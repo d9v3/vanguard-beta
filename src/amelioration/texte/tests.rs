@@ -210,7 +210,7 @@ fn adresses_et_identifiants_masques() {
     let cas = [
         (
             "délai dépassé vers https://exemple.invalid/api?cle=abc",
-            "délai dépassé vers <url>",
+            "délai dépassé vers <url><secret>",
         ),
         ("hôte 192.168.1.20:8080 injoignable", "hôte <ip> injoignable"),
         ("hôte fe80::1ff:fe23:4567:890a%3 injoignable", "hôte <ip> injoignable"),
@@ -490,4 +490,129 @@ fn entrees_pathologiques_bornees() {
         // Linéaire, 8 Ko passent en moins d'un dixième de seconde ; quadratique, il faudrait des dizaines de secondes.
         assert!(debut.elapsed().as_secs() < 10, "{m:?} : {:?}", debut.elapsed());
     }
+}
+
+// Les trouvailles de la relecture adverse. Les secrets sont inventés et portent « Faux » ou des suites
+// visiblement fabriquées ; aucun n'a de préfixe de fournisseur, d'où l'absence de découpage.
+fn trouvailles() -> Vec<(&'static str, &'static str)> {
+    vec![
+        // Valeur entre parenthèses, crochets, chevrons français ou guillemets courbes ; queue après ponctuation.
+        ("FauxMdpParenthese42", "password=({}) refusé"),
+        ("FauxJetonCrochet77", "token=[{}] refusé"),
+        ("FauxMdpGuillemet9", "mdp=«{}» refusé"),
+        ("FauxMdpCourbe31", "password=\u{201C}{}\u{201D} refusé"),
+        ("FauxQueueInventee5", "password=x1;{} refusé"),
+        ("FauxQueueParenthese6", "password=(x1)({}) refusé"),
+        // Mots-clés courts ou français.
+        ("FauxMdpBase2024", "DB_PASS={} dans la config"),
+        ("FauxMdpCourt88", "pw={} refusé"),
+        ("FauxClePartagee7", "psk: {} invalide"),
+        ("FauxMdpQuebec3", "mdp={} refusé"),
+        ("FauxCleAccent66", "clé={} refusée"),
+        ("FauxCleApi9931", "API key: {} refusée"),
+        ("FauxMdpUtil55", "Mot de passe utilisateur : {} refusé"),
+        ("FauxCleWifi4242", "Clé de sécurité réseau : {} affichée"),
+        ("FauxMdpOption7", "connexion /pass:{} refusée"),
+        // Secrets sans séparateur, en option de commande.
+        ("FauxMdpOptionP1", "commande -p {} refusée"),
+        ("FauxMdpLong22", "outil --password {} refusé"),
+        ("FauxMdpSshpass3", "sshpass -p {} ssh hote"),
+        ("FauxMdpCurl44", "curl -u alice:{} https"),
+        ("FauxMdpSmb55", "smbclient -U alice%{} partage"),
+        ("FauxMdpInvalide6", "Mot de passe {} invalide"),
+        // Groupes de chiffres : clé de récupération BitLocker inventée, carte de test.
+        (
+            "123456-234567-345678-456789-567890-678901-789012-890123",
+            "la clé de récupération {} est affichée dans la fenêtre du chiffrement de disque",
+        ),
+        (
+            "4000 1234 5678 9010",
+            "la carte {} a été refusée par la banque au moment du paiement",
+        ),
+        (
+            "4000-1234-5678-9010",
+            "la carte {} a été refusée par la banque au moment du paiement",
+        ),
+        // Codes de secours et phrases en morceaux réguliers.
+        ("Abc123-Def456-Ghi789-Jkl012", "codes {} générés"),
+        ("abcd-efgh-ijkl-mnop", "code {} généré"),
+        // Une clé de 128 bits en quatre mots de 32 bits.
+        ("0x1A2B3C4D 0x5E6F7A8B 0x9C0D1E2F 0x3A4B5C6D", "clé {} chargée"),
+        ("0x1A2B3C4D,0x5E6F7A8B,0x9C0D1E2F,0x3A4B5C6D", "clé {} chargée"),
+    ]
+}
+
+#[test]
+fn trouvailles_de_la_relecture_masquees() {
+    for (secret, gabarit) in trouvailles() {
+        let texte = gabarit.replace("{}", secret);
+        match passer(&texte, TEXTE) {
+            Ok(s) => {
+                verifier_sortie(&s, TEXTE_MAX);
+                absent(secret, &s);
+            }
+            Err(r) => assert!(
+                matches!(r, Rejet::Secrets | Rejet::PeuDeLettres | Rejet::Forme),
+                "{texte:?} : {r:?}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn faux_positifs_des_nouvelles_regles() {
+    let cas = [
+        "erreur 0x80070005 accès refusé",
+        "erreur 0x80070005 puis erreur 0x80004005 en retour",
+        "mot de passe trop court",
+        "le mot de passe a expiré",
+        "option -p ignorée",
+        "réseau Wi-Fi perdu",
+        "mise à jour du 2026-11-02 installée",
+        "build 10.0.19041.1 installé",
+        "port 8080 occupé",
+        "pid 4242 terminé",
+    ];
+    for brut in cas {
+        assert_eq!(propre(brut), brut, "{brut:?}");
+    }
+}
+
+#[test]
+fn renvois_github_desarmes() {
+    let cas = [
+        ("voir #12 pour la suite", "voir 12 pour la suite"),
+        ("Fixes #3 dans le dépôt", "Fixes 3 dans le dépôt"),
+        ("corrigé dans vanguard#45 hier", "corrigé dans vanguard 45 hier"),
+        ("voir GH-7 et gh-8 aussi", "voir GH 7 et gh 8 aussi"),
+        ("couleur #fff gardée", "couleur #fff gardée"),
+        ("le pilote AGH-2 reste", "le pilote AGH-2 reste"),
+    ];
+    for (brut, attendu) in cas {
+        assert_eq!(propre(brut), attendu, "{brut:?}");
+    }
+}
+
+#[test]
+fn ecritures_melees_refusees() {
+    // Un « а » cyrillique (U+0430) ou un « ο » grec (U+03BF) glissé dans un mot latin.
+    for brut in ["le p\u{0430}ssword est faux", "le t\u{03BF}ken est faux"] {
+        assert_eq!(passer(brut, TEXTE), Err(Rejet::Forme), "{brut:?}");
+    }
+    // Un mot entièrement grec ou cyrillique, à côté de mots latins, passe.
+    assert_eq!(
+        propre("erreur \u{0394}\u{03B9}\u{03B1} reçue"),
+        "erreur \u{0394}\u{03B9}\u{03B1} reçue"
+    );
+    assert_eq!(propre("ошибка dans le service"), "ошибка dans le service");
+}
+
+#[test]
+fn versions_sans_phrase() {
+    assert!(VersionTierce::nettoyer("1.2.3-beta.4+build").is_ok());
+    assert!(VersionTierce::nettoyer("2.0.0-rc1").is_ok());
+    assert!(VersionTierce::nettoyer("1-motdepassesecret").is_err());
+    assert!(VersionTierce::nettoyer("1-abcdefghi-abcdefghi").is_err());
+    assert!(VersionTierce::lire("1-motdepassesecret").is_none());
+    assert!(VersionTierce::lire("1.2.3-beta.4+build").is_some());
 }

@@ -10,6 +10,16 @@
 //! où le détecteur sonne trop, ou qui n'est presque plus fait de mots, est jeté en entier (seul le compte des refus
 //! monte) ; ce qui reste n'a que des lettres, des chiffres et une ponctuation sans effet dans le Markdown, le HTML ou
 //! un terminal.
+//!
+//! Ce que ce nettoyage ne fait pas, et que l'usage doit porter :
+//! - Une consigne écrite en clair (« ignore les instructions précédentes ») reste une phrase permise. Qui présente
+//!   ces textes à une IA les donne comme des données, entre délimiteurs ou dans un bloc de code, avec la consigne de
+//!   ne jamais les suivre ; jamais en début de ligne Markdown, où « # », « - » ou « 1. » prendraient un sens.
+//! - Un secret sans mot-clé ni forme reconnaissable passe : une phrase de passe en mots ordinaires, un mot de passe
+//!   d'application en quatre mots de quatre lettres séparés par des espaces, un mot de passe fait de lettres seules
+//!   après une option sans `=` (`-p motdepasse`, pris pour un mot de la phrase), un mot de passe collé à son option (`mysql -pXXXX`), donné à `net use` sans option, ou lu
+//!   dans un fichier `.pgpass` ou `.netrc` (« hôte:port:base:nom:mdp »).
+//! - Les signes combinants hors du bloc U+0300 à U+036F sont remplacés par une espace, pas comptés à part.
 
 // Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
@@ -164,7 +174,10 @@ impl VersionTierce {
             .take(VERSION_MAX)
             .collect();
         let mot = mot.trim_end_matches(['.', '-', '+', '_', ':']);
-        if !mot.starts_with(|x: char| x.is_ascii_digit()) || !mot.chars().all(version_permis) {
+        if !mot.starts_with(|x: char| x.is_ascii_digit())
+            || !mot.chars().all(version_permis)
+            || !lettres_de_version(mot)
+        {
             return Err(compter(Rejet::Forme));
         }
         match passer(mot, VERSION) {
@@ -177,9 +190,28 @@ impl VersionTierce {
         let v = s.len() <= VERSION_MAX
             && s.starts_with(|x: char| x.is_ascii_digit())
             && s.chars().all(version_permis)
+            && lettres_de_version(s)
             && !s.ends_with(['.', '-', '+', '_', ':']);
         (v && passer(s, VERSION).ok().as_deref() == Some(s)).then(|| VersionTierce(s.to_string()))
     }
+}
+
+/// Au plus 10 lettres de suite et 16 en tout : « 1.2.3-beta.4+build » passe, une phrase ou un secret en lettres
+/// déguisé en version (« 1-motdepassesecret… ») non.
+fn lettres_de_version(s: &str) -> bool {
+    let (mut suite, mut total) = (0usize, 0usize);
+    for x in s.chars() {
+        if x.is_ascii_alphabetic() {
+            suite = suite.saturating_add(1);
+            total = total.saturating_add(1);
+            if suite > 10 || total > 16 {
+                return false;
+            }
+        } else {
+            suite = 0;
+        }
+    }
+    true
 }
 
 fn version_permis(x: char) -> bool {
@@ -274,6 +306,9 @@ fn passer(brut: &str, forme: Forme) -> Result<String, Rejet> {
     if alertes > ALERTES_MAX {
         return Err(Rejet::Secrets);
     }
+    if t.split(|x| x.is_whitespace()).any(ecritures_melees) {
+        return Err(Rejet::Forme);
+    }
     let lettres = t.iter().filter(|x| x.is_alphabetic()).count();
     let visibles = t.iter().filter(|x| !x.is_whitespace()).count();
     let assez = match forme.lettres {
@@ -300,6 +335,20 @@ fn passe(c: &[char], forme: Forme) -> (Vec<char>, u32) {
     let c = couche_entropie(&c, &mut alertes);
     let c = filtrer(&c);
     (couper(&c, forme.max), alertes)
+}
+
+/// Un mot qui mêle des lettres latines à des lettres cyrilliques ou grecques : « pаssword » avec un а cyrillique
+/// échappe aux mots-clés tout en se lisant comme l'original. Un mot entièrement grec ou cyrillique passe.
+fn ecritures_melees(mot: &[char]) -> bool {
+    let latin = |x: &char| {
+        x.is_ascii_alphabetic() || ('\u{00C0}'..='\u{024F}').contains(x) || ('\u{1E00}'..='\u{1EFF}').contains(x)
+    };
+    let autre = |x: &char| {
+        ('\u{0370}'..='\u{03FF}').contains(x)
+            || ('\u{0400}'..='\u{052F}').contains(x)
+            || ('\u{1F00}'..='\u{1FFF}').contains(x)
+    };
+    mot.iter().any(latin) && mot.iter().any(autre)
 }
 
 // --- Outils de lecture -------------------------------------------------------------------------------------------
@@ -410,8 +459,9 @@ fn remplacer(c: &[char], mut trouver: impl FnMut(&[char], usize) -> Option<(usiz
 
 /// Les marqueurs que pose ce nettoyage, puis ceux de `journal::anonymiser`. Seuls ceux-là gardent leurs chevrons à
 /// la sortie : un « `<system>` » ou un « `<img …>` » écrit dans un texte perd les siens (étape 5).
-const MARQUEURS: [&str; 18] = [
+const MARQUEURS: [&str; 19] = [
     "<chemin>",
+    "<numéro>",
     "<url>",
     "<ip>",
     "<mac>",
@@ -497,7 +547,17 @@ fn invisible(x: char) -> bool {
 
 /// Le texte en caractères : invisibles retirés, formes pleine chasse (« ｇｈｐ＿ ») ramenées à l'ASCII, fins de ligne
 /// unifiées (une valeur de `Cookie:` court jusqu'à la fin de sa ligne), autres contrôles et espaces en espace simple,
-/// apostrophes typographiques en apostrophe droite.
+/// guillemets et apostrophes typographiques en guillemet et apostrophe droits (« password : « … » » est une valeur
+/// entre guillemets, comme `password: "…"`).
+/// Le texte brut sans chevrons, pleine chasse comprise : à appliquer avant `journal::anonymiser`, qui pose ses
+/// propres marqueurs. Sans cela, « `<secret>` » écrit dans un message d'erreur passerait pour un marqueur posé par
+/// le nettoyage, et ce qui le suit ou l'entoure échapperait à la recherche.
+pub(crate) fn sans_chevrons(brut: &str) -> String {
+    brut.chars()
+        .map(|x| if matches!(pleine_chasse(x), '<' | '>') { ' ' } else { x })
+        .collect()
+}
+
 fn normaliser(texte: &str) -> Vec<char> {
     let mut c = Vec::with_capacity(texte.len());
     for x in texte.chars() {
@@ -506,7 +566,10 @@ fn normaliser(texte: &str) -> Vec<char> {
             '\r' | '\n' | '\u{85}' | '\u{2028}' | '\u{2029}' => c.push('\n'),
             x if invisible(x) => {}
             x if x.is_control() || x.is_whitespace() => c.push(' '),
-            '\u{2018}' | '\u{2019}' | '\u{02BC}' | '\u{2032}' => c.push('\''),
+            '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' | '\u{2039}' | '\u{203A}' | '\u{02BC}' | '\u{2032}' => {
+                c.push('\'');
+            }
+            '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' | '\u{00AB}' | '\u{00BB}' | '\u{2033}' => c.push('"'),
             x => c.push(x),
         }
     }
@@ -626,22 +689,90 @@ const CLES: [&str; 18] = [
     "access_key",
 ];
 
+/// Mots courts qui annoncent un secret seulement comme mot entier ou comme dernier morceau d'un nom (`DB_PASS`,
+/// `wifi-psk`, « Clé : ») : cherchés dans un mot, ils sonneraient partout (« compass », « keyboard »).
+const CLES_COURTES: [&str; 9] = ["pass", "pw", "psk", "mdp", "cle", "clé", "key", "passe", "pin"];
+
+/// Mots qui annoncent un secret même quelques mots avant le séparateur : « Mot de passe Wi-Fi : … », « Clé de
+/// sécurité réseau : … », « Invalid API key: … ».
+const CLES_FORTES: [&str; 8] = ["passe", "clé", "cle", "password", "passwd", "passphrase", "mdp", "psk"];
+
 /// Clés dont la valeur court jusqu'à la fin de la ligne : « Authorization: Basic … », « Cookie: a=1; b=2 ».
 const CLES_LIGNE: [&str; 2] = ["authorization", "cookie"];
 
 /// Les mots qui annoncent un jeton à la suite (« Bearer abc… »).
 const SCHEMAS: [&str; 5] = ["bearer", "basic", "token", "digest", "negotiate"];
 
+/// Les options de ligne de commande et les mots suivis du secret après une simple espace : `--password x`,
+/// `-Password x`, `/pass x`, `-p x`, « mot de passe x », `sshpass -p x`. Sans `-`, « p » et « u » ne comptent pas.
+const CLES_SANS_SEPARATEUR: [&str; 13] = [
+    "password",
+    "passwd",
+    "passphrase",
+    "pwd",
+    "pass",
+    "mdp",
+    "passe",
+    "psk",
+    "secret",
+    "token",
+    "jeton",
+    "apikey",
+    "p",
+];
+
 fn mot_de_cle(x: char) -> bool {
-    x.is_ascii_alphanumeric() || x == '_' || x == '-'
+    x.is_alphanumeric() || x == '_' || x == '-'
 }
 
 fn entre_cle_et_valeur(x: char) -> bool {
     x == ' ' || x == '\t' || x == '"' || x == '\''
 }
 
+/// Si ce mot (en minuscules) annonce un secret : un mot-clé dedans, ou un mot court entier ou en dernier morceau.
+fn mot_annonce_un_secret(mot: &str) -> bool {
+    CLES.iter().any(|cle| mot.contains(cle))
+        || CLES_COURTES.iter().any(|cle| {
+            mot == *cle
+                || mot
+                    .strip_suffix(cle)
+                    .is_some_and(|tete| tete.ends_with('_') || tete.ends_with('-'))
+        })
+}
+
+/// Les quatre derniers mots avant `fin` (lettres, chiffres, `_`, `-`), en minuscules, le plus proche en premier.
+fn mots_avant(c: &[char], fin: usize) -> Vec<String> {
+    let mut mots = Vec::new();
+    let mut k = fin;
+    while mots.len() < 4 {
+        while avant(c, k).is_some_and(|y| y == ' ' || y == '\t') {
+            k = k.saturating_sub(1);
+        }
+        let mut debut = k;
+        while avant(c, debut).is_some_and(mot_de_cle) {
+            debut = debut.saturating_sub(1);
+        }
+        if debut == k {
+            break;
+        }
+        mots.push(chaine(c, debut, k).to_lowercase());
+        k = debut;
+    }
+    mots
+}
+
+/// Une valeur qui a l'air d'un mot de la langue (« incorrect », « Partagé ») : après une simple espace, ce n'est pas un
+/// secret (« mot de passe incorrect »). Un secret fait de minuscules seules passe donc là, et seulement là.
+fn mot_de_la_langue(v: &[char]) -> bool {
+    match v {
+        [] => true,
+        [premier, reste @ ..] => premier.is_alphabetic() && reste.iter().all(|y| y.is_alphabetic() && y.is_lowercase()),
+    }
+}
+
 /// Si une valeur de clé secrète commence en `i` : sa fin. On remonte depuis `i` : espaces et guillemets, puis `:` ou
-/// `=` (pas « :: »), puis espaces et guillemets, puis le mot de la clé.
+/// `=` (pas « :: »), puis espaces et guillemets, puis les mots de la clé. Sans séparateur, une simple espace après
+/// une option connue (`-p`, `--password`) suffit.
 fn valeur_de_cle(c: &[char], i: usize) -> Option<usize> {
     let premier = car(c, i)?;
     if premier.is_whitespace() || "\"'=:".contains(premier) {
@@ -651,37 +782,62 @@ fn valeur_de_cle(c: &[char], i: usize) -> Option<usize> {
     while avant(c, j).is_some_and(entre_cle_et_valeur) {
         j = j.checked_sub(1)?;
     }
-    let guillemet = avant(c, i).filter(|q| *q == '"' || *q == '\'');
     let separateur = j.checked_sub(1)?;
     let sep = car(c, separateur)?;
     if !(sep == ':' || sep == '=') || (sep == ':' && (avant(c, separateur) == Some(':') || premier == ':')) {
-        return None;
+        return apres_option(c, i, j);
     }
     let mut k = separateur;
     while avant(c, k).is_some_and(|y| entre_cle_et_valeur(y) || y == '=' || y == ':') {
         k = k.checked_sub(1)?;
     }
-    let mut debut_mot = k;
-    while avant(c, debut_mot).is_some_and(mot_de_cle) {
-        debut_mot = debut_mot.checked_sub(1)?;
-    }
-    let mot = chaine(c, debut_mot, k).to_lowercase();
-    let devant = chaine(c, debut_mot.saturating_sub(13), k).to_lowercase();
-    let francais = ["mot de passe", "mot-de-passe", "mot_de_passe", "motdepasse"]
-        .iter()
-        .any(|m| devant.ends_with(m));
-    if !francais && !CLES.iter().any(|cle| mot.contains(cle)) {
+    let mots = mots_avant(c, k);
+    let dernier = mots.first().map_or("", String::as_str);
+    let devant = chaine(c, k.saturating_sub(48), k).to_lowercase();
+    let annonce = mot_annonce_un_secret(dernier)
+        || mots.iter().any(|m| CLES_FORTES.contains(&m.as_str()))
+        || ["mot de passe", "mot-de-passe", "mot_de_passe", "motdepasse"]
+            .iter()
+            .any(|m| devant.contains(m));
+    if !annonce {
         return None;
     }
+    // Entre guillemets si un guillemet sépare la clé de la valeur : jusqu'au même guillemet, espaces comprises.
+    let guillemet = morceau(c, suivant(separateur), i)
+        .iter()
+        .rev()
+        .find(|q| **q == '"' || **q == '\'')
+        .copied();
     let fin = if let Some(q) = guillemet {
         fin_tant_que(c, i, |y| y != q && y != '\n')
-    } else if CLES_LIGNE.iter().any(|cle| mot.contains(cle)) {
+    } else if CLES_LIGNE.iter().any(|cle| dernier.contains(cle)) {
         fin_tant_que(c, i, |y| y != '\n')
     } else {
-        let fin = fin_tant_que(c, i, |y| !y.is_whitespace() && !",;&\"'<>()[]{}|`".contains(y));
+        // Jusqu'à une espace seulement : un mot de passe peut contenir `(`, `,`, `;`, `&` ou commencer par eux.
+        let fin = fin_tant_que(c, i, |y| !y.is_whitespace());
         apres_schema(c, i, fin)
     };
     (fin > i).then_some(fin)
+}
+
+/// La valeur qui suit une option ou un mot connu après une simple espace (`j` : début des espaces) : `-p x`,
+/// `--password x`, « mot de passe x », `-u alice:x`. Un mot de la langue n'est pas pris.
+fn apres_option(c: &[char], i: usize, j: usize) -> Option<usize> {
+    if j == i || morceau(c, j, i).iter().any(|y| *y == '"' || *y == '\'') {
+        return None;
+    }
+    let mut debut = j;
+    while avant(c, debut).is_some_and(|y| mot_de_cle(y) || y == '/') {
+        debut = debut.checked_sub(1)?;
+    }
+    let brut = chaine(c, debut, j).to_lowercase();
+    let option = brut.starts_with(['-', '/']);
+    let mot = brut.trim_start_matches(['-', '/']);
+    let fin = fin_tant_que(c, i, |y| !y.is_whitespace());
+    let valeur = morceau(c, i, fin);
+    let utilisateur = option && matches!(mot, "u" | "user") && valeur.iter().any(|y| *y == ':' || *y == '%');
+    let cle = CLES_SANS_SEPARATEUR.contains(&mot) && (option || mot.len() > 1);
+    ((cle && !mot_de_la_langue(valeur)) || utilisateur).then_some(fin)
 }
 
 /// Une valeur qui n'est qu'un schéma (« Bearer », « Basic ») : le jeton qui le suit en fait partie.
@@ -761,8 +917,68 @@ fn masquer_formes(c: &[char], ip: bool) -> Vec<char> {
         if ip && let Some(fin) = ipv6(c, i).or_else(|| ipv4(c, i)) {
             return Some((fin, "<ip>".to_string()));
         }
+        if let Some(fin) = groupes_de_chiffres(c, i) {
+            return Some((fin, "<numéro>".to_string()));
+        }
         hexa(c, i).map(|fin| (fin, "<hex>".to_string()))
     })
+}
+
+/// Trois groupes ou plus de 2 à 8 chiffres séparés par une espace ou un tiret, 12 chiffres ou plus en tout : une clé
+/// de récupération BitLocker, un numéro de carte, un code de secours. L'entropie ne les voit pas (dix symboles
+/// seulement) ; une date (« 2026-11-02 ») ou un numéro de téléphone n'en ont pas assez pour être pris.
+fn groupes_de_chiffres(c: &[char], i: usize) -> Option<usize> {
+    if avant(c, i).is_some_and(char::is_alphanumeric) {
+        return None;
+    }
+    let (mut debut, mut fin, mut groupes, mut total) = (i, i, 0usize, 0usize);
+    loop {
+        let bout = fin_tant_que(c, debut, |x| x.is_ascii_digit());
+        let n = entre(debut, bout);
+        if !(2..=8).contains(&n) {
+            break;
+        }
+        groupes = groupes.saturating_add(1);
+        total = total.saturating_add(n);
+        fin = bout;
+        if car(c, bout).is_some_and(|x| x == ' ' || x == '-')
+            && car(c, suivant(bout)).is_some_and(|x| x.is_ascii_digit())
+        {
+            debut = suivant(bout);
+        } else {
+            break;
+        }
+    }
+    (groupes >= 3 && total >= 12 && !car(c, fin).is_some_and(char::is_alphanumeric)).then_some(fin)
+}
+
+/// `0x` suivi d'exactement 8 chiffres hexadécimaux, seul : un code d'erreur Windows (HRESULT).
+fn mot_de_32_bits(c: &[char], i: usize) -> Option<usize> {
+    if !matches!((car(c, i), car(c, suivant(i))), (Some('0'), Some('x' | 'X'))) || avant(c, i).is_some_and(jeton) {
+        return None;
+    }
+    let debut = plus(i, 2);
+    let fin = fin_tant_que(c, debut, jeton);
+    (entre(debut, fin) == 8 && morceau(c, debut, fin).iter().all(char::is_ascii_hexdigit)).then_some(fin)
+}
+
+/// Un mot de 32 bits voisin, avant ou après, séparé seulement par des espaces, virgules ou points-virgules : une clé
+/// écrite en mots de 32 bits (« 0x1A2B3C4D 0x5E6F7A8B … ») n'est pas une suite de codes d'erreur.
+fn voisin_de_32_bits(c: &[char], i: usize, fin: usize) -> bool {
+    let separateur = |x: char| matches!(x, ' ' | ',' | ';');
+    let apres = fin_tant_que(c, fin, separateur);
+    if apres > fin && mot_de_32_bits(c, apres).is_some() {
+        return true;
+    }
+    let mut j = i;
+    while let Some(k) = j.checked_sub(1).filter(|k| car(c, *k).is_some_and(separateur)) {
+        j = k;
+    }
+    let fin_avant = j;
+    while let Some(k) = j.checked_sub(1).filter(|k| car(c, *k).is_some_and(jeton)) {
+        j = k;
+    }
+    fin_avant < i && mot_de_32_bits(c, j) == Some(fin_avant)
 }
 
 /// Des schémas sans « // » qui portent du code ou des données.
@@ -1070,7 +1286,10 @@ fn hexa(c: &[char], i: usize) -> Option<usize> {
         ['0', 'x' | 'X', reste @ ..] => (reste, true),
         _ => (suite, false),
     };
-    if !corps.iter().all(char::is_ascii_hexdigit) || corps.len() < 8 || (code && corps.len() == 8) {
+    if !corps.iter().all(char::is_ascii_hexdigit) || corps.len() < 8 {
+        return None;
+    }
+    if code && corps.len() == 8 && !voisin_de_32_bits(c, i, fin) {
         return None;
     }
     Some(fin)
@@ -1085,7 +1304,8 @@ fn couche_entropie(c: &[char], alertes: &mut u32) -> Vec<char> {
         }
         let fin = fin_tant_que(c, i, jeton);
         let suite = morceau(c, i, fin);
-        if suite.len() < ENTROPIE_LONGUEUR || forme_de_mots(suite) || entropie(suite) <= ENTROPIE_SEUIL {
+        let banal = suite.len() < ENTROPIE_LONGUEUR || forme_de_mots(suite) || entropie(suite) <= ENTROPIE_SEUIL;
+        if banal && !code_par_quatre(suite) {
             return None;
         }
         *alertes = alertes.saturating_add(1);
@@ -1115,9 +1335,31 @@ fn entropie(suite: &[char]) -> f64 {
 /// Des mots liés par `_`, `-` ou `/` (« ERROR_ACCESS_DENIED », « x86_64-unknown-linux-musl »,
 /// « read/write/execute ») : chaque morceau est un mot (minuscules, majuscules ou majuscule initiale), suivi au
 /// besoin de chiffres, ou un petit nombre. Un jeton tiré au hasard n'a presque jamais cette forme.
+/// Quatre morceaux ou plus de 4 lettres ou chiffres joints par des tirets (« abcd-efgh-ijkl-mnop ») : la forme des
+/// mots de passe d'application et des codes de secours, trop courte pour la borne de l'entropie.
+fn code_par_quatre(suite: &[char]) -> bool {
+    let morceaux: Vec<&[char]> = suite.split(|x| *x == '-').collect();
+    morceaux.len() >= 4
+        && morceaux
+            .iter()
+            .all(|m| m.len() == 4 && m.iter().all(char::is_ascii_alphanumeric))
+}
+
 fn forme_de_mots(suite: &[char]) -> bool {
     let morceaux: Vec<&[char]> = suite.split(|x| matches!(x, '_' | '-' | '/')).collect();
+    // Des codes de secours (« Abc123-Def456-… ») ou une phrase de passe en morceaux réguliers (« abcd-efgh-… ») ont
+    // la forme de mots : ils restent à l'entropie.
+    let finis_par_chiffre = morceaux
+        .iter()
+        .filter(|m| m.last().is_some_and(char::is_ascii_digit))
+        .count();
+    let quatre_lettres = morceaux
+        .iter()
+        .filter(|m| m.len() == 4 && m.iter().all(char::is_ascii_alphabetic))
+        .count();
     morceaux.len() >= 2
+        && finis_par_chiffre < 3
+        && quatre_lettres < 4
         && morceaux.iter().all(|m| {
             let lettres = m.iter().take_while(|x| x.is_ascii_alphabetic()).count();
             let (mot, chiffres) = m.split_at_checked(lettres).unwrap_or((m, &[]));
@@ -1157,7 +1399,10 @@ fn filtrer(c: &[char]) -> Vec<char> {
             i = fin;
             continue;
         }
-        let y = if permis(x) {
+        let y = if renvoi(c, i, &sortie) {
+            accents = 0;
+            ' '
+        } else if permis(x) {
             accents = 0;
             x
         } else if accent_combinant(x)
@@ -1179,6 +1424,23 @@ fn filtrer(c: &[char]) -> Vec<char> {
         sortie.pop();
     }
     sortie
+}
+
+/// Le `#` de « #12 », « dépôt#12 », « Fixes #12 » et le tiret de « GH-12 » : un renvoi vers un ticket ou une
+/// demande de fusion, qu'une IA pourrait suivre ou qu'une page GitHub transformerait en lien. Le nombre reste.
+fn renvoi(c: &[char], i: usize, sortie: &[char]) -> bool {
+    let chiffre_apres = car(c, suivant(i)).is_some_and(|x| x.is_ascii_digit());
+    match car(c, i) {
+        Some('#') => chiffre_apres,
+        Some('-') => {
+            let en_arriere = |recul: usize| sortie.len().checked_sub(recul).and_then(|k| sortie.get(k)).copied();
+            chiffre_apres
+                && en_arriere(2).is_some_and(|x| x.eq_ignore_ascii_case(&'g'))
+                && en_arriere(1).is_some_and(|x| x.eq_ignore_ascii_case(&'h'))
+                && !en_arriere(3).is_some_and(char::is_alphanumeric)
+        }
+        _ => false,
+    }
 }
 
 /// Au plus `max` octets, sans couper un marqueur ni un caractère.

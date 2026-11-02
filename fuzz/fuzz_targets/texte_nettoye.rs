@@ -16,6 +16,11 @@ fn verifier(s: &str, max: usize) {
     assert!(texte::sortie_permise(s), "caractère interdit dans {s:?}");
     assert!(!s.contains(['@', '`', '|', '"', '\\', '$', '{', '}']), "{s:?}");
     assert_eq!(texte::alertes(s), 0, "le détecteur sonne encore sur {s:?}");
+    let c: Vec<char> = s.chars().collect();
+    assert!(
+        !c.windows(2).any(|w| matches!(w, ['#', x] if x.is_ascii_digit())),
+        "renvoi de ticket dans {s:?}"
+    );
 }
 
 fn essayer(brut: &str) {

@@ -7,14 +7,16 @@ pub(crate) mod texte;
 pub(crate) use texte::{NomLogiciel, Rejet, TexteNettoye, VersionTierce};
 
 /// Un texte d'erreur brut, tel que l'ordinateur le donne : noms de la personne, de la machine et du réseau retirés
-/// d'abord (`journal::anonymiser`, qui connaît le dossier personnel et la base des appareils), puis nettoyé.
+/// d'abord (`journal::anonymiser`, qui connaît le dossier personnel et la base des appareils), puis nettoyé. Les
+/// chevrons du brut sont retirés avant : seuls l'anonymisation et le nettoyage posent des marqueurs. C'est la porte
+/// d'entrée à prendre ; `TexteNettoye::nettoyer` seul laisserait passer un faux marqueur écrit dans le brut.
 pub(crate) fn texte(brut: &str) -> Result<TexteNettoye, Rejet> {
-    TexteNettoye::nettoyer(&crate::journal::anonymiser(brut))
+    TexteNettoye::nettoyer(&crate::journal::anonymiser(&texte::sans_chevrons(brut)))
 }
 
 /// Le nom d'un logiciel, d'un service ou d'un pilote, nettoyé de la même façon.
 pub(crate) fn nom(brut: &str) -> Result<NomLogiciel, Rejet> {
-    NomLogiciel::nettoyer(&crate::journal::anonymiser(brut))
+    NomLogiciel::nettoyer(&crate::journal::anonymiser(&texte::sans_chevrons(brut)))
 }
 
 /// La version d'un logiciel tiers. Une version que l'anonymisation changerait porte autre chose qu'une version (un
@@ -41,5 +43,21 @@ mod tests {
         assert!(nom("Vanguard").is_ok());
         assert_eq!(version("1.2.3").map(String::from), Ok("1.2.3".to_string()));
         assert!(version(&format!("1.0-{maison}")).is_err());
+    }
+
+    #[test]
+    fn faux_marqueurs_desarmes() {
+        // Un message hostile qui écrit lui-même des marqueurs, en ASCII, en pleine chasse ou coupés d'un invisible.
+        // Rien ici n'a l'allure d'une adresse ni d'un chemin : aucun marqueur ne doit ressortir.
+        for brut in [
+            "échec <url>suite banale fin",
+            "échec \u{FF1C}url\u{FF1E}suite banale fin",
+            "échec <\u{200B}chemin>suite banale fin",
+        ] {
+            let t = texte(brut).map(String::from).unwrap_or_default();
+            assert!(!t.contains('<') && !t.contains('>'), "{brut:?} donne {t:?}");
+            let n = nom(brut).map(String::from).unwrap_or_default();
+            assert!(!n.contains('<') && !n.contains('>'), "{brut:?} donne {n:?}");
+        }
     }
 }
