@@ -4,7 +4,8 @@
 //!
 //! Limites dites : les règles tournent en parallèle, une durée est « au mur », gonflée par les voisines. Deux
 //! processus (surveillance et bilan manuel) peuvent noter en même temps : `ecrire_atomique` évite le fichier cassé,
-//! pas la mesure perdue (statistique, accepté). Non scellé : il ne décide d'aucune alerte, et sa lecture est bornée.
+//! pas la mesure perdue (statistique, accepté). Non scellé : il ne décide d'aucune alerte, seulement de l'ordre de
+//! départ des règles (`super::reglage`), sans effet sur ce qu'elles rendent ni sur l'ordre rendu ; sa lecture est bornée.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -249,6 +250,31 @@ pub(crate) fn juger(m: &Mesures, aujourd_hui: chrono::NaiveDate, delai: impl Fn(
     }
 }
 
+/// La médiane de la semaine (aujourd'hui et les 6 jours d'avant) de chaque règle mesurée : ce que lit l'ordre de
+/// départ du bilan (`super::reglage`).
+pub(crate) fn medianes_de_la_semaine(m: &Mesures, aujourd_hui: chrono::NaiveDate) -> BTreeMap<String, u64> {
+    let regles: std::collections::BTreeSet<&String> = m
+        .en_cours
+        .keys()
+        .chain(m.jours.values().flat_map(BTreeMap::keys))
+        .collect();
+    regles
+        .into_iter()
+        .filter_map(|r| {
+            let mut v = m.medianes(r, aujourd_hui, 0, 6);
+            (!v.is_empty()).then(|| (r.clone(), mediane(&mut v)))
+        })
+        .collect()
+}
+
+/// Les médianes de la semaine de cet ordinateur, aujourd'hui.
+pub(crate) fn medianes_recentes() -> BTreeMap<String, u64> {
+    medianes_de_la_semaine(
+        &lire_dans(&crate::socle::dossier_local()),
+        chrono::Local::now().date_naive(),
+    )
+}
+
 /// Le verdict des mesures de cet ordinateur, aujourd'hui.
 pub(crate) fn verdict() -> Verdict {
     let m = lire_dans(&crate::socle::dossier_local());
@@ -372,6 +398,24 @@ mod tests {
         noter_dans(&d, &duree, jour("2026-10-23"));
         assert_eq!(lire_dans(&d).en_cours["COM-FIC-001"], vec![1000]);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// L'ordre de départ lit la médiane de la semaine de chaque règle mesurée ; une règle vue il y a plus de 7 jours
+    /// n'y est plus.
+    #[test]
+    fn medianes_de_la_semaine_pour_l_ordre_de_depart() {
+        let ms = Duration::from_millis;
+        let mut m = Mesures::default();
+        m.ajouter(&[("VIEILLE", ms(9_000))], jour("2026-10-01"));
+        for (j, d) in [("2026-10-20", 100), ("2026-10-21", 300), ("2026-10-22", 200)] {
+            m.ajouter(&[("A", ms(d))], jour(j));
+        }
+        m.ajouter(&[("B", ms(50)), ("B", ms(70)), ("B", ms(60))], jour("2026-10-23"));
+        let med = medianes_de_la_semaine(&m, jour("2026-10-23"));
+        assert_eq!(med.get("A"), Some(&200));
+        assert_eq!(med.get("B"), Some(&60));
+        assert_eq!(med.get("VIEILLE"), None);
+        assert_eq!(medianes_de_la_semaine(&Mesures::default(), jour("2026-10-23")).len(), 0);
     }
 
     proptest! {

@@ -283,7 +283,9 @@ pub(crate) const MUETTES_TOLEREES: &[&str] = &[
 #[cfg(test)]
 const MUETTES_TOLEREES_AU_PLUS: usize = 95;
 
-/// Les vérifications du bilan pour ce système, une par règle, dans l'ordre des rangs.
+/// Les vérifications du bilan pour ce système, une par règle, dans l'ordre des rangs (le bilan les lance par
+/// `machine::bilan_des_regles`).
+#[cfg(test)]
 pub(super) fn verifications<'a>() -> Vec<Verification<'a>> {
     regles(Os::actuel()).into_iter().map(verification).collect()
 }

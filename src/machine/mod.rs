@@ -351,44 +351,72 @@ fn niveau_expose(pare_feu_actif: bool, niveau: Niveau) -> Niveau {
 /// Une vérification à lancer : elle rend ses constats.
 pub(crate) type Verification<'a> = Box<dyn FnOnce() -> Vec<Constat> + Send + 'a>;
 
-/// Lance les vérifications en même temps (chacune attend surtout des commandes du système) et rend leurs constats
-/// dans l'ordre de la liste. Une vérification qui plante le dit, sans emporter les autres. La durée de chaque règle
-/// va au journal des mesures (`autotest::mesures`), qui voit ainsi une règle ralentir d'une semaine à l'autre.
+/// Lance les vérifications en même temps, dans l'ordre de la liste, et note la durée de chaque règle au journal des
+/// mesures. Les essais seulement : le bilan passe par `bilan_des_regles`, qui ordonne le départ.
+#[cfg(test)]
 fn en_parallele(verifications: Vec<Verification<'_>>) -> Vec<Constat> {
-    let (constats, durees) = en_parallele_mesure(verifications);
+    let n = verifications.len();
+    let (constats, durees) = en_parallele_dans(verifications, (0..n).collect());
     crate::autotest::mesures::noter(&durees);
     constats
 }
 
-/// `en_parallele`, avec la durée de chaque règle du registre (celles qui n'ont pas d'identifiant ne sont pas
-/// mesurées).
-fn en_parallele_mesure(
+/// Les règles retenues, lancées en même temps et rendues dans l'ordre de leurs rangs. La durée de chaque règle va au
+/// journal des mesures (`autotest::mesures`), qui voit ainsi une règle ralentir d'une semaine à l'autre.
+fn bilan_des_regles(choisies: Vec<&'static regles::Regle>) -> Vec<Constat> {
+    let (constats, durees) = regles_en_parallele(choisies);
+    crate::autotest::mesures::noter(&durees);
+    constats
+}
+
+/// `bilan_des_regles` sans rien noter, avec la durée de chaque règle. Le départ suit l'auto-réglage
+/// (`autotest::reglage`) : la plus longue de la semaine d'abord, pour que le bilan ne finisse pas sur elle ; ce
+/// qu'elles rendent et l'ordre rendu n'en dépendent pas.
+fn regles_en_parallele(
+    choisies: Vec<&'static regles::Regle>,
+) -> (Vec<Constat>, Vec<(&'static str, std::time::Duration)>) {
+    let ids: Vec<Option<&str>> = choisies.iter().map(|r| Some(r.id)).collect();
+    let depart = crate::autotest::reglage::ordre_de_depart(&ids, &crate::autotest::mesures::medianes_recentes());
+    en_parallele_dans(choisies.into_iter().map(regles::verification).collect(), depart)
+}
+
+/// Lance les vérifications en même temps (chacune attend surtout des commandes du système), dans l'ordre `depart`
+/// (une permutation des positions ; tout autre ordre devient celui de la liste), et rend leurs constats dans l'ordre
+/// de la liste, avec la durée de chaque règle du registre (celles qui n'ont pas d'identifiant ne sont pas mesurées).
+/// Une vérification qui plante le dit, sans emporter les autres.
+fn en_parallele_dans(
     verifications: Vec<Verification<'_>>,
+    depart: Vec<usize>,
 ) -> (Vec<Constat>, Vec<(&'static str, std::time::Duration)>) {
     // VANGUARD_CHRONO : chaque vérification dit son temps sur la sortie d'erreur, pour trouver ce qui ralentit le bilan.
     let chrono = std::env::var_os("VANGUARD_CHRONO").is_some();
+    let n = verifications.len();
+    let depart = crate::autotest::reglage::permutation_ou_rangs(depart, n);
+    let mut a_lancer: Vec<Option<Verification<'_>>> = verifications.into_iter().map(Some).collect();
     let mut durees = Vec::new();
     let bilan = bilan_en_cours();
     let mut constats: Vec<Constat> = std::thread::scope(|s| {
-        let fils: Vec<_> = verifications
-            .into_iter()
-            .map(|v| {
-                s.spawn(move || {
+        let mut fils: Vec<Option<_>> = std::iter::repeat_with(|| None).take(n).collect();
+        for i in depart {
+            if let (Some(v), Some(place)) = (a_lancer.get_mut(i).and_then(Option::take), fils.get_mut(i)) {
+                *place = Some(s.spawn(move || {
                     let debut = std::time::Instant::now();
                     let constats = v();
                     (constats, debut.elapsed())
-                })
-            })
-            .collect();
+                }));
+            }
+        }
         fils.into_iter()
             .enumerate()
             .flat_map(|(i, f)| {
-                let (constats, duree) = f.join().unwrap_or_else(|_| {
-                    (
-                        vec![impossible("Audit", tr!("erreur interne", "internal error"))],
-                        std::time::Duration::ZERO,
-                    )
-                });
+                let (constats, duree) = f
+                    .and_then(|f: std::thread::ScopedJoinHandle<'_, _>| f.join().ok())
+                    .unwrap_or_else(|| {
+                        (
+                            vec![impossible("Audit", tr!("erreur interne", "internal error"))],
+                            std::time::Duration::ZERO,
+                        )
+                    });
                 if chrono {
                     let quoi = constats
                         .first()
@@ -420,7 +448,7 @@ pub(crate) fn essai_des_regles(
         .filter(|r| garder(r.id))
         .collect();
     if !une_par_une {
-        return en_parallele_mesure(choisies.into_iter().map(regles::verification).collect());
+        return regles_en_parallele(choisies);
     }
     let bilan = bilan_en_cours();
     let mut constats = Vec::new();
@@ -439,7 +467,7 @@ pub(crate) fn essai_des_regles(
 fn audit(systeme: &'static str) -> Audit {
     // Un nouveau bilan relit ce que ses règles partagent (`ParBilan`) : une correction a pu le changer.
     BILAN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let constats = en_parallele(regles::verifications());
+    let constats = bilan_des_regles(regles::regles(regles::Os::actuel()));
     Audit {
         systeme,
         score: score(&constats),
@@ -1372,12 +1400,12 @@ pub fn auditer(bavard: bool) -> Audit {
 /// Internet et peuvent prendre des minutes.
 pub fn auditer_seulement(garder: impl Fn(&str) -> bool) -> Audit {
     BILAN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let verifications = regles::regles(regles::Os::actuel())
-        .into_iter()
-        .filter(|r| garder(r.id))
-        .map(regles::verification)
-        .collect();
-    let constats = en_parallele(verifications);
+    let constats = bilan_des_regles(
+        regles::regles(regles::Os::actuel())
+            .into_iter()
+            .filter(|r| garder(r.id))
+            .collect(),
+    );
     Audit {
         systeme: os::NOM,
         score: score(&constats),
@@ -1742,6 +1770,41 @@ Host *
     }
 
     /// Une règle qui plante ne fait pas tomber le bilan : son constat « erreur interne » n'est pas vérifié et garde
+    /// L'ordre de départ (auto-réglage) ne change ni les constats ni l'ordre rendu, ni celui des durées : ceux de la
+    /// liste, pour chaque permutation ; un ordre faux revient à celui de la liste.
+    #[test]
+    fn l_ordre_de_depart_ne_change_pas_ce_qui_est_rendu() {
+        const REGLES: [&str; 4] = ["LNX-TST-010", "LNX-TST-011", "LNX-TST-012", "LNX-TST-013"];
+        let liste = || -> Vec<Verification<'static>> {
+            REGLES
+                .iter()
+                .enumerate()
+                .map(|(i, regle)| -> Verification<'static> {
+                    Box::new(move || {
+                        vec![Constat {
+                            regle,
+                            ..ok("Audit", i.to_string())
+                        }]
+                    })
+                })
+                .collect()
+        };
+        for depart in [
+            vec![0, 1, 2, 3],
+            vec![3, 2, 1, 0],
+            vec![2, 0, 3, 1],
+            vec![0, 0, 1, 2],
+            vec![9],
+            vec![],
+        ] {
+            let (constats, durees) = en_parallele_dans(liste(), depart.clone());
+            let messages: Vec<&str> = constats.iter().map(|c| c.message.as_str()).collect();
+            assert_eq!(messages, ["0", "1", "2", "3"], "départ {depart:?}");
+            let ordre: Vec<&str> = durees.iter().map(|(r, _)| *r).collect();
+            assert_eq!(ordre, REGLES, "départ {depart:?}");
+        }
+    }
+
     /// l'identifiant de la règle.
     #[test]
     fn regle_qui_plante_garde_son_identifiant() {

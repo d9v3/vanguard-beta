@@ -14,6 +14,7 @@
 pub(crate) mod croisees;
 pub(crate) mod lecture_seule;
 pub(crate) mod mesures;
+pub(crate) mod reglage;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
