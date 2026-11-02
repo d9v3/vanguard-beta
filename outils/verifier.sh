@@ -4,8 +4,9 @@
 # Internet, scripts PowerShell, shell et Python, essais des outils de la clé (outils/essais-cle.sh), de la signature
 # des versions (outils/essais-signature.sh) et de ce script même sous --seulement (outils/essais-verifier.sh), liens
 # internes, carte de couverture ATT&CK à jour (outils/couverture-attack.py), documentation du code sans avertissement
-# (cargo doc), textes français et anglais (outils/textes.py), protections des programmes lues dans leurs en-têtes
-# (vanguard deploiement verifier-binaire : PIE, marque RELRO, pile non exécutable ; ASLR, DEP), régression de détection (le corpus de
+# (cargo doc), textes français et anglais (outils/textes.py), relais des lots (relais/, outils/relais-schema.py),
+# protections des programmes lues dans leurs en-têtes (vanguard deploiement verifier-binaire : PIE, marque RELRO, pile
+# non exécutable ; ASLR, DEP), régression de détection (le corpus de
 # src/modele/corpus.rs, Linux et Wine), dépendances (cargo deny) et leurs failles connues (cargo audit), banc de
 # fuzzing compilé et passé quelques secondes par cible, preuves de Kani compilées (lancées par outils/preuves.sh).
 # La CI lance ce même script (.github/workflows/ci.yml) : une seule logique, ici.
@@ -281,6 +282,15 @@ scripts_python() {
     xargs -0 python3 -c 'import ast, sys; [ast.parse(open(f, encoding="utf-8").read(), f) for f in sys.argv[1:]]'
 }
 
+# Le relais des lots (relais/worker.js) : ses essais sous Node, sans wrangler ni paquet npm (une fausse base D1 sur
+# node:sqlite, Node 22.13 ou plus). Sans Node, ou sans node:sqlite, l'étape est sautée.
+relais() {
+  command -v node >/dev/null || { echo "node absent (essais du relais pas lancés)"; return "$SAUTEE"; }
+  node -e 'require("node:sqlite")' 2>/dev/null ||
+    { echo "node $(node --version) sans node:sqlite (22.13 ou plus)"; return "$SAUTEE"; }
+  node --test relais/essais/
+}
+
 # Les dépendances selon deny.toml : failles connues (base RustSec), licences, provenance, doublons. Sans Internet, la
 # base du dernier téléchargement sert telle quelle ; sans aucune, seules les failles ne sont pas vérifiées, et c'est
 # dit. Sans cargo-deny, l'étape est sautée.
@@ -477,6 +487,8 @@ if [[ $MODE != --rapide ]]; then
   etape masque bash outils/verifier-masque.sh &
   etape extensions extensions &
   etape python scripts_python &
+  etape relais relais &
+  etape relais-schema python3 outils/relais-schema.py &
   etape liens python3 outils/liens.py --hors-ligne &
   etape carte-attack python3 outils/couverture-attack.py --verifier &
   etape workflows workflows &
@@ -632,6 +644,9 @@ if [[ $MODE != --rapide ]]; then
   ligne masque "mots d'attaque masqués"
   ligne extensions "extensions (sdk, exemple Rust)"
   ligne python "scripts Python"
+  ligne relais "relais des lots ($(grep -m1 -oE '^ℹ pass [0-9]+' "$TRAVAIL/relais.log" 2>/dev/null | cut -d' ' -f3) essais)"
+  ligne relais-schema "relais : schéma et détecteur"
+  [[ -f $TRAVAIL/relais-schema.log ]] && grep -E '^comparaison .* sautée' "$TRAVAIL/relais-schema.log" | sed 's/^/      /'
   ligne liens "liens internes"
   ligne carte-attack "carte ATT&CK à jour (COUVERTURE-ATTACK.md)"
   ligne workflows "workflows de GitHub (zizmor)"

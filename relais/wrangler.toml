@@ -1,0 +1,36 @@
+# Le relais des lots d'amélioration (relais/LISEZMOI.md). Rien de réel ici : l'auteur remplace les valeurs
+# « A-REMPLACER » par celles de son compte au moment de déployer, et le secret de relève n'est jamais dans ce
+# fichier (`wrangler secret put SECRET_RELEVE`). Pas d'account_id : wrangler le prend du compte connecté.
+name = "relais"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+# L'adresse : relais.<sous-domaine neutre>.workers.dev (plan de l'envoi, §10 : sans le nom de l'auteur, elle sera
+# écrite dans le programme). Pas d'adresses d'aperçu par version : une seule adresse existe.
+workers_dev = true
+preview_urls = false
+
+# Aucun journal : ni Workers Logs, ni Logpush, ni traces. Le Worker n'écrit rien dans la console de toute façon.
+logpush = false
+[observability]
+enabled = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "relais"
+database_id = "A-REMPLACER-par-l-identifiant-de-wrangler-d1-create"
+
+# Le limiteur de Cloudflare : 10 requêtes par minute et par source (empreinte du /24 ou du /48), avant même de lire
+# le corps. `namespace_id` est un nombre choisi librement, propre à ce compte.
+[[ratelimits]]
+name = "LIMITEUR"
+namespace_id = "1001"
+
+[ratelimits.simple]
+limit = 10
+period = 60
+
+# La purge quotidienne : lots de 14 jours et plus, quotas et sels d'hier (la réception la refait aussi au premier
+# lot du jour, et la relève avant de rendre quoi que ce soit).
+[triggers]
+crons = ["0 0 * * *"]

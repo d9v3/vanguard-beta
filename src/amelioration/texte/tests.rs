@@ -616,3 +616,60 @@ fn versions_sans_phrase() {
     assert!(VersionTierce::lire("1-motdepassesecret").is_none());
     assert!(VersionTierce::lire("1.2.3-beta.4+build").is_some());
 }
+
+/// Le détecteur recopié dans le relais (relais/worker.js, deuxième des trois couches) doit sonner exactement comme
+/// celui-ci : relais/essais/corpus-detecteur.json garde, pour chaque texte, ce que donnent ici `alertes` et
+/// `sortie_permise`, et les essais du relais (`node --test relais/essais/`) exigent les mêmes valeurs du Worker. Un
+/// changement du détecteur fait échouer ce test : le recopier dans le Worker, puis réécrire les valeurs attendues avec
+/// `VANGUARD_CORPUS_RELAIS=relais/essais/corpus-detecteur.json cargo test corpus_du_relais` (chemin depuis la racine
+/// du dépôt) et relancer les essais du relais.
+#[test]
+fn corpus_du_relais_identique() {
+    let corpus: Vec<(String, u32, u8)> =
+        serde_json::from_str(include_str!("../../../relais/essais/corpus-detecteur.json")).expect("corpus lisible");
+    assert!(corpus.len() > 1000, "corpus tronqué");
+    let calcule: Vec<(String, u32, u8)> = corpus
+        .iter()
+        .map(|(s, _, _)| (s.clone(), alertes(s), u8::from(sortie_permise(s))))
+        .collect();
+    if let Ok(chemin) = std::env::var("VANGUARD_CORPUS_RELAIS") {
+        let racine = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        std::fs::write(racine.join(chemin), corpus_en_json(&calcule)).expect("corpus réécrit");
+        return;
+    }
+    let ecarts: Vec<_> = corpus
+        .iter()
+        .zip(&calcule)
+        .filter(|(a, b)| a != b)
+        .map(|(_, b)| b)
+        .collect();
+    assert!(ecarts.is_empty(), "{} écarts, dont {:?}", ecarts.len(), ecarts.first());
+}
+
+/// Une ligne par texte, en ASCII seulement ; `A`, `J`, `_`, `-` et `.` écrits `\u00XX` : les faux secrets du corpus
+/// (« gh » « p_ » …) ne font pas sonner les détecteurs de secrets de GitHub et des crochets d'envoi.
+fn corpus_en_json(corpus: &[(String, u32, u8)]) -> String {
+    let mut sortie = String::from("[\n");
+    for (k, (s, a, p)) in corpus.iter().enumerate() {
+        if k > 0 {
+            sortie.push_str(",\n");
+        }
+        sortie.push_str("[\"");
+        for x in s.chars() {
+            match x {
+                '"' => sortie.push_str("\\\""),
+                '\\' => sortie.push_str("\\\\"),
+                ' '..='~' if !"AJ_-.".contains(x) => sortie.push(x),
+                _ => {
+                    let mut unites = [0u16; 2];
+                    for u in x.encode_utf16(&mut unites) {
+                        let _ = write!(sortie, "\\u{u:04x}");
+                    }
+                }
+            }
+        }
+        let _ = write!(sortie, "\",{a},{p}]");
+    }
+    sortie.push_str("\n]\n");
+    sortie
+}
