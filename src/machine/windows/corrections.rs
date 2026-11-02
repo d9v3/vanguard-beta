@@ -500,6 +500,8 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
                     | Acte::TacheReactiver(_)
                     | Acte::DemarrageQuarantaine(_)
                     | Acte::DemarrageRemettre(_)
+                    | Acte::LancementDesactiver(..)
+                    | Acte::LancementReactiver(_)
                     | Acte::WmiAbonnementRetirer(_)
                     | Acte::WmiAbonnementRemettre(_)
                     | Acte::ServiceRetirer(_)),
@@ -578,8 +580,8 @@ fn reseau_nomme(r: &crate::machine::gestes::ReseauCategorie) -> String {
 
 fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
     use crate::machine::gestes::{
-        ACoter, Acte, Action, Categorie, CleRun, GenreExclusion, MagasinRacine, ModeAsr, ReglageDefender,
-        ValeurDefender, Vidable, Vue,
+        ACoter, Acte, Action, Categorie, CleRun, GenreExclusion, ListeLancement, MagasinRacine, ModeAsr,
+        ReglageDefender, ValeurDefender, Vidable, Vue,
     };
     use crate::ui::{tr, trf};
     match acte {
@@ -802,28 +804,50 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
         }
         Acte::TacheDesactiver(t) => {
             let t = crate::ui::affichable(t.texte());
-            trf!("Désactiver la tâche planifiée « {t} »", "Disable the scheduled task “{t}”")
+            trf!(
+                "Désactiver la tâche planifiée « {t} » (relue et rejugée ici, jamais une tâche sous \\Microsoft\\ ni un programme de Windows ou de Defender ; elle n'est pas supprimée). Sa définition est notée ; la réactiver n'est accepté que si elle n'a pas changé depuis, mais ce n'est pas encore proposé dans « Ce que Vanguard a changé »",
+                "Disable the scheduled task “{t}” (read and judged again here, never a task under \\Microsoft\\ nor a Windows or Defender program; it is not deleted). Its definition is noted; re-enabling it is accepted only if it has not changed since, but it is not offered in “What Vanguard changed” yet"
+            )
         }
         Acte::TacheReactiver(t) => {
             let t = crate::ui::affichable(t.texte());
             trf!(
-                "Réactiver la tâche planifiée « {t} »",
-                "Re-enable the scheduled task “{t}”"
+                "Réactiver la tâche planifiée « {t} » que Vanguard a désactivée, seulement si sa définition est restée celle que Vanguard a notée (refusé sinon)",
+                "Re-enable the scheduled task “{t}” that Vanguard disabled, only if its definition is still the one Vanguard noted (refused otherwise)"
             )
         }
         Acte::DemarrageQuarantaine(f) => {
             let f = crate::ui::affichable(f.texte());
             trf!(
-                "Mettre de côté le fichier de démarrage « {f} »",
-                "Set aside the startup file “{f}”"
+                "Mettre de côté le fichier « {f} » du dossier Démarrage commun (relu et rejugé ici ; jamais un lien ni une jonction, jamais un programme de Windows ou de Defender). Une copie vérifiée est gardée dans ProgramData\\Vanguard\\quarantaine avant le retrait ; la remise n'est pas encore proposée dans « Ce que Vanguard a changé »",
+                "Set aside the file “{f}” from the common Startup folder (read and judged again here; never a link or a junction, never a Windows or Defender program). A verified copy is kept in ProgramData\\Vanguard\\quarantaine before removal; putting it back is not offered in “What Vanguard changed” yet"
             )
         }
         Acte::DemarrageRemettre(f) => {
             let f = crate::ui::affichable(f.texte());
             trf!(
-                "Remettre le fichier de démarrage « {f} »",
-                "Put back the startup file “{f}”"
+                "Remettre le fichier « {f} » du dossier Démarrage commun depuis la copie que Vanguard a gardée, si elle est intacte (refusé sinon, et jamais par-dessus un fichier présent)",
+                "Put back the file “{f}” in the common Startup folder from the copy Vanguard kept, if it is intact (refused otherwise, and never over an existing file)"
             )
+        }
+        Acte::LancementDesactiver(l, _) | Acte::LancementReactiver(l) => {
+            let n = crate::ui::affichable(l.nom());
+            let ou = match l.liste() {
+                ListeLancement::Run => r"HKLM\…\CurrentVersion\Run",
+                ListeLancement::Run32 => r"HKLM\…\WOW6432Node\…\CurrentVersion\Run",
+                ListeLancement::Dossier => tr!("dossier Démarrage commun", "common Startup folder"),
+            };
+            if matches!(acte, Acte::LancementDesactiver(..)) {
+                trf!(
+                    "Désactiver le lancement au démarrage « {n} » de la machine ({ou}) comme le fait le Gestionnaire des tâches (StartupApproved : rien n'est supprimé ; relu ici, jamais Windows, Defender ni ce qu'Optimiser garde). Les octets d'avant sont notés pour une remise exacte",
+                    "Disable the machine startup entry “{n}” ({ou}) the way Task Manager does (StartupApproved: nothing is deleted; read again here, never Windows, Defender nor what Optimize keeps). The previous bytes are noted for an exact restore"
+                )
+            } else {
+                trf!(
+                    "Réactiver le lancement au démarrage « {n} » de la machine ({ou}) avec les octets que Vanguard a notés en le désactivant (refusé sans note, ou si la valeur a changé depuis)",
+                    "Re-enable the machine startup entry “{n}” ({ou}) with the bytes Vanguard noted when disabling it (refused without a note, or if the value changed since)"
+                )
+            }
         }
         Acte::WmiAbonnementRetirer(w) => {
             let (n, c) = (crate::ui::affichable(w.nom.texte()), w.classe.classe());

@@ -454,8 +454,13 @@ mod tests {
             ),
             (
                 "machine/windows/quarantaine.rs",
-                2,
-                "processus élevé : copie d'une racine retirée, créée sans écraser (create_new) dans un dossier réservé aux administrateurs, retirée si l'écriture échoue, hors bilan",
+                3,
+                "processus élevé : copie d'une racine ou d'un fichier du Démarrage commun retiré, créée sans écraser (create_new) dans un dossier réservé aux administrateurs, retirée si l'écriture échoue ou une fois remise à sa place, hors bilan",
+            ),
+            (
+                "machine/windows/demarrage_ecriture.rs",
+                1,
+                "processus élevé : remise d'un fichier du Démarrage commun depuis sa copie de quarantaine vérifiée, créé sans écraser (create_new) dans un dossier relu (ni lien ni jonction), hors bilan",
             ),
             (
                 "machine/linux/veilleur.rs",

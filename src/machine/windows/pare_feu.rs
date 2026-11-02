@@ -304,6 +304,8 @@ pub(crate) fn faire_acte(acte: &Acte) -> Option<Resultat> {
         | Acte::TacheReactiver(_)
         | Acte::DemarrageQuarantaine(_)
         | Acte::DemarrageRemettre(_)
+        | Acte::LancementDesactiver(..)
+        | Acte::LancementReactiver(_)
         | Acte::WmiAbonnementRetirer(_)
         | Acte::WmiAbonnementRemettre(_)
         | Acte::ServiceRetirer(_) => None,

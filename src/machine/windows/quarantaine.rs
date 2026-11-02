@@ -144,3 +144,35 @@ pub(super) fn deposer(nom: &str, octets: &[u8]) -> Result<PathBuf, Echec> {
     }
     Ok(chemin)
 }
+
+/// Un nom de fichier de la quarantaine : un seul composant, jamais un chemin (il vient d'une note du registre).
+fn nom_sur(nom: &str) -> bool {
+    !nom.is_empty() && nom != "." && nom != ".." && !nom.contains(['\\', '/', ':', '\0'])
+}
+
+/// Relit un fichier de la quarantaine (un simple fichier, jamais un lien), au plus `max` octets.
+pub(super) fn lire(nom: &str, max: u64) -> Result<Vec<u8>, Echec> {
+    if !nom_sur(nom) {
+        return Err(Echec::refuse(
+            "quarantaine/lire",
+            tr!("nom de fichier refusé", "file name refused"),
+        ));
+    }
+    let chemin = dossier()?.join(nom);
+    crate::socle::lire_ordinaire(&chemin, max).map_err(|e| Echec::io("quarantaine/lire", &e))
+}
+
+/// Retire un fichier de la quarantaine (une copie remise à sa place) ; un fichier déjà absent n'est pas une erreur.
+pub(super) fn retirer(nom: &str) -> Result<(), Echec> {
+    if !nom_sur(nom) {
+        return Err(Echec::refuse(
+            "quarantaine/retirer",
+            tr!("nom de fichier refusé", "file name refused"),
+        ));
+    }
+    let chemin = dossier()?.join(nom);
+    match std::fs::remove_file(&chemin) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(Echec::io("quarantaine/retirer", &e)),
+        _ => Ok(()),
+    }
+}

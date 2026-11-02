@@ -261,10 +261,44 @@ pub(super) fn run_signale(cle: super::gestes::CleRun, nom: &[u16], valeur: &winr
         mots: String::from_utf16(nom).is_err().then(|| nom.to_vec()),
         valeur: texte_valeur(valeur),
     };
-    juger_persistance(&[], &[v], &[])
+    propose(&juger_persistance(&[], &[v], &[]), ligne)
+}
+
+/// Une des corrections de `constats` est-elle exactement `ligne` ?
+fn propose(constats: &[Constat], ligne: &str) -> bool {
+    constats
         .iter()
         .filter_map(|c| c.correctif.as_ref())
         .any(|k| k.commandes.iter().any(|l| l == ligne))
+}
+
+/// Dans le processus élevé : le bilan, refait sur les lignes d'une seule tâche relue (`planificateur::lignes_tache`,
+/// la construction même du bilan), propose-t-il exactement `ligne` ?
+pub(super) fn tache_signalee(lignes: &[String], ligne: &str) -> bool {
+    let lignes: Vec<&str> = lignes.iter().map(String::as_str).collect();
+    propose(&juger_persistance(&lignes, &[], &[]), ligne)
+}
+
+/// Dans le processus élevé : le bilan, refait sur ce seul fichier relu du dossier Démarrage commun (`commun`, lu par
+/// le processus élevé lui-même), propose-t-il exactement `ligne` ? `cible` vient de `cible_demarrage`.
+pub(super) fn demarrage_signale(fichier: &str, cible: &str, commun: &str, ligne: &str) -> bool {
+    let d = format!("{fichier}|{cible}");
+    propose(&juger_persistance_selon(&[], &[], &[&d], Some(commun)), ligne)
+}
+
+/// Ce que lance un fichier du dossier Démarrage, comme le bilan l'écrit : la cible et les arguments d'un raccourci
+/// (lu au plus sur un mégaoctet, la taille d'un raccourci), ou le fichier lui-même. `None` : raccourci illisible sans
+/// COM.
+pub(super) fn cible_demarrage(plein: &str, octets: &[u8]) -> Option<String> {
+    let raccourci = std::path::Path::new(plein)
+        .extension()
+        .is_some_and(|x| x.eq_ignore_ascii_case("lnk"));
+    if raccourci {
+        let (cible, arguments) = cible_raccourci(octets.get(..1 << 20).unwrap_or(octets))?;
+        Some(format!("\"{cible}\" {arguments}"))
+    } else {
+        Some(format!("\"{plein}\""))
+    }
 }
 
 /// Le texte d'un tampon UTF-16 (petit-boutiste) jusqu'au premier zéro.
@@ -483,8 +517,8 @@ fn nom_element(element: &[u8]) -> Option<String> {
 }
 
 /// Les dossiers Démarrage de la personne puis de tous, comme [Environment]::GetFolderPath les donne. Un chemin vide
-/// ou relatif est écarté : il lirait le dossier courant (la clé, avec ses programmes).
-fn dossiers_demarrage() -> Vec<std::path::PathBuf> {
+/// ou relatif est écarté (`None`) : il lirait le dossier courant (la clé, avec ses programmes).
+fn dossiers_demarrage() -> [Option<std::path::PathBuf>; 2] {
     use winreg::RegKey;
     use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
     const DOSSIERS: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders";
@@ -509,10 +543,7 @@ fn dossiers_demarrage() -> Vec<std::path::PathBuf> {
             r"%ProgramData%\Microsoft\Windows\Start Menu\Programs\Startup",
         ),
     ]
-    .into_iter()
-    .map(std::path::PathBuf::from)
-    .filter(|d| d.is_absolute())
-    .collect()
+    .map(|d| Some(std::path::PathBuf::from(d)).filter(|d| d.is_absolute()))
 }
 
 /// La section DEM : `None` si un raccourci ne se lit pas sans COM, ou si un dossier existant ne se lit pas (PowerShell
@@ -520,7 +551,7 @@ fn dossiers_demarrage() -> Vec<std::path::PathBuf> {
 fn lignes_demarrage() -> Option<Vec<String>> {
     use std::io::Read;
     let mut lignes = Vec::new();
-    for dossier in dossiers_demarrage() {
+    for dossier in dossiers_demarrage().into_iter().flatten() {
         let entrees = match std::fs::read_dir(&dossier) {
             Ok(entrees) => entrees,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -533,19 +564,16 @@ fn lignes_demarrage() -> Option<Vec<String>> {
                 continue;
             }
             let plein = chemin.to_string_lossy();
-            let cible = if chemin.extension().is_some_and(|x| x.eq_ignore_ascii_case("lnk")) {
+            let mut octets = Vec::new();
+            if chemin.extension().is_some_and(|x| x.eq_ignore_ascii_case("lnk")) {
                 // Un raccourci tient en quelques kilo-octets : lu au plus sur un mégaoctet.
-                let mut octets = Vec::new();
                 std::fs::File::open(&chemin)
                     .ok()?
                     .take(1 << 20)
                     .read_to_end(&mut octets)
                     .ok()?;
-                let (cible, arguments) = cible_raccourci(&octets)?;
-                format!("\"{cible}\" {arguments}")
-            } else {
-                format!("\"{plein}\"")
-            };
+            }
+            let cible = cible_demarrage(&plein, &octets)?;
             lignes.push(format!("{plein}|{cible}"));
         }
     }
@@ -601,7 +629,14 @@ pub(super) fn persistance() -> Vec<Constat> {
             "startup keys not fully read: {cles}"
         ));
     }
-    let constats = juger_persistance(&taches.unwrap_or_default(), &run, &demarrage.unwrap_or_default());
+    let [_, commun] = dossiers_demarrage();
+    let commun = commun.map(|c| c.to_string_lossy().into_owned());
+    let constats = juger_persistance_selon(
+        &taches.unwrap_or_default(),
+        &run,
+        &demarrage.unwrap_or_default(),
+        commun.as_deref(),
+    );
     if non_lus.is_empty() {
         return constats;
     }
@@ -644,7 +679,27 @@ fn info_fenetre_cachee(ou: &str, commande: &str) -> Constat {
     )
 }
 
+/// Le bilan des lancements automatiques, sans dossier Démarrage commun connu (aucun fichier n'y est mis en
+/// quarantaine).
 fn juger_persistance(taches: &[&str], run: &[ValeurRun], demarrage: &[&str]) -> Vec<Constat> {
+    juger_persistance_selon(taches, run, demarrage, None)
+}
+
+/// Le fichier est-il directement dans le dossier `commun` (casse ignorée, comme Windows) ?
+fn dans_dossier(fichier: &str, commun: &str) -> bool {
+    let parent = fichier.rsplit_once('\\').map_or("", |(p, _)| p);
+    let commun = commun.trim_end_matches('\\');
+    !commun.is_empty() && parent.to_lowercase() == commun.to_lowercase()
+}
+
+/// `commun` : le dossier Démarrage de tous. Un de ses fichiers suspects est mis en quarantaine par le processus élevé
+/// (`demarrage-quarantaine`) ; un fichier du dossier de la personne garde sa correction d'avant.
+fn juger_persistance_selon(
+    taches: &[&str],
+    run: &[ValeurRun],
+    demarrage: &[&str],
+    commun: Option<&str>,
+) -> Vec<Constat> {
     use crate::modele::Objet;
     let ps_texte = crate::commande::ps_texte;
     // Noms, chemins et commandes sont choisis par le programme qui se fait relancer : les corrections visent le vrai
@@ -669,28 +724,27 @@ fn juger_persistance(taches: &[&str], run: &[ValeurRun], demarrage: &[&str]) -> 
                 montre(exe_brut),
                 montre(args_brut),
             );
-            constats.push(
-                alerte(
-                    "Persistance",
-                    Niveau::Eleve,
-                    trf!(
-                        "Tâche planifiée suspecte « {chemin}{nom} » : {raison} ({exe} {args}).",
-                        "Suspicious scheduled task “{chemin}{nom}”: {raison} ({exe} {args})."
-                    ),
-                )
-                .avec_objet(objet)
-                .corriger(
+            let constat = alerte(
+                "Persistance",
+                Niveau::Eleve,
+                trf!(
+                    "Tâche planifiée suspecte « {chemin}{nom} » : {raison} ({exe} {args}).",
+                    "Suspicious scheduled task “{chemin}{nom}”: {raison} ({exe} {args})."
+                ),
+            )
+            .avec_objet(objet);
+            // Désactivée par le processus élevé (planificateur, rejugée) ; un chemin hors de la grammaire (nom avec
+            // un caractère de contrôle…) reste signalé, à désactiver à la main.
+            constats.push(match super::gestes::ligne_tache_desactiver(chemin_brut, nom_brut) {
+                Some(ligne) => constat.corriger(
                     trf!(
                         "Désactiver la tâche « {nom} » (réactivable)",
                         "Disable the “{nom}” task (can be turned back on)"
                     ),
-                    &[&format!(
-                        "Disable-ScheduledTask -TaskPath '{}' -TaskName '{}' | Out-Null",
-                        ps_texte(chemin_brut),
-                        ps_texte(nom_brut)
-                    )],
+                    &[&ligne],
                 ),
-            );
+                None => constat,
+            });
         } else if fenetre_cachee(exe_brut, args_brut) {
             let lieu = trf!(
                 "La tâche planifiée « {}{} »",
@@ -749,21 +803,34 @@ fn juger_persistance(taches: &[&str], run: &[ValeurRun], demarrage: &[&str]) -> 
         );
         if let Some(raison) = lancement_suspect(&exe, &args) {
             let (fichier, cible) = (montre(fichier_brut), montre(cible_brute));
-            constats.push(
-                alerte(
-                    "Persistance",
-                    Niveau::Eleve,
-                    trf!(
-                        "Raccourci suspect dans le dossier Démarrage « {fichier} » : {raison} ({cible}).",
-                        "Suspicious shortcut in the Startup folder “{fichier}”: {raison} ({cible})."
+            let constat = alerte(
+                "Persistance",
+                Niveau::Eleve,
+                trf!(
+                    "Raccourci suspect dans le dossier Démarrage « {fichier} » : {raison} ({cible}).",
+                    "Suspicious shortcut in the Startup folder “{fichier}”: {raison} ({cible})."
+                ),
+            )
+            .avec_objet(objet);
+            // Le dossier de tous : mis en quarantaine par le processus élevé, remis depuis elle. Celui de la personne
+            // garde sa correction (décision du lot 3.5).
+            constats.push(if commun.is_some_and(|c| dans_dossier(fichier_brut, c)) {
+                match super::gestes::ligne_demarrage_quarantaine(fichier_brut) {
+                    Some(ligne) => constat.corriger(
+                        trf!(
+                            "Mettre « {fichier} » en quarantaine (remis depuis elle si besoin)",
+                            "Quarantine “{fichier}” (can be put back from it)"
+                        ),
+                        &[&ligne],
                     ),
-                )
-                .avec_objet(objet)
-                .corriger(
+                    None => constat,
+                }
+            } else {
+                constat.corriger(
                     trf!("Supprimer « {fichier} »", "Delete “{fichier}”"),
                     &[&format!("Remove-Item -LiteralPath '{}'", ps_texte(fichier_brut))],
-                ),
-            );
+                )
+            });
         } else if fenetre_cachee(&exe, &args) {
             let lieu = trf!(
                 "Le raccourci du dossier Démarrage « {} »",
@@ -1033,7 +1100,7 @@ mod tests {
     fn lectures_natives_sous_wine() {
         let _ = lignes_run();
         let _ = lignes_demarrage();
-        assert!(dossiers_demarrage().iter().all(|d| d.is_absolute()));
+        assert!(dossiers_demarrage().iter().flatten().all(|d| d.is_absolute()));
     }
 
     /// Sous Wine, ni le planificateur (GetTasks n'y est qu'une ébauche) ni PowerShell ne répondent : les tâches sont
@@ -1255,9 +1322,9 @@ mod tests {
         let c = juger_persistance(&taches, &[], &[]);
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].probleme, Some(Niveau::Eleve));
-        assert!(
-            c[0].correctif.as_ref().unwrap().commandes[0]
-                .contains("Disable-ScheduledTask -TaskPath '\\' -TaskName 'Mise a jour'")
+        assert_eq!(
+            c[0].correctif.as_ref().unwrap().commandes,
+            [super::super::gestes::ligne_tache_desactiver("\\", "Mise a jour").unwrap()]
         );
         let run = [valeur_run(
             r#"HKCU:\Software\Microsoft\Windows\CurrentVersion\Run|Steam|"C:\Program Files (x86)\Steam\steam.exe" -silent"#,
@@ -1280,7 +1347,9 @@ mod tests {
         );
         let c = juger_persistance(&taches, &run, &dem);
         assert_eq!(c.len(), 3);
-        for c in &c {
+        // La tâche au nom piégé n'entre pas dans la grammaire : signalée, montrée inoffensive, sans correction.
+        assert!(c[0].correctif.is_none() && !crate::ui::contient_un_piege(&c[0].message));
+        for c in &c[1..] {
             let k = c.correctif.as_ref().unwrap();
             assert!(!crate::ui::contient_un_piege(&c.message), "{}", c.message);
             assert!(!crate::ui::contient_un_piege(&k.action), "{}", k.action);
@@ -1291,6 +1360,52 @@ mod tests {
             };
             assert!(vise.contains(piege), "{}", k.commandes[0]);
         }
+    }
+
+    #[test]
+    fn demarrage_commun_mis_en_quarantaine() {
+        use super::super::gestes::ligne_demarrage_quarantaine;
+        let commun = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp";
+        let fichier = format!(r"{commun}\Maj.lnk");
+        let cible = r#""C:\Users\Public\c.exe" "#;
+        let d = format!("{fichier}|{cible}");
+        let ligne = ligne_demarrage_quarantaine(&fichier).unwrap();
+        // Dans le dossier de tous (casse ignorée, « \ » final ou non) : la quarantaine par le processus élevé.
+        for c in [commun.to_string(), commun.to_uppercase(), format!(r"{commun}\")] {
+            let k = juger_persistance_selon(&[], &[], &[&d], Some(&c));
+            assert_eq!(
+                k[0].correctif.as_ref().unwrap().commandes,
+                std::slice::from_ref(&ligne),
+                "{c}"
+            );
+        }
+        assert!(demarrage_signale(&fichier, cible, commun, &ligne));
+        // Dossier de la personne, sous-dossier du commun, commun inconnu : la correction d'avant, à la main.
+        let perso = r"C:\Users\alice\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\Maj.lnk";
+        for (f, c) in [
+            (perso.to_string(), Some(commun)),
+            (format!(r"{commun}\sous\Maj.lnk"), Some(commun)),
+            (fichier.clone(), None),
+            (fichier.clone(), Some("")),
+        ] {
+            let d = format!("{f}|{cible}");
+            let k = juger_persistance_selon(&[], &[], &[&d], c);
+            assert!(
+                k[0].correctif.as_ref().unwrap().commandes[0].starts_with("Remove-Item"),
+                "{f}"
+            );
+        }
+        // L'enfant rejuge : une autre ligne, une cible saine, un fichier hors du commun ne sont pas proposés.
+        let autre = ligne_demarrage_quarantaine(&format!(r"{commun}\Autre.lnk")).unwrap();
+        assert!(!demarrage_signale(&fichier, cible, commun, &autre));
+        assert!(!demarrage_signale(
+            &fichier,
+            r#""C:\Program Files\Steam\steam.exe" -silent"#,
+            commun,
+            &ligne
+        ));
+        assert!(!demarrage_signale(perso, cible, commun, &ligne));
+        assert!(!demarrage_signale(&fichier, cible, r"C:\Autre", &ligne));
     }
 
     /// T4 : un lancement suspect se reconnaît à sa clé de registre et à sa commande, dans les deux langues.

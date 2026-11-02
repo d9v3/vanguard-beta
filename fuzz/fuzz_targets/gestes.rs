@@ -164,6 +164,8 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                     | gestes::Acte::TacheReactiver(_)
                     | gestes::Acte::DemarrageQuarantaine(_)
                     | gestes::Acte::DemarrageRemettre(_)
+                    | gestes::Acte::LancementDesactiver(..)
+                    | gestes::Acte::LancementReactiver(_)
             );
             let nomme = nomme
                 || matches!(
@@ -369,6 +371,30 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                     assert!(c[3..].split('\\').all(composant_admis));
                     assert!(c.encode_utf16().count() <= gestes::CHEMIN_MAX);
                     assert_eq!(gestes::CheminFichier::nouveau(c).as_ref(), Some(f));
+                }
+                // Un lancement de la machine désactivé comme le fait Windows : une liste fermée, un nom sans contrôle et
+                // borné (un nom de fichier sûr pour le dossier), une valeur 03 00 00 00 + 8 octets ; ni protection ni
+                // affaiblissement, aucun PowerShell ; reconstruit à l'identique par le constructeur d'Optimiser.
+                gestes::Acte::LancementDesactiver(ref m, _) | gestes::Acte::LancementReactiver(ref m) => {
+                    let n = m.nom();
+                    assert!(!n.is_empty() && n.encode_utf16().count() <= gestes::RUN_MACHINE_NOM_MAX);
+                    assert!(!n.chars().any(char::is_control));
+                    if m.liste() == gestes::ListeLancement::Dossier {
+                        assert!(composant_admis(n));
+                    }
+                    assert!(!a.durcit() && !a.affaiblit() && !a.touche_le_reseau());
+                    assert!(!a.powershell().contains("Set-Item") && !a.powershell().contains("Remove-Item"));
+                    let voulue = match a {
+                        gestes::Acte::LancementDesactiver(_, ref v) => {
+                            assert_eq!(v.octets()[..4], [3, 0, 0, 0]);
+                            Some(l.rsplit_once(' ').map_or("", |(_, h)| h).to_string())
+                        }
+                        _ => None,
+                    };
+                    assert_eq!(
+                        gestes::ligne_lancement(m.liste().approuvee(), n, voulue.as_deref()).as_deref(),
+                        Some(l.as_str())
+                    );
                 }
                 gestes::Acte::WmiAbonnementRetirer(ref w) | gestes::Acte::WmiAbonnementRemettre(ref w) => {
                     let n = w.nom.texte();

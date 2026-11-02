@@ -2443,10 +2443,28 @@ pub(crate) const WMI_ABONNEMENT_REMETTRE: &str = "vanguard:wmi-abonnement-remett
 /// Supprimer le service d'un outil de prise en main à distance : `vanguard:service-retirer <nom en hex>` (passe d).
 /// Irréversible : jamais de remise, une deuxième confirmation.
 pub(crate) const SERVICE_RETIRER: &str = "vanguard:service-retirer ";
+/// Désactiver un programme lancé à l'ouverture de session de toute la machine, comme le fait le Gestionnaire des
+/// tâches (sa valeur dans HKLM\…\StartupApproved), sans rien retirer : `vanguard:lancement-desactiver
+/// <run|run32|dossier> <nom en hex> <valeur>`, la valeur étant celle de Windows pour « désactivé » (`03000000` puis
+/// l'heure, 12 octets en hexadécimal). Le processus élevé relit le lancement, refuse ce qu'Optimiser garde (sécurité,
+/// pilotes, Vanguard) et toute entrée de Windows ou de Defender, note les octets d'avant dans `LANCEMENT_AVANT_CLE`,
+/// écrit, puis relit.
+pub(crate) const LANCEMENT_DESACTIVER: &str = "vanguard:lancement-desactiver ";
+/// Remettre exactement les octets qu'un `lancement-desactiver` a notés : `vanguard:lancement-reactiver <liste> <nom en
+/// hex>`, seulement si la valeur est encore celle que Vanguard a écrite.
+pub(crate) const LANCEMENT_REACTIVER: &str = "vanguard:lancement-reactiver ";
 
 /// La clé (sous HKLM, vue 64 bits) où le processus élevé note la donnée d'une valeur de démarrage qu'il retire : seul
 /// un administrateur y écrit, la remise ne lit qu'elle.
 pub(crate) const RUN_AVANT_CLE: &str = r"SOFTWARE\Vanguard\RunAvant";
+/// Où le processus élevé note le XML d'une tâche qu'il désactive, avant et après : la réactivation n'a lieu que si la
+/// tâche est restée telle que Vanguard l'a laissée.
+pub(crate) const TACHE_AVANT_CLE: &str = r"SOFTWARE\Vanguard\TacheAvant";
+/// Où le processus élevé note la copie en quarantaine d'un fichier du dossier Démarrage commun (son nom et son
+/// empreinte) : la remise ne lit qu'elle.
+pub(crate) const DEMARRAGE_AVANT_CLE: &str = r"SOFTWARE\Vanguard\DemarrageAvant";
+/// Où le processus élevé note les octets d'avant d'une valeur de StartupApproved qu'il écrit, et ceux qu'il écrit.
+pub(crate) const LANCEMENT_AVANT_CLE: &str = r"SOFTWARE\Vanguard\LancementAvant";
 /// Le plus long nom de valeur de démarrage de la machine, en unités UTF-16 : ce que tient une ligne du tube
 /// (`LIGNE_MAX`). Au-delà, la valeur est signalée et se retire à la main.
 pub(crate) const RUN_MACHINE_NOM_MAX: usize = 2048;
@@ -2801,8 +2819,146 @@ impl NomService {
     }
 }
 
+/// La liste de lancements de la machine où le Gestionnaire des tâches désactive un programme : les valeurs Run (64 et
+/// 32 bits) et le dossier Démarrage commun.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ListeLancement {
+    Run,
+    Run32,
+    Dossier,
+}
+
+impl ListeLancement {
+    pub(crate) const TOUTES: [ListeLancement; 3] =
+        [ListeLancement::Run, ListeLancement::Run32, ListeLancement::Dossier];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ListeLancement::Run => "run",
+            ListeLancement::Run32 => "run32",
+            ListeLancement::Dossier => "dossier",
+        }
+    }
+
+    /// Sa liste sous StartupApproved.
+    pub(crate) fn approuvee(self) -> &'static str {
+        match self {
+            ListeLancement::Run => "Run",
+            ListeLancement::Run32 => "Run32",
+            ListeLancement::Dossier => "StartupFolder",
+        }
+    }
+
+    /// La liste d'un nom de StartupApproved (« Run », « Run32 », « StartupFolder »), sensible à la casse.
+    pub(crate) fn depuis_approuvee(l: &str) -> Option<ListeLancement> {
+        ListeLancement::TOUTES.into_iter().find(|x| x.approuvee() == l)
+    }
+}
+
+/// Un lancement de la machine désigné par sa liste et son nom : 1 à `RUN_MACHINE_NOM_MAX` unités UTF-16 valides, sans
+/// caractère de contrôle ; dans le dossier Démarrage, un nom de fichier seul (`composant_sur`, jamais un chemin).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LancementMachine {
+    liste: ListeLancement,
+    nom: String,
+}
+
+impl LancementMachine {
+    pub(crate) fn nouveau(liste: ListeLancement, nom: &str) -> Option<LancementMachine> {
+        let n = nom.encode_utf16().count();
+        let bon = n > 0
+            && n <= RUN_MACHINE_NOM_MAX
+            && !nom.chars().any(char::is_control)
+            && (liste != ListeLancement::Dossier || composant_sur(nom));
+        bon.then(|| LancementMachine {
+            liste,
+            nom: nom.to_string(),
+        })
+    }
+
+    pub(crate) fn liste(&self) -> ListeLancement {
+        self.liste
+    }
+
+    pub(crate) fn nom(&self) -> &str {
+        &self.nom
+    }
+
+    fn mots(&self) -> String {
+        format!("{} {}", self.liste.mot(), hex_texte(&self.nom))
+    }
+
+    fn lire(reste: &str) -> Option<LancementMachine> {
+        let (mot, hex) = reste.split_once(' ')?;
+        let liste = ListeLancement::TOUTES.into_iter().find(|l| l.mot() == mot)?;
+        LancementMachine::nouveau(liste, &lire_texte_hex(hex, RUN_MACHINE_NOM_MAX)?).filter(|l| l.mots() == reste)
+    }
+}
+
+/// La valeur que Windows écrit dans StartupApproved pour « désactivé » : 12 octets, `03 00 00 00` puis l'heure du
+/// changement (FILETIME). Rien d'autre n'entre dans une ligne : ni « activé », ni une autre longueur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ValeurDesactivee([u8; 12]);
+
+impl ValeurDesactivee {
+    pub(crate) fn lire(hex: &str) -> Option<ValeurDesactivee> {
+        let o = hex.as_bytes();
+        if o.len() != 24 || !o.iter().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(c)) {
+            return None;
+        }
+        let mut v = [0u8; 12];
+        for (case, paire) in v.iter_mut().zip(o.chunks(2)) {
+            *case = u8::from_str_radix(std::str::from_utf8(paire).ok()?, 16).ok()?;
+        }
+        (v[..4] == [3, 0, 0, 0]).then_some(ValeurDesactivee(v))
+    }
+
+    pub(crate) fn octets(&self) -> &[u8; 12] {
+        &self.0
+    }
+
+    fn hex(&self) -> String {
+        use std::fmt::Write;
+        self.0.iter().fold(String::with_capacity(24), |mut s, o| {
+            let _ = write!(s, "{o:02x}");
+            s
+        })
+    }
+}
+
+/// La ligne d'Optimiser pour un programme de démarrage de toute la machine (liste de StartupApproved, nom, valeur
+/// voulue en hexadécimal) : désactiver avec la valeur de Windows, ou remettre les octets notés par le processus élevé
+/// (une valeur voulue vide ou « activé »). `None` hors de ces formes : rien ne part.
+pub(crate) fn ligne_lancement(liste: &str, nom: &str, voulue: Option<&str>) -> Option<String> {
+    let l = LancementMachine::nouveau(ListeLancement::depuis_approuvee(liste)?, nom)?;
+    let desactiver = voulue
+        .filter(|h| !h.is_empty())
+        .and_then(|h| h.get(..2))
+        .and_then(|b| u8::from_str_radix(b, 16).ok())
+        .is_some_and(|b| b & 1 == 1);
+    let acte = if desactiver {
+        Acte::LancementDesactiver(l, ValeurDesactivee::lire(voulue?)?)
+    } else {
+        Acte::LancementReactiver(l)
+    };
+    Some(acte.ligne())
+}
+
+/// La ligne qui désactive une tâche signalée par le bilan, d'après son dossier (« \…\ », comme TaskPath) et son nom ;
+/// `None` hors de la forme de `CheminTache` (la tâche reste signalée, à désactiver à la main).
+pub(crate) fn ligne_tache_desactiver(dossier: &str, nom: &str) -> Option<String> {
+    let chemin = format!("{}\\{nom}", dossier.trim_end_matches('\\'));
+    Some(Acte::TacheDesactiver(CheminTache::nouveau(&chemin)?).ligne())
+}
+
+/// La ligne qui met en quarantaine un fichier du dossier Démarrage commun ; `None` hors de la forme de
+/// `CheminFichier`.
+pub(crate) fn ligne_demarrage_quarantaine(chemin: &str) -> Option<String> {
+    Some(Acte::DemarrageQuarantaine(CheminFichier::nouveau(chemin)?).ligne())
+}
+
 /// Les verbes de la persistance et de la prise en main à distance (lot 3.5).
-const VERBES_PERSISTANCE: [&str; 9] = [
+const VERBES_PERSISTANCE: [&str; 11] = [
     RUN_RETIRER_MACHINE,
     RUN_REMETTRE,
     TACHE_DESACTIVER,
@@ -2812,6 +2968,8 @@ const VERBES_PERSISTANCE: [&str; 9] = [
     WMI_ABONNEMENT_RETIRER,
     WMI_ABONNEMENT_REMETTRE,
     SERVICE_RETIRER,
+    LANCEMENT_DESACTIVER,
+    LANCEMENT_REACTIVER,
 ];
 
 /// La ligne porte-t-elle un verbe de la persistance ? Elle n'est alors lue que par `analyser_persistance`.
@@ -2864,6 +3022,15 @@ fn analyser_persistance(ligne: &str) -> Option<Acte> {
         wmi(r).map(Acte::WmiAbonnementRemettre)
     } else if let Some(r) = court(SERVICE_RETIRER) {
         NomService::lire(r).map(Acte::ServiceRetirer)
+    } else if let Some(r) = long(LANCEMENT_DESACTIVER) {
+        r.rsplit_once(' ').and_then(|(l, v)| {
+            Some(Acte::LancementDesactiver(
+                LancementMachine::lire(l)?,
+                ValeurDesactivee::lire(v)?,
+            ))
+        })
+    } else if let Some(r) = long(LANCEMENT_REACTIVER) {
+        LancementMachine::lire(r).map(Acte::LancementReactiver)
     } else {
         None
     };
@@ -2928,6 +3095,10 @@ pub(crate) enum Acte {
     WmiAbonnementRemettre(AbonnementWmi),
     /// Supprimer le service d'un outil de prise en main à distance (passe d), irréversible.
     ServiceRetirer(NomService),
+    /// Désactiver un programme de démarrage de la machine comme le Gestionnaire des tâches (StartupApproved).
+    LancementDesactiver(LancementMachine, ValeurDesactivee),
+    /// Remettre les octets de StartupApproved qu'un `LancementDesactiver` a notés.
+    LancementReactiver(LancementMachine),
 }
 
 impl Acte {
@@ -2964,6 +3135,8 @@ impl Acte {
             Acte::WmiAbonnementRetirer(w) => format!("{WMI_ABONNEMENT_RETIRER}{} {}", w.classe.mot(), w.nom.hex()),
             Acte::WmiAbonnementRemettre(w) => format!("{WMI_ABONNEMENT_REMETTRE}{} {}", w.classe.mot(), w.nom.hex()),
             Acte::ServiceRetirer(n) => format!("{SERVICE_RETIRER}{}", n.hex()),
+            Acte::LancementDesactiver(l, v) => format!("{LANCEMENT_DESACTIVER}{} {}", l.mots(), v.hex()),
+            Acte::LancementReactiver(l) => format!("{LANCEMENT_REACTIVER}{}", l.mots()),
         }
     }
 
@@ -3010,7 +3183,10 @@ impl Acte {
             | Acte::DemarrageQuarantaine(_)
             | Acte::DemarrageRemettre(_)
             | Acte::WmiAbonnementRetirer(_)
-            | Acte::WmiAbonnementRemettre(_) => false,
+            | Acte::WmiAbonnementRemettre(_)
+            // Un programme de démarrage choisi dans Optimiser : un confort, défait par Optimiser lui-même.
+            | Acte::LancementDesactiver(..)
+            | Acte::LancementReactiver(_) => false,
         }
     }
 
@@ -3042,7 +3218,11 @@ impl Acte {
             | Acte::TacheDesactiver(_)
             | Acte::DemarrageQuarantaine(_)
             | Acte::WmiAbonnementRetirer(_)
-            | Acte::ServiceRetirer(_) => false,
+            | Acte::ServiceRetirer(_)
+            // Remettre un programme qu'Optimiser avait désactivé (jamais un lancement jugé suspect par le bilan) ne
+            // touche pas à la protection.
+            | Acte::LancementDesactiver(..)
+            | Acte::LancementReactiver(_) => false,
             // Un lancement que le bilan jugeait suspect revient : dit en toutes lettres avant l'accord.
             Acte::RunRemettre(_)
             | Acte::TacheReactiver(_)
@@ -3099,7 +3279,9 @@ impl Acte {
             | Acte::DemarrageRemettre(_)
             | Acte::WmiAbonnementRetirer(_)
             | Acte::WmiAbonnementRemettre(_)
-            | Acte::ServiceRetirer(_) => SANS_POWERSHELL.to_string(),
+            | Acte::ServiceRetirer(_)
+            | Acte::LancementDesactiver(..)
+            | Acte::LancementReactiver(_) => SANS_POWERSHELL.to_string(),
             Acte::DnsAuto(g) => powershell_dns_auto(*g),
             Acte::DnsServeurs(d) => d.powershell(),
         }
@@ -6468,6 +6650,95 @@ mod tests {
         // Un verbe proche n'est pas lu comme un autre acte.
         assert!(analyser_acte("vanguard:run-retirerx run 0041").is_none());
         assert!(est_un_acte(&format!("{SERVICE_RETIRER}zz")) && !valide_seule(&format!("{SERVICE_RETIRER}zz")));
+    }
+
+    #[test]
+    fn lancement_machine_aller_retour() {
+        let v = "030000001122334455667788";
+        for (liste, mot) in [("Run", "run"), ("Run32", "run32"), ("StartupFolder", "dossier")] {
+            let nom = "Mise à jour.lnk";
+            let ligne = ligne_lancement(liste, nom, Some(v)).expect(liste);
+            assert_eq!(ligne, format!("{LANCEMENT_DESACTIVER}{mot} {} {v}", hex_texte(nom)));
+            let a = analyser_acte(&ligne).expect(&ligne);
+            assert!(
+                matches!(&a, Acte::LancementDesactiver(l, x) if l.nom() == nom && l.liste().mot() == mot && x.hex() == v)
+            );
+            assert!(!a.durcit() && !a.affaiblit() && !a.touche_le_reseau());
+            assert_eq!(a.powershell(), SANS_POWERSHELL);
+            assert!(est_un_acte(&ligne) && valide_seule(&ligne), "{ligne}");
+            // Réactiver : la valeur d'avant (activée, ou absente) n'est pas dans la ligne, la note de l'enfant la porte.
+            for voulue in [None, Some(""), Some("020000000000000000000000"), Some("06000000")] {
+                let r = ligne_lancement(liste, nom, voulue).expect(liste);
+                assert_eq!(r, format!("{LANCEMENT_REACTIVER}{mot} {}", hex_texte(nom)));
+                assert!(matches!(analyser_acte(&r), Some(Acte::LancementReactiver(_))) && valide_seule(&r));
+            }
+        }
+        // Le plus long nom tient dans une ligne du tube.
+        let long = "a".repeat(RUN_MACHINE_NOM_MAX);
+        let ligne = ligne_lancement("Run", &long, Some(v)).unwrap();
+        assert!(ligne.len() <= LIGNE_MAX && valide_seule(&ligne));
+        assert_eq!(ligne_lancement("Run", &format!("{long}a"), Some(v)), None);
+        // Liste inconnue (celle du compte, RunOnce), nom vide, de contrôle, de fichier non sûr : pas de ligne.
+        for (liste, nom) in [
+            ("RunOnce", "x"),
+            ("run", "x"),
+            ("Run", ""),
+            ("Run", "a\nb"),
+            ("StartupFolder", r"..\x.lnk"),
+            ("StartupFolder", r"a\b.lnk"),
+            ("StartupFolder", "a:flux"),
+        ] {
+            assert_eq!(ligne_lancement(liste, nom, Some(v)), None, "{liste} {nom:?}");
+        }
+        // Une valeur désactivée autre que 03 00 00 00 + 8 octets : pas de ligne.
+        assert_eq!(ligne_lancement("Run", "x", Some("0700000011223344")), None);
+    }
+
+    #[test]
+    fn lancement_machine_forge_refuse() {
+        let a = hex_texte("A");
+        let v = "030000001122334455667788";
+        let lignes = [
+            // Valeur : majuscules, autre en-tête, longueur fausse, absente, en trop.
+            format!("{LANCEMENT_DESACTIVER}run {a} 03000000112233445566778A"),
+            format!("{LANCEMENT_DESACTIVER}run {a} 020000001122334455667788"),
+            format!("{LANCEMENT_DESACTIVER}run {a} 07000000112233445566778"),
+            format!("{LANCEMENT_DESACTIVER}run {a} 0300000011223344556677889"),
+            format!("{LANCEMENT_DESACTIVER}run {a} 03000000112233445566778899"),
+            format!("{LANCEMENT_DESACTIVER}run {a}"),
+            format!("{LANCEMENT_REACTIVER}run {a} {v}"),
+            // Liste inconnue ou en majuscules, nom vide, en majuscules, NUL, de dossier avec « \ ».
+            format!("{LANCEMENT_DESACTIVER}Run {a} {v}"),
+            format!("{LANCEMENT_DESACTIVER}runonce {a} {v}"),
+            format!("{LANCEMENT_DESACTIVER}startupfolder {a} {v}"),
+            format!("{LANCEMENT_DESACTIVER}run  {v}"),
+            format!("{LANCEMENT_DESACTIVER}run 6A00 {v}"),
+            format!("{LANCEMENT_DESACTIVER}run 41 {v}"),
+            format!("{LANCEMENT_DESACTIVER}run 0000 {v}"),
+            format!("{LANCEMENT_DESACTIVER}run 410000d8 {v}"),
+            format!("{LANCEMENT_DESACTIVER}dossier {} {v}", hex_texte(r"a\b.lnk")),
+            format!("{LANCEMENT_DESACTIVER}dossier {} {v}", hex_texte("..")),
+            format!("{LANCEMENT_REACTIVER}dossier {}", hex_texte(r"..\x")),
+            // Espaces en trop, champ manquant.
+            format!("{LANCEMENT_DESACTIVER}run {a}  {v}"),
+            format!("{LANCEMENT_DESACTIVER}run {a} {v} "),
+            format!("{LANCEMENT_REACTIVER}run {a} "),
+            format!("{LANCEMENT_REACTIVER}run"),
+            format!("{LANCEMENT_REACTIVER}{a}"),
+            // Plus long que ce que tient le tube.
+            format!("{LANCEMENT_REACTIVER}run {}", "0041".repeat(LIGNE_MAX)),
+            // Une tâche de Windows, même écrite comme une ligne de Vanguard.
+            format!(
+                "{TACHE_DESACTIVER}{}",
+                hex_texte(r"\Microsoft\Windows\Defrag\ScheduledDefrag")
+            ),
+        ];
+        for l in &lignes {
+            assert!(analyser_acte(l).is_none(), "{l}");
+            assert!(!valide_seule(l), "{l}");
+        }
+        // Le nom en clair n'est jamais lu.
+        assert!(analyser_acte(&format!("{LANCEMENT_REACTIVER}run SecurityHealth")).is_none());
     }
 
     #[test]

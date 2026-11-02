@@ -672,19 +672,21 @@ pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
     match acte {
         Acte::RunRetirer(v) => return super::run_ecriture::retirer(v),
         Acte::RunRemettre(v) => return super::run_ecriture::remettre(v),
+        // Tâches (planificateur, COM), fichiers du Démarrage commun (quarantaine), lancements désactivés comme le fait
+        // Windows (StartupApproved) : relus, rejugés par les fonctions du bilan, l'état d'avant noté.
+        Acte::TacheDesactiver(t) => return super::taches_ecriture::desactiver(t),
+        Acte::TacheReactiver(t) => return super::taches_ecriture::reactiver(t),
+        Acte::DemarrageQuarantaine(f) => return super::demarrage_ecriture::quarantaine(f),
+        Acte::DemarrageRemettre(f) => return super::demarrage_ecriture::remettre(f),
+        Acte::LancementDesactiver(l, v) => return super::lancement_ecriture::desactiver(l, v),
+        Acte::LancementReactiver(l) => return super::lancement_ecriture::reactiver(l),
         _ => {}
     }
     // Le reste de la persistance et la prise en main à distance (lot 3.5) : la grammaire est là, le geste vient avec
     // sa passe. Jamais un succès simulé : refusé, rien n'est changé.
     if matches!(
         acte,
-        Acte::TacheDesactiver(_)
-            | Acte::TacheReactiver(_)
-            | Acte::DemarrageQuarantaine(_)
-            | Acte::DemarrageRemettre(_)
-            | Acte::WmiAbonnementRetirer(_)
-            | Acte::WmiAbonnementRemettre(_)
-            | Acte::ServiceRetirer(_)
+        Acte::WmiAbonnementRetirer(_) | Acte::WmiAbonnementRemettre(_) | Acte::ServiceRetirer(_)
     ) {
         return Resultat::echec(
             None,
@@ -733,6 +735,8 @@ pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
         | Acte::TacheReactiver(_)
         | Acte::DemarrageQuarantaine(_)
         | Acte::DemarrageRemettre(_)
+        | Acte::LancementDesactiver(..)
+        | Acte::LancementReactiver(_)
         | Acte::WmiAbonnementRetirer(_)
         | Acte::WmiAbonnementRemettre(_)
         | Acte::ServiceRetirer(_) => Err(Echec::refuse(

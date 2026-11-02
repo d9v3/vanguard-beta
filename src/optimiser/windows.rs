@@ -9,9 +9,7 @@ use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_
 use winreg::{RegKey, RegValue};
 
 use super::defender::{self, Pref};
-use super::demarrage::{
-    APPROUVES, Programme, desactive_windows, hex, liste_approuvee, octets, script_machine, valeur_desactivee,
-};
+use super::demarrage::{APPROUVES, Programme, desactive_windows, hex, liste_approuvee, octets, valeur_desactivee};
 use super::{Categorie, Reglage, Valeur};
 use crate::ui::*;
 
@@ -704,7 +702,7 @@ impl Changement {
                 liste,
                 nom,
                 ..
-            } => script_machine(liste, nom, v),
+            } => crate::machine::gestes::ligne_lancement(liste, nom, v),
             Changement::Defender { pref, .. } => defender::commande(*pref, v),
         }
     }
@@ -1778,8 +1776,19 @@ mod tests {
         assert!(machine.admin());
         assert_eq!(Changement::nom_demarrage("hklm|StartupFolder|L’appli.lnk"), "L’appli");
         assert_eq!(Changement::nom_demarrage("hkcu|Run|Appli.v2"), "Appli.v2");
-        let script = machine.commande_admin(None, None).unwrap();
-        assert!(script.contains("DeleteValue('L’’appli.lnk', $false)"), "{script}");
+        // La machine : un acte fermé du processus élevé, jamais de PowerShell (R52).
+        let remise = machine.commande_admin(None, None).unwrap();
+        assert!(matches!(
+            crate::machine::gestes::analyser_acte(&remise),
+            Some(crate::machine::gestes::Acte::LancementReactiver(l)) if l.nom() == "L’appli.lnk"
+        ));
+        let v = valeur_desactivee(std::time::SystemTime::now());
+        let coupe = machine.commande_admin(Some(&v), None).unwrap();
+        assert!(coupe.ends_with(&v), "{coupe}");
+        assert!(matches!(
+            crate::machine::gestes::analyser_acte(&coupe),
+            Some(crate::machine::gestes::Acte::LancementDesactiver(..))
+        ));
         for mauvaise in ["hkcu|Policies|x", "hkxx|Run|x", "hkcu|Run|", "hkcu"] {
             assert!(Changement::demarrage_depuis(mauvaise).is_none(), "{mauvaise}");
         }

@@ -45,14 +45,14 @@ fn type_du_code(c: u32) -> Option<RegType> {
 }
 
 /// La note d'une valeur retirée : le code de son type (4 octets, petit-boutiste) puis ses octets exacts.
-fn note(t: &RegType, octets: &[u8]) -> Option<Vec<u8>> {
+pub(super) fn note(t: &RegType, octets: &[u8]) -> Option<Vec<u8>> {
     let mut n = code_type(t)?.to_le_bytes().to_vec();
     n.extend_from_slice(octets);
     Some(n)
 }
 
 /// Le type et les octets d'une note ; `None` si elle n'est pas de cette forme.
-fn lire_note(n: &[u8]) -> Option<(RegType, Vec<u8>)> {
+pub(super) fn lire_note(n: &[u8]) -> Option<(RegType, Vec<u8>)> {
     let (code, octets) = n.split_first_chunk::<4>()?;
     Some((type_du_code(u32::from_le_bytes(*code))?, octets.to_vec()))
 }
@@ -92,7 +92,7 @@ fn ouvrir(v: &ValeurRunMachine, creer: bool) -> Result<Option<RegKey>, Resultat>
 }
 
 /// Les mêmes type et octets ?
-fn meme(a: &RegValue, b: &RegValue) -> bool {
+pub(super) fn meme(a: &RegValue, b: &RegValue) -> bool {
     a.vtype == b.vtype && a.bytes == b.bytes
 }
 

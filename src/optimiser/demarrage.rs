@@ -63,7 +63,7 @@ pub(super) fn notes(h: &Historique) -> Vec<Reglage> {
 
 /// Pourquoi un programme reste au démarrage, s'il le doit : il protège ou fait marcher l'ordinateur. Comparé en
 /// minuscules au nom et à la commande ; un motif court est un mot entier (« avg » ne doit pas trouver « savgame »).
-pub(super) fn a_garder(nom: &str, commande: &str, bureau: bool) -> Option<&'static str> {
+pub(crate) fn a_garder(nom: &str, commande: &str, bureau: bool) -> Option<&'static str> {
     const VANGUARD: &[&str] = &["vanguard"];
     // Des listes de motifs, que rustfmt étalerait sur une ligne chacun.
     #[rustfmt::skip]
@@ -142,9 +142,11 @@ fn ailleurs() -> &'static str {
 
 /// Où Windows note les programmes de démarrage désactivés, sous HKCU (le compte) ou HKLM (la machine), puis Run,
 /// Run32 ou StartupFolder.
+#[cfg(windows)]
 pub(super) const APPROUVES: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved";
 
 /// Les listes de StartupApproved que Vanguard touche (une note ne doit pas en viser une autre).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(super) fn liste_approuvee(l: &str) -> Option<&'static str> {
     ["Run", "Run32", "StartupFolder"].into_iter().find(|x| *x == l)
 }
@@ -183,29 +185,6 @@ pub(super) fn valeur_desactivee(quand: std::time::SystemTime) -> String {
     let mut o = vec![3, 0, 0, 0];
     o.extend_from_slice(&temps.to_le_bytes());
     hex(&o)
-}
-
-/// Le script PowerShell de la fenêtre administrateur qui écrit (ou retire, `None`) la valeur d'un programme de toute
-/// la machine dans StartupApproved. Par le registre de .NET : le -Name de Remove-ItemProperty accepte des jokers, un
-/// nom comme « `App[1]` » y viserait d'autres valeurs ; CreateSubKey garde ce que la clé contient déjà.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(super) fn script_machine(liste: &str, nom: &str, valeur: Option<&str>) -> Option<String> {
-    let cle = crate::commande::ps_texte(&format!(r"{APPROUVES}\{}", liste_approuvee(liste)?));
-    let n = crate::commande::ps_texte(nom);
-    Some(match valeur.filter(|v| !v.is_empty()) {
-        None => format!(
-            "$k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('{cle}', $true); \
-             if ($k) {{ $k.DeleteValue('{n}', $false); $k.Close() }}"
-        ),
-        Some(h) => {
-            let o: Vec<String> = octets(h)?.iter().map(|b| format!("0x{b:02x}")).collect();
-            format!(
-                "$k = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey('{cle}'); \
-                 $k.SetValue('{n}', [byte[]]({}), [Microsoft.Win32.RegistryValueKind]::Binary); $k.Close()",
-                o.join(",")
-            )
-        }
-    })
 }
 
 // ── macOS : agents de launchd du compte ─────────────────────────────────────────────────────────────────────────
@@ -521,42 +500,6 @@ mod tests {
         assert!(desactive_windows(&valeur_desactivee(std::time::SystemTime::now())));
         assert_eq!(liste_approuvee("Run32"), Some("Run32"));
         assert_eq!(liste_approuvee(r"Run\..\Autre"), None);
-    }
-
-    #[test]
-    fn script_de_la_fenetre_administrateur() {
-        let s = script_machine("Run", "L’appli", Some("0300")).unwrap();
-        assert!(s.contains("SetValue('L’’appli', [byte[]](0x03,0x00)"), "{s}");
-        assert!(s.contains(r"CreateSubKey('Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run')"));
-        let s = script_machine("StartupFolder", "Appli.lnk", None).unwrap();
-        assert!(s.contains("DeleteValue('Appli.lnk', $false)"), "{s}");
-        assert_eq!(script_machine("Autre", "x", None), None);
-        assert_eq!(script_machine("Run", "x", Some("0")), None);
-    }
-
-    /// Le script, analysé par un vrai PowerShell : un nom piégé reste du texte, et le script garde ses instructions
-    /// (une injection en ajouterait). Sauté sans pwsh (sous Wine, PowerShell n'existe pas).
-    #[test]
-    fn script_piege_reste_du_texte() {
-        let piege = "Appli’; Write-Output INJECTE; ’ ‘x‚ ‛ 'y [1]";
-        for (valeur, instructions) in [(None, 2), (Some("0300000000000000"), 3)] {
-            let script = script_machine("Run", piege, valeur).unwrap();
-            let analyse = format!(
-                "$t = $null; $e = $null; $a = [System.Management.Automation.Language.Parser]::ParseInput({}, [ref]$t, [ref]$e); Write-Output (\"$($e.Count) $($a.EndBlock.Statements.Count)\")",
-                crate::commande::ps_chaine(&script)
-            );
-            let programme = if cfg!(windows) { "powershell" } else { "pwsh" };
-            let Some(r) = crate::commande::lancer(
-                std::process::Command::new(programme).args(["-NoProfile", "-NonInteractive", "-Command", &analyse]),
-                60,
-            ) else {
-                return crate::essais::saute(&format!("{programme} absent"));
-            };
-            if r.sortie.trim().is_empty() {
-                return;
-            }
-            assert_eq!(r.sortie.trim(), format!("0 {instructions}"), "{script}\n{}", r.erreurs);
-        }
     }
 
     /// Montrés : ceux qui se lancent, et ceux que Vanguard a retirés, même introuvables (un service désactivé ne se
