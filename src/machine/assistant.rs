@@ -10,7 +10,9 @@
 //! désigne l'image qui tourne, même si le fichier est remplacé entre-temps (sudo et run0 l'exécutent tel quel).
 //! pkexec, lui, le résout en chemin réel avant de l'exécuter (realpath dans pkexec.c), et macOS n'a pas de /proc :
 //! par chemin, seulement un programme que le compte ne peut pas remplacer (à root, dossiers compris) ; sinon pkexec
-//! est sauté (run0 ou sudo prennent la suite), et sous macOS c'est dit.
+//! est sauté (run0 ou sudo prennent la suite), et sous macOS c'est dit. pkexec reçoit donc ce chemin réel lui-même :
+//! il vérifie d'abord le chemin reçu avec l'identité de la personne (access() de pkexec 126), et le lien
+//! `/proc/<pid>/exe` d'un processus non « dumpable » lui est fermé (É-7 du lot U3).
 //!
 //! Pendant le dialogue, le parent n'est plus « dumpable » : un autre processus du compte ne peut ni ouvrir ses tubes
 //! par `/proc/<pid>/fd` ni s'y attacher, donc ni glisser une autre liste au fils, ni répondre à sa place.
@@ -212,9 +214,15 @@ fn image_sure() -> bool {
     std::env::current_exe().is_ok_and(|c| chemin_sur(&c))
 }
 
-/// Le programme à relancer : l'image qui tourne (Linux), ou son chemin (macOS, sans /proc).
-fn programme() -> Option<std::ffi::OsString> {
-    if cfg!(target_os = "linux") {
+/// Le programme à relancer : l'image qui tourne (Linux), ou son chemin (macOS, sans /proc ; pkexec).
+///
+/// pkexec reçoit le chemin réel (É-7 du lot U3) : pkexec 126 (Debian 13) vérifie le chemin reçu par access(), avec
+/// l'identité de la personne, et pendant le dialogue ce processus n'est plus « dumpable » (`Inaccessible`) : son
+/// `/proc/<pid>/exe` n'est alors ouvert qu'à root, d'où « Error accessing `/proc/<pid>/exe`: Permission denied ». Rien
+/// n'est relâché pour autant : pkexec exécutait déjà ce chemin réel (realpath), et il n'est pris que s'il passe
+/// `image_sure` ; rendre ce processus « dumpable » pendant l'élévation rouvrirait ses tubes au compte.
+fn programme(m: Methode) -> Option<std::ffi::OsString> {
+    if cfg!(target_os = "linux") && m != Methode::Pkexec {
         Some(format!("/proc/{}/exe", std::process::id()).into())
     } else {
         std::env::current_exe().ok().map(std::path::PathBuf::into_os_string)
@@ -377,7 +385,7 @@ fn ranger<D>(groupes: &[Vec<D>], reponses: &[String]) -> Option<Vec<Vec<Resultat
 }
 
 fn essayer(m: Methode, groupes: &[Vec<Demande>]) -> Issue {
-    let (Some(chemin), Some(programme)) = (outil(m.nom()), programme()) else {
+    let (Some(chemin), Some(programme)) = (outil(m.nom()), programme(m)) else {
         return Issue::Indisponible;
     };
     // pkexec exécute le chemin réel du programme, et macOS n'a pas de /proc : par chemin, seulement un programme que
@@ -1140,8 +1148,9 @@ fn autre_nom(vu: &str) -> Echec {
 
 /// Une unité désignée par le parent, revue par le fils avant d'y toucher (P5 du lot U3) : un logiciel de prise de
 /// contrôle à distance reconnu, au fichier sûr, activé au démarrage. Le parent l'a trouvée ainsi ; le fils ne le
-/// croit pas sur parole.
-fn designee_revue(nom: &str, monde: &mut dyn Monde) -> Result<(), Echec> {
+/// croit pas sur parole. `Ok(false)` : reconnue, mais plus installée (son fichier retiré entre-temps, peut-être
+/// encore en marche), ce que l'appelant dit comme pour une unité de la table (`absente`, É-5 du lot U3).
+fn designee_revue(nom: &str, monde: &mut dyn Monde) -> Result<bool, Echec> {
     let vu = crate::ui::affichable(nom);
     if !crate::protection::distance::controle_a_distance(nom) {
         return Err(refus(trf!(
@@ -1150,10 +1159,10 @@ fn designee_revue(nom: &str, monde: &mut dyn Monde) -> Result<(), Echec> {
         )));
     }
     if !monde.fichier_sur(nom)? {
-        return Err(refus(pas_installe(nom)));
+        return Ok(false);
     }
     match monde.etat_du_fichier(nom)? {
-        Some(etat) if etat == "enabled" => Ok(()),
+        Some(etat) if etat == "enabled" => Ok(true),
         _ => Err(refus(trf!(
             "{vu} n'est pas lancé au démarrage : rien n'est fait",
             "{vu} is not started at boot: nothing is done"
@@ -1200,12 +1209,18 @@ fn nom_vu(u: &gestes_unix::UniteConnue) -> &'static str {
     if crate::langue::anglais() { u.en } else { u.fr }
 }
 
-/// Couper une unité de la table qui n'est pas installée : plus lancée au démarrage, c'est fait. Encore en marche (son
-/// paquet retiré sans l'arrêter), elle ne s'arrêtera qu'avec l'ordinateur : ce qu'elle lancerait à l'arrêt n'a plus
-/// de fichier à revoir, Vanguard ne l'arrête pas ; son arrêt seul est donc un échec, dit.
-fn absente(a: ActionUnite, u: &gestes_unix::UniteConnue, monde: &mut dyn Monde) -> Resultat {
-    let vu = nom_vu(u);
-    match monde.etat_d_activite(u.nom) {
+/// Couper une unité qui n'est pas installée (de la table, ou désignée) : plus lancée au démarrage, c'est fait, tant
+/// qu'elle n'est pas réinstallée. Encore en marche (son paquet retiré sans l'arrêter), elle ne s'arrêtera qu'avec
+/// l'ordinateur : ce qu'elle lancerait à l'arrêt n'a plus de fichier à revoir, Vanguard ne l'arrête pas ; son arrêt
+/// seul est donc un échec, dit.
+///
+/// Ses liens de démarrage ne sont pas retirés (É-6 du lot U3), et la note le dit : sans fichier, DisableUnitFiles
+/// ne suit plus son « Also= » (son socket, son « .path » gardent les leurs) et répond par une erreur même quand il
+/// a retiré le lien de l'unité elle-même (essayé sur systemd 262) ; et une réinstallation la relance de toute façon
+/// au démarrage sur Fedora (les préréglages du paquet) et sur Debian (deb-systemd-helper se souvient qu'elle était
+/// activée). Promettre plus que « tant qu'il n'est pas réinstallé » serait faux.
+fn absente(a: ActionUnite, unite: &str, vu: &str, monde: &mut dyn Monde) -> Resultat {
+    match monde.etat_d_activite(unite) {
         Ok(Some(e)) if matches!(e.as_str(), "active" | "activating" | "reloading" | "deactivating") => {
             if a == ActionUnite::Arreter {
                 Resultat::echec(trf!(
@@ -1214,14 +1229,14 @@ fn absente(a: ActionUnite, u: &gestes_unix::UniteConnue, monde: &mut dyn Monde) 
                 ))
             } else {
                 Resultat::ok_note(trf!(
-                    "ce service n'est plus installé sur cet ordinateur ({vu}) : il ne sera plus lancé au démarrage ; il tourne encore et s'arrêtera au prochain redémarrage de l'ordinateur",
-                    "this service is no longer installed on this computer ({vu}): it will no longer start at boot; it is still running and will stop at the next restart of the computer"
+                    "ce service n'est plus installé sur cet ordinateur ({vu}) : il ne sera plus lancé au démarrage tant qu'il n'est pas réinstallé ; il tourne encore et s'arrêtera au prochain redémarrage de l'ordinateur. Réinstallé, il pourrait de nouveau être lancé au démarrage (ses liens de démarrage restent, ou son paquet les remet) : refaites alors ce geste",
+                    "this service is no longer installed on this computer ({vu}): it will no longer start at boot as long as it is not reinstalled; it is still running and will stop at the next restart of the computer. Once reinstalled, it could start at boot again (its boot links remain, or its package puts them back): then do this step again"
                 ))
             }
         }
         Ok(_) => Resultat::ok_note(trf!(
-            "ce service n'est pas installé sur cet ordinateur ({vu}) : rien à arrêter ni à retirer du démarrage",
-            "this service is not installed on this computer ({vu}): nothing to stop or remove from startup"
+            "ce service n'est pas installé sur cet ordinateur ({vu}) : rien à arrêter ni à retirer du démarrage pour l'instant. Installé plus tard, il pourrait être lancé au démarrage (d'anciens liens restés, ou son paquet, l'y mettent) : refaites alors ce geste",
+            "this service is not installed on this computer ({vu}): nothing to stop or remove from startup for now. Installed later, it could start at boot (old links left behind, or its package, put it there): then do this step again"
         )),
         Err(raison) => Resultat::echec(raison),
     }
@@ -1303,16 +1318,20 @@ fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
     if coupe_session && let Err(raison) = aucune_session_entrante(monde) {
         return Resultat::echec(raison);
     }
-    if let GesteUnix::Designee(_, nom) = g
-        && let Err(raison) = designee_revue(nom.as_str(), monde)
-    {
-        return Resultat::echec(raison);
+    if let GesteUnix::Designee(a, nom) = g {
+        match designee_revue(nom.as_str(), monde) {
+            Ok(true) => {}
+            // Plus installée, peut-être encore en marche : dit comme pour une unité de la table.
+            Ok(false) if coupe(a) => return absente(a, nom.as_str(), &crate::ui::affichable(nom.as_str()), monde),
+            Ok(false) => return Resultat::echec(pas_installe(nom.as_str())),
+            Err(raison) => return Resultat::echec(raison),
+        }
     }
     if let GesteUnix::Unite(a, u) = g {
         match monde.fichier_sur(u.nom) {
             Ok(true) => {}
             // Pas installée : plus lancée au démarrage, c'est déjà fait ; le reste ne peut pas se faire.
-            Ok(false) if coupe(a) => return absente(a, u, monde),
+            Ok(false) if coupe(a) => return absente(a, u.nom, nom_vu(u), monde),
             Ok(false) => return Resultat::echec(pas_installe(nom_vu(u))),
             Err(raison) => return Resultat::echec(raison),
         }
@@ -1416,11 +1435,18 @@ fn signatures_clamav(monde: &mut dyn Monde) -> Resultat {
     if r.reussi && matches!(etat.as_deref(), Some("disabled" | "static")) {
         // Coupée avant, coupée après : dit, plutôt que de laisser croire qu'elle tourne. Seulement pour ces deux
         // états : « indirect », « enabled-runtime », « generated », « linked », « alias » la lancent peut-être
-        // au démarrage, par un autre chemin.
-        return Resultat::ok_note(tr!(
-            "signatures à jour ; leur mise à jour automatique n'est pas lancée au démarrage, et Vanguard la laisse ainsi",
-            "signatures up to date; their automatic update is not started at boot, and Vanguard leaves it that way"
-        ));
+        // au démarrage, par un autre chemin. Une note déjà là (le service écarté par la revue, et pourquoi) est
+        // gardée devant (B-4 du lot U3) : la remplacer cacherait qu'il n'a pas été touché.
+        return Resultat::ok_note(match r.note {
+            Some(note) => trf!(
+                "{note} ; et leur mise à jour automatique n'est pas lancée au démarrage, Vanguard la laisse ainsi",
+                "{note}; and their automatic update is not started at boot, Vanguard leaves it that way"
+            ),
+            None => String::from(tr!(
+                "signatures à jour ; leur mise à jour automatique n'est pas lancée au démarrage, et Vanguard la laisse ainsi",
+                "signatures up to date; their automatic update is not started at boot, and Vanguard leaves it that way"
+            )),
+        });
     }
     r
 }
@@ -1908,6 +1934,22 @@ mod tests {
         }
         assert!(sans_methode(true, false).contains("terminal"));
         assert!(sans_methode(true, true).contains("installé") || sans_methode(true, true).contains("installed"));
+    }
+
+    /// É-7 du lot U3 : pkexec reçoit le chemin réel de l'image, que pkexec 126 peut vérifier avec l'identité de la
+    /// personne pendant que ce processus n'est plus « dumpable » ; run0 et sudo gardent `/proc/<pid>/exe`, qui
+    /// désigne l'image qui tourne même remplacée.
+    #[test]
+    fn pkexec_recoit_le_chemin_reel() {
+        if !cfg!(target_os = "linux") {
+            return crate::essais::saute("seul Linux relance l'image par /proc/<pid>/exe");
+        }
+        let image = std::env::current_exe().map(std::path::PathBuf::into_os_string).ok();
+        assert!(image.is_some());
+        assert_eq!(programme(Methode::Pkexec), image);
+        let par_proc = Some(std::ffi::OsString::from(format!("/proc/{}/exe", std::process::id())));
+        assert_eq!(programme(Methode::Run0), par_proc);
+        assert_eq!(programme(Methode::Sudo), par_proc);
     }
 
     /// La ligne de commande de l'élévation : l'image qui tourne, la sous-commande et rien d'autre (aucun shell).
@@ -2554,10 +2596,57 @@ mod tests {
         let (r, j) = absente_qui_tourne(audit(ActionUnite::Arreter), Some("active"));
         assert!(!r.reussi && redemarrage(&r.raison), "{r:?}");
         assert_eq!(j, lu);
-        let arreter = gestes_unix::designee(ActionUnite::Arreter, "anydesk.service").unwrap();
-        let (r, j) = absente(arreter);
-        assert!(!r.reussi && r.raison.contains("install"), "{r:?}");
-        assert!(!j.contains(&"accord".to_string()), "{j:?}");
+        // É-6 : ses liens de démarrage ne sont pas retirés, et la note ne promet rien au-delà d'une réinstallation.
+        let reinstalle = |n: &str| n.contains("réinstallé") || n.contains("reinstalled");
+        let (r, _) = absente_qui_tourne(audit(ActionUnite::Desactiver), Some("active"));
+        assert!(r.note.as_deref().is_some_and(reinstalle), "{r:?}");
+        let (r, _) = absente(audit(ActionUnite::Desactiver));
+        assert!(
+            r.note
+                .as_deref()
+                .is_some_and(|n| n.contains("plus tard") || n.contains("later")),
+            "{r:?}"
+        );
+    }
+
+    /// É-5 du lot U3 : une unité désignée (un logiciel de prise de contrôle à distance) dont le fichier est retiré
+    /// est dite comme une unité de la table : encore en marche, son arrêt est un échec qui le dit (pas « pas
+    /// installé »), son retrait du démarrage une note ; à l'arrêt, « pas installé ». Ni question ni geste.
+    #[test]
+    fn une_unite_designee_retiree_qui_tourne() {
+        if !GesteUnix::ReinitialiserEchecs.permis_ici() {
+            return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
+        }
+        let essai = |a: ActionUnite, actif: Option<&str>| {
+            let mut m = FauxMonde::nouveau();
+            m.fichier = Ok(false);
+            m.actif = Ok(actif.map(ToString::to_string));
+            let r = faire_geste(gestes_unix::designee(a, "anydesk.service").unwrap(), &mut m);
+            (r, m.journal)
+        };
+        let lu = vec!["actif anydesk.service".to_string()];
+        let tourne = |t: &str| t.contains("tourne encore") || t.contains("still running");
+        let (r, j) = essai(ActionUnite::Arreter, Some("active"));
+        assert!(!r.reussi && tourne(&r.raison), "{r:?}");
+        assert_eq!(j, lu);
+        // Seuls l'arrêt et le retrait du démarrage sans arrêt se désignent (`GesteUnix::refus`).
+        let (r, j) = essai(ActionUnite::DesactiverSansArreter, Some("active"));
+        assert!(r.reussi && r.note.as_deref().is_some_and(tourne), "{r:?}");
+        assert_eq!(j, lu);
+        let (r, j) = essai(ActionUnite::Arreter, None);
+        assert!(
+            r.reussi && r.note.as_deref().is_some_and(|n| n.contains("install")),
+            "{r:?}"
+        );
+        assert_eq!(j, lu);
+        // Un nom qui n'est pas celui d'un logiciel de prise de contrôle reste refusé avant toute lecture.
+        let mut m = FauxMonde::nouveau();
+        m.fichier = Ok(false);
+        let r = faire_geste(
+            gestes_unix::designee(ActionUnite::Arreter, "alice.service").unwrap(),
+            &mut m,
+        );
+        assert!(!r.reussi && m.journal.is_empty(), "{r:?}");
     }
 
     /// B-3 du lot U3 : une unité dont systemd refuse l'arrêt à la main (auditd) n'est que retirée du démarrage, la
@@ -2628,6 +2717,28 @@ mod tests {
             "{r:?}"
         );
         assert_eq!(m.journal, [etat.clone(), actif.clone(), fresh.clone()]);
+        // B-4 : coupé au démarrage (disabled, static), la raison de la revue reste dans la note, devant.
+        for coupee in ["disabled", "static"] {
+            let mut m = FauxMonde::nouveau();
+            m.fichier = Err(Echec::refuse("essai", "complément douteux"));
+            m.etat = Ok(Some(coupee.into()));
+            let r = faire_geste(GesteUnix::SignaturesClamav, &mut m);
+            let note = r.note.clone().unwrap_or_default();
+            assert!(r.reussi && note.contains("complément douteux"), "{coupee} {r:?}");
+            assert!(note.contains("démarrage") || note.contains("boot"), "{coupee} {r:?}");
+            assert_eq!(m.journal, [etat.clone(), actif.clone(), fresh.clone()], "{coupee}");
+        }
+        let mut m = FauxMonde::nouveau();
+        m.etat = Ok(Some("disabled".into()));
+        m.actif = Ok(Some("inactive".into()));
+        let r = faire_geste(GesteUnix::SignaturesClamav, &mut m);
+        assert!(
+            r.reussi
+                && r.note
+                    .as_deref()
+                    .is_some_and(|n| n.starts_with("signatures à jour ;") || n.starts_with("signatures up to date;")),
+            "{r:?}"
+        );
         let mut m = FauxMonde::nouveau();
         m.fichier = Err(Echec::refuse("essai", "complément douteux"));
         m.programme_reussi = false;
