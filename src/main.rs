@@ -23,6 +23,7 @@ mod canaris;
 mod changements;
 mod chiffrement;
 mod commande;
+mod compte_rendu;
 mod copier;
 mod corriger;
 mod depanner;
@@ -680,6 +681,10 @@ enum Commande {
         /// Le rapport en JSON, pour un script (sans aucune valeur lue sur l'ordinateur).
         #[arg(long, conflicts_with = "detail")]
         json: bool,
+        /// Le compte rendu pour Claude en JSON : une cause par écart, avec ses identifiants (format de la veille de
+        /// nuit, sans aucune valeur lue sur l'ordinateur).
+        #[arg(long = "compte-rendu", visible_alias = "report-for-claude", conflicts_with_all = ["detail", "json"])]
+        compte_rendu: bool,
         /// Laisser les règles qui en ont besoin aller sur Internet (mises à jour, versions des logiciels).
         #[arg(long)]
         internet: bool,
@@ -769,6 +774,12 @@ enum Commande {
     /// Scan silencieux + notifications (utilisé par la surveillance).
     #[command(hide = true)]
     Surveiller,
+    /// Les comptes rendus pour Claude, lus par la veille de nuit (outils/veille/) : seulement des champs validés.
+    #[command(name = "compte-rendu", hide = true)]
+    CompteRendu {
+        #[command(subcommand)]
+        quoi: compte_rendu::Quoi,
+    },
     /// Entretien silencieux + notification (utilisé par le planificateur, une fois par mois).
     #[command(hide = true)]
     Entretenir,
@@ -3180,6 +3191,8 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("journaux-windows", "jours", "How many days back (7 by default)"),
     ("journaux-windows", "json", "The result as JSON, for a script: nothing is asked"),
     ("autotest", "json", "The report as JSON, for a script (without any value read on the computer)"),
+    ("autotest", "compte_rendu", "The report for Claude as JSON: one cause per gap, with its identifiers (the nightly \
+                                  watch's format, without any value read on the computer)"),
     ("protection", "json", "The switches' state as JSON, for a script: nothing is changed"),
     ("diagnostic", "json", "The result as JSON, for a script: nothing changes"),
     ("lenteur", "json", "The result as JSON, for a script: nothing changes"),
@@ -3669,6 +3682,12 @@ async fn main() {
                 images.as_deref().map(|d| (d, &image[..])),
             );
         }
+        Some(Commande::CompteRendu { quoi }) => {
+            let code = compte_rendu::executer(&quoi);
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
         Some(Commande::Deploiement { etape }) => {
             let code = deploiement::executer(etape);
             if code != 0 {
@@ -3828,12 +3847,14 @@ async fn main() {
         Some(Commande::Regles) => machine::regles::afficher(),
         Some(Commande::Autotest {
             json,
+            compte_rendu,
             internet,
             detail,
             une_par_une,
         }) => {
             let code = autotest::executer(&autotest::Options {
                 json,
+                compte_rendu,
                 internet,
                 detail,
                 une_par_une,

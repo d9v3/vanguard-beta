@@ -16,6 +16,11 @@ Lancé par python3 -I (nuit.sh, alerte.sh, hebdo.sh) :
     rapport.py hebdo DOSSIER SORTIE.md
     rapport.py markdown RAPPORT.json
     rapport.py structure COPIE SORTIE      la forme d'une source refusée par un canari, sans son texte
+    rapport.py compte-rendu ENTREE SORTIE  un compte rendu de Vanguard (src/compte_rendu/), refiltré champ par champ
+
+Un compte rendu de Vanguard est déjà validé en Rust ; il est relu ici quand même, comme toute donnée venue d'un
+programme que l'IA peut avoir changé : ses listes fermées et ses motifs viennent de schema-compte-rendu.json (dans
+outils/, hors de portée de l'IA), chaque champ passe par `sur()`, et une clé hors du schéma fait refuser le tout.
 """
 
 import argparse
@@ -43,6 +48,43 @@ MOTIFS = {
     "produit": r"[A-Za-z0-9()]{1,40}",
     "chemin": r"[A-Za-z0-9._/-]{1,160}",
     "lock": r"(?:Cargo\.lock|fuzz/Cargo\.lock|extensions/sdk/Cargo\.lock|extensions/exemples/rust-exemple/Cargo\.lock)",
+}
+SCHEMA_CR = json.loads((Path(__file__).resolve().parent / "schema-compte-rendu.json").read_text(encoding="utf-8"))
+CR_CAUSE = SCHEMA_CR["$defs"]["cause"]["properties"]
+CR_LECTURE_MAX = 4 * 1024 * 1024
+
+
+def motif_de(spec):
+    """Le motif d'un champ du schéma : son expression régulière, ou ses valeurs permises, littérales ; en ASCII
+    seulement (`(?a:…)`), comme en Rust : `\\d` ne prend pas les chiffres d'autres écritures."""
+    return f"(?a:{motif_brut(spec)})"
+
+
+def motif_brut(spec):
+    if "anyOf" in spec:
+        return "|".join(f"(?:{motif_brut(x)})" for x in spec["anyOf"])
+    if "enum" in spec:
+        return "|".join(re.escape(v) for v in spec["enum"] if v is not None)
+    return spec["pattern"].removeprefix("^").removesuffix("$")
+
+
+MOTIFS.update({
+    "cle": motif_de(CR_CAUSE["cle"]),
+    "regle": motif_de(CR_CAUSE["regle"]),
+    "lieu": motif_de(CR_CAUSE["lieu"]),
+    "version-vg": motif_de(SCHEMA_CR["properties"]["version"]),
+    "genre-cause": motif_de(CR_CAUSE["genre"]),
+    "contexte": motif_de(CR_CAUSE["contexte"]),
+    "famille": motif_de(CR_CAUSE["systemes"]["items"]),
+    "provenance": motif_de(CR_CAUSE["provenance"]),
+    "source": motif_de(SCHEMA_CR["properties"]["source"]),
+    "reproduction": motif_de(CR_CAUSE["reproduction"]),
+    "code": motif_de(CR_CAUSE["code"]),
+})
+# Le motif de chaque champ d'une cause, pour `sur()`.
+CR_CHAMPS = {
+    "cle": "cle", "genre": "genre-cause", "regle": "regle", "contexte": "contexte", "lieu": "lieu", "code": "code",
+    "provenance": "provenance", "premiere": "jour", "derniere": "jour", "reproduction": "reproduction",
 }
 GENRES = ["rustsec", "fuzz", "verifier", "proptest", "canari", "lien"]
 PRIORITE = {g: i + 1 for i, g in enumerate(GENRES)}
@@ -846,6 +888,63 @@ def structure(copie, sortie):
     return 0
 
 
+def lire_compte_rendu(chemin):
+    """Le compte rendu refiltré, ou (None, raison) : une clé hors du schéma, une forme qui n'est pas la sienne ou un
+    fichier trop gros font refuser le tout ; une valeur hors motif devient « (retiré) »."""
+    try:
+        with open(chemin, "rb") as f:
+            brut = f.read(CR_LECTURE_MAX + 1)
+    except OSError:
+        return None, "illisible"
+    if len(brut) > CR_LECTURE_MAX:
+        return None, "trop-gros"
+    try:
+        cr = json.loads(brut.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None, "pas-du-json"
+    if not isinstance(cr, dict) or set(cr) != set(SCHEMA_CR["required"]):
+        return None, "cles-hors-schema"
+    causes = cr["causes"]
+    if cr["schema"] != SCHEMA_CR["properties"]["schema"]["const"] or not isinstance(causes, list):
+        return None, "forme"
+    if len(causes) > SCHEMA_CR["properties"]["causes"]["maxItems"]:
+        return None, "trop-de-causes"
+    requises = set(SCHEMA_CR["$defs"]["cause"]["required"])
+    sortie = {
+        "schema": cr["schema"],
+        "source": sur("source", cr["source"]),
+        "version": sur("version-vg", cr["version"]),
+        "base_git": sur("git", cr["base_git"]),
+        "causes": [],
+    }
+    for c in causes:
+        if not isinstance(c, dict) or set(c) != requises:
+            return None, "cles-hors-schema"
+        propre = {k: sur(m, c[k]) for k, m in CR_CHAMPS.items()}
+        n = c["compte"]
+        borne_compte = CR_CAUSE["compte"]
+        propre["compte"] = (
+            n if isinstance(n, int) and not isinstance(n, bool) and borne_compte["minimum"] <= n <= borne_compte["maximum"]
+            else RETIRE
+        )
+        for k, m, borne_k in (("versions", "version-vg", "versions"), ("systemes", "famille", "systemes")):
+            v = c[k]
+            if not isinstance(v, list) or not CR_CAUSE[borne_k]["minItems"] <= len(v) <= CR_CAUSE[borne_k]["maxItems"]:
+                return None, "forme"
+            propre[k] = [sur(m, x) for x in v]
+        sortie["causes"].append({k: propre[k] for k in SCHEMA_CR["$defs"]["cause"]["required"]})
+    return sortie, None
+
+
+def compte_rendu(entree, sortie):
+    cr, raison = lire_compte_rendu(entree)
+    if cr is None:
+        print(f"compte rendu refusé : {raison}", file=sys.stderr)
+        return 1
+    ecrire_json(sortie, cr)
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sous = p.add_subparsers(dest="cmd", required=True)
@@ -888,7 +987,12 @@ def main():
     st = sous.add_parser("structure")
     st.add_argument("copie")
     st.add_argument("sortie")
+    cr = sous.add_parser("compte-rendu")
+    cr.add_argument("entree")
+    cr.add_argument("sortie")
     a = p.parse_args()
+    if a.cmd == "compte-rendu":
+        return compte_rendu(a.entree, a.sortie)
     if a.cmd == "structure":
         return structure(a.copie, a.sortie)
     if a.cmd == "fuzz-compter":

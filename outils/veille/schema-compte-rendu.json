@@ -1,0 +1,260 @@
+{
+  "$comment": "Le format des comptes rendus pour Claude (src/compte_rendu/), version 1. Gardé ici, dans outils/ que l'IA de la veille ne peut pas changer : rapport.py en tire ses listes fermées, et un essai de src/compte_rendu/tests.rs compare ses clés et ses listes à celles du programme. Un champ hors de ce schéma est refusé (Rust) ou devient « (retiré) » (rapport.py).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source",
+    "version",
+    "base_git",
+    "causes"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "source": {
+      "enum": [
+        "autotest",
+        "journal",
+        "lenteur"
+      ]
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$"
+    },
+    "base_git": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "causes": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "$ref": "#/$defs/cause"
+      }
+    }
+  },
+  "$defs": {
+    "cause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cle",
+        "genre",
+        "regle",
+        "contexte",
+        "lieu",
+        "code",
+        "compte",
+        "versions",
+        "systemes",
+        "provenance",
+        "premiere",
+        "derniere",
+        "reproduction"
+      ],
+      "properties": {
+        "cle": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "genre": {
+          "enum": [
+            "plantage",
+            "rattrapee",
+            "impossible",
+            "echec",
+            "erreur",
+            "contredite",
+            "invariant",
+            "ecriture",
+            "hors-delai",
+            "muette",
+            "lente",
+            "frole-delai",
+            "lenteur"
+          ]
+        },
+        "regle": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[A-Z]{3}-[A-Z]{3}-\\d{3}$"
+        },
+        "contexte": {
+          "enum": [
+            "mes-ordinateurs",
+            "erreur-interne",
+            "plantage",
+            "autotest",
+            "verification-impossible",
+            "scan-reseau",
+            "audit-reseau",
+            "protection-relro",
+            "scan-reseau-non-verifie",
+            "vanguard-administrateur",
+            "correction-elevee",
+            "powershell",
+            "wmi",
+            "origine-programme",
+            "protection-cle",
+            "echec/autre",
+            "annulation/remettre",
+            "audit/pq-box",
+            "audit/tls-pq",
+            "autotest/dernier",
+            "bilan/pqc-ssh",
+            "bilan/pqc-sshd",
+            "bilan/sshd-config",
+            "blocage/pare-feu",
+            "blocage/preparer",
+            "blocage/regler",
+            "canaux/lire",
+            "compte-rendu/lire",
+            "changements/noter",
+            "dbus/actions",
+            "dbus/etat_d_activite",
+            "dns/resolved",
+            "docker",
+            "entretien/etat",
+            "essai",
+            "essai/lecture",
+            "evenements/noter",
+            "evenements/perdus",
+            "evenements/version",
+            "examens/ecrire",
+            "http_unix",
+            "http_unix/connexion",
+            "machine/ports-bloques",
+            "maj/fwupd",
+            "manifeste/image",
+            "manifeste/relire",
+            "networkmanager",
+            "plateforme/fwupd",
+            "plugins/ecrire",
+            "plugins/reglages",
+            "plugins/sceau",
+            "programmes_poses/noter",
+            "quarantaine/remettre",
+            "quarantaine/supprimer",
+            "quarantaine/traces",
+            "reseau/appareils",
+            "reseau/carnet",
+            "reseau/resolved",
+            "sceau/adopter",
+            "sceau/ecrire",
+            "sceau/temoin",
+            "signaler/controle",
+            "signaler/dossier",
+            "signaler/droits",
+            "signaler/ecrire",
+            "signaler/effacer",
+            "signaler/incident",
+            "signaler/langue",
+            "signaler/outil",
+            "signaler/programme",
+            "systemd",
+            "veilleur/oublier",
+            "voulues/noter",
+            "wifi/networkmanager",
+            null
+          ]
+        },
+        "lieu": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^src/(?:[a-z0-9_]+/)*[a-z0-9_]+\\.rs:\\d{1,6}:\\d{1,5}$",
+          "maxLength": 134
+        },
+        "code": {
+          "anyOf": [
+            {
+              "enum": [
+                "droits",
+                "absente",
+                "illisible",
+                "muette",
+                "panique",
+                "delai",
+                "version-ancienne",
+                "non-precisee",
+                "introuvable",
+                "falsifie",
+                "refuse",
+                "echoue",
+                "sans-regle",
+                "etat-incoherent",
+                "message-vide",
+                "absent-natif",
+                "en-trop-natif",
+                "valeur-differente",
+                "champ-illisible",
+                "sortie-inattendue",
+                null
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^-?\\d{1,10}$"
+            }
+          ]
+        },
+        "compte": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "versions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "pattern": "^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$"
+          }
+        },
+        "systemes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": {
+            "enum": [
+              "windows",
+              "macos",
+              "linux"
+            ]
+          }
+        },
+        "provenance": {
+          "enum": [
+            "cet-ordinateur",
+            "cle"
+          ]
+        },
+        "premiere": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "derniere": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "reproduction": {
+          "enum": [
+            "vanguard autotest",
+            "vanguard autotest --internet",
+            null
+          ]
+        }
+      }
+    }
+  }
+}

@@ -47,9 +47,11 @@ const RELECTURE: Duration = if cfg!(test) {
 const PASSE_EN_COURS: Duration = Duration::from_mins(30);
 
 /// Les options de `vanguard autotest`.
-#[allow(clippy::struct_excessive_bools)] // les quatre options de la ligne de commande
+#[allow(clippy::struct_excessive_bools)] // les options de la ligne de commande
 pub(crate) struct Options {
     pub json: bool,
+    /// Le compte rendu pour Claude (`compte_rendu`) au lieu du rapport.
+    pub compte_rendu: bool,
     pub internet: bool,
     pub detail: bool,
     pub une_par_une: bool,
@@ -584,6 +586,69 @@ fn entrees_du_journal(r: &Rapport) -> Vec<(String, String)> {
     e
 }
 
+/// Le compte rendu pour Claude de cet essai : une cause par lecture contredite, règle plantée, hors délai ou muette,
+/// invariant, écriture, lenteur et délai frôlé, avec son identifiant ; jamais une valeur lue sur la machine.
+pub(crate) fn compte_rendu(r: &Rapport) -> crate::compte_rendu::CompteRendu {
+    use crate::compte_rendu::{
+        Cause, Code, CompteRendu, Contexte, Famille, Genre, Jour, Provenance, Regle, Reproduction, Source,
+    };
+    let mut cr = CompteRendu::nouveau(Source::Autotest);
+    let version = cr.version.clone();
+    let famille = match r.systeme {
+        "windows" => Famille::Windows,
+        "macos" => Famille::Macos,
+        _ => Famille::Linux,
+    };
+    let jour = r.debut.get(..10).and_then(Jour::new).unwrap_or_else(Jour::aujourdhui);
+    let mut ajouter = |genre: Genre, id: &str, code: Option<&str>, compte: usize| {
+        let regle = Regle::new(id);
+        let internet = regle.as_ref().is_some_and(|x| va_sur_internet(x.as_str()));
+        let mut c = Cause::nouvelle(
+            genre,
+            regle,
+            Some(Contexte::Autotest),
+            None,
+            code.and_then(Code::new),
+            version.clone(),
+            famille,
+            Provenance::CetOrdinateur,
+            jour.clone(),
+        );
+        c.compte = u32::try_from(compte.max(1)).unwrap_or(u32::MAX);
+        c.reproduction = Some(if internet {
+            Reproduction::AutotestInternet
+        } else {
+            Reproduction::Autotest
+        });
+        cr.ajouter(c);
+    };
+    for c in r.croisees.iter().filter(|c| c.verdict == "different") {
+        ajouter(Genre::Contredite, c.id, c.genre, 1);
+    }
+    for id in &r.regles.plantees {
+        ajouter(Genre::Rattrapee, id, Some(Raison::Panique.code()), 1);
+    }
+    for id in &r.regles.hors_delai {
+        ajouter(Genre::HorsDelai, id, Some(Raison::Delai.code()), 1);
+    }
+    for id in &r.regles.muettes {
+        ajouter(Genre::Muette, id, Some(Raison::Muette.code()), 1);
+    }
+    for i in &r.regles.invariants {
+        ajouter(Genre::Invariant, &i.regle, Some(i.genre), 1);
+    }
+    if r.preuve.verdict == "change" {
+        ajouter(Genre::Ecriture, OUTIL, None, r.preuve.nombre);
+    }
+    for l in &r.mesures.lentes {
+        ajouter(Genre::Lente, &l.regle, None, 1);
+    }
+    for f in &r.mesures.frolent_le_delai {
+        ajouter(Genre::FroleDelai, &f.regle, None, 1);
+    }
+    cr
+}
+
 /// Écrit le résultat : `examens/AUT-VAN-001.json` (scellé, un événement d'essai au journal), la date du dernier
 /// autotest et ses lectures contredites (scellées), puis le journal des erreurs.
 fn ecrire(
@@ -1008,6 +1073,11 @@ pub(crate) fn executer(o: &Options) -> i32 {
                 "{}",
                 serde_json::json!({"outil": OUTIL, "verdict": "refuse", "raison": "root", "code": 2})
             );
+        } else if o.compte_rendu {
+            tre!(
+                "  ✖ L'autotest tourne avec les droits de votre compte, jamais en root : relancez-le sans sudo.",
+                "  ✖ The self-test runs with your account's rights, never as root: run it again without sudo."
+            );
         } else {
             trp!(
                 "  ✖ L'autotest tourne avec les droits de votre compte, jamais en root : relancez-le sans sudo.",
@@ -1019,7 +1089,7 @@ pub(crate) fn executer(o: &Options) -> i32 {
     if !o.internet {
         crate::parametres::forcer_hors_ligne();
     }
-    if !o.json {
+    if !o.json && !o.compte_rendu {
         trp!(
             "  {DISCRET}Autodiagnostic : chaque règle du bilan, puis les lectures croisées (une minute ou deux)…{RESET}",
             "  {DISCRET}Self-test: every check rule, then the cross-checks (a minute or two)…{RESET}"
@@ -1060,6 +1130,8 @@ pub(crate) fn executer(o: &Options) -> i32 {
     ecrire(&r, &croisees, debut);
     if o.json {
         println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+    } else if o.compte_rendu {
+        println!("{}", compte_rendu(&r).json());
     } else {
         if o.detail && r.preuve.verdict == "change" {
             for (n, c) in &ecarts {
@@ -1315,6 +1387,100 @@ mod tests {
             assert!(!gardes.contains(p), "{p} dans le résultat : {gardes}");
         }
         assert!(journal.contains("autotest AUT-LNX-999") && journal.contains("[absent-natif] 4 en plus, 1 en moins"));
+    }
+
+    /// Le compte rendu pour Claude garde chaque identifiant du rapport (lecture contredite, règles plantées, hors
+    /// délai, muettes, invariants, écriture, lentes, délai frôlé), chacun dans une cause relue par ses motifs, et
+    /// aucune valeur lue sur la machine.
+    #[test]
+    fn compte_rendu_sans_perte_des_identifiants() {
+        let courriel = format!("alice{}example.com", '@');
+        let x = croisees::comparer(
+            [
+                ("alice-laptop".to_string(), "1.0".to_string()),
+                (courriel.clone(), "1".into()),
+            ],
+            [("bash".to_string(), "5.2".to_string())],
+        );
+        let croisees = vec![(croisee_d_essai(), x)];
+        let regles = Regles {
+            plantees: vec!["LNX-PFE-001"],
+            hors_delai: vec!["LNX-MAJ-001"],
+            muettes: vec!["LNX-SSH-002"],
+            invariants: vec![
+                Invariant {
+                    regle: "LNX-NET-003".into(),
+                    genre: "message-vide",
+                },
+                Invariant {
+                    regle: String::new(),
+                    genre: "sans-regle",
+                },
+            ],
+            ..Regles::default()
+        };
+        let mut r = rapport(
+            (chrono::Utc::now(), std::time::Instant::now()),
+            false,
+            regles,
+            &croisees,
+            Preuve {
+                verdict: "change",
+                fichiers: vec!["parametres.json".into()],
+                nombre: 2,
+            },
+        );
+        r.mesures.lentes = vec![mesures::Lente {
+            regle: "LNX-PKG-004".into(),
+            semaine_ms: 9000,
+            avant_ms: 1000,
+        }];
+        r.mesures.frolent_le_delai = vec![mesures::Frole {
+            regle: "LNX-PKG-005".into(),
+            max_ms: 590_000,
+            delai_ms: 600_000,
+        }];
+        let cr = compte_rendu(&r);
+        let relu = crate::compte_rendu::CompteRendu::lire(cr.json().as_bytes()).expect("relu par ses motifs");
+        assert_eq!(relu, cr);
+        let regles: Vec<&str> = cr
+            .causes
+            .iter()
+            .filter_map(|c| c.regle.as_ref().map(crate::compte_rendu::Regle::as_str))
+            .collect();
+        for id in [
+            "AUT-LNX-999",
+            "LNX-PFE-001",
+            "LNX-MAJ-001",
+            "LNX-SSH-002",
+            "LNX-NET-003",
+            OUTIL,
+            "LNX-PKG-004",
+            "LNX-PKG-005",
+        ] {
+            assert!(regles.contains(&id), "{id} perdu : {regles:?}");
+        }
+        assert_eq!(
+            cr.causes.len(),
+            9,
+            "une cause par identifiant, plus l'invariant sans règle"
+        );
+        let genre = |id: &str| {
+            cr.causes
+                .iter()
+                .find(|c| c.regle.as_ref().is_some_and(|x| x.as_str() == id))
+                .unwrap()
+        };
+        assert_eq!(genre("AUT-LNX-999").code.as_ref().unwrap().as_str(), "absent-natif");
+        assert_eq!(genre(OUTIL).compte, 2);
+        assert_eq!(
+            genre("LNX-MAJ-001").reproduction,
+            Some(crate::compte_rendu::Reproduction::AutotestInternet)
+        );
+        let json = cr.json();
+        for p in ["alice-laptop", courriel.as_str(), "bash", "5.2", "parametres.json"] {
+            assert!(!json.contains(p), "{p} dans le compte rendu : {json}");
+        }
     }
 
     /// Le code de sortie : 0 tout bon, 1 écart, 2 du non vérifié ; une lecture sans objet ne compte pas.
