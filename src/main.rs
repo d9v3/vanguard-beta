@@ -9,6 +9,10 @@
 #![deny(unsafe_code)]
 
 mod a_laisser;
+// La voie ouverte de l'auto-amélioration (lot A1) : le nettoyage des textes d'erreur et le détecteur de secrets,
+// que les lots suivants (A2, A3) brancheront au journal et aux lots envoyés.
+#[cfg_attr(not(test), allow(dead_code))]
+mod amelioration;
 // Le socle d'analyse des fichiers (lot AV1 de l'antivirus maison) : ses lecteurs servent aux motifs, aux signatures
 // et aux heuristiques des lots suivants (AV2 à AV4), qui ne sont pas encore branchés.
 #[cfg_attr(not(test), allow(dead_code))]

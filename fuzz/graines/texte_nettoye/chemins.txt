@@ -1,0 +1,1 @@
+Impossible d'ouvrir C:\Users\alice\Documents\Rapport annuel.docx (erreur 0x80070005)

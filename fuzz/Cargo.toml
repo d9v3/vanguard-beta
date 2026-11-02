@@ -240,3 +240,10 @@ path = "fuzz_targets/journal_entrees.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "texte_nettoye"
+path = "fuzz_targets/texte_nettoye.rs"
+test = false
+doc = false
+bench = false
