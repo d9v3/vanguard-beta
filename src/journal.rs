@@ -820,9 +820,47 @@ fn arguments_lisibles(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec
     args.into_iter().map(|a| a.to_string_lossy().into_owned()).collect()
 }
 
+/// Les erreurs du fils élevé de Linux et macOS (`appliquer-eleve`), gardées pour le parent quand ce n'est pas `None` :
+/// root, il les écrirait sous /root, que le compte ne lit pas, alors que ce qu'il montre renvoie au journal des erreurs
+/// (É-3 du lot U3). Le parent les écrit dans le sien, anonymisées comme toutes les autres.
+static RELAIS: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+/// Erreurs gardées pour le parent, au plus : une erreur répétée en boucle ne remplit ni la mémoire ni le canal.
+pub(crate) const RELAIS_MAX: usize = 32;
+
+/// À partir d'ici, les erreurs sont gardées pour le parent (`relayees`) au lieu d'être écrites.
+#[cfg(unix)]
+pub(crate) fn relayer() {
+    *RELAIS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Vec::new());
+}
+
+/// Les erreurs gardées depuis `relayer`, chacune « \[contexte\] détail » ; les suivantes sont de nouveau écrites.
+#[cfg(unix)]
+pub(crate) fn relayees() -> Vec<String> {
+    RELAIS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .unwrap_or_default()
+}
+
+/// Garde l'erreur pour le parent si le relais est ouvert ; faux sinon (elle s'écrit alors ici).
+fn relaye(contexte: &str, detail: &str) -> bool {
+    let mut relais = RELAIS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(liste) = relais.as_mut() else {
+        return false;
+    };
+    if liste.len() < RELAIS_MAX {
+        liste.push(format!("[{contexte}] {}", detail.trim()));
+    }
+    true
+}
+
 /// Ajoute une erreur au journal de la clé. Sans clé branchée, ou si l'écriture échoue : rien, en silence (le
 /// journal ne doit jamais gêner le programme).
 pub fn erreur(contexte: &str, detail: &str) {
+    if relaye(contexte, detail) {
+        return;
+    }
     let Some(dossier) = dossier() else {
         return;
     };
@@ -940,6 +978,33 @@ pub fn installer() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// É-3 du lot U3 : ouvert, le relais garde les erreurs (« [contexte] détail ») au lieu de les écrire, sans
+    /// dépasser `RELAIS_MAX` ; `relayees` le referme. Le relais est commun au processus et d'autres tests écrivent
+    /// au journal en même temps : on cherche les siennes, sans compter juste.
+    #[cfg(unix)]
+    #[test]
+    fn le_relais_garde_les_erreurs_pour_le_parent() {
+        relayer();
+        erreur("essai/relais", "  le service a refusé  ");
+        for i in 0..2 * RELAIS_MAX {
+            erreur("essai/relais", &format!("répétée {i}"));
+        }
+        let gardees = relayees();
+        assert!(
+            gardees.contains(&"[essai/relais] le service a refusé".to_string()),
+            "{gardees:?}"
+        );
+        assert!(gardees.len() <= RELAIS_MAX);
+        assert!(
+            !gardees
+                .iter()
+                .any(|g| g.ends_with(&format!("répétée {}", 2 * RELAIS_MAX - 1)))
+        );
+        // Refermé : la suivante n'est plus gardée, et une seconde lecture est vide de celle-là.
+        erreur("essai/relais", "après la fermeture");
+        assert!(!relayees().iter().any(|g| g.contains("après la fermeture")));
+    }
 
     #[test]
     fn sortie_coupee_pas_un_plantage() {

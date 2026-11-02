@@ -155,7 +155,8 @@ fn terminal() -> bool {
 /// Les façons possibles ici, dans l'ordre où les essayer. `accord` : un geste de la liste demande l'accord de la
 /// personne sur son terminal (/dev/tty, dans le fils). pkexec et run0 n'en donnent pas au programme élevé (run0 avec
 /// nos tubes passe en mode tube, sans terminal de contrôle pour le fils) : seul sudo, lancé depuis un terminal, le
-/// permet (avec use_pty, le fils a un terminal relayé) ; sinon aucune, et `sans_methode` dit pourquoi.
+/// permet (avec use_pty, le fils a un terminal relayé) ; sinon aucune, et `sans_methode` dit pourquoi. `existe` : le
+/// programme est là, et utilisable (`avec_polkit`).
 fn methodes(graphique: bool, terminal: bool, accord: bool, existe: impl Fn(&str) -> bool) -> Vec<Methode> {
     if accord {
         return if terminal && existe("sudo") {
@@ -177,6 +178,14 @@ fn methodes(graphique: bool, terminal: bool, accord: bool, existe: impl Fn(&str)
         m.push(Methode::Sudo);
     }
     m
+}
+
+/// `existe`, sauf pour pkexec et run0 quand polkit n'est pas là (`dbus::polkit_present`, B-1 du lot U3) : ils ne sont
+/// alors même pas essayés. run0 sortirait en « Access denied » sans rien demander, qu'on ne sait pas distinguer d'un
+/// vrai refus, et sudo ne serait jamais essayé ; à l'inverse, compter cette sortie comme « indisponible » ferait
+/// reposer la question par sudo à une personne qui vient de refuser.
+fn avec_polkit(polkit: bool, existe: impl Fn(&str) -> bool) -> impl Fn(&str) -> bool {
+    move |nom| (polkit || ![Methode::Pkexec, Methode::Run0].iter().any(|m| m.nom() == nom)) && existe(nom)
 }
 
 /// Le programme et tous ses dossiers appartiennent-ils à root, sans écriture pour le groupe ni les autres ? Alors
@@ -315,6 +324,39 @@ fn tous_en_echec<D>(groupes: &[Vec<D>], raison: &str) -> Vec<Vec<Resultat>> {
         .collect()
 }
 
+/// Début d'une ligne du fils qui porte une erreur de son journal (`journal::relayees`) : aucune réponse
+/// (`ordres::ligne_reponse` : « ok… », « echec… ») ne commence ainsi.
+const JOURNAL: &str = "journal ";
+
+/// Une erreur gardée par le fils, prête à passer au parent : une seule ligne, sans caractère piégé, coupée pour tenir
+/// dans `LIGNE_MAX` (le parent refuserait toute la réponse pour une ligne trop longue).
+fn ligne_journal(erreur: &str) -> String {
+    let texte = crate::ui::affichable(&erreur.replace(['\r', '\n'], " | "));
+    let place = LIGNE_MAX - JOURNAL.len();
+    let mut fin = texte.len().min(place);
+    while !texte.is_char_boundary(fin) {
+        fin -= 1;
+    }
+    format!("{JOURNAL}{}", &texte[..fin])
+}
+
+/// Sépare les erreurs relayées par le fils (au plus `journal::RELAIS_MAX`, le reste est ignoré) de ses réponses.
+fn separer_journal(lignes: Vec<String>) -> (Vec<String>, Vec<String>) {
+    let mut erreurs = Vec::new();
+    let mut reponses = Vec::new();
+    for l in lignes {
+        match l.strip_prefix(JOURNAL) {
+            Some(e) => {
+                if erreurs.len() < crate::journal::RELAIS_MAX {
+                    erreurs.push(e.to_string());
+                }
+            }
+            None => reponses.push(l),
+        }
+    }
+    (erreurs, reponses)
+}
+
 /// Les réponses du fils, rangées dans les groupes ; `None` si leur nombre n'est pas celui des ordres.
 fn ranger<D>(groupes: &[Vec<D>], reponses: &[String]) -> Option<Vec<Vec<Resultat>>> {
     let total: usize = groupes.iter().map(Vec::len).sum();
@@ -362,7 +404,9 @@ fn essayer(m: Methode, groupes: &[Vec<Demande>]) -> Issue {
         crate::commande::arreter(&mut fils);
         return Issue::Indisponible;
     };
-    let mut lecteur = BufReader::new(sortie.take(u64::try_from((LIGNES_MAX + 4) * (LIGNE_MAX + 2)).unwrap_or(0)));
+    // Les réponses, les erreurs relayées par le fils, « prêt » et « fin ».
+    let borne = (LIGNES_MAX + crate::journal::RELAIS_MAX + 4) * (LIGNE_MAX + 2);
+    let mut lecteur = BufReader::new(sortie.take(u64::try_from(borne).unwrap_or(0)));
     // Pas de délai : la personne tape son mot de passe. Le fils mort sans s'être dit prêt ferme le tube.
     let mut premiere = String::new();
     let pret = lecteur.read_line(&mut premiere).is_ok_and(|n| n > 0) && premiere.trim_end() == PRET;
@@ -385,6 +429,15 @@ fn essayer(m: Methode, groupes: &[Vec<Demande>]) -> Issue {
         None
     };
     let _ = fils.wait();
+    let reponses = reponses.map(|r| {
+        let (erreurs, reponses) = separer_journal(r);
+        // Écrites ici, dans le journal du compte, que « le détail est dans le journal des erreurs » désigne : celui
+        // du fils, root, serait sous /root.
+        for e in erreurs {
+            crate::journal::erreur("assistant/eleve", &e);
+        }
+        reponses
+    });
     match reponses.and_then(|r| ranger(groupes, &r)) {
         Some(r) => Issue::Fait(r),
         None => Issue::Fait(tous_en_echec(
@@ -418,7 +471,12 @@ pub(crate) fn appliquer(groupes: &[Vec<Demande>]) -> Vec<Vec<Resultat>> {
     let graphique = std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
     let accord = groupes.iter().flatten().any(Demande::demande_accord);
     let terminal = terminal();
-    let possibles = methodes(graphique, terminal, accord, |n| outil(n).is_some());
+    // polkit n'est demandé au bus que s'il peut servir : un geste avec accord passe par sudo seulement.
+    #[cfg(target_os = "linux")]
+    let polkit = !accord && crate::machine::linux::dbus::polkit_present();
+    #[cfg(not(target_os = "linux"))]
+    let polkit = false;
+    let possibles = methodes(graphique, terminal, accord, avec_polkit(polkit, |n| outil(n).is_some()));
     // Pendant le dialogue, plus aucun processus du compte ne peut ouvrir nos tubes par /proc/<pid>/fd ni s'attacher
     // à nous (ptrace) pour glisser une autre liste au fils, ou lui répondre à sa place : un processus non
     // « dumpable » n'est plus accessible qu'à root.
@@ -465,8 +523,8 @@ fn sans_methode(accord: bool, terminal: bool) -> &'static str {
             "a step needs your agreement in a terminal, and Vanguard was not started from a terminal (pkexec and run0 give none to the administrator program, only sudo in a terminal allows it): nothing was done. Start Vanguard from a terminal"
         ),
         (false, _) => tr!(
-            "aucun moyen d'obtenir les droits d'administrateur ici (ni pkexec avec un agent polkit, ni run0, ni sudo) : rien n'a été fait",
-            "no way to get administrator rights here (neither pkexec with a polkit agent, nor run0, nor sudo): nothing was done"
+            "aucun moyen d'obtenir les droits d'administrateur ici (ni pkexec avec un agent polkit, ni run0, qui demande polkit lui aussi, ni sudo) : rien n'a été fait",
+            "no way to get administrator rights here (neither pkexec with a polkit agent, nor run0, which needs polkit too, nor sudo): nothing was done"
         ),
     }
 }
@@ -519,6 +577,8 @@ pub(crate) fn executer(langue: Option<&str>, parent: Option<u32>) -> i32 {
         );
         return SANS_DROITS;
     }
+    // Root, ses erreurs iraient sous /root ; elles partent au parent avec les réponses.
+    crate::journal::relayer();
     let mut sortie = std::io::stdout().lock();
     if writeln!(sortie, "{PRET}").and_then(|()| sortie.flush()).is_err() {
         return SANS_DROITS;
@@ -555,6 +615,11 @@ pub(crate) fn executer(langue: Option<&str>, parent: Option<u32>) -> i32 {
     let resultats = executer_demandes(&groupes, &juge, &mut Systeme, &mut |t| {
         let _ = writeln!(std::io::stderr(), "{t}");
     });
+    for e in crate::journal::relayees() {
+        if writeln!(sortie, "{}", ligne_journal(&e)).is_err() {
+            return 1;
+        }
+    }
     let mut code = 0;
     for r in resultats.iter().flatten() {
         if !r.reussi {
@@ -602,9 +667,12 @@ trait Monde {
     /// Une session à distance entrante est-elle ouverte (SSH ou Bureau à distance reçus, logiciel de prise de contrôle
     /// connecté) ? `None` : les connexions en cours ne se lisent pas.
     fn session_entrante(&self) -> Option<bool>;
-    /// Le fichier de l'unité est-il celui de root, dans un dossier du système, fermé aux autres comptes, lien compris
-    /// (`fichier_d_unite_sur`) ?
-    fn fichier_sur(&self, unite: &str) -> Result<(), Echec>;
+    /// Le fichier de l'unité est-il celui de root, dans un dossier du système, fermé aux autres comptes, lien compris,
+    /// et de même ses compléments et ce que le gestionnaire a chargé (`fichier_d_unite_sur`) ? `Ok(false)` : l'unité
+    /// n'est pas installée (aucun fichier, rien de chargé avec un fichier).
+    fn fichier_sur(&self, unite: &str) -> Result<bool, Echec>;
+    /// L'unité peut-elle être arrêtée à la main (`systeme::arret_a_la_main`) ? `None` : pas chargée, rien à arrêter.
+    fn arret_a_la_main(&mut self, unite: &str) -> Result<Option<bool>, Echec>;
     /// L'état du fichier de l'unité (« enabled », « disabled »…) ; `None` : aucun fichier de ce nom.
     fn etat_du_fichier(&mut self, unite: &str) -> Result<Option<String>, Echec>;
     /// L'état d'activité de l'unité (« active », « inactive »…) ; `None` : aucune unité chargée de ce nom.
@@ -638,21 +706,39 @@ impl Monde for Systeme {
         None
     }
 
-    fn fichier_sur(&self, unite: &str) -> Result<(), Echec> {
+    fn fichier_sur(&self, unite: &str) -> Result<bool, Echec> {
         let dossiers = DOSSIERS_D_UNITES.map(std::path::Path::new);
         let racine = std::path::Path::new("/");
-        fichier_d_unite_sur(&dossiers, racine, unite, 0)?;
+        let qui = Proprietaire::root();
+        let sur_le_disque = fichier_d_unite_sur(&dossiers, racine, unite, qui)?;
         // Puis ce que le gestionnaire a chargé : son fichier et ses compléments peuvent venir d'ailleurs (un
         // générateur, un complément du genre « service.d » posé dans /run).
         #[cfg(target_os = "linux")]
         {
             use crate::machine::linux::dbus::systeme;
             let charges = systeme::bus_pour_agir().and_then(|mut bus| systeme::fichiers_charges(&mut bus, unite))?;
-            if let Some((id, fragment, complements)) = charges {
-                fichiers_charges_surs(&id, &fragment, &complements, racine, unite, 0)?;
+            match charges {
+                // Chargée sans aucun fichier, nulle part : une unité citée par une autre mais introuvable
+                // (« not-found »), donc pas installée.
+                Some((id, fragment, _)) if !sur_le_disque && fragment.is_empty() && id == unite => return Ok(false),
+                Some((id, fragment, complements)) => {
+                    fichiers_charges_surs(&id, &fragment, &complements, racine, unite, qui)?;
+                    return Ok(true);
+                }
+                None => {}
             }
         }
-        Ok(())
+        Ok(sur_le_disque)
+    }
+
+    fn arret_a_la_main(&mut self, unite: &str) -> Result<Option<bool>, Echec> {
+        #[cfg(target_os = "linux")]
+        {
+            use crate::machine::linux::dbus::systeme;
+            systeme::bus_pour_agir().and_then(|mut bus| systeme::arret_a_la_main(&mut bus, unite))
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(refus(format!("{unite} : {}", sans_systemd())))
     }
 
     fn etat_du_fichier(&mut self, unite: &str) -> Result<Option<String>, Echec> {
@@ -748,12 +834,81 @@ enum Regard {
     AutreNom,
 }
 
-/// Un fichier ordinaire de `proprietaire` que ni son groupe ni les autres ne peuvent modifier ; chaque dossier qui le
-/// contient jusqu'à `racine` comprise aussi, et de même chaque dossier qui contient le lien quand `chemin` en est un
-/// (sinon le lien pourrait être remplacé). `nom` : le nom que doit porter le fichier au bout des liens.
-fn regarder(chemin: &std::path::Path, racine: &std::path::Path, proprietaire: u32, nom: Option<&str>) -> Regard {
+/// À qui doivent être les fichiers d'unité et leurs dossiers.
+#[derive(Clone, Copy, Debug)]
+struct Proprietaire {
+    uid: u32,
+    /// Un groupe sans autre membre que le propriétaire : un DOSSIER qu'il peut modifier n'ouvre rien à un autre compte.
+    /// Fedora Cloud livre `/` en 0775 root:root (É-1 du lot U3), ce qui faisait refuser toute unité. Jamais pour un
+    /// fichier, ni pour l'écriture des autres.
+    groupe_seul: Option<u32>,
+}
+
+impl Proprietaire {
+    /// Son seul compte : rien de modifiable par un groupe.
+    #[cfg(test)]
+    const fn strict(uid: u32) -> Self {
+        Proprietaire { uid, groupe_seul: None }
+    }
+
+    /// root, et le groupe 0 s'il n'a pas d'autre membre (`groupe_root_seul`).
+    fn root() -> Self {
+        let lu = |f| std::fs::read_to_string(f).ok();
+        let seul = matches!((lu("/etc/group"), lu("/etc/passwd")), (Some(g), Some(p)) if groupe_root_seul(&g, &p));
+        Proprietaire {
+            uid: 0,
+            groupe_seul: seul.then_some(0),
+        }
+    }
+
+    fn a_le_fichier(self, m: &std::fs::Metadata) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        m.uid() == self.uid && m.mode() & 0o022 == 0
+    }
+
+    fn a_le_dossier(self, m: &std::fs::Metadata) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        m.uid() == self.uid && m.mode() & 0o002 == 0 && (m.mode() & 0o020 == 0 || Some(m.gid()) == self.groupe_seul)
+    }
+}
+
+/// Le groupe 0 n'a-t-il aucun autre membre que root ? Ni membre ajouté dans `/etc/group` (sa ligne vide, ou « root »
+/// seul), ni compte de personne (uid 1000 et plus) qui l'ait pour groupe principal dans `/etc/passwd`. Les comptes du
+/// système au groupe principal 0 que Fedora garde (sync, shutdown, halt, operator) ne font tourner aucun programme de
+/// la personne : ils ne comptent pas. Une ligne illisible, ou deux lignes du groupe 0 : non.
+fn groupe_root_seul(group: &str, passwd: &str) -> bool {
+    let lignes_0: Vec<&str> = group
+        .lines()
+        .filter(|l| l.split(':').nth(2).is_some_and(|g| g.trim() == "0"))
+        .collect();
+    let [ligne] = lignes_0.as_slice() else {
+        return false;
+    };
+    let champs: Vec<&str> = ligne.split(':').collect();
+    let [_, _, _, membres] = champs.as_slice() else {
+        return false;
+    };
+    let membres_surs = membres.split(',').map(str::trim).all(|m| m.is_empty() || m == "root");
+    let aucune_personne = passwd
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .all(|l| {
+            let c: Vec<&str> = l.split(':').collect();
+            match (c.get(2).map(|u| u.parse::<u32>()), c.get(3).map(|g| g.trim())) {
+                (Some(Ok(_)), Some(g)) if g != "0" => true,
+                (Some(Ok(uid)), Some(_)) => uid < 1000,
+                _ => false,
+            }
+        });
+    membres_surs && aucune_personne
+}
+
+/// Un fichier ordinaire de `qui` que ni son groupe ni les autres ne peuvent modifier ; chaque dossier qui le contient
+/// jusqu'à `racine` comprise aussi (`Proprietaire::a_le_dossier`), et de même chaque dossier qui contient le lien
+/// quand `chemin` en est un (sinon le lien pourrait être remplacé). `nom` : le nom que doit porter le fichier au bout
+/// des liens.
+fn regarder(chemin: &std::path::Path, racine: &std::path::Path, qui: Proprietaire, nom: Option<&str>) -> Regard {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-    let a_lui = |m: &std::fs::Metadata| m.uid() == proprietaire && m.mode() & 0o022 == 0;
     let vu_du_lien = match std::fs::symlink_metadata(chemin) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Regard::Absent,
@@ -775,9 +930,9 @@ fn regarder(chemin: &std::path::Path, racine: &std::path::Path, proprietaire: u3
             && depart
                 .ancestors()
                 .filter(|d| d.starts_with(&racine))
-                .all(|d| std::fs::metadata(d).is_ok_and(|m| m.is_dir() && a_lui(&m)))
+                .all(|d| std::fs::metadata(d).is_ok_and(|m| m.is_dir() && qui.a_le_dossier(&m)))
     };
-    let lien_a_lui = !vu_du_lien.file_type().is_symlink() || vu_du_lien.uid() == proprietaire;
+    let lien_a_lui = !vu_du_lien.file_type().is_symlink() || vu_du_lien.uid() == qui.uid;
     if !(fichier.parent().is_some_and(chaine_sure) && chaine_sure(&dossier_du_lien) && lien_a_lui) {
         return Regard::Douteux;
     }
@@ -798,7 +953,7 @@ fn regarder(chemin: &std::path::Path, racine: &std::path::Path, proprietaire: u3
         return Regard::Douteux;
     };
     match ouvert.metadata() {
-        Ok(m) if m.is_file() && a_lui(&m) => Regard::Sur,
+        Ok(m) if m.is_file() && qui.a_le_fichier(&m) => Regard::Sur,
         _ => Regard::Douteux,
     }
 }
@@ -823,13 +978,14 @@ fn noms_des_complements(nom: &str) -> Vec<String> {
 /// Le fichier de l'unité `nom` dans le premier de `dossiers` qui l'a, et ses compléments dans tous : chacun sûr
 /// (`regarder`), sinon un autre compte pourrait changer ce que l'unité lance (ExecStop d'un arrêt, Also= d'un
 /// retrait du démarrage). Un lien (`systemctl link`) n'est suivi que vers un tel fichier du même nom. Un fichier
-/// refusé ne fait pas chercher dans le dossier suivant.
+/// refusé ne fait pas chercher dans le dossier suivant. `Ok(false)` : aucun fichier de ce nom, l'unité n'est pas
+/// installée (ses compléments, s'il y en a, sont revus quand même : une unité installée plus tard les prendrait).
 fn fichier_d_unite_sur(
     dossiers: &[&std::path::Path],
     racine: &std::path::Path,
     nom: &str,
-    proprietaire: u32,
-) -> Result<(), Echec> {
+    qui: Proprietaire,
+) -> Result<bool, Echec> {
     let vu = crate::ui::affichable(nom);
     if !gestes_unix::nom_admis(nom) {
         return Err(refus(trf!(
@@ -839,7 +995,7 @@ fn fichier_d_unite_sur(
     }
     let mut trouve = false;
     for dossier in dossiers {
-        match regarder(&dossier.join(nom), racine, proprietaire, Some(nom)) {
+        match regarder(&dossier.join(nom), racine, qui, Some(nom)) {
             Regard::Absent => {}
             Regard::Sur => {
                 trouve = true;
@@ -849,18 +1005,21 @@ fn fichier_d_unite_sur(
             Regard::AutreNom => return Err(autre_nom(&vu)),
         }
     }
-    if !trouve {
-        return Err(refus(trf!(
-            "aucun fichier du service {vu} dans les dossiers du système : rien n'est fait",
-            "no file for the service {vu} in the system folders: nothing is done"
-        )));
-    }
     for dossier in dossiers {
         for complements in noms_des_complements(nom) {
-            complements_surs(&dossier.join(complements), racine, proprietaire, &vu)?;
+            complements_surs(&dossier.join(complements), racine, qui, &vu)?;
         }
     }
-    Ok(())
+    Ok(trouve)
+}
+
+/// Une unité qui n'est pas installée ici (É-4 du lot U3) : dit tel quel, plutôt qu'un échec du gestionnaire.
+fn pas_installe(nom: &str) -> String {
+    let vu = crate::ui::affichable(nom);
+    trf!(
+        "{vu} n'est pas installé sur cet ordinateur : rien n'est fait",
+        "{vu} is not installed on this computer: nothing is done"
+    )
 }
 
 /// Un dossier de compléments, s'il existe : à `proprietaire`, fermé aux autres comme ceux qui le contiennent, et
@@ -868,7 +1027,7 @@ fn fichier_d_unite_sur(
 fn complements_surs(
     dossier: &std::path::Path,
     racine: &std::path::Path,
-    proprietaire: u32,
+    qui: Proprietaire,
     vu: &str,
 ) -> Result<(), Echec> {
     let entrees = match std::fs::read_dir(dossier) {
@@ -882,7 +1041,7 @@ fn complements_surs(
         if chemin.extension().is_none_or(|x| x != "conf") {
             continue;
         }
-        match regarder(&chemin, racine, proprietaire, None) {
+        match regarder(&chemin, racine, qui, None) {
             Regard::Sur | Regard::Absent => {}
             Regard::Douteux | Regard::AutreNom => return Err(douteux(vu)),
         }
@@ -902,17 +1061,17 @@ fn fichiers_charges_surs(
     complements: &[String],
     racine: &std::path::Path,
     nom: &str,
-    proprietaire: u32,
+    qui: Proprietaire,
 ) -> Result<(), Echec> {
     let vu = crate::ui::affichable(nom);
     if id != nom || fragment.is_empty() {
         return Err(autre_nom(&vu));
     }
-    if regarder(std::path::Path::new(fragment), racine, proprietaire, None) != Regard::Sur {
+    if regarder(std::path::Path::new(fragment), racine, qui, None) != Regard::Sur {
         return Err(douteux(&vu));
     }
     for c in complements {
-        if regarder(std::path::Path::new(c), racine, proprietaire, None) != Regard::Sur {
+        if regarder(std::path::Path::new(c), racine, qui, None) != Regard::Sur {
             return Err(douteux(&vu));
         }
     }
@@ -946,7 +1105,9 @@ fn designee_revue(nom: &str, monde: &mut dyn Monde) -> Result<(), Echec> {
             "{vu} is not a remote control tool known to Vanguard: nothing is done"
         )));
     }
-    monde.fichier_sur(nom)?;
+    if !monde.fichier_sur(nom)? {
+        return Err(refus(pas_installe(nom)));
+    }
     match monde.etat_du_fichier(nom)? {
         Some(etat) if etat == "enabled" => Ok(()),
         _ => Err(refus(trf!(
@@ -972,9 +1133,74 @@ fn aucune_session_entrante(monde: &dyn Monde) -> Result<(), &'static str> {
     }
 }
 
+/// L'unité que touche un geste d'unité, de la table ou désignée ; `None` pour les autres gestes (ReinitialiserEchecs ne
+/// touche aucune unité en particulier, signatures-clamav revoit la sienne à part).
+fn unite_touchee(g: &GesteUnix) -> Option<(ActionUnite, &str)> {
+    match g {
+        GesteUnix::Unite(a, u) => Some((*a, u.nom)),
+        GesteUnix::Designee(a, nom) => Some((*a, nom.as_str())),
+        GesteUnix::Programme(_) | GesteUnix::ReinitialiserEchecs | GesteUnix::SignaturesClamav => None,
+    }
+}
+
+/// L'action coupe-t-elle l'unité (arrêt ou retrait du démarrage) ? Pour une unité absente, c'est déjà le cas.
+fn coupe(a: ActionUnite) -> bool {
+    matches!(
+        a,
+        ActionUnite::Desactiver | ActionUnite::DesactiverSansArreter | ActionUnite::Arreter
+    )
+}
+
+/// Le fichier de l'unité revu (`Monde::fichier_sur`) : sûr, ou la raison du refus ; une unité absente est dite « pas
+/// installée ».
+fn unite_revue(nom: &str, monde: &dyn Monde) -> Result<(), Echec> {
+    if monde.fichier_sur(nom)? {
+        Ok(())
+    } else {
+        Err(refus(pas_installe(nom)))
+    }
+}
+
+/// Le geste tel qu'il sera fait, selon ce que systemd permet d'arrêter (B-3 du lot U3) : une unité qui refuse l'arrêt
+/// à la main (RefuseManualStop, auditd sur Fedora et Arch) n'est que retirée du démarrage, avec la note qui le dit ;
+/// une unité pas chargée aussi (rien à arrêter, et systemd la chargerait pour refuser). Son arrêt seul est refusé,
+/// dit, plutôt qu'un échec du gestionnaire. Une lecture qui échoue laisse le geste tel quel : l'arrêt tenté dira
+/// lui-même s'il échoue.
+fn selon_l_arret(g: GesteUnix, monde: &mut dyn Monde) -> Result<(GesteUnix, Option<&'static str>), Echec> {
+    let Some((a @ (ActionUnite::Desactiver | ActionUnite::Arreter), nom)) = unite_touchee(&g) else {
+        return Ok((g, None));
+    };
+    // Une lecture en échec ne change rien au geste : seul ce qui est lu compte.
+    let permis = monde.arret_a_la_main(nom).ok();
+    let vu = crate::ui::affichable(nom);
+    match (a, permis) {
+        (ActionUnite::Arreter, Some(Some(false))) => Err(refus(trf!(
+            "le gestionnaire de services refuse qu'on arrête {vu} à la main (il ne s'arrête qu'avec l'ordinateur) : rien n'est fait",
+            "the service manager refuses to stop {vu} by hand (it only stops with the computer): nothing is done"
+        ))),
+        (ActionUnite::Desactiver, Some(None | Some(false))) => {
+            let sans_arret = match g {
+                GesteUnix::Unite(_, u) => GesteUnix::Unite(ActionUnite::DesactiverSansArreter, u),
+                GesteUnix::Designee(_, n) => GesteUnix::Designee(ActionUnite::DesactiverSansArreter, n),
+                autre => autre,
+            };
+            let note = (permis == Some(Some(false))).then(|| {
+                tr!(
+                    "il ne sera plus lancé au démarrage ; le gestionnaire de services refuse qu'on l'arrête à la main : s'il tourne, il s'arrêtera au prochain redémarrage de l'ordinateur",
+                    "it will no longer start at boot; the service manager refuses to stop it by hand: if it is running, it will stop at the next restart of the computer"
+                )
+            });
+            Ok((sans_arret, note))
+        }
+        _ => Ok((g, None)),
+    }
+}
+
 /// Un geste de Linux, rejugé ici avant d'être fait, dans cet ordre : permis sur ce système, jamais refusé
 /// (`GesteUnix::refus`), systemd présent s'il en faut, aucune session à distance qu'il couperait, l'unité désignée
-/// revue, puis l'accord de la personne s'il en demande un.
+/// reconnue, le fichier de l'unité revu (de la table comme désignée : un complément posé par un autre compte ferait
+/// lancer ce qu'il veut en root, É-2 du lot U3), l'arrêt permis par systemd, puis l'accord de la personne s'il en
+/// demande un, et enfin, juste avant le geste, la session et le fichier revus encore.
 fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
     if !g.permis_ici() {
         return Resultat::echec(tr!(
@@ -988,9 +1214,9 @@ fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
     if g.par_systemd() && !monde.systemd() {
         return Resultat::echec(sans_systemd());
     }
-    if g.coupe_session()
-        && let Err(raison) = aucune_session_entrante(monde)
-    {
+    // Le geste demandé, pas celui qu'il deviendrait : une session ouverte bloque tout ce qui touche au réseau.
+    let coupe_session = g.coupe_session();
+    if coupe_session && let Err(raison) = aucune_session_entrante(monde) {
         return Resultat::echec(raison);
     }
     if let GesteUnix::Designee(_, nom) = g
@@ -998,26 +1224,55 @@ fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
     {
         return Resultat::echec(raison);
     }
+    if let GesteUnix::Unite(a, u) = g {
+        match monde.fichier_sur(u.nom) {
+            Ok(true) => {}
+            // Pas installée : ni arrêtée ni lancée au démarrage, c'est déjà fait ; le reste ne peut pas se faire.
+            Ok(false) if coupe(a) => {
+                let vu = crate::ui::affichable(u.nom);
+                return Resultat::ok_note(trf!(
+                    "{vu} n'est pas installé sur cet ordinateur : rien à arrêter ni à retirer du démarrage",
+                    "{vu} is not installed on this computer: nothing to stop or remove from startup"
+                ));
+            }
+            Ok(false) => return Resultat::echec(pas_installe(u.nom)),
+            Err(raison) => return Resultat::echec(raison),
+        }
+    }
+    let (g, note) = match selon_l_arret(g, monde) {
+        Ok(fait) => fait,
+        Err(raison) => return Resultat::echec(raison),
+    };
+    if g.refus().is_some() {
+        return Resultat::echec(tr!(
+            "ce geste n'est pas permis : rien n'est fait",
+            "this step is not allowed: nothing is done"
+        ));
+    }
     if g.demande_accord()
         && let Err(Refus(raison)) = monde.accord(g)
     {
         return Resultat::echec(raison);
     }
     // La question a pu attendre longtemps : une session ouverte entre-temps compte aussi.
-    if g.coupe_session()
+    if coupe_session
         && g.demande_accord()
         && let Err(raison) = aucune_session_entrante(monde)
     {
         return Resultat::echec(raison);
     }
-    // De même, le fichier de l'unité est revu juste avant le geste : il a pu changer pendant la question.
-    if g.demande_accord()
-        && let GesteUnix::Designee(_, nom) = g
-        && let Err(raison) = monde.fichier_sur(nom.as_str())
+    // De même, le fichier de l'unité est revu juste avant le geste : il a pu changer pendant la question, ou depuis
+    // la première revue.
+    if let Some((_, nom)) = unite_touchee(&g)
+        && let Err(raison) = unite_revue(nom, monde)
     {
         return Resultat::echec(raison);
     }
-    let fait = |r: Result<(), Echec>| r.map_or_else(Resultat::echec, |()| Resultat::ok());
+    let fait = |r: Result<(), Echec>| match (r, note) {
+        (Ok(()), Some(note)) => Resultat::ok_note(note),
+        (Ok(()), None) => Resultat::ok(),
+        (Err(raison), _) => Resultat::echec(raison),
+    };
     match g {
         GesteUnix::Programme(p) => monde.programme(p),
         GesteUnix::Unite(a, u) => fait(monde.unite(a, u.nom)),
@@ -1053,12 +1308,16 @@ fn signatures_clamav(monde: &mut dyn Monde) -> Resultat {
     // Le service n'est arrêté que s'il tourne (lui seul tient le verrou de la base), et remis seulement en marche :
     // son lancement au démarrage n'est jamais changé, ce geste ne note rien qui permettrait de le défaire.
     let r = match monde.etat_d_activite(service) {
-        Ok(Some(a)) if matches!(a.as_str(), "active" | "activating" | "reloading") => {
-            freshclam_service_arrete(monde, true)
-        }
         // En train de s'arrêter : il tient peut-être encore le verrou. Son arrêt est attendu, et il reste arrêté,
         // comme il allait l'être.
-        Ok(Some(a)) if a == "deactivating" => freshclam_service_arrete(monde, false),
+        Ok(Some(a)) if matches!(a.as_str(), "active" | "activating" | "reloading" | "deactivating") => {
+            // Arrêté puis relancé en root, il lancerait ce que disent son fichier et ses compléments : revus d'abord,
+            // comme pour tout geste d'unité (É-2 du lot U3) ; douteux, il n'est pas touché, et c'est dit.
+            match unite_revue(service, monde) {
+                Ok(()) => freshclam_service_arrete(monde, a != "deactivating"),
+                Err(raison) => freshclam_sans_le_service(monde, &raison),
+            }
+        }
         Ok(_) => monde.programme(&gestes_unix::FRESHCLAM),
         // Sans savoir s'il tourne : freshclam seul, sans toucher au service ; un échec le dit.
         Err(raison) => {
@@ -1084,6 +1343,24 @@ fn signatures_clamav(monde: &mut dyn Monde) -> Resultat {
         ));
     }
     r
+}
+
+/// freshclam seul, le service de mise à jour laissé tel quel parce que son fichier n'a pas passé la revue (`raison`) :
+/// il tient peut-être le verrou de la base, ce qu'un échec dit.
+fn freshclam_sans_le_service(monde: &mut dyn Monde, raison: &Echec) -> Resultat {
+    let r = monde.programme(&gestes_unix::FRESHCLAM);
+    if r.reussi {
+        Resultat::ok_note(trf!(
+            "signatures à jour ; le service de mise à jour automatique n'a pas été touché : {raison}",
+            "signatures up to date; the automatic update service was not touched: {raison}"
+        ))
+    } else {
+        Resultat::echec(trf!(
+            "{} (le service de mise à jour automatique, qui tient peut-être la base, n'a pas été arrêté : {raison})",
+            "{} (the automatic update service, which may be holding the database, was not stopped: {raison})",
+            r.raison
+        ))
+    }
 }
 
 /// freshclam, le service de mise à jour arrêté le temps du téléchargement, puis remis en marche dans tous les cas
@@ -1129,8 +1406,10 @@ fn freshclam_service_arrete(monde: &mut dyn Monde, relancer: bool) -> Resultat {
 }
 
 /// Remet en marche le service de mise à jour, tel qu'il tournait avant l'arrêt : démarré, jamais activé (son
-/// lancement au démarrage reste ce qu'il était).
+/// lancement au démarrage reste ce qu'il était). Son fichier est revu juste avant : changé pendant le téléchargement,
+/// il ferait lancer en root ce qu'il dit ; il reste alors arrêté, et l'échec le dit.
 fn remettre_en_route(monde: &mut dyn Monde, service: &str) -> Result<(), Echec> {
+    unite_revue(service, monde)?;
     monde.unite(ActionUnite::Demarrer, service)
 }
 
@@ -1514,22 +1793,35 @@ mod tests {
         let tout = |_: &str| true;
         if cfg!(target_os = "linux") {
             assert_eq!(
-                methodes(true, true, false, tout),
+                methodes(true, true, false, avec_polkit(true, tout)),
                 [Methode::Pkexec, Methode::Run0, Methode::Sudo]
             );
             // Sans session graphique : pas de pkexec ; sans terminal : pas de run0.
-            assert_eq!(methodes(false, true, false, tout), [Methode::Run0, Methode::Sudo]);
-            assert_eq!(methodes(false, false, false, tout), [Methode::Sudo]);
-            assert_eq!(methodes(true, false, false, |n| n == "pkexec"), [Methode::Pkexec]);
+            assert_eq!(
+                methodes(false, true, false, avec_polkit(true, tout)),
+                [Methode::Run0, Methode::Sudo]
+            );
+            assert_eq!(methodes(false, false, false, avec_polkit(true, tout)), [Methode::Sudo]);
+            assert_eq!(
+                methodes(true, false, false, avec_polkit(true, |n| n == "pkexec")),
+                [Methode::Pkexec]
+            );
         } else {
-            assert_eq!(methodes(true, true, false, tout), [Methode::Sudo]);
+            assert_eq!(methodes(true, true, false, avec_polkit(true, tout)), [Methode::Sudo]);
         }
-        assert_eq!(methodes(true, true, false, |_| false), []);
+        // Sans polkit (images cloud de Fedora et d'Arch) : run0 et pkexec présents ne sont pas essayés, sudo l'est
+        // (B-1) ; sans sudo non plus, rien, et c'est dit.
+        assert_eq!(methodes(true, true, false, avec_polkit(false, tout)), [Methode::Sudo]);
+        assert_eq!(methodes(false, true, false, avec_polkit(false, tout)), [Methode::Sudo]);
+        assert_eq!(methodes(true, true, false, avec_polkit(false, |n| n != "sudo")), []);
+        assert_eq!(methodes(true, true, false, avec_polkit(true, |_| false)), []);
         // Un geste demande l'accord sur le terminal : ni pkexec ni run0 (pas de terminal pour le fils), sudo seulement
-        // depuis un terminal ; sinon rien, et le texte nomme ce qui manque.
-        assert_eq!(methodes(true, true, true, tout), [Methode::Sudo]);
-        assert_eq!(methodes(true, true, true, |n| n != "sudo"), []);
-        assert_eq!(methodes(true, false, true, tout), []);
+        // depuis un terminal ; sinon rien, et le texte nomme ce qui manque. polkit n'y change rien.
+        for polkit in [true, false] {
+            assert_eq!(methodes(true, true, true, avec_polkit(polkit, tout)), [Methode::Sudo]);
+            assert_eq!(methodes(true, true, true, avec_polkit(polkit, |n| n != "sudo")), []);
+            assert_eq!(methodes(true, false, true, avec_polkit(polkit, tout)), []);
+        }
         for terminal in [true, false] {
             let t = sans_methode(true, terminal);
             assert!(t.contains("sudo") && t.contains("pkexec") && t.contains("run0"), "{t}");
@@ -1690,9 +1982,18 @@ mod tests {
         refus: Option<&'static str>,
         systemd: bool,
         session: Option<bool>,
-        fichier: Result<(), Echec>,
+        fichier: Result<bool, Echec>,
         /// Ce que devient `fichier` une fois l'accord donné (un fichier changé pendant la question).
-        fichier_apres_accord: Option<Result<(), Echec>>,
+        fichier_apres_accord: Option<Result<bool, Echec>>,
+        /// Combien de fois le fichier a été revu.
+        revues: std::cell::Cell<usize>,
+        /// À partir de cette revue (la première est 1), le fichier devient douteux : changé entre deux revues.
+        douteux_des: Option<usize>,
+        /// De vrais dossiers d'unités (dossiers, racine, propriétaire attendu) : `fichier_sur` les lit alors au lieu
+        /// de rendre `fichier`.
+        disque: Option<(Vec<std::path::PathBuf>, std::path::PathBuf, u32)>,
+        /// Ce que rend `arret_a_la_main`.
+        arret: Result<Option<bool>, Echec>,
         etat: Result<Option<String>, Echec>,
         actif: Result<Option<String>, Echec>,
         /// Les actions (`ActionUnite::mot`) qui échouent.
@@ -1709,8 +2010,12 @@ mod tests {
                 refus: None,
                 systemd: true,
                 session: Some(false),
-                fichier: Ok(()),
+                fichier: Ok(true),
                 fichier_apres_accord: None,
+                revues: std::cell::Cell::new(0),
+                douteux_des: None,
+                disque: None,
+                arret: Ok(Some(true)),
                 etat: Ok(Some("enabled".into())),
                 actif: Ok(Some("active".into())),
                 echecs: Vec::new(),
@@ -1734,8 +2039,22 @@ mod tests {
         fn session_entrante(&self) -> Option<bool> {
             self.session
         }
-        fn fichier_sur(&self, _: &str) -> Result<(), Echec> {
-            self.fichier.clone()
+        fn fichier_sur(&self, unite: &str) -> Result<bool, Echec> {
+            let n = self.revues.get() + 1;
+            self.revues.set(n);
+            if self.douteux_des.is_some_and(|d| n >= d) {
+                return Err(Echec::refuse("essai", "fichier changé entre deux revues"));
+            }
+            match &self.disque {
+                Some((dossiers, racine, qui)) => {
+                    let d: Vec<&std::path::Path> = dossiers.iter().map(std::path::PathBuf::as_path).collect();
+                    fichier_d_unite_sur(&d, racine, unite, Proprietaire::strict(*qui))
+                }
+                None => self.fichier.clone(),
+            }
+        }
+        fn arret_a_la_main(&mut self, _: &str) -> Result<Option<bool>, Echec> {
+            self.arret.clone()
         }
         fn etat_du_fichier(&mut self, unite: &str) -> Result<Option<String>, Echec> {
             self.journal.push(format!("etat {unite}"));
@@ -1993,6 +2312,287 @@ mod tests {
         assert_eq!(essai(autre, &|_| {}), (false, vec![]));
     }
 
+    /// É-2 du lot U3 : une unité de la table passe par la même revue qu'une unité désignée, avant l'accord et encore
+    /// juste avant le geste. Un fichier douteux : rien n'est fait, pas même la question.
+    #[test]
+    fn les_unites_de_la_table_sont_revues() {
+        if !GesteUnix::ReinitialiserEchecs.permis_ici() {
+            return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
+        }
+        let s = ToString::to_string;
+        let activer = GesteUnix::Unite(ActionUnite::Activer, &gestes_unix::CUPS);
+        let mut m = FauxMonde::nouveau();
+        assert!(faire_geste(activer, &mut m).reussi);
+        assert_eq!(m.journal, [s("activer cups.service")]);
+        assert_eq!(m.revues.get(), 2);
+        let mut m = FauxMonde::nouveau();
+        m.fichier = Err(Echec::refuse("essai", "complément douteux"));
+        let r = faire_geste(activer, &mut m);
+        assert!(!r.reussi && r.raison == "complément douteux", "{r:?}");
+        assert_eq!(m.journal, Vec::<String>::new());
+        // Changé pendant la question : revu après l'accord, rien n'est fait.
+        let mut m = FauxMonde::nouveau();
+        m.fichier_apres_accord = Some(Err(Echec::refuse("essai", "remplacé")));
+        let r = faire_geste(
+            GesteUnix::Unite(ActionUnite::Activer, &gestes_unix::CUPS_BROWSED),
+            &mut m,
+        );
+        assert!(!r.reussi && r.raison == "remplacé", "{r:?}");
+        assert_eq!(m.journal, [s("accord")]);
+        // Changé entre la première revue et le geste, sans question : revu quand même.
+        let mut m = FauxMonde::nouveau();
+        m.douteux_des = Some(2);
+        assert!(!faire_geste(activer, &mut m).reussi);
+        assert_eq!(m.journal, Vec::<String>::new());
+        // Un geste sans unité : rien à revoir.
+        let mut m = FauxMonde::nouveau();
+        assert!(faire_geste(GesteUnix::ReinitialiserEchecs, &mut m).reussi);
+        assert_eq!(m.revues.get(), 0);
+    }
+
+    /// Le cas des essais QEMU : un complément posé par le compte (modifiable par lui) sur cups.service, de vrais
+    /// fichiers dans des dossiers jetables. Le geste est refusé, rien n'est activé ; le complément remis en ordre, il
+    /// passe.
+    #[test]
+    fn un_complement_du_compte_sur_une_unite_de_la_table_est_refuse() {
+        use std::os::unix::fs::PermissionsExt;
+        let activer = GesteUnix::Unite(ActionUnite::Activer, &gestes_unix::CUPS);
+        if !activer.permis_ici() {
+            return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
+        }
+        let d = crate::essais::Jetable::nouveau("assistant-table");
+        let racine = d.join("racine");
+        let dossier = racine.join("usr");
+        let complements = dossier.join("cups.service.d");
+        std::fs::create_dir_all(&complements).unwrap();
+        let mode = |chemin: &std::path::Path, m: u32| {
+            std::fs::set_permissions(chemin, std::fs::Permissions::from_mode(m)).unwrap();
+        };
+        for c in [&racine, &dossier, &complements] {
+            mode(c, 0o755);
+        }
+        let fichier = dossier.join("cups.service");
+        let complement = complements.join("50-essai.conf");
+        std::fs::write(&fichier, "[Service]\n").unwrap();
+        std::fs::write(&complement, "[Service]\nExecStartPre=/home/alice/x\n").unwrap();
+        mode(&fichier, 0o644);
+        let essai = || {
+            let mut m = FauxMonde::nouveau();
+            m.disque = Some((vec![dossier.clone()], racine.clone(), crate::socle::euid()));
+            let r = faire_geste(activer, &mut m);
+            (r, m.journal)
+        };
+        for m in [0o646, 0o664, 0o666] {
+            mode(&complement, m);
+            let (r, j) = essai();
+            assert!(!r.reussi && j.is_empty(), "{m:o} {r:?} {j:?}");
+        }
+        // Un lien vers un fichier hors des dossiers du système (le dossier personnel du compte) : refusé aussi.
+        let dehors = d.join("dehors.conf");
+        std::fs::write(&dehors, "[Service]\n").unwrap();
+        mode(&dehors, 0o644);
+        std::fs::remove_file(&complement).unwrap();
+        std::os::unix::fs::symlink(&dehors, &complement).unwrap();
+        let (r, j) = essai();
+        assert!(!r.reussi && j.is_empty(), "{r:?}");
+        std::fs::remove_file(&complement).unwrap();
+        std::fs::write(&complement, "[Service]\n").unwrap();
+        mode(&complement, 0o644);
+        let (r, j) = essai();
+        assert!(r.reussi, "{r:?}");
+        assert_eq!(j, ["activer cups.service".to_string()]);
+    }
+
+    /// É-4 du lot U3 : une unité absente est dite « pas installée ». L'arrêter ou la retirer du démarrage est déjà
+    /// fait (réussi, avec la note, sans question) ; la lancer ne peut pas se faire.
+    #[test]
+    fn une_unite_absente_est_dite_pas_installee() {
+        if !GesteUnix::ReinitialiserEchecs.permis_ici() {
+            return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
+        }
+        let absente = |g: GesteUnix| {
+            let mut m = FauxMonde::nouveau();
+            m.fichier = Ok(false);
+            let r = faire_geste(g, &mut m);
+            (r, m.journal)
+        };
+        for (a, u) in [
+            (ActionUnite::Activer, &gestes_unix::FIREWALLD),
+            (ActionUnite::Demarrer, &gestes_unix::CUPS),
+            (ActionUnite::Redemarrer, &gestes_unix::CUPS),
+        ] {
+            let (r, j) = absente(GesteUnix::Unite(a, u));
+            assert!(!r.reussi && r.raison.contains("install") && j.is_empty(), "{a:?} {r:?}");
+        }
+        for a in [ActionUnite::Desactiver, ActionUnite::Arreter] {
+            let (r, j) = absente(GesteUnix::Unite(a, &gestes_unix::AUDITD));
+            assert!(
+                r.reussi && r.note.as_deref().is_some_and(|n| n.contains("install")),
+                "{a:?} {r:?}"
+            );
+            assert!(j.is_empty(), "{a:?} {j:?}");
+        }
+        let arreter = gestes_unix::designee(ActionUnite::Arreter, "anydesk.service").unwrap();
+        let (r, j) = absente(arreter);
+        assert!(!r.reussi && r.raison.contains("install"), "{r:?}");
+        assert!(!j.contains(&"accord".to_string()), "{j:?}");
+    }
+
+    /// B-3 du lot U3 : une unité dont systemd refuse l'arrêt à la main (auditd) n'est que retirée du démarrage, la
+    /// note le dit et la question porte sur ce geste-là ; pas chargée, de même sans note ; une lecture en échec ne
+    /// change rien. Son arrêt seul est refusé avant toute question.
+    #[test]
+    fn un_arret_refuse_par_systemd() {
+        if !GesteUnix::ReinitialiserEchecs.permis_ici() {
+            return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
+        }
+        let s = ToString::to_string;
+        let essai = |g: GesteUnix, arret: Result<Option<bool>, Echec>| {
+            let mut m = FauxMonde::nouveau();
+            m.arret = arret;
+            let r = faire_geste(g, &mut m);
+            (r, m.journal)
+        };
+        let audit = GesteUnix::Unite(ActionUnite::Desactiver, &gestes_unix::AUDITD);
+        let (r, j) = essai(audit, Ok(Some(false)));
+        assert!(r.reussi, "{r:?}");
+        assert!(
+            r.note
+                .as_deref()
+                .is_some_and(|n| n.contains("redémarrage") || n.contains("restart")),
+            "{r:?}"
+        );
+        assert_eq!(j, [s("accord"), s("desactiver-sans-arreter auditd.service")]);
+        let (r, j) = essai(audit, Ok(None));
+        assert!(r.reussi && r.note.is_none(), "{r:?}");
+        assert_eq!(j, [s("accord"), s("desactiver-sans-arreter auditd.service")]);
+        let (r, j) = essai(audit, Err(Echec::echoue("essai", "illisible")));
+        assert!(r.reussi && r.note.is_none(), "{r:?}");
+        assert_eq!(j, [s("accord"), s("desactiver auditd.service")]);
+        let (r, j) = essai(audit, Ok(Some(true)));
+        assert!(r.reussi && r.note.is_none(), "{r:?}");
+        assert_eq!(j, [s("accord"), s("desactiver auditd.service")]);
+        let (r, j) = essai(
+            GesteUnix::Unite(ActionUnite::Arreter, &gestes_unix::CUPS),
+            Ok(Some(false)),
+        );
+        assert!(!r.reussi && j.is_empty(), "{r:?}");
+        // Les phrases montrées restent sans jargon.
+        assert!(!r.raison.contains("RefuseManualStop"));
+    }
+
+    /// `signatures-clamav` et la revue (É-2) : un fichier douteux laisse le service de mise à jour tel quel (freshclam
+    /// seul, dit) ; changé pendant le téléchargement, il n'est pas relancé, et c'est dit.
+    #[test]
+    fn signatures_clamav_et_la_revue() {
+        if !GesteUnix::SignaturesClamav.permis_ici() {
+            return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
+        }
+        let _signaux = SIGNAUX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let s = ToString::to_string;
+        let etat = s("etat clamav-freshclam.service");
+        let actif = s("actif clamav-freshclam.service");
+        let fresh = s("programme freshclam");
+        let mut m = FauxMonde::nouveau();
+        m.fichier = Err(Echec::refuse("essai", "complément douteux"));
+        let r = faire_geste(GesteUnix::SignaturesClamav, &mut m);
+        assert!(
+            r.reussi && r.note.as_deref().is_some_and(|n| n.contains("complément douteux")),
+            "{r:?}"
+        );
+        assert_eq!(m.journal, [etat.clone(), actif.clone(), fresh.clone()]);
+        let mut m = FauxMonde::nouveau();
+        m.fichier = Err(Echec::refuse("essai", "complément douteux"));
+        m.programme_reussi = false;
+        let r = faire_geste(GesteUnix::SignaturesClamav, &mut m);
+        assert!(!r.reussi && r.raison.contains("complément douteux"), "{r:?}");
+        let mut m = FauxMonde::nouveau();
+        m.douteux_des = Some(2);
+        let r = faire_geste(GesteUnix::SignaturesClamav, &mut m);
+        assert!(!r.reussi && r.raison.contains("changé entre deux revues"), "{r:?}");
+        assert_eq!(m.journal, [etat, actif, s("arreter clamav-freshclam.service"), fresh]);
+    }
+
+    /// É-1 du lot U3 : le groupe 0 n'est « seul » que sans autre membre ni compte de personne qui l'ait pour groupe
+    /// principal ; une ligne douteuse dit non.
+    #[test]
+    fn le_groupe_de_root_seul() {
+        let passwd = "root:x:0:0:root:/root:/bin/bash\nsync:x:5:0:sync:/sbin:/bin/sync\noperator:x:11:0:operator:/root:/sbin/nologin\nalice:x:1000:1000::/home/alice:/bin/bash\n";
+        assert!(groupe_root_seul("root:x:0:\nwheel:x:10:alice\n", passwd));
+        assert!(groupe_root_seul("root:x:0:root\n", passwd));
+        assert!(!groupe_root_seul("root:x:0:alice\n", passwd));
+        assert!(!groupe_root_seul("root:x:0:root,alice\n", passwd));
+        assert!(!groupe_root_seul("root:x:0:\nautre:x:0:\n", passwd));
+        assert!(!groupe_root_seul("wheel:x:10:\n", passwd));
+        assert!(!groupe_root_seul("root:x:0\n", passwd));
+        let alice_0 = format!("{passwd}bob:x:1001:0::/home/bob:/bin/bash\n");
+        assert!(!groupe_root_seul("root:x:0:\n", &alice_0));
+        assert!(!groupe_root_seul("root:x:0:\n", "root:x:0:0\nbizarre:x:douze:0\n"));
+    }
+
+    /// É-1 du lot U3 : un dossier modifiable par le seul groupe de son propriétaire (`/` en 0775 root:root de Fedora
+    /// Cloud) est accepté ; par les autres, ou par un autre groupe, jamais ; un fichier modifiable par le groupe non
+    /// plus.
+    #[test]
+    fn un_dossier_ouvert_au_seul_groupe_du_proprietaire() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let d = crate::essais::Jetable::nouveau("assistant-groupe");
+        let racine = d.join("racine");
+        let dossier = racine.join("usr");
+        std::fs::create_dir_all(&dossier).unwrap();
+        let mode = |chemin: &std::path::Path, m: u32| {
+            std::fs::set_permissions(chemin, std::fs::Permissions::from_mode(m)).unwrap();
+        };
+        mode(&racine, 0o755);
+        mode(&dossier, 0o755);
+        let fichier = dossier.join("cups.service");
+        std::fs::write(&fichier, "[Service]\n").unwrap();
+        mode(&fichier, 0o644);
+        let moi = crate::socle::euid();
+        let gid = std::fs::metadata(&racine).unwrap().gid();
+        let son_groupe = Proprietaire {
+            uid: moi,
+            groupe_seul: Some(gid),
+        };
+        let autre_groupe = Proprietaire {
+            uid: moi,
+            groupe_seul: Some(gid.wrapping_add(1)),
+        };
+        let sur = |qui| fichier_d_unite_sur(&[dossier.as_path()], &racine, "cups.service", qui);
+        assert_eq!(sur(son_groupe), Ok(true));
+        mode(&racine, 0o775);
+        assert_eq!(sur(son_groupe), Ok(true));
+        assert!(sur(Proprietaire::strict(moi)).is_err());
+        assert!(sur(autre_groupe).is_err());
+        for m in [0o757, 0o777] {
+            mode(&racine, m);
+            assert!(sur(son_groupe).is_err(), "{m:o}");
+        }
+        mode(&racine, 0o775);
+        mode(&fichier, 0o664);
+        assert!(sur(son_groupe).is_err());
+    }
+
+    /// É-3 du lot U3 : les erreurs du fils passent au parent sur une ligne chacune, bornée, sans caractère piégé, et
+    /// se séparent de ses réponses sans en changer le compte.
+    #[test]
+    fn les_erreurs_du_fils_passent_au_parent() {
+        assert_eq!(ligne_journal("[a] b\nc\r\nd"), "journal [a] b | c |  | d");
+        let longue = ligne_journal(&"é".repeat(LIGNE_MAX));
+        assert!(longue.len() <= LIGNE_MAX && longue.starts_with(JOURNAL));
+        assert!(!ligne_journal("x\u{1b}[2Jy").contains('\u{1b}'));
+        let mut lignes = vec![ligne_journal("[x] une"), "ok".to_string()];
+        lignes.extend((0..2 * crate::journal::RELAIS_MAX).map(|i| ligne_journal(&format!("[x] {i}"))));
+        lignes.push("echec raison".to_string());
+        let (erreurs, reponses) = separer_journal(lignes);
+        assert_eq!(erreurs.len(), crate::journal::RELAIS_MAX);
+        assert_eq!(erreurs[0], "[x] une");
+        assert_eq!(reponses, ["ok", "echec raison"]);
+        // Aucune réponse du fils ne peut passer pour une erreur relayée.
+        assert!(!ordres::ligne_reponse(&Resultat::ok()).starts_with(JOURNAL));
+        assert!(!ordres::ligne_reponse(&Resultat::echec("journal plein")).starts_with(JOURNAL));
+    }
+
     /// Pose et retrait des signaux ignorés : un essai à la fois.
     static SIGNAUX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -2147,7 +2747,7 @@ mod tests {
         }
         let moi = crate::socle::euid();
         let dossiers = [premier.as_path(), second.as_path()];
-        let sur = |nom: &str, qui: u32| fichier_d_unite_sur(&dossiers, &racine, nom, qui);
+        let sur = |nom: &str, qui: u32| fichier_d_unite_sur(&dossiers, &racine, nom, Proprietaire::strict(qui));
         let poser = |dossier: &std::path::Path, nom: &str, mode: u32| {
             let f = dossier.join(nom);
             std::fs::write(&f, "[Service]\n").unwrap();
@@ -2159,18 +2759,18 @@ mod tests {
         for dossier in [&racine, &premier, &second, &ailleurs, &racine.join("opt")] {
             mode(dossier, 0o755);
         }
-        // Absent partout : refusé, dit.
-        assert!(sur("anydesk.service", moi).is_err());
+        // Absent partout : pas installé, dit comme tel (É-4).
+        assert_eq!(sur("anydesk.service", moi), Ok(false));
         // Dans le second dossier seulement : accepté.
         poser(&second, "anydesk.service", 0o644);
-        assert_eq!(sur("anydesk.service", moi), Ok(()));
+        assert_eq!(sur("anydesk.service", moi), Ok(true));
         // Fichier direct, mais un dossier qui le contient modifiable par les autres : refusé, comme pour un lien.
         for (dossier, m) in [(&second, 0o757), (&second, 0o775), (&racine, 0o777)] {
             mode(dossier, m);
             assert!(sur("anydesk.service", moi).is_err(), "{} {m:o}", dossier.display());
             mode(dossier, 0o755);
         }
-        assert_eq!(sur("anydesk.service", moi), Ok(()));
+        assert_eq!(sur("anydesk.service", moi), Ok(true));
         // Un autre propriétaire : refusé.
         assert!(sur("anydesk.service", moi.wrapping_add(1)).is_err());
         // Modifiable par le groupe ou par tous : refusé.
@@ -2182,7 +2782,7 @@ mod tests {
         poser(&ailleurs, "teamviewerd.service", 0o644);
         let lien = premier.join("teamviewerd.service");
         std::os::unix::fs::symlink(ailleurs.join("teamviewerd.service"), &lien).unwrap();
-        assert_eq!(sur("teamviewerd.service", moi), Ok(()));
+        assert_eq!(sur("teamviewerd.service", moi), Ok(true));
         // Même lien, vers un fichier d'un autre propriétaire : refusé.
         assert!(sur("teamviewerd.service", moi.wrapping_add(1)).is_err());
         // Sa cible modifiable par les autres : refusé, sans aller voir le second dossier.
@@ -2190,7 +2790,7 @@ mod tests {
         mode(&ailleurs.join("teamviewerd.service"), 0o646);
         assert!(sur("teamviewerd.service", moi).is_err());
         mode(&ailleurs.join("teamviewerd.service"), 0o644);
-        assert_eq!(sur("teamviewerd.service", moi), Ok(()));
+        assert_eq!(sur("teamviewerd.service", moi), Ok(true));
         // Un dossier parent de la cible modifiable par les autres : refusé (le fichier pourrait y être remplacé).
         for (dossier, m) in [(&ailleurs, 0o757), (&racine.join("opt"), 0o777), (&racine, 0o775)] {
             mode(dossier, m);
@@ -2204,7 +2804,7 @@ mod tests {
             assert!(sur("teamviewerd.service", moi).is_err(), "{m:o}");
             mode(&premier, 0o755);
         }
-        assert_eq!(sur("teamviewerd.service", moi), Ok(()));
+        assert_eq!(sur("teamviewerd.service", moi), Ok(true));
         // Un lien vers une autre unité (un alias), même correcte : refusé, le geste toucherait celle-là.
         poser(&ailleurs, "autre.service", 0o644);
         std::os::unix::fs::symlink(ailleurs.join("autre.service"), premier.join("dwservice.service")).unwrap();
@@ -2227,12 +2827,12 @@ mod tests {
         // Les compléments (« drop-in ») comptent comme le fichier : chacun sûr, dans tous les dossiers, sous chacun
         // des noms qui s'appliquent (le nom, ses préfixes à tiret, le genre).
         poser(&second, "a-b-c.service", 0o644);
-        assert_eq!(sur("a-b-c.service", moi), Ok(()));
+        assert_eq!(sur("a-b-c.service", moi), Ok(true));
         let propre = second.join("a-b-c.service.d");
         std::fs::create_dir(&propre).unwrap();
         mode(&propre, 0o755);
         poser(&propre, "x.conf", 0o644);
-        assert_eq!(sur("a-b-c.service", moi), Ok(()));
+        assert_eq!(sur("a-b-c.service", moi), Ok(true));
         for m in [0o646, 0o664] {
             mode(&propre.join("x.conf"), m);
             assert!(sur("a-b-c.service", moi).is_err(), "{m:o}");
@@ -2243,7 +2843,7 @@ mod tests {
         mode(&propre, 0o755);
         // Un autre fichier que « .conf » n'est pas lu par systemd : sans effet.
         poser(&propre, "lisez-moi.txt", 0o666);
-        assert_eq!(sur("a-b-c.service", moi), Ok(()));
+        assert_eq!(sur("a-b-c.service", moi), Ok(true));
         for complements in ["a-.service.d", "a-b-.service.d", "service.d"] {
             let c = premier.join(complements);
             std::fs::create_dir(&c).unwrap();
@@ -2251,7 +2851,7 @@ mod tests {
             poser(&c, "y.conf", 0o646);
             assert!(sur("a-b-c.service", moi).is_err(), "{complements}");
             mode(&c.join("y.conf"), 0o644);
-            assert_eq!(sur("a-b-c.service", moi), Ok(()), "{complements}");
+            assert_eq!(sur("a-b-c.service", moi), Ok(true), "{complements}");
         }
         // Un complément qui est un lien hors de la racine : refusé.
         std::os::unix::fs::symlink(&dehors, propre.join("z.conf")).unwrap();
@@ -2303,8 +2903,9 @@ mod tests {
         let moi = crate::socle::euid();
         let frag = fragment.to_str().unwrap();
         let comp = vec![complement.to_str().unwrap().to_string()];
-        let charges =
-            |id: &str, f: &str, c: &[String]| fichiers_charges_surs(id, f, c, &racine, "anydesk.service", moi);
+        let charges = |id: &str, f: &str, c: &[String]| {
+            fichiers_charges_surs(id, f, c, &racine, "anydesk.service", Proprietaire::strict(moi))
+        };
         assert_eq!(charges("anydesk.service", frag, &comp), Ok(()));
         // Un alias : le nom principal est un autre.
         assert!(charges("autre.service", frag, &comp).is_err());
@@ -2334,7 +2935,7 @@ mod tests {
                 &comp,
                 &racine,
                 "anydesk.service",
-                moi.wrapping_add(1)
+                Proprietaire::strict(moi.wrapping_add(1))
             )
             .is_err()
         );

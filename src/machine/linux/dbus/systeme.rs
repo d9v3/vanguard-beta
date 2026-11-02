@@ -460,6 +460,47 @@ pub(crate) fn fichiers_charges(bus: &mut Bus, unite: &str) -> Result<Option<Fich
     Ok(Some((id, fragment, complements)))
 }
 
+/// Peut-on arrêter `unite` à la main ? GetUnit puis sa propriété RefuseManualStop (des lectures). `Ok(None)` : elle
+/// n'est pas chargée, donc ne tourne pas, rien à arrêter ; `Ok(Some(permis))` sinon. auditd porte
+/// `RefuseManualStop=yes` sur Fedora et Arch : systemd y refuse tout StopUnit (B-3 du lot U3), et le demander quand
+/// même finissait en échec, le service déjà retiré du démarrage.
+pub(crate) fn arret_a_la_main(bus: &mut Bus, unite: &str) -> Result<Option<bool>, Echec> {
+    if !gestes_unix::nom_admis(unite) {
+        return Err(echec(tr!("nom de service refusé", "service name refused")));
+    }
+    let illisible = |e: String| {
+        en_clair(
+            format!("arrêt à la main de {unite} : {e}"),
+            tr!(
+                "le gestionnaire de services de Linux n'a pas dit si ce service peut être arrêté : rien n'est fait",
+                "the Linux service manager did not say whether this service can be stopped: nothing is done"
+            ),
+        )
+    };
+    let corps = match bus.appeler(
+        SYSTEMD,
+        CHEMIN_SYSTEMD,
+        GESTIONNAIRE,
+        "GetUnit",
+        "s",
+        vec![Valeur::texte_de(unite)],
+    ) {
+        Ok(c) => c,
+        Err(e) if e.starts_with("org.freedesktop.systemd1.NoSuchUnit ") => return Ok(None),
+        Err(e) => return Err(illisible(e)),
+    };
+    let chemin = corps
+        .first()
+        .and_then(Valeur::texte)
+        .ok_or_else(|| illisible(super::mal_forme("GetUnit sans chemin")))?
+        .to_string();
+    bus.propriete(SYSTEMD, &chemin, UNITE, "RefuseManualStop")
+        .map_err(illisible)?
+        .booleen()
+        .map(|refuse| Some(!refuse))
+        .ok_or_else(|| illisible(super::mal_forme("RefuseManualStop")))
+}
+
 /// L'erreur de GetUnitFileState pour une unité sans fichier : ENOENT (FileNotFound) ou NoSuchUnit selon la version
 /// de systemd.
 fn aucun_fichier(erreur: &str) -> bool {
@@ -839,6 +880,58 @@ mod tests {
             ["GetUnit", "GetUnit", "Get Id", "Get FragmentPath", "Get DropInPaths"]
         );
         assert!(fichiers_charges(&mut bus, "a b.service").is_err());
+    }
+
+    /// RefuseManualStop lu par des lectures seulement : une unité pas chargée n'a rien à arrêter, auditd sur Fedora
+    /// refuse l'arrêt à la main, une autre le permet ; une réponse qui n'est pas un booléen est un échec dit.
+    #[test]
+    fn arret_a_la_main_par_le_faux_bus() {
+        let (mut bus, fil) = faux_bus(|s, vus| {
+            let a = lire(s);
+            vus.push(a.membre.clone().unwrap());
+            let e = Message {
+                genre: super::super::ERREUR,
+                serie: 5,
+                reponse_a: Some(a.serie),
+                nom_erreur: Some("org.freedesktop.systemd1.NoSuchUnit".into()),
+                signature: "s".into(),
+                corps: vec![Valeur::texte_de("Unit auditd.service not loaded.")],
+                ..Message::default()
+            };
+            s.write_all(&e.encoder().unwrap()).unwrap();
+            for v in [Valeur::Booleen(true), Valeur::Booleen(false), Valeur::texte_de("yes")] {
+                let a = lire(s);
+                vus.push(a.membre.clone().unwrap());
+                s.write_all(&retour(
+                    &a,
+                    "o",
+                    vec![Valeur::texte_de("/org/freedesktop/systemd1/unit/auditd_2eservice")],
+                    ":1.2",
+                ))
+                .unwrap();
+                let a = lire(s);
+                assert_eq!(a.corps[0], Valeur::texte_de(UNITE));
+                vus.push(format!("{} {}", a.membre.clone().unwrap(), a.corps[1].texte().unwrap()));
+                let sig = if matches!(v, Valeur::Booleen(_)) { "b" } else { "s" };
+                s.write_all(&retour(
+                    &a,
+                    "v",
+                    vec![Valeur::Variante(sig.into(), Box::new(v))],
+                    ":1.2",
+                ))
+                .unwrap();
+            }
+        });
+        assert_eq!(arret_a_la_main(&mut bus, "auditd.service"), Ok(None));
+        assert_eq!(arret_a_la_main(&mut bus, "auditd.service"), Ok(Some(false)));
+        assert_eq!(arret_a_la_main(&mut bus, "auditd.service"), Ok(Some(true)));
+        assert!(arret_a_la_main(&mut bus, "auditd.service").is_err());
+        let get = "Get RefuseManualStop";
+        assert_eq!(
+            fil.join().unwrap(),
+            ["GetUnit", "GetUnit", get, "GetUnit", get, "GetUnit", get]
+        );
+        assert!(arret_a_la_main(&mut bus, "a b.service").is_err());
     }
 
     /// La fin du job n'arrive pas : l'attente se termine (ici, le faux bus se ferme) et c'est « pas vérifié ».
