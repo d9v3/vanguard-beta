@@ -26,6 +26,13 @@ const PLAFOND_JOUR = 5000;
 const QUOTA_SOURCE_JOUR = 50;
 // Les lots non relevés sont effacés après 14 jours (P8) : un relais piraté n'en détient jamais plus.
 const GARDE_JOURS = 14;
+// Le jour d'un lot, par rapport au jour de réception (UTC) : 12 jours avant au plus, le lendemain au plus, sinon 422
+// (« jour »). Le programme ne garde un lot que 7 jours (src/envoi) et n'envoie que des jours clos de son fuseau. La
+// borne d'avant fait tenir le dédoublonnage : la marque d'un lot (`vus`) part 14 jours après sa réception, quand son
+// jour est au plus réception + 1, donc 13 jours avant : un renvoi venu après est refusé par cette borne. Celle
+// d'après empêche de marquer d'avance les jours à venir d'un identifiant.
+const LOT_JOURS_AVANT = 12;
+const LOT_JOURS_APRES = 1;
 // Un compteur de refus cesse de monter à cette valeur : un déluge de lots refusés n'écrit plus rien dans D1.
 const REFUS_MAX = 10000;
 // Une relève rend au plus ceci, puis dit qu'il en reste : la mémoire d'un Worker est de 128 Mio.
@@ -106,6 +113,16 @@ async function recevoir(requete, env) {
   if (verdict !== null) {
     return refuser(env, jour, verdict, 422);
   }
+  if (!jourAdmis(lot.jour, jour)) {
+    return refuser(env, jour, "jour", 422);
+  }
+  // Déjà reçu (le programme arrêté entre notre 200 et le retrait de sa file) : 200 pour qu'il le retire, rien de
+  // gardé, rien de compté dans les quotas. Avant les quotas : une source qui a atteint le sien voit quand même son
+  // doublon accepté, sinon elle le renverrait chaque jour jusqu'à la fin de la garde.
+  const marque = lot.installation === undefined ? null : [lot.installation, lot.jour];
+  if (marque !== null && (await dejaVu(env, marque))) {
+    return refuser(env, jour, "doublon", 200);
+  }
   // La source d'abord : une source qui a épuisé son quota ne fait plus monter le compte de tous, sinon elle seule
   // finirait par fermer le relais aux autres pour la journée.
   if (!(await compter(env, jour, source, QUOTA_SOURCE_JOUR))) {
@@ -115,10 +132,45 @@ async function recevoir(requete, env) {
     return refuser(env, jour, "plafond", 429);
   }
   const corps = JSON.stringify(lot);
-  await env.DB.prepare("INSERT INTO lots (jour, source, source_large, taille, corps) VALUES (?, ?, ?, ?, ?)")
-    .bind(jour, source, large, encodeur.encode(corps).length, corps)
-    .run();
+  const garder = env.DB.prepare(
+    "INSERT INTO lots (jour, source, source_large, taille, corps) VALUES (?, ?, ?, ?, ?)",
+  ).bind(jour, source, large, encodeur.encode(corps).length, corps);
+  if (marque === null) {
+    await garder.run();
+    return reponse(200);
+  }
+  // La marque et le lot dans une transaction : la clé primaire de `vus` refuse la seconde de deux requêtes
+  // simultanées, et son lot part avec elle. Le premier reçu reste ; aucun envoi n'en remplace un autre.
+  try {
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO vus (installation, jour_lot, jour) VALUES (?, ?, ?)").bind(...marque, jour),
+      garder,
+    ]);
+  } catch (erreur) {
+    if (!(await dejaVu(env, marque))) {
+      throw erreur;
+    }
+    // L'autre requête a gagné la course : ce que celle-ci a compté dans les quotas est rendu.
+    await env.DB.prepare("UPDATE quotas SET n = n - 1 WHERE jour = ? AND source IN (?, '*') AND n > 0")
+      .bind(jour, source)
+      .run();
+    return refuser(env, jour, "doublon", 200);
+  }
   return reponse(200);
+}
+
+/// Le jour d'un lot (déjà vérifié au calendrier) entre LOT_JOURS_AVANT jours avant `jour` et LOT_JOURS_APRES après.
+function jourAdmis(jourLot, jour) {
+  const ecart = (Date.parse(`${jourLot}T00:00:00Z`) - Date.parse(`${jour}T00:00:00Z`)) / 86400000;
+  return ecart >= -LOT_JOURS_AVANT && ecart <= LOT_JOURS_APRES;
+}
+
+/// Un lot de cette installation et de ce jour a-t-il déjà été reçu (relevé ou non, dans la garde de 14 jours) ?
+async function dejaVu(env, [installation, jourLot]) {
+  const ligne = await env.DB.prepare("SELECT 1 AS vu FROM vus WHERE installation = ? AND jour_lot = ?")
+    .bind(installation, jourLot)
+    .first();
+  return ligne !== null;
 }
 
 /// Le corps, au plus `max` octets ; `null` au-delà (la lecture s'arrête là).
@@ -163,7 +215,8 @@ async function compter(env, jour, source, max) {
 }
 
 /// Un refus compté par raison et par jour (le rapport du matin de l'auteur : « K refusés, quota atteint ? »), puis
-/// la réponse. Le compteur s'arrête à REFUS_MAX : au-delà, plus aucune ligne n'est écrite.
+/// la réponse ; un doublon y est compté de même, avec sa réponse 200. Le compteur s'arrête à REFUS_MAX : au-delà,
+/// plus aucune ligne n'est écrite.
 async function refuser(env, jour, raison, statut) {
   await env.DB.prepare(
     "INSERT INTO refus (jour, raison, n) VALUES (?, ?, 1) " +
@@ -350,12 +403,13 @@ async function secretBon(entete, secret) {
   return ecart === 0 && donne.length > 0;
 }
 
-/// Efface ce qui a passé sa garde : les lots reçus il y a 14 jours ou plus (P8), les quotas et les sels des jours
-/// passés (E4 : le sel d'hier n'existe plus), les refus de plus de 14 jours.
+/// Efface ce qui a passé sa garde : les lots reçus il y a 14 jours ou plus (P8) et leurs marques de doublon, les
+/// quotas et les sels des jours passés (E4 : le sel d'hier n'existe plus), les refus de plus de 14 jours.
 async function purger(env, jour) {
   const limite = jourUtc(Date.parse(`${jour}T00:00:00Z`) - GARDE_JOURS * 86400000);
   await env.DB.batch([
     env.DB.prepare("DELETE FROM lots WHERE jour <= ?").bind(limite),
+    env.DB.prepare("DELETE FROM vus WHERE jour <= ?").bind(limite),
     env.DB.prepare("DELETE FROM quotas WHERE jour < ?").bind(jour),
     env.DB.prepare("DELETE FROM sels WHERE jour < ?").bind(jour),
     env.DB.prepare("DELETE FROM refus WHERE jour <= ?").bind(limite),

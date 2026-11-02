@@ -43,11 +43,27 @@ lui-même, une fois, avec son propre compte.
 
 Rien d'autre : aucun jeton GitHub, aucun `account_id` dans le dépôt (wrangler le prend du compte connecté).
 
+## Mise à jour du relais
+
+`schema.sql` est aussi sa propre migration : tout y est `IF NOT EXISTS` ou `OR IGNORE`, il ajoute ce qui manque à une
+base déjà créée sans rien effacer. À chaque mise à jour du Worker, dans cet ordre :
+
+```sh
+wrangler d1 execute relais --remote --file relais/schema.sql   # avant : le nouveau Worker trouve ses tables
+wrangler deploy                                                 # depuis relais/
+wrangler d1 execute relais --remote --file relais/schema.sql   # après : marque les lots reçus entre-temps
+```
+
+Le second passage marque comme déjà reçus les lots que l'ancien Worker a gardés pendant la bascule (table `vus`,
+ci-dessous) : sans lui, un renvoi de l'un d'eux serait gardé deux fois. Un nouveau Worker déployé sans le premier
+passage répond 503 aux lots qui portent un identifiant d'installation ; le programme réessaie le lendemain, rien
+n'est perdu.
+
 ## Ce que fait le relais
 
 | Requête | Réponse |
 |---|---|
-| `POST /v1/lot`, corps JSON | `200` gardé ; `400` JSON illisible ; `413` plus de 128 Kio ; `415` pas `application/json` ; `422` hors du schéma ou un secret ; `429` trop de lots ; `503` base injoignable |
+| `POST /v1/lot`, corps JSON | `200` gardé, ou déjà reçu ; `400` JSON illisible ; `413` plus de 128 Kio ; `415` pas `application/json` ; `422` hors du schéma, un secret ou un jour hors des bornes ; `429` trop de lots ; `503` base injoignable |
 | `GET /v1/releve`, `Authorization: Bearer <secret>` | `200` et les lots ; `401` secret faux ou absent ; `429` trop d'essais ratés |
 | tout autre chemin, ou un paramètre | `404` ; une autre méthode sur ces deux chemins : `405` |
 
@@ -60,8 +76,18 @@ puis le schéma de `outils/veille/schema-envoi.json` (recopié dans `worker.js`,
 lot réécrit de plus de 96 Kio, et tout le lot est refusé. Les champs de la voie ouverte (textes d'erreur, noms de
 logiciels, versions tierces) passent ensuite par une copie du détecteur de secrets de `src/amelioration/texte.rs` :
 la deuxième des trois couches. Un lot qui sonne est refusé (`422`), compté « secret », jamais gardé. Un champ de la
-voie ouverte plus long que sa borne est refusé avant le détecteur. Viennent enfin le quota de la source, puis le
-plafond de tous : un lot refusé par son quota ne compte pas dans le plafond.
+voie ouverte plus long que sa borne est refusé avant le détecteur. Viennent ensuite le jour du lot (12 jours avant
+celui de réception au plus, le lendemain au plus, sinon `422`, compté « jour »), le doublon, le quota de la source,
+puis le plafond de tous : un lot refusé par son quota ne compte pas dans le plafond.
+
+**Doublons** : le programme renvoie le même lot s'il est arrêté entre le `200` et le retrait de sa file. Un lot dont
+l'identifiant d'installation et le jour (`installation`, `jour`) ont déjà été reçus répond `200`, pour que le
+programme le retire, mais n'est ni gardé ni compté dans les quotas (compté « doublon » avec les refus). Le premier
+reçu reste : le relais ne sait pas qui envoie (l'identifiant n'est pas une preuve, n'importe qui peut poster), donc
+aucun envoi ne remplace un lot déjà gardé. Revers assumé : quelqu'un qui connaîtrait l'identifiant d'un ordinateur
+pourrait faire passer son lot avant le vrai, pour aujourd'hui ou demain seulement ; il ne peut ni l'effacer ni le
+réécrire une fois reçu. Deux envois simultanés sont tranchés par la clé primaire de `vus`, dans la même transaction
+que le lot. Un lot sans identifiant d'installation n'est jamais pris pour un doublon.
 
 **Limites** : 10 requêtes par minute et par source (limiteur de Cloudflare) ; 50 lots par jour et par source ;
 5 000 lots par jour en tout. Une source est l'empreinte HMAC du préfixe /24 (IPv4) ou /48 (IPv6), avec un sel tiré
@@ -69,7 +95,8 @@ chaque jour et effacé le lendemain : l'adresse IP n'est jamais gardée. Le sel 
 les empreintes : pendant la journée, quelqu'un qui lirait D1 pourrait retrouver un préfixe en les essayant tous.
 Passé minuit, le sel est effacé et ce n'est plus possible.
 
-**Base D1** : `lots` (les lots acceptés, le JSON réécrit par le Worker), `quotas` (les comptes du jour), `refus` (les
+**Base D1** : `lots` (les lots acceptés, le JSON réécrit par le Worker), `vus` (installation et jour de chaque lot
+reçu : elle survit à la relève, pour reconnaître un doublon même relevé), `quotas` (les comptes du jour), `refus` (les
 refus comptés par jour et par raison, jamais leur contenu), `sels` (le sel du jour).
 
 **Relève** : au plus 1 000 lots ou 4 Mio par appel, lus puis effacés dans la même transaction, avec les compteurs de
@@ -77,7 +104,8 @@ refus (une panne au milieu n'efface rien) ; `"reste": true` dit qu'il faut rappe
 `{"releve":1,"lots":[{"id","jour","source","source_large","lot"}],"refus":[{"jour","raison","n"}],"reste":false}`.
 
 **Purge** : chaque jour à 0 h UTC (déclencheur de `wrangler.toml`), au premier lot du jour et avant chaque relève :
-lots et refus de 14 jours et plus, quotas et sels des jours passés.
+lots, marques de `vus` et refus reçus il y a 14 jours et plus, quotas et sels des jours passés. La borne de 12 jours
+sur le jour du lot fait qu'un renvoi venu après l'effacement de sa marque est refusé, jamais gardé une seconde fois.
 
 ## Essais
 

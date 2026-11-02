@@ -56,8 +56,12 @@ const TEXTES_PROPRES = [
   "le token a expiré, nouvelle tentative dans 5 minutes",
 ];
 
-/// Un lot de schéma 2 qui emploie chaque partie de outils/veille/schema-envoi.json.
-function lotValide() {
+/// L'identifiant d'installation inventé numéro `k` : le relais garde un seul lot par installation et par jour.
+const inst = (k) => k.toString(16).padStart(16, "0");
+
+/// Un lot de schéma 2 qui emploie chaque partie de outils/veille/schema-envoi.json ; `autres` remplace des champs
+/// de tête (l'installation ou le jour, pour ne pas faire un doublon).
+function lotValide(autres = {}) {
   return {
     schema: 2,
     version: "0.89.1",
@@ -106,6 +110,7 @@ function lotValide() {
     reglages: [{ levier: "delai", regle: "LNX-MAJ-001", avant: 120, apres: 90, annule: false }],
     refus_locaux: 4,
     retires: { textes: 1 },
+    ...autres,
   };
 }
 
@@ -453,7 +458,7 @@ describe("limites de débit", () => {
     const { db, appeler } = await relais(t);
     const codes = [];
     for (let k = 0; k < 60; k += 1) {
-      const r = await appeler(envoi(lotValide(), { ip: `192.0.2.${k % 200}` }));
+      const r = await appeler(envoi(lotValide({ installation: inst(k) }), { ip: `192.0.2.${k % 200}` }));
       await muette(r, r.status);
       codes.push(r.status);
     }
@@ -467,7 +472,7 @@ describe("limites de débit", () => {
     const { db, appeler, avancer } = await relais(t, { maintenant: Date.parse("2026-11-02T00:10:00Z") });
     const codes = [];
     for (let k = 0; k < 60; k += 1) {
-      codes.push((await appeler(envoi(lotValide(), { ip: "192.0.2.10" }))).status);
+      codes.push((await appeler(envoi(lotValide({ installation: inst(k) }), { ip: "192.0.2.10" }))).status);
       avancer(5 * 60 * 1000);
     }
     assert.deepEqual(codes.slice(0, 50), new Array(50).fill(200));
@@ -476,17 +481,17 @@ describe("limites de débit", () => {
     // Les lots refusés pour le quota ne comptent pas dans le plafond de tous : une source seule ne le fermerait pas.
     assert.deepEqual(db.lignes("SELECT n FROM quotas WHERE source = '*'"), [{ n: 50 }]);
     // Une autre source (autre /24) n'est pas touchée ; le même /24 l'est.
-    assert.equal((await appeler(envoi(lotValide(), { ip: "192.0.2.99" }))).status, 429);
-    assert.equal((await appeler(envoi(lotValide(), { ip: "198.51.100.10" }))).status, 200);
+    assert.equal((await appeler(envoi(lotValide({ installation: inst(100) }), { ip: "192.0.2.99" }))).status, 429);
+    assert.equal((await appeler(envoi(lotValide({ installation: inst(101) }), { ip: "198.51.100.10" }))).status, 200);
   });
 
   it("les adresses IPv6 d'un même /48 sont une seule source", async (t) => {
     const { db, appeler } = await relais(t);
-    await appeler(envoi(lotValide(), { ip: "2001:db8:1:a::1" }));
-    await appeler(envoi(lotValide(), { ip: "2001:DB8:1:ffff:0:0:0:2" }));
-    await appeler(envoi(lotValide(), { ip: "2001:db8:2::1" }));
-    await appeler(envoi(lotValide(), { ip: "::ffff:192.0.2.1" }));
-    await appeler(envoi(lotValide(), { ip: "192.0.2.200" }));
+    await appeler(envoi(lotValide({ installation: inst(1) }), { ip: "2001:db8:1:a::1" }));
+    await appeler(envoi(lotValide({ installation: inst(2) }), { ip: "2001:DB8:1:ffff:0:0:0:2" }));
+    await appeler(envoi(lotValide({ installation: inst(3) }), { ip: "2001:db8:2::1" }));
+    await appeler(envoi(lotValide({ installation: inst(4) }), { ip: "::ffff:192.0.2.1" }));
+    await appeler(envoi(lotValide({ installation: inst(5) }), { ip: "192.0.2.200" }));
     const lignes = db.lignes("SELECT source, source_large FROM lots ORDER BY id");
     assert.equal(lignes[0].source, lignes[1].source);
     assert.notEqual(lignes[0].source, lignes[2].source);
@@ -523,7 +528,7 @@ describe("limites de débit", () => {
     const { db, appeler, avancer } = await relais(t);
     await appeler(envoi(lotValide()));
     avancer(JOUR_MS);
-    await appeler(envoi(lotValide()));
+    await appeler(envoi(lotValide({ jour: "2026-11-03" })));
     const [a, b] = db.lignes("SELECT source FROM lots ORDER BY id");
     assert.notEqual(a.source, b.source);
     assert.deepEqual(
@@ -602,7 +607,7 @@ describe("relève par l'ordinateur de l'auteur", () => {
   it("avec le secret : rend les lots et les refus, puis les efface", async (t) => {
     const { db, appeler } = await relais(t);
     await appeler(envoi(lotValide(), { ip: "192.0.2.10" }));
-    await appeler(envoi(lotValide(), { ip: "203.0.113.5" }));
+    await appeler(envoi(lotValide({ installation: inst(2) }), { ip: "203.0.113.5" }));
     await appeler(envoi("{"));
     const r = await appeler(releve(`Bearer ${SECRET}`));
     assert.equal(r.status, 200);
@@ -669,7 +674,7 @@ describe("garde de 14 jours", () => {
     const { db, appeler, avancer } = await relais(t);
     await appeler(envoi(lotValide()));
     avancer(14 * JOUR_MS);
-    await muette(await appeler(envoi(lotValide())), 200);
+    await muette(await appeler(envoi(lotValide({ jour: "2026-11-15" }))), 200);
     assert.deepEqual(
       db.lignes("SELECT jour FROM lots").map((l) => l.jour),
       ["2026-11-16"],
@@ -682,6 +687,196 @@ describe("garde de 14 jours", () => {
     avancer(15 * JOUR_MS);
     const corps = await (await appeler(releve(`Bearer ${SECRET}`))).json();
     assert.equal(corps.lots.length, 0);
+  });
+});
+
+describe("un seul lot par installation et par jour", () => {
+  const quotas = (db) => Object.fromEntries(db.lignes("SELECT source, n FROM quotas").map((l) => [l.source, l.n]));
+
+  it("doublon exact, même d'une autre source : 200, rien de gardé ni de compté, le premier reste", async (t) => {
+    const { db, appeler } = await relais(t);
+    await muette(await appeler(envoi(lotValide(), { ip: "192.0.2.10" })), 200);
+    const avant = quotas(db);
+    // Même installation, même jour, autre contenu, autre réseau : un tiers qui connaîtrait l'identifiant ne
+    // remplace pas le lot gardé.
+    await muette(await appeler(envoi(lotValide({ refus_locaux: 9 }), { ip: "198.51.100.20" })), 200);
+    await muette(await appeler(envoi(lotValide(), { ip: "192.0.2.10" })), 200);
+    const lots = db.lignes("SELECT corps FROM lots");
+    assert.equal(lots.length, 1);
+    assert.equal(lots[0].corps, JSON.stringify(lotValide()));
+    assert.deepEqual(quotas(db), avant);
+    assert.equal(Object.keys(avant).length, 2, "une source et « * »");
+    assert.deepEqual(await refus(db), { doublon: 2 });
+    assert.deepEqual(db.lignes("SELECT installation, jour_lot, jour FROM vus"), [
+      { installation: "0123456789abcdef", jour_lot: "2026-11-02", jour: "2026-11-02" },
+    ]);
+  });
+
+  it("même installation, autre jour : les deux sont gardés", async (t) => {
+    const { db, appeler } = await relais(t);
+    await muette(await appeler(envoi(lotValide({ jour: "2026-11-01" }))), 200);
+    await muette(await appeler(envoi(lotValide())), 200);
+    assert.equal(db.lignes("SELECT * FROM lots").length, 2);
+    assert.deepEqual(quotas(db)["*"], 2);
+    assert.deepEqual(await refus(db), {});
+  });
+
+  it("autre installation, même jour : les deux sont gardés", async (t) => {
+    const { db, appeler } = await relais(t);
+    await muette(await appeler(envoi(lotValide())), 200);
+    await muette(await appeler(envoi(lotValide({ installation: inst(7) }))), 200);
+    assert.equal(db.lignes("SELECT * FROM lots").length, 2);
+    assert.deepEqual(await refus(db), {});
+  });
+
+  it("un lot sans identifiant d'installation n'est jamais pris pour un doublon", async (t) => {
+    const { db, appeler } = await relais(t);
+    const { installation: _, ...sans } = lotValide();
+    await muette(await appeler(envoi(sans)), 200);
+    await muette(await appeler(envoi(sans)), 200);
+    assert.equal(db.lignes("SELECT * FROM lots").length, 2);
+    assert.equal(db.lignes("SELECT * FROM vus").length, 0);
+  });
+
+  it("doublon après la relève : la marque survit à l'effacement des lots", async (t) => {
+    const { db, appeler, avancer } = await relais(t);
+    await appeler(envoi(lotValide()));
+    assert.equal((await (await appeler(releve(`Bearer ${SECRET}`))).json()).lots.length, 1);
+    avancer(3 * JOUR_MS);
+    await muette(await appeler(envoi(lotValide())), 200);
+    assert.equal(db.lignes("SELECT * FROM lots").length, 0);
+    const corps = await (await appeler(releve(`Bearer ${SECRET}`))).json();
+    assert.deepEqual(corps.lots, []);
+    assert.deepEqual(corps.refus, [{ jour: "2026-11-05", raison: "doublon", n: 1 }]);
+  });
+
+  it("doublon après la purge des 14 jours : refusé par la borne du jour, jamais gardé une seconde fois", async (t) => {
+    const { module, db, env, appeler, avancer } = await relais(t);
+    await appeler(envoi(lotValide()));
+    // Reçu aussi la veille du jour qu'il porte : le pire cas de la borne d'après.
+    await appeler(envoi(lotValide({ installation: inst(3), jour: "2026-11-03" })));
+    assert.equal(db.lignes("SELECT * FROM vus").length, 2);
+    avancer(12 * JOUR_MS);
+    await muette(await appeler(envoi(lotValide())), 200);
+    assert.equal(db.lignes("SELECT * FROM lots").length, 2, "12 jours : encore un doublon");
+    avancer(2 * JOUR_MS);
+    await module.default.scheduled({}, env);
+    assert.equal(db.lignes("SELECT * FROM vus").length, 0, "14 jours : marques effacées avec les lots");
+    assert.equal(db.lignes("SELECT * FROM lots").length, 0);
+    await muette(await appeler(envoi(lotValide())), 422);
+    await muette(await appeler(envoi(lotValide({ installation: inst(3), jour: "2026-11-03" }))), 422);
+    assert.equal(db.lignes("SELECT * FROM lots").length, 0);
+    assert.deepEqual(await refus(db), { doublon: 1, jour: 2 });
+  });
+
+  it("le jour du lot : 12 jours avant au plus, le lendemain au plus (422, « jour »)", async (t) => {
+    const { db, appeler } = await relais(t);
+    for (const [jour, statut] of [
+      ["2026-10-20", 422],
+      ["2026-10-21", 200],
+      ["2026-11-03", 200],
+      ["2026-11-04", 422],
+      ["9999-12-31", 422],
+      ["0001-01-01", 422],
+    ]) {
+      await muette(await appeler(envoi(lotValide({ jour }))), statut);
+    }
+    assert.deepEqual(await refus(db), { jour: 4 });
+    assert.deepEqual(db.lignes("SELECT jour_lot FROM vus ORDER BY jour_lot").map((l) => l.jour_lot), [
+      "2026-10-21",
+      "2026-11-03",
+    ]);
+  });
+
+  it("course de deux envois simultanés : un seul gardé, compté une fois", async (t) => {
+    const { db, appeler } = await relais(t);
+    const marques = [];
+    db.avant = (sql) => sql.startsWith("INSERT INTO vus") && marques.push(sql);
+    // Une barrière avant la transaction qui marque : chacun a passé la recherche du doublon et compté son quota
+    // avant que l'autre n'écrive, comme deux isolats de Cloudflare au même instant.
+    const batch = db.batch.bind(db);
+    let ouvrir;
+    const barriere = new Promise((r) => (ouvrir = r));
+    let arrives = 0;
+    db.batch = async (requetes) => {
+      if (requetes[0].sql.startsWith("INSERT INTO vus")) {
+        arrives += 1;
+        if (arrives === 2) {
+          ouvrir();
+        }
+        await barriere;
+      }
+      return batch(requetes);
+    };
+    const codes = await Promise.all([
+      appeler(envoi(lotValide(), { ip: "192.0.2.10" })),
+      appeler(envoi(lotValide({ refus_locaux: 9 }), { ip: "198.51.100.20" })),
+    ]);
+    for (const r of codes) {
+      await muette(r, 200);
+    }
+    assert.equal(marques.length, 2, "les deux sont arrivés jusqu'à la marque : la course a bien eu lieu");
+    assert.equal(db.lignes("SELECT * FROM lots").length, 1);
+    assert.equal(db.lignes("SELECT * FROM vus").length, 1);
+    const q = quotas(db);
+    assert.equal(q["*"], 1);
+    assert.equal(
+      Object.entries(q).reduce((n, [s, k]) => n + (s === "*" ? 0 : k), 0),
+      1,
+      "le perdant a rendu son compte",
+    );
+    assert.deepEqual(await refus(db), { doublon: 1 });
+  });
+
+  it("une panne en gardant le lot n'en laisse pas la marque : le renvoi est gardé", async (t) => {
+    const { db, appeler } = await relais(t);
+    db.avant = (sql) => {
+      if (sql.startsWith("INSERT INTO lots")) {
+        throw new Error("D1 coupée");
+      }
+    };
+    await muette(await appeler(envoi(lotValide())), 503);
+    assert.equal(db.lignes("SELECT * FROM vus").length, 0);
+    db.avant = null;
+    await muette(await appeler(envoi(lotValide())), 200);
+    assert.equal(db.lignes("SELECT * FROM lots").length, 1);
+    assert.deepEqual(await refus(db), {});
+  });
+
+  it("le doublon d'une source qui a atteint son quota répond quand même 200", async (t) => {
+    const { db, appeler } = await relais(t);
+    await appeler(envoi(lotValide()));
+    db.db.prepare("UPDATE quotas SET n = 50 WHERE source <> '*'").run();
+    await muette(await appeler(envoi(lotValide())), 200);
+    await muette(await appeler(envoi(lotValide({ installation: inst(8) }))), 429);
+    assert.deepEqual(await refus(db), { doublon: 1, quota: 1 });
+  });
+
+  it("schema.sql relancé sur une base d'avant les marques : les lots déjà là sont marqués", async (t) => {
+    const { db, appeler } = await relais(t);
+    db.db.exec("DROP TABLE vus");
+    const inserer = db.db.prepare(
+      "INSERT INTO lots (jour, source, source_large, taille, corps) VALUES (?, 'a', 'b', 1, ?)",
+    );
+    const { installation: _, ...sans } = lotValide();
+    // Un doublon déjà gardé par l'ancien Worker, un autre jour, une autre installation, un lot sans identifiant.
+    inserer.run("2026-11-01", JSON.stringify(lotValide()));
+    inserer.run("2026-11-02", JSON.stringify(lotValide()));
+    inserer.run("2026-11-02", JSON.stringify(lotValide({ jour: "2026-11-01" })));
+    inserer.run("2026-11-02", JSON.stringify(lotValide({ installation: inst(4) })));
+    inserer.run("2026-11-02", JSON.stringify(sans));
+    const schema = readFileSync(new URL("../schema.sql", import.meta.url), "utf8");
+    db.db.exec(schema);
+    db.db.exec(schema);
+    assert.equal(db.lignes("SELECT * FROM lots").length, 5);
+    assert.deepEqual(db.lignes("SELECT installation, jour_lot, jour FROM vus ORDER BY installation, jour_lot"), [
+      { installation: inst(4), jour_lot: "2026-11-02", jour: "2026-11-02" },
+      { installation: "0123456789abcdef", jour_lot: "2026-11-01", jour: "2026-11-02" },
+      { installation: "0123456789abcdef", jour_lot: "2026-11-02", jour: "2026-11-01" },
+    ]);
+    await muette(await appeler(envoi(lotValide())), 200);
+    assert.equal(db.lignes("SELECT * FROM lots").length, 5);
+    assert.deepEqual(await refus(db), { doublon: 1 });
   });
 });
 
@@ -721,7 +916,7 @@ describe("rien à lire pour le programme, aucune redirection", () => {
     const { appeler } = await relais(t);
     await appeler(envoi(lotValide()));
     const premiere = await (await appeler(releve(`Bearer ${SECRET}`))).json();
-    await appeler(envoi(lotValide(), { ip: "203.0.113.9" }));
+    await appeler(envoi(lotValide({ installation: inst(2) }), { ip: "203.0.113.9" }));
     const seconde = await (await appeler(releve(`Bearer ${SECRET}`))).json();
     assert.ok(seconde.lots[0].id > premiere.lots[0].id);
   });
