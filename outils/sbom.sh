@@ -41,7 +41,10 @@ export SOURCE_DATE_EPOCH
 trap 'rm -f sbom-*.json' EXIT
 while read -r nom cible; do
   cargo cyclonedx </dev/null -q -f json --spec-version 1.5 --no-build-deps --target "$cible" --override-filename "sbom-$nom"
-  sed "s#path+file://$RACINE#path+file://.#g" "sbom-$nom.json" >"$SORTIE/vanguard-$nom.cdx.json"
+  # cargo abrège l'identifiant du paquet en « #0.89.0 » quand le dossier du dépôt s'appelle comme lui (vanguard ici),
+  # et écrit « #vanguard@0.89.0 » sinon (vanguard-beta sur le Mac de GitHub) : toujours la forme longue.
+  sed -e "s#path+file://$RACINE#path+file://.#g" -e 's|path+file://\.#\([0-9]\)|path+file://.#vanguard@\1|g' \
+    "sbom-$nom.json" >"$SORTIE/vanguard-$nom.cdx.json"
   rm -f "sbom-$nom.json"
   if grep -q 'file:///' "$SORTIE/vanguard-$nom.cdx.json"; then
     echo "sbom.sh : un chemin de cette machine reste dans vanguard-$nom.cdx.json" >&2
