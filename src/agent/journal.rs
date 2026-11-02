@@ -1,9 +1,10 @@
 //! Le journal de l'agent (`agent/journal.jsonl`) : une ligne JSON par fait (une décision appliquée, montrée ou
 //! refusée, « tout remettre »), avec sa date, des types fermés seulement, et deux empreintes : la sienne et celle de
 //! la ligne d'avant, comme l'historique des bilans (`historique`). Une ligne changée, retirée au milieu ou ajoutée à
-//! la main rompt la chaîne. 1 Mio et 90 jours au plus : les plus vieilles lignes partent d'abord ; la première gardée
-//! peut donc pointer vers une ligne partie. Scellé en plus (`sceau`) : un journal douteux ou rompu fait sauter le
-//! tour, car l'agent n'agit jamais sans pouvoir le noter.
+//! la main rompt la chaîne ; des lignes retirées à la fin, non : la fin n'est protégée que par le sceau. 1 Mio et 90
+//! jours au plus : les plus vieilles lignes partent d'abord ; la première gardée peut donc pointer vers une ligne
+//! partie. Scellé en plus (`sceau`) : un journal douteux ou rompu fait sauter le tour, car l'agent n'agit pas sur un
+//! journal qu'il ne peut prolonger ; « tout remettre » repart d'un journal neuf.
 //!
 //! C'est lui que liront Paramètres et, plus tard, `vanguard agent --json` (G5) : des faits, jamais une consigne.
 //!

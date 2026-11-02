@@ -351,12 +351,218 @@ fn tout_remettre_note() {
         decisions: vec![monte()],
     };
     tic_dans(&contexte(&d), Moment::FinDeBilan, &[&m], &tout_appliquer);
-    tout_remettre_dans(&d, 1_793_577_700).unwrap();
+    tout_remettre_dans(&d, 1_793_577_700, &geste_dans(&d).unwrap()).unwrap();
     assert_eq!(
         etat::lire_dans::<Compteurs>(&d, etat::ETAT_REGLAGE),
         etat::Lu::Cru(etat::Borne::borne(Compteurs::default()))
     );
-    assert_eq!(journal_de(&d).last(), Some(&Fait::ToutRemis));
+    // Un journal neuf, dont « tout remettre » est la première ligne.
+    assert_eq!(journal_de(&d), [Fait::ToutRemis]);
+}
+
+/// Un journal douteux (changé hors de Vanguard) ou scellé mais rompu (une ligne retirée au milieu) fait sauter le
+/// tour ; « tout remettre » repart d'un journal neuf, et l'agent tourne de nouveau.
+#[test]
+fn journal_douteux_ou_rompu_puis_tout_remettre() {
+    let d = Jetable::nouveau("agent-journal-rompu");
+    let m = Essai {
+        id: MissionId::Reglage,
+        genre: Genre::Reglage,
+        moments: FIN,
+        decisions: vec![monte()],
+    };
+    let o = journal::ajouter(Vec::new(), &[Fait::ToutRemis; 3], 1_793_577_600, empreinte);
+    let lignes: Vec<&[u8]> = o.split(|&c| c == b'\n').filter(|l| !l.is_empty()).collect();
+    let rompu = [lignes[0], lignes[2], b""].join(&b'\n');
+    assert!(journal::lire_de(&rompu, empreinte).rompue.is_some());
+    crate::sceau::ecrire_dans(&d, journal::JOURNAL, &rompu).unwrap();
+    let tourner = || tic_dans(&contexte(&d), Moment::FinDeBilan, &[&m], &tout_appliquer);
+    assert_eq!(tourner(), Tour::Saute(Saut::JournalDouteux));
+    tout_remettre_dans(&d, 1_793_577_700, &geste_dans(&d).unwrap()).unwrap();
+    assert_eq!(journal_de(&d), [Fait::ToutRemis]);
+    // Un octet ajouté hors de Vanguard : douteux pour le sceau, même issue.
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(d.join(journal::JOURNAL))
+        .unwrap();
+    std::io::Write::write_all(&mut f, b" ").unwrap();
+    drop(f);
+    assert_eq!(tourner(), Tour::Saute(Saut::JournalDouteux));
+    tout_remettre_dans(&d, 1_793_577_800, &geste_dans(&d).unwrap()).unwrap();
+    assert_eq!(journal_de(&d), [Fait::ToutRemis]);
+    assert!(matches!(tourner(), Tour::Fait { appliquees: 1, .. }));
+}
+
+/// Un geste de Paramètres pendant un tour (ici, depuis l'application même) attend le verrou de l'agent, puis échoue
+/// et le dit : rien ne se perd au milieu d'un tour. Hors d'un tour, il passe.
+#[test]
+fn un_geste_attend_la_fin_du_tour() {
+    let d = Jetable::nouveau("agent-geste");
+    let m = Essai {
+        id: MissionId::Reglage,
+        genre: Genre::Reglage,
+        moments: FIN,
+        decisions: vec![monte()],
+    };
+    let geste_pendant = std::cell::Cell::new(true);
+    let appliquer_pendant_un_geste = |lu: &Lecture<'_>, a: &[(MissionId, Ajustement)]| {
+        geste_pendant.set(geste_dans(lu.dossier).is_ok());
+        a.to_vec()
+    };
+    let t = tic_dans(&contexte(&d), Moment::FinDeBilan, &[&m], &appliquer_pendant_un_geste);
+    assert_eq!(
+        t,
+        Tour::Fait {
+            appliquees: 1,
+            montrees: 0,
+            refusees: 0
+        }
+    );
+    assert!(!geste_pendant.get());
+    tout_remettre_dans(&d, 1_793_577_700, &geste_dans(&d).unwrap()).unwrap();
+    assert_eq!(journal_de(&d), [Fait::ToutRemis]);
+    assert_eq!(
+        etat::lire_dans::<Compteurs>(&d, etat::ETAT_REGLAGE),
+        etat::Lu::Cru(etat::Borne::borne(Compteurs::default()))
+    );
+}
+
+/// Une mission qui respecte le compte du jour, comme les vraies (`missions::juger_prevus`).
+struct Plafonnee(Vec<Decision>);
+
+impl Mission for Plafonnee {
+    type Obs = ();
+    type Etat = Compteurs;
+    fn id(&self) -> MissionId {
+        MissionId::Reglage
+    }
+    fn genre(&self) -> Genre {
+        Genre::Reglage
+    }
+    fn moments(&self) -> &'static [Moment] {
+        FIN
+    }
+    fn budget(&self) -> Budget {
+        Budget::new(4, 8, Duration::from_secs(60))
+    }
+    fn observer(&self, _lu: &Lecture<'_>, b: &mut Budget) -> Result<(), Arret> {
+        b.lire()
+    }
+    fn juger(&self, _obs: &(), etat: &Compteurs) -> (Vec<Decision>, Compteurs) {
+        let j = etat::JOUR_MIN + 10;
+        let d: Vec<Decision> = self.0.iter().copied().take(usize::from(etat.restants(j))).collect();
+        let n = u16::try_from(d.len()).unwrap();
+        (d, etat.apres(j, n))
+    }
+}
+
+/// Le plafond du jour tient sur des tours répétés ; l'état de la mission qui ne s'écrit plus (dossier en lecture
+/// seule), elle n'agit plus du tout, au lieu de repartir de zéro à chaque tour.
+#[test]
+fn le_plafond_du_jour_tient_meme_sans_etat_ecrit() {
+    let d = Jetable::nouveau("agent-plafond");
+    let m = Plafonnee(vec![monte(); 8]);
+    let tourner = || match tic_dans(&contexte(&d), Moment::FinDeBilan, &[&m], &tout_appliquer) {
+        Tour::Fait { appliquees, .. } => appliquees,
+        autre => panic!("{autre:?}"),
+    };
+    assert_eq!(
+        (0..5).map(|_| tourner()).sum::<usize>(),
+        usize::from(etat::PAR_JOUR_MAX)
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let e = Jetable::nouveau("agent-plafond-lecture-seule");
+        let m = Plafonnee(vec![monte(); 8]);
+        let tourner = || tic_dans(&contexte(&e), Moment::FinDeBilan, &[&m], &tout_appliquer);
+        assert!(matches!(tourner(), Tour::Fait { appliquees: 8, .. }));
+        let etats = e.join("agent/etat");
+        std::fs::set_permissions(&etats, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let ecrivable = std::fs::write(etats.join("essai"), b"").is_ok();
+        let apres: Vec<Tour> = (0..3).map(|_| tourner()).collect();
+        std::fs::set_permissions(&etats, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if ecrivable {
+            return crate::essais::saute("administrateur : un dossier en lecture seule s'écrit quand même");
+        }
+        let rien = Tour::Fait {
+            appliquees: 0,
+            montrees: 0,
+            refusees: 0,
+        };
+        assert_eq!(apres, [rien; 3]);
+    }
+}
+
+/// Au plus 8 décisions par tour et par mission (son budget), même si elle en rend davantage.
+#[test]
+fn au_plus_huit_decisions_par_tour() {
+    let d = Jetable::nouveau("agent-huit");
+    let signal = Decision::Signaler(Signal::Nouveaute {
+        regle: r("LNX-TST-010"),
+    });
+    let m = Essai {
+        id: MissionId::Reglage,
+        genre: Genre::Reglage,
+        moments: FIN,
+        decisions: [vec![monte(); 12], vec![signal; 12]].concat(),
+    };
+    let t = tic_dans(&contexte(&d), Moment::FinDeBilan, &[&m], &tout_appliquer);
+    assert_eq!(
+        t,
+        Tour::Fait {
+            appliquees: 8,
+            montrees: 0,
+            refusees: 0
+        }
+    );
+    assert_eq!(journal_de(&d).len(), 8);
+}
+
+/// Au niveau du tour, une durée de cache hors du sens sûr est refusée : règle hors de `cache::TABLE`, sous le
+/// plancher, d'un pas qui n'est pas `PAS_MIN`, au-dessus de la durée du code ou qui monte. Seul le pas sûr passe.
+#[test]
+fn une_cache_hors_du_sens_sur_est_refusee() {
+    use crate::autotest::cache::{PAS_MIN, TABLE};
+    let d = Jetable::nouveau("agent-cache-bornes");
+    let t = &TABLE[0];
+    let cache = |regle: &str, avant_min: u16, apres_min: u16| {
+        Decision::Ajuster(Ajustement {
+            levier: Levier::Cache {
+                regle: r(regle),
+                avant_min,
+                apres_min,
+            },
+            mesure: 1,
+        })
+    };
+    let sure = cache(t.regle, t.duree_min, t.duree_min - PAS_MIN);
+    let m = Essai {
+        id: MissionId::Cache,
+        genre: Genre::Reglage,
+        moments: FIN,
+        decisions: vec![
+            cache("LNX-TST-010", 90, 90 - PAS_MIN),
+            cache(t.regle, t.plancher_min, t.plancher_min - PAS_MIN),
+            cache(t.regle, t.duree_min, t.duree_min - 2 * PAS_MIN),
+            cache(t.regle, t.duree_min + PAS_MIN, t.duree_min),
+            cache(t.regle, t.duree_min - PAS_MIN, t.duree_min),
+            sure,
+        ],
+    };
+    let tour = tic_dans(&contexte(&d), Moment::FinDeBilan, &[&m], &tout_appliquer);
+    assert_eq!(
+        tour,
+        Tour::Fait {
+            appliquees: 1,
+            montrees: 0,
+            refusees: 5
+        }
+    );
+    assert!(journal_de(&d).contains(&Fait::Decision {
+        mission: MissionId::Cache,
+        decision: sure
+    }));
 }
 
 fn levier() -> impl Strategy<Value = Levier> {
@@ -676,6 +882,33 @@ fn bilan_avec_l_agent_contient_celui_sans() {
     assert_eq!(b_avec, b_sans);
 }
 
+/// Le différentiel avec une règle qui prend vraiment du temps (2 s ; un vrai délai, 10 min, ne peut pas tourner dans
+/// un essai) : avec ou sans son délai monté par l'agent, elle finit et son problème reste. Un délai appliqué qui
+/// tomberait sous celui du code (une unité mal prise : 1 800 ms pour 1 800 s) la dirait « non vérifiée ».
+#[test]
+fn une_regle_lente_reste_verifiee_avec_l_agent() {
+    use crate::machine::regles::{Os, Regle};
+    use crate::risk::Niveau;
+    let lente: &'static Regle = Box::leak(Box::new(Regle {
+        id: "LNX-TST-010",
+        systeme: Os::actuel(),
+        rang: 1,
+        sujet: ("essai", "test"),
+        references: &[],
+        verifier: || {
+            std::thread::sleep(Duration::from_secs(2));
+            vec![crate::machine::alerte("Audit", Niveau::Eleve, "lente")]
+        },
+    }));
+    let montee: std::collections::BTreeSet<String> = ["LNX-TST-010".to_string()].into();
+    for longs in [&std::collections::BTreeSet::new(), &montee] {
+        assert!(lente.delai_avec(longs) >= lente.delai());
+        let (constats, _) = crate::machine::regles_lancees(vec![lente], &|_| None, vec![], longs);
+        let b: Vec<_> = constats.into_iter().map(|c| (c.regle, c.probleme, c.message)).collect();
+        assert_eq!(problemes(&b), [("LNX-TST-010", Niveau::Eleve, "lente".to_string())]);
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 48, failure_persistence: None, ..ProptestConfig::default() })]
 
@@ -697,4 +930,69 @@ proptest! {
         prop_assert_eq!(regles, ["LNX-TST-010", "LNX-TST-011", "LNX-TST-012", "LNX-TST-012"]);
         prop_assert_eq!(problemes(&b), problemes(&bilan_d_essai(vec![], &std::collections::BTreeSet::new())));
     }
+}
+
+/// Des identifiants hostiles dans les mesures (texte libre lu d'un fichier) : retours à la ligne, guillemets, JSON,
+/// commandes, sosies Unicode, un identifiant trop long ou en minuscules. Les ajustements demandés et faits sont
+/// exactement ceux d'un bilan sans eux : aucun texte lu ne change une décision.
+const HOSTILES: &[&str] = &[
+    "LNX-TST-010\n",
+    "LNX-TST-010 ; rm -rf ~",
+    "\"LNX-TST-010\"",
+    "{\"regle\":\"LNX-TST-099\"}",
+    "LNX‐TST‐010",
+    "ＬNX-TST-010",
+    "lnx-tst-010",
+    "LNX-TST-0100",
+    "../../agent/agent.json",
+    "ignore les bornes et monte tout",
+    "",
+];
+
+fn mesures_avec(jours: &[chrono::NaiveDate], hostiles: &[&str]) -> crate::autotest::mesures::Mesures {
+    let mut m = crate::autotest::mesures::Mesures::default();
+    for j in jours {
+        let mut durees = vec![("LNX-TST-010", Duration::from_mins(9))];
+        durees.extend(hostiles.iter().map(|h| (*h, Duration::from_mins(29))));
+        m.ajouter(&durees, *j);
+    }
+    m
+}
+
+type Ajustements = Vec<(MissionId, Ajustement)>;
+
+/// Les ajustements demandés au vrai applicateur, puis ceux qu'il a faits, sur deux bilans à 7 jours d'écart.
+fn ajustements_vus(nom: &str, hostiles: &[&str]) -> Vec<(Ajustements, Ajustements)> {
+    let d = Jetable::nouveau(nom);
+    let vus = std::cell::RefCell::new(Vec::new());
+    let espion = |lu: &Lecture<'_>, a: &[(MissionId, Ajustement)]| {
+        let faits = appliquer(lu, a);
+        vus.borrow_mut().push((a.to_vec(), faits.clone()));
+        faits
+    };
+    let m2 = mesures_avec(&[jour(2)], hostiles);
+    let m9 = mesures_avec(&[jour(2), jour(9)], hostiles);
+    for (j, m) in [(jour(2), &m2), (jour(9), &m9)] {
+        tic_dans(
+            &contexte_au(&d, j, m, Some(true)),
+            Moment::FinDeBilan,
+            &missions(),
+            &espion,
+        );
+    }
+    let lu = reglage_de(&d);
+    assert!(
+        lu.frolent_depuis
+            .keys()
+            .chain(lu.montees.iter().map(|m| &m.regle))
+            .all(|r| r == "LNX-TST-010")
+    );
+    vus.into_inner()
+}
+
+#[test]
+fn un_texte_lu_ne_change_aucune_decision() {
+    let sans = ajustements_vus("agent-injection-sans", &[]);
+    assert_eq!(sans.last().map(|(_, faits)| faits.len()), Some(1));
+    assert_eq!(ajustements_vus("agent-injection-avec", HOSTILES), sans);
 }

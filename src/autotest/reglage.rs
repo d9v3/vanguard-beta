@@ -477,6 +477,7 @@ fn pour_changer(dossier: &Path) -> Etat {
 /// Met le réglage en marche ou le coupe ; les changements restent, appliqués seulement en marche. La cache est vidée
 /// d'abord : rien de ce qu'elle gardait ne revient après le geste (et s'il échoue, rien n'a changé).
 fn mettre_en_marche_dans(dossier: &Path, en_marche: bool) -> std::io::Result<()> {
+    let _geste = crate::agent::geste_dans(dossier)?;
     let mut e = pour_changer(dossier);
     e.coupe = !en_marche;
     super::cache::oublier_dans(dossier, true)?;
@@ -486,6 +487,7 @@ fn mettre_en_marche_dans(dossier: &Path, en_marche: bool) -> std::io::Result<()>
 /// Annule la montée de `regle` : son délai redevient celui du code, et elle ne remontera plus. Rend vrai si elle
 /// était montée.
 fn annuler_dans(dossier: &Path, regle: &str) -> std::io::Result<bool> {
+    let _geste = crate::agent::geste_dans(dossier)?;
     let mut e = pour_changer(dossier);
     let avant = e.montees.len();
     e.montees.retain(|m| m.regle != regle);
@@ -502,6 +504,7 @@ fn annuler_dans(dossier: &Path, regle: &str) -> std::io::Result<bool> {
 /// ceux d'après (le menu, un par un) ; `None`, le dernier pas seulement. La durée revient exactement à celle d'avant le
 /// pas annulé, et elle ne descendra plus. Rend la durée remise, ou `None` si rien n'était à annuler.
 fn annuler_duree_dans(dossier: &Path, regle: &str, depuis_min: Option<u16>) -> std::io::Result<Option<u16>> {
+    let _geste = crate::agent::geste_dans(dossier)?;
     let mut e = pour_changer(dossier);
     let Some(remise) = depuis_min.or_else(|| {
         e.raccourcies
@@ -526,8 +529,9 @@ fn annuler_duree_dans(dossier: &Path, regle: &str, depuis_min: Option<u16>) -> s
 /// Tout remettre comme à l'origine : plus rien de monté, suivi ni refusé, la cache vidée, les états de l'Agent
 /// Vanguard (`agent`) remis à zéro, et le réglage coupé jusqu'à ce qu'on le remette en marche.
 fn tout_remettre_dans(dossier: &Path) -> std::io::Result<()> {
+    let geste = crate::agent::geste_dans(dossier)?;
     super::cache::oublier_dans(dossier, true)?;
-    crate::agent::tout_remettre_dans(dossier, chrono::Utc::now().timestamp())?;
+    crate::agent::tout_remettre_dans(dossier, chrono::Utc::now().timestamp(), &geste)?;
     ecrire_dans(
         dossier,
         &Etat {

@@ -16,11 +16,14 @@
 //! - **rien ne sort** : ni réseau, ni commande, ni élévation ; les droits de la personne seulement ;
 //! - **jamais obéir à un texte** : aucune observation, aucun état, aucune ligne du journal ne porte de texte libre ;
 //! - **jamais d'attente** : le verrou déjà pris, un jeu en cours (GameMode) ou l'autotest en lecture seule, et le
-//!   tour est sauté ; un journal douteux aussi (l'agent n'agit pas sans pouvoir le noter).
+//!   tour est sauté ; un journal douteux aussi (l'agent n'agit pas sur un journal qu'il ne peut prolonger) ;
+//! - **jamais sans ses bornes** : une mission dont l'état (le compte du jour) ne s'écrit pas n'agit pas.
 //!
 //! L'interrupteur de l'agent est celui de l'auto-réglage (Paramètres, « oui » par défaut) : « non » le coupe tout
-//! entier, « tout remettre » vide aussi la cache et remet ses états à zéro. Chaque mission se coupe aussi seule
-//! (`agent/agent.json`).
+//! entier, « tout remettre » vide aussi la cache, remet ses états à zéro et repart d'un journal neuf. Un geste de
+//! Paramètres attend la fin d'un tour en cours (`geste_dans`) : il ne se perd pas au milieu d'un tour. Chaque mission
+//! pourra aussi se couper seule (`agent/agent.json`, déjà lu par le tour) : rien ne l'écrit encore, Paramètres le
+//! fera (G5).
 
 mod budget;
 mod decision;
@@ -68,8 +71,11 @@ impl<M: Mission> Tourne for M {
         b.temps().ok()?;
         let (mut decisions, nouvel) = self.juger(&obs, &etat);
         let nouvel = etat::Borne::borne(nouvel);
-        if nouvel != etat {
-            let _ = etat::ecrire_dans(lu.dossier, nom, &nouvel);
+        // Le compte du jour (`etat::PAR_JOUR_MAX`) ne tient que s'il s'écrit : sinon, chaque tour repartirait de zéro.
+        // Une mission qui décide l'écrit donc toujours, et n'agit pas s'il ne s'écrit pas. C'est aussi la preuve que le
+        // dossier de l'agent prend encore une écriture scellée, juste avant le journal.
+        if (nouvel != etat || !decisions.is_empty()) && etat::ecrire_dans(lu.dossier, nom, &nouvel).is_err() {
+            return None;
         }
         decisions.truncate(usize::from(b.decisions()));
         Some(decisions)
@@ -92,7 +98,7 @@ pub(crate) enum Saut {
     EnJeu,
     /// Un autre tour tient le verrou : jamais d'attente.
     Occupe,
-    /// Le journal est douteux ou rompu : l'agent n'agit pas sans pouvoir noter.
+    /// Le journal est douteux ou rompu : l'agent n'agit pas sur un journal qu'il ne peut prolonger.
     JournalDouteux,
 }
 
@@ -249,6 +255,10 @@ pub(crate) fn tic_dans(ctx: &Contexte<'_>, moment: Moment, missions: &[&dyn Tour
         mission: *mission,
         decision: Decision::Ajuster(*a),
     }));
+    // Rien n'a été appliqué sans que l'état de sa mission, scellé dans le même dossier, vienne de s'écrire
+    // (`Tourne::tourner`) : l'écriture du journal réussit donc d'ordinaire. Si elle échoue quand même (disque plein
+    // entre-temps), rien ne peut plus défaire le changement, mais il reste dans `reglage.json`, scellé, que Paramètres
+    // montre et sait annuler.
     if !faits.is_empty() {
         let o = journal::ajouter(entrees, &faits, ctx.quand, empreinte);
         let _ = crate::sceau::ecrire_dans(lu.dossier, journal::JOURNAL, &o);
@@ -323,25 +333,42 @@ fn en_jeu() -> bool {
     }
 }
 
-/// « Tout remettre » (Paramètres) : les états des missions et leurs interrupteurs reviennent à l'origine, et c'est
-/// noté au journal (s'il tient : un journal douteux reste, pour que le bilan le montre).
-pub(crate) fn tout_remettre_dans(dossier: &Path, quand: i64) -> std::io::Result<()> {
+/// L'attente d'un geste de Paramètres derrière un tour : un tour prend d'ordinaire quelques millisecondes, et son
+/// budget dix secondes par mission au plus. Au-delà, le geste échoue et le dit, plutôt que de figer Paramètres.
+const ATTENTE_GESTE: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_secs(1)
+} else {
+    std::time::Duration::from_secs(10)
+};
+
+/// Le verrou de l'agent, tenu par un geste de Paramètres qui change ce qu'un tour lit ou écrit (`reglage.json`, les
+/// états, le journal). Sans lui, un tour qui a lu le journal avant le geste le réécrivait après, avec ses anciennes
+/// lignes : la ligne « tout remettre » se perdait, ou ses compteurs survivaient à la remise à zéro.
+pub(crate) struct Geste {
+    _verrou: crate::socle::Verrou,
+}
+
+/// Prend le verrou de l'agent pour un geste (voir `Geste`), en attendant la fin d'un tour en cours.
+pub(crate) fn geste_dans(dossier: &Path) -> std::io::Result<Geste> {
+    crate::socle::Verrou::prendre(dossier, "agent.lock", false, ATTENTE_GESTE)
+        .map(|v| Geste { _verrou: v })
+        .map_err(|_| {
+            std::io::Error::other(crate::tr!(
+                "l'Agent Vanguard (sans IA) est en plein tour : réessayez dans un moment",
+                "the Vanguard Agent (no AI) is busy: try again in a moment"
+            ))
+        })
+}
+
+/// « Tout remettre » (Paramètres), sous le verrou d'un geste : les états des missions et leurs interrupteurs
+/// reviennent à l'origine, et l'agent repart d'un journal neuf, scellé, dont la première ligne le note. Un journal
+/// douteux (changé hors de Vanguard, ou à moitié écrit) arrêtait sinon l'agent pour toujours : c'est sa seule issue.
+pub(crate) fn tout_remettre_dans(dossier: &Path, quand: i64, _geste: &Geste) -> std::io::Result<()> {
     for id in MissionId::TOUTES {
         etat::ecrire_dans(dossier, etat::nom_etat(id), &Compteurs::default())?;
     }
     etat::ecrire_dans(dossier, etat::AGENT, &etat::Interrupteurs::default())?;
-    let entrees = match crate::sceau::juge_dans(dossier, journal::JOURNAL) {
-        crate::sceau::Juge::Absent => Vec::new(),
-        crate::sceau::Juge::Cru(o) => {
-            let j = journal::lire_de(&o, empreinte);
-            if !j.intact() {
-                return Ok(());
-            }
-            j.entrees
-        }
-        _ => return Ok(()),
-    };
-    let o = journal::ajouter(entrees, &[journal::Fait::ToutRemis], quand, empreinte);
+    let o = journal::ajouter(Vec::new(), &[journal::Fait::ToutRemis], quand, empreinte);
     crate::sceau::ecrire_dans(dossier, journal::JOURNAL, &o)
 }
 
