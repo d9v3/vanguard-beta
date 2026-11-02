@@ -46,7 +46,7 @@ pub(crate) struct Echec {
     pub(crate) code: Option<u16>,
 }
 
-/// Les essais d'un jour (UTC).
+/// Les essais d'un jour (local, comme les fichiers du relevé).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Essais {
@@ -183,13 +183,20 @@ pub(crate) fn purger(dossier: &Path, garde: impl Fn(NaiveDate) -> bool) {
     if !dossiers_surs(dossier) {
         return;
     }
-    let Ok(lus) = std::fs::read_dir(dossier.join(FILE)) else {
-        return;
-    };
+    let lus = std::fs::read_dir(dossier.join(FILE)).into_iter().flatten();
     for e in lus.filter_map(Result::ok) {
         let dossier = e.file_type().is_ok_and(|t| t.is_dir());
         let gardee = jour_du_nom(&e.file_name().to_string_lossy()).is_some_and(&garde);
         if !dossier && !gardee {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+    // Les restes d'une écriture de l'état coupée (programme fermé entre l'écriture et le renommage) : sans cela,
+    // ils s'accumuleraient dans `envoi/`, que « Ne pas partager » ne pourrait plus retirer.
+    let lus = std::fs::read_dir(dossier.join("envoi")).into_iter().flatten();
+    for e in lus.filter_map(Result::ok) {
+        let reste = e.file_name().to_string_lossy().starts_with("etat.tmp-");
+        if reste && e.file_type().is_ok_and(|t| t.is_file() || t.is_symlink()) {
             let _ = std::fs::remove_file(e.path());
         }
     }

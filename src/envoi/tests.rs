@@ -202,6 +202,7 @@ fn passer(c: &Cadre, avec_releve: &[u32]) -> Bilan {
             plateforme: || Some(plateforme_essai()),
             du_jour: |d: NaiveDate, base: Lot| avec_releve.iter().any(|&j| jour(j) == d).then_some(base),
             poster,
+            encore: || true,
         },
     )
 }
@@ -240,6 +241,7 @@ fn sans_relais_aucune_connexion() {
                 appels.fetch_add(1, Ordering::SeqCst);
                 poster(&adresse, corps)
             },
+            encore: || true,
         },
     );
     // Le point d'entrée du programme non plus : sous les essais, il ne lance même pas de fil.
@@ -354,7 +356,7 @@ fn un_429_ou_un_503_attend_24_h() {
     }
 }
 
-/// Un autre 4xx (413, 422, 400) : le lot est refusé pour de bon, il est jeté et la raison notée ; le suivant part.
+/// Un refus du contrat (413, 422, 400) : le lot est refusé pour de bon, il est jeté et la raison notée ; le suivant part.
 #[test]
 fn un_lot_refuse_est_jete() {
     for code in [413, 422, 400] {
@@ -380,6 +382,80 @@ fn un_lot_refuse_est_jete() {
 
 /// Un serveur muet ne retient pas l'envoi au-delà de son délai ; une coupure non plus. Le lot attend, la passe
 /// s'arrête au premier échec (un seul essai).
+/// Un autre 4xx (403 d'un pare-feu, 404 d'un chemin pas encore déployé, 408) ne dit rien du lot : il attend, et
+/// rien d'autre ne part ce jour-là.
+#[test]
+fn un_autre_4xx_garde_le_lot() {
+    for code in [403, 404, 408] {
+        let s = Serveur::lancer(Mode::Code(code));
+        let d = Jetable::nouveau("envoi-autre-4xx");
+        let adresse = s.adresse();
+        let b = passer(&cadre(&d, Some(&adresse)), &[8, 9]);
+        assert_eq!((b.mis, b.postes, b.recus, b.jetes), (2, 1, 0, 0), "{code}");
+        assert_eq!(en_file(&d), [jour(8), jour(9)], "{code}");
+        let e = etat(&d).dernier_echec.unwrap();
+        assert_eq!((e.raison, e.code), (Raison::Autre, Some(code)));
+    }
+}
+
+/// Les garde-fous relus avant chaque POST : fermés pendant la passe, plus rien ne part, ni essai compté.
+#[test]
+fn les_garde_fous_sont_relus_avant_chaque_post() {
+    let s = Serveur::lancer(Mode::Code(200));
+    let d = Jetable::nouveau("envoi-relus");
+    let adresse = s.adresse();
+    let b = passe_dans(
+        &cadre(&d, Some(&adresse)),
+        Sources {
+            plateforme: || Some(plateforme_essai()),
+            du_jour: |_, base| Some(base),
+            poster,
+            encore: || false,
+        },
+    );
+    assert_eq!((b.mis, b.postes), (7, 0));
+    assert_eq!(s.connexions(), 0);
+    assert_eq!(etat(&d).essais, None);
+}
+
+/// Le relevé d'hier est là mais ne se croit pas encore : le jour n'est pas tenu pour passé, la passe suivante le
+/// met en file. Un relevé plus vieux qui ne se croit pas, lui, est passé (il ne bloque pas la file).
+#[test]
+fn un_releve_d_hier_pas_encore_croyable_est_repris() {
+    let d = Jetable::nouveau("envoi-hier");
+    let c = cadre(&d, Some("http://127.0.0.1:9/v1/lot"));
+    let c = Cadre {
+        garde: Garde {
+            hors_ligne: true,
+            ..ouverte()
+        },
+        ..c
+    };
+    for j in [8, 9] {
+        let nom = d.join(crate::amelioration::nom_jour(jour(j)));
+        std::fs::create_dir_all(nom.parent().unwrap()).unwrap();
+        std::fs::write(nom, b"en cours").unwrap();
+    }
+    assert_eq!(passer(&c, &[]).mis, 0);
+    assert_eq!(etat(&d).dernier_mis, Some(Jour::new("2026-11-08").unwrap()));
+    assert_eq!(passer(&c, &[9]).mis, 1);
+    assert_eq!(en_file(&d), [jour(9)]);
+    assert_eq!(etat(&d).dernier_mis, Some(Jour::new("2026-11-09").unwrap()));
+}
+
+/// Les restes d'une écriture de l'état coupée sont balayés, et « Ne pas partager » retire alors `envoi/`.
+#[test]
+fn les_restes_de_l_etat_sont_balayes() {
+    let d = Jetable::nouveau("envoi-restes");
+    file::ecrire_etat(&d, &Etat::default()).unwrap();
+    std::fs::write(d.join("envoi").join("etat.tmp-1-2-0000000000000003"), b"{}").unwrap();
+    file::purger(&d, |_| true);
+    assert!(!d.join("envoi").join("etat.tmp-1-2-0000000000000003").exists());
+    assert!(d.join(ETAT).exists());
+    file::vider(&d).unwrap();
+    assert!(!d.join("envoi").exists());
+}
+
 #[test]
 fn serveur_muet_ou_coupure() {
     for mode in [Mode::Muet, Mode::Coupe] {
@@ -686,6 +762,7 @@ fn le_lot_vient_du_releve_du_jour() {
             plateforme: || Some(plateforme_essai()),
             du_jour: |j, base| crate::amelioration::lot_du_jour(&d, j, base, &mesures, |_| Some(60)),
             poster,
+            encore: || true,
         },
     );
     assert_eq!(b.mis, 1);

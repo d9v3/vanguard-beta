@@ -138,6 +138,9 @@ where
     pub(crate) du_jour: J,
     /// Le POST, qui rend le code de réponse (`http::poster_sans_lire`).
     pub(crate) poster: E,
+    /// Les garde-fous relus juste avant chaque POST : un autotest passé hors ligne, ou « Ne pas partager », pendant
+    /// la passe arrête l'envoi suivant, pas seulement la passe d'après.
+    pub(crate) encore: fn() -> bool,
 }
 
 /// Une passe : la file remplie des jours clos, purgée, puis envoyée du plus vieux lot au plus récent.
@@ -167,7 +170,7 @@ where
     if arrete() || file::ecrire_etat(c.dossier, &etat).is_err() || !c.garde.peut_envoyer() {
         return bilan;
     }
-    envoyer(&mut etat, c, adresse, s.poster, &mut bilan);
+    envoyer(&mut etat, c, adresse, (s.poster, s.encore), &mut bilan);
     bilan
 }
 
@@ -261,13 +264,19 @@ where
                 .flatten()
         });
         // Un jour qui ne s'écrit pas (disque plein) reste à faire : la passe suivante le reprendra.
-        if !file::chemin(c.dossier, d).exists()
-            && let Some(lot) = du_jour(d, base)
-        {
-            if file::mettre(c.dossier, d, lot).is_err() {
-                return mis;
+        if !file::chemin(c.dossier, d).exists() {
+            match du_jour(d, base) {
+                Some(lot) => {
+                    if file::mettre(c.dossier, d, lot).is_err() {
+                        return mis;
+                    }
+                    mis += 1;
+                }
+                // Le relevé d'hier est là mais ne se croit pas (un autre Vanguard le réécrit, ou finit sa
+                // journée après minuit) : réessayé à la passe suivante, jusqu'à ce qu'il ne soit plus d'hier.
+                None if d == hier && c.dossier.join(crate::amelioration::nom_jour(d)).exists() => return mis,
+                None => {}
             }
-            mis += 1;
         }
         etat.dernier_mis = Some(file::jour(d));
         d += chrono::Duration::days(1);
@@ -277,7 +286,7 @@ where
 
 /// Poste les lots en file, du plus vieux au plus récent, tant que le jour a des essais et que le relais répond.
 /// Chaque essai est noté avant de partir : un processus tué pendant le POST l'a déjà compté.
-fn envoyer<E>(etat: &mut Etat, c: &Cadre, adresse: &str, mut poster: E, bilan: &mut Bilan)
+fn envoyer<E>(etat: &mut Etat, c: &Cadre, adresse: &str, (mut poster, encore): (E, fn() -> bool), bilan: &mut Bilan)
 where
     E: FnMut(&str, Vec<u8>) -> Option<u16>,
 {
@@ -301,7 +310,7 @@ where
             .as_ref()
             .filter(|e| e.jour == aujourd_hui)
             .map_or(0, |e| e.n);
-        if essais >= ESSAIS_PAR_JOUR || arrete() {
+        if essais >= ESSAIS_PAR_JOUR || arrete() || !encore() {
             break;
         }
         etat.essais = Some(Essais {
@@ -331,7 +340,9 @@ where
                 etat.attendre_jusqu_a = Some(c.maintenant.saturating_add(ATTENTE_S));
                 break;
             }
-            Some(400..=499) => {
+            // Les refus du contrat seulement : un 403 ou un 404 (pare-feu devant le relais, chemin pas encore
+            // déployé) ne dit rien du lot, qui attend comme pour une panne.
+            Some(400 | 413 | 415 | 422) => {
                 file::retirer(c.dossier, d);
                 bilan.jetes += 1;
                 noter(etat, &aujourd_hui, Raison::Refuse, code);
@@ -409,6 +420,7 @@ fn passe(en_passe_horaire: bool) {
         },
         du_jour: |d, base| crate::amelioration::lot_du_jour(&dossier, d, base, &mesures, &*delai_s),
         poster: |adresse: &str, corps| crate::http::poster_sans_lire(adresse, corps, CONNEXION, DELAI),
+        encore: || Garde::de_ce_processus().peut_envoyer(),
     };
     passe_dans(&cadre, sources);
 }
@@ -419,6 +431,9 @@ pub(crate) fn en_fond(en_passe_horaire: bool) {
     if RELAIS.is_none() || !Garde::de_ce_processus().peut_preparer() {
         return;
     }
+    // `FIL` tenu jusqu'à ce que le fil y soit posé : un fil fini très vite ne laisse pas un second appel en poser un
+    // autre que celui-ci écraserait, et que la passe horaire n'attendrait plus.
+    let mut garde_fil = FIL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if EN_COURS.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -428,7 +443,7 @@ pub(crate) fn en_fond(en_passe_horaire: bool) {
     });
     // Gardé dans les deux cas : la passe horaire est aussi un lancement, et elle attend le fil qui a pris l'envoi.
     match fil {
-        Ok(f) => *FIL.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(f),
+        Ok(f) => *garde_fil = Some(f),
         Err(_) => EN_COURS.store(false, Ordering::SeqCst),
     }
 }
@@ -450,8 +465,12 @@ pub(crate) fn arreter_et_vider() -> std::io::Result<()> {
         return Ok(());
     }
     let dossier = crate::socle::dossier_local();
-    // Un envoi en cours finit son POST (déjà parti) mais ne réécrit rien : il voit `ARRETE`. Le verrou attendu ici
-    // le laisse finir avant d'effacer, pour que rien ne revienne après.
-    let _verrou = crate::socle::Verrou::prendre(&dossier, "envoi.lock", false, DELAI + CONNEXION);
+    // L'envoi de ce processus finit son POST (déjà parti) puis voit `ARRETE` et ne réécrit rien : il est attendu
+    // avant d'effacer, pour que rien ne revienne après. Celui d'un autre Vanguard, par le verrou : une passe entière
+    // (trois POST et la file) ; sans le verrou, rien n'est effacé sous lui, et l'échec est rendu.
+    attendre();
+    let attente = DELAI.saturating_mul(ESSAIS_PAR_JOUR + 1);
+    let _verrou = crate::socle::Verrou::prendre(&dossier, "envoi.lock", false, attente)
+        .map_err(|_| std::io::Error::other("un autre Vanguard envoie"))?;
     file::vider(&dossier)
 }

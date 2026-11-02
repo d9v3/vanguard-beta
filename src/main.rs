@@ -3583,8 +3583,12 @@ async fn main() {
     }
     let matches = ligne_de_commande().get_matches();
     let args = Args::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
-    // Le lot d'amélioration en attente, dans un fil qui ne retarde jamais la sortie (rien sans relais).
-    crate::envoi::en_fond(false);
+    // Le lot d'amélioration en attente, dans un fil qui ne retarde jamais la sortie (rien sans relais). Ni pendant
+    // un autotest, qui se met hors ligne après ce point, ni pour la passe horaire, qui le lance elle-même et
+    // l'attend.
+    if !matches!(args.commande, Some(Commande::Autotest { .. } | Commande::Surveiller)) {
+        crate::envoi::en_fond(false);
+    }
     // Le relevé local ne garde que le nom d'une sous-commande qui est un outil de la table, jamais ses arguments.
     let outil_ligne = matches
         .subcommand_name()
