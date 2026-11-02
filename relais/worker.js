@@ -30,7 +30,8 @@ const GARDE_JOURS = 14;
 // (« jour »). Le programme ne garde un lot que 7 jours (src/envoi) et n'envoie que des jours clos de son fuseau. La
 // borne d'avant fait tenir le dédoublonnage : la marque d'un lot (`vus`) part 14 jours après sa réception, quand son
 // jour est au plus réception + 1, donc 13 jours avant : un renvoi venu après est refusé par cette borne. Celle
-// d'après empêche de marquer d'avance les jours à venir d'un identifiant.
+// d'après empêche de marquer plus loin que demain les jours d'un identifiant ; elle n'empêche pas un tiers qui le
+// connaîtrait de marquer d'avance ceux de la fenêtre (relais/LISEZMOI.md, « Doublons »).
 const LOT_JOURS_AVANT = 12;
 const LOT_JOURS_APRES = 1;
 // Un compteur de refus cesse de monter à cette valeur : un déluge de lots refusés n'écrit plus rien dans D1.

@@ -34,11 +34,13 @@ CREATE TABLE IF NOT EXISTS vus (
 ) STRICT;
 CREATE INDEX IF NOT EXISTS vus_jour ON vus (jour);
 -- Migration d'une base créée avant `vus` : les lots encore là, reçus par l'ancien Worker, sont marqués (le plus
--- ancien jour de réception d'un doublon déjà gardé). Sur une base neuve ou déjà marquée, cela n'ajoute rien.
+-- ancien jour de réception d'un doublon déjà gardé). Sur une base neuve ou déjà marquée, cela n'ajoute rien. Un
+-- `corps` qui ne serait pas du JSON est passé (CASE, évalué dans l'ordre) : il ne fait pas échouer tout le fichier.
 INSERT OR IGNORE INTO vus (installation, jour_lot, jour)
   SELECT json_extract(corps, '$.installation'), json_extract(corps, '$.jour'), MIN(jour)
   FROM lots
-  WHERE json_type(corps, '$.installation') = 'text' AND json_type(corps, '$.jour') = 'text'
+  WHERE CASE WHEN json_valid(corps)
+    THEN json_type(corps, '$.installation') = 'text' AND json_type(corps, '$.jour') = 'text' END
   GROUP BY 1, 2;
 
 -- Lots acceptés du jour par source (« * » : tous) ; effacés le lendemain.

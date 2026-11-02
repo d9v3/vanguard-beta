@@ -51,13 +51,15 @@ base déjà créée sans rien effacer. À chaque mise à jour du Worker, dans ce
 ```sh
 wrangler d1 execute relais --remote --file relais/schema.sql   # avant : le nouveau Worker trouve ses tables
 wrangler deploy                                                 # depuis relais/
-wrangler d1 execute relais --remote --file relais/schema.sql   # après : marque les lots reçus entre-temps
+wrangler d1 execute relais --remote --file relais/schema.sql   # tout de suite après : marque les lots de la bascule
 ```
 
-Le second passage marque comme déjà reçus les lots que l'ancien Worker a gardés pendant la bascule (table `vus`,
-ci-dessous) : sans lui, un renvoi de l'un d'eux serait gardé deux fois. Un nouveau Worker déployé sans le premier
-passage répond 503 aux lots qui portent un identifiant d'installation ; le programme réessaie le lendemain, rien
-n'est perdu.
+Couper la minuterie de relève pendant ces trois commandes. Le dernier passage marque comme déjà reçus les lots que
+l'ancien Worker a gardés sans marque (table `vus`, ci-dessous). Entre `wrangler deploy` et lui, un renvoi de l'un de
+ces lots serait gardé une seconde fois, et une relève dans cet intervalle effacerait les lots avant qu'il ne les
+marque : d'où l'enchaînement immédiat, sans relève. Rien n'est perdu au pire, mais l'auteur lirait un lot deux fois.
+Un nouveau Worker déployé sans le premier passage répond 503 à tout lot qui porte un identifiant, au premier lot du
+jour et à chaque relève (la purge touche `vus`) ; le programme réessaie le lendemain, rien n'est perdu.
 
 ## Ce que fait le relais
 
@@ -85,9 +87,13 @@ l'identifiant d'installation et le jour (`installation`, `jour`) ont déjà ét�
 programme le retire, mais n'est ni gardé ni compté dans les quotas (compté « doublon » avec les refus). Le premier
 reçu reste : le relais ne sait pas qui envoie (l'identifiant n'est pas une preuve, n'importe qui peut poster), donc
 aucun envoi ne remplace un lot déjà gardé. Revers assumé : quelqu'un qui connaîtrait l'identifiant d'un ordinateur
-pourrait faire passer son lot avant le vrai, pour aujourd'hui ou demain seulement ; il ne peut ni l'effacer ni le
-réécrire une fois reçu. Deux envois simultanés sont tranchés par la clé primaire de `vus`, dans la même transaction
-que le lot. Un lot sans identifiant d'installation n'est jamais pris pour un doublon.
+pourrait faire passer ses lots avant les vrais, pour chaque jour de la fenêtre pas encore envoyé (12 jours avant,
+le lendemain), et recommencer chaque jour jusqu'au renouvellement de l'identifiant (90 jours) : cet ordinateur
+deviendrait muet, sans autre signe qu'un compte « doublon » qui monte. Il ne peut ni effacer ni réécrire un lot déjà
+reçu. Une source qui a atteint son quota apprend aussi, par 200 ou 429, si un (identifiant, jour) a déjà été reçu.
+Deux ordinateurs clonés avec le même identifiant n'ont qu'un lot gardé par jour. Deux envois simultanés sont
+tranchés par la clé primaire de `vus`, dans la même transaction que le lot. Un lot sans identifiant d'installation
+n'est jamais pris pour un doublon.
 
 **Limites** : 10 requêtes par minute et par source (limiteur de Cloudflare) ; 50 lots par jour et par source ;
 5 000 lots par jour en tout. Une source est l'empreinte HMAC du préfixe /24 (IPv4) ou /48 (IPv6), avec un sel tiré

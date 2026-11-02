@@ -865,17 +865,19 @@ describe("un seul lot par installation et par jour", () => {
     inserer.run("2026-11-02", JSON.stringify(lotValide({ jour: "2026-11-01" })));
     inserer.run("2026-11-02", JSON.stringify(lotValide({ installation: inst(4) })));
     inserer.run("2026-11-02", JSON.stringify(sans));
+    // Un corps qui ne serait pas du JSON (impossible par ce Worker) ne fait pas échouer la migration.
+    inserer.run("2026-11-02", "pas du json");
     const schema = readFileSync(new URL("../schema.sql", import.meta.url), "utf8");
     db.db.exec(schema);
     db.db.exec(schema);
-    assert.equal(db.lignes("SELECT * FROM lots").length, 5);
+    assert.equal(db.lignes("SELECT * FROM lots").length, 6);
     assert.deepEqual(db.lignes("SELECT installation, jour_lot, jour FROM vus ORDER BY installation, jour_lot"), [
       { installation: inst(4), jour_lot: "2026-11-02", jour: "2026-11-02" },
       { installation: "0123456789abcdef", jour_lot: "2026-11-01", jour: "2026-11-02" },
       { installation: "0123456789abcdef", jour_lot: "2026-11-02", jour: "2026-11-01" },
     ]);
     await muette(await appeler(envoi(lotValide())), 200);
-    assert.equal(db.lignes("SELECT * FROM lots").length, 5);
+    assert.equal(db.lignes("SELECT * FROM lots").length, 6);
     assert.deepEqual(await refus(db), { doublon: 1 });
   });
 });
