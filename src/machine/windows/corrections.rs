@@ -790,8 +790,8 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
             };
             if matches!(acte, Acte::RunRetirer(_)) {
                 trf!(
-                    "Retirer le lancement au démarrage « {n} » de la machine ({cle} ; relu et rejugé ici, jamais une entrée de Windows ou de Defender). Le programme lui-même reste ; sa donnée d'avant est notée",
-                    "Remove the machine startup entry “{n}” ({cle}; read and judged again here, never a Windows or Defender entry). The program itself stays; its previous data is noted"
+                    "Retirer le lancement au démarrage « {n} » de la machine ({cle} ; relu et rejugé ici, jamais une entrée de Windows ou de Defender). Le programme lui-même reste ; sa donnée exacte est notée, mais la remise n'est pas encore proposée dans « Ce que Vanguard a changé »",
+                    "Remove the machine startup entry “{n}” ({cle}; read and judged again here, never a Windows or Defender entry). The program itself stays; its exact data is noted, but putting it back is not offered in “What Vanguard changed” yet"
                 )
             } else {
                 trf!(

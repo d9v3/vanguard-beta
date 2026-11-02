@@ -1253,15 +1253,14 @@ fn retrait_windows(desinstallation: &str, silencieuse: &str) -> Vec<String> {
 
 /// Le retrait d'une valeur Run lue (« RUN|clé|nom|… »). Sous la clé Run ou RunOnce du compte : un geste du compte
 /// (`run-retirer`), fait par Vanguard non élevé dans le HKCU de la personne, jamais derrière l'UAC (la fenêtre
-/// administrateur peut s'ouvrir sous un autre compte, dont le HKCU n'est pas le sien) ; sous HKLM, par PowerShell
-/// élevé et le registre de .NET, au nom exact, vue 64 bits comme la lecture (le -Name de Remove-ItemProperty
-/// accepte des jokers : « *AnyDesk* » viserait toutes les valeurs qui lui ressemblent) ; déjà retirée (par un
-/// désinstalleur) : rien à faire, sans erreur. Un nom que la lecture n'a pas pu rendre tel quel (U+FFFD : mal formé, ou « | » et fin de ligne remplacés
+/// administrateur peut s'ouvrir sous un autre compte, dont le HKCU n'est pas le sien) ; sous HKLM, un acte du
+/// processus élevé (`run-retirer`), sans PowerShell, au nom exact, vue 64 bits comme la lecture, rejugé là-bas par
+/// `retrait_propose` (jamais de joker : « *AnyDesk* » viserait toutes les valeurs qui lui ressemblent) ; déjà
+/// retirée (par un désinstalleur) : rien à faire, sans erreur. Un nom que la lecture n'a pas pu rendre tel quel (U+FFFD : mal formé, ou « | » et fin de ligne remplacés
 /// par `run_du_registre`) n'a pas de retrait : il viserait une autre valeur, ou aucune, en disant « fait ». Une autre
 /// clé du compte non plus.
 #[cfg(any(windows, test))]
 fn retrait_run(cle: &str, nom: &str) -> Option<String> {
-    use crate::commande::ps_texte;
     use crate::machine::gestes;
     if nom.contains('\u{FFFD}') {
         return None;
@@ -1276,13 +1275,14 @@ fn retrait_run(cle: &str, nom: &str) -> Option<String> {
         };
         return gestes::ligne_run_retirer(runonce, &nom.encode_utf16().collect::<Vec<_>>());
     }
-    let chemin = cle.strip_prefix(r"HKLM:\")?;
-    Some(format!(
-        "$k = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64').OpenSubKey('{}', $true); \
-         $k.DeleteValue('{}', $false); $k.Close()",
-        ps_texte(chemin),
-        ps_texte(nom)
-    ))
+    gestes::ligne_run_retirer_machine(cle, &nom.encode_utf16().collect::<Vec<_>>())
+}
+
+/// Dans le processus élevé : le relevé des outils de prise en main à distance, refait ici à cet instant (la même
+/// fonction que le bilan, programmes installés compris), propose-t-il exactement `ligne` ?
+#[cfg(windows)]
+pub(crate) fn retrait_propose(ligne: &str) -> bool {
+    relever_tout().is_some_and(|r| r.trouvailles.iter().any(|t| t.retrait.iter().any(|l| l == ligne)))
 }
 
 /// Les sections de la lecture PowerShell. `None` sans la section des programmes installés : rien n'est fiable.
@@ -1746,7 +1746,7 @@ mod tests {
     }
 
     /// Le retrait d'une valeur Run : sous la clé Run ou RunOnce du compte, un geste du compte au nom exact ; sous
-    /// HKLM, PowerShell élevé et le registre de .NET au nom exact (jamais de joker) ; un nom pas rendu tel quel (U+FFFD) ou une autre clé du compte, aucun retrait.
+    /// HKLM, un acte du processus élevé au nom exact (jamais de joker, jamais de PowerShell) ; un nom pas rendu tel quel (U+FFFD) ou une autre clé du compte, aucun retrait.
     #[test]
     fn retrait_run_du_compte_par_un_geste_du_compte() {
         use crate::machine::gestes::{GesteCompte, analyser_compte};
@@ -1759,16 +1759,18 @@ mod tests {
             du_compte(r"HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce", ""),
             Some(GesteCompte::RetirerRun { runonce: true, nom }) if nom.is_empty()
         ));
-        assert_eq!(
-            retrait_run(
-                r"HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
-                "*Any'Desk*"
-            )
-            .unwrap(),
-            "$k = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64')\
-             .OpenSubKey('Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run', $true); \
-             $k.DeleteValue('*Any''Desk*', $false); $k.Close()"
-        );
+        let machine = retrait_run(
+            r"HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+            "*Any'Desk*",
+        )
+        .unwrap();
+        assert!(matches!(
+            crate::machine::gestes::analyser_acte(&machine),
+            Some(crate::machine::gestes::Acte::RunRetirer(v))
+                if v.cle == crate::machine::gestes::CleRun::Run32
+                    && v.nom.unites() == "*Any'Desk*".encode_utf16().collect::<Vec<_>>().as_slice()
+        ));
+        assert_eq!(retrait_run(r"HKLM:\Software\Ailleurs", "x"), None);
         assert_eq!(
             retrait_run(r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Run", "a\u{FFFD}"),
             None

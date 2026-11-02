@@ -2446,10 +2446,6 @@ pub(crate) const SERVICE_RETIRER: &str = "vanguard:service-retirer ";
 
 /// La clé (sous HKLM, vue 64 bits) où le processus élevé note la donnée d'une valeur de démarrage qu'il retire : seul
 /// un administrateur y écrit, la remise ne lit qu'elle.
-#[cfg_attr(
-    windows,
-    expect(dead_code, reason = "lu par le geste natif du retrait Run, au commit suivant")
-)]
 pub(crate) const RUN_AVANT_CLE: &str = r"SOFTWARE\Vanguard\RunAvant";
 /// Le plus long nom de valeur de démarrage de la machine, en unités UTF-16 : ce que tient une ligne du tube
 /// (`LIGNE_MAX`). Au-delà, la valeur est signalée et se retire à la main.
@@ -2510,10 +2506,6 @@ impl CleRun {
         }
     }
 
-    #[cfg_attr(
-        all(windows, not(test)),
-        expect(dead_code, reason = "lu par le geste natif du retrait Run, au commit suivant")
-    )]
     /// Le chemin sous HKLM, à ouvrir dans la vue 64 bits (WOW6432Node y est nommé, jamais deviné par la redirection).
     pub(crate) fn chemin(self) -> &'static str {
         match self {
@@ -2523,10 +2515,6 @@ impl CleRun {
         }
     }
 
-    #[cfg_attr(
-        all(windows, not(test)),
-        expect(dead_code, reason = "lu par le geste natif du retrait Run, au commit suivant")
-    )]
     /// La clé d'un nom de la lecture (« HKLM:\Software\… », comme PowerShell l'écrit) ; `None` hors de ces trois.
     pub(crate) fn depuis_ps(cle: &str) -> Option<CleRun> {
         let chemin = cle.strip_prefix(r"HKLM:\")?;
@@ -2547,10 +2535,6 @@ impl NomRun {
         (unites.len() <= RUN_MACHINE_NOM_MAX && !unites.contains(&0)).then(|| NomRun(unites.to_vec()))
     }
 
-    #[cfg_attr(
-        all(windows, not(test)),
-        expect(dead_code, reason = "lu par le geste natif du retrait Run, au commit suivant")
-    )]
     pub(crate) fn unites(&self) -> &[u16] {
         &self.0
     }
@@ -2585,10 +2569,6 @@ pub(crate) struct ValeurRunMachine {
 
 /// La ligne qui retire une valeur de démarrage de la machine, d'après la clé de la lecture (« HKLM:\… ») ; `None`
 /// pour une autre clé ou un nom hors de sa forme (la valeur reste signalée, à retirer à la main).
-#[cfg_attr(
-    all(windows, not(test)),
-    expect(dead_code, reason = "lu par le geste natif du retrait Run, au commit suivant")
-)]
 pub(crate) fn ligne_run_retirer_machine(cle: &str, nom: &[u16]) -> Option<String> {
     Some(
         Acte::RunRetirer(ValeurRunMachine {
@@ -2602,10 +2582,6 @@ pub(crate) fn ligne_run_retirer_machine(cle: &str, nom: &[u16]) -> Option<String
 /// Une valeur de démarrage que Vanguard ne retire jamais : celles de Sécurité Windows et de Defender, par leur nom ou
 /// par leur programme. Un programme malveillant qui en prend le nom reste signalé, à retirer à la main : un refus de
 /// trop ne casse rien, un retrait de trop couperait l'icône de la protection.
-#[cfg_attr(
-    all(windows, not(test)),
-    expect(dead_code, reason = "lu par le geste natif du retrait Run, au commit suivant")
-)]
 pub(crate) fn run_protege(nom: &str, programme: &str) -> bool {
     const NOMS: [&str; 4] = [
         "securityhealth",

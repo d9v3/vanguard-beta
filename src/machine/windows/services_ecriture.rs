@@ -668,13 +668,17 @@ pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
         Acte::PartageRetirerAcces(a) => return super::partages_ecriture::retirer_acces(a),
         _ => {}
     }
-    // La persistance et la prise en main à distance (lot 3.5) : la grammaire est là, le geste vient avec sa passe.
-    // Jamais un succès simulé : refusé, rien n'est changé.
+    // Les valeurs de démarrage de la machine, relues, rejugées par les fonctions du bilan, la donnée d'avant notée.
+    match acte {
+        Acte::RunRetirer(v) => return super::run_ecriture::retirer(v),
+        Acte::RunRemettre(v) => return super::run_ecriture::remettre(v),
+        _ => {}
+    }
+    // Le reste de la persistance et la prise en main à distance (lot 3.5) : la grammaire est là, le geste vient avec
+    // sa passe. Jamais un succès simulé : refusé, rien n'est changé.
     if matches!(
         acte,
-        Acte::RunRetirer(_)
-            | Acte::RunRemettre(_)
-            | Acte::TacheDesactiver(_)
+        Acte::TacheDesactiver(_)
             | Acte::TacheReactiver(_)
             | Acte::DemarrageQuarantaine(_)
             | Acte::DemarrageRemettre(_)

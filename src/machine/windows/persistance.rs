@@ -192,13 +192,17 @@ pub(crate) fn lignes_run() -> (Vec<ValeurRun>, Vec<&'static str>) {
 /// La correction d'une valeur Run. Sous HKCU : un geste du compte (`run-retirer`), fait par Vanguard non élevé dans
 /// le HKCU de la personne (la fenêtre administrateur peut s'ouvrir sous un autre compte, dont le HKCU n'est pas le
 /// sien), le nom exact porté mot par mot, demi-caractère isolé compris, jusqu'à la longueur que le registre admet.
-/// Sous HKLM : par le registre de .NET, qui vise le nom exact. Le -Name de Remove-ItemProperty accepte
-/// des jokers, et le nom est choisi par le programme qui se fait relancer : « [svc] » y visait une valeur « s », « v »
-/// ou « c » (la correction ratait), « * » retirait toutes les valeurs de la clé. Un nom mal formé est réécrit mot par
-/// mot : sa version lue avec pertes ne désignerait aucune valeur.
+/// Sous HKLM : un acte du processus élevé (`run-retirer`), sans PowerShell, qui relit la valeur, la rejuge par
+/// `run_signale`, note sa donnée exacte et la retire au nom exact (jamais de joker : le -Name de Remove-ItemProperty
+/// en acceptait, « [svc] » y visait « s », « v » ou « c », « * » toutes les valeurs). Le nom est porté mot par mot,
+/// demi-caractère isolé compris : sa version lue avec pertes ne désignerait aucune valeur. Un nom plus long que ce que
+/// tient une ligne du tube reste signalé, sans correction.
 fn retrait_run(v: &ValeurRun) -> Option<String> {
-    let ps_texte = crate::commande::ps_texte;
-    let (ruche, chemin) = v.cle.split_once(r":\")?;
+    let mots: Vec<u16> = match &v.mots {
+        Some(mots) => mots.clone(),
+        None => v.nom.encode_utf16().collect(),
+    };
+    let (ruche, _) = v.cle.split_once(r":\")?;
     if ruche == "HKCU" {
         let runonce = if v.cle == CLES_RUN[0] {
             false
@@ -207,25 +211,35 @@ fn retrait_run(v: &ValeurRun) -> Option<String> {
         } else {
             return None;
         };
-        let mots: Vec<u16> = match &v.mots {
-            Some(mots) => mots.clone(),
-            None => v.nom.encode_utf16().collect(),
-        };
         return super::gestes::ligne_run_retirer(runonce, &mots);
     }
-    let nom = match &v.mots {
-        Some(mots) => {
-            let codes: Vec<String> = mots.iter().map(|m| format!("0x{m:04X}")).collect();
-            format!("(-join [char[]]({}))", codes.join(","))
-        }
-        None => format!("'{}'", ps_texte(&v.nom)),
+    super::gestes::ligne_run_retirer_machine(v.cle, &mots)
+}
+
+/// Le texte d'une valeur Run relue par le processus élevé, comme le bilan la lit (`valeur_texte`).
+pub(super) fn texte_valeur(valeur: &winreg::RegValue) -> String {
+    valeur_texte(valeur)
+}
+
+/// Dans le processus élevé : le bilan des lancements automatiques, refait sur cette seule valeur relue, propose-t-il
+/// exactement `ligne` ? La même fonction que le bilan (`juger_persistance`), jamais une copie.
+pub(super) fn run_signale(cle: super::gestes::CleRun, nom: &[u16], valeur: &winreg::RegValue, ligne: &str) -> bool {
+    let Some(&nom_cle) = CLES_RUN
+        .iter()
+        .find(|c| super::gestes::CleRun::depuis_ps(c) == Some(cle))
+    else {
+        return false;
     };
-    // La vue 64 bits, comme la lecture : sinon une fenêtre PowerShell 32 bits viserait WOW6432Node.
-    Some(format!(
-        "$k = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64').OpenSubKey('{}', $true); \
-         $k.DeleteValue({nom}); $k.Close()",
-        ps_texte(chemin)
-    ))
+    let v = ValeurRun {
+        cle: nom_cle,
+        nom: String::from_utf16_lossy(nom),
+        mots: String::from_utf16(nom).is_err().then(|| nom.to_vec()),
+        valeur: valeur_texte(valeur),
+    };
+    juger_persistance(&[], &[v], &[])
+        .iter()
+        .filter_map(|c| c.correctif.as_ref())
+        .any(|k| k.commandes.iter().any(|l| l == ligne))
 }
 
 /// Le texte d'un tampon UTF-16 (petit-boutiste) jusqu'au premier zéro.
@@ -1061,7 +1075,7 @@ mod tests {
     /// jamais un motif (« * » retirait toutes les valeurs de la clé, « [svc] » n'en retirait aucune).
     #[test]
     fn retrait_run_sans_joker() {
-        use super::super::gestes::{GesteCompte, analyser_compte};
+        use super::super::gestes::{Acte, CleRun, GesteCompte, analyser_acte, analyser_compte};
         let cle = r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Run";
         // Sous HKCU : un geste du compte, qui porte le nom exact (aucun joker possible), fait par Vanguard non élevé.
         for nom in ["*", "[svc]", "up?date", "l'agent", ""] {
@@ -1080,21 +1094,28 @@ mod tests {
             analyser_compte(&c[0].correctif.as_ref().unwrap().commandes[0]),
             Some(GesteCompte::RetirerRun { runonce: true, .. })
         ));
-        // Sous HKLM : par le registre de .NET, nom exact ; valeur par défaut, nom vide.
-        for nom in ["*", "[svc]", "l'agent", ""] {
-            let v = valeur_run(&format!(
-                r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run|{nom}|C:\Users\Public\x.exe"
-            ));
-            let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
-            let commande = &c[0].correctif.as_ref().unwrap().commandes[0];
-            assert!(!commande.contains("Remove-ItemProperty"), "{commande}");
-            assert!(
-                commande.contains(&format!("DeleteValue('{}')", crate::commande::ps_texte(nom))),
-                "{commande}"
-            );
-            assert!(commande.contains(
-                r"OpenBaseKey('LocalMachine', 'Registry64').OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run', $true)"
-            ));
+        // Sous HKLM : un acte du processus élevé, sans PowerShell, au nom exact ; valeur par défaut, nom vide.
+        for (cle, attendue) in [
+            (r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run", CleRun::Run),
+            (
+                r"HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce",
+                CleRun::RunOnce,
+            ),
+            (
+                r"HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+                CleRun::Run32,
+            ),
+        ] {
+            for nom in ["*", "[svc]", "l'agent", ""] {
+                let v = valeur_run(&format!(r"{cle}|{nom}|C:\Users\Public\x.exe"));
+                let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
+                let commande = &c[0].correctif.as_ref().unwrap().commandes[0];
+                let n: Vec<u16> = nom.encode_utf16().collect();
+                assert!(
+                    matches!(analyser_acte(commande), Some(Acte::RunRetirer(r)) if r.cle == attendue && r.nom.unites() == n.as_slice()),
+                    "{commande}"
+                );
+            }
         }
         // Un nom au demi-caractère de substitution isolé est jugé (montré avec pertes), et la correction le porte mot
         // par mot : dans la ligne du compte sous HKCU, dans le script sous HKLM.
@@ -1111,7 +1132,18 @@ mod tests {
         v.nom = "a\u{FFFD}".to_string();
         v.mots = Some(vec![0x61, 0xD800]);
         let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
-        assert!(c[0].correctif.as_ref().unwrap().commandes[0].contains("DeleteValue((-join [char[]](0x0061,0xD800)))"));
+        assert!(matches!(
+            analyser_acte(&c[0].correctif.as_ref().unwrap().commandes[0]),
+            Some(Acte::RunRetirer(r)) if r.nom.unites() == [0x61, 0xD800]
+        ));
+        // Sous HKLM, au-delà de ce que tient une ligne du tube : jugé, sans correction.
+        let v = valeur_run(&format!(
+            r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run|{}|C:\Users\Public\x.exe",
+            "n".repeat(super::super::gestes::RUN_MACHINE_NOM_MAX + 1)
+        ));
+        let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
+        assert_eq!(c[0].probleme, Some(Niveau::Eleve));
+        assert!(c[0].correctif.is_none());
         // Un nom très long (jusqu'à la limite du registre) a son retrait ; au-delà, aucun nom réel : jugé, sans
         // correction (jamais un autre nom visé).
         let v = valeur_run(&format!(r"{cle}|{}|C:\Users\Public\x.exe", "n".repeat(16_383)));

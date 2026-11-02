@@ -54,6 +54,7 @@ mod quarantaine;
 mod regles;
 mod reseau_ecriture;
 pub(crate) mod routes;
+mod run_ecriture;
 pub(crate) mod securite;
 mod services;
 mod services_ecriture;
