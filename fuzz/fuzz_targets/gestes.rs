@@ -109,6 +109,25 @@ fn redirections_restantes(h: &[u8]) -> Vec<String> {
     r
 }
 
+/// Un composant de chemin qu'un acte de la persistance peut porter, écrit indépendamment de `gestes` : non vide, ni
+/// « . » ni « .. », sans caractère interdit par Windows, sans espace ni point final, jamais un périphérique de DOS.
+fn composant_admis(x: &str) -> bool {
+    let interdits = ['/', ':', '*', '?', '"', '<', '>', '|', '\\', '\0'];
+    let tige = x.split('.').next().unwrap_or(x).trim_end_matches(' ').to_ascii_uppercase();
+    let peripherique = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].contains(&tige.as_str())
+        || ((tige.starts_with("COM") || tige.starts_with("LPT"))
+            && tige.chars().count() == 4
+            && tige.chars().last().is_some_and(|d| d.is_ascii_digit() || "¹²³".contains(d)));
+    !x.is_empty()
+        && x != "."
+        && x != ".."
+        && !x.contains(interdits)
+        && !x.chars().any(char::is_control)
+        && !x.ends_with(' ')
+        && !x.ends_with('.')
+        && !peripherique
+}
+
 libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
     let Ok(texte) = std::str::from_utf8(octets) else {
         return;
@@ -320,10 +339,23 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                 // Une tâche hors de \Microsoft, chaque composant sûr ; reconstruite à l'identique.
                 gestes::Acte::TacheDesactiver(ref t) | gestes::Acte::TacheReactiver(ref t) => {
                     let c = t.texte();
-                    let bas = c.to_lowercase();
-                    assert!(c.starts_with('\\') && !c.contains("\\\\") && !c.contains(['/', ':', '\0']));
-                    assert!(bas != r"\microsoft" && !bas.starts_with(r"\microsoft\"));
-                    assert!(c.split('\\').skip(1).all(|x| x != ".." && x != "." && !x.is_empty()));
+                    assert!(c.starts_with('\\') && !c.contains("\\\\"));
+                    // Le premier composant, ramené à l'ASCII comme une table de casse le ferait au pire : jamais
+                    // « microsoft ».
+                    let premier: String = c[1..]
+                        .split('\\')
+                        .next()
+                        .unwrap_or("")
+                        .chars()
+                        .map(|x| match x {
+                            '\u{131}' | '\u{130}' => 'i',
+                            '\u{17f}' => 's',
+                            '\u{212a}' => 'k',
+                            x => x.to_ascii_lowercase(),
+                        })
+                        .collect();
+                    assert_ne!(premier, "microsoft");
+                    assert!(c.split('\\').skip(1).all(composant_admis));
                     assert!(c.encode_utf16().count() <= gestes::TACHE_CHEMIN_MAX);
                     assert_eq!(gestes::CheminTache::nouveau(c).as_ref(), Some(t));
                 }
@@ -332,15 +364,16 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                     let c = f.texte();
                     let o = c.as_bytes();
                     assert!(o.len() > 3 && o[0].is_ascii_alphabetic() && o[1] == b':' && o[2] == b'\\');
-                    assert!(!c[2..].contains([':', '/', '\0']) && !c.contains("\\\\"));
-                    assert!(c[3..].split('\\').all(|x| x != ".." && x != "." && !x.is_empty()));
+                    // Jamais un nom court de DOS (« PROGRA~1 »).
+                    assert!(!c.contains("\\\\") && !('0'..='9').any(|d| c.contains(&format!("~{d}"))));
+                    assert!(c[3..].split('\\').all(composant_admis));
                     assert!(c.encode_utf16().count() <= gestes::CHEMIN_MAX);
                     assert_eq!(gestes::CheminFichier::nouveau(c).as_ref(), Some(f));
                 }
                 gestes::Acte::WmiAbonnementRetirer(ref w) | gestes::Acte::WmiAbonnementRemettre(ref w) => {
                     let n = w.nom.texte();
                     assert!(!n.is_empty() && n.encode_utf16().count() <= gestes::CONSUMER_NOM_MAX);
-                    assert!(!n.chars().any(char::is_control) && !a.durcit());
+                    assert!(!n.chars().any(char::is_control) && !n.contains(['"', '\'', '\\']) && !a.durcit());
                 }
                 // Un service : irréversible, donc une protection ; jamais de « \ » ni de « / ».
                 gestes::Acte::ServiceRetirer(ref n) => {

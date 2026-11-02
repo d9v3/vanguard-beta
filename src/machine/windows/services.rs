@@ -94,7 +94,7 @@ const SERVICE_WIN32: u32 = 0x30;
 /// ProgramData, ALLUSERSPROFILE et PUBLIC par les dossiers connus (SHGetKnownFolderPath), les autres lues dans
 /// Session Manager\Environment, que seul un administrateur écrit. Jamais l'environnement de ce processus : le
 /// processus élevé hérite de celui du compte qui l'élève (HKCU\Environment, `set` avant de lancer Vanguard).
-fn variable_systeme(nom: &str) -> Option<String> {
+pub(super) fn variable_systeme(nom: &str) -> Option<String> {
     // Le dossier de Windows tel que Windows le donne, ou rien : le repli de `dossiers()` (parent de System32) est une
     // supposition, et une valeur supposée ne doit pas mener à une écriture.
     static WINDOWS: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();

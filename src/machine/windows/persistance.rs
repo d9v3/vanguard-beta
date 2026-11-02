@@ -10,9 +10,15 @@ pub(super) fn lancement_suspect(exe: &str, args: &str) -> Option<&'static str> {
     let args = args.to_lowercase();
     let tout = format!("{exe} {args}");
     let temporaire = |t: &str| {
-        ["\\appdata\\local\\temp\\", "%temp%", "%tmp%", "\\windows\\temp\\"]
-            .iter()
-            .any(|d| t.contains(d))
+        [
+            "\\appdata\\local\\temp\\",
+            "%temp%",
+            "%tmp%",
+            "%localappdata%\\temp\\",
+            "\\windows\\temp\\",
+        ]
+        .iter()
+        .any(|d| t.contains(d))
     };
     let public = |t: &str| {
         ["\\users\\public\\", "\\$recycle.bin\\", "%public%"]
@@ -111,6 +117,13 @@ fn developper(texte: &str, variable: impl Fn(&str) -> Option<String>) -> String 
 /// Une valeur du registre en texte, comme Get-ItemProperty la rend : REG_EXPAND_SZ développée (sinon
 /// « %APPDATA%\… » échapperait au jugement), plusieurs chaînes jointes par une espace, nombres en décimal.
 fn valeur_texte(valeur: &winreg::RegValue) -> String {
+    valeur_texte_selon(valeur, &|n| std::env::var(n).ok())
+}
+
+/// `valeur_texte`, les variables de REG_EXPAND_SZ prises à `variable` : celles du compte pour le bilan, celles du
+/// système (`services::variable_systeme`) dans le processus élevé, qui hérite de l'environnement du compte qui l'élève
+/// (HKCU\Environment) : un ProgramFiles ou un windir posé là y ferait passer une valeur saine pour suspecte.
+fn valeur_texte_selon(valeur: &winreg::RegValue, variable: &dyn Fn(&str) -> Option<String>) -> String {
     use winreg::enums::RegType::{REG_DWORD, REG_EXPAND_SZ, REG_MULTI_SZ, REG_QWORD, REG_SZ};
     use winreg::types::FromRegValue;
     // Une chaîne que winreg refuse (UTF-16 mal formé) est lue avec pertes plutôt que rendue vide : une valeur Run
@@ -118,7 +131,7 @@ fn valeur_texte(valeur: &winreg::RegValue) -> String {
     let texte = || String::from_reg_value(valeur).unwrap_or_else(|_| utf16_zero(&valeur.bytes));
     match valeur.vtype {
         REG_SZ | REG_MULTI_SZ => texte().replace('\n', " "),
-        REG_EXPAND_SZ => developper(&texte(), |n| std::env::var(n).ok()),
+        REG_EXPAND_SZ => developper(&texte(), variable),
         REG_DWORD => u32::from_reg_value(valeur).map(|n| n.to_string()).unwrap_or_default(),
         REG_QWORD => u64::from_reg_value(valeur).map(|n| n.to_string()).unwrap_or_default(),
         _ => String::new(),
@@ -144,6 +157,17 @@ pub(crate) struct ValeurRun {
 /// clés Run de Vanguard : « Mon ordinateur est-il contrôlé ? » et « Logiciels espions » en avaient chacun une copie, qui
 /// jetait sans rien dire les valeurs que winreg ne rendait pas et ne lisait pas toutes les clés.
 pub(crate) fn lignes_run() -> (Vec<ValeurRun>, Vec<&'static str>) {
+    lignes_run_selon(&|n| std::env::var(n).ok())
+}
+
+/// `lignes_run` pour le processus élevé : les variables de REG_EXPAND_SZ prises au système seulement
+/// (`valeur_texte_selon`), jamais à l'environnement hérité du compte qui l'élève. Une variable propre au compte reste
+/// telle quelle (« %TEMP% ») : le jugement la reconnaît écrite ainsi, ou la valeur n'est pas retirée.
+pub(crate) fn lignes_run_systeme() -> (Vec<ValeurRun>, Vec<&'static str>) {
+    lignes_run_selon(&super::services::variable_systeme)
+}
+
+fn lignes_run_selon(variable: &dyn Fn(&str) -> Option<String>) -> (Vec<ValeurRun>, Vec<&'static str>) {
     use std::os::windows::ffi::OsStrExt;
     use winreg::RegKey;
     use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
@@ -182,7 +206,7 @@ pub(crate) fn lignes_run() -> (Vec<ValeurRun>, Vec<&'static str>) {
                 cle: nom_cle,
                 nom: nom.to_string_lossy().into_owned(),
                 mots,
-                valeur: valeur_texte(&valeur),
+                valeur: valeur_texte_selon(&valeur, variable),
             });
         }
     }
@@ -216,9 +240,10 @@ fn retrait_run(v: &ValeurRun) -> Option<String> {
     super::gestes::ligne_run_retirer_machine(v.cle, &mots)
 }
 
-/// Le texte d'une valeur Run relue par le processus élevé, comme le bilan la lit (`valeur_texte`).
+/// Le texte d'une valeur Run relue par le processus élevé, comme le bilan la lit, les variables prises au système
+/// (`valeur_texte_selon`).
 pub(super) fn texte_valeur(valeur: &winreg::RegValue) -> String {
-    valeur_texte(valeur)
+    valeur_texte_selon(valeur, &super::services::variable_systeme)
 }
 
 /// Dans le processus élevé : le bilan des lancements automatiques, refait sur cette seule valeur relue, propose-t-il
@@ -234,7 +259,7 @@ pub(super) fn run_signale(cle: super::gestes::CleRun, nom: &[u16], valeur: &winr
         cle: nom_cle,
         nom: String::from_utf16_lossy(nom),
         mots: String::from_utf16(nom).is_err().then(|| nom.to_vec()),
-        valeur: valeur_texte(valeur),
+        valeur: texte_valeur(valeur),
     };
     juger_persistance(&[], &[v], &[])
         .iter()
@@ -1068,6 +1093,49 @@ mod tests {
             nom: nom.to_string(),
             mots: None,
             valeur: valeur.to_string(),
+        }
+    }
+
+    /// Le rejugement du processus élevé : une valeur suspecte de chacune des trois clés de la machine est signalée par
+    /// la ligne même que le bilan propose (clé et nom compris), une valeur saine, une autre ligne ou une autre clé
+    /// jamais. Une variable propre au compte n'est pas développée par l'environnement hérité : laissée telle quelle,
+    /// elle reste jugée.
+    #[test]
+    fn run_signale_rejuge_comme_le_bilan() {
+        use super::super::gestes::{CleRun, ligne_run_retirer_machine};
+        use std::borrow::Cow;
+        use winreg::enums::RegType::{REG_EXPAND_SZ, REG_SZ};
+        let valeur = |vtype, s: &str| winreg::RegValue {
+            bytes: Cow::Owned(format!("{s}\0").encode_utf16().flat_map(u16::to_le_bytes).collect()),
+            vtype,
+        };
+        let nom: Vec<u16> = "Agent".encode_utf16().collect();
+        let suspecte = valeur(REG_SZ, r"C:\Users\Public\x.exe");
+        for cle in CleRun::TOUTES {
+            let ps = format!(r"HKLM:\{}", cle.chemin());
+            let ligne = ligne_run_retirer_machine(&ps, &nom).unwrap();
+            assert!(run_signale(cle, &nom, &suspecte, &ligne), "{ligne}");
+            assert!(!run_signale(
+                cle,
+                &nom,
+                &valeur(REG_SZ, r"C:\Program Files\Sain\sain.exe"),
+                &ligne
+            ));
+            // Un autre nom, une autre clé : pas la ligne proposée.
+            let autre: Vec<u16> = "Autre".encode_utf16().collect();
+            assert!(!run_signale(cle, &autre, &suspecte, &ligne));
+            for ailleurs in CleRun::TOUTES.into_iter().filter(|c| *c != cle) {
+                assert!(!run_signale(ailleurs, &nom, &suspecte, &ligne), "{ligne}");
+            }
+            // %TEMP% pris au système (C:\Windows\Temp) ou laissé tel quel, %LOCALAPPDATA% (propre au compte) laissé
+            // tel quel : un dossier temporaire dans tous les cas.
+            assert!(run_signale(cle, &nom, &valeur(REG_EXPAND_SZ, r"%TEMP%\x.exe"), &ligne));
+            assert!(run_signale(
+                cle,
+                &nom,
+                &valeur(REG_EXPAND_SZ, r"%LOCALAPPDATA%\Temp\x.exe"),
+                &ligne
+            ));
         }
     }
 

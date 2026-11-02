@@ -2605,24 +2605,59 @@ pub(crate) fn run_protege(nom: &str, programme: &str) -> bool {
         || exe.contains(r"\microsoft\windows defender\")
 }
 
-/// Un composant de chemin admis : non vide, ni « . » ni « .. », sans caractère de contrôle ni `/ : * ? " < > |`, et
-/// sans espace ni point final (Windows les ôte : « x.lnk. » désignerait « x.lnk »).
+/// Un composant de chemin admis : non vide, ni « . » ni « .. », sans caractère de contrôle ni `/ : * ? " < > |`, sans
+/// espace ni point final (Windows les ôte : « x.lnk. » désignerait « x.lnk »), et jamais un nom de périphérique de
+/// DOS (`peripherique_dos` : « NUL.lnk » ouvrirait le périphérique, pas un fichier).
 fn composant_sur(c: &str) -> bool {
     let interdit = |x: char| x.is_control() || matches!(x, '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\\');
-    !c.is_empty() && c != "." && c != ".." && !c.chars().any(interdit) && !c.ends_with([' ', '.'])
+    !c.is_empty()
+        && c != "."
+        && c != ".."
+        && !c.chars().any(interdit)
+        && !c.ends_with([' ', '.'])
+        && !peripherique_dos(c)
+}
+
+/// Un nom que Windows lit comme un périphérique, quelle que soit l'extension : CON, PRN, AUX, NUL, CONIN$, CONOUT$,
+/// COM0 à COM9 et LPT0 à LPT9 (chiffres en exposant compris), en majuscules ou non, suivis ou non d'espaces.
+fn peripherique_dos(c: &str) -> bool {
+    let tige = c
+        .split('.')
+        .next()
+        .unwrap_or(c)
+        .trim_end_matches(' ')
+        .to_ascii_lowercase();
+    if ["con", "prn", "aux", "nul", "conin$", "conout$"].contains(&tige.as_str()) {
+        return true;
+    }
+    let mut lettres = tige.chars();
+    let debut: String = lettres.by_ref().take(3).collect();
+    let chiffre: Vec<char> = lettres.collect();
+    (debut == "com" || debut == "lpt")
+        && matches!(chiffre.as_slice(), [d] if d.is_ascii_digit() || matches!(d, '¹' | '²' | '³'))
+}
+
+/// Le premier composant d'un chemin de tâche pourrait-il être « Microsoft » pour Windows ? Le planificateur compare
+/// sans tenir compte de la casse, avec sa propre table : « ı », « ſ » ou « K » (Kelvin) y valent peut-être « I »,
+/// « S », « K ». Tout caractère non ASCII compte donc comme la lettre attendue : refusé au moindre doute.
+fn peut_etre_microsoft(composant: &str) -> bool {
+    composant.chars().count() == "microsoft".len()
+        && composant
+            .chars()
+            .zip("microsoft".chars())
+            .all(|(c, m)| !c.is_ascii() || c.to_ascii_lowercase() == m)
 }
 
 /// Un chemin de tâche planifiée : « \dossier\tâche », chaque composant sûr (`composant_sur`), `TACHE_CHEMIN_MAX`
 /// unités au plus, et jamais sous \Microsoft\ (les tâches de Windows, que le bilan ne lit pas : une ligne qui en
-/// désigne une est forgée).
+/// désigne une est forgée), même écrit avec une lettre non ASCII (`peut_etre_microsoft`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CheminTache(String);
 
 impl CheminTache {
     pub(crate) fn nouveau(chemin: &str) -> Option<CheminTache> {
         let reste = chemin.strip_prefix('\\')?;
-        let bas = chemin.to_lowercase();
-        let microsoft = bas == r"\microsoft" || bas.starts_with(r"\microsoft\");
+        let microsoft = peut_etre_microsoft(reste.split('\\').next().unwrap_or(reste));
         let bon =
             chemin.encode_utf16().count() <= TACHE_CHEMIN_MAX && !microsoft && reste.split('\\').all(composant_sur);
         bon.then(|| CheminTache(chemin.to_string()))
@@ -2643,7 +2678,9 @@ impl CheminTache {
 
 /// Un chemin de fichier local complet : « X:\… », chaque composant sûr (`composant_sur` : ni « .. », ni flux
 /// alternatif « : »), `CHEMIN_MAX` unités au plus. Jamais « \\?\ », « \\.\ » ni un partage (« \\serveur\… ») : ils
-/// commencent par « \ ». Le processus élevé le résout encore et le compare au dossier qu'il lit lui-même.
+/// commencent par « \ ». Jamais un nom court de DOS (« PROGRA~1 » : « ~ » suivi d'un chiffre), qui désignerait un
+/// autre fichier que celui que la ligne montre. Le processus élevé le résout encore et le compare au dossier qu'il lit
+/// lui-même.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CheminFichier(String);
 
@@ -2653,7 +2690,8 @@ impl CheminFichier {
         let lecteur = matches!(o, [l, b':', b'\\', _, ..] if l.is_ascii_alphabetic());
         let bon = lecteur
             && chemin.encode_utf16().count() <= CHEMIN_MAX
-            && chemin.get(3..).is_some_and(|r| r.split('\\').all(composant_sur));
+            && chemin.get(3..).is_some_and(|r| r.split('\\').all(composant_sur))
+            && !nom_court_dos(chemin);
         bon.then(|| CheminFichier(chemin.to_string()))
     }
 
@@ -2668,6 +2706,14 @@ impl CheminFichier {
     fn lire(hex: &str) -> Option<CheminFichier> {
         CheminFichier::nouveau(&lire_texte_hex(hex, CHEMIN_MAX)?).filter(|c| c.hex() == hex)
     }
+}
+
+/// Un nom court de DOS dans un chemin : « ~ » suivi d'un chiffre (« PROGRA~1 »).
+fn nom_court_dos(chemin: &str) -> bool {
+    chemin
+        .as_bytes()
+        .windows(2)
+        .any(|p| matches!(p, [b'~', d] if d.is_ascii_digit()))
 }
 
 /// La classe d'un consumer WMI qui lance quelque chose : une commande ou un script.
@@ -2696,14 +2742,16 @@ impl ClasseConsumer {
     }
 }
 
-/// Un nom de consumer WMI : 1 à `CONSUMER_NOM_MAX` unités UTF-16, sans caractère de contrôle.
+/// Un nom de consumer WMI : 1 à `CONSUMER_NOM_MAX` unités UTF-16, sans caractère de contrôle ni `" ' \` (le nom entre
+/// dans un chemin d'objet WMI entre guillemets : il ne peut ni en sortir ni y glisser un échappement).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NomConsumer(String);
 
 impl NomConsumer {
     pub(crate) fn nouveau(nom: &str) -> Option<NomConsumer> {
         let n = nom.encode_utf16().count();
-        (n > 0 && n <= CONSUMER_NOM_MAX && !nom.chars().any(char::is_control)).then(|| NomConsumer(nom.to_string()))
+        let interdit = |c: char| c.is_control() || matches!(c, '"' | '\'' | '\\');
+        (n > 0 && n <= CONSUMER_NOM_MAX && !nom.chars().any(interdit)).then(|| NomConsumer(nom.to_string()))
     }
 
     pub(crate) fn texte(&self) -> &str {
@@ -6277,6 +6325,11 @@ mod tests {
             r"\Microsoft",
             r"\microsoft\windows\Defrag\ScheduledDefrag",
             r"\MICROSOFT\Windows\x",
+            // Une lettre non ASCII que la table de casse de Windows peut ramener à « Microsoft ».
+            "\\M\u{131}crosoft\\Windows\\x",
+            "\\Micro\u{17f}oft",
+            "\\Micro\u{17f}oft\\x",
+            r"\a\NUL",
             r"\a/b",
             r"\a:b",
             "\\a\u{0}b",
@@ -6314,8 +6367,26 @@ mod tests {
             r"C:\a\x.lnk ",
             r"C:\a\*.lnk",
             r#"C:\a\"x".lnk"#,
+            // Périphériques de DOS, quelle que soit l'extension, et noms courts.
+            r"C:\a\NUL.lnk",
+            r"C:\a\con",
+            r"C:\a\Com1.lnk",
+            r"C:\a\lpt9 .lnk",
+            "C:\\a\\COM\u{b9}.lnk",
+            r"C:\a\CONOUT$.lnk",
+            r"C:\PROGRA~1\x.lnk",
+            r"C:\a\XLNK~12.LNK",
         ] {
             assert!(analyser_acte(&d(c)).is_none(), "{c:?}");
+        }
+        // Ce qui y ressemble sans en être reste admis.
+        for c in [
+            r"C:\a\console.lnk",
+            r"C:\a\COM10.lnk",
+            r"C:\a\nulle.lnk",
+            r"C:\a\x~y.lnk",
+        ] {
+            assert!(analyser_acte(&d(c)).is_some(), "{c:?}");
         }
         // Plus de 32 767 unités : refusé (et la ligne dépasse de toute façon le tube).
         let long = format!(r"C:\{}", "a".repeat(CHEMIN_MAX));
@@ -6347,6 +6418,10 @@ mod tests {
             ("log", "a"),
             ("script", "a\u{0}"),
             ("script", "a\tb"),
+            // Ne sort pas des guillemets d'un chemin d'objet WMI, n'y glisse pas d'échappement.
+            ("script", "a\"b"),
+            ("script", "a'b"),
+            ("commande", "a\\b"),
         ] {
             assert!(analyser_acte(&ligne_wmi(classe, n)).is_none(), "{classe} {n:?}");
         }
@@ -6371,12 +6446,22 @@ mod tests {
 
     #[test]
     fn persistance_hexadecimal_canonique() {
-        // Majuscules, NUL, unités incomplètes, UTF-16 orphelin (un chemin doit être un texte) : refusé.
-        for hex in ["5C004100", "5c000000", "5c0041", "5c0000d8", ""] {
-            for verbe in [TACHE_DESACTIVER, DEMARRAGE_QUARANTAINE, SERVICE_RETIRER] {
-                let l = format!("{verbe}{hex}");
+        // Un contenu valide pour chaque verbe : écrit en majuscules, il est refusé pour cette seule raison.
+        for (verbe, valide) in [
+            (TACHE_DESACTIVER, r"\A"),
+            (DEMARRAGE_QUARANTAINE, r"C:\x.lnk"),
+            (SERVICE_RETIRER, "z"),
+        ] {
+            let hex = hex_texte(valide);
+            assert!(valide_seule(&format!("{verbe}{hex}")), "{valide}");
+            let l = format!("{verbe}{}", hex.to_ascii_uppercase());
+            assert!(analyser_acte(&l).is_none(), "{l}");
+            // NUL ajouté, unité incomplète, demi-caractère orphelin, rien : refusé.
+            for suite in ["0000", "41", "00d8"] {
+                let l = format!("{verbe}{hex}{suite}");
                 assert!(analyser_acte(&l).is_none(), "{l}");
             }
+            assert!(analyser_acte(verbe).is_none() && analyser_acte(verbe.trim_end()).is_none());
         }
         // Un octet non ASCII : refusé avant toute lecture.
         assert!(analyser_acte(&format!("{SERVICE_RETIRER}é")).is_none());

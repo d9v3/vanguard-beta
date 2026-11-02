@@ -991,6 +991,13 @@ fn relever_tout() -> Option<Releve> {
 
 #[cfg(windows)]
 fn relever_tout() -> Option<Releve> {
+    relever_tout_selon(crate::machine::windows::persistance::lignes_run)
+}
+
+/// Le relevé, les clés Run lues par `lignes_run` : `lignes_run` pour le bilan et le parcours, `lignes_run_systeme` dans
+/// le processus élevé (`retrait_propose`).
+#[cfg(windows)]
+fn relever_tout_selon(lignes_run: fn() -> RunLues) -> Option<Releve> {
     // Tout est lu par Vanguard lui-même, sans PowerShell (c'était la vérification la plus lente du bilan, plus de 3 s) :
     // programmes installés et clés Run dans le registre, processus et connexions par les fonctions de Windows,
     // fichiers posés par une lecture des dossiers. Le texte garde les sections du script d'avant (INS, PRC, CNX, RUN,
@@ -998,7 +1005,7 @@ fn relever_tout() -> Option<Releve> {
     let mut sortie = String::new();
     let installes = installes_du_registre(&mut sortie);
     let en_cours = processus_et_connexions(&mut sortie);
-    let run = run_du_registre(&mut sortie);
+    let run = run_du_registre(&mut sortie, lignes_run);
     let fichiers = fichiers_poses_windows(&mut sortie);
     let services = services_du_registre();
     // Clé des services illisible : section vide (voir là).
@@ -1014,6 +1021,10 @@ fn relever_tout() -> Option<Releve> {
         },
     })
 }
+
+/// Ce que rend la lecture des clés Run : les valeurs, et les clés qui n'ont pas pu être lues en entier.
+#[cfg(windows)]
+type RunLues = (Vec<crate::machine::windows::persistance::ValeurRun>, Vec<&'static str>);
 
 /// Une valeur sur une ligne de section : sans saut de ligne (qui ouvrirait une fausse ligne).
 #[cfg(windows)]
@@ -1100,9 +1111,9 @@ fn processus_et_connexions(sortie: &mut String) -> bool {
 /// (`machine::windows::persistance::lignes_run`), qui garde les noms mal formés et lit aussi RunOnce. `false` : une
 /// clé n'a pas pu être lue en entier (le démarrage est alors dit non vérifié).
 #[cfg(windows)]
-fn run_du_registre(sortie: &mut String) -> bool {
+fn run_du_registre(sortie: &mut String, lignes_run: fn() -> RunLues) -> bool {
     use std::fmt::Write;
-    let (valeurs, illisibles) = crate::machine::windows::persistance::lignes_run();
+    let (valeurs, illisibles) = lignes_run();
     for v in valeurs {
         // Un « | » ou une fin de ligne dans le nom couperait la ligne ailleurs : remplacés par U+FFFD, comme un nom mal
         // formé, ce nom n'a pas de retrait (`retrait_run`), jamais celui d'une autre valeur.
@@ -1278,11 +1289,26 @@ fn retrait_run(cle: &str, nom: &str) -> Option<String> {
     gestes::ligne_run_retirer_machine(cle, &nom.encode_utf16().collect::<Vec<_>>())
 }
 
-/// Dans le processus élevé : le relevé des outils de prise en main à distance, refait ici à cet instant (la même
-/// fonction que le bilan, programmes installés compris), propose-t-il exactement `ligne` ?
+/// Dans le processus élevé : le bilan des outils de prise en main à distance, refait ici à cet instant (le même relevé,
+/// programmes installés compris, et le même jugement, `juger`), propose-t-il exactement `ligne` ? Un outil en cours
+/// ou connecté n'a pas de correction (Vanguard ne coupe pas une connexion en cours), un outil fourni avec Windows
+/// fermé n'est pas un constat : rien n'est retiré pour eux. Les clés Run sont lues avec les variables du système
+/// (`lignes_run_systeme`), jamais avec l'environnement hérité du compte qui élève.
 #[cfg(windows)]
 pub(crate) fn retrait_propose(ligne: &str) -> bool {
-    relever_tout().is_some_and(|r| r.trouvailles.iter().any(|t| t.retrait.iter().any(|l| l == ligne)))
+    let Some(r) = relever_tout_selon(crate::machine::windows::persistance::lignes_run_systeme) else {
+        return false;
+    };
+    propose_par(&juger(&r.trouvailles, aujourd_hui()), ligne)
+}
+
+/// Un des constats corrige-t-il par exactement `ligne` ?
+#[cfg(any(windows, test))]
+fn propose_par(constats: &[Constat], ligne: &str) -> bool {
+    constats
+        .iter()
+        .filter_map(|c| c.correctif.as_ref())
+        .any(|k| k.commandes.iter().any(|l| l == ligne))
 }
 
 /// Les sections de la lecture PowerShell. `None` sans la section des programmes installés : rien n'est fiable.
@@ -1692,6 +1718,29 @@ mod tests {
         let c = &juger(&ouvert, aujourd_hui)[0];
         assert_eq!(c.probleme, Some(Niveau::Eleve));
         assert!(c.message.contains("Assistance rapide"), "{}", c.message);
+    }
+
+    /// Le rejugement du processus élevé (`retrait_propose`) : seule une ligne qu'un constat corrige passe, jamais
+    /// celle d'un outil en cours ou d'un outil fourni avec Windows fermé, même si une trouvaille la porte.
+    #[test]
+    fn le_processus_eleve_ne_retire_que_ce_que_le_bilan_corrige() {
+        let aujourd_hui = jour("2026-10-18");
+        let ligne = "vanguard:run-retirer run 4100";
+        let ferme = [trouvaille("AnyDesk", Trace::Demarrage, None, &[ligne])];
+        assert!(propose_par(&juger(&ferme, aujourd_hui), ligne));
+        assert!(!propose_par(
+            &juger(&ferme, aujourd_hui),
+            "vanguard:run-retirer run 4200"
+        ));
+        for trace in [Trace::EnCours { connecte: false }, Trace::EnCours { connecte: true }] {
+            let ouvert = [
+                trouvaille("AnyDesk", Trace::Demarrage, None, &[ligne]),
+                trouvaille("AnyDesk", trace, None, &[]),
+            ];
+            assert!(!propose_par(&juger(&ouvert, aujourd_hui), ligne));
+        }
+        let integre = [trouvaille("Assistance rapide", Trace::Demarrage, None, &[ligne])];
+        assert!(!propose_par(&juger(&integre, aujourd_hui), ligne));
     }
 
     #[test]

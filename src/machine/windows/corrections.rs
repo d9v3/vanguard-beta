@@ -795,8 +795,8 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
                 )
             } else {
                 trf!(
-                    "Remettre le lancement au démarrage « {n} » de la machine ({cle}), exactement tel que Vanguard l'avait noté : rend le PC moins protégé, ce lancement avait été jugé suspect",
-                    "Put back the machine startup entry “{n}” ({cle}), exactly as Vanguard noted it: makes the PC less protected, this entry had been judged suspicious"
+                    "Remettre le lancement au démarrage « {n} » de la machine ({cle}) avec la donnée que Vanguard a notée en le retirant, s'il en a noté une (refusé sinon, et jamais par-dessus une autre valeur)",
+                    "Put back the machine startup entry “{n}” ({cle}) with the data Vanguard noted when removing it, if it noted any (refused otherwise, and never over another value)"
                 )
             }
         }
@@ -807,8 +807,8 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
         Acte::TacheReactiver(t) => {
             let t = crate::ui::affichable(t.texte());
             trf!(
-                "Réactiver la tâche planifiée « {t} » : rend le PC moins protégé",
-                "Re-enable the scheduled task “{t}”: makes the PC less protected"
+                "Réactiver la tâche planifiée « {t} »",
+                "Re-enable the scheduled task “{t}”"
             )
         }
         Acte::DemarrageQuarantaine(f) => {
@@ -821,8 +821,8 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
         Acte::DemarrageRemettre(f) => {
             let f = crate::ui::affichable(f.texte());
             trf!(
-                "Remettre le fichier de démarrage « {f} » : rend le PC moins protégé",
-                "Put back the startup file “{f}”: makes the PC less protected"
+                "Remettre le fichier de démarrage « {f} »",
+                "Put back the startup file “{f}”"
             )
         }
         Acte::WmiAbonnementRetirer(w) => {
@@ -835,8 +835,8 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
         Acte::WmiAbonnementRemettre(w) => {
             let (n, c) = (crate::ui::affichable(w.nom.texte()), w.classe.classe());
             trf!(
-                "Recréer l'abonnement WMI « {n} » ({c}) : rend le PC moins protégé",
-                "Recreate the WMI subscription “{n}” ({c}): makes the PC less protected"
+                "Recréer l'abonnement WMI « {n} » ({c})",
+                "Recreate the WMI subscription “{n}” ({c})"
             )
         }
         Acte::ServiceRetirer(n) => {
@@ -1743,6 +1743,49 @@ fn couper_smb1_serveur() -> Resultat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Les actes de la persistance (lot 3.5) : chacun se montre en clair, une remise est dite moins protégée une seule
+    /// fois (par `texte_acte`), seul le retrait d'un service, irréversible, compte comme une protection pour « Défaire ».
+    #[test]
+    fn les_actes_de_la_persistance_se_montrent_et_se_defont() {
+        use crate::machine::Defaire;
+        use crate::machine::gestes;
+        let run =
+            gestes::ligne_run_retirer_machine(r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run", &[0x41]).unwrap();
+        let remise_run = run.replacen(gestes::RUN_RETIRER_MACHINE, gestes::RUN_REMETTRE, 1);
+        // « \A », « C:\x.lnk », « A » en UTF-16 petit-boutiste.
+        let (tache, fichier, nom) = ("5c004100", "43003a005c0078002e006c006e006b00", "4100");
+        let retraits = [
+            run.clone(),
+            format!("{}{tache}", gestes::TACHE_DESACTIVER),
+            format!("{}{fichier}", gestes::DEMARRAGE_QUARANTAINE),
+            format!("{}commande {nom}", gestes::WMI_ABONNEMENT_RETIRER),
+        ];
+        let remises = [
+            remise_run,
+            format!("{}{tache}", gestes::TACHE_REACTIVER),
+            format!("{}{fichier}", gestes::DEMARRAGE_REMETTRE),
+            format!("{}script {nom}", gestes::WMI_ABONNEMENT_REMETTRE),
+        ];
+        let service = format!("{}{nom}", gestes::SERVICE_RETIRER);
+        let fois = |t: &str| t.matches("moins protégé").count() + t.matches("less protected").count();
+        for l in retraits.iter().chain(&remises).chain([&service]) {
+            let t = affichable(l);
+            assert!(native(l) && !t.starts_with("vanguard:") && !t.contains("5c00"), "{t}");
+            let attendu = usize::from(remises.contains(l));
+            assert_eq!(fois(&t), attendu, "{t}");
+            let defaire = if *l == service {
+                Defaire::Protection
+            } else {
+                Defaire::Inconnu
+            };
+            assert_eq!(comment_defaire(std::slice::from_ref(l)), defaire, "{l}");
+        }
+        // La remise d'une valeur de démarrage n'affirme rien que le processus élevé n'ait encore vérifié.
+        let t = affichable(&remises[0]);
+        assert!(!t.contains("exactement tel") && !t.contains("exactly as"), "{t}");
+        assert!(t.contains("refusé sinon") || t.contains("refused otherwise"), "{t}");
+    }
 
     /// Les actes du pare-feu et des réseaux : une remise est dite moins protégée avant l'accord, ce qui durcit ne
     /// l'est pas ; le pare-feu rallumé, le profil Public durci et un réseau passé en Public sont des protections, que
