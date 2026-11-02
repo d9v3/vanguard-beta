@@ -350,6 +350,19 @@ describe("réception d'un lot", () => {
     await muette(await appeler(envoi(espace, { ip: "198.51.100.1" })), 200);
   });
 
+  it("refuse sans peine un corps imbriqué 65 000 fois et un texte de 128 Kio (422, pas 503)", async (t) => {
+    const { db, appeler, module } = await relais(t);
+    const profond = "[".repeat(65000) + "]".repeat(65000);
+    await muette(await appeler(envoi(profond)), 422);
+    const lot = lotValide();
+    lot.textes[0].texte = "erreur ".repeat(18000).slice(0, 120000).trim();
+    const debut = performance.now();
+    assert.equal(module.juger(lot), "schema");
+    assert.ok(performance.now() - debut < 20, "un champ trop long ne passe pas par le détecteur");
+    await muette(await appeler(envoi(lot, { ip: "203.0.113.7" })), 422);
+    assert.deepEqual(await refus(db), { schema: 2 });
+  });
+
   it("refuse un lot réécrit de plus de 96 Kio (x-lot-octets-max), même sous les 128 Kio du corps", async (t) => {
     const { module } = await relais(t);
     const lot = lotValide();
@@ -460,6 +473,8 @@ describe("limites de débit", () => {
     assert.deepEqual(codes.slice(0, 50), new Array(50).fill(200));
     assert.deepEqual(codes.slice(50), new Array(10).fill(429));
     assert.deepEqual(await refus(db), { quota: 10 });
+    // Les lots refusés pour le quota ne comptent pas dans le plafond de tous : une source seule ne le fermerait pas.
+    assert.deepEqual(db.lignes("SELECT n FROM quotas WHERE source = '*'"), [{ n: 50 }]);
     // Une autre source (autre /24) n'est pas touchée ; le même /24 l'est.
     assert.equal((await appeler(envoi(lotValide(), { ip: "192.0.2.99" }))).status, 429);
     assert.equal((await appeler(envoi(lotValide(), { ip: "198.51.100.10" }))).status, 200);
@@ -485,6 +500,16 @@ describe("limites de débit", () => {
     await muette(await appeler(envoi(lotValide())), 429);
     assert.deepEqual(await refus(db), { plafond: 1 });
     assert.equal(db.lignes("SELECT * FROM lots").length, 0);
+  });
+
+  it("le limiteur passe avant tout : une rafale de requêtes mal formées bute aussi sur 429", async (t) => {
+    const { db, appeler } = await relais(t);
+    const codes = [];
+    for (let k = 0; k < 15; k += 1) {
+      codes.push((await appeler(envoi(lotValide(), { type: "text/plain" }))).status);
+    }
+    assert.deepEqual(codes, [...new Array(10).fill(415), ...new Array(5).fill(429)]);
+    assert.deepEqual(await refus(db), { type: 10, limite: 5 });
   });
 
   it("le compteur d'une raison de refus cesse de monter à 10 000", async (t) => {
@@ -550,6 +575,20 @@ describe("relève par l'ordinateur de l'auteur", () => {
       codes.push((await appeler(releve(`Bearer essai-${k}`))).status);
     }
     assert.deepEqual(codes, [...new Array(10).fill(401), ...new Array(5).fill(429)]);
+  });
+
+  it("emploie crypto.subtle.timingSafeEqual de Cloudflare quand il existe (absent de Node)", async (t) => {
+    const appels = [];
+    crypto.subtle.timingSafeEqual = (a, b) => {
+      appels.push([a.length, b.length]);
+      return a.every((x, k) => x === b[k]);
+    };
+    t.after(() => delete crypto.subtle.timingSafeEqual);
+    const { appeler } = await relais(t);
+    assert.equal((await appeler(releve(`Bearer ${SECRET}x`))).status, 401);
+    assert.equal((await appeler(releve(`Bearer ${SECRET}`))).status, 200);
+    assert.equal((await appeler(releve("Bearer "))).status, 401);
+    assert.deepEqual(appels, [[32, 32], [32, 32], [32, 32]]);
   });
 
   it("compare le secret en temps constant : empreintes SHA-256, aucune sortie anticipée", () => {
@@ -658,6 +697,33 @@ describe("rien à lire pour le programme, aucune redirection", () => {
       }
       await muette(r, 404);
     }
+  });
+
+  it("une panne au milieu de la relève n'efface rien : lots et refus partent ensemble ou pas du tout", async (t) => {
+    const { db, appeler } = await relais(t);
+    await appeler(envoi(lotValide()));
+    await appeler(envoi("{"));
+    db.avant = (sql) => {
+      if (sql.startsWith("DELETE FROM refus")) {
+        throw new Error("D1 coupée");
+      }
+    };
+    await muette(await appeler(releve(`Bearer ${SECRET}`)), 503);
+    assert.equal(db.lignes("SELECT * FROM lots").length, 1);
+    assert.deepEqual(await refus(db), { json: 1 });
+    db.avant = null;
+    const corps = await (await appeler(releve(`Bearer ${SECRET}`))).json();
+    assert.equal(corps.lots.length, 1);
+    assert.deepEqual(corps.refus, [{ jour: "2026-11-02", raison: "json", n: 1 }]);
+  });
+
+  it("un identifiant de lot n'est jamais réemployé après une relève complète", async (t) => {
+    const { appeler } = await relais(t);
+    await appeler(envoi(lotValide()));
+    const premiere = await (await appeler(releve(`Bearer ${SECRET}`))).json();
+    await appeler(envoi(lotValide(), { ip: "203.0.113.9" }));
+    const seconde = await (await appeler(releve(`Bearer ${SECRET}`))).json();
+    assert.ok(seconde.lots[0].id > premiere.lots[0].id);
   });
 
   it("une base injoignable répond 503, sans corps", async (t) => {

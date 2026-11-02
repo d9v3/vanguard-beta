@@ -288,7 +288,7 @@ relais() {
   command -v node >/dev/null || { echo "node absent (essais du relais pas lancés)"; return "$SAUTEE"; }
   node -e 'require("node:sqlite")' 2>/dev/null ||
     { echo "node $(node --version) sans node:sqlite (22.13 ou plus)"; return "$SAUTEE"; }
-  node --test relais/essais/
+  node --test --test-reporter=spec relais/essais/
 }
 
 # Les dépendances selon deny.toml : failles connues (base RustSec), licences, provenance, doublons. Sans Internet, la

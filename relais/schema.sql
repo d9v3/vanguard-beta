@@ -7,7 +7,7 @@
 -- Worker après validation, jamais les octets reçus. `source` : empreinte du /24 (IPv4) ou du /48 (IPv6) ;
 -- `source_large` : du /16 ou du /32, pour le seuil des « préfixes distincts » de la lecture chez l'auteur.
 CREATE TABLE IF NOT EXISTS lots (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   jour TEXT NOT NULL,
   source TEXT NOT NULL,
   source_large TEXT NOT NULL,

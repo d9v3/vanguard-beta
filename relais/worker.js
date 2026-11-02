@@ -76,6 +76,11 @@ function reponse(statut) {
 
 async function recevoir(requete, env) {
   const jour = jourUtc(Date.now());
+  // Le limiteur avant tout le reste : une rafale de requêtes mal formées s'arrête là comme les autres.
+  const { source, large } = await sources(env, requete.headers.get("cf-connecting-ip") ?? "", jour);
+  if (env.LIMITEUR && !(await env.LIMITEUR.limit({ key: `lot:${source}` })).success) {
+    return refuser(env, jour, "limite", 429);
+  }
   const type = (requete.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
   if (type !== "application/json") {
     return refuser(env, jour, "type", 415);
@@ -84,10 +89,6 @@ async function recevoir(requete, env) {
   const annonce = requete.headers.get("content-length");
   if (annonce !== null && !(/^[0-9]{1,9}$/.test(annonce) && Number(annonce) <= TAILLE_MAX)) {
     return refuser(env, jour, "taille", 413);
-  }
-  const { source, large } = await sources(env, requete.headers.get("cf-connecting-ip") ?? "", jour);
-  if (env.LIMITEUR && !(await env.LIMITEUR.limit({ key: `lot:${source}` })).success) {
-    return refuser(env, jour, "limite", 429);
   }
   const octets = await lireBorne(requete, TAILLE_MAX);
   if (octets === null) {
@@ -105,11 +106,13 @@ async function recevoir(requete, env) {
   if (verdict !== null) {
     return refuser(env, jour, verdict, 422);
   }
-  if (!(await compter(env, jour, "*", PLAFOND_JOUR))) {
-    return refuser(env, jour, "plafond", 429);
-  }
+  // La source d'abord : une source qui a épuisé son quota ne fait plus monter le compte de tous, sinon elle seule
+  // finirait par fermer le relais aux autres pour la journée.
   if (!(await compter(env, jour, source, QUOTA_SOURCE_JOUR))) {
     return refuser(env, jour, "quota", 429);
+  }
+  if (!(await compter(env, jour, "*", PLAFOND_JOUR))) {
+    return refuser(env, jour, "plafond", 429);
   }
   const corps = JSON.stringify(lot);
   await env.DB.prepare("INSERT INTO lots (jour, source, source_large, taille, corps) VALUES (?, ?, ?, ?, ?)")
@@ -295,24 +298,19 @@ async function relever(requete, env) {
     octets += lignes[pris].taille;
     pris += 1;
   }
-  let lots = [];
-  if (pris > 0) {
-    // Lus puis effacés dans la même transaction : les identifiants croissent, et un lot arrivé entre-temps a un
-    // identifiant plus grand que le dernier lu, donc hors de l'intervalle effacé.
-    const premier = lignes[0].id;
-    const dernier = lignes[pris - 1].id;
-    const [lus] = await env.DB.batch([
-      env.DB.prepare(
-        "SELECT id, jour, source, source_large, corps FROM lots WHERE id BETWEEN ? AND ? ORDER BY id",
-      ).bind(premier, dernier),
-      env.DB.prepare("DELETE FROM lots WHERE id BETWEEN ? AND ?").bind(premier, dernier),
-    ]);
-    lots = lus.results ?? [];
-  }
-  const [refus] = await env.DB.batch([
+  // Lots et refus lus puis effacés dans une seule transaction : une panne au milieu n'efface rien. Les identifiants
+  // croissent (AUTOINCREMENT, jamais réemployés) : un lot arrivé entre-temps est hors de l'intervalle effacé.
+  const premier = pris > 0 ? lignes[0].id : 0;
+  const dernier = pris > 0 ? lignes[pris - 1].id : -1;
+  const [lus, , refus] = await env.DB.batch([
+    env.DB.prepare(
+      "SELECT id, jour, source, source_large, corps FROM lots WHERE id BETWEEN ? AND ? ORDER BY id",
+    ).bind(premier, dernier),
+    env.DB.prepare("DELETE FROM lots WHERE id BETWEEN ? AND ?").bind(premier, dernier),
     env.DB.prepare("SELECT jour, raison, n FROM refus ORDER BY jour, raison"),
     env.DB.prepare("DELETE FROM refus"),
   ]);
+  const lots = lus.results ?? [];
   // Le corps de chaque lot est déjà le JSON réécrit par ce Worker : recopié tel quel, sans le relire.
   const morceaux = lots.map(
     (l) =>
@@ -383,10 +381,11 @@ function juger(lot, texte) {
   if (texte !== undefined && !formeBrute(texte)) {
     etat.schema = true;
   }
-  if (encodeur.encode(JSON.stringify(lot) ?? "").length > SCHEMA["x-lot-octets-max"]) {
-    etat.schema = true;
+  if (etat.secret || etat.schema) {
+    return etat.secret ? "secret" : "schema";
   }
-  return etat.secret ? "secret" : etat.schema ? "schema" : null;
+  // Un lot qui a passé le schéma est peu profond : la réécriture ne peut pas déborder la pile.
+  return encodeur.encode(JSON.stringify(lot)).length > SCHEMA["x-lot-octets-max"] ? "schema" : null;
 }
 
 /// Ce que ce relais vérifie en plus du schéma, d'après « x-verifie-en-rust », pour les définitions nommées ici : le
@@ -439,7 +438,13 @@ function verifier(v, noeud, etat) {
   const { n, nom } = resoudre(noeud);
   const plus = nom !== null && Object.hasOwn(EN_PLUS, nom) ? EN_PLUS[nom] : null;
   if (n["x-voie"] !== undefined) {
-    // Le détecteur d'abord : un secret est compté comme tel, même dans un texte par ailleurs mal formé.
+    // Trop long : refusé sans passer par le détecteur, dont le temps de calcul croît avec le texte (128 Kio d'un
+    // seul champ dépasseraient les 10 ms d'un Worker gratuit).
+    if (typeof v === "string" && n["x-octets-max"] !== undefined && encodeur.encode(v).length > n["x-octets-max"]) {
+      etat.schema = true;
+      return;
+    }
+    // Puis le détecteur : un secret est compté comme tel, même dans un texte par ailleurs mal formé.
     if (typeof v === "string" && alertes(v) > 0) {
       etat.secret = true;
       return;

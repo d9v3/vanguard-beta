@@ -54,22 +54,26 @@ Rien d'autre : aucun jeton GitHub, aucun `account_id` dans le dépôt (wrangler 
 Les réponses à `POST /v1/lot` n'ont aucun corps : le programme ne lit que le code, et un relais piraté ne peut rien
 lui faire faire. Aucune redirection, jamais.
 
-**Vérification d'un lot**, dans l'ordre : type, taille annoncée, limiteur, lecture bornée à 128 Kio, UTF-8 et JSON,
+**Vérification d'un lot**, dans l'ordre : limiteur, type, taille annoncée, lecture bornée à 128 Kio, UTF-8 et JSON,
 puis le schéma de `outils/veille/schema-envoi.json` (recopié dans `worker.js`, entre les lignes
 `DÉBUT DU SCHÉMA DU LOT` et `FIN DU SCHÉMA DU LOT`) : une clé de trop, une clé en double, un entier écrit `1.0`, un
 lot réécrit de plus de 96 Kio, et tout le lot est refusé. Les champs de la voie ouverte (textes d'erreur, noms de
 logiciels, versions tierces) passent ensuite par une copie du détecteur de secrets de `src/amelioration/texte.rs` :
-la deuxième des trois couches. Un lot qui sonne est refusé (`422`), compté « secret », jamais gardé.
+la deuxième des trois couches. Un lot qui sonne est refusé (`422`), compté « secret », jamais gardé. Un champ de la
+voie ouverte plus long que sa borne est refusé avant le détecteur. Viennent enfin le quota de la source, puis le
+plafond de tous : un lot refusé par son quota ne compte pas dans le plafond.
 
 **Limites** : 10 requêtes par minute et par source (limiteur de Cloudflare) ; 50 lots par jour et par source ;
 5 000 lots par jour en tout. Une source est l'empreinte HMAC du préfixe /24 (IPv4) ou /48 (IPv6), avec un sel tiré
-chaque jour et effacé le lendemain : l'adresse IP n'est jamais gardée.
+chaque jour et effacé le lendemain : l'adresse IP n'est jamais gardée. Le sel du jour dort dans la même base D1 que
+les empreintes : pendant la journée, quelqu'un qui lirait D1 pourrait retrouver un préfixe en les essayant tous.
+Passé minuit, le sel est effacé et ce n'est plus possible.
 
 **Base D1** : `lots` (les lots acceptés, le JSON réécrit par le Worker), `quotas` (les comptes du jour), `refus` (les
 refus comptés par jour et par raison, jamais leur contenu), `sels` (le sel du jour).
 
 **Relève** : au plus 1 000 lots ou 4 Mio par appel, lus puis effacés dans la même transaction, avec les compteurs de
-refus ; `"reste": true` dit qu'il faut rappeler. Forme :
+refus (une panne au milieu n'efface rien) ; `"reste": true` dit qu'il faut rappeler. Forme :
 `{"releve":1,"lots":[{"id","jour","source","source_large","lot"}],"refus":[{"jour","raison","n"}],"reste":false}`.
 
 **Purge** : chaque jour à 0 h UTC (déclencheur de `wrangler.toml`), au premier lot du jour et avant chaque relève :

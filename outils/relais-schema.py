@@ -207,6 +207,8 @@ def fautes_du_schema(schema, en_plus):
         if isinstance(d, dict) and "x-voie" in d:
             if d["x-voie"] != "ouverte":
                 fautes.append(f"/$defs/{nom} : x-voie {d['x-voie']!r} inconnue")
+            if not isinstance(d.get("x-octets-max"), int):
+                fautes.append(f"/$defs/{nom} : voie ouverte sans x-octets-max (le Worker borne avant le détecteur)")
             if en_plus.get(nom) not in SORTES_OUVERTES:
                 fautes.append(f"/$defs/{nom} : voie ouverte sans vérification dans EN_PLUS (worker.js) : tout lot refusé")
     for nom in en_plus:
@@ -294,6 +296,9 @@ def main():
         raise SystemExit("worker.js : « const EN_PLUS = {…}; » introuvable (une ligne, JSON strict)")
     fautes += [f"schéma du Worker {f}" for f in fautes_du_schema(schema, json.loads(m.group(1)))]
 
+    if constante_js(source, "TAILLE_MAX") != schema.get("x-corps-octets-max"):
+        fautes.append("TAILLE_MAX (worker.js) ≠ x-corps-octets-max du schéma recopié dans le Worker")
+
     # La comparaison sait-elle voir un écart ? Une copie touchée doit différer, une copie intacte non.
     touche = copy.deepcopy(schema)
     touche.setdefault("$defs", {})["__essai__"] = {"type": "string"}
@@ -309,8 +314,6 @@ def main():
             fautes.append(f"schéma : … {len(liste) - 60} écarts de plus")
         if liste:
             fautes.append("  (relais-schema.py --ecrire recopie schema-envoi.json dans le Worker ; puis node --test relais/essais/)")
-        if constante_js(source, "TAILLE_MAX") != reference.get("x-corps-octets-max"):
-            fautes.append("TAILLE_MAX (worker.js) ≠ x-corps-octets-max (schema-envoi.json)")
         print(f"schéma : comparé à {lisible(args.schema)}")
     else:
         print(f"comparaison avec schema-envoi.json sautée : {lisible(args.schema)} absent (lot A3 pas encore fusionné)")
