@@ -344,6 +344,7 @@ pub(crate) const CONTEXTES_ECHEC: &[&str] = &[
     "blocage/regler",
     "canaux/lire",
     "compte-rendu/lire",
+    "compte-rendu/trier",
     "changements/noter",
     "dbus/actions",
     "dbus/etat_d_activite",

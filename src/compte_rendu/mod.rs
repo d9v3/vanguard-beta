@@ -11,8 +11,8 @@
 //! clés et les mêmes listes : un essai les compare.
 
 pub(crate) mod champs;
-#[cfg_attr(not(test), allow(dead_code))] // la lecture sert au triage du journal (L3)
 pub(crate) mod journal;
+pub(crate) mod triage;
 
 use serde::{Deserialize, Serialize};
 
@@ -188,6 +188,14 @@ impl CompteRendu {
                 e.column()
             ))
         })?;
+        c.verifier()?;
+        Ok(c)
+    }
+
+    /// Les bornes du format, au-delà de ce que serde vérifie : schéma, nombre de causes, et pour chacune ses listes,
+    /// ses dates et sa clé recalculée.
+    pub(crate) fn verifier(&self) -> Result<(), Echec> {
+        let c = self;
         if c.schema != SCHEMA {
             return Err(refus(trf!(
                 "compte rendu refusé : schéma {} inconnu (attendu {})",
@@ -225,7 +233,7 @@ impl CompteRendu {
                 )));
             }
         }
-        Ok(c)
+        Ok(())
     }
 
     /// Le JSON, tel que la veille le lit.
@@ -302,6 +310,25 @@ pub(crate) enum Quoi {
         /// Le compte rendu JSON.
         fichier: std::path::PathBuf,
     },
+    /// Le triage du journal rapatrié (`outils/deployer.sh`) : la file des causes, en compte rendu JSON, et une ligne
+    /// de comptes sur la sortie.
+    Journal {
+        /// Le journal de cet ordinateur (`retours/journal-cet-ordinateur.txt`).
+        #[arg(long = "cet-ordinateur")]
+        cet_ordinateur: Option<std::path::PathBuf>,
+        /// Le journal rapporté par la clé (`retours/journal-cle.txt`).
+        #[arg(long)]
+        cle: Option<std::path::PathBuf>,
+        /// Le suivi d'une nuit à l'autre (`veille/etat/causes.json`) ; sans lui, tout est lu et rien n'est gardé.
+        #[arg(long)]
+        etat: Option<std::path::PathBuf>,
+        /// Les alertes déjà traitées par la veille (`veille/etat/alertes-traitees.txt`).
+        #[arg(long)]
+        traitees: Option<std::path::PathBuf>,
+        /// Où écrire le compte rendu de la file.
+        #[arg(long)]
+        sortie: std::path::PathBuf,
+    },
 }
 
 /// Le contexte des échecs de lecture (`champs::CONTEXTES_ECHEC`).
@@ -328,6 +355,32 @@ pub(crate) fn executer(quoi: &Quoi) -> i32 {
                 1
             }
         },
+        Quoi::Journal {
+            cet_ordinateur,
+            cle,
+            etat,
+            traitees,
+            sortie,
+        } => {
+            let demande = triage::Demande {
+                cet_ordinateur: cet_ordinateur.as_deref(),
+                cle: cle.as_deref(),
+                etat: etat.as_deref(),
+                traitees: traitees.as_deref(),
+                sortie,
+            };
+            match triage::executer(&demande) {
+                Ok(t) => {
+                    println!("{}", t.ligne());
+                    eprintln!("{}", triage::phrase(&t));
+                    0
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    1
+                }
+            }
+        }
     }
 }
 

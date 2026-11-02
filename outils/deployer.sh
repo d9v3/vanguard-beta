@@ -79,8 +79,11 @@ copier() { cmp -s "$1" "$2" 2>/dev/null || cp -f "$1" "$2"; }
 # Erreurs du journal de Vanguard (plantages, PowerShell en échec…) : celles de cet ordinateur et celles que la clé
 # rapporte des autres sont gardées dans retours/, puis envoyées en tickets GitHub avec gh (un ticket par erreur, les
 # répétitions en commentaire ; outils/journal-vers-github.py). Sans Internet, elles attendent le déploiement suivant.
+# La provenance (D3 du lot 0.89.1) : une copie de plus par origine, journal-cet-ordinateur.txt ou journal-cle.txt, que
+# le triage de la veille lit (`vanguard compte-rendu journal`). Posée ici, d'après le fichier vidé, jamais d'après le
+# texte des entrées : une entrée de la clé ne peut pas se dire « d'ici ».
 RETOURS="${XDG_DATA_HOME:-$HOME/.local/share}/vanguard/retours"
-rapatrier_journal() { # $1 : journal à vider, $2 : d'où il vient
+rapatrier_journal() { # $1 : journal à vider, $2 : d'où il vient, $3 : sa copie par provenance
   [[ -s $1 && -f $1 && ! -L $1 ]] || return 0
   mkdir -p "$RETOURS"
   local nb cote
@@ -97,6 +100,7 @@ rapatrier_journal() { # $1 : journal à vider, $2 : d'où il vient
   fi
   nb=$(grep -c '^== ' "$1" || true)
   cat "$1" >>"$RETOURS/journal-erreurs.txt"
+  cat "$1" >>"$RETOURS/$3"
   cat "$1" >>"$RETOURS/a-envoyer-github.txt"
   : >"$1"
   echo "Journal $2 : $nb erreur(s) rapatriée(s) dans $RETOURS/journal-erreurs.txt"
@@ -117,14 +121,14 @@ envoyer_journal() {
 refuser() {
   local cle journal="" repere="${XDG_RUNTIME_DIR:-/tmp}/vanguard-refus.empreinte" empreinte
   echo "Déploiement arrêté : seuls les journaux d'erreurs sont rapatriés."
-  rapatrier_journal "${XDG_DATA_HOME:-$HOME/.local/share}/vanguard/journal-erreurs.txt" "de cet ordinateur"
+  rapatrier_journal "${XDG_DATA_HOME:-$HOME/.local/share}/vanguard/journal-erreurs.txt" "de cet ordinateur" journal-cet-ordinateur.txt
   # La partition des journaux de la clé de cet ordinateur seulement, et seulement si la clé n'a pas changé : vider le
   # journal est une écriture.
   cle=$(cle_connue "./$LINUX" 2>/dev/null || true)
   if [[ -n $cle ]] && ./"$LINUX" deploiement comparer-cle "$cle" >/dev/null 2>&1; then
     journal=$(journal_de_la_cle "$cle" 2>/dev/null || true)
   fi
-  [[ -z $journal ]] || rapatrier_journal "$journal/journal-erreurs.txt" "de la clé"
+  [[ -z $journal ]] || rapatrier_journal "$journal/journal-erreurs.txt" "de la clé" journal-cle.txt
   envoyer_journal
   empreinte=$({ cat "$LINUX" "$WINDOWS" 2>/dev/null || true; } | sha256sum)
   if [[ -z $(find "$repere" -mmin -5 2>/dev/null) || $(cat "$repere" 2>/dev/null) != "$empreinte" ]]; then
@@ -409,7 +413,7 @@ done
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -qtf "$ICONES" || true
 
 # Sans clé branchée, Vanguard écrit son journal dans son dossier de cet ordinateur (fonctions du journal : en tête).
-rapatrier_journal "${XDG_DATA_HOME:-$HOME/.local/share}/vanguard/journal-erreurs.txt" "de cet ordinateur"
+rapatrier_journal "${XDG_DATA_HOME:-$HOME/.local/share}/vanguard/journal-erreurs.txt" "de cet ordinateur" journal-cet-ordinateur.txt
 envoyer_journal
 
 # Dossier partagé avec la machine virtuelle Windows (\\host.lan\Data\VANGUARD-TEST dans Windows) : à chaque
@@ -550,7 +554,7 @@ done
 if [[ -n $JOURNAL ]]; then
   touch "$JOURNAL/vanguard-journal.cle"
   cp -f "$CLE/vanguard.jeton" "$JOURNAL/vanguard.jeton"
-  rapatrier_journal "$JOURNAL/journal-erreurs.txt" "de la clé"
+  rapatrier_journal "$JOURNAL/journal-erreurs.txt" "de la clé" journal-cle.txt
   envoyer_journal
 fi
 

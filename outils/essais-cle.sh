@@ -1342,6 +1342,14 @@ deployer --sans-compiler
 voir "journal démesuré (5 Mio) : mis de côté, rien à envoyer sur GitHub, et dit" \
   eval 'dit "$BANC/sortie" "démesuré" && [[ ! -s $BANC/donnees/vanguard/retours/a-envoyer-github.txt ]] &&
     compgen -G "$BANC/donnees/vanguard/retours/journal-demesure-*" >/dev/null' || montrer "$BANC/sortie"
+# Un journal ordinaire de cet ordinateur : copié aussi dans le fichier de sa provenance, que lit le triage de la veille.
+printf '== 2026-11-02 10:00 UTC · vanguard 0.89.1 · linux · fr · bilan\n[WMI]\n  délai\n§ genre=erreur contexte=wmi regle=- code=- lieu=-\n\n' \
+  >"$BANC/donnees/vanguard/journal-erreurs.txt"
+deployer --sans-compiler
+voir "journal de cet ordinateur : rangé dans journal-cet-ordinateur.txt, rien dans journal-cle.txt" \
+  eval 'grep -q "contexte=wmi" "$BANC/donnees/vanguard/retours/journal-cet-ordinateur.txt" &&
+    [[ ! -e $BANC/donnees/vanguard/retours/journal-cle.txt && ! -s $BANC/donnees/vanguard/journal-erreurs.txt ]]' ||
+  montrer "$BANC/sortie"
 
 # --- Journal vers GitHub (journal-vers-github.py) -------------------------------------------------------------------
 
