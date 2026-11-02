@@ -2792,6 +2792,380 @@ pub(crate) struct AbonnementWmi {
     pub nom: NomConsumer,
 }
 
+/// Les abonnements WMI que Vanguard ne touche jamais, liste fermée (noms comparés sans la casse) : ceux que pose
+/// Windows (« SCM Event Log Consumer » et son filtre ; « BVTConsumer » et « BVTFilter » des anciennes versions), et tout
+/// nom de Sécurité Windows ou de Defender. Un abonnement malveillant qui en prend le nom reste signalé, à retirer à la
+/// main : un refus de trop ne casse rien, un retrait de trop couperait un abonnement de Windows ou de l'antivirus.
+pub(crate) fn abonnement_wmi_protege(nom: &str) -> bool {
+    const NOMS: [&str; 4] = [
+        "scm event log consumer",
+        "scm event log filter",
+        "bvtconsumer",
+        "bvtfilter",
+    ];
+    const MOTS: [&str; 5] = [
+        "windows defender",
+        "microsoft defender",
+        "windows security",
+        "securityhealth",
+        "msmpeng",
+    ];
+    let n = nom.trim().to_lowercase();
+    NOMS.contains(&n.as_str()) || MOTS.iter().any(|m| n.contains(m))
+}
+
+/// Un consumer qui lance un programme de Sécurité Windows ou de Defender (`run_protege`) : son programme
+/// (ExecutablePath), le premier mot de sa ligne de commande (entre guillemets ou jusqu'à la première espace), ou son
+/// fichier de script.
+pub(crate) fn consumer_wmi_protege(nom: &str, programmes: &[&str]) -> bool {
+    abonnement_wmi_protege(nom)
+        || programmes.iter().any(|p| {
+            let p = p.trim();
+            let premier = match p.strip_prefix('"') {
+                Some(reste) => reste.split('"').next().unwrap_or_default(),
+                None => p.split(' ').next().unwrap_or_default(),
+            };
+            run_protege("", p) || run_protege("", premier)
+        })
+}
+
+/// La ligne qui retire un abonnement WMI signalé par le bilan ; `None` pour une classe autre que
+/// CommandLineEventConsumer et ActiveScriptEventConsumer, un nom hors de la forme de `NomConsumer`, un nom protégé
+/// (`abonnement_wmi_protege`), ou un nom qui porte « ¦ » (la lecture du bilan y change « | » : ce nom-là n'est pas
+/// forcément le vrai).
+pub(crate) fn ligne_wmi_abonnement_retirer(classe: &str, nom: &str) -> Option<String> {
+    let classe = ClasseConsumer::TOUTES
+        .into_iter()
+        .find(|c| c.classe().eq_ignore_ascii_case(classe))?;
+    if nom.contains('¦') || abonnement_wmi_protege(nom) {
+        return None;
+    }
+    Some(
+        Acte::WmiAbonnementRetirer(AbonnementWmi {
+            classe,
+            nom: NomConsumer::nouveau(nom)?,
+        })
+        .ligne(),
+    )
+}
+
+/// Où le processus élevé note les trois objets d'un abonnement WMI qu'il retire (`NoteWmi`).
+pub(crate) const WMI_AVANT_CLE: &str = r"SOFTWARE\Vanguard\WmiAvant";
+/// L'en-tête d'une note d'abonnement, avec sa version : une autre version est refusée, jamais devinée.
+const NOTE_WMI_ENTETE: &[u8; 6] = b"VGWMI\x01";
+/// La plus longue note, en octets (un registre en tient bien plus ; au-delà, l'abonnement se retire à la main).
+pub(crate) const NOTE_WMI_MAX: usize = 512 * 1024;
+/// Le plus long texte noté, en octets UTF-8 (un ScriptText tient en quelques kilo-octets).
+pub(crate) const NOTE_WMI_TEXTE_MAX: usize = 256 * 1024;
+/// Le plus long chemin d'objet noté, en octets.
+pub(crate) const NOTE_WMI_CHEMIN_MAX: usize = 4096;
+/// Le plus de liaisons notées pour un consumer.
+pub(crate) const NOTE_WMI_LIAISONS_MAX: usize = 16;
+
+/// Le genre d'une propriété notée.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GenreWmi {
+    Texte,
+    Entier,
+    Booleen,
+}
+
+/// Les propriétés notées d'un __EventFilter, dans l'ordre de la note ; le nom d'abord.
+pub(crate) const PROPRIETES_FILTRE: [(&str, GenreWmi); 5] = [
+    ("Name", GenreWmi::Texte),
+    ("Query", GenreWmi::Texte),
+    ("QueryLanguage", GenreWmi::Texte),
+    ("EventNamespace", GenreWmi::Texte),
+    ("EventAccess", GenreWmi::Texte),
+];
+/// Celles d'un CommandLineEventConsumer : ce qu'il lance et comment (les réglages de fenêtre plus rares, position et
+/// couleurs d'une console, ne sont pas notés et ne reviennent pas).
+pub(crate) const PROPRIETES_COMMANDE: [(&str, GenreWmi); 13] = [
+    ("Name", GenreWmi::Texte),
+    ("ExecutablePath", GenreWmi::Texte),
+    ("CommandLineTemplate", GenreWmi::Texte),
+    ("WorkingDirectory", GenreWmi::Texte),
+    ("DesktopName", GenreWmi::Texte),
+    ("WindowTitle", GenreWmi::Texte),
+    ("KillTimeout", GenreWmi::Entier),
+    ("Priority", GenreWmi::Entier),
+    ("ShowWindowCommand", GenreWmi::Entier),
+    ("RunInteractively", GenreWmi::Booleen),
+    ("CreateNewConsole", GenreWmi::Booleen),
+    ("CreateNewProcessGroup", GenreWmi::Booleen),
+    ("UseDefaultErrorMode", GenreWmi::Booleen),
+];
+/// Celles d'un ActiveScriptEventConsumer.
+pub(crate) const PROPRIETES_SCRIPT: [(&str, GenreWmi); 5] = [
+    ("Name", GenreWmi::Texte),
+    ("ScriptingEngine", GenreWmi::Texte),
+    ("ScriptText", GenreWmi::Texte),
+    ("ScriptFileName", GenreWmi::Texte),
+    ("KillTimeout", GenreWmi::Entier),
+];
+/// Celles d'une __FilterToConsumerBinding, hors ses deux références : la remise les refait vers le filtre et le
+/// consumer recréés, jamais depuis un texte noté.
+pub(crate) const PROPRIETES_LIAISON: [(&str, GenreWmi); 4] = [
+    ("DeliverSynchronously", GenreWmi::Booleen),
+    ("MaintainSecurityContext", GenreWmi::Booleen),
+    ("SlowDownProviders", GenreWmi::Booleen),
+    ("DeliveryQoS", GenreWmi::Entier),
+];
+
+impl ClasseConsumer {
+    /// Les propriétés notées de cette classe de consumer.
+    pub(crate) fn proprietes(self) -> &'static [(&'static str, GenreWmi)] {
+        match self {
+            ClasseConsumer::Commande => &PROPRIETES_COMMANDE,
+            ClasseConsumer::Script => &PROPRIETES_SCRIPT,
+        }
+    }
+}
+
+/// Une valeur notée : absente (nulle dans WMI), un texte, un entier ou un booléen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ValeurNotee {
+    Absente,
+    Texte(String),
+    Entier(i64),
+    Booleen(bool),
+}
+
+impl ValeurNotee {
+    fn convient(&self, genre: GenreWmi) -> bool {
+        match self {
+            ValeurNotee::Absente => true,
+            ValeurNotee::Texte(t) => genre == GenreWmi::Texte && t.len() <= NOTE_WMI_TEXTE_MAX,
+            ValeurNotee::Entier(_) => genre == GenreWmi::Entier,
+            ValeurNotee::Booleen(_) => genre == GenreWmi::Booleen,
+        }
+    }
+}
+
+/// Un objet WMI noté : son chemin relatif (__RELPATH, pour dire seulement s'il diffère après la remise, jamais pour
+/// écrire) et ses valeurs, dans l'ordre de la liste de sa classe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ObjetNote {
+    pub chemin: String,
+    pub valeurs: Vec<ValeurNotee>,
+}
+
+impl ObjetNote {
+    fn convient(&self, proprietes: &[(&str, GenreWmi)]) -> bool {
+        self.chemin.len() <= NOTE_WMI_CHEMIN_MAX
+            && !self.chemin.chars().any(char::is_control)
+            && self.valeurs.len() == proprietes.len()
+            && self.valeurs.iter().zip(proprietes).all(|(v, (_, g))| v.convient(*g))
+    }
+
+    /// Le nom de l'objet (sa première valeur), s'il est un texte.
+    pub(crate) fn nom(&self) -> Option<&str> {
+        match self.valeurs.first()? {
+            ValeurNotee::Texte(t) => Some(t),
+            _ => None,
+        }
+    }
+}
+
+/// Une liaison notée, avec son filtre ; `filtre_retire` : le filtre a été supprimé avec elle (il ne servait à aucune
+/// autre liaison et n'est pas protégé), et la remise le recrée ; sinon, il est resté et la remise le retrouve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LiaisonNotee {
+    pub filtre_retire: bool,
+    pub filtre: ObjetNote,
+    pub liaison: ObjetNote,
+}
+
+/// La note d'un abonnement WMI retiré : son consumer et ses liaisons, avec leurs filtres.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NoteWmi {
+    pub classe: ClasseConsumer,
+    pub consumer: ObjetNote,
+    pub liaisons: Vec<LiaisonNotee>,
+}
+
+/// Un nom de filtre admis dans une note : 1 à 256 unités UTF-16, sans caractère de contrôle (il entre dans un chemin
+/// d'objet, que WMI échappe lui-même).
+fn nom_filtre_admis(nom: &str) -> bool {
+    let n = nom.encode_utf16().count();
+    n > 0 && n <= CONSUMER_NOM_MAX && !nom.chars().any(char::is_control)
+}
+
+impl NoteWmi {
+    /// La note est-elle bien formée et celle de `attendu` ? Le consumer a exactement le nom et la classe de la ligne,
+    /// chaque objet a les propriétés de sa classe, chaque filtre un nom admis et distinct, et aucun filtre protégé
+    /// n'est à recréer.
+    pub(crate) fn valide(&self, attendu: &AbonnementWmi) -> bool {
+        let mut noms = Vec::new();
+        self.classe == attendu.classe
+            && self.consumer.convient(self.classe.proprietes())
+            && self.consumer.nom() == Some(attendu.nom.texte())
+            && self.liaisons.len() <= NOTE_WMI_LIAISONS_MAX
+            && self.liaisons.iter().all(|l| {
+                let Some(nom) = l.filtre.nom() else {
+                    return false;
+                };
+                let neuf = !noms.contains(&nom);
+                noms.push(nom);
+                neuf && nom_filtre_admis(nom)
+                    && l.filtre.convient(&PROPRIETES_FILTRE)
+                    && l.liaison.convient(&PROPRIETES_LIAISON)
+                    && !(l.filtre_retire && abonnement_wmi_protege(nom))
+            })
+    }
+
+    /// Les octets de la note : l'en-tête et sa version, la classe, le consumer, les liaisons, puis l'empreinte
+    /// SHA-256 de tout ce qui précède. `None` si elle dépasse ses bornes.
+    pub(crate) fn octets(&self) -> Option<Vec<u8>> {
+        let mut o = NOTE_WMI_ENTETE.to_vec();
+        o.push(match self.classe {
+            ClasseConsumer::Commande => 0,
+            ClasseConsumer::Script => 1,
+        });
+        ecrire_objet(&mut o, &self.consumer, self.classe.proprietes())?;
+        if self.liaisons.len() > NOTE_WMI_LIAISONS_MAX {
+            return None;
+        }
+        o.push(u8::try_from(self.liaisons.len()).ok()?);
+        for l in &self.liaisons {
+            o.push(u8::from(l.filtre_retire));
+            ecrire_objet(&mut o, &l.filtre, &PROPRIETES_FILTRE)?;
+            ecrire_objet(&mut o, &l.liaison, &PROPRIETES_LIAISON)?;
+        }
+        o.extend_from_slice(&empreinte_note(&o));
+        (o.len() <= NOTE_WMI_MAX).then_some(o)
+    }
+
+    /// Relit une note ; `None` à la moindre différence avec la forme écrite par `octets` : autre version, borne
+    /// dépassée, octet de trop ou de moins, UTF-8 invalide, booléen autre que 0 ou 1, empreinte qui ne correspond
+    /// pas.
+    pub(crate) fn lire(octets: &[u8]) -> Option<NoteWmi> {
+        if octets.len() > NOTE_WMI_MAX {
+            return None;
+        }
+        let (corps, empreinte) = octets.split_at_checked(octets.len().checked_sub(32)?)?;
+        if empreinte != empreinte_note(corps).as_slice() {
+            return None;
+        }
+        let mut c = Curseur(corps);
+        if c.prendre(NOTE_WMI_ENTETE.len())? != NOTE_WMI_ENTETE {
+            return None;
+        }
+        let classe = match c.octet()? {
+            0 => ClasseConsumer::Commande,
+            1 => ClasseConsumer::Script,
+            _ => return None,
+        };
+        let consumer = c.objet(classe.proprietes())?;
+        let n = usize::from(c.octet()?);
+        if n > NOTE_WMI_LIAISONS_MAX {
+            return None;
+        }
+        let mut liaisons = Vec::with_capacity(n);
+        for _ in 0..n {
+            let filtre_retire = c.booleen()?;
+            let filtre = c.objet(&PROPRIETES_FILTRE)?;
+            let liaison = c.objet(&PROPRIETES_LIAISON)?;
+            liaisons.push(LiaisonNotee {
+                filtre_retire,
+                filtre,
+                liaison,
+            });
+        }
+        c.0.is_empty().then_some(NoteWmi {
+            classe,
+            consumer,
+            liaisons,
+        })
+    }
+}
+
+fn empreinte_note(octets: &[u8]) -> [u8; 32] {
+    use sha2::Digest;
+    sha2::Sha256::digest(octets).into()
+}
+
+fn ecrire_texte(o: &mut Vec<u8>, t: &str, max: usize) -> Option<()> {
+    if t.len() > max {
+        return None;
+    }
+    o.extend_from_slice(&u32::try_from(t.len()).ok()?.to_le_bytes());
+    o.extend_from_slice(t.as_bytes());
+    Some(())
+}
+
+fn ecrire_objet(o: &mut Vec<u8>, objet: &ObjetNote, proprietes: &[(&str, GenreWmi)]) -> Option<()> {
+    if !objet.convient(proprietes) {
+        return None;
+    }
+    ecrire_texte(o, &objet.chemin, NOTE_WMI_CHEMIN_MAX)?;
+    for v in &objet.valeurs {
+        match v {
+            ValeurNotee::Absente => o.push(0),
+            ValeurNotee::Texte(t) => {
+                o.push(1);
+                ecrire_texte(o, t, NOTE_WMI_TEXTE_MAX)?;
+            }
+            ValeurNotee::Entier(n) => {
+                o.push(2);
+                o.extend_from_slice(&n.to_le_bytes());
+            }
+            ValeurNotee::Booleen(b) => {
+                o.push(3);
+                o.push(u8::from(*b));
+            }
+        }
+    }
+    Some(())
+}
+
+/// La lecture d'une note, octet après octet, sans jamais lire au-delà.
+struct Curseur<'a>(&'a [u8]);
+
+impl<'a> Curseur<'a> {
+    fn prendre(&mut self, n: usize) -> Option<&'a [u8]> {
+        let (tete, reste) = self.0.split_at_checked(n)?;
+        self.0 = reste;
+        Some(tete)
+    }
+
+    fn octet(&mut self) -> Option<u8> {
+        self.prendre(1)?.first().copied()
+    }
+
+    fn booleen(&mut self) -> Option<bool> {
+        match self.octet()? {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
+    }
+
+    fn texte(&mut self, max: usize) -> Option<String> {
+        let n = usize::try_from(u32::from_le_bytes(self.prendre(4)?.try_into().ok()?)).ok()?;
+        if n > max {
+            return None;
+        }
+        String::from_utf8(self.prendre(n)?.to_vec()).ok()
+    }
+
+    fn objet(&mut self, proprietes: &[(&str, GenreWmi)]) -> Option<ObjetNote> {
+        let chemin = self.texte(NOTE_WMI_CHEMIN_MAX)?;
+        let mut valeurs = Vec::with_capacity(proprietes.len());
+        for _ in proprietes {
+            valeurs.push(match self.octet()? {
+                0 => ValeurNotee::Absente,
+                1 => ValeurNotee::Texte(self.texte(NOTE_WMI_TEXTE_MAX)?),
+                2 => ValeurNotee::Entier(i64::from_le_bytes(self.prendre(8)?.try_into().ok()?)),
+                3 => ValeurNotee::Booleen(self.booleen()?),
+                _ => return None,
+            });
+        }
+        let objet = ObjetNote { chemin, valeurs };
+        objet.convient(proprietes).then_some(objet)
+    }
+}
+
 /// Un nom de service : 1 à `SERVICE_NOM_MAX` unités UTF-16, sans caractère de contrôle, sans « \ » ni « / » (que le
 /// gestionnaire de services refuse), sans espace au début ni à la fin. Espaces et parenthèses admises : les outils de
 /// prise en main s'installent sous « ScreenConnect Client (…) ».
@@ -3003,7 +3377,8 @@ fn analyser_persistance(ligne: &str) -> Option<Acte> {
         let (mot, hex) = reste.split_once(' ')?;
         Some(AbonnementWmi {
             classe: ClasseConsumer::TOUTES.into_iter().find(|c| c.mot() == mot)?,
-            nom: NomConsumer::lire(hex)?,
+            // Jamais un abonnement de Windows ni de Defender, ni dans un sens ni dans l'autre.
+            nom: NomConsumer::lire(hex).filter(|n| !abonnement_wmi_protege(n.texte()))?,
         })
     };
     let acte = if let Some(r) = long(RUN_RETIRER_MACHINE) {
@@ -6626,6 +7001,204 @@ mod tests {
         assert!(analyser_acte(&ligne_service(&"a".repeat(SERVICE_NOM_MAX))).is_some());
         // Le service et la classe sont en hexadécimal : jamais le nom en clair.
         assert!(analyser_acte(&format!("{SERVICE_RETIRER}AnyDesk")).is_none());
+    }
+
+    #[test]
+    fn wmi_abonnements_proteges_refuses() {
+        let ligne_wmi = |classe: &str, n: &str| format!("{WMI_ABONNEMENT_RETIRER}{classe} {}", hex_texte(n));
+        for n in [
+            "SCM Event Log Consumer",
+            "scm event log consumer",
+            " SCM Event Log Filter ",
+            "BVTConsumer",
+            "bvtfilter",
+            "Windows Defender scan",
+            "MICROSOFT DEFENDER",
+            "Windows Security Health",
+            "SecurityHealthService",
+            "MsMpEng",
+        ] {
+            assert!(abonnement_wmi_protege(n), "{n}");
+            // Ni par la grammaire (ligne forgée), ni par le bilan.
+            for verbe in [WMI_ABONNEMENT_RETIRER, WMI_ABONNEMENT_REMETTRE] {
+                let l = ligne_wmi("commande", n).replacen(WMI_ABONNEMENT_RETIRER, verbe, 1);
+                assert!(analyser_acte(&l).is_none(), "{l}");
+            }
+            assert!(
+                ligne_wmi_abonnement_retirer("CommandLineEventConsumer", n).is_none(),
+                "{n}"
+            );
+        }
+        for n in ["Updater", "BVTConsumer x", "SCM Event Log Consumer 2"] {
+            assert!(!abonnement_wmi_protege(n), "{n}");
+        }
+        // Le bilan : la classe sans la casse, aller-retour par la grammaire.
+        let l = ligne_wmi_abonnement_retirer("commandlineeventconsumer", "Updater").unwrap();
+        assert_eq!(l, ligne_wmi("commande", "Updater"));
+        assert!(matches!(analyser_acte(&l), Some(Acte::WmiAbonnementRetirer(w)) if w.nom.texte() == "Updater"));
+        let l = ligne_wmi_abonnement_retirer("ActiveScriptEventConsumer", "s").unwrap();
+        assert!(matches!(analyser_acte(&l), Some(Acte::WmiAbonnementRetirer(w)) if w.classe == ClasseConsumer::Script));
+        for (classe, n) in [
+            ("LogFileEventConsumer", "a"),
+            ("NTEventLogEventConsumer", "a"),
+            ("CommandLineEventConsumer", "a¦b"),
+            ("CommandLineEventConsumer", "a\u{1b}b"),
+            ("CommandLineEventConsumer", ""),
+        ] {
+            assert!(ligne_wmi_abonnement_retirer(classe, n).is_none(), "{classe} {n:?}");
+        }
+        // Un consumer qui lance Defender, quel que soit son nom.
+        assert!(consumer_wmi_protege(
+            "x",
+            &[r#""C:\Program Files\Windows Defender\MpCmdRun.exe" -Scan"#]
+        ));
+        assert!(!consumer_wmi_protege("x", &[r"C:\Users\alice\AppData\evil.exe -q"]));
+    }
+
+    fn note_essai() -> (AbonnementWmi, NoteWmi) {
+        let w = AbonnementWmi {
+            classe: ClasseConsumer::Commande,
+            nom: NomConsumer::nouveau("Updater").unwrap(),
+        };
+        let t = |s: &str| ValeurNotee::Texte(s.to_string());
+        let mut consumer = vec![ValeurNotee::Absente; PROPRIETES_COMMANDE.len()];
+        consumer[0] = t("Updater");
+        consumer[2] = t(r"cmd.exe /c C:\Users\Public\x.bat");
+        consumer[6] = ValeurNotee::Entier(0);
+        consumer[9] = ValeurNotee::Booleen(false);
+        let filtre = |n: &str| ObjetNote {
+            chemin: format!("__EventFilter.Name=\"{n}\""),
+            valeurs: vec![
+                t(n),
+                t("SELECT * FROM __InstanceModificationEvent WITHIN 60"),
+                t("WQL"),
+                t(r"root\cimv2"),
+                ValeurNotee::Absente,
+            ],
+        };
+        let liaison = ObjetNote {
+            chemin: "__FilterToConsumerBinding.Consumer=\"x\",Filter=\"y\"".to_string(),
+            valeurs: vec![
+                ValeurNotee::Booleen(false),
+                ValeurNotee::Booleen(true),
+                ValeurNotee::Absente,
+                ValeurNotee::Entier(0),
+            ],
+        };
+        let note = NoteWmi {
+            classe: ClasseConsumer::Commande,
+            consumer: ObjetNote {
+                chemin: "CommandLineEventConsumer.Name=\"Updater\"".to_string(),
+                valeurs: consumer,
+            },
+            liaisons: vec![
+                LiaisonNotee {
+                    filtre_retire: true,
+                    filtre: filtre("F1"),
+                    liaison: liaison.clone(),
+                },
+                LiaisonNotee {
+                    filtre_retire: false,
+                    filtre: filtre("Partagé"),
+                    liaison,
+                },
+            ],
+        };
+        (w, note)
+    }
+
+    #[test]
+    fn note_wmi_aller_retour_et_alterations() {
+        let (w, note) = note_essai();
+        assert!(note.valide(&w));
+        let o = note.octets().unwrap();
+        assert_eq!(NoteWmi::lire(&o).as_ref(), Some(&note));
+        // Chaque octet changé, une troncature, un octet de plus : refusés (l'empreinte, puis la forme).
+        for i in 0..o.len() {
+            let mut x = o.clone();
+            x[i] ^= 0x01;
+            assert!(NoteWmi::lire(&x).is_none(), "octet {i}");
+        }
+        for n in 0..o.len() {
+            assert!(NoteWmi::lire(&o[..n]).is_none(), "tronquée à {n}");
+        }
+        let mut plus = o.clone();
+        plus.push(0);
+        assert!(NoteWmi::lire(&plus).is_none());
+        // Une autre version, même avec une empreinte refaite : refusée.
+        let mut autre = o[..o.len() - 32].to_vec();
+        autre[5] = 2;
+        let e = empreinte_note(&autre);
+        autre.extend_from_slice(&e);
+        assert!(NoteWmi::lire(&autre).is_none());
+        // Un octet de trop dans le corps, empreinte refaite : refusé (lecture exacte).
+        let mut long = o[..o.len() - 32].to_vec();
+        long.push(0);
+        let e = empreinte_note(&long);
+        long.extend_from_slice(&e);
+        assert!(NoteWmi::lire(&long).is_none());
+        assert!(NoteWmi::lire(&[]).is_none());
+        assert!(NoteWmi::lire(&vec![0; NOTE_WMI_MAX + 1]).is_none());
+    }
+
+    #[test]
+    fn note_wmi_valide_et_bornes() {
+        let (w, note) = note_essai();
+        // La note d'un autre abonnement, d'une autre classe : refusée.
+        let autre = AbonnementWmi {
+            nom: NomConsumer::nouveau("Autre").unwrap(),
+            ..w.clone()
+        };
+        assert!(!note.valide(&autre));
+        let script = AbonnementWmi {
+            classe: ClasseConsumer::Script,
+            ..w.clone()
+        };
+        assert!(!note.valide(&script));
+        // Un filtre protégé à recréer : refusé ; resté en place, admis.
+        let mut n = note.clone();
+        n.liaisons[0].filtre.valeurs[0] = ValeurNotee::Texte("SCM Event Log Filter".to_string());
+        assert!(!n.valide(&w));
+        n.liaisons[0].filtre_retire = false;
+        assert!(n.valide(&w));
+        // Deux fois le même filtre, un nom de filtre vide ou avec un contrôle : refusés.
+        let mut n = note.clone();
+        n.liaisons[1].filtre = n.liaisons[0].filtre.clone();
+        assert!(!n.valide(&w));
+        for mauvais in ["", "a\nb"] {
+            let mut n = note.clone();
+            n.liaisons[0].filtre.valeurs[0] = ValeurNotee::Texte(mauvais.to_string());
+            assert!(!n.valide(&w), "{mauvais:?}");
+        }
+        // Une valeur du mauvais genre, une propriété de moins : refusées.
+        let mut n = note.clone();
+        n.consumer.valeurs[6] = ValeurNotee::Texte("0".to_string());
+        assert!(!n.valide(&w));
+        let mut n = note.clone();
+        n.consumer.valeurs.pop();
+        assert!(!n.valide(&w));
+        // Bornes : un texte trop long, trop de liaisons, un chemin trop long ne s'écrivent pas.
+        let mut n = note.clone();
+        n.consumer.valeurs[2] = ValeurNotee::Texte("a".repeat(NOTE_WMI_TEXTE_MAX + 1));
+        assert!(n.octets().is_none() && !n.valide(&w));
+        let mut n = note.clone();
+        n.consumer.valeurs[2] = ValeurNotee::Texte("a".repeat(NOTE_WMI_TEXTE_MAX));
+        assert!(n.valide(&w));
+        assert_eq!(NoteWmi::lire(&n.octets().unwrap()), Some(n));
+        let mut n = note.clone();
+        n.liaisons = (0..=NOTE_WMI_LIAISONS_MAX)
+            .map(|i| {
+                let mut l = note.liaisons[0].clone();
+                l.filtre.valeurs[0] = ValeurNotee::Texte(format!("F{i}"));
+                l
+            })
+            .collect();
+        assert!(n.octets().is_none() && !n.valide(&w));
+        n.liaisons.pop();
+        assert!(n.valide(&w) && n.octets().is_some());
+        let mut n = note.clone();
+        n.consumer.chemin = "a".repeat(NOTE_WMI_CHEMIN_MAX + 1);
+        assert!(n.octets().is_none() && !n.valide(&w));
     }
 
     #[test]

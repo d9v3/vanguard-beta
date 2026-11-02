@@ -852,15 +852,15 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
         Acte::WmiAbonnementRetirer(w) => {
             let (n, c) = (crate::ui::affichable(w.nom.texte()), w.classe.classe());
             trf!(
-                "Retirer l'abonnement WMI « {n} » ({c})",
-                "Remove the WMI subscription “{n}” ({c})"
+                "Retirer l'abonnement WMI « {n} » ({c}) : relu et rejugé ici, jamais un abonnement de Windows ou de Defender. Le consumer, ses liaisons et leurs filtres sont notés, puis supprimés (un filtre qui sert à un autre abonnement reste) ; la remise n'est pas encore proposée dans « Ce que Vanguard a changé »",
+                "Remove the WMI subscription “{n}” ({c}): read and judged again here, never a Windows or Defender subscription. The consumer, its bindings and their filters are noted, then deleted (a filter used by another subscription stays); putting it back is not offered in “What Vanguard changed” yet"
             )
         }
         Acte::WmiAbonnementRemettre(w) => {
             let (n, c) = (crate::ui::affichable(w.nom.texte()), w.classe.classe());
             trf!(
-                "Recréer l'abonnement WMI « {n} » ({c})",
-                "Recreate the WMI subscription “{n}” ({c})"
+                "Recréer l'abonnement WMI « {n} » ({c}) depuis ce que Vanguard a noté en le retirant (refusé sans note valide, et jamais par-dessus un objet présent) ; son chemin d'objet peut changer, c'est dit",
+                "Recreate the WMI subscription “{n}” ({c}) from what Vanguard noted when removing it (refused without a valid note, and never over an existing object); its object path may change, this is said"
             )
         }
         Acte::ServiceRetirer(n) => {

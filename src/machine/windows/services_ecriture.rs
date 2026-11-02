@@ -680,14 +680,15 @@ pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
         Acte::DemarrageRemettre(f) => return super::demarrage_ecriture::remettre(f),
         Acte::LancementDesactiver(l, v) => return super::lancement_ecriture::desactiver(l, v),
         Acte::LancementReactiver(l) => return super::lancement_ecriture::reactiver(l),
+        // Abonnements WMI permanents (root\subscription, COM) : relus, rejugés par le bilan refait ici, les trois
+        // objets notés avant le retrait.
+        Acte::WmiAbonnementRetirer(w) => return super::wmi_ecriture::retirer(w),
+        Acte::WmiAbonnementRemettre(w) => return super::wmi_ecriture::remettre(w),
         _ => {}
     }
-    // Le reste de la persistance et la prise en main à distance (lot 3.5) : la grammaire est là, le geste vient avec
-    // sa passe. Jamais un succès simulé : refusé, rien n'est changé.
-    if matches!(
-        acte,
-        Acte::WmiAbonnementRetirer(_) | Acte::WmiAbonnementRemettre(_) | Acte::ServiceRetirer(_)
-    ) {
+    // Le reste de la persistance (lot 3.5) : la grammaire est là, le geste vient avec sa passe. Jamais un succès
+    // simulé : refusé, rien n'est changé.
+    if matches!(acte, Acte::ServiceRetirer(_)) {
         return Resultat::echec(
             None,
             tr!(

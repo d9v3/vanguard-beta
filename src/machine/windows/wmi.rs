@@ -26,8 +26,8 @@ use windows::Win32::System::Variant::{
     VT_I8, VT_INT, VT_UI1, VT_UI2, VT_UI4, VT_UI8, VT_UINT, VariantClear,
 };
 use windows::Win32::System::Wmi::{
-    IWbemLocator, WBEM_FLAG_FORWARD_ONLY, WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_GENERIC_FLAG_TYPE, WBEM_INFINITE,
-    WbemLocator,
+    IWbemLocator, IWbemServices, WBEM_FLAG_CREATE_ONLY, WBEM_FLAG_FORWARD_ONLY, WBEM_FLAG_RETURN_IMMEDIATELY,
+    WBEM_GENERIC_FLAG_TYPE, WBEM_INFINITE, WbemLocator,
 };
 use windows::core::{BSTR, Error, HSTRING, IUnknown, Interface};
 
@@ -555,6 +555,137 @@ fn appeler_dans_ce_fil(
     unsafe { resultat.Get(&HSTRING::from("ReturnValue"), 0, &raw mut v, None, None) }?;
     // SAFETY: `v` vient d'être rempli par Get.
     unsafe { lire(&v) }.entier().ok_or_else(|| Error::from(E_POINTER))
+}
+
+/// L'espace de noms des abonnements WMI permanents : le seul où `Abonnements` lit et écrit.
+const ESPACE_ABONNEMENTS: &str = r"root\subscription";
+/// Les seules classes que `Abonnements` lit, crée ou supprime.
+const CLASSES_ABONNEMENT: [&str; 4] = [
+    "__EventFilter",
+    "__FilterToConsumerBinding",
+    "CommandLineEventConsumer",
+    "ActiveScriptEventConsumer",
+];
+
+/// Une connexion à root\subscription, et à lui seul (l'espace est fixé ici, jamais reçu), pour le processus élevé
+/// qui retire ou recrée un abonnement (`wmi_ecriture`). À utiliser dans le fil COM qui l'a ouverte (`com`).
+pub(crate) struct Abonnements {
+    services: IWbemServices,
+}
+
+impl Abonnements {
+    /// Ouvre root\subscription ; COM doit être initialisé dans ce fil (`com`).
+    pub(crate) fn ouvrir() -> windows::core::Result<Abonnements> {
+        // SAFETY: COM est initialisé dans ce fil (par `com`) ; WbemLocator est la classe du localisateur WMI.
+        let localisateur: IWbemLocator = unsafe { CoCreateInstance(&WbemLocator, None, CLSCTX_INPROC_SERVER) }?;
+        let vide = BSTR::new();
+        // SAFETY: chaînes BSTR valides pendant l'appel ; utilisateur et mot de passe vides = le compte qui lance.
+        let services = unsafe {
+            localisateur.ConnectServer(&BSTR::from(ESPACE_ABONNEMENTS), &vide, &vide, &vide, 0, &vide, None)
+        }?;
+        droits_d_appel(&services);
+        Ok(Abonnements { services })
+    }
+
+    /// Chaque instance de `classe` (une de `CLASSES_ABONNEMENT`), avec ses `champs` et son chemin relatif
+    /// (`__RELPATH`), lus tels quels. Une classe absente rend l'erreur `CLASSE_ABSENTE`.
+    pub(crate) fn lire(&self, classe: &str, champs: &[&str]) -> windows::core::Result<Vec<Ligne>> {
+        if !CLASSES_ABONNEMENT.contains(&classe) {
+            return Err(Error::from(E_INVALIDARG));
+        }
+        let mut tous: Vec<String> = champs.iter().map(|c| (*c).to_string()).collect();
+        tous.push("__RELPATH".to_string());
+        // SAFETY: services est vivant ; requête et langage sont des BSTR valides pendant l'appel.
+        let instances = unsafe {
+            self.services.ExecQuery(
+                &BSTR::from("WQL"),
+                &BSTR::from(format!("SELECT * FROM {classe}")),
+                WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+                None,
+            )
+        }?;
+        droits_d_appel(&instances);
+        let noms: Vec<HSTRING> = tous.iter().map(|c| HSTRING::from(c.as_str())).collect();
+        let mut lignes = Vec::new();
+        loop {
+            let mut objets = [None];
+            let mut rendus = 0u32;
+            // SAFETY: un emplacement pour un objet, `rendus` dit combien ont été écrits.
+            unsafe { instances.Next(WBEM_INFINITE, &mut objets, &raw mut rendus) }.ok()?;
+            let Some(objet) = objets[0].take().filter(|_| rendus == 1) else {
+                break;
+            };
+            let mut ligne = Ligne::new();
+            for (champ, nom) in tous.iter().zip(&noms) {
+                let mut v = VARIANT::default();
+                // SAFETY: objet est vivant, `nom` une chaîne terminée par un zéro, `v` un VARIANT vide qui reçoit la
+                // copie.
+                let valeur = match unsafe { objet.Get(nom, 0, &raw mut v, None, None) } {
+                    // SAFETY: `v` vient d'être rempli par Get.
+                    Ok(()) => unsafe { lire(&v) },
+                    Err(_) => Valeur::Nul,
+                };
+                // SAFETY: `v` est à nous (copie rendue par Get, ou vide) ; VariantClear libère ce qu'il porte.
+                let _ = unsafe { VariantClear(&raw mut v) };
+                ligne.insert(champ.clone(), valeur);
+            }
+            lignes.push(ligne);
+        }
+        Ok(lignes)
+    }
+
+    /// Supprime l'objet de chemin relatif `chemin`, qui doit être une instance de `classe` (une de
+    /// `CLASSES_ABONNEMENT`) : il commence par « classe. », donc sans serveur ni autre espace de noms devant.
+    pub(crate) fn supprimer(&self, classe: &str, chemin: &str) -> windows::core::Result<()> {
+        if !CLASSES_ABONNEMENT.contains(&classe) || !chemin_de_classe(classe, chemin) {
+            return Err(Error::from(E_INVALIDARG));
+        }
+        // SAFETY: services est vivant ; le chemin est un BSTR valide pendant l'appel ; ni contexte ni résultat.
+        unsafe {
+            self.services
+                .DeleteInstance(&BSTR::from(chemin), WBEM_GENERIC_FLAG_TYPE(0), None, None)
+        }
+    }
+
+    /// Crée une instance de `classe` (une de `CLASSES_ABONNEMENT`) avec ces propriétés, seulement si aucune n'a déjà
+    /// sa clé (WBEM_FLAG_CREATE_ONLY : jamais par-dessus un objet présent).
+    pub(crate) fn creer(&self, classe: &str, proprietes: &[(&str, Parametre)]) -> windows::core::Result<()> {
+        if !CLASSES_ABONNEMENT.contains(&classe) {
+            return Err(Error::from(E_INVALIDARG));
+        }
+        let mut definition = None;
+        // SAFETY: services est vivant ; le chemin est un BSTR valide pendant l'appel ; `definition` reçoit la classe.
+        unsafe {
+            self.services.GetObject(
+                &BSTR::from(classe),
+                WBEM_GENERIC_FLAG_TYPE(0),
+                None,
+                Some(&raw mut definition),
+                None,
+            )
+        }?;
+        let definition = definition.ok_or_else(|| Error::from(E_POINTER))?;
+        // SAFETY: definition est la classe vivante rendue par GetObject ; SpawnInstance en fait une instance vide.
+        let instance = unsafe { definition.SpawnInstance(0) }?;
+        for (nom, valeur) in proprietes {
+            let v = valeur.variant()?;
+            // SAFETY: instance est vivante ; le nom est terminé par un zéro ; `v` vit pendant l'appel (Put en garde
+            // une copie) ; type 0 : celui de la classe.
+            unsafe { instance.Put(&HSTRING::from(*nom), 0, &raw const v, 0) }?;
+        }
+        // SAFETY: services et instance sont vivants ; ni contexte ni résultat.
+        unsafe {
+            self.services
+                .PutInstance(&instance, WBEM_GENERIC_FLAG_TYPE(WBEM_FLAG_CREATE_ONLY.0), None, None)
+        }
+    }
+}
+
+/// `chemin` est-il le chemin relatif d'une instance de `classe` : « classe. » puis la clé, sans caractère de
+/// contrôle ? Un chemin de WMI ne nomme un serveur ou un espace de noms qu'avant la classe (`\\serveur\espace:` ou
+/// `espace:`) : commencer par la classe les exclut.
+pub(crate) fn chemin_de_classe(classe: &str, chemin: &str) -> bool {
+    chemin.strip_prefix(classe).is_some_and(|reste| reste.starts_with('.')) && !chemin.chars().any(char::is_control)
 }
 
 /// Le membre de l'union que désigne `vt`, et lui seul.

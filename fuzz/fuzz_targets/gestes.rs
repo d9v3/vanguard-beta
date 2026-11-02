@@ -129,6 +129,19 @@ fn composant_admis(x: &str) -> bool {
 }
 
 libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
+    // La note d'un abonnement WMI retiré : une note relue se réécrit à l'identique, octet pour octet ; valide, elle
+    // ne recrée jamais un filtre de Windows ou de Defender.
+    if let Some(n) = gestes::NoteWmi::lire(octets) {
+        assert_eq!(n.octets().as_deref(), Some(octets));
+        assert!(octets.len() <= gestes::NOTE_WMI_MAX && n.liaisons.len() <= gestes::NOTE_WMI_LIAISONS_MAX);
+        if let Some(nom) = n.consumer.nom().and_then(gestes::NomConsumer::nouveau) {
+            let w = gestes::AbonnementWmi { classe: n.classe, nom };
+            if n.valide(&w) {
+                let protege = |l: &gestes::LiaisonNotee| l.filtre.nom().is_none_or(gestes::abonnement_wmi_protege);
+                assert!(n.liaisons.iter().all(|l| !(l.filtre_retire && protege(l))));
+            }
+        }
+    }
     let Ok(texte) = std::str::from_utf8(octets) else {
         return;
     };
@@ -402,6 +415,8 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                     let n = w.nom.texte();
                     assert!(!n.is_empty() && n.encode_utf16().count() <= gestes::CONSUMER_NOM_MAX);
                     assert!(!n.chars().any(char::is_control) && !n.contains(['"', '\'', '\\']) && !a.durcit());
+                    // Jamais un abonnement de Windows ou de Defender, même par une ligne forgée.
+                    assert!(!gestes::abonnement_wmi_protege(n));
                 }
                 // Un service : irréversible, donc une protection ; jamais de « \ » ni de « / ».
                 gestes::Acte::ServiceRetirer(ref n) => {

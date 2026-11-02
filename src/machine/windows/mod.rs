@@ -64,6 +64,7 @@ mod ssh;
 mod taches_ecriture;
 mod verrouillage;
 pub(crate) mod wmi;
+mod wmi_ecriture;
 
 use comptes::{comptes, politique};
 use maj::signatures;
