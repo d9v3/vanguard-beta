@@ -191,15 +191,6 @@ fn winget(id: &str) -> String {
     machine::windows::winget_installer(id)
 }
 
-/// Écrit une valeur DWORD en créant la clé si besoin (jamais « New-Item -Force » sur une clé existante :
-/// il l'effacerait avec toutes ses valeurs).
-fn dword(cle: &str, nom: &str, valeur: u32) -> String {
-    format!(
-        "if (-not (Test-Path '{cle}')) {{ New-Item '{cle}' -Force | Out-Null }}; \
-         Set-ItemProperty '{cle}' -Name {nom} -Value {valeur} -Type DWord"
-    )
-}
-
 /// Où vit une valeur notée : dans le compte de la personne (sa ruche, même depuis la fenêtre d'un autre
 /// administrateur), ou dans la machine.
 #[derive(Clone, Copy, PartialEq)]
@@ -449,13 +440,18 @@ fn composants(e: &Etat) -> Vec<Element> {
     l
 }
 
-/// Réglages de Windows pour jouer. Ceux du compte (`sid` : celui de la personne) s'écrivent dans sa ruche : la
-/// fenêtre administrateur qui les applique peut s'ouvrir sous un autre compte.
-fn reglages(e: &Etat, sid: Option<&str>) -> Vec<Element> {
-    const PERF: &str = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c";
-    let compte = |chemin: &str| crate::reparer::hkcu_de_la_personne(sid, chemin);
-    let preferences = compte(r"Software\Microsoft\DirectX\UserGpuPreferences");
-    let souris = compte(r"Control Panel\Mouse");
+/// Les lignes des gestes du compte (`gestes::VALEURS_COMPTE`) : faits par Vanguard non élevé, sous le compte de la
+/// personne, jamais derrière l'UAC (`machine::windows::compte`). Un identifiant hors table ne donne aucune ligne (le
+/// test `chaque_valeur_a_son_geste` le verrait).
+fn compte(ids: &[&str]) -> Vec<String> {
+    ids.iter().filter_map(|id| machine::gestes::ligne_compte(id)).collect()
+}
+
+/// Réglages de Windows pour jouer. Ceux du compte sont des gestes du compte, faits par Vanguard non élevé dans le
+/// HKCU de la personne (la fenêtre administrateur peut s'ouvrir sous un autre compte) ; HAGS, sous HKLM, est une
+/// correction de la table (`gaming-hags`), faite par le processus élevé.
+fn reglages(e: &Etat) -> Vec<Element> {
+    let perf = machine::windows::compte::PERFORMANCES;
     let mut l = vec![
         element(
             tr!("Mode Jeu activé", "Game Mode on"),
@@ -464,7 +460,7 @@ fn reglages(e: &Etat, sid: Option<&str>) -> Vec<Element> {
                 "Windows gives priority to the game and holds back updates and notifications while you play."
             ),
             Some(e.mode_jeu != Some(0)),
-            vec![dword(&compte(r"Software\Microsoft\GameBar"), "AutoGameModeEnabled", 1)],
+            compte(&["jeux-mode"]),
         )
         .annulable("mode_jeu", gestes("mode_jeu")),
         element(
@@ -477,11 +473,7 @@ fn reglages(e: &Etat, sid: Option<&str>) -> Vec<Element> {
                 "The graphics card manages its own memory: slightly lower latency, and required for DLSS 3/4 frame generation. GTX 1000 / RX 5000 cards and newer. Takes effect after a restart."
             ),
             Some(e.hags == Some(2)),
-            vec![dword(
-                r"HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers",
-                "HwSchMode",
-                2,
-            )],
+            vec![machine::windows::corrections::id("gaming-hags")],
         )
         .annulable("hags", gestes("hags")),
         element(
@@ -491,14 +483,7 @@ fn reglages(e: &Etat, sid: Option<&str>) -> Vec<Element> {
                 "Xbox Game Bar game capture uses a bit of graphics card and disk. The Game Bar (Win+G) stays available."
             ),
             Some(e.dvr == Some(0) && e.capture != Some(1)),
-            vec![
-                dword(&compte(r"System\GameConfigStore"), "GameDVR_Enabled", 0),
-                dword(
-                    &compte(r"Software\Microsoft\Windows\CurrentVersion\GameDVR"),
-                    "AppCaptureEnabled",
-                    0,
-                ),
-            ],
+            compte(&["jeux-dvr", "jeux-capture"]),
         )
         .annulable("capture", gestes("capture")),
         element(
@@ -508,24 +493,18 @@ fn reglages(e: &Etat, sid: Option<&str>) -> Vec<Element> {
                 "“Enhance pointer precision” changes the distance traveled depending on how fast you move: aiming becomes unpredictable. Takes effect at the next sign-in."
             ),
             e.souris.as_ref().map(|s| s == "0"),
-            ["MouseSpeed", "MouseThreshold1", "MouseThreshold2"]
-                .map(|nom| format!("Set-ItemProperty '{souris}' -Name {nom} -Value '0'"))
-                .into(),
+            compte(&["souris-vitesse", "souris-seuil1", "souris-seuil2"]),
         )
         .annulable("souris", gestes("souris")),
     ];
     if e.windows11 {
-        // La valeur regroupe plusieurs réglages (« VRROptimizeEnable=0;SwapEffectUpgradeEnable=1; ») : on ne
-        // remplace que le nôtre.
+        // La valeur regroupe plusieurs réglages (« VRROptimizeEnable=0;SwapEffectUpgradeEnable=1; ») : seul le
+        // nôtre change (`gestes::avec_swap_effect`).
         l.push(element(
             tr!("Optimisations pour les jeux en fenêtre", "Optimizations for windowed games"),
             tr!("Les jeux DirectX 10/11 en fenêtre ou fenêtre sans bordure passent au mode d'affichage moderne : moins de latence, VRR et HDR automatique possibles.", "DirectX 10/11 games in windowed or borderless mode switch to the modern presentation model: lower latency, VRR and Auto HDR possible."),
             Some(e.fenetres.as_deref().is_some_and(|f| f.contains("SwapEffectUpgradeEnable=1"))),
-            vec![format!(
-                "$k = '{preferences}'; if (-not (Test-Path $k)) {{ New-Item $k -Force | Out-Null }}; \
-                 $v = [string](Get-ItemProperty $k -ErrorAction SilentlyContinue).DirectXUserGlobalSettings; \
-                 Set-ItemProperty $k -Name DirectXUserGlobalSettings -Value (($v -replace 'SwapEffectUpgradeEnable=[0-9];?', '') + 'SwapEffectUpgradeEnable=1;')"
-            )],
+            compte(&["jeux-fenetres"]),
         )
         .annulable("fenetres", gestes("fenetres")));
     }
@@ -535,12 +514,9 @@ fn reglages(e: &Etat, sid: Option<&str>) -> Vec<Element> {
             "Le processeur reste à pleine fréquence : moins de saccades quand le jeu varie beaucoup. Consomme plus au repos.",
             "The processor stays at full speed: fewer stutters when the game load changes a lot. Uses more power at idle."
         ),
-        (!e.alimentation.is_empty()).then(|| e.alimentation.contains(PERF)),
-        vec![
-            // Par leur chemin dans System32, jamais par leur seul nom (`gestes::PROGRAMMES`).
-            machine::gestes::ligne_programme("powercfg-performances", None),
-            machine::gestes::ligne_programme("powercfg-mode-actif", None),
-        ],
+        (!e.alimentation.is_empty()).then(|| e.alimentation.contains(perf)),
+        // powercfg par son chemin dans System32, sans droits : un geste du compte.
+        vec![machine::gestes::ligne_alimentation()],
     )
     .annulable("alimentation", gestes("alimentation"));
     if e.portable {
@@ -589,7 +565,7 @@ pub(super) fn menu() {
         ),
         Some("2") => proposer(
             tr!("Réglages de Windows pour jouer", "Windows settings for gaming"),
-            &reglages(&etat, crate::reparer::sid_de_la_personne().as_deref()),
+            &reglages(&etat),
             true,
         ),
         Some("3") => super::remettre(),
@@ -652,32 +628,76 @@ mod tests {
         assert!(el.lien.is_some());
     }
 
+    /// Ce qui est au compte de la personne est un geste du compte (fait par Vanguard non élevé, dans son HKCU, même
+    /// quand la fenêtre administrateur s'ouvre sous un autre compte) ; ce qui est à la machine, une correction de la
+    /// table faite par le processus élevé. Aucune commande PowerShell ne reste.
     #[test]
     fn reglages_du_compte_dans_sa_ruche() {
+        use crate::machine::gestes::{analyser_compte, ligne_alimentation, ligne_compte};
         let e = etat_vide();
-        let l = reglages(&e, Some("S-1-5-21-1-2-3-1001"));
+        let l = reglages(&e);
         // Mode Jeu absent du registre = activé par défaut.
         assert_eq!(l[0].fait, Some(true));
         assert_eq!(l[3].fait, Some(false));
         assert!(l.last().unwrap().deconseille.is_some());
-        // Ce qui est au compte de la personne va sous HKEY_USERS\<SID>, même par la fenêtre d'un autre administrateur ;
-        // ce qui est à la machine reste dans HKLM.
-        for el in &l[..4] {
-            for c in el
-                .commandes
-                .iter()
-                .filter(|c| c.contains("Registry::") || c.contains("HKCU:"))
-            {
+        assert_eq!(l[0].commandes, [ligne_compte("jeux-mode").unwrap()]);
+        assert_eq!(
+            l[1].commandes,
+            [crate::machine::windows::corrections::id("gaming-hags")]
+        );
+        assert_eq!(l[2].commandes.len(), 2);
+        assert_eq!(l[3].commandes.len(), 3);
+        assert_eq!(l.last().unwrap().commandes, [ligne_alimentation()]);
+        for el in &l {
+            for c in &el.commandes {
                 assert!(
-                    c.contains(r"Registry::HKEY_USERS\S-1-5-21-1-2-3-1001\") && !c.contains("HKCU:"),
+                    analyser_compte(c).is_some() || crate::machine::windows::corrections::native(c),
+                    "{c}"
+                );
+                assert!(
+                    !c.contains("HKCU:") && !c.contains("HKEY_USERS") && !c.contains("powercfg"),
                     "{c}"
                 );
             }
         }
-        assert!(l[1].commandes[0].contains(r"HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers"));
-        assert!(reglages(&e, None)[0].commandes[0].contains(r"'HKCU:\Software\Microsoft\GameBar'"));
         super::super::tests::tient_dans_la_liste(&l);
         super::super::tests::tient_dans_la_liste(&composants(&e));
+    }
+
+    /// Chaque valeur notée d'un réglage est bien celle qu'écrit son geste : au compte, une valeur de
+    /// `gestes::VALEURS_COMPTE` (même clé, même nom, même type) ; à la machine, la correction `gaming-hags` de la
+    /// table. Ainsi Défaire remet exactement ce que l'application a changé, à la bonne ruche.
+    #[test]
+    fn chaque_valeur_a_son_geste() {
+        use crate::machine::gestes::{Donnee, VALEURS_COMPTE};
+        for &(reglage, ruche, cle, nom, dw) in VALEURS {
+            match ruche {
+                Ruche::Compte => {
+                    let v = VALEURS_COMPTE
+                        .iter()
+                        .find(|v| v.cle == cle && v.nom == nom)
+                        .unwrap_or_else(|| panic!("{reglage} {cle} {nom}"));
+                    assert_eq!(matches!(v.donnee, Donnee::Dword(_)), dw, "{reglage} {nom}");
+                    assert!(!v.durcit && v.id.starts_with(if reglage == "souris" { "souris-" } else { "jeux-" }));
+                    assert!(reglages(&etat_vide()).iter().any(|el| {
+                        el.commandes
+                            .iter()
+                            .any(|c| *c == format!("{}{}", crate::machine::gestes::COMPTE, v.id))
+                    }));
+                }
+                Ruche::Machine => {
+                    let c = crate::machine::windows::corrections::analyser(&crate::machine::windows::corrections::id(
+                        "gaming-hags",
+                    ))
+                    .unwrap();
+                    assert!(
+                        matches!(c.geste, crate::machine::windows::corrections::Geste::Dword { cle: k, valeur: n, donnee: 2 } if k == cle && n == nom),
+                        "{reglage}"
+                    );
+                    assert!(dw);
+                }
+            }
+        }
     }
 
     /// Les vraies listes, telles que `proposer` les envoie (point de restauration en tête pour les réglages) : chaque
@@ -688,11 +708,7 @@ mod tests {
         let mut e = etat_vide();
         e.winget = true;
         let point = crate::reparer::point_restauration("essai").unwrap().1;
-        for (liste, restauration) in [
-            (composants(&e), false),
-            (reglages(&e, Some("S-1-5-21-1-2-3-1001")), true),
-            (reglages(&e, None), true),
-        ] {
+        for (liste, restauration) in [(composants(&e), false), (reglages(&e), true)] {
             let tete: Vec<String> = if restauration { vec![point.clone()] } else { Vec::new() };
             let mut tout = tete.clone();
             for el in liste.iter().filter(|el| !el.commandes.is_empty()) {
@@ -724,7 +740,7 @@ mod tests {
         );
         assert_eq!(gestes("souris").len(), 3);
         assert_eq!(gestes("alimentation"), [Geste::alimentation()]);
-        for el in reglages(&etat_vide(), None) {
+        for el in reglages(&etat_vide()) {
             assert!(
                 el.annulable.as_ref().is_some_and(|(_, g)| !g.is_empty()),
                 "{}",
@@ -789,12 +805,5 @@ mod tests {
         );
         assert_eq!(guid_alimentation("pas de mode"), None);
         assert_eq!(guid_alimentation(""), None);
-    }
-
-    #[test]
-    fn cle_jamais_ecrasee() {
-        let c = dword(r"HKCU:\System\GameConfigStore", "GameDVR_Enabled", 0);
-        assert!(c.starts_with(r"if (-not (Test-Path 'HKCU:\System\GameConfigStore'))"));
-        assert!(c.ends_with("-Name GameDVR_Enabled -Value 0 -Type DWord"));
     }
 }

@@ -140,7 +140,8 @@ const NETBT_INTERFACES: &str = r"SYSTEM\CurrentControlSet\Services\NetBT\Paramet
 pub(crate) const PILOTES_VULNERABLES: &str = r"SYSTEM\CurrentControlSet\Control\CI\Config";
 
 /// La liste fermée. Chaque entrée renforce la sécurité, ou remet une valeur d'origine de Windows (`heure-ntp`,
-/// `winlogon-shell`, `winlogon-userinit`) ; aucune ne coupe un pare-feu, Defender, BitLocker ou l'UAC, ni une connexion
+/// `winlogon-shell`, `winlogon-userinit`), sauf les réglages pour jouer de la machine (`gaming-*`, les valeurs
+/// `Ruche::Machine` de gaming/windows.rs, liste fermée elle aussi), qui s'annulent par leur valeur d'avant ; aucune ne coupe un pare-feu, Defender, BitLocker ou l'UAC, ni une connexion
 /// à distance en cours (`rdp-nla` exige une authentification ; `rdp-coupe` est refusé par le processus élevé pendant
 /// une session du Bureau à distance).
 static TABLE: &[Correction] = &[
@@ -395,6 +396,16 @@ static TABLE: &[Correction] = &[
         juge: None,
         ps: Some("Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force"),
     },
+    // Réglage pour jouer, sous HKLM (le seul : les autres sont du compte, `gestes::VALEURS_COMPTE`). Ce n'est pas une
+    // protection : Gaming relève et note sa valeur d'avant, et la remet sur demande (`gaming::windows::VALEURS`).
+    dword(
+        "gaming-hags",
+        r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers",
+        "HwSchMode",
+        2,
+        "Activer la planification GPU matérielle (HAGS, au redémarrage)",
+        "Turn on hardware-accelerated GPU scheduling (HAGS, after a restart)",
+    ),
 ];
 
 /// Une entrée de la table qui met une valeur DWORD sous HKLM.
@@ -451,7 +462,12 @@ pub(crate) fn analyser(ligne: &str) -> Option<&'static Correction> {
 /// acte de service qui durcit (`gestes::SERVICES`, RemoteRegistry désactivé…) compte de même, comme le pare-feu remis
 /// en marche, le profil Public durci, un réseau passé en Public, un débogueur IFEO retiré ou un chemin de service mis
 /// entre guillemets ; un acte qui ne durcit pas (arrêter puis relancer
-/// wuauserv), comme le reste (PowerShell, le point de restauration seul, un dossier vidé), n'est pas relevé.
+/// wuauserv), comme le reste (PowerShell, le point de restauration seul, un dossier vidé, un réglage pour jouer
+/// `gaming-*`), n'est pas relevé. Un geste du compte (`gestes::COMPTE`) compte selon `GesteCompte::durcit` : les
+/// macros d'Office et la stratégie de PowerShell oui (« Protection ») ; un retrait de démarrage, de shell ou de proxy
+/// non (décision 4 b) du plan), un réglage pour jouer non plus : « Inconnu » pour l'instant, la valeur d'avant n'est
+/// notée que pour être lue (coupée, sans son type). Son annulation exacte, par une valeur d'avant relevée, revient au
+/// lot 3.5.
 pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
     use crate::machine::Defaire;
     use crate::machine::gestes::{self, Acte};
@@ -459,7 +475,8 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
     let durcies: Option<Vec<bool>> = commandes
         .iter()
         .map(|l| match (analyser(l), gestes::analyser_acte(l)) {
-            (Some(c), _) => Some(!matches!(c.geste, Geste::PointDeRestauration)),
+            (None, None) => gestes::analyser_compte(l).map(|g| g.durcit()),
+            (Some(c), _) => Some(!matches!(c.geste, Geste::PointDeRestauration) && !c.id.starts_with("gaming-")),
             (
                 None,
                 Some(
@@ -725,6 +742,9 @@ pub(crate) fn en_powershell(correctifs: &[Vec<String>]) -> Vec<Vec<String>> {
 
 /// Le texte à montrer pour une commande : la phrase d'une correction native ou d'un ordre, la commande elle-même sinon.
 pub(crate) fn affichable(commande: &str) -> String {
+    if let Some(g) = crate::machine::gestes::analyser_compte(commande) {
+        return crate::ui::affichable(&g.texte(!anglais()));
+    }
     if let Some(a) = crate::machine::gestes::analyser_programme(commande) {
         return texte_programme(&a);
     }
@@ -1039,7 +1059,13 @@ fn ecrire_dword(cle: &str, valeur: &str, donnee: u32, permis: bool) -> Resultat 
 
 /// Un DWORD posé sous `racine` : la valeur d'avant lue (refus si elle ne se remettrait pas), rien d'écrit si elle est
 /// déjà la bonne, refus si le bilan refait ici ne la signale pas (`permis`), sinon écrit puis relu.
-fn ecrire_dword_sous(racine: &winreg::RegKey, cle: &str, valeur: &str, donnee: u32, permis: bool) -> Resultat {
+pub(super) fn ecrire_dword_sous(
+    racine: &winreg::RegKey,
+    cle: &str,
+    valeur: &str,
+    donnee: u32,
+    permis: bool,
+) -> Resultat {
     use crate::ui::trf;
     use winreg::enums::{KEY_READ, KEY_WRITE};
     let avant = match valeur_d_avant(racine, cle, valeur) {
@@ -1578,7 +1604,24 @@ mod tests {
         for c in TABLE {
             assert!(analyser(&id(c.id)).is_some_and(|t| std::ptr::eq(t, c)), "{}", c.id);
             assert!(!c.powershell().is_empty() && !c.texte().is_empty());
-            // Aucun geste de la table n'affaiblit la sécurité : les valeurs écrites sont celles du durcissement.
+            // Aucun geste de la table n'affaiblit la sécurité : les valeurs écrites sont celles du durcissement, ou,
+            // pour un réglage pour jouer (`gaming-*`, liste fermée), HAGS seul, qui ne touche à aucune protection.
+            if c.id.starts_with("gaming-") {
+                assert!(
+                    matches!(
+                        c.geste,
+                        Geste::Dword {
+                            valeur: "HwSchMode",
+                            donnee: 2,
+                            ..
+                        }
+                    ),
+                    "{}",
+                    c.id
+                );
+                assert_eq!(comment_defaire(&[id(c.id)]), crate::machine::Defaire::Inconnu);
+                continue;
+            }
             if let Geste::Dword { valeur, donnee, .. } = c.geste {
                 const DURCIES: &[(&str, u32)] = &[
                     ("UseLogonCredential", 0),
@@ -1740,7 +1783,7 @@ mod tests {
         let shell = |s| {
             bilan_des_constats(
                 c("winlogon-shell"),
-                &portes::juger_winlogon(Some(s), Some(userinit), None, r"C:\Windows", ""),
+                &portes::juger_winlogon(Some(s), Some(userinit), None, r"C:\Windows"),
             )
         };
         assert_eq!(shell(r"C:\Users\alice\AppData\Roaming\bureau.exe"), Bilan::Signale);
@@ -1969,5 +2012,42 @@ mod tests {
             "{}",
             affichable(&correctifs[3][0])
         );
+    }
+
+    /// Un geste du compte se défait selon ce qu'il fait : les macros d'Office et la stratégie de PowerShell durcissent
+    /// (protection) ; un réglage pour jouer, un retrait de démarrage, de shell ou de proxy non (décision 4 b) du plan),
+    /// pas plus que HAGS (`gaming-hags`) : pas encore annulables (« Inconnu », non relevé), le lot 3.5 les relèvera. Il se montre dans les mots de la personne, jamais sous sa ligne brute.
+    #[test]
+    fn un_geste_du_compte_se_defait_selon_ce_qu_il_fait() {
+        use crate::machine::Defaire;
+        use crate::machine::gestes;
+        let durcis = [
+            gestes::ligne_compte("ps-strategie").unwrap(),
+            gestes::ligne_macros("16.0", "word").unwrap(),
+        ];
+        for l in &durcis {
+            assert_eq!(comment_defaire(std::slice::from_ref(l)), Defaire::Protection, "{l}");
+        }
+        let non_proteges = [
+            gestes::ligne_compte("jeux-mode").unwrap(),
+            gestes::ligne_compte("winlogon-shell-compte").unwrap(),
+            gestes::ligne_compte("proxy-coupe").unwrap(),
+            gestes::ligne_compte("proxy-script-retire").unwrap(),
+            gestes::ligne_run_retirer(true, &[0x61]).unwrap(),
+            gestes::ligne_alimentation(),
+            id("gaming-hags"),
+        ];
+        for l in &non_proteges {
+            assert_eq!(comment_defaire(std::slice::from_ref(l)), Defaire::Inconnu, "{l}");
+        }
+        // Avec un geste qui durcit dans la même liste : protection.
+        let melee = vec![non_proteges[0].clone(), durcis[0].clone()];
+        assert_eq!(comment_defaire(&melee), Defaire::Protection);
+        for l in durcis.iter().chain(&non_proteges) {
+            let t = affichable(l);
+            assert!(!t.contains("vanguard:") && !t.is_empty(), "{t}");
+        }
+        let t = affichable(&gestes::ligne_run_retirer(false, &"l'agent".encode_utf16().collect::<Vec<_>>()).unwrap());
+        assert!(t.contains("l'agent"), "{t}");
     }
 }

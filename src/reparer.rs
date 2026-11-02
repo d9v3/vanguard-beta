@@ -1030,7 +1030,6 @@ fn affichables(mut e: EtatWindows) -> EtatWindows {
 
 #[cfg(windows)]
 fn navigation(etat: Option<&EtatWindows>) -> Reparation {
-    const INTERNET: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
     let racine = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     let hosts = std::path::Path::new(&racine).join(r"System32\drivers\etc\hosts");
     let detournees = redirections(&String::from_utf8_lossy(&std::fs::read(hosts).unwrap_or_default()));
@@ -1044,25 +1043,17 @@ fn navigation(etat: Option<&EtatWindows>) -> Reparation {
         );
         commandes.push(commenter_hosts(&motif_adresses(&detournees)));
     }
-    // Le proxy est un réglage de la personne : écrit dans sa ruche, même si la fenêtre administrateur est celle d'un
-    // autre compte.
+    // Le proxy est un réglage de la personne : des gestes du compte, faits par Vanguard non élevé dans son HKCU (la
+    // fenêtre administrateur peut s'ouvrir sous un autre compte), puis WinINet prévenu (`compte::faire`) : les
+    // navigateurs le prennent sans fermer la session.
     if let Some(e) = etat {
-        let reglages = if e.proxy.is_empty() && e.pac.is_empty() {
-            String::new()
-        } else {
-            entre_apostrophes(&hkcu_de_la_personne(sid_de_la_personne().as_deref(), INTERNET))
-        };
         if !e.proxy.is_empty() {
             constats.push(format!("proxy {}", e.proxy));
-            commandes.push(format!(
-                "Set-ItemProperty -LiteralPath {reglages} -Name ProxyEnable -Value 0"
-            ));
+            commandes.extend(crate::machine::gestes::ligne_compte("proxy-coupe"));
         }
         if !e.pac.is_empty() {
             constats.push(trf!("script de proxy {}", "proxy script {}", e.pac));
-            commandes.push(format!(
-                "Remove-ItemProperty -LiteralPath {reglages} -Name AutoConfigURL"
-            ));
+            commandes.extend(crate::machine::gestes::ligne_compte("proxy-script-retire"));
         }
         if !e.winhttp.is_empty() {
             constats.push(trf!("proxy WinHTTP {}", "WinHTTP proxy {}", e.winhttp));
@@ -1779,7 +1770,14 @@ mod tests {
         })
         .to_string();
         let mut reparations = liste();
-        reparations.push(navigation(lire_etat_windows(&json).as_ref()));
+        let detournee = navigation(lire_etat_windows(&json).as_ref());
+        // Le proxy du compte : des gestes du compte (Vanguard non élevé, HKCU de la personne), plus aucune commande
+        // PowerShell sur sa ruche.
+        for id in ["proxy-coupe", "proxy-script-retire"] {
+            assert!(detournee.commandes.contains(&format!("vanguard:compte {id}")), "{id}");
+        }
+        assert!(!detournee.commandes.iter().any(|c| c.contains("Internet Settings")));
+        reparations.push(detournee);
         let mut essayees = 0;
         for r in reparations.iter().filter(|r| !r.commandes.is_empty()) {
             let mut commandes = r.commandes.clone();

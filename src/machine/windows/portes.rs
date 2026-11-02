@@ -566,13 +566,13 @@ pub(super) fn userinit_d_origine(valeur: &str, racine: &str) -> bool {
 }
 
 /// `shell`, `userinit` : les valeurs de Winlogon pour l'ordinateur ; `shell_du_compte` : celle du compte (absente
-/// d'ordinaire) ; `cle_du_compte` : sa clé, pour la fenêtre administrateur (le HKCU de la personne).
+/// d'ordinaire), retirée par un geste du compte (`winlogon-shell-compte`, fait par Vanguard non élevé dans le HKCU
+/// de la personne, même quand la fenêtre administrateur s'ouvre sous un autre compte).
 pub(super) fn juger_winlogon(
     shell: Option<&str>,
     userinit: Option<&str>,
     shell_du_compte: Option<&str>,
     racine: &str,
-    cle_du_compte: &str,
 ) -> Vec<Constat> {
     let mut constats = Vec::new();
     if let Some(v) = shell.filter(|v| !v.trim().is_empty() && !bureau_d_origine(v, racine)) {
@@ -633,10 +633,7 @@ pub(super) fn juger_winlogon(
                     "Retirer ce remplacement : votre compte reprend le bureau de Windows",
                     "Remove this replacement: your account goes back to Windows' desktop"
                 ),
-                &[format!(
-                    "Remove-ItemProperty -LiteralPath '{}' -Name Shell",
-                    ps_texte(cle_du_compte)
-                )],
+                &super::gestes::ligne_compte("winlogon-shell-compte").into_iter().collect::<Vec<_>>(),
             ),
         );
     }
@@ -664,7 +661,6 @@ pub(super) fn winlogon_de_l_ordinateur() -> Option<Vec<Constat>> {
         userinit.as_deref(),
         None,
         &racine_windows(),
-        "",
     ))
 }
 
@@ -679,18 +675,11 @@ fn winlogon() -> Vec<Constat> {
         .and_then(|k| k.get_value::<String, _>("Shell"))
         .ok()
         .filter(|v| !v.trim().is_empty());
-    // Le SID (whoami) seulement s'il y a quelque chose à corriger dans le compte.
-    let cle_du_compte = if du_compte.is_some() {
-        crate::reparer::hkcu_de_la_personne(crate::reparer::sid_de_la_personne().as_deref(), WINLOGON)
-    } else {
-        String::new()
-    };
     juger_winlogon(
         shell.as_deref(),
         userinit.as_deref(),
         du_compte.as_deref(),
         &racine_windows(),
-        &cle_du_compte,
     )
 }
 
@@ -1145,7 +1134,6 @@ pub(super) fn corpus_winlogon(e: &crate::modele::corpus::Entree) -> Vec<Constat>
         valeur("userinit").as_deref(),
         valeur("shell_du_compte").as_deref(),
         r"C:\Windows",
-        r"HKCU:\corpus",
     )
 }
 
@@ -1296,7 +1284,7 @@ mod tests {
             super::super::corrections::en_powershell(&[vec![ligne.clone()]])[0][0]
                 .contains(r"\x''y.exe' -Name Debugger")
         );
-        let c = juger_winlogon(Some(piege), None, Some(piege), r"C:\Windows", r"HKCU:\x");
+        let c = juger_winlogon(Some(piege), None, Some(piege), r"C:\Windows");
         assert_eq!(c.len(), 2);
         assert!(c.iter().all(|c| !crate::ui::contient_un_piege(&c.message)));
     }
@@ -1334,7 +1322,6 @@ mod tests {
             Some(r"C:\Windows\system32\userinit.exe,"),
             None,
             r,
-            "",
         );
         assert!(sain.len() == 1 && sain[0].probleme.is_none());
         assert!(bureau_d_origine(r"C:\Windows\Explorer.exe", r));
@@ -1348,7 +1335,6 @@ mod tests {
             Some(r"C:\Windows\system32\userinit.exe,C:\Users\Public\a.exe,"),
             Some(r"C:\Users\alice\AppData\Roaming\c.exe"),
             r,
-            r"Registry::HKEY_USERS\S-1-5-21-1-2-3-1001\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon",
         );
         assert_eq!(c.len(), 3);
         assert!(c.iter().all(|c| c.probleme == Some(Niveau::Eleve)));
@@ -1359,9 +1345,8 @@ mod tests {
         // Des identifiants de la table, sans paramètre : la racine de Userinit est lue par le processus élevé.
         assert_eq!(commandes[0], "vanguard:winlogon-shell");
         assert_eq!(commandes[1], "vanguard:winlogon-userinit");
-        assert!(
-            commandes[2].starts_with(r"Remove-ItemProperty -LiteralPath 'Registry::HKEY_USERS\S-1-5-21-1-2-3-1001")
-        );
+        // Celle du compte : un geste du compte, fait par Vanguard non élevé dans le HKCU de la personne.
+        assert_eq!(commandes[2], "vanguard:compte winlogon-shell-compte");
     }
 
     /// Le processus élevé rejuge par LA fonction du bilan (`juger_ifeo`), sur les mêmes lectures : il retire ce que le

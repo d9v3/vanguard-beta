@@ -2,7 +2,8 @@
 //! gestes.rs) : script vérifié par empreinte, programme fixe de la table, acte sur un service ou un dossier de la
 //! table, sur le pare-feu ou la catégorie d'un réseau (GUID), sur une clé du registre désignée par un nom en
 //! hexadécimal UTF-16 (IFEO, SilentProcessExit, service), liste validée, découpe d'une liste de correctifs en
-//! morceaux natifs et PowerShell, états d'un script en échec. Chemins piégés (« .. », NUL, lecteur manquant),
+//! morceaux natifs et PowerShell, états d'un script en échec ; gestes du compte (faits par Vanguard non élevé, jamais
+//! par le processus élevé) et séparation d'une liste entre points, travail élevé et gestes du compte. Chemins piégés (« .. », NUL, lecteur manquant),
 //! hexadécimal en majuscules ou en demi-paire, noms hors de la liste fermée, lignes et correctifs en nombre.
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
@@ -68,6 +69,21 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                 _ => {}
             }
         }
+        // Un geste du compte : écrit à l'identique, ASCII, borné ; jamais un programme, un acte ou un script, et
+        // toujours refusé par la validation du processus élevé.
+        if let Some(g) = gestes::analyser_compte(l) {
+            assert_eq!(g.ligne(), *l);
+            assert!(l.len() <= gestes::COMPTE_LIGNE_MAX && l.is_ascii() && l.starts_with(gestes::COMPTE));
+            assert!(gestes::analyser_programme(l).is_none() && gestes::analyser_acte(l).is_none());
+            assert!(gestes::analyser_script(l).is_none() && !gestes::est_un_acte(l));
+            assert!(gestes::valider(std::slice::from_ref(l), |_| Some(())).is_none());
+            assert_eq!(g.valeur().is_some(), g.donnee().is_some());
+            if let gestes::GesteCompte::RetirerRun { nom, .. } = &g {
+                assert!(nom.len() <= gestes::RUN_NOM_MAX && !nom.contains(&0));
+                let runonce = matches!(g, gestes::GesteCompte::RetirerRun { runonce: true, .. });
+                assert_eq!(gestes::ligne_run_retirer(runonce, nom).as_deref(), Some(l.as_str()));
+            }
+        }
         if let Some(s) = gestes::analyser_script(l) {
             assert_eq!(gestes::ligne_script(&s.empreinte, &s.chemin), *l);
             assert!(!s.chemin.split(['\\', '/']).any(|c| c == "." || c == ".."));
@@ -107,7 +123,10 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             // Refusée : il y a une raison, jamais une liste bonne refusée sans cause.
             let bonne = |l: &String| {
                 l.len() <= gestes::LIGNE_MAX
-                    && if l.starts_with(gestes::SCRIPT) {
+                    && if l.starts_with(gestes::COMPTE) {
+                        // Un geste du compte n'est jamais au processus élevé, même bien formé.
+                        false
+                    } else if l.starts_with(gestes::SCRIPT) {
                         gestes::analyser_script(l).is_some()
                     } else if l.starts_with(gestes::PROGRAMME) {
                         gestes::analyser_programme(l).is_some()
@@ -158,4 +177,43 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
         .flat_map(|(i, c)| (0..c.len()).map(move |j| (i, j)))
         .collect();
     assert_eq!(vues, attendues);
+    // La séparation : chaque ligne d'un correctif va à une seule part, dans l'ordre ; aux gestes du compte, seulement
+    // une ligne que `analyser_compte` relit ; un point n'est jamais un geste du compte.
+    let est_point = |l: &str| l.starts_with('!');
+    let separes = gestes::separer(&correctifs, est_point);
+    assert_eq!(separes.len(), correctifs.len());
+    for (c, s) in correctifs.iter().zip(&separes) {
+        let mut toutes: Vec<usize> = s.points.iter().chain(&s.eleves).chain(&s.compte).copied().collect();
+        toutes.sort_unstable();
+        assert_eq!(toutes, (0..c.len()).collect::<Vec<_>>());
+        assert!(s.points.iter().all(|&j| est_point(&c[j])));
+        assert!(s.compte.iter().all(|&j| !est_point(&c[j]) && gestes::analyser_compte(&c[j]).is_some()));
+        assert!(s.eleves.iter().all(|&j| !est_point(&c[j]) && gestes::analyser_compte(&c[j]).is_none()));
+    }
+    // Le passage en deux temps : jamais un geste du compte envoyé au processus élevé ; aucun geste du compte fait
+    // quand le passage élevé est arrêté ; un correctif réussi n'a que des parts réussies.
+    let arrete = octets.first().is_some_and(|o| o & 1 == 1);
+    let mut envoyes_au_processus_eleve: Vec<Vec<String>> = Vec::new();
+    let mut faits = 0usize;
+    let resultat = gestes::lancer_separe(
+        &correctifs,
+        est_point,
+        |envoyes| {
+            envoyes_au_processus_eleve = envoyes.to_vec();
+            Some(gestes::PassageEleve {
+                resultats: vec![true; envoyes.len()],
+                notes: envoyes.to_vec(),
+                arrete,
+            })
+        },
+        |_| {
+            faits = faits.saturating_add(1);
+            gestes::FaitCompte { reussi: true, rien: false, avant: None }
+        },
+    );
+    let (resultats, notes) = resultat.unwrap();
+    assert_eq!((resultats.len(), notes.len()), (correctifs.len(), correctifs.len()));
+    assert!(envoyes_au_processus_eleve.iter().flatten().all(|l| gestes::analyser_compte(l).is_none()));
+    let du_compte: usize = separes.iter().map(|s| s.compte.len()).sum();
+    assert_eq!(faits, if arrete && !envoyes_au_processus_eleve.is_empty() { 0 } else { du_compte });
 });

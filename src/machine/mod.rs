@@ -1142,19 +1142,23 @@ fn lancer_chacune(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
         for c in correctifs.iter().flatten() {
             println!("    {GRIS}> {}{RESET}", windows::corrections::affichable(c));
         }
-        // Toute liste passe par Vanguard lui-même, relancé en administrateur, en une seule demande (`admin_mele`) : les
-        // gestes natifs tels quels, le PowerShell en scripts vérifiés par leur empreinte. S'il ne peut pas (dit par
-        // `admin_mele`), rien n'est fait : l'ancienne fenêtre PowerShell administrateur, qu'un repli provoqué rouvrirait,
-        // ne sert plus que sous Wine, où l'élévation n'existe pas.
-        if par_vanguard_eleve() {
-            return windows::admin_mele(correctifs)
-                .unwrap_or_else(|| (vec![false; correctifs.len()], correctifs.to_vec()));
-        }
-        trp!(
-            "    {GRIS}Une fenêtre administrateur s'ouvre et montre chaque étape ; attendez qu'elle se ferme.{RESET}",
-            "    {GRIS}An administrator window opens and shows each step; wait for it to close.{RESET}"
-        );
-        (windows::powershell_admin_chacune(correctifs), correctifs.to_vec())
+        // Les gestes du compte (HKCU de la personne, mode d'alimentation) se font ici, sans droits, sous le compte de
+        // la personne (`windows::compte`) ; le reste passe par Vanguard lui-même, relancé en administrateur, en une
+        // seule demande (`admin_mele`) : les gestes natifs tels quels, le PowerShell en scripts vérifiés par leur
+        // empreinte. L'ordre est gardé : point de restauration et travail élevé d'abord, gestes du compte ensuite.
+        // Si Vanguard administrateur ne peut pas (dit par `admin_mele`), rien n'est fait : l'ancienne fenêtre
+        // PowerShell administrateur, qu'un repli provoqué rouvrirait, ne sert plus que sous Wine, où l'élévation
+        // n'existe pas.
+        windows::compte::lancer(correctifs, |eleves| {
+            if par_vanguard_eleve() {
+                return windows::admin_mele(eleves);
+            }
+            trp!(
+                "    {GRIS}Une fenêtre administrateur s'ouvre et montre chaque étape ; attendez qu'elle se ferme.{RESET}",
+                "    {GRIS}An administrator window opens and shows each step; wait for it to close.{RESET}"
+            );
+            Some((windows::powershell_admin_chacune(eleves), eleves.to_vec()))
+        })
     }
     #[cfg(not(windows))]
     {

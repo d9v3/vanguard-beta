@@ -189,14 +189,30 @@ pub(crate) fn lignes_run() -> (Vec<ValeurRun>, Vec<&'static str>) {
     (lignes, non_lues)
 }
 
-/// La correction d'une valeur Run : par le registre de .NET, qui vise le nom exact. Le -Name de Remove-ItemProperty
-/// accepte des jokers, et le nom est choisi par le programme qui se fait relancer : « [svc] » y visait une valeur
-/// « s », « v » ou « c » (la correction ratait), « * » retirait toutes les valeurs de la clé. Un nom mal formé est
-/// réécrit mot par mot : sa version lue avec pertes ne désignerait aucune valeur.
+/// La correction d'une valeur Run. Sous HKCU : un geste du compte (`run-retirer`), fait par Vanguard non élevé dans
+/// le HKCU de la personne (la fenêtre administrateur peut s'ouvrir sous un autre compte, dont le HKCU n'est pas le
+/// sien), le nom exact porté mot par mot, demi-caractère isolé compris, jusqu'à la longueur que le registre admet.
+/// Sous HKLM : par le registre de .NET, qui vise le nom exact. Le -Name de Remove-ItemProperty accepte
+/// des jokers, et le nom est choisi par le programme qui se fait relancer : « [svc] » y visait une valeur « s », « v »
+/// ou « c » (la correction ratait), « * » retirait toutes les valeurs de la clé. Un nom mal formé est réécrit mot par
+/// mot : sa version lue avec pertes ne désignerait aucune valeur.
 fn retrait_run(v: &ValeurRun) -> Option<String> {
     let ps_texte = crate::commande::ps_texte;
     let (ruche, chemin) = v.cle.split_once(r":\")?;
-    let ruche = if ruche == "HKCU" { "CurrentUser" } else { "LocalMachine" };
+    if ruche == "HKCU" {
+        let runonce = if v.cle == CLES_RUN[0] {
+            false
+        } else if v.cle == CLES_RUN[1] {
+            true
+        } else {
+            return None;
+        };
+        let mots: Vec<u16> = match &v.mots {
+            Some(mots) => mots.clone(),
+            None => v.nom.encode_utf16().collect(),
+        };
+        return super::gestes::ligne_run_retirer(runonce, &mots);
+    }
     let nom = match &v.mots {
         Some(mots) => {
             let codes: Vec<String> = mots.iter().map(|m| format!("0x{m:04X}")).collect();
@@ -206,7 +222,7 @@ fn retrait_run(v: &ValeurRun) -> Option<String> {
     };
     // La vue 64 bits, comme la lecture : sinon une fenêtre PowerShell 32 bits viserait WOW6432Node.
     Some(format!(
-        "$k = [Microsoft.Win32.RegistryKey]::OpenBaseKey('{ruche}', 'Registry64').OpenSubKey('{}', $true); \
+        "$k = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64').OpenSubKey('{}', $true); \
          $k.DeleteValue({nom}); $k.Close()",
         ps_texte(chemin)
     ))
@@ -1045,9 +1061,30 @@ mod tests {
     /// jamais un motif (« * » retirait toutes les valeurs de la clé, « [svc] » n'en retirait aucune).
     #[test]
     fn retrait_run_sans_joker() {
+        use super::super::gestes::{GesteCompte, analyser_compte};
         let cle = r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Run";
-        for nom in ["*", "[svc]", "up?date", "l'agent"] {
+        // Sous HKCU : un geste du compte, qui porte le nom exact (aucun joker possible), fait par Vanguard non élevé.
+        for nom in ["*", "[svc]", "up?date", "l'agent", ""] {
             let v = valeur_run(&format!(r"{cle}|{nom}|C:\Users\Public\x.exe"));
+            let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
+            let commande = &c[0].correctif.as_ref().unwrap().commandes[0];
+            let attendu: Vec<u16> = nom.encode_utf16().collect();
+            assert!(
+                matches!(analyser_compte(commande), Some(GesteCompte::RetirerRun { runonce: false, nom: n }) if n == attendu),
+                "{commande}"
+            );
+        }
+        let v = valeur_run(r"HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce|a|C:\Users\Public\x.exe");
+        let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
+        assert!(matches!(
+            analyser_compte(&c[0].correctif.as_ref().unwrap().commandes[0]),
+            Some(GesteCompte::RetirerRun { runonce: true, .. })
+        ));
+        // Sous HKLM : par le registre de .NET, nom exact ; valeur par défaut, nom vide.
+        for nom in ["*", "[svc]", "l'agent", ""] {
+            let v = valeur_run(&format!(
+                r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run|{nom}|C:\Users\Public\x.exe"
+            ));
             let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
             let commande = &c[0].correctif.as_ref().unwrap().commandes[0];
             assert!(!commande.contains("Remove-ItemProperty"), "{commande}");
@@ -1056,22 +1093,37 @@ mod tests {
                 "{commande}"
             );
             assert!(commande.contains(
-                r"OpenBaseKey('CurrentUser', 'Registry64').OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run', $true)"
+                r"OpenBaseKey('LocalMachine', 'Registry64').OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run', $true)"
             ));
         }
-        // Valeur par défaut, dans la clé de la machine : nom vide.
-        let v = valeur_run(r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run||C:\Users\Public\x.exe");
-        let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
-        let commande = &c[0].correctif.as_ref().unwrap().commandes[0];
-        assert!(commande.contains("OpenBaseKey('LocalMachine'") && commande.contains("DeleteValue('')"));
-        // Un nom au demi-caractère de substitution isolé est jugé (montré avec pertes), et la correction le réécrit
-        // mot par mot.
+        // Un nom au demi-caractère de substitution isolé est jugé (montré avec pertes), et la correction le porte mot
+        // par mot : dans la ligne du compte sous HKCU, dans le script sous HKLM.
         let mut v = valeur_run(&format!(r"{cle}|a|C:\Users\Public\x.exe"));
         v.nom = "a\u{FFFD}".to_string();
         v.mots = Some(vec![0x61, 0xD800]);
         let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
         assert_eq!(c[0].probleme, Some(Niveau::Eleve));
+        assert!(matches!(
+            analyser_compte(&c[0].correctif.as_ref().unwrap().commandes[0]),
+            Some(GesteCompte::RetirerRun { nom, .. }) if nom == [0x61, 0xD800]
+        ));
+        let mut v = valeur_run(r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run|a|C:\Users\Public\x.exe");
+        v.nom = "a\u{FFFD}".to_string();
+        v.mots = Some(vec![0x61, 0xD800]);
+        let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
         assert!(c[0].correctif.as_ref().unwrap().commandes[0].contains("DeleteValue((-join [char[]](0x0061,0xD800)))"));
+        // Un nom très long (jusqu'à la limite du registre) a son retrait ; au-delà, aucun nom réel : jugé, sans
+        // correction (jamais un autre nom visé).
+        let v = valeur_run(&format!(r"{cle}|{}|C:\Users\Public\x.exe", "n".repeat(16_383)));
+        let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
+        assert!(matches!(
+            super::super::gestes::analyser_compte(&c[0].correctif.as_ref().unwrap().commandes[0]),
+            Some(GesteCompte::RetirerRun { nom, .. }) if nom.len() == 16_383
+        ));
+        let v = valeur_run(&format!(r"{cle}|{}|C:\Users\Public\x.exe", "n".repeat(16_384)));
+        let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
+        assert_eq!(c[0].probleme, Some(Niveau::Eleve));
+        assert!(c[0].correctif.is_none());
     }
 
     /// Sous Windows (et Wine, dont le registre marche), un nom de valeur Run en UTF-16 mal formé est lu, pas sauté.
@@ -1132,7 +1184,12 @@ mod tests {
             let k = c.correctif.as_ref().unwrap();
             assert!(!crate::ui::contient_un_piege(&c.message), "{}", c.message);
             assert!(!crate::ui::contient_un_piege(&k.action), "{}", k.action);
-            assert!(k.commandes[0].contains(piege), "{}", k.commandes[0]);
+            // La valeur Run du compte : un geste du compte, qui porte le nom exact en hexadécimal.
+            let vise = match super::super::gestes::analyser_compte(&k.commandes[0]) {
+                Some(super::super::gestes::GesteCompte::RetirerRun { nom, .. }) => String::from_utf16(&nom).unwrap(),
+                _ => k.commandes[0].clone(),
+            };
+            assert!(vise.contains(piege), "{}", k.commandes[0]);
         }
     }
 

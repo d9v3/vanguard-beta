@@ -293,28 +293,6 @@ pub(crate) static PROGRAMMES: &[Programme] = &[
         en: "Require passwords of at least 8 characters",
     },
     Programme {
-        id: "powercfg-performances",
-        dossier: Dossier::Systeme32,
-        exe: "powercfg.exe",
-        arguments: &[Argument::Fixe("/setactive"), Argument::Fixe("SCHEME_MIN")],
-        noms: &[],
-        reussites: &[0],
-        au_redemarrage: &[],
-        fr: "Passer au mode d'alimentation « Performances élevées »",
-        en: "Switch to the “High performance” power plan",
-    },
-    Programme {
-        id: "powercfg-mode-actif",
-        dossier: Dossier::Systeme32,
-        exe: "powercfg.exe",
-        arguments: &[Argument::Fixe("/getactivescheme")],
-        noms: &[],
-        reussites: &[0],
-        au_redemarrage: &[],
-        fr: "Afficher le mode d'alimentation actif",
-        en: "Show the active power plan",
-    },
-    Programme {
         id: "w32tm-resync",
         dossier: Dossier::Systeme32,
         exe: "w32tm.exe",
@@ -1394,6 +1372,452 @@ pub(crate) fn ligne_reseau_categorie(guid: &str, categorie: Categorie) -> Option
     GuidReseau::lire(guid).map(|guid| ReseauCategorie { guid, categorie }.ligne())
 }
 
+// ------------------------------------------------------------------ le compte
+
+/// Le verbe d'un geste du compte : une valeur du HKCU de la personne (ou son mode d'alimentation), faite par Vanguard
+/// NON élevé, dans son propre processus, qui tourne déjà sous le compte de la personne. Le processus élevé la refuse
+/// (`valider`) : elle ne passe jamais l'UAC, et une fenêtre administrateur ouverte par un autre compte (« par-dessus
+/// l'épaule ») ne l'écrit pas dans son HKCU à elle.
+pub(crate) const COMPTE: &str = "vanguard:compte ";
+/// Le plus long nom de valeur Run admis, en unités UTF-16 : celui du registre (16 383 caractères). Un maliciel qui
+/// prend un nom très long ne doit pas échapper au retrait.
+pub(crate) const RUN_NOM_MAX: usize = 16_383;
+/// La plus longue ligne du compte : un retrait RunOnce au nom le plus long. Elle ne passe jamais le tube du processus
+/// élevé (`valider` la refuse), d'où une borne à elle, au-dessus de `LIGNE_MAX`.
+pub(crate) const COMPTE_LIGNE_MAX: usize = COMPTE.len() + "run-retirer runonce ".len() + 4 * RUN_NOM_MAX;
+/// Les caractères d'un nom montrés au plus : un nom très long est coupé à l'écran, jamais dans le geste.
+const NOM_MONTRE_MAX: usize = 200;
+/// Les clés de démarrage du compte, sous HKCU.
+pub(crate) const CLE_RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+pub(crate) const CLE_RUNONCE: &str = r"Software\Microsoft\Windows\CurrentVersion\RunOnce";
+/// Les versions d'Office qui gardent leurs réglages dans le registre (2010, 2013, 2016 à 365) et leurs programmes à
+/// macros : (clé, nom montré).
+pub(crate) const OFFICE_VERSIONS: [&str; 3] = ["16.0", "15.0", "14.0"];
+pub(crate) const OFFICE_PROGRAMMES: [(&str, &str); 6] = [
+    ("word", "Word"),
+    ("excel", "Excel"),
+    ("powerpoint", "PowerPoint"),
+    ("access", "Access"),
+    ("publisher", "Publisher"),
+    ("visio", "Visio"),
+];
+
+/// Ce qu'un geste du compte met dans sa valeur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Donnee {
+    Dword(u32),
+    /// Un texte (REG_SZ).
+    Sz(&'static str),
+    /// La valeur retirée.
+    Retirer,
+    /// DirectXUserGlobalSettings : seul « SwapEffectUpgradeEnable » change, le reste du texte est gardé
+    /// (`avec_swap_effect`).
+    SwapEffect,
+}
+
+/// Une valeur fixe du compte : sa clé sous HKCU, son nom, ce qu'elle reçoit.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValeurCompte {
+    pub id: &'static str,
+    pub cle: &'static str,
+    pub nom: &'static str,
+    pub donnee: Donnee,
+    /// Un réglage d'Internet : WinINet est prévenu une fois la valeur changée, pour que les navigateurs le prennent
+    /// tout de suite.
+    pub rafraichir: bool,
+    /// Le geste renforce la sécurité : son annulation n'est pas proposée (`Defaire::Protection`).
+    pub durcit: bool,
+    pub fr: &'static str,
+    pub en: &'static str,
+}
+
+/// Les valeurs fixes du compte, liste fermée. Seul l'identifiant voyage : la clé, le nom et la donnée sont ceux-ci.
+pub(crate) static VALEURS_COMPTE: &[ValeurCompte] = &[
+    ValeurCompte {
+        id: "jeux-mode",
+        cle: r"Software\Microsoft\GameBar",
+        nom: "AutoGameModeEnabled",
+        donnee: Donnee::Dword(1),
+        rafraichir: false,
+        durcit: false,
+        fr: "Activer le Mode Jeu",
+        en: "Turn on Game Mode",
+    },
+    ValeurCompte {
+        id: "jeux-dvr",
+        cle: r"System\GameConfigStore",
+        nom: "GameDVR_Enabled",
+        donnee: Donnee::Dword(0),
+        rafraichir: false,
+        durcit: false,
+        fr: "Couper l'enregistrement de jeu en arrière-plan",
+        en: "Turn off background game recording",
+    },
+    ValeurCompte {
+        id: "jeux-capture",
+        cle: r"Software\Microsoft\Windows\CurrentVersion\GameDVR",
+        nom: "AppCaptureEnabled",
+        donnee: Donnee::Dword(0),
+        rafraichir: false,
+        durcit: false,
+        fr: "Couper la capture de jeu de la Xbox Game Bar",
+        en: "Turn off Xbox Game Bar game capture",
+    },
+    ValeurCompte {
+        id: "souris-vitesse",
+        cle: r"Control Panel\Mouse",
+        nom: "MouseSpeed",
+        donnee: Donnee::Sz("0"),
+        rafraichir: false,
+        durcit: false,
+        fr: "Couper l'accélération de la souris (vitesse)",
+        en: "Turn off mouse acceleration (speed)",
+    },
+    ValeurCompte {
+        id: "souris-seuil1",
+        cle: r"Control Panel\Mouse",
+        nom: "MouseThreshold1",
+        donnee: Donnee::Sz("0"),
+        rafraichir: false,
+        durcit: false,
+        fr: "Couper l'accélération de la souris (premier seuil)",
+        en: "Turn off mouse acceleration (first threshold)",
+    },
+    ValeurCompte {
+        id: "souris-seuil2",
+        cle: r"Control Panel\Mouse",
+        nom: "MouseThreshold2",
+        donnee: Donnee::Sz("0"),
+        rafraichir: false,
+        durcit: false,
+        fr: "Couper l'accélération de la souris (second seuil)",
+        en: "Turn off mouse acceleration (second threshold)",
+    },
+    ValeurCompte {
+        id: "jeux-fenetres",
+        cle: r"Software\Microsoft\DirectX\UserGpuPreferences",
+        nom: "DirectXUserGlobalSettings",
+        donnee: Donnee::SwapEffect,
+        rafraichir: false,
+        durcit: false,
+        fr: "Activer les optimisations pour les jeux en fenêtre",
+        en: "Turn on optimizations for windowed games",
+    },
+    ValeurCompte {
+        id: "ps-strategie",
+        cle: r"SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell",
+        nom: "ExecutionPolicy",
+        donnee: Donnee::Sz("RemoteSigned"),
+        rafraichir: false,
+        durcit: true,
+        fr: "Remettre la stratégie d'exécution de PowerShell de ce compte à RemoteSigned",
+        en: "Set this account's PowerShell execution policy back to RemoteSigned",
+    },
+    // Décision 4 b) du plan : un retrait de persistance n'est pas « Protection » ; son annulation exacte (valeur
+    // d'avant relevée) revient au lot 3.5.
+    ValeurCompte {
+        id: "winlogon-shell-compte",
+        cle: r"Software\Microsoft\Windows NT\CurrentVersion\Winlogon",
+        nom: "Shell",
+        donnee: Donnee::Retirer,
+        rafraichir: false,
+        durcit: false,
+        fr: "Retirer le shell de remplacement de ce compte (l'Explorateur revient)",
+        en: "Remove this account's replacement shell (Explorer comes back)",
+    },
+    ValeurCompte {
+        id: "proxy-coupe",
+        cle: r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+        nom: "ProxyEnable",
+        donnee: Donnee::Dword(0),
+        rafraichir: true,
+        durcit: false,
+        fr: "Couper le proxy de ce compte",
+        en: "Turn off this account's proxy",
+    },
+    ValeurCompte {
+        id: "proxy-script-retire",
+        cle: r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+        nom: "AutoConfigURL",
+        donnee: Donnee::Retirer,
+        rafraichir: true,
+        durcit: false,
+        fr: "Retirer le script de configuration du proxy de ce compte",
+        en: "Remove this account's proxy configuration script",
+    },
+];
+
+/// Un geste du compte, relu de sa ligne.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum GesteCompte {
+    /// Une valeur de `VALEURS_COMPTE`.
+    Valeur(&'static ValeurCompte),
+    /// VBAWarnings à 2 (« désactivées avec notification ») pour un programme d'Office : version et programme pris
+    /// dans `OFFICE_VERSIONS` et `OFFICE_PROGRAMMES`.
+    Macros {
+        version: &'static str,
+        programme: &'static str,
+        nom: &'static str,
+    },
+    /// Une valeur de démarrage du compte retirée (Run ou RunOnce) ; un nom vide désigne la valeur par défaut.
+    RetirerRun { runonce: bool, nom: Vec<u16> },
+    /// Le mode d'alimentation « Performances élevées » (powercfg, qui n'a pas besoin d'administrateur pour un mode
+    /// qui existe).
+    Alimentation,
+}
+
+const MACROS: &str = "macros-office ";
+const RUN_RETIRER: &str = "run-retirer ";
+const ALIMENTATION: &str = "alimentation-performances";
+const RUN_DEFAUT: &str = "defaut";
+
+impl GesteCompte {
+    /// La ligne de ce geste.
+    pub(crate) fn ligne(&self) -> String {
+        match self {
+            GesteCompte::Valeur(v) => format!("{COMPTE}{}", v.id),
+            GesteCompte::Macros { version, programme, .. } => format!("{COMPTE}{MACROS}{version} {programme}"),
+            GesteCompte::RetirerRun { runonce, nom } => {
+                let cle = if *runonce { "runonce" } else { "run" };
+                let nom = if nom.is_empty() {
+                    RUN_DEFAUT.to_string()
+                } else {
+                    hex_utf16(nom)
+                };
+                format!("{COMPTE}{RUN_RETIRER}{cle} {nom}")
+            }
+            GesteCompte::Alimentation => format!("{COMPTE}{ALIMENTATION}"),
+        }
+    }
+
+    /// La clé sous HKCU, et le nom de la valeur en UTF-16 (vide : la valeur par défaut) ; `None` pour le mode
+    /// d'alimentation, qui n'est pas une valeur du compte.
+    pub(crate) fn valeur(&self) -> Option<(String, Vec<u16>)> {
+        match self {
+            GesteCompte::Valeur(v) => Some((v.cle.to_string(), v.nom.encode_utf16().collect())),
+            GesteCompte::Macros { version, programme, .. } => Some((
+                format!(r"Software\Microsoft\Office\{version}\{programme}\Security"),
+                "VBAWarnings".encode_utf16().collect(),
+            )),
+            GesteCompte::RetirerRun { runonce, nom } => {
+                Some(((if *runonce { CLE_RUNONCE } else { CLE_RUN }).to_string(), nom.clone()))
+            }
+            GesteCompte::Alimentation => None,
+        }
+    }
+
+    /// Ce que la valeur reçoit ; `None` pour le mode d'alimentation.
+    pub(crate) fn donnee(&self) -> Option<Donnee> {
+        match self {
+            GesteCompte::Valeur(v) => Some(v.donnee),
+            GesteCompte::Macros { .. } => Some(Donnee::Dword(2)),
+            GesteCompte::RetirerRun { .. } => Some(Donnee::Retirer),
+            GesteCompte::Alimentation => None,
+        }
+    }
+
+    /// WinINet doit-il être prévenu une fois le geste fait ?
+    pub(crate) fn rafraichir(&self) -> bool {
+        matches!(self, GesteCompte::Valeur(v) if v.rafraichir)
+    }
+
+    /// Le geste renforce-t-il la sécurité (annulation non proposée) ? Les macros et la stratégie de PowerShell, oui ;
+    /// un retrait de démarrage (décision 4 b) du plan) ou un réglage de jeu, non : ils seront annulables (lot 3.5).
+    pub(crate) fn durcit(&self) -> bool {
+        match self {
+            GesteCompte::Valeur(v) => v.durcit,
+            GesteCompte::Macros { .. } => true,
+            GesteCompte::RetirerRun { .. } | GesteCompte::Alimentation => false,
+        }
+    }
+
+    /// Le geste dit à la personne, dans sa langue. Un nom de démarrage est montré sans caractère de contrôle.
+    pub(crate) fn texte(&self, francais: bool) -> String {
+        match self {
+            GesteCompte::Valeur(v) => (if francais { v.fr } else { v.en }).to_string(),
+            GesteCompte::Macros { version, nom, .. } => {
+                if francais {
+                    format!("Faire demander {nom} ({version}) avant de lancer une macro")
+                } else {
+                    format!("Make {nom} ({version}) ask before running a macro")
+                }
+            }
+            GesteCompte::RetirerRun { runonce, nom } => {
+                let lu = String::from_utf16_lossy(nom);
+                let mut affiche: String = lu
+                    .chars()
+                    .take(NOM_MONTRE_MAX)
+                    .map(|c| if c.is_control() { '?' } else { c })
+                    .collect();
+                if lu.chars().count() > NOM_MONTRE_MAX {
+                    affiche.push('…');
+                }
+                let cle = if *runonce { "RunOnce" } else { "Run" };
+                match (francais, nom.is_empty()) {
+                    (true, true) => format!("Retirer la valeur par défaut du démarrage de ce compte ({cle})"),
+                    (true, false) => format!("Retirer « {affiche} » du démarrage de ce compte ({cle})"),
+                    (false, true) => format!("Remove the default value from this account's startup ({cle})"),
+                    (false, false) => format!("Remove “{affiche}” from this account's startup ({cle})"),
+                }
+            }
+            GesteCompte::Alimentation => {
+                if francais {
+                    "Passer au mode d'alimentation « Performances élevées »".to_string()
+                } else {
+                    "Switch to the “High performance” power plan".to_string()
+                }
+            }
+        }
+    }
+}
+
+/// Un nom UTF-16 en hexadécimal minuscule, quatre chiffres par unité petit-boutiste (la convention de `NomFichier`).
+fn hex_utf16(unites: &[u16]) -> String {
+    unites
+        .iter()
+        .flat_map(|u| u.to_le_bytes())
+        .fold(String::new(), |mut s, o| {
+            let _ = write!(s, "{o:02x}");
+            s
+        })
+}
+
+/// Les unités UTF-16 d'un hexadécimal de `hex_utf16`, s'il en a la forme exacte : minuscules, par groupes de quatre,
+/// de 1 à `max` unités, aucune unité nulle (un nom du registre n'en a pas). Toute autre unité est admise : un nom de
+/// valeur peut ne pas être de l'UTF-16 valide, il doit pourtant pouvoir se retirer.
+fn lire_hex_utf16(hex: &str, max: usize) -> Option<Vec<u16>> {
+    if hex.is_empty() || !hex.len().is_multiple_of(4) || hex.len() > max.checked_mul(4)? {
+        return None;
+    }
+    hex.as_bytes()
+        .chunks(4)
+        .map(|q| {
+            let mut o = [0u8; 2];
+            for (i, paire) in q.chunks(2).enumerate() {
+                let fort = chiffre_minuscule(*paire.first()?)?;
+                let faible = chiffre_minuscule(*paire.get(1)?)?;
+                *o.get_mut(i)? = fort.checked_mul(16)?.checked_add(faible)?;
+            }
+            Some(u16::from_le_bytes(o)).filter(|&u| u != 0)
+        })
+        .collect()
+}
+
+/// Le geste d'une ligne du compte, si et seulement si elle est exactement de sa forme (relue, elle se réécrit à
+/// l'identique) : un identifiant de `VALEURS_COMPTE`, `macros-office <version> <programme>` des listes d'Office,
+/// `run-retirer <run|runonce> <nom en hexadécimal|defaut>` ou `alimentation-performances`.
+pub(crate) fn analyser_compte(ligne: &str) -> Option<GesteCompte> {
+    let reste = ligne.strip_prefix(COMPTE)?;
+    if ligne.len() > COMPTE_LIGNE_MAX || !ligne.is_ascii() {
+        return None;
+    }
+    let geste = if let Some(r) = reste.strip_prefix(MACROS) {
+        let (version, programme) = r.split_once(' ')?;
+        let version = OFFICE_VERSIONS.into_iter().find(|v| *v == version)?;
+        let (programme, nom) = OFFICE_PROGRAMMES.into_iter().find(|p| p.0 == programme)?;
+        GesteCompte::Macros {
+            version,
+            programme,
+            nom,
+        }
+    } else if let Some(r) = reste.strip_prefix(RUN_RETIRER) {
+        let (cle, nom) = r.split_once(' ')?;
+        let runonce = match cle {
+            "run" => false,
+            "runonce" => true,
+            _ => return None,
+        };
+        let nom = if nom == RUN_DEFAUT {
+            Vec::new()
+        } else {
+            lire_hex_utf16(nom, RUN_NOM_MAX)?
+        };
+        GesteCompte::RetirerRun { runonce, nom }
+    } else if reste == ALIMENTATION {
+        GesteCompte::Alimentation
+    } else {
+        GesteCompte::Valeur(VALEURS_COMPTE.iter().find(|v| v.id == reste)?)
+    };
+    (geste.ligne() == ligne).then_some(geste)
+}
+
+/// La ligne d'une valeur fixe du compte ; `None` : identifiant hors de `VALEURS_COMPTE`.
+pub(crate) fn ligne_compte(id: &str) -> Option<String> {
+    VALEURS_COMPTE
+        .iter()
+        .find(|v| v.id == id)
+        .map(|v| GesteCompte::Valeur(v).ligne())
+}
+
+/// La ligne qui fait demander un programme d'Office avant une macro ; `None` : version ou programme hors liste.
+pub(crate) fn ligne_macros(version: &str, programme: &str) -> Option<String> {
+    let version = OFFICE_VERSIONS.into_iter().find(|v| *v == version)?;
+    let (programme, nom) = OFFICE_PROGRAMMES.into_iter().find(|p| p.0 == programme)?;
+    Some(
+        GesteCompte::Macros {
+            version,
+            programme,
+            nom,
+        }
+        .ligne(),
+    )
+}
+
+/// La ligne qui retire une valeur de démarrage du compte, désignée par son nom exact (UTF-16 tel que lu dans le
+/// registre ; vide : la valeur par défaut) ; `None` : nom trop long ou porteur d'une unité nulle.
+pub(crate) fn ligne_run_retirer(runonce: bool, nom: &[u16]) -> Option<String> {
+    if nom.len() > RUN_NOM_MAX || nom.contains(&0) {
+        return None;
+    }
+    Some(
+        GesteCompte::RetirerRun {
+            runonce,
+            nom: nom.to_vec(),
+        }
+        .ligne(),
+    )
+}
+
+/// La ligne qui passe au mode d'alimentation « Performances élevées ».
+pub(crate) fn ligne_alimentation() -> String {
+    GesteCompte::Alimentation.ligne()
+}
+
+/// DirectXUserGlobalSettings avec « SwapEffectUpgradeEnable=1; » : l'ancien réglage (« =0 », « =1 », suivi ou non de
+/// « ; », casse ignorée, comme le `-replace` de PowerShell qu'il remplace) est retiré, le reste du texte gardé tel
+/// quel, et le nôtre ajouté au bout.
+pub(crate) fn avec_swap_effect(ancien: &str) -> String {
+    const CLE: &str = "SwapEffectUpgradeEnable=";
+    let mut nouveau = String::with_capacity(ancien.len().saturating_add(CLE.len()).saturating_add(2));
+    let mut reste = ancien;
+    while !reste.is_empty() {
+        let tete = reste.get(..CLE.len()).is_some_and(|t| t.eq_ignore_ascii_case(CLE));
+        let chiffre = reste.as_bytes().get(CLE.len()).is_some_and(u8::is_ascii_digit);
+        if tete && chiffre {
+            let apres = CLE.len().saturating_add(1);
+            let fin = if reste.as_bytes().get(apres) == Some(&b';') {
+                apres.saturating_add(1)
+            } else {
+                apres
+            };
+            reste = reste.get(fin..).unwrap_or_default();
+            continue;
+        }
+        let mut c = reste.chars();
+        if let Some(premier) = c.next() {
+            nouveau.push(premier);
+        }
+        reste = c.as_str();
+    }
+    // Le réglage d'avant sans « ; » final ne doit pas se coller au nôtre (« VRROptimizeEnable=0SwapEffect… »).
+    if !nouveau.is_empty() && !nouveau.ends_with(';') {
+        nouveau.push(';');
+    }
+    nouveau.push_str(CLE);
+    nouveau.push_str("1;");
+    nouveau
+}
+
 // ------------------------------------------------------------------ la liste
 
 /// Une ligne de la liste, relue : celle d'un autre module (correction, ordre), un script, un programme ou un acte.
@@ -1405,9 +1829,10 @@ pub(crate) enum Ligne<E> {
 }
 
 /// La liste telle que le processus élevé la recevra, validée ligne à ligne, dans l'ordre ; `None` dès qu'une ligne
-/// est trop longue, n'a pas sa forme, ou n'est pas reconnue par `autre`, qu'il y en a trop ou aucune, ou qu'un même
-/// script (même empreinte) revient. Le parent l'appelle AVANT la demande d'administrateur, le processus élevé à la
-/// réception : la même fonction des deux côtés. Un script seul est admis (une liste toute en PowerShell).
+/// est trop longue, n'a pas sa forme, est un geste du compte (`COMPTE`), ou n'est pas reconnue par `autre`, qu'il y
+/// en a trop ou aucune, ou qu'un même script (même empreinte) revient. Le parent l'appelle AVANT la demande
+/// d'administrateur, le processus élevé à la réception : la même fonction des deux côtés. Un script seul est admis
+/// (une liste toute en PowerShell).
 pub(crate) fn valider<E>(lignes: &[String], mut autre: impl FnMut(&str) -> Option<E>) -> Option<Vec<Ligne<E>>> {
     if lignes.is_empty() || lignes.len() > LIGNES_MAX {
         return None;
@@ -1416,7 +1841,8 @@ pub(crate) fn valider<E>(lignes: &[String], mut autre: impl FnMut(&str) -> Optio
     lignes
         .iter()
         .map(|l| {
-            if l.len() > LIGNE_MAX {
+            // Un geste du compte n'est jamais fait par le processus élevé : sa place est Vanguard non élevé.
+            if l.len() > LIGNE_MAX || l.starts_with(COMPTE) {
                 return None;
             }
             if l.starts_with(SCRIPT) {
@@ -1468,6 +1894,147 @@ pub(crate) fn decouper(correctifs: &[Vec<String>], natif: impl Fn(&str) -> bool)
         }
     }
     morceaux
+}
+
+// ------------------------------------------------------------ la séparation
+
+/// Les lignes d'un correctif, rangées par qui les fait : les points de restauration et le reste du travail élevé
+/// (par le processus élevé), les gestes du compte (par Vanguard non élevé). Chaque place est celle de la ligne dans
+/// son correctif, dans l'ordre.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Separe {
+    pub points: Vec<usize>,
+    pub eleves: Vec<usize>,
+    pub compte: Vec<usize>,
+}
+
+/// Range chaque ligne de chaque correctif : un point de restauration (`est_point`) va aux points, une ligne du compte
+/// que `analyser_compte` reconnaît aux gestes du compte, toute autre ligne au travail élevé. Une ligne qui se donne
+/// pour un geste du compte sans en avoir la forme exacte reste au travail élevé, où elle est refusée avant l'UAC
+/// (aucune ligne « vanguard: » inconnue ne passe) : jamais faite par erreur sous un autre nom.
+pub(crate) fn separer(correctifs: &[Vec<String>], est_point: impl Fn(&str) -> bool) -> Vec<Separe> {
+    correctifs
+        .iter()
+        .map(|c| {
+            let mut s = Separe::default();
+            for (j, l) in c.iter().enumerate() {
+                if est_point(l) {
+                    s.points.push(j);
+                } else if analyser_compte(l).is_some() {
+                    s.compte.push(j);
+                } else {
+                    s.eleves.push(j);
+                }
+            }
+            s
+        })
+        .collect()
+}
+
+/// Ce que rend le passage élevé : le résultat et les lignes notées de chaque correctif envoyé, et s'il a été arrêté à
+/// la demande de la personne (point refusé, demande d'administrateur refusée).
+pub(crate) struct PassageEleve {
+    pub resultats: Vec<bool>,
+    pub notes: Vec<Vec<String>>,
+    pub arrete: bool,
+}
+
+/// Un geste du compte fait : réussi ou non, déjà bon (rien d'écrit, la ligne n'est pas notée), la valeur d'avant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FaitCompte {
+    pub reussi: bool,
+    pub rien: bool,
+    pub avant: Option<String>,
+}
+
+/// Fait une liste de correctifs en deux temps, l'ordre gardé : d'abord, en UN passage élevé (`eleve`), pour chaque
+/// correctif ses points de restauration puis son travail élevé (deux correctifs envoyés, pour savoir si le point a
+/// tenu) ; ensuite seulement, dans ce processus, les gestes du compte (`compte`), correctif par correctif. Ainsi le
+/// point de restauration est toujours pris avant la moindre écriture du compte.
+///
+/// Aucun geste du compte n'est fait si le passage élevé a été arrêté à la demande de la personne, ou si un point de
+/// restauration n'a pas tenu (le processus élevé s'arrête alors, et tout ce qui suit le point, les gestes du compte
+/// compris, reste à faire). Rien d'élevé à faire : aucun passage élevé, aucune demande d'administrateur.
+///
+/// Le résultat d'un correctif est le ET de ses trois parts ; un geste du compte non fait est un échec. Ses lignes
+/// notées : celles du passage élevé (points, puis travail élevé), puis ses gestes du compte, la valeur d'avant
+/// ajoutée ; un geste déjà bon n'est pas noté, et un correctif dont il ne reste que des points n'a plus rien à noter.
+/// `None` : le passage élevé n'a rien fait (dit par lui) ; aucun geste du compte n'est fait.
+pub(crate) fn lancer_separe(
+    correctifs: &[Vec<String>],
+    est_point: impl Fn(&str) -> bool,
+    eleve: impl FnOnce(&[Vec<String>]) -> Option<PassageEleve>,
+    mut compte: impl FnMut(&GesteCompte) -> FaitCompte,
+) -> Option<(Vec<bool>, Vec<Vec<String>>)> {
+    let separes = separer(correctifs, &est_point);
+    let ligne = |i: usize, j: usize| correctifs.get(i).and_then(|c| c.get(j)).cloned();
+    // Pour chaque correctif, la place de ses points et de son travail élevé dans la liste envoyée.
+    let mut envoyes: Vec<Vec<String>> = Vec::new();
+    let mut places: Vec<(Option<usize>, Option<usize>)> = Vec::with_capacity(correctifs.len());
+    for (i, s) in separes.iter().enumerate() {
+        let mut place = |js: &[usize]| {
+            if js.is_empty() {
+                return None;
+            }
+            envoyes.push(js.iter().filter_map(|&j| ligne(i, j)).collect());
+            envoyes.len().checked_sub(1)
+        };
+        let p = place(&s.points);
+        let e = place(&s.eleves);
+        places.push((p, e));
+    }
+    let passage = if envoyes.is_empty() {
+        PassageEleve {
+            resultats: Vec::new(),
+            notes: Vec::new(),
+            arrete: false,
+        }
+    } else {
+        eleve(&envoyes)?
+    };
+    let reussi = |k: Option<usize>| k.is_none_or(|k| passage.resultats.get(k).copied().unwrap_or(false));
+    let notes_de = |k: Option<usize>| k.and_then(|k| passage.notes.get(k).cloned()).unwrap_or_default();
+    let points_tenus = places.iter().all(|&(p, _)| reussi(p));
+    let permis = !passage.arrete && points_tenus;
+    let mut resultats = Vec::with_capacity(correctifs.len());
+    let mut notes = Vec::with_capacity(correctifs.len());
+    for (i, (s, &(p, e))) in separes.iter().zip(&places).enumerate() {
+        let mut ok = reussi(p) && reussi(e);
+        let mut n = notes_de(p);
+        n.extend(notes_de(e));
+        for &j in &s.compte {
+            let Some(l) = ligne(i, j) else {
+                ok = false;
+                continue;
+            };
+            let fait = analyser_compte(&l).filter(|_| permis).map(|g| compte(&g));
+            match fait {
+                Some(FaitCompte {
+                    reussi: true,
+                    rien: true,
+                    ..
+                }) => {}
+                Some(f) => {
+                    ok &= f.reussi;
+                    n.push(match f.avant {
+                        Some(avant) => format!("{l} (avant : {avant})"),
+                        None => l,
+                    });
+                }
+                None => {
+                    ok = false;
+                    n.push(l);
+                }
+            }
+        }
+        let a_du_travail = s.eleves.len().saturating_add(s.compte.len()) > 0;
+        if a_du_travail && n.iter().all(|l| est_point(l.split(" (").next().unwrap_or_default())) {
+            n.clear();
+        }
+        resultats.push(ok);
+        notes.push(n);
+    }
+    Some((resultats, notes))
 }
 
 // ---------------------------------------------------------------- les états
@@ -1706,14 +2273,13 @@ mod tests {
             ("ipconfig-release", "ipconfig.exe /release"),
             ("ipconfig-renew", "ipconfig.exe /renew"),
             ("netsh-winhttp-reset-proxy", "netsh.exe winhttp reset proxy"),
-            // net accounts (comptes.rs) et powercfg (réglages pour jouer), eux aussi par leur nom autrefois.
+            // net accounts (comptes.rs), lui aussi par son nom autrefois. powercfg n'est plus ici : sans
+            // administrateur, il passe par Vanguard non élevé (`COMPTE`, « alimentation-performances »).
             (
                 "net-accounts-verrouillage",
                 "net.exe accounts /lockoutthreshold:10 /lockoutduration:10 /lockoutwindow:10",
             ),
             ("net-accounts-longueur-8", "net.exe accounts /minpwlen:8"),
-            ("powercfg-performances", "powercfg.exe /setactive SCHEME_MIN"),
-            ("powercfg-mode-actif", "powercfg.exe /getactivescheme"),
         ] {
             let a = analyser_programme(&format!("{PROGRAMME}{id}")).unwrap();
             assert_eq!(a.commande(), commande);
@@ -2340,5 +2906,357 @@ mod tests {
         use crate::protection::blocage::ordres;
         assert_eq!(LIGNE_MAX, ordres::LIGNE_MAX);
         assert_eq!(LIGNES_MAX, ordres::LIGNES_MAX);
+    }
+
+    // ------------------------------------------------------------ le compte
+
+    #[test]
+    fn chaque_geste_du_compte_se_relit_a_l_identique() {
+        for v in VALEURS_COMPTE {
+            let l = ligne_compte(v.id).unwrap();
+            assert_eq!(analyser_compte(&l), Some(GesteCompte::Valeur(v)), "{l}");
+            assert!(!v.cle.starts_with(['\\', '/']) && !v.cle.contains(".."), "{}", v.id);
+        }
+        let ids: std::collections::HashSet<&str> = VALEURS_COMPTE.iter().map(|v| v.id).collect();
+        assert_eq!(ids.len(), VALEURS_COMPTE.len(), "identifiant en double");
+        for version in OFFICE_VERSIONS {
+            for (programme, _) in OFFICE_PROGRAMMES {
+                let l = ligne_macros(version, programme).unwrap();
+                let g = analyser_compte(&l).unwrap();
+                assert_eq!(g.ligne(), l);
+                assert!(g.durcit());
+                assert_eq!(g.donnee(), Some(Donnee::Dword(2)));
+                assert_eq!(
+                    g.valeur().unwrap().0,
+                    format!(r"Software\Microsoft\Office\{version}\{programme}\Security")
+                );
+            }
+        }
+        assert_eq!(ligne_macros("17.0", "word"), None);
+        assert_eq!(ligne_macros("16.0", "outlook"), None);
+        let a = ligne_alimentation();
+        assert_eq!(a, "vanguard:compte alimentation-performances");
+        assert_eq!(analyser_compte(&a), Some(GesteCompte::Alimentation));
+        assert_eq!(GesteCompte::Alimentation.valeur(), None);
+    }
+
+    #[test]
+    fn une_valeur_run_se_designe_par_son_nom_exact() {
+        let nom: Vec<u16> = "Mise à jour".encode_utf16().collect();
+        let l = ligne_run_retirer(false, &nom).unwrap();
+        assert_eq!(l, format!("{COMPTE}run-retirer run {}", hex_utf16(&nom)));
+        let g = analyser_compte(&l).unwrap();
+        assert_eq!(g.valeur(), Some((CLE_RUN.to_string(), nom.clone())));
+        assert_eq!(g.donnee(), Some(Donnee::Retirer));
+        // Décision 4 b) : un retrait de démarrage n'est pas une protection.
+        assert!(!g.durcit());
+        // La valeur par défaut, et une demi-paire (un nom que le registre admet) : désignées telles quelles.
+        let defaut = ligne_run_retirer(true, &[]).unwrap();
+        assert_eq!(defaut, "vanguard:compte run-retirer runonce defaut");
+        assert_eq!(
+            analyser_compte(&defaut).unwrap().valeur(),
+            Some((CLE_RUNONCE.to_string(), Vec::new()))
+        );
+        let demi = ligne_run_retirer(false, &[0xd800, 0x41]).unwrap();
+        assert_eq!(analyser_compte(&demi).unwrap().ligne(), demi);
+        // Refusés : unité nulle, nom trop long, hexadécimal en majuscules, groupe incomplet, clé hors liste.
+        assert_eq!(ligne_run_retirer(false, &[0x41, 0]), None);
+        assert_eq!(ligne_run_retirer(false, &vec![0x41; RUN_NOM_MAX + 1]), None);
+        let longue = ligne_run_retirer(true, &vec![0x41; RUN_NOM_MAX]).unwrap();
+        assert_eq!(longue.len(), COMPTE_LIGNE_MAX);
+        assert_eq!(analyser_compte(&longue).unwrap().ligne(), longue);
+        assert!(!valide(std::slice::from_ref(&longue)));
+        // À l'écran, un nom très long est coupé.
+        let montre = analyser_compte(&longue).unwrap().texte(true);
+        assert!(montre.contains(&format!("{}…", "A".repeat(NOM_MONTRE_MAX))) && montre.len() < 400);
+        for faux in [
+            "vanguard:compte run-retirer run 4100",
+            "vanguard:compte run-retirer run 0000",
+            "vanguard:compte run-retirer run 4A00",
+            "vanguard:compte run-retirer run 410",
+            "vanguard:compte run-retirer run ",
+            "vanguard:compte run-retirer runservices 4100",
+            "vanguard:compte run-retirer run 4100 ",
+            "vanguard:compte run-retirer run defaut ",
+        ] {
+            let attendu = faux == "vanguard:compte run-retirer run 4100";
+            assert_eq!(analyser_compte(faux).is_some(), attendu, "{faux}");
+        }
+    }
+
+    #[test]
+    fn une_ligne_du_compte_hors_de_sa_forme_est_refusee() {
+        for faux in [
+            "vanguard:compte ",
+            "vanguard:compte inconnu",
+            "vanguard:compte jeux-mode ",
+            " vanguard:compte jeux-mode",
+            "vanguard:compte  jeux-mode",
+            "vanguard:compte JEUX-MODE",
+            "vanguard:compte\tjeux-mode",
+            "vanguard:compte macros-office 16.0 Word",
+            "vanguard:compte macros-office 16.0  word",
+            "vanguard:compte macros-office 16.0",
+            "vanguard:compte alimentation-performances ",
+            "vanguard:comptejeux-mode",
+            "vanguard:compte jeux-modé",
+        ] {
+            assert_eq!(analyser_compte(faux), None, "{faux}");
+        }
+    }
+
+    #[test]
+    fn le_processus_eleve_refuse_tout_geste_du_compte() {
+        // Même bien formée : un geste du compte se fait sous le compte de la personne, jamais derrière l'UAC.
+        for v in VALEURS_COMPTE {
+            let l = lignes(&[&ligne_compte(v.id).unwrap()]);
+            assert!(valider(&l, |_| Some(())).is_none(), "{l:?}");
+        }
+        let l = lignes(&[&ligne_alimentation()]);
+        assert!(valider(&l, |_| Some(())).is_none());
+        assert!(valider(&lignes(&["vanguard:compte inconnu"]), |_| Some(())).is_none());
+        // Et aucune ne passe pour un programme, un acte ou un script.
+        for v in VALEURS_COMPTE {
+            let l = ligne_compte(v.id).unwrap();
+            assert!(analyser_programme(&l).is_none() && !est_un_acte(&l) && analyser_script(&l).is_none());
+        }
+    }
+
+    #[test]
+    fn swap_effect_seul_change_le_reste_est_garde() {
+        assert_eq!(avec_swap_effect(""), "SwapEffectUpgradeEnable=1;");
+        assert_eq!(
+            avec_swap_effect("VRROptimizeEnable=0;SwapEffectUpgradeEnable=0;"),
+            "VRROptimizeEnable=0;SwapEffectUpgradeEnable=1;"
+        );
+        assert_eq!(
+            avec_swap_effect("SwapEffectUpgradeEnable=0;VRROptimizeEnable=1;"),
+            "VRROptimizeEnable=1;SwapEffectUpgradeEnable=1;"
+        );
+        // Casse ignorée et « ; » final absent, comme le -replace de PowerShell d'avant.
+        assert_eq!(
+            avec_swap_effect("AutoHDREnable=1;swapeffectupgradeenable=0"),
+            "AutoHDREnable=1;SwapEffectUpgradeEnable=1;"
+        );
+        // Déjà bon : relu, il redonne le même texte (rien à écrire).
+        let bon = "VRROptimizeEnable=0;SwapEffectUpgradeEnable=1;";
+        assert_eq!(avec_swap_effect(bon), bon);
+        // Sans chiffre après « = », rien n'est retiré ; un texte non ASCII est gardé tel quel.
+        assert_eq!(
+            avec_swap_effect("SwapEffectUpgradeEnable=;é"),
+            "SwapEffectUpgradeEnable=;é;SwapEffectUpgradeEnable=1;"
+        );
+        // Un réglage d'avant sans « ; » final ne se colle pas au nôtre.
+        assert_eq!(
+            avec_swap_effect("VRROptimizeEnable=0"),
+            "VRROptimizeEnable=0;SwapEffectUpgradeEnable=1;"
+        );
+        assert_eq!(
+            avec_swap_effect("SwapEffectUpgradeEnable=0;AutoHDREnable=1"),
+            "AutoHDREnable=1;SwapEffectUpgradeEnable=1;"
+        );
+    }
+
+    // ------------------------------------------------------------ la séparation
+
+    fn est_point(l: &str) -> bool {
+        l == POINT
+    }
+
+    /// Le plan, §3.8 : la séparation ne change pas l'ordre. Le point de restauration d'abord, puis le reste du travail
+    /// élevé, en un seul passage ; ensuite seulement les écritures du compte, dans ce processus.
+    #[test]
+    fn point_puis_eleve_puis_compte() {
+        let mode = ligne_compte("jeux-mode").unwrap();
+        let souris = ligne_compte("souris-vitesse").unwrap();
+        let correctifs = vec![
+            lignes(&[POINT, &mode, "vanguard:gaming-hags", &souris]),
+            lignes(&["Set-Service x"]),
+        ];
+        let journal = std::cell::RefCell::new(Vec::<String>::new());
+        let (resultats, notes) = lancer_separe(
+            &correctifs,
+            est_point,
+            |envoyes| {
+                journal.borrow_mut().push(format!("eleve {envoyes:?}"));
+                Some(PassageEleve {
+                    resultats: vec![true; envoyes.len()],
+                    notes: envoyes.to_vec(),
+                    arrete: false,
+                })
+            },
+            |g| {
+                journal.borrow_mut().push(g.ligne());
+                FaitCompte {
+                    reussi: true,
+                    rien: false,
+                    avant: Some("absent".into()),
+                }
+            },
+        )
+        .unwrap();
+        let journal = journal.into_inner();
+        // Un seul passage élevé : le point, seul, en tête ; le travail élevé du premier correctif ; puis le second.
+        assert_eq!(journal.len(), 3, "{journal:?}");
+        assert_eq!(
+            journal[0],
+            format!(
+                "eleve {:?}",
+                vec![
+                    lignes(&[POINT]),
+                    lignes(&["vanguard:gaming-hags"]),
+                    lignes(&["Set-Service x"])
+                ]
+            )
+        );
+        assert_eq!(journal[1..], [mode.clone(), souris.clone()]);
+        assert_eq!(resultats, [true, true]);
+        assert_eq!(
+            notes[0],
+            [
+                POINT.to_string(),
+                "vanguard:gaming-hags".into(),
+                format!("{mode} (avant : absent)"),
+                format!("{souris} (avant : absent)"),
+            ]
+        );
+        assert_eq!(notes[1], ["Set-Service x"]);
+    }
+
+    #[test]
+    fn rien_d_eleve_aucun_passage_eleve() {
+        let mode = ligne_compte("jeux-mode").unwrap();
+        let mut eleve_appele = false;
+        let (resultats, notes) = lancer_separe(
+            &[lignes(&[&mode]), Vec::new()],
+            est_point,
+            |_| {
+                eleve_appele = true;
+                None
+            },
+            |_| FaitCompte {
+                reussi: true,
+                rien: true,
+                avant: None,
+            },
+        )
+        .unwrap();
+        assert!(!eleve_appele, "aucune demande d'administrateur pour un geste du compte");
+        assert_eq!(resultats, [true, true]);
+        // Déjà bon : rien à noter.
+        assert_eq!(notes, [Vec::<String>::new(), Vec::new()]);
+    }
+
+    /// Un point refusé, ou tout arrêté à la demande : aucun geste du compte, et ce n'est pas « fait ».
+    #[test]
+    fn point_refuse_ou_arret_aucun_geste_du_compte() {
+        let mode = ligne_compte("jeux-mode").unwrap();
+        let correctifs = vec![lignes(&[POINT, "vanguard:gaming-hags", &mode]), lignes(&[&mode])];
+        for (point_ok, arrete) in [(false, false), (true, true), (false, true)] {
+            let mut faits = 0;
+            let (resultats, notes) = lancer_separe(
+                &correctifs,
+                est_point,
+                |envoyes| {
+                    Some(PassageEleve {
+                        resultats: vec![point_ok, false],
+                        notes: envoyes.to_vec(),
+                        arrete,
+                    })
+                },
+                |_| {
+                    faits += 1;
+                    FaitCompte {
+                        reussi: true,
+                        rien: false,
+                        avant: None,
+                    }
+                },
+            )
+            .unwrap();
+            assert_eq!(faits, 0, "point_ok={point_ok} arrete={arrete}");
+            assert_eq!(resultats, [false, false]);
+            assert_eq!(notes[1], std::slice::from_ref(&mode));
+        }
+        // Le passage élevé n'a rien fait (dit par lui) : rien du compte non plus.
+        let mut faits = 0;
+        let r = lancer_separe(
+            &correctifs,
+            est_point,
+            |_| None,
+            |_| {
+                faits += 1;
+                FaitCompte {
+                    reussi: true,
+                    rien: false,
+                    avant: None,
+                }
+            },
+        );
+        assert!(r.is_none() && faits == 0);
+    }
+
+    #[test]
+    fn un_echec_eleve_n_empeche_pas_le_compte_mais_le_correctif_echoue() {
+        let mode = ligne_compte("jeux-mode").unwrap();
+        let souris = ligne_compte("souris-vitesse").unwrap();
+        let correctifs = vec![lignes(&[POINT, "Set-Service x", &mode]), lignes(&[&souris])];
+        let (resultats, notes) = lancer_separe(
+            &correctifs,
+            est_point,
+            |envoyes| {
+                Some(PassageEleve {
+                    resultats: vec![true, false],
+                    notes: envoyes.to_vec(),
+                    arrete: false,
+                })
+            },
+            |g| FaitCompte {
+                reussi: g.ligne() != souris,
+                rien: false,
+                avant: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(resultats, [false, false]);
+        assert_eq!(notes[1], std::slice::from_ref(&souris));
+        // Un correctif dont tout le reste était déjà bon : il ne reste que le point, rien à noter.
+        let (resultats, notes) = lancer_separe(
+            &[lignes(&[POINT, &mode])],
+            est_point,
+            |envoyes| {
+                (envoyes == [lignes(&[POINT])]).then(|| PassageEleve {
+                    resultats: vec![true],
+                    notes: vec![vec![format!("{POINT} (ok sans-point)")]],
+                    arrete: false,
+                })
+            },
+            |_| FaitCompte {
+                reussi: true,
+                rien: true,
+                avant: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(resultats, [true]);
+        assert_eq!(notes, [Vec::<String>::new()]);
+    }
+
+    #[test]
+    fn separer_range_chaque_ligne_une_fois() {
+        let mode = ligne_compte("jeux-mode").unwrap();
+        let s = separer(
+            &[lignes(&[POINT, &mode, "vanguard:compte faux", "Set-Service x", POINT])],
+            est_point,
+        );
+        // Une ligne du compte mal formée reste au travail élevé, où `lignes_pour_eleve` la refuse avant l'UAC.
+        assert_eq!(
+            s,
+            [Separe {
+                points: vec![0, 4],
+                eleves: vec![2, 3],
+                compte: vec![1],
+            }]
+        );
     }
 }

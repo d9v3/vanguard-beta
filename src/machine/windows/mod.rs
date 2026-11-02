@@ -13,6 +13,7 @@ use crate::ui::{resume, tr, trf, trp};
 mod ancrages;
 pub(crate) mod cartes;
 mod chargement;
+pub(crate) mod compte;
 pub(crate) mod comptes;
 pub(crate) mod connexions;
 #[cfg(test)]
@@ -635,13 +636,35 @@ fn marque_de_vanguard(ligne: &str) -> bool {
         .is_some_and(|debut| debut.eq_ignore_ascii_case(MARQUE))
 }
 
-/// Pour les tests des listes réelles (réparations, jeux) : ce correctif, découpé et écrit comme par `admin_mele`, est
-/// accepté tel quel par la validation du processus élevé, celle qui le refuserait avant la demande d'administrateur
-/// (une ligne de Vanguard mal formée comprise : `lignes_pour_eleve` la refuse).
+/// Pour les tests des listes réelles (réparations, jeux) : ces correctifs, séparés comme par `lancer_chacune` (les
+/// gestes du compte restent dans Vanguard non élevé, `compte::lancer`), puis leur part élevée découpée et écrite comme
+/// par `admin_mele`, sont acceptés tels quels par la validation du processus élevé, celle qui les refuserait avant la
+/// demande d'administrateur (une ligne de Vanguard mal formée comprise : `lignes_pour_eleve` la refuse). Il faut au
+/// moins une ligne, élevée ou du compte.
 #[cfg(test)]
 pub(crate) fn accepte_par_le_processus_eleve(correctifs: &[Vec<String>]) -> bool {
-    let morceaux = crate::machine::gestes::decouper(correctifs, corrections::native);
-    lignes_pour_eleve(correctifs, &morceaux).is_some_and(|l| !l.is_empty() && eleve::valider(&l).is_some())
+    use crate::machine::gestes::{FaitCompte, PassageEleve, lancer_separe};
+    let mut accepte = true;
+    let fait = lancer_separe(
+        correctifs,
+        |l| l == corrections::POINT,
+        |envoyes| {
+            let morceaux = crate::machine::gestes::decouper(envoyes, corrections::native);
+            accepte =
+                lignes_pour_eleve(envoyes, &morceaux).is_some_and(|l| !l.is_empty() && eleve::valider(&l).is_some());
+            Some(PassageEleve {
+                resultats: vec![true; envoyes.len()],
+                notes: envoyes.to_vec(),
+                arrete: false,
+            })
+        },
+        |_| FaitCompte {
+            reussi: true,
+            rien: false,
+            avant: None,
+        },
+    );
+    fait.is_some() && accepte && correctifs.iter().any(|c| !c.is_empty())
 }
 
 /// Ce qui n'est pas fait l'est-il seulement par choix ou en attente d'un redémarrage ? Rien fait, et chaque réponse
@@ -1916,6 +1939,10 @@ mod tests {
             "vanguard:programme sfc-scannow ",
             "vanguard:inconnu x",
             "  Vanguard:programme sfc-scannow",
+            // Un geste du compte hors de sa forme exacte n'est pas un geste du compte : il reste au travail élevé.
+            "vanguard:compte proxy-coupe ",
+            "vanguard:compte jeux-inconnu",
+            "vanguard:compte run-retirer run 00",
         ] {
             let correctifs = vec![
                 vec!["Set-Service a -StartupType Disabled".to_string()],
@@ -1929,6 +1956,34 @@ mod tests {
         let correctifs = vec![vec!["Write-Output 'vanguard:programme'".to_string()]];
         let morceaux = gestes::decouper(&correctifs, corrections::native);
         assert!(lignes_pour_eleve(&correctifs, &morceaux).is_some());
+    }
+
+    /// Un geste du compte n'est jamais un geste du processus élevé : ni natif, ni accepté par sa validation, ni écrit
+    /// dans un script (refusé avant l'UAC). Séparé comme par `lancer_chacune`, il reste dans Vanguard non élevé.
+    #[test]
+    fn un_geste_du_compte_ne_passe_jamais_par_le_processus_eleve() {
+        for l in [
+            gestes::ligne_compte("proxy-coupe").unwrap(),
+            gestes::ligne_macros("16.0", "word").unwrap(),
+            gestes::ligne_run_retirer(false, &"Essai".encode_utf16().collect::<Vec<_>>()).unwrap(),
+            gestes::ligne_alimentation(),
+        ] {
+            assert!(!corrections::native(&l), "{l}");
+            assert!(eleve::valider(std::slice::from_ref(&l)).is_none(), "{l}");
+            let seul = vec![vec![l.clone()]];
+            assert!(
+                lignes_pour_eleve(&seul, &gestes::decouper(&seul, corrections::native)).is_none(),
+                "{l}"
+            );
+            // Séparé, il ne laisse rien au processus élevé, et passe.
+            assert!(accepte_par_le_processus_eleve(&seul), "{l}");
+            let avec_point = vec![vec![
+                corrections::POINT.to_string(),
+                l.clone(),
+                corrections::id("rdp-nla"),
+            ]];
+            assert!(accepte_par_le_processus_eleve(&avec_point), "{l}");
+        }
     }
 
     /// Sous Wine, ni Defender ni le Centre de sécurité ni PowerShell : « illisible », jamais « aucun antivirus » (une

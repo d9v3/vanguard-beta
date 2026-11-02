@@ -1104,13 +1104,10 @@ fn run_du_registre(sortie: &mut String) -> bool {
     use std::fmt::Write;
     let (valeurs, illisibles) = crate::machine::windows::persistance::lignes_run();
     for v in valeurs {
-        let _ = writeln!(
-            sortie,
-            "RUN|{}|{}|{}",
-            v.cle,
-            sur_une_ligne(&v.nom),
-            sur_une_ligne(&v.valeur)
-        );
+        // Un « | » ou une fin de ligne dans le nom couperait la ligne ailleurs : remplacés par U+FFFD, comme un nom mal
+        // formé, ce nom n'a pas de retrait (`retrait_run`), jamais celui d'une autre valeur.
+        let nom = v.nom.replace(['|', '\n', '\r'], "\u{FFFD}");
+        let _ = writeln!(sortie, "RUN|{}|{}|{}", v.cle, nom, sur_une_ligne(&v.valeur));
     }
     sortie.push_str("RUN_FIN\n");
     illisibles.is_empty()
@@ -1254,6 +1251,40 @@ fn retrait_windows(desinstallation: &str, silencieuse: &str) -> Vec<String> {
     }
 }
 
+/// Le retrait d'une valeur Run lue (« RUN|clé|nom|… »). Sous la clé Run ou RunOnce du compte : un geste du compte
+/// (`run-retirer`), fait par Vanguard non élevé dans le HKCU de la personne, jamais derrière l'UAC (la fenêtre
+/// administrateur peut s'ouvrir sous un autre compte, dont le HKCU n'est pas le sien) ; sous HKLM, par PowerShell
+/// élevé et le registre de .NET, au nom exact, vue 64 bits comme la lecture (le -Name de Remove-ItemProperty
+/// accepte des jokers : « *AnyDesk* » viserait toutes les valeurs qui lui ressemblent) ; déjà retirée (par un
+/// désinstalleur) : rien à faire, sans erreur. Un nom que la lecture n'a pas pu rendre tel quel (U+FFFD : mal formé, ou « | » et fin de ligne remplacés
+/// par `run_du_registre`) n'a pas de retrait : il viserait une autre valeur, ou aucune, en disant « fait ». Une autre
+/// clé du compte non plus.
+#[cfg(any(windows, test))]
+fn retrait_run(cle: &str, nom: &str) -> Option<String> {
+    use crate::commande::ps_texte;
+    use crate::machine::gestes;
+    if nom.contains('\u{FFFD}') {
+        return None;
+    }
+    if let Some(chemin) = cle.strip_prefix(r"HKCU:\") {
+        let runonce = if chemin.eq_ignore_ascii_case(gestes::CLE_RUN) {
+            false
+        } else if chemin.eq_ignore_ascii_case(gestes::CLE_RUNONCE) {
+            true
+        } else {
+            return None;
+        };
+        return gestes::ligne_run_retirer(runonce, &nom.encode_utf16().collect::<Vec<_>>());
+    }
+    let chemin = cle.strip_prefix(r"HKLM:\")?;
+    Some(format!(
+        "$k = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64').OpenSubKey('{}', $true); \
+         $k.DeleteValue('{}', $false); $k.Close()",
+        ps_texte(chemin),
+        ps_texte(nom)
+    ))
+}
+
 /// Les sections de la lecture PowerShell. `None` sans la section des programmes installés : rien n'est fiable.
 #[cfg(any(windows, test))]
 fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
@@ -1347,11 +1378,7 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
             retrait: if installes.contains(&i) {
                 Vec::new()
             } else {
-                vec![format!(
-                    "Remove-ItemProperty -Path {} -Name {} -ErrorAction SilentlyContinue",
-                    ps_chaine(cle),
-                    ps_chaine(nom)
-                )]
+                retrait_run(cle, nom).into_iter().collect()
             },
             arret: Vec::new(),
         });
@@ -1718,6 +1745,41 @@ mod tests {
         assert_eq!(noms, ["AnyDesk", "TeamViewer"]);
     }
 
+    /// Le retrait d'une valeur Run : sous la clé Run ou RunOnce du compte, un geste du compte au nom exact ; sous
+    /// HKLM, PowerShell élevé et le registre de .NET au nom exact (jamais de joker) ; un nom pas rendu tel quel (U+FFFD) ou une autre clé du compte, aucun retrait.
+    #[test]
+    fn retrait_run_du_compte_par_un_geste_du_compte() {
+        use crate::machine::gestes::{GesteCompte, analyser_compte};
+        let du_compte = |cle: &str, nom: &str| analyser_compte(&retrait_run(cle, nom).unwrap());
+        assert!(matches!(
+            du_compte(r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Run", "l'agent [*]"),
+            Some(GesteCompte::RetirerRun { runonce: false, nom }) if nom == "l'agent [*]".encode_utf16().collect::<Vec<_>>()
+        ));
+        assert!(matches!(
+            du_compte(r"HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce", ""),
+            Some(GesteCompte::RetirerRun { runonce: true, nom }) if nom.is_empty()
+        ));
+        assert_eq!(
+            retrait_run(
+                r"HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+                "*Any'Desk*"
+            )
+            .unwrap(),
+            "$k = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64')\
+             .OpenSubKey('Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run', $true); \
+             $k.DeleteValue('*Any''Desk*', $false); $k.Close()"
+        );
+        assert_eq!(
+            retrait_run(r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Run", "a\u{FFFD}"),
+            None
+        );
+        assert_eq!(
+            retrait_run(r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run", "a\u{FFFD}"),
+            None
+        );
+        assert_eq!(retrait_run(r"HKCU:\Software\Ailleurs", "x"), None);
+    }
+
     #[test]
     fn lecture_windows_et_commandes_sans_injection() {
         let sortie = "INS|AnyDesk|20261003||\"C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe\" --remove|\n\
@@ -1779,10 +1841,12 @@ mod tests {
             t.iter()
                 .any(|x| x.logiciel == indice("Assistance rapide") && x.trace == Trace::EnCours { connecte: false })
         );
+        // Sous la clé Run du compte : un geste du compte, fait par Vanguard non élevé dans le HKCU de la personne.
         assert_eq!(
             de("UltraViewer", Trace::Demarrage).retrait,
             [
-                "Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'UltraViewer' -ErrorAction SilentlyContinue"
+                crate::machine::gestes::ligne_run_retirer(false, &"UltraViewer".encode_utf16().collect::<Vec<_>>())
+                    .unwrap()
             ]
         );
         let pose = de("AnyDesk", Trace::Fichier);
