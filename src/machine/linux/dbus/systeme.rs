@@ -21,7 +21,7 @@
 use std::time::Duration;
 
 use super::actions::{Action, FinDeJob};
-use super::{Bus, CHEMIN_SYSTEMD, DBUS, GESTIONNAIRE, SYSTEMD, Valeur};
+use super::{Bus, CHEMIN_SYSTEMD, DBUS, GESTIONNAIRE, SYSTEMD, UNITE, Valeur};
 use crate::machine::gestes_unix::{self, ActionUnite};
 use crate::modele::Echec;
 use crate::{tr, trf};
@@ -335,12 +335,16 @@ pub(crate) fn agir_sur_unite(bus: &mut Bus, action: ActionUnite, unite: &str) ->
     let mut fins = Vec::new();
     match action {
         ActionUnite::Activer => {
-            let liens = bus.fichiers(true, unite, &mut fins)?;
+            let liens = bus
+                .fichiers(true, unite, &mut fins)
+                .map_err(|e| sans_la_suite(&e, true))?;
             let job = bus.job("StartUnit", unite, &mut fins);
             liens.et_puis(unite, Some(job))
         }
         ActionUnite::Desactiver => {
-            let liens = bus.fichiers(false, unite, &mut fins)?;
+            let liens = bus
+                .fichiers(false, unite, &mut fins)
+                .map_err(|e| sans_la_suite(&e, false))?;
             let job = bus.job("StopUnit", unite, &mut fins);
             liens.et_puis(unite, Some(job))
         }
@@ -350,6 +354,18 @@ pub(crate) fn agir_sur_unite(bus: &mut Bus, action: ActionUnite, unite: &str) ->
         ActionUnite::Redemarrer => bus.job("TryRestartUnit", unite, &mut fins),
         ActionUnite::Recharger => bus.job("ReloadOrTryRestartUnit", unite, &mut fins),
     }
+}
+
+/// L'échec des liens d'une activation (ou d'une désactivation) « maintenant », complété : le démarrage (ou l'arrêt)
+/// qui devait suivre n'est pas tenté, sans savoir ce qui a changé au démarrage. Sans ce mot, « pas vérifié » laissait
+/// croire qu'il avait peut-être été lancé.
+fn sans_la_suite(e: &Echec, activer: bool) -> Echec {
+    let suite = if activer {
+        tr!(" ; il n'est pas lancé", "; it is not started")
+    } else {
+        tr!(" ; il n'est pas arrêté", "; it is not stopped")
+    };
+    echec(format!("{e}{suite}"))
 }
 
 /// `systemctl reset-failed` : ResetFailed, sans nom (toutes les unités).
@@ -388,6 +404,62 @@ pub(crate) fn etat_du_fichier(bus: &mut Bus, unite: &str) -> Result<Option<Strin
     }
 }
 
+/// Ce que le gestionnaire a chargé d'une unité : son nom principal (Id), son fichier (FragmentPath, vide pour une
+/// unité sans fichier) et ses compléments (DropInPaths).
+pub(crate) type FichiersCharges = (String, String, Vec<String>);
+
+/// Les fichiers d'où le gestionnaire a chargé `unite`, par GetUnit puis ses propriétés (des lectures) : ce qu'il
+/// fera d'un arrêt vient de là, pas seulement des dossiers que Vanguard connaît. `Ok(None)` : l'unité n'est pas
+/// chargée (rien en mémoire ; ses fichiers sur le disque sont revus à part).
+pub(crate) fn fichiers_charges(bus: &mut Bus, unite: &str) -> Result<Option<FichiersCharges>, Echec> {
+    if !gestes_unix::nom_admis(unite) {
+        return Err(echec(tr!("nom de service refusé", "service name refused")));
+    }
+    let illisible = |e: String| {
+        en_clair(
+            format!("fichiers chargés de {unite} : {e}"),
+            tr!(
+                "le gestionnaire de services de Linux n'a pas dit d'où vient ce service : rien n'est fait",
+                "the Linux service manager did not say where this service comes from: nothing is done"
+            ),
+        )
+    };
+    let corps = match bus.appeler(
+        SYSTEMD,
+        CHEMIN_SYSTEMD,
+        GESTIONNAIRE,
+        "GetUnit",
+        "s",
+        vec![Valeur::texte_de(unite)],
+    ) {
+        Ok(c) => c,
+        Err(e) if e.starts_with("org.freedesktop.systemd1.NoSuchUnit ") => return Ok(None),
+        Err(e) => return Err(illisible(e)),
+    };
+    let chemin = corps
+        .first()
+        .and_then(Valeur::texte)
+        .ok_or_else(|| illisible(super::mal_forme("GetUnit sans chemin")))?
+        .to_string();
+    let mut texte = |nom: &str| -> Result<String, Echec> {
+        let v = bus.propriete(SYSTEMD, &chemin, UNITE, nom).map_err(illisible)?;
+        v.texte()
+            .map(String::from)
+            .ok_or_else(|| illisible(super::mal_forme(nom)))
+    };
+    let id = texte("Id")?;
+    let fragment = texte("FragmentPath")?;
+    let complements = bus
+        .propriete(SYSTEMD, &chemin, UNITE, "DropInPaths")
+        .map_err(illisible)?
+        .elements()
+        .iter()
+        .map(|c| c.texte().map(String::from))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| illisible(super::mal_forme("DropInPaths")))?;
+    Ok(Some((id, fragment, complements)))
+}
+
 /// L'erreur de GetUnitFileState pour une unité sans fichier : ENOENT (FileNotFound) ou NoSuchUnit selon la version
 /// de systemd.
 fn aucun_fichier(erreur: &str) -> bool {
@@ -406,7 +478,7 @@ fn aucun_fichier(erreur: &str) -> bool {
 )]
 #[cfg(test)]
 mod tests {
-    use super::super::actions::tests::{faux_bus, lire, lire_brut, retour, signal_fin};
+    use super::super::actions::tests::{faux_bus, lire, lire_brut, retour, signal_fin, signal_fin_de};
     use super::super::{Message, RETOUR};
     use super::*;
     use std::io::Write;
@@ -499,8 +571,9 @@ mod tests {
             "StartUnit" | "StopUnit" | "TryRestartUnit" | "ReloadOrTryRestartUnit" => {
                 assert_eq!(a.corps[1], Valeur::texte_de("replace"));
                 let job = "/org/freedesktop/systemd1/job/9";
-                s.write_all(&signal_fin(job, "done", ":1.66")).unwrap();
-                s.write_all(&signal_fin(job, resultat, systemd)).unwrap();
+                let unite = a.corps[0].texte().unwrap();
+                s.write_all(&signal_fin_de(job, unite, "done", ":1.66")).unwrap();
+                s.write_all(&signal_fin_de(job, unite, resultat, systemd)).unwrap();
                 retour(a, "o", vec![Valeur::texte_de(job)], systemd)
             }
             _ => retour(a, "", Vec::new(), systemd),
@@ -658,6 +731,114 @@ mod tests {
         // Une liste qui ne se lit pas : pas vérifié, jamais fait.
         assert!(Liens::lire(true, &[changements(&[])]).is_none());
         assert!(Liens::lire(false, &[Valeur::Tableau(vec![Valeur::texte_de("symlink")])]).is_none());
+    }
+
+    /// Une activation (ou désactivation) « maintenant » dont la liste des liens ne se lit pas : pas vérifié, et dit
+    /// que le service n'est pas lancé (ou arrêté) ; ni StartUnit ni StopUnit ne part.
+    #[test]
+    fn liste_illisible_dit_pas_lance() {
+        for (action, methode, signature, fr, en) in [
+            (
+                ActionUnite::Activer,
+                "EnableUnitFiles",
+                "a(sss)",
+                "il n'est pas lancé",
+                "it is not started",
+            ),
+            (
+                ActionUnite::Desactiver,
+                "DisableUnitFiles",
+                "ba(sss)",
+                "il n'est pas arrêté",
+                "it is not stopped",
+            ),
+        ] {
+            let (mut bus, fil) = faux_bus(move |s, vus| {
+                for _ in 0..2 {
+                    let a = lire(s);
+                    let m = a.membre.clone().unwrap();
+                    // Une réponse d'une autre forme que celle attendue : la liste ne se lit pas.
+                    let r = if m == methode {
+                        let corps = if signature == "ba(sss)" {
+                            vec![Valeur::Booleen(true), changements(&[])]
+                        } else {
+                            vec![changements(&[])]
+                        };
+                        retour(&a, signature, corps, ":1.2")
+                    } else {
+                        repondre(s, &a, "done")
+                    };
+                    vus.push(m);
+                    s.write_all(&r).unwrap();
+                }
+            });
+            let e = agir_sur_unite(&mut bus, action, "cups-browsed.service")
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("pas vérifié") || e.contains("not verified"), "{e}");
+            assert!(e.contains(fr) || e.contains(en), "{e}");
+            sans_jargon(&e);
+            assert_eq!(fil.join().unwrap(), [methode, "Reload"]);
+        }
+    }
+
+    /// Les fichiers chargés d'une unité, par des lectures seulement (GetUnit, puis Get de ses propriétés) ; une unité
+    /// pas chargée n'est pas une erreur.
+    #[test]
+    fn fichiers_charges_par_le_faux_bus() {
+        let (mut bus, fil) = faux_bus(|s, vus| {
+            let a = lire(s);
+            vus.push(a.membre.clone().unwrap());
+            let e = Message {
+                genre: super::super::ERREUR,
+                serie: 5,
+                reponse_a: Some(a.serie),
+                nom_erreur: Some("org.freedesktop.systemd1.NoSuchUnit".into()),
+                signature: "s".into(),
+                corps: vec![Valeur::texte_de("Unit anydesk.service not loaded.")],
+                ..Message::default()
+            };
+            s.write_all(&e.encoder().unwrap()).unwrap();
+            let a = lire(s);
+            vus.push(a.membre.clone().unwrap());
+            s.write_all(&retour(
+                &a,
+                "o",
+                vec![Valeur::texte_de("/org/freedesktop/systemd1/unit/anydesk_2eservice")],
+                ":1.2",
+            ))
+            .unwrap();
+            let variante = |sig: &str, v| Valeur::Variante(sig.into(), Box::new(v));
+            for _ in 0..3 {
+                let a = lire(s);
+                assert_eq!(a.corps[0], Valeur::texte_de(UNITE));
+                let nom = a.corps[1].texte().unwrap().to_string();
+                let v = match nom.as_str() {
+                    "Id" => variante("s", Valeur::texte_de("anydesk.service")),
+                    "FragmentPath" => variante("s", Valeur::texte_de("/usr/lib/systemd/system/anydesk.service")),
+                    _ => variante(
+                        "as",
+                        Valeur::Tableau(vec![Valeur::texte_de("/run/systemd/system/service.d/x.conf")]),
+                    ),
+                };
+                vus.push(format!("{} {nom}", a.membre.clone().unwrap()));
+                s.write_all(&retour(&a, "v", vec![v], ":1.2")).unwrap();
+            }
+        });
+        assert_eq!(fichiers_charges(&mut bus, "anydesk.service"), Ok(None));
+        assert_eq!(
+            fichiers_charges(&mut bus, "anydesk.service"),
+            Ok(Some((
+                "anydesk.service".to_string(),
+                "/usr/lib/systemd/system/anydesk.service".to_string(),
+                vec!["/run/systemd/system/service.d/x.conf".to_string()]
+            )))
+        );
+        assert_eq!(
+            fil.join().unwrap(),
+            ["GetUnit", "GetUnit", "Get Id", "Get FragmentPath", "Get DropInPaths"]
+        );
+        assert!(fichiers_charges(&mut bus, "a b.service").is_err());
     }
 
     /// La fin du job n'arrive pas : l'attente se termine (ici, le faux bus se ferme) et c'est « pas vérifié ».

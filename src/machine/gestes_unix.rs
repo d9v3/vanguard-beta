@@ -519,12 +519,35 @@ pub(crate) fn geste_d_unite(nom: &str, etat: &str) -> Result<Option<GesteUnix>, 
     }
 }
 
-/// Le geste d'une unité désignée par son nom, s'il est admis.
-// Seuls les réglages et le retrait des programmes de contrôle à distance de Linux les demandent.
-#[cfg(any(target_os = "linux", test))]
+/// Le geste d'une unité désignée par son nom, s'il est admis (les essais ; le code passe par `designee_ou_refus`,
+/// qui dit pourquoi).
+#[cfg(test)]
 pub(crate) fn designee(a: ActionUnite, nom: &str) -> Option<GesteUnix> {
-    let g = GesteUnix::Designee(a, NomUnite::nouveau(nom)?);
-    g.refus().is_none().then_some(g)
+    designee_ou_refus(a, nom).ok()
+}
+
+/// Comme `designee`, avec la raison (français, anglais) quand le geste n'est pas admis : de quoi dire à la personne
+/// pourquoi rien n'est proposé, au lieu d'une commande sudo qui passerait à côté des contrôles de l'assistant.
+// Seul le retrait des programmes de contrôle à distance de Linux le demande.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn designee_ou_refus(a: ActionUnite, nom: &str) -> Result<GesteUnix, (&'static str, &'static str)> {
+    if UNITES_CONNUES.iter().any(|u| u.nom == nom) {
+        return Err((
+            "c'est un service que Vanguard ne touche que par ses propres réglages (pare-feu, protection, réseau)",
+            "it is a service Vanguard only changes through its own settings (firewall, protection, network)",
+        ));
+    }
+    let Some(n) = NomUnite::nouveau(nom) else {
+        return Err((
+            "son nom n'a pas la forme d'un service que Vanguard accepte de désigner",
+            "its name is not the shape of a service Vanguard agrees to name",
+        ));
+    };
+    let g = GesteUnix::Designee(a, n);
+    match g.refus() {
+        Some(raison) => Err(raison),
+        None => Ok(g),
+    }
 }
 
 /// Un identifiant de la table : minuscules ASCII, chiffres et tirets, 40 caractères au plus.

@@ -358,7 +358,7 @@ fn juger(trouvailles: &[Trouvaille], aujourd_hui: NaiveDate) -> Vec<Constat> {
         };
         // L'objet : le logiciel par son nom français, le même quelle que soit la langue de l'interface.
         let constat = alerte(CAT, niveau, message).avec_objet(crate::modele::Objet::de("logiciel", logiciel.nom[0]));
-        let retrait = correction_du_bilan(sans_repetition(siens.iter().flat_map(|t| t.retrait.iter().cloned())));
+        let retrait = sans_repetition(siens.iter().flat_map(|t| t.retrait.iter().cloned()));
         constats.push(if en_cours {
             constat.manuel(
                 tr!(
@@ -725,17 +725,25 @@ fn processus(t: &mut Vec<Trouvaille>) -> bool {
 }
 
 /// Arrêter une unité, ou ne plus la lancer au démarrage. Du système : le geste de l'assistant élevé, par le bus
-/// système (lot U3), que le fils ne fait qu'après avoir revu l'unité lui-même ; un nom hors de sa règle reste une
-/// commande. De la session (`systemctl --user`) : une commande du compte, sans droits.
+/// système (lot U3), que le fils ne fait qu'après avoir revu l'unité lui-même ; un nom que l'assistant ne désigne pas
+/// (une unité de sa table, un nom hors de sa règle) n'a rien de proposé, avec la raison (`Err`, en français et en
+/// anglais) : jamais une commande
+/// sudo qui passerait à côté de ses contrôles. De la session (`systemctl --user`) : une commande du compte, sans
+/// droits.
 #[cfg(target_os = "linux")]
-fn action_sur_unite(prefixe: &str, utilisateur: bool, action: ActionUnite, unite: &str) -> String {
-    if !utilisateur && let Some(g) = crate::machine::gestes_unix::designee(action, unite) {
-        return g.ligne();
+fn action_sur_unite(
+    prefixe: &str,
+    utilisateur: bool,
+    action: ActionUnite,
+    unite: &str,
+) -> Result<String, (&'static str, &'static str)> {
+    if utilisateur {
+        return Ok(commande_d_unite(prefixe, action, unite));
     }
-    commande_d_unite(prefixe, action, unite)
+    crate::machine::gestes_unix::designee_ou_refus(action, unite).map(crate::machine::gestes_unix::GesteUnix::ligne)
 }
 
-/// La commande systemctl d'une unité : `stop`, ou `disable` (sans arrêter).
+/// La commande systemctl d'une unité de la session : `stop`, ou `disable` (sans arrêter).
 #[cfg(target_os = "linux")]
 fn commande_d_unite(prefixe: &str, action: ActionUnite, unite: &str) -> String {
     let mot = if action == ActionUnite::Arreter {
@@ -744,33 +752,6 @@ fn commande_d_unite(prefixe: &str, action: ActionUnite, unite: &str) -> String {
         "disable"
     };
     format!("{prefixe} {mot} {}", sh_chaine(unite))
-}
-
-/// Le préfixe des commandes sur les unités du système, partagé pour que le retour aux commandes du bilan n'en
-/// ajoute pas une.
-#[cfg(target_os = "linux")]
-const SYSTEMCTL_SYSTEME: &str = "sudo systemctl";
-
-/// La correction proposée au bilan est une seule liste, que l'assistant élevé refuserait si elle mêlait des gestes
-/// (le service retiré du démarrage) et des commandes (fichier d'ouverture de session, paquet). Mêlée, ses gestes
-/// redeviennent des commandes, comme avant le lot U3 ; le retrait choisi dans l'outil (`retirer`) fait, lui, les
-/// gestes puis les commandes. Faite de gestes seuls, elle les garde.
-fn correction_du_bilan(lignes: Vec<String>) -> Vec<String> {
-    #[cfg(target_os = "linux")]
-    {
-        use crate::machine::gestes_unix::{GesteUnix, analyser};
-        let geste = |l: &String| l.starts_with(crate::protection::blocage::ordres::PREFIXE);
-        if lignes.iter().any(geste) && !lignes.iter().all(geste) {
-            return lignes
-                .into_iter()
-                .map(|l| match analyser(&l) {
-                    Some(GesteUnix::Designee(a, n)) => commande_d_unite(SYSTEMCTL_SYSTEME, a, n.as_str()),
-                    _ => l,
-                })
-                .collect();
-        }
-    }
-    lignes
 }
 
 /// Lancements automatiques : fichiers .desktop d'autostart (nom ou ligne Exec), services systemd activés (système et
@@ -812,7 +793,7 @@ fn demarrage_linux(t: &mut Vec<Trouvaille>, maison: &std::path::Path) -> bool {
     for (args, prefixe, utilisateur) in [
         (
             &["list-unit-files", "--state=enabled", "--no-legend", "--plain"][..],
-            SYSTEMCTL_SYSTEME,
+            "",
             false,
         ),
         (
@@ -838,18 +819,28 @@ fn demarrage_linux(t: &mut Vec<Trouvaille>, maison: &std::path::Path) -> bool {
             let Some(i) = reconnu(unite) else {
                 continue;
             };
+            // Sans geste admis, rien n'est proposé pour ce service, et la raison est dite là où il est montré.
+            let (ou, retrait, arret) = match (
+                action_sur_unite(prefixe, utilisateur, ActionUnite::DesactiverSansArreter, unite),
+                action_sur_unite(prefixe, utilisateur, ActionUnite::Arreter, unite),
+            ) {
+                (Ok(retrait), Ok(arret)) => (trf!("service {unite}", "service {unite}"), vec![retrait], vec![arret]),
+                (Err((fr, en)), _) | (_, Err((fr, en))) => (
+                    trf!(
+                        "service {unite} (Vanguard n'y touche pas : {fr})",
+                        "service {unite} (Vanguard leaves it alone: {en})"
+                    ),
+                    Vec::new(),
+                    Vec::new(),
+                ),
+            };
             t.push(Trouvaille {
                 logiciel: i,
                 trace: Trace::Demarrage,
-                ou: trf!("service {unite}", "service {unite}"),
+                ou,
                 depuis: None,
-                retrait: vec![action_sur_unite(
-                    prefixe,
-                    utilisateur,
-                    ActionUnite::DesactiverSansArreter,
-                    unite,
-                )],
-                arret: vec![action_sur_unite(prefixe, utilisateur, ActionUnite::Arreter, unite)],
+                retrait,
+                arret,
             });
         }
     }
@@ -1738,29 +1729,27 @@ mod tests {
         assert_eq!(dossiers_nommes([None, Some(absolu.clone())]), [absolu]);
     }
 
-    /// Lot U3 : une unité du système devient le geste désigné de l'assistant (jamais une commande sudo) ; un nom hors
-    /// de sa règle, ou une unité de la session, reste une commande, citée.
+    /// Lot U3 : une unité du système devient le geste désigné de l'assistant (jamais une commande sudo) ; un nom
+    /// qu'il ne désigne pas n'a rien de proposé, avec sa raison ; une unité de la session reste une commande, citée.
     #[cfg(target_os = "linux")]
     #[test]
     fn unites_du_systeme_par_le_geste() {
-        let s = "sudo systemctl";
         assert_eq!(
-            action_sur_unite(s, false, ActionUnite::Arreter, "anydesk.service"),
-            "vanguard:geste unite-designee arreter anydesk.service"
+            action_sur_unite("", false, ActionUnite::Arreter, "anydesk.service").as_deref(),
+            Ok("vanguard:geste unite-designee arreter anydesk.service")
         );
         assert_eq!(
-            action_sur_unite(s, false, ActionUnite::DesactiverSansArreter, "teamviewerd.service"),
-            "vanguard:geste unite-designee desactiver-sans-arreter teamviewerd.service"
+            action_sur_unite("", false, ActionUnite::DesactiverSansArreter, "teamviewerd.service").as_deref(),
+            Ok("vanguard:geste unite-designee desactiver-sans-arreter teamviewerd.service")
         );
-        // Une protection n'est jamais désignée : la commande reste, et l'assistant ne la ferait pas pour autant.
-        assert_eq!(
-            action_sur_unite(s, false, ActionUnite::Arreter, "ufw.service"),
-            format!("sudo systemctl stop {}", sh_chaine("ufw.service"))
-        );
-        assert_eq!(
-            action_sur_unite(s, false, ActionUnite::Arreter, "a b;rm.service"),
-            format!("sudo systemctl stop {}", sh_chaine("a b;rm.service"))
-        );
+        // Une unité de la table, ou un nom hors de la règle : aucune commande sudo de repli, la raison seulement.
+        for nom in ["ufw.service", "a b;rm.service"] {
+            let r = action_sur_unite("", false, ActionUnite::Arreter, nom);
+            let (fr, en) = r.expect_err(nom);
+            for raison in [fr, en] {
+                assert!(!raison.contains("sudo") && !raison.is_empty(), "{raison}");
+            }
+        }
         assert_eq!(
             action_sur_unite(
                 "systemctl --user",
@@ -1768,7 +1757,7 @@ mod tests {
                 ActionUnite::DesactiverSansArreter,
                 "rustdesk.service"
             ),
-            format!("systemctl --user disable {}", sh_chaine("rustdesk.service"))
+            Ok(format!("systemctl --user disable {}", sh_chaine("rustdesk.service")))
         );
     }
 
@@ -1823,31 +1812,6 @@ mod tests {
         ];
         let deux = deja_fait(&deux).unwrap();
         assert!(deux.starts_with("ses ") || deux.starts_with("its services"));
-    }
-
-    /// La correction du bilan ne mêle jamais gestes et commandes : mêlée, ses gestes redeviennent des commandes ;
-    /// faite de gestes seuls, elle les garde.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn correction_du_bilan_jamais_melee() {
-        let arret = action_sur_unite(SYSTEMCTL_SYSTEME, false, ActionUnite::Arreter, "anydesk.service");
-        let retrait = action_sur_unite(
-            SYSTEMCTL_SYSTEME,
-            false,
-            ActionUnite::DesactiverSansArreter,
-            "anydesk.service",
-        );
-        let gestes = vec![arret, retrait.clone()];
-        assert_eq!(correction_du_bilan(gestes.clone()), gestes);
-        let rm = "rm -f /home/alice/.config/autostart/anydesk.desktop".to_string();
-        assert_eq!(
-            correction_du_bilan(vec![retrait, rm.clone()]),
-            [
-                format!("sudo systemctl disable {}", sh_chaine("anydesk.service")),
-                rm.clone()
-            ]
-        );
-        assert_eq!(correction_du_bilan(vec![rm.clone()]), [rm]);
     }
 
     fn indice(nom: &str) -> usize {

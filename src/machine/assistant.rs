@@ -640,7 +640,19 @@ impl Monde for Systeme {
 
     fn fichier_sur(&self, unite: &str) -> Result<(), Echec> {
         let dossiers = DOSSIERS_D_UNITES.map(std::path::Path::new);
-        fichier_d_unite_sur(&dossiers, std::path::Path::new("/"), unite, 0)
+        let racine = std::path::Path::new("/");
+        fichier_d_unite_sur(&dossiers, racine, unite, 0)?;
+        // Puis ce que le gestionnaire a chargé : son fichier et ses compléments peuvent venir d'ailleurs (un
+        // générateur, un complément du genre « service.d » posé dans /run).
+        #[cfg(target_os = "linux")]
+        {
+            use crate::machine::linux::dbus::systeme;
+            let charges = systeme::bus_pour_agir().and_then(|mut bus| systeme::fichiers_charges(&mut bus, unite))?;
+            if let Some((id, fragment, complements)) = charges {
+                fichiers_charges_surs(&id, &fragment, &complements, racine, unite, 0)?;
+            }
+        }
+        Ok(())
     }
 
     fn etat_du_fichier(&mut self, unite: &str) -> Result<Option<String>, Echec> {
@@ -704,28 +716,120 @@ fn sans_systemd() -> &'static str {
     )
 }
 
-/// Où le fils cherche le fichier d'une unité désignée par son nom, dans l'ordre de systemd : celui de
-/// l'administrateur, puis ceux des logiciels installés à la main, puis ceux des paquets (/lib : distributions où il
-/// n'est pas un lien vers /usr/lib).
-const DOSSIERS_D_UNITES: [&str; 4] = [
+/// Où le fils cherche le fichier d'une unité désignée par son nom, et ses compléments (« nom.d »), dans l'ordre de
+/// systemd pour le gestionnaire du système (systemd.unit(5), « System Unit Search Path ») : ceux de `systemctl
+/// set-property` et des unités passagères, ceux des générateurs, celui de l'administrateur, ceux du démarrage en
+/// cours (/run), ceux des logiciels installés à la main, puis ceux des paquets (/lib : distributions où il n'est pas
+/// un lien vers /usr/lib).
+const DOSSIERS_D_UNITES: [&str; 13] = [
+    "/etc/systemd/system.control",
+    "/run/systemd/system.control",
+    "/run/systemd/transient",
+    "/run/systemd/generator.early",
     "/etc/systemd/system",
+    "/etc/systemd/system.attached",
+    "/run/systemd/system",
+    "/run/systemd/system.attached",
+    "/run/systemd/generator",
     "/usr/local/lib/systemd/system",
     "/usr/lib/systemd/system",
     "/lib/systemd/system",
+    "/run/systemd/generator.late",
 ];
 
-/// Le fichier de l'unité `nom` dans le premier de `dossiers` qui l'a : un fichier ordinaire de `proprietaire` (root),
-/// que ni son groupe ni les autres ne peuvent modifier, dont chaque dossier, jusqu'à `racine` (« / ») comprise, est
-/// aussi à `proprietaire` et fermé aux autres : sinon un autre compte pourrait changer ce que l'unité lance. Un lien
-/// (`systemctl link`) n'est suivi que vers un tel fichier du même nom. Un fichier refusé ne fait pas chercher dans le
-/// dossier suivant.
+/// Ce qu'un regard sur un fichier d'unité en a vu (`regarder`).
+#[derive(Debug, PartialEq, Eq)]
+enum Regard {
+    Absent,
+    Sur,
+    /// Lui, sa cible, ou un dossier qui contient l'un ou l'autre, modifiable par un autre compte (ou illisible).
+    Douteux,
+    /// Un lien vers un fichier d'un autre nom.
+    AutreNom,
+}
+
+/// Un fichier ordinaire de `proprietaire` que ni son groupe ni les autres ne peuvent modifier ; chaque dossier qui le
+/// contient jusqu'à `racine` comprise aussi, et de même chaque dossier qui contient le lien quand `chemin` en est un
+/// (sinon le lien pourrait être remplacé). `nom` : le nom que doit porter le fichier au bout des liens.
+fn regarder(chemin: &std::path::Path, racine: &std::path::Path, proprietaire: u32, nom: Option<&str>) -> Regard {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let a_lui = |m: &std::fs::Metadata| m.uid() == proprietaire && m.mode() & 0o022 == 0;
+    let vu_du_lien = match std::fs::symlink_metadata(chemin) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Regard::Absent,
+        Err(_) => return Regard::Douteux,
+    };
+    // Lien ou fichier direct, le même regard : un fichier direct dans un dossier qu'un autre compte peut modifier
+    // pourrait y être remplacé aussi bien que la cible d'un lien.
+    let (Ok(racine), Ok(fichier), Some(Ok(dossier_du_lien))) = (
+        std::fs::canonicalize(racine),
+        std::fs::canonicalize(chemin),
+        chemin.parent().map(std::fs::canonicalize),
+    ) else {
+        return Regard::Douteux;
+    };
+    // Les chemins ont tous leurs liens résolus : chacun de leurs dossiers est vu tel qu'il est. Un dossier à root et
+    // fermé aux autres ne peut pas être remplacé entre ce regard et l'ouverture.
+    let chaine_sure = |depart: &std::path::Path| {
+        depart.starts_with(&racine)
+            && depart
+                .ancestors()
+                .filter(|d| d.starts_with(&racine))
+                .all(|d| std::fs::metadata(d).is_ok_and(|m| m.is_dir() && a_lui(&m)))
+    };
+    let lien_a_lui = !vu_du_lien.file_type().is_symlink() || vu_du_lien.uid() == proprietaire;
+    if !(fichier.parent().is_some_and(chaine_sure) && chaine_sure(&dossier_du_lien) && lien_a_lui) {
+        return Regard::Douteux;
+    }
+    // Le même nom au bout : un lien vers une autre unité en ferait un alias, et le geste toucherait celle-là, qui n'a
+    // pas été revue (`controle_a_distance` juge le nom).
+    if let Some(nom) = nom
+        && fichier.file_name() != Some(std::ffi::OsStr::new(nom))
+    {
+        return Regard::AutreNom;
+    }
+    // Sans suivre de lien (O_NOFOLLOW : un fichier remplacé par un lien depuis le regard est refusé), sans attendre si
+    // c'est un tube (O_NONBLOCK).
+    let Ok(ouvert) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&fichier)
+    else {
+        return Regard::Douteux;
+    };
+    match ouvert.metadata() {
+        Ok(m) if m.is_file() && a_lui(&m) => Regard::Sur,
+        _ => Regard::Douteux,
+    }
+}
+
+/// Les dossiers de compléments (« drop-in ») qui s'appliquent à l'unité `nom` (systemd.unit(5)) : « nom.d », ceux
+/// des préfixes à tiret (« a-b-c.service » : « a-b-.service.d », « a-.service.d »), et celui du genre
+/// (« service.d »).
+fn noms_des_complements(nom: &str) -> Vec<String> {
+    let mut noms = vec![format!("{nom}.d")];
+    if let Some((base, genre)) = nom.rsplit_once('.') {
+        noms.extend(
+            base.match_indices('-')
+                .rev()
+                .filter_map(|(i, _)| base.get(..=i))
+                .map(|prefixe| format!("{prefixe}.{genre}.d")),
+        );
+        noms.push(format!("{genre}.d"));
+    }
+    noms
+}
+
+/// Le fichier de l'unité `nom` dans le premier de `dossiers` qui l'a, et ses compléments dans tous : chacun sûr
+/// (`regarder`), sinon un autre compte pourrait changer ce que l'unité lance (ExecStop d'un arrêt, Also= d'un
+/// retrait du démarrage). Un lien (`systemctl link`) n'est suivi que vers un tel fichier du même nom. Un fichier
+/// refusé ne fait pas chercher dans le dossier suivant.
 fn fichier_d_unite_sur(
     dossiers: &[&std::path::Path],
     racine: &std::path::Path,
     nom: &str,
     proprietaire: u32,
 ) -> Result<(), Echec> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let vu = crate::ui::affichable(nom);
     if !gestes_unix::nom_admis(nom) {
         return Err(refus(trf!(
@@ -733,62 +837,102 @@ fn fichier_d_unite_sur(
             "service name refused ({vu}): nothing is done"
         )));
     }
-    let douteux = || {
-        refus(trf!(
-            "le fichier du service {vu} n'est pas un fichier de l'administrateur fermé aux autres comptes (lui, ou un dossier qui le contient, est modifiable par un autre compte) : rien n'est fait",
-            "the file of the service {vu} is not an administrator file closed to other accounts (it, or a folder holding it, is writable by another account): nothing is done"
-        ))
-    };
-    let a_lui = |m: &std::fs::Metadata| m.uid() == proprietaire && m.mode() & 0o022 == 0;
+    let mut trouve = false;
     for dossier in dossiers {
-        let chemin = dossier.join(nom);
-        let vu_du_lien = match std::fs::symlink_metadata(&chemin) {
-            Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => return Err(douteux()),
-        };
-        // Lien ou fichier direct, le même regard : un fichier direct dans un dossier qu'un autre compte peut modifier
-        // pourrait y être remplacé aussi bien que la cible d'un lien.
-        let racine = std::fs::canonicalize(racine).map_err(|_| douteux())?;
-        let fichier = std::fs::canonicalize(&chemin).map_err(|_| douteux())?;
-        // Le chemin a tous ses liens résolus : chacun de ses dossiers est vu tel qu'il est. Un dossier à root et fermé
-        // aux autres ne peut pas être remplacé entre ce regard et l'ouverture.
-        let dossiers_surs = fichier.starts_with(&racine)
-            && fichier
-                .ancestors()
-                .skip(1)
-                .filter(|d| d.starts_with(&racine))
-                .all(|d| std::fs::metadata(d).is_ok_and(|m| m.is_dir() && a_lui(&m)));
-        let lien_a_lui = !vu_du_lien.file_type().is_symlink() || vu_du_lien.uid() == proprietaire;
-        if !(dossiers_surs && lien_a_lui) {
-            return Err(douteux());
+        match regarder(&dossier.join(nom), racine, proprietaire, Some(nom)) {
+            Regard::Absent => {}
+            Regard::Sur => {
+                trouve = true;
+                break;
+            }
+            Regard::Douteux => return Err(douteux(&vu)),
+            Regard::AutreNom => return Err(autre_nom(&vu)),
         }
-        // Le même nom au bout : un lien vers une autre unité en ferait un alias, et le geste toucherait celle-là,
-        // qui n'a pas été revue (`controle_a_distance` juge le nom).
-        if fichier.file_name() != Some(std::ffi::OsStr::new(nom)) {
-            return Err(refus(trf!(
-                "le fichier du service {vu} est un lien vers un fichier d'un autre nom (un autre service, ou un service masqué) : rien n'est fait",
-                "the file of the service {vu} is a link to a file with another name (another service, or a masked service): nothing is done"
-            )));
-        }
-        // Sans suivre de lien (O_NOFOLLOW : un fichier remplacé par un lien depuis le regard est refusé), sans
-        // attendre si c'est un tube (O_NONBLOCK).
-        let ouvert = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(&fichier)
-            .map_err(|_| douteux())?;
-        let m = ouvert.metadata().map_err(|_| douteux())?;
-        return if m.is_file() && a_lui(&m) {
-            Ok(())
-        } else {
-            Err(douteux())
-        };
     }
-    Err(refus(trf!(
-        "aucun fichier du service {vu} dans les dossiers du système : rien n'est fait",
-        "no file for the service {vu} in the system folders: nothing is done"
-    )))
+    if !trouve {
+        return Err(refus(trf!(
+            "aucun fichier du service {vu} dans les dossiers du système : rien n'est fait",
+            "no file for the service {vu} in the system folders: nothing is done"
+        )));
+    }
+    for dossier in dossiers {
+        for complements in noms_des_complements(nom) {
+            complements_surs(&dossier.join(complements), racine, proprietaire, &vu)?;
+        }
+    }
+    Ok(())
+}
+
+/// Un dossier de compléments, s'il existe : à `proprietaire`, fermé aux autres comme ceux qui le contiennent, et
+/// chacun de ses « .conf » sûr (`regarder`).
+fn complements_surs(
+    dossier: &std::path::Path,
+    racine: &std::path::Path,
+    proprietaire: u32,
+    vu: &str,
+) -> Result<(), Echec> {
+    let entrees = match std::fs::read_dir(dossier) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(douteux(vu)),
+    };
+    // Le dossier lui-même : un « .conf » dedans est vu par `regarder` avec chacun de ses dossiers, celui-ci compris.
+    for entree in entrees {
+        let chemin = entree.map_err(|_| douteux(vu))?.path();
+        if chemin.extension().is_none_or(|x| x != "conf") {
+            continue;
+        }
+        match regarder(&chemin, racine, proprietaire, None) {
+            Regard::Sur | Regard::Absent => {}
+            Regard::Douteux | Regard::AutreNom => return Err(douteux(vu)),
+        }
+    }
+    Ok(())
+}
+
+/// Les fichiers d'où le gestionnaire a chargé l'unité (`systeme::fichiers_charges`) : son fichier (`fragment`, vide
+/// pour une unité sans fichier) et ses compléments, tous sûrs (`regarder`), et son nom principal le nom désigné (un
+/// alias toucherait une autre unité). Ce que le gestionnaire a en mémoire compte, pas seulement ce qui est sur le
+/// disque : une unité passagère, un générateur, un complément de /run n'ont pas tous leur place dans
+/// `DOSSIERS_D_UNITES`.
+#[cfg(any(target_os = "linux", test))]
+fn fichiers_charges_surs(
+    id: &str,
+    fragment: &str,
+    complements: &[String],
+    racine: &std::path::Path,
+    nom: &str,
+    proprietaire: u32,
+) -> Result<(), Echec> {
+    let vu = crate::ui::affichable(nom);
+    if id != nom || fragment.is_empty() {
+        return Err(autre_nom(&vu));
+    }
+    if regarder(std::path::Path::new(fragment), racine, proprietaire, None) != Regard::Sur {
+        return Err(douteux(&vu));
+    }
+    for c in complements {
+        if regarder(std::path::Path::new(c), racine, proprietaire, None) != Regard::Sur {
+            return Err(douteux(&vu));
+        }
+    }
+    Ok(())
+}
+
+/// Le refus d'un fichier d'unité qu'un autre compte pourrait modifier.
+fn douteux(vu: &str) -> Echec {
+    refus(trf!(
+        "le fichier du service {vu} n'est pas un fichier de l'administrateur fermé aux autres comptes (lui, un de ses compléments, ou un dossier qui les contient, est modifiable par un autre compte) : rien n'est fait",
+        "the file of the service {vu} is not an administrator file closed to other accounts (it, one of its add-ons, or a folder holding them, is writable by another account): nothing is done"
+    ))
+}
+
+/// Le refus d'une unité qui en désigne une autre (un lien vers un fichier d'un autre nom, un alias).
+fn autre_nom(vu: &str) -> Echec {
+    refus(trf!(
+        "le fichier du service {vu} est un lien vers un fichier d'un autre nom (un autre service, ou un service masqué) : rien n'est fait",
+        "the file of the service {vu} is a link to a file with another name (another service, or a masked service): nothing is done"
+    ))
 }
 
 /// Une unité désignée par le parent, revue par le fils avant d'y toucher (P5 du lot U3) : un logiciel de prise de
@@ -866,6 +1010,13 @@ fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
     {
         return Resultat::echec(raison);
     }
+    // De même, le fichier de l'unité est revu juste avant le geste : il a pu changer pendant la question.
+    if g.demande_accord()
+        && let GesteUnix::Designee(_, nom) = g
+        && let Err(raison) = monde.fichier_sur(nom.as_str())
+    {
+        return Resultat::echec(raison);
+    }
     let fait = |r: Result<(), Echec>| r.map_or_else(Resultat::echec, |()| Resultat::ok());
     match g {
         GesteUnix::Programme(p) => monde.programme(p),
@@ -902,7 +1053,12 @@ fn signatures_clamav(monde: &mut dyn Monde) -> Resultat {
     // Le service n'est arrêté que s'il tourne (lui seul tient le verrou de la base), et remis seulement en marche :
     // son lancement au démarrage n'est jamais changé, ce geste ne note rien qui permettrait de le défaire.
     let r = match monde.etat_d_activite(service) {
-        Ok(Some(a)) if matches!(a.as_str(), "active" | "activating" | "reloading") => freshclam_service_arrete(monde),
+        Ok(Some(a)) if matches!(a.as_str(), "active" | "activating" | "reloading") => {
+            freshclam_service_arrete(monde, true)
+        }
+        // En train de s'arrêter : il tient peut-être encore le verrou. Son arrêt est attendu, et il reste arrêté,
+        // comme il allait l'être.
+        Ok(Some(a)) if a == "deactivating" => freshclam_service_arrete(monde, false),
         Ok(_) => monde.programme(&gestes_unix::FRESHCLAM),
         // Sans savoir s'il tourne : freshclam seul, sans toucher au service ; un échec le dit.
         Err(raison) => {
@@ -918,8 +1074,10 @@ fn signatures_clamav(monde: &mut dyn Monde) -> Resultat {
             }
         }
     };
-    if r.reussi && etat.as_deref() != Some("enabled") {
-        // Coupée avant, coupée après : dit, plutôt que de laisser croire qu'elle tourne.
+    if r.reussi && matches!(etat.as_deref(), Some("disabled" | "static")) {
+        // Coupée avant, coupée après : dit, plutôt que de laisser croire qu'elle tourne. Seulement pour ces deux
+        // états : « indirect », « enabled-runtime », « generated », « linked », « alias » la lancent peut-être
+        // au démarrage, par un autre chemin.
         return Resultat::ok_note(tr!(
             "signatures à jour ; leur mise à jour automatique n'est pas lancée au démarrage, et Vanguard la laisse ainsi",
             "signatures up to date; their automatic update is not started at boot, and Vanguard leaves it that way"
@@ -928,8 +1086,9 @@ fn signatures_clamav(monde: &mut dyn Monde) -> Resultat {
     r
 }
 
-/// freshclam, le service de mise à jour arrêté le temps du téléchargement, puis remis en marche dans tous les cas.
-fn freshclam_service_arrete(monde: &mut dyn Monde) -> Resultat {
+/// freshclam, le service de mise à jour arrêté le temps du téléchargement, puis remis en marche dans tous les cas
+/// (`relancer`) ; sans `relancer` (il était en train de s'arrêter), laissé arrêté.
+fn freshclam_service_arrete(monde: &mut dyn Monde, relancer: bool) -> Resultat {
     let service = gestes_unix::CLAMAV_FRESHCLAM.nom;
     // Posés avant l'arrêt, retirés après la remise en route (ordre inverse des `let`) : entre les deux, la fenêtre
     // fermée ne tue plus l'assistant au milieu.
@@ -937,13 +1096,17 @@ fn freshclam_service_arrete(monde: &mut dyn Monde) -> Resultat {
     let mut relance = Relance {
         monde,
         service,
-        faite: false,
+        faite: !relancer,
     };
     // Un arrêt en échec n'arrête pas la suite : le service a pu s'arrêter quand même, ou ne tenir aucun verrou ;
     // freshclam le dira s'il bute dessus, et le service est remis en route dans tous les cas.
     let arret = relance.monde.unite(ActionUnite::Arreter, service);
     let r = relance.monde.programme(&gestes_unix::FRESHCLAM);
-    let reprise = remettre_en_route(relance.monde, service);
+    let reprise = if relancer {
+        remettre_en_route(relance.monde, service)
+    } else {
+        Ok(())
+    };
     relance.faite = true;
     match (r.reussi, reprise, arret) {
         (true, Ok(()), _) => Resultat::ok(),
@@ -1528,6 +1691,8 @@ mod tests {
         systemd: bool,
         session: Option<bool>,
         fichier: Result<(), Echec>,
+        /// Ce que devient `fichier` une fois l'accord donné (un fichier changé pendant la question).
+        fichier_apres_accord: Option<Result<(), Echec>>,
         etat: Result<Option<String>, Echec>,
         actif: Result<Option<String>, Echec>,
         /// Les actions (`ActionUnite::mot`) qui échouent.
@@ -1545,6 +1710,7 @@ mod tests {
                 systemd: true,
                 session: Some(false),
                 fichier: Ok(()),
+                fichier_apres_accord: None,
                 etat: Ok(Some("enabled".into())),
                 actif: Ok(Some("active".into())),
                 echecs: Vec::new(),
@@ -1557,6 +1723,9 @@ mod tests {
     impl Monde for FauxMonde {
         fn accord(&mut self, _: GesteUnix) -> Result<(), Refus> {
             self.journal.push("accord".into());
+            if let Some(f) = self.fichier_apres_accord.take() {
+                self.fichier = f;
+            }
             self.refus.map_or(Ok(()), |r| Err(Refus(r.into())))
         }
         fn systemd(&self) -> bool {
@@ -1801,6 +1970,16 @@ mod tests {
             essai(arreter, &|m| m.fichier = Err(Echec::refuse("essai", "lien"))),
             (false, vec![])
         );
+        // Le fichier changé pendant la question (remplacé par un lien, rendu modifiable) : revu après l'accord,
+        // refusé, rien n'est arrêté ni retiré.
+        for g in [arreter, retirer] {
+            assert_eq!(
+                essai(g, &|m| m.fichier_apres_accord =
+                    Some(Err(Echec::refuse("essai", "remplacé")))),
+                (false, vec![s("etat anydesk.service"), s("accord")]),
+                "{g:?}"
+            );
+        }
         for etat in [None, Some(s("disabled")), Some(s("masked")), Some(s("static"))] {
             let (reussi, journal) = essai(arreter, &|m| m.etat = Ok(etat.clone()));
             assert!(!reussi && journal == [s("etat anydesk.service")], "{etat:?}");
@@ -1892,6 +2071,19 @@ mod tests {
         let (r, j) = essai(&|m| m.etat = Ok(Some(s("disabled"))));
         assert!(r.reussi && r.note.is_some(), "{r:?}");
         assert_eq!(j, tournant);
+        // Une mise à jour automatique lancée au démarrage par un autre chemin que « enabled » : aucune note qui
+        // dirait le contraire.
+        for autre in ["indirect", "enabled-runtime", "generated", "linked", "alias"] {
+            let (r, j) = essai(&|m| m.etat = Ok(Some(s(autre))));
+            assert!(r.reussi && r.note.is_none(), "{autre} {r:?}");
+            assert_eq!(j, tournant, "{autre}");
+        }
+        let (r, _) = essai(&|m| m.etat = Ok(Some(s("static"))));
+        assert!(r.reussi && r.note.is_some(), "{r:?}");
+        // En train de s'arrêter : arrêté (il tient peut-être encore le verrou), puis laissé arrêté.
+        let (r, j) = essai(&|m| m.actif = Ok(Some(s("deactivating"))));
+        assert!(r.reussi, "{r:?}");
+        assert_eq!(j, [etat.clone(), actif.clone(), arret.clone(), fresh.clone()]);
         // Activé mais arrêté : pas démarré non plus.
         let (r, j) = essai(&|m| m.actif = Ok(Some(s("inactive"))));
         assert!(r.reussi && r.note.is_none(), "{r:?}");
@@ -2005,6 +2197,14 @@ mod tests {
             assert!(sur("teamviewerd.service", moi).is_err(), "{} {m:o}", dossier.display());
             mode(dossier, 0o755);
         }
+        // Le dossier du lien lui-même modifiable par les autres : refusé (le lien pourrait y être remplacé par un
+        // autre, vers un fichier choisi par ce compte).
+        for m in [0o775, 0o757] {
+            mode(&premier, m);
+            assert!(sur("teamviewerd.service", moi).is_err(), "{m:o}");
+            mode(&premier, 0o755);
+        }
+        assert_eq!(sur("teamviewerd.service", moi), Ok(()));
         // Un lien vers une autre unité (un alias), même correcte : refusé, le geste toucherait celle-là.
         poser(&ailleurs, "autre.service", 0o644);
         std::os::unix::fs::symlink(ailleurs.join("autre.service"), premier.join("dwservice.service")).unwrap();
@@ -2024,15 +2224,119 @@ mod tests {
         assert!(sur("x11vnc.service", moi).is_err());
         // Un nom hors de la règle : refusé avant d'ouvrir quoi que ce soit.
         assert!(sur("../etc/anydesk.service", moi).is_err());
-        // Les dossiers de systemd, tous : ceux des logiciels installés à la main et /lib compris.
+        // Les compléments (« drop-in ») comptent comme le fichier : chacun sûr, dans tous les dossiers, sous chacun
+        // des noms qui s'appliquent (le nom, ses préfixes à tiret, le genre).
+        poser(&second, "a-b-c.service", 0o644);
+        assert_eq!(sur("a-b-c.service", moi), Ok(()));
+        let propre = second.join("a-b-c.service.d");
+        std::fs::create_dir(&propre).unwrap();
+        mode(&propre, 0o755);
+        poser(&propre, "x.conf", 0o644);
+        assert_eq!(sur("a-b-c.service", moi), Ok(()));
+        for m in [0o646, 0o664] {
+            mode(&propre.join("x.conf"), m);
+            assert!(sur("a-b-c.service", moi).is_err(), "{m:o}");
+        }
+        mode(&propre.join("x.conf"), 0o644);
+        mode(&propre, 0o757);
+        assert!(sur("a-b-c.service", moi).is_err());
+        mode(&propre, 0o755);
+        // Un autre fichier que « .conf » n'est pas lu par systemd : sans effet.
+        poser(&propre, "lisez-moi.txt", 0o666);
+        assert_eq!(sur("a-b-c.service", moi), Ok(()));
+        for complements in ["a-.service.d", "a-b-.service.d", "service.d"] {
+            let c = premier.join(complements);
+            std::fs::create_dir(&c).unwrap();
+            mode(&c, 0o755);
+            poser(&c, "y.conf", 0o646);
+            assert!(sur("a-b-c.service", moi).is_err(), "{complements}");
+            mode(&c.join("y.conf"), 0o644);
+            assert_eq!(sur("a-b-c.service", moi), Ok(()), "{complements}");
+        }
+        // Un complément qui est un lien hors de la racine : refusé.
+        std::os::unix::fs::symlink(&dehors, propre.join("z.conf")).unwrap();
+        assert!(sur("a-b-c.service", moi).is_err());
         assert_eq!(
-            DOSSIERS_D_UNITES,
-            [
-                "/etc/systemd/system",
-                "/usr/local/lib/systemd/system",
-                "/usr/lib/systemd/system",
-                "/lib/systemd/system"
-            ]
+            noms_des_complements("a-b-c.service"),
+            ["a-b-c.service.d", "a-b-.service.d", "a-.service.d", "service.d"]
+        );
+        assert_eq!(noms_des_complements("sans-genre"), ["sans-genre.d"]);
+        // Les dossiers de systemd, tous (systemd.unit(5)) : ceux des logiciels installés à la main, /lib, ceux de
+        // /run, des générateurs et des unités passagères compris.
+        assert_eq!(DOSSIERS_D_UNITES.len(), 13);
+        for dossier in [
+            "/etc/systemd/system",
+            "/usr/local/lib/systemd/system",
+            "/usr/lib/systemd/system",
+            "/lib/systemd/system",
+            "/run/systemd/system",
+            "/run/systemd/transient",
+            "/run/systemd/generator",
+            "/run/systemd/generator.early",
+            "/run/systemd/generator.late",
+            "/etc/systemd/system.control",
+        ] {
+            assert!(DOSSIERS_D_UNITES.contains(&dossier), "{dossier}");
+        }
+    }
+
+    /// Les fichiers d'où le gestionnaire de services a chargé l'unité : son nom principal le nom désigné, un fichier,
+    /// et lui comme chacun de ses compléments sûrs ; sinon refusé.
+    #[test]
+    fn les_fichiers_charges_d_une_unite() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = crate::essais::Jetable::nouveau("assistant-charges");
+        let racine = d.join("racine");
+        let dossier = racine.join("run");
+        std::fs::create_dir_all(&dossier).unwrap();
+        let mode = |chemin: &std::path::Path, m: u32| {
+            std::fs::set_permissions(chemin, std::fs::Permissions::from_mode(m)).unwrap();
+        };
+        mode(&racine, 0o755);
+        mode(&dossier, 0o755);
+        let fragment = dossier.join("anydesk.service");
+        let complement = dossier.join("x.conf");
+        for f in [&fragment, &complement] {
+            std::fs::write(f, "[Service]\n").unwrap();
+            mode(f, 0o644);
+        }
+        let moi = crate::socle::euid();
+        let frag = fragment.to_str().unwrap();
+        let comp = vec![complement.to_str().unwrap().to_string()];
+        let charges =
+            |id: &str, f: &str, c: &[String]| fichiers_charges_surs(id, f, c, &racine, "anydesk.service", moi);
+        assert_eq!(charges("anydesk.service", frag, &comp), Ok(()));
+        // Un alias : le nom principal est un autre.
+        assert!(charges("autre.service", frag, &comp).is_err());
+        // Sans fichier (unité passagère ou générée sans fragment) : rien à revoir, refusé.
+        assert!(charges("anydesk.service", "", &comp).is_err());
+        // Un complément modifiable par les autres, ou absent : refusé.
+        mode(&complement, 0o646);
+        assert!(charges("anydesk.service", frag, &comp).is_err());
+        mode(&complement, 0o644);
+        assert!(
+            charges(
+                "anydesk.service",
+                frag,
+                &[dossier.join("absent.conf").to_str().unwrap().to_string()]
+            )
+            .is_err()
+        );
+        // Le fichier dans un dossier modifiable par les autres : refusé.
+        mode(&dossier, 0o777);
+        assert!(charges("anydesk.service", frag, &[]).is_err());
+        mode(&dossier, 0o755);
+        // Un autre propriétaire : refusé.
+        assert!(
+            fichiers_charges_surs(
+                "anydesk.service",
+                frag,
+                &comp,
+                &racine,
+                "anydesk.service",
+                moi.wrapping_add(1)
+            )
+            .is_err()
         );
     }
 

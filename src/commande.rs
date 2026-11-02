@@ -1370,7 +1370,7 @@ mod tests_sh_chaine {
         ("optimiser/macos.rs", 3),
         ("protection/blocage/pare_feu.rs", 16),
         ("protection/conteneurs.rs", 2),
-        ("protection/distance.rs", 7),
+        ("protection/distance.rs", 6),
         ("protection/espions/mod.rs", 2),
         ("protection/memoire_dns.rs", 2),
         ("protection/quarantaine.rs", 4),

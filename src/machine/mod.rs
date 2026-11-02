@@ -1033,7 +1033,8 @@ pub(crate) enum IssueMelee {
         faites: Vec<String>,
         pas_faites: Vec<String>,
     },
-    /// Aucune ligne n'est faite.
+    /// Aucune ligne n'est sue faite (une réponse de l'assistant qui ne se relit pas est dite « pas vérifié » à
+    /// l'écran et dans les notes : `lire_reponse`).
     Echec,
 }
 
@@ -1043,16 +1044,16 @@ pub(crate) enum IssueMelee {
 /// comme avec `appliquer_chacune`.
 #[cfg(not(windows))]
 pub(crate) fn appliquer_gestes_puis_commandes(correctifs: &[Vec<String>]) -> Vec<IssueMelee> {
-    gestes_puis_commandes(correctifs, appliquer_par_ligne)
+    let (issues, notes) = gestes_puis_commandes(correctifs, lancer_lignes);
+    crate::changements::noter_annulables(&notes, &issues_faites(&issues), &[]);
+    issues
 }
 
-/// Comme `appliquer_chacune`, en rendant la réussite de chaque ligne de chaque liste : de quoi dire ce qui est fait
-/// quand une liste ne l'est qu'en partie, plutôt qu'un échec qui laisserait croire que rien n'a bougé.
+/// Vrai pour une liste entièrement faite : ce que « Ce que Vanguard a changé » et `appliquer_annulables` comptent
+/// comme réussi.
 #[cfg(not(windows))]
-fn appliquer_par_ligne(correctifs: &[Vec<String>]) -> Vec<Vec<bool>> {
-    let (lignes, notes) = lancer_lignes(correctifs);
-    crate::changements::noter_annulables(&notes, &toutes_faites(&lignes), &[]);
-    lignes
+fn issues_faites(issues: &[IssueMelee]) -> Vec<bool> {
+    issues.iter().map(|i| *i == IssueMelee::Fait).collect()
 }
 
 /// Une liste réussit quand toutes ses lignes sont faites.
@@ -1061,54 +1062,74 @@ fn toutes_faites(lignes: &[Vec<bool>]) -> Vec<bool> {
     lignes.iter().map(|l| l.iter().all(|&f| f)).collect()
 }
 
-/// `appliquer_gestes_puis_commandes`, avec `appliquer` à la place de `appliquer_par_ligne` (les essais en passent
-/// un faux).
+/// Ce que rend un lancement par lignes (`lancer_lignes`) : la réussite de chaque ligne de chaque liste, et ce qu'il
+/// faut noter pour chacune (ses lignes, enrichies de la valeur d'avant).
+#[cfg(not(windows))]
+type ParLigne = (Vec<Vec<bool>>, Vec<Vec<String>>);
+
+/// `appliquer_gestes_puis_commandes`, avec `appliquer` à la place de `lancer_lignes` (les essais en passent un faux).
+/// Rend l'issue de chaque liste, et ses notes remises dans l'ordre de ses lignes (une ligne pas lancée garde son
+/// texte).
 #[cfg(not(windows))]
 fn gestes_puis_commandes(
     correctifs: &[Vec<String>],
-    mut appliquer: impl FnMut(&[Vec<String>]) -> Vec<Vec<bool>>,
-) -> Vec<IssueMelee> {
+    mut appliquer: impl FnMut(&[Vec<String>]) -> ParLigne,
+) -> (Vec<IssueMelee>, Vec<Vec<String>>) {
     let (gestes, commandes) = separer_les_gestes(correctifs);
     // Chaque moitié n'est lancée que pour les listes qui en ont une et dont tout ce qui précède est fait : jamais les
     // commandes d'un programme dont un geste a échoué (son service tourne peut-être encore). Une ligne pas lancée
-    // reste « pas faite » (vide ici, faux plus bas).
-    let mut lancer = |faites: &mut [Vec<bool>], listes: Vec<Vec<String>>, permis: &[bool]| {
-        let (cases, lot): (Vec<&mut Vec<bool>>, Vec<Vec<String>>) = faites
+    // reste « pas faite » (vide ici, faux plus bas), notée telle quelle.
+    let mut lancer = |faites: &mut [Vec<bool>], notes: &mut [Vec<String>], listes: &[Vec<String>], permis: &[bool]| {
+        let (cases, lot): (Vec<_>, Vec<Vec<String>>) = faites
             .iter_mut()
+            .zip(notes.iter_mut())
             .zip(listes)
             .zip(permis)
             .filter(|((_, l), p)| **p && !l.is_empty())
-            .map(|(c, _)| c)
+            .map(|((c, l), _)| (c, l.clone()))
             .unzip();
         if !lot.is_empty() {
-            for (case, f) in cases.into_iter().zip(appliquer(&lot)) {
-                *case = f;
+            let (resultats, notees) = appliquer(&lot);
+            for (((f, n), l), (r, nn)) in cases.into_iter().zip(&lot).zip(resultats.into_iter().zip(notees)) {
+                *f = r;
+                // Une note d'une autre longueur ne se rapporte plus ligne à ligne : les lignes telles quelles.
+                if nn.len() == l.len() {
+                    *n = nn;
+                }
             }
         }
     };
-    let mut gestes_faits = vec![Vec::new(); correctifs.len()];
-    lancer(&mut gestes_faits, gestes.clone(), &vec![true; correctifs.len()]);
+    let (mut gestes_faits, mut gestes_notes) = (vec![Vec::new(); correctifs.len()], gestes.clone());
+    lancer(
+        &mut gestes_faits,
+        &mut gestes_notes,
+        &gestes,
+        &vec![true; correctifs.len()],
+    );
     // Un geste sans réponse compte comme pas fait : `all` sur la longueur attendue, pas sur ce qui est revenu.
     let gestes_ok: Vec<bool> = gestes
         .iter()
         .zip(&gestes_faits)
         .map(|(g, f)| (0..g.len()).all(|i| f.get(i).copied().unwrap_or(false)))
         .collect();
-    let mut commandes_faites = vec![Vec::new(); correctifs.len()];
-    lancer(&mut commandes_faites, commandes, &gestes_ok);
-    correctifs
+    let (mut commandes_faites, mut commandes_notes) = (vec![Vec::new(); correctifs.len()], commandes.clone());
+    lancer(&mut commandes_faites, &mut commandes_notes, &commandes, &gestes_ok);
+    let mut notes = Vec::with_capacity(correctifs.len());
+    let issues = correctifs
         .iter()
-        .zip(gestes_faits)
-        .zip(commandes_faites)
-        .map(|((c, g), m)| {
+        .zip(gestes_faits.into_iter().zip(gestes_notes))
+        .zip(commandes_faites.into_iter().zip(commandes_notes))
+        .map(|((c, (g, gn)), (m, mn))| {
             let (mut g, mut m) = (g.into_iter(), m.into_iter());
-            let (mut faites, mut pas_faites) = (Vec::new(), Vec::new());
+            let (mut gn, mut mn) = (gn.into_iter(), mn.into_iter());
+            let (mut faites, mut pas_faites, mut textes) = (Vec::new(), Vec::new(), Vec::new());
             for l in c {
-                let suite = if l.starts_with(crate::protection::blocage::ordres::PREFIXE) {
-                    g.next()
+                let (suite, note) = if l.starts_with(crate::protection::blocage::ordres::PREFIXE) {
+                    (g.next(), gn.next())
                 } else {
-                    m.next()
+                    (m.next(), mn.next())
                 };
+                textes.push(note.unwrap_or_else(|| l.clone()));
                 if suite.unwrap_or(false) {
                     &mut faites
                 } else {
@@ -1116,13 +1137,15 @@ fn gestes_puis_commandes(
                 }
                 .push(l.clone());
             }
+            notes.push(textes);
             match (faites.is_empty(), pas_faites.is_empty()) {
                 (_, true) => IssueMelee::Fait,
                 (true, false) => IssueMelee::Echec,
                 (false, false) => IssueMelee::EnPartie { faites, pas_faites },
             }
         })
-        .collect()
+        .collect();
+    (issues, notes)
 }
 
 /// Pour chaque liste : ses lignes « vanguard: » d'un côté, ses commandes de l'autre, chacune dans son ordre.
@@ -1141,11 +1164,38 @@ fn separer_les_gestes(correctifs: &[Vec<String>]) -> (Vec<Vec<String>>, Vec<Vec<
 /// Comme `appliquer_chacune`, pour des corrections du bilan : `annulables`, pour chacune, l'id de la note qui la
 /// défait (`optimiser::annulables`), gardé avec elle dans « Ce que Vanguard a changé ».
 pub(crate) fn appliquer_annulables(correctifs: &[Vec<String>], annulables: &[Option<String>]) -> Vec<bool> {
+    // Ailleurs que sous Windows, une liste qui mêle gestes et commandes (le retrait d'un programme proposé par le
+    // bilan) passe par `gestes_puis_commandes` : ses gestes par l'assistant, avec leurs contrôles, jamais en commandes
+    // systemctl confiées à bash. Une liste faite en partie est dite ici : « non appliqué » seul laisserait croire que
+    // rien n'a bougé.
+    #[cfg(not(windows))]
+    let (resultats, notes) = melees_par(correctifs, lancer_lignes);
+    #[cfg(windows)]
     let (resultats, notes) = lancer_chacune(correctifs);
     // Gardé sur cet ordinateur : « Ce que Vanguard a changé » (changements.rs), avec la valeur d'avant quand le
     // processus élevé l'a lue, et le lien vers la note qui l'annule exactement.
     crate::changements::noter_annulables(&notes, &resultats, annulables);
     resultats
+}
+
+/// Les listes du bilan par `gestes_puis_commandes`, avec `lancer` à la place de `lancer_lignes` (les essais en passent
+/// un faux) : vrai pour une liste entièrement faite, et ses notes ; une liste faite en partie est dite.
+#[cfg(not(windows))]
+fn melees_par(
+    correctifs: &[Vec<String>],
+    lancer: impl FnMut(&[Vec<String>]) -> ParLigne,
+) -> (Vec<bool>, Vec<Vec<String>>) {
+    let (issues, notes) = gestes_puis_commandes(correctifs, lancer);
+    for issue in &issues {
+        if let IssueMelee::EnPartie { faites, pas_faites } = issue {
+            let (faites, total) = (faites.len(), faites.len().saturating_add(pas_faites.len()));
+            trp!(
+                "    ✖ Fait en partie seulement : {faites} étape(s) sur {total}, voir ci-dessus.",
+                "    ✖ Only partly done: {faites} step(s) out of {total}, see above."
+            );
+        }
+    }
+    (issues_faites(&issues), notes)
 }
 
 /// Comme `appliquer`, sans la note : pour un blocage (protection/blocage), qui note lui-même une seule ligne avec de
@@ -1215,19 +1265,40 @@ fn lancer_les_ordres(correctifs: &[Vec<String>], resultats: &mut [Option<Vec<boo
     }
     let reponses = assistant::appliquer(&groupes);
     for (((c, resultat, note), groupe), reponse) in cibles.into_iter().zip(&groupes).zip(reponses) {
-        // Chaque ligne par sa propre réponse ; une ligne sans réponse n'est pas faite. Une réponse de trop ne se
-        // rapporte à aucune ligne connue : rien n'est compté comme fait.
-        *resultat = Some(if reponse.len() > groupe.len() {
-            vec![false; c.len()]
-        } else {
-            (0..c.len()).map(|i| reponse.get(i).is_some_and(|r| r.reussi)).collect()
-        });
-        *note = c
-            .iter()
-            .zip(reponse.iter().map(Some).chain(std::iter::repeat(None)))
-            .map(|(l, r)| r.map_or_else(|| l.clone(), |r| note_d_ordre(l, r)))
-            .collect();
+        let (faites, textes) = lire_reponse(c, groupe.len(), &reponse);
+        *resultat = Some(faites);
+        *note = textes;
     }
+}
+
+/// La réussite de chaque ligne de `c` (`attendues` étapes) et ses notes, d'après la réponse de l'assistant : chaque
+/// ligne par sa propre réponse ; une ligne sans réponse n'est pas faite. Une réponse de trop ne se rapporte à aucune
+/// ligne connue : rien n'est compté comme fait, mais des gestes ont pu l'être, c'est dit « pas vérifié » (à l'écran et
+/// dans les notes), jamais « aucune ligne n'est faite ».
+#[cfg(unix)]
+fn lire_reponse(
+    c: &[String],
+    attendues: usize,
+    reponse: &[crate::protection::blocage::ordres::Resultat],
+) -> (Vec<bool>, Vec<String>) {
+    if reponse.len() > attendues {
+        trp!(
+            "    ✖ L'assistant a rendu plus de réponses que d'étapes : ce qui a été fait n'est pas vérifié. Refaites le bilan pour voir l'état réel.",
+            "    ✖ The helper returned more answers than steps: what was done is not verified. Run the check again to see the real state."
+        );
+        let notes = c
+            .iter()
+            .map(|l| trf!("{l} (pas vérifié)", "{l} (not verified)"))
+            .collect();
+        return (vec![false; c.len()], notes);
+    }
+    let faites = (0..c.len()).map(|i| reponse.get(i).is_some_and(|r| r.reussi)).collect();
+    let notes = c
+        .iter()
+        .zip(reponse.iter().map(Some).chain(std::iter::repeat(None)))
+        .map(|(l, r)| r.map_or_else(|| l.clone(), |r| note_d_ordre(l, r)))
+        .collect();
+    (faites, notes)
 }
 
 /// Une liste passe-t-elle par Vanguard administrateur (`windows::admin_mele`) ? Partout sauf sous Wine, où
@@ -1641,15 +1712,22 @@ mod tests {
             l(&["echo commande-faite", "echo commande-en-echec"]),
         ];
         let mut lots: Vec<Vec<Vec<String>>> = Vec::new();
-        let issues = gestes_puis_commandes(&correctifs, |lot| {
+        let (issues, notes) = gestes_puis_commandes(&correctifs, |lot| {
             lots.push(lot.to_vec());
-            lot.iter()
+            let faites = lot
+                .iter()
                 .map(|c| {
                     c.iter()
                         .map(|x| !(x.contains("en-echec") || x.contains("rustdesk")))
                         .collect()
                 })
-                .collect()
+                .collect();
+            // Chaque ligne lancée notée avec une marque : les notes reviennent dans l'ordre des lignes de la liste.
+            let notees = lot
+                .iter()
+                .map(|c| c.iter().map(|x| format!("{x} (noté)")).collect())
+                .collect();
+            (faites, notees)
         });
         let en_partie = |f: &[&str], p: &[&str]| IssueMelee::EnPartie {
             faites: l(f),
@@ -1670,6 +1748,69 @@ mod tests {
         // Deux lots : les gestes, puis les commandes des listes dont les gestes ont réussi.
         assert_eq!(lots.len(), 2);
         assert!(!lots[1].iter().flatten().any(|c| c == "echo jamais"), "{lots:?}");
+        // Aucun lot ne mêle gestes et commandes (l'assistant le refuserait, bash ne doit jamais voir un geste).
+        let geste_de = |c: &String| c.starts_with(crate::protection::blocage::ordres::PREFIXE);
+        assert!(lots[0].iter().flatten().all(geste_de), "{lots:?}");
+        assert!(!lots[1].iter().flatten().any(geste_de), "{lots:?}");
+        // Les notes de chaque liste dans l'ordre de ses lignes ; une ligne pas lancée garde son texte.
+        assert_eq!(
+            notes[0],
+            [format!("{geste} (noté)"), "echo commande-en-echec (noté)".to_string()]
+        );
+        assert_eq!(notes[3][1], "echo jamais");
+        assert_eq!(
+            notes[5],
+            [
+                format!("{geste} (noté)"),
+                format!("{rate} (noté)"),
+                "echo jamais".to_string()
+            ]
+        );
+    }
+
+    /// Une correction du bilan qui mêle le retrait d'un service (geste) et une commande n'est plus réécrite en
+    /// commandes systemctl pour bash : son geste part seul vers l'assistant, puis sa commande ; ses notes reviennent
+    /// dans l'ordre de ses lignes. Un geste en échec : la commande ne part pas, la correction n'est pas faite.
+    #[cfg(not(windows))]
+    #[test]
+    fn correction_du_bilan_melee_par_l_assistant() {
+        let geste = gestes_unix::designee(gestes_unix::ActionUnite::DesactiverSansArreter, "anydesk.service")
+            .unwrap()
+            .ligne();
+        let rm = "rm -f /home/alice/.config/autostart/anydesk.desktop".to_string();
+        let mut lots: Vec<Vec<Vec<String>>> = Vec::new();
+        let (faits, notes) = melees_par(&[vec![geste.clone(), rm.clone()]], |lot| {
+            lots.push(lot.to_vec());
+            (lot.iter().map(|c| vec![true; c.len()]).collect(), lot.to_vec())
+        });
+        assert_eq!(faits, [true]);
+        assert_eq!(lots, [vec![vec![geste.clone()]], vec![vec![rm.clone()]]]);
+        assert_eq!(notes, [vec![geste.clone(), rm.clone()]]);
+        let mut lots = 0;
+        let (faits, _) = melees_par(&[vec![geste, rm]], |lot| {
+            lots += 1;
+            (lot.iter().map(|c| vec![false; c.len()]).collect(), lot.to_vec())
+        });
+        assert_eq!((faits, lots), (vec![false], 1));
+    }
+
+    /// Une réponse de trop de l'assistant : rien n'est compté comme fait, et chaque ligne est notée « pas vérifié »
+    /// (des gestes ont pu être faits), jamais notée comme un échec sûr.
+    #[cfg(unix)]
+    #[test]
+    fn reponse_de_trop_pas_verifiee() {
+        use crate::protection::blocage::ordres::Resultat;
+        let c = vec!["vanguard:geste programme freshclam".to_string()];
+        let (faites, notes) = lire_reponse(&c, 1, &[Resultat::ok(), Resultat::ok()]);
+        assert_eq!(faites, [false]);
+        assert!(
+            notes[0].ends_with("(pas vérifié)") || notes[0].ends_with("(not verified)"),
+            "{notes:?}"
+        );
+        let (faites, notes) = lire_reponse(&c, 1, &[Resultat::ok()]);
+        assert_eq!((faites, notes), (vec![true], c.clone()));
+        let (faites, notes) = lire_reponse(&c, 1, &[]);
+        assert_eq!((faites, notes), (vec![false], c));
     }
 
     /// Les gestes d'un programme d'un côté, ses commandes de l'autre, chacun dans son ordre : jamais une liste mêlée,

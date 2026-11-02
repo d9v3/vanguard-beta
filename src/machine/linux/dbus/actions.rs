@@ -244,6 +244,13 @@ impl Bus {
         fins: &mut Vec<FinDeJob>,
     ) -> Result<(Message, Vec<Valeur>), Echec> {
         let &(service, chemin, interface, methode, signature) = action(liste, interface, methode)?;
+        // L'unité visée par un job (StartUnit, StopUnit… : son premier argument) : seules les fins de jobs sur elle
+        // sont gardées en attendant la réponse. Le gestionnaire émet celles de tout le système ; un système chargé
+        // pousserait sinon la nôtre hors de la liste bornée, puis 90 s d'attente et un faux « pas vérifié ».
+        let unite = systemd
+            .and_then(|_| arguments.first())
+            .and_then(Valeur::texte)
+            .map(String::from);
         let mut appel = Message::appel(service, chemin, interface, methode, signature, arguments);
         self.serie = self.serie.wrapping_add(1).max(1);
         appel.serie = self.serie;
@@ -253,7 +260,9 @@ impl Bus {
         loop {
             let r = self.recevoir_avec_signaux(echeance, appel.serie, systemd)?;
             if r.genre == SIGNAL {
-                if let Some(fin) = fin_de_job(&r) {
+                if let Some(fin) = fin_de_job(&r)
+                    && unite.as_deref().is_none_or(|u| unite_de_la_fin(&r) == Some(u))
+                {
                     garder_fin(fins, fin);
                 }
                 continue;
@@ -331,7 +340,8 @@ impl Bus {
 }
 
 /// Au plus tant de fins de job gardées en attendant une réponse : le job attendu n'est pas encore connu (sa fin peut
-/// arriver avant la réponse de StartUnit), mais le gestionnaire émet aussi celles des autres jobs du système.
+/// arriver avant la réponse de StartUnit). Seules celles de la même unité le sont (`agir_dans`) ; la borne ne sert
+/// plus qu'à ne jamais grandir sans limite (une unité qu'un autre programme relance sans cesse).
 pub(super) const FINS_MAX: usize = 64;
 
 /// Garde `fin`, en oubliant la plus ancienne au-delà de FINS_MAX. Perdre la nôtre ne la fait jamais passer pour
@@ -341,6 +351,14 @@ fn garder_fin(fins: &mut Vec<FinDeJob>, fin: FinDeJob) {
         fins.remove(0);
     }
     fins.push(fin);
+}
+
+/// L'unité d'un signal JobRemoved (u id, o job, s unité, s résultat) déjà décodé.
+fn unite_de_la_fin(m: &Message) -> Option<&str> {
+    let [_, _, unite, _] = m.corps.as_slice() else {
+        return None;
+    };
+    unite.texte()
 }
 
 /// Le (job, résultat) d'un signal JobRemoved (u id, o job, s unité, s résultat) déjà décodé.
@@ -733,6 +751,11 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn signal_fin(job: &str, resultat: &str, expediteur: &str) -> Vec<u8> {
+        signal_fin_de(job, "vanguard-x.service", resultat, expediteur)
+    }
+
+    /// Comme `signal_fin`, pour la fin d'un job sur `unite`.
+    pub(crate) fn signal_fin_de(job: &str, unite: &str, resultat: &str, expediteur: &str) -> Vec<u8> {
         Message {
             genre: SIGNAL,
             serie: 77,
@@ -744,7 +767,7 @@ pub(crate) mod tests {
             corps: vec![
                 Valeur::U32(7),
                 Valeur::texte_de(job),
-                Valeur::texte_de("vanguard-x.service"),
+                Valeur::texte_de(unite),
                 Valeur::texte_de(resultat),
             ],
             ..Message::default()
@@ -798,6 +821,53 @@ pub(crate) mod tests {
         assert_eq!(r.unwrap(), "failed");
         assert!(fins.is_empty(), "{} fins étrangères gardées", fins.len());
         fil.join().unwrap();
+    }
+
+    /// En attendant la réponse d'un job, seules les fins de son unité sont gardées (la nôtre peut la devancer) : des
+    /// centaines de fins d'autres unités ne la poussent jamais hors de la liste.
+    #[test]
+    fn fins_d_autres_unites_jamais_gardees() {
+        let (mut bus, fil) = faux_bus(|s, appels| {
+            let a = lire(s);
+            appels.push(a.membre.clone().unwrap());
+            s.write_all(&signal_fin_de(
+                "/org/freedesktop/systemd1/job/9",
+                "vanguard-x.service",
+                "done",
+                ":1.2",
+            ))
+            .unwrap();
+            for n in 0..300 {
+                s.write_all(&signal_fin_de(
+                    &format!("/org/freedesktop/systemd1/job/{}", n + 100),
+                    &format!("autre-{n}.service"),
+                    "done",
+                    ":1.2",
+                ))
+                .unwrap();
+            }
+            s.write_all(&retour(
+                &a,
+                "o",
+                vec![Valeur::texte_de("/org/freedesktop/systemd1/job/9")],
+                ":1.2",
+            ))
+            .unwrap();
+        });
+        let mut fins = Vec::new();
+        bus.agir(
+            GESTIONNAIRE,
+            "StartUnit",
+            vec![Valeur::texte_de("vanguard-x.service"), Valeur::texte_de("replace")],
+            Some(":1.2"),
+            &mut fins,
+        )
+        .unwrap();
+        assert_eq!(
+            fins,
+            [("/org/freedesktop/systemd1/job/9".to_string(), "done".to_string())]
+        );
+        assert_eq!(fil.join().unwrap(), ["StartUnit"]);
     }
 
     /// En attendant une réponse, les fins reçues sont gardées (la nôtre peut la devancer), mais au plus FINS_MAX : les
