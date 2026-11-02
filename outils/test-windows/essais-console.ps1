@@ -268,7 +268,8 @@ if ($Etape -eq 'pilote') {
         $defile = $ecran.Texte.Contains((Texte 'defile' $Langue))
         $case = if ($ecran.Rangees -gt 0) { $r[3] / $ecran.Rangees } else { 0 }
         if ($n -lt 1) { Noter 'BUG' $essaiH "$quoi : pas de ligne de saisie « › » à l'écran" }
-        elseif ($ecran.Colonnes -notin 78, 79) { Noter 'BUG' $essaiH "$quoi : $($ecran.Colonnes) colonnes visibles, 78 attendues (79 permises)" }
+        # 120 colonnes : menu de 78 + aperçu à droite (selection.rs, COLONNES_AVEC_APERCU) ; 78 si l'écran est trop étroit pour l'aperçu.
+        elseif ($ecran.Colonnes -notin 78, 79, 120, 121) { Noter 'BUG' $essaiH "$quoi : $($ecran.Colonnes) colonnes visibles, 120 attendues avec l'aperçu ou 78 sans (une de plus permise)" }
         elseif ($defile) {
             if ($r[3] -ge $z[3] - 2 * $case) { Noter 'OK' $essaiH "$quoi : menu plus haut que l'écran, fenêtre à la hauteur de l'écran ($($r[3]) px sur $($z[3]))" }
             else { Noter 'BUG' $essaiH "$quoi : le menu défile alors que la fenêtre ($($r[3]) px) pourrait grandir jusqu'à $($z[3]) px" }
@@ -430,7 +431,8 @@ if ($Etape -eq 'pilote') {
         $retour = Ecran 'après ←'
         if (-not $retour) { Hors-Atteinte @('C7', 'C8') $script:illisible; return }
         $m = Ligne-Marquee $retour
-        if ($m -and $m.Contains((Texte 'ordinateur' $Langue)) -and -not $retour.Texte.Contains((Texte 'defender' $Langue)) -and -not $retour.Texte.Contains((Texte 'perimes' $Langue))) {
+        # L'aperçu de droite montre le contenu de « Cet ordinateur » : on cherche donc un autre groupe du menu principal.
+        if ($m -and $m.Contains((Texte 'ordinateur' $Langue)) -and $retour.Texte.Contains((Texte 'autreGroupe' $Langue))) {
             Noter 'OK' 'C7' "← : menu principal revenu, « ► » sur « $(Texte 'ordinateur' $Langue) »"
             Juger-Fenetre 'C7' 'C7' $retour 'menu principal après ←'
         } else { Noter 'BUG' 'C7' "← : menu principal pas revenu (écran $script:n)" }
