@@ -135,8 +135,28 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                     | gestes::Acte::ServiceGuillemets(_)
                     | gestes::Acte::DefenderExclusionRetirer(..)
             );
+            // La persistance (lot 3.5) : un nom de valeur ou un chemin tient dans une ligne du tube ; un consumer ou un
+            // service, dans la borne des actes nommés.
+            let long = matches!(
+                a,
+                gestes::Acte::RunRetirer(_)
+                    | gestes::Acte::RunRemettre(_)
+                    | gestes::Acte::TacheDesactiver(_)
+                    | gestes::Acte::TacheReactiver(_)
+                    | gestes::Acte::DemarrageQuarantaine(_)
+                    | gestes::Acte::DemarrageRemettre(_)
+            );
+            let nomme = nomme
+                || matches!(
+                    a,
+                    gestes::Acte::WmiAbonnementRetirer(_)
+                        | gestes::Acte::WmiAbonnementRemettre(_)
+                        | gestes::Acte::ServiceRetirer(_)
+                );
             let borne = if matches!(a, gestes::Acte::HostsEcrire(_)) {
                 gestes::HOSTS_LIGNE_MAX
+            } else if long {
+                gestes::LIGNE_MAX
             } else if nomme {
                 gestes::ACTE_NOM_MAX
             } else {
@@ -281,6 +301,53 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                         gestes::ligne_partage_retirer_acces(n, p.sid.texte()).as_deref(),
                         Some(l.as_str())
                     );
+                }
+                // Une valeur de démarrage de la machine : sans NUL, bornée, reconstruite par le constructeur du bilan ;
+                // le retrait n'affaiblit pas, la remise si, aucune n'est une protection que « Défaire » tairait.
+                gestes::Acte::RunRetirer(ref v) | gestes::Acte::RunRemettre(ref v) => {
+                    let u = v.nom.unites();
+                    assert!(u.len() <= gestes::RUN_MACHINE_NOM_MAX && !u.contains(&0));
+                    assert!(!a.durcit() && a.affaiblit() == matches!(a, gestes::Acte::RunRemettre(_)));
+                    assert_eq!(gestes::NomRun::nouveau(u).as_ref(), Some(&v.nom));
+                    if matches!(a, gestes::Acte::RunRetirer(_)) {
+                        let cle = format!(r"HKLM:\{}", v.cle.chemin());
+                        assert_eq!(
+                            gestes::ligne_run_retirer_machine(&cle, u).as_deref(),
+                            Some(l.as_str())
+                        );
+                    }
+                }
+                // Une tâche hors de \Microsoft, chaque composant sûr ; reconstruite à l'identique.
+                gestes::Acte::TacheDesactiver(ref t) | gestes::Acte::TacheReactiver(ref t) => {
+                    let c = t.texte();
+                    let bas = c.to_lowercase();
+                    assert!(c.starts_with('\\') && !c.contains("\\\\") && !c.contains(['/', ':', '\0']));
+                    assert!(bas != r"\microsoft" && !bas.starts_with(r"\microsoft\"));
+                    assert!(c.split('\\').skip(1).all(|x| x != ".." && x != "." && !x.is_empty()));
+                    assert!(c.encode_utf16().count() <= gestes::TACHE_CHEMIN_MAX);
+                    assert_eq!(gestes::CheminTache::nouveau(c).as_ref(), Some(t));
+                }
+                // Un chemin « X:\… » local : jamais \\?\, \\.\, un partage, un flux « : » ni « .. ».
+                gestes::Acte::DemarrageQuarantaine(ref f) | gestes::Acte::DemarrageRemettre(ref f) => {
+                    let c = f.texte();
+                    let o = c.as_bytes();
+                    assert!(o.len() > 3 && o[0].is_ascii_alphabetic() && o[1] == b':' && o[2] == b'\\');
+                    assert!(!c[2..].contains([':', '/', '\0']) && !c.contains("\\\\"));
+                    assert!(c[3..].split('\\').all(|x| x != ".." && x != "." && !x.is_empty()));
+                    assert!(c.encode_utf16().count() <= gestes::CHEMIN_MAX);
+                    assert_eq!(gestes::CheminFichier::nouveau(c).as_ref(), Some(f));
+                }
+                gestes::Acte::WmiAbonnementRetirer(ref w) | gestes::Acte::WmiAbonnementRemettre(ref w) => {
+                    let n = w.nom.texte();
+                    assert!(!n.is_empty() && n.encode_utf16().count() <= gestes::CONSUMER_NOM_MAX);
+                    assert!(!n.chars().any(char::is_control) && !a.durcit());
+                }
+                // Un service : irréversible, donc une protection ; jamais de « \ » ni de « / ».
+                gestes::Acte::ServiceRetirer(ref n) => {
+                    let t = n.texte();
+                    assert!(!t.is_empty() && t.encode_utf16().count() <= gestes::SERVICE_NOM_MAX);
+                    assert!(!t.contains(['\\', '/']) && !t.chars().any(char::is_control) && t.trim() == t);
+                    assert!(a.durcit() && !a.affaiblit());
                 }
                 _ => {}
             }

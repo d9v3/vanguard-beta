@@ -668,6 +668,29 @@ pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
         Acte::PartageRetirerAcces(a) => return super::partages_ecriture::retirer_acces(a),
         _ => {}
     }
+    // La persistance et la prise en main à distance (lot 3.5) : la grammaire est là, le geste vient avec sa passe.
+    // Jamais un succès simulé : refusé, rien n'est changé.
+    if matches!(
+        acte,
+        Acte::RunRetirer(_)
+            | Acte::RunRemettre(_)
+            | Acte::TacheDesactiver(_)
+            | Acte::TacheReactiver(_)
+            | Acte::DemarrageQuarantaine(_)
+            | Acte::DemarrageRemettre(_)
+            | Acte::WmiAbonnementRetirer(_)
+            | Acte::WmiAbonnementRemettre(_)
+            | Acte::ServiceRetirer(_)
+    ) {
+        return Resultat::echec(
+            None,
+            tr!(
+                "pas encore fait par Vanguard (lot 3.5, passe suivante) : rien n'est changé",
+                "not done by Vanguard yet (batch 3.5, next pass): nothing is changed"
+            )
+            .to_string(),
+        );
+    }
     // Les actes du registre relisent la clé, la rejugent par la fonction du bilan et notent la valeur d'avant.
     match acte {
         Acte::IfeoDebugger(v, n) => return super::portes::retirer_debogueur(*v, n),
@@ -699,7 +722,16 @@ pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
         | Acte::DnsServeurs(_)
         | Acte::CompteDesactiver(_)
         | Acte::CertificatRetirer(..)
-        | Acte::PartageRetirerAcces(_) => Err(Echec::refuse(
+        | Acte::PartageRetirerAcces(_)
+        | Acte::RunRetirer(_)
+        | Acte::RunRemettre(_)
+        | Acte::TacheDesactiver(_)
+        | Acte::TacheReactiver(_)
+        | Acte::DemarrageQuarantaine(_)
+        | Acte::DemarrageRemettre(_)
+        | Acte::WmiAbonnementRetirer(_)
+        | Acte::WmiAbonnementRemettre(_)
+        | Acte::ServiceRetirer(_) => Err(Echec::refuse(
             CONTEXTE,
             tr!(
                 "acte déjà rendu plus haut, non reconnu ici",

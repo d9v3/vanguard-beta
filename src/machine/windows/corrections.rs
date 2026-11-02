@@ -493,7 +493,16 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
                     | Acte::DefenderMenacesRetirer
                     | Acte::CompteDesactiver(_)
                     | Acte::CertificatRetirer(..)
-                    | Acte::PartageRetirerAcces(_)),
+                    | Acte::PartageRetirerAcces(_)
+                    | Acte::RunRetirer(_)
+                    | Acte::RunRemettre(_)
+                    | Acte::TacheDesactiver(_)
+                    | Acte::TacheReactiver(_)
+                    | Acte::DemarrageQuarantaine(_)
+                    | Acte::DemarrageRemettre(_)
+                    | Acte::WmiAbonnementRetirer(_)
+                    | Acte::WmiAbonnementRemettre(_)
+                    | Acte::ServiceRetirer(_)),
                 ),
             ) => Some(a.durcit()),
             _ => None,
@@ -569,8 +578,8 @@ fn reseau_nomme(r: &crate::machine::gestes::ReseauCategorie) -> String {
 
 fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
     use crate::machine::gestes::{
-        ACoter, Acte, Action, Categorie, GenreExclusion, MagasinRacine, ModeAsr, ReglageDefender, ValeurDefender,
-        Vidable, Vue,
+        ACoter, Acte, Action, Categorie, CleRun, GenreExclusion, MagasinRacine, ModeAsr, ReglageDefender,
+        ValeurDefender, Vidable, Vue,
     };
     use crate::ui::{tr, trf};
     match acte {
@@ -767,6 +776,74 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
             trf!(
                 "Retirer l'accès de {c} au partage « {n} » (relu et rejugé ici) : les appareils qui s'y connectaient sans mot de passe le perdent ; s'il ne reste personne, plus personne n'y entre avant qu'un accès soit redonné dans Windows. Non annulable par Vanguard (protection) ; droits d'avant notés",
                 "Remove the access of {c} to share “{n}” (read and judged again here): devices that connected without a password lose it; if nobody is left, nobody gets in until access is given back in Windows. Not undoable by Vanguard (protection); previous permissions noted"
+            )
+        }
+        Acte::RunRetirer(v) | Acte::RunRemettre(v) => {
+            let n = v.nom.montre().map_or_else(
+                || tr!("(par défaut)", "(default)").to_string(),
+                |n| crate::ui::affichable(&n),
+            );
+            let cle = match v.cle {
+                CleRun::Run => r"HKLM\…\CurrentVersion\Run",
+                CleRun::RunOnce => r"HKLM\…\CurrentVersion\RunOnce",
+                CleRun::Run32 => r"HKLM\…\WOW6432Node\…\CurrentVersion\Run",
+            };
+            if matches!(acte, Acte::RunRetirer(_)) {
+                trf!(
+                    "Retirer le lancement au démarrage « {n} » de la machine ({cle} ; relu et rejugé ici, jamais une entrée de Windows ou de Defender). Le programme lui-même reste ; sa donnée d'avant est notée",
+                    "Remove the machine startup entry “{n}” ({cle}; read and judged again here, never a Windows or Defender entry). The program itself stays; its previous data is noted"
+                )
+            } else {
+                trf!(
+                    "Remettre le lancement au démarrage « {n} » de la machine ({cle}), exactement tel que Vanguard l'avait noté : rend le PC moins protégé, ce lancement avait été jugé suspect",
+                    "Put back the machine startup entry “{n}” ({cle}), exactly as Vanguard noted it: makes the PC less protected, this entry had been judged suspicious"
+                )
+            }
+        }
+        Acte::TacheDesactiver(t) => {
+            let t = crate::ui::affichable(t.texte());
+            trf!("Désactiver la tâche planifiée « {t} »", "Disable the scheduled task “{t}”")
+        }
+        Acte::TacheReactiver(t) => {
+            let t = crate::ui::affichable(t.texte());
+            trf!(
+                "Réactiver la tâche planifiée « {t} » : rend le PC moins protégé",
+                "Re-enable the scheduled task “{t}”: makes the PC less protected"
+            )
+        }
+        Acte::DemarrageQuarantaine(f) => {
+            let f = crate::ui::affichable(f.texte());
+            trf!(
+                "Mettre de côté le fichier de démarrage « {f} »",
+                "Set aside the startup file “{f}”"
+            )
+        }
+        Acte::DemarrageRemettre(f) => {
+            let f = crate::ui::affichable(f.texte());
+            trf!(
+                "Remettre le fichier de démarrage « {f} » : rend le PC moins protégé",
+                "Put back the startup file “{f}”: makes the PC less protected"
+            )
+        }
+        Acte::WmiAbonnementRetirer(w) => {
+            let (n, c) = (crate::ui::affichable(w.nom.texte()), w.classe.classe());
+            trf!(
+                "Retirer l'abonnement WMI « {n} » ({c})",
+                "Remove the WMI subscription “{n}” ({c})"
+            )
+        }
+        Acte::WmiAbonnementRemettre(w) => {
+            let (n, c) = (crate::ui::affichable(w.nom.texte()), w.classe.classe());
+            trf!(
+                "Recréer l'abonnement WMI « {n} » ({c}) : rend le PC moins protégé",
+                "Recreate the WMI subscription “{n}” ({c}): makes the PC less protected"
+            )
+        }
+        Acte::ServiceRetirer(n) => {
+            let n = crate::ui::affichable(n.texte());
+            trf!(
+                "Supprimer le service « {n} ». Non annulable",
+                "Delete the “{n}” service. Not undoable"
             )
         }
         Acte::HostsEcrire(_) => tr!(

@@ -297,7 +297,16 @@ pub(crate) fn faire_acte(acte: &Acte) -> Option<Resultat> {
         | Acte::DnsServeurs(_)
         | Acte::CompteDesactiver(_)
         | Acte::CertificatRetirer(..)
-        | Acte::PartageRetirerAcces(_) => None,
+        | Acte::PartageRetirerAcces(_)
+        | Acte::RunRetirer(_)
+        | Acte::RunRemettre(_)
+        | Acte::TacheDesactiver(_)
+        | Acte::TacheReactiver(_)
+        | Acte::DemarrageQuarantaine(_)
+        | Acte::DemarrageRemettre(_)
+        | Acte::WmiAbonnementRetirer(_)
+        | Acte::WmiAbonnementRemettre(_)
+        | Acte::ServiceRetirer(_) => None,
     }
 }
 

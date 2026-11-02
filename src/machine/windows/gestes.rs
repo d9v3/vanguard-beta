@@ -2415,6 +2415,437 @@ pub(crate) fn refus_desactivation(e: &EtatCompte) -> Option<RefusCompte> {
     }
 }
 
+// ------------------------------------------------- persistance et prise en main à distance (lot 3.5)
+
+/// Retirer une valeur de démarrage de la machine (HKLM Run, RunOnce, ou Run des programmes 32 bits) :
+/// `vanguard:run-retirer <run|runonce|run32> <nom en hex|defaut>`. Le processus élevé relit la valeur, refait le
+/// bilan sur elle (persistance suspecte, ou outil de prise en main à distance), refuse une entrée de Windows ou de
+/// Defender (`run_protege`), note la donnée d'avant dans `RUN_AVANT_CLE`, retire, puis relit.
+pub(crate) const RUN_RETIRER_MACHINE: &str = "vanguard:run-retirer ";
+/// Remettre exactement la donnée qu'un `run-retirer` a notée : `vanguard:run-remettre <clé> <nom en hex|defaut>`.
+/// La ligne ne porte aucune donnée : seule celle que le processus élevé a notée lui-même revient, jamais par-dessus
+/// une valeur présente. Elle rend le PC moins protégé (un lancement jugé suspect revient) : dit avant l'accord.
+pub(crate) const RUN_REMETTRE: &str = "vanguard:run-remettre ";
+/// Désactiver une tâche planifiée signalée : `vanguard:tache-desactiver <chemin en hex>` (passe b).
+pub(crate) const TACHE_DESACTIVER: &str = "vanguard:tache-desactiver ";
+/// Réactiver une tâche que Vanguard a désactivée : `vanguard:tache-reactiver <chemin en hex>` (passe b).
+pub(crate) const TACHE_REACTIVER: &str = "vanguard:tache-reactiver ";
+/// Mettre en quarantaine un fichier du dossier Démarrage commun : `vanguard:demarrage-quarantaine <chemin en hex>`
+/// (passe b). Le dossier Démarrage de la personne reste à vider soi-même.
+pub(crate) const DEMARRAGE_QUARANTAINE: &str = "vanguard:demarrage-quarantaine ";
+/// Ressortir de la quarantaine un fichier que Vanguard y a mis : `vanguard:demarrage-remettre <chemin en hex>`.
+pub(crate) const DEMARRAGE_REMETTRE: &str = "vanguard:demarrage-remettre ";
+/// Retirer un abonnement WMI (consumer, binding, filtre non partagé) : `vanguard:wmi-abonnement-retirer
+/// <commande|script> <nom du consumer en hex>` (passe c).
+pub(crate) const WMI_ABONNEMENT_RETIRER: &str = "vanguard:wmi-abonnement-retirer ";
+/// Recréer un abonnement WMI que Vanguard a retiré, d'après ses propriétés notées (passe c).
+pub(crate) const WMI_ABONNEMENT_REMETTRE: &str = "vanguard:wmi-abonnement-remettre ";
+/// Supprimer le service d'un outil de prise en main à distance : `vanguard:service-retirer <nom en hex>` (passe d).
+/// Irréversible : jamais de remise, une deuxième confirmation.
+pub(crate) const SERVICE_RETIRER: &str = "vanguard:service-retirer ";
+
+/// La clé (sous HKLM, vue 64 bits) où le processus élevé note la donnée d'une valeur de démarrage qu'il retire : seul
+/// un administrateur y écrit, la remise ne lit qu'elle.
+#[cfg_attr(
+    windows,
+    expect(dead_code, reason = "lu par le geste natif du retrait Run, au commit suivant")
+)]
+pub(crate) const RUN_AVANT_CLE: &str = r"SOFTWARE\Vanguard\RunAvant";
+/// Le plus long nom de valeur de démarrage de la machine, en unités UTF-16 : ce que tient une ligne du tube
+/// (`LIGNE_MAX`). Au-delà, la valeur est signalée et se retire à la main.
+pub(crate) const RUN_MACHINE_NOM_MAX: usize = 2048;
+/// Le plus long chemin de tâche planifiée, en unités UTF-16.
+pub(crate) const TACHE_CHEMIN_MAX: usize = 512;
+/// Le plus long chemin de fichier, en unités UTF-16 : celui de Windows (32 767).
+pub(crate) const CHEMIN_MAX: usize = 32_767;
+/// Le plus long nom de consumer WMI, en unités UTF-16.
+pub(crate) const CONSUMER_NOM_MAX: usize = 256;
+/// Le plus long nom de service, en unités UTF-16 (celui du gestionnaire de services).
+pub(crate) const SERVICE_NOM_MAX: usize = 256;
+
+/// Le mot d'une ligne de démarrage pour la valeur par défaut (sans nom).
+const RUN_DEFAUT_MACHINE: &str = "defaut";
+
+/// Un texte en hexadécimal UTF-16 (la convention de `hex_utf16`).
+fn hex_texte(t: &str) -> String {
+    hex_utf16(&t.encode_utf16().collect::<Vec<_>>())
+}
+
+/// Le texte d'un hexadécimal UTF-16 de 1 à `max` unités, s'il est de l'UTF-16 valide sans NUL.
+fn lire_texte_hex(hex: &str, max: usize) -> Option<String> {
+    String::from_utf16(&lire_hex_utf16(hex, max)?).ok()
+}
+
+/// Un nom montré à la personne : sans caractère de contrôle, coupé à `NOM_MONTRE_MAX` caractères (jamais dans le
+/// geste).
+pub(crate) fn montrer_nom(lu: &str) -> String {
+    let mut affiche: String = lu
+        .chars()
+        .take(NOM_MONTRE_MAX)
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect();
+    if lu.chars().count() > NOM_MONTRE_MAX {
+        affiche.push('…');
+    }
+    affiche
+}
+
+/// La clé de démarrage de la machine d'où retirer une valeur : celles que le bilan lit sous HKLM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CleRun {
+    Run,
+    RunOnce,
+    /// La clé Run des programmes 32 bits (WOW6432Node).
+    Run32,
+}
+
+impl CleRun {
+    pub(crate) const TOUTES: [CleRun; 3] = [CleRun::Run, CleRun::RunOnce, CleRun::Run32];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            CleRun::Run => "run",
+            CleRun::RunOnce => "runonce",
+            CleRun::Run32 => "run32",
+        }
+    }
+
+    #[cfg_attr(
+        all(windows, not(test)),
+        expect(dead_code, reason = "lu par le geste natif du retrait Run, au commit suivant")
+    )]
+    /// Le chemin sous HKLM, à ouvrir dans la vue 64 bits (WOW6432Node y est nommé, jamais deviné par la redirection).
+    pub(crate) fn chemin(self) -> &'static str {
+        match self {
+            CleRun::Run => r"Software\Microsoft\Windows\CurrentVersion\Run",
+            CleRun::RunOnce => r"Software\Microsoft\Windows\CurrentVersion\RunOnce",
+            CleRun::Run32 => r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+        }
+    }
+
+    #[cfg_attr(
+        all(windows, not(test)),
+        expect(dead_code, reason = "lu par le geste natif du retrait Run, au commit suivant")
+    )]
+    /// La clé d'un nom de la lecture (« HKLM:\Software\… », comme PowerShell l'écrit) ; `None` hors de ces trois.
+    pub(crate) fn depuis_ps(cle: &str) -> Option<CleRun> {
+        let chemin = cle.strip_prefix(r"HKLM:\")?;
+        CleRun::TOUTES
+            .into_iter()
+            .find(|c| c.chemin().eq_ignore_ascii_case(chemin))
+    }
+}
+
+/// Un nom de valeur de démarrage, mot par mot (un nom peut ne pas être de l'UTF-16 valide, il doit pourtant pouvoir
+/// se retirer) : jamais de NUL, `RUN_MACHINE_NOM_MAX` unités au plus ; vide, la valeur par défaut (« defaut » dans la
+/// ligne, jamais un hexadécimal vide).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NomRun(Vec<u16>);
+
+impl NomRun {
+    pub(crate) fn nouveau(unites: &[u16]) -> Option<NomRun> {
+        (unites.len() <= RUN_MACHINE_NOM_MAX && !unites.contains(&0)).then(|| NomRun(unites.to_vec()))
+    }
+
+    #[cfg_attr(
+        all(windows, not(test)),
+        expect(dead_code, reason = "lu par le geste natif du retrait Run, au commit suivant")
+    )]
+    pub(crate) fn unites(&self) -> &[u16] {
+        &self.0
+    }
+
+    /// Le nom montré (sans caractère de contrôle, coupé) ; `None` pour la valeur par défaut.
+    pub(crate) fn montre(&self) -> Option<String> {
+        (!self.0.is_empty()).then(|| montrer_nom(&String::from_utf16_lossy(&self.0)))
+    }
+
+    fn mot(&self) -> String {
+        if self.0.is_empty() {
+            RUN_DEFAUT_MACHINE.to_string()
+        } else {
+            hex_utf16(&self.0)
+        }
+    }
+
+    fn lire(mot: &str) -> Option<NomRun> {
+        if mot == RUN_DEFAUT_MACHINE {
+            return Some(NomRun(Vec::new()));
+        }
+        lire_hex_utf16(mot, RUN_MACHINE_NOM_MAX).and_then(|u| NomRun::nouveau(&u))
+    }
+}
+
+/// Une valeur de démarrage de la machine : sa clé et son nom.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ValeurRunMachine {
+    pub cle: CleRun,
+    pub nom: NomRun,
+}
+
+/// La ligne qui retire une valeur de démarrage de la machine, d'après la clé de la lecture (« HKLM:\… ») ; `None`
+/// pour une autre clé ou un nom hors de sa forme (la valeur reste signalée, à retirer à la main).
+#[cfg_attr(
+    all(windows, not(test)),
+    expect(dead_code, reason = "lu par le geste natif du retrait Run, au commit suivant")
+)]
+pub(crate) fn ligne_run_retirer_machine(cle: &str, nom: &[u16]) -> Option<String> {
+    Some(
+        Acte::RunRetirer(ValeurRunMachine {
+            cle: CleRun::depuis_ps(cle)?,
+            nom: NomRun::nouveau(nom)?,
+        })
+        .ligne(),
+    )
+}
+
+/// Une valeur de démarrage que Vanguard ne retire jamais : celles de Sécurité Windows et de Defender, par leur nom ou
+/// par leur programme. Un programme malveillant qui en prend le nom reste signalé, à retirer à la main : un refus de
+/// trop ne casse rien, un retrait de trop couperait l'icône de la protection.
+#[cfg_attr(
+    all(windows, not(test)),
+    expect(dead_code, reason = "lu par le geste natif du retrait Run, au commit suivant")
+)]
+pub(crate) fn run_protege(nom: &str, programme: &str) -> bool {
+    const NOMS: [&str; 4] = [
+        "securityhealth",
+        "windowsdefender",
+        "windows defender",
+        "windows security",
+    ];
+    const PROGRAMMES: [&str; 5] = [
+        "securityhealthsystray.exe",
+        "msascuil.exe",
+        "msascui.exe",
+        "msmpeng.exe",
+        "mpcmdrun.exe",
+    ];
+    let nom = nom.trim().to_lowercase();
+    let exe = programme.trim().trim_matches('"').to_lowercase().replace('/', "\\");
+    let fichier = exe.rsplit('\\').next().unwrap_or(&exe);
+    NOMS.contains(&nom.as_str())
+        || PROGRAMMES.contains(&fichier)
+        || exe.contains(r"\windows defender\")
+        || exe.contains(r"\microsoft\windows defender\")
+}
+
+/// Un composant de chemin admis : non vide, ni « . » ni « .. », sans caractère de contrôle ni `/ : * ? " < > |`, et
+/// sans espace ni point final (Windows les ôte : « x.lnk. » désignerait « x.lnk »).
+fn composant_sur(c: &str) -> bool {
+    let interdit = |x: char| x.is_control() || matches!(x, '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\\');
+    !c.is_empty() && c != "." && c != ".." && !c.chars().any(interdit) && !c.ends_with([' ', '.'])
+}
+
+/// Un chemin de tâche planifiée : « \dossier\tâche », chaque composant sûr (`composant_sur`), `TACHE_CHEMIN_MAX`
+/// unités au plus, et jamais sous \Microsoft\ (les tâches de Windows, que le bilan ne lit pas : une ligne qui en
+/// désigne une est forgée).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CheminTache(String);
+
+impl CheminTache {
+    pub(crate) fn nouveau(chemin: &str) -> Option<CheminTache> {
+        let reste = chemin.strip_prefix('\\')?;
+        let bas = chemin.to_lowercase();
+        let microsoft = bas == r"\microsoft" || bas.starts_with(r"\microsoft\");
+        let bon =
+            chemin.encode_utf16().count() <= TACHE_CHEMIN_MAX && !microsoft && reste.split('\\').all(composant_sur);
+        bon.then(|| CheminTache(chemin.to_string()))
+    }
+
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+
+    fn hex(&self) -> String {
+        hex_texte(&self.0)
+    }
+
+    fn lire(hex: &str) -> Option<CheminTache> {
+        CheminTache::nouveau(&lire_texte_hex(hex, TACHE_CHEMIN_MAX)?).filter(|c| c.hex() == hex)
+    }
+}
+
+/// Un chemin de fichier local complet : « X:\… », chaque composant sûr (`composant_sur` : ni « .. », ni flux
+/// alternatif « : »), `CHEMIN_MAX` unités au plus. Jamais « \\?\ », « \\.\ » ni un partage (« \\serveur\… ») : ils
+/// commencent par « \ ». Le processus élevé le résout encore et le compare au dossier qu'il lit lui-même.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CheminFichier(String);
+
+impl CheminFichier {
+    pub(crate) fn nouveau(chemin: &str) -> Option<CheminFichier> {
+        let o = chemin.as_bytes();
+        let lecteur = matches!(o, [l, b':', b'\\', _, ..] if l.is_ascii_alphabetic());
+        let bon = lecteur
+            && chemin.encode_utf16().count() <= CHEMIN_MAX
+            && chemin.get(3..).is_some_and(|r| r.split('\\').all(composant_sur));
+        bon.then(|| CheminFichier(chemin.to_string()))
+    }
+
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+
+    fn hex(&self) -> String {
+        hex_texte(&self.0)
+    }
+
+    fn lire(hex: &str) -> Option<CheminFichier> {
+        CheminFichier::nouveau(&lire_texte_hex(hex, CHEMIN_MAX)?).filter(|c| c.hex() == hex)
+    }
+}
+
+/// La classe d'un consumer WMI qui lance quelque chose : une commande ou un script.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClasseConsumer {
+    Commande,
+    Script,
+}
+
+impl ClasseConsumer {
+    pub(crate) const TOUTES: [ClasseConsumer; 2] = [ClasseConsumer::Commande, ClasseConsumer::Script];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ClasseConsumer::Commande => "commande",
+            ClasseConsumer::Script => "script",
+        }
+    }
+
+    /// La classe de root\subscription.
+    pub(crate) fn classe(self) -> &'static str {
+        match self {
+            ClasseConsumer::Commande => "CommandLineEventConsumer",
+            ClasseConsumer::Script => "ActiveScriptEventConsumer",
+        }
+    }
+}
+
+/// Un nom de consumer WMI : 1 à `CONSUMER_NOM_MAX` unités UTF-16, sans caractère de contrôle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NomConsumer(String);
+
+impl NomConsumer {
+    pub(crate) fn nouveau(nom: &str) -> Option<NomConsumer> {
+        let n = nom.encode_utf16().count();
+        (n > 0 && n <= CONSUMER_NOM_MAX && !nom.chars().any(char::is_control)).then(|| NomConsumer(nom.to_string()))
+    }
+
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+
+    fn hex(&self) -> String {
+        hex_texte(&self.0)
+    }
+
+    fn lire(hex: &str) -> Option<NomConsumer> {
+        NomConsumer::nouveau(&lire_texte_hex(hex, CONSUMER_NOM_MAX)?).filter(|n| n.hex() == hex)
+    }
+}
+
+/// Un abonnement WMI désigné par son consumer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AbonnementWmi {
+    pub classe: ClasseConsumer,
+    pub nom: NomConsumer,
+}
+
+/// Un nom de service : 1 à `SERVICE_NOM_MAX` unités UTF-16, sans caractère de contrôle, sans « \ » ni « / » (que le
+/// gestionnaire de services refuse), sans espace au début ni à la fin. Espaces et parenthèses admises : les outils de
+/// prise en main s'installent sous « ScreenConnect Client (…) ».
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NomService(String);
+
+impl NomService {
+    pub(crate) fn nouveau(nom: &str) -> Option<NomService> {
+        let n = nom.encode_utf16().count();
+        let interdit = |c: char| c.is_control() || matches!(c, '\\' | '/');
+        let bon = n > 0 && n <= SERVICE_NOM_MAX && !nom.chars().any(interdit) && nom.trim() == nom;
+        bon.then(|| NomService(nom.to_string()))
+    }
+
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+
+    fn hex(&self) -> String {
+        hex_texte(&self.0)
+    }
+
+    fn lire(hex: &str) -> Option<NomService> {
+        NomService::nouveau(&lire_texte_hex(hex, SERVICE_NOM_MAX)?).filter(|n| n.hex() == hex)
+    }
+}
+
+/// Les verbes de la persistance et de la prise en main à distance (lot 3.5).
+const VERBES_PERSISTANCE: [&str; 9] = [
+    RUN_RETIRER_MACHINE,
+    RUN_REMETTRE,
+    TACHE_DESACTIVER,
+    TACHE_REACTIVER,
+    DEMARRAGE_QUARANTAINE,
+    DEMARRAGE_REMETTRE,
+    WMI_ABONNEMENT_RETIRER,
+    WMI_ABONNEMENT_REMETTRE,
+    SERVICE_RETIRER,
+];
+
+/// La ligne porte-t-elle un verbe de la persistance ? Elle n'est alors lue que par `analyser_persistance`.
+fn est_persistance(ligne: &str) -> bool {
+    VERBES_PERSISTANCE.iter().any(|v| ligne.starts_with(v))
+}
+
+/// L'acte d'une ligne de persistance (lot 3.5), si et seulement si elle est exactement de sa forme. Bornée par
+/// `LIGNE_MAX` (un nom de valeur ou un chemin), `ACTE_NOM_MAX` pour un consumer ou un service.
+fn analyser_persistance(ligne: &str) -> Option<Acte> {
+    let long = |verbe: &str| {
+        ligne
+            .strip_prefix(verbe)
+            .filter(|_| ligne.len() <= LIGNE_MAX && ligne.is_ascii())
+    };
+    let court = |verbe: &str| {
+        ligne
+            .strip_prefix(verbe)
+            .filter(|_| ligne.len() <= ACTE_NOM_MAX && ligne.is_ascii())
+    };
+    let run = |reste: &str| {
+        let (mot, nom) = reste.split_once(' ')?;
+        Some(ValeurRunMachine {
+            cle: CleRun::TOUTES.into_iter().find(|c| c.mot() == mot)?,
+            nom: NomRun::lire(nom)?,
+        })
+    };
+    let wmi = |reste: &str| {
+        let (mot, hex) = reste.split_once(' ')?;
+        Some(AbonnementWmi {
+            classe: ClasseConsumer::TOUTES.into_iter().find(|c| c.mot() == mot)?,
+            nom: NomConsumer::lire(hex)?,
+        })
+    };
+    let acte = if let Some(r) = long(RUN_RETIRER_MACHINE) {
+        run(r).map(Acte::RunRetirer)
+    } else if let Some(r) = long(RUN_REMETTRE) {
+        run(r).map(Acte::RunRemettre)
+    } else if let Some(r) = long(TACHE_DESACTIVER) {
+        CheminTache::lire(r).map(Acte::TacheDesactiver)
+    } else if let Some(r) = long(TACHE_REACTIVER) {
+        CheminTache::lire(r).map(Acte::TacheReactiver)
+    } else if let Some(r) = long(DEMARRAGE_QUARANTAINE) {
+        CheminFichier::lire(r).map(Acte::DemarrageQuarantaine)
+    } else if let Some(r) = long(DEMARRAGE_REMETTRE) {
+        CheminFichier::lire(r).map(Acte::DemarrageRemettre)
+    } else if let Some(r) = court(WMI_ABONNEMENT_RETIRER) {
+        wmi(r).map(Acte::WmiAbonnementRetirer)
+    } else if let Some(r) = court(WMI_ABONNEMENT_REMETTRE) {
+        wmi(r).map(Acte::WmiAbonnementRemettre)
+    } else if let Some(r) = court(SERVICE_RETIRER) {
+        NomService::lire(r).map(Acte::ServiceRetirer)
+    } else {
+        None
+    };
+    acte.filter(|a| a.ligne() == ligne)
+}
+
 /// Un acte du processus élevé sur Windows lui-même : un service de la table, un dossier à vider, la file
 /// d'impression, un cache à mettre de côté, le pare-feu et la catégorie d'un réseau. Le parent n'envoie que des
 /// identifiants et des valeurs de listes fermées ; les chemins sont calculés par le processus élevé, depuis le
@@ -2455,6 +2886,24 @@ pub(crate) enum Acte {
     CertificatRetirer(MagasinRacine, Empreinte),
     /// Retirer d'un partage les autorisations d'un compte, jamais en donner.
     PartageRetirerAcces(AccesPartage),
+    /// Retirer une valeur de démarrage de la machine que le bilan signale (donnée d'avant notée).
+    RunRetirer(ValeurRunMachine),
+    /// Remettre la donnée qu'un retrait de valeur de démarrage a notée, jamais une autre.
+    RunRemettre(ValeurRunMachine),
+    /// Désactiver une tâche planifiée signalée (passe b).
+    TacheDesactiver(CheminTache),
+    /// Réactiver une tâche que Vanguard a désactivée (passe b).
+    TacheReactiver(CheminTache),
+    /// Mettre en quarantaine un fichier du dossier Démarrage commun (passe b).
+    DemarrageQuarantaine(CheminFichier),
+    /// Ressortir de la quarantaine un fichier que Vanguard y a mis (passe b).
+    DemarrageRemettre(CheminFichier),
+    /// Retirer un abonnement WMI signalé (passe c).
+    WmiAbonnementRetirer(AbonnementWmi),
+    /// Recréer un abonnement WMI que Vanguard a retiré (passe c).
+    WmiAbonnementRemettre(AbonnementWmi),
+    /// Supprimer le service d'un outil de prise en main à distance (passe d), irréversible.
+    ServiceRetirer(NomService),
 }
 
 impl Acte {
@@ -2482,6 +2931,15 @@ impl Acte {
             Acte::CompteDesactiver(rid) => format!("{COMPTE_DESACTIVER}{rid}"),
             Acte::CertificatRetirer(m, e) => format!("{CERTIFICAT_RETIRER}{} {}", m.mot(), e.texte()),
             Acte::PartageRetirerAcces(a) => format!("{PARTAGE_RETIRER_ACCES}{} {}", a.nom.hex(), a.sid.texte()),
+            Acte::RunRetirer(v) => format!("{RUN_RETIRER_MACHINE}{} {}", v.cle.mot(), v.nom.mot()),
+            Acte::RunRemettre(v) => format!("{RUN_REMETTRE}{} {}", v.cle.mot(), v.nom.mot()),
+            Acte::TacheDesactiver(t) => format!("{TACHE_DESACTIVER}{}", t.hex()),
+            Acte::TacheReactiver(t) => format!("{TACHE_REACTIVER}{}", t.hex()),
+            Acte::DemarrageQuarantaine(f) => format!("{DEMARRAGE_QUARANTAINE}{}", f.hex()),
+            Acte::DemarrageRemettre(f) => format!("{DEMARRAGE_REMETTRE}{}", f.hex()),
+            Acte::WmiAbonnementRetirer(w) => format!("{WMI_ABONNEMENT_RETIRER}{} {}", w.classe.mot(), w.nom.hex()),
+            Acte::WmiAbonnementRemettre(w) => format!("{WMI_ABONNEMENT_REMETTRE}{} {}", w.classe.mot(), w.nom.hex()),
+            Acte::ServiceRetirer(n) => format!("{SERVICE_RETIRER}{}", n.hex()),
         }
     }
 
@@ -2505,7 +2963,9 @@ impl Acte {
             | Acte::DefenderExclusionRetirer(..)
             | Acte::CompteDesactiver(_)
             | Acte::CertificatRetirer(..)
-            | Acte::PartageRetirerAcces(_) => true,
+            | Acte::PartageRetirerAcces(_)
+            // Supprimer un service ne se défait pas : une protection, que « Défaire » ne propose jamais.
+            | Acte::ServiceRetirer(_) => true,
             Acte::PareFeuPublic(p) => p.durcit(),
             Acte::ReseauCategorie(r) => r.categorie == Categorie::Public,
             // Retirer des menaces nettoie : ni une protection remise, ni une remise qui affaiblit. Le hosts et le DNS
@@ -2516,7 +2976,17 @@ impl Acte {
             | Acte::DefenderMenacesRetirer
             | Acte::HostsEcrire(_)
             | Acte::DnsAuto(_)
-            | Acte::DnsServeurs(_) => false,
+            | Acte::DnsServeurs(_)
+            // Retirer un lancement suspect se défait (donnée notée) : ni une protection remise que « Défaire » tairait,
+            // ni une remise. Les remises, elles, affaiblissent.
+            | Acte::RunRetirer(_)
+            | Acte::RunRemettre(_)
+            | Acte::TacheDesactiver(_)
+            | Acte::TacheReactiver(_)
+            | Acte::DemarrageQuarantaine(_)
+            | Acte::DemarrageRemettre(_)
+            | Acte::WmiAbonnementRetirer(_)
+            | Acte::WmiAbonnementRemettre(_) => false,
         }
     }
 
@@ -2543,7 +3013,17 @@ impl Acte {
             | Acte::DnsServeurs(_)
             | Acte::CompteDesactiver(_)
             | Acte::CertificatRetirer(..)
-            | Acte::PartageRetirerAcces(_) => false,
+            | Acte::PartageRetirerAcces(_)
+            | Acte::RunRetirer(_)
+            | Acte::TacheDesactiver(_)
+            | Acte::DemarrageQuarantaine(_)
+            | Acte::WmiAbonnementRetirer(_)
+            | Acte::ServiceRetirer(_) => false,
+            // Un lancement que le bilan jugeait suspect revient : dit en toutes lettres avant l'accord.
+            Acte::RunRemettre(_)
+            | Acte::TacheReactiver(_)
+            | Acte::DemarrageRemettre(_)
+            | Acte::WmiAbonnementRemettre(_) => true,
         }
     }
 
@@ -2585,7 +3065,17 @@ impl Acte {
             | Acte::HostsEcrire(_)
             | Acte::CompteDesactiver(_)
             | Acte::CertificatRetirer(..)
-            | Acte::PartageRetirerAcces(_) => SANS_POWERSHELL.to_string(),
+            | Acte::PartageRetirerAcces(_)
+            // Ni la persistance ni la prise en main à distance (lot 3.5) : natif seulement.
+            | Acte::RunRetirer(_)
+            | Acte::RunRemettre(_)
+            | Acte::TacheDesactiver(_)
+            | Acte::TacheReactiver(_)
+            | Acte::DemarrageQuarantaine(_)
+            | Acte::DemarrageRemettre(_)
+            | Acte::WmiAbonnementRetirer(_)
+            | Acte::WmiAbonnementRemettre(_)
+            | Acte::ServiceRetirer(_) => SANS_POWERSHELL.to_string(),
             Acte::DnsAuto(g) => powershell_dns_auto(*g),
             Acte::DnsServeurs(d) => d.powershell(),
         }
@@ -2617,6 +3107,7 @@ pub(crate) fn est_un_acte(ligne: &str) -> bool {
         || ligne.starts_with(COMPTE_DESACTIVER)
         || ligne.starts_with(CERTIFICAT_RETIRER)
         || ligne.starts_with(PARTAGE_RETIRER_ACCES)
+        || est_persistance(ligne)
 }
 
 /// L'acte d'une ligne, si et seulement si elle est exactement de sa forme : ASCII, 256 octets au plus (1086 pour
@@ -2630,6 +3121,10 @@ pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
             .flatten()
             .map(Acte::HostsEcrire)
             .filter(|a| a.ligne() == ligne);
+    }
+    // La persistance (lot 3.5) porte un nom de valeur ou un chemin : ses propres bornes.
+    if est_persistance(ligne) {
+        return analyser_persistance(ligne);
     }
     if ligne.len() > ACTE_NOM_MAX || !ligne.is_ascii() {
         return None;
@@ -5661,5 +6156,266 @@ mod tests {
             e.rid = rid;
             assert_eq!(refus_desactivation(&e), Some(RefusCompte::Reserve), "{rid}");
         }
+    }
+
+    // ------------------------------------------------- persistance et prise en main à distance (lot 3.5)
+
+    /// La ligne passe-t-elle `valider`, seule (aucune ligne autre qu'un acte admise) ?
+    fn valide_seule(ligne: &str) -> bool {
+        valider(&[ligne.to_string()], |_| None::<()>).is_some()
+    }
+
+    #[test]
+    fn retrait_run_machine_aller_retour() {
+        let nom: Vec<u16> = "Mise à jour".encode_utf16().collect();
+        for (cle, mot) in [
+            (r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run", "run"),
+            (r"HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce", "runonce"),
+            (
+                r"HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+                "run32",
+            ),
+        ] {
+            let ligne = ligne_run_retirer_machine(cle, &nom).expect(cle);
+            assert_eq!(ligne, format!("{RUN_RETIRER_MACHINE}{mot} {}", hex_utf16(&nom)));
+            let a = analyser_acte(&ligne).expect(&ligne);
+            assert!(matches!(&a, Acte::RunRetirer(v) if v.nom.unites() == nom.as_slice() && v.cle.mot() == mot));
+            assert!(!a.durcit() && !a.affaiblit() && !a.touche_le_reseau());
+            assert_eq!(a.powershell(), SANS_POWERSHELL);
+            assert!(valide_seule(&ligne), "{ligne}");
+            // La remise : même forme, elle affaiblit.
+            let remise = ligne.replacen(RUN_RETIRER_MACHINE, RUN_REMETTRE, 1);
+            let r = analyser_acte(&remise).expect(&remise);
+            assert!(matches!(r, Acte::RunRemettre(_)) && r.affaiblit() && !r.durcit());
+            assert!(valide_seule(&remise));
+        }
+        // La valeur par défaut : « defaut », jamais un hexadécimal vide.
+        let defaut = ligne_run_retirer_machine(r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run", &[]).unwrap();
+        assert_eq!(defaut, format!("{RUN_RETIRER_MACHINE}run defaut"));
+        assert!(matches!(analyser_acte(&defaut), Some(Acte::RunRetirer(v)) if v.nom.unites().is_empty()));
+        // Un nom qui n'est pas de l'UTF-16 valide se retire quand même.
+        let orphelin =
+            ligne_run_retirer_machine(r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run", &[0xd800, 0x41]);
+        assert!(orphelin.as_deref().and_then(analyser_acte).is_some());
+        // Les clés de la personne et toute autre clé : pas une ligne de la machine.
+        for cle in [
+            r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Run",
+            r"HKLM:\Software\Microsoft\Windows\CurrentVersion\RunServices",
+            r"HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\RunOnce",
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+        ] {
+            assert_eq!(ligne_run_retirer_machine(cle, &nom), None, "{cle}");
+        }
+        // Le plus long nom tient dans une ligne du tube ; un de plus, non.
+        let long = vec![0x41u16; RUN_MACHINE_NOM_MAX];
+        let ligne = ligne_run_retirer_machine(
+            r"HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+            &long,
+        )
+        .unwrap();
+        assert!(ligne.len() <= LIGNE_MAX && valide_seule(&ligne));
+        let trop = vec![0x41u16; RUN_MACHINE_NOM_MAX + 1];
+        assert_eq!(
+            ligne_run_retirer_machine(r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run", &trop),
+            None
+        );
+        assert!(analyser_acte(&format!("{RUN_RETIRER_MACHINE}run {}", hex_utf16(&trop))).is_none());
+    }
+
+    #[test]
+    fn retrait_run_machine_forge_refuse() {
+        let a = hex_utf16(&[0x41]);
+        let lignes = [
+            // Nom vide en hexadécimal, NUL, hexadécimal mal formé, majuscules, clé inconnue ou en majuscules.
+            format!("{RUN_RETIRER_MACHINE}run "),
+            format!("{RUN_RETIRER_MACHINE}run 0000"),
+            format!("{RUN_RETIRER_MACHINE}run 00410000"),
+            format!("{RUN_RETIRER_MACHINE}run 041"),
+            format!("{RUN_RETIRER_MACHINE}run 004A"),
+            format!("{RUN_RETIRER_MACHINE}run Defaut"),
+            format!("{RUN_RETIRER_MACHINE}runservices {a}"),
+            format!("{RUN_RETIRER_MACHINE}Run {a}"),
+            format!("{RUN_RETIRER_MACHINE}run32once {a}"),
+            // Espaces en trop, champ en trop ou manquant.
+            format!("{RUN_RETIRER_MACHINE}run  {a}"),
+            format!("{RUN_RETIRER_MACHINE}run {a} "),
+            format!("{RUN_RETIRER_MACHINE}run {a} {a}"),
+            format!("{RUN_RETIRER_MACHINE}run"),
+            format!("{RUN_RETIRER_MACHINE}{a}"),
+            format!("{RUN_REMETTRE}run {a}x"),
+            // Plus long que ce que tient le tube.
+            format!("{RUN_RETIRER_MACHINE}run {}", "0041".repeat(LIGNE_MAX)),
+        ];
+        for l in &lignes {
+            assert!(analyser_acte(l).is_none(), "{l}");
+            assert!(!valide_seule(l), "{l}");
+        }
+    }
+
+    #[test]
+    fn run_protege_garde_windows_et_defender() {
+        for (nom, programme) in [
+            ("SecurityHealth", r"%windir%\system32\SecurityHealthSystray.exe"),
+            ("securityhealth", r"C:\autre.exe"),
+            ("Windows Defender", r"C:\x.exe"),
+            ("WindowsDefender", r"C:\x.exe"),
+            ("Mise à jour", r#""C:\Program Files\Windows Defender\MSASCuiL.exe""#),
+            (
+                "x",
+                r"C:\ProgramData\Microsoft\Windows Defender\Platform\4.18\MsMpEng.exe",
+            ),
+            ("x", r"c:/windows/system32/securityhealthsystray.exe"),
+        ] {
+            assert!(run_protege(nom, programme), "{nom} {programme}");
+        }
+        for (nom, programme) in [
+            ("Updater", r"C:\Users\Public\updater.exe"),
+            ("SecurityHealthX", r"C:\x.exe"),
+            ("", r"C:\Users\Public\a.exe"),
+        ] {
+            assert!(!run_protege(nom, programme), "{nom} {programme}");
+        }
+    }
+
+    #[test]
+    fn tache_et_demarrage_chemins() {
+        let t = |c: &str| format!("{TACHE_DESACTIVER}{}", hex_texte(c));
+        for c in [
+            r"\Mise à jour",
+            r"\Dossier\Tâche 2",
+            r"\MicrosoftEdgeUpdateTaskMachineCore",
+        ] {
+            let a = analyser_acte(&t(c)).unwrap_or_else(|| panic!("{c}"));
+            assert!(matches!(&a, Acte::TacheDesactiver(p) if p.texte() == c) && !a.affaiblit());
+            let r = analyser_acte(&t(c).replacen(TACHE_DESACTIVER, TACHE_REACTIVER, 1)).unwrap();
+            assert!(r.affaiblit() && !r.durcit());
+        }
+        for c in [
+            "",
+            r"Tache",
+            r"\",
+            r"\\serveur\x",
+            r"\a\\b",
+            r"\a\..\Microsoft\Windows\x",
+            r"\a\.\b",
+            r"\Microsoft",
+            r"\microsoft\windows\Defrag\ScheduledDefrag",
+            r"\MICROSOFT\Windows\x",
+            r"\a/b",
+            r"\a:b",
+            "\\a\u{0}b",
+            "\\a\nb",
+            r"\a\b.",
+            r"\a ",
+        ] {
+            assert!(analyser_acte(&t(c)).is_none(), "{c:?}");
+        }
+        assert!(analyser_acte(&t(&format!(r"\{}", "a".repeat(TACHE_CHEMIN_MAX)))).is_none());
+        assert!(analyser_acte(&t(&format!(r"\{}", "a".repeat(TACHE_CHEMIN_MAX - 1)))).is_some());
+
+        let d = |c: &str| format!("{DEMARRAGE_QUARANTAINE}{}", hex_texte(c));
+        let commun = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\x.lnk";
+        let a = analyser_acte(&d(commun)).unwrap();
+        assert!(matches!(&a, Acte::DemarrageQuarantaine(f) if f.texte() == commun));
+        let r = analyser_acte(&d(commun).replacen(DEMARRAGE_QUARANTAINE, DEMARRAGE_REMETTRE, 1)).unwrap();
+        assert!(r.affaiblit());
+        for c in [
+            r"\\?\C:\x.lnk",
+            r"\\.\C:\x.lnk",
+            r"\\serveur\partage\x.lnk",
+            r"\x.lnk",
+            r"C:x.lnk",
+            r"C:\",
+            r"1:\x.lnk",
+            r"C:\a\x.lnk:flux",
+            r"C:\a\x.lnk::$DATA",
+            r"C:\a\..\Windows\x.lnk",
+            r"C:\a\.\x.lnk",
+            r"C:\a\\x.lnk",
+            r"C:\a/x.lnk",
+            "C:\\a\\x\u{0}.lnk",
+            r"C:\a\x.lnk.",
+            r"C:\a\x.lnk ",
+            r"C:\a\*.lnk",
+            r#"C:\a\"x".lnk"#,
+        ] {
+            assert!(analyser_acte(&d(c)).is_none(), "{c:?}");
+        }
+        // Plus de 32 767 unités : refusé (et la ligne dépasse de toute façon le tube).
+        let long = format!(r"C:\{}", "a".repeat(CHEMIN_MAX));
+        assert_eq!(CheminFichier::nouveau(&long), None);
+        assert!(analyser_acte(&d(&long)).is_none());
+        assert!(CheminFichier::nouveau(&format!(r"C:\{}", "a".repeat(CHEMIN_MAX - 3))).is_some());
+        // Toute ligne portée par le tube reste sous LIGNE_MAX.
+        let plus_long = format!(r"\{}", "a".repeat(TACHE_CHEMIN_MAX - 1));
+        assert!(t(&plus_long).len() <= LIGNE_MAX);
+    }
+
+    #[test]
+    fn wmi_et_service_noms() {
+        let ligne_wmi = |classe: &str, n: &str| format!("{WMI_ABONNEMENT_RETIRER}{classe} {}", hex_texte(n));
+        let a = analyser_acte(&ligne_wmi("commande", "BVTConsumer x")).unwrap();
+        assert!(matches!(&a, Acte::WmiAbonnementRetirer(c) if c.classe.classe() == "CommandLineEventConsumer"));
+        assert!(!a.affaiblit() && !a.durcit());
+        assert!(matches!(
+            analyser_acte(&ligne_wmi("script", "s")),
+            Some(Acte::WmiAbonnementRetirer(_))
+        ));
+        let remise =
+            analyser_acte(&ligne_wmi("script", "s").replacen(WMI_ABONNEMENT_RETIRER, WMI_ABONNEMENT_REMETTRE, 1))
+                .unwrap();
+        assert!(remise.affaiblit());
+        for (classe, n) in [
+            ("commande", ""),
+            ("Commande", "a"),
+            ("log", "a"),
+            ("script", "a\u{0}"),
+            ("script", "a\tb"),
+        ] {
+            assert!(analyser_acte(&ligne_wmi(classe, n)).is_none(), "{classe} {n:?}");
+        }
+        assert!(analyser_acte(&ligne_wmi("script", &"a".repeat(CONSUMER_NOM_MAX + 1))).is_none());
+        assert!(analyser_acte(&ligne_wmi("script", &"a".repeat(CONSUMER_NOM_MAX))).is_some());
+
+        let ligne_service = |n: &str| format!("{SERVICE_RETIRER}{}", hex_texte(n));
+        for n in ["AnyDesk", "ScreenConnect Client (0123abcd)", "TeamViewer"] {
+            let a = analyser_acte(&ligne_service(n)).unwrap_or_else(|| panic!("{n}"));
+            // Irréversible : une protection, jamais une remise.
+            assert!(matches!(&a, Acte::ServiceRetirer(x) if x.texte() == n) && a.durcit() && !a.affaiblit());
+            assert!(valide_seule(&ligne_service(n)));
+        }
+        for n in ["", " AnyDesk", "AnyDesk ", r"a\b", "a/b", "a\u{0}", "a\nb"] {
+            assert!(analyser_acte(&ligne_service(n)).is_none(), "{n:?}");
+        }
+        assert!(analyser_acte(&ligne_service(&"a".repeat(SERVICE_NOM_MAX + 1))).is_none());
+        assert!(analyser_acte(&ligne_service(&"a".repeat(SERVICE_NOM_MAX))).is_some());
+        // Le service et la classe sont en hexadécimal : jamais le nom en clair.
+        assert!(analyser_acte(&format!("{SERVICE_RETIRER}AnyDesk")).is_none());
+    }
+
+    #[test]
+    fn persistance_hexadecimal_canonique() {
+        // Majuscules, NUL, unités incomplètes, UTF-16 orphelin (un chemin doit être un texte) : refusé.
+        for hex in ["5C004100", "5c000000", "5c0041", "5c0000d8", ""] {
+            for verbe in [TACHE_DESACTIVER, DEMARRAGE_QUARANTAINE, SERVICE_RETIRER] {
+                let l = format!("{verbe}{hex}");
+                assert!(analyser_acte(&l).is_none(), "{l}");
+            }
+        }
+        // Un octet non ASCII : refusé avant toute lecture.
+        assert!(analyser_acte(&format!("{SERVICE_RETIRER}é")).is_none());
+        // Un verbe proche n'est pas lu comme un autre acte.
+        assert!(analyser_acte("vanguard:run-retirerx run 0041").is_none());
+        assert!(est_un_acte(&format!("{SERVICE_RETIRER}zz")) && !valide_seule(&format!("{SERVICE_RETIRER}zz")));
+    }
+
+    #[test]
+    fn montrer_nom_coupe_et_nettoie() {
+        assert_eq!(montrer_nom("a\u{1b}[2Jb"), "a?[2Jb");
+        let long = "x".repeat(NOM_MONTRE_MAX + 5);
+        let m = montrer_nom(&long);
+        assert_eq!(m.chars().count(), NOM_MONTRE_MAX + 1);
+        assert!(m.ends_with('…'));
+        assert_eq!(NomRun::nouveau(&[]).and_then(|n| n.montre()), None);
     }
 }
