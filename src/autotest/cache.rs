@@ -924,8 +924,8 @@ pub(crate) fn lignes() -> Vec<String> {
     let Some(raccourcies) = super::reglage::pour_le_cache() else {
         return vec![
             crate::tr!(
-                "Ne sert pas : l'agent ou sa mission de la cache est coupé, ou son fichier a changé hors de Vanguard ; le passage horaire vérifie tout à neuf.",
-                "Not in use: the agent or its cache mission is off, or its file changed outside Vanguard; the hourly pass checks everything afresh."
+                "Ne sert pas : l'agent ou sa mission de la cache est coupé, ou l'un de ses fichiers a changé hors de Vanguard ; le passage horaire vérifie tout à neuf.",
+                "Not in use: the agent or its cache mission is off, or one of its files changed outside Vanguard; the hourly pass checks everything afresh."
             )
             .to_string(),
         ];

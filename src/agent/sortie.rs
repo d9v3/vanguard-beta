@@ -277,6 +277,15 @@ fn etat_de(
     (EtatMission::EnMarche, None)
 }
 
+/// La mission prendrait-elle son tour, comme `super::tic_dans` en juge (l'agent, le journal, les interrupteurs, son
+/// état) : la cache du passage horaire ne sert que si sa mission tourne, elle qui la corrige.
+pub(crate) fn en_marche_dans(dossier: &Path, id: MissionId) -> bool {
+    vue_dans(dossier)
+        .missions
+        .iter()
+        .any(|m| m.nom == id && m.etat == EtatMission::EnMarche)
+}
+
 /// La vue de l'agent dans `dossier`, sans rien écrire.
 pub(crate) fn vue_dans(dossier: &Path) -> Vue {
     let agent = crate::autotest::reglage::en_marche_sans_ecrire_dans(dossier);

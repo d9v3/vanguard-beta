@@ -1716,3 +1716,28 @@ fn la_cache_coupee_ne_sert_plus() {
     couper_dans(&d, MissionId::Cache, false, &geste_dans(&d).unwrap()).unwrap();
     assert_eq!(crate::autotest::reglage::pour_le_cache_dans(&d), avant);
 }
+
+/// La cache ne sert pas non plus quand sa mission est sautée : le journal de l'agent ou l'état de la mission changé
+/// hors de Vanguard. Sinon, un fichier tronqué garderait la cache sans la mission qui la corrige.
+#[test]
+fn la_cache_sans_sa_mission_ne_sert_plus() {
+    use std::io::Write as _;
+    let cache = crate::autotest::reglage::pour_le_cache_dans;
+    for (nom, fichier) in [("journal", journal::JOURNAL), ("etat", etat::ETAT_CACHE)] {
+        let d = Jetable::nouveau(&format!("agent-g5-sautee-{nom}"));
+        trois_tours(&d);
+        assert!(cache(&d).is_some(), "{nom}");
+        assert!(sortie::en_marche_dans(&d, MissionId::Cache), "{nom}");
+        let chemin = d.join(fichier);
+        std::fs::create_dir_all(chemin.parent().unwrap()).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&chemin)
+            .unwrap();
+        f.write_all(b"{}\n").unwrap();
+        drop(f);
+        assert!(!sortie::en_marche_dans(&d, MissionId::Cache), "{nom}");
+        assert_eq!(cache(&d), None, "{nom}");
+    }
+}

@@ -370,14 +370,15 @@ impl Lu {
 }
 
 /// Les durées raccourcies de la cache sur cet ordinateur ; `None` : coupé ou douteux, ou la mission de la cache de
-/// l'agent coupée (ou ses interrupteurs douteux), la cache ne sert pas : tout se vérifie à neuf. Une cache sans la
-/// mission qui la corrige reprendrait un résultat qu'une vérification à neuf contredit.
+/// l'agent pas en marche (coupée, ses interrupteurs, le journal de l'agent ou son état douteux), la cache ne sert
+/// pas : tout se vérifie à neuf. Une cache sans la mission qui la corrige reprendrait un résultat qu'une vérification
+/// à neuf contredit.
 pub(crate) fn pour_le_cache() -> Option<BTreeMap<String, u16>> {
     pour_le_cache_dans(&crate::socle::dossier_local())
 }
 
 pub(crate) fn pour_le_cache_dans(dossier: &Path) -> Option<BTreeMap<String, u16>> {
-    if crate::agent::mission_coupee_dans(dossier, crate::agent::MissionId::Cache) {
+    if !crate::agent::sortie::en_marche_dans(dossier, crate::agent::MissionId::Cache) {
         return None;
     }
     lire_dans(dossier).pour_le_cache()

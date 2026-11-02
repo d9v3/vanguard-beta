@@ -37,17 +37,37 @@ pub(crate) const JOUR_MAX: i32 = 84_000;
 
 /// Un état qui sait se serrer dans ses bornes, et dire s'il y est.
 pub(crate) trait Borne: Sized {
+    /// Un fichier scellé qui ne se lit pas (trop gros, d'une autre version) : douteux plutôt que l'état d'origine.
+    /// Pour les interrupteurs, l'état d'origine remettrait en marche ce qui avait été coupé.
+    const ILLISIBLE_DOUTEUX: bool = false;
     fn borne(self) -> Self;
     #[cfg_attr(not(any(test, fuzzing)), allow(dead_code))] // les essais et le banc de fuzzing
     fn dans_ses_bornes(&self) -> bool;
 }
 
 /// Le contenu d'un fichier de l'agent, serré dans ses bornes ; trop gros ou illisible : l'état d'origine.
+#[cfg_attr(not(any(test, fuzzing)), allow(dead_code))] // les essais et le banc de fuzzing
 pub(crate) fn lire_de<E: DeserializeOwned + Default + Borne>(octets: &[u8]) -> E {
+    lisible(octets).unwrap_or_else(|| E::default().borne())
+}
+
+/// Le contenu d'un fichier de l'agent, serré dans ses bornes ; `None` : trop gros ou illisible.
+fn lisible<E: DeserializeOwned + Borne>(octets: &[u8]) -> Option<E> {
     if octets.len() > TAILLE_MAX {
-        return E::default().borne();
+        return None;
     }
-    serde_json::from_slice::<E>(octets).unwrap_or_default().borne()
+    serde_json::from_slice::<E>(octets).ok().map(Borne::borne)
+}
+
+/// Un fichier scellé et cru : son contenu, ou l'état d'origine s'il ne se lit pas (`Borne::ILLISIBLE_DOUTEUX` :
+/// douteux).
+#[cfg(not(fuzzing))]
+fn cru<E: DeserializeOwned + Default + Borne>(octets: &[u8]) -> Lu<E> {
+    match lisible(octets) {
+        Some(e) => Lu::Cru(e),
+        None if E::ILLISIBLE_DOUTEUX => Lu::Douteux,
+        None => Lu::Cru(E::default().borne()),
+    }
 }
 
 /// L'état d'une mission de réglage : ce qu'elle a décidé, et combien aujourd'hui.
@@ -134,7 +154,8 @@ impl Borne for Compteurs {
     }
 }
 
-/// Les interrupteurs : les missions coupées dans Paramètres. Absent : toutes en marche. L'interrupteur de l'agent
+/// Les interrupteurs : les missions coupées dans Paramètres. Absent : toutes en marche ; scellé mais illisible (d'une
+/// autre version) : douteux, toutes coupées sauf une détection. L'interrupteur de l'agent
 /// entier est celui de l'auto-réglage (`autotest::reglage`, « oui » par défaut).
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -146,6 +167,7 @@ pub(crate) struct Interrupteurs {
 }
 
 impl Borne for Interrupteurs {
+    const ILLISIBLE_DOUTEUX: bool = true;
     fn borne(mut self) -> Interrupteurs {
         self.v = 1;
         self
@@ -595,7 +617,7 @@ pub(crate) fn nom_etat(id: MissionId) -> &'static str {
 pub(crate) fn lire_dans<E: DeserializeOwned + Default + Borne>(dossier: &std::path::Path, nom: &str) -> Lu<E> {
     match crate::sceau::juge_dans(dossier, nom) {
         crate::sceau::Juge::Absent => Lu::Absent,
-        crate::sceau::Juge::Cru(o) => Lu::Cru(lire_de(&o)),
+        crate::sceau::Juge::Cru(o) => cru(&o),
         _ => Lu::Douteux,
     }
 }
@@ -608,7 +630,7 @@ pub(crate) fn lire_sans_ecrire_dans<E: DeserializeOwned + Default + Borne>(
 ) -> Lu<E> {
     match crate::sceau::juge_sans_ecrire_dans(dossier, nom) {
         crate::sceau::Juge::Absent => Lu::Absent,
-        crate::sceau::Juge::Cru(o) => Lu::Cru(lire_de(&o)),
+        crate::sceau::Juge::Cru(o) => cru(&o),
         _ => Lu::Douteux,
     }
 }
@@ -875,11 +897,17 @@ mod tests {
         let mut gros = br#"{"v":1,"jour":18300,"du_jour":20}"#.to_vec();
         gros.resize(TAILLE_MAX + 1, b' ');
         assert_eq!(lire_de::<Compteurs>(&gros), Compteurs::default().borne());
-        // Une mission inconnue dans les interrupteurs : rien n'en est cru, toutes en marche.
+        // Une mission inconnue dans les interrupteurs : rien n'en est cru ; scellé, le fichier est douteux (toutes
+        // coupées, `lire_dans`), pas l'état d'origine qui les remettrait en marche.
         assert!(
             lire_de::<Interrupteurs>(br#"{"v":1,"coupees":["rogue-x"]}"#)
                 .coupees
                 .is_empty()
         );
+        assert!(matches!(
+            cru::<Interrupteurs>(br#"{"v":1,"coupees":["rogue-x","cache"]}"#),
+            Lu::Douteux
+        ));
+        assert!(matches!(cru::<Compteurs>(br#"{"v":1,"neuf":1}"#), Lu::Cru(c) if c == Compteurs::default().borne()));
     }
 }
