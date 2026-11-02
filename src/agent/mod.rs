@@ -83,8 +83,8 @@ impl<M: Mission> Tourne for M {
 }
 
 /// Les missions, dans l'ordre de `MissionId::TOUTES`.
-fn missions() -> [&'static dyn Tourne; 2] {
-    [&missions::Reglage, &missions::Cache]
+fn missions() -> [&'static dyn Tourne; 3] {
+    [&missions::Reglage, &missions::Cache, &missions::Releve]
 }
 
 /// Pourquoi un tour n'a pas eu lieu.
@@ -123,6 +123,9 @@ pub(crate) struct Contexte<'a> {
     pub en_jeu: bool,
     /// L'interrupteur de l'agent (celui de l'auto-réglage) : `None` quand son fichier est douteux.
     pub en_marche: Option<bool>,
+    /// Le relevé local (`amelioration`), appelé quand la mission du relevé a tourné, verrou de l'agent tenu : deux
+    /// processus ne fusionnent donc jamais le même jour en même temps. Le tour ne sait pas ce qu'il écrit.
+    pub relever: &'a dyn Fn(&Lecture<'_>, Moment),
 }
 
 /// Applique des ajustements déjà vérifiés ; rend ceux qui l'ont été vraiment.
@@ -226,6 +229,9 @@ pub(crate) fn tic_dans(ctx: &Contexte<'_>, moment: Moment, missions: &[&dyn Tour
             continue;
         };
         reglage_a_tourne |= m.genre() == Genre::Reglage;
+        if m.genre() == Genre::Releve {
+            (ctx.relever)(lu, moment);
+        }
         for d in decisions {
             if !verifiee(lu, m, &d) {
                 refusees += 1;
@@ -276,6 +282,10 @@ pub(crate) fn tic(moment: Moment) {
     if !missions.iter().any(|m| m.moments().contains(&moment)) {
         return;
     }
+    // À la sortie, seul le relevé écoute : rien à noter, rien à lire (une commande courte ne paie pas le tour).
+    if moment == Moment::Sortie && !crate::amelioration::a_noter() {
+        return;
+    }
     let dossier = crate::socle::dossier_local();
     let mesures = crate::autotest::mesures::lues();
     let delai_du_code = |id: &str| {
@@ -294,6 +304,7 @@ pub(crate) fn tic(moment: Moment) {
         quand: chrono::Utc::now().timestamp(),
         en_jeu: en_jeu(),
         en_marche: crate::autotest::reglage::en_marche_dans(&dossier),
+        relever: &|lu, m| crate::amelioration::relever(lu.dossier, lu.aujourd_hui, lu.mesures, m),
     };
     let _ = tic_dans(&ctx, moment, &missions, &appliquer);
 }

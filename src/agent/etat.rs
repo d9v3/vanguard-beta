@@ -24,6 +24,7 @@ pub(crate) const AGENT: &str = "agent/agent.json";
 /// L'état de chaque mission. Scellés.
 pub(crate) const ETAT_REGLAGE: &str = "agent/etat/reglage.json";
 pub(crate) const ETAT_CACHE: &str = "agent/etat/cache.json";
+pub(crate) const ETAT_RELEVE: &str = "agent/etat/releve.json";
 
 /// Ajustements au plus par mission et par jour : même si une mesure s'emballe, l'agent n'enchaîne pas les changements.
 pub(crate) const PAR_JOUR_MAX: u16 = 20;
@@ -161,6 +162,7 @@ pub(crate) fn nom_etat(id: MissionId) -> &'static str {
     match id {
         MissionId::Reglage => ETAT_REGLAGE,
         MissionId::Cache => ETAT_CACHE,
+        MissionId::Releve => ETAT_RELEVE,
     }
 }
 

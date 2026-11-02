@@ -364,8 +364,10 @@ fn en_parallele(verifications: Vec<Verification<'_>>) -> Vec<Constat> {
 /// Les règles retenues, lancées en même temps et rendues dans l'ordre de leurs rangs. La durée de chaque règle va au
 /// journal des mesures (`autotest::mesures`), qui voit ainsi une règle ralentir d'une semaine à l'autre.
 fn bilan_des_regles(choisies: Vec<&'static regles::Regle>) -> Vec<Constat> {
+    let noms = noms_gardes(&choisies);
     let (constats, durees) = regles_en_parallele(choisies);
     crate::autotest::mesures::noter(&durees);
+    crate::amelioration::noter_bilan(&constats, &|id| noms.contains(id), true);
     crate::agent::tic(crate::agent::Moment::FinDeBilan);
     constats
 }
@@ -380,8 +382,19 @@ fn bilan_automatique(choisies: &[&'static regles::Regle]) -> Vec<Constat> {
     AGES.with(|a| *a.borrow_mut() = plan.ages());
     let evenements = plan.terminer(choisies, &constats);
     crate::autotest::mesures::noter_avec(&durees, &evenements);
+    let noms = noms_gardes(choisies);
+    crate::amelioration::noter_bilan(&constats, &|id| noms.contains(id), false);
     crate::agent::tic(crate::agent::Moment::FinDeBilan);
     constats
+}
+
+/// Les règles dont le relevé local garde le nom de l'objet (`regles::Partage::Nom`) ; les autres, la sorte seule.
+fn noms_gardes(choisies: &[&'static regles::Regle]) -> std::collections::BTreeSet<&'static str> {
+    choisies
+        .iter()
+        .filter(|r| r.partage == regles::Partage::Nom)
+        .map(|r| r.id)
+        .collect()
 }
 
 /// `bilan_des_regles` sans rien noter, avec la durée de chaque règle. Le départ suit l'auto-réglage
@@ -1427,6 +1440,7 @@ pub fn attendre_ouvertures() {
 /// `std::process::exit` les couperait.
 pub fn quitter(code: i32) -> ! {
     attendre_ouvertures();
+    crate::agent::tic(crate::agent::Moment::Sortie);
     crate::modele::journal::ecrire_differes();
     std::process::exit(code)
 }
@@ -1977,6 +1991,7 @@ Host *
             rang: 1,
             sujet: ("essai", "test"),
             references: &[],
+            partage: regles::Partage::Sorte,
             verifier: || panic!("règle d'essai"),
         }));
         let constats = en_parallele(vec![regles::verification(regle)]);

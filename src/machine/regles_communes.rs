@@ -211,7 +211,8 @@ regle!(
     675,
     ("logiciels espions", "spyware"),
     &["CIS Controls v8 10.1"],
-    crate::protection::espions::constats
+    crate::protection::espions::constats,
+    partage = Nom
 );
 
 regle!(

@@ -119,7 +119,8 @@ regle!(
     160,
     ("failles connues des paquets", "known package flaws"),
     &["CIS Controls v8 7.7", "MITRE ATT&CK M1016", "MITRE ATT&CK M1051"],
-    || vec![failles_connues()]
+    || vec![failles_connues()],
+    partage = Nom
 );
 
 regle!(
@@ -416,5 +417,6 @@ regle!(
     370,
     ("services en échec", "failed services"),
     &["CIS Controls v8 4.1"],
-    || vec![services_en_echec()]
+    || vec![services_en_echec()],
+    partage = Nom
 );

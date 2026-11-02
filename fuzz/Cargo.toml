@@ -251,6 +251,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "amelioration_releve"
+path = "fuzz_targets/amelioration_releve.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "texte_nettoye"
 path = "fuzz_targets/texte_nettoye.rs"
 test = false

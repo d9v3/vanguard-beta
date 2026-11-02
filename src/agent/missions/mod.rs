@@ -5,9 +5,11 @@
 
 mod cache;
 mod reglage;
+mod releve;
 
 pub(crate) use cache::Cache;
 pub(crate) use reglage::Reglage;
+pub(crate) use releve::Releve;
 
 use super::decision::{Ajustement, Levier};
 use super::forme::RegleId;

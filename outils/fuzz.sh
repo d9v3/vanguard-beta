@@ -79,8 +79,8 @@ rm -f "$COMPILATION"
 
 # Plus longues que les 4096 octets que libFuzzer prend par défaut, pour une cible dont une limite est au-delà :
 # gestes refuse une ligne de plus de 8448 octets (gestes::LIGNE_MAX), envoi_lot un lot de plus de 96 Kio
-# (envoi::LOT_MAX), à atteindre des deux côtés.
-declare -A MAX_LEN=([gestes]=20000 [envoi_lot]=100000)
+# (envoi::LOT_MAX) et amelioration_releve un jour de plus de 96 Kio (releve::JOUR_MAX), à atteindre des deux côtés.
+declare -A MAX_LEN=([gestes]=20000 [envoi_lot]=100000 [amelioration_releve]=100000)
 ECHECS=0
 for c in "${liste[@]}"; do
   corpus=$FUZZ/corpus/$c

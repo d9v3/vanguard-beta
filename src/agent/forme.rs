@@ -20,17 +20,19 @@ pub(crate) enum MissionId {
     Reglage,
     /// La durée de la cache du passage horaire (L6c, `autotest::cache`).
     Cache,
+    /// Le relevé local d'amélioration (A2, `amelioration`) : il note, sans rien décider.
+    Releve,
 }
 
 impl MissionId {
     /// Toutes, dans l'ordre où un tour les passe.
-    pub(crate) const TOUTES: [MissionId; 2] = [MissionId::Reglage, MissionId::Cache];
+    pub(crate) const TOUTES: [MissionId; 3] = [MissionId::Reglage, MissionId::Cache, MissionId::Releve];
 }
 
 /// Ce qu'une mission a le droit de décider. Un réglage ajuste (dans le sens sûr) ou propose ; un relevé ne fait que
 /// noter ; une détection signale ou propose, sans jamais rien ajuster.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(not(test), allow(dead_code))] // Releve et Detection : les missions de G3 (relevé) et G7 (agents voyous)
+#[cfg_attr(not(test), allow(dead_code))] // Detection : les missions de G7 (agents voyous)
 pub(crate) enum Genre {
     Reglage,
     Releve,
@@ -39,7 +41,7 @@ pub(crate) enum Genre {
 
 /// Quand un tour de l'agent a lieu. Pas de démon neuf : il vit dans ce qui tourne déjà.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(not(test), allow(dead_code))] // Veilleur et Sortie : branchés par les lots qui en auront besoin
+#[cfg_attr(not(test), allow(dead_code))] // Veilleur : branché par le lot qui en aura besoin
 pub(crate) enum Moment {
     /// À la fin d'un bilan noté (demandé ou du passage horaire).
     FinDeBilan,

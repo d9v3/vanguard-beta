@@ -1,5 +1,6 @@
 //! Application interactive des correctifs : chaque action est montrée puis confirmée.
 
+use crate::amelioration::{Choisi, Issue};
 use crate::machine::{self, Audit, Constat, Correctif, Defaire};
 use crate::optimiser::annulables;
 use crate::reseau::{Hote, Rapport};
@@ -42,6 +43,7 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
                 println!("    {GRIS}{cmd}{RESET}");
             }
             dire_si_annulable(k);
+            crate::amelioration::noter_correction(c.regle, Issue::Proposee);
             let rep = demander(tr!(
                 "  Appliquer ? [o]ui / [n]on / [t]out appliquer / [i]gnorer, c'est normal chez moi : ",
                 "  Apply? [y]es / [n]o / [a]ll / [i]gnore, this is normal for me: "
@@ -57,9 +59,18 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
             } else if crate::langue::oui(&rep) {
                 vec![(c, k)]
             } else {
+                crate::amelioration::noter_correction(c.regle, Issue::Refusee);
+                crate::amelioration::noter_choix(c.regle, Choisi::Refus);
                 trp!("    {GRIS}ignoré{RESET}", "    {GRIS}skipped{RESET}");
                 continue;
             };
+            // « Tout » : les suivantes sont proposées et acceptées d'un coup, sans avoir été montrées une à une.
+            for (j, (c, _)) in lot.iter().enumerate() {
+                if j > 0 {
+                    crate::amelioration::noter_correction(c.regle, Issue::Proposee);
+                }
+                crate::amelioration::noter_correction(c.regle, Issue::Acceptee);
+            }
             if lot.len() > 1 {
                 trp!(
                     "    {GRIS}Les {} corrections restantes, en une fois.{RESET}",
@@ -138,6 +149,12 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
                     .collect::<Vec<_>>(),
             );
             for ((c, k), reussi) in lot.iter().zip(resultats) {
+                let issue = if reussi {
+                    Issue::Reussie(c.cle())
+                } else {
+                    Issue::Echouee
+                };
+                crate::amelioration::noter_correction(c.regle, issue);
                 if reussi {
                     machine::retenir_blocage(k);
                     // Une protection de Defender n'a pas de note d'annulation : seule la marque qu'il l'a posée

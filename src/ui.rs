@@ -521,6 +521,12 @@ pub(crate) fn vient_de_revenir() -> bool {
     REVENU.swap(false, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// `vient_de_revenir`, sans l'oublier : le relevé local compte l'outil laissé, et la pause du menu lit ensuite la même
+/// réponse.
+pub(crate) fn revenu() -> bool {
+    REVENU.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Pose une question dans le terminal et retourne la réponse sans espaces autour.
 pub fn demander(question: &str) -> String {
     // Fin de l'entrée (Ctrl-D, terminal fermé, entrée redirigée) : on quitte. Le menu reposait sinon la question

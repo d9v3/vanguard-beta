@@ -40,7 +40,8 @@ regle!(
         "MITRE ATT&CK T1068",
         "LOLDrivers"
     ],
-    pilotes
+    pilotes,
+    partage = Nom
 );
 
 /// Un pilote déclaré : son nom de service et son fichier.

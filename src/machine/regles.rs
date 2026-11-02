@@ -54,14 +54,27 @@ pub struct Regle {
     /// Références de durcissement (CIS, ANSSI, documentation de l'éditeur), quand il y en a.
     pub references: &'static [&'static str],
     pub verifier: fn() -> Vec<Constat>,
+    /// Ce que le relevé local (`amelioration`) garde de l'objet d'un constat : son nom, ou sa sorte seule.
+    pub partage: Partage,
+}
+
+/// Le nom de l'objet d'un constat est-il gardé par le relevé local (plan d'auto-amélioration, §1) ? `Nom` seulement
+/// pour les règles dont ce nom est le sujet (logiciel périmé, pilote vulnérable, service ou unité en échec, programme
+/// espion connu) ; toutes les autres (logiciels nouveaux, extensions, fichiers, réseau, sites) n'en gardent que la
+/// sorte, et c'est la valeur que donne `regle!` sans rien dire. Garde : `partage_du_nom_seulement_pour_ses_sujets`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Partage {
+    Nom,
+    Sorte,
 }
 
 inventory::collect!(Regle);
 
 /// Déclare une règle au registre : identifiant, système, rang, sujet (français, anglais), références, vérification.
 /// Un identifiant mal formé ne compile pas.
+/// Un septième argument, `partage = Nom`, garde le nom de l'objet au relevé local (`Partage`).
 macro_rules! regle {
-    ($id:literal, $os:expr, $rang:literal, $sujet:expr, $refs:expr, $verifier:expr $(,)?) => {
+    ($id:literal, $os:expr, $rang:literal, $sujet:expr, $refs:expr, $verifier:expr, partage = $p:ident $(,)?) => {
         const _: () = assert!(
             $crate::modele::id::bien_forme($id),
             "identifiant de règle mal formé"
@@ -74,8 +87,12 @@ macro_rules! regle {
                 sujet: $sujet,
                 references: $refs,
                 verifier: $verifier,
+                partage: $crate::machine::regles::Partage::$p,
             }
         }
+    };
+    ($id:literal, $os:expr, $rang:literal, $sujet:expr, $refs:expr, $verifier:expr $(,)?) => {
+        $crate::machine::regles::regle!($id, $os, $rang, $sujet, $refs, $verifier, partage = Sorte);
     };
 }
 pub(crate) use regle;
@@ -596,6 +613,75 @@ mod tests {
         sortie
     }
 
+    /// Les seules règles dont le relevé local garde le nom de l'objet (plan d'auto-amélioration, §1 et P1) : ce nom
+    /// y est le sujet même (logiciel périmé, paquet à faille, service en échec, pilote vulnérable, espion connu).
+    const PARTAGE_DU_NOM: [&str; 6] = [
+        "COM-ESP-001",
+        "LNX-MAJ-003",
+        "LNX-SRV-001",
+        "MAC-MAJ-004",
+        "WIN-MAJ-002",
+        "WIN-PRS-012",
+    ];
+
+    /// Garde de `partage`, pour les trois systèmes (lu dans les sources) et pour celui-ci (règles enregistrées) :
+    /// exactement les six règles de `PARTAGE_DU_NOM` disent `partage = Nom` ; les logiciels nouveaux, les
+    /// extensions, les fichiers, le réseau, le Wi-Fi, le DNS, les partages et les sites n'en gardent que la sorte.
+    /// Une règle de plus demande de changer la liste ici, donc une relecture.
+    #[test]
+    fn partage_du_nom_seulement_pour_ses_sujets() {
+        fn parcourir(d: &std::path::Path, lues: &mut std::collections::BTreeSet<String>) {
+            for e in std::fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    parcourir(&p, lues);
+                    continue;
+                }
+                if p.extension().is_none_or(|x| x != "rs") {
+                    continue;
+                }
+                let texte = std::fs::read_to_string(&p).unwrap();
+                let code = texte.find("#[cfg(test)]\nmod ").map_or(texte.as_str(), |t| &texte[..t]);
+                // Une règle écrite à la main (`partage: …::Nom`) ; nommer la variante ailleurs (un filtre) reste permis.
+                assert!(
+                    !code
+                        .match_indices("partage:")
+                        .any(|(i, _)| code[i..].split(',').next().is_some_and(|v| v.contains("Partage::Nom"))),
+                    "{} : `partage = Nom` passe par regle!",
+                    p.display()
+                );
+                // Seulement l'argument de `regle!`, seul sur sa ligne (la doc de la macro en parle aussi).
+                for (i, _) in code.match_indices("\n    partage = Nom\n") {
+                    let avant = &code[..i];
+                    let debut = avant.rfind("regle!(").expect("partage hors de regle!");
+                    let id: String = avant[debut + 7..]
+                        .trim_start()
+                        .trim_start_matches('"')
+                        .chars()
+                        .take(11)
+                        .collect();
+                    assert!(lues.insert(id), "{} : deux fois", p.display());
+                }
+            }
+        }
+        let mut lues = std::collections::BTreeSet::new();
+        parcourir(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/machine"),
+            &mut lues,
+        );
+        let attendues: std::collections::BTreeSet<String> = PARTAGE_DU_NOM.iter().map(|s| (*s).to_string()).collect();
+        assert_eq!(lues, attendues);
+        for r in inventory::iter::<Regle> {
+            let nom = PARTAGE_DU_NOM.contains(&r.id);
+            assert_eq!(r.partage == Partage::Nom, nom, "{}", r.id);
+            for sorte in [
+                "COM-NAV", "COM-FIC", "-RES-", "-WIF-", "COM-DNS", "COM-PAR", "COM-PRG", "COM-EXT",
+            ] {
+                assert!(!(r.id.contains(sorte) && r.partage == Partage::Nom), "{}", r.id);
+            }
+        }
+    }
+
     /// C5, pour les trois systèmes : toute règle déclarée dans les sources cite une référence reconnue ; la lecture
     /// des sources trouve bien les règles de chaque système, nouvelles comprises.
     #[test]
@@ -705,6 +791,7 @@ mod tests {
             rang: 1,
             sujet: ("essai", "test"),
             references: &[],
+            partage: Partage::Sorte,
             verifier: || {
                 VU.store(
                     super::super::bilan_du_fil().unwrap_or(u64::MAX),
@@ -739,6 +826,7 @@ mod tests {
                     sujet: r.sujet,
                     references: r.references,
                     verifier,
+                    partage: r.partage,
                 }))
             };
             let muette = verification(doublure(Vec::new))();
@@ -770,6 +858,7 @@ mod tests {
                 rang: 1,
                 sujet: ("essai", "test"),
                 references: &[],
+                partage: Partage::Sorte,
                 verifier,
             }))
         };

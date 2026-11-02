@@ -1027,6 +1027,7 @@ mod tests {
             rang: 1,
             sujet: ("essai", "test"),
             references: &[],
+            partage: crate::machine::regles::Partage::Sorte,
             verifier: Vec::new,
         }))
     }

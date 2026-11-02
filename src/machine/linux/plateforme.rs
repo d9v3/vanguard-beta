@@ -12,6 +12,7 @@ inventory::submit! {
         rang: 233,
         sujet: ("sécurité de la plateforme d'après fwupd (HSI)", "platform security according to fwupd (HSI)"),
         references: &["CIS Controls v8 4.1", "fwupd : Host Security ID", "MITRE ATT&CK M1046"],
+        partage: crate::machine::regles::Partage::Sorte,
         verifier: || vec![securite_plateforme()],
     }
 }
@@ -23,6 +24,7 @@ inventory::submit! {
         rang: 231,
         sujet: ("verrouillage du noyau et signature des modules", "kernel lockdown and module signing"),
         references: &["CIS Controls v8 10.5", "ANSSI BP-028 (configuration d'un système GNU/Linux)", "kernel.org : kernel_lockdown(7)", "MITRE ATT&CK M1045"],
+        partage: crate::machine::regles::Partage::Sorte,
         verifier: || verrouillage_noyau().into_iter().collect(),
     }
 }
@@ -34,6 +36,7 @@ inventory::submit! {
         rang: 232,
         sujet: ("BPF réservé à root", "BPF reserved for root"),
         references: &["CIS Controls v8 10.5", "kernel.org : unprivileged_bpf_disabled", "MITRE ATT&CK M1028"],
+        partage: crate::machine::regles::Partage::Sorte,
         verifier: || bpf().into_iter().collect(),
     }
 }
@@ -45,6 +48,7 @@ inventory::submit! {
         rang: 232,
         sujet: ("espaces de noms ouverts à tous", "user namespaces open to all"),
         references: &["CIS Controls v8 10.5", "kernel.org : user_namespaces(7)", "MITRE ATT&CK M1028"],
+        partage: crate::machine::regles::Partage::Sorte,
         verifier: || espaces_de_noms().into_iter().collect(),
     }
 }
@@ -56,6 +60,7 @@ inventory::submit! {
         rang: 234,
         sujet: ("journal d'audit du noyau (auditd)", "kernel audit log (auditd)"),
         references: &["CIS : auditd", "MITRE ATT&CK M1047"],
+        partage: crate::machine::regles::Partage::Sorte,
         verifier: || journal_audit().into_iter().collect(),
     }
 }

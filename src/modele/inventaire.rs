@@ -104,6 +104,12 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     scelle(crate::agent::etat::AGENT, "agent"),
     scelle(crate::agent::etat::ETAT_REGLAGE, "agent"),
     scelle(crate::agent::etat::ETAT_CACHE, "agent"),
+    scelle(crate::agent::etat::ETAT_RELEVE, "agent"),
+    // Le relevé local (A2) : un jour changé à la main ne se croit pas, le suivi non plus (une « revenue » inventée).
+    // Chaque fichier de amelioration/jours/ est scellé sous son nom, écrit par le sceau dès le premier.
+    local(crate::amelioration::JOURS, "amelioration"),
+    scelle(crate::amelioration::SUIVI, "amelioration"),
+    scelle(crate::amelioration::MATERIEL, "amelioration"),
     scelle(crate::agent::journal::JOURNAL, "agent"),
     local("agent.lock", "agent"),
     // La tête du journal des événements : retirer la fin du journal sans elle se voit.
@@ -570,6 +576,10 @@ mod tests {
             "fichier hosts préparé : son empreinte est vérifiée par le processus élevé avant l'écriture",
         ),
         (
+            "amelioration/jours",
+            "le relevé local, un fichier par jour : chacun y est scellé sous son nom (amelioration::relever_dans)",
+        ),
+        (
             "manifestes-cle",
             "les références des clés : chaque fichier y est scellé sous son nom (sceau::TARDIFS_DOSSIERS)",
         ),
@@ -678,6 +688,18 @@ mod tests {
     /// fermée, au compte près : un endroit de plus (une nouvelle lecture sans le sceau, un chemin construit) ou de moins
     /// fait échouer `chaque_lecture_passe_par_le_sceau`.
     const HORS_DU_SCEAU: &[(&str, &str, usize, &str)] = &[
+        (
+            "amelioration/mod.rs",
+            "amelioration/suivi.json",
+            1,
+            "taille seulement, pour le plafond de 10 Mo de amelioration/ ; le contenu se lit et s'écrit par le sceau",
+        ),
+        (
+            "amelioration/mod.rs",
+            "amelioration/materiel.json",
+            1,
+            "taille seulement, pour le plafond de 10 Mo de amelioration/ ; le contenu se lit et s'écrit par le sceau",
+        ),
         (
             "apprentissage.rs",
             "appris.json",

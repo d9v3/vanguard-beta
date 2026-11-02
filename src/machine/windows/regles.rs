@@ -155,7 +155,8 @@ regle!(
     185,
     ("logiciels pas à jour", "outdated software"),
     &["CIS Controls v8 7.4", "MITRE ATT&CK M1051"],
-    crate::protection::perimes::constats
+    crate::protection::perimes::constats,
+    partage = Nom
 );
 
 regle!(

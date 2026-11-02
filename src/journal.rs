@@ -834,6 +834,8 @@ pub fn erreur(contexte: Contexte, detail: &str) {
 /// de champs vient après le détail : la signature des tickets (`outils/journal-vers-github.py`) prend le libellé et la
 /// première ligne du détail, et ne change pas.
 pub(crate) fn noter(champs: &Champs, detail: &str) {
+    // Le relevé local compte la cause même sans clé branchée : ses champs fermés et le gabarit du détail.
+    crate::amelioration::noter_cause(champs, detail);
     let Some(dossier) = dossier() else {
         return;
     };

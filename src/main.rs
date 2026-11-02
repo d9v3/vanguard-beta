@@ -2701,7 +2701,21 @@ fn depanner_avec_ses_outils() {
     });
 }
 
+/// Un outil du menu, compté par le relevé local (`amelioration`) : lancé, fini ou laissé, et sa durée.
 async fn executer(s: &mut Session, action: Action) {
+    let commande = action.outil().commande;
+    crate::amelioration::outil_lance(commande, crate::compte_rendu::envoi::Origine::Menu);
+    let debut = std::time::Instant::now();
+    executer_outil(s, action).await;
+    crate::amelioration::outil_fini(
+        commande,
+        crate::compte_rendu::envoi::Origine::Menu,
+        ui::revenu(),
+        debut.elapsed(),
+    );
+}
+
+async fn executer_outil(s: &mut Session, action: Action) {
     // Le choix de l'outil dans le menu n'est pas un « revenir » : seul compte ce qui se répond dans l'outil.
     ui::noter_retour(false);
     if action.outil().groupe == Some(Groupe::Optimiser) && refuser_optimiser() {
@@ -3566,7 +3580,17 @@ async fn main() {
         [h] if h == "--help" => return print!("{}", aide_longue()),
         _ => {}
     }
-    let args = Args::from_arg_matches(&ligne_de_commande().get_matches()).unwrap_or_else(|e| e.exit());
+    let matches = ligne_de_commande().get_matches();
+    let args = Args::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    // Le relevé local ne garde que le nom d'une sous-commande qui est un outil de la table, jamais ses arguments.
+    let outil_ligne = matches
+        .subcommand_name()
+        .and_then(|n| OUTILS.iter().find(|o| !o.commande.is_empty() && o.commande == n))
+        .map(|o| o.commande);
+    if let Some(c) = outil_ligne {
+        crate::amelioration::outil_lance(c, crate::compte_rendu::envoi::Origine::Ligne);
+    }
+    let debut = std::time::Instant::now();
     if args.commande.as_ref().is_some_and(commande_d_optimiser) && refuser_optimiser() {
         machine::quitter(2);
     }
@@ -3901,6 +3925,11 @@ async fn main() {
             }
         },
     }
+    if let Some(c) = outil_ligne {
+        crate::amelioration::outil_fini(c, crate::compte_rendu::envoi::Origine::Ligne, false, debut.elapsed());
+    }
+    // Ce que le relevé local a noté, versé avant de partir (rien à noter : rien de lu).
+    crate::agent::tic(crate::agent::Moment::Sortie);
     // Une page ouverte juste avant la fin (« vanguard rapport », le tableau de bord) : son ouverture aboutit avant
     // que le processus ne parte.
     machine::attendre_ouvertures();

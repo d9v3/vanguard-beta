@@ -156,10 +156,13 @@ pub fn accepter(c: &Constat) {
     };
     retenir(&mut appris, c, niveau, aujourd_hui());
     match enregistrer(&appris) {
-        Ok(()) => trp!(
-            "    {GRIS}retenu pour {DUREE_JOURS} jours, sauf si elle s'aggrave{RESET}",
-            "    {GRIS}noted for {DUREE_JOURS} days, unless it gets worse{RESET}"
-        ),
+        Ok(()) => {
+            crate::amelioration::noter_choix(c.regle, crate::amelioration::Choisi::Normale);
+            trp!(
+                "    {GRIS}retenu pour {DUREE_JOURS} jours, sauf si elle s'aggrave{RESET}",
+                "    {GRIS}noted for {DUREE_JOURS} days, unless it gets worse{RESET}"
+            );
+        }
         Err(e) => trp!("    ✖ Choix non retenu ({e}).", "    ✖ Choice not saved ({e})."),
     }
 }
@@ -416,11 +419,19 @@ pub fn menu() {
         appris.acceptees.remove(signature);
     }
     match enregistrer(&appris) {
-        Ok(()) => trp!(
-            "  {VERT}✔{RESET} {} choix oublié(s) : ces alertes reviendront normalement.",
-            "  {VERT}✔{RESET} {} choice(s) forgotten: these alerts will come back as usual.",
-            a_oublier.len()
-        ),
+        Ok(()) => {
+            // Le relevé local ne garde que la règle de chaque choix oublié (la clé porte l'objet, parfois un chemin).
+            for (_, a) in a_oublier.iter().filter_map(|&i| liste.get(i)) {
+                if let Some((regle, _)) = a.cle.as_deref().and_then(|k| k.split_once('|')) {
+                    crate::amelioration::noter_choix(regle, crate::amelioration::Choisi::Oubli);
+                }
+            }
+            trp!(
+                "  {VERT}✔{RESET} {} choix oublié(s) : ces alertes reviendront normalement.",
+                "  {VERT}✔{RESET} {} choice(s) forgotten: these alerts will come back as usual.",
+                a_oublier.len()
+            );
+        }
         Err(e) => trp!("  ✖ Impossible d'enregistrer ({e}).", "  ✖ Could not save ({e})."),
     }
 }
