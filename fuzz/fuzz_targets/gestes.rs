@@ -381,6 +381,8 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                     assert!(!n.chars().any(char::is_control));
                     if m.liste() == gestes::ListeLancement::Dossier {
                         assert!(composant_admis(n));
+                        // Jamais un nom court de DOS (« ~ » puis un chiffre).
+                        assert!(!n.as_bytes().windows(2).any(|p| matches!(p, [b'~', d] if d.is_ascii_digit())));
                     }
                     assert!(!a.durcit() && !a.affaiblit() && !a.touche_le_reseau());
                     assert!(!a.powershell().contains("Set-Item") && !a.powershell().contains("Remove-Item"));

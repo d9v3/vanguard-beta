@@ -182,12 +182,27 @@ fn lancement(l: &LancementMachine) -> Result<Option<(String, String)>, Resultat>
                 ));
             };
             let chemin = dossier.join(l.nom());
-            let meta = match std::fs::symlink_metadata(&chemin) {
-                Ok(m) => m,
-                Err(e) if e.kind() == NotFound => return Ok(None),
-                Err(e) => return Err(illisible(&e)),
+            // Ouvert une seule fois sans suivre de lien : ce qui est jugé puis lu est ce même fichier, jamais la cible
+            // d'un lien ou d'une jonction posé entre deux regards.
+            let fichier = {
+                use std::os::windows::fs::OpenOptionsExt as _;
+                const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+                match std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                    .open(&chemin)
+                {
+                    Ok(f) => f,
+                    Err(e) if e.kind() == NotFound => return Ok(None),
+                    Err(e) => return Err(illisible(&e)),
+                }
             };
-            if crate::machine::vidage::est_lien(&meta) || !meta.is_file() {
+            let ordinaire = fichier.metadata().is_ok_and(|m| {
+                use std::os::windows::fs::MetadataExt as _;
+                const ATTRIBUT_POINT_D_ANALYSE: u32 = 0x400;
+                m.is_file() && m.file_attributes() & ATTRIBUT_POINT_D_ANALYSE == 0
+            });
+            if !ordinaire {
                 return Err(refus(
                     tr!(
                         "ce n'est pas un fichier ordinaire du dossier Démarrage commun (lien ou dossier) : rien d'écrit",
@@ -199,10 +214,11 @@ fn lancement(l: &LancementMachine) -> Result<Option<(String, String)>, Resultat>
             let plein = chemin.display().to_string();
             // Ce que lance un raccourci : sa cible, lue sans COM ; illisible, refusé (il pourrait viser Defender).
             let octets = if plein.to_lowercase().ends_with(".lnk") {
-                use std::io::Read;
+                use std::io::Read as _;
                 let mut o = Vec::new();
-                std::fs::File::open(&chemin)
-                    .and_then(|f| f.take(1 << 20).read_to_end(&mut o))
+                (&fichier)
+                    .take(1 << 20)
+                    .read_to_end(&mut o)
                     .map_err(|e| illisible(&e))?;
                 o
             } else {
@@ -223,6 +239,25 @@ fn lancement(l: &LancementMachine) -> Result<Option<(String, String)>, Resultat>
     }
 }
 
+/// Pourquoi ce lancement ne se désactive jamais : une entrée de Windows ou de Defender, ou ce qu'Optimiser garde.
+fn refus_lancement(nom: &str, programme: &str, commande: &str) -> Option<String> {
+    if gestes::run_protege(nom, programme) {
+        return Some(
+            tr!(
+                "entrée de Sécurité Windows ou de Defender : Vanguard ne la désactive jamais ; rien d'écrit",
+                "Windows Security or Defender entry: Vanguard never disables it; nothing written"
+            )
+            .to_string(),
+        );
+    }
+    crate::optimiser::a_garder(nom, commande, false).map(|pourquoi| {
+        trf!(
+            "programme à garder ({pourquoi}) : rien d'écrit",
+            "program to keep ({pourquoi}): nothing written"
+        )
+    })
+}
+
 /// Dans le processus élevé : désactive le programme `l` en écrivant `v` dans StartupApproved, comme le Gestionnaire
 /// des tâches, si le lancement est encore là et n'est ni de Windows, ni de Defender, ni gardé par Optimiser.
 pub(super) fn desactiver(l: &LancementMachine, v: &ValeurDesactivee) -> Resultat {
@@ -239,20 +274,8 @@ pub(super) fn desactiver(l: &LancementMachine, v: &ValeurDesactivee) -> Resultat
         }
         Err(r) => return r,
     };
-    if gestes::run_protege(l.nom(), &programme) {
-        return refus(
-            tr!(
-                "entrée de Sécurité Windows ou de Defender : Vanguard ne la désactive jamais ; rien d'écrit",
-                "Windows Security or Defender entry: Vanguard never disables it; nothing written"
-            )
-            .to_string(),
-        );
-    }
-    if let Some(pourquoi) = crate::optimiser::a_garder(l.nom(), &commande, false) {
-        return refus(trf!(
-            "programme à garder ({pourquoi}) : rien d'écrit",
-            "program to keep ({pourquoi}): nothing written"
-        ));
+    if let Some(pourquoi) = refus_lancement(l.nom(), &programme, &commande) {
+        return refus(pourquoi);
     }
     let cle = match approuvee(l.liste(), true) {
         Ok(Some(k)) => k,
@@ -458,5 +481,23 @@ mod tests {
         assert!(desactivee(Some(&binaire(&[7]))));
         assert!(!desactivee(Some(&binaire(&[2, 0]))));
         assert!(!desactivee(Some(&binaire(&[]))));
+    }
+
+    #[test]
+    fn refus_lancement_garde_windows_defender_et_optimiser() {
+        let sh = r"C:\Windows\System32\SecurityHealthSystray.exe";
+        assert!(refus_lancement("SecurityHealth", sh, sh).is_some());
+        // Un autre nom ne suffit pas à faire passer le programme de Sécurité Windows.
+        assert!(refus_lancement("Mise a jour", sh, sh).is_some());
+        let mp = r"C:\Program Files\Windows Defender\MSASCuiL.exe";
+        assert!(refus_lancement("Windows Defender", mp, mp).is_some());
+        // Ce qu'Optimiser garde : un pilote, Vanguard lui-même.
+        let rt = r"C:\Program Files\Realtek\Audio\RtkNGUI64.exe";
+        assert!(refus_lancement("RTHDVCPL", rt, rt).is_some());
+        let vg = r"C:\Outils\vanguard.exe";
+        assert!(refus_lancement("Vanguard", vg, vg).is_some());
+        // Un programme quelconque peut être désactivé.
+        let x = r"C:\Program Files\Exemple\exemple.exe";
+        assert!(refus_lancement("Exemple", x, x).is_none());
     }
 }

@@ -217,7 +217,7 @@ fn desactiver_ici(t: &CheminTache) -> Resultat {
             .to_string(),
         );
     }
-    let (tache, lue) = match relire(&dossier, &nom) {
+    let (_, lue) = match relire(&dossier, &nom) {
         Ok(Some(x)) => x,
         Ok(None) => {
             return Resultat::rien(
@@ -287,17 +287,21 @@ fn desactiver_ici(t: &CheminTache) -> Resultat {
             "the previous definition cannot be noted ({e}): nothing written"
         ));
     }
-    // Relue juste avant : jamais une tâche changée depuis le jugement.
-    if !lire(&tache, &dossier).is_ok_and(|encore| encore.xml == lue.xml && encore.active) {
-        effacer_note(&nom_note);
-        return refus(
-            tr!(
-                "la tâche a changé entre la lecture et l'écriture ; rien d'écrit",
-                "the task changed between reading and writing; nothing written"
-            )
-            .to_string(),
-        );
-    }
+    // Relue juste avant par une nouvelle demande au planificateur (pas l'objet déjà lu, qui pourrait garder un état
+    // en cache) : jamais une tâche changée depuis le jugement ; c'est cet objet relu qui est désactivé.
+    let tache = match relire(&dossier, &nom) {
+        Ok(Some((encore, l))) if l.xml == lue.xml && l.active && l.chemin == lue.chemin => encore,
+        _ => {
+            effacer_note(&nom_note);
+            return refus(
+                tr!(
+                    "la tâche a changé entre la lecture et l'écriture ; rien d'écrit",
+                    "the task changed between reading and writing; nothing written"
+                )
+                .to_string(),
+            );
+        }
+    };
     let avant = tr!("active", "enabled").to_string();
     if let Err(e) = activer(&tache, false) {
         effacer_note(&nom_note);
@@ -305,12 +309,22 @@ fn desactiver_ici(t: &CheminTache) -> Resultat {
     }
     let apres = match relire(&dossier, &nom) {
         Ok(Some((_, l))) if !l.active && l.chemin == lue.chemin => l,
+        Ok(Some((_, l))) if l.active && l.chemin == lue.chemin => {
+            effacer_note(&nom_note);
+            return refus(
+                tr!(
+                    "la tâche relue est toujours active : rien n'a changé",
+                    "the task read again is still enabled: nothing changed"
+                )
+                .to_string(),
+            );
+        }
         _ => {
             return Resultat::echec(
                 Some(avant),
                 tr!(
-                    "la tâche relue n'est pas désactivée ; la note est gardée",
-                    "the task read again is not disabled; the note is kept"
+                    "la tâche n'a pas pu être relue après le changement : état inconnu, à relire dans le Planificateur de tâches ; la note est gardée",
+                    "the task could not be read again after the change: state unknown, check it in Task Scheduler; the note is kept"
                 )
                 .to_string(),
             );

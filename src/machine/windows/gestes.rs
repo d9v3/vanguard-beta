@@ -2869,7 +2869,9 @@ impl LancementMachine {
         let bon = n > 0
             && n <= RUN_MACHINE_NOM_MAX
             && !nom.chars().any(char::is_control)
-            && (liste != ListeLancement::Dossier || composant_sur(nom));
+            // Un nom court de DOS désignerait le fichier sans être le nom que StartupApproved retient : « fait »
+            // sans effet.
+            && (liste != ListeLancement::Dossier || (composant_sur(nom) && !nom_court_dos(nom)));
         bon.then(|| LancementMachine {
             liste,
             nom: nom.to_string(),
@@ -6719,6 +6721,9 @@ mod tests {
             format!("{LANCEMENT_DESACTIVER}dossier {} {v}", hex_texte(r"a\b.lnk")),
             format!("{LANCEMENT_DESACTIVER}dossier {} {v}", hex_texte("..")),
             format!("{LANCEMENT_REACTIVER}dossier {}", hex_texte(r"..\x")),
+            // Nom court de DOS : désignerait le fichier sans être le nom que StartupApproved retient.
+            format!("{LANCEMENT_DESACTIVER}dossier {} {v}", hex_texte("SECURI~1.LNK")),
+            format!("{LANCEMENT_REACTIVER}dossier {}", hex_texte("MAJ~2.LNK")),
             // Espaces en trop, champ manquant.
             format!("{LANCEMENT_DESACTIVER}run {a}  {v}"),
             format!("{LANCEMENT_DESACTIVER}run {a} {v} "),

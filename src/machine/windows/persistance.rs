@@ -1314,6 +1314,20 @@ mod tests {
     }
 
     #[test]
+    fn tache_signalee_seulement_la_tache_jugee() {
+        let ligne = super::super::gestes::ligne_tache_desactiver("\\", "Mise a jour").unwrap();
+        let suspecte = vec![r"\|Mise a jour|C:\Users\alice\AppData\Local\Temp\a.exe|".to_string()];
+        assert!(tache_signalee(&suspecte, &ligne));
+        // La même tâche relue propre : plus signalée, la ligne est refusée.
+        let propre = vec![r"\|Mise a jour|C:\Program Files\Exemple\maj.exe|".to_string()];
+        assert!(!tache_signalee(&propre, &ligne));
+        // Une autre tâche suspecte ne fait pas passer la ligne d'une tâche différente.
+        let autre = vec![r"\|Autre|C:\Users\alice\AppData\Local\Temp\a.exe|".to_string()];
+        assert!(!tache_signalee(&autre, &ligne));
+        assert!(!tache_signalee(&[], &ligne));
+    }
+
+    #[test]
     fn persistance_jugee() {
         let taches = [
             r"\|Mise a jour|C:\Users\alice\AppData\Local\Temp\a.exe|",

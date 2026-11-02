@@ -13,7 +13,7 @@
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::ErrorKind::NotFound;
-use std::io::{Read as _, Write as _};
+use std::io::{Read as _, Seek as _, Write as _};
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
 
@@ -30,9 +30,11 @@ use crate::ui::{tr, trf};
 const TAILLE_MAX: u64 = 64 << 20;
 
 const GENERIC_READ: u32 = 0x8000_0000;
+const GENERIC_WRITE: u32 = 0x4000_0000;
 const DELETE: u32 = 0x0001_0000;
 const FILE_READ_ATTRIBUTES: u32 = 0x0080;
 const FILE_SHARE_READ: u32 = 0x0001;
+const FILE_SHARE_WRITE: u32 = 0x0002;
 const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const ATTRIBUT_DOSSIER: u32 = 0x10;
@@ -210,7 +212,9 @@ pub(super) fn quarantaine(f: &CheminFichier) -> Resultat {
             );
         }
     }
-    if !chemin_final(&fichier).is_some_and(|c| meme_chemin(&c, f.texte())) {
+    // Le nom sur le disque, casse comprise, est celui de la ligne : la remise redonnera exactement ce nom.
+    let meme_nom = |c: &str| c.rsplit_once('\\').is_some_and(|(_, n)| n == nom);
+    if !chemin_final(&fichier).is_some_and(|c| meme_chemin(&c, f.texte()) && meme_nom(&c)) {
         return refus(
             tr!(
                 "le fichier ouvert n'est pas celui de la ligne (chemin final différent) : rien d'écrit",
@@ -263,6 +267,21 @@ pub(super) fn quarantaine(f: &CheminFichier) -> Resultat {
             .to_string(),
         );
     }
+    // Une seule copie notée par fichier : une seconde quarantaine écraserait la note de la première, dont la copie
+    // deviendrait introuvable pour la remise.
+    let nom_note = nom_note(f);
+    let deja = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(gestes::DEMARRAGE_AVANT_CLE, KEY_QUERY_VALUE | KEY_WOW64_64KEY)
+        .is_ok_and(|k| k.get_raw_value(&nom_note).is_ok());
+    if deja {
+        return refus(
+            tr!(
+                "une copie de ce fichier attend déjà sa remise : la remettre d'abord ; rien d'écrit",
+                "a copy of this file is already waiting to be put back: put it back first; nothing written"
+            )
+            .to_string(),
+        );
+    }
     let empreinte = sha256(&octets);
     let secondes = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -291,7 +310,6 @@ pub(super) fn quarantaine(f: &CheminFichier) -> Resultat {
     let notes = RegKey::predef(HKEY_LOCAL_MACHINE)
         .create_subkey_with_flags(gestes::DEMARRAGE_AVANT_CLE, KEY_SET_VALUE | KEY_WOW64_64KEY)
         .map(|(k, _)| k);
-    let nom_note = nom_note(f);
     if let Err(e) = notes
         .as_ref()
         .map(|k| k.set_value(&nom_note, &note(&empreinte, &copie)))
@@ -376,16 +394,19 @@ pub(super) fn remettre(f: &CheminFichier) -> Resultat {
         let _ = super::quarantaine::retirer(&copie);
     };
     // Le dossier lui-même, ouvert sans suivre de lien : ni lien ni jonction, et bien celui que lit le processus élevé.
-    let dossier_sur = std::fs::OpenOptions::new()
+    // Sa poignée reste ouverte sans partage du retrait jusqu'à la fin : il ne peut être ni renommé ni remplacé par une
+    // jonction entre ce contrôle et l'écriture.
+    let dossier = std::fs::OpenOptions::new()
         .access_mode(FILE_READ_ATTRIBUTES)
-        .share_mode(FILE_SHARE_READ | 0x2 | 0x4)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
         .open(&commun)
-        .is_ok_and(|d| {
-            information(&d).is_some_and(|(a, _)| a & ATTRIBUT_DOSSIER != 0 && a & ATTRIBUT_POINT_D_ANALYSE == 0)
-                && chemin_final(&d).is_some_and(|c| meme_chemin(&c, &commun))
+        .ok()
+        .filter(|d| {
+            information(d).is_some_and(|(a, _)| a & ATTRIBUT_DOSSIER != 0 && a & ATTRIBUT_POINT_D_ANALYSE == 0)
+                && chemin_final(d).is_some_and(|c| meme_chemin(&c, &commun))
         });
-    if !dossier_sur {
+    if dossier.is_none() {
         return refus(
             tr!(
                 "le dossier Démarrage commun est un lien, une jonction ou ne s'ouvre pas : rien d'écrit",
@@ -421,36 +442,74 @@ pub(super) fn remettre(f: &CheminFichier) -> Resultat {
         }
     }
     let absent = tr!("absent", "absent").to_string();
-    let ecrit = std::fs::OpenOptions::new()
+    // Créé seulement s'il n'existe pas (même un lien du même nom fait échouer), sans partage, avec le droit de le
+    // retirer : le chemin final est vérifié avant d'écrire, et la relecture se fait par cette même poignée.
+    let mut nouveau = match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
+        .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
+        .share_mode(0)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(f.texte())
-        .and_then(|mut n| n.write_all(&octets).and_then(|()| n.sync_all()));
-    if let Err(e) = ecrit {
-        return Resultat::echec(Some(absent), e.to_string());
-    }
-    let relu = std::fs::OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(f.texte())
-        .ok()
-        .filter(|n| chemin_final(n).is_some_and(|c| meme_chemin(&c, f.texte())))
-        .and_then(|n| {
-            let mut o = Vec::new();
-            (&n).take(TAILLE_MAX + 1).read_to_end(&mut o).ok().map(|_| o)
-        });
-    if relu.as_ref() != Some(&octets) {
-        return Resultat::echec(
-            Some(absent),
+    {
+        Ok(n) => n,
+        Err(e) => {
+            return refus(trf!(
+                "le fichier ne se crée pas ({e}) : rien d'écrit",
+                "the file cannot be created ({e}): nothing written"
+            ));
+        }
+    };
+    let defaire = |n: File, raison: String| {
+        let retire = marquer_pour_retrait(&n).is_ok();
+        drop(n);
+        if retire {
+            refus(trf!(
+                "{raison} ; le fichier créé est retiré, la note et la copie sont gardées",
+                "{raison}; the created file is removed, the note and the copy are kept"
+            ))
+        } else {
+            Resultat::echec(
+                Some(absent.clone()),
+                trf!(
+                    "{raison} ; le fichier créé n'a pas pu être retiré, la note et la copie sont gardées",
+                    "{raison}; the created file could not be removed, the note and the copy are kept"
+                ),
+            )
+        }
+    };
+    let bon_nom = chemin_final(&nouveau).is_some_and(|c| meme_chemin(&c, f.texte()));
+    if !bon_nom {
+        return defaire(
+            nouveau,
             tr!(
-                "le fichier remis relu n'est pas la copie notée ; la note et la copie sont gardées",
-                "the file put back, read again, is not the noted copy; the note and the copy are kept"
+                "le fichier créé n'est pas au chemin de la ligne (chemin final différent)",
+                "the created file is not at the line's path (different final path)"
             )
             .to_string(),
         );
     }
+    let ecrit = nouveau
+        .write_all(&octets)
+        .and_then(|()| nouveau.sync_all())
+        .and_then(|()| nouveau.seek(std::io::SeekFrom::Start(0)).map(|_| ()));
+    if let Err(e) = ecrit {
+        return defaire(nouveau, trf!("l'écriture a échoué ({e})", "writing failed ({e})"));
+    }
+    let mut relu = Vec::new();
+    let lu = (&nouveau).take(TAILLE_MAX + 1).read_to_end(&mut relu);
+    if lu.is_err() || relu != octets {
+        return defaire(
+            nouveau,
+            tr!(
+                "le fichier remis relu n'est pas la copie notée",
+                "the file put back, read again, is not the noted copy"
+            )
+            .to_string(),
+        );
+    }
+    drop(nouveau);
+    drop(dossier);
     terminer();
     Resultat::fait(absent)
 }

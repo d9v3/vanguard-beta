@@ -819,15 +819,15 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
         Acte::DemarrageQuarantaine(f) => {
             let f = crate::ui::affichable(f.texte());
             trf!(
-                "Mettre de côté le fichier « {f} » du dossier Démarrage commun (relu et rejugé ici ; jamais un lien ni une jonction, jamais un programme de Windows ou de Defender). Une copie vérifiée est gardée dans ProgramData\\Vanguard\\quarantaine avant le retrait ; la remise n'est pas encore proposée dans « Ce que Vanguard a changé »",
-                "Set aside the file “{f}” from the common Startup folder (read and judged again here; never a link or a junction, never a Windows or Defender program). A verified copy is kept in ProgramData\\Vanguard\\quarantaine before removal; putting it back is not offered in “What Vanguard changed” yet"
+                "Mettre de côté le fichier « {f} » du dossier Démarrage commun (relu et rejugé ici ; jamais un lien ni une jonction, jamais un programme de Windows ou de Defender). Une copie vérifiée de son contenu est gardée dans ProgramData\\Vanguard\\quarantaine avant le retrait (seulement le contenu : ses dates, ses droits et ses flux, dont la marque « téléchargé d'Internet », ne seront pas remis) ; la remise n'est pas encore proposée dans « Ce que Vanguard a changé »",
+                "Set aside the file “{f}” from the common Startup folder (read and judged again here; never a link or a junction, never a Windows or Defender program). A verified copy of its content is kept in ProgramData\\Vanguard\\quarantaine before removal (content only: its dates, permissions and streams, including the “downloaded from the Internet” mark, will not be restored); putting it back is not offered in “What Vanguard changed” yet"
             )
         }
         Acte::DemarrageRemettre(f) => {
             let f = crate::ui::affichable(f.texte());
             trf!(
-                "Remettre le fichier « {f} » du dossier Démarrage commun depuis la copie que Vanguard a gardée, si elle est intacte (refusé sinon, et jamais par-dessus un fichier présent)",
-                "Put back the file “{f}” in the common Startup folder from the copy Vanguard kept, if it is intact (refused otherwise, and never over an existing file)"
+                "Remettre le fichier « {f} » du dossier Démarrage commun depuis la copie que Vanguard a gardée, si elle est intacte (refusé sinon, et jamais par-dessus un fichier présent) ; seul le contenu revient : dates, droits et flux, dont la marque « téléchargé d'Internet », ne sont pas remis",
+                "Put back the file “{f}” in the common Startup folder from the copy Vanguard kept, if it is intact (refused otherwise, and never over an existing file); only the content comes back: dates, permissions and streams, including the “downloaded from the Internet” mark, are not restored"
             )
         }
         Acte::LancementDesactiver(l, _) | Acte::LancementReactiver(l) => {
