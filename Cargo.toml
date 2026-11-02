@@ -28,7 +28,7 @@ rustls = { version = "0.23.46", default-features = false, features = ["ring", "s
 notify = { version = "8.2.0", default-features = false }
 rpassword = "7.5.4"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+serde_json = { version = "1.0.154", features = ["raw_value"] }
 # SHA-1 et MD5 de RustCrypto (de la même famille que sha2, déjà là). SHA-1 pour l'empreinte
 # de la machine et la recherche d'un mot de passe dans les fuites (Have I Been Pwned), MD5 et SHA-1 pour les
 # empreintes publiées à côté des vieux téléchargements. De la crypto relue par d'autres, plutôt qu'écrite ici.

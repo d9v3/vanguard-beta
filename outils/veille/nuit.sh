@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # La nuit de la veille continue, SANS IA (outils/veille/LISEZMOI.md) : le worktree de veille remis sur la tête de
 # master, verifier.sh complet, proptest à la graine du jour, l'autotest, le journal des erreurs rapatrié trié par le
-# programme, fuzz de chaque cible (le corpus grandit : c'est l'adaptation), le jeudi Miri et Kani (outils/preuves.sh),
+# programme, les envois des ordinateurs relevés au relais et comptés par le programme, fuzz de chaque cible (le corpus grandit : c'est l'adaptation), le jeudi Miri et Kani (outils/preuves.sh),
 # cargo audit sur les quatre Cargo.lock avec la base RUSTSEC fraîche, canaris des vraies sources lues par le
 # programme, liens.py, la VM par vm-tester.sh s'il existe.
 # Puis le rapport (JSON et Markdown), une seule notification si quelque chose ne va pas, et, sur alerte et dans le
@@ -181,6 +181,35 @@ if [[ -n $ARBRE_OK ]]; then
         --sortie "$TRAVAIL/journal-file.json" >"$TRAVAIL/journal-comptes.txt"
     }
     etape journal "$TRAVAIL/journal.log" journal_de_nuit
+  fi
+
+  # ── 3 quater. Les envois des ordinateurs : relevés au relais (releve-envois.sh, de la copie installée : c'est lui
+  # qui lit le secret de relève, jamais le code de la base), gardés bruts dans retours/envois/ (une quarantaine que
+  # ni l'IA ni le rapport n'ouvrent), puis lus par le programme de la base (src/compte_rendu/flotte.rs : même lecture
+  # stricte que le relais, versions publiées, règles et outils de leur version, une voix par source et par jour).
+  # Seuls des comptes en sortent (etat/flotte/<version>.json) ; les signaux sont calculés plus loin, à part. Relais
+  # pas configuré : les deux étapes sautées, dites, sans notification. ──
+  if [[ -n $SANS_RESEAU ]]; then
+    sauter envois "--sans-reseau"
+  else
+    etape envois "$TRAVAIL/envois.log" env VANGUARD_VEILLE_JOUR="$JOUR" VANGUARD_VEILLE_RETOURS="$RETOURS" \
+      bash "$ICI/releve-envois.sh"
+  fi
+  if [[ ! -f $ARBRE/src/compte_rendu/flotte.rs ]]; then
+    sauter flotte "src/compte_rendu/flotte.rs absent de $BASE"
+  elif [[ ! -d $RETOURS/envois ]]; then
+    if [[ -e ${XDG_CONFIG_HOME:-$HOME/.config}/vanguard-dev/relais-adresse ]]; then
+      sauter flotte "aucun envoi relevé ($RETOURS/envois absent)"
+    else
+      sauter flotte "relais pas configuré : aucun envoi à lire"
+    fi
+  else
+    flotte_de_nuit() {
+      "$ICI/references-flotte.sh" "$ARBRE" "$TRAVAIL/references" || return 1
+      cargo run -q -- compte-rendu flotte --dossier "$RETOURS/envois" --references "$TRAVAIL/references" \
+        --etat "$ETAT/flotte" --aujourdhui "$JOUR" >"$TRAVAIL/flotte-comptes.txt"
+    }
+    etape flotte "$TRAVAIL/flotte.log" flotte_de_nuit
   fi
 
   # ── 4. Fuzz : chaque cible, le corpus suivi avant et après (il grandit), les plantages comparés à ceux connus. ──

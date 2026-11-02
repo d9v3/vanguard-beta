@@ -14,6 +14,8 @@ pub(crate) mod champs;
 // Le lot de schéma 2 (lot A3) : construit et relu seulement, rien ne l'envoie avant A4.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod envoi;
+// La réception chez l'auteur (lot A8) : relève du relais relue et agrégée pour la veille de nuit.
+pub(crate) mod flotte;
 pub(crate) mod journal;
 pub(crate) mod triage;
 
@@ -332,6 +334,33 @@ pub(crate) enum Quoi {
         #[arg(long)]
         sortie: std::path::PathBuf,
     },
+    /// La relève brute du relais relue lot par lot (`retours/envois`) : une ligne de comptes, rien d'écrit.
+    Envois {
+        /// Le dossier de la relève (`retours/envois`).
+        #[arg(long)]
+        dossier: std::path::PathBuf,
+        /// Les références tirées de l'arbre (`outils/veille/references-flotte.sh`).
+        #[arg(long)]
+        references: std::path::PathBuf,
+        /// Le jour de la nuit (AAAA-MM-JJ, UTC) ; aujourd'hui par défaut.
+        #[arg(long)]
+        aujourdhui: Option<String>,
+    },
+    /// La même lecture, agrégée par version dans `veille/etat/flotte` (une voix par source et par jour).
+    Flotte {
+        /// Le dossier de la relève (`retours/envois`).
+        #[arg(long)]
+        dossier: std::path::PathBuf,
+        /// Les références tirées de l'arbre (`outils/veille/references-flotte.sh`).
+        #[arg(long)]
+        references: std::path::PathBuf,
+        /// Le dossier de l'état (`veille/etat/flotte`).
+        #[arg(long)]
+        etat: std::path::PathBuf,
+        /// Le jour de la nuit (AAAA-MM-JJ, UTC) ; aujourd'hui par défaut.
+        #[arg(long)]
+        aujourdhui: Option<String>,
+    },
 }
 
 /// Le contexte des échecs de lecture (`champs::CONTEXTES_ECHEC`).
@@ -383,6 +412,47 @@ pub(crate) fn executer(quoi: &Quoi) -> i32 {
                     1
                 }
             }
+        }
+        Quoi::Envois {
+            dossier,
+            references,
+            aujourdhui,
+        } => flotte_lancee(dossier, references, None, aujourdhui.as_deref()),
+        Quoi::Flotte {
+            dossier,
+            references,
+            etat,
+            aujourdhui,
+        } => flotte_lancee(dossier, references, Some(etat), aujourdhui.as_deref()),
+    }
+}
+
+/// `envois` (sans état, rien d'écrit) ou `flotte` : la ligne de comptes sur la sortie, la phrase sur l'erreur.
+fn flotte_lancee(
+    dossier: &std::path::Path,
+    references: &std::path::Path,
+    etat: Option<&std::path::Path>,
+    aujourdhui: Option<&str>,
+) -> i32 {
+    let fait = flotte::References::lire(references).and_then(|refs| {
+        let demande = flotte::Demande {
+            dossier,
+            references: &refs,
+            etat,
+            aujourdhui: flotte::aujourdhui(aujourdhui)?,
+            etat_max: flotte::ETAT_MAX,
+        };
+        flotte::executer(&demande)
+    });
+    match fait {
+        Ok(c) => {
+            println!("{}", c.ligne());
+            eprintln!("{}", flotte::phrase(&c));
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
         }
     }
 }

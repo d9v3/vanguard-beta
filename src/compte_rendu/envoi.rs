@@ -393,6 +393,11 @@ impl MemoireGo {
     }
 
     /// Les valeurs permises, de 1 à `MEMOIRE_MAX`.
+    #[allow(dead_code)]
+    pub(crate) fn get(self) -> u32 {
+        self.0
+    }
+
     pub(crate) fn permises() -> impl Iterator<Item = u32> {
         (0..u32::BITS)
             .filter_map(|p| 1u32.checked_shl(p))
@@ -828,6 +833,18 @@ impl TexteEnvoye {
     pub(crate) fn gabarit(&self) -> &Gabarit {
         &self.gabarit
     }
+
+    pub(crate) fn contexte(&self) -> Contexte {
+        self.contexte
+    }
+
+    pub(crate) fn regle(&self) -> Option<&Regle> {
+        self.regle.as_ref()
+    }
+
+    pub(crate) fn n(&self) -> Nombre<N_MAX> {
+        self.n
+    }
 }
 
 /// Les corrections d'une règle (plan, §1) : proposées, acceptées, refusées, réussies, échouées (et leurs codes),
@@ -1244,4 +1261,4 @@ fn retirer<T: Entree + Serialize, const M: usize>(
 
 #[cfg(test)]
 #[allow(clippy::arithmetic_side_effects, clippy::as_conversions)]
-mod tests;
+pub(crate) mod tests;

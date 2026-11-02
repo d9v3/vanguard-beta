@@ -53,7 +53,7 @@ fn liste<T: Entree + fmt::Debug, const M: usize>(entrees: Vec<T>) -> Liste<T, M>
     l
 }
 
-fn minimal() -> Lot {
+pub(crate) fn minimal() -> Lot {
     Lot::new(
         Version::new("0.89.1").unwrap(),
         Jour::new("2026-11-01").unwrap(),
@@ -77,7 +77,7 @@ fn minimal() -> Lot {
 }
 
 /// Un lot où chaque champ est écrit : chaque facultatif présent, chaque compte non nul, chaque tableau non vide.
-fn complet() -> Lot {
+pub(crate) fn complet() -> Lot {
     let r = regle("LNX-MAJ-001");
     let mut l = minimal();
     l.version_avant = Version::new("0.89.0");

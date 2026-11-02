@@ -676,12 +676,13 @@ def attend_auteur(r):
 def pas_verts(r):
     """Ce qui n'a pas été vérifié sans être en échec : étapes sautées (de la nuit et de verifier.sh), canaris qui n'ont
     pas lu leur source (http-404, sans-reponse, format…). Jamais compté vert. Rend (sautées, sautées imprévues,
-    canaris) ; une étape sautée sur demande (--sans-…) n'est pas imprévue."""
+    canaris) ; une étape sautée sur demande (--sans-…) n'est pas imprévue, ni celle d'un relais pas encore configuré
+    (envois, flotte : tant que l'auteur ne l'a pas déployé, il n'y a rien à relever)."""
     sautees, imprevues = [], []
     for e in r["etapes"]:
         if e["etat"] == "sautee":
             sautees.append(e["nom"])
-            if not str(e.get("raison", "")).startswith("--sans-"):
+            if not str(e.get("raison", "")).startswith(("--sans-", "relais pas configuré")):
                 imprevues.append(e["nom"])
     for e in r.get("verifier") or []:
         if e["etat"] == "sautee":

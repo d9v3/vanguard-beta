@@ -34,6 +34,8 @@ manquée (ordinateur éteint) n'est pas rattrapée en journée (`Persistent=fals
    `src/compte_rendu/triage.rs`) : les entrées regroupées en causes (champs validés de la ligne `§` seulement, jamais
    le détail ni la commande), rangées par score, 20 en file au plus ; la suite d'une nuit à l'autre dans
    `etat/causes.json`. Voir « Journal des erreurs » plus bas.
+   Puis la **relève des envois** du relais (`releve-envois.sh`, étape `envois`) et leur lecture par le programme de la
+   base (`vanguard compte-rendu flotte`, étape `flotte`). Voir « Envois » plus bas.
 4. `outils/fuzz.sh tout 300` : corpus suivi avant/après (il grandit : c'est l'adaptation), plantages nouveaux
    (SHA-256 jamais vu), cibles du banc absentes de `fuzz.sh`. Le dimanche, `cargo fuzz cmin`.
    **Le jeudi seulement** (la relecture hebdomadaire du vendredi lit les sept dernières nuits ; celle du vendredi,
@@ -61,6 +63,42 @@ manquée (ordinateur éteint) n'est pas rattrapée en journée (`Persistent=fals
 
 Jamais de silence : une nuit reportée deux fois de suite, une partie qui trouve le verrou pris (alerte.sh envoie alors
 quand même le résumé de la nuit), une partie arrêtée par systemd (`TimeoutStartSec`) ou à la main, notifient.
+
+## Envois
+
+Les lots que les ordinateurs envoient au relais (`relais/worker.js`, effacés à la lecture) sont relevés chaque nuit,
+puis lus par le programme ; ni l'IA ni le rapport n'ouvrent ce qui vient d'un lot.
+
+- **Configuration**, lue à chaque nuit, jamais dans le dépôt (le relais n'est pas encore déployé) :
+  `~/.config/vanguard-dev/relais-adresse`, l'origine du relais seule sur sa ligne (`https://hote[:port]`, sans chemin
+  ni paramètre ; le script ajoute `/v1/releve`), et `~/.config/vanguard-dev/relais-secret`, le secret de relève
+  (32 à 256 caractères `[A-Za-z0-9_-]`, fichier ordinaire à soi, `chmod 600`). Sans le premier, les deux étapes sont
+  « sautées : relais pas configuré » sans notification ; avec l'adresse mais sans secret, c'est une étape sautée
+  imprévue, notifiée.
+- **Relève** (`releve-envois.sh`) : `GET /v1/releve`, le secret dans l'en-tête (passé à curl par son entrée standard,
+  jamais en argument), HTTPS seulement (TLS 1.2 au moins), aucune redirection, 20 s pour se connecter, 2 min par
+  réponse, 20 réponses au plus. Chaque réponse est gardée telle quelle, une par ligne, dans
+  `~/.local/share/vanguard/retours/envois/AAAA-MM-JJ.jsonl` (dossier 700, fichiers 600), même illisible (le relais
+  l'a déjà effacée) : 5 Mio par réponse, 8 Mio par nuit (le reste attend au relais), 90 jours gardés. Sans Internet,
+  relais occupé (429) ou en panne (5xx) : sautée, la raison dite ; secret refusé (401), redirection, réponse trop
+  grosse ou illisible : en échec. `--sans-reseau` saute la relève, pas la lecture.
+- **Références** (`references-flotte.sh`) tirées de l'arbre de la veille : `versions.tsv` (chaque étiquette `vX.Y.Z`
+  et sa date, en UTC) et, pour les trois mineures les plus récentes, les règles (`tests/regles-connues.txt`, sans les
+  retirées), les outils (`commande: "…"` de `src/main.rs`) et les fichiers suivis sous `src/` à l'étiquette.
+- **Lecture** (`src/compte_rendu/flotte.rs`) : chaque lot passe par `envoi::lire`, la lecture stricte du relais. Ne
+  sont pas comptés, mais comptés comme refusés : enveloppe hors motif (jour, source, réseau large), lot trop gros ou
+  hors schéma (JSON cassé, clé en trop, séquence de terminal), version non publiée, plus ancienne que les trois
+  dernières mineures ou datée d'avant sa publication, `version_avant` douteuse, jour trop loin de la réception,
+  version sans références, règle, outil ou fichier absents de l'arbre de la version, doublon. Un lot où le détecteur
+  de secrets sonne va en **quarantaine** : compté, jamais lu plus loin. Une réponse illisible est comptée
+  « illisible » ; une raison de refus du relais inconnue, « inconnue ». La ligne de comptes de la nuit est dans
+  `nuits/<jour>/flotte-comptes.txt`.
+- **Agrégats** : une voix par source et par jour de réception (la source est l'empreinte que le relais calcule avec
+  le sel du jour) : chaque nombre pris à son maximum sur les lots d'une source, puis sommé d'une source à l'autre ;
+  le même résultat quel que soit l'ordre des lots. Par clé : `[sources, réseaux larges, somme]`, pour tous et par
+  groupe (famille, classe de machine). État dans `etat/flotte/<version>.json` (2 Mio au plus, écrit de façon
+  atomique ; un jour reçu il y a plus de 29 jours est figé ; gardé tant que sa mineure est parmi les trois dernières)
+  et `etat/flotte/releve.json` (ce que chaque nuit a lu et refusé, 120 jours). Aucun signal n'en est encore tiré.
 
 ## Sur alerte, avec IA
 
@@ -191,7 +229,9 @@ master a changé depuis : réinstaller. Le worktree `~/Projects/vanguard-veille`
 
 - `outils/veille/essai.sh` : toute la chaîne sur des faux, sous `unshare -rn` (sans réseau), sans IA ; vérifie les
   rapports, une seule notification, la priorité et la file, chaque garde-fou, les arguments exacts de claude et que
-  le texte hostile d'une KEV n'atteint jamais l'IA.
+  le texte hostile d'une KEV n'atteint jamais l'IA. La relève et la lecture des envois y tournent contre un faux
+  relais HTTPS sur 127.0.0.1 (certificat jetable) qui sert des lots hostiles ; le vrai programme, compilé avant
+  d'entrer dans le banc, les lit.
 - À la main, sans IA, sur une base réelle : `nuit.sh --sans-ia --sans-vm --fuzz-secondes 15` avec `VANGUARD_VEILLE`
   et `VANGUARD_VEILLE_ARBRE` vers un dossier d'essai.
 - `bash -n` et l'analyse Python passent par `outils/verifier.sh` ; shellcheck n'est pas installé ici.
@@ -208,7 +248,7 @@ Pushover, Gmail…) sans accord.
 ## Fichiers
 
 `commun.sh` (chemins, verrou, budget, ligne de commande de claude), `nuit.sh`, `alerte.sh`, `hebdo.sh`, `matin.sh`,
-`rapport.py` (rapports, état, entrées sûres de l'IA), `consignes-*.md` et `schema-*.json` (prompts fixes et formes
+`rapport.py` (rapports, état, entrées sûres de l'IA), `releve-envois.sh` et `references-flotte.sh` (envois), `consignes-*.md` et `schema-*.json` (prompts fixes et formes
 des réponses, versionnés), `reglages-claude.json` (permissions et bac à sable), `systemd/`, `installer.sh`, `essai.sh`.
 État : `~/.cache/vanguard-dev/veille/` (rapports, `etat/`, `canaris/<jour>/` gardés 7 jours, `nuits/<jour>/` 15
 jours, `ia/`, `journal/`).
