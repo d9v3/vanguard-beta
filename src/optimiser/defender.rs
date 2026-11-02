@@ -273,20 +273,17 @@ fn nombre(v: Option<&str>) -> Option<u32> {
 }
 
 /// La ligne du processus élevé qui met la préférence à `v` (`vanguard:defender…`, faite par WMI) : bloquer (1) ou
-/// audit (2). Une règle ASR jamais réglée avant (`None`) se retire, pour annuler le réglage posé ici. Couper (0),
-/// avertir (6) ou remettre « non configuré » un réglage n'a pas de ligne (`None`) : le processus élevé ne baisse
-/// jamais Defender, et ces protections ne se défont pas (`systeme::reglage_protege`).
+/// audit (2). Couper (0), avertir (6), retirer une règle ASR ou remettre « non configuré » un réglage n'a pas de ligne
+/// (`None`) : le processus élevé ne baisse jamais Defender, et ces protections ne se défont pas
+/// (`systeme::reglage_protege`).
 pub fn commande(pref: Pref, v: Option<&str>) -> Option<String> {
     use crate::machine::gestes::{self, ModeAsr, ReglageDefender, ValeurDefender};
     let reglage = match pref {
         Pref::Asr(id) => {
-            let mode = match v {
-                None => ModeAsr::Retirer,
-                Some(_) => match nombre(v)? {
-                    1 => ModeAsr::Bloquer,
-                    2 => ModeAsr::Audit,
-                    _ => return None,
-                },
+            let mode = match nombre(v)? {
+                1 => ModeAsr::Bloquer,
+                2 => ModeAsr::Audit,
+                _ => return None,
             };
             return gestes::ligne_defender_asr(id, mode);
         }
@@ -370,11 +367,8 @@ mod tests {
             commande(r, Some("mp:2")).unwrap(),
             "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 audit"
         );
-        // Jamais réglée avant : retirée à l'annulation, pas mise à « coupée ».
-        assert_eq!(
-            commande(r, None).unwrap(),
-            "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 retirer"
-        );
+        // Jamais réglée avant : aucune ligne, une règle ASR ne se retire pas (protection, jamais annulée).
+        assert_eq!(commande(r, None), None);
         assert_eq!(commande(r, Some("mp:x")), None);
         // Couper ou avertir : aucune ligne, le processus élevé ne baisse pas Defender.
         assert_eq!(commande(r, Some("mp:0")), None);

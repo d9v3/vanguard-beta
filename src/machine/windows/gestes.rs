@@ -1157,7 +1157,8 @@ fn powershell_guillemets(nom: &NomFichier) -> String {
 /// Le verbe d'un réglage de Defender : `vanguard:defender <reglage> <valeur>`, chaque réglage n'admettant que des
 /// valeurs qui protègent (`ReglageDefender::permises`).
 pub(crate) const DEFENDER: &str = "vanguard:defender ";
-/// Le verbe d'une règle ASR : `vanguard:defender-asr <GUID d'Optimiser> <bloquer|audit|retirer>`.
+/// Le verbe d'une règle ASR : `vanguard:defender-asr <GUID d'Optimiser> <bloquer|audit>` (jamais retirer : voir
+/// `ModeAsr`).
 pub(crate) const DEFENDER_ASR: &str = "vanguard:defender-asr ";
 /// Le verbe d'une exclusion à retirer : `vanguard:defender-exclusion-retirer <chemin|processus|extension> <hex>`.
 pub(crate) const DEFENDER_EXCLUSION_RETIRER: &str = "vanguard:defender-exclusion-retirer ";
@@ -1324,39 +1325,35 @@ impl ValeurDefender {
     }
 }
 
-/// Ce qu'une ligne `defender-asr` fait d'une règle.
+/// Ce qu'une ligne `defender-asr` fait d'une règle. Jamais la retirer : Optimiser ne défait pas ses règles ASR
+/// (réglages protégés, écartés de l'annulation), aucune ligne légitime ne le demande, et l'enfant élevé ne saurait
+/// pas prouver qu'une règle présente vient d'Optimiser plutôt que de la personne ou d'une stratégie.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ModeAsr {
     Bloquer,
     Audit,
-    /// La règle retirée de la liste : l'annulation d'un réglage d'Optimiser, que la console élevée dit moins
-    /// protégée (`Acte::affaiblit`).
-    Retirer,
 }
 
 impl ModeAsr {
-    pub(crate) const TOUS: [ModeAsr; 3] = [ModeAsr::Bloquer, ModeAsr::Audit, ModeAsr::Retirer];
+    pub(crate) const TOUS: [ModeAsr; 2] = [ModeAsr::Bloquer, ModeAsr::Audit];
 
     pub(crate) fn mot(self) -> &'static str {
         match self {
             ModeAsr::Bloquer => "bloquer",
             ModeAsr::Audit => "audit",
-            ModeAsr::Retirer => "retirer",
         }
     }
 
-    /// L'action de la règle (AttackSurfaceReductionRules_Actions) : 1 bloque, 2 audit ; aucune pour la retirer.
-    pub(crate) fn action(self) -> Option<u8> {
+    /// L'action de la règle (AttackSurfaceReductionRules_Actions) : 1 bloque, 2 audit.
+    pub(crate) fn action(self) -> u8 {
         match self {
-            ModeAsr::Bloquer => Some(1),
-            ModeAsr::Audit => Some(2),
-            ModeAsr::Retirer => None,
+            ModeAsr::Bloquer => 1,
+            ModeAsr::Audit => 2,
         }
     }
 
     /// Faut-il écrire, d'après l'action lue de la règle (`None` : absente de la liste) ? Bloquer ou auditer
-    /// seulement ce qui protège moins (absente ou 0 coupée, 2 audit, 6 avertit, 1 bloque ; inconnue : 0) ; retirer
-    /// seulement une règle présente.
+    /// seulement ce qui protège moins (absente ou 0 coupée, 2 audit, 6 avertit, 1 bloque ; inconnue : 0).
     pub(crate) fn a_ecrire(self, lue: Option<i64>) -> bool {
         let rang = |a: Option<i64>| -> u8 {
             match a {
@@ -1366,10 +1363,7 @@ impl ModeAsr {
                 _ => 0,
             }
         };
-        match self.action() {
-            Some(a) => rang(lue) < rang(Some(i64::from(a))),
-            None => lue.is_some(),
-        }
+        rang(lue) < rang(Some(i64::from(self.action())))
     }
 }
 
@@ -1449,21 +1443,19 @@ pub(crate) enum ValeurWmi {
 }
 
 /// La méthode statique de MSFT_MpPreference et ses paramètres pour un acte de Defender : Set pour un réglage, Add
-/// pour une règle ASR (Set remplacerait toute la liste), Remove pour la retirer ou retirer une exclusion. `None` pour
-/// les autres actes, et pour les menaces (MSFT_MpThreat.Remove, sans paramètre).
+/// pour une règle ASR (Set remplacerait toute la liste), Remove pour retirer une exclusion. `None` pour les autres
+/// actes, et pour les menaces (MSFT_MpThreat.Remove, sans paramètre).
 pub(crate) fn methode_defender(acte: &Acte) -> Option<(&'static str, Vec<(&'static str, ValeurWmi)>)> {
     const IDS: &str = "AttackSurfaceReductionRules_Ids";
     match acte {
         Acte::Defender(r, v) => Some(("Set", vec![(r.propriete(), r.valeur_wmi(*v))])),
         Acte::DefenderAsr(id, m) => {
             let ids = (IDS, ValeurWmi::Textes(vec![(*id).to_string()]));
-            Some(match m.action() {
-                Some(a) => (
-                    "Add",
-                    vec![ids, ("AttackSurfaceReductionRules_Actions", ValeurWmi::Octets(vec![a]))],
-                ),
-                None => ("Remove", vec![ids]),
-            })
+            let actions = (
+                "AttackSurfaceReductionRules_Actions",
+                ValeurWmi::Octets(vec![m.action()]),
+            );
+            Some(("Add", vec![ids, actions]))
         }
         Acte::DefenderExclusionRetirer(g, e) => Some((
             "Remove",
@@ -1555,8 +1547,8 @@ impl Acte {
             | Acte::IfeoSilencieux(..)
             | Acte::ServiceGuillemets(_)
             | Acte::Defender(..)
+            | Acte::DefenderAsr(..)
             | Acte::DefenderExclusionRetirer(..) => true,
-            Acte::DefenderAsr(_, m) => *m != ModeAsr::Retirer,
             Acte::PareFeuPublic(p) => p.durcit(),
             Acte::ReseauCategorie(r) => r.categorie == Categorie::Public,
             // Retirer des menaces nettoie : ni une protection remise, ni une remise qui affaiblit.
@@ -1571,8 +1563,8 @@ impl Acte {
             Acte::Service(s) => s.affaiblit,
             Acte::PareFeuPublic(p) => p.affaiblit(),
             Acte::ReseauCategorie(r) => r.categorie == Categorie::Prive,
-            Acte::DefenderAsr(_, m) => *m == ModeAsr::Retirer,
             Acte::PareFeuActif
+            | Acte::DefenderAsr(..)
             | Acte::Vider(_)
             | Acte::ViderFileImpression
             | Acte::MettreDeCote(_)
@@ -3383,10 +3375,9 @@ mod tests {
         assert!(ModeAsr::Audit.a_ecrire(None) && ModeAsr::Audit.a_ecrire(Some(0)));
         assert!(!ModeAsr::Audit.a_ecrire(Some(1)) && !ModeAsr::Audit.a_ecrire(Some(6)));
         assert!(!ModeAsr::Audit.a_ecrire(Some(2)));
-        assert!(ModeAsr::Retirer.a_ecrire(Some(1)) && !ModeAsr::Retirer.a_ecrire(None));
     }
 
-    /// Une règle ASR des listes d'Optimiser, en minuscules : une autre est refusée, même pour la retirer.
+    /// Une règle ASR des listes d'Optimiser, en minuscules : une autre est refusée ; aucune ne se retire.
     #[test]
     fn defender_asr_de_la_liste() {
         for id in ASR_BASE.iter().chain(&ASR_BUREAUTIQUE) {
@@ -3394,8 +3385,7 @@ mod tests {
                 let l = ligne_defender_asr(id, m).unwrap();
                 let a = analyser_acte(&l).unwrap();
                 assert!(matches!(a, Acte::DefenderAsr(i, m2) if i == *id && m2 == m), "{l}");
-                assert_eq!(a.affaiblit(), m == ModeAsr::Retirer);
-                assert_eq!(a.durcit(), m != ModeAsr::Retirer);
+                assert!(a.durcit() && !a.affaiblit());
             }
         }
         let id = ASR_BASE[0];
@@ -3410,7 +3400,10 @@ mod tests {
         );
         for l in [
             "vanguard:defender-asr b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4 bloquer",
-            "vanguard:defender-asr 00000000-0000-0000-0000-000000000000 retirer",
+            "vanguard:defender-asr 00000000-0000-0000-0000-000000000000 bloquer",
+            // Retirer une règle connue couperait une protection posée par la personne ou une stratégie.
+            "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 retirer",
+            "vanguard:defender-asr 9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2 retirer",
             "vanguard:defender-asr 56A863A9-875E-4185-98A7-B882C64B5CE5 bloquer",
             "vanguard:defender-asr {56a863a9-875e-4185-98a7-b882c64b5ce5} bloquer",
             "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 coupe",
@@ -3435,17 +3428,6 @@ mod tests {
                     ),
                     ("AttackSurfaceReductionRules_Actions", ValeurWmi::Octets(vec![2])),
                 ]
-            ))
-        );
-        let a = analyser_acte(&ligne_defender_asr(id, ModeAsr::Retirer).unwrap()).unwrap();
-        assert_eq!(
-            methode_defender(&a),
-            Some((
-                "Remove",
-                vec![(
-                    "AttackSurfaceReductionRules_Ids",
-                    ValeurWmi::Textes(vec![id.to_string()])
-                )]
             ))
         );
         let a = analyser_acte("vanguard:defender pua bloquer").unwrap();

@@ -182,10 +182,8 @@ fn temps_reel(acte: &Acte) -> Resultat {
     if let Err(r) = appeler_preferences(acte) {
         return Resultat::echec(Some(avant), r.to_string());
     }
-    for essai in 0..RELECTURES {
-        if essai > 0 {
-            std::thread::sleep(PAUSE);
-        }
+    for _ in 0..RELECTURES {
+        std::thread::sleep(PAUSE);
         if etat().0 == Some(true) {
             return Resultat::fait(avant);
         }
@@ -255,7 +253,10 @@ fn action_asr(id: &str) -> LectureAsr {
         return LectureAsr::Illisible;
     };
     let ids = l.get(IDS_ASR).map(Valeur::textes).unwrap_or_default();
-    if ids.iter().any(|x| x.starts_with("N/A")) {
+    // Un élément qui n'est pas un texte décalerait les règles par rapport à leurs actions (`textes` l'écarte) :
+    // illisible, plutôt que l'action d'une autre règle.
+    let decalee = matches!(l.get(IDS_ASR), Some(Valeur::Liste(v)) if v.len() != ids.len());
+    if decalee || ids.iter().any(|x| x.starts_with("N/A")) {
         return LectureAsr::Illisible;
     }
     let actions = l.get(ACTIONS_ASR).map(Valeur::liste).unwrap_or_default();
@@ -267,8 +268,7 @@ fn action_asr(id: &str) -> LectureAsr {
     )
 }
 
-/// Une règle ASR des listes d'Optimiser mise en blocage ou en audit (jamais baissée), ou retirée pour annuler un
-/// réglage d'Optimiser (la console élevée l'a dit moins protégé avant l'accord).
+/// Une règle ASR des listes d'Optimiser mise en blocage ou en audit (jamais baissée).
 fn regle_asr(id: &str, m: ModeAsr, acte: &Acte) -> Resultat {
     let LectureAsr::Lue(lue) = action_asr(id) else {
         return illisible();
@@ -278,23 +278,21 @@ fn regle_asr(id: &str, m: ModeAsr, acte: &Acte) -> Resultat {
         lue.map_or_else(|| "absente".to_string(), |a| a.to_string())
     ));
     if !m.a_ecrire(lue) {
-        return Resultat::rien(match m {
-            ModeAsr::Retirer => tr!("règle absente, rien d'écrit", "rule not present, nothing written").to_string(),
-            ModeAsr::Bloquer | ModeAsr::Audit => tr!(
+        return Resultat::rien(
+            tr!(
                 "règle déjà réglée au moins ainsi, rien d'écrit",
                 "rule already set at least this way, nothing written"
             )
             .to_string(),
-        });
+        );
     }
     if let Err(r) = appeler_preferences(acte) {
         return Resultat::echec(Some(avant), r.to_string());
     }
-    match (m, action_asr(id)) {
-        (ModeAsr::Retirer, LectureAsr::Lue(None)) => Resultat::fait(avant),
-        (ModeAsr::Bloquer | ModeAsr::Audit, LectureAsr::Lue(relue)) if !m.a_ecrire(relue) => Resultat::fait(avant),
-        (_, LectureAsr::Lue(_)) => Resultat::echec(Some(avant), pourquoi_garde()),
-        (_, LectureAsr::Illisible) => Resultat::echec(
+    match action_asr(id) {
+        LectureAsr::Lue(relue) if !m.a_ecrire(relue) => Resultat::fait(avant),
+        LectureAsr::Lue(_) => Resultat::echec(Some(avant), pourquoi_garde()),
+        LectureAsr::Illisible => Resultat::echec(
             Some(avant),
             tr!(
                 "règles relues illisibles après l'écriture : rien n'est compté comme fait",
@@ -367,7 +365,8 @@ fn retirer_exclusion(g: GenreExclusion, valeur: &str, acte: &Acte) -> Resultat {
         return Resultat::echec(Some(avant), r.to_string());
     }
     match exclusions::lecture_wmi() {
-        Some((apres, _)) if exclusions::cachee(&apres) => Resultat::echec(
+        // Cachée par une politique à la relecture, la liste peut revenir vide : jamais prise pour un retrait.
+        Some((apres, politiques)) if exclusions::cachee(&apres) || politiques.aux_admins => Resultat::echec(
             Some(avant),
             tr!(
                 "exclusions cachées à la relecture : rien n'est compté comme fait",

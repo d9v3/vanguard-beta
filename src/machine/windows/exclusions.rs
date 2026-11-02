@@ -175,8 +175,8 @@ pub(super) fn juger(chemins: &[String], processus: &[String], extensions: &[Stri
         Some(lignes) => c
             .corriger(
                 tr!(
-                    "Si vous n'avez pas ajouté ces exclusions vous-même, les retirer, puis lancer une analyse complète",
-                    "If you did not add these exclusions yourself, remove them, then run a full scan"
+                    "Si vous n'avez pas ajouté ces exclusions vous-même, les retirer (Vanguard ne les remet pas : une exclusion voulue se rajoute dans Sécurité Windows), puis lancer une analyse complète",
+                    "If you did not add these exclusions yourself, remove them (Vanguard does not put them back: a wanted exclusion is added again in Windows Security), then run a full scan"
                 ),
                 &lignes,
             )

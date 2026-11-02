@@ -703,9 +703,12 @@ fn montrer_menaces_defender(noms: &[String], detections: &[Detection]) {
         // sans note : rien à défaire.
         && crate::machine::appliquer_sans_noter(&[crate::machine::gestes::ligne_defender_menaces_retirer()]).0
     {
+        // Réussi veut dire « plus aucune menace active, relu » : soit retirées, soit déjà toutes en quarantaine.
+        // L'historique des détections montré plus haut peut n'en avoir aucune d'active : jamais « supprimées »
+        // pour ce cas.
         trp!(
-            "  {VERT}✔ Menaces supprimées.{RESET}",
-            "  {VERT}✔ Threats deleted.{RESET}"
+            "  {VERT}✔ Defender ne garde plus aucune menace active (relu).{RESET}",
+            "  {VERT}✔ Defender no longer holds any active threat (read back).{RESET}"
         );
     }
 }

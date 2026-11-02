@@ -84,10 +84,10 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                     }
                     assert_eq!(gestes::ligne_defender(r, v).as_deref(), Some(l.as_str()));
                 }
-                // Une règle des listes d'Optimiser seulement ; seul « retirer » affaiblit, et il le dit.
+                // Une règle des listes d'Optimiser seulement, mise en blocage ou en audit : jamais retirée.
                 gestes::Acte::DefenderAsr(id, m) => {
                     assert_eq!(gestes::asr_connue(id), Some(id));
-                    assert_eq!(a.affaiblit(), m == gestes::ModeAsr::Retirer);
+                    assert!(a.durcit() && !a.affaiblit() && gestes::ModeAsr::TOUS.contains(&m));
                     assert_eq!(gestes::ligne_defender_asr(id, m).as_deref(), Some(l.as_str()));
                 }
                 // Une exclusion relue à l'identique, sans contrôle, 260 unités au plus.

@@ -717,10 +717,6 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
                     "Règle ASR de Defender « {n} » : audit (signale sans bloquer ; jamais baissée si elle bloque déjà)",
                     "Defender ASR rule “{n}”: audit (reports, does not block; never lowered if it already blocks)"
                 ),
-                ModeAsr::Retirer => trf!(
-                    "Retirer la règle ASR de Defender « {n} » (annule le réglage posé par l'optimisation)",
-                    "Remove the Defender ASR rule “{n}” (undoes the setting made by the optimization)"
-                ),
             }
         }
         Acte::DefenderExclusionRetirer(g, e) => {

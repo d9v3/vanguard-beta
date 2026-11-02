@@ -516,24 +516,34 @@ fn appeler_dans_ce_fil(
     // SAFETY: definition est vivante ; le nom est une chaîne terminée par un zéro ; les deux emplacements reçoivent
     // les signatures d'entrée et de sortie.
     unsafe { definition.GetMethod(&HSTRING::from(nom), 0, &raw mut signature, &raw mut sortie) }?;
-    let signature = signature.ok_or_else(|| Error::from(E_POINTER))?;
-    // SAFETY: signature d'entrée vivante, rendue par GetMethod ; SpawnInstance en fait un objet à remplir.
-    let entree = unsafe { signature.SpawnInstance(0) }?;
-    for (champ, valeur) in parametres {
-        let v = valeur.variant()?;
-        // SAFETY: entree est vivante ; le nom est terminé par un zéro ; `v` vit pendant l'appel (Put en garde une
-        // copie) ; type 0 : celui de la signature.
-        unsafe { entree.Put(&HSTRING::from(*champ), 0, &raw const v, 0) }?;
-    }
+    // Une méthode sans paramètre d'entrée (MSFT_MpThreat.Remove) n'a pas de signature d'entrée : GetMethod la rend
+    // nulle, et ExecMethod s'appelle alors sans objet d'entrée. Des paramètres sans signature : erreur, jamais
+    // un appel qui les perdrait en silence.
+    let entree = match signature {
+        None if parametres.is_empty() => None,
+        None => return Err(Error::from(E_POINTER)),
+        Some(signature) => {
+            // SAFETY: signature d'entrée vivante, rendue par GetMethod ; SpawnInstance en fait un objet à remplir.
+            let entree = unsafe { signature.SpawnInstance(0) }?;
+            for (champ, valeur) in parametres {
+                let v = valeur.variant()?;
+                // SAFETY: entree est vivante ; le nom est terminé par un zéro ; `v` vit pendant l'appel (Put en
+                // garde une copie) ; type 0 : celui de la signature.
+                unsafe { entree.Put(&HSTRING::from(*champ), 0, &raw const v, 0) }?;
+            }
+            Some(entree)
+        }
+    };
     let mut resultat = None;
-    // SAFETY: services, entree et les BSTR vivent pendant l'appel ; `resultat` reçoit les paramètres de sortie.
+    // SAFETY: services, entree (ou son absence) et les BSTR vivent pendant l'appel ; `resultat` reçoit les
+    // paramètres de sortie.
     unsafe {
         services.ExecMethod(
             &chemin,
             &BSTR::from(nom),
             WBEM_GENERIC_FLAG_TYPE(0),
             None,
-            &entree,
+            entree.as_ref(),
             Some(&raw mut resultat),
             None,
         )
