@@ -48,6 +48,46 @@ pub(crate) struct Mesures {
     /// Les jours clos : jour → règle → résumé.
     #[serde(default)]
     pub jours: BTreeMap<String, BTreeMap<String, Resume>>,
+    /// Ce que la cache des passages automatiques a fait de chaque règle de sa table (`super::cache::TABLE`) : des
+    /// nombres seulement, rangés sous l'identifiant de la règle.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cache: BTreeMap<String, Cache>,
+}
+
+/// Comparaisons récentes gardées par règle : ce que juge l'auto-réglage pour raccourcir une durée.
+const RECENTES_MAX: usize = 16;
+
+/// Les mesures de la cache pour une règle, depuis le début (des nombres, jamais un texte lu sur la machine).
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Cache {
+    /// Résultats repris au lieu d'être vérifiés.
+    #[serde(default)]
+    pub repris: u32,
+    /// Vérifications à neuf de la règle par un passage automatique.
+    #[serde(default)]
+    pub a_neuf: u32,
+    /// La somme des âges des résultats repris (s) : l'âge moyen est `age_total_s / repris`.
+    #[serde(default)]
+    pub age_total_s: u64,
+    /// Le temps gagné (ms) : pour chaque reprise, la médiane de la semaine de la règle.
+    #[serde(default)]
+    pub gagne_ms: u64,
+    /// Vérifications à neuf juste après une reprise, et celles dont l'état différait du résultat repris.
+    #[serde(default)]
+    pub comparees: u32,
+    #[serde(default)]
+    pub ecarts: u32,
+    /// Les dernières comparaisons : (date du passage en secondes depuis 1970, écart), 16 au plus.
+    #[serde(default)]
+    pub recentes: Vec<(i64, bool)>,
+}
+
+impl Cache {
+    /// L'âge moyen d'un résultat repris (s).
+    pub(crate) fn age_moyen_s(&self) -> u64 {
+        self.age_total_s.checked_div(u64::from(self.repris)).unwrap_or(0)
+    }
 }
 
 fn mediane(v: &mut [u64]) -> u64 {
@@ -75,6 +115,14 @@ pub(crate) fn lire_de(octets: &[u8]) -> Mesures {
     serde_json::from_slice::<Mesures>(octets)
         .ok()
         .filter(|m| m.v <= 1 && m.jours.len() <= 400 && m.en_cours.len() <= 2_000)
+        .map(|mut m| {
+            m.cache.retain(|r, _| super::cache::en_cache(r).is_some());
+            for c in m.cache.values_mut() {
+                let trop = c.recentes.len().saturating_sub(RECENTES_MAX);
+                c.recentes.drain(..trop);
+            }
+            m
+        })
         .unwrap_or_default()
 }
 
@@ -150,6 +198,37 @@ impl Mesures {
             .unwrap_or(0)
     }
 
+    /// Note ce que la cache a fait à ce passage (`super::cache::Evenement`), le jour `jour` : le temps gagné par une
+    /// reprise est la médiane de la semaine de la règle, mesurée sur ses vérifications à neuf.
+    pub(crate) fn ajouter_cache(&mut self, evenements: &[super::cache::Evenement], jour: chrono::NaiveDate) {
+        use super::cache::Evenement;
+        for ev in evenements {
+            match ev {
+                Evenement::Repris { regle, age_s } => {
+                    let gagne = mediane(&mut self.medianes(regle, jour, 0, 6));
+                    let c = self.cache.entry((*regle).to_string()).or_default();
+                    c.repris = c.repris.saturating_add(1);
+                    c.age_total_s = c.age_total_s.saturating_add(*age_s);
+                    c.gagne_ms = c.gagne_ms.saturating_add(gagne);
+                }
+                Evenement::ANeuf { regle } => {
+                    let c = self.cache.entry((*regle).to_string()).or_default();
+                    c.a_neuf = c.a_neuf.saturating_add(1);
+                }
+                Evenement::Compare { regle, ecart, quand } => {
+                    let c = self.cache.entry((*regle).to_string()).or_default();
+                    c.comparees = c.comparees.saturating_add(1);
+                    c.ecarts = c.ecarts.saturating_add(u32::from(*ecart));
+                    c.recentes.push((*quand, *ecart));
+                    let trop = c.recentes.len().saturating_sub(RECENTES_MAX);
+                    c.recentes.drain(..trop);
+                }
+            }
+        }
+        self.cache.retain(|r, _| super::cache::en_cache(r).is_some());
+        self.v = 1;
+    }
+
     /// Les jours où quelque chose a été mesuré.
     fn jours_mesures(&self) -> usize {
         self.jours.len() + usize::from(!self.en_cours.is_empty())
@@ -158,19 +237,34 @@ impl Mesures {
 
 /// Note les durées d'un bilan. Pendant un autotest manuel, rien n'est noté : ses durées vont dans son résultat.
 pub(crate) fn noter(durees: &[(&str, Duration)]) {
+    noter_avec(durees, &[]);
+}
+
+/// `noter`, avec ce que la cache a fait à ce passage automatique, en une écriture.
+pub(crate) fn noter_avec(durees: &[(&str, Duration)], evenements: &[super::cache::Evenement]) {
     noter_dans(
         &crate::socle::dossier_local(),
         durees,
+        evenements,
         chrono::Local::now().date_naive(),
     );
 }
 
-fn noter_dans(dossier: &std::path::Path, durees: &[(&str, Duration)], jour: chrono::NaiveDate) {
-    if durees.is_empty() || super::lecture_seule::active() || !crate::socle::ecriture_sure(dossier) {
+fn noter_dans(
+    dossier: &std::path::Path,
+    durees: &[(&str, Duration)],
+    evenements: &[super::cache::Evenement],
+    jour: chrono::NaiveDate,
+) {
+    if (durees.is_empty() && evenements.is_empty())
+        || super::lecture_seule::active()
+        || !crate::socle::ecriture_sure(dossier)
+    {
         return;
     }
     let mut m = lire_dans(dossier);
     m.ajouter(durees, jour);
+    m.ajouter_cache(evenements, jour);
     if let Ok(o) = serde_json::to_vec(&m) {
         let _ = crate::sceau::ecrire_dans(dossier, MESURES, &o);
     }
@@ -401,10 +495,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         let duree = [("COM-FIC-001", Duration::from_secs(1))];
         super::super::lecture_seule::poser();
-        noter_dans(&d, &duree, jour("2026-10-23"));
+        noter_dans(&d, &duree, &[], jour("2026-10-23"));
         super::super::lecture_seule::relever_pour_le_test();
         assert!(!d.join(MESURES).exists());
-        noter_dans(&d, &duree, jour("2026-10-23"));
+        noter_dans(&d, &duree, &[], jour("2026-10-23"));
         assert_eq!(lire_dans(&d).en_cours["COM-FIC-001"], vec![1000]);
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -441,5 +535,63 @@ mod tests {
             let m = lire_de(texte.as_bytes());
             let _ = juger(&m, chrono::NaiveDate::from_ymd_opt(2026, 10, 23).unwrap(), |_| Duration::from_secs(600));
         }
+    }
+
+    /// La cache se mesure : reprises, vérifications à neuf, âge moyen, temps gagné (médiane de la semaine), écarts ;
+    /// seules les règles de sa table, 16 comparaisons récentes au plus, des nombres seulement.
+    #[test]
+    fn la_cache_se_mesure() {
+        use super::super::cache::Evenement;
+        let d = crate::socle::dossier_local().join("essai-mesures-cache");
+        let _ = std::fs::remove_dir_all(&d);
+        let j = jour("2026-10-23");
+        noter_dans(
+            &d,
+            &[("LNX-MAJ-001", Duration::from_millis(400))],
+            &[Evenement::ANeuf { regle: "LNX-MAJ-001" }],
+            j,
+        );
+        noter_dans(
+            &d,
+            &[],
+            &[Evenement::Repris {
+                regle: "LNX-MAJ-001",
+                age_s: 3_000,
+            }],
+            j,
+        );
+        let mut evenements = vec![
+            Evenement::ANeuf { regle: "LNX-MAJ-001" },
+            Evenement::Repris {
+                regle: "LNX-PFE-001",
+                age_s: 1,
+            },
+        ];
+        for i in 0..20 {
+            evenements.push(Evenement::Compare {
+                regle: "LNX-MAJ-001",
+                ecart: i % 2 == 0,
+                quand: i,
+            });
+        }
+        noter_dans(&d, &[("LNX-MAJ-001", Duration::from_millis(600))], &evenements, j);
+        let m = lire_dans(&d);
+        assert_eq!(
+            m.cache.keys().collect::<Vec<_>>(),
+            ["LNX-MAJ-001"],
+            "hors de la table : rien"
+        );
+        let c = &m.cache["LNX-MAJ-001"];
+        assert_eq!((c.repris, c.a_neuf, c.age_moyen_s(), c.gagne_ms), (1, 2, 3_000, 400));
+        assert_eq!((c.comparees, c.ecarts, c.recentes.len()), (20, 10, RECENTES_MAX));
+        assert_eq!(c.recentes.first(), Some(&(4, true)));
+        // Un fichier qui en garderait plus, ou pour une autre règle, est ramené dans ses bornes.
+        let mut texte = serde_json::to_value(&m).unwrap();
+        texte["cache"]["LNX-PFE-001"] = serde_json::json!({"repris": 1});
+        texte["cache"]["LNX-MAJ-001"]["recentes"] = serde_json::json!(vec![serde_json::json!([1, true]); 40]);
+        let relu = lire_de(&serde_json::to_vec(&texte).unwrap());
+        assert_eq!(relu.cache.len(), 1);
+        assert_eq!(relu.cache["LNX-MAJ-001"].recentes.len(), RECENTES_MAX);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

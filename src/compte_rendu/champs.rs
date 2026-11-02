@@ -335,6 +335,7 @@ pub(crate) const CONTEXTES_ECHEC: &[&str] = &[
     "annulation/remettre",
     "audit/pq-box",
     "audit/tls-pq",
+    "autotest/cache",
     "autotest/dernier",
     "bilan/pqc-ssh",
     "bilan/pqc-sshd",

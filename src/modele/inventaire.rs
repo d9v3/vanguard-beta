@@ -97,6 +97,8 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     // programme du compte ferait attendre le bilan 30 minutes sur une règle bloquée.
     scelle(crate::autotest::mesures::MESURES, "autotest::mesures"),
     scelle(crate::autotest::reglage::REGLAGE, "autotest::reglage"),
+    // La cache du passage horaire : scellée, sinon un programme du compte ferait reprendre un résultat inventé.
+    scelle(crate::autotest::cache::CACHE, "autotest::cache"),
     // La tête du journal des événements : retirer la fin du journal sans elle se voit.
     scelle(crate::modele::journal::TETE, "modele::journal"),
     local("sceaux.json", "sceau"),
@@ -673,6 +675,13 @@ mod tests {
             "appris.json",
             1,
             "chemin montré dans les messages ; la liste se lit par sceau::juge",
+        ),
+        (
+            "autotest/cache.rs",
+            "autotest/cache.json",
+            1,
+            "taille demandée au système avant toute lecture : plus de 10 Mio, il n'est pas ouvert ; le contenu se lit et \
+             s'écrit par le sceau",
         ),
         (
             "autotest/mod.rs",

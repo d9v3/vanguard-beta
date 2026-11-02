@@ -479,7 +479,11 @@ fn plus_recente_sur_le_meme(h: &Historique, id: &str) -> Option<String> {
 /// relue, et la réussite de chaque groupe en plus.
 pub(crate) fn defaire(ids: &[String], en_plus: &[Vec<String>]) -> (Vec<(String, Issue)>, Vec<bool>) {
     let tient = crate::reseau::wifi_public::tient_le_dns();
-    defaire_dans(ids, en_plus, tient, &crate::reseau::dossier_local())
+    // Une annulation change l'ordinateur : la cache des passages automatiques ne reprend rien d'avant.
+    crate::autotest::cache::oublier();
+    let r = defaire_dans(ids, en_plus, tient, &crate::reseau::dossier_local());
+    crate::autotest::cache::oublier();
+    r
 }
 
 pub(super) fn defaire_dans(

@@ -9,9 +9,15 @@
 //!   semaines de suite : il monte de `DELAI` à `DELAI_LONG`, jamais plus haut, jamais sous la valeur du code. Chaque
 //!   montée est notée (date, règle, avant, après, mesure), 50 au plus, dans `autotest/reglage.json`, scellé.
 //!
-//! Chaque montée s'annule seule dans Paramètres (la règle n'est plus jamais montée), « tout remettre » vide le fichier
-//! et coupe le réglage, l'interrupteur à « non » rend les délais du code sans rien oublier. Fichier douteux (sceau) :
-//! les délais du code, et rien n'y est réécrit tout seul.
+//! - la **durée de la cache** du passage horaire (`super::cache`) d'une règle dont le résultat repris s'est trop
+//!   souvent révélé dépassé (un écart sur trois vérifications à neuf qui suivent une reprise, quatre au moins) : elle
+//!   descend de 15 minutes, jamais sous le plancher de `cache::TABLE`, jamais au-dessus de la durée du code. La cache
+//!   elle-même suit l'interrupteur : coupé ou fichier douteux, rien n'est repris.
+//!
+//! Chaque montée et chaque durée raccourcie s'annule seule dans Paramètres (la règle n'est plus jamais changée),
+//! « tout remettre » vide le fichier et coupe le réglage, l'interrupteur à « non » rend les valeurs du code sans rien
+//! oublier ; chacun de ces gestes vide aussi la cache. Fichier douteux (sceau) : les valeurs du code, et rien n'y est
+//! réécrit tout seul.
 //!
 //! Ce qui ne bouge **jamais** ici : un seuil, un niveau, une règle ou une liste de détection, le blocage, la fraîcheur
 //! des sources de menaces ; un bilan lance toujours toutes ses règles. Ce module n'importe ni `risk` ni un module de
@@ -57,6 +63,28 @@ pub(crate) struct Montee {
     pub mesure_ms: u64,
 }
 
+/// Une durée de la cache raccourcie (`super::cache::TABLE`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Raccourcie {
+    /// Le jour (« AAAA-MM-JJ ») du dernier raccourci.
+    pub quand: String,
+    pub regle: String,
+    /// La durée d'avant (celle du code) et d'après, en minutes.
+    pub avant_min: u16,
+    pub apres_min: u16,
+    /// Ce qui l'a décidée : les vérifications à neuf jugées, et celles qui contredisaient le résultat repris.
+    pub comparees: u32,
+    pub ecarts: u32,
+    /// La date (secondes depuis 1970) de la dernière vérification jugée : un nouveau raccourci ne juge que les
+    /// suivantes.
+    pub depuis_s: i64,
+}
+
+/// Vérifications à neuf jugées au moins avant de raccourcir une durée de la cache, et part d'écarts (un sur trois).
+const COMPAREES_MIN: usize = 4;
+const ECARTS_SUR: usize = 3;
+
 /// L'état de l'auto-réglage.
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -75,6 +103,12 @@ pub(crate) struct Etat {
     /// Les règles dont la montée a été annulée : jamais remontées.
     #[serde(default)]
     pub refusees: BTreeSet<String>,
+    /// Les durées de la cache raccourcies, une par règle de `cache::TABLE` au plus.
+    #[serde(default)]
+    pub raccourcies: Vec<Raccourcie>,
+    /// Les règles dont le raccourci a été annulé : leur durée reste celle du code.
+    #[serde(default)]
+    pub gardees: BTreeSet<String>,
 }
 
 /// Ce que le fichier donne.
@@ -134,8 +168,33 @@ impl Etat {
         while self.frolent_depuis.len() > SUIVIES_MAX {
             self.frolent_depuis.pop_last();
         }
+        self.gardees.retain(|r| super::cache::en_cache(r).is_some());
+        let gardees = &self.gardees;
+        let mut vues = BTreeSet::new();
+        self.raccourcies.retain(|r| {
+            super::cache::en_cache(&r.regle).is_some_and(|t| {
+                r.avant_min == t.duree_min
+                    && r.apres_min >= t.plancher_min
+                    && t.duree_min
+                        .checked_sub(r.apres_min)
+                        .is_some_and(|d| d > 0 && d % super::cache::PAS_MIN == 0)
+            }) && date(&r.quand).is_some()
+                && !gardees.contains(&r.regle)
+                && vues.insert(r.regle.clone())
+        });
         self.v = 1;
         self
+    }
+
+    /// La durée de chaque règle raccourcie de la cache, telle que le passage horaire l'applique ; `None` quand le
+    /// réglage est coupé : pas de cache.
+    fn pour_le_cache(&self) -> Option<BTreeMap<String, u16>> {
+        (!self.coupe).then(|| {
+            self.raccourcies
+                .iter()
+                .map(|r| (r.regle.clone(), r.apres_min))
+                .collect()
+        })
     }
 
     /// Les règles au délai monté, telles que le bilan les applique : aucune quand le réglage est coupé.
@@ -171,6 +230,20 @@ impl Lu {
             Lu::Absent | Lu::Douteux => BTreeSet::new(),
         }
     }
+
+    /// Ce que la cache du passage horaire peut faire : rien (`None`) si le réglage est coupé ou son fichier douteux.
+    fn pour_le_cache(&self) -> Option<BTreeMap<String, u16>> {
+        match self {
+            Lu::Absent => Some(BTreeMap::new()),
+            Lu::Cru(e) => e.pour_le_cache(),
+            Lu::Douteux => None,
+        }
+    }
+}
+
+/// Les durées raccourcies de la cache sur cet ordinateur ; `None` : coupé ou douteux, la cache ne sert pas.
+pub(crate) fn pour_le_cache() -> Option<BTreeMap<String, u16>> {
+    lire_dans(&crate::socle::dossier_local()).pour_le_cache()
 }
 
 /// Les règles au délai monté sur cet ordinateur (le bilan les lit une fois).
@@ -227,6 +300,52 @@ fn ajuster_etat(
     *e != avant
 }
 
+/// Raccourcit la durée de la cache d'une règle dont les vérifications à neuf contredisent trop souvent le résultat
+/// repris juste avant (`super::mesures::Cache::recentes`, comparaisons d'après le dernier raccourci) : 15 minutes de
+/// moins, jamais sous le plancher de `cache::TABLE`. Une règle gardée (raccourci annulé) ne change plus. Rend vrai si
+/// l'état a changé.
+fn raccourcir_etat(
+    e: &mut Etat,
+    aujourd_hui: chrono::NaiveDate,
+    mesures: &BTreeMap<String, super::mesures::Cache>,
+) -> bool {
+    let avant = e.clone();
+    for t in super::cache::TABLE {
+        if e.gardees.contains(t.regle) {
+            continue;
+        }
+        let Some(m) = mesures.get(t.regle) else {
+            continue;
+        };
+        let deja = e.raccourcies.iter().find(|r| r.regle == t.regle).cloned();
+        let depuis = deja.as_ref().map_or(i64::MIN, |r| r.depuis_s);
+        let jugees: Vec<(i64, bool)> = m.recentes.iter().copied().filter(|(q, _)| *q > depuis).collect();
+        let ecarts = jugees.iter().filter(|(_, x)| *x).count();
+        if jugees.len() < COMPAREES_MIN || ecarts.saturating_mul(ECARTS_SUR) < jugees.len() {
+            continue;
+        }
+        let actuelle = deja.as_ref().map_or(t.duree_min, |r| r.apres_min);
+        let apres = actuelle.saturating_sub(super::cache::PAS_MIN).max(t.plancher_min);
+        if apres >= actuelle {
+            continue;
+        }
+        let r = Raccourcie {
+            quand: jour(aujourd_hui),
+            regle: t.regle.to_string(),
+            avant_min: t.duree_min,
+            apres_min: apres,
+            comparees: u32::try_from(jugees.len()).unwrap_or(u32::MAX),
+            ecarts: u32::try_from(ecarts).unwrap_or(u32::MAX),
+            depuis_s: jugees.iter().map(|(q, _)| *q).max().unwrap_or(depuis),
+        };
+        match e.raccourcies.iter_mut().find(|x| x.regle == t.regle) {
+            Some(x) => *x = r,
+            None => e.raccourcies.push(r),
+        }
+    }
+    *e != avant
+}
+
 /// Après un bilan noté (`super::mesures::noter`) : ajuste les délais d'après les mesures de cet ordinateur. Rien
 /// pendant un autotest manuel, ni quand le réglage est coupé ou son fichier douteux.
 pub(crate) fn ajuster() {
@@ -274,7 +393,9 @@ fn ajuster_dans(
         Lu::Cru(x) => avant.as_ref() == Some(&x),
         Lu::Douteux => false,
     };
-    if ajuster_etat(&mut e, aujourd_hui, &frolent, delai_du_code) && inchange {
+    let monte = ajuster_etat(&mut e, aujourd_hui, &frolent, delai_du_code);
+    let raccourci = raccourcir_etat(&mut e, aujourd_hui, &mesures.cache);
+    if (monte || raccourci) && inchange {
         let _ = ecrire_dans(dossier, &e.borne());
     }
 }
@@ -288,10 +409,12 @@ fn pour_changer(dossier: &Path) -> Etat {
     }
 }
 
-/// Met le réglage en marche ou le coupe ; les montées restent, appliquées seulement en marche.
+/// Met le réglage en marche ou le coupe ; les changements restent, appliqués seulement en marche. La cache est vidée
+/// d'abord : rien de ce qu'elle gardait ne revient après le geste (et s'il échoue, rien n'a changé).
 fn mettre_en_marche_dans(dossier: &Path, en_marche: bool) -> std::io::Result<()> {
     let mut e = pour_changer(dossier);
     e.coupe = !en_marche;
+    super::cache::oublier_dans(dossier, true)?;
     ecrire_dans(dossier, &e.borne())
 }
 
@@ -305,6 +428,22 @@ fn annuler_dans(dossier: &Path, regle: &str) -> std::io::Result<bool> {
         return Ok(false);
     }
     e.refusees.insert(regle.to_string());
+    super::cache::oublier_dans(dossier, true)?;
+    ecrire_dans(dossier, &e.borne())?;
+    Ok(true)
+}
+
+/// Annule le raccourci de la durée de la cache de `regle` : sa durée redevient celle du code, et elle ne sera plus
+/// raccourcie. Rend vrai si elle l'était.
+fn annuler_duree_dans(dossier: &Path, regle: &str) -> std::io::Result<bool> {
+    let mut e = pour_changer(dossier);
+    let avant = e.raccourcies.len();
+    e.raccourcies.retain(|r| r.regle != regle);
+    if e.raccourcies.len() == avant {
+        return Ok(false);
+    }
+    e.gardees.insert(regle.to_string());
+    super::cache::oublier_dans(dossier, true)?;
     ecrire_dans(dossier, &e.borne())?;
     Ok(true)
 }
@@ -312,6 +451,7 @@ fn annuler_dans(dossier: &Path, regle: &str) -> std::io::Result<bool> {
 /// Tout remettre comme à l'origine : plus rien de monté, suivi ni refusé, et le réglage coupé jusqu'à ce qu'on le
 /// remette en marche.
 fn tout_remettre_dans(dossier: &Path) -> std::io::Result<()> {
+    super::cache::oublier_dans(dossier, true)?;
     ecrire_dans(
         dossier,
         &Etat {
@@ -354,8 +494,12 @@ pub(crate) fn etat_court() -> String {
     match lire_dans(&crate::socle::dossier_local()) {
         Lu::Absent => tr!("oui", "yes").to_string(),
         Lu::Cru(e) if e.coupe => tr!("non", "no").to_string(),
-        Lu::Cru(e) if e.montees.is_empty() => tr!("oui", "yes").to_string(),
-        Lu::Cru(e) => trf!("oui ({} changement(s))", "yes ({} change(s))", e.montees.len()),
+        Lu::Cru(e) if e.montees.is_empty() && e.raccourcies.is_empty() => tr!("oui", "yes").to_string(),
+        Lu::Cru(e) => trf!(
+            "oui ({} changement(s))",
+            "yes ({} change(s))",
+            e.montees.len() + e.raccourcies.len()
+        ),
         Lu::Douteux => tr!(
             "oui (fichier douteux : délais d'origine)",
             "yes (doubtful file: original time limits)"
@@ -377,6 +521,27 @@ fn montree(m: &Montee) -> String {
         mesure / 60,
         mesure % 60
     )
+}
+
+/// Un raccourci, tel qu'il se montre : « LNX-MAJ-001 : résultat repris jusqu'à 90 → 75 min, le 2026-11-02 (2
+/// écart(s) sur 5) ».
+fn raccourcie_montree(r: &Raccourcie) -> String {
+    trf!(
+        "{} : résultat repris jusqu'à {} → {} min, le {} ({} écart(s) sur {} vérification(s))",
+        "{}: result reused for up to {} → {} min, on {} ({} mismatch(es) in {} check(s))",
+        r.regle,
+        r.avant_min,
+        r.apres_min,
+        r.quand,
+        r.ecarts,
+        r.comparees
+    )
+}
+
+/// Un changement en vigueur, comme le menu les numérote.
+enum Changement {
+    Montee(Montee),
+    Raccourcie(Raccourcie),
 }
 
 fn dire_echec(e: &std::io::Error) {
@@ -401,19 +566,45 @@ fn dire_en_marche(en_marche: bool) {
     }
 }
 
-fn dire_annule(regle: &str) {
-    match annuler_dans(&crate::socle::dossier_local(), regle) {
-        Ok(true) => trp!(
-            "  {VERT}✔{RESET} {regle} : délai remis à {} min, et il ne montera plus.",
-            "  {VERT}✔{RESET} {regle}: time limit back to {} min, and it will not go up again.",
-            secondes(DELAI) / 60
-        ),
-        Ok(false) => trp!(
-            "  Rien n'a changé : le délai de cette règle n'est pas monté.",
-            "  Nothing changed: this rule's time limit has not gone up."
-        ),
-        Err(e) => dire_echec(&e),
+/// Annule la montée (`montee`) ou le raccourci (`duree`) de `regle` ; rend vrai si quelque chose a été annulé.
+fn dire_annule(regle: &str, montee: bool, duree: bool) -> bool {
+    let dossier = crate::socle::dossier_local();
+    let mut fait = false;
+    if montee {
+        match annuler_dans(&dossier, regle) {
+            Ok(true) => {
+                fait = true;
+                trp!(
+                    "  {VERT}✔{RESET} {regle} : délai remis à {} min, et il ne montera plus.",
+                    "  {VERT}✔{RESET} {regle}: time limit back to {} min, and it will not go up again.",
+                    secondes(DELAI) / 60
+                );
+            }
+            Ok(false) => {}
+            Err(e) => {
+                dire_echec(&e);
+                return true;
+            }
+        }
     }
+    if duree {
+        match annuler_duree_dans(&dossier, regle) {
+            Ok(true) => {
+                fait = true;
+                trp!(
+                    "  {VERT}✔{RESET} {regle} : résultat repris de nouveau jusqu'à {} min (la valeur du code), et ce ne sera plus raccourci.",
+                    "  {VERT}✔{RESET} {regle}: result reused again for up to {} min (the code's value), and it will not be shortened again.",
+                    super::cache::en_cache(regle).map_or(0, |t| t.duree_min)
+                );
+            }
+            Ok(false) => {}
+            Err(e) => {
+                dire_echec(&e);
+                return true;
+            }
+        }
+    }
+    fait
 }
 
 fn dire_tout_remis() {
@@ -436,7 +627,14 @@ pub(crate) fn commande(mots: &[String]) {
         ["oui" | "o" | "yes" | "y" | "on"] => dire_en_marche(true),
         ["non" | "n" | "no" | "off"] => dire_en_marche(false),
         ["tout-remettre" | "reset" | "origine" | "original"] => dire_tout_remis(),
-        ["annuler" | "undo", regle] => dire_annule(&regle.to_uppercase()),
+        ["annuler" | "undo", regle] => {
+            if !dire_annule(&regle.to_uppercase(), true, true) {
+                trp!(
+                    "  Rien n'a changé : cette règle n'a ni délai monté ni durée raccourcie.",
+                    "  Nothing changed: this rule has neither a raised time limit nor a shortened duration."
+                );
+            }
+        }
         _ => trp!(
             "  Valeurs : oui, non, tout-remettre, annuler <règle> (par exemple « annuler LNX-NOY-001 »).",
             "  Values: yes, no, reset, undo <rule> (for example “undo LNX-NOY-001”)."
@@ -444,40 +642,55 @@ pub(crate) fn commande(mots: &[String]) {
     }
 }
 
-/// L'état et les changements en vigueur ; rend les montées montrées, numérotées à partir de 1.
-fn afficher() -> Vec<Montee> {
+/// L'état, les changements en vigueur et ce que garde la cache ; rend les changements montrés, numérotés à partir
+/// de 1.
+fn afficher() -> Vec<Changement> {
     titre(tr!("Réglage automatique de la vitesse", "Automatic speed tuning"));
     afficher_aligne("  ", explication(), 2, GRIS);
     println!();
     let lu = lire_dans(&crate::socle::dossier_local());
     trp!("  En marche : {}", "  On: {}", etat_court());
-    let montees = match lu {
-        Lu::Cru(e) => e.montees,
+    let changements: Vec<Changement> = match lu {
+        Lu::Cru(e) => e
+            .montees
+            .into_iter()
+            .map(Changement::Montee)
+            .chain(e.raccourcies.into_iter().map(Changement::Raccourcie))
+            .collect(),
         Lu::Absent | Lu::Douteux => Vec::new(),
     };
-    if montees.is_empty() {
+    if changements.is_empty() {
         trp!(
-            "  Aucun changement : chaque règle a le délai du code.",
-            "  No change: every rule has the code's time limit."
+            "  Aucun changement : chaque règle a les valeurs du code.",
+            "  No change: every rule has the code's values."
         );
     }
-    for (i, m) in montees.iter().enumerate() {
-        afficher_aligne(&format!("  {TOUCHE}{:>2}{RESET} ", i + 1), &montree(m), 5, "");
+    for (i, c) in changements.iter().enumerate() {
+        let texte = match c {
+            Changement::Montee(m) => montree(m),
+            Changement::Raccourcie(r) => raccourcie_montree(r),
+        };
+        afficher_aligne(&format!("  {TOUCHE}{:>2}{RESET} ", i + 1), &texte, 5, "");
     }
-    montees
+    println!();
+    trp!("  Cache du passage horaire :", "  Hourly pass cache:");
+    for l in super::cache::lignes() {
+        afficher_aligne("    ", &l, 4, GRIS);
+    }
+    changements
 }
 
 /// Ce que fait le réglage, en une phrase.
 pub(crate) fn explication() -> &'static str {
     tr!(
-        "Oui : le bilan lance d'abord ses règles les plus longues, et le délai d'une règle qui le frôle deux semaines de suite monte de 10 à 30 minutes, jamais plus. Les règles et ce qu'elles jugent ne changent jamais. Chaque changement est noté avec sa valeur d'avant et s'annule ici. Rien n'est envoyé.",
-        "Yes: the check starts its longest rules first, and the time limit of a rule that comes close to it two weeks in a row goes up from 10 to 30 minutes, never more. The rules and how they judge never change. Each change is noted with its previous value and can be undone here. Nothing is sent."
+        "Oui : le bilan lance d'abord ses règles les plus longues, et le délai d'une règle qui le frôle deux semaines de suite monte de 10 à 30 minutes, jamais plus. Le passage horaire reprend aussi, une fois sur deux au plus, le résultat récent de quelques vérifications lentes (mises à jour, fichiers sensibles), avec son âge ; un bilan que vous lancez vérifie tout à neuf, et une durée qui se trompe trop souvent raccourcit. Les règles et ce qu'elles jugent ne changent jamais. Chaque changement est noté avec sa valeur d'avant et s'annule ici. Rien n'est envoyé.",
+        "Yes: the check starts its longest rules first, and the time limit of a rule that comes close to it two weeks in a row goes up from 10 to 30 minutes, never more. The hourly pass also reuses, every other time at most, the recent result of a few slow checks (updates, sensitive files), with its age; a check you start checks everything afresh, and a duration that is too often wrong gets shorter. The rules and how they judge never change. Each change is noted with its previous value and can be undone here. Nothing is sent."
     )
 }
 
 /// L'écran de Paramètres : l'état, les changements, et de quoi les défaire.
 pub(crate) fn menu() {
-    let montees = afficher();
+    let changements = afficher();
     let reponse = demander(tr!(
         "\n  Numéro : annuler celui-ci ; « oui » ou « non » : mettre en marche ou couper ; « t » : tout remettre comme à l'origine ; Entrée pour revenir : ",
         "\n  Number: undo this one; “yes” or “no”: turn on or off; “a”: put everything back to the original; Enter to go back: "
@@ -492,12 +705,18 @@ pub(crate) fn menu() {
         dire_en_marche(true);
     } else if matches!(reponse.to_lowercase().as_str(), "n" | "non" | "no") {
         dire_en_marche(false);
-    } else if let Some(m) = reponse
+    } else if let Some(c) = reponse
         .parse::<usize>()
         .ok()
-        .and_then(|i| montees.get(i.checked_sub(1)?))
+        .and_then(|i| changements.get(i.checked_sub(1)?))
     {
-        dire_annule(&m.regle);
+        let fait = match c {
+            Changement::Montee(m) => dire_annule(&m.regle, true, false),
+            Changement::Raccourcie(r) => dire_annule(&r.regle, false, true),
+        };
+        if !fait {
+            trp!("  Rien n'a changé.", "  Nothing changed.");
+        }
     } else {
         trp!("  Rien n'a changé.", "  Nothing changed.");
     }
@@ -697,6 +916,124 @@ mod tests {
         m.ajouter(&[("LNX-TST-010", Duration::from_mins(9))], j("2026-11-08"));
         ajuster_dans(&d, j("2026-11-08"), &m, du_code);
         assert_eq!(std::fs::read(d.join(REGLAGE)).unwrap(), avant);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn comparaisons(paires: &[(i64, bool)]) -> BTreeMap<String, super::super::mesures::Cache> {
+        BTreeMap::from([(
+            "LNX-MAJ-001".to_string(),
+            super::super::mesures::Cache {
+                recentes: paires.to_vec(),
+                ..Default::default()
+            },
+        )])
+    }
+
+    /// Un écart sur trois vérifications à neuf (quatre au moins) : la durée de la cache descend de 15 minutes, jamais
+    /// sous son plancher ; les comparaisons déjà jugées ne comptent plus ; annulé, elle reste à la valeur du code.
+    #[test]
+    fn la_duree_de_la_cache_raccourcit_dans_ses_bornes() {
+        let t = super::super::cache::en_cache("LNX-MAJ-001").unwrap();
+        let mut e = Etat::default();
+        // Trois comparaisons, ou un écart sur quatre : rien.
+        assert!(!raccourcir_etat(
+            &mut e,
+            j("2026-11-02"),
+            &comparaisons(&[(1, true), (2, true), (3, true)])
+        ));
+        assert!(!raccourcir_etat(
+            &mut e,
+            j("2026-11-02"),
+            &comparaisons(&[(1, true), (2, false), (3, false), (4, false)])
+        ));
+        let mut paires = vec![(1, true), (2, false), (3, true), (4, false)];
+        assert!(raccourcir_etat(&mut e, j("2026-11-02"), &comparaisons(&paires)));
+        assert_eq!(
+            e.raccourcies,
+            vec![Raccourcie {
+                quand: "2026-11-02".into(),
+                regle: "LNX-MAJ-001".into(),
+                avant_min: t.duree_min,
+                apres_min: t.duree_min - 15,
+                comparees: 4,
+                ecarts: 2,
+                depuis_s: 4,
+            }]
+        );
+        assert_eq!(e.pour_le_cache().unwrap()["LNX-MAJ-001"], t.duree_min - 15);
+        // Les mêmes comparaisons ne le refont pas.
+        assert!(!raccourcir_etat(&mut e, j("2026-11-03"), &comparaisons(&paires)));
+        // De nouvelles, encore et encore : jamais sous le plancher.
+        for k in 0..20 {
+            paires.extend((0..4).map(|i| (10 + k * 4 + i, true)));
+            raccourcir_etat(
+                &mut e,
+                j("2026-11-04"),
+                &comparaisons(&paires[paires.len().saturating_sub(16)..]),
+            );
+        }
+        assert_eq!(e.raccourcies[0].apres_min, t.plancher_min);
+        assert_eq!(e.clone().borne().raccourcies.len(), 1);
+        // Hors des bornes (au-dessus de la durée du code, sous le plancher, autre règle) : retiré à la lecture.
+        let mut faux = e.clone();
+        faux.raccourcies[0].apres_min = t.duree_min + 15;
+        assert_eq!(faux.borne().raccourcies.len(), 0);
+        let mut faux = e.clone();
+        faux.raccourcies[0].apres_min = t.plancher_min - 15;
+        assert_eq!(faux.borne().raccourcies.len(), 0);
+        let mut faux = e.clone();
+        faux.raccourcies[0].regle = "LNX-PFE-001".into();
+        assert_eq!(faux.borne().raccourcies.len(), 0);
+        // Coupé : pas de cache du tout.
+        e.coupe = true;
+        assert_eq!(e.pour_le_cache(), None);
+    }
+
+    /// Annuler un raccourci, couper, tout remettre : la durée du code revient exactement, la règle n'est plus
+    /// raccourcie, et chaque geste vide la cache (même un fichier douteux).
+    #[test]
+    fn chaque_geste_vide_la_cache_et_annule_exactement() {
+        let d = dossier_d_essai("cache");
+        let cache = d.join(super::super::cache::CACHE);
+        let poser = || crate::sceau::ecrire_dans(&d, super::super::cache::CACHE, b"{}").unwrap();
+        let mut e = Etat::default();
+        assert!(raccourcir_etat(
+            &mut e,
+            j("2026-11-02"),
+            &comparaisons(&[(1, true), (2, true), (3, true), (4, true)])
+        ));
+        ecrire_dans(&d, &e).unwrap();
+        assert_eq!(lire_dans(&d).pour_le_cache().unwrap().len(), 1);
+
+        poser();
+        mettre_en_marche_dans(&d, false).unwrap();
+        assert!(!cache.exists());
+        assert_eq!(lire_dans(&d).pour_le_cache(), None);
+        poser();
+        mettre_en_marche_dans(&d, true).unwrap();
+        assert!(!cache.exists());
+        assert_eq!(lire_dans(&d).pour_le_cache().unwrap().len(), 1);
+
+        poser();
+        assert!(annuler_duree_dans(&d, "LNX-MAJ-001").unwrap());
+        assert!(!cache.exists());
+        assert!(!annuler_duree_dans(&d, "LNX-MAJ-001").unwrap());
+        let Lu::Cru(mut apres) = lire_dans(&d) else {
+            panic!("illisible")
+        };
+        assert_eq!(apres.pour_le_cache(), Some(BTreeMap::new()));
+        assert!(!raccourcir_etat(
+            &mut apres,
+            j("2026-11-09"),
+            &comparaisons(&[(5, true), (6, true), (7, true), (8, true)])
+        ));
+
+        // Un fichier de cache douteux : « tout remettre » le vide aussi.
+        poser();
+        std::fs::write(&cache, b"{\"v\":1}").unwrap();
+        tout_remettre_dans(&d).unwrap();
+        assert!(!cache.exists());
+        assert_eq!(lire_dans(&d).pour_le_cache(), None);
         let _ = std::fs::remove_dir_all(&d);
     }
 

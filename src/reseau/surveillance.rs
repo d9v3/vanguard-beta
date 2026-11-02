@@ -269,6 +269,13 @@ fn etat_d_avant(lu: crate::sceau::Lecture) -> Option<EtatMachine> {
 }
 
 /// Un constat que la surveillance notifie quand il apparaît.
+/// Une catégorie que la surveillance peut notifier, à un niveau ou à un autre : la cache des passages automatiques
+/// (`autotest::cache`) n'en garde jamais un résultat, pour qu'un résultat repris ne puisse ni taire ni retarder une
+/// alerte.
+pub(crate) fn categorie_alertee(categorie: &str) -> bool {
+    CATEGORIES_SURVEILLEES.contains(&categorie) || categorie == FAILLES_CRITIQUES
+}
+
 fn machine_surveillee(c: &crate::machine::Constat) -> bool {
     c.probleme.is_some_and(|n| n >= Niveau::Moyen) && CATEGORIES_SURVEILLEES.contains(&c.categorie)
         || c.probleme == Some(Niveau::Critique) && c.categorie == FAILLES_CRITIQUES
@@ -374,7 +381,8 @@ fn nouveautes_machine(avant: &EtatMachine, apres: &EtatMachine) -> Vec<(String, 
 /// Audit silencieux de cette machine, comparé au passage précédent. Le premier passage mémorise seulement. Rend le
 /// bilan : l'audit du réseau reprend ses constats réseau sans relancer ces règles.
 fn veiller_machine() -> crate::machine::Audit {
-    let audit = crate::machine::auditer(false);
+    // Le passage horaire : le seul qui peut reprendre, un passage sur deux au plus, un résultat lent récent.
+    let audit = crate::machine::auditer_automatique();
     let mut apres = etat_machine(&audit);
     let avant = etat_d_avant(crate::sceau::lire(crate::sceau::MACHINE));
     // Failles pas vérifiées cette fois (hors ligne) : celles d'avant restent, sinon leur retour serait renotifié.

@@ -370,6 +370,19 @@ fn bilan_des_regles(choisies: Vec<&'static regles::Regle>) -> Vec<Constat> {
     constats
 }
 
+/// Le bilan du passage horaire (`auditer_automatique`) : les règles de la cache (`autotest::cache`) peuvent reprendre
+/// leur résultat récent, un passage sur deux au plus ; leurs reprises ne sont pas mesurées comme des durées, mais
+/// comptées à part (`autotest::mesures`).
+fn bilan_automatique(choisies: &[&'static regles::Regle]) -> Vec<Constat> {
+    let plan = crate::autotest::cache::preparer(choisies, chrono::Utc::now().timestamp());
+    let (constats, mut durees) = regles_en_parallele_sauf(choisies.to_vec(), &|id| plan.constats_de(id));
+    durees.retain(|(id, _)| !plan.reprend(id));
+    let evenements = plan.terminer(choisies, &constats);
+    crate::autotest::mesures::noter_avec(&durees, &evenements);
+    crate::autotest::reglage::ajuster();
+    constats
+}
+
 /// `bilan_des_regles` sans rien noter, avec la durée de chaque règle. Le départ suit l'auto-réglage
 /// (`autotest::reglage`) : la plus longue de la semaine d'abord, pour que le bilan ne finisse pas sur elle ; ce
 /// qu'elles rendent et l'ordre rendu n'en dépendent pas. Le délai d'une règle aussi : celui du code, ou `DELAI_LONG`
@@ -377,13 +390,25 @@ fn bilan_des_regles(choisies: Vec<&'static regles::Regle>) -> Vec<Constat> {
 fn regles_en_parallele(
     choisies: Vec<&'static regles::Regle>,
 ) -> (Vec<Constat>, Vec<(&'static str, std::time::Duration)>) {
+    regles_en_parallele_sauf(choisies, &|_| None)
+}
+
+/// `regles_en_parallele`, sauf les règles dont `reprise` rend le résultat (la cache du passage horaire) : celui-ci
+/// prend leur place, à leur rang, sans les lancer.
+fn regles_en_parallele_sauf(
+    choisies: Vec<&'static regles::Regle>,
+    reprise: &dyn Fn(&str) -> Option<Vec<Constat>>,
+) -> (Vec<Constat>, Vec<(&'static str, std::time::Duration)>) {
     let ids: Vec<Option<&str>> = choisies.iter().map(|r| Some(r.id)).collect();
     let depart = crate::autotest::reglage::ordre_de_depart(&ids, &crate::autotest::mesures::medianes_recentes());
     let longs = crate::autotest::reglage::delais_longs();
     en_parallele_dans(
         choisies
             .into_iter()
-            .map(|r| regles::verification_avec(r, &longs))
+            .map(|r| match reprise(r.id) {
+                Some(repris) => Box::new(move || repris) as Verification<'_>,
+                None => regles::verification_avec(r, &longs),
+            })
             .collect(),
         depart,
     )
@@ -477,7 +502,14 @@ pub(crate) fn essai_des_regles(
 fn audit(systeme: &'static str) -> Audit {
     // Un nouveau bilan relit ce que ses règles partagent (`ParBilan`) : une correction a pu le changer.
     BILAN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let constats = bilan_des_regles(regles::regles(regles::Os::actuel()));
+    let choisies = regles::regles(regles::Os::actuel());
+    let constats = if AUTOMATIQUE.with(std::cell::Cell::get) {
+        bilan_automatique(&choisies)
+    } else {
+        // Un bilan demandé vérifie tout à neuf, et ce qu'il voit remplace ce que la cache gardait.
+        crate::autotest::cache::oublier();
+        bilan_des_regles(choisies)
+    };
     Audit {
         systeme,
         score: score(&constats),
@@ -490,6 +522,12 @@ static BILAN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0
 
 fn bilan_en_cours() -> u64 {
     BILAN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+std::thread_local! {
+    /// Vrai pendant le bilan du passage horaire (`auditer_automatique`), dans son fil : seul celui-là se sert de la
+    /// cache. Tout autre bilan (demandé, après une correction, l'entretien) vérifie tout à neuf.
+    static AUTOMATIQUE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 std::thread_local! {
@@ -1172,8 +1210,17 @@ pub(crate) fn noter_inacheve(etat: Inacheve) {
     INACHEVE.with(|a| a.set(etat));
 }
 
-/// Les résultats, et ce qu'il faut noter pour chaque correctif (ses commandes, enrichies de la valeur d'avant).
+/// Les résultats, et ce qu'il faut noter pour chaque correctif (ses commandes, enrichies de la valeur d'avant). La
+/// cache des passages automatiques est vidée avant et après : un résultat d'avant la correction ne doit pas revenir,
+/// ni un résultat lu pendant qu'elle tournait.
 fn lancer_chacune(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
+    crate::autotest::cache::oublier();
+    let r = lancer_chacune_sans_oublier(correctifs);
+    crate::autotest::cache::oublier();
+    r
+}
+
+fn lancer_chacune_sans_oublier(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
     INACHEVE.with(|a| a.set(Inacheve::Non));
     #[cfg(windows)]
     {
@@ -1405,6 +1452,25 @@ pub fn auditer(bavard: bool) -> Audit {
     a
 }
 
+/// Le bilan du passage horaire de la surveillance : `auditer(false)`, dont les règles lentes de la cache
+/// (`autotest::cache`) peuvent reprendre leur résultat récent, avec son âge, un passage sur deux au plus.
+pub(crate) fn auditer_automatique() -> Audit {
+    en_automatique(|| auditer(false))
+}
+
+/// `f` dans le fil du passage horaire ; l'interrupteur retombe après, même si `f` panique.
+fn en_automatique<T>(f: impl FnOnce() -> T) -> T {
+    struct Remettre;
+    impl Drop for Remettre {
+        fn drop(&mut self) {
+            AUTOMATIQUE.with(|a| a.set(false));
+        }
+    }
+    AUTOMATIQUE.with(|a| a.set(true));
+    let _remettre = Remettre;
+    f()
+}
+
 /// Le bilan des seules règles que `garder` retient (d'après leur identifiant), tel que le système le montre : sans les
 /// alertes déclarées normales, qu'`auditer` rabaisse. Les traces le joignent sans les mises à jour, qui interrogent
 /// Internet et peuvent prendre des minutes.
@@ -1499,6 +1565,53 @@ pub fn executer(json: bool) -> Audit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// L6c : seul le passage horaire se sert de la cache. Son interrupteur retombe après, même quand le passage
+    /// panique : un bilan lancé ensuite par la personne vérifie tout à neuf.
+    #[test]
+    fn l_interrupteur_du_passage_horaire_retombe() {
+        let actif = || AUTOMATIQUE.with(std::cell::Cell::get);
+        assert!(!actif());
+        assert!(en_automatique(actif));
+        assert!(!actif());
+        assert!(std::panic::catch_unwind(|| en_automatique(|| panic!("passage interrompu"))).is_err());
+        assert!(!actif());
+    }
+
+    /// L6c : seule la surveillance (le passage horaire) appelle le bilan automatique ; tout autre bilan vérifie à neuf.
+    #[cfg(unix)]
+    #[test]
+    fn seule_la_surveillance_se_sert_de_la_cache() {
+        fn fichiers(d: &std::path::Path, tous: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    fichiers(&p, tous);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    tous.push(p);
+                }
+            }
+        }
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut tous = Vec::new();
+        fichiers(&src, &mut tous);
+        let cherche = concat!("auditer_", "automatique(");
+        let mut appels = Vec::new();
+        for p in tous {
+            let n = std::fs::read_to_string(&p).unwrap().matches(cherche).count();
+            if n > 0 {
+                appels.push((p.strip_prefix(&src).unwrap().to_string_lossy().into_owned(), n));
+            }
+        }
+        appels.sort();
+        assert_eq!(
+            appels,
+            [
+                ("machine/mod.rs".to_string(), 1),
+                ("reseau/surveillance.rs".to_string(), 1)
+            ]
+        );
+    }
 
     /// chkdsk 3 : le conseil dit que rien n'est programmé et quoi lancer, sur le bon lecteur, dans les deux langues.
     #[test]

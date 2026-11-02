@@ -554,6 +554,9 @@ fn taille_max(chemin: &Path) -> u64 {
     } else if nom(Some(chemin)).as_deref() == Some(APPAREILS) {
         // Le carnet des appareils garde sa limite d'avant le sceau : un grand réseau ne le fait pas juger illisible.
         crate::reseau::CARNET_MAX
+    } else if chemin.ends_with(crate::autotest::cache::CACHE) {
+        // La cache des passages automatiques a sa propre borne (10 Mio) : plus gros, elle n'est pas lue du tout.
+        crate::autotest::cache::TAILLE_MAX
     } else {
         TAILLE_MAX
     }

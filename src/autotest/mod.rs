@@ -11,6 +11,7 @@
 //! journal des mesures (`mesures`). Hors ligne par défaut ; `--internet` le permet à la main. Ce qui ne va pas va au
 //! journal des erreurs, sans aucune valeur lue sur la machine : identifiants, nombres, genres d'écart.
 
+pub(crate) mod cache;
 pub(crate) mod croisees;
 pub(crate) mod lecture_seule;
 pub(crate) mod mesures;
@@ -1181,6 +1182,12 @@ pub(crate) fn hebdomadaire_en_fond(constats: &[Constat]) {
     if let Ok(fil) = fil {
         *HEBDOMADAIRE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(fil);
     }
+}
+
+/// L'autotest de la semaine reprendra-t-il cette passe ? Ses invariants jugent alors des lectures fraîches : la cache
+/// des passages automatiques (`cache`) ne reprend rien à cette passe-là.
+pub(crate) fn hebdomadaire_du() -> bool {
+    crate::parametres::autotest_hebdomadaire() && du(dernier().as_ref(), chrono::Utc::now())
 }
 
 /// Attend la fin de l'autotest de la semaine, s'il tourne : la passe ne finit pas avant lui.
