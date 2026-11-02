@@ -22,6 +22,7 @@ pub(crate) mod correctifs;
 pub(crate) mod corrections;
 mod croisees;
 mod defender;
+mod defender_ecriture;
 mod durcissement;
 pub(crate) mod ecoute;
 pub(crate) mod eleve;
@@ -944,7 +945,7 @@ fn antivirus() -> Vec<Constat> {
                     "Réactiver la protection en temps réel",
                     "Turn real-time protection back on"
                 ),
-                &["Set-MpPreference -DisableRealtimeMonitoring $false"],
+                &[gestes::Acte::Defender(gestes::ReglageDefender::TempsReel, gestes::ValeurDefender::Actif).ligne()],
             )
             .protection(),
         );
@@ -993,7 +994,7 @@ fn juger_cloud(valeur: Option<&str>) -> Option<Constat> {
                 "Rallumer la protection dans le cloud (le réglage de Windows)",
                 "Turn cloud protection back on (Windows' setting)"
             ),
-            &["Set-MpPreference -MAPSReporting Advanced"],
+            &[gestes::Acte::Defender(gestes::ReglageDefender::Maps, gestes::ValeurDefender::Avance).ligne()],
         )
         .protection()
     })
@@ -2037,10 +2038,7 @@ mod tests {
         assert!(juger_cloud(None).is_none() && juger_cloud(Some("2")).is_none() && juger_cloud(Some("1")).is_none());
         let coupee = juger_cloud(Some("0\r\n")).unwrap();
         assert_eq!(coupee.probleme, Some(Niveau::Moyen));
-        assert_eq!(
-            coupee.correctif.unwrap().commandes,
-            ["Set-MpPreference -MAPSReporting Advanced"]
-        );
+        assert_eq!(coupee.correctif.unwrap().commandes, ["vanguard:defender maps avance"]);
     }
 
     /// T4 : un port UDP se reconnaît à son numéro et à son programme, sans casse ni langue.

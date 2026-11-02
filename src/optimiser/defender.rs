@@ -27,27 +27,15 @@ pub enum Pref {
     Asr(&'static str),
 }
 
-/// Règles ASR que Microsoft dit sans revers (« standard protection rules »).
-pub const ASR_BASE: [&str; 3] = [
-    "56a863a9-875e-4185-98a7-b882c64b5ce5",
-    "9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2",
-    "e6db77e5-3df2-4cf1-b95a-636979351e5b",
-];
+/// Règles ASR que Microsoft dit sans revers (« standard protection rules »). La liste vit dans `gestes`, que le
+/// processus élevé consulte : une ligne `vanguard:defender-asr` n'y vaut que pour ces règles.
+pub const ASR_BASE: [&str; 3] = crate::machine::gestes::ASR_BASE;
 
 /// Règles ASR contre les documents et pièces jointes piégés : Office, Outlook, Adobe Reader, courriel, scripts.
-pub const ASR_BUREAUTIQUE: [&str; 8] = [
-    "d4f940ab-401b-4efc-aadc-ad5f3c50688a",
-    "3b576869-a4ec-4529-8536-b80a7769e899",
-    "75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84",
-    "92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b",
-    "26190899-1602-49e8-8b27-eb1d0a1ce869",
-    "7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c",
-    "be9ba2d9-53ea-4cdc-84e5-9b1eeee46550",
-    "d3e037e1-3eb8-44c8-a917-57927947596d",
-];
+pub const ASR_BUREAUTIQUE: [&str; 8] = crate::machine::gestes::ASR_BUREAUTIQUE;
 
 /// Ce que bloque une règle ASR, pour l'écran.
-fn nom_asr(id: &str) -> &'static str {
+pub(crate) fn nom_asr(id: &str) -> &'static str {
     match id {
         "56a863a9-875e-4185-98a7-b882c64b5ce5" => {
             tr!("pilotes signés mais vulnérables", "vulnerable signed drivers")
@@ -284,25 +272,34 @@ fn nombre(v: Option<&str>) -> Option<u32> {
     v?.strip_prefix("mp:")?.parse().ok()
 }
 
-/// La commande de la fenêtre administrateur qui remet la préférence à `v`.
+/// La ligne du processus élevé qui met la préférence à `v` (`vanguard:defender…`, faite par WMI) : bloquer (1) ou
+/// audit (2). Une règle ASR jamais réglée avant (`None`) se retire, pour annuler le réglage posé ici. Couper (0),
+/// avertir (6) ou remettre « non configuré » un réglage n'a pas de ligne (`None`) : le processus élevé ne baisse
+/// jamais Defender, et ces protections ne se défont pas (`systeme::reglage_protege`).
 pub fn commande(pref: Pref, v: Option<&str>) -> Option<String> {
-    let parametre = match pref {
-        // Add-MpPreference ajoute ou change une seule règle ; Set-MpPreference remplacerait toute la liste.
+    use crate::machine::gestes::{self, ModeAsr, ReglageDefender, ValeurDefender};
+    let reglage = match pref {
         Pref::Asr(id) => {
-            return Some(match v {
-                None => format!("Remove-MpPreference -AttackSurfaceReductionRules_Ids '{id}'"),
-                Some(_) => format!(
-                    "Add-MpPreference -AttackSurfaceReductionRules_Ids '{id}' -AttackSurfaceReductionRules_Actions {}",
-                    nombre(v)?
-                ),
-            });
+            let mode = match v {
+                None => ModeAsr::Retirer,
+                Some(_) => match nombre(v)? {
+                    1 => ModeAsr::Bloquer,
+                    2 => ModeAsr::Audit,
+                    _ => return None,
+                },
+            };
+            return gestes::ligne_defender_asr(id, mode);
         }
-        Pref::DossiersControles => "EnableControlledFolderAccess",
-        Pref::ProtectionReseau => "EnableNetworkProtection",
-        Pref::Pua => "PUAProtection",
+        Pref::DossiersControles => ReglageDefender::Cfa,
+        Pref::ProtectionReseau => ReglageDefender::Np,
+        Pref::Pua => ReglageDefender::Pua,
     };
-    // Sans valeur notée : celle d'un Windows neuf, coupée.
-    Some(format!("Set-MpPreference -{parametre} {}", nombre(v).unwrap_or(0)))
+    let valeur = match nombre(v)? {
+        1 => ValeurDefender::Bloquer,
+        2 => ValeurDefender::Audit,
+        _ => return None,
+    };
+    gestes::ligne_defender(reglage, valeur)
 }
 
 /// Ce qui est écrit, en clair : « Defender, protection réseau : bloque ».
@@ -367,19 +364,40 @@ mod tests {
         let r = Pref::Asr(ASR_BASE[0]);
         assert_eq!(
             commande(r, Some("mp:1")).unwrap(),
-            "Add-MpPreference -AttackSurfaceReductionRules_Ids '56a863a9-875e-4185-98a7-b882c64b5ce5' -AttackSurfaceReductionRules_Actions 1"
+            "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 bloquer"
+        );
+        assert_eq!(
+            commande(r, Some("mp:2")).unwrap(),
+            "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 audit"
         );
         // Jamais réglée avant : retirée à l'annulation, pas mise à « coupée ».
         assert_eq!(
             commande(r, None).unwrap(),
-            "Remove-MpPreference -AttackSurfaceReductionRules_Ids '56a863a9-875e-4185-98a7-b882c64b5ce5'"
+            "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 retirer"
         );
         assert_eq!(commande(r, Some("mp:x")), None);
+        // Couper ou avertir : aucune ligne, le processus élevé ne baisse pas Defender.
+        assert_eq!(commande(r, Some("mp:0")), None);
+        assert_eq!(commande(r, Some("mp:6")), None);
+        // Une règle hors des listes de Vanguard : aucune ligne.
+        assert_eq!(
+            commande(Pref::Asr("b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4"), Some("mp:1")),
+            None
+        );
         assert_eq!(
             commande(Pref::DossiersControles, Some("mp:1")).unwrap(),
-            "Set-MpPreference -EnableControlledFolderAccess 1"
+            "vanguard:defender cfa bloquer"
         );
-        assert_eq!(commande(Pref::Pua, None).unwrap(), "Set-MpPreference -PUAProtection 0");
+        assert_eq!(
+            commande(Pref::ProtectionReseau, Some("mp:2")).unwrap(),
+            "vanguard:defender np audit"
+        );
+        assert_eq!(commande(Pref::Pua, None), None);
+        assert_eq!(commande(Pref::Pua, Some("mp:0")), None);
+        // Chaque ligne rendue est un acte que le processus élevé reconnaît.
+        for l in [commande(r, Some("mp:1")), commande(Pref::Pua, Some("mp:1"))] {
+            assert!(crate::machine::gestes::analyser_acte(&l.unwrap()).is_some());
+        }
     }
 
     /// Les noms courts des notes : ceux que Vanguard règle, et rien d'autre.

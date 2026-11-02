@@ -701,7 +701,7 @@ fn montrer_menaces_defender(noms: &[String], detections: &[Detection]) {
     .oui()
         // Par Vanguard administrateur, comme toute correction (une seule forme de demande d'administrateur),
         // sans note : rien à défaire.
-        && crate::machine::appliquer_sans_noter(&["Remove-MpThreat".to_string()]).0
+        && crate::machine::appliquer_sans_noter(&[crate::machine::gestes::ligne_defender_menaces_retirer()]).0
     {
         trp!(
             "  {VERT}✔ Menaces supprimées.{RESET}",

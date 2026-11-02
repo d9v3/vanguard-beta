@@ -287,7 +287,11 @@ pub(crate) fn faire_acte(acte: &Acte) -> Option<Resultat> {
         | Acte::MettreDeCote(_)
         | Acte::IfeoDebugger(..)
         | Acte::IfeoSilencieux(..)
-        | Acte::ServiceGuillemets(_) => None,
+        | Acte::ServiceGuillemets(_)
+        | Acte::Defender(..)
+        | Acte::DefenderAsr(..)
+        | Acte::DefenderExclusionRetirer(..)
+        | Acte::DefenderMenacesRetirer => None,
     }
 }
 

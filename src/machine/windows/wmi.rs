@@ -10,12 +10,17 @@ use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use windows::Win32::Foundation::{E_POINTER, VARIANT_BOOL};
+use core::ffi::c_void;
+
+use windows::Win32::Foundation::{E_INVALIDARG, E_OUTOFMEMORY, E_POINTER, VARIANT_BOOL};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
     CoSetProxyBlanket, CoUninitialize, EOAC_NONE, RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, SAFEARRAY,
 };
-use windows::Win32::System::Ole::{SafeArrayGetDim, SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound};
+use windows::Win32::System::Ole::{
+    SafeArrayCreateVector, SafeArrayGetDim, SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound,
+    SafeArrayPutElement,
+};
 use windows::Win32::System::Variant::{
     VARENUM, VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_ARRAY, VT_BOOL, VT_BSTR, VT_BYREF, VT_I1, VT_I2, VT_I4,
     VT_I8, VT_INT, VT_UI1, VT_UI2, VT_UI4, VT_UI8, VT_UINT, VariantClear,
@@ -25,6 +30,8 @@ use windows::Win32::System::Wmi::{
     WbemLocator,
 };
 use windows::core::{BSTR, Error, HSTRING, IUnknown, Interface};
+
+use crate::machine::gestes;
 
 /// Constantes de rpcdce.h (authentification Windows, sans autorisation), ici pour ne pas tirer tout Win32_System_Rpc.
 const RPC_C_AUTHN_WINNT: u32 = 10;
@@ -341,6 +348,108 @@ pub(crate) enum Parametre {
     Texte(String),
     Entier(i32),
     Booleen(bool),
+    /// Un `uint8` (MAPSReporting, EnableControlledFolderAccess…) : VT_UI1, le type que WMI attend pour lui.
+    Octet(u8),
+    /// Un `string[]` (ExclusionPath, AttackSurfaceReductionRules_Ids…).
+    Textes(Vec<String>),
+    /// Un `uint8[]` (AttackSurfaceReductionRules_Actions).
+    Octets(Vec<u8>),
+}
+
+/// Les valeurs de Defender, décrites sans COM par `gestes` (module pur, fuzzé), prennent ici leur forme d'appel.
+impl From<gestes::ValeurWmi> for Parametre {
+    fn from(v: gestes::ValeurWmi) -> Self {
+        match v {
+            gestes::ValeurWmi::Booleen(b) => Parametre::Booleen(b),
+            gestes::ValeurWmi::Octet(n) => Parametre::Octet(n),
+            gestes::ValeurWmi::Textes(t) => Parametre::Textes(t),
+            gestes::ValeurWmi::Octets(o) => Parametre::Octets(o),
+        }
+    }
+}
+
+impl Parametre {
+    /// Le VARIANT que reçoit `Put`. Une liste qui ne se construit pas est une erreur, jamais un paramètre vide :
+    /// `Remove` d'une liste vide ne retirerait rien et se dirait réussi.
+    fn variant(&self) -> windows::core::Result<VARIANT> {
+        Ok(match self {
+            Parametre::Texte(t) => VARIANT::from(BSTR::from(t.as_str())),
+            Parametre::Entier(n) => VARIANT::from(*n),
+            Parametre::Booleen(b) => VARIANT::from(*b),
+            Parametre::Octet(n) => VARIANT::from(*n),
+            Parametre::Textes(t) => variant_textes(t)?,
+            Parametre::Octets(o) => variant_octets(o)?,
+        })
+    }
+}
+
+/// Une liste de textes dans un VARIANT (VT_ARRAY | VT_BSTR, à une dimension, à partir de 0). Un texte vide est
+/// refusé : son BSTR est nul, et SafeArrayPutElement lirait la longueur d'un BSTR qui n'existe pas.
+pub(crate) fn variant_textes(textes: &[String]) -> windows::core::Result<VARIANT> {
+    if textes.is_empty() || textes.iter().any(String::is_empty) {
+        return Err(Error::from(E_INVALIDARG));
+    }
+    let bstrs: Vec<BSTR> = textes.iter().map(|t| BSTR::from(t.as_str())).collect();
+    // SAFETY: pour VT_BSTR, SafeArrayPutElement attend le BSTR lui-même (sans indirection) et en fait une copie ;
+    // chaque BSTR de `bstrs` est non vide et vit jusqu'à la fin de l'appel.
+    unsafe {
+        variant_liste(VT_BSTR, bstrs.len(), |i| {
+            bstrs.get(i).map_or(core::ptr::null(), |b| b.as_ptr().cast())
+        })
+    }
+}
+
+/// Une liste d'octets dans un VARIANT (VT_ARRAY | VT_UI1, à une dimension, à partir de 0).
+pub(crate) fn variant_octets(octets: &[u8]) -> windows::core::Result<VARIANT> {
+    if octets.is_empty() {
+        return Err(Error::from(E_INVALIDARG));
+    }
+    // SAFETY: pour VT_UI1, SafeArrayPutElement copie l'octet pointé ; chaque octet de `octets` vit pendant l'appel.
+    unsafe {
+        variant_liste(VT_UI1, octets.len(), |i| {
+            octets
+                .get(i)
+                .map_or(core::ptr::null(), |o| core::ptr::from_ref(o).cast())
+        })
+    }
+}
+
+/// Crée un SAFEARRAY de `n` éléments du type `vt` et y copie chaque élément.
+///
+/// # Safety
+/// Pour tout `i < n`, `element(i)` rend ce que SafeArrayPutElement attend pour `vt` (le BSTR lui-même pour
+/// VT_BSTR, un pointeur vers la valeur sinon), valide pendant l'appel.
+unsafe fn variant_liste(
+    vt: VARENUM,
+    n: usize,
+    element: impl Fn(usize) -> *const c_void,
+) -> windows::core::Result<VARIANT> {
+    let total = u32::try_from(n).map_err(|_| Error::from(E_INVALIDARG))?;
+    // SAFETY: crée un tableau neuf à une dimension, sans lien avec aucune autre donnée.
+    let tableau = unsafe { SafeArrayCreateVector(vt, 0, total) };
+    if tableau.is_null() {
+        return Err(Error::from(E_OUTOFMEMORY));
+    }
+    // Le VARIANT possède le tableau dès ici : son Drop (VariantClear) le détruit, avec les copies déjà faites, même
+    // si une copie suivante échoue.
+    let v = VARIANT {
+        Anonymous: VARIANT_0 {
+            Anonymous: std::mem::ManuallyDrop::new(VARIANT_0_0 {
+                vt: VARENUM(VT_ARRAY.0 | vt.0),
+                wReserved1: 0,
+                wReserved2: 0,
+                wReserved3: 0,
+                Anonymous: VARIANT_0_0_0 { parray: tableau },
+            }),
+        },
+    };
+    for i in 0..n {
+        let indice = i32::try_from(i).map_err(|_| Error::from(E_INVALIDARG))?;
+        // SAFETY: `tableau` est vivant (détenu par `v`), à une dimension de `n` éléments ; un seul indice, dans les
+        // bornes ; `element(i)` respecte le contrat de la fonction.
+        unsafe { SafeArrayPutElement(tableau, &raw const indice, element(i)) }?;
+    }
+    Ok(v)
 }
 
 /// Ce qu'a rendu l'appel d'une méthode WMI.
@@ -411,11 +520,7 @@ fn appeler_dans_ce_fil(
     // SAFETY: signature d'entrée vivante, rendue par GetMethod ; SpawnInstance en fait un objet à remplir.
     let entree = unsafe { signature.SpawnInstance(0) }?;
     for (champ, valeur) in parametres {
-        let v = match valeur {
-            Parametre::Texte(t) => VARIANT::from(BSTR::from(t.as_str())),
-            Parametre::Entier(n) => VARIANT::from(*n),
-            Parametre::Booleen(b) => VARIANT::from(*b),
-        };
+        let v = valeur.variant()?;
         // SAFETY: entree est vivante ; le nom est terminé par un zéro ; `v` vit pendant l'appel (Put en garde une
         // copie) ; type 0 : celui de la signature.
         unsafe { entree.Put(&HSTRING::from(*champ), 0, &raw const v, 0) }?;
@@ -588,6 +693,38 @@ mod tests {
         assert_eq!(secondes_depuis("20261020160000.000000+000", maintenant), Some(0));
         assert_eq!(secondes_depuis("pas une date", maintenant), None);
         assert_eq!(secondes_depuis("20261021000000.000000+000", maintenant), None);
+    }
+
+    /// Les listes passées aux méthodes de Defender (ExclusionPath, AttackSurfaceReductionRules_Actions) : relues
+    /// telles quelles par le lecteur des réponses WMI, VARIANT détruit ensuite par son Drop.
+    #[test]
+    fn listes_aller_retour() {
+        let textes = vec![r"C:\Dossier inventé".to_string(), "élément é".to_string()];
+        let v = Parametre::Textes(textes.clone()).variant().expect("liste de textes");
+        // SAFETY: `v` vient d'être construit, son `vt` décrit son contenu.
+        let relue = unsafe { lire(&v) };
+        assert_eq!(relue.textes(), textes);
+        let v = Parametre::from(gestes::ValeurWmi::Octets(vec![1, 2, 6]))
+            .variant()
+            .expect("liste d'octets");
+        // SAFETY: idem.
+        let relue = unsafe { lire(&v) };
+        assert_eq!(
+            relue,
+            Valeur::Liste(vec![Valeur::Entier(1), Valeur::Entier(2), Valeur::Entier(6)])
+        );
+        let v = Parametre::Octet(2).variant().expect("octet");
+        // SAFETY: idem.
+        let relue = unsafe { lire(&v) };
+        assert_eq!(relue, Valeur::Entier(2));
+        let v = Parametre::Booleen(false).variant().expect("booléen");
+        // SAFETY: idem.
+        let relue = unsafe { lire(&v) };
+        assert_eq!(relue, Valeur::Booleen(false));
+        // Vide : refusé, jamais un Remove qui ne retire rien.
+        assert!(variant_textes(&[]).is_err());
+        assert!(variant_textes(&[String::new()]).is_err());
+        assert!(variant_octets(&[]).is_err());
     }
 
     /// Le WMI de Wine connaît Win32_OperatingSystem : la requête aboutit sans PowerShell, comme sous Windows.

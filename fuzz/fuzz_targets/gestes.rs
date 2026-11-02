@@ -1,7 +1,8 @@
 //! La grammaire des lignes que le processus élevé de Windows lit du Vanguard non élevé (src/machine/windows/
 //! gestes.rs) : script vérifié par empreinte, programme fixe de la table, acte sur un service ou un dossier de la
 //! table, sur le pare-feu ou la catégorie d'un réseau (GUID), sur une clé du registre désignée par un nom en
-//! hexadécimal UTF-16 (IFEO, SilentProcessExit, service), liste validée, découpe d'une liste de correctifs en
+//! hexadécimal UTF-16 (IFEO, SilentProcessExit, service), sur Defender (réglage vers le plus sûr seulement, règle
+//! ASR des listes d'Optimiser, exclusion en hexadécimal UTF-16, menaces), liste validée, découpe d'une liste de correctifs en
 //! morceaux natifs et PowerShell, états d'un script en échec ; gestes du compte (faits par Vanguard non élevé, jamais
 //! par le processus élevé) et séparation d'une liste entre points, travail élevé et gestes du compte. Chemins piégés (« .. », NUL, lecteur manquant),
 //! hexadécimal en majuscules ou en demi-paire, noms hors de la liste fermée, lignes et correctifs en nombre.
@@ -34,7 +35,10 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             assert_eq!(a.ligne(), *l);
             let nomme = matches!(
                 a,
-                gestes::Acte::IfeoDebugger(..) | gestes::Acte::IfeoSilencieux(..) | gestes::Acte::ServiceGuillemets(_)
+                gestes::Acte::IfeoDebugger(..)
+                    | gestes::Acte::IfeoSilencieux(..)
+                    | gestes::Acte::ServiceGuillemets(_)
+                    | gestes::Acte::DefenderExclusionRetirer(..)
             );
             let borne = if nomme { gestes::ACTE_NOM_MAX } else { gestes::ACTE_MAX };
             assert!(l.len() <= borne && l.is_ascii());
@@ -65,6 +69,38 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                     assert!(!t.chars().any(char::is_control) && t != ".");
                     assert_eq!(gestes::NomFichier::lire(&n.hex()).as_ref(), Some(&n));
                     assert_eq!(gestes::NomFichier::nouveau(t).as_ref(), Some(&n));
+                }
+                // Aucune ligne ne baisse Defender : une valeur permise pour ce réglage, qui vise une valeur sûre (rang
+                // non nul) ; la valeur écrite ne coupe ni le temps réel ni le cloud.
+                gestes::Acte::Defender(r, v) => {
+                    assert!(r.permises().contains(&v) && a.durcit() && !a.affaiblit());
+                    assert!(r.rang(i64::from(r.attendue(v))) > 0);
+                    match r.valeur_wmi(v) {
+                        gestes::ValeurWmi::Booleen(desactive) => {
+                            assert!(r == gestes::ReglageDefender::TempsReel && !desactive);
+                        }
+                        gestes::ValeurWmi::Octet(n) => assert!(n == 1 || n == 2),
+                        autre => panic!("{autre:?}"),
+                    }
+                    assert_eq!(gestes::ligne_defender(r, v).as_deref(), Some(l.as_str()));
+                }
+                // Une règle des listes d'Optimiser seulement ; seul « retirer » affaiblit, et il le dit.
+                gestes::Acte::DefenderAsr(id, m) => {
+                    assert_eq!(gestes::asr_connue(id), Some(id));
+                    assert_eq!(a.affaiblit(), m == gestes::ModeAsr::Retirer);
+                    assert_eq!(gestes::ligne_defender_asr(id, m).as_deref(), Some(l.as_str()));
+                }
+                // Une exclusion relue à l'identique, sans contrôle, 260 unités au plus.
+                gestes::Acte::DefenderExclusionRetirer(g, ref e) => {
+                    let t = e.texte();
+                    assert!(!t.is_empty() && t.encode_utf16().count() <= gestes::NOM_MAX);
+                    assert!(!t.chars().any(char::is_control));
+                    assert_eq!(gestes::Exclusion::lire(&e.hex()).as_ref(), Some(e));
+                    assert_eq!(gestes::ligne_defender_exclusion_retirer(g, t).as_deref(), Some(l.as_str()));
+                    assert!(a.durcit() && !a.affaiblit());
+                }
+                gestes::Acte::DefenderMenacesRetirer => {
+                    assert_eq!(*l, gestes::ligne_defender_menaces_retirer());
                 }
                 _ => {}
             }

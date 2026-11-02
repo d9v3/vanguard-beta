@@ -486,7 +486,11 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
                     | Acte::ReseauCategorie(_)
                     | Acte::IfeoDebugger(..)
                     | Acte::IfeoSilencieux(..)
-                    | Acte::ServiceGuillemets(_)),
+                    | Acte::ServiceGuillemets(_)
+                    | Acte::Defender(..)
+                    | Acte::DefenderAsr(..)
+                    | Acte::DefenderExclusionRetirer(..)
+                    | Acte::DefenderMenacesRetirer),
                 ),
             ) => Some(a.durcit()),
             _ => None,
@@ -561,7 +565,9 @@ fn reseau_nomme(r: &crate::machine::gestes::ReseauCategorie) -> String {
 }
 
 fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
-    use crate::machine::gestes::{ACoter, Acte, Action, Categorie, Vidable, Vue};
+    use crate::machine::gestes::{
+        ACoter, Acte, Action, Categorie, GenreExclusion, ModeAsr, ReglageDefender, ValeurDefender, Vidable, Vue,
+    };
     use crate::ui::{tr, trf};
     match acte {
         Acte::Service(s) => {
@@ -662,6 +668,83 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
                 "Put the path of the “{n}” service in quotes (ImagePath, read and recomputed here before writing)"
             )
         }
+        Acte::Defender(r, v) => {
+            let mode = || match v {
+                ValeurDefender::Audit => tr!(
+                    "en audit (signale sans bloquer)",
+                    "in audit mode (reports, does not block)"
+                ),
+                ValeurDefender::Actif | ValeurDefender::Avance | ValeurDefender::Bloquer => {
+                    tr!("en blocage", "in block mode")
+                }
+            };
+            match r {
+                ReglageDefender::TempsReel => tr!(
+                    "Remettre en marche la protection en temps réel de Defender",
+                    "Turn Defender real-time protection back on"
+                )
+                .to_string(),
+                ReglageDefender::Maps => tr!(
+                    "Mettre la protection dans le cloud de Defender au niveau avancé",
+                    "Set Defender cloud protection to the advanced level"
+                )
+                .to_string(),
+                ReglageDefender::Cfa => trf!(
+                    "Mettre l'accès contrôlé aux dossiers de Defender {} (jamais baissé s'il bloque déjà)",
+                    "Set Defender controlled folder access {} (never lowered if it already blocks)",
+                    mode()
+                ),
+                ReglageDefender::Np => trf!(
+                    "Mettre la protection réseau de Defender {} (jamais baissée si elle bloque déjà)",
+                    "Set Defender network protection {} (never lowered if it already blocks)",
+                    mode()
+                ),
+                ReglageDefender::Pua => trf!(
+                    "Mettre la protection de Defender contre les applications indésirables (PUA) {} (jamais baissée si elle bloque déjà)",
+                    "Set Defender protection against potentially unwanted apps (PUA) {} (never lowered if it already blocks)",
+                    mode()
+                ),
+            }
+        }
+        Acte::DefenderAsr(id, m) => {
+            let n = crate::optimiser::defender::nom_asr(id);
+            match m {
+                ModeAsr::Bloquer => trf!(
+                    "Règle ASR de Defender « {n} » : bloquer",
+                    "Defender ASR rule “{n}”: block"
+                ),
+                ModeAsr::Audit => trf!(
+                    "Règle ASR de Defender « {n} » : audit (signale sans bloquer ; jamais baissée si elle bloque déjà)",
+                    "Defender ASR rule “{n}”: audit (reports, does not block; never lowered if it already blocks)"
+                ),
+                ModeAsr::Retirer => trf!(
+                    "Retirer la règle ASR de Defender « {n} » (annule le réglage posé par l'optimisation)",
+                    "Remove the Defender ASR rule “{n}” (undoes the setting made by the optimization)"
+                ),
+            }
+        }
+        Acte::DefenderExclusionRetirer(g, e) => {
+            let x = crate::ui::affichable(e.texte());
+            match g {
+                GenreExclusion::Chemin => trf!(
+                    "Retirer l'exclusion de Defender du dossier « {x} » (relue et rejugée ici avant de la retirer)",
+                    "Remove the Defender exclusion of the folder “{x}” (read and judged again here before removing it)"
+                ),
+                GenreExclusion::Processus => trf!(
+                    "Retirer l'exclusion de Defender du programme « {x} » (relue et rejugée ici avant de la retirer)",
+                    "Remove the Defender exclusion of the program “{x}” (read and judged again here before removing it)"
+                ),
+                GenreExclusion::Extension => trf!(
+                    "Retirer l'exclusion de Defender des fichiers « {x} » (relue et rejugée ici avant de la retirer)",
+                    "Remove the Defender exclusion of the “{x}” files (read and judged again here before removing it)"
+                ),
+            }
+        }
+        Acte::DefenderMenacesRetirer => tr!(
+            "Supprimer définitivement les menaces actives trouvées par Defender",
+            "Permanently delete the active threats found by Defender"
+        )
+        .to_string(),
         Acte::ReseauCategorie(r) => {
             let g = reseau_nomme(r);
             match r.categorie {

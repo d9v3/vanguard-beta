@@ -4,8 +4,10 @@
 //! des arguments figés, sans shell, et les actes sur Windows lui-même (`vanguard:service`, `vanguard:vider`,
 //! `vanguard:vider-file-impression`, `vanguard:mettre-de-cote`, `vanguard:pare-feu-actif`, `vanguard:pare-feu-public`,
 //! `vanguard:reseau-categorie`, `vanguard:ifeo-debugger[-32]`, `vanguard:ifeo-silencieux[-32]`,
-//! `vanguard:service-guillemets`), faits par le gestionnaire de services, std::fs, les interfaces COM du pare-feu et
-//! des réseaux (`pare_feu`) et le registre (`portes`, `services`).
+//! `vanguard:service-guillemets`, `vanguard:defender`, `vanguard:defender-asr`, `vanguard:defender-exclusion-retirer`,
+//! `vanguard:defender-menaces-retirer`), faits par le gestionnaire de services, std::fs, les interfaces COM du
+//! pare-feu et des réseaux (`pare_feu`), le registre (`portes`, `services`) et WMI (`defender_ecriture`). Un réglage
+//! de Defender n'admet que des valeurs qui protègent : aucune ligne ne peut couper le temps réel ni le cloud.
 //! Plus la découpe d'une liste de correctifs en morceaux (gestes natifs, scripts) et la lecture des états d'un
 //! script : du code pur, sans E/S, testé sous Linux et lu par le banc de fuzzing
 //! (fuzz/fuzz_targets/gestes.rs). C'est la seule entrée que le processus élevé lit d'un processus moins sûr : rien ici
@@ -1019,8 +1021,8 @@ pub(crate) const IFEO_SILENCIEUX_32: &str = "vanguard:ifeo-silencieux-32 ";
 pub(crate) const SERVICE_GUILLEMETS: &str = "vanguard:service-guillemets ";
 
 /// La plus longue ligne qui porte un nom : 260 unités UTF-16 de quatre chiffres hexadécimaux après le plus long verbe
-/// (`IFEO_SILENCIEUX_32` ; test borne_des_noms).
-pub(crate) const ACTE_NOM_MAX: usize = 1068;
+/// (`DEFENDER_EXCLUSION_RETIRER` suivi de « extension » ; test borne_des_noms).
+pub(crate) const ACTE_NOM_MAX: usize = 1086;
 /// Le plus long nom admis, en unités UTF-16 : MAX_PATH. Un nom de clé du registre en admet 255, un service 256.
 pub(crate) const NOM_MAX: usize = 260;
 
@@ -1150,6 +1152,347 @@ fn powershell_guillemets(nom: &NomFichier) -> String {
     )
 }
 
+// ------------------------------------------------------------ Defender
+
+/// Le verbe d'un réglage de Defender : `vanguard:defender <reglage> <valeur>`, chaque réglage n'admettant que des
+/// valeurs qui protègent (`ReglageDefender::permises`).
+pub(crate) const DEFENDER: &str = "vanguard:defender ";
+/// Le verbe d'une règle ASR : `vanguard:defender-asr <GUID d'Optimiser> <bloquer|audit|retirer>`.
+pub(crate) const DEFENDER_ASR: &str = "vanguard:defender-asr ";
+/// Le verbe d'une exclusion à retirer : `vanguard:defender-exclusion-retirer <chemin|processus|extension> <hex>`.
+pub(crate) const DEFENDER_EXCLUSION_RETIRER: &str = "vanguard:defender-exclusion-retirer ";
+/// Les menaces trouvées par Defender, retirées (MSFT_MpThreat.Remove), sans argument.
+pub(crate) const DEFENDER_MENACES_RETIRER: &str = "vanguard:defender-menaces-retirer";
+
+/// Règles ASR que Microsoft dit sans revers (« standard protection rules »), en minuscules comme Microsoft les
+/// écrit. Ici plutôt que dans Optimiser : une ligne `defender-asr` ne désigne qu'une règle de ces listes, et ce module
+/// ne dépend de rien.
+pub(crate) const ASR_BASE: [&str; 3] = [
+    "56a863a9-875e-4185-98a7-b882c64b5ce5",
+    "9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2",
+    "e6db77e5-3df2-4cf1-b95a-636979351e5b",
+];
+
+/// Règles ASR contre les documents et pièces jointes piégés : Office, Outlook, Adobe Reader, courriel, scripts.
+pub(crate) const ASR_BUREAUTIQUE: [&str; 8] = [
+    "d4f940ab-401b-4efc-aadc-ad5f3c50688a",
+    "3b576869-a4ec-4529-8536-b80a7769e899",
+    "75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84",
+    "92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b",
+    "26190899-1602-49e8-8b27-eb1d0a1ce869",
+    "7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c",
+    "be9ba2d9-53ea-4cdc-84e5-9b1eeee46550",
+    "d3e037e1-3eb8-44c8-a917-57927947596d",
+];
+
+/// La règle ASR de ces listes qui porte exactement cet identifiant (minuscules) : une autre n'est jamais touchée,
+/// pas même retirée.
+pub(crate) fn asr_connue(id: &str) -> Option<&'static str> {
+    ASR_BASE.iter().chain(&ASR_BUREAUTIQUE).copied().find(|r| *r == id)
+}
+
+/// Un réglage de Defender qu'une ligne peut renforcer, propriété de MSFT_MpPreference comprise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReglageDefender {
+    /// La protection en temps réel (DisableRealtimeMonitoring).
+    TempsReel,
+    /// La protection dans le cloud (MAPSReporting).
+    Maps,
+    /// L'accès contrôlé aux dossiers (EnableControlledFolderAccess).
+    Cfa,
+    /// La protection réseau (EnableNetworkProtection).
+    Np,
+    /// Les applications potentiellement indésirables (PUAProtection).
+    Pua,
+}
+
+impl ReglageDefender {
+    pub(crate) const TOUS: [ReglageDefender; 5] = [
+        ReglageDefender::TempsReel,
+        ReglageDefender::Maps,
+        ReglageDefender::Cfa,
+        ReglageDefender::Np,
+        ReglageDefender::Pua,
+    ];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ReglageDefender::TempsReel => "temps-reel",
+            ReglageDefender::Maps => "maps",
+            ReglageDefender::Cfa => "cfa",
+            ReglageDefender::Np => "np",
+            ReglageDefender::Pua => "pua",
+        }
+    }
+
+    /// La propriété de MSFT_MpPreference, lue avant et après, et le paramètre de sa méthode Set.
+    pub(crate) fn propriete(self) -> &'static str {
+        match self {
+            ReglageDefender::TempsReel => "DisableRealtimeMonitoring",
+            ReglageDefender::Maps => "MAPSReporting",
+            ReglageDefender::Cfa => "EnableControlledFolderAccess",
+            ReglageDefender::Np => "EnableNetworkProtection",
+            ReglageDefender::Pua => "PUAProtection",
+        }
+    }
+
+    /// Les valeurs qu'une ligne peut porter : seulement celles qui protègent. Aucune ne coupe un réglage, si bien
+    /// qu'une ligne forgée ne peut rien affaiblir (« temps-reel non », « maps 0 », « cfa coupe »… sont refusées).
+    pub(crate) fn permises(self) -> &'static [ValeurDefender] {
+        match self {
+            ReglageDefender::TempsReel => &[ValeurDefender::Actif],
+            ReglageDefender::Maps => &[ValeurDefender::Avance],
+            ReglageDefender::Cfa | ReglageDefender::Np | ReglageDefender::Pua => {
+                &[ValeurDefender::Bloquer, ValeurDefender::Audit]
+            }
+        }
+    }
+
+    /// La valeur que la propriété doit relire une fois `v` écrite. Décidée par le réglage d'abord : même un acte
+    /// construit hors de `permises` ne vise qu'une valeur qui protège (temps réel jamais désactivé, cloud avancé).
+    pub(crate) fn attendue(self, v: ValeurDefender) -> u8 {
+        match (self, v) {
+            // DisableRealtimeMonitoring : faux.
+            (ReglageDefender::TempsReel, _) => 0,
+            // MAPSReporting : 2, « Advanced ».
+            (ReglageDefender::Maps, _) | (_, ValeurDefender::Audit) => 2,
+            (_, _) => 1,
+        }
+    }
+
+    /// Le rang de protection d'une valeur lue de la propriété : plus haut, plus sûr. Une valeur inconnue vaut 0, la
+    /// moins sûre : jamais crue plus forte qu'elle n'est. Accès contrôlé : 0 coupé, 2 et 4 audit, 3 disques seuls,
+    /// 1 bloque ; protection réseau et PUA : 0 coupée, 2 audit, 1 bloque ; cloud : 0, 1 de base, 2 avancé.
+    pub(crate) fn rang(self, lue: i64) -> u8 {
+        match self {
+            ReglageDefender::TempsReel => u8::from(lue == 0),
+            ReglageDefender::Maps => match lue {
+                1 => 1,
+                2 => 2,
+                _ => 0,
+            },
+            ReglageDefender::Cfa => match lue {
+                2 | 4 => 1,
+                3 => 2,
+                1 => 3,
+                _ => 0,
+            },
+            ReglageDefender::Np | ReglageDefender::Pua => match lue {
+                2 => 1,
+                1 => 2,
+                _ => 0,
+            },
+        }
+    }
+
+    /// Faut-il écrire ? Seulement si la valeur lue protège moins que celle demandée : une ligne ne baisse jamais un
+    /// réglage (« audit » sur un accès contrôlé qui bloque ne fait rien).
+    pub(crate) fn a_ecrire(self, v: ValeurDefender, lue: i64) -> bool {
+        self.rang(lue) < self.rang(i64::from(self.attendue(v)))
+    }
+
+    /// Le paramètre de MSFT_MpPreference.Set pour `v` : un booléen pour le temps réel, un octet (uint8) sinon.
+    pub(crate) fn valeur_wmi(self, v: ValeurDefender) -> ValeurWmi {
+        let n = self.attendue(v);
+        match self {
+            ReglageDefender::TempsReel => ValeurWmi::Booleen(n != 0),
+            _ => ValeurWmi::Octet(n),
+        }
+    }
+}
+
+/// La valeur d'une ligne `defender`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValeurDefender {
+    /// La protection en temps réel en marche.
+    Actif,
+    /// La protection dans le cloud complète (« Advanced »).
+    Avance,
+    Bloquer,
+    /// Signale sans bloquer : jamais écrit sur un réglage qui bloque déjà (`ReglageDefender::a_ecrire`).
+    Audit,
+}
+
+impl ValeurDefender {
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ValeurDefender::Actif => "actif",
+            ValeurDefender::Avance => "avance",
+            ValeurDefender::Bloquer => "bloquer",
+            ValeurDefender::Audit => "audit",
+        }
+    }
+}
+
+/// Ce qu'une ligne `defender-asr` fait d'une règle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModeAsr {
+    Bloquer,
+    Audit,
+    /// La règle retirée de la liste : l'annulation d'un réglage d'Optimiser, que la console élevée dit moins
+    /// protégée (`Acte::affaiblit`).
+    Retirer,
+}
+
+impl ModeAsr {
+    pub(crate) const TOUS: [ModeAsr; 3] = [ModeAsr::Bloquer, ModeAsr::Audit, ModeAsr::Retirer];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ModeAsr::Bloquer => "bloquer",
+            ModeAsr::Audit => "audit",
+            ModeAsr::Retirer => "retirer",
+        }
+    }
+
+    /// L'action de la règle (AttackSurfaceReductionRules_Actions) : 1 bloque, 2 audit ; aucune pour la retirer.
+    pub(crate) fn action(self) -> Option<u8> {
+        match self {
+            ModeAsr::Bloquer => Some(1),
+            ModeAsr::Audit => Some(2),
+            ModeAsr::Retirer => None,
+        }
+    }
+
+    /// Faut-il écrire, d'après l'action lue de la règle (`None` : absente de la liste) ? Bloquer ou auditer
+    /// seulement ce qui protège moins (absente ou 0 coupée, 2 audit, 6 avertit, 1 bloque ; inconnue : 0) ; retirer
+    /// seulement une règle présente.
+    pub(crate) fn a_ecrire(self, lue: Option<i64>) -> bool {
+        let rang = |a: Option<i64>| -> u8 {
+            match a {
+                Some(2) => 1,
+                Some(6) => 2,
+                Some(1) => 3,
+                _ => 0,
+            }
+        };
+        match self.action() {
+            Some(a) => rang(lue) < rang(Some(i64::from(a))),
+            None => lue.is_some(),
+        }
+    }
+}
+
+/// La liste d'exclusions de Defender visée par une ligne `defender-exclusion-retirer`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GenreExclusion {
+    Chemin,
+    Processus,
+    Extension,
+}
+
+impl GenreExclusion {
+    pub(crate) const TOUS: [GenreExclusion; 3] = [
+        GenreExclusion::Chemin,
+        GenreExclusion::Processus,
+        GenreExclusion::Extension,
+    ];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            GenreExclusion::Chemin => "chemin",
+            GenreExclusion::Processus => "processus",
+            GenreExclusion::Extension => "extension",
+        }
+    }
+
+    /// La propriété de MSFT_MpPreference, et le paramètre de sa méthode Remove.
+    pub(crate) fn propriete(self) -> &'static str {
+        match self {
+            GenreExclusion::Chemin => "ExclusionPath",
+            GenreExclusion::Processus => "ExclusionProcess",
+            GenreExclusion::Extension => "ExclusionExtension",
+        }
+    }
+}
+
+/// Une exclusion de Defender relue : non vide, 260 unités UTF-16 au plus, de l'UTF-16 valide, sans caractère de
+/// contrôle (NUL compris). Elle ne fait que désigner : le processus élevé ne la retire que si elle est, telle quelle,
+/// dans la liste qu'il relit, et que le bilan la signale (`exclusions::signalee`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Exclusion(String);
+
+impl Exclusion {
+    pub(crate) fn nouvelle(texte: &str) -> Option<Exclusion> {
+        let longueur = texte.encode_utf16().count();
+        (longueur > 0 && longueur <= NOM_MAX && !texte.chars().any(char::is_control))
+            .then(|| Exclusion(texte.to_string()))
+    }
+
+    /// Le texte tel quel (venu de Defender : à rendre affichable avant de le montrer).
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+
+    /// En hexadécimal minuscule, quatre chiffres par unité UTF-16 (la convention de `NomFichier`).
+    pub(crate) fn hex(&self) -> String {
+        let unites: Vec<u16> = self.0.encode_utf16().collect();
+        hex_utf16(&unites)
+    }
+
+    /// L'exclusion d'un hexadécimal de `hex`, si et seulement s'il en a la forme exacte.
+    pub(crate) fn lire(hex: &str) -> Option<Exclusion> {
+        let unites = lire_hex_utf16(hex, NOM_MAX)?;
+        let texte = String::from_utf16(&unites).ok()?;
+        Exclusion::nouvelle(&texte).filter(|e| e.hex() == hex)
+    }
+}
+
+/// Une valeur d'entrée d'une méthode WMI de Defender, décrite sans COM : le processus élevé la met dans un VARIANT
+/// (`wmi::Parametre`). Les tableaux sont ceux des paramètres `string[]` et `uint8[]` de MSFT_MpPreference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ValeurWmi {
+    Booleen(bool),
+    Octet(u8),
+    Textes(Vec<String>),
+    Octets(Vec<u8>),
+}
+
+/// La méthode statique de MSFT_MpPreference et ses paramètres pour un acte de Defender : Set pour un réglage, Add
+/// pour une règle ASR (Set remplacerait toute la liste), Remove pour la retirer ou retirer une exclusion. `None` pour
+/// les autres actes, et pour les menaces (MSFT_MpThreat.Remove, sans paramètre).
+pub(crate) fn methode_defender(acte: &Acte) -> Option<(&'static str, Vec<(&'static str, ValeurWmi)>)> {
+    const IDS: &str = "AttackSurfaceReductionRules_Ids";
+    match acte {
+        Acte::Defender(r, v) => Some(("Set", vec![(r.propriete(), r.valeur_wmi(*v))])),
+        Acte::DefenderAsr(id, m) => {
+            let ids = (IDS, ValeurWmi::Textes(vec![(*id).to_string()]));
+            Some(match m.action() {
+                Some(a) => (
+                    "Add",
+                    vec![ids, ("AttackSurfaceReductionRules_Actions", ValeurWmi::Octets(vec![a]))],
+                ),
+                None => ("Remove", vec![ids]),
+            })
+        }
+        Acte::DefenderExclusionRetirer(g, e) => Some((
+            "Remove",
+            vec![(g.propriete(), ValeurWmi::Textes(vec![e.texte().to_string()]))],
+        )),
+        _ => None,
+    }
+}
+
+/// La ligne qui renforce un réglage de Defender ; `None` si la valeur n'est pas permise pour ce réglage.
+pub(crate) fn ligne_defender(r: ReglageDefender, v: ValeurDefender) -> Option<String> {
+    r.permises().contains(&v).then(|| Acte::Defender(r, v).ligne())
+}
+
+/// La ligne qui règle une règle ASR ; `None` si l'identifiant n'est pas dans les listes d'Optimiser.
+pub(crate) fn ligne_defender_asr(id: &str, m: ModeAsr) -> Option<String> {
+    asr_connue(id).map(|id| Acte::DefenderAsr(id, m).ligne())
+}
+
+/// La ligne qui retire une exclusion ; `None` si elle n'a pas sa forme (signalée, à retirer dans Sécurité Windows).
+pub(crate) fn ligne_defender_exclusion_retirer(g: GenreExclusion, texte: &str) -> Option<String> {
+    Exclusion::nouvelle(texte).map(|e| Acte::DefenderExclusionRetirer(g, e).ligne())
+}
+
+/// La ligne qui retire les menaces trouvées par Defender.
+pub(crate) fn ligne_defender_menaces_retirer() -> String {
+    DEFENDER_MENACES_RETIRER.to_string()
+}
+
 /// Un acte du processus élevé sur Windows lui-même : un service de la table, un dossier à vider, la file
 /// d'impression, un cache à mettre de côté, le pare-feu et la catégorie d'un réseau. Le parent n'envoie que des
 /// identifiants et des valeurs de listes fermées ; les chemins sont calculés par le processus élevé, depuis le
@@ -1170,6 +1513,14 @@ pub(crate) enum Acte {
     IfeoSilencieux(Vue, NomFichier),
     /// Mettre entre guillemets le chemin (ImagePath) du service `nom`.
     ServiceGuillemets(NomFichier),
+    /// Renforcer un réglage de Defender, jamais le baisser (relu avant et après par le processus élevé).
+    Defender(ReglageDefender, ValeurDefender),
+    /// Une règle ASR des listes d'Optimiser.
+    DefenderAsr(&'static str, ModeAsr),
+    /// Retirer une exclusion de Defender, rejugée contre le constat relu.
+    DefenderExclusionRetirer(GenreExclusion, Exclusion),
+    /// Retirer les menaces trouvées par Defender.
+    DefenderMenacesRetirer,
 }
 
 impl Acte {
@@ -1187,6 +1538,10 @@ impl Acte {
             Acte::IfeoSilencieux(Vue::Windows, n) => format!("{IFEO_SILENCIEUX}{}", n.hex()),
             Acte::IfeoSilencieux(Vue::Wow32, n) => format!("{IFEO_SILENCIEUX_32}{}", n.hex()),
             Acte::ServiceGuillemets(n) => format!("{SERVICE_GUILLEMETS}{}", n.hex()),
+            Acte::Defender(r, v) => format!("{DEFENDER}{} {}", r.mot(), v.mot()),
+            Acte::DefenderAsr(id, m) => format!("{DEFENDER_ASR}{id} {}", m.mot()),
+            Acte::DefenderExclusionRetirer(g, e) => format!("{DEFENDER_EXCLUSION_RETIRER}{} {}", g.mot(), e.hex()),
+            Acte::DefenderMenacesRetirer => DEFENDER_MENACES_RETIRER.to_string(),
         }
     }
 
@@ -1195,10 +1550,17 @@ impl Acte {
     pub(crate) fn durcit(&self) -> bool {
         match self {
             Acte::Service(s) => s.durcit,
-            Acte::PareFeuActif | Acte::IfeoDebugger(..) | Acte::IfeoSilencieux(..) | Acte::ServiceGuillemets(_) => true,
+            Acte::PareFeuActif
+            | Acte::IfeoDebugger(..)
+            | Acte::IfeoSilencieux(..)
+            | Acte::ServiceGuillemets(_)
+            | Acte::Defender(..)
+            | Acte::DefenderExclusionRetirer(..) => true,
+            Acte::DefenderAsr(_, m) => *m != ModeAsr::Retirer,
             Acte::PareFeuPublic(p) => p.durcit(),
             Acte::ReseauCategorie(r) => r.categorie == Categorie::Public,
-            Acte::Vider(_) | Acte::ViderFileImpression | Acte::MettreDeCote(_) => false,
+            // Retirer des menaces nettoie : ni une protection remise, ni une remise qui affaiblit.
+            Acte::Vider(_) | Acte::ViderFileImpression | Acte::MettreDeCote(_) | Acte::DefenderMenacesRetirer => false,
         }
     }
 
@@ -1209,13 +1571,17 @@ impl Acte {
             Acte::Service(s) => s.affaiblit,
             Acte::PareFeuPublic(p) => p.affaiblit(),
             Acte::ReseauCategorie(r) => r.categorie == Categorie::Prive,
+            Acte::DefenderAsr(_, m) => *m == ModeAsr::Retirer,
             Acte::PareFeuActif
             | Acte::Vider(_)
             | Acte::ViderFileImpression
             | Acte::MettreDeCote(_)
             | Acte::IfeoDebugger(..)
             | Acte::IfeoSilencieux(..)
-            | Acte::ServiceGuillemets(_) => false,
+            | Acte::ServiceGuillemets(_)
+            | Acte::Defender(..)
+            | Acte::DefenderExclusionRetirer(..)
+            | Acte::DefenderMenacesRetirer => false,
         }
     }
 
@@ -1245,6 +1611,13 @@ impl Acte {
                 ps_texte(&format!(r"HKLM:\{}\{}", v.silencieuse(), n.texte()))
             ),
             Acte::ServiceGuillemets(n) => powershell_guillemets(n),
+            // Aucune commande de Defender dans un script : AMSI les juge comme celles d'un programme qui le désarme,
+            // et le chemin du programme passe par WMI (`defender_ecriture`). Sous Wine, il n'y a pas de Defender :
+            // l'erreur est dite par la fenêtre, jamais un geste deviné.
+            Acte::Defender(..)
+            | Acte::DefenderAsr(..)
+            | Acte::DefenderExclusionRetirer(..)
+            | Acte::DefenderMenacesRetirer => "throw 'Vanguard : geste sans équivalent PowerShell'".to_string(),
         }
     }
 }
@@ -1264,9 +1637,13 @@ pub(crate) fn est_un_acte(ligne: &str) -> bool {
         || ligne.starts_with(IFEO_SILENCIEUX)
         || ligne.starts_with(IFEO_SILENCIEUX_32)
         || ligne.starts_with(SERVICE_GUILLEMETS)
+        || ligne.starts_with(DEFENDER)
+        || ligne.starts_with(DEFENDER_ASR)
+        || ligne.starts_with(DEFENDER_EXCLUSION_RETIRER)
+        || ligne.starts_with(DEFENDER_MENACES_RETIRER)
 }
 
-/// L'acte d'une ligne, si et seulement si elle est exactement de sa forme : ASCII, 256 octets au plus (1068 pour
+/// L'acte d'une ligne, si et seulement si elle est exactement de sa forme : ASCII, 256 octets au plus (1086 pour
 /// une ligne qui porte un nom en hexadécimal), sensible à la casse, un nom et une action de la table (une seule espace
 /// entre chaque), réécrite à l'identique.
 pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
@@ -1275,6 +1652,11 @@ pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
     }
     if let Some((hex, faire)) = verbe_nomme(ligne) {
         return NomFichier::lire(hex).map(faire).filter(|a| a.ligne() == ligne);
+    }
+    if let Some(reste) = ligne.strip_prefix(DEFENDER_EXCLUSION_RETIRER) {
+        let (mot, hex) = reste.split_once(' ')?;
+        let genre = *GenreExclusion::TOUS.iter().find(|g| g.mot() == mot)?;
+        return Some(Acte::DefenderExclusionRetirer(genre, Exclusion::lire(hex)?)).filter(|a| a.ligne() == ligne);
     }
     if ligne.len() > ACTE_MAX {
         return None;
@@ -1297,6 +1679,15 @@ pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
         Acte::PareFeuActif
     } else if let Some(reste) = ligne.strip_prefix(PARE_FEU_PUBLIC) {
         Acte::PareFeuPublic(ProfilPublic::analyser(reste)?)
+    } else if let Some(reste) = ligne.strip_prefix(DEFENDER) {
+        let (mot, valeur) = reste.split_once(' ')?;
+        let reglage = *ReglageDefender::TOUS.iter().find(|r| r.mot() == mot)?;
+        Acte::Defender(reglage, *reglage.permises().iter().find(|v| v.mot() == valeur)?)
+    } else if let Some(reste) = ligne.strip_prefix(DEFENDER_ASR) {
+        let (id, mot) = reste.split_once(' ')?;
+        Acte::DefenderAsr(asr_connue(id)?, *ModeAsr::TOUS.iter().find(|m| m.mot() == mot)?)
+    } else if ligne == DEFENDER_MENACES_RETIRER {
+        Acte::DefenderMenacesRetirer
     } else if let Some(reste) = ligne.strip_prefix(RESEAU_CATEGORIE) {
         let (guid, mot) = reste.split_once(' ')?;
         Acte::ReseauCategorie(ReseauCategorie {
@@ -2741,13 +3132,26 @@ mod tests {
             IFEO_SILENCIEUX_32,
             SERVICE_GUILLEMETS,
         ] {
-            assert!(verbe.len() <= IFEO_SILENCIEUX_32.len(), "{verbe}");
+            assert!(verbe.len() + 4 * NOM_MAX < ACTE_NOM_MAX, "{verbe}");
         }
-        assert_eq!(ACTE_NOM_MAX, IFEO_SILENCIEUX_32.len() + 4 * NOM_MAX);
+        assert_eq!(
+            ACTE_NOM_MAX,
+            DEFENDER_EXCLUSION_RETIRER.len() + "extension ".len() + 4 * NOM_MAX
+        );
+        assert!(GenreExclusion::TOUS.iter().all(|g| g.mot().len() <= "extension".len()));
         let nom = "a".repeat(NOM_MAX);
         let l = ligne_ifeo_silencieux(Vue::Wow32, &nom).expect("260 unités admises");
-        assert_eq!(l.len(), ACTE_NOM_MAX);
+        assert_eq!(l.len(), IFEO_SILENCIEUX_32.len() + 4 * NOM_MAX);
         assert!(matches!(analyser_acte(&l), Some(Acte::IfeoSilencieux(Vue::Wow32, n)) if n.texte() == nom));
+        let l = ligne_defender_exclusion_retirer(GenreExclusion::Extension, &nom).expect("260 unités admises");
+        assert_eq!(l.len(), ACTE_NOM_MAX);
+        assert!(
+            matches!(analyser_acte(&l), Some(Acte::DefenderExclusionRetirer(GenreExclusion::Extension, e)) if e.texte() == nom)
+        );
+        assert_eq!(
+            ligne_defender_exclusion_retirer(GenreExclusion::Chemin, &format!("{nom}a")),
+            None
+        );
         // 261 unités : refusé à la construction et à la lecture (même par un verbe court).
         let trop = "a".repeat(NOM_MAX + 1);
         assert_eq!(ligne_ifeo_debugger(Vue::Windows, &trop), None);
@@ -2869,6 +3273,280 @@ mod tests {
         // Un acte ordinaire reste borné à 256 octets.
         let long = format!("vanguard:service SSDPSRV arreter{}", " ".repeat(ACTE_NOM_MAX - 40));
         assert!(analyser_acte(&long).is_none());
+    }
+
+    /// Chaque réglage n'admet que ce qui protège : une ligne forgée qui couperait le temps réel, le cloud, l'accès
+    /// contrôlé, la protection réseau ou PUA est refusée, comme toute valeur hors de la liste.
+    #[test]
+    fn defender_seulement_vers_le_plus_sur() {
+        for (r, v) in [
+            (ReglageDefender::TempsReel, ValeurDefender::Actif),
+            (ReglageDefender::Maps, ValeurDefender::Avance),
+            (ReglageDefender::Cfa, ValeurDefender::Bloquer),
+            (ReglageDefender::Cfa, ValeurDefender::Audit),
+            (ReglageDefender::Np, ValeurDefender::Bloquer),
+            (ReglageDefender::Np, ValeurDefender::Audit),
+            (ReglageDefender::Pua, ValeurDefender::Bloquer),
+            (ReglageDefender::Pua, ValeurDefender::Audit),
+        ] {
+            let l = ligne_defender(r, v).unwrap();
+            let a = analyser_acte(&l).unwrap();
+            assert!(matches!(a, Acte::Defender(r2, v2) if r2 == r && v2 == v), "{l}");
+            assert!(a.durcit() && !a.affaiblit() && est_un_acte(&l), "{l}");
+        }
+        assert_eq!(
+            ligne_defender(ReglageDefender::TempsReel, ValeurDefender::Actif).unwrap(),
+            "vanguard:defender temps-reel actif"
+        );
+        assert_eq!(
+            ligne_defender(ReglageDefender::TempsReel, ValeurDefender::Bloquer),
+            None
+        );
+        assert_eq!(ligne_defender(ReglageDefender::Maps, ValeurDefender::Audit), None);
+        for l in [
+            "vanguard:defender temps-reel non",
+            "vanguard:defender temps-reel coupe",
+            "vanguard:defender temps-reel inactif",
+            "vanguard:defender temps-reel 0",
+            "vanguard:defender temps-reel bloquer",
+            "vanguard:defender temps-reel audit",
+            "vanguard:defender maps 0",
+            "vanguard:defender maps coupe",
+            "vanguard:defender maps base",
+            "vanguard:defender maps bloquer",
+            "vanguard:defender cfa 0",
+            "vanguard:defender cfa coupe",
+            "vanguard:defender cfa desactive",
+            "vanguard:defender cfa actif",
+            "vanguard:defender np desactive",
+            "vanguard:defender np 0",
+            "vanguard:defender pua 0",
+            "vanguard:defender pua coupe",
+            "vanguard:defender pua avertir",
+            "vanguard:defender behavior bloquer",
+            "vanguard:defender Temps-reel actif",
+            "vanguard:defender temps-reel Actif",
+            "vanguard:defender temps-reel actif ",
+            "vanguard:defender  temps-reel actif",
+            "vanguard:defender temps-reel  actif",
+            "vanguard:defender temps-reel",
+            "vanguard:defender ",
+            "vanguard:defender",
+            "vanguard:defender cfa bloquer,maps 0",
+        ] {
+            assert!(analyser_acte(l).is_none(), "{l}");
+        }
+        // Même construit à la main hors de la liste, un acte ne vise qu'une valeur qui protège.
+        assert_eq!(ReglageDefender::TempsReel.attendue(ValeurDefender::Bloquer), 0);
+        assert_eq!(ReglageDefender::Maps.attendue(ValeurDefender::Audit), 2);
+        for r in ReglageDefender::TOUS {
+            for v in [
+                ValeurDefender::Actif,
+                ValeurDefender::Avance,
+                ValeurDefender::Bloquer,
+                ValeurDefender::Audit,
+            ] {
+                assert!(r.rang(i64::from(r.attendue(v))) > 0, "{r:?} {v:?}");
+            }
+        }
+    }
+
+    /// Le processus élevé n'écrit que vers plus sûr : la valeur lue d'abord, comparée par rang.
+    #[test]
+    fn defender_ne_baisse_jamais() {
+        let (cfa, np, maps, rtp) = (
+            ReglageDefender::Cfa,
+            ReglageDefender::Np,
+            ReglageDefender::Maps,
+            ReglageDefender::TempsReel,
+        );
+        // Coupé : écrit ; déjà bloqué : rien, même pour « audit ».
+        assert!(cfa.a_ecrire(ValeurDefender::Bloquer, 0) && cfa.a_ecrire(ValeurDefender::Audit, 0));
+        assert!(!cfa.a_ecrire(ValeurDefender::Audit, 1) && !cfa.a_ecrire(ValeurDefender::Bloquer, 1));
+        // Audit des disques seuls (4) → bloquer : écrit ; disques bloqués (3) → audit : rien.
+        assert!(cfa.a_ecrire(ValeurDefender::Bloquer, 4) && !cfa.a_ecrire(ValeurDefender::Audit, 3));
+        assert!(!np.a_ecrire(ValeurDefender::Audit, 1) && np.a_ecrire(ValeurDefender::Bloquer, 2));
+        // Une valeur inconnue compte pour la moins sûre.
+        assert!(np.a_ecrire(ValeurDefender::Audit, 7) && cfa.a_ecrire(ValeurDefender::Audit, -1));
+        assert!(maps.a_ecrire(ValeurDefender::Avance, 0) && maps.a_ecrire(ValeurDefender::Avance, 1));
+        assert!(!maps.a_ecrire(ValeurDefender::Avance, 2));
+        // DisableRealtimeMonitoring : vrai (1) → écrire faux ; déjà faux → rien.
+        assert!(rtp.a_ecrire(ValeurDefender::Actif, 1) && !rtp.a_ecrire(ValeurDefender::Actif, 0));
+        assert_eq!(rtp.valeur_wmi(ValeurDefender::Actif), ValeurWmi::Booleen(false));
+        assert_eq!(maps.valeur_wmi(ValeurDefender::Avance), ValeurWmi::Octet(2));
+        assert_eq!(np.valeur_wmi(ValeurDefender::Audit), ValeurWmi::Octet(2));
+        assert_eq!(cfa.valeur_wmi(ValeurDefender::Bloquer), ValeurWmi::Octet(1));
+        // ASR : absente, coupée, audit, avertit, bloque.
+        assert!(ModeAsr::Bloquer.a_ecrire(None) && ModeAsr::Bloquer.a_ecrire(Some(0)));
+        assert!(ModeAsr::Bloquer.a_ecrire(Some(2)) && ModeAsr::Bloquer.a_ecrire(Some(6)));
+        assert!(!ModeAsr::Bloquer.a_ecrire(Some(1)));
+        assert!(ModeAsr::Audit.a_ecrire(None) && ModeAsr::Audit.a_ecrire(Some(0)));
+        assert!(!ModeAsr::Audit.a_ecrire(Some(1)) && !ModeAsr::Audit.a_ecrire(Some(6)));
+        assert!(!ModeAsr::Audit.a_ecrire(Some(2)));
+        assert!(ModeAsr::Retirer.a_ecrire(Some(1)) && !ModeAsr::Retirer.a_ecrire(None));
+    }
+
+    /// Une règle ASR des listes d'Optimiser, en minuscules : une autre est refusée, même pour la retirer.
+    #[test]
+    fn defender_asr_de_la_liste() {
+        for id in ASR_BASE.iter().chain(&ASR_BUREAUTIQUE) {
+            for m in ModeAsr::TOUS {
+                let l = ligne_defender_asr(id, m).unwrap();
+                let a = analyser_acte(&l).unwrap();
+                assert!(matches!(a, Acte::DefenderAsr(i, m2) if i == *id && m2 == m), "{l}");
+                assert_eq!(a.affaiblit(), m == ModeAsr::Retirer);
+                assert_eq!(a.durcit(), m != ModeAsr::Retirer);
+            }
+        }
+        let id = ASR_BASE[0];
+        assert_eq!(
+            ligne_defender_asr(id, ModeAsr::Bloquer).unwrap(),
+            format!("vanguard:defender-asr {id} bloquer")
+        );
+        // Une règle écartée (processus d'une clé USB : bloquerait Vanguard), une inventée, une en majuscules.
+        assert_eq!(
+            ligne_defender_asr("b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4", ModeAsr::Bloquer),
+            None
+        );
+        for l in [
+            "vanguard:defender-asr b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4 bloquer",
+            "vanguard:defender-asr 00000000-0000-0000-0000-000000000000 retirer",
+            "vanguard:defender-asr 56A863A9-875E-4185-98A7-B882C64B5CE5 bloquer",
+            "vanguard:defender-asr {56a863a9-875e-4185-98a7-b882c64b5ce5} bloquer",
+            "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 coupe",
+            "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 0",
+            "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 avertir",
+            "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5",
+            "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 bloquer ",
+            "vanguard:defender-asr  56a863a9-875e-4185-98a7-b882c64b5ce5 bloquer",
+        ] {
+            assert!(analyser_acte(l).is_none(), "{l}");
+        }
+        // Les paramètres de la méthode : un seul identifiant, une seule action (Add), jamais Set (toute la liste).
+        let a = analyser_acte(&ligne_defender_asr(id, ModeAsr::Audit).unwrap()).unwrap();
+        assert_eq!(
+            methode_defender(&a),
+            Some((
+                "Add",
+                vec![
+                    (
+                        "AttackSurfaceReductionRules_Ids",
+                        ValeurWmi::Textes(vec![id.to_string()])
+                    ),
+                    ("AttackSurfaceReductionRules_Actions", ValeurWmi::Octets(vec![2])),
+                ]
+            ))
+        );
+        let a = analyser_acte(&ligne_defender_asr(id, ModeAsr::Retirer).unwrap()).unwrap();
+        assert_eq!(
+            methode_defender(&a),
+            Some((
+                "Remove",
+                vec![(
+                    "AttackSurfaceReductionRules_Ids",
+                    ValeurWmi::Textes(vec![id.to_string()])
+                )]
+            ))
+        );
+        let a = analyser_acte("vanguard:defender pua bloquer").unwrap();
+        assert_eq!(
+            methode_defender(&a),
+            Some(("Set", vec![("PUAProtection", ValeurWmi::Octet(1))]))
+        );
+        let a = analyser_acte("vanguard:defender temps-reel actif").unwrap();
+        assert_eq!(
+            methode_defender(&a),
+            Some(("Set", vec![("DisableRealtimeMonitoring", ValeurWmi::Booleen(false))]))
+        );
+        assert_eq!(methode_defender(&Acte::DefenderMenacesRetirer), None);
+        assert_eq!(methode_defender(&Acte::PareFeuActif), None);
+    }
+
+    /// Une exclusion à retirer : en hexadécimal minuscule, de l'UTF-16 valide, sans contrôle ; relue à l'identique.
+    #[test]
+    fn defender_exclusion_a_retirer() {
+        let l = ligne_defender_exclusion_retirer(GenreExclusion::Chemin, "C:\\").unwrap();
+        assert_eq!(l, "vanguard:defender-exclusion-retirer chemin 43003a005c00");
+        let a = analyser_acte(&l).unwrap();
+        assert!(matches!(&a, Acte::DefenderExclusionRetirer(GenreExclusion::Chemin, e) if e.texte() == "C:\\"));
+        assert!(a.durcit() && !a.affaiblit());
+        assert_eq!(
+            methode_defender(&a),
+            Some((
+                "Remove",
+                vec![("ExclusionPath", ValeurWmi::Textes(vec!["C:\\".to_string()]))]
+            ))
+        );
+        // Les séparateurs et les caractères interdits dans un nom de fichier sont admis ici (un chemin, « *.exe »).
+        for (g, t) in [
+            (GenreExclusion::Processus, "C:\\Outils d'été\\powershell.exe"),
+            (GenreExclusion::Extension, "*.exe"),
+            (GenreExclusion::Chemin, "%TEMP%\\*"),
+            (GenreExclusion::Chemin, "D:\\\u{1F600}"),
+        ] {
+            let l = ligne_defender_exclusion_retirer(g, t).unwrap();
+            assert!(
+                matches!(analyser_acte(&l), Some(Acte::DefenderExclusionRetirer(g2, e)) if g2 == g && e.texte() == t)
+            );
+        }
+        assert_eq!(ligne_defender_exclusion_retirer(GenreExclusion::Chemin, ""), None);
+        assert_eq!(
+            ligne_defender_exclusion_retirer(GenreExclusion::Chemin, "C:\\\nx"),
+            None
+        );
+        assert_eq!(ligne_defender_exclusion_retirer(GenreExclusion::Chemin, "C:\0"), None);
+        for l in [
+            // Majuscules, demi-paire, NUL, contrôle, longueur impaire, genre inconnu, espaces de trop.
+            "vanguard:defender-exclusion-retirer chemin 43003A005C00",
+            "vanguard:defender-exclusion-retirer chemin 00d8",
+            "vanguard:defender-exclusion-retirer chemin 43000000",
+            "vanguard:defender-exclusion-retirer chemin 43000a00",
+            "vanguard:defender-exclusion-retirer chemin 43003a005c0",
+            "vanguard:defender-exclusion-retirer dossier 43003a005c00",
+            "vanguard:defender-exclusion-retirer Chemin 43003a005c00",
+            "vanguard:defender-exclusion-retirer chemin  43003a005c00",
+            "vanguard:defender-exclusion-retirer chemin 43003a005c00 ",
+            "vanguard:defender-exclusion-retirer chemin ",
+            "vanguard:defender-exclusion-retirer chemin",
+            "vanguard:defender-exclusion-retirer ",
+        ] {
+            assert!(analyser_acte(l).is_none(), "{l}");
+        }
+        let trop = format!("{DEFENDER_EXCLUSION_RETIRER}chemin {}", "6100".repeat(NOM_MAX + 1));
+        assert!(analyser_acte(&trop).is_none());
+    }
+
+    #[test]
+    fn defender_menaces_et_powershell() {
+        let l = ligne_defender_menaces_retirer();
+        let a = analyser_acte(&l).unwrap();
+        assert!(matches!(a, Acte::DefenderMenacesRetirer) && !a.durcit() && !a.affaiblit());
+        for l in [
+            "vanguard:defender-menaces-retirer ",
+            "vanguard:defender-menaces-retirer tout",
+            "vanguard:defender-menaces",
+        ] {
+            assert!(analyser_acte(l).is_none(), "{l}");
+        }
+        // Aucune commande de Defender dans un script : sous Wine, l'erreur est dite.
+        for l in [
+            l,
+            "vanguard:defender maps avance".to_string(),
+            ligne_defender_asr(ASR_BASE[1], ModeAsr::Bloquer).unwrap(),
+            ligne_defender_exclusion_retirer(GenreExclusion::Extension, ".exe").unwrap(),
+        ] {
+            let ps = analyser_acte(&l).unwrap().powershell();
+            assert!(ps.starts_with("throw ") && !ps.contains("Mp"), "{ps}");
+        }
+        // Les verbes ne se recouvrent pas : chacun est refusé sous la forme d'un autre.
+        assert!(analyser_acte("vanguard:defender asr 56a863a9-875e-4185-98a7-b882c64b5ce5 bloquer").is_none());
+        assert!(analyser_acte("vanguard:defender-asr temps-reel actif").is_none());
+        // Une liste qui en porte une forgée est refusée en entier.
+        let lignes = vec![
+            "vanguard:defender cfa bloquer".to_string(),
+            "vanguard:defender cfa 0".to_string(),
+        ];
+        assert!(valider(&lignes, |_| Some(())).is_none());
     }
 
     /// La traduction PowerShell (Wine) : celle que le bilan écrivait avant, la clé entre apostrophes doublées.

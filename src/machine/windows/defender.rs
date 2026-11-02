@@ -278,7 +278,7 @@ mod tests {
         let base = alertes.iter().find(|a| a.message.contains("ASR")).unwrap();
         let k = base.correctif.as_ref().unwrap();
         assert_eq!(k.commandes.len(), 3);
-        assert!(k.commandes[0].starts_with("Add-MpPreference -AttackSurfaceReductionRules_Ids"));
+        assert!(k.commandes[0].starts_with("vanguard:defender-asr "));
         // Rien ne bloque : aucun sain, seulement les alertes.
         assert!(c.iter().all(|c| c.etat() != EtatConstat::Sain));
         assert_eq!(c.len(), 3);
@@ -294,7 +294,7 @@ mod tests {
         assert_eq!(a[0].probleme, Some(Niveau::Eleve));
         assert_eq!(
             a[0].correctif.as_ref().unwrap().commandes,
-            ["Set-MpPreference -EnableControlledFolderAccess 1"]
+            ["vanguard:defender cfa bloquer"]
         );
         assert_eq!(a[0].objet, Objet::de("defender", "defender_dossiers"));
         // En audit seulement (2), une règle ASR ne bloque pas.

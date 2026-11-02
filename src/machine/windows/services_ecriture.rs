@@ -651,6 +651,10 @@ pub(crate) fn faire(acte: &Acte) -> Resultat {
             },
         };
     }
+    // Les actes de Defender passent par WMI (`defender_ecriture`), relus avant et après.
+    if let Some(r) = super::defender_ecriture::faire_acte(acte) {
+        return r;
+    }
     // Les actes du registre relisent la clé, la rejugent par la fonction du bilan et notent la valeur d'avant.
     match acte {
         Acte::IfeoDebugger(v, n) => return super::portes::retirer_debogueur(*v, n),
@@ -672,9 +676,16 @@ pub(crate) fn faire(acte: &Acte) -> Resultat {
         | Acte::ReseauCategorie(_)
         | Acte::IfeoDebugger(..)
         | Acte::IfeoSilencieux(..)
-        | Acte::ServiceGuillemets(_) => Err(Echec::refuse(
+        | Acte::ServiceGuillemets(_)
+        | Acte::Defender(..)
+        | Acte::DefenderAsr(..)
+        | Acte::DefenderExclusionRetirer(..)
+        | Acte::DefenderMenacesRetirer => Err(Echec::refuse(
             CONTEXTE,
-            tr!("acte du pare-feu non reconnu", "firewall act not recognized"),
+            tr!(
+                "acte déjà rendu plus haut, non reconnu ici",
+                "act already handled above, not recognized here"
+            ),
         )),
     };
     match r {
