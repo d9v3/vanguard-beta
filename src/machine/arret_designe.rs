@@ -49,9 +49,10 @@ pub(crate) struct ArretCharge {
     pub(crate) fichiers_d_environnement: Vec<(String, bool)>,
     /// RootDirectory et RootImage, mis bout à bout : vide sans autre racine.
     pub(crate) racine: String,
-    /// RequiredBy, RequisiteOf, BoundBy, ConsistsOf, PropagatesStopTo, OnSuccess, OnFailure : les unités que l'arrêt
-    /// arrêterait ou lancerait avec elle.
+    /// RequiredBy, RequisiteOf, BoundBy, ConsistsOf, PropagatesStopTo : les unités que son arrêt arrêterait avec elle.
     pub(crate) entrainees: Vec<String>,
+    /// OnSuccess, OnFailure : les unités que son arrêt lancerait ; UpheldBy : celles qui la relanceraient aussitôt.
+    pub(crate) lancees: Vec<String>,
     /// ControlGroup : vide sans groupe (un minuteur).
     pub(crate) groupe: String,
 }
@@ -85,6 +86,35 @@ pub(crate) enum Chemin {
     AbsentPlaceSure,
     /// Modifiable par un autre compte, un dossier, illisible…
     Douteux,
+}
+
+/// Les unités du même logiciel qu'un arrêt peut entraîner, chacune revue comme lui : au-delà, refusé.
+const MEMES_MAX: usize = 4;
+
+/// Les unités que l'arrêt de `unite` entraîne, en deux parts : celles du même logiciel de prise de contrôle, que
+/// l'assistant sait désigner, et qui seront revues comme elle (preuves de session, commandes) ; le reste, qui refuse
+/// l'arrêt. xrdp en a besoin : xrdp.service et xrdp-sesman.service se tiennent l'un l'autre (Requires=, BindsTo=), et
+/// l'arrêt de l'un arrête l'autre. Plus de `MEMES_MAX` : les suivantes restent dans le reste.
+pub(crate) fn du_meme_logiciel(unite: &str, entrainees: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut memes = Vec::new();
+    let mut reste = Vec::new();
+    for e in entrainees {
+        // Un nom que l'assistant ne désignerait pas (une unité de sa table, un nom hors de sa règle, l'instance d'un
+        // modèle, que la revue du fichier ne trouverait pas) n'est pas revu comme une unité désignée : il refuse, en
+        // étant nommé.
+        if e != unite
+            && !e.contains('@')
+            && crate::machine::gestes_unix::NomUnite::nouveau(e).is_some()
+            && crate::protection::distance::meme_logiciel(e, unite)
+            && memes.len() < MEMES_MAX
+            && !memes.contains(e)
+        {
+            memes.push(e.clone());
+        } else {
+            reste.push(e.clone());
+        }
+    }
+    (memes, reste)
 }
 
 /// Les commandes d'arrêt jugées au plus, et leurs arguments : au-delà, refusé plutôt que lu à moitié.
@@ -360,8 +390,16 @@ pub(crate) fn juger_arret(unite: &str, lu: &ArretCharge, regard: &dyn Fn(&str) -
     if !lu.entrainees.is_empty() {
         let noms: Vec<String> = lu.entrainees.iter().take(3).map(|n| crate::ui::affichable(n)).collect();
         return Err(refus(trf!(
-            "son arrêt arrêterait ou lancerait aussi {}, dont les commandes ne sont pas revues",
-            "stopping it would also stop or start {}, whose commands are not reviewed",
+            "son arrêt arrêterait aussi {}, dont les commandes ne sont pas revues",
+            "stopping it would also stop {}, whose commands are not reviewed",
+            noms.join(", ")
+        )));
+    }
+    if !lu.lancees.is_empty() {
+        let noms: Vec<String> = lu.lancees.iter().take(3).map(|n| crate::ui::affichable(n)).collect();
+        return Err(refus(trf!(
+            "son arrêt lancerait {}, ou cette unité le relancerait aussitôt, et ses commandes ne sont pas revues",
+            "stopping it would start {}, or that unit would start it again at once, and its commands are not reviewed",
             noms.join(", ")
         )));
     }
@@ -620,6 +658,10 @@ mod tests {
             ..anydesk()
         }));
         assert!(refuse(ArretCharge {
+            lancees: vec!["anydesk-relance.service".into()],
+            ..anydesk()
+        }));
+        assert!(refuse(ArretCharge {
             groupe: String::new(),
             ..anydesk()
         }));
@@ -641,5 +683,35 @@ mod tests {
                 "{f}"
             );
         }
+    }
+
+    /// Les unités entraînées du même logiciel, désignables, sont mises à part pour être revues ; une autre, un nom
+    /// hors de la règle, l'unité elle-même ou une de trop restent dans le reste, qui refuse.
+    #[test]
+    fn les_unites_du_meme_logiciel_se_mettent_a_part() {
+        let noms = |l: &[&str]| l.iter().map(|n| (*n).to_string()).collect::<Vec<_>>();
+        let (memes, reste) = du_meme_logiciel(
+            "xrdp.service",
+            &noms(&[
+                "xrdp-sesman.service",
+                "cups.service",
+                "xrdp.service",
+                "xrdp sesman.service",
+            ]),
+        );
+        assert_eq!(memes, ["xrdp-sesman.service"]);
+        assert_eq!(reste, ["cups.service", "xrdp.service", "xrdp sesman.service"]);
+        let beaucoup: Vec<String> = (0..=MEMES_MAX).map(|i| format!("xrdp-{i}.service")).collect();
+        let (memes, reste) = du_meme_logiciel("xrdp.service", &beaucoup);
+        assert_eq!(memes.len(), MEMES_MAX);
+        assert_eq!(reste, [format!("xrdp-{MEMES_MAX}.service")]);
+        // Un autre logiciel de prise de contrôle n'est pas « le même » : il refuse.
+        let (memes, reste) = du_meme_logiciel("anydesk.service", &noms(&["teamviewerd.service"]));
+        assert_eq!(memes, Vec::<String>::new());
+        assert_eq!(reste, ["teamviewerd.service"]);
+        // L'instance d'un modèle : pas revue comme une unité du même logiciel, elle refuse en étant nommée.
+        let (memes, reste) = du_meme_logiciel("xrdp.service", &noms(&["xrdp-sesman@vnc_1.service"]));
+        assert_eq!(memes, Vec::<String>::new());
+        assert_eq!(reste, ["xrdp-sesman@vnc_1.service"]);
     }
 }

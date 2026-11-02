@@ -1242,9 +1242,12 @@ fn autre_nom(vu: &str) -> Echec {
 
 /// Une unité désignée par le parent, revue par le fils avant d'y toucher (P5 du lot U3) : un logiciel de prise de
 /// contrôle à distance reconnu, au fichier sûr, activé au démarrage. Le parent l'a trouvée ainsi ; le fils ne le
-/// croit pas sur parole. `Ok(false)` : reconnue, mais plus installée (son fichier retiré entre-temps, peut-être
-/// encore en marche), ce que l'appelant dit comme pour une unité de la table (`absente`, É-5 du lot U3).
-fn designee_revue(nom: &str, monde: &mut dyn Monde) -> Result<bool, Echec> {
+/// croit pas sur parole. Son arrêt, lui, ne demande pas qu'elle soit activée : une unité lancée autrement (préréglage
+/// du paquet, « enabled-runtime », à la main) tourne aussi, et la désinstallation de son paquet l'arrêterait ; le
+/// parent la fait donc passer par ce même arrêt, ses questions et ses preuves, avant de retirer le paquet.
+/// `Ok(false)` : reconnue, mais plus installée (son fichier retiré entre-temps, peut-être encore en marche), ce que
+/// l'appelant dit comme pour une unité de la table (`absente`, É-5 du lot U3).
+fn designee_revue(a: ActionUnite, nom: &str, monde: &mut dyn Monde) -> Result<bool, Echec> {
     let vu = crate::ui::affichable(nom);
     if !crate::protection::distance::controle_a_distance(nom) {
         return Err(refus(trf!(
@@ -1254,6 +1257,9 @@ fn designee_revue(nom: &str, monde: &mut dyn Monde) -> Result<bool, Echec> {
     }
     if !monde.fichier_sur(nom)? {
         return Ok(false);
+    }
+    if a == ActionUnite::Arreter {
+        return Ok(true);
     }
     match monde.etat_du_fichier(nom)? {
         Some(etat) if etat == "enabled" => Ok(true),
@@ -1413,7 +1419,7 @@ fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
         return Resultat::echec(raison);
     }
     if let GesteUnix::Designee(a, nom) = g {
-        match designee_revue(nom.as_str(), monde) {
+        match designee_revue(a, nom.as_str(), monde) {
             Ok(true) => {}
             // Plus installée, peut-être encore en marche : dit comme pour une unité de la table.
             Ok(false) if coupe(a) => return absente(a, nom.as_str(), &crate::ui::affichable(nom.as_str()), monde),
@@ -1473,16 +1479,26 @@ fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
     // Ce que l'arrêt lancerait, et les sessions portées par l'outil, revus aussi : une session a pu s'ouvrir par lui
     // pendant les deux questions.
     if let Some(nom) = arret_designe {
-        if let Err(raison) = arret_designe_revu(nom.as_str(), monde) {
-            return Resultat::echec(raison);
-        }
+        let avec = match arret_designe_revu(nom.as_str(), monde) {
+            Ok(avec) => avec,
+            Err(raison) => return arret_refuse(&raison),
+        };
+        // Les unités du même logiciel que l'arrêt entraîne sont dites, et reprises dans la commande qui les relance.
         let vu = crate::ui::affichable(nom.as_str());
+        let autres: Vec<String> = avec.iter().map(|e| crate::ui::affichable(e)).collect();
+        let entraines = autres.join(", ");
+        let tous = std::iter::once(vu.clone()).chain(autres).collect::<Vec<_>>().join(" ");
         return match monde.unite(ActionUnite::Arreter, nom.as_str()) {
-            Ok(()) => Resultat::ok_note(trf!(
+            Ok(()) if avec.is_empty() => Resultat::ok_note(trf!(
                 "{vu} arrêté par votre choix ; pour le remettre en marche, en administrateur : systemctl start {vu} (et systemctl enable {vu} pour qu'il reparte au démarrage)",
                 "{vu} stopped by your choice; to start it again, as administrator: systemctl start {vu} (and systemctl enable {vu} for it to start at boot again)"
             )),
-            Err(raison) => Resultat::echec(raison),
+            Ok(()) => Resultat::ok_note(trf!(
+                "{vu} arrêté par votre choix, avec {entraines}, qu'il entraîne ; pour les remettre en marche, en administrateur : systemctl start {tous} (et systemctl enable {tous} pour qu'ils repartent au démarrage)",
+                "{vu} stopped by your choice, with {entraines}, which it takes along; to start them again, as administrator: systemctl start {tous} (and systemctl enable {tous} for them to start at boot again)"
+            )),
+            // L'arrêt accepté a échoué : l'unité tourne encore, et le paquet ne doit pas partir non plus.
+            Err(raison) => arret_refuse(&raison),
         };
     }
     let fait = |r: Result<(), Echec>| match (r, note) {
@@ -1508,7 +1524,7 @@ fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
 fn avant_l_arret_designe(nom: &str, monde: &mut dyn Monde) -> Option<Resultat> {
     let vu = crate::ui::affichable(nom);
     match monde.etat_d_activite(nom) {
-        Ok(Some(e)) if matches!(e.as_str(), "active" | "activating" | "reloading" | "deactivating") => {}
+        Ok(e) if tourne(e.as_deref()) => {}
         Ok(_) => {
             return Some(Resultat::ok_note(trf!(
                 "{vu} n'est pas en marche : rien à arrêter",
@@ -1518,10 +1534,10 @@ fn avant_l_arret_designe(nom: &str, monde: &mut dyn Monde) -> Option<Resultat> {
         Err(raison) => return Some(Resultat::echec(raison)),
     }
     if let Err(raison) = arret_designe_revu(nom, monde) {
-        return Some(Resultat::echec(raison));
+        return Some(arret_refuse(&raison));
     }
     if !arret_designe::dit_non(monde.connecte(nom).as_deref()) {
-        return Some(Resultat::echec(trf!(
+        return Some(arret_refuse(&trf!(
             "{vu} n'est pas arrêté : vous n'avez pas répondu « non » (êtes-vous connecté par lui ?) ; il reste en marche, une session qui passe par lui n'est pas coupée. S'il est retiré du démarrage, il ne repartira plus au prochain redémarrage",
             "{vu} is not stopped: you did not answer \"no\" (are you connected through it?); it stays running, a session going through it is not cut. If it is removed from startup, it will not start again at the next restart"
         )));
@@ -1529,10 +1545,29 @@ fn avant_l_arret_designe(nom: &str, monde: &mut dyn Monde) -> Option<Resultat> {
     None
 }
 
+/// Une unité en marche, d'après son état d'activité lu sur le bus : en train de partir ou de s'arrêter compris.
+fn tourne(etat: Option<&str>) -> bool {
+    matches!(etat, Some("active" | "activating" | "reloading" | "deactivating"))
+}
+
+/// L'arrêt d'une unité désignée refusé, ou pas voulu : un échec, qui arrête aussi la suite de la liste. Le parent met
+/// cet arrêt avant la désinstallation d'un paquet (dont les scripts arrêteraient l'unité sans rien demander) : tant
+/// qu'elle tourne, aucun paquet n'est retiré, et c'est dit, sans affirmer qu'il y en a un.
+fn arret_refuse(raison: &dyn std::fmt::Display) -> Resultat {
+    let raison = raison.to_string();
+    let raison = raison.trim_end_matches('.');
+    Resultat::echec(trf!(
+        "{raison}. Tant qu'il tourne, la suite n'est pas faite non plus, ni la désinstallation d'un paquet qui le porte : elle l'arrêterait sans rien demander",
+        "{raison}. As long as it runs, the rest is not done either, nor the removal of a package that carries it: that would stop it without asking"
+    ))
+}
+
 /// L'arrêt d'un logiciel de prise en main désigné, revu : ce que systemd en dit relu sur le bus, puis, preuves
 /// seulement, une session portée par lui (Vanguard lui-même dans son groupe, ou une session de logind qu'il porte),
-/// puis ce que l'arrêt lancerait (`arret_designe::juger_arret`). Toute lecture impossible refuse.
-fn arret_designe_revu(nom: &str, monde: &mut dyn Monde) -> Result<(), Echec> {
+/// puis ce que l'arrêt lancerait (`arret_designe::juger_arret`). Toute lecture impossible refuse. Les unités du même
+/// logiciel que l'arrêt entraîne (`arret_designe::du_meme_logiciel`) passent les mêmes revues, fichier compris ;
+/// rendues pour être dites. Les autres refusent.
+fn arret_designe_revu(nom: &str, monde: &mut dyn Monde) -> Result<Vec<String>, Echec> {
     let Some(lu) = monde.arret_charge(nom)? else {
         return Err(refus(trf!(
             "{} n'est pas chargé par le gestionnaire de services : rien n'est arrêté",
@@ -1551,7 +1586,47 @@ fn arret_designe_revu(nom: &str, monde: &mut dyn Monde) -> Result<(), Echec> {
     if let Some(raison) = arret_designe::porte_par_l_outil(nom, &lu.groupe, &lignee, &sessions) {
         return Err(refus(raison));
     }
-    arret_designe::juger_arret(nom, &lu, &|c| monde.chemin(c))
+    let (memes, autres) = arret_designe::du_meme_logiciel(nom, &lu.entrainees);
+    let ensemble: Vec<&str> = std::iter::once(nom).chain(memes.iter().map(String::as_str)).collect();
+    let mut avec = Vec::new();
+    for e in &memes {
+        // Pas chargée, ou pas en marche : l'arrêt ne l'arrête pas, et ne lance rien d'elle ; ni son fichier ni ses
+        // sessions ne comptent.
+        let Some(lu_e) = monde.arret_charge(e)? else {
+            continue;
+        };
+        if !tourne(monde.etat_d_activite(e)?.as_deref()) {
+            continue;
+        }
+        unite_revue(e, monde)?;
+        if let Some(raison) = arret_designe::porte_par_l_outil(e, &lu_e.groupe, &lignee, &sessions) {
+            return Err(refus(raison));
+        }
+        let reste: Vec<String> = lu_e
+            .entrainees
+            .iter()
+            .filter(|n| !ensemble.contains(&n.as_str()))
+            .cloned()
+            .collect();
+        arret_designe::juger_arret(
+            e,
+            &ArretCharge {
+                entrainees: reste,
+                ..lu_e
+            },
+            &|c| monde.chemin(c),
+        )?;
+        avec.push(e.clone());
+    }
+    arret_designe::juger_arret(
+        nom,
+        &ArretCharge {
+            entrainees: autres,
+            ..lu
+        },
+        &|c| monde.chemin(c),
+    )?;
+    Ok(avec)
 }
 
 /// `signatures-clamav` : le service de mise à jour, s'il est installé, verrouille la base pendant qu'il tourne ; s'il
@@ -2319,6 +2394,12 @@ mod tests {
         programme_panique: bool,
         /// Ce que rend `arret_charge`.
         arret_charge: Result<Option<ArretCharge>, Echec>,
+        /// Ce que rend `arret_charge` pour ces unités-là, à la place.
+        arret_charge_de: Vec<(&'static str, Option<ArretCharge>)>,
+        /// Les unités dont le fichier est douteux ; les autres rendent `fichier`.
+        fichiers_douteux: Vec<&'static str>,
+        /// Unités arrêtées (« inactive »), quel que soit `actif`.
+        arretees: Vec<&'static str>,
         /// Les groupes de la lignée de Vanguard.
         lignee: Vec<String>,
         /// `None` : la liste des sessions ne se lit pas.
@@ -2357,6 +2438,9 @@ mod tests {
                     groupe: "/system.slice/anydesk.service".into(),
                     ..ArretCharge::default()
                 })),
+                arret_charge_de: Vec::new(),
+                fichiers_douteux: Vec::new(),
+                arretees: Vec::new(),
                 lignee: vec!["/user.slice/user-1000.slice/session-2.scope".into()],
                 sessions: Some(Vec::new()),
                 sessions_apres_question: None,
@@ -2386,6 +2470,9 @@ mod tests {
             if self.douteux_des.is_some_and(|d| n >= d) {
                 return Err(Echec::refuse("essai", "fichier changé entre deux revues"));
             }
+            if self.fichiers_douteux.contains(&unite) {
+                return Err(Echec::refuse("essai", "complément douteux"));
+            }
             match &self.disque {
                 Some((dossiers, racine, qui)) => {
                     let d: Vec<&std::path::Path> = dossiers.iter().map(std::path::PathBuf::as_path).collect();
@@ -2403,6 +2490,9 @@ mod tests {
         }
         fn etat_d_activite(&mut self, unite: &str) -> Result<Option<String>, Echec> {
             self.journal.push(format!("actif {unite}"));
+            if self.arretees.contains(&unite) {
+                return Ok(Some("inactive".into()));
+            }
             self.actif.clone()
         }
         fn unite(&mut self, action: ActionUnite, unite: &str) -> Result<(), Echec> {
@@ -2428,7 +2518,10 @@ mod tests {
         }
         fn arret_charge(&mut self, unite: &str) -> Result<Option<ArretCharge>, Echec> {
             self.journal.push(format!("arret-lu {unite}"));
-            self.arret_charge.clone()
+            match self.arret_charge_de.iter().find(|(u, _)| *u == unite) {
+                Some((_, lu)) => Ok(lu.clone()),
+                None => self.arret_charge.clone(),
+            }
         }
         fn groupes_de_la_lignee(&self) -> Vec<String> {
             self.lignee.clone()
@@ -2618,7 +2711,6 @@ mod tests {
         // L'arrêt : en marche, relu, la question « connecté par lui ? », l'accord, relu encore, puis l'arrêt.
         let arret_complet = || {
             [
-                "etat anydesk.service",
                 "actif anydesk.service",
                 "arret-lu anydesk.service",
                 "question anydesk.service",
@@ -2629,7 +2721,7 @@ mod tests {
             .map(s)
             .to_vec()
         };
-        let jusqu_a_l_accord = || arret_complet()[..5].to_vec();
+        let jusqu_a_l_accord = || arret_complet()[..4].to_vec();
         assert_eq!(essai(arreter, &|_| {}), (true, arret_complet()));
         assert_eq!(
             essai(retirer, &|m| m.session = Some(true)),
@@ -2670,12 +2762,13 @@ mod tests {
                 "{g:?}"
             );
         }
+        // Le retrait du démarrage demande qu'il soit activé ; l'arrêt, non (`l_arret_designe_ne_demande_pas_qu_il_soit_active`).
         for etat in [None, Some(s("disabled")), Some(s("masked")), Some(s("static"))] {
-            let (reussi, journal) = essai(arreter, &|m| m.etat = Ok(etat.clone()));
+            let (reussi, journal) = essai(retirer, &|m| m.etat = Ok(etat.clone()));
             assert!(!reussi && journal == [s("etat anydesk.service")], "{etat:?}");
         }
         assert_eq!(
-            essai(arreter, &|m| m.etat = Err(Echec::echoue("essai", "bus"))),
+            essai(retirer, &|m| m.etat = Err(Echec::echoue("essai", "bus"))),
             (false, vec![s("etat anydesk.service")])
         );
         // Un service qui n'est pas un logiciel de prise de contrôle : refusé avant de regarder son fichier.
@@ -2705,8 +2798,8 @@ mod tests {
         if !arreter.permis_ici() {
             return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
         }
+        // Son état au démarrage n'est pas lu : l'arrêt ne demande pas qu'il soit activé.
         let jusqu_a_la_question = [
-            "etat anydesk.service",
             "actif anydesk.service",
             "arret-lu anydesk.service",
             "question anydesk.service",
@@ -2812,6 +2905,173 @@ mod tests {
             let (r, questions, arrete) = essai(&|m| m.actif = Ok(etat.clone()));
             assert!(r.reussi && questions == 0 && !arrete, "{etat:?} : {r:?}");
         }
+    }
+
+    /// Un service qui tourne sans être lancé au démarrage (préréglage du paquet, à la
+    /// main, processus caché par hidepid) passe par le même arrêt, ses questions et ses preuves, avant le retrait de
+    /// son paquet. Son retrait du démarrage, lui, demande toujours qu'il soit activé. Un « oui », rien, ou l'entrée
+    /// finie : un échec qui dit que le paquet n'est pas retiré, après un retrait du démarrage fait quand même.
+    #[test]
+    fn l_arret_designe_ne_demande_pas_qu_il_soit_active() {
+        let arreter = gestes_unix::designee(ActionUnite::Arreter, "anydesk.service").unwrap();
+        let retirer = gestes_unix::designee(ActionUnite::DesactiverSansArreter, "anydesk.service").unwrap();
+        if !arreter.permis_ici() {
+            return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
+        }
+        for etat in [None, Some("disabled"), Some("static"), Some("indirect")] {
+            let mut m = FauxMonde::nouveau();
+            m.etat = Ok(etat.map(String::from));
+            let r = faire_geste(arreter, &mut m);
+            assert!(r.reussi, "{etat:?} : {r:?}");
+            assert!(m.journal.iter().any(|l| l == "question anydesk.service"), "{etat:?}");
+            assert!(
+                m.journal.last().is_some_and(|l| l == "arreter anydesk.service"),
+                "{etat:?}"
+            );
+            let mut m = FauxMonde::nouveau();
+            m.etat = Ok(etat.map(String::from));
+            assert!(!faire_geste(retirer, &mut m).reussi, "{etat:?}");
+            assert!(!m.journal.iter().any(|l| l.starts_with("desactiver")), "{etat:?}");
+        }
+        for reponse in [Some("oui"), Some(""), None] {
+            let mut m = FauxMonde::nouveau();
+            m.reponse = reponse;
+            assert!(faire_geste(retirer, &mut m).reussi, "{reponse:?}");
+            let r = faire_geste(arreter, &mut m);
+            assert!(!r.reussi, "{reponse:?}");
+            assert!(
+                r.raison.contains("d'un paquet qui le porte") && !r.raison.contains(".."),
+                "{}",
+                r.raison
+            );
+            assert!(!m.journal.iter().any(|l| l == "arreter anydesk.service"), "{reponse:?}");
+            assert!(m.journal.iter().any(|l| l == "desactiver-sans-arreter anydesk.service"));
+        }
+        // Un arrêt refusé parce qu'une commande ne se relit pas garde aussi le paquet, et le dit.
+        let mut m = FauxMonde::nouveau();
+        if let Ok(Some(lu)) = &mut m.arret_charge {
+            lu.arret = vec![arret_designe::Commande {
+                chemin: "/bin/sh".into(),
+                arguments: vec!["sh".into(), "-c".into(), "kill $MAINPID".into()],
+            }];
+        }
+        let r = faire_geste(arreter, &mut m);
+        assert!(
+            !r.reussi && !m.journal.iter().any(|l| l == "question anydesk.service"),
+            "{r:?}"
+        );
+        assert!(
+            r.raison.contains("d'un paquet qui le porte") && !r.raison.contains(".."),
+            "{}",
+            r.raison
+        );
+        // Accepté, mais refusé par systemd : il tourne encore, et le paquet ne part pas non plus, c'est dit.
+        let mut m = FauxMonde::nouveau();
+        m.echecs = vec!["arreter"];
+        let r = faire_geste(arreter, &mut m);
+        assert!(!r.reussi && r.raison.contains("d'un paquet qui le porte"), "{r:?}");
+    }
+
+    /// xrdp : l'arrêt de xrdp.service entraîne xrdp-sesman.service (BindsTo=), qui le lui rend. L'unité du même
+    /// logiciel passe les mêmes revues (fichier, session portée par elle, ce que son arrêt lancerait) et la note la
+    /// nomme ; une autre unité entraînée, ou une unité que l'arrêt lancerait, refusent.
+    #[test]
+    fn l_arret_designe_revoit_les_unites_du_meme_logiciel() {
+        type Reglage<'a> = &'a dyn Fn(&mut FauxMonde);
+        let arreter = gestes_unix::designee(ActionUnite::Arreter, "xrdp.service").unwrap();
+        if !arreter.permis_ici() {
+            return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
+        }
+        let lu = |nom: &str, programme: &str, entrainees: &[&str]| ArretCharge {
+            lancement: vec![arret_designe::Commande {
+                chemin: programme.into(),
+                arguments: vec![programme.into(), "--nodaemon".into()],
+            }],
+            groupe: format!("/system.slice/{nom}"),
+            entrainees: entrainees.iter().map(ToString::to_string).collect(),
+            ..ArretCharge::default()
+        };
+        let monde = || {
+            let mut m = FauxMonde::nouveau();
+            m.arret_charge = Ok(Some(lu("xrdp.service", "/usr/sbin/xrdp", &["xrdp-sesman.service"])));
+            m.arret_charge_de = vec![(
+                "xrdp-sesman.service",
+                Some(lu("xrdp-sesman.service", "/usr/sbin/xrdp-sesman", &["xrdp.service"])),
+            )];
+            m
+        };
+        let essai = |regler: Reglage| {
+            let mut m = monde();
+            regler(&mut m);
+            let r = faire_geste(arreter, &mut m);
+            let question = m.journal.iter().any(|l| l.starts_with("question"));
+            let arrete = m.journal.iter().any(|l| l.starts_with("arreter "));
+            (r, question, arrete)
+        };
+        let (r, question, arrete) = essai(&|_| {});
+        assert!(r.reussi && question && arrete, "{r:?}");
+        let note = r.note.unwrap_or_default();
+        assert!(
+            note.contains("systemctl start xrdp.service xrdp-sesman.service"),
+            "{note}"
+        );
+        // La session de logind qu'ouvre xrdp : Service=xrdp-sesman, Remote=yes.
+        let distante = SessionVue {
+            distante: true,
+            service: "xrdp-sesman".into(),
+            groupes_du_meneur: vec!["/user.slice/user-1000.slice/session-c3.scope".into()],
+        };
+        let dans_sesman = SessionVue {
+            distante: false,
+            service: "xrdp-sesman".into(),
+            groupes_du_meneur: vec!["/system.slice/xrdp-sesman.service/session".into()],
+        };
+        let refuses: [(&str, Reglage); 6] = [
+            ("session distante", &|m| m.sessions = Some(vec![distante.clone()])),
+            ("session dans sesman", &|m| m.sessions = Some(vec![dans_sesman.clone()])),
+            ("fichier de sesman douteux", &|m| {
+                m.fichiers_douteux = vec!["xrdp-sesman.service"];
+            }),
+            ("arrêt de sesman douteux", &|m| {
+                if let Some((_, Some(lu))) = m.arret_charge_de.first_mut() {
+                    lu.arret = vec![arret_designe::Commande {
+                        chemin: "/bin/sh".into(),
+                        arguments: vec!["sh".into(), "-c".into(), "pkill xrdp".into()],
+                    }];
+                }
+            }),
+            ("autre unité entraînée", &|m| {
+                if let Ok(Some(lu)) = &mut m.arret_charge {
+                    lu.entrainees.push("cups.service".into());
+                }
+            }),
+            ("unité lancée", &|m| {
+                if let Some((_, Some(lu))) = m.arret_charge_de.first_mut() {
+                    lu.lancees.push("relance.service".into());
+                }
+            }),
+        ];
+        for (cas, regler) in refuses {
+            let (r, question, arrete) = essai(regler);
+            assert!(!r.reussi && !question && !arrete, "{cas} : {r:?}");
+        }
+        // sesman qui entraîne une autre unité : refusé aussi, sa revue ne s'arrête pas à xrdp.
+        let (r, question, _) = essai(&|m| {
+            if let Some((_, Some(lu))) = m.arret_charge_de.first_mut() {
+                lu.entrainees.push("cups.service".into());
+            }
+        });
+        assert!(!r.reussi && !question && r.raison.contains("cups.service"), "{r:?}");
+        // sesman arrêté : l'arrêt ne le touche pas, son fichier douteux ne compte pas, et la note ne le nomme pas.
+        let (r, question, arrete) = essai(&|m| {
+            m.arretees = vec!["xrdp-sesman.service"];
+            m.fichiers_douteux = vec!["xrdp-sesman.service"];
+        });
+        assert!(r.reussi && question && arrete, "{r:?}");
+        assert!(!r.note.unwrap_or_default().contains("xrdp-sesman"));
+        // Une session ouverte par xrdp pendant la question : refusé juste avant l'arrêt.
+        let (r, _, arrete) = essai(&|m| m.sessions_apres_question = Some(vec![distante.clone()]));
+        assert!(!r.reussi && !arrete, "{r:?}");
     }
 
     /// É-2 du lot U3 : une unité de la table passe par la même revue qu'une unité désignée, avant l'accord et encore

@@ -551,7 +551,7 @@ fn commandes(v: Option<&Valeur>) -> Option<Vec<Commande>> {
 
 /// `ArretCharge` d'après les propriétés de l'unité (`proprietes_unite`, interface Unit) et celles de son genre
 /// (`proprietes_genre`). Une propriété attendue qui manque ou n'a pas son type : `None`, illisible. Seules
-/// PropagatesStopTo (systemd 249) et OnSuccess (systemd 249) peuvent manquer, sur un systemd plus ancien qui ne les
+/// PropagatesStopTo, OnSuccess et UpheldBy (systemd 249) peuvent manquer, sur un systemd plus ancien qui ne les
 /// connaît pas : vides alors.
 pub(crate) fn arret_charge_de(
     unite: &str,
@@ -562,13 +562,17 @@ pub(crate) fn arret_charge_de(
         recharge_attendue: proprietes_unite.champ("NeedDaemonReload")?.booleen()?,
         ..ArretCharge::default()
     };
-    for nom in ["RequiredBy", "RequisiteOf", "BoundBy", "ConsistsOf", "OnFailure"] {
+    for nom in ["RequiredBy", "RequisiteOf", "BoundBy", "ConsistsOf"] {
         lu.entrainees.extend(liste_de_textes(proprietes_unite.champ(nom))?);
     }
+    lu.lancees.extend(liste_de_textes(proprietes_unite.champ("OnFailure"))?);
+    if let Some(v) = proprietes_unite.champ("PropagatesStopTo") {
+        lu.entrainees.extend(liste_de_textes(Some(v))?);
+    }
     // UpheldBy : une unité qui la maintient la relancerait aussitôt, l'arrêt dit fait serait faux.
-    for nom in ["PropagatesStopTo", "OnSuccess", "UpheldBy"] {
+    for nom in ["OnSuccess", "UpheldBy"] {
         if let Some(v) = proprietes_unite.champ(nom) {
-            lu.entrainees.extend(liste_de_textes(Some(v))?);
+            lu.lancees.extend(liste_de_textes(Some(v))?);
         }
     }
     let Some((_, lancement, arret)) = interface_du_genre(unite) else {
@@ -1373,6 +1377,7 @@ mod tests {
                 ("ConsistsOf", Valeur::Tableau(vec![])),
                 ("OnFailure", Valeur::Tableau(vec![])),
                 ("PropagatesStopTo", Valeur::Tableau(vec![t("autre.service")])),
+                ("UpheldBy", Valeur::Tableau(vec![t("gardien.service")])),
             ])
         };
         let genre = |groupe: Valeur| {
@@ -1410,6 +1415,7 @@ mod tests {
             [("/etc/default/anydesk".to_string(), true)]
         );
         assert_eq!(lu.entrainees, ["autre.service"]);
+        assert_eq!(lu.lancees, ["gardien.service"]);
         assert_eq!(lu.groupe, "/system.slice/anydesk.service");
         assert_eq!(lu.racine, "");
         // Une liste obligatoire d'un autre type, un groupe qui n'est pas un texte, le genre absent : rien n'est lu.

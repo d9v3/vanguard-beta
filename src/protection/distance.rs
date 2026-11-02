@@ -18,6 +18,8 @@ use crate::commande::sh_chaine;
 #[cfg(target_os = "linux")]
 use crate::machine::gestes_unix::ActionUnite;
 use crate::machine::{Constat, alerte, impossible, ok};
+#[cfg(target_os = "linux")]
+use crate::modele::Echec;
 use crate::risk::Niveau;
 use crate::ui::*;
 
@@ -75,6 +77,7 @@ const LOGICIELS: &[Logiciel] = &[
     Logiciel { nom: ["NinjaOne", "NinjaOne"], motifs: &["ninjarmm", "ninjaone"], integre: false },
     Logiciel { nom: ["Action1", "Action1"], motifs: &["action1"], integre: false },
     Logiciel { nom: ["MeshCentral", "MeshCentral"], motifs: &["meshagent", "meshcentral"], integre: false },
+    Logiciel { nom: ["xrdp", "xrdp"], motifs: &["xrdp"], integre: false },
 ];
 
 /// Comment un logiciel a été trouvé.
@@ -103,6 +106,9 @@ struct Trouvaille {
     retrait: Vec<String>,
     /// Commandes qui l'arrêtent, passées avant le retrait quand la personne l'a accepté une seconde fois.
     arret: Vec<String>,
+    /// Son retrait est refusé (`retrait_garde`, la raison dans `ou`) : pas de conseil de le désinstaller autrement,
+    /// les réglages du système passeraient par les mêmes scripts.
+    refuse: bool,
 }
 
 /// Le logiciel dont un mot est reconnu au début d'un mot de `texte` (nom de programme, de paquet, de fichier…).
@@ -162,6 +168,57 @@ fn sans_repetition(commandes: impl IntoIterator<Item = String>) -> Vec<String> {
         }
     }
     liste
+}
+
+/// Les lignes du retrait d'un logiciel, dans l'ordre où elles partent ; `avec_l_arret` : la personne a accepté de
+/// l'arrêter (second accord). Sous Linux, l'arrêt d'un service désigné demande à l'administrateur s'il est connecté
+/// par lui, et un « oui » (ou rien) le fait échouer : l'assistant ne fait plus rien de la liste après un échec. Ses
+/// gestes de retrait du démarrage passent donc en premier, pour être faits quand même ; puis l'arrêt accepté, puis
+/// les arrêts qui gardent la désinstallation (`retrait_garde`), le plus souvent les mêmes, gardés une fois. Les
+/// commandes, elles, gardent leur ordre (arrêt du processus avant la désinstallation), et ne partent que si tous les
+/// gestes ont réussi : un arrêt refusé garde le paquet, qui l'arrêterait sans rien demander. Sans l'arrêt accepté,
+/// l'arrêt des services lancés au démarrage garde quand même les commandes : arrêtés au relevé, ils ont pu repartir
+/// depuis, et le paquet les arrêterait sans la question ; s'ils ne tournent toujours pas, ce geste ne fait rien.
+fn lignes_du_retrait(siens: &[&Trouvaille], avec_l_arret: bool) -> Vec<String> {
+    #[cfg(target_os = "linux")]
+    let (est_geste, est_arret) = (
+        |l: &String| l.starts_with(crate::protection::blocage::ordres::PREFIXE),
+        |l: &String| {
+            use crate::machine::gestes_unix::{GesteUnix, analyser};
+            matches!(analyser(l), Some(GesteUnix::Designee(ActionUnite::Arreter, _)))
+        },
+    );
+    #[cfg(not(target_os = "linux"))]
+    let (est_geste, est_arret) = (|_: &String| false, |_: &String| false);
+    let (gestes, commandes): (Vec<String>, Vec<String>) = siens
+        .iter()
+        .flat_map(|t| t.retrait.iter().cloned())
+        .partition(est_geste);
+    let (gardes, gestes): (Vec<String>, Vec<String>) = gestes.into_iter().partition(est_arret);
+    let arret = siens
+        .iter()
+        .filter(|_| avec_l_arret)
+        .flat_map(|t| t.arret.iter().cloned());
+    let au_demarrage = siens
+        .iter()
+        .filter(|t| !avec_l_arret && !commandes.is_empty() && t.trace == Trace::Demarrage)
+        .flat_map(|t| t.arret.iter().filter(|l| est_arret(l)).cloned())
+        .collect::<Vec<_>>();
+    sans_repetition(
+        gestes
+            .into_iter()
+            .chain(arret)
+            .chain(au_demarrage)
+            .chain(gardes)
+            .chain(commandes),
+    )
+}
+
+/// Où et pourquoi le retrait d'un logiciel est refusé (`retrait_garde`, la raison dans `ou`), joints ; `None` s'il ne
+/// l'est pas.
+fn raisons_du_refus(siens: &[&Trouvaille]) -> Option<String> {
+    let raisons: Vec<&str> = siens.iter().filter(|t| t.refuse).map(|t| t.ou.as_str()).collect();
+    (!raisons.is_empty()).then(|| raisons.join(tr!(" ; ", "; ")))
 }
 
 /// Retire chaque programme (une liste de commandes chacun) et dit, pour chacun, s'il est retiré. Ailleurs que sous
@@ -366,12 +423,23 @@ fn juger(trouvailles: &[Trouvaille], aujourd_hui: NaiveDate) -> Vec<Constat> {
         };
         // L'objet : le logiciel par son nom français, le même quelle que soit la langue de l'interface.
         let constat = alerte(CAT, niveau, message).avec_objet(crate::modele::Objet::de("logiciel", logiciel.nom[0]));
-        let retrait = sans_repetition(siens.iter().flat_map(|t| t.retrait.iter().cloned()));
+        let retrait = lignes_du_retrait(&siens, false);
         constats.push(if en_cours {
             constat.manuel(
                 tr!(
                     "Vanguard ne coupe pas une connexion à distance en cours. Si vous n'avez rien demandé : débranchez Internet (câble, Wi-Fi), puis menu « Arnaques et vie privée » › « Mon ordinateur est-il contrôlé ? » pour le fermer et le retirer",
                     "Vanguard does not cut a remote connection in progress. If you did not ask for anything: unplug the Internet (cable, Wi-Fi), then menu “Scams and privacy” › “Is my computer being controlled?” to close and remove it"
+                ),
+                &[],
+            )
+        } else if let Some(raisons) = raisons_du_refus(&siens) {
+            // Rien du tout, pas même ses autres commandes : le logiciel à moitié retiré, son service encore en marche.
+            // Et les réglages du système passeraient par les mêmes scripts de désinstallation : pas de conseil qui y
+            // mène.
+            constat.manuel(
+                trf!(
+                    "Vanguard ne retire pas {nom} : {raisons}. Ne le désinstallez pas non plus depuis les réglages du système, qui arrêteraient ses services sans rien demander",
+                    "Vanguard does not remove {nom}: {raisons}. Do not uninstall it from the system settings either, which would stop its services without asking"
                 ),
                 &[],
             )
@@ -465,6 +533,7 @@ fn fichiers_poses(t: &mut Vec<Trouvaille>, dossiers: &[PathBuf]) -> bool {
                     sh_chaine(&chemin.to_string_lossy())
                 )],
                 arret: Vec::new(),
+                refuse: false,
             });
         }
     }
@@ -494,11 +563,14 @@ fn relever_tout() -> Option<Releve> {
     let mut t = Vec::new();
     // Flatpak, Snap et /opt ne s'y ajoutent que là où ils existent : les paquets de la distribution disent seuls si
     // les programmes installés ont été lus.
-    let installes = paquets(&mut t);
+    // Lues avant les paquets : leur retrait en dépend (`retrait_garde`).
+    let en_marche = unites_en_marche();
+    let installes = paquets(&mut t, en_marche.as_deref());
     flatpaks(&mut t, &maison);
-    snaps(&mut t);
+    snaps(&mut t, en_marche.as_deref());
     dossiers_opt(&mut t);
-    let en_cours = processus(&mut t);
+    // Les deux, toujours : l'un ne se lit pas sans que l'autre soit sauté.
+    let en_cours = processus(&mut t) & services_en_marche(&mut t, en_marche.as_deref());
     let demarrage = demarrage_linux(&mut t, &maison);
     let declares = std::fs::read_to_string(maison.join(".config/user-dirs.dirs")).unwrap_or_default();
     let declare = |cle: &str, defaut: &str| {
@@ -523,6 +595,144 @@ fn relever_tout() -> Option<Releve> {
     })
 }
 
+/// Les unités du système en marche, lues par systemd sur le bus (ListUnits), sans droits : un processus caché par
+/// hidepid ne se voit pas dans /proc, son unité si. Sans systemd, aucune ; `None` : systemd est là, mais elles ne se
+/// lisent pas.
+#[cfg(target_os = "linux")]
+fn unites_en_marche() -> Option<Vec<String>> {
+    use crate::machine::linux::unites;
+    if !std::path::Path::new("/run/systemd/system").is_dir() {
+        return Some(Vec::new());
+    }
+    let lues = unites::bus(false).and_then(|mut b| unites::unites(&mut b)).ok()?;
+    Some(
+        lues.into_iter()
+            .filter(|u| en_marche(&u.activite))
+            .map(|u| u.nom)
+            .collect(),
+    )
+}
+
+/// L'état d'activité d'une unité qui tourne, ou s'arrête encore : comme le fils, qui ne demande rien pour une unité
+/// arrêtée.
+#[cfg(target_os = "linux")]
+fn en_marche(activite: &str) -> bool {
+    matches!(activite, "active" | "activating" | "reloading" | "deactivating")
+}
+
+/// Le logiciel d'une unité en marche, si elle est un service à son nom. Seuls les services comptent : un `.mount` (celui
+/// que tout snap monte), un `.scope` ou un `.slice` ne portent pas de session, et l'assistant ne les désigne pas ; les
+/// compter bloquerait le retrait pour rien.
+#[cfg(target_os = "linux")]
+fn service_du_catalogue(nom: &str) -> Option<usize> {
+    nom.ends_with(".service").then(|| reconnu(nom)).flatten()
+}
+
+/// Le geste d'arrêt d'un service du système en marche, ou la raison de ne pas en proposer (français, anglais). Une
+/// instance d'un modèle (« chrome-remote-desktop@<compte>.service ») : l'assistant ne revoit pas les modèles, il la
+/// refuserait ; dit tel quel plutôt qu'un geste voué à l'échec.
+#[cfg(target_os = "linux")]
+fn arret_d_un_service(nom: &str) -> Result<String, (&'static str, &'static str)> {
+    if nom.contains('@') {
+        return Err((
+            "c'est l'instance d'un modèle de service, que Vanguard ne revoit pas",
+            "it is an instance of a service template, which Vanguard does not review",
+        ));
+    }
+    action_sur_unite("", false, ActionUnite::Arreter, nom)
+}
+
+/// Le retrait d'un paquet ou d'un snap du logiciel `i`, gardé. Ses scripts de désinstallation (prerm de Debian,
+/// `snap remove`) arrêtent ses services sans rien demander, et couperaient une session qui passe par eux : chaque
+/// unité du système en marche à son nom passe d'abord par le geste d'arrêt de l'assistant, avec sa question
+/// « êtes-vous connecté par lui ? », son accord et ses preuves ; un geste en échec, et la commande ne part pas
+/// (`machine::appliquer_gestes_puis_commandes`). `Err`, la raison de ne rien proposer : une unité en marche que
+/// l'assistant ne désigne pas, ou des unités qui ne se lisent pas. Les unités de la session ne comptent pas : ces
+/// scripts n'arrêtent que celles du système.
+#[cfg(target_os = "linux")]
+fn retrait_garde(i: usize, commande: String, en_marche: Option<&[String]>) -> Result<Vec<String>, Echec> {
+    const CONTEXTE: &str = "distance/retrait";
+    let Some(en_marche) = en_marche else {
+        return Err(Echec::refuse(
+            CONTEXTE,
+            tr!(
+                "les services en marche ne se lisent pas, et sa désinstallation pourrait en arrêter un qui porte une session à distance",
+                "the running services cannot be read, and uninstalling it could stop one that carries a remote session"
+            ),
+        ));
+    };
+    let mut retrait = Vec::new();
+    for nom in en_marche.iter().filter(|n| service_du_catalogue(n) == Some(i)) {
+        match arret_d_un_service(nom) {
+            Ok(geste) => retrait.push(geste),
+            Err((fr, en)) => {
+                let vu = affichable(nom);
+                return Err(Echec::refuse(
+                    CONTEXTE,
+                    trf!(
+                        "son service {vu} tourne, et Vanguard n'y touche pas ({fr}) ; sa désinstallation l'arrêterait sans rien demander",
+                        "its service {vu} is running, and Vanguard leaves it alone ({en}); uninstalling it would stop it without asking"
+                    ),
+                ));
+            }
+        }
+    }
+    retrait.push(commande);
+    Ok(retrait)
+}
+
+/// Où est un paquet ou un snap, et son retrait gardé (`retrait_garde`) ; refusé, rien n'est proposé, et la raison est
+/// dite là où il est montré.
+#[cfg(target_os = "linux")]
+fn ou_et_retrait(i: usize, ou: String, commande: String, en_marche: Option<&[String]>) -> (String, Vec<String>) {
+    match retrait_garde(i, commande, en_marche) {
+        Ok(retrait) => (ou, retrait),
+        Err(raison) => (
+            trf!(
+                "{ou} (Vanguard ne le retire pas : {raison})",
+                "{ou} (Vanguard does not remove it: {raison})"
+            ),
+            Vec::new(),
+        ),
+    }
+}
+
+/// Les services du système en marche à son nom (`unites_en_marche`), même lancés autrement qu'au démarrage, et même
+/// quand leur processus est caché : leur arrêt est le geste de l'assistant, avec sa question et ses preuves. `false` :
+/// systemd est là, mais ils ne se lisent pas.
+#[cfg(target_os = "linux")]
+fn services_en_marche(t: &mut Vec<Trouvaille>, en_marche: Option<&[String]>) -> bool {
+    let Some(en_marche) = en_marche else {
+        return false;
+    };
+    for nom in en_marche {
+        let Some(i) = service_du_catalogue(nom) else {
+            continue;
+        };
+        let vu = affichable(nom);
+        let (ou, arret) = match arret_d_un_service(nom) {
+            Ok(geste) => (trf!("service {vu}", "service {vu}"), vec![geste]),
+            Err((fr, en)) => (
+                trf!(
+                    "service {vu} (Vanguard n'y touche pas : {fr})",
+                    "service {vu} (Vanguard leaves it alone: {en})"
+                ),
+                Vec::new(),
+            ),
+        };
+        t.push(Trouvaille {
+            logiciel: i,
+            trace: Trace::EnCours { connecte: false },
+            ou,
+            depuis: None,
+            retrait: Vec::new(),
+            arret,
+            refuse: false,
+        });
+    }
+    true
+}
+
 /// Date de modification du premier fichier ou dossier de `dossier` dont le nom commence par `prefixe`.
 #[cfg(target_os = "linux")]
 fn date_dans(dossier: &str, prefixe: &str) -> Option<NaiveDate> {
@@ -543,7 +753,7 @@ fn date_dans(dossier: &str, prefixe: &str) -> Option<NaiveDate> {
 /// l'outil de la distribution (Omarchy, rpm-ostree et transactional-update compris : `Paquets::retirer`).
 /// `false` : aucun gestionnaire de paquets connu, ou sa liste ne se lit pas.
 #[cfg(target_os = "linux")]
-fn paquets(t: &mut Vec<Trouvaille>) -> bool {
+fn paquets(t: &mut Vec<Trouvaille>, en_marche: Option<&[String]>) -> bool {
     use crate::machine::linux::Paquets;
     let Some(gestionnaire) = Paquets::detecter() else {
         return false;
@@ -584,12 +794,19 @@ fn paquets(t: &mut Vec<Trouvaille>) -> bool {
                 .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
                 .map(|d| d.with_timezone(&chrono::Local).date_naive()),
         };
+        let (ou, retrait) = ou_et_retrait(
+            i,
+            trf!("paquet {p}", "package {p}"),
+            gestionnaire.retirer(&sh_chaine(p)),
+            en_marche,
+        );
         t.push(Trouvaille {
             logiciel: i,
             trace: Trace::Installe,
-            ou: trf!("paquet {p}", "package {p}"),
+            ou,
             depuis,
-            retrait: vec![gestionnaire.retirer(&sh_chaine(p))],
+            refuse: retrait.is_empty(),
+            retrait,
             arret: Vec::new(),
         });
     }
@@ -620,12 +837,13 @@ fn flatpaks(t: &mut Vec<Trouvaille>, maison: &std::path::Path) {
             depuis,
             retrait: vec![format!("flatpak uninstall -y --noninteractive {}", sh_chaine(id))],
             arret: Vec::new(),
+            refuse: false,
         });
     }
 }
 
 #[cfg(target_os = "linux")]
-fn snaps(t: &mut Vec<Trouvaille>) {
+fn snaps(t: &mut Vec<Trouvaille>, en_marche: Option<&[String]>) {
     // Les fichiers de snapd disent les snaps installés ; `snap list` en secours, quand ils ne se lisent pas.
     let natif = crate::machine::linux::natif::snaps;
     let Some(liste) = liste_snaps(crate::machine::linux::natif::present("snap"), natif) else {
@@ -635,12 +853,19 @@ fn snaps(t: &mut Vec<Trouvaille>) {
         let Some(i) = reconnu(nom) else {
             continue;
         };
+        let (ou, retrait) = ou_et_retrait(
+            i,
+            format!("Snap {nom}"),
+            format!("sudo snap remove {}", sh_chaine(nom)),
+            en_marche,
+        );
         t.push(Trouvaille {
             logiciel: i,
             trace: Trace::Installe,
-            ou: format!("Snap {nom}"),
+            ou,
             depuis: None,
-            retrait: vec![format!("sudo snap remove {}", sh_chaine(nom))],
+            refuse: retrait.is_empty(),
+            retrait,
             arret: Vec::new(),
         });
     }
@@ -689,6 +914,7 @@ fn dossiers_opt(t: &mut Vec<Trouvaille>) {
             depuis: date_de(e.metadata().and_then(|m| m.modified())),
             retrait: vec![format!("sudo rm -rf {}", sh_chaine(&chemin.to_string_lossy()))],
             arret: Vec::new(),
+            refuse: false,
         });
     }
 }
@@ -727,6 +953,7 @@ fn processus(t: &mut Vec<Trouvaille>) -> bool {
             depuis: None,
             retrait: Vec::new(),
             arret: vec![format!("pkill -x {} || true", sh_chaine(&comm))],
+            refuse: false,
         });
     }
     true
@@ -795,6 +1022,7 @@ fn demarrage_linux(t: &mut Vec<Trouvaille>, maison: &std::path::Path) -> bool {
                 depuis: None,
                 retrait: vec![format!("{sudo}rm -f {}", sh_chaine(&chemin.to_string_lossy()))],
                 arret: Vec::new(),
+                refuse: false,
             });
         }
     }
@@ -849,6 +1077,7 @@ fn demarrage_linux(t: &mut Vec<Trouvaille>, maison: &std::path::Path) -> bool {
                 depuis: None,
                 retrait,
                 arret,
+                refuse: false,
             });
         }
     }
@@ -1042,6 +1271,7 @@ fn relever_tout() -> Option<Releve> {
                 depuis: date_de(e.metadata().and_then(|m| m.created())),
                 retrait: vec![format!("{sudo}rm -rf {}", sh_chaine(&chemin.to_string_lossy()))],
                 arret: Vec::new(),
+                refuse: false,
             });
         }
     }
@@ -1064,6 +1294,7 @@ fn relever_tout() -> Option<Releve> {
                 depuis: None,
                 retrait: vec![format!("{sudo}rm -f {chemin}")],
                 arret: vec![format!("{sudo}launchctl bootout {domaine} {chemin} || true")],
+                refuse: false,
             });
         }
     }
@@ -1104,6 +1335,7 @@ fn relever_tout() -> Option<Releve> {
                 depuis: None,
                 retrait: Vec::new(),
                 arret: vec![format!("pkill -x {} || true", sh_chaine(court))],
+                refuse: false,
             });
         }
     }
@@ -1402,6 +1634,7 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
             depuis: date(installation, "%Y%m%d").or_else(|| date(cle, "%Y-%m-%d")),
             retrait: retrait_windows(desinstallation, silencieuse),
             arret: Vec::new(),
+            refuse: false,
         });
     }
     let installes: Vec<usize> = t.iter().map(|x| x.logiciel).collect();
@@ -1428,6 +1661,7 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
                 "Stop-Service -Name {} -Force -ErrorAction SilentlyContinue",
                 ps_chaine(nom)
             )],
+            refuse: false,
         });
     }
     let connectes: std::collections::BTreeSet<u32> = section(Some(sortie), "CNX")
@@ -1456,6 +1690,7 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
                 "Stop-Process -Name {} -Force -ErrorAction SilentlyContinue",
                 ps_chaine(nom)
             )],
+            refuse: false,
         });
     }
     for l in section(Some(sortie), "RUN").unwrap_or_default() {
@@ -1481,6 +1716,7 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
                 )]
             },
             arret: Vec::new(),
+            refuse: false,
         });
     }
     for l in section(Some(sortie), "FIC").unwrap_or_default() {
@@ -1498,6 +1734,7 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
             depuis: date(modifie, "%Y-%m-%d"),
             retrait: vec![format!("Remove-Item -LiteralPath {} -Force", ps_chaine(chemin))],
             arret: Vec::new(),
+            refuse: false,
         });
     }
     Some(t)
@@ -1644,21 +1881,7 @@ pub fn menu() {
         let nom = logiciel.nom();
         let siens: Vec<&Trouvaille> = visibles.iter().copied().filter(|t| t.logiciel == i).collect();
         let en_cours = siens.iter().any(|t| matches!(t.trace, Trace::EnCours { .. }));
-        let mut commandes = Vec::new();
-        // Sous Linux, l'arrêt d'un service désigné demande à l'administrateur s'il est connecté par lui, et un
-        // « oui » (ou rien) le fait échouer : l'assistant ne fait plus rien de la liste après un échec. Ses gestes de
-        // retrait du démarrage passent donc avant l'arrêt, pour être faits quand même ; les commandes, elles, gardent
-        // leur ordre (arrêt du processus avant la désinstallation), et ne partent que si tous les gestes ont réussi.
-        #[cfg(target_os = "linux")]
-        let est_geste = |l: &String| l.starts_with(crate::protection::blocage::ordres::PREFIXE);
-        #[cfg(not(target_os = "linux"))]
-        let est_geste = |_: &String| false;
-        let (gestes_du_retrait, reste_du_retrait): (Vec<String>, Vec<String>) = siens
-            .iter()
-            .flat_map(|t| t.retrait.iter().cloned())
-            .partition(est_geste);
         if en_cours {
-            commandes.extend(gestes_du_retrait);
             // Le second accord : la personne qui aide peut être connectée par ce programme même.
             println!();
             dire(&trf!(
@@ -1674,12 +1897,25 @@ pub fn menu() {
                 trp!("  {nom} : gardé.", "  {nom}: kept.");
                 continue;
             }
-            commandes.extend(siens.iter().flat_map(|t| t.arret.iter().cloned()));
-        } else {
-            commandes.extend(gestes_du_retrait);
         }
-        commandes.extend(reste_du_retrait);
-        let commandes = sans_repetition(commandes);
+        let commandes = lignes_du_retrait(&siens, en_cours);
+        // Son retrait refusé : rien du tout, pas même ses autres commandes (le logiciel à moitié retiré, son service
+        // encore en marche). Et les réglages du système le désinstalleraient en arrêtant ce qui tourne sans rien
+        // demander : pas de conseil qui y mène.
+        if let Some(raisons) = raisons_du_refus(&siens) {
+            trp!(
+                "  ℹ {nom} : Vanguard ne le retire pas : {raisons}. Les réglages du système l'arrêteraient sans rien demander.",
+                "  ℹ {nom}: Vanguard does not remove it: {raisons}. The system settings would stop it without asking."
+            );
+            continue;
+        }
+        if commandes.is_empty() && en_cours && cfg!(target_os = "linux") {
+            trp!(
+                "  ℹ {nom} : Vanguard ne le retire pas tant qu'il tourne (la raison est dite au-dessus) ; les réglages du système l'arrêteraient sans rien demander.",
+                "  ℹ {nom}: Vanguard does not remove it while it runs (the reason is given above); the system settings would stop it without asking."
+            );
+            continue;
+        }
         if commandes.is_empty() {
             trp!(
                 "  ℹ {nom} : à désinstaller depuis les réglages du système (applications installées).",
@@ -1862,6 +2098,142 @@ mod tests {
         assert_eq!(reconnu("vanguard"), None);
     }
 
+    /// xrdp se désigne : ses deux unités, son paquet, et la session de logind qu'il ouvre (Service=xrdp-sesman) se
+    /// reconnaissent comme lui ; xorgxrdp (le module de Xorg) n'est pas lui.
+    #[test]
+    fn xrdp_est_au_catalogue() {
+        let xrdp = indice("xrdp");
+        for nom in ["xrdp", "xrdp.service", "xrdp-sesman.service", "xrdp-sesman"] {
+            assert_eq!(reconnu(nom), Some(xrdp), "{nom}");
+        }
+        assert_eq!(reconnu("xorgxrdp"), None);
+        #[cfg(unix)]
+        assert!(meme_logiciel("xrdp-sesman", "xrdp.service"));
+        // Ses deux unités se désignent ; hors de Linux, il n'y a pas d'unités à désigner.
+        #[cfg(target_os = "linux")]
+        for unite in ["xrdp.service", "xrdp-sesman.service"] {
+            for a in [ActionUnite::Arreter, ActionUnite::DesactiverSansArreter] {
+                assert!(
+                    crate::machine::gestes_unix::designee_ou_refus(a, unite).is_ok(),
+                    "{unite}"
+                );
+            }
+        }
+    }
+
+    /// Le retrait d'un paquet dont un service tourne (lu par systemd, même sans être lancé
+    /// au démarrage, même caché de /proc) passe d'abord par le geste d'arrêt de l'assistant, avec sa question ; un
+    /// service que l'assistant ne désigne pas, ou des services qui ne se lisent pas : rien n'est proposé, et c'est dit.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn le_retrait_d_un_paquet_passe_par_l_arret_de_ses_services() {
+        let s = ToString::to_string;
+        let arreter = |u: &str| {
+            crate::machine::gestes_unix::designee(ActionUnite::Arreter, u)
+                .unwrap()
+                .ligne()
+        };
+        let apt = s("sudo apt-get remove -y xrdp");
+        let en_marche = [s("cups.service"), s("xrdp.service"), s("xrdp-sesman.service")];
+        let xrdp = indice("xrdp");
+        assert_eq!(
+            retrait_garde(xrdp, apt.clone(), Some(&en_marche)),
+            Ok(vec![
+                arreter("xrdp.service"),
+                arreter("xrdp-sesman.service"),
+                apt.clone()
+            ])
+        );
+        // Rien en marche à son nom, ou pas de systemd : la commande seule.
+        assert_eq!(
+            retrait_garde(indice("AnyDesk"), s("x"), Some(&en_marche)),
+            Ok(vec![s("x")])
+        );
+        assert_eq!(retrait_garde(xrdp, apt.clone(), Some(&[])), Ok(vec![apt.clone()]));
+        assert!(retrait_garde(xrdp, apt.clone(), None).is_err());
+        let refuse = [s("xrdp agent.service")];
+        let raison = retrait_garde(xrdp, apt.clone(), Some(&refuse)).unwrap_err().to_string();
+        assert!(raison.contains("xrdp agent.service"), "{raison}");
+        // Une instance d'un modèle : refusée par sa vraie raison, pas par un geste que l'assistant refuserait.
+        let instance = [s("xrdp@vnc_1.service")];
+        let raison = retrait_garde(xrdp, apt.clone(), Some(&instance))
+            .unwrap_err()
+            .to_string();
+        assert!(raison.contains("modèle") || raison.contains("template"), "{raison}");
+        // Un point de montage (celui de tout snap), une tranche : pas des services, ils ne gardent rien.
+        let montages = [s("snap-xrdp-12.mount"), s("xrdp.slice"), s("xrdp.scope")];
+        assert_eq!(retrait_garde(xrdp, apt.clone(), Some(&montages)), Ok(vec![apt.clone()]));
+        let mut t = Vec::new();
+        assert!(services_en_marche(&mut t, Some(&montages)));
+        assert_eq!(t, []);
+        let (ou, retrait) = ou_et_retrait(xrdp, s("paquet xrdp"), apt.clone(), None);
+        assert!(retrait.is_empty() && ou.starts_with("paquet xrdp ("), "{ou}");
+
+        // Les services en marche deviennent « en cours », leur arrêt étant le geste de l'assistant.
+        let mut t = Vec::new();
+        assert!(services_en_marche(&mut t, Some(&en_marche)));
+        assert_eq!(t.len(), 2);
+        assert!(
+            t.iter()
+                .all(|x| x.logiciel == xrdp && x.trace == Trace::EnCours { connecte: false })
+        );
+        assert_eq!(t[0].arret, [arreter("xrdp.service")]);
+        let mut t = Vec::new();
+        assert!(services_en_marche(&mut t, Some(&refuse)));
+        assert!(t[0].arret.is_empty() && t[0].ou.contains("xrdp agent.service"), "{t:?}");
+        let mut t = Vec::new();
+        assert!(!services_en_marche(&mut t, None));
+        assert_eq!(t, []);
+    }
+
+    /// L'ordre du retrait : le retrait du démarrage d'abord (fait même si l'arrêt est refusé), puis l'arrêt accepté,
+    /// puis les arrêts qui gardent la désinstallation (gardés une fois), puis les commandes, dans leur ordre.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn le_retrait_du_demarrage_passe_avant_l_arret() {
+        use crate::machine::gestes_unix::designee;
+        let arreter = designee(ActionUnite::Arreter, "xrdp.service").unwrap().ligne();
+        let sesman = designee(ActionUnite::Arreter, "xrdp-sesman.service").unwrap().ligne();
+        let retirer = designee(ActionUnite::DesactiverSansArreter, "xrdp.service")
+            .unwrap()
+            .ligne();
+        let apt = "sudo apt-get remove -y xrdp".to_string();
+        let mut paquet = trouvaille("xrdp", Trace::Installe, None, &[]);
+        paquet.retrait = vec![arreter.clone(), sesman.clone(), apt.clone()];
+        paquet.arret = Vec::new();
+        let mut demarrage = trouvaille("xrdp", Trace::Demarrage, None, &[]);
+        demarrage.retrait = vec![retirer.clone()];
+        demarrage.arret = vec![arreter.clone()];
+        let mut service = trouvaille("xrdp", Trace::EnCours { connecte: false }, None, &[]);
+        service.arret = vec![arreter.clone()];
+        let mut processus = trouvaille("xrdp", Trace::EnCours { connecte: true }, None, &[]);
+        processus.arret = vec!["pkill -x xrdp || true".to_string()];
+        let siens = [&paquet, &demarrage, &service, &processus];
+        assert_eq!(
+            lignes_du_retrait(&siens, true),
+            [
+                retirer.clone(),
+                arreter.clone(),
+                "pkill -x xrdp || true".to_string(),
+                sesman.clone(),
+                apt.clone()
+            ]
+        );
+        assert_eq!(
+            lignes_du_retrait(&siens, false),
+            [retirer.clone(), arreter.clone(), sesman.clone(), apt.clone()]
+        );
+        // Arrêté au relevé, il a pu repartir : son arrêt garde la désinstallation même quand le paquet ne le portait
+        // pas, et seulement s'il y a une commande à garder.
+        paquet.retrait = vec![apt.clone()];
+        let siens = [&paquet, &demarrage];
+        assert_eq!(
+            lignes_du_retrait(&siens, false),
+            [retirer.clone(), arreter.clone(), apt]
+        );
+        assert_eq!(lignes_du_retrait(&[&demarrage], false), [retirer]);
+    }
+
     fn trouvaille(nom: &str, trace: Trace, depuis: Option<NaiveDate>, retrait: &[&str]) -> Trouvaille {
         Trouvaille {
             logiciel: indice(nom),
@@ -1870,6 +2242,7 @@ mod tests {
             depuis,
             retrait: retrait.iter().map(ToString::to_string).collect(),
             arret: vec!["stop".to_string()],
+            refuse: false,
         }
     }
 
@@ -1931,6 +2304,25 @@ mod tests {
         let k = c.correctif.as_ref().unwrap();
         assert!(!k.automatique && k.commandes.is_empty(), "{}", k.action);
         assert!(c.message.contains("en cours d'exécution"), "{}", c.message);
+
+        // Son retrait refusé (un service qui tourne sans geste admis) : manuel, et pas de conseil de passer par les
+        // réglages du système, qui l'arrêteraient de la même façon.
+        let mut refuse = trouvaille("xrdp", Trace::Installe, None, &[]);
+        refuse.refuse = true;
+        refuse.ou = "paquet xrdp (Vanguard ne le retire pas : son service tourne)".into();
+        // Même avec une autre commande (un dossier à effacer) : rien n'est retiré à moitié.
+        let autre = trouvaille("xrdp", Trace::Installe, None, &["sudo rm -rf '/opt/xrdp'"]);
+        let c = &juger(&[refuse.clone(), autre], aujourd_hui)[0];
+        let k = c.correctif.as_ref().unwrap();
+        assert!(!k.automatique && k.commandes.is_empty(), "{}", k.action);
+        assert!(
+            k.action.contains("Ne le désinstallez pas") && k.action.contains("son service tourne"),
+            "{}",
+            k.action
+        );
+        refuse.refuse = false;
+        let k = juger(&[refuse], aujourd_hui)[0].correctif.clone().unwrap();
+        assert!(k.action.contains("applications installées"), "{}", k.action);
 
         // Un fichier posé dans Téléchargements, même sans date : le scénario du faux technicien.
         let pose = [trouvaille("Supremo", Trace::Fichier, None, &["rm -f 'x'"])];
