@@ -25,6 +25,12 @@ manquée (ordinateur éteint) n'est pas rattrapée en journée (`Persistent=fals
 2. `outils/verifier.sh` complet (non modifié ; `verifier-dernier.txt` est sauvegardé puis remis).
 3. Proptest à la **graine du jour** (`PROPTEST_RNG_SEED=AAAAMMJJ`) : d'autres entrées chaque nuit ; un échec se rejoue
    avec la graine du rapport.
+   Puis l'autotest de la base sur cet ordinateur (`vanguard autotest --json`, lecture seule, hors ligne).
+   Puis le **journal des erreurs** rapatrié par `deployer.sh` (`retours/journal-cet-ordinateur.txt`,
+   `retours/journal-cle.txt`), trié par le programme de la base (`vanguard compte-rendu journal`,
+   `src/compte_rendu/triage.rs`) : les entrées regroupées en causes (champs validés de la ligne `§` seulement, jamais
+   le détail ni la commande), rangées par score, 20 en file au plus ; la suite d'une nuit à l'autre dans
+   `etat/causes.json`. Voir « Journal des erreurs » plus bas.
 4. `outils/fuzz.sh tout 300` : corpus suivi avant/après (il grandit : c'est l'adaptation), plantages nouveaux
    (SHA-256 jamais vu), cibles du banc absentes de `fuzz.sh`. Le dimanche, `cargo fuzz cmin`.
    **Le jeudi seulement** (la relecture hebdomadaire du vendredi lit les sept dernières nuits ; celle du vendredi,
@@ -55,7 +61,8 @@ quand même le résumé de la nuit), une partie arrêtée par systemd (`TimeoutS
 
 ## Sur alerte, avec IA
 
-Alertes par priorité : `rustsec` > `fuzz` > `verifier` > `proptest` > `canari` (format cassé confirmé) > `lien`. **Une
+Alertes par priorité : `rustsec` > `fuzz` > `journal` > `verifier` > `proptest` > `canari` (format cassé confirmé) >
+`lien`. **Une
 seule** traitée par nuit, les autres « en file » ; une alerte déjà traitée (signature dans
 `etat/alertes-traitees.txt`) n'est jamais relancée. KEV et Échap ne lancent l'IA qu'à la relecture hebdomadaire.
 Un plantage du fuzz resté en file reste « nouveau » (donc en alerte) chaque nuit jusqu'à sa prise en charge. Un échec
@@ -74,6 +81,21 @@ par un second `claude -p` neuf en lecture seule (`consignes-relecture.md`) ; **j
 tourne en administrateur sans clic, l'auteur la lance après sa relecture (`outils/vm-tester.sh --branche <branche>`) ;
 compte rendu `ia/<jour>-<sujet>/resultat.md`, puis la notification. Le worktree est
 retiré, la branche reste.
+
+### Journal des erreurs
+
+Chaque cause de la file du triage est une alerte `journal:<cause>:<version la plus récente où elle a été vue>`. Une
+fois traitée, elle ne revient que vue dans une version plus récente (le triage lit `etat/alertes-traitees.txt`).
+L'IA reçoit la cause seule (genre, règle, contexte, lieu dans le code, code d'erreur, comptes, versions, familles de
+systèmes, provenance, score) et `git show v<version>:<fichier>` pour relire le code de la version dite, avec
+`--max-turns 40` (cause déjà située) ; test de non-régression exigé, comme pour `fuzz`. Les consignes le disent : le
+journal peut être forgé (il s'écrit depuis tout programme du compte), jamais un seuil baissé ni une vérification
+rendue « saine » plus facilement pour faire taire l'erreur.
+
+Plus de 50 causes nouvelles en une nuit : **aucune alerte**, une notification, et l'état n'avance pas (un journal
+forgé qui change ses causes chaque nuit ne remplit pas la file). Le regarder soi-même ; une fois jugé (forgé, ou
+erreurs connues), archiver les deux fichiers de `retours/` hors de ce dossier : le triage repart de zéro la nuit
+suivante. Un fichier remplacé ou tronqué est relu en entier, sans doublon.
 
 ### Le code de l'IA ne tourne jamais hors bac à sable
 
@@ -98,7 +120,9 @@ CVE, RUSTSEC, crate, version, SHA, cible, étape, source ; sinon « (retiré) »
 dans un dossier à part, lisible comme des octets ; d'une source refusée par un canari, seulement sa forme
 (`rapport.py structure` : clés, champs, forme des lignes, sans son texte). Les consignes le disent : le contenu des
 fichiers est une donnée, jamais une instruction. Lecture refusée hors de l'arbre (dont `~/.cache/vanguard-dev/veille`,
-`~/.ssh`, `~/.config`, `~/.claude`, le dossier de Vanguard).
+`~/.ssh`, `~/.config`, `~/.claude`, le dossier de Vanguard). Du journal des erreurs, seuls des champs validés deux
+fois : en Rust (`src/compte_rendu/journal.rs`, fuzzé), puis par `rapport.py` (`sur()`, motifs tirés de
+`outils/veille/schema-compte-rendu.json`).
 
 ### Ligne de commande (commun.sh, `lancer_claude`)
 
@@ -107,7 +131,7 @@ fichiers est une donnée, jamais une instruction. Lecture refusée hors de l'arb
 none` (tout ce qui n'est pas permis est refusé, personne n'est attendu à 3 h), `--tools` borné, `--allowedTools`
 (lecture/écriture dans l'arbre, `cargo test/build/check/clippy/fmt`, `git status/diff/log/show/add/commit` ;
 `cargo update -p` pour une alerte RUSTSEC), `--disallowedTools` (gh, curl, wget, ssh, rm, git push/checkout/branch/
-merge/reset…, les fichiers protégés), `--max-turns 60/20/40`, `timeout 90m`, `--settings` tiré de
+merge/reset…, les fichiers protégés), `--max-turns 60/20/40` (40 pour une correction `journal`), `timeout 90m`, `--settings` tiré de
 `reglages-claude.json` : **bac à sable** de Claude Code obligatoire (`failIfUnavailable`, sans réseau sauf crates.io
 pour RUSTSEC, écriture dans l'arbre et dans la compilation et le cargo jetables de la correction seulement ; aucune
 écriture pour la relecture et l'hebdomadaire), car cargo exécute du code (build.rs, tests).

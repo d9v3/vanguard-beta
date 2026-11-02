@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # La nuit de la veille continue, SANS IA (outils/veille/LISEZMOI.md) : le worktree de veille remis sur la tête de
-# master, verifier.sh complet, proptest à la graine du jour, fuzz de chaque cible (le corpus grandit : c'est
-# l'adaptation), le jeudi Miri et Kani (outils/preuves.sh), cargo audit sur les quatre Cargo.lock avec la base
-# RUSTSEC fraîche, canaris des vraies sources lues par le programme, liens.py, la VM par vm-tester.sh s'il existe.
+# master, verifier.sh complet, proptest à la graine du jour, l'autotest, le journal des erreurs rapatrié trié par le
+# programme, fuzz de chaque cible (le corpus grandit : c'est l'adaptation), le jeudi Miri et Kani (outils/preuves.sh),
+# cargo audit sur les quatre Cargo.lock avec la base RUSTSEC fraîche, canaris des vraies sources lues par le
+# programme, liens.py, la VM par vm-tester.sh s'il existe.
 # Puis le rapport (JSON et Markdown), une seule notification si quelque chose ne va pas, et, sur alerte et dans le
 # budget, une correction proposée par alerte.sh.
 #   nuit.sh                       la nuit entière (minuterie vanguard-veille-nuit.timer)
@@ -165,6 +166,21 @@ if [[ -n $ARBRE_OK ]]; then
     return "$code"
   }
   etape autotest "$TRAVAIL/autotest.log" autotest_de_nuit
+
+  # ── 3 ter. Le journal des erreurs rapatrié par deployer.sh (retours/journal-cet-ordinateur.txt et journal-cle.txt),
+  # trié par le programme de la base (src/compte_rendu/triage.rs, lecteur fuzzé) : la file des causes en champs
+  # validés, jamais le texte d'une entrée (rapport.py la refiltre encore). Le suivi d'une nuit à l'autre :
+  # etat/causes.json ; les causes déjà traitées : etat/alertes-traitees.txt. ──
+  if [[ ! -f $ARBRE/src/compte_rendu/triage.rs ]]; then
+    sauter journal "src/compte_rendu/triage.rs absent de $BASE"
+  else
+    journal_de_nuit() {
+      cargo run -q -- compte-rendu journal --cet-ordinateur "$RETOURS/journal-cet-ordinateur.txt" \
+        --cle "$RETOURS/journal-cle.txt" --etat "$ETAT/causes.json" --traitees "$ETAT/alertes-traitees.txt" \
+        --sortie "$TRAVAIL/journal-file.json" >"$TRAVAIL/journal-comptes.txt"
+    }
+    etape journal "$TRAVAIL/journal.log" journal_de_nuit
+  fi
 
   # ── 4. Fuzz : chaque cible, le corpus suivi avant et après (il grandit), les plantages comparés à ceux connus. ──
   if [[ -n $SANS_FUZZ ]]; then

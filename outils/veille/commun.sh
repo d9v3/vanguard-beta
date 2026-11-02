@@ -16,6 +16,8 @@ BASE=${VANGUARD_VEILLE_BASE:-master}
 ARBRES_IA=${VANGUARD_VEILLE_ARBRES_IA:-$HOME/.cache/vanguard-dev/veille-arbres}
 CLAUDE=${VANGUARD_VEILLE_CLAUDE:-claude}
 FUZZ=${VANGUARD_FUZZ:-$HOME/.cache/vanguard-dev/fuzz}
+# Le journal des erreurs rapatrié par deployer.sh (lu par la nuit, jamais par l'IA : REFUS_CLAUDE plus bas).
+RETOURS=${VANGUARD_VEILLE_RETOURS:-${XDG_DATA_HOME:-$HOME/.local/share}/vanguard/retours}
 VM_RESERVEE=${VANGUARD_VEILLE_VM_RESERVEE:-$HOME/Windows/VANGUARD-TEST/resultats/.test-en-cours.txt}
 JOUR=${VANGUARD_VEILLE_JOUR:-$(date +%F)}
 # Une seule compilation de la veille, partagée en série sous le verrou ; « target-* » la laisse au ménage de
@@ -32,6 +34,8 @@ IA_PAR_SEMAINE=${VANGUARD_VEILLE_IA_PAR_SEMAINE:-3}
 TOURS_CORRECTION=60
 TOURS_RELECTURE=20
 TOURS_HEBDO=40
+# Une alerte qui arrive avec sa cause déjà située (journal) : moins de tours (plan 0.89.1, D9).
+TOURS_SITUEE=40
 DUREE_IA=${VANGUARD_VEILLE_DUREE_IA:-90m}
 MODELE=${VANGUARD_VEILLE_MODELE:-opus}
 

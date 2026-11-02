@@ -86,7 +86,7 @@ CR_CHAMPS = {
     "cle": "cle", "genre": "genre-cause", "regle": "regle", "contexte": "contexte", "lieu": "lieu", "code": "code",
     "provenance": "provenance", "premiere": "jour", "derniere": "jour", "reproduction": "reproduction",
 }
-GENRES = ["rustsec", "fuzz", "verifier", "proptest", "canari", "lien"]
+GENRES = ["rustsec", "fuzz", "journal", "verifier", "proptest", "canari", "lien"]
 PRIORITE = {g: i + 1 for i, g in enumerate(GENRES)}
 LOCKS = ["Cargo.lock", "fuzz/Cargo.lock", "extensions/sdk/Cargo.lock", "extensions/exemples/rust-exemple/Cargo.lock"]
 MOIS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]
@@ -342,11 +342,47 @@ def lire_canaris(veille, jour):
     }
 
 
+def version_recente(versions):
+    """La plus récente des versions d'une cause (« 0.89.1 »), ou None si aucune n'a passé la liste blanche."""
+    sures = [v for v in versions if isinstance(v, str) and re.fullmatch(MOTIFS["version-vg"], v)]
+    return max(sures, key=lambda v: tuple(int(x) for x in v.split(".")), default=None)
+
+
+def score_cause(c):
+    """Le score du triage (triage::score) : systèmes ×4, versions ×2, occurrences (10 au plus) ; doublé pour un
+    plantage. Recalculé ici, sur les champs refiltrés."""
+    compte = c["compte"] if isinstance(c["compte"], int) else 0
+    s = len(c["systemes"]) * 4 + len(c["versions"]) * 2 + min(compte, 10)
+    return s * 2 if c["genre"] == "plantage" else s
+
+
+COMPTES_JOURNAL = re.compile(r"(?a:nouvelles=(\d{1,6}) file=(\d{1,3}) hors-file=(\d{1,6}) trop=([01]) refusees=(\d{1,9}) "
+                             r"relu=([01]))")
+
+
+def lire_journal(t, etapes):
+    """Le triage du journal des erreurs de la nuit (étape « journal ») : sa ligne de comptes, lue par un motif exact,
+    et la file, refiltrée champ par champ (lire_compte_rendu). Rien d'autre : jamais le texte d'une entrée. None
+    quand l'étape n'a pas tourné."""
+    e = next((x for x in etapes if x.get("nom") == "journal"), None)
+    if e is None or e.get("etat") != "ok":
+        return None
+    premiere = next(iter(lignes(t / "journal-comptes.txt")), "")
+    m = COMPTES_JOURNAL.fullmatch(premiere)
+    cr, raison = lire_compte_rendu(t / "journal-file.json")
+    if m is None or cr is None or cr["source"] != "journal":
+        return {"lu": False, "raison": "comptes illisibles" if m is None else f"file refusée ({raison or 'source'})",
+                "trop": False, "file": []}
+    nouvelles, file, hors, trop, refusees, relu = (int(x) for x in m.groups())
+    return {"lu": True, "nouvelles": nouvelles, "file_comptee": file, "hors_file": hors, "trop": bool(trop),
+            "refusees": refusees, "relu": bool(relu), "file": [] if trop else cr["causes"]}
+
+
 # ───────────────────────────── Le rapport de la nuit ─────────────────────────────
 
 
 def alertes_de(r):
-    """Les alertes qui peuvent appeler l'IA, par priorité : rustsec, fuzz, verifier, proptest, canari, lien."""
+    """Les alertes qui peuvent appeler l'IA, par priorité : rustsec, fuzz, journal, verifier, proptest, canari, lien."""
     tete = r["tete_prochaine"]
     alertes = []
 
@@ -360,6 +396,17 @@ def alertes_de(r):
                 lock=a["lock"])
     for p in (r.get("fuzz") or {}).get("nouveaux_plantages", []):
         ajouter("fuzz", f"{p['cible']}:{p['sha256']}", cible=p["cible"], sha256=p["sha256"])
+    j = r.get("journal") or {}
+    if not j.get("trop"):
+        # La file du triage (src/compte_rendu/triage.rs), déjà rangée par score ; refiltrée par lire_compte_rendu. Une
+        # cause dont la clé ou les versions ne passent pas la liste blanche n'a pas de signature sûre : jamais d'alerte.
+        for c in j.get("file", []):
+            recente = version_recente(c["versions"])
+            if c["cle"] == RETIRE or recente is None:
+                continue
+            ajouter("journal", f"{c['cle']}:{recente}", cause=c["cle"], recente=recente, genre_cause=c["genre"],
+                    **{k: c[k] for k in ("regle", "contexte", "lieu", "code", "compte", "versions", "systemes",
+                                         "provenance")}, score=score_cause(c))
     for e in r.get("verifier", []):
         if e["etat"] == "echec":
             ajouter("verifier", e["etape"], etape=e["etape"])
@@ -400,6 +447,7 @@ def nuit(a):
         "rustsec": lire_audit(t, veille, set(a.exceptions or [])),
         "canaris": lire_canaris(veille, a.jour),
         "liens": lire_liens(t, veille, a.jour),
+        "journal": lire_journal(t, etapes),
     }
     p = etape(r, "proptest")
     if p:
@@ -457,6 +505,13 @@ def attend_auteur(r):
         attend.append("cibles de fuzz absentes de outils/fuzz.sh : " + ", ".join(f["cibles_sans_fuzz_sh"]))
     if f.get("corpus_sans_cible"):
         attend.append("corpus sans cible dans fuzz/fuzz_targets : " + ", ".join(f["corpus_sans_cible"]))
+    j = r.get("journal") or {}
+    if j and not j["lu"]:
+        attend.append(f"journal des erreurs : triage illisible ({j['raison']}), aucune alerte")
+    elif j.get("trop"):
+        attend.append(f"journal des erreurs : {j['nouvelles']} causes nouvelles en une nuit, aucune alerte ; le regarder "
+                      "soi-même (retours/journal-*.txt), la file ne reprend qu'une fois ces fichiers archivés "
+                      "(LISEZMOI.md, « Journal des erreurs »)")
     if r.get("copie_a_jour") == "non":
         attend.append("outils/veille/ a changé dans la base depuis l'installation : réinstaller la veille "
                       "(outils/veille/installer.sh)")
@@ -496,6 +551,11 @@ def resume(r):
         morceaux.append(f"{len(sautees)} étape(s) sautée(s) ({', '.join(sautees[:3])})")
     if canaris:
         morceaux.append(f"{len(canaris)} canari(s) en panne ({', '.join(canaris[:3])})")
+    j = r.get("journal") or {}
+    if j and not j["lu"]:
+        morceaux.append("journal des erreurs illisible")
+    elif j.get("trop"):
+        morceaux.append(f"journal : {j['nouvelles']} causes nouvelles, à regarder")
     if r["alertes"]:
         noms = [f"{al['type']} {al['cle'].split(':')[0]}" for al in r["alertes"][:3]]
         morceaux.append(f"{len(r['alertes'])} alerte(s) ({', '.join(noms)})")
@@ -511,8 +571,9 @@ def resume(r):
 
 def a_notifier(r):
     _, imprevues, canaris = pas_verts(r)
+    j = r.get("journal") or {}
     return bool([e for e in r["etapes"] if e["etat"] == "echec"] or r["alertes"] or r.get("propositions")
-                or r["ia"].get("branche") or imprevues or canaris)
+                or r["ia"].get("branche") or imprevues or canaris or (j and (not j["lu"] or j["trop"])))
 
 
 def markdown(chemin_json, kev_humain=None):
@@ -594,6 +655,16 @@ def markdown(chemin_json, kev_humain=None):
                 suivi = f"suivie : {k['couvert_par']}" if k["couvert_par"] else "hors des logiciels suivis"
                 md.append(f"- {k['cve']} — {affichable(editeur, 40)} / {affichable(produit, 40)} : "
                           f"{affichable(nom)} ({suivi}{', rançongiciels' if k['rancongiciel'] else ''})")
+    j = r.get("journal")
+    if j and j["lu"]:
+        md += ["", "### Journal des erreurs", ""]
+        md.append(f"- {j['nouvelles']} cause(s) nouvelle(s), {j['file_comptee']} en file, {j['hors_file']} hors file ; "
+                  f"{j['refusees']} entrée(s) refusée(s) par le lecteur" + (" ; fichier relu en entier" if j["relu"] else "")
+                  + (" ; **trop de causes nouvelles : aucune alerte**" if j["trop"] else ""))
+        for c in j["file"]:
+            md.append(f"- `{c['cle']}` {c['genre']} {c['regle'] or c['contexte'] or '—'} {c['lieu'] or ''} "
+                      f"({c['compte']} fois, {', '.join(map(str, c['versions']))} ; {', '.join(map(str, c['systemes']))} ; "
+                      f"{c['provenance']}) score {score_cause(c)}")
     if r.get("liens"):
         md += ["", "### Liens morts", ""]
         md += [f"- {affichable(x['url'], 200)} ({x['nuits']} nuit(s) de suite)" for x in r["liens"]]
@@ -640,6 +711,26 @@ def alerte(rapport, signature, sortie, donnees, evidente=None):
         entree |= {"cible": cible, "sha256": sur("sha256", al.get("sha256")),
                    "plantage": sur("chemin", f"{donnees}/plantage-{cible}"),
                    "rejouer": f"cargo +nightly fuzz run --fuzz-dir fuzz {cible} {donnees}/plantage-{cible}"}
+    elif genre == "journal":
+        # La cause seule, en champs de la liste blanche ; ni le détail, ni la commande, ni le système exact de
+        # l'entrée (src/compte_rendu/journal.rs ne les lit même pas). Le fichier à relire, à la version où la cause a
+        # été vue la dernière fois.
+        recente = sur("version-vg", al.get("recente"))
+        lieu = sur("lieu", al.get("lieu"))
+        fichier = lieu.rsplit(":", 2)[0] if lieu not in (None, RETIRE) else None
+        compte, score = al.get("compte"), al.get("score")
+        entree |= {
+            "cause": sur("cle", al.get("cause")), "genre_cause": sur("genre-cause", al.get("genre_cause")),
+            "regle": sur("regle", al.get("regle")), "contexte": sur("contexte", al.get("contexte")), "lieu": lieu,
+            "code": sur("code", al.get("code")),
+            "compte": compte if isinstance(compte, int) and not isinstance(compte, bool) else None,
+            "versions": [sur("version-vg", v) for v in al.get("versions", [])][:20],
+            "systemes": [sur("famille", s) for s in al.get("systemes", [])][:8],
+            "provenance": sur("provenance", al.get("provenance")),
+            "score": score if isinstance(score, int) and not isinstance(score, bool) else None,
+            "rejouer": f"git show v{recente}:{fichier}" if fichier and recente != RETIRE else None,
+            "origine": "journal des erreurs rapatrié (peut être forgé : à retrouver dans le code, pas à croire)",
+        }
     elif genre == "verifier":
         entree |= {"etape": sur("slug", al.get("etape")), "commande": "outils/verifier.sh"}
     elif genre == "proptest":

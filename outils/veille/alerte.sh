@@ -42,7 +42,7 @@ conclure() {
 trap 'trap - TERM INT; conclure "interrompue avant la fin (arrêtée par systemd ou à la main)"; exit 143' TERM INT
 
 GENRE=${SIGNATURE%%:*}
-case $GENRE in rustsec | fuzz | verifier | proptest | canari | lien | hebdo) ;; *)
+case $GENRE in rustsec | fuzz | journal | verifier | proptest | canari | lien | hebdo) ;; *)
   conclure "genre d'alerte inconnu"; exit 1 ;;
 esac
 REFUS=$(refus_ia correction)
@@ -173,6 +173,8 @@ case $GENRE in
     ;;
   fuzz) PERMIS+=("Bash(cargo +nightly fuzz run *)") ;;
 esac
+# Une cause déjà située (journal) : moins de tours.
+[[ $GENRE == journal ]] && TOURS_CORRECTION=$TOURS_SITUEE
 reglages_claude "$TRAV" "$DOSSIER/reglages.json" "$RESEAU" 1 || { conclure "réglages de claude impossibles"; exit 1; }
 AJOUTS_CLAUDE=(--add-dir "$DONNEES")
 noter_lancement correction 0 "$TOURS_CORRECTION" lance
@@ -225,7 +227,7 @@ garde_fous() {
   retires=$(grep -cE '^-\s*(#\[test\]|proptest::proptest!|proptest!)' <<<"$diff")
   ((retires > 0)) && { echo "retire $retires test(s)"; return; }
   case $GENRE in
-    fuzz | proptest | canari | hebdo)
+    fuzz | journal | proptest | canari | hebdo)
       ((ajoutes > 0)) || grep -qE '^(tests/|fuzz/graines/)' <<<"$fichiers" || { echo "aucun test ajouté"; return; } ;;
     verifier)
       [[ $CLE == tests-* ]] && ((ajoutes == 0)) && { echo "aucun test ajouté"; return; } ;;

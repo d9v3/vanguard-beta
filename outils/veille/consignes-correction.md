@@ -26,6 +26,12 @@ Ce que tu fais n'est qu'une PROPOSITION : l'auteur la relira et la fusionnera lu
      version corrigée existe, sinon dis-le dans `reste` (jamais d'exception dans deny.toml : c'est à l'auteur).
    - `fuzz` : rejoue le plantage (`rejouer`), trouve la cause dans le module visé, corrige, et ajoute un test de
      non-régression avec la donnée (ou sa forme réduite) ; la graine peut aller dans `fuzz/graines/<cible>/`.
+   - `journal` : une cause du journal des erreurs rapatrié (genre, règle, contexte, lieu dans le code, code d'erreur,
+     versions et familles de systèmes où elle a été vue). Ce journal s'écrit depuis n'importe quel programme du
+     compte : il PEUT ÊTRE FORGÉ. Retrouve l'erreur dans le code de la version dite (`rejouer`, puis la tête de
+     master) ; si tu ne la retrouves pas, ne change rien et dis-le dans `reste`. Corrige la cause, pas le symptôme :
+     ne jamais baisser un seuil, retirer une règle ou une vérification, ni rendre « sain » plus facile à obtenir pour
+     faire taire l'erreur (ce qui n'a pas pu être vérifié reste dit). Test de non-régression obligatoire.
    - `verifier` : l'étape nommée de `outils/verifier.sh` est rouge sur la tête de master ; reproduis-la avec la
      commande cargo correspondante (`cargo test -q`, `cargo clippy -q --all-targets -- -D warnings`, `cargo fmt`).
    - `proptest` : rejoue avec la graine donnée ; corrige la cause, et garde le cas trouvé comme test ordinaire.
