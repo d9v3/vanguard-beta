@@ -321,6 +321,18 @@ const PROGRAMMES_DE_SESSION: &[&str] = &[
     "teamviewer_service",
     // Le service de TeamViewer sous Linux.
     "teamviewerd",
+    // Les bureaux à distance de KDE et de GNOME, NoMachine, Chrome Remote Desktop, MeshCentral et DWService. Le nom
+    // vient de /proc/<pid>/comm, coupé à 15 caractères : « gnome-remote-desktop » s'y lit « gnome-remote-de ».
+    "krfb",
+    "vino-server",
+    "gnome-remote-de",
+    "nxserver",
+    "nxd",
+    "nxnode",
+    "remoting_host",
+    "chrome-remote-d",
+    "meshagent",
+    "dwagent",
 ];
 
 fn programme_de_session(nom: &str) -> bool {
@@ -386,7 +398,12 @@ pub(crate) fn session_entrante_ouverte() -> Option<bool> {
     let etablies = lire_etablies()?;
     let mut en_ecoute = Vec::new();
     for f in ["/proc/net/tcp", "/proc/net/tcp6"] {
-        en_ecoute.extend(en_ecoute_proc(&std::fs::read_to_string(f).ok()?));
+        match std::fs::read_to_string(f) {
+            Ok(texte) => en_ecoute.extend(en_ecoute_proc(&texte)),
+            // IPv6 coupé au démarrage (ipv6.disable=1) : pas de tcp6, donc rien n'y écoute.
+            Err(e) if f.ends_with('6') && e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
     }
     let depuis_ssh = std::env::var("SSH_CONNECTION").is_ok_and(|v| client_ssh(&v).is_some());
     Some(depuis_ssh || etablies.iter().any(|e| session_entrante(e, &en_ecoute)))
@@ -794,8 +811,19 @@ mod tests {
                 "{vpn}"
             );
         }
-        // La prise en main, et sshd sur un autre port : des sessions entrantes.
-        for p in ["rustdesk", "anydesk", "teamviewerd", "x11vnc", "sshd-session"] {
+        // La prise en main, et sshd sur un autre port : des sessions entrantes. Les bureaux à distance de KDE et de
+        // GNOME (nom coupé à 15 caractères par /proc), NoMachine et Chrome Remote Desktop aussi.
+        for p in [
+            "rustdesk",
+            "anydesk",
+            "teamviewerd",
+            "x11vnc",
+            "sshd-session",
+            "krfb",
+            "gnome-remote-de",
+            "nxd",
+            "chrome-remote-d",
+        ] {
             assert!(
                 session_entrante(&etablie("198.51.100.20", 2222, 51234, Some(p), true), &ecoute),
                 "{p}"

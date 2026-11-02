@@ -404,6 +404,13 @@ impl GesteUnix {
                 "ceci coupe le réseau de cet ordinateur",
                 "this cuts this computer's network",
             )),
+            // Un logiciel de prise en main désigné peut être un bureau à distance voulu (VNC, NoMachine) qui porte
+            // en ce moment la session de quelqu'un : ses connexions ne bloquent pas son arrêt (`coupe_session`), mais
+            // la personne devant l'écran le confirme.
+            GesteUnix::Designee(a, _) if couper(a) => Some((
+                "ceci peut couper une session à distance en cours",
+                "this may cut a remote session in progress",
+            )),
             GesteUnix::Unite(ActionUnite::Activer | ActionUnite::Demarrer, u) if u.garde == Garde::Ouverte => Some((
                 "ceci ouvre cet ordinateur au réseau local",
                 "this opens this computer to the local network",
@@ -763,10 +770,10 @@ mod tests {
         }
         assert!(!coupe(ActionUnite::Desactiver, &CUPS_BROWSED));
         // Arrêter un logiciel de prise de contrôle n'est jamais bloqué par ses propres connexions, ni le retirer du
-        // démarrage ; et ni l'un ni l'autre ne demande l'accord (rien n'est affaibli).
+        // démarrage ; mais l'un et l'autre demandent l'accord : ce peut être un bureau à distance voulu.
         for a in [ActionUnite::Arreter, ActionUnite::DesactiverSansArreter] {
-            let g = designee(a, "anydesk.service").unwrap();
-            assert!(!g.coupe_session() && !g.demande_accord(), "{a:?}");
+            let g = designee(a, "x11vnc.service").unwrap();
+            assert!(!g.coupe_session() && g.demande_accord(), "{a:?}");
         }
         assert!(!GesteUnix::Programme(&FRESHCLAM).par_systemd());
         assert!(GesteUnix::SignaturesClamav.par_systemd() && GesteUnix::ReinitialiserEchecs.par_systemd());

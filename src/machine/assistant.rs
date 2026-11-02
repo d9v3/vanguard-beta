@@ -793,6 +793,22 @@ fn designee_revue(nom: &str, monde: &mut dyn Monde) -> Result<(), Echec> {
     }
 }
 
+/// Aucune session à distance entrante n'est ouverte ; sinon la raison du refus (une ouverte, ou des connexions qui ne
+/// se lisent pas).
+fn aucune_session_entrante(monde: &dyn Monde) -> Result<(), &'static str> {
+    match monde.session_entrante() {
+        Some(false) => Ok(()),
+        Some(true) => Err(tr!(
+            "une session à distance entrante est ouverte sur cet ordinateur, et ce geste pourrait la couper : rien n'est fait. Refaites-le une fois la session fermée",
+            "an incoming remote session is open on this computer, and this step could cut it: nothing is done. Do it again once the session is closed"
+        )),
+        None => Err(tr!(
+            "les connexions en cours ne se lisent pas : sans savoir si une session à distance passe par là, rien n'est fait",
+            "the current connections cannot be read: without knowing whether a remote session goes through it, nothing is done"
+        )),
+    }
+}
+
 /// Un geste de Linux, rejugé ici avant d'être fait, dans cet ordre : permis sur ce système, jamais refusé
 /// (`GesteUnix::refus`), systemd présent s'il en faut, aucune session à distance qu'il couperait, l'unité désignée
 /// revue, puis l'accord de la personne s'il en demande un.
@@ -809,22 +825,10 @@ fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
     if g.par_systemd() && !monde.systemd() {
         return Resultat::echec(sans_systemd());
     }
-    if g.coupe_session() {
-        match monde.session_entrante() {
-            Some(false) => {}
-            Some(true) => {
-                return Resultat::echec(tr!(
-                    "une session à distance entrante est ouverte sur cet ordinateur, et ce geste pourrait la couper : rien n'est fait. Refaites-le une fois la session fermée",
-                    "an incoming remote session is open on this computer, and this step could cut it: nothing is done. Do it again once the session is closed"
-                ));
-            }
-            None => {
-                return Resultat::echec(tr!(
-                    "les connexions en cours ne se lisent pas : sans savoir si une session à distance passe par là, rien n'est fait",
-                    "the current connections cannot be read: without knowing whether a remote session goes through it, nothing is done"
-                ));
-            }
-        }
+    if g.coupe_session()
+        && let Err(raison) = aucune_session_entrante(monde)
+    {
+        return Resultat::echec(raison);
     }
     if let GesteUnix::Designee(_, nom) = g
         && let Err(raison) = designee_revue(nom.as_str(), monde)
@@ -833,6 +837,13 @@ fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
     }
     if g.demande_accord()
         && let Err(Refus(raison)) = monde.accord(g)
+    {
+        return Resultat::echec(raison);
+    }
+    // La question a pu attendre longtemps : une session ouverte entre-temps compte aussi.
+    if g.coupe_session()
+        && g.demande_accord()
+        && let Err(raison) = aucune_session_entrante(monde)
     {
         return Resultat::echec(raison);
     }
@@ -1679,7 +1690,8 @@ mod tests {
     }
 
     /// Une unité désignée par le parent n'est touchée que revue par le fils : un logiciel de prise de contrôle
-    /// reconnu, au fichier sûr, activé au démarrage ; une session à distance ouverte ne l'empêche pas.
+    /// reconnu, au fichier sûr, activé au démarrage, puis l'accord de la personne (ce peut être un bureau à distance
+    /// voulu, VNC ou NoMachine) ; une session à distance ouverte ne l'empêche pas.
     #[test]
     fn une_unite_designee_est_revue() {
         let arreter = gestes_unix::designee(ActionUnite::Arreter, "anydesk.service").unwrap();
@@ -1696,21 +1708,36 @@ mod tests {
         let s = ToString::to_string;
         assert_eq!(
             essai(arreter, &|_| {}),
-            (true, vec![s("etat anydesk.service"), s("arreter anydesk.service")])
+            (
+                true,
+                vec![s("etat anydesk.service"), s("accord"), s("arreter anydesk.service")]
+            )
         );
         assert_eq!(
             essai(retirer, &|m| m.session = Some(true)),
             (
                 true,
-                vec![s("etat anydesk.service"), s("desactiver-sans-arreter anydesk.service")]
+                vec![
+                    s("etat anydesk.service"),
+                    s("accord"),
+                    s("desactiver-sans-arreter anydesk.service")
+                ]
             )
+        );
+        // Sans l'accord, rien n'est arrêté.
+        assert_eq!(
+            essai(arreter, &|m| m.refus = Some("non")),
+            (false, vec![s("etat anydesk.service"), s("accord")])
         );
         // Une session ouverte, ou illisible, n'empêche pas d'arrêter le logiciel de prise de contrôle : ses propres
         // connexions sont justement celles du faux technicien.
         for session in [Some(true), None] {
             assert_eq!(
                 essai(arreter, &|m| m.session = session),
-                (true, vec![s("etat anydesk.service"), s("arreter anydesk.service")]),
+                (
+                    true,
+                    vec![s("etat anydesk.service"), s("accord"), s("arreter anydesk.service")]
+                ),
                 "{session:?}"
             );
         }
