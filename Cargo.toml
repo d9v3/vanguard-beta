@@ -45,7 +45,7 @@ ed25519-dalek = { version = "3.0.0", default-features = false }
 [target."cfg(windows)".dependencies]
 winreg = "0.56.0"
 # WMI et COM sans PowerShell (Microsoft) : seulement les fonctions lues par Vanguard, jamais l'interface graphique
-# (Win32_UI_WindowsAndMessaging seulement pour la taille et la place de la fenêtre de la console, voir fenetre.rs) ; Win32_UI_Shell_PropertiesSystem n'en est pas : les propriétés d'un volume (BitLocker). Win32_Security : les SID et les droits des comptes ; TaskScheduler : les tâches planifiées ; UpdateAgent : Windows Update ; WindowsFirewall : les règles du blocage et les profils du pare-feu (INetFwPolicy2), dans le processus élevé ; NetworkListManager : la catégorie d'un réseau (INetwork::SetCategory), dans le processus élevé.
+# (Win32_UI_WindowsAndMessaging seulement pour la taille et la place de la fenêtre de la console, voir fenetre.rs) ; Win32_UI_Shell_PropertiesSystem n'en est pas : les propriétés d'un volume (BitLocker). Win32_Security : les SID et les droits des comptes ; TaskScheduler : les tâches planifiées ; UpdateAgent : Windows Update ; WindowsFirewall : les règles du blocage et les profils du pare-feu (INetFwPolicy2), dans le processus élevé ; NetworkListManager : la catégorie d'un réseau (INetwork::SetCategory), dans le processus élevé. SystemInformation : le compteur du démarrage (GetTickCount64), pour que la cache du passage horaire ne se fie pas qu'à l'heure.
 windows = { version = "0.62.2", default-features = false, features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
@@ -55,6 +55,7 @@ windows = { version = "0.62.2", default-features = false, features = [
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Console",
+    "Win32_System_SystemInformation",
     "Win32_System_Ole",
     "Win32_System_TaskScheduler",
     "Win32_System_Threading",

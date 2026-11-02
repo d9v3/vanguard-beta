@@ -378,11 +378,22 @@ fn nouveautes_machine(avant: &EtatMachine, apres: &EtatMachine) -> Vec<(String, 
     notes
 }
 
+/// La note retenue pour le passage suivant. Un passage qui a repris des résultats (`autotest::cache`) peut ne voir
+/// qu'une partie d'une baisse, le reste au suivant : tant qu'aucune « note en baisse » n'est partie, la note d'avant
+/// reste la référence, et deux moitiés de baisse se comparent à la même note.
+fn score_retenu(avant: Option<u32>, apres: Option<u32>, repris: bool) -> Option<u32> {
+    match (avant, apres) {
+        (Some(a), Some(b)) if repris && b < a && b + 10 > a => Some(a),
+        _ => apres,
+    }
+}
+
 /// Audit silencieux de cette machine, comparé au passage précédent. Le premier passage mémorise seulement. Rend le
-/// bilan : l'audit du réseau reprend ses constats réseau sans relancer ces règles.
-fn veiller_machine() -> crate::machine::Audit {
+/// bilan, et si des résultats y ont été repris : l'audit du réseau reprend ses constats réseau sans relancer ces
+/// règles.
+fn veiller_machine() -> (crate::machine::Audit, bool) {
     // Le passage horaire : le seul qui peut reprendre, un passage sur deux au plus, un résultat lent récent.
-    let audit = crate::machine::auditer_automatique();
+    let (audit, repris) = crate::machine::auditer_automatique();
     let mut apres = etat_machine(&audit);
     let avant = etat_d_avant(crate::sceau::lire(crate::sceau::MACHINE));
     // Failles pas vérifiées cette fois (hors ligne) : celles d'avant restent, sinon leur retour serait renotifié.
@@ -403,11 +414,12 @@ fn veiller_machine() -> crate::machine::Audit {
         for (titre, texte) in nouveautes_machine(avant, &apres) {
             alerter(Genre::Machine, &titre, &texte);
         }
+        apres.score = score_retenu(avant.score, apres.score, repris);
     }
     if let Ok(texte) = serde_json::to_string(&apres) {
         let _ = crate::sceau::ecrire(crate::sceau::MACHINE, texte);
     }
-    audit
+    (audit, repris)
 }
 
 /// L'audit du réseau au dernier passage, réduit à ce qui déclenche une alerte quand il change : les redirections de
@@ -718,10 +730,13 @@ async fn passe() {
         return;
     }
     tableau::noter_passe();
-    let machine = veiller_machine();
+    let (machine, repris) = veiller_machine();
     // L'autotest de la semaine (au plus une fois tous les 7 jours) reprend le bilan de cette passe, sans le relancer,
-    // dans un fil à part : la passe ne l'attend qu'à la fin.
-    crate::autotest::hebdomadaire_en_fond(&machine.constats);
+    // dans un fil à part : la passe ne l'attend qu'à la fin. Pas sur un bilan qui a repris des résultats : il juge des
+    // lectures de ce passage ; dû, il empêche toute reprise au suivant (`autotest::hebdomadaire_du`), qui le fera.
+    if !repris {
+        crate::autotest::hebdomadaire_en_fond(&machine.constats);
+    }
     if let Some(fichiers) = crate::protection::integrite::changements_a_signaler() {
         alerter(
             Genre::Fichiers,
@@ -2903,6 +2918,25 @@ mod tests {
         assert!(passerelle_d_avant(Lecture::Intact(boite.to_vec())).is_some());
         assert!(passerelle_d_avant(Lecture::Falsifie(Some(boite.to_vec()))).is_none());
         assert!(passerelle_d_avant(Lecture::Adopte(boite.to_vec())).is_none());
+    }
+
+    /// L6c : une baisse coupée en deux par la cache (6 points vus, puis 6 au passage suivant) part quand même ; sans
+    /// reprise, une hausse, une baisse déjà notifiée ou une note absente : la note du passage.
+    #[test]
+    fn une_baisse_coupee_par_la_cache_se_voit() {
+        assert_eq!(score_retenu(Some(80), Some(74), true), Some(80));
+        let mut avant = etat(80, &[]);
+        avant.score = score_retenu(Some(80), Some(74), true);
+        let notes = nouveautes_machine(&avant, &etat(68, &[]));
+        assert!(
+            notes.iter().any(|(_, t)| t.contains("80") && t.contains("68")),
+            "{notes:?}"
+        );
+        assert_eq!(score_retenu(Some(80), Some(74), false), Some(74));
+        assert_eq!(score_retenu(Some(80), Some(85), true), Some(85));
+        assert_eq!(score_retenu(Some(80), Some(70), true), Some(70));
+        assert_eq!(score_retenu(None, Some(70), true), Some(70));
+        assert_eq!(score_retenu(Some(80), None, true), None);
     }
 
     #[test]

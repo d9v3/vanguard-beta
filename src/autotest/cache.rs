@@ -9,13 +9,14 @@
 //!   qui traînent) ; jamais ce qui peut changer d'une minute à l'autre ou trahir une attaque en cours (`EXCLUES`). Un
 //!   résultat qui touche une catégorie que la surveillance notifie n'est jamais gardé
 //!   (`reseau::surveillance::categorie_alertee`) : un résultat repris ne peut ni taire ni retarder une alerte.
-//! - **Rien d'inventé.** Seul un résultat entièrement vérifié se garde ; il revient tel qu'il était (état, niveau,
-//!   message, clé), sans sa correction, avec son âge à la fin du message (« vérifié il y a 40 min »). Un résultat non
-//!   vérifié n'est jamais gardé : la règle se refait au passage suivant.
+//! - **Rien d'inventé.** Seul un résultat entièrement vérifié, sans correction proposée ni problème critique, se
+//!   garde ; il revient tel qu'il était (état, niveau, message, clé), avec son âge à la fin du message (« vérifié il y
+//!   a 40 min »), ajouté après les alertes déclarées normales (`machine::auditer`). Un résultat non vérifié n'est
+//!   jamais gardé : la règle se refait au passage suivant.
 //! - **Un passage sur deux au plus, et une durée bornée.** Un résultat se reprend une seule fois : sa reprise est notée
 //!   dans le fichier avant de servir (si elle ne s'écrit pas, tout se vérifie à neuf). Il faut aussi qu'il ait au
-//!   plus la durée de sa règle (`TABLE`, raccourcie par l'auto-réglage) et qu'il ne soit pas daté dans l'avenir :
-//!   reculer ou avancer l'horloge ne prolonge jamais rien.
+//!   plus la durée de sa règle (`TABLE`, raccourcie par l'auto-réglage), selon l'heure ET selon le compteur du
+//!   démarrage du système, d'accord à 5 minutes près (`Moment`) : reculer ou avancer l'horloge ne prolonge jamais rien.
 //! - **Scellé, local.** `autotest/cache.json` sous le dossier de données (jamais sur la clé), scellé : un fichier
 //!   douteux ou illisible est ignoré (tout se vérifie à neuf) et n'est pas réécrit tout seul, pour que le bilan le
 //!   montre. Un fichier d'une autre version de Vanguard ou d'une autre langue est ignoré, puis remplacé. Il grossit
@@ -23,11 +24,14 @@
 //!   être lu, puis refait (`TAILLE_MAX`).
 //! - **Vidée** après une correction ou une mise à jour appliquée (`machine::lancer_chacune`), une annulation
 //!   (`optimiser::annulables::defaire`), un bilan demandé, et par « annuler », « tout remettre » ou l'interrupteur de
-//!   l'auto-réglage (`super::reglage`), qu'elle suit : coupé ou douteux, plus de cache.
+//!   l'auto-réglage (`super::reglage`), qu'elle suit : coupé ou douteux, plus de cache. Vider, c'est écrire un fichier
+//!   vide au jeton neuf : un passage commencé avant le voit, même parti d'un fichier absent, et n'écrit rien.
 //!
 //! La note : un résultat repris compte ce qu'il comptait à sa date, ni plus ni moins. Un changement d'une règle gardée
 //! se voit au passage suivant (vérifié à neuf), comparé au passage d'avant : la note et « note en baisse » sont
-//! retardées d'un passage au plus, jamais baissées ni masquées par la cache.
+//! retardées d'un passage au plus, jamais baissées ni masquées par la cache. Une baisse partagée entre deux passages
+//! se compare à la note d'avant (`reseau::surveillance::score_retenu`), et l'autotest de la semaine attend un passage
+//! sans reprise.
 //!
 //! La cache se mesure elle-même dans `super::mesures` (des nombres par règle de `TABLE`, jamais un texte) : reprises,
 //! vérifications à neuf, âge des résultats repris, temps gagné, et chaque vérification à neuf qui contredit le
@@ -120,30 +124,12 @@ pub(crate) const TABLE: &[EnCache] = &[
         ),
     },
     EnCache {
-        regle: "MAC-MAJ-004",
-        duree_min: 120,
-        plancher_min: 45,
-        raison: (
-            "versions des logiciels comparées à celles publiées ; change rarement dans la journée",
-            "software versions compared with the published ones; rarely changes within a day",
-        ),
-    },
-    EnCache {
         regle: "WIN-MAJ-001",
         duree_min: 120,
         plancher_min: 45,
         raison: (
             "la recherche de Windows Update est la plus lente du bilan ; change rarement dans la journée",
             "the Windows Update search is the slowest of the check; rarely changes within a day",
-        ),
-    },
-    EnCache {
-        regle: "WIN-MAJ-002",
-        duree_min: 90,
-        plancher_min: 45,
-        raison: (
-            "winget interroge ses sources ; change quelques fois par jour",
-            "winget queries its sources; changes a few times a day",
         ),
     },
     EnCache {
@@ -277,6 +263,99 @@ struct Entree {
     /// 0 : pas encore repris ; 1 : repris une fois, il ne sert plus.
     reprises: u8,
     constats: Vec<Garde>,
+    /// Le démarrage du système et son compteur (ms) à la vérification (`Moment`) : l'âge se compte aussi sur lui.
+    #[serde(default)]
+    demarrage: String,
+    #[serde(default)]
+    ms: u64,
+}
+
+/// L'heure, et où en est le système depuis son démarrage : un résultat ne se reprend que si l'heure et le compteur du
+/// démarrage lui donnent le même âge, à 5 minutes près. Une heure reculée ou avancée ne prolonge donc rien.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Moment {
+    /// Secondes depuis 1970 (UTC) : l'heure du système, qu'on peut changer.
+    pub mur: i64,
+    /// Le démarrage en cours (Linux : `boot_id` ; macOS : `kern.bootsessionuuid` ; Windows : rien, le compteur repart
+    /// de zéro et l'écart avec l'heure trahit un redémarrage).
+    pub demarrage: String,
+    /// Millisecondes depuis ce démarrage, sommeil compris : l'heure ne le change pas.
+    pub ms: u64,
+}
+
+/// L'écart toléré entre l'âge selon l'heure et selon le compteur du démarrage (secondes).
+const ECART_HORLOGES_S: u64 = 300;
+
+impl Moment {
+    /// Maintenant ; `None` si le compteur du démarrage ne se lit pas : rien ne se reprend alors.
+    pub(crate) fn maintenant() -> Option<Moment> {
+        let (demarrage, ms) = depuis_le_demarrage()?;
+        Some(Moment {
+            mur: chrono::Utc::now().timestamp(),
+            demarrage,
+            ms,
+        })
+    }
+}
+
+/// Le démarrage en cours et le temps écoulé depuis (`/proc/uptime`, sommeil compris).
+#[cfg(target_os = "linux")]
+fn depuis_le_demarrage() -> Option<(String, u64)> {
+    let id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    let ms = ms_d_uptime(&std::fs::read_to_string("/proc/uptime").ok()?)?;
+    let id = id.trim();
+    (!id.is_empty()).then(|| (id.to_string(), ms))
+}
+
+/// « 12345.67 89.10 » : les millisecondes du premier nombre.
+#[cfg(any(target_os = "linux", test))]
+fn ms_d_uptime(texte: &str) -> Option<u64> {
+    let premier = texte.split_whitespace().next()?;
+    let (entier, fraction) = premier.split_once('.').unwrap_or((premier, ""));
+    let fraction: String = fraction.chars().chain(std::iter::repeat('0')).take(3).collect();
+    if !entier.bytes().chain(fraction.bytes()).all(|o| o.is_ascii_digit()) || entier.is_empty() {
+        return None;
+    }
+    entier
+        .parse::<u64>()
+        .ok()?
+        .checked_mul(1000)?
+        .checked_add(fraction.parse::<u64>().ok()?)
+}
+
+#[cfg(target_os = "macos")]
+fn depuis_le_demarrage() -> Option<(String, u64)> {
+    Some((
+        crate::machine::macos::sysctl_texte("kern.bootsessionuuid")?,
+        crate::machine::macos::depuis_le_demarrage_ms()?,
+    ))
+}
+
+#[cfg(windows)]
+// FFI de Windows : GetTickCount64, le compteur du démarrage.
+#[allow(unsafe_code)]
+fn depuis_le_demarrage() -> Option<(String, u64)> {
+    // SAFETY: GetTickCount64 ne prend rien et ne fait que lire un compteur du système.
+    let ms = unsafe { windows::Win32::System::SystemInformation::GetTickCount64() };
+    // Zéro : un compteur qui ne dit rien, donc aucune reprise.
+    (ms > 0).then(|| (String::new(), ms))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn depuis_le_demarrage() -> Option<(String, u64)> {
+    None
+}
+
+/// L'âge (secondes) d'un résultat gardé, si l'heure et le compteur du démarrage s'accordent à 5 minutes près (le plus
+/// grand des deux : jamais flatteur) ; `None` : daté dans l'avenir, autre démarrage, compteur revenu en arrière ou
+/// heure changée entre-temps.
+fn age_sur(e: &Entree, m: &Moment) -> Option<u64> {
+    if e.ms == 0 || e.demarrage != m.demarrage {
+        return None;
+    }
+    let mur = u64::try_from(m.mur.checked_sub(e.quand)?).ok()?;
+    let compteur = m.ms.checked_sub(e.ms)? / 1000;
+    (mur.abs_diff(compteur) <= ECART_HORLOGES_S).then_some(mur.max(compteur))
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
@@ -288,6 +367,10 @@ struct Fichier {
     /// « fr » ou « en » : les messages gardés sont dans cette langue.
     langue: String,
     entrees: Vec<Entree>,
+    /// Posé par `oublier` sur un fichier vidé, jamais le même deux fois : un passage commencé avant voit que le
+    /// fichier a changé, même s'il était absent au départ, et n'écrit pas ses résultats d'avant le geste.
+    #[serde(default)]
+    jeton: u64,
 }
 
 fn langue() -> &'static str {
@@ -324,7 +407,11 @@ fn categorie(texte: &str) -> Option<&'static str> {
 /// Un constat gardable : vérifié, d'une catégorie que la surveillance ne notifie pas, sans précision qui le
 /// contredise, de textes bornés.
 fn garder(c: &Constat) -> Option<Garde> {
+    // Une correction proposée (« à faire ») ne se garde pas : reprise sans elle, le constat changerait d'état ; ses
+    // commandes n'ont rien à faire dans ce fichier. Un critique se vérifie toujours à neuf.
     if !c.verifie
+        || c.correctif.is_some()
+        || c.probleme == Some(Niveau::Critique)
         || crate::reseau::surveillance::categorie_alertee(c.categorie)
         || c.categorie.is_empty()
         || c.categorie.len() > CATEGORIE_MAX
@@ -360,7 +447,8 @@ fn garder_tout(constats: &[&Constat]) -> Option<Vec<Garde>> {
     constats.iter().map(|c| garder(c)).collect()
 }
 
-/// Un constat gardé, tel qu'il était : vérifié, même état, même niveau, même message, même clé ; sans correction.
+/// Un constat gardé, tel qu'il était : vérifié, même état, même niveau, même message, même clé ; sans correction
+/// (un constat qui en proposait une n'est jamais gardé).
 fn reprendre(regle: &'static str, g: &Garde) -> Option<Constat> {
     if g.message.len() > TEXTE_MAX || crate::reseau::surveillance::categorie_alertee(&g.categorie) {
         return None;
@@ -440,7 +528,8 @@ impl Permis {
 /// Un résultat repris par ce passage.
 struct Repris {
     regle: &'static str,
-    quand: i64,
+    /// Son âge (`age_sur`), en secondes.
+    age_s: u64,
     constats: Vec<Constat>,
 }
 
@@ -455,7 +544,7 @@ pub(crate) struct Plan {
     fichier: Fichier,
     repris: Vec<Repris>,
     /// Le début du passage : la date des résultats vérifiés à neuf (la plus ancienne possible, jamais flatteuse).
-    debut: i64,
+    debut: Moment,
 }
 
 /// Ce que la cache a fait d'une règle de `TABLE` à ce passage, pour `super::mesures`.
@@ -475,7 +564,7 @@ pub(crate) enum Evenement {
 
 impl Plan {
     /// Un plan qui ne reprend ni n'écrit rien.
-    fn inactif(dossier: &Path, debut: i64) -> Plan {
+    fn inactif(dossier: &Path, debut: Moment) -> Plan {
         Plan {
             dossier: dossier.to_path_buf(),
             ecrire: false,
@@ -486,26 +575,33 @@ impl Plan {
         }
     }
 
-    /// Le résultat repris de `regle`, avec son âge à la fin de chaque message ; `None` : elle se vérifie à neuf.
+    /// Le résultat repris de `regle`, tel qu'il était (son âge s'ajoute plus tard, `dater`) ; `None` : elle se vérifie à
+    /// neuf.
     pub(crate) fn constats_de(&self, regle: &str) -> Option<Vec<Constat>> {
-        let r = self.repris.iter().find(|r| r.regle == regle)?;
-        let age = u64::try_from(self.debut.saturating_sub(r.quand)).unwrap_or(0);
-        let suffixe = age_dit(age);
-        Some(
-            r.constats
-                .iter()
-                .cloned()
-                .map(|mut c| {
-                    c.message = format!("{} ({suffixe})", c.message);
-                    c
-                })
-                .collect(),
-        )
+        self.repris
+            .iter()
+            .find(|r| r.regle == regle)
+            .map(|r| r.constats.clone())
+    }
+
+    /// L'âge (secondes) de chaque résultat repris : `dater` l'ajoute à leurs messages, une fois les alertes déclarées
+    /// normales appliquées (`apprentissage` les reconnaît à leur message tel qu'il était).
+    pub(crate) fn ages(&self) -> Vec<(&'static str, u64)> {
+        self.repris.iter().map(|r| (r.regle, r.age_s)).collect()
     }
 
     /// Cette règle est-elle reprise à ce passage ?
     pub(crate) fn reprend(&self, regle: &str) -> bool {
         self.repris.iter().any(|r| r.regle == regle)
+    }
+}
+
+/// Ajoute à chaque constat d'une règle reprise l'âge de son résultat (`Plan::ages`) : « (vérifié il y a 40 min) ».
+pub(crate) fn dater(constats: &mut [Constat], ages: &[(&'static str, u64)]) {
+    for c in constats {
+        if let Some((_, age)) = ages.iter().find(|(r, _)| *r == c.regle) {
+            c.message = format!("{} ({})", c.message, age_dit(*age));
+        }
     }
 }
 
@@ -560,19 +656,29 @@ impl Regard {
 }
 
 fn regarder(dossier: &Path) -> Regard {
-    regarder_borne(dossier, TAILLE_MAX)
+    regarder_borne(dossier, TAILLE_MAX, true)
 }
 
-/// `regarder`, avec la borne en paramètre pour les essais. La taille se demande au système avant toute lecture : un
+/// `regarder`, sans rien écrire ni créer (Paramètres ne fait que montrer).
+fn regarder_sans_ecrire(dossier: &Path) -> Regard {
+    regarder_borne(dossier, TAILLE_MAX, false)
+}
+
+/// `regarder`, avec la borne en paramètre (`ecrire` faux : le sceau juge sans rien écrire ni créer). La taille se demande au système avant toute lecture : un
 /// fichier plus gros que `max` n'est jamais ouvert. Un lien n'est pas suivi ici : le sceau le juge.
-fn regarder_borne(dossier: &Path, max: u64) -> Regard {
+fn regarder_borne(dossier: &Path, max: u64, ecrire: bool) -> Regard {
     if let Ok(m) = std::fs::symlink_metadata(dossier.join(CACHE))
         && m.is_file()
         && m.len() > max
     {
         return Regard::TropGros(m.len());
     }
-    match crate::sceau::juge_dans(dossier, CACHE) {
+    let juge = if ecrire {
+        crate::sceau::juge_dans(dossier, CACHE)
+    } else {
+        crate::sceau::juge_sans_ecrire_dans(dossier, CACHE)
+    };
+    match juge {
         crate::sceau::Juge::Absent => Regard::Absent,
         crate::sceau::Juge::Cru(o) => Regard::Cru(o),
         crate::sceau::Juge::Douteux(..) | crate::sceau::Juge::Illisible(_) => Regard::Douteux,
@@ -606,12 +712,17 @@ fn ecrire_borne(dossier: &Path, f: &mut Fichier, max: u64) -> std::io::Result<Ve
     }
 }
 
-/// Le plan du passage automatique qui commence (`debut`, en secondes depuis 1970) pour ces règles.
-pub(crate) fn preparer(choisies: &[&'static Regle], debut: i64) -> Plan {
-    preparer_dans(&crate::socle::dossier_local(), choisies, debut, &Permis::actuel())
+/// Le plan du passage automatique qui commence maintenant pour ces règles. Sans compteur du démarrage, rien ne se
+/// reprend ni ne s'écrit.
+pub(crate) fn preparer(choisies: &[&'static Regle]) -> Plan {
+    let dossier = crate::socle::dossier_local();
+    match Moment::maintenant() {
+        Some(debut) => preparer_dans(&dossier, choisies, debut, &Permis::actuel()),
+        None => Plan::inactif(&dossier, Moment::default()),
+    }
 }
 
-fn preparer_dans(dossier: &Path, choisies: &[&'static Regle], debut: i64, permis: &Permis) -> Plan {
+fn preparer_dans(dossier: &Path, choisies: &[&'static Regle], debut: Moment, permis: &Permis) -> Plan {
     let Some(raccourcies) = permis.raccourcies.as_ref().filter(|_| permis.ecrire) else {
         return Plan::inactif(dossier, debut);
     };
@@ -628,9 +739,11 @@ fn preparer_dans(dossier: &Path, choisies: &[&'static Regle], debut: i64, permis
             let Some(e) = fichier.entrees.iter_mut().find(|e| e.regle == r.id) else {
                 continue;
             };
-            let age = debut.saturating_sub(e.quand);
-            // Daté dans l'avenir (horloge reculée) ou trop vieux (horloge avancée, passage manqué) : à neuf.
-            if e.reprises != 0 || age < 0 || age > i64::from(duree) * 60 {
+            // Daté dans l'avenir, heure changée depuis, autre démarrage, ou trop vieux (passage manqué) : à neuf.
+            let Some(age_s) = age_sur(e, &debut).filter(|a| *a <= u64::from(duree) * 60) else {
+                continue;
+            };
+            if e.reprises != 0 {
                 continue;
             }
             let Some(constats) = e
@@ -647,7 +760,7 @@ fn preparer_dans(dossier: &Path, choisies: &[&'static Regle], debut: i64, permis
             e.reprises = 1;
             repris.push(Repris {
                 regle: r.id,
-                quand: e.quand,
+                age_s,
                 constats,
             });
         }
@@ -668,6 +781,10 @@ fn preparer_dans(dossier: &Path, choisies: &[&'static Regle], debut: i64, permis
     if repris.is_empty() {
         return plan;
     }
+    // Vidé entre-temps (une correction, un bilan demandé) : rien ne se reprend ni ne s'écrit.
+    if regarder(dossier) != plan.vu {
+        return Plan::inactif(dossier, plan.debut);
+    }
     // La reprise est notée avant de servir : un résultat ne sert jamais deux fois, même si le passage s'arrête net.
     match ecrire(dossier, &mut plan.fichier) {
         Ok(o) => {
@@ -684,7 +801,7 @@ fn preparer_dans(dossier: &Path, choisies: &[&'static Regle], debut: i64, permis
                 .collect();
             plan
         }
-        Err(_) => Plan::inactif(dossier, debut),
+        Err(_) => Plan::inactif(dossier, plan.debut),
     }
 }
 
@@ -702,7 +819,7 @@ impl Plan {
             if let Some(x) = self.repris.iter().find(|x| x.regle == r.id) {
                 evenements.push(Evenement::Repris {
                     regle: r.id,
-                    age_s: u64::try_from(self.debut.saturating_sub(x.quand)).unwrap_or(0),
+                    age_s: x.age_s,
                 });
                 if let Some(e) = self.fichier.entrees.iter().find(|e| e.regle == r.id) {
                     entrees.push(e.clone());
@@ -721,15 +838,17 @@ impl Plan {
                 evenements.push(Evenement::Compare {
                     regle: r.id,
                     ecart: sig_avant != signature_des_constats(&siens),
-                    quand: self.debut,
+                    quand: self.debut.mur,
                 });
             }
             if let Some(constats) = gardes {
                 entrees.push(Entree {
                     regle: r.id.to_string(),
-                    quand: self.debut,
+                    quand: self.debut.mur,
                     reprises: 0,
                     constats,
+                    demarrage: self.debut.demarrage.clone(),
+                    ms: self.debut.ms,
                 });
             }
         }
@@ -741,8 +860,8 @@ impl Plan {
     }
 }
 
-/// Vide la cache : après une correction, une mise à jour, une annulation, un bilan demandé. Seulement un fichier cru :
-/// un fichier douteux reste, pour que le bilan le montre (il n'est jamais repris).
+/// Vide la cache : après une correction, une mise à jour, une annulation, un bilan demandé. Pas un fichier douteux : il
+/// reste, pour que le bilan le montre (il n'est jamais repris).
 pub(crate) fn oublier() {
     if let Err(e) = oublier_dans(&crate::socle::dossier_local(), false) {
         crate::modele::Echec::echoue("autotest/cache", e.to_string()).journaliser();
@@ -750,12 +869,35 @@ pub(crate) fn oublier() {
 }
 
 /// Vide la cache de `dossier` ; `meme_douteux` : aussi un fichier douteux (un geste de la personne dans Paramètres).
+/// Le fichier n'est pas effacé mais remplacé par un fichier vide au jeton neuf : un passage horaire en cours, qui
+/// l'a vu avant (même absent), voit qu'il a changé et n'y écrit rien. En lecture seule (l'autotest), rien.
 pub(crate) fn oublier_dans(dossier: &Path, meme_douteux: bool) -> std::io::Result<()> {
-    match regarder(dossier) {
-        Regard::Cru(_) | Regard::TropGros(_) => crate::sceau::effacer_dans(dossier, CACHE),
-        Regard::Douteux if meme_douteux => crate::sceau::effacer_dans(dossier, CACHE),
-        Regard::Absent | Regard::Douteux => Ok(()),
+    if super::lecture_seule::active() {
+        return Ok(());
     }
+    match regarder(dossier) {
+        Regard::Douteux if !meme_douteux => Ok(()),
+        _ => {
+            let mut vide = Fichier {
+                v: 1,
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                langue: langue().to_string(),
+                entrees: Vec::new(),
+                jeton: jeton(),
+            };
+            ecrire(dossier, &mut vide).map(|_| ())
+        }
+    }
+}
+
+/// Un nombre jamais rendu deux fois par ce processus, et presque jamais par un autre : l'heure en nanosecondes, le
+/// numéro du processus et un compteur.
+fn jeton() -> u64 {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+    nanos ^ (u64::from(std::process::id()) << 32) ^ N.fetch_add(1, std::sync::atomic::Ordering::Relaxed).rotate_left(17)
 }
 
 /// Ce que la cache fait sur cet ordinateur, pour Paramètres : chaque règle de `TABLE` de ce système, sa durée et sa
@@ -784,7 +926,7 @@ fn lignes_dans(
     raccourcies: &BTreeMap<String, u16>,
 ) -> Vec<String> {
     let mut lignes = Vec::new();
-    let vu = regarder(dossier);
+    let vu = regarder_sans_ecrire(dossier);
     if let Regard::TropGros(_) = vu {
         lignes.push(
             crate::tr!(
@@ -858,6 +1000,12 @@ fn lignes_dans(
     lignes
 }
 
+/// Vidée par `oublier` : un fichier cru, sans entrée, au jeton posé.
+#[cfg(test)]
+pub(crate) fn oubliee_dans(dossier: &Path) -> bool {
+    matches!(regarder(dossier), Regard::Cru(o) if { let f = lire_de(&o); f.entrees.is_empty() && f.jeton != 0 })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -892,7 +1040,6 @@ mod tests {
             probleme: Some(Niveau::Moyen),
             ..sain(id, "12 mises à jour en attente.")
         }
-        .corriger("installer", &["true"])
     }
 
     fn permis() -> Permis {
@@ -913,6 +1060,15 @@ mod tests {
 
     const T0: i64 = 1_800_000_000;
 
+    /// Le moment `t` d'un même démarrage, son compteur d'accord avec l'heure.
+    fn m(t: i64) -> Moment {
+        Moment {
+            mur: t,
+            demarrage: "essai".into(),
+            ms: u64::try_from(t - T0 + 1_000_000).unwrap() * 1000,
+        }
+    }
+
     /// Un passage : prépare, lance (`verifier` pour chaque règle non reprise), termine. Rend les constats et les
     /// événements.
     fn passage(
@@ -922,12 +1078,14 @@ mod tests {
         p: &Permis,
         mut verifier: impl FnMut(&'static str) -> Vec<Constat>,
     ) -> (Vec<Constat>, Vec<Evenement>) {
-        let plan = preparer_dans(d, regles, quand, p);
+        let plan = preparer_dans(d, regles, m(quand), p);
         let mut constats = Vec::new();
         for r in regles {
             constats.extend(plan.constats_de(r.id).unwrap_or_else(|| verifier(r.id)));
         }
+        let ages = plan.ages();
         let ev = plan.terminer(regles, &constats);
+        dater(&mut constats, &ages);
         (constats, ev)
     }
 
@@ -937,8 +1095,7 @@ mod tests {
         let r = [regle("LNX-MAJ-001")];
         let (c1, ev) = passage(&d, &r, T0, &permis(), |id| vec![probleme(id)]);
         assert_eq!(ev, vec![Evenement::ANeuf { regle: "LNX-MAJ-001" }]);
-        assert!(c1[0].correctif.is_some());
-        // Passage suivant : repris, tel qu'il était (problème, même niveau), daté, sans correction.
+        // Passage suivant : repris, tel qu'il était (problème, même niveau), daté.
         let (c2, ev) = passage(&d, &r, T0 + 3600, &permis(), |_| panic!("pas refait"));
         assert_eq!(
             ev,
@@ -978,8 +1135,54 @@ mod tests {
             let d = dossier();
             let r = [regle("LNX-MAJ-001")];
             passage(&d, &r, T0, &permis(), |id| vec![sain(id, "Système à jour.")]);
-            let plan = preparer_dans(&d, &r, T0 + ecart, &permis());
+            let plan = preparer_dans(&d, &r, m(T0 + ecart), &permis());
             assert_eq!(plan.reprend("LNX-MAJ-001"), repris, "écart {ecart}");
+        }
+        // L'heure reculée de 30 min au passage d'après : elle dit 70 min, le compteur du démarrage 100 : à neuf. Avancée
+        // de même, autre démarrage, compteur revenu en arrière ou illisible à l'écriture : à neuf aussi.
+        let d = dossier();
+        let r = [regle("LNX-MAJ-001")];
+        passage(&d, &r, T0, &permis(), |id| vec![sain(id, "Système à jour.")]);
+        let vrai = m(T0 + 100 * 60);
+        for (moment, repris) in [
+            (
+                Moment {
+                    mur: T0 + 70 * 60,
+                    ..vrai.clone()
+                },
+                false,
+            ),
+            (
+                Moment {
+                    mur: T0 + 20 * 60,
+                    ..m(T0 + 10 * 60)
+                },
+                false,
+            ),
+            (
+                Moment {
+                    demarrage: "autre".into(),
+                    ..m(T0 + 60)
+                },
+                false,
+            ),
+            (Moment { ms: 1, ..m(T0 + 60) }, false),
+            (
+                Moment {
+                    mur: T0 + 64,
+                    ..m(T0 + 60)
+                },
+                true,
+            ),
+        ] {
+            let plan = preparer_dans(&d, &r, moment.clone(), &permis());
+            assert_eq!(plan.reprend("LNX-MAJ-001"), repris, "{moment:?}");
+        }
+        assert_eq!(ms_d_uptime("12345.67 89.10\n"), Some(12_345_670));
+        assert_eq!(ms_d_uptime("7 1"), Some(7000));
+        assert_eq!(ms_d_uptime("1.2345"), Some(1234));
+        for faux in ["", "-1.00 2", "1e9 2", ".5 1", "99999999999999999999.0 1"] {
+            assert_eq!(ms_d_uptime(faux), None, "{faux}");
         }
     }
 
@@ -990,7 +1193,7 @@ mod tests {
         passage(&d, &r, T0, &permis(), |id| vec![sain(id, "Système à jour.")]);
         let mut p = permis();
         p.raccourcies = Some(BTreeMap::from([("LNX-MAJ-001".to_string(), 45)]));
-        assert!(!preparer_dans(&d, &r, T0 + 3600, &p).reprend("LNX-MAJ-001"));
+        assert!(!preparer_dans(&d, &r, m(T0 + 3600), &p).reprend("LNX-MAJ-001"));
         assert_eq!(
             duree_appliquee("LNX-MAJ-001", &BTreeMap::from([("LNX-MAJ-001".to_string(), 1)])),
             Some(45)
@@ -1026,9 +1229,9 @@ mod tests {
                 ..permis()
             },
         ] {
-            assert!(!preparer_dans(&d, &r, T0 + 60, &p).reprend("LNX-MAJ-001"), "{p:?}");
+            assert!(!preparer_dans(&d, &r, m(T0 + 60), &p).reprend("LNX-MAJ-001"), "{p:?}");
         }
-        assert!(preparer_dans(&d, &r, T0 + 60, &permis()).reprend("LNX-MAJ-001"));
+        assert!(preparer_dans(&d, &r, m(T0 + 60), &permis()).reprend("LNX-MAJ-001"));
     }
 
     #[test]
@@ -1043,7 +1246,7 @@ mod tests {
             }]
         };
         passage(&d, &r, T0, &permis(), non_verifie);
-        assert!(!preparer_dans(&d, &r, T0 + 60, &permis()).reprend("LNX-MAJ-001"));
+        assert!(!preparer_dans(&d, &r, m(T0 + 60), &permis()).reprend("LNX-MAJ-001"));
         // Une catégorie que la surveillance notifie : jamais gardée, même saine.
         passage(&d, &r, T0, &permis(), |id| {
             vec![Constat {
@@ -1051,14 +1254,29 @@ mod tests {
                 ..sain(id, "ok")
             }]
         });
-        assert!(!preparer_dans(&d, &r, T0 + 60, &permis()).reprend("LNX-MAJ-001"));
+        assert!(!preparer_dans(&d, &r, m(T0 + 60), &permis()).reprend("LNX-MAJ-001"));
         // Un résultat mêlé (un constat vérifié, un non vérifié) : rien n'est gardé de lui.
         passage(&d, &r, T0, &permis(), |id| {
             let mut v = non_verifie(id);
             v.push(sain(id, "ok"));
             v
         });
-        assert!(!preparer_dans(&d, &r, T0 + 60, &permis()).reprend("LNX-MAJ-001"));
+        assert!(!preparer_dans(&d, &r, m(T0 + 60), &permis()).reprend("LNX-MAJ-001"));
+        // Une correction proposée (« à faire »), automatique ou non, ou un critique : jamais gardé.
+        for c in [
+            probleme("LNX-MAJ-001").corriger("installer", &["true"]),
+            Constat {
+                probleme: Some(Niveau::Critique),
+                ..probleme("LNX-MAJ-001")
+            },
+        ] {
+            passage(&d, &r, T0, &permis(), |_| vec![c.clone()]);
+            assert!(
+                !preparer_dans(&d, &r, m(T0 + 60), &permis()).reprend("LNX-MAJ-001"),
+                "{:?}",
+                c.probleme
+            );
+        }
     }
 
     #[test]
@@ -1096,9 +1314,9 @@ mod tests {
         assert!(l[0].contains("douteux") || l[0].contains("doubtful"), "{l:?}");
         // Un geste de la personne le vide.
         oublier_dans(&d, false).unwrap();
-        assert!(d.join(CACHE).exists());
+        assert_eq!(std::fs::read_to_string(d.join(CACHE)).unwrap(), texte);
         oublier_dans(&d, true).unwrap();
-        assert!(!d.join(CACHE).exists());
+        assert!(oubliee_dans(&d));
     }
 
     #[test]
@@ -1124,7 +1342,7 @@ mod tests {
         assert_eq!(ev, vec![Evenement::ANeuf { regle: "LNX-MAJ-001" }]);
         assert!(std::fs::metadata(d.join(CACHE)).unwrap().len() < 4096, "refait, petit");
         assert!(matches!(regarder(&d), Regard::Cru(_)));
-        assert!(preparer_dans(&d, &r, T0 + 60, &permis()).reprend("LNX-MAJ-001"));
+        assert!(preparer_dans(&d, &r, m(T0 + 60), &permis()).reprend("LNX-MAJ-001"));
         // Au-delà de la borne, les entrées les plus vieilles partent d'abord, jusqu'à tenir ; le fichier ne la
         // dépasse jamais. (Une borne plus petite, pour ne pas écrire 10 Mio.)
         let entree = |regle: &str, quand: i64| Entree {
@@ -1138,6 +1356,8 @@ mod tests {
                 objet: ObjetGarde::Seul,
                 absence: None,
             }],
+            demarrage: String::new(),
+            ms: 0,
         };
         let mut fichier = Fichier {
             v: 1,
@@ -1148,6 +1368,7 @@ mod tests {
                 entree("LNX-MAJ-004", T0),
                 entree("COM-FIC-001", T0 + 60),
             ],
+            jeton: 0,
         };
         let max = u64::try_from(serde_json::to_vec(&fichier).unwrap().len()).unwrap() - 1;
         let o = ecrire_borne(&d, &mut fichier, max).unwrap();
@@ -1158,9 +1379,9 @@ mod tests {
             ["LNX-MAJ-001", "COM-FIC-001"],
             "la plus vieille est partie, seulement elle"
         );
-        assert_eq!(regarder_borne(&d, max), Regard::Cru(o.clone()));
+        assert_eq!(regarder_borne(&d, max, true), Regard::Cru(o.clone()));
         let taille = u64::try_from(o.len()).unwrap();
-        assert_eq!(regarder_borne(&d, taille - 1), Regard::TropGros(taille));
+        assert_eq!(regarder_borne(&d, taille - 1, true), Regard::TropGros(taille));
         let max = taille - 300;
         ecrire_borne(&d, &mut fichier, max).unwrap();
         let restent: Vec<&str> = fichier.entrees.iter().map(|e| e.regle.as_str()).collect();
@@ -1186,7 +1407,7 @@ mod tests {
         ] {
             assert!(lu.contains(&avant), "{lu}");
             crate::sceau::ecrire_dans(&d, CACHE, lu.replace(&avant, &apres).as_bytes()).unwrap();
-            assert!(!preparer_dans(&d, &r, T0 + 60, &permis()).reprend("LNX-MAJ-001"));
+            assert!(!preparer_dans(&d, &r, m(T0 + 60), &permis()).reprend("LNX-MAJ-001"));
         }
     }
 
@@ -1195,13 +1416,23 @@ mod tests {
         let d = dossier();
         let r = [regle("LNX-MAJ-001")];
         passage(&d, &r, T0, &permis(), |id| vec![sain(id, "ok")]);
-        let plan = preparer_dans(&d, &r, T0 + 60, &permis());
+        let plan = preparer_dans(&d, &r, m(T0 + 60), &permis());
         assert!(plan.reprend("LNX-MAJ-001"));
         // Une correction appliquée pendant le passage vide la cache : le passage ne la remet pas.
         oublier_dans(&d, false).unwrap();
         let constats = plan.constats_de("LNX-MAJ-001").unwrap();
         plan.terminer(&r, &constats);
-        assert!(!d.join(CACHE).exists());
+        assert!(oubliee_dans(&d));
+        // Même parti d'un fichier absent : vidé pendant le passage, rien de ce qu'il a vu avant ne s'écrit.
+        let d = dossier();
+        let plan = preparer_dans(&d, &r, m(T0), &permis());
+        oublier_dans(&d, false).unwrap();
+        let avant = std::fs::read(d.join(CACHE)).unwrap();
+        plan.terminer(&r, &[sain("LNX-MAJ-001", "ok")]);
+        assert_eq!(std::fs::read(d.join(CACHE)).unwrap(), avant);
+        // Deux oublis de suite ne laissent jamais le même fichier.
+        oublier_dans(&d, false).unwrap();
+        assert_ne!(std::fs::read(d.join(CACHE)).unwrap(), avant);
     }
 
     #[test]
@@ -1255,8 +1486,11 @@ mod tests {
             assert_eq!((e.duree_min - e.plancher_min) % PAS_MIN, 0, "{e:?}");
             assert!(!e.raison.0.is_empty() && !e.raison.1.is_empty());
         }
-        // Les mises à jour qui jugent une défense (coupées, en pause) ou qui sont notifiées restent dehors.
+        // Les mises à jour qui jugent une défense (coupées, en pause) ou qui sont notifiées restent dehors, comme les
+        // logiciels périmés (WIN-MAJ-002, MAC-MAJ-004) : une faille exploitée (KEV) y lève une alerte critique.
         for id in [
+            "WIN-MAJ-002",
+            "MAC-MAJ-004",
             "WIN-MAJ-003",
             "LNX-MAJ-002",
             "MAC-MAJ-001",

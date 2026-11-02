@@ -601,6 +601,19 @@ pub fn sysctl_nombre(nom: &str) -> Option<u64> {
     }
 }
 
+/// Millisecondes depuis le démarrage, sommeil compris (`CLOCK_MONOTONIC` : l'heure du système ne la change pas).
+// FFI de libc : clock_gettime.
+#[allow(unsafe_code)]
+pub fn depuis_le_demarrage_ms() -> Option<u64> {
+    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: `t` est une timespec vivante pendant l'appel ; clock_gettime n'écrit que dans elle.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut t) } != 0 {
+        return None;
+    }
+    let ms = u64::try_from(t.tv_nsec).ok()? / 1_000_000;
+    u64::try_from(t.tv_sec).ok()?.checked_mul(1000)?.checked_add(ms)
+}
+
 /// Heure du démarrage en secondes depuis 1970 : « kern.boottime », une struct timeval dont les secondes viennent en
 /// premier, sur 8 octets.
 pub fn demarrage() -> Option<u64> {

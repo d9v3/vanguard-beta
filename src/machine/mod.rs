@@ -374,9 +374,10 @@ fn bilan_des_regles(choisies: Vec<&'static regles::Regle>) -> Vec<Constat> {
 /// leur résultat récent, un passage sur deux au plus ; leurs reprises ne sont pas mesurées comme des durées, mais
 /// comptées à part (`autotest::mesures`).
 fn bilan_automatique(choisies: &[&'static regles::Regle]) -> Vec<Constat> {
-    let plan = crate::autotest::cache::preparer(choisies, chrono::Utc::now().timestamp());
+    let plan = crate::autotest::cache::preparer(choisies);
     let (constats, mut durees) = regles_en_parallele_sauf(choisies.to_vec(), &|id| plan.constats_de(id));
     durees.retain(|(id, _)| !plan.reprend(id));
+    AGES.with(|a| *a.borrow_mut() = plan.ages());
     let evenements = plan.terminer(choisies, &constats);
     crate::autotest::mesures::noter_avec(&durees, &evenements);
     crate::autotest::reglage::ajuster();
@@ -528,6 +529,9 @@ std::thread_local! {
     /// Vrai pendant le bilan du passage horaire (`auditer_automatique`), dans son fil : seul celui-là se sert de la
     /// cache. Tout autre bilan (demandé, après une correction, l'entretien) vérifie tout à neuf.
     static AUTOMATIQUE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// L'âge des résultats repris par ce passage horaire (`autotest::cache::Plan::ages`), que `auditer` ajoute à
+    /// leurs messages après les alertes déclarées normales.
+    static AGES: std::cell::RefCell<Vec<(&'static str, u64)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 std::thread_local! {
@@ -1435,6 +1439,12 @@ pub fn auditer(bavard: bool) -> Audit {
     // Une règle dont la lecture croisée a divergé au dernier autotest : ses constats sains le disent (jamais ses
     // problèmes), sans changer la note.
     crate::autotest::annoter(&mut a.constats);
+    // Un résultat repris par le passage horaire dit son âge, ajouté seulement maintenant : `apprentissage` reconnaît
+    // une alerte déclarée normale à son message tel qu'il était, et ne rabaisse pas une reprise moins qu'une
+    // vérification à neuf.
+    if AUTOMATIQUE.with(std::cell::Cell::get) {
+        AGES.with(|g| crate::autotest::cache::dater(&mut a.constats, &g.borrow()));
+    }
     // Vérifications impossibles : souvent une version de Windows ou une distribution que le code ne connaît pas.
     // Seulement à la demande : la surveillance horaire répéterait les mêmes lignes.
     if bavard {
@@ -1453,9 +1463,14 @@ pub fn auditer(bavard: bool) -> Audit {
 }
 
 /// Le bilan du passage horaire de la surveillance : `auditer(false)`, dont les règles lentes de la cache
-/// (`autotest::cache`) peuvent reprendre leur résultat récent, avec son âge, un passage sur deux au plus.
-pub(crate) fn auditer_automatique() -> Audit {
-    en_automatique(|| auditer(false))
+/// (`autotest::cache`) peuvent reprendre leur résultat récent, avec son âge, un passage sur deux au plus. Rend aussi
+/// si quelque chose a été repris.
+pub(crate) fn auditer_automatique() -> (Audit, bool) {
+    en_automatique(|| {
+        let a = auditer(false);
+        let repris = AGES.with(|g| !g.borrow().is_empty());
+        (a, repris)
+    })
 }
 
 /// `f` dans le fil du passage horaire ; l'interrupteur retombe après, même si `f` panique.
@@ -1464,8 +1479,10 @@ fn en_automatique<T>(f: impl FnOnce() -> T) -> T {
     impl Drop for Remettre {
         fn drop(&mut self) {
             AUTOMATIQUE.with(|a| a.set(false));
+            AGES.with(|a| a.borrow_mut().clear());
         }
     }
+    AGES.with(|a| a.borrow_mut().clear());
     AUTOMATIQUE.with(|a| a.set(true));
     let _remettre = Remettre;
     f()
