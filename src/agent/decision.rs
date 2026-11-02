@@ -33,14 +33,6 @@ pub(crate) enum Levier {
     },
 }
 
-impl Levier {
-    pub(crate) fn regle(&self) -> RegleId {
-        match self {
-            Levier::Delai { regle, .. } | Levier::Cache { regle, .. } => *regle,
-        }
-    }
-}
-
 /// Un ajustement : le levier, et la mesure qui l'a décidé (la plus longue durée de la semaine en ms pour un délai,
 /// les écarts sur les vérifications à neuf pour une durée de cache).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

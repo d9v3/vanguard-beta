@@ -28,13 +28,14 @@ pub(crate) mod etat;
 mod forme;
 pub(crate) mod journal;
 mod mission;
+mod missions;
 
 use std::path::Path;
 
 pub(crate) use budget::{Arret, Budget};
 pub(crate) use decision::{Ajustement, Decision, Levier};
 pub(crate) use etat::Compteurs;
-pub(crate) use forme::{Genre, MissionId, Moment, RegleId};
+pub(crate) use forme::{Genre, MissionId, Moment};
 pub(crate) use mission::{Lecture, Mission};
 
 use crate::machine::regles::{DELAI, DELAI_LONG};
@@ -76,8 +77,8 @@ impl<M: Mission> Tourne for M {
 }
 
 /// Les missions, dans l'ordre de `MissionId::TOUTES`.
-fn missions() -> [&'static dyn Tourne; 0] {
-    []
+fn missions() -> [&'static dyn Tourne; 2] {
+    [&missions::Reglage, &missions::Cache]
 }
 
 /// Pourquoi un tour n'a pas eu lieu.
@@ -202,6 +203,9 @@ pub(crate) fn tic_dans(ctx: &Contexte<'_>, moment: Moment, missions: &[&dyn Tour
     let mut faits = Vec::new();
     let mut ajustements = Vec::new();
     let (mut montrees, mut refusees) = (0, 0);
+    // Une mission de réglage a tourné : l'application passe, même sans ajustement, pour que le suivi des règles qui
+    // frôlent leur délai s'écrive (une montée écartée aujourd'hui se reprendra).
+    let mut reglage_a_tourne = false;
     for m in ecoutent {
         let en_marche = match &interrupteurs {
             Some(i) => !i.coupees.contains(&m.id()),
@@ -212,7 +216,11 @@ pub(crate) fn tic_dans(ctx: &Contexte<'_>, moment: Moment, missions: &[&dyn Tour
         if !en_marche || (m.genre() == Genre::Reglage && ctx.en_marche != Some(true)) {
             continue;
         }
-        for d in m.tourner(lu).unwrap_or_default() {
+        let Some(decisions) = m.tourner(lu) else {
+            continue;
+        };
+        reglage_a_tourne |= m.genre() == Genre::Reglage;
+        for d in decisions {
             if !verifiee(lu, m, &d) {
                 refusees += 1;
                 faits.push(journal::Fait::Refus {
@@ -230,7 +238,7 @@ pub(crate) fn tic_dans(ctx: &Contexte<'_>, moment: Moment, missions: &[&dyn Tour
             }
         }
     }
-    let appliquees = if ajustements.is_empty() {
+    let appliquees = if ajustements.is_empty() && !reglage_a_tourne {
         Vec::new()
     } else {
         appliquer(lu, &ajustements)
@@ -280,9 +288,27 @@ pub(crate) fn tic(moment: Moment) {
     let _ = tic_dans(&ctx, moment, &missions, &appliquer);
 }
 
-/// Les ajustements appliqués par les fonctions des leviers.
-fn appliquer(_lu: &Lecture<'_>, _a: &[(MissionId, Ajustement)]) -> Vec<(MissionId, Ajustement)> {
-    Vec::new()
+/// Les ajustements appliqués, par l'auto-réglage (`autotest::reglage`, où vivent les leviers) : seuls ceux demandés
+/// ici, déjà vérifiés, sont retenus ; rend ceux qui ont été écrits.
+fn appliquer(lu: &Lecture<'_>, a: &[(MissionId, Ajustement)]) -> Vec<(MissionId, Ajustement)> {
+    let demande = |id: MissionId, x: Option<Ajustement>| x.is_some_and(|x| a.contains(&(id, x)));
+    let fait = crate::autotest::reglage::ajuster_retenus_dans(
+        lu.dossier,
+        lu.aujourd_hui,
+        lu.mesures,
+        lu.delai_du_code,
+        &|m| demande(MissionId::Reglage, missions::de_montee(m)),
+        &|r| demande(MissionId::Cache, missions::de_raccourcie(r)),
+    );
+    let montees = fait
+        .montees
+        .iter()
+        .filter_map(|m| missions::de_montee(m).map(|x| (MissionId::Reglage, x)));
+    let raccourcies = fait
+        .raccourcies
+        .iter()
+        .filter_map(|r| missions::de_raccourcie(r).map(|x| (MissionId::Cache, x)));
+    montees.chain(raccourcies).collect()
 }
 
 /// Un jeu tourne-t-il (GameMode, sous Linux) ? Ailleurs, rien ne le dit : non.

@@ -35,6 +35,7 @@ pub(crate) const JOUR_MAX: i32 = 84_000;
 /// Un état qui sait se serrer dans ses bornes, et dire s'il y est.
 pub(crate) trait Borne: Sized {
     fn borne(self) -> Self;
+    #[cfg_attr(not(any(test, fuzzing)), allow(dead_code))] // les essais et le banc de fuzzing
     fn dans_ses_bornes(&self) -> bool;
 }
 

@@ -860,9 +860,18 @@ impl Plan {
     }
 }
 
-/// Vide la cache : après une correction, une mise à jour, une annulation, un bilan demandé. Pas un fichier douteux : il
+#[cfg(test)]
+thread_local! {
+    /// Les appels à `oublier` de ce fil : les essais des gestes qui doivent vider la cache.
+    pub(crate) static OUBLIS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Vide la cache : après une correction, une mise à jour, une annulation, un bilan demandé (même en partie), un
+/// fichier remis hors de la quarantaine. Pas un fichier douteux : il
 /// reste, pour que le bilan le montre (il n'est jamais repris).
 pub(crate) fn oublier() {
+    #[cfg(test)]
+    OUBLIS.with(|n| n.set(n.get().saturating_add(1)));
     if let Err(e) = oublier_dans(&crate::socle::dossier_local(), false) {
         crate::modele::Echec::echoue("autotest/cache", e.to_string()).journaliser();
     }

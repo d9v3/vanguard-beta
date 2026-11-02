@@ -737,6 +737,8 @@ async fn passe() {
     if !repris {
         crate::autotest::hebdomadaire_en_fond(&machine.constats);
     }
+    // L'Agent Vanguard (sans IA) : les missions de la passe horaire, s'il y en a ; un tour ne fait jamais attendre.
+    crate::agent::tic(crate::agent::Moment::PasseHoraire);
     if let Some(fichiers) = crate::protection::integrite::changements_a_signaler() {
         alerter(
             Genre::Fichiers,

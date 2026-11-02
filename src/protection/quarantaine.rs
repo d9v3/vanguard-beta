@@ -345,6 +345,8 @@ fn remettre_dans(e: &Entree, dossier: &Path) -> Result<(), Echec> {
         let _ = std::fs::set_permissions(&origine, std::os::unix::fs::PermissionsExt::from_mode(mode));
     }
     retirer_du_registre(dossier, &e.nom);
+    // Le fichier est revenu : un résultat gardé d'avant (la cache du passage horaire) ne doit pas le cacher.
+    crate::autotest::cache::oublier();
     Ok(())
 }
 
@@ -524,11 +526,14 @@ mod tests {
         assert_eq!(liste[0].sha256.as_deref(), Some("ab".repeat(32).as_str()));
         // Un autre fichier a pris sa place : rien n'est écrasé.
         std::fs::write(&fichier, b"nouveau").unwrap();
+        let oublis = crate::autotest::cache::OUBLIS.with(std::cell::Cell::get);
         assert!(remettre_dans(&liste[0], &q).is_err());
         assert_eq!(std::fs::read(&fichier).unwrap(), b"nouveau");
+        assert_eq!(crate::autotest::cache::OUBLIS.with(std::cell::Cell::get), oublis);
         std::fs::remove_file(&fichier).unwrap();
-        // Remis : même contenu, mêmes permissions, sorti du registre.
+        // Remis : même contenu, mêmes permissions, sorti du registre, et la cache vidée (reste du lot L6c).
         remettre_dans(&liste[0], &q).unwrap();
+        assert_eq!(crate::autotest::cache::OUBLIS.with(std::cell::Cell::get), oublis + 1);
         assert_eq!(std::fs::read(&fichier).unwrap(), b"MZ contenu");
         #[cfg(unix)]
         assert_eq!(

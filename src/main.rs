@@ -9,9 +9,7 @@
 #![deny(unsafe_code)]
 
 mod a_laisser;
-// L'Agent Vanguard (sans IA), socle du lot G1 : ses missions (réglage, cache) et ses moments arrivent au lot G2, qui
-// retire ce `allow`.
-#[allow(dead_code, unused_imports)]
+// L'Agent Vanguard (sans IA) : un petit agent intégré qui règle Vanguard dans le sens sûr (voir src/agent/mod.rs).
 mod agent;
 // La voie ouverte de l'auto-amélioration (lot A1) : le nettoyage des textes d'erreur et le détecteur de secrets,
 // que les lots suivants (A2, A3) brancheront au journal et aux lots envoyés.

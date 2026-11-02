@@ -366,7 +366,7 @@ fn en_parallele(verifications: Vec<Verification<'_>>) -> Vec<Constat> {
 fn bilan_des_regles(choisies: Vec<&'static regles::Regle>) -> Vec<Constat> {
     let (constats, durees) = regles_en_parallele(choisies);
     crate::autotest::mesures::noter(&durees);
-    crate::autotest::reglage::ajuster();
+    crate::agent::tic(crate::agent::Moment::FinDeBilan);
     constats
 }
 
@@ -380,7 +380,7 @@ fn bilan_automatique(choisies: &[&'static regles::Regle]) -> Vec<Constat> {
     AGES.with(|a| *a.borrow_mut() = plan.ages());
     let evenements = plan.terminer(choisies, &constats);
     crate::autotest::mesures::noter_avec(&durees, &evenements);
-    crate::autotest::reglage::ajuster();
+    crate::agent::tic(crate::agent::Moment::FinDeBilan);
     constats
 }
 
@@ -403,12 +403,24 @@ fn regles_en_parallele_sauf(
     let ids: Vec<Option<&str>> = choisies.iter().map(|r| Some(r.id)).collect();
     let depart = crate::autotest::reglage::ordre_de_depart(&ids, &crate::autotest::mesures::medianes_recentes());
     let longs = crate::autotest::reglage::delais_longs();
+    regles_lancees(choisies, reprise, depart, &longs)
+}
+
+/// Le cœur du bilan, sans rien lire de l'auto-réglage : `depart` (l'ordre de départ) et `longs` (les délais montés)
+/// sont donnés. C'est tout ce que l'Agent Vanguard (`agent`) change à un bilan : ses essais vérifient que ni l'un ni
+/// l'autre ne retire un constat ni ne change un niveau.
+pub(crate) fn regles_lancees(
+    choisies: Vec<&'static regles::Regle>,
+    reprise: &dyn Fn(&str) -> Option<Vec<Constat>>,
+    depart: Vec<usize>,
+    longs: &std::collections::BTreeSet<String>,
+) -> (Vec<Constat>, Vec<(&'static str, std::time::Duration)>) {
     en_parallele_dans(
         choisies
             .into_iter()
             .map(|r| match reprise(r.id) {
                 Some(repris) => Box::new(move || repris) as Verification<'_>,
-                None => regles::verification_avec(r, &longs),
+                None => regles::verification_avec(r, longs),
             })
             .collect(),
         depart,
@@ -1493,6 +1505,8 @@ fn en_automatique<T>(f: impl FnOnce() -> T) -> T {
 /// Internet et peuvent prendre des minutes.
 pub fn auditer_seulement(garder: impl Fn(&str) -> bool) -> Audit {
     BILAN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // Une vérification demandée, même en partie, voit à neuf : ce que la cache gardait ne revient pas après.
+    crate::autotest::cache::oublier();
     let constats = bilan_des_regles(
         regles::regles(regles::Os::actuel())
             .into_iter()
@@ -1942,6 +1956,15 @@ Host *
             let ordre: Vec<&str> = durees.iter().map(|(r, _)| *r).collect();
             assert_eq!(ordre, REGLES, "départ {depart:?}");
         }
+    }
+
+    /// Reste du lot L6c : une vérification demandée en partie (`auditer_seulement`, les traces, l'audit) vide la
+    /// cache du passage horaire, comme un bilan entier.
+    #[test]
+    fn une_verification_partielle_vide_la_cache() {
+        let avant = crate::autotest::cache::OUBLIS.with(std::cell::Cell::get);
+        let _ = auditer_seulement(|_| false);
+        assert_eq!(crate::autotest::cache::OUBLIS.with(std::cell::Cell::get), avant + 1);
     }
 
     /// Une règle qui plante ne fait pas tomber le bilan : son constat « erreur interne » n'est pas vérifié et garde

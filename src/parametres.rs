@@ -361,7 +361,7 @@ impl Reglage {
             Reglage::CleAbuseCh => tr!("Clé abuse.ch", "abuse.ch key"),
             Reglage::VersionsLogiciels => tr!("Versions des logiciels", "Software versions"),
             Reglage::Autotest => tr!("Autodiagnostic de la semaine", "Weekly self-test"),
-            Reglage::Vitesse => tr!("Réglage automatique de la vitesse", "Automatic speed tuning"),
+            Reglage::Vitesse => tr!("Agent Vanguard (sans IA)", "Vanguard Agent (no AI)"),
             Reglage::PaquetsAur => tr!("Paquets de l'AUR", "AUR packages"),
         }
     }

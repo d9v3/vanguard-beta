@@ -219,7 +219,7 @@ pub(crate) fn lire_de(octets: &[u8]) -> Etat {
     serde_json::from_slice::<Etat>(octets).map_or_else(|_| Etat::default(), Etat::borne)
 }
 
-fn lire_dans(dossier: &Path) -> Lu {
+pub(crate) fn lire_dans(dossier: &Path) -> Lu {
     match crate::sceau::juge_dans(dossier, REGLAGE) {
         crate::sceau::Juge::Absent => Lu::Absent,
         crate::sceau::Juge::Cru(o) => Lu::Cru(lire_de(&o)),
@@ -229,7 +229,6 @@ fn lire_dans(dossier: &Path) -> Lu {
 
 /// L'interrupteur de l'auto-réglage, qui est aussi celui de l'Agent Vanguard (`agent`) : « oui » tant que rien n'est
 /// écrit ; `None` quand le fichier est douteux (rien n'en est cru, l'agent ne règle rien).
-#[allow(dead_code)] // lue par `agent::tic`, branché au lot G2
 pub(crate) fn en_marche_dans(dossier: &Path) -> Option<bool> {
     match lire_dans(dossier) {
         Lu::Absent => Some(true),
@@ -358,39 +357,32 @@ fn raccourcir_etat(
     *e != avant
 }
 
-/// Après un bilan noté (`super::mesures::noter`) : ajuste les délais d'après les mesures de cet ordinateur. Rien
-/// pendant un autotest manuel, ni quand le réglage est coupé ou son fichier douteux.
-pub(crate) fn ajuster() {
-    ajuster_dans(
-        &crate::socle::dossier_local(),
-        chrono::Local::now().date_naive(),
-        &super::mesures::lues(),
-        |id| {
-            crate::machine::regles::regles(crate::machine::regles::Os::actuel())
-                .into_iter()
-                .find(|r| r.id == id)
-                .map(crate::machine::regles::Regle::delai)
-        },
-    );
+/// Ce qu'une passe de l'auto-réglage ajoute : les montées de délai et les pas de raccourci nouveaux.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Prevu {
+    pub montees: Vec<Montee>,
+    pub raccourcies: Vec<Raccourcie>,
 }
 
-fn ajuster_dans(
+/// Le jugement d'une passe d'après les mesures de cet ordinateur : l'état lu (`None` : pas de fichier) et celui
+/// d'après. Rien (`None`) en lecture seule (l'autotest), réglage coupé ou fichier douteux.
+fn juger_dans(
     dossier: &Path,
     aujourd_hui: chrono::NaiveDate,
     mesures: &super::mesures::Mesures,
-    delai_du_code: impl Fn(&str) -> Option<Duration>,
-) {
+    delai_du_code: &dyn Fn(&str) -> Option<Duration>,
+) -> Option<(Option<Etat>, Etat)> {
     if super::lecture_seule::active() {
-        return;
+        return None;
     }
     let avant = match lire_dans(dossier) {
         Lu::Absent => None,
         Lu::Cru(e) => Some(e),
-        Lu::Douteux => return,
+        Lu::Douteux => return None,
     };
     let mut e = avant.clone().unwrap_or_default();
     if e.coupe {
-        return;
+        return None;
     }
     let verdict = super::mesures::juger(mesures, aujourd_hui, |id| delai_du_code(id).unwrap_or(DELAI));
     let frolent: Vec<(String, u64)> = verdict
@@ -398,6 +390,56 @@ fn ajuster_dans(
         .into_iter()
         .map(|f| (f.regle, f.max_ms))
         .collect();
+    ajuster_etat(&mut e, aujourd_hui, &frolent, delai_du_code);
+    raccourcir_etat(&mut e, aujourd_hui, &mesures.cache);
+    Some((avant, e))
+}
+
+/// Ce que la passe ajouterait, sans rien écrire : ce que lit la mission de l'agent (`agent::missions`).
+pub(crate) fn prevoir_dans(
+    dossier: &Path,
+    aujourd_hui: chrono::NaiveDate,
+    mesures: &super::mesures::Mesures,
+    delai_du_code: &dyn Fn(&str) -> Option<Duration>,
+) -> Option<Prevu> {
+    let (avant, mut e) = juger_dans(dossier, aujourd_hui, mesures, delai_du_code)?;
+    let avant = avant.unwrap_or_default();
+    Some(Prevu {
+        montees: e.montees.split_off(avant.montees.len().min(e.montees.len())),
+        raccourcies: e
+            .raccourcies
+            .split_off(avant.raccourcies.len().min(e.raccourcies.len())),
+    })
+}
+
+/// Après un bilan noté, par l'Agent Vanguard (`agent`) seulement : la même passe, mais seules les montées et les pas
+/// retenus (vérifiés par l'agent) s'appliquent ; une montée écartée garde son suivi, elle se reprendra. Le suivi des
+/// règles qui frôlent leur délai s'écrit aussi. Rend ce qui a été écrit.
+pub(crate) fn ajuster_retenus_dans(
+    dossier: &Path,
+    aujourd_hui: chrono::NaiveDate,
+    mesures: &super::mesures::Mesures,
+    delai_du_code: &dyn Fn(&str) -> Option<Duration>,
+    retenir_montee: &dyn Fn(&Montee) -> bool,
+    retenir_pas: &dyn Fn(&Raccourcie) -> bool,
+) -> Prevu {
+    let Some((avant, mut e)) = juger_dans(dossier, aujourd_hui, mesures, delai_du_code) else {
+        return Prevu::default();
+    };
+    let base = avant.clone().unwrap_or_default();
+    let nouvelles = e.montees.split_off(base.montees.len().min(e.montees.len()));
+    let mut montees = Vec::new();
+    for m in nouvelles {
+        if retenir_montee(&m) {
+            montees.push(m);
+        } else if let Some(depuis) = base.frolent_depuis.get(&m.regle) {
+            e.frolent_depuis.insert(m.regle.clone(), depuis.clone());
+        }
+    }
+    e.montees.extend(montees.iter().cloned());
+    let pas = e.raccourcies.split_off(base.raccourcies.len().min(e.raccourcies.len()));
+    let raccourcies: Vec<Raccourcie> = pas.into_iter().filter(|r| retenir_pas(r)).collect();
+    e.raccourcies.extend(raccourcies.iter().cloned());
     // Relu juste avant d'écrire : un changement voulu (annuler, tout remettre, couper) écrit depuis la première
     // lecture n'est jamais écrasé ; la montée attend la prochaine passe.
     let inchange = match lire_dans(dossier) {
@@ -405,11 +447,22 @@ fn ajuster_dans(
         Lu::Cru(x) => avant.as_ref() == Some(&x),
         Lu::Douteux => false,
     };
-    let monte = ajuster_etat(&mut e, aujourd_hui, &frolent, delai_du_code);
-    let raccourci = raccourcir_etat(&mut e, aujourd_hui, &mesures.cache);
-    if (monte || raccourci) && inchange {
-        let _ = ecrire_dans(dossier, &e.borne());
+    if e != base && inchange && ecrire_dans(dossier, &e.borne()).is_ok() {
+        Prevu { montees, raccourcies }
+    } else {
+        Prevu::default()
     }
+}
+
+/// La passe entière, tout retenu : les essais de l'auto-réglage seul.
+#[cfg(test)]
+fn ajuster_dans(
+    dossier: &Path,
+    aujourd_hui: chrono::NaiveDate,
+    mesures: &super::mesures::Mesures,
+    delai_du_code: impl Fn(&str) -> Option<Duration>,
+) {
+    let _ = ajuster_retenus_dans(dossier, aujourd_hui, mesures, &delai_du_code, &|_| true, &|_| true);
 }
 
 /// L'état de départ d'un changement voulu : celui du fichier, ou celui d'origine s'il est absent ou douteux (le
@@ -470,10 +523,11 @@ fn annuler_duree_dans(dossier: &Path, regle: &str, depuis_min: Option<u16>) -> s
     Ok(Some(remise))
 }
 
-/// Tout remettre comme à l'origine : plus rien de monté, suivi ni refusé, et le réglage coupé jusqu'à ce qu'on le
-/// remette en marche.
+/// Tout remettre comme à l'origine : plus rien de monté, suivi ni refusé, la cache vidée, les états de l'Agent
+/// Vanguard (`agent`) remis à zéro, et le réglage coupé jusqu'à ce qu'on le remette en marche.
 fn tout_remettre_dans(dossier: &Path) -> std::io::Result<()> {
     super::cache::oublier_dans(dossier, true)?;
+    crate::agent::tout_remettre_dans(dossier, chrono::Utc::now().timestamp())?;
     ecrire_dans(
         dossier,
         &Etat {
@@ -577,12 +631,12 @@ fn dire_echec(e: &std::io::Error) {
 fn dire_en_marche(en_marche: bool) {
     match mettre_en_marche_dans(&crate::socle::dossier_local(), en_marche) {
         Ok(()) if en_marche => trp!(
-            "  {VERT}✔{RESET} Réglage automatique de la vitesse : en marche.",
-            "  {VERT}✔{RESET} Automatic speed tuning: on."
+            "  {VERT}✔{RESET} Agent Vanguard (sans IA) : en marche.",
+            "  {VERT}✔{RESET} Vanguard Agent (no AI): on."
         ),
         Ok(()) => trp!(
-            "  {VERT}✔{RESET} Réglage automatique de la vitesse : coupé. Les délais du code servent ; les changements restent notés, et reviennent s'il est remis en marche.",
-            "  {VERT}✔{RESET} Automatic speed tuning: off. The code's time limits are used; the changes stay noted, and come back if it is turned on again."
+            "  {VERT}✔{RESET} Agent Vanguard (sans IA) : coupé. Les délais du code servent ; les changements restent notés, et reviennent s'il est remis en marche.",
+            "  {VERT}✔{RESET} Vanguard Agent (no AI): off. The code's time limits are used; the changes stay noted, and come back if it is turned on again."
         ),
         Err(e) => dire_echec(&e),
     }
@@ -667,7 +721,7 @@ pub(crate) fn commande(mots: &[String]) {
 /// L'état, les changements en vigueur et ce que garde la cache ; rend les changements montrés, numérotés à partir
 /// de 1.
 fn afficher() -> Vec<Changement> {
-    titre(tr!("Réglage automatique de la vitesse", "Automatic speed tuning"));
+    titre(tr!("Agent Vanguard (sans IA)", "Vanguard Agent (no AI)"));
     afficher_aligne("  ", explication(), 2, GRIS);
     println!();
     let lu = lire_dans(&crate::socle::dossier_local());
@@ -705,8 +759,8 @@ fn afficher() -> Vec<Changement> {
 /// Ce que fait le réglage, en une phrase.
 pub(crate) fn explication() -> &'static str {
     tr!(
-        "Oui : le bilan lance d'abord ses règles les plus longues, et le délai d'une règle qui le frôle deux semaines de suite monte de 10 à 30 minutes, jamais plus. Le passage horaire reprend aussi, une fois sur deux au plus, le résultat récent de quelques vérifications lentes (mises à jour, fichiers sensibles), avec son âge ; un bilan que vous lancez vérifie tout à neuf, et une durée qui se trompe trop souvent raccourcit. Les règles et ce qu'elles jugent ne changent jamais. Chaque changement est noté avec sa valeur d'avant et s'annule ici. Rien n'est envoyé.",
-        "Yes: the check starts its longest rules first, and the time limit of a rule that comes close to it two weeks in a row goes up from 10 to 30 minutes, never more. The hourly pass also reuses, every other time at most, the recent result of a few slow checks (updates, sensitive files), with its age; a check you start checks everything afresh, and a duration that is too often wrong gets shorter. The rules and how they judge never change. Each change is noted with its previous value and can be undone here. Nothing is sent."
+        "Oui : un petit agent intégré, sans IA, règle Vanguard sur cet ordinateur, entre des bornes fixes. Le bilan lance d'abord ses règles les plus longues, et le délai d'une règle qui le frôle deux semaines de suite monte de 10 à 30 minutes, jamais plus. Le passage horaire reprend aussi, une fois sur deux au plus, le résultat récent de quelques vérifications lentes (mises à jour, fichiers sensibles), avec son âge ; un bilan que vous lancez vérifie tout à neuf, et une durée qui se trompe trop souvent raccourcit. Les règles et ce qu'elles jugent ne changent jamais. Chaque changement est noté avec sa valeur d'avant et s'annule ici. Rien n'est envoyé.",
+        "Yes: a small built-in agent, with no AI, tunes Vanguard on this computer, within fixed bounds. The check starts its longest rules first, and the time limit of a rule that comes close to it two weeks in a row goes up from 10 to 30 minutes, never more. The hourly pass also reuses, every other time at most, the recent result of a few slow checks (updates, sensitive files), with its age; a check you start checks everything afresh, and a duration that is too often wrong gets shorter. The rules and how they judge never change. Each change is noted with its previous value and can be undone here. Nothing is sent."
     )
 }
 
