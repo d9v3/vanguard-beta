@@ -850,7 +850,13 @@ fn relaye(contexte: &str, detail: &str) -> bool {
         return false;
     };
     if liste.len() < RELAIS_MAX {
-        liste.push(format!("[{contexte}] {}", detail.trim()));
+        // Coupée comme au journal (`DETAIL_MAX`) : 32 erreurs démesurées ne remplissent pas la mémoire du fils.
+        let detail = detail.trim();
+        let mut fin = detail.len().min(DETAIL_MAX);
+        while !detail.is_char_boundary(fin) {
+            fin -= 1;
+        }
+        liste.push(format!("[{contexte}] {}", &detail[..fin]));
     }
     true
 }

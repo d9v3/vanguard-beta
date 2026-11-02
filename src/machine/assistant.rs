@@ -331,7 +331,7 @@ const JOURNAL: &str = "journal ";
 /// Une erreur gardée par le fils, prête à passer au parent : une seule ligne, sans caractère piégé, coupée pour tenir
 /// dans `LIGNE_MAX` (le parent refuserait toute la réponse pour une ligne trop longue).
 fn ligne_journal(erreur: &str) -> String {
-    let texte = crate::ui::affichable(&erreur.replace(['\r', '\n'], " | "));
+    let texte = crate::ui::affichable(&erreur.replace("\r\n", "\n").replace(['\r', '\n'], " | "));
     let place = LIGNE_MAX - JOURNAL.len();
     let mut fin = texte.len().min(place);
     while !texte.is_char_boundary(fin) {
@@ -721,6 +721,9 @@ impl Monde for Systeme {
                 // Chargée sans aucun fichier, nulle part : une unité citée par une autre mais introuvable
                 // (« not-found »), donc pas installée.
                 Some((id, fragment, _)) if !sur_le_disque && fragment.is_empty() && id == unite => return Ok(false),
+                // Chargée d'un fichier qu'aucun des dossiers de systemd n'a sous ce nom (l'instance d'un modèle,
+                // un alias) : ses compléments n'ont pas été revus sur le disque, refusée.
+                Some(_) if !sur_le_disque => return Err(douteux(&crate::ui::affichable(unite))),
                 Some((id, fragment, complements)) => {
                     fichiers_charges_surs(&id, &fragment, &complements, racine, unite, qui)?;
                     return Ok(true);
@@ -854,7 +857,10 @@ impl Proprietaire {
     /// root, et le groupe 0 s'il n'a pas d'autre membre (`groupe_root_seul`).
     fn root() -> Self {
         let lu = |f| std::fs::read_to_string(f).ok();
-        let seul = matches!((lu("/etc/group"), lu("/etc/passwd")), (Some(g), Some(p)) if groupe_root_seul(&g, &p));
+        // gshadow manque sur certains systèmes : son absence ne donne aucun mot de passe de groupe.
+        let gshadow = lu("/etc/gshadow").unwrap_or_default();
+        let seul =
+            matches!((lu("/etc/group"), lu("/etc/passwd")), (Some(g), Some(p)) if groupe_root_seul(&g, &p, &gshadow));
         Proprietaire {
             uid: 0,
             groupe_seul: seul.then_some(0),
@@ -875,8 +881,10 @@ impl Proprietaire {
 /// Le groupe 0 n'a-t-il aucun autre membre que root ? Ni membre ajouté dans `/etc/group` (sa ligne vide, ou « root »
 /// seul), ni compte de personne (uid 1000 et plus) qui l'ait pour groupe principal dans `/etc/passwd`. Les comptes du
 /// système au groupe principal 0 que Fedora garde (sync, shutdown, halt, operator) ne font tourner aucun programme de
-/// la personne : ils ne comptent pas. Une ligne illisible, ou deux lignes du groupe 0 : non.
-fn groupe_root_seul(group: &str, passwd: &str) -> bool {
+/// la personne : ils ne comptent pas. Aucun mot de passe de groupe non plus (dans `/etc/group` ou `/etc/gshadow`) :
+/// `newgrp root` le donnerait à qui le connaît ; ni administrateur ou membre dans gshadow. Une ligne illisible, ou
+/// deux lignes du groupe 0 : non. Les comptes d'un annuaire (LDAP, sssd) ne sont pas vus ici.
+fn groupe_root_seul(group: &str, passwd: &str, gshadow: &str) -> bool {
     let lignes_0: Vec<&str> = group
         .lines()
         .filter(|l| l.split(':').nth(2).is_some_and(|g| g.trim() == "0"))
@@ -885,10 +893,19 @@ fn groupe_root_seul(group: &str, passwd: &str) -> bool {
         return false;
     };
     let champs: Vec<&str> = ligne.split(':').collect();
-    let [_, _, _, membres] = champs.as_slice() else {
+    let [nom, mot_de_passe, _, membres] = champs.as_slice() else {
         return false;
     };
-    let membres_surs = membres.split(',').map(str::trim).all(|m| m.is_empty() || m == "root");
+    let seul_root = |liste: &str| liste.split(',').map(str::trim).all(|m| m.is_empty() || m == "root");
+    // Sans mot de passe : vide, verrouillé (« ! », « * »), ou renvoyé à gshadow (« x »).
+    let sans_mot_de_passe = |m: &str| m.is_empty() || m.starts_with('!') || m.starts_with('*');
+    let ombre_sure = gshadow.lines().filter(|l| l.split(':').next() == Some(*nom)).all(|l| {
+        match l.split(':').collect::<Vec<_>>().as_slice() {
+            [_, m, admins, membres] => sans_mot_de_passe(m) && seul_root(admins) && seul_root(membres),
+            _ => false,
+        }
+    });
+    let membres_surs = seul_root(membres) && (*mot_de_passe == "x" || sans_mot_de_passe(mot_de_passe)) && ombre_sure;
     let aucune_personne = passwd
         .lines()
         .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
@@ -958,6 +975,28 @@ fn regarder(chemin: &std::path::Path, racine: &std::path::Path, qui: Proprietair
     }
 }
 
+/// Le dossier le plus profond de `chemin` qui existe (`chemin` compris), et chacun de ceux qui le contiennent jusqu'à
+/// `racine` : à `qui` et fermés aux autres (`Proprietaire::a_le_dossier`). Un fichier absent d'un dossier qu'un autre
+/// compte peut modifier pourrait y être posé entre la revue et le geste, de même qu'un dossier de compléments vide
+/// pourrait recevoir un « .conf » : leur absence ne vaut que si leur place est fermée.
+fn place_sure(chemin: &std::path::Path, racine: &std::path::Path, qui: Proprietaire) -> bool {
+    let (Ok(racine), Some(existant)) = (
+        std::fs::canonicalize(racine),
+        chemin.ancestors().find(|d| std::fs::symlink_metadata(d).is_ok()),
+    ) else {
+        return false;
+    };
+    // Un lien brisé existe sans se résoudre : douteux.
+    let Ok(existant) = std::fs::canonicalize(existant) else {
+        return false;
+    };
+    existant.starts_with(&racine)
+        && existant
+            .ancestors()
+            .filter(|d| d.starts_with(&racine))
+            .all(|d| std::fs::metadata(d).is_ok_and(|m| m.is_dir() && qui.a_le_dossier(&m)))
+}
+
 /// Les dossiers de compléments (« drop-in ») qui s'appliquent à l'unité `nom` (systemd.unit(5)) : « nom.d », ceux
 /// des préfixes à tiret (« a-b-c.service » : « a-b-.service.d », « a-.service.d »), et celui du genre
 /// (« service.d »).
@@ -995,13 +1034,15 @@ fn fichier_d_unite_sur(
     }
     let mut trouve = false;
     for dossier in dossiers {
-        match regarder(&dossier.join(nom), racine, qui, Some(nom)) {
-            Regard::Absent => {}
+        let chemin = dossier.join(nom);
+        match regarder(&chemin, racine, qui, Some(nom)) {
+            Regard::Absent if place_sure(&chemin, racine, qui) => {}
             Regard::Sur => {
                 trouve = true;
                 break;
             }
-            Regard::Douteux => return Err(douteux(&vu)),
+            // Absent d'une place qu'un autre compte peut modifier : il pourrait y être posé après la revue.
+            Regard::Absent | Regard::Douteux => return Err(douteux(&vu)),
             Regard::AutreNom => return Err(autre_nom(&vu)),
         }
     }
@@ -1017,25 +1058,28 @@ fn fichier_d_unite_sur(
 fn pas_installe(nom: &str) -> String {
     let vu = crate::ui::affichable(nom);
     trf!(
-        "{vu} n'est pas installé sur cet ordinateur : rien n'est fait",
-        "{vu} is not installed on this computer: nothing is done"
+        "ce service n'est pas installé sur cet ordinateur ({vu}) : rien n'est fait",
+        "this service is not installed on this computer ({vu}): nothing is done"
     )
 }
 
-/// Un dossier de compléments, s'il existe : à `proprietaire`, fermé aux autres comme ceux qui le contiennent, et
-/// chacun de ses « .conf » sûr (`regarder`).
+/// Un dossier de compléments : sa place fermée aux autres comptes, qu'il existe ou non (`place_sure` : vide ou
+/// absent, un autre compte pourrait sinon y poser un « .conf » après la revue), et chacun de ses « .conf » sûr
+/// (`regarder`).
 fn complements_surs(
     dossier: &std::path::Path,
     racine: &std::path::Path,
     qui: Proprietaire,
     vu: &str,
 ) -> Result<(), Echec> {
+    if !place_sure(dossier, racine, qui) {
+        return Err(douteux(vu));
+    }
     let entrees = match std::fs::read_dir(dossier) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(_) => return Err(douteux(vu)),
     };
-    // Le dossier lui-même : un « .conf » dedans est vu par `regarder` avec chacun de ses dossiers, celui-ci compris.
     for entree in entrees {
         let chemin = entree.map_err(|_| douteux(vu))?.path();
         if chemin.extension().is_none_or(|x| x != "conf") {
@@ -1151,6 +1195,38 @@ fn coupe(a: ActionUnite) -> bool {
     )
 }
 
+/// Le nom d'une unité de la table, tel que la personne le lit (« le service d'impression (CUPS) »).
+fn nom_vu(u: &gestes_unix::UniteConnue) -> &'static str {
+    if crate::langue::anglais() { u.en } else { u.fr }
+}
+
+/// Couper une unité de la table qui n'est pas installée : plus lancée au démarrage, c'est fait. Encore en marche (son
+/// paquet retiré sans l'arrêter), elle ne s'arrêtera qu'avec l'ordinateur : ce qu'elle lancerait à l'arrêt n'a plus
+/// de fichier à revoir, Vanguard ne l'arrête pas ; son arrêt seul est donc un échec, dit.
+fn absente(a: ActionUnite, u: &gestes_unix::UniteConnue, monde: &mut dyn Monde) -> Resultat {
+    let vu = nom_vu(u);
+    match monde.etat_d_activite(u.nom) {
+        Ok(Some(e)) if matches!(e.as_str(), "active" | "activating" | "reloading" | "deactivating") => {
+            if a == ActionUnite::Arreter {
+                Resultat::echec(trf!(
+                    "ce service n'est plus installé sur cet ordinateur, mais tourne encore ({vu}) : il s'arrêtera au prochain redémarrage de l'ordinateur ; rien n'est fait",
+                    "this service is no longer installed on this computer, but is still running ({vu}): it will stop at the next restart of the computer; nothing is done"
+                ))
+            } else {
+                Resultat::ok_note(trf!(
+                    "ce service n'est plus installé sur cet ordinateur ({vu}) : il ne sera plus lancé au démarrage ; il tourne encore et s'arrêtera au prochain redémarrage de l'ordinateur",
+                    "this service is no longer installed on this computer ({vu}): it will no longer start at boot; it is still running and will stop at the next restart of the computer"
+                ))
+            }
+        }
+        Ok(_) => Resultat::ok_note(trf!(
+            "ce service n'est pas installé sur cet ordinateur ({vu}) : rien à arrêter ni à retirer du démarrage",
+            "this service is not installed on this computer ({vu}): nothing to stop or remove from startup"
+        )),
+        Err(raison) => Resultat::echec(raison),
+    }
+}
+
 /// Le fichier de l'unité revu (`Monde::fichier_sur`) : sûr, ou la raison du refus ; une unité absente est dite « pas
 /// installée ».
 fn unite_revue(nom: &str, monde: &dyn Monde) -> Result<(), Echec> {
@@ -1166,9 +1242,9 @@ fn unite_revue(nom: &str, monde: &dyn Monde) -> Result<(), Echec> {
 /// une unité pas chargée aussi (rien à arrêter, et systemd la chargerait pour refuser). Son arrêt seul est refusé,
 /// dit, plutôt qu'un échec du gestionnaire. Une lecture qui échoue laisse le geste tel quel : l'arrêt tenté dira
 /// lui-même s'il échoue.
-fn selon_l_arret(g: GesteUnix, monde: &mut dyn Monde) -> Result<(GesteUnix, Option<&'static str>), Echec> {
+fn selon_l_arret(g: GesteUnix, monde: &mut dyn Monde) -> Result<(Option<GesteUnix>, Option<String>), Echec> {
     let Some((a @ (ActionUnite::Desactiver | ActionUnite::Arreter), nom)) = unite_touchee(&g) else {
-        return Ok((g, None));
+        return Ok((Some(g), None));
     };
     // Une lecture en échec ne change rien au geste : seul ce qui est lu compte.
     let permis = monde.arret_a_la_main(nom).ok();
@@ -1178,6 +1254,14 @@ fn selon_l_arret(g: GesteUnix, monde: &mut dyn Monde) -> Result<(GesteUnix, Opti
             "le gestionnaire de services refuse qu'on arrête {vu} à la main (il ne s'arrête qu'avec l'ordinateur) : rien n'est fait",
             "the service manager refuses to stop {vu} by hand (it only stops with the computer): nothing is done"
         ))),
+        // Pas chargée, donc pas en marche : rien à arrêter (systemd la chargerait pour l'arrêt, et pourrait le refuser).
+        (ActionUnite::Arreter, Some(None)) => Ok((
+            None,
+            Some(trf!(
+                "{vu} n'est pas en marche : rien à arrêter",
+                "{vu} is not running: nothing to stop"
+            )),
+        )),
         (ActionUnite::Desactiver, Some(None | Some(false))) => {
             let sans_arret = match g {
                 GesteUnix::Unite(_, u) => GesteUnix::Unite(ActionUnite::DesactiverSansArreter, u),
@@ -1185,14 +1269,14 @@ fn selon_l_arret(g: GesteUnix, monde: &mut dyn Monde) -> Result<(GesteUnix, Opti
                 autre => autre,
             };
             let note = (permis == Some(Some(false))).then(|| {
-                tr!(
+                String::from(tr!(
                     "il ne sera plus lancé au démarrage ; le gestionnaire de services refuse qu'on l'arrête à la main : s'il tourne, il s'arrêtera au prochain redémarrage de l'ordinateur",
                     "it will no longer start at boot; the service manager refuses to stop it by hand: if it is running, it will stop at the next restart of the computer"
-                )
+                ))
             });
-            Ok((sans_arret, note))
+            Ok((Some(sans_arret), note))
         }
-        _ => Ok((g, None)),
+        _ => Ok((Some(g), None)),
     }
 }
 
@@ -1227,20 +1311,16 @@ fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
     if let GesteUnix::Unite(a, u) = g {
         match monde.fichier_sur(u.nom) {
             Ok(true) => {}
-            // Pas installée : ni arrêtée ni lancée au démarrage, c'est déjà fait ; le reste ne peut pas se faire.
-            Ok(false) if coupe(a) => {
-                let vu = crate::ui::affichable(u.nom);
-                return Resultat::ok_note(trf!(
-                    "{vu} n'est pas installé sur cet ordinateur : rien à arrêter ni à retirer du démarrage",
-                    "{vu} is not installed on this computer: nothing to stop or remove from startup"
-                ));
-            }
-            Ok(false) => return Resultat::echec(pas_installe(u.nom)),
+            // Pas installée : plus lancée au démarrage, c'est déjà fait ; le reste ne peut pas se faire.
+            Ok(false) if coupe(a) => return absente(a, u, monde),
+            Ok(false) => return Resultat::echec(pas_installe(nom_vu(u))),
             Err(raison) => return Resultat::echec(raison),
         }
     }
     let (g, note) = match selon_l_arret(g, monde) {
-        Ok(fait) => fait,
+        Ok((Some(g), note)) => (g, note),
+        // Rien à faire : dit, sans question ni geste.
+        Ok((None, note)) => return Resultat::ok_note(note.unwrap_or_default()),
         Err(raison) => return Resultat::echec(raison),
     };
     if g.refus().is_some() {
@@ -2401,6 +2481,35 @@ mod tests {
         let (r, j) = essai();
         assert!(r.reussi, "{r:?}");
         assert_eq!(j, ["activer cups.service".to_string()]);
+        // Vide mais modifiable par les autres : un « .conf » pourrait y être posé après la revue. Refusé aussi.
+        std::fs::remove_file(&complement).unwrap();
+        mode(&complements, 0o777);
+        let (r, j) = essai();
+        assert!(!r.reussi && j.is_empty(), "{r:?}");
+        mode(&complements, 0o755);
+        assert!(essai().0.reussi);
+        // Un dossier de compléments absent, sous un dossier modifiable par les autres : refusé (il pourrait y être
+        // créé) ; de même pour un fichier absent du premier dossier, qui y serait posé et passerait devant.
+        std::fs::remove_dir(&complements).unwrap();
+        mode(&dossier, 0o757);
+        assert!(!essai().0.reussi);
+        mode(&dossier, 0o755);
+        assert!(essai().0.reussi);
+        let premier = racine.join("etc");
+        std::fs::create_dir(&premier).unwrap();
+        mode(&premier, 0o777);
+        let mut m = FauxMonde::nouveau();
+        m.disque = Some((
+            vec![premier.clone(), dossier.clone()],
+            racine.clone(),
+            crate::socle::euid(),
+        ));
+        assert!(!faire_geste(activer, &mut m).reussi);
+        assert_eq!(m.journal, Vec::<String>::new());
+        mode(&premier, 0o755);
+        let mut m = FauxMonde::nouveau();
+        m.disque = Some((vec![premier, dossier.clone()], racine.clone(), crate::socle::euid()));
+        assert!(faire_geste(activer, &mut m).reussi);
     }
 
     /// É-4 du lot U3 : une unité absente est dite « pas installée ». L'arrêter ou la retirer du démarrage est déjà
@@ -2410,12 +2519,15 @@ mod tests {
         if !GesteUnix::ReinitialiserEchecs.permis_ici() {
             return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
         }
-        let absente = |g: GesteUnix| {
+        let absente_qui_tourne = |g: GesteUnix, actif: Option<&str>| {
             let mut m = FauxMonde::nouveau();
             m.fichier = Ok(false);
+            m.actif = Ok(actif.map(ToString::to_string));
             let r = faire_geste(g, &mut m);
             (r, m.journal)
         };
+        let absente = |g: GesteUnix| absente_qui_tourne(g, None);
+        let lu = vec!["actif auditd.service".to_string()];
         for (a, u) in [
             (ActionUnite::Activer, &gestes_unix::FIREWALLD),
             (ActionUnite::Demarrer, &gestes_unix::CUPS),
@@ -2430,8 +2542,18 @@ mod tests {
                 r.reussi && r.note.as_deref().is_some_and(|n| n.contains("install")),
                 "{a:?} {r:?}"
             );
-            assert!(j.is_empty(), "{a:?} {j:?}");
+            assert_eq!(j, lu, "{a:?}");
         }
+        // Son paquet retiré sans l'arrêter, elle tourne encore : plus lancée au démarrage, c'est vrai, et dit ; son
+        // arrêt, sans fichier à revoir, n'est pas fait, et c'est un échec dit.
+        let redemarrage = |t: &str| t.contains("redémarrage") || t.contains("restart");
+        let audit = |a| GesteUnix::Unite(a, &gestes_unix::AUDITD);
+        let (r, j) = absente_qui_tourne(audit(ActionUnite::Desactiver), Some("active"));
+        assert!(r.reussi && r.note.as_deref().is_some_and(redemarrage), "{r:?}");
+        assert_eq!(j, lu);
+        let (r, j) = absente_qui_tourne(audit(ActionUnite::Arreter), Some("active"));
+        assert!(!r.reussi && redemarrage(&r.raison), "{r:?}");
+        assert_eq!(j, lu);
         let arreter = gestes_unix::designee(ActionUnite::Arreter, "anydesk.service").unwrap();
         let (r, j) = absente(arreter);
         assert!(!r.reussi && r.raison.contains("install"), "{r:?}");
@@ -2472,13 +2594,18 @@ mod tests {
         let (r, j) = essai(audit, Ok(Some(true)));
         assert!(r.reussi && r.note.is_none(), "{r:?}");
         assert_eq!(j, [s("accord"), s("desactiver auditd.service")]);
-        let (r, j) = essai(
-            GesteUnix::Unite(ActionUnite::Arreter, &gestes_unix::CUPS),
-            Ok(Some(false)),
-        );
-        assert!(!r.reussi && j.is_empty(), "{r:?}");
+        // auditd demande l'accord : le refus de systemd arrive avant la question.
+        let arreter = GesteUnix::Unite(ActionUnite::Arreter, &gestes_unix::AUDITD);
+        let (r, j) = essai(arreter, Ok(Some(false)));
+        assert!(!r.reussi && j.is_empty(), "{r:?} {j:?}");
         // Les phrases montrées restent sans jargon.
         assert!(!r.raison.contains("RefuseManualStop"));
+        // Pas chargée : pas en marche, rien à arrêter, ni question ni geste.
+        let (r, j) = essai(arreter, Ok(None));
+        assert!(r.reussi && r.note.is_some() && j.is_empty(), "{r:?} {j:?}");
+        let (r, j) = essai(arreter, Ok(Some(true)));
+        assert!(r.reussi, "{r:?}");
+        assert_eq!(j, [s("accord"), s("arreter auditd.service")]);
     }
 
     /// `signatures-clamav` et la revue (É-2) : un fichier douteux laisse le service de mise à jour tel quel (freshclam
@@ -2517,17 +2644,33 @@ mod tests {
     /// principal ; une ligne douteuse dit non.
     #[test]
     fn le_groupe_de_root_seul() {
+        let groupe_root_seul_essai = |g: &str, p: &str| groupe_root_seul(g, p, "root:!::\n");
         let passwd = "root:x:0:0:root:/root:/bin/bash\nsync:x:5:0:sync:/sbin:/bin/sync\noperator:x:11:0:operator:/root:/sbin/nologin\nalice:x:1000:1000::/home/alice:/bin/bash\n";
-        assert!(groupe_root_seul("root:x:0:\nwheel:x:10:alice\n", passwd));
-        assert!(groupe_root_seul("root:x:0:root\n", passwd));
-        assert!(!groupe_root_seul("root:x:0:alice\n", passwd));
-        assert!(!groupe_root_seul("root:x:0:root,alice\n", passwd));
-        assert!(!groupe_root_seul("root:x:0:\nautre:x:0:\n", passwd));
-        assert!(!groupe_root_seul("wheel:x:10:\n", passwd));
-        assert!(!groupe_root_seul("root:x:0\n", passwd));
+        assert!(groupe_root_seul_essai("root:x:0:\nwheel:x:10:alice\n", passwd));
+        assert!(groupe_root_seul_essai("root:x:0:root\n", passwd));
+        assert!(!groupe_root_seul_essai("root:x:0:alice\n", passwd));
+        assert!(!groupe_root_seul_essai("root:x:0:root,alice\n", passwd));
+        assert!(!groupe_root_seul_essai("root:x:0:\nautre:x:0:\n", passwd));
+        assert!(!groupe_root_seul_essai("wheel:x:10:\n", passwd));
+        assert!(!groupe_root_seul_essai("root:x:0\n", passwd));
         let alice_0 = format!("{passwd}bob:x:1001:0::/home/bob:/bin/bash\n");
-        assert!(!groupe_root_seul("root:x:0:\n", &alice_0));
-        assert!(!groupe_root_seul("root:x:0:\n", "root:x:0:0\nbizarre:x:douze:0\n"));
+        assert!(!groupe_root_seul_essai("root:x:0:\n", &alice_0));
+        assert!(!groupe_root_seul_essai(
+            "root:x:0:\n",
+            "root:x:0:0\nbizarre:x:douze:0\n"
+        ));
+        // Un mot de passe de groupe (newgrp root), dans group ou gshadow, ou un membre dans gshadow : non.
+        assert!(!groupe_root_seul("root:$6$sel$empreinte:0:\n", passwd, ""));
+        assert!(!groupe_root_seul("root:x:0:\n", passwd, "root:$6$sel$empreinte::\n"));
+        assert!(!groupe_root_seul("root:x:0:\n", passwd, "root:!::alice\n"));
+        assert!(!groupe_root_seul("root:x:0:\n", passwd, "root:!:alice:\n"));
+        assert!(!groupe_root_seul("root:x:0:\n", passwd, "root:!\n"));
+        assert!(groupe_root_seul("root:x:0:\n", passwd, ""));
+        assert!(groupe_root_seul(
+            "root:x:0:\n",
+            passwd,
+            "root:*::root\nwheel:!::alice\n"
+        ));
     }
 
     /// É-1 du lot U3 : un dossier modifiable par le seul groupe de son propriétaire (`/` en 0775 root:root de Fedora
@@ -2577,7 +2720,7 @@ mod tests {
     /// se séparent de ses réponses sans en changer le compte.
     #[test]
     fn les_erreurs_du_fils_passent_au_parent() {
-        assert_eq!(ligne_journal("[a] b\nc\r\nd"), "journal [a] b | c |  | d");
+        assert_eq!(ligne_journal("[a] b\nc\r\nd\re"), "journal [a] b | c | d | e");
         let longue = ligne_journal(&"é".repeat(LIGNE_MAX));
         assert!(longue.len() <= LIGNE_MAX && longue.starts_with(JOURNAL));
         assert!(!ligne_journal("x\u{1b}[2Jy").contains('\u{1b}'));
