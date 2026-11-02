@@ -607,6 +607,8 @@ trait Monde {
     fn fichier_sur(&self, unite: &str) -> Result<(), Echec>;
     /// L'état du fichier de l'unité (« enabled », « disabled »…) ; `None` : aucun fichier de ce nom.
     fn etat_du_fichier(&mut self, unite: &str) -> Result<Option<String>, Echec>;
+    /// L'état d'activité de l'unité (« active », « inactive »…) ; `None` : aucune unité chargée de ce nom.
+    fn etat_d_activite(&mut self, unite: &str) -> Result<Option<String>, Echec>;
     fn unite(&mut self, action: ActionUnite, unite: &str) -> Result<(), Echec>;
     fn reinitialiser_echecs(&mut self) -> Result<(), Echec>;
     fn programme(&mut self, p: &'static Programme) -> Resultat;
@@ -646,6 +648,16 @@ impl Monde for Systeme {
         {
             use crate::machine::linux::dbus::systeme;
             systeme::bus_pour_agir().and_then(|mut bus| systeme::etat_du_fichier(&mut bus, unite))
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(refus(format!("{unite} : {}", sans_systemd())))
+    }
+
+    fn etat_d_activite(&mut self, unite: &str) -> Result<Option<String>, Echec> {
+        #[cfg(target_os = "linux")]
+        {
+            use crate::machine::linux::dbus;
+            dbus::systeme::bus_pour_agir().and_then(|mut bus| dbus::etat_d_activite(&mut bus, unite))
         }
         #[cfg(not(target_os = "linux"))]
         Err(refus(format!("{unite} : {}", sans_systemd())))
@@ -703,9 +715,10 @@ const DOSSIERS_D_UNITES: [&str; 4] = [
 ];
 
 /// Le fichier de l'unité `nom` dans le premier de `dossiers` qui l'a : un fichier ordinaire de `proprietaire` (root),
-/// que ni son groupe ni les autres ne peuvent modifier. Un lien (`systemctl link`) n'est suivi que vers un tel fichier
-/// dont chaque dossier, jusqu'à `racine` (« / ») comprise, est aussi à `proprietaire` et fermé aux autres : sinon un
-/// autre compte pourrait changer ce que l'unité lance. Un fichier refusé ne fait pas chercher dans le dossier suivant.
+/// que ni son groupe ni les autres ne peuvent modifier, dont chaque dossier, jusqu'à `racine` (« / ») comprise, est
+/// aussi à `proprietaire` et fermé aux autres : sinon un autre compte pourrait changer ce que l'unité lance. Un lien
+/// (`systemctl link`) n'est suivi que vers un tel fichier du même nom. Un fichier refusé ne fait pas chercher dans le
+/// dossier suivant.
 fn fichier_d_unite_sur(
     dossiers: &[&std::path::Path],
     racine: &std::path::Path,
@@ -734,24 +747,30 @@ fn fichier_d_unite_sur(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(_) => return Err(douteux()),
         };
-        let fichier = if vu_du_lien.file_type().is_symlink() {
-            let racine = std::fs::canonicalize(racine).map_err(|_| douteux())?;
-            let cible = std::fs::canonicalize(&chemin).map_err(|_| douteux())?;
-            // La cible a tous ses liens résolus : chacun de ses dossiers est vu tel qu'il est. Un dossier à root et
-            // fermé aux autres ne peut pas être remplacé entre ce regard et l'ouverture.
-            let dossiers_surs = cible.starts_with(&racine)
-                && cible
-                    .ancestors()
-                    .skip(1)
-                    .filter(|d| d.starts_with(&racine))
-                    .all(|d| std::fs::metadata(d).is_ok_and(|m| m.is_dir() && a_lui(&m)));
-            if vu_du_lien.uid() != proprietaire || !dossiers_surs {
-                return Err(douteux());
-            }
-            cible
-        } else {
-            chemin
-        };
+        // Lien ou fichier direct, le même regard : un fichier direct dans un dossier qu'un autre compte peut modifier
+        // pourrait y être remplacé aussi bien que la cible d'un lien.
+        let racine = std::fs::canonicalize(racine).map_err(|_| douteux())?;
+        let fichier = std::fs::canonicalize(&chemin).map_err(|_| douteux())?;
+        // Le chemin a tous ses liens résolus : chacun de ses dossiers est vu tel qu'il est. Un dossier à root et fermé
+        // aux autres ne peut pas être remplacé entre ce regard et l'ouverture.
+        let dossiers_surs = fichier.starts_with(&racine)
+            && fichier
+                .ancestors()
+                .skip(1)
+                .filter(|d| d.starts_with(&racine))
+                .all(|d| std::fs::metadata(d).is_ok_and(|m| m.is_dir() && a_lui(&m)));
+        let lien_a_lui = !vu_du_lien.file_type().is_symlink() || vu_du_lien.uid() == proprietaire;
+        if !(dossiers_surs && lien_a_lui) {
+            return Err(douteux());
+        }
+        // Le même nom au bout : un lien vers une autre unité en ferait un alias, et le geste toucherait celle-là,
+        // qui n'a pas été revue (`controle_a_distance` juge le nom).
+        if fichier.file_name() != Some(std::ffi::OsStr::new(nom)) {
+            return Err(refus(trf!(
+                "le fichier du service {vu} est un lien vers un fichier d'un autre nom (un autre service, ou un service masqué) : rien n'est fait",
+                "the file of the service {vu} is a link to a file with another name (another service, or a masked service): nothing is done"
+            )));
+        }
         // Sans suivre de lien (O_NOFOLLOW : un fichier remplacé par un lien depuis le regard est refusé), sans
         // attendre si c'est un tube (O_NONBLOCK).
         let ouvert = std::fs::OpenOptions::new()
@@ -857,10 +876,11 @@ fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
     }
 }
 
-/// `signatures-clamav` : le service de mise à jour, s'il est installé, verrouille la base pendant qu'il tourne ; il
-/// est arrêté le temps de freshclam, puis remis en route, même si freshclam a échoué : jamais laissé arrêté. Ni un
-/// signal de fin (terminal fermé, Ctrl+C), ni une panique, ni un arrêt refusé ne sautent la remise en route. Masqué
-/// par l'administrateur, il n'est pas touché, et c'est noté.
+/// `signatures-clamav` : le service de mise à jour, s'il est installé, verrouille la base pendant qu'il tourne ; s'il
+/// tourne, il est arrêté le temps de freshclam, puis redémarré, même si freshclam a échoué : jamais laissé arrêté. Ni
+/// un signal de fin (terminal fermé, Ctrl+C), ni une panique, ni un arrêt refusé ne sautent la remise en route. Son
+/// lancement au démarrage n'est jamais changé (rien ne le noterait pour le défaire) : coupé, il le reste, et c'est
+/// dit. Masqué par l'administrateur, il n'est pas touché, et c'est noté.
 fn signatures_clamav(monde: &mut dyn Monde) -> Resultat {
     let service = gestes_unix::CLAMAV_FRESHCLAM.nom;
     let etat = match monde.etat_du_fichier(service) {
@@ -879,6 +899,38 @@ fn signatures_clamav(monde: &mut dyn Monde) -> Resultat {
             r
         };
     }
+    // Le service n'est arrêté que s'il tourne (lui seul tient le verrou de la base), et remis seulement en marche :
+    // son lancement au démarrage n'est jamais changé, ce geste ne note rien qui permettrait de le défaire.
+    let r = match monde.etat_d_activite(service) {
+        Ok(Some(a)) if matches!(a.as_str(), "active" | "activating" | "reloading") => freshclam_service_arrete(monde),
+        Ok(_) => monde.programme(&gestes_unix::FRESHCLAM),
+        // Sans savoir s'il tourne : freshclam seul, sans toucher au service ; un échec le dit.
+        Err(raison) => {
+            let r = monde.programme(&gestes_unix::FRESHCLAM);
+            if r.reussi {
+                r
+            } else {
+                Resultat::echec(trf!(
+                    "{} (l'état du service de mise à jour automatique ne se lit pas : il tient peut-être la base. {raison})",
+                    "{} (the state of the automatic update service cannot be read: it may be holding the database. {raison})",
+                    r.raison
+                ))
+            }
+        }
+    };
+    if r.reussi && etat.as_deref() != Some("enabled") {
+        // Coupée avant, coupée après : dit, plutôt que de laisser croire qu'elle tourne.
+        return Resultat::ok_note(tr!(
+            "signatures à jour ; leur mise à jour automatique n'est pas lancée au démarrage, et Vanguard la laisse ainsi",
+            "signatures up to date; their automatic update is not started at boot, and Vanguard leaves it that way"
+        ));
+    }
+    r
+}
+
+/// freshclam, le service de mise à jour arrêté le temps du téléchargement, puis remis en marche dans tous les cas.
+fn freshclam_service_arrete(monde: &mut dyn Monde) -> Resultat {
+    let service = gestes_unix::CLAMAV_FRESHCLAM.nom;
     // Posés avant l'arrêt, retirés après la remise en route (ordre inverse des `let`) : entre les deux, la fenêtre
     // fermée ne tue plus l'assistant au milieu.
     let _signaux = SignauxIgnores::poser();
@@ -913,12 +965,10 @@ fn signatures_clamav(monde: &mut dyn Monde) -> Resultat {
     }
 }
 
-/// Remet en route le service de mise à jour : activé et démarré ; si l'activation échoue, au moins démarré. L'erreur
-/// rendue est celle de l'activation.
+/// Remet en marche le service de mise à jour, tel qu'il tournait avant l'arrêt : démarré, jamais activé (son
+/// lancement au démarrage reste ce qu'il était).
 fn remettre_en_route(monde: &mut dyn Monde, service: &str) -> Result<(), Echec> {
-    monde
-        .unite(ActionUnite::Activer, service)
-        .or_else(|e| monde.unite(ActionUnite::Demarrer, service).map_err(|_| e))
+    monde.unite(ActionUnite::Demarrer, service)
 }
 
 /// Remet le service en route s'il est quitté avant la fin (`faite` encore faux) : une panique, ou un retour ajouté
@@ -1479,6 +1529,7 @@ mod tests {
         session: Option<bool>,
         fichier: Result<(), Echec>,
         etat: Result<Option<String>, Echec>,
+        actif: Result<Option<String>, Echec>,
         /// Les actions (`ActionUnite::mot`) qui échouent.
         echecs: Vec<&'static str>,
         programme_reussi: bool,
@@ -1495,6 +1546,7 @@ mod tests {
                 session: Some(false),
                 fichier: Ok(()),
                 etat: Ok(Some("enabled".into())),
+                actif: Ok(Some("active".into())),
                 echecs: Vec::new(),
                 programme_reussi: true,
                 programme_panique: false,
@@ -1519,6 +1571,10 @@ mod tests {
         fn etat_du_fichier(&mut self, unite: &str) -> Result<Option<String>, Echec> {
             self.journal.push(format!("etat {unite}"));
             self.etat.clone()
+        }
+        fn etat_d_activite(&mut self, unite: &str) -> Result<Option<String>, Echec> {
+            self.journal.push(format!("actif {unite}"));
+            self.actif.clone()
         }
         fn unite(&mut self, action: ActionUnite, unite: &str) -> Result<(), Echec> {
             self.journal.push(format!("{} {unite}", action.mot()));
@@ -1627,14 +1683,14 @@ mod tests {
             essai(reseau, &rien),
             (true, vec!["redemarrer NetworkManager.service".to_string()])
         );
-        // Le réseau seulement rechargé ne coupe rien : la session ne compte pas.
-        assert!(
-            essai(
-                GesteUnix::Unite(ActionUnite::Recharger, &gestes_unix::NETWORKMANAGER),
-                &|m| m.session = Some(true)
-            )
-            .0
-        );
+        // Le réseau rechargé non plus : relire sa configuration peut réappliquer les connexions et faire tomber
+        // celle en cours.
+        for u in [&gestes_unix::NETWORKMANAGER, &gestes_unix::NETWORKD] {
+            let recharger = GesteUnix::Unite(ActionUnite::Recharger, u);
+            assert_eq!(essai(recharger, &|m| m.session = Some(true)), (false, vide.clone()));
+            assert_eq!(essai(recharger, &|m| m.session = None), (false, vide.clone()));
+            assert_eq!(essai(recharger, &rien), (true, vec![format!("recharger {}", u.nom)]));
+        }
         // Une protection : l'accord d'abord ; refusé, rien n'est fait.
         let audit = GesteUnix::Unite(ActionUnite::Desactiver, &gestes_unix::AUDITD);
         assert_eq!(
@@ -1803,49 +1859,70 @@ mod tests {
         };
         let s = ToString::to_string;
         let etat = s("etat clamav-freshclam.service");
+        let actif = s("actif clamav-freshclam.service");
         let arret = s("arreter clamav-freshclam.service");
-        let marche = s("activer clamav-freshclam.service");
+        let marche = s("demarrer clamav-freshclam.service");
         let fresh = s("programme freshclam");
+        let tournant = [
+            etat.clone(),
+            actif.clone(),
+            arret.clone(),
+            fresh.clone(),
+            marche.clone(),
+        ];
         let (r, j) = essai(&|_| {});
         assert!(r.reussi && r.note.is_none(), "{r:?}");
-        assert_eq!(j, [etat.clone(), arret.clone(), fresh.clone(), marche.clone()]);
+        assert_eq!(j, tournant);
         let (r, j) = essai(&|m| m.etat = Ok(None));
         assert!(r.reussi && r.note.is_none(), "{r:?}");
         assert_eq!(j, [etat.clone(), fresh.clone()]);
         let (r, j) = essai(&|m| m.etat = Ok(Some(s("masked"))));
         assert!(r.reussi && r.note.is_some(), "{r:?}");
         assert_eq!(j, [etat.clone(), fresh.clone()]);
+        // Jamais activé au démarrage : ce geste ne note rien qui le déferait. Coupé et arrêté, il le reste, et
+        // c'est dit ; coupé mais lancé à la main, il est seulement redémarré.
+        for arrete in [None, Some("inactive"), Some("failed")] {
+            let (r, j) = essai(&|m| {
+                m.etat = Ok(Some(s("disabled")));
+                m.actif = Ok(arrete.map(s));
+            });
+            assert!(r.reussi && r.note.is_some(), "{arrete:?} {r:?}");
+            assert_eq!(j, [etat.clone(), actif.clone(), fresh.clone()], "{arrete:?}");
+        }
+        let (r, j) = essai(&|m| m.etat = Ok(Some(s("disabled"))));
+        assert!(r.reussi && r.note.is_some(), "{r:?}");
+        assert_eq!(j, tournant);
+        // Activé mais arrêté : pas démarré non plus.
+        let (r, j) = essai(&|m| m.actif = Ok(Some(s("inactive"))));
+        assert!(r.reussi && r.note.is_none(), "{r:?}");
+        assert_eq!(j, [etat.clone(), actif.clone(), fresh.clone()]);
+        // Son activité illisible : freshclam seul, le service pas touché ; un échec le dit.
+        let illisible = |m: &mut FauxMonde| m.actif = Err(Echec::echoue("essai", "activité illisible"));
+        let (r, j) = essai(&illisible);
+        assert!(r.reussi, "{r:?}");
+        assert_eq!(j, [etat.clone(), actif.clone(), fresh.clone()]);
+        let (r, _) = essai(&|m| {
+            illisible(m);
+            m.programme_reussi = false;
+        });
+        assert!(!r.reussi && r.raison.contains("activité illisible"), "{r:?}");
         // L'arrêt refusé : freshclam est lancé quand même, puis le service remis en route.
         let (r, j) = essai(&|m| m.echecs = vec!["arreter"]);
         assert!(r.reussi, "{r:?}");
-        assert_eq!(j, [etat.clone(), arret.clone(), fresh.clone(), marche.clone()]);
+        assert_eq!(j, tournant);
         let (r, j) = essai(&|m| {
             m.echecs = vec!["arreter"];
             m.programme_reussi = false;
         });
         assert!(!r.reussi && r.raison.contains("arreter en échec"), "{r:?}");
-        assert_eq!(j, [etat.clone(), arret.clone(), fresh.clone(), marche.clone()]);
+        assert_eq!(j, tournant);
         let (r, j) = essai(&|m| m.programme_reussi = false);
         assert!(!r.reussi && r.raison == "programme en échec", "{r:?}");
-        assert_eq!(j, [etat.clone(), arret.clone(), fresh.clone(), marche.clone()]);
-        // L'activation refusée : au moins démarré, et c'est une réussite.
-        let demarre = s("demarrer clamav-freshclam.service");
-        let (r, j) = essai(&|m| m.echecs = vec!["activer"]);
-        assert!(r.reussi, "{r:?}");
-        assert_eq!(
-            j,
-            [
-                etat.clone(),
-                arret.clone(),
-                fresh.clone(),
-                marche.clone(),
-                demarre.clone()
-            ]
-        );
-        // Ni activé ni démarré : dit, avec la raison de l'activation.
-        let (r, j) = essai(&|m| m.echecs = vec!["activer", "demarrer"]);
-        assert!(!r.reussi && r.raison.contains("activer en échec"), "{r:?}");
-        assert_eq!(j, [etat.clone(), arret.clone(), fresh.clone(), marche.clone(), demarre]);
+        assert_eq!(j, tournant);
+        // Pas redémarré : dit, avec la raison.
+        let (r, j) = essai(&|m| m.echecs = vec!["demarrer"]);
+        assert!(!r.reussi && r.raison.contains("demarrer en échec"), "{r:?}");
+        assert_eq!(j, tournant);
         // Une panique pendant freshclam : le service est quand même remis en route en sortant.
         let mut m = FauxMonde::nouveau();
         m.programme_panique = true;
@@ -1853,7 +1930,7 @@ mod tests {
             faire_geste(GesteUnix::SignaturesClamav, &mut m)
         }));
         assert!(paniquee.is_err());
-        assert_eq!(m.journal, [etat.clone(), arret, fresh, marche]);
+        assert_eq!(m.journal, tournant);
         let (r, j) = essai(&|m| m.etat = Err(Echec::echoue("essai", "bus fermé")));
         assert!(!r.reussi && r.raison == "bus fermé", "{r:?}");
         assert_eq!(j, [etat]);
@@ -1895,6 +1972,13 @@ mod tests {
         // Dans le second dossier seulement : accepté.
         poser(&second, "anydesk.service", 0o644);
         assert_eq!(sur("anydesk.service", moi), Ok(()));
+        // Fichier direct, mais un dossier qui le contient modifiable par les autres : refusé, comme pour un lien.
+        for (dossier, m) in [(&second, 0o757), (&second, 0o775), (&racine, 0o777)] {
+            mode(dossier, m);
+            assert!(sur("anydesk.service", moi).is_err(), "{} {m:o}", dossier.display());
+            mode(dossier, 0o755);
+        }
+        assert_eq!(sur("anydesk.service", moi), Ok(()));
         // Un autre propriétaire : refusé.
         assert!(sur("anydesk.service", moi.wrapping_add(1)).is_err());
         // Modifiable par le groupe ou par tous : refusé.
@@ -1921,6 +2005,10 @@ mod tests {
             assert!(sur("teamviewerd.service", moi).is_err(), "{} {m:o}", dossier.display());
             mode(dossier, 0o755);
         }
+        // Un lien vers une autre unité (un alias), même correcte : refusé, le geste toucherait celle-là.
+        poser(&ailleurs, "autre.service", 0o644);
+        std::os::unix::fs::symlink(ailleurs.join("autre.service"), premier.join("dwservice.service")).unwrap();
+        assert!(sur("dwservice.service", moi).is_err());
         // Un lien qui sort de la racine : refusé.
         let dehors = d.join("dehors.service");
         std::fs::write(&dehors, "[Service]\n").unwrap();

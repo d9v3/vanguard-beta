@@ -159,8 +159,8 @@ fn sans_repetition(commandes: impl IntoIterator<Item = String>) -> Vec<String> {
 /// Retire chaque programme (une liste de commandes chacun) et dit, pour chacun, s'il est retiré. Ailleurs que sous
 /// Windows, les gestes d'un programme (arrêt et retrait d'un service système, lot U3) passent avant ses commandes,
 /// qui ne suivent que s'ils ont réussi : ne pas désinstaller un programme dont le service tourne encore. `Err(Some)` :
-/// les gestes sont faits, pas la suite ; ce qui a déjà changé, à dire.
-fn retirer_les_programmes(correctifs: &[Vec<String>]) -> Vec<Result<(), Option<&'static str>>> {
+/// une partie seulement est faite ; ce qui a déjà changé, à dire.
+fn retirer_les_programmes(correctifs: &[Vec<String>]) -> Vec<Result<(), Option<String>>> {
     #[cfg(windows)]
     return crate::machine::appliquer_chacune(correctifs)
         .into_iter()
@@ -169,24 +169,35 @@ fn retirer_les_programmes(correctifs: &[Vec<String>]) -> Vec<Result<(), Option<&
     #[cfg(not(windows))]
     crate::machine::appliquer_gestes_puis_commandes(correctifs)
         .into_iter()
-        .zip(correctifs)
-        .map(|(issue, commandes)| issue_du_retrait(issue, commandes))
+        .map(issue_du_retrait)
         .collect()
 }
 
-/// Ce que dit le retrait d'un programme, selon l'issue de ses gestes et de ses commandes.
+/// Ce que dit le retrait d'un programme, selon l'issue de ses gestes et de ses commandes : en partie, ce que les
+/// gestes faits ont changé, sinon combien d'étapes sont faites (jamais un simple échec, qui laisserait croire que rien
+/// n'a bougé).
 #[cfg(not(windows))]
-fn issue_du_retrait(issue: crate::machine::IssueMelee, commandes: &[String]) -> Result<(), Option<&'static str>> {
+fn issue_du_retrait(issue: crate::machine::IssueMelee) -> Result<(), Option<String>> {
     match issue {
         crate::machine::IssueMelee::Fait => Ok(()),
         crate::machine::IssueMelee::Echec => Err(None),
-        crate::machine::IssueMelee::GestesSeulement => Err(Some(deja_fait(commandes))),
+        crate::machine::IssueMelee::EnPartie { faites, pas_faites } => Err(Some(deja_fait(&faites).map_or_else(
+            || {
+                let (faites, total) = (faites.len(), faites.len().saturating_add(pas_faites.len()));
+                trf!(
+                    "{faites} étape(s) sur {total} faite(s)",
+                    "{faites} step(s) out of {total} done"
+                )
+            },
+            str::to_string,
+        ))),
     }
 }
 
-/// Ce que les gestes faits ont déjà changé : le service arrêté, retiré du démarrage, ou les deux.
+/// Ce que les gestes faits ont déjà changé : le service arrêté, retiré du démarrage, ou les deux ; `None` sans aucun
+/// geste sur un service parmi elles.
 #[cfg(not(windows))]
-fn deja_fait(commandes: &[String]) -> &'static str {
+fn deja_fait(commandes: &[String]) -> Option<&'static str> {
     use crate::machine::gestes_unix::{ActionUnite, GesteUnix, analyser};
     let mut noms: Vec<String> = Vec::new();
     let (mut arrete, mut retire) = (false, false);
@@ -200,7 +211,7 @@ fn deja_fait(commandes: &[String]) -> &'static str {
         }
     }
     let plusieurs = noms.len() > 1;
-    match (arrete, retire, plusieurs) {
+    Some(match (arrete, retire, plusieurs) {
         (true, true, false) => tr!(
             "son service est arrêté et ne démarrera plus",
             "its service is stopped and will not start again"
@@ -213,8 +224,8 @@ fn deja_fait(commandes: &[String]) -> &'static str {
         (true, false, true) => tr!("ses services sont arrêtés", "its services are stopped"),
         (false, true, false) => tr!("son service ne démarrera plus", "its service will not start again"),
         (false, true, true) => tr!("ses services ne démarreront plus", "its services will not start again"),
-        (false, false, _) => tr!("ses services sont déjà changés", "its services are already changed"),
-    }
+        (false, false, _) => return None,
+    })
 }
 
 /// La même trouvaille relevée deux fois (deux processus d'un même programme, un service et son processus) ne compte
@@ -1774,22 +1785,44 @@ mod tests {
             ligne(ActionUnite::DesactiverSansArreter, "anydesk.service"),
             "sudo apt-get remove -y anydesk".to_string(),
         ];
-        assert_eq!(issue_du_retrait(IssueMelee::Fait, &un), Ok(()));
-        assert_eq!(issue_du_retrait(IssueMelee::Echec, &un), Err(None));
-        let deja = issue_du_retrait(IssueMelee::GestesSeulement, &un).unwrap_err().unwrap();
+        let en_partie = |n: usize| IssueMelee::EnPartie {
+            faites: un[..n].to_vec(),
+            pas_faites: un[n..].to_vec(),
+        };
+        assert_eq!(issue_du_retrait(IssueMelee::Fait), Ok(()));
+        assert_eq!(issue_du_retrait(IssueMelee::Echec), Err(None));
+        let deja = issue_du_retrait(en_partie(2)).unwrap_err().unwrap();
         assert!(
             deja == "son service est arrêté et ne démarrera plus"
                 || deja == "its service is stopped and will not start again",
             "{deja}"
         );
+        // Arrêté, mais pas retiré du démarrage : dit tel quel, jamais « le retrait a échoué ».
+        let deja = issue_du_retrait(en_partie(1)).unwrap_err().unwrap();
+        assert!(
+            deja == "son service est arrêté" || deja == "its service is stopped",
+            "{deja}"
+        );
+        // Sans geste fait : combien d'étapes, jamais « ses services sont déjà changés ».
+        let commandes = IssueMelee::EnPartie {
+            faites: vec!["sudo pkill -x anydesk".to_string()],
+            pas_faites: vec!["sudo apt-get remove -y anydesk".to_string()],
+        };
+        let deja = issue_du_retrait(commandes).unwrap_err().unwrap();
+        assert!(
+            deja == "1 étape(s) sur 2 faite(s)" || deja == "1 step(s) out of 2 done",
+            "{deja}"
+        );
         let arret_seul = [ligne(ActionUnite::Arreter, "anydesk.service")];
-        assert!(deja_fait(&arret_seul).contains("arrêté") || deja_fait(&arret_seul).contains("stopped"));
-        assert!(!deja_fait(&arret_seul).contains("plus") && !deja_fait(&arret_seul).contains("again"));
+        let arret = deja_fait(&arret_seul).unwrap();
+        assert!(arret.contains("arrêté") || arret.contains("stopped"));
+        assert!(!arret.contains("plus") && !arret.contains("again"));
         let deux = [
             ligne(ActionUnite::DesactiverSansArreter, "anydesk.service"),
             ligne(ActionUnite::DesactiverSansArreter, "rustdesk.service"),
         ];
-        assert!(deja_fait(&deux).starts_with("ses ") || deja_fait(&deux).starts_with("its services"));
+        let deux = deja_fait(&deux).unwrap();
+        assert!(deux.starts_with("ses ") || deux.starts_with("its services"));
     }
 
     /// La correction du bilan ne mêle jamais gestes et commandes : mêlée, ses gestes redeviennent des commandes ;

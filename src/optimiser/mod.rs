@@ -534,14 +534,45 @@ fn confirmer_et_executer(a_faire: &[&Reglage], a_annuler: &[&Reglage]) {
         trp!("  Annulé.", "  Cancelled.");
         return;
     }
+    // Ce que chaque changement doit valoir une fois fait, lu avant : la note d'un réglage annulé disparaît avec lui.
+    // Une protection ne se défait jamais (`executer_avec`) : rien à comparer, elle n'est jamais dite « en partie ».
+    let voulues: Vec<Option<Vec<Valeur>>> = a_faire
+        .iter()
+        .map(|r| Some(r.changements.iter().map(systeme::Changement::cible).collect()))
+        .chain(
+            a_annuler
+                .iter()
+                .map(|r| (!systeme::reglage_protege(&r.id)).then(|| valeurs_d_avant(r, &h))),
+        )
+        .collect();
     let (faits, annules) = executer(a_faire, a_annuler, &mut h);
     println!();
-    for (r, ok) in a_faire.iter().zip(&faits).chain(a_annuler.iter().zip(&annules)) {
+    let tous = a_faire.iter().zip(&faits).chain(a_annuler.iter().zip(&annules));
+    for ((r, ok), voulues) in tous.zip(voulues) {
         // L'état relu après coup : c'est lui qui dit si le changement a pris.
         let e = etat(r);
         let voulu_fait = a_faire.iter().any(|f| f.id == r.id);
         if *ok && (e == Etat::Fait) == voulu_fait {
             println!("  {VERT}✔{RESET} {}", r.titre);
+            continue;
+        }
+        // Changé en partie : dit ce qui l'est et ce qui ne l'est pas, jamais « pas changé » quand quelque chose a
+        // bougé. Chaque changement relu, comparé à ce qu'il devait valoir.
+        let relus = voulues.map(|v| {
+            r.changements
+                .iter()
+                .zip(v)
+                .map(|(c, v)| (c.lire() == v, crate::ui::affichable(&c.decrire(v.as_deref()))))
+                .collect::<Vec<_>>()
+        });
+        if let Some((fait, pas_fait)) = relus.and_then(en_partie) {
+            trp!(
+                "  ✖ {} : changé en partie seulement, voir le message ci-dessus\n      fait : {}\n      pas fait : {}",
+                "  ✖ {}: only partly changed, see the message above\n      done: {}\n      not done: {}",
+                r.titre,
+                fait.join(" ; "),
+                pas_fait.join(" ; ")
+            );
         } else {
             trp!(
                 "  ✖ {} : pas changé, voir le message ci-dessus",
@@ -552,6 +583,18 @@ fn confirmer_et_executer(a_faire: &[&Reglage], a_annuler: &[&Reglage]) {
     }
     let touches: Vec<&Reglage> = a_faire.iter().chain(a_annuler).copied().collect();
     systeme::apres(&touches);
+}
+
+/// Les changements faits et ceux qui ne le sont pas, quand une partie seulement l'est : `None` quand aucun ou tous
+/// le sont (« pas changé » ou réussi, déjà dits autrement).
+fn en_partie(relus: Vec<(bool, String)>) -> Option<(Vec<String>, Vec<String>)> {
+    let (fait, pas_fait): (Vec<_>, Vec<_>) = relus.into_iter().partition(|(f, _)| *f);
+    (!fait.is_empty() && !pas_fait.is_empty()).then(|| {
+        (
+            fait.into_iter().map(|(_, d)| d).collect(),
+            pas_fait.into_iter().map(|(_, d)| d).collect(),
+        )
+    })
 }
 
 /// Cette catégorie a-t-elle au moins un réglage pour cette machine ?
@@ -854,6 +897,20 @@ pub fn tout_annuler() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un réglage changé en partie dit ce qui est fait et ce qui ne l'est pas ; rien ou tout fait n'est pas « en
+    /// partie ».
+    #[test]
+    fn changement_en_partie_dit_le_fait_et_le_reste() {
+        let l = |v: &[(bool, &str)]| v.iter().map(|(f, d)| (*f, (*d).to_string())).collect::<Vec<_>>();
+        assert_eq!(
+            en_partie(l(&[(true, "a"), (false, "b"), (true, "c")])),
+            Some((vec!["a".to_string(), "c".to_string()], vec!["b".to_string()]))
+        );
+        assert_eq!(en_partie(l(&[(false, "a"), (false, "b")])), None);
+        assert_eq!(en_partie(l(&[(true, "a")])), None);
+        assert_eq!(en_partie(Vec::new()), None);
+    }
 
     #[test]
     fn catalogue_complet_et_sans_doublon() {

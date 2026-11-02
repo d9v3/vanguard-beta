@@ -718,8 +718,11 @@ impl Changement {
             );
         };
         match self {
-            // Une protection (auditd) n'est jamais remise « masquée » par une note : rien ne pourrait plus la lancer.
-            Changement::Unite { nom, .. } => ETATS_UNITE.contains(&v) && !(v == "masked" && protection(nom)),
+            // Ni un état que l'assistant refuse (un pare-feu ou une protection masqués, que rien ne pourrait plus
+            // lancer ; un pare-feu désactivé) : la note est refusée entière.
+            Changement::Unite { nom, .. } => {
+                ETATS_UNITE.contains(&v) && crate::machine::gestes_unix::geste_d_unite(nom, v).is_ok()
+            }
             Changement::Fichier { .. } => matches!(v, "present" | "autre"),
             Changement::Gnome { cible, defaut, .. } => v == *cible || v == *defaut || super::gvariant_simple(v),
             Changement::Option { cible, defaut, .. } => v == *cible || v == *defaut || super::jeton_simple(v),
@@ -750,6 +753,15 @@ impl Changement {
         matches!(self, Changement::Dns { .. })
             .then(|| self.commande(Some(v)))
             .flatten()
+    }
+
+    /// Pourquoi la valeur `v` n'est jamais écrite : un geste que l'assistant refuse (`gestes_unix::geste_d_unite`).
+    /// Dit à la personne, et le réglage compte comme pas fait, plutôt que de passer en silence.
+    pub(super) fn refus(&self, v: Option<&str>) -> Option<(&'static str, &'static str)> {
+        match (self, v) {
+            (Changement::Unite { nom, .. }, Some(v)) => crate::machine::gestes_unix::geste_d_unite(nom, v).err(),
+            _ => None,
+        }
     }
 
     /// La connexion d'un réglage de DNS.
@@ -852,12 +864,14 @@ impl Changement {
         Some(match self {
             Changement::Unite { nom, .. } => match v? {
                 // Une unité de la table de l'assistant (fstrim, cups-browsed, auditd), activée ou désactivée : son
-                // geste, par le bus système, rejugé par l'assistant élevé (lot U3) ; jamais une commande sudo. Les
-                // autres (apport, avec son fichier, et « masked ») restent des commandes jusqu'à U4.
-                e @ ("enabled" | "disabled") if let Some(g) = crate::machine::gestes_unix::geste_d_unite(nom, e) => {
-                    g.ligne()
-                }
-                e @ ("enabled" | "disabled" | "masked") => format!("sudo systemctl {} --now {nom}", etat_unite(e)),
+                // geste, par le bus système, rejugé par l'assistant élevé (lot U3). Un geste refusé (`refus`) reste
+                // refusé : jamais de commande sudo à sa place. Les autres (apport, avec son fichier, et « masked »
+                // d'une unité ordinaire) restent des commandes jusqu'à U4.
+                e @ ("enabled" | "disabled" | "masked") => match crate::machine::gestes_unix::geste_d_unite(nom, e) {
+                    Ok(Some(g)) => g.ligne(),
+                    Ok(None) => format!("sudo systemctl {} --now {nom}", etat_unite(e)),
+                    Err(_) => return None,
+                },
                 // « static », « indirect » : pas un état qu'on choisit, rien à remettre.
                 _ => return None,
             },
@@ -1010,12 +1024,6 @@ fn dns_admis(connexion: &str, v: &str) -> bool {
         && [ignore4, ignore6].iter().all(|o| matches!(*o, "yes" | "no" | ""))
 }
 
-/// Une unité de la table de l'assistant gardée comme protection (auditd, AppArmor, ClamAV).
-fn protection(nom: &str) -> bool {
-    use crate::machine::gestes_unix::{Garde, unite_connue};
-    unite_connue(nom).is_some_and(|u| u.garde == Garde::Protection)
-}
-
 fn etat_unite(v: &str) -> &str {
     match v {
         "enabled" => "enable",
@@ -1046,9 +1054,31 @@ pub fn ecrire_avec(lots: &[Vec<(&Changement, Valeur)>], en_plus: &[Vec<String>])
             return (vec![false; lots.len()], vec![false; en_plus.len()]);
         }
     }
+    // Un réglage dont un changement est refusé n'est pas fait du tout, et le refus est dit : jamais à moitié, jamais
+    // en silence.
+    let refuses: Vec<bool> = lots
+        .iter()
+        .map(|lot| {
+            let mut refuse = false;
+            for (c, v) in lot {
+                if let Some((fr, en)) = c.refus(v.as_deref()) {
+                    let raison = if crate::langue::anglais() { en } else { fr };
+                    trp!("    ✖ {} : {raison}", "    ✖ {}: {raison}", c.decrire(v.as_deref()));
+                    refuse = true;
+                }
+            }
+            refuse
+        })
+        .collect();
     let mut commandes: Vec<Vec<String>> = lots
         .iter()
-        .map(|lot| lot.iter().filter_map(|(c, v)| c.commande(v.as_deref())).collect())
+        .zip(&refuses)
+        .map(|(lot, refuse)| {
+            if *refuse {
+                return Vec::new();
+            }
+            lot.iter().filter_map(|(c, v)| c.commande(v.as_deref())).collect()
+        })
         .collect();
     commandes.extend(en_plus.iter().cloned());
     // Une note qui remet une unité (un geste de l'assistant) et autre chose (des commandes) : chaque moitié par son
@@ -1059,6 +1089,9 @@ pub fn ecrire_avec(lots: &[Vec<(&Changement, Valeur)>], en_plus: &[Vec<String>])
         .map(|i| i == crate::machine::IssueMelee::Fait)
         .collect();
     let plus = resultats.split_off(lots.len().min(resultats.len()));
+    for (ok, refuse) in resultats.iter_mut().zip(&refuses) {
+        *ok &= !refuse;
+    }
     // Ce qui est propre au compte et s'écrit sans commande (fichiers d'autostart), montré comme une commande.
     for (lot, ok) in lots.iter().zip(resultats.iter_mut()) {
         for (c, v) in lot {
@@ -1531,6 +1564,22 @@ mod tests {
             Some("sudo systemctl disable --now apport.service")
         );
         assert_eq!(u.commande(Some("static")), None);
+        // Un geste refusé par l'assistant reste refusé : aucune commande sudo à sa place, et le refus est dit.
+        for (nom, v) in [
+            ("ufw.service", "disabled"),
+            ("ufw.service", "masked"),
+            ("firewalld.service", "disabled"),
+            ("auditd", "masked"),
+        ] {
+            let c = Changement::Unite {
+                nom,
+                cible: "enabled",
+                defaut: "enabled",
+            };
+            assert_eq!(c.commande(Some(v)), None, "{nom} {v}");
+            assert!(c.refus(Some(v)).is_some(), "{nom} {v}");
+        }
+        assert_eq!(u.refus(Some("masked")), None);
     }
 
     /// Les commandes d'une option, lancées pour de vrai sur un fichier jetable (sans sudo) : une valeur aux caractères
@@ -1591,6 +1640,15 @@ mod tests {
         // Une protection n'est jamais remise masquée par une note (lot U3, P7).
         let auditd = Changement::depuis_geste("unite|auditd").unwrap();
         assert!(auditd.valeur_admise(Some("disabled")) && !auditd.valeur_admise(Some("masked")));
+        // Ni un pare-feu masqué ou désactivé.
+        for v in ["masked", "disabled"] {
+            let ufw = Changement::Unite {
+                nom: "ufw.service",
+                cible: "enabled",
+                defaut: "enabled",
+            };
+            assert!(!ufw.valeur_admise(Some(v)), "{v}");
+        }
         assert!(!unite.valeur_admise(Some("enabled --now evil.service")));
         let gnome = Changement::Gnome {
             schema: "org.gnome.desktop.privacy",

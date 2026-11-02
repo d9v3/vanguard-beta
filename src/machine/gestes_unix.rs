@@ -317,8 +317,8 @@ pub(crate) enum GesteUnix {
     Designee(ActionUnite, NomUnite),
     /// `systemctl reset-failed` : oublie les échecs passés de toutes les unités, sans rien démarrer ni arrêter.
     ReinitialiserEchecs,
-    /// Arrêter clamav-freshclam s'il est installé (il verrouille la base), lancer freshclam, puis le réactiver
-    /// dans tous les cas.
+    /// Arrêter clamav-freshclam s'il tourne (il verrouille la base), lancer freshclam, puis le redémarrer dans tous
+    /// les cas ; son lancement au démarrage n'est jamais changé (rien ne le noterait pour le défaire).
     SignaturesClamav,
 }
 
@@ -350,8 +350,9 @@ impl GesteUnix {
                 "Clear the list of failed services (nothing is started or stopped)".to_string(),
             ),
             GesteUnix::SignaturesClamav => (
-                "Mettre à jour les signatures de virus de ClamAV, puis garder leur mise à jour automatique".to_string(),
-                "Update the ClamAV virus signatures, then keep their automatic updates on".to_string(),
+                "Mettre à jour les signatures de virus de ClamAV (leur mise à jour automatique reste comme elle était)"
+                    .to_string(),
+                "Update the ClamAV virus signatures (their automatic update stays as it was)".to_string(),
             ),
         }
     }
@@ -419,7 +420,8 @@ impl GesteUnix {
         }
     }
 
-    /// Le geste peut-il couper une session à distance entrante (le réseau arrêté ou redémarré) ? L'enfant le refuse
+    /// Le geste peut-il couper une session à distance entrante (le réseau arrêté, redémarré ou rechargé : relire sa
+    /// configuration peut réappliquer les connexions et faire tomber celle en cours) ? L'enfant le refuse
     /// alors tant qu'une session est ouverte. Arrêter un logiciel de prise de contrôle désigné n'y entre pas : ses
     /// propres connexions ne bloquent jamais son retrait (le faux technicien est justement connecté par lui, et la
     /// personne a déjà choisi de le fermer), et l'arrêter n'affaiblit rien.
@@ -429,7 +431,10 @@ impl GesteUnix {
                 u.garde == Garde::Reseau
                     && matches!(
                         a,
-                        ActionUnite::Arreter | ActionUnite::Desactiver | ActionUnite::Redemarrer
+                        ActionUnite::Arreter
+                            | ActionUnite::Desactiver
+                            | ActionUnite::Redemarrer
+                            | ActionUnite::Recharger
                     )
             }
             GesteUnix::Designee(..)
@@ -486,19 +491,32 @@ fn phrase_d_unite(a: ActionUnite, fr: &str, en: &str) -> (String, String) {
 }
 
 /// Le geste qui remet une unité de la table dans l'état noté par `optimiser` : « enabled », activée et lancée ;
-/// « disabled », désactivée et arrêtée. Aucun pour un autre état (« masked » reste une commande montrée, jusqu'à U4),
-/// pour une unité hors de la table, ni pour un geste refusé (un pare-feu).
+/// « disabled », désactivée et arrêtée. `Ok(None)` : aucun geste, pour une unité hors de la table ou un autre état
+/// (« masked » d'une unité ordinaire reste une commande montrée, jusqu'à U4). `Err` : un refus, que l'appelant dit
+/// et ne remplace jamais par une commande sudo (un pare-feu coupé ; un pare-feu ou une protection masqués, que plus
+/// rien ne pourrait lancer).
 // Seuls les réglages et le retrait des programmes de contrôle à distance de Linux les demandent.
 #[cfg(any(target_os = "linux", test))]
-pub(crate) fn geste_d_unite(nom: &str, etat: &str) -> Option<GesteUnix> {
-    let u = unite_connue(nom)?;
+pub(crate) fn geste_d_unite(nom: &str, etat: &str) -> Result<Option<GesteUnix>, (&'static str, &'static str)> {
+    let Some(u) = unite_connue(nom) else {
+        return Ok(None);
+    };
     let a = match etat {
         "enabled" => ActionUnite::Activer,
         "disabled" => ActionUnite::Desactiver,
-        _ => return None,
+        "masked" if matches!(u.garde, Garde::PareFeu | Garde::Protection) => {
+            return Err((
+                "Vanguard ne masque jamais un pare-feu ni une protection : plus rien ne pourrait les lancer",
+                "Vanguard never masks a firewall or a protection: nothing could start them again",
+            ));
+        }
+        _ => return Ok(None),
     };
     let g = GesteUnix::Unite(a, u);
-    g.refus().is_none().then_some(g)
+    match g.refus() {
+        Some(raison) => Err(raison),
+        None => Ok(Some(g)),
+    }
 }
 
 /// Le geste d'une unité désignée par son nom, s'il est admis.
@@ -647,7 +665,10 @@ mod tests {
                 let permis = matches!(a, ActionUnite::Activer | ActionUnite::Demarrer);
                 assert_eq!(GesteUnix::Unite(a, pf).refus().is_none(), permis, "{a:?} {}", pf.nom);
             }
-            assert_eq!(geste_d_unite(pf.nom, "disabled"), None);
+            assert!(
+                geste_d_unite(pf.nom, "disabled").is_err(),
+                "refusé, pas « aucun geste »"
+            );
         }
         for l in [
             "vanguard:geste unite arreter ufw.service",
@@ -766,6 +787,7 @@ mod tests {
             assert!(coupe(ActionUnite::Redemarrer, u));
             assert!(coupe(ActionUnite::Arreter, u));
             assert!(coupe(ActionUnite::Desactiver, u));
+            assert!(coupe(ActionUnite::Recharger, u), "{}", u.nom);
             assert!(!coupe(ActionUnite::Activer, u));
         }
         assert!(!coupe(ActionUnite::Desactiver, &CUPS_BROWSED));
@@ -785,19 +807,33 @@ mod tests {
     fn geste_d_un_reglage() {
         assert_eq!(
             geste_d_unite("cups-browsed", "disabled"),
-            Some(GesteUnix::Unite(ActionUnite::Desactiver, &CUPS_BROWSED))
+            Ok(Some(GesteUnix::Unite(ActionUnite::Desactiver, &CUPS_BROWSED)))
         );
         assert_eq!(
             geste_d_unite("fstrim.timer", "enabled"),
-            Some(GesteUnix::Unite(ActionUnite::Activer, &FSTRIM))
+            Ok(Some(GesteUnix::Unite(ActionUnite::Activer, &FSTRIM)))
         );
         assert_eq!(
             geste_d_unite("auditd", "enabled"),
-            Some(GesteUnix::Unite(ActionUnite::Activer, &AUDITD))
+            Ok(Some(GesteUnix::Unite(ActionUnite::Activer, &AUDITD)))
         );
-        assert_eq!(geste_d_unite("auditd", "masked"), None);
-        assert_eq!(geste_d_unite("apport", "disabled"), None);
-        assert_eq!(geste_d_unite("cups-browsed", "static"), None);
+        assert_eq!(geste_d_unite("fstrim.timer", "masked"), Ok(None));
+        assert_eq!(geste_d_unite("apport", "disabled"), Ok(None));
+        assert_eq!(geste_d_unite("cups-browsed", "static"), Ok(None));
+        // Un refus reste un refus, distinct de « aucun geste » : l'appelant ne le remplace jamais par sudo.
+        for (nom, etat) in [
+            ("auditd", "masked"),
+            ("ufw", "masked"),
+            ("firewalld.service", "masked"),
+            ("ufw", "disabled"),
+            ("firewalld", "disabled"),
+        ] {
+            assert!(geste_d_unite(nom, etat).is_err(), "{nom} {etat}");
+        }
+        assert_eq!(
+            geste_d_unite("ufw", "enabled"),
+            Ok(Some(GesteUnix::Unite(ActionUnite::Activer, &UFW)))
+        );
         // « fstrim » sans suffixe serait fstrim.service, pas le minuteur.
         assert_eq!(unite_connue("fstrim"), None);
     }

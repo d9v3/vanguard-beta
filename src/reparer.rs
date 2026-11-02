@@ -335,7 +335,7 @@ fn sans_clamav() -> &'static str {
     )
 }
 
-/// Signatures ClamAV : téléchargement immédiat, puis mise à jour automatique.
+/// Signatures ClamAV : téléchargement immédiat ; leur mise à jour automatique reste comme elle était.
 #[cfg(target_os = "linux")]
 fn antivirus(systemd: bool) -> Reparation {
     let mut r = rep(
@@ -364,12 +364,12 @@ fn antivirus(systemd: bool) -> Reparation {
             n => trf!("il y a {n} jours", "{n} days ago"),
         });
     r.pourquoi = trf!(
-        "Télécharge les dernières signatures de virus de ClamAV et active leur mise à jour automatique. Dernière mise à jour : {derniere}.",
-        "Downloads the latest ClamAV virus signatures and turns on their automatic update. Last update: {derniere}."
+        "Télécharge les dernières signatures de virus de ClamAV ; leur mise à jour automatique reste comme elle était. Dernière mise à jour : {derniere}.",
+        "Downloads the latest ClamAV virus signatures; their automatic update stays as it was. Last update: {derniere}."
     );
     // Des gestes figés, faits par l'assistant élevé, sans shell ni « sudo » écrit en texte. Avec systemd, le geste
     // composé (lot U3) : le service, s'il tourne, verrouille la base ; il est arrêté le temps du téléchargement, puis
-    // activé et relancé. Sans systemd, rien à arrêter.
+    // redémarré, sans changer son lancement au démarrage. Sans systemd, rien à arrêter.
     r.commandes = vec![
         if systemd {
             crate::machine::gestes_unix::GesteUnix::SignaturesClamav

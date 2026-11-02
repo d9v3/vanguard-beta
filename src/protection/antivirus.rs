@@ -2021,7 +2021,7 @@ fn preparer() -> bool {
         for c in std::iter::once(&telechargement).chain(&service) {
             println!("  {GRIS}{}{RESET}", crate::ui::commande_affichable(c));
         }
-        // Le téléchargement passe par sudo et active leur mise à jour automatique : pas sans accord.
+        // Le téléchargement passe par l'assistant élevé : pas sans accord.
         if !demander_ou_defaut(tr!(
             "  Les télécharger maintenant ? [o/N] : ",
             "  Download them now? [y/N]: "
@@ -2034,8 +2034,9 @@ fn preparer() -> bool {
             "  Téléchargement des signatures de virus…",
             "  Downloading the virus signatures…"
         );
-        // Le téléchargement seul ne change rien à noter sous Linux ; le geste composé, qui active aussi le service
-        // pour de bon, si. Sous macOS, la configuration posée est notée, comme toute correction.
+        // Le téléchargement seul ne change rien à noter sous Linux ; le geste composé, qui arrête et redémarre un
+        // service du système, est noté (sans changer son lancement au démarrage). Sous macOS, la configuration posée
+        // est notée, comme toute correction.
         #[cfg(target_os = "linux")]
         let ok = if telechargement == crate::machine::gestes_unix::GesteUnix::SignaturesClamav.ligne() {
             crate::machine::appliquer(&[telechargement])
@@ -2081,7 +2082,7 @@ fn commande_d_installation() -> Option<String> {
 }
 
 /// Le geste du premier téléchargement des signatures, fait par l'assistant élevé sans shell (lot U3) ; rien après :
-/// le geste composé de systemd active lui-même leur mise à jour.
+/// le lancement au démarrage de leur mise à jour automatique reste ce qu'il était.
 #[cfg(target_os = "linux")]
 fn commandes_des_signatures() -> (String, Option<String>) {
     use crate::machine::gestes_unix::{FRESHCLAM, GesteUnix};

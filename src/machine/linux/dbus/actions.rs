@@ -253,7 +253,9 @@ impl Bus {
         loop {
             let r = self.recevoir_avec_signaux(echeance, appel.serie, systemd)?;
             if r.genre == SIGNAL {
-                fins.extend(fin_de_job(&r));
+                if let Some(fin) = fin_de_job(&r) {
+                    garder_fin(fins, fin);
+                }
                 continue;
             }
             if r.reponse_a != Some(appel.serie) {
@@ -301,7 +303,9 @@ impl Bus {
         .map_err(echec)
     }
 
-    /// Attend la fin du job `job` (JobRemoved), dans `fins` déjà reçus puis dans la prise, au plus `delai`.
+    /// Attend la fin du job `job` (JobRemoved), dans `fins` déjà reçus puis dans la prise, au plus `delai`. Les fins
+    /// des autres jobs reçues pendant l'attente ne sont pas gardées : le gestionnaire en émet pour tout le système, et
+    /// les garder ferait grandir la liste sans limite pendant 90 s.
     pub(super) fn attendre_job(
         &mut self,
         job: &str,
@@ -316,11 +320,27 @@ impl Bus {
             }
             // Aucun appel n'attend de réponse : seul un JobRemoved est décodé.
             let m = self.recevoir_avec_signaux(echeance, 0, Some(systemd))?;
-            if m.genre == SIGNAL {
-                fins.extend(fin_de_job(&m));
+            if m.genre == SIGNAL
+                && let Some((j, resultat)) = fin_de_job(&m)
+                && j == job
+            {
+                return Ok(resultat);
             }
         }
     }
+}
+
+/// Au plus tant de fins de job gardées en attendant une réponse : le job attendu n'est pas encore connu (sa fin peut
+/// arriver avant la réponse de StartUnit), mais le gestionnaire émet aussi celles des autres jobs du système.
+pub(super) const FINS_MAX: usize = 64;
+
+/// Garde `fin`, en oubliant la plus ancienne au-delà de FINS_MAX. Perdre la nôtre ne la fait jamais passer pour
+/// réussie : l'attente finit sur le délai, et le geste est dit « pas vérifié ».
+fn garder_fin(fins: &mut Vec<FinDeJob>, fin: FinDeJob) {
+    if fins.len() >= FINS_MAX {
+        fins.remove(0);
+    }
+    fins.push(fin);
 }
 
 /// Le (job, résultat) d'un signal JobRemoved (u id, o job, s unité, s résultat) déjà décodé.
@@ -751,6 +771,62 @@ pub(crate) mod tests {
             appels
         });
         (Bus::sur(client).unwrap(), fil)
+    }
+
+    /// Les fins des autres jobs du système reçues pendant l'attente ne sont pas gardées : la liste ne grandit pas.
+    #[test]
+    fn attendre_job_ne_garde_que_la_sienne() {
+        let (mut bus, fil) = faux_bus(|s, _| {
+            for n in 0..300 {
+                s.write_all(&signal_fin(
+                    &format!("/org/freedesktop/systemd1/job/{}", n + 100),
+                    "done",
+                    ":1.2",
+                ))
+                .unwrap();
+            }
+            s.write_all(&signal_fin("/org/freedesktop/systemd1/job/9", "failed", ":1.2"))
+                .unwrap();
+        });
+        let mut fins = Vec::new();
+        let r = bus.attendre_job(
+            "/org/freedesktop/systemd1/job/9",
+            ":1.2",
+            &mut fins,
+            Duration::from_secs(10),
+        );
+        assert_eq!(r.unwrap(), "failed");
+        assert!(fins.is_empty(), "{} fins étrangères gardées", fins.len());
+        fil.join().unwrap();
+    }
+
+    /// En attendant une réponse, les fins reçues sont gardées (la nôtre peut la devancer), mais au plus FINS_MAX : les
+    /// plus anciennes s'en vont.
+    #[test]
+    fn fins_gardees_bornees() {
+        let (mut bus, fil) = faux_bus(|s, appels| {
+            let a = lire(s);
+            appels.push(a.membre.clone().unwrap());
+            for n in 0..300 {
+                s.write_all(&signal_fin(
+                    &format!("/org/freedesktop/systemd1/job/{n}"),
+                    "done",
+                    ":1.2",
+                ))
+                .unwrap();
+            }
+            s.write_all(&retour(&a, "", Vec::new(), ":1.2")).unwrap();
+        });
+        let mut fins = Vec::new();
+        bus.agir(GESTIONNAIRE, "Reload", Vec::new(), Some(":1.2"), &mut fins)
+            .unwrap();
+        assert_eq!(fins.len(), FINS_MAX);
+        assert_eq!(
+            fins.last().map(|(j, _)| j.as_str()),
+            Some("/org/freedesktop/systemd1/job/299"),
+            "la plus récente reste"
+        );
+        assert_eq!(fil.join().unwrap(), ["Reload"]);
     }
 
     /// enable --now : EnableUnitFiles, Reload, AddMatch, Subscribe, StartUnit, puis la fin du job, arrivée AVANT la

@@ -210,20 +210,116 @@ impl Bus {
     }
 
     /// EnableUnitFiles ou DisableUnitFiles (jamais au seul démarrage en cours, jamais forcé), puis Reload, comme
-    /// systemctl : le gestionnaire ne voit les nouveaux liens qu'après un rechargement.
-    fn fichiers(&mut self, activer: bool, unite: &str, fins: &mut Vec<FinDeJob>) -> Result<(), Echec> {
+    /// systemctl : le gestionnaire ne voit les nouveaux liens qu'après un rechargement. Rend ce qu'il dit en avoir
+    /// fait (`Liens`) : une réussite peut n'être qu'en partie.
+    fn fichiers(&mut self, activer: bool, unite: &str, fins: &mut Vec<FinDeJob>) -> Result<Liens, Echec> {
         let unites = Valeur::Tableau(vec![Valeur::texte_de(unite)]);
-        if activer {
+        let corps = if activer {
             self.agir_systeme(
                 "EnableUnitFiles",
                 vec![unites, Valeur::Booleen(false), Valeur::Booleen(false)],
                 None,
                 fins,
-            )?;
+            )?
         } else {
-            self.agir_systeme("DisableUnitFiles", vec![unites, Valeur::Booleen(false)], None, fins)?;
+            self.agir_systeme("DisableUnitFiles", vec![unites, Valeur::Booleen(false)], None, fins)?
+        };
+        self.agir_systeme("Reload", Vec::new(), None, fins)?;
+        Liens::lire(activer, &corps).ok_or_else(|| {
+            en_clair(
+                format!("{unite} : liste de changements illisible ({corps:?})"),
+                trf!(
+                    "{unite} : pas vérifié, le gestionnaire de services n'a pas dit ce qu'il a changé au démarrage",
+                    "{unite}: not verified, the service manager did not say what it changed at boot"
+                ),
+            )
+        })
+    }
+}
+
+/// Ce que systemd dit avoir fait des liens d'une unité (EnableUnitFiles « b a(sss) », DisableUnitFiles « a(sss) ») :
+/// une réponse réussie peut taire ce qui a échoué (un lien posé, l'autre non : une unité jointe qui n'a pas pu
+/// l'être, une cible absente, un alias brisé, une unité masquée), signalé seulement dans sa liste.
+struct Liens {
+    activer: bool,
+    /// Les liens posés (« symlink ») ou retirés (« unlink »).
+    faits: usize,
+    /// Le reste de la liste (genre et fichier), pour le journal des erreurs.
+    manques: Vec<String>,
+    /// EnableUnitFiles : le fichier prévoit-il d'être lancé au démarrage (section `[Install]`) ?
+    installable: bool,
+}
+
+impl Liens {
+    fn lire(activer: bool, corps: &[Valeur]) -> Option<Liens> {
+        let (installable, liste) = match (activer, corps) {
+            (true, [b, l]) => (b.booleen()?, l),
+            (false, [l]) => (true, l),
+            _ => return None,
+        };
+        let mut liens = Liens {
+            activer,
+            faits: 0,
+            manques: Vec::new(),
+            installable,
+        };
+        for c in liste.elements() {
+            let [genre, fichier, _] = c.elements() else {
+                return None;
+            };
+            match genre.texte()? {
+                "symlink" | "unlink" => liens.faits = liens.faits.checked_add(1)?,
+                autre => liens.manques.push(format!(
+                    "{} {}",
+                    crate::ui::affichable(autre),
+                    crate::ui::affichable(fichier.texte()?)
+                )),
+            }
         }
-        self.agir_systeme("Reload", Vec::new(), None, fins).map(|_| ())
+        Some(liens)
+    }
+
+    /// Tout est fait : rien de signalé, et une unité activée le prévoit (sans section `[Install]`, EnableUnitFiles
+    /// réussit sans rien poser).
+    fn complets(&self) -> bool {
+        self.manques.is_empty() && (self.installable || !self.activer || self.faits > 0)
+    }
+
+    /// Le geste entier : `job`, le démarrage ou l'arrêt qui suit (fait quand même, comme systemctl), rendu seulement
+    /// si les liens sont complets ; sinon ce qui est fait et ce qui ne l'est pas, dit, jamais compté comme fait.
+    fn et_puis(self, unite: &str, job: Option<Result<(), Echec>>) -> Result<(), Echec> {
+        if self.complets() {
+            return job.unwrap_or(Ok(()));
+        }
+        let faits = self.faits;
+        let manques = self.manques.len();
+        let liens = match (self.activer, self.installable || faits > 0) {
+            (true, false) => trf!(
+                "{unite} : pas activé au démarrage, son fichier ne le prévoit pas",
+                "{unite}: not enabled at boot, its file does not provide for it"
+            ),
+            (true, true) => trf!(
+                "{unite} : activé au démarrage en partie seulement ({faits} lien(s) posé(s), {manques} pas fait(s) ; le détail est dans le journal des erreurs)",
+                "{unite}: enabled at boot only in part ({faits} link(s) created, {manques} not done; the details are in the error log)"
+            ),
+            (false, _) => trf!(
+                "{unite} : retiré du démarrage en partie seulement ({faits} lien(s) retiré(s), {manques} pas fait(s) ; le détail est dans le journal des erreurs)",
+                "{unite}: removed from boot only in part ({faits} link(s) removed, {manques} not done; the details are in the error log)"
+            ),
+        };
+        let suite = match job {
+            None => String::new(),
+            Some(Ok(())) if self.activer => tr!(" ; il est lancé", "; it is started").to_string(),
+            Some(Ok(())) => tr!(" ; il est arrêté", "; it is stopped").to_string(),
+            Some(Err(e)) => format!(" ; {e}"),
+        };
+        Err(en_clair(
+            format!(
+                "{unite} : liens en partie ({faits} faits ; {})",
+                self.manques.join(", ")
+            ),
+            format!("{liens}{suite}"),
+        ))
     }
 }
 
@@ -239,14 +335,16 @@ pub(crate) fn agir_sur_unite(bus: &mut Bus, action: ActionUnite, unite: &str) ->
     let mut fins = Vec::new();
     match action {
         ActionUnite::Activer => {
-            bus.fichiers(true, unite, &mut fins)?;
-            bus.job("StartUnit", unite, &mut fins)
+            let liens = bus.fichiers(true, unite, &mut fins)?;
+            let job = bus.job("StartUnit", unite, &mut fins);
+            liens.et_puis(unite, Some(job))
         }
         ActionUnite::Desactiver => {
-            bus.fichiers(false, unite, &mut fins)?;
-            bus.job("StopUnit", unite, &mut fins)
+            let liens = bus.fichiers(false, unite, &mut fins)?;
+            let job = bus.job("StopUnit", unite, &mut fins);
+            liens.et_puis(unite, Some(job))
         }
-        ActionUnite::DesactiverSansArreter => bus.fichiers(false, unite, &mut fins),
+        ActionUnite::DesactiverSansArreter => bus.fichiers(false, unite, &mut fins)?.et_puis(unite, None),
         ActionUnite::Demarrer => bus.job("StartUnit", unite, &mut fins),
         ActionUnite::Arreter => bus.job("StopUnit", unite, &mut fins),
         ActionUnite::Redemarrer => bus.job("TryRestartUnit", unite, &mut fins),
@@ -352,6 +450,22 @@ mod tests {
         assert_eq!(fil.join().unwrap(), Vec::<String>::new());
     }
 
+    /// Une liste de changements (genre, fichier, source) d'EnableUnitFiles ou DisableUnitFiles.
+    fn changements(liste: &[(&str, &str)]) -> Valeur {
+        Valeur::Tableau(
+            liste
+                .iter()
+                .map(|(genre, fichier)| {
+                    Valeur::Structure(vec![
+                        Valeur::texte_de(genre),
+                        Valeur::texte_de(fichier),
+                        Valeur::texte_de(""),
+                    ])
+                })
+                .collect(),
+        )
+    }
+
     /// Une réponse du faux gestionnaire ; `StartUnit`, `StopUnit`… rendent un job, dont la fin (`resultat`) arrive
     /// avant la réponse, précédée d'un faux JobRemoved venu d'un autre programme du bus.
     fn repondre(s: &mut UnixStream, a: &Message, resultat: &str) -> Vec<u8> {
@@ -367,7 +481,21 @@ mod tests {
                 assert_eq!(a.corps, [Valeur::texte_de(FILTRE_FIN_DE_JOB)]);
                 retour(a, "", Vec::new(), DBUS)
             }
-            "EnableUnitFiles" | "DisableUnitFiles" => retour(a, "a(sss)", vec![Valeur::Tableau(Vec::new())], systemd),
+            "EnableUnitFiles" => retour(
+                a,
+                "ba(sss)",
+                vec![
+                    Valeur::Booleen(true),
+                    changements(&[("symlink", "/etc/systemd/system/x.wants/u")]),
+                ],
+                systemd,
+            ),
+            "DisableUnitFiles" => retour(
+                a,
+                "a(sss)",
+                vec![changements(&[("unlink", "/etc/systemd/system/x.wants/u")])],
+                systemd,
+            ),
             "StartUnit" | "StopUnit" | "TryRestartUnit" | "ReloadOrTryRestartUnit" => {
                 assert_eq!(a.corps[1], Valeur::texte_de("replace"));
                 let job = "/org/freedesktop/systemd1/job/9";
@@ -423,6 +551,113 @@ mod tests {
                 assert_eq!(fil.join().unwrap(), appels, "{action:?}");
             }
         }
+    }
+
+    /// Une activation ou une désactivation réussie en partie seulement (systemd le tait dans sa réponse et ne le dit
+    /// que dans sa liste) : jamais comptée comme faite, et dite, avec ce qui est fait. Déjà activée (rien à poser) :
+    /// faite.
+    #[test]
+    fn liens_en_partie_dits() {
+        // L'action, la réponse de systemd, et la phrase attendue (français, anglais) quand ce n'est pas un succès.
+        type Cas<'a> = (ActionUnite, Vec<Valeur>, Option<(&'a str, &'a str)>);
+        let pose = (
+            "symlink",
+            "/etc/systemd/system/multi-user.target.wants/cups-browsed.service",
+        );
+        let cas: [Cas; 7] = [
+            (
+                ActionUnite::Activer,
+                vec![
+                    Valeur::Booleen(true),
+                    changements(&[pose, ("auxiliary unit failed", "cups-browsed.socket")]),
+                ],
+                Some(("en partie", "in part")),
+            ),
+            (
+                ActionUnite::Activer,
+                vec![
+                    Valeur::Booleen(true),
+                    changements(&[
+                        pose,
+                        ("destination not present", "/etc/systemd/system/absent.target.wants"),
+                    ]),
+                ],
+                Some(("en partie", "in part")),
+            ),
+            (
+                ActionUnite::Activer,
+                vec![Valeur::Booleen(false), changements(&[])],
+                Some(("ne le prévoit pas", "does not provide")),
+            ),
+            (
+                ActionUnite::Activer,
+                vec![Valeur::Booleen(true), changements(&[])],
+                None,
+            ),
+            (
+                ActionUnite::Desactiver,
+                vec![changements(&[("dangling", "/etc/systemd/system/alias.service")])],
+                Some(("en partie", "in part")),
+            ),
+            (
+                ActionUnite::DesactiverSansArreter,
+                vec![changements(&[
+                    ("unlink", "/etc/systemd/system/x.wants/cups-browsed.service"),
+                    ("masked", "cups-browsed.path"),
+                ])],
+                Some(("en partie", "in part")),
+            ),
+            (ActionUnite::Desactiver, vec![changements(&[])], None),
+        ];
+        {
+            for (action, corps, attendu) in cas {
+                let n = if action == ActionUnite::DesactiverSansArreter {
+                    2
+                } else {
+                    5
+                };
+                let reponse = corps.clone();
+                let (mut bus, fil) = faux_bus(move |s, vus| {
+                    for _ in 0..n {
+                        let a = lire(s);
+                        let m = a.membre.clone().unwrap();
+                        let r = match m.as_str() {
+                            "EnableUnitFiles" => retour(&a, "ba(sss)", reponse.clone(), ":1.2"),
+                            "DisableUnitFiles" => retour(&a, "a(sss)", reponse.clone(), ":1.2"),
+                            _ => repondre(s, &a, "done"),
+                        };
+                        vus.push(m);
+                        s.write_all(&r).unwrap();
+                    }
+                });
+                let r = agir_sur_unite(&mut bus, action, "cups-browsed.service");
+                match attendu {
+                    None => assert_eq!(r, Ok(()), "{action:?} {corps:?}"),
+                    Some((fr, en)) => {
+                        let e = r.unwrap_err().to_string();
+                        assert!(
+                            (e.contains(fr) || e.contains(en)) && e.contains("cups-browsed.service"),
+                            "{action:?} {e}"
+                        );
+                        // Le démarrage ou l'arrêt qui suit est fait quand même, et dit.
+                        let suite = match action {
+                            ActionUnite::Activer => Some(("il est lancé", "it is started")),
+                            ActionUnite::Desactiver => Some(("il est arrêté", "it is stopped")),
+                            _ => None,
+                        };
+                        match suite {
+                            Some((fr, en)) => assert!(e.contains(fr) || e.contains(en), "{e}"),
+                            None => assert!(!e.contains(" ; il est") && !e.contains("; it is"), "{e}"),
+                        }
+                        sans_jargon(&e);
+                    }
+                }
+                assert_eq!(fil.join().unwrap().len(), n, "{action:?}");
+            }
+        }
+        // Une liste qui ne se lit pas : pas vérifié, jamais fait.
+        assert!(Liens::lire(true, &[changements(&[])]).is_none());
+        assert!(Liens::lire(false, &[Valeur::Tableau(vec![Valeur::texte_de("symlink")])]).is_none());
     }
 
     /// La fin du job n'arrive pas : l'attente se termine (ici, le faux bus se ferme) et c'est « pas vérifié ».
