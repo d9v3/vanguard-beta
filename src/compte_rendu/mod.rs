@@ -11,6 +11,8 @@
 //! clés et les mêmes listes : un essai les compare.
 
 pub(crate) mod champs;
+#[cfg_attr(not(test), allow(dead_code))] // la lecture sert au triage du journal (L3)
+pub(crate) mod journal;
 
 use serde::{Deserialize, Serialize};
 

@@ -1354,7 +1354,14 @@ pub fn auditer(bavard: bool) -> Audit {
     // Seulement à la demande : la surveillance horaire répéterait les mêmes lignes.
     if bavard {
         for c in a.constats.iter().filter(|c| !c.verifie) {
-            crate::journal::erreur("vérification impossible", &format!("{} : {}", c.categorie, c.message));
+            crate::journal::noter(
+                &crate::compte_rendu::journal::Champs::new(
+                    crate::compte_rendu::Genre::Impossible,
+                    crate::compte_rendu::Contexte::VerificationImpossible,
+                )
+                .regle(crate::compte_rendu::Regle::new(c.regle)),
+                &format!("{} : {}", c.categorie, c.message),
+            );
         }
     }
     a

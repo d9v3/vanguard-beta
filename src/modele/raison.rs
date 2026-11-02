@@ -158,7 +158,11 @@ impl Echec {
 
     /// Note l'échec au journal des erreurs, avec son code entre crochets : le script des tickets regroupe par code.
     pub(crate) fn journaliser(&self) {
-        crate::journal::erreur(self.contexte, &format!("[{}] {self}", self.code()));
+        use crate::compte_rendu::{Code, Contexte, Genre, journal::Champs};
+        crate::journal::noter(
+            &Champs::new(Genre::Echec, Contexte::echec(self.contexte)).code(Code::new(self.code())),
+            &format!("[{}] {self}", self.code()),
+        );
     }
 }
 

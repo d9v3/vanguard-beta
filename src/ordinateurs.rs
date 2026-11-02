@@ -119,7 +119,7 @@ fn noter_dans(chemin: &Path, empreinte: &str, systeme: &str, modele: &str, audit
         },
     );
     if let Err(e) = ecrire(&t, chemin) {
-        crate::journal::erreur("mes ordinateurs", &e.to_string());
+        crate::journal::erreur(crate::compte_rendu::Contexte::MesOrdinateurs, &e.to_string());
     }
 }
 

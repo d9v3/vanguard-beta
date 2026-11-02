@@ -325,7 +325,7 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
             "    Vanguard refused its own list of fixes before asking for administrator rights: nothing was done. Update Vanguard; if it happens again, report it (the error log keeps a trace)."
         );
         crate::journal::erreur(
-            "Vanguard administrateur",
+            crate::compte_rendu::Contexte::VanguardAdministrateur,
             "liste refusée avant la demande (forme inattendue)",
         );
         return None;
@@ -408,7 +408,10 @@ fn relance_impossible(fr: &str, en: &str) -> Option<Vec<Reponse>> {
         "    Vanguard could not prepare its administrator window: nothing was changed. Restart the computer, then run the fix again. (detail: {})",
         if crate::langue::anglais() { en } else { fr }
     );
-    crate::journal::erreur("Vanguard administrateur", &format!("relance impossible : {fr}"));
+    crate::journal::erreur(
+        crate::compte_rendu::Contexte::VanguardAdministrateur,
+        &format!("relance impossible : {fr}"),
+    );
     None
 }
 
@@ -601,7 +604,7 @@ impl Serveur {
                 return false;
             }
             crate::journal::erreur(
-                "Correction élevée",
+                crate::compte_rendu::Contexte::CorrectionElevee,
                 &format!("un client inattendu (PID {client}) s'est branché sur le canal : débranché"),
             );
             // SAFETY: idem.

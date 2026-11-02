@@ -50,7 +50,7 @@ pub fn exe_d_origine() -> Option<PathBuf> {
                         "Warning: VANGUARD_ORIGINE points to {}, which is not the running program ({raison}): ignored.",
                         chemin_affichable(Path::new(&designee))
                     );
-                    crate::journal::erreur("origine du programme", &format!("VANGUARD_ORIGINE ignorée : {raison}"));
+                    crate::journal::erreur(crate::compte_rendu::Contexte::OrigineProgramme, &format!("VANGUARD_ORIGINE ignorée : {raison}"));
                     courant()
                 }
             }
@@ -241,14 +241,17 @@ pub fn proteger_cle() {
             "  ⚠ VANGUARD key not protected: it is in use (terminal or window open inside the key?).\n    {GRIS}Close them, then run Vanguard from another folder: {}/{DOSSIER_PROGRAMME}/vanguard{RESET}",
             cle.display()
         );
-        crate::journal::erreur("protection de la clé", &format!("démontage impossible : {e}"));
+        crate::journal::erreur(
+            crate::compte_rendu::Contexte::ProtectionCle,
+            &format!("démontage impossible : {e}"),
+        );
         return;
     }
     if let Err(e) = monter(&peripherique, true) {
         // Remontée impossible : on la remonte comme avant plutôt que de la laisser invisible.
         let _ = monter(&peripherique, false);
         crate::journal::erreur(
-            "protection de la clé",
+            crate::compte_rendu::Contexte::ProtectionCle,
             &format!("remontage en lecture seule refusé : {e}"),
         );
     } else {
@@ -325,7 +328,7 @@ fn relancer_depuis_une_copie(exe: &Path) {
     }
     // Aucune copie n'a pu être lancée : le programme continue depuis la clé, sans protection.
     crate::journal::erreur(
-        "protection de la clé",
+        crate::compte_rendu::Contexte::ProtectionCle,
         &format!("relance depuis une copie impossible : {}", erreurs.join(" ; ")),
     );
 }

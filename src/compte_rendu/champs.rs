@@ -7,6 +7,11 @@
 //!
 //! Module pur, sans `crate::` ni `unsafe` : le banc de fuzz l'inclut par son chemin (cible `journal_entrees`).
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+// Ni `unsafe` : refusé sans recours, aucun `allow` intérieur ne le lève (garde : chaque_module_fuzze_refuse_unsafe).
+#![forbid(unsafe_code)]
+
 use serde::{Deserialize, Serialize};
 
 /// Un champ refusé par son motif : le message ne nomme que le champ, jamais la valeur, qui peut venir d'un fichier
@@ -407,6 +412,11 @@ pub(crate) enum Contexte {
     Wmi,
     OrigineProgramme,
     ProtectionCle,
+    WindowsUpdate,
+    TachesPlanifiees,
+    BitLocker,
+    PareFeuWindows,
+    Reseaux,
     /// Un échec typé, par son contexte de `CONTEXTES_ECHEC` (toujours pris dans la liste).
     Echec(&'static str),
     /// Un échec typé dont le contexte n'est pas dans la liste.
@@ -442,12 +452,16 @@ const CONTEXTES: &[(Contexte, &str, &str)] = &[
     (Contexte::Wmi, "wmi", "WMI"),
     (Contexte::OrigineProgramme, "origine-programme", "origine du programme"),
     (Contexte::ProtectionCle, "protection-cle", "protection de la clé"),
+    (Contexte::WindowsUpdate, "windows-update", "Windows Update"),
+    (Contexte::TachesPlanifiees, "taches-planifiees", "Tâches planifiées"),
+    (Contexte::BitLocker, "bitlocker", "BitLocker"),
+    (Contexte::PareFeuWindows, "pare-feu-windows", "Pare-feu Windows"),
+    (Contexte::Reseaux, "reseaux", "Réseaux"),
     (Contexte::EchecAutre, "echec/autre", "echec/autre"),
 ];
 
 impl Contexte {
     /// Le contexte d'un échec typé : le sien s'il est dans la liste, sinon « autre ».
-    #[cfg_attr(not(test), allow(dead_code))] // écrit par le journal (L2)
     pub(crate) fn echec(contexte: &str) -> Contexte {
         CONTEXTES_ECHEC
             .iter()
@@ -468,7 +482,6 @@ impl Contexte {
     }
 
     /// Le libellé français de la ligne `[contexte]`, inchangé depuis les versions d'avant.
-    #[cfg_attr(not(test), allow(dead_code))] // écrit par le journal (L2)
     pub(crate) fn libelle(self) -> &'static str {
         match self {
             Contexte::Echec(c) => c,

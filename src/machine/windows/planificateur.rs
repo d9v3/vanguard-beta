@@ -27,7 +27,7 @@ const DOSSIERS_MAX: usize = 10_000;
 /// dossier \Microsoft, que tout Windows a : un planificateur qui ne le montre pas ne montre rien (celui de Wine rend
 /// des listes vides sans erreur, GetTasks n'y étant qu'une ébauche).
 pub(super) fn taches() -> Option<Vec<String>> {
-    wmi::com("Tâches planifiées", "ITaskService", lire)
+    wmi::com(crate::compte_rendu::Contexte::TachesPlanifiees, "ITaskService", lire)
 }
 
 fn hors_windows(dossier: &str) -> bool {
@@ -109,7 +109,7 @@ fn lire() -> windows::core::Result<Vec<String>> {
 /// sans action de ces deux genres (courriel, message, abandonnés depuis Windows 8) est montrée sans rien. `None` :
 /// comme `taches`.
 pub(crate) fn lancements() -> Option<Vec<(String, String)>> {
-    wmi::com("Tâches planifiées", "ITaskService", || {
+    wmi::com(crate::compte_rendu::Contexte::TachesPlanifiees, "ITaskService", || {
         let mut lignes = Vec::new();
         parcourir(|tache| {
             // SAFETY: tâche vivante rendue par le planificateur, le temps de cet appel ; ses actions sont indexées de
@@ -165,22 +165,26 @@ pub(crate) enum EtatTache {
 
 pub(crate) fn etat(noms: &[&str]) -> Option<EtatTache> {
     let noms: Vec<String> = noms.iter().map(|n| n.to_lowercase()).collect();
-    wmi::com("Tâches planifiées", "ITaskService", move || {
-        let mut trouve = EtatTache::Absente;
-        parcourir(|tache| {
-            // SAFETY: tâche vivante rendue par le planificateur, le temps de cet appel.
-            let (nom, active) = unsafe { (tache.Name()?.to_string(), tache.State()? != TASK_STATE_DISABLED) };
-            if noms.contains(&nom.to_lowercase()) {
-                if active {
-                    trouve = EtatTache::Active;
-                } else if trouve == EtatTache::Absente {
-                    trouve = EtatTache::Desactivee;
+    wmi::com(
+        crate::compte_rendu::Contexte::TachesPlanifiees,
+        "ITaskService",
+        move || {
+            let mut trouve = EtatTache::Absente;
+            parcourir(|tache| {
+                // SAFETY: tâche vivante rendue par le planificateur, le temps de cet appel.
+                let (nom, active) = unsafe { (tache.Name()?.to_string(), tache.State()? != TASK_STATE_DISABLED) };
+                if noms.contains(&nom.to_lowercase()) {
+                    if active {
+                        trouve = EtatTache::Active;
+                    } else if trouve == EtatTache::Absente {
+                        trouve = EtatTache::Desactivee;
+                    }
                 }
-            }
-            Ok(())
-        })?;
-        Ok(trouve)
-    })
+                Ok(())
+            })?;
+            Ok(trouve)
+        },
+    )
 }
 
 /// Les tâches nommées `noms`, où qu'elles soient hors \Microsoft\, désactivées comprises : ce qu'elles lancent et
@@ -188,18 +192,22 @@ pub(crate) fn etat(noms: &[&str]) -> Option<EtatTache> {
 /// pas le dossier \Microsoft (Wine) : PowerShell prend le relais.
 pub(crate) fn definitions(noms: &[&str]) -> Option<Vec<(String, Definition)>> {
     let noms: Vec<String> = noms.iter().map(|n| n.to_lowercase()).collect();
-    wmi::com("Tâches planifiées", "ITaskService", move || {
-        let mut trouvees = Vec::new();
-        parcourir(|tache| {
-            // SAFETY: tâche vivante rendue par le planificateur, le temps de cet appel.
-            let nom = unsafe { tache.Name() }?.to_string();
-            if noms.contains(&nom.to_lowercase()) {
-                trouvees.push((nom, definition(tache)?));
-            }
-            Ok(())
-        })?;
-        Ok(trouvees)
-    })
+    wmi::com(
+        crate::compte_rendu::Contexte::TachesPlanifiees,
+        "ITaskService",
+        move || {
+            let mut trouvees = Vec::new();
+            parcourir(|tache| {
+                // SAFETY: tâche vivante rendue par le planificateur, le temps de cet appel.
+                let nom = unsafe { tache.Name() }?.to_string();
+                if noms.contains(&nom.to_lowercase()) {
+                    trouvees.push((nom, definition(tache)?));
+                }
+                Ok(())
+            })?;
+            Ok(trouvees)
+        },
+    )
 }
 
 /// Le XML de la tâche nommée `nom` (hors \Microsoft\), tel que le planificateur la garde : ce que Vanguard a posé,
@@ -207,18 +215,22 @@ pub(crate) fn definitions(noms: &[&str]) -> Option<Vec<(String, Definition)>> {
 /// répond pas ou si elle n'existe pas : jamais une lecture partielle.
 pub(crate) fn xml(nom: &str) -> Option<String> {
     let nom = nom.to_lowercase();
-    wmi::com("Tâches planifiées", "ITaskService", move || {
-        let mut trouve = None;
-        parcourir(|tache| {
-            // SAFETY: tâche vivante rendue par le planificateur, le temps de cet appel.
-            if unsafe { tache.Name() }?.to_string().to_lowercase() == nom {
-                // SAFETY: la même tâche vivante.
-                trouve = Some(unsafe { tache.Xml() }?.to_string());
-            }
-            Ok(())
-        })?;
-        Ok(trouve)
-    })
+    wmi::com(
+        crate::compte_rendu::Contexte::TachesPlanifiees,
+        "ITaskService",
+        move || {
+            let mut trouve = None;
+            parcourir(|tache| {
+                // SAFETY: tâche vivante rendue par le planificateur, le temps de cet appel.
+                if unsafe { tache.Name() }?.to_string().to_lowercase() == nom {
+                    // SAFETY: la même tâche vivante.
+                    trouve = Some(unsafe { tache.Xml() }?.to_string());
+                }
+                Ok(())
+            })?;
+            Ok(trouve)
+        },
+    )
     .flatten()
 }
 

@@ -533,11 +533,20 @@ fn sans_valeurs(x: &Comparaison) -> Comparaison {
 // Ce qui s'écrit
 
 /// Les entrées du journal des erreurs : identifiants, nombres, genres, jamais une valeur lue sur la machine.
-fn entrees_du_journal(r: &Rapport) -> Vec<(String, String)> {
+fn entrees_du_journal(r: &Rapport) -> Vec<(crate::compte_rendu::journal::Champs, String)> {
+    use crate::compte_rendu::journal::Champs;
+    use crate::compte_rendu::{Code, Contexte, Genre, Regle};
+    // Les mêmes genres et codes que le compte rendu (`compte_rendu` plus bas) : la ligne de champs du journal et le
+    // compte rendu de l'essai disent la même chose.
+    let champs = |genre: Genre, id: &str, code: Option<&str>| {
+        Champs::new(genre, Contexte::Autotest)
+            .regle(Regle::new(id))
+            .code(code.and_then(Code::new))
+    };
     let mut e = Vec::new();
     for c in r.croisees.iter().filter(|c| c.verdict == "different") {
         e.push((
-            format!("autotest {}", c.id),
+            champs(Genre::Contredite, c.id, c.genre),
             format!(
                 "[{}] {} en plus, {} en moins, {} différent(s) ; règles {}",
                 c.genre.unwrap_or_default(),
@@ -550,17 +559,19 @@ fn entrees_du_journal(r: &Rapport) -> Vec<(String, String)> {
     }
     for id in &r.regles.plantees {
         e.push((
-            format!("autotest {id}"),
+            champs(Genre::Rattrapee, id, Some(Raison::Panique.code())),
             "[panique] règle plantée pendant l'autotest".into(),
         ));
     }
     for i in &r.regles.invariants {
-        let id = if i.regle.is_empty() { "sans-regle" } else { &i.regle };
-        e.push((format!("autotest {id}"), format!("[invariant] {}", i.genre)));
+        e.push((
+            champs(Genre::Invariant, &i.regle, Some(i.genre)),
+            format!("[invariant] {}", i.genre),
+        ));
     }
     if r.preuve.verdict == "change" {
         e.push((
-            format!("autotest {OUTIL}"),
+            champs(Genre::Ecriture, OUTIL, None),
             format!(
                 "[ecriture] {} fichier(s) changé(s) pendant l'essai : {}",
                 r.preuve.nombre,
@@ -570,7 +581,7 @@ fn entrees_du_journal(r: &Rapport) -> Vec<(String, String)> {
     }
     for l in &r.mesures.lentes {
         e.push((
-            format!("autotest {}", l.regle),
+            champs(Genre::Lente, &l.regle, None),
             format!(
                 "[lente] médiane de la semaine {} ms, {} ms les 4 semaines d'avant",
                 l.semaine_ms, l.avant_ms
@@ -579,7 +590,7 @@ fn entrees_du_journal(r: &Rapport) -> Vec<(String, String)> {
     }
     for f in &r.mesures.frolent_le_delai {
         e.push((
-            format!("autotest {}", f.regle),
+            champs(Genre::FroleDelai, &f.regle, None),
             format!("[frole-delai] {} ms sur un délai de {} ms", f.max_ms, f.delai_ms),
         ));
     }
@@ -686,8 +697,8 @@ fn ecrire(
             crate::modele::Echec::io("autotest/dernier", &e).journaliser();
         }
     });
-    for (contexte, detail) in entrees_du_journal(r) {
-        crate::journal::erreur(&contexte, &detail);
+    for (champs, detail) in entrees_du_journal(r) {
+        crate::journal::noter(&champs, &detail);
     }
 }
 
@@ -1375,7 +1386,7 @@ mod tests {
         let json = serde_json::to_string(&r).unwrap();
         let journal: String = entrees_du_journal(&r)
             .iter()
-            .map(|(a, b)| [a.as_str(), " ", b.as_str(), "\n"].concat())
+            .map(|(a, b)| [a.libelle().as_str(), " ", b.as_str(), "\n", a.ligne().as_str(), "\n"].concat())
             .collect();
         let gardes: String = constats_du_rapport(&r, &croisees)
             .iter()

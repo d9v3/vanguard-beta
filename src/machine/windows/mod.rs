@@ -189,7 +189,7 @@ pub(crate) fn ps_delai(script: &str, secondes: u64) -> Option<String> {
         secondes,
     ) else {
         crate::journal::erreur(
-            "PowerShell",
+            crate::compte_rendu::Contexte::PowerShell,
             &format!("délai de {secondes} s dépassé, ou lancement impossible\n{debut}"),
         );
         return None;
@@ -203,7 +203,7 @@ pub(crate) fn ps_delai(script: &str, secondes: u64) -> Option<String> {
                 None => "arrêté par le système".to_string(),
             };
             crate::journal::erreur(
-                "PowerShell",
+                crate::compte_rendu::Contexte::PowerShell,
                 &format!("{etat}\n{debut}\n--- erreurs ---\n{}", r.erreurs.trim()),
             );
             None
@@ -596,7 +596,7 @@ fn lignes_pour_eleve(correctifs: &[Vec<String>], morceaux: &[crate::machine::ges
             "    Vanguard refused its own list of fixes before asking for administrator rights: nothing was done. Update Vanguard; if it happens again, report it (the error log keeps a trace)."
         );
         crate::journal::erreur(
-            "Vanguard administrateur",
+            crate::compte_rendu::Contexte::VanguardAdministrateur,
             "liste refusée avant la demande (ligne vanguard: mal formée)",
         );
         return None;
@@ -1233,23 +1233,27 @@ fn protection_bitlocker() -> Option<String> {
         GPS_DEFAULT, IPropertyStore, PSGetPropertyKeyFromName, SHGetPropertyStoreFromParsingName,
     };
     use windows::core::w;
-    wmi::com_sta("BitLocker", "System.Volume.BitLockerProtection", || {
-        // SAFETY: COM est initialisé dans ce fil (par `wmi::com_sta`) ; chaînes constantes terminées par un zéro ;
-        // le PROPVARIANT rendu par GetValue est à nous et libéré par PropVariantClear.
-        unsafe {
-            let mut cle = PROPERTYKEY::default();
-            PSGetPropertyKeyFromName(w!("System.Volume.BitLockerProtection"), &raw mut cle)?;
-            let magasin: IPropertyStore = SHGetPropertyStoreFromParsingName(w!("C:\\"), None, GPS_DEFAULT)?;
-            let mut valeur = magasin.GetValue(&raw const cle)?;
-            let texte = if valeur.Anonymous.Anonymous.vt == VT_EMPTY {
-                Ok(String::new())
-            } else {
-                PropVariantToUInt32(&raw const valeur).map(|n| n.to_string())
-            };
-            let _ = PropVariantClear(&raw mut valeur);
-            texte
-        }
-    })
+    wmi::com_sta(
+        crate::compte_rendu::Contexte::BitLocker,
+        "System.Volume.BitLockerProtection",
+        || {
+            // SAFETY: COM est initialisé dans ce fil (par `wmi::com_sta`) ; chaînes constantes terminées par un zéro ;
+            // le PROPVARIANT rendu par GetValue est à nous et libéré par PropVariantClear.
+            unsafe {
+                let mut cle = PROPERTYKEY::default();
+                PSGetPropertyKeyFromName(w!("System.Volume.BitLockerProtection"), &raw mut cle)?;
+                let magasin: IPropertyStore = SHGetPropertyStoreFromParsingName(w!("C:\\"), None, GPS_DEFAULT)?;
+                let mut valeur = magasin.GetValue(&raw const cle)?;
+                let texte = if valeur.Anonymous.Anonymous.vt == VT_EMPTY {
+                    Ok(String::new())
+                } else {
+                    PropVariantToUInt32(&raw const valeur).map(|n| n.to_string())
+                };
+                let _ = PropVariantClear(&raw mut valeur);
+                texte
+            }
+        },
+    )
 }
 
 fn chiffrement() -> Constat {

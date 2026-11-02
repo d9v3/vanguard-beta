@@ -358,7 +358,7 @@ fn ecrire_reseau(fichier: &Path, non_verifie: Option<&str>, maintenant: NaiveDat
                 tronquer(&raison.replace('\n', " "), TEXTE_MAX)
             );
             if let Err(e) = crate::socle::ecrire_atomique(fichier, texte) {
-                crate::journal::erreur("scan du réseau non vérifié", &e.to_string());
+                crate::journal::erreur(crate::compte_rendu::Contexte::ScanReseauNonVerifie, &e.to_string());
             }
         }
         None => {

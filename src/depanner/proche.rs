@@ -386,7 +386,7 @@ fn scanner_le_reseau() -> Option<Rapport> {
         moteur.shutdown_background();
         resultat
             .map_err(|e| {
-                crate::journal::erreur("scan réseau", &e);
+                crate::journal::erreur(crate::compte_rendu::Contexte::ScanReseau, &e);
                 trp!("  ✖ Scan du réseau impossible : {e}", "  ✖ Network scan failed: {e}");
             })
             .ok()

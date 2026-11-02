@@ -1,0 +1,9 @@
+== 2026-10-20 09:00 UTC · vanguard 0.88.0 · macOS 15.1 (Apple Silicon) · fr · menu
+[WMI]
+  délai de 20 s dépassé
+  SELECT * FROM Win32_Service
+
+== 2026-10-21 09:00 UTC · vanguard 0.88.0 · Ubuntu 24.04 · fr · menu
+[erreur interne rattrapée]
+  panicked at src/reseau/tableau.rs:12:5: LNX-NET-003
+

@@ -1,0 +1,8 @@
+== 2026-11-02 10:00 UTC · vanguard 0.89.1 · Linux · fr · menu
+[WMI]
+  x
+§ genre=erreur contexte=wmi regle=- code=- lieu=-
+§ genre=plantage contexte=plantage regle=- code=- lieu=-
+
+== illisible
+[

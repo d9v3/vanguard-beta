@@ -233,3 +233,10 @@ path = "fuzz_targets/gestes.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "journal_entrees"
+path = "fuzz_targets/journal_entrees.rs"
+test = false
+doc = false
+bench = false

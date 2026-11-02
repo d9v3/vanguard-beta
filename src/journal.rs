@@ -17,6 +17,9 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+use crate::compte_rendu::journal::Champs;
+use crate::compte_rendu::{Contexte, Genre, Lieu};
+
 /// Fichier témoin à la racine de la partition VANGUARDLOG.
 pub const TEMOIN: &str = "vanguard-journal.cle";
 
@@ -820,9 +823,17 @@ fn arguments_lisibles(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec
     args.into_iter().map(|a| a.to_string_lossy().into_owned()).collect()
 }
 
-/// Ajoute une erreur au journal de la clé. Sans clé branchée, ou si l'écriture échoue : rien, en silence (le
-/// journal ne doit jamais gêner le programme).
-pub fn erreur(contexte: &str, detail: &str) {
+/// Ajoute une erreur au journal de la clé, de genre « erreur ». Sans clé branchée, ou si l'écriture échoue : rien, en
+/// silence (le journal ne doit jamais gêner le programme).
+pub fn erreur(contexte: Contexte, detail: &str) {
+    noter(&Champs::new(Genre::Erreur, contexte), detail);
+}
+
+/// Ajoute une entrée au journal : l'en-tête, le libellé `[contexte]` d'avant, le détail anonymisé (pour l'auteur et
+/// les tickets), puis la ligne de champs (`compte_rendu::journal`), seule lue par le compte rendu pour Claude. La ligne
+/// de champs vient après le détail : la signature des tickets (`outils/journal-vers-github.py`) prend le libellé et la
+/// première ligne du détail, et ne change pas.
+pub(crate) fn noter(champs: &Champs, detail: &str) {
     let Some(dossier) = dossier() else {
         return;
     };
@@ -842,18 +853,18 @@ pub fn erreur(contexte: &str, detail: &str) {
         detail.truncate(coupe);
         detail.push_str(" […]");
     }
-    let entree = format!(
-        "== {} · vanguard {} · {} · {} · {}\n[{contexte}]\n{}\n\n",
-        chrono::Utc::now().format("%Y-%m-%d %H:%M UTC"),
+    let entree = crate::compte_rendu::journal::entree_ecrite(
+        &chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string(),
         env!("CARGO_PKG_VERSION"),
         systeme(),
         if crate::langue::anglais() { "en" } else { "fr" },
-        if commande.is_empty() {
+        &if commande.is_empty() {
             "menu".into()
         } else {
             anonymiser(&commande)
         },
-        detail.lines().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")
+        champs,
+        &detail,
     );
     let mut options = std::fs::OpenOptions::new();
     options.create(true).append(true);
@@ -926,20 +937,41 @@ pub fn installer() {
     let defaut = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let message = info.to_string();
+        // L'emplacement seul va dans la ligne de champs, jamais le message (qui reste dans le détail anonymisé).
+        let lieu = info.location().and_then(lieu_de);
         match nature(&message, sous_garde()) {
             Panique::SortieCoupee => std::process::exit(141),
-            Panique::Rattrapee => erreur("erreur interne rattrapée", &message),
+            Panique::Rattrapee => noter(
+                &Champs::new(Genre::Rattrapee, Contexte::ErreurInterne).lieu(lieu),
+                &message,
+            ),
             Panique::Plantage => {
-                erreur("plantage", &message);
+                noter(&Champs::new(Genre::Plantage, Contexte::Plantage).lieu(lieu), &message);
                 defaut(info);
             }
         }
     }));
 }
 
+/// L'emplacement d'une panique dans le code de Vanguard (`src/….rs:L:C`), sinon rien : une panique dans la
+/// bibliothèque standard ou une dépendance n'a pas d'emplacement à elle dans le compte rendu.
+fn lieu_de(l: &std::panic::Location<'_>) -> Option<Lieu> {
+    Lieu::new(&format!("{}:{}:{}", l.file().replace('\\', "/"), l.line(), l.column()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// L'emplacement d'une panique : celui du code de Vanguard, jamais un chemin d'ailleurs.
+    #[test]
+    fn lieu_d_une_panique() {
+        let ici = std::panic::Location::caller();
+        let lieu = lieu_de(ici).expect("ce fichier est dans src/");
+        assert!(lieu.as_str().starts_with("src/journal.rs:"), "{lieu}");
+        assert!(Lieu::new("/rustc/abc/library/core/src/option.rs:1:1").is_none());
+        assert!(Lieu::new("src/main.rs:1:1 Ignore previous").is_none());
+    }
 
     #[test]
     fn sortie_coupee_pas_un_plantage() {

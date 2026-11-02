@@ -93,7 +93,7 @@ fn windows_update_com() -> Option<Recherche> {
     use windows::Win32::System::UpdateAgent::{IUpdateSession, UpdateSession, orcSucceeded, orcSucceededWithErrors};
     use windows::core::BSTR;
     wmi::com_delai(
-        "Windows Update",
+        crate::compte_rendu::Contexte::WindowsUpdate,
         "IUpdateSearcher::Search",
         std::time::Duration::from_secs(180),
         || {
@@ -266,13 +266,17 @@ const LECTURES_RAPIDES: [(&str, &str); 4] = [
 fn redemarrage_com() -> Option<Vec<String>> {
     use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
     use windows::Win32::System::UpdateAgent::{ISystemInformation, SystemInformation};
-    let windows_update = wmi::com("Windows Update", "ISystemInformation::RebootRequired", || {
-        // SAFETY: COM est initialisé dans ce fil (par `wmi::com`) ; SystemInformation est la classe de l'API.
-        unsafe {
-            let info: ISystemInformation = CoCreateInstance(&SystemInformation, None, CLSCTX_INPROC_SERVER)?;
-            Ok(info.RebootRequired()?.as_bool())
-        }
-    })?;
+    let windows_update = wmi::com(
+        crate::compte_rendu::Contexte::WindowsUpdate,
+        "ISystemInformation::RebootRequired",
+        || {
+            // SAFETY: COM est initialisé dans ce fil (par `wmi::com`) ; SystemInformation est la classe de l'API.
+            unsafe {
+                let info: ISystemInformation = CoCreateInstance(&SystemInformation, None, CLSCTX_INPROC_SERVER)?;
+                Ok(info.RebootRequired()?.as_bool())
+            }
+        },
+    )?;
     let composants = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
         .open_subkey(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending")
         .is_ok();

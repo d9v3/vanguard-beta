@@ -404,3 +404,76 @@ proptest! {
         }
     }
 }
+
+/// Le texte de chaque fichier .rs de src/, sans son module d'essais en ligne ni les fichiers d'essais (`tests.rs`).
+fn sources() -> Vec<(std::path::PathBuf, String)> {
+    let mut a_voir = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    let mut v = Vec::new();
+    while let Some(d) = a_voir.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                a_voir.push(p);
+            } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("tests.rs") {
+                let texte = std::fs::read_to_string(&p).unwrap();
+                // Coupé au premier module d'essais en ligne (`mod x {`), pas à une déclaration (`mod essais;`).
+                let fin = texte
+                    .match_indices("#[cfg(test)]\nmod ")
+                    .map(|(i, _)| i)
+                    .find(|&i| texte[i..].lines().nth(1).is_some_and(|l| l.trim_end().ends_with('{')))
+                    .unwrap_or(texte.len());
+                v.push((p, texte[..fin].to_string()));
+            }
+        }
+    }
+    assert!(v.len() > 100, "{} fichiers seulement : src/ n'est plus lu", v.len());
+    v
+}
+
+/// Chaque contexte de la liste fermée sert à un appel du journal : un contexte que plus rien n'écrit se voit (et
+/// s'enlève), un appel qui en voudrait un nouveau doit l'ajouter à la liste, au schéma et à cette garde.
+#[test]
+fn chaque_contexte_sert() {
+    let champs = include_str!("champs.rs");
+    let debut = champs.find("const CONTEXTES: &[(Contexte, &str, &str)]").unwrap();
+    let liste = &champs[debut..debut + champs[debut..].find("];").unwrap()];
+    let noms: Vec<&str> = liste
+        .split("Contexte::")
+        .skip(1)
+        .map(|s| s.split(|c: char| !c.is_alphanumeric()).next().unwrap())
+        .filter(|n| *n != "EchecAutre")
+        .collect();
+    assert!(noms.len() >= 20, "{noms:?}");
+    let sources = sources();
+    for nom in noms {
+        let motif = format!("Contexte::{nom}");
+        let ailleurs = sources.iter().any(|(p, code)| {
+            !p.ends_with("compte_rendu/champs.rs") && !p.ends_with("compte_rendu/journal.rs") && code.contains(&motif)
+        });
+        assert!(ailleurs, "{motif} n'est écrit par aucun appel du journal");
+    }
+}
+
+/// Chaque contexte d'échec écrit en clair (`Echec::refuse("…", …)` et les autres) est dans `CONTEXTES_ECHEC` : sinon
+/// il arriverait au compte rendu comme « echec/autre ».
+#[test]
+fn contextes_d_echec_connus() {
+    let mut vus = 0;
+    for (p, code) in sources() {
+        for fonction in ["new", "refuse", "echoue", "io", "ecriture"] {
+            let appel = format!("Echec::{fonction}(");
+            for (i, _) in code.match_indices(&appel) {
+                let reste = code[i + appel.len()..].trim_start();
+                let Some(texte) = reste.strip_prefix('"') else { continue };
+                let contexte = &texte[..texte.find('"').unwrap()];
+                vus += 1;
+                assert!(
+                    champs::CONTEXTES_ECHEC.contains(&contexte),
+                    "« {contexte} » ({}) manque à CONTEXTES_ECHEC",
+                    p.display()
+                );
+            }
+        }
+    }
+    assert!(vus > 50, "{vus} contextes seulement : les appels ne sont plus lus");
+}

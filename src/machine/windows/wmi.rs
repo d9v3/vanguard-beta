@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use crate::compte_rendu::Contexte;
+
 use windows::Win32::Foundation::{E_POINTER, VARIANT_BOOL};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
@@ -129,7 +131,7 @@ pub(crate) fn interroger(espace: &str, classe: &str, condition: &str, champs: &[
     let (espace, classe) = (espace.to_string(), classe.to_string());
     let champs: Vec<String> = champs.iter().map(|c| (*c).to_string()).collect();
     let debut: String = wql.chars().take(240).collect();
-    com("WMI", &debut, move || {
+    com(Contexte::Wmi, &debut, move || {
         match dans_ce_fil(&espace, &classe, &wql, &champs) {
             Ok(lignes) => Ok(Reponse::Lignes(lignes)),
             Err(e) if CLASSE_ABSENTE.contains(&e.code().0) => Ok(Reponse::ClasseAbsente),
@@ -140,38 +142,38 @@ pub(crate) fn interroger(espace: &str, classe: &str, condition: &str, champs: &[
 
 /// Une lecture par COM dans un fil à elle, avec son propre appartement (multithread), arrêtée d'attendre après le
 /// délai. `None` si elle échoue (composant absent : rien au journal, PowerShell ou « non vérifié » suivent) ou ne
-/// répond pas à temps (noté au journal sous `nom`, avec `quoi`). Le fil d'une lecture bloquée est abandonné, pas tué :
+/// répond pas à temps (noté au journal sous `contexte`, avec `quoi`). Le fil d'une lecture bloquée est abandonné, pas tué :
 /// COM ne sait pas interrompre un appel en cours.
 pub(crate) fn com<T: Send + 'static>(
-    nom: &str,
+    contexte: Contexte,
     quoi: &str,
     lecture: impl FnOnce() -> windows::core::Result<T> + Send + 'static,
 ) -> Option<T> {
-    com_delai(nom, quoi, DELAI, lecture)
+    com_delai(contexte, quoi, DELAI, lecture)
 }
 
 /// Comme `com`, avec un délai choisi : la recherche de Windows Update peut prendre deux ou trois minutes.
 pub(crate) fn com_delai<T: Send + 'static>(
-    nom: &str,
+    contexte: Contexte,
     quoi: &str,
     delai: Duration,
     lecture: impl FnOnce() -> windows::core::Result<T> + Send + 'static,
 ) -> Option<T> {
-    dans_un_appartement(nom, quoi, delai, COINIT_MULTITHREADED, lecture)
+    dans_un_appartement(contexte, quoi, delai, COINIT_MULTITHREADED, lecture)
 }
 
 /// Comme `com`, dans un appartement à fil unique (STA), celui de PowerShell 5.1 : les objets de l'Explorateur
 /// (propriétés d'un volume) sont écrits pour lui.
 pub(crate) fn com_sta<T: Send + 'static>(
-    nom: &str,
+    contexte: Contexte,
     quoi: &str,
     lecture: impl FnOnce() -> windows::core::Result<T> + Send + 'static,
 ) -> Option<T> {
-    dans_un_appartement(nom, quoi, DELAI, COINIT_APARTMENTTHREADED, lecture)
+    dans_un_appartement(contexte, quoi, DELAI, COINIT_APARTMENTTHREADED, lecture)
 }
 
 fn dans_un_appartement<T: Send + 'static>(
-    nom: &str,
+    contexte: Contexte,
     quoi: &str,
     delai: Duration,
     appartement: COINIT,
@@ -180,7 +182,7 @@ fn dans_un_appartement<T: Send + 'static>(
     if let Some(resultat) = dans_un_fil(delai, appartement, lecture) {
         resultat.ok()
     } else {
-        crate::journal::erreur(nom, &format!("délai de {} s dépassé\n{quoi}", delai.as_secs()));
+        crate::journal::erreur(contexte, &format!("délai de {} s dépassé\n{quoi}", delai.as_secs()));
         None
     }
 }
@@ -372,7 +374,10 @@ pub(crate) fn methode(
         Some(Ok(valeur)) => Retour::Valeur(valeur),
         Some(Err(code)) => Retour::Refuse(code.0),
         None => {
-            crate::journal::erreur("WMI", &format!("délai de {} s dépassé\n{quoi}", delai.as_secs()));
+            crate::journal::erreur(
+                Contexte::Wmi,
+                &format!("délai de {} s dépassé\n{quoi}", delai.as_secs()),
+            );
             Retour::SansReponse
         }
     }

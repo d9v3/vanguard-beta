@@ -162,7 +162,7 @@ fn retirer_toutes(r: &INetFwRules, nom: &str) -> windows::core::Result<usize> {
 /// Dans un fil COM à part, avec un délai : le Pare-feu Windows qui ne répond pas ne fige pas le processus élevé.
 fn dans_com(geste: impl FnOnce(&INetFwPolicy2, &INetFwRules) -> Resultat + Send + 'static) -> Resultat {
     let r = super::wmi::com_delai(
-        "Pare-feu Windows",
+        crate::compte_rendu::Contexte::PareFeuWindows,
         "INetFwPolicy2",
         std::time::Duration::from_secs(60),
         move || {
@@ -639,7 +639,7 @@ fn categorie(r: ReseauCategorie) -> Resultat {
     }
     let guid = windows::core::GUID::from_u128(r.guid.0);
     let nlm = super::wmi::com_delai(
-        "Réseaux",
+        crate::compte_rendu::Contexte::Reseaux,
         "INetworkListManager",
         std::time::Duration::from_secs(60),
         move || {
@@ -675,7 +675,7 @@ fn categorie(r: ReseauCategorie) -> Resultat {
 pub(crate) fn categorie_en_direct(guid: GuidReseau) -> Option<i32> {
     let guid = windows::core::GUID::from_u128(guid.0);
     super::wmi::com_delai(
-        "Réseaux",
+        crate::compte_rendu::Contexte::Reseaux,
         "INetworkListManager::GetCategory",
         std::time::Duration::from_secs(20),
         move || {

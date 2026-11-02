@@ -63,7 +63,9 @@ def signature(entree):
     adresses : leurs remplaçants sont tirés au hasard à chaque envoi, la même erreur doit retrouver son ticket."""
     lignes = entree.splitlines()
     contexte = lignes[1].strip() if len(lignes) > 1 else ""
-    detail = next((l.strip() for l in lignes[2:] if l.strip()), "")
+    # La ligne de champs (« § genre=… », depuis la 0.89.1) vient après le détail et ne compte pas : une entrée au
+    # détail vide garde la signature qu'elle avait avant.
+    detail = next((l.strip() for l in lignes[2:] if l.strip() and not l.startswith("§ ")), "")
     stable = f"{contexte} {detail}"
     for adresse in (confidentialite.MAC, confidentialite.MAC_TIRETS, confidentialite.IPV6, confidentialite.IPV4):
         stable = adresse.sub("<adresse>", stable)

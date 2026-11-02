@@ -1,0 +1,11 @@
+== 2026-11-02 10:00 UTC · vanguard 0.89.1 · Fedora Linux 43 6.17.1 · fr · bilan
+[plantage]
+  panicked at src/machine/mod.rs:366:12:
+  index out of bounds
+§ genre=plantage contexte=plantage regle=- code=- lieu=src/machine/mod.rs:366:12
+
+== 2026-11-02 10:01 UTC · vanguard 0.89.1 · Windows 10.0.26200.9711 · en · autotest
+[autotest LNX-PFE-001]
+  [absent-natif] 1 en plus, 0 en moins, 0 différent(s) ; règles LNX-PFE-001
+§ genre=contredite contexte=autotest regle=LNX-PFE-001 code=absent-natif lieu=-
+

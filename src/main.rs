@@ -818,7 +818,7 @@ impl Session {
                 self.scan_le = du_reseau_local.then(std::time::Instant::now);
             }
             Err(e) => {
-                journal::erreur("scan réseau", &e);
+                journal::erreur(crate::compte_rendu::Contexte::ScanReseau, &e);
                 eprintln!("{}", trf!("Scan réseau impossible : {e}", "Network scan failed: {e}"));
             }
         }
@@ -847,7 +847,7 @@ impl Session {
                     self.scan_le = Some(std::time::Instant::now());
                 }
                 Err(e) => {
-                    journal::erreur("audit du réseau", &e);
+                    journal::erreur(crate::compte_rendu::Contexte::AuditReseau, &e);
                     let a = audit::AuditReseau::sans_reseau(&e);
                     audit::rendre(&a, json);
                     self.audit_reseau = Some(a);
@@ -3539,7 +3539,7 @@ async fn main() {
     journal::installer();
     #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
     if let Err(e) = relro {
-        journal::erreur("protection RELRO", &e.to_string());
+        journal::erreur(crate::compte_rendu::Contexte::ProtectionRelro, &e.to_string());
     }
     #[cfg(unix)]
     protection::cle::proteger_cle();
@@ -3599,7 +3599,7 @@ async fn main() {
                 silencieux: false,
             };
             if let Err(e) = reseau::executer(o).await {
-                journal::erreur("scan réseau", &e);
+                journal::erreur(crate::compte_rendu::Contexte::ScanReseau, &e);
                 eprintln!("{}", trf!("Erreur : {e}", "Error: {e}"));
                 machine::quitter(1);
             }
