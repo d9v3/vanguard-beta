@@ -636,8 +636,22 @@ fn lecture_stricte() {
         &avec(&|v| v["causes"][0]["n"] = json!(CAUSE_N_MAX + 1)),
         "une cause trop nombreuse",
     );
+    // Le gabarit suit le texte changé : seule la longueur fait la différence entre les deux.
+    let mut juste_300 = base.clone();
+    juste_300["textes"][0]["texte"] = json!("é".repeat(TEXTE_MAX / 2));
+    regabariter(
+        &mut juste_300,
+        &[Pas::Clef("textes".into()), Pas::Rang(0), Pas::Clef("texte".into())],
+    );
+    assert!(lire(&octets(&juste_300)).is_ok(), "un texte de 300 octets passe");
     refuse(
-        &avec(&|v| v["textes"][0]["texte"] = json!("é".repeat(151))),
+        &avec(&|v| {
+            v["textes"][0]["texte"] = json!("é".repeat(TEXTE_MAX / 2 + 1));
+            regabariter(
+                v,
+                &[Pas::Clef("textes".into()), Pas::Rang(0), Pas::Clef("texte".into())],
+            );
+        }),
         "un texte de plus de 300 octets",
     );
     refuse(
@@ -744,6 +758,53 @@ fn aller<'a>(v: &'a mut Value, chemin: &[Pas]) -> &'a mut Value {
     })
 }
 
+/// Le gabarit d'un texte quelconque, calculé comme `Gabarit::de` (chiffres réduits à un 0, SHA-256, 8 octets) :
+/// pour changer le texte d'un lot sans que le gabarit, devenu faux, ne le fasse refuser à lui seul.
+fn gabarit_brut(s: &str) -> String {
+    use sha2::Digest as _;
+    let mut forme = String::new();
+    let mut dans_nombre = false;
+    for x in s.chars() {
+        if !(x.is_ascii_digit() && dans_nombre) {
+            forme.push(if x.is_ascii_digit() { '0' } else { x });
+        }
+        dans_nombre = x.is_ascii_digit();
+    }
+    sha2::Sha256::digest(forme.as_bytes())
+        .iter()
+        .take(8)
+        .fold(String::new(), |mut g, o| {
+            let _ = write!(g, "{o:02x}");
+            g
+        })
+}
+
+/// Si le chemin mène au texte d'une entrée qui porte son gabarit, le gabarit suit le texte.
+fn regabariter(m: &mut Value, chemin: &[Pas]) {
+    let Some((Pas::Clef(k), parent)) = chemin.split_last() else {
+        return;
+    };
+    let objet = aller(m, parent);
+    if k == "texte"
+        && objet.get("gabarit").is_some()
+        && let Some(t) = objet[k.as_str()].as_str()
+    {
+        objet["gabarit"] = json!(gabarit_brut(t));
+    }
+}
+
+#[test]
+fn gabarit_brut_comme_rust() {
+    for t in [
+        "échec de lecture",
+        "délai 30 s après 2 essais",
+        "code 12 puis 345 fin",
+        "e\u{301}cole <url>",
+    ] {
+        assert_eq!(gabarit_brut(t), Gabarit::de(&texte(t)).as_str(), "{t}");
+    }
+}
+
 /// Les textes essayés à chaque feuille : bons et mauvais exemples de chaque motif, et les longueurs aux bornes.
 fn sondes() -> Vec<String> {
     let mut s: Vec<String> = [
@@ -807,6 +868,7 @@ fn candidats(feuille: &[&Value]) -> Vec<Value> {
         json!(2),
         json!(1.5),
         json!(1.0),
+        json!(2.0),
         json!(-1),
         Value::Null,
         json!(true),
@@ -888,6 +950,7 @@ fn chaque_feuille_changee_tranche_pareil() {
                     for cand in candidats(&feuille) {
                         let mut copie = e0.clone();
                         *aller(&mut copie, sous) = cand.clone();
+                        regabariter(&mut copie, sous);
                         let mut m = base.clone();
                         *aller(&mut m, chemin) = json!([e0, copie]);
                         trancher(
@@ -910,6 +973,7 @@ fn chaque_feuille_changee_tranche_pareil() {
                 for cand in candidats(&js().feuille(chemin)) {
                     let mut m = base.clone();
                     *aller(&mut m, chemin) = cand.clone();
+                    regabariter(&mut m, chemin);
                     trancher(&m, Some(chemin), &|| format!("{cand} en {chemin:?}"), &mut oui_non);
                 }
             }
@@ -1111,7 +1175,19 @@ fn le_motif_ouvert_suit_le_nettoyage() {
                 u32::from(x)
             );
         }
-        for faux in ["<", ">", "a<b", "<url", "<chemin .>", "<chemin .abcdef>", "<autre>"] {
+        for faux in [
+            "<",
+            ">",
+            "a<b",
+            "<url",
+            "<chemin .>",
+            "<chemin .abcdef>",
+            "<autre>",
+            "a\u{85}b",
+            "a\u{2028}b",
+            "a\u{2029}b",
+            "a\u{9f}b",
+        ] {
             assert!(!classe.accepte(faux), "{def} accepte {faux:?}");
         }
     }
@@ -1690,7 +1766,13 @@ fn troncature_dans_l_ordre() {
     let mut apres = avant.clone();
     apres.tronquer();
     verifier_troncature(&avant, &apres);
-    // Ce lot-là entame les règles notables : textes et objets sont partis, le reste est entier.
+    // Ce lot-là entame les règles notables : toutes les ordinaires et au moins une notable sont parties, textes et
+    // objets aussi, le reste est entier.
+    let ordinaires = avant.regles.entrees().iter().filter(|r| !r.notable()).count();
+    assert!(
+        usize::try_from(apres.retires.regles.get()).unwrap() > ordinaires,
+        "aucune règle notable n'est partie"
+    );
     assert!(apres.textes.est_vide() && apres.objets.est_vide());
     assert!(apres.regles.entrees().iter().all(RegleEnvoyee::notable));
     assert!(!apres.causes.est_vide() && apres.causes.entrees().len() == CAUSES_MAX);

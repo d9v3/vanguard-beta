@@ -274,6 +274,14 @@ fn recueillir(v: &Value, motifs: &mut BTreeMap<String, Motif>) {
     }
 }
 
+fn egaux(a: &Value, b: &Value) -> bool {
+    match (a.as_f64(), b.as_f64()) {
+        // Égalité exacte voulue : 2 et 2.0 sont le même nombre, 2 et 2.0000001 non.
+        (Some(x), Some(y)) => x.total_cmp(&y).is_eq(),
+        _ => a == b,
+    }
+}
+
 /// Le schéma lu, motifs compilés une fois.
 pub(super) struct Schema {
     pub(super) racine: Value,
@@ -360,8 +368,9 @@ impl Schema {
                 "array" => v.is_array(),
                 t => panic!("type {t} inconnu de l'essai"),
             },
-            "const" => v == regle,
-            "enum" => regle.as_array().expect("enum").contains(v),
+            // Comme ajv et python-jsonschema : deux nombres égaux sont égaux, même écrits 2 et 2.0.
+            "const" => egaux(v, regle),
+            "enum" => regle.as_array().expect("enum").iter().any(|x| egaux(v, x)),
             "pattern" => v
                 .as_str()
                 .is_none_or(|t| self.motifs[regle.as_str().unwrap_or("")].accepte(t)),
