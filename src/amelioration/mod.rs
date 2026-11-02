@@ -786,6 +786,12 @@ pub(crate) fn peut_effacer(l: Lieu) -> bool {
     !(l.essai || l.wine || l.ci || l.depuis_une_cle || l.en_root)
 }
 
+/// `peut_effacer` pour ce processus : où « Ne pas partager » vide aussi la file de l'envoi (`envoi`).
+#[allow(dead_code)] // branché par A5, par `envoi::arreter_et_vider`
+pub(crate) fn effacement_permis() -> bool {
+    peut_effacer(lieu())
+}
+
 /// « Ne pas partager » (A5) : le relevé s'arrête pour ce processus, sa mémoire est vidée, et ce qui a été écrit est
 /// effacé (`peut_effacer`). Un relevé en cours ne réécrit rien après (`ecrire_si_permis`) ; un autre processus
 /// Vanguard déjà lancé, lui, ne le sait pas : l'interrupteur gardé sur le disque est à A5.
@@ -887,7 +893,6 @@ pub(crate) fn reglages_du(etat: &crate::autotest::reglage::Etat, jour: &str) -> 
 
 /// Le lot du jour `jour`, sur la base `lot` (version, plateforme, activité posées par A4) ; `None` sans fichier du
 /// jour qu'on puisse croire. Le lot rendu passe toujours `envoi::lire` (essai) : c'est à A4 de l'envoyer, ou non.
-#[cfg_attr(not(test), allow(dead_code))] // branché par A4 (l'envoi)
 pub(crate) fn lot_du_jour(
     dossier: &Path,
     jour: chrono::NaiveDate,

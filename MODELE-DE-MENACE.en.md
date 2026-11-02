@@ -124,6 +124,14 @@ itself:
 - **With an abuse.ch key**: the key, to abuse.ch.
 - **In public Wi-Fi mode**: DNS queries, to CIRA's Canadian Shield.
 - **The update check**: a request to GitHub.
+- **The improvement counters**: nothing for now. The relay that will receive them has no address yet; without it,
+  Vanguard prepares no sending and opens no connection (a test counts it). The day it has one, it will enter the
+  tables above, and only with your consent: at most one batch a day, made of the counters of the local record (the
+  platform reduced to a closed list, no name, path, address or secret), strictly re-read before leaving, to the
+  relay alone; only the response code is read, never the body, no redirect is followed, at most three attempts a
+  day, 24 h of waiting after a 429 or a 503, seven days kept at most. Nothing leaves under the tests, under Wine, in
+  CI, with `VANGUARD_ENVOI=0`, offline, from a key or as root; "Do not share" empties the queue and the
+  installation identifier.
 - A vulnerability report prepared by Vanguard is never sent by it: the person reads it and sends it themselves.
 
 This list is closed: Vanguard refuses to reach over HTTPS a host that is not in the first table (even at the end of

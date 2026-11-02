@@ -259,6 +259,34 @@ pub(crate) fn envoyer(demande: Demande) -> Option<Reponse> {
     .flatten()
 }
 
+/// Un POST de JSON dont seul le code de réponse compte (les lots de l'amélioration, `envoi`) : le corps de la
+/// réponse n'est jamais lu, la connexion tombe avec elle. Un relais piraté ne peut donc rien faire faire au
+/// programme : ni texte à afficher, ni réponse sans fin qui le retiendrait (le délai court jusqu'aux en-têtes
+/// seulement), ni redirection suivie (une redirection porterait le lot ailleurs que vers l'hôte de `HOTES`).
+/// `None` : adresse hors de `HOTES`, pas de réponse dans les délais.
+pub(crate) fn poster_sans_lire(adresse: &str, corps: Vec<u8>, connexion: Duration, delai: Duration) -> Option<u16> {
+    let adresse = lire_permise(adresse)?;
+    a_part(async move {
+        fournisseur();
+        let client = reqwest::Client::builder()
+            .user_agent(AGENT)
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(connexion.min(delai))
+            .timeout(delai)
+            .build()
+            .ok()?;
+        let reponse = client
+            .post(adresse)
+            .header("content-type", "application/json")
+            .body(corps)
+            .send()
+            .await
+            .ok()?;
+        Some(reponse.status().as_u16())
+    })
+    .flatten()
+}
+
 /// GET dont seule une réponse 200 compte (comme « curl -f ») : son texte.
 pub(crate) fn texte(adresse: &str, delai: Duration) -> Option<String> {
     envoyer(Demande::get(adresse, delai))

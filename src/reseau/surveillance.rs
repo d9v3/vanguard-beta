@@ -718,9 +718,12 @@ async fn attendre_reseau(
 pub async fn surveiller() {
     // Les exemples du guide se renouvellent pendant la passe (au plus une fois par semaine), sans la retarder.
     let exemples = std::thread::spawn(crate::guide::renouveler_exemples);
+    // Le lot d'amélioration du jour aussi (rien tant que le relais n'existe pas) ; ses délais bornent l'attente.
+    crate::envoi::en_fond(true);
     passe().await;
     let _ = exemples.join();
     crate::autotest::attendre_hebdomadaire();
+    crate::envoi::attendre();
 }
 
 async fn passe() {
@@ -931,8 +934,9 @@ pub fn active() -> bool {
     active
 }
 
-/// La minuterie, la tâche planifiée (non désactivée) ou l'agent existent-ils ?
-fn installee() -> bool {
+/// La minuterie, la tâche planifiée (non désactivée) ou l'agent existent-ils ? Sans rien noter (l'envoi le demande
+/// pour son lot, `active` le note en plus).
+pub(crate) fn installee() -> bool {
     #[cfg(target_os = "linux")]
     return minuterie_activee(&format!("{NOM}.timer"));
     #[cfg(windows)]

@@ -111,6 +111,10 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     local(crate::amelioration::JOURS, "amelioration"),
     scelle(crate::amelioration::SUIVI, "amelioration"),
     scelle(crate::amelioration::MATERIEL, "amelioration"),
+    // L'envoi (A4) : la file des lots et l'état, non scellés (voir NON_SCELLES) ; le verrou d'un envoi à la fois.
+    local(crate::envoi::FILE, "envoi"),
+    local(crate::envoi::ETAT, "envoi"),
+    local("envoi.lock", "envoi"),
     scelle(crate::agent::journal::JOURNAL, "agent"),
     local("agent.lock", "agent"),
     // La tête du journal des événements : retirer la fin du journal sans elle se voit.
@@ -501,6 +505,17 @@ mod tests {
         ("evenements.verrou", "verrou, sans contenu"),
         ("evenements.lock", "verrou, sans contenu"),
         ("agent.lock", "verrou, sans contenu"),
+        ("envoi.lock", "verrou, sans contenu"),
+        (
+            "envoi/file",
+            "les lots à envoyer, relus par la lecture stricte du schéma 2 avant chaque envoi et jetés sinon : un lot \
+             forgé ne porte que ce que le schéma permet, ce qu'un programme du compte pourrait envoyer lui-même",
+        ),
+        (
+            "envoi/etat.json",
+            "les dates et les essais de l'envoi, bornés à leur relecture (24 h d'attente au plus, 3 essais par jour), \
+             et l'identifiant d'installation : ils ne coupent aucune défense et ne donnent aucun accord",
+        ),
         (
             "examens",
             "copies datées des examens montrées au rapport ; le dernier résultat de chaque outil est scellé",

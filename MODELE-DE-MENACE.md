@@ -126,6 +126,14 @@ envoie lui-même :
 - **Avec une clé abuse.ch** : la clé, à abuse.ch.
 - **En mode Wi-Fi public** : les requêtes DNS, au Bouclier canadien de l'ACEI.
 - **La recherche de mise à jour** : une demande à GitHub.
+- **Les compteurs d'amélioration** : rien pour l'instant. Le relais qui les recevra n'a pas encore d'adresse ;
+  sans elle, Vanguard ne prépare aucun envoi et n'ouvre aucune connexion (un essai le compte). Le jour où il en aura
+  une, elle entrera dans les tableaux ci-dessus, et seulement avec votre accord : un lot par jour au plus, fait des
+  compteurs du relevé local (la plateforme réduite à une liste fermée, aucun nom, chemin, adresse ni secret), relu
+  strictement avant de partir, au relais seul ; seul le code de réponse est lu, jamais le corps, aucune redirection
+  n'est suivie, trois essais par jour au plus, 24 h d'attente après un 429 ou un 503, sept jours gardés au plus. Rien
+  ne part sous les essais, sous Wine, dans la CI, avec `VANGUARD_ENVOI=0`, hors ligne, depuis une clé ni en root ;
+  « Ne pas partager » vide la file et l'identifiant d'installation.
 - Un rapport de faille préparé par Vanguard n'est jamais envoyé par lui : la personne le relit et l'envoie elle-même.
 
 Cette liste est fermée : Vanguard refuse de joindre en HTTPS un hôte qui n'est pas dans le premier tableau (même au

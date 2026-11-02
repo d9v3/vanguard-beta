@@ -40,6 +40,7 @@ mod diagnostic;
 mod dns_rapide;
 mod donnees;
 mod entretien;
+mod envoi;
 #[cfg(test)]
 mod essais;
 mod evenements;
@@ -3582,6 +3583,8 @@ async fn main() {
     }
     let matches = ligne_de_commande().get_matches();
     let args = Args::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    // Le lot d'amélioration en attente, dans un fil qui ne retarde jamais la sortie (rien sans relais).
+    crate::envoi::en_fond(false);
     // Le relevé local ne garde que le nom d'une sous-commande qui est un outil de la table, jamais ses arguments.
     let outil_ligne = matches
         .subcommand_name()
