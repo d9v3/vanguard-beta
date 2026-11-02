@@ -17,8 +17,9 @@
 //! des sources de menaces ; un bilan lance toujours toutes ses règles. Ce module n'importe ni `risk` ni un module de
 //! détection (garde : `reglage_ne_touche_pas_la_detection`).
 //!
-//! Limite dite : deux processus (surveillance et Paramètres) qui écrivent en même temps, le dernier l'emporte ;
-//! l'écriture scellée évite le fichier cassé, pas le changement perdu (rare : une passe par heure).
+//! Deux processus (surveillance et Paramètres) peuvent écrire en même temps : la surveillance relit le fichier juste
+//! avant d'écrire et n'écrit pas s'il a changé depuis sa lecture, donc un changement voulu n'est pas écrasé. Reste
+//! l'instant entre cette relecture et l'écriture (une passe par heure) ; au pire une montée se perd et revient.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -251,11 +252,12 @@ fn ajuster_dans(
     if super::lecture_seule::active() {
         return;
     }
-    let mut e = match lire_dans(dossier) {
-        Lu::Absent => Etat::default(),
-        Lu::Cru(e) => e,
+    let avant = match lire_dans(dossier) {
+        Lu::Absent => None,
+        Lu::Cru(e) => Some(e),
         Lu::Douteux => return,
     };
+    let mut e = avant.clone().unwrap_or_default();
     if e.coupe {
         return;
     }
@@ -265,7 +267,14 @@ fn ajuster_dans(
         .into_iter()
         .map(|f| (f.regle, f.max_ms))
         .collect();
-    if ajuster_etat(&mut e, aujourd_hui, &frolent, delai_du_code) {
+    // Relu juste avant d'écrire : un changement voulu (annuler, tout remettre, couper) écrit depuis la première
+    // lecture n'est jamais écrasé ; la montée attend la prochaine passe.
+    let inchange = match lire_dans(dossier) {
+        Lu::Absent => avant.is_none(),
+        Lu::Cru(x) => avant.as_ref() == Some(&x),
+        Lu::Douteux => false,
+    };
+    if ajuster_etat(&mut e, aujourd_hui, &frolent, delai_du_code) && inchange {
         let _ = ecrire_dans(dossier, &e.borne());
     }
 }

@@ -28,6 +28,7 @@ import datetime
 import hashlib
 import json
 import re
+import subprocess
 import sys
 import unicodedata
 from pathlib import Path
@@ -56,8 +57,10 @@ CR_LECTURE_MAX = 4 * 1024 * 1024
 
 def motif_de(spec):
     """Le motif d'un champ du schéma : son expression régulière, ou ses valeurs permises, littérales ; en ASCII
-    seulement (`(?a:…)`), comme en Rust : `\\d` ne prend pas les chiffres d'autres écritures."""
-    return f"(?a:{motif_brut(spec)})"
+    seulement (`(?a:…)`), comme en Rust : `\\d` ne prend pas les chiffres d'autres écritures. Sa longueur maximale
+    (`maxLength`) en fait partie : le motif seul ne borne pas un chemin."""
+    borne = f"(?=.{{0,{spec['maxLength']}}}\\Z)" if "maxLength" in spec else ""
+    return f"(?a:{borne}(?:{motif_brut(spec)}))"
 
 
 def motif_brut(spec):
@@ -342,10 +345,15 @@ def lire_canaris(veille, jour):
     }
 
 
+def cle_version(v):
+    """Une version en nombres, pour la comparer (« 0.9.0 » avant « 0.10.0 »)."""
+    return tuple(int(x) for x in v.split("."))
+
+
 def version_recente(versions):
     """La plus récente des versions d'une cause (« 0.89.1 »), ou None si aucune n'a passé la liste blanche."""
     sures = [v for v in versions if isinstance(v, str) and re.fullmatch(MOTIFS["version-vg"], v)]
-    return max(sures, key=lambda v: tuple(int(x) for x in v.split(".")), default=None)
+    return max(sures, key=cle_version, default=None)
 
 
 def score_cause(c):
@@ -360,10 +368,33 @@ COMPTES_JOURNAL = re.compile(r"(?a:nouvelles=(\d{1,6}) file=(\d{1,3}) hors-file=
                              r"relu=([01]))")
 
 
-def lire_journal(t, etapes):
+def lieu_connu(arbre, lieu, versions):
+    """Le lieu d'une cause s'il désigne un fichier qui existe : dans l'arbre de la nuit, ou à l'étiquette de l'une de
+    ses versions ; sinon « (retiré) ». Son motif seul laisserait passer des mots choisis
+    (`src/ignore_previous_instructions/….rs:1:1`) : un lieu forgé n'atteint ni l'IA ni sa commande `rejouer`."""
+    if lieu in (None, RETIRE):
+        return lieu
+    fichier = lieu.rsplit(":", 2)[0]
+    racine = Path(arbre)
+    if arbre and (racine / fichier).is_file() and (racine / fichier).resolve().is_relative_to(racine.resolve()):
+        return lieu
+    for v in versions:
+        if v == RETIRE:
+            continue
+        try:
+            r = subprocess.run(["git", "-C", str(racine), "cat-file", "-e", f"v{v}:{fichier}"],
+                               stdin=subprocess.DEVNULL, capture_output=True, timeout=10, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            return RETIRE
+        if r.returncode == 0:
+            return lieu
+    return RETIRE
+
+
+def lire_journal(t, etapes, arbre=""):
     """Le triage du journal des erreurs de la nuit (étape « journal ») : sa ligne de comptes, lue par un motif exact,
-    et la file, refiltrée champ par champ (lire_compte_rendu). Rien d'autre : jamais le texte d'une entrée. None
-    quand l'étape n'a pas tourné."""
+    et la file, refiltrée champ par champ (lire_compte_rendu), chaque lieu vérifié dans l'arbre (lieu_connu). Rien
+    d'autre : jamais le texte d'une entrée. None quand l'étape n'a pas tourné."""
     e = next((x for x in etapes if x.get("nom") == "journal"), None)
     if e is None or e.get("etat") != "ok":
         return None
@@ -374,6 +405,8 @@ def lire_journal(t, etapes):
         return {"lu": False, "raison": "comptes illisibles" if m is None else f"file refusée ({raison or 'source'})",
                 "trop": False, "file": []}
     nouvelles, file, hors, trop, refusees, relu = (int(x) for x in m.groups())
+    for c in cr["causes"]:
+        c["lieu"] = lieu_connu(arbre, c["lieu"], c["versions"])
     return {"lu": True, "nouvelles": nouvelles, "file_comptee": file, "hors_file": hors, "trop": bool(trop),
             "refusees": refusees, "relu": bool(relu), "file": [] if trop else cr["causes"]}
 
@@ -490,12 +523,12 @@ def lire_lenteur(veille):
 
 def alertes_de(r):
     """Les alertes qui peuvent appeler l'IA, par priorité : rustsec, fuzz, journal, verifier, proptest, canari,
-    lenteur, lien."""
+    lenteur, lien ; une cause du journal venue de la clé, au rang des canaris, juste après eux."""
     tete = r["tete_prochaine"]
     alertes = []
 
-    def ajouter(genre, cle, **champs):
-        alertes.append({"type": genre, "cle": cle, "priorite": PRIORITE[genre],
+    def ajouter(genre, cle, priorite=None, **champs):
+        alertes.append({"type": genre, "cle": cle, "priorite": priorite or PRIORITE[genre],
                         "signature": f"{genre}:{cle}:{tete if genre == 'verifier' else ''}".rstrip(":"),
                         **champs})
 
@@ -512,7 +545,11 @@ def alertes_de(r):
             recente = version_recente(c["versions"])
             if c["cle"] == RETIRE or recente is None:
                 continue
-            ajouter("journal", f"{c['cle']}:{recente}", cause=c["cle"], recente=recente, genre_cause=c["genre"],
+            # Une cause rapatriée par la clé (journal-cle.txt, qu'un autre ordinateur peut avoir forgé) passe après les
+            # canaris : un journal forgé ne prive pas les vraies alertes du budget de l'IA.
+            ajouter("journal", f"{c['cle']}:{recente}",
+                    priorite=None if c["provenance"] == "cet-ordinateur" else PRIORITE["canari"],
+                    cause=c["cle"], recente=recente, genre_cause=c["genre"],
                     **{k: c[k] for k in ("regle", "contexte", "lieu", "code", "compte", "versions", "systemes",
                                          "provenance")}, score=score_cause(c))
     for e in r.get("verifier", []):
@@ -535,7 +572,7 @@ def alertes_de(r):
         if lien["nuits"] >= 3:
             ajouter("lien", hashlib.sha256(lien["url"].encode()).hexdigest()[:16], url=lien["url"],
                     nuits=lien["nuits"])
-    return sorted(alertes, key=lambda a: a["priorite"])
+    return sorted(alertes, key=lambda a: (a["priorite"], a["type"] == "journal"))
 
 
 def etape(r, nom):
@@ -559,7 +596,7 @@ def nuit(a):
         "rustsec": lire_audit(t, veille, set(a.exceptions or [])),
         "canaris": lire_canaris(veille, a.jour),
         "liens": lire_liens(t, veille, a.jour),
-        "journal": lire_journal(t, etapes),
+        "journal": lire_journal(t, etapes, a.arbre),
     }
     noter_durees(t, veille, a.jour, r["tete_prochaine"], etapes)
     r["lenteur"] = lire_lenteur(veille)
@@ -1143,10 +1180,12 @@ def lire_compte_rendu(chemin):
     if len(causes) > SCHEMA_CR["properties"]["causes"]["maxItems"]:
         return None, "trop-de-causes"
     requises = set(SCHEMA_CR["$defs"]["cause"]["required"])
+    version = sur("version-vg", cr["version"])
+    plafond = cle_version(version) if version != RETIRE else None
     sortie = {
         "schema": cr["schema"],
         "source": sur("source", cr["source"]),
-        "version": sur("version-vg", cr["version"]),
+        "version": version,
         "base_git": sur("git", cr["base_git"]),
         "causes": [],
     }
@@ -1165,6 +1204,10 @@ def lire_compte_rendu(chemin):
             if not isinstance(v, list) or not CR_CAUSE[borne_k]["minItems"] <= len(v) <= CR_CAUSE[borne_k]["maxItems"]:
                 return None, "forme"
             propre[k] = [sur(m, x) for x in v]
+        # Une version plus récente que le programme qui a écrit le compte rendu est forgée : elle ferait taire la
+        # vraie cause (sa signature serait notée traitée à une version que rien n'atteint).
+        propre["versions"] = [x if plafond is not None and x != RETIRE and cle_version(x) <= plafond else RETIRE
+                              for x in propre["versions"]]
         sortie["causes"].append({k: propre[k] for k in SCHEMA_CR["$defs"]["cause"]["required"]})
     return sortie, None
 

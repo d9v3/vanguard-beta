@@ -175,9 +175,17 @@ pub(crate) fn suivre(
         tranche.truncate(i + 1);
     }
     let lecture = journal::lire(&tranche);
-    let refusees = lecture.refusees + lecture.en_trop;
+    let mut refusees = lecture.refusees + lecture.en_trop;
+    // Une version plus récente que le programme du triage (bâti à la tête de la veille, jamais en retard sur une
+    // version publiée) est forgée : elle ferait taire la vraie cause (`est_traitee`) ou chasserait ses vraies versions
+    // (`VERSIONS_MAX`). Refusée, comptée avec les autres.
+    let plafond = version_cle(&Version::du_programme());
     for e in lecture.entrees {
-        ajouter(&mut causes, cause_de(e, provenance));
+        if version_cle(&e.version) > plafond {
+            refusees = refusees.saturating_add(1);
+        } else {
+            ajouter(&mut causes, cause_de(e, provenance));
+        }
     }
     let position = position + tranche.len() as u64;
     let debut_octets = position.min(debut.len() as u64);
@@ -494,18 +502,18 @@ mod tests {
         let b = Banc::new();
         let mut ici = String::new();
         for _ in 0..30 {
-            ici.push_str(&entree("0.89.1", "Arch Linux 6.17", &wmi()));
+            ici.push_str(&entree("0.87.1", "Arch Linux 6.17", &wmi()));
         }
         Banc::ajouter(&b.ici, &ici);
         let mut cle = String::new();
         for (v, s) in [
-            ("0.88.0", "Windows 10.0.26200"),
-            ("0.89.0", "macOS 15.1 (Apple Silicon)"),
-            ("0.89.1", "Ubuntu 24.04 6.8"),
+            ("0.86.0", "Windows 10.0.26200"),
+            ("0.87.0", "macOS 15.1 (Apple Silicon)"),
+            ("0.87.1", "Ubuntu 24.04 6.8"),
         ] {
             cle.push_str(&entree(v, s, &regle("WIN-MAJ-001")));
         }
-        cle.push_str(&entree("0.89.1", "Ubuntu 24.04 6.8", &plantage()));
+        cle.push_str(&entree("0.87.1", "Ubuntu 24.04 6.8", &plantage()));
         Banc::ajouter(&b.cle, &cle);
         let t = b.nuit();
         assert_eq!((t.nouvelles, t.hors_file, t.trop, t.refusees), (3, 0, false, 0));
@@ -533,12 +541,12 @@ mod tests {
     #[test]
     fn deux_nuits() {
         let b = Banc::new();
-        Banc::ajouter(&b.ici, &entree("0.89.1", "Arch Linux 6.17", &wmi()));
+        Banc::ajouter(&b.ici, &entree("0.87.1", "Arch Linux 6.17", &wmi()));
         assert_eq!(b.nuit().nouvelles, 1);
         let t = b.nuit();
         assert_eq!((t.nouvelles, t.file.len(), t.file[0].compte, t.relu), (0, 1, 1, false));
-        Banc::ajouter(&b.ici, &entree("0.89.1", "Arch Linux 6.17", &wmi()));
-        Banc::ajouter(&b.ici, &entree("0.89.1", "Arch Linux 6.17", &plantage()));
+        Banc::ajouter(&b.ici, &entree("0.87.1", "Arch Linux 6.17", &wmi()));
+        Banc::ajouter(&b.ici, &entree("0.87.1", "Arch Linux 6.17", &plantage()));
         let t = b.nuit();
         assert_eq!((t.nouvelles, t.file.len()), (1, 2));
         assert_eq!(t.file.iter().find(|c| c.genre == Genre::Erreur).unwrap().compte, 2);
@@ -549,20 +557,20 @@ mod tests {
     fn tronque_ou_remplace() {
         let b = Banc::new();
         let deux = [
-            entree("0.89.1", "Arch Linux 6.17", &wmi()),
-            entree("0.89.1", "Arch Linux 6.17", &wmi()),
+            entree("0.87.1", "Arch Linux 6.17", &wmi()),
+            entree("0.87.1", "Arch Linux 6.17", &wmi()),
         ]
         .concat();
         Banc::ajouter(&b.ici, &deux);
         b.nuit();
         // Remplacé par un plus court.
-        std::fs::write(&b.ici, entree("0.89.1", "Arch Linux 6.17", &wmi())).unwrap();
+        std::fs::write(&b.ici, entree("0.87.1", "Arch Linux 6.17", &wmi())).unwrap();
         let t = b.nuit();
         assert_eq!((t.relu, t.file[0].compte), (true, 1));
         // Remplacé par un plus long au début différent.
         std::fs::write(
             &b.ici,
-            [entree("0.89.0", "Arch Linux 6.17", &wmi()), deux.clone()].concat(),
+            [entree("0.87.0", "Arch Linux 6.17", &wmi()), deux.clone()].concat(),
         )
         .unwrap();
         let t = b.nuit();
@@ -577,20 +585,32 @@ mod tests {
     #[test]
     fn traitee_puis_revenue() {
         let b = Banc::new();
-        Banc::ajouter(&b.ici, &entree("0.89.1", "Arch Linux 6.17", &wmi()));
+        Banc::ajouter(&b.ici, &entree("0.87.1", "Arch Linux 6.17", &wmi()));
         let t = b.nuit();
         std::fs::write(
             &b.traitees,
             format!("rustsec:RUSTSEC-2025-0001\n{}\n", signature(&t.file[0])),
         )
         .unwrap();
-        Banc::ajouter(&b.ici, &entree("0.89.1", "Arch Linux 6.17", &wmi()));
-        Banc::ajouter(&b.cle, &entree("0.88.0", "Windows 10.0.26200", &wmi()));
+        Banc::ajouter(&b.ici, &entree("0.87.1", "Arch Linux 6.17", &wmi()));
+        Banc::ajouter(&b.cle, &entree("0.86.0", "Windows 10.0.26200", &wmi()));
         assert_eq!(b.nuit().file.len(), 0);
-        Banc::ajouter(&b.cle, &entree("0.90.0", "Windows 10.0.26200", &wmi()));
+        Banc::ajouter(&b.cle, &entree("0.88.0", "Windows 10.0.26200", &wmi()));
         let t = b.nuit();
         let [c] = t.file.as_slice() else { panic!("{t:?}") };
-        assert_eq!(signature(c), format!("journal:{}:0.90.0", c.cle));
+        assert_eq!(signature(c), format!("journal:{}:0.88.0", c.cle));
+    }
+
+    /// Une version plus récente que le programme est forgée : refusée, elle ne rejoint pas la vraie cause.
+    #[test]
+    fn version_du_futur_refusee() {
+        let b = Banc::new();
+        Banc::ajouter(&b.ici, &entree("0.87.1", "Arch Linux 6.17", &wmi()));
+        Banc::ajouter(&b.cle, &entree("999.999.999", "Windows 10.0.26200", &wmi()));
+        let t = b.nuit();
+        let [c] = t.file.as_slice() else { panic!("{t:?}") };
+        assert_eq!(c.versions, vec![Version::new("0.87.1").unwrap()]);
+        assert_eq!(t.refusees, 1);
     }
 
     /// Plus de 50 causes nouvelles : aucune file, et l'état n'avance pas.
@@ -599,7 +619,7 @@ mod tests {
         let b = Banc::new();
         let mut texte = String::new();
         for i in 0..60 {
-            texte.push_str(&entree("0.89.1", "Arch Linux 6.17", &regle(&format!("LNX-MAJ-{i:03}"))));
+            texte.push_str(&entree("0.87.1", "Arch Linux 6.17", &regle(&format!("LNX-MAJ-{i:03}"))));
         }
         Banc::ajouter(&b.cle, &texte);
         for _ in 0..2 {
@@ -617,7 +637,7 @@ mod tests {
         let b = Banc::new();
         let mut texte = String::new();
         for i in 0..30 {
-            texte.push_str(&entree("0.89.1", "Arch Linux 6.17", &regle(&format!("LNX-MAJ-{i:03}"))));
+            texte.push_str(&entree("0.87.1", "Arch Linux 6.17", &regle(&format!("LNX-MAJ-{i:03}"))));
         }
         Banc::ajouter(&b.ici, &texte);
         let t = b.nuit();
@@ -629,7 +649,7 @@ mod tests {
     #[test]
     fn etat_hostile() {
         let b = Banc::new();
-        Banc::ajouter(&b.ici, &entree("0.89.1", "Arch Linux 6.17", &wmi()));
+        Banc::ajouter(&b.ici, &entree("0.87.1", "Arch Linux 6.17", &wmi()));
         b.nuit();
         let mut etat: serde_json::Value = serde_json::from_slice(&std::fs::read(&b.etat).unwrap()).unwrap();
         etat["cet_ordinateur"]["causes"][0]["compte"] = 0.into();
@@ -675,7 +695,7 @@ mod tests {
             doublon in any::<prop::sample::Index>(),
         ) {
             let champs = [wmi(), plantage(), regle("LNX-PFE-001"), regle("WIN-MAJ-002")];
-            let versions = ["0.88.0", "0.89.0", "0.89.1"];
+            let versions = ["0.86.0", "0.87.0", "0.87.1"];
             let systemes = ["Arch Linux 6.17", "Windows 10.0.26200", "macOS 15.1 (Intel)"];
             let entrees: Vec<String> = choix
                 .iter()

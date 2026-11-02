@@ -1779,7 +1779,6 @@ Host *
         assert!(!a.fiable());
     }
 
-    /// Une règle qui plante ne fait pas tomber le bilan : son constat « erreur interne » n'est pas vérifié et garde
     /// L'ordre de départ (auto-réglage) ne change ni les constats ni l'ordre rendu, ni celui des durées : ceux de la
     /// liste, pour chaque permutation ; un ordre faux revient à celui de la liste.
     #[test]
@@ -1815,6 +1814,7 @@ Host *
         }
     }
 
+    /// Une règle qui plante ne fait pas tomber le bilan : son constat « erreur interne » n'est pas vérifié et garde
     /// l'identifiant de la règle.
     #[test]
     fn regle_qui_plante_garde_son_identifiant() {

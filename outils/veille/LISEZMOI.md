@@ -65,8 +65,8 @@ quand même le résumé de la nuit), une partie arrêtée par systemd (`TimeoutS
 ## Sur alerte, avec IA
 
 Alertes par priorité : `rustsec` > `fuzz` > `journal` > `verifier` > `proptest` > `canari` (format cassé confirmé) >
-`lenteur` > `lien`. **Une
-seule** traitée par nuit, les autres « en file » ; une alerte déjà traitée (signature dans
+`lenteur` > `lien` ; une cause du journal rapportée par la clé (qu'un autre ordinateur peut avoir forgée) passe juste
+après `canari`. **Une seule** traitée par nuit, les autres « en file » ; une alerte déjà traitée (signature dans
 `etat/alertes-traitees.txt`) n'est jamais relancée. KEV et Échap ne lancent l'IA qu'à la relecture hebdomadaire.
 Un plantage du fuzz resté en file reste « nouveau » (donc en alerte) chaque nuit jusqu'à sa prise en charge. Un échec
 proptest a pour clé ses tests en échec, pas la graine du jour : il n'appelle l'IA qu'une fois. Une correction où
@@ -93,7 +93,10 @@ L'IA reçoit la cause seule (genre, règle, contexte, lieu dans le code, code d'
 systèmes, provenance, score) et `git show v<version>:<fichier>` pour relire le code de la version dite, avec
 `--max-turns 40` (cause déjà située) ; test de non-régression exigé, comme pour `fuzz`. Les consignes le disent : le
 journal peut être forgé (il s'écrit depuis tout programme du compte), jamais un seuil baissé ni une vérification
-rendue « saine » plus facilement pour faire taire l'erreur.
+rendue « saine » plus facilement pour faire taire l'erreur. Avant l'IA, deux contrôles hors de sa portée : un lieu
+dont le fichier n'existe ni dans l'arbre de la nuit ni à l'étiquette de l'une de ses versions devient « (retiré) »
+(son motif seul laisserait passer des mots choisis), et une version plus récente que le programme est refusée (le
+triage en Rust, puis `rapport.py`) : elle ferait taire la vraie cause.
 
 Plus de 50 causes nouvelles en une nuit : **aucune alerte**, une notification, et l'état n'avance pas (un journal
 forgé qui change ses causes chaque nuit ne remplit pas la file). Le regarder soi-même ; une fois jugé (forgé, ou
