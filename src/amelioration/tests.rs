@@ -783,3 +783,19 @@ fn le_cout_par_evenement() {
     assert!(par_constat < std::time::Duration::from_millis(2), "{par_constat:?}");
     assert!(par_cause < std::time::Duration::from_millis(20), "{par_cause:?}");
 }
+
+/// « Non » gardé sur le disque (donné dans un autre Vanguard) : le relevé de ce processus n'écrit plus rien, ni le
+/// suivi ni le jour.
+#[test]
+fn un_non_sur_le_disque_arrete_le_releve() {
+    let d = Jetable::nouveau("releve-non");
+    crate::sceau::ecrire_dans(&d, crate::parametres::PARAMETRES, br#"{"partage":"non"}"#).unwrap();
+    let mut m = Memoire::default();
+    noter_choix_dans(&mut m, "LNX-MAJ-003", Choisi::Normale);
+    assert!(relever_dans(&d, date(2), &sans_mesures(), 2, &mut m, None).is_err());
+    assert!(!d.join("amelioration").exists());
+    // Le « oui » revenu, le relevé reprend.
+    crate::sceau::ecrire_dans(&d, crate::parametres::PARAMETRES, br#"{"partage":"oui"}"#).unwrap();
+    relever_dans(&d, date(2), &sans_mesures(), 2, &mut m, None).unwrap();
+    assert!(d.join(nom_jour(date(2))).exists());
+}

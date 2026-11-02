@@ -828,6 +828,12 @@ mod tests {
             "chemin passé à charger_juge, qui en tire dossier et nom pour le sceau",
         ),
         (
+            "parametres/partage.rs",
+            "parametres.json",
+            2,
+            "chemin passé à charger_juge (accord et refus relus sur le disque), qui en tire dossier et nom pour le sceau",
+        ),
+        (
             "passage.rs",
             "appareils.json",
             1,

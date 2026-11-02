@@ -166,6 +166,7 @@ fn cadre<'a>(dossier: &'a Path, relais: Option<&'a str>) -> Cadre<'a> {
         garde: ouverte(),
         relais,
         version: Version::new("0.89.1").unwrap(),
+        accord_le: None,
     }
 }
 
@@ -255,7 +256,7 @@ fn sans_relais_aucune_connexion() {
     assert!(!d.join("envoi.lock").exists());
 }
 
-/// Sous les essais, ce processus ne prépare rien (`amelioration::actif`, et l'accord d'A5 encore fermé).
+/// Sous les essais, ce processus ne prépare rien (`amelioration::actif`, et pas d'accord dans le dossier jetable).
 #[test]
 fn ce_processus_ne_prepare_rien_sous_les_essais() {
     let g = Garde::de_ce_processus();
@@ -814,4 +815,110 @@ fn windows_et_macos_se_reduisent() {
     let m = |v| plateforme::macos(v).map(|v| v.as_str().to_string());
     assert_eq!(m("15.1.1").as_deref(), Some("15"));
     assert_eq!(m("x"), None);
+}
+
+// --- L'accord (A5) -------------------------------------------------------------------------------------------------
+
+/// Rien de relevé jusqu'au jour de l'accord, ni ce jour-là, ne part : ni mis en file, ni gardé s'il y était déjà.
+#[test]
+fn rien_d_avant_l_accord_ne_part() {
+    fn hors_ligne(c: Cadre<'_>) -> Cadre<'_> {
+        Cadre {
+            garde: Garde {
+                hors_ligne: true,
+                ..ouverte()
+            },
+            ..c
+        }
+    }
+    let d = Jetable::nouveau("envoi-accord");
+    let c = hors_ligne(cadre(&d, Some("http://127.0.0.1:9/v1/lot")));
+    assert_eq!(
+        passer(
+            &Cadre {
+                accord_le: Some(jour(8)),
+                ..c
+            },
+            &[5, 6, 7, 8, 9]
+        )
+        .mis,
+        1
+    );
+    assert_eq!(en_file(&d), [jour(9)]);
+    assert_eq!(etat(&d).dernier_mis, Some(Jour::new("2026-11-09").unwrap()));
+    // Des lots d'avant l'accord déjà en file (un « non », puis un nouveau « oui ») sont jetés sans partir.
+    let d = Jetable::nouveau("envoi-accord-file");
+    let c = hors_ligne(cadre(&d, Some("http://127.0.0.1:9/v1/lot")));
+    assert_eq!(passer(&c, &[6, 7, 9]).mis, 3);
+    assert_eq!(en_file(&d), [jour(6), jour(7), jour(9)]);
+    let c = hors_ligne(cadre(&d, Some("http://127.0.0.1:9/v1/lot")));
+    assert_eq!(
+        passer(
+            &Cadre {
+                accord_le: Some(jour(8)),
+                ..c
+            },
+            &[6, 7, 9]
+        )
+        .mis,
+        0
+    );
+    assert_eq!(en_file(&d), [jour(9)]);
+    // L'accord du jour même : rien avant demain.
+    let d = Jetable::nouveau("envoi-accord-jour");
+    let c = hors_ligne(cadre(&d, Some("http://127.0.0.1:9/v1/lot")));
+    assert_eq!(
+        passer(
+            &Cadre {
+                accord_le: Some(jour(10)),
+                ..c
+            },
+            &[8, 9]
+        )
+        .mis,
+        0
+    );
+    assert_eq!(en_file(&d), Vec::<NaiveDate>::new());
+}
+
+/// « Non » gardé sur le disque, relu sous le verrou : même une garde ouverte (un autre Vanguard qui ne l'a pas
+/// encore vu) n'écrit ni ne poste rien.
+#[test]
+fn un_non_sur_le_disque_arrete_la_passe() {
+    let s = Serveur::lancer(Mode::Code(200));
+    let adresse = s.adresse();
+    let d = Jetable::nouveau("envoi-non");
+    crate::sceau::ecrire_dans(&d, crate::parametres::PARAMETRES, br#"{"partage":"non"}"#).unwrap();
+    assert_eq!(passer(&cadre(&d, Some(&adresse)), &[8, 9]), Bilan::default());
+    assert!(!d.join("envoi").exists());
+    assert_eq!(s.connexions(), 0);
+}
+
+/// « Voir » sans file : le lot refait du relevé d'hier, sans rien écrire ni tirer d'identifiant.
+#[test]
+fn voir_n_ecrit_rien() {
+    let d = Jetable::nouveau("envoi-voir");
+    let version = Version::new("0.89.1").unwrap();
+    let a = apercu_dans(&d, jour(10), &version, || Some(plateforme_essai()), &|j, base| {
+        (j == jour(9)).then_some(base)
+    });
+    let lot = envoi::lire(&a.lot.expect("le lot d'hier")).unwrap();
+    assert_eq!(lot.jour.as_str(), "2026-11-09");
+    assert!(lot.installation.is_none());
+    assert!(!a.en_file);
+    assert_eq!(a.en_attente, 0);
+    assert!(!d.join("envoi").exists());
+    // Avec une file : son plus vieux lot, tel qu'il partirait.
+    let c = Cadre {
+        garde: Garde {
+            hors_ligne: true,
+            ..ouverte()
+        },
+        ..cadre(&d, Some("http://127.0.0.1:9/v1/lot"))
+    };
+    passer(&c, &[8, 9]);
+    let a = apercu_dans(&d, jour(10), &version, || None, &|_, _| None);
+    assert!(a.en_file);
+    assert_eq!(a.en_attente, 2);
+    assert_eq!(a.lot, Some(file::relire(&d, jour(8)).unwrap().unwrap().ecrire()));
 }

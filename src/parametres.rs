@@ -11,7 +11,10 @@
 //! la remettant. Le téléchargement des versions des logiciels (`protection::perimes`) est gardé dans parametres.json
 //! aussi, mais lu à chaque usage : ce n'est pas un réglage du lancement. parametres.json est scellé (`sceau`) : changé
 //! hors de Vanguard, ce qu'il coupait (travail sans Internet, autodiagnostic, versions des logiciels) reste en marche,
-//! et c'est dit.
+//! et c'est dit. Le partage avec l'auteur (`partage`) y est gardé aussi, relu à chaque écriture du relevé et avant
+//! chaque envoi.
+
+pub(crate) mod partage;
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -46,6 +49,18 @@ struct Fichier {
     /// règle LNX-MAJ-006 n'est pas vérifiée).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     paquets_aur: bool,
+    /// Le partage avec l'auteur (`partage`) : « oui » ou « non » ; absent : pas de réponse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    partage: Option<partage::Choix>,
+    /// Le jour de ce choix (AAAA-MM-JJ) : rien de relevé jusqu'à ce jour-là ne part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    partage_le: Option<String>,
+    /// La phase où il a été donné (`partage::PHASE`) : un « oui » de la phase 1 ne vaut pas en phase 2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    partage_phase: Option<u8>,
+    /// Phase 1 : le jour où l'avis du partage a été montré.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    avis_partage: Option<String>,
 }
 
 /// Au-delà, ce n'est pas le fichier de Vanguard : il n'est pas lu (le processus élevé de Windows le lit aussi).
@@ -100,12 +115,21 @@ fn charger_juge(chemin: &Path) -> Result<(Fichier, Option<Douteux>), crate::mode
     let Some(raison) = douteux else {
         return Ok((f, None));
     };
-    let coupait = f.hors_ligne || f.sans_autotest || f.sans_versions || f.paquets_aur;
+    let oui_au_partage = f.partage == Some(partage::Choix::Oui) || f.avis_partage.is_some();
+    let coupait = f.hors_ligne || f.sans_autotest || f.sans_versions || f.paquets_aur || oui_au_partage;
     f.hors_ligne = false;
     f.sans_autotest = false;
     f.sans_versions = false;
     // Un accord ne se donne pas à la place de la personne : écrit hors de Vanguard, il ne vaut pas.
     f.paquets_aur = false;
+    // Le partage non plus : un « oui », ou un avis dit montré, forgé ne vaut rien. Un « non », lui, est gardé : au
+    // doute, rien ne part.
+    if f.partage != Some(partage::Choix::Non) {
+        f.partage = None;
+        f.partage_le = None;
+        f.partage_phase = None;
+    }
+    f.avis_partage = None;
     Ok((f, coupait.then_some(raison)))
 }
 
@@ -133,6 +157,29 @@ impl Douteux {
             Douteux::HorsVanguard => tr!("changé hors de Vanguard", "changed outside Vanguard"),
         }
     }
+}
+
+/// Relit le fichier, le change par `change` (`false` : rien à écrire) et l'enregistre, scellé. Un fichier qu'on ne sait
+/// plus lire n'est jamais écrasé en silence : il est gardé à côté, puis remplacé par les défauts changés.
+fn modifier_dans(chemin: &Path, change: impl FnOnce(&mut Fichier) -> bool) -> std::io::Result<()> {
+    let lu = charger_de(chemin);
+    let mut f = lu.clone().unwrap_or_default();
+    if !change(&mut f) {
+        return Ok(());
+    }
+    if lu.is_err() {
+        let copie = chemin.with_extension(format!(
+            "illisible-{}.json",
+            chrono::Local::now().format("%Y%m%d-%H%M%S")
+        ));
+        // Seulement un simple fichier, borné : un tube ou un lien vers /dev/zero à sa place ne se recopie pas.
+        if let Ok(o) = crate::socle::lire_ordinaire(chemin, TAILLE_MAX)
+            && chemin.parent().is_some_and(crate::socle::ecriture_sure)
+        {
+            let _ = crate::socle::ecrire_atomique(&copie, o);
+        }
+    }
+    enregistrer_dans(&f, chemin)
 }
 
 fn enregistrer_dans(f: &Fichier, chemin: &Path) -> std::io::Result<()> {
@@ -274,10 +321,11 @@ enum Reglage {
     Autotest,
     Vitesse,
     PaquetsAur,
+    Partage,
 }
 
 impl Reglage {
-    const TOUS: [Reglage; 14] = [
+    const TOUS: [Reglage; 15] = [
         Reglage::Langue,
         Reglage::Emojis,
         Reglage::HorsLigne,
@@ -292,6 +340,7 @@ impl Reglage {
         Reglage::Autotest,
         Reglage::Vitesse,
         Reglage::PaquetsAur,
+        Reglage::Partage,
     ];
 
     /// Le mot de la ligne de commande.
@@ -310,6 +359,7 @@ impl Reglage {
             Reglage::VersionsLogiciels => tr!("versions-logiciels", "software-versions"),
             Reglage::Autotest => "autotest",
             Reglage::Vitesse => tr!("auto-reglage", "auto-tuning"),
+            Reglage::Partage => tr!("partage", "sharing"),
             Reglage::PaquetsAur => tr!("paquets-aur", "aur-packages"),
         }
     }
@@ -342,6 +392,7 @@ impl Reglage {
             "auto-reglage" | "auto-réglage" | "autoreglage" | "auto-tuning" | "autotuning" | "vitesse" | "speed" => {
                 Some(Reglage::Vitesse)
             }
+            "partage" | "sharing" | "share" | "envoi" | "envois" | "send" => Some(Reglage::Partage),
             "paquets-aur" | "aur-packages" | "aur" | "paquets_aur" => Some(Reglage::PaquetsAur),
             _ => None,
         }
@@ -362,6 +413,7 @@ impl Reglage {
             Reglage::VersionsLogiciels => tr!("Versions des logiciels", "Software versions"),
             Reglage::Autotest => tr!("Autodiagnostic de la semaine", "Weekly self-test"),
             Reglage::Vitesse => tr!("Agent Vanguard (sans IA)", "Vanguard Agent (no AI)"),
+            Reglage::Partage => tr!("Partage avec l'auteur", "Sharing with the author"),
             Reglage::PaquetsAur => tr!("Paquets de l'AUR", "AUR packages"),
         }
     }
@@ -404,6 +456,8 @@ impl Reglage {
             | Reglage::VersionsLogiciels
             | Reglage::Autotest
             | Reglage::PaquetsAur => &["oui", "non"],
+            Reglage::Partage if anglais => &["yes", "no", "see"],
+            Reglage::Partage => &["oui", "non", "voir"],
             Reglage::Appris | Reglage::Blocage | Reglage::CleAbuseCh | Reglage::Vitesse => &[],
         }
     }
@@ -522,6 +576,7 @@ fn valeur(r: Reglage) -> String {
         // Masquée : seuls ses quatre derniers caractères, jamais la clé entière.
         Reglage::CleAbuseCh => crate::protection::abuse_ch::etat_court(),
         Reglage::Vitesse => crate::autotest::reglage::etat_court(),
+        Reglage::Partage => partage::etat_court(),
     };
     if let Some(v) = r.variable().filter(|v| std::env::var_os(v).is_some()) {
         texte += &trf!(" ({v} l'emporte)", " ({v} wins)");
@@ -580,6 +635,7 @@ pub fn commande(mots: &[String]) {
         (Reglage::Appris, _) => crate::apprentissage::menu(),
         (Reglage::Blocage, _) => crate::protection::blocage::commande(reste),
         (Reglage::Vitesse, _) => crate::autotest::reglage::commande(reste),
+        (Reglage::Partage, []) => partage::afficher(),
         (Reglage::CleAbuseCh, []) => crate::protection::abuse_ch::menu(),
         (Reglage::CleAbuseCh, [mot]) if est_retirer(mot) => crate::protection::abuse_ch::retirer(),
         // L'historique du terminal et la liste des processus garderaient une clé donnée en argument.
@@ -773,26 +829,15 @@ fn changer(r: Reglage, saisie: &str) -> bool {
         | Reglage::VersionsLogiciels
         | Reglage::Autotest
         | Reglage::PaquetsAur => {
-            let chemin = fichier();
-            let lu = charger_de(&chemin);
-            let mut f = lu.clone().unwrap_or_default();
-            let Ok((avant, apres)) = changer_dans(&mut f, r, saisie) else {
+            let mut change = None;
+            let fait = modifier_dans(&fichier(), |f| {
+                change = changer_dans(f, r, saisie).ok();
+                change.is_some()
+            });
+            let Some((avant, apres)) = change else {
                 return inconnue();
             };
-            if lu.is_err() {
-                // Jamais écraser en silence un fichier qu'on ne sait plus lire : il est gardé à côté.
-                let copie = chemin.with_extension(format!(
-                    "illisible-{}.json",
-                    chrono::Local::now().format("%Y%m%d-%H%M%S")
-                ));
-                // Seulement un simple fichier, borné : un tube ou un lien vers /dev/zero à sa place ne se recopie pas.
-                if let Ok(o) = crate::socle::lire_ordinaire(&chemin, TAILLE_MAX)
-                    && chemin.parent().is_some_and(crate::socle::ecriture_sure)
-                {
-                    let _ = crate::socle::ecrire_atomique(&copie, o);
-                }
-            }
-            if let Err(e) = enregistrer_dans(&f, &chemin) {
+            if let Err(e) = fait {
                 trp!("  ✖ Non enregistré ({e}).", "  ✖ Not saved ({e}).");
                 return false;
             }
@@ -840,6 +885,7 @@ fn changer(r: Reglage, saisie: &str) -> bool {
             }
         }
         Reglage::TempsReel => return changer_temps_reel(saisie, &[]),
+        Reglage::Partage => return partage::changer(saisie),
         Reglage::Appris | Reglage::Blocage | Reglage::CleAbuseCh | Reglage::Vitesse => return false,
     };
     trp!(
@@ -886,8 +932,8 @@ fn afficher() {
         Ok((_, Some(douteux))) => afficher_aligne(
             &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
             &trf!(
-                "parametres.json {} : le travail sans Internet, l'autodiagnostic et les versions des logiciels qu'il coupait restent en marche. Réglez-les de nouveau ici s'ils sont bien de vous.",
-                "parametres.json {}: offline work, the self-test and software versions it turned off stay on. Set them again here if they really are yours.",
+                "parametres.json {} : le travail sans Internet, l'autodiagnostic et les versions des logiciels qu'il coupait restent en marche, et un accord qu'il donnait (paquets de l'AUR, partage avec l'auteur) ne vaut pas. Réglez-les de nouveau ici s'ils sont bien de vous.",
+                "parametres.json {}: offline work, the self-test and software versions it turned off stay on, and a consent it gave (AUR packages, sharing with the author) does not count. Set them again here if they really are yours.",
                 douteux.texte()
             ),
             4,
@@ -954,6 +1000,7 @@ fn explication(r: Reglage) -> &'static str {
             "Yes: an extension asks for your consent, its fingerprint is checked, it is scanned and limited, never as administrator. No: it runs like one of your programs, without checks; turning them off asks for your consent once."
         ),
         Reglage::Vitesse => crate::autotest::reglage::explication(),
+        Reglage::Partage => partage::explication(),
         Reglage::Appris | Reglage::Blocage | Reglage::CleAbuseCh => "",
     }
 }
@@ -1003,6 +1050,7 @@ pub fn menu() {
             Reglage::Blocage => crate::protection::blocage::menu(),
             Reglage::CleAbuseCh => crate::protection::abuse_ch::menu(),
             Reglage::Vitesse => crate::autotest::reglage::menu(),
+            Reglage::Partage => partage::menu(),
             Reglage::TempsReel => choisir_temps_reel(),
             _ => choisir_valeur(r),
         }
@@ -1132,6 +1180,10 @@ mod tests {
             sans_versions: true,
             sans_autotest: true,
             paquets_aur: true,
+            partage: Some(partage::Choix::Non),
+            partage_le: Some("2026-11-02".into()),
+            partage_phase: Some(1),
+            avis_partage: Some("2026-11-01".into()),
         };
         enregistrer_dans(&voulu, &f).unwrap();
         assert_eq!(charger_de(&f).unwrap(), voulu);
@@ -1352,6 +1404,13 @@ mod tests {
                 assert!(fr.contains("vitesse") && en.contains("speed"), "{r:?} : {fr} / {en}");
                 continue;
             }
+            if r == Reglage::Partage {
+                // Sa propre ligne aussi : ce qui part, et comment le couper.
+                let (fr, en) =
+                    crate::guide::explication_vanguard("vanguard parametres partage").expect("partage au guide");
+                assert!(fr.contains("auteur") && en.contains("author"), "{r:?} : {fr} / {en}");
+                continue;
+            }
             if r == Reglage::PaquetsAur {
                 // La ligne est pleine : celui-ci a sa propre ligne au guide, qui dit ce qu'il envoie et où.
                 let (fr, en) = crate::guide::explication_vanguard("vanguard parametres paquets-aur oui")
@@ -1373,7 +1432,7 @@ mod tests {
                 Reglage::CleAbuseCh => ("clé abuse.ch", "abuse.ch key"),
                 Reglage::VersionsLogiciels => ("versions", "software versions"),
                 Reglage::Autotest => ("autotest", "self-test"),
-                Reglage::PaquetsAur | Reglage::Vitesse => unreachable!("vérifié plus haut"),
+                Reglage::PaquetsAur | Reglage::Vitesse | Reglage::Partage => unreachable!("vérifié plus haut"),
             };
             // Sans tenir compte des majuscules : la phrase du guide commence par l'un d'eux.
             assert!(
@@ -1415,6 +1474,7 @@ mod tests {
                     Reglage::TempsReel | Reglage::Surveillance | Reglage::Entretien | Reglage::Restrictions => {
                         oui_non(v).is_some()
                     }
+                    Reglage::Partage => partage::reponse_de(v).is_some(),
                     _ => changer_dans(&mut f, r, v).is_ok(),
                 };
                 assert!(ok, "{r:?} {v}");

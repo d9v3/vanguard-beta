@@ -523,7 +523,7 @@ enum Commande {
     #[command(visible_alias = "settings")]
     Parametres {
         /// Un réglage (langue, emojis, sans-internet, temps-reel, surveillance, entretien, appris, blocage,
-        /// restrictions, abuse.ch, versions-logiciels, autotest) et sa valeur ; temps-reel non prend aussi --pendant 1h ou 4h.
+        /// restrictions, abuse.ch, versions-logiciels, autotest, paquets-aur, partage) et sa valeur ; temps-reel non prend aussi --pendant 1h ou 4h.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         quoi: Vec<String>,
     },
@@ -1769,6 +1769,9 @@ async fn menu() {
     crate::modele::journal::noter_version();
     let mut s = Session::default();
     let nouveau_menu = premiere_ouverture_du_nouveau_menu();
+    // L'avis du partage (phase 1) ou la question (phase 2), avant le premier écran du menu ; rien tant que le relais
+    // n'est pas en service.
+    parametres::partage::au_menu();
     // La ligne en surbrillance au retour dans le menu : la dernière choisie.
     let mut dernier = String::from("1");
     loop {
@@ -3248,7 +3251,7 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
                                          with all your rights); off: back on. The extensions folder must stay yours \
                                          alone"),
     ("parametres", "quoi", "A setting (language, emojis, offline, real-time, monitoring, maintenance, learned, \
-                              blocking, restrictions, abuse.ch, software-versions, autotest, aur-packages) and its \
+                              blocking, restrictions, abuse.ch, software-versions, autotest, aur-packages, sharing) and its \
                               value; real-time no also takes --for 1h or 4h"),
     ("blocage", "quoi", "“search”, “undo”, “status”, “auto” or “click” (active protection), or a category (programs, \
                            connections, startup, agents) followed by a mode (off, click, auto)"),

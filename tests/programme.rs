@@ -1721,6 +1721,104 @@ fn traces_collectees_et_manifeste_juste() {
     let _ = std::fs::remove_dir_all(&maison);
 }
 
+/// Paramètres › Partage avec l'auteur, par un tube (sans terminal) : une ligne vide, la fin de la lecture ou une
+/// réponse inconnue ne donnent aucun accord ; rien n'est écrit.
+#[test]
+fn partage_sans_terminal_rien_sans_reponse() {
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    for (entree, inconnue) in [
+        ("13.1\n15\n\n", false),
+        ("13.1\n15\n", false),
+        ("13.1\n15\npeut-être\n", true),
+    ] {
+        let maison = maison_jetable();
+        let s = vanguard_dans(programme, &maison, "fr", &[], entree, 60);
+        let texte = sans_couleurs(&s.texte);
+        assert_eq!(s.code, Some(0), "{entree:?} : {texte}{}", s.erreurs);
+        assert!(texte.contains("Partager avec l'auteur ?"), "{entree:?} : {texte}");
+        assert!(texte.contains("3  Voir ce qui serait envoyé"), "{texte}");
+        assert_eq!(texte.contains("réponse inconnue ; rien ne change"), inconnue, "{texte}");
+        let parametres = std::fs::read_to_string(dossier_vanguard(&maison).join("parametres.json")).unwrap_or_default();
+        assert!(!parametres.contains("partage"), "{entree:?} : {parametres}");
+        let s = vanguard_dans(programme, &maison, "fr", &["parametres", "partage"], "", 60);
+        assert!(s.texte.contains("partage : pas répondu"), "{}", s.texte);
+    }
+}
+
+/// « Non » efface le relevé, la file de l'envoi et l'identifiant (rien d'autre du dossier) ; « oui » note son jour ;
+/// un fichier de paramètres réécrit hors de Vanguard ne donne pas l'accord.
+#[test]
+fn partage_non_efface_oui_date_falsifie_ignore() {
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let maison = maison_jetable();
+    let dossier = dossier_vanguard(&maison);
+    std::fs::create_dir_all(dossier.join("envoi/file")).unwrap();
+    std::fs::create_dir_all(dossier.join("amelioration/jours")).unwrap();
+    std::fs::write(dossier.join("envoi/etat.json"), "{}").unwrap();
+    std::fs::write(dossier.join("envoi/file/2026-11-01.json"), "{}").unwrap();
+    std::fs::write(dossier.join("amelioration/jours/2026-11-01.json"), "{}").unwrap();
+    std::fs::write(dossier.join("a-moi.txt"), "à alice").unwrap();
+    let s = vanguard_dans(programme, &maison, "fr", &[], "13.1\n15\n2\n", 60);
+    assert_eq!(s.code, Some(0), "{}{}", s.texte, s.erreurs);
+    assert!(s.texte.contains("Partage avec l'auteur : non"), "{}", s.texte);
+    // En root (verifier.sh, sous unshare) ou sous Wine, le dossier n'est pas celui d'une personne : rien n'est
+    // effacé, et c'est dit.
+    let efface = !(en_root() || sous_wine());
+    for parti in ["envoi", "amelioration"] {
+        assert_eq!(dossier.join(parti).exists(), !efface, "{parti}/ : {}", s.texte);
+    }
+    assert_eq!(s.texte.contains("Rien d'effacé ici"), !efface, "{}", s.texte);
+    assert_eq!(std::fs::read_to_string(dossier.join("a-moi.txt")).unwrap(), "à alice");
+    let parametres = std::fs::read_to_string(dossier.join("parametres.json")).unwrap();
+    assert!(parametres.contains("\"partage\": \"non\""), "{parametres}");
+    // Coupé, rien ne se relève plus, même en lançant d'autres commandes.
+    let s = vanguard_dans(programme, &maison, "fr", &["parametres", "partage", "voir"], "", 60);
+    assert!(s.texte.contains("Partage coupé"), "{}", s.texte);
+    if efface {
+        assert!(
+            !dossier.join("amelioration").exists(),
+            "le relevé a repris malgré « non »"
+        );
+    }
+    // Une valeur inconnue ne change rien.
+    let s = vanguard_dans(
+        programme,
+        &maison,
+        "fr",
+        &["parametres", "partage", "peut-être"],
+        "",
+        60,
+    );
+    assert!(s.texte.contains("Valeur inconnue"), "{}", s.texte);
+    assert_eq!(
+        std::fs::read_to_string(dossier.join("parametres.json")).unwrap(),
+        parametres
+    );
+    // « Oui » note le jour de l'accord.
+    let s = vanguard_dans(programme, &maison, "fr", &["parametres", "partage", "oui"], "", 60);
+    assert!(s.texte.contains("Partage avec l'auteur : oui"), "{}", s.texte);
+    let parametres = std::fs::read_to_string(dossier.join("parametres.json")).unwrap();
+    assert!(
+        parametres.contains("\"partage\": \"oui\"") && parametres.contains("partage_le"),
+        "{parametres}"
+    );
+    let s = vanguard_dans(programme, &maison, "fr", &["parametres", "partage", "voir"], "", 60);
+    assert!(
+        s.texte
+            .contains(if efface { "En attente : 0" } else { "En attente : " }),
+        "{}",
+        s.texte
+    );
+    // Le même accord, réécrit hors de Vanguard (le sceau ne correspond plus) : il ne vaut pas.
+    std::fs::write(
+        dossier.join("parametres.json"),
+        "{\"partage\": \"oui\", \"partage_le\": \"2026-01-01\", \"partage_phase\": 1}",
+    )
+    .unwrap();
+    let s = vanguard_dans(programme, &maison, "fr", &["parametres", "partage"], "", 60);
+    assert!(s.texte.contains("partage : pas répondu"), "{}", s.texte);
+}
+
 /// Le dossier de Vanguard dans un dossier personnel jetable, selon le système (voir `socle::dossier_local`).
 fn dossier_vanguard(maison: &Path) -> PathBuf {
     if cfg!(windows) {
@@ -2260,6 +2358,91 @@ mod menus_dans_un_terminal {
         drop(t);
         let _ = lecteur.join();
         assert!(!maison.join("donnees/vanguard/signalements").exists());
+        let _ = std::fs::remove_dir_all(&maison);
+    }
+
+    /// Paramètres › Partage avec l'auteur au clavier : les trois choix et « plus tard » ; Échap ne change rien,
+    /// « Voir » revient à la question, « Non » efface le relevé et la file, « Oui » note l'accord.
+    #[test]
+    fn partage_trois_choix_echap_voir_non_oui() {
+        let maison = maison_jetable();
+        let dossier = maison.join("donnees/vanguard");
+        std::fs::create_dir_all(dossier.join("envoi/file")).unwrap();
+        std::fs::create_dir_all(dossier.join("amelioration/jours")).unwrap();
+        std::fs::write(dossier.join("envoi/etat.json"), "{}").unwrap();
+        std::fs::write(dossier.join("amelioration/jours/2026-11-01.json"), "{}").unwrap();
+        std::fs::write(dossier.join("a-moi.txt"), "à alice").unwrap();
+        let parametres = || std::fs::read_to_string(dossier.join("parametres.json")).unwrap_or_default();
+        let (mut enfant, mut t, lecteur) = lancer(&maison, &[]);
+        t.attendre("q quitter", 60);
+        t.taper("13.1");
+        t.taper(ENTREE);
+        t.attendre("Échap/← revenir", 60);
+        t.taper("15");
+        t.taper(ENTREE);
+        let question = t.attendre("Échap/← plus tard", 30);
+        for attendu in [
+            "Partager avec l'auteur ?",
+            "En ce moment : pas répondu.",
+            "Oui",
+            "une fois par jour",
+            "arrêter et effacer le relevé",
+            "Voir ce qui serait envoyé",
+            "Plus tard",
+            "rien ne change",
+        ] {
+            assert!(question.contains(attendu), "« {attendu} » manque :\n{question}");
+        }
+        // Échap : plus tard, rien d'écrit, rien d'effacé.
+        t.taper(ECHAP);
+        t.attendre("Échap/← revenir", 30);
+        assert!(!parametres().contains("partage"), "{}", parametres());
+        assert!(dossier.join("amelioration").exists() && dossier.join("envoi").exists());
+        // Voir, puis retour à la question.
+        t.taper(ENTREE);
+        t.attendre("Échap/← plus tard", 30);
+        t.taper("3");
+        t.taper(ENTREE);
+        let vu = t.attendre("Entrée pour revenir à la question", 30);
+        assert!(
+            vu.contains("Ce qui serait envoyé") && vu.contains("En attente : 0"),
+            "{vu}"
+        );
+        assert!(!parametres().contains("partage"), "« Voir » a écrit : {}", parametres());
+        t.taper(ENTREE);
+        t.attendre("Échap/← plus tard", 30);
+        // Non : effacé, et noté.
+        t.taper("2");
+        t.taper(ENTREE);
+        let liste = t.attendre("Échap/← revenir", 30);
+        assert!(liste.contains("Partage avec l'auteur"), "{liste}");
+        assert!(parametres().contains("\"partage\": \"non\""), "{}", parametres());
+        // En root (verifier.sh, sous unshare), le dossier n'est pas celui d'une personne : rien d'effacé, et dit.
+        let efface = !super::en_root();
+        assert_eq!(liste.contains("Rien d'effacé ici"), !efface, "{liste}");
+        for parti in ["envoi", "amelioration"] {
+            assert_eq!(dossier.join(parti).exists(), !efface, "{parti}/ :\n{liste}");
+        }
+        assert_eq!(std::fs::read_to_string(dossier.join("a-moi.txt")).unwrap(), "à alice");
+        // Oui, depuis « non ».
+        t.taper(ENTREE);
+        let question = t.attendre("Échap/← plus tard", 30);
+        assert!(question.contains("En ce moment : non."), "{question}");
+        t.taper("1");
+        t.taper(ENTREE);
+        t.attendre("Échap/← revenir", 30);
+        assert!(parametres().contains("\"partage\": \"oui\""), "{}", parametres());
+        t.taper(ECHAP);
+        t.attendre("q quitter", 30);
+        t.taper("q");
+        t.taper(ENTREE);
+        let fin = Instant::now() + Duration::from_secs(30);
+        while enfant.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < fin, "« q » n'a pas fermé Vanguard");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        drop(t);
+        let _ = lecteur.join();
         let _ = std::fs::remove_dir_all(&maison);
     }
 }

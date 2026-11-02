@@ -69,11 +69,15 @@ pub(crate) struct Garde {
 
 impl Garde {
     fn de_ce_processus() -> Garde {
+        Garde::avec(accord_le().is_some())
+    }
+
+    fn avec(accord: bool) -> Garde {
         Garde {
             releve: crate::amelioration::actif(),
             developpement: cfg!(debug_assertions),
             hors_ligne: crate::parametres::hors_ligne(),
-            accord: accord(),
+            accord,
             arrete: ARRETE.load(Ordering::SeqCst),
         }
     }
@@ -87,10 +91,11 @@ impl Garde {
     }
 }
 
-/// L'accord de la personne : l'avis du partage montré (E8) et pas « Ne pas partager ». A5 le pose ; d'ici là,
-/// fermé.
-fn accord() -> bool {
-    false
+/// Le jour de l'accord de la personne (`parametres::partage`) : en phase 1, l'avis du partage montré (E8) ; en phase
+/// 2, « oui » à la question (E11). Relu sur le disque à chaque appel : un « non » donné dans un autre Vanguard arrête
+/// celui-ci avant son POST suivant. Rien de relevé jusqu'à ce jour-là ne part (`tenir`).
+fn accord_le() -> Option<NaiveDate> {
+    crate::parametres::partage::accord_dans(&crate::socle::dossier_local(), chrono::Local::now().date_naive())
 }
 
 /// « Ne pas partager » : plus rien pour ce processus, quoi qu'il arrive ensuite.
@@ -123,6 +128,8 @@ pub(crate) struct Cadre<'a> {
     pub(crate) garde: Garde,
     pub(crate) relais: Option<&'a str>,
     pub(crate) version: Version,
+    /// Le jour de l'accord (`accord_le`) : les jours relevés jusqu'à lui ne partent jamais.
+    pub(crate) accord_le: Option<NaiveDate>,
 }
 
 /// Ce dont la passe a besoin du reste du programme, donné par l'appelant (essais : sans rien lire de l'ordinateur).
@@ -162,11 +169,20 @@ where
     let Ok(_verrou) = crate::socle::Verrou::prendre(c.dossier, "envoi.lock", false, Duration::ZERO) else {
         return bilan;
     };
+    // « Non » relu sous le verrou : un « Ne pas partager » donné ailleurs entre la garde et le verrou ne laisse rien
+    // écrire ici.
+    if crate::parametres::partage::refuse_dans(c.dossier) {
+        return bilan;
+    }
     let mut etat = file::lire_etat(c.dossier);
     tenir(&mut etat, c);
     bilan.mis = remplir(&mut etat, c, s.plateforme, &s.du_jour);
     let debut = c.aujourd_hui - chrono::Duration::days(JOURS_GARDES);
-    file::purger(c.dossier, |d| d >= debut && d < c.aujourd_hui);
+    // Un lot d'un jour d'avant l'accord (mis en file avant un « non » puis un nouveau « oui », ou posé par un autre)
+    // ne part pas : il est jeté.
+    file::purger(c.dossier, |d| {
+        d >= debut && d < c.aujourd_hui && c.accord_le.is_none_or(|a| d > a)
+    });
     if arrete() || file::ecrire_etat(c.dossier, &etat).is_err() || !c.garde.peut_envoyer() {
         return bilan;
     }
@@ -220,6 +236,12 @@ fn tenir(etat: &mut Etat, c: &Cadre) {
     if let Some(t) = etat.attendre_jusqu_a {
         etat.attendre_jusqu_a = (t > c.maintenant).then(|| t.min(c.maintenant.saturating_add(ATTENTE_S)));
     }
+    // Rien de relevé avant l'accord, ni le jour même (relevé en partie avant lui), ne se met en file.
+    if let Some(a) = c.accord_le
+        && etat.dernier_mis.as_ref().and_then(file::date).is_none_or(|d| d < a)
+    {
+        etat.dernier_mis = Some(file::jour(a));
+    }
 }
 
 /// Met en file le lot de chaque jour clos de la fenêtre qui n'y est pas encore passé. Un jour sans relevé n'a pas de
@@ -246,23 +268,7 @@ where
         if arrete() {
             return mis;
         }
-        let jours = u64::try_from((d - premier).num_days()).unwrap_or(0);
-        let mut base = Lot::new(
-            c.version.clone(),
-            file::jour(d),
-            Anciennete::de_jours(jours),
-            plateforme.clone(),
-            activite.clone(),
-        );
-        base.installation = etat.installation.as_ref().map(|i| i.id.clone());
-        base.version_avant = etat.version.as_ref().and_then(|v| {
-            let depuis = file::date(&v.depuis)?;
-            let ecart = (d - depuis).num_days();
-            (0..VERSION_AVANT_JOURS)
-                .contains(&ecart)
-                .then(|| v.avant.clone())
-                .flatten()
-        });
+        let base = base(etat, &c.version, d, premier, (&plateforme, &activite));
         // Un jour qui ne s'écrit pas (disque plein) reste à faire : la passe suivante le reprendra.
         if !file::chemin(c.dossier, d).exists() {
             match du_jour(d, base) {
@@ -282,6 +288,29 @@ where
         d += chrono::Duration::days(1);
     }
     mis
+}
+
+/// La base du lot du jour `d` : version, ancienneté depuis `premier`, plateforme, activité, identifiant
+/// d'installation et version d'avant tels que l'état les tient.
+fn base(etat: &Etat, version: &Version, d: NaiveDate, premier: NaiveDate, (p, a): (&Plateforme, &Activite)) -> Lot {
+    let jours = u64::try_from((d - premier).num_days()).unwrap_or(0);
+    let mut base = Lot::new(
+        version.clone(),
+        file::jour(d),
+        Anciennete::de_jours(jours),
+        p.clone(),
+        a.clone(),
+    );
+    base.installation = etat.installation.as_ref().map(|i| i.id.clone());
+    base.version_avant = etat.version.as_ref().and_then(|v| {
+        let depuis = file::date(&v.depuis)?;
+        let ecart = (d - depuis).num_days();
+        (0..VERSION_AVANT_JOURS)
+            .contains(&ecart)
+            .then(|| v.avant.clone())
+            .flatten()
+    });
+    base
 }
 
 /// Poste les lots en file, du plus vieux au plus récent, tant que le jour a des essais et que le relais répond.
@@ -388,36 +417,42 @@ fn delais() -> impl Fn(&Regle) -> Option<u64> {
     }
 }
 
+/// La plateforme et l'activité de ce processus.
+fn plateforme_et_activite(en_passe_horaire: bool) -> Option<(Plateforme, Activite)> {
+    let activite = Activite {
+        bilans_manuels: crate::compte_rendu::envoi::Compte::default(),
+        passes_horaires: crate::compte_rendu::envoi::Compte::default(),
+        surveillance: en_passe_horaire || crate::reseau::surveillance::installee(),
+        #[cfg(target_os = "linux")]
+        veilleur: crate::machine::linux::veilleur::voulu(),
+        #[cfg(not(target_os = "linux"))]
+        veilleur: false,
+        // Depuis une clé, rien n'est relevé ni envoyé (`Garde::releve`).
+        cle: false,
+    };
+    Some((plateforme::plateforme()?, activite))
+}
+
 /// Une passe de ce processus, sur son dossier.
 fn passe(en_passe_horaire: bool) {
     let dossier = crate::socle::dossier_local();
     let maintenant = chrono::Utc::now().timestamp();
+    // L'accord lu une fois pour la garde et pour le jour plancher : les deux disent la même chose.
+    let accord_le = accord_le();
     let cadre = Cadre {
         dossier: &dossier,
         aujourd_hui: chrono::Local::now().date_naive(),
         maintenant,
-        garde: Garde::de_ce_processus(),
+        garde: Garde::avec(accord_le.is_some()),
         relais: RELAIS,
         version: Version::du_programme(),
+        accord_le,
     };
     // Lus seulement s'il y a un jour à mettre en file : une fois par jour, pas à chaque passe.
     let mesures = std::sync::LazyLock::new(crate::autotest::mesures::lues);
     let delai_s = std::sync::LazyLock::new(delais);
     let sources = Sources {
-        plateforme: || {
-            let activite = Activite {
-                bilans_manuels: crate::compte_rendu::envoi::Compte::default(),
-                passes_horaires: crate::compte_rendu::envoi::Compte::default(),
-                surveillance: en_passe_horaire || crate::reseau::surveillance::installee(),
-                #[cfg(target_os = "linux")]
-                veilleur: crate::machine::linux::veilleur::voulu(),
-                #[cfg(not(target_os = "linux"))]
-                veilleur: false,
-                // Depuis une clé, rien n'est relevé ni envoyé (`Garde::releve`).
-                cle: false,
-            };
-            Some((plateforme::plateforme()?, activite))
-        },
+        plateforme: || plateforme_et_activite(en_passe_horaire),
         du_jour: |d, base| crate::amelioration::lot_du_jour(&dossier, d, base, &mesures, &*delai_s),
         poster: |adresse: &str, corps| crate::http::poster_sans_lire(adresse, corps, CONNEXION, DELAI),
         encore: || Garde::de_ce_processus().peut_envoyer(),
@@ -458,7 +493,7 @@ pub(crate) fn attendre() {
 
 /// « Ne pas partager » (A5) : plus rien ne part de ce processus, et la file et l'état (avec l'identifiant
 /// d'installation) sont effacés, là où « Ne pas partager » efface le relevé (`amelioration::effacement_permis`).
-#[allow(dead_code)] // branché par A5 (Paramètres) ; jamais appelé des essais, il arrêterait tout le processus
+/// Jamais appelé des essais : il arrêterait l'envoi de tout le processus d'essai (`vider_dans` y sert).
 pub(crate) fn arreter_et_vider() -> std::io::Result<()> {
     ARRETE.store(true, Ordering::SeqCst);
     if !crate::amelioration::effacement_permis() {
@@ -473,4 +508,93 @@ pub(crate) fn arreter_et_vider() -> std::io::Result<()> {
     let _verrou = crate::socle::Verrou::prendre(&dossier, "envoi.lock", false, attente)
         .map_err(|_| std::io::Error::other("un autre Vanguard envoie"))?;
     file::vider(&dossier)
+}
+
+/// La file et l'état de `dossier` vidés (`file::vider`), sans rien arrêter : la part de « Ne pas partager » qui
+/// s'essaie dans un dossier jetable.
+#[cfg(test)]
+pub(crate) fn vider_dans(dossier: &Path) -> std::io::Result<()> {
+    file::vider(dossier)
+}
+
+// --- « Voir ce qui serait envoyé » --------------------------------------------------------------------------------
+
+/// Ce que montre « Voir » : le prochain lot, la file, le dernier envoi.
+#[derive(Debug, Default)]
+pub(crate) struct Apercu {
+    /// Le prochain lot, tel qu'il partirait (JSON compact).
+    pub(crate) lot: Option<Vec<u8>>,
+    /// `true` : le lot est en file ; `false` : il est refait du relevé, pour voir (rien n'est écrit).
+    pub(crate) en_file: bool,
+    pub(crate) en_attente: usize,
+    pub(crate) dernier_succes: Option<String>,
+    pub(crate) dernier_echec: Option<Raison>,
+}
+
+/// L'aperçu de `dossier`, sans rien écrire : le plus vieux lot en file, sinon celui d'hier (ou d'aujourd'hui, en
+/// cours) refait du relevé avec l'identifiant déjà tiré, s'il y en a un (aucun n'est tiré pour voir).
+pub(crate) fn apercu_dans<P, J>(
+    dossier: &Path,
+    aujourd_hui: NaiveDate,
+    version: &Version,
+    plateforme: P,
+    du_jour: &J,
+) -> Apercu
+where
+    P: FnOnce() -> Option<(Plateforme, Activite)>,
+    J: Fn(NaiveDate, Lot) -> Option<Lot>,
+{
+    let etat = file::lire_etat(dossier);
+    let jours = file::jours_en_file(dossier);
+    let mut a = Apercu {
+        en_attente: jours.len(),
+        dernier_succes: etat.dernier_succes.as_ref().map(|j| j.as_str().to_string()),
+        dernier_echec: etat.dernier_echec.as_ref().map(|e| e.raison),
+        ..Apercu::default()
+    };
+    if let Some(lot) = jours.iter().find_map(|&d| file::relire(dossier, d).ok().flatten()) {
+        a.lot = Some(lot.ecrire());
+        a.en_file = true;
+        return a;
+    }
+    let Some((p, act)) = plateforme() else {
+        return a;
+    };
+    let premier = etat.premier_jour.as_ref().and_then(file::date).unwrap_or(aujourd_hui);
+    let hier = aujourd_hui - chrono::Duration::days(1);
+    a.lot = [hier, aujourd_hui].into_iter().find_map(|d| {
+        let mut lot = du_jour(d, base(&etat, version, d, premier, (&p, &act)))?;
+        lot.tronquer();
+        Some(lot.ecrire())
+    });
+    a
+}
+
+/// L'aperçu de ce processus, sur son dossier.
+pub(crate) fn apercu() -> Apercu {
+    let dossier = crate::socle::dossier_local();
+    let mesures = crate::autotest::mesures::lues();
+    let delai_s = delais();
+    apercu_dans(
+        &dossier,
+        chrono::Local::now().date_naive(),
+        &Version::du_programme(),
+        || plateforme_et_activite(false),
+        &|d, base| crate::amelioration::lot_du_jour(&dossier, d, base, &mesures, &delai_s),
+    )
+}
+
+/// Le texte d'une raison d'échec, pour « Voir ».
+pub(crate) fn raison_texte(r: Raison) -> &'static str {
+    match r {
+        Raison::Refuse => crate::tr!("lot refusé par le relais", "batch refused by the relay"),
+        Raison::Limite => crate::tr!(
+            "le relais limite (attente de 24 h)",
+            "the relay is rate-limiting (24 h wait)"
+        ),
+        Raison::Indisponible => crate::tr!("relais indisponible (attente de 24 h)", "relay unavailable (24 h wait)"),
+        Raison::Autre => crate::tr!("réponse inattendue du relais", "unexpected answer from the relay"),
+        Raison::SansReponse => crate::tr!("pas de réponse (hors ligne ?)", "no answer (offline?)"),
+        Raison::Illisible => crate::tr!("lot abîmé, jeté sans partir", "damaged batch, discarded unsent"),
+    }
 }

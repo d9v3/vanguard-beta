@@ -706,6 +706,23 @@ pub fn choisir(lignes: &[Ligne], invite: &str, depart: &str, echap: &str) -> Opt
     choix
 }
 
+/// Comme `choisir`, pour une question que personne ne tranche à la place de la personne (le partage avec l'auteur).
+/// Au clavier, rien ne change : Échap ou ← rendent `None`. Sans terminal, une seule ligne est lue et rendue telle
+/// quelle, sans recherche ni nouvelle question ; vide, ou à la fin de l'entrée, `None`, sans quitter le programme.
+/// C'est à l'appelant de juger la réponse : une réponse inconnue ne doit rien valoir.
+pub fn choisir_sans_defaut(lignes: &[Ligne], invite: &str, depart: &str, echap: &str) -> Option<String> {
+    if au_clavier(choisissables(lignes).iter().any(|c| c.visible)) {
+        return choisir(lignes, invite, depart, echap);
+    }
+    let colonne = colonne(lignes);
+    for t in lignes.iter().filter_map(|l| texte(l, colonne, false)) {
+        println!("{t}");
+    }
+    let r = demander_ou_defaut(invite);
+    noter_retour(r.is_empty());
+    (!r.is_empty()).then_some(r)
+}
+
 /// Le menu principal : ← n'y quitte pas Vanguard (un appui de trop en revenant d'un sous-menu le fermerait), Échap
 /// et « q » si.
 pub fn choisir_au_sommet(lignes: &[Ligne], invite: &str, depart: &str, echap: &str) -> Option<String> {
@@ -788,17 +805,21 @@ struct Trouvailles<'b, 'a> {
     suite: Option<String>,
 }
 
+/// Le menu se choisit-il au clavier ? Il est redessiné depuis le haut de la fenêtre, sans retour à la ligne : il faut
+/// un terminal des deux côtés, assez large pour ses lignes (s'il est plus haut que la fenêtre, il défile).
+fn au_clavier(des_lignes_visibles: bool) -> bool {
+    let tient = terminal::size()
+        .is_ok_and(|(largeur, rangees)| usize::from(largeur) > LARGEUR && usize::from(rangees) >= RANGEES_MINIMUM);
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal() && tient && des_lignes_visibles
+}
+
 fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_revient: bool) -> Option<String> {
     let choix = choisissables(lignes);
     let touches: Vec<&str> = choix.iter().map(|c| c.touche).collect();
     // Les flèches ne parcourent que les lignes affichées ; la recherche, elle, voit aussi les lignes cachées.
     let visibles: Vec<&str> = choix.iter().filter(|c| c.visible).map(|c| c.touche).collect();
     let colonne = colonne(lignes);
-    // Le menu est redessiné depuis le haut de la fenêtre, sans retour à la ligne : assez large pour ses lignes ; s'il
-    // est plus haut que la fenêtre, il défile.
-    let tient = terminal::size()
-        .is_ok_and(|(largeur, rangees)| usize::from(largeur) > LARGEUR && usize::from(rangees) >= RANGEES_MINIMUM);
-    let clavier = std::io::stdin().is_terminal() && std::io::stdout().is_terminal() && tient && !visibles.is_empty();
+    let clavier = au_clavier(!visibles.is_empty());
     let Some(_mode) = clavier.then(ModeClavier::activer).flatten() else {
         for t in lignes.iter().filter_map(|l| texte(l, colonne, false)) {
             println!("{t}");

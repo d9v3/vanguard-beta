@@ -646,6 +646,11 @@ pub(crate) fn relever(
     };
     let mut pris = std::mem::take(&mut *m);
     drop(m);
+    // « Ne pas partager » donné dans un autre Vanguard (ou plus tôt) : la mémoire de ce processus part avec, rien
+    // n'est écrit.
+    if crate::parametres::partage::refuse_dans(dossier) {
+        return;
+    }
     let refus = texte::refus_locaux();
     let deja = REFUS_VERSES.swap(refus, Ordering::Relaxed);
     pris.brouillon.refus_locaux = pris.brouillon.refus_locaux.saturating_add(refus.saturating_sub(deja));
@@ -660,10 +665,10 @@ pub(crate) fn relever(
     }
 }
 
-/// Écrit `octets` sous `nom`, sauf si « Ne pas partager » est arrivé pendant le relevé : rien ne se réécrit après
-/// l'effacement.
+/// Écrit `octets` sous `nom`, sauf si « Ne pas partager » est arrivé pendant le relevé, dans ce processus ou un autre
+/// (l'interrupteur relu sur le disque avant chaque écriture) : rien ne se réécrit après l'effacement.
 fn ecrire_si_permis(dossier: &Path, nom: &str, octets: &[u8]) -> std::io::Result<()> {
-    if ARRETE.load(Ordering::Relaxed) {
+    if ARRETE.load(Ordering::Relaxed) || crate::parametres::partage::refuse_dans(dossier) {
         return Err(std::io::Error::other("relevé arrêté"));
     }
     crate::sceau::ecrire_dans(dossier, nom, octets)
@@ -787,15 +792,37 @@ pub(crate) fn peut_effacer(l: Lieu) -> bool {
 }
 
 /// `peut_effacer` pour ce processus : où « Ne pas partager » vide aussi la file de l'envoi (`envoi`).
-#[allow(dead_code)] // branché par A5, par `envoi::arreter_et_vider`
 pub(crate) fn effacement_permis() -> bool {
     peut_effacer(lieu())
 }
 
+/// Pourquoi « Ne pas partager » n'efface rien ici (`peut_effacer` faux), à dire à la personne.
+pub(crate) fn pourquoi_pas_efface() -> Option<&'static str> {
+    let l = lieu();
+    if peut_effacer(l) {
+        None
+    } else if l.depuis_une_cle {
+        Some(crate::tr!(
+            "lancé depuis une clé : le relevé de cet ordinateur n'est pas à elle",
+            "started from a USB key: this computer's record is not the key's"
+        ))
+    } else if l.en_root {
+        Some(crate::tr!(
+            "lancé en root : relancez sans sudo",
+            "running as root: start again without sudo"
+        ))
+    } else {
+        Some(crate::tr!(
+            "pas le dossier de la personne (Wine, CI, essai)",
+            "not the person's folder (Wine, CI, test)"
+        ))
+    }
+}
+
 /// « Ne pas partager » (A5) : le relevé s'arrête pour ce processus, sa mémoire est vidée, et ce qui a été écrit est
 /// effacé (`peut_effacer`). Un relevé en cours ne réécrit rien après (`ecrire_si_permis`) ; un autre processus
-/// Vanguard déjà lancé, lui, ne le sait pas : l'interrupteur gardé sur le disque est à A5.
-#[allow(dead_code)] // branché par A5 (Paramètres) ; jamais appelé des essais, il arrêterait tout le processus
+/// Vanguard déjà lancé le voit à l'interrupteur gardé sur le disque (`parametres::partage::refuse_dans`), relu avant
+/// chaque écriture. Jamais appelé des essais : il arrêterait le relevé de tout le processus d'essai.
 pub(crate) fn arreter_et_effacer() -> std::io::Result<()> {
     ARRETE.store(true, Ordering::Relaxed);
     if let Ok(mut m) = MEMOIRE.lock() {

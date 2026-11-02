@@ -283,6 +283,13 @@ pub const PROGRAMMES: &[Programme] = &[
                 true,
             ),
             traduite(
+                "vanguard parametres partage",
+                "vanguard settings sharing",
+                "Partage avec l'auteur : oui, non (efface le relevé) ou voir ce qui serait envoyé.",
+                "Sharing with the author: yes, no (erases the record) or see what would be sent.",
+                true,
+            ),
+            traduite(
                 "vanguard parametres auto-reglage",
                 "vanguard settings auto-tuning",
                 "Le bilan règle seul sa vitesse (ordre, délais) ; chaque changement se voit et s'annule.",
