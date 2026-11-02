@@ -96,9 +96,31 @@ pub(crate) fn accord_dans(dossier: &Path, aujourd_hui: NaiveDate) -> Option<Naiv
     accord_de(&f, PHASE, aujourd_hui)
 }
 
-/// « Non » gardé dans `dossier` ? Un fichier illisible compte pour un « non » : au doute, rien n'est relevé.
+/// « Non » gardé dans `dossier` ? Un fichier illisible, ou disparu après avoir été scellé, compte pour un « non » :
+/// au doute, rien n'est relevé.
 pub(crate) fn refuse_dans(dossier: &Path) -> bool {
-    charger_juge(&dossier.join(PARAMETRES)).map_or(true, |(f, _)| f.partage == Some(Choix::Non))
+    disparu(dossier) || charger_juge(&dossier.join(PARAMETRES)).map_or(true, |(f, _)| f.partage == Some(Choix::Non))
+}
+
+/// Le fichier des paramètres a disparu après avoir été scellé, ou les sceaux ont été refaits sans lui : un « non »
+/// a pu partir avec lui (effacé à la main, par un autre programme). Rien ne part ni ne se relève jusqu'à une
+/// nouvelle réponse, qui le réécrit.
+fn disparu(dossier: &Path) -> bool {
+    matches!(
+        crate::sceau::lire_sans_ecrire(dossier, PARAMETRES),
+        crate::sceau::Lecture::Falsifie(None) | crate::sceau::Lecture::Inconnu
+    )
+}
+
+/// Seulement des mots entiers : sans terminal, la ligne lue vient peut-être d'un script qui répondait à autre chose
+/// (« 1 » pour le bilan, `yes |`), et un accord ne se donne pas ainsi.
+fn reponse_en_mots(saisie: &str) -> Option<Reponse> {
+    match saisie.trim().to_lowercase().as_str() {
+        "oui" | "yes" => Some(Reponse::Oui),
+        "non" | "no" => Some(Reponse::Non),
+        "voir" | "see" | "view" => Some(Reponse::Voir),
+        _ => None,
+    }
 }
 
 /// Enregistre `choix` du jour `aujourd_hui`. Un « oui » déjà là, de cette phase, garde son jour.
@@ -143,7 +165,10 @@ static COUPE_ICI: AtomicBool = AtomicBool::new(false);
 
 /// La valeur montrée dans Paramètres (33 caractères au plus avec la variable).
 pub(crate) fn etat_court() -> String {
-    let mut texte = match charger_juge(&fichier()) {
+    let chemin = fichier();
+    let dossier = chemin.parent().unwrap_or_else(|| Path::new("."));
+    let mut texte = match charger_juge(&chemin) {
+        Ok(_) if disparu(dossier) => tr!("fichier effacé : rien ne part", "file erased: nothing is sent").to_string(),
         Err(_) => tr!("illisible : rien ne part", "unreadable: nothing is sent").to_string(),
         Ok((f, _)) => match (f.partage, PHASE) {
             (Some(Choix::Non), _) => tr!("non", "no").to_string(),
@@ -446,23 +471,44 @@ fn lignes_de_la_question(titre: &str) -> Vec<Ligne> {
 /// La question, reposée après « Voir » ; « plus tard », Échap, une ligne vide, une fin de lecture ou une réponse
 /// inconnue ne changent rien. Rend la réponse donnée.
 fn poser(titre: &str) -> Option<Reponse> {
+    let par_tube = !std::io::stdin().is_terminal();
+    let invite = if par_tube {
+        tr!(
+            "\n  Réponse : oui, non ou voir (Entrée : plus tard) : ",
+            "\n  Answer: yes, no or see (Enter: later): "
+        )
+    } else {
+        tr!(
+            "\n  Choix : 1, 2 ou 3 (Entrée : plus tard) : ",
+            "\n  Choice: 1, 2 or 3 (Enter: later): "
+        )
+    };
     loop {
         let lignes = lignes_de_la_question(titre);
-        let saisie = choisir_sans_defaut(
-            &lignes,
-            tr!(
-                "\n  Choix : 1, 2 ou 3 (Entrée : plus tard) : ",
-                "\n  Choice: 1, 2 or 3 (Enter: later): "
-            ),
-            "↵",
-            tr!("plus tard", "later"),
-        )?;
-        let Some(reponse) = reponse_de(&saisie) else {
-            trp!(
-                "  « {} » : réponse inconnue ; rien ne change.",
-                "  “{}”: unknown answer; nothing changes.",
-                affichable(&saisie)
-            );
+        let saisie = choisir_sans_defaut(&lignes, invite, "↵", tr!("plus tard", "later"))?;
+        // Entrée sur « Plus tard », au clavier.
+        if saisie == "↵" {
+            return None;
+        }
+        let lue = if par_tube {
+            reponse_en_mots(&saisie)
+        } else {
+            reponse_de(&saisie)
+        };
+        let Some(reponse) = lue else {
+            if reponse_de(&saisie).is_some() {
+                trp!(
+                    "  « {} » : sans terminal, répondez par un mot ; rien ne change.",
+                    "  “{}”: without a terminal, answer with a word; nothing changes.",
+                    affichable(&saisie)
+                );
+            } else {
+                trp!(
+                    "  « {} » : réponse inconnue ; rien ne change.",
+                    "  “{}”: unknown answer; nothing changes.",
+                    affichable(&saisie)
+                );
+            }
             return None;
         };
         match reponse {
@@ -501,16 +547,25 @@ enum AuLancement {
     Rien,
     /// Phase 1 : l'avis, une fois, dans un terminal (E8).
     Avis,
-    /// Phase 2 : la question, terminal ou non, jusqu'à une réponse (E11, E12).
+    /// Phase 2 : la question, terminal ou non, jusqu'à une réponse (E11, E12) ; sans terminal, seuls les mots
+    /// entiers y valent (`reponse_en_mots`).
     Question,
 }
 
 /// Rien tant que le relais n'est pas en service ou que ce processus ne relève pas : l'avis dirait une chose fausse.
-/// Un fichier illisible ne montre rien (rien ne part non plus).
-fn au_lancement(f: Option<&Fichier>, phase: Phase, en_service: bool, terminal: bool) -> AuLancement {
+/// Un fichier illisible ne montre rien (rien ne part non plus). Un fichier disparu (`disparu`) a peut-être emporté un
+/// « non » : la question, dans un terminal, plutôt que l'avis, dont l'appui vaudrait accord.
+fn au_lancement(f: Option<&Fichier>, phase: Phase, en_service: bool, terminal: bool, disparu: bool) -> AuLancement {
     let Some(f) = f.filter(|_| en_service) else {
         return AuLancement::Rien;
     };
+    if disparu {
+        return if terminal {
+            AuLancement::Question
+        } else {
+            AuLancement::Rien
+        };
+    }
     match (phase, f.partage) {
         (Phase::Un, None) if f.avis_partage.is_none() && terminal => AuLancement::Avis,
         (_, Some(Choix::Non)) | (Phase::Un, _) => AuLancement::Rien,
@@ -523,8 +578,10 @@ fn au_lancement(f: Option<&Fichier>, phase: Phase, en_service: bool, terminal: b
 pub(crate) fn au_menu() {
     let en_service = crate::envoi::RELAIS.is_some() && crate::amelioration::actif();
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-    let lu = charger_juge(&fichier()).ok().map(|(f, _)| f);
-    match au_lancement(lu.as_ref(), PHASE, en_service, terminal) {
+    let chemin = fichier();
+    let lu = charger_juge(&chemin).ok().map(|(f, _)| f);
+    let parti = disparu(chemin.parent().unwrap_or_else(|| Path::new(".")));
+    match au_lancement(lu.as_ref(), PHASE, en_service, terminal, parti) {
         AuLancement::Rien => {}
         AuLancement::Avis => {
             println!();
@@ -657,6 +714,14 @@ mod tests {
         }
         for s in ["", " ", "peut-être", "maybe", "↵", "4", "0", "oui non", "ouii"] {
             assert_eq!(reponse_de(s), None, "{s}");
+            assert_eq!(reponse_en_mots(s), None, "{s}");
+        }
+        // Sans terminal, les mots entiers seulement.
+        for s in ["1", "2", "3", "o", "y", "n", "v", "s"] {
+            assert!(reponse_de(s).is_some() && reponse_en_mots(s).is_none(), "{s}");
+        }
+        for (s, r) in [(" OUI ", Reponse::Oui), ("no", Reponse::Non), ("voir", Reponse::Voir)] {
+            assert_eq!(reponse_en_mots(s), Some(r), "{s}");
         }
     }
 
@@ -666,6 +731,8 @@ mod tests {
     fn fichier_falsifie() {
         let dossier = jetable("falsifie");
         let chemin = dossier.join(PARAMETRES);
+        // Jamais écrit : ni refus ni accord.
+        assert!(!disparu(&dossier) && !refuse_dans(&dossier));
         for forge in [
             r#"{"partage":"oui","partage_le":"2026-11-01","partage_phase":2}"#,
             r#"{"avis_partage":"2026-11-01"}"#,
@@ -702,6 +769,23 @@ mod tests {
         assert_eq!(accord_dans(&dossier, d(10)), None);
         ecrire_choix_dans(&chemin, Choix::Oui, d(9)).unwrap();
         assert_eq!(accord_dans(&dossier, d(10)), Some(d(9)));
+        // Un « non » dont le fichier disparaît (effacé à la main, par un autre programme) : toujours refusé, sans
+        // accord, jusqu'à une nouvelle réponse.
+        ecrire_choix_dans(&chemin, Choix::Non, d(9)).unwrap();
+        std::fs::remove_file(&chemin).unwrap();
+        assert!(disparu(&dossier) && refuse_dans(&dossier));
+        assert_eq!(accord_dans(&dossier, d(10)), None);
+        ecrire_choix_dans(&chemin, Choix::Oui, d(9)).unwrap();
+        assert!(!disparu(&dossier) && !refuse_dans(&dossier));
+        // Les sceaux effacés avec lui : pareil.
+        ecrire_choix_dans(&chemin, Choix::Non, d(9)).unwrap();
+        std::fs::remove_file(&chemin).unwrap();
+        let _ = std::fs::remove_file(dossier.join("sceaux.json"));
+        assert!(
+            refuse_dans(&dossier),
+            "{:?}",
+            crate::sceau::lire_sans_ecrire(&dossier, PARAMETRES)
+        );
         // L'avis, noté une fois : son premier jour reste.
         let _ = std::fs::remove_file(&chemin);
         noter_avis_dans(&chemin, d(2)).unwrap();
@@ -748,6 +832,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
+    /// Un lien posé à la place de `amelioration/`, de `amelioration/jours/`, de `envoi/` ou de `envoi/file/` est
+    /// retiré ou refusé, jamais suivi : les fichiers qu'il désigne, nommés comme ceux du relevé, restent.
+    #[cfg(unix)]
+    #[test]
+    fn non_ne_suit_aucun_lien() {
+        for lien in ["amelioration", "amelioration/jours", "envoi", "envoi/file"] {
+            let dossier = jetable("lien");
+            let ailleurs = jetable("ailleurs");
+            for nom in ["2026-11-07.json", "suivi.json", "materiel.json", "etat.json"] {
+                std::fs::write(ailleurs.join(nom), b"{}").unwrap();
+            }
+            let place = dossier.join(lien);
+            std::fs::create_dir_all(place.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&ailleurs, &place).unwrap();
+            let _ = crate::envoi::vider_dans(&dossier);
+            let _ = crate::amelioration::effacer_dans(&dossier);
+            crate::amelioration::purger_dans(&dossier, d(30) + chrono::Duration::days(400)).ok();
+            for nom in ["2026-11-07.json", "suivi.json", "materiel.json", "etat.json"] {
+                assert!(ailleurs.join(nom).exists(), "{lien} → {nom} effacé à travers le lien");
+            }
+            let _ = std::fs::remove_dir_all(&dossier);
+            let _ = std::fs::remove_dir_all(&ailleurs);
+        }
+    }
+
     #[test]
     fn ce_que_montre_le_lancement() {
         let vide = Fichier::default();
@@ -757,28 +866,52 @@ mod tests {
         let oui2 = avec(Some(Choix::Oui), Some("2026-11-01"), Some(2), None);
         // Sans relais (aujourd'hui) ou sans relevé : rien.
         for phase in [Phase::Un, Phase::Deux] {
-            assert_eq!(au_lancement(Some(&vide), phase, false, true), AuLancement::Rien);
-            assert_eq!(au_lancement(None, phase, true, true), AuLancement::Rien);
-            assert_eq!(au_lancement(Some(&non), phase, true, true), AuLancement::Rien);
+            assert_eq!(au_lancement(Some(&vide), phase, false, true, false), AuLancement::Rien);
+            assert_eq!(au_lancement(None, phase, true, true, false), AuLancement::Rien);
+            assert_eq!(au_lancement(Some(&non), phase, true, true, false), AuLancement::Rien);
         }
-        assert_eq!(au_lancement(Some(&vide), Phase::Un, true, true), AuLancement::Avis);
-        assert_eq!(au_lancement(Some(&vide), Phase::Un, true, false), AuLancement::Rien);
-        assert_eq!(au_lancement(Some(&avis), Phase::Un, true, true), AuLancement::Rien);
-        assert_eq!(au_lancement(Some(&oui1), Phase::Un, true, true), AuLancement::Rien);
+        assert_eq!(
+            au_lancement(Some(&vide), Phase::Un, true, true, false),
+            AuLancement::Avis
+        );
+        assert_eq!(
+            au_lancement(Some(&vide), Phase::Un, true, false, false),
+            AuLancement::Rien
+        );
+        assert_eq!(
+            au_lancement(Some(&avis), Phase::Un, true, true, false),
+            AuLancement::Rien
+        );
+        assert_eq!(
+            au_lancement(Some(&oui1), Phase::Un, true, true, false),
+            AuLancement::Rien
+        );
         // Phase 2 : la question, même sans terminal, sauf « oui » déjà donné en phase 2.
         assert_eq!(
-            au_lancement(Some(&vide), Phase::Deux, true, false),
+            au_lancement(Some(&vide), Phase::Deux, true, false, false),
             AuLancement::Question
         );
         assert_eq!(
-            au_lancement(Some(&avis), Phase::Deux, true, true),
+            au_lancement(Some(&avis), Phase::Deux, true, true, false),
             AuLancement::Question
         );
         assert_eq!(
-            au_lancement(Some(&oui1), Phase::Deux, true, true),
+            au_lancement(Some(&oui1), Phase::Deux, true, true, false),
             AuLancement::Question
         );
-        assert_eq!(au_lancement(Some(&oui2), Phase::Deux, true, true), AuLancement::Rien);
+        assert_eq!(
+            au_lancement(Some(&oui2), Phase::Deux, true, true, false),
+            AuLancement::Rien
+        );
+        // Fichier disparu : la question dans un terminal (jamais l'avis), rien sans lui.
+        for phase in [Phase::Un, Phase::Deux] {
+            assert_eq!(
+                au_lancement(Some(&vide), phase, true, true, true),
+                AuLancement::Question
+            );
+            assert_eq!(au_lancement(Some(&vide), phase, true, false, true), AuLancement::Rien);
+            assert_eq!(au_lancement(Some(&vide), phase, false, true, true), AuLancement::Rien);
+        }
     }
 
     /// Les retraits ne touchent que l'extérieur des chaînes : sans eux, ce sont les octets d'origine.

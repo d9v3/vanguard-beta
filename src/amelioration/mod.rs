@@ -613,6 +613,9 @@ fn cache_depuis(base: &mut BTreeMap<Regle, Base>, mesures: &crate::autotest::mes
 
 /// Les jours écrits : (« AAAA-MM-JJ », taille).
 fn jours_dans(dossier: &Path) -> Vec<(String, u64)> {
+    if !dossiers_surs(dossier) {
+        return Vec::new();
+    }
     let Ok(d) = std::fs::read_dir(dossier.join(JOURS)) else {
         return Vec::new();
     };
@@ -625,6 +628,17 @@ fn jours_dans(dossier: &Path) -> Vec<(String, u64)> {
             m.is_file().then(|| (jour.to_string(), m.len()))
         })
         .collect()
+}
+
+/// `amelioration/` et `amelioration/jours/` sont-ils de vrais dossiers (ou absents) ? Un lien posé à leur place
+/// enverrait la purge et l'effacement dans le dossier qu'il désigne.
+fn dossiers_surs(dossier: &Path) -> bool {
+    [dossier.join("amelioration"), dossier.join(JOURS)]
+        .iter()
+        .all(|d| match std::fs::symlink_metadata(d) {
+            Ok(m) => m.file_type().is_dir(),
+            Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+        })
 }
 
 fn taille(dossier: &Path, nom: &str) -> u64 {
@@ -764,6 +778,13 @@ pub(crate) fn purger_dans(dossier: &Path, jour: chrono::NaiveDate) -> std::io::R
 /// Un fichier qui résiste (verrouillé par un antivirus) n'arrête pas les autres : la première erreur est rendue à
 /// la fin.
 pub(crate) fn effacer_dans(dossier: &Path) -> std::io::Result<()> {
+    // Un lien (ou un fichier) posé à la place d'un des dossiers du relevé est retiré lui-même, jamais suivi : ce
+    // qu'il désigne reste intact.
+    for d in [dossier.join("amelioration"), dossier.join(JOURS)] {
+        if std::fs::symlink_metadata(&d).is_ok_and(|m| !m.file_type().is_dir()) {
+            let _ = std::fs::remove_file(&d).or_else(|_| std::fs::remove_dir(&d));
+        }
+    }
     let mut noms: Vec<String> = jours_dans(dossier)
         .into_iter()
         .map(|(j, _)| format!("{JOURS}/{j}.json"))

@@ -1721,15 +1721,18 @@ fn traces_collectees_et_manifeste_juste() {
     let _ = std::fs::remove_dir_all(&maison);
 }
 
-/// Paramètres › Partage avec l'auteur, par un tube (sans terminal) : une ligne vide, la fin de la lecture ou une
-/// réponse inconnue ne donnent aucun accord ; rien n'est écrit.
+/// Paramètres › Partage avec l'auteur, par un tube (sans terminal) : une ligne vide, la fin de la lecture, une
+/// réponse inconnue, ou un chiffre ou une lettre (d'un script qui répondait à autre chose) ne donnent aucun accord ;
+/// rien n'est écrit.
 #[test]
 fn partage_sans_terminal_rien_sans_reponse() {
     let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
-    for (entree, inconnue) in [
-        ("13.1\n15\n\n", false),
-        ("13.1\n15\n", false),
-        ("13.1\n15\npeut-être\n", true),
+    for (entree, refus) in [
+        ("13.1\n15\n\n", None),
+        ("13.1\n15\n", None),
+        ("13.1\n15\npeut-être\n", Some("réponse inconnue ; rien ne change")),
+        ("13.1\n15\n1\n", Some("sans terminal, répondez par un mot")),
+        ("13.1\n15\ny\n", Some("sans terminal, répondez par un mot")),
     ] {
         let maison = maison_jetable();
         let s = vanguard_dans(programme, &maison, "fr", &[], entree, 60);
@@ -1737,7 +1740,16 @@ fn partage_sans_terminal_rien_sans_reponse() {
         assert_eq!(s.code, Some(0), "{entree:?} : {texte}{}", s.erreurs);
         assert!(texte.contains("Partager avec l'auteur ?"), "{entree:?} : {texte}");
         assert!(texte.contains("3  Voir ce qui serait envoyé"), "{texte}");
-        assert_eq!(texte.contains("réponse inconnue ; rien ne change"), inconnue, "{texte}");
+        assert!(
+            texte.contains("Réponse : oui, non ou voir (Entrée : plus tard)"),
+            "{texte}"
+        );
+        assert_eq!(
+            texte.contains("rien ne change."),
+            refus.is_some(),
+            "{entree:?} : {texte}"
+        );
+        assert!(refus.is_none_or(|r| texte.contains(r)), "{entree:?} : {texte}");
         let parametres = std::fs::read_to_string(dossier_vanguard(&maison).join("parametres.json")).unwrap_or_default();
         assert!(!parametres.contains("partage"), "{entree:?} : {parametres}");
         let s = vanguard_dans(programme, &maison, "fr", &["parametres", "partage"], "", 60);
@@ -1758,7 +1770,7 @@ fn partage_non_efface_oui_date_falsifie_ignore() {
     std::fs::write(dossier.join("envoi/file/2026-11-01.json"), "{}").unwrap();
     std::fs::write(dossier.join("amelioration/jours/2026-11-01.json"), "{}").unwrap();
     std::fs::write(dossier.join("a-moi.txt"), "à alice").unwrap();
-    let s = vanguard_dans(programme, &maison, "fr", &[], "13.1\n15\n2\n", 60);
+    let s = vanguard_dans(programme, &maison, "fr", &[], "13.1\n15\nnon\n", 60);
     assert_eq!(s.code, Some(0), "{}{}", s.texte, s.erreurs);
     assert!(s.texte.contains("Partage avec l'auteur : non"), "{}", s.texte);
     // En root (verifier.sh, sous unshare) ou sous Wine, le dossier n'est pas celui d'une personne : rien n'est
@@ -1817,6 +1829,15 @@ fn partage_non_efface_oui_date_falsifie_ignore() {
     .unwrap();
     let s = vanguard_dans(programme, &maison, "fr", &["parametres", "partage"], "", 60);
     assert!(s.texte.contains("partage : pas répondu"), "{}", s.texte);
+    // Un « non » dont le fichier est effacé hors de Vanguard : toujours rien ne part.
+    vanguard_dans(programme, &maison, "fr", &["parametres", "partage", "non"], "", 60);
+    std::fs::remove_file(dossier.join("parametres.json")).unwrap();
+    let s = vanguard_dans(programme, &maison, "fr", &["parametres", "partage"], "", 60);
+    assert!(
+        s.texte.contains("partage : fichier effacé : rien ne part"),
+        "{}",
+        s.texte
+    );
 }
 
 /// Le dossier de Vanguard dans un dossier personnel jetable, selon le système (voir `socle::dossier_local`).
@@ -2398,6 +2419,13 @@ mod menus_dans_un_terminal {
         t.attendre("Échap/← revenir", 30);
         assert!(!parametres().contains("partage"), "{}", parametres());
         assert!(dossier.join("amelioration").exists() && dossier.join("envoi").exists());
+        // Entrée sur « Plus tard » (où la question s'ouvre) : pareil, sans rien dire d'autre.
+        t.taper(ENTREE);
+        t.attendre("Échap/← plus tard", 30);
+        t.taper(ENTREE);
+        let liste = t.attendre("Échap/← revenir", 30);
+        assert!(!liste.contains("réponse inconnue"), "{liste}");
+        assert!(!parametres().contains("partage"), "{}", parametres());
         // Voir, puis retour à la question.
         t.taper(ENTREE);
         t.attendre("Échap/← plus tard", 30);
