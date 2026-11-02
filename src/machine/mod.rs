@@ -58,6 +58,9 @@ pub(crate) mod vidage;
 use windows as os;
 #[cfg(unix)]
 pub(crate) mod assistant;
+// L'arrêt d'un logiciel de prise de contrôle désigné, jugé par l'assistant élevé : du code pur, éprouvé sous les essais.
+#[cfg(unix)]
+pub(crate) mod arret_designe;
 // La grammaire des gestes de Linux que l'assistant élevé fait en root (« vanguard:geste … ») : du code pur, lu aussi par
 // le banc de fuzzing.
 #[cfg(unix)]

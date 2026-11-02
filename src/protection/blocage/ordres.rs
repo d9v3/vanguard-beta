@@ -199,7 +199,7 @@ impl Juge {
 }
 
 /// Les ancêtres d'un processus, du parent à la racine (64 au plus).
-fn ancetres(pid: u32) -> Vec<u32> {
+pub(crate) fn ancetres(pid: u32) -> Vec<u32> {
     let mut liste = Vec::new();
     let mut courant = pid;
     #[cfg(windows)]

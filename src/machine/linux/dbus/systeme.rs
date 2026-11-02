@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use super::actions::{Action, FinDeJob};
 use super::{Bus, CHEMIN_SYSTEMD, DBUS, GESTIONNAIRE, SYSTEMD, UNITE, Valeur};
+use crate::machine::arret_designe::{ArretCharge, Commande, SessionLogind};
 use crate::machine::gestes_unix::{self, ActionUnite};
 use crate::modele::Echec;
 use crate::{tr, trf};
@@ -499,6 +500,194 @@ pub(crate) fn arret_a_la_main(bus: &mut Bus, unite: &str) -> Result<Option<bool>
         .booleen()
         .map(|refuse| Some(!refuse))
         .ok_or_else(|| illisible(super::mal_forme("RefuseManualStop")))
+}
+
+/// L'interface D-Bus des propriétés propres au genre de l'unité (commandes, groupe) ; `None` pour un minuteur, qui
+/// ne lance rien lui-même.
+fn interface_du_genre(unite: &str) -> Option<(&'static str, [&'static str; 2], [&'static str; 2])> {
+    if unite.ends_with(".service") {
+        Some((
+            "org.freedesktop.systemd1.Service",
+            ["ExecStart", ""],
+            ["ExecStop", "ExecStopPost"],
+        ))
+    } else if unite.ends_with(".socket") {
+        Some((
+            "org.freedesktop.systemd1.Socket",
+            ["ExecStartPre", "ExecStartPost"],
+            ["ExecStopPre", "ExecStopPost"],
+        ))
+    } else {
+        None
+    }
+}
+
+/// Un tableau D-Bus, et rien d'autre : une propriété d'un autre type n'est jamais lue comme une liste vide.
+fn tableau(v: Option<&Valeur>) -> Option<&[Valeur]> {
+    match v?.nue() {
+        Valeur::Tableau(t) => Some(t),
+        _ => None,
+    }
+}
+
+/// Une liste de textes (`as`), stricte : un élément d'un autre type la rend illisible.
+fn liste_de_textes(v: Option<&Valeur>) -> Option<Vec<String>> {
+    tableau(v)?.iter().map(|e| e.texte().map(String::from)).collect()
+}
+
+/// Les commandes d'une propriété `a(sasbttttuii)` (ExecStart, ExecStop…) : le chemin et les arguments de chacune.
+fn commandes(v: Option<&Valeur>) -> Option<Vec<Commande>> {
+    tableau(v)?
+        .iter()
+        .map(|e| match e.nue() {
+            Valeur::Structure(c) => Some(Commande {
+                chemin: c.first()?.texte()?.to_string(),
+                arguments: liste_de_textes(c.get(1))?,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `ArretCharge` d'après les propriétés de l'unité (`proprietes_unite`, interface Unit) et celles de son genre
+/// (`proprietes_genre`). Une propriété attendue qui manque ou n'a pas son type : `None`, illisible. Seules
+/// PropagatesStopTo (systemd 249) et OnSuccess (systemd 249) peuvent manquer, sur un systemd plus ancien qui ne les
+/// connaît pas : vides alors.
+pub(crate) fn arret_charge_de(
+    unite: &str,
+    proprietes_unite: &Valeur,
+    proprietes_genre: Option<&Valeur>,
+) -> Option<ArretCharge> {
+    let mut lu = ArretCharge {
+        recharge_attendue: proprietes_unite.champ("NeedDaemonReload")?.booleen()?,
+        ..ArretCharge::default()
+    };
+    for nom in ["RequiredBy", "RequisiteOf", "BoundBy", "ConsistsOf", "OnFailure"] {
+        lu.entrainees.extend(liste_de_textes(proprietes_unite.champ(nom))?);
+    }
+    // UpheldBy : une unité qui la maintient la relancerait aussitôt, l'arrêt dit fait serait faux.
+    for nom in ["PropagatesStopTo", "OnSuccess", "UpheldBy"] {
+        if let Some(v) = proprietes_unite.champ(nom) {
+            lu.entrainees.extend(liste_de_textes(Some(v))?);
+        }
+    }
+    let Some((_, lancement, arret)) = interface_du_genre(unite) else {
+        // Un minuteur : ni commande, ni groupe ; ses propriétés propres ne sont pas lues.
+        return Some(lu);
+    };
+    let p = proprietes_genre?;
+    for nom in lancement.into_iter().filter(|n| !n.is_empty()) {
+        lu.lancement.extend(commandes(p.champ(nom))?);
+    }
+    for nom in arret {
+        lu.arret.extend(commandes(p.champ(nom))?);
+    }
+    lu.fichiers_d_environnement = tableau(p.champ("EnvironmentFiles"))?
+        .iter()
+        .map(|e| match e.nue() {
+            Valeur::Structure(c) => Some((c.first()?.texte()?.to_string(), c.get(1)?.booleen()?)),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    lu.racine = format!(
+        "{}{}",
+        p.champ("RootDirectory")?.texte()?,
+        p.champ("RootImage")?.texte()?
+    );
+    lu.groupe = p.champ("ControlGroup")?.texte()?.to_string();
+    Some(lu)
+}
+
+/// Ce que le gestionnaire a en mémoire d'une unité, pour juger son arrêt (`ArretCharge`) : GetUnit, puis toutes les
+/// propriétés de l'unité et de son genre (des lectures). `Ok(None)` : pas chargée. Ce qui ne se lit pas est un échec :
+/// sans ces propriétés, l'arrêt n'est pas fait.
+pub(crate) fn arret_charge(bus: &mut Bus, unite: &str) -> Result<Option<ArretCharge>, Echec> {
+    if !gestes_unix::nom_admis(unite) {
+        return Err(echec(tr!("nom de service refusé", "service name refused")));
+    }
+    let illisible = |e: String| {
+        en_clair(
+            format!("arrêt de {unite} : {e}"),
+            tr!(
+                "le gestionnaire de services de Linux n'a pas dit ce que l'arrêt de ce service lancerait : il n'est pas arrêté",
+                "the Linux service manager did not say what stopping this service would run: it is not stopped"
+            ),
+        )
+    };
+    let corps = match bus.appeler(
+        SYSTEMD,
+        CHEMIN_SYSTEMD,
+        GESTIONNAIRE,
+        "GetUnit",
+        "s",
+        vec![Valeur::texte_de(unite)],
+    ) {
+        Ok(c) => c,
+        Err(e) if e.starts_with("org.freedesktop.systemd1.NoSuchUnit ") => return Ok(None),
+        Err(e) => return Err(illisible(e)),
+    };
+    let chemin = corps
+        .first()
+        .and_then(Valeur::texte)
+        .ok_or_else(|| illisible(super::mal_forme("GetUnit sans chemin")))?
+        .to_string();
+    let proprietes_unite = bus.proprietes(SYSTEMD, &chemin, UNITE).map_err(illisible)?;
+    let proprietes_genre = match interface_du_genre(unite) {
+        Some((interface, _, _)) => Some(bus.proprietes(SYSTEMD, &chemin, interface).map_err(illisible)?),
+        None => None,
+    };
+    arret_charge_de(unite, &proprietes_unite, proprietes_genre.as_ref())
+        .map(Some)
+        .ok_or_else(|| illisible(super::mal_forme("propriétés de l'arrêt")))
+}
+
+/// Les sessions lues au plus : au-delà, la liste n'est pas lue du tout (une session laissée de côté pourrait être
+/// celle qui passe par l'outil), et l'arrêt est refusé.
+const SESSIONS_MAX: usize = 1000;
+
+/// Les sessions de logind (ListSessions, puis les propriétés de chacune ; des lectures). Une session dont les
+/// propriétés ne se lisent pas est sautée (fermée entre la liste et sa lecture). `None` : la liste ne se lit pas, n'est
+/// pas un tableau, ou dépasse `SESSIONS_MAX` ; l'appelant refuse alors l'arrêt.
+pub(crate) fn sessions_logind(bus: &mut Bus) -> Option<Vec<SessionLogind>> {
+    const LOGIN1: &str = "org.freedesktop.login1";
+    let liste = bus
+        .appeler(
+            LOGIN1,
+            "/org/freedesktop/login1",
+            "org.freedesktop.login1.Manager",
+            "ListSessions",
+            "",
+            Vec::new(),
+        )
+        .ok()?;
+    let liste = tableau(liste.first())?;
+    if liste.len() > SESSIONS_MAX {
+        return None;
+    }
+    let mut sessions = Vec::new();
+    for s in liste {
+        let Some(chemin) = s.elements().get(4).and_then(Valeur::texte) else {
+            continue;
+        };
+        let Ok(p) = bus.proprietes(LOGIN1, chemin, "org.freedesktop.login1.Session") else {
+            continue;
+        };
+        let (Some(distante), Some(service), Some(meneur)) = (
+            p.champ("Remote").and_then(Valeur::booleen),
+            p.champ("Service").and_then(Valeur::texte),
+            p.champ("Leader")
+                .and_then(Valeur::entier)
+                .and_then(|n| u32::try_from(n).ok()),
+        ) else {
+            continue;
+        };
+        sessions.push(SessionLogind {
+            distante,
+            service: service.to_string(),
+            meneur,
+        });
+    }
+    Some(sessions)
 }
 
 /// L'erreur de GetUnitFileState pour une unité sans fichier : ENOENT (FileNotFound) ou NoSuchUnit selon la version
@@ -1162,5 +1351,83 @@ mod tests {
         assert_eq!(envoyes[0], remettre);
         // Le genre d'une réponse : rien d'autre qu'un retour n'est attendu d'un appel réussi.
         assert_eq!(RETOUR, 2);
+    }
+
+    /// Ce que le gestionnaire dit d'une unité, lu en `ArretCharge` : commandes de lancement et d'arrêt, fichiers
+    /// d'environnement, racine, groupe, unités entraînées. Une propriété obligatoire absente ou d'un autre type n'est
+    /// jamais lue comme vide : rien n'est rendu, et l'arrêt n'est pas fait.
+    #[test]
+    fn l_arret_charge_se_lit_des_proprietes() {
+        let t = Valeur::texte_de;
+        let var = |v: Valeur| Valeur::Variante("v".into(), Box::new(v));
+        let dico = |e: Vec<(&str, Valeur)>| Valeur::Dictionnaire(e.into_iter().map(|(k, v)| (t(k), var(v))).collect());
+        let commande = |chemin: &str, argv: &[&str]| {
+            Valeur::Structure(vec![t(chemin), Valeur::Tableau(argv.iter().map(|a| t(a)).collect())])
+        };
+        let unite = |requis: Valeur| {
+            dico(vec![
+                ("NeedDaemonReload", Valeur::Booleen(false)),
+                ("RequiredBy", requis),
+                ("RequisiteOf", Valeur::Tableau(vec![])),
+                ("BoundBy", Valeur::Tableau(vec![])),
+                ("ConsistsOf", Valeur::Tableau(vec![])),
+                ("OnFailure", Valeur::Tableau(vec![])),
+                ("PropagatesStopTo", Valeur::Tableau(vec![t("autre.service")])),
+            ])
+        };
+        let genre = |groupe: Valeur| {
+            dico(vec![
+                (
+                    "ExecStart",
+                    Valeur::Tableau(vec![commande("/usr/bin/anydesk", &["/usr/bin/anydesk", "--service"])]),
+                ),
+                (
+                    "ExecStop",
+                    Valeur::Tableau(vec![commande("/bin/kill", &["kill", "$MAINPID"])]),
+                ),
+                ("ExecStopPost", Valeur::Tableau(vec![])),
+                (
+                    "EnvironmentFiles",
+                    Valeur::Tableau(vec![Valeur::Structure(vec![
+                        t("/etc/default/anydesk"),
+                        Valeur::Booleen(true),
+                    ])]),
+                ),
+                ("RootDirectory", t("")),
+                ("RootImage", t("")),
+                ("ControlGroup", groupe),
+            ])
+        };
+        let g = genre(t("/system.slice/anydesk.service"));
+        let lu = arret_charge_de("anydesk.service", &unite(Valeur::Tableau(vec![])), Some(&g)).expect("lu");
+        assert!(!lu.recharge_attendue);
+        assert_eq!(lu.lancement.len(), 1);
+        assert_eq!(lu.lancement[0].arguments, ["/usr/bin/anydesk", "--service"]);
+        assert_eq!(lu.arret.len(), 1);
+        assert_eq!(lu.arret[0].chemin, "/bin/kill");
+        assert_eq!(
+            lu.fichiers_d_environnement,
+            [("/etc/default/anydesk".to_string(), true)]
+        );
+        assert_eq!(lu.entrainees, ["autre.service"]);
+        assert_eq!(lu.groupe, "/system.slice/anydesk.service");
+        assert_eq!(lu.racine, "");
+        // Une liste obligatoire d'un autre type, un groupe qui n'est pas un texte, le genre absent : rien n'est lu.
+        assert_eq!(arret_charge_de("anydesk.service", &unite(t("x")), Some(&g)), None);
+        assert_eq!(
+            arret_charge_de(
+                "anydesk.service",
+                &unite(Valeur::Tableau(vec![])),
+                Some(&genre(Valeur::U32(0)))
+            ),
+            None
+        );
+        assert_eq!(
+            arret_charge_de("anydesk.service", &unite(Valeur::Tableau(vec![])), None),
+            None
+        );
+        // Un minuteur ne lance rien lui-même : seules ses propriétés d'unité comptent.
+        let minuteur = arret_charge_de("x.timer", &unite(Valeur::Tableau(vec![])), None).expect("minuteur");
+        assert!(minuteur.arret.is_empty() && minuteur.groupe.is_empty());
     }
 }

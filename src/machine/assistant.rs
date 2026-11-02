@@ -50,6 +50,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 
+use crate::machine::arret_designe::{self, ArretCharge, Chemin, SessionVue};
 use crate::machine::gestes_unix::{self, ActionUnite, GesteUnix, Programme};
 use crate::modele::Echec;
 use crate::protection::blocage::ordres::{self, LIGNE_MAX, LIGNES_MAX, Ordre, Resultat};
@@ -466,7 +467,7 @@ pub(crate) fn appliquer(groupes: &[Vec<Demande>]) -> Vec<Vec<Resultat>> {
         let juge = ordres::Juge::lire(None);
         // Les gestes viennent d'être montrés (`machine::lancer_les_ordres`) : seulement leur issue. L'accord d'un geste
         // qui affaiblit se demande ici aussi sur le terminal : être root ne dit pas que la personne est d'accord.
-        return executer_demandes(groupes, &juge, &mut Systeme, &mut |t| {
+        return executer_demandes(groupes, &juge, &mut Systeme { demandeur: None }, &mut |t| {
             if !t.starts_with("> ") {
                 let _ = writeln!(std::io::stdout(), "    {GRIS}{t}{RESET}");
             }
@@ -620,7 +621,7 @@ pub(crate) fn executer(langue: Option<&str>, parent: Option<u32>) -> i32 {
     let juge = ordres::Juge::lire(parent);
     // Jamais `eprintln!` dans le fils : une sortie d'erreur fermée (fenêtre du terminal fermée) le ferait paniquer,
     // peut-être après l'arrêt d'un service.
-    let resultats = executer_demandes(&groupes, &juge, &mut Systeme, &mut |t| {
+    let resultats = executer_demandes(&groupes, &juge, &mut Systeme { demandeur: parent }, &mut |t| {
         let _ = writeln!(std::io::stderr(), "{t}");
     });
     for e in crate::journal::relayees() {
@@ -688,11 +689,28 @@ trait Monde {
     fn unite(&mut self, action: ActionUnite, unite: &str) -> Result<(), Echec>;
     fn reinitialiser_echecs(&mut self) -> Result<(), Echec>;
     fn programme(&mut self, p: &'static Programme) -> Resultat;
+    /// Ce que le gestionnaire a en mémoire de l'unité pour juger son arrêt (`systeme::arret_charge`) ; `None` : pas
+    /// chargée.
+    fn arret_charge(&mut self, unite: &str) -> Result<Option<ArretCharge>, Echec>;
+    /// Les groupes de contrôle de la lignée de Vanguard : ce fils, le Vanguard qui l'a demandé, et leurs ancêtres. Ce
+    /// qui ne se lit pas manque (rien n'en est conclu en faveur de l'arrêt).
+    fn groupes_de_la_lignee(&self) -> Vec<String>;
+    /// Les sessions de logind, avec les groupes de leur meneur et de ses ancêtres ; `None` : la liste ne se lit pas
+    /// (l'arrêt est alors refusé : rien n'en est conclu en sa faveur).
+    fn sessions(&mut self) -> Option<Vec<SessionVue>>;
+    /// Ce qu'un regard voit d'un chemin cité par une commande d'arrêt (`regarder`, `place_sure`).
+    fn chemin(&self, chemin: &str) -> Chemin;
+    /// « Êtes-vous connecté par lui ? », sur le terminal de la personne : la ligne qu'elle a tapée ; `None` sans
+    /// terminal, à la fin de l'entrée, ou sur une erreur de lecture.
+    fn connecte(&mut self, nom: &str) -> Option<String>;
 }
 
 /// Le vrai ordinateur : le bus système (joint de nouveau pour chaque geste : un job long ne garde pas une prise
-/// ouverte d'un geste à l'autre), les connexions en cours, le terminal de la personne.
-struct Systeme;
+/// ouverte d'un geste à l'autre), les connexions en cours, le terminal de la personne. `demandeur` : le Vanguard qui
+/// a demandé (`--parent`) ; sous run0, le fils n'en descend pas, et sa lignée compte aussi.
+struct Systeme {
+    demandeur: Option<u32>,
+}
 
 impl Monde for Systeme {
     fn accord(&mut self, g: GesteUnix) -> Result<(), Refus> {
@@ -795,6 +813,82 @@ impl Monde for Systeme {
     fn programme(&mut self, p: &'static Programme) -> Resultat {
         lancer_programme(p)
     }
+
+    fn arret_charge(&mut self, unite: &str) -> Result<Option<ArretCharge>, Echec> {
+        #[cfg(target_os = "linux")]
+        {
+            use crate::machine::linux::dbus::systeme;
+            systeme::bus_pour_agir().and_then(|mut bus| systeme::arret_charge(&mut bus, unite))
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(refus(format!("{unite} : {}", sans_systemd())))
+    }
+
+    fn groupes_de_la_lignee(&self) -> Vec<String> {
+        let moi = std::process::id();
+        let mut pids = vec![moi];
+        pids.extend(ordres::ancetres(moi));
+        if let Some(d) = self.demandeur {
+            pids.push(d);
+            pids.extend(ordres::ancetres(d));
+        }
+        groupes_des(&pids)
+    }
+
+    fn sessions(&mut self) -> Option<Vec<SessionVue>> {
+        #[cfg(target_os = "linux")]
+        {
+            use crate::machine::linux::dbus::systeme;
+            let sessions = systeme::bus_pour_agir()
+                .ok()
+                .and_then(|mut bus| systeme::sessions_logind(&mut bus))?;
+            let vues = sessions
+                .into_iter()
+                .map(|s| {
+                    let mut pids = vec![s.meneur];
+                    pids.extend(ordres::ancetres(s.meneur));
+                    SessionVue {
+                        distante: s.distante,
+                        service: s.service,
+                        groupes_du_meneur: groupes_des(&pids),
+                    }
+                })
+                .collect();
+            Some(vues)
+        }
+        #[cfg(not(target_os = "linux"))]
+        None
+    }
+
+    fn chemin(&self, chemin: &str) -> Chemin {
+        let c = std::path::Path::new(chemin);
+        let racine = std::path::Path::new("/");
+        let qui = Proprietaire::root();
+        match regarder(c, racine, qui, None) {
+            Regard::Sur => std::fs::canonicalize(c).map_or(Chemin::Douteux, |reel| Chemin::Sur {
+                reel: reel.to_string_lossy().into_owned(),
+            }),
+            Regard::Absent if place_sure(c, racine, qui) => Chemin::AbsentPlaceSure,
+            _ => Chemin::Douteux,
+        }
+    }
+
+    fn connecte(&mut self, nom: &str) -> Option<String> {
+        let vu = crate::ui::affichable(nom);
+        let question = trf!(
+            "Vanguard (administrateur) : êtes-vous vous-même connecté à cet ordinateur par {vu} en ce moment, depuis un autre appareil ? L'arrêter couperait votre session. Tapez « non » puis Entrée pour l'arrêter (« oui », Entrée seule ou autre chose : il reste en marche) :",
+            "Vanguard (administrator): are you yourself connected to this computer through {vu} right now, from another device? Stopping it would cut your session. Type \"no\" then Enter to stop it (\"yes\", Enter alone or anything else: it keeps running):"
+        );
+        question_au_terminal(&question).ok().flatten()
+    }
+}
+
+/// Les groupes de contrôle de ces processus (`/proc/<pid>/cgroup`) ; un processus disparu ou illisible est sauté.
+fn groupes_des(pids: &[u32]) -> Vec<String> {
+    pids.iter()
+        .filter_map(|p| std::fs::read_to_string(format!("/proc/{p}/cgroup")).ok())
+        .filter_map(|t| arret_designe::groupe_du_processus(&t))
+        .collect()
 }
 
 /// Le contexte des échecs d'un geste d'unité, pour le journal des erreurs.
@@ -1348,6 +1442,15 @@ fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
             "this step is not allowed: nothing is done"
         ));
     }
+    let arret_designe = match g {
+        GesteUnix::Designee(ActionUnite::Arreter, nom) => Some(nom),
+        _ => None,
+    };
+    if let Some(nom) = arret_designe
+        && let Some(fin) = avant_l_arret_designe(nom.as_str(), monde)
+    {
+        return fin;
+    }
     if g.demande_accord()
         && let Err(Refus(raison)) = monde.accord(g)
     {
@@ -1367,6 +1470,21 @@ fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
     {
         return Resultat::echec(raison);
     }
+    // Ce que l'arrêt lancerait, et les sessions portées par l'outil, revus aussi : une session a pu s'ouvrir par lui
+    // pendant les deux questions.
+    if let Some(nom) = arret_designe {
+        if let Err(raison) = arret_designe_revu(nom.as_str(), monde) {
+            return Resultat::echec(raison);
+        }
+        let vu = crate::ui::affichable(nom.as_str());
+        return match monde.unite(ActionUnite::Arreter, nom.as_str()) {
+            Ok(()) => Resultat::ok_note(trf!(
+                "{vu} arrêté par votre choix ; pour le remettre en marche, en administrateur : systemctl start {vu} (et systemctl enable {vu} pour qu'il reparte au démarrage)",
+                "{vu} stopped by your choice; to start it again, as administrator: systemctl start {vu} (and systemctl enable {vu} for it to start at boot again)"
+            )),
+            Err(raison) => Resultat::echec(raison),
+        };
+    }
     let fait = |r: Result<(), Echec>| match (r, note) {
         (Ok(()), Some(note)) => Resultat::ok_note(note),
         (Ok(()), None) => Resultat::ok(),
@@ -1379,6 +1497,61 @@ fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
         GesteUnix::ReinitialiserEchecs => fait(monde.reinitialiser_echecs()),
         GesteUnix::SignaturesClamav => signatures_clamav(monde),
     }
+}
+
+/// Avant la question d'accord de l'arrêt d'un logiciel de prise en main désigné : `None` pour continuer, sinon la fin
+/// du geste. Pas en marche : rien à arrêter, sans question. Puis ce que l'arrêt lancerait et les signes qu'une session
+/// passe par lui (`arret_designe_revu`), avant de rien demander : un signe vu refuse même si la personne dirait « non ».
+/// Enfin la question « êtes-vous connecté par lui ? » : seul un « non » tapé au terminal mène à l'accord ; « oui »,
+/// Entrée seule, l'entrée finie ou aucun terminal le laissent en marche. Un échec, pas une note : le reste de la liste
+/// (arrêt des processus, désinstallation) ne doit pas couper la session à sa place.
+fn avant_l_arret_designe(nom: &str, monde: &mut dyn Monde) -> Option<Resultat> {
+    let vu = crate::ui::affichable(nom);
+    match monde.etat_d_activite(nom) {
+        Ok(Some(e)) if matches!(e.as_str(), "active" | "activating" | "reloading" | "deactivating") => {}
+        Ok(_) => {
+            return Some(Resultat::ok_note(trf!(
+                "{vu} n'est pas en marche : rien à arrêter",
+                "{vu} is not running: nothing to stop"
+            )));
+        }
+        Err(raison) => return Some(Resultat::echec(raison)),
+    }
+    if let Err(raison) = arret_designe_revu(nom, monde) {
+        return Some(Resultat::echec(raison));
+    }
+    if !arret_designe::dit_non(monde.connecte(nom).as_deref()) {
+        return Some(Resultat::echec(trf!(
+            "{vu} n'est pas arrêté : vous n'avez pas répondu « non » (êtes-vous connecté par lui ?) ; il reste en marche, une session qui passe par lui n'est pas coupée. S'il est retiré du démarrage, il ne repartira plus au prochain redémarrage",
+            "{vu} is not stopped: you did not answer \"no\" (are you connected through it?); it stays running, a session going through it is not cut. If it is removed from startup, it will not start again at the next restart"
+        )));
+    }
+    None
+}
+
+/// L'arrêt d'un logiciel de prise en main désigné, revu : ce que systemd en dit relu sur le bus, puis, preuves
+/// seulement, une session portée par lui (Vanguard lui-même dans son groupe, ou une session de logind qu'il porte),
+/// puis ce que l'arrêt lancerait (`arret_designe::juger_arret`). Toute lecture impossible refuse.
+fn arret_designe_revu(nom: &str, monde: &mut dyn Monde) -> Result<(), Echec> {
+    let Some(lu) = monde.arret_charge(nom)? else {
+        return Err(refus(trf!(
+            "{} n'est pas chargé par le gestionnaire de services : rien n'est arrêté",
+            "{} is not loaded by the service manager: nothing is stopped",
+            crate::ui::affichable(nom)
+        )));
+    };
+    let lignee = monde.groupes_de_la_lignee();
+    let Some(sessions) = monde.sessions() else {
+        return Err(refus(trf!(
+            "{} n'est pas arrêté : les sessions ouvertes sur cet ordinateur ne se lisent pas, et l'une d'elles passe peut-être par lui",
+            "{} is not stopped: the sessions open on this computer cannot be read, and one of them may go through it",
+            crate::ui::affichable(nom)
+        )));
+    };
+    if let Some(raison) = arret_designe::porte_par_l_outil(nom, &lu.groupe, &lignee, &sessions) {
+        return Err(refus(raison));
+    }
+    arret_designe::juger_arret(nom, &lu, &|c| monde.chemin(c))
 }
 
 /// `signatures-clamav` : le service de mise à jour, s'il est installé, verrouille la base pendant qu'il tourne ; s'il
@@ -1642,15 +1815,42 @@ fn derniere_ligne(texte: &str) -> Option<String> {
 
 /// La réponse de la personne à une question d'accord : seuls « o », « oui », « y » et « yes » (majuscules permises)
 /// disent oui ; le reste, une ligne vide comprise, dit non. Une seule ligne, bornée, est lue.
+#[cfg(test)]
 fn accord(question: &str, lecteur: &mut impl BufRead, ecrivain: &mut impl Write) -> bool {
-    if write!(ecrivain, "{question} ").and_then(|()| ecrivain.flush()).is_err() {
-        return false;
-    }
-    let mut reponse = String::new();
-    if (&mut *lecteur).take(64).read_line(&mut reponse).is_err() {
-        return false;
-    }
+    reponse(question, lecteur, ecrivain).is_some_and(|r| est_oui(&r))
+}
+
+/// Seuls « o », « oui », « y » et « yes » (casse et espaces autour ignorés) valent un accord.
+fn est_oui(reponse: &str) -> bool {
     matches!(reponse.trim().to_lowercase().as_str(), "o" | "oui" | "y" | "yes")
+}
+
+/// Pose `question` et lit une seule ligne, bornée à 64 octets ; `None` : la question ne s'écrit pas, la lecture
+/// échoue, ou l'entrée est finie sans rien (Ctrl+D, terminal fermé).
+fn reponse(question: &str, lecteur: &mut impl BufRead, ecrivain: &mut impl Write) -> Option<String> {
+    write!(ecrivain, "{question} ").and_then(|()| ecrivain.flush()).ok()?;
+    let mut ligne = String::new();
+    match (&mut *lecteur).take(64).read_line(&mut ligne) {
+        Ok(0) | Err(_) => None,
+        Ok(_) => Some(ligne),
+    }
+}
+
+/// Pose `question` sur le terminal de la personne (/dev/tty), jamais sur le canal du parent, après avoir vidé ce qui
+/// a été tapé d'avance : la ligne lue (`reponse`). `Err(())` : aucun terminal.
+fn question_au_terminal(question: &str) -> Result<Option<String>, ()> {
+    use std::os::fd::AsRawFd;
+    let tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|_| ())?;
+    // Ce qui a été tapé d'avance, ou glissé avant la question, ne répond pas à sa place.
+    // SAFETY: tcflush sur un descripteur ouvert que `tty` tient pendant l'appel ; aucun pointeur.
+    unsafe { libc::tcflush(tty.as_raw_fd(), libc::TCIFLUSH) };
+    let mut ecrivain = &tty;
+    let mut lecteur = BufReader::new(&tty);
+    Ok(reponse(question, &mut lecteur, &mut ecrivain))
 }
 
 /// Pourquoi ce geste demande l'accord, dans la langue de l'interface (`GesteUnix::pourquoi_l_accord`).
@@ -1670,8 +1870,13 @@ fn pourquoi_dit(g: GesteUnix) -> &'static str {
 /// L'accord d'un geste qui affaiblit, supprime, coupe le réseau ou l'ouvre, demandé sur le terminal de la personne (/dev/tty), jamais sur le
 /// canal du parent. Sans terminal, refusé.
 fn accord_au_terminal(g: GesteUnix) -> Result<(), Refus> {
-    use std::os::fd::AsRawFd;
-    let Ok(tty) = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty") else {
+    let question = trf!(
+        "Vanguard (administrateur) : {} — {}. D'accord ? Tapez « oui » puis Entrée (autre chose refuse) :",
+        "Vanguard (administrator): {} — {}. Agree? Type \"yes\" then Enter (anything else refuses):",
+        texte_du_geste(g),
+        pourquoi_dit(g)
+    );
+    let Ok(lu) = question_au_terminal(&question) else {
         return Err(Refus(
             tr!(
             "ce geste demande votre accord, et aucun terminal n'est là pour le donner : rien n'est fait. Lancez Vanguard depuis un terminal pour le faire",
@@ -1680,18 +1885,7 @@ fn accord_au_terminal(g: GesteUnix) -> Result<(), Refus> {
             .to_string(),
         ));
     };
-    // Ce qui a été tapé d'avance, ou glissé avant la question, ne répond pas à sa place.
-    // SAFETY: tcflush sur un descripteur ouvert que `tty` tient pendant l'appel ; aucun pointeur.
-    unsafe { libc::tcflush(tty.as_raw_fd(), libc::TCIFLUSH) };
-    let question = trf!(
-        "Vanguard (administrateur) : {} — {}. D'accord ? Tapez « oui » puis Entrée (autre chose refuse) :",
-        "Vanguard (administrator): {} — {}. Agree? Type \"yes\" then Enter (anything else refuses):",
-        texte_du_geste(g),
-        pourquoi_dit(g)
-    );
-    let mut ecrivain = &tty;
-    let mut lecteur = BufReader::new(&tty);
-    if accord(&question, &mut lecteur, &mut ecrivain) {
+    if lu.is_some_and(|r| est_oui(&r)) {
         Ok(())
     } else {
         Err(Refus(
@@ -2123,6 +2317,18 @@ mod tests {
         programme_reussi: bool,
         /// Le programme panique au lieu de rendre son issue.
         programme_panique: bool,
+        /// Ce que rend `arret_charge`.
+        arret_charge: Result<Option<ArretCharge>, Echec>,
+        /// Les groupes de la lignée de Vanguard.
+        lignee: Vec<String>,
+        /// `None` : la liste des sessions ne se lit pas.
+        sessions: Option<Vec<SessionVue>>,
+        /// Les sessions vues une fois la question « connecté par lui ? » posée (une session ouverte pendant).
+        sessions_apres_question: Option<Vec<SessionVue>>,
+        /// La réponse à « êtes-vous connecté par lui ? » ; `None` : l'entrée est finie, ou aucun terminal.
+        reponse: Option<&'static str>,
+        /// Les chemins que `chemin` dit douteux ; les autres sont sûrs, tels quels.
+        chemins_douteux: Vec<&'static str>,
     }
 
     impl FauxMonde {
@@ -2143,6 +2349,19 @@ mod tests {
                 echecs: Vec::new(),
                 programme_reussi: true,
                 programme_panique: false,
+                arret_charge: Ok(Some(ArretCharge {
+                    lancement: vec![arret_designe::Commande {
+                        chemin: "/usr/bin/anydesk".into(),
+                        arguments: vec!["/usr/bin/anydesk".into(), "--service".into()],
+                    }],
+                    groupe: "/system.slice/anydesk.service".into(),
+                    ..ArretCharge::default()
+                })),
+                lignee: vec!["/user.slice/user-1000.slice/session-2.scope".into()],
+                sessions: Some(Vec::new()),
+                sessions_apres_question: None,
+                reponse: Some("non"),
+                chemins_douteux: Vec::new(),
             }
         }
     }
@@ -2206,6 +2425,30 @@ mod tests {
             } else {
                 Resultat::echec("programme en échec")
             }
+        }
+        fn arret_charge(&mut self, unite: &str) -> Result<Option<ArretCharge>, Echec> {
+            self.journal.push(format!("arret-lu {unite}"));
+            self.arret_charge.clone()
+        }
+        fn groupes_de_la_lignee(&self) -> Vec<String> {
+            self.lignee.clone()
+        }
+        fn sessions(&mut self) -> Option<Vec<SessionVue>> {
+            self.sessions.clone()
+        }
+        fn chemin(&self, chemin: &str) -> Chemin {
+            if self.chemins_douteux.contains(&chemin) {
+                Chemin::Douteux
+            } else {
+                Chemin::Sur { reel: chemin.into() }
+            }
+        }
+        fn connecte(&mut self, nom: &str) -> Option<String> {
+            self.journal.push(format!("question {nom}"));
+            if let Some(s) = self.sessions_apres_question.take() {
+                self.sessions = Some(s);
+            }
+            self.reponse.map(String::from)
         }
     }
 
@@ -2372,13 +2615,22 @@ mod tests {
             (r.reussi, m.journal)
         };
         let s = ToString::to_string;
-        assert_eq!(
-            essai(arreter, &|_| {}),
-            (
-                true,
-                vec![s("etat anydesk.service"), s("accord"), s("arreter anydesk.service")]
-            )
-        );
+        // L'arrêt : en marche, relu, la question « connecté par lui ? », l'accord, relu encore, puis l'arrêt.
+        let arret_complet = || {
+            [
+                "etat anydesk.service",
+                "actif anydesk.service",
+                "arret-lu anydesk.service",
+                "question anydesk.service",
+                "accord",
+                "arret-lu anydesk.service",
+                "arreter anydesk.service",
+            ]
+            .map(s)
+            .to_vec()
+        };
+        let jusqu_a_l_accord = || arret_complet()[..5].to_vec();
+        assert_eq!(essai(arreter, &|_| {}), (true, arret_complet()));
         assert_eq!(
             essai(retirer, &|m| m.session = Some(true)),
             (
@@ -2391,19 +2643,13 @@ mod tests {
             )
         );
         // Sans l'accord, rien n'est arrêté.
-        assert_eq!(
-            essai(arreter, &|m| m.refus = Some("non")),
-            (false, vec![s("etat anydesk.service"), s("accord")])
-        );
+        assert_eq!(essai(arreter, &|m| m.refus = Some("non")), (false, jusqu_a_l_accord()));
         // Une session ouverte, ou illisible, n'empêche pas d'arrêter le logiciel de prise de contrôle : ses propres
         // connexions sont justement celles du faux technicien.
         for session in [Some(true), None] {
             assert_eq!(
                 essai(arreter, &|m| m.session = session),
-                (
-                    true,
-                    vec![s("etat anydesk.service"), s("accord"), s("arreter anydesk.service")]
-                ),
+                (true, arret_complet()),
                 "{session:?}"
             );
         }
@@ -2413,11 +2659,14 @@ mod tests {
         );
         // Le fichier changé pendant la question (remplacé par un lien, rendu modifiable) : revu après l'accord,
         // refusé, rien n'est arrêté ni retiré.
-        for g in [arreter, retirer] {
+        for (g, attendu) in [
+            (arreter, jusqu_a_l_accord()),
+            (retirer, vec![s("etat anydesk.service"), s("accord")]),
+        ] {
             assert_eq!(
                 essai(g, &|m| m.fichier_apres_accord =
                     Some(Err(Echec::refuse("essai", "remplacé")))),
-                (false, vec![s("etat anydesk.service"), s("accord")]),
+                (false, attendu),
                 "{g:?}"
             );
         }
@@ -2432,6 +2681,137 @@ mod tests {
         // Un service qui n'est pas un logiciel de prise de contrôle : refusé avant de regarder son fichier.
         let autre = gestes_unix::designee(ActionUnite::Arreter, "bluetooth.service").unwrap();
         assert_eq!(essai(autre, &|_| {}), (false, vec![]));
+    }
+
+    /// La question de l'arrêt : l'entrée finie sans rien (Ctrl+D, terminal fermé) ne répond rien, donc pas « non » ;
+    /// une ligne longue est coupée à 64 octets, jamais lue au-delà.
+    #[test]
+    fn fin_d_entree_ne_dit_pas_non() {
+        let lire = |entree: &[u8]| reponse("?", &mut std::io::BufReader::new(entree), &mut Vec::new());
+        assert_eq!(lire(b""), None);
+        assert!(!arret_designe::dit_non(lire(b"").as_deref()));
+        assert!(arret_designe::dit_non(lire(b"non\n").as_deref()));
+        assert!(!arret_designe::dit_non(lire(b"\n").as_deref()));
+        let longue = format!("{}non\n", " ".repeat(64));
+        assert!(!arret_designe::dit_non(lire(longue.as_bytes()).as_deref()));
+    }
+
+    /// L'arrêt d'un logiciel de prise en main désigné ne se fait que sur un « non » tapé à « êtes-vous connecté par
+    /// lui ? », puis l'accord : « oui », Entrée seule, l'entrée finie, une autre réponse le laissent en marche, sans
+    /// même demander l'accord. L'arrêt fait le dit « par votre choix », avec de quoi le remettre.
+    #[test]
+    fn l_arret_designe_ne_se_fait_que_sur_un_non() {
+        let arreter = gestes_unix::designee(ActionUnite::Arreter, "anydesk.service").unwrap();
+        if !arreter.permis_ici() {
+            return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
+        }
+        let jusqu_a_la_question = [
+            "etat anydesk.service",
+            "actif anydesk.service",
+            "arret-lu anydesk.service",
+            "question anydesk.service",
+        ];
+        for reponse in [
+            Some("oui"),
+            Some("o"),
+            Some("yes"),
+            Some(""),
+            Some("\n"),
+            Some("non merci"),
+            Some("nnon"),
+            Some("peut-être"),
+            None,
+        ] {
+            let mut m = FauxMonde::nouveau();
+            m.reponse = reponse;
+            let r = faire_geste(arreter, &mut m);
+            assert!(!r.reussi && r.raison.contains("anydesk.service"), "{reponse:?} : {r:?}");
+            assert_eq!(m.journal, jusqu_a_la_question, "{reponse:?}");
+        }
+        for reponse in ["non", "Non", " NO \n", "n"] {
+            let mut m = FauxMonde::nouveau();
+            m.reponse = Some(reponse);
+            let r = faire_geste(arreter, &mut m);
+            assert!(r.reussi, "{reponse:?} : {r:?}");
+            assert!(m.journal.last().is_some_and(|l| l == "arreter anydesk.service"));
+            let note = r.note.unwrap_or_default();
+            assert!(note.contains("systemctl start anydesk.service"), "{note}");
+            if !crate::langue::anglais() {
+                assert!(note.contains("arrêté par votre choix"), "{note}");
+            }
+        }
+        // Le « non » donné, l'accord refusé : rien n'est arrêté.
+        let mut m = FauxMonde::nouveau();
+        m.refus = Some("pas d'accord");
+        assert!(!faire_geste(arreter, &mut m).reussi);
+        assert!(!m.journal.iter().any(|l| l == "arreter anydesk.service"));
+    }
+
+    /// Les preuves qu'une session passe par l'outil refusent l'arrêt avant toute question, même si la personne
+    /// aurait dit « non » ; une session ouverte par lui pendant la question le refuse juste avant le geste. Pas en
+    /// marche : rien à arrêter, sans question. Ce que l'arrêt lancerait, douteux ou illisible, refuse aussi avant.
+    #[test]
+    fn l_arret_designe_revoit_les_preuves_et_ce_qu_il_lancerait() {
+        type Reglage<'a> = &'a dyn Fn(&mut FauxMonde);
+        let arreter = gestes_unix::designee(ActionUnite::Arreter, "anydesk.service").unwrap();
+        if !arreter.permis_ici() {
+            return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
+        }
+        let essai = |regler: &dyn Fn(&mut FauxMonde)| {
+            let mut m = FauxMonde::nouveau();
+            regler(&mut m);
+            let r = faire_geste(arreter, &mut m);
+            let questions = m
+                .journal
+                .iter()
+                .filter(|l| l.starts_with("question") || *l == "accord")
+                .count();
+            let arrete = m.journal.iter().any(|l| l == "arreter anydesk.service");
+            (r, questions, arrete)
+        };
+        let dans_l_outil = "/system.slice/anydesk.service/session".to_string();
+        let portee = SessionVue {
+            distante: false,
+            service: "anydesk".into(),
+            groupes_du_meneur: vec![dans_l_outil.clone()],
+        };
+        let refuses: [(&str, Reglage); 8] = [
+            ("lignée", &|m| m.lignee.push(dans_l_outil.clone())),
+            ("session", &|m| m.sessions = Some(vec![portee.clone()])),
+            ("sessions illisibles", &|m| m.sessions = None),
+            ("pas chargé", &|m| m.arret_charge = Ok(None)),
+            ("illisible", &|m| m.arret_charge = Err(Echec::echoue("essai", "bus"))),
+            ("activité illisible", &|m| m.actif = Err(Echec::echoue("essai", "bus"))),
+            ("arrêt douteux", &|m| {
+                if let Ok(Some(lu)) = &mut m.arret_charge {
+                    lu.arret = vec![arret_designe::Commande {
+                        chemin: "/bin/sh".into(),
+                        arguments: vec!["sh".into(), "-c".into(), "rm -rf /".into()],
+                    }];
+                }
+            }),
+            ("exécutable douteux", &|m| {
+                m.chemins_douteux = vec!["/usr/bin/anydesk"];
+                if let Ok(Some(lu)) = &mut m.arret_charge {
+                    lu.arret = vec![arret_designe::Commande {
+                        chemin: "/usr/bin/anydesk".into(),
+                        arguments: vec!["/usr/bin/anydesk".into(), "--stop-service".into()],
+                    }];
+                }
+            }),
+        ];
+        for (cas, regler) in refuses {
+            let (r, questions, arrete) = essai(regler);
+            assert!(!r.reussi && !arrete && questions == 0, "{cas} : {r:?}");
+        }
+        // Une session portée par l'outil, ouverte pendant la question : refusé avant l'arrêt.
+        let (r, _, arrete) = essai(&|m| m.sessions_apres_question = Some(vec![portee.clone()]));
+        assert!(!r.reussi && !arrete, "{r:?}");
+        // Pas en marche : dit, sans question ni arrêt.
+        for etat in [None, Some("inactive".to_string()), Some("failed".to_string())] {
+            let (r, questions, arrete) = essai(&|m| m.actif = Ok(etat.clone()));
+            assert!(r.reussi && questions == 0 && !arrete, "{etat:?} : {r:?}");
+        }
     }
 
     /// É-2 du lot U3 : une unité de la table passe par la même revue qu'une unité désignée, avant l'accord et encore

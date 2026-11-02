@@ -119,6 +119,14 @@ pub(crate) fn controle_a_distance(nom: &str) -> bool {
     reconnu(nom).is_some()
 }
 
+/// Deux noms (un service, le service PAM d'une session) du même logiciel de prise de contrôle à distance : le fils
+/// root s'en sert pour reconnaître une session ouverte par l'outil qu'on lui demande d'arrêter.
+// Seul l'arrêt d'une unité désignée (Unix) s'en sert.
+#[cfg(unix)]
+pub(crate) fn meme_logiciel(a: &str, b: &str) -> bool {
+    reconnu(a).is_some_and(|i| reconnu(b) == Some(i))
+}
+
 /// `motif` dans `texte`, précédé d'autre chose qu'une lettre ou un chiffre : « atera » dans « AteraAgent », pas dans
 /// « lateral » ; « anydesk » dans « com.anydesk.Anydesk » comme dans « AnyDesk.exe ».
 pub(crate) fn contient_mot(texte: &str, motif: &str) -> bool {
@@ -1637,7 +1645,20 @@ pub fn menu() {
         let siens: Vec<&Trouvaille> = visibles.iter().copied().filter(|t| t.logiciel == i).collect();
         let en_cours = siens.iter().any(|t| matches!(t.trace, Trace::EnCours { .. }));
         let mut commandes = Vec::new();
+        // Sous Linux, l'arrêt d'un service désigné demande à l'administrateur s'il est connecté par lui, et un
+        // « oui » (ou rien) le fait échouer : l'assistant ne fait plus rien de la liste après un échec. Ses gestes de
+        // retrait du démarrage passent donc avant l'arrêt, pour être faits quand même ; les commandes, elles, gardent
+        // leur ordre (arrêt du processus avant la désinstallation), et ne partent que si tous les gestes ont réussi.
+        #[cfg(target_os = "linux")]
+        let est_geste = |l: &String| l.starts_with(crate::protection::blocage::ordres::PREFIXE);
+        #[cfg(not(target_os = "linux"))]
+        let est_geste = |_: &String| false;
+        let (gestes_du_retrait, reste_du_retrait): (Vec<String>, Vec<String>) = siens
+            .iter()
+            .flat_map(|t| t.retrait.iter().cloned())
+            .partition(est_geste);
         if en_cours {
+            commandes.extend(gestes_du_retrait);
             // Le second accord : la personne qui aide peut être connectée par ce programme même.
             println!();
             dire(&trf!(
@@ -1654,8 +1675,10 @@ pub fn menu() {
                 continue;
             }
             commandes.extend(siens.iter().flat_map(|t| t.arret.iter().cloned()));
+        } else {
+            commandes.extend(gestes_du_retrait);
         }
-        commandes.extend(siens.iter().flat_map(|t| t.retrait.iter().cloned()));
+        commandes.extend(reste_du_retrait);
         let commandes = sans_repetition(commandes);
         if commandes.is_empty() {
             trp!(

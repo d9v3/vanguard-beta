@@ -407,10 +407,16 @@ impl GesteUnix {
             )),
             // Un logiciel de prise en main désigné peut être un bureau à distance voulu (VNC, NoMachine) qui porte
             // en ce moment la session de quelqu'un : ses connexions ne bloquent pas son arrêt (`coupe_session`), mais
-            // la personne devant l'écran le confirme.
+            // la personne devant l'écran le confirme, après avoir dit qu'elle n'est pas connectée par lui
+            // (`assistant`, question de l'arrêt). Son retrait du démarrage ne coupe rien maintenant : la question dit
+            // ce qu'il change, au prochain redémarrage.
+            GesteUnix::Designee(ActionUnite::Arreter, _) => Some((
+                "toute session à distance qui passe par lui sera coupée, sans retour possible",
+                "any remote session going through it will be cut, with no way back",
+            )),
             GesteUnix::Designee(a, _) if couper(a) => Some((
-                "ceci peut couper une session à distance en cours",
-                "this may cut a remote session in progress",
+                "il ne sera plus lancé au démarrage : après le prochain redémarrage, personne ne pourra plus se connecter à cet ordinateur par lui",
+                "it will no longer start at boot: after the next restart, no one will be able to connect to this computer through it",
             )),
             GesteUnix::Unite(ActionUnite::Activer | ActionUnite::Demarrer, u) if u.garde == Garde::Ouverte => Some((
                 "ceci ouvre cet ordinateur au réseau local",
@@ -912,6 +918,42 @@ mod tests {
         assert_eq!(analyser(&longue), None);
         let tres_longue = format!("{PREFIXE}programme freshclam{}", " ".repeat(LIGNE_MAX));
         assert_eq!(analyser(&tres_longue), None);
+    }
+
+    /// Aucune ligne forgée ne fait sauter la question « connecté par lui ? » ni l'accord de l'arrêt d'une unité
+    /// désignée : la grammaire n'a aucun mot pour les dire, et toute ligne qui en ajoute un ne se lit pas. La seule qui
+    /// se lit demande les deux.
+    #[test]
+    fn l_arret_designe_ne_se_forge_pas_sans_question() {
+        let juste = "vanguard:geste unite-designee arreter anydesk.service";
+        let g = analyser(juste).expect(juste);
+        assert!(g.demande_accord());
+        for ajout in [
+            " sans-question",
+            " non",
+            " oui",
+            " confirme",
+            " --force",
+            " deja-confirme",
+            "\nnon",
+            "\0",
+            " ",
+        ] {
+            let l = format!("{juste}{ajout}");
+            assert_eq!(analyser(&l), None, "{l:?}");
+        }
+        for l in [
+            "vanguard:geste unite-designee  arreter anydesk.service",
+            "vanguard:geste unite-designee arreter-sans-question anydesk.service",
+            "vanguard:geste unite-designee arreter-confirme anydesk.service",
+            "vanguard:geste unite-designee tuer anydesk.service",
+            "vanguard:geste unite-designee kill anydesk.service",
+            "vanguard:geste unite-designee desactiver anydesk.service",
+            "vanguard:geste unite-designee arreter non anydesk.service",
+            "vanguard:geste unite-designee-confirmee arreter anydesk.service",
+        ] {
+            assert_eq!(analyser(l), None, "{l:?}");
+        }
     }
 
     /// Un geste de Linux n'est permis que sous Linux (aucun sous macOS, plan D8).

@@ -1338,6 +1338,8 @@ mod tests_sh_chaine {
         ("gaming/linux.rs", 8),
         ("gaming/macos.rs", 1),
         ("machine/administrateurs.rs", 3),
+        // Une liste de refus : les commandes d'arrêt qui passeraient par un outil d'élévation ne sont pas lancées.
+        ("machine/arret_designe.rs", 3),
         ("machine/assistant.rs", 25),
         ("machine/certificats.rs", 4),
         ("machine/chasse.rs", 6),
