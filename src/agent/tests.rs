@@ -1504,3 +1504,215 @@ fn l_avis_des_corrections_de_bout_en_bout() {
     crate::sceau::ecrire_dans(&d, crate::autotest::reglage::REGLAGE, br#"{"coupe":true}"#).unwrap();
     assert_eq!(avis_corrections_dans(&d, jour(2)).de("LNX-TST-010"), Avis::default());
 }
+
+// Lot G5 : la sortie de l'agent (`sortie`, `vanguard agent --json`) et un interrupteur par mission.
+
+/// Les fichiers sous `d`, avec leurs octets : ce qu'une lecture ne doit pas changer.
+fn fichiers_de(d: &Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut v = Vec::new();
+    let mut a_voir = vec![d.to_path_buf()];
+    while let Some(c) = a_voir.pop() {
+        for e in std::fs::read_dir(&c).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                a_voir.push(p);
+            } else {
+                v.push((p.clone(), std::fs::read(&p).unwrap()));
+            }
+        }
+    }
+    v.sort();
+    v
+}
+
+/// Trois tours avec les vraies missions : le délai de LNX-TST-010 monte, noté au journal.
+fn trois_tours(d: &Path) {
+    let m0 = frole_le(&[jour(2)]);
+    let m9 = frole_le(&[jour(2), jour(9)]);
+    for (j, m) in [(jour(2), &m0), (jour(9), &m9), (jour(9), &m9)] {
+        tic_dans(
+            &contexte_au(d, j, m, Some(true)),
+            Moment::FinDeBilan,
+            &missions(),
+            &appliquer,
+        );
+    }
+}
+
+/// Les textes d'une valeur JSON, à toute profondeur.
+fn textes<'a>(v: &'a serde_json::Value, t: &mut Vec<&'a str>) {
+    match v {
+        serde_json::Value::String(s) => t.push(s),
+        serde_json::Value::Array(a) => a.iter().for_each(|v| textes(v, t)),
+        serde_json::Value::Object(o) => o.values().for_each(|v| textes(v, t)),
+        _ => {}
+    }
+}
+
+/// `vanguard agent --json` : du JSON valide au schéma 1, les mêmes octets d'une demande à l'autre sans tour entre
+/// elles, rien d'écrit ni de créé, aucun chemin ; le dernier tour, les compteurs et les décisions de chaque mission.
+#[test]
+fn la_sortie_est_stable_en_lecture_seule_et_sans_chemin() {
+    let d = Jetable::nouveau("agent-g5-sortie");
+    // Rien encore : rien n'est créé par la lecture.
+    let vide = sortie::json_dans(&d);
+    assert_eq!(fichiers_de(&d), Vec::new());
+    let v: serde_json::Value = serde_json::from_slice(&vide).unwrap();
+    assert_eq!(v["schema"], 1);
+    assert_eq!(v["journal"], "absent");
+    assert_eq!(v["interrupteurs"], "absent");
+    trois_tours(&d);
+    let avant = fichiers_de(&d);
+    let o = sortie::json_dans(&d);
+    assert_eq!(o, sortie::json_dans(&d), "deux demandes, les mêmes octets");
+    assert_eq!(fichiers_de(&d), avant, "rien n'est écrit");
+    let texte = std::str::from_utf8(&o).unwrap();
+    assert!(
+        !texte.contains(d.to_str().unwrap()) && !texte.contains('/') && !texte.contains('\\'),
+        "{texte}"
+    );
+    let v: serde_json::Value = serde_json::from_slice(&o).unwrap();
+    assert_eq!(v["agent"], "en-marche");
+    assert_eq!(v["journal"], "intact");
+    let noms: Vec<&str> = v["missions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["nom"].as_str().unwrap())
+        .collect();
+    assert_eq!(noms, ["reglage", "cache", "releve", "corrections"]);
+    let reglage = &v["missions"][0];
+    assert_eq!(reglage["etat"], "en-marche");
+    assert_eq!(reglage["pourquoi"], serde_json::Value::Null);
+    assert_eq!(reglage["dernier_tour"], "2026-11-09");
+    assert_eq!(reglage["decisions_total"], 1);
+    assert_eq!(reglage["decisions"][0]["sorte"], "appliquee");
+    assert_eq!(reglage["decisions"][0]["raison"], "frole-son-delai");
+    assert_eq!(
+        reglage["decisions"][0]["decision"]["ajuster"]["levier"]["delai"]["regle"],
+        "LNX-TST-010"
+    );
+    let releve = &v["missions"][2];
+    assert_eq!(releve["dernier_tour"], "2026-11-09");
+    assert_eq!(releve["tours"], serde_json::Value::Null);
+    // Tout ce qui est un texte est un mot fermé, une date, ou un identifiant de règle.
+    let mut t = Vec::new();
+    textes(&v, &mut t);
+    for s in t {
+        assert!(
+            RegleId::depuis(s).is_some()
+                || s.bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-'),
+            "{s}"
+        );
+    }
+}
+
+/// Une mission coupée dans Paramètres ne prend plus aucun tour (son état ne bouge plus, rien au journal), et la vue
+/// le dit ; remise en marche, elle reprend.
+#[test]
+fn une_mission_coupee_ne_prend_aucun_tour() {
+    let d = Jetable::nouveau("agent-g5-coupee");
+    let m = Essai {
+        id: MissionId::Reglage,
+        genre: Genre::Reglage,
+        moments: FIN,
+        decisions: vec![monte()],
+    };
+    assert!(couper_dans(&d, MissionId::Reglage, true, &geste_dans(&d).unwrap()).unwrap());
+    assert!(!couper_dans(&d, MissionId::Reglage, true, &geste_dans(&d).unwrap()).unwrap());
+    assert!(mission_coupee_dans(&d, MissionId::Reglage));
+    assert!(!mission_coupee_dans(&d, MissionId::Cache));
+    let t = tic_dans(&contexte(&d), Moment::FinDeBilan, &[&m], &tout_appliquer);
+    assert_eq!(
+        t,
+        Tour::Fait {
+            appliquees: 0,
+            montrees: 0,
+            refusees: 0
+        }
+    );
+    assert_eq!(etat::lire_dans::<Compteurs>(&d, etat::ETAT_REGLAGE), etat::Lu::Absent);
+    assert_eq!(journal_de(&d), []);
+    let vue = sortie::vue_dans(&d);
+    assert_eq!(vue.missions[0].etat, sortie::EtatMission::Coupee);
+    assert_eq!(vue.missions[0].pourquoi, Some(sortie::Pourquoi::CoupeeIci));
+    assert_eq!(vue.missions[1].etat, sortie::EtatMission::EnMarche);
+    assert!(couper_dans(&d, MissionId::Reglage, false, &geste_dans(&d).unwrap()).unwrap());
+    let t = tic_dans(&contexte(&d), Moment::FinDeBilan, &[&m], &tout_appliquer);
+    assert!(matches!(t, Tour::Fait { appliquees: 1, .. }), "{t:?}");
+}
+
+/// Le fichier des interrupteurs changé, remplacé par un fichier sans sceau ou retiré hors de Vanguard ne remet
+/// aucune mission en marche : toutes restent coupées (la cache ne sert plus), sauf une détection, qui ne fait
+/// qu'ajouter. Seul un geste de Paramètres en remet une en marche, et celle-là seule.
+#[test]
+fn des_interrupteurs_falsifies_ne_remettent_rien_en_marche() {
+    let d = Jetable::nouveau("agent-g5-falsifie");
+    let reglage = Essai {
+        id: MissionId::Reglage,
+        genre: Genre::Reglage,
+        moments: FIN,
+        decisions: vec![monte()],
+    };
+    let detection = Essai {
+        id: MissionId::Corrections,
+        genre: Genre::Detection,
+        moments: FIN,
+        decisions: vec![Decision::Signaler(Signal::Nouveaute {
+            regle: r("LNX-TST-010"),
+        })],
+    };
+    let falsifier: [&dyn Fn(); 3] = [
+        &|| std::fs::write(d.join(etat::AGENT), br#"{"v":1,"coupees":[]}"#).unwrap(),
+        &|| std::fs::write(d.join(etat::AGENT), b"{}").unwrap(),
+        &|| std::fs::remove_file(d.join(etat::AGENT)).unwrap(),
+    ];
+    for f in falsifier {
+        tout_remettre_dans(&d, 1_793_577_600, &geste_dans(&d).unwrap()).unwrap();
+        assert!(couper_dans(&d, MissionId::Cache, true, &geste_dans(&d).unwrap()).unwrap());
+        f();
+        for id in MissionId::TOUTES {
+            assert!(mission_coupee_dans(&d, id), "{id:?}");
+        }
+        assert_eq!(crate::autotest::reglage::pour_le_cache_dans(&d), None);
+        let t = tic_dans(
+            &contexte(&d),
+            Moment::FinDeBilan,
+            &[&reglage, &detection],
+            &tout_appliquer,
+        );
+        assert_eq!(
+            t,
+            Tour::Fait {
+                appliquees: 0,
+                montrees: 1,
+                refusees: 0
+            }
+        );
+        let vue = sortie::vue_dans(&d);
+        assert_eq!(vue.interrupteurs, sortie::Fichier::Douteux);
+        assert!(
+            vue.missions
+                .iter()
+                .all(|m| m.pourquoi == Some(sortie::Pourquoi::InterrupteursDouteux))
+        );
+        // Un geste : celle-là seule repart, les autres restent coupées.
+        assert!(couper_dans(&d, MissionId::Reglage, false, &geste_dans(&d).unwrap()).unwrap());
+        assert!(!mission_coupee_dans(&d, MissionId::Reglage));
+        for id in [MissionId::Cache, MissionId::Releve, MissionId::Corrections] {
+            assert!(mission_coupee_dans(&d, id), "{id:?}");
+        }
+    }
+}
+
+/// La cache sans sa mission ne sert plus : le passage horaire vérifie tout à neuf.
+#[test]
+fn la_cache_coupee_ne_sert_plus() {
+    let d = Jetable::nouveau("agent-g5-cache");
+    let avant = crate::autotest::reglage::pour_le_cache_dans(&d);
+    couper_dans(&d, MissionId::Cache, true, &geste_dans(&d).unwrap()).unwrap();
+    assert_eq!(crate::autotest::reglage::pour_le_cache_dans(&d), None);
+    couper_dans(&d, MissionId::Cache, false, &geste_dans(&d).unwrap()).unwrap();
+    assert_eq!(crate::autotest::reglage::pour_le_cache_dans(&d), avant);
+}

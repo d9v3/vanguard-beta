@@ -781,6 +781,15 @@ enum Commande {
     /// Scan silencieux + notifications (utilisé par la surveillance).
     #[command(hide = true)]
     Surveiller,
+    /// L'Agent Vanguard (sans IA), en lecture seule : ses missions, leur dernier tour et son journal ; « --json » :
+    /// la même vue pour un script, au schéma versionné décrit dans agent/sortie.rs.
+    #[command(hide = true)]
+    Agent {
+        /// La vue en JSON (schéma 1) : rien d'autre que des noms fermés, des identifiants de règle, des nombres et des
+        /// dates.
+        #[arg(long)]
+        json: bool,
+    },
     /// Les comptes rendus pour Claude, lus par la veille de nuit (outils/veille/) : seulement des champs validés.
     #[command(name = "compte-rendu", hide = true)]
     CompteRendu {
@@ -3589,7 +3598,10 @@ async fn main() {
     // Le lot d'amélioration en attente, dans un fil qui ne retarde jamais la sortie (rien sans relais). Ni pendant
     // un autotest, qui se met hors ligne après ce point, ni pour la passe horaire, qui le lance elle-même et
     // l'attend.
-    if !matches!(args.commande, Some(Commande::Autotest { .. } | Commande::Surveiller)) {
+    if !matches!(
+        args.commande,
+        Some(Commande::Autotest { .. } | Commande::Surveiller | Commande::Agent { .. })
+    ) {
         crate::envoi::en_fond(false);
     }
     // Le relevé local ne garde que le nom d'une sous-commande qui est un outil de la table, jamais ses arguments.
@@ -3884,6 +3896,19 @@ async fn main() {
         Some(Commande::SeMettreAJour) => mise_a_jour::commande(),
         Some(Commande::Desinstaller { liste }) => desinstaller::commande(liste),
         Some(Commande::Regles) => machine::regles::afficher(),
+        // En lecture seule : ni envoi en fond (plus haut), ni tour de sortie de l'agent (plus bas), qui écriraient.
+        Some(Commande::Agent { json }) => {
+            if json {
+                use std::io::Write as _;
+                let o = agent::sortie::json_dans(&socle::dossier_local());
+                if std::io::stdout().lock().write_all(&o).is_err() {
+                    machine::quitter(1);
+                }
+            } else {
+                parametres::agent::afficher_tout();
+            }
+            return;
+        }
         Some(Commande::Autotest {
             json,
             compte_rendu,

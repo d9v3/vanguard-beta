@@ -342,6 +342,15 @@ pub(crate) fn en_marche_dans(dossier: &Path) -> Option<bool> {
     }
 }
 
+/// `en_marche_dans` sans rien écrire ni créer (`sceau::juge_sans_ecrire_dans`) : ce que lit `vanguard agent --json`.
+pub(crate) fn en_marche_sans_ecrire_dans(dossier: &Path) -> Option<bool> {
+    match crate::sceau::juge_sans_ecrire_dans(dossier, REGLAGE) {
+        crate::sceau::Juge::Absent => Some(true),
+        crate::sceau::Juge::Cru(o) => Some(!lire_de(&o).coupe),
+        _ => None,
+    }
+}
+
 impl Lu {
     pub(crate) fn delais_longs(&self) -> BTreeSet<String> {
         match self {
@@ -360,9 +369,18 @@ impl Lu {
     }
 }
 
-/// Les durées raccourcies de la cache sur cet ordinateur ; `None` : coupé ou douteux, la cache ne sert pas.
+/// Les durées raccourcies de la cache sur cet ordinateur ; `None` : coupé ou douteux, ou la mission de la cache de
+/// l'agent coupée (ou ses interrupteurs douteux), la cache ne sert pas : tout se vérifie à neuf. Une cache sans la
+/// mission qui la corrige reprendrait un résultat qu'une vérification à neuf contredit.
 pub(crate) fn pour_le_cache() -> Option<BTreeMap<String, u16>> {
-    lire_dans(&crate::socle::dossier_local()).pour_le_cache()
+    pour_le_cache_dans(&crate::socle::dossier_local())
+}
+
+pub(crate) fn pour_le_cache_dans(dossier: &Path) -> Option<BTreeMap<String, u16>> {
+    if crate::agent::mission_coupee_dans(dossier, crate::agent::MissionId::Cache) {
+        return None;
+    }
+    lire_dans(dossier).pour_le_cache()
 }
 
 /// Les règles au délai monté sur cet ordinateur (le bilan les lit une fois).
@@ -1115,7 +1133,8 @@ fn dire_tout_remis() {
     }
 }
 
-/// `vanguard parametres auto-reglage [oui|non|tout-remettre|annuler <règle>]` : sans mot, l'état et les changements.
+/// `vanguard parametres auto-reglage [oui|non|tout-remettre|annuler <règle>|missions|mission <nom> <oui|non>|journal]` :
+/// sans mot, l'état et les changements.
 pub(crate) fn commande(mots: &[String]) {
     let mots: Vec<String> = mots.iter().map(|m| m.trim().to_lowercase()).collect();
     match mots.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
@@ -1125,6 +1144,13 @@ pub(crate) fn commande(mots: &[String]) {
         ["oui" | "o" | "yes" | "y" | "on"] => dire_en_marche(true),
         ["non" | "n" | "no" | "off"] => dire_en_marche(false),
         ["tout-remettre" | "reset" | "origine" | "original"] => dire_tout_remis(),
+        ["missions"] => {
+            crate::parametres::agent::afficher_missions(
+                &crate::agent::sortie::vue_dans(&crate::socle::dossier_local()),
+            );
+        }
+        ["journal" | "log"] => crate::parametres::agent::afficher_journal(),
+        ["mission", mission, etat] if crate::parametres::agent::commande_mission(mission, etat) => {}
         ["annuler" | "undo", regle] => {
             if !dire_annule(&regle.to_uppercase(), Annuler::TOUT, None) {
                 trp!(
@@ -1134,8 +1160,8 @@ pub(crate) fn commande(mots: &[String]) {
             }
         }
         _ => trp!(
-            "  Valeurs : oui, non, tout-remettre, annuler <règle> (par exemple « annuler LNX-NOY-001 »).",
-            "  Values: yes, no, reset, undo <rule> (for example “undo LNX-NOY-001”)."
+            "  Valeurs : oui, non, tout-remettre, annuler <règle> (par exemple « annuler LNX-NOY-001 »), missions, mission <reglage|cache|releve|corrections> <oui|non>, journal.",
+            "  Values: yes, no, reset, undo <rule> (for example “undo LNX-NOY-001”), missions, mission <tuning|cache|record|fixes> <yes|no>, journal."
         ),
     }
 }
@@ -1174,6 +1200,17 @@ fn afficher() -> Vec<Changement> {
         };
         afficher_aligne(&format!("  {TOUCHE}{:>2}{RESET} ", i + 1), &texte, 5, "");
     }
+    let vue = crate::agent::sortie::vue_dans(&crate::socle::dossier_local());
+    let en_marche = vue
+        .missions
+        .iter()
+        .filter(|m| m.etat == crate::agent::sortie::EtatMission::EnMarche)
+        .count();
+    trp!(
+        "  Missions en marche : {en_marche} sur {} (« m » pour les voir, ou en couper une).",
+        "  Missions on: {en_marche} of {} (“m” to see them, or turn one off).",
+        vue.missions.len()
+    );
     println!();
     trp!("  Cache du passage horaire :", "  Hourly pass cache:");
     for l in super::cache::lignes() {
@@ -1194,14 +1231,18 @@ pub(crate) fn explication() -> &'static str {
 pub(crate) fn menu() {
     let changements = afficher();
     let reponse = demander(tr!(
-        "\n  Numéro : annuler celui-ci ; « oui » ou « non » : mettre en marche ou couper ; « t » : tout remettre comme à l'origine ; Entrée pour revenir : ",
-        "\n  Number: undo this one; “yes” or “no”: turn on or off; “a”: put everything back to the original; Enter to go back: "
+        "\n  Numéro : annuler celui-ci ; « oui » ou « non » : mettre en marche ou couper ; « m » : ses missions, une à une ; « j » : son journal ; « t » : tout remettre comme à l'origine ; Entrée pour revenir : ",
+        "\n  Number: undo this one; “yes” or “no”: turn on or off; “m”: its missions, one by one; “j”: its journal; “a”: put everything back to the original; Enter to go back: "
     ));
     let reponse = reponse.trim();
     if reponse.is_empty() {
         return;
     }
-    if crate::langue::tout(reponse) {
+    if reponse.eq_ignore_ascii_case("m") {
+        crate::parametres::agent::menu();
+    } else if reponse.eq_ignore_ascii_case("j") {
+        crate::parametres::agent::journal_et_revenir();
+    } else if crate::langue::tout(reponse) {
         dire_tout_remis();
     } else if crate::langue::oui(reponse) {
         dire_en_marche(true);

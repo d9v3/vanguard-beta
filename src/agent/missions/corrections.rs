@@ -44,9 +44,9 @@ impl Mission for Corrections {
         })
     }
     fn juger(&self, obs: &ObsCorrections, etat: &EtatCorrections) -> (Vec<Decision>, EtatCorrections) {
-        // Rien de neuf : l'état ne change pas (aucune écriture à chaque sortie).
+        // Rien de neuf : seul le jour du dernier tour change (une écriture par jour au plus, pas à chaque sortie).
         if obs.notes.is_empty() && obs.bilan.is_none() {
-            return (Vec::new(), etat.clone());
+            return (Vec::new(), etat.clone().avec_compteurs(etat.compteurs().vu(obs.jour)));
         }
         let (apres, montrer) = etat.clone().apres(obs.jour, &obs.notes, obs.bilan.as_ref());
         // Le journal en garde au plus le compte du jour ; l'état, lui, garde tout (c'est lui qui se montre).

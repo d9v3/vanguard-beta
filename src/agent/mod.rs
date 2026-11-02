@@ -26,8 +26,12 @@
 //! L'interrupteur de l'agent est celui de l'auto-réglage (Paramètres, « oui » par défaut) : « non » le coupe tout
 //! entier, « tout remettre » vide aussi la cache, remet ses états à zéro et repart d'un journal neuf. Un geste de
 //! Paramètres attend la fin d'un tour en cours (`geste_dans`) : il ne se perd pas au milieu d'un tour. Chaque mission
-//! pourra aussi se couper seule (`agent/agent.json`, déjà lu par le tour) : rien ne l'écrit encore, Paramètres le
-//! fera (G5).
+//! se coupe aussi seule, dans Paramètres (`couper_dans`, `agent/agent.json`, scellé) : coupée, elle ne prend plus
+//! aucun tour ; un fichier des interrupteurs douteux (changé, retiré ou remplacé hors de Vanguard) les coupe toutes,
+//! sauf une détection, qui ne fait qu'ajouter. Couper une mission ne retire rien au bilan : ses règles tournent
+//! toutes ; la cache, sans sa mission, ne sert plus (tout se vérifie à neuf).
+//!
+//! Ce que l'agent dit de lui-même (`sortie`, `vanguard agent --json`) se lit de ses fichiers, sans rien écrire.
 
 mod budget;
 mod decision;
@@ -36,11 +40,13 @@ mod forme;
 pub(crate) mod journal;
 mod mission;
 mod missions;
+pub(crate) mod sortie;
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 pub(crate) use budget::{Arret, Budget};
-pub(crate) use decision::{Ajustement, Decision, Levier};
+pub(crate) use decision::{Ajustement, Decision, Levier, Proposition, Signal};
 pub(crate) use etat::Compteurs;
 pub(crate) use forme::{Genre, Issue, MissionId, Moment, RegleId, ResumeBilan};
 pub(crate) use mission::{Lecture, Mission};
@@ -555,6 +561,42 @@ pub(crate) fn tout_remettre_dans(dossier: &Path, quand: i64, _geste: &Geste) -> 
     etat::ecrire_dans(dossier, etat::AGENT, &etat::Interrupteurs::default())?;
     let o = journal::ajouter(Vec::new(), &[journal::Fait::ToutRemis], quand, empreinte);
     crate::sceau::ecrire_dans(dossier, journal::JOURNAL, &o)
+}
+
+/// La mission `id` est-elle coupée dans `dossier` : son interrupteur à « non », ou le fichier des interrupteurs
+/// douteux (seule une détection continue alors, comme au tour).
+pub(crate) fn mission_coupee_dans(dossier: &Path, id: MissionId) -> bool {
+    match etat::lire_dans::<etat::Interrupteurs>(dossier, etat::AGENT).utilisable() {
+        Some(i) => i.coupees.contains(&id),
+        None => missions().iter().any(|m| m.id() == id && m.genre() != Genre::Detection),
+    }
+}
+
+/// Coupe (`coupee`) ou remet en marche la mission `id` (Paramètres), sous le verrou d'un geste ; rend vrai si
+/// l'interrupteur a changé. Un fichier douteux repart de ce qui vaut pendant le doute : toutes coupées, sauf les
+/// détections ; seul ce geste-là en remet une en marche. Rien d'autre ne change : ni l'état de la mission, ni le
+/// journal, ni ce qu'elle a déjà réglé (qui s'annule dans Paramètres).
+pub(crate) fn couper_dans(dossier: &Path, id: MissionId, coupee: bool, _geste: &Geste) -> std::io::Result<bool> {
+    let lu = etat::lire_dans::<etat::Interrupteurs>(dossier, etat::AGENT);
+    let douteux = matches!(lu, etat::Lu::Douteux);
+    let mut i = lu.utilisable().unwrap_or_else(|| etat::Interrupteurs {
+        v: 1,
+        coupees: missions()
+            .iter()
+            .filter(|m| m.genre() != Genre::Detection)
+            .map(|m| m.id())
+            .collect::<BTreeSet<_>>(),
+    });
+    let change = if coupee {
+        i.coupees.insert(id)
+    } else {
+        i.coupees.remove(&id)
+    };
+    if !change && !douteux {
+        return Ok(false);
+    }
+    etat::ecrire_dans(dossier, etat::AGENT, &i)?;
+    Ok(change)
 }
 
 #[cfg(test)]

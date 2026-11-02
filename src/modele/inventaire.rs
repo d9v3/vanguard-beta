@@ -727,8 +727,14 @@ mod tests {
         (
             "agent/mod.rs",
             "agent/agent.json",
-            3,
+            6,
             "passé à agent::etat::lire_dans et ecrire_dans, qui lisent et écrivent par le sceau",
+        ),
+        (
+            "agent/sortie.rs",
+            "agent/agent.json",
+            1,
+            "passé à agent::etat::lire_sans_ecrire_dans, qui lit par sceau::juge_sans_ecrire_dans",
         ),
         (
             "autotest/cache.rs",

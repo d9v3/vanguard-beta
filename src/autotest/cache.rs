@@ -919,12 +919,23 @@ pub(crate) fn lignes() -> Vec<String> {
         .map(|r| r.id)
         .filter(|id| en_cache(id).is_some())
         .collect();
+    // Sans permis (l'agent, ou sa mission de la cache, coupé ; un fichier douteux), rien n'est repris : le dire,
+    // plutôt que des durées qui ne servent pas.
+    let Some(raccourcies) = super::reglage::pour_le_cache() else {
+        return vec![
+            crate::tr!(
+                "Ne sert pas : l'agent ou sa mission de la cache est coupé, ou son fichier a changé hors de Vanguard ; le passage horaire vérifie tout à neuf.",
+                "Not in use: the agent or its cache mission is off, or its file changed outside Vanguard; the hourly pass checks everything afresh."
+            )
+            .to_string(),
+        ];
+    };
     lignes_dans(
         &crate::socle::dossier_local(),
         chrono::Utc::now().timestamp(),
         &ids,
         &super::mesures::lues().cache,
-        &super::reglage::pour_le_cache().unwrap_or_default(),
+        &raccourcies,
     )
 }
 

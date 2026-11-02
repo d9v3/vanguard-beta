@@ -14,6 +14,7 @@
 //! et c'est dit. Le partage avec l'auteur (`partage`) y est gardé aussi, relu à chaque écriture du relevé et avant
 //! chaque envoi.
 
+pub(crate) mod agent;
 pub(crate) mod partage;
 
 use std::path::{Path, PathBuf};
@@ -616,7 +617,8 @@ fn restrictions_dans(racine: &Path, actives: bool, accord: impl FnOnce(&str) -> 
 /// `vanguard parametres` : l'état ; avec un réglage et une valeur, le change ; « appris » et « blocage » ouvrent leur
 /// outil (« blocage » prend aussi ses propres mots : `vanguard parametres blocage connexions auto`) ; « abuse.ch »
 /// demande la clé, ou la retire (« retirer »), mais ne la prend jamais en argument ; « temps-reel non » prend aussi
-/// « --pendant 1h|4h » ; « auto-reglage » prend ses propres mots (oui, non, tout-remettre, annuler <règle>).
+/// « --pendant 1h|4h » ; « auto-reglage » prend ses propres mots (oui, non, tout-remettre, annuler <règle>, missions,
+/// `mission <nom> <oui|non>`, journal).
 pub fn commande(mots: &[String]) {
     let Some((premier, reste)) = mots.split_first() else {
         afficher();

@@ -66,6 +66,16 @@ pub(crate) struct Compteurs {
     pub tours: u32,
     #[serde(default)]
     pub total: u32,
+    /// Le jour (depuis 1970) du dernier tour de la mission ; 0 : aucun encore. Il ne change qu'une fois par jour :
+    /// une mission qui n'a rien à garder n'écrit pas son état à chaque tour.
+    #[serde(default, skip_serializing_if = "nul")]
+    pub dernier: i32,
+}
+
+/// Rien d'écrit pour un champ à zéro : un état d'avant ce champ se réécrit à l'identique.
+#[allow(clippy::trivially_copy_pass_by_ref)] // la forme que demande serde
+fn nul(j: &i32) -> bool {
+    *j == 0
 }
 
 impl Compteurs {
@@ -91,8 +101,14 @@ impl Compteurs {
             },
             tours: self.tours.saturating_add(1),
             total: self.total.saturating_add(u32::from(n)),
+            dernier: jour,
         }
         .borne()
+    }
+
+    /// Un tour du jour `jour` qui n'a rien jugé : seul le jour du dernier tour change.
+    pub(crate) fn vu(self, jour: i32) -> Compteurs {
+        Compteurs { dernier: jour, ..self }.borne()
     }
 }
 
@@ -104,6 +120,9 @@ impl Borne for Compteurs {
             self.du_jour = 0;
         }
         self.du_jour = self.du_jour.min(PAR_JOUR_MAX);
+        if !jour_valable(self.dernier) {
+            self.dernier = 0;
+        }
         self
     }
 
@@ -111,6 +130,7 @@ impl Borne for Compteurs {
         self.v == 1
             && self.du_jour <= PAR_JOUR_MAX
             && ((JOUR_MIN..=JOUR_MAX).contains(&self.jour) || (self.jour == 0 && self.du_jour == 0))
+            && (self.dernier == 0 || jour_valable(self.dernier))
     }
 }
 
@@ -179,6 +199,8 @@ pub(crate) struct EtatReglage {
     pub tours: u32,
     #[serde(default)]
     pub total: u32,
+    #[serde(default, skip_serializing_if = "nul")]
+    pub dernier: i32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suivis: Vec<Suivi>,
 }
@@ -201,6 +223,7 @@ impl EtatReglage {
             du_jour: self.du_jour,
             tours: self.tours,
             total: self.total,
+            dernier: self.dernier,
         }
     }
 
@@ -210,6 +233,7 @@ impl EtatReglage {
         self.du_jour = c.du_jour;
         self.tours = c.tours;
         self.total = c.total;
+        self.dernier = c.dernier;
         self.borne()
     }
 
@@ -290,6 +314,7 @@ impl Borne for EtatReglage {
             du_jour: c.du_jour,
             tours: c.tours,
             total: c.total,
+            dernier: c.dernier,
             suivis,
         }
     }
@@ -360,6 +385,8 @@ pub(crate) struct EtatCorrections {
     pub tours: u32,
     #[serde(default)]
     pub total: u32,
+    #[serde(default, skip_serializing_if = "nul")]
+    pub dernier: i32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub echecs: Vec<Echec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -475,6 +502,7 @@ impl EtatCorrections {
             du_jour: self.du_jour,
             tours: self.tours,
             total: self.total,
+            dernier: self.dernier,
         }
     }
 
@@ -484,6 +512,7 @@ impl EtatCorrections {
         self.du_jour = c.du_jour;
         self.tours = c.tours;
         self.total = c.total;
+        self.dernier = c.dernier;
         self.borne()
     }
 }
@@ -506,6 +535,7 @@ impl Borne for EtatCorrections {
             du_jour: c.du_jour,
             tours: c.tours,
             total: c.total,
+            dernier: c.dernier,
             ..self
         }
     }
@@ -564,6 +594,19 @@ pub(crate) fn nom_etat(id: MissionId) -> &'static str {
 #[cfg(not(fuzzing))]
 pub(crate) fn lire_dans<E: DeserializeOwned + Default + Borne>(dossier: &std::path::Path, nom: &str) -> Lu<E> {
     match crate::sceau::juge_dans(dossier, nom) {
+        crate::sceau::Juge::Absent => Lu::Absent,
+        crate::sceau::Juge::Cru(o) => Lu::Cru(lire_de(&o)),
+        _ => Lu::Douteux,
+    }
+}
+
+/// `lire_dans` sans rien écrire ni créer (`sceau::juge_sans_ecrire_dans`) : ce que lit `vanguard agent --json`.
+#[cfg(not(fuzzing))]
+pub(crate) fn lire_sans_ecrire_dans<E: DeserializeOwned + Default + Borne>(
+    dossier: &std::path::Path,
+    nom: &str,
+) -> Lu<E> {
+    match crate::sceau::juge_sans_ecrire_dans(dossier, nom) {
         crate::sceau::Juge::Absent => Lu::Absent,
         crate::sceau::Juge::Cru(o) => Lu::Cru(lire_de(&o)),
         _ => Lu::Douteux,
