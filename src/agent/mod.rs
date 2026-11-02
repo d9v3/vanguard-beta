@@ -9,10 +9,14 @@
 //!
 //! Les garde-fous, chacun essayé :
 //! - **jamais de baisse de la détection** : un délai ne fait que monter (de `DELAI` à `DELAI_LONG`), une durée de
-//!   cache que descendre (jamais sous le plancher de `autotest::cache::TABLE`, pour ses seules règles) ; un seuil, un
-//!   niveau, une règle, le blocage ne sont jamais à portée. Couper l'agent rend les valeurs du code : il ne retire
-//!   aucune détection, les règles du bilan ne dépendent pas de lui ;
-//! - **jamais sans accord** : une proposition ne fait rien ; l'agent n'a accès ni aux corrections ni au blocage ;
+//!   cache que descendre (jamais sous le plancher de `autotest::cache::TABLE`, pour ses seules règles) ou revenir
+//!   d'un pas que l'agent avait fait lui-même (jamais au-dessus de la durée du code), une cache que se couper ; un
+//!   second essai ne relance qu'une fois, dans le délai total du bilan, et ne remplace un résultat que s'il conclut ;
+//!   un seuil, un niveau, une règle, le blocage ne sont jamais à portée. Couper l'agent rend les valeurs du code : il
+//!   ne retire aucune détection, les règles du bilan ne dépendent pas de lui ;
+//! - **jamais sans accord** : une proposition ne fait rien ; l'agent n'a accès ni aux corrections ni au blocage. Il
+//!   lit seulement l'issue des corrections appliquées (une règle, réussie ou non, une empreinte) pour en dire un
+//!   avis, sans en retirer ni en masquer aucune ;
 //! - **rien ne sort** : ni réseau, ni commande, ni élévation ; les droits de la personne seulement ;
 //! - **jamais obéir à un texte** : aucune observation, aucun état, aucune ligne du journal ne porte de texte libre ;
 //! - **jamais d'attente** : le verrou déjà pris, un jeu en cours (GameMode) ou l'autotest en lecture seule, et le
@@ -38,7 +42,7 @@ use std::path::Path;
 pub(crate) use budget::{Arret, Budget};
 pub(crate) use decision::{Ajustement, Decision, Levier};
 pub(crate) use etat::Compteurs;
-pub(crate) use forme::{Genre, MissionId, Moment};
+pub(crate) use forme::{Genre, Issue, MissionId, Moment, RegleId, ResumeBilan};
 pub(crate) use mission::{Lecture, Mission};
 
 use crate::machine::regles::{DELAI, DELAI_LONG};
@@ -83,8 +87,13 @@ impl<M: Mission> Tourne for M {
 }
 
 /// Les missions, dans l'ordre de `MissionId::TOUTES`.
-fn missions() -> [&'static dyn Tourne; 3] {
-    [&missions::Reglage, &missions::Cache, &missions::Releve]
+fn missions() -> [&'static dyn Tourne; 4] {
+    [
+        &missions::Reglage,
+        &missions::Cache,
+        &missions::Releve,
+        &missions::Corrections,
+    ]
 }
 
 /// Pourquoi un tour n'a pas eu lieu.
@@ -139,7 +148,10 @@ fn empreinte(o: &[u8]) -> [u8; 32] {
 }
 
 /// Le sens sûr d'un levier, et lui seul : un délai qui monte de `DELAI` (celui du code) à `DELAI_LONG`, une durée de
-/// cache qui descend d'un pas sans passer sous le plancher, pour une règle de `autotest::cache::TABLE`.
+/// cache qui descend d'un pas sans passer sous le plancher, pour une règle de `autotest::cache::TABLE`, ou qui
+/// remonte d'un pas sans dépasser la durée du code (l'application ne défait qu'un pas de l'agent lui-même), une cache
+/// coupée pour une règle de la table, un second essai pour une règle du bilan dont plus de la moitié des « non
+/// vérifiée » passagers ont conclu au bilan suivant.
 pub(crate) fn sens_sur(lu: &Lecture<'_>, l: &Levier) -> bool {
     match *l {
         Levier::Delai {
@@ -162,6 +174,27 @@ pub(crate) fn sens_sur(lu: &Lecture<'_>, l: &Levier) -> bool {
                 && avant_min <= t.duree_min
                 && avant_min - apres_min == crate::autotest::cache::PAS_MIN
         }),
+        Levier::CacheRallonge {
+            regle,
+            avant_min,
+            apres_min,
+        } => crate::autotest::cache::en_cache(regle.texte()).is_some_and(|t| {
+            t.plancher_min <= avant_min
+                && avant_min < apres_min
+                && apres_min <= t.duree_min
+                && apres_min - avant_min == crate::autotest::cache::PAS_MIN
+        }),
+        Levier::CacheCoupee { regle } => crate::autotest::cache::en_cache(regle.texte()).is_some(),
+        Levier::SecondEssai {
+            regle,
+            passageres,
+            reprises,
+        } => {
+            (lu.delai_du_code)(regle.texte()).is_some()
+                && passageres >= 2
+                && reprises <= passageres
+                && u32::from(reprises) * 2 > u32::from(passageres)
+        }
     }
 }
 
@@ -276,16 +309,123 @@ pub(crate) fn tic_dans(ctx: &Contexte<'_>, moment: Moment, missions: &[&dyn Tour
     }
 }
 
+/// Les corrections appliquées depuis le tour d'avant, en mémoire seulement (R6) : le tour suivant de ce processus
+/// (la fin d'un bilan, ou la sortie) les remet à la mission des corrections. Bornées : une liste qui déborde perd les
+/// plus récentes, ce qui ne fait que taire un avis.
+static NOTES: std::sync::Mutex<Vec<forme::NoteCorrection>> = std::sync::Mutex::new(Vec::new());
+const NOTES_MAX: usize = 64;
+
+/// Note le résultat d'une correction appliquée (R6) : sa règle, réussie ou non, et l'empreinte du problème qu'elle
+/// corrigeait (jamais son texte). Une règle inconnue n'est pas notée.
+pub(crate) fn noter_correction(regle: &str, reussie: bool, empreinte: Option<u64>) {
+    let Some(regle) = forme::RegleId::depuis(regle) else {
+        return;
+    };
+    let issue = if reussie {
+        forme::IssueCorrection::Reussie { empreinte }
+    } else {
+        forme::IssueCorrection::Echouee(forme::CodeEchec::Echoue)
+    };
+    let note = forme::NoteCorrection {
+        regle,
+        issue,
+        quand_ms: chrono::Utc::now().timestamp_millis(),
+    };
+    let mut n = NOTES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if n.len() < NOTES_MAX {
+        n.push(note);
+    }
+}
+
+fn notes_prises() -> Vec<forme::NoteCorrection> {
+    std::mem::take(&mut *NOTES.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+}
+
+/// Un tour sauté rend ses notes : le tour suivant les reprendra.
+fn notes_rendues(mut v: Vec<forme::NoteCorrection>) {
+    let mut n = NOTES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    v.append(&mut n);
+    v.truncate(NOTES_MAX);
+    *n = v;
+}
+
+fn notes_en_attente() -> bool {
+    !NOTES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_empty()
+}
+
+/// Ce que l'agent sait des corrections de cet ordinateur (R6), pour les dire : rien quand l'auto-réglage est coupé
+/// ou douteux, la mission coupée, ou son état douteux.
+#[derive(Default)]
+pub(crate) struct AvisCorrections {
+    etat: etat::EtatCorrections,
+}
+
+/// Ce que l'agent dit d'une correction (R6) : de l'information seulement.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Avis {
+    /// Échouée `n` fois de suite ici (2 au moins), avec ce code.
+    pub fragile: Option<(u16, &'static str)>,
+    /// Son problème est revenu après la correction.
+    pub ne_tient_pas: bool,
+}
+
+impl AvisCorrections {
+    pub(crate) fn de(&self, regle: &str) -> Avis {
+        let Some(id) = forme::RegleId::depuis(regle) else {
+            return Avis::default();
+        };
+        let (fragile, ne_tient_pas) = self.etat.avis(id);
+        Avis {
+            fragile: fragile.map(|(n, code)| (n, code.code())),
+            ne_tient_pas,
+        }
+    }
+}
+
+/// L'avis de l'agent sur les corrections, lu de son état (`agent/etat/corrections.json`).
+pub(crate) fn avis_corrections() -> AvisCorrections {
+    avis_corrections_dans(&crate::socle::dossier_local())
+}
+
+pub(crate) fn avis_corrections_dans(dossier: &Path) -> AvisCorrections {
+    if crate::autotest::reglage::en_marche_dans(dossier) != Some(true) {
+        return AvisCorrections::default();
+    }
+    let coupee = etat::lire_dans::<etat::Interrupteurs>(dossier, etat::AGENT)
+        .utilisable()
+        .is_none_or(|i| i.coupees.contains(&MissionId::Corrections));
+    if coupee {
+        return AvisCorrections::default();
+    }
+    let lu = etat::lire_dans::<etat::EtatCorrections>(dossier, etat::nom_etat(MissionId::Corrections));
+    AvisCorrections {
+        etat: lu.utilisable().unwrap_or_default(),
+    }
+}
+
 /// Un tour de l'agent, au moment `moment`, sur cet ordinateur. Jamais d'attente : voir `tic_dans`.
 pub(crate) fn tic(moment: Moment) {
+    tic_avec(moment, None);
+}
+
+/// Le tour de la fin d'un bilan, avec ce qu'il a trouvé (R4, R6).
+pub(crate) fn tic_bilan(bilan: &forme::ResumeBilan) {
+    tic_avec(Moment::FinDeBilan, Some(bilan));
+}
+
+fn tic_avec(moment: Moment, bilan: Option<&forme::ResumeBilan>) {
     let missions = missions();
     if !missions.iter().any(|m| m.moments().contains(&moment)) {
         return;
     }
-    // À la sortie, seul le relevé écoute : rien à noter, rien à lire (une commande courte ne paie pas le tour).
-    if moment == Moment::Sortie && !crate::amelioration::a_noter() {
+    // À la sortie, rien à noter, rien à lire : une commande courte ne paie pas le tour.
+    if moment == Moment::Sortie && !crate::amelioration::a_noter() && !notes_en_attente() {
         return;
     }
+    let notes = notes_prises();
     let dossier = crate::socle::dossier_local();
     let mesures = crate::autotest::mesures::lues();
     let delai_du_code = |id: &str| {
@@ -300,13 +440,17 @@ pub(crate) fn tic(moment: Moment) {
             aujourd_hui: chrono::Local::now().date_naive(),
             mesures: &mesures,
             delai_du_code: &delai_du_code,
+            bilan,
+            corrections: &notes,
         },
         quand: chrono::Utc::now().timestamp(),
         en_jeu: en_jeu(),
         en_marche: crate::autotest::reglage::en_marche_dans(&dossier),
         relever: &|lu, m| crate::amelioration::relever(lu.dossier, lu.aujourd_hui, lu.mesures, m),
     };
-    let _ = tic_dans(&ctx, moment, &missions, &appliquer);
+    if let Tour::Saute(_) = tic_dans(&ctx, moment, &missions, &appliquer) {
+        notes_rendues(notes);
+    }
 }
 
 /// Les ajustements appliqués, par l'auto-réglage (`autotest::reglage`, où vivent les leviers) : seuls ceux demandés
@@ -318,18 +462,42 @@ fn appliquer(lu: &Lecture<'_>, a: &[(MissionId, Ajustement)]) -> Vec<(MissionId,
         lu.aujourd_hui,
         lu.mesures,
         lu.delai_du_code,
-        &|m| demande(MissionId::Reglage, missions::de_montee(m)),
-        &|r| demande(MissionId::Cache, missions::de_raccourcie(r)),
+        &crate::autotest::reglage::Retenus {
+            montee: &|m| demande(MissionId::Reglage, missions::de_montee(m)),
+            pas: &|r| demande(MissionId::Cache, missions::de_raccourcie(r)),
+            rallongee: &|r| demande(MissionId::Cache, missions::de_rallongee(r)),
+            coupure: &|c| demande(MissionId::Cache, missions::de_coupure(c)),
+        },
     );
-    let montees = fait
+    // Les seconds essais demandés, vérifiés : l'auto-réglage les note (`reglage.json`), le bilan suivant les lit.
+    let relances: Vec<_> = a
+        .iter()
+        .filter_map(|(id, x)| match x.levier {
+            Levier::SecondEssai {
+                regle,
+                passageres,
+                reprises,
+            } if *id == MissionId::Reglage => {
+                Some((regle.texte().to_owned(), u32::from(passageres), u32::from(reprises)))
+            }
+            _ => None,
+        })
+        .collect();
+    let donnees = crate::autotest::reglage::relancer_dans(lu.dossier, lu.aujourd_hui, &relances);
+    let reglage = fait
         .montees
         .iter()
-        .filter_map(|m| missions::de_montee(m).map(|x| (MissionId::Reglage, x)));
-    let raccourcies = fait
-        .raccourcies
+        .filter_map(missions::de_montee)
+        .chain(donnees.iter().filter_map(missions::de_relance))
+        .map(|x| (MissionId::Reglage, x));
+    let cache = fait
+        .coupures
         .iter()
-        .filter_map(|r| missions::de_raccourcie(r).map(|x| (MissionId::Cache, x)));
-    montees.chain(raccourcies).collect()
+        .filter_map(missions::de_coupure)
+        .chain(fait.raccourcies.iter().filter_map(missions::de_raccourcie))
+        .chain(fait.rallongees.iter().filter_map(missions::de_rallongee))
+        .map(|x| (MissionId::Cache, x));
+    reglage.chain(cache).collect()
 }
 
 /// Un jeu tourne-t-il (GameMode, sous Linux) ? Ailleurs, rien ne le dit : non.

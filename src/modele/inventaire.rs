@@ -105,6 +105,7 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     scelle(crate::agent::etat::ETAT_REGLAGE, "agent"),
     scelle(crate::agent::etat::ETAT_CACHE, "agent"),
     scelle(crate::agent::etat::ETAT_RELEVE, "agent"),
+    scelle(crate::agent::etat::ETAT_CORRECTIONS, "agent"),
     // Le relevé local (A2) : un jour changé à la main ne se croit pas, le suivi non plus (une « revenue » inventée).
     // Chaque fichier de amelioration/jours/ est scellé sous son nom, écrit par le sceau dès le premier.
     local(crate::amelioration::JOURS, "amelioration"),
@@ -711,7 +712,7 @@ mod tests {
         (
             "agent/mod.rs",
             "agent/agent.json",
-            2,
+            3,
             "passé à agent::etat::lire_dans et ecrire_dans, qui lisent et écrivent par le sceau",
         ),
         (

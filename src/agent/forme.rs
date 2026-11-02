@@ -22,11 +22,73 @@ pub(crate) enum MissionId {
     Cache,
     /// Le relevé local d'amélioration (A2, `amelioration`) : il note, sans rien décider.
     Releve,
+    /// Ce que deviennent les corrections sur cet ordinateur (R6) : de l'information, jamais un retrait.
+    Corrections,
 }
 
 impl MissionId {
     /// Toutes, dans l'ordre où un tour les passe.
-    pub(crate) const TOUTES: [MissionId; 3] = [MissionId::Reglage, MissionId::Cache, MissionId::Releve];
+    pub(crate) const TOUTES: [MissionId; 4] = [
+        MissionId::Reglage,
+        MissionId::Cache,
+        MissionId::Releve,
+        MissionId::Corrections,
+    ];
+}
+
+/// Pourquoi une correction a échoué, en code fermé : `machine::appliquer_annulables` ne rend qu'une réussite ou un
+/// échec, d'où un seul code pour l'instant. Un code plus fin demandera une raison typée de `machine`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CodeEchec {
+    Echoue,
+}
+
+impl CodeEchec {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            CodeEchec::Echoue => "echoue",
+        }
+    }
+}
+
+/// Ce qu'une règle a rendu à un bilan, vu par l'agent : conclu (aucun « non vérifié »), passager (rien que des « non
+/// vérifié » pour délai ou lecture, qui peuvent se résoudre au bilan suivant), ou autre chose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Issue {
+    Concluse,
+    Passagere,
+    Autre,
+}
+
+/// Le résumé d'un bilan pour l'agent : des nombres et des règles, jamais un message.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ResumeBilan {
+    /// Son début, en millisecondes depuis 1970.
+    pub debut_ms: i64,
+    /// Chaque règle lancée (ou reprise), et son issue.
+    pub regles: Vec<(RegleId, Issue)>,
+    /// Les problèmes vus : la règle et l'empreinte de l'objet (`amelioration::empreinte`), jamais son nom.
+    pub problemes: Vec<(RegleId, u64)>,
+}
+
+/// L'issue d'une correction appliquée.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IssueCorrection {
+    /// Réussie, avec l'empreinte du problème corrigé quand il en a une (pour voir s'il revient).
+    Reussie {
+        empreinte: Option<u64>,
+    },
+    Echouee(CodeEchec),
+}
+
+/// Une correction notée par `corriger`, que la mission des corrections lit au tour suivant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NoteCorrection {
+    pub regle: RegleId,
+    pub issue: IssueCorrection,
+    /// Millisecondes depuis 1970.
+    pub quand_ms: i64,
 }
 
 /// Ce qu'une mission a le droit de décider. Un réglage ajuste (dans le sens sûr) ou propose ; un relevé ne fait que

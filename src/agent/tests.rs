@@ -96,7 +96,7 @@ fn gardes_sur_le_source() {
                 assert!(!code.contains(interdit), "agent/{fichier} écrit (« {interdit} »)");
             }
         }
-        if fichier == "missions/reglage.rs" || fichier == "missions/cache.rs" {
+        if ["missions/reglage.rs", "missions/cache.rs", "missions/corrections.rs"].contains(&fichier.as_str()) {
             for interdit in ["risk", "Niveau"] {
                 assert!(!code.contains(interdit), "agent/{fichier} nomme « {interdit} »");
             }
@@ -175,6 +175,8 @@ fn contexte(dossier: &Path) -> Contexte<'_> {
             aujourd_hui: chrono::NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(),
             mesures: mesures(),
             delai_du_code: &du_code,
+            bilan: None,
+            corrections: &[],
         },
         quand: 1_793_577_600,
         en_jeu: false,
@@ -580,10 +582,23 @@ fn levier() -> impl Strategy<Value = Levier> {
             avant_s,
             apres_s
         }),
-        (regle, any::<u16>(), any::<u16>()).prop_map(|(regle, avant_min, apres_min)| Levier::Cache {
+        (regle.clone(), any::<u16>(), any::<u16>()).prop_map(|(regle, avant_min, apres_min)| Levier::Cache {
             regle,
             avant_min,
             apres_min
+        }),
+        (regle.clone(), any::<u16>(), any::<u16>()).prop_map(|(regle, avant_min, apres_min)| {
+            Levier::CacheRallonge {
+                regle,
+                avant_min,
+                apres_min,
+            }
+        }),
+        regle.clone().prop_map(|regle| Levier::CacheCoupee { regle }),
+        (regle, any::<u16>(), any::<u16>()).prop_map(|(regle, passageres, reprises)| Levier::SecondEssai {
+            regle,
+            passageres,
+            reprises
         }),
     ]
 }
@@ -593,6 +608,14 @@ fn decision() -> impl Strategy<Value = Decision> {
     prop_oneof![
         (levier(), any::<u64>()).prop_map(|(levier, mesure)| Decision::Ajuster(Ajustement { levier, mesure })),
         regle.prop_map(|regle| Decision::Proposer(Proposition::RevoirRegle { regle })),
+        (any::<u16>(), Just(super::forme::CodeEchec::Echoue)).prop_map(|(echecs, code)| {
+            Decision::Proposer(Proposition::CorrectionFragile {
+                regle: r("LNX-TST-010"),
+                echecs,
+                code,
+            })
+        }),
+        regle.prop_map(|regle| Decision::Proposer(Proposition::NeTientPas { regle })),
         regle.prop_map(|regle| Decision::Signaler(Signal::Nouveaute { regle })),
     ]
 }
@@ -671,6 +694,9 @@ fn les_missions_dans_l_ordre() {
         releve.moments(),
         &[Moment::FinDeBilan, Moment::PasseHoraire, Moment::Sortie]
     );
+    let corrections = missions()[3];
+    assert_eq!(corrections.genre(), Genre::Reglage);
+    assert_eq!(corrections.moments(), &[Moment::FinDeBilan, Moment::Sortie]);
 }
 
 fn jour(j: u32) -> chrono::NaiveDate {
@@ -698,6 +724,8 @@ fn contexte_au<'a>(
             aujourd_hui,
             mesures,
             delai_du_code: &du_code,
+            bilan: None,
+            corrections: &[],
         },
         quand: aujourd_hui.and_hms_opt(12, 0, 0).unwrap().and_utc().timestamp(),
         en_jeu: false,
@@ -851,7 +879,16 @@ fn bilan_d_essai(
     depart: Vec<usize>,
     longs: &std::collections::BTreeSet<String>,
 ) -> Vec<(&'static str, Option<crate::risk::Niveau>, String)> {
-    let (constats, _) = crate::machine::regles_lancees(regles_d_essai().to_vec(), &|_| None, depart, longs);
+    bilan_d_essai_relance(depart, longs, &std::collections::BTreeSet::new())
+}
+
+/// `bilan_d_essai`, avec ces règles qui ont droit à un second essai (R4).
+fn bilan_d_essai_relance(
+    depart: Vec<usize>,
+    longs: &std::collections::BTreeSet<String>,
+    relances: &std::collections::BTreeSet<String>,
+) -> Vec<(&'static str, Option<crate::risk::Niveau>, String)> {
+    let (constats, _) = crate::machine::regles_lancees(regles_d_essai().to_vec(), &|_| None, depart, longs, relances);
     constats.into_iter().map(|c| (c.regle, c.probleme, c.message)).collect()
 }
 
@@ -914,7 +951,13 @@ fn une_regle_lente_reste_verifiee_avec_l_agent() {
     let montee: std::collections::BTreeSet<String> = ["LNX-TST-010".to_string()].into();
     for longs in [&std::collections::BTreeSet::new(), &montee] {
         assert!(lente.delai_avec(longs) >= lente.delai());
-        let (constats, _) = crate::machine::regles_lancees(vec![lente], &|_| None, vec![], longs);
+        let (constats, _) = crate::machine::regles_lancees(
+            vec![lente],
+            &|_| None,
+            vec![],
+            longs,
+            &std::collections::BTreeSet::new(),
+        );
         let b: Vec<_> = constats.into_iter().map(|c| (c.regle, c.probleme, c.message)).collect();
         assert_eq!(problemes(&b), [("LNX-TST-010", Niveau::Eleve, "lente".to_string())]);
     }
@@ -1070,4 +1113,384 @@ fn le_releve_ne_change_aucune_decision() {
     let r = crate::amelioration::releve::lire(&o);
     let attendu = crate::amelioration::texte(consigne).map(String::from).unwrap();
     assert!(r.textes.entrees().iter().all(|t| t.texte.as_str() == attendu), "{r:?}");
+}
+
+// Lot G4 (A6) : le second essai (R4), les nouveaux leviers de la cache (R2, R3), les corrections (R6).
+
+/// Une règle d'essai, rapide, qui rend ce que rend `verifier`.
+fn regle_comptee(
+    id: &'static str,
+    verifier: fn() -> Vec<crate::machine::Constat>,
+) -> &'static crate::machine::regles::Regle {
+    use crate::machine::regles::{Os, Regle};
+    Box::leak(Box::new(Regle {
+        id,
+        systeme: Os::actuel(),
+        rang: 1,
+        sujet: ("essai", "test"),
+        references: &[],
+        partage: crate::machine::regles::Partage::Sorte,
+        verifier,
+    }))
+}
+
+fn delai_depasse() -> Vec<crate::machine::Constat> {
+    vec![crate::machine::impossible_par(
+        "Audit",
+        crate::modele::Raison::Delai,
+        "délai",
+    )]
+}
+
+static ALTERNE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static TOUJOURS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static GRAVE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn lance(
+    regles: Vec<&'static crate::machine::regles::Regle>,
+    relances: &[&str],
+) -> Vec<(&'static str, Option<crate::risk::Niveau>, crate::modele::Etat)> {
+    let relances: std::collections::BTreeSet<String> = relances.iter().map(|r| (*r).to_string()).collect();
+    let n = regles.len();
+    let (constats, _) = crate::machine::regles_lancees(
+        regles,
+        &|_| None,
+        (0..n).collect(),
+        &std::collections::BTreeSet::new(),
+        &relances,
+    );
+    constats.into_iter().map(|c| (c.regle, c.probleme, c.etat())).collect()
+}
+
+/// R4 : une règle qui a droit au second essai, « non vérifiée » pour un délai, est relancée une fois et une seule ;
+/// son second résultat ne remplace le premier que s'il conclut. Sans droit, ou déjà conclue, elle ne l'est pas.
+/// Les problèmes avec le second essai contiennent ceux sans lui, au même niveau.
+#[test]
+fn un_second_essai_une_fois_et_seulement_s_il_conclut() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let alterne = regle_comptee("LNX-TST-020", || {
+        if ALTERNE.fetch_add(1, SeqCst).is_multiple_of(2) {
+            delai_depasse()
+        } else {
+            vec![crate::machine::alerte("Audit", crate::risk::Niveau::Eleve, "vu")]
+        }
+    });
+    let toujours = regle_comptee("LNX-TST-021", || {
+        TOUJOURS.fetch_add(1, SeqCst);
+        delai_depasse()
+    });
+    let grave = regle_comptee("LNX-TST-022", || {
+        GRAVE.fetch_add(1, SeqCst);
+        vec![crate::machine::alerte("Audit", crate::risk::Niveau::Moyen, "moyen")]
+    });
+    let toutes = ["LNX-TST-020", "LNX-TST-021", "LNX-TST-022"];
+
+    let avec = lance(vec![alterne, toujours, grave], &toutes);
+    // Relancées : la « non vérifiée » qui conclut ensuite, et celle qui ne conclut jamais ; pas la grave.
+    assert_eq!(
+        (ALTERNE.load(SeqCst), TOUJOURS.load(SeqCst), GRAVE.load(SeqCst)),
+        (2, 2, 1)
+    );
+    let sans = lance(vec![alterne, toujours, grave], &[]);
+    assert_eq!(
+        (ALTERNE.load(SeqCst), TOUJOURS.load(SeqCst), GRAVE.load(SeqCst)),
+        (3, 3, 2)
+    );
+    assert!(matches!(sans[0].2, crate::modele::Etat::NonVerifie(_)));
+    assert_eq!(avec[0].1, Some(crate::risk::Niveau::Eleve));
+    // Toujours « non vérifiée » : le premier résultat reste, dit comme tel.
+    assert_eq!(avec[1], sans[1]);
+    assert!(matches!(avec[1].2, crate::modele::Etat::NonVerifie(_)));
+    assert_eq!(avec[2], sans[2]);
+    for p in problemes_de(&sans) {
+        assert!(problemes_de(&avec).contains(&p), "{p:?} perdu avec le second essai");
+    }
+}
+
+fn problemes_de(
+    b: &[(&'static str, Option<crate::risk::Niveau>, crate::modele::Etat)],
+) -> Vec<(&'static str, crate::risk::Niveau)> {
+    b.iter()
+        .filter(|(_, _, e)| matches!(e, crate::modele::Etat::Probleme { .. }))
+        .filter_map(|(r, n, _)| n.map(|n| (*r, n)))
+        .collect()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// R4 : le second essai tient dans le délai total du bilan (`DELAI_LONG` depuis son départ) et dans celui de la
+    /// règle ; rien pour un bilan qui l'a déjà dépassé.
+    #[test]
+    fn le_second_essai_tient_dans_le_delai_total(ecoule_ms in 0u64..2 * 3_600_000, delai_ms in 0u64..3_600_000) {
+        let ecoule = Duration::from_millis(ecoule_ms);
+        let delai = Duration::from_millis(delai_ms);
+        match crate::machine::regles::delai_du_second_essai(ecoule, delai) {
+            None => prop_assert!(ecoule >= DELAI_LONG),
+            Some(d) => {
+                prop_assert!(ecoule < DELAI_LONG);
+                prop_assert!(d <= delai);
+                prop_assert!(ecoule + d <= DELAI_LONG);
+                prop_assert!(!d.is_zero() || delai.is_zero());
+            }
+        }
+    }
+
+    /// Le différentiel des règles d'essai avec n'importe quels seconds essais : leurs problèmes sont ceux d'un bilan
+    /// sans agent, au même niveau.
+    #[test]
+    fn les_seconds_essais_ne_retirent_aucun_probleme(relancees in prop::collection::vec(any::<bool>(), 3)) {
+        let relances: std::collections::BTreeSet<String> = regles_d_essai()
+            .iter()
+            .zip(&relancees)
+            .filter(|(_, m)| **m)
+            .map(|(r, _)| r.id.to_string())
+            .collect();
+        let b = bilan_d_essai_relance(vec![0, 1, 2], &std::collections::BTreeSet::new(), &relances);
+        prop_assert_eq!(problemes(&b), problemes(&bilan_d_essai(vec![], &std::collections::BTreeSet::new())));
+    }
+}
+
+/// Au niveau du tour, les leviers d'A6 hors du sens sûr sont refusés : une durée de cache qui remonte au-dessus de
+/// celle du code, sous le plancher, d'un pas qui n'est pas `PAS_MIN` ou qui descend ; une cache coupée pour une
+/// règle hors de la table ; un second essai pour une règle inconnue du bilan, sur moins de deux passagers, plus de
+/// résolus que de passagers ou la moitié seulement. Un levier qui n'est pas celui de la mission aussi, et la
+/// mission des corrections n'en a aucun. Seuls les sûrs passent.
+#[test]
+fn les_leviers_d_a6_hors_du_sens_sur_sont_refuses() {
+    use crate::autotest::cache::{PAS_MIN, TABLE};
+    let d = Jetable::nouveau("agent-a6-bornes");
+    let t = &TABLE[0];
+    let ajuster = |levier| Decision::Ajuster(Ajustement { levier, mesure: 1 });
+    let rallonge = |regle: &str, avant_min, apres_min| {
+        ajuster(Levier::CacheRallonge {
+            regle: r(regle),
+            avant_min,
+            apres_min,
+        })
+    };
+    let essai = |regle: &str, passageres, reprises| {
+        ajuster(Levier::SecondEssai {
+            regle: r(regle),
+            passageres,
+            reprises,
+        })
+    };
+    let rallonge_sure = rallonge(t.regle, t.duree_min - PAS_MIN, t.duree_min);
+    let coupee_sure = ajuster(Levier::CacheCoupee { regle: r(t.regle) });
+    let essai_sur = essai("LNX-TST-010", 3, 2);
+    let cache = Essai {
+        id: MissionId::Cache,
+        genre: Genre::Reglage,
+        moments: FIN,
+        decisions: vec![
+            rallonge(t.regle, t.duree_min, t.duree_min + PAS_MIN),
+            rallonge(t.regle, t.plancher_min - PAS_MIN, t.plancher_min),
+            rallonge(t.regle, t.duree_min - 2 * PAS_MIN, t.duree_min),
+            rallonge(t.regle, t.duree_min, t.duree_min - PAS_MIN),
+            rallonge("LNX-TST-010", 60, 60 + PAS_MIN),
+            ajuster(Levier::CacheCoupee {
+                regle: r("LNX-TST-010"),
+            }),
+            rallonge_sure,
+            coupee_sure,
+        ],
+    };
+    let reglage = Essai {
+        id: MissionId::Reglage,
+        genre: Genre::Reglage,
+        moments: FIN,
+        decisions: vec![
+            essai("LNX-TST-011", 3, 2),
+            essai("LNX-TST-010", 1, 1),
+            essai("LNX-TST-010", 2, 3),
+            essai("LNX-TST-010", 4, 2),
+            coupee_sure,
+            rallonge_sure,
+            essai_sur,
+        ],
+    };
+    let corrections = Essai {
+        id: MissionId::Corrections,
+        genre: Genre::Reglage,
+        moments: FIN,
+        decisions: vec![essai_sur, coupee_sure, monte()],
+    };
+    let tour = tic_dans(
+        &contexte(&d),
+        Moment::FinDeBilan,
+        &[&cache, &reglage, &corrections],
+        &tout_appliquer,
+    );
+    assert_eq!(
+        tour,
+        Tour::Fait {
+            appliquees: 3,
+            montrees: 0,
+            refusees: 6 + 6 + 3
+        }
+    );
+    let faits = journal_de(&d);
+    for (mission, decision) in [
+        (MissionId::Cache, rallonge_sure),
+        (MissionId::Cache, coupee_sure),
+        (MissionId::Reglage, essai_sur),
+    ] {
+        assert!(faits.contains(&Fait::Decision { mission, decision }), "{decision:?}");
+    }
+}
+
+/// Un bilan d'essai pour la mission du réglage : LNX-TST-010 avec cette issue.
+fn resume(issue: Issue) -> ResumeBilan {
+    ResumeBilan {
+        debut_ms: 1,
+        regles: vec![(r("LNX-TST-010"), issue)],
+        problemes: Vec::new(),
+    }
+}
+
+/// R4 de bout en bout, avec les vraies missions et le vrai applicateur : une règle « non vérifiée » un bilan sur
+/// deux, résolue au suivant, gagne son second essai au deuxième résolu de la semaine, une fois, noté au journal et
+/// lu par le bilan. Agent coupé : rien ne se suit ni ne s'écrit.
+#[test]
+fn un_second_essai_de_bout_en_bout() {
+    let d = Jetable::nouveau("agent-a6-essai");
+    let sans = Jetable::nouveau("agent-a6-essai-coupe");
+    let m = mesures();
+    let suite = [
+        (jour(2), Issue::Passagere),
+        (jour(3), Issue::Concluse),
+        (jour(4), Issue::Passagere),
+        (jour(5), Issue::Concluse),
+        (jour(6), Issue::Passagere),
+        (jour(7), Issue::Concluse),
+    ];
+    let mut tours = Vec::new();
+    for (j, issue) in suite {
+        let b = resume(issue);
+        let mut ctx = contexte_au(&d, j, m, Some(true));
+        ctx.lecture.bilan = Some(&b);
+        tours.push(tic_dans(&ctx, Moment::FinDeBilan, &missions(), &appliquer));
+        let mut coupe = contexte_au(&sans, j, m, Some(false));
+        coupe.lecture.bilan = Some(&b);
+        assert_eq!(
+            tic_dans(&coupe, Moment::FinDeBilan, &missions(), &appliquer),
+            Tour::Coupe
+        );
+    }
+    let appliquees: Vec<usize> = tours
+        .iter()
+        .map(|t| match t {
+            Tour::Fait { appliquees, .. } => *appliquees,
+            autre => panic!("{autre:?}"),
+        })
+        .collect();
+    assert_eq!(appliquees, [0, 0, 0, 1, 0, 0]);
+    let e = reglage_de(&d);
+    assert_eq!(e.relances.len(), 1);
+    assert_eq!(e.relances[0].regle, "LNX-TST-010");
+    assert_eq!((e.relances[0].passageres, e.relances[0].reprises), (2, 2));
+    assert!(journal_de(&d).contains(&Fait::Decision {
+        mission: MissionId::Reglage,
+        decision: Decision::Ajuster(Ajustement {
+            levier: Levier::SecondEssai {
+                regle: r("LNX-TST-010"),
+                passageres: 2,
+                reprises: 2,
+            },
+            mesure: 2,
+        }),
+    }));
+    assert_eq!(
+        crate::autotest::reglage::relances_connues_dans(&d),
+        Some(["LNX-TST-010".to_string()].into())
+    );
+    assert_eq!(
+        crate::autotest::reglage::lire_dans(&sans),
+        crate::autotest::reglage::Lu::Absent
+    );
+    assert!(matches!(
+        etat::lire_dans::<etat::EtatReglage>(&sans, etat::ETAT_REGLAGE),
+        etat::Lu::Absent
+    ));
+}
+
+fn note(issue: forme::IssueCorrection, quand_ms: i64) -> forme::NoteCorrection {
+    forme::NoteCorrection {
+        regle: r("LNX-TST-010"),
+        issue,
+        quand_ms,
+    }
+}
+
+/// R6 de bout en bout : deux échecs de suite se montrent (une proposition, rien d'appliqué) et l'avis de la
+/// correction le dit, avec son code ; réussie puis revenue au bilan suivant, l'avis dit qu'elle ne tient pas. La
+/// mission coupée, ou l'auto-réglage coupé : aucun avis. L'agent n'ajuste rien pour autant.
+#[test]
+fn l_avis_des_corrections_de_bout_en_bout() {
+    let d = Jetable::nouveau("agent-a6-corrections");
+    let m = mesures();
+    let echec = note(forme::IssueCorrection::Echouee(forme::CodeEchec::Echoue), 10);
+    let tour = |notes: &[forme::NoteCorrection], bilan: Option<&ResumeBilan>, moment| {
+        let mut ctx = contexte_au(&d, jour(2), m, Some(true));
+        ctx.lecture.corrections = notes;
+        ctx.lecture.bilan = bilan;
+        tic_dans(&ctx, moment, &[&missions::Corrections], &appliquer)
+    };
+    let fait = |montrees| Tour::Fait {
+        appliquees: 0,
+        montrees,
+        refusees: 0,
+    };
+    assert_eq!(tour(&[echec], None, Moment::Sortie), fait(0));
+    assert_eq!(avis_corrections_dans(&d).de("LNX-TST-010"), Avis::default());
+    assert_eq!(tour(&[echec], None, Moment::Sortie), fait(1));
+    assert_eq!(
+        avis_corrections_dans(&d).de("LNX-TST-010"),
+        Avis {
+            fragile: Some((2, "echoue")),
+            ne_tient_pas: false
+        }
+    );
+    assert_eq!(avis_corrections_dans(&d).de("LNX-TST-011"), Avis::default());
+    let reussie = note(forme::IssueCorrection::Reussie { empreinte: Some(7) }, 1_000);
+    assert_eq!(tour(&[reussie], None, Moment::Sortie), fait(0));
+    assert_eq!(avis_corrections_dans(&d).de("LNX-TST-010"), Avis::default());
+    let revenu = ResumeBilan {
+        debut_ms: 2_000,
+        regles: vec![(r("LNX-TST-010"), Issue::Concluse)],
+        problemes: vec![(r("LNX-TST-010"), 7)],
+    };
+    assert_eq!(tour(&[], Some(&revenu), Moment::FinDeBilan), fait(1));
+    let ne_tient_pas = Avis {
+        fragile: None,
+        ne_tient_pas: true,
+    };
+    assert_eq!(avis_corrections_dans(&d).de("LNX-TST-010"), ne_tient_pas);
+    assert!(journal_de(&d).contains(&Fait::Decision {
+        mission: MissionId::Corrections,
+        decision: Decision::Proposer(Proposition::NeTientPas {
+            regle: r("LNX-TST-010")
+        }),
+    }));
+    assert_eq!(
+        crate::autotest::reglage::lire_dans(&d),
+        crate::autotest::reglage::Lu::Absent
+    );
+
+    // La mission coupée : aucun avis, l'état reste.
+    let coupee = etat::Interrupteurs {
+        v: 1,
+        coupees: [MissionId::Corrections].into(),
+    };
+    etat::ecrire_dans(&d, etat::AGENT, &coupee).unwrap();
+    assert_eq!(avis_corrections_dans(&d).de("LNX-TST-010"), Avis::default());
+    etat::ecrire_dans(&d, etat::AGENT, &etat::Interrupteurs::default()).unwrap();
+    assert_eq!(avis_corrections_dans(&d).de("LNX-TST-010"), ne_tient_pas);
+    // Un interrupteur douteux, ou l'auto-réglage coupé : aucun avis.
+    std::fs::write(d.join(etat::AGENT), b"{}").unwrap();
+    assert_eq!(avis_corrections_dans(&d).de("LNX-TST-010"), Avis::default());
+    etat::ecrire_dans(&d, etat::AGENT, &etat::Interrupteurs::default()).unwrap();
+    crate::sceau::ecrire_dans(&d, crate::autotest::reglage::REGLAGE, br#"{"coupe":true}"#).unwrap();
+    assert_eq!(avis_corrections_dans(&d).de("LNX-TST-010"), Avis::default());
 }

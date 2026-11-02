@@ -18,6 +18,11 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
         .filter_map(|c| Some((c, c.correctif.as_ref().filter(|k| k.automatique)?)))
         .collect();
     let mut appliquees = Vec::new();
+    // Ce que l'Agent Vanguard sait des corrections d'ici (R6) : de l'information seulement, rien n'est retiré.
+    let avis = crate::agent::avis_corrections();
+    let fragile = |c: &Constat| avis.de(c.regle).fragile.is_some();
+    // Les corrections déjà appliquées par un « tout » : celles qui restent (les fragiles) se proposent une à une.
+    let mut par_le_lot = vec![false; auto.len()];
     if auto.is_empty() {
         trp!(
             "  {VERT}✔{RESET} Rien à corriger automatiquement.",
@@ -30,6 +35,9 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
             auto.len()
         );
         for (i, (c, k)) in auto.iter().enumerate() {
+            if par_le_lot.get(i) == Some(&true) {
+                continue;
+            }
             let n = c.probleme.unwrap_or(Niveau::Info);
             println!(
                 "\n  {}[{}]{RESET} {GRAS}{}{RESET} — {}",
@@ -43,6 +51,7 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
                 println!("    {GRIS}{cmd}{RESET}");
             }
             dire_si_annulable(k);
+            dire_l_avis(avis.de(c.regle));
             crate::amelioration::noter_correction(c.regle, Issue::Proposee);
             let rep = demander(tr!(
                 "  Appliquer ? [o]ui / [n]on / [t]out appliquer / [i]gnorer, c'est normal chez moi : ",
@@ -54,8 +63,20 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
                 continue;
             }
             let tout = crate::langue::tout(&rep);
+            // « Tout » ne prend pas d'avance une correction fragile (échouée deux fois ici) : elle reste proposée, une
+            // à une, après le lot. Celle qui vient d'être montrée, si : la personne l'a vue.
+            let places: Vec<usize> = if tout {
+                places_du_lot(
+                    i,
+                    auto.len(),
+                    &|j| auto.get(j).is_some_and(|(c, _)| fragile(c)),
+                    &par_le_lot,
+                )
+            } else {
+                vec![i]
+            };
             let lot: Vec<(&Constat, &Correctif)> = if tout {
-                auto.iter().skip(i).copied().collect()
+                places.iter().filter_map(|&j| auto.get(j).copied()).collect()
             } else if crate::langue::oui(&rep) {
                 vec![(c, k)]
             } else {
@@ -71,6 +92,13 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
                 }
                 crate::amelioration::noter_correction(c.regle, Issue::Acceptee);
             }
+            let fragiles_ensuite = if tout {
+                (i..auto.len())
+                    .filter(|j| !places.contains(j) && par_le_lot.get(*j) != Some(&true))
+                    .count()
+            } else {
+                0
+            };
             if lot.len() > 1 {
                 trp!(
                     "    {GRIS}Les {} corrections restantes, en une fois.{RESET}",
@@ -148,7 +176,16 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
                     .filter_map(|(id, ok)| Some((id.clone()?, *ok)))
                     .collect::<Vec<_>>(),
             );
+            // Arrêtée à la demande de la personne, une correction n'a ni réussi ni échoué : l'agent n'en dit rien.
+            let noter_pour_l_agent = !machine::arretee_a_votre_demande();
             for ((c, k), reussi) in lot.iter().zip(resultats) {
+                if noter_pour_l_agent {
+                    crate::agent::noter_correction(
+                        c.regle,
+                        reussi,
+                        c.cle().map(|cle| crate::amelioration::empreinte(&cle)),
+                    );
+                }
                 let issue = if reussi {
                     Issue::Reussie(c.cle())
                 } else {
@@ -183,7 +220,19 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
                 }
             }
             if tout {
-                break;
+                for j in &places {
+                    if let Some(p) = par_le_lot.get_mut(*j) {
+                        *p = true;
+                    }
+                }
+                if fragiles_ensuite == 0 {
+                    break;
+                }
+                trp!(
+                    "\n    {GRIS}{} correction(s) fragile(s) hors du lot, proposée(s) à part.{RESET}",
+                    "\n    {GRIS}{} fragile fix(es) left out of the batch, offered separately.{RESET}",
+                    fragiles_ensuite
+                );
             }
         }
     }
@@ -215,6 +264,31 @@ fn relever(k: &Correctif) -> Result<annulables::Releve, annulables::PourquoiPas>
     match k.comment_defaire() {
         Defaire::Gestes(g) => annulables::relever(annulables::id_bilan(), &k.action, &g),
         _ => Err(k.pourquoi_pas().unwrap_or(annulables::PourquoiPas::NonReleve)),
+    }
+}
+
+/// Ce que prend un « tout » répondu à la correction `i` (sur `n`) : elle, et celles qui suivent, sauf les fragiles
+/// (`fragile`), qui restent proposées une à une, et celles déjà appliquées par un lot d'avant (`deja`).
+fn places_du_lot(i: usize, n: usize, fragile: &dyn Fn(usize) -> bool, deja: &[bool]) -> Vec<usize> {
+    (i..n)
+        .filter(|&j| j == i || (!fragile(j) && deja.get(j) != Some(&true)))
+        .collect()
+}
+
+/// L'avis de l'Agent Vanguard sur une correction (R6) : échouée deux fois au moins ici, ou revenue après avoir été
+/// appliquée. De l'information seulement : la correction reste proposée, la personne choisit.
+fn dire_l_avis(avis: crate::agent::Avis) {
+    if let Some((n, code)) = avis.fragile {
+        trp!(
+            "    ⚠ a échoué {n} fois sur cet ordinateur (code {code})",
+            "    ⚠ failed {n} times on this computer (code {code})"
+        );
+    }
+    if avis.ne_tient_pas {
+        trp!(
+            "    ⚠ ne tient pas : le problème est revenu après la correction",
+            "    ⚠ does not hold: the problem came back after the fix"
+        );
     }
 }
 
@@ -303,6 +377,33 @@ fn interface_admin(h: &Hote) -> Option<String> {
 mod tests {
     use super::*;
     use crate::reseau::PortOuvert;
+
+    /// R6 : un « tout » laisse les corrections fragiles hors du lot, pour être proposées une à une ; répondu « tout »
+    /// à chacune ensuite, chaque correction est appliquée une fois, aucune n'est perdue.
+    #[test]
+    fn tout_laisse_les_fragiles_a_part_sans_en_perdre() {
+        let fragile = |j: usize| j == 2 || j == 4;
+        assert_eq!(places_du_lot(0, 6, &fragile, &[false; 6]), [0, 1, 3, 5]);
+        // La fragile montrée elle-même entre dans son lot : la personne l'a vue.
+        assert_eq!(places_du_lot(2, 6, &fragile, &[false; 6]), [2, 3, 5]);
+        for n in 0..8 {
+            for masque in 0u32..(1 << n) {
+                let fragile = |j: usize| masque & (1 << j) != 0;
+                let mut faites = vec![false; n];
+                let mut fois = vec![0; n];
+                for i in 0..n {
+                    if faites[i] {
+                        continue;
+                    }
+                    for j in places_du_lot(i, n, &fragile, &faites) {
+                        fois[j] += 1;
+                        faites[j] = true;
+                    }
+                }
+                assert!(fois.iter().all(|f| *f == 1), "{n} {masque:b} {fois:?}");
+            }
+        }
+    }
 
     #[test]
     fn lien_d_administration_avec_son_port() {

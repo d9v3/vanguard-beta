@@ -349,6 +349,24 @@ pub(super) fn verification_avec<'a>(r: &'static Regle, longs: &std::collections:
     sous_delai(r, r.delai_avec(longs))
 }
 
+/// Le second essai d'une règle (R4, `super::second_essai`), sous le délai que lui laisse le bilan.
+pub(super) fn second_essai<'a>(r: &'static Regle, delai: std::time::Duration) -> Verification<'a> {
+    sous_delai(r, delai)
+}
+
+/// Le délai d'un second essai (R4), compris dans le délai total du bilan : ce qui reste de `DELAI_LONG` depuis son
+/// départ (`ecoule`), jamais plus que le délai de la règle (`delai`). Rien quand il n'en reste plus : un bilan qui
+/// dépasse déjà `DELAI_LONG` ne relance rien.
+pub(crate) fn delai_du_second_essai(
+    ecoule: std::time::Duration,
+    delai: std::time::Duration,
+) -> Option<std::time::Duration> {
+    DELAI_LONG
+        .checked_sub(ecoule)
+        .filter(|reste| !reste.is_zero())
+        .map(|reste| reste.min(delai))
+}
+
 /// La règle tourne dans un fil à part, attendu au plus `delai`. Un fil bloqué ne peut pas être arrêté de
 /// l'extérieur : il est laissé à lui-même (ce qu'il rendrait ensuite est jeté), et c'est le seul moyen de ne pas
 /// figer le bilan ni la surveillance horaire derrière lui. `thread::scope` ne le permettrait pas : il attend chacun.

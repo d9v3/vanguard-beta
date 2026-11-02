@@ -222,14 +222,15 @@ pub(crate) fn en_cache(regle: &str) -> Option<&'static EnCache> {
 }
 
 /// La durée appliquée d'une règle de `TABLE`, en minutes : celle du code, ou celle que l'auto-réglage a raccourcie
-/// (`raccourcies`), jamais hors de ses bornes.
+/// (`raccourcies`), jamais hors de ses bornes ; `None` hors de la table, ou pour une règle que l'auto-réglage a coupée
+/// (0 : jamais reprise, vérifiée à neuf à chaque passage).
 pub(crate) fn duree_appliquee(regle: &str, raccourcies: &BTreeMap<String, u16>) -> Option<u16> {
     let e = en_cache(regle)?;
-    Some(
-        raccourcies
-            .get(regle)
-            .map_or(e.duree_min, |m| (*m).clamp(e.plancher_min, e.duree_min)),
-    )
+    match raccourcies.get(regle) {
+        Some(0) => None,
+        Some(m) => Some((*m).clamp(e.plancher_min, e.duree_min)),
+        None => Some(e.duree_min),
+    }
 }
 
 /// Ce que juge un constat gardé, à côté de sa règle.
@@ -956,6 +957,13 @@ fn lignes_dans(
         Fichier::default()
     });
     for id in ids {
+        if en_cache(id).is_some() && raccourcies.get(*id) == Some(&0) {
+            lignes.push(crate::trf!(
+                "{id} : jamais repris (coupé par l'agent), vérifié à neuf à chaque passage.",
+                "{id}: never reused (cut by the agent), checked afresh at every pass."
+            ));
+            continue;
+        }
         let (Some(t), Some(duree)) = (en_cache(id), duree_appliquee(id, raccourcies)) else {
             continue;
         };
@@ -1213,6 +1221,11 @@ mod tests {
             Some(90)
         );
         assert_eq!(duree_appliquee("LNX-PFE-001", &BTreeMap::new()), None);
+        // Coupée par l'auto-réglage : jamais reprise.
+        assert_eq!(
+            duree_appliquee("LNX-MAJ-001", &BTreeMap::from([("LNX-MAJ-001".to_string(), 0)])),
+            None
+        );
     }
 
     #[test]

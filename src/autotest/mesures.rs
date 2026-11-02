@@ -54,8 +54,10 @@ pub(crate) struct Mesures {
     pub cache: BTreeMap<String, Cache>,
 }
 
-/// Comparaisons récentes gardées par règle : ce que juge l'auto-réglage pour raccourcir une durée.
-const RECENTES_MAX: usize = 16;
+/// Comparaisons récentes gardées par règle : ce que juge l'auto-réglage pour raccourcir, rallonger ou couper une
+/// durée. Deux semaines de passages horaires (une comparaison toutes les deux heures au plus : 168) y tiennent, pour
+/// la coupure sur 14 jours ; quelques Kio par règle de la table.
+pub(crate) const RECENTES_MAX: usize = 256;
 
 /// Les mesures de la cache pour une règle, depuis le début (des nombres, jamais un texte lu sur la machine).
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
@@ -351,6 +353,49 @@ pub(crate) fn juger(m: &Mesures, aujourd_hui: chrono::NaiveDate, delai: impl Fn(
     }
 }
 
+/// Les règles sorties de leur délai deux fois au moins en 7 jours (aujourd'hui et les 6 d'avant), avec leur plus
+/// longue durée de la semaine (ms) : ce qui fait monter un délai sans attendre deux semaines (`super::reglage`). Une
+/// règle qui dépasse son délai est mesurée à ce délai (le bilan l'attend jusque-là). Aujourd'hui compte chaque
+/// passage hors délai ; un jour d'avant n'en garde que le résumé, et compte une fois si son plus long l'était : un
+/// compte par défaut, jamais par excès. `delai` : celui du code.
+pub(crate) fn hors_delai(
+    m: &Mesures,
+    aujourd_hui: chrono::NaiveDate,
+    delai: impl Fn(&str) -> Duration,
+) -> Vec<(String, u64)> {
+    let regles: std::collections::BTreeSet<&String> = m
+        .en_cours
+        .keys()
+        .chain(m.jours.values().flat_map(BTreeMap::keys))
+        .collect();
+    let mut sorties = Vec::new();
+    for r in regles {
+        let delai_ms = u64::try_from(delai(r).as_millis()).unwrap_or(u64::MAX);
+        let mut fois = 0usize;
+        for ecart in 0..7 {
+            let jour = (aujourd_hui - chrono::Duration::days(ecart))
+                .format("%Y-%m-%d")
+                .to_string();
+            fois = fois.saturating_add(if jour == m.jour {
+                m.en_cours
+                    .get(r)
+                    .map_or(0, |d| d.iter().filter(|&&x| x >= delai_ms).count())
+            } else {
+                usize::from(
+                    m.jours
+                        .get(&jour)
+                        .and_then(|j| j.get(r))
+                        .is_some_and(|x| x.max >= delai_ms),
+                )
+            });
+        }
+        if fois >= 2 {
+            sorties.push((r.clone(), m.max_semaine(r, aujourd_hui)));
+        }
+    }
+    sorties
+}
+
 /// La médiane de la semaine (aujourd'hui et les 6 jours d'avant) de chaque règle mesurée : ce que lit l'ordre de
 /// départ du bilan (`super::reglage`).
 pub(crate) fn medianes_de_la_semaine(m: &Mesures, aujourd_hui: chrono::NaiveDate) -> BTreeMap<String, u64> {
@@ -567,7 +612,8 @@ mod tests {
                 age_s: 1,
             },
         ];
-        for i in 0..20 {
+        let nombre = i64::try_from(RECENTES_MAX + 4).unwrap();
+        for i in 0..nombre {
             evenements.push(Evenement::Compare {
                 regle: "LNX-MAJ-001",
                 ecart: i % 2 == 0,
@@ -583,12 +629,17 @@ mod tests {
         );
         let c = &m.cache["LNX-MAJ-001"];
         assert_eq!((c.repris, c.a_neuf, c.age_moyen_s(), c.gagne_ms), (1, 2, 3_000, 400));
-        assert_eq!((c.comparees, c.ecarts, c.recentes.len()), (20, 10, RECENTES_MAX));
+        let nombre = u32::try_from(nombre).unwrap();
+        assert_eq!(
+            (c.comparees, c.ecarts, c.recentes.len()),
+            (nombre, nombre / 2, RECENTES_MAX)
+        );
         assert_eq!(c.recentes.first(), Some(&(4, true)));
         // Un fichier qui en garderait plus, ou pour une autre règle, est ramené dans ses bornes.
         let mut texte = serde_json::to_value(&m).unwrap();
         texte["cache"]["LNX-PFE-001"] = serde_json::json!({"repris": 1});
-        texte["cache"]["LNX-MAJ-001"]["recentes"] = serde_json::json!(vec![serde_json::json!([1, true]); 40]);
+        texte["cache"]["LNX-MAJ-001"]["recentes"] =
+            serde_json::json!(vec![serde_json::json!([1, true]); RECENTES_MAX + 24]);
         let relu = lire_de(&serde_json::to_vec(&texte).unwrap());
         assert_eq!(relu.cache.len(), 1);
         assert_eq!(relu.cache["LNX-MAJ-001"].recentes.len(), RECENTES_MAX);

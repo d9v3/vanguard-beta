@@ -364,27 +364,83 @@ fn en_parallele(verifications: Vec<Verification<'_>>) -> Vec<Constat> {
 /// Les règles retenues, lancées en même temps et rendues dans l'ordre de leurs rangs. La durée de chaque règle va au
 /// journal des mesures (`autotest::mesures`), qui voit ainsi une règle ralentir d'une semaine à l'autre.
 fn bilan_des_regles(choisies: Vec<&'static regles::Regle>) -> Vec<Constat> {
+    let debut_ms = chrono::Utc::now().timestamp_millis();
     let noms = noms_gardes(&choisies);
+    let ids: Vec<&'static str> = choisies.iter().map(|r| r.id).collect();
     let (constats, durees) = regles_en_parallele(choisies);
     crate::autotest::mesures::noter(&durees);
     crate::amelioration::noter_bilan(&constats, &|id| noms.contains(id), true);
-    crate::agent::tic(crate::agent::Moment::FinDeBilan);
+    crate::agent::tic_bilan(&resume_du_bilan(debut_ms, &ids, &constats, &|_| false));
     constats
+}
+
+/// Ce que l'Agent Vanguard voit d'un bilan (R4, R6) : l'issue de chaque règle (conclue, non vérifiée pour une raison
+/// passagère, ou autre) et l'empreinte de chaque problème, jamais un texte. Une règle reprise de la cache ne compte
+/// pas : son résultat n'a pas été revu.
+fn resume_du_bilan(
+    debut_ms: i64,
+    ids: &[&'static str],
+    constats: &[Constat],
+    reprise: &dyn Fn(&str) -> bool,
+) -> crate::agent::ResumeBilan {
+    use crate::agent::{Issue, RegleId};
+    use crate::modele::Etat;
+    let mut resume = crate::agent::ResumeBilan {
+        debut_ms,
+        ..Default::default()
+    };
+    for id in ids {
+        let Some(regle) = RegleId::depuis(id) else {
+            continue;
+        };
+        if reprise(id) {
+            resume.regles.push((regle, Issue::Autre));
+            continue;
+        }
+        let siens: Vec<&Constat> = constats.iter().filter(|c| c.regle == *id).collect();
+        let issue = if siens.iter().any(|c| passagere(&c.etat())) {
+            Issue::Passagere
+        } else if siens.is_empty() || siens.iter().any(|c| matches!(c.etat(), Etat::NonVerifie(_))) {
+            Issue::Autre
+        } else {
+            Issue::Concluse
+        };
+        resume.regles.push((regle, issue));
+        for c in siens {
+            if matches!(c.etat(), Etat::Probleme { .. })
+                && let Some(k) = c.cle()
+            {
+                resume.problemes.push((regle, crate::amelioration::empreinte(&k)));
+            }
+        }
+    }
+    resume
+}
+
+/// Une « non vérifiée » passagère : délai dépassé ou lecture qui a échoué (WMI occupé, fichier pris) ; le bilan
+/// suivant la résout souvent (R4).
+fn passagere(e: &crate::modele::Etat) -> bool {
+    use crate::modele::{Etat, Raison};
+    matches!(e, Etat::NonVerifie(Raison::Delai | Raison::Illisible(_)))
 }
 
 /// Le bilan du passage horaire (`auditer_automatique`) : les règles de la cache (`autotest::cache`) peuvent reprendre
 /// leur résultat récent, un passage sur deux au plus ; leurs reprises ne sont pas mesurées comme des durées, mais
 /// comptées à part (`autotest::mesures`).
 fn bilan_automatique(choisies: &[&'static regles::Regle]) -> Vec<Constat> {
+    let debut_ms = chrono::Utc::now().timestamp_millis();
     let plan = crate::autotest::cache::preparer(choisies);
     let (constats, mut durees) = regles_en_parallele_sauf(choisies.to_vec(), &|id| plan.constats_de(id));
     durees.retain(|(id, _)| !plan.reprend(id));
     AGES.with(|a| *a.borrow_mut() = plan.ages());
+    let repris: std::collections::BTreeSet<&'static str> =
+        choisies.iter().map(|r| r.id).filter(|id| plan.reprend(id)).collect();
     let evenements = plan.terminer(choisies, &constats);
     crate::autotest::mesures::noter_avec(&durees, &evenements);
     let noms = noms_gardes(choisies);
     crate::amelioration::noter_bilan(&constats, &|id| noms.contains(id), false);
-    crate::agent::tic(crate::agent::Moment::FinDeBilan);
+    let ids: Vec<&'static str> = choisies.iter().map(|r| r.id).collect();
+    crate::agent::tic_bilan(&resume_du_bilan(debut_ms, &ids, &constats, &|id| repris.contains(id)));
     constats
 }
 
@@ -416,46 +472,123 @@ fn regles_en_parallele_sauf(
     let ids: Vec<Option<&str>> = choisies.iter().map(|r| Some(r.id)).collect();
     let depart = crate::autotest::reglage::ordre_de_depart(&ids, &crate::autotest::mesures::medianes_recentes());
     let longs = crate::autotest::reglage::delais_longs();
-    regles_lancees(choisies, reprise, depart, &longs)
+    let relances = crate::autotest::reglage::relances();
+    regles_lancees(choisies, reprise, depart, &longs, &relances)
 }
 
-/// Le cœur du bilan, sans rien lire de l'auto-réglage : `depart` (l'ordre de départ) et `longs` (les délais montés)
-/// sont donnés. C'est tout ce que l'Agent Vanguard (`agent`) change à un bilan : ses essais vérifient que ni l'un ni
-/// l'autre ne retire un constat ni ne change un niveau.
+/// Le cœur du bilan, sans rien lire de l'auto-réglage : `depart` (l'ordre de départ), `longs` (les délais montés)
+/// et `relances` (les règles qui ont droit à un second essai) sont donnés. C'est tout ce que l'Agent Vanguard
+/// (`agent`) change à un bilan : ses essais vérifient qu'aucun ne retire un constat ni ne change un niveau.
 pub(crate) fn regles_lancees(
     choisies: Vec<&'static regles::Regle>,
     reprise: &dyn Fn(&str) -> Option<Vec<Constat>>,
     depart: Vec<usize>,
     longs: &std::collections::BTreeSet<String>,
+    relances: &std::collections::BTreeSet<String>,
 ) -> (Vec<Constat>, Vec<(&'static str, std::time::Duration)>) {
-    en_parallele_dans(
-        choisies
-            .into_iter()
-            .map(|r| match reprise(r.id) {
-                Some(repris) => Box::new(move || repris) as Verification<'_>,
-                None => regles::verification_avec(r, longs),
-            })
-            .collect(),
-        depart,
-    )
+    let debut = std::time::Instant::now();
+    let bilan = bilan_en_cours();
+    // Chaque vérification, et la règle lancée à sa place (aucune pour un résultat repris de la cache).
+    let (verifications, lancees): (Vec<Verification<'_>>, Vec<Option<&'static regles::Regle>>) = choisies
+        .into_iter()
+        .map(|r| {
+            reprise(r.id).map_or_else(
+                || (regles::verification_avec(r, longs), Some(r)),
+                |repris| (Box::new(move || repris) as Verification<'_>, None),
+            )
+        })
+        .unzip();
+    let (mut groupes, durees) = en_parallele_groupes(verifications, depart);
+    second_essai(&lancees, &mut groupes, debut.elapsed(), longs, relances);
+    let mut constats = groupes.into_iter().flatten().collect();
+    apres_les_regles(&mut constats, bilan);
+    (constats, durees)
+}
+
+/// Les règles qui ne prennent jamais de second essai : celles des journaux effacés, dont l'une cède à l'autre ce
+/// qu'elle a lu dans le même bilan (`apres_les_regles`) ; une seconde lecture le ferait dire deux fois.
+const SANS_SECOND_ESSAI: [&str; 2] = ["COM-JRN-001", "WIN-JRN-003"];
+
+/// Le second essai (R4) : chaque règle de `relances`, lancée ici (pas reprise de la cache), dont tous les constats
+/// sont « non vérifiée » pour une raison passagère, est relancée une fois, toutes en même temps, dans ce qui reste
+/// de `DELAI_LONG` depuis le départ du bilan (`regles::delai_du_second_essai`) : jamais pour un bilan qui le dépasse
+/// déjà. Son second résultat ne remplace le premier que s'il conclut tout entier : rien n'est retiré, rien ne devient
+/// sain sans avoir été vérifié. Sa durée n'est pas mesurée.
+fn second_essai(
+    lancees: &[Option<&'static regles::Regle>],
+    groupes: &mut [Vec<Constat>],
+    ecoule: std::time::Duration,
+    longs: &std::collections::BTreeSet<String>,
+    relances: &std::collections::BTreeSet<String>,
+) {
+    if relances.is_empty() {
+        return;
+    }
+    let a_refaire: Vec<(usize, Verification<'_>)> = lancees
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| Some((i, (*r)?)))
+        .filter(|(i, r)| {
+            relances.contains(r.id)
+                && !SANS_SECOND_ESSAI.contains(&r.id)
+                && groupes
+                    .get(*i)
+                    .is_some_and(|g| !g.is_empty() && g.iter().all(|c| passagere(&c.etat())))
+        })
+        .filter_map(|(i, r)| {
+            Some((
+                i,
+                regles::second_essai(r, regles::delai_du_second_essai(ecoule, r.delai_avec(longs))?),
+            ))
+        })
+        .collect();
+    if a_refaire.is_empty() {
+        return;
+    }
+    let (places, verifications): (Vec<usize>, Vec<Verification<'_>>) = a_refaire.into_iter().unzip();
+    let n = verifications.len();
+    let (seconds, _) = en_parallele_groupes(verifications, (0..n).collect());
+    for (i, second) in places.into_iter().zip(seconds) {
+        let conclut = !second.is_empty()
+            && second
+                .iter()
+                .all(|c| !matches!(c.etat(), crate::modele::Etat::NonVerifie(_)));
+        if conclut && let Some(g) = groupes.get_mut(i) {
+            *g = second;
+        }
+    }
 }
 
 /// Lance les vérifications en même temps (chacune attend surtout des commandes du système), dans l'ordre `depart`
 /// (une permutation des positions ; tout autre ordre devient celui de la liste), et rend leurs constats dans l'ordre
 /// de la liste, avec la durée de chaque règle du registre (celles qui n'ont pas d'identifiant ne sont pas mesurées).
-/// Une vérification qui plante le dit, sans emporter les autres.
+/// Une vérification qui plante le dit, sans emporter les autres. Les essais seulement : le bilan passe par
+/// `regles_lancees`, qui ajoute le second essai.
+#[cfg(test)]
 fn en_parallele_dans(
     verifications: Vec<Verification<'_>>,
     depart: Vec<usize>,
 ) -> (Vec<Constat>, Vec<(&'static str, std::time::Duration)>) {
+    let bilan = bilan_en_cours();
+    let (groupes, durees) = en_parallele_groupes(verifications, depart);
+    let mut constats = groupes.into_iter().flatten().collect();
+    apres_les_regles(&mut constats, bilan);
+    (constats, durees)
+}
+
+/// `en_parallele_dans`, les constats rendus par vérification, sans ce qu'en fait le bilan ensuite
+/// (`apres_les_regles`).
+fn en_parallele_groupes(
+    verifications: Vec<Verification<'_>>,
+    depart: Vec<usize>,
+) -> (Vec<Vec<Constat>>, Vec<(&'static str, std::time::Duration)>) {
     // VANGUARD_CHRONO : chaque vérification dit son temps sur la sortie d'erreur, pour trouver ce qui ralentit le bilan.
     let chrono = std::env::var_os("VANGUARD_CHRONO").is_some();
     let n = verifications.len();
     let depart = crate::autotest::reglage::permutation_ou_rangs(depart, n);
     let mut a_lancer: Vec<Option<Verification<'_>>> = verifications.into_iter().map(Some).collect();
     let mut durees = Vec::new();
-    let bilan = bilan_en_cours();
-    let mut constats: Vec<Constat> = std::thread::scope(|s| {
+    let groupes: Vec<Vec<Constat>> = std::thread::scope(|s| {
         let mut fils: Vec<Option<_>> = std::iter::repeat_with(|| None).take(n).collect();
         for i in depart {
             if let (Some(v), Some(place)) = (a_lancer.get_mut(i).and_then(Option::take), fils.get_mut(i)) {
@@ -468,7 +601,7 @@ fn en_parallele_dans(
         }
         fils.into_iter()
             .enumerate()
-            .flat_map(|(i, f)| {
+            .map(|(i, f)| {
                 let (constats, duree) = f
                     .and_then(|f: std::thread::ScopedJoinHandle<'_, _>| f.join().ok())
                     .unwrap_or_else(|| {
@@ -490,8 +623,7 @@ fn en_parallele_dans(
             })
             .collect()
     });
-    apres_les_regles(&mut constats, bilan);
-    (constats, durees)
+    (groupes, durees)
 }
 
 /// Les règles de ce système que `garder` retient, lancées pour l'autotest sous garde et délai comme au bilan, en même

@@ -17,6 +17,10 @@ pub(crate) struct Lecture<'a> {
     pub aujourd_hui: chrono::NaiveDate,
     pub mesures: &'a crate::autotest::mesures::Mesures,
     pub delai_du_code: &'a dyn Fn(&str) -> Option<std::time::Duration>,
+    /// Le bilan qui vient de finir (à la fin d'un bilan seulement) : des règles et des issues, aucun texte.
+    pub bilan: Option<&'a super::forme::ResumeBilan>,
+    /// Les corrections appliquées depuis le tour d'avant (R6).
+    pub corrections: &'a [super::forme::NoteCorrection],
 }
 
 impl Lecture<'_> {

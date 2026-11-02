@@ -1,6 +1,7 @@
 //! Ce qu'une mission peut décider, en trois sortes et rien d'autre :
 //! - un **ajustement** : un levier de Vanguard lui-même, sur cet ordinateur, poussé dans le sens sûr (un délai de
-//!   règle qui monte, une durée de cache qui raccourcit). Seule sorte qui change quelque chose, seulement par les
+//!   règle qui monte, une durée de cache qui raccourcit, une cache coupée, un second essai ; un pas de raccourci de
+//!   l'agent défait, jamais au-dessus de la durée du code). Seule sorte qui change quelque chose, seulement par les
 //!   fonctions de l'agent qui la bornent (`super::sens_sur`), et chacune s'annule dans Paramètres ;
 //! - une **proposition** : rien n'est fait ; elle se montre, la personne décide ;
 //! - un **signal** : une observation à faire voir.
@@ -15,7 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::forme::{Genre, MissionId, RegleId};
+use super::forme::{CodeEchec, Genre, MissionId, RegleId};
 
 /// Un levier que l'agent peut pousser : chacun a son sens sûr, et lui seul.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +32,23 @@ pub(crate) enum Levier {
         avant_min: u16,
         apres_min: u16,
     },
+    /// Un pas de raccourci de la cache défait (R2) : la durée revient à celle d'avant ce pas de l'agent, jamais
+    /// au-dessus de celle du code ; seulement après 20 vérifications à neuf justes de suite.
+    CacheRallonge {
+        regle: RegleId,
+        avant_min: u16,
+        apres_min: u16,
+    },
+    /// La cache coupée pour une règle (R3) : son résultat n'est plus jamais repris (plus de vérifications).
+    CacheCoupee { regle: RegleId },
+    /// Un second essai pour une règle du bilan (R4) : elle est relancée une fois, à la fin, si elle n'a pas conclu ;
+    /// son second résultat ne remplace le premier que s'il conclut (rien n'est retiré). La mesure : sur la semaine,
+    /// ses « non vérifiée » passagers, et ceux qui ont conclu au bilan suivant (plus de la moitié).
+    SecondEssai {
+        regle: RegleId,
+        passageres: u16,
+        reprises: u16,
+    },
 }
 
 /// Un ajustement : le levier, et la mesure qui l'a décidé (la plus longue durée de la semaine en ms pour un délai,
@@ -45,10 +63,19 @@ pub(crate) struct Ajustement {
 /// Une proposition : montrée, jamais exécutée par l'agent. Les missions suivantes en ajouteront les sortes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
-#[cfg_attr(not(test), allow(dead_code))] // les missions de G4 (corrections) et G7 (agents voyous)
 pub(crate) enum Proposition {
     /// Revoir une règle (son délai, sa durée) : la personne regarde dans Paramètres.
+    #[cfg_attr(not(test), allow(dead_code))] // la mission des agents voyous (G7)
     RevoirRegle { regle: RegleId },
+    /// La correction de cette règle a échoué `echecs` fois de suite sur cet ordinateur (R6) : elle reste proposée,
+    /// une à une, dite comme telle.
+    CorrectionFragile {
+        regle: RegleId,
+        echecs: u16,
+        code: CodeEchec,
+    },
+    /// Le problème corrigé de cette règle est revenu au bilan suivant (R6) : la correction ne tient pas.
+    NeTientPas { regle: RegleId },
 }
 
 /// Un signal : une observation à faire voir. Les missions de détection en ajouteront les sortes.
@@ -77,10 +104,15 @@ pub(crate) fn permise(genre: Genre, d: &Decision) -> bool {
     )
 }
 
-/// Ce que chaque mission peut ajuster : la mission du réglage les délais, celle de la cache les durées de la cache.
+/// Ce que chaque mission peut ajuster : la mission du réglage les délais et les seconds essais, celle de la cache
+/// les durées de la cache ; celle des corrections, rien.
 pub(crate) fn levier_de(mission: MissionId, l: &Levier) -> bool {
     matches!(
         (mission, l),
-        (MissionId::Reglage, Levier::Delai { .. }) | (MissionId::Cache, Levier::Cache { .. })
+        (MissionId::Reglage, Levier::Delai { .. } | Levier::SecondEssai { .. })
+            | (
+                MissionId::Cache,
+                Levier::Cache { .. } | Levier::CacheRallonge { .. } | Levier::CacheCoupee { .. }
+            )
     )
 }
