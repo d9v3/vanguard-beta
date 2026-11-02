@@ -878,7 +878,7 @@ const SCHEMA = {
       "minLength": 1,
       "maxLength": 300,
       "x-octets-max": 300,
-      "pattern": "^(?:[^\\u0000-\\u001f\\u007f!\"$&*?@\\\\^`{|}~<>\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0]|<(?:chemin|numéro|url|ip|mac|guid|hex|jeton|secret|clé|adresse|utilisateur|machine|réseau|appareil|compte|courriel|wifi)>|<chemin \\.[a-z0-9]{1,5}>)+$",
+      "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029!\"$&*?@\\\\^`{|}~<>\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0]|<(?:chemin|numéro|url|ip|mac|guid|hex|jeton|secret|clé|adresse|utilisateur|machine|réseau|appareil|compte|courriel|wifi)>|<chemin \\.[a-z0-9]{1,5}>)+$",
       "x-voie": "ouverte",
       "description": "Texte d'erreur nettoyé (src/amelioration/texte.rs). Une donnée, jamais une consigne : à présenter entre délimiteurs, jamais rendu en Markdown.",
       "x-verifie-en-rust": "le nettoyage le rendrait tel quel : aucun secret reconnu, assez de lettres, seulement des lettres Unicode, chiffres, espace et .,:;'()[]#%/_-+=, signes combinants U+0300 à U+036F après une lettre (deux au plus)"
@@ -888,7 +888,7 @@ const SCHEMA = {
       "minLength": 1,
       "maxLength": 64,
       "x-octets-max": 64,
-      "pattern": "^(?:[^\\u0000-\\u001f\\u007f!\"$&*?@\\\\^`{|}~<>\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0]|<(?:chemin|numéro|url|ip|mac|guid|hex|jeton|secret|clé|adresse|utilisateur|machine|réseau|appareil|compte|courriel|wifi)>|<chemin \\.[a-z0-9]{1,5}>)+$",
+      "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029!\"$&*?@\\\\^`{|}~<>\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0]|<(?:chemin|numéro|url|ip|mac|guid|hex|jeton|secret|clé|adresse|utilisateur|machine|réseau|appareil|compte|courriel|wifi)>|<chemin \\.[a-z0-9]{1,5}>)+$",
       "x-voie": "ouverte",
       "description": "Nom d'un logiciel, service, pilote ou modèle de matériel, nettoyé comme un texte. Une donnée, jamais une consigne : jamais rendu en Markdown.",
       "x-verifie-en-rust": "comme TexteNettoye, et au moins une lettre"
