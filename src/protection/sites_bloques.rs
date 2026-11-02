@@ -7,7 +7,10 @@
 //!
 //! L'écriture, seule étape en administrateur, recopie le fichier préparé dans un fichier de root et vérifie son
 //! empreinte, puis celle du hosts lu au départ : un programme qui changerait l'un ou l'autre entre-temps ne fait rien
-//! écrire.
+//! écrire. Sous Windows, c'est un geste natif du processus élevé (`vanguard:hosts-ecrire`, sans PowerShell) : il lit le
+//! fichier préparé en mémoire, vérifie les deux empreintes, rejuge la différence (`gestes::juger_hosts` : hors du bloc,
+//! rien d'autre ne change ; dans le bloc, que des « 0.0.0.0 nom » et « :: nom », jamais un nom protégé), la montre
+//! avant l'accord, puis remplace le hosts d'un coup (ReplaceFileW) en gardant une copie d'avant.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -15,14 +18,16 @@ use std::path::PathBuf;
 use chrono::NaiveDate;
 
 use crate::langue::Reponse;
+use crate::machine::gestes;
 use crate::machine::{Constat, alerte};
 use crate::risk::Niveau;
 use crate::ui::*;
 
-const DEBUT: &str = "# >>> Vanguard";
-const FIN: &str = "# <<< Vanguard <<<";
+// Les marques du bloc : celles que le processus élevé de Windows reconnaît (`gestes::juger_hosts`).
+const DEBUT: &str = gestes::HOSTS_DEBUT;
+const FIN: &str = gestes::HOSTS_FIN;
 /// Dans la marque de début : le hosts ne finissait pas par une fin de ligne, Vanguard en a ajouté une, que `off` retire.
-const FDL_AJOUTEE: &str = "(fin de ligne ajoutée)";
+const FDL_AJOUTEE: &str = gestes::HOSTS_FDL_AJOUTEE;
 /// Au-delà, le bilan propose de rafraîchir : URLhaus et ThreatFox changent chaque jour.
 const VIEILLE_JOURS: i64 = 7;
 /// Sous Windows, un hosts de dizaines de milliers de lignes ralentit le client DNS : les noms au-delà ne sont pas
@@ -36,8 +41,9 @@ const MAX_NOMS: usize = 20_000;
 fn fichier_hosts() -> PathBuf {
     #[cfg(windows)]
     {
-        PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
-            .join("System32\\drivers\\etc\\hosts")
+        // Demandé à Windows (GetSystemDirectoryW), comme le processus élevé qui l'écrira : la variable SystemRoot se
+        // change avant de lancer Vanguard, et l'empreinte serait celle d'un autre fichier.
+        crate::commande::dossier_systeme().join("drivers\\etc\\hosts")
     }
     #[cfg(not(windows))]
     {
@@ -80,14 +86,9 @@ fn sans_bloc(hosts: &str) -> Option<String> {
 }
 
 /// Un nom qu'un fichier hosts peut tenir : lettres, chiffres, tirets, points ; ni une adresse IP (hosts ne bloque
-/// que des noms), ni un nom sans point.
+/// que des noms), ni un nom sans point. La règle du processus élevé de Windows, la même partout.
 fn nom_valide(n: &str) -> bool {
-    n.len() <= 253
-        && n.contains('.')
-        && n.parse::<std::net::IpAddr>().is_err()
-        && n.split('.').all(|e| !e.is_empty() && e.len() <= 63)
-        && n.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.' || b == b'_')
+    gestes::nom_hosts_valide(n)
 }
 
 /// Le bloc de Vanguard : sa marque datée, chaque nom vers 0.0.0.0 et :: (sans la seconde ligne, une demande IPv6
@@ -134,6 +135,7 @@ pub(crate) fn bloc_present() -> bool {
     std::fs::read_to_string(fichier_hosts()).is_ok_and(|h| bloc_pose(&h).is_some())
 }
 
+#[cfg(not(windows))]
 fn empreinte(octets: &[u8]) -> String {
     use sha2::Digest;
     let e: [u8; 32] = sha2::Sha256::digest(octets).into();
@@ -145,7 +147,8 @@ fn empreinte(octets: &[u8]) -> String {
 /// éventuel restent. Réécrire vide le fichier d'abord : une écriture interrompue (disque plein) remet la copie prise
 /// juste avant.
 #[cfg(not(windows))]
-fn commandes(prepare: &str, nouvelle: &str, avant: &str) -> Vec<String> {
+fn commandes(prepare: &str, nouveau: &[u8], avant: &[u8]) -> Vec<String> {
+    let (nouvelle, avant) = (empreinte(nouveau), empreinte(avant));
     let (sha, vider) = if cfg!(target_os = "macos") {
         ("shasum -a 256", "dscacheutil -flushcache; killall -HUP mDNSResponder")
     } else {
@@ -154,39 +157,193 @@ fn commandes(prepare: &str, nouvelle: &str, avant: &str) -> Vec<String> {
     vec![format!(
         "sudo sh -c 't=$(mktemp) && o=$(mktemp) && cat \"$1\" > \"$t\" && [ \"$({sha} < \"$t\" | cut -d\" \" -f1)\" = \"$2\" ] && [ \"$({sha} < /etc/hosts | cut -d\" \" -f1)\" = \"$3\" ] && cat /etc/hosts > \"$o\" && {{ cat \"$t\" > /etc/hosts || {{ cat \"$o\" > /etc/hosts; false; }}; }}; r=$?; rm -f \"$t\" \"$o\"; [ $r = 0 ] && {{ {vider}; }} 2>/dev/null; exit $r' sh {} {} {}",
         crate::commande::sh_chaine(prepare),
-        crate::commande::sh_chaine(nouvelle),
-        crate::commande::sh_chaine(avant)
+        crate::commande::sh_chaine(&nouvelle),
+        crate::commande::sh_chaine(&avant)
     )]
 }
 
+/// Le geste natif du processus élevé (`vanguard:hosts-ecrire`) : les empreintes du hosts lu et du fichier préparé,
+/// et le chemin de celui-ci. Vide si le chemin n'a pas la forme admise (dossier local hors d'un lecteur) : rien n'est
+/// demandé.
 #[cfg(windows)]
-fn commandes(prepare: &str, nouvelle: &str, avant: &str) -> Vec<String> {
-    // Windows tient hosts quelques secondes dès que son dossier change (service DNS, antivirus) : lecture et écriture
-    // refaites (`REESSAI_PS`).
-    vec![format!(
-        "$e = {{ param($o) -join ([Security.Cryptography.SHA256]::Create().ComputeHash($o) | ForEach-Object {{ $_.ToString('x2') }}) }}; $p = [IO.File]::ReadAllBytes({}); $f = \"$env:SystemRoot\\System32\\drivers\\etc\\hosts\"; $r = {reessai}; $o = & $r {{ , [IO.File]::ReadAllBytes($f) }}; if ((& $e $p) -ne '{nouvelle}' -or (& $e $o) -ne '{avant}') {{ throw 'hosts ou fichier préparé changé depuis la lecture : rien écrit' }}; try {{ & $r {{ [IO.File]::WriteAllBytes($f, $p) }} }} catch {{ & $r {{ [IO.File]::WriteAllBytes($f, $o) }}; throw }}; try {{ Clear-DnsClientCache }} catch {{ }}",
-        crate::commande::ps_chaine(prepare),
-        reessai = crate::commande::REESSAI_PS
-    )]
+fn commandes(prepare: &str, nouveau: &[u8], avant: &[u8]) -> Vec<String> {
+    gestes::ligne_hosts_ecrire(
+        &gestes::empreinte_hosts(avant),
+        &gestes::empreinte_hosts(nouveau),
+        prepare,
+    )
+    .into_iter()
+    .collect()
+}
+
+/// Le dossier du fichier préparé : « hosts-prepare », le seul nom que le processus élevé de Windows lit.
+pub(crate) fn dossier_prepare(usage: &str) -> PathBuf {
+    crate::socle::dossier_local().join(usage).join(gestes::HOSTS_DOSSIER)
+}
+
+/// Sous Windows, la ligne qui fait écrire `nouveau` à la place du hosts lu (`avant`), le fichier préparé écrit dans
+/// le dossier de `usage` ; la différence est d'abord jugée ici comme le processus élevé la jugera, pour refuser tôt
+/// (hosts en UTF-16, trop gros, bloc abîmé). L'erreur, dite à la personne, sinon.
+#[cfg(windows)]
+pub(crate) fn preparer_hosts(usage: &str, avant: &[u8], nouveau: &[u8]) -> Result<String, crate::modele::Echec> {
+    use crate::modele::Echec;
+    if let Err(r) = gestes::juger_hosts(avant, nouveau) {
+        return Err(Echec::refuse("sites_bloques/preparer", refus_hosts(&r)));
+    }
+    let dossier = dossier_prepare(usage);
+    let prepare = dossier.join(gestes::HOSTS_NOM);
+    std::fs::create_dir_all(&dossier)
+        .and_then(|()| std::fs::write(&prepare, nouveau))
+        .map_err(|e| Echec::ecriture("sites_bloques/preparer", &e).detail(chemin_affichable(&prepare)))?;
+    commandes(&prepare.to_string_lossy(), nouveau, avant)
+        .pop()
+        .ok_or_else(|| {
+            Echec::refuse(
+                "sites_bloques/preparer",
+                trf!(
+                    "le dossier local {} n'est pas sur un lecteur : écriture refusée",
+                    "the local folder {} is not on a drive: writing refused",
+                    chemin_affichable(&dossier)
+                ),
+            )
+        })
+}
+
+/// Au-delà, les noms ajoutés ou retirés sont comptés au lieu d'être montrés un par un.
+#[cfg(any(windows, test))]
+const NOMS_MONTRES: usize = 50;
+
+/// La différence du hosts telle que la fenêtre élevée la montre avant l'accord : chaque ligne mise en commentaire
+/// (« - ligne », « + # Vanguard : ligne »), puis les noms bloqués en plus et ceux qui ne le sont plus. Les lignes
+/// viennent de `juger_hosts`, déjà rendues lisibles.
+#[cfg(any(windows, test))]
+pub(crate) fn lignes_du_diff(d: &gestes::DiffHosts) -> Vec<String> {
+    let mut lignes = Vec::new();
+    for l in &d.commentees {
+        lignes.push(format!("- {l}"));
+        lignes.push(format!("+ {}{l}", gestes::HOSTS_COMMENTE));
+    }
+    let mut noms = |liste: &[String], signe: char, titre: &str| {
+        if liste.is_empty() {
+            return;
+        }
+        lignes.push(format!("{titre} ({})", liste.len()));
+        for n in liste.iter().take(NOMS_MONTRES) {
+            lignes.push(format!("{signe} {n}"));
+        }
+        if let Some(reste) = liste.len().checked_sub(NOMS_MONTRES).filter(|r| *r > 0) {
+            lignes.push(trf!("  … et {reste} autre(s)", "  … and {reste} more"));
+        }
+    };
+    noms(&d.ajoutes, '+', tr!("Sites bloqués en plus", "Sites newly blocked"));
+    noms(
+        &d.retires,
+        '-',
+        tr!("Sites qui ne seront plus bloqués", "Sites no longer blocked"),
+    );
+    if d.bloc_avant && !d.bloc_apres {
+        lignes.push(
+            tr!(
+                "Le bloc de Vanguard est retiré du fichier hosts.",
+                "Vanguard's block is removed from the hosts file."
+            )
+            .to_string(),
+        );
+    }
+    if d.vide() {
+        lignes.push(
+            tr!(
+                "Rien ne change (sauf la date du bloc).",
+                "Nothing changes (except the block's date)."
+            )
+            .to_string(),
+        );
+    }
+    lignes
+}
+
+/// Pourquoi une nouvelle version du hosts est refusée, en phrase : la même ici et dans la fenêtre élevée.
+#[cfg(any(windows, test))]
+pub(crate) fn refus_hosts(r: &gestes::RefusHosts) -> String {
+    use gestes::RefusHosts as R;
+    match r {
+        R::TropGros => trf!(
+            "le fichier hosts dépasse {} Kio : Vanguard ne le réécrit pas",
+            "the hosts file is over {} KiB: Vanguard does not rewrite it",
+            gestes::HOSTS_MAX >> 10
+        ),
+        R::Utf16 => tr!(
+            "le fichier hosts est en UTF-16 (ou contient un octet nul) : Vanguard ne le réécrit pas, pour ne pas le changer autrement",
+            "the hosts file is UTF-16 (or contains a null byte): Vanguard does not rewrite it, so as not to change it otherwise"
+        )
+        .to_string(),
+        R::BlocAbime => trf!(
+            "le bloc de Vanguard est abîmé (une marque sans l'autre, deux blocs, ou une ligne après lui) : à corriger à la main, entre « {DEBUT} » et « {FIN} »",
+            "Vanguard's block is damaged (one marker without the other, two blocks, or a line after it): to fix by hand, between “{DEBUT}” and “{FIN}”"
+        ),
+        R::Entete => tr!(
+            "la marque de début du bloc n'est pas celle de Vanguard",
+            "the block's start marker is not Vanguard's"
+        )
+        .to_string(),
+        R::PrepareChange => tr!(
+            "le fichier préparé a changé depuis que Vanguard l'a écrit : un autre programme y a touché, rien n'est écrit",
+            "the prepared file changed since Vanguard wrote it: another program touched it, nothing is written"
+        )
+        .to_string(),
+        R::HostsChange => tr!(
+            "le fichier hosts a changé depuis sa lecture : rien n'est écrit, relancez",
+            "the hosts file changed since it was read: nothing is written, run it again"
+        )
+        .to_string(),
+        R::LigneDuBloc(l) => trf!(
+            "une ligne du bloc n'est pas un site bloqué (« {l} ») : refusé",
+            "a line of the block is not a blocked site (“{l}”): refused"
+        ),
+        R::NomProtege(n) => trf!(
+            "{n} ne se bloque jamais (mises à jour de Windows ou de Vanguard, DNS) : refusé",
+            "{n} is never blocked (Windows or Vanguard updates, DNS): refused"
+        ),
+        R::LigneAjoutee(l) => trf!(
+            "une ligne qui n'est pas de Vanguard serait ajoutée (« {l} ») : refusé",
+            "a line that is not Vanguard's would be added (“{l}”): refused"
+        ),
+        R::LigneRetiree(l) => trf!(
+            "une ligne serait retirée (« {l} ») : refusé",
+            "a line would be removed (“{l}”): refused"
+        ),
+        R::LigneChangee(l) => trf!(
+            "une ligne serait changée autrement qu'en commentaire (« {l} ») : refusé",
+            "a line would be changed other than by commenting it out (“{l}”): refused"
+        ),
+    }
 }
 
 /// Écrit `nouveau` à la place du hosts lu (`avant`), en administrateur, après l'avoir montré ; relit pour dire ce qui
 /// est vraiment posé.
 fn ecrire(avant: &[u8], nouveau: &str) -> bool {
-    let dossier = crate::socle::dossier_local().join("sites-bloques");
-    let prepare = dossier.join("hosts");
-    if let Err(e) = std::fs::create_dir_all(&dossier).and_then(|()| std::fs::write(&prepare, nouveau)) {
-        trp!(
-            "  ✖ Fichier préparé pas écrit : {e}",
-            "  ✖ Prepared file not written: {e}"
-        );
-        return false;
-    }
-    let ok = crate::machine::appliquer(&commandes(
-        &prepare.to_string_lossy(),
-        &empreinte(nouveau.as_bytes()),
-        &empreinte(avant),
-    ));
+    let dossier = dossier_prepare("sites-bloques");
+    let prepare = dossier.join(gestes::HOSTS_NOM);
+    #[cfg(windows)]
+    let lignes = match preparer_hosts("sites-bloques", avant, nouveau.as_bytes()) {
+        Ok(l) => vec![l],
+        Err(raison) => {
+            trp!("  ✖ {raison}.", "  ✖ {raison}.");
+            return false;
+        }
+    };
+    #[cfg(not(windows))]
+    let lignes = {
+        if let Err(e) = std::fs::create_dir_all(&dossier).and_then(|()| std::fs::write(&prepare, nouveau)) {
+            trp!(
+                "  ✖ Fichier préparé pas écrit : {e}",
+                "  ✖ Prepared file not written: {e}"
+            );
+            return false;
+        }
+        commandes(&prepare.to_string_lossy(), nouveau.as_bytes(), avant)
+    };
+    let ok = crate::machine::appliquer(&lignes);
     let _ = std::fs::remove_file(&prepare);
     let apres = std::fs::read(fichier_hosts());
     let ecrit = apres.as_ref().is_ok_and(|h| h == nouveau.as_bytes());
@@ -216,7 +373,9 @@ fn noms_a_bloquer() -> (BTreeSet<String>, Vec<String>) {
         Ok(d) => noms.extend(d.into_iter().map(|n| n.trim_end_matches('.').to_lowercase())),
         Err(r) => manquent.push(r),
     }
-    noms.retain(|n| nom_valide(n));
+    // Jamais un nom protégé (mises à jour de Windows, de Defender ou de Vanguard, DNS chiffrés) : le processus élevé de
+    // Windows refuserait tout le bloc.
+    noms.retain(|n| nom_valide(n) && !gestes::nom_protege(n));
     (noms, manquent)
 }
 
@@ -441,6 +600,91 @@ mod tests {
         );
     }
 
+    /// Le bloc que Vanguard pose, puis retire, est admis par le jugement du processus élevé de Windows, fins de ligne
+    /// de Windows comprises ; un nom protégé n'y entre jamais.
+    #[test]
+    fn le_bloc_pose_est_admis_par_le_processus_eleve() {
+        let noms: BTreeSet<String> = ["piege-exemple.com", "c2.exemple.org"].map(String::from).into();
+        for hosts in [
+            "127.0.0.1 localhost\r\n1.2.3.4 nas.exemple\r\n",
+            "127.0.0.1 localhost",
+            "",
+        ] {
+            let pose = avec_bloc(hosts, &bloc(&noms, jour("2026-11-02")));
+            let d = gestes::juger_hosts(hosts.as_bytes(), pose.as_bytes()).unwrap();
+            assert_eq!(d.ajoutes, ["c2.exemple.org", "piege-exemple.com"], "{hosts:?}");
+            assert!(d.commentees.is_empty() && d.bloc_apres);
+            let sans = sans_bloc(&pose).unwrap();
+            let d = gestes::juger_hosts(pose.as_bytes(), sans.as_bytes()).unwrap();
+            assert_eq!(d.retires.len(), 2);
+            // Rafraîchi : un seul bloc, les noms changés seulement.
+            let autre: BTreeSet<String> = ["c2.exemple.org", "neuf.exemple.net"].map(String::from).into();
+            let repose = avec_bloc(&sans, &bloc(&autre, jour("2026-11-03")));
+            let d = gestes::juger_hosts(pose.as_bytes(), repose.as_bytes()).unwrap();
+            assert_eq!(
+                (d.ajoutes, d.retires),
+                (
+                    vec!["neuf.exemple.net".to_string()],
+                    vec!["piege-exemple.com".to_string()]
+                )
+            );
+        }
+        let protege: BTreeSet<String> = ["update.microsoft.com".to_string()].into();
+        assert_eq!(
+            gestes::juger_hosts(b"", avec_bloc("", &bloc(&protege, jour("2026-11-02"))).as_bytes()),
+            Err(gestes::RefusHosts::NomProtege("update.microsoft.com".to_string()))
+        );
+        assert!(bloc(&noms, jour("2026-11-02")).lines().next().unwrap().len() < 300);
+    }
+
+    /// La différence montrée dans la fenêtre élevée : chaque ligne commentée en avant/après, les noms comptés au-delà
+    /// de 50.
+    #[test]
+    fn la_difference_montree_avant_l_accord() {
+        let d = gestes::juger_hosts(
+            b"127.0.0.1 localhost\n1.2.3.4 www.google.com\n",
+            b"127.0.0.1 localhost\n# Vanguard : 1.2.3.4 www.google.com\n",
+        )
+        .unwrap();
+        assert_eq!(
+            lignes_du_diff(&d),
+            ["- 1.2.3.4 www.google.com", "+ # Vanguard : 1.2.3.4 www.google.com"]
+        );
+        let noms: BTreeSet<String> = (0..60).map(|i| format!("n{i:02}.exemple.com")).collect();
+        let pose = avec_bloc("", &bloc(&noms, jour("2026-11-02")));
+        let l = lignes_du_diff(&gestes::juger_hosts(b"", pose.as_bytes()).unwrap());
+        assert_eq!(l.len(), 1 + 50 + 1, "{l:?}");
+        assert!(l[0].ends_with("(60)") && l[1] == "+ n00.exemple.com" && l[51].contains("10"));
+        let l = lignes_du_diff(&gestes::juger_hosts(pose.as_bytes(), b"").unwrap());
+        assert!(
+            l[1] == "- n00.exemple.com" && l.last().unwrap().contains("Vanguard"),
+            "{l:?}"
+        );
+    }
+
+    /// Chaque refus se dit en une phrase, la ligne fautive rendue inoffensive par qui la montre.
+    #[test]
+    fn chaque_refus_du_hosts_se_dit() {
+        use gestes::RefusHosts as R;
+        for r in [
+            R::TropGros,
+            R::Utf16,
+            R::BlocAbime,
+            R::Entete,
+            R::PrepareChange,
+            R::HostsChange,
+            R::LigneDuBloc("1.2.3.4 a.b".into()),
+            R::NomProtege("update.microsoft.com".into()),
+            R::LigneAjoutee("127.0.0.1 windowsupdate.com".into()),
+            R::LigneRetiree("x".into()),
+            R::LigneChangee("y".into()),
+        ] {
+            let t = refus_hosts(&r);
+            assert!(t.len() > 20, "{r:?}");
+        }
+        assert!(refus_hosts(&R::TropGros).contains("1024"));
+    }
+
     #[test]
     fn bloc_abime_jamais_retire_a_l_aveugle() {
         assert_eq!(sans_bloc("a\n# >>> Vanguard : x >>>\n0.0.0.0 x.org\n"), None);
@@ -493,11 +737,11 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn commande_d_ecriture_verifiee() {
-        let c = commandes("/home/alice/.local/share/vanguard/sites-bloques/hosts", "aa", "bb");
+        let c = commandes("/home/alice/.local/share/vanguard/sites-bloques/hosts", b"abc", b"");
         assert_eq!(c.len(), 1);
         assert!(
             c[0].starts_with("sudo sh -c '")
-                && c[0].ends_with("sh '/home/alice/.local/share/vanguard/sites-bloques/hosts' 'aa' 'bb'"),
+                && c[0].ends_with("sh '/home/alice/.local/share/vanguard/sites-bloques/hosts' 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'"),
             "{}",
             c[0]
         );

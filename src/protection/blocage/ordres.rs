@@ -346,6 +346,13 @@ impl Juge {
         self.sessions = gardes::sessions_a_distance();
     }
 
+    /// Le nombre de sessions à distance en cours, relu à l'accord ; `None` si les connexions ne se lisent pas. Un geste
+    /// qui touche le réseau (release, renew, DNS d'une carte) est refusé pour autre chose que `Some(0)`.
+    #[cfg(windows)]
+    pub(crate) fn sessions_en_cours(&self) -> Option<usize> {
+        self.sessions.as_ref().map(|s| s.sessions.len())
+    }
+
     /// Pour les essais : des sessions et des intouchables donnés.
     #[cfg(test)]
     pub(crate) fn essai(sessions: Option<gardes::Sessions>, intouchables: HashSet<u32>) -> Juge {

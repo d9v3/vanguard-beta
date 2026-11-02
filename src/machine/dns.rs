@@ -388,8 +388,10 @@ fn serveurs() -> Option<Serveurs> {
     })
 }
 
-/// Lignes « DNS|index|adresse|manuel » : les serveurs de chaque carte réseau active. « manuel » : l'adresse
+/// Lignes « DNS|index|adresse|manuel|{GUID} » : les serveurs de chaque carte réseau active. « manuel » : l'adresse
 /// est écrite dans le registre de la carte (NameServer), donc réglée à la main ou par un programme, pas par le DHCP.
+/// La remise en automatique est un geste natif du processus élevé (`vanguard:dns-auto {GUID}`), sans PowerShell : il
+/// relit que la carte existe avant de vider son NameServer.
 #[cfg(windows)]
 fn serveurs() -> Option<Serveurs> {
     let sortie = lignes_natives().or_else(lignes_powershell)?;
@@ -397,18 +399,16 @@ fn serveurs() -> Option<Serveurs> {
     let mut remise = Vec::new();
     for l in sortie.lines() {
         let c: Vec<&str> = l.trim().split('|').collect();
-        if let ["DNS", index, ip, manuel] = c[..]
+        if let ["DNS", _index, ip, manuel, guid] = c[..]
             && let Some(ip) = adresse(ip)
         {
             let manuel = manuel.eq_ignore_ascii_case("true");
             if !liste.contains(&(ip, manuel)) {
                 liste.push((ip, manuel));
             }
-            if manuel {
-                remise.push((
-                    ip,
-                    format!("Set-DnsClientServerAddress -InterfaceIndex {index} -ResetServerAddresses"),
-                ));
+            // Un GUID hors de sa forme : pas de remise proposée (le constat reste).
+            if manuel && let Some(ligne) = crate::machine::gestes::ligne_dns_auto(guid) {
+                remise.push((ip, ligne));
             }
         }
     }
@@ -444,7 +444,7 @@ fn lignes_natives() -> Option<String> {
         let (fixe4, fixe6) = (fixe("Tcpip"), fixe("Tcpip6"));
         for ip in &carte.dns {
             let manuel = reglee_a_la_main(&fixe4, &fixe6, *ip);
-            lignes.push(format!("DNS|{}|{ip}|{manuel}", carte.index));
+            lignes.push(format!("DNS|{}|{ip}|{manuel}|{}", carte.index, carte.guid));
         }
     }
     Some(lignes.join("\n"))
@@ -453,13 +453,13 @@ fn lignes_natives() -> Option<String> {
 #[cfg(windows)]
 fn lignes_powershell() -> Option<String> {
     super::windows::ps(
-        "Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object { $i = $_.InterfaceIndex; \
+        "Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object { $i = $_.InterfaceIndex; $g = $_.InterfaceGuid; \
          $fixe = (Get-ItemProperty \"HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\$($_.InterfaceGuid)\" -ErrorAction SilentlyContinue).NameServer; \
          $fixe6 = (Get-ItemProperty \"HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters\\Interfaces\\$($_.InterfaceGuid)\" -ErrorAction SilentlyContinue).NameServer; \
          (Get-DnsClientServerAddress -InterfaceIndex $i -ErrorAction SilentlyContinue).ServerAddresses | ForEach-Object { $a = $_ -as [ipaddress]; \
          $f = if ($_ -match ':') { $fixe6 } else { $fixe }; \
          $m = $a -and @(\"$f\" -split '[ ,;]' | Where-Object { $_ -and ($_ -as [ipaddress]) -and ($_ -as [ipaddress]).Equals($a) }).Count -gt 0; \
-         \"DNS|$i|$_|$m\" } }",
+         \"DNS|$i|$_|$m|$($g)\" } }",
     )
 }
 
@@ -554,7 +554,9 @@ fn constat_serveurs(s: &Serveurs) -> Constat {
             return constat;
         }
         let mut commandes = commandes;
-        commandes.dedup();
+        // Deux serveurs de la même carte : une seule remise.
+        let mut vues = std::collections::HashSet::new();
+        commandes.retain(|c| vues.insert(*c));
         return constat.corriger(
             tr!(
                 "Remettre le DNS en automatique (celui que donne le routeur)",
@@ -720,7 +722,7 @@ mod tests {
         assert!(
             lignes
                 .lines()
-                .all(|l| l.starts_with("DNS|") && l.split('|').count() == 4),
+                .all(|l| l.starts_with("DNS|") && l.split('|').count() == 5),
             "{lignes}"
         );
     }
@@ -936,7 +938,7 @@ mod tests {
             resolveur_local: None,
             remise: vec![(
                 ip("45.13.105.2"),
-                "Set-DnsClientServerAddress -InterfaceIndex 7 -ResetServerAddresses".into(),
+                crate::machine::gestes::ligne_dns_auto("{4D36E972-E325-11CE-BFC1-08002BE10318}").unwrap(),
             )],
         };
         let c = constat_serveurs(&s(vec![(ip("45.13.105.2"), true)]));

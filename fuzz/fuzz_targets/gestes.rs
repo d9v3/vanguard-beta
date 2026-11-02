@@ -5,7 +5,10 @@
 //! ASR des listes d'Optimiser, exclusion en hexadécimal UTF-16, menaces), liste validée, découpe d'une liste de correctifs en
 //! morceaux natifs et PowerShell, états d'un script en échec ; gestes du compte (faits par Vanguard non élevé, jamais
 //! par le processus élevé) et séparation d'une liste entre points, travail élevé et gestes du compte. Chemins piégés (« .. », NUL, lecteur manquant),
-//! hexadécimal en majuscules ou en demi-paire, noms hors de la liste fermée, lignes et correctifs en nombre.
+//! hexadécimal en majuscules ou en demi-paire, noms hors de la liste fermée, lignes et correctifs en nombre. Le réseau :
+//! écriture du hosts (empreintes, chemin du fichier préparé en hexadécimal), DNS d'une carte (liste fermée), et le
+//! jugement de la différence du hosts sur deux moitiés des octets (seules des lignes mises en commentaire hors du bloc
+//! de Vanguard, jamais un nom protégé dans le bloc).
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
 #![forbid(unsafe_code)]
@@ -40,7 +43,13 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                     | gestes::Acte::ServiceGuillemets(_)
                     | gestes::Acte::DefenderExclusionRetirer(..)
             );
-            let borne = if nomme { gestes::ACTE_NOM_MAX } else { gestes::ACTE_MAX };
+            let borne = if matches!(a, gestes::Acte::HostsEcrire(_)) {
+                gestes::HOSTS_LIGNE_MAX
+            } else if nomme {
+                gestes::ACTE_NOM_MAX
+            } else {
+                gestes::ACTE_MAX
+            };
             assert!(l.len() <= borne && l.is_ascii());
             assert!(gestes::est_un_acte(l));
             assert!(!(a.durcit() && a.affaiblit()));
@@ -53,16 +62,16 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                 gestes::Acte::PareFeuPublic(p) => {
                     for (r, v) in p.reglages() {
                         assert!(r != gestes::ReglagePublic::Actif || v == gestes::ValeurPublic::Oui);
-                        assert!(
-                            v != gestes::ValeurPublic::Absent || r == gestes::ReglagePublic::ReglesEntrantes
-                        );
+                        assert!(v != gestes::ValeurPublic::Absent || r == gestes::ReglagePublic::ReglesEntrantes);
                     }
                 }
                 gestes::Acte::ReseauCategorie(r) => {
                     assert_eq!(gestes::GuidReseau::lire(&r.guid.texte()), Some(r.guid));
                 }
                 // Un nom ne sort jamais de sa racine : ni séparateur, ni « .. », ni contrôle, 260 unités au plus.
-                gestes::Acte::IfeoDebugger(_, n) | gestes::Acte::IfeoSilencieux(_, n) | gestes::Acte::ServiceGuillemets(n) => {
+                gestes::Acte::IfeoDebugger(_, n)
+                | gestes::Acte::IfeoSilencieux(_, n)
+                | gestes::Acte::ServiceGuillemets(n) => {
                     let t = n.texte();
                     assert!(!t.is_empty() && t.encode_utf16().count() <= gestes::NOM_MAX);
                     assert!(!t.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|']) && !t.contains(".."));
@@ -96,11 +105,61 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                     assert!(!t.is_empty() && t.encode_utf16().count() <= gestes::NOM_MAX);
                     assert!(!t.chars().any(char::is_control));
                     assert_eq!(gestes::Exclusion::lire(&e.hex()).as_ref(), Some(e));
-                    assert_eq!(gestes::ligne_defender_exclusion_retirer(g, t).as_deref(), Some(l.as_str()));
+                    assert_eq!(
+                        gestes::ligne_defender_exclusion_retirer(g, t).as_deref(),
+                        Some(l.as_str())
+                    );
                     assert!(a.durcit() && !a.affaiblit());
                 }
                 gestes::Acte::DefenderMenacesRetirer => {
                     assert_eq!(*l, gestes::ligne_defender_menaces_retirer());
+                }
+                // Le fichier préparé : « hosts » d'un dossier « hosts-prepare », chemin complet sans détour ; deux
+                // empreintes majuscules ; aucune commande PowerShell, et rien qui touche une carte.
+                gestes::Acte::HostsEcrire(ref h) => {
+                    assert!(!a.touche_le_reseau() && !a.durcit() && !a.affaiblit());
+                    let c = h.chemin.to_ascii_lowercase();
+                    assert!(
+                        c.ends_with(r"\hosts-prepare\hosts") && !c.split(['\\', '/']).any(|x| x == ".." || x == ".")
+                    );
+                    assert!(!h.chemin.contains(['\0', '\n', '\r']));
+                    for e in [&h.avant, &h.apres] {
+                        assert!(e.len() == 64 && e.bytes().all(|o| o.is_ascii_digit() || (b'A'..=b'F').contains(&o)));
+                    }
+                    assert_eq!(
+                        gestes::ligne_hosts_ecrire(&h.avant, &h.apres, &h.chemin).as_deref(),
+                        Some(l.as_str())
+                    );
+                }
+                gestes::Acte::DnsAuto(g) => {
+                    assert!(a.touche_le_reseau());
+                    assert_eq!(gestes::ligne_dns_auto(&g.texte()).as_deref(), Some(l.as_str()));
+                }
+                // Chaque serveur est de sa famille, une adresse d'hôte, quatre au plus ; la ligne se refait de ses
+                // côtés ; jamais « les deux tels quels » ni « les deux vidés » (qui s'écrit dns-auto).
+                gestes::Acte::DnsServeurs(ref d) => {
+                    assert!(a.touche_le_reseau());
+                    let cote = |c: &gestes::CoteDns, v6: bool| match c {
+                        gestes::CoteDns::Garder => None,
+                        gestes::CoteDns::Vider => Some(String::new()),
+                        gestes::CoteDns::Serveurs(l) => {
+                            assert!(!l.is_empty() && l.len() <= 4);
+                            assert!(l.iter().all(|ip| ip.is_ipv6() == v6
+                                && !ip.is_loopback()
+                                && !ip.is_unspecified()
+                                && !ip.is_multicast()));
+                            Some(c.texte())
+                        }
+                    };
+                    let (v4, v6) = (cote(&d.v4, false), cote(&d.v6, true));
+                    assert!(
+                        !matches!((&v4, &v6), (None, None))
+                            && !(v4.as_deref() == Some("") && v6.as_deref() == Some(""))
+                    );
+                    assert_eq!(
+                        gestes::ligne_dns(&d.guid.texte(), v4.as_deref(), v6.as_deref()).as_deref(),
+                        Some(l.as_str())
+                    );
                 }
                 _ => {}
             }
@@ -136,6 +195,42 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             let raison = format!("echec {}", gestes::raison_du_script(code, &etats));
             assert_eq!(gestes::etats_du_script(&raison), Some(etats));
         }
+    }
+    // Le hosts : la première moitié des octets pour l'ancien, la seconde pour le nouveau. Admis, le nouveau ne diffère
+    // de l'ancien que par des lignes mises en commentaire hors du bloc ; dans le bloc, aucun nom protégé ; les deux
+    // tiennent dans la borne et ne sont pas de l'UTF-16. Les empreintes vérifient les octets, au sens strict.
+    let (avant, apres) = octets.split_at(octets.len() / 2);
+    if let Ok(d) = gestes::juger_hosts(avant, apres) {
+        assert!(avant.len() <= gestes::HOSTS_MAX && apres.len() <= gestes::HOSTS_MAX);
+        assert!(!apres.contains(&0) && !avant.contains(&0));
+        assert!(d.ajoutes.iter().chain(&d.retires).all(|n| gestes::nom_hosts_valide(n)));
+        assert!(d.ajoutes.iter().all(|n| !gestes::nom_protege(n)));
+        assert!(d.commentees.iter().all(|c| !c.contains(['\n', '\r'])));
+        // Sans bloc ni commentaire, rien d'autre ne change : les octets sont les mêmes.
+        if d.vide() && !d.bloc_avant && !d.bloc_apres {
+            assert_eq!(avant, apres);
+        }
+        let h = gestes::HostsEcrire {
+            avant: gestes::empreinte_hosts(avant),
+            apres: gestes::empreinte_hosts(apres),
+            chemin: r"C:\Users\alice\AppData\Local\Vanguard\reparer\hosts-prepare\hosts".to_string(),
+        };
+        assert_eq!(gestes::verifier_hosts(&h, apres, avant), Ok(d));
+        let mut change = apres.to_vec();
+        change.push(b'#');
+        assert_eq!(
+            gestes::verifier_hosts(&h, &change, avant),
+            Err(gestes::RefusHosts::PrepareChange)
+        );
+    }
+    // Commenter ce qu'on veut d'un hosts admis donne une version admise, et qui ne commente que ces lignes-là.
+    if gestes::juger_hosts(avant, avant).is_ok() {
+        let commente = gestes::hosts_commente(avant, |ip| ip.is_ipv4());
+        let d = gestes::juger_hosts(avant, &commente).expect("une version commentée est admise");
+        assert!(d.ajoutes.is_empty() && d.retires.is_empty() && d.bloc_avant == d.bloc_apres);
+        let tout = gestes::hosts_commente(avant, |_| true);
+        assert!(gestes::juger_hosts(avant, &tout).is_ok());
+        assert_eq!(gestes::hosts_commente(avant, |_| false), avant);
     }
     // La liste : acceptée, elle a une entrée par ligne ; les « autres » lignes ne passent que par le validateur donné,
     // qui admet ici toute longueur (comme un ordre du blocage et son chemin) : seule la borne de `valider` arrête une
@@ -223,8 +318,16 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
         toutes.sort_unstable();
         assert_eq!(toutes, (0..c.len()).collect::<Vec<_>>());
         assert!(s.points.iter().all(|&j| est_point(&c[j])));
-        assert!(s.compte.iter().all(|&j| !est_point(&c[j]) && gestes::analyser_compte(&c[j]).is_some()));
-        assert!(s.eleves.iter().all(|&j| !est_point(&c[j]) && gestes::analyser_compte(&c[j]).is_none()));
+        assert!(
+            s.compte
+                .iter()
+                .all(|&j| !est_point(&c[j]) && gestes::analyser_compte(&c[j]).is_some())
+        );
+        assert!(
+            s.eleves
+                .iter()
+                .all(|&j| !est_point(&c[j]) && gestes::analyser_compte(&c[j]).is_none())
+        );
     }
     // Le passage en deux temps : jamais un geste du compte envoyé au processus élevé ; aucun geste du compte fait
     // quand le passage élevé est arrêté ; un correctif réussi n'a que des parts réussies.
@@ -244,12 +347,28 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
         },
         |_| {
             faits = faits.saturating_add(1);
-            gestes::FaitCompte { reussi: true, rien: false, avant: None }
+            gestes::FaitCompte {
+                reussi: true,
+                rien: false,
+                avant: None,
+            }
         },
     );
     let (resultats, notes) = resultat.unwrap();
     assert_eq!((resultats.len(), notes.len()), (correctifs.len(), correctifs.len()));
-    assert!(envoyes_au_processus_eleve.iter().flatten().all(|l| gestes::analyser_compte(l).is_none()));
+    assert!(
+        envoyes_au_processus_eleve
+            .iter()
+            .flatten()
+            .all(|l| gestes::analyser_compte(l).is_none())
+    );
     let du_compte: usize = separes.iter().map(|s| s.compte.len()).sum();
-    assert_eq!(faits, if arrete && !envoyes_au_processus_eleve.is_empty() { 0 } else { du_compte });
+    assert_eq!(
+        faits,
+        if arrete && !envoyes_au_processus_eleve.is_empty() {
+            0
+        } else {
+            du_compte
+        }
+    );
 });

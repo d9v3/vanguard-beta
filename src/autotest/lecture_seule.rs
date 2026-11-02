@@ -443,6 +443,11 @@ mod tests {
                 "script de correction en administrateur, hors bilan",
             ),
             (
+                "machine/windows/reseau_ecriture.rs",
+                5,
+                "processus élevé : le hosts (temporaire neuf du dossier etc, puis ReplaceFileW ; la copie d'avant remise si l'échange échoue à mi-chemin), hors bilan",
+            ),
+            (
                 "machine/windows/eleve.rs",
                 2,
                 "processus élevé d'une correction, hors bilan",

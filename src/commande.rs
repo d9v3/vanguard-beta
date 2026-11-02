@@ -623,13 +623,6 @@ pub fn sh_chaine(t: &str) -> String {
     format!("'{}'", t.replace('\'', "'\\''"))
 }
 
-/// Bloc PowerShell qui refait une action sur un fichier tant qu'un autre programme le tient (`IOException` : partage
-/// refusé), au plus `$fois` fois à une demi-seconde d'écart, puis rend l'erreur ; un refus d'accès n'est pas refait.
-/// Windows rouvre hosts dès que son dossier change (service DNS, antivirus) : vu dans la VM, jusqu'à 3 s de refus
-/// après une écriture ou une copie à côté. Emploi : `$r = <ce bloc>; & $r { [IO.File]::WriteAllBytes($f, $p) }`.
-#[cfg(any(windows, test))]
-pub const REESSAI_PS: &str = "{ param($action, $fois = 20) for ($i = 1; ; $i++) { try { & $action; return } catch [IO.IOException] { if ($i -ge $fois) { throw }; Start-Sleep -Milliseconds 500 } } }";
-
 /// Le texte entre apostrophes, pour PowerShell : « '…' ».
 #[cfg(any(windows, test))]
 pub fn ps_chaine(t: &str) -> String {
@@ -734,33 +727,6 @@ mod tests_powershell {
         if !r.sortie.trim().is_empty() {
             assert_eq!(r.sortie.trim(), format!("<{PIEGE}>"), "{}", r.erreurs);
         }
-    }
-
-    /// Le réessai, dans un vrai PowerShell : un fichier tenu (`IOException`, même levée par une méthode .NET, que
-    /// PowerShell enveloppe) est refait jusqu'au compte, puis l'erreur est rendue ; un refus d'accès ne l'est pas.
-    #[test]
-    fn reessai_powershell_seulement_quand_le_fichier_est_tenu() {
-        let programme = if cfg!(windows) { "powershell" } else { "pwsh" };
-        let script = format!(
-            "$r = {REESSAI_PS}; \
-             $global:a = 0; & $r {{ $global:a++; if ($global:a -lt 3) {{ throw [IO.IOException]::new('tenu') }} }}; \
-             $global:b = 0; try {{ & $r {{ $global:b++; [IO.File]::ReadAllBytes('vg-absent-{}.bin') }} 2 }} catch {{ }}; \
-             $global:c = 0; try {{ & $r {{ $global:c++; throw [UnauthorizedAccessException]::new('non') }} }} catch {{ }}; \
-             Write-Output \"a=$a b=$b c=$c\"",
-            std::process::id()
-        );
-        let Some(r) = lancer(
-            Command::new(programme).args(["-NoProfile", "-NonInteractive", "-Command", &script]),
-            60,
-        ) else {
-            return crate::essais::saute(&format!("{programme} absent"));
-        };
-        if r.sortie.trim().is_empty() {
-            return crate::essais::saute("PowerShell factice (Wine) : rien à comparer");
-        }
-        // a : réussi au 3e essai ; b : fichier absent (IOException dans une MethodInvocationException) refait 2 fois
-        // puis rendu ; c : refus d'accès, rendu tout de suite.
-        assert_eq!(r.sortie.trim(), "a=3 b=2 c=1", "{}", r.erreurs);
     }
 }
 

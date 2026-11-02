@@ -5,9 +5,12 @@
 //! `vanguard:vider-file-impression`, `vanguard:mettre-de-cote`, `vanguard:pare-feu-actif`, `vanguard:pare-feu-public`,
 //! `vanguard:reseau-categorie`, `vanguard:ifeo-debugger[-32]`, `vanguard:ifeo-silencieux[-32]`,
 //! `vanguard:service-guillemets`, `vanguard:defender`, `vanguard:defender-asr`, `vanguard:defender-exclusion-retirer`,
-//! `vanguard:defender-menaces-retirer`), faits par le gestionnaire de services, std::fs, les interfaces COM du
-//! pare-feu et des réseaux (`pare_feu`), le registre (`portes`, `services`) et WMI (`defender_ecriture`). Un réglage
-//! de Defender n'admet que des valeurs qui protègent : aucune ligne ne peut couper le temps réel ni le cloud.
+//! `vanguard:defender-menaces-retirer`, `vanguard:hosts-ecrire`, `vanguard:dns-auto`, `vanguard:dns-serveurs`), faits
+//! par le gestionnaire de services, std::fs, les interfaces COM du pare-feu et des réseaux (`pare_feu`), le registre
+//! (`portes`, `services`), WMI (`defender_ecriture`) et iphlpapi (`reseau_ecriture`). Un réglage de Defender n'admet
+//! que des valeurs qui protègent : aucune ligne ne peut couper le temps réel ni le cloud. Une nouvelle version du
+//! hosts n'admet hors du bloc de Vanguard que des lignes mises en commentaire (`juger_hosts`) ; un serveur DNS, que
+//! ceux de la liste fermée (`RESOLVEURS`).
 //! Plus la découpe d'une liste de correctifs en morceaux (gestes natifs, scripts) et la lecture des états d'un
 //! script : du code pur, sans E/S, testé sous Linux et lu par le banc de fuzzing
 //! (fuzz/fuzz_targets/gestes.rs). C'est la seule entrée que le processus élevé lit d'un processus moins sûr : rien ici
@@ -49,11 +52,7 @@ pub(crate) struct Script {
 
 /// La ligne qui demande ce script.
 pub(crate) fn ligne_script(empreinte: &str, chemin: &str) -> String {
-    let hex = chemin.bytes().fold(String::new(), |mut s, o| {
-        let _ = write!(s, "{o:02x}");
-        s
-    });
-    format!("{SCRIPT}{empreinte} {hex}")
+    format!("{SCRIPT}{empreinte} {}", chemin_hex(chemin))
 }
 
 /// Le script d'une ligne, si et seulement si elle est exactement de sa forme : 64 chiffres hexadécimaux majuscules,
@@ -62,34 +61,20 @@ pub(crate) fn ligne_script(empreinte: &str, chemin: &str) -> String {
 /// composant « . » ni « .. ».
 pub(crate) fn analyser_script(ligne: &str) -> Option<Script> {
     let (empreinte, hex) = ligne.strip_prefix(SCRIPT)?.split_once(' ')?;
-    let forme = empreinte.len() == 64 && empreinte.bytes().all(|o| matches!(o, b'0'..=b'9' | b'A'..=b'F'));
-    if !forme || hex.is_empty() || !hex.len().is_multiple_of(2) {
+    if !empreinte_majuscule(empreinte) {
         return None;
     }
-    let octets: Option<Vec<u8>> = hex
-        .as_bytes()
-        .chunks(2)
-        .map(|paire| {
-            let fort = chiffre_minuscule(*paire.first()?)?;
-            let faible = chiffre_minuscule(*paire.get(1)?)?;
-            fort.checked_mul(16)?.checked_add(faible)
-        })
-        .collect();
-    let chemin = String::from_utf8(octets?).ok()?;
-    let o = chemin.as_bytes();
-    let complet = matches!(o, [lecteur, b':', b'\\', _, ..] if lecteur.is_ascii_alphabetic());
+    let chemin = lire_chemin_hex(hex)?;
     let mut composants = chemin.rsplit('\\');
     let nom = composants.next().unwrap_or_default();
     let dossier = composants.next().unwrap_or_default();
     let ps1 = nom.starts_with("correction-")
         && nom.to_ascii_lowercase().ends_with(".ps1")
         && dossier.eq_ignore_ascii_case("corrections");
-    let sans_detour = !chemin.split(['\\', '/']).any(|c| c == "." || c == "..");
-    (complet && ps1 && sans_detour && !chemin.contains(['\0', '\n', '\r']) && ligne_script(empreinte, &chemin) == ligne)
-        .then(|| Script {
-            empreinte: empreinte.to_string(),
-            chemin,
-        })
+    (ps1 && chemin_sur(&chemin) && ligne_script(empreinte, &chemin) == ligne).then(|| Script {
+        empreinte: empreinte.to_string(),
+        chemin,
+    })
 }
 
 fn chiffre_minuscule(o: u8) -> Option<u8> {
@@ -993,6 +978,619 @@ impl ReseauCategorie {
     }
 }
 
+// ------------------------------------------------------------------ le réseau
+
+/// Le verbe de l'écriture du fichier hosts : `vanguard:hosts-ecrire <empreinte du hosts lu> <empreinte du fichier
+/// préparé> <chemin du fichier préparé en hexadécimal>`. Le processus élevé relit le hosts et le fichier préparé,
+/// vérifie les deux empreintes, rejuge la différence (`juger_hosts`), la montre avant l'accord, puis écrit les octets
+/// vérifiés en gardant une copie de ceux d'avant (ReplaceFileW).
+pub(crate) const HOSTS_ECRIRE: &str = "vanguard:hosts-ecrire ";
+/// Le verbe qui remet en automatique (ceux du DHCP) les serveurs DNS d'une carte réseau : `vanguard:dns-auto {GUID}`.
+pub(crate) const DNS_AUTO: &str = "vanguard:dns-auto ";
+/// Le verbe qui règle les serveurs DNS d'une carte réseau : `vanguard:dns-serveurs {GUID} <IPv4>|<IPv6>`, chaque
+/// côté « - » (laissé tel quel), vide (remis en automatique) ou une liste d'adresses de `RESOLVEURS`.
+pub(crate) const DNS_SERVEURS: &str = "vanguard:dns-serveurs ";
+/// La plus longue ligne `hosts-ecrire` : le verbe, deux empreintes, un chemin de 900 octets en hexadécimal.
+pub(crate) const HOSTS_LIGNE_MAX: usize = 2048;
+/// Le plus gros fichier hosts admis, avant comme après : 1 Mo. Au-delà, ce n'est pas un hosts que Vanguard réécrit.
+pub(crate) const HOSTS_MAX: usize = 1 << 20;
+/// Le dossier du fichier préparé (sous celui de Vanguard), et son nom.
+pub(crate) const HOSTS_DOSSIER: &str = "hosts-prepare";
+pub(crate) const HOSTS_NOM: &str = "hosts";
+/// Ce que Vanguard met devant une ligne qui détourne un nom, pour la mettre en commentaire.
+pub(crate) const HOSTS_COMMENTE: &str = "# Vanguard : ";
+/// La marque de début du bloc des sites bloqués (`protection::sites_bloques`).
+pub(crate) const HOSTS_DEBUT: &str = "# >>> Vanguard";
+/// La marque de fin du bloc.
+pub(crate) const HOSTS_FIN: &str = "# <<< Vanguard <<<";
+/// Dans la marque de début : le hosts ne finissait pas par une fin de ligne, Vanguard en a ajouté une.
+pub(crate) const HOSTS_FDL_AJOUTEE: &str = "(fin de ligne ajoutée)";
+/// La plus longue marque de début admise : celle de Vanguard en fait 150.
+const HOSTS_ENTETE_MAX: usize = 512;
+
+/// Les seuls serveurs DNS qu'une ligne peut poser : ceux de « DNS le plus rapide » (`dns_rapide::PUBLICS`, test
+/// resolveurs_de_dns_rapide), le Bouclier canadien compris (mode Wi-Fi public). Une ligne forgée ne peut pas envoyer
+/// les questions DNS de l'ordinateur vers un serveur choisi par un autre programme. Seule exception : remettre la
+/// valeur d'avant (la box, le DNS de l'entreprise), que le processus élevé a lui-même notée en la remplaçant, dans une
+/// clé que seul un administrateur écrit (`DNS_AVANT_CLE`) ; il refuse toute autre adresse.
+pub(crate) const RESOLVEURS: [&str; 20] = [
+    "1.1.1.1",
+    "1.0.0.1",
+    "2606:4700:4700::1111",
+    "2606:4700:4700::1001",
+    "9.9.9.9",
+    "149.112.112.112",
+    "2620:fe::fe",
+    "2620:fe::9",
+    "8.8.8.8",
+    "8.8.4.4",
+    "2001:4860:4860::8888",
+    "2001:4860:4860::8844",
+    "94.140.14.14",
+    "94.140.15.15",
+    "2a10:50c0::ad1:ff",
+    "2a10:50c0::ad2:ff",
+    "149.112.121.20",
+    "149.112.122.20",
+    "2620:10a:80bb::20",
+    "2620:10a:80bc::20",
+];
+/// La clé de HKLM où le processus élevé note les serveurs DNS hors de `RESOLVEURS` qu'il remplace, valeur
+/// « {GUID} v4 » ou « {GUID} v6 » : ce qu'il accepte de remettre en défaisant.
+pub(crate) const DNS_AVANT_CLE: &str = r"SOFTWARE\Vanguard\DnsAvant";
+/// Au plus quatre serveurs par famille : Windows n'en essaie pas plus, et la liste n'en a pas plus d'un service.
+const DNS_PAR_FAMILLE_MAX: usize = 4;
+
+/// Une ligne `vanguard:hosts-ecrire`, relue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HostsEcrire {
+    /// L'empreinte (SHA-256, hexadécimal majuscule) du hosts lu par Vanguard non élevé.
+    pub avant: String,
+    /// Celle du fichier préparé.
+    pub apres: String,
+    /// Le chemin complet du fichier préparé : « hosts » dans un dossier « hosts-prepare ».
+    pub chemin: String,
+}
+
+impl HostsEcrire {
+    fn ligne(&self) -> String {
+        format!(
+            "{HOSTS_ECRIRE}{} {} {}",
+            self.avant,
+            self.apres,
+            chemin_hex(&self.chemin)
+        )
+    }
+
+    fn analyser(reste: &str) -> Option<HostsEcrire> {
+        let mut champs = reste.split(' ');
+        let (avant, apres, hex) = (champs.next()?, champs.next()?, champs.next()?);
+        if champs.next().is_some() || !empreinte_majuscule(avant) || !empreinte_majuscule(apres) {
+            return None;
+        }
+        let chemin = lire_chemin_hex(hex)?;
+        let mut composants = chemin.rsplit('\\');
+        let nom = composants.next().unwrap_or_default();
+        let dossier = composants.next().unwrap_or_default();
+        (chemin_sur(&chemin) && nom.eq_ignore_ascii_case(HOSTS_NOM) && dossier.eq_ignore_ascii_case(HOSTS_DOSSIER))
+            .then(|| HostsEcrire {
+                avant: avant.to_string(),
+                apres: apres.to_string(),
+                chemin,
+            })
+    }
+}
+
+/// Un côté (IPv4 ou IPv6) d'une ligne `vanguard:dns-serveurs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CoteDns {
+    /// « - » : laissé tel quel.
+    Garder,
+    /// Vide : remis en automatique (NameServer vide, les serveurs du DHCP).
+    Vider,
+    /// Ces serveurs, dans l'ordre, de la bonne famille, sans doublon, d'adresse unicast ; hors de `RESOLVEURS`, seulement
+    /// la valeur d'avant notée (`hors_liste`, jugé par le processus élevé).
+    Serveurs(Vec<std::net::IpAddr>),
+}
+
+impl CoteDns {
+    /// Le texte du côté : « - », vide, ou « ip,ip » (la forme de NameServer, virgules comprises).
+    pub(crate) fn texte(&self) -> String {
+        match self {
+            CoteDns::Garder => "-".to_string(),
+            CoteDns::Vider => String::new(),
+            CoteDns::Serveurs(l) => l.iter().map(ToString::to_string).collect::<Vec<_>>().join(","),
+        }
+    }
+
+    /// La valeur NameServer à écrire ; `None` pour un côté laissé tel quel.
+    pub(crate) fn valeur(&self) -> Option<String> {
+        match self {
+            CoteDns::Garder => None,
+            CoteDns::Vider | CoteDns::Serveurs(_) => Some(self.texte()),
+        }
+    }
+
+    /// Un serveur au moins est-il hors de `RESOLVEURS` ? Le processus élevé n'accepte alors que la valeur d'avant
+    /// qu'il a notée pour cette carte et cette famille.
+    pub(crate) fn hors_liste(&self) -> bool {
+        match self {
+            CoteDns::Serveurs(l) => l.iter().any(|ip| !RESOLVEURS.contains(&ip.to_string().as_str())),
+            CoteDns::Garder | CoteDns::Vider => false,
+        }
+    }
+
+    fn lire(t: &str, v6: bool) -> Option<CoteDns> {
+        match t {
+            "-" => return Some(CoteDns::Garder),
+            "" => return Some(CoteDns::Vider),
+            _ => {}
+        }
+        let mut serveurs: Vec<std::net::IpAddr> = Vec::new();
+        for s in t.split(',') {
+            let ip: std::net::IpAddr = s.parse().ok()?;
+            // Écrite à l'identique (pas de zéros en tête, IPv6 en minuscules et abrégée), de la bonne famille, une
+            // seule fois, une adresse d'hôte (ni bouclage, ni « 0.0.0.0 », ni multidiffusion, ni IPv4 dans IPv6).
+            let hote = match ip {
+                std::net::IpAddr::V4(a) => {
+                    !a.is_loopback() && !a.is_unspecified() && !a.is_multicast() && !a.is_broadcast()
+                }
+                std::net::IpAddr::V6(a) => {
+                    !a.is_loopback() && !a.is_unspecified() && !a.is_multicast() && a.to_ipv4_mapped().is_none()
+                }
+            };
+            let bonne = ip.to_string() == s && ip.is_ipv6() == v6 && hote && !serveurs.contains(&ip);
+            if !bonne || serveurs.len() >= DNS_PAR_FAMILLE_MAX {
+                return None;
+            }
+            serveurs.push(ip);
+        }
+        Some(CoteDns::Serveurs(serveurs))
+    }
+}
+
+/// Une ligne `vanguard:dns-serveurs`, relue. Le GUID désigne, le processus élevé juge : il relit que la carte existe
+/// dans la liste de Windows (GetAdaptersAddresses), sinon il refuse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DnsServeurs {
+    pub guid: GuidReseau,
+    pub v4: CoteDns,
+    pub v6: CoteDns,
+}
+
+impl DnsServeurs {
+    fn ligne(&self) -> String {
+        format!(
+            "{DNS_SERVEURS}{} {}|{}",
+            self.guid.texte(),
+            self.v4.texte(),
+            self.v6.texte()
+        )
+    }
+
+    /// Les deux côtés laissés tels quels ne font rien, et les deux vidés s'écrivent `dns-auto` : une seule ligne par
+    /// geste.
+    fn analyser(reste: &str) -> Option<DnsServeurs> {
+        let (guid, serveurs) = reste.split_once(' ')?;
+        let (v4, v6) = serveurs.split_once('|')?;
+        let d = DnsServeurs {
+            guid: GuidReseau::lire(guid)?,
+            v4: CoteDns::lire(v4, false)?,
+            v6: CoteDns::lire(v6, true)?,
+        };
+        let utile = !matches!(
+            (&d.v4, &d.v6),
+            (CoteDns::Garder, CoteDns::Garder) | (CoteDns::Vider, CoteDns::Vider)
+        );
+        utile.then_some(d)
+    }
+
+    /// L'équivalent PowerShell (Wine), quand les deux côtés sont donnés : la commande d'avant d'Optimiser. Un côté
+    /// laissé tel quel n'en a pas : Set-DnsClientServerAddress écrit les deux familles d'un coup.
+    fn powershell(&self) -> String {
+        let (CoteDns::Vider | CoteDns::Serveurs(_), CoteDns::Vider | CoteDns::Serveurs(_)) = (&self.v4, &self.v6)
+        else {
+            return SANS_POWERSHELL.to_string();
+        };
+        let serveurs: Vec<String> = [&self.v4, &self.v6]
+            .iter()
+            .filter_map(|c| match c {
+                CoteDns::Serveurs(l) => Some(l.iter().map(|ip| format!("'{ip}'")).collect::<Vec<_>>()),
+                CoteDns::Garder | CoteDns::Vider => None,
+            })
+            .flatten()
+            .collect();
+        format!(
+            "{}; Set-DnsClientServerAddress -InterfaceIndex $carteDns.ifIndex -ServerAddresses @({})",
+            powershell_dns_auto(self.guid),
+            serveurs.join(",")
+        )
+    }
+}
+
+/// Une ligne sans équivalent PowerShell : le chemin par script (Wine) s'arrête et le dit.
+const SANS_POWERSHELL: &str = "throw 'Vanguard : geste sans équivalent PowerShell'";
+
+/// La remise en automatique par PowerShell (Wine) : la commande d'avant de la remise du DNS.
+fn powershell_dns_auto(guid: GuidReseau) -> String {
+    format!(
+        "$carteDns = Get-NetAdapter -IncludeHidden | Where-Object {{ $_.InterfaceGuid -eq '{}' }} | Select-Object -First 1; \
+         if (-not $carteDns) {{ throw 'network adapter not found' }}; \
+         Set-DnsClientServerAddress -InterfaceIndex $carteDns.ifIndex -ResetServerAddresses",
+        guid.texte()
+    )
+}
+
+/// 64 chiffres hexadécimaux majuscules : une empreinte SHA-256 telle que `sha256_hex` l'écrit.
+fn empreinte_majuscule(e: &str) -> bool {
+    e.len() == 64 && e.bytes().all(|o| matches!(o, b'0'..=b'9' | b'A'..=b'F'))
+}
+
+/// Le chemin en hexadécimal minuscule de ses octets UTF-8 : aucune espace, aucun caractère que la ligne couperait.
+fn chemin_hex(chemin: &str) -> String {
+    chemin.bytes().fold(String::new(), |mut s, o| {
+        let _ = write!(s, "{o:02x}");
+        s
+    })
+}
+
+/// Le texte d'un chemin en hexadécimal minuscule ; `None` s'il n'en a pas la forme ou n'est pas de l'UTF-8.
+fn lire_chemin_hex(hex: &str) -> Option<String> {
+    if hex.is_empty() || !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    let octets: Option<Vec<u8>> = hex
+        .as_bytes()
+        .chunks(2)
+        .map(|paire| {
+            let fort = chiffre_minuscule(*paire.first()?)?;
+            let faible = chiffre_minuscule(*paire.get(1)?)?;
+            fort.checked_mul(16)?.checked_add(faible)
+        })
+        .collect();
+    String::from_utf8(octets?).ok()
+}
+
+/// Un chemin complet (« X:\… »), sans composant « . » ni « .. », sans NUL ni fin de ligne. Découpé sur `\` et `/` à
+/// la main (pas par `Path`, qui sous Linux n'y voit pas de séparateur).
+fn chemin_sur(chemin: &str) -> bool {
+    let o = chemin.as_bytes();
+    let complet = matches!(o, [lecteur, b':', b'\\', _, ..] if lecteur.is_ascii_alphabetic());
+    let sans_detour = !chemin.split(['\\', '/']).any(|c| c == "." || c == "..");
+    complet && sans_detour && !chemin.contains(['\0', '\n', '\r'])
+}
+
+/// La ligne qui écrit le fichier préparé `chemin` à la place du hosts ; `None` si elle n'a pas sa forme.
+pub(crate) fn ligne_hosts_ecrire(avant: &str, apres: &str, chemin: &str) -> Option<String> {
+    let ligne = HostsEcrire {
+        avant: avant.to_string(),
+        apres: apres.to_string(),
+        chemin: chemin.to_string(),
+    }
+    .ligne();
+    analyser_acte(&ligne).is_some().then_some(ligne)
+}
+
+/// La ligne qui remet en automatique le DNS d'une carte ; `None` si le GUID n'a pas sa forme.
+pub(crate) fn ligne_dns_auto(guid: &str) -> Option<String> {
+    GuidReseau::lire(guid).map(|g| Acte::DnsAuto(g).ligne())
+}
+
+/// La ligne qui règle le DNS d'une carte (`None` pour un côté laissé tel quel, `Some("")` pour le remettre en
+/// automatique, sinon « ip,ip ») ; `None` si une adresse est hors de la liste fermée, ou si la ligne ne ferait rien.
+/// Les deux côtés vides donnent `dns-auto`.
+pub(crate) fn ligne_dns(guid: &str, v4: Option<&str>, v6: Option<&str>) -> Option<String> {
+    if v4 == Some("") && v6 == Some("") {
+        return ligne_dns_auto(guid);
+    }
+    let guid = GuidReseau::lire(guid)?;
+    let ligne = format!(
+        "{DNS_SERVEURS}{} {}|{}",
+        guid.texte(),
+        v4.unwrap_or("-"),
+        v6.unwrap_or("-")
+    );
+    analyser_acte(&ligne).is_some().then_some(ligne)
+}
+
+/// Ce geste couperait-il une connexion à distance en cours ? Rendre ou redemander l'adresse IP coupe toutes les
+/// connexions ; changer les serveurs DNS ou la carte, non, mais une session à distance (Bureau à distance, SSH) n'est
+/// jamais exposée à un geste sur le réseau : refusé dès qu'il y en a une, ou que les connexions ne se lisent pas
+/// (`sessions` : celles de `gardes::sessions_a_distance`, `None` si illisibles).
+pub(crate) fn coupe_une_session(touche_le_reseau: bool, bureau_a_distance: bool, sessions: Option<usize>) -> bool {
+    touche_le_reseau && (bureau_a_distance || sessions != Some(0))
+}
+
+impl Appel {
+    /// Le programme rend-il ou redemande-t-il l'adresse IP (toutes les connexions coupées) ?
+    pub(crate) fn coupe_le_reseau(&self) -> bool {
+        matches!(self.programme.id, "ipconfig-release" | "ipconfig-renew")
+    }
+}
+
+// --------------------------------------------------------------- le hosts
+
+/// Pourquoi une nouvelle version du hosts est refusée.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RefusHosts {
+    /// Plus de `HOSTS_MAX` octets.
+    TropGros,
+    /// Une marque d'ordre des octets UTF-16 ou un octet nul : un hosts en UTF-16, que Vanguard ne réécrit pas.
+    Utf16,
+    /// Une marque du bloc sans l'autre, deux blocs, ou un bloc « fin de ligne ajoutée » qui n'est pas à la fin.
+    BlocAbime,
+    /// Une marque de début trop longue ou avec un caractère de contrôle.
+    Entete,
+    /// Le fichier préparé n'a plus l'empreinte de la ligne (changé après l'avoir préparé, ou pendant la demande
+    /// d'administrateur).
+    PrepareChange,
+    /// Le hosts n'a plus l'empreinte lue par Vanguard non élevé : un autre programme l'a changé entre-temps.
+    HostsChange,
+    /// Une ligne du bloc qui n'est pas « 0.0.0.0 nom » ni « :: nom » (montrée telle quelle, rendue lisible).
+    LigneDuBloc(String),
+    /// Un nom que Vanguard ne bloque jamais (mises à jour de Windows, Defender, ses propres mises à jour).
+    NomProtege(String),
+    /// Une ligne ajoutée hors du bloc.
+    LigneAjoutee(String),
+    /// Une ligne retirée hors du bloc.
+    LigneRetiree(String),
+    /// Une ligne changée hors du bloc, autrement qu'en la mettant en commentaire.
+    LigneChangee(String),
+}
+
+/// Ce qui change dans le hosts, d'après `juger_hosts`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct DiffHosts {
+    /// Les lignes mises en commentaire, telles qu'elles étaient (sans leur fin de ligne, rendues lisibles).
+    pub commentees: Vec<String>,
+    /// Les noms bloqués en plus, puis ceux qui ne le sont plus.
+    pub ajoutes: Vec<String>,
+    pub retires: Vec<String>,
+    /// Le bloc de Vanguard était-il là, l'est-il après ?
+    pub bloc_avant: bool,
+    pub bloc_apres: bool,
+}
+
+impl DiffHosts {
+    /// Rien ne change (hors la date du bloc).
+    pub(crate) fn vide(&self) -> bool {
+        self.commentees.is_empty()
+            && self.ajoutes.is_empty()
+            && self.retires.is_empty()
+            && self.bloc_avant == self.bloc_apres
+    }
+}
+
+/// Les noms que le bloc ne prend jamais : eux et leurs sous-domaines. Bloquer les mises à jour de Windows ou de
+/// Defender, la vérification de connexion de Windows, les DNS chiffrés de la liste ou les mises à jour de Vanguard
+/// servirait celui qui forgerait la liste, jamais la personne.
+const NOMS_PROTEGES: [&str; 14] = [
+    "microsoft.com",
+    "windowsupdate.com",
+    "windows.com",
+    "msftncsi.com",
+    "msftconnecttest.com",
+    "digicert.com",
+    "github.com",
+    "githubusercontent.com",
+    "abuse.ch",
+    "cloudflare-dns.com",
+    "quad9.net",
+    "dns.google",
+    "adguard-dns.com",
+    "cira.ca",
+];
+
+/// Ce nom est-il un de `NOMS_PROTEGES`, ou un de leurs sous-domaines ?
+pub(crate) fn nom_protege(nom: &str) -> bool {
+    NOMS_PROTEGES
+        .iter()
+        .any(|p| nom == *p || nom.strip_suffix(p).is_some_and(|d| d.ends_with('.')))
+}
+
+/// Un nom qu'un fichier hosts peut tenir : minuscules, chiffres, tirets, soulignés, points ; ni une adresse IP (hosts
+/// ne bloque que des noms), ni un nom sans point, 253 octets au plus, chaque étiquette de 1 à 63.
+pub(crate) fn nom_hosts_valide(n: &str) -> bool {
+    n.len() <= 253
+        && n.contains('.')
+        && n.parse::<std::net::IpAddr>().is_err()
+        && n.split('.').all(|e| !e.is_empty() && e.len() <= 63)
+        && n.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.' || b == b'_')
+}
+
+/// Les octets d'une ligne sans ses blancs de fin (fin de ligne comprise).
+fn sans_blancs_de_fin(l: &[u8]) -> &[u8] {
+    let fin = l
+        .iter()
+        .rposition(|o| !o.is_ascii_whitespace())
+        .map_or(0, |i| i.saturating_add(1));
+    l.get(..fin).unwrap_or_default()
+}
+
+/// Une ligne rendue lisible pour être montrée : texte (les octets qui n'en sont pas remplacés), sans fin de ligne,
+/// coupée à 200 caractères, chaque caractère de contrôle remplacé.
+fn lisible(l: &[u8]) -> String {
+    String::from_utf8_lossy(sans_blancs_de_fin(l))
+        .chars()
+        .take(200)
+        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .collect()
+}
+
+/// Le hosts découpé : les lignes hors du bloc (fin de ligne comprise, celle ajoutée par Vanguard retirée), les noms
+/// du bloc et le nombre de blocs.
+struct Decoupe<'a> {
+    hors: Vec<&'a [u8]>,
+    noms: std::collections::BTreeSet<String>,
+    blocs: usize,
+}
+
+/// Le nom d'une ligne du bloc, si elle est exactement « 0.0.0.0 nom » ou « :: nom », puis sa fin de ligne.
+fn nom_du_bloc(l: &[u8]) -> Option<&str> {
+    let corps = l.strip_suffix(b"\r\n").or_else(|| l.strip_suffix(b"\n"))?;
+    let nom = corps.strip_prefix(b"0.0.0.0 ").or_else(|| corps.strip_prefix(b":: "))?;
+    std::str::from_utf8(nom).ok().filter(|n| nom_hosts_valide(n))
+}
+
+/// Découpe un hosts. `strict` : celui que Vanguard va écrire, dont chaque ligne du bloc est jugée ; sinon celui lu
+/// sur le disque, dont le bloc est retiré ou remplacé tel quel (retirer une ligne ne détourne rien).
+fn decouper_hosts(o: &[u8], strict: bool) -> Result<Decoupe<'_>, RefusHosts> {
+    if o.len() > HOSTS_MAX {
+        return Err(RefusHosts::TropGros);
+    }
+    if o.starts_with(&[0xFF, 0xFE]) || o.starts_with(&[0xFE, 0xFF]) || o.contains(&0) {
+        return Err(RefusHosts::Utf16);
+    }
+    let mut d = Decoupe {
+        hors: Vec::new(),
+        noms: std::collections::BTreeSet::new(),
+        blocs: 0,
+    };
+    let mut dedans = false;
+    let mut fdl = false;
+    let mut apres_fdl = false;
+    for l in o.split_inclusive(|&c| c == b'\n') {
+        let t = sans_blancs_de_fin(l);
+        if apres_fdl {
+            // Une ligne après un bloc « fin de ligne ajoutée » : retirer celle-ci collerait deux lignes en une.
+            return Err(RefusHosts::BlocAbime);
+        }
+        if t.starts_with(HOSTS_DEBUT.as_bytes()) {
+            if dedans || d.blocs > 0 {
+                return Err(RefusHosts::BlocAbime);
+            }
+            let entete = std::str::from_utf8(t).map_err(|_| RefusHosts::Entete)?;
+            if strict && (t.len() > HOSTS_ENTETE_MAX || entete.chars().any(char::is_control)) {
+                return Err(RefusHosts::Entete);
+            }
+            dedans = true;
+            d.blocs = d.blocs.saturating_add(1);
+            fdl = entete.contains(HOSTS_FDL_AJOUTEE);
+            if fdl && let Some(derniere) = d.hors.last_mut() {
+                let l = *derniere;
+                *derniere = l.strip_suffix(b"\r\n").or_else(|| l.strip_suffix(b"\n")).unwrap_or(l);
+            }
+        } else if t == HOSTS_FIN.as_bytes() {
+            if !dedans {
+                return Err(RefusHosts::BlocAbime);
+            }
+            dedans = false;
+            apres_fdl = fdl;
+        } else if dedans {
+            match nom_du_bloc(l) {
+                Some(n) if strict && nom_protege(n) => return Err(RefusHosts::NomProtege(n.to_string())),
+                Some(n) => {
+                    d.noms.insert(n.to_string());
+                }
+                None if strict => return Err(RefusHosts::LigneDuBloc(lisible(l))),
+                None => {}
+            }
+        } else {
+            d.hors.push(l);
+        }
+    }
+    if dedans {
+        return Err(RefusHosts::BlocAbime);
+    }
+    Ok(d)
+}
+
+/// L'adresse d'une ligne que Vanguard peut mettre en commentaire : une adresse IP, puis au moins un nom ; ni un
+/// commentaire, ni une adresse de bouclage ou « 0.0.0.0 » / « :: » (listes de blocage, « localhost »).
+fn adresse_commentable(l: &[u8]) -> Option<std::net::IpAddr> {
+    let texte = String::from_utf8_lossy(l);
+    let mut mots = texte.split('#').next().unwrap_or_default().split_whitespace();
+    let ip = mots.next()?.parse::<std::net::IpAddr>().ok()?;
+    let canonique = ip.to_canonical();
+    (mots.next().is_some() && !canonique.is_loopback() && !canonique.is_unspecified()).then_some(ip)
+}
+
+/// Juge la nouvelle version d'un hosts contre celle lue, octet par octet : hors du bloc de Vanguard, chaque ligne est
+/// gardée telle quelle ou mise en commentaire (« # Vanguard : » devant, rien d'autre ne change), aucune n'est
+/// ajoutée ni retirée ; le bloc, s'il y en a un, n'a que des lignes « 0.0.0.0 nom » ou « :: nom » d'un nom qui n'est
+/// pas protégé. Plus de 1 Mo, ou de l'UTF-16 (marque d'ordre des octets, octet nul), d'un côté ou de l'autre : refusé.
+/// Le processus élevé l'appelle sur les octets vérifiés par leur empreinte, le parent avant de demander : la même
+/// fonction des deux côtés.
+pub(crate) fn juger_hosts(avant: &[u8], apres: &[u8]) -> Result<DiffHosts, RefusHosts> {
+    let a = decouper_hosts(avant, false)?;
+    let b = decouper_hosts(apres, true)?;
+    let mut diff = DiffHosts {
+        bloc_avant: a.blocs > 0,
+        bloc_apres: b.blocs > 0,
+        ajoutes: b.noms.difference(&a.noms).cloned().collect(),
+        retires: a.noms.difference(&b.noms).cloned().collect(),
+        ..DiffHosts::default()
+    };
+    for (i, ligne_b) in b.hors.iter().enumerate() {
+        let Some(ligne_a) = a.hors.get(i) else {
+            return Err(RefusHosts::LigneAjoutee(lisible(ligne_b)));
+        };
+        if ligne_a == ligne_b {
+            continue;
+        }
+        let commentee = ligne_b
+            .strip_prefix(HOSTS_COMMENTE.as_bytes())
+            .is_some_and(|reste| reste == *ligne_a && adresse_commentable(ligne_a).is_some());
+        if !commentee {
+            return Err(RefusHosts::LigneChangee(lisible(ligne_b)));
+        }
+        diff.commentees.push(lisible(ligne_a));
+    }
+    if let Some(retiree) = a.hors.get(b.hors.len()) {
+        return Err(RefusHosts::LigneRetiree(lisible(retiree)));
+    }
+    Ok(diff)
+}
+
+/// L'empreinte d'un hosts telle qu'une ligne `vanguard:hosts-ecrire` la porte : SHA-256 en hexadécimal majuscule
+/// (celle de `sha256_hex`, test empreinte_des_scripts_et_du_hosts).
+pub(crate) fn empreinte_hosts(octets: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(octets)
+        .iter()
+        .fold(String::with_capacity(64), |mut s, o| {
+            let _ = write!(s, "{o:02X}");
+            s
+        })
+}
+
+/// Ce que le processus élevé juge avant de montrer, et rejuge avant d'écrire : les octets du fichier préparé et du
+/// hosts, lus une seule fois chacun, ont les empreintes de la ligne, puis leur différence est admise par
+/// `juger_hosts`. Ce sont ces octets-là, et eux seuls, qui seront écrits.
+pub(crate) fn verifier_hosts(h: &HostsEcrire, prepare: &[u8], hosts: &[u8]) -> Result<DiffHosts, RefusHosts> {
+    if prepare.len() > HOSTS_MAX || hosts.len() > HOSTS_MAX {
+        return Err(RefusHosts::TropGros);
+    }
+    if empreinte_hosts(prepare) != h.apres {
+        return Err(RefusHosts::PrepareChange);
+    }
+    if empreinte_hosts(hosts) != h.avant {
+        return Err(RefusHosts::HostsChange);
+    }
+    juger_hosts(hosts, prepare)
+}
+
+/// Le hosts avec en commentaire chaque ligne hors du bloc de Vanguard qui envoie un nom vers une adresse que
+/// `a_commenter` désigne (les adresses d'Internet, pour la réparation « Navigation détournée ») : « # Vanguard : »
+/// devant, le reste de chaque octet inchangé, encodage et fins de ligne compris. Ce que `juger_hosts` admet.
+pub(crate) fn hosts_commente(avant: &[u8], a_commenter: impl Fn(std::net::IpAddr) -> bool) -> Vec<u8> {
+    let mut sortie = Vec::with_capacity(avant.len());
+    let mut dedans = false;
+    for l in avant.split_inclusive(|&c| c == b'\n') {
+        let t = sans_blancs_de_fin(l);
+        if t.starts_with(HOSTS_DEBUT.as_bytes()) {
+            dedans = true;
+        } else if t == HOSTS_FIN.as_bytes() {
+            dedans = false;
+        } else if !dedans && adresse_commentable(l).is_some_and(&a_commenter) {
+            sortie.extend_from_slice(HOSTS_COMMENTE.as_bytes());
+        }
+        sortie.extend_from_slice(l);
+    }
+    sortie
+}
+
 // ------------------------------------------------------------ le registre
 
 /// Les deux racines d'Image File Execution Options lues par le bilan : la vue 64 bits et celle des programmes 32 bits
@@ -1513,6 +2111,12 @@ pub(crate) enum Acte {
     DefenderExclusionRetirer(GenreExclusion, Exclusion),
     /// Retirer les menaces trouvées par Defender.
     DefenderMenacesRetirer,
+    /// Écrire le fichier préparé à la place du hosts, la différence rejugée (`juger_hosts`) et montrée avant.
+    HostsEcrire(HostsEcrire),
+    /// Remettre en automatique les serveurs DNS d'une carte réseau.
+    DnsAuto(GuidReseau),
+    /// Régler les serveurs DNS d'une carte réseau, sur des serveurs de la liste fermée (`RESOLVEURS`).
+    DnsServeurs(DnsServeurs),
 }
 
 impl Acte {
@@ -1534,7 +2138,16 @@ impl Acte {
             Acte::DefenderAsr(id, m) => format!("{DEFENDER_ASR}{id} {}", m.mot()),
             Acte::DefenderExclusionRetirer(g, e) => format!("{DEFENDER_EXCLUSION_RETIRER}{} {}", g.mot(), e.hex()),
             Acte::DefenderMenacesRetirer => DEFENDER_MENACES_RETIRER.to_string(),
+            Acte::HostsEcrire(h) => h.ligne(),
+            Acte::DnsAuto(g) => format!("{DNS_AUTO}{}", g.texte()),
+            Acte::DnsServeurs(d) => d.ligne(),
         }
+    }
+
+    /// L'acte touche-t-il aux réglages d'une carte réseau (ses serveurs DNS) ? Refusé pendant une session à
+    /// distance (`coupe_une_session`).
+    pub(crate) fn touche_le_reseau(&self) -> bool {
+        matches!(self, Acte::DnsAuto(_) | Acte::DnsServeurs(_))
     }
 
     /// L'acte protège-t-il le PC (une correction qui n'en a que de tels est une protection, que « Défaire » ne propose
@@ -1551,8 +2164,15 @@ impl Acte {
             | Acte::DefenderExclusionRetirer(..) => true,
             Acte::PareFeuPublic(p) => p.durcit(),
             Acte::ReseauCategorie(r) => r.categorie == Categorie::Public,
-            // Retirer des menaces nettoie : ni une protection remise, ni une remise qui affaiblit.
-            Acte::Vider(_) | Acte::ViderFileImpression | Acte::MettreDeCote(_) | Acte::DefenderMenacesRetirer => false,
+            // Retirer des menaces nettoie : ni une protection remise, ni une remise qui affaiblit. Le hosts et le DNS
+            // dépendent de ce qui change : la console élevée le dit d'après la différence relue.
+            Acte::Vider(_)
+            | Acte::ViderFileImpression
+            | Acte::MettreDeCote(_)
+            | Acte::DefenderMenacesRetirer
+            | Acte::HostsEcrire(_)
+            | Acte::DnsAuto(_)
+            | Acte::DnsServeurs(_) => false,
         }
     }
 
@@ -1573,7 +2193,10 @@ impl Acte {
             | Acte::ServiceGuillemets(_)
             | Acte::Defender(..)
             | Acte::DefenderExclusionRetirer(..)
-            | Acte::DefenderMenacesRetirer => false,
+            | Acte::DefenderMenacesRetirer
+            | Acte::HostsEcrire(_)
+            | Acte::DnsAuto(_)
+            | Acte::DnsServeurs(_) => false,
         }
     }
 
@@ -1609,7 +2232,11 @@ impl Acte {
             Acte::Defender(..)
             | Acte::DefenderAsr(..)
             | Acte::DefenderExclusionRetirer(..)
-            | Acte::DefenderMenacesRetirer => "throw 'Vanguard : geste sans équivalent PowerShell'".to_string(),
+            | Acte::DefenderMenacesRetirer
+            // Aucun PowerShell sur le chemin d'écriture du hosts : sous Wine, l'erreur est dite.
+            | Acte::HostsEcrire(_) => SANS_POWERSHELL.to_string(),
+            Acte::DnsAuto(g) => powershell_dns_auto(*g),
+            Acte::DnsServeurs(d) => d.powershell(),
         }
     }
 }
@@ -1633,12 +2260,23 @@ pub(crate) fn est_un_acte(ligne: &str) -> bool {
         || ligne.starts_with(DEFENDER_ASR)
         || ligne.starts_with(DEFENDER_EXCLUSION_RETIRER)
         || ligne.starts_with(DEFENDER_MENACES_RETIRER)
+        || ligne.starts_with(HOSTS_ECRIRE)
+        || ligne.starts_with(DNS_AUTO)
+        || ligne.starts_with(DNS_SERVEURS)
 }
 
 /// L'acte d'une ligne, si et seulement si elle est exactement de sa forme : ASCII, 256 octets au plus (1086 pour
 /// une ligne qui porte un nom en hexadécimal), sensible à la casse, un nom et une action de la table (une seule espace
 /// entre chaque), réécrite à l'identique.
 pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
+    // L'écriture du hosts porte un chemin, plus long qu'un nom : sa propre borne.
+    if let Some(reste) = ligne.strip_prefix(HOSTS_ECRIRE) {
+        return (ligne.len() <= HOSTS_LIGNE_MAX && ligne.is_ascii())
+            .then(|| HostsEcrire::analyser(reste))
+            .flatten()
+            .map(Acte::HostsEcrire)
+            .filter(|a| a.ligne() == ligne);
+    }
     if ligne.len() > ACTE_NOM_MAX || !ligne.is_ascii() {
         return None;
     }
@@ -1686,6 +2324,10 @@ pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
             guid: GuidReseau::lire(guid)?,
             categorie: *[Categorie::Public, Categorie::Prive].iter().find(|c| c.mot() == mot)?,
         })
+    } else if let Some(guid) = ligne.strip_prefix(DNS_AUTO) {
+        Acte::DnsAuto(GuidReseau::lire(guid)?)
+    } else if let Some(reste) = ligne.strip_prefix(DNS_SERVEURS) {
+        Acte::DnsServeurs(DnsServeurs::analyser(reste)?)
     } else {
         let id = ligne.strip_prefix(METTRE_DE_COTE)?;
         Acte::MettreDeCote(*ACoter::TOUS.iter().find(|c| c.id() == id)?)
@@ -3566,6 +4208,356 @@ mod tests {
         use crate::protection::blocage::ordres;
         assert_eq!(LIGNE_MAX, ordres::LIGNE_MAX);
         assert_eq!(LIGNES_MAX, ordres::LIGNES_MAX);
+    }
+
+    // ------------------------------------------------------------ le réseau
+
+    const GUID: &str = "{4D36E972-E325-11CE-BFC1-08002BE10318}";
+    const PREPARE: &str = r"C:\Users\alice\AppData\Local\Vanguard\hosts-prepare\hosts";
+
+    fn ligne_hosts(avant: &[u8], apres: &[u8]) -> String {
+        ligne_hosts_ecrire(&empreinte_hosts(avant), &empreinte_hosts(apres), PREPARE).unwrap()
+    }
+
+    fn hosts_ecrire(l: &str) -> HostsEcrire {
+        match analyser_acte(l) {
+            Some(Acte::HostsEcrire(h)) => h,
+            autre => panic!("{autre:?}"),
+        }
+    }
+
+    #[test]
+    fn la_ligne_du_hosts_a_une_forme_fixe() {
+        let l = ligne_hosts(b"a", b"b");
+        let h = hosts_ecrire(&l);
+        assert_eq!(h.chemin, PREPARE);
+        let a = analyser_acte(&l).unwrap();
+        assert!(!a.durcit() && !a.affaiblit() && !a.touche_le_reseau());
+        assert_eq!(a.powershell(), SANS_POWERSHELL);
+        assert!(est_un_acte(&l));
+        let e = empreinte_hosts(b"x");
+        let hex = |c: &str| chemin_hex(c);
+        for faux in [
+            // Empreinte en minuscules, trop courte ; un champ de trop ; une espace doublée.
+            format!("{HOSTS_ECRIRE}{} {e} {}", e.to_lowercase(), hex(PREPARE)),
+            format!("{HOSTS_ECRIRE}{} {e} {}", &e[1..], hex(PREPARE)),
+            format!("{HOSTS_ECRIRE}{e} {e} {} x", hex(PREPARE)),
+            format!("{HOSTS_ECRIRE}{e}  {e} {}", hex(PREPARE)),
+            // Chemin en majuscules hexadécimales, relatif, avec « .. », vers un autre fichier ou un autre dossier.
+            format!("{HOSTS_ECRIRE}{e} {e} {}", hex(PREPARE).to_uppercase()),
+            format!("{HOSTS_ECRIRE}{e} {e} {}", hex(r"hosts-prepare\hosts")),
+            format!(
+                "{HOSTS_ECRIRE}{e} {e} {}",
+                hex(r"C:\x\hosts-prepare\..\hosts-prepare\hosts")
+            ),
+            format!("{HOSTS_ECRIRE}{e} {e} {}", hex(r"C:\x\hosts-prepare\hosts.ps1")),
+            format!(
+                "{HOSTS_ECRIRE}{e} {e} {}",
+                hex(r"C:\Windows\System32\drivers\etc\hosts")
+            ),
+            format!("{HOSTS_ECRIRE}{e} {e} {}", hex("C:\\x\\hosts-prepare\\hosts\n")),
+            // Trop longue.
+            format!(
+                "{HOSTS_ECRIRE}{e} {e} {}",
+                hex(&format!(r"C:\{}\hosts-prepare\hosts", "a".repeat(HOSTS_LIGNE_MAX)))
+            ),
+        ] {
+            assert!(analyser_acte(&faux).is_none(), "{faux}");
+        }
+        assert!(ligne_hosts_ecrire(&e, &e, r"C:\Windows\hosts").is_none());
+    }
+
+    #[test]
+    fn le_diff_hostile_du_hosts_est_refuse() {
+        let avant = b"127.0.0.1 localhost\r\n1.2.3.4 www.google.com\r\n".as_slice();
+        let ok = |apres: &[u8]| juger_hosts(avant, apres);
+        let bloc = |lignes: &str| format!("{HOSTS_DEBUT} : sites dangereux >>>\r\n{lignes}{HOSTS_FIN}\r\n");
+        let avec = |lignes: &str| [avant, bloc(lignes).as_bytes()].concat();
+        // Une ligne ajoutée hors du bloc, qui n'est pas de Vanguard, ou qui détourne.
+        assert!(matches!(
+            ok(&[avant, b"5.6.7.8 banque.ca\r\n"].concat()),
+            Err(RefusHosts::LigneAjoutee(_))
+        ));
+        assert!(matches!(
+            ok(&[avant, b"127.0.0.1 windowsupdate.com\r\n"].concat()),
+            Err(RefusHosts::LigneAjoutee(_))
+        ));
+        // Dans le bloc : seulement « 0.0.0.0 nom » ou « :: nom », jamais un nom protégé.
+        assert!(matches!(
+            ok(&avec("127.0.0.1 windowsupdate.com\r\n")),
+            Err(RefusHosts::LigneDuBloc(_))
+        ));
+        assert!(matches!(
+            ok(&avec("5.6.7.8 banque.ca\r\n")),
+            Err(RefusHosts::LigneDuBloc(_))
+        ));
+        assert!(matches!(
+            ok(&avec("0.0.0.0  double.example\r\n")),
+            Err(RefusHosts::LigneDuBloc(_))
+        ));
+        assert!(matches!(
+            ok(&avec("0.0.0.0 a.example b.example\r\n")),
+            Err(RefusHosts::LigneDuBloc(_))
+        ));
+        assert!(matches!(
+            ok(&avec("0.0.0.0 Majuscule.example\r\n")),
+            Err(RefusHosts::LigneDuBloc(_))
+        ));
+        for protege in [
+            "windowsupdate.com",
+            "download.windowsupdate.com",
+            "github.com",
+            "urlhaus-api.abuse.ch",
+        ] {
+            assert_eq!(
+                ok(&avec(&format!("0.0.0.0 {protege}\r\n"))),
+                Err(RefusHosts::NomProtege(protege.to_string())),
+                "{protege}"
+            );
+        }
+        // Un nom qui finit comme un nom protégé sans en être un sous-domaine passe.
+        assert!(ok(&avec("0.0.0.0 pasgithub.com\r\n:: pasgithub.com\r\n")).is_ok());
+        // Une ligne changée autrement qu'en commentaire, retirée, une fin de ligne changée.
+        assert!(matches!(
+            ok(b"127.0.0.1 localhost\r\n1.2.3.5 www.google.com\r\n"),
+            Err(RefusHosts::LigneChangee(_))
+        ));
+        assert!(matches!(
+            ok(b"127.0.0.1 localhost\r\n"),
+            Err(RefusHosts::LigneRetiree(_))
+        ));
+        assert!(matches!(
+            ok(b"127.0.0.1 localhost\n1.2.3.4 www.google.com\r\n"),
+            Err(RefusHosts::LigneChangee(_))
+        ));
+        // Mettre « localhost » ou une liste de blocage en commentaire : refusé (seules les adresses d'hôte).
+        assert!(matches!(
+            ok(&[
+                b"# Vanguard : 127.0.0.1 localhost\r\n".as_slice(),
+                b"1.2.3.4 www.google.com\r\n"
+            ]
+            .concat()),
+            Err(RefusHosts::LigneChangee(_))
+        ));
+        // UTF-16 (marque d'ordre des octets, octet nul), d'un côté ou de l'autre ; plus de 1 Mo.
+        let utf16: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain("127.0.0.1 localhost\r\n".encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        assert_eq!(ok(&utf16), Err(RefusHosts::Utf16));
+        assert_eq!(juger_hosts(&utf16, avant), Err(RefusHosts::Utf16));
+        assert_eq!(ok(&utf16[2..]), Err(RefusHosts::Utf16));
+        let gros = [avant, &vec![b'#'; HOSTS_MAX]].concat();
+        assert_eq!(ok(&gros), Err(RefusHosts::TropGros));
+        assert_eq!(juger_hosts(&gros, avant), Err(RefusHosts::TropGros));
+        // Deux blocs, une marque sans l'autre, une ligne après un bloc « fin de ligne ajoutée » (deux lignes collées).
+        assert_eq!(
+            ok(&[avec(""), bloc("").into_bytes()].concat()),
+            Err(RefusHosts::BlocAbime)
+        );
+        assert_eq!(
+            ok(&[avant, HOSTS_FIN.as_bytes(), b"\r\n"].concat()),
+            Err(RefusHosts::BlocAbime)
+        );
+        assert_eq!(
+            ok(&[avant, HOSTS_DEBUT.as_bytes(), b"\r\n"].concat()),
+            Err(RefusHosts::BlocAbime)
+        );
+        let fdl = b"127.0.0.1 localhost\r\n1.2.3.4 www.google.com";
+        let colle = [
+            fdl.as_slice(),
+            b"\r\n",
+            format!("{HOSTS_DEBUT} {HOSTS_FDL_AJOUTEE} >>>\r\n{HOSTS_FIN}\r\n").as_bytes(),
+            b"evil.example\r\n",
+        ]
+        .concat();
+        assert_eq!(juger_hosts(fdl, &colle), Err(RefusHosts::BlocAbime));
+        // Une marque de début démesurée ou avec un caractère de contrôle.
+        let entete = format!("{HOSTS_DEBUT} {}\r\n{HOSTS_FIN}\r\n", "x".repeat(HOSTS_ENTETE_MAX));
+        assert_eq!(ok(&[avant, entete.as_bytes()].concat()), Err(RefusHosts::Entete));
+        let entete = format!("{HOSTS_DEBUT} \x1b[2J\r\n{HOSTS_FIN}\r\n");
+        assert_eq!(ok(&[avant, entete.as_bytes()].concat()), Err(RefusHosts::Entete));
+    }
+
+    #[test]
+    fn le_hosts_prepare_change_apres_l_empreinte_est_refuse() {
+        let avant = b"1.2.3.4 www.google.com\r\n".to_vec();
+        let apres = hosts_commente(&avant, |_| true);
+        let h = hosts_ecrire(&ligne_hosts(&avant, &apres));
+        let diff = verifier_hosts(&h, &apres, &avant).unwrap();
+        assert_eq!(diff.commentees, ["1.2.3.4 www.google.com"]);
+        // Le fichier préparé change pendant la demande d'administrateur : refusé, même pour un changement admis.
+        let autre = [
+            apres.as_slice(),
+            format!("{HOSTS_DEBUT} >>>\r\n0.0.0.0 x.example\r\n{HOSTS_FIN}\r\n").as_bytes(),
+        ]
+        .concat();
+        assert!(juger_hosts(&avant, &autre).is_ok());
+        assert_eq!(verifier_hosts(&h, &autre, &avant), Err(RefusHosts::PrepareChange));
+        // Le hosts change entre la lecture et l'écriture.
+        assert_eq!(
+            verifier_hosts(&h, &apres, b"9.9.9.9 x.example\r\n"),
+            Err(RefusHosts::HostsChange)
+        );
+        // Plus de 1 Mo : refusé avant toute empreinte.
+        assert_eq!(
+            verifier_hosts(&h, &vec![b'#'; HOSTS_MAX + 1], &avant),
+            Err(RefusHosts::TropGros)
+        );
+        // Une ligne forgée qui a les bonnes empreintes reste jugée.
+        let forge = [avant.as_slice(), b"127.0.0.1 windowsupdate.com\r\n"].concat();
+        let h = hosts_ecrire(&ligne_hosts(&avant, &forge));
+        assert!(matches!(
+            verifier_hosts(&h, &forge, &avant),
+            Err(RefusHosts::LigneAjoutee(_))
+        ));
+    }
+
+    #[test]
+    fn mettre_en_commentaire_puis_bloquer_puis_retirer() {
+        // Fins de ligne mêlées, accent, dernière ligne sans fin de ligne : chaque octet hors du bloc est gardé.
+        let avant = "# à moi\n127.0.0.1 localhost\r\n0.0.0.0 pub.example\n192.168.1.5 nas.local\n1.2.3.4 www.google.com # détourné\n2001:db8::1 v6.example".as_bytes();
+        let commente = hosts_commente(avant, |ip| !matches!(ip, std::net::IpAddr::V4(a) if a.is_private()));
+        let d = juger_hosts(avant, &commente).unwrap();
+        assert_eq!(
+            d.commentees,
+            ["1.2.3.4 www.google.com # détourné", "2001:db8::1 v6.example"]
+        );
+        assert!(!d.vide() && !d.bloc_avant && !d.bloc_apres);
+        assert_eq!(juger_hosts(avant, avant).unwrap(), DiffHosts::default());
+        assert!(juger_hosts(avant, avant).unwrap().vide());
+        // Un bloc ajouté après une dernière ligne sans fin de ligne (« fin de ligne ajoutée »), puis retiré.
+        let bloque = [
+            commente.as_slice(),
+            format!("\n{HOSTS_DEBUT} {HOSTS_FDL_AJOUTEE} : le 2026-11-02 >>>\n0.0.0.0 mal.example\n:: mal.example\n{HOSTS_FIN}\n").as_bytes(),
+        ]
+        .concat();
+        let d = juger_hosts(&commente, &bloque).unwrap();
+        assert_eq!(d.ajoutes, ["mal.example"]);
+        assert!(d.retires.is_empty() && d.bloc_apres && !d.bloc_avant);
+        let d = juger_hosts(&bloque, &commente).unwrap();
+        assert_eq!(d.retires, ["mal.example"]);
+        // Le hosts lu peut avoir un bloc abîmé dans ses lignes (retirer ne détourne rien), pas le nouveau.
+        let vieux = format!("1.1.1.1 a.example\n{HOSTS_DEBUT} >>>\n127.0.0.1 vieux.example\n{HOSTS_FIN}\n");
+        assert!(juger_hosts(vieux.as_bytes(), b"1.1.1.1 a.example\n").is_ok());
+        assert!(matches!(
+            juger_hosts(b"1.1.1.1 a.example\n", vieux.as_bytes()),
+            Err(RefusHosts::LigneDuBloc(_))
+        ));
+    }
+
+    #[test]
+    fn empreinte_des_scripts_et_du_hosts() {
+        // Les vecteurs de SHA-256 (FIPS 180-2), en majuscules comme PowerShell et `sha256_hex`.
+        assert_eq!(
+            empreinte_hosts(b"abc"),
+            "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD"
+        );
+        assert!(empreinte_majuscule(&empreinte_hosts(b"")));
+    }
+
+    #[test]
+    fn le_dns_d_une_carte_hors_liste_ou_hors_forme_est_refuse() {
+        let a = |l: Option<String>| analyser_acte(&l.unwrap()).unwrap();
+        let auto = a(ligne_dns_auto(&GUID.to_lowercase()));
+        assert!(matches!(auto, Acte::DnsAuto(_)) && auto.touche_le_reseau());
+        assert_eq!(auto.ligne(), format!("{DNS_AUTO}{GUID}"));
+        assert!(auto.powershell().contains("-ResetServerAddresses") && auto.powershell().contains(GUID));
+        assert_eq!(ligne_dns(GUID, Some(""), Some("")), ligne_dns_auto(GUID));
+        let d = a(ligne_dns(GUID, Some("1.1.1.1,1.0.0.1"), Some("2606:4700:4700::1111")));
+        assert!(d.touche_le_reseau() && !d.durcit() && !d.affaiblit());
+        assert!(
+            d.powershell()
+                .ends_with("@('1.1.1.1','1.0.0.1','2606:4700:4700::1111')"),
+            "{}",
+            d.powershell()
+        );
+        // Un côté laissé tel quel : pas d'équivalent PowerShell (il écrit les deux familles).
+        assert_eq!(a(ligne_dns(GUID, Some("9.9.9.9"), None)).powershell(), SANS_POWERSHELL);
+        let Acte::DnsServeurs(s) = a(ligne_dns(GUID, Some("192.168.1.1"), Some(""))) else {
+            panic!()
+        };
+        // La box : hors de la liste, acceptée par la grammaire, jugée par le processus élevé (valeur d'avant notée).
+        assert!(s.v4.hors_liste() && !s.v6.hors_liste() && s.v6 == CoteDns::Vider);
+        // La ligne la plus longue de la liste tient dans la borne.
+        let v6 = RESOLVEURS
+            .iter()
+            .filter(|r| r.contains(':'))
+            .take(4)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(",");
+        let v4 = RESOLVEURS
+            .iter()
+            .filter(|r| !r.contains(':'))
+            .take(4)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(ligne_dns(GUID, Some(&v4), Some(&v6)).is_some());
+        for (v4, v6) in [
+            // Mauvaise famille, écriture non canonique, doublon, plus de quatre, bouclage, « 0.0.0.0 », multidiffusion,
+            // diffusion, IPv4 dans IPv6, espace, nom.
+            (Some("2620:fe::fe"), None),
+            (None, Some("9.9.9.9")),
+            (Some("009.9.9.9"), None),
+            (None, Some("2620:FE::FE")),
+            (None, Some("2620:00fe::fe")),
+            (Some("9.9.9.9,9.9.9.9"), None),
+            (Some("1.1.1.1,1.0.0.1,9.9.9.9,8.8.8.8,8.8.4.4"), None),
+            (Some("127.0.0.1"), None),
+            (Some("0.0.0.0"), None),
+            (Some("224.0.0.1"), None),
+            (Some("255.255.255.255"), None),
+            (None, Some("::1")),
+            (None, Some("::")),
+            (None, Some("ff02::1")),
+            (None, Some("::ffff:1.1.1.1")),
+            (Some("1.1.1.1, 1.0.0.1"), None),
+            (Some("dns.google"), None),
+            (Some("1.1.1.1,"), None),
+            // Ne rien faire, ou tout vider autrement que par dns-auto.
+            (None, None),
+        ] {
+            assert!(ligne_dns(GUID, v4, v6).is_none(), "{v4:?} {v6:?}");
+        }
+        let l = |reste: &str| analyser_acte(&format!("{DNS_SERVEURS}{reste}"));
+        assert!(l(&format!("{GUID} |")).is_none());
+        assert!(l(&format!("{GUID} -|-")).is_none());
+        assert!(l(&format!("{GUID} 1.1.1.1")).is_none());
+        assert!(l(&format!("{GUID} 1.1.1.1|-|-")).is_none());
+        assert!(l(&format!("{GUID}  1.1.1.1|-")).is_none());
+        // Le GUID : forme exacte, réécrit en majuscules.
+        for guid in [
+            "4D36E972-E325-11CE-BFC1-08002BE10318",
+            "{4D36E972-E325-11CE-BFC1-08002BE1031}",
+            "{4D36E972E32511CEBFC108002BE10318}",
+            "{4D36E972-E325-11CE-BFC1-08002BE1031G}",
+            "{../../../../../../..../hosts}",
+            "",
+        ] {
+            assert!(ligne_dns_auto(guid).is_none(), "{guid}");
+            assert!(ligne_dns(guid, Some("1.1.1.1"), None).is_none(), "{guid}");
+        }
+        assert!(analyser_acte(&format!("{DNS_AUTO}{}", GUID.to_lowercase())).is_none());
+        assert!(analyser_acte(&format!("{DNS_AUTO}{GUID} ")).is_none());
+    }
+
+    #[test]
+    fn le_reseau_n_est_jamais_touche_pendant_une_session_a_distance() {
+        let release = analyser_programme(&ligne_programme("ipconfig-release", None)).unwrap();
+        let renew = analyser_programme(&ligne_programme("ipconfig-renew", None)).unwrap();
+        let flush = analyser_programme(&ligne_programme("ipconfig-flushdns", None)).unwrap();
+        assert!(release.coupe_le_reseau() && renew.coupe_le_reseau() && !flush.coupe_le_reseau());
+        let dns = analyser_acte(&ligne_dns_auto(GUID).unwrap()).unwrap();
+        for touche in [release.coupe_le_reseau(), dns.touche_le_reseau()] {
+            // Bureau à distance, une session SSH ou de prise en main, ou des connexions illisibles : refusé.
+            assert!(coupe_une_session(touche, true, Some(0)));
+            assert!(coupe_une_session(touche, false, Some(1)));
+            assert!(coupe_une_session(touche, false, None));
+            assert!(!coupe_une_session(touche, false, Some(0)));
+        }
+        assert!(!coupe_une_session(flush.coupe_le_reseau(), true, None));
     }
 
     // ------------------------------------------------------------ le compte

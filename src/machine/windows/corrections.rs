@@ -741,6 +741,35 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
             "Permanently delete the active threats found by Defender"
         )
         .to_string(),
+        Acte::HostsEcrire(_) => tr!(
+            "Réécrire le fichier hosts préparé par Vanguard (différence ci-dessous, relue et rejugée ici ; une copie d'avant est gardée)",
+            "Rewrite the hosts file prepared by Vanguard (difference below, read and judged again here; a copy of the previous one is kept)"
+        )
+        .to_string(),
+        Acte::DnsAuto(g) => trf!(
+            "Remettre en automatique (DHCP) les serveurs DNS de la carte réseau {}, IPv4 et IPv6, puis vider le cache DNS",
+            "Set the DNS servers of network adapter {} back to automatic (DHCP), IPv4 and IPv6, then clear the DNS cache",
+            g.texte()
+        ),
+        Acte::DnsServeurs(d) => {
+            let cote = |c: &crate::machine::gestes::CoteDns| match c {
+                crate::machine::gestes::CoteDns::Garder => tr!("inchangé", "unchanged").to_string(),
+                crate::machine::gestes::CoteDns::Vider => tr!("automatique", "automatic").to_string(),
+                crate::machine::gestes::CoteDns::Serveurs(_) if c.hors_liste() => trf!(
+                    "{} (valeur d'avant, acceptée seulement si Vanguard l'a notée)",
+                    "{} (previous value, accepted only if Vanguard noted it)",
+                    c.texte()
+                ),
+                crate::machine::gestes::CoteDns::Serveurs(_) => c.texte(),
+            };
+            trf!(
+                "Régler les serveurs DNS de la carte réseau {} : IPv4 {}, IPv6 {}",
+                "Set the DNS servers of network adapter {}: IPv4 {}, IPv6 {}",
+                d.guid.texte(),
+                cote(&d.v4),
+                cote(&d.v6)
+            )
+        }
         Acte::ReseauCategorie(r) => {
             let g = reseau_nomme(r);
             match r.categorie {

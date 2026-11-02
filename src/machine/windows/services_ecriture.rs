@@ -655,6 +655,10 @@ pub(crate) fn faire(acte: &Acte) -> Resultat {
     if let Some(r) = super::defender_ecriture::faire_acte(acte) {
         return r;
     }
+    // Le hosts et le DNS des cartes (`reseau_ecriture`), rejugés, relus après l'écriture.
+    if let Some(r) = super::reseau_ecriture::faire_acte(acte) {
+        return r;
+    }
     // Les actes du registre relisent la clé, la rejugent par la fonction du bilan et notent la valeur d'avant.
     match acte {
         Acte::IfeoDebugger(v, n) => return super::portes::retirer_debogueur(*v, n),
@@ -680,7 +684,10 @@ pub(crate) fn faire(acte: &Acte) -> Resultat {
         | Acte::Defender(..)
         | Acte::DefenderAsr(..)
         | Acte::DefenderExclusionRetirer(..)
-        | Acte::DefenderMenacesRetirer => Err(Echec::refuse(
+        | Acte::DefenderMenacesRetirer
+        | Acte::HostsEcrire(_)
+        | Acte::DnsAuto(_)
+        | Acte::DnsServeurs(_) => Err(Echec::refuse(
             CONTEXTE,
             tr!(
                 "acte déjà rendu plus haut, non reconnu ici",

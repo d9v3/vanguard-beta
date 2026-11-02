@@ -1,0 +1,10 @@
+127.0.0.1 localhost
+1.2.3.4 www.google.com
+# >>> Vanguard sites bloques
+0.0.0.0 pub.exemple.com
+# <<< Vanguard <<<
+127.0.0.1 localhost
+# Vanguard : 1.2.3.4 www.google.com
+# >>> Vanguard!
+0.0.0.0 pub.exemple.com
+# <<< Vanguard <<<

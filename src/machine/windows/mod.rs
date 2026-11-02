@@ -48,6 +48,7 @@ pub(crate) mod planificateur;
 mod portes;
 pub(crate) mod processus;
 mod regles;
+mod reseau_ecriture;
 pub(crate) mod routes;
 pub(crate) mod securite;
 mod services;
