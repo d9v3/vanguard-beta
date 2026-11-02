@@ -100,12 +100,15 @@ fn aligne(octets: &[u8]) -> Option<Vec<u64>> {
     (relu == octets).then_some(tampon)
 }
 
-/// Une règle « autoriser » de ce SID reste-t-elle dans ce descripteur ?
+/// Une règle « autoriser » de ce SID reste-t-elle dans ce descripteur ? Toutes les sortes d'autorisation comptent
+/// (simple, objet, rappel, rappel objet : 0, 5, 9, 0xB), même si un partage n'a d'ordinaire que la première.
 fn autorise_encore(octets: &[u8], sid: &str) -> bool {
+    const AUTORISATIONS: [u8; 4] = [0, 5, 9, 0xB];
     securite::aces(octets).is_none_or(|regles| {
-        regles
-            .iter()
-            .any(|r| r.sorte == 0 && securite::sid_en_texte(&r.sid).is_some_and(|s| s.eq_ignore_ascii_case(sid)))
+        regles.iter().any(|r| {
+            AUTORISATIONS.contains(&r.sorte)
+                && securite::sid_en_texte(&r.sid).is_some_and(|s| s.eq_ignore_ascii_case(sid))
+        })
     })
 }
 
@@ -162,6 +165,16 @@ pub(super) fn retirer_acces(a: &AccesPartage) -> Resultat {
             tr!(
                 "aucune règle de ce compte dans le descripteur relu : rien changé",
                 "no rule for this account in the descriptor read back: nothing changed"
+            )
+            .to_string(),
+        );
+    }
+    if autorise_encore(&apres, sid) {
+        return Resultat::echec(
+            Some(avant),
+            tr!(
+                "le partage donne aussi l'accès à ce compte par une règle d'une autre sorte : rien changé, à fermer dans Windows",
+                "the share also grants this account access through another kind of rule: nothing changed, close it in Windows"
             )
             .to_string(),
         );
@@ -263,6 +276,11 @@ mod tests {
         sd.extend(acl);
         assert!(!autorise_encore(&sd, "S-1-1-0"));
         assert!(autorise_encore(&sd, "S-1-5-32-544"));
+        // Le refus de Tout le monde devenu une autorisation à rappel (sorte 9) : elle compte.
+        let mut rappel = sd.clone();
+        assert_eq!(rappel[44], 1);
+        rappel[44] = 9;
+        assert!(autorise_encore(&rappel, "S-1-1-0"));
         let mut sans_liste = sd.clone();
         sans_liste[2] = 0;
         assert!(autorise_encore(&sans_liste, "S-1-1-0"));

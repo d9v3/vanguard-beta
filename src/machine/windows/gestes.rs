@@ -2273,7 +2273,8 @@ impl SidTexte {
     pub(crate) fn lire(texte: &str) -> Option<SidTexte> {
         let reste = texte.strip_prefix("S-1-")?;
         let nombres: Vec<&str> = reste.split('-').collect();
-        if !(2..=15).contains(&nombres.len()) {
+        // L'autorité, puis de 1 à 15 sous-autorités (SID_MAX_SUB_AUTHORITIES).
+        if !(2..=16).contains(&nombres.len()) {
             return None;
         }
         let decimal = |n: &str| {
@@ -5582,7 +5583,8 @@ mod tests {
             format!("{p} S-1-1-4294967296"),
             format!("{p} S-1-281474976710656-0"),
             format!("{p} S-1-1-+0"),
-            format!("{p} S-1-5{}", "-1".repeat(15)),
+            // 16 sous-autorités : une de plus que SID_MAX_SUB_AUTHORITIES.
+            format!("{p} S-1-5{}", "-1".repeat(16)),
             format!("{p} Everyone"),
             format!("{p} S-1-1-0 "),
             format!("{p}  S-1-1-0"),
@@ -5597,6 +5599,8 @@ mod tests {
             );
         }
         assert!(analyser_acte(&format!("vanguard:partage-ajouter-acces {p} S-1-1-0")).is_none());
+        // 15 sous-autorités, le plus que Windows admet : lu.
+        assert!(analyser_acte(&format!("{PARTAGE_RETIRER_ACCES}{p} S-1-5{}", "-1".repeat(15))).is_some());
     }
 
     type Changer = fn(&mut EtatCompte);

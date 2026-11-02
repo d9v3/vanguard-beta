@@ -201,6 +201,17 @@ pub(crate) fn reserve_aux_administrateurs(octets: &[u8]) -> bool {
     let Some(regles) = aces(octets) else {
         return false;
     };
+    // `aces` s'arrête à une règle qui déborde : les suivantes ne seraient pas vues. Toutes lues, ou non.
+    let annoncees = usize::try_from(u32::from_le_bytes(
+        octets.get(16..20).and_then(|b| b.try_into().ok()).unwrap_or([0; 4]),
+    ))
+    .ok()
+    .and_then(|d| octets.get(d.checked_add(4)?..d.checked_add(6)?))
+    .and_then(|b| b.try_into().ok())
+    .map(u16::from_le_bytes);
+    if annoncees != u16::try_from(regles.len()).ok() {
+        return false;
+    }
     regles.iter().all(|r| {
         REFUS.contains(&r.sorte)
             || r.masque & ECRITURE == 0
@@ -440,6 +451,13 @@ mod tests {
         r.push(regle(0, 0x12_00A9, "S-1-5-32-545"));
         r.push(regle(1, ECRITURE, "S-1-1-0"));
         assert!(reserve_aux_administrateurs(&descripteur("S-1-5-18", Some(&r))));
+        // Une règle annoncée qui ne se lit pas (taille trop petite) : celles d'après ne seraient pas vues, refusé.
+        let mut cassee = regle(0, 0x12_00A9, "S-1-5-32-545");
+        cassee[2] = 4;
+        let mut r = admins.to_vec();
+        r.push(cassee);
+        r.push(regle(0, 0x1F_01FF, "S-1-1-0"));
+        assert!(!reserve_aux_administrateurs(&descripteur("S-1-5-18", Some(&r))));
     }
 
     /// Retirer d'un partage les autorisations d'un compte : seules les siennes partent, le reste est gardé tel quel.

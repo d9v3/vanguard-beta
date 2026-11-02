@@ -20,6 +20,9 @@ use crate::ui::{tr, trf};
 const SCRIPT: u32 = 0x1;
 /// UF_ACCOUNTDISABLE.
 const DESACTIVE: u32 = 0x2;
+/// UF_LOCKOUT et UF_PASSWORD_EXPIRED : un administrateur verrouillé ou au mot de passe expiré n'ouvre pas de session
+/// tout de suite ; il ne compte pas comme « un autre administrateur actif ».
+const INUTILISABLE: u32 = DESACTIVE | 0x10 | 0x0080_0000;
 
 /// USER_INFO_20 de lmaccess.h (32 octets en 64 bits) : les drapeaux et le RID du compte.
 #[repr(C)]
@@ -106,7 +109,7 @@ pub(super) fn desactiver(rid: u32, personne: Option<&str>) -> Resultat {
         administrateur: admins.is_none() || est_admin(cible),
         autres_administrateurs: liste
             .iter()
-            .filter(|c| c.actif && !c.sid.eq_ignore_ascii_case(cible) && est_admin(&c.sid))
+            .filter(|c| c.actif && !c.sid.eq_ignore_ascii_case(cible) && est_admin(&c.sid) && utilisable(c))
             .count(),
         programmes: programmes().and_then(|p| programme_du_compte(&p, cible)),
     };
@@ -116,7 +119,21 @@ pub(super) fn desactiver(rid: u32, personne: Option<&str>) -> Resultat {
     let Some(nom) = cibles.first().map(|c| c.nom.clone()) else {
         return Resultat::echec(None, pourquoi(RefusCompte::Introuvable));
     };
+    // Relu juste avant d'écrire : une session ouverte entre-temps (Bureau à distance, SSH) refuse encore.
+    match programmes().and_then(|p| programme_du_compte(&p, cible)) {
+        Some(false) => {}
+        Some(true) => return Resultat::echec(None, pourquoi(RefusCompte::SessionOuverte)),
+        None => return Resultat::echec(None, pourquoi(RefusCompte::ProgrammesIllisibles)),
+    }
     ecrire(&nom, rid)
+}
+
+/// Un autre administrateur compte-t-il pour garder l'ordinateur administrable ? Ses drapeaux relus ne le disent ni
+/// désactivé, ni verrouillé, ni au mot de passe expiré ; illisibles : non.
+fn utilisable(c: &comptes::Compte) -> bool {
+    gestes::rid_local(&c.sid)
+        .and_then(|rid| drapeaux(&large(&c.nom), rid))
+        .is_some_and(|d| d & INUTILISABLE == 0)
 }
 
 /// Le bilan des comptes refait sur la lecture d'à l'instant propose-t-il cette ligne, automatiquement ?

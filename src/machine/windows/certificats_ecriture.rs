@@ -183,28 +183,14 @@ fn retirer_du_magasin(m: MagasinRacine, e: &Empreinte, octets: &[u8; 20], nom: &
     } else {
         super::quarantaine::deposer(&format!("racine-{}-{secondes}.cer", e.texte()), &der)
     };
+    // Sans copie, la racine est retirée quand même : un compte ordinaire peut poser d'avance un dossier Vanguard sous
+    // ProgramData (refusé par `quarantaine`) ; s'il suffisait à garder sa racine, il la protégerait. La copie n'est
+    // qu'une commodité pour la réimporter : l'empreinte et le nom restent notés.
     let copie = match copie {
-        Ok(c) => c,
-        Err(r) => {
-            // SAFETY: le contexte trouvé (non nul) est rendu une seule fois.
-            unsafe {
-                CertFreeCertificateContext(certificat);
-            }
-            return Resultat::echec(
-                None,
-                trf!(
-                    "copie dans la quarantaine impossible ({r}) : rien retiré",
-                    "copy to quarantine failed ({r}): nothing removed"
-                ),
-            );
-        }
+        Ok(c) => trf!("copie : {}", "copy: {}", c.display()),
+        Err(r) => trf!("sans copie ({r})", "no copy ({r})"),
     };
-    let avant = avant_notable(&format!(
-        "{} {} « {montre} », copie : {}",
-        m.nom(),
-        e.texte(),
-        copie.display()
-    ));
+    let avant = avant_notable(&format!("{} {} « {montre} », {copie}", m.nom(), e.texte()));
     // SAFETY: CertDeleteCertificateFromStore rend le contexte dans tous les cas (réussite ou refus) : il n'est plus
     // touché ensuite.
     let retire = unsafe { CertDeleteCertificateFromStore(certificat) } != 0;
@@ -231,7 +217,7 @@ fn retirer_du_magasin(m: MagasinRacine, e: &Empreinte, octets: &[u8; 20], nom: &
         Some(relu) => {
             let encore = relu.chercher(octets);
             if encore.is_null() {
-                Resultat::fait(avant)
+                encore_ailleurs(e, avant)
             } else {
                 // SAFETY: le contexte trouvé (non nul) est rendu une seule fois.
                 unsafe {
@@ -255,6 +241,38 @@ fn retirer_du_magasin(m: MagasinRacine, e: &Empreinte, octets: &[u8; 20], nom: &
             )
             .to_string(),
         ),
+    }
+}
+
+/// Retirée de ce magasin : le bilan relu ne doit plus la montrer nulle part. Le magasin du compte montre aussi
+/// l'ordinateur, et le bilan ne garde qu'une ligne par empreinte : une copie de la même racine dans l'autre magasin
+/// n'apparaît qu'une fois la première retirée, et la racine resterait de confiance.
+fn encore_ailleurs(e: &Empreinte, avant: String) -> Resultat {
+    let Some(sortie) = super::magasins::racines() else {
+        return Resultat::echec(
+            Some(avant),
+            tr!(
+                "retirée, mais les magasins ne se relisent pas : rien n'est compté comme fait",
+                "removed, but the stores cannot be read back: nothing is counted as done"
+            )
+            .to_string(),
+        );
+    };
+    let (racines, _) = certificats::racines_ajoutees(&sortie);
+    if racines
+        .iter()
+        .any(|r| Empreinte::nouvelle(r.empreinte).as_ref() == Some(e))
+    {
+        Resultat::echec(
+            Some(avant),
+            tr!(
+                "retirée de ce magasin, mais encore présente dans l'autre : refaire le bilan pour la retirer aussi",
+                "removed from this store, but still present in the other one: run the scan again to remove it too"
+            )
+            .to_string(),
+        )
+    } else {
+        Resultat::fait(avant)
     }
 }
 
