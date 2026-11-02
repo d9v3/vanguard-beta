@@ -328,7 +328,7 @@ pub(crate) struct Echec {
     pub jour: i32,
 }
 
-/// Une correction réussie dont on attend le bilan suivant : le problème corrigé revient-il ?
+/// Une correction réussie, suivie `SUIVIE_JOURS` jours : le problème corrigé revient-il à un bilan ?
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Suivie {
@@ -338,7 +338,7 @@ pub(crate) struct Suivie {
     pub jour: i32,
 }
 
-/// Une correction qui n'a pas tenu : le problème est revenu au bilan suivant.
+/// Une correction qui n'a pas tenu : le problème est revenu à un bilan d'après.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Revenue {
@@ -387,9 +387,7 @@ impl EtatCorrections {
         bilan: Option<&ResumeBilan>,
     ) -> (EtatCorrections, Vec<Proposition>) {
         let mut montrer = Vec::new();
-        self.echecs.retain(|e| e.jour >= jour.saturating_sub(ECHECS_JOURS));
-        self.suivies.retain(|s| s.jour >= jour.saturating_sub(SUIVIE_JOURS));
-        self.revenues.retain(|r| r.jour >= jour.saturating_sub(REVENUE_JOURS));
+        self = self.au_jour(jour);
         for n in notes {
             match n.issue {
                 IssueCorrection::Echouee(code) => {
@@ -435,16 +433,27 @@ impl EtatCorrections {
                     self.revenues.retain(|r| r.regle != s.regle);
                     self.revenues.push(Revenue { regle: s.regle, jour });
                     montrer.push(Proposition::NeTientPas { regle: s.regle });
-                } else if issue == Some(Issue::Concluse) {
-                    self.revenues.retain(|r| r.regle != s.regle);
                 } else {
-                    // Pas conclu : ni tenue ni revenue, on attend le bilan suivant.
+                    // Tenue à ce bilan (le premier suit souvent la correction de près) : elle reste suivie jusqu'à
+                    // `SUIVIE_JOURS`, car un réglage remis plus tard par un autre programme ne tient pas non plus.
+                    if issue == Some(Issue::Concluse) {
+                        self.revenues.retain(|r| r.regle != s.regle);
+                    }
                     encore.push(s);
                 }
             }
             self.suivies = encore;
         }
         (self.borne(), montrer)
+    }
+
+    /// L'état le jour `jour` : ce qui a passé sa durée (`ECHECS_JOURS`, `SUIVIE_JOURS`, `REVENUE_JOURS`) s'oublie,
+    /// même sans tour depuis. Pure.
+    pub(crate) fn au_jour(mut self, jour: i32) -> EtatCorrections {
+        self.echecs.retain(|e| e.jour >= jour.saturating_sub(ECHECS_JOURS));
+        self.suivies.retain(|s| s.jour >= jour.saturating_sub(SUIVIE_JOURS));
+        self.revenues.retain(|r| r.jour >= jour.saturating_sub(REVENUE_JOURS));
+        self.borne()
     }
 
     /// Ce qui se dit d'une correction de `regle` : ses échecs de suite (s'ils la disent fragile) et son code, et si
@@ -698,7 +707,7 @@ mod tests {
     }
 
     /// R6 : deux échecs de suite disent une correction fragile (une réussite remet à zéro) ; un problème corrigé
-    /// qui revient au bilan suivant, de la même empreinte, dit qu'elle ne tient pas ; un bilan commencé avant la
+    /// qui revient à un bilan de la semaine, de la même empreinte, dit qu'elle ne tient pas ; un bilan commencé avant la
     /// correction, ou qui n'a pas relancé sa règle, ne juge rien.
     #[test]
     fn echecs_de_suite_et_correction_revenue() {
@@ -753,7 +762,28 @@ mod tests {
             )),
         );
         assert_eq!(m, []);
-        assert!(autre.suivies.is_empty() && autre.revenues.is_empty());
+        assert_eq!(autre.revenues, []);
+        // Tenue au bilan qui suit la correction, elle reste suivie : revenue trois jours plus tard, elle ne tient pas.
+        assert_eq!(autre.suivies.len(), 1);
+        let (plus_tard, m) = autre.apres(
+            j + 6,
+            &[],
+            Some(&bilan(
+                9_000,
+                &[("LNX-TST-010", Issue::Concluse)],
+                &[("LNX-TST-010", 7)],
+            )),
+        );
+        assert_eq!(
+            m,
+            [Proposition::NeTientPas {
+                regle: r("LNX-TST-010")
+            }]
+        );
+        assert_eq!(plus_tard.suivies, []);
+        // Au-delà de `SUIVIE_JOURS`, plus rien n'est suivi.
+        let (vieille, _) = e.clone().apres(j + 3 + SUIVIE_JOURS, &[], None);
+        assert_eq!(vieille.suivies, []);
         // Revenu : ne tient pas, dit une fois.
         let (e, m) = e.apres(
             j + 3,

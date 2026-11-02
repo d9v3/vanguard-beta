@@ -422,6 +422,7 @@ pub(crate) fn relancer_dans(
     let mut nouvelles = Vec::new();
     for (regle, passageres, reprises) in demandes {
         if !id_valide(regle)
+            || crate::machine::regles::SANS_SECOND_ESSAI.contains(&regle.as_str())
             || e.sans_relance.contains(regle)
             || e.relances.iter().any(|r| &r.regle == regle)
             || e.relances.len() >= MONTEES_MAX
@@ -1728,11 +1729,14 @@ mod tests {
         assert!(e.relancees().is_empty());
         assert!(relances_connues_dans(&d).unwrap().contains("LNX-TST-010"));
         assert_eq!(relancer_dans(&d, j("2026-11-04"), &demande), []);
-        // Un identifiant hors des règles gardées n'est jamais noté.
+        // Un identifiant hors des règles gardées n'est jamais noté, ni une règle des journaux effacés.
         assert_eq!(
             relancer_dans(&d, j("2026-11-04"), &[("pas une règle".to_string(), 4, 3)]),
             []
         );
+        for id in crate::machine::regles::SANS_SECOND_ESSAI {
+            assert_eq!(relancer_dans(&d, j("2026-11-04"), &[(id.to_string(), 4, 3)]), []);
+        }
         mettre_en_marche_dans(&d, false).unwrap();
         assert_eq!(relances_connues_dans(&d), None);
         let Lu::Cru(e) = lire_dans(&d) else { panic!("illisible") };

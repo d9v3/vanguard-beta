@@ -315,6 +315,11 @@ pub(crate) const DELAI: std::time::Duration = std::time::Duration::from_mins(10)
 /// winget, la recherche de Windows Update et les sources des logiciels pas à jour prennent parfois plusieurs minutes.
 pub(crate) const DELAI_LONG: std::time::Duration = std::time::Duration::from_mins(30);
 
+/// Les règles qui ne prennent jamais de second essai (R4) : celles des journaux effacés, dont l'une cède à l'autre ce
+/// qu'elle a lu dans le même bilan (`apres_les_regles`) ; une seconde lecture le ferait dire deux fois. L'auto-réglage
+/// n'en note donc jamais pour elles.
+pub(crate) const SANS_SECOND_ESSAI: [&str; 2] = ["COM-JRN-001", "WIN-JRN-003"];
+
 impl Regle {
     /// Au-delà, la règle est dite non vérifiée et le bilan continue sans elle.
     pub(crate) fn delai(&self) -> std::time::Duration {

@@ -1,7 +1,7 @@
 //! La mission des corrections (R6) : de l'information seulement. Elle lit les corrections appliquées depuis le tour
 //! d'avant (notées par Vanguard, des règles et des empreintes, jamais un message) et le bilan qui vient de finir ;
-//! elle garde dans son état les échecs de suite de chaque correction et les problèmes corrigés qui reviennent au
-//! bilan suivant. Ce qu'elle décide se montre (une proposition) ; rien n'est retiré ni masqué : une correction
+//! elle garde dans son état les échecs de suite de chaque correction et les problèmes corrigés qui reviennent à un
+//! bilan dans la semaine. Ce qu'elle décide se montre (une proposition) ; rien n'est retiré ni masqué : une correction
 //! fragile reste proposée, une à une, avec son avis (`super::super::avis_corrections`). Elle n'ajuste rien.
 
 use std::time::Duration;

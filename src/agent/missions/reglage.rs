@@ -54,7 +54,15 @@ impl Mission for Reglage {
                 ajustements: prevu.montees.iter().filter_map(de_montee).collect(),
             },
             bilan: lu.bilan.cloned(),
-            deja: deja.iter().filter_map(|r| RegleId::depuis(r)).collect(),
+            deja: deja
+                .iter()
+                .filter_map(|r| RegleId::depuis(r))
+                .chain(
+                    crate::machine::regles::SANS_SECOND_ESSAI
+                        .into_iter()
+                        .filter_map(RegleId::depuis),
+                )
+                .collect(),
         })
     }
     fn juger(&self, obs: &ObsReglage, etat: &EtatReglage) -> (Vec<Decision>, EtatReglage) {

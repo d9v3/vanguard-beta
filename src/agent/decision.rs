@@ -74,7 +74,7 @@ pub(crate) enum Proposition {
         echecs: u16,
         code: CodeEchec,
     },
-    /// Le problème corrigé de cette règle est revenu au bilan suivant (R6) : la correction ne tient pas.
+    /// Le problème corrigé de cette règle est revenu à un bilan de la semaine (R6) : la correction ne tient pas.
     NeTientPas { regle: RegleId },
 }
 

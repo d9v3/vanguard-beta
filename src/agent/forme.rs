@@ -66,7 +66,7 @@ pub(crate) enum Issue {
 pub(crate) struct ResumeBilan {
     /// Son début, en millisecondes depuis 1970.
     pub debut_ms: i64,
-    /// Chaque règle lancée (ou reprise), et son issue.
+    /// Chaque règle lancée, et son issue ; une règle reprise de la cache n'y est pas.
     pub regles: Vec<(RegleId, Issue)>,
     /// Les problèmes vus : la règle et l'empreinte de l'objet (`amelioration::empreinte`), jamais son nom.
     pub problemes: Vec<(RegleId, u64)>,

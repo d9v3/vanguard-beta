@@ -1424,7 +1424,7 @@ fn note(issue: forme::IssueCorrection, quand_ms: i64) -> forme::NoteCorrection {
 }
 
 /// R6 de bout en bout : deux échecs de suite se montrent (une proposition, rien d'appliqué) et l'avis de la
-/// correction le dit, avec son code ; réussie puis revenue au bilan suivant, l'avis dit qu'elle ne tient pas. La
+/// correction le dit, avec son code ; réussie puis revenue à un bilan d'après, l'avis dit qu'elle ne tient pas. La
 /// mission coupée, ou l'auto-réglage coupé : aucun avis. L'agent n'ajuste rien pour autant.
 #[test]
 fn l_avis_des_corrections_de_bout_en_bout() {
@@ -1443,19 +1443,25 @@ fn l_avis_des_corrections_de_bout_en_bout() {
         refusees: 0,
     };
     assert_eq!(tour(&[echec], None, Moment::Sortie), fait(0));
-    assert_eq!(avis_corrections_dans(&d).de("LNX-TST-010"), Avis::default());
+    assert_eq!(avis_corrections_dans(&d, jour(2)).de("LNX-TST-010"), Avis::default());
     assert_eq!(tour(&[echec], None, Moment::Sortie), fait(1));
     assert_eq!(
-        avis_corrections_dans(&d).de("LNX-TST-010"),
+        avis_corrections_dans(&d, jour(2)).de("LNX-TST-010"),
         Avis {
             fragile: Some((2, "echoue")),
             ne_tient_pas: false
         }
     );
-    assert_eq!(avis_corrections_dans(&d).de("LNX-TST-011"), Avis::default());
+    assert_eq!(avis_corrections_dans(&d, jour(2)).de("LNX-TST-011"), Avis::default());
+    // Lu longtemps après, sans tour depuis : des échecs de plus de `ECHECS_JOURS` ne se disent plus.
+    let loin = |n| jour(2) + chrono::Days::new(n);
+    assert_eq!(
+        avis_corrections_dans(&d, loin(u64::from(etat::ECHECS_JOURS.unsigned_abs()) + 1)).de("LNX-TST-010"),
+        Avis::default()
+    );
     let reussie = note(forme::IssueCorrection::Reussie { empreinte: Some(7) }, 1_000);
     assert_eq!(tour(&[reussie], None, Moment::Sortie), fait(0));
-    assert_eq!(avis_corrections_dans(&d).de("LNX-TST-010"), Avis::default());
+    assert_eq!(avis_corrections_dans(&d, jour(2)).de("LNX-TST-010"), Avis::default());
     let revenu = ResumeBilan {
         debut_ms: 2_000,
         regles: vec![(r("LNX-TST-010"), Issue::Concluse)],
@@ -1466,7 +1472,11 @@ fn l_avis_des_corrections_de_bout_en_bout() {
         fragile: None,
         ne_tient_pas: true,
     };
-    assert_eq!(avis_corrections_dans(&d).de("LNX-TST-010"), ne_tient_pas);
+    assert_eq!(avis_corrections_dans(&d, jour(2)).de("LNX-TST-010"), ne_tient_pas);
+    assert_eq!(
+        avis_corrections_dans(&d, loin(u64::from(etat::REVENUE_JOURS.unsigned_abs()) + 1)).de("LNX-TST-010"),
+        Avis::default()
+    );
     assert!(journal_de(&d).contains(&Fait::Decision {
         mission: MissionId::Corrections,
         decision: Decision::Proposer(Proposition::NeTientPas {
@@ -1484,13 +1494,13 @@ fn l_avis_des_corrections_de_bout_en_bout() {
         coupees: [MissionId::Corrections].into(),
     };
     etat::ecrire_dans(&d, etat::AGENT, &coupee).unwrap();
-    assert_eq!(avis_corrections_dans(&d).de("LNX-TST-010"), Avis::default());
+    assert_eq!(avis_corrections_dans(&d, jour(2)).de("LNX-TST-010"), Avis::default());
     etat::ecrire_dans(&d, etat::AGENT, &etat::Interrupteurs::default()).unwrap();
-    assert_eq!(avis_corrections_dans(&d).de("LNX-TST-010"), ne_tient_pas);
+    assert_eq!(avis_corrections_dans(&d, jour(2)).de("LNX-TST-010"), ne_tient_pas);
     // Un interrupteur douteux, ou l'auto-réglage coupé : aucun avis.
     std::fs::write(d.join(etat::AGENT), b"{}").unwrap();
-    assert_eq!(avis_corrections_dans(&d).de("LNX-TST-010"), Avis::default());
+    assert_eq!(avis_corrections_dans(&d, jour(2)).de("LNX-TST-010"), Avis::default());
     etat::ecrire_dans(&d, etat::AGENT, &etat::Interrupteurs::default()).unwrap();
     crate::sceau::ecrire_dans(&d, crate::autotest::reglage::REGLAGE, br#"{"coupe":true}"#).unwrap();
-    assert_eq!(avis_corrections_dans(&d).de("LNX-TST-010"), Avis::default());
+    assert_eq!(avis_corrections_dans(&d, jour(2)).de("LNX-TST-010"), Avis::default());
 }

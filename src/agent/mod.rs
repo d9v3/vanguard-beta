@@ -341,11 +341,13 @@ fn notes_prises() -> Vec<forme::NoteCorrection> {
     std::mem::take(&mut *NOTES.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
 }
 
-/// Un tour sauté rend ses notes : le tour suivant les reprendra.
+/// Un tour sauté rend ses notes : le tour suivant les reprendra. Au-delà de `NOTES_MAX`, les plus vieilles
+/// tombent.
 fn notes_rendues(mut v: Vec<forme::NoteCorrection>) {
     let mut n = NOTES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     v.append(&mut n);
-    v.truncate(NOTES_MAX);
+    let trop = v.len().saturating_sub(NOTES_MAX);
+    v.drain(..trop);
     *n = v;
 }
 
@@ -387,10 +389,11 @@ impl AvisCorrections {
 
 /// L'avis de l'agent sur les corrections, lu de son état (`agent/etat/corrections.json`).
 pub(crate) fn avis_corrections() -> AvisCorrections {
-    avis_corrections_dans(&crate::socle::dossier_local())
+    avis_corrections_dans(&crate::socle::dossier_local(), chrono::Local::now().date_naive())
 }
 
-pub(crate) fn avis_corrections_dans(dossier: &Path) -> AvisCorrections {
+/// L'avis lu dans `dossier`, le jour `aujourd_hui` : ce qui a passé sa durée ne se dit plus, même sans tour depuis.
+pub(crate) fn avis_corrections_dans(dossier: &Path, aujourd_hui: chrono::NaiveDate) -> AvisCorrections {
     if crate::autotest::reglage::en_marche_dans(dossier) != Some(true) {
         return AvisCorrections::default();
     }
@@ -402,7 +405,10 @@ pub(crate) fn avis_corrections_dans(dossier: &Path) -> AvisCorrections {
     }
     let lu = etat::lire_dans::<etat::EtatCorrections>(dossier, etat::nom_etat(MissionId::Corrections));
     AvisCorrections {
-        etat: lu.utilisable().unwrap_or_default(),
+        etat: lu
+            .utilisable()
+            .unwrap_or_default()
+            .au_jour(mission::jour_de(aujourd_hui)),
     }
 }
 

@@ -26,13 +26,13 @@ pub(crate) struct Lecture<'a> {
 impl Lecture<'_> {
     /// Le jour, compté depuis 1970 (les états ne gardent que des nombres).
     pub(crate) fn jour(&self) -> i32 {
-        i32::try_from(
-            self.aujourd_hui
-                .signed_duration_since(chrono::NaiveDate::default())
-                .num_days(),
-        )
-        .unwrap_or(0)
+        jour_de(self.aujourd_hui)
     }
+}
+
+/// Le jour `d`, compté depuis 1970.
+pub(crate) fn jour_de(d: chrono::NaiveDate) -> i32 {
+    i32::try_from(d.signed_duration_since(chrono::NaiveDate::default()).num_days()).unwrap_or(0)
 }
 
 pub(crate) trait Mission: Send + Sync {

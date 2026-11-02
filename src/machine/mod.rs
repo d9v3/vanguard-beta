@@ -375,8 +375,8 @@ fn bilan_des_regles(choisies: Vec<&'static regles::Regle>) -> Vec<Constat> {
 }
 
 /// Ce que l'Agent Vanguard voit d'un bilan (R4, R6) : l'issue de chaque règle (conclue, non vérifiée pour une raison
-/// passagère, ou autre) et l'empreinte de chaque problème, jamais un texte. Une règle reprise de la cache ne compte
-/// pas : son résultat n'a pas été revu.
+/// passagère, ou autre) et l'empreinte de chaque problème, jamais un texte. Une règle reprise de la cache n'y est
+/// pas : son résultat n'a pas été revu, elle ne résout ni ne confirme un passager (R4) ni une correction (R6).
 fn resume_du_bilan(
     debut_ms: i64,
     ids: &[&'static str],
@@ -394,7 +394,6 @@ fn resume_du_bilan(
             continue;
         };
         if reprise(id) {
-            resume.regles.push((regle, Issue::Autre));
             continue;
         }
         let siens: Vec<&Constat> = constats.iter().filter(|c| c.regle == *id).collect();
@@ -505,10 +504,6 @@ pub(crate) fn regles_lancees(
     (constats, durees)
 }
 
-/// Les règles qui ne prennent jamais de second essai : celles des journaux effacés, dont l'une cède à l'autre ce
-/// qu'elle a lu dans le même bilan (`apres_les_regles`) ; une seconde lecture le ferait dire deux fois.
-const SANS_SECOND_ESSAI: [&str; 2] = ["COM-JRN-001", "WIN-JRN-003"];
-
 /// Le second essai (R4) : chaque règle de `relances`, lancée ici (pas reprise de la cache), dont tous les constats
 /// sont « non vérifiée » pour une raison passagère, est relancée une fois, toutes en même temps, dans ce qui reste
 /// de `DELAI_LONG` depuis le départ du bilan (`regles::delai_du_second_essai`) : jamais pour un bilan qui le dépasse
@@ -530,7 +525,7 @@ fn second_essai(
         .filter_map(|(i, r)| Some((i, (*r)?)))
         .filter(|(i, r)| {
             relances.contains(r.id)
-                && !SANS_SECOND_ESSAI.contains(&r.id)
+                && !regles::SANS_SECOND_ESSAI.contains(&r.id)
                 && groupes
                     .get(*i)
                     .is_some_and(|g| !g.is_empty() && g.iter().all(|c| passagere(&c.etat())))
