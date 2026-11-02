@@ -101,6 +101,30 @@ fn ecrire_hosts(h: &HostsEcrire) -> Resultat {
     };
     let date = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let copie = libre(&dossier, &format!("hosts.vanguard-{date}"));
+    if hosts.is_empty() && !cible.exists() {
+        // Pas de hosts à remplacer : le nouveau est créé à sa place, sans jamais écraser un hosts apparu entre-temps
+        // (create_new) ; à moitié écrit, il est retiré.
+        let ecrit = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&cible)
+            .and_then(|mut f| {
+                // Créé par ce processus : s'il reste à moitié écrit, c'est le sien qui est retiré.
+                let r = f.write_all(&prepare).and_then(|()| f.sync_all());
+                if r.is_err() {
+                    drop(f);
+                    let _ = std::fs::remove_file(&cible);
+                }
+                r
+            });
+        if let Err(e) = ecrit {
+            return Resultat::echec(
+                None,
+                trf!("fichier hosts pas créé : {e}", "hosts file not created: {e}"),
+            );
+        }
+        return relu_puis_fait(&cible, &prepare, &copie, &hosts, &diff);
+    }
     let temporaire = libre(&dossier, &format!("hosts.vanguard-nouveau-{}", std::process::id()));
     if let Err(e) = ecrire_temporaire(&temporaire, &prepare) {
         let _ = std::fs::remove_file(&temporaire);
@@ -109,12 +133,7 @@ fn ecrire_hosts(h: &HostsEcrire) -> Resultat {
             trf!("fichier temporaire pas écrit : {e}", "temporary file not written: {e}"),
         );
     }
-    let fait = if hosts.is_empty() && !cible.exists() {
-        // Pas de hosts à remplacer : le nouveau prend sa place (le dossier etc n'est écrit que par un administrateur).
-        std::fs::rename(&temporaire, &cible).map_err(|e| Echec::ecriture("reseau/hosts-remplacer", &e))
-    } else {
-        remplacer(&cible, &temporaire, &copie)
-    };
+    let fait = remplacer(&cible, &temporaire, &copie);
     let _ = std::fs::remove_file(&temporaire);
     if let Err(e) = fait {
         return Resultat::echec(
@@ -125,8 +144,13 @@ fn ecrire_hosts(h: &HostsEcrire) -> Resultat {
             ),
         );
     }
-    // Relu : seul ce qui est sur le disque compte.
-    match lire(&cible) {
+    relu_puis_fait(&cible, &prepare, &copie, &hosts, &diff)
+}
+
+/// Le hosts écrit, relu (seul ce qui est sur le disque compte), puis le cache DNS vidé ; la copie d'avant est la valeur
+/// d'avant rendue.
+fn relu_puis_fait(cible: &Path, prepare: &[u8], copie: &Path, hosts: &[u8], diff: &gestes::DiffHosts) -> Resultat {
+    match lire(cible) {
         Ok(relu) if relu == prepare => {}
         _ => {
             return Resultat::echec(
@@ -324,6 +348,43 @@ fn lire_note(guid: GuidReseau, v6: bool) -> Option<String> {
         .ok()
 }
 
+/// Un côté à écrire, jugé : sa valeur, celle d'avant (brute, pour la remettre si l'autre côté échoue), la valeur
+/// d'avant à noter, et s'il remet une valeur notée.
+struct Pose {
+    v6: bool,
+    voulu: String,
+    actuel: String,
+    noter_avant: Option<String>,
+    remise: bool,
+}
+
+/// Remet les côtés déjà écrits (dans l'ordre inverse) ; la phrase dit si tout est revenu.
+fn defaire(guid: GuidReseau, poses: &[&Pose]) -> String {
+    let rates: Vec<&str> = poses
+        .iter()
+        .rev()
+        .filter(|p| poser(guid, p.v6, &canonique(&p.actuel).unwrap_or_else(|| p.actuel.clone())).is_err())
+        .map(|p| if p.v6 { "IPv6" } else { "IPv4" })
+        .collect();
+    if rates.is_empty() {
+        tr!("rien n'est changé", "nothing is changed").to_string()
+    } else {
+        trf!(
+            "remis en place sauf {} : à vérifier dans les réglages de la carte",
+            "restored except {}: check the adapter's settings",
+            rates.join(", ")
+        )
+    }
+}
+
+fn oublier_note(guid: GuidReseau, v6: bool) {
+    if let Ok(k) = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(gestes::DNS_AVANT_CLE, KEY_SET_VALUE | KEY_WOW64_64KEY)
+    {
+        let _ = k.delete_value(nom_note(guid, v6));
+    }
+}
+
 fn noter(guid: GuidReseau, v6: bool, valeur: &str) -> std::io::Result<()> {
     let (k, _) = RegKey::predef(HKEY_LOCAL_MACHINE)
         .create_subkey_with_flags(gestes::DNS_AVANT_CLE, KEY_SET_VALUE | KEY_WOW64_64KEY)?;
@@ -364,11 +425,13 @@ fn dns(d: &DnsServeurs) -> Resultat {
         );
     };
     let avant = avant_notable(&format!("{avant4}|{avant6}"));
-    let mut ecrits = 0u32;
+    // Tout est jugé avant d'écrire quoi que ce soit : un côté refusé ne laisse pas l'autre à moitié changé.
+    let mut plan: Vec<Pose> = Vec::new();
     for (cote, v6, actuel) in [(&d.v4, false, &avant4), (&d.v6, true, &avant6)] {
         let Some(voulu) = cote.valeur() else { continue };
         // Hors de la liste fermée : seulement la valeur d'avant que ce processus a notée en la remplaçant.
-        if cote.hors_liste() && lire_note(d.guid, v6).as_deref() != Some(voulu.as_str()) {
+        let remise = cote.hors_liste();
+        if remise && lire_note(d.guid, v6).as_deref() != Some(voulu.as_str()) {
             return Resultat::echec(
                 Some(avant),
                 trf!(
@@ -379,42 +442,57 @@ fn dns(d: &DnsServeurs) -> Resultat {
         }
         let actuel_canonique = canonique(actuel);
         if actuel_canonique.as_deref() == Some(voulu.as_str()) {
+            if remise {
+                // Déjà remise : la note ne sert plus.
+                oublier_note(d.guid, v6);
+            }
             continue;
         }
         // Remplacer une valeur hors liste (la box, le DNS de l'entreprise) par un serveur de la liste : elle est notée
-        // d'abord, pour pouvoir la remettre. Pas en remettant en automatique (réparer un détournement), ni quand elle
-        // ne se lit pas comme des adresses.
-        if matches!(cote, CoteDns::Serveurs(_))
-            && let Some(a) = actuel_canonique.filter(|a| !a.is_empty())
-            && a.split(',').any(|ip| !gestes::RESOLVEURS.contains(&ip))
-            && let Err(e) = noter(d.guid, v6, &a)
-        {
-            return Resultat::echec(
-                Some(avant),
-                trf!(
-                    "la valeur d'avant ({a}) n'a pas pu être notée ({e}) : rien n'est changé, pour pouvoir la remettre",
-                    "the previous value ({a}) could not be noted ({e}): nothing is changed, so it can be restored"
-                ),
-            );
+        // d'abord, pour pouvoir la remettre, et seulement si une ligne de Vanguard peut la remettre exactement. Pas en
+        // remettant en automatique : réparer un détournement ne le rend pas remettable.
+        let mut noter_avant = None;
+        if matches!(cote, CoteDns::Serveurs(_)) {
+            match actuel_canonique {
+                None => {
+                    return Resultat::echec(
+                        Some(avant),
+                        trf!(
+                            "les serveurs DNS actuels ({}) ne se lisent pas comme des adresses : ils ne pourraient pas être remis, rien n'est changé",
+                            "the current DNS servers ({}) cannot be read as addresses: they could not be restored, nothing is changed",
+                            crate::ui::affichable(actuel)
+                        ),
+                    );
+                }
+                Some(a) if !a.is_empty() && a.split(',').any(|ip| !gestes::RESOLVEURS.contains(&ip)) => {
+                    let (l4, l6) = if v6 {
+                        (None, Some(a.as_str()))
+                    } else {
+                        (Some(a.as_str()), None)
+                    };
+                    if gestes::ligne_dns(&guid, l4, l6).is_none() {
+                        return Resultat::echec(
+                            Some(avant),
+                            trf!(
+                                "les serveurs DNS actuels ({a}) ne pourraient pas être remis par Vanguard (bouclage, plus de quatre serveurs…) : rien n'est changé",
+                                "the current DNS servers ({a}) could not be restored by Vanguard (loopback, more than four servers…): nothing is changed"
+                            ),
+                        );
+                    }
+                    noter_avant = Some(a);
+                }
+                Some(_) => {}
+            }
         }
-        if let Err(e) = poser(d.guid, v6, &voulu) {
-            return Resultat::echec(Some(avant), e.to_string());
-        }
-        // Relu : seul le registre de Windows compte.
-        let relu = name_server(d.guid, v6).and_then(|v| canonique(&v));
-        if relu.as_deref() != Some(voulu.as_str()) {
-            return Resultat::echec(
-                Some(avant),
-                trf!(
-                    "relu après l'écriture : {} au lieu de {voulu}",
-                    "read back after writing: {} instead of {voulu}",
-                    relu.unwrap_or_else(|| tr!("illisible", "unreadable").to_string())
-                ),
-            );
-        }
-        ecrits = ecrits.saturating_add(1);
+        plan.push(Pose {
+            v6,
+            voulu,
+            actuel: actuel.clone(),
+            noter_avant,
+            remise,
+        });
     }
-    if ecrits == 0 {
+    if plan.is_empty() {
         return Resultat::rien(
             tr!(
                 "les serveurs DNS de la carte sont déjà ainsi",
@@ -422,6 +500,46 @@ fn dns(d: &DnsServeurs) -> Resultat {
             )
             .to_string(),
         );
+    }
+    let mut poses: Vec<&Pose> = Vec::new();
+    for p in &plan {
+        if let Some(a) = &p.noter_avant
+            && let Err(e) = noter(d.guid, p.v6, a)
+        {
+            return Resultat::echec(
+                Some(avant),
+                trf!(
+                    "la valeur d'avant ({a}) n'a pas pu être notée ({e}) : {}",
+                    "the previous value ({a}) could not be noted ({e}): {}",
+                    defaire(d.guid, &poses)
+                ),
+            );
+        }
+        let ecrit = poser(d.guid, p.v6, &p.voulu).map_err(|e| e.to_string()).and_then(|()| {
+            // Relu : seul le registre de Windows compte.
+            let relu = name_server(d.guid, p.v6).and_then(|v| canonique(&v));
+            if relu.as_deref() == Some(p.voulu.as_str()) {
+                Ok(())
+            } else {
+                Err(trf!(
+                    "relu après l'écriture : {} au lieu de {}",
+                    "read back after writing: {} instead of {}",
+                    relu.unwrap_or_else(|| tr!("illisible", "unreadable").to_string()),
+                    p.voulu
+                ))
+            }
+        });
+        // Écrit à moitié ou mal relu : ce côté aussi est remis.
+        poses.push(p);
+        if let Err(e) = ecrit {
+            return Resultat::echec(Some(avant), format!("{e} ; {}", defaire(d.guid, &poses)));
+        }
+    }
+    for p in &plan {
+        if p.remise && p.noter_avant.is_none() {
+            // La valeur d'avant est remise : sa note ne sert plus (elle ne pourra plus être reposée par une ligne).
+            oublier_note(d.guid, p.v6);
+        }
     }
     vider_cache_dns();
     Resultat::fait(avant)

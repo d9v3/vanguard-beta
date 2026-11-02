@@ -444,8 +444,8 @@ mod tests {
             ),
             (
                 "machine/windows/reseau_ecriture.rs",
-                5,
-                "processus élevé : le hosts (temporaire neuf du dossier etc, puis ReplaceFileW ; la copie d'avant remise si l'échange échoue à mi-chemin), hors bilan",
+                6,
+                "processus élevé : le hosts (temporaire neuf du dossier etc, puis ReplaceFileW ; créé sans écraser s'il manquait ; la copie d'avant remise si l'échange échoue à mi-chemin), hors bilan",
             ),
             (
                 "machine/windows/eleve.rs",

@@ -209,13 +209,10 @@ pub(crate) fn preparer_hosts(usage: &str, avant: &[u8], nouveau: &[u8]) -> Resul
         })
 }
 
-/// Au-delà, les noms ajoutés ou retirés sont comptés au lieu d'être montrés un par un.
-#[cfg(any(windows, test))]
-const NOMS_MONTRES: usize = 50;
-
 /// La différence du hosts telle que la fenêtre élevée la montre avant l'accord : chaque ligne mise en commentaire
-/// (« - ligne », « + # Vanguard : ligne »), puis les noms bloqués en plus et ceux qui ne le sont plus. Les lignes
-/// viennent de `juger_hosts`, déjà rendues lisibles.
+/// (« - ligne », « + # Vanguard : ligne »), puis les noms bloqués en plus et ceux qui ne le sont plus, tous, serrés
+/// plusieurs par ligne dans la largeur de la console : un nom caché derrière « … et N autres » serait accepté à
+/// l'aveugle. Les lignes viennent de `juger_hosts`, déjà rendues lisibles.
 #[cfg(any(windows, test))]
 pub(crate) fn lignes_du_diff(d: &gestes::DiffHosts) -> Vec<String> {
     let mut lignes = Vec::new();
@@ -228,11 +225,20 @@ pub(crate) fn lignes_du_diff(d: &gestes::DiffHosts) -> Vec<String> {
             return;
         }
         lignes.push(format!("{titre} ({})", liste.len()));
-        for n in liste.iter().take(NOMS_MONTRES) {
-            lignes.push(format!("{signe} {n}"));
+        let mut ligne = String::new();
+        for n in liste {
+            if !ligne.is_empty() && ligne.len() + 2 + n.len() > crate::ui::LARGEUR - 4 {
+                lignes.push(std::mem::take(&mut ligne));
+            }
+            if ligne.is_empty() {
+                ligne = format!("{signe} {n}");
+            } else {
+                ligne.push_str("  ");
+                ligne.push_str(n);
+            }
         }
-        if let Some(reste) = liste.len().checked_sub(NOMS_MONTRES).filter(|r| *r > 0) {
-            lignes.push(trf!("  … et {reste} autre(s)", "  … and {reste} more"));
+        if !ligne.is_empty() {
+            lignes.push(ligne);
         }
     };
     noms(&d.ajoutes, '+', tr!("Sites bloqués en plus", "Sites newly blocked"));
@@ -653,11 +659,17 @@ mod tests {
         let noms: BTreeSet<String> = (0..60).map(|i| format!("n{i:02}.exemple.com")).collect();
         let pose = avec_bloc("", &bloc(&noms, jour("2026-11-02")));
         let l = lignes_du_diff(&gestes::juger_hosts(b"", pose.as_bytes()).unwrap());
-        assert_eq!(l.len(), 1 + 50 + 1, "{l:?}");
-        assert!(l[0].ends_with("(60)") && l[1] == "+ n00.exemple.com" && l[51].contains("10"));
+        assert!(
+            l[0].ends_with("(60)") && l[1].starts_with("+ n00.exemple.com  n01.exemple.com"),
+            "{l:?}"
+        );
+        // Tous montrés, aucun caché derrière un compte, dans la largeur de la console.
+        let montres: Vec<&str> = l[1..].iter().flat_map(|x| x[2..].split("  ")).collect();
+        assert_eq!(montres, noms.iter().map(String::as_str).collect::<Vec<_>>());
+        assert!(l.iter().all(|x| x.len() <= crate::ui::LARGEUR), "{l:?}");
         let l = lignes_du_diff(&gestes::juger_hosts(pose.as_bytes(), b"").unwrap());
         assert!(
-            l[1] == "- n00.exemple.com" && l.last().unwrap().contains("Vanguard"),
+            l[1].starts_with("- n00.exemple.com") && l.last().unwrap().contains("Vanguard"),
             "{l:?}"
         );
     }

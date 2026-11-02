@@ -8,7 +8,8 @@
 //! hexadécimal en majuscules ou en demi-paire, noms hors de la liste fermée, lignes et correctifs en nombre. Le réseau :
 //! écriture du hosts (empreintes, chemin du fichier préparé en hexadécimal), DNS d'une carte (liste fermée), et le
 //! jugement de la différence du hosts sur deux moitiés des octets (seules des lignes mises en commentaire hors du bloc
-//! de Vanguard, jamais un nom protégé dans le bloc).
+//! de Vanguard, jamais un nom protégé dans le bloc), avec un oracle : aucune association adresse → nom active pour
+//! Windows après qui n'existait pas avant, sauf vers 0.0.0.0 ou ::.
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
 #![forbid(unsafe_code)]
@@ -16,6 +17,24 @@
 #[allow(dead_code)]
 #[path = "../../src/machine/windows/gestes.rs"]
 mod gestes;
+
+/// Les associations (adresse, nom) actives d'un hosts, lues comme Windows au plus large : coupé à chaque CR ou LF,
+/// au premier « # », découpé aux blancs ; noms en minuscules. Plus large que `juger_hosts`, exprès : l'oracle ne
+/// dépend pas de la découpe qu'il vérifie.
+fn associations(h: &[u8]) -> std::collections::BTreeSet<(Vec<u8>, Vec<u8>)> {
+    let mut a = std::collections::BTreeSet::new();
+    for l in h.split(|b| *b == b'\n' || *b == b'\r') {
+        let l = l.split(|b| *b == b'#').next().unwrap_or_default();
+        let mut mots = l
+            .split(|b| b.is_ascii_whitespace() || *b == 0x0b)
+            .filter(|m| !m.is_empty());
+        let Some(ip) = mots.next() else { continue };
+        for nom in mots {
+            a.insert((ip.to_vec(), nom.to_ascii_lowercase()));
+        }
+    }
+    a
+}
 
 libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
     let Ok(texte) = std::str::from_utf8(octets) else {
@@ -206,6 +225,16 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
         assert!(d.ajoutes.iter().chain(&d.retires).all(|n| gestes::nom_hosts_valide(n)));
         assert!(d.ajoutes.iter().all(|n| !gestes::nom_protege(n)));
         assert!(d.commentees.iter().all(|c| !c.contains(['\n', '\r'])));
+        // L'oracle : rien n'est détourné. Une association active après l'était déjà avant, ou bloque (0.0.0.0, ::).
+        let deja = associations(avant);
+        for (ip, nom) in associations(apres) {
+            assert!(
+                deja.contains(&(ip.clone(), nom.clone())) || ip == b"0.0.0.0" || ip == b"::",
+                "{} {} : association nouvelle",
+                String::from_utf8_lossy(&ip),
+                String::from_utf8_lossy(&nom)
+            );
+        }
         // Sans bloc ni commentaire, rien d'autre ne change : les octets sont les mêmes.
         if d.vide() && !d.bloc_avant && !d.bloc_apres {
             assert_eq!(avant, apres);

@@ -1277,7 +1277,9 @@ pub(crate) fn ligne_dns_auto(guid: &str) -> Option<String> {
 }
 
 /// La ligne qui règle le DNS d'une carte (`None` pour un côté laissé tel quel, `Some("")` pour le remettre en
-/// automatique, sinon « ip,ip ») ; `None` si une adresse est hors de la liste fermée, ou si la ligne ne ferait rien.
+/// automatique, sinon « ip,ip ») ; `None` si la ligne ne se lit pas (adresse mal écrite, de la mauvaise famille, de
+/// bouclage, plus de quatre) ou ne ferait rien. Hors de la liste fermée, elle se lit : seul le processus élevé la
+/// juge, contre la valeur d'avant qu'il a notée.
 /// Les deux côtés vides donnent `dns-auto`.
 pub(crate) fn ligne_dns(guid: &str, v4: Option<&str>, v6: Option<&str>) -> Option<String> {
     if v4 == Some("") && v6 == Some("") {
@@ -1362,10 +1364,16 @@ impl DiffHosts {
 }
 
 /// Les noms que le bloc ne prend jamais : eux et leurs sous-domaines. Bloquer les mises à jour de Windows ou de
-/// Defender, la vérification de connexion de Windows, les DNS chiffrés de la liste ou les mises à jour de Vanguard
+/// Defender, la vérification de connexion de Windows, la connexion au compte Microsoft, l'avis de VirusTotal, la
+/// révocation des certificats (Let's Encrypt, Google), les DNS chiffrés de la liste ou les mises à jour de Vanguard
 /// servirait celui qui forgerait la liste, jamais la personne.
-const NOMS_PROTEGES: [&str; 14] = [
+const NOMS_PROTEGES: [&str; 19] = [
     "microsoft.com",
+    "microsoftonline.com",
+    "live.com",
+    "virustotal.com",
+    "lencr.org",
+    "pki.goog",
     "windowsupdate.com",
     "windows.com",
     "msftncsi.com",
@@ -1410,11 +1418,17 @@ fn sans_blancs_de_fin(l: &[u8]) -> &[u8] {
 
 /// Une ligne rendue lisible pour être montrée : texte (les octets qui n'en sont pas remplacés), sans fin de ligne,
 /// coupée à 200 caractères, chaque caractère de contrôle remplacé.
+/// Un caractère qui change l'affichage sans se voir : marques de sens d'écriture (une ligne retournée à l'écran),
+/// espaces et jointures de largeur nulle, marque d'ordre des octets.
+fn invisible(c: char) -> bool {
+    matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+}
+
 fn lisible(l: &[u8]) -> String {
     String::from_utf8_lossy(sans_blancs_de_fin(l))
         .chars()
         .take(200)
-        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .map(|c| if c.is_control() || invisible(c) { '\u{FFFD}' } else { c })
         .collect()
 }
 
@@ -4377,6 +4391,43 @@ mod tests {
         assert_eq!(ok(&[avant, entete.as_bytes()].concat()), Err(RefusHosts::Entete));
         let entete = format!("{HOSTS_DEBUT} \x1b[2J\r\n{HOSTS_FIN}\r\n");
         assert_eq!(ok(&[avant, entete.as_bytes()].concat()), Err(RefusHosts::Entete));
+
+        // Dans le bloc, une tabulation ou un CR seul (deux lignes pour Windows, une pour qui découpe aux LF) : refusé.
+        assert!(matches!(
+            ok(&avec("0.0.0.0\tbanque.ca\r\n")),
+            Err(RefusHosts::LigneDuBloc(_))
+        ));
+        assert!(matches!(
+            ok(&avec("0.0.0.0 a.example\r5.6.7.8 banque.ca\r\n")),
+            Err(RefusHosts::LigneDuBloc(_))
+        ));
+        // Un bloc vide (plus aucun site bloqué) est admis.
+        assert!(ok(&avec("")).is_ok());
+        // Un hosts qui commence par la marque UTF-8 (BOM) : elle reste en tête, rien ne s'ajoute.
+        let bom = b"\xEF\xBB\xBF127.0.0.1 localhost\r\n1.2.3.4 www.google.com\r\n".as_slice();
+        let commente = hosts_commente(bom, |_| true);
+        assert!(
+            commente.starts_with(b"\xEF\xBB\xBF127.0.0.1 localhost\r\n# Vanguard : 1.2.3.4"),
+            "{commente:?}"
+        );
+        assert!(juger_hosts(bom, &commente).is_ok());
+        assert!(matches!(
+            juger_hosts(bom, &[bom, b"5.6.7.8 banque.ca\r\n"].concat()),
+            Err(RefusHosts::LigneAjoutee(_))
+        ));
+    }
+
+    /// Une ligne montrée dans la fenêtre élevée ne peut pas se maquiller : ni contrôle, ni marque de sens d'écriture
+    /// (U+202E retournerait la ligne à l'écran), ni caractère invisible.
+    #[test]
+    fn une_ligne_montree_ne_se_maquille_pas() {
+        for piege in [
+            "\u{202E}", "\u{2066}", "\u{200B}", "\u{200F}", "\u{FEFF}", "\u{061C}", "\x1b",
+        ] {
+            let l = lisible(format!("1.2.3.4 a{piege}b.example").as_bytes());
+            assert_eq!(l, "1.2.3.4 a\u{FFFD}b.example", "{piege:?}");
+        }
+        assert_eq!(lisible("1.2.3.4 é.example".as_bytes()), "1.2.3.4 é.example");
     }
 
     #[test]
