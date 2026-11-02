@@ -112,7 +112,17 @@ pub(crate) fn est_version(s: &str) -> bool {
 
 /// Un jour `AAAA-MM-JJ` qui existe au calendrier.
 pub(crate) fn est_jour(s: &str) -> bool {
-    s.len() == 10 && chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
+    // La forme d'abord, octet par octet : chrono lit `%Y` avec un signe (« +202-11-01 » passerait), et le motif du
+    // schéma d'envoi, que le relais reproduit, n'a que des chiffres.
+    let forme = s.len() == 10
+        && s.bytes().enumerate().all(|(i, b)| {
+            if i == 4 || i == 7 {
+                b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        });
+    forme && chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
 }
 
 /// Une clé de cause : 16 chiffres hexadécimaux minuscules.

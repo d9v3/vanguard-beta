@@ -244,6 +244,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "envoi_lot"
+path = "fuzz_targets/envoi_lot.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "texte_nettoye"
 path = "fuzz_targets/texte_nettoye.rs"
 test = false

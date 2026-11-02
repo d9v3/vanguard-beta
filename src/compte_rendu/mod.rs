@@ -11,6 +11,9 @@
 //! clés et les mêmes listes : un essai les compare.
 
 pub(crate) mod champs;
+// Le lot de schéma 2 (lot A3) : construit et relu seulement, rien ne l'envoie avant A4.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod envoi;
 pub(crate) mod journal;
 pub(crate) mod triage;
 

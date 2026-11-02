@@ -459,7 +459,7 @@ fn remplacer(c: &[char], mut trouver: impl FnMut(&[char], usize) -> Option<(usiz
 
 /// Les marqueurs que pose ce nettoyage, puis ceux de `journal::anonymiser`. Seuls ceux-là gardent leurs chevrons à
 /// la sortie : un « `<system>` » ou un « `<img …>` » écrit dans un texte perd les siens (étape 5).
-const MARQUEURS: [&str; 19] = [
+pub(crate) const MARQUEURS: [&str; 19] = [
     "<chemin>",
     "<numéro>",
     "<url>",
@@ -482,7 +482,7 @@ const MARQUEURS: [&str; 19] = [
 ];
 
 /// L'extension gardée d'un chemin (« `<chemin .docx>` ») : 1 à 5 lettres ou chiffres ASCII, en minuscules.
-const EXTENSION_MAX: usize = 5;
+pub(crate) const EXTENSION_MAX: usize = 5;
 
 /// La fin d'un marqueur qui commence en `i`.
 fn marqueur(c: &[char], i: usize) -> Option<usize> {

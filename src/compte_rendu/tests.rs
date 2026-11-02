@@ -78,6 +78,8 @@ fn motifs_des_champs() {
         assert!(Version::new(mauvais).is_none(), "{mauvais:?}");
     }
     assert!(Jour::new("2026-02-30").is_none() && Jour::new("2026-2-3").is_none() && Jour::new("2026-02-28").is_some());
+    // chrono lit l'année avec un signe : la forme est vérifiée avant lui.
+    assert!(Jour::new("+202-11-01").is_none() && Jour::new("-202-11-01").is_none());
     for bon in ["0", "-1", "4294967295", "muette", "absent-natif", "message-vide"] {
         assert!(Code::new(bon).is_some(), "{bon}");
     }

@@ -1,0 +1,1077 @@
+{
+  "$comment": "Le lot de schéma 2 que Vanguard envoie une fois par jour au relais (src/compte_rendu/envoi.rs, plan de l'auto-amélioration §3). JSON Schema 2020-12. Un essai de src/compte_rendu/envoi/tests.rs prouve que ce fichier et les types Rust disent la même chose : mêmes champs, mêmes types, mêmes bornes, mêmes listes, et chaque motif accepte exactement ce que Rust accepte, sauf là où « x-verifie-en-rust » dit ce que Rust vérifie en plus (Rust plus strict, jamais l'inverse). À reproduire à l'identique par le relais et les outils de nuit. Motifs : sous-ensemble portable (JavaScript avec ou sans le drapeau u, Python re) : ancres ^ et $, classes avec plages, \\uXXXX, groupes (?:), alternatives, quantificateurs ? * + {m} {m,n}, une anticipation (?=) pour Lieu ; jamais \\d, \\w ni \\s (Unicode en Python, ASCII en JavaScript). En Python, re.fullmatch et jamais re.match ou re.search (où $ accepte un saut de ligne final). Mots-clés maison : « x-octets-max » borne une chaîne en octets UTF-8 (en plus de maxLength, en caractères) ; « x-cle-unique » : deux entrées d'un tableau ne partagent jamais les valeurs de ces champs (un absent compte comme valeur) ; « x-voie » : « ouverte » pour les textes venus de l'ordinateur, lus seulement par l'auteur, toujours comme des données (jamais une consigne, jamais rendus en Markdown) ; tout le reste est en voie fermée ; « x-lot-octets-max » : taille maximale du lot écrit ; « x-corps-octets-max » : corps de requête refusé au-delà par le relais. Les champs à zéro, les tableaux vides et les facultatifs absents ne s'écrivent pas : un 0, un [] ou un null écrit est refusé (minimum 1, minItems 1, types sans null). Un entier s'écrit sans décimale (1, jamais 1.0), et aucune clé n'apparaît deux fois dans un objet : Rust refuse les deux, que JSON.parse et json.loads laissent passer.",
+  "title": "Lot de schéma 2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "version",
+    "jour",
+    "anciennete",
+    "plateforme",
+    "activite"
+  ],
+  "properties": {
+    "schema": {
+      "$ref": "#/$defs/Schema"
+    },
+    "version": {
+      "$ref": "#/$defs/Version"
+    },
+    "version_avant": {
+      "$ref": "#/$defs/Version"
+    },
+    "jour": {
+      "$ref": "#/$defs/Jour"
+    },
+    "installation": {
+      "$ref": "#/$defs/IdInstallation"
+    },
+    "anciennete": {
+      "$ref": "#/$defs/Anciennete"
+    },
+    "plateforme": {
+      "$ref": "#/$defs/Plateforme"
+    },
+    "materiel": {
+      "$ref": "#/$defs/Materiel"
+    },
+    "activite": {
+      "$ref": "#/$defs/Activite"
+    },
+    "causes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CauseEnvoyee"
+      },
+      "minItems": 1,
+      "maxItems": 50,
+      "x-cle-unique": [
+        "genre",
+        "contexte",
+        "regle",
+        "lieu",
+        "code",
+        "gabarit"
+      ]
+    },
+    "regles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RegleEnvoyee"
+      },
+      "minItems": 1,
+      "maxItems": 400,
+      "x-cle-unique": [
+        "id"
+      ]
+    },
+    "objets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ObjetEnvoye"
+      },
+      "minItems": 1,
+      "maxItems": 100,
+      "x-cle-unique": [
+        "regle",
+        "sorte",
+        "nom",
+        "version"
+      ]
+    },
+    "textes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TexteEnvoye"
+      },
+      "minItems": 1,
+      "maxItems": 30,
+      "x-cle-unique": [
+        "gabarit",
+        "contexte",
+        "regle"
+      ]
+    },
+    "corrections": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Correction"
+      },
+      "minItems": 1,
+      "maxItems": 100,
+      "x-cle-unique": [
+        "regle"
+      ]
+    },
+    "choix": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Choix"
+      },
+      "minItems": 1,
+      "maxItems": 100,
+      "x-cle-unique": [
+        "regle"
+      ]
+    },
+    "outils": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/OutilEnvoye"
+      },
+      "minItems": 1,
+      "maxItems": 80,
+      "x-cle-unique": [
+        "outil",
+        "origine"
+      ]
+    },
+    "cache": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CacheRegle"
+      },
+      "minItems": 1,
+      "maxItems": 200,
+      "x-cle-unique": [
+        "regle"
+      ]
+    },
+    "reglages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Reglage"
+      },
+      "minItems": 1,
+      "maxItems": 50,
+      "x-cle-unique": [
+        "levier",
+        "regle"
+      ]
+    },
+    "refus_locaux": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "retires": {
+      "$ref": "#/$defs/Retires"
+    }
+  },
+  "x-lot-octets-max": 98304,
+  "x-corps-octets-max": 131072,
+  "$defs": {
+    "Schema": {
+      "type": "integer",
+      "const": 2
+    },
+    "Version": {
+      "type": "string",
+      "pattern": "^[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$",
+      "description": "Version de Vanguard."
+    },
+    "Jour": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "AAAA-MM-JJ, jamais l'heure.",
+      "x-verifie-en-rust": "le jour existe au calendrier (pas de 2026-02-30)"
+    },
+    "IdInstallation": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "Identifiant d'installation tiré au hasard, renouvelé tous les 90 jours (plan, P1)."
+    },
+    "Anciennete": {
+      "type": "string",
+      "enum": [
+        "moins-7-jours",
+        "moins-30-jours",
+        "moins-90-jours",
+        "90-jours-et-plus"
+      ]
+    },
+    "FamilleFine": {
+      "type": "string",
+      "enum": [
+        "windows-10",
+        "windows-11",
+        "macos",
+        "arch",
+        "debian",
+        "ubuntu",
+        "fedora",
+        "opensuse",
+        "mint",
+        "linux-autre"
+      ]
+    },
+    "SystemeVersion": {
+      "type": "string",
+      "pattern": "^[0-9]{1,6}(?:\\.[0-9]{1,3})?$",
+      "description": "Build de Windows, majeure de macOS, majeur.mineur du noyau Linux."
+    },
+    "Arch": {
+      "type": "string",
+      "enum": [
+        "x86_64",
+        "aarch64"
+      ]
+    },
+    "Langue": {
+      "type": "string",
+      "enum": [
+        "fr",
+        "en"
+      ]
+    },
+    "Edition": {
+      "type": "string",
+      "enum": [
+        "home",
+        "pro",
+        "entreprise",
+        "serveur"
+      ]
+    },
+    "Processeur": {
+      "type": "string",
+      "enum": [
+        "intel",
+        "amd",
+        "apple",
+        "qualcomm",
+        "autre"
+      ]
+    },
+    "MemoireGo": {
+      "type": "integer",
+      "enum": [
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+        1024,
+        2048,
+        4096
+      ],
+      "description": "Go, arrondis à une puissance de 2."
+    },
+    "Disque": {
+      "type": "string",
+      "enum": [
+        "nvme",
+        "ssd",
+        "hdd",
+        "inconnu"
+      ]
+    },
+    "Virtuelle": {
+      "type": "string",
+      "enum": [
+        "aucune",
+        "hyperv",
+        "kvm",
+        "vmware",
+        "virtualbox",
+        "parallels",
+        "wsl",
+        "autre"
+      ]
+    },
+    "TroisEtats": {
+      "type": "string",
+      "enum": [
+        "oui",
+        "non",
+        "inconnu"
+      ]
+    },
+    "Graphique": {
+      "type": "string",
+      "enum": [
+        "nvidia",
+        "amd",
+        "intel",
+        "apple",
+        "qualcomm",
+        "autre",
+        "aucune"
+      ]
+    },
+    "Sorte": {
+      "type": "string",
+      "enum": [
+        "programme",
+        "service",
+        "pilote",
+        "paquet",
+        "unite",
+        "flatpak",
+        "module"
+      ]
+    },
+    "Etat": {
+      "type": "string",
+      "enum": [
+        "probleme",
+        "sain",
+        "non-verifie"
+      ]
+    },
+    "Origine": {
+      "type": "string",
+      "enum": [
+        "menu",
+        "ligne"
+      ]
+    },
+    "Levier": {
+      "type": "string",
+      "enum": [
+        "delai",
+        "duree-cache",
+        "cache-coupe",
+        "second-essai",
+        "reserve-fils",
+        "correction-fragile"
+      ]
+    },
+    "Genre": {
+      "type": "string",
+      "enum": [
+        "plantage",
+        "rattrapee",
+        "impossible",
+        "echec",
+        "erreur",
+        "contredite",
+        "invariant",
+        "ecriture",
+        "hors-delai",
+        "muette",
+        "lente",
+        "frole-delai",
+        "lenteur"
+      ]
+    },
+    "Contexte": {
+      "type": "string",
+      "enum": [
+        "mes-ordinateurs",
+        "erreur-interne",
+        "plantage",
+        "autotest",
+        "verification-impossible",
+        "scan-reseau",
+        "audit-reseau",
+        "protection-relro",
+        "scan-reseau-non-verifie",
+        "vanguard-administrateur",
+        "correction-elevee",
+        "powershell",
+        "wmi",
+        "origine-programme",
+        "protection-cle",
+        "windows-update",
+        "taches-planifiees",
+        "bitlocker",
+        "pare-feu-windows",
+        "reseaux",
+        "echec/autre",
+        "annulation/remettre",
+        "audit/pq-box",
+        "audit/tls-pq",
+        "autotest/cache",
+        "autotest/dernier",
+        "bilan/pqc-ssh",
+        "bilan/pqc-sshd",
+        "bilan/sshd-config",
+        "blocage/pare-feu",
+        "blocage/preparer",
+        "blocage/regler",
+        "canaux/lire",
+        "compte-rendu/lire",
+        "compte-rendu/trier",
+        "changements/noter",
+        "dbus/actions",
+        "dbus/etat_d_activite",
+        "dns/resolved",
+        "docker",
+        "entretien/etat",
+        "essai",
+        "essai/lecture",
+        "evenements/noter",
+        "evenements/perdus",
+        "evenements/version",
+        "examens/ecrire",
+        "http_unix",
+        "http_unix/connexion",
+        "machine/ports-bloques",
+        "maj/fwupd",
+        "manifeste/image",
+        "manifeste/relire",
+        "networkmanager",
+        "plateforme/fwupd",
+        "plugins/ecrire",
+        "plugins/reglages",
+        "plugins/sceau",
+        "programmes_poses/noter",
+        "quarantaine/remettre",
+        "quarantaine/supprimer",
+        "quarantaine/traces",
+        "reseau/appareils",
+        "reseau/carnet",
+        "reseau/resolved",
+        "sceau/adopter",
+        "sceau/ecrire",
+        "sceau/temoin",
+        "signaler/controle",
+        "signaler/dossier",
+        "signaler/droits",
+        "signaler/ecrire",
+        "signaler/effacer",
+        "signaler/incident",
+        "signaler/langue",
+        "signaler/outil",
+        "signaler/programme",
+        "systemd",
+        "veilleur/oublier",
+        "voulues/noter",
+        "wifi/networkmanager"
+      ]
+    },
+    "Regle": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}-[A-Z]{3}-[0-9]{3}$"
+    },
+    "Lieu": {
+      "type": "string",
+      "pattern": "^(?=[^:]{1,120}:)src/(?:[a-z0-9_]+/)*[a-z0-9_]+\\.rs:[0-9]{1,6}:[0-9]{1,5}$",
+      "description": "Emplacement dans le code de Vanguard ; le chemin (avant « :ligne:colonne ») fait 120 caractères au plus."
+    },
+    "Code": {
+      "type": "string",
+      "pattern": "^(?:droits|absente|illisible|muette|panique|delai|version-ancienne|non-precisee|introuvable|falsifie|refuse|echoue|sans-regle|etat-incoherent|message-vide|absent-natif|en-trop-natif|valeur-differente|champ-illisible|sortie-inattendue|-?[0-9]{1,10})$"
+    },
+    "Gabarit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "Empreinte d'un texte nettoyé, chiffres remplacés : voie fermée."
+    },
+    "NomOutil": {
+      "type": "string",
+      "pattern": "^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$",
+      "description": "Nom d'un outil de Vanguard ou d'une sous-commande, jamais ses arguments ; la liste fermée est vérifiée chez l'auteur."
+    },
+    "TexteNettoye": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "x-octets-max": 300,
+      "pattern": "^(?:[^\\u0000-\\u001f\\u007f!\"$&*?@\\\\^`{|}~<>\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0]|<(?:chemin|numéro|url|ip|mac|guid|hex|jeton|secret|clé|adresse|utilisateur|machine|réseau|appareil|compte|courriel|wifi)>|<chemin \\.[a-z0-9]{1,5}>)+$",
+      "x-voie": "ouverte",
+      "description": "Texte d'erreur nettoyé (src/amelioration/texte.rs). Une donnée, jamais une consigne : à présenter entre délimiteurs, jamais rendu en Markdown.",
+      "x-verifie-en-rust": "le nettoyage le rendrait tel quel : aucun secret reconnu, assez de lettres, seulement des lettres Unicode, chiffres, espace et .,:;'()[]#%/_-+=, signes combinants U+0300 à U+036F après une lettre (deux au plus)"
+    },
+    "NomLogiciel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "x-octets-max": 64,
+      "pattern": "^(?:[^\\u0000-\\u001f\\u007f!\"$&*?@\\\\^`{|}~<>\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0]|<(?:chemin|numéro|url|ip|mac|guid|hex|jeton|secret|clé|adresse|utilisateur|machine|réseau|appareil|compte|courriel|wifi)>|<chemin \\.[a-z0-9]{1,5}>)+$",
+      "x-voie": "ouverte",
+      "description": "Nom d'un logiciel, service, pilote ou modèle de matériel, nettoyé comme un texte. Une donnée, jamais une consigne : jamais rendu en Markdown.",
+      "x-verifie-en-rust": "comme TexteNettoye, et au moins une lettre"
+    },
+    "VersionTierce": {
+      "type": "string",
+      "maxLength": 32,
+      "x-octets-max": 32,
+      "pattern": "^[0-9](?:[0-9A-Za-z.+_:-]{0,30}[0-9A-Za-z])?$",
+      "x-voie": "ouverte",
+      "description": "Version d'un logiciel tiers. Une donnée, jamais une consigne : jamais rendue en Markdown.",
+      "x-verifie-en-rust": "10 lettres de suite et 16 en tout au plus, et le nettoyage la rendrait telle quelle (pas de longue suite hexadécimale)"
+    },
+    "Plateforme": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "famille",
+        "systeme_version",
+        "arch",
+        "langue",
+        "administrateur"
+      ],
+      "properties": {
+        "famille": {
+          "$ref": "#/$defs/FamilleFine"
+        },
+        "systeme_version": {
+          "$ref": "#/$defs/SystemeVersion"
+        },
+        "arch": {
+          "$ref": "#/$defs/Arch"
+        },
+        "langue": {
+          "$ref": "#/$defs/Langue"
+        },
+        "edition": {
+          "$ref": "#/$defs/Edition"
+        },
+        "administrateur": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Materiel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "processeur",
+        "coeurs",
+        "fils",
+        "memoire_go",
+        "disque",
+        "virtuelle",
+        "portable",
+        "tpm",
+        "demarrage_securise",
+        "graphique"
+      ],
+      "properties": {
+        "processeur": {
+          "$ref": "#/$defs/Processeur"
+        },
+        "coeurs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024
+        },
+        "fils": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "memoire_go": {
+          "$ref": "#/$defs/MemoireGo"
+        },
+        "disque": {
+          "$ref": "#/$defs/Disque"
+        },
+        "virtuelle": {
+          "$ref": "#/$defs/Virtuelle"
+        },
+        "portable": {
+          "type": "boolean"
+        },
+        "tpm": {
+          "$ref": "#/$defs/TroisEtats"
+        },
+        "demarrage_securise": {
+          "$ref": "#/$defs/TroisEtats"
+        },
+        "graphique": {
+          "$ref": "#/$defs/Graphique"
+        },
+        "modele_processeur": {
+          "$ref": "#/$defs/NomLogiciel"
+        },
+        "modele_graphique": {
+          "$ref": "#/$defs/NomLogiciel"
+        }
+      }
+    },
+    "Activite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "surveillance",
+        "veilleur",
+        "cle"
+      ],
+      "properties": {
+        "bilans_manuels": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "passes_horaires": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "surveillance": {
+          "type": "boolean"
+        },
+        "veilleur": {
+          "type": "boolean"
+        },
+        "cle": {
+          "type": "boolean"
+        }
+      }
+    },
+    "CauseEnvoyee": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "genre",
+        "contexte",
+        "n"
+      ],
+      "properties": {
+        "genre": {
+          "$ref": "#/$defs/Genre"
+        },
+        "contexte": {
+          "$ref": "#/$defs/Contexte"
+        },
+        "regle": {
+          "$ref": "#/$defs/Regle"
+        },
+        "lieu": {
+          "$ref": "#/$defs/Lieu"
+        },
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "duree_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        },
+        "en_plus": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "en_moins": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "differents": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "gabarit": {
+          "$ref": "#/$defs/Gabarit"
+        }
+      }
+    },
+    "RegleEnvoyee": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "n",
+        "delai_s"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Regle"
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "med_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        },
+        "p90_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        },
+        "hors_delai": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "problemes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "sains": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "non_verifies": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "raisons": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RaisonNombre"
+          },
+          "minItems": 1,
+          "maxItems": 4,
+          "x-cle-unique": [
+            "code"
+          ]
+        },
+        "delai_s": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        }
+      }
+    },
+    "RaisonNombre": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "n"
+      ],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        }
+      }
+    },
+    "ObjetEnvoye": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "regle",
+        "sorte",
+        "nom",
+        "etat",
+        "n"
+      ],
+      "properties": {
+        "regle": {
+          "$ref": "#/$defs/Regle"
+        },
+        "sorte": {
+          "$ref": "#/$defs/Sorte"
+        },
+        "nom": {
+          "$ref": "#/$defs/NomLogiciel"
+        },
+        "version": {
+          "$ref": "#/$defs/VersionTierce"
+        },
+        "etat": {
+          "$ref": "#/$defs/Etat"
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        }
+      }
+    },
+    "TexteEnvoye": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gabarit",
+        "texte",
+        "contexte",
+        "n"
+      ],
+      "properties": {
+        "gabarit": {
+          "$ref": "#/$defs/Gabarit",
+          "x-verifie-en-rust": "égal au gabarit du texte (SHA-256 du texte, chaque suite de chiffres ramenée à 0, 8 premiers octets en hexadécimal)"
+        },
+        "texte": {
+          "$ref": "#/$defs/TexteNettoye"
+        },
+        "contexte": {
+          "$ref": "#/$defs/Contexte"
+        },
+        "regle": {
+          "$ref": "#/$defs/Regle"
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        }
+      }
+    },
+    "Correction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "regle"
+      ],
+      "properties": {
+        "regle": {
+          "$ref": "#/$defs/Regle"
+        },
+        "proposees": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "acceptees": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "refusees": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "reussies": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "echouees": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "annulees": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "revenues": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "codes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RaisonNombre"
+          },
+          "minItems": 1,
+          "maxItems": 4,
+          "x-cle-unique": [
+            "code"
+          ]
+        }
+      }
+    },
+    "Choix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "regle"
+      ],
+      "properties": {
+        "regle": {
+          "$ref": "#/$defs/Regle"
+        },
+        "normales": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "oublis": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "refus": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "echap": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        }
+      }
+    },
+    "OutilEnvoye": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outil",
+        "origine"
+      ],
+      "properties": {
+        "outil": {
+          "$ref": "#/$defs/NomOutil"
+        },
+        "origine": {
+          "$ref": "#/$defs/Origine"
+        },
+        "lances": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "finis": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "abandonnes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "plantes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "med_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        }
+      }
+    },
+    "CacheRegle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "regle"
+      ],
+      "properties": {
+        "regle": {
+          "$ref": "#/$defs/Regle"
+        },
+        "repris": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "a_neuf": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "age_total_s": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000000
+        },
+        "gagne_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000000
+        },
+        "comparees": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "ecarts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        }
+      }
+    },
+    "Reglage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "levier",
+        "annule"
+      ],
+      "properties": {
+        "levier": {
+          "$ref": "#/$defs/Levier"
+        },
+        "regle": {
+          "$ref": "#/$defs/Regle"
+        },
+        "avant": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "apres": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "annule": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Retires": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "regles": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "textes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "objets": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "cache": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "outils": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "choix": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "corrections": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "reglages": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "causes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        }
+      },
+      "minProperties": 1
+    }
+  }
+}
