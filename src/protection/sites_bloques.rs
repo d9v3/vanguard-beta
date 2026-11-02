@@ -557,7 +557,7 @@ fn noms_detournes(hosts: &str) -> std::collections::HashSet<String> {
         .map(|l| l.split('#').next().unwrap_or_default())
         .filter_map(|l| {
             let mut mots = l.split_whitespace();
-            let ip: std::net::IpAddr = mots.next()?.parse().ok()?;
+            let ip = gestes::adresse_hosts(mots.next()?)?;
             (ip.is_unspecified() || ip.is_loopback()).then_some(mots)
         })
         .flatten()

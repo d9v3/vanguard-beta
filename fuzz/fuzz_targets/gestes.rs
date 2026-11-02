@@ -9,7 +9,9 @@
 //! écriture du hosts (empreintes, chemin du fichier préparé en hexadécimal), DNS d'une carte (liste fermée), et le
 //! jugement de la différence du hosts sur deux moitiés des octets (seules des lignes mises en commentaire hors du bloc
 //! de Vanguard, jamais un nom protégé dans le bloc), avec un oracle : aucune association adresse → nom active pour
-//! Windows après qui n'existait pas avant, sauf vers 0.0.0.0 ou ::.
+//! Windows après qui n'existait pas avant, sauf vers 0.0.0.0 ou ::, et aucune redirection laissée après tout avoir
+//! commenté ; l'adresse d'un mot de hosts lue sous toutes ses formes (IPv4 à l'ancienne, zone, IPv4 en IPv6) comme
+//! une lecture de référence écrite à part.
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
 #![forbid(unsafe_code)]
@@ -34,6 +36,77 @@ fn associations(h: &[u8]) -> std::collections::BTreeSet<(Vec<u8>, Vec<u8>)> {
         }
     }
     a
+}
+
+/// Une partie d'IPv4 à l'ancienne, lue à part de `gestes` : « 0x » hexadécimal, 0 de tête octal, sinon décimal.
+fn partie_reference(p: &str) -> Option<u64> {
+    let (chiffres, base) = if let Some(h) = p.strip_prefix("0x").or_else(|| p.strip_prefix("0X")) {
+        (h, 16)
+    } else if p.len() > 1 && p.starts_with('0') {
+        (&p[1..], 8)
+    } else {
+        (p, 10)
+    };
+    if chiffres.is_empty() {
+        return None;
+    }
+    let mut v: u64 = 0;
+    for c in chiffres.chars() {
+        v = v.checked_mul(base)?.checked_add(u64::from(c.to_digit(u32::try_from(base).ok()?)?))?;
+        if v > u64::from(u32::MAX) {
+            return None;
+        }
+    }
+    Some(v)
+}
+
+/// L'adresse d'un mot de hosts au plus large (inet_aton, zone, IPv4 en IPv6), écrite sans rien prendre à `gestes`.
+fn adresse_reference(mot: &str) -> Option<std::net::IpAddr> {
+    let (a, zone) = match mot.find('%') {
+        Some(i) => (&mot[..i], Some(&mot[i + 1..])),
+        None => (mot, None),
+    };
+    if let Some(z) = zone
+        && (z.is_empty() || z.len() > 64 || !z.bytes().all(|o| o.is_ascii_alphanumeric() || matches!(o, b'_' | b'.' | b'-')))
+    {
+        return None;
+    }
+    if let Ok(ip) = a.parse::<std::net::IpAddr>() {
+        return Some(ip.to_canonical());
+    }
+    let parties: Vec<u64> = a.split('.').map(partie_reference).collect::<Option<_>>()?;
+    let n = parties.len();
+    if !(1..=4).contains(&n) || parties[..n - 1].iter().any(|p| *p > 255) {
+        return None;
+    }
+    let reste = 8 * (5 - n as u64);
+    if parties[n - 1] >= 1u64 << reste.min(32) && reste < 32 {
+        return None;
+    }
+    let mut v: u64 = 0;
+    for (i, p) in parties[..n - 1].iter().enumerate() {
+        v |= p << (24 - 8 * i as u64);
+    }
+    v |= parties[n - 1];
+    Some(std::net::IpAddr::V4(std::net::Ipv4Addr::from(u32::try_from(v).ok()?)))
+}
+
+/// Les adresses qui détournent encore un nom (ni bouclage ni « nulle part »), lues comme un système le ferait au plus
+/// large : une ligne par LF, coupée au premier « # », découpée aux blancs ASCII ; adresse puis au moins un nom.
+fn redirections_restantes(h: &[u8]) -> Vec<String> {
+    let mut r = Vec::new();
+    for l in h.split(|b| *b == b'\n') {
+        let l = l.split(|b| *b == b'#').next().unwrap_or_default();
+        let mut mots = l
+            .split(|b| b.is_ascii_whitespace() || *b == 0x0b)
+            .filter(|m| !m.is_empty());
+        let (Some(ip), Some(_)) = (mots.next(), mots.next()) else { continue };
+        let Some(a) = std::str::from_utf8(ip).ok().and_then(adresse_reference) else { continue };
+        if !a.is_loopback() && !a.is_unspecified() {
+            r.push(String::from_utf8_lossy(ip).into_owned());
+        }
+    }
+    r
 }
 
 libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
@@ -215,6 +288,14 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             assert_eq!(gestes::etats_du_script(&raison), Some(etats));
         }
     }
+    // Une adresse de hosts, sous n'importe quelle forme, est lue comme la référence la lit ; un nom admis dans le bloc
+    // n'est jamais une adresse.
+    for mot in texte.split_ascii_whitespace().take(64) {
+        assert_eq!(gestes::adresse_hosts(mot), adresse_reference(mot), "{mot:?}");
+        if gestes::nom_hosts_valide(mot) {
+            assert!(adresse_reference(mot).is_none(), "{mot:?} : nom du bloc qui est une adresse");
+        }
+    }
     // Le hosts : la première moitié des octets pour l'ancien, la seconde pour le nouveau. Admis, le nouveau ne diffère
     // de l'ancien que par des lignes mises en commentaire hors du bloc ; dans le bloc, aucun nom protégé ; les deux
     // tiennent dans la borne et ne sont pas de l'UTF-16. Les empreintes vérifient les octets, au sens strict.
@@ -259,6 +340,10 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
         assert!(d.ajoutes.is_empty() && d.retires.is_empty() && d.bloc_avant == d.bloc_apres);
         let tout = gestes::hosts_commente(avant, |_| true);
         assert!(gestes::juger_hosts(avant, &tout).is_ok());
+        // Tout commenter ne laisse aucune redirection, quelle que soit la forme de l'adresse (« 0x5d.0.0.1 »,
+        // « 1572395042 », « ::ffff:… », « …%eth0 ») : aucune n'échappe à la mise en commentaire.
+        let restantes = redirections_restantes(&tout);
+        assert!(restantes.is_empty(), "redirections laissées : {restantes:?}");
         assert_eq!(gestes::hosts_commente(avant, |_| false), avant);
     }
     // La liste : acceptée, elle a une entrée par ligne ; les « autres » lignes ne passent que par le validateur donné,

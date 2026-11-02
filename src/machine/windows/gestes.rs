@@ -1396,12 +1396,71 @@ pub(crate) fn nom_protege(nom: &str) -> bool {
         .any(|p| nom == *p || nom.strip_suffix(p).is_some_and(|d| d.ends_with('.')))
 }
 
-/// Un nom qu'un fichier hosts peut tenir : minuscules, chiffres, tirets, soulignés, points ; ni une adresse IP (hosts
-/// ne bloque que des noms), ni un nom sans point, 253 octets au plus, chaque étiquette de 1 à 63.
+/// Une partie d'une adresse IPv4 écrite à l'ancienne (inet_aton) : décimale, octale si elle commence par 0, hexadécimale
+/// après « 0x » ; au moins un chiffre, 32 bits au plus.
+fn partie_v4(p: &str) -> Option<u32> {
+    let (chiffres, base) = match p.strip_prefix("0x").or_else(|| p.strip_prefix("0X")) {
+        Some(h) => (h, 16),
+        None if p.len() > 1 && p.starts_with('0') => (p.get(1..)?, 8),
+        None => (p, 10),
+    };
+    // from_str_radix admet un « + » de tête : une adresse n'en a jamais.
+    if chiffres.is_empty() || !chiffres.bytes().all(|o| char::from(o).is_digit(base)) {
+        return None;
+    }
+    u32::from_str_radix(chiffres, base).ok()
+}
+
+/// Une adresse IPv4 écrite à l'ancienne : une à quatre parties séparées par des points, la dernière remplissant les
+/// octets qui restent (« 127.1 » = 127.0.0.1, « 2130706433 » = 127.0.0.1, « 0x7f.0.0.1 », « 0177.0.0.1 »).
+fn v4_ancienne(t: &str) -> Option<std::net::Ipv4Addr> {
+    let parties = t.split('.').map(partie_v4).collect::<Option<Vec<u32>>>()?;
+    let (derniere, tete) = parties.split_last()?;
+    if tete.len() > 3 || tete.iter().any(|p| *p > 255) {
+        return None;
+    }
+    // Ce qui reste pour la dernière partie : 32 bits moins 8 par partie de tête.
+    let bits = 32_u32.checked_sub(8_u32.checked_mul(u32::try_from(tete.len()).ok()?)?)?;
+    if bits < 32 && derniere.checked_shr(bits).is_some_and(|reste| reste != 0) {
+        return None;
+    }
+    let tete = tete.iter().fold(0_u32, |a, p| a.wrapping_shl(8) | p);
+    let valeur = if bits == 32 {
+        *derniere
+    } else {
+        tete.wrapping_shl(bits) | derniere
+    };
+    Some(std::net::Ipv4Addr::from(valeur))
+}
+
+/// L'adresse d'un mot de hosts, lue au plus large de ce qu'un système peut admettre, puis ramenée à sa forme normale :
+/// la forme stricte, l'IPv4 à l'ancienne (`v4_ancienne`), un indice de zone (« %eth0 », « %3 ») retiré, une IPv4
+/// écrite en IPv6 (« ::ffff:1.2.3.4 ») rendue en IPv4. Plus large que ce que Windows admet sûrement : une adresse
+/// qu'il prendrait ne doit pas échapper au constat ni à la mise en commentaire sous une forme inhabituelle, et un
+/// nom qu'il pourrait lire comme une adresse n'entre pas dans le bloc.
+pub(crate) fn adresse_hosts(mot: &str) -> Option<std::net::IpAddr> {
+    let (adresse, zone) = match mot.split_once('%') {
+        Some((a, z)) => (a, Some(z)),
+        None => (mot, None),
+    };
+    if zone.is_some_and(|z| {
+        z.is_empty() || z.len() > 64 || !z.bytes().all(|o| o.is_ascii_alphanumeric() || b"_.-".contains(&o))
+    }) {
+        return None;
+    }
+    let ip = match adresse.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip,
+        Err(_) => std::net::IpAddr::V4(v4_ancienne(adresse)?),
+    };
+    Some(ip.to_canonical())
+}
+
+/// Un nom qu'un fichier hosts peut tenir : minuscules, chiffres, tirets, soulignés, points ; ni une adresse IP sous
+/// aucune forme (hosts ne bloque que des noms), ni un nom sans point, 253 octets au plus, chaque étiquette de 1 à 63.
 pub(crate) fn nom_hosts_valide(n: &str) -> bool {
     n.len() <= 253
         && n.contains('.')
-        && n.parse::<std::net::IpAddr>().is_err()
+        && adresse_hosts(n).is_none()
         && n.split('.').all(|e| !e.is_empty() && e.len() <= 63)
         && n.bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.' || b == b'_')
@@ -1511,13 +1570,13 @@ fn decouper_hosts(o: &[u8], strict: bool) -> Result<Decoupe<'_>, RefusHosts> {
 }
 
 /// L'adresse d'une ligne que Vanguard peut mettre en commentaire : une adresse IP, puis au moins un nom ; ni un
-/// commentaire, ni une adresse de bouclage ou « 0.0.0.0 » / « :: » (listes de blocage, « localhost »).
+/// commentaire, ni une adresse de bouclage ou « 0.0.0.0 » / « :: » (listes de blocage, « localhost »). L'adresse est
+/// lue sous toutes ses formes et rendue normale (`adresse_hosts`) : « 0x5d.0.0.1 » est jugée comme 93.0.0.1.
 fn adresse_commentable(l: &[u8]) -> Option<std::net::IpAddr> {
     let texte = String::from_utf8_lossy(l);
     let mut mots = texte.split('#').next().unwrap_or_default().split_whitespace();
-    let ip = mots.next()?.parse::<std::net::IpAddr>().ok()?;
-    let canonique = ip.to_canonical();
-    (mots.next().is_some() && !canonique.is_loopback() && !canonique.is_unspecified()).then_some(ip)
+    let ip = adresse_hosts(mots.next()?)?;
+    (mots.next().is_some() && !ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }
 
 /// Juge la nouvelle version d'un hosts contre celle lue, octet par octet : hors du bloc de Vanguard, chaque ligne est
@@ -4495,6 +4554,90 @@ mod tests {
             juger_hosts(b"1.1.1.1 a.example\n", vieux.as_bytes()),
             Err(RefusHosts::LigneDuBloc(_))
         ));
+    }
+
+    /// Une adresse écrite autrement (IPv4 à l'ancienne, indice de zone, IPv4 en IPv6) est lue comme celle qu'elle
+    /// désigne : elle n'échappe ni à la mise en commentaire, ni au refus d'un nom du bloc qui serait une adresse.
+    #[test]
+    fn les_adresses_ecrites_autrement_sont_lues() {
+        let ip = |t: &str| t.parse::<std::net::IpAddr>().unwrap();
+        for (ecrite, lue) in [
+            ("127.1", "127.0.0.1"),
+            ("0x7f.0.0.1", "127.0.0.1"),
+            ("0X7F.0.0.1", "127.0.0.1"),
+            ("0177.0.0.1", "127.0.0.1"),
+            ("2130706433", "127.0.0.1"),
+            ("0x7f000001", "127.0.0.1"),
+            ("::ffff:1.2.3.4", "1.2.3.4"),
+            ("1.2.3.4%eth0", "1.2.3.4"),
+            ("fe80::1%3", "fe80::1"),
+            ("2a00:1450::1%5", "2a00:1450::1"),
+            ("0x5d.0xb8.0xd8.0x22", "93.184.216.34"),
+            ("93.12113954", "93.184.216.34"),
+            ("93.184.55330", "93.184.216.34"),
+            ("1572395042", "93.184.216.34"),
+            ("0", "0.0.0.0"),
+            ("00.0.0.0", "0.0.0.0"),
+            ("1.2.3.4", "1.2.3.4"),
+            ("::", "::"),
+        ] {
+            assert_eq!(adresse_hosts(ecrite), Some(ip(lue)), "{ecrite}");
+        }
+        for pas_une in [
+            "",
+            "1.2.3.4.5",
+            "1.2.3.",
+            ".1.2.3",
+            "256.0.0.1",
+            "1.2.3.256",
+            "1.2.65536",
+            "1.16777216",
+            "4294967296",
+            "08.0.0.1",
+            "0x.0.0.1",
+            "0xg.0.0.1",
+            "+1.2.3.4",
+            "1.2.3.4%",
+            "1.2.3.4%a b",
+            "1.2.3.4%a/b",
+            "1.2.3.4%%",
+            "pub.exemple.com",
+            "1.2.3.4.nip.io",
+        ] {
+            assert_eq!(adresse_hosts(pas_une), None, "{pas_une:?}");
+        }
+        // Un nom du bloc qui serait une adresse sous une autre forme est refusé.
+        for n in ["127.1", "0x7f.0.0.1", "0177.0.0.1", "93.12113954"] {
+            assert!(!nom_hosts_valide(n), "{n}");
+        }
+        assert!(nom_hosts_valide("1.2.3.4.nip.io"));
+        // Mises en commentaire : chaque redirection, quelle que soit sa forme ; jamais le bouclage écrit autrement.
+        let avant = "127.1 localhost\n0177.0.0.1 boucle.example\n0x5d.0xb8.0xd8.0x22 banque.example\n\
+                     1572395042 hexa.example\n::ffff:93.184.216.34 mappee.example\n93.184.216.34%eth0 zone.example\n\
+                     2130706433 boucle2.example\n"
+            .as_bytes();
+        let commente = hosts_commente(avant, |_| true);
+        let d = juger_hosts(avant, &commente).unwrap();
+        assert_eq!(
+            d.commentees,
+            [
+                "0x5d.0xb8.0xd8.0x22 banque.example",
+                "1572395042 hexa.example",
+                "::ffff:93.184.216.34 mappee.example",
+                "93.184.216.34%eth0 zone.example"
+            ]
+        );
+        // Mettre en commentaire une ligne de bouclage écrite autrement reste refusé.
+        let forge = [HOSTS_COMMENTE.as_bytes(), avant].concat();
+        assert!(matches!(juger_hosts(avant, &forge), Err(RefusHosts::LigneChangee(_))));
+        // Le bloc n'admet que « 0.0.0.0 » ou « :: » écrits ainsi : « 0 nom » ou « 0x0.0.0.0 nom » sont refusés.
+        for ligne in ["0 mal.example", "0x0.0.0.0 mal.example", "::ffff:0.0.0.0 mal.example"] {
+            let b = format!("{HOSTS_DEBUT} : le 2026-11-02 >>>\n{ligne}\n{HOSTS_FIN}\n");
+            assert!(
+                matches!(juger_hosts(b"", b.as_bytes()), Err(RefusHosts::LigneDuBloc(_))),
+                "{ligne}"
+            );
+        }
     }
 
     #[test]

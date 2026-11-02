@@ -78,7 +78,9 @@ fn redirections(hosts: &str) -> Vec<(String, String)> {
             let ip = mots.next()?;
             // L'adresse d'abord : un fichier hosts de liste de blocage compte des millions de lignes « 0.0.0.0 nom »,
             // et l'ouverture du menu ne doit pas en assembler les noms un par un.
-            if !ip.parse().is_ok_and(publique) {
+            // Sous toutes ses formes (« 0x5d.0.0.1 », « 1572395042 », « ::ffff:… », « …%eth0 ») : une adresse que
+            // Windows lirait à l'ancienne n'échappe pas au constat.
+            if !crate::machine::gestes::adresse_hosts(ip).is_some_and(publique) {
                 return None;
             }
             let noms = mots.collect::<Vec<_>>().join(" ");
@@ -1562,6 +1564,33 @@ mod tests {
             r"185\.12\.0\.9|2a00:1450::1|::ffff:93\.184\.216\.34"
         );
         assert!(resume_redirections(&r).starts_with("185.12.0.9 → banque.fr www.banque.fr, "));
+    }
+
+    /// Une redirection écrite autrement (IPv4 à l'ancienne, indice de zone, IPv4 en IPv6) est vue comme les autres ;
+    /// le bouclage écrit autrement n'en est pas une. Le motif de sed ne garde que des caractères d'adresse.
+    #[test]
+    fn redirections_ecrites_autrement() {
+        let hosts = "127.1 localhost\n0177.0.0.1 boucle\n2130706433 boucle2\n0x5d.0xb8.0xd8.0x22 banque.fr\n\
+                     1572395042 hexa.fr\n93.12113954 deux.fr\n::ffff:93.184.216.34 mappee.fr\n\
+                     93.184.216.34%eth0 zone.fr\n2a00:1450::1%5 v6.fr\n0xc0.0xa8.1.1 box\n0 rien\n";
+        let r = redirections(hosts);
+        let ips: Vec<&str> = r.iter().map(|(ip, _)| ip.as_str()).collect();
+        assert_eq!(
+            ips,
+            [
+                "0x5d.0xb8.0xd8.0x22",
+                "1572395042",
+                "93.12113954",
+                "::ffff:93.184.216.34",
+                "93.184.216.34%eth0",
+                "2a00:1450::1%5"
+            ]
+        );
+        assert!(
+            motif_adresses(&r)
+                .bytes()
+                .all(|o| o.is_ascii_alphanumeric() || b".:%|\\".contains(&o))
+        );
     }
 
     /// Le fichier hosts s'écrit par qui détourne la navigation : un nom piégé arrive inoffensif dans ce qui est
