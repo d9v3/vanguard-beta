@@ -4,8 +4,9 @@
 //!
 //! Limites dites : les règles tournent en parallèle, une durée est « au mur », gonflée par les voisines. Deux
 //! processus (surveillance et bilan manuel) peuvent noter en même temps : `ecrire_atomique` évite le fichier cassé,
-//! pas la mesure perdue (statistique, accepté). Non scellé : il ne décide d'aucune alerte, seulement de l'ordre de
-//! départ des règles (`super::reglage`), sans effet sur ce qu'elles rendent ni sur l'ordre rendu ; sa lecture est bornée.
+//! pas la mesure perdue (statistique, accepté). Scellé (`sceau`) depuis la 0.89.1 : il ne décide d'aucune alerte, mais
+//! de l'auto-réglage (`super::reglage` : ordre de départ des règles, délai monté d'une règle qui frôle le sien) ; un
+//! fichier douteux vaut un fichier vide, et sa lecture est bornée.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -78,9 +79,15 @@ pub(crate) fn lire_de(octets: &[u8]) -> Mesures {
 }
 
 fn lire_dans(dossier: &std::path::Path) -> Mesures {
-    crate::socle::lire_ordinaire(&dossier.join(MESURES), TAILLE_MAX)
-        .map(|o| lire_de(&o))
-        .unwrap_or_default()
+    crate::sceau::juge_dans(dossier, MESURES)
+        .cru()
+        .filter(|o| u64::try_from(o.len()).is_ok_and(|n| n <= TAILLE_MAX))
+        .map_or_else(Mesures::default, |o| lire_de(&o))
+}
+
+/// Les mesures de cet ordinateur (scellées ; douteuses : vides).
+pub(crate) fn lues() -> Mesures {
+    lire_dans(&crate::socle::dossier_local())
 }
 
 impl Mesures {
@@ -165,7 +172,7 @@ fn noter_dans(dossier: &std::path::Path, durees: &[(&str, Duration)], jour: chro
     let mut m = lire_dans(dossier);
     m.ajouter(durees, jour);
     if let Ok(o) = serde_json::to_vec(&m) {
-        let _ = crate::socle::ecrire_atomique(&dossier.join(MESURES), o);
+        let _ = crate::sceau::ecrire_dans(dossier, MESURES, &o);
     }
 }
 
@@ -275,14 +282,16 @@ pub(crate) fn medianes_recentes() -> BTreeMap<String, u64> {
     )
 }
 
-/// Le verdict des mesures de cet ordinateur, aujourd'hui.
+/// Le verdict des mesures de cet ordinateur, aujourd'hui, contre le délai appliqué de chaque règle (celui du code, ou
+/// monté par l'auto-réglage).
 pub(crate) fn verdict() -> Verdict {
     let m = lire_dans(&crate::socle::dossier_local());
+    let longs = super::reglage::delais_longs();
     juger(&m, chrono::Local::now().date_naive(), |id| {
         crate::machine::regles::regles(crate::machine::regles::Os::actuel())
             .into_iter()
             .find(|r| r.id == id)
-            .map_or(crate::machine::regles::DELAI, crate::machine::regles::Regle::delai)
+            .map_or(crate::machine::regles::DELAI, |r| r.delai_avec(&longs))
     })
 }
 

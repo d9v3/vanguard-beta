@@ -91,9 +91,12 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     scelle(crate::modele::resultat::FICHIERS[12], "modele::resultat"),
     scelle(crate::modele::resultat::FICHIERS[13], "modele::resultat"),
     // L'autotest : la date du dernier (scellée, sinon un programme du compte repousserait l'hebdomadaire à jamais) et
-    // ses lectures contredites ; le journal des mesures, non scellé (il ne décide d'aucune alerte).
+    // ses lectures contredites.
     scelle(crate::autotest::DERNIER, "autotest"),
-    local(crate::autotest::mesures::MESURES, "autotest::mesures"),
+    // Les durées des règles et l'auto-réglage qui en découle (ordre de départ, délais montés) : scellés, sinon un
+    // programme du compte ferait attendre le bilan 30 minutes sur une règle bloquée.
+    scelle(crate::autotest::mesures::MESURES, "autotest::mesures"),
+    scelle(crate::autotest::reglage::REGLAGE, "autotest::reglage"),
     // La tête du journal des événements : retirer la fin du journal sans elle se voit.
     scelle(crate::modele::journal::TETE, "modele::journal"),
     local("sceaux.json", "sceau"),
@@ -457,10 +460,6 @@ mod tests {
     /// fichier de cette liste devenu scellé ou retiré de l'inventaire, fait échouer `chaque_lecture_passe_par_le_sceau`.
     const NON_SCELLES: &[(&str, &str)] = &[
         (
-            "autotest/mesures.json",
-            "journal des mesures de l'autodiagnostic : ne décide d'aucune alerte",
-        ),
-        (
             "sceaux.json",
             "les sceaux eux-mêmes : effacés ou abîmés, ils se voient (refaits, COM-ETA-001)",
         ),
@@ -680,6 +679,12 @@ mod tests {
             "surveillance-passe.txt",
             1,
             "date du fichier seulement, qui rend au plus la preuve « non concluante » ; le contenu se lit par le sceau",
+        ),
+        (
+            "autotest/reglage.rs",
+            "autotest/reglage.json",
+            1,
+            "nom montré quand l'écriture échoue ; le fichier se lit et s'écrit par le sceau",
         ),
         (
             "changements.rs",

@@ -182,6 +182,8 @@ const TARDIFS: &[&str] = &[
     ENTRETIEN,
     SAUVEGARDE,
     SURVEILLANCE_PASSE,
+    // Écrit sans sceau jusqu'à la 0.89.0.
+    crate::autotest::mesures::MESURES,
 ];
 
 /// Les premiers `TARDIFS`, ceux que connaissaient les versions de la forme 0 (jusqu'à la 0.87) : les seuls noms que

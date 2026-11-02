@@ -6,7 +6,8 @@
 //! alertes apprises (appris.json), le blocage (blocage.json), les restrictions des extensions (plugins/reglages.json,
 //! par leur interrupteur et son accord), la clé abuse.ch (`protection::abuse_ch`, jamais montrée en entier), la
 //! protection en temps réel (`protection::temps_reel` : coupée d'un coup pour un temps ou jusqu'à reprise, après
-//! accord, sans toucher aux réglages de chacun). Chaque changement est montré avec sa valeur d'avant, et s'annule en
+//! accord, sans toucher aux réglages de chacun), l'auto-réglage de la vitesse du bilan (`autotest::reglage` : en marche
+//! ou coupé, chaque délai monté annulable un par un, ou tout remis comme à l'origine). Chaque changement est montré avec sa valeur d'avant, et s'annule en
 //! la remettant. Le téléchargement des versions des logiciels (`protection::perimes`) est gardé dans parametres.json
 //! aussi, mais lu à chaque usage : ce n'est pas un réglage du lancement. parametres.json est scellé (`sceau`) : changé
 //! hors de Vanguard, ce qu'il coupait (travail sans Internet, autodiagnostic, versions des logiciels) reste en marche,
@@ -271,11 +272,12 @@ enum Reglage {
     CleAbuseCh,
     VersionsLogiciels,
     Autotest,
+    Vitesse,
     PaquetsAur,
 }
 
 impl Reglage {
-    const TOUS: [Reglage; 13] = [
+    const TOUS: [Reglage; 14] = [
         Reglage::Langue,
         Reglage::Emojis,
         Reglage::HorsLigne,
@@ -288,6 +290,7 @@ impl Reglage {
         Reglage::CleAbuseCh,
         Reglage::VersionsLogiciels,
         Reglage::Autotest,
+        Reglage::Vitesse,
         Reglage::PaquetsAur,
     ];
 
@@ -306,6 +309,7 @@ impl Reglage {
             Reglage::CleAbuseCh => "abuse.ch",
             Reglage::VersionsLogiciels => tr!("versions-logiciels", "software-versions"),
             Reglage::Autotest => "autotest",
+            Reglage::Vitesse => tr!("auto-reglage", "auto-tuning"),
             Reglage::PaquetsAur => tr!("paquets-aur", "aur-packages"),
         }
     }
@@ -335,6 +339,9 @@ impl Reglage {
                 Some(Reglage::VersionsLogiciels)
             }
             "autotest" | "self-test" | "autodiagnostic" | "selftest" => Some(Reglage::Autotest),
+            "auto-reglage" | "auto-réglage" | "autoreglage" | "auto-tuning" | "autotuning" | "vitesse" | "speed" => {
+                Some(Reglage::Vitesse)
+            }
             "paquets-aur" | "aur-packages" | "aur" | "paquets_aur" => Some(Reglage::PaquetsAur),
             _ => None,
         }
@@ -354,6 +361,7 @@ impl Reglage {
             Reglage::CleAbuseCh => tr!("Clé abuse.ch", "abuse.ch key"),
             Reglage::VersionsLogiciels => tr!("Versions des logiciels", "Software versions"),
             Reglage::Autotest => tr!("Autodiagnostic de la semaine", "Weekly self-test"),
+            Reglage::Vitesse => tr!("Réglage automatique de la vitesse", "Automatic speed tuning"),
             Reglage::PaquetsAur => tr!("Paquets de l'AUR", "AUR packages"),
         }
     }
@@ -396,7 +404,7 @@ impl Reglage {
             | Reglage::VersionsLogiciels
             | Reglage::Autotest
             | Reglage::PaquetsAur => &["oui", "non"],
-            Reglage::Appris | Reglage::Blocage | Reglage::CleAbuseCh => &[],
+            Reglage::Appris | Reglage::Blocage | Reglage::CleAbuseCh | Reglage::Vitesse => &[],
         }
     }
 }
@@ -513,6 +521,7 @@ fn valeur(r: Reglage) -> String {
         }
         // Masquée : seuls ses quatre derniers caractères, jamais la clé entière.
         Reglage::CleAbuseCh => crate::protection::abuse_ch::etat_court(),
+        Reglage::Vitesse => crate::autotest::reglage::etat_court(),
     };
     if let Some(v) = r.variable().filter(|v| std::env::var_os(v).is_some()) {
         texte += &trf!(" ({v} l'emporte)", " ({v} wins)");
@@ -552,7 +561,7 @@ fn restrictions_dans(racine: &Path, actives: bool, accord: impl FnOnce(&str) -> 
 /// `vanguard parametres` : l'état ; avec un réglage et une valeur, le change ; « appris » et « blocage » ouvrent leur
 /// outil (« blocage » prend aussi ses propres mots : `vanguard parametres blocage connexions auto`) ; « abuse.ch »
 /// demande la clé, ou la retire (« retirer »), mais ne la prend jamais en argument ; « temps-reel non » prend aussi
-/// « --pendant 1h|4h ».
+/// « --pendant 1h|4h » ; « auto-reglage » prend ses propres mots (oui, non, tout-remettre, annuler <règle>).
 pub fn commande(mots: &[String]) {
     let Some((premier, reste)) = mots.split_first() else {
         afficher();
@@ -570,6 +579,7 @@ pub fn commande(mots: &[String]) {
     match (r, reste) {
         (Reglage::Appris, _) => crate::apprentissage::menu(),
         (Reglage::Blocage, _) => crate::protection::blocage::commande(reste),
+        (Reglage::Vitesse, _) => crate::autotest::reglage::commande(reste),
         (Reglage::CleAbuseCh, []) => crate::protection::abuse_ch::menu(),
         (Reglage::CleAbuseCh, [mot]) if est_retirer(mot) => crate::protection::abuse_ch::retirer(),
         // L'historique du terminal et la liste des processus garderaient une clé donnée en argument.
@@ -830,7 +840,7 @@ fn changer(r: Reglage, saisie: &str) -> bool {
             }
         }
         Reglage::TempsReel => return changer_temps_reel(saisie, &[]),
-        Reglage::Appris | Reglage::Blocage | Reglage::CleAbuseCh => return false,
+        Reglage::Appris | Reglage::Blocage | Reglage::CleAbuseCh | Reglage::Vitesse => return false,
     };
     trp!(
         "  {VERT}✔{RESET} {} : {avant} → {apres}",
@@ -943,6 +953,7 @@ fn explication(r: Reglage) -> &'static str {
             "Oui : une extension demande votre accord, son empreinte est vérifiée, elle est analysée et bornée, jamais en administrateur. Non : elle tourne comme un de vos programmes, sans contrôle ; couper demande votre accord une fois.",
             "Yes: an extension asks for your consent, its fingerprint is checked, it is scanned and limited, never as administrator. No: it runs like one of your programs, without checks; turning them off asks for your consent once."
         ),
+        Reglage::Vitesse => crate::autotest::reglage::explication(),
         Reglage::Appris | Reglage::Blocage | Reglage::CleAbuseCh => "",
     }
 }
@@ -991,6 +1002,7 @@ pub fn menu() {
             Reglage::Appris => crate::apprentissage::menu(),
             Reglage::Blocage => crate::protection::blocage::menu(),
             Reglage::CleAbuseCh => crate::protection::abuse_ch::menu(),
+            Reglage::Vitesse => crate::autotest::reglage::menu(),
             Reglage::TempsReel => choisir_temps_reel(),
             _ => choisir_valeur(r),
         }
@@ -1333,6 +1345,13 @@ mod tests {
     fn le_guide_nomme_chaque_reglage() {
         let (fr, en) = crate::guide::explication_vanguard("vanguard parametres").expect("vanguard parametres au guide");
         for r in Reglage::TOUS {
+            if r == Reglage::Vitesse {
+                // Sa propre ligne au guide, comme les paquets de l'AUR : ce qu'il change, et que rien n'est envoyé.
+                let (fr, en) = crate::guide::explication_vanguard("vanguard parametres auto-reglage")
+                    .expect("auto-reglage au guide");
+                assert!(fr.contains("vitesse") && en.contains("speed"), "{r:?} : {fr} / {en}");
+                continue;
+            }
             if r == Reglage::PaquetsAur {
                 // La ligne est pleine : celui-ci a sa propre ligne au guide, qui dit ce qu'il envoie et où.
                 let (fr, en) = crate::guide::explication_vanguard("vanguard parametres paquets-aur oui")
@@ -1354,7 +1373,7 @@ mod tests {
                 Reglage::CleAbuseCh => ("clé abuse.ch", "abuse.ch key"),
                 Reglage::VersionsLogiciels => ("versions", "software versions"),
                 Reglage::Autotest => ("autotest", "self-test"),
-                Reglage::PaquetsAur => unreachable!("vérifié plus haut"),
+                Reglage::PaquetsAur | Reglage::Vitesse => unreachable!("vérifié plus haut"),
             };
             // Sans tenir compte des majuscules : la phrase du guide commence par l'un d'eux.
             assert!(

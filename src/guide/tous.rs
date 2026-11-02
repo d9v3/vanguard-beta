@@ -283,6 +283,13 @@ pub const PROGRAMMES: &[Programme] = &[
                 true,
             ),
             traduite(
+                "vanguard parametres auto-reglage",
+                "vanguard settings auto-tuning",
+                "Le bilan règle seul sa vitesse (ordre, délais) ; chaque changement se voit et s'annule.",
+                "The check tunes its own speed (order, time limits); each change shows and can be undone.",
+                true,
+            ),
+            traduite(
                 "vanguard blocage",
                 "vanguard blocking",
                 "Bloquer les menaces : d'un clic, ou tout seul pour le certain (protection active) ; chaque blocage s'annule.",

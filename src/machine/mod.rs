@@ -366,18 +366,27 @@ fn en_parallele(verifications: Vec<Verification<'_>>) -> Vec<Constat> {
 fn bilan_des_regles(choisies: Vec<&'static regles::Regle>) -> Vec<Constat> {
     let (constats, durees) = regles_en_parallele(choisies);
     crate::autotest::mesures::noter(&durees);
+    crate::autotest::reglage::ajuster();
     constats
 }
 
 /// `bilan_des_regles` sans rien noter, avec la durée de chaque règle. Le départ suit l'auto-réglage
 /// (`autotest::reglage`) : la plus longue de la semaine d'abord, pour que le bilan ne finisse pas sur elle ; ce
-/// qu'elles rendent et l'ordre rendu n'en dépendent pas.
+/// qu'elles rendent et l'ordre rendu n'en dépendent pas. Le délai d'une règle aussi : celui du code, ou `DELAI_LONG`
+/// s'il l'a monté.
 fn regles_en_parallele(
     choisies: Vec<&'static regles::Regle>,
 ) -> (Vec<Constat>, Vec<(&'static str, std::time::Duration)>) {
     let ids: Vec<Option<&str>> = choisies.iter().map(|r| Some(r.id)).collect();
     let depart = crate::autotest::reglage::ordre_de_depart(&ids, &crate::autotest::mesures::medianes_recentes());
-    en_parallele_dans(choisies.into_iter().map(regles::verification).collect(), depart)
+    let longs = crate::autotest::reglage::delais_longs();
+    en_parallele_dans(
+        choisies
+            .into_iter()
+            .map(|r| regles::verification_avec(r, &longs))
+            .collect(),
+        depart,
+    )
 }
 
 /// Lance les vérifications en même temps (chacune attend surtout des commandes du système), dans l'ordre `depart`
@@ -451,11 +460,12 @@ pub(crate) fn essai_des_regles(
         return regles_en_parallele(choisies);
     }
     let bilan = bilan_en_cours();
+    let longs = crate::autotest::reglage::delais_longs();
     let mut constats = Vec::new();
     let mut durees = Vec::new();
     for r in choisies {
         let debut = std::time::Instant::now();
-        constats.extend(regles::verification(r)());
+        constats.extend(regles::verification_avec(r, &longs)());
         durees.push((r.id, debut.elapsed()));
     }
     apres_les_regles(&mut constats, bilan);
@@ -483,7 +493,7 @@ fn bilan_en_cours() -> u64 {
 }
 
 std::thread_local! {
-    /// Le numéro du bilan dont une vérification de règle fait partie, posé dans son fil par `regles::verification`
+    /// Le numéro du bilan dont une vérification de règle fait partie, posé dans son fil par `regles::verification_avec`
     /// quand elle est créée : une règle qui note quelque chose pour la suite de son bilan le note sous ce numéro-là,
     /// jamais sous le compteur relu, qu'un autre bilan a pu avancer entre-temps.
     static BILAN_DU_FIL: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };

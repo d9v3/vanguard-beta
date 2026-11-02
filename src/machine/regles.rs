@@ -307,13 +307,29 @@ impl Regle {
             DELAI
         }
     }
+
+    /// Le délai appliqué : celui du code, monté à `DELAI_LONG` si l'auto-réglage l'a monté (`longs`,
+    /// `autotest::reglage`). Jamais sous celui du code, jamais au-delà de `DELAI_LONG`.
+    pub(crate) fn delai_avec(&self, longs: &std::collections::BTreeSet<String>) -> std::time::Duration {
+        if longs.contains(self.id) {
+            self.delai().max(DELAI_LONG)
+        } else {
+            self.delai()
+        }
+    }
 }
 
 /// La vérification d'une règle : chaque constat porte son identifiant, même celui d'une règle qui plante (« erreur
 /// interne » non vérifiée, qui dit laquelle et que `Audit::fiable` voit), qui ne rend rien (« non vérifié », hors des
 /// muettes tolérées) ou qui dépasse son délai (« non vérifié », délai dépassé).
+#[cfg(test)]
 pub(super) fn verification<'a>(r: &'static Regle) -> Verification<'a> {
     sous_delai(r, r.delai())
+}
+
+/// `verification`, avec le délai appliqué (`Regle::delai_avec`).
+pub(super) fn verification_avec<'a>(r: &'static Regle, longs: &std::collections::BTreeSet<String>) -> Verification<'a> {
+    sous_delai(r, r.delai_avec(longs))
 }
 
 /// La règle tourne dans un fil à part, attendu au plus `delai`. Un fil bloqué ne peut pas être arrêté de
