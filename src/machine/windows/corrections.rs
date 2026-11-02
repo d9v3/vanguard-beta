@@ -859,8 +859,8 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
         Acte::WmiAbonnementRemettre(w) => {
             let (n, c) = (crate::ui::affichable(w.nom.texte()), w.classe.classe());
             trf!(
-                "Recréer l'abonnement WMI « {n} » ({c}) depuis ce que Vanguard a noté en le retirant (refusé sans note valide, et jamais par-dessus un objet présent) ; son chemin d'objet peut changer, c'est dit",
-                "Recreate the WMI subscription “{n}” ({c}) from what Vanguard noted when removing it (refused without a valid note, and never over an existing object); its object path may change, this is said"
+                "Recréer l'abonnement WMI « {n} » ({c}) depuis ce que Vanguard a noté en le retirant : pas encore fait par cette version (une version suivante le fera, avec une confirmation dans la fenêtre administrateur) ; refusé, rien n'est changé et la note est gardée",
+                "Recreate the WMI subscription “{n}” ({c}) from what Vanguard noted when removing it: not done by this version yet (a later version will, with a confirmation in the administrator window); refused, nothing is changed and the note is kept"
             )
         }
         Acte::ServiceRetirer(n) => {

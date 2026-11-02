@@ -8,9 +8,12 @@
 //! changement, relues juste avant, puis la liaison, le consumer et le filtre qui ne sert à aucune autre liaison sont
 //! supprimés (IWbemServices::DeleteInstance), et l'état réel est relu.
 //!
-//! La remise recrée les trois objets depuis la note seule (SpawnInstance, PutInstance sans jamais écraser un objet
-//! présent), relit, et dit si un chemin d'objet a changé. Les références d'une liaison sont celles des objets
-//! recréés, relues dans WMI, jamais un texte de la note.
+//! La remise est coupée jusqu'à la passe 3.5d : le processus élevé refuse la ligne sans rien lire ni écrire, et la
+//! note reste. En 3.5d, elle reviendra avec une confirmation dans la fenêtre administrateur, parce qu'une ligne
+//! forgée par un programme du compte pourrait sinon recréer une persistance qui tourne en SYSTEM. Son code est gardé
+//! (`remettre_apres_confirmation`) : il recrée les trois objets depuis la note seule (SpawnInstance, PutInstance sans
+//! jamais écraser un objet présent), relit, et dit si un chemin d'objet a changé. Les références d'une liaison sont
+//! celles des objets recréés, relues dans WMI, jamais un texte de la note.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -568,9 +571,24 @@ fn defaire_creation(a: &Abonnements, w: &AbonnementWmi, filtres_crees: &[String]
     }
 }
 
-/// Dans le processus élevé : recrée l'abonnement `w` depuis la note que `retirer` a écrite, seulement si aucun
-/// consumer de ce nom n'existe et que chaque filtre est dans l'état noté ; la note est effacée après relecture.
-pub(super) fn remettre(w: &AbonnementWmi) -> Resultat {
+/// Dans le processus élevé : la remise est coupée jusqu'à la passe 3.5d (elle reviendra avec une confirmation dans la
+/// fenêtre administrateur). Refusée sans rien lire ni écrire : ni WMI, ni le registre, et la note reste.
+pub(super) fn remettre(_w: &AbonnementWmi) -> Resultat {
+    refus(
+        tr!(
+            "la remise d'un abonnement WMI viendra dans une version suivante, avec une confirmation dans la fenêtre administrateur : rien n'est changé, et la note de Vanguard est gardée",
+            "putting back a WMI subscription will come in a later version, with a confirmation in the administrator window: nothing is changed, and Vanguard's note is kept"
+        )
+        .to_string(),
+    )
+}
+
+/// Passe 3.5d, une fois la confirmation demandée dans la fenêtre administrateur : recrée l'abonnement `w` depuis la
+/// note que `retirer` a écrite, seulement si aucun consumer de ce nom n'existe et que chaque filtre est dans l'état
+/// noté ; la note est effacée après relecture.
+// Gardé pour la passe 3.5d : personne ne l'appelle d'ici là (`remettre` refuse).
+#[allow(dead_code)]
+fn remettre_apres_confirmation(w: &AbonnementWmi) -> Resultat {
     let w = w.clone();
     dans_wmi(move |abandon| remettre_ici(&w, abandon))
 }
@@ -800,6 +818,69 @@ mod tests {
         assert_eq!(lu_par_le_bilan("Updater"), "Updater");
     }
 
+    /// La remise est coupée jusqu'à la passe 3.5d : une ligne « remettre » bien formée, passée par l'aiguillage du
+    /// processus élevé, est refusée, et la note valide de cet abonnement reste octet pour octet (rien d'écrit, rien
+    /// d'effacé). Sans note, refusée de même, et aucune note n'apparaît.
+    #[test]
+    fn remise_refusee_note_gardee() {
+        use crate::machine::gestes::{ClasseConsumer, NomConsumer, PROPRIETES_COMMANDE};
+        let w = AbonnementWmi {
+            classe: ClasseConsumer::Commande,
+            nom: NomConsumer::nouveau("VanguardEssaiRemise").unwrap(),
+        };
+        let ligne = Acte::WmiAbonnementRemettre(w.clone()).ligne();
+        let acte = gestes::analyser_acte(&ligne).expect("ligne bien formée");
+        assert!(matches!(&acte, Acte::WmiAbonnementRemettre(x) if *x == w), "{ligne}");
+        let t = |s: &str| ValeurNotee::Texte(s.to_string());
+        let mut consumer = vec![ValeurNotee::Absente; PROPRIETES_COMMANDE.len()];
+        consumer[0] = t("VanguardEssaiRemise");
+        consumer[2] = t(r"cmd.exe /c C:\Users\Public\x.bat");
+        let note = NoteWmi {
+            classe: ClasseConsumer::Commande,
+            consumer: ObjetNote {
+                chemin: "CommandLineEventConsumer.Name=\"VanguardEssaiRemise\"".to_string(),
+                valeurs: consumer,
+            },
+            liaisons: vec![LiaisonNotee {
+                filtre_retire: true,
+                filtre: ObjetNote {
+                    chemin: "__EventFilter.Name=\"VanguardEssaiRemiseF\"".to_string(),
+                    valeurs: vec![
+                        t("VanguardEssaiRemiseF"),
+                        t("SELECT * FROM __InstanceModificationEvent WITHIN 60"),
+                        t("WQL"),
+                        t(r"root\cimv2"),
+                        ValeurNotee::Absente,
+                    ],
+                },
+                liaison: ObjetNote {
+                    chemin: String::new(),
+                    valeurs: vec![ValeurNotee::Absente; PROPRIETES_LIAISON.len()],
+                },
+            }],
+        };
+        assert!(note.valide(&w));
+        let octets = note.octets().unwrap();
+        let nom = nom_note(&w);
+        let relue = || notes(false).ok().and_then(|k| k.get_raw_value(&nom).ok());
+        let faire = || super::super::services_ecriture::faire(&acte, &Ok(String::new()));
+        let refusee = |r: &Resultat| !r.reussi && !r.rien && r.avant.is_none() && r.raison.contains("note");
+        effacer_note(&nom);
+        let r = faire();
+        assert!(refusee(&r), "{}", r.raison);
+        assert!(relue().is_none(), "aucune note écrite");
+        if ecrire_note(&nom, octets.clone()).is_err() {
+            return crate::essais::saute("registre de la machine non inscriptible");
+        }
+        let r = faire();
+        let reste = relue();
+        effacer_note(&nom);
+        assert!(refusee(&r), "{}", r.raison);
+        let reste = reste.expect("note gardée");
+        assert_eq!((reste.vtype, &reste.bytes[..]), (REG_BINARY, &octets[..]));
+    }
+
+    /// Fonctions de la remise gardée pour la passe 3.5d (`remettre_apres_confirmation`), essayées seules d'ici là.
     #[test]
     fn valeurs_notees_et_recreees() {
         assert_eq!(notee(None, GenreWmi::Texte), Some(ValeurNotee::Absente));

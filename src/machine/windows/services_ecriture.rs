@@ -681,7 +681,7 @@ pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
         Acte::LancementDesactiver(l, v) => return super::lancement_ecriture::desactiver(l, v),
         Acte::LancementReactiver(l) => return super::lancement_ecriture::reactiver(l),
         // Abonnements WMI permanents (root\subscription, COM) : relus, rejugés par le bilan refait ici, les trois
-        // objets notés avant le retrait.
+        // objets notés avant le retrait. La remise est refusée jusqu'à la passe 3.5d, la note gardée.
         Acte::WmiAbonnementRetirer(w) => return super::wmi_ecriture::retirer(w),
         Acte::WmiAbonnementRemettre(w) => return super::wmi_ecriture::remettre(w),
         _ => {}
