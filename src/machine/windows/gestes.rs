@@ -5,9 +5,11 @@
 //! `vanguard:vider-file-impression`, `vanguard:mettre-de-cote`, `vanguard:pare-feu-actif`, `vanguard:pare-feu-public`,
 //! `vanguard:reseau-categorie`, `vanguard:ifeo-debugger[-32]`, `vanguard:ifeo-silencieux[-32]`,
 //! `vanguard:service-guillemets`, `vanguard:defender`, `vanguard:defender-asr`, `vanguard:defender-exclusion-retirer`,
-//! `vanguard:defender-menaces-retirer`, `vanguard:hosts-ecrire`, `vanguard:dns-auto`, `vanguard:dns-serveurs`), faits
+//! `vanguard:defender-menaces-retirer`, `vanguard:hosts-ecrire`, `vanguard:dns-auto`, `vanguard:dns-serveurs`,
+//! `vanguard:compte-desactiver`, `vanguard:certificat-retirer`, `vanguard:partage-retirer-acces`), faits
 //! par le gestionnaire de services, std::fs, les interfaces COM du pare-feu et des réseaux (`pare_feu`), le registre
-//! (`portes`, `services`), WMI (`defender_ecriture`) et iphlpapi (`reseau_ecriture`). Un réglage de Defender n'admet
+//! (`portes`, `services`), WMI (`defender_ecriture`), iphlpapi (`reseau_ecriture`), netapi32 et crypt32
+//! (`comptes_ecriture`, `certificats_ecriture`, `partages_ecriture`). Un réglage de Defender n'admet
 //! que des valeurs qui protègent : aucune ligne ne peut couper le temps réel ni le cloud. Une nouvelle version du
 //! hosts n'admet hors du bloc de Vanguard que des lignes mises en commentaire (`juger_hosts`) ; un serveur DNS, que
 //! ceux de la liste fermée (`RESOLVEURS`).
@@ -2156,6 +2158,262 @@ pub(crate) fn ligne_defender_menaces_retirer() -> String {
     DEFENDER_MENACES_RETIRER.to_string()
 }
 
+// ------------------------------------------------- comptes, certificats et partages
+
+/// Désactiver un compte local, désigné par son RID (le dernier nombre de son SID) : `vanguard:compte-desactiver
+/// <RID>`. Le processus élevé relit les comptes, rejuge par la fonction du bilan et refuse la personne, son propre
+/// compte, le dernier administrateur actif, un compte réservé de Windows et un compte qui a un programme ouvert
+/// (`refus_desactivation`).
+pub(crate) const COMPTE_DESACTIVER: &str = "vanguard:compte-desactiver ";
+/// Retirer un certificat racine signalé par le bilan : `vanguard:certificat-retirer <lm|cu> <SHA-1 en hex
+/// minuscule>`, exporté avant dans la quarantaine de Vanguard. Jamais un ajout.
+pub(crate) const CERTIFICAT_RETIRER: &str = "vanguard:certificat-retirer ";
+/// Retirer d'un partage les autorisations d'un compte ouvert sans mot de passe (Tout le monde, Invités…) :
+/// `vanguard:partage-retirer-acces <nom en hex> <SID>`, la liste d'avant notée (SDDL).
+pub(crate) const PARTAGE_RETIRER_ACCES: &str = "vanguard:partage-retirer-acces ";
+
+/// Le plus petit RID d'un compte : 500 (Administrateur intégré) ; en dessous, des groupes et des comptes de Windows.
+pub(crate) const RID_MIN: u32 = 500;
+/// La plus longue d'un nom de partage, en unités UTF-16 (NNLEN de lmcons.h).
+pub(crate) const PARTAGE_NOM_MAX: usize = 80;
+
+/// Le magasin « Root » d'où retirer un certificat : celui de l'ordinateur ou celui de la personne.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MagasinRacine {
+    Ordinateur,
+    Compte,
+}
+
+impl MagasinRacine {
+    pub(crate) const TOUS: [MagasinRacine; 2] = [MagasinRacine::Ordinateur, MagasinRacine::Compte];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            MagasinRacine::Ordinateur => "lm",
+            MagasinRacine::Compte => "cu",
+        }
+    }
+
+    /// Le nom du magasin dans les lignes « CERT|… » du bilan (`magasins::racines`).
+    pub(crate) fn nom(self) -> &'static str {
+        match self {
+            MagasinRacine::Ordinateur => "LocalMachine",
+            MagasinRacine::Compte => "CurrentUser",
+        }
+    }
+}
+
+/// Une empreinte SHA-1 de certificat : 40 chiffres hexadécimaux minuscules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Empreinte(String);
+
+impl Empreinte {
+    /// L'empreinte d'un texte de 40 chiffres hexadécimaux, majuscules admises (Thumbprint) : rendue en minuscules.
+    pub(crate) fn nouvelle(texte: &str) -> Option<Empreinte> {
+        (texte.len() == 40 && texte.bytes().all(|o| o.is_ascii_hexdigit()))
+            .then(|| Empreinte(texte.to_ascii_lowercase()))
+    }
+
+    /// L'empreinte d'une ligne : minuscules seulement.
+    fn lire(texte: &str) -> Option<Empreinte> {
+        (texte.len() == 40 && texte.bytes().all(|o| chiffre_minuscule(o).is_some()))
+            .then(|| Empreinte(texte.to_string()))
+    }
+
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+
+    /// Les 20 octets, pour chercher le certificat par son empreinte.
+    pub(crate) fn octets(&self) -> Option<[u8; 20]> {
+        let mut o = [0u8; 20];
+        for (i, paire) in self.0.as_bytes().chunks(2).enumerate() {
+            let fort = chiffre_minuscule(*paire.first()?)?;
+            let faible = chiffre_minuscule(*paire.get(1)?)?;
+            *o.get_mut(i)? = fort.checked_mul(16)?.checked_add(faible)?;
+        }
+        Some(o)
+    }
+}
+
+/// Un nom de partage relu : 1 à 80 unités UTF-16, de l'UTF-16 valide, sans caractère de contrôle, et jamais un partage
+/// caché ou administratif (fini par « $ » : ADMIN$, IPC$, C$… ; le Bureau à distance et l'administration à distance
+/// en dépendent).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NomPartage(String);
+
+impl NomPartage {
+    pub(crate) fn nouveau(nom: &str) -> Option<NomPartage> {
+        let longueur = nom.encode_utf16().count();
+        (longueur > 0 && longueur <= PARTAGE_NOM_MAX && !nom.chars().any(char::is_control) && !nom.ends_with('$'))
+            .then(|| NomPartage(nom.to_string()))
+    }
+
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn hex(&self) -> String {
+        let unites: Vec<u16> = self.0.encode_utf16().collect();
+        hex_utf16(&unites)
+    }
+
+    fn lire(hex: &str) -> Option<NomPartage> {
+        let unites = lire_hex_utf16(hex, PARTAGE_NOM_MAX)?;
+        NomPartage::nouveau(&String::from_utf16(&unites).ok()?).filter(|n| n.hex() == hex)
+    }
+}
+
+/// Un SID en texte, de forme stricte : « S-1- », puis de 2 à 15 nombres décimaux séparés par « - », sans zéro de
+/// tête ; l'autorité tient sur 48 bits, chaque sous-autorité sur 32.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SidTexte(String);
+
+impl SidTexte {
+    pub(crate) fn lire(texte: &str) -> Option<SidTexte> {
+        let reste = texte.strip_prefix("S-1-")?;
+        let nombres: Vec<&str> = reste.split('-').collect();
+        if !(2..=15).contains(&nombres.len()) {
+            return None;
+        }
+        let decimal = |n: &str| {
+            !n.is_empty() && n.len() <= 15 && n.bytes().all(|o| o.is_ascii_digit()) && (n == "0" || !n.starts_with('0'))
+        };
+        let (autorite, sous) = nombres.split_first()?;
+        let bon = decimal(autorite)
+            && autorite.parse::<u64>().is_ok_and(|a| a < (1u64 << 48))
+            && sous.iter().all(|s| decimal(s) && s.parse::<u32>().is_ok());
+        bon.then(|| SidTexte(texte.to_string()))
+    }
+
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Retirer d'un partage les autorisations d'un compte.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AccesPartage {
+    pub nom: NomPartage,
+    pub sid: SidTexte,
+}
+
+/// Le RID d'une ligne : décimal, sans zéro de tête, de 500 à 4 294 967 295.
+fn lire_rid(texte: &str) -> Option<u32> {
+    (!texte.starts_with('0') && texte.bytes().all(|o| o.is_ascii_digit()))
+        .then(|| texte.parse::<u32>().ok())
+        .flatten()
+        .filter(|&r| r >= RID_MIN)
+}
+
+/// Le RID d'un compte local d'après son SID : « S-1-5-21-a-b-c-RID » exactement (le domaine de cet ordinateur ou
+/// d'un domaine) ; `None` pour tout autre SID.
+pub(crate) fn rid_local(sid: &str) -> Option<u32> {
+    let s = SidTexte::lire(sid)?;
+    let nombres: Vec<&str> = s.texte().split('-').collect();
+    match nombres.as_slice() {
+        ["S", "1", "5", "21", _, _, _, rid] => lire_rid(rid),
+        _ => None,
+    }
+}
+
+/// La ligne qui désactive un compte local d'après son SID ; `None` si ce n'est pas un compte local de RID 500 ou plus.
+pub(crate) fn ligne_compte_desactiver(sid: &str) -> Option<String> {
+    rid_local(sid).map(|rid| Acte::CompteDesactiver(rid).ligne())
+}
+
+/// La ligne qui retire une racine ; `None` si l'empreinte n'a pas sa forme ou le magasin n'est pas l'un des deux.
+pub(crate) fn ligne_certificat_retirer(magasin: &str, empreinte: &str) -> Option<String> {
+    let m = *MagasinRacine::TOUS.iter().find(|m| m.nom() == magasin)?;
+    Some(Acte::CertificatRetirer(m, Empreinte::nouvelle(empreinte)?).ligne())
+}
+
+/// La ligne qui retire d'un partage les autorisations d'un compte ; `None` pour un nom ou un SID hors de leur forme
+/// (un partage caché ou administratif compris) : la correction reste alors à faire soi-même.
+pub(crate) fn ligne_partage_retirer_acces(nom: &str, sid: &str) -> Option<String> {
+    Some(
+        Acte::PartageRetirerAcces(AccesPartage {
+            nom: NomPartage::nouveau(nom)?,
+            sid: SidTexte::lire(sid)?,
+        })
+        .ligne(),
+    )
+}
+
+/// Pourquoi le processus élevé refuse de désactiver un compte (`refus_desactivation`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefusCompte {
+    /// Le compte de la personne n'a pas pu être lu dans le jeton du Vanguard qui a demandé.
+    PersonneIllisible,
+    /// Aucun compte local, ou plus d'un, n'a ce RID.
+    Introuvable,
+    /// Le compte de la personne, ou celui de ce processus administrateur.
+    CompteEnCours,
+    /// Un compte réservé de Windows (RID de 502 à 999 : DefaultAccount, WDAGUtilityAccount…).
+    Reserve,
+    /// Le bilan relu ne propose pas de le désactiver.
+    NonSignale,
+    /// Le dernier administrateur actif de l'ordinateur.
+    DernierAdministrateur,
+    /// Les programmes ouverts ne se lisent pas : une session (Bureau à distance, SSH) en dépend peut-être.
+    ProgrammesIllisibles,
+    /// Un programme tourne sous ce compte : une session ouverte (sur l'écran, Bureau à distance, SSH) en dépend.
+    SessionOuverte,
+}
+
+/// Ce que le processus élevé relit avant de désactiver un compte.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EtatCompte<'a> {
+    /// Le RID de la ligne.
+    pub rid: u32,
+    /// Les SID des comptes locaux qui ont ce RID (exactement un pour agir).
+    pub trouves: &'a [&'a str],
+    /// Le compte de la personne, lu dans le jeton du parent.
+    pub personne: Option<&'a str>,
+    /// Le compte de ce processus administrateur.
+    pub soi: Option<&'a str>,
+    /// Le bilan relu propose-t-il cette ligne, automatiquement ?
+    pub signale: bool,
+    /// Le compte est-il membre des Administrateurs ?
+    pub administrateur: bool,
+    /// Combien d'autres comptes locaux activés sont administrateurs.
+    pub autres_administrateurs: usize,
+    /// Un programme tourne-t-il sous ce compte (`None` : illisible) ?
+    pub programmes: Option<bool>,
+}
+
+/// Le motif de refus d'une désactivation ; `None` si elle peut se faire. Pure, pour l'essayer : aucun compte ne gagne
+/// de droits, la personne ne se retrouve jamais dehors, ni l'ordinateur sans administrateur, ni une session à
+/// distance coupée.
+pub(crate) fn refus_desactivation(e: &EtatCompte) -> Option<RefusCompte> {
+    let Some(personne) = e.personne else {
+        return Some(RefusCompte::PersonneIllisible);
+    };
+    let [cible] = e.trouves else {
+        return Some(RefusCompte::Introuvable);
+    };
+    if rid_local(cible) != Some(e.rid) {
+        return Some(RefusCompte::Introuvable);
+    }
+    if cible.eq_ignore_ascii_case(personne) || e.soi.is_none_or(|s| cible.eq_ignore_ascii_case(s)) {
+        return Some(RefusCompte::CompteEnCours);
+    }
+    if e.rid != 500 && e.rid != 501 && e.rid < 1000 {
+        return Some(RefusCompte::Reserve);
+    }
+    if !e.signale {
+        return Some(RefusCompte::NonSignale);
+    }
+    if e.administrateur && e.autres_administrateurs == 0 {
+        return Some(RefusCompte::DernierAdministrateur);
+    }
+    match e.programmes {
+        None => Some(RefusCompte::ProgrammesIllisibles),
+        Some(true) => Some(RefusCompte::SessionOuverte),
+        Some(false) => None,
+    }
+}
+
 /// Un acte du processus élevé sur Windows lui-même : un service de la table, un dossier à vider, la file
 /// d'impression, un cache à mettre de côté, le pare-feu et la catégorie d'un réseau. Le parent n'envoie que des
 /// identifiants et des valeurs de listes fermées ; les chemins sont calculés par le processus élevé, depuis le
@@ -2190,6 +2448,12 @@ pub(crate) enum Acte {
     DnsAuto(GuidReseau),
     /// Régler les serveurs DNS d'une carte réseau, sur des serveurs de la liste fermée (`RESOLVEURS`).
     DnsServeurs(DnsServeurs),
+    /// Désactiver le compte local de ce RID, jamais l'activer (`refus_desactivation`).
+    CompteDesactiver(u32),
+    /// Retirer un certificat racine signalé, jamais en ajouter.
+    CertificatRetirer(MagasinRacine, Empreinte),
+    /// Retirer d'un partage les autorisations d'un compte, jamais en donner.
+    PartageRetirerAcces(AccesPartage),
 }
 
 impl Acte {
@@ -2214,6 +2478,9 @@ impl Acte {
             Acte::HostsEcrire(h) => h.ligne(),
             Acte::DnsAuto(g) => format!("{DNS_AUTO}{}", g.texte()),
             Acte::DnsServeurs(d) => d.ligne(),
+            Acte::CompteDesactiver(rid) => format!("{COMPTE_DESACTIVER}{rid}"),
+            Acte::CertificatRetirer(m, e) => format!("{CERTIFICAT_RETIRER}{} {}", m.mot(), e.texte()),
+            Acte::PartageRetirerAcces(a) => format!("{PARTAGE_RETIRER_ACCES}{} {}", a.nom.hex(), a.sid.texte()),
         }
     }
 
@@ -2234,7 +2501,10 @@ impl Acte {
             | Acte::ServiceGuillemets(_)
             | Acte::Defender(..)
             | Acte::DefenderAsr(..)
-            | Acte::DefenderExclusionRetirer(..) => true,
+            | Acte::DefenderExclusionRetirer(..)
+            | Acte::CompteDesactiver(_)
+            | Acte::CertificatRetirer(..)
+            | Acte::PartageRetirerAcces(_) => true,
             Acte::PareFeuPublic(p) => p.durcit(),
             Acte::ReseauCategorie(r) => r.categorie == Categorie::Public,
             // Retirer des menaces nettoie : ni une protection remise, ni une remise qui affaiblit. Le hosts et le DNS
@@ -2269,7 +2539,10 @@ impl Acte {
             | Acte::DefenderMenacesRetirer
             | Acte::HostsEcrire(_)
             | Acte::DnsAuto(_)
-            | Acte::DnsServeurs(_) => false,
+            | Acte::DnsServeurs(_)
+            | Acte::CompteDesactiver(_)
+            | Acte::CertificatRetirer(..)
+            | Acte::PartageRetirerAcces(_) => false,
         }
     }
 
@@ -2306,8 +2579,12 @@ impl Acte {
             | Acte::DefenderAsr(..)
             | Acte::DefenderExclusionRetirer(..)
             | Acte::DefenderMenacesRetirer
-            // Aucun PowerShell sur le chemin d'écriture du hosts : sous Wine, l'erreur est dite.
-            | Acte::HostsEcrire(_) => SANS_POWERSHELL.to_string(),
+            // Aucun PowerShell sur le chemin d'écriture du hosts, des comptes, des racines ni des partages : sous Wine,
+            // l'erreur est dite.
+            | Acte::HostsEcrire(_)
+            | Acte::CompteDesactiver(_)
+            | Acte::CertificatRetirer(..)
+            | Acte::PartageRetirerAcces(_) => SANS_POWERSHELL.to_string(),
             Acte::DnsAuto(g) => powershell_dns_auto(*g),
             Acte::DnsServeurs(d) => d.powershell(),
         }
@@ -2336,6 +2613,9 @@ pub(crate) fn est_un_acte(ligne: &str) -> bool {
         || ligne.starts_with(HOSTS_ECRIRE)
         || ligne.starts_with(DNS_AUTO)
         || ligne.starts_with(DNS_SERVEURS)
+        || ligne.starts_with(COMPTE_DESACTIVER)
+        || ligne.starts_with(CERTIFICAT_RETIRER)
+        || ligne.starts_with(PARTAGE_RETIRER_ACCES)
 }
 
 /// L'acte d'une ligne, si et seulement si elle est exactement de sa forme : ASCII, 256 octets au plus (1086 pour
@@ -2360,6 +2640,14 @@ pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
         let (mot, hex) = reste.split_once(' ')?;
         let genre = *GenreExclusion::TOUS.iter().find(|g| g.mot() == mot)?;
         return Some(Acte::DefenderExclusionRetirer(genre, Exclusion::lire(hex)?)).filter(|a| a.ligne() == ligne);
+    }
+    if let Some(reste) = ligne.strip_prefix(PARTAGE_RETIRER_ACCES) {
+        let (hex, sid) = reste.split_once(' ')?;
+        let acces = AccesPartage {
+            nom: NomPartage::lire(hex)?,
+            sid: SidTexte::lire(sid)?,
+        };
+        return Some(Acte::PartageRetirerAcces(acces)).filter(|a| a.ligne() == ligne);
     }
     if ligne.len() > ACTE_MAX {
         return None;
@@ -2401,6 +2689,12 @@ pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
         Acte::DnsAuto(GuidReseau::lire(guid)?)
     } else if let Some(reste) = ligne.strip_prefix(DNS_SERVEURS) {
         Acte::DnsServeurs(DnsServeurs::analyser(reste)?)
+    } else if let Some(rid) = ligne.strip_prefix(COMPTE_DESACTIVER) {
+        Acte::CompteDesactiver(lire_rid(rid)?)
+    } else if let Some(reste) = ligne.strip_prefix(CERTIFICAT_RETIRER) {
+        let (mot, empreinte) = reste.split_once(' ')?;
+        let magasin = *MagasinRacine::TOUS.iter().find(|m| m.mot() == mot)?;
+        Acte::CertificatRetirer(magasin, Empreinte::lire(empreinte)?)
     } else {
         let id = ligne.strip_prefix(METTRE_DE_COTE)?;
         Acte::MettreDeCote(*ACoter::TOUS.iter().find(|c| c.id() == id)?)
@@ -5104,5 +5398,264 @@ mod tests {
                 compte: vec![1],
             }]
         );
+    }
+
+    fn hex(s: &str) -> String {
+        hex_utf16(&s.encode_utf16().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn desactiver_un_compte_se_lit_par_son_rid() {
+        let a = analyser_acte("vanguard:compte-desactiver 501").unwrap();
+        assert!(matches!(a, Acte::CompteDesactiver(501)) && a.durcit() && !a.affaiblit() && !a.touche_le_reseau());
+        assert_eq!(a.powershell(), SANS_POWERSHELL);
+        assert!(est_un_acte(&a.ligne()) && analyser_compte(&a.ligne()).is_none());
+        assert_eq!(
+            ligne_compte_desactiver("S-1-5-21-1004336348-1177238915-682003330-500").as_deref(),
+            Some("vanguard:compte-desactiver 500")
+        );
+        assert_eq!(
+            analyser_acte("vanguard:compte-desactiver 4294967295").unwrap().ligne(),
+            "vanguard:compte-desactiver 4294967295"
+        );
+        // Hors d'un compte local S-1-5-21-a-b-c-RID de RID 500 ou plus : aucune ligne.
+        for sid in [
+            "S-1-5-18",
+            "S-1-5-32-544",
+            "S-1-5-21-1-2-3-499",
+            "S-1-5-21-1-2-500",
+            "S-1-5-21-1-2-3-4-500",
+            "S-1-5-21-1-2-3-0500",
+            "S-1-5-80-1-2-3-500",
+            "s-1-5-21-1-2-3-500",
+            "",
+        ] {
+            assert_eq!(ligne_compte_desactiver(sid), None, "{sid}");
+        }
+    }
+
+    #[test]
+    fn les_lignes_de_compte_forgees_sont_refusees() {
+        for reste in [
+            "499",
+            "0",
+            "0500",
+            "00500",
+            "4294967296",
+            "99999999999999999999",
+            "+500",
+            "-500",
+            " 500",
+            "500 ",
+            "500\n",
+            "5 00",
+            "",
+            "0x1f4",
+            "500.0",
+            "５００",
+            "S-1-5-21-1-2-3-500",
+            "alice",
+        ] {
+            assert!(
+                analyser_acte(&format!("{COMPTE_DESACTIVER}{reste}")).is_none(),
+                "{reste:?}"
+            );
+        }
+        // Aucun verbe pour activer, ajouter à un groupe ou changer un mot de passe : la ligne n'est rien.
+        for l in [
+            "vanguard:compte-activer 1001",
+            "vanguard:compte-desactiver",
+            "vanguard:compte-desactiver  500",
+            "Vanguard:compte-desactiver 500",
+            "vanguard:compte-administrateur 1001",
+        ] {
+            assert!(analyser_acte(l).is_none(), "{l:?}");
+        }
+    }
+
+    #[test]
+    fn retirer_une_racine_se_lit_en_minuscules() {
+        let e = "0123456789abcdef0123456789abcdef01234567";
+        for (mot, m) in [("lm", MagasinRacine::Ordinateur), ("cu", MagasinRacine::Compte)] {
+            let l = format!("{CERTIFICAT_RETIRER}{mot} {e}");
+            let a = analyser_acte(&l).unwrap();
+            assert!(matches!(&a, Acte::CertificatRetirer(m2, e2) if *m2 == m && e2.texte() == e));
+            assert!(a.durcit() && !a.affaiblit() && a.powershell() == SANS_POWERSHELL);
+            assert_eq!(
+                ligne_certificat_retirer(m.nom(), &e.to_ascii_uppercase()).as_deref(),
+                Some(l.as_str())
+            );
+        }
+        let Some(Acte::CertificatRetirer(_, emp)) = analyser_acte(&format!("{CERTIFICAT_RETIRER}lm {e}")) else {
+            panic!()
+        };
+        assert_eq!(
+            emp.octets().unwrap(),
+            [
+                0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01,
+                0x23, 0x45, 0x67
+            ]
+        );
+        assert_eq!(ligne_certificat_retirer("Disallowed", e), None);
+        assert_eq!(ligne_certificat_retirer("LocalMachine", &e[1..]), None);
+    }
+
+    #[test]
+    fn les_lignes_de_racine_forgees_sont_refusees() {
+        let e = "0123456789abcdef0123456789abcdef01234567";
+        for reste in [
+            format!("lm {}", &e[1..]),
+            format!("lm {e}0"),
+            format!("lm {}", e.to_ascii_uppercase()),
+            format!("lm {}g", &e[1..]),
+            format!("lm  {e}"),
+            format!("lm {e} "),
+            format!("LM {e}"),
+            format!("ca {e}"),
+            format!("root {e}"),
+            format!("disallowed {e}"),
+            e.to_string(),
+            "lm".to_string(),
+            format!("lm {e} lm"),
+            // Aucun ajout : seul « retirer » existe.
+            format!("lm {e} ajouter"),
+        ] {
+            assert!(
+                analyser_acte(&format!("{CERTIFICAT_RETIRER}{reste}")).is_none(),
+                "{reste:?}"
+            );
+        }
+        assert!(analyser_acte(&format!("vanguard:certificat-ajouter lm {e}")).is_none());
+    }
+
+    #[test]
+    fn retirer_un_acces_de_partage_se_lit() {
+        let l = format!("{PARTAGE_RETIRER_ACCES}{} S-1-1-0", hex("Données"));
+        let a = analyser_acte(&l).unwrap();
+        assert!(matches!(&a, Acte::PartageRetirerAcces(p) if p.nom.texte() == "Données" && p.sid.texte() == "S-1-1-0"));
+        assert!(a.durcit() && !a.affaiblit() && !a.touche_le_reseau() && a.powershell() == SANS_POWERSHELL);
+        assert_eq!(
+            ligne_partage_retirer_acces("Données", "S-1-1-0").as_deref(),
+            Some(l.as_str())
+        );
+        // Un nom de 80 unités et un SID de 15 nombres : la ligne la plus longue passe.
+        let long = "é".repeat(PARTAGE_NOM_MAX);
+        let sid = format!("S-1-281474976710655{}", "-4294967295".repeat(14));
+        let l = ligne_partage_retirer_acces(&long, &sid).unwrap();
+        assert!(l.len() > ACTE_MAX && l.len() <= ACTE_NOM_MAX);
+        assert!(analyser_acte(&l).is_some());
+    }
+
+    #[test]
+    fn les_partages_administratifs_ne_se_touchent_jamais() {
+        // ADMIN$, IPC$, C$ : le Bureau à distance, l'administration à distance et les partages cachés en dépendent.
+        for nom in ["ADMIN$", "IPC$", "C$", "print$", "Caché$", "$"] {
+            assert_eq!(ligne_partage_retirer_acces(nom, "S-1-1-0"), None, "{nom}");
+            assert!(
+                analyser_acte(&format!("{PARTAGE_RETIRER_ACCES}{} S-1-1-0", hex(nom))).is_none(),
+                "{nom}"
+            );
+        }
+    }
+
+    #[test]
+    fn les_lignes_de_partage_forgees_sont_refusees() {
+        let p = hex("Public");
+        let mut refusees = vec![
+            // Nom : vide, trop long, majuscules, unité nulle, contrôle, demi-substitut, groupe incomplet.
+            " S-1-1-0".to_string(),
+            format!("{} S-1-1-0", hex(&"a".repeat(PARTAGE_NOM_MAX + 1))),
+            format!("{} S-1-1-0", p.to_ascii_uppercase()),
+            format!("{p}0000 S-1-1-0"),
+            format!("{} S-1-1-0", hex("Pub\nlic")),
+            format!("{p}00d8 S-1-1-0"),
+            format!("{p}50 S-1-1-0"),
+            "Public S-1-1-0".to_string(),
+            // SID : forme stricte seulement.
+            format!("{p} S-1-1"),
+            format!("{p} S-1-01-0"),
+            format!("{p} S-1-1-00"),
+            format!("{p} s-1-1-0"),
+            format!("{p} S-2-1-0"),
+            format!("{p} S-1-1-0-"),
+            format!("{p} S-1--1-0"),
+            format!("{p} S-1-1-4294967296"),
+            format!("{p} S-1-281474976710656-0"),
+            format!("{p} S-1-1-+0"),
+            format!("{p} S-1-5{}", "-1".repeat(15)),
+            format!("{p} Everyone"),
+            format!("{p} S-1-1-0 "),
+            format!("{p}  S-1-1-0"),
+            p.clone(),
+            format!("{p} S-1-1-0 S-1-1-0"),
+        ];
+        refusees.push(format!("{} S-1-1-0", "00".repeat(ACTE_NOM_MAX)));
+        for reste in refusees {
+            assert!(
+                analyser_acte(&format!("{PARTAGE_RETIRER_ACCES}{reste}")).is_none(),
+                "{reste:?}"
+            );
+        }
+        assert!(analyser_acte(&format!("vanguard:partage-ajouter-acces {p} S-1-1-0")).is_none());
+    }
+
+    type Changer = fn(&mut EtatCompte);
+
+    fn etat<'a>(trouves: &'a [&'a str]) -> EtatCompte<'a> {
+        EtatCompte {
+            rid: 500,
+            trouves,
+            personne: Some("S-1-5-21-1-2-3-1001"),
+            soi: Some("S-1-5-21-1-2-3-1002"),
+            signale: true,
+            administrateur: true,
+            autres_administrateurs: 1,
+            programmes: Some(false),
+        }
+    }
+
+    #[test]
+    fn les_gardes_de_desactivation() {
+        let admin = ["S-1-5-21-1-2-3-500"];
+        assert_eq!(refus_desactivation(&etat(&admin)), None);
+        let cas: [(Changer, RefusCompte); 12] = [
+            (|e| e.personne = None, RefusCompte::PersonneIllisible),
+            (|e| e.trouves = &[], RefusCompte::Introuvable),
+            (
+                |e| e.trouves = &["S-1-5-21-1-2-3-500", "S-1-5-21-9-9-9-500"],
+                RefusCompte::Introuvable,
+            ),
+            (|e| e.trouves = &["S-1-5-21-1-2-3-501"], RefusCompte::Introuvable),
+            // Le compte de la personne, ou celui du processus administrateur : jamais.
+            (|e| e.personne = Some("S-1-5-21-1-2-3-500"), RefusCompte::CompteEnCours),
+            (|e| e.personne = Some("s-1-5-21-1-2-3-500"), RefusCompte::CompteEnCours),
+            (|e| e.soi = Some("S-1-5-21-1-2-3-500"), RefusCompte::CompteEnCours),
+            (|e| e.soi = None, RefusCompte::CompteEnCours),
+            (|e| e.signale = false, RefusCompte::NonSignale),
+            // Le dernier administrateur actif : jamais.
+            (|e| e.autres_administrateurs = 0, RefusCompte::DernierAdministrateur),
+            // Une session ouverte sous ce compte (sur l'écran, Bureau à distance, SSH) : jamais coupée.
+            (|e| e.programmes = Some(true), RefusCompte::SessionOuverte),
+            (|e| e.programmes = None, RefusCompte::ProgrammesIllisibles),
+        ];
+        for (changer, refus) in cas {
+            let mut e = etat(&admin);
+            changer(&mut e);
+            assert_eq!(refus_desactivation(&e), Some(refus), "{e:?}");
+        }
+        // Un compte qui n'est pas administrateur peut partir même seul ; un compte réservé de Windows, jamais.
+        let invite = ["S-1-5-21-1-2-3-501"];
+        let mut e = etat(&invite);
+        e.rid = 501;
+        e.administrateur = false;
+        e.autres_administrateurs = 0;
+        assert_eq!(refus_desactivation(&e), None);
+        for rid in [503, 504, 999] {
+            let sid = [format!("S-1-5-21-1-2-3-{rid}")];
+            let trouves = [sid[0].as_str()];
+            let mut e = etat(&trouves);
+            e.rid = rid;
+            assert_eq!(refus_desactivation(&e), Some(RefusCompte::Reserve), "{rid}");
+        }
     }
 }

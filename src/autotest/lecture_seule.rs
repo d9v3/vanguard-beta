@@ -453,6 +453,11 @@ mod tests {
                 "processus élevé d'une correction, hors bilan",
             ),
             (
+                "machine/windows/quarantaine.rs",
+                2,
+                "processus élevé : copie d'une racine retirée, créée sans écraser (create_new) dans un dossier réservé aux administrateurs, retirée si l'écriture échoue, hors bilan",
+            ),
+            (
                 "machine/linux/veilleur.rs",
                 10,
                 "veilleur : son état et le « chiffrement voulu » de l'anti-rançongiciel, hors bilan",

@@ -637,7 +637,8 @@ fn file_d_impression(windows: &std::path::Path) -> Result<Vec<String>, Echec> {
 }
 
 /// Fait un acte de la liste ; la précision (« déjà arrêté », « 12 retirés… ») part au parent avec le « ok ».
-pub(crate) fn faire(acte: &Acte) -> Resultat {
+/// `compte` : le SID de la personne (`eleve::faire`), que les actes des comptes et des racines du compte rejugent.
+pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
     // Les actes du pare-feu et des réseaux passent par COM (`pare_feu`), qui rend son propre résultat, relu.
     if let Some(fait) = super::pare_feu::faire_acte(acte) {
         return Resultat {
@@ -658,6 +659,14 @@ pub(crate) fn faire(acte: &Acte) -> Resultat {
     // Le hosts et le DNS des cartes (`reseau_ecriture`), rejugés, relus après l'écriture.
     if let Some(r) = super::reseau_ecriture::faire_acte(acte) {
         return r;
+    }
+    // Les comptes, les racines et les partages (netapi32, crypt32), rejugés par la fonction du bilan, relus après.
+    let personne = compte.as_deref().ok();
+    match acte {
+        Acte::CompteDesactiver(rid) => return super::comptes_ecriture::desactiver(*rid, personne),
+        Acte::CertificatRetirer(m, e) => return super::certificats_ecriture::retirer(*m, e, personne),
+        Acte::PartageRetirerAcces(a) => return super::partages_ecriture::retirer_acces(a),
+        _ => {}
     }
     // Les actes du registre relisent la clé, la rejugent par la fonction du bilan et notent la valeur d'avant.
     match acte {
@@ -687,7 +696,10 @@ pub(crate) fn faire(acte: &Acte) -> Resultat {
         | Acte::DefenderMenacesRetirer
         | Acte::HostsEcrire(_)
         | Acte::DnsAuto(_)
-        | Acte::DnsServeurs(_) => Err(Echec::refuse(
+        | Acte::DnsServeurs(_)
+        | Acte::CompteDesactiver(_)
+        | Acte::CertificatRetirer(..)
+        | Acte::PartageRetirerAcces(_) => Err(Echec::refuse(
             CONTEXTE,
             tr!(
                 "acte déjà rendu plus haut, non reconnu ici",

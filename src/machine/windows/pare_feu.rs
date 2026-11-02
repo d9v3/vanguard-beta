@@ -294,7 +294,10 @@ pub(crate) fn faire_acte(acte: &Acte) -> Option<Resultat> {
         | Acte::DefenderMenacesRetirer
         | Acte::HostsEcrire(_)
         | Acte::DnsAuto(_)
-        | Acte::DnsServeurs(_) => None,
+        | Acte::DnsServeurs(_)
+        | Acte::CompteDesactiver(_)
+        | Acte::CertificatRetirer(..)
+        | Acte::PartageRetirerAcces(_) => None,
     }
 }
 

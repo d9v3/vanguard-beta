@@ -12,9 +12,11 @@ use crate::ui::{resume, tr, trf, trp};
 
 mod ancrages;
 pub(crate) mod cartes;
+mod certificats_ecriture;
 mod chargement;
 pub(crate) mod compte;
 pub(crate) mod comptes;
+mod comptes_ecriture;
 pub(crate) mod connexions;
 #[cfg(test)]
 pub(crate) mod corpus;
@@ -41,12 +43,14 @@ pub(crate) mod memoire;
 pub(crate) mod ouvrir;
 pub(crate) mod pare_feu;
 pub(crate) mod partages;
+mod partages_ecriture;
 pub(crate) mod peripheriques;
 pub(crate) mod persistance;
 mod pilotes;
 pub(crate) mod planificateur;
 mod portes;
 pub(crate) mod processus;
+mod quarantaine;
 mod regles;
 mod reseau_ecriture;
 pub(crate) mod routes;

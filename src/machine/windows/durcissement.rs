@@ -701,7 +701,7 @@ pub(super) fn juger_signature_smb(client_exige: Option<u32>) -> Option<Constat> 
 
 /// Connexion « invité » aux partages sans mot de passe (AllowInsecureGuestAuth à 1, la stratégie de groupe passant
 /// avant le réglage) : un faux partage du réseau peut se faire passer pour le NAS et servir des fichiers piégés, sans
-/// signature possible. Laissée à la main : un vieux NAS ou une box peut en dépendre.
+/// signature possible. Un vieux NAS ou une box peut en dépendre : la phrase le dit avant l'accord.
 pub(super) fn juger_invite_smb(strategie: Option<u32>, reglage: Option<u32>) -> Option<Constat> {
     let impose = strategie.is_some();
     (strategie.or(reglage) == Some(1)).then(|| {
@@ -722,12 +722,12 @@ pub(super) fn juger_invite_smb(strategie: Option<u32>, reglage: Option<u32>) -> 
                 &[],
             )
         } else {
-            constat.manuel(
+            constat.corriger(
                 tr!(
-                    "Si aucun vieux NAS ne s'ouvre sans mot de passe : couper la connexion invité (commande ci-dessous, en administrateur)",
-                    "If no old NAS opens without a password: turn guest connections off (command below, as administrator)"
+                    "Couper la connexion invité (valeur par défaut de Windows 10 et 11). À refuser si un vieux NAS ou une box ne s'ouvre que sans mot de passe : il ne s'ouvrirait plus",
+                    "Turn guest connections off (the Windows 10 and 11 default). Decline if an old NAS or router only opens without a password: it would no longer open"
                 ),
-                &[r"Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters' -Name AllowInsecureGuestAuth -Value 0 -Type DWord"],
+                &[&super::corrections::id("smb-invite-coupe")],
             )
         }
     })
@@ -1428,7 +1428,9 @@ mod tests {
         assert!(juger_invite_smb(Some(0), Some(1)).is_none());
         let c = juger_invite_smb(None, Some(1)).unwrap();
         assert_eq!(c.probleme, Some(Niveau::Moyen));
-        assert!(c.correctif.unwrap().commandes[0].ends_with("-Name AllowInsecureGuestAuth -Value 0 -Type DWord"));
+        let coupe = c.correctif.unwrap();
+        assert!(coupe.automatique && coupe.commandes == [super::super::corrections::id("smb-invite-coupe")]);
+        assert!(coupe.action.contains("NAS"));
         let impose = juger_invite_smb(Some(1), Some(0)).unwrap().correctif.unwrap();
         assert_eq!(impose.commandes.len(), 0);
         assert!(

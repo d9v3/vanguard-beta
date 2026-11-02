@@ -1,0 +1,15 @@
+vanguard:compte-desactiver 500
+vanguard:compte-desactiver 501
+vanguard:compte-desactiver 1001
+vanguard:compte-desactiver 0500
+vanguard:compte-desactiver 499
+vanguard:compte-desactiver 4294967296
+vanguard:certificat-retirer lm 0123456789abcdef0123456789abcdef01234567
+vanguard:certificat-retirer cu 0123456789abcdef0123456789abcdef01234567
+vanguard:certificat-retirer cu 0123456789ABCDEF0123456789ABCDEF01234567
+vanguard:certificat-retirer ca 0123456789abcdef0123456789abcdef01234567
+vanguard:partage-retirer-acces 5000750062006c0069006300 S-1-1-0
+vanguard:partage-retirer-acces 44006f006e006e00e90065007300 S-1-5-32-546
+vanguard:partage-retirer-acces 500068006f0074006f007300 S-1-5-21-1004336348-1177238915-682003330-501
+vanguard:partage-retirer-acces 410044004d0049004e002400 S-1-1-0
+vanguard:partage-retirer-acces 5000750062006c0069006300 S-1-01-0

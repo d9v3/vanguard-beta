@@ -190,20 +190,30 @@ fn ancre_non_nommee(ou: &str, retirer: &[String]) -> Constat {
     )
 }
 
+/// Le bilan propose-t-il de retirer ce certificat, de lui-même ? Un logiciel publicitaire ou un outil d'interception,
+/// ou une racine dont la clé privée est sur cet ordinateur, sauf celle nommée « localhost » (.NET, IIS Express), dite
+/// sans retrait proposé. Rejugé par le processus élevé avant de retirer une racine (`certificats_ecriture`).
+pub(crate) fn retrait(nom: &str, cle_privee: bool) -> bool {
+    match famille(nom) {
+        Famille::Compromis | Famille::Interception => true,
+        _ => cle_privee && !crate::ui::affichable(nom).eq_ignore_ascii_case("localhost"),
+    }
+}
+
 /// Constat pour un certificat ajouté. `cle_privee` : sa clé privée est sur cette machine (Windows le sait). Le nom
 /// (sujet du certificat, écrit par qui l'a fabriqué) et l'endroit sont montrés rendus inoffensifs ; `retirer` garde
 /// le vrai nom.
 fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String]) -> Constat {
     let sorte = famille(nom);
+    let retrait = retrait(nom, cle_privee);
     let (nom, ou) = (crate::ui::affichable(nom), crate::ui::affichable(ou));
-    let (niveau, message, retrait) = match sorte {
+    let (niveau, message) = match sorte {
         Famille::Compromis => (
             Niveau::Critique,
             trf!(
                 "Certificat racine « {nom} » ({ou}) : installé par un logiciel publicitaire, sa clé est publique et permet à n'importe qui de lire votre trafic HTTPS.",
                 "Root certificate “{nom}” ({ou}): installed by adware, its key is public and lets anyone read your HTTPS traffic."
             ),
-            true,
         ),
         Famille::Interception => (
             Niveau::Moyen,
@@ -211,7 +221,6 @@ fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String]) -> Constat {
                 "Certificat racine « {nom} » ({ou}) : outil d'interception du trafic. À retirer si vous ne vous en servez plus.",
                 "Root certificate “{nom}” ({ou}): traffic interception tool. Remove it if you no longer use it."
             ),
-            true,
         ),
         // « localhost » est le nom que .NET et IIS Express donnent à leur certificat de développement ; mais ce nom
         // est écrit par qui fabrique le certificat, et la ligne lue ne dit pas si c'est une autorité (CA) capable de
@@ -222,7 +231,6 @@ fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String]) -> Constat {
                 "Certificat racine « localhost » ({ou}) dont la clé privée est sur cet ordinateur : celui de .NET ou d'IIS Express si vous développez ; sinon, retirez-le, un nom ne prouve rien.",
                 "Root certificate “localhost” ({ou}) whose private key is on this computer: .NET's or IIS Express's if you develop; otherwise remove it, a name proves nothing."
             ),
-            false,
         ),
         _ if cle_privee => (
             Niveau::Eleve,
@@ -230,7 +238,6 @@ fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String]) -> Constat {
                 "Certificat racine « {nom} » ({ou}) dont la clé privée est sur cet ordinateur : un programme peut fabriquer de faux certificats pour n'importe quel site.",
                 "Root certificate “{nom}” ({ou}) whose private key is on this computer: a program can forge certificates for any site."
             ),
-            true,
         ),
         Famille::Inspection => (
             Niveau::Info,
@@ -238,7 +245,6 @@ fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String]) -> Constat {
                 "Certificat racine « {nom} » ({ou}) : un antivirus ou un filtre inspecte votre trafic HTTPS. Normal si vous l'avez installé.",
                 "Root certificate “{nom}” ({ou}): an antivirus or filter inspects your HTTPS traffic. Normal if you installed it."
             ),
-            false,
         ),
         Famille::Developpement => (
             Niveau::Info,
@@ -246,7 +252,6 @@ fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String]) -> Constat {
                 "Certificat racine de développement « {nom} » ({ou}). Normal pour un développeur ; gardez sa clé privée pour vous.",
                 "Development root certificate “{nom}” ({ou}). Normal for a developer; keep its private key to yourself."
             ),
-            false,
         ),
         Famille::Autre => (
             Niveau::Info,
@@ -254,7 +259,6 @@ fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String]) -> Constat {
                 "Certificat racine ajouté : « {nom} » ({ou}). Normal si vous l'avez installé (entreprise, école, VPN) ; sinon, retirez-le.",
                 "Added root certificate: “{nom}” ({ou}). Normal if you installed it (work, school, VPN); otherwise remove it."
             ),
-            false,
         ),
     };
     let constat = alerte(CAT, niveau, message);
@@ -461,29 +465,13 @@ pub fn certificats() -> Vec<Constat> {
     }) else {
         return vec![super::windows::illisible(CAT)];
     };
-    let mut vus = std::collections::HashSet::new();
-    let mut total = 0;
+    let (racines, total) = racines_ajoutees(&sortie);
     let mut constats = Vec::new();
-    for l in sortie.lines() {
-        let c: Vec<&str> = l.trim().splitn(5, '|').collect();
-        let ["CERT", magasin, cle, empreinte, nom] = c[..] else {
-            continue;
-        };
-        if !vus.insert(empreinte.to_string()) {
+    for r in racines {
+        if famille(r.nom) == Famille::Autre && !r.cle_privee {
             continue;
         }
-        total += 1;
-        let cle_privee = cle.eq_ignore_ascii_case("true");
-        if famille(nom) == Famille::Autre && !cle_privee {
-            continue;
-        }
-        let ou = if magasin == "LocalMachine" {
-            tr!("magasin de l'ordinateur", "computer store")
-        } else {
-            tr!("magasin de l'utilisateur", "user store")
-        };
-        let retirer = vec![format!("Remove-Item -Path 'Cert:\\{magasin}\\Root\\{empreinte}'")];
-        constats.push(juger(nom, ou, cle_privee, &retirer));
+        constats.push(juger(r.nom, r.ou(), r.cle_privee, &commandes_de_retrait(&r)));
     }
     if constats.is_empty() {
         constats.push(ok(
@@ -495,6 +483,68 @@ pub fn certificats() -> Vec<Constat> {
         ));
     }
     constats
+}
+
+/// Une racine lue dans les lignes « CERT|magasin|clé privée|empreinte|sujet » de Windows (`magasins::racines`).
+#[cfg(any(windows, test))]
+pub(crate) struct RacineAjoutee<'a> {
+    pub magasin: &'a str,
+    pub cle_privee: bool,
+    pub empreinte: &'a str,
+    pub nom: &'a str,
+}
+
+#[cfg(any(windows, test))]
+impl RacineAjoutee<'_> {
+    fn ou(&self) -> &'static str {
+        if self.magasin == "LocalMachine" {
+            tr!("magasin de l'ordinateur", "computer store")
+        } else {
+            tr!("magasin de l'utilisateur", "user store")
+        }
+    }
+}
+
+/// Les racines des lignes de Windows, chacune une seule fois par empreinte : le magasin du compte montre aussi ceux de
+/// l'ordinateur, lu d'abord, et une racine présente dans les deux est de l'ordinateur. Avec le nombre de racines.
+#[cfg(any(windows, test))]
+pub(crate) fn racines_ajoutees(sortie: &str) -> (Vec<RacineAjoutee<'_>>, usize) {
+    let mut vus = std::collections::HashSet::new();
+    let mut racines = Vec::new();
+    for l in sortie.lines() {
+        let c: Vec<&str> = l.trim().splitn(5, '|').collect();
+        let ["CERT", magasin, cle, empreinte, nom] = c[..] else {
+            continue;
+        };
+        if !vus.insert(empreinte.to_ascii_uppercase()) {
+            continue;
+        }
+        racines.push(RacineAjoutee {
+            magasin,
+            cle_privee: cle.eq_ignore_ascii_case("true"),
+            empreinte,
+            nom,
+        });
+    }
+    let total = racines.len();
+    (racines, total)
+}
+
+/// Retirer une racine : la ligne du processus élevé quand le bilan propose le retrait (il la rejuge, l'exporte dans la
+/// quarantaine, la retire, puis la cherche de nouveau) ; sinon la commande montrée, à faire soi-même. Jamais de
+/// PowerShell à exécuter : une racine à retirer dont la ligne ne se forme pas n'a pas de correction.
+#[cfg(any(windows, test))]
+fn commandes_de_retrait(r: &RacineAjoutee) -> Vec<String> {
+    if retrait(r.nom, r.cle_privee) {
+        super::gestes::ligne_certificat_retirer(r.magasin, r.empreinte)
+            .into_iter()
+            .collect()
+    } else {
+        vec![format!(
+            "Remove-Item -Path 'Cert:\\{}\\Root\\{}'",
+            r.magasin, r.empreinte
+        )]
+    }
 }
 
 /// COM-CRT-001 au corpus de détection : une ligne par sujet de certificat racine ajouté.
@@ -680,6 +730,49 @@ xo1zjuQ=
         let constats = certificats_dans([d.join("absent").as_path()].into_iter());
         assert!(constats.len() == 1 && constats[0].probleme.is_none() && constats[0].verifie);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Les lignes de Windows : une racine des deux magasins est de l'ordinateur ; la ligne du processus élevé seulement
+    /// quand le bilan propose le retrait, sinon la commande montrée ; une empreinte hors de sa forme n'a pas de
+    /// correction à faire seul.
+    #[test]
+    fn racines_de_windows() {
+        let e = "0A1B2C3D4E5F60718293A4B5C6D7E8F901234567";
+        let sortie = format!(
+            "CERT|LocalMachine|False|{e}|Fiddler Root\nCERT|CurrentUser|False|{}|Fiddler Root\n\
+             CERT|CurrentUser|True|{}|alice CA\nCERT|CurrentUser|False|{}|Mon entreprise\n\
+             CERT|CurrentUser|True|{}|localhost\nCERT|CurrentUser|True|ZZ|Superfish\nautre ligne",
+            e.to_lowercase(),
+            "1".repeat(40),
+            "2".repeat(40),
+            "3".repeat(40),
+        );
+        let (racines, total) = racines_ajoutees(&sortie);
+        assert_eq!(total, 5);
+        assert_eq!(racines[0].magasin, "LocalMachine");
+        let commandes: Vec<Vec<String>> = racines.iter().map(commandes_de_retrait).collect();
+        assert_eq!(
+            commandes,
+            [
+                vec![format!("vanguard:certificat-retirer lm {}", e.to_lowercase())],
+                vec![format!("vanguard:certificat-retirer cu {}", "1".repeat(40))],
+                vec![format!(
+                    "Remove-Item -Path 'Cert:\\CurrentUser\\Root\\{}'",
+                    "2".repeat(40)
+                )],
+                vec![format!(
+                    "Remove-Item -Path 'Cert:\\CurrentUser\\Root\\{}'",
+                    "3".repeat(40)
+                )],
+                Vec::new(),
+            ]
+        );
+        assert!(retrait("Superfish", false) && retrait("alice CA", true) && !retrait("localhost", true));
+        assert!(!retrait("Mon entreprise", false) && retrait("Burp Suite CA", false));
+        // La correction proposée par le bilan : la ligne, automatique.
+        let r = &racines[1];
+        let c = juger(r.nom, r.ou(), r.cle_privee, &commandes_de_retrait(r));
+        assert!(c.correctif.as_ref().is_some_and(|k| k.automatique));
     }
 
     /// Une racine nommée « localhost » avec sa clé privée n'est plus passée sous silence : le nom est choisi par qui

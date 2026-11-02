@@ -253,6 +253,35 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                         Some(l.as_str())
                     );
                 }
+                // Un compte de RID 500 ou plus, jamais un acte qui touche une carte ni qui affaiblit.
+                gestes::Acte::CompteDesactiver(rid) => {
+                    assert!(rid >= gestes::RID_MIN && a.durcit() && !a.affaiblit() && !a.touche_le_reseau());
+                    let sid = format!("S-1-5-21-1-2-3-{rid}");
+                    assert_eq!(gestes::rid_local(&sid), Some(rid));
+                    assert_eq!(gestes::ligne_compte_desactiver(&sid).as_deref(), Some(l.as_str()));
+                }
+                // Une empreinte de 40 chiffres minuscules, d'un des deux magasins Root.
+                gestes::Acte::CertificatRetirer(m, ref e) => {
+                    let t = e.texte();
+                    assert!(t.len() == 40 && t.bytes().all(|o| o.is_ascii_digit() || (b'a'..=b'f').contains(&o)));
+                    assert!(e.octets().is_some() && a.durcit() && !a.affaiblit());
+                    assert_eq!(
+                        gestes::ligne_certificat_retirer(m.nom(), &t.to_ascii_uppercase()).as_deref(),
+                        Some(l.as_str())
+                    );
+                }
+                // Un nom de partage relu à l'identique, jamais caché ni administratif (« $ » final), et un SID strict.
+                gestes::Acte::PartageRetirerAcces(ref p) => {
+                    let n = p.nom.texte();
+                    assert!(!n.is_empty() && n.encode_utf16().count() <= gestes::PARTAGE_NOM_MAX);
+                    assert!(!n.ends_with('$') && !n.chars().any(char::is_control));
+                    assert!(p.sid.texte().starts_with("S-1-") && a.durcit() && !a.affaiblit());
+                    assert_eq!(gestes::SidTexte::lire(p.sid.texte()).as_ref(), Some(&p.sid));
+                    assert_eq!(
+                        gestes::ligne_partage_retirer_acces(n, p.sid.texte()).as_deref(),
+                        Some(l.as_str())
+                    );
+                }
                 _ => {}
             }
         }

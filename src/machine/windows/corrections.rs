@@ -490,7 +490,10 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
                     | Acte::Defender(..)
                     | Acte::DefenderAsr(..)
                     | Acte::DefenderExclusionRetirer(..)
-                    | Acte::DefenderMenacesRetirer),
+                    | Acte::DefenderMenacesRetirer
+                    | Acte::CompteDesactiver(_)
+                    | Acte::CertificatRetirer(..)
+                    | Acte::PartageRetirerAcces(_)),
                 ),
             ) => Some(a.durcit()),
             _ => None,
@@ -566,7 +569,8 @@ fn reseau_nomme(r: &crate::machine::gestes::ReseauCategorie) -> String {
 
 fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
     use crate::machine::gestes::{
-        ACoter, Acte, Action, Categorie, GenreExclusion, ModeAsr, ReglageDefender, ValeurDefender, Vidable, Vue,
+        ACoter, Acte, Action, Categorie, GenreExclusion, MagasinRacine, ModeAsr, ReglageDefender, ValeurDefender,
+        Vidable, Vue,
     };
     use crate::ui::{tr, trf};
     match acte {
@@ -741,6 +745,30 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
             "Permanently delete the active threats found by Defender"
         )
         .to_string(),
+        Acte::CompteDesactiver(rid) => trf!(
+            "Désactiver le compte local n° {rid} (relu et rejugé ici ; jamais le vôtre, le dernier administrateur actif ni un compte d'une session ouverte) : il ne pourra plus ouvrir de session. Non annulable par Vanguard (protection) ; état d'avant noté, à réactiver dans Windows au besoin",
+            "Disable local account no. {rid} (read and judged again here; never yours, the last active administrator or an account with an open session): it can no longer sign in. Not undoable by Vanguard (protection); previous state noted, reactivate it in Windows if needed"
+        ),
+        Acte::CertificatRetirer(m, e) => {
+            let x = e.texte();
+            match m {
+                MagasinRacine::Ordinateur => trf!(
+                    "Retirer la racine {x} du magasin de l'ordinateur (relue et rejugée ici ; une copie .cer est gardée dans ProgramData\\Vanguard\\quarantaine). Non annulable par Vanguard (protection) : jamais une racine n'est remise",
+                    "Remove root {x} from the computer store (read and judged again here; a .cer copy is kept in ProgramData\\Vanguard\\quarantaine). Not undoable by Vanguard (protection): a root is never put back"
+                ),
+                MagasinRacine::Compte => trf!(
+                    "Retirer la racine {x} de votre magasin (relue et rejugée ici ; Windows demande lui-même de confirmer ; une copie .cer est gardée dans ProgramData\\Vanguard\\quarantaine). Non annulable par Vanguard (protection) : jamais une racine n'est remise",
+                    "Remove root {x} from your store (read and judged again here; Windows asks for its own confirmation; a .cer copy is kept in ProgramData\\Vanguard\\quarantaine). Not undoable by Vanguard (protection): a root is never put back"
+                ),
+            }
+        }
+        Acte::PartageRetirerAcces(a) => {
+            let (n, c) = (crate::ui::affichable(a.nom.texte()), a.sid.texte());
+            trf!(
+                "Retirer l'accès de {c} au partage « {n} » (relu et rejugé ici) : les appareils qui s'y connectaient sans mot de passe le perdent ; s'il ne reste personne, plus personne n'y entre avant qu'un accès soit redonné dans Windows. Non annulable par Vanguard (protection) ; droits d'avant notés",
+                "Remove the access of {c} to share “{n}” (read and judged again here): devices that connected without a password lose it; if nobody is left, nobody gets in until access is given back in Windows. Not undoable by Vanguard (protection); previous permissions noted"
+            )
+        }
         Acte::HostsEcrire(_) => tr!(
             "Réécrire le fichier hosts préparé par Vanguard (différence ci-dessous, relue et rejugée ici ; une copie d'avant est gardée)",
             "Rewrite the hosts file prepared by Vanguard (difference below, read and judged again here; a copy of the previous one is kept)"

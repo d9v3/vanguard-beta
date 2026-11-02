@@ -43,14 +43,14 @@ pub(crate) fn sorte(meta: &std::fs::Metadata) -> Sorte {
 /// FILE_ATTRIBUTE_REPARSE_POINT, et pas seulement les liens que `is_symlink` reconnaît : tout point d'analyse peut
 /// mener ailleurs (jonction, point de montage, fichier de nuage), aucun n'est suivi.
 #[cfg(windows)]
-fn est_lien(meta: &std::fs::Metadata) -> bool {
+pub(crate) fn est_lien(meta: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     const POINT_D_ANALYSE: u32 = 0x400;
     meta.file_attributes() & POINT_D_ANALYSE != 0
 }
 
 #[cfg(not(windows))]
-fn est_lien(meta: &std::fs::Metadata) -> bool {
+pub(crate) fn est_lien(meta: &std::fs::Metadata) -> bool {
     meta.file_type().is_symlink()
 }
 

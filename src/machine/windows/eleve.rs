@@ -67,27 +67,11 @@ unsafe extern "system" {
     fn SetHandleInformation(objet: *mut c_void, masque: u32, drapeaux: u32) -> i32;
 }
 
-#[link(name = "advapi32")]
-unsafe extern "system" {
-    fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
-        texte: *const u16,
-        revision: u32,
-        descripteur: *mut *mut c_void,
-        taille: *mut u32,
-    ) -> i32;
-}
+use super::securite::{ConvertStringSecurityDescriptorToSecurityDescriptorW, Securite};
 
 #[link(name = "shell32")]
 unsafe extern "system" {
     fn ShellExecuteExW(info: *mut InfoLancement) -> i32;
-}
-
-/// SECURITY_ATTRIBUTES.
-#[repr(C)]
-struct Securite {
-    taille: u32,
-    descripteur: *mut c_void,
-    heritable: i32,
 }
 
 /// SHELLEXECUTEINFOW (112 octets en 64 bits).
@@ -908,7 +892,7 @@ fn faire(e: &Element, juge: &ordres::Juge, compte: &Result<String, String>, bila
         Element::Programme(a) if coupe(a.coupe_le_reseau(), juge) => refus_session(),
         Element::Acte(a) if coupe(a.touche_le_reseau(), juge) => refus_session(),
         Element::Programme(a) => lancer_programme(a),
-        Element::Acte(a) => super::services_ecriture::faire(a),
+        Element::Acte(a) => super::services_ecriture::faire(a, compte),
     };
     if r.reussi {
         match &r.avant {

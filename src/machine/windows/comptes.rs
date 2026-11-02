@@ -19,7 +19,16 @@ pub(super) fn comptes() -> Vec<Constat> {
     juger_comptes(&utilisateurs, moi.as_deref(), lbp)
 }
 
-fn juger_comptes(utilisateurs: &[&str], moi: Option<&str>, lbp: Option<u32>) -> Vec<Constat> {
+/// Désactiver un compte : la ligne du processus élevé (qui relit, rejuge et refuse la personne, le dernier
+/// administrateur et un compte dont une session dépend) ; à faire soi-même si le SID n'est pas celui d'un compte local.
+fn desactiver(constat: Constat, action: &str, sid: &str, nom_ps: &str) -> Constat {
+    match gestes::ligne_compte_desactiver(sid) {
+        Some(ligne) => constat.corriger(action, &[ligne]),
+        None => constat.manuel(action, &[&format!("Disable-LocalUser -Name '{nom_ps}'")]),
+    }
+}
+
+pub(super) fn juger_comptes(utilisateurs: &[&str], moi: Option<&str>, lbp: Option<u32>) -> Vec<Constat> {
     use crate::modele::Objet;
     let mut constats = Vec::new();
     for u in utilisateurs {
@@ -32,18 +41,17 @@ fn juger_comptes(utilisateurs: &[&str], moi: Option<&str>, lbp: Option<u32>) -> 
         // L'objet : le compte par son SID, que Windows ne réattribue jamais (le nom, lui, se renomme).
         let compte = |genre: &str| Objet::de(genre, &sid.to_uppercase());
         if sid.ends_with("-501") {
-            constats.push(
+            constats.push(desactiver(
                 alerte(
                     "Comptes",
                     Niveau::Eleve,
                     trf!("Compte invité « {nom} » activé.", "Guest account “{nom}” enabled."),
                 )
-                .avec_objet(compte("invite"))
-                .corriger(
-                    tr!("Désactiver le compte invité", "Disable the guest account"),
-                    &[&format!("Disable-LocalUser -Name '{nom_ps}'")],
-                ),
-            );
+                .avec_objet(compte("invite")),
+                tr!("Désactiver le compte invité", "Disable the guest account"),
+                sid,
+                &nom_ps,
+            ));
             continue;
         }
         if sid.ends_with("-500") {
@@ -66,12 +74,14 @@ fn juger_comptes(utilisateurs: &[&str], moi: Option<&str>, lbp: Option<u32>) -> 
                     &["Start-Process ms-settings:otherusers"],
                 )
             } else {
-                constat.corriger(
+                desactiver(
+                    constat,
                     tr!(
                         "Désactiver le compte Administrateur intégré",
                         "Disable the built-in Administrator account"
                     ),
-                    &[&format!("Disable-LocalUser -Name '{nom_ps}'")],
+                    sid,
+                    &nom_ps,
                 )
             });
         }
@@ -158,7 +168,7 @@ struct Modales3 {
 #[link(name = "netapi32")]
 unsafe extern "system" {
     fn NetUserModalsGet(serveur: *const u16, niveau: u32, tampon: *mut *mut u8) -> u32;
-    fn NetApiBufferFree(tampon: *mut std::ffi::c_void) -> u32;
+    pub(super) fn NetApiBufferFree(tampon: *mut std::ffi::c_void) -> u32;
     fn NetUserEnum(
         serveur: *const u16,
         niveau: u32,
@@ -169,7 +179,20 @@ unsafe extern "system" {
         total: *mut u32,
         reprise: *mut u32,
     ) -> u32;
-    fn NetUserGetInfo(serveur: *const u16, nom: *const u16, niveau: u32, tampon: *mut *mut std::ffi::c_void) -> u32;
+    pub(super) fn NetUserGetInfo(
+        serveur: *const u16,
+        nom: *const u16,
+        niveau: u32,
+        tampon: *mut *mut std::ffi::c_void,
+    ) -> u32;
+    /// Seulement pour désactiver un compte (niveau 1008, `comptes_ecriture`).
+    pub(super) fn NetUserSetInfo(
+        serveur: *const u16,
+        nom: *const u16,
+        niveau: u32,
+        tampon: *const u8,
+        erreur: *mut u32,
+    ) -> u32;
     fn NetLocalGroupGetMembers(
         serveur: *const u16,
         groupe: *const u16,
@@ -239,7 +262,7 @@ struct Utilisateur4 {
 ///
 /// # Safety
 /// `p` est nul ou pointe vers une chaîne terminée par un zéro, ou longue d'au moins `max` caractères.
-unsafe fn texte_large(p: *const u16, max: usize) -> String {
+pub(super) unsafe fn texte_large(p: *const u16, max: usize) -> String {
     if p.is_null() {
         return String::new();
     }
@@ -252,7 +275,7 @@ unsafe fn texte_large(p: *const u16, max: usize) -> String {
     String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, fin) })
 }
 
-fn large(texte: &str) -> Vec<u16> {
+pub(super) fn large(texte: &str) -> Vec<u16> {
     texte.encode_utf16().chain([0]).collect()
 }
 
@@ -260,7 +283,7 @@ fn large(texte: &str) -> Vec<u16> {
 ///
 /// # Safety
 /// `sid` est nul ou pointe vers un SID valide.
-unsafe fn sid_texte(sid: *mut std::ffi::c_void) -> Option<String> {
+pub(super) unsafe fn sid_texte(sid: *mut std::ffi::c_void) -> Option<String> {
     let mut texte: *mut u16 = std::ptr::null_mut();
     // SAFETY: ConvertSidToStringSidW alloue une chaîne terminée par un zéro, lue puis rendue une seule fois.
     unsafe {
@@ -275,11 +298,11 @@ unsafe fn sid_texte(sid: *mut std::ffi::c_void) -> Option<String> {
 
 /// Un compte local, tel que la lecture des comptes le décrit.
 #[cfg_attr(test, derive(Clone))]
-struct Compte {
-    nom: String,
-    actif: bool,
-    mot_de_passe_exige: bool,
-    sid: String,
+pub(super) struct Compte {
+    pub(super) nom: String,
+    pub(super) actif: bool,
+    pub(super) mot_de_passe_exige: bool,
+    pub(super) sid: String,
     /// Secondes depuis 1970 ; 0 : jamais connecté.
     derniere_connexion: u32,
     /// Secondes depuis le dernier changement du mot de passe ; `None` : à changer à la prochaine connexion.
@@ -290,7 +313,7 @@ struct Compte {
 
 /// Les comptes locaux ordinaires (NetUserEnum, puis NetUserGetInfo niveau 4 pour le SID) ; `None` si Windows refuse
 /// l'un d'eux ou n'en rend aucun.
-fn comptes_natifs() -> Option<Vec<Compte>> {
+pub(super) fn comptes_natifs() -> Option<Vec<Compte>> {
     const NORMAUX: u32 = 2;
     const TOUT: u32 = u32::MAX;
     const DESACTIVE: u32 = 0x2;
@@ -420,6 +443,45 @@ fn administrateurs_natifs() -> Option<Vec<String>> {
             .collect();
         NetApiBufferFree(tampon.cast());
         Some(membres)
+    }
+}
+
+/// LOCALGROUP_MEMBERS_INFO_0 de lmaccess.h : le SID du membre.
+#[repr(C)]
+struct Membre0 {
+    sid: *mut std::ffi::c_void,
+}
+
+/// Les SID des membres du groupe des administrateurs (comptes, groupes, comptes de domaine), lus par
+/// NetLocalGroupGetMembers niveau 0 ; `None` si le groupe ne se lit pas ou qu'un SID ne se convertit pas.
+pub(super) fn administrateurs_sid() -> Option<Vec<String>> {
+    let groupe = nom_du_groupe_des_administrateurs()?;
+    let mut tampon: *mut std::ffi::c_void = std::ptr::null_mut();
+    let (mut lus, mut total, mut reprise) = (0u32, 0u32, 0usize);
+    // SAFETY: niveau 0 : un tableau de `lus` LOCALGROUP_MEMBERS_INFO_0 (un pointeur de SID chacun) alloué par
+    // Windows, lu tant qu'il vit puis rendu une seule fois.
+    unsafe {
+        let code = NetLocalGroupGetMembers(
+            std::ptr::null(),
+            large(&groupe).as_ptr(),
+            0,
+            &raw mut tampon,
+            u32::MAX,
+            &raw mut lus,
+            &raw mut total,
+            &raw mut reprise,
+        );
+        if code != 0 || tampon.is_null() {
+            if !tampon.is_null() {
+                NetApiBufferFree(tampon.cast());
+            }
+            return None;
+        }
+        let membres: Option<Vec<String>> = (0..lus as usize)
+            .map(|i| sid_texte(tampon.cast::<Membre0>().add(i).read_unaligned().sid))
+            .collect();
+        NetApiBufferFree(tampon.cast());
+        membres
     }
 }
 
