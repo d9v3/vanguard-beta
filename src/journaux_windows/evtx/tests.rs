@@ -1342,9 +1342,20 @@ fn lecture_oracle(octets: Vec<u8>, valider: bool) -> (BTreeMap<u64, Vu>, usize) 
 /// Une valeur ramenée à ce que les deux lecteurs rendent de la même façon : les fins de ligne comme un analyseur XML
 /// les livre (XML 1.0 § 2.11 : « \r\n » devient « \n »), un GUID sans accolades (que nous gardons, comme la forme
 /// canonique de [MS-EVEN6] 3.1.4.7.3), une date à la microseconde (la crate s'y arrête, nous gardons les centaines
-/// de nanosecondes du FILETIME et les millisecondes du SYSTEMTIME).
+/// de nanosecondes du FILETIME et les millisecondes du SYSTEMTIME), un caractère que XML 1.0 interdit (§ 2.2 :
+/// contrôles C0 hors tabulation et fins de ligne, U+FFFE, U+FFFF) changé en « _ », comme la crate le rend depuis sa
+/// 0.15.0, à la façon de Windows, alors que nous gardons le caractère lu.
 pub(crate) fn forme_commune(v: &str) -> String {
-    let v = v.replace("\r\n", "\n").replace('\r', "\n");
+    let v: String = v
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .map(|c| match c {
+            '\t' | '\n' => c,
+            '\u{0}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}' => '_',
+            _ => c,
+        })
+        .collect();
     if let Ok(d) = DateTime::parse_from_rfc3339(&v) {
         return d.timestamp_micros().to_string();
     }
