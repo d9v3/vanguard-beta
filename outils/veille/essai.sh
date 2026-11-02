@@ -136,6 +136,12 @@ case " $* " in
     for a in "$@"; do [[ $prev == --sortie ]] && sortie=$a; prev=$a; done
     cp "$BANC/fixtures/journal-${ESSAI_JOURNAL:-vide}.json" "$sortie"
     cat "$BANC/fixtures/journal-${ESSAI_JOURNAL:-vide}.txt" ;;
+  *" autotest --json "*)
+    # L'autotest de la nuit : sa durée fabriquée (ESSAI_DUREE, ms ; sans elle, rien d'écrit) et son code.
+    [[ -n ${ESSAI_DUREE:-} ]] || exit 0
+    printf '{"code":%s,"hebdomadaire":false,"duree_ms":%s,"regles":{"durees_ms":{"LNX-MAJ-001":%s,"WIN-DEF-001":900}},"croisees":[]}\n' \
+      "${ESSAI_AUTOTEST_CODE:-0}" "$ESSAI_DUREE" "${ESSAI_DUREE_REGLE:-2000}"
+    exit "${ESSAI_AUTOTEST_CODE:-0}" ;;
   *" canaris::canaris_telecharger "*)
     mkdir -p "$VANGUARD_CANARIS/brut"
     cp "$BANC/fixtures/canaris-${ESSAI_CANARIS:-bon}.json" "$VANGUARD_CANARIS/canaris.json"
@@ -636,6 +642,48 @@ attendu '(($(notifs) == 1)) && grep -q "60 causes nouvelles" "$R/dernier.txt" &&
 ESSAI_JOURNAL=horsschema nuit 2026-12-19
 attendu '(($(appels) == n)) && (($(notifs) == 1)) && jq -e "(.alertes | length) == 0 and (.journal.lu | not)" "$R/2026-12-19.json" >/dev/null && ! jq -c .journal "$R/2026-12-19.json" | grep -q "Ignore previous"' \
   "file hors du schéma : refusée en entier, dite, sans alerte"
+nettoyer
+
+echo "Lenteur : nuits comptées, une nuit lente seule, deux nuits, la plage de commits"
+nettoyer
+: >"$BANC/notifications.log"
+# 22 nuits fabriquées (bilan 30 s, LNX-MAJ-001 2 s), chacune à sa tête ; une ligne hors format, ignorée.
+for i in $(seq 1 22); do
+  printf '2026-11-%02d\t%040x\t%s\tLNX-MAJ-001=%s,WIN-DEF-001=900\n' "$i" "$i" $((29000 + i * 100)) $((1900 + i * 10))
+done >"$R/etat/durees.tsv"
+printf '2026-11-30\t%s\t1\tLNX-MAJ-001=1\n' "$HOSTILE" >>"$R/etat/durees.tsv"
+n=$(appels)
+ESSAI_DUREE=30000 nuit 2026-12-20
+T0=$(git -C "$VANGUARD_VEILLE_DEPOT" rev-parse master)
+attendu 'jq -e ".lenteur.etat == \"pas-assez\" and .lenteur.nuits == 23" "$R/2026-12-20.json" >/dev/null && grep -q "Pas assez de nuits mesurées (23 sur 24)" "$R/2026-12-20.md" && ! grep -q "aucune régression" "$R/2026-12-20.md"' \
+  "moins de 24 nuits : « pas assez », jamais « sans régression »"
+attendu 'tail -n1 "$R/etat/durees.tsv" | grep -qx "2026-12-20	$T0	30000	LNX-MAJ-001=2000,WIN-DEF-001=900"' \
+  "la nuit notée : jour, tête, bilan, ms par règle"
+ESSAI_DUREE=90000 ESSAI_AUTOTEST_CODE=1 nuit 2026-12-21
+attendu '(($(wc -l <"$R/etat/durees.tsv") == 23)) && ! grep -q "^2026-12-21" "$R/etat/durees.tsv"' \
+  "autotest rouge (écart) : la nuit ne compte pas"
+git -C "$VANGUARD_VEILLE_DEPOT" commit -q --allow-empty -m "Ralentit"
+T1=$(git -C "$VANGUARD_VEILLE_DEPOT" rev-parse master)
+ESSAI_DUREE=60000 ESSAI_DUREE_REGLE=8000 nuit 2026-12-22
+attendu '(($(appels) == n)) && jq -e ".lenteur.etat == \"rien\" and ([.alertes[] | select(.type == \"lenteur\")] | length == 0)" "$R/2026-12-22.json" >/dev/null' \
+  "une nuit lente seule : rien"
+nettoyer
+ESSAI_DUREE=61000 ESSAI_DUREE_REGLE=8100 ESSAI_AUTOTEST_CODE=2 ESSAI_CLAUDE=sanstest nuit 2026-12-23
+L=$R/ia/2026-12-23-lenteur-bilan
+A=$BANC/claude-$((n + 1)).args
+attendu 'jq -e "[.alertes[] | select(.type == \"lenteur\") | .cle] == [\"bilan:$T1\", \"LNX-MAJ-001:$T1\"] and .ia.alerte == \"lenteur:bilan:$T1\"" "$R/2026-12-23.json" >/dev/null' \
+  "deux nuits lentes (dont une à code 2) : le bilan et la règle, clé à la tête de la première nuit lente"
+attendu 'grep -A1 -x -- --max-turns "$A" | grep -qx 40' "correction lenteur : --max-turns 40"
+attendu 'jq -e ".genre == \"lenteur\" and .quoi == \"bilan\" and .tete_rapide == \"$T0\" and .tete_lente == \"$T1\" and .chercher == \"git log --oneline $T0..$T1\" and .mediane_avant_ms == 30200 and .mediane_recente_ms == 60000 and (.nuits | length == 3)" "$L/alerte.json" >/dev/null' \
+  "alerte.json : la plage tête_rapide..tête_lente et les médianes, rien d'autre"
+attendu '! grep -rq "Ignore previous" "$L/alerte.json" "$A"' "la ligne hostile de durees.tsv n'atteint pas l'IA"
+attendu 'jq -e ".garde_fous != \"aucun test ajouté\"" "$L/etat.json" >/dev/null' "correction lenteur sans test : pas refusée pour ça"
+git -C "$VANGUARD_VEILLE_DEPOT" branch -q -D veille/2026-12-23-lenteur-bilan 2>/dev/null
+nettoyer
+n=$(appels)
+ESSAI_DUREE=62000 ESSAI_DUREE_REGLE=8000 ESSAI_CLAUDE=vide nuit 2026-12-24
+attendu '(($(appels) == n + 1)) && jq -e "([.alertes[] | select(.cle == \"bilan:$T1\")][0].suite == \"deja-traitee\") and .ia.alerte == \"lenteur:LNX-MAJ-001:$T1\"" "$R/2026-12-24.json" >/dev/null' \
+  "troisième nuit lente : même clé, déjà traitée ; la règle passe"
 nettoyer
 
 if ((ECHECS)); then

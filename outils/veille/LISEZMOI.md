@@ -25,7 +25,10 @@ manquée (ordinateur éteint) n'est pas rattrapée en journée (`Persistent=fals
 2. `outils/verifier.sh` complet (non modifié ; `verifier-dernier.txt` est sauvegardé puis remis).
 3. Proptest à la **graine du jour** (`PROPTEST_RNG_SEED=AAAAMMJJ`) : d'autres entrées chaque nuit ; un échec se rejoue
    avec la graine du rapport.
-   Puis l'autotest de la base sur cet ordinateur (`vanguard autotest --json`, lecture seule, hors ligne).
+   Puis l'autotest de la base sur cet ordinateur (`vanguard autotest --json`, lecture seule, hors ligne) : un écart
+   (code 1) met l'étape en échec ; « rien de fautif, du non vérifié » (code 2) la dit sautée. Sa durée, celle de
+   chaque règle et la tête sont gardées dans `etat/durees.tsv` (60 nuits) si l'autotest a rendu 0 ou 2. Voir
+   « Lenteur » plus bas.
    Puis le **journal des erreurs** rapatrié par `deployer.sh` (`retours/journal-cet-ordinateur.txt`,
    `retours/journal-cle.txt`), trié par le programme de la base (`vanguard compte-rendu journal`,
    `src/compte_rendu/triage.rs`) : les entrées regroupées en causes (champs validés de la ligne `§` seulement, jamais
@@ -62,7 +65,7 @@ quand même le résumé de la nuit), une partie arrêtée par systemd (`TimeoutS
 ## Sur alerte, avec IA
 
 Alertes par priorité : `rustsec` > `fuzz` > `journal` > `verifier` > `proptest` > `canari` (format cassé confirmé) >
-`lien`. **Une
+`lenteur` > `lien`. **Une
 seule** traitée par nuit, les autres « en file » ; une alerte déjà traitée (signature dans
 `etat/alertes-traitees.txt`) n'est jamais relancée. KEV et Échap ne lancent l'IA qu'à la relecture hebdomadaire.
 Un plantage du fuzz resté en file reste « nouveau » (donc en alerte) chaque nuit jusqu'à sa prise en charge. Un échec
@@ -96,6 +99,18 @@ Plus de 50 causes nouvelles en une nuit : **aucune alerte**, une notification, e
 forgé qui change ses causes chaque nuit ne remplit pas la file). Le regarder soi-même ; une fois jugé (forgé, ou
 erreurs connues), archiver les deux fichiers de `retours/` hors de ce dossier : le triage repart de zéro la nuit
 suivante. Un fichier remplacé ou tronqué est relu en entier, sans doublon.
+
+### Lenteur
+
+Une alerte `lenteur:<règle ou bilan>:<tête de la première nuit lente>` quand la médiane des 3 dernières nuits dépasse
+1,5 fois celle des 21 d'avant et 10 s pour le bilan entier (pour une règle : 3 fois et 5 s, les seuils de
+`src/autotest/mesures.rs`), et que les deux dernières nuits sont lentes chacune : une nuit lente seule ne dit rien.
+Ne comptent que les nuits où l'autotest a rendu 0 ou 2 ; une nuit reportée (jeu, VM) n'a pas d'autotest. Moins de 24
+nuits mesurées : « pas assez », jamais « sans régression ». Les durées viennent de la compilation de la nuit, en mode
+debug : elles ne valent que comparées entre elles. L'IA reçoit la plage `tête_rapide..tête_lente` pour chercher le
+commit fautif, les médianes et les trois dernières nuits (des nombres et des SHA), avec `--max-turns 40` ; test non
+exigé, aucun test retiré, et la mesure de la nuit suivante juge la correction. Les consignes interdisent d'accélérer
+une règle en lui faisant moins vérifier. `etat/durees.tsv` se supprime sans effet de bord (on repart de zéro).
 
 ### Le code de l'IA ne tourne jamais hors bac à sable
 
@@ -131,7 +146,7 @@ fois : en Rust (`src/compte_rendu/journal.rs`, fuzzé), puis par `rapport.py` (`
 none` (tout ce qui n'est pas permis est refusé, personne n'est attendu à 3 h), `--tools` borné, `--allowedTools`
 (lecture/écriture dans l'arbre, `cargo test/build/check/clippy/fmt`, `git status/diff/log/show/add/commit` ;
 `cargo update -p` pour une alerte RUSTSEC), `--disallowedTools` (gh, curl, wget, ssh, rm, git push/checkout/branch/
-merge/reset…, les fichiers protégés), `--max-turns 60/20/40` (40 pour une correction `journal`), `timeout 90m`, `--settings` tiré de
+merge/reset…, les fichiers protégés), `--max-turns 60/20/40` (40 pour une correction `journal` ou `lenteur`), `timeout 90m`, `--settings` tiré de
 `reglages-claude.json` : **bac à sable** de Claude Code obligatoire (`failIfUnavailable`, sans réseau sauf crates.io
 pour RUSTSEC, écriture dans l'arbre et dans la compilation et le cargo jetables de la correction seulement ; aucune
 écriture pour la relecture et l'hebdomadaire), car cargo exécute du code (build.rs, tests).

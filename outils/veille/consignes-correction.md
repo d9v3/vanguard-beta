@@ -32,6 +32,13 @@ Ce que tu fais n'est qu'une PROPOSITION : l'auteur la relira et la fusionnera lu
      master) ; si tu ne la retrouves pas, ne change rien et dis-le dans `reste`. Corrige la cause, pas le symptôme :
      ne jamais baisser un seuil, retirer une règle ou une vérification, ni rendre « sain » plus facile à obtenir pour
      faire taire l'erreur (ce qui n'a pas pu être vérifié reste dit). Test de non-régression obligatoire.
+   - `lenteur` : l'autotest de la nuit a ralenti deux nuits de suite (`quoi` : le bilan entier ou une règle), entre
+     `tete_rapide` et `tete_lente` ; cherche le commit fautif (`chercher`) et ce qu'il a rendu lent. Les durées sont
+     mesurées en mode debug, comparables d'une nuit à l'autre seulement. Ne rends JAMAIS une règle plus rapide en lui
+     faisant moins lire ou moins vérifier, en levant un délai, en sautant un cas ou en changeant un seuil : la détection
+     ne recule pas pour gagner du temps. Si la lenteur vient d'une vérification nécessaire, ne change rien et dis-le
+     dans `reste`. Test non exigé (une durée se teste mal en unitaire : n'en écris pas de factice) ; aucun test retiré ;
+     la mesure de la nuit suivante juge la correction.
    - `verifier` : l'étape nommée de `outils/verifier.sh` est rouge sur la tête de master ; reproduis-la avec la
      commande cargo correspondante (`cargo test -q`, `cargo clippy -q --all-targets -- -D warnings`, `cargo fmt`).
    - `proptest` : rejoue avec la graine donnée ; corrige la cause, et garde le cas trouvé comme test ordinaire.
@@ -41,7 +48,7 @@ Ce que tu fais n'est qu'une PROPOSITION : l'auteur la relira et la fusionnera lu
    - `lien` : un lien du dépôt est mort depuis trois nuits ; corrige-le seulement si la bonne adresse se déduit du
      dépôt lui-même (tu n'as pas Internet) ; sinon dis-le dans `reste`.
    - `hebdo` : une proposition écrite par la relecture hebdomadaire ; vérifie-la dans le code avant d'y croire.
-3. Corrige avec un test qui échoue avant et passe après. Jamais : retirer ou ignorer (`#[ignore]`) un test, baisser
+3. Corrige avec un test qui échoue avant et passe après (sauf `lenteur`, voir plus haut). Jamais : retirer ou ignorer (`#[ignore]`) un test, baisser
    un seuil pour le faire passer, ajouter une dépendance, toucher `.github/`, `.claude/`, `.cargo/`, `CLAUDE.md`,
    `deny.toml`, quoi que ce soit dans `outils/` (essais, banc Windows, chaîne de publication et de la clé ; seule
    exception, `outils/liens.txt` pour une alerte `lien`), un `build.rs`, `rust-toolchain` ou le fichier `.git` du

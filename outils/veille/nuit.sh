@@ -153,7 +153,8 @@ if [[ -n $ARBRE_OK ]]; then
   # ── 3 bis. L'autodiagnostic de la base sur cet ordinateur (lecture seule, hors ligne) : la première machine à voir un
   # format changer (mise à jour d'Arch) est celle de l'auteur, la nuit même. Son --json ne porte aucune valeur (il peut
   # partir à alerte.sh, donc à une IA en ligne) ; jamais --detail ici. 1 : écart, échec de l'étape ; 2 (rien de
-  # fautif, du non vérifié) : sautée, dite. ──
+  # fautif, du non vérifié) : sautée, dite. Sa durée (bilan et règles) va dans etat/durees.tsv, par rapport.py, si
+  # l'autotest a rendu 0 ou 2 : l'alerte « lenteur ». ──
   autotest_de_nuit() {
     local code
     cargo run -q -- autotest --json >"$TRAVAIL/autotest.json"

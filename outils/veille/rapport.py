@@ -86,7 +86,7 @@ CR_CHAMPS = {
     "cle": "cle", "genre": "genre-cause", "regle": "regle", "contexte": "contexte", "lieu": "lieu", "code": "code",
     "provenance": "provenance", "premiere": "jour", "derniere": "jour", "reproduction": "reproduction",
 }
-GENRES = ["rustsec", "fuzz", "journal", "verifier", "proptest", "canari", "lien"]
+GENRES = ["rustsec", "fuzz", "journal", "verifier", "proptest", "canari", "lenteur", "lien"]
 PRIORITE = {g: i + 1 for i, g in enumerate(GENRES)}
 LOCKS = ["Cargo.lock", "fuzz/Cargo.lock", "extensions/sdk/Cargo.lock", "extensions/exemples/rust-exemple/Cargo.lock"]
 MOIS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]
@@ -378,11 +378,119 @@ def lire_journal(t, etapes):
             "refusees": refusees, "relu": bool(relu), "file": [] if trop else cr["causes"]}
 
 
+# Les durées de l'autotest, nuit après nuit (etat/durees.tsv : jour, tête, durée du bilan, ms par règle). Mesurées
+# en mode debug (cargo run, la compilation de la nuit) : elles ne valent que comparées entre elles, jamais en absolu.
+DUREES_GARDEES = 60
+NUITS_AVANT, NUITS_RECENTES = 21, 3
+# (quoi, facteur en fraction, seuil en ms) : le bilan entier, plus de 1,5 fois et plus de 10 s ; une règle, les seuils
+# de src/autotest/mesures.rs (plus de 3 fois et plus de 5 s).
+SEUILS_LENTEUR = {"bilan": (3, 2, 10_000), "regle": (3, 1, 5_000)}
+DUREE_MAX_MS = 10**9
+
+
+def entier_ms(v):
+    return v if isinstance(v, int) and not isinstance(v, bool) and 0 <= v < DUREE_MAX_MS else None
+
+
+def lire_durees(chemin):
+    """Les nuits mesurées, dans l'ordre des jours : [(jour, tête, ms du bilan, {règle: ms})]. Une ligne hors format
+    est ignorée (le fichier est à la veille, mais on ne croit personne sur parole)."""
+    nuits = {}
+    for ligne in lignes(chemin):
+        champs = ligne.split("\t")
+        if len(champs) != 4 or not re.fullmatch(MOTIFS["jour"], champs[0]) or not re.fullmatch(MOTIFS["git"], champs[1]) \
+                or not re.fullmatch(r"\d{1,9}", champs[2]):
+            continue
+        regles = {}
+        for morceau in filter(None, champs[3].split(",")):
+            nom, _, ms = morceau.partition("=")
+            if re.fullmatch(MOTIFS["regle"], nom) and re.fullmatch(r"\d{1,9}", ms):
+                regles[nom] = int(ms)
+        nuits[champs[0]] = (champs[0], champs[1], int(champs[2]), regles)
+    return [nuits[j] for j in sorted(nuits)][-DUREES_GARDEES:]
+
+
+def noter_durees(t, veille, jour, tete, etapes):
+    """L'autotest de la nuit ajouté à etat/durees.tsv, seulement s'il a rendu 0 ou 2 (une nuit rouge ou sans autotest
+    ne compte pas ; une nuit reportée n'a pas d'autotest). Rejouée le même jour, la nuit remplace la précédente."""
+    e = next((x for x in etapes if x.get("nom") == "autotest"), None)
+    if e is None or e.get("etat") not in ("ok", "sautee") or not tete:
+        return
+    try:
+        if (t / "autotest.json").stat().st_size > CR_LECTURE_MAX:
+            return
+    except OSError:
+        return
+    a = lire_json(t / "autotest.json")
+    if not isinstance(a, dict) or a.get("code") not in (0, 2) or a.get("hebdomadaire") is not False:
+        return
+    total = entier_ms(a.get("duree_ms"))
+    regles = (a.get("regles") or {}).get("durees_ms") if isinstance(a.get("regles"), dict) else None
+    if total is None or not isinstance(regles, dict):
+        return
+    par_regle = ",".join(f"{k}={v}" for k, v in sorted(regles.items())
+                         if isinstance(k, str) and re.fullmatch(MOTIFS["regle"], k) and entier_ms(v) is not None)
+    chemin = veille / "etat/durees.tsv"
+    nuits = [n for n in lire_durees(chemin) if n[0] != jour]
+    texte = "".join(f"{j}\t{te}\t{ms}\t{','.join(f'{k}={v}' for k, v in sorted(rg.items()))}\n"
+                    for j, te, ms, rg in nuits[-(DUREES_GARDEES - 1):])
+    chemin.write_text(texte + f"{jour}\t{tete}\t{total}\t{par_regle}\n", encoding="utf-8")
+
+
+def mediane(v):
+    v = sorted(v)
+    return v[len(v) // 2] if v else 0
+
+
+def regression(serie, facteur, diviseur, seuil):
+    """Une série [(jour, tête, ms)] : la régression si la médiane des 3 dernières nuits dépasse le seuil et le facteur
+    fois celle des 21 d'avant, et si les deux dernières nuits, chacune, sont lentes (confirmée deux nuits de suite).
+    La première nuit lente remonte tant que les nuits le sont : sa tête reste la clé de l'alerte d'une nuit à l'autre."""
+    if len(serie) < NUITS_AVANT + NUITS_RECENTES:
+        return None
+    fenetre = serie[-(NUITS_AVANT + NUITS_RECENTES):]
+    avant = mediane([x[2] for x in fenetre[:NUITS_AVANT]])
+    recente = mediane([x[2] for x in fenetre[NUITS_AVANT:]])
+
+    def lente(ms):
+        return ms > seuil and ms * diviseur > avant * facteur
+
+    if not (lente(recente) and lente(serie[-1][2]) and lente(serie[-2][2])):
+        return None
+    i = len(serie) - 2
+    while i > 0 and lente(serie[i - 1][2]):
+        i -= 1
+    if i == 0:
+        return None
+    return {"tete_rapide": serie[i - 1][1], "tete_lente": serie[i][1], "jour_lent": serie[i][0],
+            "mediane_avant_ms": avant, "mediane_recente_ms": recente,
+            "nuits": [{"jour": j, "ms": ms} for j, _, ms in serie[-NUITS_RECENTES:]]}
+
+
+def lire_lenteur(veille):
+    """Les régressions de durée de l'autotest : le bilan entier, puis chaque règle. Moins de 24 nuits mesurées : « pas
+    assez », jamais « sans régression »."""
+    nuits = lire_durees(veille / "etat/durees.tsv")
+    besoin = NUITS_AVANT + NUITS_RECENTES
+    if len(nuits) < besoin:
+        return {"nuits": len(nuits), "besoin": besoin, "etat": "pas-assez", "regressions": []}
+    trouvees = []
+    r = regression([(j, te, ms) for j, te, ms, _ in nuits], *SEUILS_LENTEUR["bilan"])
+    if r:
+        trouvees.append({"quoi": "bilan", **r})
+    for regle in sorted({k for *_, rg in nuits for k in rg}):
+        r = regression([(j, te, rg[regle]) for j, te, _, rg in nuits if regle in rg], *SEUILS_LENTEUR["regle"])
+        if r:
+            trouvees.append({"quoi": regle, **r})
+    return {"nuits": len(nuits), "besoin": besoin, "etat": "regression" if trouvees else "rien", "regressions": trouvees}
+
+
 # ───────────────────────────── Le rapport de la nuit ─────────────────────────────
 
 
 def alertes_de(r):
-    """Les alertes qui peuvent appeler l'IA, par priorité : rustsec, fuzz, journal, verifier, proptest, canari, lien."""
+    """Les alertes qui peuvent appeler l'IA, par priorité : rustsec, fuzz, journal, verifier, proptest, canari,
+    lenteur, lien."""
     tete = r["tete_prochaine"]
     alertes = []
 
@@ -419,6 +527,10 @@ def alertes_de(r):
     for c in (r.get("canaris") or {}).get("canaris", []):
         if c["confirme"]:
             ajouter("canari", f"{c['id']}:{c['sha256']}", source=c["id"])
+    for g in (r.get("lenteur") or {}).get("regressions", []):
+        ajouter("lenteur", f"{g['quoi']}:{g['tete_lente']}", quoi=g["quoi"], tete_rapide=g["tete_rapide"],
+                tete_lente=g["tete_lente"], jour_lent=g["jour_lent"], mediane_avant_ms=g["mediane_avant_ms"],
+                mediane_recente_ms=g["mediane_recente_ms"], nuits=g["nuits"])
     for lien in r.get("liens") or []:
         if lien["nuits"] >= 3:
             ajouter("lien", hashlib.sha256(lien["url"].encode()).hexdigest()[:16], url=lien["url"],
@@ -449,6 +561,8 @@ def nuit(a):
         "liens": lire_liens(t, veille, a.jour),
         "journal": lire_journal(t, etapes),
     }
+    noter_durees(t, veille, a.jour, r["tete_prochaine"], etapes)
+    r["lenteur"] = lire_lenteur(veille)
     p = etape(r, "proptest")
     if p:
         r["proptest"] = {"graine": a.graine, "etat": p["etat"], "tests": tests_en_echec(t / "proptest.log")}
@@ -665,6 +779,18 @@ def markdown(chemin_json, kev_humain=None):
             md.append(f"- `{c['cle']}` {c['genre']} {c['regle'] or c['contexte'] or '—'} {c['lieu'] or ''} "
                       f"({c['compte']} fois, {', '.join(map(str, c['versions']))} ; {', '.join(map(str, c['systemes']))} ; "
                       f"{c['provenance']}) score {score_cause(c)}")
+    le = r.get("lenteur")
+    if le:
+        md += ["", "### Durées de l'autotest", ""]
+        if le["etat"] == "pas-assez":
+            md.append(f"- Pas assez de nuits mesurées ({le['nuits']} sur {le['besoin']}) : rien n'est conclu.")
+        else:
+            md.append(f"- {le['nuits']} nuit(s) mesurée(s) ; "
+                      + ("aucune régression vue." if le["etat"] == "rien" else f"{len(le['regressions'])} régression(s) :"))
+        for g in le["regressions"]:
+            md.append(f"- {g['quoi']} : {g['mediane_avant_ms']} ms → {g['mediane_recente_ms']} ms depuis le "
+                      f"{g['jour_lent']} (`{g['tete_rapide'][:12]}..{g['tete_lente'][:12]}`)")
+        md.append("- Durées en mode debug (cargo run) : comparables d'une nuit à l'autre seulement.")
     if r.get("liens"):
         md += ["", "### Liens morts", ""]
         md += [f"- {affichable(x['url'], 200)} ({x['nuits']} nuit(s) de suite)" for x in r["liens"]]
@@ -746,6 +872,22 @@ def alerte(rapport, signature, sortie, donnees, evidente=None):
         entree |= {"sujet": sur("slug", al.get("sujet")), "fichier": sur("chemin", al.get("fichier")),
                    "ligne": al.get("ligne") if isinstance(al.get("ligne"), int) else None,
                    "origine": "relecture hebdomadaire (texte d'une IA, à vérifier dans le code, pas à croire)"}
+    elif genre == "lenteur":
+        # Des nombres et des SHA de la liste blanche : la plage où chercher le commit qui a ralenti.
+        rapide, lente, quoi = (sur(m, v) if isinstance(v, str) else RETIRE
+                               for m, v in (("git", al.get("tete_rapide")), ("git", al.get("tete_lente")),
+                                            ("regle", al.get("quoi"))))
+        quoi = "bilan" if al.get("quoi") == "bilan" else quoi
+        nuits = [{"jour": sur("jour", n.get("jour")), "ms": entier_ms(n.get("ms"))}
+                 for n in (al.get("nuits") or [])[:NUITS_RECENTES] if isinstance(n, dict)]
+        entree |= {
+            "quoi": quoi, "tete_rapide": rapide, "tete_lente": lente,
+            "mediane_avant_ms": entier_ms(al.get("mediane_avant_ms")),
+            "mediane_recente_ms": entier_ms(al.get("mediane_recente_ms")), "nuits": nuits,
+            "chercher": f"git log --oneline {rapide}..{lente}" if RETIRE not in (rapide, lente) else None,
+            "mesure": "autotest de la nuit, en mode debug (cargo run) : comparable d'une nuit à l'autre seulement ; "
+                      "la nuit suivante juge la correction",
+        }
     elif genre == "lien":
         entree |= {"url": sur("url", al.get("url")), "nuits": al.get("nuits") if isinstance(al.get("nuits"), int) else 0}
     ecrire_json(sortie, entree)
