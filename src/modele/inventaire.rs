@@ -691,14 +691,16 @@ mod tests {
         (
             "amelioration/mod.rs",
             "amelioration/suivi.json",
-            1,
-            "taille seulement, pour le plafond de 10 Mo de amelioration/ ; le contenu se lit et s'écrit par le sceau",
+            4,
+            "la taille, pour le plafond de 10 Mo de amelioration/ ; l'écriture par ecrire_si_permis et l'effacement \
+             par effacer_dans, deux enveloppes de sceau::ecrire_dans et sceau::effacer_dans",
         ),
         (
             "amelioration/mod.rs",
             "amelioration/materiel.json",
-            1,
-            "taille seulement, pour le plafond de 10 Mo de amelioration/ ; le contenu se lit et s'écrit par le sceau",
+            3,
+            "la taille, pour le plafond de 10 Mo de amelioration/ ; l'écriture par ecrire_si_permis et l'effacement \
+             par effacer_dans, deux enveloppes de sceau::ecrire_dans et sceau::effacer_dans",
         ),
         (
             "apprentissage.rs",

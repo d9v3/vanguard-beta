@@ -414,6 +414,25 @@ pub(crate) fn outil_lance(commande: &str, origine: Origine) {
     noter(|m| outil_dans(m, commande, origine, None));
 }
 
+/// L'outil lancé en ligne de commande et son départ : sa fin se note une fois, en fin de `main` comme dans
+/// `machine::quitter` (un code de retour), sans quoi un outil qui rend un code ressemblerait à un plantage.
+static EN_LIGNE: Mutex<Option<(&'static str, std::time::Instant)>> = Mutex::new(None);
+
+pub(crate) fn ligne_lancee(commande: &'static str) {
+    outil_lance(commande, Origine::Ligne);
+    if let Ok(mut l) = EN_LIGNE.lock() {
+        *l = Some((commande, std::time::Instant::now()));
+    }
+}
+
+/// La fin de l'outil lancé en ligne, s'il y en a un et qu'elle n'est pas déjà notée.
+pub(crate) fn ligne_finie() {
+    let pris = EN_LIGNE.lock().ok().and_then(|mut l| l.take());
+    if let Some((commande, debut)) = pris {
+        outil_fini(commande, Origine::Ligne, false, debut.elapsed());
+    }
+}
+
 /// Un outil fini, ou laissé (« revenir »), et sa durée.
 pub(crate) fn outil_fini(commande: &str, origine: Origine, abandonne: bool, duree: std::time::Duration) {
     noter(|m| outil_dans(m, commande, origine, Some((abandonne, duree))));
@@ -544,7 +563,8 @@ pub(crate) fn revenues(corrigees: &mut Vec<Corrigee>, bilans: &[Bilan], maintena
             }
             return false;
         }
-        maintenant.saturating_sub(c.quand) < SUIVI_JOURS.saturating_mul(86_400_000)
+        // Une date à venir (suivi trafiqué, horloge reculée) n'est pas gardée : elle ne s'expirerait jamais.
+        c.quand <= maintenant && maintenant.saturating_sub(c.quand) < SUIVI_JOURS.saturating_mul(86_400_000)
     });
     revenues
 }
@@ -633,15 +653,27 @@ pub(crate) fn relever(
     let lire: &dyn Fn() -> Option<Materiel> = &materiel::lire;
     let materiel = (moment != crate::agent::Moment::Sortie).then_some(lire);
     if relever_dans(dossier, jour, mesures, maintenant_ms(), &mut pris, materiel).is_err()
+        && !ARRETE.load(Ordering::Relaxed)
         && let Ok(mut m) = MEMOIRE.try_lock()
     {
         m.reprendre(pris);
     }
 }
 
-/// Le relevé dans `dossier` : le jour relu, la mémoire ajoutée, le tout écrit (scellé, 96 Kio au plus) ; puis le
-/// suivi (retours, cache), la purge (90 jours, 10 Mo) et, chaque semaine, le matériel. En erreur, rien du jour n'est
-/// perdu : la mémoire reste à l'appelant.
+/// Écrit `octets` sous `nom`, sauf si « Ne pas partager » est arrivé pendant le relevé : rien ne se réécrit après
+/// l'effacement.
+fn ecrire_si_permis(dossier: &Path, nom: &str, octets: &[u8]) -> std::io::Result<()> {
+    if ARRETE.load(Ordering::Relaxed) {
+        return Err(std::io::Error::other("relevé arrêté"));
+    }
+    crate::sceau::ecrire_dans(dossier, nom, octets)
+}
+
+/// Le relevé dans `dossier` : le suivi d'abord (retours, base de la cache), puis le jour relu, la mémoire ajoutée,
+/// le tout écrit (scellé, 96 Kio au plus) ; ensuite, chaque semaine, le matériel, et la purge (90 jours, 10 Mo). Le
+/// suivi passe avant le jour : si le jour ne s'écrit pas, la mémoire rendue à l'appelant porte les retours et les
+/// écarts de la cache une seule fois, et le relevé suivant ne les recalcule pas (au pire un compte de moins, jamais
+/// un de trop). Si le suivi ne s'écrit pas, rien n'a bougé.
 pub(crate) fn relever_dans(
     dossier: &Path,
     jour: chrono::NaiveDate,
@@ -657,13 +689,21 @@ pub(crate) fn relever_dans(
     corrigees.extend(m.corrigees.iter().cloned());
     let trop = corrigees.len().saturating_sub(SUIVIES_MAX);
     corrigees.drain(..trop);
-    for regle in revenues(&mut corrigees, &m.bilans, quand) {
+    let revenues = revenues(&mut corrigees, &m.bilans, quand);
+    let mut base = std::mem::take(&mut suivi.cache);
+    let ecarts = cache_depuis(&mut base, mesures);
+    suivi.corrigees = corrigees;
+    suivi.cache = base;
+    ecrire_si_permis(dossier, SUIVI, &serde_json::to_vec(&suivi).unwrap_or_default())?;
+    // Le suivi tient les corrections et les bilans : la mémoire ne les porte plus, elle porte ce qu'ils ont donné.
+    m.corrigees.clear();
+    m.bilans.clear();
+    for regle in revenues {
         let mut c = releve::correction(regle);
         c.revenues = un();
         ajouter!(m.brouillon, corrections, c);
     }
-    let mut base = std::mem::take(&mut suivi.cache);
-    for c in cache_depuis(&mut base, mesures) {
+    for c in ecarts {
         ajouter!(m.brouillon, cache, c);
     }
     let mut b = crate::sceau::juge_dans(dossier, &nom)
@@ -672,12 +712,10 @@ pub(crate) fn relever_dans(
         .unwrap_or_default();
     b.fusionner(&m.brouillon);
     if !m.brouillon.est_vide() || crate::sceau::juge_dans(dossier, &nom) == crate::sceau::Juge::Absent {
-        crate::sceau::ecrire_dans(dossier, &nom, &b.ecrire())?;
+        ecrire_si_permis(dossier, &nom, &b.ecrire())?;
     }
     // Le jour est écrit : la mémoire est versée.
     *m = Memoire::default();
-    suivi.corrigees = corrigees;
-    suivi.cache = base;
     let lu_le = suivi
         .materiel_le
         .as_deref()
@@ -696,11 +734,11 @@ pub(crate) fn relever_dans(
             })
             .unwrap_or_default();
             if o.len() <= materiel::MATERIEL_MAX {
-                crate::sceau::ecrire_dans(dossier, MATERIEL, &o)?;
+                ecrire_si_permis(dossier, MATERIEL, &o)?;
             }
         }
+        ecrire_si_permis(dossier, SUIVI, &serde_json::to_vec(&suivi).unwrap_or_default())?;
     }
-    crate::sceau::ecrire_dans(dossier, SUIVI, &serde_json::to_vec(&suivi).unwrap_or_default())?;
     purger_dans(dossier, jour)
 }
 
@@ -718,28 +756,46 @@ pub(crate) fn purger_dans(dossier: &Path, jour: chrono::NaiveDate) -> std::io::R
 }
 
 /// Efface tout le relevé de `dossier` : les jours, le suivi, le matériel (« Ne pas partager », A5).
+/// Un fichier qui résiste (verrouillé par un antivirus) n'arrête pas les autres : la première erreur est rendue à
+/// la fin.
 pub(crate) fn effacer_dans(dossier: &Path) -> std::io::Result<()> {
-    for (j, _) in jours_dans(dossier) {
-        crate::sceau::effacer_dans(dossier, &format!("{JOURS}/{j}.json"))?;
+    let mut noms: Vec<String> = jours_dans(dossier)
+        .into_iter()
+        .map(|(j, _)| format!("{JOURS}/{j}.json"))
+        .collect();
+    noms.extend([SUIVI.to_string(), MATERIEL.to_string()]);
+    let mut premiere = Ok(());
+    for nom in noms {
+        if let Err(e) = crate::sceau::effacer_dans(dossier, &nom)
+            && premiere.is_ok()
+        {
+            premiere = Err(e);
+        }
     }
-    crate::sceau::effacer_dans(dossier, SUIVI)?;
-    crate::sceau::effacer_dans(dossier, MATERIEL)?;
     // Les dossiers vides seulement : un fichier qui n'est pas du relevé reste où il est.
     let _ = std::fs::remove_dir(dossier.join(JOURS));
     let _ = std::fs::remove_dir(dossier.join("amelioration"));
-    Ok(())
+    premiere
 }
 
-/// « Ne pas partager » (A5) : le relevé s'arrête pour ce processus, sa mémoire est vidée, et ce qu'il a écrit est
-/// effacé. Jamais là où il ne relève pas (essais, Wine, CI, `VANGUARD_ENVOI=0`, clé) : il n'y a rien écrit.
-#[cfg_attr(not(test), allow(dead_code))] // branché par A5 (Paramètres)
+/// Où « Ne pas partager » efface : partout où ce dossier est celui de la personne, même là où ce processus ne relève
+/// pas (`VANGUARD_ENVOI=0` posé après coup laisse les jours d'avant, un second clic réessaie). Jamais sous les
+/// essais, Wine ou la CI (un dossier qui n'est pas le sien), ni depuis la clé de quelqu'un d'autre (les jours de
+/// l'ordinateur sont à son propriétaire, pas à qui passe) ni en root (le dossier de root, où rien ne s'écrit).
+pub(crate) fn peut_effacer(l: Lieu) -> bool {
+    !(l.essai || l.wine || l.ci || l.depuis_une_cle || l.en_root)
+}
+
+/// « Ne pas partager » (A5) : le relevé s'arrête pour ce processus, sa mémoire est vidée, et ce qui a été écrit est
+/// effacé (`peut_effacer`). Un relevé en cours ne réécrit rien après (`ecrire_si_permis`) ; un autre processus
+/// Vanguard déjà lancé, lui, ne le sait pas : l'interrupteur gardé sur le disque est à A5.
+#[allow(dead_code)] // branché par A5 (Paramètres) ; jamais appelé des essais, il arrêterait tout le processus
 pub(crate) fn arreter_et_effacer() -> std::io::Result<()> {
-    let ecrivait = actif();
     ARRETE.store(true, Ordering::Relaxed);
     if let Ok(mut m) = MEMOIRE.lock() {
         *m = Memoire::default();
     }
-    if !ecrivait {
+    if !peut_effacer(lieu()) {
         return Ok(());
     }
     effacer_dans(&crate::socle::dossier_local())

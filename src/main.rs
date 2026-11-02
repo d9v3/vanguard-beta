@@ -3588,9 +3588,8 @@ async fn main() {
         .and_then(|n| OUTILS.iter().find(|o| !o.commande.is_empty() && o.commande == n))
         .map(|o| o.commande);
     if let Some(c) = outil_ligne {
-        crate::amelioration::outil_lance(c, crate::compte_rendu::envoi::Origine::Ligne);
+        crate::amelioration::ligne_lancee(c);
     }
-    let debut = std::time::Instant::now();
     if args.commande.as_ref().is_some_and(commande_d_optimiser) && refuser_optimiser() {
         machine::quitter(2);
     }
@@ -3925,9 +3924,7 @@ async fn main() {
             }
         },
     }
-    if let Some(c) = outil_ligne {
-        crate::amelioration::outil_fini(c, crate::compte_rendu::envoi::Origine::Ligne, false, debut.elapsed());
-    }
+    crate::amelioration::ligne_finie();
     // Ce que le relevé local a noté, versé avant de partir (rien à noter : rien de lu).
     crate::agent::tic(crate::agent::Moment::Sortie);
     // Une page ouverte juste avant la fin (« vanguard rapport », le tableau de bord) : son ouverture aboutit avant

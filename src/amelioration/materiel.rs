@@ -371,7 +371,10 @@ mod systeme {
         )?;
         let systeme = systeme.first()?;
         let memoire = entier(systeme, "TotalPhysicalMemory")?;
-        let fils = entier(cpu, "NumberOfLogicalProcessors").unwrap_or_else(fils);
+        // Un zéro (pilote ou machine virtuelle qui ne le remplit pas) vaut une valeur absente, pas un matériel perdu.
+        let fils = entier(cpu, "NumberOfLogicalProcessors")
+            .filter(|n| *n > 0)
+            .unwrap_or_else(fils);
         let cartes = wmi::requete(r"root\cimv2", "Win32_VideoController", "", &["PNPDeviceID"]).unwrap_or_default();
         let disque = wmi::requete(
             r"root\Microsoft\Windows\Storage",
@@ -403,7 +406,7 @@ mod systeme {
         let modele_systeme = texte(systeme, "Model");
         Some(Materiel {
             processeur: processeur_de(texte(cpu, "Manufacturer")),
-            coeurs: nombre::<COEURS_MAX>(entier(cpu, "NumberOfCores").unwrap_or(fils))?,
+            coeurs: nombre::<COEURS_MAX>(entier(cpu, "NumberOfCores").filter(|n| *n > 0).unwrap_or(fils))?,
             fils: nombre::<FILS_MAX>(fils)?,
             memoire_go: memoire_de_octets(memoire),
             disque,

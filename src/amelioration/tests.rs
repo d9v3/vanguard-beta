@@ -504,9 +504,116 @@ fn effacer_retire_tout_le_releve_et_rien_d_autre() {
     effacer_dans(&d).unwrap();
     assert!(!d.join("amelioration").exists());
     assert!(d.join("autre.json").is_file());
-    // Sous les essais, l'arrêt ne touche à rien : le relevé n'y écrit jamais.
-    arreter_et_effacer().unwrap();
-    assert!(!actif());
+    // Sous les essais, l'arrêt n'efface rien (`arreter_et_effacer` n'est pas appelé ici : il couperait le relevé de
+    // tout le processus d'essai).
+    assert!(!peut_effacer(lieu()));
+}
+
+/// « Ne pas partager » efface aussi là où ce processus ne relève plus (`VANGUARD_ENVOI=0` posé après coup), jamais
+/// sous les essais, Wine, la CI, depuis une clé ou en root.
+#[test]
+fn ne_pas_partager_efface_meme_si_l_envoi_est_coupe() {
+    assert!(peut_effacer(Lieu::default()));
+    assert!(peut_effacer(Lieu {
+        envoi_coupe: true,
+        ..Lieu::default()
+    }));
+    let cas: [fn(&mut Lieu); 5] = [
+        |l| l.essai = true,
+        |l| l.wine = true,
+        |l| l.ci = true,
+        |l| l.depuis_une_cle = true,
+        |l| l.en_root = true,
+    ];
+    for poser in cas {
+        let mut l = Lieu::default();
+        poser(&mut l);
+        assert!(!peut_effacer(l), "{l:?}");
+    }
+}
+
+/// Un fichier qui résiste n'arrête pas l'effacement des autres.
+#[test]
+fn un_fichier_qui_resiste_n_arrete_pas_l_effacement() {
+    let d = Jetable::nouveau("amelioration-resiste");
+    crate::sceau::ecrire_dans(&d, &nom_jour(date(1)), b"{}").unwrap();
+    crate::sceau::ecrire_dans(&d, MATERIEL, b"{}").unwrap();
+    // Le suivi est un dossier non vide : son effacement échoue, au milieu de la liste.
+    std::fs::create_dir_all(d.join(SUIVI).join("dedans")).unwrap();
+    assert!(effacer_dans(&d).is_err());
+    assert!(!d.join(nom_jour(date(1))).exists());
+    assert!(
+        !d.join(MATERIEL).exists(),
+        "le matériel, après le suivi, est effacé quand même"
+    );
+}
+
+/// Un jour qui ne s'écrit pas (disque plein, fichier bloqué) : la mémoire rendue porte les écarts de la cache et les
+/// retours une seule fois, et le relevé suivant ne les recompte pas.
+#[test]
+fn un_jour_qui_ne_s_ecrit_pas_ne_compte_rien_deux_fois() {
+    let d = Jetable::nouveau("amelioration-reprise");
+    let mut mesures = sans_mesures();
+    let cache = |repris, a_neuf| crate::autotest::mesures::Cache {
+        repris,
+        a_neuf,
+        ..Default::default()
+    };
+    mesures.cache.insert("LNX-PLT-001".into(), cache(5, 3));
+    relever_dans(&d, date(2), &mesures, 1, &mut Memoire::default(), None).unwrap();
+    // Une correction réussie, puis un bilan où son problème est encore là.
+    let mut m = Memoire::default();
+    noter_correction_dans(
+        &mut m,
+        "LNX-MAJ-003",
+        Issue::Reussie(Some(cle("LNX-MAJ-003", "paquet:openssl"))),
+        2,
+    );
+    relever_dans(&d, date(2), &mesures, 3, &mut m, None).unwrap();
+    let mut m = Memoire::default();
+    noter_bilan_dans(
+        &mut m,
+        &[probleme("LNX-MAJ-003", "paquet:openssl")],
+        &rien_garde,
+        true,
+        4,
+    );
+    mesures.cache.insert("LNX-PLT-001".into(), cache(7, 4));
+    // Le jour 3 est un dossier : son écriture échoue, la mémoire reste.
+    std::fs::create_dir_all(d.join(nom_jour(date(3))).join("dedans")).unwrap();
+    assert!(relever_dans(&d, date(3), &mesures, 5, &mut m, None).is_err());
+    std::fs::remove_dir_all(d.join(nom_jour(date(3)))).unwrap();
+    // Deux tours de plus, sans rien de neuf : les mêmes écarts ne reviennent pas.
+    relever_dans(&d, date(3), &mesures, 6, &mut m, None).unwrap();
+    relever_dans(&d, date(3), &mesures, 7, &mut Memoire::default(), None).unwrap();
+    let jour = jour_de(&d, date(3));
+    let c = jour.cache.entrees().first().cloned().unwrap();
+    assert_eq!((c.repris.get(), c.a_neuf.get()), (2, 1));
+    let revenue: u32 = jour.corrections.entrees().iter().map(|c| c.revenues.get()).sum();
+    assert_eq!(revenue, 1);
+}
+
+/// Une correction datée dans l'avenir (suivi trafiqué, horloge reculée) n'est pas gardée.
+#[test]
+fn une_correction_datee_dans_l_avenir_n_est_pas_gardee() {
+    let mut c = vec![Corrigee {
+        regle: Regle::new("LNX-MAJ-003").unwrap(),
+        empreinte: 1,
+        quand: 10 * 86_400_000,
+    }];
+    assert_eq!(revenues(&mut c, &[], 86_400_000), Vec::<Regle>::new());
+    assert_eq!(c.len(), 0);
+}
+
+/// L'outil lancé en ligne compte sa fin une seule fois, qu'il sorte par la fin de `main` ou par `machine::quitter`.
+#[test]
+fn l_outil_en_ligne_finit_une_fois() {
+    // Rien en cours : rien ne se passe, et deux fins n'en font qu'une.
+    ligne_finie();
+    *EN_LIGNE.lock().unwrap() = Some(("bilan", std::time::Instant::now()));
+    ligne_finie();
+    assert!(EN_LIGNE.lock().unwrap().is_none());
+    ligne_finie();
 }
 
 fn materiel_essai() -> Materiel {

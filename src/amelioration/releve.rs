@@ -723,8 +723,10 @@ mod tests {
         for o in [
             &b"pas du json"[..],
             br#"{"inconnu": 1}"#,
-            br#"{"regles": []}"#,
-            br#"{"bilans_manuels": 0}"#,
+            // Un champ bon à côté d'un mauvais : tout le jour est refusé, pas seulement le mauvais.
+            br#"{"bilans_manuels": 1, "inconnu": 0}"#,
+            br#"{"bilans_manuels": 1, "passes_horaires": -1}"#,
+            br#"{"bilans_manuels": 1, "regles": [{"id": "pas-une-regle"}]}"#,
             br#"{"regles": [{"id": "LNX-PLT-001"}, {"id": "LNX-PLT-001"}]}"#,
             br#"{"outils": [{"outil": "bilan", "origine": "menu", "durees": [86400001]}]}"#,
         ] {
