@@ -1,0 +1,323 @@
+//! L'Agent Vanguard (sans IA) : un petit agent intégré, sans modèle d'IA, qui observe ce que Vanguard mesure sur cet
+//! ordinateur, juge, puis règle ou propose, entre des bornes écrites ici. Rien ne sort de l'ordinateur.
+//!
+//! Une liste fermée de missions (`MissionId`), chacune avec son genre (`Genre`) : un réglage ajuste Vanguard lui-même
+//! dans le sens sûr ou propose ; une détection signale ou propose ; un relevé note. Un tour (`tic`) passe, à un moment
+//! donné (`Moment`), les missions qui l'écoutent : état lu, observation (lecture seulement, dans un budget), jugement
+//! (pur, sur des types fermés), décisions vérifiées (genre, levier, sens sûr), ajustements appliqués, faits notés au
+//! journal chaîné, état écrit.
+//!
+//! Les garde-fous, chacun essayé :
+//! - **jamais de baisse de la détection** : un délai ne fait que monter (de `DELAI` à `DELAI_LONG`), une durée de
+//!   cache que descendre (jamais sous le plancher de `autotest::cache::TABLE`, pour ses seules règles) ; un seuil, un
+//!   niveau, une règle, le blocage ne sont jamais à portée. Couper l'agent rend les valeurs du code : il ne retire
+//!   aucune détection, les règles du bilan ne dépendent pas de lui ;
+//! - **jamais sans accord** : une proposition ne fait rien ; l'agent n'a accès ni aux corrections ni au blocage ;
+//! - **rien ne sort** : ni réseau, ni commande, ni élévation ; les droits de la personne seulement ;
+//! - **jamais obéir à un texte** : aucune observation, aucun état, aucune ligne du journal ne porte de texte libre ;
+//! - **jamais d'attente** : le verrou déjà pris, un jeu en cours (GameMode) ou l'autotest en lecture seule, et le
+//!   tour est sauté ; un journal douteux aussi (l'agent n'agit pas sans pouvoir le noter).
+//!
+//! L'interrupteur de l'agent est celui de l'auto-réglage (Paramètres, « oui » par défaut) : « non » le coupe tout
+//! entier, « tout remettre » vide aussi la cache et remet ses états à zéro. Chaque mission se coupe aussi seule
+//! (`agent/agent.json`).
+
+mod budget;
+mod decision;
+pub(crate) mod etat;
+mod forme;
+pub(crate) mod journal;
+mod mission;
+
+use std::path::Path;
+
+pub(crate) use budget::{Arret, Budget};
+pub(crate) use decision::{Ajustement, Decision, Levier};
+pub(crate) use etat::Compteurs;
+pub(crate) use forme::{Genre, MissionId, Moment, RegleId};
+pub(crate) use mission::{Lecture, Mission};
+
+use crate::machine::regles::{DELAI, DELAI_LONG};
+
+/// Une mission vue par le tour, sans ses types : elle lit son état, observe, juge et écrit son état ; le tour fait le
+/// reste.
+pub(crate) trait Tourne: Send + Sync {
+    fn id(&self) -> MissionId;
+    fn genre(&self) -> Genre;
+    fn moments(&self) -> &'static [Moment];
+    /// Les décisions du tour, au plus ce que permet le budget ; `None` : mission sautée (état douteux, arrêt).
+    fn tourner(&self, lu: &Lecture<'_>) -> Option<Vec<Decision>>;
+}
+
+impl<M: Mission> Tourne for M {
+    fn id(&self) -> MissionId {
+        Mission::id(self)
+    }
+    fn genre(&self) -> Genre {
+        Mission::genre(self)
+    }
+    fn moments(&self) -> &'static [Moment] {
+        Mission::moments(self)
+    }
+    fn tourner(&self, lu: &Lecture<'_>) -> Option<Vec<Decision>> {
+        let nom = etat::nom_etat(Mission::id(self));
+        let etat = etat::lire_dans::<M::Etat>(lu.dossier, nom).utilisable()?;
+        let mut b = self.budget();
+        let obs = self.observer(lu, &mut b).ok()?;
+        b.temps().ok()?;
+        let (mut decisions, nouvel) = self.juger(&obs, &etat);
+        let nouvel = etat::Borne::borne(nouvel);
+        if nouvel != etat {
+            let _ = etat::ecrire_dans(lu.dossier, nom, &nouvel);
+        }
+        decisions.truncate(usize::from(b.decisions()));
+        Some(decisions)
+    }
+}
+
+/// Les missions, dans l'ordre de `MissionId::TOUTES`.
+fn missions() -> [&'static dyn Tourne; 0] {
+    []
+}
+
+/// Pourquoi un tour n'a pas eu lieu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Saut {
+    /// Aucune mission n'écoute ce moment.
+    PersonneNEcoute,
+    /// L'autotest tourne en lecture seule.
+    LectureSeule,
+    /// Un jeu tourne (GameMode) : rien ne doit le ralentir.
+    EnJeu,
+    /// Un autre tour tient le verrou : jamais d'attente.
+    Occupe,
+    /// Le journal est douteux ou rompu : l'agent n'agit pas sans pouvoir noter.
+    JournalDouteux,
+}
+
+/// Ce qu'a fait un tour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Tour {
+    Saute(Saut),
+    /// L'interrupteur de l'agent est à « non ».
+    Coupe,
+    Fait {
+        appliquees: usize,
+        montrees: usize,
+        refusees: usize,
+    },
+}
+
+/// Ce qu'un tour sait de son environnement.
+pub(crate) struct Contexte<'a> {
+    pub lecture: Lecture<'a>,
+    /// Secondes depuis 1970.
+    pub quand: i64,
+    pub en_jeu: bool,
+    /// L'interrupteur de l'agent (celui de l'auto-réglage) : `None` quand son fichier est douteux.
+    pub en_marche: Option<bool>,
+}
+
+/// Applique des ajustements déjà vérifiés ; rend ceux qui l'ont été vraiment.
+pub(crate) type Appliquer<'f> = &'f dyn Fn(&Lecture<'_>, &[(MissionId, Ajustement)]) -> Vec<(MissionId, Ajustement)>;
+
+/// L'empreinte d'une ligne du journal : BLAKE3, à clé dérivée propre (elle ne vaut pour aucun autre usage).
+fn empreinte(o: &[u8]) -> [u8; 32] {
+    let mut h = blake3::Hasher::new_derive_key("vanguard agent journal 1");
+    h.update(o);
+    *h.finalize().as_bytes()
+}
+
+/// Le sens sûr d'un levier, et lui seul : un délai qui monte de `DELAI` (celui du code) à `DELAI_LONG`, une durée de
+/// cache qui descend d'un pas sans passer sous le plancher, pour une règle de `autotest::cache::TABLE`.
+pub(crate) fn sens_sur(lu: &Lecture<'_>, l: &Levier) -> bool {
+    match *l {
+        Levier::Delai {
+            regle,
+            avant_s,
+            apres_s,
+        } => {
+            avant_s == DELAI.as_secs()
+                && apres_s == DELAI_LONG.as_secs()
+                && apres_s >= DELAI.as_secs()
+                && (lu.delai_du_code)(regle.texte()) == Some(DELAI)
+        }
+        Levier::Cache {
+            regle,
+            avant_min,
+            apres_min,
+        } => crate::autotest::cache::en_cache(regle.texte()).is_some_and(|t| {
+            t.plancher_min <= apres_min
+                && apres_min < avant_min
+                && avant_min <= t.duree_min
+                && avant_min - apres_min == crate::autotest::cache::PAS_MIN
+        }),
+    }
+}
+
+/// La décision est-elle permise à cette mission : de son genre, d'un levier à elle, dans le sens sûr.
+fn verifiee(lu: &Lecture<'_>, m: &dyn Tourne, d: &Decision) -> bool {
+    decision::permise(m.genre(), d)
+        && match d {
+            Decision::Ajuster(a) => decision::levier_de(m.id(), &a.levier) && sens_sur(lu, &a.levier),
+            Decision::Proposer(_) | Decision::Signaler(_) => true,
+        }
+}
+
+/// Un tour : voir le commentaire du module.
+pub(crate) fn tic_dans(ctx: &Contexte<'_>, moment: Moment, missions: &[&dyn Tourne], appliquer: Appliquer<'_>) -> Tour {
+    let ecoutent: Vec<&dyn Tourne> = missions
+        .iter()
+        .copied()
+        .filter(|m| m.moments().contains(&moment))
+        .collect();
+    if ecoutent.is_empty() {
+        return Tour::Saute(Saut::PersonneNEcoute);
+    }
+    if crate::autotest::lecture_seule::active() {
+        return Tour::Saute(Saut::LectureSeule);
+    }
+    if ctx.en_jeu {
+        return Tour::Saute(Saut::EnJeu);
+    }
+    if ctx.en_marche == Some(false) {
+        return Tour::Coupe;
+    }
+    let lu = &ctx.lecture;
+    let Ok(_verrou) = crate::socle::Verrou::prendre(lu.dossier, "agent.lock", false, std::time::Duration::ZERO) else {
+        return Tour::Saute(Saut::Occupe);
+    };
+    let entrees = match crate::sceau::juge_dans(lu.dossier, journal::JOURNAL) {
+        crate::sceau::Juge::Absent => Vec::new(),
+        crate::sceau::Juge::Cru(o) => {
+            let j = journal::lire_de(&o, empreinte);
+            if !j.intact() {
+                return Tour::Saute(Saut::JournalDouteux);
+            }
+            j.entrees
+        }
+        _ => return Tour::Saute(Saut::JournalDouteux),
+    };
+    let interrupteurs = etat::lire_dans::<etat::Interrupteurs>(lu.dossier, etat::AGENT).utilisable();
+    let mut faits = Vec::new();
+    let mut ajustements = Vec::new();
+    let (mut montrees, mut refusees) = (0, 0);
+    for m in ecoutent {
+        let en_marche = match &interrupteurs {
+            Some(i) => !i.coupees.contains(&m.id()),
+            // Douteux : seule une détection (qui ne fait qu'ajouter) continue.
+            None => m.genre() == Genre::Detection,
+        };
+        // Un réglage demande l'interrupteur de l'agent lisible et à « oui ».
+        if !en_marche || (m.genre() == Genre::Reglage && ctx.en_marche != Some(true)) {
+            continue;
+        }
+        for d in m.tourner(lu).unwrap_or_default() {
+            if !verifiee(lu, m, &d) {
+                refusees += 1;
+                faits.push(journal::Fait::Refus {
+                    mission: m.id(),
+                    decision: d,
+                });
+            } else if let Decision::Ajuster(a) = d {
+                ajustements.push((m.id(), a));
+            } else {
+                montrees += 1;
+                faits.push(journal::Fait::Decision {
+                    mission: m.id(),
+                    decision: d,
+                });
+            }
+        }
+    }
+    let appliquees = if ajustements.is_empty() {
+        Vec::new()
+    } else {
+        appliquer(lu, &ajustements)
+    };
+    // Rien n'est noté comme appliqué qui n'ait été demandé et vérifié.
+    let appliquees: Vec<_> = appliquees.into_iter().filter(|a| ajustements.contains(a)).collect();
+    faits.extend(appliquees.iter().map(|(mission, a)| journal::Fait::Decision {
+        mission: *mission,
+        decision: Decision::Ajuster(*a),
+    }));
+    if !faits.is_empty() {
+        let o = journal::ajouter(entrees, &faits, ctx.quand, empreinte);
+        let _ = crate::sceau::ecrire_dans(lu.dossier, journal::JOURNAL, &o);
+    }
+    Tour::Fait {
+        appliquees: appliquees.len(),
+        montrees,
+        refusees,
+    }
+}
+
+/// Un tour de l'agent, au moment `moment`, sur cet ordinateur. Jamais d'attente : voir `tic_dans`.
+pub(crate) fn tic(moment: Moment) {
+    let missions = missions();
+    if !missions.iter().any(|m| m.moments().contains(&moment)) {
+        return;
+    }
+    let dossier = crate::socle::dossier_local();
+    let mesures = crate::autotest::mesures::lues();
+    let delai_du_code = |id: &str| {
+        crate::machine::regles::regles(crate::machine::regles::Os::actuel())
+            .into_iter()
+            .find(|r| r.id == id)
+            .map(crate::machine::regles::Regle::delai)
+    };
+    let ctx = Contexte {
+        lecture: Lecture {
+            dossier: &dossier,
+            aujourd_hui: chrono::Local::now().date_naive(),
+            mesures: &mesures,
+            delai_du_code: &delai_du_code,
+        },
+        quand: chrono::Utc::now().timestamp(),
+        en_jeu: en_jeu(),
+        en_marche: crate::autotest::reglage::en_marche_dans(&dossier),
+    };
+    let _ = tic_dans(&ctx, moment, &missions, &appliquer);
+}
+
+/// Les ajustements appliqués par les fonctions des leviers.
+fn appliquer(_lu: &Lecture<'_>, _a: &[(MissionId, Ajustement)]) -> Vec<(MissionId, Ajustement)> {
+    Vec::new()
+}
+
+/// Un jeu tourne-t-il (GameMode, sous Linux) ? Ailleurs, rien ne le dit : non.
+fn en_jeu() -> bool {
+    #[cfg(all(target_os = "linux", not(test)))]
+    {
+        crate::machine::linux::dbus::gamemode_actif() == Some(true)
+    }
+    #[cfg(not(all(target_os = "linux", not(test))))]
+    {
+        false
+    }
+}
+
+/// « Tout remettre » (Paramètres) : les états des missions et leurs interrupteurs reviennent à l'origine, et c'est
+/// noté au journal (s'il tient : un journal douteux reste, pour que le bilan le montre).
+pub(crate) fn tout_remettre_dans(dossier: &Path, quand: i64) -> std::io::Result<()> {
+    for id in MissionId::TOUTES {
+        etat::ecrire_dans(dossier, etat::nom_etat(id), &Compteurs::default())?;
+    }
+    etat::ecrire_dans(dossier, etat::AGENT, &etat::Interrupteurs::default())?;
+    let entrees = match crate::sceau::juge_dans(dossier, journal::JOURNAL) {
+        crate::sceau::Juge::Absent => Vec::new(),
+        crate::sceau::Juge::Cru(o) => {
+            let j = journal::lire_de(&o, empreinte);
+            if !j.intact() {
+                return Ok(());
+            }
+            j.entrees
+        }
+        _ => return Ok(()),
+    };
+    let o = journal::ajouter(entrees, &[journal::Fait::ToutRemis], quand, empreinte);
+    crate::sceau::ecrire_dans(dossier, journal::JOURNAL, &o)
+}
+
+#[cfg(test)]
+mod tests;

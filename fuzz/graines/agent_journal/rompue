@@ -1,0 +1,2 @@
+{"quand":1800000000,"fait":{"decision":{"mission":"reglage","decision":{"ajuster":{"levier":{"delai":{"regle":"LNX-NOY-001","avant_s":600,"apres_s":1800}},"mesure":400001}}}},"precedent":null,"empreinte":"4459dcfbcbc7f16808893f91c652c53a11da77fd43d64b99e23391f44a21d33e"}
+{"quand":1800000000,"fait":"tout-remis","precedent":"4459dcfbcbc7f16808893f91c652c53a11da77fd43d64b99e23391f44a21d33e","empreinte":"ad5adde312d2d52b412143956ae664180583eb9030e8f0176982bc551b7e51e2"}

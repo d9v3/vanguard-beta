@@ -227,6 +227,17 @@ fn lire_dans(dossier: &Path) -> Lu {
     }
 }
 
+/// L'interrupteur de l'auto-réglage, qui est aussi celui de l'Agent Vanguard (`agent`) : « oui » tant que rien n'est
+/// écrit ; `None` quand le fichier est douteux (rien n'en est cru, l'agent ne règle rien).
+#[allow(dead_code)] // lue par `agent::tic`, branché au lot G2
+pub(crate) fn en_marche_dans(dossier: &Path) -> Option<bool> {
+    match lire_dans(dossier) {
+        Lu::Absent => Some(true),
+        Lu::Cru(e) => Some(!e.coupe),
+        Lu::Douteux => None,
+    }
+}
+
 impl Lu {
     pub(crate) fn delais_longs(&self) -> BTreeSet<String> {
         match self {

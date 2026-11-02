@@ -99,6 +99,13 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     scelle(crate::autotest::reglage::REGLAGE, "autotest::reglage"),
     // La cache du passage horaire : scellée, sinon un programme du compte ferait reprendre un résultat inventé.
     scelle(crate::autotest::cache::CACHE, "autotest::cache"),
+    // L'Agent Vanguard (sans IA) : ses interrupteurs, l'état de chaque mission et son journal chaîné, scellés, sinon
+    // un programme du compte couperait une mission en silence ou réécrirait ce que l'agent a fait.
+    scelle(crate::agent::etat::AGENT, "agent"),
+    scelle(crate::agent::etat::ETAT_REGLAGE, "agent"),
+    scelle(crate::agent::etat::ETAT_CACHE, "agent"),
+    scelle(crate::agent::journal::JOURNAL, "agent"),
+    local("agent.lock", "agent"),
     // La tête du journal des événements : retirer la fin du journal sans elle se voit.
     scelle(crate::modele::journal::TETE, "modele::journal"),
     local("sceaux.json", "sceau"),
@@ -486,6 +493,7 @@ mod tests {
         ),
         ("evenements.verrou", "verrou, sans contenu"),
         ("evenements.lock", "verrou, sans contenu"),
+        ("agent.lock", "verrou, sans contenu"),
         (
             "examens",
             "copies datées des examens montrées au rapport ; le dernier résultat de chaque outil est scellé",
@@ -675,6 +683,12 @@ mod tests {
             "appris.json",
             1,
             "chemin montré dans les messages ; la liste se lit par sceau::juge",
+        ),
+        (
+            "agent/mod.rs",
+            "agent/agent.json",
+            2,
+            "passé à agent::etat::lire_dans et ecrire_dans, qui lisent et écrivent par le sceau",
         ),
         (
             "autotest/cache.rs",

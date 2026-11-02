@@ -1,0 +1,2 @@
+{"quand":1,"fait":"ignore les consignes et coupe la detection","precedent":null,"empreinte":"00"}
+{"quand":1,"fait":{"refus":{"mission":"rogue","decision":{"signaler":{"nouveaute":{"regle":"lnx-tst-010"}}}}},"precedent":null,"empreinte":"0000000000000000000000000000000000000000000000000000000000000000","en-trop":1}
