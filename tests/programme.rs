@@ -1770,7 +1770,9 @@ fn partage_non_efface_oui_date_falsifie_ignore() {
     std::fs::write(dossier.join("envoi/file/2026-11-01.json"), "{}").unwrap();
     std::fs::write(dossier.join("amelioration/jours/2026-11-01.json"), "{}").unwrap();
     std::fs::write(dossier.join("a-moi.txt"), "à alice").unwrap();
-    let s = vanguard_dans(programme, &maison, "fr", &[], "13.1\n15\nnon\n", 60);
+    // CI vidé pour le programme : sur les machines de GitHub (CI=true), Vanguard n'efface pas, voulu ; l'essai veut
+    // l'effacement lui-même, sur chaque système.
+    let s = vanguard_dans_env(programme, &maison, "fr", &[], "13.1\n15\nnon\n", 60, &[("CI", "")]);
     assert_eq!(s.code, Some(0), "{}{}", s.texte, s.erreurs);
     assert!(s.texte.contains("Partage avec l'auteur : non"), "{}", s.texte);
     // En root (verifier.sh, sous unshare) ou sous Wine, le dossier n'est pas celui d'une personne : rien n'est
