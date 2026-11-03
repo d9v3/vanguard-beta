@@ -67,6 +67,10 @@ impl Action {
                 "Des blocages supplémentaires de Defender, appliqués après accord et annulables ; proposés seulement si Defender est l'antivirus actif.",
                 "Extra Defender blocking, applied with your consent and undoable; offered only if Defender is the active antivirus."
             ),
+            Action::OptionsDefense => tr!(
+                "Ce que Defender, ses règles ASR et le Pare-feu Windows appliquent vraiment, ce qu'une stratégie impose, la protection contre les falsifications et un antivirus tiers. Lecture seule.",
+                "What Defender, its ASR rules and Windows Firewall really apply, what a policy enforces, tamper protection and a third-party antivirus. Read-only."
+            ),
             Action::Appareils => tr!(
                 "Trouve les appareils branchés à votre réseau et leurs ports ouverts : tout le réseau d'un coup, ou un seul appareil en profondeur.",
                 "Finds the devices on your network and their open ports: the whole network at once, or one device in depth."

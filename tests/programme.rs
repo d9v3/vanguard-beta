@@ -351,6 +351,40 @@ fn durcir_hors_de_windows() {
     }
 }
 
+/// Options de défense : en lecture seule partout. Hors de Windows, l'écran dit « Windows seulement » et le JSON se
+/// ferme sans rien lire ; sous Windows (Wine compris), il ne plante pas et ne porte aucun texte du système.
+#[test]
+fn options_defense_en_lecture_seule() {
+    let aide = vanguard("en", &["options-defense", "--help"], "", 30);
+    assert!(
+        sans_couleurs(&aide.texte).contains("Windows defense options, read-only"),
+        "{}",
+        aide.texte
+    );
+    for (langue, titre, seulement) in [
+        ("fr", "Options de défense", "Windows seulement"),
+        ("en", "Defense options", "Windows only"),
+    ] {
+        let r = vanguard(langue, &["options-defense"], "", 60);
+        assert_eq!(r.code, Some(0), "{}", r.erreurs);
+        assert!(!r.erreurs.contains("panicked"), "{}", r.erreurs);
+        let t = sans_couleurs(&r.texte);
+        assert!(t.contains(titre), "{t}");
+        if !cfg!(windows) {
+            assert!(t.contains(seulement), "{t}");
+        }
+    }
+    let r = vanguard("fr", &["options-defense", "--json"], "", 60);
+    assert_eq!(r.code, Some(0), "{}", r.erreurs);
+    let v: serde_json::Value = serde_json::from_str(&r.texte).expect("JSON");
+    assert_eq!(v["version"], 1);
+    assert_eq!(v["lecture_seule"], true);
+    assert_eq!(v["disponible"], cfg!(windows));
+    if !cfg!(windows) {
+        assert_eq!(v["raison"], "windows-seulement");
+    }
+}
+
 #[test]
 fn commande_inconnue_refusee() {
     let s = vanguard("fr", &["nimportequoi"], "", 30);

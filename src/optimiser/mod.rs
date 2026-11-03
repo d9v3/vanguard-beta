@@ -694,6 +694,10 @@ pub fn protection() {
             2,
             "",
         );
+        trp!(
+            "  {GRIS}Ce qui protège à sa place : vanguard options-defense (4.11).{RESET}",
+            "  {GRIS}What protects in its place: vanguard options-defense (4.11).{RESET}"
+        );
         return;
     }
     menu(Categorie::Protection);

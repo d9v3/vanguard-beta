@@ -25,6 +25,7 @@ pub(crate) mod corrections;
 mod croisees;
 mod defender;
 mod defender_ecriture;
+pub(crate) mod defense_etat;
 mod demarrage_ecriture;
 mod durcissement;
 pub(crate) mod ecoute;

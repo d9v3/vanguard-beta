@@ -62,6 +62,9 @@ mod mise_a_jour;
 mod modele;
 mod nettoyer;
 mod optimiser;
+// Le modèle ne sert qu'à l'écran de Windows ; ailleurs, seuls ses essais le lisent (sur tous les systèmes).
+#[cfg_attr(not(windows), allow(dead_code))]
+mod options_defense;
 mod ordinateurs;
 mod parametres;
 mod passage;
@@ -465,6 +468,15 @@ enum Commande {
     #[command(name = "logiciels-perimes", visible_alias = "outdated-software")]
     LogicielsPerimes {
         /// Le résultat en JSON, pour un script.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Options de défense de Windows, en lecture seule : Microsoft Defender (mode, temps réel, cloud, protection
+    /// contre les falsifications), règles ASR, Pare-feu Windows par profil, stratégies (GPO, Intune) qui imposent une
+    /// valeur, antivirus tiers, PC géré. Rien n'est changé.
+    #[command(name = "options-defense", visible_alias = "defense-options")]
+    OptionsDefense {
+        /// Le résultat en JSON, pour un script (sans chemin, nom de compte ni nom de machine).
         #[arg(long)]
         json: bool,
     },
@@ -1587,6 +1599,7 @@ const COMMANDES_EN_LECTURE: &[&str] = &[
     "secrets",
     "conteneurs",
     "logiciels-perimes",
+    "options-defense",
     "appareils",
     "audit-reseau",
     "objets-connectes",
@@ -1841,6 +1854,7 @@ enum Action {
     Conteneurs,
     LogicielsPerimes,
     Protection,
+    OptionsDefense,
     Appareils,
     Scanner,
     Appareil,
@@ -2001,6 +2015,11 @@ const OUTILS: &[Outil] = &[
         titre: ["Blocages de Windows Defender", "Windows Defender blocking"],
         precision: ["ASR, réseau, dossiers contrôlés", "ASR, network, folders"],
         mots: "defender asr bloquer block exploit dossiers contrôlés controlled folder pua" },
+    Outil { action: Action::OptionsDefense, commande: "options-defense", groupe: Some(Groupe::Ordinateur), lettre: "",
+        titre: ["Options de défense", "Defense options"],
+        precision: ["Defender, règles ASR, pare-feu", "Defender, ASR rules, firewall"],
+        mots: "defender asr pare-feu firewall falsifications tamper gpo intune stratégie policy antivirus \
+               temps réel real-time cloud options défense defense lecture read" },
     // 5 Réseau et Internet.
     Outil { action: Action::Appareils, commande: "appareils", groupe: Some(Groupe::Reseau), lettre: "",
         titre: ["Appareils du réseau", "Devices on the network"],
@@ -2439,6 +2458,8 @@ impl Action {
             Action::OptimiserConfort => reglages_disponibles(optimiser::Categorie::Confort),
             // Lire l'état de Defender lance PowerShell : vérifié seulement à l'ouverture (`optimiser::protection`).
             Action::Protection => cfg!(windows),
+            // Lecture de Defender, du pare-feu et du registre de Windows : rien à lire ailleurs.
+            Action::OptionsDefense => cfg!(windows),
             // Deux flux du noyau Linux : ailleurs, la ligne ne serait que du bruit.
             Action::Veilleur => cfg!(target_os = "linux"),
             // Sous Linux, le gestionnaire de paquets et le catalogue de la CISA (bilan, Failles connues) s'en chargent.
@@ -2829,6 +2850,7 @@ async fn executer_outil(s: &mut Session, action: Action) {
         Action::OptimiserPerformance => optimiser::menu(optimiser::Categorie::Performance),
         Action::OptimiserConfort => optimiser::menu(optimiser::Categorie::Confort),
         Action::Protection => optimiser::protection(),
+        Action::OptionsDefense => options_defense::afficher(),
         Action::DnsRapide => dns_rapide::mesurer_et_proposer(),
         Action::OptimiserAnnuler => optimiser::tout_annuler(),
         Action::Sauvegarder => donnees::menu(),
@@ -3079,6 +3101,9 @@ const AIDES_EN: &[(&str, &str)] = &[
                            public files downloaded in full, nothing about this computer is sent), each product's \
                            exploited flaws in CISA's catalog, Firefox and Edge checked flaw by flaw (Mozilla \
                            advisories, Microsoft's list). Read-only"),
+    ("options-defense", "Windows defense options, read-only: Microsoft Defender (mode, real-time, cloud, tamper \
+                         protection), ASR rules, Windows Firewall per profile, policies (GPO, Intune) that enforce \
+                         a value, third-party antivirus, managed PC. Nothing is changed"),
     ("signaler", "Prepare a report for a vendor (MSRC, Google, Chrome, Mozilla, Apple, GHSA advisory, CERT/CC, \
                   CERT-FR, Vanguard): sorted first (a known flaw is fixed by an update, malware is not a flaw), a \
                   draft in the program's format, what is personal removed, written on this computer and shown in \
@@ -3215,6 +3240,7 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("evenements", "json", "The log as JSON, for a script"),
     ("logiciels-espions", "json", "The result as JSON, for a script"),
     ("logiciels-perimes", "json", "The result as JSON, for a script"),
+    ("options-defense", "json", "The result as JSON, for a script (no path, account name or computer name)"),
     ("signaler", "incident", "The identifier of a log event (vanguard events): its incident is used"),
     ("signaler", "outil", "The last examination of a tool (PRO-ESP-001, PRO-PER-001, PRO-COU-001)"),
     ("signaler", "programme", "The program: msrc, google, chrome, mozilla, apple, ghsa, cert-cc, cert-fr or vanguard"),
@@ -3772,6 +3798,8 @@ async fn main() {
         Some(Commande::LogicielsEspions { json: true }) => protection::espions::json(),
         Some(Commande::LogicielsPerimes { json: false }) => protection::perimes::afficher(),
         Some(Commande::LogicielsPerimes { json: true }) => protection::perimes::json(),
+        Some(Commande::OptionsDefense { json: false }) => options_defense::afficher(),
+        Some(Commande::OptionsDefense { json: true }) => options_defense::afficher_json(),
         Some(Commande::Signaler {
             incident,
             outil,
@@ -4142,6 +4170,7 @@ mod tests_menu {
         let propres = [
             Action::LogicielsPerimes,
             Action::Protection,
+            Action::OptionsDefense,
             Action::Veilleur,
             Action::OptimiserConfidentialite,
             Action::OptimiserConfort,
@@ -4178,6 +4207,10 @@ mod tests_menu {
         assert_eq!(
             touche_de(Action::LogicielsPerimes).as_deref(),
             cfg!(any(windows, target_os = "macos")).then_some("4.9")
+        );
+        assert_eq!(
+            touche_de(Action::OptionsDefense).as_deref(),
+            cfg!(windows).then_some("4.11")
         );
     }
 

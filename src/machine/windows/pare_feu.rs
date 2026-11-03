@@ -48,7 +48,7 @@ struct Voulue {
     port: Option<u16>,
 }
 
-fn politique() -> windows::core::Result<INetFwPolicy2> {
+pub(super) fn politique() -> windows::core::Result<INetFwPolicy2> {
     // SAFETY: COM est initialisé dans ce fil (`wmi::com_delai`) ; NetFwPolicy2 est la classe de la politique.
     unsafe { CoCreateInstance(&NetFwPolicy2, None, CLSCTX_INPROC_SERVER) }
 }

@@ -34,46 +34,9 @@ pub const ASR_BASE: [&str; 3] = crate::machine::gestes::ASR_BASE;
 /// Règles ASR contre les documents et pièces jointes piégés : Office, Outlook, Adobe Reader, courriel, scripts.
 pub const ASR_BUREAUTIQUE: [&str; 8] = crate::machine::gestes::ASR_BUREAUTIQUE;
 
-/// Ce que bloque une règle ASR, pour l'écran.
+/// Ce que bloque une règle ASR, pour l'écran (la table des 19 règles est celle des options de défense).
 pub(crate) fn nom_asr(id: &str) -> &'static str {
-    match id {
-        "56a863a9-875e-4185-98a7-b882c64b5ce5" => {
-            tr!("pilotes signés mais vulnérables", "vulnerable signed drivers")
-        }
-        "9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2" => {
-            tr!("vol de mots de passe dans LSASS", "credential theft from LSASS")
-        }
-        "e6db77e5-3df2-4cf1-b95a-636979351e5b" => tr!("persistance par WMI", "persistence through WMI"),
-        "d4f940ab-401b-4efc-aadc-ad5f3c50688a" => {
-            tr!("Office qui lance des programmes", "Office launching programs")
-        }
-        "3b576869-a4ec-4529-8536-b80a7769e899" => {
-            tr!("Office qui crée des exécutables", "Office creating executables")
-        }
-        "75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84" => tr!("Office qui injecte du code", "Office injecting code"),
-        "92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b" => {
-            tr!("macros Office qui appellent Win32", "Office macros calling Win32")
-        }
-        "26190899-1602-49e8-8b27-eb1d0a1ce869" => {
-            tr!("Outlook qui lance des programmes", "Outlook launching programs")
-        }
-        "7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c" => {
-            tr!(
-                "Adobe Reader qui lance des programmes",
-                "Adobe Reader launching programs"
-            )
-        }
-        "be9ba2d9-53ea-4cdc-84e5-9b1eeee46550" => {
-            tr!("exécutables reçus par courriel", "executables from email")
-        }
-        "d3e037e1-3eb8-44c8-a917-57927947596d" => {
-            tr!(
-                "scripts JS/VBS qui lancent un téléchargement",
-                "JS/VBS launching downloads"
-            )
-        }
-        _ => "?",
-    }
+    crate::options_defense::nom_asr(id).unwrap_or("?")
 }
 
 /// Ce que Defender applique, tel que Get-MpPreference le dit.
