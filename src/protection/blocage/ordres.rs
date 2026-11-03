@@ -695,14 +695,10 @@ pub(crate) fn powershell(o: &Ordre) -> Option<String> {
             pare_feu: PareFeu::Windows,
             port,
         } => ancien::entrante(PareFeu::Windows, *port)?.retirer.into_iter().next(),
-        Ordre::ArreterProcessus { pid, chemin } => {
-            let attendu = crate::commande::ps_texte(chemin);
-            Some(trf!(
-                "$p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if ($p -and $p.Path -eq '{attendu}') {{ Stop-Process -Id {pid} -Force }} else {{ throw 'PID {pid} réaffecté à un autre programme : rien n''est arrêté' }}",
-                "$p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if ($p -and $p.Path -eq '{attendu}') {{ Stop-Process -Id {pid} -Force }} else {{ throw 'PID {pid} reassigned to another program: nothing is stopped' }}"
-            ))
-        }
         Ordre::RemettrePilotes { avant } => super::gestes::annuler_pilotes(*avant).into_iter().next(),
+        // Sans équivalent, l'arrêt d'un processus compris : par script, il échapperait au dernier mot
+        // d'`arret::arreter` (sessions relues, ascendance, signature, juste avant l'arrêt) ; refusé plutôt que fait
+        // sans lui (défense D6a, relecture).
         _ => None,
     }
 }
@@ -978,12 +974,14 @@ mod tests {
         })
         .unwrap();
         assert!(ps.contains("-DisplayName 'Vanguard : bloquer vers 203.0.113.7' -Direction Outbound"));
-        let ps = powershell(&Ordre::ArreterProcessus {
-            pid: 4242,
-            chemin: r"C:\Users\alice\l'outil.exe".into(),
-        })
-        .unwrap();
-        assert!(ps.contains(r"$p.Path -eq 'C:\Users\alice\l''outil.exe'"), "{ps}");
+        // L'arrêt n'a pas d'équivalent : par script, il passerait à côté des gardes d'`arret::arreter`.
+        assert!(
+            powershell(&Ordre::ArreterProcessus {
+                pid: 4242,
+                chemin: r"C:\Users\alice\l'outil.exe".into(),
+            })
+            .is_none()
+        );
         assert!(
             powershell(&Ordre::CouperConnexions {
                 ip: "203.0.113.7".parse().unwrap()

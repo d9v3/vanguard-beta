@@ -302,11 +302,12 @@ fn preparer_programme(
             if let Some(raison) = gardes::lignee_de_session(pid, ctx.sessions.as_ref()) {
                 return Err(Echec::refuse("blocage/preparer", raison));
             }
-            // Un programme signé par Microsoft est traité comme du système (signature illisible : refusé aussi).
-            if let Some(raison) = gardes::signature_systeme(&actuel) {
+            let ici = arret_sans_droits(pid);
+            // Un programme signé par Microsoft est traité comme du système (signature illisible : refusé aussi, ici
+            // ou par Vanguard administrateur, qui la relit avec ses droits).
+            if let Some(raison) = gardes::signature_systeme_avant_remise(&actuel, ici) {
                 return Err(Echec::refuse("blocage/preparer", raison));
             }
-            let ici = arret_sans_droits(pid);
             if !ici {
                 // Un processus d'un autre compte : l'ordre part vers celui qui a les droits, qui le rejuge.
                 droits = !ctx.admin;

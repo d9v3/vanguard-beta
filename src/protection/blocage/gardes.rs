@@ -825,21 +825,46 @@ pub(crate) struct Fiche {
     pub creation: Option<u64>,
 }
 
-/// Pourquoi ce processus ne doit pas être arrêté parce qu'il descend d'un hôte de session à distance, ou `None`.
-/// `fiche` : le processus d'un numéro dans l'instantané (`None` : fini). Un parent n'est le vrai parent que s'il a été
-/// créé avant l'enfant : sinon son numéro a été repris par un autre, la chaîne est coupée, et pendant une session à
-/// distance (`aucune_session` faux : en cours ou illisible) ce qui ne se prouve pas hors d'elle n'est pas arrêté. Une
-/// heure illisible rend la lignée incertaine de même, mais la remontée continue : un hôte plus haut refuse toujours.
+/// `ascendance_selon`, lue comme sous Windows (un parent absent est fini), sans racine.
+#[cfg(test)]
 pub(crate) fn ascendance_de_session(
     pid: u32,
     fiche: impl Fn(u32) -> Option<Fiche>,
     aucune_session: bool,
 ) -> Option<&'static str> {
+    ascendance_selon(pid, fiche, aucune_session, Lecture::default())
+}
+
+/// Comment lire la lignée, selon le système et l'appelant.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Lecture {
+    /// Sous Unix, un orphelin est rattaché à init (ou à un « subreaper ») : un parent absent de la liste n'y est pas
+    /// fini, il est caché (/proc monté avec hidepid) ou illisible, et la lignée en devient incertaine. Seul init (1),
+    /// racine de tout, la finit sans se lire. Sous Windows, aucun rattachement : un parent fini manque, tout
+    /// simplement (défense D6a, relecture).
+    pub parent_absent_cache: bool,
+    /// Une lignée gelée (rançongiciel) : sa racine, jugée elle-même par le blocage, finit la lecture ; seul ce qui est
+    /// entre le membre et elle compte (un shell de session pris dans le même groupe en est hors).
+    pub racine: Option<u32>,
+}
+
+/// Pourquoi ce processus ne doit pas être arrêté parce qu'il descend d'un hôte de session à distance, ou `None`.
+/// `fiche` : le processus d'un numéro dans l'instantané (`None` : fini, ou caché selon `lecture`). Un parent n'est le
+/// vrai parent que s'il a été créé avant l'enfant : sinon son numéro a été repris par un autre, la chaîne est coupée,
+/// et pendant une session à distance (`aucune_session` faux : en cours ou illisible) ce qui ne se prouve pas hors
+/// d'elle n'est pas arrêté. Une heure illisible rend la lignée incertaine de même, mais la remontée continue : un hôte
+/// plus haut refuse toujours.
+pub(crate) fn ascendance_selon(
+    pid: u32,
+    fiche: impl Fn(u32) -> Option<Fiche>,
+    aucune_session: bool,
+    lecture: Lecture,
+) -> Option<&'static str> {
     let incertaine = || {
         (!aucune_session).then(|| {
             tr!(
-                "lignée du processus incertaine (numéro repris ou heure illisible) pendant une session à distance : rien n'est arrêté",
-                "process lineage uncertain (reused number or unreadable time) during a remote session: nothing is stopped"
+                "lignée du processus incertaine (numéro repris, parent ou heure illisible) pendant une session à distance : rien n'est arrêté",
+                "process lineage uncertain (reused number, unreadable parent or time) during a remote session: nothing is stopped"
             )
         })
     };
@@ -862,8 +887,14 @@ pub(crate) fn ascendance_de_session(
         if !vus.insert(p) {
             return incertaine();
         }
-        // Un parent fini : la lignée s'arrête là, aucun hôte vivant au-dessus par elle.
+        if lecture.racine == Some(p) {
+            return if douteuse { incertaine() } else { None };
+        }
         let Some(parent) = fiche(p) else {
+            if lecture.parent_absent_cache && p != 1 {
+                return incertaine();
+            }
+            // Un parent fini : la lignée s'arrête là, aucun hôte vivant au-dessus par elle.
             return if douteuse { incertaine() } else { None };
         };
         // Même un parent douteux qui porte le nom d'un hôte refuse : la prudence ne coûte qu'un arrêt.
@@ -906,7 +937,21 @@ fn fiche_du_stat(stat: &str) -> Option<Fiche> {
 /// La garde d'ascendance, lue sur ce système : un instantané des processus (Toolhelp32 et GetProcessTimes sous
 /// Windows, `/proc` sous Linux, proc_pidinfo sous macOS).
 pub(crate) fn lignee_de_session(pid: u32, sessions: Option<&Sessions>) -> Option<&'static str> {
+    lignee_lue(pid, sessions, None)
+}
+
+/// La garde d'ascendance d'un membre d'une lignée gelée, lue jusqu'à sa `racine` seulement (voir `Lecture`).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn lignee_de_session_sous(pid: u32, racine: u32, sessions: Option<&Sessions>) -> Option<&'static str> {
+    lignee_lue(pid, sessions, Some(racine))
+}
+
+fn lignee_lue(pid: u32, sessions: Option<&Sessions>, racine: Option<u32>) -> Option<&'static str> {
     let aucune = aucune_session(sessions);
+    let lecture = Lecture {
+        parent_absent_cache: cfg!(unix),
+        racine,
+    };
     #[cfg(windows)]
     {
         use crate::machine::windows::processus;
@@ -914,7 +959,7 @@ pub(crate) fn lignee_de_session(pid: u32, sessions: Option<&Sessions>) -> Option
             .into_iter()
             .map(|p| (p.pid, (p.parent, p.nom)))
             .collect();
-        ascendance_de_session(
+        ascendance_selon(
             pid,
             |p| {
                 let (parent, nom) = instantane.get(&p)?.clone();
@@ -925,19 +970,21 @@ pub(crate) fn lignee_de_session(pid: u32, sessions: Option<&Sessions>) -> Option
                 })
             },
             aucune,
+            lecture,
         )
     }
     #[cfg(target_os = "linux")]
     {
-        ascendance_de_session(
+        ascendance_selon(
             pid,
             |p| fiche_du_stat(&std::fs::read_to_string(format!("/proc/{p}/stat")).ok()?),
             aucune,
+            lecture,
         )
     }
     #[cfg(target_os = "macos")]
     {
-        ascendance_de_session(
+        ascendance_selon(
             pid,
             |p| {
                 let i = super::arret::macos::infos(p)?;
@@ -958,6 +1005,7 @@ pub(crate) fn lignee_de_session(pid: u32, sessions: Option<&Sessions>) -> Option
                 })
             },
             aucune,
+            lecture,
         )
     }
 }
@@ -997,6 +1045,14 @@ pub(crate) fn sujet_microsoft(sujet: &str) -> bool {
     sujet.to_lowercase().contains("microsoft")
 }
 
+/// Un signataire vérifié est-il Microsoft ? Son sujet ET la racine de sa chaîne : un sujet se forge (une autorité
+/// faite maison, posée dans le magasin Root du compte sans droits ni invite, signe « CN=Microsoft Windows »), une
+/// racine de Microsoft non (`racine_microsoft` : CERT_CHAIN_POLICY_MICROSOFT_ROOT, défense D6a, relecture).
+#[cfg(any(windows, test))]
+pub(crate) fn signe_par_microsoft(sujet: &str, racine_microsoft: bool) -> bool {
+    racine_microsoft && sujet_microsoft(sujet)
+}
+
 /// Un code rendu par WinVerifyTrust dit-il que le fichier ne s'est pas LU (et non qu'il n'est pas signé, ou mal) ?
 /// CRYPT_E_FILE_ERROR, et toute erreur de Windows (HRESULT de la famille 7 : accès refusé, partage, mémoire…).
 #[cfg(any(windows, test))]
@@ -1027,6 +1083,34 @@ pub(crate) fn signature_systeme(chemin: &str) -> Option<&'static str> {
     #[cfg(not(windows))]
     {
         let _ = chemin;
+        None
+    }
+}
+
+/// La garde de signature avant de remettre un arrêt à Vanguard administrateur (défense D6a, relecture). Le compte
+/// de ce Vanguard-ci ne lit souvent pas le programme d'un autre compte : illisible n'y refuse que l'arrêt fait ICI
+/// (`ici`). Remis, l'ordre est rejugé avec les droits (`ordres::juger`, puis `arret::arreter`), où illisible
+/// refuse ; signé Microsoft refuse partout.
+#[cfg(any(windows, test))]
+pub(crate) fn signature_avant_remise(s: Signature, ici: bool) -> Option<&'static str> {
+    if s == Signature::Illisible && !ici {
+        return None;
+    }
+    signature_intouchable(s)
+}
+
+/// `signature_avant_remise`, lue sur ce système.
+pub(crate) fn signature_systeme_avant_remise(chemin: &str, ici: bool) -> Option<&'static str> {
+    #[cfg(windows)]
+    {
+        signature_avant_remise(
+            crate::machine::windows::signature::lire(std::path::Path::new(chemin)),
+            ici,
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (chemin, ici);
         None
     }
 }
@@ -1171,6 +1255,74 @@ mod tests {
         assert!(destination_de_quarantaine(&q, profil, absent, false).is_some());
         let refuse = |_: &Path| -> std::io::Result<bool> { Err(std::io::ErrorKind::PermissionDenied.into()) };
         assert!(destination_de_quarantaine(&q, profil, refuse, true).is_some());
+    }
+
+    /// Relecture de D6a : un sujet « Microsoft » ne suffit pas, il faut une racine de Microsoft au bout de la chaîne
+    /// (une autorité faite maison, posée dans le magasin du compte, se vérifie, mais n'en est pas une).
+    #[test]
+    fn signature_microsoft_par_sa_racine() {
+        let sujet = "C=US, S=Washington, L=Redmond, O=Microsoft Corporation, CN=Microsoft Windows";
+        assert!(signe_par_microsoft(sujet, true));
+        assert!(!signe_par_microsoft(sujet, false));
+        assert!(!signe_par_microsoft(
+            "C=US, O=Mozilla Corporation, CN=Mozilla Corporation",
+            true
+        ));
+    }
+
+    /// Relecture de D6a : avant de remettre un arrêt à Vanguard administrateur, une signature illisible ici ne refuse
+    /// pas (l'administrateur la relit avec ses droits et refuse s'il ne la lit pas non plus) ; arrêté ici, elle refuse.
+    /// Microsoft refuse toujours, Autre jamais.
+    #[test]
+    fn signature_illisible_rejugee_par_l_administrateur() {
+        assert_eq!(signature_avant_remise(Signature::Illisible, false), None);
+        assert!(signature_avant_remise(Signature::Illisible, true).is_some());
+        for ici in [false, true] {
+            assert!(signature_avant_remise(Signature::Microsoft, ici).is_some());
+            assert_eq!(signature_avant_remise(Signature::Autre, ici), None);
+        }
+    }
+
+    /// Relecture de D6a : sous Unix (orphelins rattachés à init), un parent absent est caché (hidepid) ou illisible,
+    /// pas fini : pendant une session, la lignée est incertaine et rien n'est arrêté. init (1) illisible finit la
+    /// lignée. Sous Windows, un parent absent est fini.
+    #[test]
+    fn parent_cache_pendant_une_session() {
+        // bash (900) sous sshd-session (850), que ce compte ne voit pas.
+        let v = [(900, 850, "bash", Some(30))];
+        let unix = Lecture {
+            parent_absent_cache: true,
+            racine: None,
+        };
+        assert!(ascendance_selon(900, instantane(&v), false, unix).is_some());
+        assert_eq!(ascendance_selon(900, instantane(&v), true, unix), None);
+        assert_eq!(ascendance_selon(900, instantane(&v), false, Lecture::default()), None);
+        // Sous init caché (systemd --user, rattaché à 1) : la lignée finit là.
+        let w = [(900, 1, "systemd", Some(30))];
+        assert_eq!(ascendance_selon(900, instantane(&w), false, unix), None);
+    }
+
+    /// Relecture de D6a : un membre d'une lignée gelée est lu jusqu'à sa racine seulement. Ce qu'elle a lancé n'est pas
+    /// une session (même si elle en descend : elle est jugée elle-même) ; un shell de session pris dans son groupe
+    /// sans descendre d'elle reste intouché.
+    #[test]
+    fn membre_gele_lu_jusqu_a_sa_racine() {
+        let v = [
+            (1, 0, "systemd", Some(1)),
+            (10, 1, "sshd", Some(2)),
+            (20, 10, "sshd-session", Some(3)),
+            (30, 20, "bash", Some(4)),
+            (40, 30, "chiffreur", Some(5)),
+            (50, 40, "enfant", Some(6)),
+        ];
+        let sous = |racine| Lecture {
+            parent_absent_cache: true,
+            racine: Some(racine),
+        };
+        assert_eq!(ascendance_selon(50, instantane(&v), false, sous(40)), None);
+        assert!(ascendance_selon(30, instantane(&v), false, sous(40)).is_some());
+        // Sans racine, le même enfant descend de la session.
+        assert!(ascendance_selon(50, instantane(&v), false, Lecture::default()).is_some());
     }
 
     /// Un instantané d'essai : (pid, parent, nom, création).

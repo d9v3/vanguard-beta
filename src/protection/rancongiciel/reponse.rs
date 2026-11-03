@@ -69,6 +69,14 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
     processus::geler(cible.racine);
     geles.insert(cible.racine);
 
+    // Un membre pris dans la lignée (le même groupe de processus) sans descendre de la racine, sous un hôte de session
+    // à distance (SSH, xrdp), n'est ni gelé ni tué : ce serait figer ou couper cette session (défense D6a, relecture).
+    // Lu jusqu'à la racine seulement : ce qu'elle a lancé est à elle, et elle passe elle-même par le blocage.
+    let sessions = blocage::gardes::sessions_a_distance();
+    let hors_session = |pid: u32, sessions: Option<&blocage::gardes::Sessions>| {
+        blocage::gardes::lignee_de_session_sous(pid, cible.racine, sessions).is_none()
+    };
+
     // Passes : liste + gel, jusqu'à deux passes de suite sans nouveau membre (au plus cinq).
     let mut sans_nouveau = 0;
     for _ in 0..PASSES_MAX {
@@ -78,7 +86,10 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
                 continue;
             }
             let c = chemin.as_ref().map(|c| c.to_string_lossy().into_owned());
-            if blocage::processus_gelable(pid, &nom, c.as_deref(), &intouchables).is_none() && processus::geler(pid) {
+            if blocage::processus_gelable(pid, &nom, c.as_deref(), &intouchables).is_none()
+                && hors_session(pid, sessions.as_ref())
+                && processus::geler(pid)
+            {
                 geles.insert(pid);
                 nouveau = true;
             }
@@ -110,8 +121,11 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
             // La racine arrêtée, tuer le reste de la lignée gelée (le chiffrement était déjà figé).
             // Seulement ce qui est encore gelé : un numéro libéré entre-temps a pu être repris par un autre
             // programme, qui n'a pas à être tué (comme « Reprendre » ne dégèle que ce qui l'est encore).
+            // Les sessions relues, comme avant tout arrêt : une ouverte depuis le gel compte.
+            let sessions = blocage::gardes::sessions_a_distance();
             for &pid in &geles {
-                if pid != cible.racine && processus::est_gele(pid) == Some(true) {
+                if pid != cible.racine && processus::est_gele(pid) == Some(true) && hors_session(pid, sessions.as_ref())
+                {
                     tuer(pid);
                 }
             }

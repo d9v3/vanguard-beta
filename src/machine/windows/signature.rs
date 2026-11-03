@@ -2,9 +2,12 @@
 //! intégrée à sa table des certificats, vérifiée par WinVerifyTrust, avec le sujet de son signataire. Elle ne sert
 //! qu'à REFUSER un geste (défense D6a) : un fichier signé Microsoft est traité comme du système. Une signature qui ne
 //! se vérifie pas (un certificat fait maison au nom de « Microsoft ») n'en est pas une : sinon n'importe quel
-//! programme se rendrait intouchable en se signant lui-même.
+//! programme se rendrait intouchable en se signant lui-même. Une qui se vérifie ne suffit pas non plus : la racine
+//! de sa chaîne doit être une des racines de Microsoft (CERT_CHAIN_POLICY_MICROSOFT_ROOT), car WinVerifyTrust admet
+//! aussi les racines du magasin du compte, qu'un programme sans droits y ajoute par le registre, sans invite.
 
-// FFI de wintrust et crypt32 : WinVerifyTrust, catalogues (CryptCATAdmin*), sujet du certificat (CertGetNameStringW).
+// FFI de wintrust et crypt32 : WinVerifyTrust, catalogues (CryptCATAdmin*), sujet du certificat (CertGetNameStringW),
+// racine de la chaîne (CertVerifyCertificateChainPolicy).
 #![allow(unsafe_code)]
 
 use std::ffi::c_void;
@@ -53,6 +56,21 @@ unsafe extern "system" {
     fn CryptCATAdminReleaseContext(admin: *mut c_void, drapeaux: u32) -> i32;
 }
 
+#[link(name = "crypt32")]
+unsafe extern "system" {
+    fn CertVerifyCertificateChainPolicy(
+        politique: *const u8,
+        chaine: *const c_void,
+        para: *const ParaPolitique,
+        etat: *mut EtatPolitique,
+    ) -> i32;
+}
+
+/// CERT_CHAIN_POLICY_MICROSOFT_ROOT : la chaîne finit-elle sur une racine de Microsoft (clé publique comparée à
+/// celles que crypt32 porte en lui, quels que soient les magasins du compte) ? Sans drapeau : ni les racines d'essai
+/// ni la racine « application ».
+const POLITIQUE_RACINE_MICROSOFT: usize = 7;
+
 /// WINTRUST_ACTION_GENERIC_VERIFY_V2 : la vérification Authenticode ordinaire.
 const VERIFIER_V2: GUID = GUID::from_u128(0x00aa_c56b_cd44_11d0_8cc2_00c0_4fc2_95ee);
 /// WTD_UI_NONE, WTD_REVOKE_NONE, WTD_CHOICE_FILE, WTD_STATEACTION_VERIFY puis CLOSE.
@@ -94,13 +112,37 @@ struct Confiance {
     reglages: *mut c_void,
 }
 
-/// Le début de CRYPT_PROVIDER_SGNR : jusqu'à la chaîne des certificats du signataire.
+/// CRYPT_PROVIDER_SGNR, jusqu'à la chaîne construite par la vérification (pChainContext).
 #[repr(C)]
 struct Signataire {
     taille: u32,
     verifie_le: [u32; 2],
     certificats: u32,
     chaine: *const CertificatFournisseur,
+    genre: u32,
+    cms: *const c_void,
+    erreur: u32,
+    contre_signataires: u32,
+    contre: *const c_void,
+    contexte_chaine: *const c_void,
+}
+
+/// CERT_CHAIN_POLICY_PARA.
+#[repr(C)]
+struct ParaPolitique {
+    taille: u32,
+    drapeaux: u32,
+    extra: *mut c_void,
+}
+
+/// CERT_CHAIN_POLICY_STATUS.
+#[repr(C)]
+struct EtatPolitique {
+    taille: u32,
+    erreur: u32,
+    chaine: i32,
+    element: i32,
+    extra: *mut c_void,
 }
 
 /// Le début de CRYPT_PROVIDER_CERT : le certificat (PCCERT_CONTEXT).
@@ -135,8 +177,7 @@ pub(crate) fn lire(chemin: &Path) -> Signature {
     let integree = fichier
         .seek(SeekFrom::Start(0))
         .map_err(|_| ())
-        .and_then(|_| verifier(chemin, Some(&fichier)))
-        .map(|sujet| sujet.as_deref().is_some_and(gardes::sujet_microsoft));
+        .and_then(|_| verifier(chemin, Some(&fichier)));
     gardes::signature_de(catalogue, integree)
 }
 
@@ -211,12 +252,12 @@ fn dans_un_catalogue(admin: *mut c_void, fichier: &std::fs::File) -> Result<bool
             verifier(&chemin, None)
         });
         match microsoft {
-            Some(Ok(Some(sujet))) if gardes::sujet_microsoft(&sujet) => {
+            Some(Ok(true)) => {
                 // SAFETY: le catalogue rendu par l'énumération, relâché une seule fois (on ne la poursuit pas).
                 unsafe { CryptCATAdminReleaseCatalogContext(admin, catalogue, 0) };
                 return Ok(true);
             }
-            Some(Ok(_)) => {}
+            Some(Ok(false)) => {}
             // Le catalogue désigné ne se lit pas : illisible, jamais tenu pour « pas Microsoft ».
             Some(Err(())) | None => {
                 // SAFETY: comme au-dessus.
@@ -227,9 +268,10 @@ fn dans_un_catalogue(admin: *mut c_void, fichier: &std::fs::File) -> Result<bool
     }
 }
 
-/// Vérifie la signature de `chemin` (par sa poignée ouverte quand elle est donnée) : `Ok(Some(sujet))` du signataire
-/// si elle se vérifie, `Ok(None)` si elle est absente ou ne se vérifie pas, `Err` si le fichier ne se lit pas.
-fn verifier(chemin: &Path, fichier: Option<&std::fs::File>) -> Result<Option<String>, ()> {
+/// Vérifie la signature de `chemin` (par sa poignée ouverte quand elle est donnée) : `Ok(true)` si elle se vérifie,
+/// jusqu'à une racine de Microsoft, au nom de Microsoft ; `Ok(false)` si elle est absente, ne se vérifie pas ou est
+/// d'un autre ; `Err` si le fichier ou son signataire ne se lit pas.
+fn verifier(chemin: &Path, fichier: Option<&std::fs::File>) -> Result<bool, ()> {
     let nom = large(chemin.as_os_str());
     let mut info = InfoFichier {
         taille: taille_de::<InfoFichier>(),
@@ -257,20 +299,22 @@ fn verifier(chemin: &Path, fichier: Option<&std::fs::File>) -> Result<Option<Str
     // SAFETY: `d` et `info` sont à nous et vivent pendant les deux appels ; le chemin est terminé par un zéro ; la
     // poignée, s'il y en a une, vit tant que `fichier`. L'état ouvert par VERIFY est refermé par CLOSE juste après.
     let code = unsafe { WinVerifyTrust(fenetre, &VERIFIER_V2, (&raw mut d).cast()) };
-    let sujet = (code == 0).then(|| sujet_du_signataire(d.etat));
+    // Lu avant CLOSE : la chaîne et le signataire vivent dans l'état de la vérification.
+    let signe = (code == 0).then(|| signataire_microsoft(d.etat));
     d.action = ETAT_FERMER;
     // SAFETY: comme au-dessus ; CLOSE libère l'état tenu dans `d.etat`.
     unsafe { WinVerifyTrust(fenetre, &VERIFIER_V2, (&raw mut d).cast()) };
-    match sujet {
-        // Vérifiée, mais son signataire ne se lit pas : illisible.
-        Some(sujet) => sujet.map(Some).ok_or(()),
+    match signe {
+        // Vérifiée, mais son signataire ou sa chaîne ne se lit pas : illisible.
+        Some(signe) => signe.ok_or(()),
         None if gardes::verification_illisible(code) => Err(()),
-        None => Ok(None),
+        None => Ok(false),
     }
 }
 
-/// Le sujet du certificat signataire, lu dans l'état d'une vérification réussie (avant sa fermeture).
-fn sujet_du_signataire(etat: *mut c_void) -> Option<String> {
+/// Le signataire d'une vérification réussie (avant sa fermeture) est-il Microsoft : sujet au nom de Microsoft ET
+/// chaîne finie sur une racine de Microsoft ? `None` : le signataire, son sujet ou sa chaîne ne se lit pas.
+fn signataire_microsoft(etat: *mut c_void) -> Option<bool> {
     if etat.is_null() {
         return None;
     }
@@ -290,6 +334,13 @@ fn sujet_du_signataire(etat: *mut c_void) -> Option<String> {
         if certificat.is_null() {
             return None;
         }
+        // Une structure plus courte (Windows ancien) n'a pas la chaîne : illisible, jamais « Microsoft ».
+        let jusqu_a_la_chaine =
+            std::mem::offset_of!(Signataire, contexte_chaine) + std::mem::size_of::<*const c_void>();
+        if usize::try_from((*signataire).taille).map_or(true, |t| t < jusqu_a_la_chaine) {
+            return None;
+        }
+        let racine = racine_microsoft((*signataire).contexte_chaine)?;
         let mut tampon = vec![0u16; 2048];
         let n = super::magasins::CertGetNameStringW(
             certificat,
@@ -302,8 +353,41 @@ fn sujet_du_signataire(etat: *mut c_void) -> Option<String> {
         let n = usize::try_from(n).ok()?.min(tampon.len());
         // Sans le zéro final que compte la longueur rendue ; 1 : un sujet vide.
         tampon.truncate(n.saturating_sub(1));
-        (!tampon.is_empty()).then(|| String::from_utf16_lossy(&tampon))
+        let sujet = (!tampon.is_empty()).then(|| String::from_utf16_lossy(&tampon))?;
+        Some(gardes::signe_par_microsoft(&sujet, racine))
     }
+}
+
+/// La chaîne construite par WinVerifyTrust finit-elle sur une racine de Microsoft ? `None` : chaîne absente, ou
+/// politique qui ne se lit pas.
+fn racine_microsoft(chaine: *const c_void) -> Option<bool> {
+    if chaine.is_null() {
+        return None;
+    }
+    let para = ParaPolitique {
+        taille: taille_de::<ParaPolitique>(),
+        drapeaux: 0,
+        extra: std::ptr::null_mut(),
+    };
+    let mut etat = EtatPolitique {
+        taille: taille_de::<EtatPolitique>(),
+        erreur: 0,
+        chaine: 0,
+        element: 0,
+        extra: std::ptr::null_mut(),
+    };
+    // SAFETY: la politique est un identifiant entier (macro MAKEINTRESOURCE de wincrypt.h), jamais lu comme une
+    // chaîne ; `chaine` est le PCCERT_CHAIN_CONTEXT de la vérification encore ouverte, non nul ; `para` et `etat` sont à
+    // nous, leur taille annoncée.
+    let lu = unsafe {
+        CertVerifyCertificateChainPolicy(
+            std::ptr::without_provenance(POLITIQUE_RACINE_MICROSOFT),
+            chaine,
+            &raw const para,
+            &raw mut etat,
+        )
+    } != 0;
+    lu.then_some(etat.erreur == 0)
 }
 
 #[cfg(test)]

@@ -189,8 +189,9 @@ fn isoler_dans(chemin: &Path, detection: &str, dossier: &Path, sha256: Option<St
     #[cfg(windows)]
     destination_sure(dossier, true)?;
     std::fs::create_dir_all(dossier)?;
+    // Tenus jusqu'au retour : le déplacement, la note et le journal vont là où ils ont été relus.
     #[cfg(windows)]
-    destination_sure(dossier, false)?;
+    let _tenus = destination_tenue(dossier)?;
     let meta = std::fs::symlink_metadata(chemin)?;
     if !meta.is_file() {
         return Err(std::io::Error::other(tr!(
@@ -245,12 +246,12 @@ fn isoler_dans(chemin: &Path, detection: &str, dossier: &Path, sha256: Option<St
 
 /// Vanguard administrateur (Windows) écrit la quarantaine dans le profil du compte qui l'a ouvert ainsi, où un
 /// programme de ce compte a pu poser une jonction vers un dossier de Windows : chaque dossier jusqu'à la racine du
-/// profil est relu avant la création et juste avant le déplacement (défense D6a). Il reste une course entre cette
-/// relecture et le déplacement, que seul un dossier tenu ouvert fermerait. Les essais écrivent dans leurs dossiers
-/// jetables, hors de tout profil : la règle s'y essaie par `gardes::destination_de_quarantaine`.
+/// profil est relu avant la création (défense D6a), puis tenu ouvert pendant le geste (`destination_tenue`). Les
+/// essais écrivent dans leurs dossiers jetables, hors de tout profil : la règle s'y essaie par
+/// `gardes::destination_de_quarantaine` et `tenir`.
 #[cfg(windows)]
 fn destination_sure(dossier: &Path, absents_permis: bool) -> std::io::Result<()> {
-    if !cfg!(test) && crate::machine::windows::processus::eleve_ou_inconnu() {
+    if eleve_hors_essai() {
         let raison = match crate::machine::windows::environnement::profil() {
             Some(profil) => crate::protection::blocage::gardes::destination_de_quarantaine(
                 dossier,
@@ -268,6 +269,91 @@ fn destination_sure(dossier: &Path, absents_permis: bool) -> std::io::Result<()>
         }
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn eleve_hors_essai() -> bool {
+    !cfg!(test) && crate::machine::windows::processus::eleve_ou_inconnu()
+}
+
+/// En administrateur : chaque dossier, du profil à la quarantaine, tenu ouvert (`tenir`). Ailleurs, rien à tenir.
+#[cfg(windows)]
+fn destination_tenue(dossier: &Path) -> std::io::Result<Vec<std::fs::File>> {
+    if !eleve_hors_essai() {
+        return Ok(Vec::new());
+    }
+    let Some(profil) = crate::machine::windows::environnement::profil() else {
+        return Err(std::io::Error::other(tr!(
+            "le profil du compte ne se lit pas : Vanguard administrateur ne met rien en quarantaine",
+            "the account profile cannot be read: Vanguard as administrator quarantines nothing"
+        )));
+    };
+    tenir(dossier, &profil)
+}
+
+/// Ouvre chaque dossier de `profil` jusqu'à `dossier`, de la racine vers le bas, sans suivre un lien
+/// (FILE_FLAG_OPEN_REPARSE_POINT) et sans permettre à personne de le renommer ni de l'effacer (pas de
+/// FILE_SHARE_DELETE) ; chacun est jugé par sa poignée (`gardes::destination_de_quarantaine`). Tant que les poignées
+/// vivent, le chemin désigne ces dossiers-là : aucune jonction ne s'y glisse entre la relecture et l'écriture
+/// (relecture de D6a, qui fermait la course par une seconde relecture seulement). Ouvert de haut en bas : chaque
+/// dossier s'ouvre au travers de parents déjà tenus.
+#[cfg(windows)]
+fn tenir(dossier: &Path, profil: &Path) -> std::io::Result<Vec<std::fs::File>> {
+    use std::collections::HashMap;
+    use std::io::ErrorKind;
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    // FILE_LIST_DIRECTORY : sans droit sur les données, Windows ne retiendrait pas le partage refusé de la poignée.
+    const LISTER: u32 = 0x0001;
+    const LIRE_ATTRIBUTS: u32 = 0x0080;
+    const SYNCHRONISER: u32 = 0x0010_0000;
+    const PARTAGE_LIRE_ECRIRE: u32 = 0x1 | 0x2;
+    const SANS_SUIVRE_DOSSIER: u32 = 0x0020_0000 | 0x0200_0000;
+    const POINT_DE_REANALYSE: u32 = 0x400;
+    let n = dossier.components().count().saturating_sub(profil.components().count()) + 1;
+    let mut chemins: Vec<&Path> = dossier.ancestors().take(n).collect();
+    chemins.reverse();
+    let mut tenus = Vec::new();
+    // Ce que chaque poignée dit : un lien, ou ce qui l'a empêchée ; tout ce qui est en dessous d'un refus en hérite.
+    let mut lus: HashMap<&Path, Result<bool, ErrorKind>> = HashMap::new();
+    let mut refus = None;
+    for c in chemins {
+        if let Some(r) = refus {
+            lus.insert(c, r);
+            continue;
+        }
+        let lu = std::fs::OpenOptions::new()
+            .access_mode(LISTER | LIRE_ATTRIBUTS | SYNCHRONISER)
+            .share_mode(PARTAGE_LIRE_ECRIRE)
+            .custom_flags(SANS_SUIVRE_DOSSIER)
+            .open(c)
+            .and_then(|f| f.metadata().map(|m| (f, m)));
+        let verdict = match lu {
+            Ok((f, m)) => {
+                let lien = m.file_attributes() & POINT_DE_REANALYSE != 0 || !m.is_dir();
+                tenus.push(f);
+                Ok(lien)
+            }
+            Err(e) => Err(e.kind()),
+        };
+        if verdict != Ok(false) {
+            refus = Some(verdict);
+        }
+        lus.insert(c, verdict);
+    }
+    let raison = crate::protection::blocage::gardes::destination_de_quarantaine(
+        dossier,
+        profil,
+        |a| match lus.get(a) {
+            Some(Ok(lien)) => Ok(*lien),
+            Some(Err(k)) => Err((*k).into()),
+            None => Err(ErrorKind::NotFound.into()),
+        },
+        false,
+    );
+    match raison {
+        Some(raison) => Err(std::io::Error::other(raison)),
+        None => Ok(tenus),
+    }
 }
 
 /// Le journal lisible par une personne (cat, éditeur), comme avant la 0.61 : noms rendus inoffensifs.
@@ -538,6 +624,32 @@ mod tests {
     /// Retiré à la fin de l'essai, même fermé ou après une panique (M-1 de la relecture des restes c6).
     fn jetable(nom: &str) -> crate::essais::Jetable {
         crate::essais::Jetable::nouveau(&format!("quarantaine-{nom}"))
+    }
+
+    /// Relecture de D6a : chaque dossier du profil à la quarantaine est tenu pendant le geste ; ni lui ni un parent ne
+    /// se renomme ni ne s'efface (une jonction ne peut donc pas prendre sa place), puis tout se libère. Hors du
+    /// profil, ou un fichier à la place d'un dossier : refusé.
+    #[cfg(windows)]
+    #[test]
+    fn quarantaine_tenue_pendant_le_geste() {
+        let profil = jetable("tenue");
+        let q = profil
+            .join("AppData")
+            .join("Local")
+            .join("vanguard")
+            .join("quarantaine");
+        std::fs::create_dir_all(&q).unwrap();
+        let tenus = tenir(&q, &profil).unwrap();
+        assert_eq!(tenus.len(), 5);
+        let local = profil.join("AppData").join("Local");
+        assert!(std::fs::rename(local.join("vanguard"), local.join("ailleurs")).is_err());
+        assert!(std::fs::rename(&q, local.join("vanguard").join("autre")).is_err());
+        assert!(std::fs::remove_dir(&q).is_err());
+        drop(tenus);
+        std::fs::rename(&q, local.join("vanguard").join("autre")).unwrap();
+        std::fs::write(&q, b"pas un dossier").unwrap();
+        assert!(tenir(&q, &profil).is_err());
+        assert!(tenir(&q, &profil.join("autre-compte")).is_err());
     }
 
     #[test]
