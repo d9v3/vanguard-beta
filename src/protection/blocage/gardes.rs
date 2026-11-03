@@ -1043,6 +1043,8 @@ pub(crate) enum Illisibilite {
     Signataire,
     /// Un autre code de Windows.
     Code(u32),
+    /// Une erreur de lecture sans code de Windows (erreur faite par la bibliothèque, pas par le système).
+    SansCode,
 }
 
 impl Illisibilite {
@@ -1083,6 +1085,11 @@ impl Illisibilite {
                 "Windows a rendu une autre erreur (code 0x{c:08X})",
                 "Windows returned another error (code 0x{c:08X})"
             ),
+            Illisibilite::SansCode => tr!(
+                "la lecture du fichier a échoué sans code d'erreur de Windows",
+                "reading the file failed without a Windows error code"
+            )
+            .to_string(),
         }
     }
 }
@@ -1106,6 +1113,15 @@ pub(crate) fn illisibilite_connue(code: u32) -> Option<Illisibilite> {
         1058 | 1062 | 1722 | 1753 => Some(Illisibilite::CryptSvc),
         _ => None,
     }
+}
+
+/// La raison d'une erreur de lecture du fichier, d'après son code système s'il y en a un : sans code (erreur faite
+/// par la bibliothèque), le dire, plutôt qu'un « code 0x00000000 » qui ne veut rien dire.
+#[cfg_attr(not(windows), allow(dead_code))] // comme `Signature`
+pub(crate) fn raison_de_lecture(code: Option<u32>) -> Illisibilite {
+    code.map_or(Illisibilite::SansCode, |c| {
+        illisibilite_connue(c).unwrap_or(Illisibilite::Code(c))
+    })
 }
 
 /// Pourquoi ce fichier signé ne doit être ni arrêté ni mis en quarantaine SANS la personne, ou `None` : signé
@@ -1244,6 +1260,10 @@ pub(crate) enum Decision {
 /// garde refuse. `demande` : la personne l'a demandé elle-même ; `console` : la réponse viendra d'une vraie console.
 pub(crate) fn decider_signature(s: Signature, autre_garde: Option<&str>, demande: bool, console: bool) -> Decision {
     if let Some(r) = autre_garde {
+        // Les deux refusent : dire les deux, la signature Microsoft étant souvent la raison la plus parlante.
+        if s == Signature::Microsoft {
+            return Decision::Refuse(format!("{r} ; {}", signe_microsoft()));
+        }
         return Decision::Refuse(r.to_string());
     }
     match s {
@@ -1344,12 +1364,65 @@ pub(crate) struct Portrait {
     pub chemin: Option<String>,
     pub pid: Option<u32>,
     pub compte: Option<String>,
-    pub parent: Option<(String, u32)>,
+    pub parent: Option<Parent>,
     pub lancement: Option<String>,
     pub ligne: Option<String>,
     pub taille: Option<u64>,
     pub date: Option<String>,
     pub sha256: Option<String>,
+}
+
+/// Le parent d'un processus montré dans le portrait : son nom, son numéro, et ce qu'on a pu vérifier.
+#[derive(Clone, Debug)]
+pub(crate) struct Parent {
+    pub nom: String,
+    pub pid: u32,
+    pub filiation: Filiation,
+}
+
+/// Le processus qui porte le numéro du parent est-il bien le parent ?
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Filiation {
+    /// Né avant l'enfant : c'est lui.
+    Vrai,
+    /// Né après l'enfant : le vrai parent a fini, son numéro est repris par un autre.
+    Repris,
+    /// Une des deux heures de lancement ne se lit pas (processus protégé, autre compte) : on ne peut pas le dire.
+    Inverifiable,
+}
+
+/// La filiation d'après les heures de création (FILETIME) du parent et de l'enfant. Une heure illisible ne dit pas
+/// que le parent a fini : un processus protégé est bien vivant, seulement fermé à ce compte.
+#[cfg_attr(not(windows), allow(dead_code))] // lu par l'arrêt de Windows ; ailleurs, les essais seulement
+pub(crate) fn filiation(parent: Option<u64>, enfant: Option<u64>) -> Filiation {
+    match (parent, enfant) {
+        (Some(a), Some(b)) if a <= b => Filiation::Vrai,
+        (Some(_), Some(_)) => Filiation::Repris,
+        _ => Filiation::Inverifiable,
+    }
+}
+
+/// Au-delà de cette taille, l'empreinte d'un fichier n'est pas calculée avant la question : la personne attendrait
+/// sans savoir pourquoi (plusieurs secondes sur un disque lent).
+pub(crate) const EMPREINTE_MAX: u64 = 256 * 1024 * 1024;
+
+/// L'empreinte d'un fichier de cette taille se calcule-t-elle avant la question ? Taille illisible : non, le fichier
+/// ne se lira pas mieux.
+pub(crate) fn empreinte_a_calculer(taille: Option<u64>) -> bool {
+    taille.is_some_and(|t| t <= EMPREINTE_MAX)
+}
+
+/// La mise de côté échouera-t-elle d'office ? `code` : l'erreur système de l'essai d'ouverture du fichier pour le
+/// déplacer (`None` : il s'est ouvert). Partage ou verrou refusé : un programme en marche le tient ouvert, Windows
+/// refusera le déplacement ; inutile de demander « o » pour échouer ensuite. `Some` : pourquoi, et quoi faire.
+pub(crate) fn mise_de_cote_bloquee(code: Option<u32>) -> Option<String> {
+    (illisibilite_connue(code?) == Some(Illisibilite::Verrouille)).then(|| {
+        tr!(
+            "le fichier est tenu ouvert par un programme en marche : Windows ne permet pas de le déplacer. Arrêtez d'abord ce programme (« Bloquer » l'arrête avant de mettre le fichier de côté), puis recommencez",
+            "the file is held open by a running program: Windows does not allow moving it. Stop that program first (\"Block\" stops it before setting the file aside), then try again"
+        )
+        .to_string()
+    })
 }
 
 /// Un texte hostile prêt à montrer : caractères de contrôle, séquences ANSI et bidi rendus visibles (« � »), longueur
@@ -1379,9 +1452,20 @@ pub(crate) fn lignes_du_portrait(raison: Illisibilite, p: &Portrait) -> Vec<Stri
         lignes.push(trf!(
             "Parent : {}",
             "Parent: {}",
-            p.parent
-                .as_ref()
-                .map_or_else(inconnu, |(nom, pid)| format!("{} (PID {pid})", propre(nom, 80)))
+            p.parent.as_ref().map_or_else(inconnu, |pa| {
+                let (nom, pid) = (propre(&pa.nom, 80), pa.pid);
+                match pa.filiation {
+                    Filiation::Vrai => format!("{nom} (PID {pid})"),
+                    Filiation::Repris => trf!(
+                        "fini (son numéro, PID {pid}, est repris par un autre)",
+                        "ended (its number, PID {pid}, is reused by another)"
+                    ),
+                    Filiation::Inverifiable => trf!(
+                        "{nom} (PID {pid}), sans pouvoir vérifier que c'est bien lui (heure de lancement illisible)",
+                        "{nom} (PID {pid}), without being able to check it is really the parent (start time unreadable)"
+                    ),
+                }
+            })
         ));
         lignes.push(trf!("Lancé le : {}", "Started: {}", texte(&p.lancement, 40)));
         lignes.push(trf!(
@@ -1392,18 +1476,32 @@ pub(crate) fn lignes_du_portrait(raison: Illisibilite, p: &Portrait) -> Vec<Stri
                 .map_or_else(|| tr!("illisible", "unreadable").to_string(), |t| propre(t, 300))
         ));
     }
-    lignes.push(trf!(
-        "Fichier : {}, modifié le {}",
-        "File: {}, modified {}",
-        p.taille.map_or_else(inconnu, |t| trf!("{t} octets", "{t} bytes")),
-        texte(&p.date, 40)
-    ));
+    let date = p.date.as_deref().map(|d| propre(d, 40));
+    lignes.push(match (p.taille, date) {
+        (None, None) => tr!("Fichier : illisible", "File: unreadable").to_string(),
+        (Some(t), Some(d)) => trf!("Fichier : {t} octets, modifié le {d}", "File: {t} bytes, modified {d}"),
+        (Some(t), None) => trf!(
+            "Fichier : {t} octets, date de modification illisible",
+            "File: {t} bytes, modification date unreadable"
+        ),
+        (None, Some(d)) => trf!(
+            "Fichier : taille illisible, modifié le {d}",
+            "File: size unreadable, modified {d}"
+        ),
+    });
+    let sans_empreinte = if p.sha256.is_none() && p.taille.is_some() && !empreinte_a_calculer(p.taille) {
+        trf!(
+            "non calculée (fichier de plus de {} Mo : trop long à lire avant la question)",
+            "not computed (file over {} MB: too long to read before the question)",
+            EMPREINTE_MAX / (1024 * 1024)
+        )
+    } else {
+        tr!("illisible", "unreadable").to_string()
+    };
     lignes.push(trf!(
         "SHA-256 : {}",
         "SHA-256: {}",
-        p.sha256
-            .as_deref()
-            .map_or_else(|| tr!("illisible", "unreadable").to_string(), |t| propre(t, 64))
+        p.sha256.as_deref().map_or(sans_empreinte, |t| propre(t, 64))
     ));
     lignes
 }
@@ -1425,11 +1523,15 @@ pub(crate) fn portrait_de_fichier(chemin: &std::path::Path) -> Portrait {
     #[cfg(not(windows))]
     let long = texte;
     let meta = std::fs::metadata(chemin).ok();
+    let taille = meta.as_ref().map(std::fs::Metadata::len);
     Portrait {
         nom: chemin.file_name().map(|n| n.to_string_lossy().into_owned()),
-        taille: meta.as_ref().map(std::fs::Metadata::len),
+        taille,
         date: meta.and_then(|m| m.modified().ok()).map(date_locale),
-        sha256: crate::protection::empreintes::sha256(chemin).map(|e| crate::protection::empreintes::hex(&e)),
+        sha256: empreinte_a_calculer(taille)
+            .then(|| crate::protection::empreintes::sha256(chemin))
+            .flatten()
+            .map(|e| crate::protection::empreintes::hex(&e)),
         chemin: Some(long),
         ..Portrait::default()
     }
@@ -1846,7 +1948,11 @@ mod tests {
             chemin: Some(format!("C:\\x\\{long}\u{202e}exe.txt")),
             pid: Some(4242),
             compte: Some("PC\\alice\x1b]52;c;aGk=\x07".into()),
-            parent: Some(("explorer\n✔ sain".into(), 100)),
+            parent: Some(Parent {
+                nom: "explorer\n✔ sain".into(),
+                pid: 100,
+                filiation: Filiation::Vrai,
+            }),
             lancement: Some("2026-11-03 10:00:00".into()),
             ligne: Some(format!("outil.exe {long}\r\n")),
             taille: Some(1234),
@@ -1868,6 +1974,100 @@ mod tests {
         let n = note_confirmee(false, Illisibilite::Verrouille, Some("ab12"));
         assert!(n.starts_with("arrêt confirmé") && n.contains("ab12"));
         assert!(note_confirmee(true, Illisibilite::Absent, None).contains("SHA-256 illisible"));
+    }
+
+    /// Relecture de D6a-signature (M1) : un parent dont l'heure de lancement ne se lit pas (processus protégé, autre
+    /// compte) n'est pas dit « fini » ; seul un parent né après l'enfant l'est.
+    #[test]
+    fn parent_illisible_n_est_pas_fini() {
+        assert_eq!(filiation(Some(10), Some(20)), Filiation::Vrai);
+        assert_eq!(filiation(Some(20), Some(20)), Filiation::Vrai);
+        assert_eq!(filiation(Some(30), Some(20)), Filiation::Repris);
+        for (p, e) in [(None, Some(20)), (Some(10), None), (None, None)] {
+            assert_eq!(filiation(p, e), Filiation::Inverifiable, "{p:?} {e:?}");
+        }
+        let avec = |filiation| {
+            let p = Portrait {
+                processus: true,
+                parent: Some(Parent {
+                    nom: "services.exe".into(),
+                    pid: 700,
+                    filiation,
+                }),
+                ..Portrait::default()
+            };
+            lignes_du_portrait(Illisibilite::Verrouille, &p).join("\n")
+        };
+        let protege = avec(Filiation::Inverifiable);
+        assert!(protege.contains("services.exe") && protege.contains("700"), "{protege}");
+        assert!(!protege.contains("fini") && !protege.contains("ended"), "{protege}");
+        let repris = avec(Filiation::Repris);
+        assert!(repris.contains("fini") || repris.contains("ended"), "{repris}");
+        assert!(!repris.contains("services.exe"), "{repris}");
+    }
+
+    /// Relecture de D6a-signature (M2, M3) : taille et date illisibles se disent en une fois ; un fichier trop gros
+    /// n'est pas lu en entier avant la question, et le portrait dit pourquoi l'empreinte manque.
+    #[test]
+    fn portrait_du_fichier_sans_taille_ni_empreinte() {
+        let vide = lignes_du_portrait(Illisibilite::Absent, &Portrait::default()).join("\n");
+        assert!(
+            vide.contains("Fichier : illisible") || vide.contains("File: unreadable"),
+            "{vide}"
+        );
+        assert!(!vide.contains("inconnu, modifié le inconnu"), "{vide}");
+        let sans_date = Portrait {
+            taille: Some(12),
+            ..Portrait::default()
+        };
+        let l = lignes_du_portrait(Illisibilite::Absent, &sans_date).join("\n");
+        assert!(l.contains("12") && (l.contains("date de modification illisible") || l.contains("date unreadable")));
+        assert!(empreinte_a_calculer(Some(0)));
+        assert!(empreinte_a_calculer(Some(EMPREINTE_MAX)));
+        assert!(!empreinte_a_calculer(Some(EMPREINTE_MAX + 1)));
+        assert!(!empreinte_a_calculer(None));
+        let gros = Portrait {
+            taille: Some(EMPREINTE_MAX + 1),
+            ..Portrait::default()
+        };
+        let l = lignes_du_portrait(Illisibilite::Verrouille, &gros).join("\n");
+        assert!(l.contains("non calculée") || l.contains("not computed"), "{l}");
+        // Pour de vrai : un petit fichier a son empreinte ; un absent, aucune, sans attendre.
+        let dossier = crate::socle::dossier_local().join("essai-portrait");
+        std::fs::create_dir_all(&dossier).unwrap();
+        let f = dossier.join("petit.bin");
+        std::fs::write(&f, b"abc").unwrap();
+        assert_eq!(
+            portrait_de_fichier(&f).sha256.as_deref(),
+            Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        );
+        assert_eq!(portrait_de_fichier(&dossier.join("absent.bin")).sha256, None);
+    }
+
+    /// Relecture de D6a-signature (M6, M7, M8) : un fichier tenu ouvert sans partage ne reçoit pas la question
+    /// « Mettre de côté ? » (le déplacement échouerait) ; une erreur sans code ne s'affiche pas « code 0 » ; un fichier
+    /// signé Microsoft et refusé par une autre garde dit les deux raisons.
+    #[test]
+    fn mineurs_de_la_relecture_d6a_signature() {
+        for code in [32, 33, 0x8007_0020] {
+            let r = mise_de_cote_bloquee(Some(code)).unwrap();
+            assert!(
+                r.contains("Arrêtez d'abord") || r.contains("Stop that program first"),
+                "{r}"
+            );
+        }
+        for code in [None, Some(5), Some(2), Some(0)] {
+            assert_eq!(mise_de_cote_bloquee(code), None, "{code:?}");
+        }
+        assert_eq!(raison_de_lecture(None), Illisibilite::SansCode);
+        assert!(!Illisibilite::SansCode.texte().contains("0x"));
+        assert_eq!(raison_de_lecture(Some(32)), Illisibilite::Verrouille);
+        assert_eq!(raison_de_lecture(Some(0x8009_2003)), Illisibilite::Code(0x8009_2003));
+        let Decision::Refuse(r) = decider_signature(Signature::Microsoft, Some("fichier du système"), true, true)
+        else {
+            panic!("Microsoft et une autre garde : refus");
+        };
+        assert!(r.contains("fichier du système") && (r.contains("Microsoft")), "{r}");
     }
 
     /// Relecture de D6a : sous Unix (orphelins rattachés à init), un parent absent est caché (hidepid) ou illisible,

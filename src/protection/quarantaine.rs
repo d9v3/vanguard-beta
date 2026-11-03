@@ -193,6 +193,9 @@ fn garde_de_signature(chemin: &Path, automatique: bool, lancees: &mut Vec<String
         Decision::Refuse(r) => return Err(std::io::Error::other(r)),
         Decision::Demander(r) => r,
     };
+    if let Some(pourquoi) = gardes::mise_de_cote_bloquee(essai_de_deplacement(chemin)) {
+        return Err(std::io::Error::other(pourquoi));
+    }
     let portrait = gardes::portrait_de_fichier(chemin);
     let question = tr!(
         "\n  Mettre de côté quand même ? [o/N] : ",
@@ -212,6 +215,25 @@ fn garde_de_signature(chemin: &Path, automatique: bool, lancees: &mut Vec<String
     }
     lancees.push(gardes::note_confirmee(true, raison, portrait.sha256.as_deref()));
     Ok(())
+}
+
+/// Le fichier s'ouvrirait-il pour être déplacé ? Ouvert avec le seul droit que demande un déplacement (DELETE), en
+/// permettant tout partage pour ne gêner personne, et refermé aussitôt : l'erreur système, ou `None`.
+#[cfg(windows)]
+fn essai_de_deplacement(chemin: &Path) -> Option<u32> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    // DELETE ; FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE.
+    let essai = std::fs::OpenOptions::new()
+        .access_mode(0x0001_0000)
+        .share_mode(7)
+        .open(chemin);
+    essai.err()?.raw_os_error().map(i32::cast_unsigned)
+}
+
+/// Hors de Windows, un fichier ouvert ne bloque pas son déplacement.
+#[cfg(not(windows))]
+fn essai_de_deplacement(_chemin: &Path) -> Option<u32> {
+    None
 }
 
 fn isoler_dans(chemin: &Path, detection: &str, dossier: &Path, sha256: Option<String>) -> std::io::Result<PathBuf> {

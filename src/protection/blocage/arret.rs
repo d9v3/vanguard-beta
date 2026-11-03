@@ -199,20 +199,10 @@ mod windows {
         let liste = processus::liste();
         let creation = tenu.creation();
         let parent = liste.iter().find(|p| p.pid == pid).map(|p| p.parent).and_then(|pp| {
-            let nom = liste.iter().find(|p| p.pid == pp)?.nom.clone();
-            // Né après l'enfant : le vrai parent a fini, son numéro est repris par un autre.
-            let vrai = matches!((processus::creation(pp), creation), (Some(a), Some(b)) if a <= b);
-            Some(if vrai {
-                (nom, pp)
-            } else {
-                (
-                    tr!(
-                        "fini (son numéro est repris par un autre)",
-                        "ended (its number is reused by another)"
-                    )
-                    .to_string(),
-                    pp,
-                )
+            Some(gardes::Parent {
+                nom: liste.iter().find(|p| p.pid == pp)?.nom.clone(),
+                pid: pp,
+                filiation: gardes::filiation(processus::creation(pp), creation),
             })
         });
         let ligne = crate::machine::windows::wmi::requete(

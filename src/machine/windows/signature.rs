@@ -184,8 +184,7 @@ pub(crate) fn lire(chemin: &Path) -> Signature {
 
 /// La raison d'une erreur de lecture du fichier.
 fn raison_io(e: &std::io::Error) -> Illisibilite {
-    let code = e.raw_os_error().map_or(0, i32::cast_unsigned);
-    gardes::illisibilite_connue(code).unwrap_or(Illisibilite::Code(code))
+    gardes::raison_de_lecture(e.raw_os_error().map(i32::cast_unsigned))
 }
 
 /// La raison d'un échec d'une fonction des catalogues, d'après GetLastError : CryptSvc arrêté se dit tel ; un code
