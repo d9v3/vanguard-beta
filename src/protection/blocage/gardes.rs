@@ -355,8 +355,13 @@ fn programme_de_session(nom: &str) -> bool {
 pub(crate) fn est_session(e: &Etablie) -> bool {
     PORTS_DE_SESSION.contains(&e.port_local)
         || PORTS_DE_SESSION.contains(&e.port_distant)
+        || PORTS_WINRM.contains(&e.port_local)
         || e.programme.as_deref().is_some_and(programme_de_session)
 }
+
+/// WinRM (PowerShell à distance), HTTP et HTTPS : sa connexion est tenue par System (HTTP.sys), qu'aucun nom de
+/// programme ne reconnaît ; une connexion entrante sur ces ports est une session.
+const PORTS_WINRM: [u16; 2] = [5985, 5986];
 
 /// Les tunnels (VPN) et les clients d'une session sortante : leurs connexions partent de cet ordinateur, et le réseau
 /// redémarré ne coupe personne qui y serait entré. Ils restent des sessions pour le blocage (`est_session`).
@@ -788,6 +793,30 @@ mod tests {
             programme: programme.map(str::to_string),
             autre_compte: autre,
         }
+    }
+
+    /// WinRM (PowerShell à distance) : sa connexion entrante, tenue par System, est une session (le pare-feu la
+    /// garde) ; un client WinRM qui part d'ici n'en est pas une par ce port.
+    #[test]
+    fn winrm_entrant_est_une_session() {
+        for port in [5985, 5986] {
+            assert!(est_session(&etablie(
+                "198.51.100.20",
+                port,
+                51234,
+                Some("System"),
+                true
+            )));
+            assert!(!est_session(&etablie(
+                "198.51.100.20",
+                51234,
+                port,
+                Some("powershell"),
+                false
+            )));
+        }
+        let s = juger_etablies(&[etablie("198.51.100.20", 5985, 51234, Some("System"), true)], None);
+        assert_eq!(s.ports_locaux, vec![5985]);
     }
 
     /// Le réseau redémarré par l'assistant élevé : seules les sessions ENTRANTES le retiennent (SSH ou Bureau à

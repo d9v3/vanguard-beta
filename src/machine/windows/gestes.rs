@@ -2776,17 +2776,21 @@ impl RegleLue {
         }
     }
 
-    /// L'empreinte de (nom, sens, action, programme, ports locaux et distants, profils), sans casse : plusieurs
-    /// règles peuvent porter le même nom, celles qui ont aussi tout cela en commun sont réglées ensemble.
+    /// L'empreinte de (nom, sens, action, programme, service, protocole, ports locaux et distants, adresses
+    /// distantes, profils), sans casse : plusieurs règles peuvent porter le même nom (TCP et UDP d'un même programme,
+    /// sous-réseau local ou partout), celles qui ont aussi tout cela en commun sont réglées ensemble.
     pub(crate) fn empreinte(&self) -> EmpreinteElement {
         EmpreinteElement::de(&format!(
-            "{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.nom,
             if self.entrante { "in" } else { "out" },
             self.action().mot(),
             self.programme,
+            self.service,
+            self.protocole,
             self.ports_locaux,
             self.ports_distants,
+            self.adresses_distantes,
             self.profils
         ))
     }
@@ -2914,9 +2918,10 @@ pub(crate) fn port_ouvert(e: EtatProfil, bit: i32, port: u16, regles: &[RegleLue
 /// Les ports locaux qu'utilise la session à distance en cours ; `None` : aucune session. `rdp` : ce processus tourne
 /// dans une session du Bureau à distance ; `lue` : les connexions relues (`None` : illisibles), une session en cours
 /// et ses ports locaux (VNC, RustDesk, SSH sur un autre port…). Connexions illisibles, ou une session dont aucun port
-/// ne se lit : 3389 et 22, au cas où. Le Bureau à distance ajoute 3389. Les règles qui nomment 3389 ou 22 restent
-/// gardées de toute façon (`refus_regle_session`).
-pub(crate) fn session_pare_feu(rdp: bool, lue: Option<(bool, &[u16])>) -> Option<Vec<u16>> {
+/// ne se lit : 3389 et 22, au cas où. Le Bureau à distance ajoute 3389, et `port_rdp` (PortNumber de RDP-Tcp) pendant
+/// une session ou si on ne sait pas. Les règles qui nomment 3389 ou 22 restent gardées de toute façon
+/// (`refus_regle_session`).
+pub(crate) fn session_pare_feu(rdp: bool, port_rdp: Option<u16>, lue: Option<(bool, &[u16])>) -> Option<Vec<u16>> {
     if !rdp && matches!(lue, Some((false, _))) {
         return None;
     }
@@ -2925,6 +2930,11 @@ pub(crate) fn session_pare_feu(rdp: bool, lue: Option<(bool, &[u16])>) -> Option
         Some((true, _)) | None => PORTS_SESSION.to_vec(),
         Some((false, _)) => Vec::new(),
     };
+    // Le Bureau à distance sur un autre port (PortNumber de RDP-Tcp) : sa connexion est tenue par svchost, que la
+    // table des connexions ne reconnaît pas comme une session ; 3389 reste gardé en plus, au cas où.
+    if rdp || lue.is_none_or(|(s, _)| s) {
+        ports.extend(port_rdp.filter(|&n| n != 0));
+    }
     if rdp {
         ports.push(PORTS_SESSION[0]);
     }
@@ -2965,10 +2975,12 @@ pub(crate) fn refus_profil_session(
     if (r == ReglagePareFeu::Sortant && fermee) || (apres.sorties_bloquees() && !avant.sorties_bloquees()) {
         return Some(RefusSession::Sorties);
     }
-    ports
-        .iter()
-        .any(|&port| port_ouvert(avant, p.bit(), port, regles) && !port_ouvert(apres, p.bit(), port, regles))
-        .then_some(RefusSession::PortFerme)
+    // Une session passe en ce moment par ces ports : ils sont ouverts, quoi qu'en dise la lecture des règles (une
+    // règle de blocage « tous les ports » d'un programme ferait croire le port déjà fermé, et la garde se tairait).
+    // Seul compte ce que le réglage ferme : allumer, ou bloquer les entrées, quand un port ne serait plus sûrement
+    // ouvert après. Couper ou autoriser, ou une valeur déjà telle, n'est jamais refusé ici.
+    let ferme = fermee && avant.valeur(r) != fermee;
+    (ferme && ports.iter().any(|&port| !port_ouvert(apres, p.bit(), port, regles))).then_some(RefusSession::PortFerme)
 }
 
 /// Pourquoi activer (`active`) ou désactiver cette règle couperait la session à distance en cours, ou `None`. Pendant
@@ -8804,19 +8816,148 @@ mod tests {
     /// gardent 3389 et 22 au moins ; aucune session, rien à garder.
     #[test]
     fn la_session_du_pare_feu_se_lit_au_plus_prudent() {
-        assert_eq!(session_pare_feu(false, Some((false, &[]))), None);
-        assert_eq!(session_pare_feu(false, None), Some(vec![22, 3389]));
-        assert_eq!(session_pare_feu(false, Some((true, &[]))), Some(vec![22, 3389]));
-        assert_eq!(session_pare_feu(false, Some((true, &[5900]))), Some(vec![5900]));
-        assert_eq!(session_pare_feu(true, Some((false, &[]))), Some(vec![3389]));
-        assert_eq!(session_pare_feu(true, Some((true, &[2222]))), Some(vec![2222, 3389]));
+        assert_eq!(session_pare_feu(false, None, Some((false, &[]))), None);
+        assert_eq!(session_pare_feu(false, None, None), Some(vec![22, 3389]));
+        assert_eq!(session_pare_feu(false, None, Some((true, &[]))), Some(vec![22, 3389]));
+        assert_eq!(session_pare_feu(false, None, Some((true, &[5900]))), Some(vec![5900]));
+        assert_eq!(session_pare_feu(true, None, Some((false, &[]))), Some(vec![3389]));
+        assert_eq!(
+            session_pare_feu(true, None, Some((true, &[2222]))),
+            Some(vec![2222, 3389])
+        );
+    }
+
+    /// Relecture D5, point 1 : une règle de blocage « tous les ports » d'un programme (celles que l'invite du
+    /// pare-feu crée) faisait lire le port de la session comme déjà fermé, et la garde se taisait. Allumer le profil,
+    /// ou bloquer ses entrées, quand la règle du Bureau à distance manque, est refusé pendant une session, vraie ou
+    /// inconnue ; couper, autoriser, ou une valeur déjà telle ne l'est jamais.
+    #[test]
+    fn une_regle_de_blocage_d_un_programme_n_eteint_pas_la_garde() {
+        let bloque_jeu = RegleLue {
+            nom: "jeu.exe".into(),
+            entrante: true,
+            bloque: true,
+            active: true,
+            profils: 0x7FFF_FFFF,
+            programme: r"C:\Jeux\jeu.exe".into(),
+            protocole: PROTOCOLE_TOUS,
+            ..RegleLue::default()
+        };
+        let regles = [bloque_jeu.clone()];
+        let p = ProfilPareFeu::Prive;
+        let coupe = EtatProfil { actif: false, ..ALLUME };
+        let ouvert = EtatProfil {
+            entrant_bloque: false,
+            ..ALLUME
+        };
+        for s in sessions() {
+            for courants in [Some(2), None] {
+                let refus = |r, fermee, avant| refus_profil_session(Some(&s), courants, p, r, fermee, avant, &regles);
+                assert_eq!(refus(ReglagePareFeu::Actif, true, coupe), Some(RefusSession::PortFerme));
+                assert_eq!(
+                    refus(ReglagePareFeu::Entrant, true, ouvert),
+                    Some(RefusSession::PortFerme)
+                );
+                assert_eq!(refus(ReglagePareFeu::Actif, false, ALLUME), None);
+                assert_eq!(refus(ReglagePareFeu::Entrant, false, ALLUME), None);
+                assert_eq!(refus(ReglagePareFeu::Entrant, true, ALLUME), None);
+            }
+            // Profil non courant : réglable.
+            assert_eq!(
+                refus_profil_session(Some(&s), Some(4), p, ReglagePareFeu::Actif, true, coupe, &regles),
+                None
+            );
+        }
+        // Sans session : rien à garder.
+        assert_eq!(
+            refus_profil_session(None, Some(2), p, ReglagePareFeu::Actif, true, coupe, &regles),
+            None
+        );
+        // Avec la règle du Bureau à distance, la session du Bureau à distance garde son port : le blocage d'un
+        // programme « tous les ports » compte quand même, au plus prudent (la session pourrait être ce programme).
+        let avec_rdp = [regle_rdp(0x7FFF_FFFF), bloque_jeu];
+        let [rdp, _] = sessions();
+        assert_eq!(
+            refus_profil_session(Some(&rdp), Some(2), p, ReglagePareFeu::Actif, true, coupe, &avec_rdp),
+            Some(RefusSession::PortFerme)
+        );
+        assert_eq!(
+            refus_profil_session(
+                Some(&rdp),
+                Some(2),
+                p,
+                ReglagePareFeu::Actif,
+                true,
+                coupe,
+                &[regle_rdp(0x7FFF_FFFF)]
+            ),
+            None
+        );
+    }
+
+    /// Relecture D5, point 2b : le Bureau à distance sur un autre port (PortNumber) est gardé pendant une session
+    /// du Bureau à distance, ou si les connexions ne se lisent pas ; une table qui dit « aucune session » sans
+    /// Bureau à distance reste sans session.
+    #[test]
+    fn le_port_reel_du_bureau_a_distance_est_garde() {
+        assert_eq!(
+            session_pare_feu(true, Some(3390), Some((false, &[]))),
+            Some(vec![3389, 3390])
+        );
+        assert_eq!(session_pare_feu(false, Some(3390), None), Some(vec![22, 3389, 3390]));
+        assert_eq!(
+            session_pare_feu(false, Some(3390), Some((true, &[5900]))),
+            Some(vec![3390, 5900])
+        );
+        assert_eq!(session_pare_feu(false, Some(3390), Some((false, &[]))), None);
+        assert_eq!(session_pare_feu(true, Some(0), Some((false, &[]))), Some(vec![3389]));
+        assert_eq!(session_pare_feu(true, Some(3389), Some((false, &[]))), Some(vec![3389]));
+        // Allumer le profil avec la seule règle qui ouvre 3389, le Bureau à distance étant sur 3390 : refusé.
+        let s = session_pare_feu(true, Some(3390), Some((false, &[]))).unwrap();
+        let coupe = EtatProfil { actif: false, ..ALLUME };
+        assert_eq!(
+            refus_profil_session(
+                Some(&s),
+                Some(2),
+                ProfilPareFeu::Prive,
+                ReglagePareFeu::Actif,
+                true,
+                coupe,
+                &[regle_rdp(0x7FFF_FFFF)]
+            ),
+            Some(RefusSession::PortFerme)
+        );
+    }
+
+    /// Relecture D5, point 9 : deux règles du même nom et du même programme, l'une TCP et l'autre UDP, ou l'une
+    /// pour le sous-réseau local et l'autre partout, ou d'un autre service, n'ont pas la même empreinte : un choix
+    /// montré sous un nom ne change pas une autre règle.
+    #[test]
+    fn l_empreinte_distingue_protocole_adresses_et_service() {
+        let a = regle_rdp(0x7FFF_FFFF);
+        let udp = RegleLue {
+            protocole: 17,
+            ..a.clone()
+        };
+        let local = RegleLue {
+            adresses_distantes: "LocalSubnet".into(),
+            ..a.clone()
+        };
+        let service = RegleLue {
+            service: "autre".into(),
+            ..a.clone()
+        };
+        for b in [udp, local, service] {
+            assert_ne!(a.id(), b.id(), "{b:?}");
+        }
+        assert_eq!(a.id(), a.clone().id());
     }
 
     /// Les sessions simulées : vraie (Bureau à distance) et inconnue (connexions illisibles).
     fn sessions() -> [Vec<u16>; 2] {
         [
-            session_pare_feu(true, Some((false, &[]))).unwrap(),
-            session_pare_feu(false, None).unwrap(),
+            session_pare_feu(true, None, Some((false, &[]))).unwrap(),
+            session_pare_feu(false, None, None).unwrap(),
         ]
     }
 
@@ -8938,7 +9079,7 @@ mod tests {
             adresses_distantes: "192.168.1.20".into(),
             ..regle_rdp(0x7FFF_FFFF)
         };
-        let s = session_pare_feu(true, Some((false, &[]))).unwrap();
+        let s = session_pare_feu(true, None, Some((false, &[]))).unwrap();
         assert_eq!(
             refus_profil_session(
                 Some(&s),

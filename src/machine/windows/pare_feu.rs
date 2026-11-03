@@ -408,22 +408,41 @@ fn pare_feu_actif() -> Resultat {
 
 /// La garde de session pour allumer ce profil : la phrase du refus, ou `None` s'il peut l'être.
 fn garde_allumer(p: &INetFwPolicy2, regles: &INetFwRules, session: Option<&[u16]>, x: ProfilPareFeu) -> Option<String> {
-    let Some(avant) = etat_profil(p, x) else {
-        return Some(tr!("profil illisible, laissé tel quel", "profile unreadable, left as is").to_string());
-    };
+    garde_profil(p, regles, session, x, ReglagePareFeu::Actif, true)
+        .err()
+        .map(|e| match e {
+            PasEcrit::Refus(t) | PasEcrit::Echec(t) => t,
+        })
+}
+
+/// La garde de la session à distance pour ce réglage d'un profil (`gestes::refus_profil_session`), jugée sur ce qui
+/// est relu à l'instant : le profil, le masque courant, les règles. Sans session, rien à garder ; un profil ou des
+/// règles illisibles pendant une session : refusé, rien n'est écrit sans savoir.
+fn garde_profil(
+    pol: &INetFwPolicy2,
+    regles: &INetFwRules,
+    session: Option<&[u16]>,
+    p: ProfilPareFeu,
+    r: ReglagePareFeu,
+    fermee: bool,
+) -> Result<(), PasEcrit> {
+    if session.is_none() {
+        return Ok(());
+    }
+    let avant = etat_profil(pol, p).ok_or_else(|| {
+        PasEcrit::Refus(tr!("profil illisible, laissé tel quel", "profile unreadable, left as is").to_string())
+    })?;
     // SAFETY: objet COM valide ; la lecture rend une copie.
-    let courants = unsafe { p.CurrentProfileTypes() }.ok();
-    let texte = |e: PasEcrit| match e {
-        PasEcrit::Refus(t) | PasEcrit::Echec(t) => t,
-    };
-    let Ok((lues, illisibles)) = regles_com(regles) else {
-        return Some(texte(regles_illisibles()));
-    };
+    let courants = unsafe { pol.CurrentProfileTypes() }.ok();
+    let (lues, illisibles) = regles_com(regles).map_err(|_| regles_illisibles())?;
     if illisibles > 0 {
-        return Some(texte(regles_illisibles()));
+        return Err(regles_illisibles());
     }
     let lues: Vec<RegleLue> = lues.into_iter().map(|(l, _)| l).collect();
-    gestes::refus_profil_session(session, courants, x, ReglagePareFeu::Actif, true, avant, &lues).map(texte_refus)
+    match gestes::refus_profil_session(session, courants, p, r, fermee, avant, &lues) {
+        Some(refus) => Err(PasEcrit::Refus(texte_refus(refus))),
+        None => Ok(()),
+    }
 }
 
 /// Un réglage du profil Public : écrit, puis relu.
@@ -487,8 +506,22 @@ fn profil_public(p: ProfilPublic) -> Resultat {
         Ok(fait) => fait,
         Err(refus) => return refus,
     };
-    let r = dans_com(move |pol, _| {
+    let session = session_maintenant();
+    let r = dans_com(move |pol, regles| {
         for (reglage, valeur) in p.reglages() {
+            // Allumer le profil Public, ou bloquer ses entrées, pendant une session : la garde des choix du pare-feu
+            // (un port de la session fermé), rejugée ici. Refusé : rien de plus n'est écrit, c'est dit.
+            let garde = match (reglage, valeur) {
+                (ReglagePublic::Actif, ValeurPublic::Oui) => Some(ReglagePareFeu::Actif),
+                (ReglagePublic::EntrantBloque, ValeurPublic::Oui) => Some(ReglagePareFeu::Entrant),
+                _ => None,
+            };
+            if let Some(r) = garde
+                && let Err(PasEcrit::Refus(t) | PasEcrit::Echec(t)) =
+                    garde_profil(pol, regles, session.as_deref(), ProfilPareFeu::Public, r, true)
+            {
+                return Resultat::echec(trf!("{} : {t}", "{}: {t}", reglage.cle()));
+            }
             let fait = regler_public(pol, reglage, valeur);
             if !fait.reussi {
                 return fait;
@@ -761,8 +794,15 @@ pub(crate) fn nom_regle(id: IdChoix) -> Option<String> {
 /// aucune session, sûrement.
 fn session_maintenant() -> Option<Vec<u16>> {
     let lues = crate::protection::blocage::gardes::sessions_a_distance();
+    let port_rdp = super::registre::<u32>(
+        winreg::enums::HKEY_LOCAL_MACHINE,
+        r"SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp",
+        "PortNumber",
+    )
+    .and_then(|n| u16::try_from(n).ok());
     gestes::session_pare_feu(
         super::session_a_distance(),
+        port_rdp,
         lues.as_ref()
             .map(|s| (!s.sessions.is_empty(), s.ports_locaux.as_slice())),
     )
@@ -841,13 +881,11 @@ pub(crate) fn ecrire_choix(id: IdChoix, v: i64) -> Result<(), Echec> {
         Some(Ok(())) => Ok(()),
         Some(Err(PasEcrit::Refus(t))) => Err(Echec::refuse(CONTEXTE_CHOIX, t)),
         Some(Err(PasEcrit::Echec(t))) => Err(Echec::echoue(CONTEXTE_CHOIX, t)),
-        None => Err(Echec::echoue(
-            CONTEXTE_CHOIX,
-            tr!(
-                "le Pare-feu Windows n'a pas répondu dans la minute (le service mpssvc est peut-être arrêté), rien d'écrit",
-                "the Windows Firewall did not answer within a minute (the mpssvc service may be stopped), nothing written"
-            ),
-        )),
+        // Le fil laissé derrière peut encore écrire : sort inconnu, la note de la baisse est gardée (`choix_avant`).
+        None => Err(Echec::new(CONTEXTE_CHOIX, crate::modele::Raison::Delai).detail(tr!(
+            "le Pare-feu Windows n'a pas répondu dans la minute (ou ne s'est pas ouvert) : sort inconnu, l'écriture peut encore se faire ; relisez l'écran du pare-feu",
+            "the Windows Firewall did not answer within a minute (or did not open): outcome unknown, the write may still happen; re-read the firewall screen"
+        ))),
     }
 }
 
@@ -868,19 +906,8 @@ fn ecrire_profil(
             .to_string(),
         )
     };
-    let avant = etat_profil(pol, p).ok_or_else(illisible)?;
-    if session.is_some() {
-        // SAFETY: objet COM valide ; la lecture rend une copie.
-        let courants = unsafe { pol.CurrentProfileTypes() }.ok();
-        let (lues, illisibles) = regles_com(regles).map_err(|_| regles_illisibles())?;
-        if illisibles > 0 {
-            return Err(regles_illisibles());
-        }
-        let lues: Vec<RegleLue> = lues.into_iter().map(|(l, _)| l).collect();
-        if let Some(refus) = gestes::refus_profil_session(session, courants, p, r, fermee, avant, &lues) {
-            return Err(PasEcrit::Refus(texte_refus(refus)));
-        }
-    }
+    etat_profil(pol, p).ok_or_else(illisible)?;
+    garde_profil(pol, regles, session, p, r, fermee)?;
     let profil = NET_FW_PROFILE_TYPE2(p.bit());
     // SAFETY: objet COM valide ; le profil et les valeurs sont des constantes des énumérations.
     let ecrit = unsafe {
@@ -920,13 +947,17 @@ fn ecrire_regle(
     id: IdChoix,
     active: bool,
 ) -> Result<(), PasEcrit> {
-    let (lues, _) = regles_com(regles).map_err(|e| {
+    let (lues, illisibles) = regles_com(regles).map_err(|e| {
         PasEcrit::Echec(trf!(
             "règles du pare-feu illisibles ({}), rien d'écrit",
             "firewall rules unreadable ({}), nothing written",
             e.message()
         ))
     })?;
+    // Pendant une session, une règle illisible peut être celle qui la laisse entrer : rien n'est jugé sans elle.
+    if session.is_some() && illisibles > 0 {
+        return Err(regles_illisibles());
+    }
     let cibles: Vec<(RegleLue, INetFwRule)> = lues.into_iter().filter(|(l, _)| l.id() == id).collect();
     if cibles.is_empty() {
         return Err(PasEcrit::Echec(

@@ -202,7 +202,11 @@ pub(crate) fn faire_choix(m: &mut impl Monde, id: IdChoix, cible: i64, montre: O
                 return Issue::EchecNote;
             }
             if let Err(e) = m.ecrire(id, cible) {
-                remettre_note(m, &nom, ancienne.as_deref());
+                // Délai dépassé : l'écriture peut encore se faire après coup ; la note reste, pour que le bilan dise
+                // « par votre choix » et que « Rallumer » sache où revenir.
+                if e.raison != crate::modele::Raison::Delai {
+                    remettre_note(m, &nom, ancienne.as_deref());
+                }
                 return Issue::Echec {
                     avant: Some(avant),
                     raison: e.to_string(),
@@ -629,6 +633,8 @@ mod tests {
         /// Windows garde la valeur sans erreur (protection contre les falsifications).
         garde: bool,
         ecriture_refusee: bool,
+        /// L'écriture dépasse le délai, puis se fait quand même (le fil laissé derrière).
+        ecriture_en_retard: bool,
         ecritures: Vec<(String, i64)>,
         journal: Vec<String>,
     }
@@ -651,6 +657,10 @@ mod tests {
         fn ecrire(&mut self, id: IdChoix, v: i64) -> Result<(), Echec> {
             if self.ecriture_refusee {
                 return Err(Echec::refuse("essai", "refus"));
+            }
+            if self.ecriture_en_retard {
+                self.valeurs.insert(id.texte(), Some(v));
+                return Err(Echec::new("essai", crate::modele::Raison::Delai));
             }
             self.ecritures.push((id.texte(), v));
             if !self.garde {
@@ -992,5 +1002,28 @@ mod tests {
         let mut m = Faux::avec(profil, Some(0));
         assert!(matches!(rallumer(&mut m, profil), Issue::Fait { .. }));
         assert_eq!(m.ecritures, vec![(profil.texte(), 1)]);
+    }
+
+    /// Une écriture qui dépasse le délai peut se faire après coup (le fil laissé derrière) : la note de la baisse
+    /// reste, pour que le bilan dise « par votre choix » et que « Rallumer » remette la valeur d'avant. Un refus,
+    /// lui, retire la note.
+    #[test]
+    fn une_baisse_en_retard_garde_sa_note() {
+        use crate::machine::gestes::{ProfilPareFeu, ReglagePareFeu};
+        let profil = IdChoix::PareFeu(ProfilPareFeu::Domaine, ReglagePareFeu::Actif);
+        let mut m = Faux::avec(profil, Some(1));
+        m.ecriture_en_retard = true;
+        assert!(matches!(baisser(&mut m, profil, 0), Issue::Echec { .. }));
+        assert_eq!(m.valeur(profil), Some(0));
+        let n = note_valide(&mut m, profil).expect("note gardée");
+        assert_eq!(n.avant, Some(1));
+        m.ecriture_en_retard = false;
+        assert!(matches!(rallumer(&mut m, profil), Issue::Fait { .. }));
+        assert_eq!(m.valeur(profil), Some(1));
+        assert!(m.notes.is_empty());
+        let mut m = Faux::avec(profil, Some(1));
+        m.ecriture_refusee = true;
+        assert!(matches!(baisser(&mut m, profil, 0), Issue::Echec { .. }));
+        assert!(m.notes.is_empty());
     }
 }
