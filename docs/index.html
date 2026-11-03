@@ -204,7 +204,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <a class="marque" href="#haut" id="haut">
 <span class="plaque" aria-hidden="true"><svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><path fill="#ffffff" d="M8 12h22l20 52 20-52h22L60 90H40z"/><path fill="#0d0f12" d="M30 12h6l14 37 14-37h6L50 66z"/></svg></span>
 <b>VANGUARD</b>
-<span class="version">0.89.0</span>
+<span class="version">0.89.1</span>
 </a>
 <nav class="nav" aria-label="Sections">
 <a href="#comment">Comment ça marche</a>
@@ -416,14 +416,16 @@ main { gap: 3.5rem; padding-block: 3rem; }
 </ul>
 </article>
 <article class="domaine" id="suivi">
-<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M9 8h6M9 12h6"/></svg></span><div><h3>Suivi, outils et clé USB</h3><span class="touche">menu 10 · 13 · vanguard guide · parametres · extensions · verifier-cle</span></div></header>
+<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M9 8h6M9 12h6"/></svg></span><div><h3>Suivi, outils et clé USB</h3><span class="touche">menu 10 · 13 · vanguard guide · parametres · agent · extensions · verifier-cle</span></div></header>
 <ul>
 <li><b>Rapport HTML</b> avec la courbe des notes, entretien du mois, apprentissage, ce que Vanguard a changé.</li>
 <li><b>Menus au clavier</b> : → entre, ← revient ; la fenêtre ouverte pour Vanguard prend la taille du menu et se centre.</li>
-<li><b>Paramètres</b> au même endroit : langue, travail sans Internet, protection en temps réel, surveillance, entretien, blocage, restrictions des extensions ; « s » au menu principal.</li>
+<li><b>Paramètres</b> au même endroit : langue, travail sans Internet, protection en temps réel, surveillance, entretien, blocage, restrictions des extensions, Agent Vanguard, partage avec l'auteur ; « s » au menu principal.</li>
+<li><b>Agent Vanguard (sans IA)</b> : quatre missions, chacune avec son interrupteur (délais et seconds essais, cache du passage horaire, relevé local, avis sur les corrections), entre des bornes écrites dans le code ; il ne règle que dans le sens sûr (un délai qui monte, une cache qui raccourcit ou se coupe, un second essai), chaque changement noté dans un journal scellé et annulable ; couper une mission ne retire aucune vérification ; <code>vanguard agent</code> le montre en lecture seule.</li>
+<li><b>Partage avec l'auteur</b> : un relevé local des erreurs, lenteurs et corrections de Vanguard, en comptes agrégés, sans mot de passe, contenu de fichier, site visité ni inventaire des logiciels ; « Voir ce qui serait envoyé » montre le lot exact, « Non » l'efface. Dans cette version, rien ne part : le relais de l'auteur n'est pas en service.</li>
 <li><b>Extensions personnelles</b> dans Vanguard, sans toucher à son code : un plugin (un dossier avec <code>plugin.toml</code>, ajouté depuis un dossier ou une archive .zip) ou un script du labo posé tel quel ; leurs constats à part, hors de la note.</li>
 <li><b>Vérifiées avant de tourner</b> : tout le dossier analysé (YARA, MalwareBazaar) et approuvé par ses empreintes SHA-256 ; c'est la copie vérifiée qui tourne, sans terminal, bornée, jamais toute seule en administrateur ; un plugin en Rust s'écrit avec la bibliothèque <code>extensions/sdk</code>.</li>
-<li><b>1 177 commandes expliquées</b> pour Omarchy, Arch, Fedora, Debian, Ubuntu, Windows et macOS, plus de 30 000 exemples.</li>
+<li><b>1 180 commandes expliquées</b> pour Omarchy, Arch, Fedora, Debian, Ubuntu, Windows et macOS, plus de 30 000 exemples.</li>
 <li><b>La clé USB</b> : protégée en écriture ailleurs que sur l'ordinateur du propriétaire ; Vanguard mis à jour depuis la clé ou depuis GitHub (versions signées par l'auteur, avec une seconde clé de signature, gardée hors ligne, qui peut révoquer la principale, et jamais de retour à une version plus ancienne). Une clé qui démarre aussi les ordinateurs en panne (Omarchy, SystemRescue, Windows 11…) est en développement.</li>
 <li><b>Retirer Vanguard</b> de cet ordinateur : tout ce qu'il a posé, retrouvé, montré puis coché ; les données gardées sauf accord à part, la clé jamais touchée.</li>
 </ul>
@@ -453,10 +455,10 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <p>Pour qui veut connaître le fonctionnement interne : les règles du bilan, les interfaces du système lues directement en Rust, les sources de menaces, la chaîne de confiance des mises à jour, et chaque commande.</p>
 </div>
 <dl class="specs">
-<div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 281 000 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
+<div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 306 400 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
 <div><dt>Programme</dt><dd>Un seul exécutable, rien à installer : Linux x86_64 (statique, musl), Windows x86_64, macOS Apple Silicon et Intel</dd></div>
 <div><dt>Règles du bilan</dt><dd>171 règles à identifiant stable (<code>LNX-SSH-006</code>) : 94 sous Linux, 82 sous Windows, 71 sous macOS, communes comprises ; 34 fiches d'audit du réseau</dd></div>
-<div><dt>Interface</dt><dd>Menu au clavier, ou 83 commandes en ligne ; sorties <code>--json</code>, rapport HTML ou Markdown</dd></div>
+<div><dt>Interface</dt><dd>Menu au clavier, ou 84 commandes en ligne ; sorties <code>--json</code>, rapport HTML ou Markdown</dd></div>
 <div><dt>Moteurs intégrés</dt><dd>moteur YARA maison (règles YARA, YARA-X en oracle des tests), reqwest + rustls/ring (HTTPS sans OpenSSL), tokio (scan asynchrone), lecteur de plist et client UPnP maison ; chaque bibliothèque vérifiée par cargo deny (failles connues, licences, provenance)</dd></div>
 <div><dt>Cryptographie</dt><dd>Ed25519 (versions signées, clé principale et clé de secours), SHA-256, BLAKE3 (intégrité, état de Vanguard et journal des événements scellés), XChaCha20-Poly1305 + Argon2 (carnet chiffré)</dd></div>
 <div><dt>Blocage</dt><dd>Par les outils du système, montrés avant d'agir : ufw ou une table nftables sous Linux, le Pare-feu Windows par PowerShell, une ancre pf sous macOS ; le programme revérifié dans la commande même de l'arrêt ; la liste des pilotes vulnérables de Microsoft écrite par Vanguard lui-même</dd></div>
@@ -547,7 +549,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 </ol>
 <h3 class="sous-titre">Toutes les commandes</h3>
 <details class="cli">
-<summary>83 commandes en ligne <span>· le nom anglais marche aussi · sans argument, le menu · liste tirée de <code>vanguard --help</code></span></summary>
+<summary>84 commandes en ligne <span>· le nom anglais marche aussi · sans argument, le menu · liste tirée de <code>vanguard --help</code></span></summary>
 <dl class="cli-liste">
 <div><dt>bilan <i>check</i></dt><dd>Bilan complet : cet ordinateur puis le réseau</dd></div>
 <div><dt>audit</dt><dd>Audit de cet ordinateur (pare-feu, ports, SSH, mises à jour, chiffrement…)</dd></div>
@@ -632,6 +634,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <div><dt>plugins</dt><dd>Plugins : des programmes à vous ajoutés à Vanguard sans changer son code (essais, outils expérimentaux),…</dd></div>
 <div><dt>labo <i>lab</i></dt><dd>Laboratoire : un script posé tel quel dans le dossier du labo (.sh, .bash, .ps1, .py ou un programme), pour…</dd></div>
 <div><dt>extensions</dt><dd>Extensions : le menu des plugins et des scripts du labo, à choisir et lancer</dd></div>
+<div><dt>agent</dt><dd>L&#x27;Agent Vanguard (sans IA), en lecture seule : ses missions (délais, cache, relevé local, avis sur les…</dd></div>
 </dl>
 </details>
 <pre class="exemple"><span class="g"># l'audit du réseau, lisible par un script</span>
@@ -645,9 +648,11 @@ vanguard yara --complet</pre>
 <div class="tete-section">
 <p class="surtitre">Nouveautés de la version 0.89</p>
 <h2>Ce qui vient d'arriver</h2>
-<p>Une version où les corrections de Windows se font sans PowerShell, et où un verdict ne ment plus : une menace notée, une pièce jointe piégée ou un échec sont dits comme tels.</p>
+<p>Une version où les corrections de Windows se font sans PowerShell, et où un verdict ne ment plus : une menace notée, une pièce jointe piégée ou un échec sont dits comme tels. La 0.89.1 y ajoute l'Agent Vanguard, sans IA, et prépare le partage avec l'auteur, sans rien envoyer.</p>
 </div>
 <ul class="nouveautes">
+<li><b>Agent Vanguard (sans IA)</b><span>Il règle Vanguard lui-même, dans le sens sûr seulement : un délai qui monte, une cache qui raccourcit ou se coupe ; quatre missions, un interrupteur chacune, tout s'annule.</span></li>
+<li><b>Partage avec l'auteur, préparé</b><span>Un relevé local, lisible tel quel, effacé par « Non » ; rien ne part dans cette version, faute de relais en service.</span></li>
 <li><b>Services de Windows sans PowerShell</b><span>Arrêter, démarrer, désactiver ou remettre un service passe directement par Windows ; aucune action ne peut couper une protection.</span></li>
 <li><b>Pare-feu et type de réseau sans PowerShell</b><span>Chaque changement est relu ; jamais de blocage des entrées pendant une connexion à distance.</span></li>
 <li><b>Onze corrections du registre sans PowerShell</b><span>Bureau à distance, NetBIOS, SMBv1, débogueurs piégés… : la valeur est rejugée juste avant d'écrire, et celle d'avant notée pour Défaire.</span></li>
@@ -700,9 +705,9 @@ vanguard yara --complet</pre>
 <h2>Écrit en Rust, testé à chaque version</h2>
 </div>
 <div class="chiffres">
-<div class="chiffre"><b>≈ 281 000</b><span>lignes de code Rust</span></div>
-<div class="chiffre"><b>2 654</b><span>tests sous Linux</span></div>
-<div class="chiffre"><b>2 320</b><span>tests sous Windows (Wine)</span></div>
+<div class="chiffre"><b>≈ 306 400</b><span>lignes de code Rust</span></div>
+<div class="chiffre"><b>2 926</b><span>tests sous Linux</span></div>
+<div class="chiffre"><b>2 587</b><span>tests sous Windows (Wine)</span></div>
 <div class="chiffre"><b>221</b><span>vérifications sur un vrai Windows</span></div>
 </div>
 <p class="note">Chaque version passe par des relectures de sécurité indépendantes, par un vrai Windows qui se teste tout seul et par un Mac de GitHub. Cette page est refaite par le script de publication à chaque version.</p>
@@ -775,7 +780,7 @@ vanguard yara --complet</pre>
 </section>
 </main>
 <footer>
-<div class="cadre"><span>Vanguard 0.89.0 · 1 novembre 2026</span><span><a href="https://github.com/d9v3/vanguard-beta">Logiciel libre · GPL-3.0-or-later</a></span></div>
+<div class="cadre"><span>Vanguard 0.89.1 · 3 novembre 2026</span><span><a href="https://github.com/d9v3/vanguard-beta">Logiciel libre · GPL-3.0-or-later</a></span></div>
 </footer>
 </body>
 </html>
