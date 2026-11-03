@@ -30,7 +30,7 @@ if [[ -z ${ESSAI_VEILLE_DEDANS:-} ]]; then
   # (--offline : rien n'est téléchargé), dans la compilation habituelle du dépôt.
   ESSAI_VANGUARD=""
   RACINE=$(cd "$ICI/../.." && pwd)
-  if (cd "$RACINE" && cargo build -q --locked --offline --bin vanguard) >"$BANC/compilation.log" 2>&1; then
+  if (cd "$RACINE" && cargo build -q --locked --offline --bin vanguard --features reception) >"$BANC/compilation.log" 2>&1; then
     ESSAI_VANGUARD=$(cd "$RACINE" && cargo metadata -q --format-version 1 --no-deps --offline |
       jq -r .target_directory)/$(sed -n 's/^target = "\(.*\)"$/\1/p' "$RACINE/.cargo/config.toml" | head -n1)/debug/vanguard
   fi

@@ -42,6 +42,12 @@ sha2 = { version = "0.11.1", default-features = false }
 tokio = { version = "1.53.3", features = ["rt", "rt-multi-thread", "net", "time", "io-util", "macros"] }
 ed25519-dalek = { version = "3.0.0", default-features = false }
 
+[features]
+# La réception chez l'auteur (`vanguard compte-rendu flotte` et `envois`, src/compte_rendu/flotte.rs) : la veille de
+# nuit la compile depuis les sources (outils/veille/nuit.sh). Hors du programme publié, qui n'a aucune relève à lire.
+# verifier.sh compile, passe à clippy et teste les deux : avec elle pour Linux, sans elle sur les quatre cibles.
+reception = []
+
 [target."cfg(windows)".dependencies]
 winreg = "0.56.0"
 # WMI et COM sans PowerShell (Microsoft) : seulement les fonctions lues par Vanguard, jamais l'interface graphique

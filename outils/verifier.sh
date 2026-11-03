@@ -94,7 +94,7 @@ internet() { [[ -z ${VANGUARD_HORS_LIGNE:-} ]] && curl -fsI --max-time 5 https:/
 # ring (TLS du client HTTPS) et YARA-X (l'oracle des tests, par wasmtime) compilent un peu de C : musl-gcc pour Linux, le gcc de MinGW pour
 # Windows ; clippy n'assemble jamais le programme.
 clippy() {
-  cargo clippy -q --locked --all-targets --target "$1" -- -D warnings
+  cargo clippy -q --locked --all-targets --target "$1" "${@:2}" -- -D warnings
 }
 
 # La régression de détection (src/modele/corpus.rs) : le corpus seul, pour que sa ligne se voie au résumé à côté des
@@ -142,9 +142,9 @@ sautes() { echo "$TRAVAIL/sautes-$1.txt"; }
 # test au lieu de le dire sauté), sauf en CI, où les runners n'ouvrent pas le connecteur de processus.
 tests_linux() {
   if [[ $MODE == --ci ]]; then
-    VANGUARD_TESTS_SAUTES=$(sautes tests-linux) cargo test -q --locked
+    VANGUARD_TESTS_SAUTES=$(sautes tests-linux) cargo test -q --locked --features reception
   else
-    VANGUARD_TESTS_SAUTES=$(sautes tests-linux) VANGUARD_EXIGER_VEILLEUR=1 cargo test -q --locked
+    VANGUARD_TESTS_SAUTES=$(sautes tests-linux) VANGUARD_EXIGER_VEILLEUR=1 cargo test -q --locked --features reception
   fi
 }
 
@@ -230,7 +230,7 @@ EOF
 hors_ligne() {
   unshare -rn true 2>/dev/null || { echo "espaces de noms d'utilisateur indisponibles"; return 2; }
   VANGUARD_TESTS_SAUTES=$(sautes tests-hors-ligne) \
-    unshare -rn sh -c 'ip link set lo up && VANGUARD_HORS_LIGNE=1 exec cargo test -q --locked --offline'
+    unshare -rn sh -c 'ip link set lo up && VANGUARD_HORS_LIGNE=1 exec cargo test -q --locked --offline --features reception'
 }
 
 rejeu_powershell() {
@@ -458,7 +458,8 @@ fi
 
 # Pas d'exigence du veilleur dans la passe sans Internet, où le connecteur de processus n'existe pas.
 {
-  etape clippy-linux clippy x86_64-unknown-linux-musl && etape tests-linux tests_linux &&
+  etape clippy-linux clippy x86_64-unknown-linux-musl &&
+    etape clippy-reception clippy x86_64-unknown-linux-musl --features reception && etape tests-linux tests_linux &&
     { etape durcissement durcissement || true; } && etape regression-detection regression_linux &&
     if [[ $MODE != --rapide ]]; then etape tests-hors-ligne hors_ligne; fi
 } &
@@ -606,6 +607,7 @@ remarques_dependances() {
 echo
 ligne mise-en-forme "mise en forme"
 ligne clippy-linux "clippy Linux"
+ligne clippy-reception "clippy Linux, réception de l'auteur"
 [[ -z $SEULEMENT ]] && compte_unsafe | tee -a "$RESUME"
 ligne tests-linux "tests Linux ($(passes tests-linux))"
 raisons_des_sautes tests-linux

@@ -21,7 +21,9 @@ pub(crate) mod champs;
 // Le lot de schéma 2 (lot A3) : construit et relu seulement, rien ne l'envoie avant A4.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod envoi;
-// La réception chez l'auteur (lot A8) : relève du relais relue et agrégée pour la veille de nuit.
+// La réception chez l'auteur (lot A8) : relève du relais relue et agrégée pour la veille de nuit. Seulement avec la
+// feature `reception` : le programme publié n'a aucune relève à lire, il n'emporte pas ce code.
+#[cfg(feature = "reception")]
 pub(crate) mod flotte;
 pub(crate) mod journal;
 pub(crate) mod triage;
@@ -342,6 +344,7 @@ pub(crate) enum Quoi {
         sortie: std::path::PathBuf,
     },
     /// La relève brute du relais relue lot par lot (`retours/envois`) : une ligne de comptes, rien d'écrit.
+    #[cfg(feature = "reception")]
     Envois {
         /// Le dossier de la relève (`retours/envois`).
         #[arg(long)]
@@ -354,6 +357,7 @@ pub(crate) enum Quoi {
         aujourdhui: Option<String>,
     },
     /// La même lecture, agrégée par version dans `veille/etat/flotte` (une voix par source et par jour).
+    #[cfg(feature = "reception")]
     Flotte {
         /// Le dossier de la relève (`retours/envois`).
         #[arg(long)]
@@ -432,11 +436,13 @@ pub(crate) fn executer(quoi: &Quoi) -> i32 {
                 }
             }
         }
+        #[cfg(feature = "reception")]
         Quoi::Envois {
             dossier,
             references,
             aujourdhui,
         } => flotte_lancee(dossier, references, None, aujourdhui.as_deref(), None),
+        #[cfg(feature = "reception")]
         Quoi::Flotte {
             dossier,
             references,
@@ -459,6 +465,7 @@ pub(crate) fn executer(quoi: &Quoi) -> i32 {
 }
 
 /// `envois` (sans état, rien d'écrit) ou `flotte` : la ligne de comptes sur la sortie, la phrase sur l'erreur.
+#[cfg(feature = "reception")]
 fn flotte_lancee(
     dossier: &std::path::Path,
     references: &std::path::Path,

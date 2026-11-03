@@ -209,7 +209,7 @@ if [[ -n $ARBRE_OK ]]; then
   else
     flotte_de_nuit() {
       "$ICI/references-flotte.sh" "$ARBRE" "$TRAVAIL/references" || return 1
-      cargo run -q --locked ${SANS_RESEAU:+--offline} -- compte-rendu flotte --dossier "$RETOURS/envois" --references "$TRAVAIL/references" \
+      cargo run -q --locked ${SANS_RESEAU:+--offline} --features reception -- compte-rendu flotte --dossier "$RETOURS/envois" --references "$TRAVAIL/references" \
         --etat "$ETAT/flotte" --aujourdhui "$JOUR" --signaux "$TRAVAIL/flotte-signaux.json" \
         --tickets "$RETOURS/tickets" --noms "$ICI/noms-connus.txt" --arbre "$ARBRE" >"$TRAVAIL/flotte-comptes.txt"
     }
