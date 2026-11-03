@@ -168,19 +168,38 @@ fn retirer_marque_dans(dossier: &Path) -> std::io::Result<()> {
 /// (dès qu'elle est là, le refus tient, même si le fichier ne s'écrit pas) ; « oui » : le fichier d'abord, la marque
 /// retirée ensuite (jusque-là, le refus tient). Un « oui » qui lève la marque prend le jour d'aujourd'hui, même si le
 /// fichier en gardait un plus ancien : rien de relevé avant ne part. Rend la première erreur.
+///
+/// Sans verrou, un « oui » et un « non » donnés en même temps (deux Vanguard ouverts) pourraient finir en « non » dans
+/// le fichier sans marque, que la 0.89.0 oublierait : le « non » repose donc la marque après le fichier, et le « oui »
+/// relit le fichier après l'avoir retirée. Quel que soit l'ordre, l'un des deux voit l'autre.
 fn enregistrer_choix_dans(dossier: &Path, choix: Choix, aujourd_hui: NaiveDate) -> std::io::Result<()> {
     let chemin = dossier.join(PARAMETRES);
     match choix {
         Choix::Non => {
             let marque = poser_marque_dans(dossier, aujourd_hui);
             let fichier = ecrire_choix_dans(&chemin, choix, aujourd_hui);
-            marque.and(fichier)
+            let encore = poser_marque_dans(dossier, aujourd_hui);
+            marque.and(fichier).and(encore)
         }
         Choix::Oui => {
             ecrire_choix_garde(&chemin, choix, aujourd_hui, !marque_dans(dossier))?;
-            retirer_marque_dans(dossier)
+            retirer_marque_dans(dossier)?;
+            garder_un_non_arrive(dossier, aujourd_hui)
         }
     }
+}
+
+/// Après un « oui » qui a retiré la marque : si le fichier ne dit plus « oui » (un « non » écrit entre-temps, ou un
+/// doute), la marque revient et le « oui » n'est pas pris.
+fn garder_un_non_arrive(dossier: &Path, aujourd_hui: NaiveDate) -> std::io::Result<()> {
+    if !refuse_dans(dossier) {
+        return Ok(());
+    }
+    poser_marque_dans(dossier, aujourd_hui)?;
+    Err(std::io::Error::other(tr!(
+        "un « non » donné en même temps l'emporte",
+        "a “no” given at the same time wins"
+    )))
 }
 
 /// Le fichier des paramètres a disparu après avoir été scellé, ou les sceaux ont été refaits sans lui : un « non »
@@ -424,8 +443,17 @@ pub(crate) fn voir() {
 // --- Ce qui change -----------------------------------------------------------------------------------------------
 
 fn dire_oui() -> bool {
-    if let Err(e) = enregistrer_choix_dans(&crate::socle::dossier_local(), Choix::Oui, aujourd_hui()) {
-        trp!("  ✖ Non enregistré ({e}).", "  ✖ Not saved ({e}).");
+    let dossier = crate::socle::dossier_local();
+    if let Err(e) = enregistrer_choix_dans(&dossier, Choix::Oui, aujourd_hui()) {
+        // Le fichier a pu prendre le « oui » sans que la marque parte : le refus tient, il faut le dire tel quel.
+        if refuse_dans(&dossier) {
+            trp!(
+                "  ✖ « Oui » pas pris ({e}) : le « non » tient, rien n'est relevé ni envoyé.",
+                "  ✖ “Yes” not taken ({e}): the “no” holds, nothing is recorded or sent."
+            );
+        } else {
+            trp!("  ✖ Non enregistré ({e}).", "  ✖ Not saved ({e}).");
+        }
         return false;
     }
     trp!(
@@ -1007,10 +1035,32 @@ mod tests {
             assert_eq!(std::fs::read(ailleurs.join("cible.txt")).unwrap(), b"alice");
             assert!(!ailleurs.join("absent").exists());
             enregistrer_choix_dans(&dossier, Choix::Oui, d(9)).unwrap();
-            assert!(std::fs::symlink_metadata(&marque).is_err() && ailleurs.join("cible.txt").exists());
+            assert!(
+                std::fs::symlink_metadata(&marque).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+                    && ailleurs.join("cible.txt").exists()
+            );
         }
         let _ = std::fs::remove_dir_all(&dossier);
         let _ = std::fs::remove_dir_all(&ailleurs);
+    }
+
+    /// Un « oui » et un « non » en même temps : le « oui » a écrit le fichier, le « non » l'a récrit, puis le « oui »
+    /// retire la marque. En relisant, il la repose et n'est pas pris ; sans « non » arrivé, rien ne change.
+    #[test]
+    fn oui_et_non_en_meme_temps() {
+        let dossier = jetable("en-meme-temps");
+        let marque = dossier.join(MARQUE_NON);
+        ecrire_choix_dans(&dossier.join(PARAMETRES), Choix::Non, d(9)).unwrap();
+        assert!(!marque_dans(&dossier));
+        assert!(garder_un_non_arrive(&dossier, d(9)).is_err());
+        assert!(marque.is_file() && refuse_dans(&dossier));
+        assert_eq!(accord_dans(&dossier, d(10)), None);
+        // Un « oui » seul, ensuite : pris, et rien n'est reposé.
+        enregistrer_choix_dans(&dossier, Choix::Oui, d(10)).unwrap();
+        assert!(!marque_dans(&dossier) && garder_un_non_arrive(&dossier, d(10)).is_ok());
+        assert!(!marque_dans(&dossier));
+        assert_eq!(accord_dans(&dossier, d(11)), Some(d(10)));
+        let _ = std::fs::remove_dir_all(&dossier);
     }
 
     /// « Non » efface le relevé, la file et l'identifiant ; rien d'autre : ni le fichier des paramètres, ni les mesures, ni
