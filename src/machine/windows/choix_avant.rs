@@ -34,7 +34,7 @@ pub(crate) trait Monde {
     fn lire(&mut self, id: IdChoix) -> Option<Option<i64>>;
     /// Écrit la valeur exacte ; `Err` : le refus, prêt à montrer.
     fn ecrire(&mut self, id: IdChoix, v: i64) -> Result<(), Echec>;
-    /// Relit après l'écriture de `v` (le temps réel met un instant à changer : relu quelques fois).
+    /// Relit après l'écriture de `v` (Defender met un instant à appliquer : `relire_jusqu_a`).
     #[allow(clippy::option_option)] // None : illisible ; Some(None) : valeur absente
     fn relire(&mut self, id: IdChoix, v: i64) -> Option<Option<i64>>;
     /// Les octets de la note `nom`, s'il y en a une.
@@ -254,6 +254,29 @@ pub(crate) fn faire_choix(m: &mut impl Monde, id: IdChoix, cible: i64, montre: O
             }
         }
     }
+}
+
+/// Relit après l'écriture de `v`, jusqu'à la lire, au plus `fois` lectures (au moins une), chacune après
+/// `attendre` ; sans elle, la dernière lecture. Defender accepte un réglage puis l'applique un instant après : le
+/// temps réel, mais aussi la protection réseau (D3 4b, VM du 3 nov. : mise, mais relue aussitôt à l'ancienne
+/// valeur, donc « bloqué par une stratégie » et code 1). Une lecture illisible n'arrête pas l'attente : seule la
+/// dernière tranche.
+#[allow(clippy::option_option)] // None : illisible ; Some(None) : valeur absente
+pub(crate) fn relire_jusqu_a(
+    v: i64,
+    fois: u32,
+    mut lire: impl FnMut() -> Option<Option<i64>>,
+    mut attendre: impl FnMut(),
+) -> Option<Option<i64>> {
+    let mut lue = None;
+    for _ in 0..fois.max(1) {
+        attendre();
+        lue = lire();
+        if lue == Some(Some(v)) {
+            break;
+        }
+    }
+    lue
 }
 
 /// Rallume ce qu'un choix a baissé : la cible vient de la note valide si elle est au moins allumée, sinon de la
@@ -1025,5 +1048,42 @@ mod tests {
         m.ecriture_refusee = true;
         assert!(matches!(baisser(&mut m, profil, 0), Issue::Echec { .. }));
         assert!(m.notes.is_empty());
+    }
+
+    /// D3 4b : la valeur écrite arrive après quelques lectures, ou jamais ; l'attente est bornée, une lecture
+    /// illisible ne l'arrête pas, et la valeur venue l'arrête aussitôt.
+    #[test]
+    fn relecture_bornee_jusqu_a_la_valeur_ecrite() {
+        let essai = |lectures: Vec<Option<Option<i64>>>, fois| {
+            let mut suite = lectures.into_iter();
+            let (mut lues, mut attentes) = (0, 0);
+            let lue = relire_jusqu_a(
+                2,
+                fois,
+                || {
+                    lues += 1;
+                    suite.next().unwrap_or(Some(Some(0)))
+                },
+                || attentes += 1,
+            );
+            (lue, lues, attentes)
+        };
+        // Tout de suite.
+        assert_eq!(essai(vec![Some(Some(2))], 10), (Some(Some(2)), 1, 1));
+        // L'ancienne valeur deux fois, une lecture illisible, puis la bonne : attendue, pas un échec.
+        assert_eq!(
+            essai(vec![Some(Some(0)), Some(Some(0)), None, Some(Some(2))], 10),
+            (Some(Some(2)), 4, 4)
+        );
+        // Jamais : dix lectures au plus, la dernière rendue (l'ancienne valeur : le refus se dit ensuite).
+        assert_eq!(essai(vec![], 10), (Some(Some(0)), 10, 10));
+        // Illisible à la dernière : illisible.
+        let mut lectures = vec![Some(Some(0)); 9];
+        lectures.push(None);
+        assert_eq!(essai(lectures, 10), (None, 10, 10));
+        // Absente (règle ASR retirée) jusqu'au bout.
+        assert_eq!(essai(vec![Some(None); 3], 3), (Some(None), 3, 3));
+        // Zéro fois : une lecture quand même.
+        assert_eq!(essai(vec![Some(Some(2))], 0), (Some(Some(2)), 1, 1));
     }
 }

@@ -25,7 +25,8 @@ const IDS_ASR: &str = "AttackSurfaceReductionRules_Ids";
 const ACTIONS_ASR: &str = "AttackSurfaceReductionRules_Actions";
 /// Une méthode de Defender répond en quelques secondes ; retirer des menaces peut effacer des fichiers, plus long.
 const DELAI: Duration = Duration::from_secs(120);
-/// Le temps réel met un instant à repartir après l'écriture : relu jusqu'à 5 s (10 fois, toutes les 500 ms).
+/// Defender applique un réglage un instant après l'écriture (le temps réel, la protection réseau) : relu jusqu'à
+/// 5 s (10 fois, toutes les 500 ms).
 const RELECTURES: u32 = 10;
 const PAUSE: Duration = Duration::from_millis(500);
 
@@ -214,17 +215,10 @@ impl choix_avant::Monde for Monde {
         appeler_avec(PREFERENCES, methode, parametres, baisse)
     }
 
-    /// Le temps réel met un instant à changer : relu jusqu'à 5 s, jusqu'à la valeur écrite.
+    /// Tout réglage, pas seulement le temps réel : relu jusqu'à 5 s, jusqu'à la valeur écrite (D3 4b : la
+    /// protection réseau, relue aussitôt, était encore à l'ancienne valeur).
     fn relire(&mut self, id: IdChoix, v: i64) -> Option<Option<i64>> {
-        if id == IdChoix::Defender(ReglageDefender::TempsReel) {
-            for _ in 0..RELECTURES {
-                std::thread::sleep(PAUSE);
-                if lire_choix(id) == Some(Some(v)) {
-                    return Some(Some(v));
-                }
-            }
-        }
-        lire_choix(id)
+        choix_avant::relire_jusqu_a(v, RELECTURES, || lire_choix(id), || std::thread::sleep(PAUSE))
     }
 
     fn lire_note(&mut self, nom: &str) -> Option<Vec<u8>> {
