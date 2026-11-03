@@ -3,8 +3,8 @@
 //! COMPlus_* chargeraient une DLL dans PowerShell, PSModulePath ferait charger un module des Documents, PATH ferait
 //! trouver un faux programme. Seule une liste fixe de variables passe, chacune calculée par Windows.
 
-// FFI de kernel32 (GetSystemWindowsDirectoryW, GetComputerNameW, IsWow64Process2) et de shell32 (SHGetKnownFolderPath) :
-// les dossiers et la machine demandés à Windows plutôt qu'à l'environnement.
+// FFI de kernel32 (GetSystemWindowsDirectoryW, GetComputerNameW, IsWow64Process2, GetLongPathNameW) et de shell32
+// (SHGetKnownFolderPath) : les dossiers et la machine demandés à Windows plutôt qu'à l'environnement.
 #![allow(unsafe_code)]
 
 use std::ffi::OsString;
@@ -190,6 +190,7 @@ unsafe extern "system" {
     fn GetCurrentProcess() -> *mut std::ffi::c_void;
     fn GetModuleHandleW(nom: *const u16) -> *mut std::ffi::c_void;
     fn GetProcAddress(module: *mut std::ffi::c_void, nom: *const u8) -> *mut std::ffi::c_void;
+    fn GetLongPathNameW(court: *const u16, long: *mut u16, taille: u32) -> u32;
 }
 
 /// IsWow64Process2 (learn.microsoft.com) : la machine du processus et celle du système.
@@ -282,6 +283,30 @@ pub(crate) fn demarrage_commun() -> Option<PathBuf> {
 /// élevé), donnée par Windows et non par l'environnement (USERPROFILE et LOCALAPPDATA se réécrivent).
 pub(crate) fn profil() -> Option<PathBuf> {
     dossier_connu(&PROFIL)
+}
+
+/// Le chemin long d'un chemin qui existe (« C:\Users\JEANDU~1\… » → « C:\Users\Jean Dupont\… »), demandé à
+/// Windows : un chemin court 8.3 échapperait sinon aux règles écrites en noms longs. `None` : absent ou illisible.
+pub(crate) fn chemin_long(chemin: &str) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+    let court: Vec<u16> = std::ffi::OsStr::new(chemin).encode_wide().chain(Some(0)).collect();
+    let mut taille = 1024u32;
+    // Deux essais : le premier dit la taille qu'il faut quand le chemin dépasse le tampon.
+    for _ in 0..2 {
+        let mut tampon = vec![0u16; taille as usize];
+        // SAFETY: `court` finit par un zéro ; `taille` est celle du tampon ; Windows y écrit au plus autant de
+        // caractères et rend leur nombre sans le zéro final, la taille qu'il faudrait (zéro compris), ou 0.
+        let n = unsafe { GetLongPathNameW(court.as_ptr(), tampon.as_mut_ptr(), taille) };
+        if n == 0 {
+            return None;
+        }
+        if n < taille {
+            // Un nom qui ne se lit pas en Unicode valide ne se juge pas : le chemin long est alors tenu pour illisible.
+            return tampon.get(..n as usize).and_then(|t| String::from_utf16(t).ok());
+        }
+        taille = n;
+    }
+    None
 }
 
 /// Un dossier connu du compte qui fait tourner ce processus (jeton nul), à son emplacement par défaut, ou `None` si
@@ -456,5 +481,29 @@ mod tests {
             })
             .collect();
         assert!(etrangeres.is_empty(), "{etrangeres:?}");
+    }
+
+    #[test]
+    fn chemin_long_lu_par_windows() {
+        let Some(windows) = dossier_windows() else {
+            return crate::essais::saute("dossier de Windows illisible");
+        };
+        let windows = windows.to_string_lossy().into_owned();
+        let long = chemin_long(&windows).expect("chemin long du dossier de Windows");
+        assert!(long.eq_ignore_ascii_case(&windows), "{long} / {windows}");
+        // Un chemin absent n'a pas de chemin long : il ne se juge pas sur une forme inventée.
+        assert_eq!(chemin_long(&format!(r"{windows}\vanguard-absent-d6a\x.exe")), None);
+        // Un chemin plus long que le premier tampon : la taille demandée par Windows est reprise.
+        let dossier = crate::essais::Jetable::nouveau("chemin-long");
+        let mut profond = dossier.to_path_buf();
+        for _ in 0..30 {
+            profond.push("un-nom-de-dossier-assez-long-pour-le-tampon");
+        }
+        if std::fs::create_dir_all(&profond).is_err() {
+            return crate::essais::saute("chemin très long refusé par ce Windows");
+        }
+        let profond = format!(r"\\?\{}", profond.to_string_lossy());
+        let long = chemin_long(&profond).expect("chemin long d'un chemin profond");
+        assert!(long.len() > 1024, "{}", long.len());
     }
 }

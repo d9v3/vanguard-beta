@@ -109,6 +109,18 @@ pub(crate) fn processus_intouchable(
     intouchables: &HashSet<u32>,
     os: Os,
 ) -> Option<&'static str> {
+    processus_intouchable_selon(pid, nom, chemin, intouchables, os, &chemin_long)
+}
+
+/// `processus_intouchable`, le chemin long (`long`) donné : les essais en posent un sans Windows.
+fn processus_intouchable_selon(
+    pid: u32,
+    nom: &str,
+    chemin: Option<&str>,
+    intouchables: &HashSet<u32>,
+    os: Os,
+    long: &dyn Fn(&str) -> Option<String>,
+) -> Option<&'static str> {
     if PID_CRITIQUES.contains(&pid) || NOMS_CRITIQUES.contains(&nom_simple(nom).as_str()) {
         return Some(tr!(
             "processus critique du système : une alerte seulement",
@@ -127,13 +139,59 @@ pub(crate) fn processus_intouchable(
             "program path unreadable without administrator rights: nothing is stopped blindly"
         ));
     };
-    if dossier_systeme(chemin, os) {
-        return Some(tr!(
+    jugees_les_deux_formes(chemin, os, long, |c| {
+        dossier_systeme(c, os).then_some(tr!(
             "programme du système : une alerte seulement",
             "system program: an alert only"
-        ));
+        ))
+    })
+}
+
+/// Le chemin long canonique demandé à Windows ; ailleurs, aucun (les noms courts 8.3 n'existent que sous Windows).
+fn chemin_long(chemin: &str) -> Option<String> {
+    #[cfg(windows)]
+    {
+        crate::machine::windows::environnement::chemin_long(chemin)
     }
-    None
+    #[cfg(not(windows))]
+    {
+        let _ = chemin;
+        None
+    }
+}
+
+/// Un nom court 8.3 de Windows dans le chemin (« JEANDU~1 », « PROGRA~2.EXE ») : un « ~ » suivi d'un chiffre.
+fn a_un_nom_court(chemin: &str) -> bool {
+    chemin.split(['\\', '/']).any(|nom| {
+        nom.char_indices()
+            .any(|(i, c)| c == '~' && nom[i + 1..].starts_with(|d: char| d.is_ascii_digit()))
+    })
+}
+
+/// Le jugement `juge` du chemin tel qu'il est écrit, puis, sous Windows, de son chemin long (GetLongPathNameW) : les
+/// règles sont écrites en noms longs, et « C:\PROGRA~1\WINDOW~1\MsMpEng.exe » ou « C:\Users\JEANDU~1\… » leur
+/// échapperaient. Protégé sous l'une ou l'autre forme : refusé. Un nom court dont le chemin long ne se lit pas : refusé
+/// aussi, rien ne se juge à l'aveugle (défense D6a).
+fn jugees_les_deux_formes(
+    chemin: &str,
+    os: Os,
+    long: &dyn Fn(&str) -> Option<String>,
+    juge: impl Fn(&str) -> Option<&'static str>,
+) -> Option<&'static str> {
+    if let Some(raison) = juge(chemin) {
+        return Some(raison);
+    }
+    if os != Os::Windows {
+        return None;
+    }
+    match long(chemin) {
+        Some(long) => juge(&long),
+        None if a_un_nom_court(chemin) => Some(tr!(
+            "chemin court (8.3) dont le chemin long ne se lit pas : rien n'est fait à l'aveugle",
+            "short (8.3) path whose long path cannot be read: nothing is done blindly"
+        )),
+        None => None,
+    }
 }
 
 /// Pourquoi ce processus ne doit jamais être GELÉ, ou `None`. Mêmes garde-fous que l'arrêt, sauf la règle « programme
@@ -171,20 +229,37 @@ pub(crate) fn processus_gelable(
 
 /// Pourquoi ce fichier ne doit jamais être mis en quarantaine, ou `None` : un fichier du système, ou Vanguard.
 pub(crate) fn fichier_intouchable(chemin: &str, os: Os, mon_programme: Option<&str>) -> Option<&'static str> {
-    let meme = |m: &str| {
-        if os == Os::Windows {
-            m.eq_ignore_ascii_case(chemin)
-        } else {
-            m == chemin
-        }
-    };
-    if mon_programme.is_some_and(meme) {
-        return Some(tr!("Vanguard lui-même", "Vanguard itself"));
+    fichier_intouchable_selon(chemin, os, mon_programme, &chemin_long)
+}
+
+/// `fichier_intouchable`, le chemin long (`long`) donné : les essais en posent un sans Windows. Vanguard aussi se
+/// compare sous ses deux formes, lancé qu'il a pu être par un chemin court.
+fn fichier_intouchable_selon(
+    chemin: &str,
+    os: Os,
+    mon_programme: Option<&str>,
+    long: &dyn Fn(&str) -> Option<String>,
+) -> Option<&'static str> {
+    let mut miens: Vec<String> = mon_programme.iter().map(|m| (*m).to_string()).collect();
+    if os == Os::Windows {
+        miens.extend(mon_programme.and_then(long));
     }
-    dossier_systeme(chemin, os).then_some(tr!(
-        "fichier du système : une alerte seulement",
-        "system file: an alert only"
-    ))
+    jugees_les_deux_formes(chemin, os, long, |c| {
+        let meme = |m: &String| {
+            if os == Os::Windows {
+                m.eq_ignore_ascii_case(c)
+            } else {
+                m == c
+            }
+        };
+        if miens.iter().any(meme) {
+            return Some(tr!("Vanguard lui-même", "Vanguard itself"));
+        }
+        dossier_systeme(c, os).then_some(tr!(
+            "fichier du système : une alerte seulement",
+            "system file: an alert only"
+        ))
+    })
 }
 
 /// Les résolveurs DNS publics les plus courants : les bloquer couperait Internet à toute la maison, même si une liste
@@ -1324,6 +1399,52 @@ mod tests {
             fichier_intouchable("/home/alice/Téléchargements/x", Os::Linux, Some("/home/alice/vanguard")),
             None
         );
+    }
+
+    #[test]
+    fn chemin_court_juge_aussi_en_long() {
+        let rien = HashSet::new();
+        // Ce que Windows dirait des chemins longs de ces noms courts.
+        let long = |c: &str| -> Option<String> {
+            match c {
+                r"C:\PROGRA~1\WINDOW~1\MsMpEng.exe" => Some(r"C:\Program Files\Windows Defender\MsMpEng.exe".into()),
+                r"C:\Users\JEANDU~1\AppData\Local\Temp\x.exe" => {
+                    Some(r"C:\Users\Jean Dupont\AppData\Local\Temp\x.exe".into())
+                }
+                r"C:\Users\JEANDU~1\AppData\Local\Temp\vanguard.exe" => {
+                    Some(r"C:\Users\Jean Dupont\AppData\Local\Temp\vanguard.exe".into())
+                }
+                r"C:\WINDOW~1\System32\outil.exe" => Some(r"C:\Windows\System32\outil.exe".into()),
+                _ => None,
+            }
+        };
+        let p = |c| processus_intouchable_selon(4242, "outil", Some(c), &rien, Os::Windows, &long);
+        let f = |c, mien| fichier_intouchable_selon(c, Os::Windows, mien, &long);
+        // Protégé sous sa forme longue : refusé sous sa forme courte.
+        assert!(p(r"C:\PROGRA~1\WINDOW~1\MsMpEng.exe").is_some());
+        assert!(p(r"C:\WINDOW~1\System32\outil.exe").is_some());
+        assert!(f(r"C:\PROGRA~1\WINDOW~1\MsMpEng.exe", None).is_some());
+        // Vanguard, désigné par un chemin court, ou lancé par un chemin court : lui-même.
+        let mien = r"C:\Users\Jean Dupont\AppData\Local\Temp\vanguard.exe";
+        assert!(f(r"C:\Users\JEANDU~1\AppData\Local\Temp\vanguard.exe", Some(mien)).is_some());
+        assert!(f(mien, Some(r"C:\Users\JEANDU~1\AppData\Local\Temp\vanguard.exe")).is_some());
+        // Un nom court dont le chemin long ne se lit pas : refusé, sans rien juger à l'aveugle.
+        assert!(p(r"C:\PROGRA~2\inconnu.exe").is_some());
+        assert!(f(r"C:\Users\BOB~12\x.exe", None).is_some());
+        // Protégé sous la forme écrite, quel que soit le chemin long : refusé (la forme longue ne permet jamais).
+        let menteur = |_: &str| Some(r"C:\Users\alice\x.exe".to_string());
+        assert!(
+            processus_intouchable_selon(4242, "outil", Some(r"C:\Windows\x.exe"), &rien, Os::Windows, &menteur)
+                .is_some()
+        );
+        // Un programme ordinaire du dossier temporaire, nom court ou non : rien ne l'empêche.
+        assert_eq!(p(r"C:\Users\JEANDU~1\AppData\Local\Temp\x.exe"), None);
+        assert_eq!(f(r"C:\Users\JEANDU~1\AppData\Local\Temp\x.exe", Some(mien)), None);
+        assert_eq!(p(r"C:\Users\alice\Downloads\x~y.exe"), None);
+        // Hors de Windows, pas de nom court : un « ~1 » se juge tel qu'il est écrit.
+        let linux = processus_intouchable_selon(4242, "x", Some("/home/alice/a~1/x"), &rien, Os::Linux, &long);
+        assert_eq!(linux, None);
+        assert!(a_un_nom_court(r"C:\PROGRA~1\x") && a_un_nom_court("JEANDU~1") && !a_un_nom_court(r"C:\a~b\c~"));
     }
 
     fn etablie(distante: &str, port_local: u16, port_distant: u16, programme: Option<&str>, autre: bool) -> Etablie {
