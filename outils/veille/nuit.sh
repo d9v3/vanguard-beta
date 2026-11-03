@@ -187,8 +187,11 @@ if [[ -n $ARBRE_OK ]]; then
   # qui lit le secret de relève, jamais le code de la base), gardés bruts dans retours/envois/ (une quarantaine que
   # ni l'IA ni le rapport n'ouvrent), puis lus par le programme de la base (src/compte_rendu/flotte.rs : même lecture
   # stricte que le relais, versions publiées, règles et outils de leur version, une voix par source et par jour).
-  # Seuls des comptes en sortent (etat/flotte/<version>.json) ; les signaux sont calculés plus loin, à part. Relais
-  # pas configuré : les deux étapes sautées, dites, sans notification. ──
+  # Seuls des comptes en sortent (etat/flotte/<version>.json), puis les signaux, calculés par le même programme, sans
+  # IA (src/compte_rendu/flotte/signaux.rs) : flotte-signaux.json (champs fermés, que rapport.py refiltre) et les
+  # tickets de retours/tickets/ (données ouvertes, échappées, pour une session que l'auteur lance ; jamais pour l'IA
+  # de nuit). Les noms de logiciels ne vont à l'IA qu'approuvés (noms-connus.txt, approuver-nom.sh). Relais pas
+  # configuré : les deux étapes sautées, une seule ligne neutre au résumé, sans notification. ──
   if [[ -n $SANS_RESEAU ]]; then
     sauter envois "--sans-reseau"
   else
@@ -207,7 +210,8 @@ if [[ -n $ARBRE_OK ]]; then
     flotte_de_nuit() {
       "$ICI/references-flotte.sh" "$ARBRE" "$TRAVAIL/references" || return 1
       cargo run -q --locked ${SANS_RESEAU:+--offline} -- compte-rendu flotte --dossier "$RETOURS/envois" --references "$TRAVAIL/references" \
-        --etat "$ETAT/flotte" --aujourdhui "$JOUR" >"$TRAVAIL/flotte-comptes.txt"
+        --etat "$ETAT/flotte" --aujourdhui "$JOUR" --signaux "$TRAVAIL/flotte-signaux.json" \
+        --tickets "$RETOURS/tickets" --noms "$ICI/noms-connus.txt" --arbre "$ARBRE" >"$TRAVAIL/flotte-comptes.txt"
     }
     etape flotte "$TRAVAIL/flotte.log" flotte_de_nuit
   fi

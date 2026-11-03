@@ -20,9 +20,11 @@
 //! Les jours reçus depuis 30 jours (`FENETRE`) sont recalculés chaque nuit depuis la relève brute, gardée 90 jours :
 //! relire deux fois la même relève ne compte rien deux fois. Les jours plus anciens sont figés dans l'état.
 //!
-//! Aucun signal ici : seulement les comptes dont le lot A9 tirera les siens.
+//! Les signaux (lot A9) sont tirés de ces comptes par `signaux` : en Rust, sans IA, sur les états de la nuit.
 
 #![forbid(unsafe_code)]
+
+pub(crate) mod signaux;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -546,8 +548,25 @@ fn stats(lot: &Lot) -> BTreeMap<String, u64> {
             );
         }
     }
+    // Les taux de la régression par version (A9) : une source compte si un de ses lots a eu un plantage, une cause.
+    s.oui(
+        "taux|plantage".into(),
+        lot.causes.entrees().iter().any(|c| c.genre.id() == "plantage"),
+    );
+    s.oui("taux|cause".into(), !lot.causes.est_vide());
     for r in lot.regles.entrees() {
         let k = format!("regle|{}", r.id.as_str());
+        // Un constat instable (plan, §1) : problème et sain dans la même période sans correction réussie qui
+        // expliquerait le passage de l'un à l'autre.
+        let corrigee = lot
+            .corrections
+            .entrees()
+            .iter()
+            .any(|c| c.regle == r.id && !c.reussies.est_nul());
+        s.oui(
+            format!("instable|{}", r.id.as_str()),
+            !r.problemes.est_nul() && !r.sains.est_nul() && !corrigee,
+        );
         s.n(format!("{k}|vue"), 1);
         s.n(format!("{k}|n"), u64::from(r.n.get()));
         s.n(format!("{k}|problemes"), u64::from(r.problemes.get()));
@@ -632,6 +651,11 @@ fn stats(lot: &Lot) -> BTreeMap<String, u64> {
         ] {
             s.n(format!("{k}|{nom}"), u64::from(v));
         }
+        // Le dénominateur de l'échec d'une correction : celles qui ont été appliquées (réussies ou échouées).
+        s.n(
+            format!("{k}|appliquees"),
+            u64::from(c.reussies.get()).saturating_add(u64::from(c.echouees.get())),
+        );
         for x in c.codes.entrees() {
             s.n(format!("{k}|code|{}", morceau(x.code.as_str())), u64::from(x.n.get()));
         }
@@ -809,12 +833,17 @@ impl Agregat {
     }
 }
 
-/// Un jour de réception : tout ensemble (une voix par source), puis par groupe (famille et classe de machine).
+/// Un jour de réception : tout ensemble (une voix par source), puis par groupe (famille et classe de machine), puis
+/// par famille seule (A9 : les taux du plan se comparent « même famille »). `familles` manque aux états écrits avant
+/// A9 : relu vide, sans changer de format (un champ en plus, facultatif ; l'ancien lecteur n'est plus là pour le
+/// refuser).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct JourFlotte {
     pub(crate) tous: Agregat,
     pub(crate) groupes: BTreeMap<String, Agregat>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) familles: BTreeMap<String, Agregat>,
 }
 
 /// L'état d'une version (`etat/flotte/<version>.json`).
@@ -832,9 +861,13 @@ impl EtatVersion {
         let e: EtatVersion = serde_json::from_slice(octets).ok()?;
         let bon = e.schema == ETAT_SCHEMA
             && e.version == *version
-            && e.jours
-                .values()
-                .all(|j| j.tous.valide() && j.groupes.iter().all(|(g, a)| est_cle(g) && a.valide()));
+            && e.jours.values().all(|j| {
+                j.tous.valide()
+                    && j.groupes.iter().all(|(g, a)| est_cle(g) && a.valide())
+                    && j.familles
+                        .iter()
+                        .all(|(f, a)| envoi::FamilleFine::TOUS.iter().any(|x| x.id() == f) && a.valide())
+            });
         bon.then_some(e)
     }
 }
@@ -888,6 +921,8 @@ pub(crate) struct Comptes {
     /// Voix comptées : une par version, jour de réception et source.
     pub(crate) votes: u64,
     pub(crate) relais_refus: u64,
+    /// Dont les refus du relais pour quota ou plafond atteints (le rapport du matin les dit).
+    pub(crate) relais_quota: u64,
     /// États de version écrits.
     pub(crate) versions: u64,
     /// Clés ou jours retirés pour tenir dans `ETAT_MAX`.
@@ -897,6 +932,9 @@ pub(crate) struct Comptes {
     /// de bon s'ils se figeaient avant qu'il redevienne lisible) ; la commande échoue pour que l'auteur le sache.
     pub(crate) etat_retenu: bool,
     pub(crate) rejets: BTreeMap<Rejet, u64>,
+    /// Les signaux tirés des états (A9) et les tickets écrits cette nuit ; 0 sans `--signaux`.
+    pub(crate) signaux: u64,
+    pub(crate) tickets: u64,
 }
 
 impl Comptes {
@@ -937,6 +975,12 @@ impl Comptes {
         for r in Rejet::TOUS.iter().filter(|r| !r.a_part()) {
             let _ = write!(l, " refus-{}={}", r.id(), self.rejet(*r));
         }
+        // À la fin : la veille lit les champs d'avant par leur place.
+        let _ = write!(
+            l,
+            " relais-quota={} signaux={} tickets={}",
+            self.relais_quota, self.signaux, self.tickets
+        );
         l
     }
 }
@@ -954,8 +998,172 @@ pub(crate) struct Demande<'a> {
     pub(crate) etat_max: usize,
 }
 
-/// Les voix d'une nuit : version → jour de réception → (tous, groupes), chacun par source.
-type Voix3 = BTreeMap<Version, BTreeMap<Jour, (BTreeMap<String, Voix>, BTreeMap<String, BTreeMap<String, Voix>>)>>;
+/// Les voix d'un jour : tout ensemble, par groupe, par famille ; chacune par source.
+#[derive(Default)]
+struct VoixJour {
+    tous: BTreeMap<String, Voix>,
+    groupes: BTreeMap<String, BTreeMap<String, Voix>>,
+    familles: BTreeMap<String, BTreeMap<String, Voix>>,
+}
+
+/// Les voix d'une nuit : version → jour de réception → voix du jour.
+type Voix3 = BTreeMap<Version, BTreeMap<Jour, VoixJour>>;
+
+/// Installations gardées dans l'histoire de la nuit (P1) : bien plus que la flotte attendue ; au-delà, les plus
+/// petits identifiants (même raison que `Voix` : le résultat ne dépend pas de l'ordre des lots).
+const HISTOIRE_MAX: usize = 100_000;
+
+/// Ce qu'une source a dit un jour, installation par installation (P1), pour les seules clés des taux : de quoi
+/// refaire un taux sur un sous-ensemble d'installations (anciennes, vues sur les deux versions). En mémoire
+/// seulement, le temps de la nuit : l'identifiant d'installation n'est jamais écrit.
+#[derive(Default)]
+pub(crate) struct VoixP1 {
+    larges: BTreeSet<String>,
+    installations: BTreeMap<String, BTreeMap<String, u64>>,
+}
+
+impl VoixP1 {
+    fn ajouter(&mut self, large: &str, installation: &str, stats: &BTreeMap<String, u64>) {
+        self.larges.insert(large.to_string());
+        let st = self.installations.entry(installation.to_string()).or_default();
+        for (k, v) in stats.iter().filter(|(k, _)| cle_p1(k)) {
+            let e = st.entry(k.clone()).or_insert(0);
+            *e = (*e).max(*v);
+        }
+        while st.len() > CLES_VOIX_MAX {
+            st.pop_last();
+        }
+        while self.installations.len() > INSTALLATIONS_VOIX_MAX {
+            self.installations.pop_last();
+        }
+    }
+}
+
+/// Les clés qu'un signal compare sur les mêmes installations : numérateurs et dénominateurs des taux, rien d'autre.
+fn cle_p1(k: &str) -> bool {
+    let m: Vec<&str> = k.split('|').collect();
+    match m.as_slice() {
+        ["taux" | "instable", _] => true,
+        ["regle", _, x] => matches!(*x, "vue" | "problemes" | "hors_delai" | "non_verifies"),
+        ["choix", _, x] => *x == "normales",
+        ["correction", _, x] => matches!(*x, "proposees" | "refusees" | "appliquees" | "echouees"),
+        ["outil", _, _, x] => matches!(*x, "lances" | "abandonnes"),
+        _ => false,
+    }
+}
+
+/// Une voix P1 : version, jour de réception, famille.
+pub(crate) type CleP1 = (Version, Jour, String);
+
+/// Les données P1 de la nuit : les voix par installation et, pour chaque installation, le premier jour où elle a été
+/// vue sur chaque version (fenêtre de la relève).
+#[derive(Default)]
+pub(crate) struct P1 {
+    voix: BTreeMap<CleP1, BTreeMap<String, VoixP1>>,
+    histoire: BTreeMap<String, BTreeMap<Version, NaiveDate>>,
+}
+
+impl P1 {
+    fn noter(&mut self, installation: &str, version: &Version, jour: NaiveDate) {
+        let e = self
+            .histoire
+            .entry(installation.to_string())
+            .or_default()
+            .entry(version.clone())
+            .or_insert(jour);
+        *e = (*e).min(jour);
+        while self.histoire.len() > HISTOIRE_MAX {
+            self.histoire.pop_last();
+        }
+    }
+}
+
+/// Entrées ouvertes gardées par clé (règle ou gabarit), sources par entrée, clés : bornes de la nuit, plus petites
+/// valeurs gardées (même raison que `Voix`).
+const OUVERTES_CLES_MAX: usize = 2000;
+const OUVERTES_ENTREES_MAX: usize = 200;
+const OUVERTES_SOURCES_MAX: usize = 8;
+
+/// Une donnée de la voie ouverte, pour les tickets de l'auteur seulement : un objet (nom, et « sorte version état »)
+/// ou un texte nettoyé (texte, contexte). Déjà passés par le nettoyage de l'ordinateur et revérifiés par
+/// `envoi::lire` ; jamais écrits dans l'état, jamais vus par l'IA sauf un nom approuvé par l'auteur.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Ouverte {
+    Objet { nom: String, detail: String },
+    Texte { texte: String, contexte: String },
+}
+
+/// Les données ouvertes de la nuit : clé (`regle|ID`, `gabarit|G`) → donnée → sources.
+#[derive(Default)]
+pub(crate) struct Ouvertes(BTreeMap<String, BTreeMap<Ouverte, BTreeSet<String>>>);
+
+impl Ouvertes {
+    fn ajouter(&mut self, cle: String, donnee: Ouverte, source: &str) {
+        let entrees = self.0.entry(cle).or_default();
+        let sources = entrees.entry(donnee).or_default();
+        sources.insert(source.to_string());
+        while sources.len() > OUVERTES_SOURCES_MAX {
+            sources.pop_last();
+        }
+        while entrees.len() > OUVERTES_ENTREES_MAX {
+            entrees.pop_last();
+        }
+        while self.0.len() > OUVERTES_CLES_MAX {
+            self.0.pop_last();
+        }
+    }
+
+    fn lot(&mut self, lot: &Lot, source: &str) {
+        for o in lot.objets.entrees() {
+            let detail = format!(
+                "{} {} {}",
+                o.sorte.id(),
+                o.version.as_ref().map_or("-", |v| v.as_str()),
+                o.etat.id()
+            );
+            let donnee = Ouverte::Objet {
+                nom: o.nom.as_str().to_string(),
+                detail,
+            };
+            self.ajouter(format!("regle|{}", o.regle.as_str()), donnee, source);
+        }
+        for t in lot.textes.entrees() {
+            let donnee = Ouverte::Texte {
+                texte: t.texte().as_str().to_string(),
+                contexte: t.contexte().id().to_string(),
+            };
+            if let Some(r) = t.regle() {
+                self.ajouter(format!("regle|{}", r.as_str()), donnee.clone(), source);
+            }
+            self.ajouter(format!("gabarit|{}", t.gabarit().as_str()), donnee, source);
+        }
+    }
+
+    /// Les données d'une clé vues d'au moins deux sources (une seule source ne fait pas une donnée de la flotte),
+    /// les plus vues d'abord, puis dans l'ordre du texte.
+    pub(crate) fn de(&self, cle: &str, max: usize) -> Vec<(&Ouverte, usize)> {
+        let Some(entrees) = self.0.get(cle) else {
+            return Vec::new();
+        };
+        let mut v: Vec<(&Ouverte, usize)> = entrees
+            .iter()
+            .map(|(d, s)| (d, s.len()))
+            .filter(|(_, n)| *n >= 2)
+            .collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        v.truncate(max);
+        v
+    }
+}
+
+/// Ce que les signaux lisent après une nuit : les états de chaque version (avant élagage : tout ce que la nuit sait),
+/// les voix P1, les données ouvertes.
+pub(crate) struct Analyse {
+    pub(crate) aujourdhui: NaiveDate,
+    pub(crate) etats: BTreeMap<Version, EtatVersion>,
+    pub(crate) p1: P1,
+    pub(crate) ouvertes: Ouvertes,
+}
 
 struct Lecture<'a> {
     d: &'a Demande<'a>,
@@ -963,6 +1171,8 @@ struct Lecture<'a> {
     voix: Voix3,
     vus: BTreeSet<(Jour, String, [u8; 32])>,
     releve: BTreeMap<Jour, ReleveJour>,
+    p1: P1,
+    ouvertes: Ouvertes,
 }
 
 impl Lecture<'_> {
@@ -1059,6 +1269,9 @@ impl Lecture<'_> {
             relais.push((j, raison, x.n));
         }
         for (j, raison, n) in relais {
+            if raison == "quota" || raison == "plafond" {
+                self.comptes.relais_quota = self.comptes.relais_quota.saturating_add(n);
+            }
             let e = resume.relais.entry(j).or_default().entry(raison).or_insert(0);
             *e = e.saturating_add(n);
             self.comptes.relais_refus = self.comptes.relais_refus.saturating_add(n);
@@ -1154,17 +1367,36 @@ impl Lecture<'_> {
         }
         let st = stats(&lot);
         let installation = lot.installation.as_ref().map(envoi::IdInstallation::as_str);
-        let (tous, groupes) = self
+        let famille = lot.plateforme.famille.id().to_string();
+        if let Some(i) = installation {
+            self.p1.noter(i, &lot.version, r);
+            self.p1
+                .voix
+                .entry((lot.version.clone(), jour_r.clone(), famille.clone()))
+                .or_default()
+                .entry(recu.source.clone())
+                .or_default()
+                .ajouter(&recu.source_large, i, &st);
+        }
+        self.ouvertes.lot(&lot, &recu.source);
+        let vj = self
             .voix
             .entry(lot.version.clone())
             .or_default()
             .entry(jour_r)
             .or_default();
-        tous.entry(recu.source.clone())
+        vj.tous
+            .entry(recu.source.clone())
             .or_default()
             .ajouter(&recu.source_large, installation, &st);
-        groupes
+        vj.groupes
             .entry(groupe(&lot))
+            .or_default()
+            .entry(recu.source.clone())
+            .or_default()
+            .ajouter(&recu.source_large, installation, &st);
+        vj.familles
+            .entry(famille)
             .or_default()
             .entry(recu.source.clone())
             .or_default()
@@ -1179,12 +1411,13 @@ fn agreger(voix: &Voix3) -> BTreeMap<Version, BTreeMap<Jour, JourFlotte>> {
         .map(|(v, jours)| {
             let jours = jours
                 .iter()
-                .map(|(j, (tous, groupes))| {
+                .map(|(j, vj)| {
                     (
                         j.clone(),
                         JourFlotte {
-                            tous: Agregat::de(tous),
-                            groupes: groupes.iter().map(|(g, x)| (g.clone(), Agregat::de(x))).collect(),
+                            tous: Agregat::de(&vj.tous),
+                            groupes: vj.groupes.iter().map(|(g, x)| (g.clone(), Agregat::de(x))).collect(),
+                            familles: vj.familles.iter().map(|(f, x)| (f.clone(), Agregat::de(x))).collect(),
                         },
                     )
                 })
@@ -1198,9 +1431,10 @@ fn taille(e: &EtatVersion) -> usize {
     serde_json::to_vec(e).map_or(usize::MAX, |v| v.len())
 }
 
-/// Tient l'état sous `max` octets : d'abord les clés vues d'une seule source dans les groupes, puis les groupes, puis
-/// les clés d'une seule source du tout, puis les jours les plus anciens (il en reste toujours un), puis les clés
-/// les moins vues par seuils doublés. Rend le nombre de clés et de jours retirés.
+/// Tient l'état sous `max` octets : d'abord les clés vues d'une seule source dans les groupes et les familles, puis
+/// les groupes, puis les clés d'une seule source du tout, puis les jours les plus anciens (il en reste toujours un),
+/// puis les clés les moins vues par seuils doublés (tout et familles), puis les familles. Rend le nombre de clés et
+/// de jours retirés. Les signaux de la nuit sont tirés avant l'élagage : il ne touche que ce qui est gardé.
 fn borner(e: &mut EtatVersion, max: usize) -> Result<u64, Echec> {
     fn retirer(stats: &mut BTreeMap<String, [u64; 3]>, seuil: u64) -> u64 {
         let avant = stats.len();
@@ -1210,7 +1444,7 @@ fn borner(e: &mut EtatVersion, max: usize) -> Result<u64, Echec> {
     let mut retires = 0u64;
     if taille(e) > max {
         for j in e.jours.values_mut() {
-            for a in j.groupes.values_mut() {
+            for a in j.groupes.values_mut().chain(j.familles.values_mut()) {
                 retires = retires.saturating_add(retirer(&mut a.stats, 1));
             }
         }
@@ -1232,14 +1466,29 @@ fn borner(e: &mut EtatVersion, max: usize) -> Result<u64, Echec> {
             retires = retires
                 .saturating_add(retirer(&mut j.tous.stats, u64::MAX))
                 .saturating_add(1);
+            for a in j.familles.values_mut() {
+                retires = retires.saturating_add(retirer(&mut a.stats, u64::MAX));
+            }
         }
     }
     let mut seuil = 2u64;
-    while taille(e) > max && e.jours.values().any(|j| !j.tous.stats.is_empty()) {
+    while taille(e) > max
+        && e.jours
+            .values()
+            .any(|j| !j.tous.stats.is_empty() || j.familles.values().any(|a| !a.stats.is_empty()))
+    {
         for j in e.jours.values_mut() {
             retires = retires.saturating_add(retirer(&mut j.tous.stats, seuil));
+            for a in j.familles.values_mut() {
+                retires = retires.saturating_add(retirer(&mut a.stats, seuil));
+            }
         }
         seuil = seuil.saturating_mul(2);
+    }
+    if taille(e) > max {
+        for j in e.jours.values_mut() {
+            j.familles.clear();
+        }
     }
     if taille(e) > max {
         return Err(Echec::refuse(
@@ -1272,14 +1521,24 @@ fn version_du_fichier(nom: &std::ffi::OsStr) -> Option<Version> {
     nom.to_str()?.strip_suffix(".json").and_then(Version::new)
 }
 
-/// Une nuit : lit la relève de la fenêtre et, avec un dossier d'état, écrit l'état de chaque version récente.
+/// Une nuit : lit la relève de la fenêtre et, avec un dossier d'état, écrit l'état de chaque version récente (les
+/// essais ; la commande passe par `executer_analyse`).
+#[cfg(test)]
 pub(crate) fn executer(d: &Demande<'_>) -> Result<Comptes, Echec> {
+    executer_analyse(d).map(|x| x.0)
+}
+
+/// La même nuit, avec ce que les signaux lisent : rien sans dossier d'état, ni quand l'état est retenu (un fichier
+/// écarté : des voix manqueraient, un signal pourrait naître ou se cacher de ce seul fait).
+pub(crate) fn executer_analyse(d: &Demande<'_>) -> Result<(Comptes, Option<Analyse>), Echec> {
     let mut lu = Lecture {
         d,
         comptes: Comptes::default(),
         voix: BTreeMap::new(),
         vus: BTreeSet::new(),
         releve: BTreeMap::new(),
+        p1: P1::default(),
+        ouvertes: Ouvertes::default(),
     };
     for (f, chemin) in lu.fichiers()? {
         lu.fichier(f, &chemin);
@@ -1290,12 +1549,13 @@ pub(crate) fn executer(d: &Demande<'_>) -> Result<Comptes, Echec> {
         .flat_map(BTreeMap::values)
         .fold(0u64, |a, j| a.saturating_add(j.tous.sources));
     let Some(dossier) = d.etat else {
-        return Ok(lu.comptes);
+        return Ok((lu.comptes, None));
     };
     if lu.comptes.fichiers_ignores > 0 {
         lu.comptes.etat_retenu = true;
-        return Ok(lu.comptes);
+        return Ok((lu.comptes, None));
     }
+    let mut etats = BTreeMap::new();
     std::fs::create_dir_all(dossier).map_err(|e| Echec::ecriture(LIRE, &e))?;
     let t = d.aujourdhui;
     let fige = |j: &Jour| date(j).is_some_and(|x| x < moins(t, FENETRE));
@@ -1344,15 +1604,22 @@ pub(crate) fn executer(d: &Demande<'_>) -> Result<Comptes, Echec> {
         }
         let mut etat = EtatVersion {
             schema: ETAT_SCHEMA,
-            version: v,
+            version: v.clone(),
             jours,
         };
+        etats.insert(v, etat.clone());
         lu.comptes.elagues = lu.comptes.elagues.saturating_add(borner(&mut etat, d.etat_max)?);
         ecrire(&chemin, &json(&etat)?)?;
         lu.comptes.versions = lu.comptes.versions.saturating_add(1);
     }
     ecrire_releve(dossier, t, lu.releve, &mut lu.comptes)?;
-    Ok(lu.comptes)
+    let analyse = Analyse {
+        aujourdhui: t,
+        etats,
+        p1: lu.p1,
+        ouvertes: lu.ouvertes,
+    };
+    Ok((lu.comptes, Some(analyse)))
 }
 
 /// Le résumé des relèves : les fichiers lus cette nuit remplacent les leurs, les plus vieux que `RELEVE_GARDE`

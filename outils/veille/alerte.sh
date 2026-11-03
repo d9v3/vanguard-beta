@@ -42,9 +42,15 @@ conclure() {
 trap 'trap - TERM INT; conclure "interrompue avant la fin (arrêtée par systemd ou à la main)"; exit 143' TERM INT
 
 GENRE=${SIGNATURE%%:*}
-case $GENRE in rustsec | fuzz | journal | verifier | proptest | canari | lenteur | lien | hebdo) ;; *)
+case $GENRE in rustsec | fuzz | journal | flotte | verifier | proptest | canari | lenteur | lien | hebdo) ;; *)
   conclure "genre d'alerte inconnu"; exit 1 ;;
 esac
+# Un faux positif probable de la flotte n'appelle jamais l'IA (rapport.py ne le propose pas ; une demande forgée non
+# plus) : des comptes forgés feraient sinon passer une règle juste pour fausse. Un ticket seulement (signaux.rs).
+if [[ $SIGNATURE == flotte:faux-positif:* ]]; then
+  conclure "faux positif probable de la flotte : ticket seulement, jamais l'IA"
+  exit 0
+fi
 REFUS=$(refus_ia correction)
 [[ -n $REFUS ]] && { conclure "$REFUS"; exit 0; }
 grep -qxF "$SIGNATURE" "$ETAT/alertes-traitees.txt" 2>/dev/null && { conclure "alerte déjà traitée"; exit 0; }
@@ -226,9 +232,22 @@ garde_fous() {
   ajoutes=$(grep -cE '^\+\s*(#\[test\]|proptest::proptest!|proptest!)' <<<"$diff")
   retires=$(grep -cE '^-\s*(#\[test\]|proptest::proptest!|proptest!)' <<<"$diff")
   ((retires > 0)) && { echo "retire $retires test(s)"; return; }
+  # Une alerte de la flotte ne retire jamais une règle : ni ligne ôtée de tests/regles-connues.txt, ni « retire »
+  # ajouté (des comptes forgés feraient sinon taire une règle juste).
+  if [[ $GENRE == flotte ]] && grep -qxF tests/regles-connues.txt <<<"$fichiers"; then
+    local regles
+    regles=$(git_trav diff --no-ext-diff --no-textconv -U0 "$TETE"..HEAD -- tests/regles-connues.txt)
+    grep -qE '^-[^-]' <<<"$regles" && { echo "retire une ligne de tests/regles-connues.txt"; return; }
+    grep -qE '^\+.*\bretire\b' <<<"$regles" && { echo "marque une règle « retire »"; return; }
+  fi
   case $GENRE in
     fuzz | journal | proptest | canari | hebdo)
       ((ajoutes > 0)) || grep -qE '^(tests/|fuzz/graines/)' <<<"$fichiers" || { echo "aucun test ajouté"; return; } ;;
+    flotte)
+      case ${CLE%%:*} in
+        regression | couverture | fragile | cache)
+          ((ajoutes > 0)) || grep -qE '^(tests/|fuzz/graines/)' <<<"$fichiers" || { echo "aucun test ajouté"; return; } ;;
+      esac ;;
     verifier)
       [[ $CLE == tests-* ]] && ((ajoutes == 0)) && { echo "aucun test ajouté"; return; } ;;
   esac

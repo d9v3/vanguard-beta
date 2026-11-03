@@ -727,6 +727,12 @@ echo "Envois : relais pas configuré, deux étapes sautées sans notification"
 attendu 'jq -e "[.etapes[] | select(.nom == \"envois\" or .nom == \"flotte\") | .raison | startswith(\"relais pas configuré\")] == [true, true]" "$R/2026-10-19.json" >/dev/null' \
   "nuit 1 : envois et flotte sautées, « relais pas configuré »"
 attendu '[[ ! -e $VANGUARD_VEILLE_RETOURS/envois ]]' "rien relevé sans configuration"
+attendu 'grep -q "relais des envois pas encore configuré" "$R/2026-10-19.md" && ! grep -qE "sautée.*(envois|flotte)" "$R/2026-10-19.md"' \
+  "rapport de la nuit 1 : une ligne neutre, pas « étape sautée : envois/flotte »"
+mkdir -p "$BANC/nuit1" && cp -- "$R/2026-10-19.json" "$BANC/nuit1/"
+python3 -I "$ICI/rapport.py" markdown "$BANC/nuit1/2026-10-19.json" >/dev/null 2>&1
+attendu 'grep -q "relais pas encore configuré" "$BANC/nuit1/dernier.txt" && ! grep -qE "sautée\(s\) \([^)]*(envois|flotte)" "$BANC/nuit1/dernier.txt"' \
+  "dernier.txt de la nuit 1 : envois et flotte hors des étapes sautées, dit en neutre"
 
 ip link set lo up 2>/dev/null
 FR=$BANC/faux-relais
@@ -804,13 +810,13 @@ configurer() { # adresse [droits du secret] [secret]
   printf '%s\n' "${3:-$SECRET}" >"$C/vanguard-dev/relais-secret"
   chmod "${2:-600}" "$C/vanguard-dev/relais-secret"
 }
-reponse() { # reste lot… : une réponse de /v1/releve, lots reçus le 2027-01-20 de sources distinctes
+reponse() { # reste lot… : une réponse de /v1/releve, lots reçus le $RECU (2027-01-20) de sources distinctes
   local reste=$1 i=0 l
   shift
   { printf '{"releve":1,"lots":['
     for l in "$@"; do
       ((i)) && printf ','
-      printf '{"id":%d,"jour":"2027-01-20","source":"%s","source_large":"%s","lot":%s}' "$i" \
+      printf '{"id":%d,"jour":"%s","source":"%s","source_large":"%s","lot":%s}' "$i" "${RECU:-2027-01-20}" \
         "${SOURCES[i]}" "${LARGES[i]}" "$l"
       i=$((i + 1))
     done
@@ -969,6 +975,50 @@ attendu '(($(compte illisibles) == 1))' "la réponse illisible comptée"
 attendu '! grep -rqaE "MARQUEUR-A8|FAUXjeton|ZZZ-ZZZ-999|outil-invente" "$R" $BANC/claude-*.args "$BANC/notifications.log" 2>/dev/null' \
   "ni la séquence de terminal ni le reste de la réponse hors de la quarantaine"
 attendu '(($(appels) == n))' "aucune correction par l'IA pour un relais qui répond mal"
+
+echo "Signaux de la flotte : six sources dans trois /16, un faux positif en ticket, jamais à l'IA"
+# Lots sans identifiant d'installation (le P1 ne s'applique pas) : chaque règle du lot complet se dit à problème,
+# non vérifiée, refusée… sur toutes les sources, de quoi faire un faux positif probable et d'autres signaux.
+SOURCES=() LARGES=()
+for i in $(seq 0 5); do SOURCES+=("$(printf '%032x' $((i + 256)))"); LARGES+=("$(printf 'e%031x' $((i % 3)))"); done
+# Reçus le 22 : un jour à eux, sans les deux lots identifiés du 20 (le P1 demanderait des installations anciennes).
+L6=$(jq -c '.jour = "2027-01-21" | del(.installation)' <<<"$COMPLET")
+RECU=2027-01-22 reponse false "$L6" "$L6" "$L6" "$L6" "$L6" "$L6"
+servir 200 "$FR/reponse.json"
+nettoyer
+n=$(appels)
+nuit 2027-01-22
+T=$VANGUARD_VEILLE_RETOURS/tickets
+CR=$R/nuits/2027-01-22/flotte-comptes.txt
+attendu '(($(compte acceptes) == 8))' "six lots acceptés de plus (les comptes portent sur les envois gardés)"
+attendu 'ls "$T"/2027-01-22-faux-positif-*.md >/dev/null 2>&1' "faux positif probable : un ticket dans retours/tickets"
+attendu 'jq -e "[.flotte.signaux[] | select(.signal == \"faux-positif\")] | length > 0 and all(.ia == false)" "$R/2027-01-22.json" >/dev/null' \
+  "le faux positif lu par le rapport, ia faux"
+attendu 'jq -e "[.alertes[] | select(.signature | startswith(\"flotte:faux-positif\"))] | length == 0" "$R/2027-01-22.json" >/dev/null' \
+  "aucun faux positif parmi les alertes"
+attendu '! grep -rqa "faux-positif" "$BANC"/claude-*.args "$R"/ia/*/alerte.json 2>/dev/null' "aucun faux positif dans l'entrée de l'IA"
+F=$(ls -d "$R"/ia/2027-01-22-flotte-* 2>/dev/null | head -n1)
+if [[ -n $F ]]; then
+  attendu 'jq -e ".genre == \"flotte\" and (.signal | test(\"^(regression|couverture|fragile|cache|outil|lenteur|erreur-nouvelle)$\")) and (has(\"ticket\") | not)" "$F/alerte.json" >/dev/null' \
+    "alerte flotte : champs fermés, jamais le chemin du ticket"
+  attendu '! grep -rqa "Service de test\|Processeur de test" "$F/alerte.json" "$BANC"/claude-*.args' \
+    "un nom non approuvé n'atteint jamais l'IA en clair"
+  attendu '! jq -e "[.. | strings | select(test(\"^inconnu\"))] | all(test(\"^inconnu#[0-9a-f]{16}$\")) | not" "$F/alerte.json" >/dev/null' \
+    "les noms non approuvés : inconnu#<empreinte>"
+else
+  attendu 'jq -e "[.alertes[] | select(.type == \"flotte\")] | length > 0" "$R/2027-01-22.json" >/dev/null' \
+    "un signal de la flotte proposé parmi les alertes"
+fi
+sig='flotte:faux-positif:arch:LNX-MAJ-001:problemes'
+jq -n --arg j 2027-01-22 --arg s "$sig" '{jour: $j, signature: $s}' >"$R/alerte-demandee.json"
+n=$(appels)
+VANGUARD_VEILLE_JOUR=2027-01-22 bash "$ICI/alerte.sh" >>"$BANC/nuits.log" 2>&1
+attendu '(($(appels) == n)) && jq -e ".ia.raison_si_non | test(\"faux positif\")" "$R/2027-01-22.json" >/dev/null' \
+  "demande forgée flotte:faux-positif : refusée, claude jamais appelé"
+attendu '[[ -z $(find "$T" -name "*MARQUEUR*") ]] && ! grep -rqaE "MARQUEUR-A8|FAUXjeton" "$T"' "tickets : rien des lots hostiles d'avant"
+mkdir -p "$R/nuits/2027-01-22"
+attendu 'bash "$ICI/approuver-nom.sh" 0123456789abcdef </dev/null >"$BANC/approuver.out" 2>&1; (($? != 0)) && ! grep -q "0123456789abcdef" "$ICI/noms-connus.txt"' \
+  "approuver-nom.sh sans terminal : refusé, rien ajouté"
 kill "$RELAIS_PID" 2>/dev/null; wait "$RELAIS_PID" 2>/dev/null
 rm -f "$XDG_CONFIG_HOME/vanguard-dev/relais-adresse" "$XDG_CONFIG_HOME/vanguard-dev/relais-secret"
 unset CURL_CA_BUNDLE

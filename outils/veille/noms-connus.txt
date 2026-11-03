@@ -1,0 +1,3 @@
+# Noms de logiciels vus par la flotte et approuvés par l'auteur (outils/veille/approuver-nom.sh), un par ligne : seuls
+# ceux-ci peuvent aller en clair à l'IA de nuit (src/compte_rendu/flotte/signaux.rs, rapport.py) ; tout autre nom y
+# devient « inconnu#<empreinte> ». Ajouter un nom seulement par approuver-nom.sh, sur un terminal.

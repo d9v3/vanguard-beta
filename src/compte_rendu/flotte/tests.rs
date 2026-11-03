@@ -7,17 +7,17 @@ use crate::compte_rendu::envoi::{Compte, IdInstallation, Lot};
 use crate::essais::Jetable;
 use proptest::prelude::*;
 
-const T: &str = "2026-11-02";
+pub(super) const T: &str = "2026-11-02";
 
-fn j(s: &str) -> NaiveDate {
+pub(super) fn j(s: &str) -> NaiveDate {
     NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
 }
 
-fn v(s: &str) -> Version {
+pub(super) fn v(s: &str) -> Version {
     Version::new(s).unwrap()
 }
 
-fn refs() -> References {
+pub(super) fn refs() -> References {
     let publiees = [
         ("0.86.0", "2026-07-01"),
         ("0.87.0", "2026-08-01"),
@@ -43,19 +43,19 @@ fn refs() -> References {
 }
 
 /// Une source du relais : 32 chiffres hexadécimaux.
-fn src(i: u64) -> String {
+pub(super) fn src(i: u64) -> String {
     format!("{i:032x}")
 }
 
-fn ecrit(lot: &Lot) -> String {
+pub(super) fn ecrit(lot: &Lot) -> String {
     String::from_utf8(lot.ecrire()).unwrap()
 }
 
 /// Un lot tel que le relais le rend : (jour de réception, source, réseau large, lot brut).
-type Recu<'a> = (&'a str, String, String, String);
+pub(super) type Recu<'a> = (&'a str, String, String, String);
 
 /// Une réponse du relais.
-fn reponse(lots: &[Recu<'_>], refus: &str) -> String {
+pub(super) fn reponse(lots: &[Recu<'_>], refus: &str) -> String {
     let morceaux: Vec<String> = lots
         .iter()
         .enumerate()
@@ -537,6 +537,8 @@ fn jours_figes_gardes_fenetre_recalculee_mineures_sorties_retirees() {
             stats: [("activite|cle".to_string(), [7, 7, 7])].into_iter().collect(),
         },
         groupes: BTreeMap::new(),
+        // Un état écrit avant A9 : sans familles (relu vide).
+        familles: BTreeMap::new(),
     };
     let ancien = EtatVersion {
         schema: ETAT_SCHEMA,

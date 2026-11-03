@@ -105,13 +105,38 @@ puis lus par le programme ; ni l'IA ni le rapport n'ouvrent ce qui vient d'un lo
   relève écarté (lien, tube, trop gros, illisible) : l'état n'est pas récrit cette nuit et l'étape échoue. Un jour qui
   se fige pendant des nuits manquées garde le calcul de la dernière nuit qui l'a vu. État dans `etat/flotte/<version>.json` (2 Mio au plus, écrit de façon
   atomique ; un jour reçu il y a plus de 29 jours est figé ; gardé tant que sa mineure est parmi les trois dernières)
-  et `etat/flotte/releve.json` (ce que chaque nuit a lu et refusé, 120 jours). Aucun signal n'en est encore tiré.
+  et `etat/flotte/releve.json` (ce que chaque nuit a lu et refusé, 120 jours).
+- **Signaux** (`src/compte_rendu/flotte/signaux.rs`, sans IA, sur les sept derniers jours) : un signal demande au
+  moins 5 sources dans 3 réseaux /16 au numérateur (une voix par source, par jour et par clé : mille lots d'une
+  source n'en font qu'une). Régression : un taux (plantage, cause, hors délai, non vérifié, échec de correction,
+  abandon d'un outil) au moins deux fois celui de la version d'avant (5 sources au moins de chaque côté, même
+  famille), ou deux fois sur les mêmes installations vues sur les deux versions (identifiant P1). Faux positif
+  probable : problème chez plus de 60 % des sources de la famille, « c'est normal » chez plus de 30 %, correction
+  refusée par plus de la moitié, ou constat instable ; quand la famille a des installations identifiées, il doit
+  tenir aussi sur celles vues sept jours avant (une arrivée soudaine ne fait pas passer une règle pour fausse).
+  Couverture : non vérifié chez plus de 20 % (la raison dominante dite). Fragile : correction échouée chez plus de
+  10 % ou revenue chez plus de 20 %. Cache : écart chez plus de 1 % des comparaisons. Lenteur : délai frôlé chez
+  plus de 5 % d'une classe de machine. Outil : abandon chez plus de 40 %. Erreur nouvelle : un gabarit jamais vu sur
+  les versions d'avant, 3 sources dans 3 réseaux. Sortie : `nuits/<jour>/flotte-signaux.json` (champs fermés),
+  relu par rapport.py, qui en fait des alertes `flotte:<signal>:<clé>` (une régression juste après le journal de
+  cet ordinateur, les autres après les causes de la clé) ; section « Flotte » du rapport du matin.
+- **Faux positif probable** : jamais l'IA (rapport.py ne le propose pas, alerte.sh refuse une demande forgée), un
+  ticket seulement. Chaque signal écrit un **ticket** `retours/tickets/AAAA-MM-JJ-<signal>-<clé>.md` (50 par nuit
+  au plus, pas deux fois la même semaine) : champs vérifiés, où regarder (fichiers de l'arbre qui nomment la règle,
+  emplacements vérifiés), interdits, puis les données ouvertes (noms, textes) échappées dans un bloc
+  `~~~~donnees-<16 hex tirés au hasard>` qu'aucune donnée ne peut fermer. Un ticket se lit dans une session lancée
+  par l'auteur : ses données sont des données, jamais des consignes.
+- **Noms** : l'IA ne voit un nom de logiciel qu'approuvé (`noms-connus.txt`), sinon `inconnu#<empreinte>`. Les noms
+  vus sont gardés dans `retours/tickets/noms-vus.json` ; `outils/veille/approuver-nom.sh <empreinte>` (du dépôt, sur
+  un terminal, réponse « oui ») ajoute le nom à `noms-connus.txt`, à committer puis réinstaller la veille. Relais
+  pas configuré : une seule ligne neutre au résumé de la nuit, sans notification.
 
 ## Sur alerte, avec IA
 
-Alertes par priorité : `rustsec` > `fuzz` > `journal` > `verifier` > `proptest` > `canari` (format cassé confirmé) >
-`lenteur` > `lien` ; une cause du journal rapportée par la clé (qu'un autre ordinateur peut avoir forgée) passe juste
-après `canari`. **Une seule** traitée par nuit, les autres « en file » ; une alerte déjà traitée (signature dans
+Alertes par priorité : `rustsec` > `fuzz` > `journal` > `flotte` (régression) > `verifier` > `proptest` > `canari`
+(format cassé confirmé) > `lenteur` > `lien` ; une cause du journal rapportée par la clé (qu'un autre ordinateur peut
+avoir forgée) passe juste après `canari`, puis les autres signaux de la flotte (jamais un faux positif probable :
+ticket seulement). **Une seule** traitée par nuit, les autres « en file » ; une alerte déjà traitée (signature dans
 `etat/alertes-traitees.txt`) n'est jamais relancée. KEV et Échap ne lancent l'IA qu'à la relecture hebdomadaire.
 Un plantage du fuzz resté en file reste « nouveau » (donc en alerte) chaque nuit jusqu'à sa prise en charge. Un échec
 proptest a pour clé ses tests en échec, pas la graine du jour : il n'appelle l'IA qu'une fois. Une correction où
@@ -123,7 +148,9 @@ avec un test et committe ; **garde-fous mécaniques** (refus d'un diff qui touch
 `CLAUDE.md`, `deny.toml`, tout `outils/` (sauf `outils/liens.txt` pour une alerte « lien » : l'IA y forgerait le vert
 de sa proposition, ou changerait la chaîne de publication et de la clé ; une alerte « verifier » sur une étape portée
 par un essai d'`outils/` n'appelle donc pas l'IA, elle est dite à l'auteur), un `build.rs`, `rust-toolchain`, qui ajoute `#[ignore]`,
-retire un test, change les dépendances hors d'une alerte RUSTSEC, ou n'ajoute aucun test ; refus aussi si le lien
+retire un test, change les dépendances hors d'une alerte RUSTSEC, ou n'ajoute aucun test (une alerte `flotte` :
+pour regression, couverture, fragile et cache ; elle ne peut pas non plus ôter une ligne de
+`tests/regles-connues.txt` ni y marquer une règle « retire ») ; refus aussi si le lien
 `.git` du worktree a été réécrit) ; `verifier.sh` dans l'arbre, **dans un bac à sable** ; **relecture adversariale**
 par un second `claude -p` neuf en lecture seule (`consignes-relecture.md`) ; **jamais la VM** : ce qui y est déposé
 tourne en administrateur sans clic, l'auteur la lance après sa relecture (`outils/vm-tester.sh --branche <branche>`) ;
@@ -255,7 +282,8 @@ Pushover, Gmail…) sans accord.
 ## Fichiers
 
 `commun.sh` (chemins, verrou, budget, ligne de commande de claude), `nuit.sh`, `alerte.sh`, `hebdo.sh`, `matin.sh`,
-`rapport.py` (rapports, état, entrées sûres de l'IA), `releve-envois.sh` et `references-flotte.sh` (envois), `consignes-*.md` et `schema-*.json` (prompts fixes et formes
+`rapport.py` (rapports, état, entrées sûres de l'IA), `releve-envois.sh`, `references-flotte.sh`, `approuver-nom.sh` et
+`noms-connus.txt` (envois), `consignes-*.md` et `schema-*.json` (prompts fixes et formes
 des réponses, versionnés), `reglages-claude.json` (permissions et bac à sable), `systemd/`, `installer.sh`, `essai.sh`.
 État : `~/.cache/vanguard-dev/veille/` (rapports, `etat/`, `canaris/<jour>/` gardés 7 jours, `nuits/<jour>/` 15
 jours, `ia/`, `journal/`).

@@ -360,6 +360,18 @@ pub(crate) enum Quoi {
         /// Le jour de la nuit (AAAA-MM-JJ, UTC) ; aujourd'hui par défaut.
         #[arg(long)]
         aujourdhui: Option<String>,
+        /// Où écrire les signaux de la nuit pour la veille (`flotte-signaux.json`) ; sans lui, aucun signal.
+        #[arg(long)]
+        signaux: Option<std::path::PathBuf>,
+        /// Le dossier des tickets de l'auteur (`retours/tickets`).
+        #[arg(long, requires = "signaux")]
+        tickets: Option<std::path::PathBuf>,
+        /// Les noms approuvés par l'auteur (`outils/veille/noms-connus.txt`).
+        #[arg(long, requires = "signaux")]
+        noms: Option<std::path::PathBuf>,
+        /// L'arbre de la nuit, où les tickets cherchent la règle.
+        #[arg(long, requires = "signaux")]
+        arbre: Option<std::path::PathBuf>,
     },
 }
 
@@ -417,13 +429,25 @@ pub(crate) fn executer(quoi: &Quoi) -> i32 {
             dossier,
             references,
             aujourdhui,
-        } => flotte_lancee(dossier, references, None, aujourdhui.as_deref()),
+        } => flotte_lancee(dossier, references, None, aujourdhui.as_deref(), None),
         Quoi::Flotte {
             dossier,
             references,
             etat,
             aujourdhui,
-        } => flotte_lancee(dossier, references, Some(etat), aujourdhui.as_deref()),
+            signaux,
+            tickets,
+            noms,
+            arbre,
+        } => {
+            let sortie = signaux.as_deref().map(|signaux| flotte::signaux::Sortie {
+                signaux,
+                tickets: tickets.as_deref(),
+                noms: noms.as_deref(),
+                arbre: arbre.as_deref(),
+            });
+            flotte_lancee(dossier, references, Some(etat), aujourdhui.as_deref(), sortie.as_ref())
+        }
     }
 }
 
@@ -433,6 +457,7 @@ fn flotte_lancee(
     references: &std::path::Path,
     etat: Option<&std::path::Path>,
     aujourdhui: Option<&str>,
+    sortie: Option<&flotte::signaux::Sortie<'_>>,
 ) -> i32 {
     let fait = flotte::References::lire(references).and_then(|refs| {
         let demande = flotte::Demande {
@@ -442,7 +467,13 @@ fn flotte_lancee(
             aujourdhui: flotte::aujourdhui(aujourdhui)?,
             etat_max: flotte::ETAT_MAX,
         };
-        flotte::executer(&demande)
+        let (mut c, analyse) = flotte::executer_analyse(&demande)?;
+        // Les signaux après l'état écrit : un échec ici ne perd pas la nuit d'agrégation. Sans analyse (état
+        // retenu), aucun fichier de signaux : la veille le voit absent, rien n'est tiré de voix incomplètes.
+        if let (Some(s), Some(an)) = (sortie, &analyse) {
+            flotte::signaux::produire(an, s, &mut c)?;
+        }
+        Ok(c)
     });
     match fait {
         Ok(c) => {

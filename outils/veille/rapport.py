@@ -17,6 +17,7 @@ Lancé par python3 -I (nuit.sh, alerte.sh, hebdo.sh) :
     rapport.py markdown RAPPORT.json
     rapport.py structure COPIE SORTIE      la forme d'une source refusée par un canari, sans son texte
     rapport.py compte-rendu ENTREE SORTIE  un compte rendu de Vanguard (src/compte_rendu/), refiltré champ par champ
+    rapport.py nom-vu NOMS_VUS.json EMPREINTE  le nom vu sous une empreinte, affichable (approuver-nom.sh)
 
 Un compte rendu de Vanguard est déjà validé en Rust ; il est relu ici quand même, comme toute donnée venue d'un
 programme que l'IA peut avoir changé : ses listes fermées et ses motifs viennent de schema-compte-rendu.json (dans
@@ -89,8 +90,24 @@ CR_CHAMPS = {
     "cle": "cle", "genre": "genre-cause", "regle": "regle", "contexte": "contexte", "lieu": "lieu", "code": "code",
     "provenance": "provenance", "premiere": "jour", "derniere": "jour", "reproduction": "reproduction",
 }
-GENRES = ["rustsec", "fuzz", "journal", "verifier", "proptest", "canari", "lenteur", "lien"]
+GENRES = ["rustsec", "fuzz", "journal", "flotte", "verifier", "proptest", "canari", "lenteur", "lien"]
 PRIORITE = {g: i + 1 for i, g in enumerate(GENRES)}
+# Les signaux de la flotte (src/compte_rendu/flotte/signaux.rs) et les formes de leurs champs : liste fermée,
+# relue ici comme toute sortie d'un programme que l'IA peut avoir changé.
+FLOTTE_SIGNAUX = ["regression", "couverture", "fragile", "cache", "lenteur", "outil", "erreur-nouvelle",
+                  "faux-positif"]
+# Ceux dont la correction doit venir avec un test (alerte.sh) ; « faux-positif » ne va jamais à l'IA.
+FLOTTE_TEST_EXIGE = ["regression", "couverture", "fragile", "cache"]
+MOTIFS.update({
+    "flotte-mot": r"(?a:[A-Za-z0-9._-]{1,64})",
+    "flotte-cle": r"(?a:(?=.{1,190}\Z)(?:" + "|".join(FLOTTE_SIGNAUX) + r"):[A-Za-z0-9._-]{1,64}:[A-Za-z0-9._-]{1,64}"
+                  r":[A-Za-z0-9._-]{1,64})",
+    "flotte-ticket": r"(?a:\d{4}-\d{2}-\d{2}-[A-Za-z0-9._-]{1,200}\.md)",
+    "palier": r"(?a:b\d{1,2})",
+    "nom-inconnu": r"(?a:inconnu#[0-9a-f]{16})",
+})
+NOMS_CONNUS = Path(__file__).resolve().parent / "noms-connus.txt"
+FLOTTE_SIGNAUX_MAX = 200
 LOCKS = ["Cargo.lock", "fuzz/Cargo.lock", "extensions/sdk/Cargo.lock", "extensions/exemples/rust-exemple/Cargo.lock"]
 MOIS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]
 
@@ -500,6 +517,107 @@ def regression(serie, facteur, diviseur, seuil):
             "nuits": [{"jour": j, "ms": ms} for j, _, ms in serie[-NUITS_RECENTES:]]}
 
 
+def noms_connus():
+    """Les noms que l'auteur a approuvés (approuver-nom.sh) : une ligne chacun, `#` pour un commentaire."""
+    return {x for x in lignes(NOMS_CONNUS) if x and not x.startswith("#")}
+
+
+def nom_sur(nom, connus):
+    """Un nom de logiciel pour l'IA : une empreinte `inconnu#…`, ou un nom approuvé, écrit en caractères simples et
+    que `affichable()` laisse tel quel. Rien d'autre (None) : un texte ouvert ne passe jamais sans l'accord de
+    l'auteur."""
+    if not isinstance(nom, str):
+        return None
+    if re.fullmatch(MOTIFS["nom-inconnu"], nom):
+        return nom
+    simple = all(c.isalnum() or c in " .,:;'()#%/_-+=" for c in nom)
+    if nom in connus and simple and 0 < len(nom) <= 80 and affichable(nom, 80) == nom:
+        return nom
+    return None
+
+
+def entier(v, maximum=10**12):
+    return v if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= maximum else None
+
+
+def lire_comptes_flotte(chemin):
+    """La ligne des comptes de `vanguard compte-rendu flotte` (`nom=nombre` séparés par des espaces) : des nombres
+    seulement, chaque nom en liste fermée de forme."""
+    comptes = {}
+    for ligne in lignes(chemin)[-1:]:
+        for morceau in ligne.split()[:80]:
+            nom, _, valeur = morceau.partition("=")
+            if re.fullmatch(r"[a-z][a-z-]{0,39}", nom) and re.fullmatch(r"\d{1,12}", valeur):
+                comptes[nom] = int(valeur)
+    return comptes
+
+
+def signal_flotte(x, connus):
+    """Un signal de flotte-signaux.json refait champ par champ ; None s'il ne passe pas la liste blanche."""
+    if not isinstance(x, dict) or x.get("signal") not in FLOTTE_SIGNAUX:
+        return None
+    s = {"signal": x["signal"]}
+    for k in ("famille", "sujet", "mesure"):
+        s[k] = sur("flotte-mot", x.get(k))
+    s["cle"] = sur("flotte-cle", x.get("cle"))
+    if RETIRE in s.values() or s["cle"] != f"{s['signal']}:{s['famille']}:{s['sujet']}:{s['mesure']}":
+        return None
+    s["regle"] = None if x.get("regle") is None else sur("regle", x.get("regle"))
+    s["version"] = sur("version-vg", x.get("version"))
+    s["version_avant"] = None if x.get("version_avant") is None else sur("version-vg", x.get("version_avant"))
+    s["jour"] = sur("jour", x.get("jour"))
+    if RETIRE in (s["regle"], s["version"], s["version_avant"], s["jour"]):
+        return None
+    for k in ("jours", "sources", "larges", "sur"):
+        s[k] = entier(x.get(k))
+        if s[k] is None:
+            return None
+    avant = x.get("avant")
+    s["avant"] = ([entier(avant[0]), entier(avant[1])] if isinstance(avant, list) and len(avant) == 2
+                  and None not in (entier(avant[0]), entier(avant[1])) else None)
+    for k in ("meme_installations", "anciennes"):
+        s[k] = x.get(k) if isinstance(x.get(k), bool) else None
+    s["raison"] = None if x.get("raison") is None else sur("flotte-mot", x.get("raison"))
+    s["p90"] = None if x.get("p90") is None else sur("palier", x.get("p90"))
+    # Un faux positif probable ne va jamais à l'IA, quoi que dise le fichier : un ticket seulement.
+    s["ia"] = x.get("ia") is True and s["signal"] != "faux-positif"
+    s["ticket"] = None if x.get("ticket") is None else sur("flotte-ticket", x.get("ticket"))
+    noms = x.get("noms") if isinstance(x.get("noms"), list) else []
+    s["noms"] = [n for n in (nom_sur(n, connus) for n in noms[:10]) if n is not None]
+    return s
+
+
+def lire_flotte(t, etapes):
+    """Les signaux de la flotte (flotte-signaux.json) et ses comptes (flotte-comptes.txt), si l'étape flotte a
+    réussi ; sinon rien n'en est lu."""
+    e = next((x for x in etapes if x.get("nom") == "flotte"), None)
+    if e is None:
+        return None
+    if e.get("etat") != "ok":
+        return {"lu": False, "etat": e.get("etat"), "signaux": [], "versions": [], "comptes": {}, "quota": None,
+                "refus": None}
+    comptes = lire_comptes_flotte(t / "flotte-comptes.txt")
+    f = lire_json(t / "flotte-signaux.json", {})
+    connus = noms_connus()
+    signaux, versions, quota = [], [], None
+    if isinstance(f, dict) and f.get("schema") == 1:
+        brut = f.get("signaux") if isinstance(f.get("signaux"), list) else []
+        signaux = [s for s in (signal_flotte(x, connus) for x in brut[:FLOTTE_SIGNAUX_MAX]) if s is not None]
+        resume_f = f.get("resume") if isinstance(f.get("resume"), dict) else {}
+        quota = entier(resume_f.get("quota"))
+        for v in (resume_f.get("versions") if isinstance(resume_f.get("versions"), list) else [])[:20]:
+            if not isinstance(v, dict):
+                continue
+            vv = {"version": sur("version-vg", v.get("version")), "jour": sur("jour", v.get("jour")),
+                  **{k: entier(v.get(k)) for k in ("sources", "installations", "lots")},
+                  "arrivee_soudaine": v.get("arrivee_soudaine") is True}
+            if RETIRE not in vv.values() and None not in vv.values():
+                versions.append(vv)
+    refus = sum(n for k, n in comptes.items() if k.startswith("refus-") or k in ("relais-refus", "quarantaine"))
+    return {"lu": True, "etat": "ok", "signaux": signaux, "versions": versions, "comptes": comptes,
+            "quota": quota, "refus": refus}
+
+
 def lire_lenteur(veille):
     """Les régressions de durée de l'autotest : le bilan entier, puis chaque règle. Moins de 24 nuits mesurées : « pas
     assez », jamais « sans régression »."""
@@ -522,8 +640,8 @@ def lire_lenteur(veille):
 
 
 def alertes_de(r):
-    """Les alertes qui peuvent appeler l'IA, par priorité : rustsec, fuzz, journal, verifier, proptest, canari,
-    lenteur, lien ; une cause du journal venue de la clé, au rang des canaris, juste après eux."""
+    """Les alertes qui peuvent appeler l'IA, par priorité : rustsec, fuzz, journal (cet ordinateur), régression de
+    la flotte, verifier, proptest, canari, journal (clé), autres signaux de la flotte, lenteur, lien."""
     tete = r["tete_prochaine"]
     alertes = []
 
@@ -552,6 +670,15 @@ def alertes_de(r):
                     cause=c["cle"], recente=recente, genre_cause=c["genre"],
                     **{k: c[k] for k in ("regle", "contexte", "lieu", "code", "compte", "versions", "systemes",
                                          "provenance")}, score=score_cause(c))
+    for s in (r.get("flotte") or {}).get("signaux", []):
+        # Une régression de la flotte juste après le journal de cet ordinateur ; les autres signaux après les causes
+        # rapatriées par la clé. Un faux positif probable : jamais (ticket seulement, signaux.rs).
+        if not s["ia"] or s["signal"] == "faux-positif":
+            continue
+        ajouter("flotte", s["cle"], priorite=None if s["signal"] == "regression" else PRIORITE["canari"],
+                **{k: s[k] for k in ("signal", "famille", "sujet", "mesure", "regle", "version", "version_avant",
+                                     "jour", "jours", "sources", "larges", "sur", "avant", "meme_installations",
+                                     "raison", "p90", "noms")})
     for e in r.get("verifier", []):
         if e["etat"] == "echec":
             ajouter("verifier", e["etape"], etape=e["etape"])
@@ -572,7 +699,8 @@ def alertes_de(r):
         if lien["nuits"] >= 3:
             ajouter("lien", hashlib.sha256(lien["url"].encode()).hexdigest()[:16], url=lien["url"],
                     nuits=lien["nuits"])
-    return sorted(alertes, key=lambda a: (a["priorite"], a["type"] == "journal"))
+    # À priorité égale (celle des canaris) : le canari, puis la cause rapatriée par la clé, puis la flotte.
+    return sorted(alertes, key=lambda a: (a["priorite"], {"journal": 1, "flotte": 2}.get(a["type"], 0)))
 
 
 def etape(r, nom):
@@ -597,6 +725,7 @@ def nuit(a):
         "canaris": lire_canaris(veille, a.jour),
         "liens": lire_liens(t, veille, a.jour),
         "journal": lire_journal(t, etapes, a.arbre),
+        "flotte": lire_flotte(t, etapes),
     }
     noter_durees(t, veille, a.jour, r["tete_prochaine"], etapes)
     r["lenteur"] = lire_lenteur(veille)
@@ -647,10 +776,18 @@ def attend_auteur(r):
         if c["etat"] not in ("ok", "sautee"):
             attend.append(f"canari {c['id']} : {c['etat']}" + (" (confirmé au deuxième essai)" if c["confirme"] else ""))
     for e in r["etapes"]:
+        if relais_absent(e):
+            continue
         if e["etat"] == "sautee":
             attend.append(f"étape sautée : {e['nom']} ({e.get('raison', '')})")
         elif e["etat"] == "echec":
             attend.append(f"étape en échec : {e['nom']}")
+    if any(relais_absent(e) for e in r["etapes"]):
+        attend.append("relais des envois pas encore configuré : rien à relever (LISEZMOI.md, « Envois »)")
+    fl = r.get("flotte") or {}
+    tickets = [s for s in fl.get("signaux", []) if s.get("ticket")]
+    if tickets:
+        attend.append(f"{len(tickets)} ticket(s) de la flotte à regarder (retours/tickets/, jamais lus par l'IA de nuit)")
     f = r.get("fuzz") or {}
     if f.get("cibles_sans_fuzz_sh"):
         attend.append("cibles de fuzz absentes de outils/fuzz.sh : " + ", ".join(f["cibles_sans_fuzz_sh"]))
@@ -673,6 +810,17 @@ def attend_auteur(r):
     return attend
 
 
+RELAIS_ABSENT = "relais pas configuré"
+
+
+def relais_absent(e):
+    """Une étape des envois sautée parce que l'auteur n'a pas encore déployé le relais : rien à relever, rien de
+    cassé. Jamais un 401 ni une réponse illisible (en échec, releve-envois.sh), ni un relais configuré qui n'a rien
+    rendu (« aucun envoi relevé »)."""
+    return e.get("nom") in ("envois", "flotte") and e.get("etat") == "sautee" \
+        and str(e.get("raison", "")).startswith(RELAIS_ABSENT)
+
+
 def pas_verts(r):
     """Ce qui n'a pas été vérifié sans être en échec : étapes sautées (de la nuit et de verifier.sh), canaris qui n'ont
     pas lu leur source (http-404, sans-reponse, format…). Jamais compté vert. Rend (sautées, sautées imprévues,
@@ -680,9 +828,10 @@ def pas_verts(r):
     (envois, flotte : tant que l'auteur ne l'a pas déployé, il n'y a rien à relever)."""
     sautees, imprevues = [], []
     for e in r["etapes"]:
-        if e["etat"] == "sautee":
+        # Le relais pas encore déployé : une seule ligne neutre dans le résumé (`resume`), pas deux « sautées ».
+        if e["etat"] == "sautee" and not relais_absent(e):
             sautees.append(e["nom"])
-            if not str(e.get("raison", "")).startswith(("--sans-", "relais pas configuré")):
+            if not str(e.get("raison", "")).startswith("--sans-"):
                 imprevues.append(e["nom"])
     for e in r.get("verifier") or []:
         if e["etat"] == "sautee":
@@ -718,6 +867,8 @@ def resume(r):
     if r.get("propositions"):
         morceaux.append(f"{r['propositions'][0]} attend")
     texte = " ; ".join(morceaux) or "tout est vert"
+    if any(relais_absent(e) for e in r["etapes"]):
+        texte += " ; relais pas encore configuré (envois non relevés)"
     return f"Veille {jour_lisible(r['date'])} : {texte}"[:200]
 
 
@@ -829,6 +980,32 @@ def markdown(chemin_json, kev_humain=None):
             md.append(f"- {g['quoi']} : {g['mediane_avant_ms']} ms → {g['mediane_recente_ms']} ms depuis le "
                       f"{g['jour_lent']} (`{g['tete_rapide'][:12]}..{g['tete_lente'][:12]}`)")
         md.append("- Durées en mode debug (cargo run) : comparables d'une nuit à l'autre seulement.")
+    fl = r.get("flotte")
+    if fl:
+        md += ["", "### Flotte", ""]
+        if not fl["lu"]:
+            md.append(f"- Étape {affichable(fl.get('etat'), 20)} : rien n'est lu des envois cette nuit.")
+        else:
+            co = fl["comptes"]
+            vues = fl["versions"]
+            md.append(f"- Installations estimées (dernier jour de chaque version) : "
+                      f"{sum(v['installations'] for v in vues)} ; sources : {sum(v['sources'] for v in vues)}.")
+            for v in vues:
+                md.append(f"- {affichable(v['version'], 30)} le {affichable(v['jour'], 12)} : {v['sources']} source(s), "
+                          f"{v['installations']} installation(s), {v['lots']} lot(s)"
+                          + (" ; **arrivée soudaine** (à vérifier avant de croire un signal)" if v["arrivee_soudaine"]
+                             else ""))
+            md.append(f"- Lots acceptés : {co.get('acceptes', '?')} ; refusés : {fl['refus']} ; illisibles : "
+                      f"{co.get('illisibles', '?')} ; quota du relais : {fl['quota'] if fl['quota'] is not None else '?'}.")
+            md.append(f"- Signaux : {len(fl['signaux'])} ; tickets écrits : {co.get('tickets', 0)}.")
+            # Les cinq qui pèsent le plus (le plus de sources) ; tout est déjà en liste blanche, refiltré quand même.
+            for x in sorted(fl["signaux"], key=lambda x: (-x["sources"], x["cle"]))[:5]:
+                suite = "IA possible" if x["ia"] else "ticket seulement"
+                avant = (f" ; avant ({affichable(x['version_avant'], 30)}) : {x['avant'][0]} sur {x['avant'][1]}"
+                         if x["avant"] and x["version_avant"] else "")
+                md.append(f"- {affichable(x['signal'], 20)} `{affichable(x['cle'], 190)}` : {x['sources']} source(s) "
+                          f"dans {x['larges']} réseau(x) /16, sur {x['sur']}{avant} ({suite}"
+                          + (f", ticket {affichable(x['ticket'], 220)}" if x["ticket"] else "") + ")")
     if r.get("liens"):
         md += ["", "### Liens morts", ""]
         md += [f"- {affichable(x['url'], 200)} ({x['nuits']} nuit(s) de suite)" for x in r["liens"]]
@@ -925,6 +1102,23 @@ def alerte(rapport, signature, sortie, donnees, evidente=None):
             "chercher": f"git log --oneline {rapide}..{lente}" if RETIRE not in (rapide, lente) else None,
             "mesure": "autotest de la nuit, en mode debug (cargo run) : comparable d'une nuit à l'autre seulement ; "
                       "la nuit suivante juge la correction",
+        }
+    elif genre == "flotte":
+        # Des champs fermés seulement, refaits une fois de plus ; les noms : une empreinte `inconnu#…` ou un nom que
+        # l'auteur a approuvé (approuver-nom.sh). Jamais le ticket : ses données ouvertes sont pour une session
+        # lancée par l'auteur, pas pour l'IA de nuit.
+        x = signal_flotte({**al, "cle": al.get("cle"), "ia": True, "ticket": None}, noms_connus())
+        if x is None or x["signal"] == "faux-positif":
+            print("signal de la flotte refusé", file=sys.stderr)
+            return 1
+        entree |= {k: x[k] for k in ("signal", "cle", "famille", "sujet", "mesure", "regle", "version",
+                                     "version_avant", "jour", "jours", "sources", "larges", "sur", "avant",
+                                     "meme_installations", "raison", "p90", "noms")}
+        entree |= {
+            "origine": "comptes envoyés par des ordinateurs (ils peuvent être forgés : à retrouver dans le code, pas à "
+                       "croire)",
+            "interdits": "ne jamais baisser un seuil, retirer une règle ou une vérification, ni rendre « sain » plus "
+                         "facile ; test obligatoire",
         }
     elif genre == "lien":
         entree |= {"url": sur("url", al.get("url")), "nuits": al.get("nuits") if isinstance(al.get("nuits"), int) else 0}
@@ -1222,6 +1416,31 @@ def compte_rendu(entree, sortie):
     return 0
 
 
+def nom_vu(chemin, empreinte):
+    """Pour approuver-nom.sh : le nom vu sous cette empreinte (retours/tickets/noms-vus.json, écrit par
+    signaux.rs), passé par `affichable()`. 1 : inconnu ; 2 : un nom que `affichable()` changerait ou hors des
+    caractères simples, jamais approuvable (il porterait au terminal ou à l'IA ce que l'auteur n'a pas vu)."""
+    if not re.fullmatch(r"[0-9a-f]{16}", empreinte):
+        print("empreinte illisible (16 chiffres hexadécimaux)", file=sys.stderr)
+        return 1
+    try:
+        if Path(chemin).stat().st_size > 2 * 1024 * 1024:
+            return 1
+    except OSError:
+        return 1
+    vus = lire_json(chemin, {})
+    nom = vus.get(empreinte) if isinstance(vus, dict) else None
+    if not isinstance(nom, str):
+        print("aucun nom vu sous cette empreinte", file=sys.stderr)
+        return 1
+    montre = affichable(nom, 80)
+    print(montre)
+    if nom_sur(nom, {nom}) != nom:
+        print("nom non approuvable : caractères hors liste ou changés pour l'affichage", file=sys.stderr)
+        return 2
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sous = p.add_subparsers(dest="cmd", required=True)
@@ -1267,7 +1486,12 @@ def main():
     cr = sous.add_parser("compte-rendu")
     cr.add_argument("entree")
     cr.add_argument("sortie")
+    nv = sous.add_parser("nom-vu")
+    nv.add_argument("noms_vus")
+    nv.add_argument("empreinte")
     a = p.parse_args()
+    if a.cmd == "nom-vu":
+        return nom_vu(a.noms_vus, a.empreinte)
     if a.cmd == "compte-rendu":
         return compte_rendu(a.entree, a.sortie)
     if a.cmd == "structure":

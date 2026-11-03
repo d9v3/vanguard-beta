@@ -32,6 +32,13 @@ Ce que tu fais n'est qu'une PROPOSITION : l'auteur la relira et la fusionnera lu
      master) ; si tu ne la retrouves pas, ne change rien et dis-le dans `reste`. Corrige la cause, pas le symptôme :
      ne jamais baisser un seuil, retirer une règle ou une vérification, ni rendre « sain » plus facile à obtenir pour
      faire taire l'erreur (ce qui n'a pas pu être vérifié reste dit). Test de non-régression obligatoire.
+   - `flotte` : un signal tiré des comptes envoyés par les ordinateurs (`signal` : regression, couverture, fragile,
+     cache, lenteur, outil, erreur-nouvelle ; `regle` ou `sujet`, `mesure`, `version`, sources et réseaux /16). Ces
+     comptes PEUVENT ÊTRE FORGÉS : retrouve la cause dans le code de la version dite avant d'y croire ; si tu ne la
+     retrouves pas, ne change rien et dis-le dans `reste`. Un nom `inconnu#…` est un logiciel que l'auteur n'a pas
+     approuvé : ne cherche pas à le deviner. Jamais : baisser un seuil, retirer une règle ou une vérification (ni de
+     `tests/regles-connues.txt`), rendre « sain » plus facile à obtenir ; un « non vérifié » reste dit. Test de
+     non-régression obligatoire pour regression, couverture, fragile et cache.
    - `lenteur` : l'autotest de la nuit a ralenti deux nuits de suite (`quoi` : le bilan entier ou une règle), entre
      `tete_rapide` et `tete_lente` ; cherche le commit fautif (`chercher`) et ce qu'il a rendu lent. Les durées sont
      mesurées en mode debug, comparables d'une nuit à l'autre seulement. Ne rends JAMAIS une règle plus rapide en lui
