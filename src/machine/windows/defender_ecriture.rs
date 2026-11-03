@@ -42,7 +42,9 @@ pub(super) fn faire_acte(acte: &Acte) -> Option<Resultat> {
         | Acte::DefenderAsrChoix(..)
         | Acte::DefenderExclusionAjouter(..)
         | Acte::DefenderDossiersAutoriser(..)
-        | Acte::ChoixNoter(..) => return faire_choix(acte, None),
+        | Acte::ChoixNoter(..)
+        | Acte::PareFeuProfil(..)
+        | Acte::PareFeuRegleEtat(..) => return faire_choix(acte, None),
         Acte::Rallumer(id) => resultat(choix_avant::rallumer(&mut Monde::default(), *id)),
         _ => return None,
     })
@@ -70,6 +72,8 @@ pub(super) fn lire_choix(id: IdChoix) -> Option<Option<i64>> {
             let liste = liste_de(id)?;
             Some(Some(i64::from(!elements_de(&liste, id).is_empty())))
         }
+        // Le pare-feu se lit par COM (`pare_feu.rs`), jamais par Defender.
+        IdChoix::PareFeu(..) | IdChoix::PareFeuRegle(..) => super::pare_feu::lire_choix(id),
     }
 }
 
@@ -78,7 +82,7 @@ fn propriete_element(id: IdChoix) -> Option<&'static str> {
     match id {
         IdChoix::Exclusion(g, _) => Some(g.propriete()),
         IdChoix::DossiersAutorise(_) => Some(PERMIS_DOSSIERS),
-        IdChoix::Defender(_) | IdChoix::Asr(_) => None,
+        IdChoix::Defender(_) | IdChoix::Asr(_) | IdChoix::PareFeu(..) | IdChoix::PareFeuRegle(..) => None,
     }
 }
 
@@ -98,7 +102,7 @@ fn liste_de(id: IdChoix) -> Option<Vec<String>> {
             let liste = l.get(PERMIS_DOSSIERS).map(Valeur::textes).unwrap_or_default();
             (!liste.iter().any(|x| x.trim_start().starts_with("N/A"))).then_some(liste)
         }
-        IdChoix::Defender(_) | IdChoix::Asr(_) => None,
+        IdChoix::Defender(_) | IdChoix::Asr(_) | IdChoix::PareFeu(..) | IdChoix::PareFeuRegle(..) => None,
     }
 }
 
@@ -162,6 +166,10 @@ impl choix_avant::Monde for Monde {
     }
 
     fn ecrire(&mut self, id: IdChoix, v: i64) -> Result<(), Echec> {
+        // Le pare-feu s'écrit par COM, après la garde de la session à distance rejugée sur ce qui est relu à l'instant.
+        if id.pare_feu() {
+            return super::pare_feu::ecrire_choix(id, v);
+        }
         // Une valeur plus faible que celle relue : un refus de Windows peut être Defender qui juge le geste suspect.
         let baisse = baisse_ecrite(id, self.lue.filter(|(i, _)| *i == id).map(|(_, l)| l), v);
         if let Some(prop) = propriete_element(id) {
@@ -242,6 +250,9 @@ impl choix_avant::Monde for Monde {
     }
 
     fn pourquoi_garde(&mut self) -> String {
+        if self.lue.is_some_and(|(id, _)| id.pare_feu()) {
+            return super::pare_feu::pourquoi_garde();
+        }
         pourquoi_garde()
     }
 }
@@ -265,6 +276,15 @@ pub(super) fn juger(acte: &Acte) -> Option<(Montre, String)> {
     let texte = match acte {
         Acte::DefenderExclusionAjouter(g, e) => crate::options_defense::texte_ajout_exclusion(*g, e.texte()),
         Acte::DefenderDossiersAutoriser(e) => crate::options_defense::texte_autoriser_dossiers(e.texte()),
+        // Une règle se montre par son nom relu (celui d'une des règles de l'empreinte), jamais par l'empreinte seule.
+        Acte::PareFeuRegleEtat(..) => {
+            let regle = super::pare_feu::nom_regle(id).map_or_else(|| "?".to_string(), |n| crate::ui::affichable(&n));
+            format!(
+                "{nom} « {regle} » : {} → {}",
+                crate::options_defense::texte_choix(id, lue),
+                crate::options_defense::texte_choix(id, Some(cible)).to_uppercase()
+            )
+        }
         _ => format!(
             "{nom} : {} → {}",
             crate::options_defense::texte_choix(id, lue),

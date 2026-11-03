@@ -476,8 +476,8 @@ enum Commande {
         /// Le résultat en JSON, pour un script (sans chemin, nom de compte ni nom de machine).
         #[arg(long)]
         json: bool,
-        /// Un choix de Defender (pua bloquer, temps-reel coupe, asr-GUID audit…), montré puis fait dans la fenêtre
-        /// administrateur ; une baisse y est confirmée par un oui tapé, sa valeur d'avant notée.
+        /// Un choix de Defender ou du pare-feu (pua bloquer, asr-GUID audit, pare-feu-prive-actif non…), montré puis
+        /// fait dans la fenêtre administrateur ; une baisse y est confirmée par un oui tapé, sa valeur d'avant notée.
         #[arg(long, visible_alias = "choose", num_args = 2, value_names = ["ID", "VALEUR"], conflicts_with_all = ["json", "rallumer", "exclure", "permettre", "noter"])]
         choisir: Option<Vec<String>>,
         /// Remet un réglage : la valeur d'avant notée si elle protège, sinon la valeur sûre.
@@ -3249,9 +3249,9 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("logiciels-espions", "json", "The result as JSON, for a script"),
     ("logiciels-perimes", "json", "The result as JSON, for a script"),
     ("options-defense", "json", "The result as JSON, for a script (no path, account name or computer name)"),
-    ("options-defense", "choisir", "A Defender choice (pua bloquer, temps-reel coupe, asr-GUID audit…), shown then \
-                                    made in the administrator window; lowering is confirmed there by a typed yes, \
-                                    its previous value noted"),
+    ("options-defense", "choisir", "A Defender or firewall choice (pua bloquer, asr-GUID audit, \
+                                    pare-feu-prive-actif non…), shown then made in the administrator window; \
+                                    lowering is confirmed there by a typed yes, its previous value noted"),
     ("options-defense", "rallumer", "Turns a setting back on: the noted previous value if it protects, otherwise \
                                      the safe value"),
     ("options-defense", "exclure", "A scan exclusion (folder, program or type, then the text), shown then confirmed \

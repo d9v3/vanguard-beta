@@ -13,6 +13,11 @@ use crate::machine::gestes::{self, ChoixAsr, EmpreinteElement, Sens};
 use crate::selection::Ligne;
 use crate::ui::{GRAS, LARGEUR, couper, envelopper, ligne_titre};
 
+mod pare_feu;
+// Hors de Windows, seuls les essais lisent l'écran du pare-feu.
+#[cfg_attr(not(windows), allow(unused_imports))]
+use pare_feu::*;
+
 /// Les notes « avant » lues (`choix_avant::notes`).
 pub(super) type Notes = [(IdChoix, Option<Note>)];
 
@@ -169,12 +174,13 @@ pub(super) fn en_tete(e: &Etat) -> Vec<String> {
     l
 }
 
-/// La ligne « Exclusions » du menu : combien, dont combien posées par votre choix et combien inconnues (R8).
-/// `listes` : `None` si elles ne se lisent pas.
-pub(super) fn resume_exclusions(listes: Option<&[Vec<String>; 3]>, notes: &Notes) -> String {
+/// La ligne « Exclusions » du menu : combien, dont combien posées par votre choix et combien inconnues (R8), les
+/// programmes permis de l'accès contrôlé aux dossiers compris. `listes` : `None` si elles ne se lisent pas ;
+/// `permis` : `None` si la liste est muette (elle ne compte alors pas, comme une liste cachée « N/A… »).
+pub(super) fn resume_exclusions(listes: Option<&[Vec<String>; 3]>, permis: Option<&[String]>, notes: &Notes) -> String {
     let par_choix = notes
         .iter()
-        .filter(|(id, n)| matches!(id, IdChoix::Exclusion(..)) && n.is_some())
+        .filter(|(id, n)| matches!(id, IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_)) && n.is_some())
         .count();
     let Some(l) = listes else {
         return if par_choix > 0 {
@@ -196,14 +202,24 @@ pub(super) fn resume_exclusions(listes: Option<&[Vec<String>; 3]>, notes: &Notes
             tr!("visibles avec l'accord admin.", "visible with admin approval").to_string()
         };
     }
+    let permis_lus = permis
+        .filter(|p| !p.iter().any(|x| x.trim_start().starts_with("N/A")))
+        .unwrap_or_default()
+        .iter()
+        .filter(|x| !x.trim().is_empty())
+        .map(|x| IdChoix::DossiersAutorise(EmpreinteElement::de(x)));
+    let exclusions = GenreExclusion::TOUS.into_iter().zip(l).flat_map(|(g, liste)| {
+        liste
+            .iter()
+            .filter(|x| !x.trim().is_empty())
+            .map(move |x| IdChoix::Exclusion(g, EmpreinteElement::de(x)))
+    });
     let (mut choix, mut inconnues) = (0usize, 0usize);
-    for (g, liste) in GenreExclusion::TOUS.into_iter().zip(l) {
-        for x in liste.iter().filter(|x| !x.trim().is_empty()) {
-            if par_choix_element(IdChoix::Exclusion(g, EmpreinteElement::de(x)), notes).is_some() {
-                choix += 1;
-            } else {
-                inconnues += 1;
-            }
+    for id in exclusions.chain(permis_lus) {
+        if par_choix_element(id, notes).is_some() {
+            choix += 1;
+        } else {
+            inconnues += 1;
         }
     }
     let inconnue = |i: usize| {
@@ -270,8 +286,25 @@ pub(super) fn resume_pare_feu(e: &Etat) -> String {
         .map(nom)
         .collect();
     let illisibles = f.profils.iter().filter(|p| p.actif.is_none()).count();
+    if coupes.len() == 3 {
+        return tr!("coupé partout", "off everywhere").to_string();
+    }
     if !coupes.is_empty() {
-        return trf!("coupé : {}", "off: {}", coupes.join(", "));
+        let t = trf!("coupé : {}", "off: {}", coupes.join(", "));
+        // Une précision de menu fait 33 caractères : au-delà, le compte, et si le réseau actuel en est.
+        if largeur_affichee(&t) <= 33 {
+            return t;
+        }
+        let n = coupes.len();
+        let actuel = (0..3).any(|i| {
+            f.profils.get(i).and_then(|p| p.actif) == Some(false)
+                && f.courants.is_some_and(|c| c & PROFILS.get(i).map_or(0, |p| p.1) != 0)
+        });
+        return if actuel {
+            trf!("coupé : {n} profils, dont l'actuel", "off: {n} profiles, incl. current")
+        } else {
+            trf!("coupé : {n} profils", "off: {n} profiles")
+        };
     }
     if illisibles > 0 {
         return tr!("non vérifié", "not checked").to_string();
@@ -291,18 +324,10 @@ fn texte_cible(c: &Change) -> String {
 }
 
 /// Les lignes `Choix` d'un menu, bornées pour que chaque rangée tienne dans `ui::LARGEUR` : la colonne des
-/// précisions est celle de `selection` (le texte le plus long + 2, entre 36 et 48), après « ► touche ».
+/// précisions est celle de `selection` (le plus long texte des lignes qui ont une précision + 2, entre 36 et 48),
+/// après « ► touche ».
 pub(super) fn borner(lignes: &mut [Ligne]) {
-    let colonne = lignes
-        .iter()
-        .filter_map(|l| match l {
-            Ligne::Choix { texte, .. } => Some(largeur_affichee(texte)),
-            _ => None,
-        })
-        .max()
-        .unwrap_or(0)
-        .saturating_add(2)
-        .clamp(36, 48);
+    let colonne = crate::selection::colonne(lignes);
     for l in lignes.iter_mut() {
         if let Ligne::Choix {
             touche,
@@ -323,7 +348,13 @@ pub(super) fn borner(lignes: &mut [Ligne]) {
 }
 
 /// Le menu principal (plan §3.2) : les dix options, les exclusions, les règles ASR, le pare-feu, puis Appliquer.
-pub(super) fn menu(e: &Etat, notes: &Notes, listes: Option<&[Vec<String>; 3]>, changes: &[Change]) -> Vec<Ligne> {
+pub(super) fn menu(
+    e: &Etat,
+    notes: &Notes,
+    listes: Option<&[Vec<String>; 3]>,
+    permis: Option<&[String]>,
+    changes: &[Change],
+) -> Vec<Ligne> {
     let mut l = vec![Ligne::Texte(String::new()), Ligne::Texte(ligne_titre(titre()))];
     l.extend(en_tete(e).into_iter().map(Ligne::Texte));
     l.push(Ligne::Texte(String::new()));
@@ -358,15 +389,14 @@ pub(super) fn menu(e: &Etat, notes: &Notes, listes: Option<&[Vec<String>; 3]>, c
     let exclusions = if en_liste > 0 {
         trf!("{en_liste} à appliquer", "{en_liste} to apply")
     } else {
-        resume_exclusions(listes, notes)
+        resume_exclusions(listes, permis, notes)
     };
     l.push(Ligne::choix(
         "11",
         tr!("Exclusions et programmes permis ›", "Exclusions and allowed apps ›"),
         &exclusions,
     ));
-    // Court : la précision d'une ligne du menu n'a qu'une vingtaine de colonnes ici (« changement(s) choisi(s) »
-    // y était coupé).
+    // Court : la précision d'une ligne du menu a 33 colonnes (« changement(s) choisi(s) » y était coupé).
     let en_asr = changes.iter().filter(|c| matches!(c.id, IdChoix::Asr(_))).count();
     let asr = if en_asr > 0 {
         trf!("{en_asr} à appliquer", "{en_asr} to apply")
@@ -374,10 +404,16 @@ pub(super) fn menu(e: &Etat, notes: &Notes, listes: Option<&[Vec<String>; 3]>, c
         resume_asr(e)
     };
     l.push(Ligne::choix("12", tr!("Règles ASR ›", "ASR rules ›"), &asr));
+    let en_pare_feu = changes.iter().filter(|c| c.id.pare_feu()).count();
+    let pare_feu = if en_pare_feu > 0 {
+        trf!("{en_pare_feu} à appliquer", "{en_pare_feu} to apply")
+    } else {
+        resume_pare_feu(e)
+    };
     l.push(Ligne::choix(
         "13",
         tr!("Pare-feu Windows ›", "Windows Firewall ›"),
-        &resume_pare_feu(e),
+        &pare_feu,
     ));
     l.push(Ligne::Texte(String::new()));
     if !changes.is_empty() {
@@ -1090,7 +1126,8 @@ fn nom_note(id: IdChoix) -> String {
     let (genre, hex) = match id {
         IdChoix::Exclusion(g, e) => (nom_genre(g).to_string(), e.hex()),
         IdChoix::DossiersAutorise(e) => (tr!("programme permis", "allowed app").to_string(), e.hex()),
-        IdChoix::Defender(_) | IdChoix::Asr(_) => return nom_choix(id),
+        IdChoix::PareFeuRegle(_, e) => (tr!("règle du pare-feu", "firewall rule").to_string(), e.hex()),
+        IdChoix::Defender(_) | IdChoix::Asr(_) | IdChoix::PareFeu(..) => return nom_choix(id),
     };
     format!("{genre} n° {}", hex.get(..8).unwrap_or(&hex))
 }
@@ -1525,7 +1562,7 @@ mod boucle {
         let mut changes: Vec<Change> = Vec::new();
         let mut depart = "1".to_string();
         loop {
-            let lignes = menu(&lu.etat, &lu.notes, lu.listes.as_ref(), &changes);
+            let lignes = menu(&lu.etat, &lu.notes, lu.listes.as_ref(), lu.permis.as_deref(), &changes);
             let choix = crate::selection::choisir(&lignes, invite(), &depart, tr!("revenir", "back"));
             let c = choix.as_deref().map_or("", str::trim);
             if retour(c) {
@@ -1551,7 +1588,7 @@ mod boucle {
                 "v" => voir(&lu.etat),
                 "11" => exclusions(&lu, &mut changes),
                 "12" => asr(&lu, &mut changes),
-                "13" => pare_feu(&lu.etat),
+                "13" => pare_feu(&lu, &mut changes),
                 t => {
                     if let Some(o) = opt_de_touche(t) {
                         option(&lu, o, &mut changes);
@@ -1661,8 +1698,69 @@ mod boucle {
         }
     }
 
-    /// Le pare-feu en lecture ; ses choix viennent au sous-lot D5.
-    fn pare_feu(e: &Etat) {
+    /// Le pare-feu (D5) : les réglages des trois profils, puis les règles trouvées par une recherche. Les choix
+    /// rejoignent les changements du menu et partent avec eux, sous la même demande d'administrateur.
+    fn pare_feu(lu: &Lu, changes: &mut Vec<Change>) {
+        let mut depart = String::new();
+        loop {
+            let lignes = lignes_pare_feu(&lu.etat, &lu.notes, changes);
+            let Some(c) = crate::selection::choisir(&lignes, invite(), &depart, tr!("revenir", "back")) else {
+                return;
+            };
+            let c = c.trim();
+            if retour(c) {
+                return;
+            }
+            depart = c.to_string();
+            match suite_pare_feu(&lu.etat, &lu.notes, c) {
+                SuitePf::Reglage(p, r) => {
+                    let lignes = lignes_reglage_pf(&lu.etat, p, r, &lu.notes, changes);
+                    if let Some(t) = crate::selection::choisir(&lignes, invite(), "", tr!("revenir", "back"))
+                        && !retour(t.trim())
+                    {
+                        suivre(changes, suite_reglage_pf(&lu.etat, p, r, &lu.notes, &t));
+                    }
+                }
+                SuitePf::Regles => regles(lu, changes),
+                SuitePf::Voir => voir_pare_feu(&lu.etat),
+                SuitePf::Ajouter(l) => {
+                    for ch in l {
+                        ajouter(changes, ch);
+                    }
+                }
+                SuitePf::Rien => {}
+            }
+        }
+    }
+
+    /// Les règles existantes : une recherche, la liste (20 au plus), puis une règle choisie se bascule. Les règles
+    /// sont relues à chaque recherche.
+    fn regles(lu: &Lu, changes: &mut Vec<Change>) {
+        let recherche = crate::ui::demander_ou_defaut(tr!(
+            "\n  Chercher (nom, programme, groupe ou port ; Entrée : revenir) : ",
+            "\n  Search (name, program, group or port; Enter: back): "
+        ));
+        if recherche.trim().is_empty() {
+            return;
+        }
+        let lues = crate::machine::windows::pare_feu::regles_lues();
+        loop {
+            let lignes = lignes_regles(lues.as_deref(), &recherche, &lu.notes, changes);
+            let Some(c) = crate::selection::choisir(&lignes, invite(), "", tr!("revenir", "back")) else {
+                return;
+            };
+            if retour(c.trim()) {
+                return;
+            }
+            let Some(l) = lues.as_deref() else {
+                return;
+            };
+            suivre(changes, suite_regles(l, &recherche, changes, &c));
+        }
+    }
+
+    /// Le détail du pare-feu en lecture : les profils, le Centre de sécurité, la gestion du PC.
+    fn voir_pare_feu(e: &Etat) {
         crate::ui::titre(titre());
         let mut l = Vec::new();
         section_pare_feu(&mut l, e);
@@ -1743,16 +1841,7 @@ mod tests {
     /// La largeur d'une rangée telle que `selection` la dessine : « ► touche  » puis le texte, complété jusqu'à la
     /// colonne des précisions s'il y en a une.
     fn largeurs(l: &[Ligne]) -> Vec<(usize, String)> {
-        let colonne = l
-            .iter()
-            .filter_map(|x| match x {
-                Ligne::Choix { texte, .. } => Some(largeur_affichee(texte)),
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0)
-            .saturating_add(2)
-            .clamp(36, 48);
+        let colonne = crate::selection::colonne(l);
         l.iter()
             .filter_map(|x| match x {
                 Ligne::Texte(t) => Some((largeur_affichee(t), t.clone())),
@@ -1835,7 +1924,7 @@ mod tests {
                 texte: "x".into(),
                 cible: Some(1),
             }];
-            let m = menu(&e, &notes, Some(&listes), &changes);
+            let m = menu(&e, &notes, Some(&listes), None, &changes);
             dans_l_ecran(&m);
             let t = touches(&m);
             for k in 1..=13 {
@@ -1846,7 +1935,7 @@ mod tests {
             let texte = tout_texte(&m);
             assert!(texte.contains('†'));
             // Sans changement : ni « Appliquer » ni « Oublier ».
-            let m = menu(&e, &notes, Some(&listes), &[]);
+            let m = menu(&e, &notes, Some(&listes), None, &[]);
             let t = touches(&m);
             assert!(!t.contains(&"a".to_string()) && !t.contains(&"x".to_string()));
         });
@@ -1861,7 +1950,7 @@ mod tests {
         }
         let pua = IdChoix::Defender(ReglageDefender::Pua);
         let notes = vec![note(pua, Some(1), 0)];
-        let m = menu(&e, &notes, None, &[]);
+        let m = menu(&e, &notes, None, None, &[]);
         let ligne = |k: &str| {
             m.iter()
                 .find_map(|x| match x {
@@ -1883,7 +1972,7 @@ mod tests {
         if let Some(s) = e.statut.as_mut() {
             s.falsifications = Some(false);
         }
-        let m = menu(&e, &notes, None, &[]);
+        let m = menu(&e, &notes, None, None, &[]);
         assert!(!tout_texte(&m).contains('†'));
     }
 
@@ -1894,27 +1983,50 @@ mod tests {
         let notes = vec![note(id, Some(0), 1)];
         let listes = [vec![chemin.to_string(), r"D:\inconnu".to_string()], vec![], vec![]];
         assert_eq!(
-            resume_exclusions(Some(&listes), &notes),
+            resume_exclusions(Some(&listes), None, &notes),
             "2 (1 votre choix, 1 inconnue ⚠)"
         );
         // La casse ne compte pas (Windows compare sans casse ; l'empreinte se prend en minuscules).
         let listes_maj = [vec![chemin.to_uppercase()], vec![], vec![]];
-        assert_eq!(resume_exclusions(Some(&listes_maj), &notes), "1 (par votre choix)");
-        assert_eq!(resume_exclusions(Some(&Default::default()), &[]), "aucune");
+        assert_eq!(
+            resume_exclusions(Some(&listes_maj), None, &notes),
+            "1 (par votre choix)"
+        );
+        assert_eq!(resume_exclusions(Some(&Default::default()), None, &[]), "aucune");
         let n_a = [
             vec!["N/A: Must be an administrator to view exclusions".to_string()],
             vec![],
             vec![],
         ];
-        assert_eq!(resume_exclusions(Some(&n_a), &[]), "visibles avec l'accord admin.");
-        assert!(resume_exclusions(Some(&n_a), &notes).contains("1 par votre choix"));
-        assert_eq!(resume_exclusions(None, &[]), "non vérifiées (illisibles)");
-        let deux = [vec!["a".into(), "b".into()], vec![], vec![]];
-        assert_eq!(resume_exclusions(Some(&deux), &[]), "2 (inconnues ⚠)");
         assert_eq!(
-            crate::langue::en_anglais(|| resume_exclusions(Some(&listes), &notes)),
+            resume_exclusions(Some(&n_a), None, &[]),
+            "visibles avec l'accord admin."
+        );
+        assert!(resume_exclusions(Some(&n_a), None, &notes).contains("1 par votre choix"));
+        assert_eq!(resume_exclusions(None, None, &[]), "non vérifiées (illisibles)");
+        let deux = [vec!["a".into(), "b".into()], vec![], vec![]];
+        assert_eq!(resume_exclusions(Some(&deux), None, &[]), "2 (inconnues ⚠)");
+        assert_eq!(
+            crate::langue::en_anglais(|| resume_exclusions(Some(&listes), None, &notes)),
             "2 (1 your choice, 1 unknown ⚠)"
         );
+        // Les programmes permis comptent aussi (note de D4) : l'inconnu se voit, le noté est « votre choix » ;
+        // une liste cachée ou muette ne compte pas.
+        let copie = r"C:\Outils\copie.exe";
+        let permis = vec![copie.to_string(), r"C:\Autre\b.exe".to_string()];
+        let notes_permis = vec![note(IdChoix::DossiersAutorise(EmpreinteElement::de(copie)), Some(0), 1)];
+        let vides: [Vec<String>; 3] = Default::default();
+        assert_eq!(
+            resume_exclusions(Some(&vides), Some(&permis), &notes_permis),
+            "2 (1 votre choix, 1 inconnue ⚠)"
+        );
+        assert_eq!(
+            resume_exclusions(Some(&vides), Some(&permis[1..]), &[]),
+            "1 (inconnue ⚠)"
+        );
+        let cache = vec!["N/A: Must be an administrator".to_string()];
+        assert_eq!(resume_exclusions(Some(&vides), Some(&cache), &[]), "aucune");
+        assert!(resume_exclusions(None, None, &notes_permis).contains("1 par votre choix"));
     }
 
     #[test]
@@ -2564,7 +2676,7 @@ mod tests {
         let SuiteAsr::Ajouter(l) = suite_asr(&e, &[], "o") else {
             panic!("o")
         };
-        let m = menu(&e, &[], None, &l);
+        let m = menu(&e, &[], None, None, &l);
         dans_l_ecran(&m);
         assert_eq!(choix_de(&m, "12").unwrap().1, "8 à appliquer");
     }
@@ -2601,5 +2713,172 @@ mod tests {
             assert!(!tout_texte(&l).contains("copie.exe"));
             assert!(matches!(&actions[0], (_, ActionListe::Retirer(i, _)) if *i == id));
         });
+    }
+
+    // ------------------------------------------------------------ le pare-feu (D5)
+
+    use crate::machine::gestes::RegleLue;
+
+    fn regle_essai(nom: &str, bloque: bool, active: bool) -> RegleLue {
+        RegleLue {
+            nom: nom.into(),
+            entrante: true,
+            bloque,
+            active,
+            profils: 7,
+            protocole: 6,
+            ports_locaux: "8080".into(),
+            ..RegleLue::default()
+        }
+    }
+
+    /// L'écran du pare-feu, chacun des douze sous-écrans et la liste des règles tiennent dans 76 colonnes, dans les
+    /// deux langues, avec des noms de règle très longs.
+    #[test]
+    fn ecrans_du_pare_feu_dans_l_ecran() {
+        dans_les_deux_langues(|| {
+            let e = courant();
+            let l = lignes_pare_feu(&e, &[], &[]);
+            dans_l_ecran(&l);
+            let t = touches(&l);
+            for k in 1..=12 {
+                assert!(t.contains(&k.to_string()), "{k}");
+            }
+            for k in ["f", "r", "v", "↵"] {
+                assert!(t.iter().any(|x| x == k), "{k}");
+            }
+            for p in ProfilPareFeu::TOUS {
+                for r in ReglagePareFeu::TOUS {
+                    dans_l_ecran(&lignes_reglage_pf(&e, p, r, &[], &[]));
+                }
+            }
+            let long = "Une règle au nom très long qui déborderait de l'écran sans être coupée proprement";
+            let regles: Vec<RegleLue> = (0..30)
+                .map(|i| regle_essai(&format!("{long} {i}"), i % 2 == 0, true))
+                .collect();
+            let l = lignes_regles(Some(&regles), "regle", &[], &[]);
+            dans_l_ecran(&l);
+            // Vingt au plus, puis Revenir.
+            assert_eq!(touches(&l).len(), REGLES_MONTREES + 1);
+            dans_l_ecran(&lignes_regles(None, "x", &[], &[]));
+            // Une recherche vide ne montre aucune règle.
+            assert_eq!(touches(&lignes_regles(Some(&regles), "", &[], &[])).len(), 1);
+        });
+    }
+
+    /// Les touches de l'écran du pare-feu : un réglage par chiffre, « r » rallume le domaine coupé, un réglage déjà
+    /// à la valeur choisie se retire.
+    #[test]
+    fn suites_du_pare_feu() {
+        let e = courant();
+        assert_eq!(
+            suite_pare_feu(&e, &[], "5"),
+            SuitePf::Reglage(ProfilPareFeu::Prive, ReglagePareFeu::Actif)
+        );
+        assert_eq!(
+            suite_pare_feu(&e, &[], "12"),
+            SuitePf::Reglage(ProfilPareFeu::Public, ReglagePareFeu::ToutBloquer)
+        );
+        assert_eq!(suite_pare_feu(&e, &[], "13"), SuitePf::Rien);
+        assert_eq!(suite_pare_feu(&e, &[], "0"), SuitePf::Rien);
+        assert_eq!(suite_pare_feu(&e, &[], "f"), SuitePf::Regles);
+        let domaine = IdChoix::PareFeu(ProfilPareFeu::Domaine, ReglagePareFeu::Actif);
+        match suite_pare_feu(&e, &[], "r") {
+            SuitePf::Ajouter(l) => {
+                assert!(l.iter().any(|c| c.id == domaine && c.cible == Some(1)));
+                assert!(l.iter().all(|c| c.ligne.starts_with("vanguard:rallumer ")), "{l:?}");
+            }
+            s => panic!("{s:?}"),
+        }
+        let prive = IdChoix::PareFeu(ProfilPareFeu::Prive, ReglagePareFeu::Actif);
+        // Privé allumé : « 1 » (allumé) est l'actuelle, « 2 » coupe, ligne de baisse exacte.
+        assert_eq!(
+            suite_reglage_pf(&e, ProfilPareFeu::Prive, ReglagePareFeu::Actif, &[], "1"),
+            Suite::Retirer(prive)
+        );
+        match suite_reglage_pf(&e, ProfilPareFeu::Prive, ReglagePareFeu::Actif, &[], "2") {
+            Suite::Ajouter(c) => {
+                assert_eq!(
+                    c.ligne,
+                    gestes::ligne_baisse_pare_feu(ProfilPareFeu::Prive, ReglagePareFeu::Actif, false)
+                );
+                assert_eq!(c.cible, Some(0));
+            }
+            s => panic!("{s:?}"),
+        }
+        // Le domaine coupé : « r » le rallume, « m » le note.
+        assert!(matches!(
+            suite_reglage_pf(&e, ProfilPareFeu::Domaine, ReglagePareFeu::Actif, &[], "r"),
+            Suite::Ajouter(Change { cible: Some(1), .. })
+        ));
+        assert!(matches!(
+            suite_reglage_pf(&e, ProfilPareFeu::Domaine, ReglagePareFeu::Actif, &[], "m"),
+            Suite::Ajouter(Change { cible: None, .. })
+        ));
+        // Noté par choix : plus de « C'est moi », la ligne porte ‡.
+        let notes = vec![note(domaine, Some(1), 0)];
+        assert_eq!(
+            suite_reglage_pf(&e, ProfilPareFeu::Domaine, ReglagePareFeu::Actif, &notes, "m"),
+            Suite::Rien
+        );
+        assert!(tout_texte(&lignes_pare_feu(&e, &notes, &[])).contains('‡'));
+    }
+
+    /// Les règles : une recherche vide ne trouve rien, vingt au plus ; choisir bascule, choisir encore retire ; une
+    /// règle notée est proposée par « Rallumer ».
+    #[test]
+    fn regles_du_pare_feu() {
+        let regles: Vec<RegleLue> = (0..30).map(|i| regle_essai(&format!("Jeu {i}"), false, true)).collect();
+        assert_eq!(trouver_regles(&regles, "  ").len(), 0);
+        assert_eq!(trouver_regles(&regles, "jeu").len(), REGLES_MONTREES);
+        assert_eq!(trouver_regles(&regles, "JEU 29").len(), 1);
+        assert_eq!(trouver_regles(&regles, "8080").len(), REGLES_MONTREES);
+        let Suite::Ajouter(c) = suite_regles(&regles, "jeu 3", &[], "1") else {
+            panic!()
+        };
+        assert_eq!(c.id, regles[3].id());
+        assert_eq!(c.cible, Some(0));
+        assert_eq!(c.ligne, gestes::ligne_regle_etat(&regles[3], false));
+        assert_eq!(
+            suite_regles(&regles, "jeu 3", std::slice::from_ref(&c), "1"),
+            Suite::Retirer(c.id)
+        );
+        assert_eq!(suite_regles(&regles, "jeu 3", &[], "2"), Suite::Rien);
+        let e = courant();
+        let notes = vec![note(regles[3].id(), Some(1), 0)];
+        let r = rallumer_tout_pf(&e, &notes);
+        assert!(r.iter().any(|x| x.id == regles[3].id() && x.cible == Some(0)), "{r:?}");
+    }
+
+    /// La précision du pare-feu dans le menu tient en 33 caractères, quels que soient les profils coupés.
+    #[test]
+    fn resume_du_pare_feu_borne() {
+        dans_les_deux_langues(|| {
+            for coupes in 0u8..8 {
+                for courants in [None, Some(1), Some(3), Some(7)] {
+                    let mut e = courant();
+                    if let Some(f) = e.pare_feu.as_mut() {
+                        f.courants = courants;
+                        for (i, p) in f.profils.iter_mut().enumerate() {
+                            p.actif = Some(coupes & (1 << i) == 0);
+                        }
+                    }
+                    let t = resume_pare_feu(&e);
+                    assert!(largeur_affichee(&t) <= 33, "{t}");
+                }
+            }
+        });
+        let mut e = courant();
+        if let Some(f) = e.pare_feu.as_mut() {
+            f.courants = Some(2);
+            for p in &mut f.profils[..2] {
+                p.actif = Some(false);
+            }
+        }
+        assert_eq!(resume_pare_feu(&e), "coupé : Domaine, Privé (actuel)");
+        if let Some(f) = e.pare_feu.as_mut() {
+            f.profils[2].actif = Some(false);
+        }
+        assert_eq!(resume_pare_feu(&e), "coupé partout");
     }
 }

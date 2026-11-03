@@ -92,11 +92,46 @@ pub enum Etat {
 
 fn etat(r: &Reglage) -> Etat {
     let bons = r.changements.iter().filter(|c| c.lire() == c.cible()).count();
-    match bons {
-        0 => Etat::AFaire,
-        n if n == r.changements.len() => Etat::Fait,
+    // Un changement baissé par la personne compte comme en place, pourvu qu'un autre le soit vraiment : un groupe
+    // entièrement baissé par choix reste « à faire », jamais « fait ».
+    let choisis = if bons > 0 {
+        r.changements
+            .iter()
+            .filter(|c| c.lire() != c.cible() && par_votre_choix(c))
+            .count()
+    } else {
+        0
+    };
+    etat_de(bons, choisis, r.changements.len())
+}
+
+/// L'état d'un réglage de `total` changements : `bons` en place, `choisis` baissés par la personne (comptés seulement
+/// si un autre est en place).
+fn etat_de(bons: usize, choisis: usize, total: usize) -> Etat {
+    match (bons, bons + choisis) {
+        (0, _) => Etat::AFaire,
+        (_, n) if n == total => Etat::Fait,
         _ => Etat::EnPartie,
     }
+}
+
+/// Un changement que la personne a baissé elle-même (une règle ASR, Options de défense) : il ne rend pas son réglage
+/// « à faire », et le réglage se dit « sauf vos choix », comme au bilan.
+#[cfg(windows)]
+fn par_votre_choix(c: &systeme::Changement) -> bool {
+    c.par_votre_choix()
+}
+
+#[cfg(not(windows))]
+fn par_votre_choix(_: &systeme::Changement) -> bool {
+    false
+}
+
+/// Le réglage a-t-il des changements baissés par la personne (`par_votre_choix`) ?
+fn sauf_vos_choix(r: &Reglage) -> bool {
+    r.changements
+        .iter()
+        .any(|c| c.lire() != c.cible() && par_votre_choix(c))
 }
 
 /// Valeurs d'avant de chaque réglage appliqué par Vanguard, dans l'ordre de ses changements.
@@ -706,11 +741,15 @@ pub fn menu(categorie: Categorie) {
         .zip(&etats)
         .map(|(r, e)| Case {
             texte: r.titre.to_string(),
-            precision: libelle(
-                *e,
-                h.reglages.contains_key(r.id.as_ref()) || h.protections.contains(r.id.as_ref()),
-            )
-            .to_string(),
+            precision: if *e == Etat::Fait && sauf_vos_choix(r) {
+                tr!("fait, sauf vos choix", "done, except your choices").to_string()
+            } else {
+                libelle(
+                    *e,
+                    h.reglages.contains_key(r.id.as_ref()) || h.protections.contains(r.id.as_ref()),
+                )
+                .to_string()
+            },
             detail: match r.prudence {
                 Some(p) => format!("{} ⚠ {p}", r.effet),
                 None => r.effet.to_string(),
@@ -937,6 +976,18 @@ pub fn tout_annuler() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Note de D4 : un groupe ASR dont les règles manquantes sont baissées par choix est « fait » (dit « sauf vos
+    /// choix »), comme au bilan ; entièrement baissé, il reste « à faire » ; une règle manquante sans choix, « en
+    /// partie ».
+    #[test]
+    fn groupe_fait_sauf_vos_choix() {
+        assert_eq!(etat_de(2, 1, 3), Etat::Fait);
+        assert_eq!(etat_de(3, 0, 3), Etat::Fait);
+        assert_eq!(etat_de(0, 3, 3), Etat::AFaire);
+        assert_eq!(etat_de(1, 1, 3), Etat::EnPartie);
+        assert_eq!(etat_de(0, 0, 3), Etat::AFaire);
+    }
 
     /// Un réglage changé en partie dit ce qui est fait et ce qui ne l'est pas ; un changement déjà en place avant
     /// n'est pas compté « fait » ; un seul changement relu en place malgré une étape en échec est « fait en partie »,

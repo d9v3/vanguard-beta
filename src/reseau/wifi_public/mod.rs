@@ -1329,6 +1329,9 @@ fn eteindre() {
             "\n  {VERT}✔{RESET} Mode Wi-Fi public éteint : tout est revenu comme avant.",
             "\n  {VERT}✔{RESET} Public Wi-Fi mode off: everything is back as before."
         );
+        if pare_feu_trouve_coupe(remises.iter().map(|(x, _)| *x)) {
+            recouper_si_voulu();
+        }
     } else {
         e.elements = reste;
         ecrire_etat_apres(&e);
@@ -1343,6 +1346,64 @@ fn eteindre() {
         );
     }
 }
+
+/// Le pare-feu Public était coupé avant le mode (le mode l'a allumé et ne le recoupe jamais de lui-même).
+fn pare_feu_trouve_coupe<'a>(elements: impl IntoIterator<Item = &'a Element>) -> bool {
+    elements
+        .into_iter()
+        .any(|x| matches!(x, Element::ProfilPublic { parametre, .. } if parametre == "Enabled") && x.jamais_remis())
+}
+
+/// La liste du recoupage : la seule baisse, jamais mêlée aux remises (liste pure, § « tes outils de défense »).
+#[cfg(windows)]
+fn liste_recoupage() -> Vec<Vec<String>> {
+    use crate::machine::gestes::{ProfilPareFeu, ReglagePareFeu, ligne_baisse_pare_feu};
+    vec![vec![ligne_baisse_pare_feu(
+        ProfilPareFeu::Public,
+        ReglagePareFeu::Actif,
+        false,
+    )]]
+}
+
+/// À part de la liste de remise, après l'extinction : la question explicite, « non » par défaut, puis une liste pure
+/// de baisse ; la fenêtre administrateur rejuge et note la valeur d'avant (« Rallumer » la défait).
+#[cfg(windows)]
+fn recouper_si_voulu() {
+    use crate::machine::gestes::{IdChoix, ProfilPareFeu, ReglagePareFeu};
+    let id = IdChoix::PareFeu(ProfilPareFeu::Public, ReglagePareFeu::Actif);
+    println!();
+    afficher_aligne("  ", &crate::options_defense::effet_baisse(id), 2, "");
+    afficher_aligne("  ", crate::options_defense::protege_encore(id), 2, GRIS);
+    if !demander(tr!(
+        "\n  Le pare-feu Public était coupé avant le mode Wi-Fi public. Le recouper ? [o/N] : ",
+        "\n  The Public firewall was off before public Wi-Fi mode. Turn it off again? [y/N]: "
+    ))
+    .oui()
+    {
+        trp!("  Laissé allumé.", "  Left on.");
+        return;
+    }
+    if appliquer(&liste_recoupage()) == [true] {
+        afficher_aligne(
+            "  ",
+            tr!(
+                "Pare-feu Public recoupé, par votre choix. Options de défense › Pare-feu › « Rallumer ce qui est baissé » le rallume.",
+                "Public firewall turned off again, by your choice. Defense options › Firewall › “Turn back on what is lowered” turns it on."
+            ),
+            2,
+            "",
+        );
+    } else {
+        trp!(
+            "  ✖ Pas recoupé : voir le message ci-dessus. Le pare-feu reste allumé.",
+            "  ✖ Not turned off: see the message above. The firewall stays on."
+        );
+    }
+}
+
+/// Linux (lot D7) et macOS (gelé) : le pare-feu trouvé coupé reste allumé, comme avant.
+#[cfg(not(windows))]
+fn recouper_si_voulu() {}
 
 /// L'état ne peut pas être cru : rien de ce qu'il contient n'est remis. Seul ce qui est sans ambiguïté à Vanguard
 /// est retiré (Linux : sa table) ; les réglages plus sûrs restent, masques runtime compris, et c'est dit.
@@ -1961,6 +2022,39 @@ mod tests {
         // Rejouable : le même état donne les mêmes commandes.
         let (encore, _) = plan_extinction(&e);
         assert_eq!(remises, encore);
+    }
+
+    /// Le pare-feu Public trouvé coupé : la remise ne le recoupe jamais (aucune commande), la question à part ne
+    /// vient que pour lui, et sa liste ne contient que la baisse, seule.
+    #[test]
+    fn recoupage_a_part_de_la_remise() {
+        let coupe = Element::ProfilPublic {
+            parametre: "Enabled".into(),
+            avant: "False".into(),
+        };
+        let entrant = Element::ProfilPublic {
+            parametre: "DefaultInboundAction".into(),
+            avant: "Allow".into(),
+        };
+        let allume = Element::ProfilPublic {
+            parametre: "Enabled".into(),
+            avant: "True".into(),
+        };
+        assert!(commande_remise(&coupe).is_none(), "jamais dans la liste de remise");
+        assert!(pare_feu_trouve_coupe([&entrant, &coupe]));
+        assert!(!pare_feu_trouve_coupe([&entrant, &allume]));
+        assert!(!pare_feu_trouve_coupe(exemple().elements.iter()));
+        #[cfg(windows)]
+        {
+            use crate::machine::gestes::{Acte, ProfilPareFeu, ReglagePareFeu, analyser_acte};
+            let liste = liste_recoupage();
+            assert_eq!(liste.len(), 1);
+            assert_eq!(liste[0].len(), 1, "une liste pure : la baisse seule");
+            assert!(matches!(
+                analyser_acte(&liste[0][0]),
+                Some(Acte::PareFeuProfil(ProfilPareFeu::Public, ReglagePareFeu::Actif, false))
+            ));
+        }
     }
 
     /// Tout relu à sa valeur d'avant : plus rien dans l'état, il est effacé. Ce qui ne se relit pas se juge sur sa

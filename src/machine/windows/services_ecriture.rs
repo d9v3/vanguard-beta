@@ -726,6 +726,8 @@ pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
         | Acte::DefenderMenacesRetirer
         | Acte::DefenderChoix(..)
         | Acte::DefenderAsrChoix(..)
+        | Acte::PareFeuProfil(..)
+        | Acte::PareFeuRegleEtat(..)
         | Acte::Rallumer(_)
         | Acte::DefenderExclusionAjouter(..)
         | Acte::DefenderDossiersAutoriser(..)

@@ -273,7 +273,7 @@ pub(super) fn protections_de_defender() -> Vec<Constat> {
     let mut c = juger_avec(Some(&etat), &crate::optimiser::reglages_poses(), &choix);
     // Les autres réglages notés (échantillons, comportement, téléchargements, scripts, première vue, règles ASR,
     // programmes permis) : jugés ici, chacun relu ; le temps réel et le cloud le sont par l'antivirus, les exclusions
-    // par la leur.
+    // par la leur, le pare-feu par le sien.
     let ailleurs = |id: &IdChoix| {
         matches!(
             id,
@@ -284,7 +284,7 @@ pub(super) fn protections_de_defender() -> Vec<Constat> {
                     | ReglageDefender::Pua
                     | ReglageDefender::Cfa
             ) | IdChoix::Exclusion(..)
-        )
+        ) || id.pare_feu()
     };
     let restants: Vec<_> = choix.into_iter().filter(|(id, _)| !ailleurs(id)).collect();
     c.extend(choix_avant::constats_des_notes(

@@ -12,7 +12,7 @@
 //! ou un programme du système, jamais une connexion à distance en cours ; sans les droits, rien n'est fait à moitié.
 
 mod arret;
-mod gardes;
+pub(crate) mod gardes;
 pub(crate) mod gestes;
 mod menaces;
 pub(crate) mod ordres;
@@ -285,6 +285,7 @@ fn afficher_etat(p: &Parametres) {
         dire_administrateur();
     }
     crate::protection::temps_reel::dire_si_coupee(crate::protection::temps_reel::Ou::Blocage);
+    dire_si_pare_feu_coupe();
 }
 
 /// Le texte de l'accord, montré une seule fois, avant le premier « automatique ».
@@ -765,6 +766,35 @@ pub(crate) fn commande_montree(c: &str) -> String {
     }
 }
 
+/// Le pare-feu coupé sur un profil du réseau actuel : une règle « Vanguard : bloquer … » n'y bloquerait rien. Dit en
+/// une ligne, avec le chemin pour le rallumer ; rien quand il est illisible (le geste le refusera de lui-même).
+#[cfg(windows)]
+fn dire_si_pare_feu_coupe() {
+    let Some(coupes) = crate::machine::windows::pare_feu::profils_courants_coupes() else {
+        return;
+    };
+    if coupes.is_empty() {
+        return;
+    }
+    let profils = coupes
+        .into_iter()
+        .map(crate::options_defense::nom_profil_pare_feu)
+        .collect::<Vec<_>>()
+        .join(", ");
+    afficher_aligne(
+        &format!("  {}ℹ{RESET} ", couleur(crate::risk::Niveau::Moyen)),
+        &trf!(
+            "Pare-feu coupé sur ce profil ({profils}) : vos blocages ne s'appliquent pas. Rallumez-le : Options de défense › Pare-feu.",
+            "Firewall off on this profile ({profils}): your blocks do not apply. Turn it back on: Defense options › Firewall."
+        ),
+        4,
+        "",
+    );
+}
+
+#[cfg(not(windows))]
+fn dire_si_pare_feu_coupe() {}
+
 /// Le geste, montré avant l'accord : chaque étape, puis les commandes.
 fn montrer(m: &Menace, pret: &gestes::Pret) {
     println!();
@@ -796,6 +826,9 @@ fn proposer(menaces: Vec<Menace>, ctx: &Contexte) {
                 afficher_aligne("    ", &trf!("Alerte seulement : {r}", "Alert only: {r}"), 4, GRIS);
             }
         }
+    }
+    if !restantes.is_empty() {
+        dire_si_pare_feu_coupe();
     }
     if restantes.is_empty() {
         if refusees == 0 {

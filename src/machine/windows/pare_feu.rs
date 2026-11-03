@@ -28,10 +28,16 @@ use windows::Win32::Networking::NetworkListManager::{
     INetworkListManager, NLM_ENUM_NETWORK_CONNECTED, NLM_NETWORK_CATEGORY, NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED,
     NetworkListManager,
 };
-use windows::Win32::System::Com::{CLSCTX_ALL, CLSCTX_INPROC_SERVER, CoCreateInstance};
-use windows::core::BSTR;
+use windows::Win32::System::Com::{CLSCTX_ALL, CLSCTX_INPROC_SERVER, CoCreateInstance, IDispatch};
+use windows::Win32::System::Ole::IEnumVARIANT;
+use windows::Win32::System::Variant::VARIANT;
+use windows::core::{BSTR, Interface};
 
-use crate::machine::gestes::{Acte, GuidReseau, ProfilPublic, ReglagePublic, ReseauCategorie, ValeurPublic};
+use crate::machine::gestes::{
+    self, Acte, EtatProfil, GuidReseau, IdChoix, ProfilPareFeu, ProfilPublic, RefusSession, ReglagePareFeu,
+    ReglagePublic, RegleLue, ReseauCategorie, ValeurPublic,
+};
+use crate::modele::raison::Echec;
 
 use crate::protection::blocage::ordres::Resultat;
 use crate::{tr, trf};
@@ -66,6 +72,26 @@ fn en_marche(p: &INetFwPolicy2) -> bool {
                 .is_ok_and(|e| e == VARIANT_TRUE)
         }) && actifs & 7 != 0
     }
+}
+
+/// Le pare-feu coupé sur un profil courant : la règle n'y bloquerait rien. La phrase propose de le rallumer, par
+/// son identifiant (`vanguard options-defense --rallumer pare-feu-<profil>-actif`, ou l'écran des Options).
+fn coupe_pour_le_reseau(p: &INetFwPolicy2) -> String {
+    // SAFETY: objet COM valide ; la lecture rend une copie.
+    let courants = unsafe { p.CurrentProfileTypes() }.unwrap_or(0);
+    let coupes: Vec<String> = ProfilPareFeu::TOUS
+        .into_iter()
+        .filter(|x| courants & x.bit() != 0)
+        .filter(|x| !allume(p, NET_FW_PROFILE_TYPE2(x.bit())))
+        .map(|x| IdChoix::PareFeu(x, ReglagePareFeu::Actif).texte())
+        .collect();
+    let rallumer = coupes
+        .first()
+        .map_or_else(|| "pare-feu-prive-actif".to_string(), Clone::clone);
+    trf!(
+        "le Pare-feu Windows est coupé pour le réseau actif : une règle n'y bloquerait rien, aucune n'est posée. Rallumez-le d'abord : Options de défense › Pare-feu, ou « vanguard options-defense --rallumer {rallumer} »",
+        "the Windows Firewall is off for the active network: a rule would block nothing there, none is added. Turn it back on first: Defense options › Firewall, or “vanguard options-defense --rallumer {rallumer}”"
+    )
 }
 
 /// La règle de ce nom, si elle existe.
@@ -195,10 +221,7 @@ fn dans_com(geste: impl FnOnce(&INetFwPolicy2, &INetFwRules) -> Resultat + Send 
 fn poser(v: Voulue) -> Resultat {
     dans_com(move |p, r| {
         if !en_marche(p) {
-            return Resultat::echec(tr!(
-                "le Pare-feu Windows est coupé pour le réseau actif : une règle n'y bloquerait rien, aucune n'est posée",
-                "the Windows Firewall is off for the active network: a rule would block nothing there, none is added"
-            ));
+            return Resultat::echec(coupe_pour_le_reseau(p));
         }
         if let Some(existante) = trouver(r, &v.nom) {
             if conforme(&existante, &v) {
@@ -314,7 +337,10 @@ pub(crate) fn faire_acte(acte: &Acte) -> Option<Resultat> {
         | Acte::LancementReactiver(_)
         | Acte::WmiAbonnementRetirer(_)
         | Acte::WmiAbonnementRemettre(_)
-        | Acte::ServiceRetirer(_) => None,
+        | Acte::ServiceRetirer(_)
+        // Les choix du pare-feu passent par `choix_avant` (`defender_ecriture::faire_choix`), jamais tout droit ici.
+        | Acte::PareFeuProfil(..)
+        | Acte::PareFeuRegleEtat(..) => None,
     }
 }
 
@@ -327,16 +353,29 @@ fn allume(p: &INetFwPolicy2, profil: NET_FW_PROFILE_TYPE2) -> bool {
 /// Le pare-feu en marche sur les trois profils, chacun relu. Une stratégie de groupe peut encore le couper : la
 /// valeur locale est celle-ci, l'effet est celui que relira le bilan.
 fn pare_feu_actif() -> Resultat {
-    dans_com(|p, _| {
+    let session = session_maintenant();
+    dans_com(move |p, regles| {
         let profils = [
-            (NET_FW_PROFILE2_DOMAIN, tr!("domaine", "domain")),
-            (NET_FW_PROFILE2_PRIVATE, tr!("privé", "private")),
-            (NET_FW_PROFILE2_PUBLIC, tr!("public", "public")),
+            (ProfilPareFeu::Domaine, NET_FW_PROFILE2_DOMAIN, tr!("domaine", "domain")),
+            (ProfilPareFeu::Prive, NET_FW_PROFILE2_PRIVATE, tr!("privé", "private")),
+            (ProfilPareFeu::Public, NET_FW_PROFILE2_PUBLIC, tr!("public", "public")),
         ];
         let mut rallumes = Vec::new();
-        for (profil, nom) in profils {
+        for (x, profil, nom) in profils {
             if allume(p, profil) {
                 continue;
+            }
+            // Allumer un profil courant pendant une session à distance : la même garde que les choix (un port de la
+            // session fermé, des sorties bloquées), rejugée ici sur ce qui est relu.
+            if session.is_some()
+                && let Some(refus) = garde_allumer(p, regles, session.as_deref(), x)
+            {
+                let fait = if rallumes.is_empty() {
+                    String::new()
+                } else {
+                    trf!(" (remis en marche : {})", " (turned back on: {})", rallumes.join(", "))
+                };
+                return Resultat::echec(trf!("profil {nom} : {refus}{fait}", "{nom} profile: {refus}{fait}"));
             }
             // SAFETY: objet COM valide ; un profil et une valeur constants.
             if let Err(e) = unsafe { p.put_FirewallEnabled(profil, VARIANT_TRUE) } {
@@ -367,10 +406,29 @@ fn pare_feu_actif() -> Resultat {
     })
 }
 
+/// La garde de session pour allumer ce profil : la phrase du refus, ou `None` s'il peut l'être.
+fn garde_allumer(p: &INetFwPolicy2, regles: &INetFwRules, session: Option<&[u16]>, x: ProfilPareFeu) -> Option<String> {
+    let Some(avant) = etat_profil(p, x) else {
+        return Some(tr!("profil illisible, laissé tel quel", "profile unreadable, left as is").to_string());
+    };
+    // SAFETY: objet COM valide ; la lecture rend une copie.
+    let courants = unsafe { p.CurrentProfileTypes() }.ok();
+    let texte = |e: PasEcrit| match e {
+        PasEcrit::Refus(t) | PasEcrit::Echec(t) => t,
+    };
+    let Ok((lues, illisibles)) = regles_com(regles) else {
+        return Some(texte(regles_illisibles()));
+    };
+    if illisibles > 0 {
+        return Some(texte(regles_illisibles()));
+    }
+    let lues: Vec<RegleLue> = lues.into_iter().map(|(l, _)| l).collect();
+    gestes::refus_profil_session(session, courants, x, ReglagePareFeu::Actif, true, avant, &lues).map(texte_refus)
+}
+
 /// Un réglage du profil Public : écrit, puis relu.
 fn regler_public(p: &INetFwPolicy2, r: ReglagePublic, v: ValeurPublic) -> Resultat {
     let public = NET_FW_PROFILE2_PUBLIC;
-    let booleen = |b: bool| if b { VARIANT_TRUE } else { VARIANT_FALSE };
     // SAFETY: objet COM valide ; le profil et les valeurs sont des constantes de l'énumération ; chaque lecture rend
     // une copie.
     let (ecrit, relu) = unsafe {
@@ -519,6 +577,402 @@ fn retirer_du_magasin() -> Resultat {
             "inbound for allowed programs is restored, but the store does not read back the written value: left as is"
         )),
     }
+}
+
+// ------------------------------------------------------------- les choix de la personne (plan §2.3)
+
+/// Le contexte des échecs d'écriture des choix du pare-feu, stable pour le journal des erreurs.
+const CONTEXTE_CHOIX: &str = "pare-feu/choix";
+/// Au-delà, la liste des règles n'est pas crue lue en entier : un Windows en a quelques centaines.
+const REGLES_MAX: usize = 50_000;
+
+fn booleen(b: bool) -> VARIANT_BOOL {
+    if b { VARIANT_TRUE } else { VARIANT_FALSE }
+}
+
+fn vrai_faux(v: VARIANT_BOOL) -> Option<bool> {
+    if v == VARIANT_TRUE {
+        Some(true)
+    } else if v == VARIANT_FALSE {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn action(bloquer: bool) -> NET_FW_ACTION {
+    if bloquer {
+        NET_FW_ACTION_BLOCK
+    } else {
+        NET_FW_ACTION_ALLOW
+    }
+}
+
+/// Un profil tel qu'il s'applique, relu ; `None` si l'une de ses quatre valeurs ne se lit pas.
+fn etat_profil(pol: &INetFwPolicy2, p: ProfilPareFeu) -> Option<EtatProfil> {
+    let profil = NET_FW_PROFILE_TYPE2(p.bit());
+    // SAFETY: objet COM valide ; le profil est une constante de l'énumération ; chaque lecture rend une copie.
+    unsafe {
+        Some(EtatProfil {
+            actif: vrai_faux(pol.get_FirewallEnabled(profil).ok()?)?,
+            entrant_bloque: pol.get_DefaultInboundAction(profil).ok()? == NET_FW_ACTION_BLOCK,
+            sortant_bloque: pol.get_DefaultOutboundAction(profil).ok()? == NET_FW_ACTION_BLOCK,
+            tout_bloque: vrai_faux(pol.get_BlockAllInboundTraffic(profil).ok()?)?,
+        })
+    }
+}
+
+/// Une règle relue ; `None` si son nom, son sens, son action, son état ou ses profils ne se lisent pas, ni les ports
+/// locaux d'une règle d'autorisation (elle pourrait être celle du Bureau à distance : illisible, elle compte parmi les
+/// règles illisibles, que la garde de session refuse). Un champ d'adresse ou d'interface illisible vaut « ? », jamais
+/// « partout » ; les ports locaux illisibles d'une règle de blocage valent « tous » : dans le doute, une règle
+/// d'autorisation n'ouvre rien et une règle de blocage touche tout (`gestes::RegleLue`).
+fn lire_regle(r: &INetFwRule) -> Option<RegleLue> {
+    let texte = |b: windows::core::Result<BSTR>, sinon: &str| b.map_or_else(|_| sinon.to_string(), |b| b.to_string());
+    // SAFETY: objet COM valide ; chaque lecture rend une copie (BSTR, VARIANT libérés par leur Drop).
+    unsafe {
+        let interfaces = match r.Interfaces() {
+            Ok(v) if v.is_empty() => texte(r.InterfaceTypes(), "?"),
+            _ => "?".to_string(),
+        };
+        let bloque = r.Action().ok()? == NET_FW_ACTION_BLOCK;
+        let ports_locaux = match r.LocalPorts() {
+            Ok(b) => b.to_string(),
+            Err(_) if bloque => String::new(),
+            Err(_) => return None,
+        };
+        Some(RegleLue {
+            nom: r.Name().ok()?.to_string(),
+            entrante: r.Direction().ok()? == NET_FW_RULE_DIR_IN,
+            bloque,
+            active: vrai_faux(r.Enabled().ok()?)?,
+            profils: r.Profiles().ok()?,
+            programme: texte(r.ApplicationName(), "?"),
+            protocole: r.Protocol().unwrap_or(NET_FW_IP_PROTOCOL_ANY.0),
+            ports_locaux,
+            ports_distants: texte(r.RemotePorts(), "?"),
+            adresses_distantes: texte(r.RemoteAddresses(), "?"),
+            adresses_locales: texte(r.LocalAddresses(), "?"),
+            interfaces,
+            service: texte(r.ServiceName(), "?"),
+            groupe: texte(r.Grouping(), ""),
+        })
+    }
+}
+
+/// Chaque règle du pare-feu, relue, avec son objet COM (dans ce fil seulement), et le nombre de celles qui ne se
+/// lisent pas. Une liste qui ne se parcourt pas jusqu'au bout est une erreur, jamais une liste partielle.
+fn regles_com(r: &INetFwRules) -> windows::core::Result<(Vec<(RegleLue, INetFwRule)>, usize)> {
+    // SAFETY: objet COM valide ; _NewEnum rend un énumérateur à nous ; chaque VARIANT rempli par Next est à nous et
+    // libéré par son Drop (VariantClear) ; la règle tirée de son IDispatch est une référence comptée à part.
+    unsafe {
+        let enumerateur: IEnumVARIANT = r._NewEnum()?.cast()?;
+        let (mut lues, mut illisibles) = (Vec::new(), 0usize);
+        loop {
+            let mut v = [VARIANT::default()];
+            let mut n = 0u32;
+            enumerateur.Next(&mut v, &raw mut n).ok()?;
+            if n == 0 {
+                break;
+            }
+            match IDispatch::try_from(&v[0])
+                .and_then(|d| d.cast::<INetFwRule>())
+                .ok()
+                .and_then(|regle| lire_regle(&regle).map(|l| (l, regle)))
+            {
+                Some(lue) => lues.push(lue),
+                None => illisibles += 1,
+            }
+            if lues.len() + illisibles > REGLES_MAX {
+                return Err(windows::core::Error::from(windows::Win32::Foundation::E_UNEXPECTED));
+            }
+        }
+        Ok((lues, illisibles))
+    }
+}
+
+/// Une lecture du pare-feu dans un fil COM à part, avec un délai ; `None` : pas de réponse ou COM indisponible.
+fn lecture<T: Send + 'static>(
+    geste: impl FnOnce(&INetFwPolicy2, &INetFwRules) -> windows::core::Result<T> + Send + 'static,
+) -> Option<T> {
+    super::wmi::com_delai(
+        crate::compte_rendu::Contexte::PareFeuWindows,
+        "INetFwPolicy2 (choix)",
+        std::time::Duration::from_secs(60),
+        move || {
+            let p = politique()?;
+            // SAFETY: objet COM valide.
+            let r = unsafe { p.Rules() }?;
+            geste(&p, &r)
+        },
+    )
+}
+
+/// Les règles du pare-feu relues, pour l'écran ; `None` : illisibles.
+pub(crate) fn regles_lues() -> Option<Vec<RegleLue>> {
+    lecture(|_, r| regles_com(r).map(|(l, _)| l.into_iter().map(|(x, _)| x).collect()))
+}
+
+/// Les profils du réseau actuel où le pare-feu est coupé : les blocages de Vanguard n'y s'appliquent pas. `None` :
+/// illisible (rien n'est affirmé).
+pub(crate) fn profils_courants_coupes() -> Option<Vec<ProfilPareFeu>> {
+    lecture(|pol, _| {
+        // SAFETY: objet COM valide ; la lecture rend une copie.
+        let courants = unsafe { pol.CurrentProfileTypes() }?;
+        Ok(ProfilPareFeu::TOUS
+            .into_iter()
+            .filter(|x| courants & x.bit() != 0)
+            .filter(|x| !allume(pol, NET_FW_PROFILE_TYPE2(x.bit())))
+            .collect())
+    })
+}
+
+/// La valeur d'un choix du pare-feu (`IdChoix::pare_feu`) : pour un profil, 1 la valeur fermée ; pour une règle,
+/// 1 active (`gestes::etat_des_regles`). `None` : illisible, ou aucune règle de cette empreinte.
+#[allow(clippy::option_option)] // None : illisible
+pub(crate) fn lire_choix(id: IdChoix) -> Option<Option<i64>> {
+    match id {
+        IdChoix::PareFeu(p, r) => lecture(move |pol, _| Ok(etat_profil(pol, p)))
+            .flatten()
+            .map(|e| Some(i64::from(e.valeur(r)))),
+        IdChoix::PareFeuRegle(a, _) => lecture(move |_, regles| {
+            let (lues, _) = regles_com(regles)?;
+            Ok(gestes::etat_des_regles(
+                a,
+                lues.iter().filter(|(l, _)| l.id() == id).map(|(l, _)| l.active),
+            ))
+        })
+        .flatten()
+        .map(Some),
+        _ => None,
+    }
+}
+
+/// Le nom de la règle d'un choix, relu, pour la fenêtre administrateur ; `None` : aucune.
+pub(crate) fn nom_regle(id: IdChoix) -> Option<String> {
+    lecture(move |_, regles| {
+        let (lues, _) = regles_com(regles)?;
+        Ok(lues.into_iter().find(|(l, _)| l.id() == id).map(|(l, _)| l.nom))
+    })
+    .flatten()
+}
+
+/// Les ports de la session à distance en cours, relus au moment d'écrire (`gestes::session_pare_feu`) ; `None` :
+/// aucune session, sûrement.
+fn session_maintenant() -> Option<Vec<u16>> {
+    let lues = crate::protection::blocage::gardes::sessions_a_distance();
+    gestes::session_pare_feu(
+        super::session_a_distance(),
+        lues.as_ref()
+            .map(|s| (!s.sessions.is_empty(), s.ports_locaux.as_slice())),
+    )
+}
+
+/// Ce qu'une écriture refusée ou échouée dit.
+enum PasEcrit {
+    /// La garde de la session : rien n'est écrit.
+    Refus(String),
+    Echec(String),
+}
+
+/// La phrase d'un refus de la garde de session.
+fn texte_refus(r: RefusSession) -> String {
+    let quoi = match r {
+        RefusSession::ToutBloquer => tr!(
+            "bloquer toutes les entrées sur un profil du réseau actuel la couperait",
+            "blocking all inbound on a profile of the current network would cut it"
+        ),
+        RefusSession::Sorties => tr!(
+            "bloquer les sorties sur un profil du réseau actuel couperait AnyDesk, TeamViewer, RustDesk ou un VPN",
+            "blocking outbound on a profile of the current network would cut AnyDesk, TeamViewer, RustDesk or a VPN"
+        ),
+        RefusSession::PortFerme => tr!(
+            "ce réglage fermerait un port de la session (Bureau à distance 3389, SSH 22, ou celui qu'elle utilise) : aucune règle sûre ne le laisse ouvert",
+            "this setting would close a port of the session (Remote Desktop 3389, SSH 22, or the one it uses): no safe rule keeps it open"
+        ),
+        RefusSession::RegleAutorisation => tr!(
+            "désactiver cette règle d'autorisation pourrait la couper",
+            "disabling this allow rule could cut it"
+        ),
+        RefusSession::RegleBlocage => tr!(
+            "activer cette règle de blocage pourrait la couper",
+            "enabling this block rule could cut it"
+        ),
+    };
+    trf!(
+        "une session à distance est en cours (ou les connexions ne se lisent pas) : {quoi}. Refusé, rien d'écrit ; à refaire depuis l'ordinateur lui-même",
+        "a remote session is in progress (or connections cannot be read): {quoi}. Refused, nothing written; do it again from the computer itself"
+    )
+}
+
+fn regles_illisibles() -> PasEcrit {
+    PasEcrit::Refus(tr!(
+        "une session à distance est en cours (ou les connexions ne se lisent pas) et des règles du pare-feu ne se lisent pas : impossible de dire si ce réglage la couperait. Refusé, rien d'écrit",
+        "a remote session is in progress (or connections cannot be read) and some firewall rules cannot be read: impossible to tell whether this setting would cut it. Refused, nothing written"
+    )
+    .to_string())
+}
+
+/// Écrit un choix du pare-feu (`v` : 1 la valeur fermée, ou active) après la garde de la session, rejugée ici sur
+/// ce qui est relu à l'instant (la session, le masque courant, le profil, les règles). Jamais de règle effacée :
+/// seulement activée ou désactivée. La valeur est ensuite relue par `choix_avant`.
+pub(crate) fn ecrire_choix(id: IdChoix, v: i64) -> Result<(), Echec> {
+    let fermee = match v {
+        0 => false,
+        1 => true,
+        _ => {
+            return Err(Echec::refuse(
+                CONTEXTE_CHOIX,
+                tr!("valeur refusée pour ce réglage", "value refused for this setting"),
+            ));
+        }
+    };
+    let session = session_maintenant();
+    let fait = lecture(move |pol, regles| {
+        Ok(match id {
+            IdChoix::PareFeu(p, r) => ecrire_profil(pol, regles, session.as_deref(), p, r, fermee),
+            IdChoix::PareFeuRegle(..) => ecrire_regle(pol, regles, session.as_deref(), id, fermee),
+            _ => Err(PasEcrit::Refus(
+                tr!("pas un réglage du pare-feu", "not a firewall setting").to_string(),
+            )),
+        })
+    });
+    match fait {
+        Some(Ok(())) => Ok(()),
+        Some(Err(PasEcrit::Refus(t))) => Err(Echec::refuse(CONTEXTE_CHOIX, t)),
+        Some(Err(PasEcrit::Echec(t))) => Err(Echec::echoue(CONTEXTE_CHOIX, t)),
+        None => Err(Echec::echoue(
+            CONTEXTE_CHOIX,
+            tr!(
+                "le Pare-feu Windows n'a pas répondu dans la minute (le service mpssvc est peut-être arrêté), rien d'écrit",
+                "the Windows Firewall did not answer within a minute (the mpssvc service may be stopped), nothing written"
+            ),
+        )),
+    }
+}
+
+fn ecrire_profil(
+    pol: &INetFwPolicy2,
+    regles: &INetFwRules,
+    session: Option<&[u16]>,
+    p: ProfilPareFeu,
+    r: ReglagePareFeu,
+    fermee: bool,
+) -> Result<(), PasEcrit> {
+    let illisible = || {
+        PasEcrit::Echec(
+            tr!(
+                "profil du pare-feu illisible, rien d'écrit",
+                "firewall profile unreadable, nothing written"
+            )
+            .to_string(),
+        )
+    };
+    let avant = etat_profil(pol, p).ok_or_else(illisible)?;
+    if session.is_some() {
+        // SAFETY: objet COM valide ; la lecture rend une copie.
+        let courants = unsafe { pol.CurrentProfileTypes() }.ok();
+        let (lues, illisibles) = regles_com(regles).map_err(|_| regles_illisibles())?;
+        if illisibles > 0 {
+            return Err(regles_illisibles());
+        }
+        let lues: Vec<RegleLue> = lues.into_iter().map(|(l, _)| l).collect();
+        if let Some(refus) = gestes::refus_profil_session(session, courants, p, r, fermee, avant, &lues) {
+            return Err(PasEcrit::Refus(texte_refus(refus)));
+        }
+    }
+    let profil = NET_FW_PROFILE_TYPE2(p.bit());
+    // SAFETY: objet COM valide ; le profil et les valeurs sont des constantes des énumérations.
+    let ecrit = unsafe {
+        match r {
+            ReglagePareFeu::Actif => pol.put_FirewallEnabled(profil, booleen(fermee)),
+            ReglagePareFeu::Entrant => pol.put_DefaultInboundAction(profil, action(fermee)),
+            ReglagePareFeu::Sortant => pol.put_DefaultOutboundAction(profil, action(fermee)),
+            ReglagePareFeu::ToutBloquer => pol.put_BlockAllInboundTraffic(profil, booleen(fermee)),
+        }
+    };
+    ecrit.map_err(|e| {
+        PasEcrit::Echec(trf!(
+            "refusé par le Pare-feu Windows ({})",
+            "refused by the Windows Firewall ({})",
+            e.message()
+        ))
+    })
+}
+
+/// Les sorties sont-elles bloquées par défaut sur l'un des profils courants (`None` : un profil ou le masque ne se
+/// lit pas) ?
+fn sorties_bloquees(pol: &INetFwPolicy2) -> Option<bool> {
+    // SAFETY: objet COM valide ; la lecture rend une copie.
+    let courants = unsafe { pol.CurrentProfileTypes() }.ok()?;
+    let mut bloquees = false;
+    for p in ProfilPareFeu::TOUS.into_iter().filter(|p| courants & p.bit() != 0) {
+        let e = etat_profil(pol, p)?;
+        bloquees |= e.actif && e.sortant_bloque;
+    }
+    Some(bloquees)
+}
+
+fn ecrire_regle(
+    pol: &INetFwPolicy2,
+    regles: &INetFwRules,
+    session: Option<&[u16]>,
+    id: IdChoix,
+    active: bool,
+) -> Result<(), PasEcrit> {
+    let (lues, _) = regles_com(regles).map_err(|e| {
+        PasEcrit::Echec(trf!(
+            "règles du pare-feu illisibles ({}), rien d'écrit",
+            "firewall rules unreadable ({}), nothing written",
+            e.message()
+        ))
+    })?;
+    let cibles: Vec<(RegleLue, INetFwRule)> = lues.into_iter().filter(|(l, _)| l.id() == id).collect();
+    if cibles.is_empty() {
+        return Err(PasEcrit::Echec(
+            tr!(
+                "cette règle n'existe plus (retirée ou changée depuis), rien d'écrit",
+                "this rule no longer exists (removed or changed since), nothing written"
+            )
+            .to_string(),
+        ));
+    }
+    if session.is_some() {
+        // SAFETY: objet COM valide ; la lecture rend une copie.
+        let courants = unsafe { pol.CurrentProfileTypes() }.ok();
+        let sorties = sorties_bloquees(pol);
+        // Toutes jugées avant d'en toucher une : un refus ne laisse pas la moitié faite.
+        if let Some(refus) = cibles
+            .iter()
+            .find_map(|(l, _)| gestes::refus_regle_session(session, courants, sorties, l, active))
+        {
+            return Err(PasEcrit::Refus(texte_refus(refus)));
+        }
+    }
+    for (l, regle) in &cibles {
+        if l.active == active {
+            continue;
+        }
+        // SAFETY: objet COM valide, de ce fil ; une valeur constante.
+        if let Err(e) = unsafe { regle.SetEnabled(booleen(active)) } {
+            return Err(PasEcrit::Echec(trf!(
+                "règle « {} » refusée par le Pare-feu Windows ({})",
+                "rule “{}” refused by the Windows Firewall ({})",
+                crate::ui::affichable(&l.nom),
+                e.message()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Pourquoi le pare-feu a gardé la valeur écrite sans erreur : une stratégie l'emporte sur le magasin local.
+pub(crate) fn pourquoi_garde() -> String {
+    tr!(
+        "le Pare-feu Windows a gardé la valeur : une stratégie (GPO, ou Intune par le MDM) impose ce réglage, quoi que Vanguard écrive",
+        "the Windows Firewall kept the value: a policy (GPO, or Intune through MDM) enforces this setting, whatever Vanguard writes"
+    )
+    .to_string()
 }
 
 /// Ce que dit INetworkListManager (NLM) d'un réseau. Seuls des codes sortent de son fil (voir `wmi::dans_un_fil`).

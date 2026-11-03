@@ -12,7 +12,9 @@
 //! se dit « non vérifié », jamais saine. Le JSON ne porte que des identifiants et des nombres :
 //! aucun chemin, nom de compte, de machine, de domaine ni d'antivirus.
 
-use crate::machine::gestes::{ChoixAsr, ChoixDefender, GenreExclusion, IdChoix, ReglageDefender};
+use crate::machine::gestes::{
+    ActionRegle, ChoixAsr, ChoixDefender, GenreExclusion, IdChoix, ProfilPareFeu, ReglageDefender, ReglagePareFeu,
+};
 use crate::ui::{ACCENT, DISCRET, GRIS, RESET, VERT, largeur_affichee};
 use crate::{tr, trf};
 
@@ -607,20 +609,30 @@ pub(crate) const MDM_EXCLUSIONS: [Emplacement; 3] = [
     (MDM, "ExcludedExtensions"),
 ];
 /// Le Pare-feu Windows imposé par GPO, par profil (le profil privé s'appelait « Standard » avant Windows Vista, et les
-/// anciens modèles d'administration l'écrivent encore là).
+/// anciens modèles d'administration l'écrivent encore là), ou par la gestion des appareils (MDM, sous
+/// `FirewallPolicy\Mdm`).
 pub(crate) const GPO_PARE_FEU: [&[&str]; 3] = [
-    &[r"SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile"],
+    &[
+        r"SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile",
+        r"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\Mdm\DomainProfile",
+    ],
     &[
         r"SOFTWARE\Policies\Microsoft\WindowsFirewall\PrivateProfile",
         r"SOFTWARE\Policies\Microsoft\WindowsFirewall\StandardProfile",
+        r"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\Mdm\PrivateProfile",
     ],
-    &[r"SOFTWARE\Policies\Microsoft\WindowsFirewall\PublicProfile"],
+    &[
+        r"SOFTWARE\Policies\Microsoft\WindowsFirewall\PublicProfile",
+        r"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\Mdm\PublicProfile",
+    ],
 ];
-pub(crate) const VALEURS_PARE_FEU: [&str; 4] = [
+/// « Tout bloquer » s'appelle DoNotAllowExceptions dans une GPO et Shielded dans le MDM.
+pub(crate) const VALEURS_PARE_FEU: [&str; 5] = [
     "EnableFirewall",
     "DefaultInboundAction",
     "DefaultOutboundAction",
     "DoNotAllowExceptions",
+    "Shielded",
 ];
 
 /// Les identifiants d'une chaîne de règles ASR d'Intune (« id=1|id=2 »), ceux de la table seulement.
@@ -695,6 +707,37 @@ fn nom_profil(i: usize) -> &'static str {
         0 => tr!("Domaine", "Domain"),
         1 => tr!("Privé", "Private"),
         _ => tr!("Public", "Public"),
+    }
+}
+
+/// Le nom affiché d'un profil du pare-feu.
+pub(crate) fn nom_profil_pare_feu(p: ProfilPareFeu) -> &'static str {
+    nom_profil(match p {
+        ProfilPareFeu::Domaine => 0,
+        ProfilPareFeu::Prive => 1,
+        ProfilPareFeu::Public => 2,
+    })
+}
+
+/// Le nom court d'un réglage d'un profil du pare-feu.
+pub(crate) fn nom_reglage_pare_feu(r: ReglagePareFeu) -> &'static str {
+    match r {
+        ReglagePareFeu::Actif => tr!("Pare-feu", "Firewall"),
+        ReglagePareFeu::Entrant => tr!("Entrées par défaut", "Inbound by default"),
+        ReglagePareFeu::Sortant => tr!("Sorties par défaut", "Outbound by default"),
+        ReglagePareFeu::ToutBloquer => tr!("Tout bloquer en entrée", "Block all inbound"),
+    }
+}
+
+/// Une valeur d'un réglage d'un profil du pare-feu, en mots (1 : fermée, 0 : ouverte).
+pub(crate) fn mot_valeur_pare_feu(r: ReglagePareFeu, fermee: bool) -> &'static str {
+    match (r, fermee) {
+        (ReglagePareFeu::Actif, true) => tr!("allumé", "on"),
+        (ReglagePareFeu::Actif, false) => tr!("coupé", "off"),
+        (ReglagePareFeu::Entrant | ReglagePareFeu::Sortant, true) => tr!("bloquées", "blocked"),
+        (ReglagePareFeu::Entrant | ReglagePareFeu::Sortant, false) => tr!("autorisées", "allowed"),
+        (ReglagePareFeu::ToutBloquer, true) => tr!("oui", "yes"),
+        (ReglagePareFeu::ToutBloquer, false) => tr!("non", "no"),
     }
 }
 
@@ -1624,6 +1667,16 @@ pub(crate) fn nom_choix(id: IdChoix) -> String {
             "Allowed app (controlled folder access)"
         )
         .to_string(),
+        IdChoix::PareFeu(p, r) => {
+            let (n, pr) = (nom_reglage_pare_feu(r), nom_profil_pare_feu(p));
+            trf!("{n} (pare-feu, profil {pr})", "{n} (firewall, {pr} profile)")
+        }
+        IdChoix::PareFeuRegle(ActionRegle::Bloque, _) => {
+            tr!("Règle du pare-feu qui bloque", "Firewall rule that blocks").to_string()
+        }
+        IdChoix::PareFeuRegle(ActionRegle::Autorise, _) => {
+            tr!("Règle du pare-feu qui autorise", "Firewall rule that allows").to_string()
+        }
     }
 }
 
@@ -1645,6 +1698,10 @@ pub(crate) fn texte_choix(id: IdChoix, v: Option<Option<i64>>) -> String {
         (IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_), Some(v)) => {
             EtatOpt::Autre(v.unwrap_or(-1)).texte(false)
         }
+        (IdChoix::PareFeu(_, r), Some(Some(v @ (0 | 1)))) => mot_valeur_pare_feu(r, v == 1).to_string(),
+        (IdChoix::PareFeuRegle(..), Some(Some(1))) => tr!("active", "enabled").to_string(),
+        (IdChoix::PareFeuRegle(..), Some(Some(0))) => tr!("inactive", "disabled").to_string(),
+        (IdChoix::PareFeu(..) | IdChoix::PareFeuRegle(..), Some(v)) => EtatOpt::Autre(v.unwrap_or(-1)).texte(false),
     }
 }
 
@@ -1704,6 +1761,22 @@ pub(crate) fn protege_encore(id: IdChoix) -> &'static str {
             "Ce qui protège encore : la protection en temps réel, le pare-feu et les autres règles.",
             "What still protects you: real-time protection, the firewall and the other rules."
         ),
+        IdChoix::PareFeu(_, ReglagePareFeu::Actif) => tr!(
+            "Ce qui protège encore : le routeur (NAT) contre les entrées venues d'Internet, Defender, SmartScreen. Ne marchent plus sur ce profil : les blocages de Vanguard et le mode Wi-Fi public.",
+            "What still protects you: the router (NAT) against connections coming from the Internet, Defender, SmartScreen. No longer working on this profile: Vanguard's blocks and public Wi-Fi mode."
+        ),
+        IdChoix::PareFeu(_, ReglagePareFeu::Entrant | ReglagePareFeu::ToutBloquer) => tr!(
+            "Ce qui protège encore : le routeur (NAT), les règles qui bloquent, les programmes qui n'écoutent pas.",
+            "What still protects you: the router (NAT), the rules that block, programs that do not listen."
+        ),
+        IdChoix::PareFeu(_, ReglagePareFeu::Sortant) => tr!(
+            "Ce qui protège encore : les règles qui bloquent en sortie (dont les blocages de Vanguard), Defender.",
+            "What still protects you: the outbound rules that block (Vanguard's blocks among them), Defender."
+        ),
+        IdChoix::PareFeuRegle(..) => tr!(
+            "Ce qui protège encore : le reste du pare-feu ; seule cette règle change.",
+            "What still protects you: the rest of the firewall; only this rule changes."
+        ),
     }
 }
 
@@ -1762,6 +1835,30 @@ pub(crate) fn effet_baisse(id: IdChoix) -> String {
             "Désactiver ou passer en audit : la règle ne bloque plus. En audit, Defender note seulement ce qu'elle aurait bloqué (journal de Defender, événement 1122).",
             "Disable or set to audit: the rule no longer blocks. In audit, Defender only logs what it would have blocked (Defender log, event 1122)."
         ),
+        IdChoix::PareFeu(_, ReglagePareFeu::Actif) => tr!(
+            "Couper : plus aucune règle de ce profil ne compte, en entrée comme en sortie.",
+            "Turn off: no rule of this profile counts any more, inbound or outbound."
+        ),
+        IdChoix::PareFeu(_, ReglagePareFeu::Entrant) => tr!(
+            "Autoriser : tout programme qui écoute est joignable depuis le réseau, sauf ce qu'une règle bloque.",
+            "Allow: any listening program can be reached from the network, except what a rule blocks."
+        ),
+        IdChoix::PareFeu(_, ReglagePareFeu::ToutBloquer) => tr!(
+            "Retirer « tout bloquer » : les règles qui autorisent une entrée comptent de nouveau.",
+            "Remove “block all”: the rules that allow an inbound connection count again."
+        ),
+        IdChoix::PareFeu(_, ReglagePareFeu::Sortant) => tr!(
+            "Bloquer les sorties est plus strict ; les autoriser est l'usage de Windows.",
+            "Blocking outbound is stricter; allowing it is Windows' default."
+        ),
+        IdChoix::PareFeuRegle(ActionRegle::Bloque, _) => tr!(
+            "Désactiver : ce que la règle bloquait passe de nouveau.",
+            "Disable: what the rule blocked gets through again."
+        ),
+        IdChoix::PareFeuRegle(ActionRegle::Autorise, _) => tr!(
+            "Activer : la règle laisse passer ce qu'elle nomme.",
+            "Enable: the rule lets through what it names."
+        ),
     };
     format!("{effet} {}", protege_encore(id))
 }
@@ -1788,8 +1885,13 @@ pub(crate) fn ligne_choix(id: &str, valeur: &str) -> Option<String> {
             let c = ChoixAsr::TOUS.into_iter().find(|c| c.mot() == v)?;
             crate::machine::gestes::ligne_baisse_asr(g, c)
         }
-        // Un élément de liste s'ajoute par son texte (`ligne_exclure`, `ligne_permettre`), jamais par son empreinte.
-        IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) => None,
+        // Un élément de liste s'ajoute par son texte (`ligne_exclure`, `ligne_permettre`), jamais par son empreinte ;
+        // une règle se change depuis l'écran, qui l'a lue : son empreinte seule ne dit pas laquelle.
+        IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) | IdChoix::PareFeuRegle(..) => None,
+        IdChoix::PareFeu(p, r) => {
+            let fermee = [true, false].into_iter().find(|f| r.mot_valeur(*f) == v)?;
+            Some(crate::machine::gestes::ligne_baisse_pare_feu(p, r, fermee))
+        }
     }
 }
 
@@ -1845,6 +1947,14 @@ fn aide_choix() -> String {
     }
     let mots: Vec<&str> = ChoixAsr::TOUS.iter().map(|c| c.mot()).collect();
     l.push(format!("  asr-<GUID> : {}", mots.join(", ")));
+    for r in ReglagePareFeu::TOUS {
+        l.push(format!(
+            "  pare-feu-<domaine|prive|public>-{} : {}, {}",
+            r.mot(),
+            r.mot_valeur(true),
+            r.mot_valeur(false)
+        ));
+    }
     l.push("  --exclure <dossier|programme|type> <texte> ; --permettre <programme> ; --noter <id>".to_string());
     l.join("\n")
 }

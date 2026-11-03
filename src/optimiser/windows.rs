@@ -349,6 +349,26 @@ impl Changement {
         }
     }
 
+    /// Une règle ASR baissée par le choix de la personne (Options de défense) et encore telle : son groupe n'est pas
+    /// « à faire » pour elle, comme le bilan le dit (« sauf vos choix », `machine::windows::defender`).
+    pub fn par_votre_choix(&self) -> bool {
+        use crate::machine::choix_avant::{Lecture, lecture_note, note_de, notes};
+        let Changement::Defender { pref: Pref::Asr(g), .. } = self else {
+            return false;
+        };
+        let id = crate::machine::gestes::IdChoix::Asr(g);
+        let notes = notes();
+        let Some(n) = note_de(&notes, id) else {
+            return false;
+        };
+        // Absente de la liste : `Some(None)`, comme la note la compare.
+        let lue = match self.lire() {
+            None => Some(None),
+            Some(t) => t.strip_prefix("mp:").and_then(|v| v.parse::<i64>().ok()).map(Some),
+        };
+        matches!(lecture_note(id, n, lue), Lecture::ParChoix(_))
+    }
+
     // Même forme que `lire`, pour les comparer.
     #[allow(clippy::unnecessary_wraps)]
     pub fn cible(&self) -> Valeur {

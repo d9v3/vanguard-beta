@@ -2315,6 +2315,11 @@ pub(crate) enum IdChoix {
     Exclusion(GenreExclusion, EmpreinteElement),
     /// Un programme permis malgré l'accès contrôlé aux dossiers (ControlledFolderAccessAllowedApplications).
     DossiersAutorise(EmpreinteElement),
+    /// Un réglage d'un profil du pare-feu : 1 la valeur la plus fermée (`ReglagePareFeu`).
+    PareFeu(ProfilPareFeu, ReglagePareFeu),
+    /// Une règle existante du pare-feu, désignée par son action et son empreinte (`RegleLue::empreinte`) : 1 active,
+    /// 0 inactive.
+    PareFeuRegle(ActionRegle, EmpreinteElement),
 }
 
 impl IdChoix {
@@ -2324,6 +2329,8 @@ impl IdChoix {
             IdChoix::Asr(id) => format!("asr-{id}"),
             IdChoix::Exclusion(g, e) => format!("defender-exclusion-{}-{}", g.mot(), e.hex()),
             IdChoix::DossiersAutorise(e) => format!("defender-dossiers-autorise-{}", e.hex()),
+            IdChoix::PareFeu(p, r) => format!("pare-feu-{}-{}", p.mot(), r.mot()),
+            IdChoix::PareFeuRegle(a, e) => format!("pare-feu-regle-{}-{}", a.mot(), e.hex()),
         }
     }
 
@@ -2337,6 +2344,18 @@ impl IdChoix {
             IdChoix::DossiersAutorise(EmpreinteElement::lire(hex)?)
         } else if let Some(r) = texte.strip_prefix("defender-") {
             IdChoix::Defender(*ReglageDefender::TOUS.iter().find(|x| x.id_choix() == r)?)
+        } else if let Some(reste) = texte.strip_prefix("pare-feu-regle-") {
+            let (action, hex) = reste.split_once('-')?;
+            let a = *[ActionRegle::Bloque, ActionRegle::Autorise]
+                .iter()
+                .find(|a| a.mot() == action)?;
+            IdChoix::PareFeuRegle(a, EmpreinteElement::lire(hex)?)
+        } else if let Some(reste) = texte.strip_prefix("pare-feu-") {
+            let (profil, reglage) = reste.split_once('-')?;
+            IdChoix::PareFeu(
+                *ProfilPareFeu::TOUS.iter().find(|p| p.mot() == profil)?,
+                *ReglagePareFeu::TOUS.iter().find(|r| r.mot() == reglage)?,
+            )
         } else {
             IdChoix::Asr(asr_toute(texte.strip_prefix("asr-")?)?)
         };
@@ -2348,13 +2367,29 @@ impl IdChoix {
         matches!(self, IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_))
     }
 
+    /// « Rallumer » n'y touche que si Vanguard l'a noté : un élément de liste, une règle du pare-feu (celles des
+    /// autres ne sont jamais réglées d'office).
+    pub(crate) fn note_requise(self) -> bool {
+        self.element() || matches!(self, IdChoix::PareFeuRegle(..))
+    }
+
+    /// Un choix du pare-feu (profil ou règle), lu et écrit par COM (`pare_feu.rs`), jamais par Defender.
+    pub(crate) fn pare_feu(self) -> bool {
+        matches!(self, IdChoix::PareFeu(..) | IdChoix::PareFeuRegle(..))
+    }
+
     /// Le rang de protection d'une valeur (`None` : règle ASR absente de la liste). Plus haut, plus sûr ; une valeur
     /// inconnue vaut 0. Un élément de liste absent (0) protège plus que présent.
     pub(crate) fn rang(self, v: Option<i64>) -> u8 {
         match self {
             IdChoix::Defender(r) => v.map_or(0, |v| r.rang(v)),
             IdChoix::Asr(_) => rang_asr(v),
-            IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) => u8::from(v == Some(0)),
+            // Absent ; une règle d'autorisation inactive.
+            IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) | IdChoix::PareFeuRegle(ActionRegle::Autorise, _) => {
+                u8::from(v == Some(0))
+            }
+            // 1 : allumé, bloquer, tout bloquer ; une règle de blocage active.
+            IdChoix::PareFeu(..) | IdChoix::PareFeuRegle(ActionRegle::Bloque, _) => u8::from(v == Some(1)),
         }
     }
 
@@ -2363,7 +2398,12 @@ impl IdChoix {
     /// remplacé ; pour un élément de liste, absent.
     pub(crate) fn plancher(self) -> u8 {
         match self {
-            IdChoix::Defender(_) | IdChoix::Asr(_) | IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) => 1,
+            IdChoix::Defender(_)
+            | IdChoix::Asr(_)
+            | IdChoix::Exclusion(..)
+            | IdChoix::DossiersAutorise(_)
+            | IdChoix::PareFeu(..)
+            | IdChoix::PareFeuRegle(..) => 1,
         }
     }
 
@@ -2373,6 +2413,8 @@ impl IdChoix {
     pub(crate) fn baissee(self, v: Option<i64>) -> bool {
         let seuil = match self {
             IdChoix::Defender(ReglageDefender::Echantillons) => self.plancher(),
+            // Une règle d'autorisation active n'est pas une protection baissée : Windows en a des dizaines.
+            IdChoix::PareFeuRegle(ActionRegle::Autorise, _) => return false,
             _ => self.rang(Some(self.sure())),
         };
         self.rang(v) < seuil
@@ -2382,8 +2424,13 @@ impl IdChoix {
     pub(crate) fn sure(self) -> i64 {
         match self {
             IdChoix::Defender(r) => r.sure(),
-            IdChoix::Asr(_) => 1,
-            IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) => 0,
+            IdChoix::PareFeu(_, r) => r.sure(),
+            // Une règle de blocage active ; une règle d'autorisation n'est jamais « baissée » : l'activer est un
+            // choix noté (elle ouvre), la laisser inactive ne protège pas moins que Windows.
+            IdChoix::Asr(_) | IdChoix::PareFeuRegle(ActionRegle::Bloque, _) => 1,
+            IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) | IdChoix::PareFeuRegle(ActionRegle::Autorise, _) => {
+                0
+            }
         }
     }
 }
@@ -2530,8 +2577,11 @@ pub(crate) fn remettre_en_ordre<T>(ordre: &[usize], reponses: Vec<T>) -> Option<
 pub(crate) fn methode_choix(id: IdChoix, v: i64) -> Option<(&'static str, Vec<(&'static str, ValeurWmi)>)> {
     match id {
         IdChoix::Defender(r) => Some(("Set", vec![(r.propriete(), r.wmi_de(v)?)])),
-        // Un élément de liste s'écrit avec son texte, que l'identifiant ne porte pas : `defender_ecriture`.
-        IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) => None,
+        // Un élément de liste s'écrit avec son texte, que l'identifiant ne porte pas : `defender_ecriture` ; le
+        // pare-feu, par COM (`pare_feu.rs`).
+        IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) | IdChoix::PareFeu(..) | IdChoix::PareFeuRegle(..) => {
+            None
+        }
         IdChoix::Asr(guid) => {
             let action = u8::try_from(v).ok().filter(|a| matches!(a, 0 | 1 | 2 | 6))?;
             Some((
@@ -2580,6 +2630,447 @@ pub(crate) fn ligne_autoriser_dossiers(texte: &str) -> Option<String> {
 /// La ligne « C'est moi, le noter » (P11). Mêmes appelants.
 pub(crate) fn ligne_noter(id: IdChoix) -> String {
     Acte::ChoixNoter(id).ligne()
+}
+
+// ------------------------------------------------------------ Pare-feu : les choix de la personne (D5)
+
+/// Le verbe d'un réglage d'un profil du pare-feu, au choix exact de la personne : `vanguard:pare-feu-profil
+/// <domaine|prive|public> <actif|tout-bloquer>=<oui|non>` ou `<entrant|sortant>=<bloquer|autoriser>`, un seul réglage
+/// par ligne. Jugé comme `defender-choix` : le sens vient de la valeur relue, une baisse est montrée, confirmée et
+/// notée (`pare-feu-<profil>-<reglage>`).
+pub(crate) const PARE_FEU_PROFIL: &str = "vanguard:pare-feu-profil ";
+/// Le verbe d'une règle existante du pare-feu activée ou désactivée au choix de la personne :
+/// `vanguard:pare-feu-regle-etat <bloque|autorise>-<empreinte> <active|inactive>`. La règle n'est jamais effacée ;
+/// l'empreinte désigne toutes les règles de mêmes nom, sens, action, programme, ports et profils (`RegleLue`).
+pub(crate) const PARE_FEU_REGLE_ETAT: &str = "vanguard:pare-feu-regle-etat ";
+
+/// Un profil du Pare-feu Windows, avec son bit de NET_FW_PROFILE_TYPE2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ProfilPareFeu {
+    Domaine,
+    Prive,
+    Public,
+}
+
+impl ProfilPareFeu {
+    pub(crate) const TOUS: [ProfilPareFeu; 3] = [ProfilPareFeu::Domaine, ProfilPareFeu::Prive, ProfilPareFeu::Public];
+
+    /// Domaine 1, privé 2, public 4.
+    pub(crate) fn bit(self) -> i32 {
+        match self {
+            ProfilPareFeu::Domaine => 1,
+            ProfilPareFeu::Prive => 2,
+            ProfilPareFeu::Public => 4,
+        }
+    }
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ProfilPareFeu::Domaine => "domaine",
+            ProfilPareFeu::Prive => "prive",
+            ProfilPareFeu::Public => "public",
+        }
+    }
+}
+
+/// Un réglage d'un profil que la personne choisit. La valeur 1 est la plus fermée (allumé, bloquer, bloquer, tout
+/// bloquer) ; 0, l'autre.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ReglagePareFeu {
+    /// FirewallEnabled.
+    Actif,
+    /// DefaultInboundAction : 1 bloquer.
+    Entrant,
+    /// DefaultOutboundAction : 1 bloquer (le défaut de Windows est « autoriser »).
+    Sortant,
+    /// BlockAllInboundTraffic : 1 toutes les entrées bloquées, même celles des programmes autorisés.
+    ToutBloquer,
+}
+
+impl ReglagePareFeu {
+    pub(crate) const TOUS: [ReglagePareFeu; 4] = [
+        ReglagePareFeu::Actif,
+        ReglagePareFeu::Entrant,
+        ReglagePareFeu::Sortant,
+        ReglagePareFeu::ToutBloquer,
+    ];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ReglagePareFeu::Actif => "actif",
+            ReglagePareFeu::Entrant => "entrant",
+            ReglagePareFeu::Sortant => "sortant",
+            ReglagePareFeu::ToutBloquer => "tout-bloquer",
+        }
+    }
+
+    /// Le mot d'une valeur dans la ligne : « oui »/« non », ou « bloquer »/« autoriser ».
+    pub(crate) fn mot_valeur(self, fermee: bool) -> &'static str {
+        match (self, fermee) {
+            (ReglagePareFeu::Actif | ReglagePareFeu::ToutBloquer, true) => "oui",
+            (ReglagePareFeu::Actif | ReglagePareFeu::ToutBloquer, false) => "non",
+            (ReglagePareFeu::Entrant | ReglagePareFeu::Sortant, true) => "bloquer",
+            (ReglagePareFeu::Entrant | ReglagePareFeu::Sortant, false) => "autoriser",
+        }
+    }
+
+    /// La valeur sûre, celle de Windows : allumé, entrées bloquées, sorties autorisées, règles des programmes
+    /// suivies.
+    pub(crate) fn sure(self) -> i64 {
+        match self {
+            ReglagePareFeu::Actif | ReglagePareFeu::Entrant => 1,
+            ReglagePareFeu::Sortant | ReglagePareFeu::ToutBloquer => 0,
+        }
+    }
+}
+
+/// L'action d'une règle existante.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ActionRegle {
+    Bloque,
+    Autorise,
+}
+
+impl ActionRegle {
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ActionRegle::Bloque => "bloque",
+            ActionRegle::Autorise => "autorise",
+        }
+    }
+}
+
+/// Une règle du Pare-feu Windows telle qu'elle est relue (INetFwRule). Le protocole suit NET_FW_IP_PROTOCOL (TCP 6,
+/// tous 256) ; les profils, le masque de NET_FW_PROFILE_TYPE2 (tous : 0x7FFFFFFF).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RegleLue {
+    pub(crate) nom: String,
+    pub(crate) entrante: bool,
+    pub(crate) bloque: bool,
+    pub(crate) active: bool,
+    pub(crate) profils: i32,
+    pub(crate) programme: String,
+    pub(crate) protocole: i32,
+    pub(crate) ports_locaux: String,
+    pub(crate) ports_distants: String,
+    pub(crate) adresses_distantes: String,
+    pub(crate) adresses_locales: String,
+    /// InterfaceTypes (« All », « Lan »…) ; une liste d'interfaces précises (Interfaces) s'y écrit « précises ».
+    pub(crate) interfaces: String,
+    pub(crate) service: String,
+    pub(crate) groupe: String,
+}
+
+/// TCP et « tous les protocoles » dans NET_FW_IP_PROTOCOL.
+const PROTOCOLE_TCP: i32 = 6;
+const PROTOCOLE_TOUS: i32 = 256;
+/// Les ports des sessions à distance que le pare-feu ne doit jamais fermer : Bureau à distance et SSH.
+pub(crate) const PORTS_SESSION: [u16; 2] = [3389, 22];
+
+impl RegleLue {
+    pub(crate) fn action(&self) -> ActionRegle {
+        if self.bloque {
+            ActionRegle::Bloque
+        } else {
+            ActionRegle::Autorise
+        }
+    }
+
+    /// L'empreinte de (nom, sens, action, programme, ports locaux et distants, profils), sans casse : plusieurs
+    /// règles peuvent porter le même nom, celles qui ont aussi tout cela en commun sont réglées ensemble.
+    pub(crate) fn empreinte(&self) -> EmpreinteElement {
+        EmpreinteElement::de(&format!(
+            "{}|{}|{}|{}|{}|{}|{}",
+            self.nom,
+            if self.entrante { "in" } else { "out" },
+            self.action().mot(),
+            self.programme,
+            self.ports_locaux,
+            self.ports_distants,
+            self.profils
+        ))
+    }
+
+    pub(crate) fn id(&self) -> IdChoix {
+        IdChoix::PareFeuRegle(self.action(), self.empreinte())
+    }
+
+    /// La règle s'applique-t-elle à l'un des profils de ce masque ?
+    pub(crate) fn sur(&self, masque: i32) -> bool {
+        self.profils & masque != 0
+    }
+
+    fn tcp(&self) -> bool {
+        matches!(self.protocole, PROTOCOLE_TCP | PROTOCOLE_TOUS)
+    }
+
+    /// Chaque élément de LocalPorts : `Some(true)` le port y est nommé (seul ou dans une plage), `Some(false)` « * »
+    /// ou rien (tous les ports), `None` absent.
+    fn port_dans(&self, port: u16) -> Option<bool> {
+        let t = self.ports_locaux.trim();
+        if t.is_empty() || t == "*" {
+            return Some(false);
+        }
+        t.split(',').map(str::trim).find_map(|x| {
+            if x == "*" {
+                return Some(false);
+            }
+            let (a, b) = x.split_once('-').unwrap_or((x, x));
+            let (a, b) = (a.trim().parse::<u16>().ok()?, b.trim().parse::<u16>().ok()?);
+            (a <= port && port <= b).then_some(true)
+        })
+    }
+
+    /// La règle vise-t-elle ce port local en TCP, nommé ou par « tous les ports » ?
+    pub(crate) fn touche_port(&self, port: u16) -> bool {
+        self.tcp() && self.port_dans(port).is_some()
+    }
+
+    /// La règle nomme-t-elle ce port local en TCP (pas seulement « tous les ports ») ?
+    pub(crate) fn nomme_port(&self, port: u16) -> bool {
+        self.tcp() && self.port_dans(port) == Some(true)
+    }
+
+    /// Cette règle d'autorisation laisse-t-elle sûrement entrer une session sur ce port : le port nommé, depuis
+    /// toute adresse distante, vers toute adresse locale, sur toute interface, de tout port distant, pour le Bureau à
+    /// distance (svchost, TermService), System ou sshd, ou sans programme ni service ? Dans le doute, non : la garde
+    /// refuse alors plutôt que de couper.
+    fn ouvre(&self, port: u16) -> bool {
+        let partout = |t: &str| {
+            let t = t.trim();
+            t.is_empty() || t == "*" || t.eq_ignore_ascii_case("all")
+        };
+        let programme = self.programme.trim().to_lowercase();
+        let fichier = programme.rsplit(['\\', '/']).next().unwrap_or(&programme);
+        let service = self.service.trim().to_lowercase();
+        !self.bloque
+            && self.nomme_port(port)
+            && partout(&self.adresses_distantes)
+            && partout(&self.adresses_locales)
+            && partout(&self.ports_distants)
+            && partout(&self.interfaces)
+            && matches!(fichier, "" | "svchost.exe" | "system" | "sshd.exe")
+            && matches!(service.as_str(), "" | "*" | "termservice" | "sshd")
+    }
+}
+
+/// Un profil du pare-feu tel qu'il s'applique.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(clippy::struct_excessive_bools)] // les quatre réglages d'un profil, chacun pour lui-même
+pub(crate) struct EtatProfil {
+    pub(crate) actif: bool,
+    pub(crate) entrant_bloque: bool,
+    pub(crate) sortant_bloque: bool,
+    pub(crate) tout_bloque: bool,
+}
+
+impl EtatProfil {
+    /// Le profil après ce réglage.
+    pub(crate) fn avec(self, r: ReglagePareFeu, fermee: bool) -> EtatProfil {
+        let mut e = self;
+        match r {
+            ReglagePareFeu::Actif => e.actif = fermee,
+            ReglagePareFeu::Entrant => e.entrant_bloque = fermee,
+            ReglagePareFeu::Sortant => e.sortant_bloque = fermee,
+            ReglagePareFeu::ToutBloquer => e.tout_bloque = fermee,
+        }
+        e
+    }
+
+    pub(crate) fn valeur(self, r: ReglagePareFeu) -> bool {
+        match r {
+            ReglagePareFeu::Actif => self.actif,
+            ReglagePareFeu::Entrant => self.entrant_bloque,
+            ReglagePareFeu::Sortant => self.sortant_bloque,
+            ReglagePareFeu::ToutBloquer => self.tout_bloque,
+        }
+    }
+
+    fn sorties_bloquees(self) -> bool {
+        self.actif && self.sortant_bloque
+    }
+}
+
+/// Une connexion entrante sur ce port passe-t-elle, sur ce profil (`bit`), avec ces règles ? Coupé, tout passe ; une
+/// règle de blocage active qui touche le port l'emporte ; tout bloquer ferme ; entrées autorisées par défaut, le
+/// port passe ; sinon il faut une règle d'autorisation sûre (`RegleLue::ouvre`).
+pub(crate) fn port_ouvert(e: EtatProfil, bit: i32, port: u16, regles: &[RegleLue]) -> bool {
+    if !e.actif {
+        return true;
+    }
+    let actives = || regles.iter().filter(|r| r.active && r.entrante && r.sur(bit));
+    if actives().any(|r| r.bloque && r.touche_port(port)) {
+        return false;
+    }
+    if e.tout_bloque {
+        return false;
+    }
+    if !e.entrant_bloque {
+        return true;
+    }
+    actives().any(|r| r.ouvre(port))
+}
+
+/// Les ports locaux qu'utilise la session à distance en cours ; `None` : aucune session. `rdp` : ce processus tourne
+/// dans une session du Bureau à distance ; `lue` : les connexions relues (`None` : illisibles), une session en cours
+/// et ses ports locaux (VNC, RustDesk, SSH sur un autre port…). Connexions illisibles, ou une session dont aucun port
+/// ne se lit : 3389 et 22, au cas où. Le Bureau à distance ajoute 3389. Les règles qui nomment 3389 ou 22 restent
+/// gardées de toute façon (`refus_regle_session`).
+pub(crate) fn session_pare_feu(rdp: bool, lue: Option<(bool, &[u16])>) -> Option<Vec<u16>> {
+    if !rdp && matches!(lue, Some((false, _))) {
+        return None;
+    }
+    let mut ports: Vec<u16> = match lue {
+        Some((true, lus)) if !lus.is_empty() => lus.to_vec(),
+        Some((true, _)) | None => PORTS_SESSION.to_vec(),
+        Some((false, _)) => Vec::new(),
+    };
+    if rdp {
+        ports.push(PORTS_SESSION[0]);
+    }
+    ports.sort_unstable();
+    ports.dedup();
+    Some(ports)
+}
+
+fn courant(courants: Option<i32>, bit: i32) -> bool {
+    // CurrentProfileTypes illisible : chaque profil compte comme courant.
+    courants.is_none_or(|m| m & bit != 0)
+}
+
+/// Pourquoi ce réglage d'un profil couperait la session à distance en cours (plan §2.3, gardes B), ou `None`.
+/// `session` : les ports à garder (`session_pare_feu`), `None` sans session ; `courants` : CurrentProfileTypes
+/// (`None` : illisible, tous les profils comptent) ; `avant` : le profil relu ; `regles` : les règles relues. Sur un
+/// profil courant, pendant une session ou si on ne sait pas : tout bloquer, et les sorties bloquées par défaut (AnyDesk,
+/// TeamViewer, un VPN passent par une sortie), sont refusés ; allumer le pare-feu ou bloquer les entrées par défaut
+/// l'est aussi s'il fermerait un port de la session ou bloquerait les sorties. Couper le pare-feu et autoriser
+/// n'ouvrent que davantage : jamais refusés pour cette raison. Un profil absent du masque courant reste réglable.
+pub(crate) fn refus_profil_session(
+    session: Option<&[u16]>,
+    courants: Option<i32>,
+    p: ProfilPareFeu,
+    r: ReglagePareFeu,
+    fermee: bool,
+    avant: EtatProfil,
+    regles: &[RegleLue],
+) -> Option<RefusSession> {
+    let ports = session?;
+    if !courant(courants, p.bit()) {
+        return None;
+    }
+    let apres = avant.avec(r, fermee);
+    if r == ReglagePareFeu::ToutBloquer && fermee {
+        return Some(RefusSession::ToutBloquer);
+    }
+    if (r == ReglagePareFeu::Sortant && fermee) || (apres.sorties_bloquees() && !avant.sorties_bloquees()) {
+        return Some(RefusSession::Sorties);
+    }
+    ports
+        .iter()
+        .any(|&port| port_ouvert(avant, p.bit(), port, regles) && !port_ouvert(apres, p.bit(), port, regles))
+        .then_some(RefusSession::PortFerme)
+}
+
+/// Pourquoi activer (`active`) ou désactiver cette règle couperait la session à distance en cours, ou `None`. Pendant
+/// une session ou si on ne sait pas, est refusé : désactiver une règle d'autorisation entrante d'un profil courant ;
+/// une sortante d'un profil courant si les sorties y sont (ou peuvent y être) bloquées par défaut (`sorties_bloquees`,
+/// sur les profils courants ; `None` : illisible) ; une règle d'autorisation qui nomme 3389, 22 ou un port de la
+/// session, sur n'importe quel profil ; activer une règle de blocage sortante d'un profil courant, ou entrante qui
+/// touche un port de la session. Activer une autorisation et désactiver un blocage n'ouvrent que davantage.
+pub(crate) fn refus_regle_session(
+    session: Option<&[u16]>,
+    courants: Option<i32>,
+    sorties_bloquees: Option<bool>,
+    regle: &RegleLue,
+    active: bool,
+) -> Option<RefusSession> {
+    let ports = session?;
+    let sur_courant = regle.sur(courants.unwrap_or(0x7FFF_FFFF));
+    let gardes = || ports.iter().chain(PORTS_SESSION.iter());
+    match (regle.bloque, active) {
+        (false, false)
+            if (sur_courant && (regle.entrante || sorties_bloquees != Some(false)))
+                || (regle.entrante && gardes().any(|&p| regle.nomme_port(p))) =>
+        {
+            Some(RefusSession::RegleAutorisation)
+        }
+        (true, true) if sur_courant && (!regle.entrante || gardes().any(|&p| regle.touche_port(p))) => {
+            Some(RefusSession::RegleBlocage)
+        }
+        _ => None,
+    }
+}
+
+/// La valeur d'une règle désignée par son empreinte (`IdChoix::PareFeuRegle`), d'après l'état de chacune des règles
+/// qui la portent : 1 toutes actives, 0 toutes inactives ; partagées, la plus faible (une règle de blocage inactive,
+/// une règle d'autorisation active), pour que « Rallumer » les remette toutes ; `None` : aucune règle.
+pub(crate) fn etat_des_regles(a: ActionRegle, actives: impl IntoIterator<Item = bool>) -> Option<i64> {
+    let (mut oui, mut non) = (false, false);
+    for x in actives {
+        if x {
+            oui = true;
+        } else {
+            non = true;
+        }
+    }
+    match (oui, non) {
+        (false, false) => None,
+        (true, false) => Some(1),
+        (false, true) => Some(0),
+        (true, true) => Some(i64::from(a == ActionRegle::Autorise)),
+    }
+}
+
+/// Pourquoi un geste du pare-feu est refusé pendant une session à distance (ou si les connexions ne se lisent pas) ;
+/// le texte est dit par `pare_feu.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefusSession {
+    /// Tout bloquer en entrée sur un profil courant.
+    ToutBloquer,
+    /// Bloquer les sorties sur un profil courant (par le réglage, ou en allumant un profil qui les bloque).
+    Sorties,
+    /// Allumer, ou bloquer les entrées par défaut, fermerait un port de la session.
+    PortFerme,
+    /// Désactiver une règle d'autorisation.
+    RegleAutorisation,
+    /// Activer une règle de blocage.
+    RegleBlocage,
+}
+
+/// La ligne d'un réglage de profil du pare-feu au choix exact de la personne, qui peut baisser. Appelée seulement par
+/// l'écran des Options et par la question du mode Wi-Fi public à sa sortie (règle
+/// `les_baisses_ne_viennent_que_des_options` de `autotest/lecture_seule.rs`) : jamais par le bilan.
+pub(crate) fn ligne_baisse_pare_feu(p: ProfilPareFeu, r: ReglagePareFeu, fermee: bool) -> String {
+    Acte::PareFeuProfil(p, r, fermee).ligne()
+}
+
+/// La ligne d'une règle existante activée ou désactivée au choix de la personne. Mêmes appelants que
+/// `ligne_baisse_pare_feu`, le mode Wi-Fi public excepté.
+pub(crate) fn ligne_regle_etat(regle: &RegleLue, active: bool) -> String {
+    Acte::PareFeuRegleEtat(regle.action(), regle.empreinte(), active).ligne()
+}
+
+fn analyser_pare_feu_profil(reste: &str) -> Option<Acte> {
+    let (profil, paire) = reste.split_once(' ')?;
+    let (cle, valeur) = paire.split_once('=')?;
+    let p = *ProfilPareFeu::TOUS.iter().find(|p| p.mot() == profil)?;
+    let r = *ReglagePareFeu::TOUS.iter().find(|r| r.mot() == cle)?;
+    let fermee = [true, false].into_iter().find(|f| r.mot_valeur(*f) == valeur)?;
+    Some(Acte::PareFeuProfil(p, r, fermee))
+}
+
+fn analyser_regle_etat(reste: &str) -> Option<Acte> {
+    let (designee, etat) = reste.split_once(' ')?;
+    let (action, hex) = designee.split_once('-')?;
+    let a = *[ActionRegle::Bloque, ActionRegle::Autorise]
+        .iter()
+        .find(|a| a.mot() == action)?;
+    let active = match etat {
+        "active" => true,
+        "inactive" => false,
+        _ => return None,
+    };
+    Some(Acte::PareFeuRegleEtat(a, EmpreinteElement::lire(hex)?, active))
 }
 
 /// Une exclusion large (R8) : la racine d'un disque, Windows, Téléchargements, le dossier temporaire, les
@@ -4086,6 +4577,12 @@ pub(crate) enum Acte {
     DefenderDossiersAutoriser(Exclusion),
     /// Noter comme choix de la personne un réglage coupé hors de Vanguard (P11), après la question d'une baisse.
     ChoixNoter(IdChoix),
+    /// Régler un profil du pare-feu au choix exact de la personne (`true` : la valeur la plus fermée), mêmes gardes
+    /// que `DefenderChoix`, plus celle de la session à distance au moment d'écrire (`refus_profil_session`).
+    PareFeuProfil(ProfilPareFeu, ReglagePareFeu, bool),
+    /// Activer (`true`) ou désactiver une règle existante du pare-feu, jamais l'effacer ; mêmes gardes
+    /// (`refus_regle_session`).
+    PareFeuRegleEtat(ActionRegle, EmpreinteElement, bool),
     /// Écrire le fichier préparé à la place du hosts, la différence rejugée (`juger_hosts`) et montrée avant.
     HostsEcrire(HostsEcrire),
     /// Remettre en automatique les serveurs DNS d'une carte réseau.
@@ -4147,6 +4644,13 @@ impl Acte {
             Acte::DefenderExclusionAjouter(g, e) => format!("{DEFENDER_EXCLUSION_AJOUTER}{} {}", g.mot(), e.hex()),
             Acte::DefenderDossiersAutoriser(e) => format!("{DEFENDER_DOSSIERS_AUTORISER}{}", e.hex()),
             Acte::ChoixNoter(id) => format!("{CHOIX_NOTER}{}", id.texte()),
+            Acte::PareFeuProfil(p, r, f) => format!("{PARE_FEU_PROFIL}{} {}={}", p.mot(), r.mot(), r.mot_valeur(*f)),
+            Acte::PareFeuRegleEtat(a, e, actif) => format!(
+                "{PARE_FEU_REGLE_ETAT}{}-{} {}",
+                a.mot(),
+                e.hex(),
+                if *actif { "active" } else { "inactive" }
+            ),
             Acte::HostsEcrire(h) => h.ligne(),
             Acte::DnsAuto(g) => format!("{DNS_AUTO}{}", g.texte()),
             Acte::DnsServeurs(d) => d.ligne(),
@@ -4181,6 +4685,8 @@ impl Acte {
                 Some((IdChoix::DossiersAutorise(EmpreinteElement::de(e.texte())), Some(1)))
             }
             Acte::ChoixNoter(id) => Some((*id, None)),
+            Acte::PareFeuProfil(p, r, f) => Some((IdChoix::PareFeu(*p, *r), Some(i64::from(*f)))),
+            Acte::PareFeuRegleEtat(a, e, actif) => Some((IdChoix::PareFeuRegle(*a, *e), Some(i64::from(*actif)))),
             _ => None,
         }
     }
@@ -4223,6 +4729,8 @@ impl Acte {
             | Acte::DefenderExclusionAjouter(..)
             | Acte::DefenderDossiersAutoriser(..)
             | Acte::ChoixNoter(..)
+            | Acte::PareFeuProfil(..)
+            | Acte::PareFeuRegleEtat(..)
             | Acte::HostsEcrire(_)
             | Acte::DnsAuto(_)
             | Acte::DnsServeurs(_)
@@ -4266,6 +4774,8 @@ impl Acte {
             | Acte::DefenderExclusionAjouter(..)
             | Acte::DefenderDossiersAutoriser(..)
             | Acte::ChoixNoter(..)
+            | Acte::PareFeuProfil(..)
+            | Acte::PareFeuRegleEtat(..)
             | Acte::Rallumer(_)
             | Acte::HostsEcrire(_)
             | Acte::DnsAuto(_)
@@ -4329,6 +4839,9 @@ impl Acte {
             | Acte::DefenderDossiersAutoriser(..)
             | Acte::ChoixNoter(..)
             | Acte::Rallumer(_)
+            // Les choix du pare-feu se jugent sur la valeur relue et la session en cours : par COM seulement.
+            | Acte::PareFeuProfil(..)
+            | Acte::PareFeuRegleEtat(..)
             // Aucun PowerShell sur le chemin d'écriture du hosts, des comptes, des racines ni des partages : sous Wine,
             // l'erreur est dite.
             | Acte::HostsEcrire(_)
@@ -4362,6 +4875,8 @@ pub(crate) fn est_un_acte(ligne: &str) -> bool {
         || ligne.starts_with(METTRE_DE_COTE)
         || ligne.starts_with(PARE_FEU_ACTIF)
         || ligne.starts_with(PARE_FEU_PUBLIC)
+        || ligne.starts_with(PARE_FEU_PROFIL)
+        || ligne.starts_with(PARE_FEU_REGLE_ETAT)
         || ligne.starts_with(RESEAU_CATEGORIE)
         || ligne.starts_with(IFEO_DEBUGGER)
         || ligne.starts_with(IFEO_DEBUGGER_32)
@@ -4448,6 +4963,10 @@ pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
         Acte::PareFeuActif
     } else if let Some(reste) = ligne.strip_prefix(PARE_FEU_PUBLIC) {
         Acte::PareFeuPublic(ProfilPublic::analyser(reste)?)
+    } else if let Some(reste) = ligne.strip_prefix(PARE_FEU_PROFIL) {
+        analyser_pare_feu_profil(reste)?
+    } else if let Some(reste) = ligne.strip_prefix(PARE_FEU_REGLE_ETAT) {
+        analyser_regle_etat(reste)?
     } else if let Some(reste) = ligne.strip_prefix(DEFENDER) {
         let (mot, valeur) = reste.split_once(' ')?;
         let reglage = *ReglageDefender::TOUS.iter().find(|r| r.mot() == mot)?;
@@ -8255,5 +8774,385 @@ mod tests {
         );
         assert_eq!(methode_choix(IdChoix::Asr(ASR_TOUTES[0]), 5), None);
         assert_eq!(methode_choix(IdChoix::Asr(ASR_TOUTES[0]), 256), None);
+    }
+
+    // ------------------------------------------------------------ le pare-feu : profils et règles (D5)
+
+    /// Le Bureau à distance tel que Windows le pose : TCP 3389 entrant autorisé, svchost, TermService.
+    fn regle_rdp(profils: i32) -> RegleLue {
+        RegleLue {
+            nom: "Remote Desktop - User Mode (TCP-In)".into(),
+            entrante: true,
+            active: true,
+            profils,
+            programme: r"%SystemRoot%\system32\svchost.exe".into(),
+            protocole: PROTOCOLE_TCP,
+            ports_locaux: "3389".into(),
+            service: "termservice".into(),
+            ..RegleLue::default()
+        }
+    }
+
+    const ALLUME: EtatProfil = EtatProfil {
+        actif: true,
+        entrant_bloque: true,
+        sortant_bloque: false,
+        tout_bloque: false,
+    };
+
+    /// Une session vraie (Bureau à distance, SSH lue) et une session inconnue (connexions illisibles) : les deux
+    /// gardent 3389 et 22 au moins ; aucune session, rien à garder.
+    #[test]
+    fn la_session_du_pare_feu_se_lit_au_plus_prudent() {
+        assert_eq!(session_pare_feu(false, Some((false, &[]))), None);
+        assert_eq!(session_pare_feu(false, None), Some(vec![22, 3389]));
+        assert_eq!(session_pare_feu(false, Some((true, &[]))), Some(vec![22, 3389]));
+        assert_eq!(session_pare_feu(false, Some((true, &[5900]))), Some(vec![5900]));
+        assert_eq!(session_pare_feu(true, Some((false, &[]))), Some(vec![3389]));
+        assert_eq!(session_pare_feu(true, Some((true, &[2222]))), Some(vec![2222, 3389]));
+    }
+
+    /// Les sessions simulées : vraie (Bureau à distance) et inconnue (connexions illisibles).
+    fn sessions() -> [Vec<u16>; 2] {
+        [
+            session_pare_feu(true, Some((false, &[]))).unwrap(),
+            session_pare_feu(false, None).unwrap(),
+        ]
+    }
+
+    /// Gardes B (plan §2.3) : pendant une session, vraie ou inconnue, tout bloquer et bloquer les sorties sont
+    /// refusés sur chaque profil du masque courant, et sur tous si le masque ne se lit pas.
+    #[test]
+    fn tout_bloquer_et_sorties_refuses_pendant_une_session() {
+        let regles = [regle_rdp(0x7FFF_FFFF)];
+        for s in sessions() {
+            for p in ProfilPareFeu::TOUS {
+                for courants in [Some(p.bit()), Some(7), None] {
+                    assert_eq!(
+                        refus_profil_session(
+                            Some(&s),
+                            courants,
+                            p,
+                            ReglagePareFeu::ToutBloquer,
+                            true,
+                            ALLUME,
+                            &regles
+                        ),
+                        Some(RefusSession::ToutBloquer),
+                        "{p:?} {courants:?}"
+                    );
+                    assert_eq!(
+                        refus_profil_session(Some(&s), courants, p, ReglagePareFeu::Sortant, true, ALLUME, &regles),
+                        Some(RefusSession::Sorties),
+                        "{p:?} {courants:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Allumer un profil coupé qui bloquerait les sorties, ou tout en entrée, est refusé pendant une session.
+    #[test]
+    fn allumer_un_profil_qui_couperait_est_refuse() {
+        let regles = [regle_rdp(0x7FFF_FFFF)];
+        let coupe_sorties = EtatProfil {
+            actif: false,
+            sortant_bloque: true,
+            ..ALLUME
+        };
+        let coupe_tout = EtatProfil {
+            actif: false,
+            tout_bloque: true,
+            ..ALLUME
+        };
+        for s in sessions() {
+            let p = ProfilPareFeu::Prive;
+            assert_eq!(
+                refus_profil_session(
+                    Some(&s),
+                    Some(2),
+                    p,
+                    ReglagePareFeu::Actif,
+                    true,
+                    coupe_sorties,
+                    &regles
+                ),
+                Some(RefusSession::Sorties)
+            );
+            assert_eq!(
+                refus_profil_session(Some(&s), Some(2), p, ReglagePareFeu::Actif, true, coupe_tout, &regles),
+                Some(RefusSession::PortFerme)
+            );
+        }
+        // Allumé tel que Windows le règle, avec la règle du Bureau à distance : la session du Bureau à distance passe
+        // encore ; une session inconnue garde aussi 22, qu'aucune règle n'ouvre ici : refusé.
+        let coupe = EtatProfil { actif: false, ..ALLUME };
+        let [rdp, inconnue] = sessions();
+        let p = ProfilPareFeu::Prive;
+        assert_eq!(
+            refus_profil_session(Some(&rdp), Some(2), p, ReglagePareFeu::Actif, true, coupe, &regles),
+            None
+        );
+        assert_eq!(
+            refus_profil_session(Some(&inconnue), Some(2), p, ReglagePareFeu::Actif, true, coupe, &regles),
+            Some(RefusSession::PortFerme)
+        );
+    }
+
+    /// Bloquer les entrées par défaut ferme la session sans règle qui l'ouvre ; avec la règle du Bureau à distance
+    /// (et une règle SSH pour une session inconnue), elle passe.
+    #[test]
+    fn entrees_bloquees_selon_les_regles_de_la_session() {
+        let ouvert = EtatProfil {
+            entrant_bloque: false,
+            ..ALLUME
+        };
+        let ssh = RegleLue {
+            nom: "OpenSSH SSH Server (sshd)".into(),
+            programme: r"C:\Windows\System32\OpenSSH\sshd.exe".into(),
+            ports_locaux: "22".into(),
+            service: String::new(),
+            ..regle_rdp(0x7FFF_FFFF)
+        };
+        for s in sessions() {
+            let p = ProfilPareFeu::Public;
+            assert_eq!(
+                refus_profil_session(Some(&s), Some(4), p, ReglagePareFeu::Entrant, true, ouvert, &[]),
+                Some(RefusSession::PortFerme)
+            );
+            assert_eq!(
+                refus_profil_session(
+                    Some(&s),
+                    Some(4),
+                    p,
+                    ReglagePareFeu::Entrant,
+                    true,
+                    ouvert,
+                    &[regle_rdp(0x7FFF_FFFF), ssh.clone()]
+                ),
+                None
+            );
+        }
+        // Une règle du Bureau à distance limitée à une adresse ne compte pas : dans le doute, refusé.
+        let limitee = RegleLue {
+            adresses_distantes: "192.168.1.20".into(),
+            ..regle_rdp(0x7FFF_FFFF)
+        };
+        let s = session_pare_feu(true, Some((false, &[]))).unwrap();
+        assert_eq!(
+            refus_profil_session(
+                Some(&s),
+                Some(4),
+                ProfilPareFeu::Public,
+                ReglagePareFeu::Entrant,
+                true,
+                ouvert,
+                &[limitee]
+            ),
+            Some(RefusSession::PortFerme)
+        );
+    }
+
+    /// Couper le pare-feu ou autoriser n'ouvre que davantage : jamais refusé ; un profil hors du masque courant
+    /// reste réglable ; sans session, rien n'est refusé.
+    #[test]
+    fn ce_qui_ouvre_et_les_profils_non_courants_restent_reglables() {
+        for s in sessions() {
+            for p in ProfilPareFeu::TOUS {
+                for r in ReglagePareFeu::TOUS {
+                    assert_eq!(
+                        refus_profil_session(Some(&s), None, p, r, false, ALLUME, &[]),
+                        None,
+                        "{r:?}"
+                    );
+                }
+            }
+            // Domaine absent du masque courant (privé) : tout bloquer y est permis.
+            assert_eq!(
+                refus_profil_session(
+                    Some(&s),
+                    Some(2),
+                    ProfilPareFeu::Domaine,
+                    ReglagePareFeu::ToutBloquer,
+                    true,
+                    ALLUME,
+                    &[]
+                ),
+                None
+            );
+        }
+        assert_eq!(
+            refus_profil_session(
+                None,
+                None,
+                ProfilPareFeu::Public,
+                ReglagePareFeu::ToutBloquer,
+                true,
+                ALLUME,
+                &[]
+            ),
+            None
+        );
+    }
+
+    /// Règles, pendant une session vraie ou inconnue : désactiver une autorisation entrante d'un profil courant est
+    /// refusé ; désactiver celle de 3389 ou 22 l'est même sur un profil non courant ; une autorisation sortante
+    /// l'est si les sorties sont (ou peuvent être) bloquées ; activer un blocage sortant, ou entrant qui touche la
+    /// session, l'est aussi. Activer une autorisation et désactiver un blocage restent permis.
+    #[test]
+    fn regles_gardees_pendant_une_session() {
+        let rdp_domaine = regle_rdp(1);
+        let autre_entrante = RegleLue {
+            nom: "Partage".into(),
+            ports_locaux: "445".into(),
+            programme: "System".into(),
+            service: String::new(),
+            profils: 2,
+            ..regle_rdp(2)
+        };
+        let sortante = RegleLue {
+            nom: "Navigateur".into(),
+            entrante: false,
+            ports_locaux: String::new(),
+            programme: r"C:\Program Files\Nav\nav.exe".into(),
+            service: String::new(),
+            ..regle_rdp(2)
+        };
+        let ssh_bloque = RegleLue {
+            nom: "Bloque SSH".into(),
+            bloque: true,
+            active: false,
+            ports_locaux: "20-25".into(),
+            ..regle_rdp(2)
+        };
+        let bloque_sortant = RegleLue {
+            nom: "Bloque tout".into(),
+            entrante: false,
+            bloque: true,
+            active: false,
+            ..sortante.clone()
+        };
+        let autre_bloque = RegleLue {
+            nom: "Bloque 8080".into(),
+            bloque: true,
+            active: false,
+            ports_locaux: "8080".into(),
+            ..regle_rdp(2)
+        };
+        for s in sessions() {
+            let s = Some(s.as_slice());
+            for courants in [Some(2), None] {
+                assert_eq!(
+                    refus_regle_session(s, courants, Some(false), &autre_entrante, false),
+                    Some(RefusSession::RegleAutorisation)
+                );
+                // 3389 sur le domaine, profil non courant : gardée quand même.
+                assert_eq!(
+                    refus_regle_session(s, courants, Some(false), &rdp_domaine, false),
+                    Some(RefusSession::RegleAutorisation)
+                );
+                for sorties in [Some(true), None] {
+                    assert_eq!(
+                        refus_regle_session(s, courants, sorties, &sortante, false),
+                        Some(RefusSession::RegleAutorisation)
+                    );
+                }
+                assert_eq!(refus_regle_session(s, courants, Some(false), &sortante, false), None);
+                assert_eq!(
+                    refus_regle_session(s, courants, Some(false), &ssh_bloque, true),
+                    Some(RefusSession::RegleBlocage)
+                );
+                assert_eq!(
+                    refus_regle_session(s, courants, Some(false), &bloque_sortant, true),
+                    Some(RefusSession::RegleBlocage)
+                );
+                assert_eq!(refus_regle_session(s, courants, Some(false), &autre_bloque, true), None);
+                // Ce qui ouvre davantage.
+                assert_eq!(
+                    refus_regle_session(s, courants, Some(true), &autre_entrante, true),
+                    None
+                );
+                assert_eq!(refus_regle_session(s, courants, Some(true), &ssh_bloque, false), None);
+            }
+            // Une autorisation entrante d'un profil non courant, sans port gardé : permis.
+            assert_eq!(
+                refus_regle_session(s, Some(4), Some(false), &autre_entrante, false),
+                None
+            );
+        }
+        assert_eq!(refus_regle_session(None, None, None, &rdp_domaine, false), None);
+    }
+
+    #[test]
+    fn etat_partage_des_regles() {
+        assert_eq!(etat_des_regles(ActionRegle::Bloque, []), None);
+        assert_eq!(etat_des_regles(ActionRegle::Bloque, [true, true]), Some(1));
+        assert_eq!(etat_des_regles(ActionRegle::Bloque, [false]), Some(0));
+        assert_eq!(etat_des_regles(ActionRegle::Bloque, [true, false]), Some(0));
+        assert_eq!(etat_des_regles(ActionRegle::Autorise, [true, false]), Some(1));
+    }
+
+    /// Chaque ligne du pare-feu se relit à l'identique ; chaque identifiant aussi ; une forme voisine est refusée.
+    #[test]
+    fn lignes_et_identifiants_du_pare_feu() {
+        for p in ProfilPareFeu::TOUS {
+            for r in ReglagePareFeu::TOUS {
+                for f in [true, false] {
+                    let l = ligne_baisse_pare_feu(p, r, f);
+                    assert!(est_un_acte(&l), "{l}");
+                    assert_eq!(analyser_acte(&l).map(|a| a.ligne()), Some(l.clone()));
+                    assert!(analyser_acte(&format!("{l} ")).is_none(), "{l}");
+                    assert!(analyser_acte(&l.to_uppercase()).is_none(), "{l}");
+                }
+                let id = IdChoix::PareFeu(p, r);
+                assert_eq!(IdChoix::lire(&id.texte()), Some(id));
+                assert!(id.pare_feu() && !id.note_requise());
+            }
+        }
+        let regle = regle_rdp(7);
+        for active in [true, false] {
+            let l = ligne_regle_etat(&regle, active);
+            assert!(est_un_acte(&l), "{l}");
+            assert!(matches!(
+                analyser_acte(&l),
+                Some(Acte::PareFeuRegleEtat(ActionRegle::Autorise, e, a)) if e == regle.empreinte() && a == active
+            ));
+        }
+        let id = regle.id();
+        assert_eq!(IdChoix::lire(&id.texte()), Some(id));
+        assert!(id.pare_feu() && id.note_requise());
+        for faux in [
+            "pare-feu-salon-actif",
+            "pare-feu-prive-allume",
+            "pare-feu-regle-ouvre-00",
+            "pare-feu-prive",
+        ] {
+            assert_eq!(IdChoix::lire(faux), None, "{faux}");
+        }
+    }
+
+    /// Rang, valeur sûre et baisse : allumé, entrées bloquées, sorties autorisées, pas tout bloquer ; une règle de
+    /// blocage active ; une règle d'autorisation n'est jamais « baissée ». « Rallumer » ne remet jamais plus faible.
+    #[test]
+    fn rangs_et_rallumage_du_pare_feu() {
+        let actif = IdChoix::PareFeu(ProfilPareFeu::Public, ReglagePareFeu::Actif);
+        assert!(actif.baissee(Some(0)) && !actif.baissee(Some(1)));
+        assert_eq!(actif.sure(), 1);
+        assert_eq!(cible_rallumer(actif, Some(Some(0))), 1);
+        assert_eq!(cible_rallumer(actif, None), 1);
+        let sortant = IdChoix::PareFeu(ProfilPareFeu::Public, ReglagePareFeu::Sortant);
+        assert_eq!(sortant.sure(), 0);
+        assert!(!sortant.baissee(Some(0)) && !sortant.baissee(Some(1)));
+        // Les sorties bloquées notées avant : remises telles quelles (plus fermé).
+        assert_eq!(cible_rallumer(sortant, Some(Some(1))), 1);
+        let tout = IdChoix::PareFeu(ProfilPareFeu::Public, ReglagePareFeu::ToutBloquer);
+        assert_eq!(tout.sure(), 0);
+        let bloque = IdChoix::PareFeuRegle(ActionRegle::Bloque, regle_rdp(1).empreinte());
+        assert!(bloque.baissee(Some(0)) && !bloque.baissee(Some(1)));
+        assert_eq!(cible_rallumer(bloque, Some(Some(0))), 1);
+        let autorise = regle_rdp(1).id();
+        assert!(!autorise.baissee(Some(1)) && !autorise.baissee(Some(0)));
+        assert_eq!(cible_rallumer(autorise, Some(Some(1))), 0);
+        assert!(autorise.rang(Some(0)) > autorise.rang(Some(1)));
     }
 }

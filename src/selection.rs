@@ -438,13 +438,15 @@ fn rendu(touche: &str, texte: &str, precision: &str, colonne: usize, en_cours: b
     }
 }
 
-/// Colonne des précisions : la même pour toutes les lignes du menu, après le texte le plus long.
-fn colonne(lignes: &[Ligne]) -> usize {
+/// Colonne des précisions : la même pour toutes les lignes du menu qui en ont une, après le plus long de leurs
+/// textes. Une ligne sans précision (« Tout voir… », « Appliquer… ») s'écrit d'un trait et ne pousse pas la colonne :
+/// elle laissait aux précisions des autres une vingtaine de colonnes au lieu de 33.
+pub(crate) fn colonne(lignes: &[Ligne]) -> usize {
     let plus_long = lignes
         .iter()
         .filter_map(|l| match l {
-            Ligne::Choix { texte, .. } => Some(largeur_affichee(texte)),
-            Ligne::Texte(_) | Ligne::Cachee { .. } => None,
+            Ligne::Choix { texte, precision, .. } if !precision.is_empty() => Some(largeur_affichee(texte)),
+            Ligne::Choix { .. } | Ligne::Texte(_) | Ligne::Cachee { .. } => None,
         })
         .max()
         .unwrap_or(0);
@@ -1757,6 +1759,13 @@ mod tests {
         let long = "Navigation détournée (proxy, fichier hosts)";
         let c = colonne(&[Ligne::choix("2", long, "rien à faire")]);
         assert!(rendu("2", long, "rien à faire", c, false).contains(long));
+        // Une longue ligne sans précision ne pousse pas la colonne des autres (note D4 : 33 caractères de précision).
+        let lignes = [
+            Ligne::choix("12", "Règles ASR ›", "8 bloquent · 1 audit · 10 coupées"),
+            Ligne::choix("v", "Tout voir (détail, stratégies, gestion du PC)", ""),
+        ];
+        assert_eq!(colonne(&lignes), 36);
+        assert_eq!(LARGEUR - (5 + 2 + colonne(&lignes)), 33);
     }
 
     #[test]

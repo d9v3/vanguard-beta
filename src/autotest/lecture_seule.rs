@@ -549,9 +549,10 @@ mod tests {
         }
     }
 
-    /// Garde structurelle des baisses : une ligne de choix exact (qui peut baisser une protection de Defender), une
-    /// exclusion, un programme permis ou une note « c'est moi » ne s'écrit que depuis les Options de défense, où la
-    /// personne l'a choisie elle-même ; ni le bilan, ni une correction, ni « Tout remettre » (qui n'a que
+    /// Garde structurelle des baisses : une ligne de choix exact (qui peut baisser une protection de Defender ou un
+    /// réglage du pare-feu), une exclusion, un programme permis ou une note « c'est moi » ne s'écrit que depuis les
+    /// Options de défense, où la personne l'a choisie elle-même (et le pare-feu Public recoupé à la sortie du mode
+    /// Wi-Fi public, à sa question) ; ni le bilan, ni une correction, ni « Tout remettre » (qui n'a que
     /// `ligne_rallumer`) n'en fabriquent. Hors des tests, les seuls fichiers qui nomment ces fonctions ou ces verbes
     /// sont leur définition et l'écran des Options ; les constructeurs des Options (`ligne_choix`, `ligne_exclure`…)
     /// ne servent que dans ses fichiers, et leurs entrées seulement à la ligne de commande (`--choisir`,
@@ -565,6 +566,21 @@ mod tests {
             "options_defense/ecran.rs",
         ];
         const OPTIONS: &[&str] = &["options_defense.rs", "options_defense/ecran.rs"];
+        // Le pare-feu (D5) : l'écran des Options a son module ; la sortie du mode Wi-Fi public recoupe le pare-feu
+        // Public, à la question explicite, par la seule ligne de baisse d'un profil.
+        const PARE_FEU: &[&str] = &[
+            "machine/windows/gestes.rs",
+            "options_defense.rs",
+            "options_defense/ecran.rs",
+            "options_defense/ecran/pare_feu.rs",
+        ];
+        const PARE_FEU_ET_WIFI: &[&str] = &[
+            "machine/windows/gestes.rs",
+            "options_defense.rs",
+            "options_defense/ecran.rs",
+            "options_defense/ecran/pare_feu.rs",
+            "reseau/wifi_public/mod.rs",
+        ];
         // Un fichier qui n'est tout entier qu'un module d'essais (déclaré sous `#[cfg(test)]` par son parent, ce que
         // l'essai vérifie) : ses lignes ne partent jamais dans le programme.
         const ESSAIS_SEULS: &[(&str, &str, &str)] = &[(
@@ -593,6 +609,14 @@ mod tests {
             ("Acte::DefenderExclusionAjouter(", PERMIS),
             ("Acte::DefenderDossiersAutoriser(", PERMIS),
             ("Acte::ChoixNoter(", PERMIS),
+            ("ligne_baisse_pare_feu(", PARE_FEU_ET_WIFI),
+            ("ligne_regle_etat(", PARE_FEU),
+            ("PARE_FEU_PROFIL", PERMIS),
+            ("PARE_FEU_REGLE_ETAT", PERMIS),
+            ("pare-feu-profil ", PERMIS),
+            ("pare-feu-regle-etat ", PERMIS),
+            ("Acte::PareFeuProfil(", PERMIS),
+            ("Acte::PareFeuRegleEtat(", PERMIS),
             ("ligne_choix(", &["options_defense.rs"]),
             ("ligne_exclure(", &["options_defense.rs"]),
             ("ligne_exclusion(", OPTIONS),

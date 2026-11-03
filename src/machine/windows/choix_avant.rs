@@ -78,14 +78,24 @@ pub(crate) fn texte_avant(id: IdChoix, v: Option<i64>) -> String {
     format!("{}={}", id.texte(), texte_valeur(v))
 }
 
-fn illisible() -> Issue {
-    Issue::Echec {
-        avant: None,
-        raison: tr!(
+fn illisible(id: IdChoix) -> Issue {
+    let raison = match id {
+        IdChoix::PareFeu(..) => tr!(
+            "réglage du pare-feu illisible, rien d'écrit",
+            "firewall setting unreadable, nothing written"
+        ),
+        IdChoix::PareFeuRegle(..) => tr!(
+            "règle du pare-feu introuvable ou illisible (retirée ou changée depuis ?), rien d'écrit",
+            "firewall rule not found or unreadable (removed or changed since?), nothing written"
+        ),
+        IdChoix::Defender(_) | IdChoix::Asr(_) | IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) => tr!(
             "réglage de Defender illisible, rien d'écrit",
             "Defender setting unreadable, nothing written"
-        )
-        .to_string(),
+        ),
+    };
+    Issue::Echec {
+        avant: None,
+        raison: raison.to_string(),
     }
 }
 
@@ -149,7 +159,7 @@ fn remettre_note(m: &mut impl Monde, nom: &str, ancienne: Option<&[u8]>) {
 /// note ne s'écrit pas, rien n'est baissé (`EchecNote`).
 pub(crate) fn faire_choix(m: &mut impl Monde, id: IdChoix, cible: i64, montre: Option<Montre>) -> Issue {
     let Some(lue) = m.lire(id) else {
-        return illisible();
+        return illisible(id);
     };
     let avant = texte_avant(id, lue);
     match sens(id, Some(lue), Some(cible)) {
@@ -250,7 +260,7 @@ pub(crate) fn rallumer(m: &mut impl Monde, id: IdChoix) -> Issue {
     let note = note_valide(m, id);
     // Un élément de liste (exclusion, programme permis) n'est retiré que si Vanguard l'a posé ou noté : une
     // exclusion posée par quelqu'un d'autre passe par le bilan (`defender-exclusion-retirer`), jamais par ici.
-    if id.element() && note.is_none() {
+    if id.note_requise() && note.is_none() {
         return Issue::Echec {
             avant: None,
             raison: tr!(
@@ -262,7 +272,7 @@ pub(crate) fn rallumer(m: &mut impl Monde, id: IdChoix) -> Issue {
     }
     let cible = crate::machine::gestes::cible_rallumer(id, note.map(|n| n.avant));
     let Some(lue) = m.lire(id) else {
-        return illisible();
+        return illisible(id);
     };
     let avant = texte_avant(id, lue);
     if id.rang(lue) > id.rang(Some(cible)) || lue == Some(cible) {
@@ -313,7 +323,7 @@ pub(crate) fn sens_noter(id: IdChoix, lue: Option<Option<i64>>, note: Option<&No
 /// donc la valeur sûre, jamais plus faible. Rien n'est écrit dans Defender.
 pub(crate) fn noter(m: &mut impl Monde, id: IdChoix, montre: Option<Montre>) -> Issue {
     let Some(lue) = m.lire(id) else {
-        return illisible();
+        return illisible(id);
     };
     let avant = texte_avant(id, lue);
     let note = note_valide(m, id);
@@ -963,5 +973,24 @@ mod tests {
             String::new()
         });
         assert!(question.contains("[o/N]") || question.contains("[y/N]"));
+    }
+
+    /// Pare-feu : « Rallumer » une règle sans note de Vanguard n'écrit rien (celles des autres ne sont jamais
+    /// réglées d'office) ; un profil coupé sans note est rallumé ; une règle notée revient à sa valeur d'avant.
+    #[test]
+    fn rallumer_du_pare_feu() {
+        use crate::machine::gestes::{ActionRegle, EmpreinteElement, ProfilPareFeu, ReglagePareFeu};
+        let regle = IdChoix::PareFeuRegle(ActionRegle::Bloque, EmpreinteElement::de("Bloque|in|bloque|||445|7"));
+        let mut m = Faux::avec(regle, Some(0));
+        assert!(matches!(rallumer(&mut m, regle), Issue::Echec { avant: None, .. }));
+        assert_eq!(m.ecritures.len(), 0);
+        m.notes.insert(regle.texte(), note(regle, Some(1), 0));
+        assert!(matches!(rallumer(&mut m, regle), Issue::Fait { .. }));
+        assert_eq!(m.valeur(regle), Some(1));
+        assert!(m.notes.is_empty());
+        let profil = IdChoix::PareFeu(ProfilPareFeu::Domaine, ReglagePareFeu::Actif);
+        let mut m = Faux::avec(profil, Some(0));
+        assert!(matches!(rallumer(&mut m, profil), Issue::Fait { .. }));
+        assert_eq!(m.ecritures, vec![(profil.texte(), 1)]);
     }
 }

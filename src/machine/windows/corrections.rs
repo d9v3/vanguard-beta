@@ -493,6 +493,8 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
                     | Acte::DefenderMenacesRetirer
                     | Acte::DefenderChoix(..)
                     | Acte::DefenderAsrChoix(..)
+                    | Acte::PareFeuProfil(..)
+                    | Acte::PareFeuRegleEtat(..)
                     | Acte::Rallumer(_)
                     | Acte::DefenderExclusionAjouter(..)
                     | Acte::DefenderDossiersAutoriser(..)
@@ -773,7 +775,7 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
             "Permanently delete the active threats found by Defender"
         )
         .to_string(),
-        Acte::DefenderChoix(..) | Acte::DefenderAsrChoix(..) => {
+        Acte::DefenderChoix(..) | Acte::DefenderAsrChoix(..) | Acte::PareFeuProfil(..) | Acte::PareFeuRegleEtat(..) => {
             let Some((id, v)) = acte.choix() else {
                 return String::new();
             };

@@ -16,10 +16,47 @@ use crate::ui::{resume, tr, trf};
 /// Les exclusions de Defender. Sans droits administrateur, Windows les cache (« N/A: Must be an administrator… ») :
 /// rien à conclure. Avec un autre antivirus, Get-MpPreference échoue : rien non plus.
 pub(super) fn exclusions() -> Vec<Constat> {
-    let Some(listes) = listes() else {
-        return Vec::new();
-    };
-    juger_avec(&listes, &crate::machine::choix_avant::notes())
+    let notes = crate::machine::choix_avant::notes();
+    let mut c = listes().map_or_else(Vec::new, |l| juger_avec(&l, &notes));
+    c.extend(programmes_permis().and_then(|p| juger_permis(&p, &notes)));
+    c
+}
+
+/// Les programmes permis de l'accès contrôlé aux dossiers ajoutés hors de Vanguard (sans note) : un signal en
+/// information, comme une exclusion inconnue (R8) ; un programme permis écrit dans les dossiers protégés malgré la
+/// protection contre les rançongiciels. Un programme noté se dit déjà « par votre choix » (`defender`, notes des
+/// choix). Rien si la liste est cachée (« N/A… ») ou vide.
+fn juger_permis(permis: &[String], notes: &[(IdChoix, Option<Note>)]) -> Option<Constat> {
+    if permis.iter().any(|x| x.trim_start().starts_with("N/A")) {
+        return None;
+    }
+    let inconnus: Vec<String> = permis
+        .iter()
+        .filter(|x| !x.trim().is_empty())
+        .filter(|x| choix_avant::note_de(notes, IdChoix::DossiersAutorise(gestes::EmpreinteElement::de(x))).is_none())
+        .map(|x| crate::options_defense::externe(x))
+        .collect();
+    if inconnus.is_empty() {
+        return None;
+    }
+    let liste = resume(&inconnus, 4, ", ");
+    Some(
+        alerte(
+            "Antivirus",
+            Niveau::Info,
+            trf!(
+                "Programmes permis de l'accès contrôlé aux dossiers ajoutés hors de Vanguard : {liste}. Ils écrivent dans les dossiers protégés malgré la protection contre les rançongiciels. Si c'est vous, rien à faire ; sinon, un programme a pu s'y ajouter.",
+                "Controlled folder access allowed apps added outside Vanguard: {liste}. They write to protected folders despite ransomware protection. If it was you, nothing to do; otherwise, a program may have added itself.",
+            ),
+        )
+        .manuel(
+            tr!(
+                "Si ce n'est pas vous, les retirer : Options de défense › Exclusions et programmes permis, ou Sécurité Windows (Protection contre les rançongiciels › Autoriser une application via l'accès contrôlé aux dossiers)",
+                "If it was not you, remove them: Defense options › Exclusions and allowed apps, or Windows Security (Ransomware protection › Allow an app through Controlled folder access)"
+            ),
+            &[],
+        ),
+    )
 }
 
 /// Une exclusion prête à montrer (R13) : texte rendu affichable et borné, une extension sous la forme « *.exe ».
@@ -399,6 +436,35 @@ mod tests {
 
     fn v(l: &[&str]) -> Vec<String> {
         l.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// Note de D4 : un programme permis inconnu se signale au bilan, en information ; un programme noté (dit « par
+    /// votre choix » ailleurs) ni une liste cachée ne donnent rien.
+    #[test]
+    fn programme_permis_inconnu_signale() {
+        let note = |x: &str| {
+            let id = IdChoix::DossiersAutorise(gestes::EmpreinteElement::de(x));
+            (
+                id,
+                Some(Note {
+                    id: id.texte(),
+                    avant: Some(0),
+                    posee: 1,
+                    date: 1_793_000_000,
+                }),
+            )
+        };
+        let c = juger_permis(
+            &v(&[r"C:\Outils\copie.exe", r"C:\Autre\b.exe", " "]),
+            &[note(r"C:\Outils\copie.exe")],
+        )
+        .expect("signalé");
+        assert_eq!(c.probleme, Some(Niveau::Info));
+        assert!(c.message.contains(r"C:\Autre\b.exe"), "{}", c.message);
+        assert!(!c.message.contains("copie.exe"), "{}", c.message);
+        assert!(juger_permis(&v(&[r"C:\Outils\copie.exe"]), &[note(r"C:\Outils\copie.exe")]).is_none());
+        assert!(juger_permis(&v(&["N/A: Must be an administrator"]), &[]).is_none());
+        assert!(juger_permis(&[], &[]).is_none());
     }
 
     #[test]

@@ -832,34 +832,118 @@ fn recomposer(
 
 /// État de chaque profil du pare-feu, lu dans le registre (les valeurs que rend Get-NetFirewallProfile, sans
 /// lancer PowerShell : le pare-feu passe avant toutes les autres vérifications, son attente retardait tout le bilan).
-/// Une stratégie de groupe passe avant le réglage local, comme pour Windows. Un profil illisible n'est pas listé.
+/// Une stratégie de groupe passe avant le réglage local, comme pour Windows, puis celle de la gestion des appareils
+/// (MDM, `FirewallPolicy\Mdm`). Un profil illisible n'est pas listé.
 pub(crate) fn profils_pare_feu() -> Vec<(&'static str, bool)> {
     use winreg::enums::HKEY_LOCAL_MACHINE;
+    const POLITIQUE: &str = r"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy";
     [
-        ("Domain", "DomainProfile"),
-        ("Private", "StandardProfile"),
-        ("Public", "PublicProfile"),
+        ("Domain", "DomainProfile", "DomainProfile"),
+        ("Private", "StandardProfile", "PrivateProfile"),
+        ("Public", "PublicProfile", "PublicProfile"),
     ]
     .into_iter()
-    .filter_map(|(nom, cle)| {
+    .filter_map(|(nom, cle, cle_mdm)| {
         let strategie = registre::<u32>(
             HKEY_LOCAL_MACHINE,
             &format!(r"SOFTWARE\Policies\Microsoft\WindowsFirewall\{cle}"),
             "EnableFirewall",
         );
-        let local = registre::<u32>(
+        let mdm = registre::<u32>(
             HKEY_LOCAL_MACHINE,
-            &format!(r"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\{cle}"),
+            &format!(r"{POLITIQUE}\Mdm\{cle_mdm}"),
             "EnableFirewall",
         );
-        strategie.or(local).map(|v| (nom, v != 0))
+        let local = registre::<u32>(HKEY_LOCAL_MACHINE, &format!(r"{POLITIQUE}\{cle}"), "EnableFirewall");
+        strategie.or(mdm).or(local).map(|v| (nom, v != 0))
     })
     .collect()
 }
 
+/// Le profil du pare-feu d'un nom de `profils_pare_feu`.
+fn profil_de_nom(nom: &str) -> Option<gestes::ProfilPareFeu> {
+    match nom {
+        "Domain" => Some(gestes::ProfilPareFeu::Domaine),
+        "Private" => Some(gestes::ProfilPareFeu::Prive),
+        "Public" => Some(gestes::ProfilPareFeu::Public),
+        _ => None,
+    }
+}
+
+/// Les notes des choix du pare-feu (Options de défense › Pare-feu).
+fn notes_pare_feu() -> Vec<(gestes::IdChoix, Option<crate::machine::choix_avant::Note>)> {
+    crate::machine::choix_avant::notes()
+        .into_iter()
+        .filter(|(id, _)| id.pare_feu())
+        .collect()
+}
+
+/// Les profils coupés par le choix de la personne, encore tels : la note du réglage « Pare-feu » du profil et la
+/// valeur lue (coupé) concordent (`choix_avant::lecture_note`).
+fn coupes_par_choix<'a>(
+    profils: &[(&'static str, bool)],
+    notes: &'a [(gestes::IdChoix, Option<crate::machine::choix_avant::Note>)],
+) -> Vec<(gestes::IdChoix, &'a crate::machine::choix_avant::Note, u64)> {
+    use crate::machine::choix_avant::{Lecture, lecture_note, note_de};
+    profils
+        .iter()
+        .filter(|(_, actif)| !actif)
+        .filter_map(|(nom, _)| {
+            let id = gestes::IdChoix::PareFeu(profil_de_nom(nom)?, gestes::ReglagePareFeu::Actif);
+            let n = note_de(notes, id)?;
+            match lecture_note(id, n, Some(Some(0))) {
+                Lecture::ParChoix(date) => Some((id, n, date)),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Les profils coupés que le choix de la personne n'explique pas.
+fn coupes_sans_choix(
+    profils: &[(&'static str, bool)],
+    choisis: &[(gestes::IdChoix, &crate::machine::choix_avant::Note, u64)],
+) -> Vec<&'static str> {
+    profils
+        .iter()
+        .filter(|(nom, actif)| {
+            !actif
+                && !choisis.iter().any(|(id, _, _)| {
+                    profil_de_nom(nom)
+                        .is_some_and(|p| *id == gestes::IdChoix::PareFeu(p, gestes::ReglagePareFeu::Actif))
+                })
+        })
+        .map(|(n, _)| *n)
+        .collect()
+}
+
+/// Le profil coupé par choix que le constat principal dit lui-même : le premier, quand aucun autre profil n'est
+/// coupé sans choix (sinon le constat principal est l'alerte, et chaque choix se dit à part).
+fn choix_du_principal(
+    profils: &[(&'static str, bool)],
+    notes: &[(gestes::IdChoix, Option<crate::machine::choix_avant::Note>)],
+) -> Option<gestes::IdChoix> {
+    let choisis = coupes_par_choix(profils, notes);
+    if coupes_sans_choix(profils, &choisis).is_empty() {
+        choisis.first().map(|(id, _, _)| *id)
+    } else {
+        None
+    }
+}
+
 fn pare_feu() -> Constat {
-    let profils = profils_pare_feu();
-    let off: Vec<&str> = profils.iter().filter(|(_, actif)| !actif).map(|(n, _)| *n).collect();
+    pare_feu_de(&profils_pare_feu(), &notes_pare_feu())
+}
+
+/// Le constat du pare-feu. Un profil coupé par le choix de la personne (note concordante) est une information « par
+/// votre choix », hors de « Tout corriger » ; un profil coupé sans elle reste l'alerte, avec « Réactiver ». Les deux
+/// gardent le pare-feu dit coupé pour les ports exposés (`probleme` présent).
+fn pare_feu_de(
+    profils: &[(&'static str, bool)],
+    notes: &[(gestes::IdChoix, Option<crate::machine::choix_avant::Note>)],
+) -> Constat {
+    let choisis = coupes_par_choix(profils, notes);
+    let off = coupes_sans_choix(profils, &choisis);
     match (profils.is_empty(), off.join(", ")) {
         // Rien de lu n'est rien de vérifié : sans constat vérifié du pare-feu, le bilan ne donne pas de note
         // (`Audit::fiable`), comme sous Linux et macOS.
@@ -870,13 +954,21 @@ fn pare_feu() -> Constat {
                 "no firewall profile read (third-party firewall?)"
             ),
         ),
-        (false, off) if off.is_empty() => ok(
-            "Pare-feu",
-            tr!(
-                "Pare-feu Windows actif sur tous les profils.",
-                "Windows firewall on for every profile."
+        (false, off) if off.is_empty() => match choisis.first() {
+            Some((id, n, date)) => crate::machine::choix_avant::par_votre_choix(
+                "Pare-feu",
+                *id,
+                &crate::machine::choix_avant::sujet_note(*id, n),
+                *date,
             ),
-        ),
+            None => ok(
+                "Pare-feu",
+                tr!(
+                    "Pare-feu Windows actif sur tous les profils.",
+                    "Windows firewall on for every profile."
+                ),
+            ),
+        },
         (false, off) => alerte(
             "Pare-feu",
             Niveau::Eleve,
@@ -891,6 +983,23 @@ fn pare_feu() -> Constat {
         )
         .protection(),
     }
+}
+
+/// Les autres choix notés du pare-feu (réglages des profils, règles existantes, profils coupés que le constat
+/// principal ne dit pas déjà) : « par votre choix » ou « rallumée depuis », chacun relu. Le réglage « Pare-feu » d'un
+/// profil se relit dans le registre, comme le constat principal, pour qu'ils ne se contredisent pas.
+fn pare_feu_notes() -> Vec<Constat> {
+    let profils = profils_pare_feu();
+    let notes = notes_pare_feu();
+    let deja = choix_du_principal(&profils, &notes);
+    let restantes: Vec<_> = notes.into_iter().filter(|(id, _)| Some(*id) != deja).collect();
+    crate::machine::choix_avant::constats_des_notes("Pare-feu", &restantes, |id| match id {
+        gestes::IdChoix::PareFeu(p, gestes::ReglagePareFeu::Actif) => profils
+            .iter()
+            .find(|(nom, _)| profil_de_nom(nom) == Some(p))
+            .map(|(_, actif)| Some(i64::from(*actif))),
+        _ => pare_feu::lire_choix(id),
+    })
 }
 
 /// L'état de Defender par WMI (les classes que lisent Get-MpComputerStatus et Get-MpPreference), dans le JSON que
@@ -2406,5 +2515,49 @@ mod tests {
         // Une seule ligne sans guillemet double : elle passe entre guillemets dans la ligne de commande.
         assert!(!a.contains('\n') && !a.contains('"'), "{a}");
         assert!(a.len() < 1000, "{}", a.len());
+    }
+
+    /// Bilan du pare-feu (D5) : un profil coupé sans note est l'alerte, avec « Réactiver » ; coupé par le choix de la
+    /// personne (note concordante), une information « par votre choix », sans correction automatique ; les deux
+    /// ensemble, l'alerte ne nomme que le profil que le choix n'explique pas, et le choix se dit à part.
+    #[test]
+    fn pare_feu_par_choix_ou_alerte() {
+        use crate::machine::choix_avant::Note;
+        use crate::risk::Niveau;
+        let domaine = gestes::IdChoix::PareFeu(gestes::ProfilPareFeu::Domaine, gestes::ReglagePareFeu::Actif);
+        let note = vec![(
+            domaine,
+            Some(Note {
+                id: domaine.texte(),
+                avant: Some(1),
+                posee: 0,
+                date: 1_793_000_000,
+            }),
+        )];
+        let coupe = [("Domain", false), ("Private", true), ("Public", true)];
+        let c = pare_feu_de(&coupe, &[]);
+        assert_eq!(c.probleme, Some(Niveau::Eleve));
+        assert!(
+            c.correctif
+                .as_ref()
+                .is_some_and(|k| k.automatique && k.commandes == [gestes::ligne_pare_feu_actif()])
+        );
+        let c = pare_feu_de(&coupe, &note);
+        assert_eq!(c.probleme, Some(Niveau::Info));
+        assert!(c.correctif.as_ref().is_some_and(|k| !k.automatique), "{}", c.message);
+        assert_eq!(choix_du_principal(&coupe, &note), Some(domaine));
+        let deux = [("Domain", false), ("Private", true), ("Public", false)];
+        let c = pare_feu_de(&deux, &note);
+        assert_eq!(c.probleme, Some(Niveau::Eleve));
+        assert!(
+            c.message.contains("Public") && !c.message.contains("Domain"),
+            "{}",
+            c.message
+        );
+        assert_eq!(choix_du_principal(&deux, &note), None);
+        // Rallumé depuis : plus coupé, plus de « par votre choix ».
+        let c = pare_feu_de(&[("Domain", true), ("Private", true), ("Public", true)], &note);
+        assert_eq!(c.probleme, None);
+        assert!(!pare_feu_de(&[], &note).verifie);
     }
 }

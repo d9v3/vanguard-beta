@@ -24,7 +24,11 @@ regle!(
         "Microsoft : Windows Firewall overview",
         "MITRE ATT&CK M1037"
     ],
-    || vec![PARE_FEU.lire(pare_feu)]
+    || {
+        let mut c = vec![PARE_FEU.lire(pare_feu)];
+        c.extend(pare_feu_notes());
+        c
+    }
 );
 
 regle!(
