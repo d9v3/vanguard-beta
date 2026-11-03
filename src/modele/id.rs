@@ -118,7 +118,7 @@ impl fmt::Display for Cle {
 
 /// L'empreinte courte d'un texte écrit par un tiers (une ligne lancée au démarrage, une commande) : ce qui change
 /// dès que le texte change, sans mettre dans la clé un texte long ou fabriqué. Les blancs du bord ne comptent pas.
-#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))] // persistance de Linux
+#[cfg(any(target_os = "linux", test))] // persistance de Linux
 pub(crate) fn trace(texte: &str) -> String {
     blake3::hash(texte.trim().as_bytes()).to_hex()[..12].to_string()
 }

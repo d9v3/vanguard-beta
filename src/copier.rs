@@ -125,7 +125,7 @@ fn sur_le_systeme(p: &Path) -> Option<bool> {
 /// D'après /proc/self/mountinfo : le système de fichiers (« majeur:mineur ») du montage le plus profond qui contient
 /// chaque chemin. `st_dev` ne suffit pas : chaque sous-volume d'un btrfs a le sien, et /var/log ou un sous-volume
 /// monté dans /mnt passait pour un autre disque.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(target_os = "linux")]
 fn sur_le_systeme_selon(montages: &str, p: &Path, maison: &Path) -> Option<bool> {
     let volume = |chemin: &Path| montage(montages, chemin).map(|(dev, _)| dev);
     let v = volume(p)?;
@@ -134,7 +134,7 @@ fn sur_le_systeme_selon(montages: &str, p: &Path, maison: &Path) -> Option<bool>
 
 /// Le montage le plus profond qui contient `chemin`, d'après /proc/self/mountinfo : (majeur:mineur, type de système
 /// de fichiers, écrit après « - »).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn montage<'a>(montages: &'a str, chemin: &Path) -> Option<(&'a str, &'a str)> {
     montages
         .lines()
@@ -200,7 +200,7 @@ fn gros_fichiers(dossiers: &[(Sorte, PathBuf)]) -> Vec<PathBuf> {
 
 /// Un chemin de /proc/mounts ou mountinfo : l'espace, la tabulation, le saut de ligne et la barre oblique inverse y
 /// sont écrits en octal (« \040 » pour l'espace).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn sans_echappements(t: &str) -> String {
     let mut sortie = Vec::with_capacity(t.len());
     let octets = t.as_bytes();
@@ -366,7 +366,7 @@ fn disques_des_lecteurs(texte: &str) -> Vec<(PathBuf, String)> {
 }
 
 /// « E:\|Sauvegarde|1000|2000 » par ligne, sans le lecteur du système (« C: »).
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 fn lire_lecteurs(texte: &str, systeme: &str) -> Vec<Disque> {
     texte
         .lines()

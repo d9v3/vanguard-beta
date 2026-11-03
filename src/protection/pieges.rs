@@ -153,7 +153,7 @@ fn reconnus(trouves: &[PathBuf]) -> Vec<Piege> {
 /// Les chemins des fichiers-pièges posés, pour que le veilleur anti-rançongiciel les surveille en direct et juge R6
 /// avec la même liste que le bilan. Vide si la liste est absente ou illisible (« non vérifié = dit » : sans pièges,
 /// R6 ne se déclenche jamais, au lieu d'un faux).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(target_os = "linux")]
 pub(crate) fn chemins_poses() -> Vec<PathBuf> {
     match charger() {
         Ok(pieges) => pieges.into_iter().map(|p| p.chemin).collect(),
@@ -181,7 +181,7 @@ pub(crate) fn dossiers_a_veiller() -> Vec<PathBuf> {
 
 /// Musique, Vidéos et Téléchargements d'après user-dirs.dirs (dans la langue du bureau), sinon leurs noms courants
 /// en français et en anglais. Sans regarder le disque : l'appelant garde ceux qui existent.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn dossiers_en_plus(declares: &str, maison: &Path) -> Vec<PathBuf> {
     let mut liste = Vec::new();
     for (cle, noms) in [
@@ -266,7 +266,7 @@ fn dossiers_du_systeme() -> Vec<PathBuf> {
 }
 
 /// Un dossier de user-dirs.dirs. « $HOME » seul (dossier non configuré) n'est pas un dossier personnel.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn dossier_declare(declares: &str, cle: &str, maison: &Path) -> Option<PathBuf> {
     let valeur = declares
         .lines()
@@ -313,7 +313,7 @@ fn dossiers_du_systeme() -> Vec<PathBuf> {
 
 /// « %USERPROFILE%\Documents » → le vrai chemin, d'après les variables d'environnement ; une variable inconnue reste
 /// telle quelle.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 pub(crate) fn developper(chemin: &str) -> String {
     let mut sortie = String::new();
     let mut reste = chemin;
@@ -434,7 +434,7 @@ fn proteges_par_windows() -> Vec<PathBuf> {
 }
 
 /// `dossier` est-il `parent` ou dedans ? À la façon de Windows : sans tenir compte de la casse.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 fn sous_dossier(dossier: &Path, parent: &str) -> bool {
     let d = dossier.to_string_lossy().to_lowercase();
     let p = parent.trim_end_matches(['\\', '/']).to_lowercase();

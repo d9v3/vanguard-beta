@@ -124,7 +124,7 @@ fn temporaires() -> Option<std::collections::HashSet<Ipv6Addr>> {
 /// Les lignes de /proc/net/if_inet6 : « 20010db8000100020000000000000001 02 40 00 80 eth0 » (adresse, numéro
 /// d'interface, longueur du préfixe, portée, drapeaux, interface) → (adresse, temporaire, interface). Le drapeau
 /// 0x01 est IFA_F_TEMPORARY.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn lire_if_inet6(texte: &str) -> Vec<(Ipv6Addr, bool, String)> {
     texte
         .lines()

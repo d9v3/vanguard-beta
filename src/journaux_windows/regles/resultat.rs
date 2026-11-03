@@ -721,6 +721,7 @@ fn lu(j: &Jugement) -> String {
 }
 
 /// Les constats d'une analyse, et sa couverture. `est_normale` : l'alerte de cette clé est-elle déclarée normale ?
+#[cfg(any(windows, test))]
 pub(crate) fn constats(a: &Analyse, est_normale: &dyn Fn(&str) -> bool) -> (Vec<Constat>, Couverture) {
     let (constats, _, couverture) = constats_dates(a, est_normale);
     (constats, couverture)
@@ -849,7 +850,7 @@ fn constats_dates(
 /// identifiant `EVT-` devant (le bilan pose le sien sur tous ses constats) ; les règles vérifiées en un seul constat
 /// sain ; les règles non vérifiées regroupées par ce qui leur a manqué (un journal de sécurité refusé en rend huit non
 /// vérifiées d'un coup), chacune avec sa raison typée : jamais un sain pour ce qui n'a pas été lu.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 pub(crate) fn constats_du_bilan(a: &Analyse, est_normale: &dyn Fn(&str) -> bool) -> Vec<Constat> {
     let (tous, _) = constats(a, est_normale);
     let couverture = Objet::de("evt", "couverture");
@@ -950,7 +951,7 @@ pub(crate) fn constats_du_bilan(a: &Analyse, est_normale: &dyn Fn(&str) -> bool)
 
 /// Les services ordinaires installés pendant la période, en une information : au plus `SERVICES_MONTRES` noms, puis
 /// « … ». Rien dans leur chemin ne les rend suspects (EVT-SRV-001 dit les autres), mais un service inconnu se regarde.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 fn services_installes(services: &[String]) -> Option<Constat> {
     if services.is_empty() {
         return None;
@@ -987,7 +988,7 @@ fn services_installes(services: &[String]) -> Option<Constat> {
 /// Le journal System a-t-il été lu en entier sur la période : ni refusé, ni coupé, ni arrêté par une borne ou le
 /// délai (rien de « lu en partie »). Alors chaque journal effacé (104) de la période est une alerte d'EVT-EFF-001, et
 /// la règle commune des journaux (COM-JRN-001) n'a pas à le redire.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 pub(crate) fn systeme_lu_en_entier(a: &Analyse) -> bool {
     let mut systeme = a.etats.iter().filter(|e| e.nom == "System");
     let lu =

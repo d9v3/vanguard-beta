@@ -164,7 +164,7 @@ fn liste_valide(t: &str, avec_nom: bool) -> bool {
 }
 
 /// Linux : « uuid\ndns4|ignore4|dns6|ignore6 » (forme d'`optimiser::linux`).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn dns_valide_linux(v: &str) -> bool {
     let Some((uuid, reste)) = v.split_once('\n') else {
         return false;
@@ -179,7 +179,7 @@ pub(crate) fn dns_valide_linux(v: &str) -> bool {
 }
 
 /// Windows : « {guid}\nv4|v6 » (forme d'`optimiser::windows`).
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 pub(crate) fn dns_valide_windows(v: &str) -> bool {
     let Some((guid, reste)) = v.split_once('\n') else {
         return false;

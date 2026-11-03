@@ -11,12 +11,13 @@ use chrono::{DateTime, Utc};
 
 use crate::modele::Objet;
 use crate::risk::Niveau;
-use crate::{tr, trf};
+use crate::tr;
+use crate::trf;
 
 const CAT: &str = "Journaux";
 
 /// État du journal de journald : conservé sur disque ou non, scellé ou non.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn juger_journald(persistant: bool, scelle: bool) -> Constat {
     match (persistant, scelle) {
         (false, _) => alerte(
@@ -91,7 +92,7 @@ fn garder_sur_disque(c: Constat) -> Constat {
 /// Un journal effacé, relevé par Windows (événement 104) : le jour (AAAA-MM-JJ, à l'heure de l'ordinateur), l'instant
 /// exact (UTC, s'il est lisible) et le détail (compte qui a effacé, journal), prêts à montrer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 struct Effacement {
     jour: String,
     instant: Option<DateTime<Utc>>,
@@ -104,7 +105,7 @@ const GENRE: &str = "effacement";
 
 /// Chaque effacement relevé (Windows en rend 5 au plus, les plus récents d'abord), un constat chacun : récent (moins
 /// de 30 jours) ou non. Ceux que WIN-JRN-003 a lus aussi lui sont cédés au bilan (`ceder_au_bilan_des_journaux`).
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 fn juger_effacements(effacements: &[Effacement], aujourdhui: chrono::NaiveDate) -> Vec<Constat> {
     if effacements.is_empty() {
         return vec![ok(
@@ -203,7 +204,7 @@ const BILAN_DES_JOURNAUX: &str = "WIN-JRN-003";
 static SYSTEME_LU: std::sync::Mutex<Option<(u64, SystemeLu)>> = std::sync::Mutex::new(None);
 
 /// WIN-JRN-003 a lu le journal System en entier pendant le bilan `bilan`.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 pub(super) fn noter_systeme_lu(bilan: u64, lu: SystemeLu) {
     *SYSTEME_LU.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((bilan, lu));
 }
@@ -243,7 +244,7 @@ pub fn journaux() -> Vec<Constat> {
 
 /// Lignes « EFF|jour|instant|détail » : l'instant en UTC (RFC 3339 ; illisible, l'effacement n'est jamais cédé), le
 /// détail (compte qui a effacé, journal) venu de l'événement lui-même, lu prêt à montrer.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 fn lire_effacements(sortie: &str) -> Vec<Effacement> {
     sortie
         .lines()

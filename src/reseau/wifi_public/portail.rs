@@ -4,6 +4,7 @@
 //! jamais un allumage. La page de connexion s'ouvre par l'adresse de la sonde du système lui-même, jamais par un
 //! serveur de Vanguard ; sous Linux sans adresse configurée, rien n'est inventé : la personne ouvre un site en http.
 
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 use crate::langue::Reponse;
@@ -105,7 +106,7 @@ pub(crate) fn ouvrir_et_attendre(fin: Option<std::time::Instant>) -> bool {
 
 /// Les noms de sites se résolvent-ils encore (par le DNS du système, en 8 secondes au plus) ? Une seule question,
 /// celle que ferait n'importe quel navigateur.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(target_os = "linux")]
 pub(crate) fn noms_resolus() -> bool {
     use std::net::ToSocketAddrs;
     let (tx, rx) = std::sync::mpsc::channel();

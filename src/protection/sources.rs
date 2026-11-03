@@ -23,13 +23,13 @@ use crate::{tr, trf};
 /// surveillance horaire ne doit pas relire des gigaoctets.
 const TAILLE_MAX: u64 = 256 << 20;
 /// Le veilleur hache chaque programme lancé : plus petit, et pas plus de tant de fichiers retenus.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 const TAILLE_MAX_VEILLEUR: u64 = 64 << 20;
 const RETENUS_MAX: usize = 4096;
 /// Le temps laissé à un hachage. Le veilleur, une seule boucle, ne doit jamais rester pris sur un fichier qui ne
 /// répond pas (un montage FUSE d'un programme du compte) : il ne lirait plus aucun lancement. Le bilan et le
 /// blocage hachent jusqu'à 256 Mio, sur un disque parfois lent.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 const DELAI_VEILLEUR: Duration = Duration::from_secs(2);
 const DELAI: Duration = Duration::from_secs(30);
 
@@ -64,7 +64,7 @@ impl Fichiers {
     }
 
     /// Pour le veilleur : les empreintes des dernières 48 heures, relues sur le disque.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg(target_os = "linux")]
     pub(crate) fn recentes() -> Fichiers {
         Fichiers::avec(
             empreintes::recentes_gardees().map(Liste::Propre),

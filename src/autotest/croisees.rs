@@ -127,7 +127,7 @@ pub(crate) fn comparer(
 }
 
 /// Comme `comparer`, pour des ensembles sans valeur (noms seuls).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(target_os = "linux")]
 pub(crate) fn comparer_noms(
     natif: impl IntoIterator<Item = String>,
     outil: impl IntoIterator<Item = String>,
@@ -281,7 +281,7 @@ pub(crate) fn powershell(ligne: &'static str) -> Result<Vec<serde_json::Value>, 
 }
 
 /// Le JSON de ConvertTo-Json : un objet seul ou une liste ; vide si rien n'est rendu.
-#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+#[cfg(any(windows, test))]
 pub(crate) fn json_en_liste(texte: &str) -> Result<Vec<serde_json::Value>, Raison> {
     if texte.trim().is_empty() {
         return Ok(Vec::new());

@@ -396,7 +396,6 @@ pub(crate) fn appimage(chemin: &str, montages: &str) -> bool {
 }
 
 /// L'image d'où tourne une AppImage, d'après son environnement (`/proc/<pid>/environ` : « APPIMAGE=…\0 »).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn image_appimage(environ: &[u8]) -> Option<String> {
     environ
         .split(|&o| o == 0)
@@ -408,7 +407,7 @@ fn image_appimage(environ: &[u8]) -> Option<String> {
 /// Un nouveau fichier qu'un programme lancé par la personne n'a pas pu poser : fichier et dossier à root, dossier que
 /// ni le groupe ni les autres n'écrivent (/usr, /opt, /snap, /var/lib/flatpak d'ordinaire). Ailleurs (profil, /tmp),
 /// un programme malveillant qui s'est effacé n'aurait qu'à reposer n'importe quel fichier à sa place.
-#[cfg_attr(not(unix), allow(dead_code))]
+#[cfg(any(unix, test))]
 fn hors_de_portee(proprietaire_fichier: u32, proprietaire_dossier: u32, mode_dossier: u32) -> bool {
     proprietaire_fichier == 0 && proprietaire_dossier == 0 && mode_dossier & 0o022 == 0
 }

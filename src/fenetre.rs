@@ -282,7 +282,7 @@ fn attendre_la_grille(avant: (u16, u16)) {
 }
 
 /// La grille du terminal, avec la place de la fenêtre et la zone de son écran.
-#[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
+#[cfg(any(target_os = "linux", windows))]
 fn mesure(place: Place) -> Option<Mesure> {
     let (colonnes, rangees) = terminal::size().ok()?;
     (place.2 > 0 && place.3 > 0 && colonnes > 0 && rangees > 0).then_some(Mesure {

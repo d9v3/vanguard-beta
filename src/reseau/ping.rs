@@ -25,7 +25,7 @@ pub(crate) fn echo(cible: Ipv4Addr, delai: Duration) -> Option<bool> {
 }
 
 /// Le paquet de la demande d'écho : type 8, code 0, somme de contrôle, identifiant, numéro, puis `donnees`.
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(any(not(windows), test))]
 fn demande(identifiant: u16, numero: u16, donnees: &[u8]) -> Vec<u8> {
     let mut p = vec![8, 0, 0, 0];
     p.extend(identifiant.to_be_bytes());
@@ -41,7 +41,7 @@ fn demande(identifiant: u16, numero: u16, donnees: &[u8]) -> Vec<u8> {
 
 /// La somme de contrôle d'Internet (RFC 1071) : le complément à un de la somme en complément à un des mots de 16
 /// bits.
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(any(not(windows), test))]
 fn somme_de_controle(octets: &[u8]) -> u16 {
     // Un octet seul à la fin compte comme un mot complété d'un zéro.
     let (mots, dernier) = octets.as_chunks::<2>();
@@ -61,7 +61,7 @@ fn somme_de_controle(octets: &[u8]) -> u16 {
 /// La réponse reçue est-elle l'écho de notre demande ? Le message ICMP seul (la prise « datagramme » de Linux ne rend
 /// pas l'en-tête IP) : une réponse d'écho (type 0) qui porte nos données, venue de la cible ; un autre message (un
 /// « injoignable » d'un routeur, l'écho d'un autre programme) ne compte pas.
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(any(not(windows), test))]
 fn est_notre_echo(recu: &[u8], depuis: Ipv4Addr, cible: Ipv4Addr, donnees: &[u8]) -> bool {
     depuis == cible && recu.first() == Some(&0) && recu.get(8..) == Some(donnees)
 }

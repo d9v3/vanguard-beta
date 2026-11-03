@@ -50,7 +50,7 @@ pub(crate) struct Reglages {
 impl Reglages {
     /// Les réglages scellés ; les défauts (rien en plus, rien d'exclu) si le fichier est absent, illisible ou falsifié
     /// (« non vérifié = dit » : un réglage falsifié n'ouvre pas de dossier en silence).
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg(any(target_os = "linux", test))]
     pub(crate) fn charger() -> Reglages {
         // Acceptés tels quels après des sceaux refaits, pas plus crus que changés (`sceau::juge`).
         sceau::juge(REGLAGES)

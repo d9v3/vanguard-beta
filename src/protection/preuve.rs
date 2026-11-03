@@ -25,7 +25,7 @@ const CONNEXIONS_MAX: usize = 50;
 /// Le temps laissé à WMI pour la ligne de commande et le parent, sous Windows : le relevé passe avant l'arrêt d'un
 /// programme jugé certain, et un WMI lent ou figé (une panne connue, ou chargé par le programme hostile) ne doit pas
 /// retarder l'arrêt des 30 secondes de son propre délai.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(windows)]
 const DELAI_WMI: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Ce qui a été relevé juste avant le geste.
@@ -337,7 +337,7 @@ fn processus(pid: u32, p: &mut Preuve) -> Processus {
 
 /// Le résultat de `lire`, s'il arrive dans le délai ; sinon `None`, et le fil qui lit est abandonné (il finira de
 /// lui-même) : le geste n'attend pas.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 fn en_moins_de<T: Send + 'static>(delai: std::time::Duration, lire: impl FnOnce() -> T + Send + 'static) -> Option<T> {
     let (envoi, reception) = std::sync::mpsc::channel();
     std::thread::Builder::new()

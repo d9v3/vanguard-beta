@@ -33,6 +33,7 @@ const VERSION_MAX: u32 = 64 << 10;
 /// Octets lus en tout dans un fichier.
 const LUS_MAX: usize = 256 << 10;
 /// Le type RT_VERSION.
+#[cfg(any(windows, test, fuzzing))]
 const RT_VERSION: u32 = 16;
 /// Le type RT_MANIFEST, et le numéro du manifeste qu'un .exe porte pour son propre processus
 /// (CREATEPROCESS_MANIFEST_RESOURCE_ID) : le seul que Windows lit en le lançant.
@@ -67,6 +68,7 @@ pub(crate) const TAILLE_MIN_DRAPEAUX: u32 = DRAPEAUX_DE_CHARGEMENT + 2;
 /// LOAD_LIBRARY_SEARCH_SYSTEM32.
 pub(crate) const SYSTEM32_SEULEMENT: u16 = 0x800;
 /// La signature de VS_FIXEDFILEINFO.
+#[cfg(any(windows, test, fuzzing))]
 const SIGNATURE: u32 = 0xFEEF_04BD;
 
 /// L'architecture d'un exécutable.
@@ -100,6 +102,7 @@ impl Machine {
 }
 
 /// Ce que dit un exécutable : version du fichier et du produit (quatre nombres de 16 bits chacune), architecture.
+#[cfg(any(windows, test, fuzzing))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InfoPe {
     pub fichier: [u16; 4],
@@ -115,6 +118,7 @@ pub(crate) enum Echec {
     /// Pas un fichier ordinaire (dossier, tube nommé).
     PasUnFichier,
     /// Pas un exécutable PE, pas de ressource de version, ou une forme refusée.
+    #[cfg_attr(not(any(windows, test, fuzzing)), allow(dead_code))]
     Format,
 }
 
@@ -133,7 +137,7 @@ impl std::fmt::Display for Echec {
 impl std::error::Error for Echec {}
 
 /// La version de l'exécutable `chemin`. Un fichier ordinaire seulement (un tube nommé bloquerait la lecture).
-#[cfg_attr(not(any(windows, test)), allow(dead_code))] // logiciels pas à jour, sous Windows
+#[cfg(any(windows, test, fuzzing))] // logiciels pas à jour, sous Windows
 pub(crate) fn version(chemin: &Path) -> Result<InfoPe, Echec> {
     let (mut fichier, taille) = ouvrir(chemin)?;
     lire(&mut fichier, taille).ok_or(Echec::Format)
@@ -324,7 +328,7 @@ fn entetes<R: Read + Seek>(l: &mut Lecteur<'_, R>) -> Option<Entetes> {
 
 /// La version et l'architecture d'un exécutable de `taille` octets. `None` : pas un PE, pas de ressource de version,
 /// ou une forme refusée.
-#[cfg_attr(not(any(windows, test)), allow(dead_code))] // logiciels pas à jour, sous Windows
+#[cfg(any(windows, test, fuzzing))] // logiciels pas à jour, sous Windows
 pub(crate) fn lire<R: Read + Seek>(source: &mut R, taille: u64) -> Option<InfoPe> {
     let mut l = Lecteur { source, taille, lus: 0 };
     let e = entetes(&mut l)?;
@@ -572,6 +576,7 @@ fn ressource<R: Read + Seek>(
 
 /// VS_VERSIONINFO : longueur, longueur de la valeur, type, la clé « VS_VERSION_INFO » en UTF-16, un alignement sur
 /// 4 octets, puis VS_FIXEDFILEINFO (52 octets, signature 0xFEEF04BD). Rend les versions du fichier et du produit.
+#[cfg(any(windows, test, fuzzing))]
 fn info_fixe(donnees: &[u8]) -> Option<([u16; 4], [u16; 4])> {
     let longueur = usize::from(mot16_a(donnees, 0)?);
     let longueur_valeur = usize::from(mot16_a(donnees, 2)?);

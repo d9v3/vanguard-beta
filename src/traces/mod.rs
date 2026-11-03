@@ -16,7 +16,7 @@
 
 mod chronologie;
 // Lu par la chronologie sous Windows ; ses essais tournent partout.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 mod journaux_windows;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -360,7 +360,7 @@ impl Feuille {
 
     /// Un fichier du shell (.bashrc, .zshrc…) : recopié comme `fichier`, mais la valeur des variables au nom de secret
     /// masquée (`masquer_secrets`).
-    #[cfg_attr(windows, allow(dead_code))]
+    #[cfg(not(windows))]
     pub(crate) fn fichier_shell(&mut self, chemin: &Path) {
         self.fichier_avec(chemin, false, true);
     }

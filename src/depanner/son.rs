@@ -9,6 +9,7 @@ use super::{Etat, a_savoir, fait, question, verifications};
 use crate::ui::*;
 
 /// Une sortie du son (Linux : un « sink » de pactl).
+#[cfg(any(target_os = "linux", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Sortie {
     pub nom: String,
@@ -17,7 +18,7 @@ pub(super) struct Sortie {
 }
 
 /// Le genre d'une sortie, d'après son nom : ce que la personne a répondu (haut-parleurs, casque, HDMI, Bluetooth).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn genre(nom: &str) -> usize {
     let n = nom.to_lowercase();
     let contient = |mots: &[&str]| mots.iter().any(|m| n.contains(m));
@@ -32,7 +33,7 @@ fn genre(nom: &str) -> usize {
 
 /// `pactl list sinks` : les sorties (nom et description), lues en anglais (LC_ALL=C). La description vient souvent de
 /// l'appareil (le nom d'un casque Bluetooth) : prête à montrer. Le nom, qui sert à choisir la sortie, reste tel quel.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn sorties_pactl(texte: &str) -> Vec<Sortie> {
     texte
         .split("Sink #")
@@ -56,7 +57,7 @@ fn sorties_pactl(texte: &str) -> Vec<Sortie> {
 }
 
 /// « Volume: front-left: 32768 /  50% / -18.06 dB, … » → 50.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn volume_pactl(texte: &str) -> Option<u32> {
     texte
         .split('/')

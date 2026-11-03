@@ -67,6 +67,7 @@ impl Empreintes {
 /// Les empreintes d'un texte d'abuse.ch : une par ligne, lignes « # » de commentaire. Dans chaque ligne, le premier
 /// champ de 64 chiffres hexadécimaux, guillemets et fins de ligne Windows ôtés : la liste nue comme l'export CSV (où
 /// l'empreinte SHA-256 est la seule de cette longueur) se lisent pareil.
+#[cfg(any(target_os = "linux", test))]
 fn lire_texte(texte: &str) -> Vec<[u8; 32]> {
     lire_octets(texte.as_bytes())
 }
@@ -202,7 +203,7 @@ pub(crate) fn gardees() -> Chargees {
 /// Les empreintes récentes seulement (48 heures, quelques milliers), relues sur le disque à chaque appel, sans rien
 /// télécharger : pour le veilleur, un service borné à 128 Mo de mémoire, où la liste complète (plus d'un million
 /// d'empreintes) ne tiendrait pas. `None` : aucune copie gardée.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(target_os = "linux")]
 pub(crate) fn recentes_gardees() -> Option<Empreintes> {
     // Borné comme une liste : le veilleur tient en 128 Mo, un fichier creux de plusieurs Gio ne s'y charge pas.
     // La copie scellée seule (`socle::cache::gardee`) : changée hors de Vanguard, aucune liste, jamais une liste vide.

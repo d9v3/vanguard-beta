@@ -63,7 +63,7 @@ pub fn outil_de_repli() -> String {
 }
 
 /// Une lecture faite par un outil d'avant : les redirections seulement, la box non décrite.
-#[cfg(any(any(unix, windows), test))]
+#[cfg(any(unix, windows, test))]
 fn lecture_d_outil(redirections: Vec<Redirection>, adresse_externe: Option<Ipv4Addr>) -> Etat {
     Etat::Actif(Box::new(Lecture {
         description: igd::Description::default(),
@@ -118,7 +118,7 @@ fn etat_par_outil() -> (Etat, Option<Ipv4Addr>) {
 }
 
 /// Une redirection lue par un outil : ni bail, ni hôte distant, toujours active.
-#[cfg(any(any(unix, windows), test))]
+#[cfg(any(unix, windows, test))]
 fn redirection_d_outil(proto: &str, public: u16, ip: &str, port: u16, description: &str) -> Redirection {
     Redirection {
         protocole: affichable(proto),

@@ -1205,7 +1205,7 @@ pub(crate) fn attendre_hebdomadaire() {
 /// un jeu sans fin (ou un jeu jamais quitté) ne le repousse pas pour toujours ; au-delà de deux semaines depuis le
 /// dernier, il est lancé quand même (en fond, sans notification, comme toujours). Sans dernier autotest lisible,
 /// jamais reporté : rien ne dit depuis quand il attend.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn reporter(d: Option<&Dernier>, maintenant: chrono::DateTime<chrono::Utc>, jeu: Option<bool>) -> bool {
     // Une date dans le futur (horloge reculée, dernier forgé) ne compte pas comme récente : sans cela le report
     // n'avait plus de fin.

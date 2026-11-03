@@ -101,7 +101,7 @@ impl Bilan {
 
     /// Ajoute les accès ; une même application vue deux fois pour la même permission (portail et permission fixe)
     /// ne fait qu'une ligne, les deux sources réunies.
-    #[cfg_attr(windows, allow(dead_code))]
+    #[cfg(any(not(windows), test))]
     fn ajouter(&mut self, nouveaux: Vec<Acces>) {
         for a in nouveaux {
             if let Some(deja) = self

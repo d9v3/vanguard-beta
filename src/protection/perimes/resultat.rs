@@ -10,8 +10,7 @@ type Debut = (chrono::DateTime<chrono::Utc>, std::time::Instant);
 
 /// Le résultat d'un bilan : un constat par logiciel ou groupe jugé, les logiciels dont la version n'a pas pu être
 /// comparée comptés non vérifiés.
-#[cfg(any(windows, test))]
-#[cfg_attr(not(windows), allow(dead_code))] // l'écran ne tourne que sous Windows
+#[cfg(any(windows, test))] // l'écran ne tourne que sous Windows
 pub(super) fn resultat(b: &super::rapport::Bilan, debut: Debut) -> Resultat {
     let mut non_verifies = super::rapport::non_verifies(b);
     // Rien de suivi trouvé : le verdict reste « non vérifié » (un logiciel installé ailleurs n'est pas vu), mais il

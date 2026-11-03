@@ -16,7 +16,7 @@ pub(crate) fn os_release() -> &'static str {
 
 /// La valeur de `cle` dans un texte d'os-release, sans ses guillemets (doubles ou simples, os-release(5)).
 // Le nom ne sert qu'aux fiches de Linux ; le texte, lui, se demande aussi ailleurs, à l'exécution (le guide).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn valeur<'a>(texte: &'a str, cle: &str) -> Option<&'a str> {
     texte.lines().find_map(|l| {
         let v = l.strip_prefix(cle)?.strip_prefix('=')?.trim();
@@ -25,7 +25,7 @@ pub(crate) fn valeur<'a>(texte: &'a str, cle: &str) -> Option<&'a str> {
 }
 
 /// Le nom du système à montrer (« Arch Linux », « Ubuntu 24.04.1 LTS ») ; « Linux » quand os-release ne le dit pas.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(target_os = "linux")]
 pub(crate) fn nom() -> String {
     valeur(os_release(), "PRETTY_NAME")
         .filter(|v| !v.is_empty())

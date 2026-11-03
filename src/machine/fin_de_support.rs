@@ -79,7 +79,7 @@ fn constat_abandonne(nom: &str, annee: u16) -> Constat {
 }
 
 /// Un navigateur installé à part, pas mis à jour depuis `jours`.
-#[cfg_attr(target_os = "linux", allow(dead_code))] // sous Linux, le gestionnaire de paquets s'en charge
+#[cfg(any(not(target_os = "linux"), test))] // sous Linux, le gestionnaire de paquets s'en charge
 pub(crate) fn constat_navigateur(nom: &str, jours: u64) -> Constat {
     alerte(
         "Navigateur",

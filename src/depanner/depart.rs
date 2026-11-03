@@ -54,7 +54,7 @@ fn tpm() -> Option<bool> {
 }
 
 /// /sys/class/tpm : un « tpm0 » dedans, c'est une puce ; le dossier vide, pas de puce ; le dossier absent, illisible.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn tpm_dans(classe: &std::path::Path) -> Option<bool> {
     let entrees = std::fs::read_dir(classe).ok()?;
     Some(
@@ -112,7 +112,7 @@ fn tpm_tbs() -> Option<bool> {
 
 /// Le code de Tbsi_GetDeviceInfo : réussite, une puce ; TBS_E_TPM_NOT_FOUND, aucune. Tout le reste (service TBS
 /// arrêté ou désactivé, refus) ne prouve pas l'absence : illisible.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 fn tpm_de_tbs(code: u32) -> Option<bool> {
     const TBS_SUCCESS: u32 = 0;
     const TBS_E_TPM_NOT_FOUND: u32 = 0x8028_400F;
@@ -124,7 +124,7 @@ fn tpm_de_tbs(code: u32) -> Option<bool> {
 }
 
 /// « True » ou « False », tels que PowerShell les écrit.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 fn tpm_de_ps(texte: &str) -> Option<bool> {
     match texte.trim().to_ascii_lowercase().as_str() {
         "true" => Some(true),

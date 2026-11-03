@@ -6,7 +6,7 @@ use crate::compte_rendu::envoi::{Arch, Edition, FamilleFine, Langue, Plateforme,
 
 /// La famille d'après os-release : `ID` d'abord, puis chaque mot d'`ID_LIKE` ; jamais `NAME` ni `PRETTY_NAME`, que
 /// n'importe qui peut écrire.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn famille_linux(os_release: &str) -> FamilleFine {
     let de = |id: &str| match id {
         "arch" => Some(FamilleFine::Arch),
@@ -30,7 +30,7 @@ pub(crate) fn famille_linux(os_release: &str) -> FamilleFine {
 }
 
 /// « 6.17.2-arch1-1 » → « 6.17 » : le majeur.mineur seulement, le reste dirait un noyau fait à la main.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn noyau_reduit(osrelease: &str) -> Option<SystemeVersion> {
     let chiffres = |s: &str| s.bytes().take_while(u8::is_ascii_digit).count();
     let t = osrelease.trim();
@@ -45,7 +45,7 @@ pub(crate) fn noyau_reduit(osrelease: &str) -> Option<SystemeVersion> {
 }
 
 /// Windows : la famille par le numéro de build (22000 et plus : Windows 11), la version est ce numéro.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 pub(crate) fn windows(build: &str) -> Option<(FamilleFine, SystemeVersion)> {
     let b: u32 = build.trim().parse().ok()?;
     let famille = if b >= 22_000 {
@@ -57,7 +57,7 @@ pub(crate) fn windows(build: &str) -> Option<(FamilleFine, SystemeVersion)> {
 }
 
 /// L'édition de Windows d'après `EditionID` ; une valeur inconnue n'en donne aucune.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 pub(crate) fn edition_windows(id: &str) -> Option<Edition> {
     let id = id.trim();
     if id.starts_with("Server") {

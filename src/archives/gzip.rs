@@ -48,7 +48,7 @@ pub(crate) fn debut_du_flux(octets: &[u8], debut: usize) -> Option<usize> {
     debut.checked_add(pos)
 }
 
-#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))] // bases de pacman, mtree
+#[cfg(any(target_os = "linux", test))] // bases de pacman, mtree
 /// Le contenu d'un gzip : le premier membre, au plus `limite` octets. `None` si ce n'est pas du gzip, s'il est abîmé
 /// ou s'il dépasse la limite. La fin du membre (CRC, taille) n'est pas lue : un fichier de cet ordinateur, que le
 /// système de fichiers garde entier.
@@ -56,7 +56,7 @@ pub(crate) fn degzip(octets: &[u8], limite: usize) -> Option<Vec<u8>> {
     degzip_avant(octets, limite, std::time::Instant::now().checked_add(DELAI)?)
 }
 
-#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))] // bases de pacman, mtree
+#[cfg(any(target_os = "linux", test))] // bases de pacman, mtree
 /// `degzip`, lu avant `echeance`.
 fn degzip_avant(octets: &[u8], limite: usize, echeance: std::time::Instant) -> Option<Vec<u8>> {
     let pos = debut_du_flux(octets, 0)?;
@@ -68,7 +68,7 @@ fn degzip_avant(octets: &[u8], limite: usize, echeance: std::time::Instant) -> O
 /// pas.
 const DELAI: std::time::Duration = std::time::Duration::from_secs(30);
 
-#[cfg_attr(not(any(windows, test)), allow(dead_code))] // logiciels pas à jour
+#[cfg(any(windows, test, fuzzing))] // logiciels pas à jour
 /// Le contenu d'un gzip téléchargé, au plus `limite` octets en tout : chaque membre (un serveur peut en mettre
 /// plusieurs bout à bout) est décompressé, puis son CRC-32 et sa taille, écrits à sa fin, sont vérifiés. `None` : pas
 /// du gzip, coupé, abîmé, plus grand que la limite (une « bombe » de quelques Kio qui en donnerait des Go s'arrête à
@@ -77,7 +77,7 @@ pub(crate) fn degzip_controle(octets: &[u8], limite: usize) -> Option<Vec<u8>> {
     degzip_controle_avant(octets, limite, std::time::Instant::now().checked_add(DELAI)?)
 }
 
-#[cfg_attr(not(any(windows, test)), allow(dead_code))] // logiciels pas à jour
+#[cfg(any(windows, test, fuzzing))] // logiciels pas à jour
 /// `degzip_controle`, tous les membres lus avant `echeance`.
 fn degzip_controle_avant(octets: &[u8], limite: usize, echeance: std::time::Instant) -> Option<Vec<u8>> {
     let mut contenu = Vec::new();

@@ -99,7 +99,7 @@ pub(crate) fn pour_traces() -> Result<Vec<(String, String, String)>, &'static st
 }
 
 /// La clé d'une alerte du veilleur.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn cle_veilleur(cle: &str) -> String {
     format!("veilleur|{cle}")
 }

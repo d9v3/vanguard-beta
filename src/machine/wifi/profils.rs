@@ -8,6 +8,7 @@
 // Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
+#[cfg(any(not(windows), test))]
 use crate::ui::affichable;
 
 /// Un réseau enregistré.
@@ -34,7 +35,7 @@ const TAILLE_MAX: u64 = 64 * 1024;
 
 /// Les paires clé = valeur d'un fichier INI (fichier clé de NetworkManager, réglages d'iwd), avec leur section :
 /// (section, clé, valeur), sans commentaires ni espaces autour.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn ini(texte: &str) -> Vec<(String, String, String)> {
     let mut section = String::new();
     let mut paires = Vec::new();
@@ -52,7 +53,7 @@ fn ini(texte: &str) -> Vec<(String, String, String)> {
 }
 
 /// La valeur d'une clé d'une section.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn valeur<'a>(paires: &'a [(String, String, String)], section: &str, cle: &str) -> Option<&'a str> {
     paires
         .iter()
@@ -64,7 +65,7 @@ fn valeur<'a>(paires: &'a [(String, String, String)], section: &str, cle: &str) 
 /// (vrai par défaut), et sa protection : sans section `[wifi-security]` ou sans `key-mgmt`, le réseau est ouvert
 /// (« none » est du WEP, « owe » du Wi-Fi ouvert chiffré : pas ouverts). `None` : pas une connexion Wi-Fi, ou un UUID
 /// qui n'a pas sa forme (il entre dans une commande).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn nm_keyfile(texte: &str) -> Option<ProfilEnregistre> {
     let paires = ini(texte);
     if !matches!(valeur(&paires, "connection", "type"), Some("wifi" | "802-11-wireless")) {
@@ -91,7 +92,7 @@ pub(crate) fn nm_keyfile(texte: &str) -> Option<ProfilEnregistre> {
 
 /// Le nom d'un réseau d'après le nom de son fichier iwd : tel quel quand il ne contient que des lettres, chiffres,
 /// espaces, « _ » et « - » ; sinon « = » suivi de ses octets en hexadécimal.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn nom_iwd(base: &str) -> Option<String> {
     let nom = match base.strip_prefix('=') {
         Some(hex) => {
@@ -109,7 +110,7 @@ fn nom_iwd(base: &str) -> Option<String> {
 
 /// Un réseau d'iwd : le fichier `<nom>.open`, `.psk` ou `.8021x` dit sa protection ; `[Settings] AutoConnect=false`
 /// coupe la reconnexion. `None` : pas un fichier de réseau.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn iwd(nom_fichier: &str, texte: &str) -> Option<ProfilEnregistre> {
     let (base, extension) = nom_fichier.rsplit_once('.')?;
     if !matches!(extension, "open" | "psk" | "8021x") {

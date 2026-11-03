@@ -385,7 +385,6 @@ impl Reste {
 }
 
 /// Les tâches du Planificateur qu'une version d'avant posait, par leur nom.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn taches_d_avant() -> Vec<String> {
     ["vanguard-surveillance", "vanguard-entretien"]
         .iter()

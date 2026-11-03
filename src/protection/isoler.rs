@@ -33,7 +33,7 @@ pub(crate) fn dossier_jetable() -> std::io::Result<PathBuf> {
 /// /run/media. Dans la session (/run/user/…), le bus de session permettrait de demander à systemd, hors du bac, de
 /// lancer un programme : seul l'affichage Wayland en est rendu visible. `var_run` : /var/run est un vrai dossier
 /// (vieux systèmes ; ailleurs, c'est un lien vers /run, masqué avec lui).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn arguments_bwrap(
     jetable: &Path,
     programme: &Path,
@@ -133,7 +133,7 @@ pub(crate) fn arguments_extension(jetable: &Path, dossier: &Path, commande: &[St
 
 /// Fichier de configuration de Windows Sandbox : dossier du programme en lecture seule, réseau coupé, programme
 /// lancé à l'ouverture.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 fn configuration_wsb(dossier: &str, nom: &str) -> String {
     let echapper = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
     format!(
