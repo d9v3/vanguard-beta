@@ -14,6 +14,7 @@
 mod arret;
 pub(crate) mod gardes;
 pub(crate) mod gestes;
+mod juger;
 mod menaces;
 pub(crate) mod ordres;
 // La forme des lignes des ordres : du code pur, lu aussi par le banc de fuzzing.
@@ -214,7 +215,8 @@ fn est(mot: &str, mots: &[&str]) -> bool {
 }
 
 /// `vanguard blocage` : le menu ; « chercher », « annuler », « etat » ; « auto » ou « clic » pour la protection
-/// active ; ou une catégorie suivie d'un mode (« connexions auto »).
+/// active ; une catégorie suivie d'un mode (« connexions auto ») ; « juger » un PID, « parent » ou un fichier, en
+/// lecture seulement.
 pub fn commande(mots: &[String]) {
     let mots: Vec<&str> = mots.iter().map(String::as_str).collect();
     match mots.as_slice() {
@@ -222,6 +224,9 @@ pub fn commande(mots: &[String]) {
         [m] if est(m, &["chercher", "scan", "search", "maintenant", "now"]) => chercher_et_proposer(),
         [m] if est(m, &["annuler", "undo", "defaire", "défaire"]) => annuler(),
         [m] if est(m, &["etat", "état", "status", "state"]) => afficher_etat(&parametres()),
+        // En lecture seulement : ce que chaque garde refuserait, et pourquoi (essais de la VM, défense D6a).
+        [m, d, dossier] if est(m, &["juger", "judge"]) && est(d, &["destination"]) => juger::commande(dossier, true),
+        [m, quoi] if est(m, &["juger", "judge"]) => juger::commande(quoi, false),
         [m] if est(m, &["auto", "actif", "active", "on"]) => {
             for c in Categorie::TOUTES.into_iter().filter(|c| c.a_du_certain()) {
                 if !changer_mode(c, Mode::Automatique) {
@@ -247,8 +252,8 @@ pub fn commande(mots: &[String]) {
 fn usage() {
     let categories = Categorie::TOUTES.map(Categorie::mot).join(", ");
     trp!(
-        "  Usage : vanguard blocage [chercher | annuler | etat | auto | clic | <catégorie> <mode>]\n  Catégories : {categories}. Modes : off, clic, auto (programmes et connexions seulement).",
-        "  Usage: vanguard blocking [search | undo | status | auto | click | <category> <mode>]\n  Categories: {categories}. Modes: off, click, auto (programs and connections only)."
+        "  Usage : vanguard blocage [chercher | annuler | etat | auto | clic | <catégorie> <mode> | juger <PID | parent | fichier> | juger destination <dossier>]\n  Catégories : {categories}. Modes : off, clic, auto (programmes et connexions seulement). « juger » montre ce que le blocage refuserait, et pourquoi, sans rien faire.",
+        "  Usage: vanguard blocking [search | undo | status | auto | click | <category> <mode> | judge <PID | parent | file> | judge destination <folder>]\n  Categories: {categories}. Modes: off, click, auto (programs and connections only). “judge” shows what blocking would refuse, and why, without doing anything."
     );
 }
 

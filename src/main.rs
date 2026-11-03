@@ -564,8 +564,9 @@ enum Commande {
     /// MalwareBazaar, outil d'attaque connu, serveur de commande), puis prévient. Sans argument : le menu.
     #[command(visible_alias = "blocking")]
     Blocage {
-        /// « chercher », « annuler », « etat », « auto » ou « clic » (la protection active), ou une catégorie
-        /// (programmes, connexions, demarrage, agents) suivie d'un mode (off, clic, auto).
+        /// « chercher », « annuler », « etat », « auto » ou « clic » (la protection active), une catégorie
+        /// (programmes, connexions, demarrage, agents) suivie d'un mode (off, clic, auto), ou « juger » un PID,
+        /// « parent » ou un fichier (ce que le blocage refuserait, et pourquoi, sans rien faire).
         quoi: Vec<String>,
     },
     /// Sauvegarde la base des appareils et l'état de la surveillance dans un fichier JSON.
@@ -3321,8 +3322,9 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
                               blocking, restrictions, abuse.ch, software-versions, autotest, aur-packages, auto-tuning, \
                               sharing) and its \
                               value; real-time no also takes --for 1h or 4h"),
-    ("blocage", "quoi", "“search”, “undo”, “status”, “auto” or “click” (active protection), or a category (programs, \
-                           connections, startup, agents) followed by a mode (off, click, auto)"),
+    ("blocage", "quoi", "“search”, “undo”, “status”, “auto” or “click” (active protection), a category (programs, \
+                           connections, startup, agents) followed by a mode (off, click, auto), or “judge” a PID, \
+                           “parent” or a file (what blocking would refuse, and why, without doing anything)"),
     ("optimiser", "quoi", "recommended, privacy, performance, comfort or undo"),
     ("verifier-moi", "programme", "Another copy of Vanguard to check (from another key, an earlier version), by its \
                                      fingerprint and the signed version history"),
