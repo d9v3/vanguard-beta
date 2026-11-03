@@ -1455,14 +1455,8 @@ pub fn catalogue() -> Vec<Reglage> {
     l
 }
 
-/// Defender est-il l'antivirus actif ? Sinon (coupé, ou passif derrière un autre antivirus), ses blocages ne
-/// s'appliquent pas : rien n'est proposé.
-pub fn defender_actif() -> bool {
-    defender::etat().actif
-}
-
 /// Les protections de Defender qui bloquent elles-mêmes. Aucune n'est « recommandée » : elles ne sont proposées que
-/// dans leur catégorie, ouverte seulement si Defender est l'antivirus actif (`defender_actif`). Leur état n'est lu
+/// dans leur catégorie, ouverte depuis les Options de défense seulement si Defender est l'antivirus actif. Leur état n'est lu
 /// qu'à l'affichage, pour ne pas lancer PowerShell à chaque ouverture d'un autre menu.
 fn protection() -> Vec<Reglage> {
     let defender = |pref, cible| Changement::Defender { pref, cible };

@@ -38,8 +38,12 @@ pub(super) fn faire_acte(acte: &Acte) -> Option<Resultat> {
         Acte::DefenderExclusionRetirer(g, e) => retirer_exclusion(*g, e.texte(), acte),
         Acte::DefenderMenacesRetirer => retirer_menaces(),
         // Sans le sens montré (`faire_choix`, depuis `eleve::faire`), une baisse est refusée : rien d'écrit.
-        Acte::DefenderChoix(..) | Acte::DefenderAsrChoix(..) => return faire_choix(acte, None),
-        Acte::Rallumer(id) => resultat(choix_avant::rallumer(&mut Monde, *id)),
+        Acte::DefenderChoix(..)
+        | Acte::DefenderAsrChoix(..)
+        | Acte::DefenderExclusionAjouter(..)
+        | Acte::DefenderDossiersAutoriser(..)
+        | Acte::ChoixNoter(..) => return faire_choix(acte, None),
+        Acte::Rallumer(id) => resultat(choix_avant::rallumer(&mut Monde::default(), *id)),
         _ => return None,
     })
 }
@@ -49,7 +53,7 @@ pub(super) fn faire_acte(acte: &Acte) -> Option<Resultat> {
 /// La valeur actuelle d'un réglage des choix (`None` : illisible ; `Some(None)` : règle ASR absente de la liste).
 /// Le temps réel est jugé sur ce que Defender applique, et seulement là (`temps_reel_de`).
 #[allow(clippy::option_option)] // None : illisible ou sans note ; Some(None) : valeur absente
-fn lire_choix(id: IdChoix) -> Option<Option<i64>> {
+pub(super) fn lire_choix(id: IdChoix) -> Option<Option<i64>> {
     match id {
         IdChoix::Defender(ReglageDefender::TempsReel) => temps_reel_de(etat().0),
         IdChoix::Defender(r) => {
@@ -62,7 +66,52 @@ fn lire_choix(id: IdChoix) -> Option<Option<i64>> {
             LectureAsr::Lue(v) => Some(v),
             LectureAsr::Illisible => None,
         },
+        IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) => {
+            let liste = liste_de(id)?;
+            Some(Some(i64::from(!elements_de(&liste, id).is_empty())))
+        }
     }
+}
+
+/// La propriété de MSFT_MpPreference d'un élément de liste ; `None` pour un réglage.
+fn propriete_element(id: IdChoix) -> Option<&'static str> {
+    match id {
+        IdChoix::Exclusion(g, _) => Some(g.propriete()),
+        IdChoix::DossiersAutorise(_) => Some(PERMIS_DOSSIERS),
+        IdChoix::Defender(_) | IdChoix::Asr(_) => None,
+    }
+}
+
+/// La liste relue d'un élément (exclusions de ce genre, programmes permis) ; `None` si elle ne se lit pas, ou se lit
+/// cachée (« N/A… », ou une politique qui la cache même aux administrateurs, ce qui peut la rendre vide).
+fn liste_de(id: IdChoix) -> Option<Vec<String>> {
+    match id {
+        IdChoix::Exclusion(g, _) => {
+            let (listes, politiques) = exclusions::lecture_wmi()?;
+            if exclusions::cachee(&listes) || politiques.aux_admins {
+                return None;
+            }
+            Some(du_genre(&listes, g).to_vec())
+        }
+        IdChoix::DossiersAutorise(_) => {
+            let l = preferences(&[PERMIS_DOSSIERS])?;
+            let liste = l.get(PERMIS_DOSSIERS).map(Valeur::textes).unwrap_or_default();
+            (!liste.iter().any(|x| x.trim_start().starts_with("N/A"))).then_some(liste)
+        }
+        IdChoix::Defender(_) | IdChoix::Asr(_) => None,
+    }
+}
+
+/// Les éléments de la liste qui portent l'empreinte de `id` (sans casse, comme Windows les compare).
+fn elements_de(liste: &[String], id: IdChoix) -> Vec<String> {
+    let (IdChoix::Exclusion(_, e) | IdChoix::DossiersAutorise(e)) = id else {
+        return Vec::new();
+    };
+    liste
+        .iter()
+        .filter(|x| gestes::EmpreinteElement::de(x) == e)
+        .cloned()
+        .collect()
 }
 
 /// La valeur du temps réel, lue d'une seule source : l'état que Defender applique (RealTimeProtectionEnabled ; en
@@ -73,8 +122,24 @@ fn temps_reel_de(marche: Option<bool>) -> Option<Option<i64>> {
     marche.map(|m| Some(i64::from(!m)))
 }
 
-/// Defender par WMI et les notes sous HKLM : le monde des choix dans le processus élevé.
-struct Monde;
+/// Les notes devenues sans objet (la protection a été rallumée depuis, par Windows ou par quelqu'un) effacées : à
+/// chaque passage élevé, après les listes (plan §2.1, « Durée »). Sans note, rien n'est lu.
+pub(super) fn nettoyer_notes() {
+    let ids: Vec<IdChoix> = choix_avant::notes().into_iter().map(|(id, _)| id).collect();
+    if !ids.is_empty() {
+        choix_avant::nettoyer(&mut Monde::default(), ids);
+    }
+}
+
+/// Defender par WMI et les notes sous HKLM : le monde des choix dans le processus élevé. `texte` : le texte d'un
+/// élément à ajouter (exclusion, programme permis), que l'identifiant (une empreinte) ne porte pas.
+#[derive(Default)]
+struct Monde {
+    texte: Option<String>,
+}
+
+/// Les programmes permis malgré l'accès contrôlé aux dossiers.
+const PERMIS_DOSSIERS: &str = "ControlledFolderAccessAllowedApplications";
 
 impl choix_avant::Monde for Monde {
     fn lire(&mut self, id: IdChoix) -> Option<Option<i64>> {
@@ -82,13 +147,48 @@ impl choix_avant::Monde for Monde {
     }
 
     fn ecrire(&mut self, id: IdChoix, v: i64) -> Result<(), Echec> {
+        // Une valeur plus faible que la valeur sûre : un refus de Windows peut être Defender qui juge le geste suspect.
+        let baisse = id.rang(Some(v)) < id.rang(Some(id.sure()));
+        if let Some(prop) = propriete_element(id) {
+            let refus = || {
+                Echec::refuse(
+                    CONTEXTE,
+                    tr!("valeur refusée pour ce réglage", "value refused for this setting"),
+                )
+            };
+            let (methode, textes) = match v {
+                // Ajouter : le texte reçu, s'il porte bien l'empreinte de l'identifiant.
+                1 => {
+                    let t = self
+                        .texte
+                        .clone()
+                        .filter(|t| !elements_de(std::slice::from_ref(t), id).is_empty());
+                    ("Add", vec![t.ok_or_else(refus)?])
+                }
+                // Retirer : chaque élément relu qui porte l'empreinte, tel que Defender l'écrit.
+                0 => {
+                    let textes = elements_de(&liste_de(id).ok_or_else(refus)?, id);
+                    if textes.is_empty() {
+                        return Ok(());
+                    }
+                    ("Remove", textes)
+                }
+                _ => return Err(refus()),
+            };
+            return appeler_avec(
+                PREFERENCES,
+                methode,
+                vec![(prop, gestes::ValeurWmi::Textes(textes))],
+                baisse,
+            );
+        }
         let Some((methode, parametres)) = gestes::methode_choix(id, v) else {
             return Err(Echec::refuse(
                 CONTEXTE,
                 tr!("valeur refusée pour ce réglage", "value refused for this setting"),
             ));
         };
-        appeler(PREFERENCES, methode, parametres)
+        appeler_avec(PREFERENCES, methode, parametres, baisse)
     }
 
     /// Le temps réel met un instant à changer : relu jusqu'à 5 s, jusqu'à la valeur écrite.
@@ -136,12 +236,26 @@ impl choix_avant::Monde for Monde {
 pub(super) fn juger(acte: &Acte) -> Option<(Montre, String)> {
     let (id, cible) = acte.choix()?;
     let lue = lire_choix(id);
-    let texte = format!(
-        "{} : {} → {}",
-        crate::options_defense::nom_choix(id),
-        crate::options_defense::texte_choix(id, lue),
-        crate::options_defense::texte_choix(id, Some(cible)).to_uppercase()
-    );
+    let nom = crate::options_defense::nom_choix(id);
+    if let Acte::ChoixNoter(_) = acte {
+        let note = choix_avant::note_valide(&mut Monde::default(), id);
+        let texte = trf!(
+            "{nom} : {} → NOTER « C'EST MOI » (Vanguard le dira « par votre choix »)",
+            "{nom}: {} → NOTE “IT WAS ME” (Vanguard will call it “your choice”)",
+            crate::options_defense::texte_choix(id, lue)
+        );
+        let sens = choix_avant::sens_noter(id, lue, note.as_ref());
+        return Some((Montre { sens, lue }, texte));
+    }
+    let texte = match acte {
+        Acte::DefenderExclusionAjouter(g, e) => crate::options_defense::texte_ajout_exclusion(*g, e.texte()),
+        Acte::DefenderDossiersAutoriser(e) => crate::options_defense::texte_autoriser_dossiers(e.texte()),
+        _ => format!(
+            "{nom} : {} → {}",
+            crate::options_defense::texte_choix(id, lue),
+            crate::options_defense::texte_choix(id, Some(cible)).to_uppercase()
+        ),
+    };
     Some((
         Montre {
             sens: gestes::sens(id, lue, cible),
@@ -155,13 +269,25 @@ pub(super) fn juger(acte: &Acte) -> Option<(Montre, String)> {
 /// n'est pas un choix.
 pub(super) fn faire_choix(acte: &Acte, montre: Option<Montre>) -> Option<Resultat> {
     let (id, cible) = acte.choix()?;
+    if let Acte::ChoixNoter(_) = acte {
+        return Some(resultat(choix_avant::noter(&mut Monde::default(), id, montre)));
+    }
     let Some(cible) = cible else {
         return Some(Resultat::echec(
             None,
             tr!("valeur refusée pour ce réglage", "value refused for this setting").to_string(),
         ));
     };
-    Some(resultat(choix_avant::faire_choix(&mut Monde, id, cible, montre)))
+    let texte = match acte {
+        Acte::DefenderExclusionAjouter(_, e) | Acte::DefenderDossiersAutoriser(e) => Some(e.texte().to_string()),
+        _ => None,
+    };
+    Some(resultat(choix_avant::faire_choix(
+        &mut Monde { texte },
+        id,
+        cible,
+        montre,
+    )))
 }
 
 /// Ce que le parent reçoit d'une issue : une baisse faite porte « note=choix » (`eleve::ligne_resultat`).
@@ -224,13 +350,13 @@ fn etat() -> (Option<bool>, Option<bool>) {
 fn pourquoi_garde() -> String {
     match etat().1 {
         Some(true) => tr!(
-            "Windows a gardé la valeur : la protection contre les falsifications l'empêche (Sécurité Windows > Protection contre les virus et menaces > Gérer les paramètres)",
-            "Windows kept the value: tamper protection prevents it (Windows Security > Virus & threat protection > Manage settings)"
+            "Windows a refusé ce changement : la protection contre les falsifications est active. Elle empêche tout programme, Vanguard compris, de toucher à ce réglage de Defender. Seule une personne peut la couper, à la main (Sécurité Windows › Protection contre les virus et menaces › Gérer les paramètres › Protection contre les falsifications)",
+            "Windows refused this change: tamper protection is on. It stops any program, Vanguard included, from changing this Defender setting. Only a person can turn it off, by hand (Windows Security › Virus & threat protection › Manage settings › Tamper Protection)"
         )
         .to_string(),
         _ => tr!(
-            "Windows a gardé la valeur : une stratégie de groupe, une gestion d'entreprise ou un autre antivirus l'impose",
-            "Windows kept the value: a group policy, enterprise management or another antivirus enforces it"
+            "Windows a gardé la valeur : une stratégie (GPO ou Intune), une gestion d'entreprise ou un autre antivirus l'impose, quoi que Vanguard écrive",
+            "Windows kept the value: a policy (GPO or Intune), enterprise management or another antivirus enforces it, whatever Vanguard writes"
         )
         .to_string(),
     }
@@ -241,20 +367,36 @@ const CONTEXTE: &str = "defender/ecriture";
 
 /// Appelle la méthode statique de `classe` ; `Err` : le refus de Windows, sa phrase prête à montrer.
 fn appeler(classe: &str, methode: &str, parametres: Vec<(&'static str, gestes::ValeurWmi)>) -> Result<(), Echec> {
+    appeler_avec(classe, methode, parametres, false)
+}
+
+/// Comme `appeler` ; `baisse` : une valeur plus faible est écrite, et un refus de Windows le dit (plan §3.3 :
+/// « Defender a bloqué ce changement… »), sans jamais chercher à le contourner.
+fn appeler_avec(
+    classe: &str,
+    methode: &str,
+    parametres: Vec<(&'static str, gestes::ValeurWmi)>,
+    baisse: bool,
+) -> Result<(), Echec> {
+    let refus = |phrase: String| {
+        let phrase = if baisse {
+            format!("{phrase}. {}", choix_avant::defender_bloque())
+        } else {
+            phrase
+        };
+        Err(Echec::echoue(CONTEXTE, phrase))
+    };
     let parametres = parametres.into_iter().map(|(n, v)| (n, Parametre::from(v))).collect();
     match wmi::methode(ESPACE, classe, methode, parametres, DELAI) {
         Retour::Valeur(0) => Ok(()),
-        Retour::Valeur(n) => Err(Echec::echoue(
-            CONTEXTE,
-            match u32::try_from(n) {
-                Ok(code) => trf!(
-                    "Windows a refusé la demande (code 0x{:08X})",
-                    "Windows refused the request (code 0x{:08X})",
-                    code
-                ),
-                Err(_) => trf!("Windows a répondu {n}", "Windows answered {n}"),
-            },
-        )),
+        Retour::Valeur(n) => refus(match u32::try_from(n) {
+            Ok(code) => trf!(
+                "Windows a refusé la demande (code 0x{:08X})",
+                "Windows refused the request (code 0x{:08X})",
+                code
+            ),
+            Err(_) => trf!("Windows a répondu {n}", "Windows answered {n}"),
+        }),
         Retour::Refuse(code) if CLASSE_ABSENTE.contains(&code) => Err(Echec::echoue(
             CONTEXTE,
             trf!(
@@ -263,13 +405,10 @@ fn appeler(classe: &str, methode: &str, parametres: Vec<(&'static str, gestes::V
                 code
             ),
         )),
-        Retour::Refuse(code) => Err(Echec::echoue(
-            CONTEXTE,
-            trf!(
-                "Windows a refusé la demande (code 0x{:08X})",
-                "Windows refused the request (code 0x{:08X})",
-                code
-            ),
+        Retour::Refuse(code) => refus(trf!(
+            "Windows a refusé la demande (code 0x{:08X})",
+            "Windows refused the request (code 0x{:08X})",
+            code
         )),
         Retour::SansReponse => Err(Echec::echoue(
             CONTEXTE,

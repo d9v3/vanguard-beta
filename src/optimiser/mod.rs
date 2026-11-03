@@ -679,28 +679,10 @@ pub fn dossiers_controles() -> Option<Vec<String>> {
         .then(|| e.dossiers_ajoutes().to_vec())
 }
 
-/// Les protections de Defender : seulement s'il est l'antivirus actif, puisque sinon ses blocages ne s'appliquent
-/// pas (un autre antivirus le met en mode passif).
+/// Les protections de Defender : l'écran des Options de défense (plan §3.1), qui dit lui-même un Defender passif ou
+/// coupé. L'écran à cocher des blocages de base (`menu(Categorie::Protection)`) s'ouvre depuis ses règles ASR.
 pub fn protection() {
-    #[cfg(windows)]
-    if !windows::defender_actif() {
-        titre(Categorie::Protection.titre());
-        afficher_aligne(
-            "  ",
-            tr!(
-                "Microsoft Defender n'est pas l'antivirus actif ici (coupé, ou remplacé par un autre antivirus) : ses blocages ne s'appliqueraient pas. Rien à proposer.",
-                "Microsoft Defender is not the active antivirus here (off, or replaced by another antivirus): its blocking would not apply. Nothing to offer."
-            ),
-            2,
-            "",
-        );
-        trp!(
-            "  {GRIS}Ce qui protège à sa place : vanguard options-defense (4.11).{RESET}",
-            "  {GRIS}What protects in its place: vanguard options-defense (4.11).{RESET}"
-        );
-        return;
-    }
-    menu(Categorie::Protection);
+    crate::options_defense::afficher();
 }
 
 /// Une catégorie : liste à cocher. Coché = réglage en place ; cocher applique, décocher annule.

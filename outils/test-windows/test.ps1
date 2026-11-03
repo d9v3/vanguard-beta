@@ -1355,7 +1355,7 @@ if (Test-Path -LiteralPath $lanceur) {
     Bug 'Lanceur de la clé absent du dossier du programme (dépôt incomplet)'
 }
 
-Etape 'Blocages de Windows Defender : liste, rien changé sans accord'
+Etape 'Options de défense : écran, rien changé sans accord'
 function Etat-Defender {
     $p = Get-MpPreference
     "cfa=$($p.EnableControlledFolderAccess) np=$($p.EnableNetworkProtection) pua=$($p.PUAProtection) asr=$((@($p.AttackSurfaceReductionRules_Ids) | Where-Object { $_ }) -join ',')/$(@($p.AttackSurfaceReductionRules_Actions) -join ',')"
@@ -1364,20 +1364,25 @@ $defAvant = Etat-Defender
 $modeDefender = (Get-MpComputerStatus).AMRunningMode
 Info "Defender ($modeDefender) : $defAvant"
 # Le numéro de l'outil dans le groupe Cet ordinateur (4), lu à l'écran : 10, après les lignes communes (la conception
-# de la 0.87 le fige ; lu quand même, pour que les essais suivants tournent si une ligne s'ajoutait).
+# de la 0.87 le fige, les Options de défense l'ont repris ; lu quand même, pour que les essais suivants tournent si une
+# ligne s'ajoutait).
 LancerAvec 'protection-groupe' @() "4`n`nq`n"
 $groupe = (Sortie 'protection-groupe') -replace '\x1b\[[0-9;]*m', ''
-$numeroDefender = if ($groupe -match '(?m)^\s*(\d+)\s+(Blocages de Windows Defender|Windows Defender blocking)') { $Matches[1] } else { '' }
+$numeroDefender = if ($groupe -match '(?m)^\s*(\d+)\s+(Options de défense|Defense options)') { $Matches[1] } else { '' }
 if ($numeroDefender) {
     if ($numeroDefender -eq '10') { Ok 'Outil présent dans le groupe, en 4.10' } else { Bug "Outil en 4.$numeroDefender, pas en 4.10" }
     LancerAvec 'protection' @() "4.$numeroDefender`n`n`nq`n"
-    $t = Sortie 'protection'
-    foreach ($titre in 'Blocages de base de Defender|Defender basic blocking', 'Protection réseau de Defender|Defender network protection', 'Accès contrôlé aux dossiers|Controlled folder access') {
-        if ($t -match $titre) { Ok "Réglage affiché : $($titre.Split('|')[0])" } else { Bug "Réglage ABSENT : $($titre.Split('|')[0])" }
+    $t = (Sortie 'protection') -replace '\x1b\[[0-9;]*m', ''
+    # Les dix options, puis les listes, l'ASR et le pare-feu (lignes 11 à 13), puis « Tout voir ».
+    foreach ($titre in 'Protection en temps réel|Real-time protection', 'Blocage des logiciels indésirables|Potentially unwanted apps', 'Protection réseau|Network protection', 'Accès contrôlé aux dossiers|Controlled folder access', 'Blocage à la première détection|Block at first sight', 'Exclusions et programmes permis|Exclusions and allowed apps', 'Règles ASR|ASR rules', 'Pare-feu Windows|Windows Firewall', 'Tout voir|See everything') {
+        if ($t -match $titre) { Ok "Ligne affichée : $($titre.Split('|')[0])" } else { Bug "Ligne ABSENTE : $($titre.Split('|')[0])" }
     }
-    if ($modeDefender -eq 'Normal' -and $t -match "n'est pas l'antivirus actif|is not the active antivirus") { Bug 'Defender actif, mais dit inactif' }
+    if ($t -match 'Microsoft Defender — (antivirus actif|active antivirus)') { $ditActif = $true } else { $ditActif = $false }
+    if ($modeDefender -eq 'Normal' -and -not $ditActif) { Bug 'Defender actif (Get-MpComputerStatus), mais l''en-tête ne dit pas « antivirus actif »' }
+    elseif ($modeDefender -eq 'Normal') { Ok 'En-tête : Microsoft Defender, antivirus actif' }
+    if ($t -match 'Lecture seule|Read-only') { Bug 'L''écran se dit encore en lecture seule' }
     if ((Etat-Defender) -eq $defAvant) { Ok 'Rien changé sans accord' } else { Bug "Defender modifié sans accord : $(Etat-Defender)" }
-} else { Bug 'Outil « Blocages de Windows Defender » ABSENT du groupe' }
+} else { Bug 'Outil « Options de défense » ABSENT du groupe' }
 
 Etape 'Windows sans PowerShell (0.82) : Defender, santé, BitLocker, mises à jour, lenteur, diagnostic et fiche, comparés à PowerShell'
 # Depuis la 0.82, ces lectures passent par WMI, les journaux et les fonctions de Windows ; PowerShell ne sert plus qu'en
@@ -1417,16 +1422,16 @@ try {
     } else { Bug "Dernière mise à jour absente du bilan : « $majBilan »" }
 } catch { Bug "machine --json illisible : $($_.Exception.Message)" }
 
-# Defender : MSFT_MpComputerStatus et MSFT_MpPreference par WMI (l'outil « Blocages de Windows Defender »).
+# Defender : MSFT_MpComputerStatus et MSFT_MpPreference par WMI (l'outil « Options de défense »).
 if ($numeroDefender) {
     LancerSurveille 'protection-sans-ps' @() "4.$numeroDefender`n`n`nq`n"
     $t = Sortie 'protection-sans-ps'
     $modeDefender = (Get-MpComputerStatus -ErrorAction SilentlyContinue).AMRunningMode
-    if ($modeDefender -eq 'Normal' -and $t -match "n'est pas l'antivirus actif|is not the active antivirus") { Bug 'Defender actif selon Get-MpComputerStatus, dit inactif par la lecture WMI' }
-    elseif ($t -match 'Protection réseau de Defender|Defender network protection') { Ok "Réglages de Defender lus (Get-MpComputerStatus : $modeDefender)" }
+    if ($modeDefender -eq 'Normal' -and $t -notmatch 'antivirus actif|active antivirus') { Bug 'Defender actif selon Get-MpComputerStatus, pas dit actif par la lecture WMI' }
+    elseif ($t -match 'Protection réseau|Network protection') { Ok "Réglages de Defender lus (Get-MpComputerStatus : $modeDefender)" }
     else { Bug 'Réglages de Defender ABSENTS' }
-    Sans-PowerShell 'Blocages de Windows Defender'
-} else { Sautee 'Blocages de Windows Defender absents du groupe : lecture WMI pas essayée' }
+    Sans-PowerShell 'Options de défense'
+} else { Sautee 'Options de défense absentes du groupe : lecture WMI pas essayée' }
 
 # Mises à jour installées, encore : « lent › depuis peu » montre les huit dernières, autant que Get-HotFix en a.
 LancerSurveille 'depanner-lent' @('depanner', 'lent') "1`n2`nn`n`n`n`n"
@@ -1507,7 +1512,7 @@ try {
 } catch { Bug "fiche --json illisible : $($_.Exception.Message)" }
 Sans-PowerShell 'Fiche de l''ordinateur'
 
-Etape 'Blocages de Windows Defender : protection réseau changée puis remise (UAC)'
+Etape 'Options de défense : protection réseau changée puis remise (UAC)'
 # Defender applique une préférence quelques instants après la fenêtre administrateur : relue jusqu'à 10 s.
 function Protection-Reseau-Attendue([int]$voulue) {
     for ($i = 0; $i -lt 20; $i++) {
@@ -1520,14 +1525,17 @@ function Protection-Reseau-Attendue([int]$voulue) {
 $npAvant = [int](Get-MpPreference).EnableNetworkProtection
 # Déjà active (une passe d'avant l'a laissée ainsi) : annulée d'abord, puis remise ; sinon activée, puis annulée.
 $npAutre = if ($npAvant -eq 1) { 0 } else { 1 }
+# La touche de la valeur dans le sous-écran de la protection réseau (ligne 5) : 1 bloquer, 2 audit, 3 coupée.
+function Touche-Reseau([int]$v) { switch ($v) { 1 { '1' } 2 { '2' } default { '3' } } }
 if (-not $numeroDefender) { Sautee 'Sautée : outil absent.' }
 elseif (Question 'Faire ce test (deux fenêtres UAC à accepter) ?') {
     Write-Host '      Clique OUI dans les deux fenêtres UAC. Un refus ne change rien et fait échouer le test.' -ForegroundColor Yellow
     Write-Host '      Si la fenêtre administrateur demande « Continue without a restore point? », réponds y (la VM n''a pas de' -ForegroundColor Yellow
     Write-Host '      points de restauration) : sinon, rien n''est changé.' -ForegroundColor Yellow
-    # Ligne 3 de la liste : la protection réseau. Sans terminal, taper son numéro coche (ou décoche) et valide ; puis
-    # « o » accepte.
-    LancerAvec 'protection-changer' @() "4.$numeroDefender`n3`no`n`nq`n"
+    Write-Host '      Une baisse (protection coupée) se confirme encore dans la fenêtre administrateur : réponds o.' -ForegroundColor Yellow
+    # Ligne 5 de l'écran : la protection réseau ; sa valeur choisie, puis « a » applique (récapitulatif, une fenêtre
+    # administrateur), Entrée revient, Entrée sort.
+    LancerAvec 'protection-changer' @() "4.$numeroDefender`n5`n$(Touche-Reseau $npAutre)`na`n`n`nq`n"
     $np = Protection-Reseau-Attendue $npAutre
     if ($np -eq $npAutre) { Ok "Protection réseau passée de $npAvant à $npAutre par Vanguard" }
     elseif ((Sortie 'protection-changer') -match "Administrator prompt refused|Demande d'administrateur refusée") { Bug 'Fenêtre UAC refusée : rien changé (le test demande OUI)' }
@@ -1539,7 +1547,7 @@ elseif (Question 'Faire ce test (deux fenêtres UAC à accepter) ?') {
     # Rien n'a changé : une « remise » acceptée basculerait la protection au lieu de la remettre.
     if ($np -ne $npAutre) { Sautee 'Remise sautée : rien n''avait changé' }
     else {
-        LancerAvec 'protection-remettre' @() "4.$numeroDefender`n3`no`n`nq`n"
+        LancerAvec 'protection-remettre' @() "4.$numeroDefender`n5`n$(Touche-Reseau $npAvant)`na`n`n`nq`n"
         $np = Protection-Reseau-Attendue $npAvant
         if ($np -eq $npAvant) { Ok 'Protection réseau remise comme avant' } else { Bug "Protection réseau PAS remise ($np au lieu de $npAvant)" }
     }

@@ -549,15 +549,22 @@ mod tests {
         }
     }
 
-    /// Garde structurelle des baisses : une ligne de choix exact (qui peut baisser une protection de Defender) ne
-    /// s'écrit que depuis les Options de défense, où la personne l'a choisie elle-même ; ni le bilan, ni une
-    /// correction, ni « Tout remettre » (qui n'a que `ligne_rallumer`) n'en fabriquent. Hors des tests, les seuls
-    /// fichiers qui nomment ces fonctions ou les verbes des choix sont leur définition et l'écran des Options ; le
-    /// constructeur des Options (`ligne_choix`) ne sert que dans son fichier, et leur entrée `choisir` seulement à la
-    /// ligne de commande (`--choisir`).
+    /// Garde structurelle des baisses : une ligne de choix exact (qui peut baisser une protection de Defender), une
+    /// exclusion, un programme permis ou une note « c'est moi » ne s'écrit que depuis les Options de défense, où la
+    /// personne l'a choisie elle-même ; ni le bilan, ni une correction, ni « Tout remettre » (qui n'a que
+    /// `ligne_rallumer`) n'en fabriquent. Hors des tests, les seuls fichiers qui nomment ces fonctions ou ces verbes
+    /// sont leur définition et l'écran des Options ; les constructeurs des Options (`ligne_choix`, `ligne_exclure`…)
+    /// ne servent que dans ses fichiers, et leurs entrées seulement à la ligne de commande (`--choisir`,
+    /// `--exclure`, `--permettre`, `--noter`). Un acte nommé pour être rangé ou lu (motif `(..)`, `if let`, bras
+    /// `Acte::X(a, b) =>`) ne fabrique rien et ne compte pas.
     #[test]
     fn les_baisses_ne_viennent_que_des_options() {
-        const PERMIS: &[&str] = &["machine/windows/gestes.rs", "options_defense.rs"];
+        const PERMIS: &[&str] = &[
+            "machine/windows/gestes.rs",
+            "options_defense.rs",
+            "options_defense/ecran.rs",
+        ];
+        const OPTIONS: &[&str] = &["options_defense.rs", "options_defense/ecran.rs"];
         // Un fichier qui n'est tout entier qu'un module d'essais (déclaré sous `#[cfg(test)]` par son parent, ce que
         // l'essai vérifie) : ses lignes ne partent jamais dans le programme.
         const ESSAIS_SEULS: &[(&str, &str, &str)] = &[(
@@ -575,8 +582,25 @@ mod tests {
             ("defender-asr-choix ", PERMIS),
             ("Acte::DefenderChoix(", PERMIS),
             ("Acte::DefenderAsrChoix(", PERMIS),
+            ("ligne_ajout_exclusion(", PERMIS),
+            ("ligne_autoriser_dossiers(", PERMIS),
+            ("DEFENDER_EXCLUSION_AJOUTER", PERMIS),
+            ("DEFENDER_DOSSIERS_AUTORISER", PERMIS),
+            ("CHOIX_NOTER", PERMIS),
+            ("defender-exclusion-ajouter ", PERMIS),
+            ("defender-dossiers-autoriser ", PERMIS),
+            ("choix-noter ", PERMIS),
+            ("Acte::DefenderExclusionAjouter(", PERMIS),
+            ("Acte::DefenderDossiersAutoriser(", PERMIS),
+            ("Acte::ChoixNoter(", PERMIS),
             ("ligne_choix(", &["options_defense.rs"]),
+            ("ligne_exclure(", &["options_defense.rs"]),
+            ("ligne_exclusion(", OPTIONS),
+            ("ligne_permettre(", OPTIONS),
             ("options_defense::choisir(", &["main.rs"]),
+            ("options_defense::exclure(", &["main.rs"]),
+            ("options_defense::permettre(", &["main.rs"]),
+            ("options_defense::noter(", &["main.rs"]),
         ];
         let racine = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for (fichier, parent, declaration) in ESSAIS_SEULS {
@@ -607,13 +631,8 @@ mod tests {
                 }
                 let code = hors_essais(&std::fs::read_to_string(&p).unwrap());
                 for l in code.lines().filter(|l| !l.trim_start().starts_with("//")) {
-                    // Un acte déjà là se nomme pour être rangé (pas de baisse, rien d'écrit) : seul un bras qui le
-                    // fabrique compte, pas un motif `Acte::DefenderChoix(..)`.
-                    if l.contains("Choix(..)") {
-                        continue;
-                    }
                     for (mot, permis) in MOTS {
-                        if l.contains(mot) {
+                        if l.contains(mot) && !motif(l, mot) {
                             vus.insert(*mot);
                             if !permis.contains(&nom.as_str()) {
                                 *trouves.entry(format!("{nom} : {mot}")).or_insert(0) += 1;
@@ -635,6 +654,36 @@ mod tests {
             trouves.is_empty(),
             "lignes de baisse fabriquées hors des Options de défense : {trouves:?}"
         );
+    }
+
+    /// Un acte déjà là se nomme pour être rangé ou lu (pas de baisse, rien d'écrit) : seul ce qui le fabrique compte.
+    /// Motif : `Acte::X(..)`, `Acte::X(_)`, `if let … Acte::X(…) =`, ou un bras `Acte::X(a, b) =>` (la flèche après
+    /// lui, pas avant : `y => Acte::X(a).ligne()` le fabrique).
+    fn motif(ligne: &str, mot: &str) -> bool {
+        if !mot.starts_with("Acte::") {
+            return false;
+        }
+        ligne.match_indices(mot).all(|(i, _)| {
+            let (avant, apres) = (&ligne[..i], &ligne[i + mot.len()..]);
+            apres.starts_with("..)")
+                || apres.starts_with("_)")
+                || ligne.trim_start().starts_with("if let ")
+                || (apres.contains("=>") && !avant.contains("=>"))
+        })
+    }
+
+    #[test]
+    fn un_motif_d_acte_ne_fabrique_rien() {
+        let m = "Acte::ChoixNoter(";
+        assert!(motif("        | Acte::ChoixNoter(..)", m));
+        assert!(motif("    if let Acte::ChoixNoter(_) = acte {", m));
+        assert!(motif("        Acte::ChoixNoter(id) => {", m));
+        assert!(motif("    if let Element::Acte(gestes::Acte::ChoixNoter(x)) = e {", m));
+        assert!(!motif("        x => Acte::ChoixNoter(id).ligne(),", m));
+        assert!(!motif("    let l = Acte::ChoixNoter(id).ligne();", m));
+        assert!(!motif("    Acte::ChoixNoter(id).ligne()", m));
+        // Un mot qui n'est pas un acte n'est jamais un motif.
+        assert!(!motif("    ligne_noter(id) => 1", "ligne_noter("));
     }
 
     /// Un fichier énorme est haché sur son début seulement, et vite.

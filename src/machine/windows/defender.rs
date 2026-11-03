@@ -10,6 +10,8 @@
 //! retient seulement qu'il les a posées (`optimiser::retenir_protection`), pour dire plus fort une coupure.
 
 use super::{Constat, alerte, ok};
+use crate::machine::choix_avant::{self, Lecture, Note};
+use crate::machine::gestes::{IdChoix, ReglageDefender};
 use crate::machine::sans_objet;
 use crate::modele::{Absence, Objet, Raison};
 use crate::optimiser::Geste;
@@ -90,8 +92,27 @@ fn remettre(c: Constat, p: &Protection) -> Constat {
     .protection()
 }
 
-/// Le jugement, d'après l'état lu (`None` : Defender n'a pas répondu) et les réglages dont Vanguard garde la note.
-pub(super) fn juger(etat: Option<&Etat>, notes: &[String]) -> Vec<Constat> {
+/// Le réglage des choix de la personne (Options de défense) d'une protection, s'il en a un.
+fn reglage_choix(p: &Protection) -> Option<IdChoix> {
+    match p.reglage {
+        "defender_reseau" => Some(IdChoix::Defender(ReglageDefender::Np)),
+        "defender_pua" => Some(IdChoix::Defender(ReglageDefender::Pua)),
+        "defender_dossiers" => Some(IdChoix::Defender(ReglageDefender::Cfa)),
+        _ => None,
+    }
+}
+
+/// La valeur actuelle d'une protection à une seule préférence, comme la note la garde (« mp:2 » : 2).
+#[allow(clippy::option_option)] // None : illisible ; Some(None) : valeur absente
+fn valeur_choix(etat: &Etat, p: &Protection) -> Option<Option<i64>> {
+    let [pref] = p.prefs.as_slice() else { return None };
+    etat.valeur(*pref)?.strip_prefix("mp:")?.parse::<i64>().ok().map(Some)
+}
+
+/// Le jugement, d'après l'état lu (`None` : Defender n'a pas répondu), les réglages dont Vanguard garde la note
+/// (`notes`, Optimiser et le bilan) et les notes des choix de la personne (`choix`, Options de défense) : une
+/// protection qu'elle a baissée et encore telle est dite « par votre choix » (une information), jamais une alerte.
+pub(super) fn juger_avec(etat: Option<&Etat>, notes: &[String], choix: &[(IdChoix, Option<Note>)]) -> Vec<Constat> {
     let Some(etat) = etat.filter(|e| e.lu) else {
         return vec![crate::machine::impossible_par(
             CAT,
@@ -128,6 +149,21 @@ pub(super) fn juger(etat: Option<&Etat>, notes: &[String]) -> Vec<Constat> {
     let (mut actives, mut autres) = (Vec::new(), Vec::new());
     for p in protections() {
         let objet = Objet::de("defender", p.reglage);
+        let lecture = reglage_choix(&p).and_then(|id| {
+            let n = choix_avant::note_de(choix, id)?;
+            Some((id, n, choix_avant::lecture_note(id, n, valeur_choix(etat, &p))))
+        });
+        if let Some((id, n, Lecture::ParChoix(date))) = lecture {
+            constats
+                .push(choix_avant::par_votre_choix(CAT, id, &choix_avant::sujet_note(id, n), date).avec_objet(objet));
+            continue;
+        }
+        if let Some((id, _, Lecture::Remontee)) = lecture {
+            constats.push(choix_avant::rallumee_depuis(
+                CAT,
+                &crate::options_defense::nom_choix(id),
+            ));
+        }
         if en_place(etat, &p) {
             actives.push(nom(&p));
         } else if notes.iter().any(|n| {
@@ -191,12 +227,39 @@ pub(super) fn juger(etat: Option<&Etat>, notes: &[String]) -> Vec<Constat> {
 pub(super) fn protections_de_defender() -> Vec<Constat> {
     defender::oublier();
     let etat = defender::etat();
-    juger(Some(&etat), &crate::optimiser::reglages_poses())
+    let choix = choix_avant::notes();
+    let mut c = juger_avec(Some(&etat), &crate::optimiser::reglages_poses(), &choix);
+    // Les autres réglages notés (échantillons, comportement, téléchargements, scripts, première vue, règles ASR,
+    // programmes permis) : jugés ici, chacun relu ; le temps réel et le cloud le sont par l'antivirus, les exclusions
+    // par la leur.
+    let ailleurs = |id: &IdChoix| {
+        matches!(
+            id,
+            IdChoix::Defender(
+                ReglageDefender::TempsReel
+                    | ReglageDefender::Maps
+                    | ReglageDefender::Np
+                    | ReglageDefender::Pua
+                    | ReglageDefender::Cfa
+            ) | IdChoix::Exclusion(..)
+        )
+    };
+    let restants: Vec<_> = choix.into_iter().filter(|(id, _)| !ailleurs(id)).collect();
+    c.extend(choix_avant::constats_des_notes(
+        CAT,
+        &restants,
+        super::defender_ecriture::lire_choix,
+    ));
+    c
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn juger(etat: Option<&Etat>, notes: &[String]) -> Vec<Constat> {
+        juger_avec(etat, notes, &[])
+    }
     use crate::machine::Defaire;
     use crate::modele::Etat as EtatConstat;
 

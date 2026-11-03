@@ -41,6 +41,9 @@ pub(crate) struct Lieux {
     pub cle: Option<PathBuf>,
     /// Des sites dangereux bloqués par Vanguard dans le fichier hosts : les retirer demande l'administrateur.
     pub sites_bloques: bool,
+    /// Les choix notés des Options de défense (Windows, sous HKLM) : une protection de Defender baissée par la
+    /// personne le reste après Vanguard.
+    pub choix_defense: usize,
 }
 
 /// Une tâche du Planificateur de Windows, lue.
@@ -117,6 +120,7 @@ impl Lieux {
             programme,
             cle: crate::reseau::cle_usb(),
             sites_bloques: crate::protection::sites_bloques::bloc_present(),
+            choix_defense: crate::machine::choix_avant::notes().len(),
         })
     }
 
@@ -133,6 +137,7 @@ impl Lieux {
             programme: None,
             cle: Some(racine.join("cle")),
             sites_bloques: false,
+            choix_defense: 0,
         }
     }
 }
@@ -496,6 +501,16 @@ pub(crate) fn recenser(l: &Lieux) -> Recensement {
             "Sites dangereux bloqués dans le fichier hosts : « vanguard sites-dangereux off » les retire (droits d'administrateur), avant de retirer Vanguard. Laissés, ils restent bloqués, sans autre effet.",
             "Dangerous sites blocked in the hosts file: “vanguard dangerous-sites off” removes them (administrator rights), before removing Vanguard. Left there, they stay blocked, with no other effect."
         ).to_string());
+    }
+    // Une baisse de Defender survit à Vanguard : « Rallumer » d'abord, s'il le faut. Les notes (HKLM) et la source
+    // « Vanguard » du journal Application restent, exprès et sans droits pour les retirer d'ici : la trace d'une
+    // baisse doit rester lisible dans l'Observateur d'événements quand Vanguard est parti (journal_evenements.rs).
+    if l.choix_defense > 0 {
+        r.a_faire.push(trf!(
+            "{} réglage(s) de Defender changé(s) par votre choix (Options de défense) le restent après Vanguard : « Rallumer » dans « vanguard options-defense » les remet, avant de le retirer. Leurs notes (HKLM\\SOFTWARE\\Vanguard\\ChoixAvant) et la source « Vanguard » du journal Application restent, exprès : la trace des baisses reste lisible dans l'Observateur d'événements.",
+            "{} Defender setting(s) changed by your choice (Defense options) stay so after Vanguard: “Turn back on” in “vanguard defense-options” restores them, before removing it. Their notes (HKLM\\SOFTWARE\\Vanguard\\ChoixAvant) and the “Vanguard” source of the Application log stay, on purpose: the trace of the lowerings stays readable in Event Viewer.",
+            l.choix_defense
+        ));
     }
     sauvegarde(l, &mut r);
     #[cfg(target_os = "linux")]
@@ -2089,6 +2104,24 @@ mod tests {
         assert!(!recenser(&l).a_faire.iter().any(|x| x.contains("sites-dangereux off")));
         l.sites_bloques = true;
         assert!(recenser(&l).a_faire.iter().any(|x| x.contains("sites-dangereux off")));
+    }
+
+    /// Des choix de Defender notés : la désinstallation dit qu'ils restent, comment les rallumer, et que leurs notes
+    /// et la source du journal restent exprès.
+    #[test]
+    fn choix_de_defense_dits_avant_de_partir() {
+        let mut l = Lieux::jetable(&racine("choix-defense"));
+        assert!(!recenser(&l).a_faire.iter().any(|x| x.contains("options-defense")));
+        l.choix_defense = 2;
+        let a_faire = recenser(&l).a_faire;
+        let x = a_faire
+            .iter()
+            .find(|x| x.contains("options-defense"))
+            .expect("choix dits");
+        assert!(
+            x.starts_with("2 ") && x.contains(r"HKLM\SOFTWARE\Vanguard\ChoixAvant") && x.contains("Rallumer"),
+            "{x}"
+        );
     }
 
     /// Un ordinateur jetable où Vanguard, et une version d'avant, ont tout posé, avec à côté ce qui n'est pas à eux.

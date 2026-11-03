@@ -5,8 +5,8 @@
 #   C1 menu affiché · C2 fenêtre à la hauteur du menu · C3 fenêtre entière dans la zone de travail, à la place où
 #   elle s'est ouverte quand le chef l'a vue avant la retouche (sous Windows, Vanguard ne recentre pas :
 #   src/fenetre.rs, CENTRER) · C4 ↓ jusqu'à « Cet ordinateur » · puis la fenêtre est posée par le pilote en bas à
-#   droite de la zone, comme une personne l'y mettrait · C5 → entre (lignes « Logiciels pas à jour » et « Blocages
-#   de Windows Defender », les deux dernières, propres à Windows) · C6 hauteur du sous-menu, place posée gardée
+#   droite de la zone, comme une personne l'y mettrait · C5 → entre (lignes « Logiciels pas à jour » et « Options
+#   de défense », les deux dernières, propres à Windows) · C6 hauteur du sous-menu, place posée gardée
 #   C7 ← revient : hauteur du menu, fenêtre remontée juste ce qu'il faut pour rester dans la zone · C8 q + Entrée
 #   quitte.
 # Un OK exige le texte vu à l'écran ET l'effet mesuré. Écran illisible ou touches refusées : « SAUTE » avec la raison
@@ -170,7 +170,7 @@ public static class PiloteConsoleVg {
 $textes = @{
     ordinateur = @('Cet ordinateur', 'This computer')
     autreGroupe = @('Virus et logiciels espions', 'Viruses and spyware')
-    defender = @('Blocages de Windows Defender', 'Windows Defender blocking')
+    defender = @('Options de défense', 'Defense options')
     perimes = @('Logiciels pas à jour', 'Outdated software')
     defile = @('ligne(s) plus', 'more line(s)')
 }

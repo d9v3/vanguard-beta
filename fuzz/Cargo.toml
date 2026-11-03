@@ -291,3 +291,10 @@ path = "fuzz_targets/ordres.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "choix_note"
+path = "fuzz_targets/choix_note.rs"
+test = false
+doc = false
+bench = false

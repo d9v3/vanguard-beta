@@ -66,9 +66,8 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
          present) · Flaws in Docker images: known serious or critical flaws (trivy, if present)
        4.9 Outdated software (Windows, macOS): browsers, Office, Acrobat, Java, 7-Zip… and their exploited flaws
          (read-only; vanguard outdated-software)
-       4.10 Windows Defender blocking: password theft, booby-trapped attachments, dangerous sites, ransomware
-       4.11 Defense options (Windows): Defender, ASR rules, firewall per profile, what a policy enforces,
-         third-party antivirus (read-only; vanguard defense-options)
+       4.10 Defense options (Windows): each Defender option, exclusions, ASR rules, firewall per profile, what a
+         policy enforces; lowering shown then confirmed, “Turn back on” (vanguard defense-options)
   5  Network and Internet ›
        5.1 Devices on the network › Network scan (and unmask a password thief like Responder) · All ports of one
          device (deep scan; vanguard devices)

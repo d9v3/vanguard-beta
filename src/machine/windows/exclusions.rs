@@ -1,20 +1,93 @@
 //! Exclusions de Microsoft Defender : un dossier, un programme ou un type de fichier que Defender ne regarde plus. Un
 //! programme malveillant en ajoute pour se cacher (le disque entier, les Téléchargements, PowerShell, les « .exe ») ;
-//! seules les exclusions aussi larges sont signalées, celles d'un jeu ou d'un outil de développement restent.
+//! les exclusions aussi larges sont une alerte. Une exclusion ajoutée par la personne dans les Options de défense
+//! (notée dans ChoixAvant) est dite « par votre choix », une information ; toute autre, celle d'un jeu ou d'un outil
+//! de développement comprise, est signalée comme inconnue, en information aussi (R8) : elle reste, mais se voit.
 
 use super::super::{Constat, alerte};
 use super::ps;
 use super::wmi::Valeur;
-use crate::machine::gestes::{self, GenreExclusion};
+use crate::machine::choix_avant::{self, Note};
+use crate::machine::gestes::{self, GenreExclusion, IdChoix};
 use crate::protection::antivirus::Politiques;
 use crate::risk::Niveau;
-use crate::ui::{affichable, resume, tr, trf};
+use crate::ui::{resume, tr, trf};
 
 /// Les exclusions de Defender. Sans droits administrateur, Windows les cache (« N/A: Must be an administrator… ») :
 /// rien à conclure. Avec un autre antivirus, Get-MpPreference échoue : rien non plus.
-pub(super) fn exclusions() -> Option<Constat> {
-    let [chemins, processus, extensions] = listes()?;
-    juger(&chemins, &processus, &extensions)
+pub(super) fn exclusions() -> Vec<Constat> {
+    let Some(listes) = listes() else {
+        return Vec::new();
+    };
+    juger_avec(&listes, &crate::machine::choix_avant::notes())
+}
+
+/// Une exclusion prête à montrer (R13) : texte rendu affichable et borné, une extension sous la forme « *.exe ».
+fn montree(genre: GenreExclusion, x: &str) -> String {
+    match genre {
+        GenreExclusion::Extension => format!(
+            "*.{}",
+            crate::options_defense::externe(x.trim().trim_start_matches(['*', '.']))
+        ),
+        GenreExclusion::Chemin | GenreExclusion::Processus => crate::options_defense::externe(x),
+    }
+}
+
+/// Le bilan des exclusions avec les notes des choix de la personne (`notes`) : une exclusion notée et présente est
+/// « par votre choix » (information, « Rallumer » la retire) ; une exclusion large sans note, l'alerte de `juger` ;
+/// toute autre exclusion sans note, un signal en information : ajoutée hors de Vanguard, elle reste, mais se voit
+/// (R8). Rien si la liste est cachée.
+pub(super) fn juger_avec(listes: &[Vec<String>; 3], notes: &[(IdChoix, Option<Note>)]) -> Vec<Constat> {
+    if cachee(listes) {
+        return Vec::new();
+    }
+    let mut constats = Vec::new();
+    let mut sans_note: [Vec<String>; 3] = Default::default();
+    let mut inconnues = Vec::new();
+    for ((genre, liste), reste) in GenreExclusion::TOUS.into_iter().zip(listes).zip(sans_note.iter_mut()) {
+        for x in liste.iter().filter(|x| !x.trim().is_empty()) {
+            let id = IdChoix::Exclusion(genre, gestes::EmpreinteElement::de(x));
+            if let Some(n) = choix_avant::note_de(notes, id)
+                && let choix_avant::Lecture::ParChoix(date) = choix_avant::lecture_note(id, n, Some(Some(1)))
+            {
+                let sujet = trf!(
+                    "{} « {} » : ajoutée",
+                    "{} “{}”: added",
+                    crate::options_defense::nom_choix(id),
+                    montree(genre, x)
+                );
+                constats.push(choix_avant::par_votre_choix("Antivirus", id, &sujet, date));
+                continue;
+            }
+            reste.push(x.clone());
+            if !signalee(genre, x) {
+                inconnues.push(montree(genre, x));
+            }
+        }
+    }
+    let [chemins, processus, extensions] = &sans_note;
+    constats.extend(juger(chemins, processus, extensions));
+    if !inconnues.is_empty() {
+        let liste = resume(&inconnues, 4, ", ");
+        constats.push(
+            alerte(
+                "Antivirus",
+                Niveau::Info,
+                trf!(
+                    "Exclusions de Defender ajoutées hors de Vanguard : {liste}. Si c'est vous (un jeu, un outil), rien à faire ; sinon, un programme a pu les ajouter pour se cacher.",
+                    "Defender exclusions added outside Vanguard: {liste}. If it was you (a game, a tool), nothing to do; otherwise, a program may have added them to hide.",
+                ),
+            )
+            .manuel(
+                tr!(
+                    "Si ce n'est pas vous, les retirer dans Sécurité Windows (Protection contre les virus et menaces > Gérer les paramètres > Exclusions), puis lancer une analyse complète",
+                    "If it was not you, remove them in Windows Security (Virus & threat protection > Manage settings > Exclusions), then run a full scan"
+                ),
+                &[],
+            ),
+        );
+    }
+    constats
 }
 
 /// Les trois listes d'exclusions de Defender, telles que lues : chemins, processus, extensions. Cachées sans droits
@@ -149,10 +222,7 @@ pub(super) fn juger(chemins: &[String], processus: &[String], extensions: &[Stri
     let mut lignes = Some(Vec::new());
     for (genre, liste) in GenreExclusion::TOUS.into_iter().zip(&listes) {
         for x in liste.iter().filter(|x| signalee(genre, x)) {
-            montrees.push(match genre {
-                GenreExclusion::Extension => format!("*.{}", affichable(x.trim().trim_start_matches(['*', '.']))),
-                GenreExclusion::Chemin | GenreExclusion::Processus => affichable(x),
-            });
+            montrees.push(montree(genre, x));
             lignes = lignes.and_then(|mut l: Vec<String>| {
                 l.push(gestes::ligne_defender_exclusion_retirer(genre, x)?);
                 Some(l)

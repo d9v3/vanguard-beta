@@ -50,7 +50,7 @@ regle!(
         "Microsoft : Exclusions for Microsoft Defender Antivirus",
         "MITRE ATT&CK T1685"
     ],
-    || exclusions::exclusions().into_iter().collect()
+    exclusions::exclusions
 );
 
 regle!(

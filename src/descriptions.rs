@@ -63,13 +63,9 @@ impl Action {
                 "Compare la version installée des navigateurs, d'Office, d'Acrobat, de Java et d'autres logiciels courants à la dernière publiée. Lecture seule.",
                 "Compares the installed version of browsers, Office, Acrobat, Java and other common software with the latest release. Read-only."
             ),
-            Action::Protection => tr!(
-                "Des blocages supplémentaires de Defender, appliqués après accord et annulables ; proposés seulement si Defender est l'antivirus actif.",
-                "Extra Defender blocking, applied with your consent and undoable; offered only if Defender is the active antivirus."
-            ),
             Action::OptionsDefense => tr!(
-                "Ce que Defender, ses règles ASR et le Pare-feu Windows appliquent vraiment, ce qu'une stratégie impose, la protection contre les falsifications et un antivirus tiers. Lecture seule.",
-                "What Defender, its ASR rules and Windows Firewall really apply, what a policy enforces, tamper protection and a third-party antivirus. Read-only."
+                "Chaque option de Defender, ses exclusions, ses règles ASR et le Pare-feu Windows : ce qui s'applique vraiment, ce qu'une stratégie impose, et vos choix. Une baisse est montrée, puis confirmée.",
+                "Each Defender option, its exclusions, its ASR rules and Windows Firewall: what really applies, what a policy enforces, and your choices. Lowering is shown, then confirmed."
             ),
             Action::Appareils => tr!(
                 "Trouve les appareils branchés à votre réseau et leurs ports ouverts : tout le réseau d'un coup, ou un seul appareil en profondeur.",

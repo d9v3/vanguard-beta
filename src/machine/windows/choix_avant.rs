@@ -10,109 +10,22 @@
 //! Le geste lui-même (`faire_choix`, `rallumer`) passe par un `Monde` : WMI et le registre sous Windows
 //! (`defender_ecriture`), un faux monde dans les essais, si bien que chaque cas se vérifie sur tous les systèmes.
 
-use sha2::{Digest, Sha256};
+#[path = "choix_note.rs"]
+mod note;
 
 use crate::machine::gestes::{IdChoix, Montre, Sens, sens};
 use crate::modele::Echec;
 use crate::ui::{tr, trf, trp};
+#[cfg(windows)]
+pub(crate) use note::lire_valeur;
+pub(crate) use note::{NOTE_MAX, Note, texte_valeur};
 
 /// La clé des notes, sous HKLM (vue 64 bits).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) const CLE: &str = r"SOFTWARE\Vanguard\ChoixAvant";
-/// L'en-tête d'une note, version comprise : une autre version n'est jamais lue.
-const ENTETE: &[u8] = b"VGCHX\x01";
-/// La plus longue note admise : une valeur simple et son identifiant n'en prennent que quelques dizaines d'octets.
-pub(crate) const NOTE_MAX: usize = 4096;
 /// Le plus de valeurs que la clé peut garder : une note neuve au-delà est refusée (`echec note`).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) const VALEURS_MAX: usize = 256;
-/// L'empreinte qui clôt une note.
-const EMPREINTE: usize = 32;
-
-/// Une note « avant » : ce qu'un choix a trouvé, ce qu'il a demandé, et quand.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Note {
-    /// L'identifiant du réglage (`IdChoix::texte`), le nom de la valeur.
-    pub(crate) id: String,
-    /// La valeur trouvée avant la première baisse (`None` : règle ASR absente de la liste).
-    pub(crate) avant: Option<i64>,
-    /// La valeur demandée par la baisse : écrite avant la relecture, elle peut ne pas avoir pris (valeur changée
-    /// pendant le geste, note gardée pour « Rallumer »). Elle sert à lire la note, jamais de cible.
-    pub(crate) posee: i64,
-    /// Secondes depuis 1970 (UTC).
-    pub(crate) date: u64,
-}
-
-fn texte_valeur(v: Option<i64>) -> String {
-    v.map_or_else(|| "absente".to_string(), |n| n.to_string())
-}
-
-/// Un entier décimal écrit par `texte_valeur`, et seulement lui : pas de « + », de zéro de tête ni d'espace.
-#[allow(clippy::option_option)] // None : illisible ; Some(None) : valeur absente
-pub(crate) fn lire_valeur(t: &str) -> Option<Option<i64>> {
-    if t == "absente" {
-        return Some(None);
-    }
-    let n: i64 = t.parse().ok()?;
-    (n.to_string() == t).then_some(Some(n))
-}
-
-impl Note {
-    /// Les octets de la note : en-tête, trois champs (longueur sur 2 octets petit-boutiste, puis le texte ASCII),
-    /// la date sur 8 octets, puis le SHA-256 de tout ce qui précède.
-    pub(crate) fn octets(&self) -> Vec<u8> {
-        let mut o = ENTETE.to_vec();
-        for champ in [self.id.clone(), texte_valeur(self.avant), self.posee.to_string()] {
-            let n = u16::try_from(champ.len()).unwrap_or(u16::MAX);
-            o.extend_from_slice(&n.to_le_bytes());
-            o.extend_from_slice(champ.as_bytes());
-        }
-        o.extend_from_slice(&self.date.to_le_bytes());
-        let empreinte = Sha256::digest(&o);
-        o.extend_from_slice(&empreinte);
-        o
-    }
-
-    /// La note de la valeur `nom`, si et seulement si ses octets en ont la forme exacte : bornée, empreinte juste,
-    /// bonne version, identifiant égal au nom de la valeur (une note copiée sous un autre nom est refusée), texte
-    /// ASCII visible, nombres réécrits à l'identique, rien après. `None` sinon : « Rallumer » vise alors la valeur
-    /// sûre.
-    pub(crate) fn lire(nom: &str, octets: &[u8]) -> Option<Note> {
-        if octets.len() > NOTE_MAX || octets.len() < ENTETE.len() + 6 + 8 + EMPREINTE {
-            return None;
-        }
-        let (corps, empreinte) = octets.split_at(octets.len().checked_sub(EMPREINTE)?);
-        if Sha256::digest(corps).as_slice() != empreinte {
-            return None;
-        }
-        let mut reste = corps.strip_prefix(ENTETE)?;
-        let mut champs = Vec::with_capacity(3);
-        for _ in 0..3 {
-            let (n, suite) = reste.split_first_chunk::<2>()?;
-            let n = usize::from(u16::from_le_bytes(*n));
-            let (texte, suite) = (suite.get(..n)?, suite.get(n..)?);
-            if texte.is_empty() || !texte.iter().all(u8::is_ascii_graphic) {
-                return None;
-            }
-            champs.push(std::str::from_utf8(texte).ok()?);
-            reste = suite;
-        }
-        let date: [u8; 8] = reste.try_into().ok()?;
-        let [id, avant, posee] = champs.as_slice() else {
-            return None;
-        };
-        if *id != nom {
-            return None;
-        }
-        Some(Note {
-            id: (*id).to_string(),
-            avant: lire_valeur(avant)?,
-            posee: lire_valeur(posee)??,
-            date: u64::from_le_bytes(date),
-        })
-    }
-}
-
 /// Ce que le processus élevé lit et écrit pour un choix : Defender et le registre sous Windows, un faux dans les
 /// essais.
 pub(crate) trait Monde {
@@ -150,6 +63,14 @@ pub(crate) enum Issue {
     /// Devenue une baisse depuis l'affichage sans avoir été montrée comme telle, ou une baisse dont la valeur relue
     /// n'est plus celle montrée : refusée, rien d'écrit.
     Change,
+}
+
+/// Une baisse refusée à l'écriture (plan §3.3) : Defender peut juger le geste suspect. Jamais de contournement.
+pub(crate) fn defender_bloque() -> &'static str {
+    tr!(
+        "Defender a bloqué ce changement et l'a peut-être signalé comme une attaque. Vanguard ne cherche pas à le contourner.",
+        "Defender blocked this change and may have reported it as an attack. Vanguard does not try to get around it."
+    )
 }
 
 /// La valeur d'avant telle que le parent la note : « defender-pua=1 », « asr-…=absente ».
@@ -191,7 +112,7 @@ fn changee_pendant(avant: String) -> Issue {
 }
 
 /// La note valide de `id`, si elle existe.
-fn note_valide(m: &mut impl Monde, id: IdChoix) -> Option<Note> {
+pub(crate) fn note_valide(m: &mut impl Monde, id: IdChoix) -> Option<Note> {
     let nom = id.texte();
     m.lire_note(&nom).and_then(|o| Note::lire(&nom, &o))
 }
@@ -327,6 +248,18 @@ pub(crate) fn faire_choix(m: &mut impl Monde, id: IdChoix, cible: i64, montre: O
 /// protection revenue.
 pub(crate) fn rallumer(m: &mut impl Monde, id: IdChoix) -> Issue {
     let note = note_valide(m, id);
+    // Un élément de liste (exclusion, programme permis) n'est retiré que si Vanguard l'a posé ou noté : une
+    // exclusion posée par quelqu'un d'autre passe par le bilan (`defender-exclusion-retirer`), jamais par ici.
+    if id.element() && note.is_none() {
+        return Issue::Echec {
+            avant: None,
+            raison: tr!(
+                "pas posé par Vanguard (aucune note), rien d'écrit",
+                "not set by Vanguard (no note), nothing written"
+            )
+            .to_string(),
+        };
+    }
     let cible = crate::machine::gestes::cible_rallumer(id, note.map(|n| n.avant));
     let Some(lue) = m.lire(id) else {
         return illisible();
@@ -357,6 +290,198 @@ pub(crate) fn rallumer(m: &mut impl Monde, id: IdChoix) -> Issue {
         Some(_) => changee_pendant(avant),
         None => relue_illisible(avant),
     }
+}
+
+/// Le sens de « C'est moi » (`vanguard:choix-noter`) : une baisse, car la note fera dire au bilan « par votre
+/// choix » au lieu d'une alerte. Il n'y a rien à noter si la valeur est au moins la valeur sûre, ou déjà notée telle
+/// quelle ; une valeur illisible reste une baisse (le processus élevé relit, puis refuse).
+#[allow(clippy::option_option)] // None : illisible ; Some(None) : valeur absente
+pub(crate) fn sens_noter(id: IdChoix, lue: Option<Option<i64>>, note: Option<&Note>) -> Sens {
+    let Some(lue) = lue else {
+        return Sens::Baisse;
+    };
+    let deja = matches!((note, lue), (Some(n), Some(v)) if n.posee == v);
+    if lue.is_some() && id.rang(lue) < id.rang(Some(id.sure())) && !deja {
+        Sens::Baisse
+    } else {
+        Sens::Rien
+    }
+}
+
+/// « C'est moi » : note une protection déjà baissée, telle qu'elle a été montrée (`montre`, une baisse avec la valeur
+/// relue), pour que le bilan la dise « par votre choix ». La note dit « avant : la valeur sûre » : « Rallumer » remet
+/// donc la valeur sûre, jamais plus faible. Rien n'est écrit dans Defender.
+pub(crate) fn noter(m: &mut impl Monde, id: IdChoix, montre: Option<Montre>) -> Issue {
+    let Some(lue) = m.lire(id) else {
+        return illisible();
+    };
+    let avant = texte_avant(id, lue);
+    let note = note_valide(m, id);
+    match sens_noter(id, Some(lue), note.as_ref()) {
+        Sens::Rien | Sens::Renforce => {
+            return Issue::Rien(trf!(
+                "rien à noter ({avant}), rien d'écrit",
+                "nothing to note ({avant}), nothing written"
+            ));
+        }
+        Sens::Baisse => {}
+    }
+    if montre
+        != Some(Montre {
+            sens: Sens::Baisse,
+            lue: Some(lue),
+        })
+    {
+        return Issue::Change;
+    }
+    let Some(posee) = lue else {
+        return Issue::Rien(trf!(
+            "rien à noter ({avant}), rien d'écrit",
+            "nothing to note ({avant}), nothing written"
+        ));
+    };
+    let nom = id.texte();
+    let ancienne = m.lire_note(&nom);
+    let octets = Note {
+        id: nom.clone(),
+        avant: Some(id.sure()),
+        posee,
+        date: m.maintenant(),
+    }
+    .octets();
+    if octets.len() > NOTE_MAX
+        || m.ecrire_note(&nom, &octets).is_err()
+        || m.lire_note(&nom).as_deref() != Some(&octets[..])
+    {
+        remettre_note(m, &nom, ancienne.as_deref());
+        return Issue::EchecNote;
+    }
+    m.journal(&trf!(
+        "Vanguard : protection baissée notée « par votre choix » à la demande de la personne, confirmée dans la fenêtre administrateur : {nom}={}. « Rallumer » dans Vanguard la remet.",
+        "Vanguard: lowered protection noted as “your choice” at the person's request, confirmed in the administrator window: {nom}={}. “Turn back on” in Vanguard restores it.",
+        texte_valeur(lue)
+    ));
+    Issue::Fait { avant, note: true }
+}
+
+/// Efface les notes devenues sans objet : la valeur relue est plus forte que celle que la note a posée (Windows ou
+/// quelqu'un l'a rallumée depuis). Une valeur illisible garde la note. Appelé à chaque passage élevé.
+pub(crate) fn nettoyer(m: &mut impl Monde, ids: impl IntoIterator<Item = IdChoix>) {
+    for id in ids {
+        let (Some(note), Some(lue)) = (note_valide(m, id), m.lire(id)) else {
+            continue;
+        };
+        if id.rang(lue) > id.rang(Some(note.posee)) {
+            m.effacer_note(&id.texte());
+        }
+    }
+}
+
+/// Ce que dit une note au bilan, relue avec la valeur actuelle (plan §3.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lecture {
+    /// Encore à la valeur que la note a posée : « par votre choix le `date` ».
+    ParChoix(u64),
+    /// Plus fort que la valeur posée : rallumée depuis, par Windows ou par quelqu'un (note effacée au prochain
+    /// passage élevé).
+    Remontee,
+    /// Ni l'un ni l'autre (illisible, ou une autre valeur aussi faible) : jugée comme sans note.
+    Autre,
+}
+
+/// La lecture d'une note : `lue`, la valeur actuelle (`None` : illisible ; `Some(None)` : règle absente).
+#[allow(clippy::option_option)] // None : illisible ; Some(None) : valeur absente
+pub(crate) fn lecture_note(id: IdChoix, note: &Note, lue: Option<Option<i64>>) -> Lecture {
+    match lue {
+        Some(v) if v == Some(note.posee) => Lecture::ParChoix(note.date),
+        Some(v) if id.rang(v) > id.rang(Some(note.posee)) => Lecture::Remontee,
+        _ => Lecture::Autre,
+    }
+}
+
+/// La note valide d'un réglage parmi celles lues (`notes`).
+pub(crate) fn note_de(notes: &[(IdChoix, Option<Note>)], id: IdChoix) -> Option<&Note> {
+    notes.iter().find(|(i, _)| *i == id).and_then(|(_, n)| n.as_ref())
+}
+
+/// Une date de note (secondes depuis 1970, UTC), à l'heure locale : « 2026-11-03 ».
+pub(crate) fn date_note(secondes: u64) -> String {
+    i64::try_from(secondes)
+        .ok()
+        .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
+        .map_or_else(
+            || "?".to_string(),
+            |d| d.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string(),
+        )
+}
+
+/// La commande « Rallumer » d'un réglage noté, proposée au bilan, jamais faite d'office.
+pub(crate) fn commande_rallumer(id: IdChoix) -> String {
+    format!("vanguard options-defense --rallumer {}", id.texte())
+}
+
+/// Le constat d'une protection baissée par la personne (plan §3.4) : une information, jamais saine ni dans « Tout
+/// corriger » ; « Rallumer » proposé à part. `sujet` : ce qui est baissé, prêt à montrer (« Protection en temps réel :
+/// coupée », une exclusion et son texte). « Si ce n'est pas vous » y est toujours : une note imitée par un programme
+/// administrateur (R3) ne fait pas taire la coupure.
+pub(crate) fn par_votre_choix(categorie: &'static str, id: IdChoix, sujet: &str, date: u64) -> crate::machine::Constat {
+    let date = date_note(date);
+    let protege = crate::options_defense::protege_encore(id);
+    crate::machine::alerte(
+        categorie,
+        crate::risk::Niveau::Info,
+        trf!(
+            "{sujet}, par votre choix le {date}. {protege} Si ce n'est pas vous : Rallumer.",
+            "{sujet}, by your choice on {date}. {protege} If it was not you: Turn back on."
+        ),
+    )
+    .manuel(
+        tr!(
+            "Rallumer (Options de défense), si ce n'est pas vous qui l'avez baissée",
+            "Turn back on (Defense options), if you did not lower it"
+        ),
+        &[&commande_rallumer(id)],
+    )
+}
+
+/// Le constat d'une protection notée mais rallumée depuis (plan §3.4).
+pub(crate) fn rallumee_depuis(categorie: &'static str, nom: &str) -> crate::machine::Constat {
+    crate::machine::ok(
+        categorie,
+        trf!(
+            "{nom} : rallumée depuis votre choix, par Windows ou par quelqu'un. La note sera effacée au prochain passage administrateur.",
+            "{nom}: turned back on since your choice, by Windows or by someone. The note will be cleared at the next administrator pass."
+        ),
+    )
+}
+
+/// Le sujet d'un constat « par votre choix » : le nom du réglage et sa valeur notée (« Protection en temps réel :
+/// coupée »).
+pub(crate) fn sujet_note(id: IdChoix, note: &Note) -> String {
+    format!(
+        "{} : {}",
+        crate::options_defense::nom_choix(id),
+        crate::options_defense::texte_choix(id, Some(Some(note.posee)))
+    )
+}
+
+/// Les constats des notes, pour les réglages que le bilan ne juge pas déjà ailleurs : `lire`, la valeur actuelle
+/// d'un réglage. Une note abîmée, ou dont la valeur ne dit rien (`Lecture::Autre`), ne donne rien ici.
+#[allow(clippy::option_option)] // None : illisible ; Some(None) : valeur absente
+pub(crate) fn constats_des_notes(
+    categorie: &'static str,
+    notes: &[(IdChoix, Option<Note>)],
+    mut lire: impl FnMut(IdChoix) -> Option<Option<i64>>,
+) -> Vec<crate::machine::Constat> {
+    notes
+        .iter()
+        .filter_map(|(id, n)| Some((*id, n.as_ref()?)))
+        .filter_map(|(id, n)| match lecture_note(id, n, lire(id)) {
+            Lecture::ParChoix(date) => Some(par_votre_choix(categorie, id, &sujet_note(id, n), date)),
+            Lecture::Remontee => Some(rallumee_depuis(categorie, &crate::options_defense::nom_choix(id))),
+            Lecture::Autre => None,
+        })
+        .collect()
 }
 
 /// La question d'une liste de baisses, posée une fois : seul un oui (« o », « oui », « y », « yes ») accepte ;
@@ -474,6 +599,8 @@ pub(crate) fn notes() -> Vec<(IdChoix, Option<Note>)> {
 mod tests {
     use super::*;
     use crate::machine::gestes::{ASR_TOUTES, ReglageDefender};
+    use note::{EMPREINTE, ENTETE};
+    use sha2::{Digest, Sha256};
     use std::collections::HashMap;
 
     const PUA: IdChoix = IdChoix::Defender(ReglageDefender::Pua);

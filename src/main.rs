@@ -371,10 +371,6 @@ enum Commande {
         #[arg(long, visible_alias = "remove")]
         retirer: bool,
     },
-    /// Blocages de Windows Defender : règles ASR, protection réseau, logiciels indésirables, accès contrôlé aux
-    /// dossiers. Chacun s'active après accord ; une protection, que Vanguard ne défait pas (Windows seulement).
-    #[command(name = "defender")]
-    Durcir,
     /// Analyse YARA : 308 règles de familles de logiciels malveillants (ReversingLabs) et les empreintes de
     /// MalwareBazaar, en complément de l'antivirus. Sans dossier : téléchargements, bureau, démarrage. Lecture seule.
     Yara {
@@ -471,21 +467,33 @@ enum Commande {
         #[arg(long)]
         json: bool,
     },
-    /// Options de défense de Windows, en lecture seule : Microsoft Defender (mode, temps réel, cloud, protection
-    /// contre les falsifications), règles ASR, Pare-feu Windows par profil, stratégies (GPO, Intune) qui imposent une
-    /// valeur, antivirus tiers, PC géré. Rien n'est changé sans --choisir ou --rallumer (montré, puis confirmé).
-    #[command(name = "options-defense", visible_alias = "defense-options")]
+    /// Options de défense de Windows : Microsoft Defender (mode, temps réel, cloud, protection contre les
+    /// falsifications, chaque option), exclusions, règles ASR, Pare-feu Windows par profil, stratégies (GPO, Intune)
+    /// qui imposent une valeur, antivirus tiers, PC géré. Chaque option se choisit, ce qu'une baisse change est dit ;
+    /// rien n'est changé sans être montré, puis confirmé dans la fenêtre administrateur.
+    #[command(name = "options-defense", visible_aliases = ["defense-options", "defender"])]
     OptionsDefense {
         /// Le résultat en JSON, pour un script (sans chemin, nom de compte ni nom de machine).
         #[arg(long)]
         json: bool,
         /// Un choix de Defender (pua bloquer, temps-reel coupe, asr-GUID audit…), montré puis fait dans la fenêtre
         /// administrateur ; une baisse y est confirmée par un oui tapé, sa valeur d'avant notée.
-        #[arg(long, visible_alias = "choose", num_args = 2, value_names = ["ID", "VALEUR"], conflicts_with_all = ["json", "rallumer"])]
+        #[arg(long, visible_alias = "choose", num_args = 2, value_names = ["ID", "VALEUR"], conflicts_with_all = ["json", "rallumer", "exclure", "permettre", "noter"])]
         choisir: Option<Vec<String>>,
         /// Remet un réglage : la valeur d'avant notée si elle protège, sinon la valeur sûre.
-        #[arg(long, visible_alias = "turn-back-on", value_name = "ID", conflicts_with = "json")]
+        #[arg(long, visible_alias = "turn-back-on", value_name = "ID", conflicts_with_all = ["json", "exclure", "permettre", "noter"])]
         rallumer: Option<String>,
+        /// Une exclusion de l'analyse (dossier, programme ou type, puis le texte), montrée puis confirmée dans la
+        /// fenêtre administrateur comme une baisse.
+        #[arg(long, visible_alias = "exclude", num_args = 2, value_names = ["GENRE", "TEXTE"], conflicts_with_all = ["json", "permettre", "noter"])]
+        exclure: Option<Vec<String>>,
+        /// Un programme permis malgré l'accès contrôlé aux dossiers, montré puis confirmé comme une baisse.
+        #[arg(long, visible_alias = "allow", value_name = "PROGRAMME", conflicts_with_all = ["json", "noter"])]
+        permettre: Option<String>,
+        /// « C'est moi » : une valeur baissée hors de Vanguard, notée « par votre choix » (même question qu'une
+        /// baisse) ; le bilan cesse d'alerter.
+        #[arg(long, visible_alias = "note", value_name = "ID", conflicts_with = "json")]
+        noter: Option<String>,
     },
     /// Préparer un signalement à un éditeur (MSRC, Google, Chrome, Mozilla, Apple, avis GHSA, CERT/CC, CERT-FR,
     /// Vanguard) : trié d'abord (une faille connue se corrige par une mise à jour, un logiciel malveillant n'est pas une
@@ -1756,7 +1764,7 @@ const ANCIENS_NOMS: &[(&str, &str)] = &[
     ("test-connexion", "connexion connection"),
     ("tableau-de-bord", "tableau"),
     ("fiche-ordinateur", "fiche"),
-    ("defender", "durcir harden"),
+    ("options-defense", "defender durcir harden"),
     ("rapport-a-laisser", "a-laisser"),
     ("exporter", "sauvegarder backup"),
     ("jeux", "gaming"),
@@ -1860,7 +1868,6 @@ enum Action {
     SecretsGit,
     Conteneurs,
     LogicielsPerimes,
-    Protection,
     OptionsDefense,
     Appareils,
     Scanner,
@@ -2018,15 +2025,12 @@ const OUTILS: &[Outil] = &[
         precision: ["versions, failles exploitées", "versions, exploited flaws"],
         mots: "logiciel software version périmé outdated mise à jour update navigateur browser chrome edge \
                firefox brave office word excel acrobat reader java kev faille exploitée exploited" },
-    Outil { action: Action::Protection, commande: "defender", groupe: Some(Groupe::Ordinateur), lettre: "",
-        titre: ["Blocages de Windows Defender", "Windows Defender blocking"],
-        precision: ["ASR, réseau, dossiers contrôlés", "ASR, network, folders"],
-        mots: "defender asr bloquer block exploit dossiers contrôlés controlled folder pua" },
     Outil { action: Action::OptionsDefense, commande: "options-defense", groupe: Some(Groupe::Ordinateur), lettre: "",
         titre: ["Options de défense", "Defense options"],
         precision: ["Defender, règles ASR, pare-feu", "Defender, ASR rules, firewall"],
-        mots: "defender asr pare-feu firewall falsifications tamper gpo intune stratégie policy antivirus \
-               temps réel real-time cloud options défense defense lecture read" },
+        mots: "defender antivirus temps réel real-time cloud asr pare-feu firewall exclusion pua couper turn off \
+               rallumer turn on falsifications tamper gpo intune stratégie policy options défense defense bloquer \
+               block exploit dossiers contrôlés controlled folder" },
     // 5 Réseau et Internet.
     Outil { action: Action::Appareils, commande: "appareils", groupe: Some(Groupe::Reseau), lettre: "",
         titre: ["Appareils du réseau", "Devices on the network"],
@@ -2463,8 +2467,6 @@ impl Action {
             #[cfg(not(target_os = "macos"))]
             Action::OptimiserPerformance => reglages_disponibles(optimiser::Categorie::Performance),
             Action::OptimiserConfort => reglages_disponibles(optimiser::Categorie::Confort),
-            // Lire l'état de Defender lance PowerShell : vérifié seulement à l'ouverture (`optimiser::protection`).
-            Action::Protection => cfg!(windows),
             // Lecture de Defender, du pare-feu et du registre de Windows : rien à lire ailleurs.
             Action::OptionsDefense => cfg!(windows),
             // Deux flux du noyau Linux : ailleurs, la ligne ne serait que du bruit.
@@ -2856,7 +2858,6 @@ async fn executer_outil(s: &mut Session, action: Action) {
         #[cfg(not(target_os = "macos"))]
         Action::OptimiserPerformance => optimiser::menu(optimiser::Categorie::Performance),
         Action::OptimiserConfort => optimiser::menu(optimiser::Categorie::Confort),
-        Action::Protection => optimiser::protection(),
         Action::OptionsDefense => options_defense::afficher(),
         Action::DnsRapide => dns_rapide::mesurer_et_proposer(),
         Action::OptimiserAnnuler => optimiser::tout_annuler(),
@@ -3080,8 +3081,6 @@ const AIDES_EN: &[(&str, &str)] = &[
                      \"portal\" reopens the network's login page. Without argument: its state"),
     ("pieges", "Decoy files against ransomware: place them (after your consent), see whether they are intact, or \
                 remove them"),
-    ("defender", "Windows Defender blocking: ASR rules, network protection, unwanted software, controlled folder access. \
-                Each one is turned on after your consent; a protection Vanguard does not undo (Windows only)"),
     ("isoler", "Run an unknown program in a sandbox: no network, home folder hidden"),
     ("fuite-courriel", "Email address leaks: the address is sent to the search service, after your consent"),
     ("integrite", "Critical file integrity: BLAKE3 fingerprint reference, then what changed since"),
@@ -3108,10 +3107,11 @@ const AIDES_EN: &[(&str, &str)] = &[
                            public files downloaded in full, nothing about this computer is sent), each product's \
                            exploited flaws in CISA's catalog, Firefox and Edge checked flaw by flaw (Mozilla \
                            advisories, Microsoft's list). Read-only"),
-    ("options-defense", "Windows defense options, read-only: Microsoft Defender (mode, real-time, cloud, tamper \
-                         protection), ASR rules, Windows Firewall per profile, policies (GPO, Intune) that enforce \
-                         a value, third-party antivirus, managed PC. Nothing is changed without --choisir or \
-                         --rallumer (shown, then confirmed)"),
+    ("options-defense", "Windows defense options: Microsoft Defender (mode, real-time, cloud, tamper protection, \
+                         each option), exclusions, ASR rules, Windows Firewall per profile, policies (GPO, Intune) \
+                         that enforce a value, third-party antivirus, managed PC. Each option can be chosen, what \
+                         lowering changes is said; nothing is changed without being shown, then confirmed in the \
+                         administrator window"),
     ("signaler", "Prepare a report for a vendor (MSRC, Google, Chrome, Mozilla, Apple, GHSA advisory, CERT/CC, \
                   CERT-FR, Vanguard): sorted first (a known flaw is fixed by an update, malware is not a flaw), a \
                   draft in the program's format, what is personal removed, written on this computer and shown in \
@@ -3254,6 +3254,12 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
                                     its previous value noted"),
     ("options-defense", "rallumer", "Turns a setting back on: the noted previous value if it protects, otherwise \
                                      the safe value"),
+    ("options-defense", "exclure", "A scan exclusion (folder, program or type, then the text), shown then confirmed \
+                                    in the administrator window like lowering"),
+    ("options-defense", "permettre", "An app allowed despite controlled folder access, shown then confirmed like \
+                                      lowering"),
+    ("options-defense", "noter", "“It was me”: a value lowered outside Vanguard, noted “your choice” (same question \
+                                  as lowering); the check stops alerting"),
     ("signaler", "incident", "The identifier of a log event (vanguard events): its incident is used"),
     ("signaler", "outil", "The last examination of a tool (PRO-ESP-001, PRO-PER-001, PRO-COU-001)"),
     ("signaler", "programme", "The program: msrc, google, chrome, mozilla, apple, ghsa, cert-cc, cert-fr or vanguard"),
@@ -3823,6 +3829,19 @@ async fn main() {
         Some(Commande::OptionsDefense { rallumer: Some(id), .. }) => {
             machine::quitter(i32::from(!options_defense::rallumer(&id)))
         }
+        Some(Commande::OptionsDefense { exclure: Some(e), .. }) => {
+            let (genre, texte) = (
+                e.first().map_or("", String::as_str),
+                e.get(1).map_or("", String::as_str),
+            );
+            machine::quitter(i32::from(!options_defense::exclure(genre, texte)));
+        }
+        Some(Commande::OptionsDefense { permettre: Some(p), .. }) => {
+            machine::quitter(i32::from(!options_defense::permettre(&p)))
+        }
+        Some(Commande::OptionsDefense { noter: Some(id), .. }) => {
+            machine::quitter(i32::from(!options_defense::noter(&id)))
+        }
         Some(Commande::OptionsDefense { json: false, .. }) => options_defense::afficher(),
         Some(Commande::OptionsDefense { json: true, .. }) => options_defense::afficher_json(),
         Some(Commande::Signaler {
@@ -3905,7 +3924,6 @@ async fn main() {
         },
         Some(Commande::Isoler { fichier }) => protection::isoler::isoler(&fichier),
         Some(Commande::Pieges { retirer }) => protection::pieges::commande(retirer),
-        Some(Commande::Durcir) => optimiser::protection(),
         // La portée vient des options ; le menu la demande (`yara::menu`), puis lance la même analyse.
         Some(Commande::Yara { complet, dossier }) => protection::yara::analyser(&portee(dossier, complet)),
         Some(Commande::Memoire) => protection::memoire::analyser(),
@@ -4194,7 +4212,6 @@ mod tests_menu {
     fn lignes_propres_a_un_systeme_en_fin() {
         let propres = [
             Action::LogicielsPerimes,
-            Action::Protection,
             Action::OptionsDefense,
             Action::Veilleur,
             Action::OptimiserConfidentialite,
@@ -4222,20 +4239,17 @@ mod tests_menu {
         );
     }
 
-    /// Le test de la VM lit Defender en 4.10 : toujours là sous Windows, juste après les logiciels pas à jour.
+    /// Le test de la VM ouvre les Options de défense en 4.10 : toujours là sous Windows, juste après les logiciels
+    /// pas à jour, à la place des anciens « Blocages de Windows Defender ».
     #[test]
-    fn defender_toujours_en_4_10_sous_windows() {
+    fn options_de_defense_toujours_en_4_10_sous_windows() {
         assert_eq!(
-            touche_de(Action::Protection).as_deref(),
+            touche_de(Action::OptionsDefense).as_deref(),
             cfg!(windows).then_some("4.10")
         );
         assert_eq!(
             touche_de(Action::LogicielsPerimes).as_deref(),
             cfg!(any(windows, target_os = "macos")).then_some("4.9")
-        );
-        assert_eq!(
-            touche_de(Action::OptionsDefense).as_deref(),
-            cfg!(windows).then_some("4.11")
         );
     }
 

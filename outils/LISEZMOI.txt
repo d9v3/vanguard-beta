@@ -68,9 +68,8 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
          (et gitleaks, s'il est là) · Failles des images Docker : failles connues, graves ou critiques (trivy)
        4.9 Logiciels pas à jour (Windows, macOS) : navigateurs, Office, Acrobat, Java, 7-Zip… et leurs failles
          exploitées (lecture seule ; vanguard logiciels-perimes)
-       4.10 Blocages de Windows Defender : vol de mots de passe, pièces jointes piégées, sites dangereux, rançongiciels
-       4.11 Options de défense (Windows) : Defender, règles ASR, pare-feu par profil, ce qu'une stratégie impose,
-         antivirus tiers (lecture seule ; vanguard options-defense)
+       4.10 Options de défense (Windows) : chaque option de Defender, exclusions, règles ASR, pare-feu par profil,
+         ce qu'une stratégie impose ; une baisse montrée puis confirmée, « Rallumer » (vanguard options-defense)
   5  Réseau et Internet ›
        5.1 Appareils du réseau › Scan du réseau (et démasquer un voleur de mots de passe comme Responder) ·
          Tous les ports d'un appareil (scan approfondi ; vanguard appareils)

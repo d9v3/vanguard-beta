@@ -1,15 +1,18 @@
-//! Options de défense, en lecture seule : ce que Microsoft Defender, ses règles ASR et le Pare-feu Windows appliquent
-//! vraiment, ce qu'une stratégie (GPO, Intune) impose, la protection contre les falsifications, un antivirus tiers, et
-//! si le PC est géré par une organisation. Les lectures sont dans `machine::windows::defense_etat` (WMI natif,
-//! INetFwPolicy2, registre) ; ici, le modèle, son interprétation, l'écran et le JSON, testés sur tous les systèmes.
+//! Options de défense : ce que Microsoft Defender, ses règles ASR et le Pare-feu Windows appliquent vraiment, ce
+//! qu'une stratégie (GPO, Intune) impose, la protection contre les falsifications, un antivirus tiers, et si le PC est
+//! géré par une organisation ; puis les choix de la personne. Les lectures sont dans `machine::windows::defense_etat`
+//! (WMI natif, INetFwPolicy2, registre) ; ici, le modèle, son interprétation, l'écran et le JSON, testés sur tous les
+//! systèmes.
 //!
-//! L'écran n'écrit rien. Changer une option passe par les choix de la personne (`vanguard:defender-choix`,
-//! `vanguard:defender-asr-choix`) et « Rallumer » (`vanguard:rallumer`), faits dans la fenêtre administrateur : une
-//! baisse y est montrée, puis confirmée, et sa valeur d'avant notée (`machine::choix_avant`). Une mesure qui manque
+//! L'écran (`ecran`) ne fait que choisir. Changer une option passe par les choix de la personne
+//! (`vanguard:defender-choix`, `vanguard:defender-asr-choix`, `vanguard:defender-exclusion-ajouter`,
+//! `vanguard:defender-dossiers-autoriser`, `vanguard:choix-noter`) et « Rallumer » (`vanguard:rallumer`), faits dans
+//! la fenêtre administrateur : une baisse y est montrée, puis confirmée, et sa valeur d'avant notée
+//! (`machine::choix_avant`). Une mesure qui manque
 //! se dit « non vérifié », jamais saine. Le JSON ne porte que des identifiants et des nombres :
 //! aucun chemin, nom de compte, de machine, de domaine ni d'antivirus.
 
-use crate::machine::gestes::{ChoixAsr, ChoixDefender, IdChoix, ReglageDefender};
+use crate::machine::gestes::{ChoixAsr, ChoixDefender, GenreExclusion, IdChoix, ReglageDefender};
 use crate::ui::{ACCENT, DISCRET, GRIS, RESET, VERT, largeur_affichee};
 use crate::{tr, trf};
 
@@ -870,8 +873,8 @@ fn effet_non_verifie() -> &'static str {
 fn imposee(lignes: &mut Vec<String>, oui: Option<bool>) {
     let texte = match oui {
         Some(true) => tr!(
-            "↳ imposé par une stratégie (GPO ou Intune) : Windows garde la valeur de la stratégie.",
-            "↳ enforced by a policy (GPO or Intune): Windows keeps the policy's value."
+            "↳ imposé par une stratégie (GPO ou Intune) : Windows garde la valeur de la stratégie, quoi que Vanguard écrive.",
+            "↳ enforced by a policy (GPO or Intune): Windows keeps the policy's value, whatever Vanguard writes."
         ),
         None => tr!(
             "↳ stratégie (GPO ou Intune) : non vérifiée.",
@@ -893,27 +896,33 @@ fn oui_non(v: Option<bool>) -> &'static str {
 /// Les lignes de l'écran, couleurs comprises, chacune dans `ui::LARGEUR` colonnes (le titre est à part).
 pub(crate) fn lignes(e: &Etat) -> Vec<String> {
     let mut l = Vec::new();
-    l.push(format!(
-        "  {GRIS}{}{RESET}",
-        tr!(
-            "Lecture seule : rien n'est changé ici.",
-            "Read-only: nothing is changed here."
-        )
-    ));
     section_defender(&mut l, e);
     section_asr(&mut l, e);
     section_pare_feu(&mut l, e);
     section_centre(&mut l, e);
     section_gestion(&mut l, e);
-    l.push(String::new());
-    l.push(format!(
-        "  {GRIS}{}{RESET}",
-        tr!(
-            "Pour renforcer les blocages de Defender : vanguard defender (4.10).",
-            "To strengthen Defender blocking: vanguard defender (4.10)."
-        )
-    ));
     l
+}
+
+/// Ce que dit un Defender qui ne protège pas (plan §3.3, antivirus tiers) ; `None` s'il est actif ou illisible.
+fn texte_mode(e: &Etat) -> Option<String> {
+    match e.mode() {
+        ModeDefender::Passif | ModeDefender::BlocageEdr => {
+            let nom = nom_du_tiers(e);
+            Some(trf!(
+                "Defender est en mode passif : {nom} est votre antivirus. Les réglages de Defender et les règles ASR n'ont pas d'effet tant que {nom} protège ; réglez-le dans son propre programme. Le pare-feu reste réglable ici.",
+                "Defender is in passive mode: {nom} is your antivirus. Defender settings and ASR rules have no effect while {nom} protects you; adjust it in its own program. The firewall can still be adjusted here."
+            ))
+        }
+        ModeDefender::Coupe => Some(
+            tr!(
+                "Defender est coupé : ses réglages et ses règles ASR n'ont pas d'effet.",
+                "Defender is off: its settings and ASR rules have no effect."
+            )
+            .to_string(),
+        ),
+        ModeDefender::Actif | ModeDefender::Illisible => None,
+    }
 }
 
 fn section_defender(l: &mut Vec<String>, e: &Etat) {
@@ -932,27 +941,8 @@ fn section_defender(l: &mut Vec<String>, e: &Etat) {
         texte,
         style,
     ));
-    match mode {
-        ModeDefender::Passif | ModeDefender::BlocageEdr => {
-            let nom = nom_du_tiers(e);
-            note(
-                l,
-                &trf!(
-                    "Defender est en mode passif : {nom} est votre antivirus. Les réglages de Defender et les règles ASR n'ont pas d'effet tant que {nom} protège ; réglez-le dans son propre programme. Le pare-feu reste réglable ici.",
-                    "Defender is in passive mode: {nom} is your antivirus. Defender settings and ASR rules have no effect while {nom} protects you; adjust it in its own program. The firewall can still be adjusted here."
-                ),
-                GRIS,
-            );
-        }
-        ModeDefender::Coupe => note(
-            l,
-            tr!(
-                "Defender est coupé : ses réglages et ses règles ASR n'ont pas d'effet.",
-                "Defender is off: its settings and ASR rules have no effect."
-            ),
-            GRIS,
-        ),
-        _ => {}
+    if let Some(t) = texte_mode(e) {
+        note(l, &t, GRIS);
     }
     let statut = e.statut.as_ref();
     let falsif = statut.and_then(|s| s.falsifications);
@@ -1440,7 +1430,73 @@ fn opt_de(r: ReglageDefender) -> Opt {
         ReglageDefender::Cfa => Opt::Dossiers,
         ReglageDefender::Np => Opt::Reseau,
         ReglageDefender::Pua => Opt::Pua,
+        ReglageDefender::Echantillons => Opt::Echantillons,
+        ReglageDefender::Comportement => Opt::Comportement,
+        ReglageDefender::Telechargements => Opt::Telechargements,
+        ReglageDefender::Scripts => Opt::Scripts,
+        ReglageDefender::PremiereVue => Opt::PremiereVue,
     }
+}
+
+/// Le réglage des choix d'une option de l'écran (les dix ont le leur).
+pub(crate) fn reglage_de(o: Opt) -> ReglageDefender {
+    match o {
+        Opt::TempsReel => ReglageDefender::TempsReel,
+        Opt::Cloud => ReglageDefender::Maps,
+        Opt::Dossiers => ReglageDefender::Cfa,
+        Opt::Reseau => ReglageDefender::Np,
+        Opt::Pua => ReglageDefender::Pua,
+        Opt::Echantillons => ReglageDefender::Echantillons,
+        Opt::Comportement => ReglageDefender::Comportement,
+        Opt::Telechargements => ReglageDefender::Telechargements,
+        Opt::Scripts => ReglageDefender::Scripts,
+        Opt::PremiereVue => ReglageDefender::PremiereVue,
+    }
+}
+
+/// Le plus de colonnes qu'un texte venu d'ailleurs (chemin exclu, programme permis) prend à l'écran (R13).
+const TEXTE_EXTERNE_MAX: usize = 60;
+
+/// Un texte venu d'ailleurs, prêt à montrer : caractères piégés remplacés, coupé à `TEXTE_EXTERNE_MAX` colonnes.
+pub(crate) fn externe(texte: &str) -> String {
+    crate::ui::couper(&crate::ui::affichable(texte), TEXTE_EXTERNE_MAX)
+}
+
+/// Le genre d'une exclusion, en mots.
+pub(crate) fn nom_genre(g: GenreExclusion) -> &'static str {
+    match g {
+        GenreExclusion::Chemin => tr!("dossier ou fichier", "folder or file"),
+        GenreExclusion::Processus => tr!("programme", "program"),
+        GenreExclusion::Extension => tr!("type de fichier", "file type"),
+    }
+}
+
+/// L'avertissement d'une exclusion large (R8), dit avant la question.
+pub(crate) fn avertissement_large() -> &'static str {
+    tr!(
+        "⚠ EXCLUSION LARGE : Defender n'examinera plus une grande partie du PC (un disque entier, Windows, les téléchargements, le dossier temporaire, un interpréteur ou tout un type de programme). Les virus s'y cachent souvent. N'acceptez que si vous savez exactement pourquoi.",
+        "⚠ BROAD EXCLUSION: Defender will stop scanning a large part of the PC (a whole drive, Windows, downloads, the temporary folder, an interpreter or a whole type of program). Viruses often hide there. Only accept if you know exactly why."
+    )
+}
+
+/// Ce que la fenêtre administrateur montre pour une exclusion ajoutée : son genre et son texte rendu affichable et
+/// borné (R13). L'avertissement d'une exclusion large vient avant la question (`avertissement_large`).
+pub(crate) fn texte_ajout_exclusion(g: GenreExclusion, texte: &str) -> String {
+    let t = externe(texte);
+    trf!(
+        "Exclusion de l'analyse ({}) : AJOUTER « {t} »",
+        "Scan exclusion ({}): ADD “{t}”",
+        nom_genre(g)
+    )
+}
+
+/// Ce que la fenêtre administrateur montre pour un programme permis malgré l'accès contrôlé aux dossiers.
+pub(crate) fn texte_autoriser_dossiers(texte: &str) -> String {
+    let t = externe(texte);
+    trf!(
+        "Accès contrôlé aux dossiers : PERMETTRE à « {t} » d'écrire dans vos dossiers protégés",
+        "Controlled folder access: ALLOW “{t}” to write to your protected folders"
+    )
 }
 
 /// Le nom d'un réglage des choix, pour la fenêtre administrateur et les phrases d'une liste.
@@ -1451,6 +1507,12 @@ pub(crate) fn nom_choix(id: IdChoix) -> String {
             let n = nom_asr(g).unwrap_or("?");
             trf!("Règle ASR « {n} »", "ASR rule “{n}”")
         }
+        IdChoix::Exclusion(g, _) => trf!("Exclusion de l'analyse ({})", "Scan exclusion ({})", nom_genre(g)),
+        IdChoix::DossiersAutorise(_) => tr!(
+            "Programme permis (accès contrôlé aux dossiers)",
+            "Allowed app (controlled folder access)"
+        )
+        .to_string(),
     }
 }
 
@@ -1465,21 +1527,132 @@ pub(crate) fn texte_choix(id: IdChoix, v: Option<Option<i64>>) -> String {
         }
         (IdChoix::Asr(_), Some(None)) => tr!("absente de la liste (coupée)", "not listed (off)").to_string(),
         (IdChoix::Asr(_), Some(v)) => ActionAsr::depuis(v).texte(),
+        (IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_), Some(Some(0))) => tr!("absente", "absent").to_string(),
+        (IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_), Some(Some(1))) => {
+            tr!("présente", "present").to_string()
+        }
+        (IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_), Some(v)) => {
+            EtatOpt::Autre(v.unwrap_or(-1)).texte(false)
+        }
     }
 }
 
-/// Ce qui protège encore quand `id` est baissé, dit avant la question : jamais « rien », toujours la suite.
+/// Ce qui protège encore quand `id` est baissé (plan §2.1), dit avant la question et dans le bilan : jamais
+/// « rien », toujours la suite.
 pub(crate) fn protege_encore(id: IdChoix) -> &'static str {
     match id {
         IdChoix::Defender(ReglageDefender::TempsReel) => tr!(
-            "Restent : le Pare-feu Windows, SmartScreen et les analyses à la demande ; Windows peut remettre le temps réel de lui-même. « Rallumer » dans Vanguard le remet.",
-            "Still on: Windows Firewall, SmartScreen and on-demand scans; Windows may turn real-time protection back on by itself. “Turn back on” in Vanguard restores it."
+            "Ce qui protège encore : SmartScreen, le pare-feu, l'analyse à la demande, la protection de Vanguard. Ne protègent plus : les règles ASR, l'accès contrôlé aux dossiers, la protection réseau, le blocage à la première détection. Windows peut le rallumer de lui-même.",
+            "What still protects you: SmartScreen, the firewall, on-demand scans, Vanguard's protection. No longer protecting: ASR rules, controlled folder access, network protection, block at first sight. Windows may turn it back on by itself."
         ),
-        _ => tr!(
-            "Restent : la protection en temps réel, le Pare-feu Windows et les autres règles. « Rallumer » dans Vanguard le remet.",
-            "Still on: real-time protection, Windows Firewall and the other rules. “Turn back on” in Vanguard restores it."
+        IdChoix::Defender(ReglageDefender::Maps) => tr!(
+            "Ce qui protège encore : les signatures locales, le temps réel, les règles ASR. Le blocage à la première détection ne marche plus.",
+            "What still protects you: local signatures, real-time protection, ASR rules. Block at first sight no longer works."
+        ),
+        IdChoix::Defender(ReglageDefender::Echantillons) => tr!(
+            "Ce qui protège encore : tout le reste. C'est surtout un choix de vie privée : seule l'analyse des fichiers inconnus par le cloud est plus lente ou absente.",
+            "What still protects you: everything else. It is mostly a privacy choice: only the cloud analysis of unknown files is slower or missing."
+        ),
+        IdChoix::Defender(ReglageDefender::Pua) => tr!(
+            "Ce qui protège encore : le temps réel contre les vrais virus, le filtre de SmartScreen dans Edge (s'il est allumé).",
+            "What still protects you: real-time protection against real viruses, SmartScreen's filter in Edge (if on)."
+        ),
+        IdChoix::Defender(ReglageDefender::Np) => tr!(
+            "Ce qui protège encore : SmartScreen dans Edge, le DNS protecteur de Vanguard s'il est posé, les listes noires de Vanguard.",
+            "What still protects you: SmartScreen in Edge, Vanguard's protective DNS if set, Vanguard's blocklists."
+        ),
+        IdChoix::Defender(ReglageDefender::Cfa) => tr!(
+            "Ce qui protège encore : le temps réel, les pièges contre les rançongiciels de Vanguard (canaris), vos sauvegardes.",
+            "What still protects you: real-time protection, Vanguard's ransomware traps (canaries), your backups."
+        ),
+        IdChoix::DossiersAutorise(_) => tr!(
+            "Ce qui protège encore : le reste de l'accès contrôlé aux dossiers ; seul ce programme y écrit librement.",
+            "What still protects you: the rest of controlled folder access; only this program writes there freely."
+        ),
+        IdChoix::Defender(ReglageDefender::Comportement) => tr!(
+            "Ce qui protège encore : les signatures, le cloud, les règles ASR (en partie).",
+            "What still protects you: signatures, the cloud, ASR rules (in part)."
+        ),
+        IdChoix::Defender(ReglageDefender::Telechargements) => tr!(
+            "Ce qui protège encore : SmartScreen, le temps réel à l'ouverture du fichier.",
+            "What still protects you: SmartScreen, real-time protection when the file is opened."
+        ),
+        IdChoix::Defender(ReglageDefender::Scripts) => tr!(
+            "Ce qui protège encore : AMSI reste actif pour les autres moteurs ; le temps réel.",
+            "What still protects you: AMSI stays on for the other engines; real-time protection."
+        ),
+        IdChoix::Defender(ReglageDefender::PremiereVue) => tr!(
+            "Ce qui protège encore : le cloud (sans attente), les signatures.",
+            "What still protects you: the cloud (without waiting), signatures."
+        ),
+        IdChoix::Exclusion(..) => tr!(
+            "Ce qui protège encore : tout, sauf pour ce qui est exclu.",
+            "What still protects you: everything, except for what is excluded."
+        ),
+        IdChoix::Asr(_) => tr!(
+            "Ce qui protège encore : la protection en temps réel, le pare-feu et les autres règles.",
+            "What still protects you: real-time protection, the firewall and the other rules."
         ),
     }
+}
+
+/// Ce qu'une baisse change, dit sous la liste des valeurs (plan §3.2) : avec ce qui protège encore.
+pub(crate) fn effet_baisse(id: IdChoix) -> String {
+    let effet = match id {
+        IdChoix::Defender(ReglageDefender::TempsReel) => tr!(
+            "Couper : Defender n'examine plus les fichiers à l'ouverture. Les règles ASR, l'accès contrôlé aux dossiers et la protection réseau ne bloquent plus tant qu'elle est coupée.",
+            "Turn off: Defender no longer scans files when they open. ASR rules, controlled folder access and network protection stop blocking while it is off."
+        ),
+        IdChoix::Defender(ReglageDefender::Maps) => tr!(
+            "Couper ou baisser : Defender ne demande plus l'avis du cloud de Microsoft sur un fichier inconnu.",
+            "Turn off or lower: Defender no longer asks Microsoft's cloud about an unknown file."
+        ),
+        IdChoix::Defender(ReglageDefender::Echantillons) => tr!(
+            "« Jamais » : aucun fichier n'est envoyé à Microsoft pour analyse ; « toujours demander » : Windows vous demande avant chaque envoi.",
+            "“Never”: no file is sent to Microsoft for analysis; “always ask”: Windows asks you before each submission."
+        ),
+        IdChoix::Defender(ReglageDefender::Pua) => tr!(
+            "Couper : les logiciels publicitaires, barres d'outils et autres programmes indésirables ne sont plus bloqués.",
+            "Turn off: adware, toolbars and other unwanted programs are no longer blocked."
+        ),
+        IdChoix::Defender(ReglageDefender::Np) => tr!(
+            "Couper : les sites dangereux connus ne sont plus bloqués pour les programmes autres qu'Edge.",
+            "Turn off: known dangerous sites are no longer blocked for programs other than Edge."
+        ),
+        IdChoix::Defender(ReglageDefender::Cfa) => tr!(
+            "Couper : n'importe quel programme peut de nouveau modifier vos Documents, Images et autres dossiers protégés.",
+            "Turn off: any program can again change your Documents, Pictures and other protected folders."
+        ),
+        IdChoix::Defender(ReglageDefender::Comportement) => tr!(
+            "Couper : Defender ne surveille plus ce que font les programmes en marche.",
+            "Turn off: Defender no longer watches what running programs do."
+        ),
+        IdChoix::Defender(ReglageDefender::Telechargements) => tr!(
+            "Couper : les fichiers téléchargés et les pièces jointes ne sont plus examinés à leur arrivée.",
+            "Turn off: downloaded files and attachments are no longer scanned when they arrive."
+        ),
+        IdChoix::Defender(ReglageDefender::Scripts) => tr!(
+            "Couper : Defender n'examine plus les scripts (PowerShell, JavaScript, VBScript) avant qu'ils tournent.",
+            "Turn off: Defender no longer scans scripts (PowerShell, JavaScript, VBScript) before they run."
+        ),
+        IdChoix::Defender(ReglageDefender::PremiereVue) => tr!(
+            "Couper : un fichier inconnu n'est plus retenu le temps que le cloud l'examine.",
+            "Turn off: an unknown file is no longer held while the cloud examines it."
+        ),
+        IdChoix::Exclusion(..) => tr!(
+            "Ajouter : Defender n'examine plus ce dossier, ce programme ou ce type de fichier.",
+            "Add: Defender no longer scans this folder, program or file type."
+        ),
+        IdChoix::DossiersAutorise(_) => tr!(
+            "Permettre : ce programme peut modifier vos dossiers protégés.",
+            "Allow: this program can change your protected folders."
+        ),
+        IdChoix::Asr(_) => tr!(
+            "Couper ou passer en audit : la règle ne bloque plus.",
+            "Turn off or set to audit: the rule no longer blocks."
+        ),
+    };
+    format!("{effet} {}", protege_encore(id))
 }
 
 /// L'identifiant d'un réglage des choix tel que la personne l'écrit (`temps-reel`, `pua`, `asr-<GUID>`, ou le
@@ -1504,7 +1677,52 @@ pub(crate) fn ligne_choix(id: &str, valeur: &str) -> Option<String> {
             let c = ChoixAsr::TOUS.into_iter().find(|c| c.mot() == v)?;
             crate::machine::gestes::ligne_baisse_asr(g, c)
         }
+        // Un élément de liste s'ajoute par son texte (`ligne_exclure`, `ligne_permettre`), jamais par son empreinte.
+        IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) => None,
     }
+}
+
+/// Le genre d'exclusion tel que la personne l'écrit : `chemin` ou `dossier`, `processus` ou `programme`,
+/// `extension` ou `type`.
+fn genre_de(mot: &str) -> Option<GenreExclusion> {
+    match mot.trim().to_lowercase().as_str() {
+        "chemin" | "dossier" | "fichier" | "path" | "folder" | "file" => Some(GenreExclusion::Chemin),
+        "processus" | "programme" | "process" | "program" => Some(GenreExclusion::Processus),
+        "extension" | "type" => Some(GenreExclusion::Extension),
+        _ => None,
+    }
+}
+
+/// La ligne d'une exclusion ajoutée (`--exclure <genre> <texte>`, ou l'écran) ; `None` pour un genre inconnu ou un
+/// texte refusé (vide, trop long, caractère de contrôle). Une extension s'écrit sans son point.
+pub(crate) fn ligne_exclure(genre: &str, texte: &str) -> Option<String> {
+    ligne_exclusion(genre_de(genre)?, texte)
+}
+
+/// Le texte d'une exclusion tel qu'il est envoyé et noté : sans espaces autour, une extension sans son point.
+fn texte_exclusion(g: GenreExclusion, texte: &str) -> &str {
+    let t = texte.trim();
+    if g == GenreExclusion::Extension {
+        t.trim_start_matches('.')
+    } else {
+        t
+    }
+}
+
+/// La ligne d'une exclusion d'un genre connu (`ligne_exclure`, l'écran).
+fn ligne_exclusion(g: GenreExclusion, texte: &str) -> Option<String> {
+    crate::machine::gestes::ligne_ajout_exclusion(g, texte_exclusion(g, texte))
+}
+
+/// La ligne d'un programme permis malgré l'accès contrôlé aux dossiers (`--permettre <programme>`, ou l'écran).
+pub(crate) fn ligne_permettre(programme: &str) -> Option<String> {
+    crate::machine::gestes::ligne_autoriser_dossiers(programme.trim())
+}
+
+/// La ligne « C'est moi » (`--noter <id>`, ou l'écran) : la valeur actuelle, déjà baissée hors de Vanguard, notée
+/// « par votre choix » dans la fenêtre administrateur, avec la même question qu'une baisse (P11).
+pub(crate) fn ligne_noter(id: &str) -> Option<String> {
+    id_de(id).map(crate::machine::gestes::ligne_noter)
 }
 
 /// Les identifiants et valeurs admis, pour l'aide d'une commande refusée.
@@ -1516,6 +1734,7 @@ fn aide_choix() -> String {
     }
     let mots: Vec<&str> = ChoixAsr::TOUS.iter().map(|c| c.mot()).collect();
     l.push(format!("  asr-<GUID> : {}", mots.join(", ")));
+    l.push("  --exclure <dossier|programme|type> <texte> ; --permettre <programme> ; --noter <id>".to_string());
     l.join("\n")
 }
 
@@ -1526,6 +1745,43 @@ pub fn choisir(id: &str, valeur: &str) -> bool {
         eprintln!(
             "{}\n{}",
             tr!("Choix inconnu. Admis :", "Unknown choice. Allowed:"),
+            aide_choix()
+        );
+        return false;
+    };
+    appliquer_choix(ligne)
+}
+
+/// `vanguard options-defense --exclure <genre> <texte>` : une exclusion de l'analyse, montrée puis confirmée dans
+/// la fenêtre administrateur comme toute baisse.
+pub fn exclure(genre: &str, texte: &str) -> bool {
+    let Some(ligne) = ligne_exclure(genre, texte) else {
+        eprintln!(
+            "{}\n{}",
+            tr!("Exclusion refusée. Admis :", "Exclusion refused. Allowed:"),
+            aide_choix()
+        );
+        return false;
+    };
+    appliquer_choix(ligne)
+}
+
+/// `vanguard options-defense --permettre <programme>` : un programme permis malgré l'accès contrôlé aux dossiers,
+/// montré puis confirmé comme toute baisse.
+pub fn permettre(programme: &str) -> bool {
+    let Some(ligne) = ligne_permettre(programme) else {
+        eprintln!("{}", tr!("Programme refusé.", "Program refused."));
+        return false;
+    };
+    appliquer_choix(ligne)
+}
+
+/// `vanguard options-defense --noter <id>` : « C'est moi » (P11).
+pub fn noter(id: &str) -> bool {
+    let Some(ligne) = ligne_noter(id) else {
+        eprintln!(
+            "{}\n{}",
+            tr!("Réglage inconnu. Admis :", "Unknown setting. Allowed:"),
             aide_choix()
         );
         return false;
@@ -1568,16 +1824,12 @@ fn appliquer_choix(ligne: String) -> bool {
     }
 }
 
-/// L'écran (menu 4.11, `vanguard options-defense`).
+/// L'écran (menu 4.10, `vanguard options-defense`).
 pub fn afficher() {
-    crate::ui::titre(titre());
     #[cfg(windows)]
-    {
-        let e = crate::machine::windows::defense_etat::lire();
-        for l in lignes(&e) {
-            println!("{l}");
-        }
-    }
+    ecran::ecran();
+    #[cfg(not(windows))]
+    crate::ui::titre(titre());
     #[cfg(not(windows))]
     crate::ui::afficher_aligne(
         "  ",
@@ -1599,6 +1851,9 @@ pub fn afficher_json() {
     println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+mod ecran;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1609,7 +1864,7 @@ mod tests {
 
     /// Un PC courant : Defender actif, Tamper active par la personne, deux règles qui bloquent, une en audit, une
     /// inconnue ; le profil public courant, le domaine coupé et imposé par une GPO.
-    fn courant() -> Etat {
+    pub(super) fn courant() -> Etat {
         let mut valeurs = [Some(0); 10];
         valeurs[1] = Some(2); // cloud avancé
         valeurs[2] = Some(1); // échantillons sûrs
@@ -1939,7 +2194,8 @@ mod tests {
     #[test]
     fn ecran_d_un_pc_courant() {
         let l = lignes(&courant()).join("\n");
-        assert!(l.contains("Lecture seule"));
+        // L'écran change les réglages : plus de « lecture seule », plus de renvoi à l'ancien outil.
+        assert!(!l.contains("Lecture seule") && !l.contains("vanguard defender"));
         assert!(l.contains("actif"));
         assert!(l.contains("avancée"));
         assert!(l.contains("Public (réseau actuel)"));
@@ -1949,7 +2205,7 @@ mod tests {
         assert!(l.contains("1 dossier(s)"));
         assert!(l.contains("n'est géré par aucune organisation"));
         let en = crate::langue::en_anglais(|| lignes(&courant()).join("\n"));
-        assert!(en.contains("Read-only"));
+        assert!(!en.contains("Read-only"));
         assert!(en.contains("Public (current network)"));
         assert!(!en.contains("Lecture seule"));
     }

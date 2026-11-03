@@ -339,28 +339,35 @@ fn aide_dans_les_deux_langues() {
     assert!(en.texte.contains("--liste") && en.texte.contains("deleting nothing"));
 }
 
-// Blocages de Windows Defender : en anglais dans l'aide ; ailleurs que sous Windows, rien à proposer et rien changé.
+// « defender », l'ancienne commande des blocages, mène aux Options de défense (alias) ; ailleurs que sous Windows,
+// rien à proposer et rien changé.
 #[test]
-fn durcir_hors_de_windows() {
+fn defender_mene_aux_options_de_defense() {
     let aide = vanguard("en", &["defender", "--help"], "", 30);
-    assert!(aide.texte.contains("Windows Defender blocking"), "{}", aide.texte);
-    if !cfg!(windows) {
-        let r = vanguard("en", &["defender"], "", 30);
-        assert_eq!(r.code, Some(0));
-        assert!(r.texte.contains("Nothing in this category"), "{}", r.texte);
-    }
-}
-
-/// Options de défense : en lecture seule partout. Hors de Windows, l'écran dit « Windows seulement » et le JSON se
-/// ferme sans rien lire ; sous Windows (Wine compris), il ne plante pas et ne porte aucun texte du système.
-#[test]
-fn options_defense_en_lecture_seule() {
-    let aide = vanguard("en", &["options-defense", "--help"], "", 30);
     assert!(
-        sans_couleurs(&aide.texte).contains("Windows defense options, read-only"),
+        sans_couleurs(&aide.texte).contains("Windows defense options"),
         "{}",
         aide.texte
     );
+    if !cfg!(windows) {
+        let r = vanguard("en", &["defender"], "", 30);
+        assert_eq!(r.code, Some(0));
+        assert!(sans_couleurs(&r.texte).contains("Windows only"), "{}", r.texte);
+    }
+}
+
+/// Options de défense, sans rien choisir (l'entrée se ferme tout de suite). Hors de Windows, l'écran dit « Windows
+/// seulement » et le JSON se ferme sans rien lire ; sous Windows (Wine compris), il ne plante pas, ne demande rien à
+/// l'administrateur et ne porte aucun texte du système dans le JSON.
+#[test]
+fn options_defense_sans_choix() {
+    let aide = vanguard("en", &["options-defense", "--help"], "", 30);
+    let t = sans_couleurs(&aide.texte);
+    assert!(t.contains("Windows defense options"), "{t}");
+    // Chaque entrée qui change quelque chose est dans l'aide, avec ce qui la confirme.
+    for o in ["--choisir", "--rallumer", "--exclure", "--permettre", "--noter"] {
+        assert!(t.contains(o), "{o} : {t}");
+    }
     for (langue, titre, seulement) in [
         ("fr", "Options de défense", "Windows seulement"),
         ("en", "Defense options", "Windows only"),
@@ -370,6 +377,8 @@ fn options_defense_en_lecture_seule() {
         assert!(!r.erreurs.contains("panicked"), "{}", r.erreurs);
         let t = sans_couleurs(&r.texte);
         assert!(t.contains(titre), "{t}");
+        // Rien choisi : aucune demande d'administrateur, rien de fait.
+        assert!(!t.contains("administrateur") && !t.contains("administrator"), "{t}");
         if !cfg!(windows) {
             assert!(t.contains(seulement), "{t}");
         }

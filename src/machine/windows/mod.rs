@@ -942,7 +942,26 @@ fn antivirus() -> Vec<Constat> {
         return vec![illisible("Antivirus")];
     }
     let mut c = Vec::new();
-    if *champ("RealTimeProtectionEnabled") == false || *champ("AntivirusEnabled") == false {
+    // Les notes des choix de la personne (Options de défense) : une protection baissée par elle et encore telle est
+    // dite « par votre choix », une information, au lieu d'une alerte (plan §3.4).
+    let notes = crate::machine::choix_avant::notes();
+    let rtp = gestes::IdChoix::Defender(gestes::ReglageDefender::TempsReel);
+    let lecture_rtp = crate::machine::choix_avant::note_de(&notes, rtp).map(|n| {
+        let lue = champ("RealTimeProtectionEnabled")
+            .as_bool()
+            .map(|m| Some(i64::from(!m)));
+        (n, crate::machine::choix_avant::lecture_note(rtp, n, lue))
+    });
+    if let Some((n, crate::machine::choix_avant::Lecture::ParChoix(date))) = lecture_rtp
+        && *champ("AntivirusEnabled") != false
+    {
+        c.push(crate::machine::choix_avant::par_votre_choix(
+            "Antivirus",
+            rtp,
+            &crate::machine::choix_avant::sujet_note(rtp, n),
+            date,
+        ));
+    } else if *champ("RealTimeProtectionEnabled") == false || *champ("AntivirusEnabled") == false {
         c.push(
             alerte(
                 "Antivirus",
@@ -978,9 +997,38 @@ fn antivirus() -> Vec<Constat> {
             tr!("âge des signatures illisible", "signature age unreadable"),
         ),
     });
-    c.extend(juger_cloud(
-        champ("MAPSReporting").as_u64().map(|n| n.to_string()).as_deref(),
-    ));
+    if matches!(lecture_rtp, Some((_, crate::machine::choix_avant::Lecture::Remontee))) {
+        c.push(crate::machine::choix_avant::rallumee_depuis(
+            "Antivirus",
+            &crate::options_defense::nom_choix(rtp),
+        ));
+    }
+    let maps = gestes::IdChoix::Defender(gestes::ReglageDefender::Maps);
+    let lue_maps = champ("MAPSReporting").as_i64();
+    match crate::machine::choix_avant::note_de(&notes, maps).map(|n| {
+        (
+            n,
+            crate::machine::choix_avant::lecture_note(maps, n, lue_maps.map(Some)),
+        )
+    }) {
+        Some((n, crate::machine::choix_avant::Lecture::ParChoix(date))) => {
+            c.push(crate::machine::choix_avant::par_votre_choix(
+                "Antivirus",
+                maps,
+                &crate::machine::choix_avant::sujet_note(maps, n),
+                date,
+            ));
+        }
+        lecture => {
+            c.extend(juger_cloud(lue_maps.map(|n| n.to_string()).as_deref()));
+            if matches!(lecture, Some((_, crate::machine::choix_avant::Lecture::Remontee))) {
+                c.push(crate::machine::choix_avant::rallumee_depuis(
+                    "Antivirus",
+                    &crate::options_defense::nom_choix(maps),
+                ));
+            }
+        }
+    }
     if *champ("IsTamperProtected") == false {
         c.push(alerte("Antivirus", Niveau::Moyen, tr!("Protection contre les falsifications désactivée : un malware peut couper Defender.", "Tamper protection is off: malware can turn Defender off."))
             .manuel(tr!("Sécurité Windows > Protection contre les virus > Gérer les paramètres > Protection contre les falsifications", "Windows Security > Virus protection > Manage settings > Tamper protection"), &["Start-Process windowsdefender://threatsettings"]));

@@ -1,0 +1,1635 @@
+//! L'écran des Options de défense qui change les réglages (plan §3.2, §3.3) : chaque ligne montre ses valeurs et ce
+//! qu'une baisse change ; les changements choisis s'accumulent, puis partent ensemble, sous une seule demande
+//! d'administrateur (P7 : « Rallumer » dans la liste des renforcements, les choix dans la leur). Une baisse y est
+//! montrée, puis confirmée par un oui dans la fenêtre administrateur (`eleve.rs`), jamais ici : rien de ce qui est
+//! choisi à l'écran n'agit sans elle. Le résultat est relu ligne à ligne.
+//!
+//! Le modèle (lignes du menu et des sous-écrans, changements, textes) est pur et testé sur tous les systèmes ; la
+//! boucle, qui lit Windows et demande l'administrateur, est sous `#[cfg(windows)]`.
+
+use super::*;
+use crate::machine::choix_avant::{self, Lecture, Note};
+use crate::machine::gestes::{self, EmpreinteElement, Sens};
+use crate::selection::Ligne;
+use crate::ui::{GRAS, LARGEUR, couper, envelopper, ligne_titre};
+
+/// Les notes « avant » lues (`choix_avant::notes`).
+pub(super) type Notes = [(IdChoix, Option<Note>)];
+
+/// Un changement choisi à l'écran, pas encore fait.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Change {
+    pub(super) id: IdChoix,
+    /// La ligne envoyée au processus élevé.
+    pub(super) ligne: String,
+    /// Ce qui est montré au récapitulatif et au résultat, prêt à afficher.
+    pub(super) texte: String,
+    /// La valeur visée, pour l'écran ; `None` pour « C'est moi », qui ne change pas la valeur.
+    pub(super) cible: Option<i64>,
+}
+
+/// Ajoute un changement ; un autre déjà choisi pour le même réglage est remplacé (le dernier choix compte).
+pub(super) fn ajouter(changes: &mut Vec<Change>, c: Change) {
+    changes.retain(|x| x.id != c.id);
+    changes.push(c);
+}
+
+/// Ce que fait un choix dans un sous-écran.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Suite {
+    Ajouter(Change),
+    /// La valeur actuelle choisie de nouveau : un changement déjà choisi pour ce réglage est oublié.
+    Retirer(IdChoix),
+    Rien,
+}
+
+pub(super) fn suivre(changes: &mut Vec<Change>, s: Suite) {
+    match s {
+        Suite::Ajouter(c) => ajouter(changes, c),
+        Suite::Retirer(id) => changes.retain(|x| x.id != id),
+        Suite::Rien => {}
+    }
+}
+
+fn id_opt(o: Opt) -> IdChoix {
+    IdChoix::Defender(reglage_de(o))
+}
+
+/// La valeur d'une option, comme la note la compare : pour le temps réel, l'effet relu passe avant la préférence
+/// (0 allumée, 1 coupée), comme à l'écran.
+pub(super) fn valeur(e: &Etat, o: Opt) -> Option<i64> {
+    if o == Opt::TempsReel
+        && let Some(effet) = e.statut.as_ref().and_then(|s| s.temps_reel)
+    {
+        return Some(i64::from(!effet));
+    }
+    e.preferences.as_ref().and_then(|p| p.valeur(o))
+}
+
+/// La protection contre les falsifications est-elle active (lue, pas supposée) ?
+pub(super) fn tamper(e: &Etat) -> bool {
+    e.statut.as_ref().and_then(|s| s.falsifications) == Some(true)
+}
+
+/// Les options que la protection contre les falsifications protège (plan §2.1 ; l'essai reste permis, la relecture
+/// tranche, la liste de Microsoft change d'une version à l'autre).
+pub(super) fn protegee(o: Opt) -> bool {
+    matches!(
+        o,
+        Opt::TempsReel | Opt::Cloud | Opt::Comportement | Opt::Telechargements
+    )
+}
+
+fn protegee_id(id: IdChoix) -> bool {
+    Opt::TOUTES.iter().any(|o| protegee(*o) && id_opt(*o) == id)
+}
+
+/// Ce que dit la note d'une option, relue avec sa valeur actuelle ; `None` sans note.
+pub(super) fn lecture(e: &Etat, o: Opt, notes: &Notes) -> Option<Lecture> {
+    let id = id_opt(o);
+    choix_avant::note_de(notes, id).map(|n| choix_avant::lecture_note(id, n, valeur(e, o).map(Some)))
+}
+
+/// Un élément de liste (exclusion, programme permis) présent et noté par Vanguard.
+fn par_choix_element(id: IdChoix, notes: &Notes) -> Option<u64> {
+    match choix_avant::lecture_note(id, choix_avant::note_de(notes, id)?, Some(Some(1))) {
+        Lecture::ParChoix(d) => Some(d),
+        Lecture::Remontee | Lecture::Autre => None,
+    }
+}
+
+fn majuscule(t: &str) -> String {
+    let mut c = t.chars();
+    c.next()
+        .map(|p| p.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
+}
+
+/// Un texte en gris, coupé à la largeur de l'écran sous un retrait de deux colonnes.
+fn paragraphe(l: &mut Vec<Ligne>, texte: &str, style: &str) {
+    for x in envelopper(texte, LARGEUR - 2) {
+        l.push(Ligne::Texte(format!("  {style}{x}{RESET}")));
+    }
+}
+
+/// La liste d'une liste lue est-elle cachée (« N/A: Must be an administrator… ») ?
+fn masquee(listes: &[Vec<String>; 3]) -> bool {
+    listes.iter().flatten().any(|x| x.trim_start().starts_with("N/A"))
+}
+
+/// L'en-tête : l'antivirus et la protection contre les falsifications, sur deux lignes (une seule dépasserait la
+/// largeur de l'écran), puis ce qui empêche les options d'agir.
+pub(super) fn en_tete(e: &Etat) -> Vec<String> {
+    let (mode, s1) = match e.mode() {
+        ModeDefender::Actif => (tr!("antivirus actif", "active antivirus"), VERT),
+        ModeDefender::Passif => (tr!("en mode passif", "in passive mode"), ACCENT),
+        ModeDefender::BlocageEdr => (tr!("passif, blocage EDR", "passive, EDR block mode"), ACCENT),
+        ModeDefender::Coupe => (tr!("antivirus coupé", "antivirus off"), ACCENT),
+        ModeDefender::Illisible => (
+            tr!("état non vérifié (illisible)", "state not checked (unreadable)"),
+            "",
+        ),
+    };
+    let statut = e.statut.as_ref();
+    let (falsif, s2) = match statut.and_then(|s| s.falsifications) {
+        Some(true) => (tr!("ACTIVE", "ON"), VERT),
+        Some(false) => (tr!("coupée", "off"), ACCENT),
+        None => (tr!("non vérifiée", "not checked"), ""),
+    };
+    let mut l = vec![
+        format!("  Microsoft Defender — {s1}{mode}{RESET}"),
+        format!(
+            "  {}{s2}{falsif}{RESET}",
+            tr!("Protection contre les falsifications : ", "Tamper protection: ")
+        ),
+    ];
+    let mut notes = Vec::new();
+    if tamper(e) && statut.and_then(|s| s.source) == Some(SourceFalsif::Organisation) {
+        notes.push(
+            tr!(
+                "Imposée par votre organisation : vous ne pouvez pas la couper vous-même.",
+                "Enforced by your organization: you cannot turn it off yourself."
+            )
+            .to_string(),
+        );
+    }
+    notes.extend(texte_mode(e));
+    if e.gestion.geree() == Some(true) {
+        notes.push(
+            tr!(
+                "Ce PC est géré par une organisation : elle peut remettre ses propres valeurs. Pour les changer pour de bon, voyez votre service informatique.",
+                "This PC is managed by an organization: it may put its own values back. To change them for good, see your IT department."
+            )
+            .to_string(),
+        );
+    }
+    for n in notes {
+        note(&mut l, &n, GRIS);
+    }
+    l
+}
+
+/// La ligne « Exclusions » du menu : combien, dont combien posées par votre choix et combien inconnues (R8).
+/// `listes` : `None` si elles ne se lisent pas.
+pub(super) fn resume_exclusions(listes: Option<&[Vec<String>; 3]>, notes: &Notes) -> String {
+    let par_choix = notes
+        .iter()
+        .filter(|(id, n)| matches!(id, IdChoix::Exclusion(..)) && n.is_some())
+        .count();
+    let Some(l) = listes else {
+        return if par_choix > 0 {
+            trf!(
+                "non vérifiées · {par_choix} par votre choix",
+                "not checked · {par_choix} your choice"
+            )
+        } else {
+            tr!("non vérifiées (illisibles)", "not checked (unreadable)").to_string()
+        };
+    };
+    if masquee(l) {
+        return if par_choix > 0 {
+            trf!(
+                "accord admin. requis · {par_choix} par votre choix",
+                "admin approval needed · {par_choix} your choice"
+            )
+        } else {
+            tr!("visibles avec l'accord admin.", "visible with admin approval").to_string()
+        };
+    }
+    let (mut choix, mut inconnues) = (0usize, 0usize);
+    for (g, liste) in GenreExclusion::TOUS.into_iter().zip(l) {
+        for x in liste.iter().filter(|x| !x.trim().is_empty()) {
+            if par_choix_element(IdChoix::Exclusion(g, EmpreinteElement::de(x)), notes).is_some() {
+                choix += 1;
+            } else {
+                inconnues += 1;
+            }
+        }
+    }
+    let inconnue = |i: usize| {
+        if i > 1 {
+            tr!("inconnues", "unknown")
+        } else {
+            tr!("inconnue", "unknown")
+        }
+    };
+    match (choix, inconnues) {
+        (0, 0) => tr!("aucune", "none").to_string(),
+        (c, 0) => trf!("{c} (par votre choix)", "{c} (your choice)"),
+        (0, i) => trf!("{i} ({} ⚠)", "{i} ({} ⚠)", inconnue(i)),
+        (c, i) => trf!(
+            "{} ({c} votre choix, {i} {} ⚠)",
+            "{} ({c} your choice, {i} {} ⚠)",
+            c + i,
+            inconnue(i)
+        ),
+    }
+}
+
+/// La ligne « Règles ASR » du menu.
+pub(super) fn resume_asr(e: &Etat) -> String {
+    let Some(p) = e.preferences.as_ref() else {
+        return tr!("non vérifiées (illisibles)", "not checked (unreadable)").to_string();
+    };
+    let compte = |a: ActionAsr| p.asr.regles.iter().filter(|(_, x)| *x == a).count();
+    let (b, au, av) = (
+        compte(ActionAsr::Bloque),
+        compte(ActionAsr::Audit),
+        compte(ActionAsr::Avertit),
+    );
+    let coupees = ASR_TOUTES.len().saturating_sub(b + au + av);
+    if av > 0 {
+        trf!(
+            "{b} bloquent · {au} audit · {av} avertissent · {coupees} coupées",
+            "{b} block · {au} audit · {av} warn · {coupees} off"
+        )
+    } else {
+        trf!(
+            "{b} bloquent · {au} audit · {coupees} coupées",
+            "{b} block · {au} audit · {coupees} off"
+        )
+    }
+}
+
+/// La ligne « Pare-feu » du menu : allumé partout, ou les profils coupés ; le réseau actuel nommé.
+pub(super) fn resume_pare_feu(e: &Etat) -> String {
+    let Some(f) = e.pare_feu else {
+        return tr!("non vérifié (ne répond pas)", "not checked (no answer)").to_string();
+    };
+    let nom = |i: usize| {
+        let courant = f.courants.is_some_and(|c| c & PROFILS.get(i).map_or(0, |p| p.1) != 0);
+        if courant {
+            trf!("{} (actuel)", "{} (current)", nom_profil(i))
+        } else {
+            nom_profil(i).to_string()
+        }
+    };
+    let coupes: Vec<String> = (0..3)
+        .filter(|&i| f.profils.get(i).and_then(|p| p.actif) == Some(false))
+        .map(nom)
+        .collect();
+    let illisibles = f.profils.iter().filter(|p| p.actif.is_none()).count();
+    if !coupes.is_empty() {
+        return trf!("coupé : {}", "off: {}", coupes.join(", "));
+    }
+    if illisibles > 0 {
+        return tr!("non vérifié", "not checked").to_string();
+    }
+    match (0..3).find(|&i| f.courants.is_some_and(|c| c & PROFILS.get(i).map_or(0, |p| p.1) != 0)) {
+        Some(i) => trf!("allumé (réseau actuel : {})", "on (current network: {})", nom_profil(i)),
+        None => tr!("allumé partout", "on everywhere").to_string(),
+    }
+}
+
+/// Ce que vise un changement, en mots.
+fn texte_cible(c: &Change) -> String {
+    match c.cible {
+        Some(v) => texte_choix(c.id, Some(Some(v))),
+        None => tr!("noter « votre choix »", "note “your choice”").to_string(),
+    }
+}
+
+/// Les lignes `Choix` d'un menu, bornées pour que chaque rangée tienne dans `ui::LARGEUR` : la colonne des
+/// précisions est celle de `selection` (le texte le plus long + 2, entre 36 et 48), après « ► touche ».
+pub(super) fn borner(lignes: &mut [Ligne]) {
+    let colonne = lignes
+        .iter()
+        .filter_map(|l| match l {
+            Ligne::Choix { texte, .. } => Some(largeur_affichee(texte)),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+        .saturating_add(2)
+        .clamp(36, 48);
+    for l in lignes.iter_mut() {
+        if let Ligne::Choix {
+            touche,
+            texte,
+            precision,
+            ..
+        } = l
+        {
+            let debut = 5 + largeur_affichee(touche).max(2);
+            if precision.is_empty() {
+                *texte = couper(texte, LARGEUR.saturating_sub(debut));
+            } else {
+                *texte = couper(texte, colonne.saturating_sub(1));
+                *precision = couper(precision, LARGEUR.saturating_sub(debut + colonne));
+            }
+        }
+    }
+}
+
+/// Le menu principal (plan §3.2) : les dix options, les exclusions, les règles ASR, le pare-feu, puis Appliquer.
+pub(super) fn menu(e: &Etat, notes: &Notes, listes: Option<&[Vec<String>; 3]>, changes: &[Change]) -> Vec<Ligne> {
+    let mut l = vec![Ligne::Texte(String::new()), Ligne::Texte(ligne_titre(titre()))];
+    l.extend(en_tete(e).into_iter().map(Ligne::Texte));
+    l.push(Ligne::Texte(String::new()));
+    let tamper = tamper(e);
+    let (mut dague, mut etoile, mut double) = (false, false, false);
+    for (i, &o) in Opt::TOUTES.iter().enumerate() {
+        let mut marques = String::new();
+        if tamper && protegee(o) {
+            marques.push('†');
+            dague = true;
+        }
+        if e.strategies.option(o) == Some(true) {
+            marques.push('*');
+            etoile = true;
+        }
+        if matches!(lecture(e, o, notes), Some(Lecture::ParChoix(_))) {
+            marques.push('‡');
+            double = true;
+        }
+        let texte = if marques.is_empty() {
+            o.libelle().to_string()
+        } else {
+            format!("{} {marques}", o.libelle())
+        };
+        let precision = match changes.iter().find(|c| c.id == id_opt(o)) {
+            Some(c) => format!("→ {}", texte_cible(c)),
+            None => e.etat_opt(o).texte(o.masculin()),
+        };
+        l.push(Ligne::choix(&(i + 1).to_string(), &texte, &precision));
+    }
+    let en_liste = changes.iter().filter(|c| c.id.element()).count();
+    let exclusions = if en_liste > 0 {
+        trf!("{en_liste} changement(s) choisi(s)", "{en_liste} change(s) chosen")
+    } else {
+        resume_exclusions(listes, notes)
+    };
+    l.push(Ligne::choix(
+        "11",
+        tr!("Exclusions et programmes permis ›", "Exclusions and allowed apps ›"),
+        &exclusions,
+    ));
+    l.push(Ligne::choix("12", tr!("Règles ASR ›", "ASR rules ›"), &resume_asr(e)));
+    l.push(Ligne::choix(
+        "13",
+        tr!("Pare-feu Windows ›", "Windows Firewall ›"),
+        &resume_pare_feu(e),
+    ));
+    l.push(Ligne::Texte(String::new()));
+    if !changes.is_empty() {
+        l.push(Ligne::choix(
+            "a",
+            &trf!(
+                "Appliquer les changements choisis ({})",
+                "Apply the chosen changes ({})",
+                changes.len()
+            ),
+            "",
+        ));
+        l.push(Ligne::choix(
+            "x",
+            tr!("Oublier les changements choisis", "Forget the chosen changes"),
+            "",
+        ));
+    }
+    l.push(Ligne::choix(
+        "v",
+        tr!(
+            "Tout voir (détail, stratégies, gestion du PC)",
+            "See everything (details, policies, PC management)"
+        ),
+        "",
+    ));
+    l.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
+    let mut bas = Vec::new();
+    if dague {
+        bas.push(tr!(
+            "† Windows refusera tant que la protection contre les falsifications est active.",
+            "† Windows will refuse while tamper protection is on."
+        ));
+    }
+    if etoile {
+        bas.push(tr!(
+            "* imposée par une stratégie (GPO ou Intune) : Windows garde sa valeur.",
+            "* enforced by a policy (GPO or Intune): Windows keeps its value."
+        ));
+    }
+    if double {
+        bas.push(tr!(
+            "‡ baissée par votre choix ; « Rallumer » dans sa ligne.",
+            "‡ lowered by your choice; “Turn back on” in its line."
+        ));
+    }
+    if !bas.is_empty() {
+        l.push(Ligne::Texte(String::new()));
+        for b in bas {
+            paragraphe(&mut l, b, GRIS);
+        }
+    }
+    borner(&mut l);
+    l
+}
+
+/// L'option désignée par une touche du menu (« 1 » à « 10 »).
+pub(super) fn opt_de_touche(touche: &str) -> Option<Opt> {
+    let n: usize = touche.trim().parse().ok()?;
+    Opt::TOUTES.get(n.checked_sub(1)?).copied()
+}
+
+/// « Rallumer » est-il proposé ? Avec une note, ou quand la valeur protège moins que la valeur sûre ; jamais quand
+/// la cible est déjà la valeur actuelle.
+fn rallumable(e: &Etat, o: Opt, notes: &Notes) -> Option<i64> {
+    let id = id_opt(o);
+    let note = choix_avant::note_de(notes, id);
+    let v = valeur(e, o);
+    let cible = gestes::cible_rallumer(id, note.map(|n| n.avant));
+    let sous = v.is_some_and(|v| id.rang(Some(v)) < id.rang(Some(id.sure())));
+    ((note.is_some() || sous) && v != Some(cible)).then_some(cible)
+}
+
+/// « C'est moi » (P11) est-il proposé ? Pour une valeur lue sous la valeur sûre, pas encore notée telle quelle.
+fn notable(e: &Etat, o: Opt, notes: &Notes) -> bool {
+    let id = id_opt(o);
+    let v = valeur(e, o);
+    v.is_some() && choix_avant::sens_noter(id, Some(v), choix_avant::note_de(notes, id)) == Sens::Baisse
+}
+
+/// Pourquoi le service de Defender, le pare-feu et le moteur de filtrage ne s'arrêtent pas (plan §2.1).
+pub(super) fn texte_windefend() -> &'static str {
+    tr!(
+        "Vanguard ne propose pas d'arrêter le service de Defender (WinDefend) : Windows le protège et le redémarre, et l'arrêter laisserait le PC sans aucun antivirus. Pour un faux positif, une exclusion (ligne 11) vise mieux. Le service du pare-feu (mpssvc) et le moteur de filtrage (BFE) ne s'arrêtent pas non plus : le réseau serait coupé.",
+        "Vanguard does not offer to stop Defender's service (WinDefend): Windows protects and restarts it, and stopping it would leave the PC with no antivirus at all. For a false positive, an exclusion (line 11) is more precise. The firewall service (mpssvc) and the filtering engine (BFE) are not stopped either: the network would be cut."
+    )
+}
+
+/// Le sous-écran d'une option : son état, ce qui l'empêche d'agir, ses valeurs, « Rallumer », « C'est moi », et ce
+/// qu'une baisse change (plan §3.2).
+pub(super) fn lignes_option(e: &Etat, o: Opt, notes: &Notes, changes: &[Change]) -> Vec<Ligne> {
+    let id = id_opt(o);
+    let reglage = reglage_de(o);
+    let lue = valeur(e, o);
+    let masc = o.masculin();
+    let mut l = vec![
+        Ligne::Texte(String::new()),
+        Ligne::Texte(ligne_titre(titre())),
+        Ligne::Texte(format!(
+            "  {GRAS}{} : {}{RESET}",
+            o.libelle(),
+            e.etat_opt(o).texte(masc)
+        )),
+    ];
+    let mut infos: Vec<String> = Vec::new();
+    if e.mode() != ModeDefender::Actif && e.mode() != ModeDefender::Illisible {
+        infos.push(
+            tr!(
+                "Defender n'est pas l'antivirus actif : ce réglage n'a pas d'effet pour l'instant.",
+                "Defender is not the active antivirus: this setting has no effect for now."
+            )
+            .to_string(),
+        );
+    }
+    if tamper(e) && protegee(o) {
+        infos.push(
+            tr!(
+                "(Windows refusera tant que la protection contre les falsifications est active.)",
+                "(Windows will refuse while tamper protection is on.)"
+            )
+            .to_string(),
+        );
+    }
+    match e.strategies.option(o) {
+        Some(true) => infos.push(
+            tr!(
+                "Imposé par une stratégie (GPO ou Intune) : Windows garde la valeur de la stratégie, quoi que Vanguard écrive.",
+                "Enforced by a policy (GPO or Intune): Windows keeps the policy's value, whatever Vanguard writes."
+            )
+            .to_string(),
+        ),
+        None => infos.push(tr!("Stratégie (GPO ou Intune) : non vérifiée.", "Policy (GPO or Intune): not checked.").to_string()),
+        Some(false) => {}
+    }
+    match lecture(e, o, notes) {
+        Some(Lecture::ParChoix(d)) => infos.push(trf!(
+            "Baissée par votre choix le {}. « Rallumer » la remet.",
+            "Lowered by your choice on {}. “Turn back on” restores it.",
+            choix_avant::date_note(d)
+        )),
+        Some(Lecture::Remontee) => infos.push(
+            tr!(
+                "Rallumée depuis votre choix, par Windows ou par quelqu'un.",
+                "Turned back on since your choice, by Windows or by someone."
+            )
+            .to_string(),
+        ),
+        Some(Lecture::Autre) | None => {}
+    }
+    if let Some(c) = changes.iter().find(|c| c.id == id) {
+        infos.push(trf!("Déjà choisi : {}", "Already chosen: {}", c.texte));
+    }
+    for i in infos {
+        paragraphe(&mut l, &i, GRIS);
+    }
+    l.push(Ligne::Texte(String::new()));
+    for (k, c) in reglage.choix().iter().enumerate() {
+        let cv = reglage.valeur_choix(*c);
+        let precision = if lue.is_some() && cv == lue {
+            tr!("(actuelle)", "(current)")
+        } else if cv == Some(reglage.sure()) {
+            tr!("(la valeur sûre)", "(the safe value)")
+        } else {
+            ""
+        };
+        l.push(Ligne::choix(
+            &(k + 1).to_string(),
+            &majuscule(&o.etat(cv).texte(masc)),
+            precision,
+        ));
+    }
+    if let Some(cible) = rallumable(e, o, notes) {
+        l.push(Ligne::choix(
+            "r",
+            &trf!("Rallumer ({})", "Turn back on ({})", o.etat(Some(cible)).texte(masc)),
+            "",
+        ));
+    }
+    if notable(e, o, notes) {
+        l.push(Ligne::choix(
+            "m",
+            tr!("C'est moi : noter « par votre choix »", "It was me: note “your choice”"),
+            tr!("le bilan n'alertera plus", "the check stops alerting"),
+        ));
+    }
+    l.push(Ligne::Texte(String::new()));
+    paragraphe(&mut l, &effet_baisse(id), GRIS);
+    if o == Opt::TempsReel {
+        paragraphe(&mut l, texte_windefend(), GRIS);
+    }
+    l.push(Ligne::Texte(String::new()));
+    l.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
+    borner(&mut l);
+    l
+}
+
+/// Ce que fait une touche du sous-écran d'une option.
+pub(super) fn suite_option(e: &Etat, o: Opt, notes: &Notes, touche: &str) -> Suite {
+    let id = id_opt(o);
+    let reglage = reglage_de(o);
+    let lue = valeur(e, o);
+    let masc = o.masculin();
+    let actuel = e.etat_opt(o).texte(masc);
+    match touche.trim() {
+        "r" => match rallumable(e, o, notes) {
+            Some(cible) => Suite::Ajouter(Change {
+                id,
+                ligne: gestes::ligne_rallumer(id),
+                texte: trf!(
+                    "{} : {actuel} → rallumer ({})",
+                    "{}: {actuel} → turn back on ({})",
+                    o.libelle(),
+                    o.etat(Some(cible)).texte(masc)
+                ),
+                cible: Some(cible),
+            }),
+            None => Suite::Rien,
+        },
+        "m" if notable(e, o, notes) => Suite::Ajouter(Change {
+            id,
+            ligne: gestes::ligne_noter(id),
+            texte: trf!(
+                "{} : {actuel}, noter « par votre choix »",
+                "{}: {actuel}, note “your choice”",
+                o.libelle()
+            ),
+            cible: None,
+        }),
+        t => {
+            let Some(c) = t
+                .parse::<usize>()
+                .ok()
+                .and_then(|n| n.checked_sub(1))
+                .and_then(|k| reglage.choix().get(k))
+            else {
+                return Suite::Rien;
+            };
+            let cv = reglage.valeur_choix(*c);
+            if lue.is_some() && cv == lue {
+                return Suite::Retirer(id);
+            }
+            match gestes::ligne_baisse_defender(reglage, *c) {
+                Some(ligne) => Suite::Ajouter(Change {
+                    id,
+                    ligne,
+                    texte: format!("{} : {actuel} → {}", o.libelle(), o.etat(cv).texte(masc)),
+                    cible: cv,
+                }),
+                None => Suite::Rien,
+            }
+        }
+    }
+}
+
+/// Ce que fait une touche du sous-écran des exclusions.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum ActionListe {
+    /// Demander le texte d'une exclusion de ce genre.
+    Ajouter(GenreExclusion),
+    /// Demander un programme à permettre malgré l'accès contrôlé aux dossiers.
+    Permettre,
+    /// Retirer un élément posé par votre choix (« Rallumer » d'un élément : l'absence).
+    Retirer(IdChoix, String),
+    /// « C'est moi » pour un élément inconnu.
+    Noter(IdChoix, String),
+}
+
+/// Un élément noté, quand la liste ne se lit pas : son genre et le début de son empreinte (jamais le chemin, que la
+/// note ne garde pas).
+fn nom_note(id: IdChoix) -> String {
+    let (genre, hex) = match id {
+        IdChoix::Exclusion(g, e) => (nom_genre(g).to_string(), e.hex()),
+        IdChoix::DossiersAutorise(e) => (tr!("programme permis", "allowed app").to_string(), e.hex()),
+        IdChoix::Defender(_) | IdChoix::Asr(_) => return nom_choix(id),
+    };
+    format!("{genre} n° {}", hex.get(..8).unwrap_or(&hex))
+}
+
+/// Le sous-écran des exclusions et des programmes permis : ce qui est noté (à retirer), ce qui est inconnu (⚠, « C'est
+/// moi »), puis ajouter. `listes` : les trois listes lues (`None` : illisibles).
+pub(super) fn lignes_exclusions(
+    listes: Option<&[Vec<String>; 3]>,
+    notes: &Notes,
+    changes: &[Change],
+) -> (Vec<Ligne>, Vec<(String, ActionListe)>) {
+    let mut l = vec![
+        Ligne::Texte(String::new()),
+        Ligne::Texte(ligne_titre(titre())),
+        Ligne::Texte(format!(
+            "  {GRAS}{}{RESET}",
+            tr!(
+                "Exclusions de l'analyse et programmes permis",
+                "Scan exclusions and allowed apps"
+            )
+        )),
+        Ligne::Texte(String::new()),
+    ];
+    let mut actions = Vec::new();
+    let n = std::cell::Cell::new(0usize);
+    let touche = |prefixe: &str| {
+        n.set(n.get() + 1);
+        format!("{prefixe}{}", n.get())
+    };
+    let lisibles = listes.filter(|x| !masquee(x));
+    let mut inconnue = false;
+    if let Some(listes) = lisibles {
+        for (g, liste) in GenreExclusion::TOUS.into_iter().zip(listes) {
+            for x in liste.iter().filter(|x| !x.trim().is_empty()) {
+                let id = IdChoix::Exclusion(g, EmpreinteElement::de(x));
+                let montre = format!("{} : {}", majuscule(nom_genre(g)), externe(x));
+                if let Some(d) = par_choix_element(id, notes) {
+                    let t = touche("r");
+                    l.push(Ligne::choix(
+                        &t,
+                        &montre,
+                        &trf!(
+                            "votre choix ({}) · retirer",
+                            "your choice ({}) · remove",
+                            choix_avant::date_note(d)
+                        ),
+                    ));
+                    actions.push((t, ActionListe::Retirer(id, externe(x))));
+                } else {
+                    inconnue = true;
+                    let t = touche("m");
+                    l.push(Ligne::choix(
+                        &t,
+                        &format!("⚠ {montre}"),
+                        tr!("inconnue · c'est moi ?", "unknown · was it me?"),
+                    ));
+                    actions.push((t, ActionListe::Noter(id, externe(x))));
+                }
+            }
+        }
+        if n.get() == 0 {
+            l.push(Ligne::Texte(format!(
+                "  {GRIS}{}{RESET}",
+                tr!("Aucune exclusion de l'analyse.", "No scan exclusion.")
+            )));
+        }
+    } else {
+        let texte = if listes.is_some() {
+            tr!(
+                "Liste visible seulement avec l'accord administrateur : les exclusions posées hors de Vanguard ne se voient pas ici (le bilan en administrateur les signale). Celles notées par votre choix sont listées sans leur chemin.",
+                "List visible only with administrator approval: exclusions added outside Vanguard are not shown here (the check as administrator reports them). Those noted as your choice are listed without their path."
+            )
+        } else {
+            tr!(
+                "Les exclusions ne se lisent pas (Defender ne répond pas). Celles notées par votre choix sont listées sans leur chemin.",
+                "Exclusions cannot be read (Defender does not answer). Those noted as your choice are listed without their path."
+            )
+        };
+        paragraphe(&mut l, texte, GRIS);
+        for (id, note) in notes {
+            if let (IdChoix::Exclusion(..), Some(nt)) = (id, note) {
+                let t = touche("r");
+                l.push(Ligne::choix(
+                    &t,
+                    &nom_note(*id),
+                    &trf!(
+                        "votre choix ({}) · retirer",
+                        "your choice ({}) · remove",
+                        choix_avant::date_note(nt.date)
+                    ),
+                ));
+                actions.push((t, ActionListe::Retirer(*id, nom_note(*id))));
+            }
+        }
+    }
+    for (id, note) in notes {
+        if let (IdChoix::DossiersAutorise(_), Some(nt)) = (id, note) {
+            let t = touche("r");
+            l.push(Ligne::choix(
+                &t,
+                &nom_note(*id),
+                &trf!(
+                    "votre choix ({}) · retirer",
+                    "your choice ({}) · remove",
+                    choix_avant::date_note(nt.date)
+                ),
+            ));
+            actions.push((t, ActionListe::Retirer(*id, nom_note(*id))));
+        }
+    }
+    if inconnue {
+        paragraphe(
+            &mut l,
+            tr!(
+                "⚠ inconnue : posée hors de Vanguard. Si c'est vous, « c'est moi » la note et le bilan cesse de la signaler. Sinon, retirez-la dans Sécurité Windows (Protection contre les virus et menaces › Gérer les paramètres › Exclusions), puis lancez une analyse complète.",
+                "⚠ unknown: added outside Vanguard. If it was you, “was it me” notes it and the check stops reporting it. Otherwise, remove it in Windows Security (Virus & threat protection › Manage settings › Exclusions), then run a full scan."
+            ),
+            GRIS,
+        );
+    }
+    let a_faire: Vec<&Change> = changes.iter().filter(|c| c.id.element()).collect();
+    if !a_faire.is_empty() {
+        l.push(Ligne::Texte(String::new()));
+        l.push(Ligne::Texte(format!("  {}", tr!("Déjà choisis :", "Already chosen:"))));
+        for c in a_faire {
+            for (k, x) in envelopper(&c.texte, LARGEUR - 6).into_iter().enumerate() {
+                let puce = if k == 0 { "  · " } else { "    " };
+                l.push(Ligne::Texte(format!("  {puce}{x}")));
+            }
+        }
+    }
+    l.push(Ligne::Texte(String::new()));
+    for (t, texte, a) in [
+        (
+            "a",
+            tr!("Exclure un dossier ou un fichier", "Exclude a folder or file"),
+            ActionListe::Ajouter(GenreExclusion::Chemin),
+        ),
+        (
+            "p",
+            tr!(
+                "Exclure un programme (par son nom ou son chemin)",
+                "Exclude a program (by name or path)"
+            ),
+            ActionListe::Ajouter(GenreExclusion::Processus),
+        ),
+        (
+            "t",
+            tr!(
+                "Exclure un type de fichier (extension)",
+                "Exclude a file type (extension)"
+            ),
+            ActionListe::Ajouter(GenreExclusion::Extension),
+        ),
+        (
+            "d",
+            tr!(
+                "Permettre un programme (accès contrôlé aux dossiers)",
+                "Allow an app (controlled folder access)"
+            ),
+            ActionListe::Permettre,
+        ),
+    ] {
+        l.push(Ligne::choix(t, texte, ""));
+        actions.push((t.to_string(), a));
+    }
+    l.push(Ligne::Texte(String::new()));
+    paragraphe(
+        &mut l,
+        &effet_baisse(IdChoix::Exclusion(GenreExclusion::Chemin, EmpreinteElement::de(""))),
+        GRIS,
+    );
+    l.push(Ligne::Texte(String::new()));
+    l.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
+    borner(&mut l);
+    (l, actions)
+}
+
+/// Le changement d'un élément de liste choisi au sous-écran des exclusions ; `texte`, ce que la personne a tapé
+/// pour un ajout. `None` pour un texte refusé (vide, trop long, caractère de contrôle).
+pub(super) fn change_liste(a: &ActionListe, texte: &str) -> Option<Change> {
+    match a {
+        ActionListe::Ajouter(g) => {
+            let t = texte_exclusion(*g, texte);
+            Some(Change {
+                id: IdChoix::Exclusion(*g, EmpreinteElement::de(t)),
+                ligne: ligne_exclusion(*g, t)?,
+                texte: texte_ajout_exclusion(*g, t),
+                cible: Some(1),
+            })
+        }
+        ActionListe::Permettre => {
+            let t = texte.trim();
+            Some(Change {
+                id: IdChoix::DossiersAutorise(EmpreinteElement::de(t)),
+                ligne: ligne_permettre(t)?,
+                texte: texte_autoriser_dossiers(t),
+                cible: Some(1),
+            })
+        }
+        ActionListe::Retirer(id, montre) => Some(Change {
+            id: *id,
+            ligne: gestes::ligne_rallumer(*id),
+            texte: trf!("{} « {montre} » : RETIRER", "{} “{montre}”: REMOVE", nom_choix(*id)),
+            cible: Some(0),
+        }),
+        ActionListe::Noter(id, montre) => Some(Change {
+            id: *id,
+            ligne: gestes::ligne_noter(*id),
+            texte: trf!(
+                "{} « {montre} » : noter « par votre choix »",
+                "{} “{montre}”: note “your choice”",
+                nom_choix(*id)
+            ),
+            cible: None,
+        }),
+    }
+}
+
+/// Faut-il dire l'avertissement d'une exclusion large avant de l'ajouter (R8) ?
+pub(super) fn large(a: &ActionListe, texte: &str) -> bool {
+    match a {
+        ActionListe::Ajouter(g) => gestes::exclusion_large(*g, texte_exclusion(*g, texte)),
+        ActionListe::Permettre | ActionListe::Retirer(..) | ActionListe::Noter(..) => false,
+    }
+}
+
+/// Le récapitulatif de tous les changements choisis, avant la demande d'administrateur (plan §3.2).
+pub(super) fn recapitulatif(changes: &[Change]) -> Vec<String> {
+    let mut l = vec![format!(
+        "  {GRAS}{}{RESET}",
+        trf!("Les {} changements choisis :", "The {} chosen changes:", changes.len())
+    )];
+    for c in changes {
+        for (k, x) in envelopper(&c.texte, LARGEUR - 4).into_iter().enumerate() {
+            let puce = if k == 0 { "  · " } else { "    " };
+            l.push(format!("{puce}{x}"));
+        }
+    }
+    let baisses = changes.iter().any(|c| {
+        c.cible
+            .is_none_or(|v| c.id.rang(Some(v)) < c.id.rang(Some(c.id.sure())))
+    });
+    if baisses {
+        for x in envelopper(
+            tr!(
+                "Ce qui baisse votre protection vous sera montré, puis demandé (o/N), dans la fenêtre administrateur.",
+                "What lowers your protection will be shown, then asked (y/N), in the administrator window."
+            ),
+            LARGEUR - 2,
+        ) {
+            l.push(format!("  {GRIS}{x}{RESET}"));
+        }
+    }
+    l.push(format!(
+        "  {}",
+        tr!(
+            "Il faut l'accord d'un administrateur (fenêtre de Windows).",
+            "An administrator's approval is needed (Windows prompt)."
+        )
+    ));
+    l
+}
+
+/// L'issue d'un changement, d'après la réponse du processus élevé (qui relit après avoir écrit).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Issue {
+    Fait,
+    PasFait,
+    /// Pas fait, sur une option que la protection contre les falsifications protège, alors qu'elle est active.
+    Tamper,
+}
+
+pub(super) fn issue(c: &Change, reussi: bool, tamper: bool) -> Issue {
+    if reussi {
+        Issue::Fait
+    } else if tamper && protegee_id(c.id) {
+        Issue::Tamper
+    } else {
+        Issue::PasFait
+    }
+}
+
+pub(super) fn texte_issue(c: &Change, i: Issue) -> String {
+    match i {
+        Issue::Fait => trf!("  {VERT}✔{RESET} {} : fait", "  {VERT}✔{RESET} {}: done", c.texte),
+        Issue::PasFait => trf!(
+            "  {ACCENT}✖{RESET} {} : pas fait (réponse non, ou Windows a refusé : voir la fenêtre administrateur)",
+            "  {ACCENT}✖{RESET} {}: not done (answer no, or Windows refused: see the administrator window)",
+            c.texte
+        ),
+        Issue::Tamper => trf!(
+            "  {ACCENT}✖{RESET} {} : Windows a refusé (protection contre les falsifications)",
+            "  {ACCENT}✖{RESET} {}: Windows refused (tamper protection)",
+            c.texte
+        ),
+    }
+}
+
+/// Le texte d'un refus dû à la protection contre les falsifications (plan §3.3).
+pub(super) fn texte_tamper() -> &'static str {
+    tr!(
+        "Windows a refusé ce changement : la protection contre les falsifications est active. Elle empêche tout programme, Vanguard compris, de toucher à ce réglage de Defender. Seule une personne peut la couper, à la main. Vanguard ouvre la page où elle se trouve (Sécurité Windows › Protection contre les virus et menaces › Gérer les paramètres › Protection contre les falsifications). Coupez-la, revenez ici et refaites votre choix. Pensez à la rallumer ensuite : elle protège Defender contre les virus qui veulent le couper.",
+        "Windows refused this change: tamper protection is on. It stops any program, Vanguard included, from changing this Defender setting. Only a person can turn it off, by hand. Vanguard opens the page where it lives (Windows Security › Virus & threat protection › Manage settings › Tamper Protection). Turn it off, come back here and make your choice again. Remember to turn it back on afterwards: it protects Defender from viruses that try to turn it off."
+    )
+}
+
+/// La page de Sécurité Windows où se coupe la protection contre les falsifications, la seule que ce lot ouvre.
+pub(super) const PAGE_TAMPER: &str = "windowsdefender://threatsettings";
+
+// ------------------------------------------------------------------ la boucle (Windows)
+
+#[cfg(windows)]
+mod boucle {
+    use super::*;
+
+    /// Tout ce que l'écran lit, relu après chaque application.
+    struct Lu {
+        etat: Etat,
+        notes: Vec<(IdChoix, Option<Note>)>,
+        listes: Option<[Vec<String>; 3]>,
+    }
+
+    fn lire() -> Lu {
+        Lu {
+            etat: crate::machine::windows::defense_etat::lire(),
+            notes: choix_avant::notes(),
+            listes: crate::machine::windows::exclusions::lecture_wmi().map(|(l, _)| l),
+        }
+    }
+
+    fn invite() -> &'static str {
+        tr!("  Votre choix (Entrée : revenir) : ", "  Your choice (Enter: back): ")
+    }
+
+    fn retour(c: &str) -> bool {
+        c.is_empty() || c == "↵" || c.eq_ignore_ascii_case("q")
+    }
+
+    /// L'écran, jusqu'à ce que la personne revienne ; des changements choisis et pas faits sont proposés une dernière
+    /// fois (jamais faits sans qu'elle le dise).
+    pub(in crate::options_defense) fn ecran() {
+        let mut lu = lire();
+        let mut changes: Vec<Change> = Vec::new();
+        let mut depart = "1".to_string();
+        loop {
+            let lignes = menu(&lu.etat, &lu.notes, lu.listes.as_ref(), &changes);
+            let choix = crate::selection::choisir(&lignes, invite(), &depart, tr!("revenir", "back"));
+            let c = choix.as_deref().map_or("", str::trim);
+            if retour(c) {
+                if !changes.is_empty() {
+                    let q = trf!(
+                        "\n  Appliquer les {} changements choisis avant de revenir ? [o/N] : ",
+                        "\n  Apply the {} chosen changes before going back? [y/N]: ",
+                        changes.len()
+                    );
+                    if crate::langue::oui(&crate::ui::demander_ou_defaut(&q)) {
+                        appliquer(&mut changes, &lu);
+                    }
+                }
+                return;
+            }
+            depart = c.to_string();
+            match c {
+                "a" if !changes.is_empty() => {
+                    appliquer(&mut changes, &lu);
+                    lu = lire();
+                }
+                "x" => changes.clear(),
+                "v" => voir(&lu.etat),
+                "11" => exclusions(&lu, &mut changes),
+                "12" => asr(&lu.etat),
+                "13" => pare_feu(&lu.etat),
+                t => {
+                    if let Some(o) = opt_de_touche(t) {
+                        option(&lu, o, &mut changes);
+                    }
+                }
+            }
+        }
+    }
+
+    fn option(lu: &Lu, o: Opt, changes: &mut Vec<Change>) {
+        let lignes = lignes_option(&lu.etat, o, &lu.notes, changes);
+        let Some(c) = crate::selection::choisir(&lignes, invite(), "", tr!("revenir", "back")) else {
+            return;
+        };
+        if !retour(c.trim()) {
+            suivre(changes, suite_option(&lu.etat, o, &lu.notes, &c));
+        }
+    }
+
+    fn exclusions(lu: &Lu, changes: &mut Vec<Change>) {
+        let (lignes, actions) = lignes_exclusions(lu.listes.as_ref(), &lu.notes, changes);
+        let Some(c) = crate::selection::choisir(&lignes, invite(), "", tr!("revenir", "back")) else {
+            return;
+        };
+        let Some((_, a)) = actions.iter().find(|(t, _)| *t == c.trim()) else {
+            return;
+        };
+        let texte = match a {
+            ActionListe::Ajouter(g) => crate::ui::demander_ou_defaut(&trf!(
+                "\n  {} à exclure (Entrée : rien) : ",
+                "\n  {} to exclude (Enter: nothing): ",
+                majuscule(nom_genre(*g))
+            )),
+            ActionListe::Permettre => crate::ui::demander_ou_defaut(tr!(
+                "\n  Chemin complet du programme à permettre (Entrée : rien) : ",
+                "\n  Full path of the app to allow (Enter: nothing): "
+            )),
+            ActionListe::Retirer(..) | ActionListe::Noter(..) => String::new(),
+        };
+        if matches!(a, ActionListe::Ajouter(_) | ActionListe::Permettre) && texte.trim().is_empty() {
+            return;
+        }
+        if large(a, &texte) {
+            println!();
+            crate::ui::afficher_aligne("  ", avertissement_large(), 2, ACCENT);
+            let q = tr!(
+                "  La garder dans les changements choisis ? [o/N] : ",
+                "  Keep it in the chosen changes? [y/N]: "
+            );
+            if !crate::langue::oui(&crate::ui::demander_ou_defaut(q)) {
+                return;
+            }
+        }
+        if let Some(ch) = change_liste(a, &texte) {
+            ajouter(changes, ch);
+        } else {
+            crate::trp!(
+                "  {ACCENT}Texte refusé (vide, trop long ou avec un caractère de contrôle).{RESET}",
+                "  {ACCENT}Text refused (empty, too long or with a control character).{RESET}"
+            );
+            crate::selection::attendre_retour(tr!("  Entrée pour revenir… ", "  Enter to go back… "));
+        }
+    }
+
+    fn voir(e: &Etat) {
+        crate::ui::titre(titre());
+        for l in lignes(e) {
+            println!("{l}");
+        }
+        println!();
+        crate::selection::attendre_retour(tr!("  Entrée pour revenir… ", "  Enter to go back… "));
+    }
+
+    /// Les règles ASR en lecture ; leurs choix viennent au sous-lot D4. D'ici là, l'écran à cocher d'Optimiser
+    /// renforce les règles de base.
+    fn asr(e: &Etat) {
+        let mut l = Vec::new();
+        section_asr(&mut l, e);
+        let mut lignes: Vec<Ligne> = vec![Ligne::Texte(String::new()), Ligne::Texte(ligne_titre(titre()))];
+        lignes.extend(l.into_iter().map(Ligne::Texte));
+        lignes.push(Ligne::Texte(String::new()));
+        // Des blocages d'un Defender passif ou coupé ne s'appliqueraient pas : rien à cocher.
+        let actif = e.mode() == ModeDefender::Actif;
+        if actif {
+            lignes.push(Ligne::choix(
+                "r",
+                tr!(
+                    "Renforcer les protections de base (écran à cocher)",
+                    "Strengthen the basic protections (checklist)"
+                ),
+                "",
+            ));
+        }
+        lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
+        borner(&mut lignes);
+        if crate::selection::choisir(&lignes, invite(), "", tr!("revenir", "back")).as_deref() == Some("r") && actif {
+            crate::optimiser::menu(crate::optimiser::Categorie::Protection);
+        }
+    }
+
+    /// Le pare-feu en lecture ; ses choix viennent au sous-lot D5.
+    fn pare_feu(e: &Etat) {
+        crate::ui::titre(titre());
+        let mut l = Vec::new();
+        section_pare_feu(&mut l, e);
+        section_centre(&mut l, e);
+        section_gestion(&mut l, e);
+        for x in l {
+            println!("{x}");
+        }
+        println!();
+        crate::selection::attendre_retour(tr!("  Entrée pour revenir… ", "  Enter to go back… "));
+    }
+
+    /// Le récapitulatif, une seule demande d'administrateur pour tous les changements (un correctif par changement :
+    /// le processus élevé met « Rallumer » dans la liste des renforcements et les choix dans la leur, P7), puis le
+    /// résultat relu ligne à ligne. Les changements sont oubliés ensuite, faits ou non : l'écran relu montre où en
+    /// est chacun.
+    fn appliquer(changes: &mut Vec<Change>, lu: &Lu) {
+        crate::ui::titre(titre());
+        for l in recapitulatif(changes) {
+            println!("{l}");
+        }
+        println!();
+        let correctifs: Vec<Vec<String>> = changes.iter().map(|c| vec![c.ligne.clone()]).collect();
+        let reussis = crate::machine::appliquer_chacune(&correctifs);
+        let apres = crate::machine::windows::defense_etat::lire();
+        let tamper = tamper(&apres) || tamper(&lu.etat);
+        println!();
+        let mut refus_tamper = false;
+        for (k, c) in changes.iter().enumerate() {
+            let i = issue(c, reussis.get(k).copied().unwrap_or(false), tamper);
+            refus_tamper |= i == Issue::Tamper;
+            println!("{}", texte_issue(c, i));
+        }
+        if refus_tamper {
+            println!();
+            crate::ui::afficher_aligne("  ", texte_tamper(), 2, "");
+            crate::machine::ouvrir(PAGE_TAMPER);
+        }
+        changes.clear();
+        println!();
+        crate::selection::attendre_retour(tr!("  Entrée pour revenir… ", "  Enter to go back… "));
+    }
+}
+
+#[cfg(windows)]
+pub(super) use boucle::ecran;
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::courant;
+    use super::*;
+
+    fn note(id: IdChoix, avant: Option<i64>, posee: i64) -> (IdChoix, Option<Note>) {
+        (
+            id,
+            Some(Note {
+                id: id.texte(),
+                avant,
+                posee,
+                date: 1_793_000_000,
+            }),
+        )
+    }
+
+    /// La largeur d'une rangée telle que `selection` la dessine : « ► touche  » puis le texte, complété jusqu'à la
+    /// colonne des précisions s'il y en a une.
+    fn largeurs(l: &[Ligne]) -> Vec<(usize, String)> {
+        let colonne = l
+            .iter()
+            .filter_map(|x| match x {
+                Ligne::Choix { texte, .. } => Some(largeur_affichee(texte)),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
+            .saturating_add(2)
+            .clamp(36, 48);
+        l.iter()
+            .filter_map(|x| match x {
+                Ligne::Texte(t) => Some((largeur_affichee(t), t.clone())),
+                Ligne::Choix {
+                    touche,
+                    texte,
+                    precision,
+                    ..
+                } => {
+                    let debut = 5 + largeur_affichee(touche).max(2);
+                    let w = if precision.is_empty() {
+                        debut + largeur_affichee(texte)
+                    } else {
+                        debut + largeur_affichee(texte).max(colonne) + largeur_affichee(precision)
+                    };
+                    Some((w, format!("{touche} {texte} {precision}")))
+                }
+                Ligne::Cachee { .. } => None,
+            })
+            .collect()
+    }
+
+    fn dans_l_ecran(l: &[Ligne]) {
+        for (w, t) in largeurs(l) {
+            assert!(w <= LARGEUR, "{w} > {LARGEUR} : {t}");
+        }
+    }
+
+    fn touches(l: &[Ligne]) -> Vec<String> {
+        l.iter()
+            .filter_map(|x| match x {
+                Ligne::Choix { touche, .. } => Some(touche.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn tout_texte(l: &[Ligne]) -> String {
+        l.iter()
+            .map(|x| match x {
+                Ligne::Texte(t) => t.clone(),
+                Ligne::Choix { texte, precision, .. } | Ligne::Cachee { texte, precision, .. } => {
+                    format!("{texte} {precision}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Le texte des paragraphes remis sur une ligne, sans couleurs : pour y chercher une phrase coupée.
+    fn a_plat(t: &str) -> String {
+        t.replace(GRIS, "")
+            .replace(RESET, "")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn dans_les_deux_langues(f: impl Fn()) {
+        f();
+        crate::langue::en_anglais(&f);
+    }
+
+    #[test]
+    fn le_menu_tient_dans_l_ecran_et_dit_tout() {
+        dans_les_deux_langues(|| {
+            let e = courant();
+            let tr = IdChoix::Defender(ReglageDefender::Pua);
+            let notes = vec![note(tr, Some(1), 0)];
+            let listes = [
+                vec![
+                    r"C:\Jeux\Un très long dossier de jeu qui dépasse largement la largeur de l'écran\bin".to_string(),
+                ],
+                vec![],
+                vec!["log".to_string()],
+            ];
+            let changes = vec![Change {
+                id: IdChoix::Defender(ReglageDefender::TempsReel),
+                ligne: gestes::ligne_rallumer(IdChoix::Defender(ReglageDefender::TempsReel)),
+                texte: "x".into(),
+                cible: Some(1),
+            }];
+            let m = menu(&e, &notes, Some(&listes), &changes);
+            dans_l_ecran(&m);
+            let t = touches(&m);
+            for k in 1..=13 {
+                assert!(t.contains(&k.to_string()), "{k}");
+            }
+            assert!(t.contains(&"a".to_string()) && t.contains(&"x".to_string()) && t.contains(&"↵".to_string()));
+            // Tamper active (courant) : † sur les quatre options qu'elle protège.
+            let texte = tout_texte(&m);
+            assert!(texte.contains('†'));
+            // Sans changement : ni « Appliquer » ni « Oublier ».
+            let m = menu(&e, &notes, Some(&listes), &[]);
+            let t = touches(&m);
+            assert!(!t.contains(&"a".to_string()) && !t.contains(&"x".to_string()));
+        });
+    }
+
+    #[test]
+    fn marques_du_menu() {
+        let mut e = courant();
+        // PUA coupée (0), notée par votre choix ; réseau imposé par une stratégie (courant : options[4]).
+        if let Some(p) = e.preferences.as_mut() {
+            p.valeurs[3] = Some(0);
+        }
+        let pua = IdChoix::Defender(ReglageDefender::Pua);
+        let notes = vec![note(pua, Some(1), 0)];
+        let m = menu(&e, &notes, None, &[]);
+        let ligne = |k: &str| {
+            m.iter()
+                .find_map(|x| match x {
+                    Ligne::Choix {
+                        touche,
+                        texte,
+                        precision,
+                        ..
+                    } if touche == k => Some((texte.clone(), precision.clone())),
+                    _ => None,
+                })
+                .expect("ligne")
+        };
+        assert!(ligne("1").0.ends_with('†'), "{:?}", ligne("1"));
+        assert!(ligne("4").0.contains('‡'), "{:?}", ligne("4"));
+        assert!(ligne("5").0.contains('*'), "{:?}", ligne("5"));
+        assert!(!ligne("4").0.contains('†'));
+        // Sans Tamper : plus de †.
+        if let Some(s) = e.statut.as_mut() {
+            s.falsifications = Some(false);
+        }
+        let m = menu(&e, &notes, None, &[]);
+        assert!(!tout_texte(&m).contains('†'));
+    }
+
+    #[test]
+    fn resume_des_exclusions() {
+        let chemin = r"C:\Outils\scanner";
+        let id = IdChoix::Exclusion(GenreExclusion::Chemin, EmpreinteElement::de(chemin));
+        let notes = vec![note(id, Some(0), 1)];
+        let listes = [vec![chemin.to_string(), r"D:\inconnu".to_string()], vec![], vec![]];
+        assert_eq!(
+            resume_exclusions(Some(&listes), &notes),
+            "2 (1 votre choix, 1 inconnue ⚠)"
+        );
+        // La casse ne compte pas (Windows compare sans casse ; l'empreinte se prend en minuscules).
+        let listes_maj = [vec![chemin.to_uppercase()], vec![], vec![]];
+        assert_eq!(resume_exclusions(Some(&listes_maj), &notes), "1 (par votre choix)");
+        assert_eq!(resume_exclusions(Some(&Default::default()), &[]), "aucune");
+        let n_a = [
+            vec!["N/A: Must be an administrator to view exclusions".to_string()],
+            vec![],
+            vec![],
+        ];
+        assert_eq!(resume_exclusions(Some(&n_a), &[]), "visibles avec l'accord admin.");
+        assert!(resume_exclusions(Some(&n_a), &notes).contains("1 par votre choix"));
+        assert_eq!(resume_exclusions(None, &[]), "non vérifiées (illisibles)");
+        let deux = [vec!["a".into(), "b".into()], vec![], vec![]];
+        assert_eq!(resume_exclusions(Some(&deux), &[]), "2 (inconnues ⚠)");
+        assert_eq!(
+            crate::langue::en_anglais(|| resume_exclusions(Some(&listes), &notes)),
+            "2 (1 your choice, 1 unknown ⚠)"
+        );
+    }
+
+    #[test]
+    fn resume_asr_et_pare_feu() {
+        let e = courant();
+        // Deux connues bloquent, une en audit (l'inconnue n'est pas comptée).
+        assert_eq!(resume_asr(&e), "2 bloquent · 1 audit · 16 coupées");
+        // Courant : réseau actuel public, domaine coupé.
+        assert_eq!(resume_pare_feu(&e), "coupé : Domaine");
+        let mut e2 = courant();
+        if let Some(f) = e2.pare_feu.as_mut() {
+            f.profils[0].actif = Some(true);
+        }
+        assert_eq!(resume_pare_feu(&e2), "allumé (réseau actuel : Public)");
+        let vide = Etat::default();
+        assert!(resume_asr(&vide).contains("non vérifiées"));
+        assert!(resume_pare_feu(&vide).contains("non vérifié"));
+    }
+
+    #[test]
+    fn sous_ecran_d_une_option() {
+        dans_les_deux_langues(|| {
+            let e = courant();
+            for o in Opt::TOUTES {
+                let l = lignes_option(&e, o, &[], &[]);
+                dans_l_ecran(&l);
+                let t = touches(&l);
+                // Une touche par valeur admise, plus « Revenir ».
+                for k in 1..=reglage_de(o).choix().len() {
+                    assert!(t.contains(&k.to_string()), "{} {k}", o.id());
+                }
+                assert!(t.contains(&"↵".to_string()));
+                // L'effet d'une baisse et ce qui protège encore sont dits.
+                let texte = tout_texte(&l);
+                assert!(a_plat(&texte).contains(protege_encore(id_opt(o))), "{}", o.id());
+            }
+            // Temps réel : la raison de ne pas arrêter WinDefend.
+            let l = tout_texte(&lignes_option(&e, Opt::TempsReel, &[], &[]));
+            assert!(l.contains("WinDefend"));
+            // Tamper active : la note à côté des options qu'elle protège, pas des autres.
+            let refusera = tr!("Windows refusera", "Windows will refuse");
+            assert!(l.contains(refusera));
+            assert!(!tout_texte(&lignes_option(&e, Opt::Pua, &[], &[])).contains(refusera));
+        });
+    }
+
+    #[test]
+    fn choisir_une_valeur_baisse_ou_annule() {
+        let e = courant();
+        // Temps réel allumé : « 2 » (coupée) est une baisse, « 1 » (allumée, l'actuelle) oublie le choix.
+        let s = suite_option(&e, Opt::TempsReel, &[], "2");
+        let Suite::Ajouter(c) = s else { panic!("{s:?}") };
+        assert_eq!(c.id, IdChoix::Defender(ReglageDefender::TempsReel));
+        assert_eq!(c.cible, Some(1));
+        assert_eq!(
+            Some(c.ligne.clone()),
+            gestes::ligne_baisse_defender(ReglageDefender::TempsReel, ChoixDefender::Coupe)
+        );
+        assert!(c.texte.contains("allumée → coupée"), "{}", c.texte);
+        assert_eq!(
+            suite_option(&e, Opt::TempsReel, &[], "1"),
+            Suite::Retirer(IdChoix::Defender(ReglageDefender::TempsReel))
+        );
+        assert_eq!(suite_option(&e, Opt::TempsReel, &[], "9"), Suite::Rien);
+        assert_eq!(suite_option(&e, Opt::TempsReel, &[], "0"), Suite::Rien);
+        // Rien à rallumer ni à noter : la valeur est sûre, sans note.
+        assert_eq!(suite_option(&e, Opt::TempsReel, &[], "r"), Suite::Rien);
+        assert_eq!(suite_option(&e, Opt::TempsReel, &[], "m"), Suite::Rien);
+        // Le dernier choix d'un réglage remplace le précédent ; la valeur actuelle choisie l'oublie.
+        let mut changes = Vec::new();
+        suivre(&mut changes, suite_option(&e, Opt::Cloud, &[], "2"));
+        suivre(&mut changes, suite_option(&e, Opt::Cloud, &[], "3"));
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].cible, Some(0));
+        suivre(&mut changes, suite_option(&e, Opt::Cloud, &[], "1"));
+        assert_eq!(changes, Vec::<Change>::new());
+    }
+
+    #[test]
+    fn rallumer_et_c_est_moi() {
+        let mut e = courant();
+        if let Some(p) = e.preferences.as_mut() {
+            p.valeurs[3] = Some(0); // PUA coupée
+            p.valeurs[2] = Some(2); // échantillons : jamais
+        }
+        let pua = IdChoix::Defender(ReglageDefender::Pua);
+        // Sans note : « Rallumer » vise la valeur sûre (bloque), « C'est moi » est proposé.
+        let t = touches(&lignes_option(&e, Opt::Pua, &[], &[]));
+        assert!(t.contains(&"r".to_string()) && t.contains(&"m".to_string()));
+        let Suite::Ajouter(c) = suite_option(&e, Opt::Pua, &[], "r") else {
+            panic!()
+        };
+        assert_eq!(c.ligne, gestes::ligne_rallumer(pua));
+        assert_eq!(c.cible, Some(1));
+        let Suite::Ajouter(c) = suite_option(&e, Opt::Pua, &[], "m") else {
+            panic!()
+        };
+        assert_eq!(c.ligne, gestes::ligne_noter(pua));
+        assert_eq!(c.cible, None);
+        // Notée par votre choix (avant : audit) : « Rallumer » remet l'audit ; plus de « C'est moi ».
+        let notes = vec![note(pua, Some(2), 0)];
+        let t = touches(&lignes_option(&e, Opt::Pua, &notes, &[]));
+        assert!(t.contains(&"r".to_string()) && !t.contains(&"m".to_string()));
+        let Suite::Ajouter(c) = suite_option(&e, Opt::Pua, &notes, "r") else {
+            panic!()
+        };
+        assert_eq!(c.cible, Some(2));
+        assert!(tout_texte(&lignes_option(&e, Opt::Pua, &notes, &[])).contains("par votre choix le"));
+        // Une note forgée qui dit « avant : coupée » ne fait jamais rallumer plus faible qu'allumé.
+        let forgee = vec![note(pua, Some(0), 0)];
+        let Suite::Ajouter(c) = suite_option(&e, Opt::Pua, &forgee, "r") else {
+            panic!()
+        };
+        assert_eq!(c.cible, Some(1));
+        // Échantillons « jamais » : un choix de vie privée, « Rallumer » vise « fichiers sûrs ».
+        let Suite::Ajouter(c) = suite_option(&e, Opt::Echantillons, &[], "r") else {
+            panic!()
+        };
+        assert_eq!(c.cible, Some(1));
+        // Illisible : ni l'un ni l'autre.
+        let vide = Etat::default();
+        let t = touches(&lignes_option(&vide, Opt::Pua, &[], &[]));
+        assert!(!t.contains(&"r".to_string()) && !t.contains(&"m".to_string()));
+    }
+
+    #[test]
+    fn temps_reel_lu_par_son_effet() {
+        let mut e = courant();
+        if let Some(s) = e.statut.as_mut() {
+            s.temps_reel = Some(false);
+        }
+        // La préférence dit allumé (0), l'effet dit coupé : la note se compare à l'effet.
+        assert_eq!(valeur(&e, Opt::TempsReel), Some(1));
+        let tr = IdChoix::Defender(ReglageDefender::TempsReel);
+        let notes = vec![note(tr, Some(0), 1)];
+        assert!(matches!(
+            lecture(&e, Opt::TempsReel, &notes),
+            Some(Lecture::ParChoix(_))
+        ));
+        if let Some(s) = e.statut.as_mut() {
+            s.temps_reel = Some(true);
+        }
+        assert_eq!(lecture(&e, Opt::TempsReel, &notes), Some(Lecture::Remontee));
+    }
+
+    #[test]
+    fn sous_ecran_des_exclusions() {
+        dans_les_deux_langues(|| {
+            let chemin = r"C:\Outils\scanner";
+            let id = IdChoix::Exclusion(GenreExclusion::Chemin, EmpreinteElement::de(chemin));
+            let permis = IdChoix::DossiersAutorise(EmpreinteElement::de(r"C:\Outils\copie.exe"));
+            let notes = vec![note(id, Some(0), 1), note(permis, Some(0), 1)];
+            let piege = "D:\\inconnu\u{1b}[31m\u{202e}exe.txt";
+            let listes = [
+                vec![chemin.to_string(), piege.to_string()],
+                vec![],
+                vec!["log".to_string()],
+            ];
+            let (l, actions) = lignes_exclusions(Some(&listes), &notes, &[]);
+            dans_l_ecran(&l);
+            let texte = tout_texte(&l);
+            // R13 : un texte venu d'ailleurs ne porte ni échappement ni inversion.
+            assert!(!texte.contains("\u{1b}[31m"));
+            assert!(!texte.contains('\u{202e}'));
+            let a = |t: &str| actions.iter().find(|(k, _)| k == t).map(|(_, a)| a.clone());
+            assert!(matches!(a("r1"), Some(ActionListe::Retirer(i, _)) if i == id));
+            assert!(matches!(a("m2"), Some(ActionListe::Noter(..))));
+            assert!(matches!(
+                a("m3"),
+                Some(ActionListe::Noter(IdChoix::Exclusion(GenreExclusion::Extension, _), _))
+            ));
+            assert!(matches!(a("r4"), Some(ActionListe::Retirer(i, _)) if i == permis));
+            for k in ["a", "p", "t", "d"] {
+                assert!(a(k).is_some(), "{k}");
+            }
+            // Liste cachée : les notes, sans chemin.
+            let n_a = [vec!["N/A: Must be an administrator".to_string()], vec![], vec![]];
+            let (l, actions) = lignes_exclusions(Some(&n_a), &notes, &[]);
+            dans_l_ecran(&l);
+            assert!(!tout_texte(&l).contains("Outils"));
+            assert!(
+                actions
+                    .iter()
+                    .any(|(_, a)| matches!(a, ActionListe::Retirer(i, _) if *i == id))
+            );
+        });
+    }
+
+    #[test]
+    fn changements_des_listes() {
+        // Une extension s'écrit sans son point ; l'empreinte est celle du texte envoyé.
+        let c = change_liste(&ActionListe::Ajouter(GenreExclusion::Extension), " .log ").expect("ajout");
+        assert_eq!(
+            c.id,
+            IdChoix::Exclusion(GenreExclusion::Extension, EmpreinteElement::de("log"))
+        );
+        assert_eq!(
+            Some(c.ligne.clone()),
+            gestes::ligne_ajout_exclusion(GenreExclusion::Extension, "log")
+        );
+        assert_eq!(c.cible, Some(1));
+        let c = change_liste(&ActionListe::Permettre, r" C:\Outils\copie.exe ").expect("permis");
+        assert_eq!(
+            c.id,
+            IdChoix::DossiersAutorise(EmpreinteElement::de(r"C:\Outils\copie.exe"))
+        );
+        assert_eq!(Some(c.ligne), gestes::ligne_autoriser_dossiers(r"C:\Outils\copie.exe"));
+        // Refusés : vide, caractère de contrôle.
+        assert!(change_liste(&ActionListe::Ajouter(GenreExclusion::Chemin), "   ").is_none());
+        assert!(change_liste(&ActionListe::Ajouter(GenreExclusion::Chemin), "C:\\a\nb").is_none());
+        assert!(change_liste(&ActionListe::Permettre, "").is_none());
+        // Retirer : « Rallumer » de l'élément (son absence).
+        let id = IdChoix::Exclusion(GenreExclusion::Chemin, EmpreinteElement::de("c:\\x"));
+        let c = change_liste(&ActionListe::Retirer(id, "c:\\x".into()), "").expect("retirer");
+        assert_eq!(c.ligne, gestes::ligne_rallumer(id));
+        let c = change_liste(&ActionListe::Noter(id, "c:\\x".into()), "").expect("noter");
+        assert_eq!(c.ligne, gestes::ligne_noter(id));
+        // L'avertissement d'une exclusion large (R8).
+        assert!(large(&ActionListe::Ajouter(GenreExclusion::Chemin), "C:\\"));
+        assert!(large(&ActionListe::Ajouter(GenreExclusion::Extension), ".exe"));
+        assert!(!large(&ActionListe::Ajouter(GenreExclusion::Chemin), r"C:\Jeux\Un jeu"));
+        assert!(!large(&ActionListe::Permettre, "C:\\"));
+    }
+
+    #[test]
+    fn recapitulatif_et_issues() {
+        dans_les_deux_langues(|| {
+            let e = courant();
+            let mut changes = Vec::new();
+            suivre(&mut changes, suite_option(&e, Opt::TempsReel, &[], "2"));
+            suivre(&mut changes, suite_option(&e, Opt::Pua, &[], "3"));
+            let r = recapitulatif(&changes);
+            for x in &r {
+                assert!(largeur_affichee(x) <= LARGEUR, "{x}");
+            }
+            let tout = r.join("\n");
+            assert!(tout.contains(tr!("accord d'un administrateur", "administrator's approval")));
+            assert!(tout.contains(tr!("demandé (o/N)", "asked (y/N)")));
+            // Un renforcement seul : pas d'annonce de question.
+            let mut e2 = courant();
+            if let Some(p) = e2.preferences.as_mut() {
+                p.valeurs[3] = Some(0);
+            }
+            let seul = vec![match suite_option(&e2, Opt::Pua, &[], "1") {
+                Suite::Ajouter(c) => c,
+                s => panic!("{s:?}"),
+            }];
+            assert!(
+                !recapitulatif(&seul)
+                    .join("\n")
+                    .contains(tr!("demandé (o/N)", "asked (y/N)"))
+            );
+            let tr = &changes[0];
+            let pua = &changes[1];
+            assert_eq!(issue(tr, true, true), Issue::Fait);
+            assert_eq!(issue(tr, false, true), Issue::Tamper);
+            assert_eq!(issue(tr, false, false), Issue::PasFait);
+            // PUA n'est pas protégée par Tamper : un refus reste un refus ordinaire.
+            assert_eq!(issue(pua, false, true), Issue::PasFait);
+            for i in [Issue::Fait, Issue::PasFait, Issue::Tamper] {
+                assert!(texte_issue(tr, i).contains(&tr.texte));
+            }
+            assert!(texte_tamper().contains(tr!("falsifications", "tamper")));
+        });
+        assert_eq!(PAGE_TAMPER, "windowsdefender://threatsettings");
+    }
+
+    #[test]
+    fn touches_du_menu() {
+        assert_eq!(opt_de_touche("1"), Some(Opt::TempsReel));
+        assert_eq!(opt_de_touche("10"), Some(Opt::PremiereVue));
+        assert_eq!(opt_de_touche("0"), None);
+        assert_eq!(opt_de_touche("11"), None);
+        assert_eq!(opt_de_touche("a"), None);
+    }
+}

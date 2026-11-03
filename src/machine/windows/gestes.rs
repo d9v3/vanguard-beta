@@ -1849,6 +1849,17 @@ pub(crate) const DEFENDER_ASR_CHOIX: &str = "vanguard:defender-asr-choix ";
 /// calcule la cible lui-même (`cible_rallumer`) : la valeur d'avant de la note si elle est valide et au moins au
 /// plancher, sinon la valeur sûre. Une ligne ne peut donc jamais faire « rallumer » plus faible qu'allumé.
 pub(crate) const RALLUMER: &str = "vanguard:rallumer ";
+/// Le verbe d'une exclusion de Defender que la personne ajoute : `vanguard:defender-exclusion-ajouter
+/// <chemin|processus|extension> <hex>`. Une baisse (P5), jugée, montrée, confirmée et notée comme `defender-choix`
+/// (`defender-exclusion-<genre>-<empreinte>`) ; « Rallumer » la retire.
+pub(crate) const DEFENDER_EXCLUSION_AJOUTER: &str = "vanguard:defender-exclusion-ajouter ";
+/// Le verbe d'un programme que la personne permet malgré l'accès contrôlé aux dossiers :
+/// `vanguard:defender-dossiers-autoriser <hex>`, jugé comme `defender-exclusion-ajouter`.
+pub(crate) const DEFENDER_DOSSIERS_AUTORISER: &str = "vanguard:defender-dossiers-autoriser ";
+/// Le verbe qui note un réglage coupé hors de Vanguard comme le choix de la personne (« C'est moi », P11) :
+/// `vanguard:choix-noter <id>`. Rien n'est écrit dans Defender ; la note (avant : la valeur sûre) est posée par le
+/// processus élevé, après la même question qu'une baisse.
+pub(crate) const CHOIX_NOTER: &str = "vanguard:choix-noter ";
 
 /// Règles ASR que Microsoft dit sans revers (« standard protection rules »), en minuscules comme Microsoft les
 /// écrit. Ici plutôt que dans Optimiser : une ligne `defender-asr` ne désigne qu'une règle de ces listes, et ce module
@@ -1919,15 +1930,31 @@ pub(crate) enum ReglageDefender {
     Np,
     /// Les applications potentiellement indésirables (PUAProtection).
     Pua,
+    /// L'envoi d'échantillons au cloud (SubmitSamplesConsent) : un choix de vie privée, jamais renforcé par une ligne
+    /// `defender` (`permises` vide).
+    Echantillons,
+    /// La surveillance du comportement (DisableBehaviorMonitoring).
+    Comportement,
+    /// L'analyse des téléchargements et pièces jointes (DisableIOAVProtection).
+    Telechargements,
+    /// L'analyse des scripts (DisableScriptScanning).
+    Scripts,
+    /// Le blocage à la première détection (DisableBlockAtFirstSeen).
+    PremiereVue,
 }
 
 impl ReglageDefender {
-    pub(crate) const TOUS: [ReglageDefender; 5] = [
+    pub(crate) const TOUS: [ReglageDefender; 10] = [
         ReglageDefender::TempsReel,
         ReglageDefender::Maps,
         ReglageDefender::Cfa,
         ReglageDefender::Np,
         ReglageDefender::Pua,
+        ReglageDefender::Echantillons,
+        ReglageDefender::Comportement,
+        ReglageDefender::Telechargements,
+        ReglageDefender::Scripts,
+        ReglageDefender::PremiereVue,
     ];
 
     pub(crate) fn mot(self) -> &'static str {
@@ -1937,7 +1964,24 @@ impl ReglageDefender {
             ReglageDefender::Cfa => "cfa",
             ReglageDefender::Np => "np",
             ReglageDefender::Pua => "pua",
+            ReglageDefender::Echantillons => "echantillons",
+            ReglageDefender::Comportement => "comportement",
+            ReglageDefender::Telechargements => "telechargements",
+            ReglageDefender::Scripts => "scripts",
+            ReglageDefender::PremiereVue => "premiere-vue",
         }
+    }
+
+    /// Un `Disable…` de MSFT_MpPreference : un booléen, faux (0) en marche, vrai (1) coupé.
+    pub(crate) fn booleen(self) -> bool {
+        matches!(
+            self,
+            ReglageDefender::TempsReel
+                | ReglageDefender::Comportement
+                | ReglageDefender::Telechargements
+                | ReglageDefender::Scripts
+                | ReglageDefender::PremiereVue
+        )
     }
 
     /// La propriété de MSFT_MpPreference, lue avant et après, et le paramètre de sa méthode Set.
@@ -1948,6 +1992,11 @@ impl ReglageDefender {
             ReglageDefender::Cfa => "EnableControlledFolderAccess",
             ReglageDefender::Np => "EnableNetworkProtection",
             ReglageDefender::Pua => "PUAProtection",
+            ReglageDefender::Echantillons => "SubmitSamplesConsent",
+            ReglageDefender::Comportement => "DisableBehaviorMonitoring",
+            ReglageDefender::Telechargements => "DisableIOAVProtection",
+            ReglageDefender::Scripts => "DisableScriptScanning",
+            ReglageDefender::PremiereVue => "DisableBlockAtFirstSeen",
         }
     }
 
@@ -1955,11 +2004,11 @@ impl ReglageDefender {
     /// qu'une ligne forgée ne peut rien affaiblir (« temps-reel non », « maps 0 », « cfa coupe »… sont refusées).
     pub(crate) fn permises(self) -> &'static [ValeurDefender] {
         match self {
-            ReglageDefender::TempsReel => &[ValeurDefender::Actif],
+            r if r.booleen() => &[ValeurDefender::Actif],
             ReglageDefender::Maps => &[ValeurDefender::Avance],
-            ReglageDefender::Cfa | ReglageDefender::Np | ReglageDefender::Pua => {
-                &[ValeurDefender::Bloquer, ValeurDefender::Audit]
-            }
+            // L'envoi d'échantillons est un choix de vie privée : seule la personne le règle, dans les Options.
+            ReglageDefender::Echantillons => &[],
+            _ => &[ValeurDefender::Bloquer, ValeurDefender::Audit],
         }
     }
 
@@ -1967,8 +2016,10 @@ impl ReglageDefender {
     /// construit hors de `permises` ne vise qu'une valeur qui protège (temps réel jamais désactivé, cloud avancé).
     pub(crate) fn attendue(self, v: ValeurDefender) -> u8 {
         match (self, v) {
-            // DisableRealtimeMonitoring : faux.
-            (ReglageDefender::TempsReel, _) => 0,
+            // DisableRealtimeMonitoring et les autres `Disable…` : faux.
+            (r, _) if r.booleen() => 0,
+            // SubmitSamplesConsent : 1, les fichiers sûrs (2 serait « jamais » : jamais visé par un renforcement).
+            (ReglageDefender::Echantillons, _) => 1,
             // MAPSReporting : 2, « Advanced ».
             (ReglageDefender::Maps, _) | (_, ValeurDefender::Audit) => 2,
             (_, _) => 1,
@@ -1978,9 +2029,16 @@ impl ReglageDefender {
     /// Le rang de protection d'une valeur lue de la propriété : plus haut, plus sûr. Une valeur inconnue vaut 0, la
     /// moins sûre : jamais crue plus forte qu'elle n'est. Accès contrôlé : 0 coupé, 2 et 4 audit, 3 disques seuls,
     /// 1 bloque ; protection réseau et PUA : 0 coupée, 2 audit, 1 bloque ; cloud : 0, 1 de base, 2 avancé.
+    /// Envoi d'échantillons : 2 jamais, 0 toujours demander, 1 fichiers sûrs, 3 tous.
     pub(crate) fn rang(self, lue: i64) -> u8 {
         match self {
-            ReglageDefender::TempsReel => u8::from(lue == 0),
+            r if r.booleen() => u8::from(lue == 0),
+            ReglageDefender::Echantillons => match lue {
+                0 => 1,
+                1 => 2,
+                3 => 3,
+                _ => 0,
+            },
             ReglageDefender::Maps => match lue {
                 1 => 1,
                 2 => 2,
@@ -1992,7 +2050,7 @@ impl ReglageDefender {
                 1 => 3,
                 _ => 0,
             },
-            ReglageDefender::Np | ReglageDefender::Pua => match lue {
+            _ => match lue {
                 2 => 1,
                 1 => 2,
                 _ => 0,
@@ -2009,9 +2067,10 @@ impl ReglageDefender {
     /// Le paramètre de MSFT_MpPreference.Set pour `v` : un booléen pour le temps réel, un octet (uint8) sinon.
     pub(crate) fn valeur_wmi(self, v: ValeurDefender) -> ValeurWmi {
         let n = self.attendue(v);
-        match self {
-            ReglageDefender::TempsReel => ValeurWmi::Booleen(n != 0),
-            _ => ValeurWmi::Octet(n),
+        if self.booleen() {
+            ValeurWmi::Booleen(n != 0)
+        } else {
+            ValeurWmi::Octet(n)
         }
     }
 }
@@ -2057,10 +2116,18 @@ pub(crate) enum ChoixDefender {
     Disques,
     /// Signale sans bloquer.
     Audit,
+    /// Envoi d'échantillons : tous les fichiers, sans demander (3).
+    Tous,
+    /// Envoi d'échantillons : les fichiers sûrs, sans demander (1).
+    Surs,
+    /// Envoi d'échantillons : toujours demander (0).
+    Demander,
+    /// Envoi d'échantillons : jamais (2).
+    Jamais,
 }
 
 impl ChoixDefender {
-    pub(crate) const TOUS: [ChoixDefender; 7] = [
+    pub(crate) const TOUS: [ChoixDefender; 11] = [
         ChoixDefender::Allume,
         ChoixDefender::Coupe,
         ChoixDefender::Avance,
@@ -2068,6 +2135,10 @@ impl ChoixDefender {
         ChoixDefender::Bloquer,
         ChoixDefender::Disques,
         ChoixDefender::Audit,
+        ChoixDefender::Tous,
+        ChoixDefender::Surs,
+        ChoixDefender::Demander,
+        ChoixDefender::Jamais,
     ];
 
     pub(crate) fn mot(self) -> &'static str {
@@ -2079,6 +2150,10 @@ impl ChoixDefender {
             ChoixDefender::Bloquer => "bloquer",
             ChoixDefender::Disques => "disques",
             ChoixDefender::Audit => "audit",
+            ChoixDefender::Tous => "tous",
+            ChoixDefender::Surs => "surs",
+            ChoixDefender::Demander => "demander",
+            ChoixDefender::Jamais => "jamais",
         }
     }
 }
@@ -2087,7 +2162,13 @@ impl ReglageDefender {
     /// Les choix qu'une ligne `defender-choix` peut porter pour ce réglage, coupé compris.
     pub(crate) fn choix(self) -> &'static [ChoixDefender] {
         match self {
-            ReglageDefender::TempsReel => &[ChoixDefender::Allume, ChoixDefender::Coupe],
+            r if r.booleen() => &[ChoixDefender::Allume, ChoixDefender::Coupe],
+            ReglageDefender::Echantillons => &[
+                ChoixDefender::Tous,
+                ChoixDefender::Surs,
+                ChoixDefender::Demander,
+                ChoixDefender::Jamais,
+            ],
             ReglageDefender::Maps => &[ChoixDefender::Avance, ChoixDefender::Base, ChoixDefender::Coupe],
             ReglageDefender::Cfa => &[
                 ChoixDefender::Bloquer,
@@ -2095,9 +2176,7 @@ impl ReglageDefender {
                 ChoixDefender::Audit,
                 ChoixDefender::Coupe,
             ],
-            ReglageDefender::Np | ReglageDefender::Pua => {
-                &[ChoixDefender::Bloquer, ChoixDefender::Audit, ChoixDefender::Coupe]
-            }
+            _ => &[ChoixDefender::Bloquer, ChoixDefender::Audit, ChoixDefender::Coupe],
         }
     }
 
@@ -2108,9 +2187,10 @@ impl ReglageDefender {
             return None;
         }
         Some(match (self, c) {
-            (ReglageDefender::TempsReel, ChoixDefender::Coupe) | (_, ChoixDefender::Bloquer | ChoixDefender::Base) => 1,
-            (_, ChoixDefender::Avance | ChoixDefender::Audit) => 2,
-            (_, ChoixDefender::Disques) => 3,
+            (r, ChoixDefender::Coupe) if r.booleen() => 1,
+            (_, ChoixDefender::Bloquer | ChoixDefender::Base | ChoixDefender::Surs) => 1,
+            (_, ChoixDefender::Avance | ChoixDefender::Audit | ChoixDefender::Jamais) => 2,
+            (_, ChoixDefender::Disques | ChoixDefender::Tous) => 3,
             (_, _) => 0,
         })
     }
@@ -2123,14 +2203,19 @@ impl ReglageDefender {
             ReglageDefender::Cfa => "dossiers",
             ReglageDefender::Np => "reseau",
             ReglageDefender::Pua => "pua",
+            ReglageDefender::Echantillons => "echantillons",
+            ReglageDefender::Comportement => "comportement",
+            ReglageDefender::Telechargements => "telechargements",
+            ReglageDefender::Scripts => "scripts",
+            ReglageDefender::PremiereVue => "premiere-vue",
         }
     }
 
-    /// La valeur sûre par défaut, celle que vise « Rallumer » sans note valide : temps réel en marche, cloud avancé,
-    /// bloquer.
+    /// La valeur sûre par défaut, celle que vise « Rallumer » sans note valide : en marche, cloud avancé, échantillons
+    /// sûrs sans demander, bloquer.
     pub(crate) fn sure(self) -> i64 {
         match self {
-            ReglageDefender::TempsReel => 0,
+            r if r.booleen() => 0,
             ReglageDefender::Maps => 2,
             _ => 1,
         }
@@ -2140,15 +2225,14 @@ impl ReglageDefender {
     /// (0 ou 1 seulement), un octet sinon ; `None` pour une valeur hors de ce que le réglage connaît.
     pub(crate) fn wmi_de(self, v: i64) -> Option<ValeurWmi> {
         match self {
-            ReglageDefender::TempsReel => match v {
+            r if r.booleen() => match v {
                 0 => Some(ValeurWmi::Booleen(false)),
                 1 => Some(ValeurWmi::Booleen(true)),
                 _ => None,
             },
-            ReglageDefender::Maps | ReglageDefender::Np | ReglageDefender::Pua => {
-                u8::try_from(v).ok().filter(|n| *n <= 2).map(ValeurWmi::Octet)
-            }
             ReglageDefender::Cfa => u8::try_from(v).ok().filter(|n| *n <= 4).map(ValeurWmi::Octet),
+            ReglageDefender::Echantillons => u8::try_from(v).ok().filter(|n| *n <= 3).map(ValeurWmi::Octet),
+            _ => u8::try_from(v).ok().filter(|n| *n <= 2).map(ValeurWmi::Octet),
         }
     }
 }
@@ -2181,12 +2265,56 @@ impl ChoixAsr {
     }
 }
 
+/// L'empreinte d'un élément de liste de Defender (une exclusion, un programme permis) : les 8 premiers octets du
+/// SHA-256 de son texte en minuscules (Windows compare chemins et extensions sans casse). Elle nomme la note et la
+/// ligne `rallumer` sans jamais y mettre le chemin lui-même.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct EmpreinteElement([u8; 8]);
+
+impl EmpreinteElement {
+    pub(crate) fn de(texte: &str) -> EmpreinteElement {
+        use sha2::Digest;
+        let h = sha2::Sha256::digest(texte.to_lowercase().as_bytes());
+        let mut e = [0u8; 8];
+        for (d, s) in e.iter_mut().zip(h.iter()) {
+            *d = *s;
+        }
+        EmpreinteElement(e)
+    }
+
+    /// 16 chiffres hexadécimaux minuscules.
+    pub(crate) fn hex(self) -> String {
+        self.0.iter().fold(String::with_capacity(16), |mut t, o| {
+            let _ = write!(t, "{o:02x}");
+            t
+        })
+    }
+
+    /// L'empreinte de 16 chiffres hexadécimaux minuscules, et seulement de cette forme.
+    pub(crate) fn lire(hex: &str) -> Option<EmpreinteElement> {
+        if hex.len() != 16 || !hex.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) {
+            return None;
+        }
+        let mut e = [0u8; 8];
+        for (d, paire) in e.iter_mut().zip(hex.as_bytes().as_chunks::<2>().0) {
+            *d = u8::from_str_radix(std::str::from_utf8(paire).ok()?, 16).ok()?;
+        }
+        Some(EmpreinteElement(e))
+    }
+}
+
 /// Ce qu'un choix règle, nommé dans les notes « avant » (`choix_avant`) et dans `vanguard:rallumer <id>` :
-/// `defender-<id>` ou `asr-<GUID>`.
+/// `defender-<id>`, `asr-<GUID>`, `defender-exclusion-<genre>-<empreinte>` ou
+/// `defender-dossiers-autorise-<empreinte>`. Pour une exclusion et un programme permis, la valeur est 0 absent (le
+/// plus sûr) ou 1 présent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IdChoix {
     Defender(ReglageDefender),
     Asr(&'static str),
+    /// Une exclusion de l'analyse de Defender (ExclusionPath, ExclusionProcess, ExclusionExtension).
+    Exclusion(GenreExclusion, EmpreinteElement),
+    /// Un programme permis malgré l'accès contrôlé aux dossiers (ControlledFolderAccessAllowedApplications).
+    DossiersAutorise(EmpreinteElement),
 }
 
 impl IdChoix {
@@ -2194,12 +2322,20 @@ impl IdChoix {
         match self {
             IdChoix::Defender(r) => format!("defender-{}", r.id_choix()),
             IdChoix::Asr(id) => format!("asr-{id}"),
+            IdChoix::Exclusion(g, e) => format!("defender-exclusion-{}-{}", g.mot(), e.hex()),
+            IdChoix::DossiersAutorise(e) => format!("defender-dossiers-autorise-{}", e.hex()),
         }
     }
 
     /// L'identifiant d'un texte, si et seulement s'il en a la forme exacte.
     pub(crate) fn lire(texte: &str) -> Option<IdChoix> {
-        let id = if let Some(r) = texte.strip_prefix("defender-") {
+        let id = if let Some(reste) = texte.strip_prefix("defender-exclusion-") {
+            let (genre, hex) = reste.split_once('-')?;
+            let g = *GenreExclusion::TOUS.iter().find(|g| g.mot() == genre)?;
+            IdChoix::Exclusion(g, EmpreinteElement::lire(hex)?)
+        } else if let Some(hex) = texte.strip_prefix("defender-dossiers-autorise-") {
+            IdChoix::DossiersAutorise(EmpreinteElement::lire(hex)?)
+        } else if let Some(r) = texte.strip_prefix("defender-") {
             IdChoix::Defender(*ReglageDefender::TOUS.iter().find(|x| x.id_choix() == r)?)
         } else {
             IdChoix::Asr(asr_toute(texte.strip_prefix("asr-")?)?)
@@ -2207,28 +2343,36 @@ impl IdChoix {
         (id.texte() == texte).then_some(id)
     }
 
+    /// Un élément de liste (exclusion, programme permis) : 0 absent, 1 présent.
+    pub(crate) fn element(self) -> bool {
+        matches!(self, IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_))
+    }
+
     /// Le rang de protection d'une valeur (`None` : règle ASR absente de la liste). Plus haut, plus sûr ; une valeur
-    /// inconnue vaut 0.
+    /// inconnue vaut 0. Un élément de liste absent (0) protège plus que présent.
     pub(crate) fn rang(self, v: Option<i64>) -> u8 {
         match self {
             IdChoix::Defender(r) => v.map_or(0, |v| r.rang(v)),
             IdChoix::Asr(_) => rang_asr(v),
+            IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) => u8::from(v == Some(0)),
         }
     }
 
     /// Le rang le plus bas qu'une valeur d'avant notée peut avoir pour que « Rallumer » la remette : allumé (audit
-    /// compris), jamais coupé.
+    /// compris), jamais coupé ; pour l'envoi d'échantillons, « toujours demander » (rang 1) : seul « jamais » est
+    /// remplacé ; pour un élément de liste, absent.
     pub(crate) fn plancher(self) -> u8 {
         match self {
-            IdChoix::Defender(_) | IdChoix::Asr(_) => 1,
+            IdChoix::Defender(_) | IdChoix::Asr(_) | IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) => 1,
         }
     }
 
-    /// La valeur sûre par défaut : temps réel en marche, cloud avancé, bloquer.
+    /// La valeur sûre par défaut : en marche, cloud avancé, échantillons sûrs, bloquer ; un élément de liste absent.
     pub(crate) fn sure(self) -> i64 {
         match self {
             IdChoix::Defender(r) => r.sure(),
             IdChoix::Asr(_) => 1,
+            IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) => 0,
         }
     }
 }
@@ -2375,6 +2519,8 @@ pub(crate) fn remettre_en_ordre<T>(ordre: &[usize], reponses: Vec<T>) -> Option<
 pub(crate) fn methode_choix(id: IdChoix, v: i64) -> Option<(&'static str, Vec<(&'static str, ValeurWmi)>)> {
     match id {
         IdChoix::Defender(r) => Some(("Set", vec![(r.propriete(), r.wmi_de(v)?)])),
+        // Un élément de liste s'écrit avec son texte, que l'identifiant ne porte pas : `defender_ecriture`.
+        IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_) => None,
         IdChoix::Asr(guid) => {
             let action = u8::try_from(v).ok().filter(|a| matches!(a, 0 | 1 | 2 | 6))?;
             Some((
@@ -2407,6 +2553,65 @@ pub(crate) fn ligne_baisse_asr(id: &str, c: ChoixAsr) -> Option<String> {
 /// La ligne qui rallume ce qu'un choix a baissé (un renforcement : permise partout).
 pub(crate) fn ligne_rallumer(id: IdChoix) -> String {
     Acte::Rallumer(id).ligne()
+}
+
+/// La ligne d'une exclusion que la personne ajoute (une baisse) ; `None` pour un texte vide, trop long ou avec un
+/// caractère de contrôle. Mêmes appelants que `ligne_baisse_defender`.
+pub(crate) fn ligne_ajout_exclusion(g: GenreExclusion, texte: &str) -> Option<String> {
+    Exclusion::nouvelle(texte).map(|e| Acte::DefenderExclusionAjouter(g, e).ligne())
+}
+
+/// La ligne d'un programme permis malgré l'accès contrôlé aux dossiers (une baisse). Mêmes appelants.
+pub(crate) fn ligne_autoriser_dossiers(texte: &str) -> Option<String> {
+    Exclusion::nouvelle(texte).map(|e| Acte::DefenderDossiersAutoriser(e).ligne())
+}
+
+/// La ligne « C'est moi, le noter » (P11). Mêmes appelants.
+pub(crate) fn ligne_noter(id: IdChoix) -> String {
+    Acte::ChoixNoter(id).ligne()
+}
+
+/// Une exclusion large (R8) : la racine d'un disque, Windows, Téléchargements, le dossier temporaire, les
+/// programmes, scripts ou interpréteurs en entier, un joker. La question le dit plus fort.
+pub(crate) fn exclusion_large(g: GenreExclusion, texte: &str) -> bool {
+    let t = texte.trim().trim_end_matches(['\\', '/']).to_lowercase();
+    if t.is_empty() || t.contains('*') || t.contains('?') {
+        return true;
+    }
+    match g {
+        GenreExclusion::Extension => matches!(
+            t.trim_start_matches('.'),
+            "exe" | "ps1" | "dll" | "bat" | "cmd" | "vbs" | "js" | "scr" | "msi" | "com" | "hta" | "lnk"
+        ),
+        GenreExclusion::Processus => {
+            let nom = t.rsplit(['\\', '/']).next().unwrap_or(&t);
+            matches!(
+                nom,
+                "powershell.exe"
+                    | "pwsh.exe"
+                    | "cmd.exe"
+                    | "wscript.exe"
+                    | "cscript.exe"
+                    | "mshta.exe"
+                    | "rundll32.exe"
+            )
+        }
+        GenreExclusion::Chemin => {
+            (t.len() <= 2 && t.ends_with(':'))
+                || t.contains("%temp%")
+                || t.contains("%tmp%")
+                || t.contains("\\appdata\\local\\temp")
+                || t.ends_with("\\downloads")
+                || t.ends_with("\\téléchargements")
+                || t.ends_with(":\\windows")
+                || t.contains(":\\windows\\temp")
+                || t.ends_with(":\\users")
+                || t.ends_with(":\\program files")
+                || t.ends_with(":\\program files (x86)")
+                || t.ends_with(":\\programdata")
+                || t.starts_with("\\\\")
+        }
+    }
 }
 
 /// Ce qu'une ligne `defender-asr` fait d'une règle. Jamais la retirer : Optimiser ne défait pas ses règles ASR
@@ -3864,6 +4069,12 @@ pub(crate) enum Acte {
     /// Remettre ce qu'un choix a baissé : la valeur d'avant notée si elle est au moins allumée, sinon la valeur sûre.
     /// La ligne ne porte aucune valeur.
     Rallumer(IdChoix),
+    /// Ajouter une exclusion de Defender au choix de la personne (P5) : une baisse, mêmes gardes que `DefenderChoix`.
+    DefenderExclusionAjouter(GenreExclusion, Exclusion),
+    /// Permettre un programme malgré l'accès contrôlé aux dossiers, au choix de la personne : une baisse.
+    DefenderDossiersAutoriser(Exclusion),
+    /// Noter comme choix de la personne un réglage coupé hors de Vanguard (P11), après la question d'une baisse.
+    ChoixNoter(IdChoix),
     /// Écrire le fichier préparé à la place du hosts, la différence rejugée (`juger_hosts`) et montrée avant.
     HostsEcrire(HostsEcrire),
     /// Remettre en automatique les serveurs DNS d'une carte réseau.
@@ -3922,6 +4133,9 @@ impl Acte {
             Acte::DefenderChoix(r, c) => format!("{DEFENDER_CHOIX}{} {}", r.id_choix(), c.mot()),
             Acte::DefenderAsrChoix(id, c) => format!("{DEFENDER_ASR_CHOIX}{id} {}", c.mot()),
             Acte::Rallumer(id) => format!("{RALLUMER}{}", id.texte()),
+            Acte::DefenderExclusionAjouter(g, e) => format!("{DEFENDER_EXCLUSION_AJOUTER}{} {}", g.mot(), e.hex()),
+            Acte::DefenderDossiersAutoriser(e) => format!("{DEFENDER_DOSSIERS_AUTORISER}{}", e.hex()),
+            Acte::ChoixNoter(id) => format!("{CHOIX_NOTER}{}", id.texte()),
             Acte::HostsEcrire(h) => h.ligne(),
             Acte::DnsAuto(g) => format!("{DNS_AUTO}{}", g.texte()),
             Acte::DnsServeurs(d) => d.ligne(),
@@ -3942,12 +4156,20 @@ impl Acte {
         }
     }
 
-    /// Ce qu'un choix règle et la valeur exacte qu'il vise (`None` : règle ASR absente, jamais visée) ; `None` pour
-    /// un autre acte, `Rallumer` compris (sa cible dépend de la note relue).
+    /// Ce qu'un choix règle et la valeur exacte qu'il vise (`None` : règle ASR absente, jamais visée ; pour
+    /// `ChoixNoter`, rien n'est visé : la valeur reste) ; `None` pour un autre acte, `Rallumer` compris (sa cible
+    /// dépend de la note relue).
     pub(crate) fn choix(&self) -> Option<(IdChoix, Option<i64>)> {
         match self {
             Acte::DefenderChoix(r, c) => Some((IdChoix::Defender(*r), r.valeur_choix(*c))),
             Acte::DefenderAsrChoix(id, c) => Some((IdChoix::Asr(id), Some(c.action()))),
+            Acte::DefenderExclusionAjouter(g, e) => {
+                Some((IdChoix::Exclusion(*g, EmpreinteElement::de(e.texte())), Some(1)))
+            }
+            Acte::DefenderDossiersAutoriser(e) => {
+                Some((IdChoix::DossiersAutorise(EmpreinteElement::de(e.texte())), Some(1)))
+            }
+            Acte::ChoixNoter(id) => Some((*id, None)),
             _ => None,
         }
     }
@@ -3987,6 +4209,9 @@ impl Acte {
             // Un choix exact dépend de la valeur relue : le processus élevé en juge le sens (`sens`) avant d'écrire.
             | Acte::DefenderChoix(..)
             | Acte::DefenderAsrChoix(..)
+            | Acte::DefenderExclusionAjouter(..)
+            | Acte::DefenderDossiersAutoriser(..)
+            | Acte::ChoixNoter(..)
             | Acte::HostsEcrire(_)
             | Acte::DnsAuto(_)
             | Acte::DnsServeurs(_)
@@ -4027,6 +4252,9 @@ impl Acte {
             // Le sens d'un choix se juge sur la valeur relue (`sens`), jamais sur le type ; rallumer protège.
             | Acte::DefenderChoix(..)
             | Acte::DefenderAsrChoix(..)
+            | Acte::DefenderExclusionAjouter(..)
+            | Acte::DefenderDossiersAutoriser(..)
+            | Acte::ChoixNoter(..)
             | Acte::Rallumer(_)
             | Acte::HostsEcrire(_)
             | Acte::DnsAuto(_)
@@ -4086,6 +4314,9 @@ impl Acte {
             | Acte::DefenderMenacesRetirer
             | Acte::DefenderChoix(..)
             | Acte::DefenderAsrChoix(..)
+            | Acte::DefenderExclusionAjouter(..)
+            | Acte::DefenderDossiersAutoriser(..)
+            | Acte::ChoixNoter(..)
             | Acte::Rallumer(_)
             // Aucun PowerShell sur le chemin d'écriture du hosts, des comptes, des racines ni des partages : sous Wine,
             // l'erreur est dite.
@@ -4169,6 +4400,14 @@ pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
         let genre = *GenreExclusion::TOUS.iter().find(|g| g.mot() == mot)?;
         return Some(Acte::DefenderExclusionRetirer(genre, Exclusion::lire(hex)?)).filter(|a| a.ligne() == ligne);
     }
+    if let Some(reste) = ligne.strip_prefix(DEFENDER_EXCLUSION_AJOUTER) {
+        let (mot, hex) = reste.split_once(' ')?;
+        let genre = *GenreExclusion::TOUS.iter().find(|g| g.mot() == mot)?;
+        return Some(Acte::DefenderExclusionAjouter(genre, Exclusion::lire(hex)?)).filter(|a| a.ligne() == ligne);
+    }
+    if let Some(hex) = ligne.strip_prefix(DEFENDER_DOSSIERS_AUTORISER) {
+        return Some(Acte::DefenderDossiersAutoriser(Exclusion::lire(hex)?)).filter(|a| a.ligne() == ligne);
+    }
     if let Some(reste) = ligne.strip_prefix(PARTAGE_RETIRER_ACCES) {
         let (hex, sid) = reste.split_once(' ')?;
         let acces = AccesPartage {
@@ -4216,6 +4455,8 @@ pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
         Acte::DefenderAsrChoix(asr_toute(id)?, *ChoixAsr::TOUS.iter().find(|c| c.mot() == mot)?)
     } else if let Some(id) = ligne.strip_prefix(RALLUMER) {
         Acte::Rallumer(IdChoix::lire(id)?)
+    } else if let Some(id) = ligne.strip_prefix(CHOIX_NOTER) {
+        Acte::ChoixNoter(IdChoix::lire(id)?)
     } else if let Some(reste) = ligne.strip_prefix(RESEAU_CATEGORIE) {
         let (guid, mot) = reste.split_once(' ')?;
         Acte::ReseauCategorie(ReseauCategorie {
@@ -7783,7 +8024,8 @@ mod tests {
                 assert!(methode_choix(id, v.unwrap()).is_some(), "{l}");
             }
         }
-        assert_eq!(vues, 2 + 3 + 4 + 3 + 3);
+        // Cinq interrupteurs (allumé, coupé), le cloud (3), l'accès contrôlé (4), NP et PUA (3), les échantillons (4).
+        assert_eq!(vues, 5 * 2 + 3 + 4 + 3 + 3 + 4);
         assert_eq!(
             ligne_baisse_defender(ReglageDefender::TempsReel, ChoixDefender::Coupe).unwrap(),
             "vanguard:defender-choix temps-reel coupe"
@@ -7822,7 +8064,8 @@ mod tests {
             "vanguard:defender-choix maps coupe",
             "vanguard:defender-choix cloud bloquer",
             "vanguard:defender-choix pua disques",
-            "vanguard:defender-choix echantillons jamais",
+            "vanguard:defender-choix echantillons bloquer",
+            "vanguard:defender-choix scripts audit",
             "vanguard:defender-choix cfa coupe",
             "vanguard:defender-asr-choix 56A863A9-875E-4185-98A7-B882C64B5CE5 audit",
             "vanguard:defender-asr-choix 56a863a9-875e-4185-98a7-b882c64b5ce5 avertir",

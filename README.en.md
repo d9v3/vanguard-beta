@@ -114,7 +114,7 @@ certificate, scams, spyware and other privacy intrusions.
 | **Exposure to the Internet** | The network audit in six grades (exposure, Wi-Fi, device separation, DNS and certificates, connected devices, computers); the ports the router opens to the Internet (UPnP), this computer's open ports and firewall, the public Internet address on a blocklist, the router's admin page over HTTP only. |
 | **Intruders on the Wi-Fi** | Every device on the network, its manufacturer, its open ports and its risks; newcomers flagged every hour, with a dashboard in the browser; the Wi-Fi's protection (WEP, WPA2, WPA3), the fake access point copying its name, Bluetooth devices paired recently; public Wi-Fi mode, which closes the computer to the network of a café, a hotel or an airport and puts it back as it was when you leave. |
 | **Connected devices** | The router and the devices on the network (cameras, printers, NAS, TVs, smart home…) recognized, with their default password to change; hidden cameras, in a rental or at someone's place. |
-| **Infected computer** | Antivirus scan as a second opinion (Defender or ClamAV), over 300 YARA rules and the fingerprints of known malware from MalwareBazaar (free abuse.ch key), the memory of running programs (on demand), live threat hunting (guessed password, suspicious running programs), threat blocking, with one click or by itself for clear-cut threats (active protection), with the evidence recorded before each action and a sealed event log, decoy files and the ransomware watcher (Linux), Windows Defender blocking, what starts in secret, backdoors, Windows' hidden doors and vulnerable drivers, rootkit signs, suspicious event logs, connections to known botnet servers, a password thief like Responder unmasked, overly permissive AI agents, integrity of critical files, flaws in Docker images (trivy, when installed), reversible quarantine, and the traces collected before cleaning up, with the incident timeline; a draft report prepared for the vendor when a program misbehaves, never sent. |
+| **Infected computer** | Antivirus scan as a second opinion (Defender or ClamAV), over 300 YARA rules and the fingerprints of known malware from MalwareBazaar (free abuse.ch key), the memory of running programs (on demand), live threat hunting (guessed password, suspicious running programs), threat blocking, with one click or by itself for clear-cut threats (active protection), with the evidence recorded before each action and a sealed event log, decoy files and the ransomware watcher (Linux), Windows Defender's options on one screen, what starts in secret, backdoors, Windows' hidden doors and vulnerable drivers, rootkit signs, suspicious event logs, connections to known botnet servers, a password thief like Responder unmasked, overly permissive AI agents, integrity of critical files, flaws in Docker images (trivy, when installed), reversible quarantine, and the traces collected before cleaning up, with the incident timeline; a draft report prepared for the vendor when a program misbehaves, never sent. |
 | **Hijacked DNS and certificates** | The DNS really in use (and made-up answers), added root certificates (HTTPS interception), a forced proxy and sites redirected by the hosts file, automatic proxy discovery (WPAD), browser extensions that read every site. |
 | **Scams and remote control** | Tech-support scam (remote control tools), dangerous links checked without opening them, downloaded files checked, leaked passwords and email addresses, hacked account, a sandbox for an unknown program. |
 | **Privacy and secrets** | Spyware planted by someone close (known servers, programs reading the keyboard, monitoring permissions, known monitoring software), privacy check (who can access location, contacts, camera and microphone), camera and microphone, browser passwords without protection, sensitive files left in clear text, secrets forgotten in git project history, key data protected by a passphrase. |
@@ -292,12 +292,16 @@ each line carries the fingerprint of the previous one and the head is sealed; a 
 and a broken chain is reported by the check. `--incident <id>` follows an incident's thread, from the alert to the
 undo.
 
-**Windows Defender blocking** — on top of its own blocking, Vanguard turns on, after your consent, what Windows blocks
-from its kernel and protects against being turned off. Attack surface reduction rules (password theft from memory,
-vulnerable drivers, booby-trapped Office documents and attachments), network protection against dangerous sites,
-unwanted software, controlled folder access against ransomware. Each rule is named before you agree; they are
-protections, which Vanguard does not undo (the person can change them in Windows); those that would block Vanguard on its USB drive or troubleshooting are never turned on, and
-nothing is offered when another antivirus replaces Defender.
+**Defense options** — Microsoft Defender's settings on one screen (`vanguard defense-options`, tool 4.10): real-time,
+cloud, samples, unwanted apps, network protection against dangerous sites, controlled folder access against
+ransomware, behavior, downloads, scripts, block at first sight, then exclusions and allowed apps. Each one is read
+with what enforces it (policy, tamper protection) and can be set from here: a lowering is shown, then confirmed in
+the administrator window; the check calls it “your choice” and “Turn back on” restores it. An exclusion added outside
+Vanguard is flagged. Vanguard never gets around tamper protection. On top of its own blocking, it also turns on,
+after your consent, the attack surface reduction rules (password theft from memory, vulnerable drivers,
+booby-trapped Office documents and attachments), each one named before you agree; those that would block Vanguard on
+its USB drive or troubleshooting are never turned on, and nothing is offered when another antivirus replaces
+Defender.
 
 **Collect the traces** — after an infection, before cleaning up or reinstalling: what a specialist will want to
 see, kept in a dated folder on the VANGUARD key (or in this computer's Vanguard folder), in the order it vanishes.
@@ -751,8 +755,7 @@ Each menu entry is also a command.
 | `vanguard secrets` | secrets forgotten in the history of git projects (and gitleaks, if installed; read-only) |
 | `vanguard containers` | known flaws in Docker or Podman images (trivy, if installed; read-only) |
 | `vanguard outdated-software` | outdated software (Windows, macOS): browsers, Office, Acrobat, Java, 7-Zip, PuTTY, Slack compared with their latest version; exploited flaws (read-only) |
-| `vanguard defender` | Windows Defender blocking: ASR rules, network protection, unwanted software, controlled folder access; each after your consent, a protection Vanguard does not undo (Windows) |
-| `vanguard defense-options` | Windows defense options: Defender (mode, real-time, cloud, tamper protection), ASR rules, firewall per profile, policies (GPO, Intune) that enforce a value, third-party antivirus, managed PC; `--json` without paths or names (read-only) |
+| `vanguard defense-options` | Windows defense options: each Defender option (real-time, cloud, PUA, controlled folder access…), exclusions, ASR rules, firewall per profile, policies (GPO, Intune) that enforce a value, third-party antivirus, managed PC; lowering shown, then confirmed in the administrator window, “Turn back on”; `--json` without paths or names (Windows) |
 | **5 Network and Internet** | |
 | `vanguard devices [target] [-p common\|all\|22,80,8000-8100] [--json]` | scan the network or one device |
 | `vanguard network-audit [--json] [--html] [--guest]` | network audit by domain: six grades (exposure, Wi-Fi, device separation, DNS and certificates, connected devices, computers), attacking nothing; `--guest`: on the guest network, checks that it is really separated from the main one |

@@ -631,6 +631,27 @@ fn avec_inverse(commande: String) -> String {
     commande
 }
 
+/// Un choix de la personne (Options de défense) ne se défait pas ici : une baisse se remet par « Rallumer », une
+/// exclusion ou un programme permis se retire dans la liste ; l'historique le dit. La ligne notée peut porter la valeur
+/// d'avant en suffixe « (…) » : relue sans lui, du plus court au plus long (un chemin peut contenir « (x86) »).
+fn se_remet(commande: &str) -> Option<&'static str> {
+    use crate::machine::gestes::{Acte, analyser_acte};
+    let acte = std::iter::once(commande)
+        .chain(commande.match_indices(" (").map(|(i, _)| &commande[..i]))
+        .find_map(analyser_acte)?;
+    match acte {
+        Acte::DefenderChoix(..) | Acte::DefenderAsrChoix(..) => Some(tr!(
+            " (se remet par « Rallumer », Options de défense)",
+            " (restored by “Turn back on”, Defense options)"
+        )),
+        Acte::DefenderExclusionAjouter(..) | Acte::DefenderDossiersAutoriser(..) => Some(tr!(
+            " (se retire dans Options de défense, ligne 11)",
+            " (removed in Defense options, line 11)"
+        )),
+        _ => None,
+    }
+}
+
 /// Pour le rapport HTML : (corrections notées, réussies, date de la dernière). Les commandes n'y vont pas : le rapport
 /// voyage sur la clé et sert aux captures d'écran, et une commande peut citer un nom de fichier ou de compte.
 pub fn resume() -> Option<(usize, usize, String)> {
@@ -704,6 +725,7 @@ pub fn afficher() {
         let etat = match (&c.defaite, &c.annulable) {
             (Some(le), _) => trf!(" (défaite le {le})", " (undone on {le})"),
             (None, Some(id)) if a_sa_note(id) => tr!(" (annulable)", " (undoable)").to_string(),
+            _ if c.reussi => se_remet(premiere).unwrap_or_default().to_string(),
             _ => String::new(),
         };
         afficher_aligne(
@@ -792,6 +814,46 @@ fn annuler_des_corrections() {
 
 #[cfg(test)]
 mod tests {
+    /// Un choix des Options de défense dit dans l'historique comment il se remet, même avec la valeur d'avant en
+    /// suffixe et un chemin à parenthèses ; « Rallumer », « C'est moi » et une autre commande ne disent rien.
+    #[test]
+    fn un_choix_dit_comment_il_se_remet() {
+        use crate::machine::gestes::{
+            ASR_TOUTES, ChoixAsr, ChoixDefender, GenreExclusion, IdChoix, ReglageDefender, ligne_ajout_exclusion,
+            ligne_autoriser_dossiers, ligne_baisse_asr, ligne_baisse_defender, ligne_noter, ligne_rallumer,
+        };
+        let pua = ligne_baisse_defender(ReglageDefender::Pua, ChoixDefender::Coupe).unwrap();
+        let rallumer = tr!("« Rallumer »", "“Turn back on”");
+        for l in [
+            pua.clone(),
+            format!("{pua} (avant : 1)"),
+            ligne_baisse_asr(ASR_TOUTES[0], ChoixAsr::Desactiver).unwrap(),
+        ] {
+            assert!(se_remet(&l).is_some_and(|t| t.contains(rallumer)), "{l}");
+        }
+        for l in [
+            ligne_ajout_exclusion(GenreExclusion::Chemin, r"C:\Program Files (x86)\Jeu").unwrap(),
+            format!(
+                "{} (avant : absente)",
+                ligne_ajout_exclusion(GenreExclusion::Chemin, r"C:\Program Files (x86)\Jeu").unwrap()
+            ),
+            ligne_autoriser_dossiers(r"C:\Outils\sauve.exe").unwrap(),
+        ] {
+            assert!(se_remet(&l).is_some_and(|t| t.contains("11")), "{l}");
+        }
+        let id = IdChoix::Defender(ReglageDefender::Pua);
+        for l in [
+            ligne_rallumer(id),
+            ligne_noter(id),
+            "netsh advfirewall set allprofiles state on".to_string(),
+        ] {
+            assert_eq!(se_remet(&l), None, "{l}");
+        }
+        crate::langue::en_anglais(|| {
+            assert!(se_remet(&pua).is_some_and(|t| t.contains("Turn back on")));
+        });
+    }
+
     /// Le durcissement du noyau, devenu une protection, dit comment se défaire à la main ; une autre commande reste
     /// telle quelle.
     #[cfg(target_os = "linux")]

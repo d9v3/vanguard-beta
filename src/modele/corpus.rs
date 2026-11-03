@@ -69,13 +69,17 @@ impl Entree {
     /// Effacé quand il n'est plus tenu, même si le jugement panique.
     #[cfg(unix)]
     pub(crate) fn jetable(&self, nom: &str) -> Jetable {
+        // Un numéro par dossier : deux essais lisent le corpus en même temps (chaque_cas_du_corpus_tire,
+        // aucune_ligne_du_bilan_n_est_une_baisse), le même cas ne doit pas effacer le dossier de l'autre.
+        static SUIVANT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let cas = self
             .dossier
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        let d = crate::essais::temporaire().join(format!("vanguard-corpus-{}-{cas}-{nom}", std::process::id()));
+        let n = SUIVANT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let d = crate::essais::temporaire().join(format!("vanguard-corpus-{}-{n}-{cas}-{nom}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         Jetable(d)
@@ -427,6 +431,7 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
         "WIN-ANV-002",
         &[
             ("machine/windows/exclusions.rs", "exclusions"),
+            ("machine/windows/exclusions.rs", "juger_avec"),
             ("machine/windows/exclusions.rs", "juger"),
         ],
     ),
@@ -1800,6 +1805,20 @@ fn variantes_d_un_cas() {
     }
     assert_eq!(variantes(&d), ["", "-2", "-3"]);
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[cfg(unix)]
+#[test]
+fn deux_dossiers_jetables_du_meme_cas_ne_se_marchent_pas_dessus() {
+    let entree = Entree {
+        dossier: PathBuf::from("corpus/COM-DIS-001"),
+        texte: String::new(),
+    };
+    let a = entree.jetable("telechargements");
+    std::fs::write(a.join("AnyDesk.exe"), b"").unwrap();
+    let b = entree.jetable("telechargements");
+    assert_ne!(a.to_path_buf(), b.to_path_buf());
+    assert!(a.join("AnyDesk.exe").is_file(), "le second dossier a effacé le premier");
 }
 
 #[test]

@@ -494,6 +494,9 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
                     | Acte::DefenderChoix(..)
                     | Acte::DefenderAsrChoix(..)
                     | Acte::Rallumer(_)
+                    | Acte::DefenderExclusionAjouter(..)
+                    | Acte::DefenderDossiersAutoriser(..)
+                    | Acte::ChoixNoter(..)
                     | Acte::CompteDesactiver(_)
                     | Acte::CertificatRetirer(..)
                     | Acte::PartageRetirerAcces(_)
@@ -722,6 +725,17 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
                     "Set Defender protection against potentially unwanted apps (PUA) {} (never lowered if it already blocks)",
                     mode()
                 ),
+                ReglageDefender::Comportement
+                | ReglageDefender::Telechargements
+                | ReglageDefender::Scripts
+                | ReglageDefender::PremiereVue
+                | ReglageDefender::Echantillons => {
+                    let n = crate::options_defense::nom_choix(crate::machine::gestes::IdChoix::Defender(*r));
+                    trf!(
+                        "Remettre « {n} » de Defender à la valeur sûre",
+                        "Set Defender “{n}” back to the safe value"
+                    )
+                }
             }
         }
         Acte::DefenderAsr(id, m) => {
@@ -770,6 +784,28 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
             trf!(
                 "{n} : {v} (votre choix ; relu dans la fenêtre administrateur, une baisse y est montrée puis confirmée, sa valeur d'avant notée pour « Rallumer »)",
                 "{n}: {v} (your choice; read in the administrator window, a lowering is shown there then confirmed, its previous value noted for “Turn back on”)"
+            )
+        }
+        Acte::DefenderExclusionAjouter(..) | Acte::DefenderDossiersAutoriser(..) => {
+            let (g, e) = match acte {
+                Acte::DefenderExclusionAjouter(g, e) => (Some(*g), e),
+                Acte::DefenderDossiersAutoriser(e) => (None, e),
+                _ => return String::new(),
+            };
+            let texte = match g {
+                Some(g) => crate::options_defense::texte_ajout_exclusion(g, e.texte()),
+                None => crate::options_defense::texte_autoriser_dossiers(e.texte()),
+            };
+            trf!(
+                "{texte} (votre choix ; une baisse, montrée puis confirmée dans la fenêtre administrateur, notée pour « Rallumer »)",
+                "{texte} (your choice; a lowering, shown then confirmed in the administrator window, noted for “Turn back on”)"
+            )
+        }
+        Acte::ChoixNoter(id) => {
+            let n = crate::options_defense::nom_choix(*id);
+            trf!(
+                "« C'est moi » : noter « {n} » tel qu'il est, par votre choix (montré puis confirmé dans la fenêtre administrateur ; « Rallumer » le remet)",
+                "“It was me”: note “{n}” as it is, as your choice (shown then confirmed in the administrator window; “Turn back on” restores it)"
             )
         }
         Acte::Rallumer(id) => {

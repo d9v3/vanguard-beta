@@ -420,8 +420,8 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
         Ok(f) => f,
         Err(1223) => {
             trp!(
-                "    Demande d'administrateur refusée : rien n'a été modifié.",
-                "    Administrator prompt refused: nothing was changed."
+                "    Demande d'administrateur refusée. Rien n'a changé : il faut l'accord d'un administrateur de ce PC.",
+                "    Administrator prompt refused. Nothing changed: an administrator of this PC must approve."
             );
             return Some(lignes.iter().map(|_| lire_reponse(ARRETEE)).collect());
         }
@@ -514,6 +514,7 @@ fn appliquer_en_place(envoi: &[String]) -> Vec<Reponse> {
             reponses.push(lire_reponse(&ligne_resultat(&r)));
         }
     }
+    super::defender_ecriture::nettoyer_notes();
     reponses
 }
 
@@ -610,7 +611,11 @@ fn question(liste: &[Element], sens: &[Option<(gestes::Montre, String)>], baisse
             )));
     }
     let mut baisses: Vec<gestes::IdChoix> = Vec::new();
+    let mut large = false;
     for (e, s) in liste.iter().zip(sens) {
+        if let Element::Acte(gestes::Acte::DefenderExclusionAjouter(g, x)) = e {
+            large |= gestes::exclusion_large(*g, x.texte());
+        }
         if let (
             Element::Acte(a),
             Some((
@@ -630,6 +635,20 @@ fn question(liste: &[Element], sens: &[Option<(gestes::Montre, String)>], baisse
     for id in &baisses {
         for l in lignes_protege(*id) {
             println!("  {GRIS}{l}{RESET}");
+        }
+    }
+    if !baisses.is_empty() {
+        trp!(
+            "  {GRIS}« Rallumer » dans Vanguard (Options de défense) remet chacun.{RESET}",
+            "  {GRIS}“Turn back on” in Vanguard (Defense options) restores each one.{RESET}"
+        );
+    }
+    if large {
+        for l in crate::ui::envelopper(
+            crate::options_defense::avertissement_large(),
+            crate::ui::LARGEUR.saturating_sub(2),
+        ) {
+            println!("  {ACCENT}{l}{RESET}");
         }
     }
     if baisses.contains(&gestes::IdChoix::Defender(gestes::ReglageDefender::TempsReel)) {
@@ -1001,6 +1020,7 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
             }
         }
     }
+    super::defender_ecriture::nettoyer_notes();
     let _ = tube.write_all(format!("{FIN}\n").as_bytes());
     let _ = tube.flush();
     drop(tube);
