@@ -12,7 +12,7 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::machine::gestes::{IdChoix, Sens, sens};
+use crate::machine::gestes::{IdChoix, Montre, Sens, sens};
 use crate::modele::Echec;
 use crate::ui::{tr, trf, trp};
 
@@ -29,14 +29,15 @@ pub(crate) const VALEURS_MAX: usize = 256;
 /// L'empreinte qui clôt une note.
 const EMPREINTE: usize = 32;
 
-/// Une note « avant » : ce qu'un choix a trouvé, ce qu'il a posé, et quand.
+/// Une note « avant » : ce qu'un choix a trouvé, ce qu'il a demandé, et quand.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Note {
     /// L'identifiant du réglage (`IdChoix::texte`), le nom de la valeur.
     pub(crate) id: String,
     /// La valeur trouvée avant la première baisse (`None` : règle ASR absente de la liste).
     pub(crate) avant: Option<i64>,
-    /// La valeur posée par la baisse.
+    /// La valeur demandée par la baisse : écrite avant la relecture, elle peut ne pas avoir pris (valeur changée
+    /// pendant le geste, note gardée pour « Rallumer »). Elle sert à lire la note, jamais de cible.
     pub(crate) posee: i64,
     /// Secondes depuis 1970 (UTC).
     pub(crate) date: u64,
@@ -146,7 +147,8 @@ pub(crate) enum Issue {
     Echec { avant: Option<String>, raison: String },
     /// La note ne s'écrit pas : rien n'est baissé.
     EchecNote,
-    /// Devenue une baisse depuis l'affichage, sans avoir été montrée comme telle : refusée, rien d'écrit.
+    /// Devenue une baisse depuis l'affichage sans avoir été montrée comme telle, ou une baisse dont la valeur relue
+    /// n'est plus celle montrée : refusée, rien d'écrit.
     Change,
 }
 
@@ -194,14 +196,15 @@ fn note_valide(m: &mut impl Monde, id: IdChoix) -> Option<Note> {
     m.lire_note(&nom).and_then(|o| Note::lire(&nom, &o))
 }
 
-/// La protection est revenue au moins au niveau noté (ou la note ne vaut rien) : la note n'a plus d'usage.
+/// La protection est revenue à la valeur notée ou plus haut (ou la note ne vaut rien) : la note n'a plus d'usage. Une
+/// autre valeur du même rang la garde, comme la baisse qui l'a écrite.
 fn effacer_si_remontee(m: &mut impl Monde, id: IdChoix, valeur: Option<i64>) {
     let nom = id.texte();
     let Some(octets) = m.lire_note(&nom) else {
         return;
     };
     match Note::lire(&nom, &octets) {
-        Some(n) if id.rang(valeur) < id.rang(n.avant) => {}
+        Some(n) if valeur != n.avant && id.rang(valeur) <= id.rang(n.avant) => {}
         _ => m.effacer_note(&nom),
     }
 }
@@ -217,12 +220,13 @@ fn remettre_note(m: &mut impl Monde, nom: &str, ancienne: Option<&[u8]>) {
     }
 }
 
-/// Fait un choix exact : `cible`, la valeur visée ; `montre`, le sens montré à la personne avant son accord. Le sens
-/// est rejugé ici, sur la valeur relue juste avant d'écrire : une baisse qui n'a pas été montrée comme telle est
-/// refusée (`Change`). Une baisse écrit d'abord sa note (la valeur d'avant d'une note encore valide et au moins aussi
+/// Fait un choix exact : `cible`, la valeur visée ; `montre`, le sens et la valeur montrés à la personne avant son
+/// accord. Le sens est rejugé ici, sur la valeur relue juste avant d'écrire : une baisse qui n'a pas été montrée comme
+/// telle, ou dont la valeur relue n'est plus celle montrée (la note garderait une valeur que la personne n'a pas vue),
+/// est refusée (`Change`). Une baisse écrit d'abord sa note (la valeur d'avant d'une note encore valide et au moins aussi
 /// forte est gardée : deux baisses de suite rallument à la première valeur), la relit, puis écrit la valeur ; si la
 /// note ne s'écrit pas, rien n'est baissé (`EchecNote`).
-pub(crate) fn faire_choix(m: &mut impl Monde, id: IdChoix, cible: i64, montre: Option<Sens>) -> Issue {
+pub(crate) fn faire_choix(m: &mut impl Monde, id: IdChoix, cible: i64, montre: Option<Montre>) -> Issue {
     let Some(lue) = m.lire(id) else {
         return illisible();
     };
@@ -235,7 +239,15 @@ pub(crate) fn faire_choix(m: &mut impl Monde, id: IdChoix, cible: i64, montre: O
                 "already set ({avant}), nothing written"
             ))
         }
-        Sens::Baisse if montre != Some(Sens::Baisse) => Issue::Change,
+        Sens::Baisse
+            if montre
+                != Some(Montre {
+                    sens: Sens::Baisse,
+                    lue: Some(lue),
+                }) =>
+        {
+            Issue::Change
+        }
         Sens::Baisse => {
             let nom = id.texte();
             let ancienne = m.lire_note(&nom);
@@ -310,7 +322,8 @@ pub(crate) fn faire_choix(m: &mut impl Monde, id: IdChoix, cible: i64, montre: O
 }
 
 /// Rallume ce qu'un choix a baissé : la cible vient de la note valide si elle est au moins allumée, sinon de la
-/// valeur sûre (`gestes::cible_rallumer`). Déjà au moins aussi fort : rien d'écrit. La note est effacée une fois la
+/// valeur sûre (`gestes::cible_rallumer`). Déjà plus fort, ou déjà à cette valeur : rien d'écrit ; une autre valeur
+/// du même rang (audit de tout pour audit des disques) est remise comme elle était. La note est effacée une fois la
 /// protection revenue.
 pub(crate) fn rallumer(m: &mut impl Monde, id: IdChoix) -> Issue {
     let note = note_valide(m, id);
@@ -319,7 +332,7 @@ pub(crate) fn rallumer(m: &mut impl Monde, id: IdChoix) -> Issue {
         return illisible();
     };
     let avant = texte_avant(id, lue);
-    if id.rang(lue) >= id.rang(Some(cible)) {
+    if id.rang(lue) > id.rang(Some(cible)) || lue == Some(cible) {
         m.effacer_note(&id.texte());
         return Issue::Rien(trf!(
             "déjà en marche ({avant}), rien d'écrit",
@@ -333,7 +346,7 @@ pub(crate) fn rallumer(m: &mut impl Monde, id: IdChoix) -> Issue {
         };
     }
     match m.relire(id, cible) {
-        Some(v) if id.rang(v) >= id.rang(Some(cible)) => {
+        Some(v) if v == Some(cible) || id.rang(v) > id.rang(Some(cible)) => {
             m.effacer_note(&id.texte());
             Issue::Fait { avant, note: false }
         }
@@ -549,6 +562,20 @@ mod tests {
         .octets()
     }
 
+    /// Une baisse montrée avec la valeur que le faux monde a à cet instant, puis faite.
+    fn baisser(m: &mut Faux, id: IdChoix, cible: i64) -> Issue {
+        let lue = m.lire(id);
+        faire_choix(
+            m,
+            id,
+            cible,
+            Some(Montre {
+                sens: Sens::Baisse,
+                lue,
+            }),
+        )
+    }
+
     #[test]
     fn note_aller_retour() {
         for (id, avant) in [(PUA, Some(1)), (RTP, Some(0)), (IdChoix::Asr(ASR_TOUTES[0]), None)] {
@@ -614,7 +641,7 @@ mod tests {
     #[test]
     fn baisse_notee_puis_faite() {
         let mut m = Faux::avec(PUA, Some(1));
-        let r = faire_choix(&mut m, PUA, 0, Some(Sens::Baisse));
+        let r = baisser(&mut m, PUA, 0);
         assert_eq!(
             r,
             Issue::Fait {
@@ -628,8 +655,8 @@ mod tests {
         assert_eq!(m.journal.len(), 1);
         // Une deuxième baisse (audit → coupée, après un audit choisi) garde la première valeur d'avant.
         let mut m = Faux::avec(PUA, Some(1));
-        faire_choix(&mut m, PUA, 2, Some(Sens::Baisse));
-        faire_choix(&mut m, PUA, 0, Some(Sens::Baisse));
+        baisser(&mut m, PUA, 2);
+        baisser(&mut m, PUA, 0);
         let n = Note::lire("defender-pua", &m.notes["defender-pua"]).unwrap();
         assert_eq!((n.avant, n.posee), (Some(1), 0));
         // Rallumer remet 1 et efface la note.
@@ -649,7 +676,7 @@ mod tests {
             let mut m = Faux::avec(RTP, Some(0));
             m.note_refusee = !alteree;
             m.note_alteree = alteree;
-            assert_eq!(faire_choix(&mut m, RTP, 1, Some(Sens::Baisse)), Issue::EchecNote);
+            assert_eq!(baisser(&mut m, RTP, 1), Issue::EchecNote);
             assert_eq!(m.ecritures, Vec::<(String, i64)>::new());
             assert_eq!(m.valeur(RTP), Some(0));
             assert!(m.notes.is_empty() && m.journal.is_empty());
@@ -659,7 +686,7 @@ mod tests {
         let ancienne = note(PUA, Some(1), 2);
         m.notes.insert(PUA.texte(), ancienne.clone());
         m.note_alteree = true;
-        assert_eq!(faire_choix(&mut m, PUA, 0, Some(Sens::Baisse)), Issue::EchecNote);
+        assert_eq!(baisser(&mut m, PUA, 0), Issue::EchecNote);
         assert_eq!(m.ecritures, Vec::<(String, i64)>::new());
         assert_eq!(
             m.notes[&PUA.texte()].len(),
@@ -673,7 +700,7 @@ mod tests {
     fn baisse_gardee_par_windows() {
         let mut m = Faux::avec(RTP, Some(0));
         m.garde = true;
-        let r = faire_choix(&mut m, RTP, 1, Some(Sens::Baisse));
+        let r = baisser(&mut m, RTP, 1);
         assert_eq!(
             r,
             Issue::Echec {
@@ -685,18 +712,12 @@ mod tests {
         // Écriture refusée : de même.
         let mut m = Faux::avec(RTP, Some(0));
         m.ecriture_refusee = true;
-        assert!(matches!(
-            faire_choix(&mut m, RTP, 1, Some(Sens::Baisse)),
-            Issue::Echec { .. }
-        ));
+        assert!(matches!(baisser(&mut m, RTP, 1), Issue::Echec { .. }));
         assert!(m.notes.is_empty());
         // Illisible : rien d'écrit.
         let mut m = Faux::avec(RTP, Some(0));
         m.illisible = true;
-        assert!(matches!(
-            faire_choix(&mut m, RTP, 1, Some(Sens::Baisse)),
-            Issue::Echec { avant: None, .. }
-        ));
+        assert!(matches!(baisser(&mut m, RTP, 1), Issue::Echec { avant: None, .. }));
         assert!(m.ecritures.is_empty() && m.notes.is_empty());
     }
 
@@ -704,8 +725,12 @@ mod tests {
     /// refusée, sans note ni geste.
     #[test]
     fn devenue_baisse_refusee() {
-        for montre in [None, Some(Sens::Renforce), Some(Sens::Rien)] {
+        for sens in [None, Some(Sens::Renforce), Some(Sens::Rien)] {
             let mut m = Faux::avec(PUA, Some(1));
+            let montre = sens.map(|sens| Montre {
+                sens,
+                lue: Some(Some(1)),
+            });
             assert_eq!(faire_choix(&mut m, PUA, 2, montre), Issue::Change);
             assert!(m.ecritures.is_empty() && m.notes.is_empty());
         }
@@ -713,17 +738,79 @@ mod tests {
         let mut m = Faux::avec(PUA, Some(0));
         m.notes.insert(PUA.texte(), note(PUA, Some(2), 0));
         assert!(matches!(
-            faire_choix(&mut m, PUA, 1, Some(Sens::Renforce)),
+            faire_choix(
+                &mut m,
+                PUA,
+                1,
+                Some(Montre {
+                    sens: Sens::Renforce,
+                    lue: Some(Some(0))
+                })
+            ),
             Issue::Fait { note: false, .. }
         ));
         assert!(m.notes.is_empty());
         // Déjà là : rien.
         let mut m = Faux::avec(PUA, Some(1));
-        assert!(matches!(
-            faire_choix(&mut m, PUA, 1, Some(Sens::Baisse)),
-            Issue::Rien(_)
-        ));
+        assert!(matches!(baisser(&mut m, PUA, 1), Issue::Rien(_)));
         assert_eq!(m.ecritures, Vec::<(String, i64)>::new());
+    }
+
+    /// La valeur a bougé entre l'affichage et l'écriture (un autre outil, Defender lui-même) : la baisse est
+    /// refusée, sans note ni geste, pour que la note ne garde jamais une valeur que la personne n'a pas vue.
+    #[test]
+    fn valeur_changee_depuis_l_affichage() {
+        let vue = |lue| {
+            Some(Montre {
+                sens: Sens::Baisse,
+                lue,
+            })
+        };
+        // Montrée à 1 (bloque), relue à 2 (audit) au moment d'écrire : toujours une baisse vers 0, mais pas celle vue.
+        let mut m = Faux::avec(PUA, Some(2));
+        assert_eq!(faire_choix(&mut m, PUA, 0, vue(Some(Some(1)))), Issue::Change);
+        assert!(m.ecritures.is_empty() && m.notes.is_empty() && m.journal.is_empty());
+        // Montrée illisible, lisible au moment d'écrire : de même.
+        assert_eq!(faire_choix(&mut m, PUA, 0, vue(None)), Issue::Change);
+        // Règle absente montrée, présente relue : de même.
+        let asr = IdChoix::Asr(ASR_TOUTES[0]);
+        let mut m = Faux::avec(asr, Some(1));
+        assert_eq!(faire_choix(&mut m, asr, 0, vue(Some(None))), Issue::Change);
+        assert!(m.ecritures.is_empty() && m.notes.is_empty());
+        // La valeur montrée est encore là : la baisse se fait.
+        assert!(matches!(
+            faire_choix(&mut m, asr, 0, vue(Some(Some(1)))),
+            Issue::Fait { note: true, .. }
+        ));
+    }
+
+    /// Une autre valeur du même rang (audit des disques → audit de tout) est une baisse : montrée, notée, et
+    /// « Rallumer » remet la valeur d'avant.
+    #[test]
+    fn meme_rang_autre_valeur_notee() {
+        let cfa = IdChoix::Defender(ReglageDefender::Cfa);
+        let mut m = Faux::avec(cfa, Some(4));
+        let renforce = Some(Montre {
+            sens: Sens::Renforce,
+            lue: Some(Some(4)),
+        });
+        assert_eq!(faire_choix(&mut m, cfa, 2, renforce), Issue::Change);
+        assert_eq!(m.ecritures, Vec::<(String, i64)>::new());
+        assert!(matches!(baisser(&mut m, cfa, 2), Issue::Fait { note: true, .. }));
+        let n = Note::lire(&cfa.texte(), &m.notes[&cfa.texte()]).unwrap();
+        assert_eq!((n.avant, n.posee), (Some(4), 2));
+        // Redemander la même valeur ne fait rien et garde la note.
+        assert!(matches!(baisser(&mut m, cfa, 2), Issue::Rien(_)));
+        assert_eq!(m.notes.len(), 1);
+        assert!(matches!(rallumer(&mut m, cfa), Issue::Fait { .. }));
+        assert_eq!(m.valeur(cfa), Some(4));
+        assert!(m.notes.is_empty());
+        // Windows garde la valeur du même rang : « Rallumer » ne le compte pas comme fait.
+        let mut m = Faux::avec(cfa, Some(2));
+        m.notes.insert(cfa.texte(), note(cfa, Some(4), 2));
+        m.garde = true;
+        assert!(matches!(rallumer(&mut m, cfa), Issue::Echec { .. }));
+        assert_eq!(m.notes.len(), 1);
     }
 
     /// La question n'accepte qu'un oui, dans une vraie console : Entrée, « n », la fin de l'entrée (réponse vide) ou

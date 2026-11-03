@@ -514,10 +514,47 @@ mod tests {
         assert!(!trouves.is_empty(), "la lecture des sources ne trouve plus rien");
     }
 
+    /// Le code d'un fichier sans ses modules d'essais : `#[cfg(test)]` puis `mod … {` jusqu'à la première `}` en
+    /// colonne 0 (rustfmt n'en met une qu'à la fin d'un élément de premier niveau). Le code qui suit un module
+    /// d'essais est lu comme le reste ; un module déclaré ailleurs (`mod essais;`) ne retire que sa ligne.
+    fn hors_essais(texte: &str) -> String {
+        const DEBUT: &str = "#[cfg(test)]\nmod ";
+        let mut code = String::new();
+        let mut reste = texte;
+        while let Some(t) = reste.find(DEBUT) {
+            let (avant, apres) = reste.split_at(t);
+            code.push_str(avant);
+            let module = apres.strip_prefix("#[cfg(test)]\n").unwrap_or(apres);
+            let (ligne, suite) = module.split_once('\n').unwrap_or((module, ""));
+            reste = if ligne.trim_end().ends_with(';') {
+                suite
+            } else {
+                module.split_once("\n}").map_or("", |(_, s)| s)
+            };
+        }
+        code.push_str(reste);
+        code
+    }
+
+    /// Le code après un module d'essais compte ; le module lui-même, non.
+    #[test]
+    fn essais_retires_le_reste_lu() {
+        let texte = "fn a() {}\n#[cfg(test)]\nmod tests {\n    fn b() {\n    }\n}\nfn c() {}\n#[cfg(test)]\nmod autres;\nfn d() {}\n#[cfg(test)]\nmod e {\n    fn f() {}\n}\n";
+        let code = hors_essais(texte);
+        for x in ["fn a()", "fn c()", "fn d()"] {
+            assert!(code.contains(x), "{x} : {code:?}");
+        }
+        for x in ["fn b()", "mod autres", "fn f()"] {
+            assert!(!code.contains(x), "{x} : {code:?}");
+        }
+    }
+
     /// Garde structurelle des baisses : une ligne de choix exact (qui peut baisser une protection de Defender) ne
     /// s'écrit que depuis les Options de défense, où la personne l'a choisie elle-même ; ni le bilan, ni une
     /// correction, ni « Tout remettre » (qui n'a que `ligne_rallumer`) n'en fabriquent. Hors des tests, les seuls
-    /// fichiers qui nomment ces fonctions ou les verbes des choix sont leur définition et l'écran des Options.
+    /// fichiers qui nomment ces fonctions ou les verbes des choix sont leur définition et l'écran des Options ; le
+    /// constructeur des Options (`ligne_choix`) ne sert que dans son fichier, et leur entrée `choisir` seulement à la
+    /// ligne de commande (`--choisir`).
     #[test]
     fn les_baisses_ne_viennent_que_des_options() {
         const PERMIS: &[&str] = &["machine/windows/gestes.rs", "options_defense.rs"];
@@ -528,15 +565,18 @@ mod tests {
             "modele/mod.rs",
             "#[cfg(test)]\npub(crate) mod corpus;\n",
         )];
-        const MOTS: &[&str] = &[
-            "ligne_baisse_defender(",
-            "ligne_baisse_asr(",
-            "DEFENDER_CHOIX",
-            "DEFENDER_ASR_CHOIX",
-            "defender-choix ",
-            "defender-asr-choix ",
-            "Acte::DefenderChoix(",
-            "Acte::DefenderAsrChoix(",
+        // Chaque mot, et les seuls fichiers où il peut paraître.
+        const MOTS: &[(&str, &[&str])] = &[
+            ("ligne_baisse_defender(", PERMIS),
+            ("ligne_baisse_asr(", PERMIS),
+            ("DEFENDER_CHOIX", PERMIS),
+            ("DEFENDER_ASR_CHOIX", PERMIS),
+            ("defender-choix ", PERMIS),
+            ("defender-asr-choix ", PERMIS),
+            ("Acte::DefenderChoix(", PERMIS),
+            ("Acte::DefenderAsrChoix(", PERMIS),
+            ("ligne_choix(", &["options_defense.rs"]),
+            ("options_defense::choisir(", &["main.rs"]),
         ];
         let racine = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for (fichier, parent, declaration) in ESSAIS_SEULS {
@@ -549,6 +589,7 @@ mod tests {
         let mut a_voir = vec![racine.clone()];
         let mut trouves = std::collections::BTreeMap::new();
         let mut lus = 0;
+        let mut vus = std::collections::BTreeSet::new();
         while let Some(d) = a_voir.pop() {
             for e in std::fs::read_dir(&d).unwrap().flatten() {
                 let p = e.path();
@@ -560,22 +601,36 @@ mod tests {
                     continue;
                 }
                 lus += 1;
-                let texte = std::fs::read_to_string(&p).unwrap();
-                let code = texte.find("#[cfg(test)]\nmod ").map_or(texte.as_str(), |t| &texte[..t]);
-                let n = code
-                    .lines()
-                    .filter(|l| !l.trim_start().starts_with("//") && MOTS.iter().any(|x| l.contains(x)))
+                let nom = p.strip_prefix(&racine).unwrap().to_string_lossy().replace('\\', "/");
+                if ESSAIS_SEULS.iter().any(|(f, ..)| *f == nom) {
+                    continue;
+                }
+                let code = hors_essais(&std::fs::read_to_string(&p).unwrap());
+                for l in code.lines().filter(|l| !l.trim_start().starts_with("//")) {
                     // Un acte déjà là se nomme pour être rangé (pas de baisse, rien d'écrit) : seul un bras qui le
                     // fabrique compte, pas un motif `Acte::DefenderChoix(..)`.
-                    .filter(|l| !l.contains("Choix(..)"))
-                    .count();
-                let nom = p.strip_prefix(&racine).unwrap().to_string_lossy().replace('\\', "/");
-                if n > 0 && !PERMIS.contains(&nom.as_str()) && !ESSAIS_SEULS.iter().any(|(f, ..)| *f == nom) {
-                    trouves.insert(nom, n);
+                    if l.contains("Choix(..)") {
+                        continue;
+                    }
+                    for (mot, permis) in MOTS {
+                        if l.contains(mot) {
+                            vus.insert(*mot);
+                            if !permis.contains(&nom.as_str()) {
+                                *trouves.entry(format!("{nom} : {mot}")).or_insert(0) += 1;
+                            }
+                        }
+                    }
                 }
             }
         }
         assert!(lus > 100, "la lecture des sources ne trouve plus rien ({lus})");
+        // Un mot qui ne paraît plus nulle part ne garde plus rien : renommé, il faut le suivre ici.
+        for (mot, _) in MOTS {
+            assert!(
+                vus.contains(mot),
+                "« {mot} » ne paraît plus dans les sources : la garde ne le voit plus"
+            );
+        }
         assert!(
             trouves.is_empty(),
             "lignes de baisse fabriquées hors des Options de défense : {trouves:?}"

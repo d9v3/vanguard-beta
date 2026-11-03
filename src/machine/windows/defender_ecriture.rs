@@ -13,7 +13,7 @@ use super::corrections::{NOTE_CHOIX, Resultat, avant_notable, echec_note};
 use super::exclusions;
 use super::wmi::{self, CLASSE_ABSENTE, Ligne, Parametre, Retour, Valeur};
 use crate::machine::choix_avant;
-use crate::machine::gestes::{self, Acte, GenreExclusion, IdChoix, ModeAsr, ReglageDefender, Sens, ValeurDefender};
+use crate::machine::gestes::{self, Acte, GenreExclusion, IdChoix, ModeAsr, Montre, ReglageDefender, ValeurDefender};
 use crate::modele::raison::Echec;
 use crate::ui::{tr, trf};
 
@@ -47,21 +47,11 @@ pub(super) fn faire_acte(acte: &Acte) -> Option<Resultat> {
 // ------------------------------------------------------------------ choix de la personne et « Rallumer »
 
 /// La valeur actuelle d'un réglage des choix (`None` : illisible ; `Some(None)` : règle ASR absente de la liste).
-/// Le temps réel est jugé sur ce que Defender applique (RealTimeProtectionEnabled : en marche 0, coupé 1, comme
-/// DisableRealtimeMonitoring), la préférence seulement si l'état ne se lit pas.
+/// Le temps réel est jugé sur ce que Defender applique, et seulement là (`temps_reel_de`).
 #[allow(clippy::option_option)] // None : illisible ou sans note ; Some(None) : valeur absente
 fn lire_choix(id: IdChoix) -> Option<Option<i64>> {
     match id {
-        IdChoix::Defender(ReglageDefender::TempsReel) => {
-            const PROP: &str = "DisableRealtimeMonitoring";
-            if let Some(marche) = etat().0 {
-                Some(Some(i64::from(!marche)))
-            } else {
-                preferences(&[PROP])
-                    .and_then(|l| l.get(PROP).and_then(entier))
-                    .map(Some)
-            }
-        }
+        IdChoix::Defender(ReglageDefender::TempsReel) => temps_reel_de(etat().0),
         IdChoix::Defender(r) => {
             let prop = r.propriete();
             preferences(&[prop])
@@ -73,6 +63,14 @@ fn lire_choix(id: IdChoix) -> Option<Option<i64>> {
             LectureAsr::Illisible => None,
         },
     }
+}
+
+/// La valeur du temps réel, lue d'une seule source : l'état que Defender applique (RealTimeProtectionEnabled ; en
+/// marche 0, coupé 1, comme DisableRealtimeMonitoring). L'état illisible rend le réglage illisible, jamais la
+/// préférence à la place : deux sources pourraient se contredire entre l'affichage, la note et la relecture.
+#[allow(clippy::option_option)] // None : illisible
+fn temps_reel_de(marche: Option<bool>) -> Option<Option<i64>> {
+    marche.map(|m| Some(i64::from(!m)))
 }
 
 /// Defender par WMI et les notes sous HKLM : le monde des choix dans le processus élevé.
@@ -133,9 +131,9 @@ impl choix_avant::Monde for Monde {
     }
 }
 
-/// Le sens d'un choix, jugé sur la valeur relue ici, et sa ligne pour la fenêtre administrateur (« nom : actuelle →
-/// visée ») ; `None` : l'acte n'est pas un choix.
-pub(super) fn juger(acte: &Acte) -> Option<(Sens, String)> {
+/// Le sens d'un choix, jugé sur la valeur relue ici, avec cette valeur, et sa ligne pour la fenêtre administrateur
+/// (« nom : actuelle → visée ») ; `None` : l'acte n'est pas un choix.
+pub(super) fn juger(acte: &Acte) -> Option<(Montre, String)> {
     let (id, cible) = acte.choix()?;
     let lue = lire_choix(id);
     let texte = format!(
@@ -144,12 +142,18 @@ pub(super) fn juger(acte: &Acte) -> Option<(Sens, String)> {
         crate::options_defense::texte_choix(id, lue),
         crate::options_defense::texte_choix(id, Some(cible)).to_uppercase()
     );
-    Some((gestes::sens(id, lue, cible), texte))
+    Some((
+        Montre {
+            sens: gestes::sens(id, lue, cible),
+            lue,
+        },
+        texte,
+    ))
 }
 
-/// Fait un choix exact, avec le sens montré à la personne avant son accord (`montre`) ; `None` : l'acte n'est pas
-/// un choix.
-pub(super) fn faire_choix(acte: &Acte, montre: Option<Sens>) -> Option<Resultat> {
+/// Fait un choix exact, avec le sens et la valeur montrés à la personne avant son accord (`montre`) ; `None` : l'acte
+/// n'est pas un choix.
+pub(super) fn faire_choix(acte: &Acte, montre: Option<Montre>) -> Option<Resultat> {
     let (id, cible) = acte.choix()?;
     let Some(cible) = cible else {
         return Some(Resultat::echec(
@@ -598,6 +602,15 @@ mod tests {
         l.iter().map(|s| (*s).to_string()).collect()
     }
 
+    /// Le temps réel se lit d'une seule source, l'état appliqué : en marche 0, coupé 1, et illisible si l'état ne se
+    /// lit pas (jamais la préférence à la place).
+    #[test]
+    fn temps_reel_une_source() {
+        assert_eq!(temps_reel_de(Some(true)), Some(Some(0)));
+        assert_eq!(temps_reel_de(Some(false)), Some(Some(1)));
+        assert_eq!(temps_reel_de(None), None);
+    }
+
     /// La ligne forgée qui désigne une exclusion ordinaire, absente, ou dans une liste cachée : refusée avant tout
     /// appel à Defender.
     #[test]
@@ -653,8 +666,15 @@ mod tests {
             &gestes::ligne_baisse_defender(ReglageDefender::Pua, gestes::ChoixDefender::Coupe).unwrap(),
         )
         .unwrap();
-        assert!(matches!(juger(&coupe), Some((Sens::Baisse, _))));
-        let r = faire_choix(&coupe, Some(Sens::Baisse)).unwrap();
+        let (montre, _) = juger(&coupe).unwrap();
+        assert_eq!(
+            montre,
+            Montre {
+                sens: gestes::Sens::Baisse,
+                lue: None
+            }
+        );
+        let r = faire_choix(&coupe, Some(montre)).unwrap();
         assert!(!r.reussi && r.avant.is_none(), "{}", r.raison);
         assert!(faire_acte(&gestes::analyser_acte("vanguard:service SSDPSRV arreter").unwrap()).is_none());
     }

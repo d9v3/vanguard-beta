@@ -14,25 +14,28 @@ enum Element {
     Note(Note),
     Blocage(String, Box<Blocage>),
     /// Un choix de Defender baissé par la personne (note ChoixAvant) : « Rallumer » le remet, jamais plus bas que
-    /// « allumé ».
-    Rallumer(String, IdChoix),
+    /// « allumé ». Le troisième champ dit pourquoi il vise la valeur sûre plutôt que celle d'avant (`None` : la valeur
+    /// d'avant notée).
+    Rallumer(String, IdChoix, Option<&'static str>),
 }
 
 impl Element {
     fn date(&self) -> &str {
         match self {
             Element::Note(n) => &n.date,
-            Element::Blocage(d, _) | Element::Rallumer(d, _) => d,
+            Element::Blocage(d, _) | Element::Rallumer(d, ..) => d,
         }
     }
 }
 
 /// Les choix baissés à rallumer, datés comme les autres notes (à la minute, heure locale) ; une note abîmée n'a pas
-/// de date sûre : « ? », rangée en tête (défaite d'abord : « Rallumer » ne baisse rien).
-fn choix_a_rallumer(notes: Vec<(IdChoix, Option<crate::machine::choix_avant::Note>)>) -> Vec<(String, IdChoix)> {
+/// de date sûre : « ? », rangée en tête (défaite d'abord : « Rallumer » ne baisse rien). Chacun dit s'il ira à la
+/// valeur sûre plutôt qu'à celle d'avant, et pourquoi (`vers_sure`).
+fn choix_a_rallumer(notes: Vec<(IdChoix, Option<crate::machine::choix_avant::Note>)>) -> Vec<ChoixARallumer> {
     notes
         .into_iter()
         .map(|(id, n)| {
+            let sure = vers_sure(id, n.as_ref());
             let date = n
                 .and_then(|n| i64::try_from(n.date).ok())
                 .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
@@ -40,9 +43,28 @@ fn choix_a_rallumer(notes: Vec<(IdChoix, Option<crate::machine::choix_avant::Not
                     || "?".to_string(),
                     |d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string(),
                 );
-            (date, id)
+            (date, id, sure)
         })
         .collect()
+}
+
+/// Un choix à rallumer : sa date, son réglage, et pourquoi il ira à la valeur sûre (`None` : à la valeur d'avant).
+type ChoixARallumer = (String, IdChoix, Option<&'static str>);
+
+/// Pourquoi « Rallumer » visera la valeur sûre plutôt que la valeur d'avant (`gestes::cible_rallumer`) : la note ne
+/// se lit pas, ou la valeur d'avant notée était coupée. `None` : la valeur d'avant, telle que notée.
+fn vers_sure(id: IdChoix, note: Option<&crate::machine::choix_avant::Note>) -> Option<&'static str> {
+    match note {
+        None => Some(tr!(
+            "note illisible : vers la valeur sûre",
+            "unreadable note: to the safe value"
+        )),
+        Some(n) if Some(crate::machine::gestes::cible_rallumer(id, Some(n.avant))) != n.avant => Some(tr!(
+            "valeur d'avant coupée : vers la valeur sûre",
+            "previous value was off: to the safe value"
+        )),
+        Some(_) => None,
+    }
 }
 
 /// Les lignes que « Tout remettre » lance pour les choix : seulement des `vanguard:rallumer`, une par réglage, dans
@@ -51,7 +73,7 @@ fn lignes_rallumer(elements: &[Element]) -> Vec<Vec<String>> {
     elements
         .iter()
         .filter_map(|e| match e {
-            Element::Rallumer(_, id) => Some(vec![crate::machine::gestes::ligne_rallumer(*id)]),
+            Element::Rallumer(_, id, _) => Some(vec![crate::machine::gestes::ligne_rallumer(*id)]),
             _ => None,
         })
         .collect()
@@ -59,9 +81,9 @@ fn lignes_rallumer(elements: &[Element]) -> Vec<Vec<String>> {
 
 /// Les notes et les blocages, du plus récent au plus ancien : l'ordre où ils se défont. Un blocage qui a retiré un
 /// programme du démarrage n'y est pas : sa note d'Optimiser (« demarrage:… ») le défait.
-fn a_defaire(notes: Vec<Note>, blocages: Vec<(String, Blocage)>, choix: Vec<(String, IdChoix)>) -> Vec<Element> {
+fn a_defaire(notes: Vec<Note>, blocages: Vec<(String, Blocage)>, choix: Vec<ChoixARallumer>) -> Vec<Element> {
     let mut l: Vec<Element> = notes.into_iter().map(Element::Note).collect();
-    l.extend(choix.into_iter().map(|(d, id)| Element::Rallumer(d, id)));
+    l.extend(choix.into_iter().map(|(d, id, s)| Element::Rallumer(d, id, s)));
     l.extend(
         blocages
             .into_iter()
@@ -103,14 +125,15 @@ fn ligne(e: &Element) -> String {
             };
             format!("[{}] {}{refus}", tr!("Blocage", "Block"), affichable(&b.quoi))
         }
-        Element::Rallumer(_, id) => format!(
-            "[{}] {}",
+        Element::Rallumer(_, id, sure) => format!(
+            "[{}] {}{}",
             tr!("Defender", "Defender"),
             trf!(
                 "Rallumer : {}",
                 "Turn back on: {}",
                 crate::options_defense::nom_choix(*id)
-            )
+            ),
+            sure.map(|s| format!(" {GRIS}({s}){RESET}")).unwrap_or_default()
         ),
     }
 }
@@ -242,7 +265,7 @@ fn remettre(elements: &[Element]) {
     let mut rang_choix = premier_choix;
     for e in elements {
         match e {
-            Element::Rallumer(_, id) => {
+            Element::Rallumer(_, id, _) => {
                 let nom = crate::options_defense::nom_choix(*id);
                 if plus.get(rang_choix) == Some(&true) {
                     trp!(
@@ -375,13 +398,17 @@ mod tests {
                 ),
             ),
         ];
-        let choix = vec![("2026-10-21 08:00".to_string(), IdChoix::Defender(ReglageDefender::Pua))];
+        let choix = vec![(
+            "2026-10-21 08:00".to_string(),
+            IdChoix::Defender(ReglageDefender::Pua),
+            None,
+        )];
         let ordre: Vec<String> = a_defaire(notes, blocages, choix)
             .iter()
             .map(|e| match e {
                 Element::Note(n) => n.id.clone(),
                 Element::Blocage(_, b) => b.id.clone(),
-                Element::Rallumer(_, id) => id.texte(),
+                Element::Rallumer(_, id, _) => id.texte(),
             })
             .collect();
         assert_eq!(ordre, ["bilan:b", "x", "defender-pua", "jeux:hags", "dns_rapide"]);
@@ -428,6 +455,29 @@ mod tests {
         assert!(matches!(typee, Some(Ok((_, None)))), "{typee:?}");
     }
 
+    /// « Rallumer » dit quand il visera la valeur sûre plutôt que celle d'avant : note illisible, ou valeur d'avant
+    /// coupée ; une valeur d'avant allumée (audit compris) ne dit rien de plus.
+    #[test]
+    fn rallumer_dit_la_valeur_sure() {
+        let pua = IdChoix::Defender(ReglageDefender::Pua);
+        let asr = IdChoix::Asr(crate::machine::gestes::ASR_TOUTES[0]);
+        let note = |id: IdChoix, avant| crate::machine::choix_avant::Note {
+            id: id.texte(),
+            avant,
+            posee: 0,
+            date: 1_793_000_000,
+        };
+        assert!(vers_sure(pua, None).is_some_and(|s| s.contains("illisible")));
+        assert!(vers_sure(pua, Some(&note(pua, Some(0)))).is_some_and(|s| s.contains("coupée")));
+        assert!(vers_sure(pua, Some(&note(pua, Some(9)))).is_some_and(|s| s.contains("coupée")));
+        assert!(vers_sure(asr, Some(&note(asr, None))).is_some_and(|s| s.contains("coupée")));
+        assert_eq!(vers_sure(pua, Some(&note(pua, Some(2)))), None);
+        assert_eq!(vers_sure(pua, Some(&note(pua, Some(1)))), None);
+        let choix = choix_a_rallumer(vec![(pua, None)]);
+        let e = a_defaire(Vec::new(), Vec::new(), choix);
+        assert!(ligne(&e[0]).contains("note illisible"), "{}", ligne(&e[0]));
+    }
+
     /// « Tout remettre » ne produit jamais de baisse : pour chaque réglage des choix, noté ou abîmé, la seule ligne
     /// lancée est un `vanguard:rallumer` sans valeur, qui renforce (jamais un choix, jamais dans la liste des baisses
     /// du processus élevé) ; une note abîmée garde son réglage à remettre.
@@ -450,7 +500,7 @@ mod tests {
             .collect();
         let choix = choix_a_rallumer(notes);
         assert_eq!(choix.len(), ids.len());
-        assert!(choix.iter().any(|(d, _)| d == "?") && choix.iter().any(|(d, _)| d.starts_with("2026-")));
+        assert!(choix.iter().any(|(d, ..)| d == "?") && choix.iter().any(|(d, ..)| d.starts_with("2026-")));
         let elements = a_defaire(Vec::new(), Vec::new(), choix);
         let groupes = lignes_rallumer(&elements);
         assert_eq!(groupes.len(), ids.len());

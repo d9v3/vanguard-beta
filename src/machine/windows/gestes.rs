@@ -2253,24 +2253,31 @@ pub(crate) enum Sens {
     Rien,
 }
 
+/// Ce que la personne a vu d'un choix avant son accord : son sens, et la valeur relue alors (`None` : illisible,
+/// `Some(None)` : règle absente). Le processus élevé ne fait une baisse que si la valeur relue juste avant d'écrire
+/// est celle qui a été montrée : la note garde ainsi la valeur que la personne a vue, jamais une autre arrivée entre
+/// l'affichage et l'écriture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Montre {
+    pub(crate) sens: Sens,
+    #[allow(clippy::option_option)] // None : illisible ; Some(None) : valeur absente
+    pub(crate) lue: Option<Option<i64>>,
+}
+
 /// Le sens d'un choix : `lue`, la valeur relue (`None` : illisible, `Some(None)` : règle absente) ; `cible`, la
 /// valeur demandée. Illisible : une baisse, pour que la question soit posée (le geste échouera de toute façon, faute
-/// de relecture). À rang égal, la même valeur ne fait rien ; une autre valeur connue du même rang (audit des disques
-/// et audit de tout) n'est pas une baisse ; deux valeurs inconnues ou coupées différentes, si (rien n'est cru).
+/// de relecture). Plus fort : un renforcement ; la même valeur : rien. Plus faible, ou une autre valeur du même rang
+/// (audit des disques et audit de tout, deux valeurs inconnues ou coupées) : une baisse, montrée puis confirmée et
+/// notée, pour qu'aucun changement de réglage ne se fasse sans que la personne l'ait vu.
 #[allow(clippy::option_option)] // None : illisible ou sans note ; Some(None) : valeur absente
 pub(crate) fn sens(id: IdChoix, lue: Option<Option<i64>>, cible: Option<i64>) -> Sens {
     let Some(lue) = lue else {
         return Sens::Baisse;
     };
-    let (avant, apres) = (id.rang(lue), id.rang(cible));
-    if apres > avant {
+    if id.rang(cible) > id.rang(lue) {
         Sens::Renforce
-    } else if apres < avant {
-        Sens::Baisse
     } else if lue == cible {
         Sens::Rien
-    } else if apres > 0 {
-        Sens::Renforce
     } else {
         Sens::Baisse
     }
@@ -2298,7 +2305,12 @@ pub(crate) fn liste_pure(sens: &[Option<Sens>]) -> Result<bool, ()> {
 /// Les deux listes que le parent envoie au processus élevé, en une seule demande d'administrateur (P7) : les places
 /// des lignes ordinaires, puis celles des choix exacts (`defender-choix`, `defender-asr-choix`), chacune dans son
 /// ordre. Une liste sans choix, ou faite seulement de choix, reste seule. Le processus élevé juge chacune à part
-/// (`liste_pure`) : les choix y sont montrés et demandés à part, jamais cachés parmi d'autres gestes.
+/// (`liste_pure`) : les choix y sont montrés et demandés à part, jamais cachés parmi d'autres gestes. Les lignes
+/// ordinaires passent d'abord, les choix ensuite : ce qui renforce (un point de restauration, les corrections du
+/// bilan) est fait avant qu'une baisse soit même demandée, et un refus de la baisse (la réponse par défaut) ne
+/// retire rien de ce qui a été accepté. Si un renforcement et un choix visent le même réglage, le choix, fait en
+/// dernier, l'emporte ; sa liste est jugée et montrée juste avant ses gestes, avec la valeur que le renforcement a
+/// laissée.
 pub(crate) fn separer_choix(lignes: &[String]) -> Vec<Vec<usize>> {
     let (choix, autres): (Vec<usize>, Vec<usize>) = (0..lignes.len()).partition(|&i| {
         lignes
@@ -7913,8 +7925,11 @@ mod tests {
         assert_eq!(sens(rtp, None, Some(0)), Sens::Baisse);
         assert_eq!(sens(cfa, Some(Some(1)), Some(2)), Sens::Baisse);
         assert_eq!(sens(cfa, Some(Some(3)), Some(1)), Sens::Renforce);
-        // Même rang, autre valeur connue (audit de tout, audit des disques) : pas une baisse.
-        assert_eq!(sens(cfa, Some(Some(4)), Some(2)), Sens::Renforce);
+        // Même rang, autre valeur connue (audit de tout, audit des disques) : montrée comme une baisse, confirmée et
+        // notée (relecture adverse : un changement de même rang ne passe plus sans question).
+        assert_eq!(sens(cfa, Some(Some(4)), Some(2)), Sens::Baisse);
+        assert_eq!(sens(cfa, Some(Some(2)), Some(4)), Sens::Baisse);
+        assert_eq!(sens(cfa, Some(Some(4)), Some(4)), Sens::Rien);
         // Coupé et une valeur inconnue : même rang 0, jamais cru plus fort.
         assert_eq!(sens(cfa, Some(Some(9)), Some(0)), Sens::Baisse);
         assert_eq!(sens(asr, Some(None), Some(0)), Sens::Baisse);

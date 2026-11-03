@@ -505,7 +505,7 @@ fn appliquer_en_place(envoi: &[String]) -> Vec<Reponse> {
             let r = if arret {
                 refusee()
             } else {
-                faire(e, &juge, &compte, bilan, s.as_ref().map(|(s, _)| *s))
+                faire(e, &juge, &compte, bilan, s.as_ref().map(|(m, _)| *m))
             };
             if !r.reussi && est_point(e) {
                 arret = true;
@@ -520,17 +520,17 @@ fn appliquer_en_place(envoi: &[String]) -> Vec<Reponse> {
 /// Le sens de chaque ligne d'une liste, relu ici juste avant de la montrer, avec la ligne « nom : actuelle → VISÉE »
 /// d'un choix (`None` pour ce qui n'en est pas un) ; puis vrai pour une liste de baisses. `None` : la liste mêle une
 /// baisse à un autre geste, refusée sans rien demander (le parent ne l'envoie jamais ainsi).
-type Jugement = (Vec<Option<(gestes::Sens, String)>>, bool);
+type Jugement = (Vec<Option<(gestes::Montre, String)>>, bool);
 
 fn juger_liste(liste: &[Element]) -> Option<Jugement> {
-    let sens: Vec<Option<(gestes::Sens, String)>> = liste
+    let sens: Vec<Option<(gestes::Montre, String)>> = liste
         .iter()
         .map(|e| match e {
             Element::Acte(a) => super::defender_ecriture::juger(a),
             _ => None,
         })
         .collect();
-    let seuls: Vec<Option<gestes::Sens>> = sens.iter().map(|s| s.as_ref().map(|(s, _)| *s)).collect();
+    let seuls: Vec<Option<gestes::Sens>> = sens.iter().map(|s| s.as_ref().map(|(m, _)| m.sens)).collect();
     let baisse = gestes::liste_pure(&seuls).ok()?;
     Some((sens, baisse))
 }
@@ -563,7 +563,7 @@ fn dire_annule(baisse: bool) {
 }
 
 /// Ce qui va être fait, avec, pour un choix, sa valeur actuelle et la visée, et ce qui baisse la protection en clair.
-fn montrer(montre: &[(String, Vec<String>)], sens: &[Option<(gestes::Sens, String)>]) {
+fn montrer(montre: &[(String, Vec<String>)], sens: &[Option<(gestes::Montre, String)>]) {
     println!();
     trp!("Ce qui va être fait :", "What will be done:");
     for ((texte, lignes), s) in montre.iter().zip(sens.iter().chain(std::iter::repeat(&None))) {
@@ -571,7 +571,7 @@ fn montrer(montre: &[(String, Vec<String>)], sens: &[Option<(gestes::Sens, Strin
         for l in lignes {
             println!("    {GRIS}{l}{RESET}");
         }
-        match s {
+        match s.as_ref().map(|(m, t)| (m.sens, t)) {
             Some((gestes::Sens::Baisse, t)) => trp!(
                 "    {ACCENT}{}  (baisse la protection){RESET}",
                 "    {ACCENT}{}  (lowers protection){RESET}",
@@ -582,17 +582,26 @@ fn montrer(montre: &[(String, Vec<String>)], sens: &[Option<(gestes::Sens, Strin
                 "    {GRIS}{}  (already so: nothing to write){RESET}",
                 t
             ),
-            Some((gestes::Sens::Renforce, t)) => println!("    {GRIS}{t}{RESET}"),
+            Some((gestes::Sens::Renforce, t)) => crate::ui::afficher_aligne("    ", t, 4, GRIS),
             None => {}
         }
     }
     println!();
 }
 
+/// Ce qui reste actif après la baisse de `id`, coupé pour tenir dans `ui::LARGEUR` sous un retrait de deux colonnes
+/// (une console de 80 colonnes couperait sinon au milieu d'un mot).
+fn lignes_protege(id: gestes::IdChoix) -> Vec<String> {
+    crate::ui::envelopper(
+        crate::options_defense::protege_encore(id),
+        crate::ui::LARGEUR.saturating_sub(2),
+    )
+}
+
 /// L'accord d'une liste. Une liste de baisses : ce qui reste actif, l'avertissement du temps réel (P10), puis la
 /// question des baisses (`choix_avant::demander_baisse` : un oui tapé dans une vraie console, défaut non). Une autre
 /// liste : dans la fenêtre administrateur (`fils`), Entrée ou oui ; déjà administrateur, l'accord a été donné avant.
-fn question(liste: &[Element], sens: &[Option<(gestes::Sens, String)>], baisse: bool, fils: bool) -> bool {
+fn question(liste: &[Element], sens: &[Option<(gestes::Montre, String)>], baisse: bool, fils: bool) -> bool {
     if !baisse {
         return !fils
             || accepte(&crate::ui::demander(tr!(
@@ -602,7 +611,16 @@ fn question(liste: &[Element], sens: &[Option<(gestes::Sens, String)>], baisse: 
     }
     let mut baisses: Vec<gestes::IdChoix> = Vec::new();
     for (e, s) in liste.iter().zip(sens) {
-        if let (Element::Acte(a), Some((gestes::Sens::Baisse, _))) = (e, s)
+        if let (
+            Element::Acte(a),
+            Some((
+                gestes::Montre {
+                    sens: gestes::Sens::Baisse,
+                    ..
+                },
+                _,
+            )),
+        ) = (e, s)
             && let Some((id, _)) = a.choix()
             && !baisses.contains(&id)
         {
@@ -610,7 +628,9 @@ fn question(liste: &[Element], sens: &[Option<(gestes::Sens, String)>], baisse: 
         }
     }
     for id in &baisses {
-        println!("  {GRIS}{}{RESET}", crate::options_defense::protege_encore(*id));
+        for l in lignes_protege(*id) {
+            println!("  {GRIS}{l}{RESET}");
+        }
     }
     if baisses.contains(&gestes::IdChoix::Defender(gestes::ReglageDefender::TempsReel)) {
         trp!(
@@ -963,7 +983,7 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
             let r = if arret {
                 refusee()
             } else {
-                faire(e, &juge, &compte, bilan, s.as_ref().map(|(s, _)| *s))
+                faire(e, &juge, &compte, bilan, s.as_ref().map(|(m, _)| *m))
             };
             if !r.reussi {
                 code = 1;
@@ -1088,13 +1108,14 @@ fn refusee() -> Resultat {
 /// `compte` : le SID de la personne, lu dans le jeton du Vanguard qui a lancé ce processus (tenu par une poignée dès
 /// le tube vérifié), ou dans le sien quand Vanguard est lui-même administrateur ; l'erreur de lecture sinon.
 /// `bilan` : celui de `bilans`, pour une correction de la table.
-/// `montre` : le sens d'un choix tel qu'il a été montré avant l'accord, rejugé juste avant d'écrire.
+/// `montre` : le sens d'un choix et la valeur relue tels qu'ils ont été montrés avant l'accord, rejugés juste avant
+/// d'écrire.
 fn faire(
     e: &Element,
     juge: &ordres::Juge,
     compte: &Result<String, String>,
     bilan: corrections::Bilan,
-    montre: Option<gestes::Sens>,
+    montre: Option<gestes::Montre>,
 ) -> Resultat {
     println!("{GRIS}> {}  {}{RESET}", chrono::Local::now().format("%H:%M"), e.texte());
     let r = match e {
@@ -1578,6 +1599,40 @@ const CONTEXTE_POINT: &str = "restauration/point";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ce qui reste actif après une baisse tient dans la largeur de l'écran, sous son retrait, pour chaque réglage des
+    /// choix : coupé aux espaces, sans rien perdre.
+    #[test]
+    fn protege_encore_tient_dans_la_largeur() {
+        let mut ids: Vec<gestes::IdChoix> = gestes::ReglageDefender::TOUS
+            .iter()
+            .map(|r| gestes::IdChoix::Defender(*r))
+            .collect();
+        ids.extend(gestes::ASR_TOUTES.iter().copied().map(gestes::IdChoix::Asr));
+        let mut coupes = 0;
+        for id in ids {
+            let lignes = lignes_protege(id);
+            assert!(!lignes.is_empty(), "{id:?}");
+            for l in &lignes {
+                assert!(
+                    crate::ui::largeur_affichee(l).saturating_add(2) <= crate::ui::LARGEUR,
+                    "{id:?} : {l:?}"
+                );
+            }
+            assert_eq!(
+                lignes.join(" "),
+                crate::options_defense::protege_encore(id)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            coupes += usize::from(lignes.len() > 1);
+        }
+        assert!(
+            coupes > 0,
+            "aucun texte assez long pour être coupé : l'essai ne vérifie plus rien"
+        );
+    }
 
     /// La liste du fils : corrections, ordres du blocage permis sous Windows, scripts à empreinte et programmes fixes,
     /// sous leur seule forme ; tout le reste refusé en entier.
