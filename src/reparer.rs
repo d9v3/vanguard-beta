@@ -78,7 +78,9 @@ fn redirections(hosts: &str) -> Vec<(String, String)> {
             let ip = mots.next()?;
             // L'adresse d'abord : un fichier hosts de liste de blocage compte des millions de lignes « 0.0.0.0 nom »,
             // et l'ouverture du menu ne doit pas en assembler les noms un par un.
-            if !ip.parse().is_ok_and(publique) {
+            // Sous toutes ses formes (« 0x5d.0.0.1 », « 1572395042 », « ::ffff:… », « …%eth0 ») : une adresse que
+            // Windows lirait à l'ancienne n'échappe pas au constat.
+            if !crate::machine::gestes::adresse_hosts(ip).is_some_and(publique) {
                 return None;
             }
             let noms = mots.collect::<Vec<_>>().join(" ");
@@ -87,26 +89,13 @@ fn redirections(hosts: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Les adresses détournées, en expression régulière (« 1\.2\.3\.4|5\.6\.7\.8 »), pour sed et PowerShell.
+/// Les adresses détournées, en expression régulière (« 1\.2\.3\.4|5\.6\.7\.8 »), pour sed.
+#[cfg(any(unix, test))]
 fn motif_adresses(lignes: &[(String, String)]) -> String {
     let mut ips: Vec<String> = lignes.iter().map(|(ip, _)| ip.replace('.', r"\.")).collect();
     ips.sort();
     ips.dedup();
     ips.join("|")
-}
-
-/// Windows : commente dans hosts les lignes des adresses de `motif`. Lu d'abord, puis réécrit d'un coup en « Default »
-/// (ANSI), comme Set-Content le faisait (« ASCII » changerait en « ? » les lettres accentuées des commentaires). Pas
-/// Set-Content : il vide le fichier avant de l'ouvrir pour écrire, et un autre programme qui tient hosts à ce
-/// moment (Windows le rouvre dès que son dossier change, ici juste après la copie de sauvegarde) laissait hosts vide.
-/// Lecture et écriture sont refaites tant que hosts est tenu ; si l'écriture échoue quand même, les octets d'avant
-/// sont remis.
-#[cfg(any(windows, test))]
-fn commenter_hosts(motif: &str) -> String {
-    format!(
-        r#"$h = "$env:SystemRoot\System32\drivers\etc\hosts"; $r = {reessai}; $o = & $r {{ , [IO.File]::ReadAllBytes($h) }}; $l = [string[]]@(& $r {{ [IO.File]::ReadAllLines($h, [Text.Encoding]::Default) }} | ForEach-Object {{ if ($_ -match '^\s*({motif})\s') {{ '# Vanguard : ' + $_ }} else {{ $_ }} }}); try {{ & $r {{ [IO.File]::WriteAllLines($h, $l, [Text.Encoding]::Default) }} }} catch {{ & $r {{ [IO.File]::WriteAllBytes($h, $o) }}; throw }}"#,
-        reessai = crate::commande::REESSAI_PS
-    )
 }
 
 /// Résumé lisible : « 1.2.3.4 → banque.fr, 5.6.7.8 → update.microsoft.com (et 3 autre(s)) ».
@@ -1030,39 +1019,37 @@ fn affichables(mut e: EtatWindows) -> EtatWindows {
 
 #[cfg(windows)]
 fn navigation(etat: Option<&EtatWindows>) -> Reparation {
-    const INTERNET: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
-    let racine = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-    let hosts = std::path::Path::new(&racine).join(r"System32\drivers\etc\hosts");
-    let detournees = redirections(&String::from_utf8_lossy(&std::fs::read(hosts).unwrap_or_default()));
+    // Le chemin demandé à Windows (GetSystemDirectoryW), jamais la variable SystemRoot, que le compte choisit.
+    let hosts = crate::commande::dossier_systeme().join(r"drivers\etc\hosts");
+    let octets = std::fs::read(hosts).unwrap_or_default();
+    let detournees = redirections(&String::from_utf8_lossy(&octets));
     let mut constats = Vec::new();
     let mut commandes = Vec::new();
     if !detournees.is_empty() {
         constats.push(constat_hosts(&detournees));
-        commandes.push(
-            r#"$h = "$env:SystemRoot\System32\drivers\etc\hosts"; Copy-Item $h "$h.vanguard-$(Get-Date -Format yyyyMMdd-HHmmss)""#
-                .to_string(),
-        );
-        commandes.push(commenter_hosts(&motif_adresses(&detournees)));
+        // Le geste natif du processus élevé (`vanguard:hosts-ecrire`, sans PowerShell) : la nouvelle version, préparée
+        // ici, n'y diffère que par des lignes mises en commentaire ; il la rejuge, la montre, puis remplace le hosts
+        // d'un coup en gardant une copie d'avant.
+        let nouveau = crate::machine::gestes::hosts_commente(&octets, publique);
+        match crate::protection::sites_bloques::preparer_hosts("reparer", &octets, &nouveau) {
+            Ok(ligne) => commandes.push(ligne),
+            Err(raison) => constats.push(trf!(
+                "{raison} ; lignes à mettre en commentaire à la main (# devant)",
+                "{raison}; lines to comment out by hand (# in front)"
+            )),
+        }
     }
-    // Le proxy est un réglage de la personne : écrit dans sa ruche, même si la fenêtre administrateur est celle d'un
-    // autre compte.
+    // Le proxy est un réglage de la personne : des gestes du compte, faits par Vanguard non élevé dans son HKCU (la
+    // fenêtre administrateur peut s'ouvrir sous un autre compte), puis WinINet prévenu (`compte::faire`) : les
+    // navigateurs le prennent sans fermer la session.
     if let Some(e) = etat {
-        let reglages = if e.proxy.is_empty() && e.pac.is_empty() {
-            String::new()
-        } else {
-            entre_apostrophes(&hkcu_de_la_personne(sid_de_la_personne().as_deref(), INTERNET))
-        };
         if !e.proxy.is_empty() {
             constats.push(format!("proxy {}", e.proxy));
-            commandes.push(format!(
-                "Set-ItemProperty -LiteralPath {reglages} -Name ProxyEnable -Value 0"
-            ));
+            commandes.extend(crate::machine::gestes::ligne_compte("proxy-coupe"));
         }
         if !e.pac.is_empty() {
             constats.push(trf!("script de proxy {}", "proxy script {}", e.pac));
-            commandes.push(format!(
-                "Remove-ItemProperty -LiteralPath {reglages} -Name AutoConfigURL"
-            ));
+            commandes.extend(crate::machine::gestes::ligne_compte("proxy-script-retire"));
         }
         if !e.winhttp.is_empty() {
             constats.push(trf!("proxy WinHTTP {}", "WinHTTP proxy {}", e.winhttp));
@@ -1159,6 +1146,13 @@ pub fn liste() -> Vec<Reparation> {
         reseau.bloquee = Some(tr!(
             "vous êtes connecté par le Bureau à distance : cette réparation couperait votre connexion",
             "you are connected over Remote Desktop: this repair would cut your connection"
+        ));
+    } else if crate::protection::blocage::session_a_distance() != Some(false) {
+        // Une connexion SSH (ou un Bureau à distance vu par ses connexions) passe par la carte que release coupe ; des
+        // connexions qui ne se lisent pas valent une session en cours. Le processus élevé refuse aussi (`gardes`).
+        reseau.bloquee = Some(tr!(
+            "une connexion à distance est en cours (ou les connexions ne se lisent pas) : cette réparation la couperait",
+            "a remote connection is in progress (or connections cannot be read): this repair would cut it"
         ));
     }
     vec![
@@ -1572,6 +1566,33 @@ mod tests {
         assert!(resume_redirections(&r).starts_with("185.12.0.9 → banque.fr www.banque.fr, "));
     }
 
+    /// Une redirection écrite autrement (IPv4 à l'ancienne, indice de zone, IPv4 en IPv6) est vue comme les autres ;
+    /// le bouclage écrit autrement n'en est pas une. Le motif de sed ne garde que des caractères d'adresse.
+    #[test]
+    fn redirections_ecrites_autrement() {
+        let hosts = "127.1 localhost\n0177.0.0.1 boucle\n2130706433 boucle2\n0x5d.0xb8.0xd8.0x22 banque.fr\n\
+                     1572395042 hexa.fr\n93.12113954 deux.fr\n::ffff:93.184.216.34 mappee.fr\n\
+                     93.184.216.34%eth0 zone.fr\n2a00:1450::1%5 v6.fr\n0xc0.0xa8.1.1 box\n0 rien\n";
+        let r = redirections(hosts);
+        let ips: Vec<&str> = r.iter().map(|(ip, _)| ip.as_str()).collect();
+        assert_eq!(
+            ips,
+            [
+                "0x5d.0xb8.0xd8.0x22",
+                "1572395042",
+                "93.12113954",
+                "::ffff:93.184.216.34",
+                "93.184.216.34%eth0",
+                "2a00:1450::1%5"
+            ]
+        );
+        assert!(
+            motif_adresses(&r)
+                .bytes()
+                .all(|o| o.is_ascii_alphanumeric() || b".:%|\\".contains(&o))
+        );
+    }
+
     /// Le fichier hosts s'écrit par qui détourne la navigation : un nom piégé arrive inoffensif dans ce qui est
     /// montré. L'adresse, qui sert à la commande, est déjà vérifiée (c'en est une).
     #[test]
@@ -1585,89 +1606,27 @@ mod tests {
         assert_eq!(motif_adresses(&r), r"185\.12\.0\.9");
     }
 
-    /// La commande qui commente hosts, dans un vrai PowerShell, sur une copie jetable : seule la ligne de l'adresse
-    /// détournée change. Tenue par un autre programme le temps de deux réessais (verrou exclusif ; pwsh l'y voit comme
-    /// Windows le fait d'un partage refusé), elle attend au lieu de laisser hosts vide ; impossible à écrire, elle
-    /// échoue sans rien changer. Windows : powershell ; ailleurs, pwsh s'il est là.
+    /// Windows : la nouvelle version du hosts ne commente que les lignes que la réparation montre (adresses
+    /// d'Internet), et le processus élevé l'admet ; les listes de blocage et le réseau local restent.
     #[test]
-    fn commenter_hosts_attend_le_fichier_et_ne_le_vide_jamais() {
-        let programme = if cfg!(windows) { "powershell" } else { "pwsh" };
-        let dossier = crate::essais::Jetable::nouveau("vg-hosts-commente");
-        let h = dossier.join("hosts");
+    fn le_hosts_commente_est_celui_que_la_reparation_montre() {
         let avant = "127.0.0.1 localhost\r\n203.0.113.7 banque.exemple www.banque.exemple\r\n\
-                     # garde : 203.0.113.7\r\n  203.0.113.70 autre.exemple\r\n";
-        std::fs::write(&h, avant).unwrap();
-        let motif = motif_adresses(&[("203.0.113.7".to_string(), "banque.exemple".to_string())]);
-        let script = commenter_hosts(&motif).replacen(
-            r#""$env:SystemRoot\System32\drivers\etc\hosts""#,
-            &crate::commande::ps_chaine(&h.to_string_lossy()),
-            1,
-        );
-        assert!(!script.contains("SystemRoot"), "{script}");
-        // Comme la fenêtre administrateur (`script_admin`) : toute erreur arrête. Le marqueur de fin distingue un vrai
-        // PowerShell du factice de Wine, qui rend 0 sans rien faire.
-        let script = format!("$ErrorActionPreference = 'Stop'; {script}; Write-Output 'VG-FINI'");
-        let lancer = || {
-            crate::commande::lancer(
-                std::process::Command::new(programme).args(["-NoProfile", "-NonInteractive", "-Command", &script]),
-                60,
-            )
-        };
-
-        // Un autre programme tient hosts 1,5 s : la commande part pendant ce temps.
-        let tenu = std::fs::File::open(&h).unwrap();
-        let liberer = if cfg!(unix) && tenu.try_lock().is_ok() {
-            Some(std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(1500));
-                drop(tenu);
-            }))
-        } else {
-            drop(tenu);
-            None
-        };
-        let Some(r) = lancer() else {
-            return crate::essais::saute(&format!("{programme} absent"));
-        };
-        if let Some(fil) = liberer {
-            fil.join().unwrap();
-        }
-        if !r.sortie.contains("VG-FINI") && r.erreurs.trim().is_empty() {
-            return crate::essais::saute("PowerShell factice (Wine) : rien à comparer");
-        }
-        assert_eq!((r.code, r.sortie.trim()), (Some(0), "VG-FINI"), "{}", r.erreurs);
-        let apres = std::fs::read_to_string(&h).unwrap();
-        let lignes: Vec<&str> = apres.lines().collect();
+                     # garde : 203.0.113.7\r\n  203.0.113.70 autre.exemple\r\n0.0.0.0 pub.exemple\r\n\
+                     192.168.1.20 nas\r\n";
+        let nouveau = crate::machine::gestes::hosts_commente(avant.as_bytes(), publique);
+        let d = crate::machine::gestes::juger_hosts(avant.as_bytes(), &nouveau).unwrap();
         assert_eq!(
-            lignes,
+            d.commentees,
             [
-                "127.0.0.1 localhost",
-                "# Vanguard : 203.0.113.7 banque.exemple www.banque.exemple",
-                "# garde : 203.0.113.7",
-                "  203.0.113.70 autre.exemple",
-            ],
-            "{apres:?}"
+                "203.0.113.7 banque.exemple www.banque.exemple",
+                "  203.0.113.70 autre.exemple"
+            ]
         );
-
-        // Impossible à écrire (lecture seule) : erreur rendue, octets d'avant intacts.
-        std::fs::write(&h, avant).unwrap();
-        let mut droits = std::fs::metadata(&h).unwrap().permissions();
-        droits.set_readonly(true);
-        std::fs::set_permissions(&h, droits.clone()).unwrap();
-        let ecrivable = std::fs::OpenOptions::new().append(true).open(&h).is_ok();
-        let r = lancer().unwrap();
-        #[allow(clippy::permissions_set_readonly_false)]
-        droits.set_readonly(false);
-        std::fs::set_permissions(&h, droits).unwrap();
-        if ecrivable {
-            return crate::essais::saute("administrateur : la lecture seule ne l'arrête pas");
-        }
-        assert!(
-            r.code != Some(0) && !r.sortie.contains("VG-FINI"),
-            "{}{}",
-            r.sortie,
-            r.erreurs
+        assert_eq!(d.commentees.len(), redirections(avant).len());
+        assert_eq!(
+            redirections(&String::from_utf8_lossy(&nouveau)),
+            Vec::<(String, String)>::new()
         );
-        assert_eq!(std::fs::read_to_string(&h).unwrap(), avant);
     }
 
     /// Une variable de proxy vient d'un fichier de démarrage que tout programme de la session peut écrire.
@@ -1779,7 +1738,14 @@ mod tests {
         })
         .to_string();
         let mut reparations = liste();
-        reparations.push(navigation(lire_etat_windows(&json).as_ref()));
+        let detournee = navigation(lire_etat_windows(&json).as_ref());
+        // Le proxy du compte : des gestes du compte (Vanguard non élevé, HKCU de la personne), plus aucune commande
+        // PowerShell sur sa ruche.
+        for id in ["proxy-coupe", "proxy-script-retire"] {
+            assert!(detournee.commandes.contains(&format!("vanguard:compte {id}")), "{id}");
+        }
+        assert!(!detournee.commandes.iter().any(|c| c.contains("Internet Settings")));
+        reparations.push(detournee);
         let mut essayees = 0;
         for r in reparations.iter().filter(|r| !r.commandes.is_empty()) {
             let mut commandes = r.commandes.clone();

@@ -8,7 +8,8 @@ use std::ffi::c_void;
 
 #[link(name = "crypt32")]
 unsafe extern "system" {
-    fn CertOpenStore(
+    /// Partagées avec `certificats_ecriture` : une seule déclaration de chaque import.
+    pub(super) fn CertOpenStore(
         fournisseur: *const i8,
         encodage: u32,
         crypto: usize,
@@ -30,7 +31,17 @@ unsafe extern "system" {
         nom: *mut u16,
         taille: u32,
     ) -> u32;
-    fn CertCloseStore(magasin: *mut c_void, drapeaux: u32) -> i32;
+    pub(super) fn CertCloseStore(magasin: *mut c_void, drapeaux: u32) -> i32;
+    pub(super) fn CertFindCertificateInStore(
+        magasin: *mut c_void,
+        encodage: u32,
+        drapeaux: u32,
+        sorte: u32,
+        cherche: *const c_void,
+        precedent: *const c_void,
+    ) -> *const c_void;
+    pub(super) fn CertDeleteCertificateFromStore(certificat: *const c_void) -> i32;
+    pub(super) fn CertFreeCertificateContext(certificat: *const c_void) -> i32;
 }
 
 /// Les lignes des deux magasins « Root », ordinateur d'abord ; `None` si celui de l'ordinateur ne se lit pas jusqu'au

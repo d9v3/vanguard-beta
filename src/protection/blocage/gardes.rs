@@ -306,6 +306,16 @@ const PROGRAMMES_DE_SESSION: &[&str] = &[
     "xrdp-sesman",
     "rustdesk",
     "anydesk",
+    // Windows : Assistance rapide, ConnectWise ScreenConnect, Splashtop ; VPN ZeroTier, GlobalProtect, Cisco Secure
+    // Client (AnyConnect), FortiClient.
+    "quickassist",
+    "screenconnect.clientservice",
+    "srservice",
+    "zerotier-one",
+    "zerotier-one_x64",
+    "pangps",
+    "vpnagent",
+    "fortisslvpndaemon",
     "parsec",
     "parsecd",
     "tailscaled",
@@ -778,6 +788,10 @@ mod tests {
             "parsecd",
             "x11vnc",
             "vncserver",
+            r"C:\Windows\System32\QuickAssist.exe",
+            "SRService.exe",
+            "ScreenConnect.ClientService.exe",
+            "vpnagent.exe",
         ] {
             assert!(programme_de_session(nom), "{nom}");
         }

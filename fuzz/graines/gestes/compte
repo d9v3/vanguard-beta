@@ -1,0 +1,12 @@
+vanguard:point-de-restauration
+vanguard:compte jeux-mode
+vanguard:compte macros-office 16.0 word
+vanguard:compte run-retirer run 610000d8
+vanguard:compte run-retirer runonce defaut
+vanguard:compte alimentation-performances
+
+!point
+vanguard:compte proxy-coupe
+autre
+vanguard:compte proxy-coupe 
+vanguard:compte run-retirer run 6100

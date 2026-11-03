@@ -373,7 +373,7 @@ mod systeme {
 /// administratifs. Un partage dont les droits n'ont pas pu être lus (« ? ») est rendu à part.
 #[cfg(any(windows, test))]
 fn lire_windows(sortie: &str) -> Option<Releve> {
-    use crate::commande::{ps_chaine, section};
+    use crate::commande::section;
     let acces = section(Some(sortie), "ACC")?;
     // « INV|True » : activé ; « INV|False » ou « INV| » (pas de compte invité) : désactivé. Sans la
     // section (lecture refusée, Get-LocalUser en échec), l'état n'est pas connu.
@@ -387,6 +387,9 @@ fn lire_windows(sortie: &str) -> Option<Releve> {
     };
     let mut partages: Vec<Partage> = Vec::new();
     let mut illisibles: Vec<Illisible> = Vec::new();
+    // Les partages dont un accès ne se retire pas par une ligne du processus élevé (nom ou SID hors de leur forme) : à
+    // fermer soi-même, en entier, pour ne pas en laisser un derrière un « fait ».
+    let mut a_la_main: Vec<&str> = Vec::new();
     // Un refus prime sur une autorisation, quel que soit l'ordre des règles : relevés d'abord.
     let refus: Vec<(&str, &str, &str)> = acces
         .iter()
@@ -425,17 +428,22 @@ fn lire_windows(sortie: &str) -> Option<Releve> {
             continue;
         }
         let ecriture = matches!(droit.trim(), "Full" | "Change") && !refuse(&["Change"]);
-        let fermeture = format!(
-            "Revoke-SmbShareAccess -Name {} -AccountName {} -Force",
-            ps_chaine(nom),
-            ps_chaine(compte)
-        );
+        // Les règles de ce compte retirées de la liste des droits du partage par le processus élevé (NetShareSetInfo), qui
+        // relit le partage et le rejuge ici avant d'écrire.
+        let fermeture = crate::machine::gestes::ligne_partage_retirer_acces(nom, sid);
+        if fermeture.is_none() && !a_la_main.contains(&nom) {
+            a_la_main.push(nom);
+        }
         if let Some(p) = partages.iter_mut().find(|p| p.nom == nom) {
             if !p.a_qui.contains(compte) {
                 p.a_qui = format!("{}, {compte}", p.a_qui);
             }
             p.ecriture = Some(p.ecriture.unwrap_or(false) || ecriture);
-            p.fermeture.push(fermeture);
+            if let Some(f) = fermeture
+                && !p.fermeture.contains(&f)
+            {
+                p.fermeture.push(f);
+            }
         } else {
             partages.push(Partage {
                 nom: nom.to_string(),
@@ -443,8 +451,13 @@ fn lire_windows(sortie: &str) -> Option<Releve> {
                 a_qui: compte.to_string(),
                 ecriture: Some(ecriture),
                 nuance,
-                fermeture: vec![fermeture],
+                fermeture: fermeture.into_iter().collect(),
             });
+        }
+    }
+    for p in &mut partages {
+        if a_la_main.contains(&p.nom.as_str()) {
+            p.fermeture.clear();
         }
     }
     Some(Releve {
@@ -452,6 +465,16 @@ fn lire_windows(sortie: &str) -> Option<Releve> {
         illisibles,
         service_vu_arrete: !service_lance,
     })
+}
+
+/// Le bilan relu (lignes « ACC|… ») propose-t-il de retirer cet accès, par la ligne du processus élevé ? Rejugé par
+/// lui avant d'écrire (`partages_ecriture`).
+#[cfg(any(windows, test))]
+pub(crate) fn acces_signale(sortie: &str, nom: &str, sid: &str) -> bool {
+    let Some(ligne) = crate::machine::gestes::ligne_partage_retirer_acces(nom, sid) else {
+        return false;
+    };
+    lire_windows(sortie).is_some_and(|r| r.partages.iter().any(|p| p.nom == nom && p.fermeture.contains(&ligne)))
 }
 
 /// Un refus visant `refuse` s'applique-t-il à `compte` ? Tout le monde (S-1-1-0) contient les
@@ -727,10 +750,16 @@ mod tests {
                 ("Docs", Some(false), Nuance::InviteDesactive)
             ]
         );
+        // Le nom en UTF-16 hexadécimal : « Public ».
         assert_eq!(
             r.partages[0].fermeture,
-            ["Revoke-SmbShareAccess -Name 'Public' -AccountName 'Tout le monde' -Force"]
+            ["vanguard:partage-retirer-acces 5000750062006c0069006300 S-1-1-0"]
         );
+        assert!(acces_signale(sortie, "Public", "S-1-1-0"));
+        // Un compte nommé n'est pas signalé (alice garde son accès), ni un partage inconnu.
+        assert!(!acces_signale(sortie, "Public", "S-1-5-21-1-2-3-1001"));
+        assert!(!acces_signale(sortie, "Absent", "S-1-1-0"));
+        assert!(!acces_signale(sortie, "Prive", "S-1-1-0"));
         assert_eq!(r.illisibles, [Illisible { nom: "Cache".into() }]);
         assert!(!r.service_vu_arrete);
         // Invité activé et service lancé : rien ne tempère ; service arrêté : tempéré.
@@ -753,6 +782,28 @@ mod tests {
             ("Everyone, Guest", Some(true))
         );
         assert_eq!(r.partages[0].fermeture.len(), 2);
+        // Deux règles du même compte : une seule ligne.
+        let r = lire_windows(
+            "ACC|P|C:\\P|Everyone|S-1-1-0|Allow|Read\nACC|P|C:\\P|Everyone|S-1-1-0|Allow|Change\nACC_FIN\n",
+        )
+        .unwrap();
+        assert_eq!(r.partages[0].fermeture.len(), 1);
+        // Un nom hors de la forme d'une ligne (partage caché, trop long) : tout le partage à fermer soi-même, et
+        // jamais de PowerShell.
+        for nom in ["Cache$", &"x".repeat(81)] {
+            let sortie = format!(
+                "ACC|{nom}|C:\\P|Everyone|S-1-1-0|Allow|Read\nACC|{nom}|C:\\P|Guest|S-1-5-21-1-2-3-501|Allow|Read\nACC_FIN\n"
+            );
+            let r = lire_windows(&sortie).unwrap();
+            assert!(r.partages[0].fermeture.is_empty(), "{nom}");
+            let c = juger(&r.partages, &[], false);
+            assert!(
+                c[0].correctif
+                    .as_ref()
+                    .is_some_and(|k| !k.automatique && k.commandes.is_empty())
+            );
+            assert!(!acces_signale(&sortie, nom, "S-1-1-0"));
+        }
         // Sans la section des accès (PowerShell tombé), rien n'est conclu.
         assert!(lire_windows("INV|True\nINV_FIN\n").is_none());
     }

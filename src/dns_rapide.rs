@@ -466,6 +466,13 @@ pub fn mesurer_et_proposer() {
 mod tests {
     use super::*;
 
+    // La liste fermée du processus élevé de Windows (`gestes::RESOLVEURS`) est exactement celle des DNS proposés ici.
+    #[test]
+    fn resolveurs_de_dns_rapide() {
+        let ici: Vec<&str> = PUBLICS.iter().flat_map(|p| p.v4.iter().chain(&p.v6)).copied().collect();
+        assert_eq!(ici, crate::machine::gestes::RESOLVEURS);
+    }
+
     // Un DNS actuel en IPv6 de lien local ne se mesure pas : jamais « il ne répond pas », et rien n'est proposé
     // sur cette base. Un serveur de lien local à côté d'un autre mesurable laisse la comparaison se faire.
     #[test]

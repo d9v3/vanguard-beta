@@ -4,8 +4,15 @@
 //! des arguments figés, sans shell, et les actes sur Windows lui-même (`vanguard:service`, `vanguard:vider`,
 //! `vanguard:vider-file-impression`, `vanguard:mettre-de-cote`, `vanguard:pare-feu-actif`, `vanguard:pare-feu-public`,
 //! `vanguard:reseau-categorie`, `vanguard:ifeo-debugger[-32]`, `vanguard:ifeo-silencieux[-32]`,
-//! `vanguard:service-guillemets`), faits par le gestionnaire de services, std::fs, les interfaces COM du pare-feu et
-//! des réseaux (`pare_feu`) et le registre (`portes`, `services`).
+//! `vanguard:service-guillemets`, `vanguard:defender`, `vanguard:defender-asr`, `vanguard:defender-exclusion-retirer`,
+//! `vanguard:defender-menaces-retirer`, `vanguard:hosts-ecrire`, `vanguard:dns-auto`, `vanguard:dns-serveurs`,
+//! `vanguard:compte-desactiver`, `vanguard:certificat-retirer`, `vanguard:partage-retirer-acces`), faits
+//! par le gestionnaire de services, std::fs, les interfaces COM du pare-feu et des réseaux (`pare_feu`), le registre
+//! (`portes`, `services`), WMI (`defender_ecriture`), iphlpapi (`reseau_ecriture`), netapi32 et crypt32
+//! (`comptes_ecriture`, `certificats_ecriture`, `partages_ecriture`). Un réglage de Defender n'admet
+//! que des valeurs qui protègent : aucune ligne ne peut couper le temps réel ni le cloud. Une nouvelle version du
+//! hosts n'admet hors du bloc de Vanguard que des lignes mises en commentaire (`juger_hosts`) ; un serveur DNS, que
+//! ceux de la liste fermée (`RESOLVEURS`).
 //! Plus la découpe d'une liste de correctifs en morceaux (gestes natifs, scripts) et la lecture des états d'un
 //! script : du code pur, sans E/S, testé sous Linux et lu par le banc de fuzzing
 //! (fuzz/fuzz_targets/gestes.rs). C'est la seule entrée que le processus élevé lit d'un processus moins sûr : rien ici
@@ -47,11 +54,7 @@ pub(crate) struct Script {
 
 /// La ligne qui demande ce script.
 pub(crate) fn ligne_script(empreinte: &str, chemin: &str) -> String {
-    let hex = chemin.bytes().fold(String::new(), |mut s, o| {
-        let _ = write!(s, "{o:02x}");
-        s
-    });
-    format!("{SCRIPT}{empreinte} {hex}")
+    format!("{SCRIPT}{empreinte} {}", chemin_hex(chemin))
 }
 
 /// Le script d'une ligne, si et seulement si elle est exactement de sa forme : 64 chiffres hexadécimaux majuscules,
@@ -60,34 +63,20 @@ pub(crate) fn ligne_script(empreinte: &str, chemin: &str) -> String {
 /// composant « . » ni « .. ».
 pub(crate) fn analyser_script(ligne: &str) -> Option<Script> {
     let (empreinte, hex) = ligne.strip_prefix(SCRIPT)?.split_once(' ')?;
-    let forme = empreinte.len() == 64 && empreinte.bytes().all(|o| matches!(o, b'0'..=b'9' | b'A'..=b'F'));
-    if !forme || hex.is_empty() || !hex.len().is_multiple_of(2) {
+    if !empreinte_majuscule(empreinte) {
         return None;
     }
-    let octets: Option<Vec<u8>> = hex
-        .as_bytes()
-        .chunks(2)
-        .map(|paire| {
-            let fort = chiffre_minuscule(*paire.first()?)?;
-            let faible = chiffre_minuscule(*paire.get(1)?)?;
-            fort.checked_mul(16)?.checked_add(faible)
-        })
-        .collect();
-    let chemin = String::from_utf8(octets?).ok()?;
-    let o = chemin.as_bytes();
-    let complet = matches!(o, [lecteur, b':', b'\\', _, ..] if lecteur.is_ascii_alphabetic());
+    let chemin = lire_chemin_hex(hex)?;
     let mut composants = chemin.rsplit('\\');
     let nom = composants.next().unwrap_or_default();
     let dossier = composants.next().unwrap_or_default();
     let ps1 = nom.starts_with("correction-")
         && nom.to_ascii_lowercase().ends_with(".ps1")
         && dossier.eq_ignore_ascii_case("corrections");
-    let sans_detour = !chemin.split(['\\', '/']).any(|c| c == "." || c == "..");
-    (complet && ps1 && sans_detour && !chemin.contains(['\0', '\n', '\r']) && ligne_script(empreinte, &chemin) == ligne)
-        .then(|| Script {
-            empreinte: empreinte.to_string(),
-            chemin,
-        })
+    (ps1 && chemin_sur(&chemin) && ligne_script(empreinte, &chemin) == ligne).then(|| Script {
+        empreinte: empreinte.to_string(),
+        chemin,
+    })
 }
 
 fn chiffre_minuscule(o: u8) -> Option<u8> {
@@ -291,28 +280,6 @@ pub(crate) static PROGRAMMES: &[Programme] = &[
         au_redemarrage: &[],
         fr: "Exiger des mots de passe de 8 caractères au moins",
         en: "Require passwords of at least 8 characters",
-    },
-    Programme {
-        id: "powercfg-performances",
-        dossier: Dossier::Systeme32,
-        exe: "powercfg.exe",
-        arguments: &[Argument::Fixe("/setactive"), Argument::Fixe("SCHEME_MIN")],
-        noms: &[],
-        reussites: &[0],
-        au_redemarrage: &[],
-        fr: "Passer au mode d'alimentation « Performances élevées »",
-        en: "Switch to the “High performance” power plan",
-    },
-    Programme {
-        id: "powercfg-mode-actif",
-        dossier: Dossier::Systeme32,
-        exe: "powercfg.exe",
-        arguments: &[Argument::Fixe("/getactivescheme")],
-        noms: &[],
-        reussites: &[0],
-        au_redemarrage: &[],
-        fr: "Afficher le mode d'alimentation actif",
-        en: "Show the active power plan",
     },
     Programme {
         id: "w32tm-resync",
@@ -1013,6 +980,692 @@ impl ReseauCategorie {
     }
 }
 
+// ------------------------------------------------------------------ le réseau
+
+/// Le verbe de l'écriture du fichier hosts : `vanguard:hosts-ecrire <empreinte du hosts lu> <empreinte du fichier
+/// préparé> <chemin du fichier préparé en hexadécimal>`. Le processus élevé relit le hosts et le fichier préparé,
+/// vérifie les deux empreintes, rejuge la différence (`juger_hosts`), la montre avant l'accord, puis écrit les octets
+/// vérifiés en gardant une copie de ceux d'avant (ReplaceFileW).
+pub(crate) const HOSTS_ECRIRE: &str = "vanguard:hosts-ecrire ";
+/// Le verbe qui remet en automatique (ceux du DHCP) les serveurs DNS d'une carte réseau : `vanguard:dns-auto {GUID}`.
+pub(crate) const DNS_AUTO: &str = "vanguard:dns-auto ";
+/// Le verbe qui règle les serveurs DNS d'une carte réseau : `vanguard:dns-serveurs {GUID} <IPv4>|<IPv6>`, chaque
+/// côté « - » (laissé tel quel), vide (remis en automatique) ou une liste d'adresses de `RESOLVEURS`.
+pub(crate) const DNS_SERVEURS: &str = "vanguard:dns-serveurs ";
+/// La plus longue ligne `hosts-ecrire` : le verbe, deux empreintes, un chemin de 900 octets en hexadécimal.
+pub(crate) const HOSTS_LIGNE_MAX: usize = 2048;
+/// Le plus gros fichier hosts admis, avant comme après : 1 Mo. Au-delà, ce n'est pas un hosts que Vanguard réécrit.
+pub(crate) const HOSTS_MAX: usize = 1 << 20;
+/// Le dossier du fichier préparé (sous celui de Vanguard), et son nom.
+pub(crate) const HOSTS_DOSSIER: &str = "hosts-prepare";
+pub(crate) const HOSTS_NOM: &str = "hosts";
+/// Ce que Vanguard met devant une ligne qui détourne un nom, pour la mettre en commentaire.
+pub(crate) const HOSTS_COMMENTE: &str = "# Vanguard : ";
+/// La marque de début du bloc des sites bloqués (`protection::sites_bloques`).
+pub(crate) const HOSTS_DEBUT: &str = "# >>> Vanguard";
+/// La marque de fin du bloc.
+pub(crate) const HOSTS_FIN: &str = "# <<< Vanguard <<<";
+/// Dans la marque de début : le hosts ne finissait pas par une fin de ligne, Vanguard en a ajouté une.
+pub(crate) const HOSTS_FDL_AJOUTEE: &str = "(fin de ligne ajoutée)";
+/// La plus longue marque de début admise : celle de Vanguard en fait 150.
+const HOSTS_ENTETE_MAX: usize = 512;
+
+/// Les seuls serveurs DNS qu'une ligne peut poser : ceux de « DNS le plus rapide » (`dns_rapide::PUBLICS`, test
+/// resolveurs_de_dns_rapide), le Bouclier canadien compris (mode Wi-Fi public). Une ligne forgée ne peut pas envoyer
+/// les questions DNS de l'ordinateur vers un serveur choisi par un autre programme. Seule exception : remettre la
+/// valeur d'avant (la box, le DNS de l'entreprise), que le processus élevé a lui-même notée en la remplaçant, dans une
+/// clé que seul un administrateur écrit (`DNS_AVANT_CLE`) ; il refuse toute autre adresse.
+pub(crate) const RESOLVEURS: [&str; 20] = [
+    "1.1.1.1",
+    "1.0.0.1",
+    "2606:4700:4700::1111",
+    "2606:4700:4700::1001",
+    "9.9.9.9",
+    "149.112.112.112",
+    "2620:fe::fe",
+    "2620:fe::9",
+    "8.8.8.8",
+    "8.8.4.4",
+    "2001:4860:4860::8888",
+    "2001:4860:4860::8844",
+    "94.140.14.14",
+    "94.140.15.15",
+    "2a10:50c0::ad1:ff",
+    "2a10:50c0::ad2:ff",
+    "149.112.121.20",
+    "149.112.122.20",
+    "2620:10a:80bb::20",
+    "2620:10a:80bc::20",
+];
+/// La clé de HKLM où le processus élevé note les serveurs DNS hors de `RESOLVEURS` qu'il remplace, valeur
+/// « {GUID} v4 » ou « {GUID} v6 » : ce qu'il accepte de remettre en défaisant.
+pub(crate) const DNS_AVANT_CLE: &str = r"SOFTWARE\Vanguard\DnsAvant";
+/// Au plus quatre serveurs par famille : Windows n'en essaie pas plus, et la liste n'en a pas plus d'un service.
+const DNS_PAR_FAMILLE_MAX: usize = 4;
+
+/// Une ligne `vanguard:hosts-ecrire`, relue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HostsEcrire {
+    /// L'empreinte (SHA-256, hexadécimal majuscule) du hosts lu par Vanguard non élevé.
+    pub avant: String,
+    /// Celle du fichier préparé.
+    pub apres: String,
+    /// Le chemin complet du fichier préparé : « hosts » dans un dossier « hosts-prepare ».
+    pub chemin: String,
+}
+
+impl HostsEcrire {
+    fn ligne(&self) -> String {
+        format!(
+            "{HOSTS_ECRIRE}{} {} {}",
+            self.avant,
+            self.apres,
+            chemin_hex(&self.chemin)
+        )
+    }
+
+    fn analyser(reste: &str) -> Option<HostsEcrire> {
+        let mut champs = reste.split(' ');
+        let (avant, apres, hex) = (champs.next()?, champs.next()?, champs.next()?);
+        if champs.next().is_some() || !empreinte_majuscule(avant) || !empreinte_majuscule(apres) {
+            return None;
+        }
+        let chemin = lire_chemin_hex(hex)?;
+        let mut composants = chemin.rsplit('\\');
+        let nom = composants.next().unwrap_or_default();
+        let dossier = composants.next().unwrap_or_default();
+        (chemin_sur(&chemin) && nom.eq_ignore_ascii_case(HOSTS_NOM) && dossier.eq_ignore_ascii_case(HOSTS_DOSSIER))
+            .then(|| HostsEcrire {
+                avant: avant.to_string(),
+                apres: apres.to_string(),
+                chemin,
+            })
+    }
+}
+
+/// Un côté (IPv4 ou IPv6) d'une ligne `vanguard:dns-serveurs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CoteDns {
+    /// « - » : laissé tel quel.
+    Garder,
+    /// Vide : remis en automatique (NameServer vide, les serveurs du DHCP).
+    Vider,
+    /// Ces serveurs, dans l'ordre, de la bonne famille, sans doublon, d'adresse unicast ; hors de `RESOLVEURS`, seulement
+    /// la valeur d'avant notée (`hors_liste`, jugé par le processus élevé).
+    Serveurs(Vec<std::net::IpAddr>),
+}
+
+impl CoteDns {
+    /// Le texte du côté : « - », vide, ou « ip,ip » (la forme de NameServer, virgules comprises).
+    pub(crate) fn texte(&self) -> String {
+        match self {
+            CoteDns::Garder => "-".to_string(),
+            CoteDns::Vider => String::new(),
+            CoteDns::Serveurs(l) => l.iter().map(ToString::to_string).collect::<Vec<_>>().join(","),
+        }
+    }
+
+    /// La valeur NameServer à écrire ; `None` pour un côté laissé tel quel.
+    pub(crate) fn valeur(&self) -> Option<String> {
+        match self {
+            CoteDns::Garder => None,
+            CoteDns::Vider | CoteDns::Serveurs(_) => Some(self.texte()),
+        }
+    }
+
+    /// Un serveur au moins est-il hors de `RESOLVEURS` ? Le processus élevé n'accepte alors que la valeur d'avant
+    /// qu'il a notée pour cette carte et cette famille.
+    pub(crate) fn hors_liste(&self) -> bool {
+        match self {
+            CoteDns::Serveurs(l) => l.iter().any(|ip| !RESOLVEURS.contains(&ip.to_string().as_str())),
+            CoteDns::Garder | CoteDns::Vider => false,
+        }
+    }
+
+    fn lire(t: &str, v6: bool) -> Option<CoteDns> {
+        match t {
+            "-" => return Some(CoteDns::Garder),
+            "" => return Some(CoteDns::Vider),
+            _ => {}
+        }
+        let mut serveurs: Vec<std::net::IpAddr> = Vec::new();
+        for s in t.split(',') {
+            let ip: std::net::IpAddr = s.parse().ok()?;
+            // Écrite à l'identique (pas de zéros en tête, IPv6 en minuscules et abrégée), de la bonne famille, une
+            // seule fois, une adresse d'hôte (ni bouclage, ni « 0.0.0.0 », ni multidiffusion, ni IPv4 dans IPv6).
+            let hote = match ip {
+                std::net::IpAddr::V4(a) => {
+                    !a.is_loopback() && !a.is_unspecified() && !a.is_multicast() && !a.is_broadcast()
+                }
+                std::net::IpAddr::V6(a) => {
+                    !a.is_loopback() && !a.is_unspecified() && !a.is_multicast() && a.to_ipv4_mapped().is_none()
+                }
+            };
+            let bonne = ip.to_string() == s && ip.is_ipv6() == v6 && hote && !serveurs.contains(&ip);
+            if !bonne || serveurs.len() >= DNS_PAR_FAMILLE_MAX {
+                return None;
+            }
+            serveurs.push(ip);
+        }
+        Some(CoteDns::Serveurs(serveurs))
+    }
+}
+
+/// Une ligne `vanguard:dns-serveurs`, relue. Le GUID désigne, le processus élevé juge : il relit que la carte existe
+/// dans la liste de Windows (GetAdaptersAddresses), sinon il refuse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DnsServeurs {
+    pub guid: GuidReseau,
+    pub v4: CoteDns,
+    pub v6: CoteDns,
+}
+
+impl DnsServeurs {
+    fn ligne(&self) -> String {
+        format!(
+            "{DNS_SERVEURS}{} {}|{}",
+            self.guid.texte(),
+            self.v4.texte(),
+            self.v6.texte()
+        )
+    }
+
+    /// Les deux côtés laissés tels quels ne font rien, et les deux vidés s'écrivent `dns-auto` : une seule ligne par
+    /// geste.
+    fn analyser(reste: &str) -> Option<DnsServeurs> {
+        let (guid, serveurs) = reste.split_once(' ')?;
+        let (v4, v6) = serveurs.split_once('|')?;
+        let d = DnsServeurs {
+            guid: GuidReseau::lire(guid)?,
+            v4: CoteDns::lire(v4, false)?,
+            v6: CoteDns::lire(v6, true)?,
+        };
+        let utile = !matches!(
+            (&d.v4, &d.v6),
+            (CoteDns::Garder, CoteDns::Garder) | (CoteDns::Vider, CoteDns::Vider)
+        );
+        utile.then_some(d)
+    }
+
+    /// L'équivalent PowerShell (Wine), quand les deux côtés sont donnés : la commande d'avant d'Optimiser. Un côté
+    /// laissé tel quel n'en a pas : Set-DnsClientServerAddress écrit les deux familles d'un coup.
+    fn powershell(&self) -> String {
+        let (CoteDns::Vider | CoteDns::Serveurs(_), CoteDns::Vider | CoteDns::Serveurs(_)) = (&self.v4, &self.v6)
+        else {
+            return SANS_POWERSHELL.to_string();
+        };
+        let serveurs: Vec<String> = [&self.v4, &self.v6]
+            .iter()
+            .filter_map(|c| match c {
+                CoteDns::Serveurs(l) => Some(l.iter().map(|ip| format!("'{ip}'")).collect::<Vec<_>>()),
+                CoteDns::Garder | CoteDns::Vider => None,
+            })
+            .flatten()
+            .collect();
+        format!(
+            "{}; Set-DnsClientServerAddress -InterfaceIndex $carteDns.ifIndex -ServerAddresses @({})",
+            powershell_dns_auto(self.guid),
+            serveurs.join(",")
+        )
+    }
+}
+
+/// Une ligne sans équivalent PowerShell : le chemin par script (Wine) s'arrête et le dit.
+const SANS_POWERSHELL: &str = "throw 'Vanguard : geste sans équivalent PowerShell'";
+
+/// La remise en automatique par PowerShell (Wine) : la commande d'avant de la remise du DNS.
+fn powershell_dns_auto(guid: GuidReseau) -> String {
+    format!(
+        "$carteDns = Get-NetAdapter -IncludeHidden | Where-Object {{ $_.InterfaceGuid -eq '{}' }} | Select-Object -First 1; \
+         if (-not $carteDns) {{ throw 'network adapter not found' }}; \
+         Set-DnsClientServerAddress -InterfaceIndex $carteDns.ifIndex -ResetServerAddresses",
+        guid.texte()
+    )
+}
+
+/// 64 chiffres hexadécimaux majuscules : une empreinte SHA-256 telle que `sha256_hex` l'écrit.
+fn empreinte_majuscule(e: &str) -> bool {
+    e.len() == 64 && e.bytes().all(|o| matches!(o, b'0'..=b'9' | b'A'..=b'F'))
+}
+
+/// Le chemin en hexadécimal minuscule de ses octets UTF-8 : aucune espace, aucun caractère que la ligne couperait.
+fn chemin_hex(chemin: &str) -> String {
+    chemin.bytes().fold(String::new(), |mut s, o| {
+        let _ = write!(s, "{o:02x}");
+        s
+    })
+}
+
+/// Le texte d'un chemin en hexadécimal minuscule ; `None` s'il n'en a pas la forme ou n'est pas de l'UTF-8.
+fn lire_chemin_hex(hex: &str) -> Option<String> {
+    if hex.is_empty() || !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    let octets: Option<Vec<u8>> = hex
+        .as_bytes()
+        .chunks(2)
+        .map(|paire| {
+            let fort = chiffre_minuscule(*paire.first()?)?;
+            let faible = chiffre_minuscule(*paire.get(1)?)?;
+            fort.checked_mul(16)?.checked_add(faible)
+        })
+        .collect();
+    String::from_utf8(octets?).ok()
+}
+
+/// Un chemin complet (« X:\… »), sans composant « . » ni « .. », sans NUL ni fin de ligne. Découpé sur `\` et `/` à
+/// la main (pas par `Path`, qui sous Linux n'y voit pas de séparateur).
+fn chemin_sur(chemin: &str) -> bool {
+    let o = chemin.as_bytes();
+    let complet = matches!(o, [lecteur, b':', b'\\', _, ..] if lecteur.is_ascii_alphabetic());
+    let sans_detour = !chemin.split(['\\', '/']).any(|c| c == "." || c == "..");
+    complet && sans_detour && !chemin.contains(['\0', '\n', '\r'])
+}
+
+/// La ligne qui écrit le fichier préparé `chemin` à la place du hosts ; `None` si elle n'a pas sa forme.
+pub(crate) fn ligne_hosts_ecrire(avant: &str, apres: &str, chemin: &str) -> Option<String> {
+    let ligne = HostsEcrire {
+        avant: avant.to_string(),
+        apres: apres.to_string(),
+        chemin: chemin.to_string(),
+    }
+    .ligne();
+    analyser_acte(&ligne).is_some().then_some(ligne)
+}
+
+/// La ligne qui remet en automatique le DNS d'une carte ; `None` si le GUID n'a pas sa forme.
+pub(crate) fn ligne_dns_auto(guid: &str) -> Option<String> {
+    GuidReseau::lire(guid).map(|g| Acte::DnsAuto(g).ligne())
+}
+
+/// La ligne qui règle le DNS d'une carte (`None` pour un côté laissé tel quel, `Some("")` pour le remettre en
+/// automatique, sinon « ip,ip ») ; `None` si la ligne ne se lit pas (adresse mal écrite, de la mauvaise famille, de
+/// bouclage, plus de quatre) ou ne ferait rien. Hors de la liste fermée, elle se lit : seul le processus élevé la
+/// juge, contre la valeur d'avant qu'il a notée.
+/// Les deux côtés vides donnent `dns-auto`.
+pub(crate) fn ligne_dns(guid: &str, v4: Option<&str>, v6: Option<&str>) -> Option<String> {
+    if v4 == Some("") && v6 == Some("") {
+        return ligne_dns_auto(guid);
+    }
+    let guid = GuidReseau::lire(guid)?;
+    let ligne = format!(
+        "{DNS_SERVEURS}{} {}|{}",
+        guid.texte(),
+        v4.unwrap_or("-"),
+        v6.unwrap_or("-")
+    );
+    analyser_acte(&ligne).is_some().then_some(ligne)
+}
+
+/// Ce geste couperait-il une connexion à distance en cours ? Rendre ou redemander l'adresse IP coupe toutes les
+/// connexions ; changer les serveurs DNS ou la carte, non, mais une session à distance (Bureau à distance, SSH) n'est
+/// jamais exposée à un geste sur le réseau : refusé dès qu'il y en a une, ou que les connexions ne se lisent pas
+/// (`sessions` : celles de `gardes::sessions_a_distance`, `None` si illisibles).
+pub(crate) fn coupe_une_session(touche_le_reseau: bool, bureau_a_distance: bool, sessions: Option<usize>) -> bool {
+    touche_le_reseau && (bureau_a_distance || sessions != Some(0))
+}
+
+impl Appel {
+    /// Le programme rend-il ou redemande-t-il l'adresse IP (toutes les connexions coupées) ?
+    pub(crate) fn coupe_le_reseau(&self) -> bool {
+        matches!(self.programme.id, "ipconfig-release" | "ipconfig-renew")
+    }
+}
+
+// --------------------------------------------------------------- le hosts
+
+/// Pourquoi une nouvelle version du hosts est refusée.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RefusHosts {
+    /// Plus de `HOSTS_MAX` octets.
+    TropGros,
+    /// Une marque d'ordre des octets UTF-16 ou un octet nul : un hosts en UTF-16, que Vanguard ne réécrit pas.
+    Utf16,
+    /// Une marque du bloc sans l'autre, deux blocs, ou un bloc « fin de ligne ajoutée » qui n'est pas à la fin.
+    BlocAbime,
+    /// Une marque de début trop longue ou avec un caractère de contrôle.
+    Entete,
+    /// Le fichier préparé n'a plus l'empreinte de la ligne (changé après l'avoir préparé, ou pendant la demande
+    /// d'administrateur).
+    PrepareChange,
+    /// Le hosts n'a plus l'empreinte lue par Vanguard non élevé : un autre programme l'a changé entre-temps.
+    HostsChange,
+    /// Une ligne du bloc qui n'est pas « 0.0.0.0 nom » ni « :: nom » (montrée telle quelle, rendue lisible).
+    LigneDuBloc(String),
+    /// Un nom que Vanguard ne bloque jamais (mises à jour de Windows, Defender, ses propres mises à jour).
+    NomProtege(String),
+    /// Une ligne ajoutée hors du bloc.
+    LigneAjoutee(String),
+    /// Une ligne retirée hors du bloc.
+    LigneRetiree(String),
+    /// Une ligne changée hors du bloc, autrement qu'en la mettant en commentaire.
+    LigneChangee(String),
+}
+
+/// Ce qui change dans le hosts, d'après `juger_hosts`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct DiffHosts {
+    /// Les lignes mises en commentaire, telles qu'elles étaient (sans leur fin de ligne, rendues lisibles).
+    pub commentees: Vec<String>,
+    /// Les noms bloqués en plus, puis ceux qui ne le sont plus.
+    pub ajoutes: Vec<String>,
+    pub retires: Vec<String>,
+    /// Le bloc de Vanguard était-il là, l'est-il après ?
+    pub bloc_avant: bool,
+    pub bloc_apres: bool,
+}
+
+impl DiffHosts {
+    /// Rien ne change (hors la date du bloc).
+    pub(crate) fn vide(&self) -> bool {
+        self.commentees.is_empty()
+            && self.ajoutes.is_empty()
+            && self.retires.is_empty()
+            && self.bloc_avant == self.bloc_apres
+    }
+}
+
+/// Les noms que le bloc ne prend jamais : eux et leurs sous-domaines. Bloquer les mises à jour de Windows ou de
+/// Defender, la vérification de connexion de Windows, la connexion au compte Microsoft, l'avis de VirusTotal, la
+/// révocation des certificats (Let's Encrypt, Google), les DNS chiffrés de la liste ou les mises à jour de Vanguard
+/// servirait celui qui forgerait la liste, jamais la personne.
+const NOMS_PROTEGES: [&str; 19] = [
+    "microsoft.com",
+    "microsoftonline.com",
+    "live.com",
+    "virustotal.com",
+    "lencr.org",
+    "pki.goog",
+    "windowsupdate.com",
+    "windows.com",
+    "msftncsi.com",
+    "msftconnecttest.com",
+    "digicert.com",
+    "github.com",
+    "githubusercontent.com",
+    "abuse.ch",
+    "cloudflare-dns.com",
+    "quad9.net",
+    "dns.google",
+    "adguard-dns.com",
+    "cira.ca",
+];
+
+/// Ce nom est-il un de `NOMS_PROTEGES`, ou un de leurs sous-domaines ?
+pub(crate) fn nom_protege(nom: &str) -> bool {
+    NOMS_PROTEGES
+        .iter()
+        .any(|p| nom == *p || nom.strip_suffix(p).is_some_and(|d| d.ends_with('.')))
+}
+
+/// Une partie d'une adresse IPv4 écrite à l'ancienne (inet_aton) : décimale, octale si elle commence par 0, hexadécimale
+/// après « 0x » ; au moins un chiffre, 32 bits au plus.
+fn partie_v4(p: &str) -> Option<u32> {
+    let (chiffres, base) = match p.strip_prefix("0x").or_else(|| p.strip_prefix("0X")) {
+        Some(h) => (h, 16),
+        None if p.len() > 1 && p.starts_with('0') => (p.get(1..)?, 8),
+        None => (p, 10),
+    };
+    // from_str_radix admet un « + » de tête : une adresse n'en a jamais.
+    if chiffres.is_empty() || !chiffres.bytes().all(|o| char::from(o).is_digit(base)) {
+        return None;
+    }
+    u32::from_str_radix(chiffres, base).ok()
+}
+
+/// Une adresse IPv4 écrite à l'ancienne : une à quatre parties séparées par des points, la dernière remplissant les
+/// octets qui restent (« 127.1 » = 127.0.0.1, « 2130706433 » = 127.0.0.1, « 0x7f.0.0.1 », « 0177.0.0.1 »).
+fn v4_ancienne(t: &str) -> Option<std::net::Ipv4Addr> {
+    let parties = t.split('.').map(partie_v4).collect::<Option<Vec<u32>>>()?;
+    let (derniere, tete) = parties.split_last()?;
+    if tete.len() > 3 || tete.iter().any(|p| *p > 255) {
+        return None;
+    }
+    // Ce qui reste pour la dernière partie : 32 bits moins 8 par partie de tête.
+    let bits = 32_u32.checked_sub(8_u32.checked_mul(u32::try_from(tete.len()).ok()?)?)?;
+    if bits < 32 && derniere.checked_shr(bits).is_some_and(|reste| reste != 0) {
+        return None;
+    }
+    let tete = tete.iter().fold(0_u32, |a, p| a.wrapping_shl(8) | p);
+    let valeur = if bits == 32 {
+        *derniere
+    } else {
+        tete.wrapping_shl(bits) | derniere
+    };
+    Some(std::net::Ipv4Addr::from(valeur))
+}
+
+/// L'adresse d'un mot de hosts, lue au plus large de ce qu'un système peut admettre, puis ramenée à sa forme normale :
+/// la forme stricte, l'IPv4 à l'ancienne (`v4_ancienne`), un indice de zone (« %eth0 », « %3 ») retiré, une IPv4
+/// écrite en IPv6 (« ::ffff:1.2.3.4 ») rendue en IPv4. Plus large que ce que Windows admet sûrement : une adresse
+/// qu'il prendrait ne doit pas échapper au constat ni à la mise en commentaire sous une forme inhabituelle, et un
+/// nom qu'il pourrait lire comme une adresse n'entre pas dans le bloc.
+pub(crate) fn adresse_hosts(mot: &str) -> Option<std::net::IpAddr> {
+    let (adresse, zone) = match mot.split_once('%') {
+        Some((a, z)) => (a, Some(z)),
+        None => (mot, None),
+    };
+    if zone.is_some_and(|z| {
+        z.is_empty() || z.len() > 64 || !z.bytes().all(|o| o.is_ascii_alphanumeric() || b"_.-".contains(&o))
+    }) {
+        return None;
+    }
+    let ip = match adresse.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip,
+        Err(_) => std::net::IpAddr::V4(v4_ancienne(adresse)?),
+    };
+    Some(ip.to_canonical())
+}
+
+/// Un nom qu'un fichier hosts peut tenir : minuscules, chiffres, tirets, soulignés, points ; ni une adresse IP sous
+/// aucune forme (hosts ne bloque que des noms), ni un nom sans point, 253 octets au plus, chaque étiquette de 1 à 63.
+pub(crate) fn nom_hosts_valide(n: &str) -> bool {
+    n.len() <= 253
+        && n.contains('.')
+        && adresse_hosts(n).is_none()
+        && n.split('.').all(|e| !e.is_empty() && e.len() <= 63)
+        && n.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.' || b == b'_')
+}
+
+/// Les octets d'une ligne sans ses blancs de fin (fin de ligne comprise).
+fn sans_blancs_de_fin(l: &[u8]) -> &[u8] {
+    let fin = l
+        .iter()
+        .rposition(|o| !o.is_ascii_whitespace())
+        .map_or(0, |i| i.saturating_add(1));
+    l.get(..fin).unwrap_or_default()
+}
+
+/// Une ligne rendue lisible pour être montrée : texte (les octets qui n'en sont pas remplacés), sans fin de ligne,
+/// coupée à 200 caractères, chaque caractère de contrôle remplacé.
+/// Un caractère qui change l'affichage sans se voir : marques de sens d'écriture (une ligne retournée à l'écran),
+/// espaces et jointures de largeur nulle, marque d'ordre des octets.
+fn invisible(c: char) -> bool {
+    matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+}
+
+fn lisible(l: &[u8]) -> String {
+    String::from_utf8_lossy(sans_blancs_de_fin(l))
+        .chars()
+        .take(200)
+        .map(|c| if c.is_control() || invisible(c) { '\u{FFFD}' } else { c })
+        .collect()
+}
+
+/// Le hosts découpé : les lignes hors du bloc (fin de ligne comprise, celle ajoutée par Vanguard retirée), les noms
+/// du bloc et le nombre de blocs.
+struct Decoupe<'a> {
+    hors: Vec<&'a [u8]>,
+    noms: std::collections::BTreeSet<String>,
+    blocs: usize,
+}
+
+/// Le nom d'une ligne du bloc, si elle est exactement « 0.0.0.0 nom » ou « :: nom », puis sa fin de ligne.
+fn nom_du_bloc(l: &[u8]) -> Option<&str> {
+    let corps = l.strip_suffix(b"\r\n").or_else(|| l.strip_suffix(b"\n"))?;
+    let nom = corps.strip_prefix(b"0.0.0.0 ").or_else(|| corps.strip_prefix(b":: "))?;
+    std::str::from_utf8(nom).ok().filter(|n| nom_hosts_valide(n))
+}
+
+/// Découpe un hosts. `strict` : celui que Vanguard va écrire, dont chaque ligne du bloc est jugée ; sinon celui lu
+/// sur le disque, dont le bloc est retiré ou remplacé tel quel (retirer une ligne ne détourne rien).
+fn decouper_hosts(o: &[u8], strict: bool) -> Result<Decoupe<'_>, RefusHosts> {
+    if o.len() > HOSTS_MAX {
+        return Err(RefusHosts::TropGros);
+    }
+    if o.starts_with(&[0xFF, 0xFE]) || o.starts_with(&[0xFE, 0xFF]) || o.contains(&0) {
+        return Err(RefusHosts::Utf16);
+    }
+    let mut d = Decoupe {
+        hors: Vec::new(),
+        noms: std::collections::BTreeSet::new(),
+        blocs: 0,
+    };
+    let mut dedans = false;
+    let mut fdl = false;
+    let mut apres_fdl = false;
+    for l in o.split_inclusive(|&c| c == b'\n') {
+        let t = sans_blancs_de_fin(l);
+        if apres_fdl {
+            // Une ligne après un bloc « fin de ligne ajoutée » : retirer celle-ci collerait deux lignes en une.
+            return Err(RefusHosts::BlocAbime);
+        }
+        if t.starts_with(HOSTS_DEBUT.as_bytes()) {
+            if dedans || d.blocs > 0 {
+                return Err(RefusHosts::BlocAbime);
+            }
+            let entete = std::str::from_utf8(t).map_err(|_| RefusHosts::Entete)?;
+            if strict && (t.len() > HOSTS_ENTETE_MAX || entete.chars().any(char::is_control)) {
+                return Err(RefusHosts::Entete);
+            }
+            dedans = true;
+            d.blocs = d.blocs.saturating_add(1);
+            fdl = entete.contains(HOSTS_FDL_AJOUTEE);
+            if fdl && let Some(derniere) = d.hors.last_mut() {
+                let l = *derniere;
+                *derniere = l.strip_suffix(b"\r\n").or_else(|| l.strip_suffix(b"\n")).unwrap_or(l);
+            }
+        } else if t == HOSTS_FIN.as_bytes() {
+            if !dedans {
+                return Err(RefusHosts::BlocAbime);
+            }
+            dedans = false;
+            apres_fdl = fdl;
+        } else if dedans {
+            match nom_du_bloc(l) {
+                Some(n) if strict && nom_protege(n) => return Err(RefusHosts::NomProtege(n.to_string())),
+                Some(n) => {
+                    d.noms.insert(n.to_string());
+                }
+                None if strict => return Err(RefusHosts::LigneDuBloc(lisible(l))),
+                None => {}
+            }
+        } else {
+            d.hors.push(l);
+        }
+    }
+    if dedans {
+        return Err(RefusHosts::BlocAbime);
+    }
+    Ok(d)
+}
+
+/// L'adresse d'une ligne que Vanguard peut mettre en commentaire : une adresse IP, puis au moins un nom ; ni un
+/// commentaire, ni une adresse de bouclage ou « 0.0.0.0 » / « :: » (listes de blocage, « localhost »). L'adresse est
+/// lue sous toutes ses formes et rendue normale (`adresse_hosts`) : « 0x5d.0.0.1 » est jugée comme 93.0.0.1.
+fn adresse_commentable(l: &[u8]) -> Option<std::net::IpAddr> {
+    let texte = String::from_utf8_lossy(l);
+    let mut mots = texte.split('#').next().unwrap_or_default().split_whitespace();
+    let ip = adresse_hosts(mots.next()?)?;
+    (mots.next().is_some() && !ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
+/// Juge la nouvelle version d'un hosts contre celle lue, octet par octet : hors du bloc de Vanguard, chaque ligne est
+/// gardée telle quelle ou mise en commentaire (« # Vanguard : » devant, rien d'autre ne change), aucune n'est
+/// ajoutée ni retirée ; le bloc, s'il y en a un, n'a que des lignes « 0.0.0.0 nom » ou « :: nom » d'un nom qui n'est
+/// pas protégé. Plus de 1 Mo, ou de l'UTF-16 (marque d'ordre des octets, octet nul), d'un côté ou de l'autre : refusé.
+/// Le processus élevé l'appelle sur les octets vérifiés par leur empreinte, le parent avant de demander : la même
+/// fonction des deux côtés.
+pub(crate) fn juger_hosts(avant: &[u8], apres: &[u8]) -> Result<DiffHosts, RefusHosts> {
+    let a = decouper_hosts(avant, false)?;
+    let b = decouper_hosts(apres, true)?;
+    let mut diff = DiffHosts {
+        bloc_avant: a.blocs > 0,
+        bloc_apres: b.blocs > 0,
+        ajoutes: b.noms.difference(&a.noms).cloned().collect(),
+        retires: a.noms.difference(&b.noms).cloned().collect(),
+        ..DiffHosts::default()
+    };
+    for (i, ligne_b) in b.hors.iter().enumerate() {
+        let Some(ligne_a) = a.hors.get(i) else {
+            return Err(RefusHosts::LigneAjoutee(lisible(ligne_b)));
+        };
+        if ligne_a == ligne_b {
+            continue;
+        }
+        let commentee = ligne_b
+            .strip_prefix(HOSTS_COMMENTE.as_bytes())
+            .is_some_and(|reste| reste == *ligne_a && adresse_commentable(ligne_a).is_some());
+        if !commentee {
+            return Err(RefusHosts::LigneChangee(lisible(ligne_b)));
+        }
+        diff.commentees.push(lisible(ligne_a));
+    }
+    if let Some(retiree) = a.hors.get(b.hors.len()) {
+        return Err(RefusHosts::LigneRetiree(lisible(retiree)));
+    }
+    Ok(diff)
+}
+
+/// L'empreinte d'un hosts telle qu'une ligne `vanguard:hosts-ecrire` la porte : SHA-256 en hexadécimal majuscule
+/// (celle de `sha256_hex`, test empreinte_des_scripts_et_du_hosts).
+pub(crate) fn empreinte_hosts(octets: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(octets)
+        .iter()
+        .fold(String::with_capacity(64), |mut s, o| {
+            let _ = write!(s, "{o:02X}");
+            s
+        })
+}
+
+/// Ce que le processus élevé juge avant de montrer, et rejuge avant d'écrire : les octets du fichier préparé et du
+/// hosts, lus une seule fois chacun, ont les empreintes de la ligne, puis leur différence est admise par
+/// `juger_hosts`. Ce sont ces octets-là, et eux seuls, qui seront écrits.
+pub(crate) fn verifier_hosts(h: &HostsEcrire, prepare: &[u8], hosts: &[u8]) -> Result<DiffHosts, RefusHosts> {
+    if prepare.len() > HOSTS_MAX || hosts.len() > HOSTS_MAX {
+        return Err(RefusHosts::TropGros);
+    }
+    if empreinte_hosts(prepare) != h.apres {
+        return Err(RefusHosts::PrepareChange);
+    }
+    if empreinte_hosts(hosts) != h.avant {
+        return Err(RefusHosts::HostsChange);
+    }
+    juger_hosts(hosts, prepare)
+}
+
+/// Le hosts avec en commentaire chaque ligne hors du bloc de Vanguard qui envoie un nom vers une adresse que
+/// `a_commenter` désigne (les adresses d'Internet, pour la réparation « Navigation détournée ») : « # Vanguard : »
+/// devant, le reste de chaque octet inchangé, encodage et fins de ligne compris. Ce que `juger_hosts` admet.
+pub(crate) fn hosts_commente(avant: &[u8], a_commenter: impl Fn(std::net::IpAddr) -> bool) -> Vec<u8> {
+    let mut sortie = Vec::with_capacity(avant.len());
+    let mut dedans = false;
+    for l in avant.split_inclusive(|&c| c == b'\n') {
+        let t = sans_blancs_de_fin(l);
+        if t.starts_with(HOSTS_DEBUT.as_bytes()) {
+            dedans = true;
+        } else if t == HOSTS_FIN.as_bytes() {
+            dedans = false;
+        } else if !dedans && adresse_commentable(l).is_some_and(&a_commenter) {
+            sortie.extend_from_slice(HOSTS_COMMENTE.as_bytes());
+        }
+        sortie.extend_from_slice(l);
+    }
+    sortie
+}
+
 // ------------------------------------------------------------ le registre
 
 /// Les deux racines d'Image File Execution Options lues par le bilan : la vue 64 bits et celle des programmes 32 bits
@@ -1041,8 +1694,8 @@ pub(crate) const IFEO_SILENCIEUX_32: &str = "vanguard:ifeo-silencieux-32 ";
 pub(crate) const SERVICE_GUILLEMETS: &str = "vanguard:service-guillemets ";
 
 /// La plus longue ligne qui porte un nom : 260 unités UTF-16 de quatre chiffres hexadécimaux après le plus long verbe
-/// (`IFEO_SILENCIEUX_32` ; test borne_des_noms).
-pub(crate) const ACTE_NOM_MAX: usize = 1068;
+/// (`DEFENDER_EXCLUSION_RETIRER` suivi de « extension » ; test borne_des_noms).
+pub(crate) const ACTE_NOM_MAX: usize = 1086;
 /// Le plus long nom admis, en unités UTF-16 : MAX_PATH. Un nom de clé du registre en admet 255, un service 256.
 pub(crate) const NOM_MAX: usize = 260;
 
@@ -1172,6 +1825,1595 @@ fn powershell_guillemets(nom: &NomFichier) -> String {
     )
 }
 
+// ------------------------------------------------------------ Defender
+
+/// Le verbe d'un réglage de Defender : `vanguard:defender <reglage> <valeur>`, chaque réglage n'admettant que des
+/// valeurs qui protègent (`ReglageDefender::permises`).
+pub(crate) const DEFENDER: &str = "vanguard:defender ";
+/// Le verbe d'une règle ASR : `vanguard:defender-asr <GUID d'Optimiser> <bloquer|audit>` (jamais retirer : voir
+/// `ModeAsr`).
+pub(crate) const DEFENDER_ASR: &str = "vanguard:defender-asr ";
+/// Le verbe d'une exclusion à retirer : `vanguard:defender-exclusion-retirer <chemin|processus|extension> <hex>`.
+pub(crate) const DEFENDER_EXCLUSION_RETIRER: &str = "vanguard:defender-exclusion-retirer ";
+/// Les menaces trouvées par Defender, retirées (MSFT_MpThreat.Remove), sans argument.
+pub(crate) const DEFENDER_MENACES_RETIRER: &str = "vanguard:defender-menaces-retirer";
+
+/// Règles ASR que Microsoft dit sans revers (« standard protection rules »), en minuscules comme Microsoft les
+/// écrit. Ici plutôt que dans Optimiser : une ligne `defender-asr` ne désigne qu'une règle de ces listes, et ce module
+/// ne dépend de rien.
+pub(crate) const ASR_BASE: [&str; 3] = [
+    "56a863a9-875e-4185-98a7-b882c64b5ce5",
+    "9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2",
+    "e6db77e5-3df2-4cf1-b95a-636979351e5b",
+];
+
+/// Règles ASR contre les documents et pièces jointes piégés : Office, Outlook, Adobe Reader, courriel, scripts.
+pub(crate) const ASR_BUREAUTIQUE: [&str; 8] = [
+    "d4f940ab-401b-4efc-aadc-ad5f3c50688a",
+    "3b576869-a4ec-4529-8536-b80a7769e899",
+    "75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84",
+    "92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b",
+    "26190899-1602-49e8-8b27-eb1d0a1ce869",
+    "7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c",
+    "be9ba2d9-53ea-4cdc-84e5-9b1eeee46550",
+    "d3e037e1-3eb8-44c8-a917-57927947596d",
+];
+
+/// La règle ASR de ces listes qui porte exactement cet identifiant (minuscules) : une autre n'est jamais touchée,
+/// pas même retirée.
+pub(crate) fn asr_connue(id: &str) -> Option<&'static str> {
+    ASR_BASE.iter().chain(&ASR_BUREAUTIQUE).copied().find(|r| *r == id)
+}
+
+/// Un réglage de Defender qu'une ligne peut renforcer, propriété de MSFT_MpPreference comprise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReglageDefender {
+    /// La protection en temps réel (DisableRealtimeMonitoring).
+    TempsReel,
+    /// La protection dans le cloud (MAPSReporting).
+    Maps,
+    /// L'accès contrôlé aux dossiers (EnableControlledFolderAccess).
+    Cfa,
+    /// La protection réseau (EnableNetworkProtection).
+    Np,
+    /// Les applications potentiellement indésirables (PUAProtection).
+    Pua,
+}
+
+impl ReglageDefender {
+    pub(crate) const TOUS: [ReglageDefender; 5] = [
+        ReglageDefender::TempsReel,
+        ReglageDefender::Maps,
+        ReglageDefender::Cfa,
+        ReglageDefender::Np,
+        ReglageDefender::Pua,
+    ];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ReglageDefender::TempsReel => "temps-reel",
+            ReglageDefender::Maps => "maps",
+            ReglageDefender::Cfa => "cfa",
+            ReglageDefender::Np => "np",
+            ReglageDefender::Pua => "pua",
+        }
+    }
+
+    /// La propriété de MSFT_MpPreference, lue avant et après, et le paramètre de sa méthode Set.
+    pub(crate) fn propriete(self) -> &'static str {
+        match self {
+            ReglageDefender::TempsReel => "DisableRealtimeMonitoring",
+            ReglageDefender::Maps => "MAPSReporting",
+            ReglageDefender::Cfa => "EnableControlledFolderAccess",
+            ReglageDefender::Np => "EnableNetworkProtection",
+            ReglageDefender::Pua => "PUAProtection",
+        }
+    }
+
+    /// Les valeurs qu'une ligne peut porter : seulement celles qui protègent. Aucune ne coupe un réglage, si bien
+    /// qu'une ligne forgée ne peut rien affaiblir (« temps-reel non », « maps 0 », « cfa coupe »… sont refusées).
+    pub(crate) fn permises(self) -> &'static [ValeurDefender] {
+        match self {
+            ReglageDefender::TempsReel => &[ValeurDefender::Actif],
+            ReglageDefender::Maps => &[ValeurDefender::Avance],
+            ReglageDefender::Cfa | ReglageDefender::Np | ReglageDefender::Pua => {
+                &[ValeurDefender::Bloquer, ValeurDefender::Audit]
+            }
+        }
+    }
+
+    /// La valeur que la propriété doit relire une fois `v` écrite. Décidée par le réglage d'abord : même un acte
+    /// construit hors de `permises` ne vise qu'une valeur qui protège (temps réel jamais désactivé, cloud avancé).
+    pub(crate) fn attendue(self, v: ValeurDefender) -> u8 {
+        match (self, v) {
+            // DisableRealtimeMonitoring : faux.
+            (ReglageDefender::TempsReel, _) => 0,
+            // MAPSReporting : 2, « Advanced ».
+            (ReglageDefender::Maps, _) | (_, ValeurDefender::Audit) => 2,
+            (_, _) => 1,
+        }
+    }
+
+    /// Le rang de protection d'une valeur lue de la propriété : plus haut, plus sûr. Une valeur inconnue vaut 0, la
+    /// moins sûre : jamais crue plus forte qu'elle n'est. Accès contrôlé : 0 coupé, 2 et 4 audit, 3 disques seuls,
+    /// 1 bloque ; protection réseau et PUA : 0 coupée, 2 audit, 1 bloque ; cloud : 0, 1 de base, 2 avancé.
+    pub(crate) fn rang(self, lue: i64) -> u8 {
+        match self {
+            ReglageDefender::TempsReel => u8::from(lue == 0),
+            ReglageDefender::Maps => match lue {
+                1 => 1,
+                2 => 2,
+                _ => 0,
+            },
+            ReglageDefender::Cfa => match lue {
+                2 | 4 => 1,
+                3 => 2,
+                1 => 3,
+                _ => 0,
+            },
+            ReglageDefender::Np | ReglageDefender::Pua => match lue {
+                2 => 1,
+                1 => 2,
+                _ => 0,
+            },
+        }
+    }
+
+    /// Faut-il écrire ? Seulement si la valeur lue protège moins que celle demandée : une ligne ne baisse jamais un
+    /// réglage (« audit » sur un accès contrôlé qui bloque ne fait rien).
+    pub(crate) fn a_ecrire(self, v: ValeurDefender, lue: i64) -> bool {
+        self.rang(lue) < self.rang(i64::from(self.attendue(v)))
+    }
+
+    /// Le paramètre de MSFT_MpPreference.Set pour `v` : un booléen pour le temps réel, un octet (uint8) sinon.
+    pub(crate) fn valeur_wmi(self, v: ValeurDefender) -> ValeurWmi {
+        let n = self.attendue(v);
+        match self {
+            ReglageDefender::TempsReel => ValeurWmi::Booleen(n != 0),
+            _ => ValeurWmi::Octet(n),
+        }
+    }
+}
+
+/// La valeur d'une ligne `defender`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValeurDefender {
+    /// La protection en temps réel en marche.
+    Actif,
+    /// La protection dans le cloud complète (« Advanced »).
+    Avance,
+    Bloquer,
+    /// Signale sans bloquer : jamais écrit sur un réglage qui bloque déjà (`ReglageDefender::a_ecrire`).
+    Audit,
+}
+
+impl ValeurDefender {
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ValeurDefender::Actif => "actif",
+            ValeurDefender::Avance => "avance",
+            ValeurDefender::Bloquer => "bloquer",
+            ValeurDefender::Audit => "audit",
+        }
+    }
+}
+
+/// Ce qu'une ligne `defender-asr` fait d'une règle. Jamais la retirer : Optimiser ne défait pas ses règles ASR
+/// (réglages protégés, écartés de l'annulation), aucune ligne légitime ne le demande, et l'enfant élevé ne saurait
+/// pas prouver qu'une règle présente vient d'Optimiser plutôt que de la personne ou d'une stratégie.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModeAsr {
+    Bloquer,
+    Audit,
+}
+
+impl ModeAsr {
+    pub(crate) const TOUS: [ModeAsr; 2] = [ModeAsr::Bloquer, ModeAsr::Audit];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ModeAsr::Bloquer => "bloquer",
+            ModeAsr::Audit => "audit",
+        }
+    }
+
+    /// L'action de la règle (AttackSurfaceReductionRules_Actions) : 1 bloque, 2 audit.
+    pub(crate) fn action(self) -> u8 {
+        match self {
+            ModeAsr::Bloquer => 1,
+            ModeAsr::Audit => 2,
+        }
+    }
+
+    /// Faut-il écrire, d'après l'action lue de la règle (`None` : absente de la liste) ? Bloquer ou auditer
+    /// seulement ce qui protège moins (absente ou 0 coupée, 2 audit, 6 avertit, 1 bloque ; inconnue : 0).
+    pub(crate) fn a_ecrire(self, lue: Option<i64>) -> bool {
+        let rang = |a: Option<i64>| -> u8 {
+            match a {
+                Some(2) => 1,
+                Some(6) => 2,
+                Some(1) => 3,
+                _ => 0,
+            }
+        };
+        rang(lue) < rang(Some(i64::from(self.action())))
+    }
+}
+
+/// La liste d'exclusions de Defender visée par une ligne `defender-exclusion-retirer`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GenreExclusion {
+    Chemin,
+    Processus,
+    Extension,
+}
+
+impl GenreExclusion {
+    pub(crate) const TOUS: [GenreExclusion; 3] = [
+        GenreExclusion::Chemin,
+        GenreExclusion::Processus,
+        GenreExclusion::Extension,
+    ];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            GenreExclusion::Chemin => "chemin",
+            GenreExclusion::Processus => "processus",
+            GenreExclusion::Extension => "extension",
+        }
+    }
+
+    /// La propriété de MSFT_MpPreference, et le paramètre de sa méthode Remove.
+    pub(crate) fn propriete(self) -> &'static str {
+        match self {
+            GenreExclusion::Chemin => "ExclusionPath",
+            GenreExclusion::Processus => "ExclusionProcess",
+            GenreExclusion::Extension => "ExclusionExtension",
+        }
+    }
+}
+
+/// Une exclusion de Defender relue : non vide, 260 unités UTF-16 au plus, de l'UTF-16 valide, sans caractère de
+/// contrôle (NUL compris). Elle ne fait que désigner : le processus élevé ne la retire que si elle est, telle quelle,
+/// dans la liste qu'il relit, et que le bilan la signale (`exclusions::signalee`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Exclusion(String);
+
+impl Exclusion {
+    pub(crate) fn nouvelle(texte: &str) -> Option<Exclusion> {
+        let longueur = texte.encode_utf16().count();
+        (longueur > 0 && longueur <= NOM_MAX && !texte.chars().any(char::is_control))
+            .then(|| Exclusion(texte.to_string()))
+    }
+
+    /// Le texte tel quel (venu de Defender : à rendre affichable avant de le montrer).
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+
+    /// En hexadécimal minuscule, quatre chiffres par unité UTF-16 (la convention de `NomFichier`).
+    pub(crate) fn hex(&self) -> String {
+        let unites: Vec<u16> = self.0.encode_utf16().collect();
+        hex_utf16(&unites)
+    }
+
+    /// L'exclusion d'un hexadécimal de `hex`, si et seulement s'il en a la forme exacte.
+    pub(crate) fn lire(hex: &str) -> Option<Exclusion> {
+        let unites = lire_hex_utf16(hex, NOM_MAX)?;
+        let texte = String::from_utf16(&unites).ok()?;
+        Exclusion::nouvelle(&texte).filter(|e| e.hex() == hex)
+    }
+}
+
+/// Une valeur d'entrée d'une méthode WMI de Defender, décrite sans COM : le processus élevé la met dans un VARIANT
+/// (`wmi::Parametre`). Les tableaux sont ceux des paramètres `string[]` et `uint8[]` de MSFT_MpPreference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ValeurWmi {
+    Booleen(bool),
+    Octet(u8),
+    Textes(Vec<String>),
+    Octets(Vec<u8>),
+}
+
+/// La méthode statique de MSFT_MpPreference et ses paramètres pour un acte de Defender : Set pour un réglage, Add
+/// pour une règle ASR (Set remplacerait toute la liste), Remove pour retirer une exclusion. `None` pour les autres
+/// actes, et pour les menaces (MSFT_MpThreat.Remove, sans paramètre).
+pub(crate) fn methode_defender(acte: &Acte) -> Option<(&'static str, Vec<(&'static str, ValeurWmi)>)> {
+    const IDS: &str = "AttackSurfaceReductionRules_Ids";
+    match acte {
+        Acte::Defender(r, v) => Some(("Set", vec![(r.propriete(), r.valeur_wmi(*v))])),
+        Acte::DefenderAsr(id, m) => {
+            let ids = (IDS, ValeurWmi::Textes(vec![(*id).to_string()]));
+            let actions = (
+                "AttackSurfaceReductionRules_Actions",
+                ValeurWmi::Octets(vec![m.action()]),
+            );
+            Some(("Add", vec![ids, actions]))
+        }
+        Acte::DefenderExclusionRetirer(g, e) => Some((
+            "Remove",
+            vec![(g.propriete(), ValeurWmi::Textes(vec![e.texte().to_string()]))],
+        )),
+        _ => None,
+    }
+}
+
+/// La ligne qui renforce un réglage de Defender ; `None` si la valeur n'est pas permise pour ce réglage.
+pub(crate) fn ligne_defender(r: ReglageDefender, v: ValeurDefender) -> Option<String> {
+    r.permises().contains(&v).then(|| Acte::Defender(r, v).ligne())
+}
+
+/// La ligne qui règle une règle ASR ; `None` si l'identifiant n'est pas dans les listes d'Optimiser.
+pub(crate) fn ligne_defender_asr(id: &str, m: ModeAsr) -> Option<String> {
+    asr_connue(id).map(|id| Acte::DefenderAsr(id, m).ligne())
+}
+
+/// La ligne qui retire une exclusion ; `None` si elle n'a pas sa forme (signalée, à retirer dans Sécurité Windows).
+pub(crate) fn ligne_defender_exclusion_retirer(g: GenreExclusion, texte: &str) -> Option<String> {
+    Exclusion::nouvelle(texte).map(|e| Acte::DefenderExclusionRetirer(g, e).ligne())
+}
+
+/// La ligne qui retire les menaces trouvées par Defender.
+pub(crate) fn ligne_defender_menaces_retirer() -> String {
+    DEFENDER_MENACES_RETIRER.to_string()
+}
+
+// ------------------------------------------------- comptes, certificats et partages
+
+/// Désactiver un compte local, désigné par son RID (le dernier nombre de son SID) : `vanguard:compte-desactiver
+/// <RID>`. Le processus élevé relit les comptes, rejuge par la fonction du bilan et refuse la personne, son propre
+/// compte, le dernier administrateur actif, un compte réservé de Windows et un compte qui a un programme ouvert
+/// (`refus_desactivation`).
+pub(crate) const COMPTE_DESACTIVER: &str = "vanguard:compte-desactiver ";
+/// Retirer un certificat racine signalé par le bilan : `vanguard:certificat-retirer <lm|cu> <SHA-1 en hex
+/// minuscule>`, exporté avant dans la quarantaine de Vanguard. Jamais un ajout.
+pub(crate) const CERTIFICAT_RETIRER: &str = "vanguard:certificat-retirer ";
+/// Retirer d'un partage les autorisations d'un compte ouvert sans mot de passe (Tout le monde, Invités…) :
+/// `vanguard:partage-retirer-acces <nom en hex> <SID>`, la liste d'avant notée (SDDL).
+pub(crate) const PARTAGE_RETIRER_ACCES: &str = "vanguard:partage-retirer-acces ";
+
+/// Le plus petit RID d'un compte : 500 (Administrateur intégré) ; en dessous, des groupes et des comptes de Windows.
+pub(crate) const RID_MIN: u32 = 500;
+/// La plus longue d'un nom de partage, en unités UTF-16 (NNLEN de lmcons.h).
+pub(crate) const PARTAGE_NOM_MAX: usize = 80;
+
+/// Le magasin « Root » d'où retirer un certificat : celui de l'ordinateur ou celui de la personne.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MagasinRacine {
+    Ordinateur,
+    Compte,
+}
+
+impl MagasinRacine {
+    pub(crate) const TOUS: [MagasinRacine; 2] = [MagasinRacine::Ordinateur, MagasinRacine::Compte];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            MagasinRacine::Ordinateur => "lm",
+            MagasinRacine::Compte => "cu",
+        }
+    }
+
+    /// Le nom du magasin dans les lignes « CERT|… » du bilan (`magasins::racines`).
+    pub(crate) fn nom(self) -> &'static str {
+        match self {
+            MagasinRacine::Ordinateur => "LocalMachine",
+            MagasinRacine::Compte => "CurrentUser",
+        }
+    }
+}
+
+/// Une empreinte SHA-1 de certificat : 40 chiffres hexadécimaux minuscules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Empreinte(String);
+
+impl Empreinte {
+    /// L'empreinte d'un texte de 40 chiffres hexadécimaux, majuscules admises (Thumbprint) : rendue en minuscules.
+    pub(crate) fn nouvelle(texte: &str) -> Option<Empreinte> {
+        (texte.len() == 40 && texte.bytes().all(|o| o.is_ascii_hexdigit()))
+            .then(|| Empreinte(texte.to_ascii_lowercase()))
+    }
+
+    /// L'empreinte d'une ligne : minuscules seulement.
+    fn lire(texte: &str) -> Option<Empreinte> {
+        (texte.len() == 40 && texte.bytes().all(|o| chiffre_minuscule(o).is_some()))
+            .then(|| Empreinte(texte.to_string()))
+    }
+
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+
+    /// Les 20 octets, pour chercher le certificat par son empreinte.
+    pub(crate) fn octets(&self) -> Option<[u8; 20]> {
+        let mut o = [0u8; 20];
+        for (i, paire) in self.0.as_bytes().chunks(2).enumerate() {
+            let fort = chiffre_minuscule(*paire.first()?)?;
+            let faible = chiffre_minuscule(*paire.get(1)?)?;
+            *o.get_mut(i)? = fort.checked_mul(16)?.checked_add(faible)?;
+        }
+        Some(o)
+    }
+}
+
+/// Un nom de partage relu : 1 à 80 unités UTF-16, de l'UTF-16 valide, sans caractère de contrôle, et jamais un partage
+/// caché ou administratif (fini par « $ » : ADMIN$, IPC$, C$… ; le Bureau à distance et l'administration à distance
+/// en dépendent).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NomPartage(String);
+
+impl NomPartage {
+    pub(crate) fn nouveau(nom: &str) -> Option<NomPartage> {
+        let longueur = nom.encode_utf16().count();
+        (longueur > 0 && longueur <= PARTAGE_NOM_MAX && !nom.chars().any(char::is_control) && !nom.ends_with('$'))
+            .then(|| NomPartage(nom.to_string()))
+    }
+
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn hex(&self) -> String {
+        let unites: Vec<u16> = self.0.encode_utf16().collect();
+        hex_utf16(&unites)
+    }
+
+    fn lire(hex: &str) -> Option<NomPartage> {
+        let unites = lire_hex_utf16(hex, PARTAGE_NOM_MAX)?;
+        NomPartage::nouveau(&String::from_utf16(&unites).ok()?).filter(|n| n.hex() == hex)
+    }
+}
+
+/// Un SID en texte, de forme stricte : « S-1- », puis de 2 à 15 nombres décimaux séparés par « - », sans zéro de
+/// tête ; l'autorité tient sur 48 bits, chaque sous-autorité sur 32.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SidTexte(String);
+
+impl SidTexte {
+    pub(crate) fn lire(texte: &str) -> Option<SidTexte> {
+        let reste = texte.strip_prefix("S-1-")?;
+        let nombres: Vec<&str> = reste.split('-').collect();
+        // L'autorité, puis de 1 à 15 sous-autorités (SID_MAX_SUB_AUTHORITIES).
+        if !(2..=16).contains(&nombres.len()) {
+            return None;
+        }
+        let decimal = |n: &str| {
+            !n.is_empty() && n.len() <= 15 && n.bytes().all(|o| o.is_ascii_digit()) && (n == "0" || !n.starts_with('0'))
+        };
+        let (autorite, sous) = nombres.split_first()?;
+        let bon = decimal(autorite)
+            && autorite.parse::<u64>().is_ok_and(|a| a < (1u64 << 48))
+            && sous.iter().all(|s| decimal(s) && s.parse::<u32>().is_ok());
+        bon.then(|| SidTexte(texte.to_string()))
+    }
+
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Retirer d'un partage les autorisations d'un compte.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AccesPartage {
+    pub nom: NomPartage,
+    pub sid: SidTexte,
+}
+
+/// Le RID d'une ligne : décimal, sans zéro de tête, de 500 à 4 294 967 295.
+fn lire_rid(texte: &str) -> Option<u32> {
+    (!texte.starts_with('0') && texte.bytes().all(|o| o.is_ascii_digit()))
+        .then(|| texte.parse::<u32>().ok())
+        .flatten()
+        .filter(|&r| r >= RID_MIN)
+}
+
+/// Le RID d'un compte local d'après son SID : « S-1-5-21-a-b-c-RID » exactement (le domaine de cet ordinateur ou
+/// d'un domaine) ; `None` pour tout autre SID.
+pub(crate) fn rid_local(sid: &str) -> Option<u32> {
+    let s = SidTexte::lire(sid)?;
+    let nombres: Vec<&str> = s.texte().split('-').collect();
+    match nombres.as_slice() {
+        ["S", "1", "5", "21", _, _, _, rid] => lire_rid(rid),
+        _ => None,
+    }
+}
+
+/// La ligne qui désactive un compte local d'après son SID ; `None` si ce n'est pas un compte local de RID 500 ou plus.
+pub(crate) fn ligne_compte_desactiver(sid: &str) -> Option<String> {
+    rid_local(sid).map(|rid| Acte::CompteDesactiver(rid).ligne())
+}
+
+/// La ligne qui retire une racine ; `None` si l'empreinte n'a pas sa forme ou le magasin n'est pas l'un des deux.
+pub(crate) fn ligne_certificat_retirer(magasin: &str, empreinte: &str) -> Option<String> {
+    let m = *MagasinRacine::TOUS.iter().find(|m| m.nom() == magasin)?;
+    Some(Acte::CertificatRetirer(m, Empreinte::nouvelle(empreinte)?).ligne())
+}
+
+/// La ligne qui retire d'un partage les autorisations d'un compte ; `None` pour un nom ou un SID hors de leur forme
+/// (un partage caché ou administratif compris) : la correction reste alors à faire soi-même.
+pub(crate) fn ligne_partage_retirer_acces(nom: &str, sid: &str) -> Option<String> {
+    Some(
+        Acte::PartageRetirerAcces(AccesPartage {
+            nom: NomPartage::nouveau(nom)?,
+            sid: SidTexte::lire(sid)?,
+        })
+        .ligne(),
+    )
+}
+
+/// Pourquoi le processus élevé refuse de désactiver un compte (`refus_desactivation`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefusCompte {
+    /// Le compte de la personne n'a pas pu être lu dans le jeton du Vanguard qui a demandé.
+    PersonneIllisible,
+    /// Aucun compte local, ou plus d'un, n'a ce RID.
+    Introuvable,
+    /// Le compte de la personne, ou celui de ce processus administrateur.
+    CompteEnCours,
+    /// Un compte réservé de Windows (RID de 502 à 999 : DefaultAccount, WDAGUtilityAccount…).
+    Reserve,
+    /// Le bilan relu ne propose pas de le désactiver.
+    NonSignale,
+    /// Le dernier administrateur actif de l'ordinateur.
+    DernierAdministrateur,
+    /// Les programmes ouverts ne se lisent pas : une session (Bureau à distance, SSH) en dépend peut-être.
+    ProgrammesIllisibles,
+    /// Un programme tourne sous ce compte : une session ouverte (sur l'écran, Bureau à distance, SSH) en dépend.
+    SessionOuverte,
+}
+
+/// Ce que le processus élevé relit avant de désactiver un compte.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EtatCompte<'a> {
+    /// Le RID de la ligne.
+    pub rid: u32,
+    /// Les SID des comptes locaux qui ont ce RID (exactement un pour agir).
+    pub trouves: &'a [&'a str],
+    /// Le compte de la personne, lu dans le jeton du parent.
+    pub personne: Option<&'a str>,
+    /// Le compte de ce processus administrateur.
+    pub soi: Option<&'a str>,
+    /// Le bilan relu propose-t-il cette ligne, automatiquement ?
+    pub signale: bool,
+    /// Le compte est-il membre des Administrateurs ?
+    pub administrateur: bool,
+    /// Combien d'autres comptes locaux activés sont administrateurs.
+    pub autres_administrateurs: usize,
+    /// Un programme tourne-t-il sous ce compte (`None` : illisible) ?
+    pub programmes: Option<bool>,
+}
+
+/// Le motif de refus d'une désactivation ; `None` si elle peut se faire. Pure, pour l'essayer : aucun compte ne gagne
+/// de droits, la personne ne se retrouve jamais dehors, ni l'ordinateur sans administrateur, ni une session à
+/// distance coupée.
+pub(crate) fn refus_desactivation(e: &EtatCompte) -> Option<RefusCompte> {
+    let Some(personne) = e.personne else {
+        return Some(RefusCompte::PersonneIllisible);
+    };
+    let [cible] = e.trouves else {
+        return Some(RefusCompte::Introuvable);
+    };
+    if rid_local(cible) != Some(e.rid) {
+        return Some(RefusCompte::Introuvable);
+    }
+    if cible.eq_ignore_ascii_case(personne) || e.soi.is_none_or(|s| cible.eq_ignore_ascii_case(s)) {
+        return Some(RefusCompte::CompteEnCours);
+    }
+    if e.rid != 500 && e.rid != 501 && e.rid < 1000 {
+        return Some(RefusCompte::Reserve);
+    }
+    if !e.signale {
+        return Some(RefusCompte::NonSignale);
+    }
+    if e.administrateur && e.autres_administrateurs == 0 {
+        return Some(RefusCompte::DernierAdministrateur);
+    }
+    match e.programmes {
+        None => Some(RefusCompte::ProgrammesIllisibles),
+        Some(true) => Some(RefusCompte::SessionOuverte),
+        Some(false) => None,
+    }
+}
+
+// ------------------------------------------------- persistance et prise en main à distance (lot 3.5)
+
+/// Retirer une valeur de démarrage de la machine (HKLM Run, RunOnce, ou Run des programmes 32 bits) :
+/// `vanguard:run-retirer <run|runonce|run32> <nom en hex|defaut>`. Le processus élevé relit la valeur, refait le
+/// bilan sur elle (persistance suspecte, ou outil de prise en main à distance), refuse une entrée de Windows ou de
+/// Defender (`run_protege`), note la donnée d'avant dans `RUN_AVANT_CLE`, retire, puis relit.
+pub(crate) const RUN_RETIRER_MACHINE: &str = "vanguard:run-retirer ";
+/// Remettre exactement la donnée qu'un `run-retirer` a notée : `vanguard:run-remettre <clé> <nom en hex|defaut>`.
+/// La ligne ne porte aucune donnée : seule celle que le processus élevé a notée lui-même revient, jamais par-dessus
+/// une valeur présente. Elle rend le PC moins protégé (un lancement jugé suspect revient) : dit avant l'accord.
+pub(crate) const RUN_REMETTRE: &str = "vanguard:run-remettre ";
+/// Désactiver une tâche planifiée signalée : `vanguard:tache-desactiver <chemin en hex>` (passe b).
+pub(crate) const TACHE_DESACTIVER: &str = "vanguard:tache-desactiver ";
+/// Réactiver une tâche que Vanguard a désactivée : `vanguard:tache-reactiver <chemin en hex>` (passe b).
+pub(crate) const TACHE_REACTIVER: &str = "vanguard:tache-reactiver ";
+/// Mettre en quarantaine un fichier du dossier Démarrage commun : `vanguard:demarrage-quarantaine <chemin en hex>`
+/// (passe b). Le dossier Démarrage de la personne reste à vider soi-même.
+pub(crate) const DEMARRAGE_QUARANTAINE: &str = "vanguard:demarrage-quarantaine ";
+/// Ressortir de la quarantaine un fichier que Vanguard y a mis : `vanguard:demarrage-remettre <chemin en hex>`.
+pub(crate) const DEMARRAGE_REMETTRE: &str = "vanguard:demarrage-remettre ";
+/// Retirer un abonnement WMI (consumer, binding, filtre non partagé) : `vanguard:wmi-abonnement-retirer
+/// <commande|script> <nom du consumer en hex>` (passe c).
+pub(crate) const WMI_ABONNEMENT_RETIRER: &str = "vanguard:wmi-abonnement-retirer ";
+/// Recréer un abonnement WMI que Vanguard a retiré, d'après ses propriétés notées (passe c).
+pub(crate) const WMI_ABONNEMENT_REMETTRE: &str = "vanguard:wmi-abonnement-remettre ";
+/// Supprimer le service d'un outil de prise en main à distance : `vanguard:service-retirer <nom en hex>` (passe d).
+/// Irréversible : jamais de remise, une deuxième confirmation.
+pub(crate) const SERVICE_RETIRER: &str = "vanguard:service-retirer ";
+/// Désactiver un programme lancé à l'ouverture de session de toute la machine, comme le fait le Gestionnaire des
+/// tâches (sa valeur dans HKLM\…\StartupApproved), sans rien retirer : `vanguard:lancement-desactiver
+/// <run|run32|dossier> <nom en hex> <valeur>`, la valeur étant celle de Windows pour « désactivé » (`03000000` puis
+/// l'heure, 12 octets en hexadécimal). Le processus élevé relit le lancement, refuse ce qu'Optimiser garde (sécurité,
+/// pilotes, Vanguard) et toute entrée de Windows ou de Defender, note les octets d'avant dans `LANCEMENT_AVANT_CLE`,
+/// écrit, puis relit.
+pub(crate) const LANCEMENT_DESACTIVER: &str = "vanguard:lancement-desactiver ";
+/// Remettre exactement les octets qu'un `lancement-desactiver` a notés : `vanguard:lancement-reactiver <liste> <nom en
+/// hex>`, seulement si la valeur est encore celle que Vanguard a écrite.
+pub(crate) const LANCEMENT_REACTIVER: &str = "vanguard:lancement-reactiver ";
+
+/// La clé (sous HKLM, vue 64 bits) où le processus élevé note la donnée d'une valeur de démarrage qu'il retire : seul
+/// un administrateur y écrit, la remise ne lit qu'elle.
+pub(crate) const RUN_AVANT_CLE: &str = r"SOFTWARE\Vanguard\RunAvant";
+/// Où le processus élevé note le XML d'une tâche qu'il désactive, avant et après : la réactivation n'a lieu que si la
+/// tâche est restée telle que Vanguard l'a laissée.
+pub(crate) const TACHE_AVANT_CLE: &str = r"SOFTWARE\Vanguard\TacheAvant";
+/// Où le processus élevé note la copie en quarantaine d'un fichier du dossier Démarrage commun (son nom et son
+/// empreinte) : la remise ne lit qu'elle.
+pub(crate) const DEMARRAGE_AVANT_CLE: &str = r"SOFTWARE\Vanguard\DemarrageAvant";
+/// Où le processus élevé note les octets d'avant d'une valeur de StartupApproved qu'il écrit, et ceux qu'il écrit.
+pub(crate) const LANCEMENT_AVANT_CLE: &str = r"SOFTWARE\Vanguard\LancementAvant";
+/// Le plus long nom de valeur de démarrage de la machine, en unités UTF-16 : ce que tient une ligne du tube
+/// (`LIGNE_MAX`). Au-delà, la valeur est signalée et se retire à la main.
+pub(crate) const RUN_MACHINE_NOM_MAX: usize = 2048;
+/// Le plus long chemin de tâche planifiée, en unités UTF-16.
+pub(crate) const TACHE_CHEMIN_MAX: usize = 512;
+/// Le plus long chemin de fichier, en unités UTF-16 : celui de Windows (32 767).
+pub(crate) const CHEMIN_MAX: usize = 32_767;
+/// Le plus long nom de consumer WMI, en unités UTF-16.
+pub(crate) const CONSUMER_NOM_MAX: usize = 256;
+/// Le plus long nom de service, en unités UTF-16 (celui du gestionnaire de services).
+pub(crate) const SERVICE_NOM_MAX: usize = 256;
+
+/// Le mot d'une ligne de démarrage pour la valeur par défaut (sans nom).
+const RUN_DEFAUT_MACHINE: &str = "defaut";
+
+/// Un texte en hexadécimal UTF-16 (la convention de `hex_utf16`).
+fn hex_texte(t: &str) -> String {
+    hex_utf16(&t.encode_utf16().collect::<Vec<_>>())
+}
+
+/// Le texte d'un hexadécimal UTF-16 de 1 à `max` unités, s'il est de l'UTF-16 valide sans NUL.
+fn lire_texte_hex(hex: &str, max: usize) -> Option<String> {
+    String::from_utf16(&lire_hex_utf16(hex, max)?).ok()
+}
+
+/// Un nom montré à la personne : sans caractère de contrôle, coupé à `NOM_MONTRE_MAX` caractères (jamais dans le
+/// geste).
+pub(crate) fn montrer_nom(lu: &str) -> String {
+    let mut affiche: String = lu
+        .chars()
+        .take(NOM_MONTRE_MAX)
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect();
+    if lu.chars().count() > NOM_MONTRE_MAX {
+        affiche.push('…');
+    }
+    affiche
+}
+
+/// La clé de démarrage de la machine d'où retirer une valeur : celles que le bilan lit sous HKLM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CleRun {
+    Run,
+    RunOnce,
+    /// La clé Run des programmes 32 bits (WOW6432Node).
+    Run32,
+}
+
+impl CleRun {
+    pub(crate) const TOUTES: [CleRun; 3] = [CleRun::Run, CleRun::RunOnce, CleRun::Run32];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            CleRun::Run => "run",
+            CleRun::RunOnce => "runonce",
+            CleRun::Run32 => "run32",
+        }
+    }
+
+    /// Le chemin sous HKLM, à ouvrir dans la vue 64 bits (WOW6432Node y est nommé, jamais deviné par la redirection).
+    pub(crate) fn chemin(self) -> &'static str {
+        match self {
+            CleRun::Run => r"Software\Microsoft\Windows\CurrentVersion\Run",
+            CleRun::RunOnce => r"Software\Microsoft\Windows\CurrentVersion\RunOnce",
+            CleRun::Run32 => r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+        }
+    }
+
+    /// La clé d'un nom de la lecture (« HKLM:\Software\… », comme PowerShell l'écrit) ; `None` hors de ces trois.
+    pub(crate) fn depuis_ps(cle: &str) -> Option<CleRun> {
+        let chemin = cle.strip_prefix(r"HKLM:\")?;
+        CleRun::TOUTES
+            .into_iter()
+            .find(|c| c.chemin().eq_ignore_ascii_case(chemin))
+    }
+}
+
+/// Un nom de valeur de démarrage, mot par mot (un nom peut ne pas être de l'UTF-16 valide, il doit pourtant pouvoir
+/// se retirer) : jamais de NUL, `RUN_MACHINE_NOM_MAX` unités au plus ; vide, la valeur par défaut (« defaut » dans la
+/// ligne, jamais un hexadécimal vide).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NomRun(Vec<u16>);
+
+impl NomRun {
+    pub(crate) fn nouveau(unites: &[u16]) -> Option<NomRun> {
+        (unites.len() <= RUN_MACHINE_NOM_MAX && !unites.contains(&0)).then(|| NomRun(unites.to_vec()))
+    }
+
+    pub(crate) fn unites(&self) -> &[u16] {
+        &self.0
+    }
+
+    /// Le nom montré (sans caractère de contrôle, coupé) ; `None` pour la valeur par défaut.
+    pub(crate) fn montre(&self) -> Option<String> {
+        (!self.0.is_empty()).then(|| montrer_nom(&String::from_utf16_lossy(&self.0)))
+    }
+
+    fn mot(&self) -> String {
+        if self.0.is_empty() {
+            RUN_DEFAUT_MACHINE.to_string()
+        } else {
+            hex_utf16(&self.0)
+        }
+    }
+
+    fn lire(mot: &str) -> Option<NomRun> {
+        if mot == RUN_DEFAUT_MACHINE {
+            return Some(NomRun(Vec::new()));
+        }
+        lire_hex_utf16(mot, RUN_MACHINE_NOM_MAX).and_then(|u| NomRun::nouveau(&u))
+    }
+}
+
+/// Une valeur de démarrage de la machine : sa clé et son nom.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ValeurRunMachine {
+    pub cle: CleRun,
+    pub nom: NomRun,
+}
+
+/// La ligne qui retire une valeur de démarrage de la machine, d'après la clé de la lecture (« HKLM:\… ») ; `None`
+/// pour une autre clé ou un nom hors de sa forme (la valeur reste signalée, à retirer à la main).
+pub(crate) fn ligne_run_retirer_machine(cle: &str, nom: &[u16]) -> Option<String> {
+    Some(
+        Acte::RunRetirer(ValeurRunMachine {
+            cle: CleRun::depuis_ps(cle)?,
+            nom: NomRun::nouveau(nom)?,
+        })
+        .ligne(),
+    )
+}
+
+/// Une valeur de démarrage que Vanguard ne retire jamais : celles de Sécurité Windows et de Defender, par leur nom ou
+/// par leur programme. Un programme malveillant qui en prend le nom reste signalé, à retirer à la main : un refus de
+/// trop ne casse rien, un retrait de trop couperait l'icône de la protection.
+pub(crate) fn run_protege(nom: &str, programme: &str) -> bool {
+    const NOMS: [&str; 4] = [
+        "securityhealth",
+        "windowsdefender",
+        "windows defender",
+        "windows security",
+    ];
+    const PROGRAMMES: [&str; 5] = [
+        "securityhealthsystray.exe",
+        "msascuil.exe",
+        "msascui.exe",
+        "msmpeng.exe",
+        "mpcmdrun.exe",
+    ];
+    let nom = nom.trim().to_lowercase();
+    let exe = programme.trim().trim_matches('"').to_lowercase().replace('/', "\\");
+    let fichier = exe.rsplit('\\').next().unwrap_or(&exe);
+    NOMS.contains(&nom.as_str())
+        || PROGRAMMES.contains(&fichier)
+        || exe.contains(r"\windows defender\")
+        || exe.contains(r"\microsoft\windows defender\")
+}
+
+/// Un composant de chemin admis : non vide, ni « . » ni « .. », sans caractère de contrôle ni `/ : * ? " < > |`, sans
+/// espace ni point final (Windows les ôte : « x.lnk. » désignerait « x.lnk »), et jamais un nom de périphérique de
+/// DOS (`peripherique_dos` : « NUL.lnk » ouvrirait le périphérique, pas un fichier).
+fn composant_sur(c: &str) -> bool {
+    let interdit = |x: char| x.is_control() || matches!(x, '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\\');
+    !c.is_empty()
+        && c != "."
+        && c != ".."
+        && !c.chars().any(interdit)
+        && !c.ends_with([' ', '.'])
+        && !peripherique_dos(c)
+}
+
+/// Un nom que Windows lit comme un périphérique, quelle que soit l'extension : CON, PRN, AUX, NUL, CONIN$, CONOUT$,
+/// COM0 à COM9 et LPT0 à LPT9 (chiffres en exposant compris), en majuscules ou non, suivis ou non d'espaces.
+fn peripherique_dos(c: &str) -> bool {
+    let tige = c
+        .split('.')
+        .next()
+        .unwrap_or(c)
+        .trim_end_matches(' ')
+        .to_ascii_lowercase();
+    if ["con", "prn", "aux", "nul", "conin$", "conout$"].contains(&tige.as_str()) {
+        return true;
+    }
+    let mut lettres = tige.chars();
+    let debut: String = lettres.by_ref().take(3).collect();
+    let chiffre: Vec<char> = lettres.collect();
+    (debut == "com" || debut == "lpt")
+        && matches!(chiffre.as_slice(), [d] if d.is_ascii_digit() || matches!(d, '¹' | '²' | '³'))
+}
+
+/// Le premier composant d'un chemin de tâche pourrait-il être « Microsoft » pour Windows ? Le planificateur compare
+/// sans tenir compte de la casse, avec sa propre table : « ı », « ſ » ou « K » (Kelvin) y valent peut-être « I »,
+/// « S », « K ». Tout caractère non ASCII compte donc comme la lettre attendue : refusé au moindre doute.
+fn peut_etre_microsoft(composant: &str) -> bool {
+    composant.chars().count() == "microsoft".len()
+        && composant
+            .chars()
+            .zip("microsoft".chars())
+            .all(|(c, m)| !c.is_ascii() || c.to_ascii_lowercase() == m)
+}
+
+/// Un chemin de tâche planifiée : « \dossier\tâche », chaque composant sûr (`composant_sur`), `TACHE_CHEMIN_MAX`
+/// unités au plus, et jamais sous \Microsoft\ (les tâches de Windows, que le bilan ne lit pas : une ligne qui en
+/// désigne une est forgée), même écrit avec une lettre non ASCII (`peut_etre_microsoft`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CheminTache(String);
+
+impl CheminTache {
+    pub(crate) fn nouveau(chemin: &str) -> Option<CheminTache> {
+        let reste = chemin.strip_prefix('\\')?;
+        let microsoft = peut_etre_microsoft(reste.split('\\').next().unwrap_or(reste));
+        let bon =
+            chemin.encode_utf16().count() <= TACHE_CHEMIN_MAX && !microsoft && reste.split('\\').all(composant_sur);
+        bon.then(|| CheminTache(chemin.to_string()))
+    }
+
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+
+    fn hex(&self) -> String {
+        hex_texte(&self.0)
+    }
+
+    fn lire(hex: &str) -> Option<CheminTache> {
+        CheminTache::nouveau(&lire_texte_hex(hex, TACHE_CHEMIN_MAX)?).filter(|c| c.hex() == hex)
+    }
+}
+
+/// Un chemin de fichier local complet : « X:\… », chaque composant sûr (`composant_sur` : ni « .. », ni flux
+/// alternatif « : »), `CHEMIN_MAX` unités au plus. Jamais « \\?\ », « \\.\ » ni un partage (« \\serveur\… ») : ils
+/// commencent par « \ ». Jamais un nom court de DOS (« PROGRA~1 » : « ~ » suivi d'un chiffre), qui désignerait un
+/// autre fichier que celui que la ligne montre. Le processus élevé le résout encore et le compare au dossier qu'il lit
+/// lui-même.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CheminFichier(String);
+
+impl CheminFichier {
+    pub(crate) fn nouveau(chemin: &str) -> Option<CheminFichier> {
+        let o = chemin.as_bytes();
+        let lecteur = matches!(o, [l, b':', b'\\', _, ..] if l.is_ascii_alphabetic());
+        let bon = lecteur
+            && chemin.encode_utf16().count() <= CHEMIN_MAX
+            && chemin.get(3..).is_some_and(|r| r.split('\\').all(composant_sur))
+            && !nom_court_dos(chemin);
+        bon.then(|| CheminFichier(chemin.to_string()))
+    }
+
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+
+    fn hex(&self) -> String {
+        hex_texte(&self.0)
+    }
+
+    fn lire(hex: &str) -> Option<CheminFichier> {
+        CheminFichier::nouveau(&lire_texte_hex(hex, CHEMIN_MAX)?).filter(|c| c.hex() == hex)
+    }
+}
+
+/// Un nom court de DOS dans un chemin : « ~ » suivi d'un chiffre (« PROGRA~1 »).
+fn nom_court_dos(chemin: &str) -> bool {
+    chemin
+        .as_bytes()
+        .windows(2)
+        .any(|p| matches!(p, [b'~', d] if d.is_ascii_digit()))
+}
+
+/// La classe d'un consumer WMI qui lance quelque chose : une commande ou un script.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClasseConsumer {
+    Commande,
+    Script,
+}
+
+impl ClasseConsumer {
+    pub(crate) const TOUTES: [ClasseConsumer; 2] = [ClasseConsumer::Commande, ClasseConsumer::Script];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ClasseConsumer::Commande => "commande",
+            ClasseConsumer::Script => "script",
+        }
+    }
+
+    /// La classe de root\subscription.
+    pub(crate) fn classe(self) -> &'static str {
+        match self {
+            ClasseConsumer::Commande => "CommandLineEventConsumer",
+            ClasseConsumer::Script => "ActiveScriptEventConsumer",
+        }
+    }
+}
+
+/// Un nom de consumer WMI : 1 à `CONSUMER_NOM_MAX` unités UTF-16, sans caractère de contrôle ni `" ' \` (le nom entre
+/// dans un chemin d'objet WMI entre guillemets : il ne peut ni en sortir ni y glisser un échappement).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NomConsumer(String);
+
+impl NomConsumer {
+    pub(crate) fn nouveau(nom: &str) -> Option<NomConsumer> {
+        let n = nom.encode_utf16().count();
+        let interdit = |c: char| c.is_control() || matches!(c, '"' | '\'' | '\\');
+        (n > 0 && n <= CONSUMER_NOM_MAX && !nom.chars().any(interdit)).then(|| NomConsumer(nom.to_string()))
+    }
+
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+
+    fn hex(&self) -> String {
+        hex_texte(&self.0)
+    }
+
+    fn lire(hex: &str) -> Option<NomConsumer> {
+        NomConsumer::nouveau(&lire_texte_hex(hex, CONSUMER_NOM_MAX)?).filter(|n| n.hex() == hex)
+    }
+}
+
+/// Un abonnement WMI désigné par son consumer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AbonnementWmi {
+    pub classe: ClasseConsumer,
+    pub nom: NomConsumer,
+}
+
+/// Les abonnements WMI que Vanguard ne touche jamais, liste fermée (noms comparés sans la casse) : ceux que pose
+/// Windows (« SCM Event Log Consumer » et son filtre ; « BVTConsumer » et « BVTFilter » des anciennes versions), et tout
+/// nom de Sécurité Windows ou de Defender. Un abonnement malveillant qui en prend le nom reste signalé, à retirer à la
+/// main : un refus de trop ne casse rien, un retrait de trop couperait un abonnement de Windows ou de l'antivirus.
+pub(crate) fn abonnement_wmi_protege(nom: &str) -> bool {
+    const NOMS: [&str; 4] = [
+        "scm event log consumer",
+        "scm event log filter",
+        "bvtconsumer",
+        "bvtfilter",
+    ];
+    const MOTS: [&str; 5] = [
+        "windows defender",
+        "microsoft defender",
+        "windows security",
+        "securityhealth",
+        "msmpeng",
+    ];
+    let n = nom.trim().to_lowercase();
+    NOMS.contains(&n.as_str()) || MOTS.iter().any(|m| n.contains(m))
+}
+
+/// Un consumer qui lance un programme de Sécurité Windows ou de Defender (`run_protege`) : son programme
+/// (ExecutablePath), le premier mot de sa ligne de commande (entre guillemets ou jusqu'à la première espace), ou son
+/// fichier de script.
+pub(crate) fn consumer_wmi_protege(nom: &str, programmes: &[&str]) -> bool {
+    abonnement_wmi_protege(nom)
+        || programmes.iter().any(|p| {
+            let p = p.trim();
+            let premier = match p.strip_prefix('"') {
+                Some(reste) => reste.split('"').next().unwrap_or_default(),
+                None => p.split(' ').next().unwrap_or_default(),
+            };
+            run_protege("", p) || run_protege("", premier)
+        })
+}
+
+/// La ligne qui retire un abonnement WMI signalé par le bilan ; `None` pour une classe autre que
+/// CommandLineEventConsumer et ActiveScriptEventConsumer, un nom hors de la forme de `NomConsumer`, un nom protégé
+/// (`abonnement_wmi_protege`), ou un nom qui porte « ¦ » (la lecture du bilan y change « | » : ce nom-là n'est pas
+/// forcément le vrai).
+pub(crate) fn ligne_wmi_abonnement_retirer(classe: &str, nom: &str) -> Option<String> {
+    let classe = ClasseConsumer::TOUTES
+        .into_iter()
+        .find(|c| c.classe().eq_ignore_ascii_case(classe))?;
+    if nom.contains('¦') || abonnement_wmi_protege(nom) {
+        return None;
+    }
+    Some(
+        Acte::WmiAbonnementRetirer(AbonnementWmi {
+            classe,
+            nom: NomConsumer::nouveau(nom)?,
+        })
+        .ligne(),
+    )
+}
+
+/// Où le processus élevé note les trois objets d'un abonnement WMI qu'il retire (`NoteWmi`).
+pub(crate) const WMI_AVANT_CLE: &str = r"SOFTWARE\Vanguard\WmiAvant";
+/// L'en-tête d'une note d'abonnement, avec sa version : une autre version est refusée, jamais devinée.
+const NOTE_WMI_ENTETE: &[u8; 6] = b"VGWMI\x01";
+/// La plus longue note, en octets (un registre en tient bien plus ; au-delà, l'abonnement se retire à la main).
+pub(crate) const NOTE_WMI_MAX: usize = 512 * 1024;
+/// Le plus long texte noté, en octets UTF-8 (un ScriptText tient en quelques kilo-octets).
+pub(crate) const NOTE_WMI_TEXTE_MAX: usize = 256 * 1024;
+/// Le plus long chemin d'objet noté, en octets.
+pub(crate) const NOTE_WMI_CHEMIN_MAX: usize = 4096;
+/// Le plus de liaisons notées pour un consumer.
+pub(crate) const NOTE_WMI_LIAISONS_MAX: usize = 16;
+
+/// Le genre d'une propriété notée.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GenreWmi {
+    Texte,
+    Entier,
+    Booleen,
+}
+
+/// Les propriétés notées d'un __EventFilter, dans l'ordre de la note ; le nom d'abord.
+pub(crate) const PROPRIETES_FILTRE: [(&str, GenreWmi); 5] = [
+    ("Name", GenreWmi::Texte),
+    ("Query", GenreWmi::Texte),
+    ("QueryLanguage", GenreWmi::Texte),
+    ("EventNamespace", GenreWmi::Texte),
+    ("EventAccess", GenreWmi::Texte),
+];
+/// Celles d'un CommandLineEventConsumer : ce qu'il lance et comment (les réglages de fenêtre plus rares, position et
+/// couleurs d'une console, ne sont pas notés et ne reviennent pas).
+pub(crate) const PROPRIETES_COMMANDE: [(&str, GenreWmi); 13] = [
+    ("Name", GenreWmi::Texte),
+    ("ExecutablePath", GenreWmi::Texte),
+    ("CommandLineTemplate", GenreWmi::Texte),
+    ("WorkingDirectory", GenreWmi::Texte),
+    ("DesktopName", GenreWmi::Texte),
+    ("WindowTitle", GenreWmi::Texte),
+    ("KillTimeout", GenreWmi::Entier),
+    ("Priority", GenreWmi::Entier),
+    ("ShowWindowCommand", GenreWmi::Entier),
+    ("RunInteractively", GenreWmi::Booleen),
+    ("CreateNewConsole", GenreWmi::Booleen),
+    ("CreateNewProcessGroup", GenreWmi::Booleen),
+    ("UseDefaultErrorMode", GenreWmi::Booleen),
+];
+/// Celles d'un ActiveScriptEventConsumer.
+pub(crate) const PROPRIETES_SCRIPT: [(&str, GenreWmi); 5] = [
+    ("Name", GenreWmi::Texte),
+    ("ScriptingEngine", GenreWmi::Texte),
+    ("ScriptText", GenreWmi::Texte),
+    ("ScriptFileName", GenreWmi::Texte),
+    ("KillTimeout", GenreWmi::Entier),
+];
+/// Celles d'une __FilterToConsumerBinding, hors ses deux références : la remise les refait vers le filtre et le
+/// consumer recréés, jamais depuis un texte noté.
+pub(crate) const PROPRIETES_LIAISON: [(&str, GenreWmi); 4] = [
+    ("DeliverSynchronously", GenreWmi::Booleen),
+    ("MaintainSecurityContext", GenreWmi::Booleen),
+    ("SlowDownProviders", GenreWmi::Booleen),
+    ("DeliveryQoS", GenreWmi::Entier),
+];
+
+impl ClasseConsumer {
+    /// Les propriétés notées de cette classe de consumer.
+    pub(crate) fn proprietes(self) -> &'static [(&'static str, GenreWmi)] {
+        match self {
+            ClasseConsumer::Commande => &PROPRIETES_COMMANDE,
+            ClasseConsumer::Script => &PROPRIETES_SCRIPT,
+        }
+    }
+}
+
+/// Une valeur notée : absente (nulle dans WMI), un texte, un entier ou un booléen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ValeurNotee {
+    Absente,
+    Texte(String),
+    Entier(i64),
+    Booleen(bool),
+}
+
+impl ValeurNotee {
+    fn convient(&self, genre: GenreWmi) -> bool {
+        match self {
+            ValeurNotee::Absente => true,
+            ValeurNotee::Texte(t) => genre == GenreWmi::Texte && t.len() <= NOTE_WMI_TEXTE_MAX,
+            ValeurNotee::Entier(_) => genre == GenreWmi::Entier,
+            ValeurNotee::Booleen(_) => genre == GenreWmi::Booleen,
+        }
+    }
+}
+
+/// Un objet WMI noté : son chemin relatif (__RELPATH, pour dire seulement s'il diffère après la remise, jamais pour
+/// écrire) et ses valeurs, dans l'ordre de la liste de sa classe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ObjetNote {
+    pub chemin: String,
+    pub valeurs: Vec<ValeurNotee>,
+}
+
+impl ObjetNote {
+    fn convient(&self, proprietes: &[(&str, GenreWmi)]) -> bool {
+        self.chemin.len() <= NOTE_WMI_CHEMIN_MAX
+            && !self.chemin.chars().any(char::is_control)
+            && self.valeurs.len() == proprietes.len()
+            && self.valeurs.iter().zip(proprietes).all(|(v, (_, g))| v.convient(*g))
+    }
+
+    /// Le nom de l'objet (sa première valeur), s'il est un texte.
+    pub(crate) fn nom(&self) -> Option<&str> {
+        match self.valeurs.first()? {
+            ValeurNotee::Texte(t) => Some(t),
+            _ => None,
+        }
+    }
+}
+
+/// Une liaison notée, avec son filtre ; `filtre_retire` : le filtre a été supprimé avec elle (il ne servait à aucune
+/// autre liaison et n'est pas protégé), et la remise le recrée ; sinon, il est resté et la remise le retrouve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LiaisonNotee {
+    pub filtre_retire: bool,
+    pub filtre: ObjetNote,
+    pub liaison: ObjetNote,
+}
+
+/// La note d'un abonnement WMI retiré : son consumer et ses liaisons, avec leurs filtres.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NoteWmi {
+    pub classe: ClasseConsumer,
+    pub consumer: ObjetNote,
+    pub liaisons: Vec<LiaisonNotee>,
+}
+
+/// Un nom de filtre admis dans une note : 1 à 256 unités UTF-16, sans caractère de contrôle (il entre dans un chemin
+/// d'objet, que WMI échappe lui-même).
+fn nom_filtre_admis(nom: &str) -> bool {
+    let n = nom.encode_utf16().count();
+    n > 0 && n <= CONSUMER_NOM_MAX && !nom.chars().any(char::is_control)
+}
+
+impl NoteWmi {
+    /// La note est-elle bien formée et celle de `attendu` ? Le consumer a exactement le nom et la classe de la ligne,
+    /// chaque objet a les propriétés de sa classe, chaque filtre un nom admis et distinct, et aucun filtre protégé
+    /// n'est à recréer.
+    pub(crate) fn valide(&self, attendu: &AbonnementWmi) -> bool {
+        let mut noms = Vec::new();
+        self.classe == attendu.classe
+            && self.consumer.convient(self.classe.proprietes())
+            && self.consumer.nom() == Some(attendu.nom.texte())
+            && self.liaisons.len() <= NOTE_WMI_LIAISONS_MAX
+            && self.liaisons.iter().all(|l| {
+                let Some(nom) = l.filtre.nom() else {
+                    return false;
+                };
+                let neuf = !noms.contains(&nom);
+                noms.push(nom);
+                neuf && nom_filtre_admis(nom)
+                    && l.filtre.convient(&PROPRIETES_FILTRE)
+                    && l.liaison.convient(&PROPRIETES_LIAISON)
+                    && !(l.filtre_retire && abonnement_wmi_protege(nom))
+            })
+    }
+
+    /// Les octets de la note : l'en-tête et sa version, la classe, le consumer, les liaisons, puis l'empreinte
+    /// SHA-256 de tout ce qui précède. `None` si elle dépasse ses bornes.
+    pub(crate) fn octets(&self) -> Option<Vec<u8>> {
+        let mut o = NOTE_WMI_ENTETE.to_vec();
+        o.push(match self.classe {
+            ClasseConsumer::Commande => 0,
+            ClasseConsumer::Script => 1,
+        });
+        ecrire_objet(&mut o, &self.consumer, self.classe.proprietes())?;
+        if self.liaisons.len() > NOTE_WMI_LIAISONS_MAX {
+            return None;
+        }
+        o.push(u8::try_from(self.liaisons.len()).ok()?);
+        for l in &self.liaisons {
+            o.push(u8::from(l.filtre_retire));
+            ecrire_objet(&mut o, &l.filtre, &PROPRIETES_FILTRE)?;
+            ecrire_objet(&mut o, &l.liaison, &PROPRIETES_LIAISON)?;
+        }
+        o.extend_from_slice(&empreinte_note(&o));
+        (o.len() <= NOTE_WMI_MAX).then_some(o)
+    }
+
+    /// Relit une note ; `None` à la moindre différence avec la forme écrite par `octets` : autre version, borne
+    /// dépassée, octet de trop ou de moins, UTF-8 invalide, booléen autre que 0 ou 1, empreinte qui ne correspond
+    /// pas.
+    pub(crate) fn lire(octets: &[u8]) -> Option<NoteWmi> {
+        if octets.len() > NOTE_WMI_MAX {
+            return None;
+        }
+        let (corps, empreinte) = octets.split_at_checked(octets.len().checked_sub(32)?)?;
+        if empreinte != empreinte_note(corps).as_slice() {
+            return None;
+        }
+        let mut c = Curseur(corps);
+        if c.prendre(NOTE_WMI_ENTETE.len())? != NOTE_WMI_ENTETE {
+            return None;
+        }
+        let classe = match c.octet()? {
+            0 => ClasseConsumer::Commande,
+            1 => ClasseConsumer::Script,
+            _ => return None,
+        };
+        let consumer = c.objet(classe.proprietes())?;
+        let n = usize::from(c.octet()?);
+        if n > NOTE_WMI_LIAISONS_MAX {
+            return None;
+        }
+        let mut liaisons = Vec::with_capacity(n);
+        for _ in 0..n {
+            let filtre_retire = c.booleen()?;
+            let filtre = c.objet(&PROPRIETES_FILTRE)?;
+            let liaison = c.objet(&PROPRIETES_LIAISON)?;
+            liaisons.push(LiaisonNotee {
+                filtre_retire,
+                filtre,
+                liaison,
+            });
+        }
+        c.0.is_empty().then_some(NoteWmi {
+            classe,
+            consumer,
+            liaisons,
+        })
+    }
+}
+
+fn empreinte_note(octets: &[u8]) -> [u8; 32] {
+    use sha2::Digest;
+    sha2::Sha256::digest(octets).into()
+}
+
+fn ecrire_texte(o: &mut Vec<u8>, t: &str, max: usize) -> Option<()> {
+    if t.len() > max {
+        return None;
+    }
+    o.extend_from_slice(&u32::try_from(t.len()).ok()?.to_le_bytes());
+    o.extend_from_slice(t.as_bytes());
+    Some(())
+}
+
+fn ecrire_objet(o: &mut Vec<u8>, objet: &ObjetNote, proprietes: &[(&str, GenreWmi)]) -> Option<()> {
+    if !objet.convient(proprietes) {
+        return None;
+    }
+    ecrire_texte(o, &objet.chemin, NOTE_WMI_CHEMIN_MAX)?;
+    for v in &objet.valeurs {
+        match v {
+            ValeurNotee::Absente => o.push(0),
+            ValeurNotee::Texte(t) => {
+                o.push(1);
+                ecrire_texte(o, t, NOTE_WMI_TEXTE_MAX)?;
+            }
+            ValeurNotee::Entier(n) => {
+                o.push(2);
+                o.extend_from_slice(&n.to_le_bytes());
+            }
+            ValeurNotee::Booleen(b) => {
+                o.push(3);
+                o.push(u8::from(*b));
+            }
+        }
+    }
+    Some(())
+}
+
+/// La lecture d'une note, octet après octet, sans jamais lire au-delà.
+struct Curseur<'a>(&'a [u8]);
+
+impl<'a> Curseur<'a> {
+    fn prendre(&mut self, n: usize) -> Option<&'a [u8]> {
+        let (tete, reste) = self.0.split_at_checked(n)?;
+        self.0 = reste;
+        Some(tete)
+    }
+
+    fn octet(&mut self) -> Option<u8> {
+        self.prendre(1)?.first().copied()
+    }
+
+    fn booleen(&mut self) -> Option<bool> {
+        match self.octet()? {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
+    }
+
+    fn texte(&mut self, max: usize) -> Option<String> {
+        let n = usize::try_from(u32::from_le_bytes(self.prendre(4)?.try_into().ok()?)).ok()?;
+        if n > max {
+            return None;
+        }
+        String::from_utf8(self.prendre(n)?.to_vec()).ok()
+    }
+
+    fn objet(&mut self, proprietes: &[(&str, GenreWmi)]) -> Option<ObjetNote> {
+        let chemin = self.texte(NOTE_WMI_CHEMIN_MAX)?;
+        let mut valeurs = Vec::with_capacity(proprietes.len());
+        for _ in proprietes {
+            valeurs.push(match self.octet()? {
+                0 => ValeurNotee::Absente,
+                1 => ValeurNotee::Texte(self.texte(NOTE_WMI_TEXTE_MAX)?),
+                2 => ValeurNotee::Entier(i64::from_le_bytes(self.prendre(8)?.try_into().ok()?)),
+                3 => ValeurNotee::Booleen(self.booleen()?),
+                _ => return None,
+            });
+        }
+        let objet = ObjetNote { chemin, valeurs };
+        objet.convient(proprietes).then_some(objet)
+    }
+}
+
+/// Un nom de service : 1 à `SERVICE_NOM_MAX` unités UTF-16, sans caractère de contrôle, sans « \ » ni « / » (que le
+/// gestionnaire de services refuse), sans espace au début ni à la fin. Espaces et parenthèses admises : les outils de
+/// prise en main s'installent sous « ScreenConnect Client (…) ».
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NomService(String);
+
+impl NomService {
+    pub(crate) fn nouveau(nom: &str) -> Option<NomService> {
+        let n = nom.encode_utf16().count();
+        let interdit = |c: char| c.is_control() || matches!(c, '\\' | '/');
+        let bon = n > 0 && n <= SERVICE_NOM_MAX && !nom.chars().any(interdit) && nom.trim() == nom;
+        bon.then(|| NomService(nom.to_string()))
+    }
+
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+
+    fn hex(&self) -> String {
+        hex_texte(&self.0)
+    }
+
+    fn lire(hex: &str) -> Option<NomService> {
+        NomService::nouveau(&lire_texte_hex(hex, SERVICE_NOM_MAX)?).filter(|n| n.hex() == hex)
+    }
+}
+
+/// La liste de lancements de la machine où le Gestionnaire des tâches désactive un programme : les valeurs Run (64 et
+/// 32 bits) et le dossier Démarrage commun.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ListeLancement {
+    Run,
+    Run32,
+    Dossier,
+}
+
+impl ListeLancement {
+    pub(crate) const TOUTES: [ListeLancement; 3] =
+        [ListeLancement::Run, ListeLancement::Run32, ListeLancement::Dossier];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ListeLancement::Run => "run",
+            ListeLancement::Run32 => "run32",
+            ListeLancement::Dossier => "dossier",
+        }
+    }
+
+    /// Sa liste sous StartupApproved.
+    pub(crate) fn approuvee(self) -> &'static str {
+        match self {
+            ListeLancement::Run => "Run",
+            ListeLancement::Run32 => "Run32",
+            ListeLancement::Dossier => "StartupFolder",
+        }
+    }
+
+    /// La liste d'un nom de StartupApproved (« Run », « Run32 », « StartupFolder »), sensible à la casse.
+    pub(crate) fn depuis_approuvee(l: &str) -> Option<ListeLancement> {
+        ListeLancement::TOUTES.into_iter().find(|x| x.approuvee() == l)
+    }
+}
+
+/// Un lancement de la machine désigné par sa liste et son nom : 1 à `RUN_MACHINE_NOM_MAX` unités UTF-16 valides, sans
+/// caractère de contrôle ; dans le dossier Démarrage, un nom de fichier seul (`composant_sur`, jamais un chemin).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LancementMachine {
+    liste: ListeLancement,
+    nom: String,
+}
+
+impl LancementMachine {
+    pub(crate) fn nouveau(liste: ListeLancement, nom: &str) -> Option<LancementMachine> {
+        let n = nom.encode_utf16().count();
+        let bon = n > 0
+            && n <= RUN_MACHINE_NOM_MAX
+            && !nom.chars().any(char::is_control)
+            // Un nom court de DOS désignerait le fichier sans être le nom que StartupApproved retient : « fait »
+            // sans effet.
+            && (liste != ListeLancement::Dossier || (composant_sur(nom) && !nom_court_dos(nom)));
+        bon.then(|| LancementMachine {
+            liste,
+            nom: nom.to_string(),
+        })
+    }
+
+    pub(crate) fn liste(&self) -> ListeLancement {
+        self.liste
+    }
+
+    pub(crate) fn nom(&self) -> &str {
+        &self.nom
+    }
+
+    fn mots(&self) -> String {
+        format!("{} {}", self.liste.mot(), hex_texte(&self.nom))
+    }
+
+    fn lire(reste: &str) -> Option<LancementMachine> {
+        let (mot, hex) = reste.split_once(' ')?;
+        let liste = ListeLancement::TOUTES.into_iter().find(|l| l.mot() == mot)?;
+        LancementMachine::nouveau(liste, &lire_texte_hex(hex, RUN_MACHINE_NOM_MAX)?).filter(|l| l.mots() == reste)
+    }
+}
+
+/// La valeur que Windows écrit dans StartupApproved pour « désactivé » : 12 octets, `03 00 00 00` puis l'heure du
+/// changement (FILETIME). Rien d'autre n'entre dans une ligne : ni « activé », ni une autre longueur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ValeurDesactivee([u8; 12]);
+
+impl ValeurDesactivee {
+    pub(crate) fn lire(hex: &str) -> Option<ValeurDesactivee> {
+        let o = hex.as_bytes();
+        if o.len() != 24 || !o.iter().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(c)) {
+            return None;
+        }
+        let mut v = [0u8; 12];
+        for (case, paire) in v.iter_mut().zip(o.chunks(2)) {
+            *case = u8::from_str_radix(std::str::from_utf8(paire).ok()?, 16).ok()?;
+        }
+        (v[..4] == [3, 0, 0, 0]).then_some(ValeurDesactivee(v))
+    }
+
+    pub(crate) fn octets(&self) -> &[u8; 12] {
+        &self.0
+    }
+
+    fn hex(&self) -> String {
+        use std::fmt::Write;
+        self.0.iter().fold(String::with_capacity(24), |mut s, o| {
+            let _ = write!(s, "{o:02x}");
+            s
+        })
+    }
+}
+
+/// La ligne d'Optimiser pour un programme de démarrage de toute la machine (liste de StartupApproved, nom, valeur
+/// voulue en hexadécimal) : désactiver avec la valeur de Windows, ou remettre les octets notés par le processus élevé
+/// (une valeur voulue vide ou « activé »). `None` hors de ces formes : rien ne part.
+pub(crate) fn ligne_lancement(liste: &str, nom: &str, voulue: Option<&str>) -> Option<String> {
+    let l = LancementMachine::nouveau(ListeLancement::depuis_approuvee(liste)?, nom)?;
+    let desactiver = voulue
+        .filter(|h| !h.is_empty())
+        .and_then(|h| h.get(..2))
+        .and_then(|b| u8::from_str_radix(b, 16).ok())
+        .is_some_and(|b| b & 1 == 1);
+    let acte = if desactiver {
+        Acte::LancementDesactiver(l, ValeurDesactivee::lire(voulue?)?)
+    } else {
+        Acte::LancementReactiver(l)
+    };
+    Some(acte.ligne())
+}
+
+/// La ligne qui désactive une tâche signalée par le bilan, d'après son dossier (« \…\ », comme TaskPath) et son nom ;
+/// `None` hors de la forme de `CheminTache` (la tâche reste signalée, à désactiver à la main).
+pub(crate) fn ligne_tache_desactiver(dossier: &str, nom: &str) -> Option<String> {
+    let chemin = format!("{}\\{nom}", dossier.trim_end_matches('\\'));
+    Some(Acte::TacheDesactiver(CheminTache::nouveau(&chemin)?).ligne())
+}
+
+/// La ligne qui met en quarantaine un fichier du dossier Démarrage commun ; `None` hors de la forme de
+/// `CheminFichier`.
+pub(crate) fn ligne_demarrage_quarantaine(chemin: &str) -> Option<String> {
+    Some(Acte::DemarrageQuarantaine(CheminFichier::nouveau(chemin)?).ligne())
+}
+
+/// Les verbes de la persistance et de la prise en main à distance (lot 3.5).
+const VERBES_PERSISTANCE: [&str; 11] = [
+    RUN_RETIRER_MACHINE,
+    RUN_REMETTRE,
+    TACHE_DESACTIVER,
+    TACHE_REACTIVER,
+    DEMARRAGE_QUARANTAINE,
+    DEMARRAGE_REMETTRE,
+    WMI_ABONNEMENT_RETIRER,
+    WMI_ABONNEMENT_REMETTRE,
+    SERVICE_RETIRER,
+    LANCEMENT_DESACTIVER,
+    LANCEMENT_REACTIVER,
+];
+
+/// La ligne porte-t-elle un verbe de la persistance ? Elle n'est alors lue que par `analyser_persistance`.
+fn est_persistance(ligne: &str) -> bool {
+    VERBES_PERSISTANCE.iter().any(|v| ligne.starts_with(v))
+}
+
+/// L'acte d'une ligne de persistance (lot 3.5), si et seulement si elle est exactement de sa forme. Bornée par
+/// `LIGNE_MAX` (un nom de valeur ou un chemin), `ACTE_NOM_MAX` pour un consumer ou un service.
+fn analyser_persistance(ligne: &str) -> Option<Acte> {
+    let long = |verbe: &str| {
+        ligne
+            .strip_prefix(verbe)
+            .filter(|_| ligne.len() <= LIGNE_MAX && ligne.is_ascii())
+    };
+    let court = |verbe: &str| {
+        ligne
+            .strip_prefix(verbe)
+            .filter(|_| ligne.len() <= ACTE_NOM_MAX && ligne.is_ascii())
+    };
+    let run = |reste: &str| {
+        let (mot, nom) = reste.split_once(' ')?;
+        Some(ValeurRunMachine {
+            cle: CleRun::TOUTES.into_iter().find(|c| c.mot() == mot)?,
+            nom: NomRun::lire(nom)?,
+        })
+    };
+    let wmi = |reste: &str| {
+        let (mot, hex) = reste.split_once(' ')?;
+        Some(AbonnementWmi {
+            classe: ClasseConsumer::TOUTES.into_iter().find(|c| c.mot() == mot)?,
+            // Jamais un abonnement de Windows ni de Defender, ni dans un sens ni dans l'autre.
+            nom: NomConsumer::lire(hex).filter(|n| !abonnement_wmi_protege(n.texte()))?,
+        })
+    };
+    let acte = if let Some(r) = long(RUN_RETIRER_MACHINE) {
+        run(r).map(Acte::RunRetirer)
+    } else if let Some(r) = long(RUN_REMETTRE) {
+        run(r).map(Acte::RunRemettre)
+    } else if let Some(r) = long(TACHE_DESACTIVER) {
+        CheminTache::lire(r).map(Acte::TacheDesactiver)
+    } else if let Some(r) = long(TACHE_REACTIVER) {
+        CheminTache::lire(r).map(Acte::TacheReactiver)
+    } else if let Some(r) = long(DEMARRAGE_QUARANTAINE) {
+        CheminFichier::lire(r).map(Acte::DemarrageQuarantaine)
+    } else if let Some(r) = long(DEMARRAGE_REMETTRE) {
+        CheminFichier::lire(r).map(Acte::DemarrageRemettre)
+    } else if let Some(r) = court(WMI_ABONNEMENT_RETIRER) {
+        wmi(r).map(Acte::WmiAbonnementRetirer)
+    } else if let Some(r) = court(WMI_ABONNEMENT_REMETTRE) {
+        wmi(r).map(Acte::WmiAbonnementRemettre)
+    } else if let Some(r) = court(SERVICE_RETIRER) {
+        NomService::lire(r).map(Acte::ServiceRetirer)
+    } else if let Some(r) = long(LANCEMENT_DESACTIVER) {
+        r.rsplit_once(' ').and_then(|(l, v)| {
+            Some(Acte::LancementDesactiver(
+                LancementMachine::lire(l)?,
+                ValeurDesactivee::lire(v)?,
+            ))
+        })
+    } else if let Some(r) = long(LANCEMENT_REACTIVER) {
+        LancementMachine::lire(r).map(Acte::LancementReactiver)
+    } else {
+        None
+    };
+    acte.filter(|a| a.ligne() == ligne)
+}
+
 /// Un acte du processus élevé sur Windows lui-même : un service de la table, un dossier à vider, la file
 /// d'impression, un cache à mettre de côté, le pare-feu et la catégorie d'un réseau. Le parent n'envoie que des
 /// identifiants et des valeurs de listes fermées ; les chemins sont calculés par le processus élevé, depuis le
@@ -1192,6 +3434,48 @@ pub(crate) enum Acte {
     IfeoSilencieux(Vue, NomFichier),
     /// Mettre entre guillemets le chemin (ImagePath) du service `nom`.
     ServiceGuillemets(NomFichier),
+    /// Renforcer un réglage de Defender, jamais le baisser (relu avant et après par le processus élevé).
+    Defender(ReglageDefender, ValeurDefender),
+    /// Une règle ASR des listes d'Optimiser.
+    DefenderAsr(&'static str, ModeAsr),
+    /// Retirer une exclusion de Defender, rejugée contre le constat relu.
+    DefenderExclusionRetirer(GenreExclusion, Exclusion),
+    /// Retirer les menaces trouvées par Defender.
+    DefenderMenacesRetirer,
+    /// Écrire le fichier préparé à la place du hosts, la différence rejugée (`juger_hosts`) et montrée avant.
+    HostsEcrire(HostsEcrire),
+    /// Remettre en automatique les serveurs DNS d'une carte réseau.
+    DnsAuto(GuidReseau),
+    /// Régler les serveurs DNS d'une carte réseau, sur des serveurs de la liste fermée (`RESOLVEURS`).
+    DnsServeurs(DnsServeurs),
+    /// Désactiver le compte local de ce RID, jamais l'activer (`refus_desactivation`).
+    CompteDesactiver(u32),
+    /// Retirer un certificat racine signalé, jamais en ajouter.
+    CertificatRetirer(MagasinRacine, Empreinte),
+    /// Retirer d'un partage les autorisations d'un compte, jamais en donner.
+    PartageRetirerAcces(AccesPartage),
+    /// Retirer une valeur de démarrage de la machine que le bilan signale (donnée d'avant notée).
+    RunRetirer(ValeurRunMachine),
+    /// Remettre la donnée qu'un retrait de valeur de démarrage a notée, jamais une autre.
+    RunRemettre(ValeurRunMachine),
+    /// Désactiver une tâche planifiée signalée (passe b).
+    TacheDesactiver(CheminTache),
+    /// Réactiver une tâche que Vanguard a désactivée (passe b).
+    TacheReactiver(CheminTache),
+    /// Mettre en quarantaine un fichier du dossier Démarrage commun (passe b).
+    DemarrageQuarantaine(CheminFichier),
+    /// Ressortir de la quarantaine un fichier que Vanguard y a mis (passe b).
+    DemarrageRemettre(CheminFichier),
+    /// Retirer un abonnement WMI signalé (passe c).
+    WmiAbonnementRetirer(AbonnementWmi),
+    /// Recréer un abonnement WMI que Vanguard a retiré (passe c).
+    WmiAbonnementRemettre(AbonnementWmi),
+    /// Supprimer le service d'un outil de prise en main à distance (passe d), irréversible.
+    ServiceRetirer(NomService),
+    /// Désactiver un programme de démarrage de la machine comme le Gestionnaire des tâches (StartupApproved).
+    LancementDesactiver(LancementMachine, ValeurDesactivee),
+    /// Remettre les octets de StartupApproved qu'un `LancementDesactiver` a notés.
+    LancementReactiver(LancementMachine),
 }
 
 impl Acte {
@@ -1209,7 +3493,34 @@ impl Acte {
             Acte::IfeoSilencieux(Vue::Windows, n) => format!("{IFEO_SILENCIEUX}{}", n.hex()),
             Acte::IfeoSilencieux(Vue::Wow32, n) => format!("{IFEO_SILENCIEUX_32}{}", n.hex()),
             Acte::ServiceGuillemets(n) => format!("{SERVICE_GUILLEMETS}{}", n.hex()),
+            Acte::Defender(r, v) => format!("{DEFENDER}{} {}", r.mot(), v.mot()),
+            Acte::DefenderAsr(id, m) => format!("{DEFENDER_ASR}{id} {}", m.mot()),
+            Acte::DefenderExclusionRetirer(g, e) => format!("{DEFENDER_EXCLUSION_RETIRER}{} {}", g.mot(), e.hex()),
+            Acte::DefenderMenacesRetirer => DEFENDER_MENACES_RETIRER.to_string(),
+            Acte::HostsEcrire(h) => h.ligne(),
+            Acte::DnsAuto(g) => format!("{DNS_AUTO}{}", g.texte()),
+            Acte::DnsServeurs(d) => d.ligne(),
+            Acte::CompteDesactiver(rid) => format!("{COMPTE_DESACTIVER}{rid}"),
+            Acte::CertificatRetirer(m, e) => format!("{CERTIFICAT_RETIRER}{} {}", m.mot(), e.texte()),
+            Acte::PartageRetirerAcces(a) => format!("{PARTAGE_RETIRER_ACCES}{} {}", a.nom.hex(), a.sid.texte()),
+            Acte::RunRetirer(v) => format!("{RUN_RETIRER_MACHINE}{} {}", v.cle.mot(), v.nom.mot()),
+            Acte::RunRemettre(v) => format!("{RUN_REMETTRE}{} {}", v.cle.mot(), v.nom.mot()),
+            Acte::TacheDesactiver(t) => format!("{TACHE_DESACTIVER}{}", t.hex()),
+            Acte::TacheReactiver(t) => format!("{TACHE_REACTIVER}{}", t.hex()),
+            Acte::DemarrageQuarantaine(f) => format!("{DEMARRAGE_QUARANTAINE}{}", f.hex()),
+            Acte::DemarrageRemettre(f) => format!("{DEMARRAGE_REMETTRE}{}", f.hex()),
+            Acte::WmiAbonnementRetirer(w) => format!("{WMI_ABONNEMENT_RETIRER}{} {}", w.classe.mot(), w.nom.hex()),
+            Acte::WmiAbonnementRemettre(w) => format!("{WMI_ABONNEMENT_REMETTRE}{} {}", w.classe.mot(), w.nom.hex()),
+            Acte::ServiceRetirer(n) => format!("{SERVICE_RETIRER}{}", n.hex()),
+            Acte::LancementDesactiver(l, v) => format!("{LANCEMENT_DESACTIVER}{} {}", l.mots(), v.hex()),
+            Acte::LancementReactiver(l) => format!("{LANCEMENT_REACTIVER}{}", l.mots()),
         }
+    }
+
+    /// L'acte touche-t-il aux réglages d'une carte réseau (ses serveurs DNS) ? Refusé pendant une session à
+    /// distance (`coupe_une_session`).
+    pub(crate) fn touche_le_reseau(&self) -> bool {
+        matches!(self, Acte::DnsAuto(_) | Acte::DnsServeurs(_))
     }
 
     /// L'acte protège-t-il le PC (une correction qui n'en a que de tels est une protection, que « Défaire » ne propose
@@ -1217,10 +3528,42 @@ impl Acte {
     pub(crate) fn durcit(&self) -> bool {
         match self {
             Acte::Service(s) => s.durcit,
-            Acte::PareFeuActif | Acte::IfeoDebugger(..) | Acte::IfeoSilencieux(..) | Acte::ServiceGuillemets(_) => true,
+            Acte::PareFeuActif
+            | Acte::IfeoDebugger(..)
+            | Acte::IfeoSilencieux(..)
+            | Acte::ServiceGuillemets(_)
+            | Acte::Defender(..)
+            | Acte::DefenderAsr(..)
+            | Acte::DefenderExclusionRetirer(..)
+            | Acte::CompteDesactiver(_)
+            | Acte::CertificatRetirer(..)
+            | Acte::PartageRetirerAcces(_)
+            // Supprimer un service ne se défait pas : une protection, que « Défaire » ne propose jamais.
+            | Acte::ServiceRetirer(_) => true,
             Acte::PareFeuPublic(p) => p.durcit(),
             Acte::ReseauCategorie(r) => r.categorie == Categorie::Public,
-            Acte::Vider(_) | Acte::ViderFileImpression | Acte::MettreDeCote(_) => false,
+            // Retirer des menaces nettoie : ni une protection remise, ni une remise qui affaiblit. Le hosts et le DNS
+            // dépendent de ce qui change : la console élevée le dit d'après la différence relue.
+            Acte::Vider(_)
+            | Acte::ViderFileImpression
+            | Acte::MettreDeCote(_)
+            | Acte::DefenderMenacesRetirer
+            | Acte::HostsEcrire(_)
+            | Acte::DnsAuto(_)
+            | Acte::DnsServeurs(_)
+            // Retirer un lancement suspect se défait (donnée notée) : ni une protection remise que « Défaire » tairait,
+            // ni une remise. Les remises, elles, affaiblissent.
+            | Acte::RunRetirer(_)
+            | Acte::RunRemettre(_)
+            | Acte::TacheDesactiver(_)
+            | Acte::TacheReactiver(_)
+            | Acte::DemarrageQuarantaine(_)
+            | Acte::DemarrageRemettre(_)
+            | Acte::WmiAbonnementRetirer(_)
+            | Acte::WmiAbonnementRemettre(_)
+            // Un programme de démarrage choisi dans Optimiser : un confort, défait par Optimiser lui-même.
+            | Acte::LancementDesactiver(..)
+            | Acte::LancementReactiver(_) => false,
         }
     }
 
@@ -1232,12 +3575,36 @@ impl Acte {
             Acte::PareFeuPublic(p) => p.affaiblit(),
             Acte::ReseauCategorie(r) => r.categorie == Categorie::Prive,
             Acte::PareFeuActif
+            | Acte::DefenderAsr(..)
             | Acte::Vider(_)
             | Acte::ViderFileImpression
             | Acte::MettreDeCote(_)
             | Acte::IfeoDebugger(..)
             | Acte::IfeoSilencieux(..)
-            | Acte::ServiceGuillemets(_) => false,
+            | Acte::ServiceGuillemets(_)
+            | Acte::Defender(..)
+            | Acte::DefenderExclusionRetirer(..)
+            | Acte::DefenderMenacesRetirer
+            | Acte::HostsEcrire(_)
+            | Acte::DnsAuto(_)
+            | Acte::DnsServeurs(_)
+            | Acte::CompteDesactiver(_)
+            | Acte::CertificatRetirer(..)
+            | Acte::PartageRetirerAcces(_)
+            | Acte::RunRetirer(_)
+            | Acte::TacheDesactiver(_)
+            | Acte::DemarrageQuarantaine(_)
+            | Acte::WmiAbonnementRetirer(_)
+            | Acte::ServiceRetirer(_)
+            // Remettre un programme qu'Optimiser avait désactivé (jamais un lancement jugé suspect par le bilan) ne
+            // touche pas à la protection.
+            | Acte::LancementDesactiver(..)
+            | Acte::LancementReactiver(_) => false,
+            // Un lancement que le bilan jugeait suspect revient : dit en toutes lettres avant l'accord.
+            Acte::RunRemettre(_)
+            | Acte::TacheReactiver(_)
+            | Acte::DemarrageRemettre(_)
+            | Acte::WmiAbonnementRemettre(_) => true,
         }
     }
 
@@ -1267,6 +3634,33 @@ impl Acte {
                 ps_texte(&format!(r"HKLM:\{}\{}", v.silencieuse(), n.texte()))
             ),
             Acte::ServiceGuillemets(n) => powershell_guillemets(n),
+            // Aucune commande de Defender dans un script : AMSI les juge comme celles d'un programme qui le désarme,
+            // et le chemin du programme passe par WMI (`defender_ecriture`). Sous Wine, il n'y a pas de Defender :
+            // l'erreur est dite par la fenêtre, jamais un geste deviné.
+            Acte::Defender(..)
+            | Acte::DefenderAsr(..)
+            | Acte::DefenderExclusionRetirer(..)
+            | Acte::DefenderMenacesRetirer
+            // Aucun PowerShell sur le chemin d'écriture du hosts, des comptes, des racines ni des partages : sous Wine,
+            // l'erreur est dite.
+            | Acte::HostsEcrire(_)
+            | Acte::CompteDesactiver(_)
+            | Acte::CertificatRetirer(..)
+            | Acte::PartageRetirerAcces(_)
+            // Ni la persistance ni la prise en main à distance (lot 3.5) : natif seulement.
+            | Acte::RunRetirer(_)
+            | Acte::RunRemettre(_)
+            | Acte::TacheDesactiver(_)
+            | Acte::TacheReactiver(_)
+            | Acte::DemarrageQuarantaine(_)
+            | Acte::DemarrageRemettre(_)
+            | Acte::WmiAbonnementRetirer(_)
+            | Acte::WmiAbonnementRemettre(_)
+            | Acte::ServiceRetirer(_)
+            | Acte::LancementDesactiver(..)
+            | Acte::LancementReactiver(_) => SANS_POWERSHELL.to_string(),
+            Acte::DnsAuto(g) => powershell_dns_auto(*g),
+            Acte::DnsServeurs(d) => d.powershell(),
         }
     }
 }
@@ -1286,17 +3680,53 @@ pub(crate) fn est_un_acte(ligne: &str) -> bool {
         || ligne.starts_with(IFEO_SILENCIEUX)
         || ligne.starts_with(IFEO_SILENCIEUX_32)
         || ligne.starts_with(SERVICE_GUILLEMETS)
+        || ligne.starts_with(DEFENDER)
+        || ligne.starts_with(DEFENDER_ASR)
+        || ligne.starts_with(DEFENDER_EXCLUSION_RETIRER)
+        || ligne.starts_with(DEFENDER_MENACES_RETIRER)
+        || ligne.starts_with(HOSTS_ECRIRE)
+        || ligne.starts_with(DNS_AUTO)
+        || ligne.starts_with(DNS_SERVEURS)
+        || ligne.starts_with(COMPTE_DESACTIVER)
+        || ligne.starts_with(CERTIFICAT_RETIRER)
+        || ligne.starts_with(PARTAGE_RETIRER_ACCES)
+        || est_persistance(ligne)
 }
 
-/// L'acte d'une ligne, si et seulement si elle est exactement de sa forme : ASCII, 256 octets au plus (1068 pour
+/// L'acte d'une ligne, si et seulement si elle est exactement de sa forme : ASCII, 256 octets au plus (1086 pour
 /// une ligne qui porte un nom en hexadécimal), sensible à la casse, un nom et une action de la table (une seule espace
 /// entre chaque), réécrite à l'identique.
 pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
+    // L'écriture du hosts porte un chemin, plus long qu'un nom : sa propre borne.
+    if let Some(reste) = ligne.strip_prefix(HOSTS_ECRIRE) {
+        return (ligne.len() <= HOSTS_LIGNE_MAX && ligne.is_ascii())
+            .then(|| HostsEcrire::analyser(reste))
+            .flatten()
+            .map(Acte::HostsEcrire)
+            .filter(|a| a.ligne() == ligne);
+    }
+    // La persistance (lot 3.5) porte un nom de valeur ou un chemin : ses propres bornes.
+    if est_persistance(ligne) {
+        return analyser_persistance(ligne);
+    }
     if ligne.len() > ACTE_NOM_MAX || !ligne.is_ascii() {
         return None;
     }
     if let Some((hex, faire)) = verbe_nomme(ligne) {
         return NomFichier::lire(hex).map(faire).filter(|a| a.ligne() == ligne);
+    }
+    if let Some(reste) = ligne.strip_prefix(DEFENDER_EXCLUSION_RETIRER) {
+        let (mot, hex) = reste.split_once(' ')?;
+        let genre = *GenreExclusion::TOUS.iter().find(|g| g.mot() == mot)?;
+        return Some(Acte::DefenderExclusionRetirer(genre, Exclusion::lire(hex)?)).filter(|a| a.ligne() == ligne);
+    }
+    if let Some(reste) = ligne.strip_prefix(PARTAGE_RETIRER_ACCES) {
+        let (hex, sid) = reste.split_once(' ')?;
+        let acces = AccesPartage {
+            nom: NomPartage::lire(hex)?,
+            sid: SidTexte::lire(sid)?,
+        };
+        return Some(Acte::PartageRetirerAcces(acces)).filter(|a| a.ligne() == ligne);
     }
     if ligne.len() > ACTE_MAX {
         return None;
@@ -1319,12 +3749,31 @@ pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
         Acte::PareFeuActif
     } else if let Some(reste) = ligne.strip_prefix(PARE_FEU_PUBLIC) {
         Acte::PareFeuPublic(ProfilPublic::analyser(reste)?)
+    } else if let Some(reste) = ligne.strip_prefix(DEFENDER) {
+        let (mot, valeur) = reste.split_once(' ')?;
+        let reglage = *ReglageDefender::TOUS.iter().find(|r| r.mot() == mot)?;
+        Acte::Defender(reglage, *reglage.permises().iter().find(|v| v.mot() == valeur)?)
+    } else if let Some(reste) = ligne.strip_prefix(DEFENDER_ASR) {
+        let (id, mot) = reste.split_once(' ')?;
+        Acte::DefenderAsr(asr_connue(id)?, *ModeAsr::TOUS.iter().find(|m| m.mot() == mot)?)
+    } else if ligne == DEFENDER_MENACES_RETIRER {
+        Acte::DefenderMenacesRetirer
     } else if let Some(reste) = ligne.strip_prefix(RESEAU_CATEGORIE) {
         let (guid, mot) = reste.split_once(' ')?;
         Acte::ReseauCategorie(ReseauCategorie {
             guid: GuidReseau::lire(guid)?,
             categorie: *[Categorie::Public, Categorie::Prive].iter().find(|c| c.mot() == mot)?,
         })
+    } else if let Some(guid) = ligne.strip_prefix(DNS_AUTO) {
+        Acte::DnsAuto(GuidReseau::lire(guid)?)
+    } else if let Some(reste) = ligne.strip_prefix(DNS_SERVEURS) {
+        Acte::DnsServeurs(DnsServeurs::analyser(reste)?)
+    } else if let Some(rid) = ligne.strip_prefix(COMPTE_DESACTIVER) {
+        Acte::CompteDesactiver(lire_rid(rid)?)
+    } else if let Some(reste) = ligne.strip_prefix(CERTIFICAT_RETIRER) {
+        let (mot, empreinte) = reste.split_once(' ')?;
+        let magasin = *MagasinRacine::TOUS.iter().find(|m| m.mot() == mot)?;
+        Acte::CertificatRetirer(magasin, Empreinte::lire(empreinte)?)
     } else {
         let id = ligne.strip_prefix(METTRE_DE_COTE)?;
         Acte::MettreDeCote(*ACoter::TOUS.iter().find(|c| c.id() == id)?)
@@ -1394,6 +3843,452 @@ pub(crate) fn ligne_reseau_categorie(guid: &str, categorie: Categorie) -> Option
     GuidReseau::lire(guid).map(|guid| ReseauCategorie { guid, categorie }.ligne())
 }
 
+// ------------------------------------------------------------------ le compte
+
+/// Le verbe d'un geste du compte : une valeur du HKCU de la personne (ou son mode d'alimentation), faite par Vanguard
+/// NON élevé, dans son propre processus, qui tourne déjà sous le compte de la personne. Le processus élevé la refuse
+/// (`valider`) : elle ne passe jamais l'UAC, et une fenêtre administrateur ouverte par un autre compte (« par-dessus
+/// l'épaule ») ne l'écrit pas dans son HKCU à elle.
+pub(crate) const COMPTE: &str = "vanguard:compte ";
+/// Le plus long nom de valeur Run admis, en unités UTF-16 : celui du registre (16 383 caractères). Un maliciel qui
+/// prend un nom très long ne doit pas échapper au retrait.
+pub(crate) const RUN_NOM_MAX: usize = 16_383;
+/// La plus longue ligne du compte : un retrait RunOnce au nom le plus long. Elle ne passe jamais le tube du processus
+/// élevé (`valider` la refuse), d'où une borne à elle, au-dessus de `LIGNE_MAX`.
+pub(crate) const COMPTE_LIGNE_MAX: usize = COMPTE.len() + "run-retirer runonce ".len() + 4 * RUN_NOM_MAX;
+/// Les caractères d'un nom montrés au plus : un nom très long est coupé à l'écran, jamais dans le geste.
+const NOM_MONTRE_MAX: usize = 200;
+/// Les clés de démarrage du compte, sous HKCU.
+pub(crate) const CLE_RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+pub(crate) const CLE_RUNONCE: &str = r"Software\Microsoft\Windows\CurrentVersion\RunOnce";
+/// Les versions d'Office qui gardent leurs réglages dans le registre (2010, 2013, 2016 à 365) et leurs programmes à
+/// macros : (clé, nom montré).
+pub(crate) const OFFICE_VERSIONS: [&str; 3] = ["16.0", "15.0", "14.0"];
+pub(crate) const OFFICE_PROGRAMMES: [(&str, &str); 6] = [
+    ("word", "Word"),
+    ("excel", "Excel"),
+    ("powerpoint", "PowerPoint"),
+    ("access", "Access"),
+    ("publisher", "Publisher"),
+    ("visio", "Visio"),
+];
+
+/// Ce qu'un geste du compte met dans sa valeur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Donnee {
+    Dword(u32),
+    /// Un texte (REG_SZ).
+    Sz(&'static str),
+    /// La valeur retirée.
+    Retirer,
+    /// DirectXUserGlobalSettings : seul « SwapEffectUpgradeEnable » change, le reste du texte est gardé
+    /// (`avec_swap_effect`).
+    SwapEffect,
+}
+
+/// Une valeur fixe du compte : sa clé sous HKCU, son nom, ce qu'elle reçoit.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ValeurCompte {
+    pub id: &'static str,
+    pub cle: &'static str,
+    pub nom: &'static str,
+    pub donnee: Donnee,
+    /// Un réglage d'Internet : WinINet est prévenu une fois la valeur changée, pour que les navigateurs le prennent
+    /// tout de suite.
+    pub rafraichir: bool,
+    /// Le geste renforce la sécurité : son annulation n'est pas proposée (`Defaire::Protection`).
+    pub durcit: bool,
+    pub fr: &'static str,
+    pub en: &'static str,
+}
+
+/// Les valeurs fixes du compte, liste fermée. Seul l'identifiant voyage : la clé, le nom et la donnée sont ceux-ci.
+pub(crate) static VALEURS_COMPTE: &[ValeurCompte] = &[
+    ValeurCompte {
+        id: "jeux-mode",
+        cle: r"Software\Microsoft\GameBar",
+        nom: "AutoGameModeEnabled",
+        donnee: Donnee::Dword(1),
+        rafraichir: false,
+        durcit: false,
+        fr: "Activer le Mode Jeu",
+        en: "Turn on Game Mode",
+    },
+    ValeurCompte {
+        id: "jeux-dvr",
+        cle: r"System\GameConfigStore",
+        nom: "GameDVR_Enabled",
+        donnee: Donnee::Dword(0),
+        rafraichir: false,
+        durcit: false,
+        fr: "Couper l'enregistrement de jeu en arrière-plan",
+        en: "Turn off background game recording",
+    },
+    ValeurCompte {
+        id: "jeux-capture",
+        cle: r"Software\Microsoft\Windows\CurrentVersion\GameDVR",
+        nom: "AppCaptureEnabled",
+        donnee: Donnee::Dword(0),
+        rafraichir: false,
+        durcit: false,
+        fr: "Couper la capture de jeu de la Xbox Game Bar",
+        en: "Turn off Xbox Game Bar game capture",
+    },
+    ValeurCompte {
+        id: "souris-vitesse",
+        cle: r"Control Panel\Mouse",
+        nom: "MouseSpeed",
+        donnee: Donnee::Sz("0"),
+        rafraichir: false,
+        durcit: false,
+        fr: "Couper l'accélération de la souris (vitesse)",
+        en: "Turn off mouse acceleration (speed)",
+    },
+    ValeurCompte {
+        id: "souris-seuil1",
+        cle: r"Control Panel\Mouse",
+        nom: "MouseThreshold1",
+        donnee: Donnee::Sz("0"),
+        rafraichir: false,
+        durcit: false,
+        fr: "Couper l'accélération de la souris (premier seuil)",
+        en: "Turn off mouse acceleration (first threshold)",
+    },
+    ValeurCompte {
+        id: "souris-seuil2",
+        cle: r"Control Panel\Mouse",
+        nom: "MouseThreshold2",
+        donnee: Donnee::Sz("0"),
+        rafraichir: false,
+        durcit: false,
+        fr: "Couper l'accélération de la souris (second seuil)",
+        en: "Turn off mouse acceleration (second threshold)",
+    },
+    ValeurCompte {
+        id: "jeux-fenetres",
+        cle: r"Software\Microsoft\DirectX\UserGpuPreferences",
+        nom: "DirectXUserGlobalSettings",
+        donnee: Donnee::SwapEffect,
+        rafraichir: false,
+        durcit: false,
+        fr: "Activer les optimisations pour les jeux en fenêtre",
+        en: "Turn on optimizations for windowed games",
+    },
+    ValeurCompte {
+        id: "ps-strategie",
+        cle: r"SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell",
+        nom: "ExecutionPolicy",
+        donnee: Donnee::Sz("RemoteSigned"),
+        rafraichir: false,
+        durcit: true,
+        fr: "Remettre la stratégie d'exécution de PowerShell de ce compte à RemoteSigned",
+        en: "Set this account's PowerShell execution policy back to RemoteSigned",
+    },
+    // Décision 4 b) du plan : un retrait de persistance n'est pas « Protection » ; son annulation exacte (valeur
+    // d'avant relevée) revient au lot 3.5.
+    ValeurCompte {
+        id: "winlogon-shell-compte",
+        cle: r"Software\Microsoft\Windows NT\CurrentVersion\Winlogon",
+        nom: "Shell",
+        donnee: Donnee::Retirer,
+        rafraichir: false,
+        durcit: false,
+        fr: "Retirer le shell de remplacement de ce compte (l'Explorateur revient)",
+        en: "Remove this account's replacement shell (Explorer comes back)",
+    },
+    ValeurCompte {
+        id: "proxy-coupe",
+        cle: r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+        nom: "ProxyEnable",
+        donnee: Donnee::Dword(0),
+        rafraichir: true,
+        durcit: false,
+        fr: "Couper le proxy de ce compte",
+        en: "Turn off this account's proxy",
+    },
+    ValeurCompte {
+        id: "proxy-script-retire",
+        cle: r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+        nom: "AutoConfigURL",
+        donnee: Donnee::Retirer,
+        rafraichir: true,
+        durcit: false,
+        fr: "Retirer le script de configuration du proxy de ce compte",
+        en: "Remove this account's proxy configuration script",
+    },
+];
+
+/// Un geste du compte, relu de sa ligne.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum GesteCompte {
+    /// Une valeur de `VALEURS_COMPTE`.
+    Valeur(&'static ValeurCompte),
+    /// VBAWarnings à 2 (« désactivées avec notification ») pour un programme d'Office : version et programme pris
+    /// dans `OFFICE_VERSIONS` et `OFFICE_PROGRAMMES`.
+    Macros {
+        version: &'static str,
+        programme: &'static str,
+        nom: &'static str,
+    },
+    /// Une valeur de démarrage du compte retirée (Run ou RunOnce) ; un nom vide désigne la valeur par défaut.
+    RetirerRun { runonce: bool, nom: Vec<u16> },
+    /// Le mode d'alimentation « Performances élevées » (powercfg, qui n'a pas besoin d'administrateur pour un mode
+    /// qui existe).
+    Alimentation,
+}
+
+const MACROS: &str = "macros-office ";
+const RUN_RETIRER: &str = "run-retirer ";
+const ALIMENTATION: &str = "alimentation-performances";
+const RUN_DEFAUT: &str = "defaut";
+
+impl GesteCompte {
+    /// La ligne de ce geste.
+    pub(crate) fn ligne(&self) -> String {
+        match self {
+            GesteCompte::Valeur(v) => format!("{COMPTE}{}", v.id),
+            GesteCompte::Macros { version, programme, .. } => format!("{COMPTE}{MACROS}{version} {programme}"),
+            GesteCompte::RetirerRun { runonce, nom } => {
+                let cle = if *runonce { "runonce" } else { "run" };
+                let nom = if nom.is_empty() {
+                    RUN_DEFAUT.to_string()
+                } else {
+                    hex_utf16(nom)
+                };
+                format!("{COMPTE}{RUN_RETIRER}{cle} {nom}")
+            }
+            GesteCompte::Alimentation => format!("{COMPTE}{ALIMENTATION}"),
+        }
+    }
+
+    /// La clé sous HKCU, et le nom de la valeur en UTF-16 (vide : la valeur par défaut) ; `None` pour le mode
+    /// d'alimentation, qui n'est pas une valeur du compte.
+    pub(crate) fn valeur(&self) -> Option<(String, Vec<u16>)> {
+        match self {
+            GesteCompte::Valeur(v) => Some((v.cle.to_string(), v.nom.encode_utf16().collect())),
+            GesteCompte::Macros { version, programme, .. } => Some((
+                format!(r"Software\Microsoft\Office\{version}\{programme}\Security"),
+                "VBAWarnings".encode_utf16().collect(),
+            )),
+            GesteCompte::RetirerRun { runonce, nom } => {
+                Some(((if *runonce { CLE_RUNONCE } else { CLE_RUN }).to_string(), nom.clone()))
+            }
+            GesteCompte::Alimentation => None,
+        }
+    }
+
+    /// Ce que la valeur reçoit ; `None` pour le mode d'alimentation.
+    pub(crate) fn donnee(&self) -> Option<Donnee> {
+        match self {
+            GesteCompte::Valeur(v) => Some(v.donnee),
+            GesteCompte::Macros { .. } => Some(Donnee::Dword(2)),
+            GesteCompte::RetirerRun { .. } => Some(Donnee::Retirer),
+            GesteCompte::Alimentation => None,
+        }
+    }
+
+    /// WinINet doit-il être prévenu une fois le geste fait ?
+    pub(crate) fn rafraichir(&self) -> bool {
+        matches!(self, GesteCompte::Valeur(v) if v.rafraichir)
+    }
+
+    /// Le geste renforce-t-il la sécurité (annulation non proposée) ? Les macros et la stratégie de PowerShell, oui ;
+    /// un retrait de démarrage (décision 4 b) du plan) ou un réglage de jeu, non : ils seront annulables (lot 3.5).
+    pub(crate) fn durcit(&self) -> bool {
+        match self {
+            GesteCompte::Valeur(v) => v.durcit,
+            GesteCompte::Macros { .. } => true,
+            GesteCompte::RetirerRun { .. } | GesteCompte::Alimentation => false,
+        }
+    }
+
+    /// Le geste dit à la personne, dans sa langue. Un nom de démarrage est montré sans caractère de contrôle.
+    pub(crate) fn texte(&self, francais: bool) -> String {
+        match self {
+            GesteCompte::Valeur(v) => (if francais { v.fr } else { v.en }).to_string(),
+            GesteCompte::Macros { version, nom, .. } => {
+                if francais {
+                    format!("Faire demander {nom} ({version}) avant de lancer une macro")
+                } else {
+                    format!("Make {nom} ({version}) ask before running a macro")
+                }
+            }
+            GesteCompte::RetirerRun { runonce, nom } => {
+                let lu = String::from_utf16_lossy(nom);
+                let mut affiche: String = lu
+                    .chars()
+                    .take(NOM_MONTRE_MAX)
+                    .map(|c| if c.is_control() { '?' } else { c })
+                    .collect();
+                if lu.chars().count() > NOM_MONTRE_MAX {
+                    affiche.push('…');
+                }
+                let cle = if *runonce { "RunOnce" } else { "Run" };
+                match (francais, nom.is_empty()) {
+                    (true, true) => format!("Retirer la valeur par défaut du démarrage de ce compte ({cle})"),
+                    (true, false) => format!("Retirer « {affiche} » du démarrage de ce compte ({cle})"),
+                    (false, true) => format!("Remove the default value from this account's startup ({cle})"),
+                    (false, false) => format!("Remove “{affiche}” from this account's startup ({cle})"),
+                }
+            }
+            GesteCompte::Alimentation => {
+                if francais {
+                    "Passer au mode d'alimentation « Performances élevées »".to_string()
+                } else {
+                    "Switch to the “High performance” power plan".to_string()
+                }
+            }
+        }
+    }
+}
+
+/// Un nom UTF-16 en hexadécimal minuscule, quatre chiffres par unité petit-boutiste (la convention de `NomFichier`).
+fn hex_utf16(unites: &[u16]) -> String {
+    unites
+        .iter()
+        .flat_map(|u| u.to_le_bytes())
+        .fold(String::new(), |mut s, o| {
+            let _ = write!(s, "{o:02x}");
+            s
+        })
+}
+
+/// Les unités UTF-16 d'un hexadécimal de `hex_utf16`, s'il en a la forme exacte : minuscules, par groupes de quatre,
+/// de 1 à `max` unités, aucune unité nulle (un nom du registre n'en a pas). Toute autre unité est admise : un nom de
+/// valeur peut ne pas être de l'UTF-16 valide, il doit pourtant pouvoir se retirer.
+fn lire_hex_utf16(hex: &str, max: usize) -> Option<Vec<u16>> {
+    if hex.is_empty() || !hex.len().is_multiple_of(4) || hex.len() > max.checked_mul(4)? {
+        return None;
+    }
+    hex.as_bytes()
+        .chunks(4)
+        .map(|q| {
+            let mut o = [0u8; 2];
+            for (i, paire) in q.chunks(2).enumerate() {
+                let fort = chiffre_minuscule(*paire.first()?)?;
+                let faible = chiffre_minuscule(*paire.get(1)?)?;
+                *o.get_mut(i)? = fort.checked_mul(16)?.checked_add(faible)?;
+            }
+            Some(u16::from_le_bytes(o)).filter(|&u| u != 0)
+        })
+        .collect()
+}
+
+/// Le geste d'une ligne du compte, si et seulement si elle est exactement de sa forme (relue, elle se réécrit à
+/// l'identique) : un identifiant de `VALEURS_COMPTE`, `macros-office <version> <programme>` des listes d'Office,
+/// `run-retirer <run|runonce> <nom en hexadécimal|defaut>` ou `alimentation-performances`.
+pub(crate) fn analyser_compte(ligne: &str) -> Option<GesteCompte> {
+    let reste = ligne.strip_prefix(COMPTE)?;
+    if ligne.len() > COMPTE_LIGNE_MAX || !ligne.is_ascii() {
+        return None;
+    }
+    let geste = if let Some(r) = reste.strip_prefix(MACROS) {
+        let (version, programme) = r.split_once(' ')?;
+        let version = OFFICE_VERSIONS.into_iter().find(|v| *v == version)?;
+        let (programme, nom) = OFFICE_PROGRAMMES.into_iter().find(|p| p.0 == programme)?;
+        GesteCompte::Macros {
+            version,
+            programme,
+            nom,
+        }
+    } else if let Some(r) = reste.strip_prefix(RUN_RETIRER) {
+        let (cle, nom) = r.split_once(' ')?;
+        let runonce = match cle {
+            "run" => false,
+            "runonce" => true,
+            _ => return None,
+        };
+        let nom = if nom == RUN_DEFAUT {
+            Vec::new()
+        } else {
+            lire_hex_utf16(nom, RUN_NOM_MAX)?
+        };
+        GesteCompte::RetirerRun { runonce, nom }
+    } else if reste == ALIMENTATION {
+        GesteCompte::Alimentation
+    } else {
+        GesteCompte::Valeur(VALEURS_COMPTE.iter().find(|v| v.id == reste)?)
+    };
+    (geste.ligne() == ligne).then_some(geste)
+}
+
+/// La ligne d'une valeur fixe du compte ; `None` : identifiant hors de `VALEURS_COMPTE`.
+pub(crate) fn ligne_compte(id: &str) -> Option<String> {
+    VALEURS_COMPTE
+        .iter()
+        .find(|v| v.id == id)
+        .map(|v| GesteCompte::Valeur(v).ligne())
+}
+
+/// La ligne qui fait demander un programme d'Office avant une macro ; `None` : version ou programme hors liste.
+pub(crate) fn ligne_macros(version: &str, programme: &str) -> Option<String> {
+    let version = OFFICE_VERSIONS.into_iter().find(|v| *v == version)?;
+    let (programme, nom) = OFFICE_PROGRAMMES.into_iter().find(|p| p.0 == programme)?;
+    Some(
+        GesteCompte::Macros {
+            version,
+            programme,
+            nom,
+        }
+        .ligne(),
+    )
+}
+
+/// La ligne qui retire une valeur de démarrage du compte, désignée par son nom exact (UTF-16 tel que lu dans le
+/// registre ; vide : la valeur par défaut) ; `None` : nom trop long ou porteur d'une unité nulle.
+pub(crate) fn ligne_run_retirer(runonce: bool, nom: &[u16]) -> Option<String> {
+    if nom.len() > RUN_NOM_MAX || nom.contains(&0) {
+        return None;
+    }
+    Some(
+        GesteCompte::RetirerRun {
+            runonce,
+            nom: nom.to_vec(),
+        }
+        .ligne(),
+    )
+}
+
+/// La ligne qui passe au mode d'alimentation « Performances élevées ».
+pub(crate) fn ligne_alimentation() -> String {
+    GesteCompte::Alimentation.ligne()
+}
+
+/// DirectXUserGlobalSettings avec « SwapEffectUpgradeEnable=1; » : l'ancien réglage (« =0 », « =1 », suivi ou non de
+/// « ; », casse ignorée, comme le `-replace` de PowerShell qu'il remplace) est retiré, le reste du texte gardé tel
+/// quel, et le nôtre ajouté au bout.
+pub(crate) fn avec_swap_effect(ancien: &str) -> String {
+    const CLE: &str = "SwapEffectUpgradeEnable=";
+    let mut nouveau = String::with_capacity(ancien.len().saturating_add(CLE.len()).saturating_add(2));
+    let mut reste = ancien;
+    while !reste.is_empty() {
+        let tete = reste.get(..CLE.len()).is_some_and(|t| t.eq_ignore_ascii_case(CLE));
+        let chiffre = reste.as_bytes().get(CLE.len()).is_some_and(u8::is_ascii_digit);
+        if tete && chiffre {
+            let apres = CLE.len().saturating_add(1);
+            let fin = if reste.as_bytes().get(apres) == Some(&b';') {
+                apres.saturating_add(1)
+            } else {
+                apres
+            };
+            reste = reste.get(fin..).unwrap_or_default();
+            continue;
+        }
+        let mut c = reste.chars();
+        if let Some(premier) = c.next() {
+            nouveau.push(premier);
+        }
+        reste = c.as_str();
+    }
+    // Le réglage d'avant sans « ; » final ne doit pas se coller au nôtre (« VRROptimizeEnable=0SwapEffect… »).
+    if !nouveau.is_empty() && !nouveau.ends_with(';') {
+        nouveau.push(';');
+    }
+    nouveau.push_str(CLE);
+    nouveau.push_str("1;");
+    nouveau
+}
+
 // ------------------------------------------------------------------ la liste
 
 /// Une ligne de la liste, relue : celle d'un autre module (correction, ordre), un script, un programme ou un acte.
@@ -1405,9 +4300,10 @@ pub(crate) enum Ligne<E> {
 }
 
 /// La liste telle que le processus élevé la recevra, validée ligne à ligne, dans l'ordre ; `None` dès qu'une ligne
-/// est trop longue, n'a pas sa forme, ou n'est pas reconnue par `autre`, qu'il y en a trop ou aucune, ou qu'un même
-/// script (même empreinte) revient. Le parent l'appelle AVANT la demande d'administrateur, le processus élevé à la
-/// réception : la même fonction des deux côtés. Un script seul est admis (une liste toute en PowerShell).
+/// est trop longue, n'a pas sa forme, est un geste du compte (`COMPTE`), ou n'est pas reconnue par `autre`, qu'il y
+/// en a trop ou aucune, ou qu'un même script (même empreinte) revient. Le parent l'appelle AVANT la demande
+/// d'administrateur, le processus élevé à la réception : la même fonction des deux côtés. Un script seul est admis
+/// (une liste toute en PowerShell).
 pub(crate) fn valider<E>(lignes: &[String], mut autre: impl FnMut(&str) -> Option<E>) -> Option<Vec<Ligne<E>>> {
     if lignes.is_empty() || lignes.len() > LIGNES_MAX {
         return None;
@@ -1416,7 +4312,8 @@ pub(crate) fn valider<E>(lignes: &[String], mut autre: impl FnMut(&str) -> Optio
     lignes
         .iter()
         .map(|l| {
-            if l.len() > LIGNE_MAX {
+            // Un geste du compte n'est jamais fait par le processus élevé : sa place est Vanguard non élevé.
+            if l.len() > LIGNE_MAX || l.starts_with(COMPTE) {
                 return None;
             }
             if l.starts_with(SCRIPT) {
@@ -1468,6 +4365,147 @@ pub(crate) fn decouper(correctifs: &[Vec<String>], natif: impl Fn(&str) -> bool)
         }
     }
     morceaux
+}
+
+// ------------------------------------------------------------ la séparation
+
+/// Les lignes d'un correctif, rangées par qui les fait : les points de restauration et le reste du travail élevé
+/// (par le processus élevé), les gestes du compte (par Vanguard non élevé). Chaque place est celle de la ligne dans
+/// son correctif, dans l'ordre.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Separe {
+    pub points: Vec<usize>,
+    pub eleves: Vec<usize>,
+    pub compte: Vec<usize>,
+}
+
+/// Range chaque ligne de chaque correctif : un point de restauration (`est_point`) va aux points, une ligne du compte
+/// que `analyser_compte` reconnaît aux gestes du compte, toute autre ligne au travail élevé. Une ligne qui se donne
+/// pour un geste du compte sans en avoir la forme exacte reste au travail élevé, où elle est refusée avant l'UAC
+/// (aucune ligne « vanguard: » inconnue ne passe) : jamais faite par erreur sous un autre nom.
+pub(crate) fn separer(correctifs: &[Vec<String>], est_point: impl Fn(&str) -> bool) -> Vec<Separe> {
+    correctifs
+        .iter()
+        .map(|c| {
+            let mut s = Separe::default();
+            for (j, l) in c.iter().enumerate() {
+                if est_point(l) {
+                    s.points.push(j);
+                } else if analyser_compte(l).is_some() {
+                    s.compte.push(j);
+                } else {
+                    s.eleves.push(j);
+                }
+            }
+            s
+        })
+        .collect()
+}
+
+/// Ce que rend le passage élevé : le résultat et les lignes notées de chaque correctif envoyé, et s'il a été arrêté à
+/// la demande de la personne (point refusé, demande d'administrateur refusée).
+pub(crate) struct PassageEleve {
+    pub resultats: Vec<bool>,
+    pub notes: Vec<Vec<String>>,
+    pub arrete: bool,
+}
+
+/// Un geste du compte fait : réussi ou non, déjà bon (rien d'écrit, la ligne n'est pas notée), la valeur d'avant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FaitCompte {
+    pub reussi: bool,
+    pub rien: bool,
+    pub avant: Option<String>,
+}
+
+/// Fait une liste de correctifs en deux temps, l'ordre gardé : d'abord, en UN passage élevé (`eleve`), pour chaque
+/// correctif ses points de restauration puis son travail élevé (deux correctifs envoyés, pour savoir si le point a
+/// tenu) ; ensuite seulement, dans ce processus, les gestes du compte (`compte`), correctif par correctif. Ainsi le
+/// point de restauration est toujours pris avant la moindre écriture du compte.
+///
+/// Aucun geste du compte n'est fait si le passage élevé a été arrêté à la demande de la personne, ou si un point de
+/// restauration n'a pas tenu (le processus élevé s'arrête alors, et tout ce qui suit le point, les gestes du compte
+/// compris, reste à faire). Rien d'élevé à faire : aucun passage élevé, aucune demande d'administrateur.
+///
+/// Le résultat d'un correctif est le ET de ses trois parts ; un geste du compte non fait est un échec. Ses lignes
+/// notées : celles du passage élevé (points, puis travail élevé), puis ses gestes du compte, la valeur d'avant
+/// ajoutée ; un geste déjà bon n'est pas noté, et un correctif dont il ne reste que des points n'a plus rien à noter.
+/// `None` : le passage élevé n'a rien fait (dit par lui) ; aucun geste du compte n'est fait.
+pub(crate) fn lancer_separe(
+    correctifs: &[Vec<String>],
+    est_point: impl Fn(&str) -> bool,
+    eleve: impl FnOnce(&[Vec<String>]) -> Option<PassageEleve>,
+    mut compte: impl FnMut(&GesteCompte) -> FaitCompte,
+) -> Option<(Vec<bool>, Vec<Vec<String>>)> {
+    let separes = separer(correctifs, &est_point);
+    let ligne = |i: usize, j: usize| correctifs.get(i).and_then(|c| c.get(j)).cloned();
+    // Pour chaque correctif, la place de ses points et de son travail élevé dans la liste envoyée.
+    let mut envoyes: Vec<Vec<String>> = Vec::new();
+    let mut places: Vec<(Option<usize>, Option<usize>)> = Vec::with_capacity(correctifs.len());
+    for (i, s) in separes.iter().enumerate() {
+        let mut place = |js: &[usize]| {
+            if js.is_empty() {
+                return None;
+            }
+            envoyes.push(js.iter().filter_map(|&j| ligne(i, j)).collect());
+            envoyes.len().checked_sub(1)
+        };
+        let p = place(&s.points);
+        let e = place(&s.eleves);
+        places.push((p, e));
+    }
+    let passage = if envoyes.is_empty() {
+        PassageEleve {
+            resultats: Vec::new(),
+            notes: Vec::new(),
+            arrete: false,
+        }
+    } else {
+        eleve(&envoyes)?
+    };
+    let reussi = |k: Option<usize>| k.is_none_or(|k| passage.resultats.get(k).copied().unwrap_or(false));
+    let notes_de = |k: Option<usize>| k.and_then(|k| passage.notes.get(k).cloned()).unwrap_or_default();
+    let points_tenus = places.iter().all(|&(p, _)| reussi(p));
+    let permis = !passage.arrete && points_tenus;
+    let mut resultats = Vec::with_capacity(correctifs.len());
+    let mut notes = Vec::with_capacity(correctifs.len());
+    for (i, (s, &(p, e))) in separes.iter().zip(&places).enumerate() {
+        let mut ok = reussi(p) && reussi(e);
+        let mut n = notes_de(p);
+        n.extend(notes_de(e));
+        for &j in &s.compte {
+            let Some(l) = ligne(i, j) else {
+                ok = false;
+                continue;
+            };
+            let fait = analyser_compte(&l).filter(|_| permis).map(|g| compte(&g));
+            match fait {
+                Some(FaitCompte {
+                    reussi: true,
+                    rien: true,
+                    ..
+                }) => {}
+                Some(f) => {
+                    ok &= f.reussi;
+                    n.push(match f.avant {
+                        Some(avant) => format!("{l} (avant : {avant})"),
+                        None => l,
+                    });
+                }
+                None => {
+                    ok = false;
+                    n.push(l);
+                }
+            }
+        }
+        let a_du_travail = s.eleves.len().saturating_add(s.compte.len()) > 0;
+        if a_du_travail && n.iter().all(|l| est_point(l.split(" (").next().unwrap_or_default())) {
+            n.clear();
+        }
+        resultats.push(ok);
+        notes.push(n);
+    }
+    Some((resultats, notes))
 }
 
 // ---------------------------------------------------------------- les états
@@ -1706,14 +4744,13 @@ mod tests {
             ("ipconfig-release", "ipconfig.exe /release"),
             ("ipconfig-renew", "ipconfig.exe /renew"),
             ("netsh-winhttp-reset-proxy", "netsh.exe winhttp reset proxy"),
-            // net accounts (comptes.rs) et powercfg (réglages pour jouer), eux aussi par leur nom autrefois.
+            // net accounts (comptes.rs), lui aussi par son nom autrefois. powercfg n'est plus ici : sans
+            // administrateur, il passe par Vanguard non élevé (`COMPTE`, « alimentation-performances »).
             (
                 "net-accounts-verrouillage",
                 "net.exe accounts /lockoutthreshold:10 /lockoutduration:10 /lockoutwindow:10",
             ),
             ("net-accounts-longueur-8", "net.exe accounts /minpwlen:8"),
-            ("powercfg-performances", "powercfg.exe /setactive SCHEME_MIN"),
-            ("powercfg-mode-actif", "powercfg.exe /getactivescheme"),
         ] {
             let a = analyser_programme(&format!("{PROGRAMME}{id}")).unwrap();
             assert_eq!(a.commande(), commande);
@@ -2175,13 +5212,26 @@ mod tests {
             IFEO_SILENCIEUX_32,
             SERVICE_GUILLEMETS,
         ] {
-            assert!(verbe.len() <= IFEO_SILENCIEUX_32.len(), "{verbe}");
+            assert!(verbe.len() + 4 * NOM_MAX < ACTE_NOM_MAX, "{verbe}");
         }
-        assert_eq!(ACTE_NOM_MAX, IFEO_SILENCIEUX_32.len() + 4 * NOM_MAX);
+        assert_eq!(
+            ACTE_NOM_MAX,
+            DEFENDER_EXCLUSION_RETIRER.len() + "extension ".len() + 4 * NOM_MAX
+        );
+        assert!(GenreExclusion::TOUS.iter().all(|g| g.mot().len() <= "extension".len()));
         let nom = "a".repeat(NOM_MAX);
         let l = ligne_ifeo_silencieux(Vue::Wow32, &nom).expect("260 unités admises");
-        assert_eq!(l.len(), ACTE_NOM_MAX);
+        assert_eq!(l.len(), IFEO_SILENCIEUX_32.len() + 4 * NOM_MAX);
         assert!(matches!(analyser_acte(&l), Some(Acte::IfeoSilencieux(Vue::Wow32, n)) if n.texte() == nom));
+        let l = ligne_defender_exclusion_retirer(GenreExclusion::Extension, &nom).expect("260 unités admises");
+        assert_eq!(l.len(), ACTE_NOM_MAX);
+        assert!(
+            matches!(analyser_acte(&l), Some(Acte::DefenderExclusionRetirer(GenreExclusion::Extension, e)) if e.texte() == nom)
+        );
+        assert_eq!(
+            ligne_defender_exclusion_retirer(GenreExclusion::Chemin, &format!("{nom}a")),
+            None
+        );
         // 261 unités : refusé à la construction et à la lecture (même par un verbe court).
         let trop = "a".repeat(NOM_MAX + 1);
         assert_eq!(ligne_ifeo_debugger(Vue::Windows, &trop), None);
@@ -2305,6 +5355,270 @@ mod tests {
         assert!(analyser_acte(&long).is_none());
     }
 
+    /// Chaque réglage n'admet que ce qui protège : une ligne forgée qui couperait le temps réel, le cloud, l'accès
+    /// contrôlé, la protection réseau ou PUA est refusée, comme toute valeur hors de la liste.
+    #[test]
+    fn defender_seulement_vers_le_plus_sur() {
+        for (r, v) in [
+            (ReglageDefender::TempsReel, ValeurDefender::Actif),
+            (ReglageDefender::Maps, ValeurDefender::Avance),
+            (ReglageDefender::Cfa, ValeurDefender::Bloquer),
+            (ReglageDefender::Cfa, ValeurDefender::Audit),
+            (ReglageDefender::Np, ValeurDefender::Bloquer),
+            (ReglageDefender::Np, ValeurDefender::Audit),
+            (ReglageDefender::Pua, ValeurDefender::Bloquer),
+            (ReglageDefender::Pua, ValeurDefender::Audit),
+        ] {
+            let l = ligne_defender(r, v).unwrap();
+            let a = analyser_acte(&l).unwrap();
+            assert!(matches!(a, Acte::Defender(r2, v2) if r2 == r && v2 == v), "{l}");
+            assert!(a.durcit() && !a.affaiblit() && est_un_acte(&l), "{l}");
+        }
+        assert_eq!(
+            ligne_defender(ReglageDefender::TempsReel, ValeurDefender::Actif).unwrap(),
+            "vanguard:defender temps-reel actif"
+        );
+        assert_eq!(
+            ligne_defender(ReglageDefender::TempsReel, ValeurDefender::Bloquer),
+            None
+        );
+        assert_eq!(ligne_defender(ReglageDefender::Maps, ValeurDefender::Audit), None);
+        for l in [
+            "vanguard:defender temps-reel non",
+            "vanguard:defender temps-reel coupe",
+            "vanguard:defender temps-reel inactif",
+            "vanguard:defender temps-reel 0",
+            "vanguard:defender temps-reel bloquer",
+            "vanguard:defender temps-reel audit",
+            "vanguard:defender maps 0",
+            "vanguard:defender maps coupe",
+            "vanguard:defender maps base",
+            "vanguard:defender maps bloquer",
+            "vanguard:defender cfa 0",
+            "vanguard:defender cfa coupe",
+            "vanguard:defender cfa desactive",
+            "vanguard:defender cfa actif",
+            "vanguard:defender np desactive",
+            "vanguard:defender np 0",
+            "vanguard:defender pua 0",
+            "vanguard:defender pua coupe",
+            "vanguard:defender pua avertir",
+            "vanguard:defender behavior bloquer",
+            "vanguard:defender Temps-reel actif",
+            "vanguard:defender temps-reel Actif",
+            "vanguard:defender temps-reel actif ",
+            "vanguard:defender  temps-reel actif",
+            "vanguard:defender temps-reel  actif",
+            "vanguard:defender temps-reel",
+            "vanguard:defender ",
+            "vanguard:defender",
+            "vanguard:defender cfa bloquer,maps 0",
+        ] {
+            assert!(analyser_acte(l).is_none(), "{l}");
+        }
+        // Même construit à la main hors de la liste, un acte ne vise qu'une valeur qui protège.
+        assert_eq!(ReglageDefender::TempsReel.attendue(ValeurDefender::Bloquer), 0);
+        assert_eq!(ReglageDefender::Maps.attendue(ValeurDefender::Audit), 2);
+        for r in ReglageDefender::TOUS {
+            for v in [
+                ValeurDefender::Actif,
+                ValeurDefender::Avance,
+                ValeurDefender::Bloquer,
+                ValeurDefender::Audit,
+            ] {
+                assert!(r.rang(i64::from(r.attendue(v))) > 0, "{r:?} {v:?}");
+            }
+        }
+    }
+
+    /// Le processus élevé n'écrit que vers plus sûr : la valeur lue d'abord, comparée par rang.
+    #[test]
+    fn defender_ne_baisse_jamais() {
+        let (cfa, np, maps, rtp) = (
+            ReglageDefender::Cfa,
+            ReglageDefender::Np,
+            ReglageDefender::Maps,
+            ReglageDefender::TempsReel,
+        );
+        // Coupé : écrit ; déjà bloqué : rien, même pour « audit ».
+        assert!(cfa.a_ecrire(ValeurDefender::Bloquer, 0) && cfa.a_ecrire(ValeurDefender::Audit, 0));
+        assert!(!cfa.a_ecrire(ValeurDefender::Audit, 1) && !cfa.a_ecrire(ValeurDefender::Bloquer, 1));
+        // Audit des disques seuls (4) → bloquer : écrit ; disques bloqués (3) → audit : rien.
+        assert!(cfa.a_ecrire(ValeurDefender::Bloquer, 4) && !cfa.a_ecrire(ValeurDefender::Audit, 3));
+        assert!(!np.a_ecrire(ValeurDefender::Audit, 1) && np.a_ecrire(ValeurDefender::Bloquer, 2));
+        // Une valeur inconnue compte pour la moins sûre.
+        assert!(np.a_ecrire(ValeurDefender::Audit, 7) && cfa.a_ecrire(ValeurDefender::Audit, -1));
+        assert!(maps.a_ecrire(ValeurDefender::Avance, 0) && maps.a_ecrire(ValeurDefender::Avance, 1));
+        assert!(!maps.a_ecrire(ValeurDefender::Avance, 2));
+        // DisableRealtimeMonitoring : vrai (1) → écrire faux ; déjà faux → rien.
+        assert!(rtp.a_ecrire(ValeurDefender::Actif, 1) && !rtp.a_ecrire(ValeurDefender::Actif, 0));
+        assert_eq!(rtp.valeur_wmi(ValeurDefender::Actif), ValeurWmi::Booleen(false));
+        assert_eq!(maps.valeur_wmi(ValeurDefender::Avance), ValeurWmi::Octet(2));
+        assert_eq!(np.valeur_wmi(ValeurDefender::Audit), ValeurWmi::Octet(2));
+        assert_eq!(cfa.valeur_wmi(ValeurDefender::Bloquer), ValeurWmi::Octet(1));
+        // ASR : absente, coupée, audit, avertit, bloque.
+        assert!(ModeAsr::Bloquer.a_ecrire(None) && ModeAsr::Bloquer.a_ecrire(Some(0)));
+        assert!(ModeAsr::Bloquer.a_ecrire(Some(2)) && ModeAsr::Bloquer.a_ecrire(Some(6)));
+        assert!(!ModeAsr::Bloquer.a_ecrire(Some(1)));
+        assert!(ModeAsr::Audit.a_ecrire(None) && ModeAsr::Audit.a_ecrire(Some(0)));
+        assert!(!ModeAsr::Audit.a_ecrire(Some(1)) && !ModeAsr::Audit.a_ecrire(Some(6)));
+        assert!(!ModeAsr::Audit.a_ecrire(Some(2)));
+    }
+
+    /// Une règle ASR des listes d'Optimiser, en minuscules : une autre est refusée ; aucune ne se retire.
+    #[test]
+    fn defender_asr_de_la_liste() {
+        for id in ASR_BASE.iter().chain(&ASR_BUREAUTIQUE) {
+            for m in ModeAsr::TOUS {
+                let l = ligne_defender_asr(id, m).unwrap();
+                let a = analyser_acte(&l).unwrap();
+                assert!(matches!(a, Acte::DefenderAsr(i, m2) if i == *id && m2 == m), "{l}");
+                assert!(a.durcit() && !a.affaiblit());
+            }
+        }
+        let id = ASR_BASE[0];
+        assert_eq!(
+            ligne_defender_asr(id, ModeAsr::Bloquer).unwrap(),
+            format!("vanguard:defender-asr {id} bloquer")
+        );
+        // Une règle écartée (processus d'une clé USB : bloquerait Vanguard), une inventée, une en majuscules.
+        assert_eq!(
+            ligne_defender_asr("b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4", ModeAsr::Bloquer),
+            None
+        );
+        for l in [
+            "vanguard:defender-asr b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4 bloquer",
+            "vanguard:defender-asr 00000000-0000-0000-0000-000000000000 bloquer",
+            // Retirer une règle connue couperait une protection posée par la personne ou une stratégie.
+            "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 retirer",
+            "vanguard:defender-asr 9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2 retirer",
+            "vanguard:defender-asr 56A863A9-875E-4185-98A7-B882C64B5CE5 bloquer",
+            "vanguard:defender-asr {56a863a9-875e-4185-98a7-b882c64b5ce5} bloquer",
+            "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 coupe",
+            "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 0",
+            "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 avertir",
+            "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5",
+            "vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 bloquer ",
+            "vanguard:defender-asr  56a863a9-875e-4185-98a7-b882c64b5ce5 bloquer",
+        ] {
+            assert!(analyser_acte(l).is_none(), "{l}");
+        }
+        // Les paramètres de la méthode : un seul identifiant, une seule action (Add), jamais Set (toute la liste).
+        let a = analyser_acte(&ligne_defender_asr(id, ModeAsr::Audit).unwrap()).unwrap();
+        assert_eq!(
+            methode_defender(&a),
+            Some((
+                "Add",
+                vec![
+                    (
+                        "AttackSurfaceReductionRules_Ids",
+                        ValeurWmi::Textes(vec![id.to_string()])
+                    ),
+                    ("AttackSurfaceReductionRules_Actions", ValeurWmi::Octets(vec![2])),
+                ]
+            ))
+        );
+        let a = analyser_acte("vanguard:defender pua bloquer").unwrap();
+        assert_eq!(
+            methode_defender(&a),
+            Some(("Set", vec![("PUAProtection", ValeurWmi::Octet(1))]))
+        );
+        let a = analyser_acte("vanguard:defender temps-reel actif").unwrap();
+        assert_eq!(
+            methode_defender(&a),
+            Some(("Set", vec![("DisableRealtimeMonitoring", ValeurWmi::Booleen(false))]))
+        );
+        assert_eq!(methode_defender(&Acte::DefenderMenacesRetirer), None);
+        assert_eq!(methode_defender(&Acte::PareFeuActif), None);
+    }
+
+    /// Une exclusion à retirer : en hexadécimal minuscule, de l'UTF-16 valide, sans contrôle ; relue à l'identique.
+    #[test]
+    fn defender_exclusion_a_retirer() {
+        let l = ligne_defender_exclusion_retirer(GenreExclusion::Chemin, "C:\\").unwrap();
+        assert_eq!(l, "vanguard:defender-exclusion-retirer chemin 43003a005c00");
+        let a = analyser_acte(&l).unwrap();
+        assert!(matches!(&a, Acte::DefenderExclusionRetirer(GenreExclusion::Chemin, e) if e.texte() == "C:\\"));
+        assert!(a.durcit() && !a.affaiblit());
+        assert_eq!(
+            methode_defender(&a),
+            Some((
+                "Remove",
+                vec![("ExclusionPath", ValeurWmi::Textes(vec!["C:\\".to_string()]))]
+            ))
+        );
+        // Les séparateurs et les caractères interdits dans un nom de fichier sont admis ici (un chemin, « *.exe »).
+        for (g, t) in [
+            (GenreExclusion::Processus, "C:\\Outils d'été\\powershell.exe"),
+            (GenreExclusion::Extension, "*.exe"),
+            (GenreExclusion::Chemin, "%TEMP%\\*"),
+            (GenreExclusion::Chemin, "D:\\\u{1F600}"),
+        ] {
+            let l = ligne_defender_exclusion_retirer(g, t).unwrap();
+            assert!(
+                matches!(analyser_acte(&l), Some(Acte::DefenderExclusionRetirer(g2, e)) if g2 == g && e.texte() == t)
+            );
+        }
+        assert_eq!(ligne_defender_exclusion_retirer(GenreExclusion::Chemin, ""), None);
+        assert_eq!(
+            ligne_defender_exclusion_retirer(GenreExclusion::Chemin, "C:\\\nx"),
+            None
+        );
+        assert_eq!(ligne_defender_exclusion_retirer(GenreExclusion::Chemin, "C:\0"), None);
+        for l in [
+            // Majuscules, demi-paire, NUL, contrôle, longueur impaire, genre inconnu, espaces de trop.
+            "vanguard:defender-exclusion-retirer chemin 43003A005C00",
+            "vanguard:defender-exclusion-retirer chemin 00d8",
+            "vanguard:defender-exclusion-retirer chemin 43000000",
+            "vanguard:defender-exclusion-retirer chemin 43000a00",
+            "vanguard:defender-exclusion-retirer chemin 43003a005c0",
+            "vanguard:defender-exclusion-retirer dossier 43003a005c00",
+            "vanguard:defender-exclusion-retirer Chemin 43003a005c00",
+            "vanguard:defender-exclusion-retirer chemin  43003a005c00",
+            "vanguard:defender-exclusion-retirer chemin 43003a005c00 ",
+            "vanguard:defender-exclusion-retirer chemin ",
+            "vanguard:defender-exclusion-retirer chemin",
+            "vanguard:defender-exclusion-retirer ",
+        ] {
+            assert!(analyser_acte(l).is_none(), "{l}");
+        }
+        let trop = format!("{DEFENDER_EXCLUSION_RETIRER}chemin {}", "6100".repeat(NOM_MAX + 1));
+        assert!(analyser_acte(&trop).is_none());
+    }
+
+    #[test]
+    fn defender_menaces_et_powershell() {
+        let l = ligne_defender_menaces_retirer();
+        let a = analyser_acte(&l).unwrap();
+        assert!(matches!(a, Acte::DefenderMenacesRetirer) && !a.durcit() && !a.affaiblit());
+        for l in [
+            "vanguard:defender-menaces-retirer ",
+            "vanguard:defender-menaces-retirer tout",
+            "vanguard:defender-menaces",
+        ] {
+            assert!(analyser_acte(l).is_none(), "{l}");
+        }
+        // Aucune commande de Defender dans un script : sous Wine, l'erreur est dite.
+        for l in [
+            l,
+            "vanguard:defender maps avance".to_string(),
+            ligne_defender_asr(ASR_BASE[1], ModeAsr::Bloquer).unwrap(),
+            ligne_defender_exclusion_retirer(GenreExclusion::Extension, ".exe").unwrap(),
+        ] {
+            let ps = analyser_acte(&l).unwrap().powershell();
+            assert!(ps.starts_with("throw ") && !ps.contains("Mp"), "{ps}");
+        }
+        // Les verbes ne se recouvrent pas : chacun est refusé sous la forme d'un autre.
+        assert!(analyser_acte("vanguard:defender asr 56a863a9-875e-4185-98a7-b882c64b5ce5 bloquer").is_none());
+        assert!(analyser_acte("vanguard:defender-asr temps-reel actif").is_none());
+        // Une liste qui en porte une forgée est refusée en entier.
+        let lignes = vec![
+            "vanguard:defender cfa bloquer".to_string(),
+            "vanguard:defender cfa 0".to_string(),
+        ];
+        assert!(valider(&lignes, |_| Some(())).is_none());
+    }
+
     /// La traduction PowerShell (Wine) : celle que le bilan écrivait avant, la clé entre apostrophes doublées.
     #[test]
     fn les_actes_du_registre_ont_leur_equivalent_powershell() {
@@ -2340,5 +5654,1678 @@ mod tests {
         use crate::protection::blocage::ordres;
         assert_eq!(LIGNE_MAX, ordres::LIGNE_MAX);
         assert_eq!(LIGNES_MAX, ordres::LIGNES_MAX);
+    }
+
+    // ------------------------------------------------------------ le réseau
+
+    const GUID: &str = "{4D36E972-E325-11CE-BFC1-08002BE10318}";
+    const PREPARE: &str = r"C:\Users\alice\AppData\Local\Vanguard\hosts-prepare\hosts";
+
+    fn ligne_hosts(avant: &[u8], apres: &[u8]) -> String {
+        ligne_hosts_ecrire(&empreinte_hosts(avant), &empreinte_hosts(apres), PREPARE).unwrap()
+    }
+
+    fn hosts_ecrire(l: &str) -> HostsEcrire {
+        match analyser_acte(l) {
+            Some(Acte::HostsEcrire(h)) => h,
+            autre => panic!("{autre:?}"),
+        }
+    }
+
+    #[test]
+    fn la_ligne_du_hosts_a_une_forme_fixe() {
+        let l = ligne_hosts(b"a", b"b");
+        let h = hosts_ecrire(&l);
+        assert_eq!(h.chemin, PREPARE);
+        let a = analyser_acte(&l).unwrap();
+        assert!(!a.durcit() && !a.affaiblit() && !a.touche_le_reseau());
+        assert_eq!(a.powershell(), SANS_POWERSHELL);
+        assert!(est_un_acte(&l));
+        let e = empreinte_hosts(b"x");
+        let hex = |c: &str| chemin_hex(c);
+        for faux in [
+            // Empreinte en minuscules, trop courte ; un champ de trop ; une espace doublée.
+            format!("{HOSTS_ECRIRE}{} {e} {}", e.to_lowercase(), hex(PREPARE)),
+            format!("{HOSTS_ECRIRE}{} {e} {}", &e[1..], hex(PREPARE)),
+            format!("{HOSTS_ECRIRE}{e} {e} {} x", hex(PREPARE)),
+            format!("{HOSTS_ECRIRE}{e}  {e} {}", hex(PREPARE)),
+            // Chemin en majuscules hexadécimales, relatif, avec « .. », vers un autre fichier ou un autre dossier.
+            format!("{HOSTS_ECRIRE}{e} {e} {}", hex(PREPARE).to_uppercase()),
+            format!("{HOSTS_ECRIRE}{e} {e} {}", hex(r"hosts-prepare\hosts")),
+            format!(
+                "{HOSTS_ECRIRE}{e} {e} {}",
+                hex(r"C:\x\hosts-prepare\..\hosts-prepare\hosts")
+            ),
+            format!("{HOSTS_ECRIRE}{e} {e} {}", hex(r"C:\x\hosts-prepare\hosts.ps1")),
+            format!(
+                "{HOSTS_ECRIRE}{e} {e} {}",
+                hex(r"C:\Windows\System32\drivers\etc\hosts")
+            ),
+            format!("{HOSTS_ECRIRE}{e} {e} {}", hex("C:\\x\\hosts-prepare\\hosts\n")),
+            // Trop longue.
+            format!(
+                "{HOSTS_ECRIRE}{e} {e} {}",
+                hex(&format!(r"C:\{}\hosts-prepare\hosts", "a".repeat(HOSTS_LIGNE_MAX)))
+            ),
+        ] {
+            assert!(analyser_acte(&faux).is_none(), "{faux}");
+        }
+        assert!(ligne_hosts_ecrire(&e, &e, r"C:\Windows\hosts").is_none());
+    }
+
+    #[test]
+    fn le_diff_hostile_du_hosts_est_refuse() {
+        let avant = b"127.0.0.1 localhost\r\n1.2.3.4 www.google.com\r\n".as_slice();
+        let ok = |apres: &[u8]| juger_hosts(avant, apres);
+        let bloc = |lignes: &str| format!("{HOSTS_DEBUT} : sites dangereux >>>\r\n{lignes}{HOSTS_FIN}\r\n");
+        let avec = |lignes: &str| [avant, bloc(lignes).as_bytes()].concat();
+        // Une ligne ajoutée hors du bloc, qui n'est pas de Vanguard, ou qui détourne.
+        assert!(matches!(
+            ok(&[avant, b"5.6.7.8 banque.ca\r\n"].concat()),
+            Err(RefusHosts::LigneAjoutee(_))
+        ));
+        assert!(matches!(
+            ok(&[avant, b"127.0.0.1 windowsupdate.com\r\n"].concat()),
+            Err(RefusHosts::LigneAjoutee(_))
+        ));
+        // Dans le bloc : seulement « 0.0.0.0 nom » ou « :: nom », jamais un nom protégé.
+        assert!(matches!(
+            ok(&avec("127.0.0.1 windowsupdate.com\r\n")),
+            Err(RefusHosts::LigneDuBloc(_))
+        ));
+        assert!(matches!(
+            ok(&avec("5.6.7.8 banque.ca\r\n")),
+            Err(RefusHosts::LigneDuBloc(_))
+        ));
+        assert!(matches!(
+            ok(&avec("0.0.0.0  double.example\r\n")),
+            Err(RefusHosts::LigneDuBloc(_))
+        ));
+        assert!(matches!(
+            ok(&avec("0.0.0.0 a.example b.example\r\n")),
+            Err(RefusHosts::LigneDuBloc(_))
+        ));
+        assert!(matches!(
+            ok(&avec("0.0.0.0 Majuscule.example\r\n")),
+            Err(RefusHosts::LigneDuBloc(_))
+        ));
+        for protege in [
+            "windowsupdate.com",
+            "download.windowsupdate.com",
+            "github.com",
+            "urlhaus-api.abuse.ch",
+        ] {
+            assert_eq!(
+                ok(&avec(&format!("0.0.0.0 {protege}\r\n"))),
+                Err(RefusHosts::NomProtege(protege.to_string())),
+                "{protege}"
+            );
+        }
+        // Un nom qui finit comme un nom protégé sans en être un sous-domaine passe.
+        assert!(ok(&avec("0.0.0.0 pasgithub.com\r\n:: pasgithub.com\r\n")).is_ok());
+        // Une ligne changée autrement qu'en commentaire, retirée, une fin de ligne changée.
+        assert!(matches!(
+            ok(b"127.0.0.1 localhost\r\n1.2.3.5 www.google.com\r\n"),
+            Err(RefusHosts::LigneChangee(_))
+        ));
+        assert!(matches!(
+            ok(b"127.0.0.1 localhost\r\n"),
+            Err(RefusHosts::LigneRetiree(_))
+        ));
+        assert!(matches!(
+            ok(b"127.0.0.1 localhost\n1.2.3.4 www.google.com\r\n"),
+            Err(RefusHosts::LigneChangee(_))
+        ));
+        // Mettre « localhost » ou une liste de blocage en commentaire : refusé (seules les adresses d'hôte).
+        assert!(matches!(
+            ok(&[
+                b"# Vanguard : 127.0.0.1 localhost\r\n".as_slice(),
+                b"1.2.3.4 www.google.com\r\n"
+            ]
+            .concat()),
+            Err(RefusHosts::LigneChangee(_))
+        ));
+        // UTF-16 (marque d'ordre des octets, octet nul), d'un côté ou de l'autre ; plus de 1 Mo.
+        let utf16: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain("127.0.0.1 localhost\r\n".encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        assert_eq!(ok(&utf16), Err(RefusHosts::Utf16));
+        assert_eq!(juger_hosts(&utf16, avant), Err(RefusHosts::Utf16));
+        assert_eq!(ok(&utf16[2..]), Err(RefusHosts::Utf16));
+        let gros = [avant, &vec![b'#'; HOSTS_MAX]].concat();
+        assert_eq!(ok(&gros), Err(RefusHosts::TropGros));
+        assert_eq!(juger_hosts(&gros, avant), Err(RefusHosts::TropGros));
+        // Deux blocs, une marque sans l'autre, une ligne après un bloc « fin de ligne ajoutée » (deux lignes collées).
+        assert_eq!(
+            ok(&[avec(""), bloc("").into_bytes()].concat()),
+            Err(RefusHosts::BlocAbime)
+        );
+        assert_eq!(
+            ok(&[avant, HOSTS_FIN.as_bytes(), b"\r\n"].concat()),
+            Err(RefusHosts::BlocAbime)
+        );
+        assert_eq!(
+            ok(&[avant, HOSTS_DEBUT.as_bytes(), b"\r\n"].concat()),
+            Err(RefusHosts::BlocAbime)
+        );
+        let fdl = b"127.0.0.1 localhost\r\n1.2.3.4 www.google.com";
+        let colle = [
+            fdl.as_slice(),
+            b"\r\n",
+            format!("{HOSTS_DEBUT} {HOSTS_FDL_AJOUTEE} >>>\r\n{HOSTS_FIN}\r\n").as_bytes(),
+            b"evil.example\r\n",
+        ]
+        .concat();
+        assert_eq!(juger_hosts(fdl, &colle), Err(RefusHosts::BlocAbime));
+        // Une marque de début démesurée ou avec un caractère de contrôle.
+        let entete = format!("{HOSTS_DEBUT} {}\r\n{HOSTS_FIN}\r\n", "x".repeat(HOSTS_ENTETE_MAX));
+        assert_eq!(ok(&[avant, entete.as_bytes()].concat()), Err(RefusHosts::Entete));
+        let entete = format!("{HOSTS_DEBUT} \x1b[2J\r\n{HOSTS_FIN}\r\n");
+        assert_eq!(ok(&[avant, entete.as_bytes()].concat()), Err(RefusHosts::Entete));
+
+        // Dans le bloc, une tabulation ou un CR seul (deux lignes pour Windows, une pour qui découpe aux LF) : refusé.
+        assert!(matches!(
+            ok(&avec("0.0.0.0\tbanque.ca\r\n")),
+            Err(RefusHosts::LigneDuBloc(_))
+        ));
+        assert!(matches!(
+            ok(&avec("0.0.0.0 a.example\r5.6.7.8 banque.ca\r\n")),
+            Err(RefusHosts::LigneDuBloc(_))
+        ));
+        // Un bloc vide (plus aucun site bloqué) est admis.
+        assert!(ok(&avec("")).is_ok());
+        // Un hosts qui commence par la marque UTF-8 (BOM) : elle reste en tête, rien ne s'ajoute.
+        let bom = b"\xEF\xBB\xBF127.0.0.1 localhost\r\n1.2.3.4 www.google.com\r\n".as_slice();
+        let commente = hosts_commente(bom, |_| true);
+        assert!(
+            commente.starts_with(b"\xEF\xBB\xBF127.0.0.1 localhost\r\n# Vanguard : 1.2.3.4"),
+            "{commente:?}"
+        );
+        assert!(juger_hosts(bom, &commente).is_ok());
+        assert!(matches!(
+            juger_hosts(bom, &[bom, b"5.6.7.8 banque.ca\r\n"].concat()),
+            Err(RefusHosts::LigneAjoutee(_))
+        ));
+    }
+
+    /// Une ligne montrée dans la fenêtre élevée ne peut pas se maquiller : ni contrôle, ni marque de sens d'écriture
+    /// (U+202E retournerait la ligne à l'écran), ni caractère invisible.
+    #[test]
+    fn une_ligne_montree_ne_se_maquille_pas() {
+        for piege in [
+            "\u{202E}", "\u{2066}", "\u{200B}", "\u{200F}", "\u{FEFF}", "\u{061C}", "\x1b",
+        ] {
+            let l = lisible(format!("1.2.3.4 a{piege}b.example").as_bytes());
+            assert_eq!(l, "1.2.3.4 a\u{FFFD}b.example", "{piege:?}");
+        }
+        assert_eq!(lisible("1.2.3.4 é.example".as_bytes()), "1.2.3.4 é.example");
+    }
+
+    #[test]
+    fn le_hosts_prepare_change_apres_l_empreinte_est_refuse() {
+        let avant = b"1.2.3.4 www.google.com\r\n".to_vec();
+        let apres = hosts_commente(&avant, |_| true);
+        let h = hosts_ecrire(&ligne_hosts(&avant, &apres));
+        let diff = verifier_hosts(&h, &apres, &avant).unwrap();
+        assert_eq!(diff.commentees, ["1.2.3.4 www.google.com"]);
+        // Le fichier préparé change pendant la demande d'administrateur : refusé, même pour un changement admis.
+        let autre = [
+            apres.as_slice(),
+            format!("{HOSTS_DEBUT} >>>\r\n0.0.0.0 x.example\r\n{HOSTS_FIN}\r\n").as_bytes(),
+        ]
+        .concat();
+        assert!(juger_hosts(&avant, &autre).is_ok());
+        assert_eq!(verifier_hosts(&h, &autre, &avant), Err(RefusHosts::PrepareChange));
+        // Le hosts change entre la lecture et l'écriture.
+        assert_eq!(
+            verifier_hosts(&h, &apres, b"9.9.9.9 x.example\r\n"),
+            Err(RefusHosts::HostsChange)
+        );
+        // Plus de 1 Mo : refusé avant toute empreinte.
+        assert_eq!(
+            verifier_hosts(&h, &vec![b'#'; HOSTS_MAX + 1], &avant),
+            Err(RefusHosts::TropGros)
+        );
+        // Une ligne forgée qui a les bonnes empreintes reste jugée.
+        let forge = [avant.as_slice(), b"127.0.0.1 windowsupdate.com\r\n"].concat();
+        let h = hosts_ecrire(&ligne_hosts(&avant, &forge));
+        assert!(matches!(
+            verifier_hosts(&h, &forge, &avant),
+            Err(RefusHosts::LigneAjoutee(_))
+        ));
+    }
+
+    #[test]
+    fn mettre_en_commentaire_puis_bloquer_puis_retirer() {
+        // Fins de ligne mêlées, accent, dernière ligne sans fin de ligne : chaque octet hors du bloc est gardé.
+        let avant = "# à moi\n127.0.0.1 localhost\r\n0.0.0.0 pub.example\n192.168.1.5 nas.local\n1.2.3.4 www.google.com # détourné\n2001:db8::1 v6.example".as_bytes();
+        let commente = hosts_commente(avant, |ip| !matches!(ip, std::net::IpAddr::V4(a) if a.is_private()));
+        let d = juger_hosts(avant, &commente).unwrap();
+        assert_eq!(
+            d.commentees,
+            ["1.2.3.4 www.google.com # détourné", "2001:db8::1 v6.example"]
+        );
+        assert!(!d.vide() && !d.bloc_avant && !d.bloc_apres);
+        assert_eq!(juger_hosts(avant, avant).unwrap(), DiffHosts::default());
+        assert!(juger_hosts(avant, avant).unwrap().vide());
+        // Un bloc ajouté après une dernière ligne sans fin de ligne (« fin de ligne ajoutée »), puis retiré.
+        let bloque = [
+            commente.as_slice(),
+            format!("\n{HOSTS_DEBUT} {HOSTS_FDL_AJOUTEE} : le 2026-11-02 >>>\n0.0.0.0 mal.example\n:: mal.example\n{HOSTS_FIN}\n").as_bytes(),
+        ]
+        .concat();
+        let d = juger_hosts(&commente, &bloque).unwrap();
+        assert_eq!(d.ajoutes, ["mal.example"]);
+        assert!(d.retires.is_empty() && d.bloc_apres && !d.bloc_avant);
+        let d = juger_hosts(&bloque, &commente).unwrap();
+        assert_eq!(d.retires, ["mal.example"]);
+        // Le hosts lu peut avoir un bloc abîmé dans ses lignes (retirer ne détourne rien), pas le nouveau.
+        let vieux = format!("1.1.1.1 a.example\n{HOSTS_DEBUT} >>>\n127.0.0.1 vieux.example\n{HOSTS_FIN}\n");
+        assert!(juger_hosts(vieux.as_bytes(), b"1.1.1.1 a.example\n").is_ok());
+        assert!(matches!(
+            juger_hosts(b"1.1.1.1 a.example\n", vieux.as_bytes()),
+            Err(RefusHosts::LigneDuBloc(_))
+        ));
+    }
+
+    /// Une adresse écrite autrement (IPv4 à l'ancienne, indice de zone, IPv4 en IPv6) est lue comme celle qu'elle
+    /// désigne : elle n'échappe ni à la mise en commentaire, ni au refus d'un nom du bloc qui serait une adresse.
+    #[test]
+    fn les_adresses_ecrites_autrement_sont_lues() {
+        let ip = |t: &str| t.parse::<std::net::IpAddr>().unwrap();
+        for (ecrite, lue) in [
+            ("127.1", "127.0.0.1"),
+            ("0x7f.0.0.1", "127.0.0.1"),
+            ("0X7F.0.0.1", "127.0.0.1"),
+            ("0177.0.0.1", "127.0.0.1"),
+            ("2130706433", "127.0.0.1"),
+            ("0x7f000001", "127.0.0.1"),
+            ("::ffff:1.2.3.4", "1.2.3.4"),
+            ("1.2.3.4%eth0", "1.2.3.4"),
+            ("fe80::1%3", "fe80::1"),
+            ("2a00:1450::1%5", "2a00:1450::1"),
+            ("0x5d.0xb8.0xd8.0x22", "93.184.216.34"),
+            ("93.12113954", "93.184.216.34"),
+            ("93.184.55330", "93.184.216.34"),
+            ("1572395042", "93.184.216.34"),
+            ("0", "0.0.0.0"),
+            ("00.0.0.0", "0.0.0.0"),
+            ("1.2.3.4", "1.2.3.4"),
+            ("::", "::"),
+        ] {
+            assert_eq!(adresse_hosts(ecrite), Some(ip(lue)), "{ecrite}");
+        }
+        for pas_une in [
+            "",
+            "1.2.3.4.5",
+            "1.2.3.",
+            ".1.2.3",
+            "256.0.0.1",
+            "1.2.3.256",
+            "1.2.65536",
+            "1.16777216",
+            "4294967296",
+            "08.0.0.1",
+            "0x.0.0.1",
+            "0xg.0.0.1",
+            "+1.2.3.4",
+            "1.2.3.4%",
+            "1.2.3.4%a b",
+            "1.2.3.4%a/b",
+            "1.2.3.4%%",
+            "pub.exemple.com",
+            "1.2.3.4.nip.io",
+        ] {
+            assert_eq!(adresse_hosts(pas_une), None, "{pas_une:?}");
+        }
+        // Un nom du bloc qui serait une adresse sous une autre forme est refusé.
+        for n in ["127.1", "0x7f.0.0.1", "0177.0.0.1", "93.12113954"] {
+            assert!(!nom_hosts_valide(n), "{n}");
+        }
+        assert!(nom_hosts_valide("1.2.3.4.nip.io"));
+        // Mises en commentaire : chaque redirection, quelle que soit sa forme ; jamais le bouclage écrit autrement.
+        let avant = "127.1 localhost\n0177.0.0.1 boucle.example\n0x5d.0xb8.0xd8.0x22 banque.example\n\
+                     1572395042 hexa.example\n::ffff:93.184.216.34 mappee.example\n93.184.216.34%eth0 zone.example\n\
+                     2130706433 boucle2.example\n"
+            .as_bytes();
+        let commente = hosts_commente(avant, |_| true);
+        let d = juger_hosts(avant, &commente).unwrap();
+        assert_eq!(
+            d.commentees,
+            [
+                "0x5d.0xb8.0xd8.0x22 banque.example",
+                "1572395042 hexa.example",
+                "::ffff:93.184.216.34 mappee.example",
+                "93.184.216.34%eth0 zone.example"
+            ]
+        );
+        // Mettre en commentaire une ligne de bouclage écrite autrement reste refusé.
+        let forge = [HOSTS_COMMENTE.as_bytes(), avant].concat();
+        assert!(matches!(juger_hosts(avant, &forge), Err(RefusHosts::LigneChangee(_))));
+        // Le bloc n'admet que « 0.0.0.0 » ou « :: » écrits ainsi : « 0 nom » ou « 0x0.0.0.0 nom » sont refusés.
+        for ligne in ["0 mal.example", "0x0.0.0.0 mal.example", "::ffff:0.0.0.0 mal.example"] {
+            let b = format!("{HOSTS_DEBUT} : le 2026-11-02 >>>\n{ligne}\n{HOSTS_FIN}\n");
+            assert!(
+                matches!(juger_hosts(b"", b.as_bytes()), Err(RefusHosts::LigneDuBloc(_))),
+                "{ligne}"
+            );
+        }
+    }
+
+    #[test]
+    fn empreinte_des_scripts_et_du_hosts() {
+        // Les vecteurs de SHA-256 (FIPS 180-2), en majuscules comme PowerShell et `sha256_hex`.
+        assert_eq!(
+            empreinte_hosts(b"abc"),
+            "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD"
+        );
+        assert!(empreinte_majuscule(&empreinte_hosts(b"")));
+    }
+
+    #[test]
+    fn le_dns_d_une_carte_hors_liste_ou_hors_forme_est_refuse() {
+        let a = |l: Option<String>| analyser_acte(&l.unwrap()).unwrap();
+        let auto = a(ligne_dns_auto(&GUID.to_lowercase()));
+        assert!(matches!(auto, Acte::DnsAuto(_)) && auto.touche_le_reseau());
+        assert_eq!(auto.ligne(), format!("{DNS_AUTO}{GUID}"));
+        assert!(auto.powershell().contains("-ResetServerAddresses") && auto.powershell().contains(GUID));
+        assert_eq!(ligne_dns(GUID, Some(""), Some("")), ligne_dns_auto(GUID));
+        let d = a(ligne_dns(GUID, Some("1.1.1.1,1.0.0.1"), Some("2606:4700:4700::1111")));
+        assert!(d.touche_le_reseau() && !d.durcit() && !d.affaiblit());
+        assert!(
+            d.powershell()
+                .ends_with("@('1.1.1.1','1.0.0.1','2606:4700:4700::1111')"),
+            "{}",
+            d.powershell()
+        );
+        // Un côté laissé tel quel : pas d'équivalent PowerShell (il écrit les deux familles).
+        assert_eq!(a(ligne_dns(GUID, Some("9.9.9.9"), None)).powershell(), SANS_POWERSHELL);
+        let Acte::DnsServeurs(s) = a(ligne_dns(GUID, Some("192.168.1.1"), Some(""))) else {
+            panic!()
+        };
+        // La box : hors de la liste, acceptée par la grammaire, jugée par le processus élevé (valeur d'avant notée).
+        assert!(s.v4.hors_liste() && !s.v6.hors_liste() && s.v6 == CoteDns::Vider);
+        // La ligne la plus longue de la liste tient dans la borne.
+        let v6 = RESOLVEURS
+            .iter()
+            .filter(|r| r.contains(':'))
+            .take(4)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(",");
+        let v4 = RESOLVEURS
+            .iter()
+            .filter(|r| !r.contains(':'))
+            .take(4)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(ligne_dns(GUID, Some(&v4), Some(&v6)).is_some());
+        for (v4, v6) in [
+            // Mauvaise famille, écriture non canonique, doublon, plus de quatre, bouclage, « 0.0.0.0 », multidiffusion,
+            // diffusion, IPv4 dans IPv6, espace, nom.
+            (Some("2620:fe::fe"), None),
+            (None, Some("9.9.9.9")),
+            (Some("009.9.9.9"), None),
+            (None, Some("2620:FE::FE")),
+            (None, Some("2620:00fe::fe")),
+            (Some("9.9.9.9,9.9.9.9"), None),
+            (Some("1.1.1.1,1.0.0.1,9.9.9.9,8.8.8.8,8.8.4.4"), None),
+            (Some("127.0.0.1"), None),
+            (Some("0.0.0.0"), None),
+            (Some("224.0.0.1"), None),
+            (Some("255.255.255.255"), None),
+            (None, Some("::1")),
+            (None, Some("::")),
+            (None, Some("ff02::1")),
+            (None, Some("::ffff:1.1.1.1")),
+            (Some("1.1.1.1, 1.0.0.1"), None),
+            (Some("dns.google"), None),
+            (Some("1.1.1.1,"), None),
+            // Ne rien faire, ou tout vider autrement que par dns-auto.
+            (None, None),
+        ] {
+            assert!(ligne_dns(GUID, v4, v6).is_none(), "{v4:?} {v6:?}");
+        }
+        let l = |reste: &str| analyser_acte(&format!("{DNS_SERVEURS}{reste}"));
+        assert!(l(&format!("{GUID} |")).is_none());
+        assert!(l(&format!("{GUID} -|-")).is_none());
+        assert!(l(&format!("{GUID} 1.1.1.1")).is_none());
+        assert!(l(&format!("{GUID} 1.1.1.1|-|-")).is_none());
+        assert!(l(&format!("{GUID}  1.1.1.1|-")).is_none());
+        // Le GUID : forme exacte, réécrit en majuscules.
+        for guid in [
+            "4D36E972-E325-11CE-BFC1-08002BE10318",
+            "{4D36E972-E325-11CE-BFC1-08002BE1031}",
+            "{4D36E972E32511CEBFC108002BE10318}",
+            "{4D36E972-E325-11CE-BFC1-08002BE1031G}",
+            "{../../../../../../..../hosts}",
+            "",
+        ] {
+            assert!(ligne_dns_auto(guid).is_none(), "{guid}");
+            assert!(ligne_dns(guid, Some("1.1.1.1"), None).is_none(), "{guid}");
+        }
+        assert!(analyser_acte(&format!("{DNS_AUTO}{}", GUID.to_lowercase())).is_none());
+        assert!(analyser_acte(&format!("{DNS_AUTO}{GUID} ")).is_none());
+    }
+
+    #[test]
+    fn le_reseau_n_est_jamais_touche_pendant_une_session_a_distance() {
+        let release = analyser_programme(&ligne_programme("ipconfig-release", None)).unwrap();
+        let renew = analyser_programme(&ligne_programme("ipconfig-renew", None)).unwrap();
+        let flush = analyser_programme(&ligne_programme("ipconfig-flushdns", None)).unwrap();
+        assert!(release.coupe_le_reseau() && renew.coupe_le_reseau() && !flush.coupe_le_reseau());
+        let dns = analyser_acte(&ligne_dns_auto(GUID).unwrap()).unwrap();
+        for touche in [release.coupe_le_reseau(), dns.touche_le_reseau()] {
+            // Bureau à distance, une session SSH ou de prise en main, ou des connexions illisibles : refusé.
+            assert!(coupe_une_session(touche, true, Some(0)));
+            assert!(coupe_une_session(touche, false, Some(1)));
+            assert!(coupe_une_session(touche, false, None));
+            assert!(!coupe_une_session(touche, false, Some(0)));
+        }
+        assert!(!coupe_une_session(flush.coupe_le_reseau(), true, None));
+    }
+
+    // ------------------------------------------------------------ le compte
+
+    #[test]
+    fn chaque_geste_du_compte_se_relit_a_l_identique() {
+        for v in VALEURS_COMPTE {
+            let l = ligne_compte(v.id).unwrap();
+            assert_eq!(analyser_compte(&l), Some(GesteCompte::Valeur(v)), "{l}");
+            assert!(!v.cle.starts_with(['\\', '/']) && !v.cle.contains(".."), "{}", v.id);
+        }
+        let ids: std::collections::HashSet<&str> = VALEURS_COMPTE.iter().map(|v| v.id).collect();
+        assert_eq!(ids.len(), VALEURS_COMPTE.len(), "identifiant en double");
+        for version in OFFICE_VERSIONS {
+            for (programme, _) in OFFICE_PROGRAMMES {
+                let l = ligne_macros(version, programme).unwrap();
+                let g = analyser_compte(&l).unwrap();
+                assert_eq!(g.ligne(), l);
+                assert!(g.durcit());
+                assert_eq!(g.donnee(), Some(Donnee::Dword(2)));
+                assert_eq!(
+                    g.valeur().unwrap().0,
+                    format!(r"Software\Microsoft\Office\{version}\{programme}\Security")
+                );
+            }
+        }
+        assert_eq!(ligne_macros("17.0", "word"), None);
+        assert_eq!(ligne_macros("16.0", "outlook"), None);
+        let a = ligne_alimentation();
+        assert_eq!(a, "vanguard:compte alimentation-performances");
+        assert_eq!(analyser_compte(&a), Some(GesteCompte::Alimentation));
+        assert_eq!(GesteCompte::Alimentation.valeur(), None);
+    }
+
+    #[test]
+    fn une_valeur_run_se_designe_par_son_nom_exact() {
+        let nom: Vec<u16> = "Mise à jour".encode_utf16().collect();
+        let l = ligne_run_retirer(false, &nom).unwrap();
+        assert_eq!(l, format!("{COMPTE}run-retirer run {}", hex_utf16(&nom)));
+        let g = analyser_compte(&l).unwrap();
+        assert_eq!(g.valeur(), Some((CLE_RUN.to_string(), nom.clone())));
+        assert_eq!(g.donnee(), Some(Donnee::Retirer));
+        // Décision 4 b) : un retrait de démarrage n'est pas une protection.
+        assert!(!g.durcit());
+        // La valeur par défaut, et une demi-paire (un nom que le registre admet) : désignées telles quelles.
+        let defaut = ligne_run_retirer(true, &[]).unwrap();
+        assert_eq!(defaut, "vanguard:compte run-retirer runonce defaut");
+        assert_eq!(
+            analyser_compte(&defaut).unwrap().valeur(),
+            Some((CLE_RUNONCE.to_string(), Vec::new()))
+        );
+        let demi = ligne_run_retirer(false, &[0xd800, 0x41]).unwrap();
+        assert_eq!(analyser_compte(&demi).unwrap().ligne(), demi);
+        // Refusés : unité nulle, nom trop long, hexadécimal en majuscules, groupe incomplet, clé hors liste.
+        assert_eq!(ligne_run_retirer(false, &[0x41, 0]), None);
+        assert_eq!(ligne_run_retirer(false, &vec![0x41; RUN_NOM_MAX + 1]), None);
+        let longue = ligne_run_retirer(true, &vec![0x41; RUN_NOM_MAX]).unwrap();
+        assert_eq!(longue.len(), COMPTE_LIGNE_MAX);
+        assert_eq!(analyser_compte(&longue).unwrap().ligne(), longue);
+        assert!(!valide(std::slice::from_ref(&longue)));
+        // À l'écran, un nom très long est coupé.
+        let montre = analyser_compte(&longue).unwrap().texte(true);
+        assert!(montre.contains(&format!("{}…", "A".repeat(NOM_MONTRE_MAX))) && montre.len() < 400);
+        for faux in [
+            "vanguard:compte run-retirer run 4100",
+            "vanguard:compte run-retirer run 0000",
+            "vanguard:compte run-retirer run 4A00",
+            "vanguard:compte run-retirer run 410",
+            "vanguard:compte run-retirer run ",
+            "vanguard:compte run-retirer runservices 4100",
+            "vanguard:compte run-retirer run 4100 ",
+            "vanguard:compte run-retirer run defaut ",
+        ] {
+            let attendu = faux == "vanguard:compte run-retirer run 4100";
+            assert_eq!(analyser_compte(faux).is_some(), attendu, "{faux}");
+        }
+    }
+
+    #[test]
+    fn une_ligne_du_compte_hors_de_sa_forme_est_refusee() {
+        for faux in [
+            "vanguard:compte ",
+            "vanguard:compte inconnu",
+            "vanguard:compte jeux-mode ",
+            " vanguard:compte jeux-mode",
+            "vanguard:compte  jeux-mode",
+            "vanguard:compte JEUX-MODE",
+            "vanguard:compte\tjeux-mode",
+            "vanguard:compte macros-office 16.0 Word",
+            "vanguard:compte macros-office 16.0  word",
+            "vanguard:compte macros-office 16.0",
+            "vanguard:compte alimentation-performances ",
+            "vanguard:comptejeux-mode",
+            "vanguard:compte jeux-modé",
+        ] {
+            assert_eq!(analyser_compte(faux), None, "{faux}");
+        }
+    }
+
+    #[test]
+    fn le_processus_eleve_refuse_tout_geste_du_compte() {
+        // Même bien formée : un geste du compte se fait sous le compte de la personne, jamais derrière l'UAC.
+        for v in VALEURS_COMPTE {
+            let l = lignes(&[&ligne_compte(v.id).unwrap()]);
+            assert!(valider(&l, |_| Some(())).is_none(), "{l:?}");
+        }
+        let l = lignes(&[&ligne_alimentation()]);
+        assert!(valider(&l, |_| Some(())).is_none());
+        assert!(valider(&lignes(&["vanguard:compte inconnu"]), |_| Some(())).is_none());
+        // Et aucune ne passe pour un programme, un acte ou un script.
+        for v in VALEURS_COMPTE {
+            let l = ligne_compte(v.id).unwrap();
+            assert!(analyser_programme(&l).is_none() && !est_un_acte(&l) && analyser_script(&l).is_none());
+        }
+    }
+
+    #[test]
+    fn swap_effect_seul_change_le_reste_est_garde() {
+        assert_eq!(avec_swap_effect(""), "SwapEffectUpgradeEnable=1;");
+        assert_eq!(
+            avec_swap_effect("VRROptimizeEnable=0;SwapEffectUpgradeEnable=0;"),
+            "VRROptimizeEnable=0;SwapEffectUpgradeEnable=1;"
+        );
+        assert_eq!(
+            avec_swap_effect("SwapEffectUpgradeEnable=0;VRROptimizeEnable=1;"),
+            "VRROptimizeEnable=1;SwapEffectUpgradeEnable=1;"
+        );
+        // Casse ignorée et « ; » final absent, comme le -replace de PowerShell d'avant.
+        assert_eq!(
+            avec_swap_effect("AutoHDREnable=1;swapeffectupgradeenable=0"),
+            "AutoHDREnable=1;SwapEffectUpgradeEnable=1;"
+        );
+        // Déjà bon : relu, il redonne le même texte (rien à écrire).
+        let bon = "VRROptimizeEnable=0;SwapEffectUpgradeEnable=1;";
+        assert_eq!(avec_swap_effect(bon), bon);
+        // Sans chiffre après « = », rien n'est retiré ; un texte non ASCII est gardé tel quel.
+        assert_eq!(
+            avec_swap_effect("SwapEffectUpgradeEnable=;é"),
+            "SwapEffectUpgradeEnable=;é;SwapEffectUpgradeEnable=1;"
+        );
+        // Un réglage d'avant sans « ; » final ne se colle pas au nôtre.
+        assert_eq!(
+            avec_swap_effect("VRROptimizeEnable=0"),
+            "VRROptimizeEnable=0;SwapEffectUpgradeEnable=1;"
+        );
+        assert_eq!(
+            avec_swap_effect("SwapEffectUpgradeEnable=0;AutoHDREnable=1"),
+            "AutoHDREnable=1;SwapEffectUpgradeEnable=1;"
+        );
+    }
+
+    // ------------------------------------------------------------ la séparation
+
+    fn est_point(l: &str) -> bool {
+        l == POINT
+    }
+
+    /// Le plan, §3.8 : la séparation ne change pas l'ordre. Le point de restauration d'abord, puis le reste du travail
+    /// élevé, en un seul passage ; ensuite seulement les écritures du compte, dans ce processus.
+    #[test]
+    fn point_puis_eleve_puis_compte() {
+        let mode = ligne_compte("jeux-mode").unwrap();
+        let souris = ligne_compte("souris-vitesse").unwrap();
+        let correctifs = vec![
+            lignes(&[POINT, &mode, "vanguard:gaming-hags", &souris]),
+            lignes(&["Set-Service x"]),
+        ];
+        let journal = std::cell::RefCell::new(Vec::<String>::new());
+        let (resultats, notes) = lancer_separe(
+            &correctifs,
+            est_point,
+            |envoyes| {
+                journal.borrow_mut().push(format!("eleve {envoyes:?}"));
+                Some(PassageEleve {
+                    resultats: vec![true; envoyes.len()],
+                    notes: envoyes.to_vec(),
+                    arrete: false,
+                })
+            },
+            |g| {
+                journal.borrow_mut().push(g.ligne());
+                FaitCompte {
+                    reussi: true,
+                    rien: false,
+                    avant: Some("absent".into()),
+                }
+            },
+        )
+        .unwrap();
+        let journal = journal.into_inner();
+        // Un seul passage élevé : le point, seul, en tête ; le travail élevé du premier correctif ; puis le second.
+        assert_eq!(journal.len(), 3, "{journal:?}");
+        assert_eq!(
+            journal[0],
+            format!(
+                "eleve {:?}",
+                vec![
+                    lignes(&[POINT]),
+                    lignes(&["vanguard:gaming-hags"]),
+                    lignes(&["Set-Service x"])
+                ]
+            )
+        );
+        assert_eq!(journal[1..], [mode.clone(), souris.clone()]);
+        assert_eq!(resultats, [true, true]);
+        assert_eq!(
+            notes[0],
+            [
+                POINT.to_string(),
+                "vanguard:gaming-hags".into(),
+                format!("{mode} (avant : absent)"),
+                format!("{souris} (avant : absent)"),
+            ]
+        );
+        assert_eq!(notes[1], ["Set-Service x"]);
+    }
+
+    #[test]
+    fn rien_d_eleve_aucun_passage_eleve() {
+        let mode = ligne_compte("jeux-mode").unwrap();
+        let mut eleve_appele = false;
+        let (resultats, notes) = lancer_separe(
+            &[lignes(&[&mode]), Vec::new()],
+            est_point,
+            |_| {
+                eleve_appele = true;
+                None
+            },
+            |_| FaitCompte {
+                reussi: true,
+                rien: true,
+                avant: None,
+            },
+        )
+        .unwrap();
+        assert!(!eleve_appele, "aucune demande d'administrateur pour un geste du compte");
+        assert_eq!(resultats, [true, true]);
+        // Déjà bon : rien à noter.
+        assert_eq!(notes, [Vec::<String>::new(), Vec::new()]);
+    }
+
+    /// Un point refusé, ou tout arrêté à la demande : aucun geste du compte, et ce n'est pas « fait ».
+    #[test]
+    fn point_refuse_ou_arret_aucun_geste_du_compte() {
+        let mode = ligne_compte("jeux-mode").unwrap();
+        let correctifs = vec![lignes(&[POINT, "vanguard:gaming-hags", &mode]), lignes(&[&mode])];
+        for (point_ok, arrete) in [(false, false), (true, true), (false, true)] {
+            let mut faits = 0;
+            let (resultats, notes) = lancer_separe(
+                &correctifs,
+                est_point,
+                |envoyes| {
+                    Some(PassageEleve {
+                        resultats: vec![point_ok, false],
+                        notes: envoyes.to_vec(),
+                        arrete,
+                    })
+                },
+                |_| {
+                    faits += 1;
+                    FaitCompte {
+                        reussi: true,
+                        rien: false,
+                        avant: None,
+                    }
+                },
+            )
+            .unwrap();
+            assert_eq!(faits, 0, "point_ok={point_ok} arrete={arrete}");
+            assert_eq!(resultats, [false, false]);
+            assert_eq!(notes[1], std::slice::from_ref(&mode));
+        }
+        // Le passage élevé n'a rien fait (dit par lui) : rien du compte non plus.
+        let mut faits = 0;
+        let r = lancer_separe(
+            &correctifs,
+            est_point,
+            |_| None,
+            |_| {
+                faits += 1;
+                FaitCompte {
+                    reussi: true,
+                    rien: false,
+                    avant: None,
+                }
+            },
+        );
+        assert!(r.is_none() && faits == 0);
+    }
+
+    #[test]
+    fn un_echec_eleve_n_empeche_pas_le_compte_mais_le_correctif_echoue() {
+        let mode = ligne_compte("jeux-mode").unwrap();
+        let souris = ligne_compte("souris-vitesse").unwrap();
+        let correctifs = vec![lignes(&[POINT, "Set-Service x", &mode]), lignes(&[&souris])];
+        let (resultats, notes) = lancer_separe(
+            &correctifs,
+            est_point,
+            |envoyes| {
+                Some(PassageEleve {
+                    resultats: vec![true, false],
+                    notes: envoyes.to_vec(),
+                    arrete: false,
+                })
+            },
+            |g| FaitCompte {
+                reussi: g.ligne() != souris,
+                rien: false,
+                avant: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(resultats, [false, false]);
+        assert_eq!(notes[1], std::slice::from_ref(&souris));
+        // Un correctif dont tout le reste était déjà bon : il ne reste que le point, rien à noter.
+        let (resultats, notes) = lancer_separe(
+            &[lignes(&[POINT, &mode])],
+            est_point,
+            |envoyes| {
+                (envoyes == [lignes(&[POINT])]).then(|| PassageEleve {
+                    resultats: vec![true],
+                    notes: vec![vec![format!("{POINT} (ok sans-point)")]],
+                    arrete: false,
+                })
+            },
+            |_| FaitCompte {
+                reussi: true,
+                rien: true,
+                avant: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(resultats, [true]);
+        assert_eq!(notes, [Vec::<String>::new()]);
+    }
+
+    #[test]
+    fn separer_range_chaque_ligne_une_fois() {
+        let mode = ligne_compte("jeux-mode").unwrap();
+        let s = separer(
+            &[lignes(&[POINT, &mode, "vanguard:compte faux", "Set-Service x", POINT])],
+            est_point,
+        );
+        // Une ligne du compte mal formée reste au travail élevé, où `lignes_pour_eleve` la refuse avant l'UAC.
+        assert_eq!(
+            s,
+            [Separe {
+                points: vec![0, 4],
+                eleves: vec![2, 3],
+                compte: vec![1],
+            }]
+        );
+    }
+
+    fn hex(s: &str) -> String {
+        hex_utf16(&s.encode_utf16().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn desactiver_un_compte_se_lit_par_son_rid() {
+        let a = analyser_acte("vanguard:compte-desactiver 501").unwrap();
+        assert!(matches!(a, Acte::CompteDesactiver(501)) && a.durcit() && !a.affaiblit() && !a.touche_le_reseau());
+        assert_eq!(a.powershell(), SANS_POWERSHELL);
+        assert!(est_un_acte(&a.ligne()) && analyser_compte(&a.ligne()).is_none());
+        assert_eq!(
+            ligne_compte_desactiver("S-1-5-21-1004336348-1177238915-682003330-500").as_deref(),
+            Some("vanguard:compte-desactiver 500")
+        );
+        assert_eq!(
+            analyser_acte("vanguard:compte-desactiver 4294967295").unwrap().ligne(),
+            "vanguard:compte-desactiver 4294967295"
+        );
+        // Hors d'un compte local S-1-5-21-a-b-c-RID de RID 500 ou plus : aucune ligne.
+        for sid in [
+            "S-1-5-18",
+            "S-1-5-32-544",
+            "S-1-5-21-1-2-3-499",
+            "S-1-5-21-1-2-500",
+            "S-1-5-21-1-2-3-4-500",
+            "S-1-5-21-1-2-3-0500",
+            "S-1-5-80-1-2-3-500",
+            "s-1-5-21-1-2-3-500",
+            "",
+        ] {
+            assert_eq!(ligne_compte_desactiver(sid), None, "{sid}");
+        }
+    }
+
+    #[test]
+    fn les_lignes_de_compte_forgees_sont_refusees() {
+        for reste in [
+            "499",
+            "0",
+            "0500",
+            "00500",
+            "4294967296",
+            "99999999999999999999",
+            "+500",
+            "-500",
+            " 500",
+            "500 ",
+            "500\n",
+            "5 00",
+            "",
+            "0x1f4",
+            "500.0",
+            "５００",
+            "S-1-5-21-1-2-3-500",
+            "alice",
+        ] {
+            assert!(
+                analyser_acte(&format!("{COMPTE_DESACTIVER}{reste}")).is_none(),
+                "{reste:?}"
+            );
+        }
+        // Aucun verbe pour activer, ajouter à un groupe ou changer un mot de passe : la ligne n'est rien.
+        for l in [
+            "vanguard:compte-activer 1001",
+            "vanguard:compte-desactiver",
+            "vanguard:compte-desactiver  500",
+            "Vanguard:compte-desactiver 500",
+            "vanguard:compte-administrateur 1001",
+        ] {
+            assert!(analyser_acte(l).is_none(), "{l:?}");
+        }
+    }
+
+    #[test]
+    fn retirer_une_racine_se_lit_en_minuscules() {
+        let e = "0123456789abcdef0123456789abcdef01234567";
+        for (mot, m) in [("lm", MagasinRacine::Ordinateur), ("cu", MagasinRacine::Compte)] {
+            let l = format!("{CERTIFICAT_RETIRER}{mot} {e}");
+            let a = analyser_acte(&l).unwrap();
+            assert!(matches!(&a, Acte::CertificatRetirer(m2, e2) if *m2 == m && e2.texte() == e));
+            assert!(a.durcit() && !a.affaiblit() && a.powershell() == SANS_POWERSHELL);
+            assert_eq!(
+                ligne_certificat_retirer(m.nom(), &e.to_ascii_uppercase()).as_deref(),
+                Some(l.as_str())
+            );
+        }
+        let Some(Acte::CertificatRetirer(_, emp)) = analyser_acte(&format!("{CERTIFICAT_RETIRER}lm {e}")) else {
+            panic!()
+        };
+        assert_eq!(
+            emp.octets().unwrap(),
+            [
+                0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01,
+                0x23, 0x45, 0x67
+            ]
+        );
+        assert_eq!(ligne_certificat_retirer("Disallowed", e), None);
+        assert_eq!(ligne_certificat_retirer("LocalMachine", &e[1..]), None);
+    }
+
+    #[test]
+    fn les_lignes_de_racine_forgees_sont_refusees() {
+        let e = "0123456789abcdef0123456789abcdef01234567";
+        for reste in [
+            format!("lm {}", &e[1..]),
+            format!("lm {e}0"),
+            format!("lm {}", e.to_ascii_uppercase()),
+            format!("lm {}g", &e[1..]),
+            format!("lm  {e}"),
+            format!("lm {e} "),
+            format!("LM {e}"),
+            format!("ca {e}"),
+            format!("root {e}"),
+            format!("disallowed {e}"),
+            e.to_string(),
+            "lm".to_string(),
+            format!("lm {e} lm"),
+            // Aucun ajout : seul « retirer » existe.
+            format!("lm {e} ajouter"),
+        ] {
+            assert!(
+                analyser_acte(&format!("{CERTIFICAT_RETIRER}{reste}")).is_none(),
+                "{reste:?}"
+            );
+        }
+        assert!(analyser_acte(&format!("vanguard:certificat-ajouter lm {e}")).is_none());
+    }
+
+    #[test]
+    fn retirer_un_acces_de_partage_se_lit() {
+        let l = format!("{PARTAGE_RETIRER_ACCES}{} S-1-1-0", hex("Données"));
+        let a = analyser_acte(&l).unwrap();
+        assert!(matches!(&a, Acte::PartageRetirerAcces(p) if p.nom.texte() == "Données" && p.sid.texte() == "S-1-1-0"));
+        assert!(a.durcit() && !a.affaiblit() && !a.touche_le_reseau() && a.powershell() == SANS_POWERSHELL);
+        assert_eq!(
+            ligne_partage_retirer_acces("Données", "S-1-1-0").as_deref(),
+            Some(l.as_str())
+        );
+        // Un nom de 80 unités et un SID de 15 nombres : la ligne la plus longue passe.
+        let long = "é".repeat(PARTAGE_NOM_MAX);
+        let sid = format!("S-1-281474976710655{}", "-4294967295".repeat(14));
+        let l = ligne_partage_retirer_acces(&long, &sid).unwrap();
+        assert!(l.len() > ACTE_MAX && l.len() <= ACTE_NOM_MAX);
+        assert!(analyser_acte(&l).is_some());
+    }
+
+    #[test]
+    fn les_partages_administratifs_ne_se_touchent_jamais() {
+        // ADMIN$, IPC$, C$ : le Bureau à distance, l'administration à distance et les partages cachés en dépendent.
+        for nom in ["ADMIN$", "IPC$", "C$", "print$", "Caché$", "$"] {
+            assert_eq!(ligne_partage_retirer_acces(nom, "S-1-1-0"), None, "{nom}");
+            assert!(
+                analyser_acte(&format!("{PARTAGE_RETIRER_ACCES}{} S-1-1-0", hex(nom))).is_none(),
+                "{nom}"
+            );
+        }
+    }
+
+    #[test]
+    fn les_lignes_de_partage_forgees_sont_refusees() {
+        let p = hex("Public");
+        let mut refusees = vec![
+            // Nom : vide, trop long, majuscules, unité nulle, contrôle, demi-substitut, groupe incomplet.
+            " S-1-1-0".to_string(),
+            format!("{} S-1-1-0", hex(&"a".repeat(PARTAGE_NOM_MAX + 1))),
+            format!("{} S-1-1-0", p.to_ascii_uppercase()),
+            format!("{p}0000 S-1-1-0"),
+            format!("{} S-1-1-0", hex("Pub\nlic")),
+            format!("{p}00d8 S-1-1-0"),
+            format!("{p}50 S-1-1-0"),
+            "Public S-1-1-0".to_string(),
+            // SID : forme stricte seulement.
+            format!("{p} S-1-1"),
+            format!("{p} S-1-01-0"),
+            format!("{p} S-1-1-00"),
+            format!("{p} s-1-1-0"),
+            format!("{p} S-2-1-0"),
+            format!("{p} S-1-1-0-"),
+            format!("{p} S-1--1-0"),
+            format!("{p} S-1-1-4294967296"),
+            format!("{p} S-1-281474976710656-0"),
+            format!("{p} S-1-1-+0"),
+            // 16 sous-autorités : une de plus que SID_MAX_SUB_AUTHORITIES.
+            format!("{p} S-1-5{}", "-1".repeat(16)),
+            format!("{p} Everyone"),
+            format!("{p} S-1-1-0 "),
+            format!("{p}  S-1-1-0"),
+            p.clone(),
+            format!("{p} S-1-1-0 S-1-1-0"),
+        ];
+        refusees.push(format!("{} S-1-1-0", "00".repeat(ACTE_NOM_MAX)));
+        for reste in refusees {
+            assert!(
+                analyser_acte(&format!("{PARTAGE_RETIRER_ACCES}{reste}")).is_none(),
+                "{reste:?}"
+            );
+        }
+        assert!(analyser_acte(&format!("vanguard:partage-ajouter-acces {p} S-1-1-0")).is_none());
+        // 15 sous-autorités, le plus que Windows admet : lu.
+        assert!(analyser_acte(&format!("{PARTAGE_RETIRER_ACCES}{p} S-1-5{}", "-1".repeat(15))).is_some());
+    }
+
+    type Changer = fn(&mut EtatCompte);
+
+    fn etat<'a>(trouves: &'a [&'a str]) -> EtatCompte<'a> {
+        EtatCompte {
+            rid: 500,
+            trouves,
+            personne: Some("S-1-5-21-1-2-3-1001"),
+            soi: Some("S-1-5-21-1-2-3-1002"),
+            signale: true,
+            administrateur: true,
+            autres_administrateurs: 1,
+            programmes: Some(false),
+        }
+    }
+
+    #[test]
+    fn les_gardes_de_desactivation() {
+        let admin = ["S-1-5-21-1-2-3-500"];
+        assert_eq!(refus_desactivation(&etat(&admin)), None);
+        let cas: [(Changer, RefusCompte); 12] = [
+            (|e| e.personne = None, RefusCompte::PersonneIllisible),
+            (|e| e.trouves = &[], RefusCompte::Introuvable),
+            (
+                |e| e.trouves = &["S-1-5-21-1-2-3-500", "S-1-5-21-9-9-9-500"],
+                RefusCompte::Introuvable,
+            ),
+            (|e| e.trouves = &["S-1-5-21-1-2-3-501"], RefusCompte::Introuvable),
+            // Le compte de la personne, ou celui du processus administrateur : jamais.
+            (|e| e.personne = Some("S-1-5-21-1-2-3-500"), RefusCompte::CompteEnCours),
+            (|e| e.personne = Some("s-1-5-21-1-2-3-500"), RefusCompte::CompteEnCours),
+            (|e| e.soi = Some("S-1-5-21-1-2-3-500"), RefusCompte::CompteEnCours),
+            (|e| e.soi = None, RefusCompte::CompteEnCours),
+            (|e| e.signale = false, RefusCompte::NonSignale),
+            // Le dernier administrateur actif : jamais.
+            (|e| e.autres_administrateurs = 0, RefusCompte::DernierAdministrateur),
+            // Une session ouverte sous ce compte (sur l'écran, Bureau à distance, SSH) : jamais coupée.
+            (|e| e.programmes = Some(true), RefusCompte::SessionOuverte),
+            (|e| e.programmes = None, RefusCompte::ProgrammesIllisibles),
+        ];
+        for (changer, refus) in cas {
+            let mut e = etat(&admin);
+            changer(&mut e);
+            assert_eq!(refus_desactivation(&e), Some(refus), "{e:?}");
+        }
+        // Un compte qui n'est pas administrateur peut partir même seul ; un compte réservé de Windows, jamais.
+        let invite = ["S-1-5-21-1-2-3-501"];
+        let mut e = etat(&invite);
+        e.rid = 501;
+        e.administrateur = false;
+        e.autres_administrateurs = 0;
+        assert_eq!(refus_desactivation(&e), None);
+        for rid in [503, 504, 999] {
+            let sid = [format!("S-1-5-21-1-2-3-{rid}")];
+            let trouves = [sid[0].as_str()];
+            let mut e = etat(&trouves);
+            e.rid = rid;
+            assert_eq!(refus_desactivation(&e), Some(RefusCompte::Reserve), "{rid}");
+        }
+    }
+
+    // ------------------------------------------------- persistance et prise en main à distance (lot 3.5)
+
+    /// La ligne passe-t-elle `valider`, seule (aucune ligne autre qu'un acte admise) ?
+    fn valide_seule(ligne: &str) -> bool {
+        valider(&[ligne.to_string()], |_| None::<()>).is_some()
+    }
+
+    #[test]
+    fn retrait_run_machine_aller_retour() {
+        let nom: Vec<u16> = "Mise à jour".encode_utf16().collect();
+        for (cle, mot) in [
+            (r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run", "run"),
+            (r"HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce", "runonce"),
+            (
+                r"HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+                "run32",
+            ),
+        ] {
+            let ligne = ligne_run_retirer_machine(cle, &nom).expect(cle);
+            assert_eq!(ligne, format!("{RUN_RETIRER_MACHINE}{mot} {}", hex_utf16(&nom)));
+            let a = analyser_acte(&ligne).expect(&ligne);
+            assert!(matches!(&a, Acte::RunRetirer(v) if v.nom.unites() == nom.as_slice() && v.cle.mot() == mot));
+            assert!(!a.durcit() && !a.affaiblit() && !a.touche_le_reseau());
+            assert_eq!(a.powershell(), SANS_POWERSHELL);
+            assert!(valide_seule(&ligne), "{ligne}");
+            // La remise : même forme, elle affaiblit.
+            let remise = ligne.replacen(RUN_RETIRER_MACHINE, RUN_REMETTRE, 1);
+            let r = analyser_acte(&remise).expect(&remise);
+            assert!(matches!(r, Acte::RunRemettre(_)) && r.affaiblit() && !r.durcit());
+            assert!(valide_seule(&remise));
+        }
+        // La valeur par défaut : « defaut », jamais un hexadécimal vide.
+        let defaut = ligne_run_retirer_machine(r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run", &[]).unwrap();
+        assert_eq!(defaut, format!("{RUN_RETIRER_MACHINE}run defaut"));
+        assert!(matches!(analyser_acte(&defaut), Some(Acte::RunRetirer(v)) if v.nom.unites().is_empty()));
+        // Un nom qui n'est pas de l'UTF-16 valide se retire quand même.
+        let orphelin =
+            ligne_run_retirer_machine(r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run", &[0xd800, 0x41]);
+        assert!(orphelin.as_deref().and_then(analyser_acte).is_some());
+        // Les clés de la personne et toute autre clé : pas une ligne de la machine.
+        for cle in [
+            r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Run",
+            r"HKLM:\Software\Microsoft\Windows\CurrentVersion\RunServices",
+            r"HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\RunOnce",
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+        ] {
+            assert_eq!(ligne_run_retirer_machine(cle, &nom), None, "{cle}");
+        }
+        // Le plus long nom tient dans une ligne du tube ; un de plus, non.
+        let long = vec![0x41u16; RUN_MACHINE_NOM_MAX];
+        let ligne = ligne_run_retirer_machine(
+            r"HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+            &long,
+        )
+        .unwrap();
+        assert!(ligne.len() <= LIGNE_MAX && valide_seule(&ligne));
+        let trop = vec![0x41u16; RUN_MACHINE_NOM_MAX + 1];
+        assert_eq!(
+            ligne_run_retirer_machine(r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run", &trop),
+            None
+        );
+        assert!(analyser_acte(&format!("{RUN_RETIRER_MACHINE}run {}", hex_utf16(&trop))).is_none());
+    }
+
+    #[test]
+    fn retrait_run_machine_forge_refuse() {
+        let a = hex_utf16(&[0x41]);
+        let lignes = [
+            // Nom vide en hexadécimal, NUL, hexadécimal mal formé, majuscules, clé inconnue ou en majuscules.
+            format!("{RUN_RETIRER_MACHINE}run "),
+            format!("{RUN_RETIRER_MACHINE}run 0000"),
+            format!("{RUN_RETIRER_MACHINE}run 00410000"),
+            format!("{RUN_RETIRER_MACHINE}run 041"),
+            format!("{RUN_RETIRER_MACHINE}run 004A"),
+            format!("{RUN_RETIRER_MACHINE}run Defaut"),
+            format!("{RUN_RETIRER_MACHINE}runservices {a}"),
+            format!("{RUN_RETIRER_MACHINE}Run {a}"),
+            format!("{RUN_RETIRER_MACHINE}run32once {a}"),
+            // Espaces en trop, champ en trop ou manquant.
+            format!("{RUN_RETIRER_MACHINE}run  {a}"),
+            format!("{RUN_RETIRER_MACHINE}run {a} "),
+            format!("{RUN_RETIRER_MACHINE}run {a} {a}"),
+            format!("{RUN_RETIRER_MACHINE}run"),
+            format!("{RUN_RETIRER_MACHINE}{a}"),
+            format!("{RUN_REMETTRE}run {a}x"),
+            // Plus long que ce que tient le tube.
+            format!("{RUN_RETIRER_MACHINE}run {}", "0041".repeat(LIGNE_MAX)),
+        ];
+        for l in &lignes {
+            assert!(analyser_acte(l).is_none(), "{l}");
+            assert!(!valide_seule(l), "{l}");
+        }
+    }
+
+    #[test]
+    fn run_protege_garde_windows_et_defender() {
+        for (nom, programme) in [
+            ("SecurityHealth", r"%windir%\system32\SecurityHealthSystray.exe"),
+            ("securityhealth", r"C:\autre.exe"),
+            ("Windows Defender", r"C:\x.exe"),
+            ("WindowsDefender", r"C:\x.exe"),
+            ("Mise à jour", r#""C:\Program Files\Windows Defender\MSASCuiL.exe""#),
+            (
+                "x",
+                r"C:\ProgramData\Microsoft\Windows Defender\Platform\4.18\MsMpEng.exe",
+            ),
+            ("x", r"c:/windows/system32/securityhealthsystray.exe"),
+        ] {
+            assert!(run_protege(nom, programme), "{nom} {programme}");
+        }
+        for (nom, programme) in [
+            ("Updater", r"C:\Users\Public\updater.exe"),
+            ("SecurityHealthX", r"C:\x.exe"),
+            ("", r"C:\Users\Public\a.exe"),
+        ] {
+            assert!(!run_protege(nom, programme), "{nom} {programme}");
+        }
+    }
+
+    #[test]
+    fn tache_et_demarrage_chemins() {
+        let t = |c: &str| format!("{TACHE_DESACTIVER}{}", hex_texte(c));
+        for c in [
+            r"\Mise à jour",
+            r"\Dossier\Tâche 2",
+            r"\MicrosoftEdgeUpdateTaskMachineCore",
+        ] {
+            let a = analyser_acte(&t(c)).unwrap_or_else(|| panic!("{c}"));
+            assert!(matches!(&a, Acte::TacheDesactiver(p) if p.texte() == c) && !a.affaiblit());
+            let r = analyser_acte(&t(c).replacen(TACHE_DESACTIVER, TACHE_REACTIVER, 1)).unwrap();
+            assert!(r.affaiblit() && !r.durcit());
+        }
+        for c in [
+            "",
+            r"Tache",
+            r"\",
+            r"\\serveur\x",
+            r"\a\\b",
+            r"\a\..\Microsoft\Windows\x",
+            r"\a\.\b",
+            r"\Microsoft",
+            r"\microsoft\windows\Defrag\ScheduledDefrag",
+            r"\MICROSOFT\Windows\x",
+            // Une lettre non ASCII que la table de casse de Windows peut ramener à « Microsoft ».
+            "\\M\u{131}crosoft\\Windows\\x",
+            "\\Micro\u{17f}oft",
+            "\\Micro\u{17f}oft\\x",
+            r"\a\NUL",
+            r"\a/b",
+            r"\a:b",
+            "\\a\u{0}b",
+            "\\a\nb",
+            r"\a\b.",
+            r"\a ",
+        ] {
+            assert!(analyser_acte(&t(c)).is_none(), "{c:?}");
+        }
+        assert!(analyser_acte(&t(&format!(r"\{}", "a".repeat(TACHE_CHEMIN_MAX)))).is_none());
+        assert!(analyser_acte(&t(&format!(r"\{}", "a".repeat(TACHE_CHEMIN_MAX - 1)))).is_some());
+
+        let d = |c: &str| format!("{DEMARRAGE_QUARANTAINE}{}", hex_texte(c));
+        let commun = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\x.lnk";
+        let a = analyser_acte(&d(commun)).unwrap();
+        assert!(matches!(&a, Acte::DemarrageQuarantaine(f) if f.texte() == commun));
+        let r = analyser_acte(&d(commun).replacen(DEMARRAGE_QUARANTAINE, DEMARRAGE_REMETTRE, 1)).unwrap();
+        assert!(r.affaiblit());
+        for c in [
+            r"\\?\C:\x.lnk",
+            r"\\.\C:\x.lnk",
+            r"\\serveur\partage\x.lnk",
+            r"\x.lnk",
+            r"C:x.lnk",
+            r"C:\",
+            r"1:\x.lnk",
+            r"C:\a\x.lnk:flux",
+            r"C:\a\x.lnk::$DATA",
+            r"C:\a\..\Windows\x.lnk",
+            r"C:\a\.\x.lnk",
+            r"C:\a\\x.lnk",
+            r"C:\a/x.lnk",
+            "C:\\a\\x\u{0}.lnk",
+            r"C:\a\x.lnk.",
+            r"C:\a\x.lnk ",
+            r"C:\a\*.lnk",
+            r#"C:\a\"x".lnk"#,
+            // Périphériques de DOS, quelle que soit l'extension, et noms courts.
+            r"C:\a\NUL.lnk",
+            r"C:\a\con",
+            r"C:\a\Com1.lnk",
+            r"C:\a\lpt9 .lnk",
+            "C:\\a\\COM\u{b9}.lnk",
+            r"C:\a\CONOUT$.lnk",
+            r"C:\PROGRA~1\x.lnk",
+            r"C:\a\XLNK~12.LNK",
+        ] {
+            assert!(analyser_acte(&d(c)).is_none(), "{c:?}");
+        }
+        // Ce qui y ressemble sans en être reste admis.
+        for c in [
+            r"C:\a\console.lnk",
+            r"C:\a\COM10.lnk",
+            r"C:\a\nulle.lnk",
+            r"C:\a\x~y.lnk",
+        ] {
+            assert!(analyser_acte(&d(c)).is_some(), "{c:?}");
+        }
+        // Plus de 32 767 unités : refusé (et la ligne dépasse de toute façon le tube).
+        let long = format!(r"C:\{}", "a".repeat(CHEMIN_MAX));
+        assert_eq!(CheminFichier::nouveau(&long), None);
+        assert!(analyser_acte(&d(&long)).is_none());
+        assert!(CheminFichier::nouveau(&format!(r"C:\{}", "a".repeat(CHEMIN_MAX - 3))).is_some());
+        // Toute ligne portée par le tube reste sous LIGNE_MAX.
+        let plus_long = format!(r"\{}", "a".repeat(TACHE_CHEMIN_MAX - 1));
+        assert!(t(&plus_long).len() <= LIGNE_MAX);
+    }
+
+    #[test]
+    fn wmi_et_service_noms() {
+        let ligne_wmi = |classe: &str, n: &str| format!("{WMI_ABONNEMENT_RETIRER}{classe} {}", hex_texte(n));
+        let a = analyser_acte(&ligne_wmi("commande", "BVTConsumer x")).unwrap();
+        assert!(matches!(&a, Acte::WmiAbonnementRetirer(c) if c.classe.classe() == "CommandLineEventConsumer"));
+        assert!(!a.affaiblit() && !a.durcit());
+        assert!(matches!(
+            analyser_acte(&ligne_wmi("script", "s")),
+            Some(Acte::WmiAbonnementRetirer(_))
+        ));
+        let remise =
+            analyser_acte(&ligne_wmi("script", "s").replacen(WMI_ABONNEMENT_RETIRER, WMI_ABONNEMENT_REMETTRE, 1))
+                .unwrap();
+        assert!(remise.affaiblit());
+        for (classe, n) in [
+            ("commande", ""),
+            ("Commande", "a"),
+            ("log", "a"),
+            ("script", "a\u{0}"),
+            ("script", "a\tb"),
+            // Ne sort pas des guillemets d'un chemin d'objet WMI, n'y glisse pas d'échappement.
+            ("script", "a\"b"),
+            ("script", "a'b"),
+            ("commande", "a\\b"),
+        ] {
+            assert!(analyser_acte(&ligne_wmi(classe, n)).is_none(), "{classe} {n:?}");
+        }
+        assert!(analyser_acte(&ligne_wmi("script", &"a".repeat(CONSUMER_NOM_MAX + 1))).is_none());
+        assert!(analyser_acte(&ligne_wmi("script", &"a".repeat(CONSUMER_NOM_MAX))).is_some());
+
+        let ligne_service = |n: &str| format!("{SERVICE_RETIRER}{}", hex_texte(n));
+        for n in ["AnyDesk", "ScreenConnect Client (0123abcd)", "TeamViewer"] {
+            let a = analyser_acte(&ligne_service(n)).unwrap_or_else(|| panic!("{n}"));
+            // Irréversible : une protection, jamais une remise.
+            assert!(matches!(&a, Acte::ServiceRetirer(x) if x.texte() == n) && a.durcit() && !a.affaiblit());
+            assert!(valide_seule(&ligne_service(n)));
+        }
+        for n in ["", " AnyDesk", "AnyDesk ", r"a\b", "a/b", "a\u{0}", "a\nb"] {
+            assert!(analyser_acte(&ligne_service(n)).is_none(), "{n:?}");
+        }
+        assert!(analyser_acte(&ligne_service(&"a".repeat(SERVICE_NOM_MAX + 1))).is_none());
+        assert!(analyser_acte(&ligne_service(&"a".repeat(SERVICE_NOM_MAX))).is_some());
+        // Le service et la classe sont en hexadécimal : jamais le nom en clair.
+        assert!(analyser_acte(&format!("{SERVICE_RETIRER}AnyDesk")).is_none());
+    }
+
+    #[test]
+    fn wmi_abonnements_proteges_refuses() {
+        let ligne_wmi = |classe: &str, n: &str| format!("{WMI_ABONNEMENT_RETIRER}{classe} {}", hex_texte(n));
+        for n in [
+            "SCM Event Log Consumer",
+            "scm event log consumer",
+            " SCM Event Log Filter ",
+            "BVTConsumer",
+            "bvtfilter",
+            "Windows Defender scan",
+            "MICROSOFT DEFENDER",
+            "Windows Security Health",
+            "SecurityHealthService",
+            "MsMpEng",
+        ] {
+            assert!(abonnement_wmi_protege(n), "{n}");
+            // Ni par la grammaire (ligne forgée), ni par le bilan.
+            for verbe in [WMI_ABONNEMENT_RETIRER, WMI_ABONNEMENT_REMETTRE] {
+                let l = ligne_wmi("commande", n).replacen(WMI_ABONNEMENT_RETIRER, verbe, 1);
+                assert!(analyser_acte(&l).is_none(), "{l}");
+            }
+            assert!(
+                ligne_wmi_abonnement_retirer("CommandLineEventConsumer", n).is_none(),
+                "{n}"
+            );
+        }
+        for n in ["Updater", "BVTConsumer x", "SCM Event Log Consumer 2"] {
+            assert!(!abonnement_wmi_protege(n), "{n}");
+        }
+        // Le bilan : la classe sans la casse, aller-retour par la grammaire.
+        let l = ligne_wmi_abonnement_retirer("commandlineeventconsumer", "Updater").unwrap();
+        assert_eq!(l, ligne_wmi("commande", "Updater"));
+        assert!(matches!(analyser_acte(&l), Some(Acte::WmiAbonnementRetirer(w)) if w.nom.texte() == "Updater"));
+        let l = ligne_wmi_abonnement_retirer("ActiveScriptEventConsumer", "s").unwrap();
+        assert!(matches!(analyser_acte(&l), Some(Acte::WmiAbonnementRetirer(w)) if w.classe == ClasseConsumer::Script));
+        for (classe, n) in [
+            ("LogFileEventConsumer", "a"),
+            ("NTEventLogEventConsumer", "a"),
+            ("CommandLineEventConsumer", "a¦b"),
+            ("CommandLineEventConsumer", "a\u{1b}b"),
+            ("CommandLineEventConsumer", ""),
+        ] {
+            assert!(ligne_wmi_abonnement_retirer(classe, n).is_none(), "{classe} {n:?}");
+        }
+        // Un consumer qui lance Defender, quel que soit son nom.
+        assert!(consumer_wmi_protege(
+            "x",
+            &[r#""C:\Program Files\Windows Defender\MpCmdRun.exe" -Scan"#]
+        ));
+        assert!(!consumer_wmi_protege("x", &[r"C:\Users\alice\AppData\evil.exe -q"]));
+    }
+
+    fn note_essai() -> (AbonnementWmi, NoteWmi) {
+        let w = AbonnementWmi {
+            classe: ClasseConsumer::Commande,
+            nom: NomConsumer::nouveau("Updater").unwrap(),
+        };
+        let t = |s: &str| ValeurNotee::Texte(s.to_string());
+        let mut consumer = vec![ValeurNotee::Absente; PROPRIETES_COMMANDE.len()];
+        consumer[0] = t("Updater");
+        consumer[2] = t(r"cmd.exe /c C:\Users\Public\x.bat");
+        consumer[6] = ValeurNotee::Entier(0);
+        consumer[9] = ValeurNotee::Booleen(false);
+        let filtre = |n: &str| ObjetNote {
+            chemin: format!("__EventFilter.Name=\"{n}\""),
+            valeurs: vec![
+                t(n),
+                t("SELECT * FROM __InstanceModificationEvent WITHIN 60"),
+                t("WQL"),
+                t(r"root\cimv2"),
+                ValeurNotee::Absente,
+            ],
+        };
+        let liaison = ObjetNote {
+            chemin: "__FilterToConsumerBinding.Consumer=\"x\",Filter=\"y\"".to_string(),
+            valeurs: vec![
+                ValeurNotee::Booleen(false),
+                ValeurNotee::Booleen(true),
+                ValeurNotee::Absente,
+                ValeurNotee::Entier(0),
+            ],
+        };
+        let note = NoteWmi {
+            classe: ClasseConsumer::Commande,
+            consumer: ObjetNote {
+                chemin: "CommandLineEventConsumer.Name=\"Updater\"".to_string(),
+                valeurs: consumer,
+            },
+            liaisons: vec![
+                LiaisonNotee {
+                    filtre_retire: true,
+                    filtre: filtre("F1"),
+                    liaison: liaison.clone(),
+                },
+                LiaisonNotee {
+                    filtre_retire: false,
+                    filtre: filtre("Partagé"),
+                    liaison,
+                },
+            ],
+        };
+        (w, note)
+    }
+
+    #[test]
+    fn note_wmi_aller_retour_et_alterations() {
+        let (w, note) = note_essai();
+        assert!(note.valide(&w));
+        let o = note.octets().unwrap();
+        assert_eq!(NoteWmi::lire(&o).as_ref(), Some(&note));
+        // Chaque octet changé, une troncature, un octet de plus : refusés (l'empreinte, puis la forme).
+        for i in 0..o.len() {
+            let mut x = o.clone();
+            x[i] ^= 0x01;
+            assert!(NoteWmi::lire(&x).is_none(), "octet {i}");
+        }
+        for n in 0..o.len() {
+            assert!(NoteWmi::lire(&o[..n]).is_none(), "tronquée à {n}");
+        }
+        let mut plus = o.clone();
+        plus.push(0);
+        assert!(NoteWmi::lire(&plus).is_none());
+        // Une autre version, même avec une empreinte refaite : refusée.
+        let mut autre = o[..o.len() - 32].to_vec();
+        autre[5] = 2;
+        let e = empreinte_note(&autre);
+        autre.extend_from_slice(&e);
+        assert!(NoteWmi::lire(&autre).is_none());
+        // Un octet de trop dans le corps, empreinte refaite : refusé (lecture exacte).
+        let mut long = o[..o.len() - 32].to_vec();
+        long.push(0);
+        let e = empreinte_note(&long);
+        long.extend_from_slice(&e);
+        assert!(NoteWmi::lire(&long).is_none());
+        assert!(NoteWmi::lire(&[]).is_none());
+        assert!(NoteWmi::lire(&vec![0; NOTE_WMI_MAX + 1]).is_none());
+    }
+
+    #[test]
+    fn note_wmi_valide_et_bornes() {
+        let (w, note) = note_essai();
+        // La note d'un autre abonnement, d'une autre classe : refusée.
+        let autre = AbonnementWmi {
+            nom: NomConsumer::nouveau("Autre").unwrap(),
+            ..w.clone()
+        };
+        assert!(!note.valide(&autre));
+        let script = AbonnementWmi {
+            classe: ClasseConsumer::Script,
+            ..w.clone()
+        };
+        assert!(!note.valide(&script));
+        // Un filtre protégé à recréer : refusé ; resté en place, admis.
+        let mut n = note.clone();
+        n.liaisons[0].filtre.valeurs[0] = ValeurNotee::Texte("SCM Event Log Filter".to_string());
+        assert!(!n.valide(&w));
+        n.liaisons[0].filtre_retire = false;
+        assert!(n.valide(&w));
+        // Deux fois le même filtre, un nom de filtre vide ou avec un contrôle : refusés.
+        let mut n = note.clone();
+        n.liaisons[1].filtre = n.liaisons[0].filtre.clone();
+        assert!(!n.valide(&w));
+        for mauvais in ["", "a\nb"] {
+            let mut n = note.clone();
+            n.liaisons[0].filtre.valeurs[0] = ValeurNotee::Texte(mauvais.to_string());
+            assert!(!n.valide(&w), "{mauvais:?}");
+        }
+        // Une valeur du mauvais genre, une propriété de moins : refusées.
+        let mut n = note.clone();
+        n.consumer.valeurs[6] = ValeurNotee::Texte("0".to_string());
+        assert!(!n.valide(&w));
+        let mut n = note.clone();
+        n.consumer.valeurs.pop();
+        assert!(!n.valide(&w));
+        // Bornes : un texte trop long, trop de liaisons, un chemin trop long ne s'écrivent pas.
+        let mut n = note.clone();
+        n.consumer.valeurs[2] = ValeurNotee::Texte("a".repeat(NOTE_WMI_TEXTE_MAX + 1));
+        assert!(n.octets().is_none() && !n.valide(&w));
+        let mut n = note.clone();
+        n.consumer.valeurs[2] = ValeurNotee::Texte("a".repeat(NOTE_WMI_TEXTE_MAX));
+        assert!(n.valide(&w));
+        assert_eq!(NoteWmi::lire(&n.octets().unwrap()), Some(n));
+        let mut n = note.clone();
+        n.liaisons = (0..=NOTE_WMI_LIAISONS_MAX)
+            .map(|i| {
+                let mut l = note.liaisons[0].clone();
+                l.filtre.valeurs[0] = ValeurNotee::Texte(format!("F{i}"));
+                l
+            })
+            .collect();
+        assert!(n.octets().is_none() && !n.valide(&w));
+        n.liaisons.pop();
+        assert!(n.valide(&w) && n.octets().is_some());
+        let mut n = note.clone();
+        n.consumer.chemin = "a".repeat(NOTE_WMI_CHEMIN_MAX + 1);
+        assert!(n.octets().is_none() && !n.valide(&w));
+    }
+
+    #[test]
+    fn persistance_hexadecimal_canonique() {
+        // Un contenu valide pour chaque verbe : écrit en majuscules, il est refusé pour cette seule raison.
+        for (verbe, valide) in [
+            (TACHE_DESACTIVER, r"\A"),
+            (DEMARRAGE_QUARANTAINE, r"C:\x.lnk"),
+            (SERVICE_RETIRER, "z"),
+        ] {
+            let hex = hex_texte(valide);
+            assert!(valide_seule(&format!("{verbe}{hex}")), "{valide}");
+            let l = format!("{verbe}{}", hex.to_ascii_uppercase());
+            assert!(analyser_acte(&l).is_none(), "{l}");
+            // NUL ajouté, unité incomplète, demi-caractère orphelin, rien : refusé.
+            for suite in ["0000", "41", "00d8"] {
+                let l = format!("{verbe}{hex}{suite}");
+                assert!(analyser_acte(&l).is_none(), "{l}");
+            }
+            assert!(analyser_acte(verbe).is_none() && analyser_acte(verbe.trim_end()).is_none());
+        }
+        // Un octet non ASCII : refusé avant toute lecture.
+        assert!(analyser_acte(&format!("{SERVICE_RETIRER}é")).is_none());
+        // Un verbe proche n'est pas lu comme un autre acte.
+        assert!(analyser_acte("vanguard:run-retirerx run 0041").is_none());
+        assert!(est_un_acte(&format!("{SERVICE_RETIRER}zz")) && !valide_seule(&format!("{SERVICE_RETIRER}zz")));
+    }
+
+    #[test]
+    fn lancement_machine_aller_retour() {
+        let v = "030000001122334455667788";
+        for (liste, mot) in [("Run", "run"), ("Run32", "run32"), ("StartupFolder", "dossier")] {
+            let nom = "Mise à jour.lnk";
+            let ligne = ligne_lancement(liste, nom, Some(v)).expect(liste);
+            assert_eq!(ligne, format!("{LANCEMENT_DESACTIVER}{mot} {} {v}", hex_texte(nom)));
+            let a = analyser_acte(&ligne).expect(&ligne);
+            assert!(
+                matches!(&a, Acte::LancementDesactiver(l, x) if l.nom() == nom && l.liste().mot() == mot && x.hex() == v)
+            );
+            assert!(!a.durcit() && !a.affaiblit() && !a.touche_le_reseau());
+            assert_eq!(a.powershell(), SANS_POWERSHELL);
+            assert!(est_un_acte(&ligne) && valide_seule(&ligne), "{ligne}");
+            // Réactiver : la valeur d'avant (activée, ou absente) n'est pas dans la ligne, la note de l'enfant la porte.
+            for voulue in [None, Some(""), Some("020000000000000000000000"), Some("06000000")] {
+                let r = ligne_lancement(liste, nom, voulue).expect(liste);
+                assert_eq!(r, format!("{LANCEMENT_REACTIVER}{mot} {}", hex_texte(nom)));
+                assert!(matches!(analyser_acte(&r), Some(Acte::LancementReactiver(_))) && valide_seule(&r));
+            }
+        }
+        // Le plus long nom tient dans une ligne du tube.
+        let long = "a".repeat(RUN_MACHINE_NOM_MAX);
+        let ligne = ligne_lancement("Run", &long, Some(v)).unwrap();
+        assert!(ligne.len() <= LIGNE_MAX && valide_seule(&ligne));
+        assert_eq!(ligne_lancement("Run", &format!("{long}a"), Some(v)), None);
+        // Liste inconnue (celle du compte, RunOnce), nom vide, de contrôle, de fichier non sûr : pas de ligne.
+        for (liste, nom) in [
+            ("RunOnce", "x"),
+            ("run", "x"),
+            ("Run", ""),
+            ("Run", "a\nb"),
+            ("StartupFolder", r"..\x.lnk"),
+            ("StartupFolder", r"a\b.lnk"),
+            ("StartupFolder", "a:flux"),
+        ] {
+            assert_eq!(ligne_lancement(liste, nom, Some(v)), None, "{liste} {nom:?}");
+        }
+        // Une valeur désactivée autre que 03 00 00 00 + 8 octets : pas de ligne.
+        assert_eq!(ligne_lancement("Run", "x", Some("0700000011223344")), None);
+    }
+
+    #[test]
+    fn lancement_machine_forge_refuse() {
+        let a = hex_texte("A");
+        let v = "030000001122334455667788";
+        let lignes = [
+            // Valeur : majuscules, autre en-tête, longueur fausse, absente, en trop.
+            format!("{LANCEMENT_DESACTIVER}run {a} 03000000112233445566778A"),
+            format!("{LANCEMENT_DESACTIVER}run {a} 020000001122334455667788"),
+            format!("{LANCEMENT_DESACTIVER}run {a} 07000000112233445566778"),
+            format!("{LANCEMENT_DESACTIVER}run {a} 0300000011223344556677889"),
+            format!("{LANCEMENT_DESACTIVER}run {a} 03000000112233445566778899"),
+            format!("{LANCEMENT_DESACTIVER}run {a}"),
+            format!("{LANCEMENT_REACTIVER}run {a} {v}"),
+            // Liste inconnue ou en majuscules, nom vide, en majuscules, NUL, de dossier avec « \ ».
+            format!("{LANCEMENT_DESACTIVER}Run {a} {v}"),
+            format!("{LANCEMENT_DESACTIVER}runonce {a} {v}"),
+            format!("{LANCEMENT_DESACTIVER}startupfolder {a} {v}"),
+            format!("{LANCEMENT_DESACTIVER}run  {v}"),
+            format!("{LANCEMENT_DESACTIVER}run 6A00 {v}"),
+            format!("{LANCEMENT_DESACTIVER}run 41 {v}"),
+            format!("{LANCEMENT_DESACTIVER}run 0000 {v}"),
+            format!("{LANCEMENT_DESACTIVER}run 410000d8 {v}"),
+            format!("{LANCEMENT_DESACTIVER}dossier {} {v}", hex_texte(r"a\b.lnk")),
+            format!("{LANCEMENT_DESACTIVER}dossier {} {v}", hex_texte("..")),
+            format!("{LANCEMENT_REACTIVER}dossier {}", hex_texte(r"..\x")),
+            // Nom court de DOS : désignerait le fichier sans être le nom que StartupApproved retient.
+            format!("{LANCEMENT_DESACTIVER}dossier {} {v}", hex_texte("SECURI~1.LNK")),
+            format!("{LANCEMENT_REACTIVER}dossier {}", hex_texte("MAJ~2.LNK")),
+            // Espaces en trop, champ manquant.
+            format!("{LANCEMENT_DESACTIVER}run {a}  {v}"),
+            format!("{LANCEMENT_DESACTIVER}run {a} {v} "),
+            format!("{LANCEMENT_REACTIVER}run {a} "),
+            format!("{LANCEMENT_REACTIVER}run"),
+            format!("{LANCEMENT_REACTIVER}{a}"),
+            // Plus long que ce que tient le tube.
+            format!("{LANCEMENT_REACTIVER}run {}", "0041".repeat(LIGNE_MAX)),
+            // Une tâche de Windows, même écrite comme une ligne de Vanguard.
+            format!(
+                "{TACHE_DESACTIVER}{}",
+                hex_texte(r"\Microsoft\Windows\Defrag\ScheduledDefrag")
+            ),
+        ];
+        for l in &lignes {
+            assert!(analyser_acte(l).is_none(), "{l}");
+            assert!(!valide_seule(l), "{l}");
+        }
+        // Le nom en clair n'est jamais lu.
+        assert!(analyser_acte(&format!("{LANCEMENT_REACTIVER}run SecurityHealth")).is_none());
+    }
+
+    #[test]
+    fn montrer_nom_coupe_et_nettoie() {
+        assert_eq!(montrer_nom("a\u{1b}[2Jb"), "a?[2Jb");
+        let long = "x".repeat(NOM_MONTRE_MAX + 5);
+        let m = montrer_nom(&long);
+        assert_eq!(m.chars().count(), NOM_MONTRE_MAX + 1);
+        assert!(m.ends_with('…'));
+        assert_eq!(NomRun::nouveau(&[]).and_then(|n| n.montre()), None);
     }
 }

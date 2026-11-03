@@ -1166,6 +1166,39 @@ mod tests {
             .into_iter()
             .chain((base.is_empty()).then(|| "main.rs".to_string()))
             .find(|f| sources.contains_key(f))
+            .or_else(|| module_par_path(&dossier, sources))
+    }
+
+    /// Un module déclaré par `#[path = "…"]` dans son parent (« machine::gestes » → machine/windows/gestes.rs) : le
+    /// chemin, relatif au dossier du fichier parent, est lu sur la ligne juste au-dessus de `mod nom;`.
+    fn module_par_path(dossier: &[&str], sources: &BTreeMap<String, String>) -> Option<String> {
+        let (nom, haut) = dossier.split_last()?;
+        let haut = haut.join("/");
+        let parents: Vec<(String, String)> = if haut.is_empty() {
+            vec![("main.rs".to_string(), String::new())]
+        } else {
+            let au_dessus = haut.rsplit_once('/').map_or(String::new(), |(d, _)| d.to_string());
+            vec![
+                (format!("{haut}/mod.rs"), haut.clone()),
+                (format!("{haut}.rs"), au_dessus),
+            ]
+        };
+        let declaration = format!("mod {nom};");
+        parents.into_iter().find_map(|(parent, ici)| {
+            let lignes: Vec<&str> = sources.get(&parent)?.lines().map(str::trim).collect();
+            lignes.windows(2).find_map(|l| {
+                if !(l[1] == declaration || l[1].ends_with(&format!(" {declaration}"))) {
+                    return None;
+                }
+                let chemin = l[0].strip_prefix("#[path = \"")?.strip_suffix("\"]")?;
+                let complet = if ici.is_empty() {
+                    chemin.to_string()
+                } else {
+                    format!("{ici}/{chemin}")
+                };
+                sources.contains_key(&complet).then_some(complet)
+            })
+        })
     }
 
     /// Ce que vaut une constante vue depuis `fichier` (« NOM », « sceau::NOM », « crate::x::NOM », ou un nom importé) :

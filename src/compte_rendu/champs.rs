@@ -402,6 +402,7 @@ pub(crate) const CONTEXTES_ECHEC: &[&str] = &[
     "veilleur/oublier",
     "voulues/noter",
     "wifi/networkmanager",
+    "wininet/annonce",
 ];
 
 /// Où une erreur a été notée : une liste fermée, écrite par le code (jamais un texte de l'erreur). L'identifiant

@@ -9,9 +9,7 @@ use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_
 use winreg::{RegKey, RegValue};
 
 use super::defender::{self, Pref};
-use super::demarrage::{
-    APPROUVES, Programme, desactive_windows, hex, liste_approuvee, octets, script_machine, valeur_desactivee,
-};
+use super::demarrage::{APPROUVES, Programme, desactive_windows, hex, liste_approuvee, octets, valeur_desactivee};
 use super::{Categorie, Reglage, Valeur};
 use crate::ui::*;
 
@@ -102,6 +100,16 @@ fn liste_dns(t: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// Les serveurs d'un côté (« ip,ip », séparés comme dans NameServer) réécrits à l'identique de la grammaire des gestes
+/// (zéros en tête retirés, IPv6 en minuscules et abrégée) ; `None` si un morceau n'est pas une adresse IP.
+fn dns_canonique(t: &str) -> Option<String> {
+    t.split([',', ' ', ';'])
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse::<std::net::IpAddr>().ok().map(|ip| ip.to_string()))
+        .collect::<Option<Vec<_>>>()
+        .map(|l| l.join(","))
 }
 
 /// L'identifiant d'une carte réseau (« {xxxxxxxx-…} ») : il entre tel quel dans le registre et dans PowerShell.
@@ -662,40 +670,39 @@ impl Changement {
             | Changement::Demarrage { machine: false, .. }
             | Changement::Alimentation
             | Changement::Service { .. } => None,
+            // Un geste natif du processus élevé (`vanguard:dns-serveurs`, `vanguard:dns-auto`), sans PowerShell : il
+            // relit que la carte existe, n'écrit que des serveurs de la liste fermée (`gestes::RESOLVEURS`) ou la valeur
+            // d'avant qu'il a lui-même notée, relit ce qui est posé et vide le cache DNS.
             Changement::Dns { carte, .. } => {
                 let (id, reste) = v?.split_once('\n')?;
                 if id != carte || !guid_valide(carte) {
                     return None;
                 }
-                // Seules des adresses IP entrent dans la commande.
-                let serveurs: Vec<String> = reste
-                    .split(['|', ','])
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.parse::<std::net::IpAddr>().map(|ip| format!("'{ip}'")))
-                    .collect::<Result<_, _>>()
-                    .ok()?;
-                // Remis d'abord en automatique, puis réglé : la liste écrite est exactement celle voulue, en IPv4
-                // comme en IPv6.
-                let reglage = if serveurs.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        "; Set-DnsClientServerAddress -InterfaceIndex $carteDns.ifIndex -ServerAddresses @({})",
-                        serveurs.join(",")
-                    )
+                let (v4, v6) = reste.split_once('|')?;
+                let actuel = self.lire();
+                let (actuel4, actuel6) = actuel
+                    .as_deref()
+                    .and_then(|a| a.split_once('\n'))
+                    .and_then(|(_, r)| r.split_once('|'))
+                    .map_or((None, None), |(a4, a6)| (dns_canonique(a4), dns_canonique(a6)));
+                // Seules des adresses IP entrent dans la ligne, écrites à l'identique.
+                let (v4, v6) = (dns_canonique(v4)?, dns_canonique(v6)?);
+                // Hors de la liste et déjà en place (la box d'une carte dont seul l'IPv4 change) : laissé tel quel.
+                let cote = |voulu: String, actuel: Option<String>| {
+                    let hors_liste = voulu
+                        .split(',')
+                        .any(|ip| !ip.is_empty() && !crate::machine::gestes::RESOLVEURS.contains(&ip));
+                    (!hors_liste || actuel.as_ref() != Some(&voulu)).then_some(voulu)
                 };
-                Some(format!(
-                    "$carteDns = Get-NetAdapter -IncludeHidden | Where-Object {{ $_.InterfaceGuid -eq '{carte}' }} | \
-                     Select-Object -First 1; if (-not $carteDns) {{ throw 'network adapter not found' }}; \
-                     Set-DnsClientServerAddress -InterfaceIndex $carteDns.ifIndex -ResetServerAddresses{reglage}"
-                ))
+                let (c4, c6) = (cote(v4, actuel4), cote(v6, actuel6));
+                crate::machine::gestes::ligne_dns(carte, c4.as_deref(), c6.as_deref())
             }
             Changement::Demarrage {
                 machine: true,
                 liste,
                 nom,
                 ..
-            } => script_machine(liste, nom, v),
+            } => crate::machine::gestes::ligne_lancement(liste, nom, v),
             Changement::Defender { pref, .. } => defender::commande(*pref, v),
         }
     }
@@ -1704,17 +1711,26 @@ mod tests {
             cible: Some("1.1.1.1,1.0.0.1|2606:4700:4700::1111".into()),
         };
         let cible = c.cible().unwrap();
+        // La carte n'existe pas ici : aucune valeur actuelle, chaque côté est écrit.
         let commande = c.commande_admin(Some(&cible), None).unwrap();
-        assert!(
-            commande.contains("-ResetServerAddresses; Set-DnsClientServerAddress"),
-            "{commande}"
-        );
-        assert!(
-            commande.contains("@('1.1.1.1','1.0.0.1','2606:4700:4700::1111')"),
-            "{commande}"
+        assert_eq!(
+            commande,
+            format!("vanguard:dns-serveurs {carte} 1.1.1.1,1.0.0.1|2606:4700:4700::1111")
         );
         let remise = c.commande_admin(c.defaut().as_deref(), None).unwrap();
-        assert!(remise.ends_with("-ResetServerAddresses"), "{remise}");
+        assert_eq!(remise, format!("vanguard:dns-auto {carte}"));
+        // Écrite autrement par Windows (espaces, zéros, majuscules) : réécrite à l'identique de la grammaire.
+        assert_eq!(
+            c.commande_admin(Some(&format!("{carte}\n9.9.9.9 149.112.112.112|2620:00FE::FE")), None),
+            Some(format!(
+                "vanguard:dns-serveurs {carte} 9.9.9.9,149.112.112.112|2620:fe::fe"
+            ))
+        );
+        // La box (valeur d'avant) : la ligne part, le processus élevé ne l'écrit que s'il l'a notée lui-même.
+        assert_eq!(
+            c.commande_admin(Some(&format!("{carte}\n192.168.1.1|")), None),
+            Some(format!("vanguard:dns-serveurs {carte} 192.168.1.1|"))
+        );
         // Une autre carte, ou autre chose qu'une adresse IP : aucune commande.
         assert_eq!(c.commande_admin(Some("{autre}\n|"), None), None);
         assert_eq!(
@@ -1760,8 +1776,19 @@ mod tests {
         assert!(machine.admin());
         assert_eq!(Changement::nom_demarrage("hklm|StartupFolder|L’appli.lnk"), "L’appli");
         assert_eq!(Changement::nom_demarrage("hkcu|Run|Appli.v2"), "Appli.v2");
-        let script = machine.commande_admin(None, None).unwrap();
-        assert!(script.contains("DeleteValue('L’’appli.lnk', $false)"), "{script}");
+        // La machine : un acte fermé du processus élevé, jamais de PowerShell (R52).
+        let remise = machine.commande_admin(None, None).unwrap();
+        assert!(matches!(
+            crate::machine::gestes::analyser_acte(&remise),
+            Some(crate::machine::gestes::Acte::LancementReactiver(l)) if l.nom() == "L’appli.lnk"
+        ));
+        let v = valeur_desactivee(std::time::SystemTime::now());
+        let coupe = machine.commande_admin(Some(&v), None).unwrap();
+        assert!(coupe.ends_with(&v), "{coupe}");
+        assert!(matches!(
+            crate::machine::gestes::analyser_acte(&coupe),
+            Some(crate::machine::gestes::Acte::LancementDesactiver(..))
+        ));
         for mauvaise in ["hkcu|Policies|x", "hkxx|Run|x", "hkcu|Run|", "hkcu"] {
             assert!(Changement::demarrage_depuis(mauvaise).is_none(), "{mauvaise}");
         }

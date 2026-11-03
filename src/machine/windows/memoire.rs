@@ -55,16 +55,17 @@ struct PageEx {
 }
 
 /// BY_HANDLE_FILE_INFORMATION (fileapi.h) : treize ULONG, les dates (FILETIME) en deux moitiés.
+/// Partagée avec `demarrage_ecriture` (même déclaration de GetFileInformationByHandle).
 #[repr(C)]
 #[derive(Default)]
-struct InformationFichier {
-    attributs: u32,
+pub(super) struct InformationFichier {
+    pub(super) attributs: u32,
     creation: [u32; 2],
     acces: [u32; 2],
     ecriture: [u32; 2],
     volume: u32,
     taille: [u32; 2],
-    liens: u32,
+    pub(super) liens: u32,
     index_haut: u32,
     index_bas: u32,
 }

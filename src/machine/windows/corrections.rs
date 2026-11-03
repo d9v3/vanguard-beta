@@ -140,7 +140,8 @@ const NETBT_INTERFACES: &str = r"SYSTEM\CurrentControlSet\Services\NetBT\Paramet
 pub(crate) const PILOTES_VULNERABLES: &str = r"SYSTEM\CurrentControlSet\Control\CI\Config";
 
 /// La liste fermée. Chaque entrée renforce la sécurité, ou remet une valeur d'origine de Windows (`heure-ntp`,
-/// `winlogon-shell`, `winlogon-userinit`) ; aucune ne coupe un pare-feu, Defender, BitLocker ou l'UAC, ni une connexion
+/// `winlogon-shell`, `winlogon-userinit`), sauf les réglages pour jouer de la machine (`gaming-*`, les valeurs
+/// `Ruche::Machine` de gaming/windows.rs, liste fermée elle aussi), qui s'annulent par leur valeur d'avant ; aucune ne coupe un pare-feu, Defender, BitLocker ou l'UAC, ni une connexion
 /// à distance en cours (`rdp-nla` exige une authentification ; `rdp-coupe` est refusé par le processus élevé pendant
 /// une session du Bureau à distance).
 static TABLE: &[Correction] = &[
@@ -395,6 +396,16 @@ static TABLE: &[Correction] = &[
         juge: None,
         ps: Some("Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force"),
     },
+    // Réglage pour jouer, sous HKLM (le seul : les autres sont du compte, `gestes::VALEURS_COMPTE`). Ce n'est pas une
+    // protection : Gaming relève et note sa valeur d'avant, et la remet sur demande (`gaming::windows::VALEURS`).
+    dword(
+        "gaming-hags",
+        r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers",
+        "HwSchMode",
+        2,
+        "Activer la planification GPU matérielle (HAGS, au redémarrage)",
+        "Turn on hardware-accelerated GPU scheduling (HAGS, after a restart)",
+    ),
 ];
 
 /// Une entrée de la table qui met une valeur DWORD sous HKLM.
@@ -451,7 +462,12 @@ pub(crate) fn analyser(ligne: &str) -> Option<&'static Correction> {
 /// acte de service qui durcit (`gestes::SERVICES`, RemoteRegistry désactivé…) compte de même, comme le pare-feu remis
 /// en marche, le profil Public durci, un réseau passé en Public, un débogueur IFEO retiré ou un chemin de service mis
 /// entre guillemets ; un acte qui ne durcit pas (arrêter puis relancer
-/// wuauserv), comme le reste (PowerShell, le point de restauration seul, un dossier vidé), n'est pas relevé.
+/// wuauserv), comme le reste (PowerShell, le point de restauration seul, un dossier vidé, un réglage pour jouer
+/// `gaming-*`), n'est pas relevé. Un geste du compte (`gestes::COMPTE`) compte selon `GesteCompte::durcit` : les
+/// macros d'Office et la stratégie de PowerShell oui (« Protection ») ; un retrait de démarrage, de shell ou de proxy
+/// non (décision 4 b) du plan), un réglage pour jouer non plus : « Inconnu » pour l'instant, la valeur d'avant n'est
+/// notée que pour être lue (coupée, sans son type). Son annulation exacte, par une valeur d'avant relevée, revient au
+/// lot 3.5.
 pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
     use crate::machine::Defaire;
     use crate::machine::gestes::{self, Acte};
@@ -459,7 +475,8 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
     let durcies: Option<Vec<bool>> = commandes
         .iter()
         .map(|l| match (analyser(l), gestes::analyser_acte(l)) {
-            (Some(c), _) => Some(!matches!(c.geste, Geste::PointDeRestauration)),
+            (None, None) => gestes::analyser_compte(l).map(|g| g.durcit()),
+            (Some(c), _) => Some(!matches!(c.geste, Geste::PointDeRestauration) && !c.id.starts_with("gaming-")),
             (
                 None,
                 Some(
@@ -469,7 +486,25 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
                     | Acte::ReseauCategorie(_)
                     | Acte::IfeoDebugger(..)
                     | Acte::IfeoSilencieux(..)
-                    | Acte::ServiceGuillemets(_)),
+                    | Acte::ServiceGuillemets(_)
+                    | Acte::Defender(..)
+                    | Acte::DefenderAsr(..)
+                    | Acte::DefenderExclusionRetirer(..)
+                    | Acte::DefenderMenacesRetirer
+                    | Acte::CompteDesactiver(_)
+                    | Acte::CertificatRetirer(..)
+                    | Acte::PartageRetirerAcces(_)
+                    | Acte::RunRetirer(_)
+                    | Acte::RunRemettre(_)
+                    | Acte::TacheDesactiver(_)
+                    | Acte::TacheReactiver(_)
+                    | Acte::DemarrageQuarantaine(_)
+                    | Acte::DemarrageRemettre(_)
+                    | Acte::LancementDesactiver(..)
+                    | Acte::LancementReactiver(_)
+                    | Acte::WmiAbonnementRetirer(_)
+                    | Acte::WmiAbonnementRemettre(_)
+                    | Acte::ServiceRetirer(_)),
                 ),
             ) => Some(a.durcit()),
             _ => None,
@@ -544,7 +579,10 @@ fn reseau_nomme(r: &crate::machine::gestes::ReseauCategorie) -> String {
 }
 
 fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
-    use crate::machine::gestes::{ACoter, Acte, Action, Categorie, Vidable, Vue};
+    use crate::machine::gestes::{
+        ACoter, Acte, Action, Categorie, CleRun, GenreExclusion, ListeLancement, MagasinRacine, ModeAsr,
+        ReglageDefender, ValeurDefender, Vidable, Vue,
+    };
     use crate::ui::{tr, trf};
     match acte {
         Acte::Service(s) => {
@@ -645,6 +683,222 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
                 "Put the path of the “{n}” service in quotes (ImagePath, read and recomputed here before writing)"
             )
         }
+        Acte::Defender(r, v) => {
+            let mode = || match v {
+                ValeurDefender::Audit => tr!(
+                    "en audit (signale sans bloquer)",
+                    "in audit mode (reports, does not block)"
+                ),
+                ValeurDefender::Actif | ValeurDefender::Avance | ValeurDefender::Bloquer => {
+                    tr!("en blocage", "in block mode")
+                }
+            };
+            match r {
+                ReglageDefender::TempsReel => tr!(
+                    "Remettre en marche la protection en temps réel de Defender",
+                    "Turn Defender real-time protection back on"
+                )
+                .to_string(),
+                ReglageDefender::Maps => tr!(
+                    "Mettre la protection dans le cloud de Defender au niveau avancé",
+                    "Set Defender cloud protection to the advanced level"
+                )
+                .to_string(),
+                ReglageDefender::Cfa => trf!(
+                    "Mettre l'accès contrôlé aux dossiers de Defender {} (jamais baissé s'il bloque déjà)",
+                    "Set Defender controlled folder access {} (never lowered if it already blocks)",
+                    mode()
+                ),
+                ReglageDefender::Np => trf!(
+                    "Mettre la protection réseau de Defender {} (jamais baissée si elle bloque déjà)",
+                    "Set Defender network protection {} (never lowered if it already blocks)",
+                    mode()
+                ),
+                ReglageDefender::Pua => trf!(
+                    "Mettre la protection de Defender contre les applications indésirables (PUA) {} (jamais baissée si elle bloque déjà)",
+                    "Set Defender protection against potentially unwanted apps (PUA) {} (never lowered if it already blocks)",
+                    mode()
+                ),
+            }
+        }
+        Acte::DefenderAsr(id, m) => {
+            let n = crate::optimiser::defender::nom_asr(id);
+            match m {
+                ModeAsr::Bloquer => trf!(
+                    "Règle ASR de Defender « {n} » : bloquer",
+                    "Defender ASR rule “{n}”: block"
+                ),
+                ModeAsr::Audit => trf!(
+                    "Règle ASR de Defender « {n} » : audit (signale sans bloquer ; jamais baissée si elle bloque déjà)",
+                    "Defender ASR rule “{n}”: audit (reports, does not block; never lowered if it already blocks)"
+                ),
+            }
+        }
+        Acte::DefenderExclusionRetirer(g, e) => {
+            let x = crate::ui::affichable(e.texte());
+            match g {
+                GenreExclusion::Chemin => trf!(
+                    "Retirer l'exclusion de Defender du dossier « {x} » (relue et rejugée ici avant de la retirer)",
+                    "Remove the Defender exclusion of the folder “{x}” (read and judged again here before removing it)"
+                ),
+                GenreExclusion::Processus => trf!(
+                    "Retirer l'exclusion de Defender du programme « {x} » (relue et rejugée ici avant de la retirer)",
+                    "Remove the Defender exclusion of the program “{x}” (read and judged again here before removing it)"
+                ),
+                GenreExclusion::Extension => trf!(
+                    "Retirer l'exclusion de Defender des fichiers « {x} » (relue et rejugée ici avant de la retirer)",
+                    "Remove the Defender exclusion of the “{x}” files (read and judged again here before removing it)"
+                ),
+            }
+        }
+        Acte::DefenderMenacesRetirer => tr!(
+            "Supprimer définitivement les menaces actives trouvées par Defender",
+            "Permanently delete the active threats found by Defender"
+        )
+        .to_string(),
+        Acte::CompteDesactiver(rid) => trf!(
+            "Désactiver le compte local n° {rid} (relu et rejugé ici ; jamais le vôtre, le dernier administrateur actif ni un compte d'une session ouverte) : il ne pourra plus ouvrir de session. Non annulable par Vanguard (protection) ; état d'avant noté, à réactiver dans Windows au besoin",
+            "Disable local account no. {rid} (read and judged again here; never yours, the last active administrator or an account with an open session): it can no longer sign in. Not undoable by Vanguard (protection); previous state noted, reactivate it in Windows if needed"
+        ),
+        Acte::CertificatRetirer(m, e) => {
+            let x = e.texte();
+            match m {
+                MagasinRacine::Ordinateur => trf!(
+                    "Retirer la racine {x} du magasin de l'ordinateur (relue et rejugée ici ; une copie .cer est gardée dans ProgramData\\Vanguard\\quarantaine si ce dossier est sûr). Non annulable par Vanguard (protection) : jamais une racine n'est remise",
+                    "Remove root {x} from the computer store (read and judged again here; a .cer copy is kept in ProgramData\\Vanguard\\quarantaine if that folder is safe). Not undoable by Vanguard (protection): a root is never put back"
+                ),
+                MagasinRacine::Compte => trf!(
+                    "Retirer la racine {x} de votre magasin (relue et rejugée ici ; Windows demande lui-même de confirmer ; une copie .cer est gardée dans ProgramData\\Vanguard\\quarantaine si ce dossier est sûr). Non annulable par Vanguard (protection) : jamais une racine n'est remise",
+                    "Remove root {x} from your store (read and judged again here; Windows asks for its own confirmation; a .cer copy is kept in ProgramData\\Vanguard\\quarantaine if that folder is safe). Not undoable by Vanguard (protection): a root is never put back"
+                ),
+            }
+        }
+        Acte::PartageRetirerAcces(a) => {
+            let (n, c) = (crate::ui::affichable(a.nom.texte()), a.sid.texte());
+            trf!(
+                "Retirer l'accès de {c} au partage « {n} » (relu et rejugé ici) : les appareils qui s'y connectaient sans mot de passe le perdent ; s'il ne reste personne, plus personne n'y entre avant qu'un accès soit redonné dans Windows. Non annulable par Vanguard (protection) ; droits d'avant notés",
+                "Remove the access of {c} to share “{n}” (read and judged again here): devices that connected without a password lose it; if nobody is left, nobody gets in until access is given back in Windows. Not undoable by Vanguard (protection); previous permissions noted"
+            )
+        }
+        Acte::RunRetirer(v) | Acte::RunRemettre(v) => {
+            let n = v.nom.montre().map_or_else(
+                || tr!("(par défaut)", "(default)").to_string(),
+                |n| crate::ui::affichable(&n),
+            );
+            let cle = match v.cle {
+                CleRun::Run => r"HKLM\…\CurrentVersion\Run",
+                CleRun::RunOnce => r"HKLM\…\CurrentVersion\RunOnce",
+                CleRun::Run32 => r"HKLM\…\WOW6432Node\…\CurrentVersion\Run",
+            };
+            if matches!(acte, Acte::RunRetirer(_)) {
+                trf!(
+                    "Retirer le lancement au démarrage « {n} » de la machine ({cle} ; relu et rejugé ici, jamais une entrée de Windows ou de Defender). Le programme lui-même reste ; sa donnée exacte est notée, mais la remise n'est pas encore proposée dans « Ce que Vanguard a changé »",
+                    "Remove the machine startup entry “{n}” ({cle}; read and judged again here, never a Windows or Defender entry). The program itself stays; its exact data is noted, but putting it back is not offered in “What Vanguard changed” yet"
+                )
+            } else {
+                trf!(
+                    "Remettre le lancement au démarrage « {n} » de la machine ({cle}) avec la donnée que Vanguard a notée en le retirant, s'il en a noté une (refusé sinon, et jamais par-dessus une autre valeur)",
+                    "Put back the machine startup entry “{n}” ({cle}) with the data Vanguard noted when removing it, if it noted any (refused otherwise, and never over another value)"
+                )
+            }
+        }
+        Acte::TacheDesactiver(t) => {
+            let t = crate::ui::affichable(t.texte());
+            trf!(
+                "Désactiver la tâche planifiée « {t} » (relue et rejugée ici, jamais une tâche sous \\Microsoft\\ ni un programme de Windows ou de Defender ; elle n'est pas supprimée). Sa définition est notée ; la réactiver n'est accepté que si elle n'a pas changé depuis, mais ce n'est pas encore proposé dans « Ce que Vanguard a changé »",
+                "Disable the scheduled task “{t}” (read and judged again here, never a task under \\Microsoft\\ nor a Windows or Defender program; it is not deleted). Its definition is noted; re-enabling it is accepted only if it has not changed since, but it is not offered in “What Vanguard changed” yet"
+            )
+        }
+        Acte::TacheReactiver(t) => {
+            let t = crate::ui::affichable(t.texte());
+            trf!(
+                "Réactiver la tâche planifiée « {t} » que Vanguard a désactivée, seulement si sa définition est restée celle que Vanguard a notée (refusé sinon)",
+                "Re-enable the scheduled task “{t}” that Vanguard disabled, only if its definition is still the one Vanguard noted (refused otherwise)"
+            )
+        }
+        Acte::DemarrageQuarantaine(f) => {
+            let f = crate::ui::affichable(f.texte());
+            trf!(
+                "Mettre de côté le fichier « {f} » du dossier Démarrage commun (relu et rejugé ici ; jamais un lien ni une jonction, jamais un programme de Windows ou de Defender). Une copie vérifiée de son contenu est gardée dans ProgramData\\Vanguard\\quarantaine avant le retrait (seulement le contenu : ses dates, ses droits et ses flux, dont la marque « téléchargé d'Internet », ne seront pas remis) ; la remise n'est pas encore proposée dans « Ce que Vanguard a changé »",
+                "Set aside the file “{f}” from the common Startup folder (read and judged again here; never a link or a junction, never a Windows or Defender program). A verified copy of its content is kept in ProgramData\\Vanguard\\quarantaine before removal (content only: its dates, permissions and streams, including the “downloaded from the Internet” mark, will not be restored); putting it back is not offered in “What Vanguard changed” yet"
+            )
+        }
+        Acte::DemarrageRemettre(f) => {
+            let f = crate::ui::affichable(f.texte());
+            trf!(
+                "Remettre le fichier « {f} » du dossier Démarrage commun depuis la copie que Vanguard a gardée, si elle est intacte (refusé sinon, et jamais par-dessus un fichier présent) ; seul le contenu revient : dates, droits et flux, dont la marque « téléchargé d'Internet », ne sont pas remis",
+                "Put back the file “{f}” in the common Startup folder from the copy Vanguard kept, if it is intact (refused otherwise, and never over an existing file); only the content comes back: dates, permissions and streams, including the “downloaded from the Internet” mark, are not restored"
+            )
+        }
+        Acte::LancementDesactiver(l, _) | Acte::LancementReactiver(l) => {
+            let n = crate::ui::affichable(l.nom());
+            let ou = match l.liste() {
+                ListeLancement::Run => r"HKLM\…\CurrentVersion\Run",
+                ListeLancement::Run32 => r"HKLM\…\WOW6432Node\…\CurrentVersion\Run",
+                ListeLancement::Dossier => tr!("dossier Démarrage commun", "common Startup folder"),
+            };
+            if matches!(acte, Acte::LancementDesactiver(..)) {
+                trf!(
+                    "Désactiver le lancement au démarrage « {n} » de la machine ({ou}) comme le fait le Gestionnaire des tâches (StartupApproved : rien n'est supprimé ; relu ici, jamais Windows, Defender ni ce qu'Optimiser garde). Les octets d'avant sont notés pour une remise exacte",
+                    "Disable the machine startup entry “{n}” ({ou}) the way Task Manager does (StartupApproved: nothing is deleted; read again here, never Windows, Defender nor what Optimize keeps). The previous bytes are noted for an exact restore"
+                )
+            } else {
+                trf!(
+                    "Réactiver le lancement au démarrage « {n} » de la machine ({ou}) avec les octets que Vanguard a notés en le désactivant (refusé sans note, ou si la valeur a changé depuis)",
+                    "Re-enable the machine startup entry “{n}” ({ou}) with the bytes Vanguard noted when disabling it (refused without a note, or if the value changed since)"
+                )
+            }
+        }
+        Acte::WmiAbonnementRetirer(w) => {
+            let (n, c) = (crate::ui::affichable(w.nom.texte()), w.classe.classe());
+            trf!(
+                "Retirer l'abonnement WMI « {n} » ({c}) : relu et rejugé ici, jamais un abonnement de Windows ou de Defender. Le consumer, ses liaisons et leurs filtres sont notés, puis supprimés (un filtre qui sert à un autre abonnement reste) ; la remise n'est pas encore proposée dans « Ce que Vanguard a changé »",
+                "Remove the WMI subscription “{n}” ({c}): read and judged again here, never a Windows or Defender subscription. The consumer, its bindings and their filters are noted, then deleted (a filter used by another subscription stays); putting it back is not offered in “What Vanguard changed” yet"
+            )
+        }
+        Acte::WmiAbonnementRemettre(w) => {
+            let (n, c) = (crate::ui::affichable(w.nom.texte()), w.classe.classe());
+            trf!(
+                "Recréer l'abonnement WMI « {n} » ({c}) depuis ce que Vanguard a noté en le retirant : pas encore fait par cette version (une version suivante le fera, avec une confirmation dans la fenêtre administrateur) ; refusé, rien n'est changé et la note est gardée",
+                "Recreate the WMI subscription “{n}” ({c}) from what Vanguard noted when removing it: not done by this version yet (a later version will, with a confirmation in the administrator window); refused, nothing is changed and the note is kept"
+            )
+        }
+        Acte::ServiceRetirer(n) => {
+            let n = crate::ui::affichable(n.texte());
+            trf!(
+                "Supprimer le service « {n} ». Non annulable",
+                "Delete the “{n}” service. Not undoable"
+            )
+        }
+        Acte::HostsEcrire(_) => tr!(
+            "Réécrire le fichier hosts préparé par Vanguard (différence ci-dessous, relue et rejugée ici ; une copie d'avant est gardée)",
+            "Rewrite the hosts file prepared by Vanguard (difference below, read and judged again here; a copy of the previous one is kept)"
+        )
+        .to_string(),
+        Acte::DnsAuto(g) => trf!(
+            "Remettre en automatique (DHCP) les serveurs DNS de la carte réseau {}, IPv4 et IPv6, puis vider le cache DNS",
+            "Set the DNS servers of network adapter {} back to automatic (DHCP), IPv4 and IPv6, then clear the DNS cache",
+            g.texte()
+        ),
+        Acte::DnsServeurs(d) => {
+            let cote = |c: &crate::machine::gestes::CoteDns| match c {
+                crate::machine::gestes::CoteDns::Garder => tr!("inchangé", "unchanged").to_string(),
+                crate::machine::gestes::CoteDns::Vider => tr!("automatique", "automatic").to_string(),
+                crate::machine::gestes::CoteDns::Serveurs(_) if c.hors_liste() => trf!(
+                    "{} (valeur d'avant, acceptée seulement si Vanguard l'a notée)",
+                    "{} (previous value, accepted only if Vanguard noted it)",
+                    c.texte()
+                ),
+                crate::machine::gestes::CoteDns::Serveurs(_) => c.texte(),
+            };
+            trf!(
+                "Régler les serveurs DNS de la carte réseau {} : IPv4 {}, IPv6 {}",
+                "Set the DNS servers of network adapter {}: IPv4 {}, IPv6 {}",
+                d.guid.texte(),
+                cote(&d.v4),
+                cote(&d.v6)
+            )
+        }
         Acte::ReseauCategorie(r) => {
             let g = reseau_nomme(r);
             match r.categorie {
@@ -725,6 +979,9 @@ pub(crate) fn en_powershell(correctifs: &[Vec<String>]) -> Vec<Vec<String>> {
 
 /// Le texte à montrer pour une commande : la phrase d'une correction native ou d'un ordre, la commande elle-même sinon.
 pub(crate) fn affichable(commande: &str) -> String {
+    if let Some(g) = crate::machine::gestes::analyser_compte(commande) {
+        return crate::ui::affichable(&g.texte(!anglais()));
+    }
     if let Some(a) = crate::machine::gestes::analyser_programme(commande) {
         return texte_programme(&a);
     }
@@ -1039,7 +1296,13 @@ fn ecrire_dword(cle: &str, valeur: &str, donnee: u32, permis: bool) -> Resultat 
 
 /// Un DWORD posé sous `racine` : la valeur d'avant lue (refus si elle ne se remettrait pas), rien d'écrit si elle est
 /// déjà la bonne, refus si le bilan refait ici ne la signale pas (`permis`), sinon écrit puis relu.
-fn ecrire_dword_sous(racine: &winreg::RegKey, cle: &str, valeur: &str, donnee: u32, permis: bool) -> Resultat {
+pub(super) fn ecrire_dword_sous(
+    racine: &winreg::RegKey,
+    cle: &str,
+    valeur: &str,
+    donnee: u32,
+    permis: bool,
+) -> Resultat {
     use crate::ui::trf;
     use winreg::enums::{KEY_READ, KEY_WRITE};
     let avant = match valeur_d_avant(racine, cle, valeur) {
@@ -1505,6 +1768,49 @@ fn couper_smb1_serveur() -> Resultat {
 mod tests {
     use super::*;
 
+    /// Les actes de la persistance (lot 3.5) : chacun se montre en clair, une remise est dite moins protégée une seule
+    /// fois (par `texte_acte`), seul le retrait d'un service, irréversible, compte comme une protection pour « Défaire ».
+    #[test]
+    fn les_actes_de_la_persistance_se_montrent_et_se_defont() {
+        use crate::machine::Defaire;
+        use crate::machine::gestes;
+        let run =
+            gestes::ligne_run_retirer_machine(r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run", &[0x41]).unwrap();
+        let remise_run = run.replacen(gestes::RUN_RETIRER_MACHINE, gestes::RUN_REMETTRE, 1);
+        // « \A », « C:\x.lnk », « A » en UTF-16 petit-boutiste.
+        let (tache, fichier, nom) = ("5c004100", "43003a005c0078002e006c006e006b00", "4100");
+        let retraits = [
+            run.clone(),
+            format!("{}{tache}", gestes::TACHE_DESACTIVER),
+            format!("{}{fichier}", gestes::DEMARRAGE_QUARANTAINE),
+            format!("{}commande {nom}", gestes::WMI_ABONNEMENT_RETIRER),
+        ];
+        let remises = [
+            remise_run,
+            format!("{}{tache}", gestes::TACHE_REACTIVER),
+            format!("{}{fichier}", gestes::DEMARRAGE_REMETTRE),
+            format!("{}script {nom}", gestes::WMI_ABONNEMENT_REMETTRE),
+        ];
+        let service = format!("{}{nom}", gestes::SERVICE_RETIRER);
+        let fois = |t: &str| t.matches("moins protégé").count() + t.matches("less protected").count();
+        for l in retraits.iter().chain(&remises).chain([&service]) {
+            let t = affichable(l);
+            assert!(native(l) && !t.starts_with("vanguard:") && !t.contains("5c00"), "{t}");
+            let attendu = usize::from(remises.contains(l));
+            assert_eq!(fois(&t), attendu, "{t}");
+            let defaire = if *l == service {
+                Defaire::Protection
+            } else {
+                Defaire::Inconnu
+            };
+            assert_eq!(comment_defaire(std::slice::from_ref(l)), defaire, "{l}");
+        }
+        // La remise d'une valeur de démarrage n'affirme rien que le processus élevé n'ait encore vérifié.
+        let t = affichable(&remises[0]);
+        assert!(!t.contains("exactement tel") && !t.contains("exactly as"), "{t}");
+        assert!(t.contains("refusé sinon") || t.contains("refused otherwise"), "{t}");
+    }
+
     /// Les actes du pare-feu et des réseaux : une remise est dite moins protégée avant l'accord, ce qui durcit ne
     /// l'est pas ; le pare-feu rallumé, le profil Public durci et un réseau passé en Public sont des protections, que
     /// « Défaire » ne propose pas ; une remise seule ne l'est pas. Le chemin de Wine reprend les commandes d'avant.
@@ -1578,7 +1884,24 @@ mod tests {
         for c in TABLE {
             assert!(analyser(&id(c.id)).is_some_and(|t| std::ptr::eq(t, c)), "{}", c.id);
             assert!(!c.powershell().is_empty() && !c.texte().is_empty());
-            // Aucun geste de la table n'affaiblit la sécurité : les valeurs écrites sont celles du durcissement.
+            // Aucun geste de la table n'affaiblit la sécurité : les valeurs écrites sont celles du durcissement, ou,
+            // pour un réglage pour jouer (`gaming-*`, liste fermée), HAGS seul, qui ne touche à aucune protection.
+            if c.id.starts_with("gaming-") {
+                assert!(
+                    matches!(
+                        c.geste,
+                        Geste::Dword {
+                            valeur: "HwSchMode",
+                            donnee: 2,
+                            ..
+                        }
+                    ),
+                    "{}",
+                    c.id
+                );
+                assert_eq!(comment_defaire(&[id(c.id)]), crate::machine::Defaire::Inconnu);
+                continue;
+            }
             if let Geste::Dword { valeur, donnee, .. } = c.geste {
                 const DURCIES: &[(&str, u32)] = &[
                     ("UseLogonCredential", 0),
@@ -1740,7 +2063,7 @@ mod tests {
         let shell = |s| {
             bilan_des_constats(
                 c("winlogon-shell"),
-                &portes::juger_winlogon(Some(s), Some(userinit), None, r"C:\Windows", ""),
+                &portes::juger_winlogon(Some(s), Some(userinit), None, r"C:\Windows"),
             )
         };
         assert_eq!(shell(r"C:\Users\alice\AppData\Roaming\bureau.exe"), Bilan::Signale);
@@ -1969,5 +2292,42 @@ mod tests {
             "{}",
             affichable(&correctifs[3][0])
         );
+    }
+
+    /// Un geste du compte se défait selon ce qu'il fait : les macros d'Office et la stratégie de PowerShell durcissent
+    /// (protection) ; un réglage pour jouer, un retrait de démarrage, de shell ou de proxy non (décision 4 b) du plan),
+    /// pas plus que HAGS (`gaming-hags`) : pas encore annulables (« Inconnu », non relevé), le lot 3.5 les relèvera. Il se montre dans les mots de la personne, jamais sous sa ligne brute.
+    #[test]
+    fn un_geste_du_compte_se_defait_selon_ce_qu_il_fait() {
+        use crate::machine::Defaire;
+        use crate::machine::gestes;
+        let durcis = [
+            gestes::ligne_compte("ps-strategie").unwrap(),
+            gestes::ligne_macros("16.0", "word").unwrap(),
+        ];
+        for l in &durcis {
+            assert_eq!(comment_defaire(std::slice::from_ref(l)), Defaire::Protection, "{l}");
+        }
+        let non_proteges = [
+            gestes::ligne_compte("jeux-mode").unwrap(),
+            gestes::ligne_compte("winlogon-shell-compte").unwrap(),
+            gestes::ligne_compte("proxy-coupe").unwrap(),
+            gestes::ligne_compte("proxy-script-retire").unwrap(),
+            gestes::ligne_run_retirer(true, &[0x61]).unwrap(),
+            gestes::ligne_alimentation(),
+            id("gaming-hags"),
+        ];
+        for l in &non_proteges {
+            assert_eq!(comment_defaire(std::slice::from_ref(l)), Defaire::Inconnu, "{l}");
+        }
+        // Avec un geste qui durcit dans la même liste : protection.
+        let melee = vec![non_proteges[0].clone(), durcis[0].clone()];
+        assert_eq!(comment_defaire(&melee), Defaire::Protection);
+        for l in durcis.iter().chain(&non_proteges) {
+            let t = affichable(l);
+            assert!(!t.contains("vanguard:") && !t.is_empty(), "{t}");
+        }
+        let t = affichable(&gestes::ligne_run_retirer(false, &"l'agent".encode_utf16().collect::<Vec<_>>()).unwrap());
+        assert!(t.contains("l'agent"), "{t}");
     }
 }

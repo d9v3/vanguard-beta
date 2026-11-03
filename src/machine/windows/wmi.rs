@@ -10,23 +10,30 @@ use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use core::ffi::c_void;
+
 use crate::compte_rendu::Contexte;
 
-use windows::Win32::Foundation::{E_POINTER, VARIANT_BOOL};
+use windows::Win32::Foundation::{E_INVALIDARG, E_OUTOFMEMORY, E_POINTER, VARIANT_BOOL};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
     CoSetProxyBlanket, CoUninitialize, EOAC_NONE, RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, SAFEARRAY,
 };
-use windows::Win32::System::Ole::{SafeArrayGetDim, SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound};
+use windows::Win32::System::Ole::{
+    SafeArrayCreateVector, SafeArrayGetDim, SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound,
+    SafeArrayPutElement,
+};
 use windows::Win32::System::Variant::{
     VARENUM, VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_ARRAY, VT_BOOL, VT_BSTR, VT_BYREF, VT_I1, VT_I2, VT_I4,
     VT_I8, VT_INT, VT_UI1, VT_UI2, VT_UI4, VT_UI8, VT_UINT, VariantClear,
 };
 use windows::Win32::System::Wmi::{
-    IWbemLocator, WBEM_FLAG_FORWARD_ONLY, WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_GENERIC_FLAG_TYPE, WBEM_INFINITE,
-    WbemLocator,
+    IWbemLocator, IWbemServices, WBEM_FLAG_CREATE_ONLY, WBEM_FLAG_FORWARD_ONLY, WBEM_FLAG_RETURN_IMMEDIATELY,
+    WBEM_GENERIC_FLAG_TYPE, WBEM_INFINITE, WbemLocator,
 };
 use windows::core::{BSTR, Error, HSTRING, IUnknown, Interface};
+
+use crate::machine::gestes;
 
 /// Constantes de rpcdce.h (authentification Windows, sans autorisation), ici pour ne pas tirer tout Win32_System_Rpc.
 const RPC_C_AUTHN_WINNT: u32 = 10;
@@ -343,6 +350,108 @@ pub(crate) enum Parametre {
     Texte(String),
     Entier(i32),
     Booleen(bool),
+    /// Un `uint8` (MAPSReporting, EnableControlledFolderAccess…) : VT_UI1, le type que WMI attend pour lui.
+    Octet(u8),
+    /// Un `string[]` (ExclusionPath, AttackSurfaceReductionRules_Ids…).
+    Textes(Vec<String>),
+    /// Un `uint8[]` (AttackSurfaceReductionRules_Actions).
+    Octets(Vec<u8>),
+}
+
+/// Les valeurs de Defender, décrites sans COM par `gestes` (module pur, fuzzé), prennent ici leur forme d'appel.
+impl From<gestes::ValeurWmi> for Parametre {
+    fn from(v: gestes::ValeurWmi) -> Self {
+        match v {
+            gestes::ValeurWmi::Booleen(b) => Parametre::Booleen(b),
+            gestes::ValeurWmi::Octet(n) => Parametre::Octet(n),
+            gestes::ValeurWmi::Textes(t) => Parametre::Textes(t),
+            gestes::ValeurWmi::Octets(o) => Parametre::Octets(o),
+        }
+    }
+}
+
+impl Parametre {
+    /// Le VARIANT que reçoit `Put`. Une liste qui ne se construit pas est une erreur, jamais un paramètre vide :
+    /// `Remove` d'une liste vide ne retirerait rien et se dirait réussi.
+    fn variant(&self) -> windows::core::Result<VARIANT> {
+        Ok(match self {
+            Parametre::Texte(t) => VARIANT::from(BSTR::from(t.as_str())),
+            Parametre::Entier(n) => VARIANT::from(*n),
+            Parametre::Booleen(b) => VARIANT::from(*b),
+            Parametre::Octet(n) => VARIANT::from(*n),
+            Parametre::Textes(t) => variant_textes(t)?,
+            Parametre::Octets(o) => variant_octets(o)?,
+        })
+    }
+}
+
+/// Une liste de textes dans un VARIANT (VT_ARRAY | VT_BSTR, à une dimension, à partir de 0). Un texte vide est
+/// refusé : son BSTR est nul, et SafeArrayPutElement lirait la longueur d'un BSTR qui n'existe pas.
+pub(crate) fn variant_textes(textes: &[String]) -> windows::core::Result<VARIANT> {
+    if textes.is_empty() || textes.iter().any(String::is_empty) {
+        return Err(Error::from(E_INVALIDARG));
+    }
+    let bstrs: Vec<BSTR> = textes.iter().map(|t| BSTR::from(t.as_str())).collect();
+    // SAFETY: pour VT_BSTR, SafeArrayPutElement attend le BSTR lui-même (sans indirection) et en fait une copie ;
+    // chaque BSTR de `bstrs` est non vide et vit jusqu'à la fin de l'appel.
+    unsafe {
+        variant_liste(VT_BSTR, bstrs.len(), |i| {
+            bstrs.get(i).map_or(core::ptr::null(), |b| b.as_ptr().cast())
+        })
+    }
+}
+
+/// Une liste d'octets dans un VARIANT (VT_ARRAY | VT_UI1, à une dimension, à partir de 0).
+pub(crate) fn variant_octets(octets: &[u8]) -> windows::core::Result<VARIANT> {
+    if octets.is_empty() {
+        return Err(Error::from(E_INVALIDARG));
+    }
+    // SAFETY: pour VT_UI1, SafeArrayPutElement copie l'octet pointé ; chaque octet de `octets` vit pendant l'appel.
+    unsafe {
+        variant_liste(VT_UI1, octets.len(), |i| {
+            octets
+                .get(i)
+                .map_or(core::ptr::null(), |o| core::ptr::from_ref(o).cast())
+        })
+    }
+}
+
+/// Crée un SAFEARRAY de `n` éléments du type `vt` et y copie chaque élément.
+///
+/// # Safety
+/// Pour tout `i < n`, `element(i)` rend ce que SafeArrayPutElement attend pour `vt` (le BSTR lui-même pour
+/// VT_BSTR, un pointeur vers la valeur sinon), valide pendant l'appel.
+unsafe fn variant_liste(
+    vt: VARENUM,
+    n: usize,
+    element: impl Fn(usize) -> *const c_void,
+) -> windows::core::Result<VARIANT> {
+    let total = u32::try_from(n).map_err(|_| Error::from(E_INVALIDARG))?;
+    // SAFETY: crée un tableau neuf à une dimension, sans lien avec aucune autre donnée.
+    let tableau = unsafe { SafeArrayCreateVector(vt, 0, total) };
+    if tableau.is_null() {
+        return Err(Error::from(E_OUTOFMEMORY));
+    }
+    // Le VARIANT possède le tableau dès ici : son Drop (VariantClear) le détruit, avec les copies déjà faites, même
+    // si une copie suivante échoue.
+    let v = VARIANT {
+        Anonymous: VARIANT_0 {
+            Anonymous: std::mem::ManuallyDrop::new(VARIANT_0_0 {
+                vt: VARENUM(VT_ARRAY.0 | vt.0),
+                wReserved1: 0,
+                wReserved2: 0,
+                wReserved3: 0,
+                Anonymous: VARIANT_0_0_0 { parray: tableau },
+            }),
+        },
+    };
+    for i in 0..n {
+        let indice = i32::try_from(i).map_err(|_| Error::from(E_INVALIDARG))?;
+        // SAFETY: `tableau` est vivant (détenu par `v`), à une dimension de `n` éléments ; un seul indice, dans les
+        // bornes ; `element(i)` respecte le contrat de la fonction.
+        unsafe { SafeArrayPutElement(tableau, &raw const indice, element(i)) }?;
+    }
+    Ok(v)
 }
 
 /// Ce qu'a rendu l'appel d'une méthode WMI.
@@ -412,28 +521,34 @@ fn appeler_dans_ce_fil(
     // SAFETY: definition est vivante ; le nom est une chaîne terminée par un zéro ; les deux emplacements reçoivent
     // les signatures d'entrée et de sortie.
     unsafe { definition.GetMethod(&HSTRING::from(nom), 0, &raw mut signature, &raw mut sortie) }?;
-    let signature = signature.ok_or_else(|| Error::from(E_POINTER))?;
-    // SAFETY: signature d'entrée vivante, rendue par GetMethod ; SpawnInstance en fait un objet à remplir.
-    let entree = unsafe { signature.SpawnInstance(0) }?;
-    for (champ, valeur) in parametres {
-        let v = match valeur {
-            Parametre::Texte(t) => VARIANT::from(BSTR::from(t.as_str())),
-            Parametre::Entier(n) => VARIANT::from(*n),
-            Parametre::Booleen(b) => VARIANT::from(*b),
-        };
-        // SAFETY: entree est vivante ; le nom est terminé par un zéro ; `v` vit pendant l'appel (Put en garde une
-        // copie) ; type 0 : celui de la signature.
-        unsafe { entree.Put(&HSTRING::from(*champ), 0, &raw const v, 0) }?;
-    }
+    // Une méthode sans paramètre d'entrée (MSFT_MpThreat.Remove) n'a pas de signature d'entrée : GetMethod la rend
+    // nulle, et ExecMethod s'appelle alors sans objet d'entrée. Des paramètres sans signature : erreur, jamais
+    // un appel qui les perdrait en silence.
+    let entree = match signature {
+        None if parametres.is_empty() => None,
+        None => return Err(Error::from(E_POINTER)),
+        Some(signature) => {
+            // SAFETY: signature d'entrée vivante, rendue par GetMethod ; SpawnInstance en fait un objet à remplir.
+            let entree = unsafe { signature.SpawnInstance(0) }?;
+            for (champ, valeur) in parametres {
+                let v = valeur.variant()?;
+                // SAFETY: entree est vivante ; le nom est terminé par un zéro ; `v` vit pendant l'appel (Put en
+                // garde une copie) ; type 0 : celui de la signature.
+                unsafe { entree.Put(&HSTRING::from(*champ), 0, &raw const v, 0) }?;
+            }
+            Some(entree)
+        }
+    };
     let mut resultat = None;
-    // SAFETY: services, entree et les BSTR vivent pendant l'appel ; `resultat` reçoit les paramètres de sortie.
+    // SAFETY: services, entree (ou son absence) et les BSTR vivent pendant l'appel ; `resultat` reçoit les
+    // paramètres de sortie.
     unsafe {
         services.ExecMethod(
             &chemin,
             &BSTR::from(nom),
             WBEM_GENERIC_FLAG_TYPE(0),
             None,
-            &entree,
+            entree.as_ref(),
             Some(&raw mut resultat),
             None,
         )
@@ -445,6 +560,137 @@ fn appeler_dans_ce_fil(
     unsafe { resultat.Get(&HSTRING::from("ReturnValue"), 0, &raw mut v, None, None) }?;
     // SAFETY: `v` vient d'être rempli par Get.
     unsafe { lire(&v) }.entier().ok_or_else(|| Error::from(E_POINTER))
+}
+
+/// L'espace de noms des abonnements WMI permanents : le seul où `Abonnements` lit et écrit.
+const ESPACE_ABONNEMENTS: &str = r"root\subscription";
+/// Les seules classes que `Abonnements` lit, crée ou supprime.
+const CLASSES_ABONNEMENT: [&str; 4] = [
+    "__EventFilter",
+    "__FilterToConsumerBinding",
+    "CommandLineEventConsumer",
+    "ActiveScriptEventConsumer",
+];
+
+/// Une connexion à root\subscription, et à lui seul (l'espace est fixé ici, jamais reçu), pour le processus élevé
+/// qui retire ou recrée un abonnement (`wmi_ecriture`). À utiliser dans le fil COM qui l'a ouverte (`com`).
+pub(crate) struct Abonnements {
+    services: IWbemServices,
+}
+
+impl Abonnements {
+    /// Ouvre root\subscription ; COM doit être initialisé dans ce fil (`com`).
+    pub(crate) fn ouvrir() -> windows::core::Result<Abonnements> {
+        // SAFETY: COM est initialisé dans ce fil (par `com`) ; WbemLocator est la classe du localisateur WMI.
+        let localisateur: IWbemLocator = unsafe { CoCreateInstance(&WbemLocator, None, CLSCTX_INPROC_SERVER) }?;
+        let vide = BSTR::new();
+        // SAFETY: chaînes BSTR valides pendant l'appel ; utilisateur et mot de passe vides = le compte qui lance.
+        let services = unsafe {
+            localisateur.ConnectServer(&BSTR::from(ESPACE_ABONNEMENTS), &vide, &vide, &vide, 0, &vide, None)
+        }?;
+        droits_d_appel(&services);
+        Ok(Abonnements { services })
+    }
+
+    /// Chaque instance de `classe` (une de `CLASSES_ABONNEMENT`), avec ses `champs` et son chemin relatif
+    /// (`__RELPATH`), lus tels quels. Une classe absente rend l'erreur `CLASSE_ABSENTE`.
+    pub(crate) fn lire(&self, classe: &str, champs: &[&str]) -> windows::core::Result<Vec<Ligne>> {
+        if !CLASSES_ABONNEMENT.contains(&classe) {
+            return Err(Error::from(E_INVALIDARG));
+        }
+        let mut tous: Vec<String> = champs.iter().map(|c| (*c).to_string()).collect();
+        tous.push("__RELPATH".to_string());
+        // SAFETY: services est vivant ; requête et langage sont des BSTR valides pendant l'appel.
+        let instances = unsafe {
+            self.services.ExecQuery(
+                &BSTR::from("WQL"),
+                &BSTR::from(format!("SELECT * FROM {classe}")),
+                WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+                None,
+            )
+        }?;
+        droits_d_appel(&instances);
+        let noms: Vec<HSTRING> = tous.iter().map(|c| HSTRING::from(c.as_str())).collect();
+        let mut lignes = Vec::new();
+        loop {
+            let mut objets = [None];
+            let mut rendus = 0u32;
+            // SAFETY: un emplacement pour un objet, `rendus` dit combien ont été écrits.
+            unsafe { instances.Next(WBEM_INFINITE, &mut objets, &raw mut rendus) }.ok()?;
+            let Some(objet) = objets[0].take().filter(|_| rendus == 1) else {
+                break;
+            };
+            let mut ligne = Ligne::new();
+            for (champ, nom) in tous.iter().zip(&noms) {
+                let mut v = VARIANT::default();
+                // SAFETY: objet est vivant, `nom` une chaîne terminée par un zéro, `v` un VARIANT vide qui reçoit la
+                // copie.
+                let valeur = match unsafe { objet.Get(nom, 0, &raw mut v, None, None) } {
+                    // SAFETY: `v` vient d'être rempli par Get.
+                    Ok(()) => unsafe { lire(&v) },
+                    Err(_) => Valeur::Nul,
+                };
+                // SAFETY: `v` est à nous (copie rendue par Get, ou vide) ; VariantClear libère ce qu'il porte.
+                let _ = unsafe { VariantClear(&raw mut v) };
+                ligne.insert(champ.clone(), valeur);
+            }
+            lignes.push(ligne);
+        }
+        Ok(lignes)
+    }
+
+    /// Supprime l'objet de chemin relatif `chemin`, qui doit être une instance de `classe` (une de
+    /// `CLASSES_ABONNEMENT`) : il commence par « classe. », donc sans serveur ni autre espace de noms devant.
+    pub(crate) fn supprimer(&self, classe: &str, chemin: &str) -> windows::core::Result<()> {
+        if !CLASSES_ABONNEMENT.contains(&classe) || !chemin_de_classe(classe, chemin) {
+            return Err(Error::from(E_INVALIDARG));
+        }
+        // SAFETY: services est vivant ; le chemin est un BSTR valide pendant l'appel ; ni contexte ni résultat.
+        unsafe {
+            self.services
+                .DeleteInstance(&BSTR::from(chemin), WBEM_GENERIC_FLAG_TYPE(0), None, None)
+        }
+    }
+
+    /// Crée une instance de `classe` (une de `CLASSES_ABONNEMENT`) avec ces propriétés, seulement si aucune n'a déjà
+    /// sa clé (WBEM_FLAG_CREATE_ONLY : jamais par-dessus un objet présent).
+    pub(crate) fn creer(&self, classe: &str, proprietes: &[(&str, Parametre)]) -> windows::core::Result<()> {
+        if !CLASSES_ABONNEMENT.contains(&classe) {
+            return Err(Error::from(E_INVALIDARG));
+        }
+        let mut definition = None;
+        // SAFETY: services est vivant ; le chemin est un BSTR valide pendant l'appel ; `definition` reçoit la classe.
+        unsafe {
+            self.services.GetObject(
+                &BSTR::from(classe),
+                WBEM_GENERIC_FLAG_TYPE(0),
+                None,
+                Some(&raw mut definition),
+                None,
+            )
+        }?;
+        let definition = definition.ok_or_else(|| Error::from(E_POINTER))?;
+        // SAFETY: definition est la classe vivante rendue par GetObject ; SpawnInstance en fait une instance vide.
+        let instance = unsafe { definition.SpawnInstance(0) }?;
+        for (nom, valeur) in proprietes {
+            let v = valeur.variant()?;
+            // SAFETY: instance est vivante ; le nom est terminé par un zéro ; `v` vit pendant l'appel (Put en garde
+            // une copie) ; type 0 : celui de la classe.
+            unsafe { instance.Put(&HSTRING::from(*nom), 0, &raw const v, 0) }?;
+        }
+        // SAFETY: services et instance sont vivants ; ni contexte ni résultat.
+        unsafe {
+            self.services
+                .PutInstance(&instance, WBEM_GENERIC_FLAG_TYPE(WBEM_FLAG_CREATE_ONLY.0), None, None)
+        }
+    }
+}
+
+/// `chemin` est-il le chemin relatif d'une instance de `classe` : « classe. » puis la clé, sans caractère de
+/// contrôle ? Un chemin de WMI ne nomme un serveur ou un espace de noms qu'avant la classe (`\\serveur\espace:` ou
+/// `espace:`) : commencer par la classe les exclut.
+pub(crate) fn chemin_de_classe(classe: &str, chemin: &str) -> bool {
+    chemin.strip_prefix(classe).is_some_and(|reste| reste.starts_with('.')) && !chemin.chars().any(char::is_control)
 }
 
 /// Le membre de l'union que désigne `vt`, et lui seul.
@@ -593,6 +839,38 @@ mod tests {
         assert_eq!(secondes_depuis("20261020160000.000000+000", maintenant), Some(0));
         assert_eq!(secondes_depuis("pas une date", maintenant), None);
         assert_eq!(secondes_depuis("20261021000000.000000+000", maintenant), None);
+    }
+
+    /// Les listes passées aux méthodes de Defender (ExclusionPath, AttackSurfaceReductionRules_Actions) : relues
+    /// telles quelles par le lecteur des réponses WMI, VARIANT détruit ensuite par son Drop.
+    #[test]
+    fn listes_aller_retour() {
+        let textes = vec![r"C:\Dossier inventé".to_string(), "élément é".to_string()];
+        let v = Parametre::Textes(textes.clone()).variant().expect("liste de textes");
+        // SAFETY: `v` vient d'être construit, son `vt` décrit son contenu.
+        let relue = unsafe { lire(&v) };
+        assert_eq!(relue.textes(), textes);
+        let v = Parametre::from(gestes::ValeurWmi::Octets(vec![1, 2, 6]))
+            .variant()
+            .expect("liste d'octets");
+        // SAFETY: idem.
+        let relue = unsafe { lire(&v) };
+        assert_eq!(
+            relue,
+            Valeur::Liste(vec![Valeur::Entier(1), Valeur::Entier(2), Valeur::Entier(6)])
+        );
+        let v = Parametre::Octet(2).variant().expect("octet");
+        // SAFETY: idem.
+        let relue = unsafe { lire(&v) };
+        assert_eq!(relue, Valeur::Entier(2));
+        let v = Parametre::Booleen(false).variant().expect("booléen");
+        // SAFETY: idem.
+        let relue = unsafe { lire(&v) };
+        assert_eq!(relue, Valeur::Booleen(false));
+        // Vide : refusé, jamais un Remove qui ne retire rien.
+        assert!(variant_textes(&[]).is_err());
+        assert!(variant_textes(&[String::new()]).is_err());
+        assert!(variant_octets(&[]).is_err());
     }
 
     /// Le WMI de Wine connaît Win32_OperatingSystem : la requête aboutit sans PowerShell, comme sous Windows.

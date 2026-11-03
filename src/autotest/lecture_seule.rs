@@ -443,9 +443,24 @@ mod tests {
                 "script de correction en administrateur, hors bilan",
             ),
             (
+                "machine/windows/reseau_ecriture.rs",
+                6,
+                "processus élevé : le hosts (temporaire neuf du dossier etc, puis ReplaceFileW ; créé sans écraser s'il manquait ; la copie d'avant remise si l'échange échoue à mi-chemin), hors bilan",
+            ),
+            (
                 "machine/windows/eleve.rs",
                 2,
                 "processus élevé d'une correction, hors bilan",
+            ),
+            (
+                "machine/windows/quarantaine.rs",
+                3,
+                "processus élevé : copie d'une racine ou d'un fichier du Démarrage commun retiré, créée sans écraser (create_new) dans un dossier réservé aux administrateurs, retirée si l'écriture échoue ou une fois remise à sa place, hors bilan",
+            ),
+            (
+                "machine/windows/demarrage_ecriture.rs",
+                1,
+                "processus élevé : remise d'un fichier du Démarrage commun depuis sa copie de quarantaine vérifiée, créé sans écraser (create_new) dans un dossier relu (ni lien ni jonction), hors bilan",
             ),
             (
                 "machine/linux/veilleur.rs",

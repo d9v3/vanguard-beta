@@ -10,11 +10,11 @@ use std::ffi::c_void;
 
 use super::securite::sid_en_texte;
 
-/// SHARE_INFO_502 de lmshare.h.
+/// SHARE_INFO_502 de lmshare.h ; lu aussi par `partages_ecriture`.
 #[repr(C)]
-struct Partage502 {
+pub(super) struct Partage502 {
     nom: *const u16,
-    sorte: u32,
+    pub(super) sorte: u32,
     remarque: *const u16,
     permissions: u32,
     max: u32,
@@ -22,7 +22,7 @@ struct Partage502 {
     chemin: *const u16,
     mot_de_passe: *const u16,
     reserve: u32,
-    securite: *const c_void,
+    pub(super) securite: *const c_void,
 }
 
 /// SHARE_INFO_1 de lmshare.h : sans chemin ni droits, lisible sans être administrateur.
@@ -65,6 +65,16 @@ unsafe extern "system" {
         reprise: *mut u32,
     ) -> u32;
     fn NetApiBufferFree(tampon: *mut c_void) -> u32;
+    /// Un seul partage (niveau 502) : `partages_ecriture` le relit avant et après le geste.
+    pub(super) fn NetShareGetInfo(serveur: *const u16, nom: *const u16, niveau: u32, tampon: *mut *mut c_void) -> u32;
+    /// Niveau 1501 : le seul descripteur de sécurité du partage.
+    pub(super) fn NetShareSetInfo(
+        serveur: *const u16,
+        nom: *const u16,
+        niveau: u32,
+        tampon: *const c_void,
+        erreur: *mut u32,
+    ) -> u32;
 }
 
 #[link(name = "advapi32")]
@@ -81,7 +91,7 @@ unsafe extern "system" {
 }
 
 const TOUT: u32 = u32::MAX;
-const SPECIAL: u32 = 0x8000_0000;
+pub(super) const SPECIAL: u32 = 0x8000_0000;
 
 /// Un texte UTF-16 terminé par un zéro, rendu par Windows ; lu sur 32 767 caractères au plus (la plus grande longueur
 /// d'un nom ou d'un chemin de Windows).

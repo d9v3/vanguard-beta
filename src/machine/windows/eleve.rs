@@ -67,27 +67,11 @@ unsafe extern "system" {
     fn SetHandleInformation(objet: *mut c_void, masque: u32, drapeaux: u32) -> i32;
 }
 
-#[link(name = "advapi32")]
-unsafe extern "system" {
-    fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
-        texte: *const u16,
-        revision: u32,
-        descripteur: *mut *mut c_void,
-        taille: *mut u32,
-    ) -> i32;
-}
+use super::securite::{ConvertStringSecurityDescriptorToSecurityDescriptorW, Securite};
 
 #[link(name = "shell32")]
 unsafe extern "system" {
     fn ShellExecuteExW(info: *mut InfoLancement) -> i32;
-}
-
-/// SECURITY_ATTRIBUTES.
-#[repr(C)]
-struct Securite {
-    taille: u32,
-    descripteur: *mut c_void,
-    heritable: i32,
 }
 
 /// SHELLEXECUTEINFOW (112 octets en 64 bits).
@@ -720,11 +704,11 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     // Illisible ou changé depuis son écriture, la liste entière est refusée, sans rien demander.
     let montre = match a_montrer(&liste) {
         Ok(m) => m,
-        Err(chemin) => {
+        Err(raison) => {
             trp!(
-                "Le script de correction {} ne se lit plus ou a changé depuis que Vanguard l'a écrit : rien n'est fait, rien n'est demandé. Un autre programme y a touché : lancez une analyse antivirus, puis relancez la correction.",
-                "The fix script {} can no longer be read or has changed since Vanguard wrote it: nothing is done, nothing is asked. Another program touched it: run an antivirus scan, then run the fix again.",
-                crate::ui::affichable(chemin)
+                "{} : rien n'est fait, rien n'est demandé.",
+                "{}: nothing is done, nothing is asked.",
+                raison
             );
             let _ = tube.write_all(format!("{FIN}\n").as_bytes());
             attendre_entree_pour_fermer();
@@ -816,27 +800,58 @@ fn lire_script_verifie(chemin: &str, empreinte: &str) -> Option<Vec<u8>> {
     (super::sha256_hex(&o) == empreinte).then_some(o)
 }
 
-/// Ce que la console montre avant l'accord : le texte de chaque geste et, pour un script, ses lignes vérifiées.
-/// `Err(chemin)` dès qu'un script est illisible ou n'a plus son empreinte : montrer autre chose que ce qui sera
-/// lancé (ou rien) ferait accepter à l'aveugle.
-fn a_montrer(liste: &[Element]) -> Result<Vec<(String, Vec<String>)>, &str> {
+/// Ce que la console montre avant l'accord : le texte de chaque geste et, pour un script, ses lignes vérifiées ; pour
+/// le hosts, la différence lue et jugée ici. `Err(raison)` dès qu'un script est illisible ou n'a plus son empreinte,
+/// ou que le hosts préparé est refusé : montrer autre chose que ce qui sera fait (ou rien) ferait accepter à l'aveugle.
+fn a_montrer(liste: &[Element]) -> Result<Vec<(String, Vec<String>)>, crate::modele::Echec> {
     liste
         .iter()
         .map(|e| {
             let lignes = match e {
                 Element::Script(s) => {
-                    let o = lire_script_verifie(&s.chemin, &s.empreinte).ok_or(s.chemin.as_str())?;
+                    let o = lire_script_verifie(&s.chemin, &s.empreinte).ok_or_else(|| {
+                        crate::modele::Echec::refuse("eleve/montrer", trf!(
+                            "Le script de correction {} ne se lit plus ou a changé depuis que Vanguard l'a écrit. Un autre programme y a touché : lancez une analyse antivirus, puis relancez la correction",
+                            "The fix script {} can no longer be read or has changed since Vanguard wrote it. Another program touched it: run an antivirus scan, then run the fix again",
+                            crate::ui::affichable(&s.chemin)
+                        ))
+                    })?;
                     String::from_utf8_lossy(&o)
                         .trim_start_matches('\u{feff}')
                         .lines()
                         .map(crate::ui::affichable)
                         .collect()
                 }
+                Element::Acte(gestes::Acte::HostsEcrire(h)) => super::reseau_ecriture::montrer_hosts(h)
+                    .map_err(|r| {
+                        crate::modele::Echec::refuse(
+                            "eleve/hosts",
+                            trf!("Fichier hosts refusé : {r}", "Hosts file refused: {r}"),
+                        )
+                    })?,
                 _ => Vec::new(),
             };
             Ok((e.texte(), lignes))
         })
         .collect()
+}
+
+/// Le geste couperait-il une session à distance en cours (ou des connexions qui ne se lisent pas) ?
+fn coupe(touche_le_reseau: bool, juge: &ordres::Juge) -> bool {
+    gestes::coupe_une_session(touche_le_reseau, super::session_a_distance(), juge.sessions_en_cours())
+}
+
+fn refus_session() -> Resultat {
+    Resultat {
+        reussi: false,
+        rien: false,
+        avant: None,
+        raison: tr!(
+            "une connexion à distance est en cours (Bureau à distance, SSH), ou les connexions ne se lisent pas : ce geste la couperait, refusé",
+            "a remote connection is in progress (Remote Desktop, SSH), or connections cannot be read: this step would cut it, refused"
+        )
+        .to_string(),
+    }
 }
 
 fn attendre_entree_pour_fermer() {
@@ -875,8 +890,12 @@ fn faire(e: &Element, juge: &ordres::Juge, compte: &Result<String, String>, bila
             }
         }
         Element::Script(s) => lancer_script(&s.chemin, &s.empreinte),
+        // Rendre ou redemander l'adresse, changer le DNS d'une carte : jamais pendant une session à distance, relue
+        // après l'accord (le parent le refuse aussi, mais une ligne forgée ne passe pas par lui).
+        Element::Programme(a) if coupe(a.coupe_le_reseau(), juge) => refus_session(),
+        Element::Acte(a) if coupe(a.touche_le_reseau(), juge) => refus_session(),
         Element::Programme(a) => lancer_programme(a),
-        Element::Acte(a) => super::services_ecriture::faire(a),
+        Element::Acte(a) => super::services_ecriture::faire(a, compte),
     };
     if r.reussi {
         match &r.avant {
@@ -1513,7 +1532,12 @@ mod tests {
         // Changé après son écriture : refusé, et le chemin est dit.
         std::fs::write(&chemin, "Write-Host 'change'").unwrap();
         let change = script(bonne.clone());
-        assert_eq!(a_montrer(&change), Err(chemin.display().to_string().as_str()));
+        assert!(
+            a_montrer(&change)
+                .unwrap_err()
+                .to_string()
+                .contains(&chemin.display().to_string())
+        );
         // Disparu : refusé aussi (avant, la liste était montrée sans le script, puis l'Entrée demandée).
         std::fs::remove_file(&chemin).unwrap();
         assert!(a_montrer(&script(bonne)).is_err());

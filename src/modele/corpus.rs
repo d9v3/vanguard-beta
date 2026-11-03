@@ -513,7 +513,7 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
         "WIN-PRS-001",
         &[
             ("machine/windows/persistance.rs", "persistance"),
-            ("machine/windows/persistance.rs", "juger_persistance"),
+            ("machine/windows/persistance.rs", "juger_persistance_selon"),
         ],
     ),
     (

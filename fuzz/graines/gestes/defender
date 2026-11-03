@@ -1,0 +1,30 @@
+vanguard:defender temps-reel actif
+vanguard:defender maps avance
+vanguard:defender cfa bloquer
+vanguard:defender np audit
+vanguard:defender pua bloquer
+vanguard:defender temps-reel non
+vanguard:defender temps-reel inactif
+vanguard:defender maps 0
+vanguard:defender maps base
+vanguard:defender cfa 0
+vanguard:defender cfa coupe
+vanguard:defender pua audit 
+vanguard:defender  np bloquer
+vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 bloquer
+vanguard:defender-asr d3e037e1-3eb8-44c8-a917-57927947596d audit
+vanguard:defender-asr 9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2 retirer
+vanguard:defender-asr 56A863A9-875E-4185-98A7-B882C64B5CE5 bloquer
+vanguard:defender-asr 01443614-cd74-433a-b99e-2ecdc07bfc25 retirer
+vanguard:defender-asr 56a863a9-875e-4185-98a7-b882c64b5ce5 coupe
+vanguard:defender-exclusion-retirer chemin 43003a005c00
+vanguard:defender-exclusion-retirer extension 2e00650078006500
+vanguard:defender-exclusion-retirer processus 70006f007700650072007300680065006c006c002e00650078006500
+vanguard:defender-exclusion-retirer chemin 43003A005C00
+vanguard:defender-exclusion-retirer chemin 43003a005c000000
+vanguard:defender-exclusion-retirer chemin 43003a000a00
+vanguard:defender-exclusion-retirer dossier 43003a005c00
+vanguard:defender-exclusion-retirer chemin 
+vanguard:defender-exclusion-retirer chemin 00d8
+vanguard:defender-menaces-retirer
+vanguard:defender-menaces-retirer tout

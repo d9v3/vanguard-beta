@@ -12,7 +12,7 @@ use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 use super::corrections::Resultat;
 use super::persistance::lancement_suspect;
 use super::*;
-use crate::commande::{decouper_commande, ps_texte};
+use crate::commande::decouper_commande;
 use crate::machine::gestes::{self, Acte, NomFichier, Vue};
 use crate::machine::regles::{Os, regle};
 use crate::ui::{affichable, couper};
@@ -566,13 +566,13 @@ pub(super) fn userinit_d_origine(valeur: &str, racine: &str) -> bool {
 }
 
 /// `shell`, `userinit` : les valeurs de Winlogon pour l'ordinateur ; `shell_du_compte` : celle du compte (absente
-/// d'ordinaire) ; `cle_du_compte` : sa clé, pour la fenêtre administrateur (le HKCU de la personne).
+/// d'ordinaire), retirée par un geste du compte (`winlogon-shell-compte`, fait par Vanguard non élevé dans le HKCU
+/// de la personne, même quand la fenêtre administrateur s'ouvre sous un autre compte).
 pub(super) fn juger_winlogon(
     shell: Option<&str>,
     userinit: Option<&str>,
     shell_du_compte: Option<&str>,
     racine: &str,
-    cle_du_compte: &str,
 ) -> Vec<Constat> {
     let mut constats = Vec::new();
     if let Some(v) = shell.filter(|v| !v.trim().is_empty() && !bureau_d_origine(v, racine)) {
@@ -633,10 +633,7 @@ pub(super) fn juger_winlogon(
                     "Retirer ce remplacement : votre compte reprend le bureau de Windows",
                     "Remove this replacement: your account goes back to Windows' desktop"
                 ),
-                &[format!(
-                    "Remove-ItemProperty -LiteralPath '{}' -Name Shell",
-                    ps_texte(cle_du_compte)
-                )],
+                &super::gestes::ligne_compte("winlogon-shell-compte").into_iter().collect::<Vec<_>>(),
             ),
         );
     }
@@ -664,7 +661,6 @@ pub(super) fn winlogon_de_l_ordinateur() -> Option<Vec<Constat>> {
         userinit.as_deref(),
         None,
         &racine_windows(),
-        "",
     ))
 }
 
@@ -679,18 +675,11 @@ fn winlogon() -> Vec<Constat> {
         .and_then(|k| k.get_value::<String, _>("Shell"))
         .ok()
         .filter(|v| !v.trim().is_empty());
-    // Le SID (whoami) seulement s'il y a quelque chose à corriger dans le compte.
-    let cle_du_compte = if du_compte.is_some() {
-        crate::reparer::hkcu_de_la_personne(crate::reparer::sid_de_la_personne().as_deref(), WINLOGON)
-    } else {
-        String::new()
-    };
     juger_winlogon(
         shell.as_deref(),
         userinit.as_deref(),
         du_compte.as_deref(),
         &racine_windows(),
-        &cle_du_compte,
     )
 }
 
@@ -794,7 +783,7 @@ fn sur_une_ligne(v: &str) -> String {
 
 /// Classe et nom d'une référence WMI (`\\.\root\subscription:CommandLineEventConsumer.Name="x"`), ce que
 /// PowerShell résolvait en objet ($_.Consumer.Name) ; « \" » et « \\ » y sont échappés.
-fn reference(chemin: &str) -> Option<(String, String)> {
+pub(super) fn reference(chemin: &str) -> Option<(String, String)> {
     let sans_espace = if chemin.starts_with("\\\\") {
         chemin.split_once(':')?.1
     } else {
@@ -896,6 +885,13 @@ fn abonnements() -> String {
     ps(SCRIPT_WMI).unwrap_or(sortie)
 }
 
+/// Dans le processus élevé : le bilan des abonnements, refait sur une lecture complète de cet instant par WMI (jamais
+/// PowerShell, jamais une lecture partielle), propose-t-il exactement `ligne` ?
+pub(super) fn abonnement_signale(ligne: &str) -> bool {
+    let (complet, sortie) = sortie_wmi();
+    complet && propose(&juger_wmi(Some(&sortie)), ligne)
+}
+
 /// Un consommateur qui lance quelque chose : sa classe, son nom, ce qu'il lance.
 struct Consommateur<'a> {
     classe: &'static str,
@@ -990,44 +986,33 @@ fn juger_wmi(sortie: Option<&str>) -> Vec<Constat> {
                 "Permanent WMI consumer “{nom}” that runs {lance}, tied to no event for now: a leftover, or a door waiting to be plugged back in."
             )
         };
-        // Les commandes visent les vrais noms ; un filtre n'est retiré que s'il ne sert à aucun autre consommateur.
-        let espace = "Get-CimInstance -Namespace root/subscription -ClassName";
-        let mut retirer = Vec::new();
-        if !filtres_lies.is_empty() {
-            retirer.push(format!(
-                "{espace} __FilterToConsumerBinding | Where-Object {{ $_.Consumer.Name -eq '{}' }} | Remove-CimInstance",
-                ps_texte(c.nom)
-            ));
-        }
-        retirer.push(format!(
-            "{espace} {} | Where-Object {{ $_.Name -eq '{}' }} | Remove-CimInstance",
-            c.classe,
-            ps_texte(c.nom)
-        ));
-        for filtre in &filtres_lies {
-            let partage = liens.iter().any(|(f, _, n)| f == filtre && *n != c.nom);
-            if !partage {
-                retirer.push(format!(
-                    "{espace} __EventFilter | Where-Object {{ $_.Name -eq '{}' }} | Remove-CimInstance",
-                    ps_texte(filtre)
-                ));
-            }
-        }
-        let retirer: Vec<&str> = retirer.iter().map(String::as_str).collect();
-        constats.push(
-            alerte(
-                CAT,
-                if filtres_lies.is_empty() { Niveau::Moyen } else { Niveau::Eleve },
-                message,
-            )
-            .manuel(
-                tr!(
-                    "Si vous ne l'avez pas posé vous-même : le retirer (commandes ci-dessous, en administrateur), puis lancer une analyse antivirus complète",
-                    "If you did not set it up yourself: remove it (commands below, as administrator), then run a full antivirus scan"
-                ),
-                &retirer,
-            ),
+        // Le processus élevé relit l'abonnement, le rejuge (`abonnement_signale`), note ses trois objets puis retire
+        // la liaison, le consumer et le filtre qui ne sert à aucune autre liaison (`wmi_ecriture`).
+        let constat = alerte(
+            CAT,
+            if filtres_lies.is_empty() {
+                Niveau::Moyen
+            } else {
+                Niveau::Eleve
+            },
+            message,
         );
+        constats.push(match gestes::ligne_wmi_abonnement_retirer(c.classe, c.nom) {
+            Some(ligne) => constat.corriger(
+                trf!(
+                    "Si vous ne l'avez pas posé vous-même : retirer l'abonnement « {nom} » (ses propriétés sont notées), puis lancer une analyse antivirus complète",
+                    "If you did not set it up yourself: remove the subscription “{nom}” (its properties are noted), then run a full antivirus scan"
+                ),
+                &[ligne],
+            ),
+            None => constat.manuel(
+                trf!(
+                    "Nom protégé ou piégé : si vous ne l'avez pas posé vous-même, retirer à la main (en administrateur, outil wbemtest, espace root\\subscription) le consommateur « {nom} », sa liaison __FilterToConsumerBinding et son __EventFilter s'il ne sert à rien d'autre, puis lancer une analyse antivirus complète",
+                    "Protected or booby-trapped name: if you did not set it up yourself, remove by hand (as administrator, wbemtest tool, root\\subscription namespace) the consumer “{nom}”, its __FilterToConsumerBinding and its __EventFilter if nothing else uses it, then run a full antivirus scan"
+                ),
+                &[],
+            ),
+        });
     }
     if constats.is_empty() {
         constats.push(ok(
@@ -1145,7 +1130,6 @@ pub(super) fn corpus_winlogon(e: &crate::modele::corpus::Entree) -> Vec<Constat>
         valeur("userinit").as_deref(),
         valeur("shell_du_compte").as_deref(),
         r"C:\Windows",
-        r"HKCU:\corpus",
     )
 }
 
@@ -1296,7 +1280,7 @@ mod tests {
             super::super::corrections::en_powershell(&[vec![ligne.clone()]])[0][0]
                 .contains(r"\x''y.exe' -Name Debugger")
         );
-        let c = juger_winlogon(Some(piege), None, Some(piege), r"C:\Windows", r"HKCU:\x");
+        let c = juger_winlogon(Some(piege), None, Some(piege), r"C:\Windows");
         assert_eq!(c.len(), 2);
         assert!(c.iter().all(|c| !crate::ui::contient_un_piege(&c.message)));
     }
@@ -1334,7 +1318,6 @@ mod tests {
             Some(r"C:\Windows\system32\userinit.exe,"),
             None,
             r,
-            "",
         );
         assert!(sain.len() == 1 && sain[0].probleme.is_none());
         assert!(bureau_d_origine(r"C:\Windows\Explorer.exe", r));
@@ -1348,7 +1331,6 @@ mod tests {
             Some(r"C:\Windows\system32\userinit.exe,C:\Users\Public\a.exe,"),
             Some(r"C:\Users\alice\AppData\Roaming\c.exe"),
             r,
-            r"Registry::HKEY_USERS\S-1-5-21-1-2-3-1001\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon",
         );
         assert_eq!(c.len(), 3);
         assert!(c.iter().all(|c| c.probleme == Some(Niveau::Eleve)));
@@ -1359,9 +1341,8 @@ mod tests {
         // Des identifiants de la table, sans paramètre : la racine de Userinit est lue par le processus élevé.
         assert_eq!(commandes[0], "vanguard:winlogon-shell");
         assert_eq!(commandes[1], "vanguard:winlogon-userinit");
-        assert!(
-            commandes[2].starts_with(r"Remove-ItemProperty -LiteralPath 'Registry::HKEY_USERS\S-1-5-21-1-2-3-1001")
-        );
+        // Celle du compte : un geste du compte, fait par Vanguard non élevé dans le HKCU de la personne.
+        assert_eq!(commandes[2], "vanguard:compte winlogon-shell-compte");
     }
 
     /// Le processus élevé rejuge par LA fonction du bilan (`juger_ifeo`), sur les mêmes lectures : il retire ce que le
@@ -1487,14 +1468,29 @@ mod tests {
         assert_eq!(c.len(), 2);
         assert_eq!(c[0].probleme, Some(Niveau::Eleve));
         assert!(c[0].message.contains("powershell -enc"), "{}", c[0].message);
+        // Une seule ligne du processus élevé, sans PowerShell : il relit, rejuge, note puis retire.
         let k = c[0].correctif.as_ref().unwrap();
-        assert!(!k.automatique);
-        assert_eq!(k.commandes.len(), 3);
-        assert!(k.commandes[1].contains("CommandLineEventConsumer | Where-Object { $_.Name -eq 'Mise a jour' }"));
-        assert!(k.commandes[2].contains("__EventFilter | Where-Object { $_.Name -eq 'Demarrage' }"));
-        // Un consommateur relié à rien : un reste, moins grave.
+        assert!(k.automatique);
+        let ligne = gestes::ligne_wmi_abonnement_retirer("CommandLineEventConsumer", "Mise a jour").unwrap();
+        assert_eq!(k.commandes, std::slice::from_ref(&ligne));
+        assert!(propose(&c, &ligne));
+        // Un consommateur relié à rien : un reste, moins grave, retiré de la même façon.
         assert_eq!(c[1].probleme, Some(Niveau::Moyen));
-        assert_eq!(c[1].correctif.as_ref().unwrap().commandes.len(), 1);
+        assert_eq!(
+            c[1].correctif.as_ref().unwrap().commandes,
+            [gestes::ligne_wmi_abonnement_retirer("ActiveScriptEventConsumer", "Reste").unwrap()]
+        );
+        // Un nom de Windows ou de Defender repris par un consumer qui lance une commande, ou un nom où la lecture a
+        // changé « | » : signalé, à retirer à la main, jamais une ligne.
+        for nom in ["SCM Event Log Consumer", "Windows Defender MAJ", "a¦b"] {
+            let sortie = format!("ADM|True\nADM_FIN\nFLT_FIN\nCMD|{nom}|C:\\x.exe|\nCMD_FIN\nSCR_FIN\nLIE_FIN");
+            let c = juger_wmi(Some(&sortie));
+            let k = c[0].correctif.as_ref().unwrap();
+            assert!(
+                c[0].probleme.is_some() && !k.automatique && k.commandes.is_empty(),
+                "{nom}"
+            );
+        }
         // Lecture refusée sans droits : non vérifié, avec la marche à suivre ; PowerShell absent : non vérifié.
         let refus = juger_wmi(Some("ADM|False\nADM_FIN\nFLT_FIN"));
         assert!(!refus[0].verifie && refus[0].message.contains(tr!("administrateur", "administrator")));

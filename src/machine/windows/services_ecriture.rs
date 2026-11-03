@@ -637,7 +637,8 @@ fn file_d_impression(windows: &std::path::Path) -> Result<Vec<String>, Echec> {
 }
 
 /// Fait un acte de la liste ; la précision (« déjà arrêté », « 12 retirés… ») part au parent avec le « ok ».
-pub(crate) fn faire(acte: &Acte) -> Resultat {
+/// `compte` : le SID de la personne (`eleve::faire`), que les actes des comptes et des racines du compte rejugent.
+pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
     // Les actes du pare-feu et des réseaux passent par COM (`pare_feu`), qui rend son propre résultat, relu.
     if let Some(fait) = super::pare_feu::faire_acte(acte) {
         return Resultat {
@@ -650,6 +651,52 @@ pub(crate) fn faire(acte: &Acte) -> Resultat {
                 fait.raison
             },
         };
+    }
+    // Les actes de Defender passent par WMI (`defender_ecriture`), relus avant et après.
+    if let Some(r) = super::defender_ecriture::faire_acte(acte) {
+        return r;
+    }
+    // Le hosts et le DNS des cartes (`reseau_ecriture`), rejugés, relus après l'écriture.
+    if let Some(r) = super::reseau_ecriture::faire_acte(acte) {
+        return r;
+    }
+    // Les comptes, les racines et les partages (netapi32, crypt32), rejugés par la fonction du bilan, relus après.
+    let personne = compte.as_deref().ok();
+    match acte {
+        Acte::CompteDesactiver(rid) => return super::comptes_ecriture::desactiver(*rid, personne),
+        Acte::CertificatRetirer(m, e) => return super::certificats_ecriture::retirer(*m, e, personne),
+        Acte::PartageRetirerAcces(a) => return super::partages_ecriture::retirer_acces(a),
+        _ => {}
+    }
+    // Les valeurs de démarrage de la machine, relues, rejugées par les fonctions du bilan, la donnée d'avant notée.
+    match acte {
+        Acte::RunRetirer(v) => return super::run_ecriture::retirer(v),
+        Acte::RunRemettre(v) => return super::run_ecriture::remettre(v),
+        // Tâches (planificateur, COM), fichiers du Démarrage commun (quarantaine), lancements désactivés comme le fait
+        // Windows (StartupApproved) : relus, rejugés par les fonctions du bilan, l'état d'avant noté.
+        Acte::TacheDesactiver(t) => return super::taches_ecriture::desactiver(t),
+        Acte::TacheReactiver(t) => return super::taches_ecriture::reactiver(t),
+        Acte::DemarrageQuarantaine(f) => return super::demarrage_ecriture::quarantaine(f),
+        Acte::DemarrageRemettre(f) => return super::demarrage_ecriture::remettre(f),
+        Acte::LancementDesactiver(l, v) => return super::lancement_ecriture::desactiver(l, v),
+        Acte::LancementReactiver(l) => return super::lancement_ecriture::reactiver(l),
+        // Abonnements WMI permanents (root\subscription, COM) : relus, rejugés par le bilan refait ici, les trois
+        // objets notés avant le retrait. La remise est refusée jusqu'à la passe 3.5d, la note gardée.
+        Acte::WmiAbonnementRetirer(w) => return super::wmi_ecriture::retirer(w),
+        Acte::WmiAbonnementRemettre(w) => return super::wmi_ecriture::remettre(w),
+        _ => {}
+    }
+    // Le reste de la persistance (lot 3.5) : la grammaire est là, le geste vient avec sa passe. Jamais un succès
+    // simulé : refusé, rien n'est changé.
+    if matches!(acte, Acte::ServiceRetirer(_)) {
+        return Resultat::echec(
+            None,
+            tr!(
+                "pas encore fait par Vanguard (lot 3.5, passe suivante) : rien n'est changé",
+                "not done by Vanguard yet (batch 3.5, next pass): nothing is changed"
+            )
+            .to_string(),
+        );
     }
     // Les actes du registre relisent la clé, la rejugent par la fonction du bilan et notent la valeur d'avant.
     match acte {
@@ -672,9 +719,33 @@ pub(crate) fn faire(acte: &Acte) -> Resultat {
         | Acte::ReseauCategorie(_)
         | Acte::IfeoDebugger(..)
         | Acte::IfeoSilencieux(..)
-        | Acte::ServiceGuillemets(_) => Err(Echec::refuse(
+        | Acte::ServiceGuillemets(_)
+        | Acte::Defender(..)
+        | Acte::DefenderAsr(..)
+        | Acte::DefenderExclusionRetirer(..)
+        | Acte::DefenderMenacesRetirer
+        | Acte::HostsEcrire(_)
+        | Acte::DnsAuto(_)
+        | Acte::DnsServeurs(_)
+        | Acte::CompteDesactiver(_)
+        | Acte::CertificatRetirer(..)
+        | Acte::PartageRetirerAcces(_)
+        | Acte::RunRetirer(_)
+        | Acte::RunRemettre(_)
+        | Acte::TacheDesactiver(_)
+        | Acte::TacheReactiver(_)
+        | Acte::DemarrageQuarantaine(_)
+        | Acte::DemarrageRemettre(_)
+        | Acte::LancementDesactiver(..)
+        | Acte::LancementReactiver(_)
+        | Acte::WmiAbonnementRetirer(_)
+        | Acte::WmiAbonnementRemettre(_)
+        | Acte::ServiceRetirer(_) => Err(Echec::refuse(
             CONTEXTE,
-            tr!("acte du pare-feu non reconnu", "firewall act not recognized"),
+            tr!(
+                "acte déjà rendu plus haut, non reconnu ici",
+                "act already handled above, not recognized here"
+            ),
         )),
     };
     match r {

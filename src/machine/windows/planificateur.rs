@@ -30,7 +30,7 @@ pub(super) fn taches() -> Option<Vec<String>> {
     wmi::com(crate::compte_rendu::Contexte::TachesPlanifiees, "ITaskService", lire)
 }
 
-fn hors_windows(dossier: &str) -> bool {
+pub(super) fn hors_windows(dossier: &str) -> bool {
     let bas = dossier.to_ascii_lowercase();
     bas != r"\microsoft" && !bas.starts_with(r"\microsoft\")
 }
@@ -71,26 +71,7 @@ fn lire() -> windows::core::Result<Vec<String>> {
                 if tache.State()? == TASK_STATE_DISABLED {
                     continue;
                 }
-                let nom = tache.Name()?;
-                let actions = tache.Definition()?.Actions()?;
-                let mut nombre = 0;
-                actions.Count(&raw mut nombre)?;
-                for j in 1..=nombre {
-                    let action = actions.get_Item(j)?;
-                    let mut genre = TASK_ACTION_TYPE::default();
-                    action.Type(&raw mut genre)?;
-                    if genre != TASK_ACTION_EXEC {
-                        continue;
-                    }
-                    let lancement: IExecAction = action.cast()?;
-                    let (mut programme, mut arguments) = (BSTR::new(), BSTR::new());
-                    lancement.Path(&raw mut programme)?;
-                    lancement.Arguments(&raw mut arguments)?;
-                    // Comme le `Where-Object { $_.Execute }` du script : une action sans programme ne lance rien.
-                    if !programme.is_empty() {
-                        lignes.push(format!("{prefixe}|{nom}|{programme}|{arguments}"));
-                    }
-                }
+                lignes.extend(lignes_tache(&tache, &prefixe)?);
             }
             let sous = dossier.GetFolders(0)?;
             for i in 1..=sous.Count()? {
@@ -100,6 +81,38 @@ fn lire() -> windows::core::Result<Vec<String>> {
     }
     if !dossier_de_windows {
         return Err(windows::core::Error::empty());
+    }
+    Ok(lignes)
+}
+
+/// Les lignes du bilan d'une tâche, une par action qui lance un programme : « dossier\|nom|programme|arguments »
+/// (`prefixe` : le dossier terminé par « \ »). Le bilan et le processus élevé, qui rejuge une tâche avant de la
+/// désactiver, passent tous deux par ici.
+pub(super) fn lignes_tache(tache: &IRegisteredTask, prefixe: &str) -> windows::core::Result<Vec<String>> {
+    let mut lignes = Vec::new();
+    // SAFETY: tâche vivante rendue par le planificateur, le temps de cet appel ; ses actions sont indexées de 1 à
+    // Count, lu avant.
+    unsafe {
+        let nom = tache.Name()?;
+        let actions = tache.Definition()?.Actions()?;
+        let mut nombre = 0;
+        actions.Count(&raw mut nombre)?;
+        for j in 1..=nombre {
+            let action = actions.get_Item(j)?;
+            let mut genre = TASK_ACTION_TYPE::default();
+            action.Type(&raw mut genre)?;
+            if genre != TASK_ACTION_EXEC {
+                continue;
+            }
+            let lancement: IExecAction = action.cast()?;
+            let (mut programme, mut arguments) = (BSTR::new(), BSTR::new());
+            lancement.Path(&raw mut programme)?;
+            lancement.Arguments(&raw mut arguments)?;
+            // Comme le `Where-Object { $_.Execute }` du script : une action sans programme ne lance rien.
+            if !programme.is_empty() {
+                lignes.push(format!("{prefixe}|{nom}|{programme}|{arguments}"));
+            }
+        }
     }
     Ok(lignes)
 }

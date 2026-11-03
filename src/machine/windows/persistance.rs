@@ -10,9 +10,15 @@ pub(super) fn lancement_suspect(exe: &str, args: &str) -> Option<&'static str> {
     let args = args.to_lowercase();
     let tout = format!("{exe} {args}");
     let temporaire = |t: &str| {
-        ["\\appdata\\local\\temp\\", "%temp%", "%tmp%", "\\windows\\temp\\"]
-            .iter()
-            .any(|d| t.contains(d))
+        [
+            "\\appdata\\local\\temp\\",
+            "%temp%",
+            "%tmp%",
+            "%localappdata%\\temp\\",
+            "\\windows\\temp\\",
+        ]
+        .iter()
+        .any(|d| t.contains(d))
     };
     let public = |t: &str| {
         ["\\users\\public\\", "\\$recycle.bin\\", "%public%"]
@@ -111,6 +117,13 @@ fn developper(texte: &str, variable: impl Fn(&str) -> Option<String>) -> String 
 /// Une valeur du registre en texte, comme Get-ItemProperty la rend : REG_EXPAND_SZ développée (sinon
 /// « %APPDATA%\… » échapperait au jugement), plusieurs chaînes jointes par une espace, nombres en décimal.
 fn valeur_texte(valeur: &winreg::RegValue) -> String {
+    valeur_texte_selon(valeur, &|n| std::env::var(n).ok())
+}
+
+/// `valeur_texte`, les variables de REG_EXPAND_SZ prises à `variable` : celles du compte pour le bilan, celles du
+/// système (`services::variable_systeme`) dans le processus élevé, qui hérite de l'environnement du compte qui l'élève
+/// (HKCU\Environment) : un ProgramFiles ou un windir posé là y ferait passer une valeur saine pour suspecte.
+fn valeur_texte_selon(valeur: &winreg::RegValue, variable: &dyn Fn(&str) -> Option<String>) -> String {
     use winreg::enums::RegType::{REG_DWORD, REG_EXPAND_SZ, REG_MULTI_SZ, REG_QWORD, REG_SZ};
     use winreg::types::FromRegValue;
     // Une chaîne que winreg refuse (UTF-16 mal formé) est lue avec pertes plutôt que rendue vide : une valeur Run
@@ -118,7 +131,7 @@ fn valeur_texte(valeur: &winreg::RegValue) -> String {
     let texte = || String::from_reg_value(valeur).unwrap_or_else(|_| utf16_zero(&valeur.bytes));
     match valeur.vtype {
         REG_SZ | REG_MULTI_SZ => texte().replace('\n', " "),
-        REG_EXPAND_SZ => developper(&texte(), |n| std::env::var(n).ok()),
+        REG_EXPAND_SZ => developper(&texte(), variable),
         REG_DWORD => u32::from_reg_value(valeur).map(|n| n.to_string()).unwrap_or_default(),
         REG_QWORD => u64::from_reg_value(valeur).map(|n| n.to_string()).unwrap_or_default(),
         _ => String::new(),
@@ -144,6 +157,17 @@ pub(crate) struct ValeurRun {
 /// clés Run de Vanguard : « Mon ordinateur est-il contrôlé ? » et « Logiciels espions » en avaient chacun une copie, qui
 /// jetait sans rien dire les valeurs que winreg ne rendait pas et ne lisait pas toutes les clés.
 pub(crate) fn lignes_run() -> (Vec<ValeurRun>, Vec<&'static str>) {
+    lignes_run_selon(&|n| std::env::var(n).ok())
+}
+
+/// `lignes_run` pour le processus élevé : les variables de REG_EXPAND_SZ prises au système seulement
+/// (`valeur_texte_selon`), jamais à l'environnement hérité du compte qui l'élève. Une variable propre au compte reste
+/// telle quelle (« %TEMP% ») : le jugement la reconnaît écrite ainsi, ou la valeur n'est pas retirée.
+pub(crate) fn lignes_run_systeme() -> (Vec<ValeurRun>, Vec<&'static str>) {
+    lignes_run_selon(&super::services::variable_systeme)
+}
+
+fn lignes_run_selon(variable: &dyn Fn(&str) -> Option<String>) -> (Vec<ValeurRun>, Vec<&'static str>) {
     use std::os::windows::ffi::OsStrExt;
     use winreg::RegKey;
     use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
@@ -182,34 +206,99 @@ pub(crate) fn lignes_run() -> (Vec<ValeurRun>, Vec<&'static str>) {
                 cle: nom_cle,
                 nom: nom.to_string_lossy().into_owned(),
                 mots,
-                valeur: valeur_texte(&valeur),
+                valeur: valeur_texte_selon(&valeur, variable),
             });
         }
     }
     (lignes, non_lues)
 }
 
-/// La correction d'une valeur Run : par le registre de .NET, qui vise le nom exact. Le -Name de Remove-ItemProperty
-/// accepte des jokers, et le nom est choisi par le programme qui se fait relancer : « [svc] » y visait une valeur
-/// « s », « v » ou « c » (la correction ratait), « * » retirait toutes les valeurs de la clé. Un nom mal formé est
-/// réécrit mot par mot : sa version lue avec pertes ne désignerait aucune valeur.
+/// La correction d'une valeur Run. Sous HKCU : un geste du compte (`run-retirer`), fait par Vanguard non élevé dans
+/// le HKCU de la personne (la fenêtre administrateur peut s'ouvrir sous un autre compte, dont le HKCU n'est pas le
+/// sien), le nom exact porté mot par mot, demi-caractère isolé compris, jusqu'à la longueur que le registre admet.
+/// Sous HKLM : un acte du processus élevé (`run-retirer`), sans PowerShell, qui relit la valeur, la rejuge par
+/// `run_signale`, note sa donnée exacte et la retire au nom exact (jamais de joker : le -Name de Remove-ItemProperty
+/// en acceptait, « [svc] » y visait « s », « v » ou « c », « * » toutes les valeurs). Le nom est porté mot par mot,
+/// demi-caractère isolé compris : sa version lue avec pertes ne désignerait aucune valeur. Un nom plus long que ce que
+/// tient une ligne du tube reste signalé, sans correction.
 fn retrait_run(v: &ValeurRun) -> Option<String> {
-    let ps_texte = crate::commande::ps_texte;
-    let (ruche, chemin) = v.cle.split_once(r":\")?;
-    let ruche = if ruche == "HKCU" { "CurrentUser" } else { "LocalMachine" };
-    let nom = match &v.mots {
-        Some(mots) => {
-            let codes: Vec<String> = mots.iter().map(|m| format!("0x{m:04X}")).collect();
-            format!("(-join [char[]]({}))", codes.join(","))
-        }
-        None => format!("'{}'", ps_texte(&v.nom)),
+    let mots: Vec<u16> = match &v.mots {
+        Some(mots) => mots.clone(),
+        None => v.nom.encode_utf16().collect(),
     };
-    // La vue 64 bits, comme la lecture : sinon une fenêtre PowerShell 32 bits viserait WOW6432Node.
-    Some(format!(
-        "$k = [Microsoft.Win32.RegistryKey]::OpenBaseKey('{ruche}', 'Registry64').OpenSubKey('{}', $true); \
-         $k.DeleteValue({nom}); $k.Close()",
-        ps_texte(chemin)
-    ))
+    let (ruche, _) = v.cle.split_once(r":\")?;
+    if ruche == "HKCU" {
+        let runonce = if v.cle == CLES_RUN[0] {
+            false
+        } else if v.cle == CLES_RUN[1] {
+            true
+        } else {
+            return None;
+        };
+        return super::gestes::ligne_run_retirer(runonce, &mots);
+    }
+    super::gestes::ligne_run_retirer_machine(v.cle, &mots)
+}
+
+/// Le texte d'une valeur Run relue par le processus élevé, comme le bilan la lit, les variables prises au système
+/// (`valeur_texte_selon`).
+pub(super) fn texte_valeur(valeur: &winreg::RegValue) -> String {
+    valeur_texte_selon(valeur, &super::services::variable_systeme)
+}
+
+/// Dans le processus élevé : le bilan des lancements automatiques, refait sur cette seule valeur relue, propose-t-il
+/// exactement `ligne` ? La même fonction que le bilan (`juger_persistance`), jamais une copie.
+pub(super) fn run_signale(cle: super::gestes::CleRun, nom: &[u16], valeur: &winreg::RegValue, ligne: &str) -> bool {
+    let Some(&nom_cle) = CLES_RUN
+        .iter()
+        .find(|c| super::gestes::CleRun::depuis_ps(c) == Some(cle))
+    else {
+        return false;
+    };
+    let v = ValeurRun {
+        cle: nom_cle,
+        nom: String::from_utf16_lossy(nom),
+        mots: String::from_utf16(nom).is_err().then(|| nom.to_vec()),
+        valeur: texte_valeur(valeur),
+    };
+    propose(&juger_persistance(&[], &[v], &[]), ligne)
+}
+
+/// Une des corrections de `constats` est-elle exactement `ligne` ?
+fn propose(constats: &[Constat], ligne: &str) -> bool {
+    constats
+        .iter()
+        .filter_map(|c| c.correctif.as_ref())
+        .any(|k| k.commandes.iter().any(|l| l == ligne))
+}
+
+/// Dans le processus élevé : le bilan, refait sur les lignes d'une seule tâche relue (`planificateur::lignes_tache`,
+/// la construction même du bilan), propose-t-il exactement `ligne` ?
+pub(super) fn tache_signalee(lignes: &[String], ligne: &str) -> bool {
+    let lignes: Vec<&str> = lignes.iter().map(String::as_str).collect();
+    propose(&juger_persistance(&lignes, &[], &[]), ligne)
+}
+
+/// Dans le processus élevé : le bilan, refait sur ce seul fichier relu du dossier Démarrage commun (`commun`, lu par
+/// le processus élevé lui-même), propose-t-il exactement `ligne` ? `cible` vient de `cible_demarrage`.
+pub(super) fn demarrage_signale(fichier: &str, cible: &str, commun: &str, ligne: &str) -> bool {
+    let d = format!("{fichier}|{cible}");
+    propose(&juger_persistance_selon(&[], &[], &[&d], Some(commun)), ligne)
+}
+
+/// Ce que lance un fichier du dossier Démarrage, comme le bilan l'écrit : la cible et les arguments d'un raccourci
+/// (lu au plus sur un mégaoctet, la taille d'un raccourci), ou le fichier lui-même. `None` : raccourci illisible sans
+/// COM.
+pub(super) fn cible_demarrage(plein: &str, octets: &[u8]) -> Option<String> {
+    let raccourci = std::path::Path::new(plein)
+        .extension()
+        .is_some_and(|x| x.eq_ignore_ascii_case("lnk"));
+    if raccourci {
+        let (cible, arguments) = cible_raccourci(octets.get(..1 << 20).unwrap_or(octets))?;
+        Some(format!("\"{cible}\" {arguments}"))
+    } else {
+        Some(format!("\"{plein}\""))
+    }
 }
 
 /// Le texte d'un tampon UTF-16 (petit-boutiste) jusqu'au premier zéro.
@@ -428,8 +517,8 @@ fn nom_element(element: &[u8]) -> Option<String> {
 }
 
 /// Les dossiers Démarrage de la personne puis de tous, comme [Environment]::GetFolderPath les donne. Un chemin vide
-/// ou relatif est écarté : il lirait le dossier courant (la clé, avec ses programmes).
-fn dossiers_demarrage() -> Vec<std::path::PathBuf> {
+/// ou relatif est écarté (`None`) : il lirait le dossier courant (la clé, avec ses programmes).
+fn dossiers_demarrage() -> [Option<std::path::PathBuf>; 2] {
     use winreg::RegKey;
     use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
     const DOSSIERS: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders";
@@ -454,10 +543,7 @@ fn dossiers_demarrage() -> Vec<std::path::PathBuf> {
             r"%ProgramData%\Microsoft\Windows\Start Menu\Programs\Startup",
         ),
     ]
-    .into_iter()
-    .map(std::path::PathBuf::from)
-    .filter(|d| d.is_absolute())
-    .collect()
+    .map(|d| Some(std::path::PathBuf::from(d)).filter(|d| d.is_absolute()))
 }
 
 /// La section DEM : `None` si un raccourci ne se lit pas sans COM, ou si un dossier existant ne se lit pas (PowerShell
@@ -465,7 +551,7 @@ fn dossiers_demarrage() -> Vec<std::path::PathBuf> {
 fn lignes_demarrage() -> Option<Vec<String>> {
     use std::io::Read;
     let mut lignes = Vec::new();
-    for dossier in dossiers_demarrage() {
+    for dossier in dossiers_demarrage().into_iter().flatten() {
         let entrees = match std::fs::read_dir(&dossier) {
             Ok(entrees) => entrees,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -478,19 +564,16 @@ fn lignes_demarrage() -> Option<Vec<String>> {
                 continue;
             }
             let plein = chemin.to_string_lossy();
-            let cible = if chemin.extension().is_some_and(|x| x.eq_ignore_ascii_case("lnk")) {
+            let mut octets = Vec::new();
+            if chemin.extension().is_some_and(|x| x.eq_ignore_ascii_case("lnk")) {
                 // Un raccourci tient en quelques kilo-octets : lu au plus sur un mégaoctet.
-                let mut octets = Vec::new();
                 std::fs::File::open(&chemin)
                     .ok()?
                     .take(1 << 20)
                     .read_to_end(&mut octets)
                     .ok()?;
-                let (cible, arguments) = cible_raccourci(&octets)?;
-                format!("\"{cible}\" {arguments}")
-            } else {
-                format!("\"{plein}\"")
-            };
+            }
+            let cible = cible_demarrage(&plein, &octets)?;
             lignes.push(format!("{plein}|{cible}"));
         }
     }
@@ -546,7 +629,14 @@ pub(super) fn persistance() -> Vec<Constat> {
             "startup keys not fully read: {cles}"
         ));
     }
-    let constats = juger_persistance(&taches.unwrap_or_default(), &run, &demarrage.unwrap_or_default());
+    let [_, commun] = dossiers_demarrage();
+    let commun = commun.map(|c| c.to_string_lossy().into_owned());
+    let constats = juger_persistance_selon(
+        &taches.unwrap_or_default(),
+        &run,
+        &demarrage.unwrap_or_default(),
+        commun.as_deref(),
+    );
     if non_lus.is_empty() {
         return constats;
     }
@@ -589,7 +679,27 @@ fn info_fenetre_cachee(ou: &str, commande: &str) -> Constat {
     )
 }
 
+/// Le bilan des lancements automatiques, sans dossier Démarrage commun connu (aucun fichier n'y est mis en
+/// quarantaine).
 fn juger_persistance(taches: &[&str], run: &[ValeurRun], demarrage: &[&str]) -> Vec<Constat> {
+    juger_persistance_selon(taches, run, demarrage, None)
+}
+
+/// Le fichier est-il directement dans le dossier `commun` (casse ignorée, comme Windows) ?
+fn dans_dossier(fichier: &str, commun: &str) -> bool {
+    let parent = fichier.rsplit_once('\\').map_or("", |(p, _)| p);
+    let commun = commun.trim_end_matches('\\');
+    !commun.is_empty() && parent.to_lowercase() == commun.to_lowercase()
+}
+
+/// `commun` : le dossier Démarrage de tous. Un de ses fichiers suspects est mis en quarantaine par le processus élevé
+/// (`demarrage-quarantaine`) ; un fichier du dossier de la personne garde sa correction d'avant.
+fn juger_persistance_selon(
+    taches: &[&str],
+    run: &[ValeurRun],
+    demarrage: &[&str],
+    commun: Option<&str>,
+) -> Vec<Constat> {
     use crate::modele::Objet;
     let ps_texte = crate::commande::ps_texte;
     // Noms, chemins et commandes sont choisis par le programme qui se fait relancer : les corrections visent le vrai
@@ -614,28 +724,27 @@ fn juger_persistance(taches: &[&str], run: &[ValeurRun], demarrage: &[&str]) -> 
                 montre(exe_brut),
                 montre(args_brut),
             );
-            constats.push(
-                alerte(
-                    "Persistance",
-                    Niveau::Eleve,
-                    trf!(
-                        "Tâche planifiée suspecte « {chemin}{nom} » : {raison} ({exe} {args}).",
-                        "Suspicious scheduled task “{chemin}{nom}”: {raison} ({exe} {args})."
-                    ),
-                )
-                .avec_objet(objet)
-                .corriger(
+            let constat = alerte(
+                "Persistance",
+                Niveau::Eleve,
+                trf!(
+                    "Tâche planifiée suspecte « {chemin}{nom} » : {raison} ({exe} {args}).",
+                    "Suspicious scheduled task “{chemin}{nom}”: {raison} ({exe} {args})."
+                ),
+            )
+            .avec_objet(objet);
+            // Désactivée par le processus élevé (planificateur, rejugée) ; un chemin hors de la grammaire (nom avec
+            // un caractère de contrôle…) reste signalé, à désactiver à la main.
+            constats.push(match super::gestes::ligne_tache_desactiver(chemin_brut, nom_brut) {
+                Some(ligne) => constat.corriger(
                     trf!(
                         "Désactiver la tâche « {nom} » (réactivable)",
                         "Disable the “{nom}” task (can be turned back on)"
                     ),
-                    &[&format!(
-                        "Disable-ScheduledTask -TaskPath '{}' -TaskName '{}' | Out-Null",
-                        ps_texte(chemin_brut),
-                        ps_texte(nom_brut)
-                    )],
+                    &[&ligne],
                 ),
-            );
+                None => constat,
+            });
         } else if fenetre_cachee(exe_brut, args_brut) {
             let lieu = trf!(
                 "La tâche planifiée « {}{} »",
@@ -694,21 +803,34 @@ fn juger_persistance(taches: &[&str], run: &[ValeurRun], demarrage: &[&str]) -> 
         );
         if let Some(raison) = lancement_suspect(&exe, &args) {
             let (fichier, cible) = (montre(fichier_brut), montre(cible_brute));
-            constats.push(
-                alerte(
-                    "Persistance",
-                    Niveau::Eleve,
-                    trf!(
-                        "Raccourci suspect dans le dossier Démarrage « {fichier} » : {raison} ({cible}).",
-                        "Suspicious shortcut in the Startup folder “{fichier}”: {raison} ({cible})."
+            let constat = alerte(
+                "Persistance",
+                Niveau::Eleve,
+                trf!(
+                    "Raccourci suspect dans le dossier Démarrage « {fichier} » : {raison} ({cible}).",
+                    "Suspicious shortcut in the Startup folder “{fichier}”: {raison} ({cible})."
+                ),
+            )
+            .avec_objet(objet);
+            // Le dossier de tous : mis en quarantaine par le processus élevé, remis depuis elle. Celui de la personne
+            // garde sa correction (décision du lot 3.5).
+            constats.push(if commun.is_some_and(|c| dans_dossier(fichier_brut, c)) {
+                match super::gestes::ligne_demarrage_quarantaine(fichier_brut) {
+                    Some(ligne) => constat.corriger(
+                        trf!(
+                            "Mettre « {fichier} » en quarantaine (remis depuis elle si besoin)",
+                            "Quarantine “{fichier}” (can be put back from it)"
+                        ),
+                        &[&ligne],
                     ),
-                )
-                .avec_objet(objet)
-                .corriger(
+                    None => constat,
+                }
+            } else {
+                constat.corriger(
                     trf!("Supprimer « {fichier} »", "Delete “{fichier}”"),
                     &[&format!("Remove-Item -LiteralPath '{}'", ps_texte(fichier_brut))],
-                ),
-            );
+                )
+            });
         } else if fenetre_cachee(&exe, &args) {
             let lieu = trf!(
                 "Le raccourci du dossier Démarrage « {} »",
@@ -978,7 +1100,7 @@ mod tests {
     fn lectures_natives_sous_wine() {
         let _ = lignes_run();
         let _ = lignes_demarrage();
-        assert!(dossiers_demarrage().iter().all(|d| d.is_absolute()));
+        assert!(dossiers_demarrage().iter().flatten().all(|d| d.is_absolute()));
     }
 
     /// Sous Wine, ni le planificateur (GetTasks n'y est qu'une ébauche) ni PowerShell ne répondent : les tâches sont
@@ -1041,37 +1163,134 @@ mod tests {
         }
     }
 
+    /// Le rejugement du processus élevé : une valeur suspecte de chacune des trois clés de la machine est signalée par
+    /// la ligne même que le bilan propose (clé et nom compris), une valeur saine, une autre ligne ou une autre clé
+    /// jamais. Une variable propre au compte n'est pas développée par l'environnement hérité : laissée telle quelle,
+    /// elle reste jugée.
+    #[test]
+    fn run_signale_rejuge_comme_le_bilan() {
+        use super::super::gestes::{CleRun, ligne_run_retirer_machine};
+        use std::borrow::Cow;
+        use winreg::enums::RegType::{REG_EXPAND_SZ, REG_SZ};
+        let valeur = |vtype, s: &str| winreg::RegValue {
+            bytes: Cow::Owned(format!("{s}\0").encode_utf16().flat_map(u16::to_le_bytes).collect()),
+            vtype,
+        };
+        let nom: Vec<u16> = "Agent".encode_utf16().collect();
+        let suspecte = valeur(REG_SZ, r"C:\Users\Public\x.exe");
+        for cle in CleRun::TOUTES {
+            let ps = format!(r"HKLM:\{}", cle.chemin());
+            let ligne = ligne_run_retirer_machine(&ps, &nom).unwrap();
+            assert!(run_signale(cle, &nom, &suspecte, &ligne), "{ligne}");
+            assert!(!run_signale(
+                cle,
+                &nom,
+                &valeur(REG_SZ, r"C:\Program Files\Sain\sain.exe"),
+                &ligne
+            ));
+            // Un autre nom, une autre clé : pas la ligne proposée.
+            let autre: Vec<u16> = "Autre".encode_utf16().collect();
+            assert!(!run_signale(cle, &autre, &suspecte, &ligne));
+            for ailleurs in CleRun::TOUTES.into_iter().filter(|c| *c != cle) {
+                assert!(!run_signale(ailleurs, &nom, &suspecte, &ligne), "{ligne}");
+            }
+            // %TEMP% pris au système (C:\Windows\Temp) ou laissé tel quel, %LOCALAPPDATA% (propre au compte) laissé
+            // tel quel : un dossier temporaire dans tous les cas.
+            assert!(run_signale(cle, &nom, &valeur(REG_EXPAND_SZ, r"%TEMP%\x.exe"), &ligne));
+            assert!(run_signale(
+                cle,
+                &nom,
+                &valeur(REG_EXPAND_SZ, r"%LOCALAPPDATA%\Temp\x.exe"),
+                &ligne
+            ));
+        }
+    }
+
     /// Le nom d'une valeur Run est choisi par le programme qui se fait relancer : la correction vise ce nom exact,
     /// jamais un motif (« * » retirait toutes les valeurs de la clé, « [svc] » n'en retirait aucune).
     #[test]
     fn retrait_run_sans_joker() {
+        use super::super::gestes::{Acte, CleRun, GesteCompte, analyser_acte, analyser_compte};
         let cle = r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Run";
-        for nom in ["*", "[svc]", "up?date", "l'agent"] {
+        // Sous HKCU : un geste du compte, qui porte le nom exact (aucun joker possible), fait par Vanguard non élevé.
+        for nom in ["*", "[svc]", "up?date", "l'agent", ""] {
             let v = valeur_run(&format!(r"{cle}|{nom}|C:\Users\Public\x.exe"));
             let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
             let commande = &c[0].correctif.as_ref().unwrap().commandes[0];
-            assert!(!commande.contains("Remove-ItemProperty"), "{commande}");
+            let attendu: Vec<u16> = nom.encode_utf16().collect();
             assert!(
-                commande.contains(&format!("DeleteValue('{}')", crate::commande::ps_texte(nom))),
+                matches!(analyser_compte(commande), Some(GesteCompte::RetirerRun { runonce: false, nom: n }) if n == attendu),
                 "{commande}"
             );
-            assert!(commande.contains(
-                r"OpenBaseKey('CurrentUser', 'Registry64').OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run', $true)"
-            ));
         }
-        // Valeur par défaut, dans la clé de la machine : nom vide.
-        let v = valeur_run(r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run||C:\Users\Public\x.exe");
+        let v = valeur_run(r"HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce|a|C:\Users\Public\x.exe");
         let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
-        let commande = &c[0].correctif.as_ref().unwrap().commandes[0];
-        assert!(commande.contains("OpenBaseKey('LocalMachine'") && commande.contains("DeleteValue('')"));
-        // Un nom au demi-caractère de substitution isolé est jugé (montré avec pertes), et la correction le réécrit
-        // mot par mot.
+        assert!(matches!(
+            analyser_compte(&c[0].correctif.as_ref().unwrap().commandes[0]),
+            Some(GesteCompte::RetirerRun { runonce: true, .. })
+        ));
+        // Sous HKLM : un acte du processus élevé, sans PowerShell, au nom exact ; valeur par défaut, nom vide.
+        for (cle, attendue) in [
+            (r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run", CleRun::Run),
+            (
+                r"HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce",
+                CleRun::RunOnce,
+            ),
+            (
+                r"HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+                CleRun::Run32,
+            ),
+        ] {
+            for nom in ["*", "[svc]", "l'agent", ""] {
+                let v = valeur_run(&format!(r"{cle}|{nom}|C:\Users\Public\x.exe"));
+                let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
+                let commande = &c[0].correctif.as_ref().unwrap().commandes[0];
+                let n: Vec<u16> = nom.encode_utf16().collect();
+                assert!(
+                    matches!(analyser_acte(commande), Some(Acte::RunRetirer(r)) if r.cle == attendue && r.nom.unites() == n.as_slice()),
+                    "{commande}"
+                );
+            }
+        }
+        // Un nom au demi-caractère de substitution isolé est jugé (montré avec pertes), et la correction le porte mot
+        // par mot : dans la ligne du compte sous HKCU, dans le script sous HKLM.
         let mut v = valeur_run(&format!(r"{cle}|a|C:\Users\Public\x.exe"));
         v.nom = "a\u{FFFD}".to_string();
         v.mots = Some(vec![0x61, 0xD800]);
         let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
         assert_eq!(c[0].probleme, Some(Niveau::Eleve));
-        assert!(c[0].correctif.as_ref().unwrap().commandes[0].contains("DeleteValue((-join [char[]](0x0061,0xD800)))"));
+        assert!(matches!(
+            analyser_compte(&c[0].correctif.as_ref().unwrap().commandes[0]),
+            Some(GesteCompte::RetirerRun { nom, .. }) if nom == [0x61, 0xD800]
+        ));
+        let mut v = valeur_run(r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run|a|C:\Users\Public\x.exe");
+        v.nom = "a\u{FFFD}".to_string();
+        v.mots = Some(vec![0x61, 0xD800]);
+        let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
+        assert!(matches!(
+            analyser_acte(&c[0].correctif.as_ref().unwrap().commandes[0]),
+            Some(Acte::RunRetirer(r)) if r.nom.unites() == [0x61, 0xD800]
+        ));
+        // Sous HKLM, au-delà de ce que tient une ligne du tube : jugé, sans correction.
+        let v = valeur_run(&format!(
+            r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run|{}|C:\Users\Public\x.exe",
+            "n".repeat(super::super::gestes::RUN_MACHINE_NOM_MAX + 1)
+        ));
+        let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
+        assert_eq!(c[0].probleme, Some(Niveau::Eleve));
+        assert!(c[0].correctif.is_none());
+        // Un nom très long (jusqu'à la limite du registre) a son retrait ; au-delà, aucun nom réel : jugé, sans
+        // correction (jamais un autre nom visé).
+        let v = valeur_run(&format!(r"{cle}|{}|C:\Users\Public\x.exe", "n".repeat(16_383)));
+        let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
+        assert!(matches!(
+            super::super::gestes::analyser_compte(&c[0].correctif.as_ref().unwrap().commandes[0]),
+            Some(GesteCompte::RetirerRun { nom, .. }) if nom.len() == 16_383
+        ));
+        let v = valeur_run(&format!(r"{cle}|{}|C:\Users\Public\x.exe", "n".repeat(16_384)));
+        let c = juger_persistance(&[], std::slice::from_ref(&v), &[]);
+        assert_eq!(c[0].probleme, Some(Niveau::Eleve));
+        assert!(c[0].correctif.is_none());
     }
 
     /// Sous Windows (et Wine, dont le registre marche), un nom de valeur Run en UTF-16 mal formé est lu, pas sauté.
@@ -1095,6 +1314,20 @@ mod tests {
     }
 
     #[test]
+    fn tache_signalee_seulement_la_tache_jugee() {
+        let ligne = super::super::gestes::ligne_tache_desactiver("\\", "Mise a jour").unwrap();
+        let suspecte = vec![r"\|Mise a jour|C:\Users\alice\AppData\Local\Temp\a.exe|".to_string()];
+        assert!(tache_signalee(&suspecte, &ligne));
+        // La même tâche relue propre : plus signalée, la ligne est refusée.
+        let propre = vec![r"\|Mise a jour|C:\Program Files\Exemple\maj.exe|".to_string()];
+        assert!(!tache_signalee(&propre, &ligne));
+        // Une autre tâche suspecte ne fait pas passer la ligne d'une tâche différente.
+        let autre = vec![r"\|Autre|C:\Users\alice\AppData\Local\Temp\a.exe|".to_string()];
+        assert!(!tache_signalee(&autre, &ligne));
+        assert!(!tache_signalee(&[], &ligne));
+    }
+
+    #[test]
     fn persistance_jugee() {
         let taches = [
             r"\|Mise a jour|C:\Users\alice\AppData\Local\Temp\a.exe|",
@@ -1103,9 +1336,9 @@ mod tests {
         let c = juger_persistance(&taches, &[], &[]);
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].probleme, Some(Niveau::Eleve));
-        assert!(
-            c[0].correctif.as_ref().unwrap().commandes[0]
-                .contains("Disable-ScheduledTask -TaskPath '\\' -TaskName 'Mise a jour'")
+        assert_eq!(
+            c[0].correctif.as_ref().unwrap().commandes,
+            [super::super::gestes::ligne_tache_desactiver("\\", "Mise a jour").unwrap()]
         );
         let run = [valeur_run(
             r#"HKCU:\Software\Microsoft\Windows\CurrentVersion\Run|Steam|"C:\Program Files (x86)\Steam\steam.exe" -silent"#,
@@ -1128,12 +1361,65 @@ mod tests {
         );
         let c = juger_persistance(&taches, &run, &dem);
         assert_eq!(c.len(), 3);
-        for c in &c {
+        // La tâche au nom piégé n'entre pas dans la grammaire : signalée, montrée inoffensive, sans correction.
+        assert!(c[0].correctif.is_none() && !crate::ui::contient_un_piege(&c[0].message));
+        for c in &c[1..] {
             let k = c.correctif.as_ref().unwrap();
             assert!(!crate::ui::contient_un_piege(&c.message), "{}", c.message);
             assert!(!crate::ui::contient_un_piege(&k.action), "{}", k.action);
-            assert!(k.commandes[0].contains(piege), "{}", k.commandes[0]);
+            // La valeur Run du compte : un geste du compte, qui porte le nom exact en hexadécimal.
+            let vise = match super::super::gestes::analyser_compte(&k.commandes[0]) {
+                Some(super::super::gestes::GesteCompte::RetirerRun { nom, .. }) => String::from_utf16(&nom).unwrap(),
+                _ => k.commandes[0].clone(),
+            };
+            assert!(vise.contains(piege), "{}", k.commandes[0]);
         }
+    }
+
+    #[test]
+    fn demarrage_commun_mis_en_quarantaine() {
+        use super::super::gestes::ligne_demarrage_quarantaine;
+        let commun = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp";
+        let fichier = format!(r"{commun}\Maj.lnk");
+        let cible = r#""C:\Users\Public\c.exe" "#;
+        let d = format!("{fichier}|{cible}");
+        let ligne = ligne_demarrage_quarantaine(&fichier).unwrap();
+        // Dans le dossier de tous (casse ignorée, « \ » final ou non) : la quarantaine par le processus élevé.
+        for c in [commun.to_string(), commun.to_uppercase(), format!(r"{commun}\")] {
+            let k = juger_persistance_selon(&[], &[], &[&d], Some(&c));
+            assert_eq!(
+                k[0].correctif.as_ref().unwrap().commandes,
+                std::slice::from_ref(&ligne),
+                "{c}"
+            );
+        }
+        assert!(demarrage_signale(&fichier, cible, commun, &ligne));
+        // Dossier de la personne, sous-dossier du commun, commun inconnu : la correction d'avant, à la main.
+        let perso = r"C:\Users\alice\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\Maj.lnk";
+        for (f, c) in [
+            (perso.to_string(), Some(commun)),
+            (format!(r"{commun}\sous\Maj.lnk"), Some(commun)),
+            (fichier.clone(), None),
+            (fichier.clone(), Some("")),
+        ] {
+            let d = format!("{f}|{cible}");
+            let k = juger_persistance_selon(&[], &[], &[&d], c);
+            assert!(
+                k[0].correctif.as_ref().unwrap().commandes[0].starts_with("Remove-Item"),
+                "{f}"
+            );
+        }
+        // L'enfant rejuge : une autre ligne, une cible saine, un fichier hors du commun ne sont pas proposés.
+        let autre = ligne_demarrage_quarantaine(&format!(r"{commun}\Autre.lnk")).unwrap();
+        assert!(!demarrage_signale(&fichier, cible, commun, &autre));
+        assert!(!demarrage_signale(
+            &fichier,
+            r#""C:\Program Files\Steam\steam.exe" -silent"#,
+            commun,
+            &ligne
+        ));
+        assert!(!demarrage_signale(perso, cible, commun, &ligne));
+        assert!(!demarrage_signale(&fichier, cible, r"C:\Autre", &ligne));
     }
 
     /// T4 : un lancement suspect se reconnaît à sa clé de registre et à sa commande, dans les deux langues.

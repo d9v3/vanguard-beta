@@ -16,6 +16,8 @@ mod macos;
 mod windows;
 
 pub(crate) use annulables::Geste;
+#[cfg(windows)]
+pub(crate) use demarrage::a_garder;
 pub use demarrage::menu as programmes_au_demarrage;
 pub use demarrage::{
     remettre as remettre_au_demarrage, retirables as demarrage_retirables, retirer as retirer_du_demarrage,

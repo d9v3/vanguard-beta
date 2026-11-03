@@ -312,16 +312,9 @@ pub(super) fn juger_ntlm(niveau: Option<u32>) -> Option<Constat> {
     )
 }
 
-/// Versions d'Office qui gardent leurs réglages dans le registre (2010, 2013, 2016 à 365) et programmes à macros.
-const OFFICE_VERSIONS: [&str; 3] = ["16.0", "15.0", "14.0"];
-const OFFICE_PROGRAMMES: [(&str, &str); 6] = [
-    ("word", "Word"),
-    ("excel", "Excel"),
-    ("powerpoint", "PowerPoint"),
-    ("access", "Access"),
-    ("publisher", "Publisher"),
-    ("visio", "Visio"),
-];
+// Versions d'Office qui gardent leurs réglages dans le registre (2010, 2013, 2016 à 365) et programmes à macros :
+// ceux des gestes du compte, que la remise relit (`gestes::ligne_macros`).
+use super::gestes::{OFFICE_PROGRAMMES, OFFICE_VERSIONS};
 
 /// Les programmes d'Office qui lancent toutes les macros sans demander (VBAWarnings à 1 ; la stratégie de groupe
 /// passe avant le réglage) : (clé du programme, nom, version, imposé par une stratégie). `lire` donne VBAWarnings
@@ -343,9 +336,10 @@ pub(super) fn macros_ouvertes(
 }
 
 /// Macros toutes permises : un document reçu par courriel installe un programme malveillant dès son ouverture.
-/// Remises à « désactivées avec notification » (2, le réglage d'Office) pour ce compte ; imposées par une stratégie
-/// de groupe, c'est à l'organisation de les changer.
-pub(super) fn juger_macros(ouvertes: &[(&str, &str, &str, bool)], sid: Option<&str>) -> Option<Constat> {
+/// Remises à « désactivées avec notification » (2, le réglage d'Office) pour ce compte, par un geste du compte (fait
+/// par Vanguard non élevé, dans le HKCU de la personne, même quand la fenêtre administrateur s'ouvre sous un autre
+/// compte) ; imposées par une stratégie de groupe, c'est à l'organisation de les changer.
+pub(super) fn juger_macros(ouvertes: &[(&str, &str, &str, bool)]) -> Option<Constat> {
     if ouvertes.is_empty() {
         return None;
     }
@@ -371,13 +365,7 @@ pub(super) fn juger_macros(ouvertes: &[(&str, &str, &str, bool)], sid: Option<&s
     }
     let commandes: Vec<String> = ouvertes
         .iter()
-        .map(|(cle, _, version, _)| {
-            let chemin = crate::reparer::hkcu_de_la_personne(
-                sid,
-                &format!(r"Software\Microsoft\Office\{version}\{cle}\Security"),
-            );
-            format!("Set-ItemProperty -LiteralPath '{chemin}' -Name VBAWarnings -Value 2 -Type DWord")
-        })
+        .filter_map(|(cle, _, version, _)| super::gestes::ligne_macros(version, cle))
         .collect();
     Some(constat.corriger(
         tr!(
@@ -713,7 +701,7 @@ pub(super) fn juger_signature_smb(client_exige: Option<u32>) -> Option<Constat> 
 
 /// Connexion « invité » aux partages sans mot de passe (AllowInsecureGuestAuth à 1, la stratégie de groupe passant
 /// avant le réglage) : un faux partage du réseau peut se faire passer pour le NAS et servir des fichiers piégés, sans
-/// signature possible. Laissée à la main : un vieux NAS ou une box peut en dépendre.
+/// signature possible. Un vieux NAS ou une box peut en dépendre : la phrase le dit avant l'accord.
 pub(super) fn juger_invite_smb(strategie: Option<u32>, reglage: Option<u32>) -> Option<Constat> {
     let impose = strategie.is_some();
     (strategie.or(reglage) == Some(1)).then(|| {
@@ -734,12 +722,12 @@ pub(super) fn juger_invite_smb(strategie: Option<u32>, reglage: Option<u32>) -> 
                 &[],
             )
         } else {
-            constat.manuel(
+            constat.corriger(
                 tr!(
-                    "Si aucun vieux NAS ne s'ouvre sans mot de passe : couper la connexion invité (commande ci-dessous, en administrateur)",
-                    "If no old NAS opens without a password: turn guest connections off (command below, as administrator)"
+                    "Couper la connexion invité (valeur par défaut de Windows 10 et 11). À refuser si un vieux NAS ou une box ne s'ouvre que sans mot de passe : il ne s'ouvrirait plus",
+                    "Turn guest connections off (the Windows 10 and 11 default). Decline if an old NAS or router only opens without a password: it would no longer open"
                 ),
-                &[r"Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters' -Name AllowInsecureGuestAuth -Value 0 -Type DWord"],
+                &[&super::corrections::id("smb-invite-coupe")],
             )
         }
     })
@@ -764,9 +752,10 @@ pub(super) fn strategie_effective(
 }
 
 /// PowerShell en « Unrestricted » ou « Bypass » : un script téléchargé se lance sans avertissement. Remis à
-/// « RemoteSigned » pour ce compte (un script écrit ici se lance toujours, un script téléchargé doit être signé) ;
-/// imposé par une stratégie de groupe, c'est à l'organisation de le changer.
-pub(super) fn juger_strategie_ps(effective: Option<(String, bool)>, cle_du_compte: &str) -> Option<Constat> {
+/// « RemoteSigned » pour ce compte (un script écrit ici se lance toujours, un script téléchargé doit être signé), par
+/// un geste du compte (`ps-strategie`, fait par Vanguard non élevé dans le HKCU de la personne) ; imposé par une
+/// stratégie de groupe, c'est à l'organisation de le changer.
+pub(super) fn juger_strategie_ps(effective: Option<(String, bool)>) -> Option<Constat> {
     let (valeur, imposee) = effective?;
     if !(valeur.eq_ignore_ascii_case("Unrestricted") || valeur.eq_ignore_ascii_case("Bypass")) {
         return None;
@@ -793,9 +782,7 @@ pub(super) fn juger_strategie_ps(effective: Option<(String, bool)>, cle_du_compt
                 "Revenir à « RemoteSigned » pour ce compte : un script écrit ici se lance toujours, un script téléchargé doit être signé",
                 "Go back to “RemoteSigned” for this account: a script written here still runs, a downloaded script must be signed"
             ),
-            &[&format!(
-                "Set-ItemProperty -LiteralPath '{cle_du_compte}' -Name ExecutionPolicy -Value RemoteSigned"
-            )],
+            &super::gestes::ligne_compte("ps-strategie").into_iter().collect::<Vec<_>>(),
         )
     })
 }
@@ -1132,7 +1119,6 @@ pub(super) fn programmes_et_documents() -> Vec<Constat> {
         du_compte(shell_ids).as_deref(),
         lire_texte(shell_ids, "ExecutionPolicy").as_deref(),
     );
-    let sid = crate::reparer::sid_de_la_personne();
     let installeur = r"SOFTWARE\Policies\Microsoft\Windows\Installer";
     let installeur_du_compte = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
         .open_subkey(installeur)
@@ -1142,10 +1128,7 @@ pub(super) fn programmes_et_documents() -> Vec<Constat> {
         lire_dword(installeur, "AlwaysInstallElevated"),
         installeur_du_compte,
     ));
-    c.extend(juger_strategie_ps(
-        effective,
-        &crate::reparer::hkcu_de_la_personne(sid.as_deref(), shell_ids),
-    ));
+    c.extend(juger_strategie_ps(effective));
     let vba = |cle: &str| {
         winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
             .open_subkey(cle)
@@ -1153,7 +1136,7 @@ pub(super) fn programmes_et_documents() -> Vec<Constat> {
             .get_value::<u32, _>("VBAWarnings")
             .ok()
     };
-    c.extend(juger_macros(&macros_ouvertes(vba), sid.as_deref()));
+    c.extend(juger_macros(&macros_ouvertes(vba)));
     sain_si_vide(
         c,
         (
@@ -1321,16 +1304,16 @@ mod tests {
             Some(("Bypass".to_string(), true))
         );
         assert_eq!(strategie_effective(None, None, Some("Undefined"), None), None);
-        let corrigee = juger_strategie_ps(
-            effective,
-            r"HKCU:\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell",
-        )
-        .unwrap();
+        let corrigee = juger_strategie_ps(effective).unwrap();
         assert!(corrigee.correctif.as_ref().unwrap().automatique);
-        assert!(corrigee.correctif.as_ref().unwrap().commandes[0].contains("RemoteSigned"));
-        let imposee = juger_strategie_ps(Some(("Bypass".into(), true)), "x").unwrap();
+        // Un geste du compte : la valeur du compte de la personne, jamais derrière l'UAC.
+        assert_eq!(
+            corrigee.correctif.as_ref().unwrap().commandes,
+            ["vanguard:compte ps-strategie"]
+        );
+        let imposee = juger_strategie_ps(Some(("Bypass".into(), true))).unwrap();
         assert!(!imposee.correctif.as_ref().unwrap().automatique);
-        assert!(juger_strategie_ps(Some(("RemoteSigned".into(), false)), "x").is_none());
+        assert!(juger_strategie_ps(Some(("RemoteSigned".into(), false))).is_none());
         assert_eq!(juger_ntlm(Some(1)).unwrap().probleme, Some(Niveau::Eleve));
         assert_eq!(
             juger_ntlm(Some(1)).unwrap().correctif.unwrap().commandes[0],
@@ -1353,16 +1336,20 @@ mod tests {
             ouvertes,
             [("word", "Word", "16.0", false), ("word", "Word", "15.0", false)]
         );
-        let macros = juger_macros(&ouvertes, Some("S-1-5-21-1-2-3-1001")).unwrap();
+        let macros = juger_macros(&ouvertes).unwrap();
         assert!(macros.probleme == Some(Niveau::Eleve) && macros.message.contains("(Word)"));
         let remise = macros.correctif.unwrap();
-        assert!(remise.automatique && remise.commandes.len() == 2);
+        assert!(remise.automatique);
+        // Un geste du compte par programme ouvert, désigné par sa version et sa clé.
         assert_eq!(
-            remise.commandes[1],
-            r"Set-ItemProperty -LiteralPath 'Registry::HKEY_USERS\S-1-5-21-1-2-3-1001\Software\Microsoft\Office\15.0\word\Security' -Name VBAWarnings -Value 2 -Type DWord"
+            remise.commandes,
+            [
+                "vanguard:compte macros-office 16.0 word",
+                "vanguard:compte macros-office 15.0 word"
+            ]
         );
-        assert!(juger_macros(&[], None).is_none());
-        let imposees = juger_macros(&[("excel", "Excel", "16.0", true)], None)
+        assert!(juger_macros(&[]).is_none());
+        let imposees = juger_macros(&[("excel", "Excel", "16.0", true)])
             .unwrap()
             .correctif
             .unwrap();
@@ -1443,7 +1430,9 @@ mod tests {
         assert!(juger_invite_smb(Some(0), Some(1)).is_none());
         let c = juger_invite_smb(None, Some(1)).unwrap();
         assert_eq!(c.probleme, Some(Niveau::Moyen));
-        assert!(c.correctif.unwrap().commandes[0].ends_with("-Name AllowInsecureGuestAuth -Value 0 -Type DWord"));
+        let coupe = c.correctif.unwrap();
+        assert!(coupe.automatique && coupe.commandes == [super::super::corrections::id("smb-invite-coupe")]);
+        assert!(coupe.action.contains("NAS"));
         let impose = juger_invite_smb(Some(1), Some(0)).unwrap().correctif.unwrap();
         assert_eq!(impose.commandes.len(), 0);
         assert!(
