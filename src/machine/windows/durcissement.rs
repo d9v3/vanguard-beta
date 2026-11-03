@@ -1369,12 +1369,32 @@ pub(super) fn windows_update_bloque() -> Vec<Constat> {
     )
 }
 
+/// Les octets d'une valeur texte du registre (UTF-16) ont-ils au moins un caractère avant le premier zéro ?
+fn texte_non_vide(octets: &[u8]) -> bool {
+    octets.first_chunk::<2>().is_some_and(|c| *c != [0, 0])
+}
+
+/// DefaultPassword est-il écrit (texte, non vide) ? Lu en octets bruts, jamais en `String` : le tampon, où le mot de
+/// passe passe en clair, est mis à zéro aussitôt (`socle::effacer`).
+fn mot_de_passe_ecrit() -> bool {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, REG_EXPAND_SZ, REG_SZ};
+    let Ok(k) = winreg::RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(WINLOGON) else {
+        return false;
+    };
+    let Ok(mut v) = k.get_raw_value("DefaultPassword") else {
+        return false;
+    };
+    let ecrit = matches!(v.vtype, REG_SZ | REG_EXPAND_SZ) && texte_non_vide(&v.bytes);
+    crate::socle::effacer(v.bytes.to_mut());
+    ecrit
+}
+
 /// WIN-SES-002 : la session qui s'ouvre toute seule, mot de passe gardé dans le registre.
 pub(super) fn ouverture_automatique() -> Vec<Constat> {
     let mut c = Vec::new();
     c.extend(juger_ouverture_auto(
         lire_texte(WINLOGON, "AutoAdminLogon").as_deref(),
-        lire_texte(WINLOGON, "DefaultPassword").is_some_and(|m| !m.is_empty()),
+        mot_de_passe_ecrit(),
     ));
     sain_si_vide(
         c,
@@ -1388,6 +1408,18 @@ pub(super) fn ouverture_automatique() -> Vec<Constat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DefaultPassword lu en octets : écrit dès un caractère avant le premier zéro ; vide ou seulement le zéro final, non.
+    #[test]
+    fn mot_de_passe_ecrit_lu_en_octets() {
+        assert!(texte_non_vide(&[b'a', 0, 0, 0]));
+        assert!(texte_non_vide(&[b' ', 0]));
+        assert!(texte_non_vide(&[0, 1, 0, 0]));
+        assert!(!texte_non_vide(&[0, 0, b'a', 0]));
+        assert!(!texte_non_vide(&[0, 0]));
+        assert!(!texte_non_vide(b"a"));
+        assert!(!texte_non_vide(&[]));
+    }
 
     #[test]
     fn journalisation_credential_guard_et_sysmon() {

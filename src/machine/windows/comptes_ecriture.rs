@@ -21,7 +21,7 @@
 
 use super::comptes::{self, NetApiBufferFree, NetUserGetInfo, NetUserSetInfo, large, sid_texte};
 use super::corrections::{Resultat, avant_notable};
-use crate::machine::gestes::{self, EtatCompte, RefusCompte, RefusSessionMdp};
+use crate::machine::gestes::{self, EtatCompte, RefusCompte, RefusGenreCompte, RefusSessionMdp};
 use crate::ui::{tr, trf, trp};
 
 /// UF_SCRIPT : exigé par NetUserSetInfo dans les drapeaux d'un compte.
@@ -47,7 +47,7 @@ struct Utilisateur20 {
 struct ProgrammeWts {
     session: u32,
     pid: u32,
-    _nom: *const u16,
+    nom: *const u16,
     sid: *mut std::ffi::c_void,
     _fils: u32,
     _poignees: u32,
@@ -234,12 +234,24 @@ fn drapeaux_exiges(d: u32) -> u32 {
     (d & !NON_EXIGE) | SCRIPT
 }
 
+/// ENABLE_PROCESSED_INPUT.
+const TRAITE: u32 = 0x1;
+/// ENABLE_LINE_INPUT.
+const LIGNE: u32 = 0x2;
+/// ENABLE_ECHO_INPUT.
+const ECHO: u32 = 0x4;
+
+/// Le mode de la console pendant la saisie du mot de passe : sans écho, mais toujours ligne par ligne et Ctrl+C
+/// traité, quel que soit le mode d'avant (sans LIGNE, chaque touche reviendrait seule ; sans TRAITE, Ctrl+C entrerait
+/// dans le mot de passe).
+fn mode_masque(avant: u32) -> u32 {
+    (avant | LIGNE | TRAITE) & !ECHO
+}
+
 /// Lit une ligne dans la console du processus, sans écho (le mode d'avant est remis) ; `Illisible` si l'entrée n'est
 /// pas une console ou si la lecture échoue. Une ligne trop longue est lue jusqu'au bout puis refusée (`TropLong`).
 fn lire_masque() -> Result<Secret, Saisie> {
     const ENTREE_STANDARD: u32 = 0xFFFF_FFF6;
-    /// ENABLE_ECHO_INPUT.
-    const ECHO: u32 = 0x4;
     // SAFETY: simple lecture d'une poignée du processus, sans pointeur.
     let entree = unsafe { GetStdHandle(ENTREE_STANDARD) };
     if entree.is_null() || entree as isize == -1 {
@@ -252,7 +264,7 @@ fn lire_masque() -> Result<Secret, Saisie> {
         return Err(Saisie::Illisible);
     }
     // SAFETY: la même poignée, un mode sans pointeur.
-    if unsafe { SetConsoleMode(entree, mode & !ECHO) } == 0 {
+    if unsafe { SetConsoleMode(entree, mode_masque(mode)) } == 0 {
         return Err(Saisie::Illisible);
     }
     let mut tampon = Secret(vec![0u16; MOT_DE_PASSE_MAX + 2]);
@@ -307,29 +319,43 @@ fn compte_microsoft(nom: &[u16]) -> Option<bool> {
     }
 }
 
-/// Le protocole d'une session (WTSClientProtocolType : 0 la console, 2 le Bureau à distance) ; `None` illisible.
-fn protocole(session: u32) -> Option<u16> {
-    /// WTSClientProtocolType.
-    const PROTOCOLE: u32 = 16;
+/// Un entier que WTSQuerySessionInformationW dit d'une session (`classe`) ; `None` illisible ou trop court.
+///
+/// # Safety
+/// `T` est un entier (u16, u32) : tout motif d'octets en est un, et `classe` en donne un de cette taille au moins.
+unsafe fn info_session<T: Copy>(session: u32, classe: u32) -> Option<T> {
     let mut tampon: *mut u16 = std::ptr::null_mut();
     let mut octets = 0u32;
-    // SAFETY: le serveur nul est cet ordinateur ; Windows alloue un USHORT dans `tampon` (`octets` en dit la taille),
-    // lu s'il en a au moins deux, puis rendu une seule fois par WTSFreeMemory.
+    // SAFETY: le serveur nul est cet ordinateur ; Windows alloue la valeur dans `tampon` (`octets` en dit la taille),
+    // lue s'il en a au moins la taille de `T` (un entier, voir la fonction), puis rendue une seule fois par
+    // WTSFreeMemory.
     unsafe {
-        let ok = WTSQuerySessionInformationW(
-            std::ptr::null_mut(),
-            session,
-            PROTOCOLE,
-            &raw mut tampon,
-            &raw mut octets,
-        ) != 0;
+        let ok =
+            WTSQuerySessionInformationW(std::ptr::null_mut(), session, classe, &raw mut tampon, &raw mut octets) != 0;
         if !ok || tampon.is_null() {
             return None;
         }
-        let p = (octets >= 2).then(|| tampon.read_unaligned());
+        let v = (octets as usize >= std::mem::size_of::<T>()).then(|| tampon.cast::<T>().read_unaligned());
         WTSFreeMemory(tampon.cast());
-        p
+        v
     }
+}
+
+/// Le protocole d'une session (WTSClientProtocolType : 0 la console, 2 le Bureau à distance) quand elle est active
+/// (WTSConnectState), `None` sinon ou illisible : `gestes::protocole_sur`.
+fn protocole(session: u32) -> Option<u16> {
+    /// WTSConnectState.
+    const ETAT: u32 = 8;
+    /// WTSClientProtocolType.
+    const PROTOCOLE: u32 = 16;
+    // SAFETY: WTSClientProtocolType est un USHORT, WTSConnectState un WTS_CONNECTSTATE_CLASS (un entier de 32 bits).
+    let (p, e) = unsafe {
+        (
+            info_session::<u16>(session, PROTOCOLE),
+            info_session::<u32>(session, ETAT),
+        )
+    };
+    gestes::protocole_sur(p, e)
 }
 
 /// La garde de session du mot de passe, sur la lecture d'à l'instant : `None` si rien ne s'y oppose.
@@ -399,13 +425,19 @@ pub(super) fn poser_mot_de_passe(rid: u32, personne: Option<&str>) -> Resultat {
         );
     };
     let note = avant_notable(&format!("{affiche} : drapeaux 0x{avant:08x}"));
-    if compte_microsoft(&nom_large) == Some(true) {
+    if let Some(genre) = gestes::refus_genre_compte(compte_microsoft(&nom_large)) {
         return Resultat::echec(
             Some(note),
-            tr!(
-                "compte lié à un compte Microsoft : son mot de passe se change en ligne (account.microsoft.com) ou dans Paramètres > Comptes, pas par Vanguard ; rien changé",
-                "account linked to a Microsoft account: its password is changed online (account.microsoft.com) or in Settings > Accounts, not by Vanguard; nothing changed"
-            )
+            match genre {
+                RefusGenreCompte::Microsoft => tr!(
+                    "compte lié à un compte Microsoft : son mot de passe se change en ligne (account.microsoft.com) ou dans Paramètres > Comptes, pas par Vanguard ; rien changé",
+                    "account linked to a Microsoft account: its password is changed online (account.microsoft.com) or in Settings > Accounts, not by Vanguard; nothing changed"
+                ),
+                RefusGenreCompte::Illisible => tr!(
+                    "le genre du compte ne se lit pas (local ou lié à un compte Microsoft) : Vanguard n'y pose pas de mot de passe ; rien changé",
+                    "the account's kind cannot be read (local or linked to a Microsoft account): Vanguard does not set a password on it; nothing changed"
+                ),
+            }
             .to_string(),
         );
     }
@@ -658,6 +690,26 @@ fn ecrire(nom: &str, rid: u32) -> Resultat {
 /// Les programmes ouverts de toutes les sessions : (session, SID du compte, `None` si Windows ne le dit pas).
 /// `None` si la liste ne se lit pas.
 fn programmes() -> Option<Vec<(u32, Option<String>)>> {
+    programmes_lus().map(|l| l.into_iter().map(|(session, sid, _)| (session, sid)).collect())
+}
+
+/// Les programmes ouverts de toutes les sessions : (session, nom du programme). `None` si la liste ne se lit pas ou
+/// qu'elle est vide (jamais sur un Windows qui tourne). La garde de l'ouverture automatique de session.
+pub(super) fn programmes_par_session() -> Option<Vec<(u32, String)>> {
+    programmes_lus()
+        .map(|l| {
+            l.into_iter()
+                .map(|(session, _, nom)| (session, nom))
+                .collect::<Vec<_>>()
+        })
+        .filter(|l| !l.is_empty())
+}
+
+/// La plus longue d'un nom de programme lu, en unités UTF-16 (MAX_PATH).
+const NOM_PROGRAMME_MAX: usize = 260;
+
+/// (session, SID du compte, nom du programme) de chaque programme ouvert, toutes sessions ; `None` illisible.
+fn programmes_lus() -> Option<Vec<(u32, Option<String>, String)>> {
     const TOUTES_LES_SESSIONS: u32 = 0xFFFF_FFFE;
     /// WTSTypeProcessInfoLevel1.
     const NIVEAU_1: u32 = 1;
@@ -665,8 +717,8 @@ fn programmes() -> Option<Vec<(u32, Option<String>)>> {
     let mut tampon: *mut u16 = std::ptr::null_mut();
     let mut nombre = 0u32;
     // SAFETY: le serveur nul est cet ordinateur ; au niveau 1, Windows écrit un tableau de `nombre`
-    // WTS_PROCESS_INFO_EXW (que `ProgrammeWts` reproduit), lu tant qu'il vit, SID compris, puis rendu une seule fois
-    // par WTSFreeMemoryExW avec le même genre et le même nombre.
+    // WTS_PROCESS_INFO_EXW (que `ProgrammeWts` reproduit), lu tant qu'il vit, SID et nom (chaîne terminée par un zéro,
+    // ou nulle) compris, puis rendu une seule fois par WTSFreeMemoryExW avec le même genre et le même nombre.
     unsafe {
         let lu = WTSEnumerateProcessesExW(
             std::ptr::null_mut(),
@@ -694,7 +746,7 @@ fn programmes() -> Option<Vec<(u32, Option<String>)>> {
                 }
                 // Le processus inactif (0) et System (4) n'ont pas de compte à eux.
                 if p.pid != 0 && p.pid != 4 {
-                    liste.push((p.session, sid));
+                    liste.push((p.session, sid, comptes::texte_large(p.nom, NOM_PROGRAMME_MAX)));
                 }
             }
         }
@@ -760,6 +812,16 @@ fn pourquoi(refus: RefusCompte) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La saisie du mot de passe : jamais d'écho, toujours ligne par ligne avec Ctrl+C traité, le reste du mode gardé.
+    #[test]
+    fn mode_de_la_saisie_masquee() {
+        assert_eq!(mode_masque(0), LIGNE | TRAITE);
+        assert_eq!(mode_masque(TRAITE | LIGNE | ECHO), TRAITE | LIGNE);
+        // ENABLE_INSERT_MODE (0x20) et ENABLE_EXTENDED_FLAGS (0x80) restent.
+        assert_eq!(mode_masque(0x20 | 0x80 | ECHO), 0x20 | 0x80 | LIGNE | TRAITE);
+        assert_eq!(mode_masque(u32::MAX) & ECHO, 0);
+    }
 
     #[test]
     fn formes_de_windows() {

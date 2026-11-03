@@ -33,6 +33,8 @@ pub(crate) enum Ruche {
 pub(crate) enum Cible {
     /// REG_DWORD de cette valeur.
     Dword(u32),
+    /// REG_DWORD qui a au moins ces bits : les autres bits lus restent (une valeur plus forte ne baisse jamais).
+    Bits(u32),
     /// REG_SZ de ce texte (comparé sans la casse).
     Sz(&'static str),
     /// Retirée.
@@ -102,7 +104,7 @@ fn compte(cle: &str, valeur: &'static str, cible: Cible) -> Ecrit {
 /// Les valeurs d'un réglage, dans l'ordre où elles sont écrites (pour l'ouverture automatique, `AutoAdminLogon=0`
 /// d'abord : si le retrait du mot de passe échouait ensuite, Windows ne s'ouvrirait plus tout seul quand même).
 pub(crate) fn table(id: IdReglage) -> Vec<Ecrit> {
-    use Cible::{Absente, Dword, Sz};
+    use Cible::{Absente, Bits, Dword, Sz};
     match id {
         IdReglage::LsaPpl => vec![machine(LSA, "RunAsPPL", Dword(2))],
         IdReglage::AssistanceCoupe => vec![machine(
@@ -172,10 +174,11 @@ pub(crate) fn table(id: IdReglage) -> Vec<Ecrit> {
                 "EnableVirtualizationBasedSecurity",
                 Dword(1),
             ),
+            // Au moins le démarrage sécurisé (bit 1) ; 3 (avec la protection DMA) reste 3.
             machine(
                 r"SYSTEM\CurrentControlSet\Control\DeviceGuard",
                 "RequirePlatformSecurityFeatures",
-                Dword(1),
+                Bits(1),
             ),
             machine(LSA, "LsaCfgFlags", Dword(2)),
         ],
@@ -185,7 +188,7 @@ pub(crate) fn table(id: IdReglage) -> Vec<Ecrit> {
 /// La valeur que la cible écrit ; `None` pour une valeur à retirer.
 pub(crate) fn brute(cible: Cible) -> Option<Brute> {
     match cible {
-        Cible::Dword(n) => Some(Brute {
+        Cible::Dword(n) | Cible::Bits(n) => Some(Brute {
             code: 4,
             octets: n.to_le_bytes().to_vec(),
         }),
@@ -194,6 +197,15 @@ pub(crate) fn brute(cible: Cible) -> Option<Brute> {
             octets: t.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect(),
         }),
         Cible::Absente => None,
+    }
+}
+
+/// La valeur que `poser` écrit pour atteindre `cible` depuis `lue` : celle de la cible, ou pour des bits, le DWORD lu
+/// avec ces bits en plus (un autre type, ou rien : les bits seuls).
+pub(crate) fn a_ecrire(cible: Cible, lue: Option<&Brute>) -> Option<Brute> {
+    match cible {
+        Cible::Bits(n) => brute(Cible::Dword(lue.and_then(dword).unwrap_or(0) | n)),
+        c => brute(c),
     }
 }
 
@@ -223,6 +235,7 @@ pub(crate) fn atteinte(cible: Cible, lue: Option<&Brute>) -> bool {
     match (cible, lue) {
         (Cible::Absente, None) => true,
         (Cible::Dword(n), Some(b)) => dword(b) == Some(n),
+        (Cible::Bits(n), Some(b)) => dword(b).is_some_and(|v| v & n == n),
         (Cible::Sz(t), Some(b)) => texte(b).is_some_and(|x| x.trim().eq_ignore_ascii_case(t)),
         _ => false,
     }
@@ -519,7 +532,7 @@ pub(crate) fn poser<R: Registre>(r: &mut R, id: IdReglage, nom: &str) -> Issue {
         if atteinte(e.cible, l.as_ref()) {
             continue;
         }
-        if let Err(raison) = ecrire_une(r, e, brute(e.cible).as_ref()) {
+        if let Err(raison) = ecrire_une(r, e, a_ecrire(e.cible, l.as_ref()).as_ref()) {
             return annuler(
                 r,
                 trf!(
@@ -917,6 +930,32 @@ mod tests {
         assert!(!f.notes.contains_key(&nom));
     }
 
+    /// Credential Guard ne baisse jamais RequirePlatformSecurityFeatures : 3 (démarrage sécurisé et protection DMA)
+    /// reste 3 ; 2 (la protection DMA seule) devient 3 ; la remise rend la valeur d'avant.
+    #[test]
+    fn credential_guard_garde_la_protection_dma() {
+        let t = table(IdReglage::CredentialGuard);
+        let exiges = t
+            .iter()
+            .find(|e| e.valeur == "RequirePlatformSecurityFeatures")
+            .unwrap();
+        let nom = nom_note(IdReglage::CredentialGuard, None).unwrap();
+        for (avant, apres) in [(3, 3), (2, 3), (1, 1)] {
+            let mut f = Faux::default();
+            mettre(&mut f, exiges, dw(avant));
+            assert!(matches!(
+                poser(&mut f, IdReglage::CredentialGuard, &nom),
+                Issue::Fait { .. }
+            ));
+            assert_eq!(valeur(&f, exiges), Some(dw(apres)), "{avant}");
+            assert!(matches!(
+                remettre(&mut f, IdReglage::CredentialGuard, &nom),
+                Issue::Fait { .. }
+            ));
+            assert_eq!(valeur(&f, exiges), Some(dw(avant)), "{avant}");
+        }
+    }
+
     #[test]
     fn une_ecriture_muette_compte_comme_un_echec() {
         let mut f = Faux {
@@ -1007,6 +1046,16 @@ mod tests {
 
     #[test]
     fn atteinte_compare_le_type() {
+        // Des bits : au moins ceux-là, les autres gardés ; jamais une valeur plus forte baissée.
+        assert!(atteinte(Cible::Bits(1), Some(&dw(1))));
+        assert!(atteinte(Cible::Bits(1), Some(&dw(3))));
+        assert!(!atteinte(Cible::Bits(1), Some(&dw(2))));
+        assert!(!atteinte(Cible::Bits(1), Some(&sz("1"))));
+        assert!(!atteinte(Cible::Bits(1), None));
+        assert_eq!(a_ecrire(Cible::Bits(1), Some(&dw(2))), Some(dw(3)));
+        assert_eq!(a_ecrire(Cible::Bits(1), None), Some(dw(1)));
+        assert_eq!(a_ecrire(Cible::Bits(1), Some(&sz("x"))), Some(dw(1)));
+        assert_eq!(a_ecrire(Cible::Dword(2), Some(&dw(7))), Some(dw(2)));
         assert!(atteinte(Cible::Dword(1), Some(&dw(1))));
         assert!(!atteinte(Cible::Dword(1), Some(&sz("1"))));
         assert!(atteinte(Cible::Sz("Warn"), Some(&sz("warn"))));

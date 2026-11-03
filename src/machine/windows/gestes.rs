@@ -3523,6 +3523,35 @@ pub(crate) fn refus_chemin_session(nom: &str, session: Option<bool>) -> bool {
     SERVICES_ACCES_DISTANT.iter().any(|s| s.eq_ignore_ascii_case(nom)) && session != Some(false)
 }
 
+/// Le programme qu'un chemin de service lance : entre les guillemets s'il en a, sinon jusqu'au premier « .exe »
+/// (ou au premier blanc).
+pub(crate) fn programme_du_chemin(brut: &str) -> &str {
+    let t = brut.trim_start();
+    if let Some(reste) = t.strip_prefix('"') {
+        return reste.split('"').next().unwrap_or(reste);
+    }
+    // to_ascii_lowercase garde la longueur de chaque octet : l'indice vaut dans `t`.
+    match t.to_ascii_lowercase().find(".exe").and_then(|i| i.checked_add(4)) {
+        Some(fin) => t.get(..fin).unwrap_or(t),
+        None => t.split_whitespace().next().unwrap_or(t),
+    }
+}
+
+/// Changer le chemin du service `nom` (chemin actuel ou visé : `chemins`) couperait-il une session à distance ? Un
+/// service d'accès à distance de Windows (`refus_chemin_session`), ou un outil d'accès à distance, de prise en main
+/// ou de VPN (AnyDesk, TeamViewer, OpenVPN…) d'après le nom du service ou le programme qu'il lance
+/// (`outil_de_session`, la liste des gardes du blocage) : refusé quand une session est ouverte ou ne se lit pas.
+pub(crate) fn refus_chemin_outil(
+    nom: &str,
+    chemins: &[&str],
+    session: Option<bool>,
+    outil_de_session: impl Fn(&str) -> bool,
+) -> bool {
+    refus_chemin_session(nom, session)
+        || (session != Some(false)
+            && (outil_de_session(nom) || chemins.iter().any(|c| outil_de_session(programme_du_chemin(c)))))
+}
+
 /// Couper l'Assistance à distance couperait-il une aide en cours ? `msra` : msra.exe tourne-t-il (`None` : la liste
 /// des programmes ne se lit pas, refusé aussi).
 pub(crate) fn refus_assistance(msra: Option<bool>) -> bool {
@@ -3535,6 +3564,35 @@ pub(crate) fn refus_assistance(msra: Option<bool>) -> bool {
 pub(crate) enum RefusSessionMdp {
     Illisible,
     ADistance,
+}
+
+/// Pourquoi Vanguard ne pose pas de mot de passe sur un compte d'après son genre : lié à un compte Microsoft (Windows
+/// gère ce mot de passe en ligne), ou un genre que Windows ne dit pas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefusGenreCompte {
+    Microsoft,
+    Illisible,
+}
+
+/// Le genre du compte (`microsoft` : lié à un compte Microsoft, `None` illisible) permet-il de poser un mot de passe
+/// local ? Seulement un compte sûrement local : ce que Windows ferait d'un mot de passe local posé sur un compte
+/// Microsoft n'est pas mesuré.
+pub(crate) fn refus_genre_compte(microsoft: Option<bool>) -> Option<RefusGenreCompte> {
+    match microsoft {
+        Some(false) => None,
+        Some(true) => Some(RefusGenreCompte::Microsoft),
+        None => Some(RefusGenreCompte::Illisible),
+    }
+}
+
+/// WTSActive (WTS_CONNECTSTATE_CLASS) : la session est ouverte et reliée à son écran ou à son client.
+pub(crate) const SESSION_ACTIVE: u32 = 0;
+
+/// Le protocole à juger d'une session : celui que Windows dit quand elle est active. Une session déconnectée (ou dans
+/// un autre état) peut se dire « console » (0) après une session du Bureau à distance, où elle se reprend : son
+/// protocole ne se sait pas (`None`, refusé comme illisible) ; un état illisible non plus.
+pub(crate) fn protocole_sur(protocole: Option<u16>, etat: Option<u32>) -> Option<u16> {
+    if etat == Some(SESSION_ACTIVE) { protocole } else { None }
 }
 
 /// Les sessions du compte `cible` dans `programmes` (session, SID de chaque programme) : refusé si la liste ne se lit
@@ -3566,6 +3624,42 @@ pub(crate) fn refus_session_mdp(
         }
     }
     illisible.then_some(RefusSessionMdp::Illisible)
+}
+
+/// Pourquoi l'ouverture automatique de session reste : la liste des programmes ne se lit pas, ou un outil d'accès à
+/// distance (son nom) ne tourne que dans une session ouverte.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RefusOuvertureAuto {
+    Illisible,
+    Outil(String),
+}
+
+/// Les clients d'une connexion sortante : ils ne ramènent personne sur cet ordinateur.
+const CLIENTS_SORTANTS: [&str; 1] = ["mstsc"];
+
+/// Couper l'ouverture automatique de session (ou ôter son mot de passe) empêcherait-il de revenir à distance après un
+/// redémarrage ? Un outil d'accès à distance, de prise en main ou de VPN (`outil_de_session`) qui tourne dans une
+/// session ouverte (1 et plus) alors qu'aucun ne tourne dans la session 0 (les services, qui démarrent sans session
+/// ouverte) ne revient qu'avec elle : refusé. `programmes` : (session, nom du programme) ; `None` illisible, refusé.
+pub(crate) fn refus_ouverture_auto(
+    programmes: Option<&[(u32, String)]>,
+    outil_de_session: impl Fn(&str) -> bool,
+) -> Option<RefusOuvertureAuto> {
+    let Some(liste) = programmes else {
+        return Some(RefusOuvertureAuto::Illisible);
+    };
+    let outil = |n: &str| {
+        let bas = n.to_ascii_lowercase();
+        let court = bas.strip_suffix(".exe").unwrap_or(&bas);
+        outil_de_session(n) && !CLIENTS_SORTANTS.contains(&court)
+    };
+    if liste.iter().any(|(session, nom)| *session == 0 && outil(nom)) {
+        return None;
+    }
+    liste
+        .iter()
+        .find(|(session, nom)| *session != 0 && outil(nom))
+        .map(|(_, nom)| RefusOuvertureAuto::Outil(nom.clone()))
 }
 
 /// Le plus petit RID d'un compte : 500 (Administrateur intégré) ; en dessous, des groupes et des comptes de Windows.
@@ -9760,6 +9854,126 @@ mod tests {
         assert!(!refus_chemin_session("Mon Outil", Some(true)));
         assert!(!refus_chemin_session("Mon Outil", None));
         assert!(!refus_chemin_session("TermService2", Some(true)));
+    }
+
+    /// Le programme lancé par un chemin de service : entre guillemets, jusqu'au « .exe », ou jusqu'au blanc.
+    #[test]
+    fn programme_lance_par_un_chemin_de_service() {
+        assert_eq!(
+            programme_du_chemin(r#""C:\Program Files (x86)\AnyDesk\AnyDesk.exe" --service"#),
+            r"C:\Program Files (x86)\AnyDesk\AnyDesk.exe"
+        );
+        assert_eq!(
+            programme_du_chemin(r"C:\Program Files\TeamViewer\TeamViewer_Service.EXE -x"),
+            r"C:\Program Files\TeamViewer\TeamViewer_Service.EXE"
+        );
+        assert_eq!(programme_du_chemin(r"C:\outil\svc -k"), r"C:\outil\svc");
+        assert_eq!(programme_du_chemin(r#""C:\sans fin"#), r"C:\sans fin");
+        assert_eq!(programme_du_chemin(""), "");
+        assert_eq!(programme_du_chemin("  É.exe"), "É.exe");
+    }
+
+    /// Garde B : le chemin d'un outil d'accès à distance tiers (nom du service ou programme lancé, actuel ou visé) ne
+    /// change pas pendant une session ni quand elle ne se lit pas ; un service ordinaire, toujours.
+    #[test]
+    fn garde_session_du_chemin_d_un_outil_tiers() {
+        let outil = |n: &str| {
+            let f = n.rsplit(['/', '\\']).next().unwrap_or(n).to_ascii_lowercase();
+            matches!(
+                f.strip_suffix(".exe").unwrap_or(&f),
+                "anydesk" | "teamviewer_service" | "openvpnserv"
+            )
+        };
+        let anydesk = r#""C:\Program Files (x86)\AnyDesk\AnyDesk.exe" --service"#;
+        let tv = r"C:\Program Files\TeamViewer\TeamViewer_Service.exe";
+        for session in [Some(true), None] {
+            assert!(refus_chemin_outil("AnyDesk", &[], session, outil));
+            assert!(refus_chemin_outil("Mon Service", &[anydesk], session, outil));
+            assert!(refus_chemin_outil("TeamViewer", &[tv], session, outil));
+            assert!(refus_chemin_outil(
+                "x",
+                &[r"C:\a.exe", r"C:\OpenVPN\bin\openvpnserv.exe"],
+                session,
+                outil
+            ));
+            assert!(refus_chemin_outil("TermService", &[r"C:\a.exe"], session, outil));
+            assert!(!refus_chemin_outil(
+                "Mon Service",
+                &[r"C:\Mon Outil\svc.exe -k"],
+                session,
+                outil
+            ));
+        }
+        assert!(!refus_chemin_outil("AnyDesk", &[anydesk], Some(false), outil));
+        assert!(!refus_chemin_outil("TermService", &[], Some(false), outil));
+    }
+
+    /// Garde B : l'ouverture automatique de session reste quand un outil d'accès à distance ne tourne que dans une
+    /// session ouverte (il ne reviendrait pas après un redémarrage), ou quand les programmes ne se lisent pas.
+    #[test]
+    fn garde_session_de_l_ouverture_automatique() {
+        let outil = |n: &str| {
+            let b = n.to_ascii_lowercase();
+            matches!(
+                b.strip_suffix(".exe").unwrap_or(&b),
+                "anydesk" | "teamviewer" | "teamviewer_service" | "mstsc"
+            )
+        };
+        let l = |v: &[(u32, &str)]| v.iter().map(|&(s, n)| (s, n.to_string())).collect::<Vec<_>>();
+        assert_eq!(refus_ouverture_auto(None, outil), Some(RefusOuvertureAuto::Illisible));
+        let portable = l(&[(0, "svchost.exe"), (1, "explorer.exe"), (1, "AnyDesk.exe")]);
+        assert_eq!(
+            refus_ouverture_auto(Some(&portable), outil),
+            Some(RefusOuvertureAuto::Outil("AnyDesk.exe".into()))
+        );
+        assert_eq!(
+            refus_ouverture_auto(Some(&l(&[(2, "AnyDesk.exe")])), outil),
+            Some(RefusOuvertureAuto::Outil("AnyDesk.exe".into()))
+        );
+        // Installé en service : il revient sans session ouverte.
+        let service = l(&[(0, "TeamViewer_Service.exe"), (1, "TeamViewer.exe")]);
+        assert_eq!(refus_ouverture_auto(Some(&service), outil), None);
+        assert_eq!(
+            refus_ouverture_auto(Some(&l(&[(0, "AnyDesk.exe"), (1, "AnyDesk.exe")])), outil),
+            None
+        );
+        // Aucun outil, ou seulement le client du Bureau à distance (une connexion sortante).
+        assert_eq!(
+            refus_ouverture_auto(Some(&l(&[(0, "svchost.exe"), (1, "explorer.exe")])), outil),
+            None
+        );
+        assert_eq!(refus_ouverture_auto(Some(&l(&[(1, "MSTSC.EXE")])), outil), None);
+        assert_eq!(refus_ouverture_auto(Some(&[]), outil), None);
+    }
+
+    /// Garde B : une session déconnectée peut se dire « console » après le Bureau à distance ; seul le protocole d'une
+    /// session active se croit, et le mot de passe n'est pas posé sur un compte qui a une session déconnectée.
+    #[test]
+    fn protocole_d_une_session_deconnectee_non_cru() {
+        const DECONNECTEE: u32 = 4;
+        assert_eq!(protocole_sur(Some(0), Some(SESSION_ACTIVE)), Some(0));
+        assert_eq!(protocole_sur(Some(2), Some(SESSION_ACTIVE)), Some(2));
+        assert_eq!(protocole_sur(Some(0), Some(DECONNECTEE)), None);
+        assert_eq!(protocole_sur(Some(0), None), None);
+        assert_eq!(protocole_sur(None, Some(SESSION_ACTIVE)), None);
+        let cible = "S-1-5-21-1-2-3-1001";
+        let v = [(1, Some(cible.to_string()))];
+        assert_eq!(
+            refus_session_mdp(Some(&v), cible, |_| protocole_sur(Some(0), Some(DECONNECTEE))),
+            Some(RefusSessionMdp::Illisible)
+        );
+        assert_eq!(
+            refus_session_mdp(Some(&v), cible, |_| protocole_sur(Some(0), Some(SESSION_ACTIVE))),
+            None
+        );
+    }
+
+    /// Le mot de passe ne se pose que sur un compte sûrement local : un compte Microsoft, ou un genre illisible, non.
+    #[test]
+    fn mot_de_passe_seulement_sur_un_compte_surement_local() {
+        assert_eq!(refus_genre_compte(Some(false)), None);
+        assert_eq!(refus_genre_compte(Some(true)), Some(RefusGenreCompte::Microsoft));
+        assert_eq!(refus_genre_compte(None), Some(RefusGenreCompte::Illisible));
     }
 
     /// Garde B : l'Assistance à distance ne se coupe que si msra.exe ne tourne sûrement pas.

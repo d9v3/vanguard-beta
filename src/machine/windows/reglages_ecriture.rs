@@ -10,7 +10,9 @@
 use std::io::ErrorKind::NotFound;
 
 use winreg::RegKey;
-use winreg::enums::{HKEY_LOCAL_MACHINE, HKEY_USERS, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WOW64_64KEY, RegType};
+use winreg::enums::{
+    HKEY_LOCAL_MACHINE, HKEY_USERS, KEY_CREATE_SUB_KEY, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WOW64_64KEY, RegType,
+};
 
 use super::corrections::{Resultat, avant_notable};
 use crate::machine::gestes::{self, Acte, IdReglage, Montre, Sens};
@@ -25,6 +27,10 @@ const CONTEXTE: &str = "reglages/ecriture";
 pub(super) struct Winreg {
     sid: Option<String>,
 }
+
+/// La racine du registre d'un compte (HKU\<SID>) : lire, et créer dessous une clé qui manque (RegCreateKeyEx exige
+/// KEY_CREATE_SUB_KEY sur la clé parente) ; rien de plus, chaque sous-clé s'ouvre avec ses propres droits.
+const ACCES_RACINE_COMPTE: u32 = KEY_QUERY_VALUE | KEY_CREATE_SUB_KEY;
 
 impl Winreg {
     pub(super) fn nouveau(sid: Option<&str>) -> Winreg {
@@ -47,7 +53,7 @@ impl Winreg {
                     )
                 })?;
                 RegKey::predef(HKEY_USERS)
-                    .open_subkey_with_flags(sid, KEY_QUERY_VALUE)
+                    .open_subkey_with_flags(sid, ACCES_RACINE_COMPTE)
                     .map_err(|e| {
                         Echec::echoue(
                             CONTEXTE,
@@ -194,6 +200,22 @@ fn msra_tourne() -> Option<bool> {
     (!liste.is_empty()).then(|| liste.iter().any(|p| p.nom.eq_ignore_ascii_case("msra")))
 }
 
+/// Pourquoi l'ouverture automatique de session reste (garde B, `gestes::refus_ouverture_auto`).
+fn raison_ouverture_auto(r: &gestes::RefusOuvertureAuto) -> String {
+    match r {
+        gestes::RefusOuvertureAuto::Illisible => tr!(
+            "les programmes ouverts ne se lisent pas : un outil d'accès à distance pourrait ne revenir qu'avec l'ouverture automatique de session ; rien d'écrit",
+            "open programs cannot be read: a remote access tool might only come back with automatic sign-in; nothing written"
+        )
+        .to_string(),
+        gestes::RefusOuvertureAuto::Outil(nom) => trf!(
+            "« {} » (accès à distance, prise en main ou VPN) tourne dans une session ouverte et non en service : après un redémarrage, il ne reviendrait qu'avec l'ouverture automatique de session ; installez-le en service, ou coupez-la à la main (netplwiz) ; rien d'écrit",
+            "“{}” (remote access, remote control or VPN) runs in a signed-in session, not as a service: after a restart it would only come back with automatic sign-in; install it as a service, or turn it off by hand (netplwiz); nothing written",
+            crate::ui::affichable(nom)
+        ),
+    }
+}
+
 fn refus(fr: &str, en: &str) -> Resultat {
     Resultat::echec(None, if crate::langue::anglais() { en } else { fr }.to_string())
 }
@@ -231,6 +253,14 @@ pub(super) fn poser(id: IdReglage, personne: Option<&str>) -> Resultat {
             "une assistance à distance est en cours (msra.exe), ou les programmes ne se lisent pas : Vanguard ne coupe jamais une session à distance ; rien d'écrit",
             "a remote assistance is in progress (msra.exe), or programs cannot be read: Vanguard never cuts a remote session; nothing written",
         );
+    }
+    if matches!(id, IdReglage::OuvertureAutoMdp | IdReglage::OuvertureAutoCoupe)
+        && let Some(raison) = gestes::refus_ouverture_auto(
+            super::comptes_ecriture::programmes_par_session().as_deref(),
+            crate::protection::blocage::gardes::programme_de_session,
+        )
+    {
+        return Resultat::echec(None, raison_ouverture_auto(&raison));
     }
     if let Some(q) = reglages::question(id)
         && !reglages::confirmer(super::eleve::console_reelle(), q, crate::ui::demander_ou_defaut)
@@ -274,5 +304,23 @@ fn resultat(issue: Issue) -> Resultat {
             avant_notable(&avant)
         )),
         Issue::Echec { avant, raison } => Resultat::echec(avant.as_deref().map(avant_notable), raison),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// La racine du compte permet de créer une clé qui manque dessous, sans droit d'écrire ni d'effacer à la racine.
+    #[test]
+    fn acces_de_la_racine_du_compte() {
+        use winreg::enums::KEY_ALL_ACCESS;
+        /// DELETE et WRITE_DAC de winnt.h.
+        const DELETE: u32 = 0x0001_0000;
+        const WRITE_DAC: u32 = 0x0004_0000;
+        assert_eq!(ACCES_RACINE_COMPTE & KEY_CREATE_SUB_KEY, KEY_CREATE_SUB_KEY);
+        assert_eq!(ACCES_RACINE_COMPTE & KEY_QUERY_VALUE, KEY_QUERY_VALUE);
+        assert_eq!(ACCES_RACINE_COMPTE & (KEY_SET_VALUE | DELETE | WRITE_DAC), 0);
+        assert_ne!(ACCES_RACINE_COMPTE, KEY_ALL_ACCESS);
     }
 }

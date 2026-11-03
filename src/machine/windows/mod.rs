@@ -1357,13 +1357,12 @@ pub fn session_a_distance() -> bool {
     distante || std::env::var("SESSIONNAME").is_ok_and(|s| s.to_ascii_uppercase().starts_with("RDP-"))
 }
 
-/// La valeur PortNumber de RDP-Tcp, le port où le Bureau à distance écoute (`gardes::port_rdp_lu` la juge).
-pub(crate) fn port_bureau_a_distance() -> Option<u32> {
-    registre::<u32>(
-        winreg::enums::HKEY_LOCAL_MACHINE,
-        r"SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp",
-        "PortNumber",
-    )
+/// La valeur PortNumber de RDP-Tcp, le port où le Bureau à distance écoute (`gardes::port_rdp_de` la juge) ; une
+/// erreur NotFound quand la clé ou la valeur manque, une autre quand elle ne se lit pas (droits, type).
+pub(crate) fn port_bureau_a_distance() -> std::io::Result<u32> {
+    winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
+        .open_subkey(r"SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp")?
+        .get_value("PortNumber")
 }
 
 fn uac() -> Constat {

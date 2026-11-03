@@ -365,7 +365,7 @@ pub(super) fn poser_guillemets(nom: &NomFichier) -> Resultat {
     if sens_change_par_le_gestionnaire(&brute.vtype, &brut) {
         return noter_et_ecrire(nom, &brute, &nouveau);
     }
-    if let Some(r) = refus_session(nom) {
+    if let Some(r) = refus_session(nom, &[&brut, &nouveau]) {
         return r;
     }
     match super::services_ecriture::changer_le_chemin(nom.texte(), &nouveau) {
@@ -471,19 +471,31 @@ fn ecrire_au_registre(nom: &NomFichier, valeur: &winreg::RegValue) -> std::io::R
         .set_raw_value("ImagePath", valeur)
 }
 
-/// Changer le chemin d'un service d'accès à distance (TermService, sshd…) pendant une session, ou quand elle ne se
-/// lit pas : refusé (garde B, `gestes::refus_chemin_session`).
-fn refus_session(nom: &NomFichier) -> Option<Resultat> {
-    gestes::refus_chemin_session(nom.texte(), super::reglages_ecriture::session_ouverte()).then(|| {
+/// Changer le chemin d'un service d'accès à distance (TermService, sshd…) ou d'un outil d'accès à distance, de prise
+/// en main ou de VPN (AnyDesk, TeamViewer, OpenVPN… : nom du service ou programme des `chemins`, actuel ou visé)
+/// pendant une session, ou quand elle ne se lit pas : refusé (garde B, `gestes::refus_chemin_outil`).
+fn refus_session(nom: &NomFichier, chemins: &[&str]) -> Option<Resultat> {
+    gestes::refus_chemin_outil(
+        nom.texte(),
+        chemins,
+        super::reglages_ecriture::session_ouverte(),
+        crate::protection::blocage::gardes::programme_de_session,
+    )
+    .then(|| {
         Resultat::echec(
             None,
             tr!(
-                "service d'accès à distance et session à distance en cours (ou illisible) : Vanguard ne touche pas à son chemin ; rien d'écrit",
-                "remote access service and remote session in progress (or unreadable): Vanguard leaves its path alone; nothing written"
+                "service d'accès à distance (ou outil d'accès à distance, de prise en main ou VPN) et session à distance en cours (ou illisible) : Vanguard ne touche pas à son chemin ; rien d'écrit",
+                "remote access service (or remote access, remote control or VPN tool) and remote session in progress (or unreadable): Vanguard leaves its path alone; nothing written"
             )
             .to_string(),
         )
     })
+}
+
+/// Deux valeurs du registre identiques : même type, mêmes octets.
+fn meme_valeur(a: &winreg::RegValue, b: &winreg::RegValue) -> bool {
+    a.vtype == b.vtype && a.bytes.as_ref() == b.bytes.as_ref()
 }
 
 /// Note le chemin d'avant et celui écrit (ChoixAvant, « svc-… »), puis écrit `nouveau` : au registre en gardant le
@@ -491,10 +503,10 @@ fn refus_session(nom: &NomFichier) -> Option<Resultat> {
 /// moindre erreur, le chemin d'avant est remis et la note effacée.
 fn noter_et_ecrire(nom: &NomFichier, brute: &winreg::RegValue, nouveau: &str) -> Resultat {
     use crate::machine::reglages;
-    if let Some(r) = refus_session(nom) {
+    let brut = super::corrections::texte_reg(brute).unwrap_or_default();
+    if let Some(r) = refus_session(nom, &[&brut, nouveau]) {
         return r;
     }
-    let brut = super::corrections::texte_reg(brute).unwrap_or_default();
     let avant = avant_notable(&brut);
     let note_nom = reglages::nom_note_service(nom.texte());
     let ecrit = reglages::Brute {
@@ -528,6 +540,18 @@ fn noter_et_ecrire(nom: &NomFichier, brute: &winreg::RegValue, nouveau: &str) ->
             tr!(
                 "la note ne se relit pas : rien d'écrit",
                 "the note cannot be read back: nothing written"
+            )
+            .to_string(),
+        );
+    }
+    // Relu juste avant d'écrire : un chemin changé pendant la question n'est jamais écrasé.
+    if !lire_chemin(nom).is_ok_and(|(_, v, _)| meme_valeur(&v, brute)) {
+        crate::machine::choix_avant::effacer_brut(&note_nom);
+        return Resultat::echec(
+            Some(avant),
+            tr!(
+                "le chemin a changé pendant la question : rien d'écrit",
+                "the path changed during the question: nothing written"
             )
             .to_string(),
         );
@@ -637,7 +661,7 @@ pub(super) fn guillemets_risques(nom: &NomFichier) -> Resultat {
             .to_string(),
         );
     };
-    if let Some(r) = refus_session(nom) {
+    if let Some(r) = refus_session(nom, &[&brut, &nouveau]) {
         return r;
     }
     let question = trf!(
@@ -742,7 +766,7 @@ pub(super) fn remettre_chemin(nom: &NomFichier) -> Resultat {
             .to_string(),
         );
     }
-    if let Some(r) = refus_session(nom) {
+    if let Some(r) = refus_session(nom, &[&brut, &t_ancien]) {
         return r;
     }
     let ecriture = if sens_change_par_le_gestionnaire(&type_ancien, &t_ancien) {
@@ -1012,6 +1036,23 @@ pub(super) fn juger(sortie: &str) -> Option<Constat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Le chemin relu juste avant d'écrire doit être exactement celui qui a été jugé et montré : type et octets.
+    #[test]
+    fn chemin_relu_avant_d_ecrire_identique() {
+        use winreg::enums::{REG_EXPAND_SZ, REG_SZ};
+        let v = |vtype, t: &str| winreg::RegValue {
+            bytes: octets_texte(t).into(),
+            vtype,
+        };
+        assert!(meme_valeur(&v(REG_SZ, r"C:\a b\s.exe"), &v(REG_SZ, r"C:\a b\s.exe")));
+        assert!(!meme_valeur(
+            &v(REG_SZ, r"C:\a b\s.exe"),
+            &v(REG_EXPAND_SZ, r"C:\a b\s.exe")
+        ));
+        assert!(!meme_valeur(&v(REG_SZ, r"C:\a b\s.exe"), &v(REG_SZ, r"C:\a b\t.exe")));
+        assert!(!meme_valeur(&v(REG_SZ, r"C:\a b\s.exe"), &v(REG_SZ, r"C:\a b\s.exe ")));
+    }
 
     #[test]
     fn programmes_sans_guillemets() {

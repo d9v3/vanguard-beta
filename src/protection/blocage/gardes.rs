@@ -345,7 +345,9 @@ const PROGRAMMES_DE_SESSION: &[&str] = &[
     "dwagent",
 ];
 
-fn programme_de_session(nom: &str) -> bool {
+/// `nom` (un nom de programme ou un chemin, « .exe » ou non) est-il un programme d'accès à distance, de prise en main
+/// ou de VPN ? Aussi la garde de session du chemin des services (défense D6b).
+pub(crate) fn programme_de_session(nom: &str) -> bool {
     let n = nom_simple(nom);
     PROGRAMMES_DE_SESSION.contains(&n.as_str()) || n.starts_with("vnc") || n.ends_with("vnc") || n.contains("vncserver")
 }
@@ -369,16 +371,28 @@ pub(crate) fn port_rdp_lu(valeur: Option<u32>) -> Option<u16> {
     valeur.and_then(|n| u16::try_from(n).ok()).filter(|&n| n != 0)
 }
 
-/// Le PortNumber de RDP-Tcp de cet ordinateur ; ailleurs que sous Windows, aucun.
+/// PortNumber de RDP-Tcp est là mais ne se lit pas (droits, type) : le port réel du Bureau à distance n'est pas sûr.
+#[cfg(any(windows, test))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PortIllisible;
+
+/// Le port du Bureau à distance d'après la lecture de PortNumber : `port_rdp_lu` si elle est lue ou manque
+/// (NotFound), `PortIllisible` si elle est là mais ne se lit pas.
+#[cfg(any(windows, test))]
+pub(crate) fn port_rdp_de(lu: std::io::Result<u32>) -> Result<Option<u16>, PortIllisible> {
+    match lu {
+        Ok(n) => Ok(port_rdp_lu(Some(n))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(PortIllisible),
+    }
+}
+
+/// Le PortNumber de RDP-Tcp de cet ordinateur ; illisible, aucun (3389 reste gardé).
+#[cfg(windows)]
 pub(crate) fn port_rdp() -> Option<u16> {
-    #[cfg(windows)]
-    {
-        port_rdp_lu(crate::machine::windows::port_bureau_a_distance())
-    }
-    #[cfg(not(windows))]
-    {
-        None
-    }
+    port_rdp_de(crate::machine::windows::port_bureau_a_distance())
+        .ok()
+        .flatten()
 }
 
 /// WinRM (PowerShell à distance), HTTP et HTTPS : sa connexion est tenue par System (HTTP.sys), qu'aucun nom de
@@ -620,11 +634,15 @@ fn etablies_avec(netstat: &str, a_moi: &[(String, u16, IpAddr, u16)]) -> Vec<Eta
 
 /// Ce que les connexions en cours interdisent de couper sur cet ordinateur : les sessions à distance, entrantes comme
 /// sortantes, celle du client SSH de Vanguard, et les adresses des connexions d'autres comptes. `None` : la table des
-/// connexions ne se lit pas.
+/// connexions ne se lit pas, ou le port réel du Bureau à distance non plus (`port_rdp_de`).
 pub(crate) fn sessions_a_distance() -> Option<Sessions> {
+    #[cfg(windows)]
+    let port = port_rdp_de(crate::machine::windows::port_bureau_a_distance()).ok()?;
+    #[cfg(not(windows))]
+    let port = None;
     let etablies = lire_etablies()?;
     let client = std::env::var("SSH_CONNECTION").ok().as_deref().and_then(client_ssh);
-    Some(juger_etablies(&etablies, client, port_rdp()))
+    Some(juger_etablies(&etablies, client, port))
 }
 
 #[cfg(target_os = "linux")]
@@ -875,6 +893,24 @@ mod tests {
         assert_eq!(port_rdp_lu(Some(3390)), Some(3390));
     }
 
+    /// PortNumber présent mais illisible (droits, type) : le port n'est pas sûr, les sessions ne se lisent pas ;
+    /// absent : aucun port de plus que 3389.
+    #[test]
+    fn port_rdp_illisible_rend_les_sessions_illisibles() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(port_rdp_de(Ok(3390)), Ok(Some(3390)));
+        assert_eq!(port_rdp_de(Ok(0)), Ok(None));
+        assert_eq!(port_rdp_de(Err(Error::from(ErrorKind::NotFound))), Ok(None));
+        assert_eq!(
+            port_rdp_de(Err(Error::from(ErrorKind::PermissionDenied))),
+            Err(PortIllisible)
+        );
+        assert_eq!(
+            port_rdp_de(Err(Error::from(ErrorKind::InvalidData))),
+            Err(PortIllisible)
+        );
+    }
+
     /// Le réseau redémarré par l'assistant élevé : seules les sessions ENTRANTES le retiennent (SSH ou Bureau à
     /// distance sur un port local en écoute, un programme de prise en main) ; ni un VPN, ni un SSH qui part d'ici.
     #[test]
@@ -1014,6 +1050,27 @@ mod tests {
             assert!(programme_de_session(nom), "{nom}");
         }
         assert!(!programme_de_session("firefox") && !programme_de_session("ssh-agent"));
+    }
+
+    /// La garde de session du chemin des services (défense D6b) reconnaît les outils d'accès à distance et les VPN
+    /// tiers par le programme qu'ils lancent, tel que le registre l'écrit.
+    #[test]
+    fn programmes_de_session_lus_d_un_chemin_de_service() {
+        use crate::machine::gestes::programme_du_chemin;
+        for chemin in [
+            r#""C:\Program Files (x86)\AnyDesk\AnyDesk.exe" --service"#,
+            r#""C:\Program Files\TeamViewer\TeamViewer_Service.exe""#,
+            r#""C:\Program Files\OpenVPN\bin\openvpnserv.exe""#,
+            r#""C:\Program Files\Tailscale\tailscaled.exe""#,
+            r#""C:\Program Files\WireGuard\wireguard.exe" /tunnelservice "C:\x.conf""#,
+            r#""C:\Program Files\RustDesk\rustdesk.exe" --service"#,
+            r"C:\Windows\System32\OpenSSH\sshd.exe",
+        ] {
+            assert!(programme_de_session(programme_du_chemin(chemin)), "{chemin}");
+        }
+        assert!(!programme_de_session(programme_du_chemin(
+            r#""C:\Program Files\Outil\svc.exe" -k"#
+        )));
     }
 
     #[test]
