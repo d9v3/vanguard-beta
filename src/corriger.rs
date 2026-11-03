@@ -7,17 +7,45 @@ use crate::reseau::{Hote, Rapport};
 use crate::risk::Niveau;
 use crate::ui::*;
 
+/// Ce que `proposer` a fait des corrections proposées : de quoi dire le code de sortie de « vanguard corriger ».
+#[derive(Debug, Default)]
+pub struct Bilan {
+    /// Les catégories des corrections appliquées.
+    pub appliquees: Vec<&'static str>,
+    /// Refusées dans la liste (« n », ou Entrée seule) : la personne n'en voulait pas.
+    pub refusees: usize,
+    /// Acceptées (« o », « t ») mais pas faites : « N » ou Entrée dans la fenêtre administrateur, UAC refusée,
+    /// échec de la commande, point de restauration refusé, valeurs d'avant non enregistrées.
+    pub non_faites: usize,
+}
+
+impl Bilan {
+    /// 0 : tout ce qui a été accepté est fait et rien n'a été refusé (ou il n'y avait rien à faire) ; 1 : une
+    /// correction acceptée n'est pas faite ; 2 : des corrections refusées dans la liste, les acceptées faites.
+    /// Avant, « vanguard corriger » rendait toujours 0 : un script (un banc d'essai) le croyait fait (D6b, étape 2).
+    /// « `[i]gnorer` » ne compte pas : c'est dire que l'état est normal ici, pas refuser une correction.
+    pub fn code(&self) -> i32 {
+        if self.non_faites > 0 {
+            1
+        } else if self.refusees > 0 {
+            2
+        } else {
+            0
+        }
+    }
+}
+
 /// Propose chaque correction automatique, puis liste celles à faire soi-même. « `[t]out` » applique la correction
 /// en cours et toutes les suivantes en une seule exécution : une seule fenêtre administrateur sous Windows.
-/// Retourne les catégories des corrections appliquées. `contexte` nomme le point de restauration créé
-/// automatiquement avant la première correction appliquée (« corrections », « mises à jour »).
-pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
+/// Retourne ce qui a été fait (le `Bilan`). `contexte` nomme le point de restauration créé automatiquement avant
+/// la première correction appliquée (« corrections », « mises à jour »).
+pub fn proposer(constats: &[Constat], contexte: &str) -> Bilan {
     let mut point_cree = false;
     let auto: Vec<_> = constats
         .iter()
         .filter_map(|c| Some((c, c.correctif.as_ref().filter(|k| k.automatique)?)))
         .collect();
-    let mut appliquees = Vec::new();
+    let mut bilan = Bilan::default();
     // Ce que l'Agent Vanguard sait des corrections d'ici (R6) : de l'information seulement, rien n'est retiré.
     let avis = crate::agent::avis_corrections();
     let fragile = |c: &Constat| avis.de(c.regle).fragile.is_some();
@@ -82,6 +110,7 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
             } else {
                 crate::amelioration::noter_correction(c.regle, Issue::Refusee);
                 crate::amelioration::noter_choix(c.regle, Choisi::Refus);
+                bilan.refusees += 1;
                 trp!("    {GRIS}ignoré{RESET}", "    {GRIS}skipped{RESET}");
                 continue;
             };
@@ -136,6 +165,7 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
                             // Pas de correction sans point de restauration : on le retentera avant la prochaine
                             // correction acceptée, au lieu de l'appliquer sans rien dire.
                             point_cree = false;
+                            bilan.non_faites += lot.len();
                             trp!("    {GRIS}ignoré{RESET}", "    {GRIS}skipped{RESET}");
                             continue;
                         }
@@ -156,6 +186,7 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
                     "    ✖ Valeurs d'avant non enregistrées : rien n'a été appliqué.",
                     "    ✖ Previous values not saved: nothing was applied."
                 );
+                bilan.non_faites += lot.len();
                 continue;
             }
             let mut ids = ids_lot;
@@ -202,7 +233,9 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
                     {
                         crate::optimiser::retenir_protection(id);
                     }
-                    appliquees.push(c.categorie);
+                    bilan.appliquees.push(c.categorie);
+                } else {
+                    bilan.non_faites += 1;
                 }
                 let cat = crate::langue::categorie(c.categorie);
                 // Sans ces lignes, un échec (UAC refusée, commande en erreur) passait sans un mot de Vanguard.
@@ -256,7 +289,7 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
             }
         }
     }
-    appliquees
+    bilan
 }
 
 /// Relève l'état d'avant d'une correction : erreur, pourquoi elle ne s'annulera pas.
@@ -308,10 +341,12 @@ fn dire_si_annulable(k: &Correctif) {
     }
 }
 
-/// Propose les corrections de la machine, puis la marche à suivre pour le reste. Retourne le nouvel audit.
-pub fn corriger(audit: &Audit, reseau: Option<&Rapport>) -> Option<Audit> {
+/// Propose les corrections de la machine, puis la marche à suivre pour le reste. Retourne le nouvel audit (si une
+/// correction a été appliquée) et le code de sortie (`Bilan::code`).
+pub fn corriger(audit: &Audit, reseau: Option<&Rapport>) -> (Option<Audit>, i32) {
     titre(tr!("Corrections", "Fixes"));
-    let applique = !proposer(&audit.constats, tr!("corrections", "fixes")).is_empty();
+    let bilan = proposer(&audit.constats, tr!("corrections", "fixes"));
+    let applique = !bilan.appliquees.is_empty();
 
     if let Some(r) = reseau {
         let exposes: Vec<_> = r
@@ -354,9 +389,9 @@ pub fn corriger(audit: &Audit, reseau: Option<&Rapport>) -> Option<Audit> {
         let nouveau = machine::auditer(false);
         afficher_note(tr!("Avant", "Before"), audit.score);
         afficher_note(tr!("Après", "After"), nouveau.score);
-        return Some(nouveau);
+        return (Some(nouveau), bilan.code());
     }
-    None
+    (None, bilan.code())
 }
 
 /// Adresse de la page d'administration d'un appareil, d'après ses ports ouverts (http d'abord). Hors des ports
@@ -377,6 +412,24 @@ fn interface_admin(h: &Hote) -> Option<String> {
 mod tests {
     use super::*;
     use crate::reseau::PortOuvert;
+
+    #[test]
+    fn code_de_sortie_de_corriger() {
+        let b = |appliquees: usize, refusees, non_faites| Bilan {
+            appliquees: vec!["pare-feu"; appliquees],
+            refusees,
+            non_faites,
+        };
+        // Rien à faire, ou tout ce qui a été accepté est fait.
+        assert_eq!(b(0, 0, 0).code(), 0);
+        assert_eq!(b(3, 0, 0).code(), 0);
+        // Des refus dans la liste, le reste fait (ou rien d'accepté) : 2, pas le faux vert d'avant.
+        assert_eq!(b(1, 2, 0).code(), 2);
+        assert_eq!(b(0, 4, 0).code(), 2);
+        // Une acceptée non faite l'emporte sur tout : 1.
+        assert_eq!(b(0, 0, 1).code(), 1);
+        assert_eq!(b(2, 3, 1).code(), 1);
+    }
 
     /// R6 : un « tout » laisse les corrections fragiles hors du lot, pour être proposées une à une ; répondu « tout »
     /// à chacune ensuite, chaque correction est appliquée une fois, aucune n'est perdue.

@@ -127,7 +127,10 @@ enum Commande {
         #[arg(long)]
         json: bool,
     },
-    /// Audit de l'ordinateur puis application guidée des correctifs.
+    /// Audit de l'ordinateur puis application guidée des correctifs. Code de sortie : 0 tout ce qui a été accepté
+    /// est fait (ou rien à faire), 1 une correction acceptée n'est pas faite (« N » ou Entrée dans la fenêtre
+    /// administrateur, UAC refusée, échec), 2 des corrections refusées dans la liste (« n » ou Entrée), les autres
+    /// faites. « i » (c'est normal chez moi) n'est pas un refus.
     #[command(visible_alias = "fix")]
     Corriger,
     /// Chercher un outil, une page du guide, un logiciel ou un réglage : les dix meilleurs résultats, avec leur place
@@ -984,11 +987,14 @@ impl Session {
         let _ = rapport::generer(self.audit.as_ref(), self.reseau.as_ref(), self.audit_reseau.as_ref());
     }
 
-    fn corriger(&mut self) {
+    /// Le code de sortie de « vanguard corriger » : `corriger::Bilan::code`.
+    fn corriger(&mut self) -> i32 {
         let audit = self.audit.get_or_insert_with(|| machine::executer(false));
-        if let Some(nouveau) = corriger::corriger(audit, self.reseau.as_ref()) {
+        let (nouveau, code) = corriger::corriger(audit, self.reseau.as_ref());
+        if let Some(nouveau) = nouveau {
             self.audit = Some(nouveau);
         }
+        code
     }
 }
 
@@ -2772,7 +2778,9 @@ async fn executer_outil(s: &mut Session, action: Action) {
     }
     match action {
         Action::Complet => s.complet().await,
-        Action::Corriger => s.corriger(),
+        Action::Corriger => {
+            s.corriger();
+        }
         Action::Rapport => {
             if s.audit.is_none() && s.reseau.is_none() {
                 s.complet().await;
@@ -3022,7 +3030,10 @@ fn etat_de_la_protection() {
 const AIDES_EN: &[(&str, &str)] = &[
     ("bilan", "Full check: this computer, then the network"),
     ("audit", "Audit this computer (firewall, ports, SSH, updates, encryption…)"),
-    ("corriger", "Audit the machine, then apply the fixes step by step"),
+    ("corriger", "Audit the machine, then apply the fixes step by step. Exit code: 0 everything accepted is \
+                  done (or nothing to do), 1 an accepted fix is not done (“N” or Enter in the administrator \
+                  window, UAC declined, failure), 2 fixes declined in the list (“n” or Enter), the others done. \
+                  “i” (normal for me) is not a decline"),
     ("appareils", "Network scan: devices, open ports, risks, changes since previous scans"),
     ("audit-reseau", "Network audit by domain: six grades (exposure to the Internet, Wi-Fi, segmentation, DNS and TLS, \
                       connected devices, computers) from the local network scan, this computer's network findings and \
@@ -3695,7 +3706,12 @@ async fn main() {
         Some(Commande::Machine { json }) => {
             machine::executer(json);
         }
-        Some(Commande::Corriger) => Session::default().corriger(),
+        Some(Commande::Corriger) => {
+            let code = Session::default().corriger();
+            if code != 0 {
+                machine::quitter(code);
+            }
+        }
         Some(Commande::Reseau {
             cible,
             ports,

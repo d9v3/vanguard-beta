@@ -549,7 +549,7 @@ pub(super) fn proche() {
 
     // Les corrections du circuit habituel, dans l'ordre du résumé : chacune montrée puis acceptée, point de
     // restauration avant la première.
-    let audit = match crate::corriger::corriger(&dans_l_ordre(&audit, &priorite), rapport.as_ref()) {
+    let audit = match crate::corriger::corriger(&dans_l_ordre(&audit, &priorite), rapport.as_ref()).0 {
         Some(nouveau) => {
             crate::historique::enregistrer(Some(&nouveau), rapport.as_ref());
             nouveau
