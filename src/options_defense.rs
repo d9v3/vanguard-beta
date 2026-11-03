@@ -812,10 +812,22 @@ impl Gestion {
     }
 }
 
+/// Les fournisseurs que Windows 11 inscrit de lui-même sous `Enrollments`, sur un PC joint à rien (VM du 3 nov. :
+/// `dsregcmd /status` dit AzureAdJoined, EnterpriseJoined, DomainJoined et WorkplaceJoined à NO, et ces trois
+/// inscriptions sont pourtant « inscrites » (EnrollmentState 1, EnrollmentType 0x1c, 0x1e, 0x1f), sans UPN ni
+/// DiscoveryServiceFullURL). Ce sont des autorités internes de Windows, pas une organisation : elles faisaient voir
+/// tout PC comme « géré » (stratégies seulement montrées, jamais retirées).
+const AUTORITES_DE_WINDOWS: [&str; 3] = ["Local Authority", "Cloud Authority", "Deploy Authority"];
+
 /// Une inscription de `HKLM\SOFTWARE\Microsoft\Enrollments\<id>` est-elle une gestion active ? Windows y laisse des
-/// entrées sans fournisseur ou abandonnées : seule compte celle qui nomme son fournisseur et dit « inscrite » (1).
+/// entrées sans fournisseur ou abandonnées : seule compte celle qui nomme son fournisseur et dit « inscrite » (1), et
+/// dont le fournisseur n'est pas une autorité interne de Windows (`AUTORITES_DE_WINDOWS`). Un fournisseur inconnu
+/// compte (« MS DM Server » d'Intune, un MDM tiers) : sans UPN ni adresse de découverte aussi, car une inscription
+/// par paquet de provisionnement peut ne pas les avoir, et un « non géré » à tort ferait retirer la stratégie d'une
+/// organisation. Le doute reste du côté « géré » (seulement montré).
 pub(crate) fn inscription_active(fournisseur: Option<&str>, etat: Option<u32>) -> bool {
-    fournisseur.is_some_and(|f| !f.trim().is_empty()) && etat == Some(1)
+    let interne = |f: &str| AUTORITES_DE_WINDOWS.iter().any(|a| f.trim().eq_ignore_ascii_case(a));
+    fournisseur.is_some_and(|f| !f.trim().is_empty() && !interne(f)) && etat == Some(1)
 }
 
 /// L'édition de Windows, d'après `EditionID`.
@@ -2369,6 +2381,25 @@ mod tests {
         assert!(!inscription_active(None, Some(1)));
         assert!(!inscription_active(Some("MS DM Server"), Some(0)));
         assert!(!inscription_active(Some("MS DM Server"), None));
+        // VM du 3 nov. : Windows 11, joint à rien, inscrit de lui-même ces trois autorités (état 1) : non géré.
+        let vm = ["Local Authority", "Cloud Authority", "Deploy Authority"];
+        assert!(vm.iter().all(|a| !inscription_active(Some(a), Some(1))));
+        assert!(!inscription_active(Some(" local authority "), Some(1)));
+        assert_eq!(
+            une_presente(vm.iter().map(|a| Some(inscription_active(Some(a), Some(1))))),
+            Some(false)
+        );
+        // Un vrai MDM (Intune : « MS DM Server »), ou un MDM tiers, à côté d'elles : géré.
+        assert!(inscription_active(Some("MS DM Server"), Some(1)));
+        assert!(inscription_active(Some("AirWatchMDM"), Some(1)));
+        assert_eq!(
+            une_presente(
+                vm.iter()
+                    .chain(&["MS DM Server"])
+                    .map(|a| Some(inscription_active(Some(a), Some(1))))
+            ),
+            Some(true)
+        );
         let g = Gestion {
             domaine: Some(false),
             entra: Some(false),
