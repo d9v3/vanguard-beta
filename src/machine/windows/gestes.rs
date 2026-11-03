@@ -3359,7 +3359,22 @@ pub(crate) enum IdReglage {
     Macros(u8, u8),
     /// Credential Guard (sécurité basée sur la virtualisation), sans verrou UEFI.
     CredentialGuard,
+    /// La stratégie d'un navigateur (indice dans `NAVIGATEURS`) qui coupe la protection contre les sites frauduleux
+    /// (`pq` faux) ou l'échange de clés post-quantique (`pq` vrai), retirée de la machine (HKLM) ou du compte de la
+    /// personne (`compte`), hors gestion seulement. Firefox : le post-quantique seulement (sa protection contre les
+    /// sites frauduleux se coupe par la stratégie Preferences, un texte JSON qui reste à la main).
+    Navigateur { nav: u8, pq: bool, compte: bool },
 }
+
+/// Les navigateurs dont Vanguard sait retirer une stratégie du registre : nom (celui de `extensions::racines`), clé
+/// des stratégies (sous HKLM ou HKCU), mot de la ligne. Une liste fermée : la ligne ne porte que le mot.
+pub(crate) const NAVIGATEURS: [(&str, &str, &str); 5] = [
+    ("Chrome", r"SOFTWARE\Policies\Google\Chrome", "chrome"),
+    ("Chromium", r"SOFTWARE\Policies\Chromium", "chromium"),
+    ("Brave", r"SOFTWARE\Policies\BraveSoftware\Brave", "brave"),
+    ("Edge", r"SOFTWARE\Policies\Microsoft\Edge", "edge"),
+    ("Firefox", r"SOFTWARE\Policies\Mozilla\Firefox", "firefox"),
+];
 
 impl IdReglage {
     const FIXES: [IdReglage; 14] = [
@@ -3389,6 +3404,17 @@ impl IdReglage {
                 }
             }
         }
+        for (i, (nom, _, _)) in NAVIGATEURS.iter().enumerate() {
+            let Ok(nav) = u8::try_from(i) else { continue };
+            for pq in [false, true] {
+                if !pq && *nom == "Firefox" {
+                    continue;
+                }
+                for compte in [false, true] {
+                    t.push(IdReglage::Navigateur { nav, pq, compte });
+                }
+            }
+        }
         t
     }
 
@@ -3414,6 +3440,20 @@ impl IdReglage {
                 self::OFFICE_PROGRAMMES.get(usize::from(p)).map_or("?", |x| x.0)
             ),
             IdReglage::CredentialGuard => "credential-guard".into(),
+            IdReglage::Navigateur { nav, pq, compte } => format!(
+                "nav-{}-{}-{}",
+                NAVIGATEURS.get(usize::from(nav)).map_or("?", |n| n.2),
+                if pq { "pq" } else { "sb" },
+                if compte { "compte" } else { "machine" }
+            ),
+        }
+    }
+
+    /// Le nom et la clé des stratégies du navigateur d'un réglage `Navigateur`.
+    pub(crate) fn navigateur(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            IdReglage::Navigateur { nav, .. } => NAVIGATEURS.get(usize::from(nav)).map(|n| (n.0, n.1)),
+            _ => None,
         }
     }
 
@@ -3454,7 +3494,10 @@ impl IdReglage {
 
     /// Écrit-il dans le registre du compte de la personne (HKEY_USERS\<SID>) plutôt que dans celui de la machine ?
     pub(crate) fn du_compte(self) -> bool {
-        matches!(self, IdReglage::PsStrategieCompte | IdReglage::Macros(..))
+        matches!(
+            self,
+            IdReglage::PsStrategieCompte | IdReglage::Macros(..) | IdReglage::Navigateur { compte: true, .. }
+        )
     }
 
     /// Retire-t-il une stratégie de groupe (seulement sur un PC hors domaine et hors gestion, §3.3) ?
@@ -3467,6 +3510,7 @@ impl IdReglage {
                 | IdReglage::PsStrategieMachine
                 | IdReglage::PsStrategieCompte
                 | IdReglage::Macros(..)
+                | IdReglage::Navigateur { .. }
         )
     }
 

@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::{Constat, alerte, impossible, ok, sans_objet};
+use crate::machine::gestes::{IdReglage, NAVIGATEURS, ligne_reglage};
 use crate::modele::{Absence, Objet};
 use crate::risk::Niveau;
 use crate::{tr, trf};
@@ -197,68 +198,75 @@ fn strategies(nom: &str) -> Strategies {
 
 #[cfg(windows)]
 fn strategies(nom: &str) -> Strategies {
+    strategies_de(nom, None)
+}
+
+/// Comme `strategies`, avec `sid` : les stratégies du compte lues sous HKEY_USERS\<sid> au lieu de HKCU (le
+/// processus élevé, qui rejuge pour la personne ; elles gardent le nom « HKCU » dans l'endroit montré).
+#[cfg(windows)]
+fn strategies_de(nom: &str, sid: Option<&str>) -> Strategies {
     use winreg::RegKey;
-    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, HKEY_USERS};
+    let ouvrir = |machine: bool, cle: &str| match (machine, sid) {
+        (true, _) => RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(cle),
+        (false, None) => RegKey::predef(HKEY_CURRENT_USER).open_subkey(cle),
+        (false, Some(sid)) => RegKey::predef(HKEY_USERS).open_subkey(format!(r"{sid}\{cle}")),
+    };
     let mut s = Strategies::default();
-    let cle = match nom {
-        "Chrome" => r"SOFTWARE\Policies\Google\Chrome",
-        "Chromium" => r"SOFTWARE\Policies\Chromium",
-        "Brave" => r"SOFTWARE\Policies\BraveSoftware\Brave",
-        "Edge" => r"SOFTWARE\Policies\Microsoft\Edge",
-        "Firefox" => {
-            // Le registre passe avant distribution\policies.json, et HKLM avant HKCU, comme dans Firefox.
-            let cle = r"SOFTWARE\Policies\Mozilla\Firefox";
-            for (racine, court) in [(HKEY_LOCAL_MACHINE, "HKLM"), (HKEY_CURRENT_USER, "HKCU")] {
-                let Ok(k) = RegKey::predef(racine).open_subkey(cle) else {
+    let Some(cle) = NAVIGATEURS.iter().find(|n| n.0 == nom).map(|n| n.1) else {
+        return s;
+    };
+    if nom == "Firefox" {
+        // Le registre passe avant distribution\policies.json, et HKLM avant HKCU, comme dans Firefox.
+        for (machine, court) in [(true, "HKLM"), (false, "HKCU")] {
+            let Ok(k) = ouvrir(machine, cle) else {
+                continue;
+            };
+            let pq = k.get_value::<u32, _>("PostQuantumKeyAgreementEnabled").ok();
+            // REG_SZ ou REG_MULTI_SZ (lignes jointes par winreg) : le JSON de la stratégie Preferences.
+            let texte = k.get_value::<String, _>("Preferences").ok();
+            let anciennes: Vec<(String, u32)> = k
+                .open_subkey("Preferences")
+                .map(|p| {
+                    PREFS_PQ
+                        .into_iter()
+                        .filter_map(|n| Some((n.to_string(), p.get_value::<u32, _>(n).ok()?)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let (objet, illisible) = firefox_du_registre(pq, texte.as_deref(), &anciennes);
+            if illisible {
+                s.illisibles.push(format!(r"{court}\{cle}\Preferences"));
+            }
+            if let Some(objet) = objet {
+                s.firefox = Some((objet, format!(r"{court}\{cle}")));
+                break;
+            }
+        }
+        if s.firefox.is_none() {
+            for variable in ["ProgramFiles", "ProgramFiles(x86)"] {
+                let Some(base) = std::env::var_os(variable) else {
                     continue;
                 };
-                let pq = k.get_value::<u32, _>("PostQuantumKeyAgreementEnabled").ok();
-                // REG_SZ ou REG_MULTI_SZ (lignes jointes par winreg) : le JSON de la stratégie Preferences.
-                let texte = k.get_value::<String, _>("Preferences").ok();
-                let anciennes: Vec<(String, u32)> = k
-                    .open_subkey("Preferences")
-                    .map(|p| {
-                        PREFS_PQ
-                            .into_iter()
-                            .filter_map(|n| Some((n.to_string(), p.get_value::<u32, _>(n).ok()?)))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let (objet, illisible) = firefox_du_registre(pq, texte.as_deref(), &anciennes);
-                if illisible {
-                    s.illisibles.push(format!(r"{court}\{cle}\Preferences"));
+                let c = std::path::Path::new(&base).join(r"Mozilla Firefox\distribution\policies.json");
+                if !c.exists() {
+                    continue;
                 }
-                if let Some(objet) = objet {
-                    s.firefox = Some((objet, format!(r"{court}\{cle}")));
-                    break;
+                let ou = c.display().to_string();
+                match std::fs::read_to_string(&c).ok().as_deref().and_then(json_souple) {
+                    Some(v) => s.firefox = Some((champ(&v, &["policies"]).clone(), ou)),
+                    None => s.illisibles.push(ou),
                 }
+                break;
             }
-            if s.firefox.is_none() {
-                for variable in ["ProgramFiles", "ProgramFiles(x86)"] {
-                    let Some(base) = std::env::var_os(variable) else {
-                        continue;
-                    };
-                    let c = std::path::Path::new(&base).join(r"Mozilla Firefox\distribution\policies.json");
-                    if !c.exists() {
-                        continue;
-                    }
-                    let ou = c.display().to_string();
-                    match std::fs::read_to_string(&c).ok().as_deref().and_then(json_souple) {
-                        Some(v) => s.firefox = Some((champ(&v, &["policies"]).clone(), ou)),
-                        None => s.illisibles.push(ou),
-                    }
-                    break;
-                }
-            }
-            return s;
         }
-        _ => return s,
-    };
+        return s;
+    }
     // HKLM lu en dernier : il passe avant HKCU.
-    for (racine, court) in [(HKEY_CURRENT_USER, "HKCU"), (HKEY_LOCAL_MACHINE, "HKLM")] {
+    for (machine, court) in [(false, "HKCU"), (true, "HKLM")] {
         for (sous, cible) in [("", &mut s.imposees), (r"\Recommended", &mut s.recommandees)] {
             let chemin = format!("{cle}{sous}");
-            let Ok(k) = RegKey::predef(racine).open_subkey(&chemin) else {
+            let Ok(k) = ouvrir(machine, &chemin) else {
                 continue;
             };
             for v in [
@@ -311,6 +319,134 @@ fn firefox_du_registre(pq: Option<u32>, texte: Option<&str>, anciennes: &[(Strin
         objet.insert("Preferences".into(), Value::Object(prefs));
     }
     ((!objet.is_empty()).then_some(Value::Object(objet)), illisible)
+}
+
+/// Le réglage qui retire la stratégie du registre `ou` (« HKLM\… » ou « HKCU\… », tel que `strategies` l'écrit) qui
+/// coupe la protection d'un navigateur de `gestes::NAVIGATEURS` par la règle `regle` ; `None` pour tout le reste
+/// (fichier de stratégies, Preferences de Firefox, stratégie recommandée, autre navigateur), qui reste à la main.
+fn id_retrait(nom: &str, regle: &str, ou: &str) -> Option<IdReglage> {
+    let (i, (_, cle, _)) = NAVIGATEURS.iter().enumerate().find(|(_, n)| n.0 == nom)?;
+    let nav = u8::try_from(i).ok()?;
+    let (racine, reste) = ou.split_once('\\')?;
+    let compte = match racine {
+        "HKLM" => false,
+        "HKCU" => true,
+        _ => return None,
+    };
+    let valeur = |v: &str| reste.strip_prefix(cle).and_then(|r| r.strip_prefix('\\')) == Some(v);
+    let pq = match regle {
+        "PostQuantumKeyAgreementEnabled = false" if nom == "Firefox" => reste == *cle,
+        "PostQuantumKeyAgreementEnabled = false" => valeur("PostQuantumKeyAgreementEnabled"),
+        _ => false,
+    };
+    let sb = nom != "Firefox"
+        && match regle {
+            "SafeBrowsingProtectionLevel = 0" => valeur("SafeBrowsingProtectionLevel"),
+            "SafeBrowsingEnabled = false" => valeur("SafeBrowsingEnabled"),
+            _ => false,
+        };
+    (pq || sb).then_some(IdReglage::Navigateur { nav, pq, compte })
+}
+
+/// Ce que devient la correction d'une stratégie qui coupe une protection.
+#[derive(Debug, PartialEq)]
+enum Retrait {
+    /// Pas une stratégie que Vanguard sait retirer : à la main, comme avant.
+    AlaMain,
+    /// PC dans un domaine, géré, ou dont la gestion ne se lit pas : montré seulement.
+    Gere,
+    /// PC hors domaine et hors gestion : la ligne du geste (valeur d'avant notée, annulable).
+    Ligne(String),
+}
+
+/// La gestion n'est lue que pour une stratégie que Vanguard sait retirer.
+fn retrait(id: Option<IdReglage>, hors_gestion: impl FnOnce() -> bool) -> Retrait {
+    match id {
+        None => Retrait::AlaMain,
+        Some(id) if hors_gestion() => Retrait::Ligne(ligne_reglage(id)),
+        Some(_) => Retrait::Gere,
+    }
+}
+
+/// Le PC est-il hors domaine et hors gestion (lecture qui manque : non) ? Sous Linux et macOS, les stratégies sont des
+/// fichiers, que Vanguard ne retire pas (défense D7) : non.
+fn hors_gestion() -> bool {
+    #[cfg(windows)]
+    {
+        super::windows::defense_etat::hors_gestion()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Le retrait d'une stratégie : `ou`, l'endroit ; `pq` : l'échange post-quantique (sinon les sites frauduleux). Un
+/// constat sans correction (stratégie sans effet) reste tel quel.
+fn avec_retrait(c: Constat, ou: &str, r: &Retrait, pq: bool) -> Constat {
+    if c.correctif.is_none() {
+        return c;
+    }
+    let ensuite = if pq {
+        tr!(
+            "chercher le logiciel qui l'a posée",
+            "look for the software that set it"
+        )
+    } else {
+        tr!("un examen antivirus", "an antivirus scan")
+    };
+    match r {
+        Retrait::AlaMain => c,
+        Retrait::Gere => c.manuel(
+            trf!(
+                "Stratégie sur un PC dans un domaine, géré, ou dont la gestion ne se lit pas : à changer par qui gère l'ordinateur (entreprise, école) ; Vanguard ne la retire que sur un PC hors domaine et hors gestion ({ou})",
+                "Policy on a PC in a domain, managed, or whose management cannot be read: to be changed by whoever manages the computer (company, school); Vanguard only removes it on a PC outside a domain and unmanaged ({ou})"
+            ),
+            &[],
+        ),
+        Retrait::Ligne(l) => c.corriger(
+            trf!(
+                "Retirer la stratégie {ou} (PC hors domaine et hors gestion ; valeur d'avant notée, annulable), puis {ensuite}",
+                "Remove the policy {ou} (PC outside a domain and unmanaged; previous value noted, undoable), then {ensuite}"
+            ),
+            std::slice::from_ref(l),
+        ),
+    }
+}
+
+/// Le bilan refait par le processus élevé pour le retrait d'une stratégie de navigateur (`vanguard:reglage
+/// nav-…`) : vrai si les stratégies lues à cet instant (celles du compte sous HKEY_USERS\<sid>) font proposer
+/// exactement ce retrait. La gestion du PC est vérifiée à part (`reglages_ecriture::poser`). La version du
+/// navigateur n'est pas relue : retirer une stratégie post-quantique devenue sans effet (version 147 et plus) ne
+/// baisse rien.
+#[cfg(windows)]
+pub(crate) fn rejuger_strategie(id: IdReglage, sid: Option<&str>) -> bool {
+    let Some((nom, _)) = id.navigateur() else {
+        return false;
+    };
+    let sid = sid.filter(|s| crate::machine::reglages::sid_valide(s));
+    if id.du_compte() && sid.is_none() {
+        return false;
+    }
+    retraits(nom, &strategies_de(nom, sid)).contains(&id)
+}
+
+/// Les retraits que les stratégies lues font proposer pour un navigateur (la gestion du PC mise à part).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn retraits(nom: &str, s: &Strategies) -> Vec<IdReglage> {
+    if nom == "Firefox" {
+        return s
+            .firefox
+            .as_ref()
+            .and_then(|(p, ou)| id_retrait(nom, &firefox_pq_impose(p)?, ou))
+            .into_iter()
+            .collect();
+    }
+    [safe_browsing_coupe(&s.imposees), chromium_pq_coupe(&s.imposees)]
+        .into_iter()
+        .flatten()
+        .filter_map(|(regle, ou)| id_retrait(nom, &regle, &ou))
+        .collect()
 }
 
 /// Une stratégie qui coupe la protection : les Paramètres ne peuvent pas la rallumer.
@@ -392,7 +528,8 @@ pub fn navigateurs() -> Vec<Constat> {
                 (safe_browsing_coupe(&s.imposees), recommandee)
             };
             if let Some((regle, ou)) = imposee {
-                constats.push(juger_strategie(nom, &ou, &regle));
+                let r = retrait(id_retrait(nom, &regle, &ou), hors_gestion);
+                constats.push(avec_retrait(juger_strategie(nom, &ou, &regle), &ou, &r, false));
             }
             if !s.illisibles.is_empty() {
                 constats.push(impossible(
@@ -652,6 +789,19 @@ fn juger_pq(navigateur: &str, coupure: Option<&CoupurePq>, sans: &SansCoupure) -
     }
 }
 
+/// `juger_pq`, et pour une stratégie du registre qui coupe l'échange, son retrait (hors gestion) ou « montré
+/// seulement » (géré).
+fn pq_et_retrait(nom: &str, coupure: Option<&CoupurePq>, sans: &SansCoupure) -> Constat {
+    let c = juger_pq(nom, coupure, sans);
+    match coupure {
+        Some(CoupurePq::Strategie { regle, ou, .. }) => {
+            let r = retrait(id_retrait(nom, regle, ou), hors_gestion);
+            avec_retrait(c, ou, &r, true)
+        }
+        _ => c,
+    }
+}
+
 /// Rien ne coupe l'échange : encore faut-il que la version le propose. Une version illisible ne conclut rien.
 fn juger_sans_coupure(navigateur: &str, sans: &SansCoupure) -> Constat {
     let actif = |groupe: &str| {
@@ -737,7 +887,7 @@ pub fn post_quantique() -> Vec<Constat> {
                 version: lue(),
                 allume: false,
             };
-            constats.push(juger_pq(nom, coupure.as_ref(), &sans).avec_objet(Objet::de("pq", nom)));
+            constats.push(pq_et_retrait(nom, coupure.as_ref(), &sans).avec_objet(Objet::de("pq", nom)));
             continue;
         }
         let s = strategies(nom);
@@ -755,7 +905,7 @@ pub fn post_quantique() -> Vec<Constat> {
                     version: Version::SansObjet,
                     allume: false,
                 };
-                constats.push(juger_pq(nom, Some(&c), &sans).avec_objet(Objet::de("pq", nom)));
+                constats.push(pq_et_retrait(nom, Some(&c), &sans).avec_objet(Objet::de("pq", nom)));
             }
             continue;
         }
@@ -1164,6 +1314,223 @@ mod tests {
         // Rien : pas de stratégie ; texte abîmé : dit illisible.
         assert_eq!(firefox_du_registre(None, None, &[]), (None, false));
         assert_eq!(firefox_du_registre(None, Some("{\"a\":"), &[]), (None, true));
+    }
+
+    /// Défense D6c : seule une stratégie du registre d'un navigateur de la table, à l'endroit exact que `strategies`
+    /// écrit et pour la règle qui coupe, devient un retrait ; tout le reste (fichier, Preferences de Firefox,
+    /// stratégie recommandée, autre navigateur, endroit forgé) reste à la main.
+    #[test]
+    fn retrait_des_strategies_du_registre() {
+        let id = |nav, pq, compte| Some(IdReglage::Navigateur { nav, pq, compte });
+        let chrome = r"SOFTWARE\Policies\Google\Chrome";
+        assert_eq!(
+            id_retrait(
+                "Chrome",
+                "SafeBrowsingProtectionLevel = 0",
+                &format!(r"HKLM\{chrome}\SafeBrowsingProtectionLevel")
+            ),
+            id(0, false, false)
+        );
+        assert_eq!(
+            id_retrait(
+                "Edge",
+                "SafeBrowsingEnabled = false",
+                r"HKCU\SOFTWARE\Policies\Microsoft\Edge\SafeBrowsingEnabled"
+            ),
+            id(3, false, true)
+        );
+        assert_eq!(
+            id_retrait(
+                "Brave",
+                "PostQuantumKeyAgreementEnabled = false",
+                r"HKLM\SOFTWARE\Policies\BraveSoftware\Brave\PostQuantumKeyAgreementEnabled"
+            ),
+            id(2, true, false)
+        );
+        assert_eq!(
+            id_retrait(
+                "Firefox",
+                "PostQuantumKeyAgreementEnabled = false",
+                r"HKCU\SOFTWARE\Policies\Mozilla\Firefox"
+            ),
+            id(4, true, true)
+        );
+        for (nom, regle, ou) in [
+            // La règle ne va pas avec l'endroit.
+            (
+                "Chrome",
+                "SafeBrowsingEnabled = false",
+                format!(r"HKLM\{chrome}\SafeBrowsingProtectionLevel"),
+            ),
+            (
+                "Chrome",
+                "SafeBrowsingEnabled = false",
+                format!(r"HKLM\{chrome}\PostQuantumKeyAgreementEnabled"),
+            ),
+            // Le navigateur ne va pas avec la clé, ou n'est pas dans la table.
+            (
+                "Edge",
+                "SafeBrowsingEnabled = false",
+                format!(r"HKLM\{chrome}\SafeBrowsingEnabled"),
+            ),
+            (
+                "Vivaldi",
+                "SafeBrowsingEnabled = false",
+                format!(r"HKLM\{chrome}\SafeBrowsingEnabled"),
+            ),
+            // Recommandée, autre racine, chemin forgé ou en fichier.
+            (
+                "Chrome",
+                "SafeBrowsingEnabled = false",
+                format!(r"HKLM\{chrome}\Recommended\SafeBrowsingEnabled"),
+            ),
+            (
+                "Chrome",
+                "SafeBrowsingEnabled = false",
+                format!(r"HKU\{chrome}\SafeBrowsingEnabled"),
+            ),
+            (
+                "Chrome",
+                "SafeBrowsingEnabled = false",
+                format!(r"HKLM\{chrome}\..\X\SafeBrowsingEnabled"),
+            ),
+            (
+                "Chrome",
+                "SafeBrowsingEnabled = false",
+                format!(r"HKLM\{chrome}\SafeBrowsingEnabled\x"),
+            ),
+            (
+                "Chrome",
+                "SafeBrowsingEnabled = false",
+                "/etc/opt/chrome/policies/managed/x.json".to_string(),
+            ),
+            // Firefox : sa protection contre les sites frauduleux et ses Preferences restent à la main, comme son
+            // policies.json.
+            (
+                "Firefox",
+                "Preferences : network.http.http3.enable_kyber = false",
+                r"HKLM\SOFTWARE\Policies\Mozilla\Firefox".to_string(),
+            ),
+            (
+                "Firefox",
+                "Preferences : browser.safebrowsing.malware.enabled = false",
+                r"HKLM\SOFTWARE\Policies\Mozilla\Firefox".to_string(),
+            ),
+            (
+                "Firefox",
+                "PostQuantumKeyAgreementEnabled = false",
+                r"C:\Program Files\Mozilla Firefox\distribution\policies.json".to_string(),
+            ),
+            (
+                "Firefox",
+                "PostQuantumKeyAgreementEnabled = false",
+                r"HKLM\SOFTWARE\Policies\Mozilla\Firefox\PostQuantumKeyAgreementEnabled".to_string(),
+            ),
+        ] {
+            assert_eq!(id_retrait(nom, regle, &ou), None, "{nom} {regle} {ou}");
+        }
+        // Chaque retrait est un réglage de la grammaire fermée, sa remise aussi ; il se retire de la ruche lue.
+        for id in IdReglage::tous().into_iter().filter(|i| i.navigateur().is_some()) {
+            assert!(id.strategie() && id.annulable(), "{id:?}");
+            assert_eq!(IdReglage::lire(&id.mot()), Some(id));
+            assert!(id.mot().starts_with("nav-") && id.mot().len() <= 64);
+        }
+        assert_eq!(
+            ligne_reglage(IdReglage::Navigateur {
+                nav: 0,
+                pq: false,
+                compte: true
+            }),
+            "vanguard:reglage nav-chrome-sb-compte"
+        );
+        assert!(IdReglage::lire("nav-firefox-sb-machine").is_none());
+        assert!(IdReglage::lire("nav-vivaldi-pq-machine").is_none());
+        assert!(IdReglage::lire("nav-chrome-pq-autre").is_none());
+    }
+
+    /// Géré (ou gestion illisible) : montré seulement, sans aucune ligne ; hors gestion : la ligne, annulable ; une
+    /// stratégie que Vanguard ne sait pas retirer ne fait jamais lire la gestion.
+    #[test]
+    fn navigateur_gere_montre_seulement() {
+        let ou = r"HKLM\SOFTWARE\Policies\Google\Chrome\SafeBrowsingEnabled";
+        let id = id_retrait("Chrome", "SafeBrowsingEnabled = false", ou);
+        assert_eq!(retrait(None, || panic!("gestion lue pour rien")), Retrait::AlaMain);
+        assert_eq!(retrait(id, || false), Retrait::Gere);
+        let ligne = ligne_reglage(id.unwrap());
+        assert_eq!(retrait(id, || true), Retrait::Ligne(ligne.clone()));
+        let c = || juger_strategie("Chrome", ou, "SafeBrowsingEnabled = false");
+        let gere = avec_retrait(c(), ou, &Retrait::Gere, false);
+        let k = gere.correctif.as_ref().unwrap();
+        assert!(!k.automatique && k.commandes.is_empty(), "{}", k.action);
+        assert!(gere.probleme == Some(Niveau::Moyen) && gere.coherent());
+        let libre = avec_retrait(c(), ou, &Retrait::Ligne(ligne.clone()), false);
+        let k = libre.correctif.as_ref().unwrap();
+        assert!(k.automatique && k.commandes == vec![ligne], "{}", k.action);
+        assert!(
+            k.action.contains("annulable") || k.action.contains("undoable"),
+            "{}",
+            k.action
+        );
+        assert!(libre.coherent());
+        let a_la_main = avec_retrait(c(), ou, &Retrait::AlaMain, false);
+        let k = a_la_main.correctif.as_ref().unwrap();
+        assert_eq!(k.action, c().correctif.unwrap().action);
+        assert!(!k.automatique && k.commandes.is_empty());
+        // Une stratégie post-quantique sans effet (version 147 et plus) n'a pas de correction : rien n'est ajouté.
+        let sans_effet = CoupurePq::Strategie {
+            regle: "PostQuantumKeyAgreementEnabled = false".into(),
+            ou: ou.into(),
+            version: Version::Lue(147),
+        };
+        let j = juger_pq("Chrome", Some(&sans_effet), &recent(false));
+        assert!(j.correctif.is_none());
+        assert!(
+            avec_retrait(j, ou, &Retrait::Ligne("x".into()), true)
+                .correctif
+                .is_none()
+        );
+    }
+
+    /// Ce que le processus élevé rejuge : les stratégies lues font proposer exactement ces retraits.
+    #[test]
+    fn retraits_rejuges() {
+        let mut s = Strategies::default();
+        let chrome = r"HKLM\SOFTWARE\Policies\Google\Chrome";
+        s.imposees.insert(
+            "SafeBrowsingProtectionLevel".into(),
+            (Value::from(0), format!(r"{chrome}\SafeBrowsingProtectionLevel")),
+        );
+        s.imposees.insert(
+            "PostQuantumKeyAgreementEnabled".into(),
+            (Value::from("0"), format!(r"{chrome}\PostQuantumKeyAgreementEnabled")),
+        );
+        let n = |pq| IdReglage::Navigateur {
+            nav: 0,
+            pq,
+            compte: false,
+        };
+        assert_eq!(retraits("Chrome", &s), vec![n(false), n(true)]);
+        // Rallumée entre-temps : plus rien.
+        s.imposees.insert(
+            "SafeBrowsingProtectionLevel".into(),
+            (Value::from(1), format!(r"{chrome}\SafeBrowsingProtectionLevel")),
+        );
+        s.imposees.remove("PostQuantumKeyAgreementEnabled");
+        assert_eq!(retraits("Chrome", &s), Vec::<IdReglage>::new());
+        let mut f = Strategies::default();
+        let (v, _) = firefox_du_registre(Some(0), None, &[]);
+        f.firefox = Some((v.unwrap(), r"HKLM\SOFTWARE\Policies\Mozilla\Firefox".into()));
+        assert_eq!(
+            retraits("Firefox", &f),
+            vec![IdReglage::Navigateur {
+                nav: 4,
+                pq: true,
+                compte: false
+            }]
+        );
+        let (v, _) = firefox_du_registre(None, Some(r#"{"network.http.http3.enable_kyber":false}"#), &[]);
+        f.firefox = Some((v.unwrap(), r"HKLM\SOFTWARE\Policies\Mozilla\Firefox".into()));
+        assert_eq!(retraits("Firefox", &f), Vec::<IdReglage>::new());
     }
 
     /// La vraie règle sur cet ordinateur, en lecture seule : jamais vide, toujours cohérente.

@@ -673,6 +673,27 @@ pub(crate) fn nom_reglage(id: crate::machine::gestes::IdReglage) -> String {
             "Turn on Credential Guard (virtualization-based security, without firmware lock)"
         )
         .to_string(),
+        IdReglage::Navigateur { pq, compte, .. } => {
+            let (nom, _) = id.navigateur().unwrap_or(("?", "?"));
+            match (pq, compte) {
+                (false, false) => trf!(
+                    "Retirer la stratégie de la machine qui coupe la protection de {nom} contre les sites frauduleux (SafeBrowsing ; PC hors domaine et hors gestion)",
+                    "Remove the machine policy that turns off {nom}'s protection against fraudulent sites (SafeBrowsing; PC outside a domain and unmanaged)"
+                ),
+                (false, true) => trf!(
+                    "Retirer la stratégie de votre compte qui coupe la protection de {nom} contre les sites frauduleux (SafeBrowsing ; PC hors domaine et hors gestion)",
+                    "Remove the policy on your account that turns off {nom}'s protection against fraudulent sites (SafeBrowsing; PC outside a domain and unmanaged)"
+                ),
+                (true, false) => trf!(
+                    "Retirer la stratégie de la machine qui coupe l'échange de clés post-quantique de {nom} (PostQuantumKeyAgreementEnabled ; PC hors domaine et hors gestion)",
+                    "Remove the machine policy that turns off {nom}'s post-quantum key exchange (PostQuantumKeyAgreementEnabled; PC outside a domain and unmanaged)"
+                ),
+                (true, true) => trf!(
+                    "Retirer la stratégie de votre compte qui coupe l'échange de clés post-quantique de {nom} (PostQuantumKeyAgreementEnabled ; PC hors domaine et hors gestion)",
+                    "Remove the policy on your account that turns off {nom}'s post-quantum key exchange (PostQuantumKeyAgreementEnabled; PC outside a domain and unmanaged)"
+                ),
+            }
+        }
     }
 }
 

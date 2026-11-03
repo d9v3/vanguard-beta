@@ -1329,6 +1329,7 @@ pub(super) fn rejuger_reglage(id: IdReglage, sid: Option<&str>) -> bool {
         )
         .into_iter()
         .collect(),
+        IdReglage::Navigateur { .. } => return crate::machine::navigateur::rejuger_strategie(id, sid),
     };
     propose(&constats, &ligne_reglage(id))
 }

@@ -182,6 +182,22 @@ pub(crate) fn table(id: IdReglage) -> Vec<Ecrit> {
             ),
             machine(LSA, "LsaCfgFlags", Dword(2)),
         ],
+        // Les deux valeurs qui coupent la protection contre les sites frauduleux, retirées ensemble (sans elles, le
+        // navigateur revient à sa protection par défaut).
+        IdReglage::Navigateur { pq, compte, .. } => id.navigateur().map_or_else(Vec::new, |(_, cle)| {
+            let ou = |valeur| {
+                if compte {
+                    self::compte(cle, valeur, Absente)
+                } else {
+                    machine(cle, valeur, Absente)
+                }
+            };
+            if pq {
+                vec![ou("PostQuantumKeyAgreementEnabled")]
+            } else {
+                vec![ou("SafeBrowsingProtectionLevel"), ou("SafeBrowsingEnabled")]
+            }
+        }),
     }
 }
 
@@ -773,7 +789,24 @@ mod tests {
     #[test]
     fn chaque_reglage_a_sa_table_et_son_mot() {
         let tous = IdReglage::tous();
-        assert_eq!(tous.len(), 14 + 3 * 6);
+        // 14 fixes, les macros (3 versions × 6 programmes), les stratégies des navigateurs (4 de la famille Chromium
+        // × 2 protections × 2 ruches, Firefox : le post-quantique × 2 ruches).
+        assert_eq!(tous.len(), 14 + 3 * 6 + 4 * 2 * 2 + 2);
+        // Une stratégie de navigateur : seulement ses valeurs qui coupent, retirées, sous la clé des stratégies.
+        for id in tous.iter().filter(|i| i.navigateur().is_some()) {
+            let (_, cle) = id.navigateur().unwrap();
+            let t = table(*id);
+            assert!(
+                t.iter().all(|e| e.cle == cle && e.cible == Cible::Absente && !e.secret),
+                "{id:?}"
+            );
+            assert!(cle.starts_with(r"SOFTWARE\Policies\"), "{cle}");
+            let valeurs: Vec<&str> = t.iter().map(|e| e.valeur).collect();
+            match id {
+                IdReglage::Navigateur { pq: true, .. } => assert_eq!(valeurs, ["PostQuantumKeyAgreementEnabled"]),
+                _ => assert_eq!(valeurs, ["SafeBrowsingProtectionLevel", "SafeBrowsingEnabled"]),
+            }
+        }
         for id in &tous {
             let t = table(*id);
             assert!(!t.is_empty(), "{id:?}");
