@@ -1,0 +1,10 @@
+vanguard:bloquer-sortie ufw ::ffff:203.0.113.7
+vanguard:bloquer-sortie ufw 203.0.113.07
+vanguard:fermer-port ufw 0
+vanguard:fermer-port ufw 65536
+vanguard:fermer-port ufw 022
+vanguard:fermer-port  ufw 22
+vanguard:fermer-port iptables 22
+vanguard:remettre-pilotes 2
+VANGUARD:couper-connexions 203.0.113.7
+vanguard:geste programme freshclam

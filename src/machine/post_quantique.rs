@@ -720,7 +720,18 @@ fn lire_serveur() -> Lecture<Serveur> {
     // fichier et ne se voit que par « sshd -T », en administrateur. RHEL 9 et Fedora l'incluent dans le fichier.
     const POLITIQUE: &str = "/etc/crypto-policies/back-ends/opensshserver.config";
     match sshd_en_marche() {
-        None => return Lecture::Illisible(Raison::Absente("systemd".into())),
+        None if !std::path::Path::new("/run/systemd/system").is_dir() => {
+            return Lecture::Illisible(Raison::Absente("systemd".into()));
+        }
+        None => {
+            return Lecture::Illisible(Raison::Illisible(
+                tr!(
+                    "état du serveur SSH non lu (ni le bus système ni systemctl n'ont répondu)",
+                    "SSH server state not read (neither the system bus nor systemctl answered)"
+                )
+                .into(),
+            ));
+        }
         Some(false) => return Lecture::Absent(Absence::Inactif),
         Some(true) => {}
     }

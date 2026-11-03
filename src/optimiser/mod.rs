@@ -536,24 +536,119 @@ fn confirmer_et_executer(a_faire: &[&Reglage], a_annuler: &[&Reglage]) {
         trp!("  Annulé.", "  Cancelled.");
         return;
     }
+    // Ce que chaque changement doit valoir une fois fait, lu avant : la note d'un réglage annulé disparaît avec lui.
+    // Une protection ne se défait jamais (`executer_avec`) : rien à comparer, elle n'est jamais dite « en partie ».
+    let voulues: Vec<Option<Vec<Valeur>>> = a_faire
+        .iter()
+        .map(|r| Some(r.changements.iter().map(systeme::Changement::cible).collect()))
+        .chain(
+            a_annuler
+                .iter()
+                .map(|r| (!systeme::reglage_protege(&r.id)).then(|| valeurs_d_avant(r, &h))),
+        )
+        .collect();
+    // Chaque changement déjà à ce qu'il doit valoir avant de lancer : il ne sera pas compté « fait » par Vanguard.
+    let reglages = a_faire.iter().chain(a_annuler);
+    let deja: Vec<Option<Vec<bool>>> = reglages
+        .zip(&voulues)
+        .map(|(r, v)| {
+            v.as_ref()
+                .map(|v| r.changements.iter().zip(v).map(|(c, v)| c.lire() == *v).collect())
+        })
+        .collect();
     let (faits, annules) = executer(a_faire, a_annuler, &mut h);
     println!();
-    for (r, ok) in a_faire.iter().zip(&faits).chain(a_annuler.iter().zip(&annules)) {
+    let tous = a_faire.iter().zip(&faits).chain(a_annuler.iter().zip(&annules));
+    for (((r, ok), voulues), deja) in tous.zip(voulues).zip(deja) {
         // L'état relu après coup : c'est lui qui dit si le changement a pris.
-        let e = etat(r);
         let voulu_fait = a_faire.iter().any(|f| f.id == r.id);
-        if *ok && (e == Etat::Fait) == voulu_fait {
-            println!("  {VERT}✔{RESET} {}", r.titre);
-        } else {
-            trp!(
+        let conforme = (etat(r) == Etat::Fait) == voulu_fait;
+        // Chaque changement relu, comparé à ce qu'il devait valoir, et à ce qu'il valait avant.
+        let relus = voulues.map(|v| {
+            r.changements
+                .iter()
+                .zip(v)
+                .zip(deja.unwrap_or_default().into_iter().chain(std::iter::repeat(false)))
+                .map(|((c, v), avant)| Relu {
+                    avant,
+                    apres: c.lire() == v,
+                    texte: crate::ui::affichable(&c.decrire(v.as_deref())),
+                })
+                .collect::<Vec<_>>()
+        });
+        match issue_du_reglage(*ok, conforme, relus) {
+            IssueReglage::Reussi => println!("  {VERT}✔{RESET} {}", r.titre),
+            IssueReglage::EnPartie { fait, pas_fait } => trp!(
+                "  ✖ {} : changé en partie seulement, voir le message ci-dessus\n      fait : {}\n      pas fait : {}",
+                "  ✖ {}: only partly changed, see the message above\n      done: {}\n      not done: {}",
+                r.titre,
+                fait.join(" ; "),
+                pas_fait.join(" ; ")
+            ),
+            IssueReglage::FaitEnPartie => trp!(
+                "  ✖ {} : fait en partie (en place à la relecture, mais une étape a échoué)",
+                "  ✖ {}: partly done (in place when read back, but a step failed)",
+                r.titre
+            ),
+            IssueReglage::PasChange => trp!(
                 "  ✖ {} : pas changé, voir le message ci-dessus",
                 "  ✖ {}: not changed, see the message above",
                 r.titre
-            );
+            ),
         }
     }
     let touches: Vec<&Reglage> = a_faire.iter().chain(a_annuler).copied().collect();
     systeme::apres(&touches);
+}
+
+/// Un changement d'un réglage relu : à ce qu'il devait valoir avant de lancer, après, et sa description.
+struct Relu {
+    avant: bool,
+    apres: bool,
+    texte: String,
+}
+
+/// Ce qui est dit d'un réglage après l'application.
+#[derive(Debug, PartialEq, Eq)]
+enum IssueReglage {
+    Reussi,
+    /// Une partie de ses changements faite par Vanguard, une autre pas.
+    EnPartie {
+        fait: Vec<String>,
+        pas_fait: Vec<String>,
+    },
+    /// Une étape a échoué, mais tout est à ce qu'il doit valoir à la relecture : jamais « pas changé ».
+    FaitEnPartie,
+    PasChange,
+}
+
+/// L'issue d'un réglage : `ok` (ses étapes ont réussi), `conforme` (son état relu est celui voulu), `relus` (chaque
+/// changement relu ; `None` pour une protection, qui ne se compare pas). Un changement déjà en place avant n'est
+/// jamais compté « fait » par Vanguard ; un réglage d'un seul changement relu en place malgré une étape en échec est
+/// « fait en partie », jamais « pas changé ».
+fn issue_du_reglage(ok: bool, conforme: bool, relus: Option<Vec<Relu>>) -> IssueReglage {
+    if ok && conforme {
+        return IssueReglage::Reussi;
+    }
+    let Some(relus) = relus else {
+        return if conforme {
+            IssueReglage::FaitEnPartie
+        } else {
+            IssueReglage::PasChange
+        };
+    };
+    let fait: Vec<String> = relus
+        .iter()
+        .filter(|r| r.apres && !r.avant)
+        .map(|r| r.texte.clone())
+        .collect();
+    let pas_fait: Vec<String> = relus.iter().filter(|r| !r.apres).map(|r| r.texte.clone()).collect();
+    match (fait.is_empty(), pas_fait.is_empty()) {
+        (false, false) => IssueReglage::EnPartie { fait, pas_fait },
+        (_, true) if ok => IssueReglage::Reussi,
+        (_, true) => IssueReglage::FaitEnPartie,
+        (true, false) => IssueReglage::PasChange,
+    }
 }
 
 /// Cette catégorie a-t-elle au moins un réglage pour cette machine ?
@@ -856,6 +951,56 @@ pub fn tout_annuler() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un réglage changé en partie dit ce qui est fait et ce qui ne l'est pas ; un changement déjà en place avant
+    /// n'est pas compté « fait » ; un seul changement relu en place malgré une étape en échec est « fait en partie »,
+    /// jamais « pas changé ».
+    #[test]
+    fn changement_en_partie_dit_le_fait_et_le_reste() {
+        let l = |v: &[(bool, bool, &str)]| {
+            Some(
+                v.iter()
+                    .map(|&(avant, apres, d)| Relu {
+                        avant,
+                        apres,
+                        texte: d.to_string(),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let s = |v: &[&str]| v.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            issue_du_reglage(
+                false,
+                false,
+                l(&[(false, true, "a"), (false, false, "b"), (false, true, "c")])
+            ),
+            IssueReglage::EnPartie {
+                fait: s(&["a", "c"]),
+                pas_fait: s(&["b"])
+            }
+        );
+        assert_eq!(
+            issue_du_reglage(false, false, l(&[(false, false, "a"), (false, false, "b")])),
+            IssueReglage::PasChange
+        );
+        // Déjà en place avant : pas « fait » par Vanguard, donc rien n'a changé.
+        assert_eq!(
+            issue_du_reglage(false, false, l(&[(true, true, "a"), (false, false, "b")])),
+            IssueReglage::PasChange
+        );
+        // Un seul changement, une étape en échec, mais relu en place.
+        assert_eq!(
+            issue_du_reglage(false, true, l(&[(false, true, "a")])),
+            IssueReglage::FaitEnPartie
+        );
+        assert_eq!(issue_du_reglage(false, true, None), IssueReglage::FaitEnPartie);
+        assert_eq!(issue_du_reglage(false, false, None), IssueReglage::PasChange);
+        assert_eq!(
+            issue_du_reglage(true, true, l(&[(false, true, "a")])),
+            IssueReglage::Reussi
+        );
+    }
 
     #[test]
     fn catalogue_complet_et_sans_doublon() {

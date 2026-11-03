@@ -341,6 +341,148 @@ pub fn lancer_en_anglais(commande: &mut Command, secondes: u64) -> Option<Result
     lancer(commande.env("LC_ALL", "C.UTF-8").env_remove("LANGUAGE"), secondes)
 }
 
+/// Un programme du système par son chemin, jamais par le PATH du compte (qui choisirait un faux « sudo » posé dans un
+/// dossier à lui). NixOS met ses programmes setuid dans /run/wrappers/bin.
+#[cfg(unix)]
+pub(crate) fn outil_systeme(nom: &str) -> Option<std::path::PathBuf> {
+    [
+        "/run/wrappers/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+        "/run/current-system/sw/bin",
+    ]
+    .iter()
+    .map(|d| std::path::Path::new(d).join(nom))
+    .find(|c| c.is_file())
+}
+
+/// Un outil du système (`outil_systeme`) prêt à lancer dans un `environnement_propre` : ni un faux programme posé dans
+/// le PATH du compte, ni ses variables (LD_PRELOAD, BASH_ENV…) ne choisissent ce qui tourne. `None` si l'outil n'est
+/// pas dans les dossiers du système : à dire, jamais à chercher ailleurs.
+#[cfg(target_os = "linux")]
+pub(crate) fn outil_propre(nom: &str) -> Option<Command> {
+    let mut c = Command::new(outil_systeme(nom)?);
+    environnement_propre(&mut c, std::env::vars_os());
+    Some(c)
+}
+
+/// Le PATH des commandes qu'une correction lance (`environnement_propre`) : les dossiers du système d'abord, pour qu'un
+/// faux « sudo » posé par un programme du compte dans un dossier à lui (~/.local/bin, ~/bin) ne soit jamais pris.
+/// /usr/local vient après le système : sous Debian, il a longtemps appartenu au groupe staff, et sous macOS, Homebrew le
+/// donne au compte qui l'a installé (comme /opt/homebrew, mis en dernier pour `brew` et ce qu'il installe). NixOS met
+/// ses programmes setuid (sudo) dans /run/wrappers/bin, et le reste dans /run/current-system/sw/bin.
+///
+/// Ce que cet ordre ne protège PAS : l'outil que sudo lance en root. sudo le cherche dans le `secure_path` de sudoers,
+/// pas dans ce PATH, et Debian comme Fedora y mettent /usr/local/sbin et /usr/local/bin EN TÊTE : un
+/// /usr/local/bin/apt-get écrit par le groupe staff passe avant le vrai. Raison de plus pour les gestes par chemin
+/// absolu (U2+). Sous macOS, aucune ligne `sudo` ne lance un outil de Homebrew (dossier du compte) : à garder ainsi.
+/// À l'inverse, `outil_systeme` ignore /usr/local : un freshclam compilé à la main y passe pour « pas installé ».
+///
+/// Absents exprès (à revoir avec les gestes par chemin absolu, U2+) : les dossiers de snap (/snap/bin), de Flatpak
+/// (…/flatpak/exports/bin), de Nix pour le compte (~/.nix-profile/bin, `/etc/profiles/per-user/<compte>/bin`), de
+/// Linuxbrew (son compte à part dans /home) et de MacPorts (/opt/local/bin) : un outil qui n'est installé que là
+/// échoue « introuvable », ce qui se voit. Plusieurs appartiennent au compte, et aucun n'est sûr pour root.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) const PATH_PROPRE: &str =
+    "/run/wrappers/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/usr/local/sbin:/run/current-system/sw/bin";
+#[cfg(target_os = "macos")]
+pub(crate) const PATH_PROPRE: &str =
+    "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/usr/local/sbin:/opt/homebrew/bin:/opt/homebrew/sbin";
+
+/// Les variables de la personne qu'une commande de correction garde : sa langue, son terminal, son bureau et sa
+/// session D-Bus (gsettings, systemctl --user), ses dossiers XDG (flatpak --user y installe), et son proxy. Rien
+/// d'autre : ni BASH_ENV (un script lu par tout bash non interactif), ni les fonctions exportées (BASH_FUNC_sudo%%, qui
+/// remplaceraient « sudo » dans la commande), ni LD_PRELOAD, ni SUDO_ASKPASS, ni le PATH. HOME, USER et LOGNAME ne
+/// viennent pas de là : `environnement_propre` les tire de la base des comptes, car bash développe `~` et `$HOME`
+/// AVANT sudo, et un HOME posé par un programme du compte (environment.d, ~/.zshenv) ferait écrire root chez lui.
+///
+/// Le proxy (http_proxy, https_proxy, no_proxy, ftp_proxy, en minuscules comme en majuscules) passe : sans lui, un
+/// réseau d'entreprise ne télécharge rien. Il ne choisit pas ce qui est installé : TLS et les signatures des paquets
+/// protègent contre le proxy. Les certificats, eux, ne passent jamais (SSL_CERT_FILE, SSL_CERT_DIR, CURL_CA_BUNDLE,
+/// REQUESTS_CA_BUNDLE) : une autorité choisie par le compte ferait croire à root le proxy qui intercepte, et c'est
+/// alors TLS qui ne protège plus rien.
+///
+/// Non gardés exprès, faute d'être sûrs (à revoir avec les gestes par chemin absolu, U2+) : XAUTHORITY (un fichier
+/// que le compte choisit, et que root lirait), et XDG_DATA_DIRS (voir `bash_propre`).
+#[cfg(unix)]
+const GARDEES: [&str; 18] = [
+    "LANG",
+    "TERM",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "ftp_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "FTP_PROXY",
+];
+
+/// Une variable de `de` passe-t-elle à une commande de correction (`GARDEES`, et les LC_* de la langue) ?
+#[cfg(unix)]
+fn gardee(nom: &std::ffi::OsStr) -> bool {
+    nom.to_str()
+        .is_some_and(|n| GARDEES.contains(&n) || n.strip_prefix("LC_").is_some_and(|r| !r.is_empty()))
+}
+
+/// Un environnement où un programme du compte (qui peut écrire ~/.bashrc, ~/.local/bin, environment.d) ne choisit
+/// rien de ce qui est lancé : `de` (l'environnement de Vanguard, en pratique) vidé, sauf `GARDEES`, et `PATH_PROPRE` ;
+/// HOME, USER et LOGNAME tirés de la base des comptes pour le compte qui tourne (absents s'il n'y figure pas, jamais
+/// repris de `de`). Un HOME de bac à sable (`env -i HOME=…`) ne vaut donc plus pour les lignes de correction.
+/// Sous Omarchy, ses scripts lisent OMARCHY_PATH sans valeur par défaut (omarchy-snapshot, que lance « omarchy
+/// update ») : il est remis à l'installation du système, jamais pris de l'environnement, qui pourrait le faire pointer
+/// vers un dossier du compte.
+#[cfg(unix)]
+pub(crate) fn environnement_propre(
+    commande: &mut Command,
+    de: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> &mut Command {
+    commande.env_clear();
+    for (nom, valeur) in de {
+        if gardee(&nom) {
+            commande.env(nom, valeur);
+        }
+    }
+    if let Some((nom, dossier)) = crate::socle::personnel::compte_de(crate::socle::uid()) {
+        commande.env("HOME", dossier).env("USER", &nom).env("LOGNAME", &nom);
+    }
+    commande.env("PATH", PATH_PROPRE);
+    if cfg!(target_os = "linux") && std::path::Path::new("/usr/share/omarchy").is_dir() {
+        commande.env("OMARCHY_PATH", "/usr/share/omarchy");
+    }
+    commande
+}
+
+/// Une ligne de correction lancée par bash, par son chemin, dans un `environnement_propre` tiré de `de`, sans lire
+/// aucun fichier de démarrage (--noprofile --norc ; BASH_ENV, lui, est retiré avec le reste de l'environnement).
+/// C'était le trou : la ligne « sudo … » prenait le sudo du PATH du compte, et un faux sudo posé dans ~/.local/bin
+/// recevait le mot de passe. bash vient des dossiers du système (`outil_systeme` : /usr/bin, /bin, et NixOS, qui n'a
+/// que /run/current-system/sw/bin) ; `None` s'il n'y est pas, à dire, jamais à chercher dans le PATH du compte.
+///
+/// XDG_DATA_DIRS ne passe pas : sous NixOS, un `gsettings set` lancé sous le compte (sans sudo) n'y trouve alors pas
+/// ses schémas et échoue, ce qui se voit. Le garder pour ces seules lignes demanderait de savoir, ligne par ligne,
+/// lesquelles restent sous le compte : c'est ce que donnent les gestes typés (U2+), pas une chaîne bash.
+#[cfg(unix)]
+pub(crate) fn bash_propre(
+    ligne: &str,
+    de: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Option<Command> {
+    let mut c = Command::new(outil_systeme("bash")?);
+    c.args(["--noprofile", "--norc", "-c", ligne]);
+    environnement_propre(&mut c, de);
+    Some(c)
+}
+
 /// Quelle part d'une sortie trop longue garder.
 #[cfg(unix)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1150,6 +1292,134 @@ mod tests_sh_chaine {
         trouves
     }
 
+    /// Les appels d'élévation du code (`compte_sudo` : sudo, doas, pkexec, run0 ; hors essais, hors commentaires et
+    /// hors guide/, qui les montre sans les lancer), par fichier, au 1er novembre 2026 : le lot Unix les remplace un à
+    /// un par des gestes que l'assistant élevé rejuge (`machine::gestes_unix`). Les textes et les listes qui nomment
+    /// l'outil (`assistant.rs`, la chasse, les règles) comptent aussi ; le nombre est exact, il ne peut que baisser, et
+    /// se baisse ici avec le code. Un nouvel appel passe par un geste. Un fichier à zéro sort de la liste.
+    const SUDO_RESTANTS: &[(&str, usize)] = &[
+        ("changements.rs", 2),
+        ("depanner/imprimante.rs", 2),
+        ("depanner/son.rs", 1),
+        ("gaming/linux.rs", 8),
+        ("gaming/macos.rs", 1),
+        ("machine/administrateurs.rs", 3),
+        // Une liste de refus : les commandes d'arrêt qui passeraient par un outil d'élévation ne sont pas lancées.
+        ("machine/arret_designe.rs", 3),
+        ("machine/assistant.rs", 25),
+        ("machine/certificats.rs", 4),
+        ("machine/chasse.rs", 6),
+        ("machine/comptes_oublies.rs", 2),
+        ("machine/dns.rs", 1),
+        ("machine/heure.rs", 1),
+        ("machine/journaux.rs", 4),
+        ("machine/linux/algorithmes_ssh.rs", 9),
+        ("machine/linux/corpus.rs", 1),
+        ("machine/linux/dissimulation.rs", 3),
+        ("machine/linux/durcissement.rs", 4),
+        ("machine/linux/maj.rs", 5),
+        ("machine/linux/mod.rs", 45),
+        ("machine/linux/persistance.rs", 1),
+        ("machine/linux/plateforme.rs", 1),
+        ("machine/linux/privileges.rs", 5),
+        ("machine/linux/regles.rs", 2),
+        ("machine/macos/durcissement.rs", 4),
+        ("machine/macos/maj.rs", 1),
+        ("machine/macos/mod.rs", 8),
+        ("machine/macos/parite.rs", 10),
+        ("machine/macos/persistance.rs", 3),
+        ("machine/macos/privileges.rs", 2),
+        ("machine/macos/regles.rs", 2),
+        ("machine/partages.rs", 8),
+        ("machine/unix.rs", 28),
+        ("nettoyer/linux.rs", 14),
+        ("nettoyer/macos.rs", 1),
+        ("optimiser/linux.rs", 19),
+        ("optimiser/macos.rs", 3),
+        ("protection/blocage/pare_feu.rs", 16),
+        ("protection/conteneurs.rs", 2),
+        ("protection/distance.rs", 6),
+        ("protection/espions/mod.rs", 2),
+        ("protection/memoire_dns.rs", 2),
+        ("protection/quarantaine.rs", 4),
+        ("protection/rancongiciel/veille.rs", 2),
+        ("protection/sites_bloques.rs", 1),
+        ("protection/sortantes.rs", 2),
+        ("reparer.rs", 47),
+        ("reseau/wifi_public/linux.rs", 9),
+        ("reseau/wifi_public/macos.rs", 1),
+        ("risk.rs", 2),
+        ("sauvegarde.rs", 4),
+        ("traces/chronologie.rs", 7),
+        ("traces/linux.rs", 1),
+        ("traces/mod.rs", 2),
+    ];
+
+    /// Les outils d'élévation que la garde compte.
+    const ELEVATEURS: [&str; 4] = ["sudo", "doas", "pkexec", "run0"];
+
+    /// Les appels d'élévation d'un code, commentaires (`//`, `/* */`) ôtés : `sudo`, `doas`, `pkexec` ou `run0`, en
+    /// mot entier (pas `pseudo `), suivi d'une espace, d'une tabulation (vraie ou `\t` écrit dans une chaîne) ou d'un
+    /// guillemet (`Command::new("sudo")`, `"sudo"` dans une liste d'arguments, `"…; sudo"` puis une concaténation).
+    /// Les textes affichés qui nomment l'outil comptent aussi : la garde exige le nombre exact, un faux compte stable
+    /// ne gêne pas, un vrai appel ajouté ou déplacé se voit.
+    fn compte_sudo(code: &str) -> usize {
+        let code = crate::tests_menu::blanchi(code, false);
+        let o = code.as_bytes();
+        ELEVATEURS
+            .iter()
+            .map(|outil| {
+                code.match_indices(outil)
+                    .filter(|(i, _)| {
+                        let libre = code[..*i]
+                            .chars()
+                            .next_back()
+                            .is_none_or(|c| !c.is_alphanumeric() && c != '_');
+                        let apres = &o[i + outil.len()..];
+                        libre && (matches!(apres.first(), Some(b' ' | b'\t' | b'"')) || apres.starts_with(b"\\t"))
+                    })
+                    .count()
+            })
+            .sum()
+    }
+
+    /// Garde du lot Unix : aucune nouvelle commande d'élévation dans src/ (voir `SUDO_RESTANTS`), et chaque nombre
+    /// exact : un nombre qui baisse se baisse aussi dans la table, pour qu'un appel ajouté plus tard ne s'y cache pas.
+    #[test]
+    fn aucune_nouvelle_commande_sudo() {
+        let base = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        let mut fichiers = Vec::new();
+        sources(base, base, &mut fichiers);
+        let mut ecarts = Vec::new();
+        for (nom, src) in &fichiers {
+            let nom = nom.replace('\\', "/");
+            if nom.starts_with("guide/") {
+                continue;
+            }
+            let code = src.find("#[cfg(test)]\nmod ").map_or(src.as_str(), |t| &src[..t]);
+            let n = compte_sudo(code);
+            let permis = SUDO_RESTANTS.iter().find(|(f, _)| *f == nom).map_or(0, |(_, n)| *n);
+            if n > permis {
+                ecarts.push(format!(
+                    "{nom} : {n} appels d'élévation, {permis} permis : passe par un geste de machine::gestes_unix"
+                ));
+            } else if n < permis {
+                ecarts.push(format!(
+                    "{nom} : {n} appels d'élévation, la table en dit {permis} : baisse-la"
+                ));
+            }
+        }
+        assert!(ecarts.is_empty(), "SUDO_RESTANTS (lot Unix) :\n{}", ecarts.join("\n"));
+        assert_eq!(compte_sudo("let c = \"sudo ufw enable\";"), 1);
+        assert_eq!(compte_sudo("pseudo x && a;sudo b"), 1);
+        assert_eq!(compte_sudo("// sudo x\n/// sudo y"), 0);
+        assert_eq!(compte_sudo("a /* sudo x\n doas y */ b"), 0);
+        assert_eq!(compte_sudo("Command::new(\"sudo\").args([\"run0\", \"x\"])"), 2);
+        assert_eq!(compte_sudo("\"sudo\\tufw\" \"pkexec\tx\" \"doas x\""), 3);
+        assert_eq!(compte_sudo("outil_sudo  sudoers pkexec_x run0x ésudo x"), 0);
+        assert_eq!(compte_sudo("« sudo x » “sudo y”"), 2);
+    }
+
     #[test]
     fn textes_dans_sudo_et_rm_mis_entre_apostrophes() {
         let base = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
@@ -1606,6 +1876,157 @@ mod tests_noms_nus {
                    .args([\"qe\", \"System\"]),\n    );\n}\n";
         let fichiers = vec![("main.rs".to_string(), src.to_string())];
         assert_eq!(noms_nus(&fichiers), ["main.rs:3 : wevtutil"]);
+    }
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod tests_environnement_propre {
+    use super::{bash_propre, environnement_propre};
+    use std::ffi::OsString;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Un dossier jetable avec un faux programme `nom` qui laisse une trace (`trace`) s'il est lancé.
+    fn faux(dossier: &std::path::Path, nom: &str, trace: &std::path::Path) {
+        let f = dossier.join(nom);
+        std::fs::write(&f, format!("#!/bin/sh\ntouch '{}'\n", trace.display())).unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn env(paires: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+        paires
+            .iter()
+            .map(|(n, v)| (OsString::from(n), OsString::from(v)))
+            .collect()
+    }
+
+    /// Le piège d'A1 : un faux `ls` et un faux `sudo` en tête du PATH, un BASH_ENV et une fonction exportée qui
+    /// laissent chacun leur trace. Le témoin (bash -c comme avant, avec cet environnement) tombe dans chacun ; la
+    /// ligne de correction (`bash_propre`) dans aucun.
+    #[test]
+    fn faux_sudo_bash_env_et_fonctions_ignores() {
+        let d = crate::essais::Jetable::nouveau("env-propre");
+        let bin = d.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let (t_ls, t_sudo, t_env, t_fonction) = (
+            d.join("ls-lance"),
+            d.join("sudo-lance"),
+            d.join("bash-env-lu"),
+            d.join("fonction-lancee"),
+        );
+        faux(&bin, "ls", &t_ls);
+        faux(&bin, "sudo", &t_sudo);
+        let bash_env = d.join("bash_env");
+        std::fs::write(&bash_env, format!("touch '{}'\n", t_env.display())).unwrap();
+        let path = format!("{}:/usr/bin:/bin", bin.display());
+        let fonction = format!("() {{ touch '{}'; }}", t_fonction.display());
+        let piege = env(&[
+            ("PATH", &path),
+            ("BASH_ENV", bash_env.to_str().unwrap()),
+            ("BASH_FUNC_id%%", &fonction),
+        ]);
+        // `sudo` seulement par `type -P` : le vrai, s'il est pris, n'est jamais lancé.
+        let ligne = "ls / >/dev/null; id >/dev/null; type -P sudo; true";
+        let Some(bash) = super::outil_systeme("bash") else {
+            return crate::essais::saute("bash absent des dossiers du système");
+        };
+
+        let temoin = std::process::Command::new(bash)
+            .args(["-c", ligne])
+            .env_clear()
+            .envs(piege.clone())
+            .output();
+        let temoin = temoin.unwrap();
+        assert!(
+            t_ls.exists() && t_env.exists() && t_fonction.exists(),
+            "le piège ne prend pas : essai sans valeur"
+        );
+        assert!(String::from_utf8_lossy(&temoin.stdout).contains(bin.to_str().unwrap()));
+        for t in [&t_ls, &t_env, &t_fonction] {
+            std::fs::remove_file(t).unwrap();
+        }
+
+        let sortie = bash_propre(ligne, piege).unwrap().output().unwrap();
+        assert!(sortie.status.success(), "{sortie:?}");
+        let sudo = String::from_utf8_lossy(&sortie.stdout);
+        assert!(!sudo.contains(bin.to_str().unwrap()), "faux sudo choisi : {sudo}");
+        for t in [&t_ls, &t_sudo, &t_env, &t_fonction] {
+            assert!(!t.exists(), "{} : le piège a joué", t.display());
+        }
+    }
+
+    /// Ce qui est gardé l'est tel quel (la langue, la session, le proxy) ; le reste disparaît, et le PATH est celui du
+    /// système, quel que soit celui reçu. HOME, USER et LOGNAME viennent de la base des comptes : un HOME hostile (le
+    /// dossier d'un programme du compte, où `sudo mv x ~/.Trash/` ferait écrire root) ne ressort jamais.
+    #[test]
+    fn seules_les_variables_gardees_passent() {
+        let de = env(&[
+            ("HOME", "/tmp/piege-de-a1"),
+            ("USER", "piege"),
+            ("LOGNAME", "piege"),
+            ("https_proxy", "http://exemple.invalid:3128"),
+            ("NO_PROXY", "localhost"),
+            ("SSL_CERT_FILE", "/tmp/autorite-de-a1.pem"),
+            ("SSL_CERT_DIR", "/tmp/autorites"),
+            ("CURL_CA_BUNDLE", "/tmp/autorite-de-a1.pem"),
+            ("REQUESTS_CA_BUNDLE", "/tmp/autorite-de-a1.pem"),
+            ("XAUTHORITY", "/tmp/xauth"),
+            ("LANG", "fr_CA.UTF-8"),
+            ("LC_TIME", "fr_CA.UTF-8"),
+            ("LC_", "rien"),
+            ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
+            ("LD_PRELOAD", "/tmp/x.so"),
+            ("SUDO_ASKPASS", "/tmp/demande"),
+            ("PATH", "/home/alice/.local/bin:/usr/bin"),
+            ("VANGUARD_LANG", "en"),
+        ]);
+        let mut c = std::process::Command::new("/usr/bin/env");
+        environnement_propre(&mut c, de);
+        let vues: Vec<(String, Option<String>)> = c
+            .get_envs()
+            .map(|(n, v)| {
+                (
+                    n.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        let valeur = |n: &str| vues.iter().find(|(m, _)| m == n).and_then(|(_, v)| v.clone());
+        let (nom, dossier) = crate::socle::personnel::compte_de(crate::socle::uid()).expect("compte dans la base");
+        assert_eq!(valeur("HOME").as_deref(), dossier.to_str());
+        assert_eq!(valeur("USER").as_deref(), nom.to_str());
+        assert_eq!(valeur("LOGNAME").as_deref(), nom.to_str());
+        assert_ne!(valeur("HOME").as_deref(), Some("/tmp/piege-de-a1"));
+        assert_eq!(valeur("https_proxy").as_deref(), Some("http://exemple.invalid:3128"));
+        assert_eq!(valeur("NO_PROXY").as_deref(), Some("localhost"));
+        assert_eq!(valeur("LANG").as_deref(), Some("fr_CA.UTF-8"));
+        assert_eq!(valeur("LC_TIME").as_deref(), Some("fr_CA.UTF-8"));
+        assert_eq!(
+            valeur("DBUS_SESSION_BUS_ADDRESS").as_deref(),
+            Some("unix:path=/run/user/1000/bus")
+        );
+        assert_eq!(valeur("PATH").as_deref(), Some(super::PATH_PROPRE));
+        for n in [
+            "LC_",
+            "LD_PRELOAD",
+            "SUDO_ASKPASS",
+            "VANGUARD_LANG",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "CURL_CA_BUNDLE",
+            "REQUESTS_CA_BUNDLE",
+            "XAUTHORITY",
+        ] {
+            assert_eq!(valeur(n), None, "{n}");
+        }
+        // Le système d'abord : aucun dossier personnel ni relatif, et /usr/bin avant /usr/local/bin.
+        let dossiers: Vec<&str> = super::PATH_PROPRE.split(':').collect();
+        assert!(
+            dossiers.iter().all(|d| d.starts_with('/') && !d.contains("home")),
+            "{dossiers:?}"
+        );
+        let rang = |d: &str| dossiers.iter().position(|x| *x == d);
+        assert!(rang("/usr/bin") < rang("/usr/local/bin"));
     }
 }
 

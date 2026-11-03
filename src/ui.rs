@@ -185,10 +185,16 @@ pub fn chemin_affichable(chemin: &std::path::Path) -> String {
 /// « ⏎ » sur la même ligne, pour qu'un nom de fichier qui en contient n'ajoute pas sous la commande une fausse ligne
 /// (« ✔ … ») ; le reste passe par le filtre d'`affichable`. La commande lancée, elle, ne change pas. Un programme fixe
 /// de Windows (`vanguard:programme …`) se montre tel qu'il est lancé (« sfc.exe /scannow ») ; un acte
-/// (`vanguard:service …`), par sa phrase (« Arrêter le service Spooler… »).
+/// (`vanguard:service …`), par sa phrase (« Arrêter le service Spooler… ») ; un geste de Linux
+/// (`vanguard:geste …`), par sa phrase aussi.
 pub fn commande_affichable(commande: &str) -> String {
     if let Some(a) = crate::machine::gestes::analyser_programme(commande) {
         return a.commande();
+    }
+    #[cfg(unix)]
+    if let Some(g) = crate::machine::gestes_unix::analyser(commande) {
+        let (fr, en) = g.phrase();
+        return if crate::langue::anglais() { en } else { fr };
     }
     #[cfg(windows)]
     if let Some(a) = crate::machine::gestes::analyser_acte(commande) {

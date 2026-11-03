@@ -1,0 +1,23 @@
+vanguard:geste unite activer cups.service
+vanguard:geste unite desactiver cups-browsed.service
+vanguard:geste unite activer auditd.service
+vanguard:geste unite redemarrer NetworkManager.service
+vanguard:geste unite recharger ufw.service
+vanguard:geste unite arreter ufw.service
+vanguard:geste unite desactiver firewalld.service
+vanguard:geste unite reinitialiser-echecs
+vanguard:geste unite reinitialiser-echecs cups.service
+vanguard:geste unite-designee arreter anydesk.service
+vanguard:geste unite-designee desactiver-sans-arreter x11vnc@:1.service
+vanguard:geste unite-designee arreter ufw.service
+vanguard:geste unite-designee activer anydesk.service
+vanguard:geste unite-designee arreter ../../x.service
+vanguard:geste unite-designee arreter @.service
+vanguard:geste unite-designee arreter x@.service
+vanguard:geste unite-designee arreter anydesk
+vanguard:geste unite-designee arreter -x.service
+vanguard:geste unite-designee arreter a..b.service
+vanguard:geste signatures-clamav
+vanguard:geste signatures-clamav 
+vanguard:geste unite  activer cups.service
+vanguard:geste unite masquer cups.service

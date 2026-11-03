@@ -25,6 +25,10 @@ use crate::{tr, trf};
 /// une seconde liste fermée, sur le bus de la session seulement. Hors du banc de fuzzing, qui ne lit que les messages.
 #[cfg(not(fuzzing))]
 pub(crate) mod actions;
+/// Les actions du fils root sur les unités du système (lot U3), sur le bus SYSTÈME : une troisième liste fermée, au
+/// modèle d'`actions`. Hors du banc de fuzzing, comme elle.
+#[cfg(not(fuzzing))]
+pub(crate) mod systeme;
 
 /// La prise du bus système (chemin fixe de la spécification ; /var/run en est un lien).
 const BUS_SYSTEME: &str = "/run/dbus/system_bus_socket";
@@ -45,6 +49,11 @@ const DBUS: &str = "org.freedesktop.DBus";
 const PROPRIETES: &str = "org.freedesktop.DBus.Properties";
 const OBJETS: &str = "org.freedesktop.DBus.ObjectManager";
 
+/// Le chemin du bus lui-même, pour ses propres méthodes (Hello, NameHasOwner…).
+const CHEMIN_DBUS: &str = "/org/freedesktop/DBus";
+/// Le nom de polkit sur le bus système : sans lui, run0 et pkexec ne peuvent rien autoriser.
+const POLKIT: &str = "org.freedesktop.PolicyKit1";
+
 pub(crate) const SYSTEMD: &str = "org.freedesktop.systemd1";
 pub(crate) const CHEMIN_SYSTEMD: &str = "/org/freedesktop/systemd1";
 pub(crate) const GESTIONNAIRE: &str = "org.freedesktop.systemd1.Manager";
@@ -55,6 +64,9 @@ const LECTURES: &[(&str, &str)] = &[
     (DBUS, "Hello"),
     // Le processus qui tient un nom du bus : pour ne croire un service que s'il est le vrai programme.
     (DBUS, "GetConnectionUnixProcessID"),
+    // Un nom tenu, ou que le bus lancerait à la demande : polkit est-il là avant de choisir run0 (B-1 du lot U3) ?
+    (DBUS, "NameHasOwner"),
+    (DBUS, "ListActivatableNames"),
     (PROPRIETES, "Get"),
     (PROPRIETES, "GetAll"),
     (OBJETS, "GetManagedObjects"),
@@ -66,6 +78,8 @@ const LECTURES: &[(&str, &str)] = &[
     // Lot 4 (Linux) : lectures qui remplacent systemctl, loginctl, fwupdmgr et nmcli. GetSettings ne rend jamais
     // les secrets (GetSecrets, à part, n'est pas permis) ; GetUpgrades lit les métadonnées déjà téléchargées.
     (GESTIONNAIRE, "ListUnitFiles"),
+    // Lot U3 : l'état du fichier d'une unité (`systemctl is-enabled`), que le fils root relit avant d'agir.
+    (GESTIONNAIRE, "GetUnitFileState"),
     ("org.freedesktop.login1.Manager", "ListSessions"),
     ("org.freedesktop.fwupd", "GetHostSecurityAttrs"),
     ("org.freedesktop.fwupd", "GetDevices"),
@@ -1080,6 +1094,46 @@ pub(crate) fn service_absent(erreur: &str) -> bool {
         .any(|nom| erreur.starts_with(&format!("org.freedesktop.DBus.Error.{nom} ")))
 }
 
+/// Le nom est-il tenu sur ce bus, ou le bus le lancerait-il au premier appel (un service activé à la demande, comme
+/// polkit sur Debian, n'a souvent personne derrière son nom avant qu'on l'appelle) ? `None` : le bus n'a pas répondu,
+/// ou pas comme il le doit.
+fn nom_present(bus: &mut Bus, nom: &str) -> Option<bool> {
+    let tenu = bus
+        .appeler(
+            DBUS,
+            CHEMIN_DBUS,
+            DBUS,
+            "NameHasOwner",
+            "s",
+            vec![Valeur::texte_de(nom)],
+        )
+        .ok()?;
+    if tenu.first().and_then(Valeur::booleen)? {
+        return Some(true);
+    }
+    let activables = bus
+        .appeler(DBUS, CHEMIN_DBUS, DBUS, "ListActivatableNames", "", Vec::new())
+        .ok()?;
+    Some(
+        activables
+            .first()
+            .map(Valeur::elements)
+            .unwrap_or_default()
+            .iter()
+            .any(|n| n.texte() == Some(nom)),
+    )
+}
+
+/// polkit est-il là pour autoriser run0 ou pkexec ? Sans lui, run0 sort tout de suite en « Access denied », sans rien
+/// demander, ce qui se confondait avec un refus de la personne et empêchait d'essayer sudo (B-1 du lot U3). Un bus
+/// injoignable, ou une réponse illisible : non (run0 passe lui aussi par le bus, il n'irait pas plus loin).
+pub(crate) fn polkit_present() -> bool {
+    Bus::systeme()
+        .ok()
+        .and_then(|mut bus| nom_present(&mut bus, POLKIT))
+        .unwrap_or(false)
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // systemd
 
@@ -1197,7 +1251,7 @@ mod tests {
     /// Un message de la spécification, octet par octet : l'appel Hello que tout client envoie en premier.
     #[test]
     fn hello_octet_par_octet() {
-        let mut m = Message::appel(DBUS, "/org/freedesktop/DBus", DBUS, "Hello", "", Vec::new());
+        let mut m = Message::appel(DBUS, CHEMIN_DBUS, DBUS, "Hello", "", Vec::new());
         m.serie = 1;
         let octets = m.encoder().unwrap();
         let mut attendu: Vec<u8> = vec![b'l', 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0];
@@ -1560,6 +1614,47 @@ mod tests {
         let mut bus = Bus::sur(client).unwrap();
         assert_eq!(unites_en_echec(&mut bus).unwrap(), ["aa.mount", "zz.service"]);
         assert_eq!(fil.join().unwrap(), b"\0AUTH EXTERNAL\r\nDATA\r\nBEGIN\r\n");
+    }
+
+    /// polkit présent : son nom tenu sur le bus, ou seulement activable (lancé au premier appel) ; absent : ni l'un
+    /// ni l'autre. Deux lectures du bus lui-même, rien d'autre.
+    #[test]
+    fn polkit_tenu_activable_ou_absent() {
+        for (tenu, activables, attendu) in [
+            (true, None, true),
+            (false, Some(vec!["org.freedesktop.systemd1", POLKIT]), true),
+            (false, Some(vec!["org.freedesktop.systemd1"]), false),
+            (false, Some(vec!["org.freedesktop.PolicyKit1.Autre"]), false),
+        ] {
+            let (client, fil) = faux_bus(move |s, appel| {
+                assert_eq!(
+                    (
+                        appel.destination.as_deref(),
+                        appel.chemin.as_deref(),
+                        appel.membre.as_deref()
+                    ),
+                    (Some(DBUS), Some(CHEMIN_DBUS), Some("NameHasOwner"))
+                );
+                assert_eq!(appel.corps, vec![t(POLKIT)]);
+                s.write_all(&retour(&appel, "b", vec![Valeur::Booleen(tenu)])).unwrap();
+                if let Some(noms) = activables {
+                    let appel = lire_message(s);
+                    assert_eq!(appel.membre.as_deref(), Some("ListActivatableNames"));
+                    let liste = Valeur::Tableau(noms.into_iter().map(t).collect());
+                    s.write_all(&retour(&appel, "as", vec![liste])).unwrap();
+                }
+            });
+            let mut bus = Bus::sur(client).unwrap();
+            assert_eq!(nom_present(&mut bus, POLKIT), Some(attendu), "{tenu} {attendu}");
+            fil.join().unwrap();
+        }
+        // Une réponse qui n'est pas un booléen ne vaut pas présence.
+        let (client, fil) = faux_bus(|s, appel| {
+            s.write_all(&retour(&appel, "s", vec![t("oui")])).unwrap();
+        });
+        let mut bus = Bus::sur(client).unwrap();
+        assert_eq!(nom_present(&mut bus, POLKIT), None);
+        fil.join().unwrap();
     }
 
     /// Un bus qui refuse EXTERNAL sans identité (REJECTED) : le client la redonne écrite, l'uid décimal en

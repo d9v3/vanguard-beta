@@ -559,12 +559,13 @@ pub(super) fn failles_connues() -> Constat {
             }
         },
         Paquets::Dnf => {
-            match crate::commande::lancer(
-                Command::new("dnf")
-                    .args(["-q", "updateinfo", "list", "--security"])
-                    .env("LC_ALL", "C"),
-                120,
-            ) {
+            // Par son chemin, dans un environnement vidé : un faux dnf du compte dirait « aucun avis ».
+            match crate::commande::outil_propre("dnf").and_then(|mut c| {
+                crate::commande::lancer(
+                    c.args(["-q", "updateinfo", "list", "--security"]).env("LC_ALL", "C"),
+                    120,
+                )
+            }) {
                 Some(r) if r.code == Some(0) => failles_dnf(&r.sortie),
                 _ => {
                     return impossible(

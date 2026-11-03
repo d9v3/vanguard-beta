@@ -167,7 +167,9 @@ pub(super) fn defauts_sudo(liste: &str) -> (bool, Option<f64>) {
 
 pub(super) fn sudo_sans_mot_de_passe(tout_permis: &str) -> Vec<Constat> {
     // -n : jamais de demande de mot de passe. Sans règle NOPASSWD (ni sudo récent), la liste est refusée : rien à dire.
-    let Some(liste) = sortie("sudo", &["-n", "-l"]) else {
+    // sudo par son chemin : un faux sudo du compte répondrait ce qu'il veut.
+    let Some(liste) = crate::commande::outil_systeme("sudo").and_then(|s| sortie(&s.to_string_lossy(), &["-n", "-l"]))
+    else {
         return Vec::new();
     };
     juger_sudo(&liste, tout_permis)

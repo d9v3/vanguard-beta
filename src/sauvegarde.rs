@@ -326,26 +326,72 @@ fn cles_deja_dup(destination: &Path) -> Vec<(&'static str, &'static str, String)
     ]
 }
 
-/// `gsettings set` : par l'écrivain de dconf (bus de la session), la valeur vérifiée contre le schéma puis relue ;
-/// gsettings seulement quand ce chemin ne s'applique pas (schéma inconnu ici, valeur d'un autre type, pas de bus).
+/// `gsettings set` : par l'écrivain de dconf (bus de la session), la valeur vérifiée contre le schéma puis relue.
+/// Quand ce chemin ne s'applique pas (schéma inconnu ici, valeur d'un autre type, pas de bus) : un échec, dit, et non
+/// plus gsettings pris dans le PATH du compte (un faux répondrait « fait »).
 #[cfg(target_os = "linux")]
 fn regler_gsettings(schema: &str, cle: &str, valeur: &str) -> bool {
     // Sous les essais, aucun réglage réel ne s'écrit, ni par dconf ni par gsettings.
     if cfg!(test) {
         return false;
     }
-    match crate::machine::linux::dconf::gsettings_set(schema, cle, valeur) {
-        Some(ecrit) => ecrit,
-        None => crate::machine::sortie("gsettings", &["set", schema, cle, valeur]).is_some(),
+    crate::machine::linux::dconf::gsettings_set(schema, cle, valeur).unwrap_or(false)
+}
+
+/// Pourquoi les réglages de Déjà Dup n'ont pas été posés.
+#[cfg(target_os = "linux")]
+#[derive(Debug, PartialEq, Eq)]
+enum ReglageEchoue {
+    /// La valeur d'avant de cette clé (« schéma clé ») ne se lit pas : rien n'est écrit.
+    Illisible(String),
+    /// L'écriture de `cle` a échoué ; les clés écrites avant elle sont remises comme avant, sauf `restees`, que la
+    /// remise n'a pas pu écrire non plus : celles-là restent changées, et le message le dit.
+    Ecriture { cle: String, restees: Vec<String> },
+}
+
+/// Pose les clés de Déjà Dup en deux passes : toutes les valeurs d'avant lues d'abord (une seule illisible et rien
+/// n'est écrit, le réglage ne pourrait pas s'annuler), puis écrites ; une écriture qui échoue fait remettre celles déjà
+/// écrites, de la dernière à la première. `Ok` : les valeurs d'avant, notées pour l'annulation.
+#[cfg(target_os = "linux")]
+fn regler_les_cles(
+    cles: &[(&str, &str, String)],
+    mut lire: impl FnMut(&str, &str) -> Option<String>,
+    mut ecrire: impl FnMut(&str, &str, &str) -> bool,
+) -> Result<Vec<(String, String)>, ReglageEchoue> {
+    let mut avant = Vec::with_capacity(cles.len());
+    for (schema, cle, _) in cles {
+        // Lue dans dconf et les schémas compilés, au format que `gsettings set` reprendra.
+        let Some(ancienne) = lire(schema, cle) else {
+            return Err(ReglageEchoue::Illisible(format!("{schema} {cle}")));
+        };
+        avant.push((format!("{schema} {cle}"), ancienne.trim().to_string()));
     }
+    for (rang, (schema, cle, valeur)) in cles.iter().enumerate() {
+        if ecrire(schema, cle, valeur) {
+            continue;
+        }
+        let mut restees = Vec::new();
+        for ((schema, cle, _), (nom, ancienne)) in cles.iter().zip(&avant).take(rang).rev() {
+            if !ecrire(schema, cle, ancienne) {
+                restees.push(nom.clone());
+            }
+        }
+        return Err(ReglageEchoue::Ecriture {
+            cle: format!("{schema} {cle}"),
+            restees,
+        });
+    }
+    Ok(avant)
 }
 
 #[cfg(target_os = "linux")]
 fn deja_dup_present() -> bool {
     dans_le_path("deja-dup").is_some()
         && schema_gsettings("org.gnome.DejaDup", Some("periodic")).unwrap_or_else(|| {
-            crate::machine::sortie("gsettings", &["list-keys", "org.gnome.DejaDup"])
-                .is_some_and(|t| t.contains("periodic"))
+            // Par son chemin et dans un environnement vidé ; ne fait que lire.
+            crate::commande::outil_propre("gsettings")
+                .and_then(|mut c| crate::commande::lancer(c.args(["list-keys", "org.gnome.DejaDup"]), 30))
+                .is_some_and(|r| r.code == Some(0) && r.sortie.contains("periodic"))
         })
 }
 
@@ -807,21 +853,31 @@ fn mettre_en_place() -> Option<MiseEnPlace> {
             ));
             return None;
         }
-        let mut avant = Vec::new();
-        for (schema, cle, valeur) in &cles {
-            // Lue dans dconf et les schémas compilés, au format que `gsettings set` reprendra ; lui en secours.
-            let ancienne = crate::machine::linux::dconf::gsettings_get(schema, cle)
-                .or_else(|| crate::machine::sortie("gsettings", &["get", schema, cle]))
-                .unwrap_or_default();
-            avant.push((format!("{schema} {cle}"), ancienne.trim().to_string()));
-            if !regler_gsettings(schema, cle, valeur) {
+        let avant = match regler_les_cles(&cles, crate::machine::linux::dconf::gsettings_get, regler_gsettings) {
+            Ok(avant) => avant,
+            Err(ReglageEchoue::Illisible(cle)) => {
                 mauvais(&trf!(
-                    "gsettings set {schema} {cle} a échoué ; rien d'autre n'est changé.",
-                    "gsettings set {schema} {cle} failed; nothing else is changed."
+                    "Valeur d'avant de {cle} illisible : rien n'est changé.",
+                    "Earlier value of {cle} unreadable: nothing is changed."
                 ));
                 return None;
             }
-        }
+            Err(ReglageEchoue::Ecriture { cle, restees }) if restees.is_empty() => {
+                mauvais(&trf!(
+                    "gsettings set {cle} a échoué ; les réglages déjà faits sont remis comme avant, rien n'est changé.",
+                    "gsettings set {cle} failed; the settings already made are put back as before, nothing is changed."
+                ));
+                return None;
+            }
+            Err(ReglageEchoue::Ecriture { cle, restees }) => {
+                let restees = restees.join(", ");
+                mauvais(&trf!(
+                    "gsettings set {cle} a échoué, et ces réglages déjà faits n'ont pas pu être remis comme avant : {restees}. Remettez-les dans Déjà Dup (Préférences).",
+                    "gsettings set {cle} failed, and these settings already made could not be put back as before: {restees}. Set them back in Déjà Dup (Preferences)."
+                ));
+                return None;
+            }
+        };
         bon(tr!(
             "Déjà Dup réglé. Ouvrez-le une première fois (il demande les dossiers à inclure et un mot de passe de chiffrement) : « deja-dup ».",
             "Déjà Dup set. Open it once (it asks which folders to include and an encryption password): “deja-dup”."
@@ -1117,9 +1173,13 @@ fn annuler_mise_en_place(m: &MiseEnPlace) -> (bool, Vec<PathBuf>) {
             }
             #[cfg(target_os = "linux")]
             {
+                // Chaque clé est remise même si une autre échoue, et toute clé non remise (illisible dans les notes,
+                // ou que l'écrivain de dconf n'a pas pu écrire, faute de bus ou de schéma connu ici : gsettings du
+                // PATH ne sert plus de secours) fait dire l'annulation incomplète, jamais faite.
                 let mut ok = true;
                 for (schema_cle, valeur) in avant {
                     let Some((schema, cle)) = schema_cle.split_once(' ') else {
+                        ok = false;
                         continue;
                     };
                     println!("    {GRIS}$ gsettings set {schema} {cle} {valeur}{RESET}");
@@ -1565,6 +1625,71 @@ pub fn verifier_sauvegarde() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Déjà Dup appliqué à moitié : une valeur d'avant illisible n'écrit rien ; une écriture qui échoue remet celles
+    /// déjà écrites, et le résultat nomme celles que la remise n'a pas pu écrire.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn deja_dup_applique_a_moitie() {
+        use std::cell::RefCell;
+        use std::collections::BTreeMap;
+        let cles = cles_deja_dup(Path::new("/media/alice/Disque/Sauvegarde"));
+        assert!(cles.len() >= 3);
+        let nom = |i: usize| format!("{} {}", cles[i].0, cles[i].1);
+        let depart: BTreeMap<String, String> = (0..cles.len()).map(|i| (nom(i), format!("'avant-{i}'"))).collect();
+        // Un faux dconf : `refus` dit, pour une clé et la valeur qu'on veut y mettre, si l'écriture échoue.
+        let essai = |illisible: Option<usize>, refus: &dyn Fn(&str, &str) -> bool| {
+            let dconf = RefCell::new(depart.clone());
+            let mut lues = 0;
+            let r = regler_les_cles(
+                &cles,
+                |s, c| {
+                    lues += 1;
+                    let v = dconf.borrow().get(&format!("{s} {c}")).cloned()?;
+                    (Some(lues) != illisible).then(|| format!("{v}\n"))
+                },
+                |s, c, v| {
+                    let k = format!("{s} {c}");
+                    !refus(&k, v) && dconf.borrow_mut().insert(k, v.to_string()).is_some()
+                },
+            );
+            (r, dconf.into_inner())
+        };
+
+        // La 3e valeur d'avant ne se lit pas : aucune clé écrite.
+        let (r, apres) = essai(Some(3), &|_, _| false);
+        assert_eq!(r, Err(ReglageEchoue::Illisible(nom(2))));
+        assert_eq!(apres, depart);
+
+        // Tout passe : les valeurs d'avant, sans le saut de ligne, notées dans l'ordre pour l'annulation.
+        let (r, apres) = essai(None, &|_, _| false);
+        let attendu: Vec<(String, String)> = (0..cles.len()).map(|i| (nom(i), format!("'avant-{i}'"))).collect();
+        assert_eq!(r, Ok(attendu));
+        assert!((0..cles.len()).all(|i| apres[&nom(i)] == cles[i].2));
+
+        // La 3e écriture échoue : les deux premières sont remises, rien ne reste changé.
+        let (r, apres) = essai(None, &|k, _| k == nom(2));
+        assert_eq!(
+            r,
+            Err(ReglageEchoue::Ecriture {
+                cle: nom(2),
+                restees: Vec::new()
+            })
+        );
+        assert_eq!(apres, depart);
+
+        // Et la remise de la 1re échoue aussi : elle seule reste changée, et c'est dit.
+        let (r, apres) = essai(None, &|k, v| k == nom(2) || (k == nom(0) && v.starts_with("'avant-")));
+        assert_eq!(
+            r,
+            Err(ReglageEchoue::Ecriture {
+                cle: nom(2),
+                restees: vec![nom(0)]
+            })
+        );
+        assert_eq!(apres[&nom(0)], cles[0].2);
+        assert_eq!(apres[&nom(1)], depart[&nom(1)]);
+    }
 
     /// Le fichier d'horodatage que systemd pose pour la minuterie : « stamp- » + le nom de l'unité. Le retrait lui-même
     /// (surveillance::retirer_horodatage) est essayé sur un dossier jetable dans la surveillance ; ici, le nom.

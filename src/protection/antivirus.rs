@@ -2022,9 +2022,9 @@ fn preparer() -> bool {
         );
         let (telechargement, service) = commandes_des_signatures();
         for c in std::iter::once(&telechargement).chain(&service) {
-            println!("  {GRIS}{c}{RESET}");
+            println!("  {GRIS}{}{RESET}", crate::ui::commande_affichable(c));
         }
-        // Le téléchargement passe par sudo et active leur mise à jour automatique : pas sans accord.
+        // Le téléchargement passe par l'assistant élevé : pas sans accord.
         if !demander_ou_defaut(tr!(
             "  Les télécharger maintenant ? [o/N] : ",
             "  Download them now? [y/N]: "
@@ -2037,11 +2037,15 @@ fn preparer() -> bool {
             "  Téléchargement des signatures de virus…",
             "  Downloading the virus signatures…"
         );
-        // Le téléchargement ne change rien à noter sous Linux ; le service activé pour de bon, si. Sous macOS, la
-        // configuration posée est notée, comme toute correction.
+        // Le téléchargement seul ne change rien à noter sous Linux ; le geste composé, qui arrête et redémarre un
+        // service du système, est noté (sans changer son lancement au démarrage). Sous macOS, la configuration posée
+        // est notée, comme toute correction.
         #[cfg(target_os = "linux")]
-        let ok = crate::machine::appliquer_sans_noter(&[telechargement]).0
-            && service.is_none_or(|s| crate::machine::appliquer(&[s]));
+        let ok = if telechargement == crate::machine::gestes_unix::GesteUnix::SignaturesClamav.ligne() {
+            crate::machine::appliquer(&[telechargement])
+        } else {
+            crate::machine::appliquer_sans_noter(&[telechargement]).0
+        } && service.is_none_or(|s| crate::machine::appliquer(&[s]));
         #[cfg(target_os = "macos")]
         let ok = crate::machine::appliquer(&[telechargement]);
         if !ok {
@@ -2080,14 +2084,20 @@ fn commande_d_installation() -> Option<String> {
     Some(format!("{brew} install clamav"))
 }
 
-/// Les commandes du premier téléchargement des signatures, puis celle qui active leur mise à jour (Linux seulement).
+/// Le geste du premier téléchargement des signatures, fait par l'assistant élevé sans shell (lot U3) ; rien après :
+/// le lancement au démarrage de leur mise à jour automatique reste ce qu'il était.
 #[cfg(target_os = "linux")]
 fn commandes_des_signatures() -> (String, Option<String>) {
-    // Sur Debian/Ubuntu/Mint, le service tourne déjà et verrouille la base : on l'arrête le temps du premier téléchargement.
-    (
-        "sudo systemctl stop clamav-freshclam.service 2>/dev/null; sudo freshclam".to_string(),
-        Some("sudo systemctl enable --now clamav-freshclam.service".to_string()),
-    )
+    use crate::machine::gestes_unix::{FRESHCLAM, GesteUnix};
+    // Sur Debian/Ubuntu/Mint, le service tourne déjà et verrouille la base : le geste composé l'arrête le temps du
+    // premier téléchargement, puis le relance. Sans systemd, freshclam seul.
+    let systemd = std::path::Path::new("/run/systemd/system").is_dir();
+    let geste = if systemd {
+        GesteUnix::SignaturesClamav
+    } else {
+        GesteUnix::Programme(&FRESHCLAM)
+    };
+    (geste.ligne(), None)
 }
 
 /// Homebrew livre seulement un modèle de configuration (« Example » à retirer) ; pas besoin de sudo.

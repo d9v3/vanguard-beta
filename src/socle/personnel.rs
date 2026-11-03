@@ -37,6 +37,14 @@ pub fn maison() -> PathBuf {
 /// Le dossier personnel du compte `uid`, d'après la base des comptes du système.
 #[cfg(unix)]
 pub(crate) fn dossier_personnel_de(uid: libc::uid_t) -> Option<PathBuf> {
+    compte_de(uid).map(|(_, dossier)| dossier)
+}
+
+/// Le nom et le dossier personnel du compte `uid`, d'après la base des comptes du système (getpwuid_r) : ce que
+/// `commande::environnement_propre` donne pour HOME, USER et LOGNAME, au lieu de les prendre d'un environnement qu'un
+/// programme du compte a pu écrire.
+#[cfg(unix)]
+pub(crate) fn compte_de(uid: libc::uid_t) -> Option<(std::ffi::OsString, PathBuf)> {
     use std::os::unix::ffi::OsStrExt;
     let mut tampon: Vec<libc::c_char> = vec![0; 16 << 10];
     // SAFETY: passwd n'a que des entiers et des pointeurs, valides à zéro ; getpwuid_r les remplit.
@@ -45,12 +53,20 @@ pub(crate) fn dossier_personnel_de(uid: libc::uid_t) -> Option<PathBuf> {
     // SAFETY: `compte`, `tampon` (avec sa vraie longueur) et `trouve` vivent jusqu'à la fin de la fonction ;
     // getpwuid_r n'écrit que dans eux.
     let r = unsafe { libc::getpwuid_r(uid, &raw mut compte, tampon.as_mut_ptr(), tampon.len(), &raw mut trouve) };
-    if r != 0 || trouve.is_null() || compte.pw_dir.is_null() {
+    if r != 0 || trouve.is_null() || compte.pw_dir.is_null() || compte.pw_name.is_null() {
         return None;
     }
-    // SAFETY: pw_dir pointe dans `tampon`, encore vivant, et getpwuid_r l'a terminé par un zéro.
-    let dossier = unsafe { std::ffi::CStr::from_ptr(compte.pw_dir) };
-    Some(PathBuf::from(std::ffi::OsStr::from_bytes(dossier.to_bytes())))
+    // SAFETY: pw_dir et pw_name pointent dans `tampon`, encore vivant, et getpwuid_r les a terminés par un zéro.
+    let (dossier, nom) = unsafe {
+        (
+            std::ffi::CStr::from_ptr(compte.pw_dir),
+            std::ffi::CStr::from_ptr(compte.pw_name),
+        )
+    };
+    Some((
+        std::ffi::OsStr::from_bytes(nom.to_bytes()).to_os_string(),
+        PathBuf::from(std::ffi::OsStr::from_bytes(dossier.to_bytes())),
+    ))
 }
 
 /// « 1.2 Go », « 340 Mo ».

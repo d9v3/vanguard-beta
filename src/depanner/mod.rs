@@ -197,9 +197,20 @@ fn fait(texte: &str) {
 #[cfg(unix)]
 fn proposer(question: &str, commandes: &[String]) -> bool {
     for c in commandes {
-        println!("    {GRIS}$ {}{RESET}", crate::ui::commande_affichable(c));
+        println!("    {GRIS}{}{}{RESET}", invite(c), crate::ui::commande_affichable(c));
     }
     demander(question).oui() && crate::machine::appliquer(commandes)
+}
+
+/// Le « $ » d'invite devant une vraie commande du shell ; rien devant un geste, montré par une phrase (« Redémarrer
+/// le service réseau ») qui n'est pas à taper.
+#[cfg(unix)]
+fn invite(commande: &str) -> &'static str {
+    if crate::machine::gestes_unix::a_le_prefixe(commande) {
+        ""
+    } else {
+        "$ "
+    }
 }
 
 /// Un conseil à suivre soi-même.
@@ -715,6 +726,16 @@ pub fn executer(sujet: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un geste se montre par une phrase sans « $ » devant (ce n'est pas une commande à taper) ; une vraie commande
+    /// garde le sien.
+    #[cfg(unix)]
+    #[test]
+    fn pas_de_dollar_devant_un_geste() {
+        use crate::machine::gestes_unix::{ActionUnite, CUPS, GesteUnix};
+        assert_eq!(invite(&GesteUnix::Unite(ActionUnite::Activer, &CUPS).ligne()), "");
+        assert_eq!(invite("nmcli networking on"), "$ ");
+    }
 
     /// Les douze parcours et les deux outils du groupe (11.13, 11.14) tiennent dans un terminal de 24 rangées, avec
     /// l'aide et la saisie : sinon 11.13, 11.14 et « Revenir » passent sous le bord.

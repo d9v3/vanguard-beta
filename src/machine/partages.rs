@@ -213,6 +213,7 @@ fn fermeture_samba(nom: &str, fichier: &str) -> Vec<String> {
     vec![
         format!("test -e {f}.avant-vanguard || sudo cp -p {f} {f}.avant-vanguard"),
         format!("sudo sed -i {} {f}", sh_chaine(&expression)),
+        // Lot U3 : le rechargement reste une commande, après le fichier changé par sed ; geste avec lui (U4).
         "sudo smbcontrol all reload-config 2>/dev/null || sudo systemctl reload smb smbd 2>/dev/null || true"
             .to_string(),
     ]
@@ -320,11 +321,13 @@ fn nfs(exports: &str, fichier: &str, nuance: Nuance) -> Vec<Partage> {
 mod systeme {
     use super::{Nuance, Releve};
 
-    /// Un service systemd est-il actif ? `None` sans systemd.
+    /// Un service systemd est-il actif ? `None` sans systemd, ou quand son état n'a pu se lire : aucune nuance alors,
+    /// jamais « service arrêté » sans l'avoir lu.
     fn actif(noms: &[&str]) -> Option<bool> {
-        std::path::Path::new("/run/systemd/system")
-            .is_dir()
-            .then(|| noms.iter().any(|n| crate::machine::linux::service_actif(n)))
+        if !std::path::Path::new("/run/systemd/system").is_dir() {
+            return None;
+        }
+        crate::machine::linux::un_service_actif(noms)
     }
 
     fn nuance(actif: Option<bool>) -> Nuance {

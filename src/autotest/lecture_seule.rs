@@ -463,6 +463,11 @@ mod tests {
                 "processus élevé : remise d'un fichier du Démarrage commun depuis sa copie de quarantaine vérifiée, créé sans écraser (create_new) dans un dossier relu (ni lien ni jonction), hors bilan",
             ),
             (
+                "machine/assistant.rs",
+                1,
+                "terminal de la personne (/dev/tty) ouvert pour demander l'accord d'un geste : rien n'est écrit sur le disque",
+            ),
+            (
                 "machine/linux/veilleur.rs",
                 10,
                 "veilleur : son état et le « chiffrement voulu » de l'anti-rançongiciel, hors bilan",

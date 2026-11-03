@@ -19,6 +19,9 @@
 #[allow(dead_code)]
 #[path = "../../src/machine/windows/gestes.rs"]
 mod gestes;
+// La découpe commune, que gestes.rs reprend par `super::decoupe`.
+#[path = "../../src/machine/decoupe.rs"]
+mod decoupe;
 
 /// Les associations (adresse, nom) actives d'un hosts, lues comme Windows au plus large : coupé à chaque CR ou LF,
 /// au premier « # », découpé aux blancs ; noms en minuscules. Plus large que `juger_hosts`, exprès : l'oracle ne

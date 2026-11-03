@@ -141,6 +141,7 @@ mod tests {
                 depuis: Some(jour("2026-10-20")),
                 retrait: vec!["rm -f x".into()],
                 arret: Vec::new(),
+                refuse: false,
             }],
             lu: Lu {
                 fichiers: true,

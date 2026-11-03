@@ -468,7 +468,8 @@ pub(super) fn juger_journal_audit(installe: bool, actif: bool) -> Option<Constat
         )
         .corriger(
             tr!("Le lancer, et le garder au démarrage", "Start it, and keep it at boot"),
-            &["sudo systemctl enable --now auditd"],
+            // Par l'assistant élevé et le bus système (lot U3), sans shell.
+            &[GesteUnix::Unite(ActionUnite::Activer, &gestes_unix::AUDITD).ligne().as_str()],
         )
         .annulable(vec![crate::optimiser::Geste::unite("auditd")])
     })
@@ -482,9 +483,21 @@ pub(super) fn journal_audit() -> Option<Constat> {
     let installe = ["/usr/bin/auditd", "/usr/sbin/auditd", "/sbin/auditd"]
         .iter()
         .any(|p| Path::new(p).exists());
-    let actif = installe
-        && service_tourne_dans(&RACINES_CGROUP.map(Path::new), "auditd.service")
-            .unwrap_or_else(|| super::service_actif("auditd"));
+    if !installe {
+        return None;
+    }
+    let Some(actif) = service_tourne_dans(&RACINES_CGROUP.map(Path::new), "auditd.service")
+        .or_else(|| super::service_actif("auditd"))
+    else {
+        // Ni les groupes de contrôle ni systemd n'ont répondu : jamais « arrêté » sans l'avoir lu.
+        return Some(crate::machine::impossible(
+            "Journal d'audit",
+            tr!(
+                "état d'auditd non lu (ni le bus système ni systemctl n'ont répondu)",
+                "auditd state not read (neither the system bus nor systemctl answered)"
+            ),
+        ));
+    };
     juger_journal_audit(installe, actif)
 }
 

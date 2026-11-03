@@ -33,7 +33,7 @@ const DCONF_ECRIVAIN: &str = "ca.desrt.dconf.Writer";
 const CHEMIN_DCONF: &str = "/ca/desrt/dconf/Writer/user";
 
 /// Une action permise : (service, chemin, interface, méthode, signature des arguments).
-type Action = (&'static str, &'static str, &'static str, &'static str, &'static str);
+pub(super) type Action = (&'static str, &'static str, &'static str, &'static str, &'static str);
 
 /// Les seules actions que ce client envoie, toutes sur le bus de la session.
 pub(super) const ACTIONS: &[Action] = &[
@@ -202,9 +202,9 @@ fn session_pour_agir() -> Result<Bus, Echec> {
     session()
 }
 
-/// L'action de la liste, s'il y en a une pour (interface, méthode) ; sinon rien ne part.
-fn action(interface: &str, methode: &str) -> Result<&'static Action, Echec> {
-    ACTIONS
+/// L'action de `liste`, s'il y en a une pour (interface, méthode) ; sinon rien ne part.
+fn action(liste: &'static [Action], interface: &str, methode: &str) -> Result<&'static Action, Echec> {
+    liste
         .iter()
         .find(|a| a.2 == interface && a.3 == methode)
         .ok_or_else(|| {
@@ -216,7 +216,7 @@ fn action(interface: &str, methode: &str) -> Result<&'static Action, Echec> {
 }
 
 /// Un signal JobRemoved du gestionnaire : (chemin du job, résultat).
-type FinDeJob = (String, String);
+pub(super) type FinDeJob = (String, String);
 
 impl Bus {
     /// Envoie une action de la liste et attend sa réponse ; les signaux JobRemoved venus de `systemd` (nom unique
@@ -229,7 +229,28 @@ impl Bus {
         systemd: Option<&str>,
         fins: &mut Vec<FinDeJob>,
     ) -> Result<(Message, Vec<Valeur>), Echec> {
-        let &(service, chemin, interface, methode, signature) = action(interface, methode)?;
+        self.agir_dans(ACTIONS, interface, methode, arguments, systemd, fins)
+    }
+
+    /// `agir` sur une autre liste fermée (`systeme::ACTIONS_SYSTEME`, celle du bus système) : une action hors de
+    /// `liste` ne part pas.
+    pub(super) fn agir_dans(
+        &mut self,
+        liste: &'static [Action],
+        interface: &str,
+        methode: &str,
+        arguments: Vec<Valeur>,
+        systemd: Option<&str>,
+        fins: &mut Vec<FinDeJob>,
+    ) -> Result<(Message, Vec<Valeur>), Echec> {
+        let &(service, chemin, interface, methode, signature) = action(liste, interface, methode)?;
+        // L'unité visée par un job (StartUnit, StopUnit… : son premier argument) : seules les fins de jobs sur elle
+        // sont gardées en attendant la réponse. Le gestionnaire émet celles de tout le système ; un système chargé
+        // pousserait sinon la nôtre hors de la liste bornée, puis 90 s d'attente et un faux « pas vérifié ».
+        let unite = systemd
+            .and_then(|_| arguments.first())
+            .and_then(Valeur::texte)
+            .map(String::from);
         let mut appel = Message::appel(service, chemin, interface, methode, signature, arguments);
         self.serie = self.serie.wrapping_add(1).max(1);
         appel.serie = self.serie;
@@ -239,7 +260,11 @@ impl Bus {
         loop {
             let r = self.recevoir_avec_signaux(echeance, appel.serie, systemd)?;
             if r.genre == SIGNAL {
-                fins.extend(fin_de_job(&r));
+                if let Some(fin) = fin_de_job(&r)
+                    && unite.as_deref().is_none_or(|u| unite_de_la_fin(&r) == Some(u))
+                {
+                    garder_fin(fins, fin);
+                }
                 continue;
             }
             if r.reponse_a != Some(appel.serie) {
@@ -287,20 +312,53 @@ impl Bus {
         .map_err(echec)
     }
 
-    /// Attend la fin du job `job` (JobRemoved), dans `fins` déjà reçus puis dans la prise.
-    fn attendre_job(&mut self, job: &str, systemd: &str, fins: &mut Vec<FinDeJob>) -> Result<String, Echec> {
-        let echeance = super::echeance(DELAI_JOB);
+    /// Attend la fin du job `job` (JobRemoved), dans `fins` déjà reçus puis dans la prise, au plus `delai`. Les fins
+    /// des autres jobs reçues pendant l'attente ne sont pas gardées : le gestionnaire en émet pour tout le système, et
+    /// les garder ferait grandir la liste sans limite pendant 90 s.
+    pub(super) fn attendre_job(
+        &mut self,
+        job: &str,
+        systemd: &str,
+        fins: &mut Vec<FinDeJob>,
+        delai: Duration,
+    ) -> Result<String, Echec> {
+        let echeance = super::echeance(delai);
         loop {
             if let Some(i) = fins.iter().position(|(j, _)| j == job) {
                 return Ok(fins.swap_remove(i).1);
             }
             // Aucun appel n'attend de réponse : seul un JobRemoved est décodé.
             let m = self.recevoir_avec_signaux(echeance, 0, Some(systemd))?;
-            if m.genre == SIGNAL {
-                fins.extend(fin_de_job(&m));
+            if m.genre == SIGNAL
+                && let Some((j, resultat)) = fin_de_job(&m)
+                && j == job
+            {
+                return Ok(resultat);
             }
         }
     }
+}
+
+/// Au plus tant de fins de job gardées en attendant une réponse : le job attendu n'est pas encore connu (sa fin peut
+/// arriver avant la réponse de StartUnit). Seules celles de la même unité le sont (`agir_dans`) ; la borne ne sert
+/// plus qu'à ne jamais grandir sans limite (une unité qu'un autre programme relance sans cesse).
+pub(super) const FINS_MAX: usize = 64;
+
+/// Garde `fin`, en oubliant la plus ancienne au-delà de FINS_MAX. Perdre la nôtre ne la fait jamais passer pour
+/// réussie : l'attente finit sur le délai, et le geste est dit « pas vérifié ».
+fn garder_fin(fins: &mut Vec<FinDeJob>, fin: FinDeJob) {
+    if fins.len() >= FINS_MAX {
+        fins.remove(0);
+    }
+    fins.push(fin);
+}
+
+/// L'unité d'un signal JobRemoved (u id, o job, s unité, s résultat) déjà décodé.
+fn unite_de_la_fin(m: &Message) -> Option<&str> {
+    let [_, _, unite, _] = m.corps.as_slice() else {
+        return None;
+    };
+    unite.texte()
 }
 
 /// Le (job, résultat) d'un signal JobRemoved (u id, o job, s unité, s résultat) déjà décodé.
@@ -380,7 +438,9 @@ pub(crate) fn utilisateur(geste: Geste, unite: &str) -> bool {
         if geste != Geste::Recharger {
             args.push(unite);
         }
-        crate::commande::lancer(std::process::Command::new("systemctl").args(&args), 60)
+        // Par son chemin et dans un environnement vidé (XDG_RUNTIME_DIR, qui mène à la prise privée, est gardé).
+        crate::commande::outil_propre("systemctl")
+            .and_then(|mut c| crate::commande::lancer(c.args(&args), 60))
             .is_some_and(|r| r.code == Some(0))
     }
 }
@@ -420,7 +480,7 @@ fn systemd_sur(bus: &mut Bus, geste: Geste, unite: &str) -> Result<(), Echec> {
             .and_then(Valeur::texte)
             .map(String::from)
             .ok_or_else(|| echec(super::mal_forme("job")))?;
-        let resultat = bus.attendre_job(&chemin, &systemd, fins)?;
+        let resultat = bus.attendre_job(&chemin, &systemd, fins, DELAI_JOB)?;
         if job_reussi(&resultat) {
             Ok(())
         } else {
@@ -545,7 +605,7 @@ fn changer_dconf_sur(bus: &mut Bus, changement: &[u8]) -> Result<String, Echec> 
     reason = "essais : y déborder fait échouer l'essai"
 )]
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::{Read, Write};
 
@@ -559,9 +619,9 @@ mod tests {
                 "{methode} est déjà une lecture"
             );
         }
-        assert!(action("org.freedesktop.systemd1.Manager", "PowerOff").is_err());
-        assert!(action("org.freedesktop.systemd1.Manager", "StartTransientUnit").is_err());
-        assert!(action("org.freedesktop.UDisks2.Filesystem", "Mount").is_err());
+        assert!(action(ACTIONS, "org.freedesktop.systemd1.Manager", "PowerOff").is_err());
+        assert!(action(ACTIONS, "org.freedesktop.systemd1.Manager", "StartTransientUnit").is_err());
+        assert!(action(ACTIONS, "org.freedesktop.UDisks2.Filesystem", "Mount").is_err());
     }
 
     #[test]
@@ -653,7 +713,7 @@ mod tests {
 
     // ── Un faux bus de session : il lit l'authentification, Hello, puis répond selon un scénario ──
 
-    fn lire_ligne(s: &mut UnixStream) {
+    pub(crate) fn lire_ligne(s: &mut UnixStream) {
         let mut l = Vec::new();
         let mut o = [0];
         while !l.ends_with(b"\r\n") {
@@ -662,16 +722,21 @@ mod tests {
         }
     }
 
-    fn lire(s: &mut UnixStream) -> Message {
+    /// Les octets d'un message entier, tels que le client les a écrits.
+    pub(crate) fn lire_brut(s: &mut UnixStream) -> Vec<u8> {
         let mut debut = [0; 16];
         s.read_exact(&mut debut).unwrap();
         let mut octets = debut.to_vec();
         octets.resize(super::super::longueur_totale(&debut).unwrap(), 0);
         s.read_exact(&mut octets[16..]).unwrap();
-        Message::decoder_si(&octets, |_| true).unwrap()
+        octets
     }
 
-    fn retour(a: &Message, signature: &str, corps: Vec<Valeur>, expediteur: &str) -> Vec<u8> {
+    pub(crate) fn lire(s: &mut UnixStream) -> Message {
+        Message::decoder_si(&lire_brut(s), |_| true).unwrap()
+    }
+
+    pub(crate) fn retour(a: &Message, signature: &str, corps: Vec<Valeur>, expediteur: &str) -> Vec<u8> {
         Message {
             genre: RETOUR,
             serie: 900 + a.serie,
@@ -685,7 +750,12 @@ mod tests {
         .unwrap()
     }
 
-    fn signal_fin(job: &str, resultat: &str, expediteur: &str) -> Vec<u8> {
+    pub(crate) fn signal_fin(job: &str, resultat: &str, expediteur: &str) -> Vec<u8> {
+        signal_fin_de(job, "vanguard-x.service", resultat, expediteur)
+    }
+
+    /// Comme `signal_fin`, pour la fin d'un job sur `unite`.
+    pub(crate) fn signal_fin_de(job: &str, unite: &str, resultat: &str, expediteur: &str) -> Vec<u8> {
         Message {
             genre: SIGNAL,
             serie: 77,
@@ -697,7 +767,7 @@ mod tests {
             corps: vec![
                 Valeur::U32(7),
                 Valeur::texte_de(job),
-                Valeur::texte_de("vanguard-x.service"),
+                Valeur::texte_de(unite),
                 Valeur::texte_de(resultat),
             ],
             ..Message::default()
@@ -707,7 +777,7 @@ mod tests {
     }
 
     /// Le bus côté client, et le fil du faux bus qui rend les membres appelés, dans l'ordre.
-    fn faux_bus(
+    pub(crate) fn faux_bus(
         scenario: impl FnOnce(&mut UnixStream, &mut Vec<String>) + Send + 'static,
     ) -> (Bus, std::thread::JoinHandle<Vec<String>>) {
         let (client, mut serveur) = UnixStream::pair().unwrap();
@@ -724,6 +794,109 @@ mod tests {
             appels
         });
         (Bus::sur(client).unwrap(), fil)
+    }
+
+    /// Les fins des autres jobs du système reçues pendant l'attente ne sont pas gardées : la liste ne grandit pas.
+    #[test]
+    fn attendre_job_ne_garde_que_la_sienne() {
+        let (mut bus, fil) = faux_bus(|s, _| {
+            for n in 0..300 {
+                s.write_all(&signal_fin(
+                    &format!("/org/freedesktop/systemd1/job/{}", n + 100),
+                    "done",
+                    ":1.2",
+                ))
+                .unwrap();
+            }
+            s.write_all(&signal_fin("/org/freedesktop/systemd1/job/9", "failed", ":1.2"))
+                .unwrap();
+        });
+        let mut fins = Vec::new();
+        let r = bus.attendre_job(
+            "/org/freedesktop/systemd1/job/9",
+            ":1.2",
+            &mut fins,
+            Duration::from_secs(10),
+        );
+        assert_eq!(r.unwrap(), "failed");
+        assert!(fins.is_empty(), "{} fins étrangères gardées", fins.len());
+        fil.join().unwrap();
+    }
+
+    /// En attendant la réponse d'un job, seules les fins de son unité sont gardées (la nôtre peut la devancer) : des
+    /// centaines de fins d'autres unités ne la poussent jamais hors de la liste.
+    #[test]
+    fn fins_d_autres_unites_jamais_gardees() {
+        let (mut bus, fil) = faux_bus(|s, appels| {
+            let a = lire(s);
+            appels.push(a.membre.clone().unwrap());
+            s.write_all(&signal_fin_de(
+                "/org/freedesktop/systemd1/job/9",
+                "vanguard-x.service",
+                "done",
+                ":1.2",
+            ))
+            .unwrap();
+            for n in 0..300 {
+                s.write_all(&signal_fin_de(
+                    &format!("/org/freedesktop/systemd1/job/{}", n + 100),
+                    &format!("autre-{n}.service"),
+                    "done",
+                    ":1.2",
+                ))
+                .unwrap();
+            }
+            s.write_all(&retour(
+                &a,
+                "o",
+                vec![Valeur::texte_de("/org/freedesktop/systemd1/job/9")],
+                ":1.2",
+            ))
+            .unwrap();
+        });
+        let mut fins = Vec::new();
+        bus.agir(
+            GESTIONNAIRE,
+            "StartUnit",
+            vec![Valeur::texte_de("vanguard-x.service"), Valeur::texte_de("replace")],
+            Some(":1.2"),
+            &mut fins,
+        )
+        .unwrap();
+        assert_eq!(
+            fins,
+            [("/org/freedesktop/systemd1/job/9".to_string(), "done".to_string())]
+        );
+        assert_eq!(fil.join().unwrap(), ["StartUnit"]);
+    }
+
+    /// En attendant une réponse, les fins reçues sont gardées (la nôtre peut la devancer), mais au plus FINS_MAX : les
+    /// plus anciennes s'en vont.
+    #[test]
+    fn fins_gardees_bornees() {
+        let (mut bus, fil) = faux_bus(|s, appels| {
+            let a = lire(s);
+            appels.push(a.membre.clone().unwrap());
+            for n in 0..300 {
+                s.write_all(&signal_fin(
+                    &format!("/org/freedesktop/systemd1/job/{n}"),
+                    "done",
+                    ":1.2",
+                ))
+                .unwrap();
+            }
+            s.write_all(&retour(&a, "", Vec::new(), ":1.2")).unwrap();
+        });
+        let mut fins = Vec::new();
+        bus.agir(GESTIONNAIRE, "Reload", Vec::new(), Some(":1.2"), &mut fins)
+            .unwrap();
+        assert_eq!(fins.len(), FINS_MAX);
+        assert_eq!(
+            fins.last().map(|(j, _)| j.as_str()),
+            Some("/org/freedesktop/systemd1/job/299"),
+            "la plus récente reste"
+        );
+        assert_eq!(fil.join().unwrap(), ["Reload"]);
     }
 
     /// enable --now : EnableUnitFiles, Reload, AddMatch, Subscribe, StartUnit, puis la fin du job, arrivée AVANT la

@@ -8,6 +8,7 @@ use std::process::Command;
 use super::sshd::{mots_de_passe_sshd, mots_de_passe_vides_sshd, valeur_sshd};
 use super::unix::configuration_sshd;
 use super::{Audit, Constat, alerte, cles_ssh, impossible, ok, sortie};
+use crate::machine::gestes_unix::{self, ActionUnite, GesteUnix};
 use crate::optimiser::Geste;
 use crate::risk::{Niveau, info_port};
 use crate::{tr, trf, trw};
@@ -290,7 +291,9 @@ impl Paquets {
                 } else {
                     ("rpm", "-V")
                 };
-                let verif = crate::commande::lancer(Command::new(outil).args([option, paquet]).env("LC_ALL", "C"), 60)
+                // Par son chemin et dans un environnement vidé : un faux rpm du compte dirait « rien n'a changé ».
+                let verif = crate::commande::outil_propre(outil)
+                    .and_then(|mut c| crate::commande::lancer(c.args([option, paquet]).env("LC_ALL", "C"), 60))
                     .filter(|r| matches!(r.code, Some(0 | 1)))
                     .map(|r| r.sortie);
                 fichiers
@@ -376,24 +379,88 @@ fn systemd() -> bool {
     Path::new("/run/systemd/system").is_dir()
 }
 
-pub(crate) fn service_actif(nom: &str) -> bool {
-    services_systemd_actifs(&[nom]).first().copied().unwrap_or(false)
+/// L'unité tourne-t-elle ? `None` : son état n'a pu se lire ni par le bus ni par systemctl (`services_systemd_actifs`).
+pub(crate) fn service_actif(nom: &str) -> Option<bool> {
+    services_systemd_actifs(&[nom]).first().copied().flatten()
 }
 
-/// Chaque unité tourne-t-elle, comme le code de retour de `systemctl is-active` le dirait (« active »,
-/// « reloading » ou « refreshing ») ? L'état d'activité de systemd, lu sur un seul bus pour toutes : une unité « oneshot » qui reste
+/// Au moins une des unités tourne-t-elle ? `Some(true)` dès qu'une est lue active, `Some(false)` quand toutes sont
+/// lues arrêtées, `None` sinon : une unité non lue peut être celle qui tourne.
+pub(crate) fn un_service_actif(noms: &[&str]) -> Option<bool> {
+    une_lue_active(&services_systemd_actifs(noms))
+}
+
+fn une_lue_active(etats: &[Option<bool>]) -> Option<bool> {
+    if etats.contains(&Some(true)) {
+        Some(true)
+    } else if etats.contains(&None) {
+        None
+    } else {
+        Some(false)
+    }
+}
+
+/// Les trois états où `systemctl is-active` répond 0 (systemctl-is-active.c).
+fn etat_actif(etat: &str) -> bool {
+    matches!(etat, "active" | "reloading" | "refreshing")
+}
+
+/// Chaque unité tourne-t-elle, comme le code de retour de `systemctl is-active` le dirait (« active », « reloading »
+/// ou « refreshing ») ? L'état d'activité de systemd, lu sur un seul bus pour toutes : une unité « oneshot » qui reste
 /// active sans processus (ufw, nftables) et une prise d'écoute (ssh.socket) y sont actives, ce que les groupes de
-/// contrôle ne diraient pas. Sans bus (conteneur), ou sur une erreur pour un nom, `systemctl is-active` pour ce nom.
-pub(crate) fn services_systemd_actifs(noms: &[&str]) -> Vec<bool> {
-    // Les trois états où `systemctl is-active` répond 0 (systemctl-is-active.c).
-    let actif = |etat: &str| matches!(etat, "active" | "reloading" | "refreshing");
+/// contrôle ne diraient pas. Sans bus, ou sur une erreur pour un nom, `systemctl is-active` en secours (celui du
+/// système, jamais celui du PATH du compte, dans un environnement propre) ; `None` quand lui non plus ne répond pas :
+/// un état non lu n'est jamais pris pour « arrêté », qui ferait dire « serveur SSH désactivé » ou « aucun pare-feu ».
+pub(crate) fn services_systemd_actifs(noms: &[&str]) -> Vec<Option<bool>> {
     let mut bus = dbus::Bus::systeme().ok();
-    noms.iter()
-        .map(|nom| match bus.as_mut().map(|b| dbus::etat_d_activite(b, nom)) {
-            Some(Ok(etat)) => etat.as_deref().is_some_and(actif),
-            _ => sortie("systemctl", &["is-active", nom]).is_some_and(|s| actif(s.trim())),
-        })
-        .collect()
+    etats_des_services(
+        noms,
+        |nom| {
+            let e = dbus::etat_d_activite(bus.as_mut()?, nom).ok()?;
+            Some(e.as_deref().is_some_and(etat_actif))
+        },
+        systemctl_is_active,
+    )
+}
+
+/// Le bus d'abord, nom par nom ; les noms qu'il n'a pas lus vont tous ensemble au secours.
+fn etats_des_services(
+    noms: &[&str],
+    mut par_le_bus: impl FnMut(&str) -> Option<bool>,
+    secours: impl FnOnce(&[&str]) -> Vec<Option<bool>>,
+) -> Vec<Option<bool>> {
+    let mut etats: Vec<Option<bool>> = noms.iter().map(|n| par_le_bus(n)).collect();
+    let manquants: Vec<&str> = noms
+        .iter()
+        .zip(&etats)
+        .filter(|(_, e)| e.is_none())
+        .map(|(n, _)| *n)
+        .collect();
+    if manquants.is_empty() {
+        return etats;
+    }
+    let mut repris = secours(&manquants).into_iter();
+    for e in etats.iter_mut().filter(|e| e.is_none()) {
+        *e = repris.next().flatten();
+    }
+    etats
+}
+
+/// `systemctl is-active -- <noms>` : une ligne par unité, dans l'ordre. 0 (une au moins active), 3 (aucune) ou 4
+/// (unité inconnue) avec autant de lignes que de noms : lu ; tout autre cas (systemd injoignable, 1) : rien de lu.
+fn systemctl_is_active(noms: &[&str]) -> Vec<Option<bool>> {
+    let lu = crate::commande::outil_propre("systemctl")
+        .and_then(|mut c| crate::commande::lancer(c.arg("is-active").arg("--").args(noms), 10))
+        .and_then(|r| lire_is_active(r.code, &r.sortie, noms.len()));
+    lu.unwrap_or_else(|| vec![None; noms.len()])
+}
+
+fn lire_is_active(code: Option<i32>, sortie: &str, n: usize) -> Option<Vec<Option<bool>>> {
+    if !matches!(code, Some(0 | 3 | 4)) {
+        return None;
+    }
+    let etats: Vec<Option<bool>> = sortie.lines().map(|l| Some(etat_actif(l.trim()))).collect();
+    (etats.len() == n).then_some(etats)
 }
 
 fn home() -> String {
@@ -408,10 +475,14 @@ pub(crate) fn politique_ufw(texte: &str) -> Option<String> {
     })
 }
 
-/// ufw est-il le pare-feu actif ? (les corrections « ufw deny » n'ont de sens qu'avec lui)
+/// ufw est-il le pare-feu actif ? (les corrections « ufw deny » n'ont de sens qu'avec lui) ; un état non lu ne l'est
+/// pas.
 pub(crate) fn ufw_actif() -> bool {
+    ufw_active_dans_sa_configuration() && service_actif("ufw") == Some(true)
+}
+
+fn ufw_active_dans_sa_configuration() -> bool {
     std::fs::read_to_string("/etc/ufw/ufw.conf").is_ok_and(|c| c.lines().any(|l| l.trim() == "ENABLED=yes"))
-        && service_actif("ufw")
 }
 
 /// La zone par défaut de firewalld : « DefaultZone= » de sa configuration, que « --set-default-zone » réécrit ;
@@ -433,10 +504,23 @@ fn zone_par_defaut(conf: &str) -> Option<String> {
 }
 
 fn pare_feu() -> Constat {
+    const SERVICES: [&str; 5] = ["ufw", "firewalld", "nftables", "iptables", "ip6tables"];
     if !systemd() {
         return impossible("Pare-feu", tr!("systemd absent", "systemd missing"));
     }
-    if ufw_actif() {
+    // Un seul état non lu, et « aucun pare-feu » (avec ufw à activer par-dessus firewalld) pourrait être faux.
+    let etats = services_systemd_actifs(&SERVICES);
+    if etats.contains(&None) {
+        return impossible(
+            "Pare-feu",
+            tr!(
+                "état des services non lu (ni le bus système ni systemctl n'ont répondu)",
+                "service state not read (neither the system bus nor systemctl answered)"
+            ),
+        );
+    }
+    let actif = |nom: &str| SERVICES.iter().zip(&etats).any(|(n, e)| *n == nom && *e == Some(true));
+    if ufw_active_dans_sa_configuration() && actif("ufw") {
         // Actif ne suffit pas : encore faut-il qu'il bloque les connexions entrantes par défaut.
         let politique = std::fs::read_to_string("/etc/default/ufw")
             .ok()
@@ -467,7 +551,7 @@ fn pare_feu() -> Constat {
             ),
             None => ok("Pare-feu", tr!("ufw est actif.", "ufw is running.")),
         }
-    } else if service_actif("firewalld") {
+    } else if actif("firewalld") {
         // La zone « trusted » laisse tout passer.
         match zone_firewalld() {
             Some(z) if z == "trusted" => alerte(
@@ -495,10 +579,7 @@ fn pare_feu() -> Constat {
             ),
             None => ok("Pare-feu", tr!("firewalld est actif.", "firewalld is running.")),
         }
-    } else if let Some(s) = ["nftables", "iptables", "ip6tables"]
-        .into_iter()
-        .find(|s| service_actif(s))
-    {
+    } else if let Some(s) = ["nftables", "iptables", "ip6tables"].into_iter().find(|s| actif(s)) {
         ok(
             "Pare-feu",
             trf!(
@@ -527,6 +608,8 @@ fn pare_feu() -> Constat {
                 "Activer ufw : bloquer les connexions entrantes, autoriser les sortantes",
                 "Turn ufw on: block incoming connections, allow outgoing ones"
             ),
+            // Lot U3 : le « systemctl » reste une commande, mêlé ici aux commandes d'ufw ; il passera au geste « unite »
+            // avec elles (U6).
             &[
                 &format!("command -v ufw >/dev/null || {installer_ufw}"),
                 "sudo ufw default deny incoming",
@@ -594,7 +677,10 @@ fn cups_browsed_expose() -> Constat {
             "Arrêter et désactiver cups-browsed (les imprimantes récentes restent trouvées par CUPS)",
             "Stop and disable cups-browsed (recent printers are still found by CUPS)"
         ),
-        &["sudo systemctl disable --now cups-browsed"],
+        // Le geste fait par l'assistant élevé, par le bus système (lot U3) : ni shell ni « sudo » écrit en texte.
+        &[GesteUnix::Unite(ActionUnite::Desactiver, &gestes_unix::CUPS_BROWSED)
+            .ligne()
+            .as_str()],
     )
     .annulable(vec![Geste::unite("cups-browsed")])
 }
@@ -653,6 +739,8 @@ fn ports_ecoute(pare_feu_actif: bool, ufw: bool) -> Vec<Constat> {
                 p if proto == "udp" && port == 631 && p.starts_with("cups-browsed") => cups_browsed_expose().avec_objet(objet),
                 "ollama" => constat.corriger(
                     tr!("Faire écouter Ollama uniquement en local (127.0.0.1)", "Make Ollama listen locally only (127.0.0.1)"),
+                    // Lot U3 : daemon-reload et restart restent des commandes, après le fichier écrit par tee dans la même
+                    // correction ; ils passeront au geste « unite » avec lui (U4).
                     &[
                         "sudo mkdir -p /etc/systemd/system/ollama.service.d",
                         "printf '[Service]\\nEnvironment=OLLAMA_HOST=127.0.0.1\\n' | sudo tee /etc/systemd/system/ollama.service.d/vanguard.conf >/dev/null",
@@ -717,23 +805,33 @@ fn enable_streaming(vdf: &str) -> Option<bool> {
 }
 
 /// Vérifie puis recharge sshd. « try-reload-or-restart » : sur Ubuntu, ssh.socket ne démarre sshd qu'à la première
-/// connexion, et « reload » d'un service arrêté échouait alors que la configuration était écrite.
+/// connexion, et « reload » d'un service arrêté échouait alors que la configuration était écrite. Lot U3 : reste une
+/// commande, parce qu'elle suit toujours l'écriture du fichier de sshd et `sshd -t` ; geste avec eux (U4, U7).
 pub(crate) const RECHARGER_SSHD: &str = "sudo sshd -t && sudo systemctl try-reload-or-restart sshd";
 
 /// Le serveur SSH tourne-t-il ? « sshd » sur Arch et Fedora, « ssh » sur Debian, Ubuntu et Mint. Ubuntu (22.10+) le
-/// lance à la demande par ssh.socket : le service paraît arrêté alors que le port 22 accepte les connexions.
-fn sshd_actif() -> bool {
-    ["sshd", "ssh", "sshd.socket", "ssh.socket"]
-        .iter()
-        .any(|s| service_actif(s))
+/// lance à la demande par ssh.socket : le service paraît arrêté alors que le port 22 accepte les connexions. `None` :
+/// état non lu ; seule `ssh_serveur` le dit, les autres règles du serveur SSH se taisent (`!= Some(true)`).
+fn sshd_actif() -> Option<bool> {
+    un_service_actif(&["sshd", "ssh", "sshd.socket", "ssh.socket"])
 }
 
 fn ssh_serveur() -> Constat {
     if !systemd() {
         return impossible("SSH", tr!("systemd absent", "systemd missing"));
     }
-    if !sshd_actif() {
-        return ok("SSH", tr!("Serveur SSH désactivé.", "SSH server off."));
+    match sshd_actif() {
+        Some(true) => {}
+        Some(false) => return ok("SSH", tr!("Serveur SSH désactivé.", "SSH server off.")),
+        None => {
+            return impossible(
+                "SSH",
+                tr!(
+                    "état du serveur SSH non lu (ni le bus système ni systemctl n'ont répondu)",
+                    "SSH server state not read (neither the system bus nor systemctl answered)"
+                ),
+            );
+        }
     }
     let Some(conf) = configuration_sshd() else {
         return impossible(
@@ -897,7 +995,7 @@ fn juger_ssh_secondaire(conf: &str) -> Option<Constat> {
 }
 
 fn ssh_secondaire() -> Option<Constat> {
-    if !systemd() || !sshd_actif() {
+    if !systemd() || sshd_actif() != Some(true) {
         return None;
     }
     juger_ssh_secondaire(&configuration_sshd()?)
@@ -905,7 +1003,7 @@ fn ssh_secondaire() -> Option<Constat> {
 
 fn ports_ssh() -> Option<Constat> {
     // Configuration illisible : la règle du serveur SSH le dit déjà.
-    if !systemd() || !sshd_actif() {
+    if !systemd() || sshd_actif() != Some(true) {
         return None;
     }
     juger_ports_ssh(&configuration_sshd()?)
@@ -914,7 +1012,7 @@ fn ports_ssh() -> Option<Constat> {
 /// Le journal de sshd des dernières 24 h, un message par ligne, ou le constat qui dit pourquoi il ne se lit pas. `None` :
 /// pas de serveur SSH ici (ou pas de systemd pour le dire), rien à lire.
 fn journal_sshd() -> Option<Result<String, Constat>> {
-    if !systemd() || !sshd_actif() {
+    if !systemd() || sshd_actif() != Some(true) {
         return None;
     }
     // « sshd-session » : depuis OpenSSH 9.8, c'est lui qui écrit les échecs de connexion. Les fichiers du journal
@@ -973,7 +1071,7 @@ fn ssh_echecs() -> Option<Constat> {
     // Configuration illisible : on suppose les mots de passe permis (la valeur par défaut de sshd).
     let mots_de_passe = configuration_sshd().is_none_or(|c| mots_de_passe_sshd(&c));
     juger_echecs_ssh(&journal, mots_de_passe, || {
-        BLOQUEURS.into_iter().find(|s| service_actif(s))
+        BLOQUEURS.into_iter().find(|s| service_actif(s) == Some(true))
     })
 }
 
@@ -1757,52 +1855,24 @@ fn verrouillage_ecran() -> Option<Constat> {
 type Minuteries = (Vec<(String, u64, String, bool)>, Vec<bool>);
 
 /// Minuteries systemd (système et utilisateur) : (nom, dernier passage en µs depuis 1970, service lancé, utilisateur ?),
-/// lues par D-Bus (ListUnits, puis LastTriggerUSec et Unit de chaque minuterie), `systemctl list-timers` en secours.
-/// Rend aussi les gestionnaires qui n'ont pu être lus ni par l'un ni par l'autre (« système », « utilisateur ») :
-/// « aucune sauvegarde » n'y serait pas prouvé.
+/// lues par D-Bus (ListUnits, puis LastTriggerUSec et Unit de chaque minuterie), sans `systemctl list-timers` en
+/// secours : il passe par les mêmes bus, et le PATH du compte en choisirait un faux. Rend aussi les gestionnaires qui
+/// n'ont pu être lus (« système », « utilisateur ») : « aucune sauvegarde » n'y serait pas prouvé.
 fn minuteries() -> Minuteries {
     let mut toutes = Vec::new();
     let mut non_lus = Vec::new();
     for utilisateur in [false, true] {
-        if let Ok(liste) = unites::bus(utilisateur).and_then(|mut b| unites::minuteries(&mut b)) {
-            toutes.extend(liste.into_iter().map(|m| (m.nom, m.dernier, m.service, utilisateur)));
-            continue;
-        }
-        let mut args = vec!["list-timers", "--all", "--output=json"];
-        if utilisateur {
-            args.insert(0, "--user");
-        }
-        let Some(liste) = sortie("systemctl", &args).and_then(|json| match serde_json::from_str(&json) {
-            Ok(serde_json::Value::Array(l)) => Some(l),
-            _ => None,
-        }) else {
-            non_lus.push(utilisateur);
-            continue;
-        };
-        for t in liste {
-            let champ = |c: &str| {
-                t.get(c)
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string()
-            };
-            let dernier = t.get("last").and_then(serde_json::Value::as_u64).unwrap_or(0);
-            toutes.push((champ("unit"), dernier, champ("activates"), utilisateur));
+        match unites::bus(utilisateur).and_then(|mut b| unites::minuteries(&mut b)) {
+            Ok(liste) => toutes.extend(liste.into_iter().map(|m| (m.nom, m.dernier, m.service, utilisateur))),
+            Err(_) => non_lus.push(utilisateur),
         }
     }
     (toutes, non_lus)
 }
 
-/// Le résultat du dernier passage d'un service (« success »…), par D-Bus, `systemctl show -p Result` en secours.
+/// Le résultat du dernier passage d'un service (« success »…), par D-Bus seul ; `None` sans bus (non lu).
 fn resultat_du_service(service: &str, utilisateur: bool) -> Option<String> {
-    if let Ok(mut b) = unites::bus(utilisateur) {
-        return unites::resultat(&mut b, service);
-    }
-    let mut args = vec!["show", service, "-p", "Result", "--value"];
-    if utilisateur {
-        args.insert(0, "--user");
-    }
-    sortie("systemctl", &args).map(|r| r.trim().to_string())
+    unites::resultat(&mut unites::bus(utilisateur).ok()?, service)
 }
 
 /// Une minuterie de sauvegarde ? `Some(true)` = vraie sauvegarde, `Some(false)` = instantanés sur le même disque.
@@ -2103,7 +2173,79 @@ mod tests {
         if !systemctl[0] {
             return crate::essais::saute("systemctl ne joint pas systemd ici");
         }
-        assert_eq!(services_systemd_actifs(&noms), systemctl, "{noms:?}");
+        let attendu: Vec<Option<bool>> = systemctl.into_iter().map(Some).collect();
+        assert_eq!(services_systemd_actifs(&noms), attendu, "{noms:?}");
+        // Le secours, d'un seul appel, lit la même chose.
+        assert_eq!(systemctl_is_active(&noms), attendu, "{noms:?}");
+    }
+
+    /// Bus absent ou en erreur : le secours lit ce qui manque, d'un seul appel ; s'il ne répond pas non plus, l'état
+    /// reste non lu (`None`), jamais « arrêté ».
+    #[test]
+    fn bus_absent_ou_en_erreur() {
+        let noms = ["sshd", "ssh", "ufw"];
+        let jamais = |_: &[&str]| -> Vec<Option<bool>> { panic!("secours appelé alors que tout est lu") };
+        // Tout lu par le bus : pas de secours.
+        assert_eq!(
+            etats_des_services(&noms, |n| Some(n == "ssh"), jamais),
+            [Some(false), Some(true), Some(false)]
+        );
+        // Bus absent, systemctl répond.
+        let mut demandes = Vec::new();
+        let etats = etats_des_services(
+            &noms,
+            |_| None,
+            |m| {
+                demandes.push(m.join(" "));
+                vec![Some(false), Some(true), Some(false)]
+            },
+        );
+        assert_eq!(etats, [Some(false), Some(true), Some(false)]);
+        assert_eq!(demandes, ["sshd ssh ufw"]);
+        // Une erreur du bus pour un seul nom : lui seul part au secours, remis à sa place.
+        let etats = etats_des_services(
+            &noms,
+            |n| (n != "ssh").then_some(false),
+            |m| {
+                assert_eq!(m, ["ssh"]);
+                vec![Some(true)]
+            },
+        );
+        assert_eq!(etats, [Some(false), Some(true), Some(false)]);
+        // Ni bus ni systemctl : rien de lu, et rien de pris pour arrêté.
+        let etats = etats_des_services(&noms, |_| None, |m| vec![None; m.len()]);
+        assert_eq!(etats, [None, None, None]);
+        assert_eq!(une_lue_active(&etats), None);
+        // Un secours qui rend moins de lignes que demandé ne comble pas les trous avec « arrêté ».
+        assert_eq!(
+            etats_des_services(&noms, |_| None, |_| vec![Some(true)]),
+            [Some(true), None, None]
+        );
+        // Au moins une lue active suffit ; toutes lues arrêtées, arrêté ; sinon non lu.
+        assert_eq!(une_lue_active(&[None, Some(true)]), Some(true));
+        assert_eq!(une_lue_active(&[Some(false), Some(false)]), Some(false));
+        assert_eq!(une_lue_active(&[Some(false), None]), None);
+    }
+
+    /// La sortie de `systemctl is-active` : un état par ligne, lu seulement avec un code qui le permet et le bon
+    /// nombre de lignes.
+    #[test]
+    fn sortie_de_systemctl_is_active() {
+        let lu = |code, sortie: &str, n| lire_is_active(code, sortie, n);
+        assert_eq!(
+            lu(Some(0), "active\ninactive\nreloading\n", 3),
+            Some(vec![Some(true), Some(false), Some(true)])
+        );
+        assert_eq!(
+            lu(Some(3), "inactive\nfailed\n", 2),
+            Some(vec![Some(false), Some(false)])
+        );
+        assert_eq!(lu(Some(4), "inactive\n", 1), Some(vec![Some(false)]));
+        // systemd injoignable : code 1, rien sur la sortie.
+        assert_eq!(lu(Some(1), "", 2), None);
+        // Tué par un signal, ou une ligne de moins : rien de lu.
+        assert_eq!(lu(None, "active\n", 1), None);
+        assert_eq!(lu(Some(0), "active\n", 2), None);
     }
 
     #[test]
@@ -2342,7 +2484,7 @@ mod tests {
         assert_eq!(c.probleme, Some(Niveau::Eleve));
         assert_eq!(
             c.correctif.unwrap().commandes,
-            ["sudo systemctl disable --now cups-browsed"]
+            ["vanguard:geste unite desactiver cups-browsed.service"]
         );
         // Nommé par son groupe de contrôle quand le programme est invisible sans droits.
         assert_eq!(

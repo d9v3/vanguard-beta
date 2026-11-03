@@ -129,13 +129,14 @@ pub(super) fn soupcon(programme: &str, arguments: &str) -> Option<&'static str> 
 /// (/Library/LaunchDaemons) vivent dans le domaine `system` ; un agent, même posé dans
 /// /Library/LaunchAgents, est chargé dans la session de la personne (gui/<uid>) : `bootout system`
 /// ne le trouverait pas et il tournerait jusqu'à la déconnexion. `$(id -u)` est développé avant
-/// `sudo` : c'est le compte de la personne, pas root.
+/// `sudo` : c'est le compte de la personne, pas root ; `$HOME` aussi, entre guillemets, et il vient de la base des
+/// comptes (`commande::environnement_propre`), jamais d'un HOME posé par un programme du compte.
 fn arret_et_retrait(chemin: &Path, dossier: &Path, systeme: bool) -> (String, String) {
     let plist = crate::commande::sh_chaine(&chemin.display().to_string());
     if !systeme {
         return (
             format!("launchctl bootout gui/$(id -u) {plist}"),
-            format!("mv {plist} ~/.Trash/"),
+            format!("mv {plist} \"$HOME/.Trash/\""),
         );
     }
     let arret = if dossier.ends_with("LaunchDaemons") {
@@ -143,7 +144,7 @@ fn arret_et_retrait(chemin: &Path, dossier: &Path, systeme: bool) -> (String, St
     } else {
         format!("sudo launchctl bootout gui/$(id -u) {plist}")
     };
-    (arret, format!("sudo mv {plist} ~/.Trash/"))
+    (arret, format!("sudo mv {plist} \"$HOME/.Trash/\""))
 }
 
 pub fn persistance() -> Vec<Constat> {

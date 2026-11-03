@@ -16,6 +16,8 @@ mod gardes;
 pub(crate) mod gestes;
 mod menaces;
 pub(crate) mod ordres;
+// La forme des lignes des ordres : du code pur, lu aussi par le banc de fuzzing.
+mod ordres_ligne;
 pub(crate) mod parametres;
 pub(crate) mod pare_feu;
 
@@ -28,6 +30,9 @@ pub(crate) use gestes::chemin_du_processus;
 // d'une session en cours).
 #[cfg(windows)]
 pub(crate) use gardes::{port_a_garder, port_intouchable, sessions_a_distance};
+// L'assistant élevé de Linux ne redémarre pas le réseau pendant une session à distance entrante.
+#[cfg(target_os = "linux")]
+pub(crate) use gardes::session_entrante_ouverte;
 use menaces::Menace;
 use parametres::{Categorie, Decision, Mode, Parametres, decider};
 

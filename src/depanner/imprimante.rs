@@ -256,17 +256,19 @@ mod systeme {
                 "Le service d'impression (CUPS) est arrêté.",
                 "The printing service (CUPS) is stopped."
             ));
+            // Sous Linux, le geste de l'assistant élevé, par le bus système (lot U3) ; sous macOS, launchctl.
             let demarrer = if cfg!(target_os = "macos") {
-                "sudo launchctl kickstart -k system/org.cups.cupsd"
+                "sudo launchctl kickstart -k system/org.cups.cupsd".to_string()
             } else {
-                "sudo systemctl enable --now cups"
+                use crate::machine::gestes_unix::{ActionUnite, CUPS, GesteUnix};
+                GesteUnix::Unite(ActionUnite::Activer, &CUPS).ligne()
             };
             if proposer(
                 tr!(
                     "\n  Démarrer le service d'impression ? [o/N] : ",
                     "\n  Start the printing service? [y/N]: "
                 ),
-                &[demarrer.to_string()],
+                &[demarrer],
             ) {
                 fait(tr!("Service démarré.", "Service started."));
             } else {

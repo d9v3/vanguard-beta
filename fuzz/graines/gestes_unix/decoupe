@@ -1,0 +1,11 @@
+vanguard:geste programme freshclam
+vanguard:couper-connexions 203.0.113.7
+
+sudo freshclam
+systemctl stop clamav-freshclam.service
+
+vanguard:geste programme freshclam
+sudo freshclam
+vanguard:geste programme freshclam
+
+
