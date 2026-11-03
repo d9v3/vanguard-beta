@@ -3305,6 +3305,269 @@ pub(crate) const CERTIFICAT_RETIRER: &str = "vanguard:certificat-retirer ";
 /// `vanguard:partage-retirer-acces <nom en hex> <SID>`, la liste d'avant notée (SDDL).
 pub(crate) const PARTAGE_RETIRER_ACCES: &str = "vanguard:partage-retirer-acces ";
 
+// ------------------------------------------------- réglages du registre et mots de passe (défense D6b)
+
+/// Mettre un réglage de Windows à sa valeur sûre : `vanguard:reglage <mot>`, le mot d'un `IdReglage` (jamais un
+/// chemin de registre : les clés, valeurs et cibles sont celles de la table de `reglages`). La valeur d'avant est
+/// notée (ChoixAvant), sauf pour le mot de passe en clair de l'ouverture automatique, retiré exprès sans copie.
+pub(crate) const REGLAGE: &str = "vanguard:reglage ";
+/// Remettre ce qu'un `REGLAGE` a noté : `vanguard:reglage-remettre <mot>`, une baisse, montrée puis confirmée.
+pub(crate) const REGLAGE_REMETTRE: &str = "vanguard:reglage-remettre ";
+/// Poser un mot de passe sur un compte local qui n'en exige pas : `vanguard:compte-mot-de-passe <RID>`. Le mot de
+/// passe n'est jamais sur la ligne : il est tapé deux fois dans la console élevée seulement, lecture masquée.
+pub(crate) const COMPTE_MOT_DE_PASSE: &str = "vanguard:compte-mot-de-passe ";
+/// Mettre entre guillemets le chemin d'un service que Vanguard ne sait pas vérifier (variable inconnue, programme
+/// introuvable), après une question qui dit que le service peut ne plus démarrer : `vanguard:service-guillemets-risque
+/// <nom en hex>`. Le chemin d'avant est noté.
+pub(crate) const SERVICE_GUILLEMETS_RISQUE: &str = "vanguard:service-guillemets-risque ";
+/// Remettre le chemin d'un service que Vanguard a noté en le changeant : `vanguard:service-chemin-remettre <nom en
+/// hex>`, une baisse, seulement si le chemin est encore celui que Vanguard a écrit.
+pub(crate) const SERVICE_CHEMIN_REMETTRE: &str = "vanguard:service-chemin-remettre ";
+
+/// Un réglage de Windows que Vanguard sait mettre à sa valeur sûre, puis remettre (sauf `OuvertureAutoMdp`). Une
+/// liste fermée : le processus élevé n'écrit que les clés et valeurs de la table de `reglages` pour ce réglage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum IdReglage {
+    /// Protection LSA, `RunAsPPL=2` (sans verrou UEFI).
+    LsaPpl,
+    /// Assistance à distance coupée (`fAllowToGetHelp=0`).
+    AssistanceCoupe,
+    /// Ouverture automatique avec le mot de passe en clair : `DefaultPassword` retiré et `AutoAdminLogon=0`.
+    OuvertureAutoMdp,
+    /// Ouverture automatique sans mot de passe en clair : `AutoAdminLogon=0`.
+    OuvertureAutoCoupe,
+    /// SmartScreen de l'Explorateur à « Warn » (la valeur de la personne, jamais une stratégie).
+    SmartScreen,
+    /// La stratégie qui coupe SmartScreen, retirée (PC hors domaine et hors gestion seulement).
+    SmartScreenStrategie,
+    /// Intégrité de la mémoire (HVCI), `Enabled=1` et `Locked=0`.
+    Hvci,
+    /// La pause des mises à jour, retirée.
+    MajPause,
+    /// La stratégie NoAutoUpdate, retirée (hors gestion).
+    MajStrategie,
+    /// Signature SMB exigée par le client.
+    SmbSignature,
+    /// La stratégie qui permet la connexion invité, retirée (hors gestion).
+    SmbInviteStrategie,
+    /// La stratégie d'exécution PowerShell de la machine, retirée (hors gestion).
+    PsStrategieMachine,
+    /// La stratégie d'exécution PowerShell du compte de la personne, retirée (hors gestion).
+    PsStrategieCompte,
+    /// La stratégie qui ouvre les macros d'un programme d'Office pour la personne (indices dans `OFFICE_VERSIONS` et
+    /// `OFFICE_PROGRAMMES`), retirée (hors gestion).
+    Macros(u8, u8),
+    /// Credential Guard (sécurité basée sur la virtualisation), sans verrou UEFI.
+    CredentialGuard,
+}
+
+impl IdReglage {
+    const FIXES: [IdReglage; 14] = [
+        IdReglage::LsaPpl,
+        IdReglage::AssistanceCoupe,
+        IdReglage::OuvertureAutoMdp,
+        IdReglage::OuvertureAutoCoupe,
+        IdReglage::SmartScreen,
+        IdReglage::SmartScreenStrategie,
+        IdReglage::Hvci,
+        IdReglage::MajPause,
+        IdReglage::MajStrategie,
+        IdReglage::SmbSignature,
+        IdReglage::SmbInviteStrategie,
+        IdReglage::PsStrategieMachine,
+        IdReglage::PsStrategieCompte,
+        IdReglage::CredentialGuard,
+    ];
+
+    /// Tous les réglages, macros de chaque version et programme comprises.
+    pub(crate) fn tous() -> Vec<IdReglage> {
+        let mut t = Self::FIXES.to_vec();
+        for v in 0..OFFICE_VERSIONS.len() {
+            for p in 0..OFFICE_PROGRAMMES.len() {
+                if let (Ok(v), Ok(p)) = (u8::try_from(v), u8::try_from(p)) {
+                    t.push(IdReglage::Macros(v, p));
+                }
+            }
+        }
+        t
+    }
+
+    /// Le mot de la ligne : minuscules ASCII, chiffres, « - » et « . ».
+    pub(crate) fn mot(self) -> String {
+        match self {
+            IdReglage::LsaPpl => "lsa-ppl".into(),
+            IdReglage::AssistanceCoupe => "assistance-coupe".into(),
+            IdReglage::OuvertureAutoMdp => "ouverture-auto-mdp".into(),
+            IdReglage::OuvertureAutoCoupe => "ouverture-auto-coupe".into(),
+            IdReglage::SmartScreen => "smartscreen".into(),
+            IdReglage::SmartScreenStrategie => "smartscreen-strategie".into(),
+            IdReglage::Hvci => "hvci".into(),
+            IdReglage::MajPause => "maj-pause".into(),
+            IdReglage::MajStrategie => "maj-strategie".into(),
+            IdReglage::SmbSignature => "smb-signature".into(),
+            IdReglage::SmbInviteStrategie => "smb-invite-strategie".into(),
+            IdReglage::PsStrategieMachine => "ps-strategie-machine".into(),
+            IdReglage::PsStrategieCompte => "ps-strategie-compte".into(),
+            IdReglage::Macros(v, p) => format!(
+                "macros-strategie-{}-{}",
+                self::OFFICE_VERSIONS.get(usize::from(v)).copied().unwrap_or("?"),
+                self::OFFICE_PROGRAMMES.get(usize::from(p)).map_or("?", |x| x.0)
+            ),
+            IdReglage::CredentialGuard => "credential-guard".into(),
+        }
+    }
+
+    /// Le réglage d'un mot, si et seulement si c'est exactement le mot d'un réglage de la liste.
+    pub(crate) fn lire(mot: &str) -> Option<IdReglage> {
+        if mot.len() > 64
+            || !mot
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
+        {
+            return None;
+        }
+        Self::tous().into_iter().find(|id| id.mot() == mot)
+    }
+
+    /// La version et la clé du programme d'Office d'un réglage des macros.
+    pub(crate) fn office(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            IdReglage::Macros(v, p) => Some((
+                *OFFICE_VERSIONS.get(usize::from(v))?,
+                OFFICE_PROGRAMMES.get(usize::from(p))?.0,
+            )),
+            _ => None,
+        }
+    }
+
+    /// Le réglage des macros d'une version et d'un programme d'Office de la liste.
+    pub(crate) fn macros(version: &str, cle: &str) -> Option<IdReglage> {
+        let v = OFFICE_VERSIONS.iter().position(|x| *x == version)?;
+        let p = OFFICE_PROGRAMMES.iter().position(|x| x.0 == cle)?;
+        Some(IdReglage::Macros(u8::try_from(v).ok()?, u8::try_from(p).ok()?))
+    }
+
+    /// Se remet-il (« Remettre ») ? Le mot de passe en clair n'est pas gardé, exprès : non.
+    pub(crate) fn annulable(self) -> bool {
+        self != IdReglage::OuvertureAutoMdp
+    }
+
+    /// Écrit-il dans le registre du compte de la personne (HKEY_USERS\<SID>) plutôt que dans celui de la machine ?
+    pub(crate) fn du_compte(self) -> bool {
+        matches!(self, IdReglage::PsStrategieCompte | IdReglage::Macros(..))
+    }
+
+    /// Retire-t-il une stratégie de groupe (seulement sur un PC hors domaine et hors gestion, §3.3) ?
+    pub(crate) fn strategie(self) -> bool {
+        matches!(
+            self,
+            IdReglage::SmartScreenStrategie
+                | IdReglage::MajStrategie
+                | IdReglage::SmbInviteStrategie
+                | IdReglage::PsStrategieMachine
+                | IdReglage::PsStrategieCompte
+                | IdReglage::Macros(..)
+        )
+    }
+
+    /// Ne prend-il effet qu'au redémarrage de Windows ?
+    pub(crate) fn redemarrage(self) -> bool {
+        matches!(
+            self,
+            IdReglage::LsaPpl | IdReglage::Hvci | IdReglage::CredentialGuard | IdReglage::SmbSignature
+        )
+    }
+}
+
+/// La ligne qui met un réglage à sa valeur sûre.
+pub(crate) fn ligne_reglage(id: IdReglage) -> String {
+    Acte::Reglage(id).ligne()
+}
+
+/// La ligne qui remet ce qu'un réglage a noté ; `None` pour un réglage qui ne se remet pas.
+pub(crate) fn ligne_reglage_remettre(id: IdReglage) -> Option<String> {
+    id.annulable().then(|| Acte::ReglageRemettre(id).ligne())
+}
+
+/// La ligne qui pose un mot de passe sur un compte local d'après son SID ; `None` hors d'un compte local de RID 500
+/// ou plus.
+pub(crate) fn ligne_compte_mot_de_passe(sid: &str) -> Option<String> {
+    rid_local(sid).map(|rid| Acte::CompteMotDePasse(rid).ligne())
+}
+
+/// La ligne qui met entre guillemets, après la question du risque, le chemin d'un service que Vanguard ne sait pas
+/// vérifier.
+pub(crate) fn ligne_service_guillemets_risque(nom: &str) -> Option<String> {
+    NomFichier::nouveau(nom).map(|n| Acte::ServiceGuillemetsRisque(n).ligne())
+}
+
+/// La ligne qui remet le chemin noté d'un service.
+pub(crate) fn ligne_service_chemin_remettre(nom: &str) -> Option<String> {
+    NomFichier::nouveau(nom).map(|n| Acte::ServiceCheminRemettre(n).ligne())
+}
+
+/// Les services d'accès à distance : leur chemin n'est jamais changé pendant une session à distance (ni quand elle
+/// ne se lit pas), le Bureau à distance, l'assistance, SSH ou WinRM en dépendent.
+pub(crate) const SERVICES_ACCES_DISTANT: [&str; 6] = [
+    "TermService",
+    "SessionEnv",
+    "UmRdpService",
+    "sshd",
+    "WinRM",
+    "RemoteAccess",
+];
+
+/// Changer le chemin du service `nom` couperait-il une session à distance au prochain démarrage du service ? Refusé
+/// pour un service d'accès à distance quand une session est ouverte ou ne se lit pas (`session` : `None`).
+pub(crate) fn refus_chemin_session(nom: &str, session: Option<bool>) -> bool {
+    SERVICES_ACCES_DISTANT.iter().any(|s| s.eq_ignore_ascii_case(nom)) && session != Some(false)
+}
+
+/// Couper l'Assistance à distance couperait-il une aide en cours ? `msra` : msra.exe tourne-t-il (`None` : la liste
+/// des programmes ne se lit pas, refusé aussi).
+pub(crate) fn refus_assistance(msra: Option<bool>) -> bool {
+    msra != Some(false)
+}
+
+/// Pourquoi un mot de passe n'est pas posé sur un compte pendant une session : la liste ne se lit pas, ou une
+/// session du compte n'est pas une session sur l'écran de cet ordinateur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefusSessionMdp {
+    Illisible,
+    ADistance,
+}
+
+/// Les sessions du compte `cible` dans `programmes` (session, SID de chaque programme) : refusé si la liste ne se lit
+/// pas, si un programme sans SID tourne dans une session ouverte, si le compte a un programme dans la session 0 (SSH,
+/// service) ou dans une session dont le protocole n'est pas la console (0 ; `protocole` : `None` illisible).
+pub(crate) fn refus_session_mdp(
+    programmes: Option<&[(u32, Option<String>)]>,
+    cible: &str,
+    protocole: impl Fn(u32) -> Option<u16>,
+) -> Option<RefusSessionMdp> {
+    let Some(liste) = programmes else {
+        return Some(RefusSessionMdp::Illisible);
+    };
+    let mut illisible = false;
+    for (session, sid) in liste {
+        match sid {
+            Some(s) if s.eq_ignore_ascii_case(cible) => {
+                if *session == 0 {
+                    return Some(RefusSessionMdp::ADistance);
+                }
+                match protocole(*session) {
+                    Some(0) => {}
+                    Some(_) => return Some(RefusSessionMdp::ADistance),
+                    None => illisible = true,
+                }
+            }
+            None if *session != 0 => illisible = true,
+            Some(_) | None => {}
+        }
+    }
+    illisible.then_some(RefusSessionMdp::Illisible)
+}
+
 /// Le plus petit RID d'un compte : 500 (Administrateur intégré) ; en dessous, des groupes et des comptes de Windows.
 pub(crate) const RID_MIN: u32 = 500;
 /// La plus longue d'un nom de partage, en unités UTF-16 (NNLEN de lmcons.h).
@@ -4629,6 +4892,16 @@ pub(crate) enum Acte {
     LancementDesactiver(LancementMachine, ValeurDesactivee),
     /// Remettre les octets de StartupApproved qu'un `LancementDesactiver` a notés.
     LancementReactiver(LancementMachine),
+    /// Mettre un réglage de Windows de la table de `reglages` à sa valeur sûre, valeur d'avant notée (défense D6b).
+    Reglage(IdReglage),
+    /// Remettre la valeur qu'un `Reglage` a notée : une baisse, montrée puis confirmée.
+    ReglageRemettre(IdReglage),
+    /// Poser un mot de passe sur le compte local de ce RID (tapé dans la console élevée seulement).
+    CompteMotDePasse(u32),
+    /// Mettre entre guillemets le chemin d'un service que Vanguard ne sait pas vérifier, après la question du risque.
+    ServiceGuillemetsRisque(NomFichier),
+    /// Remettre le chemin d'un service que Vanguard a noté : une baisse.
+    ServiceCheminRemettre(NomFichier),
 }
 
 impl Acte {
@@ -4680,6 +4953,11 @@ impl Acte {
             Acte::ServiceRetirer(n) => format!("{SERVICE_RETIRER}{}", n.hex()),
             Acte::LancementDesactiver(l, v) => format!("{LANCEMENT_DESACTIVER}{} {}", l.mots(), v.hex()),
             Acte::LancementReactiver(l) => format!("{LANCEMENT_REACTIVER}{}", l.mots()),
+            Acte::Reglage(id) => format!("{REGLAGE}{}", id.mot()),
+            Acte::ReglageRemettre(id) => format!("{REGLAGE_REMETTRE}{}", id.mot()),
+            Acte::CompteMotDePasse(rid) => format!("{COMPTE_MOT_DE_PASSE}{rid}"),
+            Acte::ServiceGuillemetsRisque(n) => format!("{SERVICE_GUILLEMETS_RISQUE}{}", n.hex()),
+            Acte::ServiceCheminRemettre(n) => format!("{SERVICE_CHEMIN_REMETTRE}{}", n.hex()),
         }
     }
 
@@ -4725,6 +5003,11 @@ impl Acte {
             | Acte::CertificatRetirer(..)
             | Acte::PartageRetirerAcces(_)
             | Acte::Rallumer(_)
+            // Un réglage mis à sa valeur sûre, un mot de passe posé, des guillemets : des protections. La remise d'un
+            // réglage passe par sa propre ligne (une baisse), jamais par « Défaire ».
+            | Acte::Reglage(_)
+            | Acte::CompteMotDePasse(_)
+            | Acte::ServiceGuillemetsRisque(_)
             // Supprimer un service ne se défait pas : une protection, que « Défaire » ne propose jamais.
             | Acte::ServiceRetirer(_) => true,
             Acte::PareFeuPublic(p) => p.durcit(),
@@ -4758,7 +5041,10 @@ impl Acte {
             | Acte::WmiAbonnementRemettre(_)
             // Un programme de démarrage choisi dans Optimiser : un confort, défait par Optimiser lui-même.
             | Acte::LancementDesactiver(..)
-            | Acte::LancementReactiver(_) => false,
+            | Acte::LancementReactiver(_)
+            // La remise d'un réglage ou d'un chemin de service noté : une baisse, jamais une protection remise.
+            | Acte::ReglageRemettre(_)
+            | Acte::ServiceCheminRemettre(_) => false,
         }
     }
 
@@ -4803,12 +5089,19 @@ impl Acte {
             // Remettre un programme qu'Optimiser avait désactivé (jamais un lancement jugé suspect par le bilan) ne
             // touche pas à la protection.
             | Acte::LancementDesactiver(..)
-            | Acte::LancementReactiver(_) => false,
+            | Acte::LancementReactiver(_)
+            // Un réglage mis à sa valeur sûre, un mot de passe posé, des guillemets : rien ne baisse.
+            | Acte::Reglage(_)
+            | Acte::CompteMotDePasse(_)
+            | Acte::ServiceGuillemetsRisque(_) => false,
             // Un lancement que le bilan jugeait suspect revient : dit en toutes lettres avant l'accord.
             Acte::RunRemettre(_)
             | Acte::TacheReactiver(_)
             | Acte::DemarrageRemettre(_)
-            | Acte::WmiAbonnementRemettre(_) => true,
+            | Acte::WmiAbonnementRemettre(_)
+            // La remise d'un réglage ou d'un chemin de service noté : la valeur faible revient.
+            | Acte::ReglageRemettre(_)
+            | Acte::ServiceCheminRemettre(_) => true,
         }
     }
 
@@ -4871,7 +5164,14 @@ impl Acte {
             | Acte::WmiAbonnementRemettre(_)
             | Acte::ServiceRetirer(_)
             | Acte::LancementDesactiver(..)
-            | Acte::LancementReactiver(_) => SANS_POWERSHELL.to_string(),
+            | Acte::LancementReactiver(_)
+            // Les réglages du registre et les mots de passe (D6b) : natif seulement, la valeur d'avant notée par le
+            // processus élevé ; un mot de passe ne passe jamais par un script.
+            | Acte::Reglage(_)
+            | Acte::ReglageRemettre(_)
+            | Acte::CompteMotDePasse(_)
+            | Acte::ServiceGuillemetsRisque(_)
+            | Acte::ServiceCheminRemettre(_) => SANS_POWERSHELL.to_string(),
             Acte::DnsAuto(g) => powershell_dns_auto(*g),
             Acte::DnsServeurs(d) => d.powershell(),
         }
@@ -4908,6 +5208,11 @@ pub(crate) fn est_un_acte(ligne: &str) -> bool {
         || ligne.starts_with(COMPTE_DESACTIVER)
         || ligne.starts_with(CERTIFICAT_RETIRER)
         || ligne.starts_with(PARTAGE_RETIRER_ACCES)
+        || ligne.starts_with(REGLAGE)
+        || ligne.starts_with(REGLAGE_REMETTRE)
+        || ligne.starts_with(COMPTE_MOT_DE_PASSE)
+        || ligne.starts_with(SERVICE_GUILLEMETS_RISQUE)
+        || ligne.starts_with(SERVICE_CHEMIN_REMETTRE)
         || est_persistance(ligne)
 }
 
@@ -5011,6 +5316,12 @@ pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
         Acte::DnsServeurs(DnsServeurs::analyser(reste)?)
     } else if let Some(rid) = ligne.strip_prefix(COMPTE_DESACTIVER) {
         Acte::CompteDesactiver(lire_rid(rid)?)
+    } else if let Some(rid) = ligne.strip_prefix(COMPTE_MOT_DE_PASSE) {
+        Acte::CompteMotDePasse(lire_rid(rid)?)
+    } else if let Some(mot) = ligne.strip_prefix(REGLAGE) {
+        Acte::Reglage(IdReglage::lire(mot)?)
+    } else if let Some(mot) = ligne.strip_prefix(REGLAGE_REMETTRE) {
+        Acte::ReglageRemettre(IdReglage::lire(mot).filter(|id| id.annulable())?)
     } else if let Some(reste) = ligne.strip_prefix(CERTIFICAT_RETIRER) {
         let (mot, empreinte) = reste.split_once(' ')?;
         let magasin = *MagasinRacine::TOUS.iter().find(|m| m.mot() == mot)?;
@@ -5027,12 +5338,14 @@ type FaireActe = fn(NomFichier) -> Acte;
 
 /// Les verbes des actes du registre qui portent un nom. Aucun verbe n'est le début d'un autre : « ifeo-debugger-32 »
 /// n'a pas d'espace après « ifeo-debugger ».
-const ACTES_NOMMES: [(&str, FaireActe); 5] = [
+const ACTES_NOMMES: [(&str, FaireActe); 7] = [
     (IFEO_DEBUGGER_32, |n| Acte::IfeoDebugger(Vue::Wow32, n)),
     (IFEO_DEBUGGER, |n| Acte::IfeoDebugger(Vue::Windows, n)),
     (IFEO_SILENCIEUX_32, |n| Acte::IfeoSilencieux(Vue::Wow32, n)),
     (IFEO_SILENCIEUX, |n| Acte::IfeoSilencieux(Vue::Windows, n)),
     (SERVICE_GUILLEMETS, Acte::ServiceGuillemets),
+    (SERVICE_GUILLEMETS_RISQUE, Acte::ServiceGuillemetsRisque),
+    (SERVICE_CHEMIN_REMETTRE, Acte::ServiceCheminRemettre),
 ];
 
 /// L'hexadécimal du nom et l'acte, si la ligne a le verbe d'un acte du registre qui porte un nom (sa forme est
@@ -9321,5 +9634,195 @@ mod tests {
         assert!(!autorise.baissee(Some(1)) && !autorise.baissee(Some(0)));
         assert_eq!(cible_rallumer(autorise, Some(Some(1))), 0);
         assert!(autorise.rang(Some(0)) > autorise.rang(Some(1)));
+    }
+
+    /// Les réglages de la défense D6b : chaque mot de la table se lit et se relit à l'identique, la remise aussi ;
+    /// le mot de passe en clair ne se remet jamais ; un mot hors table, une majuscule, un espace : refusés.
+    #[test]
+    fn reglages_en_grammaire_fermee() {
+        let tous = IdReglage::tous();
+        assert!(tous.len() > IdReglage::FIXES.len(), "les macros d'Office comptent");
+        let mut mots: Vec<String> = tous.iter().map(|id| id.mot()).collect();
+        mots.sort();
+        mots.dedup();
+        assert_eq!(mots.len(), tous.len(), "deux réglages au même mot");
+        for id in &tous {
+            assert_eq!(IdReglage::lire(&id.mot()), Some(*id), "{id:?}");
+            let ligne = ligne_reglage(*id);
+            let a = analyser_acte(&ligne).unwrap();
+            assert!(matches!(a, Acte::Reglage(x) if x == *id), "{ligne}");
+            assert!(a.durcit() && !a.affaiblit() && !a.touche_le_reseau(), "{ligne}");
+            assert_eq!(a.powershell(), SANS_POWERSHELL);
+            assert!(est_un_acte(&ligne), "{ligne}");
+            match ligne_reglage_remettre(*id) {
+                Some(l) => {
+                    assert!(id.annulable(), "{id:?}");
+                    let a = analyser_acte(&l).unwrap();
+                    assert!(matches!(a, Acte::ReglageRemettre(x) if x == *id), "{l}");
+                    assert!(!a.durcit() && a.affaiblit(), "{l}");
+                    assert_eq!(a.powershell(), SANS_POWERSHELL);
+                }
+                None => assert_eq!(*id, IdReglage::OuvertureAutoMdp),
+            }
+        }
+        // Le mot de passe en clair n'est pas gardé : sa remise, même forgée, est refusée.
+        assert!(analyser_acte("vanguard:reglage-remettre ouverture-auto-mdp").is_none());
+        assert!(analyser_acte("vanguard:reglage ouverture-auto-mdp").is_some());
+        for forge in [
+            "vanguard:reglage ",
+            "vanguard:reglage lsa-ppl ",
+            "vanguard:reglage  lsa-ppl",
+            "vanguard:reglage LSA-PPL",
+            "vanguard:reglage lsa-ppl\n",
+            "vanguard:reglage HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa",
+            "vanguard:reglage macros-strategie-16.0-?",
+            "vanguard:reglage macros-strategie-99.0-word",
+            "vanguard:reglage-remettre inconnu",
+            "vanguard:reglage-remettre ",
+            "vanguard:reglagelsa-ppl",
+        ] {
+            assert!(analyser_acte(forge).is_none(), "{forge:?}");
+        }
+        assert_eq!(IdReglage::lire(&"a".repeat(65)), None);
+        // Seules les stratégies attendent un PC hors gestion ; les réglages au redémarrage, dits.
+        assert!(IdReglage::SmartScreenStrategie.strategie() && !IdReglage::SmartScreen.strategie());
+        assert!(!IdReglage::AssistanceCoupe.strategie() && !IdReglage::MajPause.strategie());
+        assert!(IdReglage::Hvci.redemarrage() && IdReglage::CredentialGuard.redemarrage());
+        assert!(IdReglage::LsaPpl.redemarrage() && !IdReglage::AssistanceCoupe.redemarrage());
+        assert!(IdReglage::PsStrategieCompte.du_compte() && !IdReglage::PsStrategieMachine.du_compte());
+    }
+
+    /// Poser un mot de passe, des guillemets risqués, remettre un chemin : des lignes au RID ou au nom en hex, jamais
+    /// au mot de passe ni à un chemin libre ; relues à l'identique.
+    #[test]
+    fn mot_de_passe_et_chemins_en_grammaire_fermee() {
+        let l = ligne_compte_mot_de_passe("S-1-5-21-1004336348-1177238915-682003330-1002").unwrap();
+        assert_eq!(l, "vanguard:compte-mot-de-passe 1002");
+        let a = analyser_acte(&l).unwrap();
+        assert!(matches!(a, Acte::CompteMotDePasse(1002)) && a.durcit() && !a.affaiblit());
+        assert_eq!(a.powershell(), SANS_POWERSHELL);
+        for sid in ["S-1-5-18", "S-1-5-21-1-2-3-499", "S-1-5-32-544", ""] {
+            assert_eq!(ligne_compte_mot_de_passe(sid), None, "{sid}");
+        }
+        for forge in [
+            "vanguard:compte-mot-de-passe 499",
+            "vanguard:compte-mot-de-passe 01002",
+            "vanguard:compte-mot-de-passe 1002 secret",
+            "vanguard:compte-mot-de-passe ",
+            "vanguard:compte-mot-de-passe -1",
+        ] {
+            assert!(analyser_acte(forge).is_none(), "{forge:?}");
+        }
+        let risque = ligne_service_guillemets_risque("Mon Service (x86)").unwrap();
+        assert_eq!(
+            risque,
+            format!("{SERVICE_GUILLEMETS_RISQUE}{}", hex("Mon Service (x86)"))
+        );
+        let a = analyser_acte(&risque).unwrap();
+        assert!(matches!(&a, Acte::ServiceGuillemetsRisque(n) if n.texte() == "Mon Service (x86)"));
+        assert!(a.durcit() && !a.affaiblit());
+        // Les guillemets ordinaires et risqués ne se confondent jamais.
+        let ordinaire = ligne_service_guillemets("Mon Service (x86)").unwrap();
+        assert!(matches!(analyser_acte(&ordinaire), Some(Acte::ServiceGuillemets(_))));
+        let remise = ligne_service_chemin_remettre("Mon Service (x86)").unwrap();
+        let a = analyser_acte(&remise).unwrap();
+        assert!(matches!(&a, Acte::ServiceCheminRemettre(n) if n.texte() == "Mon Service (x86)"));
+        assert!(!a.durcit() && a.affaiblit());
+        for nom in ["", "a..b", "a\\b", "a|b"] {
+            assert_eq!(ligne_service_guillemets_risque(nom), None, "{nom:?}");
+            assert_eq!(ligne_service_chemin_remettre(nom), None, "{nom:?}");
+        }
+        for forge in [
+            format!("{SERVICE_GUILLEMETS_RISQUE}{}", hex("Mon Service").to_uppercase()),
+            format!("{SERVICE_GUILLEMETS_RISQUE}{}0", hex("Mon Service")),
+            format!("{SERVICE_CHEMIN_REMETTRE}{}", hex("a..b")),
+            format!("{SERVICE_CHEMIN_REMETTRE}C:\\Windows\\x.exe"),
+        ] {
+            assert!(analyser_acte(&forge).is_none(), "{forge:?}");
+        }
+    }
+
+    /// Garde B : le chemin d'un service d'accès à distance ne change jamais pendant une session, ni quand elle ne se
+    /// lit pas ; un autre service, toujours.
+    #[test]
+    fn garde_session_du_chemin_de_service() {
+        for nom in SERVICES_ACCES_DISTANT {
+            assert!(refus_chemin_session(nom, Some(true)), "{nom}");
+            assert!(refus_chemin_session(nom, None), "{nom}");
+            assert!(refus_chemin_session(&nom.to_ascii_lowercase(), None), "{nom}");
+            assert!(refus_chemin_session(&nom.to_ascii_uppercase(), Some(true)), "{nom}");
+            assert!(!refus_chemin_session(nom, Some(false)), "{nom}");
+        }
+        // Le Bureau à distance, SSH et WinRM en sont.
+        for nom in ["TermService", "SessionEnv", "UmRdpService", "sshd", "WinRM"] {
+            assert!(SERVICES_ACCES_DISTANT.contains(&nom), "{nom}");
+        }
+        assert!(!refus_chemin_session("Mon Outil", Some(true)));
+        assert!(!refus_chemin_session("Mon Outil", None));
+        assert!(!refus_chemin_session("TermService2", Some(true)));
+    }
+
+    /// Garde B : l'Assistance à distance ne se coupe que si msra.exe ne tourne sûrement pas.
+    #[test]
+    fn garde_session_de_l_assistance() {
+        assert!(refus_assistance(Some(true)));
+        assert!(refus_assistance(None));
+        assert!(!refus_assistance(Some(false)));
+    }
+
+    /// Garde B : un mot de passe ne se pose jamais sur un compte qui a une session à distance (session 0 = SSH ou
+    /// service, protocole autre que la console), ni quand les sessions ne se lisent pas.
+    #[test]
+    fn garde_session_du_mot_de_passe() {
+        let cible = "S-1-5-21-1-2-3-1002";
+        let autre = "S-1-5-21-1-2-3-1001";
+        let console = |_: u32| Some(0u16);
+        let p = |v: &[(u32, Option<&str>)]| -> Vec<(u32, Option<String>)> {
+            v.iter().map(|(s, sid)| (*s, sid.map(str::to_string))).collect()
+        };
+        assert_eq!(
+            refus_session_mdp(None, cible, console),
+            Some(RefusSessionMdp::Illisible)
+        );
+        // Aucun programme du compte, ou seulement à l'écran de cet ordinateur : permis.
+        assert_eq!(refus_session_mdp(Some(&[]), cible, console), None);
+        let ecran = p(&[(1, Some(cible)), (1, Some(autre)), (0, None)]);
+        assert_eq!(refus_session_mdp(Some(&ecran), cible, console), None);
+        // Le SID se compare sans la casse.
+        let ssh = p(&[(0, Some(&cible.to_ascii_lowercase()))]);
+        assert_eq!(
+            refus_session_mdp(Some(&ssh), cible, console),
+            Some(RefusSessionMdp::ADistance)
+        );
+        // Bureau à distance (protocole 2) sur la session du compte : refusé ; sur un autre compte, permis.
+        let rdp = |s: u32| Some(if s == 2 { 2u16 } else { 0 });
+        let v = p(&[(1, Some(cible)), (2, Some(cible))]);
+        assert_eq!(
+            refus_session_mdp(Some(&v), cible, rdp),
+            Some(RefusSessionMdp::ADistance)
+        );
+        let v = p(&[(1, Some(cible)), (2, Some(autre))]);
+        assert_eq!(refus_session_mdp(Some(&v), cible, rdp), None);
+        // Le protocole d'une session du compte ne se lit pas : refusé.
+        let v = p(&[(3, Some(cible))]);
+        assert_eq!(
+            refus_session_mdp(Some(&v), cible, |_| None),
+            Some(RefusSessionMdp::Illisible)
+        );
+        // Un programme sans SID lisible dans une session ouverte : peut-être le compte, refusé ; dans la session 0,
+        // un service du système, ignoré.
+        let v = p(&[(1, Some(cible)), (2, None)]);
+        assert_eq!(
+            refus_session_mdp(Some(&v), cible, console),
+            Some(RefusSessionMdp::Illisible)
+        );
+        let v = p(&[(0, None), (1, Some(autre))]);
+        assert_eq!(refus_session_mdp(Some(&v), cible, console), None);
+        // Une session à distance l'emporte sur une illisible.
+        let v = p(&[(2, None), (0, Some(cible))]);
+        assert_eq!(
+            refus_session_mdp(Some(&v), cible, console),
+            Some(RefusSessionMdp::ADistance)
+        );
     }
 }

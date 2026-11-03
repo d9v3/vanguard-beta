@@ -55,6 +55,7 @@ pub(crate) mod planificateur;
 mod portes;
 pub(crate) mod processus;
 mod quarantaine;
+mod reglages_ecriture;
 mod regles;
 mod reseau_ecriture;
 pub(crate) mod routes;

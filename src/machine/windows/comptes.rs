@@ -28,6 +28,32 @@ fn desactiver(constat: Constat, action: &str, sid: &str, nom_ps: &str) -> Consta
     }
 }
 
+/// Un compte qui n'exige pas de mot de passe : Vanguard en pose un dans sa fenêtre administrateur (saisie masquée,
+/// défense D6b, R43), puis l'exige ; `-PasswordRequired` seul lèverait le drapeau sans donner de mot de passe (un
+/// compte déjà vide s'ouvrirait toujours sans rien taper, et le bilan le dirait sain). Hors d'un compte local (RID
+/// 500 et plus) : à faire soi-même, le mot de passe d'abord (Paramètres), puis le drapeau.
+fn mot_de_passe(constat: Constat, sid: &str, nom: &str, nom_ps: &str) -> Constat {
+    match gestes::ligne_compte_mot_de_passe(sid) {
+        Some(ligne) => constat.corriger(
+            trf!(
+                "Vanguard pose un mot de passe sur « {nom} », tapé par vous dans sa fenêtre administrateur (rien ne s'affiche, rien n'est gardé), puis l'exige toujours",
+                "Vanguard sets a password on “{nom}”, typed by you in its administrator window (nothing is shown, nothing is kept), then always requires one"
+            ),
+            &[ligne],
+        ),
+        None => constat.manuel(
+            trf!(
+                "Donner un mot de passe à « {nom} » (Paramètres > Comptes), puis l'exiger toujours",
+                "Give “{nom}” a password (Settings > Accounts), then always require one"
+            ),
+            &[
+                "Start-Process ms-settings:otherusers",
+                &format!("Set-LocalUser -Name '{nom_ps}' -PasswordRequired $true"),
+            ],
+        ),
+    }
+}
+
 pub(super) fn juger_comptes(utilisateurs: &[&str], moi: Option<&str>, lbp: Option<u32>) -> Vec<Constat> {
     use crate::modele::Objet;
     let mut constats = Vec::new();
@@ -86,7 +112,7 @@ pub(super) fn juger_comptes(utilisateurs: &[&str], moi: Option<&str>, lbp: Optio
             });
         }
         if exige.eq_ignore_ascii_case("false") {
-            constats.push(
+            constats.push(mot_de_passe(
                 alerte(
                     "Comptes",
                     Niveau::Moyen,
@@ -97,21 +123,11 @@ pub(super) fn juger_comptes(utilisateurs: &[&str], moi: Option<&str>, lbp: Optio
                         "The “{nom}” account accepts an empty password (Windows does not require one for it): if it has none, it opens without typing anything."
                     ),
                 )
-                .avec_objet(compte("mot-de-passe-non-exige"))
-                // À faire soi-même : -PasswordRequired lève seulement le drapeau, sans donner de mot de passe. Un compte
-                // déjà vide s'ouvrirait toujours sans rien taper, et le bilan le dirait sain. Le mot de passe d'abord
-                // (Paramètres), puis le drapeau.
-                .manuel(
-                    trf!(
-                        "Donner un mot de passe à « {nom} » (Paramètres > Comptes), puis l'exiger toujours",
-                        "Give “{nom}” a password (Settings > Accounts), then always require one"
-                    ),
-                    &[
-                        "Start-Process ms-settings:otherusers",
-                        &format!("Set-LocalUser -Name '{nom_ps}' -PasswordRequired $true"),
-                    ],
-                ),
-            );
+                .avec_objet(compte("mot-de-passe-non-exige")),
+                sid,
+                nom,
+                &nom_ps,
+            ));
         }
     }
     if lbp == Some(0) {
@@ -185,7 +201,8 @@ unsafe extern "system" {
         niveau: u32,
         tampon: *mut *mut std::ffi::c_void,
     ) -> u32;
-    /// Seulement pour désactiver un compte (niveau 1008, `comptes_ecriture`).
+    /// Seulement dans `comptes_ecriture` : désactiver un compte (niveau 1008), poser un mot de passe (niveau 1003,
+    /// défense D6b) puis l'exiger (1008).
     pub(super) fn NetUserSetInfo(
         serveur: *const u16,
         nom: *const u16,
@@ -996,15 +1013,26 @@ mod tests {
         );
         // Administrateur intégré utilisé en ce moment : conseil, pas de désactivation automatique.
         assert!(c[2].correctif.as_ref().is_some_and(|k| !k.automatique));
-        // Compte sans mot de passe exigé : à faire soi-même (le drapeau seul ne donne pas de mot de passe), le nom
-        // protégé dans la commande montrée.
+        // Compte local sans mot de passe exigé : Vanguard pose le mot de passe (saisie masquée dans le processus
+        // élevé), puis l'exige : une seule ligne de la grammaire, jamais le drapeau seul.
+        let k = c[0].correctif.as_ref().unwrap();
+        assert!(k.automatique);
+        assert_eq!(k.commandes, ["vanguard:compte-mot-de-passe 1002"]);
+        assert!(!k.commandes.iter().any(|x| x.contains("PasswordRequired")));
+    }
+
+    /// Hors d'un compte local (SID d'un autre genre) : à faire soi-même, le mot de passe d'abord, le nom protégé dans
+    /// la commande montrée.
+    #[test]
+    fn mot_de_passe_hors_compte_local() {
+        let c = juger_comptes(&["True|False|S-1-5-21-1-1-1-42|o'brien"], None, Some(1));
         let k = c[0].correctif.as_ref().unwrap();
         assert!(!k.automatique);
         assert_eq!(
             k.commandes,
             [
                 "Start-Process ms-settings:otherusers",
-                "Set-LocalUser -Name 'enfant' -PasswordRequired $true"
+                "Set-LocalUser -Name 'o''brien' -PasswordRequired $true"
             ]
         );
     }

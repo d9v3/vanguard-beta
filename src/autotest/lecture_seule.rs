@@ -556,7 +556,7 @@ mod tests {
     /// `ligne_rallumer`) n'en fabriquent. Hors des tests, les seuls fichiers qui nomment ces fonctions ou ces verbes
     /// sont leur définition et l'écran des Options ; les constructeurs des Options (`ligne_choix`, `ligne_exclure`…)
     /// ne servent que dans ses fichiers, et leurs entrées seulement à la ligne de commande (`--choisir`,
-    /// `--exclure`, `--permettre`, `--noter`). Un acte nommé pour être rangé ou lu (motif `(..)`, `if let`, bras
+    /// `--exclure`, `--permettre`, `--noter`, `--remettre`). Un acte nommé pour être rangé ou lu (motif `(..)`, `if let`, bras
     /// `Acte::X(a, b) =>`) ne fabrique rien et ne compte pas.
     #[test]
     fn les_baisses_ne_viennent_que_des_options() {
@@ -625,6 +625,17 @@ mod tests {
             ("options_defense::exclure(", &["main.rs"]),
             ("options_defense::permettre(", &["main.rs"]),
             ("options_defense::noter(", &["main.rs"]),
+            // Défense D6b : la remise d'un réglage du registre ou d'un chemin de service noté, une baisse.
+            ("ligne_reglage_remettre(", PERMIS),
+            ("REGLAGE_REMETTRE", PERMIS),
+            ("reglage-remettre ", PERMIS),
+            ("Acte::ReglageRemettre(", PERMIS),
+            ("ligne_service_chemin_remettre(", PERMIS),
+            ("SERVICE_CHEMIN_REMETTRE", PERMIS),
+            ("service-chemin-remettre ", PERMIS),
+            ("Acte::ServiceCheminRemettre(", PERMIS),
+            ("ligne_remettre(", &["options_defense.rs"]),
+            ("options_defense::remettre(", &["main.rs"]),
         ];
         let racine = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for (fichier, parent, declaration) in ESSAIS_SEULS {

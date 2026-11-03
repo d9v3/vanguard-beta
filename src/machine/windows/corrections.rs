@@ -512,7 +512,12 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
                     | Acte::LancementReactiver(_)
                     | Acte::WmiAbonnementRetirer(_)
                     | Acte::WmiAbonnementRemettre(_)
-                    | Acte::ServiceRetirer(_)),
+                    | Acte::ServiceRetirer(_)
+                    | Acte::Reglage(_)
+                    | Acte::ReglageRemettre(_)
+                    | Acte::CompteMotDePasse(_)
+                    | Acte::ServiceGuillemetsRisque(_)
+                    | Acte::ServiceCheminRemettre(_)),
                 ),
             ) => Some(a.durcit()),
             _ => None,
@@ -583,6 +588,113 @@ fn reseau_nomme(r: &crate::machine::gestes::ReseauCategorie) -> String {
         }
         NomReseau::Absent => trf!("{g} (inconnu de ce PC)", "{g} (unknown to this PC)"),
         NomReseau::Illisible => trf!("{g} (nom illisible)", "{g} (name unreadable)"),
+    }
+}
+
+/// Le nom d'un réglage du registre (défense D6b), tel que la fenêtre administrateur le montre.
+pub(crate) fn nom_reglage(id: crate::machine::gestes::IdReglage) -> String {
+    use crate::machine::gestes::IdReglage;
+    use crate::ui::{tr, trf};
+    match id {
+        IdReglage::LsaPpl => tr!(
+            "Protéger l'autorité de sécurité locale (LSA, RunAsPPL=2, sans verrou du micrologiciel)",
+            "Protect the Local Security Authority (LSA, RunAsPPL=2, without firmware lock)"
+        )
+        .to_string(),
+        IdReglage::AssistanceCoupe => tr!(
+            "Couper l'Assistance à distance de Windows (fAllowToGetHelp=0)",
+            "Turn off Windows Remote Assistance (fAllowToGetHelp=0)"
+        )
+        .to_string(),
+        IdReglage::OuvertureAutoMdp => tr!(
+            "Retirer le mot de passe écrit en clair de l'ouverture automatique (DefaultPassword) et couper celle-ci (AutoAdminLogon=0)",
+            "Remove the clear-text password of automatic sign-in (DefaultPassword) and turn it off (AutoAdminLogon=0)"
+        )
+        .to_string(),
+        IdReglage::OuvertureAutoCoupe => tr!(
+            "Couper l'ouverture de session automatique (AutoAdminLogon=0)",
+            "Turn off automatic sign-in (AutoAdminLogon=0)"
+        )
+        .to_string(),
+        IdReglage::SmartScreen => tr!(
+            "Rallumer SmartScreen pour les programmes téléchargés (réglage de l'Explorateur, « Warn » ; pas une stratégie)",
+            "Turn SmartScreen back on for downloaded programs (Explorer setting, “Warn”; not a policy)"
+        )
+        .to_string(),
+        IdReglage::SmartScreenStrategie => tr!(
+            "Retirer la stratégie qui coupe SmartScreen (EnableSmartScreen ; PC hors domaine et hors gestion)",
+            "Remove the policy that turns SmartScreen off (EnableSmartScreen; PC outside a domain and unmanaged)"
+        )
+        .to_string(),
+        IdReglage::Hvci => tr!(
+            "Activer l'intégrité de la mémoire (HVCI, sans verrou : Locked=0)",
+            "Turn on memory integrity (HVCI, without lock: Locked=0)"
+        )
+        .to_string(),
+        IdReglage::MajPause => tr!(
+            "Reprendre les mises à jour de Windows (valeurs de pause retirées)",
+            "Resume Windows updates (pause values removed)"
+        )
+        .to_string(),
+        IdReglage::MajStrategie => tr!(
+            "Retirer la stratégie qui coupe les mises à jour automatiques (NoAutoUpdate ; PC hors domaine et hors gestion)",
+            "Remove the policy that turns automatic updates off (NoAutoUpdate; PC outside a domain and unmanaged)"
+        )
+        .to_string(),
+        IdReglage::SmbSignature => tr!(
+            "Exiger la signature SMB pour les partages ouverts depuis ce PC (RequireSecuritySignature=1)",
+            "Require SMB signing for shares opened from this PC (RequireSecuritySignature=1)"
+        )
+        .to_string(),
+        IdReglage::SmbInviteStrategie => tr!(
+            "Retirer la stratégie qui permet les partages en invité (AllowInsecureGuestAuth ; PC hors domaine et hors gestion)",
+            "Remove the policy that allows guest shares (AllowInsecureGuestAuth; PC outside a domain and unmanaged)"
+        )
+        .to_string(),
+        IdReglage::PsStrategieMachine => tr!(
+            "Retirer la stratégie d'exécution de PowerShell imposée à la machine (PC hors domaine et hors gestion)",
+            "Remove the PowerShell execution policy forced on the machine (PC outside a domain and unmanaged)"
+        )
+        .to_string(),
+        IdReglage::PsStrategieCompte => tr!(
+            "Retirer la stratégie d'exécution de PowerShell imposée à votre compte (PC hors domaine et hors gestion)",
+            "Remove the PowerShell execution policy forced on your account (PC outside a domain and unmanaged)"
+        )
+        .to_string(),
+        IdReglage::Macros(..) => {
+            let (v, p) = id.office().unwrap_or(("?", "?"));
+            trf!(
+                "Retirer la stratégie qui ouvre les macros de {p} (Office {v}) pour votre compte (VBAWarnings ; PC hors domaine et hors gestion)",
+                "Remove the policy that opens {p} macros (Office {v}) for your account (VBAWarnings; PC outside a domain and unmanaged)"
+            )
+        }
+        IdReglage::CredentialGuard => tr!(
+            "Activer Credential Guard (sécurité basée sur la virtualisation, sans verrou du micrologiciel)",
+            "Turn on Credential Guard (virtualization-based security, without firmware lock)"
+        )
+        .to_string(),
+    }
+}
+
+/// Ce que la phrase d'un réglage ajoute : remis comment, et quand il prend effet.
+fn suite_reglage(id: crate::machine::gestes::IdReglage) -> String {
+    use crate::ui::{tr, trf};
+    let remise = if id.annulable() {
+        trf!(
+            "valeur d'avant notée, remise par « vanguard options-defense --remettre {} »",
+            "previous value noted, put back by “vanguard options-defense --remettre {}”",
+            id.mot()
+        )
+    } else {
+        tr!("non annulable", "not undoable").to_string()
+    };
+    if id.redemarrage() {
+        trf!(
+            "{remise} ; effet au prochain redémarrage",
+            "{remise}; takes effect at the next restart"
+        )
+    } else {
+        remise
     }
 }
 
@@ -929,6 +1041,39 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
             trf!(
                 "Supprimer le service « {n} ». Non annulable",
                 "Delete the “{n}” service. Not undoable"
+            )
+        }
+        Acte::Reglage(id) => {
+            let n = nom_reglage(*id);
+            let suite = suite_reglage(*id);
+            trf!(
+                "{n} (relu et rejugé ici ; {suite})",
+                "{n} (read and judged again here; {suite})"
+            )
+        }
+        Acte::ReglageRemettre(id) => {
+            let n = nom_reglage(*id);
+            trf!(
+                "Remettre la valeur d'avant que Vanguard a notée pour : {n} (seulement si le réglage est encore celui que Vanguard a écrit)",
+                "Put back the previous value Vanguard noted for: {n} (only if the setting is still the one Vanguard wrote)"
+            )
+        }
+        Acte::CompteMotDePasse(rid) => trf!(
+            "Poser un mot de passe sur le compte local n° {rid}, qui n'en exige pas : tapé deux fois dans cette fenêtre, sans être affiché ni gardé. Non annulable",
+            "Set a password on local account no. {rid}, which does not require one: typed twice in this window, never shown nor kept. Not undoable"
+        ),
+        Acte::ServiceGuillemetsRisque(n) => {
+            let n = crate::ui::affichable(n.texte());
+            trf!(
+                "Mettre entre guillemets le chemin du service « {n} », que Vanguard ne peut pas vérifier entièrement : le service peut ne plus démarrer (question avant ; chemin d'avant noté, remis par « vanguard options-defense --remettre service:{n} »)",
+                "Put the path of the “{n}” service in quotes, which Vanguard cannot fully check: the service may no longer start (question first; previous path noted, put back by “vanguard options-defense --remettre service:{n}”)"
+            )
+        }
+        Acte::ServiceCheminRemettre(n) => {
+            let n = crate::ui::affichable(n.texte());
+            trf!(
+                "Remettre le chemin d'avant du service « {n} », noté par Vanguard (seulement si le chemin est encore celui que Vanguard a écrit)",
+                "Put back the previous path of the “{n}” service, noted by Vanguard (only if the path is still the one Vanguard wrote)"
             )
         }
         Acte::HostsEcrire(_) => tr!(

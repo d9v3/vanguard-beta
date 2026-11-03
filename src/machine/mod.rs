@@ -54,6 +54,12 @@ pub(crate) mod gestes;
 #[cfg_attr(not(windows), allow(dead_code))]
 #[path = "windows/choix_avant.rs"]
 pub(crate) mod choix_avant;
+// Les réglages du registre du processus élevé (défense D6b) et leur note : du code pur sur un `Registre`, compilé
+// partout pour essayer sous Linux que rien n'est écrit sans note, qu'une écriture ratée remet tout et qu'une remise
+// n'écrit jamais par-dessus un changement.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[path = "windows/reglages.rs"]
+pub(crate) mod reglages;
 // Où une liste de correctifs passe des lignes natives de Vanguard au reste : commune à Windows et à Linux et macOS.
 pub(crate) mod decoupe;
 // Vider un dossier de Windows et mettre un cache de côté (actes du processus élevé) : sans appel système propre à

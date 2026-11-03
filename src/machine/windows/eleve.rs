@@ -119,7 +119,7 @@ const ENTREE_STANDARD: u32 = 0xFFFF_FFF6;
 
 /// L'entrée est-elle une vraie console (GetConsoleMode réussit) ? Une réponse qui arrive par un tube ou un fichier
 /// n'a pas été tapée par la personne devant cette fenêtre : la question d'une baisse y vaut non.
-fn console_reelle() -> bool {
+pub(super) fn console_reelle() -> bool {
     // SAFETY: simple lecture d'une poignée du processus, sans pointeur.
     let entree = unsafe { GetStdHandle(ENTREE_STANDARD) };
     if entree.is_null() || entree == POIGNEE_INVALIDE {
@@ -487,7 +487,7 @@ fn appliquer_en_place(envoi: &[String]) -> Vec<Reponse> {
     // suivantes comprises.
     let mut abandon = false;
     for liste in &listes {
-        let Some((sens, baisse)) = juger_liste(liste) else {
+        let Some((sens, baisse)) = juger_liste(liste, &compte) else {
             dire_melee();
             reponses.extend(liste.iter().map(|_| lire_reponse(&ligne_resultat(&melee()))));
             continue;
@@ -523,11 +523,15 @@ fn appliquer_en_place(envoi: &[String]) -> Vec<Reponse> {
 /// baisse à un autre geste, refusée sans rien demander (le parent ne l'envoie jamais ainsi).
 type Jugement = (Vec<Option<(gestes::Montre, String)>>, bool);
 
-fn juger_liste(liste: &[Element]) -> Option<Jugement> {
+fn juger_liste(liste: &[Element], compte: &Result<String, String>) -> Option<Jugement> {
+    let personne = compte.as_deref().ok();
     let sens: Vec<Option<(gestes::Montre, String)>> = liste
         .iter()
         .map(|e| match e {
-            Element::Acte(a) => super::defender_ecriture::juger(a),
+            // Une remise de réglage ou de chemin de service (D6b) : une baisse, montrée puis confirmée.
+            Element::Acte(a) => {
+                super::defender_ecriture::juger(a).or_else(|| super::reglages_ecriture::juger(a, personne))
+            }
             _ => None,
         })
         .collect();
@@ -974,7 +978,7 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     // Chaque liste (P7 : les choix de Defender à part) est jugée, montrée et demandée à son tour, juste avant ses
     // gestes : la valeur relue pour juger une baisse est celle de l'instant de la question.
     'listes: for (liste, montre) in listes.iter().zip(&montres) {
-        let Some((sens, baisse)) = juger_liste(liste) else {
+        let Some((sens, baisse)) = juger_liste(liste, &compte) else {
             dire_melee();
             code = 1;
             echec = true;

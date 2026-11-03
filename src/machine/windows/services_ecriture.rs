@@ -703,6 +703,16 @@ pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
         Acte::IfeoDebugger(v, n) => return super::portes::retirer_debogueur(*v, n),
         Acte::IfeoSilencieux(v, n) => return super::portes::retirer_moniteur(*v, n),
         Acte::ServiceGuillemets(n) => return super::services::poser_guillemets(n),
+        Acte::ServiceGuillemetsRisque(n) => return super::services::guillemets_risques(n),
+        Acte::ServiceCheminRemettre(n) => return super::services::remettre_chemin(n),
+        _ => {}
+    }
+    // Les réglages du registre (défense D6b) et le mot de passe d'un compte : rejugés par le bilan refait ici, la
+    // valeur d'avant notée, relus après l'écriture.
+    match acte {
+        Acte::Reglage(id) => return super::reglages_ecriture::poser(*id, personne),
+        Acte::ReglageRemettre(id) => return super::reglages_ecriture::remettre(*id, personne),
+        Acte::CompteMotDePasse(rid) => return super::comptes_ecriture::poser_mot_de_passe(*rid, personne),
         _ => {}
     }
     let r = match acte {
@@ -748,7 +758,12 @@ pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
         | Acte::LancementReactiver(_)
         | Acte::WmiAbonnementRetirer(_)
         | Acte::WmiAbonnementRemettre(_)
-        | Acte::ServiceRetirer(_) => Err(Echec::refuse(
+        | Acte::ServiceRetirer(_)
+        | Acte::Reglage(_)
+        | Acte::ReglageRemettre(_)
+        | Acte::CompteMotDePasse(_)
+        | Acte::ServiceGuillemetsRisque(_)
+        | Acte::ServiceCheminRemettre(_) => Err(Echec::refuse(
             CONTEXTE,
             tr!(
                 "acte déjà rendu plus haut, non reconnu ici",

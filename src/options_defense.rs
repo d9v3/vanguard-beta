@@ -1938,6 +1938,45 @@ pub(crate) fn ligne_noter(id: &str) -> Option<String> {
     id_de(id).map(crate::machine::gestes::ligne_noter)
 }
 
+/// La ligne qui remet ce qu'une correction de la défense D6b a noté (`--remettre <mot>`) : un réglage du registre par
+/// son mot (« smartscreen », « hvci »…), ou le chemin d'un service (`service:<nom>`) ; `None` pour un mot inconnu
+/// ou un réglage qui ne se remet pas (le mot de passe en clair de l'ouverture automatique n'est jamais gardé).
+pub(crate) fn ligne_remettre(mot: &str) -> Option<String> {
+    let mot = mot.trim();
+    if let Some(nom) = mot.strip_prefix("service:") {
+        return crate::machine::gestes::ligne_service_chemin_remettre(nom);
+    }
+    let id = crate::machine::gestes::IdReglage::lire(mot)?;
+    crate::machine::gestes::ligne_reglage_remettre(id)
+}
+
+/// Les mots admis par `--remettre`.
+fn aide_remettre() -> String {
+    let mots: Vec<String> = crate::machine::gestes::IdReglage::tous()
+        .into_iter()
+        .filter(|id| id.annulable())
+        .map(crate::machine::gestes::IdReglage::mot)
+        .collect();
+    format!("  --remettre <{}|service:<nom>>", mots.join("|"))
+}
+
+/// `vanguard options-defense --remettre <mot>` : remet la valeur (ou le chemin) d'avant notée par Vanguard, une
+/// baisse montrée puis confirmée dans la fenêtre administrateur.
+pub fn remettre(mot: &str) -> bool {
+    let Some(ligne) = ligne_remettre(mot) else {
+        eprintln!(
+            "{}\n{}",
+            tr!(
+                "Rien à remettre sous ce nom. Admis :",
+                "Nothing to put back under this name. Allowed:"
+            ),
+            aide_remettre()
+        );
+        return false;
+    };
+    appliquer_choix(ligne)
+}
+
 /// Les identifiants et valeurs admis, pour l'aide d'une commande refusée.
 fn aide_choix() -> String {
     let mut l = Vec::new();
@@ -1956,6 +1995,7 @@ fn aide_choix() -> String {
         ));
     }
     l.push("  --exclure <dossier|programme|type> <texte> ; --permettre <programme> ; --noter <id>".to_string());
+    l.push(aide_remettre());
     l.join("\n")
 }
 
@@ -2641,5 +2681,37 @@ mod tests {
                 .join("\n")
                 .contains("Sans effet tant que la protection en temps réel est coupée.")
         );
+    }
+
+    /// `--remettre` : un mot de la table (sauf le mot de passe en clair, jamais remis) ou `service:<nom>` ; tout
+    /// autre mot n'a aucune ligne.
+    #[test]
+    fn remettre_par_un_mot_de_la_table() {
+        use crate::machine::gestes::{IdReglage, ligne_reglage_remettre, ligne_service_chemin_remettre};
+        for id in IdReglage::tous() {
+            assert_eq!(ligne_remettre(&id.mot()), ligne_reglage_remettre(id), "{id:?}");
+            assert_eq!(ligne_remettre(&id.mot()).is_some(), id.annulable(), "{id:?}");
+        }
+        assert_eq!(ligne_remettre("ouverture-auto-mdp"), None);
+        assert_eq!(ligne_remettre(" lsa-ppl "), ligne_reglage_remettre(IdReglage::LsaPpl));
+        assert_eq!(
+            ligne_remettre("service:Mon Outil"),
+            ligne_service_chemin_remettre("Mon Outil")
+        );
+        assert!(ligne_remettre("service:Mon Outil").is_some());
+        for mot in [
+            "",
+            "inconnu",
+            "LSA-PPL",
+            "service:",
+            "service:a..b",
+            "service:a\\b",
+            "reglage:lsa-ppl",
+        ] {
+            assert_eq!(ligne_remettre(mot), None, "{mot:?}");
+        }
+        let aide = aide_remettre();
+        assert!(aide.contains("lsa-ppl") && aide.contains("service:") && !aide.contains("ouverture-auto-mdp|"));
+        assert!(!aide.contains("ouverture-auto-mdp"), "{aide}");
     }
 }

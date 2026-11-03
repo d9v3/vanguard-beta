@@ -263,6 +263,12 @@ fn produit(l: &Ligne) -> Produit {
     )
 }
 
+/// Le PC est-il sûrement hors domaine (local et Entra) et hors gestion (MDM) ? Une lecture qui manque vaut « géré
+/// peut-être » : une stratégie n'est alors que montrée (plan §3.3).
+pub(crate) fn hors_gestion() -> bool {
+    gestion().geree() == Some(false)
+}
+
 fn gestion() -> Gestion {
     let domaine = wmi::requete(r"root\cimv2", "Win32_ComputerSystem", "", &["PartOfDomain"])
         .and_then(|l| l.first().and_then(|c| booleen(champ(c, "PartOfDomain"))));

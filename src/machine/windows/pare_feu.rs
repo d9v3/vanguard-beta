@@ -338,6 +338,11 @@ pub(crate) fn faire_acte(acte: &Acte) -> Option<Resultat> {
         | Acte::WmiAbonnementRetirer(_)
         | Acte::WmiAbonnementRemettre(_)
         | Acte::ServiceRetirer(_)
+        | Acte::Reglage(_)
+        | Acte::ReglageRemettre(_)
+        | Acte::CompteMotDePasse(_)
+        | Acte::ServiceGuillemetsRisque(_)
+        | Acte::ServiceCheminRemettre(_)
         // Les choix du pare-feu passent par `choix_avant` (`defender_ecriture::faire_choix`), jamais tout droit ici.
         | Acte::PareFeuProfil(..)
         | Acte::PareFeuRegleEtat(..) => None,

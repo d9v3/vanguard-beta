@@ -494,6 +494,10 @@ enum Commande {
         /// baisse) ; le bilan cesse d'alerter.
         #[arg(long, visible_alias = "note", value_name = "ID", conflicts_with = "json")]
         noter: Option<String>,
+        /// Remet ce qu'une correction du registre a noté (smartscreen, hvci, maj-pause… ou `service:<nom>` pour le
+        /// chemin d'un service) : une baisse, montrée puis confirmée dans la fenêtre administrateur.
+        #[arg(long, visible_alias = "put-back", value_name = "MOT", conflicts_with_all = ["json", "choisir", "rallumer", "exclure", "permettre", "noter"])]
+        remettre: Option<String>,
     },
     /// Préparer un signalement à un éditeur (MSRC, Google, Chrome, Mozilla, Apple, avis GHSA, CERT/CC, CERT-FR,
     /// Vanguard) : trié d'abord (une faille connue se corrige par une mise à jour, un logiciel malveillant n'est pas une
@@ -3260,6 +3264,9 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
                                       lowering"),
     ("options-defense", "noter", "“It was me”: a value lowered outside Vanguard, noted “your choice” (same question \
                                   as lowering); the check stops alerting"),
+    ("options-defense", "remettre", "Puts back what a registry fix noted (smartscreen, hvci, maj-pause… or \
+                                     service:<name> for a service path): lowering, shown then confirmed in the \
+                                     administrator window"),
     ("signaler", "incident", "The identifier of a log event (vanguard events): its incident is used"),
     ("signaler", "outil", "The last examination of a tool (PRO-ESP-001, PRO-PER-001, PRO-COU-001)"),
     ("signaler", "programme", "The program: msrc, google, chrome, mozilla, apple, ghsa, cert-cc, cert-fr or vanguard"),
@@ -3842,6 +3849,9 @@ async fn main() {
         Some(Commande::OptionsDefense { noter: Some(id), .. }) => {
             machine::quitter(i32::from(!options_defense::noter(&id)))
         }
+        Some(Commande::OptionsDefense {
+            remettre: Some(mot), ..
+        }) => machine::quitter(i32::from(!options_defense::remettre(&mot))),
         Some(Commande::OptionsDefense { json: false, .. }) => options_defense::afficher(),
         Some(Commande::OptionsDefense { json: true, .. }) => options_defense::afficher_json(),
         Some(Commande::Signaler {

@@ -8,7 +8,7 @@ use super::corrections::{Resultat, avant_notable};
 use super::ps;
 use crate::machine::gestes::{self, NomFichier};
 use crate::risk::Niveau;
-use crate::ui::{affichable, resume, tr, trf};
+use crate::ui::{affichable, resume, tr, trf, trp};
 
 /// Pour chaque service au chemin sans guillemets : « SVC|nom|programme|dossier modifiable|arguments ». Les
 /// arguments viennent en dernier : ils peuvent contenir « | », qu'un chemin Windows n'admet pas, et le dernier champ
@@ -338,16 +338,6 @@ pub(super) fn poser_guillemets(nom: &NomFichier) -> Resultat {
             .to_string(),
         );
     }
-    if sens_change_par_le_gestionnaire(&brute.vtype, &brut) {
-        return Resultat::echec(
-            Some(avant),
-            tr!(
-                "refusé, à corriger à la main dans regedit : ce chemin (REG_SZ) contient « % » ; le gestionnaire des services l'écrirait en REG_EXPAND_SZ et son sens changerait ; rien d'écrit",
-                "refused, to fix by hand in regedit: this path (REG_SZ) contains “%”; the service manager would write it as REG_EXPAND_SZ and its meaning would change; nothing written"
-            )
-            .to_string(),
-        );
-    }
     let type_service = cle.get_value::<u32, _>("Type").unwrap_or(0);
     if let Some(raison) =
         juger_service(type_service, &brut, variable_systeme, existe, dossier_modifiable).and_then(|j| j.a_la_main)
@@ -370,6 +360,14 @@ pub(super) fn poser_guillemets(nom: &NomFichier) -> Resultat {
             .to_string(),
         );
     };
+    // Un chemin REG_SZ qui contient « % » : le gestionnaire des services l'écrirait en REG_EXPAND_SZ et son sens
+    // changerait. Écrit au registre en gardant REG_SZ, le chemin d'avant noté (défense D6b).
+    if sens_change_par_le_gestionnaire(&brute.vtype, &brut) {
+        return noter_et_ecrire(nom, &brute, &nouveau);
+    }
+    if let Some(r) = refus_session(nom) {
+        return r;
+    }
     match super::services_ecriture::changer_le_chemin(nom.texte(), &nouveau) {
         Ok(true) => {}
         Ok(false) => return absent(),
@@ -388,6 +386,397 @@ pub(super) fn poser_guillemets(nom: &NomFichier) -> Resultat {
             ),
         ),
         Err(e) => Resultat::echec(Some(avant), e.to_string()),
+    }
+}
+
+/// Le nouvel ImagePath brut d'un service signalé que Vanguard ne sait pas vérifier (variable inconnue, programme
+/// introuvable : `a_la_main`) : les guillemets autour du programme, rien d'autre ; la valeur développée ne change que
+/// par eux (une variable connue qui déplacerait le « .exe » : rien). Un service sans raison d'être à la main passe
+/// par `guillemets_du_jugement`, jamais par ici.
+fn guillemets_risques_du_jugement(
+    j: &Signale,
+    brut: &str,
+    variable: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    j.a_la_main.as_ref()?;
+    let (brut_exe, brut_suite) = programme_et_suite(brut)?;
+    let nouveau = format!("\"{brut_exe}\"{brut_suite}");
+    (developper(&nouveau, &variable) == format!("\"{}\"{}", j.exe, j.suite)).then_some(nouveau)
+}
+
+/// Le chemin brut d'un service, lu en lecture seule : la clé, la valeur et son texte ; ou ce qu'il faut répondre.
+fn lire_chemin(nom: &NomFichier) -> Result<(winreg::RegKey, winreg::RegValue<'static>, String), Resultat> {
+    use std::io::ErrorKind::NotFound;
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE};
+    let chemin = format!(r"{}\{}", crate::machine::windows::CLE_SERVICES, nom.texte());
+    let cle = match winreg::RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(&chemin, KEY_QUERY_VALUE) {
+        Ok(c) => c,
+        Err(e) if e.kind() == NotFound => {
+            return Err(Resultat::rien(
+                tr!(
+                    "service absent : rien à corriger ici, rien d'écrit",
+                    "no such service: nothing to fix here, nothing written"
+                )
+                .to_string(),
+            ));
+        }
+        Err(e) => {
+            return Err(Resultat::echec(
+                None,
+                trf!("clé du service illisible : {e}", "service key unreadable: {e}"),
+            ));
+        }
+    };
+    let brute = match cle.get_raw_value("ImagePath") {
+        Ok(b) => b,
+        Err(e) => {
+            return Err(Resultat::echec(
+                None,
+                trf!("ImagePath illisible : {e}", "ImagePath unreadable: {e}"),
+            ));
+        }
+    };
+    let Some(brut) = super::corrections::texte_reg(&brute) else {
+        return Err(Resultat::echec(
+            None,
+            trf!(
+                "refusé : ImagePath de type {:?}, pas un texte ; rien d'écrit",
+                "refused: ImagePath of type {:?}, not text; nothing written",
+                brute.vtype
+            ),
+        ));
+    };
+    Ok((cle, brute, brut))
+}
+
+/// Les octets d'un texte REG_SZ ou REG_EXPAND_SZ : UTF-16 petit-boutiste, zéro final.
+fn octets_texte(t: &str) -> Vec<u8> {
+    t.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect()
+}
+
+/// Une valeur de registre telle que la note la garde.
+fn brute_de(v: &winreg::RegValue) -> crate::machine::reglages::Brute {
+    crate::machine::reglages::Brute {
+        code: v.vtype.clone() as u32,
+        octets: v.bytes.to_vec(),
+    }
+}
+
+/// Écrit `valeur` (type et octets exacts) dans ImagePath du service, au registre.
+fn ecrire_au_registre(nom: &NomFichier, valeur: &winreg::RegValue) -> std::io::Result<()> {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE};
+    let chemin = format!(r"{}\{}", crate::machine::windows::CLE_SERVICES, nom.texte());
+    winreg::RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(&chemin, KEY_QUERY_VALUE | KEY_SET_VALUE)?
+        .set_raw_value("ImagePath", valeur)
+}
+
+/// Changer le chemin d'un service d'accès à distance (TermService, sshd…) pendant une session, ou quand elle ne se
+/// lit pas : refusé (garde B, `gestes::refus_chemin_session`).
+fn refus_session(nom: &NomFichier) -> Option<Resultat> {
+    gestes::refus_chemin_session(nom.texte(), super::reglages_ecriture::session_ouverte()).then(|| {
+        Resultat::echec(
+            None,
+            tr!(
+                "service d'accès à distance et session à distance en cours (ou illisible) : Vanguard ne touche pas à son chemin ; rien d'écrit",
+                "remote access service and remote session in progress (or unreadable): Vanguard leaves its path alone; nothing written"
+            )
+            .to_string(),
+        )
+    })
+}
+
+/// Note le chemin d'avant et celui écrit (ChoixAvant, « svc-… »), puis écrit `nouveau` : au registre en gardant le
+/// type quand le gestionnaire des services en changerait le sens (REG_SZ avec « % »), par lui sinon ; relu. À la
+/// moindre erreur, le chemin d'avant est remis et la note effacée.
+fn noter_et_ecrire(nom: &NomFichier, brute: &winreg::RegValue, nouveau: &str) -> Resultat {
+    use crate::machine::reglages;
+    if let Some(r) = refus_session(nom) {
+        return r;
+    }
+    let brut = super::corrections::texte_reg(brute).unwrap_or_default();
+    let avant = avant_notable(&brut);
+    let note_nom = reglages::nom_note_service(nom.texte());
+    let ecrit = reglages::Brute {
+        code: brute.vtype.clone() as u32,
+        octets: octets_texte(nouveau),
+    };
+    let ancien = brute_de(brute);
+    let Some(note) = reglages::coder(&note_nom, &[("avant", Some(&ancien)), ("ecrit", Some(&ecrit))]) else {
+        return Resultat::echec(
+            Some(avant),
+            tr!(
+                "le chemin d'avant ne se note pas (trop long) : rien d'écrit",
+                "the previous path cannot be noted (too long): nothing written"
+            )
+            .to_string(),
+        );
+    };
+    if let Err(e) = crate::machine::choix_avant::ecrire_brut(&note_nom, &note) {
+        return Resultat::echec(
+            Some(avant),
+            trf!(
+                "le chemin d'avant ne se note pas ({e}) : rien d'écrit",
+                "the previous path cannot be noted ({e}): nothing written"
+            ),
+        );
+    }
+    if crate::machine::choix_avant::lire_brut(&note_nom).as_deref() != Some(note.as_slice()) {
+        crate::machine::choix_avant::effacer_brut(&note_nom);
+        return Resultat::echec(
+            Some(avant),
+            tr!(
+                "la note ne se relit pas : rien d'écrit",
+                "the note cannot be read back: nothing written"
+            )
+            .to_string(),
+        );
+    }
+    let direct = sens_change_par_le_gestionnaire(&brute.vtype, &brut);
+    let ecriture = if direct {
+        ecrire_au_registre(
+            nom,
+            &winreg::RegValue {
+                bytes: octets_texte(nouveau).into(),
+                vtype: brute.vtype.clone(),
+            },
+        )
+        .map_err(|e| e.to_string())
+    } else {
+        match super::services_ecriture::changer_le_chemin(nom.texte(), nouveau) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(tr!("service absent", "no such service").to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    };
+    let relue = lire_chemin(nom).ok().map(|(_, v, _)| v);
+    if ecriture.is_ok() && relue.as_ref().is_some_and(|v| relue_conforme(&brute.vtype, v, nouveau)) {
+        if direct {
+            trp!(
+                "  Écrit au registre : le gestionnaire des services le lira au prochain démarrage de Windows.",
+                "  Written to the registry: the service manager will read it at the next Windows restart."
+            );
+        }
+        return Resultat::fait(avant);
+    }
+    // Retour arrière : le chemin d'avant, exactement.
+    let _ = ecrire_au_registre(nom, brute);
+    let revenu = lire_chemin(nom).is_ok_and(|(_, v, _)| v.vtype == brute.vtype && v.bytes == brute.bytes);
+    if revenu {
+        crate::machine::choix_avant::effacer_brut(&note_nom);
+    }
+    let raison = match ecriture {
+        Err(e) => e,
+        Ok(()) => tr!(
+            "le chemin relu n'est pas celui écrit",
+            "the path read back is not the one written"
+        )
+        .to_string(),
+    };
+    Resultat::echec(
+        Some(avant),
+        if revenu {
+            trf!(
+                "{raison} ; le chemin d'avant est remis",
+                "{raison}; the previous path is put back"
+            )
+        } else {
+            trf!(
+                "{raison} ; ATTENTION : le chemin d'avant ne se remet pas, vérifiez ce service (note gardée)",
+                "{raison}; WARNING: the previous path could not be put back, check this service (note kept)"
+            )
+        },
+    )
+}
+
+/// Met entre guillemets, après la question du risque, le chemin d'un service que Vanguard ne sait pas vérifier
+/// (processus élevé) : relu, rejugé par `juger_service` (il doit être signalé, et « à la main »), puis noté et écrit.
+pub(super) fn guillemets_risques(nom: &NomFichier) -> Resultat {
+    let (cle, brute, brut) = match lire_chemin(nom) {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
+    let avant = avant_notable(&brut);
+    if brut.starts_with('"') {
+        return Resultat::rien(
+            tr!(
+                "déjà entre guillemets, rien d'écrit",
+                "already in quotes, nothing written"
+            )
+            .to_string(),
+        );
+    }
+    let type_service = cle.get_value::<u32, _>("Type").unwrap_or(0);
+    let Some(j) = juger_service(type_service, &brut, variable_systeme, existe, dossier_modifiable) else {
+        return Resultat::echec(
+            Some(avant),
+            tr!(
+                "refusé : le bilan refait ici ne signale pas ce service ; rien d'écrit",
+                "refused: the check redone here does not flag this service; nothing written"
+            )
+            .to_string(),
+        );
+    };
+    let Some(raison) = j.a_la_main.clone() else {
+        return Resultat::echec(
+            Some(avant),
+            tr!(
+                "refusé : ce chemin se vérifie, il passe par la correction sans question ; rien d'écrit",
+                "refused: this path can be checked, it goes through the fix without a question; nothing written"
+            )
+            .to_string(),
+        );
+    };
+    let Some(nouveau) = guillemets_risques_du_jugement(&j, &brut, variable_systeme) else {
+        return Resultat::echec(
+            Some(avant),
+            tr!(
+                "refusé : le chemin changerait autrement que par les guillemets ; rien d'écrit",
+                "refused: the path would change beyond the quotes; nothing written"
+            )
+            .to_string(),
+        );
+    };
+    if let Some(r) = refus_session(nom) {
+        return r;
+    }
+    let question = trf!(
+        "  Service « {} » : {raison}.\n  Avec les guillemets, le service peut ne plus démarrer (chemin d'avant noté : « vanguard options-defense --remettre service:{} » le remet).\n  Mettre les guillemets ? [o/N] : ",
+        "  Service “{}”: {raison}.\n  With the quotes, the service may no longer start (previous path noted: “vanguard options-defense --remettre service:{}” puts it back).\n  Add the quotes? [y/N]: ",
+        affichable(nom.texte()),
+        affichable(nom.texte())
+    );
+    if !crate::machine::reglages::confirmer(super::eleve::console_reelle(), &question, crate::ui::demander_ou_defaut) {
+        return Resultat::echec(
+            Some(avant),
+            tr!("non confirmé : rien d'écrit", "not confirmed: nothing written").to_string(),
+        );
+    }
+    noter_et_ecrire(nom, &brute, &nouveau)
+}
+
+/// La note du chemin d'un service : le chemin d'avant et celui que Vanguard a écrit.
+fn note_chemin(nom: &NomFichier) -> Option<(crate::machine::reglages::Brute, crate::machine::reglages::Brute)> {
+    use crate::machine::reglages;
+    let note_nom = reglages::nom_note_service(nom.texte());
+    let octets = crate::machine::choix_avant::lire_brut(&note_nom)?;
+    let mut v = reglages::decoder(&octets, &note_nom, &["avant", "ecrit"])?.into_iter();
+    Some((v.next()??, v.next()??))
+}
+
+/// Le texte d'une brute de chemin (REG_SZ ou REG_EXPAND_SZ).
+fn texte_brute(b: &crate::machine::reglages::Brute) -> Option<String> {
+    let t = type_texte(b.code)?;
+    super::corrections::texte_reg(&winreg::RegValue {
+        bytes: b.octets.clone().into(),
+        vtype: t,
+    })
+}
+
+fn type_texte(code: u32) -> Option<winreg::enums::RegType> {
+    match code {
+        1 => Some(winreg::enums::RegType::REG_SZ),
+        2 => Some(winreg::enums::RegType::REG_EXPAND_SZ),
+        _ => None,
+    }
+}
+
+/// Ce que la remise du chemin d'un service va écrire, montré avant la question des baisses.
+pub(super) fn texte_remise(nom: &NomFichier) -> String {
+    let n = affichable(nom.texte());
+    match note_chemin(nom).and_then(|(a, e)| Some((texte_brute(&a)?, texte_brute(&e)?))) {
+        Some((avant, ecrit)) => trf!(
+            "Chemin du service « {n} » : {} → REMIS À {}",
+            "Path of the “{n}” service: {} → PUT BACK TO {}",
+            avant_notable(&ecrit),
+            avant_notable(&avant)
+        ),
+        None => trf!(
+            "Chemin du service « {n} » : aucun chemin d'avant noté, rien ne sera écrit",
+            "Path of the “{n}” service: no previous path noted, nothing will be written"
+        ),
+    }
+}
+
+/// Remet le chemin d'avant qu'une écriture de Vanguard a noté, si et seulement si le chemin est encore celui que
+/// Vanguard a écrit (jamais par-dessus un changement fait depuis) ; la note est effacée une fois le chemin relu.
+pub(super) fn remettre_chemin(nom: &NomFichier) -> Resultat {
+    let Some((ancien, ecrit)) = note_chemin(nom) else {
+        return Resultat::echec(
+            None,
+            tr!(
+                "aucun chemin d'avant noté par Vanguard pour ce service (ou note abîmée) : rien d'écrit",
+                "no previous path noted by Vanguard for this service (or damaged note): nothing written"
+            )
+            .to_string(),
+        );
+    };
+    let (Some(t_ancien), Some(t_ecrit), Some(type_ancien)) =
+        (texte_brute(&ancien), texte_brute(&ecrit), type_texte(ancien.code))
+    else {
+        return Resultat::echec(
+            None,
+            tr!("note abîmée : rien d'écrit", "damaged note: nothing written").to_string(),
+        );
+    };
+    let (_, brute, brut) = match lire_chemin(nom) {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
+    let avant = avant_notable(&brut);
+    let note_nom = crate::machine::reglages::nom_note_service(nom.texte());
+    if brute.vtype == type_ancien && brute.bytes.as_ref() == ancien.octets.as_slice() {
+        crate::machine::choix_avant::effacer_brut(&note_nom);
+        return Resultat::rien(trf!(
+            "déjà ainsi ({avant}), rien d'écrit",
+            "already so ({avant}), nothing written"
+        ));
+    }
+    if !relue_conforme(&type_ancien, &brute, &t_ecrit) {
+        return Resultat::echec(
+            Some(avant),
+            tr!(
+                "le chemin a changé depuis que Vanguard l'a écrit : Vanguard n'écrit jamais par-dessus ; rien d'écrit",
+                "the path has changed since Vanguard wrote it: Vanguard never writes over it; nothing written"
+            )
+            .to_string(),
+        );
+    }
+    if let Some(r) = refus_session(nom) {
+        return r;
+    }
+    let ecriture = if sens_change_par_le_gestionnaire(&type_ancien, &t_ancien) {
+        ecrire_au_registre(
+            nom,
+            &winreg::RegValue {
+                bytes: ancien.octets.clone().into(),
+                vtype: type_ancien.clone(),
+            },
+        )
+        .map_err(|e| e.to_string())
+    } else {
+        match super::services_ecriture::changer_le_chemin(nom.texte(), &t_ancien) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(tr!("service absent", "no such service").to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    };
+    if let Err(e) = ecriture {
+        return Resultat::echec(Some(avant), trf!("{e} ; la note est gardée", "{e}; the note is kept"));
+    }
+    match lire_chemin(nom) {
+        Ok((_, v, _)) if relue_conforme(&type_ancien, &v, &t_ancien) => {
+            crate::machine::choix_avant::effacer_brut(&note_nom);
+            Resultat::fait(avant)
+        }
+        _ => Resultat::echec(
+            Some(avant),
+            tr!(
+                "le chemin relu n'est pas celui noté ; la note est gardée",
+                "the path read back is not the noted one; the note is kept"
+            )
+            .to_string(),
+        ),
     }
 }
 
@@ -507,6 +896,7 @@ pub(super) fn juger(sortie: &str) -> Option<Constat> {
     let mut inconnus = Vec::new();
     let mut commandes = Vec::new();
     let mut automatiques = Vec::new();
+    let mut risques = Vec::new();
     let mut a_la_main = Vec::new();
     for (manuel, ligne) in sortie.lines().filter_map(|l| {
         let l = l.trim_end_matches('\r');
@@ -528,17 +918,29 @@ pub(super) fn juger(sortie: &str) -> Option<Constat> {
         // la ligne soit « SVCM » ou non.
         if dossier.is_empty() {
             inconnus.push(affichable(nom));
-            a_la_main.push(affichable(nom));
+            // « SVCM » : les guillemets après la question du risque (défense D6b), le processus élevé rejugeant.
+            match gestes::ligne_service_guillemets_risque(nom).filter(|_| manuel) {
+                Some(l) => {
+                    commandes.push(l);
+                    risques.push(affichable(nom));
+                }
+                None => a_la_main.push(affichable(nom)),
+            }
             continue;
         }
         // Un nom de service peut avoir des espaces et des parenthèses (« Bonjour Service », « Intel(R) … ») : écarté,
         // le service exploitable passait pour sain. Il est toujours signalé ; un nom que la grammaire des lignes
         // refuse (séparateur, caractère de contrôle, « .. ») n'a pas de ligne : à corriger à la main.
         noms.push(format!("{} ({})", affichable(nom), affichable(dossier)));
-        match gestes::ligne_service_guillemets(nom).filter(|_| !manuel) {
-            Some(l) => {
+        let ligne = if manuel {
+            gestes::ligne_service_guillemets_risque(nom).map(|l| (l, &mut risques))
+        } else {
+            gestes::ligne_service_guillemets(nom).map(|l| (l, &mut automatiques))
+        };
+        match ligne {
+            Some((l, liste)) => {
                 commandes.push(l);
-                automatiques.push(affichable(nom));
+                liste.push(affichable(nom));
             }
             None => a_la_main.push(affichable(nom)),
         }
@@ -567,12 +969,23 @@ pub(super) fn juger(sortie: &str) -> Option<Constat> {
         };
         alerte("Persistance", Niveau::Eleve, message)
     };
-    // Une correction automatique : dite telle quelle, service par service.
-    let action = trf!(
-        "Vanguard ajoute les guillemets au chemin du service {} ; signaler ensuite le défaut à l'éditeur du programme",
-        "Vanguard adds the quotes to the path of the service {}; then report the flaw to the program's publisher",
-        resume(&automatiques, 3, ", ")
-    );
+    // Une correction automatique : dite telle quelle, service par service ; celle qui demande d'abord, à part.
+    let mut parties = Vec::new();
+    if !automatiques.is_empty() {
+        parties.push(trf!(
+            "Vanguard ajoute les guillemets au chemin du service {} ; signaler ensuite le défaut à l'éditeur du programme",
+            "Vanguard adds the quotes to the path of the service {}; then report the flaw to the program's publisher",
+            resume(&automatiques, 3, ", ")
+        ));
+    }
+    if !risques.is_empty() {
+        parties.push(trf!(
+            "Vanguard ajoute les guillemets, après une question (il ne sait pas vérifier ce chemin : le service peut ne plus démarrer ; chemin d'avant noté, annulable), au chemin du service {}",
+            "Vanguard adds the quotes, after a question (it cannot check this path: the service may no longer start; previous path noted, undoable), to the path of the service {}",
+            resume(&risques, 3, ", ")
+        ));
+    }
+    let action = parties.join(" ; ");
     if commandes.is_empty() {
         return Some(constat.manuel(
             trf!(
@@ -823,17 +1236,31 @@ mod tests {
             entre_guillemets(0x10, brut, variable, present, ouvert).as_deref(),
             Some(r#""C:\Program Files\Mon Outil\svc.exe" -k %SystemRoot%"#)
         );
+        // La ligne du bilan « SVCM » : les guillemets après la question du risque (défense D6b), jamais la ligne
+        // ordinaire ; l'action dit que le service peut ne plus démarrer.
         let c = juger("SVCM|Outil|C:\\Mon Outil\\svc.exe|C:\\Mon Outil|\nSVC_FIN\n").unwrap();
         let k = c.correctif.unwrap();
+        assert_eq!(k.commandes, [gestes::ligne_service_guillemets_risque("Outil").unwrap()]);
         assert!(
-            k.commandes.is_empty() && !k.automatique && k.action.contains("Outil"),
+            k.action.contains("Outil")
+                && (k.action.contains("peut ne plus démarrer") || k.action.contains("may no longer start")),
             "{}",
             k.action
         );
-        // Un service à la main parmi d'autres : seul l'autre a sa ligne.
+        // Un service à la main parmi d'autres : chacun sa ligne, la risquée pour celui à la main seulement.
         let c = juger("SVCM|Outil|C:\\A B\\x.exe|C:\\A B|\nSVC|Autre|C:\\A B\\y.exe|C:\\A B|\nSVC_FIN\n").unwrap();
         let k = c.correctif.unwrap();
-        assert_eq!(k.commandes, [gestes::ligne_service_guillemets("Autre").unwrap()]);
+        assert_eq!(
+            k.commandes,
+            [
+                gestes::ligne_service_guillemets_risque("Outil").unwrap(),
+                gestes::ligne_service_guillemets("Autre").unwrap()
+            ]
+        );
+        // Un nom que la grammaire refuse n'a aucune ligne, même risquée : à la main.
+        let c = juger("SVCM|a..b|C:\\A B\\x.exe|C:\\A B|\nSVC_FIN\n").unwrap();
+        let k = c.correctif.unwrap();
+        assert!(k.commandes.is_empty() && !k.automatique, "{}", k.action);
     }
 
     /// Le développement par l'environnement du système : une valeur qui cite une variable inconnue n'est pas
@@ -1077,12 +1504,20 @@ mod tests {
             c.message
         );
         let k = c.correctif.unwrap();
+        assert_eq!(
+            k.commandes,
+            [gestes::ligne_service_guillemets_risque("vg-essai-var").unwrap()]
+        );
+        assert!(k.action.contains("vg-essai-var"), "{}", k.action);
+        // Même cas en « SVC » (pas à la main) : sans dossier, toujours à la main, aucune ligne.
+        let c = juger("SVC|vg-essai-var|%NEXISTEPASVG%\\Mon Outil\\svc.exe||\nSVC_FIN\n").unwrap();
+        let k = c.correctif.unwrap();
         assert!(
             k.commandes.is_empty() && !k.automatique && k.action.contains("vg-essai-var"),
             "{}",
             k.action
         );
-        // Avec un service piégé : élevé, les deux dits, seul le piégé a sa ligne.
+        // Avec un service piégé : élevé, les deux dits, chacun sa ligne (la risquée pour celui à la main).
         let c = juger("SVCM|vg-essai-var|%X%\\A B\\svc.exe||\nSVC|Autre|C:\\A B\\y.exe|C:\\A B|\nSVC_FIN\n").unwrap();
         assert_eq!(c.probleme, Some(Niveau::Eleve));
         assert!(
@@ -1091,7 +1526,13 @@ mod tests {
             c.message
         );
         let k = c.correctif.unwrap();
-        assert_eq!(k.commandes, [gestes::ligne_service_guillemets("Autre").unwrap()]);
+        assert_eq!(
+            k.commandes,
+            [
+                gestes::ligne_service_guillemets_risque("vg-essai-var").unwrap(),
+                gestes::ligne_service_guillemets("Autre").unwrap()
+            ]
+        );
         assert!(k.action.contains("vg-essai-var"), "{}", k.action);
     }
 
@@ -1178,5 +1619,61 @@ mod tests {
                 assert!(!code.contains(interdit), "{nom} : {interdit}");
             }
         }
+    }
+
+    /// Les guillemets risqués (défense D6b) : seulement pour un service à la main, autour du programme brut, et si la
+    /// valeur développée ne change que par eux ; un jugement sans raison d'être à la main passe par l'autre chemin.
+    #[test]
+    fn guillemets_risques_seulement_a_la_main_et_exacts() {
+        let variable = |n: &str| n.eq_ignore_ascii_case("SystemRoot").then(|| r"C:\Windows".to_string());
+        let ouvert = |d: &std::path::Path| d == std::path::Path::new(r"C:\");
+        let absent = |_: &std::path::Path| false;
+        // Programme introuvable : entre guillemets, rien d'autre.
+        let brut = r"C:\Program Files\Autre Outil\svc.exe -k x";
+        let j = juger_service(0x10, brut, variable, absent, ouvert).unwrap();
+        assert!(j.a_la_main.is_some(), "{j:?}");
+        assert_eq!(
+            guillemets_risques_du_jugement(&j, brut, variable).as_deref(),
+            Some(r#""C:\Program Files\Autre Outil\svc.exe" -k x"#)
+        );
+        // La variable connue reste telle quelle dans le brut.
+        let brut = r"%SystemRoot%\Mon Outil\svc.exe";
+        if let Some(j) = juger_service(0x10, brut, variable, absent, ouvert) {
+            assert_eq!(
+                guillemets_risques_du_jugement(&j, brut, variable).as_deref(),
+                Some(r#""%SystemRoot%\Mon Outil\svc.exe""#)
+            );
+        }
+        // Sans raison d'être à la main : jamais par ici.
+        let j = Signale {
+            exe: r"C:\A B\svc.exe".into(),
+            suite: String::new(),
+            dossier: Some(std::path::PathBuf::from(r"C:\")),
+            a_la_main: None,
+        };
+        assert_eq!(guillemets_risques_du_jugement(&j, r"C:\A B\svc.exe", variable), None);
+        // Un jugement qui ne correspond pas au brut (le programme développé serait un autre) : rien.
+        let j = Signale {
+            exe: r"C:\Autre\svc.exe".into(),
+            suite: String::new(),
+            dossier: None,
+            a_la_main: Some("x".into()),
+        };
+        assert_eq!(guillemets_risques_du_jugement(&j, r"C:\A B\svc.exe", variable), None);
+        // Déjà entre guillemets : rien.
+        let j = Signale {
+            exe: r"C:\A B\svc.exe".into(),
+            suite: String::new(),
+            dossier: None,
+            a_la_main: Some("x".into()),
+        };
+        assert_eq!(
+            guillemets_risques_du_jugement(&j, r#""C:\A B\svc.exe""#, variable),
+            None
+        );
+        assert_eq!(
+            guillemets_risques_du_jugement(&j, r"C:\A B\svc.exe", variable).as_deref(),
+            Some(r#""C:\A B\svc.exe""#)
+        );
     }
 }

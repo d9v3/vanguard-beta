@@ -6,6 +6,8 @@
 
 use super::*;
 
+use super::gestes::{IdReglage, ligne_reglage};
+
 const DURCI: &str = "Durcissement";
 const WDIGEST: &str = r"SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest";
 
@@ -46,8 +48,8 @@ pub(super) fn juger_wdigest(valeur: Option<u32>) -> Constat {
     }
 }
 
-/// Protection LSA : `RunAsPPL` à 1 ou 2 (2 : sans verrou UEFI). Absente : une information, à activer soi-même (un
-/// pilote ancien peut la refuser, Windows le dit alors).
+/// Protection LSA : `RunAsPPL` à 1 ou 2 (2 : sans verrou UEFI). Absente : une information ; Vanguard pose
+/// `RunAsPPL=2` (jamais 1 et le verrou, qui ne se défait plus sans le micrologiciel), annulable, au redémarrage.
 pub(super) fn juger_lsa(valeur: Option<u32>) -> Constat {
     if matches!(valeur, Some(1 | 2)) {
         ok(
@@ -66,12 +68,12 @@ pub(super) fn juger_lsa(valeur: Option<u32>) -> Constat {
                 "Local Security Authority (LSA) protection off: a program with administrator rights can read sign-in secrets."
             ),
         )
-        .manuel(
+        .corriger(
             tr!(
-                "Sécurité Windows › Sécurité de l'appareil › Isolation du noyau › Protection de l'autorité de sécurité locale, puis redémarrer",
-                "Windows Security › Device security › Core isolation › Local Security Authority protection, then restart"
+                "Protéger l'autorité de sécurité locale (RunAsPPL=2, sans verrou du micrologiciel, annulable), effet au prochain redémarrage. Un pilote d'authentification ancien (lecteur d'empreintes, carte à puce) peut ne plus se charger : Windows le dit alors",
+                "Protect the Local Security Authority (RunAsPPL=2, without firmware lock, undoable), effective at the next restart. An old authentication driver (fingerprint reader, smart card) may no longer load: Windows then says so"
             ),
-            &["Start-Process windowsdefender://coreisolation"],
+            &[ligne_reglage(IdReglage::LsaPpl)],
         )
     }
 }
@@ -106,8 +108,9 @@ pub(super) fn juger_powershell2(installe: Option<bool>) -> Option<Constat> {
     })
 }
 
-/// Assistance à distance (`fAllowToGetHelp`) : une information, à couper soi-même (couper ici pourrait interrompre
-/// une assistance en cours, et Vanguard ne coupe jamais une connexion à distance).
+/// Assistance à distance (`fAllowToGetHelp`) : une information ; coupée par Vanguard, annulable. Le processus élevé
+/// refuse si `msra.exe` tourne (une assistance en cours est une session à distance, jamais coupée) ou si la liste des
+/// processus ne se lit pas.
 pub(super) fn juger_assistance(valeur: Option<u32>) -> Option<Constat> {
     (valeur == Some(1)).then(|| {
         alerte(
@@ -118,12 +121,12 @@ pub(super) fn juger_assistance(valeur: Option<u32>) -> Option<Constat> {
                 "Windows Remote Assistance accepts invitations: it is the tool fake technicians ask you to open."
             ),
         )
-        .manuel(
+        .corriger(
             tr!(
-                "Si personne ne vous aide ainsi : Panneau de configuration › Système › Paramètres d'utilisation à distance, décocher « Autoriser les connexions d'assistance à distance »",
-                "If nobody helps you this way: Control Panel › System › Remote settings, uncheck “Allow Remote Assistance connections”"
+                "Couper l'Assistance à distance (annulable). Refusé tant qu'une assistance est en cours (msra.exe) : Vanguard ne coupe jamais une session à distance",
+                "Turn Remote Assistance off (undoable). Refused while an assistance is in progress (msra.exe): Vanguard never cuts a remote session"
             ),
-            &["Start-Process SystemPropertiesRemote.exe"],
+            &[ligne_reglage(IdReglage::AssistanceCoupe)],
         )
     })
 }
@@ -154,12 +157,12 @@ pub(super) fn juger_ouverture_auto(auto: Option<&str>, mot_de_passe: bool) -> Op
                 "Automatic sign-in with the password written in clear text in the registry: any program running here can read it."
             ),
         )
-        .manuel(
+        .corriger(
             tr!(
-                "Touche Windows + R, « netplwiz », cocher « Les utilisateurs doivent entrer un nom et un mot de passe » ; puis retirer DefaultPassword (commande ci-dessous, en administrateur)",
-                "Windows key + R, “netplwiz”, check “Users must enter a user name and password”; then remove DefaultPassword (command below, as administrator)"
+                "Retirer le mot de passe écrit en clair (DefaultPassword) et couper l'ouverture automatique. NON ANNULABLE (le mot de passe n'est pas gardé, exprès) : assurez-vous de connaître votre mot de passe, Windows le demandera au prochain démarrage",
+                "Remove the clear-text password (DefaultPassword) and turn automatic sign-in off. NOT UNDOABLE (the password is not kept, on purpose): make sure you know your password, Windows will ask for it at the next start"
             ),
-            &[r"Remove-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name DefaultPassword"],
+            &[ligne_reglage(IdReglage::OuvertureAutoMdp)],
         )
     } else {
         alerte(
@@ -170,35 +173,64 @@ pub(super) fn juger_ouverture_auto(auto: Option<&str>, mot_de_passe: bool) -> Op
                 "Automatic sign-in: anyone who turns the computer on gets into the session, without a password."
             ),
         )
-        .manuel(
+        .corriger(
             tr!(
-                "Si l'ordinateur sort de votre domicile : touche Windows + R, « netplwiz », cocher « Les utilisateurs doivent entrer un nom et un mot de passe »",
-                "If the computer leaves the house: Windows key + R, “netplwiz”, check “Users must enter a user name and password”"
+                "Couper l'ouverture automatique (annulable) : assurez-vous de connaître votre mot de passe, Windows le demandera au prochain démarrage",
+                "Turn automatic sign-in off (undoable): make sure you know your password, Windows will ask for it at the next start"
             ),
-            &[],
+            &[ligne_reglage(IdReglage::OuvertureAutoCoupe)],
         )
     })
 }
 
 /// SmartScreen coupé (réglage de l'Explorateur à « Off », ou stratégie EnableSmartScreen à 0) : un programme téléchargé
 /// inconnu se lance sans avertissement.
-pub(super) fn juger_smartscreen(explorateur: Option<&str>, strategie: Option<u32>) -> Option<Constat> {
-    let coupe = explorateur.is_some_and(|v| v.eq_ignore_ascii_case("off")) || strategie == Some(0);
-    coupe.then(|| {
-        alerte(
+#[cfg(test)]
+fn juger_smartscreen(explorateur: Option<&str>, strategie: Option<u32>) -> Option<Constat> {
+    juger_smartscreen_selon(explorateur, strategie, false)
+}
+
+/// `juger_smartscreen`, sachant si le PC est hors domaine et hors gestion (`hors_gestion`, §3.3). Le réglage de
+/// l'Explorateur se rallume par sa seule valeur (« Warn »), jamais par une stratégie, qui griserait l'option dans les
+/// Paramètres ; une stratégie qui le coupe se retire seulement hors gestion, sinon elle est montrée.
+pub(super) fn juger_smartscreen_selon(
+    explorateur: Option<&str>,
+    strategie: Option<u32>,
+    hors_gestion: bool,
+) -> Option<Constat> {
+    let par_explorateur = explorateur.is_some_and(|v| v.eq_ignore_ascii_case("off"));
+    let par_strategie = strategie == Some(0);
+    (par_explorateur || par_strategie).then(|| {
+        let constat = alerte(
             DURCI,
             Niveau::Moyen,
             tr!(
                 "SmartScreen est coupé : un programme téléchargé inconnu se lance sans le moindre avertissement.",
                 "SmartScreen is off: an unknown downloaded program starts without any warning."
             ),
-        )
-        .manuel(
+        );
+        if par_strategie && !hors_gestion {
+            return constat.manuel(
+                tr!(
+                    "Coupé par une stratégie de groupe : à changer par qui gère l'ordinateur (entreprise, école) ; Vanguard ne retire une stratégie que sur un PC hors domaine et hors gestion",
+                    "Turned off by a group policy: to be changed by whoever manages the computer (company, school); Vanguard only removes a policy on a PC outside a domain and unmanaged"
+                ),
+                &[],
+            );
+        }
+        let mut lignes = Vec::new();
+        if par_strategie {
+            lignes.push(ligne_reglage(IdReglage::SmartScreenStrategie));
+        }
+        if par_explorateur {
+            lignes.push(ligne_reglage(IdReglage::SmartScreen));
+        }
+        constat.corriger(
             tr!(
-                "Sécurité Windows › Contrôle des applications et du navigateur › Protection fondée sur la réputation : tout activer",
-                "Windows Security › App & browser control › Reputation-based protection: turn everything on"
+                "Rallumer SmartScreen par le réglage de l'Explorateur (« Avertir »), la stratégie qui le coupe retirée s'il y en a une (PC hors domaine et hors gestion) ; annulable",
+                "Turn SmartScreen back on through the Explorer setting (“Warn”), removing the policy that turns it off if there is one (PC outside a domain and unmanaged); undoable"
             ),
-            &["Start-Process windowsdefender://appbrowser"],
+            &lignes,
         )
     })
 }
@@ -237,7 +269,7 @@ pub(super) fn jeton_distant() -> Vec<Constat> {
 }
 
 /// Intégrité de la mémoire (HVCI) : bloque les pilotes modifiés ou vulnérables. Une information : quelques vieux
-/// pilotes (et anti-triches) la refusent, Windows le dit alors.
+/// pilotes (et anti-triches) la refusent ; Vanguard la pose sans verrou (Locked=0), annulable, après une question.
 pub(super) fn juger_integrite_memoire(active: Option<u32>) -> Constat {
     if active == Some(1) {
         ok(
@@ -256,12 +288,12 @@ pub(super) fn juger_integrite_memoire(active: Option<u32>) -> Constat {
                 "Memory integrity off: a vulnerable driver can be used to disarm the antivirus."
             ),
         )
-        .manuel(
+        .corriger(
             tr!(
-                "Sécurité Windows › Sécurité de l'appareil › Isolation du noyau › Intégrité de la mémoire, puis redémarrer",
-                "Windows Security › Device security › Core isolation › Memory integrity, then restart"
+                "Activer l'intégrité de la mémoire (sans verrou : Locked=0, annulable), effet au prochain redémarrage. Un vieux pilote (ou un anti-triche) incompatible peut ne plus se charger : une question le rappelle avant",
+                "Turn memory integrity on (without lock: Locked=0, undoable), effective at the next restart. An old incompatible driver (or anti-cheat) may no longer load: a question reminds you first"
             ),
-            &["Start-Process windowsdefender://coreisolation"],
+            &[ligne_reglage(IdReglage::Hvci)],
         )
     }
 }
@@ -278,12 +310,12 @@ pub(super) fn juger_pause(fin: Option<&str>, aujourd_hui: &str) -> Option<Consta
                 "Windows updates are paused until {date}: security fixes wait too."
             ),
         )
-        .manuel(
+        .corriger(
             tr!(
-                "Paramètres › Windows Update › Reprendre les mises à jour",
-                "Settings › Windows Update › Resume updates"
+                "Reprendre les mises à jour (les valeurs de pause retirées ; annulable)",
+                "Resume updates (pause values removed; undoable)"
             ),
-            &["Start-Process ms-settings:windowsupdate"],
+            &[ligne_reglage(IdReglage::MajPause)],
         )
     })
 }
@@ -339,7 +371,15 @@ pub(super) fn macros_ouvertes(
 /// Remises à « désactivées avec notification » (2, le réglage d'Office) pour ce compte, par un geste du compte (fait
 /// par Vanguard non élevé, dans le HKCU de la personne, même quand la fenêtre administrateur s'ouvre sous un autre
 /// compte) ; imposées par une stratégie de groupe, c'est à l'organisation de les changer.
-pub(super) fn juger_macros(ouvertes: &[(&str, &str, &str, bool)]) -> Option<Constat> {
+#[cfg(test)]
+fn juger_macros(ouvertes: &[(&str, &str, &str, bool)]) -> Option<Constat> {
+    juger_macros_selon(ouvertes, false)
+}
+
+/// `juger_macros` ; `hors_gestion` : PC hors domaine et hors gestion (§3.3), où la stratégie qui ouvre les macros se
+/// retire (dans le registre du compte de la personne, par la fenêtre administrateur). Ces retraits ne se mêlent pas
+/// aux gestes du compte (faits sans élévation) : un programme ouvert par son seul réglage est remis au bilan suivant.
+pub(super) fn juger_macros_selon(ouvertes: &[(&str, &str, &str, bool)], hors_gestion: bool) -> Option<Constat> {
     if ouvertes.is_empty() {
         return None;
     }
@@ -354,6 +394,22 @@ pub(super) fn juger_macros(ouvertes: &[(&str, &str, &str, bool)]) -> Option<Cons
             noms.join(", ")
         ),
     );
+    if ouvertes.iter().any(|o| o.3) && hors_gestion {
+        let retrait: Vec<String> = ouvertes
+            .iter()
+            .filter(|o| o.3)
+            .filter_map(|(cle, _, version, _)| IdReglage::macros(version, cle).map(ligne_reglage))
+            .collect();
+        if !retrait.is_empty() {
+            return Some(constat.corriger(
+                tr!(
+                    "Retirer la stratégie qui ouvre les macros pour votre compte (PC hors domaine et hors gestion ; valeur notée, annulable) ; Office reviendra à son réglage",
+                    "Remove the policy that opens macros for your account (PC outside a domain and unmanaged; value noted, undoable); Office will go back to its setting"
+                ),
+                &retrait,
+            ));
+        }
+    }
     if ouvertes.iter().any(|o| o.3) {
         return Some(constat.manuel(
             tr!(
@@ -627,10 +683,22 @@ pub(super) fn juger_protection_exploits(valeurs: Option<&str>) -> Option<Constat
 /// (Start à 4), ou stratégie NoAutoUpdate à 1. Plus aucune faille ne se corrige toute seule. Les services sont remis
 /// comme Windows les livre (wuauserv manuel, UsoSvc automatique) ; la stratégie peut venir de qui gère l'ordinateur :
 /// à retirer soi-même.
-pub(super) fn juger_windows_update(
+#[cfg(test)]
+fn juger_windows_update(
     service: Option<u32>,
     orchestrateur: Option<u32>,
     sans_maj_auto: Option<u32>,
+) -> Option<Constat> {
+    juger_windows_update_selon(service, orchestrateur, sans_maj_auto, || false)
+}
+
+/// `juger_windows_update`, la stratégie NoAutoUpdate retirée seulement sur un PC hors domaine et hors gestion
+/// (`hors_gestion`, lu seulement si la stratégie est là, §3.3).
+pub(super) fn juger_windows_update_selon(
+    service: Option<u32>,
+    orchestrateur: Option<u32>,
+    sans_maj_auto: Option<u32>,
+    hors_gestion: impl FnOnce() -> bool,
 ) -> Option<Constat> {
     let mut commandes = Vec::new();
     if service == Some(4) {
@@ -659,15 +727,24 @@ pub(super) fn juger_windows_update(
         );
     }
     (sans_maj_auto == Some(1)).then(|| {
-        alerte(
+        let constat = alerte(
             "Mises à jour",
             Niveau::Moyen,
             tr!(
                 "Une stratégie empêche Windows Update de s'installer tout seul : les failles corrigées restent ouvertes tant que personne ne lance les mises à jour.",
                 "A policy stops Windows Update from installing by itself: fixed flaws stay open until someone runs the updates."
             ),
-        )
-        .manuel(
+        );
+        if hors_gestion() {
+            return constat.corriger(
+                tr!(
+                    "Retirer la stratégie (PC hors domaine et hors gestion ; valeur notée, annulable)",
+                    "Remove the policy (PC outside a domain and unmanaged; value noted, undoable)"
+                ),
+                &[ligne_reglage(IdReglage::MajStrategie)],
+            );
+        }
+        constat.manuel(
             tr!(
                 "Si personne ne gère cet ordinateur (entreprise, école) : retirer la stratégie (commande ci-dessous, en administrateur)",
                 "If nobody manages this computer (company, school): remove the policy (command below, as administrator)"
@@ -677,8 +754,8 @@ pub(super) fn juger_windows_update(
     })
 }
 
-/// Signature SMB : le client qui ne l'exige pas peut se faire relayer vers un faux partage. Une information, à
-/// activer soi-même (un vieux NAS sans signature ne répondrait plus) ; Windows 11 24H2 l'exige déjà.
+/// Signature SMB : le client qui ne l'exige pas peut se faire relayer vers un faux partage. Une information ; exigée
+/// par Vanguard (annulable : un vieux NAS sans signature ne répondrait plus) ; Windows 11 24H2 l'exige déjà.
 pub(super) fn juger_signature_smb(client_exige: Option<u32>) -> Option<Constat> {
     (client_exige == Some(0)).then(|| {
         alerte(
@@ -689,12 +766,12 @@ pub(super) fn juger_signature_smb(client_exige: Option<u32>) -> Option<Constat> 
                 "File shares do not require signing: a device on the network can get in the middle and relay the connection."
             ),
         )
-        .manuel(
+        .corriger(
             tr!(
-                "Si aucun vieux NAS n'est utilisé : exiger la signature (commande ci-dessous, en administrateur), puis redémarrer",
-                "If no old NAS is in use: require signing (command below, as administrator), then restart"
+                "Exiger la signature des partages (annulable). À refuser si un vieux NAS sans signature est utilisé : il ne répondrait plus. Peut demander un redémarrage",
+                "Require share signing (undoable). Decline if an old NAS without signing is in use: it would stop answering. May need a restart"
             ),
-            &["Set-SmbClientConfiguration -RequireSecuritySignature $true -Force"],
+            &[ligne_reglage(IdReglage::SmbSignature)],
         )
     })
 }
@@ -702,7 +779,18 @@ pub(super) fn juger_signature_smb(client_exige: Option<u32>) -> Option<Constat> 
 /// Connexion « invité » aux partages sans mot de passe (AllowInsecureGuestAuth à 1, la stratégie de groupe passant
 /// avant le réglage) : un faux partage du réseau peut se faire passer pour le NAS et servir des fichiers piégés, sans
 /// signature possible. Un vieux NAS ou une box peut en dépendre : la phrase le dit avant l'accord.
-pub(super) fn juger_invite_smb(strategie: Option<u32>, reglage: Option<u32>) -> Option<Constat> {
+#[cfg(test)]
+fn juger_invite_smb(strategie: Option<u32>, reglage: Option<u32>) -> Option<Constat> {
+    juger_invite_smb_selon(strategie, reglage, || false)
+}
+
+/// `juger_invite_smb`, la stratégie qui ouvre la connexion invité retirée seulement hors domaine et hors gestion
+/// (`hors_gestion`, lu seulement si elle est là, §3.3).
+pub(super) fn juger_invite_smb_selon(
+    strategie: Option<u32>,
+    reglage: Option<u32>,
+    hors_gestion: impl FnOnce() -> bool,
+) -> Option<Constat> {
     let impose = strategie.is_some();
     (strategie.or(reglage) == Some(1)).then(|| {
         let constat = alerte(
@@ -713,7 +801,15 @@ pub(super) fn juger_invite_smb(strategie: Option<u32>, reglage: Option<u32>) -> 
                 "Network shares accept a password-less “guest” connection: a fake share can pose as your NAS and hand you booby-trapped files."
             ),
         );
-        if impose {
+        if impose && hors_gestion() {
+            constat.corriger(
+                tr!(
+                    "Retirer la stratégie qui ouvre la connexion invité (PC hors domaine et hors gestion ; valeur notée, annulable). À refuser si un vieux NAS ou une box ne s'ouvre que sans mot de passe",
+                    "Remove the policy that opens guest connections (PC outside a domain and unmanaged; value noted, undoable). Decline if an old NAS or router only opens without a password"
+                ),
+                &[ligne_reglage(IdReglage::SmbInviteStrategie)],
+            )
+        } else if impose {
             constat.manuel(
                 tr!(
                     "Réglé par une stratégie de groupe : à changer par qui gère l'ordinateur (Station de travail Lanman, « Activer les ouvertures de session invité non sécurisées »)",
@@ -755,7 +851,20 @@ pub(super) fn strategie_effective(
 /// « RemoteSigned » pour ce compte (un script écrit ici se lance toujours, un script téléchargé doit être signé), par
 /// un geste du compte (`ps-strategie`, fait par Vanguard non élevé dans le HKCU de la personne) ; imposé par une
 /// stratégie de groupe, c'est à l'organisation de le changer.
-pub(super) fn juger_strategie_ps(effective: Option<(String, bool)>) -> Option<Constat> {
+#[cfg(test)]
+fn juger_strategie_ps(effective: Option<(String, bool)>) -> Option<Constat> {
+    juger_strategie_ps_selon(effective, &[])
+}
+
+/// Une stratégie d'exécution qui laisse tout passer (« Unrestricted », « Bypass »).
+fn ps_faible(v: Option<&str>) -> bool {
+    v.map(str::trim)
+        .is_some_and(|v| v.eq_ignore_ascii_case("Unrestricted") || v.eq_ignore_ascii_case("Bypass"))
+}
+
+/// `juger_strategie_ps` ; `retrait` : les lignes qui retirent les stratégies faibles, sur un PC hors domaine et hors
+/// gestion (vide sinon : la stratégie imposée est montrée, à changer par qui gère l'ordinateur).
+pub(super) fn juger_strategie_ps_selon(effective: Option<(String, bool)>, retrait: &[String]) -> Option<Constat> {
     let (valeur, imposee) = effective?;
     if !(valeur.eq_ignore_ascii_case("Unrestricted") || valeur.eq_ignore_ascii_case("Bypass")) {
         return None;
@@ -768,7 +877,15 @@ pub(super) fn juger_strategie_ps(effective: Option<(String, bool)>) -> Option<Co
             "PowerShell runs any script without warning (“{valeur}” policy): a script downloaded or received by email runs with a double-click."
         ),
     );
-    Some(if imposee {
+    Some(if imposee && !retrait.is_empty() {
+        constat.corriger(
+            tr!(
+                "Retirer la stratégie d'exécution de PowerShell imposée (PC hors domaine et hors gestion ; valeur notée, annulable)",
+                "Remove the forced PowerShell execution policy (PC outside a domain and unmanaged; value noted, undoable)"
+            ),
+            retrait,
+        )
+    } else if imposee {
         constat.manuel(
             tr!(
                 "Réglé par une stratégie de groupe : à changer par qui gère l'ordinateur (entreprise, école)",
@@ -874,13 +991,34 @@ pub(super) fn juger_credential_guard(edition: Option<&str>, services: Option<&st
                 "Credential Guard is off: sign-in secrets stay in LSASS memory, where a password stealer looks for them."
             ),
         )
-        .manuel(
+        .corriger(
             tr!(
-                "Stratégie de groupe : Configuration ordinateur › Modèles d'administration › Système › Device Guard › Activer la sécurité basée sur la virtualisation, puis redémarrer",
-                "Group Policy: Computer Configuration › Administrative Templates › System › Device Guard › Turn On Virtualization Based Security, then restart"
+                "Activer Credential Guard (sans verrou du micrologiciel, annulable), effet au prochain redémarrage. Des machines virtuelles d'autres éditeurs ou un ancien VPN peuvent ne plus fonctionner : une question le rappelle avant",
+                "Turn Credential Guard on (without firmware lock, undoable), effective at the next restart. Virtual machines from other vendors or an old VPN may stop working: a question reminds you first"
             ),
-            &[],
+            &[ligne_reglage(IdReglage::CredentialGuard)],
         )
+    })
+}
+
+/// `SecurityServicesRunning` de Win32_DeviceGuard, lu par WMI, comme le `-join ','` du script (aucune instance : une
+/// liste vide) ; `None` si WMI ne répond pas.
+fn services_vbs() -> Option<String> {
+    wmi::requete(
+        r"root\Microsoft\Windows\DeviceGuard",
+        "Win32_DeviceGuard",
+        "",
+        &["SecurityServicesRunning"],
+    )
+    .map(|lignes| {
+        lignes.first().map_or_else(String::new, |l| {
+            l["SecurityServicesRunning"]
+                .liste()
+                .iter()
+                .filter_map(|v| v.entier().map(|n| n.to_string()))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
     })
 }
 
@@ -969,27 +1107,7 @@ pub(super) fn durcissement() -> Vec<Constat> {
             .map(|v| v.bytes)
             .as_deref(),
     );
-    let cg_wmi = credential_guard
-        .then(|| {
-            wmi::requete(
-                r"root\Microsoft\Windows\DeviceGuard",
-                "Win32_DeviceGuard",
-                "",
-                &["SecurityServicesRunning"],
-            )
-        })
-        .flatten()
-        .map(|lignes| {
-            // Comme le `-join ','` du script : aucune instance, une liste vide.
-            lignes.first().map_or_else(String::new, |l| {
-                l["SecurityServicesRunning"]
-                    .liste()
-                    .iter()
-                    .filter_map(|v| v.entier().map(|n| n.to_string()))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            })
-        });
+    let cg_wmi = credential_guard.then(services_vbs).flatten();
     let secours = script_de_secours(ps2_wmi.is_none(), exploits, credential_guard && cg_wmi.is_none())
         .and_then(|script| ps(&script));
     let installe = match &ps2_wmi {
@@ -1050,7 +1168,7 @@ pub(super) fn partage_smb() -> Vec<Constat> {
         r"SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters",
         "RequireSecuritySignature",
     )));
-    c.extend(juger_invite_smb(
+    c.extend(juger_invite_smb_selon(
         lire_dword(
             r"SOFTWARE\Policies\Microsoft\Windows\LanmanWorkstation",
             "AllowInsecureGuestAuth",
@@ -1059,6 +1177,7 @@ pub(super) fn partage_smb() -> Vec<Constat> {
             r"SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters",
             "AllowInsecureGuestAuth",
         ),
+        super::defense_etat::hors_gestion,
     ));
     sain_si_vide(
         c,
@@ -1096,47 +1215,14 @@ pub(super) fn acces_distant() -> Vec<Constat> {
 /// Office, installations toujours élevées).
 pub(super) fn programmes_et_documents() -> Vec<Constat> {
     let mut c = Vec::new();
-    c.extend(juger_smartscreen(
-        lire_texte(
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer",
-            "SmartScreenEnabled",
-        )
-        .as_deref(),
-        lire_dword(r"SOFTWARE\Policies\Microsoft\Windows\System", "EnableSmartScreen"),
-    ));
-    let shell_ids = r"SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell";
-    let strategies = r"SOFTWARE\Policies\Microsoft\Windows\PowerShell";
-    let du_compte = |cle: &str| {
-        winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
-            .open_subkey(cle)
-            .ok()?
-            .get_value::<String, _>("ExecutionPolicy")
-            .ok()
-    };
-    let effective = strategie_effective(
-        lire_texte(strategies, "ExecutionPolicy").as_deref(),
-        du_compte(strategies).as_deref(),
-        du_compte(shell_ids).as_deref(),
-        lire_texte(shell_ids, "ExecutionPolicy").as_deref(),
-    );
+    c.extend(smartscreen_lu());
     let installeur = r"SOFTWARE\Policies\Microsoft\Windows\Installer";
-    let installeur_du_compte = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
-        .open_subkey(installeur)
-        .ok()
-        .and_then(|k| k.get_value::<u32, _>("AlwaysInstallElevated").ok());
     c.extend(juger_installation_elevee(
         lire_dword(installeur, "AlwaysInstallElevated"),
-        installeur_du_compte,
+        du_compte::<u32>(None, installeur, "AlwaysInstallElevated"),
     ));
-    c.extend(juger_strategie_ps(effective));
-    let vba = |cle: &str| {
-        winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
-            .open_subkey(cle)
-            .ok()?
-            .get_value::<u32, _>("VBAWarnings")
-            .ok()
-    };
-    c.extend(juger_macros(&macros_ouvertes(vba)));
+    c.extend(strategie_ps_lue(None));
+    c.extend(macros_lues(None));
     sain_si_vide(
         c,
         (
@@ -1146,13 +1232,124 @@ pub(super) fn programmes_et_documents() -> Vec<Constat> {
     )
 }
 
+/// Une valeur du registre d'un compte : celui qui lance Vanguard (`None` : HKCU, le bilan non élevé), ou celui de la
+/// personne vu du processus élevé (`HKEY_USERS\<SID>`), dont le HKCU est celui de l'administrateur.
+fn du_compte<T: winreg::types::FromRegValue>(sid: Option<&str>, cle: &str, valeur: &str) -> Option<T> {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_USERS};
+    let k = match sid {
+        None => winreg::RegKey::predef(HKEY_CURRENT_USER).open_subkey(cle).ok()?,
+        Some(s) => winreg::RegKey::predef(HKEY_USERS)
+            .open_subkey(format!(r"{s}\{cle}"))
+            .ok()?,
+    };
+    k.get_value(valeur).ok()
+}
+
+const EXPLORATEUR: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer";
+const SYSTEME_STRATEGIE: &str = r"SOFTWARE\Policies\Microsoft\Windows\System";
+const PS_STRATEGIES: &str = r"SOFTWARE\Policies\Microsoft\Windows\PowerShell";
+
+/// SmartScreen lu ici ; la gestion du PC (§3.3) n'est lue que si une stratégie le coupe.
+fn smartscreen_lu() -> Option<Constat> {
+    let strategie = lire_dword(SYSTEME_STRATEGIE, "EnableSmartScreen");
+    juger_smartscreen_selon(
+        lire_texte(EXPLORATEUR, "SmartScreenEnabled").as_deref(),
+        strategie,
+        strategie == Some(0) && super::defense_etat::hors_gestion(),
+    )
+}
+
+/// La stratégie d'exécution de PowerShell, lue pour le compte `sid` (`du_compte`) ; les stratégies faibles se
+/// retirent hors domaine et hors gestion (lue seulement si l'une est imposée).
+fn strategie_ps_lue(sid: Option<&str>) -> Option<Constat> {
+    let shell_ids = r"SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell";
+    let machine = lire_texte(PS_STRATEGIES, "ExecutionPolicy");
+    let compte = du_compte::<String>(sid, PS_STRATEGIES, "ExecutionPolicy");
+    let effective = strategie_effective(
+        machine.as_deref(),
+        compte.as_deref(),
+        du_compte::<String>(sid, shell_ids, "ExecutionPolicy").as_deref(),
+        lire_texte(shell_ids, "ExecutionPolicy").as_deref(),
+    );
+    let mut retrait = Vec::new();
+    if effective.as_ref().is_some_and(|e| e.1 && ps_faible(Some(&e.0))) && super::defense_etat::hors_gestion() {
+        if ps_faible(machine.as_deref()) {
+            retrait.push(ligne_reglage(IdReglage::PsStrategieMachine));
+        }
+        if ps_faible(compte.as_deref()) {
+            retrait.push(ligne_reglage(IdReglage::PsStrategieCompte));
+        }
+    }
+    juger_strategie_ps_selon(effective, &retrait)
+}
+
+/// Les macros d'Office, lues pour le compte `sid` ; la gestion du PC n'est lue que si une stratégie les ouvre.
+fn macros_lues(sid: Option<&str>) -> Option<Constat> {
+    let ouvertes = macros_ouvertes(|cle| du_compte::<u32>(sid, cle, "VBAWarnings"));
+    let hors_gestion = ouvertes.iter().any(|o| o.3) && super::defense_etat::hors_gestion();
+    juger_macros_selon(&ouvertes, hors_gestion)
+}
+
+/// Le bilan refait par le processus élevé pour un réglage (`vanguard:reglage <mot>`), sur les lectures de cet
+/// instant : la fonction même du constat. Vrai si et seulement si le bilan propose exactement cette ligne, en
+/// correction automatique : une ligne forgée qui nomme un réglage n'écrit que ce que le bilan aurait proposé.
+/// `sid` : la personne (ses stratégies du compte se lisent sous HKEY_USERS) ; sans lui, un réglage du compte est
+/// refusé.
+pub(super) fn rejuger_reglage(id: IdReglage, sid: Option<&str>) -> bool {
+    let constats: Vec<Constat> = match id {
+        IdReglage::LsaPpl => vec![juger_lsa(lire_dword(
+            r"SYSTEM\CurrentControlSet\Control\Lsa",
+            "RunAsPPL",
+        ))],
+        IdReglage::AssistanceCoupe => juger_assistance(lire_dword(
+            r"SYSTEM\CurrentControlSet\Control\Remote Assistance",
+            "fAllowToGetHelp",
+        ))
+        .into_iter()
+        .collect(),
+        IdReglage::OuvertureAutoMdp | IdReglage::OuvertureAutoCoupe => ouverture_automatique(),
+        IdReglage::SmartScreen | IdReglage::SmartScreenStrategie => smartscreen_lu().into_iter().collect(),
+        IdReglage::Hvci => vec![juger_integrite_memoire(lire_dword(
+            r"SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity",
+            "Enabled",
+        ))],
+        IdReglage::MajPause | IdReglage::MajStrategie => windows_update_bloque(),
+        IdReglage::SmbSignature | IdReglage::SmbInviteStrategie => partage_smb(),
+        IdReglage::PsStrategieMachine | IdReglage::PsStrategieCompte => match sid {
+            Some(s) => strategie_ps_lue(Some(s)).into_iter().collect(),
+            None => Vec::new(),
+        },
+        IdReglage::Macros(..) => match sid {
+            Some(s) => macros_lues(Some(s)).into_iter().collect(),
+            None => Vec::new(),
+        },
+        IdReglage::CredentialGuard => juger_credential_guard(
+            lire_texte(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "EditionID").as_deref(),
+            services_vbs().as_deref(),
+        )
+        .into_iter()
+        .collect(),
+    };
+    propose(&constats, &ligne_reglage(id))
+}
+
+/// Un de ces constats propose-t-il `ligne` en correction automatique ?
+pub(super) fn propose(constats: &[Constat], ligne: &str) -> bool {
+    constats.iter().any(|c| {
+        c.correctif
+            .as_ref()
+            .is_some_and(|k| k.automatique && k.commandes.iter().any(|l| l == ligne))
+    })
+}
+
 /// WIN-MAJ-003 : Windows Update coupé (service désactivé, stratégie) ou en pause.
 pub(super) fn windows_update_bloque() -> Vec<Constat> {
     let mut c = Vec::new();
-    c.extend(juger_windows_update(
+    c.extend(juger_windows_update_selon(
         lire_dword(r"SYSTEM\CurrentControlSet\Services\wuauserv", "Start"),
         lire_dword(r"SYSTEM\CurrentControlSet\Services\UsoSvc", "Start"),
         lire_dword(r"SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU", "NoAutoUpdate"),
+        super::defense_etat::hors_gestion,
     ));
     let aujourd_hui = chrono::Local::now().format("%Y-%m-%d").to_string();
     c.extend(juger_pause(
@@ -1270,8 +1467,13 @@ mod tests {
         assert_eq!(juger_powershell2(Some(true)).unwrap().probleme, Some(Niveau::Moyen));
         assert!(juger_powershell2(Some(false)).unwrap().probleme.is_none());
         assert!(juger_powershell2(None).is_none());
+        // Coupée par un réglage du processus élevé (plan §4.2, D6b), qui refuse si une assistance est en cours.
         let a = juger_assistance(Some(1)).unwrap();
-        assert!(!a.correctif.as_ref().unwrap().automatique);
+        assert!(a.correctif.as_ref().unwrap().automatique);
+        assert_eq!(
+            a.correctif.as_ref().unwrap().commandes,
+            ["vanguard:reglage assistance-coupe"]
+        );
         assert!(juger_assistance(Some(0)).is_none() && juger_assistance(None).is_none());
         assert_eq!(
             juger_ouverture_auto(Some("1"), true).unwrap().probleme,
@@ -1452,5 +1654,80 @@ mod tests {
             let k = c.correctif.unwrap();
             assert!(k.automatique && k.commandes == ["vanguard:wpad-coupe"]);
         }
+    }
+
+    /// Une stratégie ne se retire que sur un PC hors domaine et hors gestion (§3.3) : sinon montrée, sans commande ;
+    /// la gestion ne se lit que si une stratégie est là.
+    #[test]
+    fn une_strategie_ne_se_retire_que_hors_gestion() {
+        let lignes = |c: Option<Constat>| {
+            let k = c.unwrap().correctif.unwrap();
+            (k.automatique, k.commandes)
+        };
+        // SmartScreen : la valeur de l'Explorateur se remet toujours, jamais par une stratégie.
+        assert_eq!(
+            lignes(juger_smartscreen_selon(Some("Off"), None, false)),
+            (true, vec![ligne_reglage(IdReglage::SmartScreen)])
+        );
+        assert_eq!(
+            lignes(juger_smartscreen_selon(Some("Off"), Some(0), false)),
+            (false, vec![])
+        );
+        assert_eq!(
+            lignes(juger_smartscreen_selon(Some("Off"), Some(0), true)),
+            (
+                true,
+                vec![
+                    ligne_reglage(IdReglage::SmartScreenStrategie),
+                    ligne_reglage(IdReglage::SmartScreen)
+                ]
+            )
+        );
+        assert_eq!(
+            lignes(juger_smartscreen_selon(None, Some(0), true)),
+            (true, vec![ligne_reglage(IdReglage::SmartScreenStrategie)])
+        );
+        assert!(juger_smartscreen_selon(Some("Warn"), Some(1), true).is_none());
+        // Windows Update : la stratégie NoAutoUpdate ; la gestion n'est pas lue sans elle.
+        assert_eq!(
+            lignes(juger_windows_update_selon(None, None, Some(1), || true)),
+            (true, vec![ligne_reglage(IdReglage::MajStrategie)])
+        );
+        let (auto, commandes) = lignes(juger_windows_update_selon(None, None, Some(1), || false));
+        assert!(
+            !auto && !commandes.iter().any(|c| c.starts_with("vanguard:")),
+            "{commandes:?}"
+        );
+        assert!(juger_windows_update_selon(None, None, None, || unreachable!("gestion lue sans stratégie")).is_none());
+        // Connexion invité : la stratégie retirée hors gestion ; le seul réglage, coupé comme avant.
+        assert_eq!(
+            lignes(juger_invite_smb_selon(Some(1), None, || true)),
+            (true, vec![ligne_reglage(IdReglage::SmbInviteStrategie)])
+        );
+        assert_eq!(
+            lignes(juger_invite_smb_selon(Some(1), Some(0), || false)),
+            (false, vec![])
+        );
+        assert_eq!(
+            lignes(juger_invite_smb_selon(None, Some(1), || unreachable!(
+                "gestion lue sans stratégie"
+            ))),
+            (true, vec![super::super::corrections::id("smb-invite-coupe")])
+        );
+        // Macros : la stratégie du compte retirée hors gestion seulement.
+        let imposees = [("excel", "Excel", "16.0", true)];
+        assert_eq!(lignes(juger_macros_selon(&imposees, false)), (false, vec![]));
+        assert_eq!(
+            lignes(juger_macros_selon(&imposees, true)),
+            (true, vec![ligne_reglage(IdReglage::macros("16.0", "excel").unwrap())])
+        );
+        // PowerShell : sans retrait (PC géré), montré ; avec, les lignes données.
+        let imposee = Some(("Bypass".to_string(), true));
+        assert_eq!(lignes(juger_strategie_ps_selon(imposee.clone(), &[])), (false, vec![]));
+        let retrait = [ligne_reglage(IdReglage::PsStrategieMachine)];
+        assert_eq!(
+            lignes(juger_strategie_ps_selon(imposee, &retrait)),
+            (true, retrait.to_vec())
+        );
     }
 }
