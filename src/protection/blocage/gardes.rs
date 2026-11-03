@@ -1161,7 +1161,9 @@ pub(crate) fn sujet_microsoft(sujet: &str) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Racine {
     /// Une racine « produit » de Microsoft (la politique sans drapeau) : celle de Windows (Root Certificate
-    /// Authority 2010) et les plus anciennes.
+    /// Authority 2010) et les plus anciennes. Windows peut en compter d'autres que Wine (racines ECC 2017 et 2018 ?) :
+    /// au pire un programme de Microsoft signé sous l'une d'elles sort « Autre » ; un tiers y reste exclu par son
+    /// sujet et ses usages (`signe_par_microsoft`).
     Produit,
     /// Seulement la racine « application », Microsoft Root Certificate Authority 2011 (drapeau
     /// CHECK_APPLICATION_ROOT) : Edge, Office, Teams, signés par Microsoft Code Signing PCA 2011. La politique
@@ -1171,11 +1173,31 @@ pub(crate) enum Racine {
     Aucune,
 }
 
+/// MICROSOFT_ROOT_CERT_CHAIN_POLICY_CHECK_APPLICATION_ROOT_FLAG : la politique vérifie « à la place » la racine
+/// application, Microsoft Root Certificate Authority 2011 (Edge, Office, Teams). Jamais ENABLE_TEST_ROOT
+/// (0x0001_0000), qui ajoute les racines d'essai de Microsoft : elles signent n'importe quoi en laboratoire.
+#[cfg(any(windows, test))]
+pub(crate) const RACINE_APPLICATION: u32 = 0x0002_0000;
+
+/// La racine d'une chaîne, `lire` rendant la politique CERT_CHAIN_POLICY_MICROSOFT_ROOT lue avec ces drapeaux
+/// (`None` : illisible) : sans drapeau d'abord, puis avec la seule racine application si la première dit non.
+/// Passée en paramètre pour que l'essai voie les drapeaux demandés, jamais la racine d'essai (relecture, B3).
+#[cfg(any(windows, test))]
+pub(crate) fn racine_lue(mut lire: impl FnMut(u32) -> Option<bool>) -> Option<Racine> {
+    let produit = lire(0);
+    let application = if produit == Some(false) {
+        lire(RACINE_APPLICATION)
+    } else {
+        None
+    };
+    racine_selon(produit, application)
+}
+
 /// La racine d'après les deux lectures de la politique : sans drapeau, puis avec CHECK_APPLICATION_ROOT (jamais
 /// avec la racine d'essai, ENABLE_TEST_ROOT). `None` : la première ne se lit pas (chaîne illisible). La seconde
 /// illisible : pas de racine application, jamais « Microsoft » par défaut.
 #[cfg(any(windows, test))]
-pub(crate) fn racine_selon(produit: Option<bool>, application: Option<bool>) -> Option<Racine> {
+fn racine_selon(produit: Option<bool>, application: Option<bool>) -> Option<Racine> {
     Some(if produit? {
         Racine::Produit
     } else if application == Some(true) {
@@ -1216,14 +1238,32 @@ fn attributs(sujet: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Les seuls signataires « Microsoft » sous une racine produit, par égalité du CN (casse ignorée) : « Microsoft
+/// Windows » (fichiers et catalogues de Windows), « Microsoft Windows Publisher » (composants de Windows signés
+/// hors catalogue), « Microsoft Corporation » (Office, outils, Code Signing PCA 2010). Une liste BLANCHE : la
+/// famille « Third Party Component CA » de Microsoft a plusieurs signataires qui signent pour autrui (Hardware
+/// Compatibility, Software Compatibility, Third Party Application Component…) et peut en gagner sans préavis ;
+/// une liste noire ne se prouve pas complète (relecture de la racine 2011, B1). Les autres signataires de
+/// Microsoft (Dynamic Code Publisher, Windows Kits Publisher, HAL Publisher…) ne sont pas « Microsoft » : le
+/// moindre mal, les fichiers des dossiers de Windows restant intouchables par leur chemin (`fichier_intouchable`).
+#[cfg(any(windows, test))]
+const SIGNATAIRES_PRODUIT: [&str; 3] = [
+    "Microsoft Windows",
+    "Microsoft Windows Publisher",
+    "Microsoft Corporation",
+];
+
 /// Les signataires au nom de Microsoft qui signent le travail d'AUTRES éditeurs, sous une racine de Microsoft :
 /// pilotes WHQL et attestés (« Microsoft Windows Hardware Compatibility Publisher » : des pilotes malveillants
-/// l'ont obtenu par le programme matériel de Microsoft), pilotes ELAM des antivirus (« … Early Launch
-/// Anti-malware Publisher »), composants tiers (« Microsoft Windows Third Party Application Component »,
-/// « Microsoft 3rd Party Application Component »). Microsoft en garantit la provenance, pas l'auteur : pas
-/// d'immunité « Microsoft ». En minuscules, cherchés dans le CN.
+/// l'ont obtenu par le programme matériel de Microsoft), composants tiers poussés par Windows Update (« Microsoft
+/// Windows Software Compatibility Publisher »), pilotes ELAM des antivirus (« … Early Launch Anti-malware
+/// Publisher »), composants tiers (« Microsoft Windows Third Party Application Component », « Microsoft 3rd Party
+/// Application Component »). Microsoft en garantit la provenance, pas l'auteur : pas d'immunité « Microsoft ».
+/// Aussi ceux de Microsoft passés par là (pilotes Surface, l'ELAM de Defender, WdBoot.sys hors de Windows) :
+/// choisi, le moindre mal. Redondant avec `SIGNATAIRES_PRODUIT`, gardé si elle s'élargit. En minuscules,
+/// cherchés dans le CN.
 #[cfg(any(windows, test))]
-const SIGNATAIRES_POUR_AUTRUI: [&str; 4] = ["hardware compatibility", "early launch", "third party", "3rd party"];
+const SIGNATAIRES_POUR_AUTRUI: [&str; 4] = ["compatibility", "early launch", "third party", "3rd party"];
 
 /// Les usages (EKU) du même travail pour autrui, s'ils sont dans le certificat : pilote WHQL (311.10.3.5),
 /// pilote attesté (311.10.3.5.1), pilote ELAM (311.61.4.1), paquet du Microsoft Store (311.76.3.1, signé par
@@ -1244,8 +1284,9 @@ const SIGNATURE_DE_CODE: &str = "1.3.6.1.5.5.7.3.3";
 /// faite maison, posée dans le magasin Root du compte sans droits ni invite, signe « CN=Microsoft Windows »), une
 /// racine de Microsoft non (`racine_microsoft` : CERT_CHAIN_POLICY_MICROSOFT_ROOT, défense D6a, relecture).
 /// Le sujet : un seul O, « Microsoft Corporation », un seul CN, qui n'est pas un signataire pour autrui ; aucun
-/// usage pour autrui (`usages` : les EKU du certificat, vide s'il n'en dit pas). Sous la seule racine 2011, plus
-/// strict : CN « Microsoft Corporation » (Microsoft Code Signing PCA 2011) et l'usage signature de code.
+/// usage pour autrui (`usages` : les EKU du certificat, vide s'il n'en dit pas). Sous une racine produit, le CN
+/// est l'un de `SIGNATAIRES_PRODUIT` ; sous la seule racine 2011, plus strict : CN « Microsoft Corporation »
+/// (Microsoft Code Signing PCA 2011) et l'usage signature de code.
 #[cfg(any(windows, test))]
 pub(crate) fn signe_par_microsoft(sujet: &str, usages: &[&str], racine: Racine) -> bool {
     // `sujet_microsoft` d'abord : le tri grossier d'avant, que le sujet lu attribut par attribut resserre.
@@ -1271,8 +1312,11 @@ pub(crate) fn signe_par_microsoft(sujet: &str, usages: &[&str], racine: Racine) 
     {
         return false;
     }
-    racine == Racine::Produit
-        || (cn.eq_ignore_ascii_case("Microsoft Corporation") && usages.contains(&SIGNATURE_DE_CODE))
+    match racine {
+        Racine::Produit => SIGNATAIRES_PRODUIT.iter().any(|s| cn.eq_ignore_ascii_case(s)),
+        Racine::Application => cn.eq_ignore_ascii_case("Microsoft Corporation") && usages.contains(&SIGNATURE_DE_CODE),
+        Racine::Aucune => false,
+    }
 }
 
 /// Un code rendu par WinVerifyTrust dit-il que le fichier ne s'est pas LU (et non qu'il n'est pas signé, ou mal) ?
@@ -1934,6 +1978,87 @@ mod tests {
             &[],
             Racine::Produit
         ));
+    }
+
+    /// Relecture de la racine 2011, B3 : la politique est lue sans drapeau, puis avec la seule racine application
+    /// si la première dit non ; jamais avec la racine d'essai (ENABLE_TEST_ROOT, 0x0001_0000).
+    #[test]
+    fn racine_lue_jamais_la_racine_d_essai() {
+        let lire = |reponses: Vec<Option<bool>>| {
+            let mut reponses = reponses.into_iter();
+            let mut drapeaux = Vec::new();
+            let racine = racine_lue(|d| {
+                drapeaux.push(d);
+                reponses.next().flatten()
+            });
+            (racine, drapeaux)
+        };
+        let deux = vec![0, RACINE_APPLICATION];
+        assert_eq!(lire(vec![Some(true)]), (Some(Racine::Produit), vec![0]));
+        assert_eq!(lire(vec![None]), (None, vec![0]));
+        assert_eq!(
+            lire(vec![Some(false), Some(true)]),
+            (Some(Racine::Application), deux.clone())
+        );
+        assert_eq!(
+            lire(vec![Some(false), Some(false)]),
+            (Some(Racine::Aucune), deux.clone())
+        );
+        assert_eq!(lire(vec![Some(false), None]), (Some(Racine::Aucune), deux));
+        assert_eq!(RACINE_APPLICATION, 0x0002_0000);
+        assert_eq!(RACINE_APPLICATION & 0x0001_0000, 0);
+    }
+
+    /// Relecture de la racine 2011, B1, B2, B6 : sous une racine produit, seuls trois signataires sont Microsoft
+    /// (liste blanche) ; « Software Compatibility Publisher » (composants tiers de Windows Update) et un signataire
+    /// inconnu ne le sont pas, avec ou sans usages ; ceux de Microsoft passés par WHQL ou ELAM non plus (choisi).
+    #[test]
+    fn signature_microsoft_liste_blanche_sous_la_racine_produit() {
+        const CODE: &str = "1.3.6.1.5.5.7.3.3";
+        const ELAM: &str = "1.3.6.1.4.1.311.61.4.1";
+        let sujet = |cn: &str| format!("C=US, S=Washington, L=Redmond, O=Microsoft Corporation, CN={cn}");
+        for cn in [
+            "Microsoft Windows",
+            "Microsoft Windows Publisher",
+            "Microsoft Corporation",
+        ] {
+            assert!(signe_par_microsoft(&sujet(cn), &[CODE], Racine::Produit), "{cn}");
+        }
+        for cn in [
+            "Microsoft Windows Software Compatibility Publisher",
+            "Microsoft Windows Nouveau Publisher",
+            "Microsoft Windows 3rd party Component",
+            "MICROSOFT WINDOWS HARDWARE COMPATIBILITY PUBLISHER",
+            "Microsoft Windows Publisher Extra",
+        ] {
+            for usages in [&[][..], &[CODE][..]] {
+                for racine in [Racine::Produit, Racine::Application] {
+                    assert!(!signe_par_microsoft(&sujet(cn), usages, racine), "{cn}");
+                }
+            }
+        }
+        // L'ELAM de Defender (WdBoot.sys) : signé pour le démarrage anticipé, pas « Microsoft » (choisi).
+        assert!(!signe_par_microsoft(
+            &sujet("Microsoft Windows Early Launch Anti-malware Publisher"),
+            &[ELAM, CODE],
+            Racine::Produit
+        ));
+        // Un guillemet jamais fermé, « Microsoft » dans OU seulement, un paquet Store d'un tiers.
+        for (s, usages) in [
+            ("C=US, CN=\"Microsoft Corporation, O=Microsoft Corporation", &[CODE][..]),
+            (
+                "C=US, O=Evil, OU=Microsoft Corporation, CN=Microsoft Corporation",
+                &[CODE][..],
+            ),
+            (
+                "C=SE, O=Spotify AB, OU=Microsoft Store, CN=Spotify AB",
+                &[CODE, "1.3.6.1.4.1.311.76.3.1"][..],
+            ),
+        ] {
+            for racine in [Racine::Produit, Racine::Application] {
+                assert!(!signe_par_microsoft(s, usages, racine), "{s}");
+            }
+        }
     }
 
     /// Relecture de D6a : avant de remettre un arrêt à Vanguard administrateur, une signature illisible ici ne refuse

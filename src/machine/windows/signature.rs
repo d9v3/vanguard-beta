@@ -73,10 +73,6 @@ unsafe extern "system" {
 /// celles que crypt32 porte en lui, quels que soient les magasins du compte) ? Sans drapeau : ni les racines d'essai
 /// ni la racine « application ».
 const POLITIQUE_RACINE_MICROSOFT: usize = 7;
-/// MICROSOFT_ROOT_CERT_CHAIN_POLICY_CHECK_APPLICATION_ROOT_FLAG : vérifier « à la place » la racine application,
-/// Microsoft Root Certificate Authority 2011 (Edge, Office, Teams). Jamais ENABLE_TEST_ROOT (0x0001_0000) : les
-/// racines d'essai de Microsoft signent n'importe quoi en laboratoire.
-const RACINE_APPLICATION: u32 = 0x0002_0000;
 /// CERT_FIND_EXT_ONLY_ENHKEY_USAGE_FLAG : les usages écrits dans le certificat, pas les propriétés qu'un magasin
 /// lui ajoute.
 const USAGES_DU_CERTIFICAT: u32 = 0x2;
@@ -477,13 +473,7 @@ fn racine_microsoft(chaine: *const c_void) -> Option<Racine> {
     if chaine.is_null() {
         return None;
     }
-    let produit = politique_racine(chaine, 0);
-    let application = if produit == Some(false) {
-        politique_racine(chaine, RACINE_APPLICATION)
-    } else {
-        None
-    };
-    gardes::racine_selon(produit, application)
+    gardes::racine_lue(|drapeaux| politique_racine(chaine, drapeaux))
 }
 
 /// Une lecture de CERT_CHAIN_POLICY_MICROSOFT_ROOT avec ces drapeaux : la chaîne (non nulle) y satisfait-elle ?
@@ -518,14 +508,6 @@ fn politique_racine(chaine: *const c_void, drapeaux: u32) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// La racine application est le seul drapeau : jamais la racine d'essai (ENABLE_TEST_ROOT, 0x0001_0000), qui
-    /// ferait « Microsoft » tout ce que signe un laboratoire.
-    #[test]
-    fn jamais_la_racine_d_essai() {
-        assert_eq!(RACINE_APPLICATION, 0x0002_0000);
-        assert_eq!(RACINE_APPLICATION & 0x0001_0000, 0);
-    }
 
     /// Lu pour de vrai (Windows ou Wine) : un fichier absent est illisible ; un fichier fait ici n'est pas signé
     /// Microsoft ; un programme de Windows l'est (sous Windows seulement : ceux de Wine ne sont pas signés).
