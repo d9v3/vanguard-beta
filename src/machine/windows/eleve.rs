@@ -202,7 +202,10 @@ fn ligne_resultat(r: &Resultat) -> String {
         (true, None) => "ok".to_string(),
         (false, _) if r.raison == arret_demande() => ARRETEE.to_string(),
         (false, _) if r.raison.starts_with(au_redemarrage()) => AU_REDEMARRAGE.to_string(),
-        (false, _) => format!("echec {}", r.raison.replace(['\r', '\n'], " ")),
+        // Un échec qui a déjà touché quelque chose (racine retirée d'un seul magasin, valeur relue autre) : la valeur
+        // d'avant va au parent, notée à côté de la ligne en échec ; la raison reste dans la console du fils.
+        (false, Some(avant)) => format!("echec avant={}", avant.replace(['\r', '\n'], " ")),
+        (false, None) => format!("echec {}", r.raison.replace(['\r', '\n'], " ")),
     }
 }
 
@@ -247,7 +250,10 @@ fn arret_demande() -> &'static str {
 
 fn lire_reponse(ligne: &str) -> Reponse {
     let reussi = ligne == "ok" || ligne.starts_with("ok ");
-    let avant = ligne.strip_prefix("ok avant=").map(str::to_string);
+    let avant = ligne
+        .strip_prefix("ok avant=")
+        .or_else(|| ligne.strip_prefix("echec avant="))
+        .map(str::to_string);
     let rien = ligne.strip_prefix("ok rien=");
     let note = if ligne == SANS_POINT {
         Some(sans_point_accepte().to_string())
@@ -1625,7 +1631,12 @@ mod tests {
             avant: Some("1".into()),
             raison: "a\r\nb".into(),
         });
-        assert_eq!(aller_retour, "echec a  b");
+        assert_eq!(aller_retour, "echec avant=1");
+        let r = lire_reponse(&aller_retour);
+        assert!(!r.reussi && r.avant.as_deref() == Some("1") && !r.arretee && r.code.is_none());
+        let sans_avant = ligne_resultat(&Resultat::echec(None, "a\r\nb".into()));
+        assert_eq!(sans_avant, "echec a  b");
+        assert!(lire_reponse(&sans_avant).avant.is_none());
         // Déjà bon, rien d'écrit : réussi, dit rien (le parent ne le note pas parmi ce que Vanguard a changé).
         let deja = ligne_resultat(&Resultat::rien("déjà 1,\nrien d'écrit".into()));
         assert_eq!(deja, "ok rien=déjà 1, rien d'écrit");

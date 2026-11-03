@@ -764,12 +764,12 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
             let x = e.texte();
             match m {
                 MagasinRacine::Ordinateur => trf!(
-                    "Retirer la racine {x} du magasin de l'ordinateur (relue et rejugée ici ; une copie .cer est gardée dans ProgramData\\Vanguard\\quarantaine si ce dossier est sûr). Non annulable par Vanguard (protection) : jamais une racine n'est remise",
-                    "Remove root {x} from the computer store (read and judged again here; a .cer copy is kept in ProgramData\\Vanguard\\quarantaine if that folder is safe). Not undoable by Vanguard (protection): a root is never put back"
+                    "Retirer la racine {x} du magasin de l'ordinateur (relue et rejugée ici ; une copie .cer est gardée dans ProgramData\\Vanguard\\quarantaine ; si elle ne peut pas l'être, Vanguard vous redemande avant de la retirer sans copie). Non annulable par Vanguard (protection) : jamais une racine n'est remise",
+                    "Remove root {x} from the computer store (read and judged again here; a .cer copy is kept in ProgramData\\Vanguard\\quarantaine; if it cannot be, Vanguard asks you again before removing it without a copy). Not undoable by Vanguard (protection): a root is never put back"
                 ),
                 MagasinRacine::Compte => trf!(
-                    "Retirer la racine {x} de votre magasin (relue et rejugée ici ; Windows demande lui-même de confirmer ; une copie .cer est gardée dans ProgramData\\Vanguard\\quarantaine si ce dossier est sûr). Non annulable par Vanguard (protection) : jamais une racine n'est remise",
-                    "Remove root {x} from your store (read and judged again here; Windows asks for its own confirmation; a .cer copy is kept in ProgramData\\Vanguard\\quarantaine if that folder is safe). Not undoable by Vanguard (protection): a root is never put back"
+                    "Retirer la racine {x} de votre magasin (relue et rejugée ici ; Windows demande lui-même de confirmer ; une copie .cer est gardée dans ProgramData\\Vanguard\\quarantaine ; si elle ne peut pas l'être, Vanguard vous redemande avant de la retirer sans copie). Non annulable par Vanguard (protection) : jamais une racine n'est remise",
+                    "Remove root {x} from your store (read and judged again here; Windows asks for its own confirmation; a .cer copy is kept in ProgramData\\Vanguard\\quarantaine; if it cannot be, Vanguard asks you again before removing it without a copy). Not undoable by Vanguard (protection): a root is never put back"
                 ),
             }
         }
