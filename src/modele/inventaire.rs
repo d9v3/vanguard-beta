@@ -115,6 +115,8 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     local(crate::envoi::FILE, "envoi"),
     local(crate::envoi::ETAT, "envoi"),
     local("envoi.lock", "envoi"),
+    // La marque d'un « non » au partage, hors de parametres.json : non scellée (voir NON_SCELLES).
+    local(crate::parametres::partage::MARQUE_NON, "parametres::partage"),
     scelle(crate::agent::journal::JOURNAL, "agent"),
     local("agent.lock", "agent"),
     // La tête du journal des événements : retirer la fin du journal sans elle se voit.
@@ -507,6 +509,11 @@ mod tests {
         ("agent.lock", "verrou, sans contenu"),
         ("envoi.lock", "verrou, sans contenu"),
         (
+            crate::parametres::partage::MARQUE_NON,
+            "la marque d'un « non » au partage : seule sa présence compte, et elle ne dit jamais que « non » ; forgée, \
+             elle coupe le relevé et l'envoi, ce qu'un programme du compte peut faire lui-même",
+        ),
+        (
             "envoi/file",
             "les lots à envoyer, relus par la lecture stricte du schéma 2 avant chaque envoi et jetés sinon : un lot \
              forgé ne porte que ce que le schéma permet, ce qu'un programme du compte pourrait envoyer lui-même",
@@ -836,8 +843,9 @@ mod tests {
         (
             "parametres/partage.rs",
             "parametres.json",
-            2,
-            "chemin passé à charger_juge (accord et refus relus sur le disque), qui en tire dossier et nom pour le sceau",
+            3,
+            "chemin passé à charger_juge (accord et refus relus sur le disque) et à ecrire_choix_dans (par modifier_dans), \
+             qui en tirent dossier et nom pour le sceau",
         ),
         (
             "passage.rs",
