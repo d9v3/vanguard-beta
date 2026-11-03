@@ -136,6 +136,19 @@ pub(super) fn nettoyer_notes() {
 #[derive(Default)]
 struct Monde {
     texte: Option<String>,
+    /// La dernière valeur relue, et de quel choix : l'écriture qui suit se juge contre elle.
+    lue: Option<(IdChoix, Option<i64>)>,
+}
+
+/// L'écriture de `v` baisse-t-elle la protection ? Contre la valeur relue juste avant (`lue`, du même choix), sinon
+/// contre la valeur sûre. Seule une baisse fait dire, à un refus de Windows, que Defender a pu juger le geste suspect :
+/// « Rallumer » vers l'audit, depuis coupé, est un renforcement.
+#[allow(clippy::option_option)] // None : rien relu ; Some(None) : valeur absente
+fn baisse_ecrite(id: IdChoix, lue: Option<Option<i64>>, v: i64) -> bool {
+    match lue {
+        Some(l) => id.rang(Some(v)) < id.rang(l),
+        None => id.baissee(Some(v)),
+    }
 }
 
 /// Les programmes permis malgré l'accès contrôlé aux dossiers.
@@ -143,12 +156,14 @@ const PERMIS_DOSSIERS: &str = "ControlledFolderAccessAllowedApplications";
 
 impl choix_avant::Monde for Monde {
     fn lire(&mut self, id: IdChoix) -> Option<Option<i64>> {
-        lire_choix(id)
+        let l = lire_choix(id);
+        self.lue = l.map(|l| (id, l));
+        l
     }
 
     fn ecrire(&mut self, id: IdChoix, v: i64) -> Result<(), Echec> {
-        // Une valeur plus faible que la valeur sûre : un refus de Windows peut être Defender qui juge le geste suspect.
-        let baisse = id.rang(Some(v)) < id.rang(Some(id.sure()));
+        // Une valeur plus faible que celle relue : un refus de Windows peut être Defender qui juge le geste suspect.
+        let baisse = baisse_ecrite(id, self.lue.filter(|(i, _)| *i == id).map(|(_, l)| l), v);
         if let Some(prop) = propriete_element(id) {
             let refus = || {
                 Echec::refuse(
@@ -283,7 +298,7 @@ pub(super) fn faire_choix(acte: &Acte, montre: Option<Montre>) -> Option<Resulta
         _ => None,
     };
     Some(resultat(choix_avant::faire_choix(
-        &mut Monde { texte },
+        &mut Monde { texte, lue: None },
         id,
         cible,
         montre,
@@ -736,6 +751,18 @@ fn retirer_menaces() -> Resultat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un refus n'est dit « Defender a pu bloquer » que pour une vraie baisse, jugée contre la valeur relue : rallumer
+    /// l'audit depuis coupé est un renforcement ; sans relecture, contre la valeur sûre.
+    #[test]
+    fn baisse_jugee_contre_la_valeur_relue() {
+        let pua = IdChoix::Defender(ReglageDefender::Pua);
+        assert!(!baisse_ecrite(pua, Some(Some(0)), 2));
+        assert!(baisse_ecrite(pua, Some(Some(1)), 2));
+        assert!(!baisse_ecrite(pua, Some(Some(2)), 2));
+        assert!(baisse_ecrite(pua, None, 2));
+        assert!(!baisse_ecrite(pua, None, 1));
+    }
 
     fn v(l: &[&str]) -> Vec<String> {
         l.iter().map(|s| (*s).to_string()).collect()

@@ -633,14 +633,20 @@ fn avec_inverse(commande: String) -> String {
 
 /// Un choix de la personne (Options de défense) ne se défait pas ici : une baisse se remet par « Rallumer », une
 /// exclusion ou un programme permis se retire dans la liste ; l'historique le dit. La ligne notée peut porter la valeur
-/// d'avant en suffixe « (…) » : relue sans lui, du plus court au plus long (un chemin peut contenir « (x86) »).
+/// d'avant en suffixe « (…) » : relue sans lui, du plus court au plus long (un chemin peut contenir « (x86) »). Un
+/// réglage choisi n'est une baisse que si sa ligne porte la note d'une baisse, « (avant : `id=valeur`) » : un
+/// renforcement (« (avant : `valeur`) ») n'a rien à rallumer.
 fn se_remet(commande: &str) -> Option<&'static str> {
     use crate::machine::gestes::{Acte, analyser_acte};
     let acte = std::iter::once(commande)
         .chain(commande.match_indices(" (").map(|(i, _)| &commande[..i]))
         .find_map(analyser_acte)?;
+    let baisse_notee = || {
+        acte.choix()
+            .is_some_and(|(id, _)| commande.contains(&format!(" (avant : {}=", id.texte())))
+    };
     match acte {
-        Acte::DefenderChoix(..) | Acte::DefenderAsrChoix(..) => Some(tr!(
+        Acte::DefenderChoix(..) | Acte::DefenderAsrChoix(..) if baisse_notee() => Some(tr!(
             " (se remet par « Rallumer », Options de défense)",
             " (restored by “Turn back on”, Defense options)"
         )),
@@ -824,12 +830,22 @@ mod tests {
         };
         let pua = ligne_baisse_defender(ReglageDefender::Pua, ChoixDefender::Coupe).unwrap();
         let rallumer = tr!("« Rallumer »", "“Turn back on”");
+        let asr = ligne_baisse_asr(ASR_TOUTES[0], ChoixAsr::Desactiver).unwrap();
+        let id_asr = IdChoix::Asr(ASR_TOUTES[0]).texte();
         for l in [
-            pua.clone(),
-            format!("{pua} (avant : 1)"),
-            ligne_baisse_asr(ASR_TOUTES[0], ChoixAsr::Desactiver).unwrap(),
+            format!("{pua} (avant : defender-pua=1)"),
+            format!("{asr} (avant : {id_asr}=1)"),
         ] {
             assert!(se_remet(&l).is_some_and(|t| t.contains(rallumer)), "{l}");
+        }
+        // Un renforcement (sa note dit la valeur d'avant seule) ou une ligne sans note : rien à rallumer.
+        let renforce = ligne_baisse_defender(ReglageDefender::Pua, ChoixDefender::Bloquer).unwrap();
+        for l in [
+            pua.clone(),
+            format!("{renforce} (avant : 0)"),
+            format!("{pua} (avant : 1)"),
+        ] {
+            assert_eq!(se_remet(&l), None, "{l}");
         }
         for l in [
             ligne_ajout_exclusion(GenreExclusion::Chemin, r"C:\Program Files (x86)\Jeu").unwrap(),
@@ -850,7 +866,8 @@ mod tests {
             assert_eq!(se_remet(&l), None, "{l}");
         }
         crate::langue::en_anglais(|| {
-            assert!(se_remet(&pua).is_some_and(|t| t.contains("Turn back on")));
+            let l = format!("{pua} (avant : defender-pua=1)");
+            assert!(se_remet(&l).is_some_and(|t| t.contains("Turn back on")));
         });
     }
 

@@ -507,8 +507,8 @@ pub(crate) fn recenser(l: &Lieux) -> Recensement {
     // baisse doit rester lisible dans l'Observateur d'événements quand Vanguard est parti (journal_evenements.rs).
     if l.choix_defense > 0 {
         r.a_faire.push(trf!(
-            "{} réglage(s) de Defender changé(s) par votre choix (Options de défense) le restent après Vanguard : « Rallumer » dans « vanguard options-defense » les remet, avant de le retirer. Leurs notes (HKLM\\SOFTWARE\\Vanguard\\ChoixAvant) et la source « Vanguard » du journal Application restent, exprès : la trace des baisses reste lisible dans l'Observateur d'événements.",
-            "{} Defender setting(s) changed by your choice (Defense options) stay so after Vanguard: “Turn back on” in “vanguard defense-options” restores them, before removing it. Their notes (HKLM\\SOFTWARE\\Vanguard\\ChoixAvant) and the “Vanguard” source of the Application log stay, on purpose: the trace of the lowerings stays readable in Event Viewer.",
+            "{} choix noté(s) dans Options de défense (réglages de Defender baissés, exclusions, programmes permis) le restent après Vanguard : « Rallumer » dans « vanguard options-defense » remet un réglage, « r » à la ligne 11 retire une exclusion ou un programme permis, avant de retirer Vanguard. Leurs notes (HKLM\\SOFTWARE\\Vanguard\\ChoixAvant) et la source « Vanguard » du journal Application restent, exprès : la trace des baisses reste lisible dans l'Observateur d'événements.",
+            "{} choice(s) noted in Defense options (lowered Defender settings, exclusions, allowed programs) stay so after Vanguard: “Turn back on” in “vanguard defense-options” restores a setting, “r” on line 11 removes an exclusion or an allowed program, before removing Vanguard. Their notes (HKLM\\SOFTWARE\\Vanguard\\ChoixAvant) and the “Vanguard” source of the Application log stay, on purpose: the trace of the lowerings stays readable in Event Viewer.",
             l.choix_defense
         ));
     }
@@ -2119,7 +2119,11 @@ mod tests {
             .find(|x| x.contains("options-defense"))
             .expect("choix dits");
         assert!(
-            x.starts_with("2 ") && x.contains(r"HKLM\SOFTWARE\Vanguard\ChoixAvant") && x.contains("Rallumer"),
+            x.starts_with("2 ")
+                && x.contains(r"HKLM\SOFTWARE\Vanguard\ChoixAvant")
+                && x.contains("Rallumer")
+                && x.contains("exclusions")
+                && x.contains("11"),
             "{x}"
         );
     }

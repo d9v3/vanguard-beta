@@ -293,15 +293,15 @@ pub(crate) fn rallumer(m: &mut impl Monde, id: IdChoix) -> Issue {
 }
 
 /// Le sens de « C'est moi » (`vanguard:choix-noter`) : une baisse, car la note fera dire au bilan « par votre
-/// choix » au lieu d'une alerte. Il n'y a rien à noter si la valeur est au moins la valeur sûre, ou déjà notée telle
-/// quelle ; une valeur illisible reste une baisse (le processus élevé relit, puis refuse).
+/// choix » au lieu d'une alerte. Il n'y a rien à noter si la valeur n'est pas baissée (`IdChoix::baissee` :
+/// « toujours demander » des échantillons ne l'est pas), ou déjà notée telle quelle ; une valeur illisible reste une baisse (le processus élevé relit, puis refuse).
 #[allow(clippy::option_option)] // None : illisible ; Some(None) : valeur absente
 pub(crate) fn sens_noter(id: IdChoix, lue: Option<Option<i64>>, note: Option<&Note>) -> Sens {
     let Some(lue) = lue else {
         return Sens::Baisse;
     };
     let deja = matches!((note, lue), (Some(n), Some(v)) if n.posee == v);
-    if lue.is_some() && id.rang(lue) < id.rang(Some(id.sure())) && !deja {
+    if lue.is_some() && id.baissee(lue) && !deja {
         Sens::Baisse
     } else {
         Sens::Rien

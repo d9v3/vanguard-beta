@@ -2367,6 +2367,17 @@ impl IdChoix {
         }
     }
 
+    /// Une valeur baissée (`None` : règle absente) : sous la valeur sûre, montrée telle à l'écran, avec « Rallumer »
+    /// et « C'est moi ». Pour l'envoi d'échantillons, « toujours demander » est un choix de vie privée (plan §2.1) et
+    /// non une baisse : seul « jamais » l'est.
+    pub(crate) fn baissee(self, v: Option<i64>) -> bool {
+        let seuil = match self {
+            IdChoix::Defender(ReglageDefender::Echantillons) => self.plancher(),
+            _ => self.rang(Some(self.sure())),
+        };
+        self.rang(v) < seuil
+    }
+
     /// La valeur sûre par défaut : en marche, cloud avancé, échantillons sûrs, bloquer ; un élément de liste absent.
     pub(crate) fn sure(self) -> i64 {
         match self {
@@ -8121,6 +8132,20 @@ mod tests {
         ] {
             assert_eq!(IdChoix::lire(t), None, "{t}");
         }
+    }
+
+    #[test]
+    fn toujours_demander_n_est_pas_une_baisse() {
+        // Plan §2.1 : « toujours demander » des échantillons est un choix de vie privée ; seul « jamais » est baissé.
+        let ech = IdChoix::Defender(ReglageDefender::Echantillons);
+        assert!(!ech.baissee(Some(0)) && !ech.baissee(Some(1)) && !ech.baissee(Some(3)));
+        assert!(ech.baissee(Some(2)) && ech.baissee(None));
+        assert_eq!(cible_rallumer(ech, Some(Some(0))), 0);
+        // Ailleurs, sous la valeur sûre est baissé : le cloud de base, l'audit, une règle ASR absente.
+        assert!(IdChoix::Defender(ReglageDefender::Maps).baissee(Some(1)));
+        assert!(IdChoix::Defender(ReglageDefender::Cfa).baissee(Some(2)));
+        assert!(IdChoix::Asr(ASR_TOUTES[0]).baissee(None));
+        assert!(!IdChoix::Defender(ReglageDefender::Pua).baissee(Some(1)));
     }
 
     /// Rallumer ne vise jamais plus faible qu'allumé : sans note, note abîmée (`None`), ou note qui dit « coupé » ou

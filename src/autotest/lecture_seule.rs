@@ -657,7 +657,7 @@ mod tests {
     }
 
     /// Un acte déjà là se nomme pour être rangé ou lu (pas de baisse, rien d'écrit) : seul ce qui le fabrique compte.
-    /// Motif : `Acte::X(..)`, `Acte::X(_)`, `if let … Acte::X(…) =`, ou un bras `Acte::X(a, b) =>` (la flèche après
+    /// Motif : `Acte::X(..)`, `Acte::X(_)`, `if let … Acte::X(…) =` (à gauche du `=`), ou un bras `Acte::X(a, b) =>` (la flèche après
     /// lui, pas avant : `y => Acte::X(a).ligne()` le fabrique).
     fn motif(ligne: &str, mot: &str) -> bool {
         if !mot.starts_with("Acte::") {
@@ -667,7 +667,8 @@ mod tests {
             let (avant, apres) = (&ligne[..i], &ligne[i + mot.len()..]);
             apres.starts_with("..)")
                 || apres.starts_with("_)")
-                || ligne.trim_start().starts_with("if let ")
+                // Le motif d'un `if let`, avant son `=` : après lui, l'acte serait fabriqué.
+                || (ligne.trim_start().starts_with("if let ") && !avant.contains('=') && apres.contains(" = "))
                 || (apres.contains("=>") && !avant.contains("=>"))
         })
     }
@@ -682,6 +683,9 @@ mod tests {
         assert!(!motif("        x => Acte::ChoixNoter(id).ligne(),", m));
         assert!(!motif("    let l = Acte::ChoixNoter(id).ligne();", m));
         assert!(!motif("    Acte::ChoixNoter(id).ligne()", m));
+        // Dans un `if let`, seulement à gauche du `=` : à droite, il est fabriqué.
+        assert!(!motif("    if let Some(l) = Some(Acte::ChoixNoter(id).ligne()) {", m));
+        assert!(!motif("    if let Some(l) = Acte::ChoixNoter(id).ligne().get(..) {", m));
         // Un mot qui n'est pas un acte n'est jamais un motif.
         assert!(!motif("    ligne_noter(id) => 1", "ligne_noter("));
     }

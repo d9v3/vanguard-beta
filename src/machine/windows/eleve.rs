@@ -599,6 +599,18 @@ fn lignes_protege(id: gestes::IdChoix) -> Vec<String> {
     )
 }
 
+/// La liste ajoute-t-elle une exclusion large, ou permet-elle largement un programme malgré l'accès contrôlé aux
+/// dossiers (un interpréteur, un joker) ? La question le dit alors plus fort (R8).
+fn liste_large(liste: &[Element]) -> bool {
+    liste.iter().any(|e| match e {
+        Element::Acte(gestes::Acte::DefenderExclusionAjouter(g, x)) => gestes::exclusion_large(*g, x.texte()),
+        Element::Acte(gestes::Acte::DefenderDossiersAutoriser(x)) => {
+            gestes::exclusion_large(gestes::GenreExclusion::Processus, x.texte())
+        }
+        _ => false,
+    })
+}
+
 /// L'accord d'une liste. Une liste de baisses : ce qui reste actif, l'avertissement du temps réel (P10), puis la
 /// question des baisses (`choix_avant::demander_baisse` : un oui tapé dans une vraie console, défaut non). Une autre
 /// liste : dans la fenêtre administrateur (`fils`), Entrée ou oui ; déjà administrateur, l'accord a été donné avant.
@@ -611,11 +623,8 @@ fn question(liste: &[Element], sens: &[Option<(gestes::Montre, String)>], baisse
             )));
     }
     let mut baisses: Vec<gestes::IdChoix> = Vec::new();
-    let mut large = false;
+    let large = liste_large(liste);
     for (e, s) in liste.iter().zip(sens) {
-        if let Element::Acte(gestes::Acte::DefenderExclusionAjouter(g, x)) = e {
-            large |= gestes::exclusion_large(*g, x.texte());
-        }
         if let (
             Element::Acte(a),
             Some((
@@ -1619,6 +1628,23 @@ const CONTEXTE_POINT: &str = "restauration/point";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R8 : permettre un interpréteur ou un joker malgré l'accès contrôlé aux dossiers est large, comme une exclusion
+    /// large ; un programme précis ne l'est pas.
+    #[test]
+    fn permettre_un_interpreteur_est_large() {
+        let liste = |l: Option<String>| vec![Element::Acte(gestes::analyser_acte(&l.unwrap()).unwrap())];
+        for p in [r"C:\Windows\System32\cmd.exe", r"C:\Outils\*"] {
+            assert!(liste_large(&liste(gestes::ligne_autoriser_dossiers(p))), "{p}");
+        }
+        assert!(!liste_large(&liste(gestes::ligne_autoriser_dossiers(
+            r"C:\Windows\System32\notepad.exe"
+        ))));
+        assert!(liste_large(&liste(gestes::ligne_ajout_exclusion(
+            gestes::GenreExclusion::Chemin,
+            "C:\\"
+        ))));
+    }
 
     /// Ce qui reste actif après une baisse tient dans la largeur de l'écran, sous son retrait, pour chaque réglage des
     /// choix : coupé aux espaces, sans rien perdre.

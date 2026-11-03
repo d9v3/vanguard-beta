@@ -574,6 +574,7 @@ pub fn powershell_admin_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
 /// impossible), et c'est dit ; aucune autre demande d'administrateur ne prend le relais.
 pub(crate) fn admin_mele(correctifs: &[Vec<String>]) -> Option<(Vec<bool>, Vec<Vec<String>>)> {
     let morceaux = crate::machine::gestes::decouper(correctifs, corrections::native);
+    ARRETES.with(|a| a.borrow_mut().clear());
     let lignes = lignes_pour_eleve(correctifs, &morceaux)?;
     // Rien à envoyer : seulement quand chaque correctif est vide (`decouper` place toute ligne). Vrai pour un
     // correctif vide seulement, jamais d'office.
@@ -584,7 +585,51 @@ pub(crate) fn admin_mele(correctifs: &[Vec<String>]) -> Option<(Vec<bool>, Vec<V
     // Tout arrêté à la demande de la personne (point refusé en tête, accord ou demande d'administrateur refusés) :
     // rien n'a été fait, et ce n'est pas un échec.
     crate::machine::noter_inacheve(inacheve(&reponses));
+    let arretes = arretes(correctifs.len(), &morceaux, &reponses);
+    ARRETES.with(|a| *a.borrow_mut() = arretes);
     Some(recomposer(correctifs, &morceaux, reponses))
+}
+
+thread_local! {
+    /// Pour chaque correctif du dernier passage élevé de ce fil (`admin_mele`), dans l'ordre reçu : arrêté à la
+    /// demande de la personne (« non » à la question, demande d'administrateur refusée) ; vide si rien n'a été envoyé.
+    static ARRETES: std::cell::RefCell<Vec<bool>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Les correctifs du dernier passage élevé arrêtés à la demande de la personne, dans l'ordre reçu par `admin_mele`
+/// (vide si rien n'a été envoyé). Un correctif arrêté n'a pas été refusé par Windows : l'écran des Options de défense
+/// ne l'impute donc pas à la protection contre les falsifications.
+pub(crate) fn correctifs_arretes() -> Vec<bool> {
+    ARRETES.with(|a| a.borrow().clone())
+}
+
+/// Pour chaque correctif : une de ses réponses dit « arrêté » (un script arrêté arrête chaque correctif qu'il porte).
+fn arretes(n: usize, morceaux: &[crate::machine::gestes::Morceau], reponses: &[eleve::Reponse]) -> Vec<bool> {
+    use crate::machine::gestes::Morceau;
+    let mut arretes = vec![false; n];
+    let mut reponses = reponses.iter();
+    for m in morceaux {
+        let places: Vec<usize> = match m {
+            Morceau::Natif(places) => places
+                .iter()
+                .map(|&(i, _)| i)
+                .filter(|_| reponses.next().is_some_and(|r| r.arretee))
+                .collect(),
+            Morceau::Script(suite) => {
+                if reponses.next().is_some_and(|r| r.arretee) {
+                    suite.iter().map(|(i, _)| *i).collect()
+                } else {
+                    Vec::new()
+                }
+            }
+        };
+        for i in places {
+            if let Some(a) = arretes.get_mut(i) {
+                *a = true;
+            }
+        }
+    }
+    arretes
 }
 
 /// Les lignes que reçoit le processus élevé pour ces morceaux : les gestes natifs tels quels, chaque suite PowerShell
@@ -1859,6 +1904,32 @@ mod tests {
             au_redemarrage: false,
             rien: false,
         }
+    }
+
+    /// Un « non » à la question des baisses arrête leurs correctifs seulement : un renforcement fait à côté, un
+    /// échec de Windows ou une réponse qui manque ne sont pas « arrêtés » ; un script arrêté arrête chacun des siens.
+    #[test]
+    fn arretes_par_correctif() {
+        let arretee = || eleve::Reponse {
+            arretee: true,
+            ..reponse(false, None, None, None)
+        };
+        let natifs = gestes::Morceau::Natif(vec![(0, 0), (1, 0), (2, 0)]);
+        let r = [
+            reponse(true, None, None, None),
+            arretee(),
+            reponse(false, None, None, None),
+        ];
+        assert_eq!(
+            arretes(4, std::slice::from_ref(&natifs), &r),
+            [false, true, false, false]
+        );
+        assert_eq!(
+            arretes(3, std::slice::from_ref(&natifs), &r[..1]),
+            [false, false, false]
+        );
+        let script = gestes::Morceau::Script(vec![(0, vec![0]), (2, vec![0])]);
+        assert_eq!(arretes(3, &[script], &[arretee()]), [true, false, true]);
     }
 
     /// Point de restauration refusé (« N ») ou demande refusée : chaque geste revient « arrêté », la liste est dite

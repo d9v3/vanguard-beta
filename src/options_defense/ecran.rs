@@ -438,7 +438,7 @@ fn rallumable(e: &Etat, o: Opt, notes: &Notes) -> Option<i64> {
     let note = choix_avant::note_de(notes, id);
     let v = valeur(e, o);
     let cible = gestes::cible_rallumer(id, note.map(|n| n.avant));
-    let sous = v.is_some_and(|v| id.rang(Some(v)) < id.rang(Some(id.sure())));
+    let sous = v.is_some_and(|v| id.baissee(Some(v)));
     ((note.is_some() || sous) && v != Some(cible)).then_some(cible)
 }
 
@@ -647,6 +647,12 @@ fn nom_note(id: IdChoix) -> String {
     format!("{genre} n° {}", hex.get(..8).unwrap_or(&hex))
 }
 
+/// La précision d'une note dont l'élément n'a pas pu être relu (liste cachée hors administrateur, ou jamais relue) :
+/// il a pu être retiré ailleurs depuis, la note ne s'efface qu'au prochain passage en administrateur.
+fn a_verifier() -> &'static str {
+    tr!("à vérifier · retirer", "to check · remove")
+}
+
 /// Le sous-écran des exclusions et des programmes permis : ce qui est noté (à retirer), ce qui est inconnu (⚠, « C'est
 /// moi »), puis ajouter. `listes` : les trois listes lues (`None` : illisibles).
 pub(super) fn lignes_exclusions(
@@ -712,44 +718,29 @@ pub(super) fn lignes_exclusions(
     } else {
         let texte = if listes.is_some() {
             tr!(
-                "Liste visible seulement avec l'accord administrateur : les exclusions posées hors de Vanguard ne se voient pas ici (le bilan en administrateur les signale). Celles notées par votre choix sont listées sans leur chemin.",
-                "List visible only with administrator approval: exclusions added outside Vanguard are not shown here (the check as administrator reports them). Those noted as your choice are listed without their path."
+                "Liste visible seulement avec l'accord administrateur : les exclusions posées hors de Vanguard ne se voient pas ici (le bilan en administrateur les signale). Celles notées par votre choix sont listées sans leur chemin, « à vérifier » : retirées ailleurs, leur note ne s'efface qu'au prochain passage en administrateur.",
+                "List visible only with administrator approval: exclusions added outside Vanguard are not shown here (the check as administrator reports them). Those noted as your choice are listed without their path, “to check”: removed elsewhere, their note is only cleared at the next run as administrator."
             )
         } else {
             tr!(
-                "Les exclusions ne se lisent pas (Defender ne répond pas). Celles notées par votre choix sont listées sans leur chemin.",
-                "Exclusions cannot be read (Defender does not answer). Those noted as your choice are listed without their path."
+                "Les exclusions ne se lisent pas (Defender ne répond pas). Celles notées par votre choix sont listées sans leur chemin, « à vérifier ».",
+                "Exclusions cannot be read (Defender does not answer). Those noted as your choice are listed without their path, “to check”."
             )
         };
         paragraphe(&mut l, texte, GRIS);
         for (id, note) in notes {
-            if let (IdChoix::Exclusion(..), Some(nt)) = (id, note) {
+            if let (IdChoix::Exclusion(..), Some(_)) = (id, note) {
                 let t = touche("r");
-                l.push(Ligne::choix(
-                    &t,
-                    &nom_note(*id),
-                    &trf!(
-                        "votre choix ({}) · retirer",
-                        "your choice ({}) · remove",
-                        choix_avant::date_note(nt.date)
-                    ),
-                ));
+                l.push(Ligne::choix(&t, &nom_note(*id), a_verifier()));
                 actions.push((t, ActionListe::Retirer(*id, nom_note(*id))));
             }
         }
     }
     for (id, note) in notes {
-        if let (IdChoix::DossiersAutorise(_), Some(nt)) = (id, note) {
+        // La liste des programmes permis n'est pas relue ici : la note peut survivre à un retrait fait ailleurs.
+        if let (IdChoix::DossiersAutorise(_), Some(_)) = (id, note) {
             let t = touche("r");
-            l.push(Ligne::choix(
-                &t,
-                &nom_note(*id),
-                &trf!(
-                    "votre choix ({}) · retirer",
-                    "your choice ({}) · remove",
-                    choix_avant::date_note(nt.date)
-                ),
-            ));
+            l.push(Ligne::choix(&t, &nom_note(*id), a_verifier()));
             actions.push((t, ActionListe::Retirer(*id, nom_note(*id))));
         }
     }
@@ -866,7 +857,9 @@ pub(super) fn change_liste(a: &ActionListe, texte: &str) -> Option<Change> {
 pub(super) fn large(a: &ActionListe, texte: &str) -> bool {
     match a {
         ActionListe::Ajouter(g) => gestes::exclusion_large(*g, texte_exclusion(*g, texte)),
-        ActionListe::Permettre | ActionListe::Retirer(..) | ActionListe::Noter(..) => false,
+        // Permettre un interpréteur (PowerShell, cmd…) ou un joker ouvre vos dossiers à tout ce qu'il lance.
+        ActionListe::Permettre => gestes::exclusion_large(GenreExclusion::Processus, texte),
+        ActionListe::Retirer(..) | ActionListe::Noter(..) => false,
     }
 }
 
@@ -883,6 +876,8 @@ pub(super) fn recapitulatif(changes: &[Change]) -> Vec<String> {
         }
     }
     let baisses = changes.iter().any(|c| {
+        // Comme le processus élevé (`gestes::sens`), qui demande aussi pour « toujours demander » des échantillons :
+        // un changement vers plus bas que la valeur sûre est montré, puis demandé.
         c.cible
             .is_none_or(|v| c.id.rang(Some(v)) < c.id.rang(Some(c.id.sure())))
     });
@@ -911,14 +906,31 @@ pub(super) fn recapitulatif(changes: &[Change]) -> Vec<String> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Issue {
     Fait,
+    /// Déjà à la valeur demandée : rien d'écrit.
+    Deja,
     PasFait,
+    /// Pas fait, à la demande de la personne : « non » à la question, ou demande d'administrateur refusée.
+    Arretee,
     /// Pas fait, sur une option que la protection contre les falsifications protège, alors qu'elle est active.
     Tamper,
 }
 
-pub(super) fn issue(c: &Change, reussi: bool, tamper: bool) -> Issue {
-    if reussi {
-        Issue::Fait
+/// Ce que le passage élevé rend pour un changement : réussi ; réussi sans rien écrire (déjà ainsi) ; arrêté à la
+/// demande de la personne.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Rendu {
+    pub(super) reussi: bool,
+    pub(super) rien: bool,
+    pub(super) arrete: bool,
+}
+
+/// `tamper` : la protection contre les falsifications peut être la cause d'un refus (`tamper_en_cause`). Un refus
+/// de la personne n'est jamais un refus de Windows : la page de la protection ne s'ouvre pas pour lui.
+pub(super) fn issue(c: &Change, r: Rendu, tamper: bool) -> Issue {
+    if r.reussi {
+        if r.rien { Issue::Deja } else { Issue::Fait }
+    } else if r.arrete {
+        Issue::Arretee
     } else if tamper && protegee_id(c.id) {
         Issue::Tamper
     } else {
@@ -926,12 +938,31 @@ pub(super) fn issue(c: &Change, reussi: bool, tamper: bool) -> Issue {
     }
 }
 
+/// La protection contre les falsifications peut-elle avoir refusé ce changement ? Active avant ou après, et l'option
+/// n'est pas imposée par une stratégie (GPO ou Intune) : là, c'est la stratégie qui garde la valeur.
+pub(super) fn tamper_en_cause(avant: &Etat, apres: &Etat, id: IdChoix) -> bool {
+    let imposee = Opt::TOUTES.iter().any(|o| {
+        id_opt(*o) == id && (apres.strategies.option(*o) == Some(true) || avant.strategies.option(*o) == Some(true))
+    });
+    (tamper(avant) || tamper(apres)) && !imposee
+}
+
 pub(super) fn texte_issue(c: &Change, i: Issue) -> String {
     match i {
         Issue::Fait => trf!("  {VERT}✔{RESET} {} : fait", "  {VERT}✔{RESET} {}: done", c.texte),
+        Issue::Deja => trf!(
+            "  {VERT}✔{RESET} {} : déjà ainsi, rien d'écrit",
+            "  {VERT}✔{RESET} {}: already so, nothing written",
+            c.texte
+        ),
         Issue::PasFait => trf!(
-            "  {ACCENT}✖{RESET} {} : pas fait (réponse non, ou Windows a refusé : voir la fenêtre administrateur)",
-            "  {ACCENT}✖{RESET} {}: not done (answer no, or Windows refused: see the administrator window)",
+            "  {ACCENT}✖{RESET} {} : pas fait (Windows a refusé, ou la relecture n'a pas suivi : voir la fenêtre administrateur)",
+            "  {ACCENT}✖{RESET} {}: not done (Windows refused, or the reread did not follow: see the administrator window)",
+            c.texte
+        ),
+        Issue::Arretee => trf!(
+            "  {GRIS}–{RESET} {} : pas fait, à votre demande (réponse non, ou demande d'administrateur refusée)",
+            "  {GRIS}–{RESET} {}: not done, as you asked (answer no, or administrator prompt declined)",
             c.texte
         ),
         Issue::Tamper => trf!(
@@ -970,7 +1001,8 @@ mod boucle {
         Lu {
             etat: crate::machine::windows::defense_etat::lire(),
             notes: choix_avant::notes(),
-            listes: crate::machine::windows::exclusions::lecture_wmi().map(|(l, _)| l),
+            // Comme l'audit : WMI d'abord, PowerShell en secours si Defender ne répond pas par WMI.
+            listes: crate::machine::windows::exclusions::lecture().map(|(l, _)| l),
         }
     }
 
@@ -1141,13 +1173,26 @@ mod boucle {
         }
         println!();
         let correctifs: Vec<Vec<String>> = changes.iter().map(|c| vec![c.ligne.clone()]).collect();
-        let reussis = crate::machine::appliquer_chacune(&correctifs);
+        let (reussis, notes) = crate::machine::appliquer_chacune_notees(&correctifs);
+        // Un correctif par ligne élevée, sans point de restauration : le passage élevé les reçoit dans cet ordre. S'il
+        // n'a rien reçu (lancement impossible), rien n'est imputé à la protection contre les falsifications.
+        let arretes = crate::machine::windows::correctifs_arretes();
+        let passe = arretes.len() == changes.len();
         let apres = crate::machine::windows::defense_etat::lire();
-        let tamper = tamper(&apres) || tamper(&lu.etat);
         println!();
         let mut refus_tamper = false;
         for (k, c) in changes.iter().enumerate() {
-            let i = issue(c, reussis.get(k).copied().unwrap_or(false), tamper);
+            let reussi = reussis.get(k).copied().unwrap_or(false);
+            let rendu = Rendu {
+                reussi,
+                rien: reussi && notes.get(k).is_some_and(Vec::is_empty),
+                arrete: if passe {
+                    arretes.get(k).copied().unwrap_or(false)
+                } else {
+                    crate::machine::arretee_a_votre_demande()
+                },
+            };
+            let i = issue(c, rendu, passe && tamper_en_cause(&lu.etat, &apres, c.id));
             refus_tamper |= i == Issue::Tamper;
             println!("{}", texte_issue(c, i));
         }
@@ -1476,6 +1521,14 @@ mod tests {
             panic!()
         };
         assert_eq!(c.cible, Some(1));
+        // Échantillons « toujours demander » : un choix de vie privée, pas une baisse (plan §2.1) : ni « Rallumer »
+        // ni « C'est moi ».
+        let mut demander = e.clone();
+        if let Some(p) = demander.preferences.as_mut() {
+            p.valeurs[2] = Some(0);
+        }
+        let t = touches(&lignes_option(&demander, Opt::Echantillons, &[], &[]));
+        assert!(!t.contains(&"r".to_string()) && !t.contains(&"m".to_string()), "{t:?}");
         // Illisible : ni l'un ni l'autre.
         let vide = Etat::default();
         let t = touches(&lignes_option(&vide, Opt::Pua, &[], &[]));
@@ -1537,6 +1590,12 @@ mod tests {
             let (l, actions) = lignes_exclusions(Some(&n_a), &notes, &[]);
             dans_l_ecran(&l);
             assert!(!tout_texte(&l).contains("Outils"));
+            // Non relue, la note peut être périmée : dite « à vérifier ».
+            assert!(
+                tout_texte(&l).contains(tr!("à vérifier", "to check")),
+                "{}",
+                tout_texte(&l)
+            );
             assert!(
                 actions
                     .iter()
@@ -1578,7 +1637,12 @@ mod tests {
         assert!(large(&ActionListe::Ajouter(GenreExclusion::Chemin), "C:\\"));
         assert!(large(&ActionListe::Ajouter(GenreExclusion::Extension), ".exe"));
         assert!(!large(&ActionListe::Ajouter(GenreExclusion::Chemin), r"C:\Jeux\Un jeu"));
-        assert!(!large(&ActionListe::Permettre, "C:\\"));
+        assert!(large(
+            &ActionListe::Permettre,
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        ));
+        assert!(large(&ActionListe::Permettre, r"C:\Outils\*"));
+        assert!(!large(&ActionListe::Permettre, r"C:\Windows\System32\notepad.exe"));
     }
 
     #[test]
@@ -1611,12 +1675,35 @@ mod tests {
             );
             let tr = &changes[0];
             let pua = &changes[1];
-            assert_eq!(issue(tr, true, true), Issue::Fait);
-            assert_eq!(issue(tr, false, true), Issue::Tamper);
-            assert_eq!(issue(tr, false, false), Issue::PasFait);
+            let fait = Rendu {
+                reussi: true,
+                ..Rendu::default()
+            };
+            let refuse = Rendu::default();
+            let arrete = Rendu {
+                arrete: true,
+                ..Rendu::default()
+            };
+            assert_eq!(issue(tr, fait, true), Issue::Fait);
+            assert_eq!(issue(tr, Rendu { rien: true, ..fait }, true), Issue::Deja);
+            assert_eq!(issue(tr, refuse, true), Issue::Tamper);
+            assert_eq!(issue(tr, refuse, false), Issue::PasFait);
+            // Un « non » ou une demande d'administrateur refusée n'est jamais un refus de la protection.
+            assert_eq!(issue(tr, arrete, true), Issue::Arretee);
             // PUA n'est pas protégée par Tamper : un refus reste un refus ordinaire.
-            assert_eq!(issue(pua, false, true), Issue::PasFait);
-            for i in [Issue::Fait, Issue::PasFait, Issue::Tamper] {
+            assert_eq!(issue(pua, refuse, true), Issue::PasFait);
+            // Tamper en cause : active avant ou après, et l'option pas imposée par une stratégie.
+            let e = courant();
+            assert!(tamper_en_cause(&e, &e, tr.id));
+            let mut sans = courant();
+            if let Some(s) = sans.statut.as_mut() {
+                s.falsifications = Some(false);
+            }
+            assert!(!tamper_en_cause(&sans, &sans, tr.id));
+            assert!(tamper_en_cause(&sans, &e, tr.id));
+            // Imposée par une stratégie (le réseau, dans cet état) : c'est la stratégie qui garde la valeur.
+            assert!(!tamper_en_cause(&e, &e, id_opt(Opt::Reseau)));
+            for i in [Issue::Fait, Issue::Deja, Issue::PasFait, Issue::Arretee, Issue::Tamper] {
                 assert!(texte_issue(tr, i).contains(&tr.texte));
             }
             assert!(texte_tamper().contains(tr!("falsifications", "tamper")));

@@ -1259,6 +1259,15 @@ pub fn appliquer_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
     appliquer_annulables(correctifs, &[])
 }
 
+/// Comme `appliquer_chacune`, avec aussi ce qui est noté pour chaque correctif : une liste vide pour un correctif
+/// réussi dont chaque ligne était déjà bonne (rien d'écrit).
+#[cfg(windows)]
+pub(crate) fn appliquer_chacune_notees(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
+    let (resultats, notes) = lancer_chacune(correctifs);
+    crate::changements::noter_annulables(&notes, &resultats, &[]);
+    (resultats, notes)
+}
+
 /// L'issue d'une liste de `appliquer_gestes_puis_commandes`.
 #[cfg(not(windows))]
 #[derive(Debug, Clone, PartialEq, Eq)]
