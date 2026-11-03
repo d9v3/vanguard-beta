@@ -18,7 +18,7 @@ use std::path::Path;
 
 use windows::core::GUID;
 
-use crate::protection::blocage::gardes::{self, Signature};
+use crate::protection::blocage::gardes::{self, Illisibilite, Signature};
 
 #[link(name = "wintrust")]
 unsafe extern "system" {
@@ -168,24 +168,40 @@ fn taille_de<T>() -> u32 {
 }
 
 /// La signature de `chemin` : Microsoft, autre (ou aucune), ou illisible (le fichier ne s'ouvre pas, un catalogue ou
-/// sa signature ne se lit pas).
+/// sa signature ne se lit pas), avec la raison tirée du code de Windows.
 pub(crate) fn lire(chemin: &Path) -> Signature {
-    let Ok(mut fichier) = std::fs::File::open(chemin) else {
-        return Signature::Illisible;
+    let mut fichier = match std::fs::File::open(chemin) {
+        Ok(f) => f,
+        Err(e) => return Signature::Illisible(raison_io(&e)),
     };
     let catalogue = catalogue_microsoft(&mut fichier);
     let integree = fichier
         .seek(SeekFrom::Start(0))
-        .map_err(|_| ())
+        .map_err(|e| raison_io(&e))
         .and_then(|_| verifier(chemin, Some(&fichier)));
     gardes::signature_de(catalogue, integree)
 }
 
+/// La raison d'une erreur de lecture du fichier.
+fn raison_io(e: &std::io::Error) -> Illisibilite {
+    let code = e.raw_os_error().map_or(0, i32::cast_unsigned);
+    gardes::illisibilite_connue(code).unwrap_or(Illisibilite::Code(code))
+}
+
+/// La raison d'un échec d'une fonction des catalogues, d'après GetLastError : CryptSvc arrêté se dit tel ; un code
+/// inconnu se rattache aux catalogues.
+fn raison_catalogue() -> Illisibilite {
+    let code = std::io::Error::last_os_error()
+        .raw_os_error()
+        .map_or(0, i32::cast_unsigned);
+    gardes::illisibilite_connue(code).unwrap_or(Illisibilite::Catalogues)
+}
+
 /// Le fichier est-il dans un catalogue de Windows signé par Microsoft ? Cherché par son empreinte SHA-256 puis
 /// SHA-1 (les catalogues anciens n'ont que celle-là) ; chaque catalogue trouvé est vérifié comme un fichier signé.
-fn catalogue_microsoft(fichier: &mut std::fs::File) -> Result<bool, ()> {
+fn catalogue_microsoft(fichier: &mut std::fs::File) -> Result<bool, Illisibilite> {
     for algorithme in ["SHA256", "SHA1"] {
-        fichier.seek(SeekFrom::Start(0)).map_err(|_| ())?;
+        fichier.seek(SeekFrom::Start(0)).map_err(|e| raison_io(&e))?;
         let algorithme = large(std::ffi::OsStr::new(algorithme));
         let mut admin: *mut c_void = std::ptr::null_mut();
         // SAFETY: `admin` est à nous ; l'algorithme est une chaîne terminée par un zéro, vivante pendant l'appel ;
@@ -200,7 +216,7 @@ fn catalogue_microsoft(fichier: &mut std::fs::File) -> Result<bool, ()> {
             )
         } == 0
         {
-            return Err(());
+            return Err(raison_catalogue());
         }
         let trouve = dans_un_catalogue(admin, fichier);
         // SAFETY: le contexte acquis juste au-dessus, relâché une seule fois.
@@ -212,9 +228,9 @@ fn catalogue_microsoft(fichier: &mut std::fs::File) -> Result<bool, ()> {
     Ok(false)
 }
 
-fn dans_un_catalogue(admin: *mut c_void, fichier: &std::fs::File) -> Result<bool, ()> {
+fn dans_un_catalogue(admin: *mut c_void, fichier: &std::fs::File) -> Result<bool, Illisibilite> {
     let mut empreinte = [0u8; 64];
-    let mut taille = u32::try_from(empreinte.len()).map_err(|_| ())?;
+    let mut taille = u32::try_from(empreinte.len()).map_err(|_| Illisibilite::Catalogues)?;
     // SAFETY: le contexte est ouvert ; la poignée du fichier vit tant que `fichier` ; Windows écrit au plus `taille`
     // octets dans `empreinte`, puis leur nombre dans `taille`.
     let calcule = unsafe {
@@ -226,8 +242,11 @@ fn dans_un_catalogue(admin: *mut c_void, fichier: &std::fs::File) -> Result<bool
             0,
         )
     } != 0;
-    if !calcule || usize::try_from(taille).map_or(true, |t| t == 0 || t > empreinte.len()) {
-        return Err(());
+    if !calcule {
+        return Err(raison_catalogue());
+    }
+    if usize::try_from(taille).map_or(true, |t| t == 0 || t > empreinte.len()) {
+        return Err(Illisibilite::Catalogues);
     }
     let mut catalogue: *mut c_void = std::ptr::null_mut();
     loop {
@@ -258,11 +277,21 @@ fn dans_un_catalogue(admin: *mut c_void, fichier: &std::fs::File) -> Result<bool
                 return Ok(true);
             }
             Some(Ok(false)) => {}
-            // Le catalogue désigné ne se lit pas : illisible, jamais tenu pour « pas Microsoft ».
-            Some(Err(())) | None => {
+            // Le catalogue désigné ne se lit pas : illisible, jamais tenu pour « pas Microsoft ». CryptSvc arrêté se dit
+            // tel ; le reste, « catalogues ».
+            Some(Err(r)) => {
                 // SAFETY: comme au-dessus.
                 unsafe { CryptCATAdminReleaseCatalogContext(admin, catalogue, 0) };
-                return Err(());
+                return Err(if r == Illisibilite::CryptSvc {
+                    r
+                } else {
+                    Illisibilite::Catalogues
+                });
+            }
+            None => {
+                // SAFETY: comme au-dessus.
+                unsafe { CryptCATAdminReleaseCatalogContext(admin, catalogue, 0) };
+                return Err(Illisibilite::Catalogues);
             }
         }
     }
@@ -270,8 +299,8 @@ fn dans_un_catalogue(admin: *mut c_void, fichier: &std::fs::File) -> Result<bool
 
 /// Vérifie la signature de `chemin` (par sa poignée ouverte quand elle est donnée) : `Ok(true)` si elle se vérifie,
 /// jusqu'à une racine de Microsoft, au nom de Microsoft ; `Ok(false)` si elle est absente, ne se vérifie pas ou est
-/// d'un autre ; `Err` si le fichier ou son signataire ne se lit pas.
-fn verifier(chemin: &Path, fichier: Option<&std::fs::File>) -> Result<bool, ()> {
+/// d'un autre ; `Err` si le fichier ou son signataire ne se lit pas, avec la raison.
+fn verifier(chemin: &Path, fichier: Option<&std::fs::File>) -> Result<bool, Illisibilite> {
     let nom = large(chemin.as_os_str());
     let mut info = InfoFichier {
         taille: taille_de::<InfoFichier>(),
@@ -306,8 +335,11 @@ fn verifier(chemin: &Path, fichier: Option<&std::fs::File>) -> Result<bool, ()> 
     unsafe { WinVerifyTrust(fenetre, &VERIFIER_V2, (&raw mut d).cast()) };
     match signe {
         // Vérifiée, mais son signataire ou sa chaîne ne se lit pas : illisible.
-        Some(signe) => signe.ok_or(()),
-        None if gardes::verification_illisible(code) => Err(()),
+        Some(signe) => signe.ok_or(Illisibilite::Signataire),
+        None if gardes::verification_illisible(code) => {
+            let code = code.cast_unsigned();
+            Err(gardes::illisibilite_connue(code).unwrap_or(Illisibilite::Code(code)))
+        }
         None => Ok(false),
     }
 }
@@ -400,7 +432,10 @@ mod tests {
     fn signature_lue_par_windows() {
         let dossier = crate::socle::dossier_local().join("essai-signature");
         std::fs::create_dir_all(&dossier).unwrap();
-        assert_eq!(lire(&dossier.join("absent.exe")), Signature::Illisible);
+        assert_eq!(
+            lire(&dossier.join("absent.exe")),
+            Signature::Illisible(Illisibilite::Absent)
+        );
         let fait_ici = dossier.join("fait-ici.exe");
         std::fs::write(&fait_ici, b"MZ pas un vrai programme").unwrap();
         let lu = lire(&fait_ici);

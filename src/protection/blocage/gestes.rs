@@ -88,6 +88,10 @@ struct Arret {
     /// Ce compte peut l'arrêter lui-même (un processus à lui, ou Vanguard administrateur) : Vanguard le fait dans son
     /// propre processus (`arret`), sans demande de droits ni commande.
     ici: bool,
+    /// Demandé par la personne (jamais automatique) : une signature illisible s'y montre puis se confirme (choix
+    /// 3.1), avec les gardes des processus vitaux d'abord (Vanguard et ce qui le fait tourner, système). `None` :
+    /// illisible refuse.
+    demandee: Option<(HashSet<u32>, Os)>,
 }
 
 fn droits_manquants() -> String {
@@ -110,7 +114,14 @@ pub(crate) fn preparer(m: &Menace, ctx: &Contexte, automatique: bool) -> Result<
             chemin,
             fichier,
             detection,
-        } => preparer_programme(*pid, nom, (chemin.as_deref(), fichier.as_deref()), detection, ctx)?,
+        } => preparer_programme(
+            *pid,
+            nom,
+            (chemin.as_deref(), fichier.as_deref()),
+            detection,
+            ctx,
+            automatique,
+        )?,
         Geste::Adresse { ip } => {
             if let Some(raison) = gardes::adresse_intouchable(*ip, ctx.sessions.as_ref(), automatique) {
                 return Err(Echec::refuse(OU, raison));
@@ -277,6 +288,7 @@ fn preparer_programme(
     (chemin, fichier): (Option<&Path>, Option<&Path>),
     detection: &str,
     ctx: &Contexte,
+    automatique: bool,
 ) -> Result<(Pret, bool), Echec> {
     let chemin_texte = chemin.map(|c| c.to_string_lossy().into_owned());
     let mut etapes = Vec::new();
@@ -303,11 +315,14 @@ fn preparer_programme(
                 return Err(Echec::refuse("blocage/preparer", raison));
             }
             let ici = arret_sans_droits(pid);
-            // Un programme signé par Microsoft est traité comme du système (signature illisible : refusé aussi, ici
-            // ou par Vanguard administrateur, qui la relit avec ses droits).
-            if let Some(raison) = gardes::signature_systeme_avant_remise(&actuel, ici) {
-                return Err(Echec::refuse("blocage/preparer", raison));
-            }
+            // Un programme signé par Microsoft est traité comme du système. Signature illisible (choix 3.1) : un geste
+            // automatique la refuse (ici, ou Vanguard administrateur, qui la relit avec ses droits) ; demandé par la
+            // personne, elle se montre et se confirme là où l'arrêt se fait.
+            let confirmera = match gardes::signature_avant_remise(gardes::signature_lue(&actuel), ici, automatique) {
+                gardes::Avant::Refuse(raison) => return Err(Echec::refuse("blocage/preparer", raison)),
+                gardes::Avant::Confirmera => true,
+                gardes::Avant::Rien => false,
+            };
             if !ici {
                 // Un processus d'un autre compte : l'ordre part vers celui qui a les droits, qui le rejuge.
                 droits = !ctx.admin;
@@ -315,6 +330,7 @@ fn preparer_programme(
                     super::ordres::Ordre::ArreterProcessus {
                         pid,
                         chemin: actuel.clone(),
+                        demande: !automatique,
                     }
                     .ligne(),
                 );
@@ -323,10 +339,14 @@ fn preparer_programme(
                 "Arrêter « {nom} » (PID {pid}) tout de suite",
                 "Stop “{nom}” (PID {pid}) right away"
             ));
+            if confirmera {
+                etapes.push(gardes::etape_confirmera(false));
+            }
             Some(Arret {
                 pid,
                 chemin: actuel,
                 ici,
+                demandee: (!automatique).then(|| (ctx.intouchables.clone(), ctx.os)),
             })
         }
         _ => None,
@@ -339,9 +359,12 @@ fn preparer_programme(
             if let Some(raison) = gardes::fichier_intouchable(&texte, ctx.os, ctx.mon_programme.as_deref()) {
                 return Err(Echec::refuse("blocage/preparer", raison));
             }
-            if let Some(raison) = gardes::signature_systeme(&texte) {
-                return Err(Echec::refuse("blocage/preparer", raison));
-            }
+            // La même garde de signature que l'arrêt : la quarantaine se fait ici (rien n'est remis).
+            let confirmera = match gardes::signature_avant_remise(gardes::signature_lue(&texte), true, automatique) {
+                gardes::Avant::Refuse(raison) => return Err(Echec::refuse("blocage/preparer", raison)),
+                gardes::Avant::Confirmera => true,
+                gardes::Avant::Rien => false,
+            };
             if !peut_deplacer(c) {
                 return Err(Echec::refuse(
                     "blocage/preparer",
@@ -356,6 +379,9 @@ fn preparer_programme(
                 "Quarantine “{}”: made unusable, put back exactly with “vanguard blocking undo”",
                 chemin_affichable(c)
             ));
+            if confirmera {
+                etapes.push(gardes::etape_confirmera(true));
+            }
             // En administrateur, la quarantaine et sa note vont dans le profil du compte qui a ouvert Vanguard ainsi :
             // un autre administrateur, si c'est lui qui a donné son mot de passe (défense D6a).
             if ctx.admin && ctx.os == Os::Windows {
@@ -643,7 +669,7 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<Fait, E
                 };
                 match chemin_du_processus(a.pid) {
                     Some(c) if meme_chemin(&c, &a.chemin) => {
-                        if !arreter(a, &pret.commandes, &mut lancees) {
+                        if !arreter(a, &pret.commandes, &mut lancees, automatique) {
                             return echec(
                                 tr!(
                                     "l'arrêt du processus a échoué : rien d'autre n'a été fait",
@@ -819,12 +845,16 @@ fn releve<'a>(geste: &'a Geste, faire: &'a Faire) -> preuve::Releve<'a> {
 }
 
 /// Arrête le processus : dans Vanguard même quand ce compte le peut (`arret`, sans course sur le numéro), sinon par
-/// l'ordre, fait par celui qui a les droits.
-fn arreter(a: &Arret, commandes: &[String], lancees: &mut Vec<String>) -> bool {
+/// l'ordre, fait par celui qui a les droits. Une signature illisible ne se confirme que pour un arrêt demandé, jamais
+/// pour un geste automatique (`automatique`, revu ici même si l'arrêt a été préparé comme demandé).
+fn arreter(a: &Arret, commandes: &[String], lancees: &mut Vec<String>, automatique: bool) -> bool {
     if a.ici {
         lancees.push(format!("arrêt : PID {} ({})", a.pid, a.chemin));
-        return match super::arret::arreter(a.pid, &a.chemin) {
-            Ok(()) => true,
+        return match super::arret::arreter(a.pid, &a.chemin, &confirmation(a, automatique)) {
+            Ok(note) => {
+                lancees.extend(note);
+                true
+            }
             Err(e) => {
                 crate::ui::afficher_aligne("    ✖ ", &e.to_string(), 6, "");
                 false
@@ -834,6 +864,15 @@ fn arreter(a: &Arret, commandes: &[String], lancees: &mut Vec<String>) -> bool {
     let (reussi, notes) = crate::machine::appliquer_sans_noter(commandes);
     lancees.extend(notes);
     reussi
+}
+
+/// Une signature illisible peut-elle se confirmer pour cet arrêt ? Seulement s'il a été préparé comme demandé ET que
+/// le geste n'est pas automatique : un rançongiciel, la protection active ou la nuit ne posent jamais la question.
+fn confirmation(a: &Arret, automatique: bool) -> super::arret::Confirmation<'_> {
+    match &a.demandee {
+        Some((intouchables, os)) if !automatique => super::arret::Confirmation::Demandee { intouchables, os: *os },
+        _ => super::arret::Confirmation::Jamais,
+    }
 }
 
 /// Attend que le processus arrêté soit bien fini (5 secondes au plus) : son fichier se libère pour la quarantaine.
@@ -1385,13 +1424,38 @@ mod tests {
         });
         let mut ctx = contexte(true, false);
         ctx.os = Os::actuel();
+        // Préparé automatiquement (rançongiciel, protection active) : jamais de confirmation possible.
+        let auto = preparer(&m, &ctx, true).unwrap();
+        assert!(matches!(&auto.faire, Faire::Programme { arret: Some(a), .. } if a.demandee.is_none()));
         let pret = preparer(&m, &ctx, false).unwrap();
         assert!(pret.commandes.is_empty(), "{:?}", pret.commandes);
-        assert!(matches!(&pret.faire, Faire::Programme { arret: Some(a), .. } if a.ici));
+        assert!(matches!(&pret.faire, Faire::Programme { arret: Some(a), .. } if a.ici && a.demandee.is_some()));
         let fait = faire(&m, pret, false).unwrap();
         let statut = enfant.wait().unwrap();
         assert_eq!(statut.signal(), Some(libc::SIGKILL), "{fait} {statut:?}");
         let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Une signature illisible ne se confirme que pour un arrêt préparé comme demandé ET fait sans automatisme : un
+    /// arrêt préparé à la main puis rejoué par un geste automatique ne pose pas la question.
+    #[test]
+    fn confirmation_seulement_pour_un_arret_demande() {
+        use super::super::arret::Confirmation;
+        let arret = |demandee| Arret {
+            pid: 42,
+            chemin: "/tmp/.x/outil".into(),
+            ici: true,
+            demandee,
+        };
+        let demande = arret(Some((HashSet::from([7]), Os::Windows)));
+        assert!(matches!(
+            confirmation(&demande, false),
+            Confirmation::Demandee { intouchables, os: Os::Windows } if intouchables.contains(&7)
+        ));
+        assert!(matches!(confirmation(&demande, true), Confirmation::Jamais));
+        for automatique in [false, true] {
+            assert!(matches!(confirmation(&arret(None), automatique), Confirmation::Jamais));
+        }
     }
 
     /// Le numéro du processus fait maintenant tourner un autre programme (repris, ou passé à un autre par exec) :
@@ -1417,6 +1481,7 @@ mod tests {
                     pid,
                     chemin: "/tmp/.x/outil".into(),
                     ici: true,
+                    demandee: None,
                 }),
                 quarantaine: None,
             },
@@ -1764,6 +1829,7 @@ mod tests {
                 pid: moi,
                 chemin,
                 ici: false,
+                demandee: None,
             }),
             quarantaine: None,
         };

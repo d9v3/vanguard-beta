@@ -97,6 +97,25 @@ fn ligne(garde: &str, raison: Option<&str>) {
     }
 }
 
+/// La garde de signature : Microsoft lisible refuse ; illisible ne refuse plus d'office (choix 3.1) mais demandera
+/// confirmation à la personne, avec pourquoi elle ne se lit pas.
+fn ligne_signature(chemin: &str) {
+    let garde = tr!("Signature", "Signature");
+    match gardes::signature_lue(chemin) {
+        gardes::Signature::Illisible(r) => afficher_aligne(
+            &format!("  {}?{RESET} ", couleur(crate::risk::Niveau::Moyen)),
+            &trf!(
+                "{garde} : signature illisible : demandera confirmation — {}",
+                "{garde}: unreadable signature: will ask for confirmation — {}",
+                r.texte()
+            ),
+            4,
+            "",
+        ),
+        s => ligne(garde, gardes::signature_intouchable(s).as_deref()),
+    }
+}
+
 /// Le chemin long, quand Windows en donne un autre que celui écrit (nom court 8.3).
 fn dire_chemin_long(chemin: &str) {
     #[cfg(windows)]
@@ -162,10 +181,9 @@ fn juger_processus(pid: u32, ctx: &Contexte) {
         tr!("Session à distance (ascendance)", "Remote session (ancestry)"),
         gardes::lignee_de_session(pid, ctx.sessions.as_ref()),
     );
-    ligne(
-        tr!("Signature", "Signature"),
-        chemin.as_deref().and_then(gardes::signature_systeme),
-    );
+    if let Some(c) = chemin.as_deref() {
+        ligne_signature(c);
+    }
     let menace = Menace {
         categorie: Categorie::Programmes,
         certaine: false,
@@ -200,7 +218,7 @@ fn juger_fichier(chemin: &Path, ctx: &Contexte) {
         ),
         gardes::fichier_intouchable(&texte, ctx.os, ctx.mon_programme.as_deref()),
     );
-    ligne(tr!("Signature", "Signature"), gardes::signature_systeme(&texte));
+    ligne_signature(&texte);
     #[cfg(windows)]
     juger_destination(&crate::protection::quarantaine::dossier());
     let menace = Menace {

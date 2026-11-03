@@ -47,10 +47,13 @@ pub(crate) enum Ordre {
     CouperConnexions {
         ip: IpAddr,
     },
-    /// Arrêter ce processus, seulement s'il fait toujours tourner ce programme.
+    /// Arrêter ce processus, seulement s'il fait toujours tourner ce programme. `demande` : la personne l'a demandé
+    /// elle-même (jamais un geste automatique) ; une signature illisible y donne une question posée dans une vraie
+    /// console, au lieu d'un refus (défense D6a, choix 3.1). Sans lui, illisible refuse.
     ArreterProcessus {
         pid: u32,
         chemin: String,
+        demande: bool,
     },
     /// Windows : la liste de blocage des pilotes vulnérables remise à sa valeur d'avant (`None` : valeur absente).
     RemettrePilotes {
@@ -123,8 +126,13 @@ impl Ordre {
                 format!("{PREFIXE}rouvrir-port {} {port}", nom_pare_feu(*pare_feu))
             }
             Ordre::CouperConnexions { ip } => format!("{PREFIXE}couper-connexions {}", ip.to_canonical()),
-            Ordre::ArreterProcessus { pid, chemin } => {
-                format!("{PREFIXE}arreter-processus {pid} {}", hex(chemin.as_bytes()))
+            Ordre::ArreterProcessus { pid, chemin, demande } => {
+                let verbe = if *demande {
+                    "arreter-processus-demande"
+                } else {
+                    "arreter-processus"
+                };
+                format!("{PREFIXE}{verbe} {pid} {}", hex(chemin.as_bytes()))
             }
             Ordre::RemettrePilotes { avant: Some(v) } => format!("{PREFIXE}remettre-pilotes {v}"),
             Ordre::RemettrePilotes { avant: None } => format!("{PREFIXE}remettre-pilotes absent"),
@@ -161,7 +169,7 @@ pub(crate) fn analyser(ligne: &str) -> Option<Ordre> {
             port: port(n)?,
         },
         ["couper-connexions", a] => Ordre::CouperConnexions { ip: ip(a)? },
-        ["arreter-processus", n, c] => {
+        [verbe @ ("arreter-processus" | "arreter-processus-demande"), n, c] => {
             let chemin = String::from_utf8(de_hex(c)?).ok()?;
             let absolu = chemin_absolu(&chemin);
             if chemin.is_empty() || chemin.len() > CHEMIN_MAX || !absolu || chemin.contains(['\0', '\n', '\r']) {
@@ -170,6 +178,7 @@ pub(crate) fn analyser(ligne: &str) -> Option<Ordre> {
             Ordre::ArreterProcessus {
                 pid: n.parse::<u32>().ok().filter(|p| *p != 0)?,
                 chemin,
+                demande: *verbe == "arreter-processus-demande",
             }
         }
         ["remettre-pilotes", "absent"] => Ordre::RemettrePilotes { avant: None },

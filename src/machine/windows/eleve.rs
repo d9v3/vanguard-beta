@@ -119,7 +119,7 @@ const ENTREE_STANDARD: u32 = 0xFFFF_FFF6;
 
 /// L'entrée est-elle une vraie console (GetConsoleMode réussit) ? Une réponse qui arrive par un tube ou un fichier
 /// n'a pas été tapée par la personne devant cette fenêtre : la question d'une baisse y vaut non.
-pub(super) fn console_reelle() -> bool {
+pub(crate) fn console_reelle() -> bool {
     // SAFETY: simple lecture d'une poignée du processus, sans pointeur.
     let entree = unsafe { GetStdHandle(ENTREE_STANDARD) };
     if entree.is_null() || entree == POIGNEE_INVALIDE {
@@ -1156,7 +1156,7 @@ fn faire(
         Element::Ordre(o) => {
             let r = match ordres::juger(o, juge) {
                 Some(refus) => ordres::Resultat::echec(refus),
-                None => ordres::faire(o),
+                None => ordres::faire(o, juge),
             };
             Resultat {
                 reussi: r.reussi,

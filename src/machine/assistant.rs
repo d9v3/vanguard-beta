@@ -2271,6 +2271,7 @@ mod tests {
             vec![Demande::Ordre(Ordre::ArreterProcessus {
                 pid: 4242,
                 chemin: "/home/alice/.cache/x".into(),
+                demande: true,
             })],
         ];
         let t = envoi(&groupes);

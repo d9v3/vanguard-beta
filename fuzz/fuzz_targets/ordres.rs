@@ -48,7 +48,7 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             ordres_ligne::Ordre::FermerPort { port, .. } | ordres_ligne::Ordre::RouvrirPort { port, .. } => {
                 assert_ne!(port, 0);
             }
-            ordres_ligne::Ordre::ArreterProcessus { pid, chemin } => {
+            ordres_ligne::Ordre::ArreterProcessus { pid, chemin, .. } => {
                 assert_ne!(pid, 0);
                 assert!(!chemin.is_empty() && chemin.len() <= ordres_ligne::CHEMIN_MAX);
                 assert!(!chemin.contains(['\0', '\n', '\r']));

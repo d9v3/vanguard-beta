@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 use crate::machine::regles::Os;
-use crate::tr;
+use crate::{tr, trf};
 
 /// Le noyau ou Idle (0), init, systemd ou launchd (1), System de Windows (4).
 const PID_CRITIQUES: [u32; 3] = [0, 1, 4];
@@ -1010,33 +1010,128 @@ fn lignee_lue(pid: u32, sessions: Option<&Sessions>, racine: Option<u32>) -> Opt
     }
 }
 
-/// Ce que Windows dit de la signature d'un fichier (défense D6a). Une signature ne fait que REFUSER : aucun geste
-/// n'est permis parce qu'un fichier n'est pas signé.
-#[cfg(any(windows, test))]
+/// Ce que Windows dit de la signature d'un fichier (défense D6a). Une signature ne PERMET jamais rien : aucun geste
+/// n'est ouvert parce qu'un fichier n'est pas signé. Signé Microsoft refuse ; illisible refuse tout geste automatique,
+/// et demande à la personne, devant une vraie console, de confirmer ce qu'elle a demandé elle-même (choix 3.1).
+#[cfg_attr(not(windows), allow(dead_code))] // ailleurs que sous Windows, rien ne se lit : seuls les essais la font
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Signature {
     /// Dans un catalogue signé par Microsoft, ou signé par Microsoft dans sa table des certificats ; vérifiée.
     Microsoft,
     /// Non signé, ou par un autre, ou une signature qui ne se vérifie pas (une fausse « Microsoft » comprise).
     Autre,
-    /// Le fichier, sa signature ou les catalogues de Windows ne se lisent pas.
-    Illisible,
+    /// Le fichier, sa signature ou les catalogues de Windows ne se lisent pas, et pourquoi.
+    Illisible(Illisibilite),
 }
 
-/// Pourquoi ce fichier signé ne doit être ni arrêté ni mis en quarantaine, ou `None`.
-#[cfg(any(windows, test))]
-pub(crate) fn signature_intouchable(s: Signature) -> Option<&'static str> {
+/// Pourquoi une signature ne se lit pas, d'après le code de Windows : montré à la personne avant qu'elle confirme.
+/// Un maliciel s'y rend illisible exprès (fichier ouvert sans partage, image renommée, CryptSvc coupé).
+#[cfg_attr(not(windows), allow(dead_code))] // comme `Signature`
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Illisibilite {
+    /// Partage refusé ou fichier verrouillé (ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION).
+    Verrouille,
+    /// Accès refusé (ERROR_ACCESS_DENIED).
+    AccesRefuse,
+    /// Fichier ou dossier introuvable : effacé, renommé ou déplacé depuis le lancement.
+    Absent,
+    /// Le service de chiffrement (CryptSvc) ne répond pas : arrêté, désactivé, ou son point d'appel absent.
+    CryptSvc,
+    /// Un catalogue de Windows ne se lit pas, sans code plus précis.
+    Catalogues,
+    /// La signature se vérifie, mais son signataire ou sa chaîne ne se lit pas.
+    Signataire,
+    /// Un autre code de Windows.
+    Code(u32),
+}
+
+impl Illisibilite {
+    /// La raison, en mots simples, prête à montrer.
+    pub(crate) fn texte(self) -> String {
+        match self {
+            Illisibilite::Verrouille => tr!(
+                "le fichier est verrouillé : un programme le tient ouvert sans permettre de le lire (souvent le programme lui-même)",
+                "the file is locked: a program holds it open without allowing it to be read (often the program itself)"
+            )
+            .to_string(),
+            Illisibilite::AccesRefuse => tr!(
+                "accès refusé : ce compte n'a pas le droit de lire le fichier",
+                "access denied: this account may not read the file"
+            )
+            .to_string(),
+            Illisibilite::Absent => tr!(
+                "le fichier n'est plus là : effacé, renommé ou déplacé depuis le lancement du programme",
+                "the file is gone: deleted, renamed or moved since the program started"
+            )
+            .to_string(),
+            Illisibilite::CryptSvc => tr!(
+                "le service de chiffrement de Windows (CryptSvc) ne répond pas : arrêté ou bloqué",
+                "the Windows cryptographic service (CryptSvc) is not responding: stopped or blocked"
+            )
+            .to_string(),
+            Illisibilite::Catalogues => tr!(
+                "les catalogues de signatures de Windows ne se lisent pas",
+                "the Windows signature catalogs cannot be read"
+            )
+            .to_string(),
+            Illisibilite::Signataire => tr!(
+                "la signature est là, mais son signataire ou sa chaîne de certificats ne se lit pas",
+                "the signature is there, but its signer or its certificate chain cannot be read"
+            )
+            .to_string(),
+            Illisibilite::Code(c) => trf!(
+                "Windows a rendu une autre erreur (code 0x{c:08X})",
+                "Windows returned another error (code 0x{c:08X})"
+            ),
+        }
+    }
+}
+
+/// La raison d'un code de Windows (Win32, ou HRESULT de la famille 7 qui le porte), ou `None` : un code inconnu, que
+/// l'appelant dit tel quel (`Code`) ou rattache à ce qu'il lisait (`Catalogues`).
+#[cfg_attr(not(windows), allow(dead_code))] // comme `Signature`
+pub(crate) fn illisibilite_connue(code: u32) -> Option<Illisibilite> {
+    let win32 = if code & 0xFFFF_0000 == 0x8007_0000 {
+        code & 0xFFFF
+    } else {
+        code
+    };
+    match win32 {
+        // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION.
+        32 | 33 => Some(Illisibilite::Verrouille),
+        5 => Some(Illisibilite::AccesRefuse),
+        // ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND.
+        2 | 3 => Some(Illisibilite::Absent),
+        // ERROR_SERVICE_DISABLED, ERROR_SERVICE_NOT_ACTIVE, RPC_S_SERVER_UNAVAILABLE, EPT_S_NOT_REGISTERED.
+        1058 | 1062 | 1722 | 1753 => Some(Illisibilite::CryptSvc),
+        _ => None,
+    }
+}
+
+/// Pourquoi ce fichier signé ne doit être ni arrêté ni mis en quarantaine SANS la personne, ou `None` : signé
+/// Microsoft, toujours ; illisible, quand personne ne peut confirmer (geste automatique, pas de vraie console).
+pub(crate) fn signature_intouchable(s: Signature) -> Option<String> {
     match s {
-        Signature::Microsoft => Some(tr!(
-            "signé par Microsoft : traité comme du système, une alerte seulement",
-            "signed by Microsoft: treated as part of the system, an alert only"
-        )),
-        Signature::Illisible => Some(tr!(
-            "signature du fichier illisible (le fichier ou les catalogues de Windows) : rien n'est fait à l'aveugle",
-            "file signature unreadable (the file or the Windows catalogs): nothing is done blindly"
-        )),
+        Signature::Microsoft => Some(signe_microsoft().to_string()),
+        Signature::Illisible(r) => Some(illisible_sans_confirmation(r)),
         Signature::Autre => None,
     }
+}
+
+fn signe_microsoft() -> &'static str {
+    tr!(
+        "signé par Microsoft : traité comme du système, une alerte seulement",
+        "signed by Microsoft: treated as part of the system, an alert only"
+    )
+}
+
+/// Le refus d'une signature illisible quand personne ne peut confirmer : il dit quoi faire.
+fn illisible_sans_confirmation(r: Illisibilite) -> String {
+    trf!(
+        "signature du fichier illisible ({}) : rien n'est fait à l'aveugle sans vous ; à faire à la main depuis Vanguard, dans une vraie fenêtre (Bloquer et réagir › Blocage des menaces), qui vous montrera pourquoi et vous demandera de confirmer",
+        "file signature unreadable ({}): nothing is done blindly without you; do it by hand from Vanguard, in a real window (Block and respond › Threat blocking), which will show you why and ask you to confirm",
+        r.texte()
+    )
 }
 
 /// Le sujet d'un certificat signataire est-il celui de Microsoft (« O=Microsoft Corporation, CN=Microsoft Windows ») ?
@@ -1061,57 +1156,306 @@ pub(crate) fn verification_illisible(code: i32) -> bool {
     code == 0x8009_2003 || code & 0xFFFF_0000 == 0x8007_0000
 }
 
-/// La signature d'un fichier d'après ses deux voies, chacune `Ok(signé Microsoft)` ou `Err` (illisible) : signé
-/// Microsoft par l'une suffit ; sinon une voie illisible rend le tout illisible.
+/// La signature d'un fichier d'après ses deux voies, chacune `Ok(signé Microsoft)` ou `Err(pourquoi illisible)` :
+/// signé Microsoft par l'une suffit ; sinon une voie illisible rend le tout illisible (CryptSvc d'abord, la cause la
+/// plus utile à dire ; puis la signature intégrée, lue sur le fichier même).
 #[cfg(any(windows, test))]
-pub(crate) fn signature_de(catalogue: Result<bool, ()>, integree: Result<bool, ()>) -> Signature {
+pub(crate) fn signature_de(catalogue: Result<bool, Illisibilite>, integree: Result<bool, Illisibilite>) -> Signature {
     if catalogue == Ok(true) || integree == Ok(true) {
-        Signature::Microsoft
-    } else if catalogue.is_err() || integree.is_err() {
-        Signature::Illisible
-    } else {
-        Signature::Autre
+        return Signature::Microsoft;
+    }
+    match (catalogue, integree) {
+        (Err(Illisibilite::CryptSvc), _) | (_, Err(Illisibilite::CryptSvc)) => {
+            Signature::Illisible(Illisibilite::CryptSvc)
+        }
+        (_, Err(r)) | (Err(r), _) => Signature::Illisible(r),
+        _ => Signature::Autre,
     }
 }
 
-/// La garde de signature, lue sur ce système : sous Windows seulement (ailleurs, aucune signature ne se lit ici).
-pub(crate) fn signature_systeme(chemin: &str) -> Option<&'static str> {
+/// La signature de `chemin`, lue sur ce système : sous Windows seulement (ailleurs, aucune ne se lit : « autre »,
+/// qui n'ouvre aucun geste de plus).
+pub(crate) fn signature_lue(chemin: &str) -> Signature {
     #[cfg(windows)]
     {
-        signature_intouchable(crate::machine::windows::signature::lire(std::path::Path::new(chemin)))
+        crate::machine::windows::signature::lire(std::path::Path::new(chemin))
     }
     #[cfg(not(windows))]
     {
         let _ = chemin;
-        None
+        Signature::Autre
     }
 }
 
-/// La garde de signature avant de remettre un arrêt à Vanguard administrateur (défense D6a, relecture). Le compte
-/// de ce Vanguard-ci ne lit souvent pas le programme d'un autre compte : illisible n'y refuse que l'arrêt fait ICI
-/// (`ici`). Remis, l'ordre est rejugé avec les droits (`ordres::juger`, puis `arret::arreter`), où illisible
-/// refuse ; signé Microsoft refuse partout.
-#[cfg(any(windows, test))]
-pub(crate) fn signature_avant_remise(s: Signature, ici: bool) -> Option<&'static str> {
-    if s == Signature::Illisible && !ici {
-        return None;
-    }
-    signature_intouchable(s)
+/// Ce que la garde de signature dit avant de préparer un arrêt ou une quarantaine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Avant {
+    /// Refusé, avec la raison.
+    Refuse(String),
+    /// Illisible, demandé par la personne : la question sera posée là où le geste se fait.
+    Confirmera,
+    /// Rien à dire.
+    Rien,
 }
 
-/// `signature_avant_remise`, lue sur ce système.
-pub(crate) fn signature_systeme_avant_remise(chemin: &str, ici: bool) -> Option<&'static str> {
+/// La garde de signature avant de préparer un geste (défense D6a, choix 3.1). Signé Microsoft refuse partout.
+/// Illisible : demandé par la personne (`automatique` faux), la question viendra là où le geste se fait (ici, ou
+/// Vanguard administrateur, qui relit avec ses droits) ; automatique, refusé ici (`ici`), ou laissé à Vanguard
+/// administrateur, qui le refuse (l'ordre part sans `demande`) : le compte de ce Vanguard-ci ne lit souvent pas le
+/// programme d'un autre compte.
+pub(crate) fn signature_avant_remise(s: Signature, ici: bool, automatique: bool) -> Avant {
+    match s {
+        Signature::Microsoft => Avant::Refuse(signe_microsoft().to_string()),
+        Signature::Autre => Avant::Rien,
+        Signature::Illisible(_) if !automatique => Avant::Confirmera,
+        Signature::Illisible(_) if !ici => Avant::Rien,
+        Signature::Illisible(r) => Avant::Refuse(illisible_sans_confirmation(r)),
+    }
+}
+
+/// L'étape montrée quand la signature ne se lit pas d'ici, pour un geste demandé.
+pub(crate) fn etape_confirmera(quarantaine: bool) -> String {
+    if quarantaine {
+        tr!(
+            "La signature du fichier ne se lit pas : avant de le mettre de côté, Vanguard vous montrera pourquoi et vous demandera de confirmer (non par défaut)",
+            "The file's signature cannot be read: before setting it aside, Vanguard will show you why and ask you to confirm (no by default)"
+        )
+        .to_string()
+    } else {
+        tr!(
+            "La signature du programme ne se lit pas d'ici : avant de l'arrêter, Vanguard vous montrera pourquoi et vous demandera de confirmer (non par défaut)",
+            "The program's signature cannot be read from here: before stopping it, Vanguard will show you why and ask you to confirm (no by default)"
+        )
+        .to_string()
+    }
+}
+
+/// Ce que la garde de signature décide au moment du geste.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Decision {
+    Refuse(String),
+    /// Illisible, et la personne peut confirmer : montrer pourquoi, puis demander.
+    Demander(Illisibilite),
+    Permis,
+}
+
+/// La garde de signature au moment du geste (défense D6a, choix 3.1). `autre_garde` : le refus d'une garde qui passe
+/// AVANT la question (session à distance, processus vital) ; la question n'est jamais posée pour ce qu'une autre
+/// garde refuse. `demande` : la personne l'a demandé elle-même ; `console` : la réponse viendra d'une vraie console.
+pub(crate) fn decider_signature(s: Signature, autre_garde: Option<&str>, demande: bool, console: bool) -> Decision {
+    if let Some(r) = autre_garde {
+        return Decision::Refuse(r.to_string());
+    }
+    match s {
+        Signature::Microsoft => Decision::Refuse(signe_microsoft().to_string()),
+        Signature::Autre => Decision::Permis,
+        Signature::Illisible(r) if demande && console => Decision::Demander(r),
+        Signature::Illisible(r) => Decision::Refuse(illisible_sans_confirmation(r)),
+    }
+}
+
+/// La question [o/N] (même règle que les baisses de D2) : seul « o » (« y ») vaut oui ; Entrée, la fin de l'entrée,
+/// une erreur de lecture (`demander` rend alors une réponse vide) et tout le reste valent non. Sans vraie console, la
+/// question n'est même pas posée : une réponse arrivée par un tube n'a pas été tapée par la personne.
+pub(crate) fn confirmer(console: bool, question: &str, demander: impl FnOnce(&str) -> String) -> bool {
+    if !console {
+        crate::ui::afficher_aligne(
+            "    ",
+            tr!(
+                "L'entrée n'est pas une console : la réponse vaut non, rien n'est fait.",
+                "The input is not a console: the answer is no, nothing is done."
+            ),
+            4,
+            "",
+        );
+        return false;
+    }
+    crate::langue::oui(&demander(question))
+}
+
+/// L'entrée de ce Vanguard est-elle une vraie console (sous Windows, GetConsoleMode : pas un tube, pas un fichier) ?
+pub(crate) fn console_reelle() -> bool {
     #[cfg(windows)]
     {
-        signature_avant_remise(
-            crate::machine::windows::signature::lire(std::path::Path::new(chemin)),
-            ici,
-        )
+        crate::machine::windows::eleve::console_reelle()
     }
     #[cfg(not(windows))]
     {
-        let _ = (chemin, ici);
-        None
+        use std::io::IsTerminal as _;
+        std::io::stdin().is_terminal()
+    }
+}
+
+/// Ce qui désigne un processus, lu avant la question puis relu après la réponse.
+#[cfg_attr(not(windows), allow(dead_code))] // relu par l'arrêt de Windows ; ailleurs, les essais seulement
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Identite {
+    pub pid: u32,
+    /// Heure de création (FILETIME) : un numéro repris a une autre heure.
+    pub creation: Option<u64>,
+    pub chemin: Option<String>,
+}
+
+/// La réponse « o » tient-elle encore, relue juste avant l'arrêt ? Elle ne vaut que pour CE processus, faisant
+/// tourner CE programme, toujours illisible ou autre : un numéro repris, une autre image, une signature devenue
+/// Microsoft lisible, ou une garde qui refuse maintenant (session ouverte depuis) l'annulent. `Err` : pourquoi,
+/// au contexte `ou` de l'appelant.
+#[cfg_attr(not(windows), allow(dead_code))] // comme `Identite`
+pub(crate) fn confirmation_tient(
+    avant: &Identite,
+    apres: &Identite,
+    signature: Signature,
+    autre_garde: Option<&str>,
+    ou: &'static str,
+) -> Result<(), crate::modele::Echec> {
+    let refus = |r: String| Err(crate::modele::Echec::refuse(ou, r));
+    if let Some(r) = autre_garde {
+        return refus(r.to_string());
+    }
+    let meme_heure = avant.creation.is_some() && avant.creation == apres.creation;
+    if avant.pid != apres.pid || !meme_heure {
+        return refus(trf!(
+            "le PID {} désigne maintenant un autre processus : la réponse ne vaut pas pour lui, rien n'est arrêté",
+            "PID {} now points to another process: the answer does not apply to it, nothing is stopped",
+            avant.pid
+        ));
+    }
+    let meme_image = matches!((&avant.chemin, &apres.chemin), (Some(a), Some(b)) if a.eq_ignore_ascii_case(b));
+    if !meme_image {
+        return refus(tr!(
+            "le processus fait maintenant tourner un autre programme : la réponse ne vaut pas pour lui, rien n'est arrêté",
+            "the process now runs another program: the answer does not apply to it, nothing is stopped"
+        )
+        .to_string());
+    }
+    if signature == Signature::Microsoft {
+        return refus(signe_microsoft().to_string());
+    }
+    Ok(())
+}
+
+/// Ce que Vanguard sait d'un programme (ou d'un fichier) à la signature illisible, montré avant la question. Chaque
+/// texte vient du programme ou du système de fichiers, donc de n'importe qui : nettoyé et borné à l'affichage.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Portrait {
+    /// Un processus (pid, compte, parent, lancement, ligne de commande) ou seulement un fichier.
+    pub processus: bool,
+    pub nom: Option<String>,
+    pub chemin: Option<String>,
+    pub pid: Option<u32>,
+    pub compte: Option<String>,
+    pub parent: Option<(String, u32)>,
+    pub lancement: Option<String>,
+    pub ligne: Option<String>,
+    pub taille: Option<u64>,
+    pub date: Option<String>,
+    pub sha256: Option<String>,
+}
+
+/// Un texte hostile prêt à montrer : caractères de contrôle, séquences ANSI et bidi rendus visibles (« � »), longueur
+/// bornée à `colonnes`.
+pub(crate) fn propre(texte: &str, colonnes: usize) -> String {
+    crate::ui::couper(&crate::ui::affichable(texte), colonnes)
+}
+
+/// Les lignes à montrer avant la question : pourquoi la signature ne se lit pas, puis le portrait.
+pub(crate) fn lignes_du_portrait(raison: Illisibilite, p: &Portrait) -> Vec<String> {
+    let inconnu = || tr!("inconnu", "unknown").to_string();
+    let texte = |v: &Option<String>, n: usize| v.as_deref().map_or_else(inconnu, |t| propre(t, n));
+    let mut lignes = vec![trf!(
+        "Pourquoi la signature ne se lit pas : {}",
+        "Why the signature cannot be read: {}",
+        raison.texte()
+    )];
+    lignes.push(trf!("Nom : {}", "Name: {}", texte(&p.nom, 80)));
+    lignes.push(trf!("Chemin : {}", "Path: {}", texte(&p.chemin, 300)));
+    if p.processus {
+        lignes.push(trf!(
+            "PID : {}",
+            "PID: {}",
+            p.pid.map_or_else(inconnu, |n| n.to_string())
+        ));
+        lignes.push(trf!("Compte : {}", "Account: {}", texte(&p.compte, 80)));
+        lignes.push(trf!(
+            "Parent : {}",
+            "Parent: {}",
+            p.parent
+                .as_ref()
+                .map_or_else(inconnu, |(nom, pid)| format!("{} (PID {pid})", propre(nom, 80)))
+        ));
+        lignes.push(trf!("Lancé le : {}", "Started: {}", texte(&p.lancement, 40)));
+        lignes.push(trf!(
+            "Ligne de commande : {}",
+            "Command line: {}",
+            p.ligne
+                .as_deref()
+                .map_or_else(|| tr!("illisible", "unreadable").to_string(), |t| propre(t, 300))
+        ));
+    }
+    lignes.push(trf!(
+        "Fichier : {}, modifié le {}",
+        "File: {}, modified {}",
+        p.taille.map_or_else(inconnu, |t| trf!("{t} octets", "{t} bytes")),
+        texte(&p.date, 40)
+    ));
+    lignes.push(trf!(
+        "SHA-256 : {}",
+        "SHA-256: {}",
+        p.sha256
+            .as_deref()
+            .map_or_else(|| tr!("illisible", "unreadable").to_string(), |t| propre(t, 64))
+    ));
+    lignes
+}
+
+/// Montre pourquoi la signature ne se lit pas et le portrait, puis pose `question` ; `true` seulement sur « o ».
+pub(crate) fn montrer_et_confirmer(raison: Illisibilite, p: &Portrait, question: &str) -> bool {
+    println!();
+    for l in lignes_du_portrait(raison, p) {
+        crate::ui::afficher_aligne("    ", &l, 6, "");
+    }
+    confirmer(console_reelle(), question, crate::ui::demander_ou_defaut)
+}
+
+/// Le portrait d'un fichier : son nom, son chemin long (pas 8.3), sa taille et sa date, son SHA-256 s'il se lit.
+pub(crate) fn portrait_de_fichier(chemin: &std::path::Path) -> Portrait {
+    let texte = chemin.to_string_lossy().into_owned();
+    #[cfg(windows)]
+    let long = crate::machine::windows::environnement::chemin_long(&texte).unwrap_or(texte);
+    #[cfg(not(windows))]
+    let long = texte;
+    let meta = std::fs::metadata(chemin).ok();
+    Portrait {
+        nom: chemin.file_name().map(|n| n.to_string_lossy().into_owned()),
+        taille: meta.as_ref().map(std::fs::Metadata::len),
+        date: meta.and_then(|m| m.modified().ok()).map(date_locale),
+        sha256: crate::protection::empreintes::sha256(chemin).map(|e| crate::protection::empreintes::hex(&e)),
+        chemin: Some(long),
+        ..Portrait::default()
+    }
+}
+
+/// Une heure du système, à l'heure de cet ordinateur.
+pub(crate) fn date_locale(t: std::time::SystemTime) -> String {
+    chrono::DateTime::<chrono::Local>::from(t)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string()
+}
+
+/// Ce qui est noté au journal d'un geste confirmé malgré une signature illisible : la raison, et l'empreinte si le
+/// fichier se lisait.
+pub(crate) fn note_confirmee(quarantaine: bool, raison: Illisibilite, sha256: Option<&str>) -> String {
+    let empreinte = sha256.unwrap_or("illisible");
+    if quarantaine {
+        format!(
+            "quarantaine confirmée malgré une signature illisible ({}) ; SHA-256 {empreinte}",
+            raison.texte()
+        )
+    } else {
+        format!(
+            "arrêt confirmé malgré une signature illisible ({}) ; SHA-256 {empreinte}",
+            raison.texte()
+        )
     }
 }
 
@@ -1176,16 +1520,32 @@ mod tests {
     /// n'est permis ni refusé par elle.
     #[test]
     fn signature_ne_fait_que_refuser() {
+        // Sans personne pour confirmer (geste automatique, pas de vraie console) : Microsoft et illisible refusent,
+        // et le refus d'illisible dit quoi faire ; autre ne refuse pas (et n'ouvre rien de plus).
         assert!(signature_intouchable(Signature::Microsoft).is_some());
-        assert!(signature_intouchable(Signature::Illisible).is_some());
+        let illisible = signature_intouchable(Signature::Illisible(Illisibilite::Verrouille)).unwrap();
+        assert!(
+            illisible.contains("à la main") || illisible.contains("by hand"),
+            "{illisible}"
+        );
         assert_eq!(signature_intouchable(Signature::Autre), None);
         assert_eq!(signature_de(Ok(true), Ok(false)), Signature::Microsoft);
         assert_eq!(signature_de(Ok(false), Ok(true)), Signature::Microsoft);
         // Microsoft par une voie, l'autre illisible : refusé de toute façon.
-        assert_eq!(signature_de(Err(()), Ok(true)), Signature::Microsoft);
-        assert_eq!(signature_de(Err(()), Ok(false)), Signature::Illisible);
-        assert_eq!(signature_de(Ok(false), Err(())), Signature::Illisible);
+        let r = Illisibilite::Catalogues;
+        assert_eq!(signature_de(Err(r), Ok(true)), Signature::Microsoft);
+        assert_eq!(signature_de(Err(r), Ok(false)), Signature::Illisible(r));
+        assert_eq!(signature_de(Ok(false), Err(r)), Signature::Illisible(r));
         assert_eq!(signature_de(Ok(false), Ok(false)), Signature::Autre);
+        // Les deux illisibles : CryptSvc d'abord, sinon la signature intégrée (lue sur le fichier même).
+        assert_eq!(
+            signature_de(Err(Illisibilite::CryptSvc), Err(Illisibilite::Verrouille)),
+            Signature::Illisible(Illisibilite::CryptSvc)
+        );
+        assert_eq!(
+            signature_de(Err(Illisibilite::Catalogues), Err(Illisibilite::Verrouille)),
+            Signature::Illisible(Illisibilite::Verrouille)
+        );
         for sujet in [
             "C=US, S=Washington, L=Redmond, O=Microsoft Corporation, CN=Microsoft Windows",
             "CN=Microsoft Windows Hardware Compatibility Publisher",
@@ -1275,12 +1635,239 @@ mod tests {
     /// Microsoft refuse toujours, Autre jamais.
     #[test]
     fn signature_illisible_rejugee_par_l_administrateur() {
-        assert_eq!(signature_avant_remise(Signature::Illisible, false), None);
-        assert!(signature_avant_remise(Signature::Illisible, true).is_some());
+        let illisible = Signature::Illisible(Illisibilite::Verrouille);
+        // Automatique : refusé ici ; remis à Vanguard administrateur, qui le refuse (ordre sans `demande`).
+        assert_eq!(signature_avant_remise(illisible, false, true), Avant::Rien);
+        assert!(matches!(
+            signature_avant_remise(illisible, true, true),
+            Avant::Refuse(_)
+        ));
+        // Demandé par la personne (choix 3.1) : la question viendra là où le geste se fait, ici ou remis.
         for ici in [false, true] {
-            assert!(signature_avant_remise(Signature::Microsoft, ici).is_some());
-            assert_eq!(signature_avant_remise(Signature::Autre, ici), None);
+            assert_eq!(signature_avant_remise(illisible, ici, false), Avant::Confirmera);
         }
+        for ici in [false, true] {
+            for automatique in [false, true] {
+                assert!(matches!(
+                    signature_avant_remise(Signature::Microsoft, ici, automatique),
+                    Avant::Refuse(_)
+                ));
+                assert_eq!(signature_avant_remise(Signature::Autre, ici, automatique), Avant::Rien);
+            }
+        }
+    }
+
+    /// Rançongiciel (geste automatique) + signature illisible : refusé à chaque étape (préparé ici, rejugé par
+    /// Vanguard administrateur, au moment du geste), même devant une vraie console, sans jamais poser la question.
+    #[test]
+    fn rancongiciel_automatique_et_illisible_refuse() {
+        for r in [Illisibilite::Verrouille, Illisibilite::Absent, Illisibilite::CryptSvc] {
+            let illisible = Signature::Illisible(r);
+            // Préparé ici, ou rejugé par l'administrateur (`ordres::juger` : l'ordre part sans `demande`).
+            assert!(matches!(
+                signature_avant_remise(illisible, true, true),
+                Avant::Refuse(_)
+            ));
+            // Au moment du geste : `Confirmation::Jamais`, la garde sans question.
+            assert!(signature_intouchable(illisible).is_some());
+            for console in [false, true] {
+                assert!(matches!(
+                    decider_signature(illisible, None, false, console),
+                    Decision::Refuse(_)
+                ));
+            }
+        }
+    }
+
+    /// La raison d'une signature illisible, d'après le code de Windows (Win32 ou HRESULT 0x8007xxxx).
+    #[test]
+    fn illisibilite_d_apres_le_code() {
+        for (code, attendu) in [
+            (32, Illisibilite::Verrouille),
+            (0x8007_0020, Illisibilite::Verrouille),
+            (0x8007_0021, Illisibilite::Verrouille),
+            (5, Illisibilite::AccesRefuse),
+            (0x8007_0005, Illisibilite::AccesRefuse),
+            (2, Illisibilite::Absent),
+            (0x8007_0003, Illisibilite::Absent),
+            (1722, Illisibilite::CryptSvc),
+            (0x8007_06BA, Illisibilite::CryptSvc),
+            (0x8007_06D9, Illisibilite::CryptSvc),
+            (0x8007_0422, Illisibilite::CryptSvc),
+            (0x8007_0426, Illisibilite::CryptSvc),
+        ] {
+            assert_eq!(illisibilite_connue(code), Some(attendu), "{code:x}");
+        }
+        for code in [0, 0x8009_2003, 0x8007_000E, 0x800B_0100] {
+            assert_eq!(illisibilite_connue(code), None, "{code:x}");
+        }
+        assert!(Illisibilite::Code(0x8009_2003).texte().contains("0x80092003"));
+    }
+
+    /// Choix 3.1 : illisible + demandé + vraie console = question ; sans console, ou automatique (rançongiciel,
+    /// protection active, nuit) = refus qui dit de le faire à la main.
+    #[test]
+    fn illisible_demande_en_console_pose_la_question() {
+        let r = Illisibilite::Verrouille;
+        let illisible = Signature::Illisible(r);
+        assert_eq!(decider_signature(illisible, None, true, true), Decision::Demander(r));
+        for (demande, console) in [(true, false), (false, true), (false, false)] {
+            let Decision::Refuse(raison) = decider_signature(illisible, None, demande, console) else {
+                panic!("{demande} {console}");
+            };
+            assert!(raison.contains("à la main") || raison.contains("by hand"), "{raison}");
+        }
+        assert_eq!(decider_signature(Signature::Autre, None, true, true), Decision::Permis);
+        assert_eq!(
+            decider_signature(Signature::Autre, None, false, false),
+            Decision::Permis
+        );
+    }
+
+    /// Microsoft lisible, session à distance, processus vital : refus SANS question, même illisible et demandé.
+    #[test]
+    fn les_autres_gardes_refusent_sans_question() {
+        assert!(matches!(
+            decider_signature(Signature::Microsoft, None, true, true),
+            Decision::Refuse(_)
+        ));
+        // Un programme lancé depuis WinRM (wsmprovhost), parent vivant né avant lui.
+        let session = ascendance_de_session(
+            4242,
+            |p| match p {
+                4242 => Some(Fiche {
+                    parent: 100,
+                    nom: "outil.exe".into(),
+                    creation: Some(20),
+                }),
+                100 => Some(Fiche {
+                    parent: 0,
+                    nom: "wsmprovhost.exe".into(),
+                    creation: Some(10),
+                }),
+                _ => None,
+            },
+            false,
+        );
+        assert!(session.is_some());
+        let vital = processus_intouchable(
+            4242,
+            "lsass.exe",
+            Some(r"C:\Users\alice\lsass.exe"),
+            &HashSet::new(),
+            Os::Windows,
+        );
+        assert!(vital.is_some());
+        for garde in [session, vital] {
+            let d = decider_signature(Signature::Illisible(Illisibilite::Verrouille), garde, true, true);
+            assert_eq!(d, Decision::Refuse(garde.unwrap().to_string()));
+        }
+    }
+
+    /// Seul « o » (ou « y ») arrête ; Entrée, fin de l'entrée ou erreur de lecture (réponse vide), le reste : non.
+    /// Sans vraie console, la question n'est même pas posée.
+    #[test]
+    fn seul_o_confirme() {
+        for oui in ["o", "O", "oui", "y", "yes", " o "] {
+            assert!(confirmer(true, "?", |_| oui.to_string()), "{oui}");
+        }
+        for non in ["", "n", "non", "no", "0", "oo", "\x1b[A", "ok"] {
+            assert!(!confirmer(true, "?", |_| non.to_string()), "{non:?}");
+        }
+        let mut posee = false;
+        assert!(!confirmer(false, "?", |_| {
+            posee = true;
+            "o".to_string()
+        }));
+        assert!(!posee);
+    }
+
+    /// La réponse ne vaut que pour le processus vu : un PID repris (autre heure de création), une autre image, une
+    /// signature devenue Microsoft lisible, ou une garde qui refuse maintenant, et rien n'est arrêté.
+    #[test]
+    fn la_reponse_ne_vaut_que_pour_le_processus_vu() {
+        let avant = Identite {
+            pid: 4242,
+            creation: Some(133_000_000_000_000_000),
+            chemin: Some(r"C:\Users\alice\AppData\Local\Temp\outil.exe".into()),
+        };
+        let illisible = Signature::Illisible(Illisibilite::Verrouille);
+        assert_eq!(
+            confirmation_tient(&avant, &avant.clone(), illisible, None, "essai"),
+            Ok(())
+        );
+        let casse = Identite {
+            chemin: Some(r"c:\users\alice\appdata\local\temp\OUTIL.EXE".into()),
+            ..avant.clone()
+        };
+        assert_eq!(
+            confirmation_tient(&avant, &casse, Signature::Autre, None, "essai"),
+            Ok(())
+        );
+        let repris = Identite {
+            creation: Some(133_000_000_000_000_001),
+            ..avant.clone()
+        };
+        let autre_image = Identite {
+            chemin: Some(r"C:\Users\alice\autre.exe".into()),
+            ..avant.clone()
+        };
+        let illisible_apres = Identite {
+            creation: None,
+            ..avant.clone()
+        };
+        let sans_chemin = Identite {
+            chemin: None,
+            ..avant.clone()
+        };
+        for apres in [&repris, &autre_image, &illisible_apres, &sans_chemin] {
+            assert!(
+                confirmation_tient(&avant, apres, illisible, None, "essai").is_err(),
+                "{apres:?}"
+            );
+        }
+        assert!(confirmation_tient(&avant, &avant, Signature::Microsoft, None, "essai").is_err());
+        assert!(confirmation_tient(&avant, &avant, illisible, Some("session"), "essai").is_err());
+        let sans_heure = Identite {
+            creation: None,
+            ..avant.clone()
+        };
+        assert!(confirmation_tient(&sans_heure, &sans_heure, illisible, None, "essai").is_err());
+    }
+
+    /// Un nom, un chemin ou une ligne de commande hostiles (séquence ANSI, retour chariot, très long) sont nettoyés et
+    /// bornés avant d'être montrés.
+    #[test]
+    fn portrait_hostile_nettoye() {
+        let long = "A".repeat(5000);
+        let p = Portrait {
+            processus: true,
+            nom: Some("ok\x1b[2K\rmicrosoft.exe".into()),
+            chemin: Some(format!("C:\\x\\{long}\u{202e}exe.txt")),
+            pid: Some(4242),
+            compte: Some("PC\\alice\x1b]52;c;aGk=\x07".into()),
+            parent: Some(("explorer\n✔ sain".into(), 100)),
+            lancement: Some("2026-11-03 10:00:00".into()),
+            ligne: Some(format!("outil.exe {long}\r\n")),
+            taille: Some(1234),
+            date: Some("2026-11-03".into()),
+            sha256: None,
+        };
+        let lignes = lignes_du_portrait(Illisibilite::Verrouille, &p);
+        for l in &lignes {
+            assert!(!crate::ui::contient_un_piege(l), "{l:?}");
+            assert!(crate::ui::largeur_affichee(l) <= 340, "{}", l.len());
+        }
+        let tout = lignes.join("\n");
+        assert!(tout.contains("4242") && tout.contains("1234"));
+        assert!(tout.contains("illisible") || tout.contains("unreadable"));
+        // Un fichier seulement : ni PID ni compte.
+        let fichier = Portrait { processus: false, ..p };
+        assert!(lignes_du_portrait(Illisibilite::Absent, &fichier).len() < lignes.len());
+        // La note du journal : la raison et l'empreinte, si elle est connue.
+        let n = note_confirmee(false, Illisibilite::Verrouille, Some("ab12"));
+        assert!(n.starts_with("arrêt confirmé") && n.contains("ab12"));
+        assert!(note_confirmee(true, Illisibilite::Absent, None).contains("SHA-256 illisible"));
     }
 
     /// Relecture de D6a : sous Unix (orphelins rattachés à init), un parent absent est caché (hidepid) ou illisible,

@@ -51,9 +51,22 @@ impl Ordre {
                 "Cut the connections already open to {}",
                 ip.to_canonical()
             ),
-            Ordre::ArreterProcessus { pid, chemin } => trf!(
+            Ordre::ArreterProcessus {
+                pid,
+                chemin,
+                demande: false,
+            } => trf!(
                 "Arrêter le processus {pid} ({}), seulement s'il fait toujours tourner ce programme",
                 "Stop process {pid} ({}), only if it still runs this program",
+                crate::ui::affichable(chemin)
+            ),
+            Ordre::ArreterProcessus {
+                pid,
+                chemin,
+                demande: true,
+            } => trf!(
+                "Arrêter le processus {pid} ({}), seulement s'il fait toujours tourner ce programme ; si sa signature ne se lit pas, vous verrez pourquoi et confirmerez d'abord",
+                "Stop process {pid} ({}), only if it still runs this program; if its signature cannot be read, you will see why and confirm first",
                 crate::ui::affichable(chemin)
             ),
             Ordre::RemettrePilotes { avant: Some(v) } => trf!(
@@ -259,7 +272,7 @@ pub(crate) fn juger(o: &Ordre, j: &Juge) -> Option<String> {
         // Une règle entrante Block coupe aussi ce qui est établi : le port d'une session en cours (prise en main sur
         // 5900, RustDesk…) n'est pas fermé, et rien ne l'est sans connexions lisibles.
         Ordre::FermerPort { port, .. } => gardes::port_a_garder(*port, j.sessions.as_ref()).map(str::to_string),
-        Ordre::ArreterProcessus { pid, chemin } => {
+        Ordre::ArreterProcessus { pid, chemin, demande } => {
             let Some(actuel) = super::gestes::chemin_du_processus(*pid) else {
                 return Some(trf!(
                     "le processus {pid} est fini ou son programme ne se lit pas : rien n'est arrêté",
@@ -286,8 +299,8 @@ pub(crate) fn juger(o: &Ordre, j: &Juge) -> Option<String> {
                 .flatten()
                 .find_map(|nom| gardes::processus_intouchable(*pid, nom, Some(&actuel), &j.intouchables, j.os))
                 .or_else(|| gardes::lignee_de_session(*pid, j.sessions.as_ref()))
-                .or_else(|| gardes::signature_systeme(&actuel))
                 .map(str::to_string)
+                .or_else(|| signature_avant_arret(&actuel, *demande))
         }
         // Défaire n'est permis que pour ce que Vanguard a pu poser : il ne bloque jamais une adresse locale ou un DNS
         // public, ne ferme jamais SSH ni le Bureau à distance. Une note forgée qui viserait la règle d'un autre (ufw ne
@@ -310,6 +323,15 @@ pub(crate) fn juger(o: &Ordre, j: &Juge) -> Option<String> {
         }
         #[cfg(not(windows))]
         Ordre::RemettrePilotes { .. } => None,
+    }
+}
+
+/// La garde de signature du rejugement : Microsoft lisible refuse toujours ; illisible refuse un ordre automatique,
+/// et pour un ordre demandé laisse la question à `faire` (`arret::arreter` relit tout juste avant).
+fn signature_avant_arret(actuel: &str, demande: bool) -> Option<String> {
+    match gardes::signature_avant_remise(gardes::signature_lue(actuel), true, !demande) {
+        gardes::Avant::Refuse(raison) => Some(raison),
+        gardes::Avant::Confirmera | gardes::Avant::Rien => None,
     }
 }
 
@@ -363,7 +385,7 @@ pub(crate) fn executer_groupes(
 /// Un ordre rejugé, puis fait s'il passe.
 #[cfg(any(unix, test))]
 pub(crate) fn juger_et_faire(o: &Ordre, juge: &Juge) -> Resultat {
-    juger(o, juge).map_or_else(|| faire(o), Resultat::echec)
+    juger(o, juge).map_or_else(|| faire(o, juge), Resultat::echec)
 }
 
 /// La marche de `executer_groupes` pour toute sorte de demande (les ordres du blocage, les gestes de Linux de
@@ -404,11 +426,22 @@ pub(crate) fn executer_en_groupes<D>(
         .collect()
 }
 
-/// Fait un ordre déjà rejugé, avec les droits de ce processus.
-pub(crate) fn faire(o: &Ordre) -> Resultat {
-    if let Ordre::ArreterProcessus { pid, chemin } = o {
-        return match super::arret::arreter(*pid, chemin) {
-            Ok(()) => Resultat::ok(),
+/// Fait un ordre déjà rejugé, avec les droits de ce processus. Un arrêt demandé dont la signature ne se lit pas est
+/// montré puis confirmé ici, là où le jugement final a lieu (une seule question, posée par celui qui agit), avec les
+/// gardes du juge ; la note dit qu'il a été confirmé.
+pub(crate) fn faire(o: &Ordre, j: &Juge) -> Resultat {
+    if let Ordre::ArreterProcessus { pid, chemin, demande } = o {
+        let confirmation = if *demande {
+            super::arret::Confirmation::Demandee {
+                intouchables: &j.intouchables,
+                os: j.os,
+            }
+        } else {
+            super::arret::Confirmation::Jamais
+        };
+        return match super::arret::arreter(*pid, chemin, &confirmation) {
+            Ok(Some(note)) => Resultat::ok_note(note),
+            Ok(None) => Resultat::ok(),
             Err(e) => Resultat::echec(e.to_string()),
         };
     }
@@ -731,10 +764,12 @@ mod tests {
             Ordre::ArreterProcessus {
                 pid: 4242,
                 chemin: "/home/alice/.cache/x m'rig".into(),
+                demande: false,
             },
             Ordre::ArreterProcessus {
                 pid: 7,
                 chemin: r"C:\Users\alice\AppData\Local\Temp\l'outil.exe".into(),
+                demande: true,
             },
             Ordre::RemettrePilotes { avant: None },
             Ordre::RemettrePilotes { avant: Some(0) },
@@ -752,10 +787,20 @@ mod tests {
         assert_eq!(
             Ordre::ArreterProcessus {
                 pid: 1,
-                chemin: "/a b".into()
+                chemin: "/a b".into(),
+                demande: false,
             }
             .ligne(),
             "vanguard:arreter-processus 1 2f612062"
+        );
+        assert_eq!(
+            Ordre::ArreterProcessus {
+                pid: 1,
+                chemin: "/a b".into(),
+                demande: true,
+            }
+            .ligne(),
+            "vanguard:arreter-processus-demande 1 2f612062"
         );
     }
 
@@ -886,12 +931,14 @@ mod tests {
             let arreter_moi = Ordre::ArreterProcessus {
                 pid: moi,
                 chemin: chemin.clone(),
+                demande: true,
             };
             assert!(juger(&arreter_moi, &Juge::lire(None)).is_some());
             // Un autre programme attendu sous ce numéro : refusé aussi.
             let autre = Ordre::ArreterProcessus {
                 pid: moi,
                 chemin: "/autre/programme".into(),
+                demande: true,
             };
             assert!(juger(&autre, &juge).is_some());
         }
@@ -979,6 +1026,7 @@ mod tests {
             powershell(&Ordre::ArreterProcessus {
                 pid: 4242,
                 chemin: r"C:\Users\alice\l'outil.exe".into(),
+                demande: false,
             })
             .is_none()
         );

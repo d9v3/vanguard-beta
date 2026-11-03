@@ -106,12 +106,10 @@ pub(crate) fn isoler(chemin: &Path, detection: &str, d: Demande) -> std::io::Res
         .and_then(|p| p.fichier.as_ref())
         .filter(|f| Path::new(&f.chemin) == chemin)
         .and_then(|f| f.sha256.clone());
-    // Le seul chemin vers la quarantaine : un fichier signé par Microsoft (ou dont la signature ne se lit pas) n'y
-    // va jamais, d'où que vienne la demande (défense D6a).
-    let r = match crate::protection::blocage::gardes::signature_systeme(&chemin.to_string_lossy()) {
-        Some(raison) => Err(std::io::Error::other(raison)),
-        None => isoler_dans(chemin, detection, &dossier(), sha256),
-    };
+    // Le seul chemin vers la quarantaine : un fichier signé par Microsoft n'y va jamais, d'où que vienne la demande
+    // (défense D6a) ; une signature illisible s'y montre puis se confirme, seulement à la demande de la personne.
+    let r = garde_de_signature(chemin, d.automatique, &mut lancees)
+        .and_then(|()| isoler_dans(chemin, detection, &dossier(), sha256));
     let annulation =
         r.as_ref()
             .ok()
@@ -174,6 +172,46 @@ pub(crate) fn supprimer_apres_analyse(chemin: &Path, detection: &str) -> std::io
         preuve,
     );
     r
+}
+
+/// La garde de signature de la quarantaine (défense D6a, choix 3.1) : Microsoft lisible refuse ; illisible refuse un
+/// geste automatique ou sans vraie console, sinon montre pourquoi et ce qu'on sait du fichier, puis demande « Mettre
+/// de côté quand même ? [o/N] ». Un fichier qu'une autre garde refuse (système, Vanguard) n'en reçoit jamais la
+/// question. La signature est relue après la réponse : devenue Microsoft lisible, la réponse ne vaut plus.
+fn garde_de_signature(chemin: &Path, automatique: bool, lancees: &mut Vec<String>) -> std::io::Result<()> {
+    use crate::protection::blocage::gardes::{self, Decision};
+    let texte = chemin.to_string_lossy();
+    let sig = gardes::signature_lue(&texte);
+    if matches!(sig, gardes::Signature::Autre) {
+        // Lisible et pas Microsoft : rien de plus qu'avant (les autres gardes sont celles de l'appelant).
+        return Ok(());
+    }
+    let mon_programme = std::env::current_exe().ok().map(|c| c.to_string_lossy().into_owned());
+    let autre = gardes::fichier_intouchable(&texte, crate::machine::regles::Os::actuel(), mon_programme.as_deref());
+    let raison = match gardes::decider_signature(sig, autre, !automatique, gardes::console_reelle()) {
+        Decision::Permis => return Ok(()),
+        Decision::Refuse(r) => return Err(std::io::Error::other(r)),
+        Decision::Demander(r) => r,
+    };
+    let portrait = gardes::portrait_de_fichier(chemin);
+    let question = tr!(
+        "\n  Mettre de côté quand même ? [o/N] : ",
+        "\n  Set it aside anyway? [y/N]: "
+    );
+    if !gardes::montrer_et_confirmer(raison, &portrait, question) {
+        return Err(std::io::Error::other(tr!(
+            "vous avez répondu non : rien n'est mis de côté",
+            "you answered no: nothing is set aside"
+        )));
+    }
+    let relue = gardes::signature_lue(&texte);
+    if matches!(relue, gardes::Signature::Microsoft) {
+        return Err(std::io::Error::other(
+            gardes::signature_intouchable(relue).unwrap_or_default(),
+        ));
+    }
+    lancees.push(gardes::note_confirmee(true, raison, portrait.sha256.as_deref()));
+    Ok(())
 }
 
 fn isoler_dans(chemin: &Path, detection: &str, dossier: &Path, sha256: Option<String>) -> std::io::Result<PathBuf> {
