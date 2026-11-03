@@ -293,7 +293,7 @@ fn trier(pid: u32, nom: &str, moi: u32, windows: Option<&Lieux>) -> Tri {
 /// PAGE_NOACCESS ni PAGE_GUARD, qui ferait une exception dans le programme lu), et privée (MEM_PRIVATE : tas, piles,
 /// VirtualAlloc, là où un chargeur pose son code) ou mappée exécutable. Une image (MEM_IMAGE) se juge à part
 /// (`image_windows`).
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 pub(crate) fn region_windows(etat: u32, protection: u32, sorte: u32) -> bool {
     const MEM_PRIVATE: u32 = 0x2_0000;
     const MEM_MAPPED: u32 = 0x4_0000;
@@ -303,7 +303,7 @@ pub(crate) fn region_windows(etat: u32, protection: u32, sorte: u32) -> bool {
 }
 
 /// Validée et lisible sans exception dans le programme lu.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 pub(crate) fn lisible_windows(etat: u32, protection: u32) -> bool {
     const MEM_COMMIT: u32 = 0x1000;
     const PAGE_NOACCESS: u32 = 0x01;
@@ -319,7 +319,7 @@ pub(crate) fn lisible_windows(etat: u32, protection: u32) -> bool {
 /// effacé, ou d'un fichier réécrit depuis, vivent en MEM_IMAGE, sur un fichier sain ou absent, que ni le scan de
 /// fichiers ni celui des régions privées ne voyaient. Une page de code en lecture-écriture-exécution
 /// (PAGE_EXECUTE_READWRITE) n'est pas celle d'une image intacte : lue aussi.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 pub(crate) fn image_windows(fichier_present: Option<bool>, pages_privees: Option<bool>, rwx: bool) -> Option<bool> {
     if fichier_present == Some(false) || pages_privees == Some(true) || rwx {
         return Some(true);
@@ -333,7 +333,7 @@ pub(crate) fn image_windows(fichier_present: Option<bool>, pages_privees: Option
 /// (« \Windows »), d'après GetSystemDirectoryW. Retenus : System32, SysWOW64, WinSxS, Microsoft.NET, SystemApps et les
 /// deux Program Files ; écartés : les sous-dossiers que tout compte peut écrire (Tasks, spool\drivers\color,
 /// com\dmp, Tracing…), un « .. », et un « : » (flux de données secondaire). Ce qui n'est pas retenu se lit.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 pub(crate) fn image_du_systeme_windows(chemin: &str, racines: &[String], windows: &str) -> bool {
     const SOUS_WINDOWS: &[&str] = &[
         "system32\\",
@@ -381,7 +381,7 @@ pub(crate) fn image_du_systeme_windows(chemin: &str, racines: &[String], windows
 /// Comparés : la date de liaison et le nombre de sections (COFF), le point d'entrée, la taille de l'image et la somme
 /// de contrôle (en-tête facultatif), et la table des sections ; pas l'adresse de base, que le chargeur réécrit en
 /// mémoire quand il déplace l'image. `None` : l'un des deux n'est pas un PE lisible.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 pub(crate) fn entetes_pe_concordent(memoire: &[u8], fichier: &[u8]) -> Option<bool> {
     fn champs(o: &[u8]) -> Option<Vec<&[u8]>> {
         if o.get(..2)? != b"MZ" {
@@ -412,7 +412,7 @@ pub(crate) fn entetes_pe_concordent(memoire: &[u8], fichier: &[u8]) -> Option<bo
 
 /// Une entrée de `/proc/<pid>/smaps` : l'en-tête (celui de maps) et le champ « Anonymous » (pages privées, copiées à
 /// l'écriture ou jamais adossées à un fichier).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 #[derive(Debug, Clone, PartialEq)]
 struct Mappage {
     region: Region,
@@ -427,7 +427,7 @@ struct Mappage {
 
 /// L'en-tête d'une entrée de smaps (« debut-fin droits décalage majeur:mineur inode chemin »), nombres en hexadécimal
 /// sauf l'inode ; `None` pour une ligne de champ (« Rss: 4 kB »).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn entete_linux(ligne: &str) -> Option<Mappage> {
     let mut champs = ligne.splitn(6, ' ');
     let (adresses, droits, decalage, peripherique, inode) = (
@@ -469,7 +469,7 @@ fn entete_linux(ligne: &str) -> Option<Mappage> {
 /// périphérique : en mémoire (tmpfs, ramfs : le scan de fichiers ne couvre ni /dev/shm, ni /tmp, ni /run/user), servis
 /// par un programme (FUSE, qu'un compte monte lui-même et qui peut rendre un contenu au chargeur et un autre à une
 /// lecture ultérieure) ou par le réseau. Une image qui y est mappée se lit en mémoire.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn en_memoire_linux(mountinfo: &str) -> Vec<(u32, u32)> {
     mountinfo
         .lines()
@@ -499,7 +499,7 @@ pub(crate) fn en_memoire_linux(mountinfo: &str) -> Vec<(u32, u32)> {
 /// dans un dossier du système (`fichier_linux`) ; ailleurs, elle se lit (`ImageHorsSysteme`) si elle a du code : une
 /// région exécutable, ou un en-tête ELF ou PE au début du fichier ; un fichier de données mappé (un journal) ne se
 /// lit pas et n'est jamais dit morcelé.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn releve_linux(
     smaps: &str,
     en_memoire: Option<&[(u32, u32)]>,
@@ -606,7 +606,7 @@ pub(crate) fn releve_linux(
 /// Un chemin dans un dossier du système, que seul root change : /usr (et /bin, /lib… qui y mènent souvent), le
 /// magasin de Nix, les applications Flatpak et Snap installées pour tout le système. Pas /opt (des installateurs y
 /// donnent souvent la main à un compte), ni /tmp, /var/tmp, /home. Un « .. » n'y entre pas.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn image_du_systeme_linux(chemin: &str) -> bool {
     const DOSSIERS: &[&str] = &[
         "/usr/",
@@ -624,6 +624,7 @@ fn image_du_systeme_linux(chemin: &str) -> bool {
 }
 
 /// Ce que le disque dit du fichier d'une image (`fichier_linux`).
+#[cfg(any(target_os = "linux", test))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct SurLeDisque {
     /// Un fichier d'un dossier du système (`image_du_systeme_linux`), confirmé par son inode.
@@ -639,7 +640,7 @@ pub(crate) struct SurLeDisque {
 /// smaps donne celui du système de fichiers, stat celui du sous-volume. « /run/host/… » est la racine de l'hôte que
 /// le bac à sable de Steam (pressure-vessel) montre à ses jeux : « /run/host/usr/lib/x » est « /usr/lib/x » d'ici,
 /// s'il en a l'inode.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(target_os = "linux")]
 fn fichier_linux(chemin: &str, inode: u64) -> SurLeDisque {
     #[cfg(unix)]
     {

@@ -140,7 +140,7 @@ fn version_datee(version: &str, date: &str) -> String {
 }
 
 /// « 09/04/2026 » (mois/jour/année, comme les BIOS l'écrivent) → « 2026-09-04 ».
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn date_bios(date: &str) -> String {
     let parties: Vec<&str> = date.trim().split('/').collect();
     match parties[..] {
@@ -151,7 +151,7 @@ fn date_bios(date: &str) -> String {
 
 /// Nom d'une carte graphique d'après lspci : le nom court du fabricant (« NVIDIA Corporation » → « NVIDIA »), puis le
 /// nom commercial, entre crochets (« GB205 [GeForce RTX 5070] »), sinon le nom de la puce.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(target_os = "linux")]
 fn nom_graphique(fabricant: &str, puce: &str) -> String {
     let n = fabricant.to_lowercase();
     // « ati » se cherche comme un mot : « Intel Corporation » le contient aussi.
@@ -315,7 +315,7 @@ pub(crate) fn disque_entier(d: &crate::machine::linux::natif::Disque) -> bool {
 /// Les barrettes de mémoire, d'après les propriétés que udev tire de la table DMI (`udevadm info -q property -p
 /// /sys/class/dmi/id`), lisibles sans droits : « MEMORY_DEVICE_1_SIZE=17179869184 »… Un emplacement vide n'en est
 /// pas une. Rend aussi les numéros de série (emplacement, numéro).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn barrettes_udev(texte: &str) -> (Vec<Barrette>, Vec<(String, String)>) {
     use std::collections::BTreeMap;
     let mut champs: BTreeMap<u32, BTreeMap<&str, &str>> = BTreeMap::new();
@@ -352,7 +352,7 @@ fn barrettes_udev(texte: &str) -> (Vec<Barrette>, Vec<(String, String)>) {
 }
 
 /// Le type de mémoire d'après son code SMBIOS (Win32_PhysicalMemory.SMBIOSMemoryType).
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 fn sorte_smbios(code: u64) -> &'static str {
     #[rustfmt::skip] // cinq codes par ligne, que rustfmt étalerait sur dix
     const SORTES: [(u64, &str); 10] = [
@@ -375,7 +375,7 @@ fn sorte_disque(transport: &str, rotatif: bool) -> String {
 /// Les propriétés que udev garde d'un appareil (/run/udev/data, lisible par tous : « E:CLÉ=valeur ») dans la forme
 /// « CLÉ=valeur » de `udevadm info --query=property`, qui lit ce même fichier. Absent, udevadm n'en dirait pas
 /// plus : pas de commande en secours.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn proprietes_udev(texte: &str) -> String {
     texte
         .lines()
@@ -388,7 +388,7 @@ fn proprietes_udev(texte: &str) -> String {
 /// table de lscpu : /proc/cpuinfo n'a pas de « model name » sur ARM 64 bits. Un code absent de la table ne
 /// donne rien : mieux vaut un champ vide qu'un nom faux (le nom de la carte, par exemple, n'est pas celui du
 /// processeur).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn coeur_arm(fabricant: u32, piece: u32) -> Option<&'static str> {
     let nom = match (fabricant, piece) {
         (0x41, 0xc07) => "Cortex-A7",
@@ -418,7 +418,7 @@ fn coeur_arm(fabricant: u32, piece: u32) -> Option<&'static str> {
 }
 
 /// Le cœur d'après les lignes « CPU implementer » et « CPU part » de /proc/cpuinfo (« 0x41 », « 0xd08 »).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn coeur_cpuinfo(fabricant: &str, piece: &str) -> Option<&'static str> {
     let hexa = |t: &str| u32::from_str_radix(t.trim().strip_prefix("0x")?, 16).ok();
     coeur_arm(hexa(fabricant)?, hexa(piece)?)
@@ -426,7 +426,7 @@ fn coeur_cpuinfo(fabricant: &str, piece: &str) -> Option<&'static str> {
 
 /// Le cœur d'après /sys/devices/system/cpu/cpu0/regs/identification/midr_el1 (« 0x00000000410fd083 ») :
 /// fabricant aux bits 31 à 24, pièce aux bits 15 à 4.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn coeur_midr(texte: &str) -> Option<&'static str> {
     let midr = u64::from_str_radix(texte.trim().strip_prefix("0x")?, 16).ok()?;
     let champ = |decalage: u32, masque: u64| u32::try_from((midr >> decalage) & masque).ok();
@@ -437,7 +437,7 @@ fn coeur_midr(texte: &str) -> Option<&'static str> {
 /// « POWER9, altivec supported »), puis le numéro du cœur ARM, de /proc/cpuinfo ou du registre MIDR. Rien
 /// d'autre : un champ vide se lit « non renseigné », alors qu'un nom de carte se lirait comme celui du
 /// processeur.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn nom_du_processeur(cpuinfo: &str, midr: &str) -> String {
     let valeur = |cle: &str| {
         cpuinfo
@@ -535,15 +535,16 @@ fn lire() -> Fiche {
 }
 
 /// Ce que lit le script PowerShell (Windows) : un objet JSON, aux champs du même nom que dans le script.
+#[cfg(any(windows, test))]
 type LectureWindows = serde_json::Map<String, serde_json::Value>;
 
-#[cfg_attr(target_os = "linux", allow(dead_code))]
+#[cfg(any(not(target_os = "linux"), test))]
 fn champ<'a>(objet: &'a serde_json::Value, cle: &str) -> &'a str {
     objet[cle].as_str().unwrap_or_default()
 }
 
 /// La fiche d'après la lecture PowerShell (séparée pour être testée partout).
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 fn fiche_windows(l: LectureWindows) -> Fiche {
     // Lu comme ses barrettes, cartes et disques : un champ absent se lit vide, ou zéro.
     let l = serde_json::Value::Object(l);

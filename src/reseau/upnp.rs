@@ -63,7 +63,7 @@ pub fn outil_de_repli() -> String {
 }
 
 /// Une lecture faite par un outil d'avant : les redirections seulement, la box non décrite.
-#[cfg_attr(not(any(unix, windows)), allow(dead_code))]
+#[cfg(any(any(unix, windows), test))]
 fn lecture_d_outil(redirections: Vec<Redirection>, adresse_externe: Option<Ipv4Addr>) -> Etat {
     Etat::Actif(Box::new(Lecture {
         description: igd::Description::default(),
@@ -94,7 +94,7 @@ fn etat_par_outil() -> (Etat, Option<Ipv4Addr>) {
 /// Ce que dit `upnpc -l`, de code de retour `code` : « pas de box UPnP » quoi qu'il rende (miniupnpc sort alors en
 /// erreur) ; une lecture seulement s'il a réussi (code 0). Un échec d'autre chose (réseau, délai de la box, option
 /// refusée) n'est pas « UPnP actif, rien d'ouvert » : non vérifié (campagne 6, B1).
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(any(not(windows), test))]
 pub(crate) fn juger_upnpc(code: Option<i32>, texte: &str) -> (Etat, Option<Ipv4Addr>) {
     let adresse = adresse_externe(texte);
     match lire_upnpc(texte, adresse) {
@@ -118,7 +118,7 @@ fn etat_par_outil() -> (Etat, Option<Ipv4Addr>) {
 }
 
 /// Une redirection lue par un outil : ni bail, ni hôte distant, toujours active.
-#[cfg_attr(not(any(unix, windows)), allow(dead_code))]
+#[cfg(any(any(unix, windows), test))]
 fn redirection_d_outil(proto: &str, public: u16, ip: &str, port: u16, description: &str) -> Redirection {
     Redirection {
         protocole: affichable(proto),
@@ -136,7 +136,7 @@ fn redirection_d_outil(proto: &str, public: u16, ip: &str, port: u16, descriptio
 /// demander une redirection, avec l'adresse et la description de son choix : lues prêtes à montrer (`affichable`).
 /// Une box lue se voit dans la sortie (sa table, son adresse, une redirection) : sans aucune de ces traces (sortie
 /// vide, autre message), rien n'a été lu, non vérifié.
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(any(not(windows), test))]
 fn lire_upnpc(sortie: &str, adresse: Option<Ipv4Addr>) -> Etat {
     if sortie.contains("No IGD UPnP Device") || sortie.contains("No valid UPNP Internet Gateway Device") {
         return Etat::Absent;
@@ -168,7 +168,7 @@ fn lire_upnpc(sortie: &str, adresse: Option<Ipv4Addr>) -> Etat {
 }
 
 /// « ExternalIPAddress = 203.0.113.7 » dans `upnpc -l`.
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(any(not(windows), test))]
 fn adresse_externe(texte: &str) -> Option<Ipv4Addr> {
     texte.lines().find_map(|l| {
         l.trim()
@@ -183,7 +183,7 @@ fn adresse_externe(texte: &str) -> Option<Ipv4Addr> {
 
 /// Sortie de l'interface UPnP de Windows : « UPNP_ABSENT », ou « UPNP_ACTIF » puis une ligne
 /// « UPNP|protocole|port public|appareil|port|description » par redirection, lue comme celles de upnpc.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 fn lire_upnp_windows(sortie: &str) -> Etat {
     if sortie.contains("UPNP_ABSENT") {
         return Etat::Absent;

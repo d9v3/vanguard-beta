@@ -270,7 +270,6 @@ impl Bande {
 }
 
 /// Canal d'une fréquence en MHz : 2412 → 1 (2484 → 14), 5180 → 36, 5955 → 1 (6 GHz).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn canal_de_frequence(mhz: u32) -> Option<u16> {
     let canal = match Bande::de_frequence(mhz)? {
         Bande::G24 if mhz == 2484 => 14,
@@ -282,7 +281,7 @@ pub(crate) fn canal_de_frequence(mhz: u32) -> Option<u16> {
 }
 
 /// Puissance reçue en dBm vers le pourcentage que montrent les systèmes : −100 dBm → 0 %, −50 dBm et mieux → 100 %.
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(any(not(windows), test))]
 pub(crate) fn pourcentage(dbm: i32) -> u8 {
     u8::try_from(dbm.saturating_add(100).saturating_mul(2).clamp(0, 100)).unwrap_or(0)
 }
@@ -328,7 +327,7 @@ pub(crate) struct Connexion {
 
 /// Au-delà, en secondes, la liste des voisins ne dit plus qui émet maintenant : un jumeau allumé depuis, ou un voisin
 /// qui a changé de canal, n'y serait pas.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const VOISINS_RECENTS: u64 = 600;
 
 /// Ce que vaut la liste des bornes voisines d'une lecture : ce qui manque d'une liste vieille ou vide ne se compte
@@ -349,7 +348,7 @@ pub(crate) enum Voisins {
     JamaisCherches,
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 impl Voisins {
     /// D'après l'âge de la dernière recherche, en secondes.
     pub(crate) fn selon_age(secondes: u64) -> Voisins {

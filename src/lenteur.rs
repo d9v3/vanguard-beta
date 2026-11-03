@@ -118,7 +118,7 @@ fn avec_poids(programmes: &[Programme], liste: impl Iterator<Item = (String, Str
 /// micrologiciel et le chargeur se comptent à rebours depuis son départ ; après, l'initrd, le système et la fin depuis
 /// son départ. Zéro : pas noté (pas d'EFI, pas d'initrd).
 #[derive(Debug, Default, Clone, Copy)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 struct InstantsDemarrage {
     micrologiciel: u64,
     chargeur: u64,
@@ -131,7 +131,7 @@ struct InstantsDemarrage {
 
 /// La durée du démarrage et ses étapes (« micrologiciel 11,8 s · chargeur 8,1 s · noyau 15,2 s · système 5,6 s »),
 /// calculées comme `systemd-analyze` ; `None` tant que le démarrage n'est pas fini.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 #[allow(clippy::cast_precision_loss)]
 fn duree_demarrage(t: &InstantsDemarrage) -> Option<(f64, String)> {
     if t.fin == 0 {
@@ -174,7 +174,7 @@ fn duree_demarrage(t: &InstantsDemarrage) -> Option<(f64, String)> {
 /// début (`InactiveExitTimestampMonotonic`), active (`ActiveEnterTimestampMonotonic`), retombée inactive
 /// (`InactiveEnterTimestampMonotonic`).
 #[derive(Debug, Default, Clone)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 struct UniteDemarrage {
     apres: Vec<String>,
     debut: u64,
@@ -189,7 +189,7 @@ struct UniteDemarrage {
 /// exemple) avec ce qui le retarde vraiment. `lire` donne une unité chargée par son nom (`Ok(None)` : pas chargée).
 /// Une lecture qui échoue (`Err`) rend la liste vide : écarter l'unité ferait suivre une autre branche, et la liste
 /// serait fausse. Le nom d'une unité de l'utilisateur est le sien : rendu prêt à montrer.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 #[allow(clippy::cast_precision_loss)]
 fn chaine_critique(
     racine: &str,
@@ -273,7 +273,7 @@ fn secondes_lisibles(s: f64) -> String {
 
 /// Un service de l'utilisateur lancé à l'ouverture de session : voulu par default.target (ou la session graphique). Un
 /// service activé pour autre chose (au branchement d'une clé, par une minuterie, un chemin surveillé) ne l'est pas.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn lance_a_l_ouverture(unite: &str) -> bool {
     let mut dans_install = false;
     unite.lines().map(str::trim).any(|l| {
@@ -294,7 +294,7 @@ fn lance_a_l_ouverture(unite: &str) -> bool {
 /// Une entrée de démarrage automatique (fichier .desktop d'autostart) : (nom affiché, programme) si elle est active
 /// pour ce bureau. `Hidden=true` ou `X-GNOME-Autostart-enabled=false` : désactivée ; `OnlyShowIn`/`NotShowIn` :
 /// selon le bureau.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn entree_autostart(texte: &str, bureau: &str) -> Option<(String, String)> {
     let mut dans_entree = false;
     let mut champs: HashMap<&str, &str> = HashMap::new();
@@ -761,7 +761,7 @@ pub fn menu() {
 
 /// Le nom d'un processus : son programme (lien `/proc/<pid>/exe`, lisible pour nos propres processus), sauf quand ce
 /// programme est un interpréteur ou un moteur partagé (python, electron…) : son nom court dit alors mieux qui il est.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn nom_de_processus(exe: Option<&str>, comm: &str) -> String {
     const MOTEURS: &[&str] = &[
         "python", "perl", "ruby", "node", "electron", "java", "bash", "sh", "dash", "zsh", "lua",
@@ -775,7 +775,7 @@ fn nom_de_processus(exe: Option<&str>, comm: &str) -> String {
 
 /// `/proc/<pid>/stat` : (temps processeur en tops d'horloge, mémoire résidente en pages). Le nom (2e champ) peut
 /// contenir des espaces et des parenthèses : on repart de la dernière « ) ».
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn stat_processus(texte: &str) -> Option<(u64, u64)> {
     let champs: Vec<&str> = texte
         .get(texte.rfind(')')?.checked_add(1)?..)?
@@ -788,7 +788,7 @@ fn stat_processus(texte: &str) -> Option<(u64, u64)> {
 }
 
 /// Première ligne de /proc/stat : (occupé, total) en tops d'horloge, toute la machine.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn stat_processeur(texte: &str) -> Option<(u64, u64)> {
     let ligne = texte.strip_prefix("cpu ")?.lines().next()?;
     let valeurs: Vec<u64> = ligne.split_whitespace().filter_map(|v| v.parse().ok()).collect();
@@ -799,7 +799,7 @@ fn stat_processeur(texte: &str) -> Option<(u64, u64)> {
 }
 
 /// /proc/diskstats : temps passé à servir des entrées-sorties (ms), par disque.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn occupation_disques(texte: &str, disques: &[String]) -> HashMap<String, u64> {
     let disque = |l: &str| {
         let c: Vec<&str> = l.split_whitespace().collect();
@@ -1066,6 +1066,8 @@ mod systeme {
 // ───────────────────────────── Windows ─────────────────────────────
 
 /// Ce que lit le script PowerShell, en JSON.
+#[cfg(any(windows, test))]
+#[cfg_attr(all(test, not(windows)), allow(dead_code))] // construite par serde seulement, dans les essais
 #[derive(serde::Deserialize, Default)]
 #[serde(default)]
 struct LectureWindows {
@@ -1087,6 +1089,8 @@ struct LectureWindows {
     total: u64,
 }
 
+#[cfg(any(windows, test))]
+#[cfg_attr(all(test, not(windows)), allow(dead_code))] // construite par serde seulement, dans les essais
 #[derive(serde::Deserialize, Default)]
 #[serde(default)]
 struct LentWindows {
@@ -1094,6 +1098,8 @@ struct LentWindows {
     ms: u64,
 }
 
+#[cfg(any(windows, test))]
+#[cfg_attr(all(test, not(windows)), allow(dead_code))] // construite par serde seulement, dans les essais
 #[derive(serde::Deserialize, Default)]
 #[serde(default)]
 struct DemarrageWindows {
@@ -1102,7 +1108,7 @@ struct DemarrageWindows {
 }
 
 /// L'instantané d'après la lecture PowerShell (séparé pour être testé partout).
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 #[allow(clippy::cast_precision_loss)]
 fn instantane_windows(l: LectureWindows) -> Instantane {
     let programmes = reunir(l.programmes.into_iter().map(|p| Programme {

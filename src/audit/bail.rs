@@ -111,7 +111,7 @@ fn adresses(texte: &str) -> Vec<IpAddr> {
 
 /// Un paquet DHCP (BOOTP, RFC 2131) gardé tel quel par dhcpcd (`.lease`) : l'adresse reçue (yiaddr), puis les options 3
 /// (routeurs), 6 (DNS), 15 (domaine), 51 (durée), 54 (serveur).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn paquet_dhcp(octets: &[u8], debut: Option<u64>) -> Option<Bail> {
     const COOKIE: [u8; 4] = [0x63, 0x82, 0x53, 0x63];
     let (entete, mut options) = octets.split_at_checked(240)?;
@@ -154,7 +154,7 @@ fn paquet_dhcp(octets: &[u8], debut: Option<u64>) -> Option<Bail> {
 }
 
 /// Les lignes « nameserver » d'un resolv.conf.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(not(windows), test))]
 fn resolv_conf(texte: &str) -> Vec<IpAddr> {
     texte
         .lines()
