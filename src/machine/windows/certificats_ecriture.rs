@@ -2,7 +2,9 @@
 //! `gestes.rs`), dans le processus élevé, par crypt32, sans PowerShell.
 //!
 //! Le processus élevé relit les deux magasins « Root » et rejuge la racine par la fonction du bilan
-//! (`certificats::retrait`) : même magasin, même empreinte exacte. Il exporte le certificat (sans clé privée) dans la
+//! (`certificats::retrait_sur_demande`) : même magasin, même empreinte exacte. Une racine que le bilan ne juge pas
+//! dangereuse (`certificats::retrait` faux : inspection du HTTPS, développement, « localhost ») n'est retirée qu'après
+//! un oui dans cette console, qui dit ce qui peut cesser de marcher (D6c). Il exporte le certificat (sans clé privée) dans la
 //! quarantaine, le retire, puis le cherche de nouveau : seule la relecture compte. Pour le magasin du compte, Windows
 //! montre sa propre fenêtre de confirmation, et ce magasin doit être celui de la personne (le processus élevé peut
 //! tourner sous un autre compte administrateur). Jamais un ajout : Vanguard ne remet pas une racine retirée ; la
@@ -118,11 +120,11 @@ pub(super) fn retirer(m: MagasinRacine, e: &Empreinte, personne: Option<&str>) -
         );
     };
     let (racines, _) = certificats::racines_ajoutees(&sortie);
-    let Some(nom) = racines
+    let Some((nom, dangereuse)) = racines
         .iter()
         .find(|r| r.magasin == m.nom() && Empreinte::nouvelle(r.empreinte).as_ref() == Some(e))
-        .filter(|r| certificats::retrait(r.nom, r.cle_privee))
-        .map(|r| r.nom.to_string())
+        .filter(|r| certificats::retrait_sur_demande(r.nom, r.cle_privee))
+        .map(|r| (r.nom.to_string(), certificats::retrait(r.nom, r.cle_privee)))
     else {
         return Resultat::echec(
             None,
@@ -136,10 +138,39 @@ pub(super) fn retirer(m: MagasinRacine, e: &Empreinte, personne: Option<&str>) -
     let Some(octets) = e.octets() else {
         return Resultat::echec(None, tr!("empreinte illisible", "unreadable thumbprint").to_string());
     };
-    retirer_du_magasin(m, e, &octets, &nom)
+    // Une racine que le bilan ne juge pas dangereuse (inspection, développement, « localhost ») : retirée seulement
+    // après un oui dans cette console, qui dit ce qui peut cesser de marcher. Aucune ligne ne saute cette question.
+    if !dangereuse
+        && !decider_sur_demande(
+            &crate::ui::affichable(&nom),
+            super::eleve::console_reelle(),
+            crate::ui::demander_ou_defaut,
+        )
+    {
+        return Resultat::rien(
+            tr!(
+                "racine gardée : vous n'avez pas accepté de la retirer",
+                "root kept: you did not accept removing it"
+            )
+            .to_string(),
+        );
+    }
+    retirer_du_magasin(m, e, &octets, &nom, dangereuse)
 }
 
-fn retirer_du_magasin(m: MagasinRacine, e: &Empreinte, octets: &[u8; 20], nom: &str) -> Resultat {
+/// La question d'une racine qui n'est pas jugée dangereuse : ce qui peut cesser de marcher, puis [o/N]. Seul un oui
+/// d'une vraie console retire (`reglages::confirmer`) ; Entrée seule, la fin de l'entrée ou une autre réponse gardent.
+fn decider_sur_demande(nom: &str, console: bool, demander: impl FnOnce(&str) -> String) -> bool {
+    let question = trf!(
+        "  Retirer la racine « {} » ? Une copie .cer sera gardée dans la quarantaine. Attention : {}. [o/N] : ",
+        "  Remove root “{}”? A .cer copy will be kept in quarantine. Warning: {}. [y/N]: ",
+        crate::ui::couper(nom, NOM_NOTE_MAX),
+        certificats::avertissement_retrait()
+    );
+    crate::machine::reglages::confirmer(console, &question, demander)
+}
+
+fn retirer_du_magasin(m: MagasinRacine, e: &Empreinte, octets: &[u8; 20], nom: &str, dangereuse: bool) -> Resultat {
     /// ERROR_CANCELLED : « Non » dans la fenêtre de confirmation de Windows.
     const ANNULE: i32 = 1223;
     let montre = crate::ui::affichable(nom);
@@ -197,7 +228,7 @@ fn retirer_du_magasin(m: MagasinRacine, e: &Empreinte, octets: &[u8; 20], nom: &
     // sous ProgramData (refusé par `quarantaine`) ; s'il suffisait à garder sa racine, il la protégerait. Mais ce
     // retrait-là ne se rattrape pas : la personne le dit elle-même, par une question de plus dans cette console. La
     // fin de l'entrée (console fermée) vaut non : le processus va au bout de la liste et rend chaque ligne.
-    let Some(copie) = decider_copie(copie, &nom_note, &empreintes, crate::ui::demander_ou_defaut) else {
+    let Some(copie) = decider_copie(copie, &nom_note, &empreintes, dangereuse, crate::ui::demander_ou_defaut) else {
         // SAFETY: le contexte trouvé (non nul) n'est ni retiré ni rendu ailleurs : rendu ici, une seule fois.
         unsafe {
             CertFreeCertificateContext(certificat);
@@ -280,6 +311,7 @@ fn decider_copie(
     copie: Result<std::path::PathBuf, crate::modele::Echec>,
     nom: &str,
     empreintes: &str,
+    dangereuse: bool,
     demander: impl FnOnce(&str) -> String,
 ) -> Option<String> {
     let r = match copie {
@@ -292,7 +324,7 @@ fn decider_copie(
         && matches!(r.contexte, "quarantaine/droits" | "quarantaine/dossier");
     // Entière à l'écran (la cause de Windows vient en dernier), coupée seulement dans la note.
     let raison = crate::ui::affichable(&r.to_string());
-    crate::ui::imprimer(&texte_sans_copie(&raison, prepare, nom, empreintes));
+    crate::ui::imprimer(&texte_sans_copie(&raison, prepare, nom, empreintes, dangereuse));
     let reponse = demander(tr!(
         "  Retirer cette racine sans copie, non annulable ? [o/N] : ",
         "  Remove this root without a copy, not undoable? [y/N]: "
@@ -307,9 +339,9 @@ fn decider_copie(
     ))
 }
 
-/// Ce que la console dit avant la question : la copie manquée, le risque de garder la racine, et ce que le retrait
-/// sans copie coûte.
-fn texte_sans_copie(raison: &str, prepare: bool, nom: &str, empreintes: &str) -> String {
+/// Ce que la console dit avant la question : la copie manquée, le risque de garder la racine (`dangereuse`) ou le fait
+/// que le bilan ne la juge pas dangereuse, ce que le retrait sans copie coûte, et ce qui peut cesser de marcher.
+fn texte_sans_copie(raison: &str, prepare: bool, nom: &str, empreintes: &str, dangereuse: bool) -> String {
     let mut t = trf!(
         "  Copie .cer impossible ({raison}).",
         "  .cer copy not possible ({raison})."
@@ -322,9 +354,27 @@ fn texte_sans_copie(raison: &str, prepare: bool, nom: &str, empreintes: &str) ->
         ));
     }
     t.push(' ');
+    if dangereuse {
+        t.push_str(&trf!(
+            "Le bilan juge la racine « {nom} » ({empreintes}) dangereuse : gardée, elle reste de confiance pour tout ce qu'elle signe.",
+            "The scan finds root “{nom}” ({empreintes}) dangerous: if kept, it stays trusted for everything it signs."
+        ));
+    } else {
+        t.push_str(&trf!(
+            "Le bilan ne juge pas la racine « {nom} » ({empreintes}) dangereuse : vous avez demandé à la retirer.",
+            "The scan does not find root “{nom}” ({empreintes}) dangerous: you asked to remove it."
+        ));
+    }
+    t.push(' ');
+    t.push_str(tr!(
+        "Retirée SANS COPIE, ce retrait est NON ANNULABLE : ni Vanguard ni vous ne pourrez la réimporter depuis une copie ; si vous acceptez, ses empreintes et son nom seront notés dans « Ce que Vanguard a changé ».",
+        "Removed WITHOUT A COPY, this removal is NOT UNDOABLE: neither Vanguard nor you can import it again from a copy; if you accept, its thumbprints and name will be noted in “What Vanguard changed”."
+    ));
+    t.push(' ');
     t.push_str(&trf!(
-        "Le bilan juge la racine « {nom} » ({empreintes}) dangereuse : gardée, elle reste de confiance pour tout ce qu'elle signe. Retirée SANS COPIE, ce retrait est NON ANNULABLE : ni Vanguard ni vous ne pourrez la réimporter depuis une copie ; si vous acceptez, ses empreintes et son nom seront notés dans « Ce que Vanguard a changé ».",
-        "The scan finds root “{nom}” ({empreintes}) dangerous: if kept, it stays trusted for everything it signs. Removed WITHOUT A COPY, this removal is NOT UNDOABLE: neither Vanguard nor you can import it again from a copy; if you accept, its thumbprints and name will be noted in “What Vanguard changed”."
+        "Attention : {}.",
+        "Warning: {}.",
+        certificats::avertissement_retrait()
     ));
     t
 }
@@ -384,6 +434,7 @@ mod tests {
             Ok(r"C:\ProgramData\Vanguard\quarantaine\r.cer".into()),
             "R",
             &empreintes,
+            true,
             |q| panic!("question posée alors que la copie est faite : {q}"),
         );
         assert!(faite.is_some_and(|n| n.contains("r.cer")));
@@ -400,7 +451,7 @@ mod tests {
             ("ouii", false),
         ] {
             let mut posee = String::new();
-            let note = decider_copie(Err(manquee()), "Racine Piégée", &empreintes, |q| {
+            let note = decider_copie(Err(manquee()), "Racine Piégée", &empreintes, true, |q| {
                 posee = q.to_string();
                 reponse.to_string()
             });
@@ -426,14 +477,71 @@ mod tests {
     #[test]
     fn le_texte_dit_le_risque_et_le_dossier_prepare() {
         let longue = format!("{} (cause de Windows à la fin)", "x".repeat(200));
-        let t = texte_sans_copie(&longue, false, "Racine", "SHA-1 ab");
+        let t = texte_sans_copie(&longue, false, "Racine", "SHA-1 ab", true);
         // Entière : rien n'est coupé à l'écran, même au-delà de la coupe de la note.
         assert!(t.contains(&longue), "{t}");
         assert!(t.contains("NON ANNULABLE") || t.contains("NOT UNDOABLE"), "{t}");
         assert!(t.contains("seront notés") || t.contains("will be noted"), "{t}");
         assert!(t.contains("de confiance") || t.contains("trusted"), "{t}");
         assert!(!t.contains("suspect"), "{t}");
-        assert!(texte_sans_copie("refusé", true, "Racine", "SHA-1 ab").contains("suspect"));
+        assert!(texte_sans_copie("refusé", true, "Racine", "SHA-1 ab", true).contains("suspect"));
+        // D6c : toujours ce qui peut cesser de marcher ; une racine demandée n'est pas dite dangereuse.
+        assert!(t.contains(certificats::avertissement_retrait()), "{t}");
+        let t = texte_sans_copie("disque plein", false, "Avast Root", "SHA-1 ab", false);
+        assert!(t.contains("NON ANNULABLE") || t.contains("NOT UNDOABLE"), "{t}");
+        assert!(t.contains(certificats::avertissement_retrait()), "{t}");
+        assert!(
+            !t.contains("juge la racine « Avast Root » (SHA-1 ab) dangereuse"),
+            "{t}"
+        );
+    }
+
+    /// D6c : une racine qui n'est pas dangereuse ne se retire qu'après un oui d'une vraie console (non par défaut) ;
+    /// la question dit la copie gardée et ce qui peut cesser de marcher. Sans console, rien n'est demandé : non.
+    #[test]
+    fn racine_sur_demande_seul_un_oui_de_la_console() {
+        for (reponse, retire) in [
+            ("o", true),
+            ("oui", true),
+            ("y", true),
+            ("", false),
+            ("n", false),
+            ("ouii", false),
+        ] {
+            let mut posee = String::new();
+            let r = decider_sur_demande("Avast Root", true, |q| {
+                posee = q.to_string();
+                reponse.to_string()
+            });
+            assert_eq!(r, retire, "{reponse:?}");
+            assert!(posee.contains(certificats::avertissement_retrait()), "{posee}");
+            assert!(posee.contains("[o/N]") || posee.contains("[y/N]"), "{posee}");
+        }
+        assert!(!decider_sur_demande("Avast Root", false, |q| panic!(
+            "question sans console : {q}"
+        )));
+    }
+
+    /// D6c, certificat sans copie : sur demande aussi, la question « non annulable », et non par défaut.
+    #[test]
+    fn sans_copie_sur_demande_non_par_defaut() {
+        use crate::modele::Echec;
+        let mut posee = String::new();
+        let note = decider_copie(
+            Err(Echec::echoue("quarantaine/deposer", "disque plein")),
+            "mkcert",
+            "SHA-1 ab",
+            false,
+            |q| {
+                posee = q.to_string();
+                String::new()
+            },
+        );
+        assert!(note.is_none());
+        assert!(
+            posee.contains("non annulable") || posee.contains("not undoable"),
+            "{posee}"
+        );
     }
 
     /// Aucune ligne de la liste ne peut sauter la question : la grammaire n'a pas de « sans copie », ni comme verbe ni

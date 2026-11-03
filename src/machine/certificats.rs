@@ -200,12 +200,38 @@ pub(crate) fn retrait(nom: &str, cle_privee: bool) -> bool {
     }
 }
 
+/// Windows (D6c) : le bilan propose-t-il de retirer cette racine quand la personne le demande ? Toute racine qu'il
+/// montre : dangereuse (`retrait`), à clé privée (« localhost » compris), d'inspection du HTTPS ou de développement.
+/// Une racine « Autre » sans clé privée n'est pas montrée sous Windows (il met à jour ses racines lui-même). Rejugé
+/// par le processus élevé ; une racine qui n'est pas dangereuse y demande d'abord un oui dans sa console.
+#[cfg(any(windows, test))]
+pub(crate) fn retrait_sur_demande(nom: &str, cle_privee: bool) -> bool {
+    retrait(nom, cle_privee) || cle_privee || famille(nom) != Famille::Autre
+}
+
+/// L'avertissement d'un retrait de racine qui n'est pas jugée dangereuse : ce qui peut cesser de marcher.
+pub(crate) fn avertissement_retrait() -> &'static str {
+    tr!(
+        "un antivirus qui inspecte le HTTPS, un filtre ou un outil de développement qui se sert de cette racine peut cesser de marcher",
+        "an antivirus that inspects HTTPS, a filter or a development tool that uses this root may stop working"
+    )
+}
+
 /// Constat pour un certificat ajouté. `cle_privee` : sa clé privée est sur cette machine (Windows le sait). Le nom
 /// (sujet du certificat, écrit par qui l'a fabriqué) et l'endroit sont montrés rendus inoffensifs ; `retirer` garde
-/// le vrai nom.
-fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String]) -> Constat {
+/// le vrai nom. `natif` : `retirer` est la ligne du processus élevé (Windows), qui sait retirer sur demande, copie
+/// gardée, toute racine de `retrait_sur_demande` ; ailleurs (Unix, D7), une racine qui n'est pas dangereuse garde sa
+/// commande montrée, à faire soi-même.
+fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String], natif: bool) -> Constat {
     let sorte = famille(nom);
     let retrait = retrait(nom, cle_privee);
+    #[cfg(any(windows, test))]
+    let sur_demande = natif && !retrait && retrait_sur_demande(nom, cle_privee);
+    #[cfg(not(any(windows, test)))]
+    let sur_demande = {
+        let _ = natif;
+        false
+    };
     let (nom, ou) = (crate::ui::affichable(nom), crate::ui::affichable(ou));
     let (niveau, message) = match sorte {
         Famille::Compromis => (
@@ -268,6 +294,15 @@ fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String]) -> Constat {
     let action = trf!("Retirer le certificat « {nom} »", "Remove the “{nom}” certificate");
     if retrait {
         constat.corriger(action, retirer)
+    } else if sur_demande {
+        let avertissement = avertissement_retrait();
+        constat.corriger(
+            trf!(
+                "{action}, copie gardée, après un oui dans la fenêtre administrateur ({avertissement})",
+                "{action}, copy kept, after a yes in the administrator window ({avertissement})"
+            ),
+            retirer,
+        )
     } else {
         let commandes: Vec<&str> = retirer.iter().map(String::as_str).collect();
         constat.manuel(action, &commandes)
@@ -370,7 +405,7 @@ fn ancres(trouves: Vec<std::path::PathBuf>, illisibles: &[std::path::PathBuf]) -
         ];
         let (noms, entier) = lire_ancre(&octets);
         for nom in noms {
-            constats.push(juger(&nom, &chemin, false, &retirer));
+            constats.push(juger(&nom, &chemin, false, &retirer, false));
         }
         if !entier {
             constats.push(ancre_non_nommee(&chemin, &retirer));
@@ -433,7 +468,7 @@ pub fn certificats() -> Vec<Constat> {
             } else {
                 vec![format!("security delete-certificate -c {nom_cite}")]
             };
-            constats.push(juger(&nom, ou, false, &retirer));
+            constats.push(juger(&nom, ou, false, &retirer, false));
         }
     }
     if constats.is_empty() {
@@ -471,7 +506,7 @@ pub fn certificats() -> Vec<Constat> {
         if famille(r.nom) == Famille::Autre && !r.cle_privee {
             continue;
         }
-        constats.push(juger(r.nom, r.ou(), r.cle_privee, &commandes_de_retrait(&r)));
+        constats.push(juger(r.nom, r.ou(), r.cle_privee, &commandes_de_retrait(&r), true));
     }
     if constats.is_empty() {
         constats.push(ok(
@@ -530,12 +565,13 @@ pub(crate) fn racines_ajoutees(sortie: &str) -> (Vec<RacineAjoutee<'_>>, usize) 
     (racines, total)
 }
 
-/// Retirer une racine : la ligne du processus élevé quand le bilan propose le retrait (il la rejuge, l'exporte dans la
-/// quarantaine, la retire, puis la cherche de nouveau) ; sinon la commande montrée, à faire soi-même. Jamais de
-/// PowerShell à exécuter : une racine à retirer dont la ligne ne se forme pas n'a pas de correction.
+/// Retirer une racine : la ligne du processus élevé quand le bilan propose le retrait, de lui-même ou sur demande (il
+/// la rejuge, demande un oui pour une racine qui n'est pas dangereuse, l'exporte dans la quarantaine, la retire, puis
+/// la cherche de nouveau) ; sinon la commande montrée, à faire soi-même. Jamais de PowerShell à exécuter : une racine
+/// à retirer dont la ligne ne se forme pas n'a pas de correction.
 #[cfg(any(windows, test))]
 fn commandes_de_retrait(r: &RacineAjoutee) -> Vec<String> {
-    if retrait(r.nom, r.cle_privee) {
+    if retrait_sur_demande(r.nom, r.cle_privee) {
         super::gestes::ligne_certificat_retirer(r.magasin, r.empreinte)
             .into_iter()
             .collect()
@@ -552,7 +588,7 @@ fn commandes_de_retrait(r: &RacineAjoutee) -> Vec<String> {
 pub(super) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
     e.lignes()
         .into_iter()
-        .map(|nom| juger(nom, "corpus", false, &[]))
+        .map(|nom| juger(nom, "corpus", false, &[], false))
         .collect()
 }
 
@@ -618,7 +654,7 @@ xo1zjuQ=
         let piege = "Faux CA\x1b]52;c;eA==\x07\x1b[2K\r\u{202e}";
         let retirer = vec![format!("security delete-certificate -c '{piege}'")];
         for cle_privee in [false, true] {
-            let c = juger(piege, "/etc/x\x1b[8m.pem", cle_privee, &retirer);
+            let c = juger(piege, "/etc/x\x1b[8m.pem", cle_privee, &retirer, false);
             assert!(!crate::ui::contient_un_piege(&c.message), "{}", c.message);
             let k = c.correctif.as_ref().unwrap();
             assert!(!crate::ui::contient_un_piege(&k.action), "{}", k.action);
@@ -630,14 +666,14 @@ xo1zjuQ=
     #[test]
     fn jugement() {
         let retirer = vec!["sudo rm -f '/x'".to_string()];
-        let c = juger("Superfish, Inc.", "/x", false, &retirer);
+        let c = juger("Superfish, Inc.", "/x", false, &retirer, false);
         assert_eq!(c.probleme, Some(Niveau::Critique));
         assert!(c.correctif.as_ref().is_some_and(|k| k.automatique));
-        let c = juger("Mon entreprise CA", "/x", false, &retirer);
+        let c = juger("Mon entreprise CA", "/x", false, &retirer, false);
         assert_eq!(c.probleme, Some(Niveau::Info));
         assert!(c.correctif.as_ref().is_some_and(|k| !k.automatique));
         assert_eq!(
-            juger("Mon entreprise CA", "/x", true, &retirer).probleme,
+            juger("Mon entreprise CA", "/x", true, &retirer, false).probleme,
             Some(Niveau::Eleve)
         );
     }
@@ -760,10 +796,8 @@ xo1zjuQ=
                     "Remove-Item -Path 'Cert:\\CurrentUser\\Root\\{}'",
                     "2".repeat(40)
                 )],
-                vec![format!(
-                    "Remove-Item -Path 'Cert:\\CurrentUser\\Root\\{}'",
-                    "3".repeat(40)
-                )],
+                // D6c : « localhost » à clé privée se retire sur demande, par la ligne du processus élevé.
+                vec![format!("vanguard:certificat-retirer cu {}", "3".repeat(40))],
                 Vec::new(),
             ]
         );
@@ -771,8 +805,45 @@ xo1zjuQ=
         assert!(!retrait("Mon entreprise", false) && retrait("Burp Suite CA", false));
         // La correction proposée par le bilan : la ligne, automatique.
         let r = &racines[1];
-        let c = juger(r.nom, r.ou(), r.cle_privee, &commandes_de_retrait(r));
+        let c = juger(r.nom, r.ou(), r.cle_privee, &commandes_de_retrait(r), false);
         assert!(c.correctif.as_ref().is_some_and(|k| k.automatique));
+    }
+
+    /// D6c : sous Windows, une racine d'inspection, de développement ou « localhost » à clé privée se retire sur
+    /// demande par la ligne du processus élevé ; le libellé dit la copie gardée, le oui demandé et ce qui peut cesser
+    /// de marcher. Une racine « Autre » sans clé privée, non ; et une racine dangereuse garde son libellé.
+    #[test]
+    fn racines_sur_demande_sous_windows() {
+        for (nom, cle) in [
+            ("Avast Web/Mail Shield Root", false),
+            ("mkcert alice@portable", false),
+            ("localhost", true),
+        ] {
+            assert!(!retrait(nom, cle) && retrait_sur_demande(nom, cle), "{nom}");
+            let ligne = vec![format!("vanguard:certificat-retirer cu {}", "4".repeat(40))];
+            let c = juger(nom, "magasin de l'utilisateur", cle, &ligne, true);
+            assert_eq!(c.probleme, Some(Niveau::Info), "{nom}");
+            let k = c.correctif.as_ref().unwrap();
+            assert!(k.automatique && k.commandes == ligne, "{nom}");
+            assert!(k.action.contains(avertissement_retrait()), "{}", k.action);
+            assert!(k.action.contains("copie gardée") || k.action.contains("copy kept"));
+            // Hors de Windows (D7), la même racine garde sa commande montrée.
+            let montre = vec!["sudo rm -f '/x'".to_string()];
+            assert!(
+                juger(nom, "/x", cle, &montre, false)
+                    .correctif
+                    .is_some_and(|k| !k.automatique)
+            );
+        }
+        assert!(!retrait_sur_demande("Mon entreprise", false));
+        let k = juger("Superfish", "x", false, &["l".to_string()], true)
+            .correctif
+            .unwrap();
+        assert!(k.automatique && !k.action.contains(avertissement_retrait()));
+        // Un nom piégé reste inoffensif dans le libellé.
+        let piege = "mkcert\x1b[2K\r\u{202e}";
+        let k = juger(piege, "x", false, &["l".to_string()], true).correctif.unwrap();
+        assert!(!crate::ui::contient_un_piege(&k.action), "{}", k.action);
     }
 
     /// Une racine nommée « localhost » avec sa clé privée n'est plus passée sous silence : le nom est choisi par qui
@@ -780,7 +851,7 @@ xo1zjuQ=
     #[test]
     fn localhost_avec_cle_privee_est_dit() {
         let retirer = vec!["Remove-Item -Path 'Cert:\\CurrentUser\\Root\\0A1B'".to_string()];
-        let c = juger("localhost", "magasin de l'utilisateur", true, &retirer);
+        let c = juger("localhost", "magasin de l'utilisateur", true, &retirer, false);
         assert_eq!(c.probleme, Some(Niveau::Info));
         assert!(c.message.contains("localhost") && c.message.contains("clé privée"));
         assert!(
@@ -789,6 +860,9 @@ xo1zjuQ=
                 .is_some_and(|k| !k.automatique && k.commandes == retirer)
         );
         // Sans clé privée, c'est un certificat ajouté comme un autre.
-        assert_eq!(juger("LOCALHOST", "/x", false, &retirer).probleme, Some(Niveau::Info));
+        assert_eq!(
+            juger("LOCALHOST", "/x", false, &retirer, false).probleme,
+            Some(Niveau::Info)
+        );
     }
 }

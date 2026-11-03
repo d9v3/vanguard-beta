@@ -645,9 +645,10 @@ pub(super) fn persistance() -> Vec<Constat> {
     constats
 }
 
-/// PowerShell lancé en fenêtre cachée (« -w hidden », « -WindowStyle Hidden ») sans autre signe : dit en information
-/// seulement. Des outils légitimes le font (mises à jour, outils d'entreprise), mais c'est aussi un réflexe de logiciel
-/// malveillant : la personne regarde si elle le reconnaît.
+/// PowerShell lancé en fenêtre cachée (« -w hidden », « -WindowStyle Hidden ») sans autre signe : dit en information.
+/// Des outils légitimes le font (mises à jour, outils d'entreprise), mais c'est aussi un réflexe de logiciel
+/// malveillant : la personne regarde si elle le reconnaît, et peut le désactiver d'ici (tâche désactivée, valeur Run
+/// retirée et notée, fichier du dossier Démarrage de tous mis en quarantaine), sur sa demande seulement.
 fn fenetre_cachee(exe: &str, args: &str) -> bool {
     let exe = exe.trim().trim_matches('"').to_lowercase().replace('/', "\\");
     let programme = exe.rsplit('\\').next().unwrap_or(&exe).trim_end_matches(".exe");
@@ -665,6 +666,17 @@ fn fenetre_cachee(exe: &str, args: &str) -> bool {
         }
         _ => false,
     })
+}
+
+/// Un nom montré dans le libellé d'une correction : rendu inoffensif (`ui::affichable`) et coupé à 80 caractères, le
+/// nom exact restant dans la ligne du geste.
+fn nom_court(nom: &str) -> String {
+    const COURT: usize = 80;
+    let mut n: String = crate::ui::affichable(nom).chars().take(COURT).collect();
+    if nom.chars().count() > COURT {
+        n.push('…');
+    }
+    n
 }
 
 /// Le constat d'information d'un lancement automatique en fenêtre cachée.
@@ -752,7 +764,20 @@ fn juger_persistance_selon(
                 montre(chemin_brut),
                 montre(nom_brut)
             );
-            constats.push(info_fenetre_cachee(&lieu, &montre(&format!("{exe_brut} {args_brut}"))).avec_objet(objet));
+            let constat = info_fenetre_cachee(&lieu, &montre(&format!("{exe_brut} {args_brut}"))).avec_objet(objet);
+            // Une information, mais la personne qui ne la reconnaît pas peut la désactiver d'ici : le geste du lot
+            // 3.5 (rejugé par le processus élevé, réactivable), jamais fait sans qu'elle le demande.
+            constats.push(match super::gestes::ligne_tache_desactiver(chemin_brut, nom_brut) {
+                Some(ligne) => constat.corriger(
+                    trf!(
+                        "Désactiver la tâche « {} » si vous ne la reconnaissez pas (réactivable)",
+                        "Disable the “{}” task if you do not recognize it (can be turned back on)",
+                        nom_court(nom_brut)
+                    ),
+                    &[&ligne],
+                ),
+                None => constat,
+            });
         }
     }
     for r in run {
@@ -785,7 +810,18 @@ fn juger_persistance_selon(
                 montre(nom),
                 montre(r.cle)
             );
-            constats.push(info_fenetre_cachee(&lieu, &montre(&r.valeur)).avec_objet(objet));
+            let constat = info_fenetre_cachee(&lieu, &montre(&r.valeur)).avec_objet(objet);
+            constats.push(match retrait_run(r) {
+                Some(retrait) => constat.corriger(
+                    trf!(
+                        "Retirer « {} » du démarrage si vous ne le reconnaissez pas",
+                        "Remove “{}” from startup if you do not recognize it",
+                        nom_court(nom)
+                    ),
+                    &[retrait],
+                ),
+                None => constat,
+            });
         }
     }
     for d in demarrage {
@@ -837,7 +873,24 @@ fn juger_persistance_selon(
                 "Startup folder shortcut “{}”",
                 montre(fichier_brut)
             );
-            constats.push(info_fenetre_cachee(&lieu, &montre(cible_brute)).avec_objet(objet));
+            let constat = info_fenetre_cachee(&lieu, &montre(cible_brute)).avec_objet(objet);
+            // Le dossier de tous seulement, comme plus haut : celui de la personne n'a pas de geste natif.
+            constats.push(
+                match commun
+                    .filter(|c| dans_dossier(fichier_brut, c))
+                    .and_then(|_| super::gestes::ligne_demarrage_quarantaine(fichier_brut))
+                {
+                    Some(ligne) => constat.corriger(
+                        trf!(
+                            "Mettre « {} » en quarantaine si vous ne le reconnaissez pas (remis depuis elle si besoin)",
+                            "Quarantine “{}” if you do not recognize it (can be put back from it)",
+                            nom_court(fichier_brut)
+                        ),
+                        &[&ligne],
+                    ),
+                    None => constat,
+                },
+            );
         }
     }
     if constats.is_empty() {
@@ -889,7 +942,8 @@ mod tests {
         assert!(fenetre_cachee("pwsh", "/win h -c x"));
         assert!(!fenetre_cachee("powershell.exe", "-NoProfile -File maj.ps1"));
         assert!(!fenetre_cachee("notepad.exe", "-w hidden"));
-        // Dans le bilan : une information, pas une alerte, et pas de correction proposée.
+        // Dans le bilan : une information, pas une alerte. Sa correction (D6c) est le geste du lot 3.5, proposé
+        // comme les autres (montré, puis « Appliquer ? »), jamais fait seul.
         let run = [ValeurRun {
             cle: "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
             nom: "OutilMaj".into(),
@@ -900,6 +954,13 @@ mod tests {
         let info: Vec<&Constat> = c.iter().filter(|c| c.probleme == Some(Niveau::Info)).collect();
         assert_eq!(info.len(), 1);
         assert!(info[0].message.contains("fenêtre cachée") || info[0].message.contains("hidden window"));
+        assert!(c.iter().all(|c| c.probleme == Some(Niveau::Info)));
+        let k = info[0].correctif.as_ref().unwrap();
+        let nom: Vec<u16> = "OutilMaj".encode_utf16().collect();
+        assert_eq!(
+            k.commandes,
+            [super::super::gestes::ligne_run_retirer(false, &nom).unwrap()]
+        );
         // Encodée en base64, la même commande reste une alerte élevée.
         let run = [ValeurRun {
             cle: run[0].cle,
@@ -1420,6 +1481,87 @@ mod tests {
         ));
         assert!(!demarrage_signale(perso, cible, commun, &ligne));
         assert!(!demarrage_signale(&fichier, cible, r"C:\Autre", &ligne));
+    }
+
+    /// D6c : PowerShell en fenêtre cachée reçoit le geste du lot 3.5 de son lieu (tâche désactivée, valeur Run de la
+    /// machine retirée, fichier du Démarrage de tous en quarantaine), et le processus élevé le rejuge par la fonction
+    /// du bilan : la ligne proposée est reconnue, une autre non. Le dossier Démarrage de la personne n'a pas de geste.
+    #[test]
+    fn fenetre_cachee_se_desactive_par_le_geste_du_lot_3_5() {
+        use super::super::gestes::{ligne_demarrage_quarantaine, ligne_run_retirer_machine, ligne_tache_desactiver};
+        use std::borrow::Cow;
+        let cache = "powershell.exe -w hidden -File C:\\Outils\\maj.ps1";
+        // Tâche.
+        let tache = r"\Outils\|Maj|powershell.exe|-w hidden -File C:\Outils\maj.ps1".to_string();
+        let lignes = [tache.clone()];
+        let c = juger_persistance(&[&tache], &[], &[]);
+        let ligne = ligne_tache_desactiver(r"\Outils\", "Maj").unwrap();
+        assert_eq!(c[0].probleme, Some(Niveau::Info));
+        assert_eq!(c[0].correctif.as_ref().unwrap().commandes, std::slice::from_ref(&ligne));
+        assert!(c[0].correctif.as_ref().unwrap().automatique);
+        assert!(tache_signalee(&lignes, &ligne));
+        assert!(!tache_signalee(
+            &lignes,
+            &ligne_tache_desactiver(r"\Outils\", "Autre").unwrap()
+        ));
+        // Une tâche sans fenêtre cachée n'est pas proposée.
+        let saine = [r"\Outils\|Maj|powershell.exe|-NoProfile -File C:\Outils\maj.ps1".to_string()];
+        assert!(!tache_signalee(&saine, &ligne));
+        // Valeur Run de la machine.
+        let cle = super::super::gestes::CleRun::Run;
+        let ps = format!(r"HKLM:\{}", cle.chemin());
+        let nom: Vec<u16> = "OutilMaj".encode_utf16().collect();
+        let ligne = ligne_run_retirer_machine(&ps, &nom).unwrap();
+        let valeur = winreg::RegValue {
+            bytes: Cow::Owned(format!("{cache}\0").encode_utf16().flat_map(u16::to_le_bytes).collect()),
+            vtype: winreg::enums::RegType::REG_SZ,
+        };
+        assert!(run_signale(cle, &nom, &valeur, &ligne));
+        // Dossier Démarrage de tous, puis celui de la personne.
+        let commun = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp";
+        let fichier = format!(r"{commun}\Maj.lnk");
+        let d = format!("{fichier}|{cache}");
+        let ligne = ligne_demarrage_quarantaine(&fichier).unwrap();
+        let k = juger_persistance_selon(&[], &[], &[&d], Some(commun));
+        assert_eq!(k[0].probleme, Some(Niveau::Info));
+        assert_eq!(k[0].correctif.as_ref().unwrap().commandes, std::slice::from_ref(&ligne));
+        assert!(demarrage_signale(&fichier, cache, commun, &ligne));
+        let perso = r"C:\Users\alice\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\Maj.lnk";
+        let d = format!("{perso}|{cache}");
+        let k = juger_persistance_selon(&[], &[], &[&d], Some(commun));
+        assert_eq!(k[0].probleme, Some(Niveau::Info));
+        assert!(k[0].correctif.is_none());
+    }
+
+    /// D6c : un nom de tâche ou de valeur Run piégé (\x1b[, \r, très long) est montré sans caractère de contrôle et
+    /// coupé dans le libellé ; la ligne du geste garde le nom exact.
+    #[test]
+    fn fenetre_cachee_texte_hostile_nettoye() {
+        let long = "A".repeat(5000);
+        for nom in ["Maj\x1b[2J\x1b[31mFAUX", "Maj\rOK", long.as_str()] {
+            let run = [ValeurRun {
+                cle: CLES_RUN[0],
+                nom: nom.to_string(),
+                mots: None,
+                valeur: "powershell.exe -w hidden -c x\x1b[0m\r".into(),
+            }];
+            let t = format!(r"\Outils\|{nom}|powershell.exe|-w hidden -c x");
+            for c in juger_persistance(&[&t], &run, &[]) {
+                assert_eq!(c.probleme, Some(Niveau::Info), "{nom:?}");
+                assert!(!c.message.contains(['\x1b', '\r']), "{:?}", c.message);
+                if let Some(k) = &c.correctif {
+                    assert!(!k.action.contains(['\x1b', '\r']), "{:?}", k.action);
+                    assert!(k.action.chars().count() < 200, "{}", k.action.len());
+                }
+            }
+            let mots: Vec<u16> = nom.encode_utf16().collect();
+            let c = juger_persistance(&[], &run, &[]);
+            assert_eq!(
+                c[0].correctif.as_ref().map(|k| k.commandes.clone()),
+                super::super::gestes::ligne_run_retirer(false, &mots).map(|l| vec![l]),
+                "{nom:?}"
+            );
+        }
     }
 
     /// T4 : un lancement suspect se reconnaît à sa clé de registre et à sa commande, dans les deux langues.
