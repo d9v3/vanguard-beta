@@ -918,7 +918,7 @@ mod tests {
             programme: Some("x11vnc".into()),
             autre_compte: false,
         };
-        let juge = Juge::essai(Some(gardes::juger_etablies(&[vnc], None)), HashSet::new());
+        let juge = Juge::essai(Some(gardes::juger_etablies(&[vnc], None, None)), HashSet::new());
         let fermer = |port| Ordre::FermerPort { pare_feu: pf, port };
         let refus = juger(&fermer(5900), &juge).unwrap_or_default();
         assert!(refus.contains("session"), "{refus}");

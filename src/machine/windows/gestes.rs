@@ -8895,6 +8895,32 @@ mod tests {
         );
     }
 
+    /// Garde de session : le Bureau à distance sur 3390 (PortNumber), tenu par svchost et vu depuis la console d'un
+    /// autre compte (`rdp` faux) ; la table des connexions le compte maintenant comme une session, et son port est
+    /// gardé. Sans PortNumber lu, la table ne le reconnaît pas, comme avant.
+    #[test]
+    fn la_connexion_svchost_du_port_reel_est_une_session() {
+        use crate::protection::blocage::gardes::{Etablie, juger_etablies};
+        let e = Etablie {
+            distante: "198.51.100.30".parse().unwrap(),
+            port_local: 3390,
+            port_distant: 51234,
+            programme: Some("svchost.exe".into()),
+            autre_compte: true,
+        };
+        let s = juger_etablies(std::slice::from_ref(&e), None, Some(3390));
+        assert_eq!(
+            session_pare_feu(
+                false,
+                Some(3390),
+                Some((!s.sessions.is_empty(), s.ports_locaux.as_slice()))
+            ),
+            Some(vec![3390])
+        );
+        let sans = juger_etablies(&[e], None, None);
+        assert_eq!(sans.sessions, Vec::<std::net::IpAddr>::new());
+    }
+
     /// Relecture D5, point 2b : le Bureau à distance sur un autre port (PortNumber) est gardé pendant une session
     /// du Bureau à distance, ou si les connexions ne se lisent pas ; une table qui dit « aucune session » sans
     /// Bureau à distance reste sans session.

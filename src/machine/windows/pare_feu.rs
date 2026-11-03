@@ -794,12 +794,7 @@ pub(crate) fn nom_regle(id: IdChoix) -> Option<String> {
 /// aucune session, sûrement.
 fn session_maintenant() -> Option<Vec<u16>> {
     let lues = crate::protection::blocage::gardes::sessions_a_distance();
-    let port_rdp = super::registre::<u32>(
-        winreg::enums::HKEY_LOCAL_MACHINE,
-        r"SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp",
-        "PortNumber",
-    )
-    .and_then(|n| u16::try_from(n).ok());
+    let port_rdp = crate::protection::blocage::gardes::port_rdp();
     gestes::session_pare_feu(
         super::session_a_distance(),
         port_rdp,

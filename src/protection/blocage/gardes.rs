@@ -351,12 +351,34 @@ fn programme_de_session(nom: &str) -> bool {
 }
 
 /// Une connexion établie est-elle une session à distance : le port de SSH ou du Bureau à distance d'un côté ou de
-/// l'autre, ou un programme d'accès à distance, de prise en main ou de VPN, quel que soit son port ?
-pub(crate) fn est_session(e: &Etablie) -> bool {
+/// l'autre, ou un programme d'accès à distance, de prise en main ou de VPN, quel que soit son port ? `port_rdp` : le
+/// PortNumber de RDP-Tcp (`port_rdp_lu`), le port réel du Bureau à distance quand il n'est pas 3389 ; sa connexion
+/// est tenue par svchost, qu'aucun nom de programme ne reconnaît : une connexion sur ce port local est une session.
+pub(crate) fn est_session(e: &Etablie, port_rdp: Option<u16>) -> bool {
     PORTS_DE_SESSION.contains(&e.port_local)
         || PORTS_DE_SESSION.contains(&e.port_distant)
         || PORTS_WINRM.contains(&e.port_local)
+        || port_rdp.is_some_and(|p| p != 0 && e.port_local == p)
         || e.programme.as_deref().is_some_and(programme_de_session)
+}
+
+/// Le port du Bureau à distance d'après la valeur PortNumber de RDP-Tcp : `None` si elle manque, vaut 0 ou dépasse
+/// un port. 3389 est gardé de toute façon (`PORTS_DE_SESSION`).
+#[cfg(any(windows, test))]
+pub(crate) fn port_rdp_lu(valeur: Option<u32>) -> Option<u16> {
+    valeur.and_then(|n| u16::try_from(n).ok()).filter(|&n| n != 0)
+}
+
+/// Le PortNumber de RDP-Tcp de cet ordinateur ; ailleurs que sous Windows, aucun.
+pub(crate) fn port_rdp() -> Option<u16> {
+    #[cfg(windows)]
+    {
+        port_rdp_lu(crate::machine::windows::port_bureau_a_distance())
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 /// WinRM (PowerShell à distance), HTTP et HTTPS : sa connexion est tenue par System (HTTP.sys), qu'aucun nom de
@@ -424,12 +446,13 @@ pub(crate) fn session_entrante_ouverte() -> Option<bool> {
     Some(depuis_ssh || etablies.iter().any(|e| session_entrante(e, &en_ecoute)))
 }
 
-/// Les adresses à ne pas couper, d'après les connexions établies et le client SSH de Vanguard.
-pub(crate) fn juger_etablies(etablies: &[Etablie], client: Option<IpAddr>) -> Sessions {
+/// Les adresses à ne pas couper, d'après les connexions établies, le client SSH de Vanguard et le port réel du
+/// Bureau à distance (`port_rdp`, PortNumber de RDP-Tcp).
+pub(crate) fn juger_etablies(etablies: &[Etablie], client: Option<IpAddr>, port_rdp: Option<u16>) -> Sessions {
     let mut s = Sessions::default();
     for e in etablies {
         let ip = e.distante.to_canonical();
-        if est_session(e) {
+        if est_session(e, port_rdp) {
             s.sessions.push(ip);
             s.ports_locaux.push(e.port_local);
         }
@@ -601,7 +624,7 @@ fn etablies_avec(netstat: &str, a_moi: &[(String, u16, IpAddr, u16)]) -> Vec<Eta
 pub(crate) fn sessions_a_distance() -> Option<Sessions> {
     let etablies = lire_etablies()?;
     let client = std::env::var("SSH_CONNECTION").ok().as_deref().and_then(client_ssh);
-    Some(juger_etablies(&etablies, client))
+    Some(juger_etablies(&etablies, client, port_rdp()))
 }
 
 #[cfg(target_os = "linux")]
@@ -800,23 +823,56 @@ mod tests {
     #[test]
     fn winrm_entrant_est_une_session() {
         for port in [5985, 5986] {
-            assert!(est_session(&etablie(
-                "198.51.100.20",
-                port,
-                51234,
-                Some("System"),
-                true
-            )));
-            assert!(!est_session(&etablie(
-                "198.51.100.20",
-                51234,
-                port,
-                Some("powershell"),
-                false
-            )));
+            assert!(est_session(
+                &etablie("198.51.100.20", port, 51234, Some("System"), true),
+                None
+            ));
+            assert!(!est_session(
+                &etablie("198.51.100.20", 51234, port, Some("powershell"), false),
+                None
+            ));
         }
-        let s = juger_etablies(&[etablie("198.51.100.20", 5985, 51234, Some("System"), true)], None);
+        let s = juger_etablies(
+            &[etablie("198.51.100.20", 5985, 51234, Some("System"), true)],
+            None,
+            None,
+        );
         assert_eq!(s.ports_locaux, vec![5985]);
+    }
+
+    /// Le Bureau à distance sur un port personnalisé (PortNumber de RDP-Tcp) : sa connexion, tenue par svchost, est
+    /// une session (adresse gardée, port local gardé) ; sans PortNumber lu, ou à 0, rien ne change ; 3389 reste une
+    /// session quel que soit PortNumber, et une connexion sortante dont le port DISTANT est ce port n'en devient pas
+    /// une par lui (renforcement seulement : rien de ce qui était une session ne cesse de l'être).
+    #[test]
+    fn bureau_a_distance_sur_un_autre_port() {
+        let rdp = etablie("198.51.100.30", 3390, 51234, Some("svchost"), true);
+        assert!(!est_session(&rdp, None));
+        assert!(!est_session(&rdp, Some(0)));
+        assert!(est_session(&rdp, Some(3390)));
+        assert!(!est_session(&rdp, Some(3391)));
+        let sortante = etablie("198.51.100.30", 51234, 3390, Some("svchost"), false);
+        assert!(!est_session(&sortante, Some(3390)));
+        let classique = etablie("198.51.100.31", 3389, 51235, Some("svchost"), true);
+        for port in [None, Some(0), Some(3390)] {
+            assert!(est_session(&classique, port), "{port:?}");
+        }
+        let s = juger_etablies(&[rdp.clone(), classique.clone()], None, Some(3390));
+        assert_eq!(s.ports_locaux, vec![3389, 3390]);
+        assert_eq!(s.sessions, vec![ip("198.51.100.30"), ip("198.51.100.31")]);
+        let sans = juger_etablies(&[rdp, classique], None, None);
+        assert_eq!(sans.ports_locaux, vec![3389]);
+        assert_eq!(sans.sessions, vec![ip("198.51.100.31")]);
+    }
+
+    /// PortNumber de RDP-Tcp : absent, 0 ou plus grand qu'un port ne donne aucun port ; sinon, le port.
+    #[test]
+    fn port_rdp_du_registre() {
+        assert_eq!(port_rdp_lu(None), None);
+        assert_eq!(port_rdp_lu(Some(0)), None);
+        assert_eq!(port_rdp_lu(Some(70_000)), None);
+        assert_eq!(port_rdp_lu(Some(3389)), Some(3389));
+        assert_eq!(port_rdp_lu(Some(3390)), Some(3390));
     }
 
     /// Le réseau redémarré par l'assistant élevé : seules les sessions ENTRANTES le retiennent (SSH ou Bureau à
@@ -846,7 +902,7 @@ mod tests {
             );
             // Ils restent des sessions pour le blocage, qui ne coupe pas l'adresse.
             assert!(
-                est_session(&etablie("198.51.100.20", 41641, 41641, Some(vpn), true)),
+                est_session(&etablie("198.51.100.20", 41641, 41641, Some(vpn), true), None),
                 "{vpn}"
             );
         }
@@ -922,7 +978,7 @@ mod tests {
             etablie("203.0.113.7", 51003, 443, Some("firefox"), false),
             etablie("203.0.113.8", 51004, 443, None, true),
         ];
-        let s = juger_etablies(&etablies, Some(ip("198.51.100.40")));
+        let s = juger_etablies(&etablies, Some(ip("198.51.100.40")), None);
         assert_eq!(
             s.sessions,
             [
@@ -979,7 +1035,7 @@ mod tests {
                 etablie("203.51.171.4", 0xD432, 443, None, false),
             ]
         );
-        let s = juger_etablies(&e, None);
+        let s = juger_etablies(&e, None, None);
         assert_eq!(s.sessions, [ip("192.168.1.20"), ip("203.51.171.7")]);
         assert_eq!(s.autres_comptes, [ip("203.51.171.7")]);
         // Windows : une session du Bureau à distance (port local 3389) en IPv4, et une connexion web.
@@ -1018,7 +1074,7 @@ tcp6       0      0  2001:db8::5.51001      2001:db8::7.5938       ESTABLISHED
             ]
         );
         assert_eq!(
-            juger_etablies(&e, None).sessions,
+            juger_etablies(&e, None, None).sessions,
             [ip("192.168.1.20"), ip("2001:db8::7")]
         );
         assert_eq!(
