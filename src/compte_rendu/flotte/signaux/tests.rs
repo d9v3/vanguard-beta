@@ -3,7 +3,7 @@
 //! empreinte, le bloc des données jamais fermé par une donnée.
 
 use super::super::tests::{Recu, T, ecrit, j, refs, reponse, src, v};
-use super::super::{Demande, EtatVersion, Jour, Ouvertes, P1, VoixP1, executer_analyse};
+use super::super::{Demande, EtatVersion, Jour, OUVERTES_TOTAL_MAX, Ouverte, Ouvertes, P1, VoixP1, executer_analyse};
 use super::*;
 use crate::compte_rendu::Regle;
 use crate::compte_rendu::envoi::tests::minimal;
@@ -780,4 +780,194 @@ fn une_arrivee_soudaine_se_dit_dans_le_resume() {
     assert!(r.versions[0].arrivee_soudaine);
     let an = analyse(vec![("0.89.1", vec![("2026-11-01", jour_arch(&ag(5, &[])))])]);
     assert!(!resume(&an, &Comptes::default()).versions[0].arrivee_soudaine);
+}
+
+// --- Les corrections de la relecture -----------------------------------------------------------------------------
+
+#[test]
+fn la_version_d_avant_suit_l_ordre_des_numeros() {
+    // 0.89.10 vient après 0.89.9, pas après 0.89.1 (l'ordre du texte) : comparée à 0.89.9 (5 %), la 0.89.10 (50 %)
+    // régresse ; comparée par erreur à 0.89.1 (50 %), elle ne régresserait pas.
+    let g = "0123456789abcdef";
+    let gabarit = format!("gabarit|{g}|echec|wmi");
+    let an = analyse(vec![
+        (
+            "0.89.1",
+            vec![("2026-10-29", jour_arch(&ag(100, &[("taux|plantage", 50, 3)])))],
+        ),
+        (
+            "0.89.9",
+            vec![(
+                "2026-10-30",
+                jour_arch(&ag(100, &[("taux|plantage", 5, 3), (gabarit.as_str(), 1, 1)])),
+            )],
+        ),
+        (
+            "0.89.10",
+            vec![(
+                "2026-11-01",
+                jour_arch(&ag(10, &[("taux|plantage", 5, 3), (gabarit.as_str(), 9, 9)])),
+            )],
+        ),
+    ]);
+    let e = evaluer(&an);
+    let s = e
+        .iter()
+        .find(|(c, _)| c.cle() == "regression:arch:plantage:taux")
+        .expect("régression contre 0.89.9");
+    assert_eq!(s.0.avant.as_ref().map(|(x, _)| x.as_str()), Some("0.89.9"));
+    // Le gabarit vu sur 0.89.9 n'est pas « nouveau » sur 0.89.10.
+    assert!(
+        !a(&cles(&an), &format!("erreur-nouvelle:toutes:{g}:echec.wmi")),
+        "gabarit de 0.89.9 redit nouveau"
+    );
+}
+
+#[test]
+fn des_lots_forges_de_l_ancienne_version_ne_cachent_pas_la_regression() {
+    // 0.89.1 sort le 31 oct. avec 50 % de plantages ; la 0.89.0 en avait 5 % avant. Des lots « 0.89.0, plantage »
+    // envoyés le 1er nov. font monter son taux à 50 % : le jour d'avant la sortie reste celui qui compte.
+    let k = "regression:arch:plantage:taux";
+    let an = |avec_veille: bool| {
+        let mut jours = vec![("2026-11-01", jour_arch(&ag(100, &[("taux|plantage", 50, 3)])))];
+        if avec_veille {
+            jours.push(("2026-10-29", jour_arch(&ag(100, &[("taux|plantage", 5, 3)]))));
+        }
+        analyse(vec![
+            ("0.89.0", jours),
+            (
+                "0.89.1",
+                vec![
+                    // Le jour de la sortie : deux sources, rien à conclure ; il marque l'arrivée de la version.
+                    ("2026-10-31", jour_arch(&ag(2, &[]))),
+                    ("2026-11-01", jour_arch(&ag(10, &[("taux|plantage", 5, 3)]))),
+                ],
+            ),
+        ])
+    };
+    assert!(
+        a(&cles(&an(true)), k),
+        "la régression cachée par des lots d'après la sortie"
+    );
+    // Sans aucun jour d'avant la sortie, faute de mieux, le dernier jour : rien à conclure ici.
+    assert!(!a(&cles(&an(false)), k));
+}
+
+#[test]
+fn une_source_ne_vide_pas_l_histoire_des_installations() {
+    // Une seule adresse déclare des centaines de petits identifiants sur 20 familles et 3 jours ; une vraie
+    // installation, d'une autre source, doit rester dans l'histoire (P1).
+    let mut p1 = P1::default();
+    let st: BTreeMap<String, u64> = [("regle|LNX-MAJ-001|vue".to_string(), 1)].into_iter().collect();
+    let mut n = 0u64;
+    for jour in ["2026-10-30", "2026-10-31", "2026-11-01"] {
+        for f in 0..20 {
+            let voix = p1
+                .voix
+                .entry((v("0.89.1"), jk(jour), format!("famille{f}")))
+                .or_default();
+            let x = voix.entry(src(0x1)).or_default();
+            for _ in 0..8 {
+                n += 1;
+                x.ajouter("large0", &format!("{n:016x}"), &st);
+            }
+        }
+    }
+    let vraie = "f00dfeedcafe0001";
+    p1.voix
+        .entry((v("0.89.1"), jk("2026-10-12"), "arch".into()))
+        .or_default()
+        .entry(src(0x2))
+        .or_default()
+        .ajouter("large1", vraie, &st);
+    p1.histoire_des_voix();
+    assert!(p1.histoire.len() <= 8 + 1, "{}", p1.histoire.len());
+    assert_eq!(
+        p1.histoire.get(vraie).and_then(|m| m.get(&v("0.89.1"))),
+        Some(&j("2026-10-12"))
+    );
+}
+
+#[test]
+fn les_noms_de_la_nuit_passent_avant_ceux_d_avant_et_le_fichier_reste_lisible() {
+    let banc = Banc::new();
+    let mut recus = six_sources(&lot_probleme("Service de test"));
+    let autre = ecrit(&lot_probleme("Outil inconnu"));
+    recus.extend((0..6u64).map(|i| ("2026-11-01", src(0x300 + i), src(0xb0 + i % 3), autre.clone())));
+    banc.poser("2026-11-02", &recus);
+    // Les nuits d'avant ont laissé 5000 noms valides de 64 caractères non ASCII, et une entrée forgée.
+    let mut avant: BTreeMap<String, String> = (0..5000u32)
+        .map(|i| {
+            let nom: String = format!("{i:05}").chars().chain(std::iter::repeat_n('é', 59)).collect();
+            (hex_du_nom(&nom), nom)
+        })
+        .collect();
+    avant.insert("0000000000000000".into(), "forgé".into());
+    std::fs::create_dir_all(banc.d.join("tickets")).unwrap();
+    std::fs::write(
+        banc.d.join("tickets/noms-vus.json"),
+        serde_json::to_vec(&avant).unwrap(),
+    )
+    .unwrap();
+    banc.nuit(Some("Service de test\n"), None);
+    let o = std::fs::read(banc.d.join("tickets/noms-vus.json")).unwrap();
+    assert!(o.len() as u64 <= NOMS_OCTETS / 2, "{} octets", o.len());
+    let vus: BTreeMap<String, String> = serde_json::from_slice(&o).unwrap();
+    assert!(vus.values().any(|n| n == "Outil inconnu"), "le nom de la nuit chassé");
+    assert!(
+        !vus.contains_key("0000000000000000"),
+        "une empreinte qui ne correspond pas gardée"
+    );
+    assert!(vus.len() > 1 && vus.len() < 5000);
+}
+
+#[test]
+fn un_nom_approuve_suit_les_memes_caracteres_que_rapport_py() {
+    let connus: BTreeSet<String> = ["Outil [x]", "Outil (x) 2.1", ""]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    assert!(nom_pour_ia("Outil [x]", &connus).starts_with("inconnu#"));
+    assert_eq!(nom_pour_ia("Outil (x) 2.1", &connus), "Outil (x) 2.1");
+    assert!(nom_pour_ia("", &connus).starts_with("inconnu#"));
+}
+
+#[test]
+fn les_donnees_ouvertes_sont_bornees_en_tout_et_dans_le_meme_ordre() {
+    // 150 gabarits × 200 textes : plus que la borne totale ; la règle (plus petite clé) reste, et le résultat ne
+    // dépend pas de l'ordre d'arrivée.
+    let paires: Vec<(String, Ouverte)> = (0..150u32)
+        .flat_map(|g| {
+            (0..200u32).map(move |t| {
+                (
+                    format!("gabarit|{g:016x}"),
+                    Ouverte::Texte {
+                        texte: format!("texte {t}"),
+                        contexte: "autotest".into(),
+                    },
+                )
+            })
+        })
+        .chain(std::iter::once((
+            format!("regle|{LNX}"),
+            Ouverte::Objet {
+                nom: "Service de test".into(),
+                detail: "service - probleme".into(),
+            },
+        )))
+        .collect();
+    let remplir = |ordre: &mut dyn Iterator<Item = &(String, Ouverte)>| {
+        let mut o = Ouvertes::default();
+        for (k, d) in ordre {
+            o.ajouter(k.clone(), d.clone(), &src(1));
+        }
+        o
+    };
+    let a1 = remplir(&mut paires.iter());
+    let a2 = remplir(&mut paires.iter().rev());
+    let total: usize = a1.0.values().map(BTreeMap::len).sum();
+    assert_eq!(total, OUVERTES_TOTAL_MAX);
+    assert_eq!(a1.1, total);
+    assert!(a1.0.contains_key(&format!("regle|{LNX}")));
+    assert_eq!(a1.0, a2.0);
 }

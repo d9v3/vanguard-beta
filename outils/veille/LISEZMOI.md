@@ -109,8 +109,9 @@ puis lus par le programme ; ni l'IA ni le rapport n'ouvrent ce qui vient d'un lo
 - **Signaux** (`src/compte_rendu/flotte/signaux.rs`, sans IA, sur les sept derniers jours) : un signal demande au
   moins 5 sources dans 3 réseaux /16 au numérateur (une voix par source, par jour et par clé : mille lots d'une
   source n'en font qu'une). Régression : un taux (plantage, cause, hors délai, non vérifié, échec de correction,
-  abandon d'un outil) au moins deux fois celui de la version d'avant (5 sources au moins de chaque côté, même
-  famille), ou deux fois sur les mêmes installations vues sur les deux versions (identifiant P1). Faux positif
+  abandon d'un outil) au moins deux fois celui de la version d'avant dans l'ordre des numéros (5 sources au moins
+  de chaque côté, même famille ; le jour d'avant pris de préférence avant l'arrivée de la nouvelle version, pour
+  que des lots forgés de l'ancienne envoyés ensuite ne la diluent pas), ou deux fois sur les mêmes installations vues sur les deux versions (identifiant P1). Faux positif
   probable : problème chez plus de 60 % des sources de la famille, « c'est normal » chez plus de 30 %, correction
   refusée par plus de la moitié, ou constat instable ; quand la famille a des installations identifiées, il doit
   tenir aussi sur celles vues sept jours avant (une arrivée soudaine ne fait pas passer une règle pour fausse).
@@ -149,8 +150,9 @@ avec un test et committe ; **garde-fous mécaniques** (refus d'un diff qui touch
 de sa proposition, ou changerait la chaîne de publication et de la clé ; une alerte « verifier » sur une étape portée
 par un essai d'`outils/` n'appelle donc pas l'IA, elle est dite à l'auteur), un `build.rs`, `rust-toolchain`, qui ajoute `#[ignore]`,
 retire un test, change les dépendances hors d'une alerte RUSTSEC, ou n'ajoute aucun test (une alerte `flotte` :
-pour regression, couverture, fragile et cache ; elle ne peut pas non plus ôter une ligne de
-`tests/regles-connues.txt` ni y marquer une règle « retire ») ; refus aussi si le lien
+un vrai `#[test]` ou proptest ajouté pour regression, couverture, fragile et cache ; elle ne peut pas non plus ôter
+une ligne de `tests/regles-connues.txt`, y marquer une règle « retire », ni supprimer ou renommer un fichier de
+`tests/`) ; refus aussi si le lien
 `.git` du worktree a été réécrit) ; `verifier.sh` dans l'arbre, **dans un bac à sable** ; **relecture adversariale**
 par un second `claude -p` neuf en lecture seule (`consignes-relecture.md`) ; **jamais la VM** : ce qui y est déposé
 tourne en administrateur sans clic, l'auteur la lance après sa relecture (`outils/vm-tester.sh --branche <branche>`) ;

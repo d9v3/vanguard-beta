@@ -1010,7 +1010,9 @@ struct VoixJour {
 type Voix3 = BTreeMap<Version, BTreeMap<Jour, VoixJour>>;
 
 /// Installations gardées dans l'histoire de la nuit (P1) : bien plus que la flotte attendue ; au-delà, les plus
-/// petits identifiants (même raison que `Voix` : le résultat ne dépend pas de l'ordre des lots).
+/// petits identifiants (même raison que `Voix` : le résultat ne dépend pas de l'ordre des lots). L'histoire ne
+/// vient que des voix déjà bornées, et au plus `INSTALLATIONS_VOIX_MAX` installations par source : une seule
+/// adresse qui déclare des milliers de petits identifiants ne peut pas en chasser les vraies installations.
 const HISTOIRE_MAX: usize = 100_000;
 
 /// Ce qu'une source a dit un jour, installation par installation (P1), pour les seules clés des taux : de quoi
@@ -1064,6 +1066,35 @@ pub(crate) struct P1 {
 }
 
 impl P1 {
+    /// L'histoire tirée des voix de la nuit, une fois tous les lots lus : par source, ses plus petits identifiants
+    /// seulement (sur toutes ses voix), notés au premier jour de réception où elle les a dits sur chaque version.
+    fn histoire_des_voix(&mut self) {
+        let mut par_source: BTreeMap<&str, BTreeMap<&str, BTreeMap<&Version, NaiveDate>>> = BTreeMap::new();
+        for ((version, jour, _), sources) in &self.voix {
+            let Some(d) = date(jour) else {
+                continue;
+            };
+            for (source, v) in sources {
+                let s = par_source.entry(source.as_str()).or_default();
+                for i in v.installations.keys() {
+                    let e = s.entry(i.as_str()).or_default().entry(version).or_insert(d);
+                    *e = (*e).min(d);
+                }
+                while s.len() > INSTALLATIONS_VOIX_MAX {
+                    s.pop_last();
+                }
+            }
+        }
+        let notes: Vec<(String, Version, NaiveDate)> = par_source
+            .values()
+            .flat_map(|s| s.iter())
+            .flat_map(|(i, m)| m.iter().map(move |(v, d)| ((*i).to_string(), (*v).clone(), *d)))
+            .collect();
+        for (i, v, d) in notes {
+            self.noter(&i, &v, d);
+        }
+    }
+
     fn noter(&mut self, installation: &str, version: &Version, jour: NaiveDate) {
         let e = self
             .histoire
@@ -1083,6 +1114,10 @@ impl P1 {
 const OUVERTES_CLES_MAX: usize = 2000;
 const OUVERTES_ENTREES_MAX: usize = 200;
 const OUVERTES_SOURCES_MAX: usize = 8;
+/// Entrées ouvertes gardées en tout, toutes clés confondues : 2000 clés × 200 entrées feraient sinon des centaines
+/// de Mo dans la nuit. Au-delà, les plus grandes paires (clé, entrée) partent, les gabarits d'abord (`a_retirer`) :
+/// le même choix quel que soit l'ordre des lots (une paire écartée est toujours après toutes les gardées).
+const OUVERTES_TOTAL_MAX: usize = 20_000;
 
 /// Une donnée de la voie ouverte, pour les tickets de l'auteur seulement : un objet (nom, et « sorte version état »)
 /// ou un texte nettoyé (texte, contexte). Déjà passés par le nettoyage de l'ordinateur et revérifiés par
@@ -1093,13 +1128,15 @@ pub(crate) enum Ouverte {
     Texte { texte: String, contexte: String },
 }
 
-/// Les données ouvertes de la nuit : clé (`regle|ID`, `gabarit|G`) → donnée → sources.
+/// Les données ouvertes de la nuit : clé (`regle|ID`, `gabarit|G`) → donnée → sources ; et le nombre d'entrées en
+/// tout.
 #[derive(Default)]
-pub(crate) struct Ouvertes(BTreeMap<String, BTreeMap<Ouverte, BTreeSet<String>>>);
+pub(crate) struct Ouvertes(BTreeMap<String, BTreeMap<Ouverte, BTreeSet<String>>>, usize);
 
 impl Ouvertes {
     fn ajouter(&mut self, cle: String, donnee: Ouverte, source: &str) {
         let entrees = self.0.entry(cle).or_default();
+        let avant = entrees.len();
         let sources = entrees.entry(donnee).or_default();
         sources.insert(source.to_string());
         while sources.len() > OUVERTES_SOURCES_MAX {
@@ -1108,9 +1145,37 @@ impl Ouvertes {
         while entrees.len() > OUVERTES_ENTREES_MAX {
             entrees.pop_last();
         }
+        self.1 = self.1.saturating_add(entrees.len()).saturating_sub(avant);
         while self.0.len() > OUVERTES_CLES_MAX {
-            self.0.pop_last();
+            let Some(k) = self.a_retirer() else { break };
+            if let Some(e) = self.0.remove(&k) {
+                self.1 = self.1.saturating_sub(e.len());
+            }
         }
+        while self.1 > OUVERTES_TOTAL_MAX {
+            let Some(k) = self.a_retirer() else { break };
+            let Some(entrees) = self.0.get_mut(&k) else { break };
+            if entrees.pop_last().is_some() {
+                self.1 -= 1;
+            }
+            if entrees.is_empty() {
+                self.0.remove(&k);
+            }
+        }
+    }
+
+    /// La clé qui perd en premier : le plus grand gabarit (n'importe qui peut en inventer), puis seulement la plus
+    /// grande clé (les règles sont celles du programme, en nombre fini). Sans cela, « gabarit| » se rangeant avant
+    /// « regle| », une inondation de gabarits chasserait les données des règles.
+    fn a_retirer(&self) -> Option<String> {
+        self.0
+            .range::<str, _>((
+                std::ops::Bound::Included("gabarit|"),
+                std::ops::Bound::Excluded("gabarit}"),
+            ))
+            .next_back()
+            .or_else(|| self.0.iter().next_back())
+            .map(|(k, _)| k.clone())
     }
 
     fn lot(&mut self, lot: &Lot, source: &str) {
@@ -1369,7 +1434,6 @@ impl Lecture<'_> {
         let installation = lot.installation.as_ref().map(envoi::IdInstallation::as_str);
         let famille = lot.plateforme.famille.id().to_string();
         if let Some(i) = installation {
-            self.p1.noter(i, &lot.version, r);
             self.p1
                 .voix
                 .entry((lot.version.clone(), jour_r.clone(), famille.clone()))
@@ -1613,6 +1677,7 @@ pub(crate) fn executer_analyse(d: &Demande<'_>) -> Result<(Comptes, Option<Analy
         lu.comptes.versions = lu.comptes.versions.saturating_add(1);
     }
     ecrire_releve(dossier, t, lu.releve, &mut lu.comptes)?;
+    lu.p1.histoire_des_voix();
     let analyse = Analyse {
         aujourdhui: t,
         etats,

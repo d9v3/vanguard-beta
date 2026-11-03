@@ -233,11 +233,15 @@ garde_fous() {
   retires=$(grep -cE '^-\s*(#\[test\]|proptest::proptest!|proptest!)' <<<"$diff")
   ((retires > 0)) && { echo "retire $retires test(s)"; return; }
   # Une alerte de la flotte ne retire jamais une règle : ni ligne ôtée de tests/regles-connues.txt, ni « retire »
-  # ajouté (des comptes forgés feraient sinon taire une règle juste).
-  if [[ $GENRE == flotte ]] && grep -qxF tests/regles-connues.txt <<<"$fichiers"; then
-    local regles
-    regles=$(git_trav diff --no-ext-diff --no-textconv -U0 "$TETE"..HEAD -- tests/regles-connues.txt)
-    grep -qE '^-[^-]' <<<"$regles" && { echo "retire une ligne de tests/regles-connues.txt"; return; }
+  # ajouté (des comptes forgés feraient sinon taire une règle juste), ni fichier de tests/ supprimé ou renommé
+  # (--no-renames : un renommage se voit comme une suppression, quel que soit diff.renames).
+  if [[ $GENRE == flotte ]]; then
+    local regles enleves
+    enleves=$(git_trav diff --no-renames --diff-filter=D --name-only "$TETE"..HEAD -- tests/ | head -n3 | paste -sd' ')
+    [[ -n $enleves ]] && { echo "supprime ou renomme sous tests/ : $enleves"; return; }
+    regles=$(git_trav diff --no-renames --no-ext-diff --no-textconv -U0 "$TETE"..HEAD -- tests/regles-connues.txt)
+    awk '/^-/ && !/^--- (a\/|\/dev\/null)/ { f = 1 } END { exit !f }' <<<"$regles" &&
+      { echo "retire une ligne de tests/regles-connues.txt"; return; }
     grep -qE '^\+.*\bretire\b' <<<"$regles" && { echo "marque une règle « retire »"; return; }
   fi
   case $GENRE in
@@ -245,8 +249,10 @@ garde_fous() {
       ((ajoutes > 0)) || grep -qE '^(tests/|fuzz/graines/)' <<<"$fichiers" || { echo "aucun test ajouté"; return; } ;;
     flotte)
       case ${CLE%%:*} in
+        # Un vrai test (#[test] ou proptest ajouté dans un .rs) : une ligne dans un fichier texte de tests/ ne
+        # suffit pas à prouver qu'une correction tirée de comptes forgeables tient.
         regression | couverture | fragile | cache)
-          ((ajoutes > 0)) || grep -qE '^(tests/|fuzz/graines/)' <<<"$fichiers" || { echo "aucun test ajouté"; return; } ;;
+          ((ajoutes > 0)) || { echo "aucun test ajouté"; return; } ;;
       esac ;;
     verifier)
       [[ $CLE == tests-* ]] && ((ajoutes == 0)) && { echo "aucun test ajouté"; return; } ;;

@@ -61,8 +61,11 @@ const ARBRE_PROFONDEUR: usize = 16;
 const OU_MAX: usize = 5;
 /// La liste des noms approuvés (`outils/veille/noms-connus.txt`).
 const NOMS_OCTETS: u64 = 1024 * 1024;
-/// Les noms vus gardés pour `approuver-nom.sh` (un nom fait 64 caractères au plus : moins de 1 Mio en tout).
+/// Les noms vus gardés pour `approuver-nom.sh`, en nombre (et en octets : `NOMS_OCTETS_ECRITS`).
 const NOMS_VUS_MAX: usize = 4000;
+/// Octets écrits au plus dans noms-vus.json (au pire, chaque caractère échappé en `\uXXXX`) : la moitié de ce que la
+/// nuit suivante accepte de relire.
+const NOMS_OCTETS_ECRITS: usize = 512 * 1024;
 /// La longueur d'une clé de signal : `flotte:<clé>` tient dans la signature des alertes (200 caractères).
 const CLE_MAX: usize = 190;
 
@@ -368,18 +371,34 @@ fn sous_taux(voix: Option<&BTreeMap<String, VoixP1>>, garde: &dyn Fn(&str) -> bo
 }
 
 /// Le jour de la version d'avant à comparer : le dernier jusqu'à `d` où la famille a au moins `AVANT_MIN` sources
-/// au dénominateur.
+/// au dénominateur, pris d'abord avant `premier` (le premier jour de la version courante). Des lots forgés de la
+/// version d'avant, envoyés après la sortie de la nouvelle pour gonfler son taux, ne peuvent ainsi pas cacher une
+/// régression tant qu'un jour d'avant la sortie est gardé ; sans lui, le dernier jour, faute de mieux.
 fn jour_avant<'a>(
     jours: &'a BTreeMap<super::Jour, JourFlotte>,
     d: NaiveDate,
+    premier: Option<NaiveDate>,
     famille: &str,
     t: &Taux,
 ) -> Option<(NaiveDate, &'a Agregat)> {
-    jours.iter().rev().find_map(|(j, jf)| {
-        let x = date(j)?;
-        let a = jf.familles.get(famille)?;
-        (x <= d && den_de(a, t.den.as_deref()) >= AVANT_MIN).then_some((x, a))
-    })
+    let dernier = |borne: NaiveDate| {
+        jours.iter().rev().find_map(|(j, jf)| {
+            let x = date(j)?;
+            let a = jf.familles.get(famille)?;
+            (x <= borne && den_de(a, t.den.as_deref()) >= AVANT_MIN).then_some((x, a))
+        })
+    };
+    premier
+        .and_then(|p| p.pred_opt())
+        .and_then(|veille| dernier(veille.min(d)))
+        .or_else(|| dernier(d))
+}
+
+/// Les versions plus anciennes que `v`, dans l'ordre des numéros (pas celui du texte : « 0.89.10 » vient après
+/// « 0.89.9 »).
+fn versions_avant<'a>(an: &'a Analyse, v: &Version) -> impl Iterator<Item = (&'a Version, &'a super::EtatVersion)> {
+    let cle = super::version_cle(v);
+    an.etats.iter().filter(move |(x, _)| super::version_cle(x) < cle)
 }
 
 /// Le 90e centile des paliers `regle|ID|p90_ms|bN` des sources : le premier palier où 90 % des sources sont passées.
@@ -445,13 +464,14 @@ impl Contexte<'_> {
 
 /// La régression d'une famille : le taux d'au moins une mesure double depuis la version d'avant.
 fn regression(cx: &Contexte<'_>, famille: &str, a: &Agregat, sortie: &mut Vec<Candidat>) {
-    let Some((avant, etat_avant)) = cx.an.etats.range(..cx.version.clone()).next_back() else {
+    let Some((avant, etat_avant)) = versions_avant(cx.an, cx.version).max_by_key(|(x, _)| super::version_cle(x)) else {
         return;
     };
+    let premier = cx.an.etats.get(cx.version).and_then(|e| e.jours.keys().find_map(date));
     for t in taux_regression(a) {
         let num = compte(a, &t.num);
         let den = den_de(a, t.den.as_deref());
-        let Some((d_avant, aa)) = jour_avant(&etat_avant.jours, cx.d, famille, &t) else {
+        let Some((d_avant, aa)) = jour_avant(&etat_avant.jours, cx.d, premier, famille, &t) else {
             continue;
         };
         let num_p = compte(aa, &t.num)[0];
@@ -676,7 +696,7 @@ fn lenteur(cx: &Contexte<'_>, groupe: &str, a: &Agregat, sortie: &mut Vec<Candid
 
 /// L'erreur nouvelle : un gabarit de cause jamais vu sur une version d'avant, dit par au moins 3 sources.
 fn erreur_nouvelle(cx: &Contexte<'_>, a: &Agregat, sortie: &mut Vec<Candidat>) {
-    let avant: Vec<&super::EtatVersion> = cx.an.etats.range(..cx.version.clone()).map(|(_, e)| e).collect();
+    let avant: Vec<&super::EtatVersion> = versions_avant(cx.an, cx.version).map(|(_, e)| e).collect();
     if avant.is_empty() {
         return;
     }
@@ -809,7 +829,10 @@ fn hex_du_nom(nom: &str) -> String {
 
 /// Ce que l'IA peut lire d'un nom : lui-même s'il est approuvé (et sûr à afficher), sinon `inconnu#<empreinte>`.
 fn nom_pour_ia(nom: &str, connus: &BTreeSet<String>) -> String {
-    if connus.contains(nom) && nom.chars().all(texte::permis) {
+    // Les mêmes caractères que `nom_sur` de rapport.py, qui revérifie : un nom approuvé ne s'y perd pas en route.
+    let simple = |c: char| c.is_alphanumeric() || " .,:;'()#%/_-+=".contains(c);
+    let longueur = nom.chars().count();
+    if connus.contains(nom) && (1..=80).contains(&longueur) && nom.chars().all(|c| texte::permis(c) && simple(c)) {
         nom.to_string()
     } else {
         format!("inconnu#{}", hex_du_nom(nom))
@@ -1318,21 +1341,28 @@ pub(crate) fn produire(an: &Analyse, sortie: &Sortie<'_>, comptes: &mut Comptes)
         }
         comptes.tickets = ecrits;
         // Les noms vus, pour `approuver-nom.sh` : à côté des tickets (des données ouvertes, jamais dans l'état de la
-        // veille). Ceux des nuits d'avant restent (un ticket se lit des jours plus tard), bornés : au-delà, les
-        // plus grandes empreintes partent, le même choix quel que soit l'ordre d'arrivée.
+        // veille). Ceux des tickets de cette nuit d'abord (au plus TICKETS_MAX × NOMS_MAX), puis ceux des nuits
+        // d'avant (un ticket se lit des jours plus tard) tant qu'il reste de la place, en nombre et en octets : le
+        // fichier reste toujours lisible la nuit suivante, et des noms forgés d'hier ne chassent pas ceux de ce soir.
         let chemin = dossier.join("noms-vus.json");
+        let place = |n: &str| n.len().saturating_mul(6).saturating_add(32);
+        let mut octets = vus.values().fold(0usize, |t, n| t.saturating_add(place(n)));
         // Illisible, trop gros ou remplacé par un lien : repris de zéro (une commodité, jamais de quoi arrêter la
         // nuit) ; l'écriture atomique remplace le lien sans le suivre.
         if let Ok(Some(o)) = lire_borne(&chemin, NOMS_OCTETS) {
             let avant: BTreeMap<String, String> = serde_json::from_slice(&o).unwrap_or_default();
             for (h, n) in avant {
-                if h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()) && hex_du_nom(&n) == h {
-                    vus.entry(h).or_insert(n);
+                let valide = h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()) && hex_du_nom(&n) == h;
+                if !valide || vus.contains_key(&h) {
+                    continue;
                 }
+                let plus = place(&n);
+                if vus.len() >= NOMS_VUS_MAX || octets.saturating_add(plus) > NOMS_OCTETS_ECRITS {
+                    break;
+                }
+                octets = octets.saturating_add(plus);
+                vus.insert(h, n);
             }
-        }
-        while vus.len() > NOMS_VUS_MAX {
-            vus.pop_last();
         }
         ecrire(&chemin, &json(&vus)?)?;
     }
