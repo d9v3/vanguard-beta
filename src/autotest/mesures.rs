@@ -1,6 +1,8 @@
 //! Le journal des mesures : combien de temps chaque règle du bilan a pris, à chaque bilan (manuel ou horaire), gardé
 //! en résumé par jour pendant 8 semaines dans `autotest/mesures.json`. À part du journal des événements, qui garde
-//! les décisions, pas la télémétrie ; jamais envoyé, il sert à voir une règle qui ralentit.
+//! les décisions, pas la télémétrie. Il sert à voir une règle qui ralentit et à l'auto-réglage ; ses durées entrent,
+//! résumées, dans le relevé local (`crate::amelioration::durees_du`), qui ne part qu'avec le partage accepté et un
+//! relais en service (aucun dans cette version : rien ne part).
 //!
 //! Limites dites : les règles tournent en parallèle, une durée est « au mur », gonflée par les voisines. Deux
 //! processus (surveillance et bilan manuel) peuvent noter en même temps : `ecrire_atomique` évite le fichier cassé,

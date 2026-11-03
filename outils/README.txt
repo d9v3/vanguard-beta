@@ -176,7 +176,10 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
          (masked); the previous value is shown, except for learned alerts and blocking, which open their own
          screen (vanguard settings). Real-time protection: the hourly monitoring and the active protection of
          blocking turned off at once, after your consent, for 1 h, 4 h or until turned back on; never Defender,
-         the firewall or UAC, and a block already made stays in place (vanguard settings real-time no --for 1h)
+         the firewall or UAC, and a block already made stays in place (vanguard settings real-time no --for 1h).
+         Vanguard Agent (no AI): four missions that tune Vanguard itself, in the safe direction only, a switch
+         each, everything can be undone; no check is removed (vanguard agent). Sharing with the author: a local
+         record, readable as is, erased by "No"; nothing leaves in this version.
        13.2 What Vanguard has learned: your habits, and the alerts you declared normal ("i" when fixing, in
          monitoring, the watcher or blocking)
        13.3 Update Vanguard: the copy on this computer, from the key or from GitHub (d9v3/vanguard-update,

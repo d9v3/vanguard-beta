@@ -25,26 +25,28 @@ APPELS_MAX=20
 GARDE_JOURS=90
 
 dire() { printf '%s\n' "$1"; }
+# Un chemin pour le résumé de la nuit : sous le dossier personnel, en « ~/… » (le nom du compte n'y paraît pas).
+court() { if [[ $1 == "$HOME"/* ]]; then printf '%s/%s' '~' "${1#"$HOME"/}"; else printf '%s' "$1"; fi; }
 sautee() { dire "$1"; exit 77; }
 refus() { dire "$1"; exit 1; }
 
 [[ $JOUR =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || refus "jour illisible"
 ADRESSE_F=$CONFIG/relais-adresse
 SECRET_F=$CONFIG/relais-secret
-[[ -e $ADRESSE_F ]] || sautee "relais pas configuré ($ADRESSE_F absent)"
-[[ -e $SECRET_F ]] || sautee "secret de relève absent ($SECRET_F), adresse pourtant configurée"
+[[ -e $ADRESSE_F ]] || sautee "relais pas configuré ($(court "$ADRESSE_F") absent)"
+[[ -e $SECRET_F ]] || sautee "secret de relève absent ($(court "$SECRET_F")), adresse pourtant configurée"
 
 # L'adresse : une origine https, sans chemin, sans identifiants ni requête ; jamais http (le secret partirait en
 # clair). La ligne est lue sans jamais être recopiée dans le journal.
 adresse=$(head -c 300 "$ADRESSE_F" | head -n1 | tr -d '\r')
 [[ $adresse =~ ^https://[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:[0-9]{1,5})?/?$ ]] ||
-  refus "adresse du relais refusée : une origine https://hote[:port], rien d'autre ($ADRESSE_F)"
+  refus "adresse du relais refusée : une origine https://hote[:port], rien d'autre ($(court "$ADRESSE_F"))"
 adresse=${adresse%/}/v1/releve
 
 # Le secret : un fichier ordinaire à soi, lisible par soi seul ; jamais en argument (ps le montrerait) ni affiché.
 [[ -f $SECRET_F && ! -L $SECRET_F && -O $SECRET_F ]] || refus "secret de relève refusé : pas un fichier ordinaire à soi"
 droits=$(stat -c %a "$SECRET_F")
-[[ $droits == 600 || $droits == 400 ]] || refus "secret de relève refusé : droits $droits (600 attendu : chmod 600 $SECRET_F)"
+[[ $droits == 600 || $droits == 400 ]] || refus "secret de relève refusé : droits $droits (600 attendu : chmod 600 $(court "$SECRET_F"))"
 secret=$(head -c 300 "$SECRET_F" | head -n1 | tr -d '\r')
 [[ $secret =~ ^[A-Za-z0-9_-]{32,256}$ ]] || { unset secret; refus "secret de relève refusé : hors motif ([A-Za-z0-9_-], 32 à 256)"; }
 

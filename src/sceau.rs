@@ -186,6 +186,9 @@ const TARDIFS: &[&str] = &[
     crate::autotest::mesures::MESURES,
 ];
 
+/// Les `TARDIFS` scellés depuis la 0.89.1, que la 0.89.0 et les versions d'avant écrivent encore sans sceau.
+const SCELLES_DEPUIS_0891: &[&str] = &[crate::autotest::mesures::MESURES];
+
 /// Les premiers `TARDIFS`, ceux que connaissaient les versions de la forme 0 (jusqu'à la 0.87) : les seuls noms que
 /// leurs sceaux ont pu mettre dans leurs `vus`.
 const TARDIFS_D_AVANT: usize = 18;
@@ -1222,6 +1225,14 @@ fn juger_constat(falsifies: &[&str], illisibles: bool, copie_ancienne: bool) -> 
             " Cause probable : la copie de Vanguard de cet ordinateur est plus ancienne et écrit ces fichiers sans sceau ; mettez-la à jour (« vanguard se-mettre-a-jour »).",
             " Likely cause: the copy of Vanguard on this computer is older and writes these files without a seal; update it (“vanguard se-mettre-a-jour”)."
         );
+    } else if falsifies.iter().all(|n| SCELLES_DEPUIS_0891.contains(n)) {
+        // Un retour à la 0.89.0, puis de nouveau cette version : la copie n'est plus ancienne, mais la 0.89.0 a
+        // réécrit ces fichiers sans sceau entre-temps. Rien ne permet de le distinguer d'un programme qui les change :
+        // le niveau reste, seule la cause possible est dite.
+        message += tr!(
+            " Cause possible : la 0.89.0 ou une version plus ancienne de Vanguard a servi ici depuis ; elle écrit ce fichier sans sceau, et ses mesures repartent de zéro.",
+            " Possible cause: Vanguard 0.89.0 or older has run here since; it writes this file without a seal, and its measurements start over."
+        );
     }
     let niveau = if copie_ancienne { Niveau::Moyen } else { Niveau::Eleve };
     Some(
@@ -1933,6 +1944,16 @@ mod tests {
         let c = juger_constat(&[BOTNETS], false, true).unwrap();
         assert_eq!(c.probleme, Some(Niveau::Moyen));
         assert!(c.message.contains("se-mettre-a-jour"), "{}", c.message);
+        // Les mesures seules, réécrites par la 0.89.0 après un retour de version : la cause possible est dite, au
+        // même niveau ; avec un autre fichier, ou une copie plus ancienne, elle ne l'est pas.
+        let mesures = crate::autotest::mesures::MESURES;
+        let c = juger_constat(&[mesures], false, false).unwrap();
+        assert_eq!(c.probleme, Some(Niveau::Eleve));
+        assert!(c.message.contains("0.89.0"), "{}", c.message);
+        let c = juger_constat(&[mesures, INTEGRITE], false, false).unwrap();
+        assert!(!c.message.contains("0.89.0"), "{}", c.message);
+        let c = juger_constat(&[mesures], false, true).unwrap();
+        assert!(!c.message.contains("0.89.0"), "{}", c.message);
     }
 
     /// La course du premier usage, sans dépendre de l'ordre des fils : un autre Vanguard, lancé au même moment, vient

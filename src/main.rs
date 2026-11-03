@@ -517,13 +517,13 @@ enum Commande {
     Conteneurs,
     /// Paramètres : tous les réglages de Vanguard (langue, emojis, travail sans Internet, protection en temps réel,
     /// surveillance, entretien, alertes apprises, blocage, restrictions des extensions, clé abuse.ch, versions des
-    /// logiciels, autodiagnostic de la semaine, paquets de l'AUR). Sans argument : leur état ; avec un réglage et une
+    /// logiciels, autodiagnostic de la semaine, paquets de l'AUR, Agent Vanguard, partage avec l'auteur). Sans argument : leur état ; avec un réglage et une
     /// valeur : le change, la valeur d'avant montrée pour revenir. « temps-reel non --pendant 1h|4h » coupe la protection en temps réel de Vanguard pour ce temps
     /// (sans --pendant : jusqu'à reprise), après accord ; jamais Defender, le pare-feu ni l'UAC.
     #[command(visible_alias = "settings")]
     Parametres {
         /// Un réglage (langue, emojis, sans-internet, temps-reel, surveillance, entretien, appris, blocage,
-        /// restrictions, abuse.ch, versions-logiciels, autotest, paquets-aur, partage) et sa valeur ; temps-reel non prend aussi --pendant 1h ou 4h.
+        /// restrictions, abuse.ch, versions-logiciels, autotest, paquets-aur, auto-reglage, partage) et sa valeur ; temps-reel non prend aussi --pendant 1h ou 4h.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         quoi: Vec<String>,
     },
@@ -781,9 +781,9 @@ enum Commande {
     /// Scan silencieux + notifications (utilisé par la surveillance).
     #[command(hide = true)]
     Surveiller,
-    /// L'Agent Vanguard (sans IA), en lecture seule : ses missions, leur dernier tour et son journal ; « --json » :
-    /// la même vue pour un script, au schéma versionné décrit dans agent/sortie.rs.
-    #[command(hide = true)]
+    /// L'Agent Vanguard (sans IA), en lecture seule : ses missions (délais, cache, relevé local, avis sur les
+    /// corrections), leur dernier tour et son journal, sans aucune donnée personnelle. Rien n'est changé ni envoyé. Ses interrupteurs sont dans
+    /// Paramètres (« parametres auto-reglage »).
     Agent {
         /// La vue en JSON (schéma 1) : rien d'autre que des noms fermés, des identifiants de règle, des nombres et des
         /// dates.
@@ -3028,7 +3028,8 @@ const AIDES_EN: &[(&str, &str)] = &[
     ("conteneurs", "Known flaws in this computer's Docker or Podman images, by trivy if installed. Read-only"),
     ("parametres", "Settings: all of Vanguard's settings (language, emojis, working without the Internet, real-time \
                     protection, monitoring, monthly check-up, learned alerts, blocking, extension restrictions, \
-                    abuse.ch key, software versions, weekly self-test, AUR packages). \
+                    abuse.ch key, software versions, weekly self-test, AUR packages, Vanguard Agent, sharing with \
+                    the author). \
                     No argument: their state; with a setting and a value: changes it, showing the \
                     previous value to go back. “real-time no --for 1h|4h” turns Vanguard's real-time protection off \
                     for that long (without --for: until turned back on), after your consent; never Defender, the \
@@ -3160,6 +3161,9 @@ const AIDES_EN: &[(&str, &str)] = &[
               outside Vanguard's program. No argument: the list to choose from; “open”: the folder; “<file> \
               [arguments]” runs it (approved by its fingerprint on the first run). Never as administrator"),
     ("extensions", "Extensions: the menu of plugins and lab scripts, to choose and run"),
+    ("agent", "The Vanguard Agent (no AI), read-only: its missions (time limits, cache, local record, notes on \
+               fixes), their last run and its journal, without any personal data. Nothing is changed or sent. Its switches are in Settings \
+               (“settings auto-tuning”)"),
     ("optimiser", "Optimize: the recommended settings, the privacy, performance (except macOS) and comfort ones, each \
                    shown, accepted, then exactly undoable; “undo” puts everything back as it was. No argument: the \
                    Optimize menu"),
@@ -3256,11 +3260,13 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("chercher", "premier", "Open the best result right away"),
     ("plugins", "quoi", "add <folder>, approve <name>, list, remove <name>, or <name> [--report] [arguments]"),
     ("labo", "quoi", "open, list, or <file> [arguments]"),
+    ("agent", "json", "The view in JSON (schema 1): nothing but closed names, rule identifiers, numbers and dates"),
     ("extensions", "sans_restrictions", "on: the extensions' restrictions turned off (no consent, fingerprint or scan, \
                                          with all your rights); off: back on. The extensions folder must stay yours \
                                          alone"),
     ("parametres", "quoi", "A setting (language, emojis, offline, real-time, monitoring, maintenance, learned, \
-                              blocking, restrictions, abuse.ch, software-versions, autotest, aur-packages, sharing) and its \
+                              blocking, restrictions, abuse.ch, software-versions, autotest, aur-packages, auto-tuning, \
+                              sharing) and its \
                               value; real-time no also takes --for 1h or 4h"),
     ("blocage", "quoi", "“search”, “undo”, “status”, “auto” or “click” (active protection), or a category (programs, \
                            connections, startup, agents) followed by a mode (off, click, auto)"),
@@ -3296,6 +3302,7 @@ const RUBRIQUE_DES_AUTRES: &[(&str, Groupe)] = &[
     ("importer", Groupe::Vanguard),
     ("plugins", Groupe::Vanguard),
     ("labo", Groupe::Vanguard),
+    ("agent", Groupe::Vanguard),
 ];
 
 /// Le nom d'une commande dans la langue de l'interface : son alias anglais visible en anglais, s'il en a un.
@@ -4488,6 +4495,10 @@ mod tests_menu {
         ),
         ("plugins", "le menu Extensions les liste et les lance"),
         ("labo", "le menu Extensions les liste et les lance"),
+        (
+            "agent",
+            "Paramètres › Agent Vanguard montre la même vue et en tient les interrupteurs",
+        ),
         (
             "protection",
             "l'état de tous les interrupteurs d'un coup ; chacun a aussi sa ligne dans son groupe",

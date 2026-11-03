@@ -614,7 +614,8 @@ a appris » montre tout et permet d'oublier.
 **Paramètres** (Vanguard › Paramètres, « s » au menu principal, `vanguard parametres`) — tous les réglages au même
 endroit : langue, emojis, travail sans Internet, protection en temps réel, surveillance horaire, entretien du mois,
 alertes apprises, blocage des menaces, restrictions des extensions, clé abuse.ch, versions des logiciels, autodiagnostic
-de la semaine et paquets de l'AUR (Arch Linux : coupé par défaut, aucun nom de paquet n'est envoyé à l'AUR sans lui).
+de la semaine, paquets de l'AUR (Arch Linux : coupé par défaut, aucun nom de paquet n'est envoyé à l'AUR sans lui),
+Agent Vanguard et partage avec l'auteur.
 Chaque changement montre la valeur d'avant et la commande pour la remettre ; les alertes apprises et le blocage ouvrent
 leur propre écran (« Ce que Vanguard a appris », Blocage des menaces). La langue, les emojis et le travail sans Internet
 restent choisis d'un lancement à l'autre (VANGUARD_LANG, VANGUARD_EMOJI et VANGUARD_HORS_LIGNE l'emportent toujours).
@@ -630,6 +631,36 @@ blocage et sur le tableau de la surveillance, par une notification à la premiè
 l'entretien du mois : un programme qui la couperait en douce ne passe pas inaperçu. Elle ne concerne que Vanguard :
 Defender, le pare-feu et l'UAC ne sont jamais touchés, et un blocage déjà fait reste en place. En administrateur, elle
 ne se règle pas : son réglage est celui du compte (sous sudo, celui du compte qui l'a lancé est lu).
+
+**Agent Vanguard (sans IA)** (Paramètres › Agent Vanguard, `vanguard parametres auto-reglage`, `vanguard agent
+[--json]`) — un petit agent intégré, sans modèle d'IA, qui règle Vanguard lui-même sur cet ordinateur, entre des
+bornes écrites dans le code. Quatre missions, chacune avec son interrupteur (`mission
+<reglage|cache|releve|corrections> <oui|non>`) : **délais et seconds essais** (le délai d'une règle qui le frôle monte
+de 10 à 30 minutes, jamais plus, et une règle qui conclut d'ordinaire au bilan suivant a droit à un second essai),
+**cache du passage horaire** (le passage horaire reprend, une fois sur deux au plus, le résultat récent de quelques
+vérifications lentes, avec son âge ; un bilan lancé à la main vérifie tout à neuf, et une durée qui se trompe
+raccourcit), **relevé local** (voir le partage, plus bas) et **avis sur les corrections** (une correction qui échoue
+souvent, ou un problème qui revient après elle, est signalé). Les règles et ce qu'elles jugent ne changent jamais :
+couper une mission, ou tout l'agent, ne retire aucune vérification. Chaque changement est noté avec sa valeur d'avant
+dans un journal scellé, et s'annule (`annuler <règle>`, `tout-remettre`). `vanguard agent` montre ses missions, leur
+dernier tour et son journal, en lecture seule ; `--json` donne la même vue pour un script : des noms d'une liste
+fermée, des identifiants de règle, des nombres et des dates, aucune donnée personnelle.
+
+**Partage avec l'auteur** (Paramètres › Partage avec l'auteur, `vanguard parametres partage oui|non|voir`) — pour
+améliorer Vanguard, la mission du relevé local note chaque jour, sur cet ordinateur et en comptes agrégés, ses
+erreurs, ses lenteurs, le résultat des corrections, les choix faits dans Vanguard, le matériel (sans numéro de série)
+et le nom et la version des logiciels, services et pilotes en cause. Jamais de mot de passe, de contenu de fichier, de
+site visité, de texte tapé, d'argument de commande ni d'inventaire des logiciels ; un texte d'erreur est nettoyé
+(chemins, adresses et jetons retirés) ou jeté en entier. Le relevé tient dans le dossier `amelioration/` (scellé, 96
+Kio par jour, 90 jours et 10 Mo au plus) ; il ne se fait jamais depuis la clé, en root, sous Wine ni dans une CI.
+**Dans cette version, rien ne part** : le relais de l'auteur n'est pas encore en service, Vanguard n'a aucune adresse
+où envoyer et n'ouvre aucune connexion pour cela, et l'écran du partage le dit. Le jour où il le sera, le code prévoit
+un avis au lancement avant tout envoi, un lot par jour au plus, en HTTPS, rien de relevé avant le jour de l'accord, et
+un identifiant d'installation tiré au hasard, renouvelé tous les 90 jours. « Voir ce qui serait envoyé » (`voir`)
+montre les octets exacts du prochain lot, mis en retrait pour la lecture. « Non » (ne pas partager) arrête le relevé
+et efface le relevé (`amelioration/`), la file d'envoi (`envoi/`) et l'identifiant d'installation ; les bilans, les
+réglages, l'Agent et les mesures de l'autodiagnostic restent sur l'ordinateur. `VANGUARD_ENVOI=0` l'emporte toujours :
+rien n'est relevé ni envoyé. Ce qui sortira, et comment : [MODELE-DE-MENACE.md](MODELE-DE-MENACE.md).
 
 **Extensions** (menu 12, `vanguard extensions`) — des programmes personnels dans Vanguard, sans toucher à son code. Un
 plugin est un dossier avec un manifeste `plugin.toml`, ajouté une fois depuis un dossier ou une archive .zip
@@ -833,7 +864,7 @@ Chaque entrée du menu existe aussi en commande.
 | `vanguard nat` | type de NAT pour le jeu : ouvert, modéré ou strict |
 | `vanguard canaux-wifi` | Wi-Fi encombré : les réseaux voisins par canal, et le canal le plus libre |
 | **13 Vanguard** | |
-| `vanguard parametres [réglage valeur]` | paramètres (aussi « s » au menu principal) : langue, emojis, travail sans Internet, protection en temps réel (`temps-reel non --pendant 1h\|4h`, ou jusqu'à reprise), surveillance, entretien du mois, alertes apprises, blocage, restrictions des extensions, clé abuse.ch (masquée), versions des logiciels, autodiagnostic de la semaine, paquets de l'AUR (Arch Linux, coupé par défaut) ; la valeur d'avant est montrée pour revenir |
+| `vanguard parametres [réglage valeur]` | paramètres (aussi « s » au menu principal) : langue, emojis, travail sans Internet, protection en temps réel (`temps-reel non --pendant 1h\|4h`, ou jusqu'à reprise), surveillance, entretien du mois, alertes apprises, blocage, restrictions des extensions, clé abuse.ch (masquée), versions des logiciels, autodiagnostic de la semaine, paquets de l'AUR (Arch Linux, coupé par défaut), Agent Vanguard (`auto-reglage`, une mission à la fois : `mission <nom> <oui\|non>`), partage avec l'auteur (`partage oui\|non\|voir` ; rien ne part dans cette version) ; la valeur d'avant est montrée pour revenir |
 | `vanguard appris` | ce que Vanguard a appris : les habitudes et les choix notés, et les oublier |
 | `vanguard se-mettre-a-jour` | mettre Vanguard à jour sur cet ordinateur, depuis la clé ou depuis GitHub (versions signées par l'auteur) |
 | `vanguard verifier-moi [programme]` | vérifier Vanguard lui-même : version, date de compilation, empreinte SHA-256 à comparer à la page de la version ; sur la clé du propriétaire, le manifeste de la clé ; après accord, l'historique signé des versions publiées, qui vérifie aussi une autre copie (`programme`), même une version d'avant |
@@ -847,6 +878,7 @@ Chaque entrée du menu existe aussi en commande.
 | `vanguard importer <fichier>` | ajoute une sauvegarde à la base actuelle, sans rien effacer |
 | `vanguard plugins [ajouter <dossier\|archive.zip>\|approuver <nom>\|liste\|retirer <nom>\|<nom> [--rapport] [--isole]]` | plugins : ajouté après analyse (YARA, MalwareBazaar) et approuvé par ses empreintes SHA-256, lancé, réapprouvé après un changement, retiré ; hors de la note |
 | `vanguard labo [ouvrir\|liste\|<fichier> [--isole] [arguments]]` | laboratoire : un script posé tel quel, montré et approuvé par son empreinte au premier lancement ; hors de la note |
+| `vanguard agent [--json]` | l'Agent Vanguard (sans IA), en lecture seule : ses missions, leur dernier tour et son journal ; `--json` pour un script, sans aucune donnée personnelle ; ses interrupteurs sont dans Paramètres |
 
 </details>
 

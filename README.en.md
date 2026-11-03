@@ -570,8 +570,8 @@ lets you forget.
 
 **Settings** (Vanguard › Settings, "s" in the main menu, `vanguard settings`) — every setting in one place: language,
 emojis, working without the Internet, real-time protection, hourly monitoring, monthly check-up, learned alerts, threat
-blocking, extension restrictions, the abuse.ch key, software versions, the weekly self-test and AUR packages (Arch
-Linux: off by default, no package name is sent to the AUR without it). Each change shows the previous value and the
+blocking, extension restrictions, the abuse.ch key, software versions, the weekly self-test, AUR packages (Arch
+Linux: off by default, no package name is sent to the AUR without it), the Vanguard Agent and sharing with the author. Each change shows the previous value and the
 command to put it back; learned alerts and blocking open their own screen ("What Vanguard has learned", Threat
 blocking). Language, emojis and working without the Internet stay chosen from one launch to the next (VANGUARD_LANG,
 VANGUARD_EMOJI and VANGUARD_HORS_LIGNE always win).
@@ -587,6 +587,34 @@ dashboard, by a notification at the first run then once a day, and in the monthl
 quietly does not go unnoticed. It only concerns Vanguard: Defender, the firewall and UAC are never touched, and a block
 already made stays in place. As administrator, it is not set: its setting belongs to the user account (under sudo, the one
 of the account that started it is read).
+
+**Vanguard Agent (no AI)** (Settings › Vanguard Agent, `vanguard settings auto-tuning`, `vanguard agent [--json]`) — a
+small built-in agent, with no AI model, that tunes Vanguard itself on this computer, within bounds written in the
+code. Four missions, each with its own switch (`mission <tuning|cache|record|fixes> <yes|no>`): **time limits and
+second attempts** (the time limit of a rule that comes close to it goes up from 10 to 30 minutes, never more, and a
+rule that usually concludes at the next check gets a second attempt), **hourly pass cache** (the hourly pass reuses,
+every other time at most, the recent result of a few slow checks, with its age; a check you start by hand checks
+everything afresh, and a duration that turns out wrong gets shorter), **local record** (see sharing, below) and
+**notes on fixes** (a fix that often fails, or a problem that comes back after it, is pointed out). The rules and how
+they judge never change: turning off a mission, or the whole agent, removes no check. Each change is noted with its
+previous value in a sealed journal, and can be undone (`undo <rule>`, `reset`). `vanguard agent` shows its missions,
+their last run and its journal, read-only; `--json` gives the same view for a script: names from a closed list, rule
+identifiers, numbers and dates, no personal data.
+
+**Sharing with the author** (Settings › Sharing with the author, `vanguard settings sharing yes|no|see`) — to improve
+Vanguard, the local record mission notes each day, on this computer and as aggregated counts, its errors, its
+slowdowns, the result of fixes, the choices made in Vanguard, the hardware (no serial number) and the name and version
+of the software, services and drivers involved. Never a password, file contents, a visited site, typed text, a command
+argument or a software inventory; an error text is cleaned (paths, addresses and tokens removed) or dropped entirely.
+The record lives in the `amelioration/` folder (sealed, 96 KiB per day, 90 days and 10 MB at most); it is never made
+from the key, as root, under Wine or in a CI. **In this version, nothing is sent**: the author's relay is not in
+service yet, Vanguard has no address to send to and opens no connection for it, and the sharing screen says so. Once
+it is, the code provides for a notice at launch before anything is sent, one batch per day at most, over HTTPS,
+nothing recorded before the day of consent, and an installation identifier drawn at random, renewed every 90 days.
+“See what would be sent” (`see`) shows the exact bytes of the next batch, indented for reading. “No” (do not share)
+stops the record and erases the record (`amelioration/`), the sending queue (`envoi/`) and the installation
+identifier; check-ups, settings, the Agent and the self-test measurements stay on the computer. `VANGUARD_ENVOI=0`
+always wins: nothing is recorded or sent. What will leave, and how: [MODELE-DE-MENACE.en.md](MODELE-DE-MENACE.en.md).
 
 **Extensions** (menu 12, `vanguard extensions`) — custom programs in Vanguard, without touching its code. A plugin
 is a folder with a `plugin.toml` manifest, added once from a folder or a .zip archive (`vanguard plugins add`); a lab
@@ -786,7 +814,7 @@ Each menu entry is also a command.
 | `vanguard nat` | NAT type for gaming: open, moderate or strict |
 | `vanguard wifi-channels` | crowded Wi-Fi: nearby networks by channel, and the freest channel |
 | **13 Vanguard** | |
-| `vanguard settings [setting value]` | settings (also “s” in the main menu): language, emojis, working without the Internet, real-time protection (`real-time no --for 1h\|4h`, or until turned back on), monitoring, monthly check-up, learned alerts, blocking, extension restrictions, abuse.ch key (masked), software versions, weekly self-test, AUR packages (Arch Linux, off by default); the previous value is shown to go back |
+| `vanguard settings [setting value]` | settings (also “s” in the main menu): language, emojis, working without the Internet, real-time protection (`real-time no --for 1h\|4h`, or until turned back on), monitoring, monthly check-up, learned alerts, blocking, extension restrictions, abuse.ch key (masked), software versions, weekly self-test, AUR packages (Arch Linux, off by default), Vanguard Agent (`auto-tuning`, one mission at a time: `mission <name> <yes\|no>`), sharing with the author (`sharing yes\|no\|see`; nothing is sent in this version); the previous value is shown to go back |
 | `vanguard learned` | what Vanguard has learned: the habits and choices recorded, and forgetting them |
 | `vanguard self-update` | update Vanguard on this computer, from the key or from GitHub (versions signed by the author) |
 | `vanguard self-check [program]` | check Vanguard itself: version, build date, SHA-256 checksum to compare with the release page; on the owner's key, the key manifest; after your consent, the signed history of published versions, which also checks another copy (`program`), even an earlier version |
@@ -800,6 +828,7 @@ Each menu entry is also a command.
 | `vanguard import <file>` | adds a backup to the current database, erasing nothing |
 | `vanguard plugins [add <folder\|archive.zip>\|approve <name>\|list\|remove <name>\|<name> [--report] [--isolated]]` | plugins: added after a scan (YARA, MalwareBazaar) and approved by their SHA-256 fingerprints, run, approved again after a change, removed; outside the grade |
 | `vanguard lab [open\|list\|<file> [--isolated] [arguments]]` | lab: a script dropped as it is, shown and approved by its fingerprint at its first run; outside the grade |
+| `vanguard agent [--json]` | the Vanguard Agent (no AI), read-only: its missions, their last run and its journal; `--json` for a script, without any personal data; its switches are in Settings |
 
 </details>
 

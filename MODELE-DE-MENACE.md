@@ -126,14 +126,10 @@ envoie lui-même :
 - **Avec une clé abuse.ch** : la clé, à abuse.ch.
 - **En mode Wi-Fi public** : les requêtes DNS, au Bouclier canadien de l'ACEI.
 - **La recherche de mise à jour** : une demande à GitHub.
-- **Les compteurs d'amélioration** : rien pour l'instant. Le relais qui les recevra n'a pas encore d'adresse ;
-  sans elle, Vanguard ne prépare aucun envoi et n'ouvre aucune connexion (un essai le compte). Le jour où il en aura
-  une, elle entrera dans les tableaux ci-dessus, et seulement avec votre accord : un lot par jour au plus, fait des
-  compteurs du relevé local (la plateforme réduite à une liste fermée, aucun nom, chemin, adresse ni secret), relu
-  strictement avant de partir, au relais seul ; seul le code de réponse est lu, jamais le corps, aucune redirection
-  n'est suivie, trois essais par jour au plus, 24 h d'attente après un 429 ou un 503, sept jours gardés au plus. Rien
-  ne part sous les essais, sous Wine, dans la CI, avec `VANGUARD_ENVOI=0`, hors ligne, depuis une clé ni en root ;
-  « Ne pas partager » vide la file et l'identifiant d'installation.
+- **Le relevé d'amélioration** : rien dans cette version. Le relais qui le recevra n'est pas déployé et le
+  programme n'a pas son adresse ; sans elle, Vanguard ne prépare aucun envoi et n'ouvre aucune connexion (un essai
+  le compte). Ce qui partirait un jour, et seulement avec votre accord, est décrit plus bas (« Le relevé
+  d'amélioration et son relais »).
 - Un rapport de faille préparé par Vanguard n'est jamais envoyé par lui : la personne le relit et l'envoie elle-même.
 
 Cette liste est fermée : Vanguard refuse de joindre en HTTPS un hôte qui n'est pas dans le premier tableau (même au
@@ -190,3 +186,42 @@ de Rosetta ; nmap, lui, n'interroge que les appareils du réseau local. Une page
 accord (pages de « Signaler », portail du Wi-Fi public : l'adresse de la sonde du système, celle de NetworkManager
 sous Linux, montrée avant) est jointe par le navigateur. Une extension ajoutée par la personne a le réseau de
 l'ordinateur, sauf lancée isolée (Linux, macOS). Ces destinations dépendent de ces programmes, pas de Vanguard.
+
+### Le relevé d'amélioration et son relais
+
+Depuis la 0.89.1, Vanguard tient un relevé local de son propre fonctionnement, pour que l'auteur sache ce qui échoue
+ou ralentit chez les autres. Quatre étapes ; les deux dernières n'ont pas lieu tant que le relais n'est pas déployé,
+ce qui est le cas aujourd'hui :
+
+- **Sur l'ordinateur.** Le relevé note chaque jour, en comptes agrégés, les erreurs de Vanguard, ses lenteurs, le
+  résultat des corrections et les choix faits dans Vanguard, avec la plateforme réduite à une liste fermée. Une voie
+  ouverte y garde des noms, parce qu'un problème se comprend mal sans eux : nom et version des logiciels, services et
+  pilotes en cause, modèle du processeur et de la carte graphique (sans numéro de série), textes d'erreur nettoyés par
+  `amelioration::texte` (chemins, adresses et jetons retirés) ou jetés en entier. Il ne contient jamais : le contenu
+  d'un fichier, les arguments d'une commande, un mot de passe, l'historique du navigateur, un texte tapé, la liste de
+  vos fichiers, de vos comptes, de vos réseaux ou de vos appareils, ni l'inventaire de vos logiciels. Il est rangé
+  dans `amelioration/` (scellé, 96 Kio par jour au plus, 90 jours, 10 Mo au total) et se lit tel quel par « Voir ce
+  qui serait envoyé ». Répondre « Non » au partage l'efface, avec la file d'envoi et l'identifiant d'installation ;
+  `VANGUARD_ENVOI=0` le coupe.
+- **La file d'envoi, sans hôte.** `RELAIS` est vide dans le code et la liste fermée des sites HTTPS (`HOTES`, le
+  premier tableau ci-dessus) ne contient aucun relais : aucun lot n'est préparé, aucun fichier d'envoi n'est écrit,
+  aucun fil ni aucune connexion n'est lancé. Même avec un relais, rien ne partirait sous les essais, sous Wine, dans
+  la CI, avec `VANGUARD_ENVOI=0`, depuis une clé, en root, dans une compilation de développement, hors ligne, sans
+  votre accord ou après « Non » au partage.
+- **Le relais, une fois déployé.** Son adresse entrera alors dans `HOTES` et dans le premier tableau, au même titre
+  que les autres sites. Vanguard ne le joindra qu'en HTTPS, sans suivre de redirection ; il n'enverra qu'un lot par
+  jour au plus (96 Kio, relu strictement avant de partir), avec un identifiant d'installation tiré au hasard et
+  renouvelé tous les 90 jours ; trois essais par jour au plus, 24 h d'attente après un 429 ou un 503, sept jours
+  gardés au plus. Seul le code de réponse est lu, jamais le corps : il n'existe aucun canal descendant, et aucune
+  consigne, règle ni mise à jour ne peut venir par le relais. Le code du relais est dans le dépôt (`relais/`) : il
+  refait la même lecture stricte, refuse un lot où sonne le détecteur de secrets, ne garde pas l'adresse IP (une
+  empreinte de son préfixe, au sel effacé chaque jour) et efface ce qui n'est pas relevé après 14 jours.
+- **Chez l'auteur.** Chaque lot relevé est relu comme s'il venait de n'importe qui : la même lecture stricte, les
+  refus comptés, une quarantaine pour tout lot où le détecteur de secrets sonne (jamais lu plus loin). Une source
+  (l'empreinte du préfixe d'adresse) ne compte qu'une fois par jour, quel que soit son nombre de lots, et un signal
+  demande au moins 5 sources dans 3 réseaux /16. Un faux positif probable, la voie qu'un empoisonneur prendrait pour
+  faire assouplir une règle, ne va jamais à l'IA de la veille : seulement dans un ticket, que l'auteur juge. Les noms
+  et textes venus des lots n'entrent dans un ticket que dans un bloc de données fermé par un marqueur tiré au hasard,
+  que ces données ne contiennent pas (`~~~~donnees-` suivi de 16 chiffres hexadécimaux), et un nom jamais approuvé par
+  l'auteur ne paraît ailleurs que par son empreinte (`inconnu#…`). Rien d'un lot n'est une consigne, et la veille ne
+  fusionne ni ne pousse jamais rien.

@@ -7,6 +7,56 @@ une seule publication par jour, qui regroupe le travail de la journée ; le 21 o
 la 0.84 au soir, qui reprend la 0.83 livrée juste avant elle. Seule la dernière version a sa page de téléchargement ;
 chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par exemple), pour être recompilée au besoin.
 
+## 0.89.1 (pas encore publiée)
+
+- **Agent Vanguard (sans IA).** Une partie de Vanguard qui l'aide à mieux tourner sur votre ordinateur, sans IA et
+  sans rien envoyer. Il a quatre missions, chacune avec son interrupteur (Paramètres › Agent Vanguard,
+  `vanguard parametres auto-reglage`) :
+  - **délais et seconds essais** : une règle du bilan qui frôle son délai deux semaines de suite, ou le dépasse deux
+    fois en 7 jours, voit son délai monter une fois, jamais plus haut ; une règle dont le « non vérifié » passager se
+    résout le plus souvent au bilan suivant est relancée une fois à la fin du bilan, dans le délai total ;
+  - **cache du passage horaire** : le passage horaire de la surveillance reprend, une fois sur deux au plus, le
+    résultat récent de quelques vérifications lentes, avec son âge (« vérifié il y a 40 min »). Un bilan lancé à la
+    main vérifie tout à neuf. Le pare-feu, l'antivirus, les connexions à distance, les ports et la persistance ne
+    sont jamais repris. Une durée qui se trompe raccourcit, et trop d'écarts coupent la cache de la règle ;
+  - **relevé local** (voir le partage, plus bas) ;
+  - **avis sur les corrections** : une correction qui échoue deux fois le dit, une correction qui ne tient pas aussi ;
+    répondre « tout » la laisse hors du lot et la propose ensuite seule.
+
+  Les règles et ce qu'elles jugent ne changent jamais : couper une mission, ou tout l'Agent, ne retire aucune
+  vérification. Chaque changement est noté avec sa valeur d'avant dans un journal scellé et s'annule (`annuler
+  <règle>`, `tout-remettre`). `vanguard agent` montre ses missions, leur dernier tour et son journal, en lecture
+  seule ; `--json` donne la même vue pour un script, sans aucune donnée personnelle. Les règles du bilan partent
+  aussi la plus longue d'abord, pour que le bilan ne finisse pas sur elle.
+
+- **Partage avec l'auteur, préparé : rien ne part dans cette version.** Paramètres › Partage avec l'auteur (`vanguard
+  parametres partage oui|non|voir`). Le relevé local note chaque jour, sur l'ordinateur et en comptes agrégés, les
+  erreurs de Vanguard, ses lenteurs, le résultat des corrections, les choix faits dans Vanguard, le matériel (sans
+  numéro de série) et le nom et la version des logiciels, services et pilotes en cause.
+  - Jamais de mot de passe, de contenu de fichier, de site visité, de texte tapé, d'argument de commande ni
+    d'inventaire des logiciels ; un texte d'erreur est nettoyé ou jeté en entier.
+  - Le relais de l'auteur n'est pas en service : Vanguard n'a aucune adresse où envoyer et n'ouvre aucune connexion
+    pour cela. MODELE-DE-MENACE.md décrit ce qui partira le jour où il le sera, et comment.
+  - « Voir ce qui serait envoyé » montre les octets exacts du prochain lot. « Non » arrête le relevé et l'efface,
+    avec la file d'envoi et l'identifiant d'installation. `VANGUARD_ENVOI=0` l'emporte toujours.
+
+- **Revenir à la 0.89.0, puis à la 0.89.1.** Rien de dangereux, mais deux choses se voient :
+  - la 0.89.0 réécrit les mesures de l'autodiagnostic (`autotest/mesures.json`) sans sceau. De retour en 0.89.1, le
+    bilan le dit par une alerte élevée (« L'état de Vanguard a été changé hors de Vanguard »), avec sa cause
+    possible : une version 0.89.0 ou plus ancienne a servi ici. Les mesures repartent de zéro, et l'alerte disparaît
+    quand le bilan suivant réécrit le fichier avec son sceau. Aucune alerte n'est tue, aucune vérification retirée ;
+  - un réglage changé dans la 0.89.0 réécrit le fichier des paramètres sans la réponse au partage, qui est alors
+    oubliée. Si vous aviez répondu « Non », redites-le (Paramètres › Partage avec l'auteur) : d'ici là, le relevé
+    local reprend, sur l'ordinateur seulement.
+
+  Les fichiers de l'Agent (`agent/`, `autotest/cache.json`, `autotest/reglage.json`) ne sont pas touchés par la
+  0.89.0.
+
+- **Pour l'auteur.** Le journal des erreurs est trié en causes suivies d'une nuit à l'autre, et la veille de nuit
+  alerte sur ces causes et sur une lenteur de l'autodiagnostic. Le code du relais (`relais/`, non déployé), la relève
+  de ses lots et les signaux de la flotte sont prêts : chaque lot y est relu comme une donnée hostile, une source ne
+  vote qu'une fois par jour, et un faux positif probable ne va jamais à l'IA, seulement dans un ticket.
+
 ## 1er novembre 2026 : version 0.89
 
 - **Services de Windows réglés par Vanguard lui-même, sans PowerShell.** Vanguard arrête, démarre, désactive ou remet

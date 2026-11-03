@@ -202,7 +202,7 @@ if [[ -n $ARBRE_OK ]]; then
     sauter flotte "src/compte_rendu/flotte.rs absent de $BASE"
   elif [[ ! -d $RETOURS/envois ]]; then
     if [[ -e ${XDG_CONFIG_HOME:-$HOME/.config}/vanguard-dev/relais-adresse ]]; then
-      sauter flotte "aucun envoi relevé ($RETOURS/envois absent)"
+      sauter flotte "aucun envoi relevé (${RETOURS/#"$HOME"/\~}/envois absent)"
     else
       sauter flotte "relais pas configuré : aucun envoi à lire"
     fi

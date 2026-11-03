@@ -124,14 +124,10 @@ itself:
 - **With an abuse.ch key**: the key, to abuse.ch.
 - **In public Wi-Fi mode**: DNS queries, to CIRA's Canadian Shield.
 - **The update check**: a request to GitHub.
-- **The improvement counters**: nothing for now. The relay that will receive them has no address yet; without it,
-  Vanguard prepares no sending and opens no connection (a test counts it). The day it has one, it will enter the
-  tables above, and only with your consent: at most one batch a day, made of the counters of the local record (the
-  platform reduced to a closed list, no name, path, address or secret), strictly re-read before leaving, to the
-  relay alone; only the response code is read, never the body, no redirect is followed, at most three attempts a
-  day, 24 h of waiting after a 429 or a 503, seven days kept at most. Nothing leaves under the tests, under Wine, in
-  CI, with `VANGUARD_ENVOI=0`, offline, from a key or as root; "Do not share" empties the queue and the
-  installation identifier.
+- **The improvement record**: nothing in this version. The relay that will receive it is not deployed and the
+  program does not have its address; without it, Vanguard prepares no sending and opens no connection (a test counts
+  it). What would leave one day, and only with your consent, is described below ("The improvement record and its
+  relay").
 - A vulnerability report prepared by Vanguard is never sent by it: the person reads it and sends it themselves.
 
 This list is closed: Vanguard refuses to reach over HTTPS a host that is not in the first table (even at the end of
@@ -187,3 +183,38 @@ network. A page opened in the browser after consent (“Report” pages, public 
 NetworkManager's on Linux, shown first) is reached by the browser. An extension added by the person has the
 computer's network, unless run isolated (Linux, macOS). These destinations depend on those programs, not on
 Vanguard.
+
+### The improvement record and its relay
+
+Since 0.89.1, Vanguard keeps a local record of how it runs, so that the author learns what fails or slows down on
+other computers. Four stages; the last two do not happen while the relay is not deployed, which is the case today:
+
+- **On the computer.** Each day the record notes, as aggregated counts, Vanguard's errors, its slowdowns, the result
+  of fixes and the choices made in Vanguard, with the platform reduced to a closed list. An open lane keeps names in
+  it, because a problem is hard to understand without them: name and version of the software, services and drivers
+  involved, model of the processor and graphics card (no serial number), error texts cleaned by `amelioration::texte`
+  (paths, addresses and tokens removed) or dropped whole. It never holds: the content of a file, the arguments of a
+  command, a password, the browser history, typed text, the list of your files, accounts, networks or devices, or the
+  inventory of your software. It is kept in `amelioration/` (sealed, at most 96 KiB a day, 90 days, 10 MB in all) and
+  can be read as is through "See what would be sent". Answering "No" to sharing erases it, along with the sending
+  queue and the installation identifier; `VANGUARD_ENVOI=0` turns it off.
+- **The sending queue, with no host.** `RELAIS` is empty in the code and the closed list of HTTPS sites (`HOTES`, the
+  first table above) holds no relay: no batch is prepared, no sending file is written, no thread or connection is
+  started. Even with a relay, nothing would leave under the tests, under Wine, in CI, with `VANGUARD_ENVOI=0`, from a
+  key, as root, in a development build, offline, without your consent or after "No" to sharing.
+- **The relay, once deployed.** Its address will then enter `HOTES` and the first table, like the other sites.
+  Vanguard will reach it over HTTPS only, without following a redirect; it will send at most one batch a day (96 KiB,
+  strictly re-read before leaving), with an installation identifier drawn at random and renewed every 90 days; at most
+  three attempts a day, 24 h of waiting after a 429 or a 503, seven days kept at most. Only the response code is read,
+  never the body: there is no downward channel, and no instruction, rule or update can come through the relay. The
+  relay's code is in the repository (`relais/`): it repeats the same strict reading, refuses a batch where the secret
+  detector goes off, does not keep the IP address (a fingerprint of its prefix, with a salt erased each day) and
+  erases what is not collected after 14 days.
+- **At the author's.** Each collected batch is re-read as if it came from anyone: the same strict reading, refusals
+  counted, a quarantine for any batch where the secret detector goes off (never read further). A source (the
+  fingerprint of the address prefix) counts once a day, whatever its number of batches, and a signal needs at least 5
+  sources in 3 /16 networks. A likely false positive, the path a poisoner would take to get a rule relaxed, never goes
+  to the watch's AI: only into a ticket, which the author judges. Names and texts from the batches enter a ticket only
+  inside a data block closed by a marker drawn at random that this data does not contain (`~~~~donnees-` followed by
+  16 hexadecimal digits), and a name the author never approved appears elsewhere only by its fingerprint
+  (`inconnu#…`). Nothing in a batch is an instruction, and the watch never merges or pushes anything.

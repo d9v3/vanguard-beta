@@ -7,6 +7,55 @@ a day, gathering the day's work; October 21 had two, 0.82 in the morning and 0.8
 delivered just before it. Only the latest version has its download page; every version keeps its tag in the repository
 (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 
+## 0.89.1 (not yet released)
+
+- **Vanguard Agent (no AI).** A part of Vanguard that helps it run better on your computer, with no AI and without
+  sending anything. It has four missions, each with its own switch (Settings › Vanguard Agent,
+  `vanguard settings auto-tuning`):
+  - **time limits and second attempts**: a check-up rule that comes close to its time limit two weeks in a row, or
+    goes over it twice in 7 days, has its limit raised once, never higher; a rule whose passing "not checked" is most
+    often resolved by the next check-up is run again once at the end of the check-up, within the total time limit;
+  - **hourly pass cache**: the monitoring's hourly pass reuses, at most every other time, the recent result of a few
+    slow checks, with its age ("checked 40 min ago"). A check-up started by hand checks everything afresh. The
+    firewall, antivirus, remote connections, ports and persistence are never reused. A duration that proves wrong
+    gets shorter, and too many mismatches turn off the cache for that rule;
+  - **local record** (see sharing, below);
+  - **notes on fixes**: a fix that fails twice says so, and so does a fix that does not hold; answering "all" leaves
+    it out of the batch and then offers it on its own.
+
+  The rules and what they judge never change: turning off a mission, or the whole Agent, removes no check. Each
+  change is logged with its previous value in a sealed journal and can be undone (`undo <rule>`, `reset`).
+  `vanguard agent` shows its missions, their last run and its journal, read-only; `--json` gives the same view for a
+  script, without any personal data. Check-up rules also start longest first, so that the check-up does not end
+  waiting on one.
+
+- **Sharing with the author, prepared: nothing leaves in this version.** Settings › Sharing with the author
+  (`vanguard settings sharing yes|no|see`). Each day the local record notes, on the computer and as aggregated
+  counts, Vanguard's errors, its slowdowns, the result of fixes, the choices made in Vanguard, the hardware (no
+  serial number) and the name and version of the software, services and drivers involved.
+  - Never a password, file content, visited site, typed text, command argument or software inventory; an error text
+    is cleaned or dropped whole.
+  - The author's relay is not in service: Vanguard has no address to send to and opens no connection for it.
+    MODELE-DE-MENACE.en.md describes what will leave the day it is, and how.
+  - "See what would be sent" shows the exact bytes of the next batch. "No" stops the record and erases it, along with
+    the sending queue and the installation identifier. `VANGUARD_ENVOI=0` always wins.
+
+- **Going back to 0.89.0, then to 0.89.1.** Nothing dangerous, but two things show:
+  - 0.89.0 rewrites the self-test measurements (`autotest/mesures.json`) without a seal. Back on 0.89.1, the check-up
+    reports it with a high alert ("Vanguard's state was changed outside Vanguard"), with its possible cause: version
+    0.89.0 or older has run here. The measurements start over, and the alert goes away when the next check-up rewrites
+    the file with its seal. No alert is silenced, no check removed;
+  - a setting changed in 0.89.0 rewrites the settings file without the sharing answer, which is then forgotten. If
+    you had answered "No", say it again (Settings › Sharing with the author): until then, the local record resumes,
+    on the computer only.
+
+  The Agent's files (`agent/`, `autotest/cache.json`, `autotest/reglage.json`) are not touched by 0.89.0.
+
+- **For the author.** The error journal is sorted into causes followed from one night to the next, and the nightly
+  watch alerts on these causes and on a self-test slowdown. The relay's code (`relais/`, not deployed), the
+  collection of its batches and the fleet signals are ready: each batch is re-read there as hostile data, a source
+  votes only once a day, and a likely false positive never goes to the AI, only into a ticket.
+
 ## November 1, 2026: version 0.89
 
 - **Windows services handled by Vanguard itself, without PowerShell.** Vanguard stops, starts, disables or restores a

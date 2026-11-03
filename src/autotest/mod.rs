@@ -1,5 +1,8 @@
 //! L'autodiagnostic de Vanguard (`vanguard autotest`, et une fois par semaine avec la surveillance) : Vanguard vérifie
-//! ses propres lectures sur cet ordinateur. Rien n'est changé, rien n'est envoyé.
+//! ses propres lectures sur cet ordinateur. Rien du système n'est changé, rien n'est envoyé. Depuis la 0.89.1, deux
+//! voisins (`cache`, `reglage`) ajustent les seuls réglages de Vanguard, dans le sens sûr, quand leur mission de
+//! l'Agent Vanguard tourne (`crate::agent`) ; les durées mesurées entrent dans le relevé local (`crate::amelioration`),
+//! qui ne quitte l'ordinateur qu'avec le partage accepté et un relais en service (aucun dans cette version).
 //!
 //! Pourquoi : Vanguard lit presque tout en Rust natif (base de pacman, unités systemd, prises réseau, registre de
 //! Windows…). Une lecture native peut se tromper sans bruit, à la mise à jour d'un format, et la règle dirait « sain »

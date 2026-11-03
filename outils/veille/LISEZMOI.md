@@ -95,32 +95,33 @@ puis lus par le programme ; ni l'IA ni le rapport n'ouvrent ce qui vient d'un lo
   de secrets sonne va en **quarantaine** : compté, jamais lu plus loin. Une réponse illisible est comptée
   « illisible » ; une raison de refus du relais inconnue, « inconnue ». La ligne de comptes de la nuit est dans
   `nuits/<jour>/flotte-comptes.txt`.
-- **Agrégats** : une voix par source et par jour de réception (la source est l'empreinte que le relais calcule avec
-  le sel du jour) : chaque nombre pris à son maximum sur les lots d'une source, puis sommé d'une source à l'autre ;
-  le même résultat quel que soit l'ordre des lots. Par clé : `[sources, réseaux larges, somme]`, pour tous et par
-  groupe (famille, classe de machine). Une voix garde 2 000 clés et 8 installations au plus (les plus petites dans
-  l'ordre du texte, pour rester indépendant de l'ordre). Seuls les comptes de sources (et de réseaux larges) valent
-  comme signal : une source peut parler pour deux versions ou deux groupes (une voix dans chacun), et pousser la
-  somme d'une clé jusqu'au maximum du schéma ; ne jamais sommer d'une version ou d'un groupe à l'autre. Un fichier de
-  relève écarté (lien, tube, trop gros, illisible) : l'état n'est pas récrit cette nuit et l'étape échoue. Un jour qui
-  se fige pendant des nuits manquées garde le calcul de la dernière nuit qui l'a vu. État dans `etat/flotte/<version>.json` (2 Mio au plus, écrit de façon
-  atomique ; un jour reçu il y a plus de 29 jours est figé ; gardé tant que sa mineure est parmi les trois dernières)
-  et `etat/flotte/releve.json` (ce que chaque nuit a lu et refusé, 120 jours).
+- **Agrégats** : une voix par source et par jour de réception (la source est l'empreinte que le relais calcule avec le
+  sel du jour) : chaque nombre pris à son maximum sur les lots d'une source, puis sommé d'une source à l'autre ; le
+  même résultat quel que soit l'ordre des lots. Par clé : `[sources, réseaux larges, somme]`, pour tous et par groupe
+  (famille, classe de machine). Une voix garde 2 000 clés et 8 installations au plus (les plus petites dans l'ordre du
+  texte, pour rester indépendant de l'ordre). Seuls les comptes de sources (et de réseaux larges) valent comme signal
+  : une source peut parler pour deux versions ou deux groupes (une voix dans chacun), et pousser la somme d'une clé
+  jusqu'au maximum du schéma ; ne jamais sommer d'une version ou d'un groupe à l'autre. Un fichier de relève écarté
+  (lien, tube, trop gros, illisible) : l'état n'est pas récrit cette nuit et l'étape échoue. Un jour qui se fige
+  pendant des nuits manquées garde le calcul de la dernière nuit qui l'a vu. État dans `etat/flotte/<version>.json` (2
+  Mio au plus, écrit de façon atomique ; un jour reçu il y a plus de 29 jours est figé ; gardé tant que sa mineure est
+  parmi les trois dernières) et `etat/flotte/releve.json` (ce que chaque nuit a lu et refusé, 120 jours).
 - **Signaux** (`src/compte_rendu/flotte/signaux.rs`, sans IA, sur les sept derniers jours) : un signal demande au
-  moins 5 sources dans 3 réseaux /16 au numérateur (une voix par source, par jour et par clé : mille lots d'une
-  source n'en font qu'une). Régression : un taux (plantage, cause, hors délai, non vérifié, échec de correction,
-  abandon d'un outil) au moins deux fois celui de la version d'avant dans l'ordre des numéros (5 sources au moins
-  de chaque côté, même famille ; le jour d'avant pris de préférence avant l'arrivée de la nouvelle version, pour
-  que des lots forgés de l'ancienne envoyés ensuite ne la diluent pas), ou deux fois sur les mêmes installations vues sur les deux versions (identifiant P1). Faux positif
-  probable : problème chez plus de 60 % des sources de la famille, « c'est normal » chez plus de 30 %, correction
-  refusée par plus de la moitié, ou constat instable ; quand la famille a des installations identifiées, il doit
-  tenir aussi sur celles vues sept jours avant (une arrivée soudaine ne fait pas passer une règle pour fausse).
-  Couverture : non vérifié chez plus de 20 % (la raison dominante dite). Fragile : correction échouée chez plus de
-  10 % ou revenue chez plus de 20 %. Cache : écart chez plus de 1 % des comparaisons. Lenteur : délai frôlé chez
-  plus de 5 % d'une classe de machine. Outil : abandon chez plus de 40 %. Erreur nouvelle : un gabarit jamais vu sur
-  les versions d'avant, 3 sources dans 3 réseaux. Sortie : `nuits/<jour>/flotte-signaux.json` (champs fermés),
-  relu par rapport.py, qui en fait des alertes `flotte:<signal>:<clé>` (une régression juste après le journal de
-  cet ordinateur, les autres après les causes de la clé) ; section « Flotte » du rapport du matin.
+  moins 5 sources dans 3 réseaux /16 au numérateur (une voix par source, par jour et par clé : mille lots d'une source
+  n'en font qu'une). Régression : un taux (plantage, cause, hors délai, non vérifié, échec de correction, abandon d'un
+  outil) au moins deux fois celui de la version d'avant dans l'ordre des numéros (5 sources au moins de chaque côté,
+  même famille ; le jour d'avant pris de préférence avant l'arrivée de la nouvelle version, pour que des lots forgés
+  de l'ancienne envoyés ensuite ne la diluent pas), ou deux fois sur les mêmes installations vues sur les deux
+  versions (même identifiant d'installation). Faux positif probable : problème chez plus de 60 % des sources de la
+  famille, « c'est normal » chez plus de 30 %, correction refusée par plus de la moitié, ou constat instable ; quand
+  la famille a des installations identifiées, il doit tenir aussi sur celles vues sept jours avant (une arrivée
+  soudaine ne fait pas passer une règle pour fausse). Couverture : non vérifié chez plus de 20 % (la raison dominante
+  dite). Fragile : correction échouée chez plus de 10 % ou revenue chez plus de 20 %. Cache : écart chez plus de 1 %
+  des comparaisons. Lenteur : délai frôlé chez plus de 5 % d'une classe de machine. Outil : abandon chez plus de 40 %.
+  Erreur nouvelle : un gabarit jamais vu sur les versions d'avant, 3 sources dans 3 réseaux. Sortie :
+  `nuits/<jour>/flotte-signaux.json` (champs fermés), relu par rapport.py, qui en fait des alertes
+  `flotte:<signal>:<clé>` (une régression juste après le journal de cet ordinateur, les autres après les causes de la
+  clé) ; section « Flotte » du rapport du matin.
 - **Faux positif probable** : jamais l'IA (rapport.py ne le propose pas, alerte.sh refuse une demande forgée), un
   ticket seulement. Chaque signal écrit un **ticket** `retours/tickets/AAAA-MM-JJ-<signal>-<clé>.md` (50 par nuit
   au plus, pas deux fois la même semaine) : champs vérifiés, où regarder (fichiers de l'arbre qui nomment la règle,

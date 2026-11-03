@@ -183,7 +183,10 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
          (masquée) ; la valeur d'avant est montrée, sauf pour les alertes apprises et le blocage, qui ouvrent leur
          propre écran (vanguard parametres). Protection en temps réel : la surveillance horaire et la protection
          active du blocage coupées d'un coup, après accord, pendant 1 h, 4 h ou jusqu'à reprise ; jamais Defender,
-         le pare-feu ni l'UAC, et un blocage déjà fait reste en place (vanguard parametres temps-reel non --pendant 1h)
+         le pare-feu ni l'UAC, et un blocage déjà fait reste en place (vanguard parametres temps-reel non --pendant 1h).
+         Agent Vanguard (sans IA) : quatre missions qui règlent Vanguard lui-même, dans le sens sûr seulement, un
+         interrupteur chacune, tout s'annule ; aucune vérification n'est retirée (vanguard agent). Partage avec
+         l'auteur : un relevé local, lisible tel quel, effacé par « Non » ; rien ne part dans cette version.
        13.2 Ce que Vanguard a appris : les habitudes, et les alertes déclarées normales (« i » à la correction, dans
          la surveillance, le veilleur ou le blocage)
        13.3 Mettre Vanguard à jour : la copie de cet ordinateur, depuis la clé ou GitHub (d9v3/vanguard-update,
