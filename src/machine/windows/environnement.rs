@@ -278,6 +278,12 @@ pub(crate) fn demarrage_commun() -> Option<PathBuf> {
     dossier_connu(&DEMARRAGE_COMMUN)
 }
 
+/// La racine du profil du compte qui fait tourner ce processus (celui qui l'a ouvert en administrateur, quand il est
+/// élevé), donnée par Windows et non par l'environnement (USERPROFILE et LOCALAPPDATA se réécrivent).
+pub(crate) fn profil() -> Option<PathBuf> {
+    dossier_connu(&PROFIL)
+}
+
 /// Un dossier connu du compte qui fait tourner ce processus (jeton nul), à son emplacement par défaut, ou `None` si
 /// Windows n'en donne pas.
 fn dossier_connu(id: &GUID) -> Option<PathBuf> {

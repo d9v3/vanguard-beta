@@ -956,6 +956,55 @@ pub(crate) fn signature_systeme(chemin: &str) -> Option<&'static str> {
     }
 }
 
+/// Pourquoi Vanguard administrateur n'écrit pas la quarantaine dans `dossier`, ou `None` (défense D6a). Le dossier
+/// local est dans le profil d'un compte, où un programme de ce compte pose d'avance un lien ou une jonction (vers
+/// System32) : chaque dossier, de celui de la quarantaine jusqu'à la racine du profil `profil` comprise, doit être un
+/// vrai dossier (`lien` : en est-il un ?), et le tout dans ce profil. `absents_permis` : avant leur création, un
+/// dossier qui manque encore est permis (il est relu après).
+#[cfg(any(windows, test))]
+pub(crate) fn destination_de_quarantaine(
+    dossier: &std::path::Path,
+    profil: &std::path::Path,
+    lien: impl Fn(&std::path::Path) -> std::io::Result<bool>,
+    absents_permis: bool,
+) -> Option<&'static str> {
+    use std::path::Component;
+    let bas = |p: &std::path::Path| -> Vec<String> {
+        p.components()
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+            .collect()
+    };
+    let (d, p) = (bas(dossier), bas(profil));
+    let remonte = dossier
+        .components()
+        .any(|c| matches!(c, Component::ParentDir | Component::CurDir));
+    if remonte || p.is_empty() || d.len() < p.len() || d.get(..p.len()) != Some(&p[..]) {
+        return Some(tr!(
+            "la quarantaine n'est pas dans le profil du compte qui a ouvert Vanguard en administrateur : rien n'est déplacé",
+            "the quarantine is not inside the profile of the account that opened Vanguard as administrator: nothing is moved"
+        ));
+    }
+    for a in dossier.ancestors().take(d.len() - p.len() + 1) {
+        match lien(a) {
+            Ok(false) => {}
+            Ok(true) => {
+                return Some(tr!(
+                    "un dossier du chemin de la quarantaine est un lien ou une jonction : Vanguard administrateur n'y écrit pas, rien n'est déplacé",
+                    "a folder on the quarantine path is a link or a junction: Vanguard as administrator does not write there, nothing is moved"
+                ));
+            }
+            Err(e) if absents_permis && e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {
+                return Some(tr!(
+                    "un dossier du chemin de la quarantaine ne se lit pas : rien n'est déplacé",
+                    "a folder on the quarantine path cannot be read: nothing is moved"
+                ));
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -995,6 +1044,58 @@ mod tests {
         for code in [0x800B_0100u32, 0x8009_6010, 0x800B_0109, 0x800B_0003, 0x800B_0101] {
             assert!(!verification_illisible(code.cast_signed()), "{code:x}");
         }
+    }
+
+    /// Garde de la quarantaine écrite en administrateur (défense D6a) : un lien ou une jonction n'importe où entre la
+    /// quarantaine et la racine du profil refuse ; hors du profil, ou un « .. », aussi ; un dossier illisible aussi.
+    #[test]
+    fn quarantaine_jamais_par_un_lien() {
+        use std::path::{Path, PathBuf};
+        let profil = Path::new("/p/alice");
+        let q = profil
+            .join("AppData")
+            .join("Local")
+            .join("vanguard")
+            .join("quarantaine");
+        // `liens(n)` : seul le dossier nommé `n` est un lien.
+        let liens =
+            |n: &'static str| move |a: &Path| -> std::io::Result<bool> { Ok(a.file_name().is_some_and(|f| f == n)) };
+        assert_eq!(destination_de_quarantaine(&q, profil, liens("aucun"), false), None);
+        for lien in ["quarantaine", "vanguard", "Local", "AppData", "alice"] {
+            assert!(
+                destination_de_quarantaine(&q, profil, liens(lien), false).is_some(),
+                "{lien}"
+            );
+            assert!(
+                destination_de_quarantaine(&q, profil, liens(lien), true).is_some(),
+                "{lien}"
+            );
+        }
+        // Au-dessus du profil (C:\Users) : pas jugé ici.
+        assert_eq!(destination_de_quarantaine(&q, profil, liens("p"), false), None);
+        // La casse du profil (Windows ne la distingue pas).
+        assert_eq!(
+            destination_de_quarantaine(&q, Path::new("/P/ALICE"), liens("aucun"), false),
+            None
+        );
+        // Hors du profil (LOCALAPPDATA redirigé), ou qui remonte.
+        let ailleurs = PathBuf::from("/d/vanguard/quarantaine");
+        assert!(destination_de_quarantaine(&ailleurs, profil, liens("aucun"), false).is_some());
+        let remonte = profil.join("..").join("bob").join("quarantaine");
+        assert!(destination_de_quarantaine(&remonte, profil, liens("aucun"), false).is_some());
+        assert!(destination_de_quarantaine(&q, Path::new(""), liens("aucun"), false).is_some());
+        // Absent : permis seulement avant la création ; illisible : refusé.
+        let absent = |a: &Path| -> std::io::Result<bool> {
+            if a.ends_with("quarantaine") {
+                Err(std::io::ErrorKind::NotFound.into())
+            } else {
+                Ok(false)
+            }
+        };
+        assert_eq!(destination_de_quarantaine(&q, profil, absent, true), None);
+        assert!(destination_de_quarantaine(&q, profil, absent, false).is_some());
+        let refuse = |_: &Path| -> std::io::Result<bool> { Err(std::io::ErrorKind::PermissionDenied.into()) };
+        assert!(destination_de_quarantaine(&q, profil, refuse, true).is_some());
     }
 
     /// Un instantané d'essai : (pid, parent, nom, création).

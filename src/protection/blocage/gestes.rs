@@ -355,6 +355,17 @@ fn preparer_programme(
                 "Quarantine “{}”: made unusable, put back exactly with “vanguard blocking undo”",
                 chemin_affichable(c)
             ));
+            // En administrateur, la quarantaine et sa note vont dans le profil du compte qui a ouvert Vanguard ainsi :
+            // un autre administrateur, si c'est lui qui a donné son mot de passe (défense D6a).
+            if ctx.admin && ctx.os == Os::Windows {
+                etapes.push(
+                    tr!(
+                        "Vanguard est administrateur : la quarantaine et sa note vont dans le profil du compte qui l'a ouvert ainsi (un autre administrateur, si c'est lui qui a donné son mot de passe) ; « vanguard blocage annuler » se lance depuis ce compte-là",
+                        "Vanguard is administrator: the quarantine and its note go into the profile of the account that opened it that way (another administrator, if that one gave the password); run “vanguard blocking undo” from that account"
+                    )
+                    .to_string(),
+                );
+            }
             Some((c.to_path_buf(), detection.to_string()))
         }
         None => None,

@@ -186,7 +186,11 @@ fn isoler_dans(chemin: &Path, detection: &str, dossier: &Path, sha256: Option<St
             "root does not write into an account's folder (sudo -E): start again without sudo"
         )));
     }
+    #[cfg(windows)]
+    destination_sure(dossier, true)?;
     std::fs::create_dir_all(dossier)?;
+    #[cfg(windows)]
+    destination_sure(dossier, false)?;
     let meta = std::fs::symlink_metadata(chemin)?;
     if !meta.is_file() {
         return Err(std::io::Error::other(tr!(
@@ -237,6 +241,33 @@ fn isoler_dans(chemin: &Path, detection: &str, dossier: &Path, sha256: Option<St
     r.fichiers.push(entree);
     enregistrer(dossier, &r)?;
     Ok(dest)
+}
+
+/// Vanguard administrateur (Windows) écrit la quarantaine dans le profil du compte qui l'a ouvert ainsi, où un
+/// programme de ce compte a pu poser une jonction vers un dossier de Windows : chaque dossier jusqu'à la racine du
+/// profil est relu avant la création et juste avant le déplacement (défense D6a). Il reste une course entre cette
+/// relecture et le déplacement, que seul un dossier tenu ouvert fermerait. Les essais écrivent dans leurs dossiers
+/// jetables, hors de tout profil : la règle s'y essaie par `gardes::destination_de_quarantaine`.
+#[cfg(windows)]
+fn destination_sure(dossier: &Path, absents_permis: bool) -> std::io::Result<()> {
+    if !cfg!(test) && crate::machine::windows::processus::eleve_ou_inconnu() {
+        let raison = match crate::machine::windows::environnement::profil() {
+            Some(profil) => crate::protection::blocage::gardes::destination_de_quarantaine(
+                dossier,
+                &profil,
+                |d| std::fs::symlink_metadata(d).map(|m| crate::machine::vidage::est_lien(&m)),
+                absents_permis,
+            ),
+            None => Some(tr!(
+                "le profil du compte ne se lit pas : Vanguard administrateur ne met rien en quarantaine",
+                "the account profile cannot be read: Vanguard as administrator quarantines nothing"
+            )),
+        };
+        if let Some(raison) = raison {
+            return Err(std::io::Error::other(raison));
+        }
+    }
+    Ok(())
 }
 
 /// Le journal lisible par une personne (cat, éditeur), comme avant la 0.61 : noms rendus inoffensifs.
