@@ -768,6 +768,24 @@ pub(crate) fn remettre_sshd(c: &mut impl Config, nom: &str) -> Issue {
         return Issue::Rien(copie);
     }
     if sha != sha_ecrit {
+        // Deux réglages écrits l'un après l'autre : le dernier se remet d'abord (relecture D6c).
+        let apres = ReglageSshd::TOUS.into_iter().find(|&r| {
+            let autre = nom_note_sshd(r);
+            autre != nom
+                && c.lire_note(&autre)
+                    .and_then(|o| note_sshd(&o, &autre))
+                    .is_some_and(|n| n.2 == sha)
+        });
+        if let Some(r) = apres {
+            let mot = r.mot();
+            return echec(
+                None,
+                trf!(
+                    "sshd_config a été changé par Vanguard après ce réglage : remettez d'abord « sshd:{mot} », puis celui-ci ; rien d'écrit",
+                    "sshd_config was changed by Vanguard after this setting: put back « sshd:{mot} » first, then this one; nothing written"
+                ),
+            );
+        }
         return echec(
             None,
             tr!(
@@ -1209,7 +1227,8 @@ mod tests {
             self.fichiers.remove(temporaire);
         }
         fn nom_copie(&mut self) -> String {
-            format!("{PREFIXE_COPIE}20261103-120000")
+            // Une copie par remplacement, comme les secondes du vrai nom.
+            format!("{PREFIXE_COPIE}20261103-12000{}", self.remplacements)
         }
         fn remplacer(&mut self, temporaire: &str, copie: Option<&str>) -> Result<(), Echec> {
             self.remplacements += 1;
@@ -1287,6 +1306,37 @@ mod tests {
         assert_eq!(remettre_sshd(&mut d, "sshd-v"), Issue::Fait { avant: copie });
         assert_eq!(d.fichiers["sshd_config"], avant);
         assert_eq!(d.testes.len(), 2);
+        assert!(d.notes.is_empty());
+    }
+
+    /// Deux réglages écrits l'un après l'autre : remis dans le mauvais ordre, rien d'écrit et la personne sait lequel
+    /// remettre d'abord ; dans le bon ordre, sshd_config redevient celui d'origine (relecture D6c).
+    #[test]
+    fn deux_reglages_sshd_remis_dans_l_ordre() {
+        let origine = b"PermitEmptyPasswords yes\nPasswordAuthentication yes\n".to_vec();
+        let mut d = dossier(&origine);
+        let vides = nom_note_sshd(ReglageSshd::MotsDePasseVides);
+        let mdp = nom_note_sshd(ReglageSshd::MotsDePasse);
+        assert!(matches!(
+            ecrire_sshd(&mut d, ReglageSshd::MotsDePasseVides, &vides),
+            Issue::Fait { .. }
+        ));
+        assert!(matches!(
+            ecrire_sshd(&mut d, ReglageSshd::MotsDePasse, &mdp),
+            Issue::Fait { .. }
+        ));
+        let ecrit = d.fichiers["sshd_config"].clone();
+        let Issue::Echec { raison, .. } = remettre_sshd(&mut d, &vides) else {
+            panic!()
+        };
+        assert!(raison.contains("sshd:mots-de-passe"), "{raison}");
+        assert!(!raison.contains("sshd:mots-de-passe-vides"), "{raison}");
+        assert_eq!(d.fichiers["sshd_config"], ecrit);
+        assert_eq!(d.remplacements, 2);
+        assert!(d.notes.contains_key(&vides) && d.notes.contains_key(&mdp));
+        assert!(matches!(remettre_sshd(&mut d, &mdp), Issue::Fait { .. }));
+        assert!(matches!(remettre_sshd(&mut d, &vides), Issue::Fait { .. }));
+        assert_eq!(d.fichiers["sshd_config"], origine);
         assert!(d.notes.is_empty());
     }
 

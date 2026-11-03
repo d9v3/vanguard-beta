@@ -554,7 +554,15 @@ pub(crate) fn session_ssh_ouverte(ports_sshd: &[u16]) -> Option<bool> {
     if std::env::var("SSH_CONNECTION").is_ok_and(|v| client_ssh(&v).is_some()) {
         return Some(true);
     }
-    lire_etablies().map(|l| l.iter().any(|e| session_ssh_entrante(e, ports_sshd)))
+    // Les deux tables exigées : une session SSH en IPv6 seulement ne se verrait pas si sa table manquait.
+    lire_etablies_win(true).map(|l| l.iter().any(|e| session_ssh_entrante(e, ports_sshd)))
+}
+
+/// Les tables lues suffisent-elles ? Pour sshd (`les_deux`), chacune : une table illisible pourrait tenir la session
+/// qu'un redémarrage couperait (relecture D6c) ; ailleurs, une seule.
+#[cfg(any(windows, test))]
+fn tables_suffisantes(v4: bool, v6: bool, les_deux: bool) -> bool {
+    if les_deux { v4 && v6 } else { v4 || v6 }
 }
 
 /// Les adresses à ne pas couper, d'après les connexions établies, le client SSH de Vanguard et le port réel du
@@ -765,10 +773,16 @@ fn lire_etablies() -> Option<Vec<Etablie>> {
 
 #[cfg(windows)]
 fn lire_etablies() -> Option<Vec<Etablie>> {
+    lire_etablies_win(false)
+}
+
+/// Les connexions établies d'IPv4 et d'IPv6 ; `les_deux` : `None` dès qu'une des deux tables manque.
+#[cfg(windows)]
+fn lire_etablies_win(les_deux: bool) -> Option<Vec<Etablie>> {
     use crate::machine::windows::processus;
     let v4 = crate::protection::sortantes::table_tcp(2).map(|t| etablies_table(&t, false));
     let v6 = crate::protection::sortantes::table_tcp(23).map(|t| etablies_table(&t, true));
-    if v4.is_none() && v6.is_none() {
+    if !tables_suffisantes(v4.is_some(), v6.is_some(), les_deux) {
         return None;
     }
     let lignes: Vec<(u16, IpAddr, u16, u32)> = v4.into_iter().chain(v6).flatten().collect();
@@ -2853,6 +2867,19 @@ mod tests {
             &etablie("198.51.100.20", 2222, 51234, None, true),
             &[22]
         ));
+    }
+
+    /// Pour sshd, une table TCP illisible (IPv4 ou IPv6) rend la session illisible : une session en IPv6 seulement y
+    /// échapperait, et sshd serait redémarré (relecture D6c). Pour le reste, une table suffit, comme avant.
+    #[test]
+    fn sshd_exige_les_deux_tables() {
+        assert!(tables_suffisantes(true, true, true));
+        assert!(!tables_suffisantes(true, false, true));
+        assert!(!tables_suffisantes(false, true, true));
+        assert!(!tables_suffisantes(false, false, true));
+        assert!(tables_suffisantes(true, false, false));
+        assert!(tables_suffisantes(false, true, false));
+        assert!(!tables_suffisantes(false, false, false));
     }
 
     /// Le réseau redémarré par l'assistant élevé : seules les sessions ENTRANTES le retiennent (SSH ou Bureau à
