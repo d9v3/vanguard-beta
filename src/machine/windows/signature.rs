@@ -4,13 +4,15 @@
 //! se vérifie pas (un certificat fait maison au nom de « Microsoft ») n'en est pas une : sinon n'importe quel
 //! programme se rendrait intouchable en se signant lui-même. Une qui se vérifie ne suffit pas non plus : la racine
 //! de sa chaîne doit être une des racines de Microsoft (CERT_CHAIN_POLICY_MICROSOFT_ROOT), car WinVerifyTrust admet
-//! aussi les racines du magasin du compte, qu'un programme sans droits y ajoute par le registre, sans invite.
+//! aussi les racines du magasin du compte, qu'un programme sans droits y ajoute par le registre, sans invite. Et
+//! sous ces racines, Microsoft signe aussi pour d'autres (pilotes WHQL, Store) : le sujet et les usages du
+//! certificat le disent (`gardes::signe_par_microsoft`).
 
 // FFI de wintrust et crypt32 : WinVerifyTrust, catalogues (CryptCATAdmin*), sujet du certificat (CertGetNameStringW),
-// racine de la chaîne (CertVerifyCertificateChainPolicy).
+// ses usages (CertGetEnhancedKeyUsage), racine de la chaîne (CertVerifyCertificateChainPolicy).
 #![allow(unsafe_code)]
 
-use std::ffi::c_void;
+use std::ffi::{CStr, c_void};
 use std::io::{Seek, SeekFrom};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::AsRawHandle;
@@ -18,7 +20,7 @@ use std::path::Path;
 
 use windows::core::GUID;
 
-use crate::protection::blocage::gardes::{self, Illisibilite, Signature};
+use crate::protection::blocage::gardes::{self, Illisibilite, Racine, Signature};
 
 #[link(name = "wintrust")]
 unsafe extern "system" {
@@ -64,12 +66,20 @@ unsafe extern "system" {
         para: *const ParaPolitique,
         etat: *mut EtatPolitique,
     ) -> i32;
+    fn CertGetEnhancedKeyUsage(certificat: *const c_void, drapeaux: u32, usages: *mut c_void, taille: *mut u32) -> i32;
 }
 
 /// CERT_CHAIN_POLICY_MICROSOFT_ROOT : la chaîne finit-elle sur une racine de Microsoft (clé publique comparée à
 /// celles que crypt32 porte en lui, quels que soient les magasins du compte) ? Sans drapeau : ni les racines d'essai
 /// ni la racine « application ».
 const POLITIQUE_RACINE_MICROSOFT: usize = 7;
+/// MICROSOFT_ROOT_CERT_CHAIN_POLICY_CHECK_APPLICATION_ROOT_FLAG : vérifier « à la place » la racine application,
+/// Microsoft Root Certificate Authority 2011 (Edge, Office, Teams). Jamais ENABLE_TEST_ROOT (0x0001_0000) : les
+/// racines d'essai de Microsoft signent n'importe quoi en laboratoire.
+const RACINE_APPLICATION: u32 = 0x0002_0000;
+/// CERT_FIND_EXT_ONLY_ENHKEY_USAGE_FLAG : les usages écrits dans le certificat, pas les propriétés qu'un magasin
+/// lui ajoute.
+const USAGES_DU_CERTIFICAT: u32 = 0x2;
 
 /// WINTRUST_ACTION_GENERIC_VERIFY_V2 : la vérification Authenticode ordinaire.
 const VERIFIER_V2: GUID = GUID::from_u128(0x00aa_c56b_cd44_11d0_8cc2_00c0_4fc2_95ee);
@@ -143,6 +153,13 @@ struct EtatPolitique {
     chaine: i32,
     element: i32,
     extra: *mut c_void,
+}
+
+/// CERT_ENHKEY_USAGE : les identifiants (OID) des usages, chaînes ASCII terminées par un zéro.
+#[repr(C)]
+struct Usages {
+    nombre: u32,
+    identifiants: *const *const std::ffi::c_char,
 }
 
 /// Le début de CRYPT_PROVIDER_CERT : le certificat (PCCERT_CONTEXT).
@@ -343,8 +360,9 @@ fn verifier(chemin: &Path, fichier: Option<&std::fs::File>) -> Result<bool, Illi
     }
 }
 
-/// Le signataire d'une vérification réussie (avant sa fermeture) est-il Microsoft : sujet au nom de Microsoft ET
-/// chaîne finie sur une racine de Microsoft ? `None` : le signataire, son sujet ou sa chaîne ne se lit pas.
+/// Le signataire d'une vérification réussie (avant sa fermeture) est-il Microsoft : chaîne finie sur une racine de
+/// Microsoft ET sujet et usages de Microsoft (`gardes::signe_par_microsoft`) ? `None` : le signataire, son sujet,
+/// ses usages ou sa chaîne ne se lisent pas.
 fn signataire_microsoft(etat: *mut c_void) -> Option<bool> {
     if etat.is_null() {
         return None;
@@ -385,19 +403,95 @@ fn signataire_microsoft(etat: *mut c_void) -> Option<bool> {
         // Sans le zéro final que compte la longueur rendue ; 1 : un sujet vide.
         tampon.truncate(n.saturating_sub(1));
         let sujet = (!tampon.is_empty()).then(|| String::from_utf16_lossy(&tampon))?;
-        Some(gardes::signe_par_microsoft(&sujet, racine))
+        if racine == Racine::Aucune {
+            return Some(false);
+        }
+        let usages = usages(certificat)?;
+        let usages: Vec<&str> = usages.iter().map(String::as_str).collect();
+        Some(gardes::signe_par_microsoft(&sujet, &usages, racine))
     }
 }
 
-/// La chaîne construite par WinVerifyTrust finit-elle sur une racine de Microsoft ? `None` : chaîne absente, ou
-/// politique qui ne se lit pas.
-fn racine_microsoft(chaine: *const c_void) -> Option<bool> {
+/// Les usages (EKU) écrits dans le certificat ; vide s'il n'en a pas (bon pour tout usage, ou pour aucun).
+/// `None` : ils ne se lisent pas.
+///
+/// # Safety
+/// `certificat` est un PCCERT_CONTEXT valide, non nul, pendant l'appel.
+unsafe fn usages(certificat: *const c_void) -> Option<Vec<String>> {
+    let mut taille = 0u32;
+    // SAFETY: d'abord la taille seulement (tampon nul) ; `certificat` est valide (contrat de la fonction).
+    let lu =
+        unsafe { CertGetEnhancedKeyUsage(certificat, USAGES_DU_CERTIFICAT, std::ptr::null_mut(), &raw mut taille) };
+    if lu == 0 {
+        // CRYPT_E_NOT_FOUND : pas d'extension d'usages dans le certificat.
+        let pas_d_usages = std::io::Error::last_os_error().raw_os_error() == Some(0x8009_2004_u32.cast_signed());
+        return pas_d_usages.then(Vec::new);
+    }
+    let octets = usize::try_from(taille).ok()?;
+    if octets < std::mem::size_of::<Usages>() {
+        return None;
+    }
+    // Des u64 : l'alignement de la structure et de ses pointeurs, que des octets ne garantiraient pas.
+    let mut tampon = vec![0u64; octets.div_ceil(8)];
+    // SAFETY: le tampon fait au moins `taille` octets et est aligné pour `Usages` ; crypt32 y écrit la structure
+    // puis les pointeurs et les chaînes qu'elle désigne, tous dans ce tampon.
+    let lu = unsafe {
+        CertGetEnhancedKeyUsage(
+            certificat,
+            USAGES_DU_CERTIFICAT,
+            tampon.as_mut_ptr().cast(),
+            &raw mut taille,
+        )
+    };
+    if lu == 0 {
+        return None;
+    }
+    let liste = tampon.as_ptr().cast::<Usages>();
+    // SAFETY: crypt32 vient d'écrire la structure en tête du tampon, qui vit jusqu'à la fin de la fonction.
+    let (nombre, identifiants) = unsafe { ((*liste).nombre, (*liste).identifiants) };
+    let nombre = usize::try_from(nombre).ok()?;
+    if nombre == 0 {
+        return Some(Vec::new());
+    }
+    if identifiants.is_null() {
+        return None;
+    }
+    (0..nombre)
+        .map(|i| {
+            // SAFETY: `identifiants` désigne `nombre` pointeurs écrits par crypt32 dans le tampon ; chacun, vérifié
+            // non nul, désigne une chaîne terminée par un zéro, dans le même tampon.
+            let id = unsafe { *identifiants.add(i) };
+            if id.is_null() {
+                return None;
+            }
+            // SAFETY: comme au-dessus.
+            Some(unsafe { CStr::from_ptr(id) }.to_string_lossy().into_owned())
+        })
+        .collect()
+}
+
+/// Sur quelle racine de Microsoft finit la chaîne construite par WinVerifyTrust ? Deux lectures de la politique :
+/// sans drapeau (les racines produit, dont celle de Windows), puis avec la racine application 2011 seule.
+/// `None` : chaîne absente, ou première lecture qui ne se fait pas.
+fn racine_microsoft(chaine: *const c_void) -> Option<Racine> {
     if chaine.is_null() {
         return None;
     }
+    let produit = politique_racine(chaine, 0);
+    let application = if produit == Some(false) {
+        politique_racine(chaine, RACINE_APPLICATION)
+    } else {
+        None
+    };
+    gardes::racine_selon(produit, application)
+}
+
+/// Une lecture de CERT_CHAIN_POLICY_MICROSOFT_ROOT avec ces drapeaux : la chaîne (non nulle) y satisfait-elle ?
+/// `None` : la politique ne se lit pas.
+fn politique_racine(chaine: *const c_void, drapeaux: u32) -> Option<bool> {
     let para = ParaPolitique {
         taille: taille_de::<ParaPolitique>(),
-        drapeaux: 0,
+        drapeaux,
         extra: std::ptr::null_mut(),
     };
     let mut etat = EtatPolitique {
@@ -408,8 +502,8 @@ fn racine_microsoft(chaine: *const c_void) -> Option<bool> {
         extra: std::ptr::null_mut(),
     };
     // SAFETY: la politique est un identifiant entier (macro MAKEINTRESOURCE de wincrypt.h), jamais lu comme une
-    // chaîne ; `chaine` est le PCCERT_CHAIN_CONTEXT de la vérification encore ouverte, non nul ; `para` et `etat` sont à
-    // nous, leur taille annoncée.
+    // chaîne ; `chaine` est le PCCERT_CHAIN_CONTEXT de la vérification encore ouverte, non nul (vérifié par
+    // `racine_microsoft`) ; `para` et `etat` sont à nous, leur taille annoncée.
     let lu = unsafe {
         CertVerifyCertificateChainPolicy(
             std::ptr::without_provenance(POLITIQUE_RACINE_MICROSOFT),
@@ -424,6 +518,14 @@ fn racine_microsoft(chaine: *const c_void) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La racine application est le seul drapeau : jamais la racine d'essai (ENABLE_TEST_ROOT, 0x0001_0000), qui
+    /// ferait « Microsoft » tout ce que signe un laboratoire.
+    #[test]
+    fn jamais_la_racine_d_essai() {
+        assert_eq!(RACINE_APPLICATION, 0x0002_0000);
+        assert_eq!(RACINE_APPLICATION & 0x0001_0000, 0);
+    }
 
     /// Lu pour de vrai (Windows ou Wine) : un fichier absent est illisible ; un fichier fait ici n'est pas signé
     /// Microsoft ; un programme de Windows l'est (sous Windows seulement : ceux de Wine ne sont pas signés).

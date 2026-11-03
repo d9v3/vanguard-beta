@@ -1156,12 +1156,123 @@ pub(crate) fn sujet_microsoft(sujet: &str) -> bool {
     sujet.to_lowercase().contains("microsoft")
 }
 
+/// La racine de Microsoft au bout de la chaîne d'un signataire, lue par CERT_CHAIN_POLICY_MICROSOFT_ROOT.
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Racine {
+    /// Une racine « produit » de Microsoft (la politique sans drapeau) : celle de Windows (Root Certificate
+    /// Authority 2010) et les plus anciennes.
+    Produit,
+    /// Seulement la racine « application », Microsoft Root Certificate Authority 2011 (drapeau
+    /// CHECK_APPLICATION_ROOT) : Edge, Office, Teams, signés par Microsoft Code Signing PCA 2011. La politique
+    /// sans drapeau ne la compte pas : sans elle, msedge.exe n'était pas « signé Microsoft » (VM, D6a 3b).
+    Application,
+    /// Aucune racine de Microsoft.
+    Aucune,
+}
+
+/// La racine d'après les deux lectures de la politique : sans drapeau, puis avec CHECK_APPLICATION_ROOT (jamais
+/// avec la racine d'essai, ENABLE_TEST_ROOT). `None` : la première ne se lit pas (chaîne illisible). La seconde
+/// illisible : pas de racine application, jamais « Microsoft » par défaut.
+#[cfg(any(windows, test))]
+pub(crate) fn racine_selon(produit: Option<bool>, application: Option<bool>) -> Option<Racine> {
+    Some(if produit? {
+        Racine::Produit
+    } else if application == Some(true) {
+        Racine::Application
+    } else {
+        Racine::Aucune
+    })
+}
+
+/// Les attributs d'un sujet X.500 tel que l'écrit CertGetNameStringW (« C=US, …, O=…, CN=… ») : la clé en
+/// majuscules, la valeur sans ses guillemets. Une valeur qui contient une virgule, un point-virgule, un « + » ou
+/// un « = » y est entre guillemets (ses guillemets doublés) : elle ne coupe pas le sujet, sinon
+/// « CN="x, O=Microsoft Corporation" » se lirait comme deux attributs. « + » sépare les attributs d'un même RDN.
+#[cfg(any(windows, test))]
+fn attributs(sujet: &str) -> Vec<(String, String)> {
+    let mut morceaux = Vec::new();
+    let mut courant = String::new();
+    let mut entre_guillemets = false;
+    let mut car = sujet.chars().peekable();
+    while let Some(c) = car.next() {
+        match c {
+            '"' if entre_guillemets && car.peek() == Some(&'"') => {
+                car.next();
+                courant.push('"');
+            }
+            '"' => entre_guillemets = !entre_guillemets,
+            ',' | ';' | '+' if !entre_guillemets => morceaux.push(std::mem::take(&mut courant)),
+            _ => courant.push(c),
+        }
+    }
+    morceaux.push(courant);
+    morceaux
+        .iter()
+        .filter_map(|m| {
+            let (cle, valeur) = m.split_once('=')?;
+            Some((cle.trim().to_uppercase(), valeur.trim().to_string()))
+        })
+        .collect()
+}
+
+/// Les signataires au nom de Microsoft qui signent le travail d'AUTRES éditeurs, sous une racine de Microsoft :
+/// pilotes WHQL et attestés (« Microsoft Windows Hardware Compatibility Publisher » : des pilotes malveillants
+/// l'ont obtenu par le programme matériel de Microsoft), pilotes ELAM des antivirus (« … Early Launch
+/// Anti-malware Publisher »), composants tiers (« Microsoft Windows Third Party Application Component »,
+/// « Microsoft 3rd Party Application Component »). Microsoft en garantit la provenance, pas l'auteur : pas
+/// d'immunité « Microsoft ». En minuscules, cherchés dans le CN.
+#[cfg(any(windows, test))]
+const SIGNATAIRES_POUR_AUTRUI: [&str; 4] = ["hardware compatibility", "early launch", "third party", "3rd party"];
+
+/// Les usages (EKU) du même travail pour autrui, s'ils sont dans le certificat : pilote WHQL (311.10.3.5),
+/// pilote attesté (311.10.3.5.1), pilote ELAM (311.61.4.1), paquet du Microsoft Store (311.76.3.1, signé par
+/// Microsoft pour l'éditeur du paquet).
+#[cfg(any(windows, test))]
+const USAGES_POUR_AUTRUI: [&str; 4] = [
+    "1.3.6.1.4.1.311.10.3.5",
+    "1.3.6.1.4.1.311.10.3.5.1",
+    "1.3.6.1.4.1.311.61.4.1",
+    "1.3.6.1.4.1.311.76.3.1",
+];
+
+/// L'usage « signature de code » (EKU id-kp-codeSigning).
+#[cfg(any(windows, test))]
+const SIGNATURE_DE_CODE: &str = "1.3.6.1.5.5.7.3.3";
+
 /// Un signataire vérifié est-il Microsoft ? Son sujet ET la racine de sa chaîne : un sujet se forge (une autorité
 /// faite maison, posée dans le magasin Root du compte sans droits ni invite, signe « CN=Microsoft Windows »), une
 /// racine de Microsoft non (`racine_microsoft` : CERT_CHAIN_POLICY_MICROSOFT_ROOT, défense D6a, relecture).
+/// Le sujet : un seul O, « Microsoft Corporation », un seul CN, qui n'est pas un signataire pour autrui ; aucun
+/// usage pour autrui (`usages` : les EKU du certificat, vide s'il n'en dit pas). Sous la seule racine 2011, plus
+/// strict : CN « Microsoft Corporation » (Microsoft Code Signing PCA 2011) et l'usage signature de code.
 #[cfg(any(windows, test))]
-pub(crate) fn signe_par_microsoft(sujet: &str, racine_microsoft: bool) -> bool {
-    racine_microsoft && sujet_microsoft(sujet)
+pub(crate) fn signe_par_microsoft(sujet: &str, usages: &[&str], racine: Racine) -> bool {
+    // `sujet_microsoft` d'abord : le tri grossier d'avant, que le sujet lu attribut par attribut resserre.
+    if racine == Racine::Aucune || !sujet_microsoft(sujet) {
+        return false;
+    }
+    let attributs = attributs(sujet);
+    let valeurs = |cle: &str| -> Vec<&str> {
+        attributs
+            .iter()
+            .filter(|(k, _)| k == cle)
+            .map(|(_, v)| v.as_str())
+            .collect()
+    };
+    let (os, cns) = (valeurs("O"), valeurs("CN"));
+    let ([o], [cn]) = (os.as_slice(), cns.as_slice()) else {
+        return false;
+    };
+    let cn_min = cn.to_lowercase();
+    if !o.eq_ignore_ascii_case("Microsoft Corporation")
+        || SIGNATAIRES_POUR_AUTRUI.iter().any(|s| cn_min.contains(s))
+        || usages.iter().any(|u| USAGES_POUR_AUTRUI.contains(u))
+    {
+        return false;
+    }
+    racine == Racine::Produit
+        || (cn.eq_ignore_ascii_case("Microsoft Corporation") && usages.contains(&SIGNATURE_DE_CODE))
 }
 
 /// Un code rendu par WinVerifyTrust dit-il que le fichier ne s'est pas LU (et non qu'il n'est pas signé, ou mal) ?
@@ -1724,11 +1835,104 @@ mod tests {
     #[test]
     fn signature_microsoft_par_sa_racine() {
         let sujet = "C=US, S=Washington, L=Redmond, O=Microsoft Corporation, CN=Microsoft Windows";
-        assert!(signe_par_microsoft(sujet, true));
-        assert!(!signe_par_microsoft(sujet, false));
+        assert!(signe_par_microsoft(sujet, &[], Racine::Produit));
+        assert!(!signe_par_microsoft(sujet, &[], Racine::Aucune));
         assert!(!signe_par_microsoft(
             "C=US, O=Mozilla Corporation, CN=Mozilla Corporation",
-            true
+            &[],
+            Racine::Produit
+        ));
+    }
+
+    /// Défense D6a, racine 2011 : Edge, Office et Teams (Code Signing PCA 2011, racine application) sont Microsoft ;
+    /// ceux que Microsoft signe pour d'autres éditeurs (WHQL, attestés, ELAM, composants tiers, Store) ne le sont
+    /// sous aucune racine ; un sujet qui se joue des guillemets ou double son O non plus.
+    #[test]
+    fn signature_microsoft_racine_application_et_signataires_pour_autrui() {
+        const CODE: &str = "1.3.6.1.5.5.7.3.3";
+        let windows = "C=US, S=Washington, L=Redmond, O=Microsoft Corporation, CN=Microsoft Windows";
+        let corporation = "C=US, S=Washington, L=Redmond, O=Microsoft Corporation, CN=Microsoft Corporation";
+        let systeme = ["1.3.6.1.4.1.311.10.3.6", CODE];
+        // Les deux lectures de la politique : la première illisible rend la chaîne illisible ; la seconde ne compte
+        // que si la première dit non, et illisible elle ne donne jamais la racine application.
+        assert_eq!(racine_selon(None, Some(true)), None);
+        assert_eq!(racine_selon(Some(true), None), Some(Racine::Produit));
+        assert_eq!(racine_selon(Some(true), Some(false)), Some(Racine::Produit));
+        assert_eq!(racine_selon(Some(false), Some(true)), Some(Racine::Application));
+        assert_eq!(racine_selon(Some(false), Some(false)), Some(Racine::Aucune));
+        assert_eq!(racine_selon(Some(false), None), Some(Racine::Aucune));
+        // Windows sous sa racine, Edge sous la racine 2011.
+        assert!(signe_par_microsoft(windows, &systeme, Racine::Produit));
+        assert!(signe_par_microsoft(corporation, &[CODE], Racine::Produit));
+        assert!(signe_par_microsoft(corporation, &[CODE], Racine::Application));
+        assert!(signe_par_microsoft(
+            "C=US; O=Microsoft Corporation + OU=MOPR; CN=Microsoft Corporation",
+            &[CODE],
+            Racine::Application
+        ));
+        // Racine 2011 : un autre CN, ou sans l'usage signature de code (ou sans usage du tout), n'est pas Microsoft.
+        assert!(!signe_par_microsoft(windows, &systeme, Racine::Application));
+        assert!(!signe_par_microsoft(corporation, &[], Racine::Application));
+        assert!(!signe_par_microsoft(
+            corporation,
+            &["1.3.6.1.4.1.311.10.3.6"],
+            Racine::Application
+        ));
+        // Signés par Microsoft pour d'autres éditeurs : sous aucune racine, par leur CN ou par leur usage.
+        for cn in [
+            "Microsoft Windows Hardware Compatibility Publisher",
+            "Microsoft Windows Early Launch Anti-malware Publisher",
+            "Microsoft Windows Third Party Application Component",
+            "Microsoft 3rd Party Application Component",
+        ] {
+            let sujet = format!("C=US, S=Washington, L=Redmond, O=Microsoft Corporation, CN={cn}");
+            for racine in [Racine::Produit, Racine::Application] {
+                assert!(!signe_par_microsoft(&sujet, &[CODE], racine), "{cn}");
+            }
+        }
+        for usage in [
+            "1.3.6.1.4.1.311.10.3.5",
+            "1.3.6.1.4.1.311.10.3.5.1",
+            "1.3.6.1.4.1.311.61.4.1",
+            "1.3.6.1.4.1.311.76.3.1",
+        ] {
+            assert!(
+                !signe_par_microsoft(windows, &[usage, CODE], Racine::Produit),
+                "{usage}"
+            );
+            assert!(
+                !signe_par_microsoft(corporation, &[CODE, usage], Racine::Application),
+                "{usage}"
+            );
+        }
+        // Le sujet lu entier, guillemets compris : un O caché dans une valeur, ou deux O, ou deux CN, ne passent pas.
+        for sujet in [
+            "C=US, O=Evil, CN=\"x, O=Microsoft Corporation\"",
+            "C=US, O=\"Evil, O=Microsoft Corporation\", CN=Microsoft Corporation",
+            "C=US, O=\"Microsoft Corporation, Inc\", CN=Microsoft Corporation",
+            "C=US, O=Microsoft Corporation, O=Evil, CN=Microsoft Corporation",
+            "C=US, O=Microsoft Corporation, CN=Microsoft Corporation, CN=Evil",
+            "C=US, O=Microsoft Corporation",
+            "CN=Microsoft Windows",
+            "C=US, O=Microsoft, CN=Microsoft Windows",
+            "",
+        ] {
+            for racine in [Racine::Produit, Racine::Application] {
+                assert!(!signe_par_microsoft(sujet, &[CODE], racine), "{sujet}");
+            }
+        }
+        // Une valeur entre guillemets, guillemets doublés compris, se lit entière.
+        assert_eq!(
+            attributs("O=\"Microsoft Corporation\", CN=\"a \"\"b\"\", c\""),
+            vec![
+                ("O".to_string(), "Microsoft Corporation".to_string()),
+                ("CN".to_string(), "a \"b\", c".to_string())
+            ]
+        );
+        assert!(signe_par_microsoft(
+            "O=\"Microsoft Corporation\", CN=Microsoft Windows",
+            &[],
+            Racine::Produit
         ));
     }
 
