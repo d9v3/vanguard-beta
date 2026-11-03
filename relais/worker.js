@@ -897,10 +897,10 @@ const SCHEMA = {
         "audit/pq-box", "audit/tls-pq", "autotest/cache", "autotest/dernier", "bilan/pqc-ssh", "bilan/pqc-sshd",
         "bilan/sshd-config", "blocage/pare-feu", "blocage/preparer", "blocage/regler", "canaux/lire",
         "certificats/retirer", "compte-rendu/lire", "compte-rendu/trier", "changements/noter", "dbus/actions",
-        "dbus/etat_d_activite", "dbus/systeme", "dns/resolved", "docker", "eleve/hosts", "eleve/montrer",
-        "entretien/etat", "essai", "essai/lecture", "evenements/noter", "evenements/perdus", "evenements/version",
-        "examens/ecrire", "http_unix", "http_unix/connexion", "machine/ports-bloques", "maj/fwupd",
-        "manifeste/image", "manifeste/relire", "networkmanager", "partages/retirer", "plateforme/fwupd",
+        "dbus/etat_d_activite", "dbus/systeme", "dns/resolved", "docker", "droits/poser", "eleve/hosts",
+        "eleve/montrer", "entretien/etat", "essai", "essai/lecture", "evenements/noter", "evenements/perdus",
+        "evenements/version", "examens/ecrire", "http_unix", "http_unix/connexion", "machine/ports-bloques",
+        "maj/fwupd", "manifeste/image", "manifeste/relire", "networkmanager", "partages/retirer", "plateforme/fwupd",
         "plugins/ecrire", "plugins/reglages", "plugins/sceau", "programmes_poses/noter", "quarantaine/creer",
         "quarantaine/deposer", "quarantaine/dossier", "quarantaine/droits", "quarantaine/lire",
         "quarantaine/remettre", "quarantaine/retirer", "quarantaine/supprimer", "quarantaine/traces",
@@ -908,7 +908,8 @@ const SCHEMA = {
         "reseau/hosts-lire", "reseau/hosts-remplacer", "reseau/resolved", "sceau/adopter", "sceau/ecrire",
         "sceau/temoin", "signaler/controle", "signaler/dossier", "signaler/droits", "signaler/ecrire",
         "signaler/effacer", "signaler/incident", "signaler/langue", "signaler/outil", "signaler/programme",
-        "sites_bloques/preparer", "systemd", "veilleur/oublier", "voulues/noter", "wifi/networkmanager"
+        "sites_bloques/preparer", "ssh/ecriture", "ssh/noter", "systemd", "veilleur/oublier", "voulues/noter",
+        "wifi/networkmanager"
       ]
     },
     "Regle": { "type": "string", "pattern": "^[A-Z]{3}-[A-Z]{3}-[0-9]{3}$" },

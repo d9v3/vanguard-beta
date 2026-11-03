@@ -592,6 +592,29 @@ fn service(s: &GesteService) -> Result<String, Echec> {
     }
 }
 
+/// Le service tourne-t-il ? `Some(false)` : arrêté ou absent ; `None` : le gestionnaire ou l'état ne se lit pas.
+pub(super) fn en_marche(nom: &str) -> Option<bool> {
+    let g = gestionnaire().ok()?;
+    match ouvrir(&g, nom, LIRE_L_ETAT).ok()? {
+        None => Some(false),
+        Some(s) => etat(&s, nom).ok().map(|e| e.etat == EN_MARCHE),
+    }
+}
+
+/// Redémarre le service s'il tourne encore (relu juste avant) : `Ok(false)` s'il ne tourne plus, rien n'est démarré.
+pub(super) fn redemarrer_si_en_marche(nom: &'static str) -> Result<bool, Echec> {
+    if en_marche(nom) != Some(true) {
+        return Ok(false);
+    }
+    service(&GesteService {
+        nom,
+        action: Action::Redemarrer,
+        durcit: true,
+        affaiblit: false,
+    })
+    .map(|_| true)
+}
+
 /// Le dossier de Windows : le parent de System32 (GetSystemDirectoryW), jamais une variable d'environnement, que le
 /// compte qui a lancé Vanguard choisit.
 fn dossier_windows() -> Result<PathBuf, Echec> {
@@ -713,6 +736,11 @@ pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
         Acte::Reglage(id) => return super::reglages_ecriture::poser(*id, personne),
         Acte::ReglageRemettre(id) => return super::reglages_ecriture::remettre(*id, personne),
         Acte::CompteMotDePasse(rid) => return super::comptes_ecriture::poser_mot_de_passe(*rid, personne),
+        // SSH (défense D6c) : rejugés sur le fichier ouvert ici, chemin pris ici, jamais dans la ligne.
+        Acte::SshDroits(c) => return super::ssh_ecriture::droits(c, personne),
+        Acte::SshDroitsRemettre(c) => return super::ssh_ecriture::droits_remettre(c, personne),
+        Acte::SshdReglage(r) => return super::ssh_ecriture::sshd(*r),
+        Acte::SshdReglageRemettre(r) => return super::ssh_ecriture::sshd_remettre(*r),
         _ => {}
     }
     let r = match acte {
@@ -762,6 +790,10 @@ pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
         | Acte::Reglage(_)
         | Acte::ReglageRemettre(_)
         | Acte::CompteMotDePasse(_)
+        | Acte::SshDroits(_)
+        | Acte::SshDroitsRemettre(_)
+        | Acte::SshdReglage(_)
+        | Acte::SshdReglageRemettre(_)
         | Acte::ServiceGuillemetsRisque(_)
         | Acte::ServiceCheminRemettre(_) => Err(Echec::refuse(
             CONTEXTE,

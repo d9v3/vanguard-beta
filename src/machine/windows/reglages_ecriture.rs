@@ -174,7 +174,8 @@ pub(super) fn juger(acte: &Acte, personne: Option<&str>) -> Option<(Montre, Stri
             }
         }
         Acte::ServiceCheminRemettre(n) => super::services::texte_remise(n),
-        _ => return None,
+        // Les remises SSH (défense D6c), montrées comme une baisse : jamais déclenchées par une liste mêlée.
+        _ => return super::ssh_ecriture::juger(acte, personne),
     };
     Some((
         Montre {

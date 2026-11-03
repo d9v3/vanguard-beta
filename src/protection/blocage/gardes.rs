@@ -535,6 +535,28 @@ pub(crate) fn session_entrante_ouverte() -> Option<bool> {
     Some(depuis_ssh || etablies.iter().any(|e| session_entrante(e, &en_ecoute)))
 }
 
+/// Une connexion établie est-elle une session SSH ENTRANTE : sur un port local de sshd (22, ou ceux de sshd_config),
+/// ou tenue par sshd lui-même (sshd, sshd-session). Ni un client SSH qui part d'ici, ni le Bureau à distance : c'est
+/// sshd qu'un redémarrage couperait (défense D6c).
+#[cfg(any(windows, test))]
+pub(crate) fn session_ssh_entrante(e: &Etablie, ports_sshd: &[u16]) -> bool {
+    e.port_local == 22
+        || ports_sshd.contains(&e.port_local)
+        || e.programme
+            .as_deref()
+            .is_some_and(|p| matches!(nom_simple(p).as_str(), "sshd" | "sshd-session"))
+}
+
+/// Une session SSH entrante est-elle ouverte sur cet ordinateur (`session_ssh_entrante`, ou Vanguard lancé depuis
+/// SSH) ? `None` : les connexions ne se lisent pas, et sshd n'est alors ni redémarré ni privé des mots de passe.
+#[cfg(windows)]
+pub(crate) fn session_ssh_ouverte(ports_sshd: &[u16]) -> Option<bool> {
+    if std::env::var("SSH_CONNECTION").is_ok_and(|v| client_ssh(&v).is_some()) {
+        return Some(true);
+    }
+    lire_etablies().map(|l| l.iter().any(|e| session_ssh_entrante(e, ports_sshd)))
+}
+
 /// Les adresses à ne pas couper, d'après les connexions établies, le client SSH de Vanguard et le port réel du
 /// Bureau à distance (`port_rdp`, PortNumber de RDP-Tcp).
 pub(crate) fn juger_etablies(etablies: &[Etablie], client: Option<IpAddr>, port_rdp: Option<u16>) -> Sessions {
@@ -2798,6 +2820,39 @@ mod tests {
             port_rdp_de(Err(Error::from(ErrorKind::InvalidData))),
             Err(PortIllisible)
         );
+    }
+
+    /// sshd redémarré ou privé des mots de passe (défense D6c) : une session SSH entrante l'interdit, sur 22, sur un
+    /// port de sshd_config ou tenue par sshd ; ni un SSH qui part d'ici, ni le Bureau à distance (l'auteur essaie
+    /// par RDP).
+    #[test]
+    fn sessions_ssh_entrantes() {
+        assert!(session_ssh_entrante(
+            &etablie("198.51.100.20", 22, 51234, None, true),
+            &[]
+        ));
+        assert!(session_ssh_entrante(
+            &etablie("198.51.100.20", 2222, 51234, None, true),
+            &[2222]
+        ));
+        for p in ["sshd", r"C:\Windows\System32\OpenSSH\sshd-session.exe", "SSHD.EXE"] {
+            assert!(
+                session_ssh_entrante(&etablie("198.51.100.20", 4000, 51234, Some(p), true), &[]),
+                "{p}"
+            );
+        }
+        assert!(!session_ssh_entrante(
+            &etablie("198.51.100.20", 51234, 22, Some("ssh.exe"), false),
+            &[]
+        ));
+        assert!(!session_ssh_entrante(
+            &etablie("198.51.100.20", 3389, 51234, Some("svchost"), true),
+            &[22]
+        ));
+        assert!(!session_ssh_entrante(
+            &etablie("198.51.100.20", 2222, 51234, None, true),
+            &[22]
+        ));
     }
 
     /// Le réseau redémarré par l'assistant élevé : seules les sessions ENTRANTES le retiennent (SSH ou Bureau à

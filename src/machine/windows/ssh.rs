@@ -3,13 +3,17 @@
 //! administrateurs) et les clés privées du compte (%USERPROFILE%\.ssh). Tout est lu en Rust : le registre pour le
 //! service, WMI pour son état, les fichiers eux-mêmes et leurs droits (`securite`).
 //!
-//! Aucune correction automatique : couper les mots de passe peut enfermer dehors quelqu'un qui n'a pas encore de
-//! clé, et Vanguard ne coupe jamais une connexion à distance en cours. Les droits d'un fichier ne sont pas dans la
-//! liste de ce qu'il sait remettre exactement : la marche à suivre est donnée, à faire soi-même.
+//! Les corrections (défense D6c) passent par les gestes du processus élevé (`ssh_ecriture`), montrées puis
+//! acceptées : les droits d'administrators_authorized_keys ou d'une clé réservés (liste d'avant notée, annulable),
+//! « PermitEmptyPasswords no » et « PasswordAuthentication no » dans sshd_config (copie d'avant gardée, `sshd -t`
+//! avant de remplacer). Couper les mots de passe peut enfermer dehors quelqu'un qui n'a pas encore de clé : la
+//! question est posée, et le geste est refusé pendant une session SSH ; sshd n'est jamais redémarré pendant l'une
+//! d'elles. Sans configuration lisible (fichier absent), la marche à suivre reste à faire soi-même.
 
 use std::path::{Path, PathBuf};
 
 use super::{Constat, alerte, ok};
+use crate::machine::gestes::ReglageSshd;
 use crate::machine::{cle_protegee, impossible_par, sans_objet};
 use crate::modele::{Absence, Objet, Raison};
 use crate::risk::Niveau;
@@ -167,14 +171,12 @@ pub(super) fn juger_serveur(s: &Serveur) -> Vec<Constat> {
             constats.push(
                 alerte(CAT, niveau, message)
                 .avec_objet(Objet::de("fichier", "administrators_authorized_keys"))
-                .manuel(
+                .corriger(
                     tr!(
-                        "Réserver le fichier à SYSTEM et aux administrateurs (commande de Microsoft, PowerShell en administrateur)",
-                        "Restrict the file to SYSTEM and administrators (Microsoft's command, PowerShell as administrator)"
+                        "Réserver le fichier à SYSTEM et aux administrateurs (il n'est ni vidé ni réécrit ; droits d'avant notés, annulable)",
+                        "Restrict the file to SYSTEM and administrators (it is neither emptied nor rewritten; previous rights noted, undoable)"
                     ),
-                    &[
-                        r#"icacls.exe "$env:ProgramData\ssh\administrators_authorized_keys" /inheritance:r /grant "*S-1-5-32-544:F" /grant "*S-1-5-18:F""#,
-                    ],
+                    &[crate::machine::gestes::ligne_ssh_droits(None).unwrap_or_default()],
                 ),
             );
         }
@@ -198,6 +200,8 @@ pub(super) fn juger_serveur(s: &Serveur) -> Vec<Constat> {
         ));
         return constats;
     }
+    // Le geste ne crée jamais sshd_config : sans fichier lu, la marche à suivre reste à faire soi-même.
+    let lisible = matches!(s.configuration, Lu::Texte(_));
     let conf = match &s.configuration {
         Lu::Texte(t) => crate::machine::sshd::partie_globale_sshd(t),
         // Sans fichier, sshd prend ses valeurs par défaut : mots de passe permis.
@@ -219,35 +223,51 @@ pub(super) fn juger_serveur(s: &Serveur) -> Vec<Constat> {
         r"In %ProgramData%\ssh\sshd_config (Notepad as administrator), then “Restart-Service sshd” when nobody is connected"
     );
     if crate::machine::sshd::mots_de_passe_vides_sshd(&conf) {
-        constats.push(
-            alerte(
-                CAT,
-                Niveau::Critique,
-                tr!(
-                    "Le serveur OpenSSH accepte les comptes sans mot de passe : un tel compte s'ouvre depuis le réseau sans rien taper.",
-                    "The OpenSSH server accepts accounts without a password: such an account opens from the network without typing anything."
-                ),
-            )
-            .manuel(trf!("{ou} : « PermitEmptyPasswords no ».", "{ou}: “PermitEmptyPasswords no”."), &[]),
+        let c = alerte(
+            CAT,
+            Niveau::Critique,
+            tr!(
+                "Le serveur OpenSSH accepte les comptes sans mot de passe : un tel compte s'ouvre depuis le réseau sans rien taper.",
+                "The OpenSSH server accepts accounts without a password: such an account opens from the network without typing anything."
+            ),
         );
-    } else if crate::machine::sshd::mots_de_passe_sshd(&conf) {
-        constats.push(
-            alerte(
-                CAT,
-                Niveau::Moyen,
+        constats.push(if lisible {
+            c.corriger(
                 tr!(
-                    "Le serveur OpenSSH accepte les mots de passe : depuis le réseau, on peut en essayer autant qu'on veut (force brute).",
-                    "The OpenSSH server accepts passwords: from the network, one can try as many as one wants (brute force)."
+                    "Mettre « PermitEmptyPasswords no » dans sshd_config (copie d'avant gardée, « sshd -t » avant de remplacer ; sshd redémarré seulement sans session SSH ouverte)",
+                    "Set “PermitEmptyPasswords no” in sshd_config (previous copy kept, “sshd -t” before replacing; sshd restarted only with no SSH session open)"
                 ),
+                &[crate::machine::gestes::ligne_sshd_reglage(ReglageSshd::MotsDePasseVides)],
             )
-            .manuel(
+        } else {
+            c.manuel(trf!("{ou} : « PermitEmptyPasswords no ».", "{ou}: “PermitEmptyPasswords no”."), &[])
+        });
+    } else if crate::machine::sshd::mots_de_passe_sshd(&conf) {
+        let c = alerte(
+            CAT,
+            Niveau::Moyen,
+            tr!(
+                "Le serveur OpenSSH accepte les mots de passe : depuis le réseau, on peut en essayer autant qu'on veut (force brute).",
+                "The OpenSSH server accepts passwords: from the network, one can try as many as one wants (brute force)."
+            ),
+        );
+        constats.push(if lisible {
+            c.corriger(
+                tr!(
+                    "Après avoir ajouté votre clé depuis l'autre ordinateur : « PasswordAuthentication no » dans sshd_config (question « Une clé est-elle déjà posée pour votre compte ? » ; refusé pendant une session SSH ; copie d'avant gardée). Ou arrêter le service s'il ne sert pas",
+                    "After adding your key from the other computer: “PasswordAuthentication no” in sshd_config (question “Is a key already set up for your account?”; refused during an SSH session; previous copy kept). Or stop the service if unused"
+                ),
+                &[crate::machine::gestes::ligne_sshd_reglage(ReglageSshd::MotsDePasse)],
+            )
+        } else {
+            c.manuel(
                 trf!(
                     "Après avoir ajouté votre clé depuis l'autre ordinateur : {ou} : « PasswordAuthentication no ». Ou arrêter le service s'il ne sert pas",
                     "After adding your key from the other computer: {ou}: “PasswordAuthentication no”. Or stop the service if unused"
                 ),
                 &[],
-            ),
-        );
+            )
+        });
     } else {
         constats.push(ok(
             CAT,
@@ -303,24 +323,32 @@ pub(super) fn juger_cles(dossier_existe: bool, cles: &[Cle]) -> Vec<Constat> {
             );
         }
         if c.lisible_par_tous == Some(true) {
-            constats.push(
-                alerte(
-                    CAT_CLES,
-                    Niveau::Critique,
+            let constat = alerte(
+                CAT_CLES,
+                Niveau::Critique,
+                trf!(
+                    r"Clé privée %USERPROFILE%\.ssh\{nom} lisible par les autres comptes de cet ordinateur.",
+                    r"Private key %USERPROFILE%\.ssh\{nom} is readable by the other accounts of this computer."
+                ),
+            )
+            .avec_objet(objet);
+            constats.push(match crate::machine::gestes::ligne_ssh_droits(Some(&c.nom)) {
+                Some(ligne) => constat.corriger(
                     trf!(
-                        r"Clé privée %USERPROFILE%\.ssh\{nom} lisible par les autres comptes de cet ordinateur.",
-                        r"Private key %USERPROFILE%\.ssh\{nom} is readable by the other accounts of this computer."
+                        "Réserver {nom} à votre compte, SYSTEM et aux administrateurs (la clé n'est pas touchée ; droits d'avant notés, annulable)",
+                        "Restrict {nom} to your account, SYSTEM and administrators (the key itself is not touched; previous rights noted, undoable)"
                     ),
-                )
-                .avec_objet(objet)
-                .manuel(
+                    &[ligne],
+                ),
+                // Un nom que la grammaire des gestes refuse : la marche à suivre, à faire soi-même.
+                None => constat.manuel(
                     trf!(
                         "Réserver {nom} à votre compte : Propriétés › Sécurité › Avancé, désactiver l'héritage et ne garder que vous, SYSTEM et Administrateurs",
                         "Restrict {nom} to your account: Properties › Security › Advanced, disable inheritance and keep only you, SYSTEM and Administrators"
                     ),
                     &[],
                 ),
-            );
+            });
         }
     }
     if cles
@@ -416,6 +444,7 @@ pub(super) fn cles_du_compte() -> Vec<Constat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::machine::gestes::{ligne_ssh_droits, ligne_sshd_reglage};
     use crate::modele::Etat;
 
     /// Un descripteur autonome inventé : (sorte, drapeaux, masque, SID en texte) par règle.
@@ -534,7 +563,23 @@ mod tests {
         let c = serveur(Some(2), Some(true), LIVREE, Droits::Surs);
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].probleme, Some(Niveau::Moyen));
-        assert!(!c[0].correctif.as_ref().unwrap().automatique);
+        // Défense D6c : corrigé par le geste fermé du processus élevé (question, refus pendant une session SSH).
+        let k = c[0].correctif.as_ref().unwrap();
+        assert!(k.automatique);
+        assert_eq!(k.commandes, [ligne_sshd_reglage(ReglageSshd::MotsDePasse)]);
+        assert!(k.action.contains("Une clé est-elle déjà posée") || k.action.contains("Is a key already set up"));
+        // Sans sshd_config (valeurs par défaut de sshd), le geste ne le crée pas : la marche à suivre, à la main.
+        let sans = juger_serveur(&Serveur {
+            service: true,
+            demarrage: Some(2),
+            en_marche: Some(true),
+            configuration: Lu::Absent,
+            cles_admin: Droits::Surs,
+        });
+        assert_eq!(sans[0].probleme, Some(Niveau::Moyen));
+        let k = sans[0].correctif.as_ref().unwrap();
+        assert!(!k.automatique);
+        assert!(k.commandes.is_empty(), "{:?}", k.commandes);
         let cles = serveur(
             Some(2),
             Some(true),
@@ -544,7 +589,11 @@ mod tests {
         assert_eq!(cles[0].etat(), Etat::Sain);
         let vide = serveur(Some(3), None, "PermitEmptyPasswords yes\n", Droits::Surs);
         assert_eq!(vide[0].probleme, Some(Niveau::Critique));
+        let k = vide[0].correctif.as_ref().unwrap();
+        assert!(k.automatique);
+        assert_eq!(k.commandes, [ligne_sshd_reglage(ReglageSshd::MotsDePasseVides)]);
         assert!(vide.iter().all(Constat::coherent));
+        assert!(c.iter().chain(&sans).all(Constat::coherent));
     }
 
     #[test]
@@ -558,7 +607,13 @@ mod tests {
         );
         assert_eq!(c[0].probleme, Some(Niveau::Moyen));
         assert!(c[0].message.contains("StrictModes"));
-        assert!(c[0].correctif.as_ref().unwrap().commandes[0].starts_with("icacls.exe"));
+        // Défense D6c : le geste fermé (aucun chemin dans la ligne), plus la commande icacls.
+        let cles_admin = ligne_ssh_droits(None).unwrap();
+        assert_eq!(
+            c[0].correctif.as_ref().unwrap().commandes,
+            std::slice::from_ref(&cles_admin)
+        );
+        assert!(c[0].correctif.as_ref().unwrap().automatique);
         // StrictModes coupé : une clé ajoutée ouvre une session d'administrateur.
         let c = serveur(
             Some(2),
@@ -568,7 +623,7 @@ mod tests {
         );
         assert_eq!(c[0].probleme, Some(Niveau::Critique));
         assert!(c[0].message.contains("administrators_authorized_keys"));
-        assert!(c[0].correctif.as_ref().unwrap().commandes[0].starts_with("icacls.exe"));
+        assert_eq!(c[0].correctif.as_ref().unwrap().commandes, [cles_admin]);
         // Arrêté : la porte reste, moins urgente.
         let c = serveur(Some(4), Some(false), "", Droits::Ouverts(vec!["S-1-5-11".into()]));
         assert_eq!(c[0].probleme, Some(Niveau::Moyen));
@@ -600,6 +655,25 @@ mod tests {
         assert_eq!(c[0].probleme, Some(Niveau::Moyen));
         assert_eq!(c[1].probleme, Some(Niveau::Critique));
         assert!(c[0].correctif.as_ref().unwrap().commandes[0].contains(r"\.ssh\serveur"));
+        // Défense D6c : lisible par les autres, réservée par le geste fermé, le nom en hexadécimal dans la ligne.
+        let k = c[1].correctif.as_ref().unwrap();
+        assert!(k.automatique);
+        assert_eq!(k.commandes, [ligne_ssh_droits(Some("serveur")).unwrap()]);
+        assert!(c.iter().all(Constat::coherent));
+        // Un nom hostile : nettoyé dans le message ; refusé par la grammaire (contrôle), la marche à suivre à la main.
+        let hostile = "id\x1b[31m\rcache";
+        let c = juger_cles(true, &[cle(hostile, Some(true), Some(true))]);
+        assert_eq!(c.len(), 1);
+        assert!(
+            !c[0].message.contains('\x1b') && !c[0].message.contains('\r'),
+            "{:?}",
+            c[0].message
+        );
+        let k = c[0].correctif.as_ref().unwrap();
+        assert!(!k.automatique && k.commandes.is_empty());
+        let long = "k".repeat(300);
+        let c = juger_cles(true, &[cle(&long, Some(true), Some(true))]);
+        assert!(!c[0].correctif.as_ref().unwrap().automatique);
         let c = juger_cles(true, &[cle("id_rsa", Some(true), None)]);
         assert!(matches!(c[0].etat(), Etat::NonVerifie(Raison::Droits)));
     }

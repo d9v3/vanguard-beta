@@ -189,6 +189,8 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                     gestes::Acte::WmiAbonnementRetirer(_)
                         | gestes::Acte::WmiAbonnementRemettre(_)
                         | gestes::Acte::ServiceRetirer(_)
+                        | gestes::Acte::SshDroits(gestes::CibleSsh::Cle(_))
+                        | gestes::Acte::SshDroitsRemettre(gestes::CibleSsh::Cle(_))
                 );
             let borne = if matches!(a, gestes::Acte::HostsEcrire(_)) {
                 gestes::HOSTS_LIGNE_MAX

@@ -516,6 +516,10 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
                     | Acte::Reglage(_)
                     | Acte::ReglageRemettre(_)
                     | Acte::CompteMotDePasse(_)
+                    | Acte::SshDroits(_)
+                    | Acte::SshDroitsRemettre(_)
+                    | Acte::SshdReglage(_)
+                    | Acte::SshdReglageRemettre(_)
                     | Acte::ServiceGuillemetsRisque(_)
                     | Acte::ServiceCheminRemettre(_)),
                 ),
@@ -721,7 +725,7 @@ fn suite_reglage(id: crate::machine::gestes::IdReglage) -> String {
 
 fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
     use crate::machine::gestes::{
-        ACoter, Acte, Action, Categorie, CleRun, GenreExclusion, ListeLancement, MagasinRacine, ModeAsr,
+        ACoter, Acte, Action, Categorie, CibleSsh, CleRun, GenreExclusion, ListeLancement, MagasinRacine, ModeAsr,
         ReglageDefender, ValeurDefender, Vidable, Vue,
     };
     use crate::ui::{tr, trf};
@@ -1083,6 +1087,44 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
             "Poser un mot de passe sur le compte local n° {rid}, qui n'en exige pas : tapé deux fois dans cette fenêtre, sans être affiché ni gardé. Non annulable",
             "Set a password on local account no. {rid}, which does not require one: typed twice in this window, never shown nor kept. Not undoable"
         ),
+        Acte::SshDroits(CibleSsh::ClesAdmin) => tr!(
+            r"Réserver %ProgramData%\ssh\administrators_authorized_keys à SYSTEM et aux administrateurs (le fichier n'est ni vidé ni réécrit ; liste des droits d'avant notée, remise par « vanguard options-defense --remettre ssh:cles-admin »)",
+            r"Restrict %ProgramData%\ssh\administrators_authorized_keys to SYSTEM and administrators (the file is neither emptied nor rewritten; previous list of rights noted, put back by “vanguard options-defense --remettre ssh:cles-admin”)"
+        )
+        .to_string(),
+        Acte::SshDroits(CibleSsh::Cle(n)) => {
+            let n = crate::ui::affichable(n.texte());
+            trf!(
+                r"Réserver la clé privée .ssh\{n} à votre compte, SYSTEM et aux administrateurs (la clé n'est pas touchée ; liste des droits d'avant notée, remise par « vanguard options-defense --remettre ssh-cle:{n} »)",
+                r"Restrict the private key .ssh\{n} to your account, SYSTEM and administrators (the key itself is not touched; previous list of rights noted, put back by “vanguard options-defense --remettre ssh-cle:{n}”)"
+            )
+        }
+        Acte::SshDroitsRemettre(CibleSsh::ClesAdmin) => tr!(
+            "Remettre la liste des droits d'avant d'administrators_authorized_keys, notée par Vanguard (seulement si elle est encore celle que Vanguard a posée)",
+            "Put back the previous list of rights of administrators_authorized_keys, noted by Vanguard (only if it is still the one Vanguard set)"
+        )
+        .to_string(),
+        Acte::SshDroitsRemettre(CibleSsh::Cle(n)) => {
+            let n = crate::ui::affichable(n.texte());
+            trf!(
+                r"Remettre la liste des droits d'avant de la clé .ssh\{n}, notée par Vanguard (seulement si elle est encore celle que Vanguard a posée)",
+                r"Put back the previous list of rights of the key .ssh\{n}, noted by Vanguard (only if it is still the one Vanguard set)"
+            )
+        }
+        Acte::SshdReglage(r) => {
+            let (m, n) = (r.mot_cle(), r.mot());
+            trf!(
+                "Mettre « {m} no » dans sshd_config : nouvelle version éprouvée par « sshd -t » avant de remplacer, copie d'avant gardée (remise par « vanguard options-defense --remettre sshd:{n} ») ; sshd redémarré seulement sans session SSH ouverte, sinon au prochain redémarrage",
+                "Set “{m} no” in sshd_config: new version checked by “sshd -t” before replacing, previous copy kept (put back by “vanguard options-defense --remettre sshd:{n}”); sshd restarted only with no SSH session open, otherwise at the next restart"
+            )
+        }
+        Acte::SshdReglageRemettre(r) => {
+            let m = r.mot_cle();
+            trf!(
+                "Remettre la copie d'avant de sshd_config gardée par Vanguard ({m}), seulement si le fichier est encore celui que Vanguard a écrit",
+                "Put back the previous copy of sshd_config kept by Vanguard ({m}), only if the file is still the one Vanguard wrote"
+            )
+        }
         Acte::ServiceGuillemetsRisque(n) => {
             let n = crate::ui::affichable(n.texte());
             trf!(

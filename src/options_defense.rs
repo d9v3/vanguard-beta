@@ -1958,6 +1958,17 @@ pub(crate) fn ligne_remettre(mot: &str) -> Option<String> {
     if let Some(nom) = mot.strip_prefix("service:") {
         return crate::machine::gestes::ligne_service_chemin_remettre(nom);
     }
+    // SSH (défense D6c) : la liste des droits d'avant d'administrators_authorized_keys ou d'une clé du compte, la
+    // copie d'avant de sshd_config.
+    if mot == "ssh:cles-admin" {
+        return crate::machine::gestes::ligne_ssh_droits_remettre(None);
+    }
+    if let Some(nom) = mot.strip_prefix("ssh-cle:") {
+        return crate::machine::gestes::ligne_ssh_droits_remettre(Some(nom));
+    }
+    if let Some(r) = mot.strip_prefix("sshd:") {
+        return crate::machine::gestes::ReglageSshd::lire(r).map(crate::machine::gestes::ligne_sshd_reglage_remettre);
+    }
     let id = crate::machine::gestes::IdReglage::lire(mot)?;
     crate::machine::gestes::ligne_reglage_remettre(id)
 }
@@ -1969,7 +1980,15 @@ fn aide_remettre() -> String {
         .filter(|id| id.annulable())
         .map(crate::machine::gestes::IdReglage::mot)
         .collect();
-    format!("  --remettre <{}|service:<nom>>", mots.join("|"))
+    let sshd: Vec<String> = crate::machine::gestes::ReglageSshd::TOUS
+        .into_iter()
+        .map(|r| format!("sshd:{}", r.mot()))
+        .collect();
+    format!(
+        "  --remettre <{}|service:<nom>|ssh:cles-admin|ssh-cle:<nom>|{}>",
+        mots.join("|"),
+        sshd.join("|")
+    )
 }
 
 /// `vanguard options-defense --remettre <mot>` : remet la valeur (ou le chemin) d'avant notée par Vanguard, une
@@ -2770,5 +2789,42 @@ mod tests {
         let aide = aide_remettre();
         assert!(aide.contains("lsa-ppl") && aide.contains("service:") && !aide.contains("ouverture-auto-mdp|"));
         assert!(!aide.contains("ouverture-auto-mdp"), "{aide}");
+    }
+
+    /// `--remettre` des gestes SSH (défense D6c) : trois formes fermées ; un nom de clé qui serait un chemin, un
+    /// réglage inconnu ou une forme voisine n'ont aucune ligne.
+    #[test]
+    fn remettre_ssh_par_un_mot_ferme() {
+        use crate::machine::gestes::{ReglageSshd, ligne_ssh_droits_remettre, ligne_sshd_reglage_remettre};
+        assert_eq!(ligne_remettre("ssh:cles-admin"), ligne_ssh_droits_remettre(None));
+        assert!(ligne_remettre("ssh:cles-admin").is_some());
+        assert_eq!(
+            ligne_remettre("ssh-cle:id_ed25519"),
+            ligne_ssh_droits_remettre(Some("id_ed25519"))
+        );
+        assert!(ligne_remettre("ssh-cle:id_ed25519").is_some());
+        for r in ReglageSshd::TOUS {
+            assert_eq!(
+                ligne_remettre(&format!("sshd:{}", r.mot())),
+                Some(ligne_sshd_reglage_remettre(r))
+            );
+        }
+        for mot in [
+            "ssh:",
+            "ssh:cles",
+            "ssh-cle:",
+            r"ssh-cle:..\x",
+            "ssh-cle:a/b",
+            "ssh-cle:C:x",
+            "sshd:",
+            "sshd:PasswordAuthentication",
+            "sshd:mots-de-passe x",
+        ] {
+            assert_eq!(ligne_remettre(mot), None, "{mot:?}");
+        }
+        let aide = aide_remettre();
+        assert!(
+            aide.contains("ssh:cles-admin") && aide.contains("ssh-cle:<nom>") && aide.contains("sshd:mots-de-passe")
+        );
     }
 }

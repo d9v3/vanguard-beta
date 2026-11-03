@@ -60,6 +60,12 @@ pub(crate) mod choix_avant;
 #[cfg_attr(not(windows), allow(dead_code))]
 #[path = "windows/reglages.rs"]
 pub(crate) mod reglages;
+// Les gestes SSH du processus élevé (défense D6c) : droits d'un fichier SSH et réglage de sshd_config, en code pur
+// sur un `Fichier` et une `Config`, compilé partout pour essayer sous Linux que rien n'est remplacé sans `sshd -t`,
+// qu'aucune session SSH n'est coupée et qu'une remise n'écrit jamais par-dessus un changement.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[path = "windows/ssh_regles.rs"]
+pub(crate) mod ssh_regles;
 // Où une liste de correctifs passe des lignes natives de Vanguard au reste : commune à Windows et à Linux et macOS.
 pub(crate) mod decoupe;
 // Vider un dossier de Windows et mettre un cache de côté (actes du processus élevé) : sans appel système propre à

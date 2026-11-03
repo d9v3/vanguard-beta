@@ -448,6 +448,11 @@ mod tests {
                 "processus élevé : le hosts (temporaire neuf du dossier etc, puis ReplaceFileW ; créé sans écraser s'il manquait ; la copie d'avant remise si l'échange échoue à mi-chemin), hors bilan",
             ),
             (
+                "machine/windows/ssh_ecriture.rs",
+                4,
+                "processus élevé : sshd_config (nouvelle version créée sans écraser dans le dossier de sshd réservé aux administrateurs, éprouvée par sshd -t, puis ReplaceFileW qui garde l'ancienne en copie ; le temporaire retiré s'il échoue ; l'ancienne remise si l'échange échoue à mi-chemin), hors bilan",
+            ),
+            (
                 "machine/windows/eleve.rs",
                 2,
                 "processus élevé d'une correction, hors bilan",
@@ -634,6 +639,17 @@ mod tests {
             ("SERVICE_CHEMIN_REMETTRE", PERMIS),
             ("service-chemin-remettre ", PERMIS),
             ("Acte::ServiceCheminRemettre(", PERMIS),
+            // Défense D6c : la remise des droits d'avant d'un fichier SSH ou de la copie d'avant de sshd_config.
+            ("ligne_ssh_droits_remettre(", PERMIS),
+            ("ligne_sshd_reglage_remettre(", PERMIS),
+            ("SSH_CLES_ADMIN_REMETTRE", PERMIS),
+            ("SSH_CLE_REMETTRE", PERMIS),
+            ("SSHD_REGLAGE_REMETTRE", PERMIS),
+            ("ssh-cles-admin-remettre", PERMIS),
+            ("ssh-cle-remettre ", PERMIS),
+            ("sshd-reglage-remettre ", PERMIS),
+            ("Acte::SshDroitsRemettre(", PERMIS),
+            ("Acte::SshdReglageRemettre(", PERMIS),
             ("ligne_remettre(", &["options_defense.rs"]),
             ("options_defense::remettre(", &["main.rs"]),
         ];

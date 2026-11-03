@@ -3353,6 +3353,66 @@ pub(crate) const SERVICE_GUILLEMETS_RISQUE: &str = "vanguard:service-guillemets-
 /// hex>`, une baisse, seulement si le chemin est encore celui que Vanguard a écrit.
 pub(crate) const SERVICE_CHEMIN_REMETTRE: &str = "vanguard:service-chemin-remettre ";
 
+// ------------------------------------------------- SSH : droits des fichiers et sshd_config (défense D6c)
+
+/// Réserver %ProgramData%\ssh\administrators_authorized_keys à SYSTEM et aux administrateurs (liste des droits
+/// native, celle d'avant notée en SDDL) : `vanguard:ssh-cles-admin-droits`. Le contenu du fichier n'est jamais touché.
+pub(crate) const SSH_CLES_ADMIN_DROITS: &str = "vanguard:ssh-cles-admin-droits";
+/// Remettre la liste des droits d'avant de administrators_authorized_keys : `vanguard:ssh-cles-admin-remettre`, une
+/// baisse, seulement si la liste est encore celle que Vanguard a posée.
+pub(crate) const SSH_CLES_ADMIN_REMETTRE: &str = "vanguard:ssh-cles-admin-remettre";
+/// Réserver une clé privée du dossier .ssh de la personne à son compte, à SYSTEM et aux administrateurs :
+/// `vanguard:ssh-cle-droits <nom du fichier en hex>` (un nom dans ce dossier, jamais un chemin).
+pub(crate) const SSH_CLE_DROITS: &str = "vanguard:ssh-cle-droits ";
+/// Remettre la liste des droits d'avant d'une clé privée : `vanguard:ssh-cle-remettre <nom en hex>`, une baisse.
+pub(crate) const SSH_CLE_REMETTRE: &str = "vanguard:ssh-cle-remettre ";
+/// Mettre un réglage de sshd_config à « no » : `vanguard:sshd-reglage <mot>`, le mot d'un `ReglageSshd`. Copie
+/// d'avant gardée, `sshd -t` sur la nouvelle version avant de remplacer, sshd redémarré seulement sans session SSH.
+pub(crate) const SSHD_REGLAGE: &str = "vanguard:sshd-reglage ";
+/// Remettre la copie d'avant de sshd_config qu'un `SSHD_REGLAGE` a gardée : `vanguard:sshd-reglage-remettre <mot>`,
+/// une baisse, seulement si le fichier est encore celui que Vanguard a écrit.
+pub(crate) const SSHD_REGLAGE_REMETTRE: &str = "vanguard:sshd-reglage-remettre ";
+
+/// Le fichier dont Vanguard réserve les droits : celui des clés des administrateurs, ou une clé privée de la personne
+/// (un nom dans son dossier .ssh, jamais un chemin).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CibleSsh {
+    ClesAdmin,
+    Cle(NomFichier),
+}
+
+/// Un réglage de sshd_config que Vanguard sait mettre à « no » : une liste fermée.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReglageSshd {
+    /// PermitEmptyPasswords.
+    MotsDePasseVides,
+    /// PasswordAuthentication.
+    MotsDePasse,
+}
+
+impl ReglageSshd {
+    pub(crate) const TOUS: [ReglageSshd; 2] = [ReglageSshd::MotsDePasseVides, ReglageSshd::MotsDePasse];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ReglageSshd::MotsDePasseVides => "mots-de-passe-vides",
+            ReglageSshd::MotsDePasse => "mots-de-passe",
+        }
+    }
+
+    /// Le mot-clé de sshd_config.
+    pub(crate) fn mot_cle(self) -> &'static str {
+        match self {
+            ReglageSshd::MotsDePasseVides => "PermitEmptyPasswords",
+            ReglageSshd::MotsDePasse => "PasswordAuthentication",
+        }
+    }
+
+    pub(crate) fn lire(mot: &str) -> Option<ReglageSshd> {
+        ReglageSshd::TOUS.into_iter().find(|r| r.mot() == mot)
+    }
+}
+
 /// Un réglage de Windows que Vanguard sait mettre à sa valeur sûre, puis remettre (sauf `OuvertureAutoMdp`). Une
 /// liste fermée : le processus élevé n'écrit que les clés et valeurs de la table de `reglages` pour ce réglage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -3577,6 +3637,34 @@ pub(crate) fn ligne_service_guillemets_risque(nom: &str) -> Option<String> {
 /// La ligne qui remet le chemin noté d'un service.
 pub(crate) fn ligne_service_chemin_remettre(nom: &str) -> Option<String> {
     NomFichier::nouveau(nom).map(|n| Acte::ServiceCheminRemettre(n).ligne())
+}
+
+/// La ligne qui réserve les droits d'un fichier SSH : `None` pour le nom d'une clé qui n'a pas la forme d'un nom de
+/// fichier (séparateur, « .. », caractère de contrôle).
+pub(crate) fn ligne_ssh_droits(cle: Option<&str>) -> Option<String> {
+    cible_ssh(cle).map(|c| Acte::SshDroits(c).ligne())
+}
+
+/// La ligne qui remet la liste des droits d'avant d'un fichier SSH.
+pub(crate) fn ligne_ssh_droits_remettre(cle: Option<&str>) -> Option<String> {
+    cible_ssh(cle).map(|c| Acte::SshDroitsRemettre(c).ligne())
+}
+
+fn cible_ssh(cle: Option<&str>) -> Option<CibleSsh> {
+    match cle {
+        None => Some(CibleSsh::ClesAdmin),
+        Some(nom) => NomFichier::nouveau(nom).map(CibleSsh::Cle),
+    }
+}
+
+/// La ligne qui met un réglage de sshd_config à « no ».
+pub(crate) fn ligne_sshd_reglage(r: ReglageSshd) -> String {
+    Acte::SshdReglage(r).ligne()
+}
+
+/// La ligne qui remet la copie d'avant de sshd_config.
+pub(crate) fn ligne_sshd_reglage_remettre(r: ReglageSshd) -> String {
+    Acte::SshdReglageRemettre(r).ligne()
 }
 
 /// Les services d'accès à distance : leur chemin n'est jamais changé pendant une session à distance (ni quand elle
@@ -5069,6 +5157,14 @@ pub(crate) enum Acte {
     ServiceGuillemetsRisque(NomFichier),
     /// Remettre le chemin d'un service que Vanguard a noté : une baisse.
     ServiceCheminRemettre(NomFichier),
+    /// Réserver les droits d'un fichier SSH (défense D6c), la liste d'avant notée.
+    SshDroits(CibleSsh),
+    /// Remettre la liste des droits d'avant d'un fichier SSH : une baisse.
+    SshDroitsRemettre(CibleSsh),
+    /// Mettre un réglage de sshd_config à « no », copie d'avant gardée (défense D6c).
+    SshdReglage(ReglageSshd),
+    /// Remettre la copie d'avant de sshd_config : une baisse.
+    SshdReglageRemettre(ReglageSshd),
 }
 
 impl Acte {
@@ -5125,6 +5221,12 @@ impl Acte {
             Acte::CompteMotDePasse(rid) => format!("{COMPTE_MOT_DE_PASSE}{rid}"),
             Acte::ServiceGuillemetsRisque(n) => format!("{SERVICE_GUILLEMETS_RISQUE}{}", n.hex()),
             Acte::ServiceCheminRemettre(n) => format!("{SERVICE_CHEMIN_REMETTRE}{}", n.hex()),
+            Acte::SshDroits(CibleSsh::ClesAdmin) => SSH_CLES_ADMIN_DROITS.to_string(),
+            Acte::SshDroits(CibleSsh::Cle(n)) => format!("{SSH_CLE_DROITS}{}", n.hex()),
+            Acte::SshDroitsRemettre(CibleSsh::ClesAdmin) => SSH_CLES_ADMIN_REMETTRE.to_string(),
+            Acte::SshDroitsRemettre(CibleSsh::Cle(n)) => format!("{SSH_CLE_REMETTRE}{}", n.hex()),
+            Acte::SshdReglage(r) => format!("{SSHD_REGLAGE}{}", r.mot()),
+            Acte::SshdReglageRemettre(r) => format!("{SSHD_REGLAGE_REMETTRE}{}", r.mot()),
         }
     }
 
@@ -5175,6 +5277,9 @@ impl Acte {
             | Acte::Reglage(_)
             | Acte::CompteMotDePasse(_)
             | Acte::ServiceGuillemetsRisque(_)
+            // Des droits réservés, un réglage de sshd mis à « no » : des protections (D6c).
+            | Acte::SshDroits(_)
+            | Acte::SshdReglage(_)
             // Supprimer un service ne se défait pas : une protection, que « Défaire » ne propose jamais.
             | Acte::ServiceRetirer(_) => true,
             Acte::PareFeuPublic(p) => p.durcit(),
@@ -5211,7 +5316,9 @@ impl Acte {
             | Acte::LancementReactiver(_)
             // La remise d'un réglage ou d'un chemin de service noté : une baisse, jamais une protection remise.
             | Acte::ReglageRemettre(_)
-            | Acte::ServiceCheminRemettre(_) => false,
+            | Acte::ServiceCheminRemettre(_)
+            | Acte::SshDroitsRemettre(_)
+            | Acte::SshdReglageRemettre(_) => false,
         }
     }
 
@@ -5260,7 +5367,9 @@ impl Acte {
             // Un réglage mis à sa valeur sûre, un mot de passe posé, des guillemets : rien ne baisse.
             | Acte::Reglage(_)
             | Acte::CompteMotDePasse(_)
-            | Acte::ServiceGuillemetsRisque(_) => false,
+            | Acte::ServiceGuillemetsRisque(_)
+            | Acte::SshDroits(_)
+            | Acte::SshdReglage(_) => false,
             // Un lancement que le bilan jugeait suspect revient : dit en toutes lettres avant l'accord.
             Acte::RunRemettre(_)
             | Acte::TacheReactiver(_)
@@ -5268,7 +5377,10 @@ impl Acte {
             | Acte::WmiAbonnementRemettre(_)
             // La remise d'un réglage ou d'un chemin de service noté : la valeur faible revient.
             | Acte::ReglageRemettre(_)
-            | Acte::ServiceCheminRemettre(_) => true,
+            | Acte::ServiceCheminRemettre(_)
+            // Les droits d'avant d'un fichier SSH, la copie d'avant de sshd_config : la faiblesse revient.
+            | Acte::SshDroitsRemettre(_)
+            | Acte::SshdReglageRemettre(_) => true,
         }
     }
 
@@ -5338,7 +5450,12 @@ impl Acte {
             | Acte::ReglageRemettre(_)
             | Acte::CompteMotDePasse(_)
             | Acte::ServiceGuillemetsRisque(_)
-            | Acte::ServiceCheminRemettre(_) => SANS_POWERSHELL.to_string(),
+            | Acte::ServiceCheminRemettre(_)
+            // SSH (D6c) : natif seulement, rejugé et noté par le processus élevé.
+            | Acte::SshDroits(_)
+            | Acte::SshDroitsRemettre(_)
+            | Acte::SshdReglage(_)
+            | Acte::SshdReglageRemettre(_) => SANS_POWERSHELL.to_string(),
             Acte::DnsAuto(g) => powershell_dns_auto(*g),
             Acte::DnsServeurs(d) => d.powershell(),
         }
@@ -5380,6 +5497,12 @@ pub(crate) fn est_un_acte(ligne: &str) -> bool {
         || ligne.starts_with(COMPTE_MOT_DE_PASSE)
         || ligne.starts_with(SERVICE_GUILLEMETS_RISQUE)
         || ligne.starts_with(SERVICE_CHEMIN_REMETTRE)
+        || ligne.starts_with(SSH_CLES_ADMIN_DROITS)
+        || ligne.starts_with(SSH_CLES_ADMIN_REMETTRE)
+        || ligne.starts_with(SSH_CLE_DROITS)
+        || ligne.starts_with(SSH_CLE_REMETTRE)
+        || ligne.starts_with(SSHD_REGLAGE)
+        || ligne.starts_with(SSHD_REGLAGE_REMETTRE)
         || est_persistance(ligne)
 }
 
@@ -5489,6 +5612,14 @@ pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
         Acte::Reglage(IdReglage::lire(mot)?)
     } else if let Some(mot) = ligne.strip_prefix(REGLAGE_REMETTRE) {
         Acte::ReglageRemettre(IdReglage::lire(mot).filter(|id| id.annulable())?)
+    } else if ligne == SSH_CLES_ADMIN_DROITS {
+        Acte::SshDroits(CibleSsh::ClesAdmin)
+    } else if ligne == SSH_CLES_ADMIN_REMETTRE {
+        Acte::SshDroitsRemettre(CibleSsh::ClesAdmin)
+    } else if let Some(mot) = ligne.strip_prefix(SSHD_REGLAGE) {
+        Acte::SshdReglage(ReglageSshd::lire(mot)?)
+    } else if let Some(mot) = ligne.strip_prefix(SSHD_REGLAGE_REMETTRE) {
+        Acte::SshdReglageRemettre(ReglageSshd::lire(mot)?)
     } else if let Some(reste) = ligne.strip_prefix(CERTIFICAT_RETIRER) {
         let (mot, empreinte) = reste.split_once(' ')?;
         let magasin = *MagasinRacine::TOUS.iter().find(|m| m.mot() == mot)?;
@@ -5505,7 +5636,7 @@ type FaireActe = fn(NomFichier) -> Acte;
 
 /// Les verbes des actes du registre qui portent un nom. Aucun verbe n'est le début d'un autre : « ifeo-debugger-32 »
 /// n'a pas d'espace après « ifeo-debugger ».
-const ACTES_NOMMES: [(&str, FaireActe); 7] = [
+const ACTES_NOMMES: [(&str, FaireActe); 9] = [
     (IFEO_DEBUGGER_32, |n| Acte::IfeoDebugger(Vue::Wow32, n)),
     (IFEO_DEBUGGER, |n| Acte::IfeoDebugger(Vue::Windows, n)),
     (IFEO_SILENCIEUX_32, |n| Acte::IfeoSilencieux(Vue::Wow32, n)),
@@ -5513,6 +5644,8 @@ const ACTES_NOMMES: [(&str, FaireActe); 7] = [
     (SERVICE_GUILLEMETS, Acte::ServiceGuillemets),
     (SERVICE_GUILLEMETS_RISQUE, Acte::ServiceGuillemetsRisque),
     (SERVICE_CHEMIN_REMETTRE, Acte::ServiceCheminRemettre),
+    (SSH_CLE_DROITS, |n| Acte::SshDroits(CibleSsh::Cle(n))),
+    (SSH_CLE_REMETTRE, |n| Acte::SshDroitsRemettre(CibleSsh::Cle(n))),
 ];
 
 /// L'hexadécimal du nom et l'acte, si la ligne a le verbe d'un acte du registre qui porte un nom (sa forme est
@@ -9904,6 +10037,89 @@ mod tests {
         assert!(IdReglage::Hvci.redemarrage() && IdReglage::CredentialGuard.redemarrage());
         assert!(IdReglage::LsaPpl.redemarrage() && !IdReglage::AssistanceCoupe.redemarrage());
         assert!(IdReglage::PsStrategieCompte.du_compte() && !IdReglage::PsStrategieMachine.du_compte());
+    }
+
+    /// Les gestes SSH de la défense D6c : des lignes fixes, au nom de clé en hex ou au mot d'une liste fermée, jamais
+    /// un chemin ; les remises sont des baisses, jamais un choix (une liste qui les mêle à d'autres gestes est refusée
+    /// par le processus élevé), natives et sans PowerShell.
+    #[test]
+    fn ssh_en_grammaire_fermee() {
+        let admin = ligne_ssh_droits(None).unwrap();
+        assert_eq!(admin, "vanguard:ssh-cles-admin-droits");
+        let cle = ligne_ssh_droits(Some("id_ed25519")).unwrap();
+        assert_eq!(cle, format!("{SSH_CLE_DROITS}{}", hex("id_ed25519")));
+        let remises = [
+            ligne_ssh_droits_remettre(None).unwrap(),
+            ligne_ssh_droits_remettre(Some("id_ed25519")).unwrap(),
+            ligne_sshd_reglage_remettre(ReglageSshd::MotsDePasseVides),
+            ligne_sshd_reglage_remettre(ReglageSshd::MotsDePasse),
+        ];
+        let gestes = [
+            admin.clone(),
+            cle.clone(),
+            ligne_sshd_reglage(ReglageSshd::MotsDePasseVides),
+            ligne_sshd_reglage(ReglageSshd::MotsDePasse),
+        ];
+        for l in &gestes {
+            let a = analyser_acte(l).unwrap();
+            assert_eq!(a.ligne(), *l);
+            assert!(a.durcit() && !a.affaiblit() && !a.touche_le_reseau(), "{l}");
+            assert_eq!(a.powershell(), SANS_POWERSHELL);
+            assert!(est_un_acte(l) && a.choix().is_none(), "{l}");
+        }
+        for l in &remises {
+            let a = analyser_acte(l).unwrap();
+            assert_eq!(a.ligne(), *l);
+            assert!(!a.durcit() && a.affaiblit() && !a.touche_le_reseau(), "{l}");
+            assert_eq!(a.powershell(), SANS_POWERSHELL);
+            assert!(est_un_acte(l) && a.choix().is_none(), "{l}");
+        }
+        assert!(matches!(analyser_acte(&cle), Some(Acte::SshDroits(CibleSsh::Cle(n))) if n.texte() == "id_ed25519"));
+        assert!(matches!(
+            analyser_acte("vanguard:sshd-reglage mots-de-passe"),
+            Some(Acte::SshdReglage(ReglageSshd::MotsDePasse))
+        ));
+        assert_eq!(
+            ReglageSshd::TOUS.map(ReglageSshd::mot_cle),
+            ["PermitEmptyPasswords", "PasswordAuthentication"]
+        );
+        // Un nom de clé qui serait un chemin ne fait pas de ligne.
+        for nom in ["", "..", "a..b", r"..\id_rsa", "C:/x", "id\nrsa", "a|b"] {
+            assert_eq!(ligne_ssh_droits(Some(nom)), None, "{nom:?}");
+            assert_eq!(ligne_ssh_droits_remettre(Some(nom)), None, "{nom:?}");
+        }
+        for forge in [
+            "vanguard:ssh-cles-admin-droits ".to_string(),
+            "vanguard:ssh-cles-admin-droits C:\\ProgramData\\ssh\\x".to_string(),
+            "vanguard:ssh-cles-admin-remettre 1".to_string(),
+            "vanguard:ssh-cle-droits ".to_string(),
+            format!("{SSH_CLE_DROITS}{}", hex("id_rsa").to_uppercase()),
+            format!("{SSH_CLE_DROITS}{}0", hex("id_rsa")),
+            format!("{SSH_CLE_DROITS}{} ", hex("id_rsa")),
+            format!("{SSH_CLE_DROITS}{}", hex(r"..\..\Windows\win.ini")),
+            format!("{SSH_CLE_REMETTRE}{}", hex("a..b")),
+            format!("{SSH_CLE_REMETTRE}C:\\Users\\alice\\.ssh\\id_rsa"),
+            "vanguard:sshd-reglage ".to_string(),
+            "vanguard:sshd-reglage PasswordAuthentication".to_string(),
+            "vanguard:sshd-reglage mots-de-passe ".to_string(),
+            "vanguard:sshd-reglage mots-de-passe yes".to_string(),
+            "vanguard:sshd-reglage Mots-de-passe".to_string(),
+            "vanguard:sshd-reglage permit-root-login".to_string(),
+            "vanguard:sshd-reglage-remettre ".to_string(),
+            "vanguard:sshd-reglage-remettre ..\\sshd_config".to_string(),
+            "vanguard:sshd-reglagemots-de-passe".to_string(),
+        ] {
+            assert!(analyser_acte(&forge).is_none(), "{forge:?}");
+        }
+        // Une remise ne passe jamais avec les choix : elle reste dans la liste ordinaire, que le processus élevé
+        // juge mêlée (une baisse parmi d'autres gestes) et refuse en entier.
+        let lot = vec![
+            admin,
+            remises[2].clone(),
+            "vanguard:defender-choix temps-reel coupe".to_string(),
+        ];
+        assert_eq!(separer_choix(&lot), vec![vec![0, 1], vec![2]]);
+        assert_eq!(liste_pure(&[None, Some(Sens::Baisse)]), Err(()));
     }
 
     /// Poser un mot de passe, des guillemets risqués, remettre un chemin : des lignes au RID ou au nom en hex, jamais

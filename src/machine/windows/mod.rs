@@ -65,6 +65,7 @@ mod services;
 mod services_ecriture;
 pub(crate) mod signature;
 mod ssh;
+mod ssh_ecriture;
 mod taches_ecriture;
 mod verrouillage;
 pub(crate) mod wmi;

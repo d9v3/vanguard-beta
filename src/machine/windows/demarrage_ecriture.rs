@@ -52,7 +52,7 @@ unsafe extern "system" {
 /// Les attributs et le nombre de noms (liens physiques) du fichier ouvert.
 // FFI de kernel32 : GetFileInformationByHandle.
 #[allow(unsafe_code)]
-fn information(f: &File) -> Option<(u32, u32)> {
+pub(super) fn information(f: &File) -> Option<(u32, u32)> {
     let mut info = InformationFichier::default();
     // SAFETY: la poignée vient d'un fichier ouvert qui vit pendant l'appel ; `info` est une
     // BY_HANDLE_FILE_INFORMATION à nous, que l'appel remplit sans en sortir.
@@ -64,7 +64,7 @@ fn information(f: &File) -> Option<(u32, u32)> {
 /// partage (« \\?\UNC\… ») ou si Windows ne le donne pas.
 // FFI de kernel32 : GetFinalPathNameByHandleW.
 #[allow(unsafe_code)]
-fn chemin_final(f: &File) -> Option<String> {
+pub(super) fn chemin_final(f: &File) -> Option<String> {
     let mut tampon = vec![0u16; 1024];
     for _ in 0..2 {
         let taille = u32::try_from(tampon.len()).ok()?;
@@ -107,7 +107,7 @@ fn refus(raison: String) -> Resultat {
     Resultat::echec(None, raison)
 }
 
-fn meme_chemin(a: &str, b: &str) -> bool {
+pub(super) fn meme_chemin(a: &str, b: &str) -> bool {
     a.trim_end_matches('\\').to_lowercase() == b.trim_end_matches('\\').to_lowercase()
 }
 

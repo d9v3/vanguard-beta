@@ -341,6 +341,10 @@ pub(crate) fn faire_acte(acte: &Acte) -> Option<Resultat> {
         | Acte::Reglage(_)
         | Acte::ReglageRemettre(_)
         | Acte::CompteMotDePasse(_)
+        | Acte::SshDroits(_)
+        | Acte::SshDroitsRemettre(_)
+        | Acte::SshdReglage(_)
+        | Acte::SshdReglageRemettre(_)
         | Acte::ServiceGuillemetsRisque(_)
         | Acte::ServiceCheminRemettre(_)
         // Les choix du pare-feu passent par `choix_avant` (`defender_ecriture::faire_choix`), jamais tout droit ici.

@@ -35,6 +35,31 @@ unsafe extern "system" {
         texte: *mut *mut u16,
         taille: *mut u32,
     ) -> i32;
+    fn GetSecurityInfo(
+        poignee: *mut c_void,
+        sorte: u32,
+        quoi: u32,
+        proprietaire: *mut *mut c_void,
+        groupe: *mut *mut c_void,
+        liste: *mut *mut c_void,
+        audit: *mut *mut c_void,
+        descripteur: *mut *mut c_void,
+    ) -> u32;
+    fn SetSecurityInfo(
+        poignee: *mut c_void,
+        sorte: u32,
+        quoi: u32,
+        proprietaire: *const c_void,
+        groupe: *const c_void,
+        liste: *const c_void,
+        audit: *const c_void,
+    ) -> u32;
+    fn GetSecurityDescriptorDacl(
+        descripteur: *const c_void,
+        presente: *mut i32,
+        liste: *mut *mut c_void,
+        par_defaut: *mut i32,
+    ) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -314,17 +339,21 @@ pub(crate) fn sans_acces(octets: &[u8], sid: &str) -> Option<(Vec<u8>, usize)> {
 /// `descripteur` désigne un descripteur de sécurité valide qui vit pendant l'appel.
 pub(crate) unsafe fn en_sddl(descripteur: *const c_void) -> Option<String> {
     const PROPRIETAIRE_ET_DROITS: u32 = 0x1 | 0x4;
+    // SAFETY: les mêmes conditions que celles de cette fonction.
+    unsafe { en_texte(descripteur, PROPRIETAIRE_ET_DROITS) }
+}
+
+/// Les parties `quoi` d'un descripteur en SDDL ; `None` si Windows refuse.
+///
+/// # Safety
+/// `descripteur` désigne un descripteur de sécurité valide qui vit pendant l'appel.
+unsafe fn en_texte(descripteur: *const c_void, quoi: u32) -> Option<String> {
     let mut texte: *mut u16 = std::ptr::null_mut();
     let mut taille = 0u32;
     // SAFETY: Windows alloue le texte (terminé par un zéro, `taille` caractères), lu puis rendu une seule fois.
     unsafe {
-        if ConvertSecurityDescriptorToStringSecurityDescriptorW(
-            descripteur,
-            1,
-            PROPRIETAIRE_ET_DROITS,
-            &raw mut texte,
-            &raw mut taille,
-        ) == 0
+        if ConvertSecurityDescriptorToStringSecurityDescriptorW(descripteur, 1, quoi, &raw mut texte, &raw mut taille)
+            == 0
             || texte.is_null()
         {
             return None;
@@ -333,6 +362,125 @@ pub(crate) unsafe fn en_sddl(descripteur: *const c_void) -> Option<String> {
         let t = String::from_utf16_lossy(std::slice::from_raw_parts(texte, n));
         LocalFree(texte.cast());
         Some(t.trim_end_matches('\0').to_string())
+    }
+}
+
+/// DACL_SECURITY_INFORMATION, et SE_FILE_OBJECT.
+const LISTE_DES_DROITS: u32 = 0x4;
+const FICHIER: u32 = 1;
+
+/// La liste des droits du fichier ouvert (le droit READ_CONTROL), en octets (descripteur autonome, pour `aces`) et en
+/// SDDL (« D:… ») ; `None` si elle ne se lit pas. Lue sur la poignée : c'est ce fichier-là, jamais un autre posé depuis
+/// au même chemin.
+pub(crate) fn droits_poignee(f: &std::fs::File) -> Option<(Vec<u8>, String)> {
+    use std::os::windows::io::AsRawHandle;
+    let mut descripteur = std::ptr::null_mut();
+    let mut liste = std::ptr::null_mut();
+    // SAFETY: la poignée vient d'un fichier ouvert qui vit pendant l'appel ; le descripteur alloué par Windows (code non
+    // nul : rien n'est alloué) est copié et mis en texte, puis rendu une seule fois par LocalFree.
+    unsafe {
+        if GetSecurityInfo(
+            f.as_raw_handle(),
+            FICHIER,
+            LISTE_DES_DROITS,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &raw mut liste,
+            std::ptr::null_mut(),
+            &raw mut descripteur,
+        ) != 0
+            || descripteur.is_null()
+        {
+            return None;
+        }
+        let octets = copier(descripteur);
+        let texte = if octets.is_some() {
+            en_texte(descripteur, LISTE_DES_DROITS)
+        } else {
+            None
+        };
+        LocalFree(descripteur);
+        Some((octets?, texte?))
+    }
+}
+
+/// Un SDDL de liste des droits tel que Windows l'écrirait (alias des comptes connus, droits en lettres) : lu puis
+/// réécrit par Windows ; `None` s'il ne se lit pas ou n'est pas une liste (« D:… », que Windows accepterait vide).
+pub(crate) fn sddl_canonique(sddl: &str) -> Option<String> {
+    if !sddl.starts_with("D:") {
+        return None;
+    }
+    let large: Vec<u16> = sddl.encode_utf16().chain([0]).collect();
+    let mut descripteur = std::ptr::null_mut();
+    // SAFETY: le texte est terminé par un zéro et vit pendant l'appel ; le descripteur alloué par Windows (code nul :
+    // rien n'est alloué) est mis en texte puis rendu une seule fois par LocalFree.
+    unsafe {
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            large.as_ptr(),
+            1,
+            &raw mut descripteur,
+            std::ptr::null_mut(),
+        ) == 0
+            || descripteur.is_null()
+        {
+            return None;
+        }
+        let texte = en_texte(descripteur, LISTE_DES_DROITS);
+        LocalFree(descripteur);
+        texte.filter(|t| t.starts_with("D:"))
+    }
+}
+
+/// Pose cette liste des droits (« D:… ») sur le fichier ouvert (le droit WRITE_DAC) : protégée de l'héritage
+/// (`protegee`), ou rendue à l'héritage du dossier, que Windows recalcule. Le propriétaire n'est pas touché.
+pub(crate) fn poser_droits(f: &std::fs::File, sddl: &str, protegee: bool) -> Result<(), crate::modele::raison::Echec> {
+    use crate::modele::raison::Echec;
+    use std::os::windows::io::AsRawHandle;
+    /// PROTECTED_DACL_SECURITY_INFORMATION, UNPROTECTED_DACL_SECURITY_INFORMATION.
+    const PROTEGEE: u32 = 0x8000_0000;
+    const HERITEE: u32 = 0x2000_0000;
+    let large: Vec<u16> = sddl.encode_utf16().chain([0]).collect();
+    let mut descripteur = std::ptr::null_mut();
+    // SAFETY: le texte est terminé par un zéro et vit pendant l'appel ; la liste désignée vit dans le descripteur alloué
+    // par Windows, rendu une seule fois par LocalFree après SetSecurityInfo ; la poignée vient d'un fichier ouvert qui
+    // vit pendant l'appel.
+    unsafe {
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            large.as_ptr(),
+            1,
+            &raw mut descripteur,
+            std::ptr::null_mut(),
+        ) == 0
+            || descripteur.is_null()
+        {
+            return Err(Echec::ecriture("droits/poser", &std::io::Error::last_os_error()));
+        }
+        let (mut presente, mut par_defaut) = (0i32, 0i32);
+        let mut liste = std::ptr::null_mut();
+        if GetSecurityDescriptorDacl(descripteur, &raw mut presente, &raw mut liste, &raw mut par_defaut) == 0
+            || presente == 0
+        {
+            LocalFree(descripteur);
+            return Err(Echec::refuse("droits/poser", "SDDL"));
+        }
+        let code = SetSecurityInfo(
+            f.as_raw_handle(),
+            FICHIER,
+            LISTE_DES_DROITS | if protegee { PROTEGEE } else { HERITEE },
+            std::ptr::null(),
+            std::ptr::null(),
+            liste,
+            std::ptr::null(),
+        );
+        LocalFree(descripteur);
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(Echec::ecriture(
+                "droits/poser",
+                &std::io::Error::from_raw_os_error(i32::try_from(code).unwrap_or(i32::MAX)),
+            ))
+        }
     }
 }
 
@@ -505,5 +653,20 @@ mod tests {
             let _ = aces(&d);
         }
         assert_eq!(du_fichier(Path::new(r"C:\vanguard-dossier-inexistant")), None);
+    }
+
+    /// La liste voulue pour un fichier SSH (défense D6c) passe par Windows et revient sous une forme qui garde les
+    /// mêmes règles, protégée ; un texte qui n'est pas une liste est refusé.
+    #[test]
+    fn liste_ssh_canonique() {
+        for sid in [None, Some("S-1-5-21-1-2-3-1001")] {
+            let voulu = crate::machine::ssh_regles::voulu(sid).unwrap();
+            let c = sddl_canonique(&voulu).unwrap();
+            assert!(crate::machine::ssh_regles::memes_droits(&c, &voulu), "{voulu} → {c}");
+            assert!(crate::machine::ssh_regles::explicites(&c).unwrap().protegee, "{c}");
+        }
+        for faux in ["", "D:(A;;FA;;;", "pas une liste", "D:(Z;;FA;;;SY)"] {
+            assert_eq!(sddl_canonique(faux), None, "{faux:?}");
+        }
     }
 }
