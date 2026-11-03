@@ -20,8 +20,8 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
     main vérifie tout à neuf. Le pare-feu, l'antivirus, les connexions à distance, les ports et la persistance ne
     sont jamais repris. Une durée qui se trompe raccourcit, et trop d'écarts coupent la cache de la règle ;
   - **relevé local** (voir le partage, plus bas) ;
-  - **avis sur les corrections** : une correction qui échoue deux fois le dit, une correction qui ne tient pas aussi ;
-    répondre « tout » la laisse hors du lot et la propose ensuite seule.
+  - **avis sur les corrections** : une correction qui échoue deux fois le dit, et répondre « tout » la laisse hors du
+    lot pour la proposer ensuite seule ; une correction qui ne tient pas le dit aussi.
 
   Les règles et ce qu'elles jugent ne changent jamais : couper une mission, ou tout l'Agent, ne retire aucune
   vérification. Chaque changement est noté avec sa valeur d'avant dans un journal scellé et s'annule (`annuler
@@ -37,8 +37,9 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
     d'inventaire des logiciels ; un texte d'erreur est nettoyé ou jeté en entier.
   - Le relais de l'auteur n'est pas en service : Vanguard n'a aucune adresse où envoyer et n'ouvre aucune connexion
     pour cela. MODELE-DE-MENACE.md décrit ce qui partira le jour où il le sera, et comment.
-  - « Voir ce qui serait envoyé » montre les octets exacts du prochain lot. « Non » arrête le relevé et l'efface,
-    avec la file d'envoi et l'identifiant d'installation. `VANGUARD_ENVOI=0` l'emporte toujours.
+  - « Voir ce qui serait envoyé » montre le prochain lot en file ou, sinon, le lot du relevé le plus récent refait
+    pour le voir, octet pour octet. « Non » arrête le relevé et l'efface, avec la file d'envoi et l'identifiant
+    d'installation. `VANGUARD_ENVOI=0` l'emporte toujours.
 
 - **Revenir à la 0.89.0, puis à la 0.89.1.** Rien de dangereux, mais deux choses se voient :
   - la 0.89.0 réécrit les mesures de l'autodiagnostic (`autotest/mesures.json`) sans sceau. De retour en 0.89.1, le

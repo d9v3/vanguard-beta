@@ -187,8 +187,8 @@ pub(crate) fn etat_court() -> String {
 /// Ce que fait le réglage, sous la question et dans l'aide.
 pub(crate) fn explication() -> &'static str {
     tr!(
-        "Vanguard relève sur cet ordinateur ses erreurs, ses lenteurs, le résultat des corrections, les choix faits dans Vanguard, le matériel et le nom des logiciels, services et pilotes en cause ; jamais de mot de passe, de fichier, de site visité ni de texte tapé. Oui : ce relevé part à l'auteur une fois par jour, pour améliorer Vanguard (rien de relevé avant ce jour-là). Non : il s'arrête, et ce qui a été relevé est effacé avec l'identifiant d'installation.",
-        "Vanguard records on this computer its errors, slowdowns, the result of fixes, the choices made in Vanguard, the hardware and the name of the software, services and drivers involved; never a password, file, visited site or typed text. Yes: this record goes to the author once a day, to improve Vanguard (nothing recorded before that day). No: it stops, and what was recorded is erased along with the installation identifier."
+        "Vanguard relève sur cet ordinateur ses erreurs, ses lenteurs, le résultat des corrections, les choix faits dans Vanguard, le matériel et le nom des logiciels, services et pilotes en cause ; jamais de mot de passe, de fichier, de site visité ni de texte tapé. Oui : ce relevé part à l'auteur une fois par jour, pour améliorer Vanguard (rien de ce qui a été relevé avant ce jour-là ne part). Non : il s'arrête, et ce qui a été relevé est effacé avec l'identifiant d'installation.",
+        "Vanguard records on this computer its errors, slowdowns, the result of fixes, the choices made in Vanguard, the hardware and the name of the software, services and drivers involved; never a password, file, visited site or typed text. Yes: this record goes to the author once a day, to improve Vanguard (nothing recorded before that day is ever sent). No: it stops, and what was recorded is erased along with the installation identifier."
     )
 }
 

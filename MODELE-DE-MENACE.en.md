@@ -124,10 +124,10 @@ itself:
 - **With an abuse.ch key**: the key, to abuse.ch.
 - **In public Wi-Fi mode**: DNS queries, to CIRA's Canadian Shield.
 - **The update check**: a request to GitHub.
-- **The improvement record**: nothing in this version. The relay that will receive it is not deployed and the
-  program does not have its address; without it, Vanguard prepares no sending and opens no connection (a test counts
-  it). What would leave one day, and only with your consent, is described below ("The improvement record and its
-  relay").
+- **The improvement record**: nothing in this version. The relay that will receive it is not deployed and the program
+  does not have its address; without it, Vanguard prepares no sending and opens no connection (a test counts it). What
+  would leave one day, after the notice shown at launch or your "yes" (before 1.0, a "yes" will be required), never
+  after "No", is described below ("The improvement record and its relay").
 - A vulnerability report prepared by Vanguard is never sent by it: the person reads it and sends it themselves.
 
 This list is closed: Vanguard refuses to reach over HTTPS a host that is not in the first table (even at the end of
@@ -196,20 +196,22 @@ other computers. Four stages; the last two do not happen while the relay is not 
   (paths, addresses and tokens removed) or dropped whole. It never holds: the content of a file, the arguments of a
   command, a password, the browser history, typed text, the list of your files, accounts, networks or devices, or the
   inventory of your software. It is kept in `amelioration/` (sealed, at most 96 KiB a day, 90 days, 10 MB in all) and
-  can be read as is through "See what would be sent". Answering "No" to sharing erases it, along with the sending
-  queue and the installation identifier; `VANGUARD_ENVOI=0` turns it off.
+  the batch it would yield can be read, byte for byte, through "See what would be sent". Answering "No" to sharing
+  erases it, along with the sending queue and the installation identifier; `VANGUARD_ENVOI=0` turns it off.
 - **The sending queue, with no host.** `RELAIS` is empty in the code and the closed list of HTTPS sites (`HOTES`, the
   first table above) holds no relay: no batch is prepared, no sending file is written, no thread or connection is
   started. Even with a relay, nothing would leave under the tests, under Wine, in CI, with `VANGUARD_ENVOI=0`, from a
-  key, as root, in a development build, offline, without your consent or after "No" to sharing.
+  key, as root (Linux, macOS), in a development build, offline, before the notice shown at launch or your "yes"
+  (before 1.0, a "yes" will be required), after "No" to sharing, or for what was recorded before the day of consent.
 - **The relay, once deployed.** Its address will then enter `HOTES` and the first table, like the other sites.
   Vanguard will reach it over HTTPS only, without following a redirect; it will send at most one batch a day (96 KiB,
   strictly re-read before leaving), with an installation identifier drawn at random and renewed every 90 days; at most
   three attempts a day, 24 h of waiting after a 429 or a 503, seven days kept at most. Only the response code is read,
   never the body: there is no downward channel, and no instruction, rule or update can come through the relay. The
-  relay's code is in the repository (`relais/`): it repeats the same strict reading, refuses a batch where the secret
-  detector goes off, does not keep the IP address (a fingerprint of its prefix, with a salt erased each day) and
-  erases what is not collected after 14 days.
+  relay's code is in the repository (`relais/`): it checks the same schema, strictly, and one layer of the secret
+  detector, refuses a batch where that layer goes off (the full strict reading is done again at the author's), does
+  not keep the IP address (a fingerprint of its prefix, with a salt drawn each day and erased the next day) and erases
+  what is not collected after 14 days.
 - **At the author's.** Each collected batch is re-read as if it came from anyone: the same strict reading, refusals
   counted, a quarantine for any batch where the secret detector goes off (never read further). A source (the
   fingerprint of the address prefix) counts once a day, whatever its number of batches, and a signal needs at least 5

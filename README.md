@@ -652,15 +652,16 @@ erreurs, ses lenteurs, le résultat des corrections, les choix faits dans Vangua
 et le nom et la version des logiciels, services et pilotes en cause. Jamais de mot de passe, de contenu de fichier, de
 site visité, de texte tapé, d'argument de commande ni d'inventaire des logiciels ; un texte d'erreur est nettoyé
 (chemins, adresses et jetons retirés) ou jeté en entier. Le relevé tient dans le dossier `amelioration/` (scellé, 96
-Kio par jour, 90 jours et 10 Mo au plus) ; il ne se fait jamais depuis la clé, en root, sous Wine ni dans une CI.
-**Dans cette version, rien ne part** : le relais de l'auteur n'est pas encore en service, Vanguard n'a aucune adresse
-où envoyer et n'ouvre aucune connexion pour cela, et l'écran du partage le dit. Le jour où il le sera, le code prévoit
-un avis au lancement avant tout envoi, un lot par jour au plus, en HTTPS, rien de relevé avant le jour de l'accord, et
-un identifiant d'installation tiré au hasard, renouvelé tous les 90 jours. « Voir ce qui serait envoyé » (`voir`)
-montre les octets exacts du prochain lot, mis en retrait pour la lecture. « Non » (ne pas partager) arrête le relevé
-et efface le relevé (`amelioration/`), la file d'envoi (`envoi/`) et l'identifiant d'installation ; les bilans, les
-réglages, l'Agent et les mesures de l'autodiagnostic restent sur l'ordinateur. `VANGUARD_ENVOI=0` l'emporte toujours :
-rien n'est relevé ni envoyé. Ce qui sortira, et comment : [MODELE-DE-MENACE.md](MODELE-DE-MENACE.md).
+Kio par jour, 90 jours et 10 Mo au plus) ; il ne se fait jamais depuis la clé, en root (Linux, macOS), sous Wine ni
+dans une CI. **Dans cette version, rien ne part** : le relais de l'auteur n'est pas encore en service, Vanguard n'a
+aucune adresse où envoyer et n'ouvre aucune connexion pour cela, et l'écran du partage le dit. Le jour où il le sera,
+le code prévoit un avis au lancement avant tout envoi, un lot par jour au plus, en HTTPS, aucun envoi de ce qui a été
+relevé avant le jour de l'accord, et un identifiant d'installation tiré au hasard, renouvelé tous les 90 jours. « Voir
+ce qui serait envoyé » (`voir`) montre le prochain lot en file ou, sinon, le lot du relevé le plus récent refait pour
+le voir, octet pour octet, mis en retrait pour la lecture. « Non » (ne pas partager) arrête le relevé et efface le
+relevé (`amelioration/`), la file d'envoi (`envoi/`) et l'identifiant d'installation ; les bilans, les réglages,
+l'Agent et les mesures de l'autodiagnostic restent sur l'ordinateur. `VANGUARD_ENVOI=0` l'emporte toujours : rien
+n'est relevé ni envoyé. Ce qui sortira, et comment : [MODELE-DE-MENACE.md](MODELE-DE-MENACE.md).
 
 **Extensions** (menu 12, `vanguard extensions`) — des programmes personnels dans Vanguard, sans toucher à son code. Un
 plugin est un dossier avec un manifeste `plugin.toml`, ajouté une fois depuis un dossier ou une archive .zip

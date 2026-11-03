@@ -517,9 +517,10 @@ enum Commande {
     Conteneurs,
     /// Paramètres : tous les réglages de Vanguard (langue, emojis, travail sans Internet, protection en temps réel,
     /// surveillance, entretien, alertes apprises, blocage, restrictions des extensions, clé abuse.ch, versions des
-    /// logiciels, autodiagnostic de la semaine, paquets de l'AUR, Agent Vanguard, partage avec l'auteur). Sans argument : leur état ; avec un réglage et une
-    /// valeur : le change, la valeur d'avant montrée pour revenir. « temps-reel non --pendant 1h|4h » coupe la protection en temps réel de Vanguard pour ce temps
-    /// (sans --pendant : jusqu'à reprise), après accord ; jamais Defender, le pare-feu ni l'UAC.
+    /// logiciels, autodiagnostic de la semaine, paquets de l'AUR, Agent Vanguard, partage avec l'auteur). Sans
+    /// argument : leur état ; avec un réglage et une valeur : le change, la valeur d'avant montrée pour revenir.
+    /// « temps-reel non --pendant 1h|4h » coupe la protection en temps réel de Vanguard pour ce temps (sans
+    /// --pendant : jusqu'à reprise), après accord ; jamais Defender, le pare-feu ni l'UAC.
     #[command(visible_alias = "settings")]
     Parametres {
         /// Un réglage (langue, emojis, sans-internet, temps-reel, surveillance, entretien, appris, blocage,
@@ -782,8 +783,8 @@ enum Commande {
     #[command(hide = true)]
     Surveiller,
     /// L'Agent Vanguard (sans IA), en lecture seule : ses missions (délais, cache, relevé local, avis sur les
-    /// corrections), leur dernier tour et son journal, sans aucune donnée personnelle. Rien n'est changé ni envoyé. Ses interrupteurs sont dans
-    /// Paramètres (« parametres auto-reglage »).
+    /// corrections), leur dernier tour et son journal, sans aucune donnée personnelle. Rien n'est changé ni envoyé.
+    /// Ses interrupteurs sont dans Paramètres (« parametres auto-reglage »).
     Agent {
         /// La vue en JSON (schéma 1) : rien d'autre que des noms fermés, des identifiants de règle, des nombres et des
         /// dates.
@@ -3162,8 +3163,8 @@ const AIDES_EN: &[(&str, &str)] = &[
               [arguments]” runs it (approved by its fingerprint on the first run). Never as administrator"),
     ("extensions", "Extensions: the menu of plugins and lab scripts, to choose and run"),
     ("agent", "The Vanguard Agent (no AI), read-only: its missions (time limits, cache, local record, notes on \
-               fixes), their last run and its journal, without any personal data. Nothing is changed or sent. Its switches are in Settings \
-               (“settings auto-tuning”)"),
+               fixes), their last run and its journal, without any personal data. Nothing is changed or sent. \
+               Its switches are in Settings (“settings auto-tuning”)"),
     ("optimiser", "Optimize: the recommended settings, the privacy, performance (except macOS) and comfort ones, each \
                    shown, accepted, then exactly undoable; “undo” puts everything back as it was. No argument: the \
                    Optimize menu"),

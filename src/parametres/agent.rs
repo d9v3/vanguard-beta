@@ -32,8 +32,8 @@ fn role(id: MissionId) -> &'static str {
             "Sets how long the hourly pass reuses the result of a few slow checks. Off: the hourly pass reuses nothing and checks everything afresh."
         ),
         MissionId::Releve => tr!(
-            "Passe la main au relevé local, celui que le partage avec l'auteur peut envoyer. Coupée ici : plus rien n'est noté, mais ce qui l'est déjà reste sur cet ordinateur, et part encore si le partage est à « oui ». « Non » dans Paramètres › Partage avec l'auteur, au contraire, arrête le relevé et l'efface.",
-            "Hands over to the local record, the one sharing with the author can send. Off here: nothing more is noted, but what already is stays on this computer, and is still sent if sharing is “yes”. “No” in Settings › Sharing with the author, on the other hand, stops the record and erases it."
+            "Passe la main au relevé local, celui que le partage avec l'auteur peut envoyer. Coupée ici : plus rien n'est noté, mais ce qui l'est déjà reste sur cet ordinateur, et partira encore si le partage est à « oui », le jour où le relais de l'auteur sera en service. « Non » dans Paramètres › Partage avec l'auteur, au contraire, arrête le relevé et l'efface.",
+            "Hands over to the local record, the one sharing with the author can send. Off here: nothing more is noted, but what already is stays on this computer, and will still be sent if sharing is “yes”, once the author's relay is in service. “No” in Settings › Sharing with the author, on the other hand, stops the record and erases it."
         ),
         MissionId::Corrections => tr!(
             "Montre une correction qui échoue souvent, ou un problème qui revient après elle. Coupée : plus aucun avis ; les corrections elles-mêmes ne changent pas.",

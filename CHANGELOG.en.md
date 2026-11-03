@@ -20,8 +20,8 @@ delivered just before it. Only the latest version has its download page; every v
     firewall, antivirus, remote connections, ports and persistence are never reused. A duration that proves wrong
     gets shorter, and too many mismatches turn off the cache for that rule;
   - **local record** (see sharing, below);
-  - **notes on fixes**: a fix that fails twice says so, and so does a fix that does not hold; answering "all" leaves
-    it out of the batch and then offers it on its own.
+  - **notes on fixes**: a fix that fails twice says so, and answering "all" leaves it out of the batch to offer it on
+    its own afterwards; a fix that does not hold says so too.
 
   The rules and what they judge never change: turning off a mission, or the whole Agent, removes no check. Each
   change is logged with its previous value in a sealed journal and can be undone (`undo <rule>`, `reset`).
@@ -37,8 +37,9 @@ delivered just before it. Only the latest version has its download page; every v
     is cleaned or dropped whole.
   - The author's relay is not in service: Vanguard has no address to send to and opens no connection for it.
     MODELE-DE-MENACE.en.md describes what will leave the day it is, and how.
-  - "See what would be sent" shows the exact bytes of the next batch. "No" stops the record and erases it, along with
-    the sending queue and the installation identifier. `VANGUARD_ENVOI=0` always wins.
+  - "See what would be sent" shows the next queued batch or, failing that, the batch of the latest record rebuilt to
+    see it, byte for byte. "No" stops the record and erases it, along with the sending queue and the installation
+    identifier. `VANGUARD_ENVOI=0` always wins.
 
 - **Going back to 0.89.0, then to 0.89.1.** Nothing dangerous, but two things show:
   - 0.89.0 rewrites the self-test measurements (`autotest/mesures.json`) without a seal. Back on 0.89.1, the check-up

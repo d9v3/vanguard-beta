@@ -607,14 +607,15 @@ slowdowns, the result of fixes, the choices made in Vanguard, the hardware (no s
 of the software, services and drivers involved. Never a password, file contents, a visited site, typed text, a command
 argument or a software inventory; an error text is cleaned (paths, addresses and tokens removed) or dropped entirely.
 The record lives in the `amelioration/` folder (sealed, 96 KiB per day, 90 days and 10 MB at most); it is never made
-from the key, as root, under Wine or in a CI. **In this version, nothing is sent**: the author's relay is not in
-service yet, Vanguard has no address to send to and opens no connection for it, and the sharing screen says so. Once
-it is, the code provides for a notice at launch before anything is sent, one batch per day at most, over HTTPS,
-nothing recorded before the day of consent, and an installation identifier drawn at random, renewed every 90 days.
-“See what would be sent” (`see`) shows the exact bytes of the next batch, indented for reading. “No” (do not share)
-stops the record and erases the record (`amelioration/`), the sending queue (`envoi/`) and the installation
-identifier; check-ups, settings, the Agent and the self-test measurements stay on the computer. `VANGUARD_ENVOI=0`
-always wins: nothing is recorded or sent. What will leave, and how: [MODELE-DE-MENACE.en.md](MODELE-DE-MENACE.en.md).
+from the key, as root (Linux, macOS), under Wine or in a CI. **In this version, nothing is sent**: the author's relay
+is not in service yet, Vanguard has no address to send to and opens no connection for it, and the sharing screen says
+so. Once it is, the code provides for a notice at launch before anything is sent, one batch per day at most, over
+HTTPS, no sending of anything recorded before the day of consent, and an installation identifier drawn at random,
+renewed every 90 days. “See what would be sent” (`see`) shows the next queued batch or, failing that, the batch of the
+latest record rebuilt to see it, byte for byte, indented for reading. “No” (do not share) stops the record and erases
+the record (`amelioration/`), the sending queue (`envoi/`) and the installation identifier; check-ups, settings, the
+Agent and the self-test measurements stay on the computer. `VANGUARD_ENVOI=0` always wins: nothing is recorded or
+sent. What will leave, and how: [MODELE-DE-MENACE.en.md](MODELE-DE-MENACE.en.md).
 
 **Extensions** (menu 12, `vanguard extensions`) — custom programs in Vanguard, without touching its code. A plugin
 is a folder with a `plugin.toml` manifest, added once from a folder or a .zip archive (`vanguard plugins add`); a lab

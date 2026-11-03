@@ -126,10 +126,10 @@ envoie lui-même :
 - **Avec une clé abuse.ch** : la clé, à abuse.ch.
 - **En mode Wi-Fi public** : les requêtes DNS, au Bouclier canadien de l'ACEI.
 - **La recherche de mise à jour** : une demande à GitHub.
-- **Le relevé d'amélioration** : rien dans cette version. Le relais qui le recevra n'est pas déployé et le
-  programme n'a pas son adresse ; sans elle, Vanguard ne prépare aucun envoi et n'ouvre aucune connexion (un essai
-  le compte). Ce qui partirait un jour, et seulement avec votre accord, est décrit plus bas (« Le relevé
-  d'amélioration et son relais »).
+- **Le relevé d'amélioration** : rien dans cette version. Le relais qui le recevra n'est pas déployé et le programme
+  n'a pas son adresse ; sans elle, Vanguard ne prépare aucun envoi et n'ouvre aucune connexion (un essai le compte).
+  Ce qui partirait un jour, après l'avis montré au lancement ou votre « oui » (avant la 1.0, il faudra répondre
+  « oui »), jamais après « Non », est décrit plus bas (« Le relevé d'amélioration et son relais »).
 - Un rapport de faille préparé par Vanguard n'est jamais envoyé par lui : la personne le relit et l'envoie elle-même.
 
 Cette liste est fermée : Vanguard refuse de joindre en HTTPS un hôte qui n'est pas dans le premier tableau (même au
@@ -200,22 +200,24 @@ ce qui est le cas aujourd'hui :
   `amelioration::texte` (chemins, adresses et jetons retirés) ou jetés en entier. Il ne contient jamais : le contenu
   d'un fichier, les arguments d'une commande, un mot de passe, l'historique du navigateur, un texte tapé, la liste de
   vos fichiers, de vos comptes, de vos réseaux ou de vos appareils, ni l'inventaire de vos logiciels. Il est rangé
-  dans `amelioration/` (scellé, 96 Kio par jour au plus, 90 jours, 10 Mo au total) et se lit tel quel par « Voir ce
-  qui serait envoyé ». Répondre « Non » au partage l'efface, avec la file d'envoi et l'identifiant d'installation ;
-  `VANGUARD_ENVOI=0` le coupe.
+  dans `amelioration/` (scellé, 96 Kio par jour au plus, 90 jours, 10 Mo au total) et le lot qui en sortirait se lit,
+  octet pour octet, par « Voir ce qui serait envoyé ». Répondre « Non » au partage l'efface, avec la file d'envoi et
+  l'identifiant d'installation ; `VANGUARD_ENVOI=0` le coupe.
 - **La file d'envoi, sans hôte.** `RELAIS` est vide dans le code et la liste fermée des sites HTTPS (`HOTES`, le
   premier tableau ci-dessus) ne contient aucun relais : aucun lot n'est préparé, aucun fichier d'envoi n'est écrit,
   aucun fil ni aucune connexion n'est lancé. Même avec un relais, rien ne partirait sous les essais, sous Wine, dans
-  la CI, avec `VANGUARD_ENVOI=0`, depuis une clé, en root, dans une compilation de développement, hors ligne, sans
-  votre accord ou après « Non » au partage.
+  la CI, avec `VANGUARD_ENVOI=0`, depuis une clé, en root (Linux, macOS), dans une compilation de développement, hors
+  ligne, ni avant l'avis montré au lancement ou votre « oui » (avant la 1.0, il faudra répondre « oui »), ni après
+  « Non » au partage, ni pour ce qui a été relevé avant le jour de l'accord.
 - **Le relais, une fois déployé.** Son adresse entrera alors dans `HOTES` et dans le premier tableau, au même titre
   que les autres sites. Vanguard ne le joindra qu'en HTTPS, sans suivre de redirection ; il n'enverra qu'un lot par
   jour au plus (96 Kio, relu strictement avant de partir), avec un identifiant d'installation tiré au hasard et
   renouvelé tous les 90 jours ; trois essais par jour au plus, 24 h d'attente après un 429 ou un 503, sept jours
   gardés au plus. Seul le code de réponse est lu, jamais le corps : il n'existe aucun canal descendant, et aucune
   consigne, règle ni mise à jour ne peut venir par le relais. Le code du relais est dans le dépôt (`relais/`) : il
-  refait la même lecture stricte, refuse un lot où sonne le détecteur de secrets, ne garde pas l'adresse IP (une
-  empreinte de son préfixe, au sel effacé chaque jour) et efface ce qui n'est pas relevé après 14 jours.
+  contrôle le même schéma, strictement, et une couche du détecteur de secrets, refuse un lot où elle sonne (la lecture
+  stricte complète est refaite chez l'auteur), ne garde pas l'adresse IP (une empreinte de son préfixe, au sel tiré
+  chaque jour et effacé le lendemain) et efface ce qui n'est pas relevé après 14 jours.
 - **Chez l'auteur.** Chaque lot relevé est relu comme s'il venait de n'importe qui : la même lecture stricte, les
   refus comptés, une quarantaine pour tout lot où le détecteur de secrets sonne (jamais lu plus loin). Une source
   (l'empreinte du préfixe d'adresse) ne compte qu'une fois par jour, quel que soit son nombre de lots, et un signal
