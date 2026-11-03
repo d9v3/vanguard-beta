@@ -257,7 +257,7 @@ impl SourceFalsif {
         let s = source.trim().to_ascii_lowercase();
         if s.is_empty() || s == "n/a" || s.starts_with("not ") {
             None
-        } else if ["intune", "atp", "configmgr", "mde", "mem", "sense"]
+        } else if ["intune", "atp", "configmgr", "mde", "mem", "sense", "e5"]
             .iter()
             .any(|o| s.contains(o))
         {
@@ -320,6 +320,8 @@ pub(crate) enum ActionAsr {
     Bloque,
     Audit,
     Avertit,
+    /// 5 : « NotConfigured », la règle est listée sans être réglée.
+    NonReglee,
     Autre(i64),
     /// La liste des actions est plus courte que celle des règles : rien n'est supposé.
     Illisible,
@@ -331,6 +333,7 @@ impl ActionAsr {
             Some(0) => ActionAsr::Coupee,
             Some(1) => ActionAsr::Bloque,
             Some(2) => ActionAsr::Audit,
+            Some(5) => ActionAsr::NonReglee,
             Some(6) => ActionAsr::Avertit,
             Some(n) => ActionAsr::Autre(n),
             None => ActionAsr::Illisible,
@@ -343,6 +346,7 @@ impl ActionAsr {
             ActionAsr::Bloque => tr!("bloque", "blocks").to_string(),
             ActionAsr::Audit => tr!("audit", "audit").to_string(),
             ActionAsr::Avertit => tr!("avertit", "warns").to_string(),
+            ActionAsr::NonReglee => tr!("non réglée", "not set").to_string(),
             ActionAsr::Autre(n) => trf!("valeur {n}", "value {n}"),
             ActionAsr::Illisible => tr!("illisible", "unreadable").to_string(),
         }
@@ -354,6 +358,7 @@ impl ActionAsr {
             ActionAsr::Bloque => Some(1),
             ActionAsr::Audit => Some(2),
             ActionAsr::Avertit => Some(6),
+            ActionAsr::NonReglee => Some(5),
             ActionAsr::Autre(n) => Some(n),
             ActionAsr::Illisible => None,
         }
@@ -688,8 +693,9 @@ pub(crate) struct PareFeu {
     pub(crate) courants: Option<i32>,
     /// Domaine, privé, public.
     pub(crate) profils: [Profil; 3],
-    /// `LocalPolicyModifyState` : 0 le réglage local compte, 1 une stratégie l'emporte, 2 les règles d'entrée locales
-    /// sont ignorées.
+    /// `LocalPolicyModifyState` (`NET_FW_MODIFY_STATE`), pour le profil actuel seulement : 0 le réglage local compte,
+    /// 1 une stratégie l'emporte, 2 tout l'entrant est bloqué (`BlockAllInboundTraffic`), une règle locale n'aurait
+    /// pas d'effet.
     pub(crate) modification: Option<i32>,
     pub(crate) regles: Option<i32>,
 }
@@ -816,6 +822,17 @@ pub(crate) struct Etat {
 }
 
 impl Etat {
+    /// Les stratégies du pare-feu, par profil. Seule la GPO se lit : le Firewall CSP d'Intune range la sienne
+    /// ailleurs. Sur un PC inscrit à une gestion, ou dont l'inscription ne se lit pas, « aucune GPO » ne prouve pas
+    /// que rien n'est imposé : non vérifié.
+    fn pare_feu_impose(&self) -> [Option<bool>; 3] {
+        let mdm_possible = self.gestion.mdm != Some(false);
+        self.strategies.pare_feu.map(|v| match v {
+            Some(false) if mdm_possible => None,
+            v => v,
+        })
+    }
+
     fn mode(&self) -> ModeDefender {
         self.statut.as_ref().map_or(ModeDefender::Illisible, |s| s.mode)
     }
@@ -857,17 +874,28 @@ fn note(lignes: &mut Vec<String>, texte: &str, style: &str) {
     }
 }
 
+/// Les réglages se lisent, mais pas l'état de Defender : rien ne dit qu'ils agissent.
+fn effet_non_verifie() -> &'static str {
+    tr!(
+        "Effet non vérifié : l'état de Defender ne se lit pas.",
+        "Effect not checked: Defender's state cannot be read."
+    )
+}
+
+/// La note d'une valeur imposée ; une stratégie qui ne se lit pas le dit aussi, pour ne pas passer pour « libre ».
 fn imposee(lignes: &mut Vec<String>, oui: Option<bool>) {
-    if oui == Some(true) {
-        note(
-            lignes,
-            tr!(
-                "↳ imposé par une stratégie (GPO ou Intune) : Windows garde la valeur de la stratégie.",
-                "↳ enforced by a policy (GPO or Intune): Windows keeps the policy's value."
-            ),
-            GRIS,
-        );
-    }
+    let texte = match oui {
+        Some(true) => tr!(
+            "↳ imposé par une stratégie (GPO ou Intune) : Windows garde la valeur de la stratégie.",
+            "↳ enforced by a policy (GPO or Intune): Windows keeps the policy's value."
+        ),
+        None => tr!(
+            "↳ stratégie (GPO ou Intune) : non vérifiée.",
+            "↳ policy (GPO or Intune): not checked."
+        ),
+        Some(false) => return,
+    };
+    note(lignes, texte, GRIS);
 }
 
 fn oui_non(v: Option<bool>) -> &'static str {
@@ -969,12 +997,23 @@ fn section_defender(l: &mut Vec<String>, e: &Etat) {
         note(l, texte, GRIS);
     }
     // Defender qui ne protège pas : ses options sont montrées, en gris, puisqu'elles n'agissent pas.
-    let sans_effet = mode != ModeDefender::Actif && mode != ModeDefender::Illisible;
+    // Mode illisible : la préférence est lue, pas son effet ; rien en vert.
+    let gris = mode != ModeDefender::Actif;
+    // Aucune stratégie lisible (registre refusé) : une seule note, pas dix.
+    let aucune_lue = Opt::TOUTES.iter().all(|o| e.strategies.option(*o).is_none());
     for o in Opt::TOUTES {
         let etat = e.etat_opt(o);
-        let style = if sans_effet { GRIS } else { etat.couleur() };
+        let style = if gris { GRIS } else { etat.couleur() };
         l.push(pointilles(o.libelle(), &etat.texte(o.masculin()), style));
-        imposee(l, e.strategies.option(o));
+        if !aucune_lue {
+            imposee(l, e.strategies.option(o));
+        }
+    }
+    if aucune_lue {
+        imposee(l, None);
+    }
+    if mode == ModeDefender::Illisible && e.preferences.is_some() {
+        note(l, effet_non_verifie(), GRIS);
     }
     let exclusions = e.preferences.as_ref().map(|p| p.exclusions);
     let (texte, style) = match exclusions {
@@ -1040,6 +1079,7 @@ fn section_asr(l: &mut Vec<String>, e: &Etat) {
     };
     let mode = e.mode();
     let sans_effet = mode != ModeDefender::Actif && mode != ModeDefender::Illisible;
+    let gris = mode != ModeDefender::Actif;
     let imposees = e.strategies.asr.as_deref().unwrap_or_default();
     let compte = |a: ActionAsr| p.asr.regles.iter().filter(|(_, x)| *x == a).count();
     let reglees = p.asr.regles.len();
@@ -1051,14 +1091,14 @@ fn section_asr(l: &mut Vec<String>, e: &Etat) {
             compte(ActionAsr::Bloque),
             compte(ActionAsr::Audit),
             compte(ActionAsr::Avertit),
-            ASR_TOUTES.len() - reglees + compte(ActionAsr::Coupee)
+            ASR_TOUTES.len() - reglees + compte(ActionAsr::Coupee) + compte(ActionAsr::NonReglee)
         )
     ));
     let mut une_imposee = false;
     for id in ASR_TOUTES {
         let Some(action) = p.asr.action(id) else { continue };
         let style = match action {
-            _ if sans_effet => GRIS,
+            _ if gris => GRIS,
             ActionAsr::Bloque => VERT,
             _ => "",
         };
@@ -1102,6 +1142,8 @@ fn section_asr(l: &mut Vec<String>, e: &Etat) {
             ),
             GRIS,
         );
+    } else if mode == ModeDefender::Illisible && reglees > 0 {
+        note(l, effet_non_verifie(), GRIS);
     } else if e.etat_opt(Opt::TempsReel) == EtatOpt::Coupee && reglees > 0 {
         note(
             l,
@@ -1137,7 +1179,7 @@ fn section_pare_feu(l: &mut Vec<String>, e: &Etat) {
         ));
         return;
     };
-    for (i, ((p, (_, bit)), imposee_ici)) in f.profils.iter().zip(PROFILS).zip(e.strategies.pare_feu).enumerate() {
+    for (i, ((p, (_, bit)), imposee_ici)) in f.profils.iter().zip(PROFILS).zip(e.pare_feu_impose()).enumerate() {
         let courant = f.courants.is_some_and(|c| c & bit != 0);
         let nom = if courant {
             trf!("{} (réseau actuel)", "{} (current network)", nom_profil(i))
@@ -1179,16 +1221,16 @@ fn section_pare_feu(l: &mut Vec<String>, e: &Etat) {
         Some(1) => note(
             l,
             tr!(
-                "Une stratégie l'emporte sur les réglages locaux du pare-feu.",
-                "A policy overrides the firewall's local settings."
+                "Profil actuel : une stratégie l'emporte sur les réglages locaux du pare-feu.",
+                "Current profile: a policy overrides the firewall's local settings."
             ),
             GRIS,
         ),
         Some(2) => note(
             l,
             tr!(
-                "Les règles d'entrée locales sont ignorées (stratégie).",
-                "Local inbound rules are ignored (policy)."
+                "Profil actuel : tout l'entrant est bloqué, une règle d'entrée locale n'aurait pas d'effet.",
+                "Current profile: all inbound is blocked, a local inbound rule would have no effect."
             ),
             GRIS,
         ),
@@ -1316,7 +1358,7 @@ pub(crate) fn json(e: &Etat) -> serde_json::Value {
         f.profils
             .iter()
             .zip(PROFILS)
-            .zip(e.strategies.pare_feu)
+            .zip(e.pare_feu_impose())
             .map(|((p, (id, bit)), imposee)| {
                 json!({
                     "id": id,
@@ -1333,7 +1375,7 @@ pub(crate) fn json(e: &Etat) -> serde_json::Value {
     let modification = e.pare_feu.and_then(|f| f.modification).map(|m| match m {
         0 => "locale",
         1 => "strategie",
-        2 => "entrees-locales-ignorees",
+        2 => "entrant-bloque",
         _ => "autre",
     });
     let actifs = |l: &Option<Vec<Produit>>| l.as_ref().map(|l| l.iter().filter(|p| p.actif == Some(true)).count());
@@ -1600,6 +1642,36 @@ mod tests {
         );
     }
 
+    /// 5 (« NotConfigured ») est une règle listée sans être réglée : comptée avec les coupées, jamais « valeur 5 ».
+    #[test]
+    fn asr_non_reglee_comptee() {
+        assert_eq!(ActionAsr::depuis(Some(5)), ActionAsr::NonReglee);
+        let mut e = courant();
+        if let Some(p) = e.preferences.as_mut() {
+            p.asr = Asr::depuis(
+                &textes(&[
+                    "9E6C4E1F-7D60-472F-BA1A-A39EF669E4B2",
+                    "d4f940ab-401b-4efc-aadc-ad5f3c50688a",
+                ]),
+                &[Some(1), Some(5)],
+            );
+        }
+        let l = lignes(&e).join("\n");
+        assert!(
+            l.contains("1 bloquent · 0 en audit · 0 avertissent · 18 coupées ou non réglées"),
+            "{l}"
+        );
+        assert!(l.contains("non réglée "));
+        assert!(!l.contains("valeur 5"));
+        let j = json(&e);
+        let regles = j["asr"]["regles"].as_array().cloned().unwrap_or_default();
+        assert!(
+            regles
+                .iter()
+                .any(|r| r["id"] == "d4f940ab-401b-4efc-aadc-ad5f3c50688a" && r["action"] == 5)
+        );
+    }
+
     #[test]
     fn table_asr_complete() {
         let uniques: std::collections::HashSet<_> = ASR_TOUTES.iter().collect();
@@ -1793,6 +1865,59 @@ mod tests {
         assert!(l.contains("Antivirus Exemple est votre antivirus"));
         assert!(l.contains("Sans effet : Defender n'est pas l'antivirus actif."));
         assert!(!l.contains(&format!("{VERT}bloque")));
+    }
+
+    /// `LocalPolicyModifyState = 2` : l'entrant bloqué du profil actuel, pas une stratégie.
+    #[test]
+    fn entrant_bloque_n_est_pas_une_strategie() {
+        let mut e = courant();
+        if let Some(f) = e.pare_feu.as_mut() {
+            f.modification = Some(2);
+        }
+        let l = lignes(&e).join("\n");
+        assert!(l.contains("tout l'entrant est bloqué"), "{l}");
+        assert_eq!(json(&e)["pare_feu"]["modification"], "entrant-bloque");
+    }
+
+    /// Le pare-feu d'Intune ne se lit pas : sur un PC inscrit (ou d'inscription illisible), « aucune GPO » devient
+    /// non vérifié, à l'écran comme dans le JSON ; une GPO lue reste imposée.
+    #[test]
+    fn pare_feu_libre_seulement_hors_mdm() {
+        let mut e = courant();
+        assert_eq!(json(&e)["pare_feu"]["profils"][1]["imposee"], false);
+        for mdm in [Some(true), None] {
+            e.gestion.mdm = mdm;
+            assert_eq!(e.pare_feu_impose(), [Some(true), None, None]);
+            let j = json(&e);
+            assert_eq!(j["pare_feu"]["profils"][0]["imposee"], true);
+            assert_eq!(j["pare_feu"]["profils"][1]["imposee"], serde_json::Value::Null);
+            assert!(
+                lignes(&e)
+                    .join("\n")
+                    .contains("↳ stratégie (GPO ou Intune) : non vérifiée.")
+            );
+        }
+    }
+
+    /// L'état de Defender ne se lit pas, ses réglages oui : rien en vert, et l'effet dit non vérifié.
+    #[test]
+    fn mode_illisible_rien_en_vert() {
+        let mut e = courant();
+        e.statut = None;
+        let l = lignes(&e).join("\n");
+        assert!(
+            l.contains("Effet non vérifié : l'état de Defender ne se lit pas."),
+            "{l}"
+        );
+        // Le pare-feu se lit à part : seules les sections de Defender sont grises.
+        let defender = l.split("Pare-feu").next().unwrap_or_default();
+        assert!(defender.contains("Règles ASR"), "{l}");
+        assert!(!defender.contains(VERT), "{l}");
+    }
+
+    #[test]
+    fn falsifications_e5_par_l_organisation() {
+        assert_eq!(SourceFalsif::depuis("E5 transition"), Some(SourceFalsif::Organisation));
     }
 
     fn textes_de(v: &serde_json::Value, sortie: &mut Vec<String>) {
