@@ -99,6 +99,7 @@ fn remettre(c: Constat, p: &Protection) -> Constat {
 /// programme » ou « pas activées », avec une correction qui les remettrait en blocage contre ce choix. Les autres
 /// règles du groupe restent jugées et corrigées. Une règle remontée depuis, ou changée autrement, reste jugée.
 fn sans_regles_choisies(etat: &Etat, mut p: Protection, choix: &[(IdChoix, Option<Note>)]) -> Protection {
+    let toutes = p.prefs.len();
     p.prefs.retain(|pref| {
         let Pref::Asr(g) = *pref else { return true };
         let id = IdChoix::Asr(g);
@@ -112,6 +113,20 @@ fn sans_regles_choisies(etat: &Etat, mut p: Protection, choix: &[(IdChoix, Optio
         };
         !matches!(choix_avant::lecture_note(id, n, lue), Lecture::ParChoix(_))
     });
+    // Le nom suit : « blocages de base » listés parmi ce qui bloque laisseraient croire que les trois bloquent.
+    if p.prefs.len() < toutes {
+        p.nom = match p.reglage {
+            "defender_asr_base" => (
+                "blocages de base (ASR), sauf vos choix",
+                "basic blocking (ASR), except your choices",
+            ),
+            "defender_asr_bureautique" => (
+                "documents et pièces jointes piégés, sauf vos choix",
+                "booby-trapped documents, except your choices",
+            ),
+            _ => p.nom,
+        };
+    }
     p
 }
 
@@ -420,6 +435,12 @@ mod tests {
             c.iter().map(|c| &c.message).collect::<Vec<_>>()
         );
         assert!(c.iter().any(|c| c.etat() == EtatConstat::Sain));
+        // Relecture D4 : le nom dit que la règle choisie n'est pas comptée parmi ce qui bloque.
+        assert!(
+            c.iter().any(|c| c.message.contains("sauf vos choix")),
+            "{:?}",
+            c.iter().map(|c| &c.message).collect::<Vec<_>>()
+        );
         // Une autre en audit : alerte, mais sa correction ne remet que celle-là.
         let c = juger_avec(Some(&etat(2)), &poses, &choix);
         let a: Vec<&Constat> = c.iter().filter(|c| c.probleme.is_some()).collect();

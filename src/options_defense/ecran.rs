@@ -672,9 +672,10 @@ fn asr_imposee(e: &Etat, id: &str) -> Option<bool> {
 fn rallumable_asr(e: &Etat, id: &'static str, notes: &Notes) -> Option<i64> {
     let idc = IdChoix::Asr(id);
     let note = choix_avant::note_de(notes, idc)?;
-    let v = valeur_asr(e, id)?;
+    // Illisible : proposé quand même, comme pour les options ; le processus élevé relit avant d'écrire.
+    let v = valeur_asr(e, id);
     let cible = gestes::cible_rallumer(idc, Some(note.avant));
-    (v != Some(cible)).then_some(cible)
+    (v != Some(Some(cible))).then_some(cible)
 }
 
 /// « C'est moi » d'une règle : listée sous « bloque » (désactivée, audit, avertit) et pas encore notée telle quelle.
@@ -713,17 +714,19 @@ fn groupes_asr() -> [(&'static str, &'static [&'static str]); 3] {
     ]
 }
 
-/// Les règles d'un groupe qu'un raccourci mettrait en blocage : celles qui ne bloquent pas déjà.
+/// Les règles d'un groupe qu'un raccourci mettrait en blocage : celles qui ne bloquent pas déjà. Une règle imposée
+/// par une stratégie est laissée (Windows garderait sa valeur : « pas fait ») ; un « C'est moi » déjà choisi aussi,
+/// pour qu'un raccourci ne remplace pas en silence un choix fait règle par règle.
 fn a_bloquer(e: &Etat, groupe: &[&'static str], changes: &[Change]) -> Vec<&'static str> {
     groupe
         .iter()
         .copied()
         .filter(|id| {
-            let deja = changes
-                .iter()
-                .find(|c| c.id == IdChoix::Asr(id))
-                .map_or_else(|| valeur_asr(e, id) == Some(Some(1)), |c| c.cible == Some(1));
-            !deja
+            let deja = changes.iter().find(|c| c.id == IdChoix::Asr(id)).map_or_else(
+                || valeur_asr(e, id) == Some(Some(1)),
+                |c| c.cible != Some(0) && c.cible != Some(2),
+            );
+            !deja && asr_imposee(e, id) != Some(true)
         })
         .collect()
 }
@@ -983,6 +986,8 @@ pub(super) fn lignes_regle(e: &Etat, id: &'static str, notes: &Notes, changes: &
             tr!("(actuelle)", "(current)")
         } else if *c == ChoixAsr::Desactiver && lue == Some(None) {
             tr!("(absente : sans effet déjà)", "(not listed: no effect already)")
+        } else if *c == ChoixAsr::Desactiver && lue == Some(Some(5)) {
+            tr!("(non réglée : sans effet déjà)", "(not set: no effect already)")
         } else if c.action() == idc.sure() && avertissement_asr(id).is_none() {
             tr!("(la valeur sûre)", "(the safe value)")
         } else {
@@ -1005,7 +1010,9 @@ pub(super) fn lignes_regle(e: &Etat, id: &'static str, notes: &Notes, changes: &
         l.push(Ligne::choix(
             "m",
             tr!("C'est moi : noter « par votre choix »", "It was me: note “your choice”"),
-            tr!("le bilan n'alertera plus", "the check stops alerting"),
+            // Le bilan ne juge que les règles de base et celles que Vanguard a posées : pour les autres, la note ne
+            // fait taire aucune alerte, elle fait seulement dire « par votre choix ».
+            tr!("le bilan dira « votre choix »", "the check says “your choice”"),
         ));
     }
     l.push(Ligne::Texte(String::new()));
@@ -2473,6 +2480,81 @@ mod tests {
             assert!(matches!(suite_regle(&e, id, &[], "1"), Suite::Ajouter(_)));
             assert_eq!(touches(&lignes_regle(&e, id, &[], &[])), ["1", "2", "3", "↵"]);
         });
+    }
+
+    /// Relecture D4 : préférences illisibles, une règle notée se rallume quand même (le processus élevé relit).
+    #[test]
+    fn asr_rallumer_sans_preferences_lues() {
+        let mut e = courant();
+        e.preferences = None;
+        let id = gestes::ASR_BUREAUTIQUE[0];
+        let idc = IdChoix::Asr(id);
+        let notes = vec![note(idc, Some(1), 0)];
+        let l = lignes_regle(&e, id, &notes, &[]);
+        dans_l_ecran(&l);
+        assert_eq!(touches(&l), ["1", "2", "3", "r", "↵"]);
+        let Suite::Ajouter(c) = suite_regle(&e, id, &notes, "r") else {
+            panic!("r")
+        };
+        assert_eq!(c.ligne, gestes::ligne_rallumer(idc));
+        assert_eq!(c.cible, Some(1));
+    }
+
+    /// Relecture D4 : « C'est moi » d'une règle que le bilan ne juge pas ne promet pas que le bilan cessera d'alerter.
+    #[test]
+    fn asr_c_est_moi_ne_promet_pas_le_silence() {
+        dans_les_deux_langues(|| {
+            let e = avec_regle(ASR_TOUTES[11], 2);
+            let l = lignes_regle(&e, ASR_TOUTES[11], &[], &[]);
+            dans_l_ecran(&l);
+            let (_, precision) = choix_de(&l, "m").unwrap();
+            assert_eq!(
+                precision,
+                tr!("le bilan dira « votre choix »", "the check says “your choice”")
+            );
+            assert!(!a_plat(&tout_texte(&l)).contains(tr!("n'alertera plus", "stops alerting")));
+        });
+    }
+
+    /// Relecture D4 : une règle « non réglée » (5) est déjà sans effet ; « Désactiver » le dit, comme pour l'absente.
+    #[test]
+    fn asr_non_reglee_dite_sans_effet() {
+        dans_les_deux_langues(|| {
+            let id = gestes::ASR_BUREAUTIQUE[1];
+            let e = avec_regle(id, 5);
+            let l = lignes_regle(&e, id, &[], &[]);
+            dans_l_ecran(&l);
+            assert_eq!(
+                choix_de(&l, "3").unwrap().1,
+                tr!("(non réglée : sans effet déjà)", "(not set: no effect already)")
+            );
+        });
+    }
+
+    /// Relecture D4 : un raccourci de groupe laisse la règle imposée par une stratégie (Windows garderait sa valeur)
+    /// et ne remplace pas un « C'est moi » choisi règle par règle.
+    #[test]
+    fn asr_raccourci_laisse_imposee_et_c_est_moi() {
+        let mut e = courant();
+        let SuiteAsr::Ajouter(tous) = suite_asr(&e, &[], "o") else {
+            panic!("o")
+        };
+        assert_eq!(tous.len(), 8);
+        let imposee = gestes::ASR_BUREAUTIQUE[1];
+        e.strategies.asr = Some(vec![imposee]);
+        let notee = gestes::ASR_BUREAUTIQUE[0];
+        let Suite::Ajouter(moi) = suite_regle(&e, notee, &[], "m") else {
+            panic!("m")
+        };
+        let changes = vec![moi];
+        let SuiteAsr::Ajouter(l) = suite_asr(&e, &changes, "o") else {
+            panic!("o")
+        };
+        assert_eq!(l.len(), 6);
+        assert!(
+            l.iter()
+                .all(|c| c.id != IdChoix::Asr(imposee) && c.id != IdChoix::Asr(notee))
+        );
     }
 
     /// Au menu, la ligne 12 compte les changements de règles choisis.

@@ -778,7 +778,8 @@ pub(crate) fn inscription_active(fournisseur: Option<&str>, etat: Option<u32>) -
 /// L'édition de Windows, d'après `EditionID`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Edition {
-    /// Famille (« Core ») : Microsoft ne prend en charge les règles ASR que sur Pro, Entreprise et Éducation.
+    /// Famille (« Core ») : Microsoft disait autrefois les règles ASR réservées à Pro et plus ; sa page de 2026 les dit
+    /// disponibles partout où Defender l'est (`texte_effet_asr`).
     Famille,
     Serveur,
     Autre,
@@ -1149,10 +1150,11 @@ pub(crate) fn effet_asr(e: &Etat) -> EffetAsr {
     } else if e.etat_opt(Opt::TempsReel) == EtatOpt::Coupee {
         // L'effet relu passe avant la préférence (`etat_opt`) : c'est ce que Defender applique.
         EffetAsr::TempsReelCoupe
+    } else if mode == ModeDefender::Illisible {
+        // Avant l'édition : sans Defender relu, même sur Famille, rien n'est vérifié.
+        EffetAsr::NonVerifie
     } else if e.edition == Some(Edition::Famille) {
         EffetAsr::Famille
-    } else if mode == ModeDefender::Illisible {
-        EffetAsr::NonVerifie
     } else {
         EffetAsr::SAppliquent
     }
@@ -2478,6 +2480,16 @@ mod tests {
         assert_eq!(effet_asr(&e), EffetAsr::NonVerifie);
         e.preferences = None;
         assert_eq!(json(&e)["asr"]["effet"], serde_json::Value::Null);
+    }
+
+    /// Relecture D4 : Defender illisible sur un Windows Famille dit « non vérifié », pas le texte de Famille.
+    #[test]
+    fn effet_asr_illisible_avant_famille() {
+        let mut e = courant();
+        e.edition = Some(Edition::Famille);
+        e.statut.as_mut().unwrap().mode = ModeDefender::Illisible;
+        assert_eq!(effet_asr(&e), EffetAsr::NonVerifie);
+        assert_eq!(texte_effet_asr(&e), effet_non_verifie());
     }
 
     /// Les 8 règles écartées des Réglages recommandés ont chacune leur avertissement, « Essayez d'abord Audit » à la
