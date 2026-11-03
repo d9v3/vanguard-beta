@@ -1298,6 +1298,10 @@ mod tests_sh_chaine {
     /// l'outil (`assistant.rs`, la chasse, les règles) comptent aussi ; le nombre est exact, il ne peut que baisser, et
     /// se baisse ici avec le code. Un nouvel appel passe par un geste. Un fichier à zéro sort de la liste.
     const SUDO_RESTANTS: &[(&str, usize)] = &[
+        // La liste des mots que le code de l'agent ne doit pas nommer (garde de ses tests, sans appel).
+        ("agent/tests.rs", 2),
+        // « relancez sans sudo » : un conseil affiché, sans appel.
+        ("amelioration/mod.rs", 2),
         ("changements.rs", 2),
         ("depanner/imprimante.rs", 2),
         ("depanner/son.rs", 1),

@@ -629,7 +629,7 @@ fn service_du_catalogue(nom: &str) -> Option<usize> {
 }
 
 /// Le geste d'arrêt d'un service du système en marche, ou la raison de ne pas en proposer (français, anglais). Une
-/// instance d'un modèle (« chrome-remote-desktop@<compte>.service ») : l'assistant ne revoit pas les modèles, il la
+/// instance d'un modèle (« `chrome-remote-desktop@<compte>.service` ») : l'assistant ne revoit pas les modèles, il la
 /// refuserait ; dit tel quel plutôt qu'un geste voué à l'échec.
 #[cfg(target_os = "linux")]
 fn arret_d_un_service(nom: &str) -> Result<String, (&'static str, &'static str)> {
