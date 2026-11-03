@@ -473,12 +473,19 @@ enum Commande {
     },
     /// Options de défense de Windows, en lecture seule : Microsoft Defender (mode, temps réel, cloud, protection
     /// contre les falsifications), règles ASR, Pare-feu Windows par profil, stratégies (GPO, Intune) qui imposent une
-    /// valeur, antivirus tiers, PC géré. Rien n'est changé.
+    /// valeur, antivirus tiers, PC géré. Rien n'est changé sans --choisir ou --rallumer (montré, puis confirmé).
     #[command(name = "options-defense", visible_alias = "defense-options")]
     OptionsDefense {
         /// Le résultat en JSON, pour un script (sans chemin, nom de compte ni nom de machine).
         #[arg(long)]
         json: bool,
+        /// Un choix de Defender (pua bloquer, temps-reel coupe, asr-GUID audit…), montré puis fait dans la fenêtre
+        /// administrateur ; une baisse y est confirmée par un oui tapé, sa valeur d'avant notée.
+        #[arg(long, visible_alias = "choose", num_args = 2, value_names = ["ID", "VALEUR"], conflicts_with_all = ["json", "rallumer"])]
+        choisir: Option<Vec<String>>,
+        /// Remet un réglage : la valeur d'avant notée si elle protège, sinon la valeur sûre.
+        #[arg(long, visible_alias = "turn-back-on", value_name = "ID", conflicts_with = "json")]
+        rallumer: Option<String>,
     },
     /// Préparer un signalement à un éditeur (MSRC, Google, Chrome, Mozilla, Apple, avis GHSA, CERT/CC, CERT-FR,
     /// Vanguard) : trié d'abord (une faille connue se corrige par une mise à jour, un logiciel malveillant n'est pas une
@@ -3103,7 +3110,8 @@ const AIDES_EN: &[(&str, &str)] = &[
                            advisories, Microsoft's list). Read-only"),
     ("options-defense", "Windows defense options, read-only: Microsoft Defender (mode, real-time, cloud, tamper \
                          protection), ASR rules, Windows Firewall per profile, policies (GPO, Intune) that enforce \
-                         a value, third-party antivirus, managed PC. Nothing is changed"),
+                         a value, third-party antivirus, managed PC. Nothing is changed without --choisir or \
+                         --rallumer (shown, then confirmed)"),
     ("signaler", "Prepare a report for a vendor (MSRC, Google, Chrome, Mozilla, Apple, GHSA advisory, CERT/CC, \
                   CERT-FR, Vanguard): sorted first (a known flaw is fixed by an update, malware is not a flaw), a \
                   draft in the program's format, what is personal removed, written on this computer and shown in \
@@ -3241,6 +3249,11 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("logiciels-espions", "json", "The result as JSON, for a script"),
     ("logiciels-perimes", "json", "The result as JSON, for a script"),
     ("options-defense", "json", "The result as JSON, for a script (no path, account name or computer name)"),
+    ("options-defense", "choisir", "A Defender choice (pua bloquer, temps-reel coupe, asr-GUID audit…), shown then \
+                                    made in the administrator window; lowering is confirmed there by a typed yes, \
+                                    its previous value noted"),
+    ("options-defense", "rallumer", "Turns a setting back on: the noted previous value if it protects, otherwise \
+                                     the safe value"),
     ("signaler", "incident", "The identifier of a log event (vanguard events): its incident is used"),
     ("signaler", "outil", "The last examination of a tool (PRO-ESP-001, PRO-PER-001, PRO-COU-001)"),
     ("signaler", "programme", "The program: msrc, google, chrome, mozilla, apple, ghsa, cert-cc, cert-fr or vanguard"),
@@ -3798,8 +3811,20 @@ async fn main() {
         Some(Commande::LogicielsEspions { json: true }) => protection::espions::json(),
         Some(Commande::LogicielsPerimes { json: false }) => protection::perimes::afficher(),
         Some(Commande::LogicielsPerimes { json: true }) => protection::perimes::json(),
-        Some(Commande::OptionsDefense { json: false }) => options_defense::afficher(),
-        Some(Commande::OptionsDefense { json: true }) => options_defense::afficher_json(),
+        Some(Commande::OptionsDefense {
+            choisir: Some(choix), ..
+        }) => {
+            let (id, valeur) = (
+                choix.first().map_or("", String::as_str),
+                choix.get(1).map_or("", String::as_str),
+            );
+            machine::quitter(i32::from(!options_defense::choisir(id, valeur)));
+        }
+        Some(Commande::OptionsDefense { rallumer: Some(id), .. }) => {
+            machine::quitter(i32::from(!options_defense::rallumer(&id)))
+        }
+        Some(Commande::OptionsDefense { json: false, .. }) => options_defense::afficher(),
+        Some(Commande::OptionsDefense { json: true, .. }) => options_defense::afficher_json(),
         Some(Commande::Signaler {
             incident,
             outil,

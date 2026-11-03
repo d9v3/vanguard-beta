@@ -65,6 +65,8 @@ unsafe extern "system" {
     fn WaitForSingleObject(objet: *mut c_void, delai: u32) -> u32;
     fn SetDefaultDllDirectories(drapeaux: u32) -> i32;
     fn SetHandleInformation(objet: *mut c_void, masque: u32, drapeaux: u32) -> i32;
+    fn GetStdHandle(quelle: u32) -> *mut c_void;
+    fn GetConsoleMode(console: *mut c_void, mode: *mut u32) -> i32;
 }
 
 use super::securite::{ConvertStringSecurityDescriptorToSecurityDescriptorW, Securite};
@@ -112,6 +114,22 @@ const _: () = assert!(gestes::LIGNE_MAX == LIGNE_MAX && gestes::LIGNES_MAX == LI
 const SCRIPT_MAX: u64 = 16 << 20;
 /// HANDLE_FLAG_INHERIT : la poignée passe au processus créé avec l'héritage des poignées (SetHandleInformation).
 const HERITEE: u32 = 0x1;
+/// STD_INPUT_HANDLE ((DWORD)-10) : l'entrée standard du processus.
+const ENTREE_STANDARD: u32 = 0xFFFF_FFF6;
+
+/// L'entrée est-elle une vraie console (GetConsoleMode réussit) ? Une réponse qui arrive par un tube ou un fichier
+/// n'a pas été tapée par la personne devant cette fenêtre : la question d'une baisse y vaut non.
+fn console_reelle() -> bool {
+    // SAFETY: simple lecture d'une poignée du processus, sans pointeur.
+    let entree = unsafe { GetStdHandle(ENTREE_STANDARD) };
+    if entree.is_null() || entree == POIGNEE_INVALIDE {
+        return false;
+    }
+    let mut mode = 0u32;
+    // SAFETY: `entree` est la poignée d'entrée du processus, `mode` une variable vivante pendant l'appel ; une poignée
+    // qui n'est pas une console fait échouer l'appel, sans rien écrire ailleurs.
+    unsafe { GetConsoleMode(entree, &raw mut mode) != 0 }
+}
 
 /// Une ligne de la liste, relue.
 pub(crate) enum Element {
@@ -192,6 +210,14 @@ fn empreinte(chemin: &std::path::Path) -> Option<String> {
 /// Réponse du fils pour une correction : « ok avant=1 », « ok rien=déjà 1… », « echec raison… ».
 fn ligne_resultat(r: &Resultat) -> String {
     match (&r.reussi, &r.avant) {
+        // Une baisse faite : sa valeur d'avant est notée dans ChoixAvant (« Rallumer » la remet).
+        (true, Some(avant)) if r.raison == corrections::NOTE_CHOIX => {
+            format!(
+                "ok avant={} {}",
+                avant.replace(['\r', '\n'], " "),
+                corrections::NOTE_CHOIX
+            )
+        }
         (true, Some(avant)) => format!("ok avant={}", avant.replace(['\r', '\n'], " ")),
         // Déjà bon, rien d'écrit : le parent ne le note pas parmi ce que Vanguard a changé.
         (true, None) if r.rien => format!("ok rien={}", r.raison.replace(['\r', '\n'], " ")),
@@ -201,6 +227,8 @@ fn ligne_resultat(r: &Resultat) -> String {
         (true, None) if !r.raison.is_empty() => format!("ok note={}", r.raison.replace(['\r', '\n'], " ")),
         (true, None) => "ok".to_string(),
         (false, _) if r.raison == arret_demande() => ARRETEE.to_string(),
+        // La valeur d'avant n'a pas pu être notée : aucun geste, rien à noter chez le parent.
+        (false, _) if r.raison == corrections::echec_note() => ECHEC_NOTE.to_string(),
         (false, _) if r.raison.starts_with(au_redemarrage()) => AU_REDEMARRAGE.to_string(),
         // Un échec qui a déjà touché quelque chose (racine retirée d'un seul magasin, valeur relue autre) : la valeur
         // d'avant va au parent, notée à côté de la ligne en échec ; la raison reste dans la console du fils.
@@ -233,6 +261,8 @@ pub(crate) struct Reponse {
 const SANS_POINT: &str = "ok sans-point";
 /// La réponse d'un geste non fait parce que la personne s'est arrêtée.
 const ARRETEE: &str = "echec arret";
+/// La réponse d'une baisse non faite faute d'avoir pu noter sa valeur d'avant (rien n'a été écrit).
+const ECHEC_NOTE: &str = "echec note";
 
 /// La réponse d'un geste laissé à la personne (chkdsk 3).
 const AU_REDEMARRAGE: &str = "echec redemarrage";
@@ -248,14 +278,26 @@ fn arret_demande() -> &'static str {
     tr!("arrêté à votre demande", "stopped as you asked")
 }
 
+/// La valeur d'avant d'une baisse notée (« defender-pua=1 note=choix ») : seulement si ce qui précède « = » est
+/// l'identifiant d'un choix ; une autre valeur d'avant qui finirait par le même mot reste entière.
+fn avant_choix(avant: &str) -> Option<&str> {
+    let v = avant.strip_suffix(corrections::NOTE_CHOIX)?.strip_suffix(' ')?;
+    let (id, valeur) = v.split_once('=')?;
+    (gestes::IdChoix::lire(id).is_some() && crate::machine::choix_avant::lire_valeur(valeur).is_some()).then_some(v)
+}
+
 fn lire_reponse(ligne: &str) -> Reponse {
     let reussi = ligne == "ok" || ligne.starts_with("ok ");
-    let avant = ligne
-        .strip_prefix("ok avant=")
+    let brut = ligne.strip_prefix("ok avant=");
+    let choix = brut.and_then(avant_choix);
+    let avant = choix
+        .or(brut)
         .or_else(|| ligne.strip_prefix("echec avant="))
         .map(str::to_string);
     let rien = ligne.strip_prefix("ok rien=");
-    let note = if ligne == SANS_POINT {
+    let note = if choix.is_some() {
+        Some(corrections::NOTE_CHOIX.to_string())
+    } else if ligne == SANS_POINT {
         Some(sans_point_accepte().to_string())
     } else {
         ligne.strip_prefix("ok note=").or(rien).map(str::to_string)
@@ -320,8 +362,23 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
         );
         return None;
     }
+    // Les choix de Defender partent dans une liste à eux, après les autres (P7) : chaque liste est montrée et jugée à
+    // part, sous une seule demande d'administrateur ; une liste mêlée serait refusée par le fils.
+    let groupes = gestes::separer_choix(lignes);
+    let (envoi, ordre) = gestes::joindre_listes(lignes, &groupes);
+    if envoi.len() > LIGNES_MAX {
+        trp!(
+            "    Trop d'étapes d'un coup ({} ; {LIGNES_MAX} au plus) : rien n'a été fait. Appliquez-les en plusieurs fois.",
+            "    Too many steps at once ({}; {LIGNES_MAX} at most): nothing was done. Apply them in several goes.",
+            envoi.len()
+        );
+        return None;
+    }
+    let remettre = |reponses: Vec<Reponse>| {
+        gestes::remettre_en_ordre(&ordre, reponses).unwrap_or_else(|| lignes.iter().map(|_| non_faite()).collect())
+    };
     if super::processus::eleve() {
-        return Some(appliquer_en_place(lignes));
+        return Some(remettre(appliquer_en_place(&envoi)));
     }
     let mut aleatoire = [0u8; 16];
     if getrandom::fill(&mut aleatoire).is_err() {
@@ -384,10 +441,10 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
         fils.attendre();
         let _ = std::fs::OpenOptions::new().read(true).write(true).open(&nom);
     });
-    let reponses = serveur.dialoguer(pid, lignes);
+    let reponses = serveur.dialoguer(pid, &envoi, ordre.len());
     drop(serveur);
     let _ = veilleur.join();
-    Some(reponses.unwrap_or_else(|| lignes.iter().map(|_| non_faite()).collect()))
+    Some(reponses.map_or_else(|| lignes.iter().map(|_| non_faite()).collect(), remettre))
 }
 
 /// La relance élevée ne peut pas se préparer : on le dit, rien n'est fait, et aucune autre demande d'administrateur ne
@@ -405,27 +462,163 @@ fn relance_impossible(fr: &str, en: &str) -> Option<Vec<Reponse>> {
     None
 }
 
-/// Déjà administrateur : chaque geste est fait ici, montré au passage, les ordres rejugés comme par le fils.
-fn appliquer_en_place(lignes: &[String]) -> Vec<Reponse> {
-    let Some(liste) = valider(lignes) else {
-        return lignes.iter().map(|_| non_faite()).collect();
+/// Les listes d'un envoi (`gestes::decouper_listes`), chacune validée ; `None` si l'envoi n'a pas cette forme.
+fn valider_listes(envoi: &[String]) -> Option<Vec<Vec<Element>>> {
+    gestes::decouper_listes(envoi)?.iter().map(|l| valider(l)).collect()
+}
+
+/// Déjà administrateur : chaque geste est fait ici, montré au passage, les ordres rejugés comme par le fils. Une
+/// liste de baisses est montrée et demandée ici, comme dans la fenêtre administrateur ; une liste mêlée, refusée.
+/// Les réponses suivent l'ordre de l'envoi, sans les séparateurs.
+fn appliquer_en_place(envoi: &[String]) -> Vec<Reponse> {
+    let Some(listes) = valider_listes(envoi) else {
+        return envoi
+            .iter()
+            .filter(|l| *l != gestes::SUITE)
+            .map(|_| non_faite())
+            .collect();
     };
     let juge = ordres::Juge::lire(None);
     // Vanguard administrateur lui-même : son propre compte.
     let compte = super::processus::sid()
         .ok_or_else(|| tr!("SID illisible dans le jeton", "SID unreadable in the token").to_string());
-    let mut reponses = Vec::with_capacity(liste.len());
-    let mut arret = false;
-    for (e, bilan) in liste.iter().zip(bilans(&liste, &compte)) {
-        let r = if arret {
-            refusee()
-        } else {
-            faire(e, &juge, &compte, bilan)
+    let mut reponses = Vec::with_capacity(envoi.len());
+    // Sans point de restauration, et la personne ne veut pas continuer sans : tout le reste est abandonné, listes
+    // suivantes comprises.
+    let mut abandon = false;
+    for liste in &listes {
+        let Some((sens, baisse)) = juger_liste(liste) else {
+            dire_melee();
+            reponses.extend(liste.iter().map(|_| lire_reponse(&ligne_resultat(&melee()))));
+            continue;
         };
-        arret |= !r.reussi && est_point(e);
-        reponses.push(lire_reponse(&ligne_resultat(&r)));
+        let mut arret = abandon;
+        if baisse && !arret {
+            let montre: Vec<(String, Vec<String>)> = liste.iter().map(|e| (e.texte(), Vec::new())).collect();
+            montrer(&montre, &sens);
+            arret = !question(liste, &sens, true, false);
+            if arret {
+                dire_annule(true);
+            }
+        }
+        for ((e, bilan), s) in liste.iter().zip(bilans(liste, &compte)).zip(&sens) {
+            let r = if arret {
+                refusee()
+            } else {
+                faire(e, &juge, &compte, bilan, s.as_ref().map(|(s, _)| *s))
+            };
+            if !r.reussi && est_point(e) {
+                arret = true;
+                abandon = true;
+            }
+            reponses.push(lire_reponse(&ligne_resultat(&r)));
+        }
     }
     reponses
+}
+
+/// Le sens de chaque ligne d'une liste, relu ici juste avant de la montrer, avec la ligne « nom : actuelle → VISÉE »
+/// d'un choix (`None` pour ce qui n'en est pas un) ; puis vrai pour une liste de baisses. `None` : la liste mêle une
+/// baisse à un autre geste, refusée sans rien demander (le parent ne l'envoie jamais ainsi).
+type Jugement = (Vec<Option<(gestes::Sens, String)>>, bool);
+
+fn juger_liste(liste: &[Element]) -> Option<Jugement> {
+    let sens: Vec<Option<(gestes::Sens, String)>> = liste
+        .iter()
+        .map(|e| match e {
+            Element::Acte(a) => super::defender_ecriture::juger(a),
+            _ => None,
+        })
+        .collect();
+    let seuls: Vec<Option<gestes::Sens>> = sens.iter().map(|s| s.as_ref().map(|(s, _)| *s)).collect();
+    let baisse = gestes::liste_pure(&seuls).ok()?;
+    Some((sens, baisse))
+}
+
+/// La raison d'une liste mêlée, pour chacune de ses lignes.
+fn melee() -> Resultat {
+    Resultat::echec(
+        None,
+        tr!(
+            "liste refusée : elle mêle des changements qui baissent votre protection à d'autres gestes ; rien n'est fait",
+            "list refused: it mixes changes that lower your protection with other steps; nothing is done"
+        )
+        .to_string(),
+    )
+}
+
+fn dire_melee() {
+    trp!(
+        "Liste refusée : elle mêle des changements qui baissent votre protection à d'autres gestes. Rien n'est fait, rien n'est demandé.",
+        "List refused: it mixes changes that lower your protection with other steps. Nothing is done, nothing is asked."
+    );
+}
+
+fn dire_annule(baisse: bool) {
+    if baisse {
+        trp!("Rien n'est baissé.", "Nothing is lowered.");
+    } else {
+        trp!("Annulé : rien n'a été modifié.", "Cancelled: nothing was changed.");
+    }
+}
+
+/// Ce qui va être fait, avec, pour un choix, sa valeur actuelle et la visée, et ce qui baisse la protection en clair.
+fn montrer(montre: &[(String, Vec<String>)], sens: &[Option<(gestes::Sens, String)>]) {
+    println!();
+    trp!("Ce qui va être fait :", "What will be done:");
+    for ((texte, lignes), s) in montre.iter().zip(sens.iter().chain(std::iter::repeat(&None))) {
+        println!("  · {texte}");
+        for l in lignes {
+            println!("    {GRIS}{l}{RESET}");
+        }
+        match s {
+            Some((gestes::Sens::Baisse, t)) => trp!(
+                "    {ACCENT}{}  (baisse la protection){RESET}",
+                "    {ACCENT}{}  (lowers protection){RESET}",
+                t
+            ),
+            Some((gestes::Sens::Rien, t)) => trp!(
+                "    {GRIS}{}  (déjà ainsi : rien à écrire){RESET}",
+                "    {GRIS}{}  (already so: nothing to write){RESET}",
+                t
+            ),
+            Some((gestes::Sens::Renforce, t)) => println!("    {GRIS}{t}{RESET}"),
+            None => {}
+        }
+    }
+    println!();
+}
+
+/// L'accord d'une liste. Une liste de baisses : ce qui reste actif, l'avertissement du temps réel (P10), puis la
+/// question des baisses (`choix_avant::demander_baisse` : un oui tapé dans une vraie console, défaut non). Une autre
+/// liste : dans la fenêtre administrateur (`fils`), Entrée ou oui ; déjà administrateur, l'accord a été donné avant.
+fn question(liste: &[Element], sens: &[Option<(gestes::Sens, String)>], baisse: bool, fils: bool) -> bool {
+    if !baisse {
+        return !fils
+            || accepte(&crate::ui::demander(tr!(
+                "Appuyez sur Entrée pour appliquer ; toute autre réponse qu'oui annule : ",
+                "Press Enter to apply; any answer other than yes cancels: "
+            )));
+    }
+    let mut baisses: Vec<gestes::IdChoix> = Vec::new();
+    for (e, s) in liste.iter().zip(sens) {
+        if let (Element::Acte(a), Some((gestes::Sens::Baisse, _))) = (e, s)
+            && let Some((id, _)) = a.choix()
+            && !baisses.contains(&id)
+        {
+            baisses.push(id);
+        }
+    }
+    for id in &baisses {
+        println!("  {GRIS}{}{RESET}", crate::options_defense::protege_encore(*id));
+    }
+    if baisses.contains(&gestes::IdChoix::Defender(gestes::ReglageDefender::TempsReel)) {
+        trp!(
+            "  {ACCENT}Defender peut juger ce geste suspect et signaler Vanguard.{RESET} Vanguard ne contourne jamais Defender : s'il refuse (protection contre les falsifications), rien n'est baissé.",
+            "  {ACCENT}Defender may judge this step suspicious and flag Vanguard.{RESET} Vanguard never bypasses Defender: if it refuses (Tamper Protection), nothing is lowered."
+        );
+    }
+    crate::machine::choix_avant::demander_baisse(console_reelle(), crate::ui::demander_ou_defaut)
 }
 
 /// Le bilan refait ici pour chaque correction de la table, tous avant le premier geste : un geste de la liste ne
@@ -604,7 +797,9 @@ impl Serveur {
     }
 
     /// Envoie la liste, lit une réponse par ligne ; `None` si le fils n'a pas répondu jusqu'au bout.
-    fn dialoguer(&self, pid: u32, lignes: &[String]) -> Option<Vec<Reponse>> {
+    /// Envoie les lignes (listes séparées par `SUITE`) et lit les réponses : `attendues`, une par ligne d'une liste,
+    /// dans l'ordre d'envoi ; `None` si le compte n'y est pas.
+    fn dialoguer(&self, pid: u32, lignes: &[String], attendues: usize) -> Option<Vec<Reponse>> {
         if !self.attendre_le_fils(pid) {
             return None;
         }
@@ -623,7 +818,7 @@ impl Serveur {
         for ligne in lire_lignes(&fichier)? {
             reponses.push(lire_reponse(&ligne));
         }
-        (reponses.len() == lignes.len()).then_some(reponses)
+        (reponses.len() == attendues).then_some(reponses)
     }
 }
 
@@ -697,7 +892,7 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     let Some(lignes) = lire_lignes(&tube) else {
         return CANAL_REFUSE;
     };
-    let Some(liste) = valider(&lignes) else {
+    let Some(listes) = valider_listes(&lignes) else {
         trp!(
             "La liste reçue n'est pas une liste de corrections de Vanguard : rien n'est fait. Un autre programme y a touché : lancez une analyse antivirus.",
             "The list received is not a Vanguard fix list: nothing is done. Another program touched it: run an antivirus scan."
@@ -707,8 +902,8 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
         return LISTE_REFUSEE;
     };
     // Chaque script est lu et vérifié avant d'être montré : ce que l'Entrée autorise est exactement ce qui sera lancé.
-    // Illisible ou changé depuis son écriture, la liste entière est refusée, sans rien demander.
-    let montre = match a_montrer(&liste) {
+    // Illisible ou changé depuis son écriture, l'envoi entier est refusé, sans rien demander.
+    let montres = match listes.iter().map(|l| a_montrer(l)).collect::<Result<Vec<_>, _>>() {
         Ok(m) => m,
         Err(raison) => {
             trp!(
@@ -721,55 +916,69 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
             return LISTE_REFUSEE;
         }
     };
-    println!();
-    trp!("Ce qui va être fait :", "What will be done:");
-    for (texte, lignes) in &montre {
-        println!("  · {texte}");
-        for l in lignes {
-            println!("    {GRIS}{l}{RESET}");
-        }
-    }
-    println!();
-    let accord = crate::ui::demander(tr!(
-        "Appuyez sur Entrée pour appliquer ; toute autre réponse qu'oui annule : ",
-        "Press Enter to apply; any answer other than yes cancels: "
-    ));
     let mut code = 0;
     // Un échec qui n'est pas un arrêt voulu par la personne : lui seul fait dire « au moins une étape en échec ».
     let mut echec = false;
     let mut a_finir = false;
-    let mut arret = !accepte(&accord);
-    if arret {
-        trp!("Annulé : rien n'a été modifié.", "Cancelled: nothing was changed.");
-    } else if !tube_ouvert(&tube) {
-        // Le Vanguard qui a demandé s'est fermé pendant la lecture : rien de ce qui serait fait ne pourrait être noté
-        // dans « Ce que Vanguard a changé ».
-        trp!(
-            "Le Vanguard qui a demandé la correction s'est fermé : rien n'est fait.",
-            "The Vanguard that asked for the fix has closed: nothing is done."
-        );
-        attendre_entree_pour_fermer();
-        return CANAL_REFUSE;
-    }
-    juge.relire_sessions();
-    let bilans = bilans(&liste, &compte);
-    for (e, bilan) in liste.iter().zip(bilans) {
-        let r = if arret {
-            refusee()
-        } else {
-            faire(e, &juge, &compte, bilan)
-        };
-        if !r.reussi {
+    // Sans point de restauration, et la personne ne veut pas continuer sans : tout le reste est abandonné, listes
+    // suivantes comprises (sans leur question).
+    let mut abandon = false;
+    // Chaque liste (P7 : les choix de Defender à part) est jugée, montrée et demandée à son tour, juste avant ses
+    // gestes : la valeur relue pour juger une baisse est celle de l'instant de la question.
+    'listes: for (liste, montre) in listes.iter().zip(&montres) {
+        let Some((sens, baisse)) = juger_liste(liste) else {
+            dire_melee();
             code = 1;
-            echec |= r.raison != arret_demande() && !r.raison.starts_with(au_redemarrage());
-            a_finir |= r.raison.starts_with(au_redemarrage());
-            // Sans point de restauration, et la personne ne veut pas continuer sans : tout le reste est abandonné.
-            arret |= est_point(e);
+            echec = true;
+            for _ in liste {
+                if tube
+                    .write_all(format!("{}\n", ligne_resultat(&melee())).as_bytes())
+                    .is_err()
+                {
+                    code = CANAL_REFUSE;
+                    break 'listes;
+                }
+            }
+            continue;
+        };
+        let mut arret = abandon;
+        if !arret {
+            montrer(montre, &sens);
+            arret = !question(liste, &sens, baisse, true);
+            if arret {
+                dire_annule(baisse);
+            } else if !tube_ouvert(&tube) {
+                // Le Vanguard qui a demandé s'est fermé pendant la lecture : rien de ce qui serait fait ne pourrait être
+                // noté dans « Ce que Vanguard a changé ».
+                trp!(
+                    "Le Vanguard qui a demandé la correction s'est fermé : rien n'est fait.",
+                    "The Vanguard that asked for the fix has closed: nothing is done."
+                );
+                attendre_entree_pour_fermer();
+                return CANAL_REFUSE;
+            }
         }
-        if tube.write_all(format!("{}\n", ligne_resultat(&r)).as_bytes()).is_err() {
-            // Le parent n'entend plus : ce qui suivrait serait changé sans être noté dans « Ce que Vanguard a changé ».
-            code = CANAL_REFUSE;
-            break;
+        juge.relire_sessions();
+        for ((e, bilan), s) in liste.iter().zip(bilans(liste, &compte)).zip(&sens) {
+            let r = if arret {
+                refusee()
+            } else {
+                faire(e, &juge, &compte, bilan, s.as_ref().map(|(s, _)| *s))
+            };
+            if !r.reussi {
+                code = 1;
+                echec |= r.raison != arret_demande() && !r.raison.starts_with(au_redemarrage());
+                a_finir |= r.raison.starts_with(au_redemarrage());
+                if est_point(e) {
+                    arret = true;
+                    abandon = true;
+                }
+            }
+            if tube.write_all(format!("{}\n", ligne_resultat(&r)).as_bytes()).is_err() {
+                // Le parent n'entend plus : ce qui suivrait serait changé sans être noté dans « Ce que Vanguard a changé ».
+                code = CANAL_REFUSE;
+                break 'listes;
+            }
         }
     }
     let _ = tube.write_all(format!("{FIN}\n").as_bytes());
@@ -879,7 +1088,14 @@ fn refusee() -> Resultat {
 /// `compte` : le SID de la personne, lu dans le jeton du Vanguard qui a lancé ce processus (tenu par une poignée dès
 /// le tube vérifié), ou dans le sien quand Vanguard est lui-même administrateur ; l'erreur de lecture sinon.
 /// `bilan` : celui de `bilans`, pour une correction de la table.
-fn faire(e: &Element, juge: &ordres::Juge, compte: &Result<String, String>, bilan: corrections::Bilan) -> Resultat {
+/// `montre` : le sens d'un choix tel qu'il a été montré avant l'accord, rejugé juste avant d'écrire.
+fn faire(
+    e: &Element,
+    juge: &ordres::Juge,
+    compte: &Result<String, String>,
+    bilan: corrections::Bilan,
+    montre: Option<gestes::Sens>,
+) -> Resultat {
     println!("{GRIS}> {}  {}{RESET}", chrono::Local::now().format("%H:%M"), e.texte());
     let r = match e {
         Element::Correction(c) => corrections::appliquer(c, compte, bilan),
@@ -901,10 +1117,15 @@ fn faire(e: &Element, juge: &ordres::Juge, compte: &Result<String, String>, bila
         Element::Programme(a) if coupe(a.coupe_le_reseau(), juge) => refus_session(),
         Element::Acte(a) if coupe(a.touche_le_reseau(), juge) => refus_session(),
         Element::Programme(a) => lancer_programme(a),
-        Element::Acte(a) => super::services_ecriture::faire(a, compte),
+        Element::Acte(a) => super::defender_ecriture::faire_choix(a, montre)
+            .unwrap_or_else(|| super::services_ecriture::faire(a, compte)),
     };
     if r.reussi {
         match &r.avant {
+            Some(avant) if r.raison == corrections::NOTE_CHOIX => trp!(
+                "  {VERT}OK{RESET} (avant : {avant} ; noté, « Rallumer » le remet)",
+                "  {VERT}OK{RESET} (before: {avant}; noted, “Turn back on” restores it)"
+            ),
             Some(avant) => trp!(
                 "  {VERT}OK{RESET} (avant : {avant})",
                 "  {VERT}OK{RESET} (before: {avant})"
@@ -1647,6 +1868,86 @@ mod tests {
         let r = lire_reponse("echec code=1 etats=101");
         assert!(!r.reussi && r.code == Some(1) && r.etats == Some(vec![true, false, true]));
         assert!(lire_reponse("echec code=1").etats.is_none());
+    }
+
+    /// Une baisse faite part au parent avec sa valeur d'avant et « note=choix » ; une note impossible part en
+    /// « echec note », sans valeur d'avant (rien n'a été écrit). Une autre valeur d'avant qui finirait par le même mot
+    /// reste entière.
+    #[test]
+    fn une_baisse_notee_se_lit() {
+        let faite = Resultat {
+            reussi: true,
+            rien: false,
+            avant: Some("defender-pua=1".into()),
+            raison: corrections::NOTE_CHOIX.into(),
+        };
+        let l = ligne_resultat(&faite);
+        assert_eq!(l, "ok avant=defender-pua=1 note=choix");
+        let r = lire_reponse(&l);
+        assert!(r.reussi && !r.rien && r.avant.as_deref() == Some("defender-pua=1"));
+        assert_eq!(r.note.as_deref(), Some(corrections::NOTE_CHOIX));
+        let asr = "ok avant=asr-56a863a9-875e-4185-98a7-b882c64b5ce5=absente note=choix";
+        assert_eq!(
+            lire_reponse(asr).avant.as_deref(),
+            Some("asr-56a863a9-875e-4185-98a7-b882c64b5ce5=absente")
+        );
+        // Pas l'identifiant d'un choix, ou valeur qui n'est pas un nombre écrit par Vanguard : pris tel quel.
+        for autre in [
+            "ok avant=1 note=choix",
+            "ok avant=defender-inconnu=1 note=choix",
+            "ok avant=defender-pua=+1 note=choix",
+        ] {
+            let r = lire_reponse(autre);
+            assert_eq!(r.avant.as_deref(), autre.strip_prefix("ok avant="), "{autre}");
+            assert!(r.note.is_none(), "{autre}");
+        }
+        let note = ligne_resultat(&Resultat::echec(None, corrections::echec_note().into()));
+        assert_eq!(note, ECHEC_NOTE);
+        let r = lire_reponse(&note);
+        assert!(!r.reussi && r.avant.is_none() && !r.arretee && r.note.is_none());
+    }
+
+    /// Le tube porte au plus deux listes séparées par « suite » (P7), chacune validée comme une liste seule ; une
+    /// liste vide, une troisième ou « suite » seule sont refusées, et « suite » n'est jamais une ligne d'une liste.
+    #[test]
+    fn les_listes_du_tube() {
+        use gestes::{ChoixDefender, IdChoix, ReglageDefender, SUITE};
+        let l = |s: &str| s.to_string();
+        let baisse = gestes::ligne_baisse_defender(ReglageDefender::Pua, ChoixDefender::Coupe).unwrap();
+        let rallumer = gestes::ligne_rallumer(IdChoix::Defender(ReglageDefender::Pua));
+        assert!(valider(&[l(SUITE)]).is_none());
+        let deux = [l("vanguard:rdp-nla"), rallumer.clone(), l(SUITE), baisse.clone()];
+        let listes = valider_listes(&deux).expect("deux listes");
+        assert_eq!(listes.iter().map(Vec::len).collect::<Vec<_>>(), [2, 1]);
+        assert_eq!(valider_listes(&[l("vanguard:rdp-nla")]).map(|v| v.len()), Some(1));
+        for refusee in [
+            vec![l(SUITE)],
+            vec![l(SUITE), baisse.clone()],
+            vec![baisse.clone(), l(SUITE)],
+            vec![l("vanguard:rdp-nla"), l(SUITE), l(SUITE), baisse.clone()],
+            vec![
+                l("vanguard:rdp-nla"),
+                l(SUITE),
+                rallumer.clone(),
+                l(SUITE),
+                baisse.clone(),
+            ],
+            vec![l("vanguard:rdp-nla"), l(SUITE), l("vanguard:inconnu")],
+        ] {
+            assert!(valider_listes(&refusee).is_none(), "{refusee:?}");
+        }
+        // Le parent envoie les choix à part, et remet les réponses à leur place d'origine.
+        let lignes = [baisse.clone(), l("vanguard:rdp-nla"), rallumer];
+        let (envoi, ordre) = gestes::joindre_listes(&lignes, &gestes::separer_choix(&lignes));
+        assert_eq!(envoi, [l("vanguard:rdp-nla"), lignes[2].clone(), l(SUITE), baisse]);
+        assert_eq!(ordre, [1, 2, 0]);
+        assert_eq!(
+            gestes::remettre_en_ordre(&ordre, vec!["b", "c", "a"]),
+            Some(vec!["a", "b", "c"])
+        );
+        assert_eq!(gestes::remettre_en_ordre(&ordre, vec!["b", "c"]), None);
+        assert_eq!(gestes::remettre_en_ordre(&[0, 0], vec!["a", "b"]), None);
+        assert_eq!(gestes::remettre_en_ordre(&[0, 5], vec!["a", "b"]), None);
     }
 
     /// Les lignes reçues s'arrêtent à « fin » et sont bornées : un flux sans fin, trop long ou trop fourni est refusé.

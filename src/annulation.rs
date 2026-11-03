@@ -5,6 +5,7 @@
 //! Chaque réglage est relu après coup : ce qui n'est pas revenu est dit, et sa note reste pour réessayer.
 
 use crate::changements::{Annulation, Blocage};
+use crate::machine::gestes::IdChoix;
 use crate::optimiser::annulables::{self, Issue, Note, Origine};
 use crate::ui::*;
 
@@ -12,21 +13,55 @@ use crate::ui::*;
 enum Element {
     Note(Note),
     Blocage(String, Box<Blocage>),
+    /// Un choix de Defender baissé par la personne (note ChoixAvant) : « Rallumer » le remet, jamais plus bas que
+    /// « allumé ».
+    Rallumer(String, IdChoix),
 }
 
 impl Element {
     fn date(&self) -> &str {
         match self {
             Element::Note(n) => &n.date,
-            Element::Blocage(d, _) => d,
+            Element::Blocage(d, _) | Element::Rallumer(d, _) => d,
         }
     }
 }
 
+/// Les choix baissés à rallumer, datés comme les autres notes (à la minute, heure locale) ; une note abîmée n'a pas
+/// de date sûre : « ? », rangée en tête (défaite d'abord : « Rallumer » ne baisse rien).
+fn choix_a_rallumer(notes: Vec<(IdChoix, Option<crate::machine::choix_avant::Note>)>) -> Vec<(String, IdChoix)> {
+    notes
+        .into_iter()
+        .map(|(id, n)| {
+            let date = n
+                .and_then(|n| i64::try_from(n.date).ok())
+                .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
+                .map_or_else(
+                    || "?".to_string(),
+                    |d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string(),
+                );
+            (date, id)
+        })
+        .collect()
+}
+
+/// Les lignes que « Tout remettre » lance pour les choix : seulement des `vanguard:rallumer`, une par réglage, dans
+/// l'ordre des éléments. Jamais une baisse : « Rallumer » n'a pas de valeur, son plancher est « allumé ».
+fn lignes_rallumer(elements: &[Element]) -> Vec<Vec<String>> {
+    elements
+        .iter()
+        .filter_map(|e| match e {
+            Element::Rallumer(_, id) => Some(vec![crate::machine::gestes::ligne_rallumer(*id)]),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Les notes et les blocages, du plus récent au plus ancien : l'ordre où ils se défont. Un blocage qui a retiré un
 /// programme du démarrage n'y est pas : sa note d'Optimiser (« demarrage:… ») le défait.
-fn a_defaire(notes: Vec<Note>, blocages: Vec<(String, Blocage)>) -> Vec<Element> {
+fn a_defaire(notes: Vec<Note>, blocages: Vec<(String, Blocage)>, choix: Vec<(String, IdChoix)>) -> Vec<Element> {
     let mut l: Vec<Element> = notes.into_iter().map(Element::Note).collect();
+    l.extend(choix.into_iter().map(|(d, id)| Element::Rallumer(d, id)));
     l.extend(
         blocages
             .into_iter()
@@ -68,6 +103,15 @@ fn ligne(e: &Element) -> String {
             };
             format!("[{}] {}{refus}", tr!("Blocage", "Block"), affichable(&b.quoi))
         }
+        Element::Rallumer(_, id) => format!(
+            "[{}] {}",
+            tr!("Defender", "Defender"),
+            trf!(
+                "Rallumer : {}",
+                "Turn back on: {}",
+                crate::options_defense::nom_choix(*id)
+            )
+        ),
     }
 }
 
@@ -81,7 +125,8 @@ pub fn tout_remettre() {
     let tient = crate::reseau::wifi_public::tient_le_dns();
     let mut blocages = crate::changements::blocages_en_place();
     blocages.reverse();
-    let elements = a_defaire(annulables::notes(None), blocages);
+    let choix = choix_a_rallumer(crate::machine::choix_avant::notes());
+    let elements = a_defaire(annulables::notes(None), blocages, choix);
     if elements.is_empty() {
         trp!(
             "  {GRIS}Vanguard n'a rien changé qu'il sache défaire sur cet ordinateur.{RESET}",
@@ -162,7 +207,7 @@ fn blocages_prepares(elements: &[Element]) -> (Vec<(&Blocage, Prepare)>, Vec<Vec
         .iter()
         .filter_map(|e| match e {
             Element::Blocage(_, b) => preparer(b).map(|p| (&**b, p)),
-            Element::Note(_) => None,
+            Element::Note(_) | Element::Rallumer(..) => None,
         })
         .collect();
     let groupes = prepares
@@ -179,10 +224,14 @@ fn remettre(elements: &[Element]) {
         .iter()
         .filter_map(|e| match e {
             Element::Note(n) => Some(n.id.clone()),
-            Element::Blocage(..) => None,
+            Element::Blocage(..) | Element::Rallumer(..) => None,
         })
         .collect();
-    let (prepares, groupes) = blocages_prepares(elements);
+    let (prepares, mut groupes) = blocages_prepares(elements);
+    // Les choix à rallumer après les blocages, dans la même demande administrateur : leurs réussites suivent celles
+    // des blocages admis dans `plus`.
+    let premier_choix = groupes.len();
+    groupes.extend(lignes_rallumer(elements));
     // Le rang de chaque blocage admis dans `groupes`, donc dans les réussites rendues.
     let admis: Vec<(&str, Option<&String>)> = prepares
         .iter()
@@ -190,8 +239,31 @@ fn remettre(elements: &[Element]) {
         .collect();
     let (issues, plus) = annulables::defaire(&ids, &groupes);
     println!();
+    let mut rang_choix = premier_choix;
     for e in elements {
         match e {
+            Element::Rallumer(_, id) => {
+                let nom = crate::options_defense::nom_choix(*id);
+                if plus.get(rang_choix) == Some(&true) {
+                    trp!(
+                        "  {VERT}✔{RESET} {} : rallumé.",
+                        "  {VERT}✔{RESET} {}: turned back on.",
+                        nom
+                    );
+                } else {
+                    afficher_aligne(
+                        "  ✖ ",
+                        &trf!(
+                            "{} : pas rallumé (voir le message ci-dessus) ; sa note reste pour réessayer.",
+                            "{}: not turned back on (see the message above); its note stays to try again.",
+                            nom
+                        ),
+                        4,
+                        "",
+                    );
+                }
+                rang_choix += 1;
+            }
             Element::Note(n) => {
                 let issue = issues
                     .iter()
@@ -250,6 +322,7 @@ fn remettre(elements: &[Element]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::machine::gestes::ReglageDefender;
 
     fn note(id: &str, date: &str, origine: Origine) -> Note {
         Note {
@@ -302,14 +375,16 @@ mod tests {
                 ),
             ),
         ];
-        let ordre: Vec<String> = a_defaire(notes, blocages)
+        let choix = vec![("2026-10-21 08:00".to_string(), IdChoix::Defender(ReglageDefender::Pua))];
+        let ordre: Vec<String> = a_defaire(notes, blocages, choix)
             .iter()
             .map(|e| match e {
                 Element::Note(n) => n.id.clone(),
                 Element::Blocage(_, b) => b.id.clone(),
+                Element::Rallumer(_, id) => id.texte(),
             })
             .collect();
-        assert_eq!(ordre, ["bilan:b", "x", "jeux:hags", "dns_rapide"]);
+        assert_eq!(ordre, ["bilan:b", "x", "defender-pua", "jeux:hags", "dns_rapide"]);
     }
 
     /// Un programme du compte écrit dans changements.jsonl un blocage « en place » dont l'annulation est sa propre
@@ -340,6 +415,7 @@ mod tests {
                 ("2026-10-23 07:00".to_string(), blocage("forge", forge)),
                 ("2026-10-22 07:00".to_string(), blocage("type", champs)),
             ],
+            Vec::new(),
         );
         let (prepares, groupes) = blocages_prepares(&elements);
         assert_eq!(groupes, [vec!["vanguard:debloquer-sortie ufw 203.0.113.7".to_string()]]);
@@ -350,6 +426,46 @@ mod tests {
         // Le port à oublier vient des champs typés (une règle sortante n'en retient pas), pas du relevé.
         let typee = prepares.iter().find(|(b, _)| b.id == "type").map(|(_, p)| p.clone());
         assert!(matches!(typee, Some(Ok((_, None)))), "{typee:?}");
+    }
+
+    /// « Tout remettre » ne produit jamais de baisse : pour chaque réglage des choix, noté ou abîmé, la seule ligne
+    /// lancée est un `vanguard:rallumer` sans valeur, qui renforce (jamais un choix, jamais dans la liste des baisses
+    /// du processus élevé) ; une note abîmée garde son réglage à remettre.
+    #[test]
+    fn tout_remettre_ne_baisse_jamais() {
+        use crate::machine::gestes::{self, ASR_TOUTES, Acte};
+        let mut ids: Vec<IdChoix> = ReglageDefender::TOUS.into_iter().map(IdChoix::Defender).collect();
+        ids.extend(ASR_TOUTES.into_iter().map(IdChoix::Asr));
+        assert!(ids.len() > 10, "{ids:?}");
+        let note = |id: IdChoix| crate::machine::choix_avant::Note {
+            id: id.texte(),
+            avant: Some(0),
+            posee: 0,
+            date: 1_793_000_000,
+        };
+        let notes: Vec<(IdChoix, Option<crate::machine::choix_avant::Note>)> = ids
+            .iter()
+            .enumerate()
+            .map(|(k, &id)| (id, (k % 2 == 0).then(|| note(id))))
+            .collect();
+        let choix = choix_a_rallumer(notes);
+        assert_eq!(choix.len(), ids.len());
+        assert!(choix.iter().any(|(d, _)| d == "?") && choix.iter().any(|(d, _)| d.starts_with("2026-")));
+        let elements = a_defaire(Vec::new(), Vec::new(), choix);
+        let groupes = lignes_rallumer(&elements);
+        assert_eq!(groupes.len(), ids.len());
+        let lignes: Vec<String> = groupes.into_iter().flatten().collect();
+        for l in &lignes {
+            let acte = gestes::analyser_acte(l);
+            assert!(matches!(acte, Some(Acte::Rallumer(_))), "{l}");
+            let acte = acte.unwrap();
+            assert!(acte.choix().is_none() && acte.durcit(), "{l}");
+        }
+        // Tout dans la première liste : aucune ne part dans celle des choix (`separer_choix`).
+        assert_eq!(
+            gestes::separer_choix(&lignes),
+            vec![(0..lignes.len()).collect::<Vec<_>>()]
+        );
     }
 
     /// Les textes de « Tout remettre comme avant » tiennent dans `LARGEUR` colonnes, dans les deux langues.

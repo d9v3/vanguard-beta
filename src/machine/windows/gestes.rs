@@ -1837,6 +1837,18 @@ pub(crate) const DEFENDER_ASR: &str = "vanguard:defender-asr ";
 pub(crate) const DEFENDER_EXCLUSION_RETIRER: &str = "vanguard:defender-exclusion-retirer ";
 /// Les menaces trouvées par Defender, retirées (MSFT_MpThreat.Remove), sans argument.
 pub(crate) const DEFENDER_MENACES_RETIRER: &str = "vanguard:defender-menaces-retirer";
+/// Le verbe d'un choix exact de la personne pour un réglage de Defender : `vanguard:defender-choix <reglage> <choix>`
+/// (`ReglageDefender::choix`). Contrairement à `defender`, qui ne fait que renforcer, ce choix peut baisser : le sens
+/// n'est jamais lu dans la ligne, le processus élevé le juge sur la valeur relue (`sens`), montre une baisse et pose sa
+/// question avant de rien écrire, puis note la valeur d'avant pour « Rallumer » (`choix_avant`).
+pub(crate) const DEFENDER_CHOIX: &str = "vanguard:defender-choix ";
+/// Le verbe d'un choix exact pour une règle ASR : `vanguard:defender-asr-choix <GUID de ASR_TOUTES>
+/// <bloquer|audit|desactiver>`, jugé comme `defender-choix`.
+pub(crate) const DEFENDER_ASR_CHOIX: &str = "vanguard:defender-asr-choix ";
+/// Le verbe qui rallume ce qu'un choix a baissé : `vanguard:rallumer <id>`, sans aucune valeur. Le processus élevé
+/// calcule la cible lui-même (`cible_rallumer`) : la valeur d'avant de la note si elle est valide et au moins au
+/// plancher, sinon la valeur sûre. Une ligne ne peut donc jamais faire « rallumer » plus faible qu'allumé.
+pub(crate) const RALLUMER: &str = "vanguard:rallumer ";
 
 /// Règles ASR que Microsoft dit sans revers (« standard protection rules »), en minuscules comme Microsoft les
 /// écrit. Ici plutôt que dans Optimiser : une ligne `defender-asr` ne désigne qu'une règle de ces listes, et ce module
@@ -1863,6 +1875,35 @@ pub(crate) const ASR_BUREAUTIQUE: [&str; 8] = [
 /// pas même retirée.
 pub(crate) fn asr_connue(id: &str) -> Option<&'static str> {
     ASR_BASE.iter().chain(&ASR_BUREAUTIQUE).copied().find(|r| *r == id)
+}
+
+/// Les 19 règles ASR que Microsoft documente (« Attack surface reduction rules reference »), en minuscules : celles
+/// qu'une ligne `defender-asr-choix` peut désigner (le choix de la personne, dans les Options), et que l'écran lit.
+pub(crate) const ASR_TOUTES: [&str; 19] = [
+    "56a863a9-875e-4185-98a7-b882c64b5ce5",
+    "9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2",
+    "e6db77e5-3df2-4cf1-b95a-636979351e5b",
+    "d4f940ab-401b-4efc-aadc-ad5f3c50688a",
+    "3b576869-a4ec-4529-8536-b80a7769e899",
+    "75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84",
+    "92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b",
+    "26190899-1602-49e8-8b27-eb1d0a1ce869",
+    "7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c",
+    "be9ba2d9-53ea-4cdc-84e5-9b1eeee46550",
+    "d3e037e1-3eb8-44c8-a917-57927947596d",
+    "5beb7efe-fd9a-4556-801d-275e5ffc04cc",
+    "01443614-cd74-433a-b99e-2ecdc07bfc25",
+    "c1db55ab-c21a-4637-bb3f-a12568109d35",
+    "d1e49aac-8f56-4280-b9ba-993a6d77406c",
+    "b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4",
+    "c0033c00-d16d-4114-a5a0-dc9b3a7d2ceb",
+    "33ddedf1-c6e0-47cb-833e-de6133960387",
+    "a8f5898e-1dc8-49a9-9878-85004b8a61e6",
+];
+
+/// La règle de `ASR_TOUTES` qui porte exactement cet identifiant (minuscules, sans accolades).
+pub(crate) fn asr_toute(id: &str) -> Option<&'static str> {
+    ASR_TOUTES.iter().copied().find(|r| *r == id)
 }
 
 /// Un réglage de Defender qu'une ligne peut renforcer, propriété de MSFT_MpPreference comprise.
@@ -1998,6 +2039,364 @@ impl ValeurDefender {
     }
 }
 
+// ------------------------------------------------- choix de la personne (baisse, Rallumer)
+
+/// Le choix exact d'une ligne `defender-choix`, que le réglage admet ou non (`ReglageDefender::choix`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChoixDefender {
+    /// La protection en temps réel en marche.
+    Allume,
+    /// Le réglage coupé.
+    Coupe,
+    /// Le cloud complet (« Advanced »).
+    Avance,
+    /// Le cloud de base (« Basic »).
+    Base,
+    Bloquer,
+    /// L'accès contrôlé aux dossiers qui ne bloque que l'écriture sur les disques.
+    Disques,
+    /// Signale sans bloquer.
+    Audit,
+}
+
+impl ChoixDefender {
+    pub(crate) const TOUS: [ChoixDefender; 7] = [
+        ChoixDefender::Allume,
+        ChoixDefender::Coupe,
+        ChoixDefender::Avance,
+        ChoixDefender::Base,
+        ChoixDefender::Bloquer,
+        ChoixDefender::Disques,
+        ChoixDefender::Audit,
+    ];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ChoixDefender::Allume => "allume",
+            ChoixDefender::Coupe => "coupe",
+            ChoixDefender::Avance => "avance",
+            ChoixDefender::Base => "base",
+            ChoixDefender::Bloquer => "bloquer",
+            ChoixDefender::Disques => "disques",
+            ChoixDefender::Audit => "audit",
+        }
+    }
+}
+
+impl ReglageDefender {
+    /// Les choix qu'une ligne `defender-choix` peut porter pour ce réglage, coupé compris.
+    pub(crate) fn choix(self) -> &'static [ChoixDefender] {
+        match self {
+            ReglageDefender::TempsReel => &[ChoixDefender::Allume, ChoixDefender::Coupe],
+            ReglageDefender::Maps => &[ChoixDefender::Avance, ChoixDefender::Base, ChoixDefender::Coupe],
+            ReglageDefender::Cfa => &[
+                ChoixDefender::Bloquer,
+                ChoixDefender::Disques,
+                ChoixDefender::Audit,
+                ChoixDefender::Coupe,
+            ],
+            ReglageDefender::Np | ReglageDefender::Pua => {
+                &[ChoixDefender::Bloquer, ChoixDefender::Audit, ChoixDefender::Coupe]
+            }
+        }
+    }
+
+    /// La valeur de la propriété pour un choix de ce réglage (DisableRealtimeMonitoring : 0 en marche, 1 coupée) ;
+    /// `None` pour un choix que le réglage n'admet pas.
+    pub(crate) fn valeur_choix(self, c: ChoixDefender) -> Option<i64> {
+        if !self.choix().contains(&c) {
+            return None;
+        }
+        Some(match (self, c) {
+            (ReglageDefender::TempsReel, ChoixDefender::Coupe) | (_, ChoixDefender::Bloquer | ChoixDefender::Base) => 1,
+            (_, ChoixDefender::Avance | ChoixDefender::Audit) => 2,
+            (_, ChoixDefender::Disques) => 3,
+            (_, _) => 0,
+        })
+    }
+
+    /// L'identifiant du réglage dans les Options et dans les notes (`defender-<id>`), celui de `options_defense::Opt`.
+    pub(crate) fn id_choix(self) -> &'static str {
+        match self {
+            ReglageDefender::TempsReel => "temps-reel",
+            ReglageDefender::Maps => "cloud",
+            ReglageDefender::Cfa => "dossiers",
+            ReglageDefender::Np => "reseau",
+            ReglageDefender::Pua => "pua",
+        }
+    }
+
+    /// La valeur sûre par défaut, celle que vise « Rallumer » sans note valide : temps réel en marche, cloud avancé,
+    /// bloquer.
+    pub(crate) fn sure(self) -> i64 {
+        match self {
+            ReglageDefender::TempsReel => 0,
+            ReglageDefender::Maps => 2,
+            _ => 1,
+        }
+    }
+
+    /// Le paramètre de MSFT_MpPreference.Set pour une valeur exacte de la propriété : un booléen pour le temps réel
+    /// (0 ou 1 seulement), un octet sinon ; `None` pour une valeur hors de ce que le réglage connaît.
+    pub(crate) fn wmi_de(self, v: i64) -> Option<ValeurWmi> {
+        match self {
+            ReglageDefender::TempsReel => match v {
+                0 => Some(ValeurWmi::Booleen(false)),
+                1 => Some(ValeurWmi::Booleen(true)),
+                _ => None,
+            },
+            ReglageDefender::Maps | ReglageDefender::Np | ReglageDefender::Pua => {
+                u8::try_from(v).ok().filter(|n| *n <= 2).map(ValeurWmi::Octet)
+            }
+            ReglageDefender::Cfa => u8::try_from(v).ok().filter(|n| *n <= 4).map(ValeurWmi::Octet),
+        }
+    }
+}
+
+/// Le choix exact d'une ligne `defender-asr-choix` : l'action de la règle (1 bloque, 2 audit, 0 désactivée).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChoixAsr {
+    Bloquer,
+    Audit,
+    Desactiver,
+}
+
+impl ChoixAsr {
+    pub(crate) const TOUS: [ChoixAsr; 3] = [ChoixAsr::Bloquer, ChoixAsr::Audit, ChoixAsr::Desactiver];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ChoixAsr::Bloquer => "bloquer",
+            ChoixAsr::Audit => "audit",
+            ChoixAsr::Desactiver => "desactiver",
+        }
+    }
+
+    pub(crate) fn action(self) -> i64 {
+        match self {
+            ChoixAsr::Bloquer => 1,
+            ChoixAsr::Audit => 2,
+            ChoixAsr::Desactiver => 0,
+        }
+    }
+}
+
+/// Ce qu'un choix règle, nommé dans les notes « avant » (`choix_avant`) et dans `vanguard:rallumer <id>` :
+/// `defender-<id>` ou `asr-<GUID>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdChoix {
+    Defender(ReglageDefender),
+    Asr(&'static str),
+}
+
+impl IdChoix {
+    pub(crate) fn texte(self) -> String {
+        match self {
+            IdChoix::Defender(r) => format!("defender-{}", r.id_choix()),
+            IdChoix::Asr(id) => format!("asr-{id}"),
+        }
+    }
+
+    /// L'identifiant d'un texte, si et seulement s'il en a la forme exacte.
+    pub(crate) fn lire(texte: &str) -> Option<IdChoix> {
+        let id = if let Some(r) = texte.strip_prefix("defender-") {
+            IdChoix::Defender(*ReglageDefender::TOUS.iter().find(|x| x.id_choix() == r)?)
+        } else {
+            IdChoix::Asr(asr_toute(texte.strip_prefix("asr-")?)?)
+        };
+        (id.texte() == texte).then_some(id)
+    }
+
+    /// Le rang de protection d'une valeur (`None` : règle ASR absente de la liste). Plus haut, plus sûr ; une valeur
+    /// inconnue vaut 0.
+    pub(crate) fn rang(self, v: Option<i64>) -> u8 {
+        match self {
+            IdChoix::Defender(r) => v.map_or(0, |v| r.rang(v)),
+            IdChoix::Asr(_) => rang_asr(v),
+        }
+    }
+
+    /// Le rang le plus bas qu'une valeur d'avant notée peut avoir pour que « Rallumer » la remette : allumé (audit
+    /// compris), jamais coupé.
+    pub(crate) fn plancher(self) -> u8 {
+        match self {
+            IdChoix::Defender(_) | IdChoix::Asr(_) => 1,
+        }
+    }
+
+    /// La valeur sûre par défaut : temps réel en marche, cloud avancé, bloquer.
+    pub(crate) fn sure(self) -> i64 {
+        match self {
+            IdChoix::Defender(r) => r.sure(),
+            IdChoix::Asr(_) => 1,
+        }
+    }
+}
+
+/// La cible de `vanguard:rallumer` : la valeur d'avant d'une note valide (`None` : pas de note, ou abîmée) si elle
+/// est au moins au plancher, sinon la valeur sûre. Une note forgée, tronquée ou qui dit « coupé » ne fait donc jamais
+/// rallumer plus faible qu'allumé.
+#[allow(clippy::option_option)] // None : illisible ou sans note ; Some(None) : valeur absente
+pub(crate) fn cible_rallumer(id: IdChoix, avant_note: Option<Option<i64>>) -> i64 {
+    match avant_note {
+        Some(Some(v)) if id.rang(Some(v)) >= id.plancher() => v,
+        _ => id.sure(),
+    }
+}
+
+/// Le sens d'un geste, jugé sur la valeur relue, jamais lu dans la ligne.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Sens {
+    Renforce,
+    Baisse,
+    /// Déjà à la valeur demandée : rien à écrire.
+    Rien,
+}
+
+/// Le sens d'un choix : `lue`, la valeur relue (`None` : illisible, `Some(None)` : règle absente) ; `cible`, la
+/// valeur demandée. Illisible : une baisse, pour que la question soit posée (le geste échouera de toute façon, faute
+/// de relecture). À rang égal, la même valeur ne fait rien ; une autre valeur connue du même rang (audit des disques
+/// et audit de tout) n'est pas une baisse ; deux valeurs inconnues ou coupées différentes, si (rien n'est cru).
+#[allow(clippy::option_option)] // None : illisible ou sans note ; Some(None) : valeur absente
+pub(crate) fn sens(id: IdChoix, lue: Option<Option<i64>>, cible: Option<i64>) -> Sens {
+    let Some(lue) = lue else {
+        return Sens::Baisse;
+    };
+    let (avant, apres) = (id.rang(lue), id.rang(cible));
+    if apres > avant {
+        Sens::Renforce
+    } else if apres < avant {
+        Sens::Baisse
+    } else if lue == cible {
+        Sens::Rien
+    } else if apres > 0 {
+        Sens::Renforce
+    } else {
+        Sens::Baisse
+    }
+}
+
+/// Une liste reçue par le processus élevé, jugée : `sens`, pour chaque ligne, celui d'un choix (`None` : un autre
+/// geste, dont le sens est celui de son type). `Ok(true)` : une liste de baisses, que la question `[o/N]` garde ;
+/// `Ok(false)` : une liste ordinaire, gardée par l'accord habituel ; `Err(())` : une liste mêlée (une baisse parmi
+/// des gestes qui ne sont pas des choix), refusée en entier. Une liste de baisses peut porter d'autres choix (un
+/// réglage remonté en même temps, un réglage déjà à la valeur demandée) : chacun est montré avec son sens, et rejugé
+/// avant l'écriture (devenu une baisse sans avoir été montré comme telle, il est refusé). Une baisse ne se cache donc
+/// jamais parmi les corrections du bilan.
+#[allow(clippy::result_unit_err)]
+pub(crate) fn liste_pure(sens: &[Option<Sens>]) -> Result<bool, ()> {
+    if !sens.contains(&Some(Sens::Baisse)) {
+        return Ok(false);
+    }
+    if sens.iter().all(Option::is_some) {
+        Ok(true)
+    } else {
+        Err(())
+    }
+}
+
+/// Les deux listes que le parent envoie au processus élevé, en une seule demande d'administrateur (P7) : les places
+/// des lignes ordinaires, puis celles des choix exacts (`defender-choix`, `defender-asr-choix`), chacune dans son
+/// ordre. Une liste sans choix, ou faite seulement de choix, reste seule. Le processus élevé juge chacune à part
+/// (`liste_pure`) : les choix y sont montrés et demandés à part, jamais cachés parmi d'autres gestes.
+pub(crate) fn separer_choix(lignes: &[String]) -> Vec<Vec<usize>> {
+    let (choix, autres): (Vec<usize>, Vec<usize>) = (0..lignes.len()).partition(|&i| {
+        lignes
+            .get(i)
+            .and_then(|l| analyser_acte(l))
+            .is_some_and(|a| a.choix().is_some())
+    });
+    [autres, choix].into_iter().filter(|l| !l.is_empty()).collect()
+}
+
+/// La ligne qui sépare deux listes dans le tube du processus élevé (P7) : jamais une ligne d'une liste (ni acte, ni
+/// correction, ni ordre : `valider` la refuse).
+pub(crate) const SUITE: &str = "suite";
+/// Le plus de listes qu'un envoi porte : les lignes ordinaires, puis les choix (`separer_choix`).
+pub(crate) const LISTES_MAX: usize = 2;
+
+/// Les lignes à envoyer pour ces listes (`separer_choix`), séparées par `SUITE`, et la place d'origine de chaque
+/// ligne envoyée, dans l'ordre d'envoi (celui des réponses).
+pub(crate) fn joindre_listes(lignes: &[String], groupes: &[Vec<usize>]) -> (Vec<String>, Vec<usize>) {
+    let mut envoi = Vec::with_capacity(lignes.len().saturating_add(groupes.len()));
+    let mut ordre = Vec::with_capacity(lignes.len());
+    for (k, g) in groupes.iter().enumerate() {
+        if k > 0 {
+            envoi.push(SUITE.to_string());
+        }
+        for &i in g {
+            if let Some(l) = lignes.get(i) {
+                envoi.push(l.clone());
+                ordre.push(i);
+            }
+        }
+    }
+    (envoi, ordre)
+}
+
+/// Les listes reçues par le processus élevé : `None` si l'une est vide (deux `SUITE` de suite, ou en tête ou en fin)
+/// ou s'il y en a plus de `LISTES_MAX`.
+pub(crate) fn decouper_listes(lignes: &[String]) -> Option<Vec<Vec<String>>> {
+    let listes: Vec<Vec<String>> = lignes.split(|l| l == SUITE).map(<[String]>::to_vec).collect();
+    (listes.len() <= LISTES_MAX && listes.iter().all(|l| !l.is_empty())).then_some(listes)
+}
+
+/// Les réponses, reçues dans l'ordre d'envoi, remises à la place de leur ligne ; `None` si leur nombre ou les places
+/// ne vont pas (une réponse perdue ne prend jamais la place d'une autre).
+pub(crate) fn remettre_en_ordre<T>(ordre: &[usize], reponses: Vec<T>) -> Option<Vec<T>> {
+    if ordre.len() != reponses.len() {
+        return None;
+    }
+    let mut places: Vec<Option<T>> = std::iter::repeat_with(|| None).take(ordre.len()).collect();
+    for (&i, r) in ordre.iter().zip(reponses) {
+        let place = places.get_mut(i)?;
+        if place.is_some() {
+            return None;
+        }
+        *place = Some(r);
+    }
+    places.into_iter().collect()
+}
+
+/// La méthode de MSFT_MpPreference pour écrire une valeur exacte d'un choix : Set pour un réglage, Add pour une
+/// règle ASR (Set remplacerait toute la liste) ; `None` pour une valeur que le réglage ne connaît pas.
+pub(crate) fn methode_choix(id: IdChoix, v: i64) -> Option<(&'static str, Vec<(&'static str, ValeurWmi)>)> {
+    match id {
+        IdChoix::Defender(r) => Some(("Set", vec![(r.propriete(), r.wmi_de(v)?)])),
+        IdChoix::Asr(guid) => {
+            let action = u8::try_from(v).ok().filter(|a| matches!(a, 0 | 1 | 2 | 6))?;
+            Some((
+                "Add",
+                vec![
+                    (
+                        "AttackSurfaceReductionRules_Ids",
+                        ValeurWmi::Textes(vec![guid.to_string()]),
+                    ),
+                    ("AttackSurfaceReductionRules_Actions", ValeurWmi::Octets(vec![action])),
+                ],
+            ))
+        }
+    }
+}
+
+/// La ligne d'un choix exact pour un réglage de Defender, qui peut baisser ; `None` si le réglage n'admet pas ce
+/// choix. Appelée seulement par l'écran des Options, où la personne la choisit (règle
+/// `les_baisses_ne_viennent_que_des_options` de `autotest/lecture_seule.rs`) : jamais par le bilan.
+pub(crate) fn ligne_baisse_defender(r: ReglageDefender, c: ChoixDefender) -> Option<String> {
+    r.choix().contains(&c).then(|| Acte::DefenderChoix(r, c).ligne())
+}
+
+/// La ligne d'un choix exact pour une règle ASR, qui peut baisser ; `None` hors de `ASR_TOUTES`. Mêmes appelants que
+/// `ligne_baisse_defender`.
+pub(crate) fn ligne_baisse_asr(id: &str, c: ChoixAsr) -> Option<String> {
+    asr_toute(id).map(|id| Acte::DefenderAsrChoix(id, c).ligne())
+}
+
+/// La ligne qui rallume ce qu'un choix a baissé (un renforcement : permise partout).
+pub(crate) fn ligne_rallumer(id: IdChoix) -> String {
+    Acte::Rallumer(id).ligne()
+}
+
 /// Ce qu'une ligne `defender-asr` fait d'une règle. Jamais la retirer : Optimiser ne défait pas ses règles ASR
 /// (réglages protégés, écartés de l'annulation), aucune ligne légitime ne le demande, et l'enfant élevé ne saurait
 /// pas prouver qu'une règle présente vient d'Optimiser plutôt que de la personne ou d'une stratégie.
@@ -2028,15 +2427,18 @@ impl ModeAsr {
     /// Faut-il écrire, d'après l'action lue de la règle (`None` : absente de la liste) ? Bloquer ou auditer
     /// seulement ce qui protège moins (absente ou 0 coupée, 2 audit, 6 avertit, 1 bloque ; inconnue : 0).
     pub(crate) fn a_ecrire(self, lue: Option<i64>) -> bool {
-        let rang = |a: Option<i64>| -> u8 {
-            match a {
-                Some(2) => 1,
-                Some(6) => 2,
-                Some(1) => 3,
-                _ => 0,
-            }
-        };
-        rang(lue) < rang(Some(i64::from(self.action())))
+        rang_asr(lue) < rang_asr(Some(i64::from(self.action())))
+    }
+}
+
+/// Le rang de protection de l'action lue d'une règle ASR (`None` : absente de la liste) : absente ou 0 coupée, 2
+/// audit, 6 avertit, 1 bloque ; une action inconnue vaut 0, jamais crue plus forte qu'elle n'est.
+pub(crate) fn rang_asr(lue: Option<i64>) -> u8 {
+    match lue {
+        Some(2) => 1,
+        Some(6) => 2,
+        Some(1) => 3,
+        _ => 0,
     }
 }
 
@@ -3442,6 +3844,14 @@ pub(crate) enum Acte {
     DefenderExclusionRetirer(GenreExclusion, Exclusion),
     /// Retirer les menaces trouvées par Defender.
     DefenderMenacesRetirer,
+    /// Mettre un réglage de Defender au choix exact de la personne, baisse comprise : une baisse, jugée sur la
+    /// valeur relue, n'est faite que montrée, dans une liste de baisses seulement, et confirmée (`liste_pure`).
+    DefenderChoix(ReglageDefender, ChoixDefender),
+    /// Mettre une règle ASR au choix exact de la personne, mêmes gardes que `DefenderChoix`.
+    DefenderAsrChoix(&'static str, ChoixAsr),
+    /// Remettre ce qu'un choix a baissé : la valeur d'avant notée si elle est au moins allumée, sinon la valeur sûre.
+    /// La ligne ne porte aucune valeur.
+    Rallumer(IdChoix),
     /// Écrire le fichier préparé à la place du hosts, la différence rejugée (`juger_hosts`) et montrée avant.
     HostsEcrire(HostsEcrire),
     /// Remettre en automatique les serveurs DNS d'une carte réseau.
@@ -3497,6 +3907,9 @@ impl Acte {
             Acte::DefenderAsr(id, m) => format!("{DEFENDER_ASR}{id} {}", m.mot()),
             Acte::DefenderExclusionRetirer(g, e) => format!("{DEFENDER_EXCLUSION_RETIRER}{} {}", g.mot(), e.hex()),
             Acte::DefenderMenacesRetirer => DEFENDER_MENACES_RETIRER.to_string(),
+            Acte::DefenderChoix(r, c) => format!("{DEFENDER_CHOIX}{} {}", r.id_choix(), c.mot()),
+            Acte::DefenderAsrChoix(id, c) => format!("{DEFENDER_ASR_CHOIX}{id} {}", c.mot()),
+            Acte::Rallumer(id) => format!("{RALLUMER}{}", id.texte()),
             Acte::HostsEcrire(h) => h.ligne(),
             Acte::DnsAuto(g) => format!("{DNS_AUTO}{}", g.texte()),
             Acte::DnsServeurs(d) => d.ligne(),
@@ -3514,6 +3927,16 @@ impl Acte {
             Acte::ServiceRetirer(n) => format!("{SERVICE_RETIRER}{}", n.hex()),
             Acte::LancementDesactiver(l, v) => format!("{LANCEMENT_DESACTIVER}{} {}", l.mots(), v.hex()),
             Acte::LancementReactiver(l) => format!("{LANCEMENT_REACTIVER}{}", l.mots()),
+        }
+    }
+
+    /// Ce qu'un choix règle et la valeur exacte qu'il vise (`None` : règle ASR absente, jamais visée) ; `None` pour
+    /// un autre acte, `Rallumer` compris (sa cible dépend de la note relue).
+    pub(crate) fn choix(&self) -> Option<(IdChoix, Option<i64>)> {
+        match self {
+            Acte::DefenderChoix(r, c) => Some((IdChoix::Defender(*r), r.valeur_choix(*c))),
+            Acte::DefenderAsrChoix(id, c) => Some((IdChoix::Asr(id), Some(c.action()))),
+            _ => None,
         }
     }
 
@@ -3538,6 +3961,7 @@ impl Acte {
             | Acte::CompteDesactiver(_)
             | Acte::CertificatRetirer(..)
             | Acte::PartageRetirerAcces(_)
+            | Acte::Rallumer(_)
             // Supprimer un service ne se défait pas : une protection, que « Défaire » ne propose jamais.
             | Acte::ServiceRetirer(_) => true,
             Acte::PareFeuPublic(p) => p.durcit(),
@@ -3548,6 +3972,9 @@ impl Acte {
             | Acte::ViderFileImpression
             | Acte::MettreDeCote(_)
             | Acte::DefenderMenacesRetirer
+            // Un choix exact dépend de la valeur relue : le processus élevé en juge le sens (`sens`) avant d'écrire.
+            | Acte::DefenderChoix(..)
+            | Acte::DefenderAsrChoix(..)
             | Acte::HostsEcrire(_)
             | Acte::DnsAuto(_)
             | Acte::DnsServeurs(_)
@@ -3585,6 +4012,10 @@ impl Acte {
             | Acte::Defender(..)
             | Acte::DefenderExclusionRetirer(..)
             | Acte::DefenderMenacesRetirer
+            // Le sens d'un choix se juge sur la valeur relue (`sens`), jamais sur le type ; rallumer protège.
+            | Acte::DefenderChoix(..)
+            | Acte::DefenderAsrChoix(..)
+            | Acte::Rallumer(_)
             | Acte::HostsEcrire(_)
             | Acte::DnsAuto(_)
             | Acte::DnsServeurs(_)
@@ -3641,6 +4072,9 @@ impl Acte {
             | Acte::DefenderAsr(..)
             | Acte::DefenderExclusionRetirer(..)
             | Acte::DefenderMenacesRetirer
+            | Acte::DefenderChoix(..)
+            | Acte::DefenderAsrChoix(..)
+            | Acte::Rallumer(_)
             // Aucun PowerShell sur le chemin d'écriture du hosts, des comptes, des racines ni des partages : sous Wine,
             // l'erreur est dite.
             | Acte::HostsEcrire(_)
@@ -3684,6 +4118,9 @@ pub(crate) fn est_un_acte(ligne: &str) -> bool {
         || ligne.starts_with(DEFENDER_ASR)
         || ligne.starts_with(DEFENDER_EXCLUSION_RETIRER)
         || ligne.starts_with(DEFENDER_MENACES_RETIRER)
+        || ligne.starts_with(DEFENDER_CHOIX)
+        || ligne.starts_with(DEFENDER_ASR_CHOIX)
+        || ligne.starts_with(RALLUMER)
         || ligne.starts_with(HOSTS_ECRIRE)
         || ligne.starts_with(DNS_AUTO)
         || ligne.starts_with(DNS_SERVEURS)
@@ -3758,6 +4195,15 @@ pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
         Acte::DefenderAsr(asr_connue(id)?, *ModeAsr::TOUS.iter().find(|m| m.mot() == mot)?)
     } else if ligne == DEFENDER_MENACES_RETIRER {
         Acte::DefenderMenacesRetirer
+    } else if let Some(reste) = ligne.strip_prefix(DEFENDER_CHOIX) {
+        let (id, mot) = reste.split_once(' ')?;
+        let reglage = *ReglageDefender::TOUS.iter().find(|r| r.id_choix() == id)?;
+        Acte::DefenderChoix(reglage, *reglage.choix().iter().find(|c| c.mot() == mot)?)
+    } else if let Some(reste) = ligne.strip_prefix(DEFENDER_ASR_CHOIX) {
+        let (id, mot) = reste.split_once(' ')?;
+        Acte::DefenderAsrChoix(asr_toute(id)?, *ChoixAsr::TOUS.iter().find(|c| c.mot() == mot)?)
+    } else if let Some(id) = ligne.strip_prefix(RALLUMER) {
+        Acte::Rallumer(IdChoix::lire(id)?)
     } else if let Some(reste) = ligne.strip_prefix(RESEAU_CATEGORIE) {
         let (guid, mot) = reste.split_once(' ')?;
         Acte::ReseauCategorie(ReseauCategorie {
@@ -7297,5 +7743,234 @@ mod tests {
         assert_eq!(m.chars().count(), NOM_MONTRE_MAX + 1);
         assert!(m.ends_with('…'));
         assert_eq!(NomRun::nouveau(&[]).and_then(|n| n.montre()), None);
+    }
+
+    /// Les choix exacts, baisses comprises, s'écrivent et se relisent à l'identique ; une forme approchée, une valeur
+    /// que le réglage n'admet pas ou une règle hors de la table est refusée. Aucun n'est un renforcement déclaré par
+    /// son type : le sens vient de la relecture (`sens`).
+    #[test]
+    fn choix_grammaire() {
+        let mut vues = 0;
+        for r in ReglageDefender::TOUS {
+            for c in ChoixDefender::TOUS {
+                let Some(l) = ligne_baisse_defender(r, c) else {
+                    assert!(r.valeur_choix(c).is_none(), "{r:?} {c:?}");
+                    continue;
+                };
+                vues += 1;
+                let a = analyser_acte(&l).unwrap();
+                assert!(matches!(a, Acte::DefenderChoix(r2, c2) if r2 == r && c2 == c), "{l}");
+                assert_eq!(a.ligne(), l);
+                assert!(
+                    est_un_acte(&l) && !a.durcit() && !a.affaiblit() && !a.touche_le_reseau(),
+                    "{l}"
+                );
+                assert_eq!(a.powershell(), SANS_POWERSHELL);
+                let (id, v) = a.choix().unwrap();
+                assert_eq!(id, IdChoix::Defender(r));
+                assert!(methode_choix(id, v.unwrap()).is_some(), "{l}");
+            }
+        }
+        assert_eq!(vues, 2 + 3 + 4 + 3 + 3);
+        assert_eq!(
+            ligne_baisse_defender(ReglageDefender::TempsReel, ChoixDefender::Coupe).unwrap(),
+            "vanguard:defender-choix temps-reel coupe"
+        );
+        assert_eq!(
+            ligne_baisse_defender(ReglageDefender::TempsReel, ChoixDefender::Audit),
+            None
+        );
+        assert_eq!(
+            ligne_baisse_defender(ReglageDefender::Maps, ChoixDefender::Bloquer),
+            None
+        );
+        for id in ASR_TOUTES {
+            for c in ChoixAsr::TOUS {
+                let l = ligne_baisse_asr(id, c).unwrap();
+                let a = analyser_acte(&l).unwrap();
+                assert_eq!(a.ligne(), l);
+                assert_eq!(a.choix(), Some((IdChoix::Asr(id), Some(c.action()))));
+                assert!(!a.durcit() && !a.affaiblit());
+            }
+        }
+        assert_eq!(
+            ligne_baisse_asr("{56A863A9-875E-4185-98A7-B882C64B5CE5}", ChoixAsr::Audit),
+            None
+        );
+        assert_eq!(
+            ligne_baisse_asr("00000000-0000-0000-0000-000000000000", ChoixAsr::Audit),
+            None
+        );
+        for l in [
+            "vanguard:defender-choix temps-reel",
+            "vanguard:defender-choix temps-reel 1",
+            "vanguard:defender-choix temps-reel Coupe",
+            "vanguard:defender-choix temps-reel coupe ",
+            "vanguard:defender-choix  temps-reel coupe",
+            "vanguard:defender-choix maps coupe",
+            "vanguard:defender-choix cloud bloquer",
+            "vanguard:defender-choix pua disques",
+            "vanguard:defender-choix echantillons jamais",
+            "vanguard:defender-choix cfa coupe",
+            "vanguard:defender-asr-choix 56A863A9-875E-4185-98A7-B882C64B5CE5 audit",
+            "vanguard:defender-asr-choix 56a863a9-875e-4185-98a7-b882c64b5ce5 avertir",
+            "vanguard:defender-asr-choix 56a863a9-875e-4185-98a7-b882c64b5ce5 0",
+            "vanguard:defender-asr-choix 56a863a9-875e-4185-98a7-b882c64b5ce5",
+            "vanguard:defender-choix pua coupe,vanguard:defender-choix maps coupe",
+        ] {
+            assert!(analyser_acte(l).is_none() && est_un_acte(l), "{l}");
+        }
+    }
+
+    /// `vanguard:rallumer` ne porte que l'identifiant, jamais de valeur ; c'est un renforcement, que « Défaire » ne
+    /// propose pas.
+    #[test]
+    fn rallumer_grammaire() {
+        let mut ids: Vec<IdChoix> = ReglageDefender::TOUS.iter().map(|r| IdChoix::Defender(*r)).collect();
+        ids.extend(ASR_TOUTES.iter().map(|g| IdChoix::Asr(g)));
+        for id in ids {
+            assert_eq!(IdChoix::lire(&id.texte()), Some(id));
+            let l = ligne_rallumer(id);
+            let a = analyser_acte(&l).unwrap();
+            assert_eq!(a.ligne(), l);
+            assert!(matches!(a, Acte::Rallumer(i) if i == id));
+            assert!(a.durcit() && !a.affaiblit() && a.choix().is_none() && est_un_acte(&l));
+        }
+        assert_eq!(
+            ligne_rallumer(IdChoix::Defender(ReglageDefender::TempsReel)),
+            "vanguard:rallumer defender-temps-reel"
+        );
+        for l in [
+            "vanguard:rallumer defender-temps-reel 1",
+            "vanguard:rallumer defender-temps-reel coupe",
+            "vanguard:rallumer defender-maps",
+            "vanguard:rallumer defender-",
+            "vanguard:rallumer defender-Temps-reel",
+            "vanguard:rallumer asr-56A863A9-875E-4185-98A7-B882C64B5CE5",
+            "vanguard:rallumer asr-{56a863a9-875e-4185-98a7-b882c64b5ce5}",
+            "vanguard:rallumer asr-00000000-0000-0000-0000-000000000000",
+            "vanguard:rallumer ",
+            "vanguard:rallumer",
+            "vanguard:rallumer  defender-pua",
+        ] {
+            assert!(analyser_acte(l).is_none(), "{l}");
+        }
+        for t in [
+            "defender-maps",
+            "defender-",
+            "asr-",
+            "asr-x",
+            "pua",
+            "defender-pua ",
+            "",
+        ] {
+            assert_eq!(IdChoix::lire(t), None, "{t}");
+        }
+    }
+
+    /// Rallumer ne vise jamais plus faible qu'allumé : sans note, note abîmée (`None`), ou note qui dit « coupé » ou
+    /// une valeur inconnue, c'est la valeur sûre.
+    #[test]
+    fn rallumer_plancher_allume() {
+        let rtp = IdChoix::Defender(ReglageDefender::TempsReel);
+        let maps = IdChoix::Defender(ReglageDefender::Maps);
+        let cfa = IdChoix::Defender(ReglageDefender::Cfa);
+        let pua = IdChoix::Defender(ReglageDefender::Pua);
+        let asr = IdChoix::Asr(ASR_TOUTES[0]);
+        assert_eq!(cible_rallumer(rtp, None), 0);
+        assert_eq!(cible_rallumer(rtp, Some(Some(1))), 0);
+        assert_eq!(cible_rallumer(rtp, Some(Some(0))), 0);
+        assert_eq!(cible_rallumer(rtp, Some(None)), 0);
+        assert_eq!(cible_rallumer(maps, Some(Some(1))), 1);
+        assert_eq!(cible_rallumer(maps, Some(Some(0))), 2);
+        assert_eq!(cible_rallumer(maps, Some(Some(7))), 2);
+        assert_eq!(cible_rallumer(cfa, Some(Some(2))), 2);
+        assert_eq!(cible_rallumer(cfa, Some(Some(3))), 3);
+        assert_eq!(cible_rallumer(cfa, Some(Some(0))), 1);
+        assert_eq!(cible_rallumer(pua, None), 1);
+        assert_eq!(cible_rallumer(pua, Some(Some(-1))), 1);
+        assert_eq!(cible_rallumer(asr, Some(None)), 1);
+        assert_eq!(cible_rallumer(asr, Some(Some(0))), 1);
+        assert_eq!(cible_rallumer(asr, Some(Some(5))), 1);
+        assert_eq!(cible_rallumer(asr, Some(Some(6))), 6);
+        assert_eq!(cible_rallumer(asr, Some(Some(2))), 2);
+        // La cible s'écrit toujours (une méthode WMI existe), et elle est au moins allumée.
+        for id in [rtp, maps, cfa, pua, asr, IdChoix::Defender(ReglageDefender::Np)] {
+            assert!(id.rang(Some(id.sure())) >= id.plancher(), "{id:?}");
+            assert!(methode_choix(id, id.sure()).is_some(), "{id:?}");
+        }
+    }
+
+    /// Le sens se juge sur la valeur relue : plus fort, plus faible, déjà là ; illisible compte comme une baisse.
+    #[test]
+    fn sens_par_relecture() {
+        let rtp = IdChoix::Defender(ReglageDefender::TempsReel);
+        let cfa = IdChoix::Defender(ReglageDefender::Cfa);
+        let asr = IdChoix::Asr(ASR_TOUTES[3]);
+        assert_eq!(sens(rtp, Some(Some(0)), Some(1)), Sens::Baisse);
+        assert_eq!(sens(rtp, Some(Some(1)), Some(0)), Sens::Renforce);
+        assert_eq!(sens(rtp, Some(Some(1)), Some(1)), Sens::Rien);
+        assert_eq!(sens(rtp, None, Some(0)), Sens::Baisse);
+        assert_eq!(sens(cfa, Some(Some(1)), Some(2)), Sens::Baisse);
+        assert_eq!(sens(cfa, Some(Some(3)), Some(1)), Sens::Renforce);
+        // Même rang, autre valeur connue (audit de tout, audit des disques) : pas une baisse.
+        assert_eq!(sens(cfa, Some(Some(4)), Some(2)), Sens::Renforce);
+        // Coupé et une valeur inconnue : même rang 0, jamais cru plus fort.
+        assert_eq!(sens(cfa, Some(Some(9)), Some(0)), Sens::Baisse);
+        assert_eq!(sens(asr, Some(None), Some(0)), Sens::Baisse);
+        assert_eq!(sens(asr, Some(None), Some(1)), Sens::Renforce);
+        assert_eq!(sens(asr, Some(Some(6)), Some(2)), Sens::Baisse);
+        assert_eq!(sens(asr, Some(Some(2)), Some(2)), Sens::Rien);
+    }
+
+    /// Une baisse ne passe que dans une liste faite de choix ; parmi d'autres gestes, la liste est refusée en entier.
+    #[test]
+    fn liste_melee_refusee() {
+        use Sens::{Baisse, Renforce, Rien};
+        assert_eq!(liste_pure(&[]), Ok(false));
+        assert_eq!(liste_pure(&[None, None]), Ok(false));
+        assert_eq!(liste_pure(&[None, Some(Renforce), Some(Rien)]), Ok(false));
+        assert_eq!(liste_pure(&[Some(Baisse)]), Ok(true));
+        assert_eq!(liste_pure(&[Some(Baisse), Some(Rien), Some(Renforce)]), Ok(true));
+        assert_eq!(liste_pure(&[Some(Baisse), None]), Err(()));
+        assert_eq!(liste_pure(&[None, Some(Rien), Some(Baisse)]), Err(()));
+        // Le parent sépare les choix des autres lignes : deux listes, chacune jugée à part.
+        let l = |s: &str| s.to_string();
+        let lignes = [
+            l("vanguard:defender pua bloquer"),
+            l("vanguard:defender-choix temps-reel coupe"),
+            l("vanguard:rallumer defender-cloud"),
+            l("vanguard:defender-asr-choix 56a863a9-875e-4185-98a7-b882c64b5ce5 audit"),
+        ];
+        assert_eq!(separer_choix(&lignes), vec![vec![0, 2], vec![1, 3]]);
+        assert_eq!(separer_choix(&lignes[..1]), vec![vec![0]]);
+        assert_eq!(separer_choix(&lignes[1..2]), vec![vec![0]]);
+        assert_eq!(separer_choix(&[]), Vec::<Vec<usize>>::new());
+    }
+
+    /// L'écriture d'un choix vise la valeur exacte : Set pour un réglage (booléen pour le temps réel), Add pour une
+    /// règle (Set remplacerait toute la liste) ; une valeur hors de ce que le réglage connaît n'a pas de méthode.
+    #[test]
+    fn methode_des_choix() {
+        let rtp = IdChoix::Defender(ReglageDefender::TempsReel);
+        assert_eq!(
+            methode_choix(rtp, 1),
+            Some(("Set", vec![("DisableRealtimeMonitoring", ValeurWmi::Booleen(true))]))
+        );
+        assert_eq!(methode_choix(rtp, 2), None);
+        assert_eq!(
+            methode_choix(IdChoix::Defender(ReglageDefender::Pua), 0),
+            Some(("Set", vec![("PUAProtection", ValeurWmi::Octet(0))]))
+        );
+        assert_eq!(methode_choix(IdChoix::Defender(ReglageDefender::Maps), 3), None);
+        assert_eq!(methode_choix(IdChoix::Defender(ReglageDefender::Cfa), -1), None);
+        let (m, p) = methode_choix(IdChoix::Asr(ASR_TOUTES[0]), 0).unwrap();
+        assert_eq!(m, "Add");
+        assert_eq!(
+            p[1],
+            ("AttackSurfaceReductionRules_Actions", ValeurWmi::Octets(vec![0]))
+        );
+        assert_eq!(methode_choix(IdChoix::Asr(ASR_TOUTES[0]), 5), None);
+        assert_eq!(methode_choix(IdChoix::Asr(ASR_TOUTES[0]), 256), None);
     }
 }

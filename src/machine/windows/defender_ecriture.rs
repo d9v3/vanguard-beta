@@ -9,10 +9,11 @@
 
 use std::time::Duration;
 
-use super::corrections::{Resultat, avant_notable};
+use super::corrections::{NOTE_CHOIX, Resultat, avant_notable, echec_note};
 use super::exclusions;
 use super::wmi::{self, CLASSE_ABSENTE, Ligne, Parametre, Retour, Valeur};
-use crate::machine::gestes::{self, Acte, GenreExclusion, ModeAsr, ReglageDefender, ValeurDefender};
+use crate::machine::choix_avant;
+use crate::machine::gestes::{self, Acte, GenreExclusion, IdChoix, ModeAsr, ReglageDefender, Sens, ValeurDefender};
 use crate::modele::raison::Echec;
 use crate::ui::{tr, trf};
 
@@ -36,8 +37,152 @@ pub(super) fn faire_acte(acte: &Acte) -> Option<Resultat> {
         Acte::DefenderAsr(id, m) => regle_asr(id, *m, acte),
         Acte::DefenderExclusionRetirer(g, e) => retirer_exclusion(*g, e.texte(), acte),
         Acte::DefenderMenacesRetirer => retirer_menaces(),
+        // Sans le sens montré (`faire_choix`, depuis `eleve::faire`), une baisse est refusée : rien d'écrit.
+        Acte::DefenderChoix(..) | Acte::DefenderAsrChoix(..) => return faire_choix(acte, None),
+        Acte::Rallumer(id) => resultat(choix_avant::rallumer(&mut Monde, *id)),
         _ => return None,
     })
+}
+
+// ------------------------------------------------------------------ choix de la personne et « Rallumer »
+
+/// La valeur actuelle d'un réglage des choix (`None` : illisible ; `Some(None)` : règle ASR absente de la liste).
+/// Le temps réel est jugé sur ce que Defender applique (RealTimeProtectionEnabled : en marche 0, coupé 1, comme
+/// DisableRealtimeMonitoring), la préférence seulement si l'état ne se lit pas.
+#[allow(clippy::option_option)] // None : illisible ou sans note ; Some(None) : valeur absente
+fn lire_choix(id: IdChoix) -> Option<Option<i64>> {
+    match id {
+        IdChoix::Defender(ReglageDefender::TempsReel) => {
+            const PROP: &str = "DisableRealtimeMonitoring";
+            if let Some(marche) = etat().0 {
+                Some(Some(i64::from(!marche)))
+            } else {
+                preferences(&[PROP])
+                    .and_then(|l| l.get(PROP).and_then(entier))
+                    .map(Some)
+            }
+        }
+        IdChoix::Defender(r) => {
+            let prop = r.propriete();
+            preferences(&[prop])
+                .and_then(|l| l.get(prop).and_then(entier))
+                .map(Some)
+        }
+        IdChoix::Asr(g) => match action_asr(g) {
+            LectureAsr::Lue(v) => Some(v),
+            LectureAsr::Illisible => None,
+        },
+    }
+}
+
+/// Defender par WMI et les notes sous HKLM : le monde des choix dans le processus élevé.
+struct Monde;
+
+impl choix_avant::Monde for Monde {
+    fn lire(&mut self, id: IdChoix) -> Option<Option<i64>> {
+        lire_choix(id)
+    }
+
+    fn ecrire(&mut self, id: IdChoix, v: i64) -> Result<(), Echec> {
+        let Some((methode, parametres)) = gestes::methode_choix(id, v) else {
+            return Err(Echec::refuse(
+                CONTEXTE,
+                tr!("valeur refusée pour ce réglage", "value refused for this setting"),
+            ));
+        };
+        appeler(PREFERENCES, methode, parametres)
+    }
+
+    /// Le temps réel met un instant à changer : relu jusqu'à 5 s, jusqu'à la valeur écrite.
+    fn relire(&mut self, id: IdChoix, v: i64) -> Option<Option<i64>> {
+        if id == IdChoix::Defender(ReglageDefender::TempsReel) {
+            for _ in 0..RELECTURES {
+                std::thread::sleep(PAUSE);
+                if lire_choix(id) == Some(Some(v)) {
+                    return Some(Some(v));
+                }
+            }
+        }
+        lire_choix(id)
+    }
+
+    fn lire_note(&mut self, nom: &str) -> Option<Vec<u8>> {
+        choix_avant::lire_brut(nom)
+    }
+
+    fn ecrire_note(&mut self, nom: &str, octets: &[u8]) -> Result<(), Echec> {
+        choix_avant::ecrire_brut(nom, octets)
+    }
+
+    fn effacer_note(&mut self, nom: &str) {
+        choix_avant::effacer_brut(nom);
+    }
+
+    fn journal(&mut self, texte: &str) {
+        let _ = super::journal_evenements::avertir(texte);
+    }
+
+    fn maintenant(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    }
+
+    fn pourquoi_garde(&mut self) -> String {
+        pourquoi_garde()
+    }
+}
+
+/// Le sens d'un choix, jugé sur la valeur relue ici, et sa ligne pour la fenêtre administrateur (« nom : actuelle →
+/// visée ») ; `None` : l'acte n'est pas un choix.
+pub(super) fn juger(acte: &Acte) -> Option<(Sens, String)> {
+    let (id, cible) = acte.choix()?;
+    let lue = lire_choix(id);
+    let texte = format!(
+        "{} : {} → {}",
+        crate::options_defense::nom_choix(id),
+        crate::options_defense::texte_choix(id, lue),
+        crate::options_defense::texte_choix(id, Some(cible)).to_uppercase()
+    );
+    Some((gestes::sens(id, lue, cible), texte))
+}
+
+/// Fait un choix exact, avec le sens montré à la personne avant son accord (`montre`) ; `None` : l'acte n'est pas
+/// un choix.
+pub(super) fn faire_choix(acte: &Acte, montre: Option<Sens>) -> Option<Resultat> {
+    let (id, cible) = acte.choix()?;
+    let Some(cible) = cible else {
+        return Some(Resultat::echec(
+            None,
+            tr!("valeur refusée pour ce réglage", "value refused for this setting").to_string(),
+        ));
+    };
+    Some(resultat(choix_avant::faire_choix(&mut Monde, id, cible, montre)))
+}
+
+/// Ce que le parent reçoit d'une issue : une baisse faite porte « note=choix » (`eleve::ligne_resultat`).
+fn resultat(issue: choix_avant::Issue) -> Resultat {
+    use choix_avant::Issue;
+    match issue {
+        Issue::Fait { avant, note: true } => Resultat {
+            reussi: true,
+            rien: false,
+            avant: Some(avant_notable(&avant)),
+            raison: NOTE_CHOIX.to_string(),
+        },
+        Issue::Fait { avant, note: false } => Resultat::fait(avant_notable(&avant)),
+        Issue::Rien(t) => Resultat::rien(t),
+        Issue::Echec { avant, raison } => Resultat::echec(avant.map(|a| avant_notable(&a)), raison),
+        Issue::EchecNote => Resultat::echec(None, echec_note().to_string()),
+        Issue::Change => Resultat::echec(
+            None,
+            tr!(
+                "ce réglage baisserait maintenant la protection, ce qui n'a pas été montré avant votre accord : refusé, rien d'écrit",
+                "this setting would now lower protection, which was not shown before your consent: refused, nothing written"
+            )
+            .to_string(),
+        ),
+    }
 }
 
 /// La seule instance de MSFT_MpPreference, ces champs lus ; `None` si Defender ne répond pas.
@@ -491,12 +636,26 @@ mod tests {
             gestes::ligne_defender_asr(gestes::ASR_BASE[0], ModeAsr::Bloquer),
             gestes::ligne_defender_exclusion_retirer(GenreExclusion::Chemin, "C:\\"),
             Some(gestes::ligne_defender_menaces_retirer()),
+            gestes::ligne_baisse_defender(ReglageDefender::Pua, gestes::ChoixDefender::Coupe),
+            gestes::ligne_baisse_defender(ReglageDefender::TempsReel, gestes::ChoixDefender::Allume),
+            gestes::ligne_baisse_asr(gestes::ASR_TOUTES[0], gestes::ChoixAsr::TOUS[0]),
+            Some(gestes::ligne_rallumer(IdChoix::Defender(ReglageDefender::Pua))),
         ];
         for ligne in actes.into_iter().map(Option::unwrap) {
             let acte = gestes::analyser_acte(&ligne).unwrap();
             let r = faire_acte(&acte).unwrap();
             assert!(!r.reussi && !r.raison.is_empty(), "{ligne}");
+            assert!(r.raison != NOTE_CHOIX, "{ligne}");
         }
+        // Un choix illisible est jugé comme une baisse (jamais montré comme sans danger), et même montré ainsi, il
+        // n'est pas fait.
+        let coupe = gestes::analyser_acte(
+            &gestes::ligne_baisse_defender(ReglageDefender::Pua, gestes::ChoixDefender::Coupe).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(juger(&coupe), Some((Sens::Baisse, _))));
+        let r = faire_choix(&coupe, Some(Sens::Baisse)).unwrap();
+        assert!(!r.reussi && r.avant.is_none(), "{}", r.raison);
         assert!(faire_acte(&gestes::analyser_acte("vanguard:service SSDPSRV arreter").unwrap()).is_none());
     }
 }

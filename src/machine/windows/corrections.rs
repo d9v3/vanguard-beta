@@ -491,6 +491,9 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
                     | Acte::DefenderAsr(..)
                     | Acte::DefenderExclusionRetirer(..)
                     | Acte::DefenderMenacesRetirer
+                    | Acte::DefenderChoix(..)
+                    | Acte::DefenderAsrChoix(..)
+                    | Acte::Rallumer(_)
                     | Acte::CompteDesactiver(_)
                     | Acte::CertificatRetirer(..)
                     | Acte::PartageRetirerAcces(_)
@@ -756,6 +759,26 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
             "Permanently delete the active threats found by Defender"
         )
         .to_string(),
+        Acte::DefenderChoix(..) | Acte::DefenderAsrChoix(..) => {
+            let Some((id, v)) = acte.choix() else {
+                return String::new();
+            };
+            let (n, v) = (
+                crate::options_defense::nom_choix(id),
+                crate::options_defense::texte_choix(id, Some(v)),
+            );
+            trf!(
+                "{n} : {v} (votre choix ; relu dans la fenêtre administrateur, une baisse y est montrée puis confirmée, sa valeur d'avant notée pour « Rallumer »)",
+                "{n}: {v} (your choice; read in the administrator window, a lowering is shown there then confirmed, its previous value noted for “Turn back on”)"
+            )
+        }
+        Acte::Rallumer(id) => {
+            let n = crate::options_defense::nom_choix(*id);
+            trf!(
+                "Rallumer « {n} » : la valeur d'avant notée si elle protège, sinon la valeur sûre (jamais plus faible)",
+                "Turn “{n}” back on: the previous value noted if it protects, otherwise the safe value (never weaker)"
+            )
+        }
         Acte::CompteDesactiver(rid) => trf!(
             "Désactiver le compte local n° {rid} (relu et rejugé ici ; jamais le vôtre, le dernier administrateur actif ni un compte d'une session ouverte) : il ne pourra plus ouvrir de session. Non annulable par Vanguard (protection) ; état d'avant noté, à réactiver dans Windows au besoin",
             "Disable local account no. {rid} (read and judged again here; never yours, the last active administrator or an account with an open session): it can no longer sign in. Not undoable by Vanguard (protection); previous state noted, reactivate it in Windows if needed"
@@ -1081,6 +1104,17 @@ impl Resultat {
             raison,
         }
     }
+}
+
+/// La raison d'une baisse faite par un choix de la personne, notée (`choix_avant`) : « ok avant=… note=choix ».
+pub(crate) const NOTE_CHOIX: &str = "note=choix";
+
+/// La raison d'une baisse non faite parce que sa note ne s'écrit pas : « echec note ».
+pub(crate) fn echec_note() -> &'static str {
+    crate::ui::tr!(
+        "la valeur d'avant ne peut pas être notée (registre) : rien n'est baissé, faute de pouvoir le rallumer exactement",
+        "the previous value cannot be noted (registry): nothing is lowered, since it could not be turned back on exactly"
+    )
 }
 
 /// Une valeur d'avant prête à noter : sans caractère de contrôle, et courte (le parent borne chaque ligne du tube).

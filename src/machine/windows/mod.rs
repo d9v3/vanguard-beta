@@ -38,6 +38,7 @@ pub(crate) mod gestionnaire;
 pub(crate) mod hachage;
 pub(crate) mod impression;
 pub(crate) mod installes;
+mod journal_evenements;
 mod lancement_ecriture;
 pub(crate) mod lecteurs;
 pub(crate) mod magasins;

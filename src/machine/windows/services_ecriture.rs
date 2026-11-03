@@ -724,6 +724,9 @@ pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
         | Acte::DefenderAsr(..)
         | Acte::DefenderExclusionRetirer(..)
         | Acte::DefenderMenacesRetirer
+        | Acte::DefenderChoix(..)
+        | Acte::DefenderAsrChoix(..)
+        | Acte::Rallumer(_)
         | Acte::HostsEcrire(_)
         | Acte::DnsAuto(_)
         | Acte::DnsServeurs(_)

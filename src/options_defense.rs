@@ -3,10 +3,13 @@
 //! si le PC est géré par une organisation. Les lectures sont dans `machine::windows::defense_etat` (WMI natif,
 //! INetFwPolicy2, registre) ; ici, le modèle, son interprétation, l'écran et le JSON, testés sur tous les systèmes.
 //!
-//! Rien n'est écrit : changer ces options viendra avec la question, la note et « Rallumer » du lot suivant. Une
-//! mesure qui manque se dit « non vérifié », jamais saine. Le JSON ne porte que des identifiants et des nombres :
+//! L'écran n'écrit rien. Changer une option passe par les choix de la personne (`vanguard:defender-choix`,
+//! `vanguard:defender-asr-choix`) et « Rallumer » (`vanguard:rallumer`), faits dans la fenêtre administrateur : une
+//! baisse y est montrée, puis confirmée, et sa valeur d'avant notée (`machine::choix_avant`). Une mesure qui manque
+//! se dit « non vérifié », jamais saine. Le JSON ne porte que des identifiants et des nombres :
 //! aucun chemin, nom de compte, de machine, de domaine ni d'antivirus.
 
+use crate::machine::gestes::{ChoixAsr, ChoixDefender, IdChoix, ReglageDefender};
 use crate::ui::{ACCENT, DISCRET, GRIS, RESET, VERT, largeur_affichee};
 use crate::{tr, trf};
 
@@ -408,28 +411,9 @@ pub(crate) fn asr_connue(id: &str) -> Option<&'static str> {
     ASR_TOUTES.iter().copied().find(|r| *r == propre)
 }
 
-/// Les 19 règles ASR que Microsoft documente (« Attack surface reduction rules reference »).
-pub(crate) const ASR_TOUTES: [&str; 19] = [
-    "56a863a9-875e-4185-98a7-b882c64b5ce5",
-    "9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2",
-    "e6db77e5-3df2-4cf1-b95a-636979351e5b",
-    "d4f940ab-401b-4efc-aadc-ad5f3c50688a",
-    "3b576869-a4ec-4529-8536-b80a7769e899",
-    "75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84",
-    "92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b",
-    "26190899-1602-49e8-8b27-eb1d0a1ce869",
-    "7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c",
-    "be9ba2d9-53ea-4cdc-84e5-9b1eeee46550",
-    "d3e037e1-3eb8-44c8-a917-57927947596d",
-    "5beb7efe-fd9a-4556-801d-275e5ffc04cc",
-    "01443614-cd74-433a-b99e-2ecdc07bfc25",
-    "c1db55ab-c21a-4637-bb3f-a12568109d35",
-    "d1e49aac-8f56-4280-b9ba-993a6d77406c",
-    "b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4",
-    "c0033c00-d16d-4114-a5a0-dc9b3a7d2ceb",
-    "33ddedf1-c6e0-47cb-833e-de6133960387",
-    "a8f5898e-1dc8-49a9-9878-85004b8a61e6",
-];
+/// Les 19 règles ASR que Microsoft documente (« Attack surface reduction rules reference »), tenues par les gestes
+/// (`vanguard:defender-asr-choix` ne vise qu'elles).
+pub(crate) use crate::machine::gestes::ASR_TOUTES;
 
 /// Ce que bloque une règle ASR, pour l'écran ; `None` hors de la table.
 pub(crate) fn nom_asr(id: &str) -> Option<&'static str> {
@@ -1444,6 +1428,144 @@ fn json_hors_windows() -> serde_json::Value {
 
 fn titre() -> &'static str {
     tr!("Options de défense", "Defense options")
+}
+
+// ------------------------------------------------------------------ choix de la personne et « Rallumer »
+
+/// L'option de l'écran que règle un réglage des choix.
+fn opt_de(r: ReglageDefender) -> Opt {
+    match r {
+        ReglageDefender::TempsReel => Opt::TempsReel,
+        ReglageDefender::Maps => Opt::Cloud,
+        ReglageDefender::Cfa => Opt::Dossiers,
+        ReglageDefender::Np => Opt::Reseau,
+        ReglageDefender::Pua => Opt::Pua,
+    }
+}
+
+/// Le nom d'un réglage des choix, pour la fenêtre administrateur et les phrases d'une liste.
+pub(crate) fn nom_choix(id: IdChoix) -> String {
+    match id {
+        IdChoix::Defender(r) => opt_de(r).libelle().to_string(),
+        IdChoix::Asr(g) => {
+            let n = nom_asr(g).unwrap_or("?");
+            trf!("Règle ASR « {n} »", "ASR rule “{n}”")
+        }
+    }
+}
+
+/// Une valeur d'un réglage des choix, en mots (`None` : illisible ; `Some(None)` : règle ASR absente de la liste).
+#[allow(clippy::option_option)] // None : illisible ou sans note ; Some(None) : valeur absente
+pub(crate) fn texte_choix(id: IdChoix, v: Option<Option<i64>>) -> String {
+    match (id, v) {
+        (_, None) => EtatOpt::Illisible.texte(false),
+        (IdChoix::Defender(r), Some(v)) => {
+            let o = opt_de(r);
+            o.etat(v).texte(o.masculin())
+        }
+        (IdChoix::Asr(_), Some(None)) => tr!("absente de la liste (coupée)", "not listed (off)").to_string(),
+        (IdChoix::Asr(_), Some(v)) => ActionAsr::depuis(v).texte(),
+    }
+}
+
+/// Ce qui protège encore quand `id` est baissé, dit avant la question : jamais « rien », toujours la suite.
+pub(crate) fn protege_encore(id: IdChoix) -> &'static str {
+    match id {
+        IdChoix::Defender(ReglageDefender::TempsReel) => tr!(
+            "Restent : le Pare-feu Windows, SmartScreen et les analyses à la demande ; Windows peut remettre le temps réel de lui-même. « Rallumer » dans Vanguard le remet.",
+            "Still on: Windows Firewall, SmartScreen and on-demand scans; Windows may turn real-time protection back on by itself. “Turn back on” in Vanguard restores it."
+        ),
+        _ => tr!(
+            "Restent : la protection en temps réel, le Pare-feu Windows et les autres règles. « Rallumer » dans Vanguard le remet.",
+            "Still on: real-time protection, Windows Firewall and the other rules. “Turn back on” in Vanguard restores it."
+        ),
+    }
+}
+
+/// L'identifiant d'un réglage des choix tel que la personne l'écrit (`temps-reel`, `pua`, `asr-<GUID>`, ou le
+/// texte complet `defender-pua`).
+fn id_de(texte: &str) -> Option<IdChoix> {
+    let t = texte.trim().to_ascii_lowercase();
+    IdChoix::lire(&t)
+        .or_else(|| IdChoix::lire(&format!("defender-{t}")))
+        .or_else(|| asr_connue(t.strip_prefix("asr-").unwrap_or(&t)).map(IdChoix::Asr))
+}
+
+/// La ligne d'un choix (`vanguard options-defense --choisir <id> <valeur>`) ; `None` si l'identifiant ou la valeur
+/// n'en est pas un.
+pub(crate) fn ligne_choix(id: &str, valeur: &str) -> Option<String> {
+    let v = valeur.trim().to_ascii_lowercase();
+    match id_de(id)? {
+        IdChoix::Defender(r) => {
+            let c = ChoixDefender::TOUS.into_iter().find(|c| c.mot() == v)?;
+            crate::machine::gestes::ligne_baisse_defender(r, c)
+        }
+        IdChoix::Asr(g) => {
+            let c = ChoixAsr::TOUS.into_iter().find(|c| c.mot() == v)?;
+            crate::machine::gestes::ligne_baisse_asr(g, c)
+        }
+    }
+}
+
+/// Les identifiants et valeurs admis, pour l'aide d'une commande refusée.
+fn aide_choix() -> String {
+    let mut l = Vec::new();
+    for r in ReglageDefender::TOUS {
+        let mots: Vec<&str> = r.choix().iter().map(|c| c.mot()).collect();
+        l.push(format!("  {} : {}", r.id_choix(), mots.join(", ")));
+    }
+    let mots: Vec<&str> = ChoixAsr::TOUS.iter().map(|c| c.mot()).collect();
+    l.push(format!("  asr-<GUID> : {}", mots.join(", ")));
+    l.join("\n")
+}
+
+/// `vanguard options-defense --choisir <id> <valeur>` : un choix de la personne, montré puis fait dans la fenêtre
+/// administrateur (une baisse y est confirmée). Faux si la commande est refusée ou si le geste n'a pas réussi.
+pub fn choisir(id: &str, valeur: &str) -> bool {
+    let Some(ligne) = ligne_choix(id, valeur) else {
+        eprintln!(
+            "{}\n{}",
+            tr!("Choix inconnu. Admis :", "Unknown choice. Allowed:"),
+            aide_choix()
+        );
+        return false;
+    };
+    appliquer_choix(ligne)
+}
+
+/// `vanguard options-defense --rallumer <id>` : remet la valeur d'avant notée si elle protège, sinon la valeur sûre.
+pub fn rallumer(id: &str) -> bool {
+    let Some(i) = id_de(id) else {
+        eprintln!(
+            "{}\n{}",
+            tr!("Réglage inconnu. Admis :", "Unknown setting. Allowed:"),
+            aide_choix()
+        );
+        return false;
+    };
+    appliquer_choix(crate::machine::gestes::ligne_rallumer(i))
+}
+
+#[cfg_attr(not(windows), allow(clippy::needless_pass_by_value))] // la ligne n'est consommée que sous Windows
+fn appliquer_choix(ligne: String) -> bool {
+    #[cfg(windows)]
+    {
+        crate::ui::titre(titre());
+        let reussis = crate::machine::appliquer_chacune(&[vec![ligne]]);
+        reussis.first().copied().unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = ligne;
+        eprintln!(
+            "{}",
+            tr!(
+                "Windows seulement : ces réglages sont ceux de Microsoft Defender.",
+                "Windows only: these settings are Microsoft Defender's."
+            )
+        );
+        false
+    }
 }
 
 /// L'écran (menu 4.11, `vanguard options-defense`).

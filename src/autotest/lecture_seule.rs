@@ -514,6 +514,74 @@ mod tests {
         assert!(!trouves.is_empty(), "la lecture des sources ne trouve plus rien");
     }
 
+    /// Garde structurelle des baisses : une ligne de choix exact (qui peut baisser une protection de Defender) ne
+    /// s'écrit que depuis les Options de défense, où la personne l'a choisie elle-même ; ni le bilan, ni une
+    /// correction, ni « Tout remettre » (qui n'a que `ligne_rallumer`) n'en fabriquent. Hors des tests, les seuls
+    /// fichiers qui nomment ces fonctions ou les verbes des choix sont leur définition et l'écran des Options.
+    #[test]
+    fn les_baisses_ne_viennent_que_des_options() {
+        const PERMIS: &[&str] = &["machine/windows/gestes.rs", "options_defense.rs"];
+        // Un fichier qui n'est tout entier qu'un module d'essais (déclaré sous `#[cfg(test)]` par son parent, ce que
+        // l'essai vérifie) : ses lignes ne partent jamais dans le programme.
+        const ESSAIS_SEULS: &[(&str, &str, &str)] = &[(
+            "modele/corpus.rs",
+            "modele/mod.rs",
+            "#[cfg(test)]\npub(crate) mod corpus;\n",
+        )];
+        const MOTS: &[&str] = &[
+            "ligne_baisse_defender(",
+            "ligne_baisse_asr(",
+            "DEFENDER_CHOIX",
+            "DEFENDER_ASR_CHOIX",
+            "defender-choix ",
+            "defender-asr-choix ",
+            "Acte::DefenderChoix(",
+            "Acte::DefenderAsrChoix(",
+        ];
+        let racine = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for (fichier, parent, declaration) in ESSAIS_SEULS {
+            let texte = std::fs::read_to_string(racine.join(parent)).unwrap();
+            assert!(
+                texte.contains(declaration),
+                "{fichier} n'est plus déclaré sous #[cfg(test)] dans {parent} : il n'est plus exempté"
+            );
+        }
+        let mut a_voir = vec![racine.clone()];
+        let mut trouves = std::collections::BTreeMap::new();
+        let mut lus = 0;
+        while let Some(d) = a_voir.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    a_voir.push(p);
+                    continue;
+                }
+                if p.extension().is_none_or(|x| x != "rs") {
+                    continue;
+                }
+                lus += 1;
+                let texte = std::fs::read_to_string(&p).unwrap();
+                let code = texte.find("#[cfg(test)]\nmod ").map_or(texte.as_str(), |t| &texte[..t]);
+                let n = code
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with("//") && MOTS.iter().any(|x| l.contains(x)))
+                    // Un acte déjà là se nomme pour être rangé (pas de baisse, rien d'écrit) : seul un bras qui le
+                    // fabrique compte, pas un motif `Acte::DefenderChoix(..)`.
+                    .filter(|l| !l.contains("Choix(..)"))
+                    .count();
+                let nom = p.strip_prefix(&racine).unwrap().to_string_lossy().replace('\\', "/");
+                if n > 0 && !PERMIS.contains(&nom.as_str()) && !ESSAIS_SEULS.iter().any(|(f, ..)| *f == nom) {
+                    trouves.insert(nom, n);
+                }
+            }
+        }
+        assert!(lus > 100, "la lecture des sources ne trouve plus rien ({lus})");
+        assert!(
+            trouves.is_empty(),
+            "lignes de baisse fabriquées hors des Options de défense : {trouves:?}"
+        );
+    }
+
     /// Un fichier énorme est haché sur son début seulement, et vite.
     #[test]
     fn empreinte_bornee_pour_un_gros_fichier() {

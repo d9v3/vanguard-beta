@@ -49,6 +49,11 @@ pub mod windows;
 #[cfg_attr(not(windows), allow(dead_code))]
 #[path = "windows/gestes.rs"]
 pub(crate) mod gestes;
+// Les notes « avant » des choix de la personne et « Rallumer » : du code pur sur un `Monde`, compilé partout pour
+// essayer sous Linux qu'une note abîmée ne fait jamais rallumer plus faible et qu'une baisse sans note n'est pas faite.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[path = "windows/choix_avant.rs"]
+pub(crate) mod choix_avant;
 // Où une liste de correctifs passe des lignes natives de Vanguard au reste : commune à Windows et à Linux et macOS.
 pub(crate) mod decoupe;
 // Vider un dossier de Windows et mettre un cache de côté (actes du processus élevé) : sans appel système propre à

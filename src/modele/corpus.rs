@@ -1151,6 +1151,59 @@ fn chaque_cas_du_corpus_tire() {
     );
 }
 
+/// Propriété du bilan (R4) : pour chaque cas du corpus qui tourne ici, fabriqué comme propre et dans chaque
+/// variante, aucune commande de correction rendue n'est une ligne de choix exact (qui peut baisser une protection de
+/// Defender) ; une baisse ne vient que des Options de défense, où la personne la choisit.
+#[test]
+fn aucune_ligne_du_bilan_n_est_une_baisse() {
+    use crate::machine::gestes;
+    let est_baisse = |l: &str| {
+        let l = l.trim();
+        l.starts_with(gestes::DEFENDER_CHOIX.trim_end())
+            || l.starts_with(gestes::DEFENDER_ASR_CHOIX.trim_end())
+            || gestes::analyser_acte(l).is_some_and(|a| a.choix().is_some())
+    };
+    // Le garde-fou se juge lui-même : une ligne de baisse est bien reconnue.
+    let pua = gestes::ligne_baisse_defender(gestes::ReglageDefender::Pua, gestes::ChoixDefender::Coupe);
+    assert!(pua.as_deref().is_some_and(est_baisse), "{pua:?}");
+    assert!(!est_baisse(&gestes::ligne_rallumer(gestes::IdChoix::Defender(
+        gestes::ReglageDefender::Pua
+    ))));
+    let mut constats = 0;
+    let mut fautes = Vec::new();
+    for (id, juge) in tous_les_cas() {
+        let dossier = racine_du_corpus().join(id);
+        for n in variantes(&dossier) {
+            for f in [format!("fabrique{n}.txt"), format!("propre{n}.txt")] {
+                let Ok(texte) = std::fs::read_to_string(dossier.join(&f)) else {
+                    continue;
+                };
+                let entree = Entree {
+                    dossier: dossier.clone(),
+                    texte,
+                };
+                let Ok(tires) = juger_le_fichier(id, &f, juge, &entree) else {
+                    continue;
+                };
+                for c in &tires {
+                    constats += 1;
+                    for l in c.correctif.iter().flat_map(|k| &k.commandes) {
+                        if est_baisse(l) {
+                            fautes.push(format!("{id}/{f} : {l}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(constats > 0, "aucun constat lu dans le corpus");
+    assert!(
+        fautes.is_empty(),
+        "lignes de baisse dans le bilan :\n{}",
+        fautes.join("\n")
+    );
+}
+
 #[test]
 fn chaque_regle_de_detection_a_son_cas() {
     let outils: Vec<&str> = super::registre::OUTILS.iter().map(|o| o.id).collect();
