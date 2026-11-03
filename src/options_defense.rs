@@ -2097,8 +2097,27 @@ fn appliquer_choix(ligne: String) -> bool {
     }
 }
 
-/// L'écran (menu 4.10, `vanguard options-defense`).
+/// Sortie vers un fichier ou un tube (`vanguard options-defense > etat.txt`) : le rapport complet, sans rien
+/// demander. Depuis D3, le menu s'y affichait et attendait « Votre choix » que personne ne voyait (le banc D1 de la
+/// VM semblait gelé). Pure, pour l'essayer.
+#[cfg_attr(not(windows), allow(dead_code))] // hors de Windows, pas de menu : un texte seulement
+fn rapport_seul(sortie_console: bool) -> bool {
+    !sortie_console
+}
+
+/// L'écran (menu 4.10, `vanguard options-defense`) ; sortie qui n'est pas une console : le rapport complet (chaque
+/// section, gestion du PC comprise), comme avant le menu, puis la sortie (`rapport_seul`).
 pub fn afficher() {
+    #[cfg(windows)]
+    use std::io::IsTerminal as _;
+    #[cfg(windows)]
+    if rapport_seul(std::io::stdout().is_terminal()) {
+        crate::ui::titre(titre());
+        for l in lignes(&crate::machine::windows::defense_etat::lire()) {
+            println!("{l}");
+        }
+        return;
+    }
     #[cfg(windows)]
     ecran::ecran();
     #[cfg(not(windows))]
@@ -2372,6 +2391,13 @@ mod tests {
         let long = "A".repeat(300);
         assert!(largeur_affichee(&Produit::depuis(Some(&long), None, None).nom) <= 64);
         assert!(Produit::depuis(Some("Windows Defender"), Some(0x61100), Some("windowsdefender://")).microsoft);
+    }
+
+    /// `vanguard options-defense > fichier` : le rapport, jamais le menu qui attend une réponse ; à la console, le menu.
+    #[test]
+    fn rapport_seul_hors_console() {
+        assert!(rapport_seul(false));
+        assert!(!rapport_seul(true));
     }
 
     #[test]
