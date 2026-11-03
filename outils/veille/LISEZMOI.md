@@ -79,7 +79,9 @@ puis lus par le programme ; ni l'IA ni le rapport n'ouvrent ce qui vient d'un lo
   jamais en argument), HTTPS seulement (TLS 1.2 au moins), aucune redirection, 20 s pour se connecter, 2 min par
   réponse, 20 réponses au plus. Chaque réponse est gardée telle quelle, une par ligne, dans
   `~/.local/share/vanguard/retours/envois/AAAA-MM-JJ.jsonl` (dossier 700, fichiers 600), même illisible (le relais
-  l'a déjà effacée) : 5 Mio par réponse, 8 Mio par nuit (le reste attend au relais), 90 jours gardés. Sans Internet,
+  l'a déjà effacée) : 5 Mio par réponse, 8 Mio par nuit (une réponse de plus n'est demandée que s'il reste 5 Mio de
+  place : en pratique une seule grosse réponse par nuit ; le reste attend au relais, 14 jours), 90 jours gardés. Une
+  réponse coupée en cours de route est perdue (le relais l'a effacée) : en échec, dit. Sans Internet,
   relais occupé (429) ou en panne (5xx) : sautée, la raison dite ; secret refusé (401), redirection, réponse trop
   grosse ou illisible : en échec. `--sans-reseau` saute la relève, pas la lecture.
 - **Références** (`references-flotte.sh`) tirées de l'arbre de la veille : `versions.tsv` (chaque étiquette `vX.Y.Z`
@@ -96,7 +98,12 @@ puis lus par le programme ; ni l'IA ni le rapport n'ouvrent ce qui vient d'un lo
 - **Agrégats** : une voix par source et par jour de réception (la source est l'empreinte que le relais calcule avec
   le sel du jour) : chaque nombre pris à son maximum sur les lots d'une source, puis sommé d'une source à l'autre ;
   le même résultat quel que soit l'ordre des lots. Par clé : `[sources, réseaux larges, somme]`, pour tous et par
-  groupe (famille, classe de machine). État dans `etat/flotte/<version>.json` (2 Mio au plus, écrit de façon
+  groupe (famille, classe de machine). Une voix garde 2 000 clés et 8 installations au plus (les plus petites dans
+  l'ordre du texte, pour rester indépendant de l'ordre). Seuls les comptes de sources (et de réseaux larges) valent
+  comme signal : une source peut parler pour deux versions ou deux groupes (une voix dans chacun), et pousser la
+  somme d'une clé jusqu'au maximum du schéma ; ne jamais sommer d'une version ou d'un groupe à l'autre. Un fichier de
+  relève écarté (lien, tube, trop gros, illisible) : l'état n'est pas récrit cette nuit et l'étape échoue. Un jour qui
+  se fige pendant des nuits manquées garde le calcul de la dernière nuit qui l'a vu. État dans `etat/flotte/<version>.json` (2 Mio au plus, écrit de façon
   atomique ; un jour reçu il y a plus de 29 jours est figé ; gardé tant que sa mineure est parmi les trois dernières)
   et `etat/flotte/releve.json` (ce que chaque nuit a lu et refusé, 120 jours). Aucun signal n'en est encore tiré.
 

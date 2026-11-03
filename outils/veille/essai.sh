@@ -735,7 +735,8 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 
   -addext subjectAltName=IP:127.0.0.1 -keyout "$FR/cle.pem" -out "$FR/cert.pem" >/dev/null 2>&1
 cat >"$FR/relais.py" <<'FIN'
 # Faux relais : GET seulement ; chaque requête notée (chemin, en-tête Authorization) ; la réponse suivante de la file
-# (NN.code, NN.corps, NN.location facultatif), 503 quand la file est vide.
+# (NN.code, NN.corps, NN.location facultatif ; NN.mode : « sans-longueur » sans Content-Length, « coupe » une longueur
+# annoncée plus grande que le corps puis la connexion fermée), 503 quand la file est vide.
 import http.server, json, os, ssl, sys
 file, cert, cle, port_f, journal = sys.argv[1:]
 class Relais(http.server.BaseHTTPRequestHandler):
@@ -745,19 +746,22 @@ class Relais(http.server.BaseHTTPRequestHandler):
         with open(journal, "a") as j:
             j.write(json.dumps({"chemin": self.path, "auth": self.headers.get("Authorization", "")}) + "\n")
         noms = sorted(n[:-5] for n in os.listdir(file) if n.endswith(".code"))
-        code, corps, location = 503, b"", None
+        code, corps, location, mode = 503, b"", None, ""
         if noms:
             b = os.path.join(file, noms[0])
             code = int(open(b + ".code").read())
             corps = open(b + ".corps", "rb").read()
             if os.path.exists(b + ".location"):
                 location = open(b + ".location").read()
-            for s in (".code", ".corps", ".location"):
+            if os.path.exists(b + ".mode"):
+                mode = open(b + ".mode").read()
+            for s in (".code", ".corps", ".location", ".mode"):
                 if os.path.exists(b + s):
                     os.remove(b + s)
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(corps)))
+        if mode != "sans-longueur":
+            self.send_header("Content-Length", str(len(corps) + (100 if mode == "coupe" else 0)))
         if location:
             self.send_header("Location", location)
         self.end_headers()
@@ -778,11 +782,12 @@ PORT=$(cat "$FR/port" 2>/dev/null)
 export CURL_CA_BUNDLE=$FR/cert.pem
 attendu '[[ $PORT =~ ^[0-9]+$ ]]' "faux relais HTTPS à l'écoute sur 127.0.0.1:$PORT"
 N_FILE=0
-servir() { # code fichier-du-corps [location]
+servir() { # code fichier-du-corps [location] [mode]
   N_FILE=$((N_FILE + 1))
   local b; b=$FR/file/$(printf '%03d' "$N_FILE")
   cp -- "$2" "$b.corps"
   [[ -n ${3:-} ]] && printf '%s' "$3" >"$b.location"
+  [[ -n ${4:-} ]] && printf '%s' "$4" >"$b.mode"
   printf '%s' "$1" >"$b.code"
 }
 requetes() { [[ -f $FR/requetes.log ]] && wc -l <"$FR/requetes.log" || echo 0; }
@@ -870,6 +875,14 @@ servir 200 "$FR/gros.json"
 releve 2027-01-10; code=$?
 attendu '((code == 1)) && grep -q "trop grosse" "$BANC/releve.out" && (($(wc -l <"$E") == 2))' \
   "réponse de plus de 5 Mio : refusée, rien ajouté"
+servir 200 "$FR/gros.json" "" sans-longueur
+releve 2027-01-10; code=$?
+attendu '((code == 1)) && grep -qE "trop grosse|perdue" "$BANC/releve.out" && (($(wc -l <"$E") == 2))' \
+  "plus de 5 Mio sans longueur annoncée : refusée en cours de route, rien ajouté"
+servir 200 "$FR/vide.json" "" coupe
+releve 2027-01-10; code=$?
+attendu '((code == 1)) && grep -q "perdue" "$BANC/releve.out" && (($(wc -l <"$E") == 2))' \
+  "réponse coupée en cours : en échec, la perte dite (le relais l'a déjà effacée)"
 printf '{"releve":1,"lots":[{"lot":{"schema":2,"x":"\033]0;MARQUEUR-A8\a' >"$FR/casse.json"
 servir 200 "$FR/casse.json"
 releve 2027-01-10; code=$?
@@ -926,13 +939,14 @@ CR=$R/nuits/2027-01-20/flotte-comptes.txt
 compte() { grep -oE "(^| )$1=[0-9]+" "$CR" | cut -d= -f2; }
 attendu 'jq -e "[.etapes[] | select(.nom == \"envois\" or .nom == \"flotte\") | .etat] == [\"ok\", \"ok\"]" "$R/2027-01-20.json" >/dev/null' \
   "étapes envois et flotte : ok"
-attendu '[[ -x $ESSAI_VANGUARD ]]' "le vrai programme a lu les envois (compilé avant le banc)"
+attendu '[[ -x $ESSAI_VANGUARD ]] && grep -q "^fichiers=1 fichiers-ignores=0 " "$CR"' \
+  "le vrai programme a lu les envois (compilé avant le banc ; sa ligne de comptes)"
 attendu '(($(wc -l <"$VANGUARD_VEILLE_RETOURS/envois/2027-01-20.jsonl") == 2))' "deux réponses relevées, gardées en quarantaine"
 attendu '(($(compte lots) == 13 && $(compte quarantaine) == 1 && $(compte doublons) == 1 && $(compte relais-refus) == 5))' \
   "13 lots ; le secret planté en quarantaine ; le doublon ; les refus du relais comptés (raison hostile : « inconnue »)"
-attendu '(($(compte refus-version-non-publiee) == 1 && $(compte refus-regle-inconnue) == 1 && $(compte refus-outil-inconnu) == 1 && $(compte refus-trop-gros) == 1 && $(compte refus-enveloppe) == 1 && $(compte refus-hors-schema) >= 3))' \
-  "refusés et comptés : version non publiée, règle inventée, outil inconnu, trop gros, source hors motif, JSON cassé, clé en trop, séquence de terminal"
-attendu '(($(compte acceptes) >= 2 && $(compte votes) >= 2))' "les bons lots comptés, une voix par source"
+attendu '(($(compte refus-version-non-publiee) == 1 && $(compte refus-regle-inconnue) == 1 && $(compte refus-outil-inconnu) == 1 && $(compte refus-trop-gros) == 1 && $(compte refus-enveloppe) == 1 && $(compte refus-hors-schema) == 4 && $(compte refuses) == 9))' \
+  "refusés et comptés : version non publiée, règle inventée, outil inconnu, trop gros, source hors motif ; hors schéma : JSON cassé, clé en trop, séquence de terminal, texte hostile qui ne suit pas son gabarit"
+attendu '(($(compte acceptes) == 2 && $(compte votes) == 2))' "les deux bons lots comptés, une voix par source"
 attendu '[[ -s $R/etat/flotte/0.89.1.json ]] && jq -e ".version == \"0.89.1\"" "$R/etat/flotte/0.89.1.json" >/dev/null' \
   "état de la version écrit (etat/flotte/0.89.1.json)"
 attendu '! grep -rqaE "MARQUEUR-A8|FAUXjeton|ZZZ-ZZZ-999|outil-invente" "$R" $BANC/claude-*.args "$BANC/notifications.log" 2>/dev/null' \

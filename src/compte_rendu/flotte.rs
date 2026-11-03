@@ -27,7 +27,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fmt::Write as _;
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use chrono::{Days, NaiveDate};
@@ -87,9 +86,10 @@ const ETAT_SCHEMA: u8 = 1;
 pub(crate) enum Rejet {
     /// Jour, source ou réseau large hors motif, ou jour de réception hors de la fenêtre du fichier.
     Enveloppe,
+    /// Plus de `envoi::LOT_MAX` octets : refusé avant tout balayage (rien à gagner à lire 5 Mio pour les refuser).
+    TropGros,
     /// Le détecteur de secrets sonne : compté, jamais lu plus loin.
     Quarantaine,
-    TropGros,
     HorsSchema,
     VersionNonPubliee,
     /// Hors des trois dernières mineures publiées.
@@ -114,8 +114,8 @@ pub(crate) enum Rejet {
 impl Rejet {
     pub(crate) const TOUS: [Rejet; 15] = [
         Rejet::Enveloppe,
-        Rejet::Quarantaine,
         Rejet::TropGros,
+        Rejet::Quarantaine,
         Rejet::HorsSchema,
         Rejet::VersionNonPubliee,
         Rejet::VersionAncienne,
@@ -310,22 +310,12 @@ fn lignes(octets: &[u8]) -> Result<impl Iterator<Item = &str>, Echec> {
 
 /// Un fichier lu en entier, borné ; absent : rien.
 fn lire_borne(chemin: &Path, max: u64) -> Result<Option<Vec<u8>>, Echec> {
-    let f = match std::fs::File::open(chemin) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(Echec::io(LIRE, &e)),
-    };
-    let mut o = Vec::new();
-    f.take(max.saturating_add(1))
-        .read_to_end(&mut o)
-        .map_err(|e| Echec::io(LIRE, &e))?;
-    if u64::try_from(o.len()).unwrap_or(u64::MAX) > max {
-        return Err(Echec::refuse(
-            LIRE,
-            trf!("{} dépasse {} octets", "{} is over {} bytes", chemin.display(), max),
-        ));
+    // Ni lien suivi, ni tube nommé (il figerait la nuit dans open()), jugé sur ce qui est ouvert : socle.
+    match crate::socle::lire_ordinaire(chemin, max) {
+        Ok(o) => Ok(Some(o)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(Echec::refuse(LIRE, format!("{}: {e}", chemin.display()))),
     }
-    Ok(Some(o))
 }
 
 // --- La relève : l'enveloppe du relais ---------------------------------------------------------------------------
@@ -731,7 +721,16 @@ fn regles(lot: &Lot) -> impl Iterator<Item = &Regle> {
 
 // --- L'agrégat ---------------------------------------------------------------------------------------------------
 
-/// Ce qu'une source a dit un jour, sur tous ses lots : chaque nombre à son maximum.
+/// Les clés gardées par voix : une source qui envoie des milliers de lots aux noms tous différents ne fait pas
+/// grossir la nuit sans fin.
+const CLES_VOIX_MAX: usize = 2000;
+/// Les installations gardées par voix : un foyer derrière une même adresse en a quelques-unes ; une source ne peut
+/// pas en déclarer mille pour gonfler le compte des installations distinctes.
+const INSTALLATIONS_VOIX_MAX: usize = 8;
+
+/// Ce qu'une source a dit un jour, sur tous ses lots : chaque nombre à son maximum. Bornée en gardant les plus
+/// petites clés (et installations) dans l'ordre du texte : une clé écartée avait déjà assez de plus petites qu'elle
+/// et en aura toujours ; le résultat ne dépend donc pas de l'ordre des lots.
 #[derive(Default)]
 struct Voix {
     larges: BTreeSet<String>,
@@ -746,10 +745,16 @@ impl Voix {
         self.lots = self.lots.saturating_add(1);
         if let Some(i) = installation {
             self.installations.insert(i.to_string());
+            while self.installations.len() > INSTALLATIONS_VOIX_MAX {
+                self.installations.pop_last();
+            }
         }
         for (k, v) in stats {
             let e = self.stats.entry(k.clone()).or_insert(0);
             *e = (*e).max(*v);
+        }
+        while self.stats.len() > CLES_VOIX_MAX {
+            self.stats.pop_last();
         }
     }
 }
@@ -888,6 +893,9 @@ pub(crate) struct Comptes {
     /// Clés ou jours retirés pour tenir dans `ETAT_MAX`.
     pub(crate) elagues: u64,
     pub(crate) etats_illisibles: u64,
+    /// Un fichier de la fenêtre écarté : l'état n'est pas récrit cette nuit (il perdrait les jours de ce fichier, pour
+    /// de bon s'ils se figeaient avant qu'il redevienne lisible) ; la commande échoue pour que l'auteur le sache.
+    pub(crate) etat_retenu: bool,
     pub(crate) rejets: BTreeMap<Rejet, u64>,
 }
 
@@ -908,7 +916,7 @@ impl Comptes {
     pub(crate) fn ligne(&self) -> String {
         let mut l = format!(
             "fichiers={} fichiers-ignores={} lignes={} illisibles={} lots={} acceptes={} votes={} quarantaine={} \
-             doublons={} figes={} refuses={} relais-refus={} versions={} elagues={} etats-illisibles={}",
+             doublons={} figes={} refuses={} relais-refus={} versions={} elagues={} etats-illisibles={} etat-retenu={}",
             self.fichiers,
             self.fichiers_ignores,
             self.lignes,
@@ -924,6 +932,7 @@ impl Comptes {
             self.versions,
             self.elagues,
             self.etats_illisibles,
+            u8::from(self.etat_retenu),
         );
         for r in Rejet::TOUS.iter().filter(|r| !r.a_part()) {
             let _ = write!(l, " refus-{}={}", r.id(), self.rejet(*r));
@@ -1036,8 +1045,10 @@ impl Lecture<'_> {
         }
         let mut relais = Vec::with_capacity(r.refus.len());
         for x in &r.refus {
+            // Le jour borné comme la réception d'un lot (le relais ne garde que 14 jours) : sinon mille jours
+            // distincts par ligne feraient grossir releve.json sans limite.
             let Some(j) = Jour::new(&x.jour) else { return false };
-            if x.n > REFUS_N_MAX {
+            if x.n > REFUS_N_MAX || date(&j).is_none_or(|d| d < moins(f, RECU_AVANT) || d > plus(f, 1)) {
                 return false;
             }
             let raison = if RAISONS_RELAIS.contains(&x.raison.as_str()) {
@@ -1081,6 +1092,9 @@ impl Lecture<'_> {
             return Err(Rejet::Enveloppe);
         }
         let brut = recu.lot.get();
+        if brut.len() > envoi::LOT_MAX {
+            return Err(Rejet::TropGros);
+        }
         match serde_json::from_str::<Balayage>(brut) {
             Ok(Balayage(0)) => {}
             Ok(_) => return Err(Rejet::Quarantaine),
@@ -1278,6 +1292,10 @@ pub(crate) fn executer(d: &Demande<'_>) -> Result<Comptes, Echec> {
     let Some(dossier) = d.etat else {
         return Ok(lu.comptes);
     };
+    if lu.comptes.fichiers_ignores > 0 {
+        lu.comptes.etat_retenu = true;
+        return Ok(lu.comptes);
+    }
     std::fs::create_dir_all(dossier).map_err(|e| Echec::ecriture(LIRE, &e))?;
     let t = d.aujourdhui;
     let fige = |j: &Jour| date(j).is_some_and(|x| x < moins(t, FENETRE));

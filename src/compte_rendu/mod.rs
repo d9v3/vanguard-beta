@@ -448,6 +448,17 @@ fn flotte_lancee(
         Ok(c) => {
             println!("{}", c.ligne());
             eprintln!("{}", flotte::phrase(&c));
+            if c.etat_retenu {
+                eprintln!(
+                    "{}",
+                    trf!(
+                        "{} fichier(s) de relève écarté(s) (lien, tube, trop gros ou illisible) : état gardé tel quel.",
+                        "{} relay file(s) set aside (link, pipe, too big or unreadable): state kept as it was.",
+                        c.fichiers_ignores
+                    )
+                );
+                return 1;
+            }
             0
         }
         Err(e) => {

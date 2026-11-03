@@ -10,6 +10,8 @@
 # grosse). Le relais efface ce qu'il rend : une réponse reçue est toujours gardée avant d'en demander une autre.
 set -uo pipefail
 umask 077
+# L'adresse et le secret jugés en octets : une plage comme [a-z] dépend sinon de la langue du système.
+export LC_ALL=C
 
 CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}/vanguard-dev
 RETOURS=${VANGUARD_VEILLE_RETOURS:-${XDG_DATA_HOME:-$HOME/.local/share}/vanguard/retours}
@@ -82,12 +84,14 @@ while :; do
   code_http=$(relever)
   code=$?
   appels=$((appels + 1))
+  # Le relais efface ce qu'il rend avant de répondre : une réponse commencée puis coupée est perdue, et dite.
   case $code in
     0) ;;
-    6 | 7 | 28) ((appels == 1)) && sautee "relais injoignable (pas d'Internet ?) : curl $code"
-                refus "relais injoignable au milieu de la relève : curl $code" ;;
-    63) refus "réponse du relais trop grosse (plus de $REPONSE_MAX octets) : refusée" ;;
-    *) refus "relève impossible : curl $code" ;;
+    6 | 7 | 28)
+      [[ $appels == 1 && ${code_http:-000} == 000 ]] && sautee "relais injoignable (pas d'Internet ?) : curl $code"
+      refus "relève coupée (curl $code) : la réponse, déjà effacée au relais, est perdue" ;;
+    63) refus "réponse du relais trop grosse (plus de $REPONSE_MAX octets) : refusée, perdue (déjà effacée au relais)" ;;
+    *) refus "relève coupée (curl $code) : la réponse, déjà effacée au relais, est perdue" ;;
   esac
   case $code_http in
     200) ;;

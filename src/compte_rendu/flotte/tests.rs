@@ -325,8 +325,9 @@ fn hostiles() -> Vec<(Option<Rejet>, Recu<'static>)> {
             Some(Rejet::RegleInconnue),
             (r, src(15), large(), bon().replace("LNX-MAJ-001", "ZZZ-ZZZ-999")),
         ),
+        // Sans `regles` : accepté, les règles des autres listes (causes, objets…) sont connues.
         (
-            Some(Rejet::RegleInconnue),
+            None,
             (
                 r,
                 src(16),
@@ -398,10 +399,13 @@ fn chaque_refus_est_compte_et_rien_d_hostile_n_est_ecrit() {
             *attendu.entry(*r).or_default() += 1;
         }
     }
-    // Le lot sans `regles` est accepté (règles connues ailleurs) : il n'est pas un refus.
-    *attendu.get_mut(&Rejet::RegleInconnue).unwrap() -= 1;
-    attendu.retain(|_, n| *n > 0);
     assert_eq!(c.rejets, attendu, "{}", c.ligne());
+    assert_eq!(
+        c.acceptes,
+        tous.iter().filter(|(r, _)| r.is_none()).count() as u64,
+        "{}",
+        c.ligne()
+    );
     assert_eq!(c.acceptes, 2, "{}", c.ligne());
     assert_eq!(c.illisibles, illisibles.len() as u64);
     assert_eq!(c.relais_refus, 5);
@@ -465,6 +469,59 @@ fn fichiers_hors_fenetre_lien_ou_trop_gros() {
     assert_eq!(c.fichiers, 0, "{c:?}");
     assert_eq!(c.acceptes, 0);
     assert_eq!(c.fichiers_ignores, if cfg!(unix) { 2 } else { 1 });
+    // Un fichier de la fenêtre écarté : l'état n'avance pas, dit.
+    assert!(c.etat_retenu);
+    assert!(!b.etat.join("releve.json").exists());
+    #[cfg(unix)]
+    {
+        // Un tube nommé à la place de l'état : écarté sans attendre (il figeait la nuit dans open()).
+        let b = Banc::new();
+        std::fs::create_dir_all(&b.etat).unwrap();
+        let tube = b.etat.join("0.89.1.json");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&tube)
+                .status()
+                .is_ok_and(|s| s.success())
+        );
+        b.poser("2026-11-02", std::slice::from_ref(&ligne));
+        let c = b.nuit();
+        assert_eq!((c.acceptes, c.etats_illisibles), (1, 1), "{c:?}");
+    }
+}
+
+#[test]
+fn une_source_ne_gonfle_ni_les_cles_ni_les_installations() {
+    // Mille lots d'une source, chacun avec ses propres noms d'objets et sa propre installation : la voix reste
+    // bornée, et le résultat ne dépend pas de l'ordre.
+    let lots: Vec<String> = (0..1000u32)
+        .map(|i| {
+            let mut l = complet();
+            l.installation = Some(crate::compte_rendu::envoi::IdInstallation::de_octets(
+                u64::from(i).to_be_bytes(),
+            ));
+            let mut e: serde_json::Value = serde_json::from_str(&ecrit(&l)).unwrap();
+            e["objets"][0]["nom"] = serde_json::Value::String(format!("Objet {i}"));
+            e["objets"][0]["version"] = serde_json::Value::String(format!("1.{i}.0"));
+            e.to_string()
+        })
+        .collect();
+    let etat = |ordre: &mut dyn Iterator<Item = &String>| {
+        let b = Banc::new();
+        let recus: Vec<Recu<'_>> = ordre.map(|l| ("2026-11-01", r1(), large(), l.clone())).collect();
+        let lignes: Vec<String> = recus.chunks(500).map(|c| reponse(c, "[]")).collect();
+        b.poser("2026-11-02", &lignes);
+        let c = b.nuit();
+        assert_eq!(c.votes, 1, "{c:?}");
+        let e = b.etat("0.89.1");
+        let j = e.jours[&Jour::new("2026-11-01").unwrap()].tous.clone();
+        (j, std::fs::read(b.etat.join("0.89.1.json")).unwrap())
+    };
+    let (j, octets) = etat(&mut lots.iter());
+    assert_eq!(j.installations, INSTALLATIONS_VOIX_MAX as u64);
+    assert!(j.stats.len() <= CLES_VOIX_MAX, "{}", j.stats.len());
+    let (_, a_rebours) = etat(&mut lots.iter().rev());
+    assert_eq!(octets, a_rebours);
 }
 
 #[test]
