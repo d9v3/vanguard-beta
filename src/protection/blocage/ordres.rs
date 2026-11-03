@@ -285,6 +285,7 @@ pub(crate) fn juger(o: &Ordre, j: &Juge) -> Option<String> {
             noms.iter()
                 .flatten()
                 .find_map(|nom| gardes::processus_intouchable(*pid, nom, Some(&actuel), &j.intouchables, j.os))
+                .or_else(|| gardes::lignee_de_session(*pid, j.sessions.as_ref()))
                 .map(str::to_string)
         }
         // Défaire n'est permis que pour ce que Vanguard a pu poser : il ne bloque jamais une adresse locale ou un DNS

@@ -14,6 +14,13 @@ unsafe extern "system" {
     fn OpenProcess(acces: u32, heriter: i32, processus: u32) -> *mut c_void;
     fn QueryFullProcessImageNameW(processus: *mut c_void, drapeaux: u32, nom: *mut u16, taille: *mut u32) -> i32;
     fn TerminateProcess(processus: *mut c_void, code: u32) -> i32;
+    fn GetProcessTimes(
+        processus: *mut c_void,
+        creation: *mut [u32; 2],
+        fin: *mut [u32; 2],
+        noyau: *mut [u32; 2],
+        utilisateur: *mut [u32; 2],
+    ) -> i32;
     fn GetCurrentProcess() -> *mut c_void;
     fn CloseHandle(objet: *mut c_void) -> i32;
     /// Partagé avec `comptes` : une seule déclaration de chaque import.
@@ -104,6 +111,12 @@ pub(crate) fn chemin(processus: u32) -> Option<String> {
     Tenu::ouvrir(processus).ok()?.chemin()
 }
 
+/// L'heure de création d'un processus (FILETIME, en centaines de nanosecondes) : avec le numéro, elle distingue un
+/// processus d'un autre venu sur le même numéro. `None` : Windows refuse (processus fini, protégé, d'un autre compte).
+pub(crate) fn creation(processus: u32) -> Option<u64> {
+    Tenu::ouvrir(processus).ok()?.creation()
+}
+
 /// Un processus tenu par une poignée de lecture limitée (PROCESS_QUERY_LIMITED_INFORMATION) : tant qu'elle vit,
 /// Windows ne redonne pas son numéro à un autre processus, et ce qui est lu par elle (programme, compte) est celui de
 /// ce processus-là, même s'il a fini entre-temps. Le processus élevé tient ainsi le Vanguard qui l'a lancé.
@@ -123,6 +136,25 @@ impl Tenu {
         } else {
             Ok(Tenu(poignee))
         }
+    }
+
+    /// Son heure de création, lue par la poignée ; `None` si Windows refuse.
+    // FFI : GetProcessTimes sur la poignée tenue.
+    #[allow(unsafe_code)]
+    pub(crate) fn creation(&self) -> Option<u64> {
+        let (mut creation, mut fin, mut noyau, mut utilisateur) = ([0u32; 2], [0u32; 2], [0u32; 2], [0u32; 2]);
+        // SAFETY: la poignée est ouverte tant que `self` vit ; GetProcessTimes écrit une FILETIME (deux u32, poids
+        // faible d'abord) dans chacun des quatre tableaux, à nous et vivants pendant l'appel.
+        let lu = unsafe {
+            GetProcessTimes(
+                self.0,
+                &raw mut creation,
+                &raw mut fin,
+                &raw mut noyau,
+                &raw mut utilisateur,
+            )
+        } != 0;
+        (lu && creation != [0, 0]).then(|| (u64::from(creation[1]) << 32) | u64::from(creation[0]))
     }
 
     /// Le chemin complet de son programme, lu par la poignée ; `None` si Windows refuse.

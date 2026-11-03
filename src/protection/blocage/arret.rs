@@ -19,6 +19,11 @@ const OU: &str = "blocage/arret";
 /// Arrête `pid` s'il fait toujours tourner `attendu` (« (deleted) » compris sous Linux : effacé depuis). `Err` : ce
 /// qui l'a empêché, prêt à montrer ; rien n'est alors arrêté.
 pub(crate) fn arreter(pid: u32, attendu: &str) -> Result<(), Echec> {
+    // Le dernier mot, juste avant le signal, sur des sessions relues : quel que soit le chemin qui mène ici, ce qui
+    // descend d'une session à distance n'est jamais arrêté.
+    if let Some(raison) = super::gardes::lignee_de_session(pid, super::gardes::sessions_a_distance().as_ref()) {
+        return Err(Echec::refuse(OU, raison));
+    }
     #[cfg(target_os = "linux")]
     {
         linux::arreter(pid, attendu)
@@ -251,6 +256,14 @@ mod tests {
             enfant.try_wait().unwrap().is_none(),
             "un autre programme attendu : il vit encore"
         );
+        // Lancé depuis une session à distance (cargo test par SSH), la garde d'ascendance refuse à juste titre :
+        // l'arrêt ne se vérifie alors pas ici.
+        if super::super::gardes::lignee_de_session(pid, super::super::gardes::sessions_a_distance().as_ref()).is_some()
+        {
+            let _ = enfant.kill();
+            let _ = enfant.wait();
+            return crate::essais::saute("lancé depuis une session à distance");
+        }
         arreter(pid, &programme).unwrap();
         let statut = enfant.wait().unwrap();
         assert_eq!(statut.signal(), Some(libc::SIGKILL));

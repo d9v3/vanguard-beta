@@ -724,12 +724,309 @@ fn lire_etablies() -> Option<Vec<Etablie>> {
     Some(etablies_avec(&n.sortie, &a_moi))
 }
 
+/// Les hôtes des sessions à distance : SSH (le serveur, et le processus de chaque connexion depuis OpenSSH 9.8),
+/// WinRM (PowerShell à distance, winrs), le Bureau à distance (RemoteApp de Windows, xrdp de Linux). Ce qu'ils font
+/// tourner EST la session : rien de ce qui descend d'eux n'est arrêté (défense D6a).
+const HOTES_DE_SESSION: &[&str] = &[
+    "sshd",
+    "sshd-session",
+    "wsmprovhost",
+    "winrshost",
+    "rdpinit",
+    "rdpshell",
+    "xrdp",
+    "xrdp-sesman",
+];
+
+/// Au-delà, la lignée n'est plus suivie : elle reste incertaine (une boucle de numéros repris ne finit jamais).
+const PROFONDEUR_MAX: usize = 64;
+
+/// Un processus de l'instantané, tel que la garde d'ascendance le lit.
+pub(crate) struct Fiche {
+    pub parent: u32,
+    pub nom: String,
+    /// L'heure de création, dans l'unité du système (FILETIME sous Windows, tops depuis le démarrage sous Linux,
+    /// microsecondes sous macOS) ; `None` : illisible.
+    pub creation: Option<u64>,
+}
+
+/// Pourquoi ce processus ne doit pas être arrêté parce qu'il descend d'un hôte de session à distance, ou `None`.
+/// `fiche` : le processus d'un numéro dans l'instantané (`None` : fini). Un parent n'est le vrai parent que s'il a été
+/// créé avant l'enfant : sinon son numéro a été repris par un autre, la chaîne est coupée, et pendant une session à
+/// distance (`aucune_session` faux : en cours ou illisible) ce qui ne se prouve pas hors d'elle n'est pas arrêté. Une
+/// heure illisible rend la lignée incertaine de même, mais la remontée continue : un hôte plus haut refuse toujours.
+pub(crate) fn ascendance_de_session(
+    pid: u32,
+    fiche: impl Fn(u32) -> Option<Fiche>,
+    aucune_session: bool,
+) -> Option<&'static str> {
+    let incertaine = || {
+        (!aucune_session).then(|| {
+            tr!(
+                "lignée du processus incertaine (numéro repris ou heure illisible) pendant une session à distance : rien n'est arrêté",
+                "process lineage uncertain (reused number or unreadable time) during a remote session: nothing is stopped"
+            )
+        })
+    };
+    let Some(mut enfant) = fiche(pid) else {
+        return Some(tr!(
+            "le processus ne se lit plus dans la liste des processus : rien n'est arrêté",
+            "the process can no longer be read in the process list: nothing is stopped"
+        ));
+    };
+    let mut courant = pid;
+    let mut vus = HashSet::from([pid]);
+    let mut douteuse = false;
+    for _ in 0..PROFONDEUR_MAX {
+        let p = enfant.parent;
+        // La racine (Idle, le noyau) : la lignée est lue jusqu'au bout.
+        if p == 0 || p == courant {
+            return if douteuse { incertaine() } else { None };
+        }
+        // Une boucle ne vient que de numéros repris.
+        if !vus.insert(p) {
+            return incertaine();
+        }
+        // Un parent fini : la lignée s'arrête là, aucun hôte vivant au-dessus par elle.
+        let Some(parent) = fiche(p) else {
+            return if douteuse { incertaine() } else { None };
+        };
+        // Même un parent douteux qui porte le nom d'un hôte refuse : la prudence ne coûte qu'un arrêt.
+        if HOTES_DE_SESSION.contains(&nom_simple(&parent.nom).as_str()) {
+            return Some(tr!(
+                "lancé depuis une session à distance (SSH, WinRM, Bureau à distance) : jamais arrêté, une alerte seulement",
+                "started from a remote session (SSH, WinRM, Remote Desktop): never stopped, an alert only"
+            ));
+        }
+        match (parent.creation, enfant.creation) {
+            // Égal permis : les tops de Linux durent 10 ms, un parent et son enfant peuvent y naître ensemble.
+            (Some(a), Some(b)) if a <= b => {}
+            // Né après l'enfant : un autre processus a repris le numéro du vrai parent, fini.
+            (Some(_), Some(_)) => return incertaine(),
+            _ => douteuse = true,
+        }
+        courant = p;
+        enfant = parent;
+    }
+    incertaine()
+}
+
+/// Les sessions lues permettent-elles de dire qu'aucune session à distance n'est en cours ? Illisibles : non.
+pub(crate) fn aucune_session(sessions: Option<&Sessions>) -> bool {
+    sessions.is_some_and(|s| s.sessions.is_empty())
+}
+
+/// Le nom, le parent et l'heure de départ d'un `/proc/<pid>/stat` : le nom entre la première « ( » et la dernière
+/// « ) » (il peut en contenir), puis l'état, le parent (2e champ) et le départ (22e champ du fichier).
+#[cfg(any(target_os = "linux", test))]
+fn fiche_du_stat(stat: &str) -> Option<Fiche> {
+    let (avant, apres) = stat.rsplit_once(')')?;
+    let nom = avant.split_once('(')?.1.to_string();
+    let mut champs = apres.split_whitespace();
+    let parent = champs.nth(1)?.parse().ok()?;
+    let creation = champs.nth(17).and_then(|c| c.parse().ok());
+    Some(Fiche { parent, nom, creation })
+}
+
+/// La garde d'ascendance, lue sur ce système : un instantané des processus (Toolhelp32 et GetProcessTimes sous
+/// Windows, `/proc` sous Linux, proc_pidinfo sous macOS).
+pub(crate) fn lignee_de_session(pid: u32, sessions: Option<&Sessions>) -> Option<&'static str> {
+    let aucune = aucune_session(sessions);
+    #[cfg(windows)]
+    {
+        use crate::machine::windows::processus;
+        let instantane: std::collections::HashMap<u32, (u32, String)> = processus::liste()
+            .into_iter()
+            .map(|p| (p.pid, (p.parent, p.nom)))
+            .collect();
+        ascendance_de_session(
+            pid,
+            |p| {
+                let (parent, nom) = instantane.get(&p)?.clone();
+                Some(Fiche {
+                    parent,
+                    nom,
+                    creation: processus::creation(p),
+                })
+            },
+            aucune,
+        )
+    }
+    #[cfg(target_os = "linux")]
+    {
+        ascendance_de_session(
+            pid,
+            |p| fiche_du_stat(&std::fs::read_to_string(format!("/proc/{p}/stat")).ok()?),
+            aucune,
+        )
+    }
+    #[cfg(target_os = "macos")]
+    {
+        ascendance_de_session(
+            pid,
+            |p| {
+                let i = super::arret::macos::infos(p)?;
+                let nom: Vec<u8> = i
+                    .pbi_comm
+                    .iter()
+                    .take_while(|&&c| c != 0)
+                    .map(|&c| c.cast_unsigned())
+                    .collect();
+                let creation = i
+                    .pbi_start_tvsec
+                    .checked_mul(1_000_000)?
+                    .checked_add(i.pbi_start_tvusec);
+                Some(Fiche {
+                    parent: i.pbi_ppid,
+                    nom: String::from_utf8_lossy(&nom).into_owned(),
+                    creation,
+                })
+            },
+            aucune,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn ip(t: &str) -> IpAddr {
         t.parse().unwrap()
+    }
+
+    /// Un instantané d'essai : (pid, parent, nom, création).
+    fn instantane<'a>(v: &'a [(u32, u32, &'a str, Option<u64>)]) -> impl Fn(u32) -> Option<Fiche> + 'a {
+        move |p| {
+            v.iter().find(|f| f.0 == p).map(|&(_, parent, nom, creation)| Fiche {
+                parent,
+                nom: nom.to_string(),
+                creation,
+            })
+        }
+    }
+
+    /// Garde d'ascendance (défense D6a) : un descendant de sshd, sshd-session, wsmprovhost, winrshost ou de l'hôte
+    /// RemoteApp n'est jamais arrêté, à n'importe quelle profondeur ; un processus ordinaire l'est.
+    #[test]
+    fn descendant_d_une_session_jamais_arrete() {
+        for hote in [
+            "sshd",
+            "sshd-session.exe",
+            "wsmprovhost.exe",
+            "WinRSHost.exe",
+            "rdpinit.exe",
+            "rdpshell.exe",
+            "xrdp-sesman",
+        ] {
+            let v = [
+                (4, 0, "System", Some(1)),
+                (600, 4, "services", Some(2)),
+                (700, 600, hote, Some(3)),
+                (800, 700, "cmd.exe", Some(4)),
+                (900, 800, "malware.exe", Some(5)),
+            ];
+            for sans_session in [true, false] {
+                assert!(
+                    ascendance_de_session(900, instantane(&v), sans_session).is_some(),
+                    "{hote}"
+                );
+                assert!(
+                    ascendance_de_session(800, instantane(&v), sans_session).is_some(),
+                    "{hote}"
+                );
+            }
+        }
+        // Lancé par l'Explorateur : arrêté, session en cours ou non.
+        let v = [
+            (4, 0, "System", Some(1)),
+            (500, 4, "winlogon", Some(2)),
+            (1200, 999, "explorer.exe", Some(5)),
+            (1300, 1200, "malware.exe", Some(9)),
+        ];
+        assert_eq!(ascendance_de_session(1300, instantane(&v), true), None);
+        assert_eq!(ascendance_de_session(1300, instantane(&v), false), None);
+        // Linux : lancé par systemd, rien ne l'empêche.
+        let v = [(1, 0, "systemd", Some(0)), (2000, 1, "xmrig", Some(50))];
+        assert_eq!(ascendance_de_session(2000, instantane(&v), false), None);
+        // Le processus visé ne se lit plus : rien n'est arrêté.
+        assert!(ascendance_de_session(77, instantane(&v), true).is_some());
+    }
+
+    /// Un numéro repris : le « parent » est né après l'enfant. La chaîne est coupée : pendant une session à distance
+    /// (ou des sessions illisibles), refusé ; sans aucune session, l'arrêt reste permis.
+    #[test]
+    fn numero_repris_chaine_coupee() {
+        let v = [
+            (4, 0, "System", Some(1)),
+            (700, 4, "outil.exe", Some(100)),
+            (900, 700, "malware.exe", Some(50)),
+        ];
+        assert!(ascendance_de_session(900, instantane(&v), false).is_some());
+        assert_eq!(ascendance_de_session(900, instantane(&v), true), None);
+        // Même un faux parent nommé sshd refuse.
+        let v = [
+            (4, 0, "System", Some(1)),
+            (700, 4, "sshd", Some(100)),
+            (900, 700, "x", Some(50)),
+        ];
+        assert!(ascendance_de_session(900, instantane(&v), true).is_some());
+        // Une boucle de numéros repris : incertaine.
+        let v = [(10, 20, "a", Some(5)), (20, 10, "b", Some(5))];
+        assert!(ascendance_de_session(10, instantane(&v), false).is_some());
+        assert_eq!(ascendance_de_session(10, instantane(&v), true), None);
+        // Égal : permis (les tops de Linux).
+        let v = [
+            (1, 0, "systemd", Some(0)),
+            (30, 1, "bash", Some(7)),
+            (31, 30, "x", Some(7)),
+        ];
+        assert_eq!(ascendance_de_session(31, instantane(&v), false), None);
+    }
+
+    /// Une heure de création illisible : la lignée est incertaine (refusée pendant une session), mais la remontée
+    /// continue et un hôte au-dessus refuse toujours. Une lignée trop longue l'est aussi.
+    #[test]
+    fn heure_illisible_et_lignee_trop_longue() {
+        let v = [
+            (4, 0, "System", Some(1)),
+            (700, 4, "svchost.exe", None),
+            (900, 700, "malware.exe", Some(50)),
+        ];
+        assert!(ascendance_de_session(900, instantane(&v), false).is_some());
+        assert_eq!(ascendance_de_session(900, instantane(&v), true), None);
+        let v = [
+            (4, 0, "System", Some(1)),
+            (650, 4, "wsmprovhost.exe", Some(2)),
+            (700, 650, "cmd.exe", None),
+            (900, 700, "malware.exe", Some(50)),
+        ];
+        assert!(ascendance_de_session(900, instantane(&v), true).is_some());
+        let mut longue: Vec<(u32, u32, &str, Option<u64>)> = (1..=100u32).map(|p| (p, p + 1, "x", Some(0))).collect();
+        longue.push((101, 0, "racine", Some(0)));
+        assert!(ascendance_de_session(1, instantane(&longue), false).is_some());
+        assert_eq!(ascendance_de_session(1, instantane(&longue), true), None);
+        // Des sessions illisibles ne prouvent pas qu'il n'y en a aucune.
+        assert!(!aucune_session(None));
+        assert!(aucune_session(Some(&Sessions::default())));
+        let en_cours = Sessions {
+            sessions: vec![ip("192.0.2.7")],
+            ..Sessions::default()
+        };
+        assert!(!aucune_session(Some(&en_cours)));
+    }
+
+    /// `/proc/<pid>/stat` : le nom (même avec « ) » et des espaces), le parent et le départ.
+    #[test]
+    fn fiche_lue_du_stat() {
+        let f =
+            fiche_du_stat("4242 (a) b (c)) S 17 4242 4242 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 98765 1 2").unwrap();
+        assert_eq!((f.parent, f.nom.as_str(), f.creation), (17, "a) b (c)", Some(98765)));
+        let f = fiche_du_stat("7 (sshd-session) S 1 7 7 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 12 0").unwrap();
+        assert_eq!((f.parent, f.nom.as_str(), f.creation), (1, "sshd-session", Some(12)));
+        // Coupé avant le départ : heure illisible, pas inventée.
+        assert_eq!(fiche_du_stat("7 (x) S 1 7").unwrap().creation, None);
+        assert!(fiche_du_stat("7 x S 1").is_none());
     }
 
     /// Garde-fou : jamais un processus critique (PID 0, 1, 4, ou nom critique), jamais Vanguard ni ce qui le fait

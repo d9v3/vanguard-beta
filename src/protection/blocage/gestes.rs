@@ -298,6 +298,10 @@ fn preparer_programme(
             if let Some(raison) = gardes::processus_intouchable(pid, nom, Some(&actuel), &ctx.intouchables, ctx.os) {
                 return Err(Echec::refuse("blocage/preparer", raison));
             }
+            // Ce qui descend d'une session à distance (SSH, WinRM, Bureau à distance) n'est jamais arrêté.
+            if let Some(raison) = gardes::lignee_de_session(pid, ctx.sessions.as_ref()) {
+                return Err(Echec::refuse("blocage/preparer", raison));
+            }
             let ici = arret_sans_droits(pid);
             if !ici {
                 // Un processus d'un autre compte : l'ordre part vers celui qui a les droits, qui le rejuge.
