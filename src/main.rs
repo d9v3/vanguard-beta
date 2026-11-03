@@ -867,9 +867,22 @@ struct Session {
     /// minutes.
     scan_le: Option<std::time::Instant>,
     audit_reseau: Option<audit::AuditReseau>,
+    /// Le dernier outil choisi dans chaque écran d'outils, par son chemin (« Réseau et Internet », ou un écran à
+    /// choix sous son groupe) : y revenir pendant la session remet la surbrillance dessus, pas sur la ligne 1.
+    choisis: std::collections::HashMap<String, Action>,
 }
 
 impl Session {
+    /// La ligne à mettre en surbrillance en entrant dans l'écran `chemin` : celle de l'outil choisi la dernière fois,
+    /// retrouvé par l'outil et non par son numéro (un outil devenu indisponible décale les numéros) ; sinon la 1.
+    fn ligne_gardee(&self, chemin: &str, actions: &[Action]) -> String {
+        self.choisis
+            .get(chemin)
+            .and_then(|a| actions.iter().position(|b| b == a))
+            .map_or(1, |i| i + 1)
+            .to_string()
+    }
+
     async fn scanner_reseau(&mut self, cible: Option<String>, ports: &str) {
         let du_reseau_local = cible.is_none() && ports == "courants";
         match reseau::executer(Options::defaut(cible, ports)).await {
@@ -2670,7 +2683,7 @@ fn places() -> Vec<(String, Action)> {
 
 /// Un écran d'outils numérotés (un groupe, ou les variantes d'un écran à choix), Entrée pour revenir.
 async fn liste_d_outils(s: &mut Session, chemin: &str, resume: &str, actions: &[Action], retour: &str) {
-    let mut dernier = String::from("1");
+    let mut dernier = s.ligne_gardee(chemin, actions);
     loop {
         print!("\x1b[2J\x1b[H");
         let mut lignes: Vec<Ligne> = lignes_cadre(&format!("{ACCENT}VANGUARD{RESET} {GRIS}›{RESET} {chemin}"), resume)
@@ -2711,6 +2724,7 @@ async fn liste_d_outils(s: &mut Session, chemin: &str, resume: &str, actions: &[
             continue;
         };
         dernier = choix.to_string();
+        s.choisis.insert(chemin.to_string(), action);
         println!();
         lancer(s, action, chemin).await;
         if action.attendre_apres() && !ui::vient_de_revenir() {
@@ -4116,6 +4130,24 @@ async fn main() {
 #[cfg(test)]
 mod tests_menu {
     use super::*;
+
+    /// Revenir dans un écran d'outils remet la surbrillance sur l'outil choisi la dernière fois, retrouvé par l'outil
+    /// même si son numéro a changé ; un autre écran, ou un outil disparu, repart à la ligne 1.
+    #[test]
+    fn ligne_gardee_par_ecran() {
+        let mut s = Session::default();
+        let ecran = [Action::Scanner, Action::Appareil, Action::Conteneurs];
+        assert_eq!(s.ligne_gardee("Réseau", &ecran), "1");
+        s.choisis.insert("Réseau".into(), Action::Appareil);
+        assert_eq!(s.ligne_gardee("Réseau", &ecran), "2");
+        assert_eq!(s.ligne_gardee("Réseau", &[Action::Appareil]), "1");
+        assert_eq!(
+            s.ligne_gardee("Réseau", &[Action::Conteneurs, Action::Scanner, Action::Appareil]),
+            "3"
+        );
+        assert_eq!(s.ligne_gardee("Réseau", &[Action::Scanner]), "1");
+        assert_eq!(s.ligne_gardee("Virus", &ecran), "1");
+    }
 
     /// Les sous-commandes refusées en administrateur sont exactement celles des outils d'Optimiser de la table.
     #[test]
