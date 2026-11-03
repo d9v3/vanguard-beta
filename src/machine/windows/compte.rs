@@ -92,7 +92,7 @@ pub(crate) fn faire(g: &GesteCompte) -> Resultat {
     if r.reussi && !r.rien && g.rafraichir() && !prevenir_wininet() {
         // Écrit et relu : seul l'annonce a manqué. Le réglage vaut à la prochaine ouverture du navigateur.
         crate::journal::erreur(
-            crate::compte_rendu::Contexte::echec("wininet/annonce"),
+            crate::compte_rendu::Contexte::Reseaux,
             "InternetSetOptionW (réglages changés) refusé",
         );
     }
