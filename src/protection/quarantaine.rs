@@ -106,7 +106,12 @@ pub(crate) fn isoler(chemin: &Path, detection: &str, d: Demande) -> std::io::Res
         .and_then(|p| p.fichier.as_ref())
         .filter(|f| Path::new(&f.chemin) == chemin)
         .and_then(|f| f.sha256.clone());
-    let r = isoler_dans(chemin, detection, &dossier(), sha256);
+    // Le seul chemin vers la quarantaine : un fichier signé par Microsoft (ou dont la signature ne se lit pas) n'y
+    // va jamais, d'où que vienne la demande (défense D6a).
+    let r = match crate::protection::blocage::gardes::signature_systeme(&chemin.to_string_lossy()) {
+        Some(raison) => Err(std::io::Error::other(raison)),
+        None => isoler_dans(chemin, detection, &dossier(), sha256),
+    };
     let annulation =
         r.as_ref()
             .ok()

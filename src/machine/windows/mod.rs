@@ -63,6 +63,7 @@ mod run_ecriture;
 pub(crate) mod securite;
 mod services;
 mod services_ecriture;
+pub(crate) mod signature;
 mod ssh;
 mod taches_ecriture;
 mod verrouillage;

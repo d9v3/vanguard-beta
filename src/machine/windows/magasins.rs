@@ -23,7 +23,8 @@ unsafe extern "system" {
         donnees: *mut c_void,
         taille: *mut u32,
     ) -> i32;
-    fn CertGetNameStringW(
+    /// Partagée avec `signature` : une seule déclaration de chaque import.
+    pub(super) fn CertGetNameStringW(
         certificat: *const c_void,
         sorte: u32,
         drapeaux: u32,

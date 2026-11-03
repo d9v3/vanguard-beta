@@ -24,6 +24,9 @@ pub(crate) fn arreter(pid: u32, attendu: &str) -> Result<(), Echec> {
     if let Some(raison) = super::gardes::lignee_de_session(pid, super::gardes::sessions_a_distance().as_ref()) {
         return Err(Echec::refuse(OU, raison));
     }
+    if let Some(raison) = super::gardes::signature_systeme(attendu) {
+        return Err(Echec::refuse(OU, raison));
+    }
     #[cfg(target_os = "linux")]
     {
         linux::arreter(pid, attendu)

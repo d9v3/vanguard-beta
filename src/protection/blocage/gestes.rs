@@ -302,6 +302,10 @@ fn preparer_programme(
             if let Some(raison) = gardes::lignee_de_session(pid, ctx.sessions.as_ref()) {
                 return Err(Echec::refuse("blocage/preparer", raison));
             }
+            // Un programme signé par Microsoft est traité comme du système (signature illisible : refusé aussi).
+            if let Some(raison) = gardes::signature_systeme(&actuel) {
+                return Err(Echec::refuse("blocage/preparer", raison));
+            }
             let ici = arret_sans_droits(pid);
             if !ici {
                 // Un processus d'un autre compte : l'ordre part vers celui qui a les droits, qui le rejuge.
@@ -332,6 +336,9 @@ fn preparer_programme(
         Some(c) => {
             let texte = c.to_string_lossy();
             if let Some(raison) = gardes::fichier_intouchable(&texte, ctx.os, ctx.mon_programme.as_deref()) {
+                return Err(Echec::refuse("blocage/preparer", raison));
+            }
+            if let Some(raison) = gardes::signature_systeme(&texte) {
                 return Err(Echec::refuse("blocage/preparer", raison));
             }
             if !peut_deplacer(c) {

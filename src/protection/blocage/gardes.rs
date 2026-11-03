@@ -887,12 +887,114 @@ pub(crate) fn lignee_de_session(pid: u32, sessions: Option<&Sessions>) -> Option
     }
 }
 
+/// Ce que Windows dit de la signature d'un fichier (défense D6a). Une signature ne fait que REFUSER : aucun geste
+/// n'est permis parce qu'un fichier n'est pas signé.
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Signature {
+    /// Dans un catalogue signé par Microsoft, ou signé par Microsoft dans sa table des certificats ; vérifiée.
+    Microsoft,
+    /// Non signé, ou par un autre, ou une signature qui ne se vérifie pas (une fausse « Microsoft » comprise).
+    Autre,
+    /// Le fichier, sa signature ou les catalogues de Windows ne se lisent pas.
+    Illisible,
+}
+
+/// Pourquoi ce fichier signé ne doit être ni arrêté ni mis en quarantaine, ou `None`.
+#[cfg(any(windows, test))]
+pub(crate) fn signature_intouchable(s: Signature) -> Option<&'static str> {
+    match s {
+        Signature::Microsoft => Some(tr!(
+            "signé par Microsoft : traité comme du système, une alerte seulement",
+            "signed by Microsoft: treated as part of the system, an alert only"
+        )),
+        Signature::Illisible => Some(tr!(
+            "signature du fichier illisible (le fichier ou les catalogues de Windows) : rien n'est fait à l'aveugle",
+            "file signature unreadable (the file or the Windows catalogs): nothing is done blindly"
+        )),
+        Signature::Autre => None,
+    }
+}
+
+/// Le sujet d'un certificat signataire est-il celui de Microsoft (« O=Microsoft Corporation, CN=Microsoft Windows ») ?
+#[cfg(any(windows, test))]
+pub(crate) fn sujet_microsoft(sujet: &str) -> bool {
+    sujet.to_lowercase().contains("microsoft")
+}
+
+/// Un code rendu par WinVerifyTrust dit-il que le fichier ne s'est pas LU (et non qu'il n'est pas signé, ou mal) ?
+/// CRYPT_E_FILE_ERROR, et toute erreur de Windows (HRESULT de la famille 7 : accès refusé, partage, mémoire…).
+#[cfg(any(windows, test))]
+pub(crate) fn verification_illisible(code: i32) -> bool {
+    let code = code.cast_unsigned();
+    code == 0x8009_2003 || code & 0xFFFF_0000 == 0x8007_0000
+}
+
+/// La signature d'un fichier d'après ses deux voies, chacune `Ok(signé Microsoft)` ou `Err` (illisible) : signé
+/// Microsoft par l'une suffit ; sinon une voie illisible rend le tout illisible.
+#[cfg(any(windows, test))]
+pub(crate) fn signature_de(catalogue: Result<bool, ()>, integree: Result<bool, ()>) -> Signature {
+    if catalogue == Ok(true) || integree == Ok(true) {
+        Signature::Microsoft
+    } else if catalogue.is_err() || integree.is_err() {
+        Signature::Illisible
+    } else {
+        Signature::Autre
+    }
+}
+
+/// La garde de signature, lue sur ce système : sous Windows seulement (ailleurs, aucune signature ne se lit ici).
+pub(crate) fn signature_systeme(chemin: &str) -> Option<&'static str> {
+    #[cfg(windows)]
+    {
+        signature_intouchable(crate::machine::windows::signature::lire(std::path::Path::new(chemin)))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = chemin;
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn ip(t: &str) -> IpAddr {
         t.parse().unwrap()
+    }
+
+    /// Garde de signature (défense D6a) : signé Microsoft ou illisible, refusé ; non signé ou autre, rien de plus
+    /// n'est permis ni refusé par elle.
+    #[test]
+    fn signature_ne_fait_que_refuser() {
+        assert!(signature_intouchable(Signature::Microsoft).is_some());
+        assert!(signature_intouchable(Signature::Illisible).is_some());
+        assert_eq!(signature_intouchable(Signature::Autre), None);
+        assert_eq!(signature_de(Ok(true), Ok(false)), Signature::Microsoft);
+        assert_eq!(signature_de(Ok(false), Ok(true)), Signature::Microsoft);
+        // Microsoft par une voie, l'autre illisible : refusé de toute façon.
+        assert_eq!(signature_de(Err(()), Ok(true)), Signature::Microsoft);
+        assert_eq!(signature_de(Err(()), Ok(false)), Signature::Illisible);
+        assert_eq!(signature_de(Ok(false), Err(())), Signature::Illisible);
+        assert_eq!(signature_de(Ok(false), Ok(false)), Signature::Autre);
+        for sujet in [
+            "C=US, S=Washington, L=Redmond, O=Microsoft Corporation, CN=Microsoft Windows",
+            "CN=Microsoft Windows Hardware Compatibility Publisher",
+            "cn=MICROSOFT windows publisher",
+        ] {
+            assert!(sujet_microsoft(sujet), "{sujet}");
+        }
+        assert!(!sujet_microsoft("C=US, O=Mozilla Corporation, CN=Mozilla Corporation"));
+        assert!(!sujet_microsoft(""));
+        // Fichier illisible, partage refusé : illisible. Pas de signature, signature fausse ou chaîne non approuvée :
+        // une signature qui ne se vérifie pas n'en est pas une.
+        for code in [0x8009_2003u32, 0x8007_0005, 0x8007_0020] {
+            assert!(verification_illisible(code.cast_signed()), "{code:x}");
+        }
+        for code in [0x800B_0100u32, 0x8009_6010, 0x800B_0109, 0x800B_0003, 0x800B_0101] {
+            assert!(!verification_illisible(code.cast_signed()), "{code:x}");
+        }
     }
 
     /// Un instantané d'essai : (pid, parent, nom, création).
