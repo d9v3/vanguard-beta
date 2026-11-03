@@ -46,9 +46,9 @@ delivered just before it. Only the latest version has its download page; every v
     reports it with a high alert ("Vanguard's state was changed outside Vanguard"), with its possible cause: version
     0.89.0 or older has run here. The measurements start over, and the alert goes away when the next check-up rewrites
     the file with its seal. No alert is silenced, no check removed;
-  - a setting changed in 0.89.0 rewrites the settings file without the sharing answer, which is then forgotten. If
-    you had answered "No", say it again (Settings › Sharing with the author): until then, the local record resumes,
-    on the computer only.
+  - a setting changed in 0.89.0 rewrites the settings file without the sharing answer. A "No" is not lost, though:
+    it is also noted separately (`partage-non`, in Vanguard's folder), which 0.89.0 does not touch, and it holds
+    until you answer "Yes". Without a "No", it is as on first launch: the sharing notice shows again.
 
   The Agent's files (`agent/`, `autotest/cache.json`, `autotest/reglage.json`) are not touched by 0.89.0.
 

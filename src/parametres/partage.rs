@@ -8,6 +8,8 @@
 //! - Écrit hors de Vanguard, un « oui » (ou un avis dit montré) ne vaut rien ; un « non », si (E9).
 //! - « Non » efface le relevé, la file et l'identifiant d'installation ; rien de relevé jusqu'au jour d'un accord ne
 //!   part jamais (`envoi::tenir`).
+//! - « Non » est aussi marqué hors du fichier des paramètres (`MARQUE_NON`) : une version d'avant, qui réécrit ce
+//!   fichier sans le partage, ne l'efface pas ; seul un « oui » donné dans Vanguard retire la marque.
 
 use std::io::IsTerminal as _;
 use std::path::Path;
@@ -89,17 +91,115 @@ fn accord_de(f: &Fichier, phase: Phase, aujourd_hui: NaiveDate) -> Option<NaiveD
     (le <= aujourd_hui).then_some(le)
 }
 
-/// L'accord gardé dans `dossier` : le fichier relu sous son sceau (un « oui » forgé n'y est déjà plus). Illisible :
-/// aucun.
+/// L'accord gardé dans `dossier` : le fichier relu sous son sceau (un « oui » forgé n'y est déjà plus). Illisible,
+/// ou un « non » marqué (`MARQUE_NON`) : aucun.
 pub(crate) fn accord_dans(dossier: &Path, aujourd_hui: NaiveDate) -> Option<NaiveDate> {
+    if marque_dans(dossier) {
+        return None;
+    }
     let (f, _) = charger_juge(&dossier.join(PARAMETRES)).ok()?;
     accord_de(&f, PHASE, aujourd_hui)
 }
 
-/// « Non » gardé dans `dossier` ? Un fichier illisible, ou disparu après avoir été scellé, compte pour un « non » :
-/// au doute, rien n'est relevé.
+/// « Non » gardé dans `dossier` ? La marque du refus (`MARQUE_NON`), un fichier illisible, ou disparu après avoir été
+/// scellé, comptent pour un « non » : au doute, rien n'est relevé.
 pub(crate) fn refuse_dans(dossier: &Path) -> bool {
-    disparu(dossier) || charger_juge(&dossier.join(PARAMETRES)).map_or(true, |(f, _)| f.partage == Some(Choix::Non))
+    marque_dans(dossier)
+        || disparu(dossier)
+        || charger_juge(&dossier.join(PARAMETRES)).map_or(true, |(f, _)| f.partage == Some(Choix::Non))
+}
+
+/// La marque d'un « non », à côté du fichier des paramètres et hors de lui. Une version d'avant le partage (0.89.0 et
+/// plus ancienne) relit ce fichier et le réécrit sans les champs qu'elle ne connaît pas : le « non » partait avec eux,
+/// et en phase 1 un partage sans réponse vaut accord une fois l'avis montré. Ce nom-là, aucune version d'avant ne le
+/// lit, ne l'écrit ni ne l'efface ; « Non » (qui vide `amelioration/` et `envoi/`) non plus.
+///
+/// Elle ne dit jamais que « non » : sa seule présence, sous n'importe quelle forme (fichier, lien, dossier, contenu
+/// quelconque), ou le doute sur elle (pas lisible), vaut refus, quoi que dise le fichier des paramètres, jusqu'à un
+/// « oui » donné dans Vanguard, qui la retire. Absente, elle ne donne rien : le fichier des paramètres décide. Sans
+/// sceau, donc : un « non » forgé est respecté, et un « oui » ne peut pas venir d'elle.
+pub(crate) const MARQUE_NON: &str = "partage-non";
+
+/// La marque est-elle là, ou ne peut-on pas savoir ? Seul « elle n'existe pas » dit non.
+fn marque_dans(dossier: &Path) -> bool {
+    !matches!(
+        std::fs::symlink_metadata(dossier.join(MARQUE_NON)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
+/// Pose la marque, sauf si quelque chose est déjà à sa place : cela vaut refus tel quel, et rien n'est suivi ni
+/// remplacé.
+fn poser_marque_dans(dossier: &Path, aujourd_hui: NaiveDate) -> std::io::Result<()> {
+    let chemin = dossier.join(MARQUE_NON);
+    match std::fs::symlink_metadata(&chemin) {
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        Err(_) => {}
+    }
+    if !crate::socle::ecriture_sure(dossier) {
+        return Err(std::io::Error::other("dossier de Vanguard pas sûr"));
+    }
+    // Le contenu ne compte pas (seule la présence vaut) : il dit ce qu'est ce fichier à qui l'ouvre.
+    crate::socle::ecrire_atomique(
+        &chemin,
+        format!(
+            "Vanguard : « non » au partage avec l'auteur, le {}. / \"no\" to sharing with the author.\n",
+            jour(aujourd_hui)
+        ),
+    )
+}
+
+/// Retire la marque sans rien suivre : un fichier ou un lien est retiré ; un dossier seulement s'il est vide (rien
+/// n'est effacé dedans), sinon il reste, et le refus avec lui.
+fn retirer_marque_dans(dossier: &Path) -> std::io::Result<()> {
+    let chemin = dossier.join(MARQUE_NON);
+    match std::fs::symlink_metadata(&chemin) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+        Ok(m) if m.is_dir() => std::fs::remove_dir(&chemin),
+        // Un lien vers un dossier, sous Windows, ne se retire que par `remove_dir`, qui ne suit pas le lien (ailleurs,
+        // il refuse un lien).
+        Ok(_) => std::fs::remove_file(&chemin).or_else(|e| std::fs::remove_dir(&chemin).map_err(|_| e)),
+    }
+}
+
+/// Enregistre `choix` dans `dossier` : le fichier des paramètres et la marque du « non ». « Non » : la marque d'abord
+/// (dès qu'elle est là, le refus tient, même si le fichier ne s'écrit pas) ; « oui » : le fichier d'abord, la marque
+/// retirée ensuite (jusque-là, le refus tient). Un « oui » qui lève la marque prend le jour d'aujourd'hui, même si le
+/// fichier en gardait un plus ancien : rien de relevé avant ne part. Rend la première erreur.
+///
+/// Sans verrou, un « oui » et un « non » donnés en même temps (deux Vanguard ouverts) pourraient finir en « non » dans
+/// le fichier sans marque, que la 0.89.0 oublierait : le « non » repose donc la marque après le fichier, et le « oui »
+/// relit le fichier après l'avoir retirée. Quel que soit l'ordre, l'un des deux voit l'autre.
+fn enregistrer_choix_dans(dossier: &Path, choix: Choix, aujourd_hui: NaiveDate) -> std::io::Result<()> {
+    let chemin = dossier.join(PARAMETRES);
+    match choix {
+        Choix::Non => {
+            let marque = poser_marque_dans(dossier, aujourd_hui);
+            let fichier = ecrire_choix_dans(&chemin, choix, aujourd_hui);
+            let encore = poser_marque_dans(dossier, aujourd_hui);
+            marque.and(fichier).and(encore)
+        }
+        Choix::Oui => {
+            ecrire_choix_garde(&chemin, choix, aujourd_hui, !marque_dans(dossier))?;
+            retirer_marque_dans(dossier)?;
+            garder_un_non_arrive(dossier, aujourd_hui)
+        }
+    }
+}
+
+/// Après un « oui » qui a retiré la marque : si le fichier ne dit plus « oui » (un « non » écrit entre-temps, ou un
+/// doute), la marque revient et le « oui » n'est pas pris.
+fn garder_un_non_arrive(dossier: &Path, aujourd_hui: NaiveDate) -> std::io::Result<()> {
+    if !refuse_dans(dossier) {
+        return Ok(());
+    }
+    poser_marque_dans(dossier, aujourd_hui)?;
+    Err(std::io::Error::other(tr!(
+        "un « non » donné en même temps l'emporte",
+        "a “no” given at the same time wins"
+    )))
 }
 
 /// Le fichier des paramètres a disparu après avoir été scellé, ou les sceaux ont été refaits sans lui : un « non »
@@ -125,8 +225,14 @@ fn reponse_en_mots(saisie: &str) -> Option<Reponse> {
 
 /// Enregistre `choix` du jour `aujourd_hui`. Un « oui » déjà là, de cette phase, garde son jour.
 fn ecrire_choix_dans(chemin: &Path, choix: Choix, aujourd_hui: NaiveDate) -> std::io::Result<()> {
+    ecrire_choix_garde(chemin, choix, aujourd_hui, true)
+}
+
+/// `ecrire_choix_dans` ; sans `garder`, le jour est celui d'aujourd'hui même si le même choix était déjà là.
+fn ecrire_choix_garde(chemin: &Path, choix: Choix, aujourd_hui: NaiveDate, garder: bool) -> std::io::Result<()> {
     modifier_dans(chemin, |f| {
-        let deja = f.partage == Some(choix)
+        let deja = garder
+            && f.partage == Some(choix)
             && f.partage_phase == Some(PHASE.numero())
             && date(f.partage_le.as_deref()).is_some_and(|d| d <= aujourd_hui);
         if deja {
@@ -168,6 +274,7 @@ pub(crate) fn etat_court() -> String {
     let chemin = fichier();
     let dossier = chemin.parent().unwrap_or_else(|| Path::new("."));
     let mut texte = match charger_juge(&chemin) {
+        _ if marque_dans(dossier) => tr!("non", "no").to_string(),
         Ok(_) if disparu(dossier) => tr!("fichier effacé : rien ne part", "file erased: nothing is sent").to_string(),
         Err(_) => tr!("illisible : rien ne part", "unreadable: nothing is sent").to_string(),
         Ok((f, _)) => match (f.partage, PHASE) {
@@ -336,8 +443,17 @@ pub(crate) fn voir() {
 // --- Ce qui change -----------------------------------------------------------------------------------------------
 
 fn dire_oui() -> bool {
-    if let Err(e) = ecrire_choix_dans(&fichier(), Choix::Oui, aujourd_hui()) {
-        trp!("  ✖ Non enregistré ({e}).", "  ✖ Not saved ({e}).");
+    let dossier = crate::socle::dossier_local();
+    if let Err(e) = enregistrer_choix_dans(&dossier, Choix::Oui, aujourd_hui()) {
+        // Le fichier a pu prendre le « oui » sans que la marque parte : le refus tient, il faut le dire tel quel.
+        if refuse_dans(&dossier) {
+            trp!(
+                "  ✖ « Oui » pas pris ({e}) : le « non » tient, rien n'est relevé ni envoyé.",
+                "  ✖ “Yes” not taken ({e}): the “no” holds, nothing is recorded or sent."
+            );
+        } else {
+            trp!("  ✖ Non enregistré ({e}).", "  ✖ Not saved ({e}).");
+        }
         return false;
     }
     trp!(
@@ -364,10 +480,11 @@ fn dire_oui() -> bool {
 /// processus arrêté et sa file vidée, puis le relevé arrêté et effacé, le verrou de l'agent tenu : aucun tour ne
 /// réécrit un jour pendant l'effacement. Jamais appelé des essais : il arrêterait tout le processus d'essai.
 fn dire_non() -> bool {
-    let enregistre = ecrire_choix_dans(&fichier(), Choix::Non, aujourd_hui());
+    let dossier = crate::socle::dossier_local();
+    let enregistre = enregistrer_choix_dans(&dossier, Choix::Non, aujourd_hui());
     COUPE_ICI.store(true, Ordering::SeqCst);
     let envoi = crate::envoi::arreter_et_vider();
-    let geste = crate::agent::geste_dans(&crate::socle::dossier_local());
+    let geste = crate::agent::geste_dans(&dossier);
     let releve = crate::amelioration::arreter_et_effacer();
     let tour_en_cours = geste.is_err();
     drop(geste);
@@ -376,6 +493,17 @@ fn dire_non() -> bool {
             "  ✔ Partage avec l'auteur : non. Plus rien n'est relevé ni envoyé.",
             "  ✔ Sharing with the author: no. Nothing is recorded or sent anymore."
         ),
+        // La marque ou le fichier tient : le « non » reste, mais pas aussi sûrement.
+        Err(e) if refuse_dans(&dossier) => {
+            trp!(
+                "  ✔ Partage avec l'auteur : non. Plus rien n'est relevé ni envoyé.",
+                "  ✔ Sharing with the author: no. Nothing is recorded or sent anymore."
+            );
+            trp!(
+                "  ⚠ Pas tout enregistré ({e}) : refaites « non » dans un moment.",
+                "  ⚠ Not everything saved ({e}): say “no” again in a moment."
+            );
+        }
         Err(e) => trp!(
             "  ✖ Non enregistré ({e}) : arrêté pour ce lancement seulement.",
             "  ✖ Not saved ({e}): stopped for this run only."
@@ -579,8 +707,15 @@ pub(crate) fn au_menu() {
     let en_service = crate::envoi::RELAIS.is_some() && crate::amelioration::actif();
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let chemin = fichier();
-    let lu = charger_juge(&chemin).ok().map(|(f, _)| f);
-    let parti = disparu(chemin.parent().unwrap_or_else(|| Path::new(".")));
+    let dossier = chemin.parent().unwrap_or_else(|| Path::new("."));
+    // Un « non » marqué : rien à montrer (sans fichier lu, `au_lancement` ne montre rien), ni l'avis, dont l'appui
+    // vaudrait accord, ni la question.
+    let lu = if marque_dans(dossier) {
+        None
+    } else {
+        charger_juge(&chemin).ok().map(|(f, _)| f)
+    };
+    let parti = disparu(dossier);
     match au_lancement(lu.as_ref(), PHASE, en_service, terminal, parti) {
         AuLancement::Rien => {}
         AuLancement::Avis => {
@@ -794,13 +929,146 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
+    /// Une version d'avant (0.89.0) réécrit le fichier des paramètres, scellé, sans le partage : le « non » tient par
+    /// sa marque, l'avis noté ou un « oui » dans le fichier n'y peuvent rien. Sans marque, rien ne change (phase 1).
+    #[test]
+    fn non_survit_a_une_version_plus_ancienne() {
+        let dossier = jetable("ancienne");
+        enregistrer_choix_dans(&dossier, Choix::Non, d(8)).unwrap();
+        assert!(dossier.join(MARQUE_NON).is_file());
+        for reecrit in [
+            &br#"{"langue":"fr"}"#[..],
+            br#"{"avis_partage":"2026-11-01"}"#,
+            br#"{"partage":"oui","partage_le":"2026-11-01","partage_phase":1}"#,
+        ] {
+            crate::sceau::ecrire_dans(&dossier, PARAMETRES, reecrit).unwrap();
+            let (f, douteux) = charger_juge(&dossier.join(PARAMETRES)).unwrap();
+            assert!(douteux.is_none() && f.partage != Some(Choix::Non));
+            assert!(refuse_dans(&dossier), "{}", String::from_utf8_lossy(reecrit));
+            assert_eq!(
+                accord_dans(&dossier, d(10)),
+                None,
+                "{}",
+                String::from_utf8_lossy(reecrit)
+            );
+        }
+        // « Oui » donné dans Vanguard : la marque part, l'accord vaut de ce jour.
+        enregistrer_choix_dans(&dossier, Choix::Oui, d(9)).unwrap();
+        assert!(!dossier.join(MARQUE_NON).exists() && !refuse_dans(&dossier));
+        assert_eq!(accord_dans(&dossier, d(10)), Some(d(9)));
+        // « Non » la repose.
+        enregistrer_choix_dans(&dossier, Choix::Non, d(9)).unwrap();
+        assert!(dossier.join(MARQUE_NON).is_file() && refuse_dans(&dossier));
+        // Sans marque ni réponse : la phase 1 d'avant, inchangée (rien sans l'avis, accord dès l'avis montré).
+        std::fs::remove_file(dossier.join(MARQUE_NON)).unwrap();
+        crate::sceau::ecrire_dans(&dossier, PARAMETRES, br#"{"langue":"fr"}"#).unwrap();
+        assert!(!refuse_dans(&dossier));
+        assert_eq!(accord_dans(&dossier, d(10)), None);
+        crate::sceau::ecrire_dans(&dossier, PARAMETRES, br#"{"avis_partage":"2026-11-01"}"#).unwrap();
+        assert!(!refuse_dans(&dossier));
+        assert_eq!(accord_dans(&dossier, d(10)), Some(d(1)));
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Une marque posée hors de Vanguard, vide, illisible, dossier ou lien : refus, jamais un accord, même devant un
+    /// « oui » scellé. Un « oui » la retire sans rien suivre ; un dossier plein reste, et le refus avec lui.
+    #[test]
+    fn marque_forgee_ou_douteuse() {
+        let dossier = jetable("marque");
+        let oui = br#"{"partage":"oui","partage_le":"2026-11-01","partage_phase":1}"#;
+        let refuse = |quoi: &str| {
+            crate::sceau::ecrire_dans(&dossier, PARAMETRES, oui).unwrap();
+            assert!(refuse_dans(&dossier), "{quoi}");
+            assert_eq!(accord_dans(&dossier, d(10)), None, "{quoi}");
+        };
+        let marque = dossier.join(MARQUE_NON);
+        for contenu in [&b""[..], b"oui", b"{\"partage\":\"oui\"}", &[0xff, 0xfe, 0x00]] {
+            std::fs::write(&marque, contenu).unwrap();
+            refuse(&String::from_utf8_lossy(contenu));
+            enregistrer_choix_dans(&dossier, Choix::Oui, d(9)).unwrap();
+            assert!(!marque.exists() && accord_dans(&dossier, d(10)).is_some());
+        }
+        // Un dossier vide se retire ; plein, il reste, avec ce qu'il contient.
+        std::fs::create_dir(&marque).unwrap();
+        refuse("dossier vide");
+        enregistrer_choix_dans(&dossier, Choix::Oui, d(9)).unwrap();
+        assert!(!marque.exists());
+        std::fs::create_dir(&marque).unwrap();
+        std::fs::write(marque.join("a-moi.txt"), b"alice").unwrap();
+        refuse("dossier plein");
+        assert!(enregistrer_choix_dans(&dossier, Choix::Oui, d(9)).is_err());
+        assert!(marque.join("a-moi.txt").exists());
+        refuse("dossier plein, après « oui »");
+        // « Non » ne remplace pas ce qui est déjà à la place de la marque.
+        enregistrer_choix_dans(&dossier, Choix::Non, d(9)).unwrap();
+        assert!(marque.join("a-moi.txt").exists() && refuse_dans(&dossier));
+        std::fs::remove_dir_all(&marque).unwrap();
+        // Au doute (on ne peut pas savoir si elle est là) : refus. Sous Windows, un chemin à travers un fichier se dit
+        // « introuvable », comme une marque absente.
+        std::fs::write(dossier.join("pas-un-dossier"), b"").unwrap();
+        assert_eq!(accord_dans(&dossier.join("pas-un-dossier"), d(10)), None);
+        #[cfg(unix)]
+        assert!(marque_dans(&dossier.join("pas-un-dossier")));
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Un lien à la place de la marque vaut refus, cassé ou non ; « non » ne le suit pas, « oui » retire le lien et
+    /// laisse ce qu'il désigne.
+    #[cfg(unix)]
+    #[test]
+    fn marque_en_lien() {
+        let dossier = jetable("marque-lien");
+        let ailleurs = jetable("marque-ailleurs");
+        let marque = dossier.join(MARQUE_NON);
+        crate::sceau::ecrire_dans(
+            &dossier,
+            PARAMETRES,
+            br#"{"partage":"oui","partage_le":"2026-11-01","partage_phase":1}"#,
+        )
+        .unwrap();
+        for cible in [ailleurs.join("absent"), ailleurs.join("cible.txt"), ailleurs.clone()] {
+            std::fs::write(ailleurs.join("cible.txt"), b"alice").unwrap();
+            std::os::unix::fs::symlink(&cible, &marque).unwrap();
+            assert!(refuse_dans(&dossier), "{}", cible.display());
+            assert_eq!(accord_dans(&dossier, d(10)), None);
+            enregistrer_choix_dans(&dossier, Choix::Non, d(9)).unwrap();
+            assert_eq!(std::fs::read(ailleurs.join("cible.txt")).unwrap(), b"alice");
+            assert!(!ailleurs.join("absent").exists());
+            enregistrer_choix_dans(&dossier, Choix::Oui, d(9)).unwrap();
+            assert!(
+                std::fs::symlink_metadata(&marque).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+                    && ailleurs.join("cible.txt").exists()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dossier);
+        let _ = std::fs::remove_dir_all(&ailleurs);
+    }
+
+    /// Un « oui » et un « non » en même temps : le « oui » a écrit le fichier, le « non » l'a récrit, puis le « oui »
+    /// retire la marque. En relisant, il la repose et n'est pas pris ; sans « non » arrivé, rien ne change.
+    #[test]
+    fn oui_et_non_en_meme_temps() {
+        let dossier = jetable("en-meme-temps");
+        let marque = dossier.join(MARQUE_NON);
+        ecrire_choix_dans(&dossier.join(PARAMETRES), Choix::Non, d(9)).unwrap();
+        assert!(!marque_dans(&dossier));
+        assert!(garder_un_non_arrive(&dossier, d(9)).is_err());
+        assert!(marque.is_file() && refuse_dans(&dossier));
+        assert_eq!(accord_dans(&dossier, d(10)), None);
+        // Un « oui » seul, ensuite : pris, et rien n'est reposé.
+        enregistrer_choix_dans(&dossier, Choix::Oui, d(10)).unwrap();
+        assert!(!marque_dans(&dossier) && garder_un_non_arrive(&dossier, d(10)).is_ok());
+        assert!(!marque_dans(&dossier));
+        assert_eq!(accord_dans(&dossier, d(11)), Some(d(10)));
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
     /// « Non » efface le relevé, la file et l'identifiant ; rien d'autre : ni le fichier des paramètres, ni les mesures, ni
     /// un fichier qui n'est pas du relevé.
     #[test]
     fn non_efface_le_releve_et_la_file_seulement() {
         let dossier = jetable("efface");
-        let chemin = dossier.join(PARAMETRES);
-        ecrire_choix_dans(&chemin, Choix::Non, d(8)).unwrap();
+        enregistrer_choix_dans(&dossier, Choix::Non, d(8)).unwrap();
         for (nom, octets) in [
             ("amelioration/jours/2026-11-07.json", &b"{}"[..]),
             ("amelioration/suivi.json", b"{}"),
@@ -829,6 +1097,10 @@ mod tests {
         assert!(dossier.join("mesures.json").exists());
         assert!(dossier.join("journal.jsonl").exists());
         assert!(refuse_dans(&dossier), "le « non » reste après l'effacement");
+        assert!(
+            dossier.join(MARQUE_NON).is_file(),
+            "la marque du « non » reste après l'effacement"
+        );
         let _ = std::fs::remove_dir_all(&dossier);
     }
 

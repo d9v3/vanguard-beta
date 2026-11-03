@@ -1817,6 +1817,8 @@ fn partage_non_efface_oui_date_falsifie_ignore() {
     assert_eq!(std::fs::read_to_string(dossier.join("a-moi.txt")).unwrap(), "à alice");
     let parametres = std::fs::read_to_string(dossier.join("parametres.json")).unwrap();
     assert!(parametres.contains("\"partage\": \"non\""), "{parametres}");
+    // Noté aussi à part, pour qu'une version d'avant qui réécrit parametres.json ne l'efface pas.
+    assert!(dossier.join("partage-non").is_file(), "{}", s.texte);
     // Coupé, rien ne se relève plus, même en lançant d'autres commandes.
     let s = vanguard_dans(programme, &maison, "fr", &["parametres", "partage", "voir"], "", 60);
     assert!(s.texte.contains("Partage coupé"), "{}", s.texte);
@@ -1848,6 +1850,7 @@ fn partage_non_efface_oui_date_falsifie_ignore() {
         parametres.contains("\"partage\": \"oui\"") && parametres.contains("partage_le"),
         "{parametres}"
     );
+    assert!(!dossier.join("partage-non").exists(), "{}", s.texte);
     let s = vanguard_dans(programme, &maison, "fr", &["parametres", "partage", "voir"], "", 60);
     assert!(
         s.texte
@@ -1863,9 +1866,12 @@ fn partage_non_efface_oui_date_falsifie_ignore() {
     .unwrap();
     let s = vanguard_dans(programme, &maison, "fr", &["parametres", "partage"], "", 60);
     assert!(s.texte.contains("partage : pas répondu"), "{}", s.texte);
-    // Un « non » dont le fichier est effacé hors de Vanguard : toujours rien ne part.
+    // Un « non » dont le fichier est effacé hors de Vanguard : sa marque le garde ; sans elle non plus, rien ne part.
     vanguard_dans(programme, &maison, "fr", &["parametres", "partage", "non"], "", 60);
     std::fs::remove_file(dossier.join("parametres.json")).unwrap();
+    let s = vanguard_dans(programme, &maison, "fr", &["parametres", "partage"], "", 60);
+    assert!(s.texte.contains("partage : non"), "{}", s.texte);
+    std::fs::remove_file(dossier.join("partage-non")).unwrap();
     let s = vanguard_dans(programme, &maison, "fr", &["parametres", "partage"], "", 60);
     assert!(
         s.texte.contains("partage : fichier effacé : rien ne part"),

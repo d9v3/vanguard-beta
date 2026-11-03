@@ -197,7 +197,9 @@ other computers. Four stages; the last two do not happen while the relay is not 
   command, a password, the browser history, typed text, the list of your files, accounts, networks or devices, or the
   inventory of your software. It is kept in `amelioration/` (sealed, at most 96 KiB a day, 90 days, 10 MB in all) and
   the batch it would yield can be read, byte for byte, through "See what would be sent". Answering "No" to sharing
-  erases it, along with the sending queue and the installation identifier; `VANGUARD_ENVOI=0` turns it off.
+  erases it, along with the sending queue and the installation identifier; this "No" is also noted separately
+  (`partage-non`), which an older version that rewrites the settings does not touch, and holds until a "Yes" given in
+  Vanguard. `VANGUARD_ENVOI=0` turns it off.
 - **The sending queue, with no host.** `RELAIS` is empty in the code and the closed list of HTTPS sites (`HOTES`, the
   first table above) holds no relay: no batch is prepared, no sending file is written, no thread or connection is
   started. Even with a relay, nothing would leave under the tests, under Wine, in CI, with `VANGUARD_ENVOI=0`, from a

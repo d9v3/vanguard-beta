@@ -46,9 +46,10 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
     bilan le dit par une alerte élevée (« L'état de Vanguard a été changé hors de Vanguard »), avec sa cause
     possible : une version 0.89.0 ou plus ancienne a servi ici. Les mesures repartent de zéro, et l'alerte disparaît
     quand le bilan suivant réécrit le fichier avec son sceau. Aucune alerte n'est tue, aucune vérification retirée ;
-  - un réglage changé dans la 0.89.0 réécrit le fichier des paramètres sans la réponse au partage, qui est alors
-    oubliée. Si vous aviez répondu « Non », redites-le (Paramètres › Partage avec l'auteur) : d'ici là, le relevé
-    local reprend, sur l'ordinateur seulement.
+  - un réglage changé dans la 0.89.0 réécrit le fichier des paramètres sans la réponse au partage. Un « Non » n'est
+    pas oublié pour autant : il est aussi noté à part (`partage-non`, dans le dossier de Vanguard), que la 0.89.0 ne
+    touche pas, et il tient jusqu'à ce que vous répondiez « Oui ». Sans « Non », c'est comme au premier lancement :
+    l'avis du partage revient.
 
   Les fichiers de l'Agent (`agent/`, `autotest/cache.json`, `autotest/reglage.json`) ne sont pas touchés par la
   0.89.0.

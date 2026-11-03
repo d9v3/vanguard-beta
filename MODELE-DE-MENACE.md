@@ -202,7 +202,9 @@ ce qui est le cas aujourd'hui :
   vos fichiers, de vos comptes, de vos réseaux ou de vos appareils, ni l'inventaire de vos logiciels. Il est rangé
   dans `amelioration/` (scellé, 96 Kio par jour au plus, 90 jours, 10 Mo au total) et le lot qui en sortirait se lit,
   octet pour octet, par « Voir ce qui serait envoyé ». Répondre « Non » au partage l'efface, avec la file d'envoi et
-  l'identifiant d'installation ; `VANGUARD_ENVOI=0` le coupe.
+  l'identifiant d'installation ; ce « Non » est aussi noté à part (`partage-non`), qu'une version plus ancienne qui
+  réécrit les paramètres ne touche pas, et tient jusqu'à un « Oui » donné dans Vanguard. `VANGUARD_ENVOI=0` le
+  coupe.
 - **La file d'envoi, sans hôte.** `RELAIS` est vide dans le code et la liste fermée des sites HTTPS (`HOTES`, le
   premier tableau ci-dessus) ne contient aucun relais : aucun lot n'est préparé, aucun fichier d'envoi n'est écrit,
   aucun fil ni aucune connexion n'est lancé. Même avec un relais, rien ne partirait sous les essais, sous Wine, dans
