@@ -348,7 +348,8 @@ impl ActionAsr {
 
     fn texte(self) -> String {
         match self {
-            ActionAsr::Coupee => tr!("coupée", "off").to_string(),
+            // « Désactivée », le mot du plan (§2.2) et de Sécurité Windows : la règle reste listée, à 0.
+            ActionAsr::Coupee => tr!("désactivée", "disabled").to_string(),
             ActionAsr::Bloque => tr!("bloque", "blocks").to_string(),
             ActionAsr::Audit => tr!("audit", "audit").to_string(),
             ActionAsr::Avertit => tr!("avertit", "warns").to_string(),
@@ -1051,17 +1052,16 @@ fn section_asr(l: &mut Vec<String>, e: &Etat) {
         ));
         return;
     };
-    let mode = e.mode();
-    let sans_effet = mode != ModeDefender::Actif && mode != ModeDefender::Illisible;
-    let gris = mode != ModeDefender::Actif;
+    // Grises quand elles ne s'appliquent pas, ou que rien ne le vérifie.
+    let gris = effet_asr(e) != EffetAsr::SAppliquent;
     let imposees = e.strategies.asr.as_deref().unwrap_or_default();
     let compte = |a: ActionAsr| p.asr.regles.iter().filter(|(_, x)| *x == a).count();
     let reglees = p.asr.regles.len();
     l.push(format!(
         "  {}",
         trf!(
-            "{} bloquent · {} en audit · {} avertissent · {} coupées ou non réglées",
-            "{} block · {} audit · {} warn · {} off or not set",
+            "{} bloquent · {} en audit · {} avertissent · {} désactivées ou non réglées",
+            "{} block · {} audit · {} warn · {} disabled or not set",
             compte(ActionAsr::Bloque),
             compte(ActionAsr::Audit),
             compte(ActionAsr::Avertit),
@@ -1107,37 +1107,145 @@ fn section_asr(l: &mut Vec<String>, e: &Etat) {
             GRIS,
         );
     }
-    if sans_effet {
-        note(
-            l,
-            tr!(
-                "Sans effet : Defender n'est pas l'antivirus actif.",
-                "No effect: Defender is not the active antivirus."
-            ),
-            GRIS,
-        );
-    } else if mode == ModeDefender::Illisible && reglees > 0 {
-        note(l, effet_non_verifie(), GRIS);
-    } else if e.etat_opt(Opt::TempsReel) == EtatOpt::Coupee && reglees > 0 {
-        note(
-            l,
-            tr!(
-                "Sans effet tant que la protection en temps réel est coupée.",
-                "No effect while real-time protection is off."
-            ),
-            GRIS,
-        );
+    // Sans effet (Defender passif ou coupé) : dit même sans règle réglée, comme avant ; l'effet des autres cas ne
+    // concerne que des règles réglées.
+    if reglees > 0 || effet_asr(e) == EffetAsr::DefenderInactif {
+        note(l, &texte_effet_asr(e), GRIS);
     }
-    if e.edition == Some(Edition::Famille) && reglees > 0 {
-        note(
-            l,
-            tr!(
-                "Windows Famille : Microsoft ne prend en charge les règles ASR que sur Pro, Entreprise et Éducation ; leur effet n'est pas garanti ici.",
-                "Windows Home: Microsoft supports ASR rules only on Pro, Enterprise and Education; their effect is not guaranteed here."
-            ),
-            GRIS,
-        );
+}
+
+/// Ce qui laisse les règles ASR agir (plan §2.2) : Defender antivirus actif **et** la protection en temps réel
+/// allumée. La relecture de `AttackSurfaceReductionRules_Ids/Actions` est le stockage de la préférence, pas son
+/// application : c'est ceci qui dit si elle s'applique.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EffetAsr {
+    SAppliquent,
+    /// Passif derrière un autre antivirus, en blocage EDR, ou coupé.
+    DefenderInactif,
+    TempsReelCoupe,
+    /// Windows Famille : Microsoft le dit pris en charge aujourd'hui, pas toujours avant ; rien ne le relit.
+    Famille,
+    /// L'état de Defender ne se lit pas.
+    NonVerifie,
+}
+
+impl EffetAsr {
+    /// Pour `--json`.
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            EffetAsr::SAppliquent => "s-appliquent",
+            EffetAsr::DefenderInactif => "defender-inactif",
+            EffetAsr::TempsReelCoupe => "temps-reel-coupe",
+            EffetAsr::Famille => "famille",
+            EffetAsr::NonVerifie => "non-verifie",
+        }
     }
+}
+
+pub(crate) fn effet_asr(e: &Etat) -> EffetAsr {
+    let mode = e.mode();
+    if mode != ModeDefender::Actif && mode != ModeDefender::Illisible {
+        EffetAsr::DefenderInactif
+    } else if e.etat_opt(Opt::TempsReel) == EtatOpt::Coupee {
+        // L'effet relu passe avant la préférence (`etat_opt`) : c'est ce que Defender applique.
+        EffetAsr::TempsReelCoupe
+    } else if e.edition == Some(Edition::Famille) {
+        EffetAsr::Famille
+    } else if mode == ModeDefender::Illisible {
+        EffetAsr::NonVerifie
+    } else {
+        EffetAsr::SAppliquent
+    }
+}
+
+/// La phrase de `effet_asr`, dite à l'écran des règles et sous leur liste.
+pub(crate) fn texte_effet_asr(e: &Etat) -> String {
+    match effet_asr(e) {
+        EffetAsr::SAppliquent => tr!(
+            "Les règles s'appliquent : Defender est l'antivirus actif et la protection en temps réel est allumée.",
+            "The rules apply: Defender is the active antivirus and real-time protection is on."
+        )
+        .to_string(),
+        EffetAsr::DefenderInactif if e.mode() == ModeDefender::Coupe => tr!(
+            "Sans effet : Defender n'est pas l'antivirus actif. Son antivirus est coupé : les règles restent réglables, et agiront quand il sera rallumé.",
+            "No effect: Defender is not the active antivirus. Its antivirus is off: the rules can still be set, and will act once it is back on."
+        )
+        .to_string(),
+        EffetAsr::DefenderInactif => {
+            let nom = nom_du_tiers(e);
+            trf!(
+                "Sans effet : Defender n'est pas l'antivirus actif. Il est en mode passif, {nom} est votre antivirus : les règles ASR n'agissent pas tant que {nom} protège.",
+                "No effect: Defender is not the active antivirus. It is in passive mode, {nom} is your antivirus: ASR rules do not act while {nom} protects you."
+            )
+        }
+        EffetAsr::TempsReelCoupe => tr!(
+            "Sans effet tant que la protection en temps réel est coupée. Tant qu'elle l'est, les règles ne s'appliquent pas ; elles restent réglables, et agiront quand elle sera rallumée (ligne 1).",
+            "No effect while real-time protection is off. While it is, the rules do not apply; they can still be set, and will act once it is back on (line 1)."
+        )
+        .to_string(),
+        // La page de Microsoft (« ASR rules reference », 2026) dit les règles disponibles sur toute édition qui a
+        // Defender, Famille comprise ; elle disait autrefois Pro et plus. Rien ne relit leur application : le dire.
+        EffetAsr::Famille => tr!(
+            "Windows Famille : Microsoft dit aujourd'hui les règles ASR disponibles sur toute édition qui a Defender ; un Windows Famille ancien peut les garder notées sans les appliquer. La relecture montre le réglage, pas son effet.",
+            "Windows Home: Microsoft now says ASR rules are available on any edition that has Defender; an older Windows Home may keep them noted without applying them. The reread shows the setting, not its effect."
+        )
+        .to_string(),
+        EffetAsr::NonVerifie => effet_non_verifie().to_string(),
+    }
+}
+
+/// L'avertissement des 8 règles que les Réglages recommandés écartent exprès (P4) : elles peuvent gêner un programme
+/// légitime, Vanguard compris. Proposées dans les Options, jamais dans « Réglages recommandés » ni dans Optimiser ;
+/// « Essayez d'abord Audit » pour chacune. `None` pour les 11 autres.
+pub(crate) fn avertissement_asr(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "01443614-cd74-433a-b99e-2ecdc07bfc25" => tr!(
+            "Peut bloquer Vanguard lui-même après une mise à jour (un nouvel exécutable, encore peu répandu) et des programmes rares. Elle a besoin de la protection par le cloud. Essayez d'abord Audit.",
+            "May block Vanguard itself after an update (a new executable, not yet widespread) and rare programs. It needs cloud-delivered protection. Try Audit first."
+        ),
+        "c1db55ab-c21a-4637-bb3f-a12568109d35" => tr!(
+            "Faux positifs fréquents sur les programmes peu connus, Vanguard compris. Elle a besoin de la protection par le cloud. Essayez d'abord Audit.",
+            "Frequent false positives on little-known programs, Vanguard included. It needs cloud-delivered protection. Try Audit first."
+        ),
+        // Vanguard n'appelle par WMI que des méthodes de réglage (MSFT_MpPreference, MSFT_SmbServerConfiguration,
+        // SystemRestore.CreateRestorePoint), jamais Win32_Process.Create : la règle ne vise pas ce qu'il fait.
+        "d1e49aac-8f56-4280-b9ba-993a6d77406c" => tr!(
+            "Bloque les programmes lancés par PsExec et par WMI (Win32_Process.Create) : peut casser des outils d'administration à distance et des scripts d'entreprise. Vanguard n'en dépend pas : il lit et règle par WMI, sans jamais y lancer de programme. Essayez d'abord Audit.",
+            "Blocks programs started by PsExec and by WMI (Win32_Process.Create): may break remote administration tools and company scripts. Vanguard does not depend on it: it reads and sets through WMI, never starting a program there. Try Audit first."
+        ),
+        "c0033c00-d16d-4114-a5a0-dc9b3a7d2ceb" => tr!(
+            "Peut bloquer des outils portables légitimes, rangés hors de leur dossier habituel. Essayez d'abord Audit.",
+            "May block legitimate portable tools, kept outside their usual folder. Try Audit first."
+        ),
+        "5beb7efe-fd9a-4556-801d-275e5ffc04cc" => tr!(
+            "Peut bloquer des scripts d'installation légitimes. Elle a besoin de la protection par le cloud. Essayez d'abord Audit.",
+            "May block legitimate setup scripts. It needs cloud-delivered protection. Try Audit first."
+        ),
+        "33ddedf1-c6e0-47cb-833e-de6133960387" => tr!(
+            "Empêche aussi de redémarrer en mode sans échec pour dépanner (l'environnement de récupération de Windows y mène encore). Essayez d'abord Audit.",
+            "Also prevents restarting into Safe Mode to troubleshoot (the Windows recovery environment still leads there). Try Audit first."
+        ),
+        "b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4" => tr!(
+            "Vanguard portable sur une clé USB : ses extensions non signées seraient bloquées, comme tout programme non signé lancé depuis une clé. Essayez d'abord Audit.",
+            "Vanguard portable on a USB drive: its unsigned extensions would be blocked, like any unsigned program run from a drive. Try Audit first."
+        ),
+        "a8f5898e-1dc8-49a9-9878-85004b8a61e6" => tr!(
+            "Faite pour les serveurs Exchange ; sans effet utile sur un PC. Essayez d'abord Audit.",
+            "Made for Exchange servers; no useful effect on a PC. Try Audit first."
+        ),
+        _ => return None,
+    })
+}
+
+/// Les règles qui ont besoin de la protection par le cloud (« ASR rules reference », dépendances) : coupée, elles
+/// ne bloquent rien.
+pub(crate) fn asr_avec_cloud(id: &str) -> bool {
+    matches!(
+        id,
+        "01443614-cd74-433a-b99e-2ecdc07bfc25"
+            | "5beb7efe-fd9a-4556-801d-275e5ffc04cc"
+            | "c1db55ab-c21a-4637-bb3f-a12568109d35"
+    )
 }
 
 fn section_pare_feu(l: &mut Vec<String>, e: &Etat) {
@@ -1377,6 +1485,7 @@ pub(crate) fn json(e: &Etat) -> serde_json::Value {
             "regles": regles,
             "inconnues": p.map(|p| p.asr.inconnues),
             "imposees_lues": imposees.is_some(),
+            "effet": p.map(|_| effet_asr(e).id()),
         },
         "pare_feu": {
             "lu": e.pare_feu.is_some(),
@@ -1525,7 +1634,7 @@ pub(crate) fn texte_choix(id: IdChoix, v: Option<Option<i64>>) -> String {
             let o = opt_de(r);
             o.etat(v).texte(o.masculin())
         }
-        (IdChoix::Asr(_), Some(None)) => tr!("absente de la liste (coupée)", "not listed (off)").to_string(),
+        (IdChoix::Asr(_), Some(None)) => tr!("absente de la liste (sans effet)", "not listed (no effect)").to_string(),
         (IdChoix::Asr(_), Some(v)) => ActionAsr::depuis(v).texte(),
         (IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_), Some(Some(0))) => tr!("absente", "absent").to_string(),
         (IdChoix::Exclusion(..) | IdChoix::DossiersAutorise(_), Some(Some(1))) => {
@@ -1648,8 +1757,8 @@ pub(crate) fn effet_baisse(id: IdChoix) -> String {
             "Allow: this program can change your protected folders."
         ),
         IdChoix::Asr(_) => tr!(
-            "Couper ou passer en audit : la règle ne bloque plus.",
-            "Turn off or set to audit: the rule no longer blocks."
+            "Désactiver ou passer en audit : la règle ne bloque plus. En audit, Defender note seulement ce qu'elle aurait bloqué (journal de Defender, événement 1122).",
+            "Disable or set to audit: the rule no longer blocks. In audit, Defender only logs what it would have blocked (Defender log, event 1122)."
         ),
     };
     format!("{effet} {}", protege_encore(id))
@@ -1858,7 +1967,7 @@ mod ecran;
 mod tests {
     use super::*;
 
-    fn textes(l: &[&str]) -> Vec<String> {
+    pub(super) fn textes(l: &[&str]) -> Vec<String> {
         l.iter().map(|s| (*s).to_string()).collect()
     }
 
@@ -2035,7 +2144,7 @@ mod tests {
         }
         let l = lignes(&e).join("\n");
         assert!(
-            l.contains("1 bloquent · 0 en audit · 0 avertissent · 18 coupées ou non réglées"),
+            l.contains("1 bloquent · 0 en audit · 0 avertissent · 18 désactivées ou non réglées"),
             "{l}"
         );
         assert!(l.contains("non réglée "));
@@ -2342,6 +2451,61 @@ mod tests {
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')),
             "{t:?}"
         );
+    }
+
+    /// Ce qui laisse les règles ASR agir, dans l'ordre : Defender actif, puis le temps réel, puis l'édition ; le JSON
+    /// le dit par un identifiant.
+    #[test]
+    fn effet_des_regles_asr() {
+        let mut e = courant();
+        assert_eq!(effet_asr(&e), EffetAsr::SAppliquent);
+        assert_eq!(json(&e)["asr"]["effet"], "s-appliquent");
+        e.edition = Some(Edition::Famille);
+        assert_eq!(effet_asr(&e), EffetAsr::Famille);
+        e.statut.as_mut().unwrap().temps_reel = Some(false);
+        assert_eq!(effet_asr(&e), EffetAsr::TempsReelCoupe);
+        assert_eq!(json(&e)["asr"]["effet"], "temps-reel-coupe");
+        assert!(texte_effet_asr(&e).contains("les règles ne s'appliquent pas"));
+        crate::langue::en_anglais(|| assert!(texte_effet_asr(&e).contains("the rules do not apply")));
+        for m in [ModeDefender::Passif, ModeDefender::BlocageEdr, ModeDefender::Coupe] {
+            e.statut.as_mut().unwrap().mode = m;
+            assert_eq!(effet_asr(&e), EffetAsr::DefenderInactif, "{m:?}");
+            assert!(texte_effet_asr(&e).starts_with("Sans effet"));
+        }
+        e.statut.as_mut().unwrap().mode = ModeDefender::Illisible;
+        e.statut.as_mut().unwrap().temps_reel = Some(true);
+        e.edition = Some(Edition::Autre);
+        assert_eq!(effet_asr(&e), EffetAsr::NonVerifie);
+        e.preferences = None;
+        assert_eq!(json(&e)["asr"]["effet"], serde_json::Value::Null);
+    }
+
+    /// Les 8 règles écartées des Réglages recommandés ont chacune leur avertissement, « Essayez d'abord Audit » à la
+    /// fin ; celles qui ont besoin du cloud le disent ; les 11 autres n'en ont pas.
+    #[test]
+    fn avertissement_des_8_regles_ecartees() {
+        let avec: Vec<&str> = ASR_TOUTES
+            .iter()
+            .copied()
+            .filter(|id| avertissement_asr(id).is_some())
+            .collect();
+        assert_eq!(avec.len(), 8);
+        for id in &avec {
+            assert!(
+                !crate::machine::gestes::ASR_BASE.contains(id) && !crate::machine::gestes::ASR_BUREAUTIQUE.contains(id),
+                "{id}"
+            );
+            let fr = avertissement_asr(id).unwrap();
+            assert!(fr.ends_with("Essayez d'abord Audit."), "{fr}");
+            assert_eq!(fr.contains("cloud"), asr_avec_cloud(id), "{fr}");
+            crate::langue::en_anglais(|| {
+                let en = avertissement_asr(id).unwrap();
+                assert!(en.ends_with("Try Audit first."), "{en}");
+                assert_eq!(en.contains("cloud"), asr_avec_cloud(id), "{en}");
+            });
+        }
+        assert!(avec.iter().all(|id| ASR_TOUTES.contains(id)));
+        assert_eq!(ASR_TOUTES.iter().filter(|id| asr_avec_cloud(id)).count(), 3);
     }
 
     #[test]

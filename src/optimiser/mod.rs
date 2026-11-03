@@ -680,7 +680,7 @@ pub fn dossiers_controles() -> Option<Vec<String>> {
 }
 
 /// Les protections de Defender : l'écran des Options de défense (plan §3.1), qui dit lui-même un Defender passif ou
-/// coupé. L'écran à cocher des blocages de base (`menu(Categorie::Protection)`) s'ouvre depuis ses règles ASR.
+/// coupé, et y règle chaque règle ASR (plan §2.2).
 pub fn protection() {
     crate::options_defense::afficher();
 }

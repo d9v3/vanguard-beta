@@ -4,10 +4,12 @@
 //! contre la désactivation. Ce sont des protections : Vanguard ne les défait pas (`systeme::reglage_protege`), la
 //! personne peut les changer dans Windows.
 //!
-//! Écartées, parce qu'elles bloqueraient Vanguard ou l'administration de la machine : processus non signés lancés
-//! depuis une clé USB (Vanguard sur la clé), exécutables sans réputation suffisante et protection avancée contre les
-//! rançongiciels (un programme neuf et non signé comme Vanguard), PsExec et WMI, outils système copiés (heuristique),
-//! scripts brouillés, redémarrage en mode sans échec (dépannage), et celle des serveurs Exchange.
+//! Écartées d'ici et des Réglages recommandés, parce qu'elles peuvent gêner Vanguard ou l'administration de la
+//! machine : processus non signés lancés depuis une clé USB (Vanguard sur la clé), exécutables sans réputation
+//! suffisante et protection avancée contre les rançongiciels (un programme neuf et non signé comme Vanguard), PsExec
+//! et WMI, outils système copiés (heuristique), scripts brouillés, redémarrage en mode sans échec (dépannage), et
+//! celle des serveurs Exchange. Les Options de défense les proposent une à une, avec leur avertissement et « Essayez
+//! d'abord Audit » (plan P4) : le choix revient à la personne, jamais à un profil.
 //!
 //! Lues par Get-MpPreference, la seule source qui dit ce que Defender applique : son registre n'est pas lisible par
 //! la personne. Une lecture par session, refaite après chaque écriture.
@@ -386,8 +388,16 @@ mod tests {
             "c0033c00-d16d-4114-a5a0-dc9b3a7d2ceb",
             "5beb7efe-fd9a-4556-801d-275e5ffc04cc",
             "33ddedf1-c6e0-47cb-833e-de6133960387",
+            "a8f5898e-1dc8-49a9-9878-85004b8a61e6",
         ] {
             assert!(!ASR_BASE.contains(&interdite) && !ASR_BUREAUTIQUE.contains(&interdite));
+            // Proposées seulement dans les Options de défense, une à une, avec leur avertissement (plan P4).
+            assert!(crate::machine::gestes::ASR_TOUTES.contains(&interdite), "{interdite}");
+            assert_ne!(nom_asr(interdite), "?", "{interdite}");
+            assert!(
+                crate::options_defense::avertissement_asr(interdite).is_some(),
+                "{interdite}"
+            );
         }
     }
 }

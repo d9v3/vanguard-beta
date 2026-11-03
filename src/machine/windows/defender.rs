@@ -8,6 +8,8 @@
 //! que si Vanguard les avait posées et qu'elles ont été coupées depuis. Ce sont des protections : Vanguard ne les
 //! défait pas (une note forgée ne peut donc pas les faire couper) ; la personne peut les changer dans Windows. Il
 //! retient seulement qu'il les a posées (`optimiser::retenir_protection`), pour dire plus fort une coupure.
+//! Une règle ASR baissée par le choix de la personne (Options de défense) et encore telle n'y est pas rejugée : la
+//! note la dit « par votre choix », sans correction qui la remettrait.
 
 use super::{Constat, alerte, ok};
 use crate::machine::choix_avant::{self, Lecture, Note};
@@ -92,6 +94,27 @@ fn remettre(c: Constat, p: &Protection) -> Constat {
     .protection()
 }
 
+/// La protection sans ses règles ASR baissées par le choix de la personne (Options de défense, plan §2.2) et encore
+/// telles : `constats_des_notes` les dit « par votre choix » ; les rejuger ici les dirait aussi « coupées par un
+/// programme » ou « pas activées », avec une correction qui les remettrait en blocage contre ce choix. Les autres
+/// règles du groupe restent jugées et corrigées. Une règle remontée depuis, ou changée autrement, reste jugée.
+fn sans_regles_choisies(etat: &Etat, mut p: Protection, choix: &[(IdChoix, Option<Note>)]) -> Protection {
+    p.prefs.retain(|pref| {
+        let Pref::Asr(g) = *pref else { return true };
+        let id = IdChoix::Asr(g);
+        let Some(n) = choix_avant::note_de(choix, id) else {
+            return true;
+        };
+        // Absente de la liste : `Some(None)`, comme la note la compare.
+        let lue = match etat.valeur(*pref) {
+            None => Some(None),
+            Some(t) => t.strip_prefix("mp:").and_then(|v| v.parse::<i64>().ok()).map(Some),
+        };
+        !matches!(choix_avant::lecture_note(id, n, lue), Lecture::ParChoix(_))
+    });
+    p
+}
+
 /// Le réglage des choix de la personne (Options de défense) d'une protection, s'il en a un.
 fn reglage_choix(p: &Protection) -> Option<IdChoix> {
     match p.reglage {
@@ -148,6 +171,10 @@ pub(super) fn juger_avec(etat: Option<&Etat>, notes: &[String], choix: &[(IdChoi
     let mut constats = Vec::new();
     let (mut actives, mut autres) = (Vec::new(), Vec::new());
     for p in protections() {
+        let p = sans_regles_choisies(etat, p, choix);
+        if p.prefs.is_empty() {
+            continue;
+        }
         let objet = Objet::de("defender", p.reglage);
         let lecture = reglage_choix(&p).and_then(|id| {
             let n = choix_avant::note_de(choix, id)?;
@@ -363,6 +390,48 @@ mod tests {
         // En audit seulement (2), une règle ASR ne bloque pas.
         let e = lu("mode|Normal\nav|True\nnp|1\npua|1\nasr|56a863a9-875e-4185-98a7-b882c64b5ce5|2\n");
         let c = juger(Some(&e), &["defender_asr_base".into()]);
+        assert!(c.iter().any(|c| c.probleme == Some(Niveau::Eleve)));
+    }
+
+    /// Une règle de base baissée par le choix de la personne (Options de défense) et encore telle : ni alerte ni
+    /// correction qui la remettrait en blocage ; les deux autres restent jugées et seules corrigées.
+    #[test]
+    fn regle_asr_baissee_par_choix_ni_alerte_ni_remise() {
+        const CHOISIE: &str = "56a863a9-875e-4185-98a7-b882c64b5ce5";
+        let note = |posee| Note {
+            id: IdChoix::Asr(CHOISIE).texte(),
+            avant: Some(1),
+            posee,
+            date: 1_700_000_000,
+        };
+        let choix = [(IdChoix::Asr(CHOISIE), Some(note(0)))];
+        let etat = |autre: u8| {
+            lu(&format!(
+                "mode|Normal\nav|True\nrtp|True\ncfa|0\nnp|1\npua|1\nasr|{CHOISIE}|0\n\
+                 asr|9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2|1\nasr|e6db77e5-3df2-4cf1-b95a-636979351e5b|{autre}\n"
+            ))
+        };
+        let poses = ["defender_asr_base".to_string()];
+        // Les deux autres bloquent : aucune alerte, et les blocages de base comptent parmi ce qui bloque.
+        let c = juger_avec(Some(&etat(1)), &poses, &choix);
+        assert!(
+            c.iter().all(|c| c.probleme.is_none()),
+            "{:?}",
+            c.iter().map(|c| &c.message).collect::<Vec<_>>()
+        );
+        assert!(c.iter().any(|c| c.etat() == EtatConstat::Sain));
+        // Une autre en audit : alerte, mais sa correction ne remet que celle-là.
+        let c = juger_avec(Some(&etat(2)), &poses, &choix);
+        let a: Vec<&Constat> = c.iter().filter(|c| c.probleme.is_some()).collect();
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].probleme, Some(Niveau::Eleve));
+        let k = a[0].correctif.as_ref().unwrap();
+        assert_eq!(k.commandes.len(), 2);
+        assert!(k.commandes.iter().all(|x| !x.contains(CHOISIE)), "{:?}", k.commandes);
+        // Sans la note, ou changée depuis la note (posée 2, lue 0), la règle est jugée comme avant.
+        let c = juger_avec(Some(&etat(1)), &poses, &[]);
+        assert!(c.iter().any(|c| c.probleme == Some(Niveau::Eleve)));
+        let c = juger_avec(Some(&etat(1)), &poses, &[(IdChoix::Asr(CHOISIE), Some(note(2)))]);
         assert!(c.iter().any(|c| c.probleme == Some(Niveau::Eleve)));
     }
 

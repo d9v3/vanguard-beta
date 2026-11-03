@@ -151,6 +151,26 @@ pub(crate) fn lecture_wmi() -> Option<([Vec<String>; 3], Politiques)> {
     ))
 }
 
+/// Les programmes permis de l'accès contrôlé aux dossiers (ControlledFolderAccessAllowedApplications), par WMI
+/// seul : un programme permis écrit dans les dossiers protégés malgré la protection contre les rançongiciels, à
+/// voir comme une exclusion. Un « N/A… » (liste cachée sans droits administrateur) est gardé tel quel, pour que
+/// l'écran dise « à vérifier » au lieu de « vide ». `None` si Defender ne répond pas par WMI : pas de secours
+/// PowerShell ici, l'écran garde alors ses notes « à vérifier ».
+pub(crate) fn programmes_permis() -> Option<Vec<String>> {
+    let l = super::wmi::requete(
+        r"root\Microsoft\Windows\Defender",
+        "MSFT_MpPreference",
+        "",
+        &["ControlledFolderAccessAllowedApplications"],
+    )
+    .and_then(|l| l.into_iter().next())?;
+    Some(
+        l.get("ControlledFolderAccessAllowedApplications")
+            .map(Valeur::textes)
+            .unwrap_or_default(),
+    )
+}
+
 /// La réponse du secours PowerShell. Le script rend toujours trois tableaux (@(…)) ; un autre compte pour vide,
 /// comme pour WMI : les deux autres sont jugées quand même. Une politique absente de cette plateforme vaut `null` :
 /// elle ne cache rien.
