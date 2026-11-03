@@ -7,7 +7,7 @@ a day, gathering the day's work; October 21 had two, 0.82 in the morning and 0.8
 delivered just before it. Only the latest version has its download page; every version keeps its tag in the repository
 (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 
-## 0.89.1 (not yet released)
+## November 3, 2026: version 0.89.1
 
 - **Vanguard Agent (no AI).** A part of Vanguard that helps it run better on your computer, with no AI and without
   sending anything. It has four missions, each with its own switch (Settings › Vanguard Agent,
