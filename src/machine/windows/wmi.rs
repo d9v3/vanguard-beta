@@ -460,8 +460,13 @@ pub(crate) enum Retour {
     /// Son ReturnValue.
     Valeur(i64),
     /// Refusé, avec le code de l'erreur : WMI absent, classe ou méthode inconnues (`CLASSE_ABSENTE`), paramètre
-    /// refusé, pas de ReturnValue (E_POINTER).
+    /// refusé, ExecMethod en erreur. Rien n'a été accepté.
     Refuse(i32),
+    /// ExecMethod a accepté l'appel (pas d'erreur), mais sans ReturnValue lisible : pas d'objet de sortie, ou un
+    /// ReturnValue vide ou qui n'est pas un entier (noté au journal). MSFT_MpPreference.Set le fait dans la VM du
+    /// 3 nov. (D3) : la valeur est bien écrite. Ni réussi ni refusé : seule la relecture de l'appelant le dit.
+    /// Avant, c'était `Refuse(E_POINTER)`, dit « Windows a refusé » et code 1 sur une écriture faite.
+    Accepte,
     /// Pas de réponse dans le délai (noté au journal).
     SansReponse,
 }
@@ -480,7 +485,9 @@ pub(crate) fn methode(
     match dans_un_fil(delai, COINIT_MULTITHREADED, move || {
         appeler_dans_ce_fil(&espace, &classe, &nom, &parametres)
     }) {
-        Some(Ok(valeur)) => Retour::Valeur(valeur),
+        Some(Ok(sortie)) => retour_accepte(sortie, |manque| {
+            crate::journal::erreur(Contexte::Wmi, &format!("appel accepté, {manque}\n{quoi}"));
+        }),
         Some(Err(code)) => Retour::Refuse(code.0),
         None => {
             crate::journal::erreur(
@@ -492,12 +499,26 @@ pub(crate) fn methode(
     }
 }
 
+/// Le `Retour` d'un appel qu'ExecMethod a accepté : son ReturnValue, ou `Accepte` quand il ne se lit pas
+/// (`noter` reçoit ce qui manque). Pure, pour l'essayer : jamais `Refuse` ici, l'appel n'a pas été refusé.
+fn retour_accepte(sortie: Result<i64, &'static str>, noter: impl FnOnce(&'static str)) -> Retour {
+    match sortie {
+        Ok(valeur) => Retour::Valeur(valeur),
+        Err(manque) => {
+            noter(manque);
+            Retour::Accepte
+        }
+    }
+}
+
+/// `Err` : l'appel est refusé (rien d'accepté) ; `Ok(Err(manque))` : ExecMethod l'a accepté, mais son ReturnValue ne
+/// se lit pas (`manque` dit pourquoi, pour le journal).
 fn appeler_dans_ce_fil(
     espace: &str,
     classe: &str,
     nom: &str,
     parametres: &[(&str, Parametre)],
-) -> windows::core::Result<i64> {
+) -> windows::core::Result<Result<i64, &'static str>> {
     // SAFETY: COM est initialisé dans ce fil (par `dans_un_fil`) ; WbemLocator est la classe du localisateur WMI.
     let localisateur: IWbemLocator = unsafe { CoCreateInstance(&WbemLocator, None, CLSCTX_INPROC_SERVER) }?;
     let vide = BSTR::new();
@@ -553,13 +574,18 @@ fn appeler_dans_ce_fil(
             None,
         )
     }?;
-    let resultat = resultat.ok_or_else(|| Error::from(E_POINTER))?;
+    // Ici l'appel est accepté : ce qui manque ensuite n'est plus un refus (`Retour::Accepte`).
+    let Some(resultat) = resultat else {
+        return Ok(Err("sans objet de sortie"));
+    };
     let mut v = VARIANT::default();
     // SAFETY: resultat est vivant, le nom terminé par un zéro, `v` un VARIANT vide qui reçoit la copie (libérée par
     // son Drop).
-    unsafe { resultat.Get(&HSTRING::from("ReturnValue"), 0, &raw mut v, None, None) }?;
+    if unsafe { resultat.Get(&HSTRING::from("ReturnValue"), 0, &raw mut v, None, None) }.is_err() {
+        return Ok(Err("sans ReturnValue"));
+    }
     // SAFETY: `v` vient d'être rempli par Get.
-    unsafe { lire(&v) }.entier().ok_or_else(|| Error::from(E_POINTER))
+    Ok(unsafe { lire(&v) }.entier().ok_or("ReturnValue vide ou non entier"))
 }
 
 /// L'espace de noms des abonnements WMI permanents : le seul où `Abonnements` lit et écrit.
@@ -803,6 +829,23 @@ mod tests {
         );
         assert_eq!(Valeur::Nul.textes(), Vec::<String>::new());
         assert_eq!(Valeur::Entier(2).textes(), Vec::<String>::new());
+    }
+
+    /// VM du 3 nov. (D3) : MSFT_MpPreference.Set écrit la valeur, ExecMethod rend « réussi », mais sans
+    /// ReturnValue lisible. C'était `Refuse(E_POINTER)` (« Windows a refusé », code 1) : c'est `Accepte`, noté au
+    /// journal, et jamais `Valeur(0)` (pas compté réussi sans la relecture de l'appelant).
+    #[test]
+    fn appel_accepte_sans_returnvalue_n_est_pas_un_refus() {
+        let mut note = None;
+        assert_eq!(
+            retour_accepte(Err("ReturnValue vide ou non entier"), |m| note = Some(m)),
+            Retour::Accepte
+        );
+        assert_eq!(note, Some("ReturnValue vide ou non entier"));
+        let mut note = None;
+        assert_eq!(retour_accepte(Ok(0), |m| note = Some(m)), Retour::Valeur(0));
+        assert_eq!(retour_accepte(Ok(5), |m| note = Some(m)), Retour::Valeur(5));
+        assert_eq!(note, None);
     }
 
     /// Une erreur COM avec sa description (IErrorInfo posée par SetErrorInfo, comme le fait WMI) : captée par

@@ -1549,7 +1549,8 @@ fn poser_le_point() -> Result<(), Echec> {
         DELAI_POINT,
     );
     let mut apres = None;
-    if retour == Retour::Valeur(0) && avant.is_some() {
+    // Accepté sans code de retour lisible (`Accepte`) : seule la liste des points dit s'il est fait.
+    if matches!(retour, Retour::Valeur(0) | Retour::Accepte) && avant.is_some() {
         // La liste peut ne montrer le point qu'un peu après la réponse : relue quelques fois, 20 s au plus.
         for essai in 0..10 {
             if essai > 0 {
@@ -2127,6 +2128,14 @@ mod tests {
         assert!(delai != refus && refus != absent && delai != absent);
         let illisible = raison(Valeur(0), None);
         assert!(juger_le_point(None, Valeur(0), Some(&[p(27, 5)])).is_err());
+        // Accepté sans code de retour lisible (`wmi::Retour::Accepte`) : la liste seule le dit, dans les deux sens.
+        let sans_retour = crate::machine::windows::wmi::Retour::Accepte;
+        assert_eq!(
+            juger_le_point(Some(&avant), sans_retour, Some(&[avant[0], avant[1], p(27, 5)])),
+            Ok(())
+        );
+        assert!(raison(sans_retour, Some(&avant)).contains("24 h"));
+        assert!(raison(sans_retour, None).contains("illisible") || raison(sans_retour, None).contains("unreadable"));
         assert!(
             [sautee.as_str(), perdu.as_str(), illisible.as_str()]
                 .iter()

@@ -1956,7 +1956,8 @@ fn couper_smb1_serveur() -> Resultat {
         DELAI,
     );
     let refus = match retour {
-        Retour::Valeur(0) => None,
+        // Accepté sans code de retour lisible : la relecture de SMBv1 qui suit le dit.
+        Retour::Valeur(0) | Retour::Accepte => None,
         Retour::Valeur(n) => Some(trf!("WMI a répondu {n}", "WMI answered {n}")),
         Retour::Refuse(code) if CLASSE_ABSENTE.contains(&code) => Some(trf!(
             "le réglage SMB de Windows est absent (WMI 0x{code:08X})",
@@ -1973,8 +1974,8 @@ fn couper_smb1_serveur() -> Resultat {
         _ => Resultat::echec(
             Some(avant),
             trf!(
-                "WMI a répondu 0, mais SMBv1 se relit encore actif (SMB1={})",
-                "WMI answered 0, but SMBv1 still reads as on (SMB1={})",
+                "WMI a accepté la demande, mais SMBv1 se relit encore actif (SMB1={})",
+                "WMI accepted the request, but SMBv1 still reads as on (SMB1={})",
                 lu()
             ),
         ),

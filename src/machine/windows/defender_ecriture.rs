@@ -15,7 +15,7 @@ use super::wmi::{self, CLASSE_ABSENTE, Ligne, Parametre, Retour, Valeur};
 use crate::machine::choix_avant;
 use crate::machine::gestes::{self, Acte, GenreExclusion, IdChoix, ModeAsr, Montre, ReglageDefender, ValeurDefender};
 use crate::modele::raison::Echec;
-use crate::ui::{tr, trf};
+use crate::ui::{GRIS, RESET, tr, trf, trp};
 
 const ESPACE: &str = r"root\Microsoft\Windows\Defender";
 const PREFERENCES: &str = "MSFT_MpPreference";
@@ -407,6 +407,26 @@ fn appeler_avec(
     parametres: Vec<(&'static str, gestes::ValeurWmi)>,
     baisse: bool,
 ) -> Result<(), Echec> {
+    let parametres = parametres.into_iter().map(|(n, v)| (n, Parametre::from(v))).collect();
+    let retour = wmi::methode(ESPACE, classe, methode, parametres, DELAI);
+    if retour == Retour::Accepte {
+        trp!(
+            "  {GRIS}Windows a accepté la demande sans dire son résultat : la valeur relue dira si c'est fait.{RESET}",
+            "  {GRIS}Windows accepted the request without giving its result: the value read back will tell whether it is done.{RESET}"
+        );
+    }
+    juger_retour(retour, baisse)
+}
+
+/// Ce que vaut le retour de MSFT_MpPreference (ou MSFT_MpThreat) : `Ok` quand l'appel est accepté, à confirmer
+/// par la relecture que fait chaque appelant (aucun ne compte un `Ok` comme fait sans elle). `baisse` : un refus de
+/// Windows dit que Defender a pu bloquer le geste. Pure, pour l'essayer.
+///
+/// `Accepte` (accepté, mais sans ReturnValue lisible) est un `Ok` : dans la VM du 3 nov. (D3), chaque choix
+/// était écrit puis dit « Windows a refusé (0x80004003) … Defender a bloqué ce changement » avec le code 1. Un
+/// vrai refus sans erreur (protection contre les falsifications, qui ignore la demande) se voit à la relecture,
+/// et `pourquoi_garde` le dit.
+fn juger_retour(retour: Retour, baisse: bool) -> Result<(), Echec> {
     let refus = |phrase: String| {
         let phrase = if baisse {
             format!("{phrase}. {}", choix_avant::defender_bloque())
@@ -415,9 +435,8 @@ fn appeler_avec(
         };
         Err(Echec::echoue(CONTEXTE, phrase))
     };
-    let parametres = parametres.into_iter().map(|(n, v)| (n, Parametre::from(v))).collect();
-    match wmi::methode(ESPACE, classe, methode, parametres, DELAI) {
-        Retour::Valeur(0) => Ok(()),
+    match retour {
+        Retour::Valeur(0) | Retour::Accepte => Ok(()),
         Retour::Valeur(n) => refus(match u32::try_from(n) {
             Ok(code) => trf!(
                 "Windows a refusé la demande (code 0x{:08X})",
@@ -765,6 +784,34 @@ fn retirer_menaces() -> Resultat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// VM du 3 nov. (D3, exe a31a9df9) : chaque choix de Defender était écrit (relu changé par le --json qui suit),
+    /// mais dit « Windows a refusé la demande (code 0x80004003) … Defender a bloqué ce changement » avec le code 1 :
+    /// ExecMethod acceptait l'appel sans ReturnValue lisible, et `wmi::methode` en faisait `Refuse(E_POINTER)`.
+    /// Accepté sans retour = `Ok`, à juger par la relecture (`choix_avant::faire_choix`, `reglage`…) ; un vrai refus
+    /// reste un échec, dit « Defender a pu bloquer » pour une baisse seulement.
+    #[test]
+    fn accepte_sans_retour_juge_par_la_relecture() {
+        let bloque = choix_avant::defender_bloque();
+        assert!(juger_retour(Retour::Accepte, true).is_ok());
+        assert!(juger_retour(Retour::Accepte, false).is_ok());
+        assert!(juger_retour(Retour::Valeur(0), true).is_ok());
+        let e_pointer = 0x8000_4003_u32.cast_signed();
+        let refus = juger_retour(Retour::Refuse(e_pointer), true)
+            .expect_err("refusé")
+            .to_string();
+        assert!(refus.contains("0x80004003") && refus.contains(bloque), "{refus}");
+        let refus = juger_retour(Retour::Refuse(e_pointer), false)
+            .expect_err("refusé")
+            .to_string();
+        assert!(!refus.contains(bloque), "{refus}");
+        assert!(juger_retour(Retour::Valeur(2), true).is_err());
+        assert!(juger_retour(Retour::SansReponse, true).is_err());
+        let absente = juger_retour(Retour::Refuse(CLASSE_ABSENTE[0]), true)
+            .expect_err("absente")
+            .to_string();
+        assert!(!absente.contains(bloque), "{absente}");
+    }
 
     /// Un refus n'est dit « Defender a pu bloquer » que pour une vraie baisse, jugée contre la valeur relue : rallumer
     /// l'audit depuis coupé est un renforcement ; sans relecture, contre la valeur sûre.
