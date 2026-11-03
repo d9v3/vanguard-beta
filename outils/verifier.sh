@@ -288,7 +288,9 @@ relais() {
   command -v node >/dev/null || { echo "node absent (essais du relais pas lancés)"; return "$SAUTEE"; }
   node -e 'require("node:sqlite")' 2>/dev/null ||
     { echo "node $(node --version) sans node:sqlite (22.13 ou plus)"; return "$SAUTEE"; }
-  node --test --test-reporter=spec relais/essais/
+  # Les fichiers nommés, pas le dossier : Node 22 (celui de la CI) prend un dossier pour un module à charger
+  # (MODULE_NOT_FOUND, 0 essai) ; Node 23 et plus le parcourent.
+  node --test --test-reporter=spec relais/essais/*.test.mjs
 }
 
 # Les dépendances selon deny.toml : failles connues (base RustSec), licences, provenance, doublons. Sans Internet, la
