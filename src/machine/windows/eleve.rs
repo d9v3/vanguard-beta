@@ -1170,7 +1170,7 @@ fn faire(
         // après l'accord (le parent le refuse aussi, mais une ligne forgée ne passe pas par lui).
         Element::Programme(a) if coupe(a.coupe_le_reseau(), juge) => refus_session(),
         Element::Acte(a) if coupe(a.touche_le_reseau(), juge) => refus_session(),
-        Element::Programme(a) => lancer_programme(a),
+        Element::Programme(a) => apres_sfc(a, lancer_programme(a)),
         Element::Acte(a) => super::defender_ecriture::faire_choix(a, montre)
             .unwrap_or_else(|| super::services_ecriture::faire(a, compte)),
     };
@@ -1380,6 +1380,32 @@ fn lancer_programme(a: &gestes::Appel) -> Resultat {
     }
 }
 
+/// sfc /scanfile : le code de sfc ne suffit pas, le programme d'accessibilité est relu. Encore une copie, ou
+/// illisible : échec dit clairement (la raison de sfc gardée devant) ; plus une copie : remis, quel que soit le code.
+fn apres_sfc(a: &gestes::Appel, r: Resultat) -> Resultat {
+    let (true, Some(nom)) = (a.programme.id == gestes::SFC_FICHIER, a.nom) else {
+        return r;
+    };
+    match super::portes::apres_sfc(nom, super::portes::copie_de(nom)) {
+        None => Resultat {
+            reussi: true,
+            rien: false,
+            avant: None,
+            raison: if r.reussi { r.raison } else { String::new() },
+        },
+        Some(echec) => Resultat {
+            reussi: false,
+            rien: false,
+            avant: None,
+            raison: if r.raison.is_empty() {
+                echec
+            } else {
+                format!("{} ; {echec}", r.raison)
+            },
+        },
+    }
+}
+
 /// La commande d'un programme fixe, prête à lancer : son chemin complet, ses arguments, l'environnement réduit
 /// (DISM ou sfc ne doivent rien charger de ce que le compte a posé) et System32 pour dossier courant. `None` : le
 /// lecteur système ne se lit pas.
@@ -1395,7 +1421,7 @@ fn commande_du_programme(a: &gestes::Appel) -> Option<std::process::Command> {
     let mut commande = std::process::Command::new(exe);
     super::environnement::reduire(&mut commande)
         .current_dir(systeme)
-        .args(a.arguments(lecteur));
+        .args(a.arguments(lecteur, &systeme.to_string_lossy()));
     Some(commande)
 }
 

@@ -15,7 +15,7 @@ use super::*;
 use crate::commande::decouper_commande;
 use crate::machine::gestes::{self, Acte, NomFichier, Vue};
 use crate::machine::regles::{Os, regle};
-use crate::ui::{affichable, couper};
+use crate::ui::{affichable, couper, trf};
 
 const CAT: &str = "Persistance";
 
@@ -455,12 +455,12 @@ fn juger_remplaces(verifies: usize, remplaces: &[(&str, &str)], illisibles: &[&s
                     "“{programme}” is a copy of {copie}: at the sign-in screen, its accessibility shortcut opens {copie} with system rights, without a password (a classic backdoor)."
                 ),
             )
-            .manuel(
+            .corriger(
                 tr!(
-                    "Remettre le vrai programme : vérifier les fichiers de Windows (commande ci-dessous, en administrateur), puis lancer une analyse antivirus complète",
-                    "Put the real program back: check Windows' files (command below, as administrator), then run a full antivirus scan"
+                    "Remettre le vrai programme par sfc (relu ensuite : s'il reste une copie, c'est dit), puis lancer une analyse antivirus complète",
+                    "Put the real program back with sfc (read back afterwards: a copy left is said), then run a full antivirus scan"
                 ),
-                &["sfc /scannow"],
+                &[ligne_sfc(programme)],
             )
         })
         .collect();
@@ -496,10 +496,21 @@ fn juger_remplaces(verifies: usize, remplaces: &[(&str, &str)], illisibles: &[&s
     constats
 }
 
-fn programmes_remplaces() -> Vec<Constat> {
-    let racine = PathBuf::from(racine_windows());
+/// La ligne qui remet ce programme : `sfc-scanfile <nom>` pour les cinq de sa liste fermée, sinon sfc /scannow (le
+/// choix de l'écran et le lanceur d'accessibilité, que sfc /scanfile ne prend pas ici).
+fn ligne_sfc(programme: &str) -> String {
+    let nom = programme.to_ascii_lowercase();
+    let nom = nom.strip_suffix(".exe").unwrap_or(&nom);
+    match gestes::ACCESSIBILITE_SFC.iter().find(|&&n| n == nom) {
+        Some(n) => gestes::ligne_programme(gestes::SFC_FICHIER, Some(n)),
+        None => gestes::ligne_programme("sfc-scannow", None),
+    }
+}
+
+/// Les programmes dont une copie à la place d'un programme d'accessibilité ouvre une invite système.
+fn modeles(racine: &Path) -> Vec<(&'static str, PathBuf)> {
     let system32 = racine.join("System32");
-    let modeles: Vec<(&str, PathBuf)> = [
+    [
         ("cmd.exe", system32.join("cmd.exe")),
         (
             "powershell.exe",
@@ -509,7 +520,64 @@ fn programmes_remplaces() -> Vec<Constat> {
     ]
     .into_iter()
     .filter(|(_, chemin)| chemin.is_file())
-    .collect();
+    .collect()
+}
+
+/// Un programme d'accessibilité relu par le processus élevé.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Relu {
+    /// Ce n'est plus une copie de cmd, de PowerShell ni de l'Explorateur.
+    Remis,
+    /// Encore une copie de ce programme.
+    Copie(&'static str),
+    /// Absent ou illisible.
+    Illisible,
+}
+
+/// Après `sfc /scanfile` : le code de sfc ne suffit pas (0 même quand le magasin de composants n'a pas de bonne
+/// version), seule la relecture dit « remis ». `None` : remis ; sinon la raison de l'échec, dite clairement.
+pub(super) fn apres_sfc(nom: &str, relu: Relu) -> Option<String> {
+    let nom = affichable(nom);
+    match relu {
+        Relu::Remis => None,
+        Relu::Copie(c) => {
+            let c = affichable(c);
+            Some(trf!(
+                "sfc n'a pas remis le vrai {nom}.exe : c'est encore une copie de {c}, la porte reste ouverte. Le magasin de composants de Windows est peut-être abîmé : « Réparer l'image de Windows (DISM) », puis recommencer",
+                "sfc did not put back the real {nom}.exe: it is still a copy of {c}, the backdoor stays open. The Windows component store may be damaged: “Repair the Windows image (DISM)”, then try again"
+            ))
+        }
+        Relu::Illisible => Some(trf!(
+            "{nom}.exe ne se relit pas après sfc : remis ou non, on ne sait pas ; refaire le bilan",
+            "{nom}.exe cannot be read back after sfc: put back or not is unknown; run the check again"
+        )),
+    }
+}
+
+/// Après sfc /scanfile, relu par le processus élevé : ce programme d'accessibilité (nom sans « .exe », de la liste
+/// fermée) est-il encore une copie ?
+pub(super) fn copie_de(nom: &str) -> Relu {
+    let racine = PathBuf::from(racine_windows());
+    let modeles = modeles(&racine);
+    let chemin = racine.join("System32").join(format!("{nom}.exe"));
+    if modeles.is_empty() || !chemin.is_file() {
+        return Relu::Illisible;
+    }
+    let mut illisible = false;
+    for (copie, modele) in &modeles {
+        match identiques(&chemin, modele) {
+            Some(true) => return Relu::Copie(copie),
+            Some(false) => {}
+            None => illisible = true,
+        }
+    }
+    if illisible { Relu::Illisible } else { Relu::Remis }
+}
+
+fn programmes_remplaces() -> Vec<Constat> {
+    let racine = PathBuf::from(racine_windows());
+    let system32 = racine.join("System32");
+    let modeles = modeles(&racine);
     if modeles.is_empty() {
         return vec![impossible(
             CAT,
@@ -1154,6 +1222,22 @@ pub(super) fn corpus_wmi(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
 mod tests {
     use super::*;
 
+    /// Le code de sfc ne suffit pas : encore une copie = échec dit clairement (DISM conseillé) ; illisible = dit,
+    /// jamais compté remis ; plus une copie = remis. Un texte hostile dans le nom est nettoyé.
+    #[test]
+    fn apres_sfc_relu() {
+        assert_eq!(apres_sfc("sethc", Relu::Remis), None);
+        let encore = apres_sfc("sethc", Relu::Copie("cmd.exe")).unwrap();
+        assert!(
+            encore.contains("sethc.exe") && encore.contains("cmd.exe") && encore.contains("DISM"),
+            "{encore}"
+        );
+        let illisible = apres_sfc("osk", Relu::Illisible).unwrap();
+        assert!(illisible.contains("osk.exe"), "{illisible}");
+        let hostile = apres_sfc("a\x1b[31m\r", Relu::Copie("b\x1b]0;x\x07")).unwrap();
+        assert!(!crate::ui::contient_un_piege(&hostile), "{hostile:?}");
+    }
+
     fn reglage(programme: &str, debogueur: Option<&str>, drapeaux: Option<u32>) -> Reglage {
         Reglage {
             vue: Vue::Windows,
@@ -1303,7 +1387,23 @@ mod tests {
         let c = juger_remplaces(4, &[("sethc.exe", "cmd.exe")], &[]);
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].probleme, Some(Niveau::Eleve));
-        assert!(!c[0].correctif.as_ref().unwrap().automatique);
+        // D6c : remis par sfc /scanfile, un identifiant de la liste fermée, jamais un chemin ; demandé depuis le
+        // bilan (confirmé par le clic d'administrateur), relu ensuite.
+        let k = c[0].correctif.as_ref().unwrap();
+        assert!(k.automatique);
+        assert_eq!(k.commandes, ["vanguard:programme sfc-scanfile sethc"]);
+        assert!(c[0].coherent());
+        for (programme, ligne) in [
+            ("utilman.exe", "vanguard:programme sfc-scanfile utilman"),
+            ("Narrator.exe", "vanguard:programme sfc-scanfile narrator"),
+            ("osk.exe", "vanguard:programme sfc-scanfile osk"),
+            ("magnify.exe", "vanguard:programme sfc-scanfile magnify"),
+            ("displayswitch.exe", "vanguard:programme sfc-scannow"),
+            ("atbroker.exe", "vanguard:programme sfc-scannow"),
+        ] {
+            let c = juger_remplaces(4, &[(programme, "powershell.exe")], &[]);
+            assert_eq!(c[0].correctif.as_ref().unwrap().commandes, [ligne], "{programme}");
+        }
         assert!(juger_remplaces(5, &[], &[])[0].probleme.is_none());
         // Rien de comparé, ou un fichier illisible : dit, jamais compté comme sain.
         assert!(!juger_remplaces(0, &[], &[])[0].verifie);

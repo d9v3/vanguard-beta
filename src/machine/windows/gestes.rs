@@ -110,6 +110,9 @@ pub(crate) enum Argument {
     LecteurSysteme,
     /// Ce préfixe, suivi du nom donné par la ligne (une des `noms` du programme).
     Nom(&'static str),
+    /// Ce préfixe, suivi du chemin du programme de System32 que nomme la ligne (`<System32>\<nom>.exe`) : System32
+    /// lu par le processus élevé, le nom pris dans la liste fermée, jamais un chemin venu de la ligne.
+    FichierSysteme32(&'static str),
 }
 
 /// Un programme fixe de Windows : un outil de réparation, lancé tel quel.
@@ -133,6 +136,14 @@ pub(crate) struct Programme {
 
 /// 3010 : fait, redémarrage nécessaire (comme le script PowerShell le comptait déjà).
 const FAIT: &[i32] = &[0, 3010];
+
+/// Remettre un seul programme de Windows par sfc /scanfile (touches rémanentes et autres raccourcis de l'écran de
+/// connexion remplacés par une copie de cmd).
+pub(crate) const SFC_FICHIER: &str = "sfc-scanfile";
+
+/// Les programmes d'accessibilité de l'écran de connexion que `sfc-scanfile` remet (nom sans « .exe ») : des
+/// identifiants, jamais un chemin.
+pub(crate) const ACCESSIBILITE_SFC: &[&str] = &["sethc", "utilman", "osk", "magnify", "narrator"];
 
 /// Les fonctionnalités de Windows que Vanguard peut retirer : PowerShell 2.0 et le client SMBv1.
 const FONCTIONS_A_RETIRER: &[&str] = &[
@@ -169,6 +180,18 @@ pub(crate) static PROGRAMMES: &[Programme] = &[
         au_redemarrage: &[],
         fr: "Vérifier et réparer les fichiers système (SFC)",
         en: "Check and repair the system files (SFC)",
+    },
+    Programme {
+        id: SFC_FICHIER,
+        dossier: Dossier::Systeme32,
+        exe: "sfc.exe",
+        arguments: &[Argument::FichierSysteme32("/scanfile=")],
+        noms: ACCESSIBILITE_SFC,
+        // Le code de sfc ne suffit pas : le processus élevé relit ensuite le fichier (`apres_sfc`).
+        reussites: FAIT,
+        au_redemarrage: &[],
+        fr: "Remettre le vrai programme d'accessibilité de Windows (sfc /scanfile)",
+        en: "Put back the real Windows accessibility program (sfc /scanfile)",
     },
     Programme {
         id: "chkdsk-scan-systeme",
@@ -369,8 +392,9 @@ impl Appel {
         }
     }
 
-    /// Les arguments, dans l'ordre, avec la lettre du lecteur de Windows donnée par le processus élevé.
-    pub(crate) fn arguments(&self, lecteur: &str) -> Vec<String> {
+    /// Les arguments, dans l'ordre, avec la lettre du lecteur de Windows et le dossier System32 donnés par le
+    /// processus élevé.
+    pub(crate) fn arguments(&self, lecteur: &str, systeme32: &str) -> Vec<String> {
         self.programme
             .arguments
             .iter()
@@ -378,14 +402,19 @@ impl Appel {
                 Argument::Fixe(t) => (*t).to_string(),
                 Argument::LecteurSysteme => lecteur.to_string(),
                 Argument::Nom(prefixe) => format!("{prefixe}{}", self.nom.unwrap_or_default()),
+                Argument::FichierSysteme32(prefixe) => format!(
+                    r"{prefixe}{}\{}.exe",
+                    systeme32.trim_end_matches('\\'),
+                    self.nom.unwrap_or_default()
+                ),
             })
             .collect()
     }
 
-    /// La commande à montrer : le programme et ses arguments, le lecteur sous son nom de variable.
+    /// La commande à montrer : le programme et ses arguments, le lecteur et System32 sous leur nom de variable.
     pub(crate) fn commande(&self) -> String {
         let mut c = self.programme.exe.to_string();
-        for a in self.arguments("%SystemDrive%") {
+        for a in self.arguments("%SystemDrive%", r"%SystemRoot%\System32") {
             c.push(' ');
             c.push_str(&a);
         }
@@ -400,7 +429,7 @@ impl Appel {
             Dossier::Defender => format!(r"$env:SystemDrive\{DOSSIER_DEFENDER}"),
         };
         let mut c = format!(r#"& "{dossier}\{}""#, self.programme.exe);
-        for a in self.arguments("$env:SystemDrive") {
+        for a in self.arguments("$env:SystemDrive", r"$env:SystemRoot\System32") {
             c.push(' ');
             c.push_str(&a);
         }
@@ -6343,13 +6372,16 @@ mod tests {
                 p.id
             );
             assert!(p.reussites.contains(&0) && !p.fr.is_empty() && !p.en.is_empty());
-            let a_un_nom = p.arguments.iter().any(|a| matches!(a, Argument::Nom(_)));
+            let a_un_nom = p
+                .arguments
+                .iter()
+                .any(|a| matches!(a, Argument::Nom(_) | Argument::FichierSysteme32(_)));
             assert_eq!(a_un_nom, !p.noms.is_empty(), "{}", p.id);
             // Ni séparateur ni espace dans un exe ou un argument : rien ne s'y glisse en passant par une ligne de
             // commande.
             assert!(p.exe.strip_suffix(".exe").is_some_and(|n| !n.is_empty()) && !p.exe.contains(['\\', '/', ' ']));
             for a in p.arguments {
-                if let Argument::Fixe(t) | Argument::Nom(t) = a {
+                if let Argument::Fixe(t) | Argument::Nom(t) | Argument::FichierSysteme32(t) = a {
                     assert!(!t.is_empty() && !t.contains([' ', '"', '\'', ';', '&', '|']), "{t}");
                 }
             }
@@ -6357,8 +6389,52 @@ mod tests {
         for n in FONCTIONS_A_RETIRER {
             assert!(n.bytes().all(|o| o.is_ascii_alphanumeric() || o == b'-'), "{n}");
         }
+        // Un fichier de System32 nommé par la ligne : un mot en minuscules, ni point, ni séparateur, ni « .. ».
+        for n in ACCESSIBILITE_SFC {
+            assert!(!n.is_empty() && n.bytes().all(|o| o.is_ascii_lowercase()), "{n}");
+        }
     }
 
+    /// D6c : sfc /scanfile prend un IDENTIFIANT parmi les cinq programmes d'accessibilité, jamais un chemin ; le
+    /// chemin est bâti par le processus élevé à partir de System32.
+    #[test]
+    fn sfc_scanfile_identifiant_seulement() {
+        for n in ["sethc", "utilman", "osk", "magnify", "narrator"] {
+            let l = ligne_programme(SFC_FICHIER, Some(n));
+            assert_eq!(l, format!("vanguard:programme sfc-scanfile {n}"));
+            let a = analyser_programme(&l).unwrap();
+            assert_eq!(
+                a.arguments("C:", r"C:\Windows\System32\"),
+                [format!(r"/scanfile=C:\Windows\System32\{n}.exe")]
+            );
+            assert_eq!(
+                a.commande(),
+                format!(r"sfc.exe /scanfile=%SystemRoot%\System32\{n}.exe")
+            );
+            assert_eq!(
+                a.powershell(),
+                format!(r#"& "$env:SystemRoot\System32\sfc.exe" /scanfile=$env:SystemRoot\System32\{n}.exe"#)
+            );
+        }
+        // Hors de la liste, un chemin libre, sans nom, un nom en trop, une autre casse : refusés.
+        for l in [
+            "vanguard:programme sfc-scanfile",
+            "vanguard:programme sfc-scanfile cmd",
+            "vanguard:programme sfc-scanfile displayswitch",
+            "vanguard:programme sfc-scanfile notepad",
+            "vanguard:programme sfc-scanfile sethc.exe",
+            "vanguard:programme sfc-scanfile SETHC",
+            r"vanguard:programme sfc-scanfile C:\Windows\System32\sethc.exe",
+            r"vanguard:programme sfc-scanfile ..\..\Users\x\sethc",
+            "vanguard:programme sfc-scanfile /scanfile=C:\\x.exe",
+            "vanguard:programme sfc-scanfile sethc osk",
+            "vanguard:programme sfc-scanfile sethc ",
+            "vanguard:programme sfc-scanfile  sethc",
+            "vanguard:programme sfc-scannow sethc",
+        ] {
+            assert!(analyser_programme(l).is_none(), "{l}");
+        }
+    }
     /// Pour Wine (le chemin par script) : chaque programme par son chemin complet, jamais par son seul nom, que
     /// PowerShell chercherait dans le PATH.
     #[test]
@@ -6379,7 +6455,7 @@ mod tests {
             chkdsk.powershell(),
             r#"& "$env:SystemRoot\System32\chkdsk.exe" $env:SystemDrive /scan; if ($LASTEXITCODE -in 1, 2) { $global:LASTEXITCODE = 0 }"#
         );
-        assert_eq!(chkdsk.arguments("D:"), ["D:", "/scan"]);
+        assert_eq!(chkdsk.arguments("D:", r"D:\Windows\System32"), ["D:", "/scan"]);
         assert!(chkdsk.reussite(1) && chkdsk.reussite(2) && !chkdsk.reussite(3));
         // 3 : ni fait ni échoué, à finir au redémarrage ; aucun autre programme n'a ce troisième état.
         assert!(chkdsk.au_redemarrage(3) && !chkdsk.au_redemarrage(0) && !chkdsk.au_redemarrage(1));

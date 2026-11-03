@@ -155,7 +155,7 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             assert_eq!(a.ligne(), *l);
             assert!(l.len() <= 256 && l.is_ascii());
             // Les arguments sont ceux de la table : le nom reçu n'en ajoute pas un, ni une espace.
-            let args = a.arguments("C:");
+            let args = a.arguments("C:", r"C:\Windows\System32");
             assert_eq!(args.len(), a.programme.arguments.len());
             assert!(args.iter().all(|x| !x.contains(['\n', '\r', '"'])));
         }
