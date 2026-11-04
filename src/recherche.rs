@@ -6,6 +6,8 @@
 //! titre 80, ailleurs dans le titre 60, dans le chemin, la précision ou les mots cachés 40 ; ×0,8 pour un synonyme,
 //! ×0,6 pour un mot corrigé. Tous les mots tapés doivent se trouver ; sinon la ligne n'est que « partielle ».
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use crate::selection::simplifier;
 
 /// Des mots qui disent la même chose, en français et en anglais. Vocabulaire seulement : « box » se cherche encore
@@ -51,7 +53,7 @@ pub fn termes(requete: &str) -> Vec<Terme> {
                 let n = forme.split([' ', '-']).count();
                 if n >= pris
                     && mots
-                        .get(i..i + n)
+                        .get(i..i.saturating_add(n))
                         .is_some_and(|m| m.join(" ") == forme.replace('-', " "))
                 {
                     pris = n;
@@ -60,7 +62,7 @@ pub fn termes(requete: &str) -> Vec<Terme> {
             }
         }
         // i < mots.len() et pris ne dépasse pas ce qui reste (vérifié par le `get` ci-dessus) : toujours là.
-        let Some(pris_ici) = mots.get(i..i + pris) else {
+        let Some(pris_ici) = mots.get(i..i.saturating_add(pris)) else {
             break;
         };
         let tape = pris_ici.join(" ");
@@ -74,7 +76,7 @@ pub fn termes(requete: &str) -> Vec<Terme> {
             }
         }
         termes.push(Terme { tape, formes });
-        i += pris;
+        i = i.saturating_add(pris);
     }
     termes
 }
@@ -89,11 +91,11 @@ fn score_forme(forme: &str, nom: &str, tout: &str) -> u32 {
     // La racine, comme `selection::correspond` avant ce score : au moins quatre lettres gardées (cinq quand on en
     // retire deux), pour que « vider » trouve « vide » et « disques » « disque », sans que « réseau » trouve « reset ».
     let n = forme.chars().count();
-    let racine = |retire: usize| forme.chars().take(n - retire).collect::<String>();
+    let racine = |retire: usize| forme.chars().take(n.saturating_sub(retire)).collect::<String>();
     [(5, 1), (7, 2)]
         .into_iter()
         .filter(|(minimum, _)| n >= *minimum)
-        .map(|(_, retire)| score_exact(&racine(retire), nom, tout) * 90 / 100)
+        .map(|(_, retire)| score_exact(&racine(retire), nom, tout).saturating_mul(90) / 100)
         .max()
         .unwrap_or(0)
 }
@@ -141,19 +143,19 @@ fn debut_d_un_mot(texte: &str, debut: &str) -> bool {
 
 /// Le score d'une ligne pour ces termes : (score, tous les termes trouvés ?). `None` : aucun terme trouvé.
 pub fn score(termes: &[Terme], nom: &str, tout: &str) -> Option<(u32, bool)> {
-    let mut total = 0;
+    let mut total = 0u32;
     let mut complet = true;
     for t in termes {
         let meilleur = t
             .formes
             .iter()
-            .map(|(f, poids)| score_forme(f, nom, tout) * poids / 100)
+            .map(|(f, poids)| score_forme(f, nom, tout).saturating_mul(*poids) / 100)
             .max()
             .unwrap_or(0);
         if meilleur == 0 {
             complet = false;
         }
-        total += meilleur;
+        total = total.saturating_add(meilleur);
     }
     (total > 0).then_some((total, complet))
 }
@@ -165,7 +167,7 @@ pub fn distance_bornee(a: &str, b: &str, borne: usize) -> Option<usize> {
     if a.len().abs_diff(b.len()) > borne {
         return None;
     }
-    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    let mut d = vec![vec![0usize; b.len().saturating_add(1)]; a.len().saturating_add(1)];
     for (i, ligne) in d.iter_mut().enumerate() {
         if let Some(premiere) = ligne.first_mut() {
             *premiere = i;
@@ -183,10 +185,18 @@ pub fn distance_bornee(a: &str, b: &str, borne: usize) -> Option<usize> {
                 reason = "1 <= i <= a.len() et 1 <= j <= b.len() par les boucles ; d a a.len()+1 lignes de b.len()+1 cases"
             )]
             {
-                let cout = usize::from(a[i - 1] != b[j - 1]);
-                let mut v = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cout);
-                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                    v = v.min(d[i - 2][j - 2] + 1);
+                let cout = usize::from(a[i.saturating_sub(1)] != b[j.saturating_sub(1)]);
+                let (i_avant, j_avant) = (i.saturating_sub(1), j.saturating_sub(1));
+                let mut v = d[i_avant][j]
+                    .saturating_add(1)
+                    .min(d[i][j_avant].saturating_add(1))
+                    .min(d[i_avant][j_avant].saturating_add(cout));
+                if i > 1
+                    && j > 1
+                    && a[i.saturating_sub(1)] == b[j.saturating_sub(2)]
+                    && a[i.saturating_sub(2)] == b[j.saturating_sub(1)]
+                {
+                    v = v.min(d[i.saturating_sub(2)][j.saturating_sub(2)].saturating_add(1));
                 }
                 d[i][j] = v;
             }
@@ -247,7 +257,7 @@ pub fn termes_corriges(
                 t.formes = corrige
                     .into_iter()
                     .flat_map(|c| c.formes)
-                    .map(|(f, p)| (f, p * 60 / 100))
+                    .map(|(f, p)| (f, p.saturating_mul(60) / 100))
                     .collect();
             }
             t
@@ -270,6 +280,11 @@ pub fn vocabulaire<'a>(textes: impl IntoIterator<Item = &'a str>) -> Vec<String>
     mots
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

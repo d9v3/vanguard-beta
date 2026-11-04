@@ -10,6 +10,8 @@
 //! (`COLONNES_AVEC_APERCU`), un panneau à droite montre la ligne en surbrillance : son titre, sa description et ce
 //! qu'elle ouvre ; plus étroite, le menu reste tel quel.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::fmt::Write as _;
 use std::io::{IsTerminal, Write};
 use std::ops::ControlFlow;
@@ -155,7 +157,7 @@ pub fn correspond(recherche: &str, texte: &str) -> bool {
             }
             // La racine garde au moins quatre lettres (cinq quand on en retire deux) : « réseau » ne devient pas
             // « rese », qui trouverait « reset ».
-            let racine = |retire: usize| v.chars().take(n - retire).collect::<String>();
+            let racine = |retire: usize| v.chars().take(n.saturating_sub(retire)).collect::<String>();
             texte.contains(v.as_str())
                 || (n >= 5 && texte.contains(&racine(1)))
                 || (n >= 7 && texte.contains(&racine(2)))
@@ -371,9 +373,9 @@ fn rendu_trouve(c: &Choisissable<'_>, largeur_touche: usize, en_cours: bool) -> 
     } else {
         (" ".to_string(), "")
     };
-    let dispo = LARGEUR.saturating_sub(largeur_touche + 5);
+    let dispo = LARGEUR.saturating_sub(largeur_touche.saturating_add(5));
     let texte = couper(&c.texte, dispo);
-    let reste = dispo.saturating_sub(largeur_affichee(&texte) + 2);
+    let reste = dispo.saturating_sub(largeur_affichee(&texte).saturating_add(2));
     let precision = simplement_affiche(c.precision);
     let precision = if precision.is_empty() || reste < 10 {
         String::new()
@@ -448,7 +450,7 @@ fn colonne(lignes: &[Ligne]) -> usize {
         })
         .max()
         .unwrap_or(0);
-    (plus_long + 2).clamp(36, 48)
+    plus_long.saturating_add(2).clamp(36, 48)
 }
 
 /// La ligne à l'écran, ou rien pour une ligne cachée (seule la recherche la montre).
@@ -479,22 +481,22 @@ fn fenetre(rangees: &[String], entete: usize, en_cours: usize, place: usize, hau
         return rangees.to_vec();
     }
     // Au moins trois rangées de liste sous l'en-tête et les deux annonces ; sinon l'en-tête défile aussi.
-    let entete = if entete + 2 + 3 <= place { entete } else { 0 };
+    let entete = if entete.saturating_add(5) <= place { entete } else { 0 };
     // `entete` <= `place` < `rangees.len()` ici ; le `min` le garantit même si l'appelant se trompe.
     let (tete, liste) = rangees.split_at(entete.min(rangees.len()));
-    let hauteur = place.saturating_sub(entete + 2).max(1);
+    let hauteur = place.saturating_sub(entete.saturating_add(2)).max(1);
     let ligne = en_cours.saturating_sub(entete).min(liste.len().saturating_sub(1));
     let marge = usize::from(hauteur >= 5);
     // Borné d'abord : l'appelant demande la fin de la liste avec `usize::MAX`.
     let dernier_haut = liste.len().saturating_sub(hauteur);
     *haut = (*haut).min(dernier_haut);
-    if ligne < *haut + marge {
+    if ligne < (*haut).saturating_add(marge) {
         *haut = ligne.saturating_sub(marge);
-    } else if ligne + marge >= *haut + hauteur {
-        *haut = (ligne + marge + 1).saturating_sub(hauteur);
+    } else if ligne.saturating_add(marge) >= (*haut).saturating_add(hauteur) {
+        *haut = ligne.saturating_add(marge).saturating_add(1).saturating_sub(hauteur);
     }
     *haut = (*haut).min(dernier_haut);
-    let reste = liste.len().saturating_sub(*haut + hauteur);
+    let reste = liste.len().saturating_sub((*haut).saturating_add(hauteur));
     let annonce = |fleche: char, n: usize, texte: String| {
         if n == 0 {
             String::new()
@@ -566,7 +568,7 @@ fn ce_qu_elle_ouvre(lignes: &[Ligne], ligne: &Ligne) -> Vec<String> {
             return sous.iter().map(|s| nom_seul(s)).collect();
         }
         Ligne::Choix { touche, .. } => (touche.as_str(), 1),
-        Ligne::Cachee { touche, chemin, .. } => (touche.as_str(), profondeur(chemin) + 1),
+        Ligne::Cachee { touche, chemin, .. } => (touche.as_str(), profondeur(chemin).saturating_add(1)),
         Ligne::Texte(_) => return Vec::new(),
     };
     let mut vues: Vec<&str> = Vec::new();
@@ -639,7 +641,7 @@ fn apercu(lignes: &[Ligne], ligne: &Ligne, largeur: usize, hauteur: usize) -> Ve
             panneau.push(format!("{ACCENT}›{RESET} {}", couper(nom, largeur.saturating_sub(2))));
         }
         if montres < ouvre.len() {
-            let autres = ouvre.len() - montres;
+            let autres = ouvre.len().saturating_sub(montres);
             panneau.push(format!(
                 "{GRIS}{}{RESET}",
                 trf!("… et {autres} autre(s)", "… and {autres} more")
@@ -656,7 +658,7 @@ fn debut_apercu(rangees: &[String]) -> usize {
         .iter()
         .take(4)
         .position(|r| simplement_affiche(r).starts_with('╰'))
-        .map_or(0, |i| i + 1)
+        .map_or(0, |i| i.saturating_add(1))
 }
 
 /// Les rangées d'un écran, chacune effacée jusqu'au bout de la ligne, et le panneau à droite à partir de la rangée
@@ -781,7 +783,10 @@ fn entete_de_recherche(lignes: &[Ligne], colonne: usize) -> (Vec<String>, usize)
         entete.pop();
     }
     entete.push(String::new());
-    let hauteur: usize = entete.iter().map(|t| 1 + t.matches('\n').count()).sum();
+    let hauteur: usize = entete
+        .iter()
+        .map(|t| t.matches('\n').count().saturating_add(1))
+        .fold(0, usize::saturating_add);
     (entete, hauteur)
 }
 
@@ -913,7 +918,7 @@ fn ecran_de_recherche(
 ) -> String {
     let mut ecran: Vec<String> = Vec::new();
     let rangees = terminal::size().map_or(24, |(_, r)| usize::from(r));
-    let montre_entete = hauteur_entete + 4 + 3 <= rangees;
+    let montre_entete = hauteur_entete.saturating_add(7) <= rangees;
     if montre_entete {
         for l in entete {
             ecran.extend(l.split('\n').map(String::from));
@@ -926,11 +931,11 @@ fn ecran_de_recherche(
     )));
     // Ce qui tient sous l'en-tête, au-dessus de l'aide et de la saisie ; au-delà, une ligne le dit.
     let au_dessus = if montre_entete { hauteur_entete } else { 0 };
-    let mut place = rangees.saturating_sub(au_dessus + 4).max(1);
+    let mut place = rangees.saturating_sub(au_dessus.saturating_add(4)).max(1);
     if t.trouves.len() > place {
         place = place.saturating_sub(1).max(1);
     }
-    let debut = (etat.en_cours_trouve + 1).saturating_sub(place);
+    let debut = etat.en_cours_trouve.saturating_add(1).saturating_sub(place);
     let largeur = largeur_des_touches(t.trouves.iter().copied());
     for (i, c) in t.trouves.iter().enumerate().skip(debut).take(place) {
         ecran.push(rendu_trouve(c, largeur, i == etat.en_cours_trouve));
@@ -959,15 +964,15 @@ fn ecran_de_recherche(
     let panneau = panneau.and_then(|largeur| {
         let c = t.trouves.get(etat.en_cours_trouve)?;
         let debut = debut_apercu(&ecran);
-        let hauteur = rangees.saturating_sub(debut + 2);
+        let hauteur = rangees.saturating_sub(debut.saturating_add(2));
         let plus_long = t
             .trouves
             .iter()
             .map(|c| apercu(lignes, c.ligne, largeur, hauteur).len())
             .max()
             .unwrap_or(0);
-        if ecran.len() < debut + plus_long {
-            ecran.resize(debut + plus_long, String::new());
+        if ecran.len() < debut.saturating_add(plus_long) {
+            ecran.resize(debut.saturating_add(plus_long), String::new());
         }
         Some((apercu(lignes, c.ligne, largeur, hauteur), debut))
     });
@@ -1012,23 +1017,23 @@ fn ecran_du_menu(
         if let Some(t) = texte(l, colonne, ligne_de_choix && n == en_cours) {
             rangees.extend(t.split('\n').map(String::from));
         }
-        n += usize::from(ligne_de_choix);
+        n = n.saturating_add(usize::from(ligne_de_choix));
     }
     // L'en-tête fixe s'arrête avant le titre de la première section et sa ligne vide : ils défilent avec la
     // liste, qu'ils annoncent.
     let mut entete_menu = entete_menu.unwrap_or(0);
     while entete_menu > 0
-        && rangees.get(entete_menu - 1).is_some_and(|r| {
+        && rangees.get(entete_menu.saturating_sub(1)).is_some_and(|r| {
             let t = simplement_affiche(r);
             t.trim().is_empty() || t.trim_start().starts_with("── ")
         })
     {
-        entete_menu -= 1;
+        entete_menu = entete_menu.saturating_sub(1);
     }
     // Première ou dernière ligne : la liste montre son début ou sa fin, titres compris.
     if en_cours == 0 {
         etat.haut = 0;
-    } else if en_cours + 1 == nombre_visibles {
+    } else if en_cours.saturating_add(1) == nombre_visibles {
         etat.haut = usize::MAX;
     }
     // Assez de rangées pour le plus long des aperçus du menu, pas seulement celui de la ligne en cours : l'aide ne
@@ -1040,10 +1045,10 @@ fn ecran_du_menu(
             .map(|l| apercu(lignes, l, largeur, usize::MAX).len())
             .max()
             .unwrap_or(0);
-        rangees.len().max(debut_apercu(&rangees) + plus_long)
+        rangees.len().max(debut_apercu(&rangees).saturating_add(plus_long))
     });
     // L'aide et la saisie restent sous le menu ; la fenêtre se fait à sa hauteur.
-    crate::fenetre::epouser(voulues + 2);
+    crate::fenetre::epouser(voulues.saturating_add(2));
     let place = terminal::size().map_or(24, |(_, r)| usize::from(r)).saturating_sub(2);
     // Des rangées vides pour l'aperçu, jamais au point de faire défiler le menu.
     if voulues > rangees.len() {
@@ -1090,7 +1095,11 @@ fn touche_du_menu(
     let derniere = nombre.saturating_sub(1);
     let deplacement = match k.code {
         KeyCode::Up | KeyCode::BackTab => Some(actuelle.checked_sub(1).unwrap_or(derniere)),
-        KeyCode::Down | KeyCode::Tab => Some(if actuelle >= derniere { 0 } else { actuelle + 1 }),
+        KeyCode::Down | KeyCode::Tab => Some(if actuelle >= derniere {
+            0
+        } else {
+            actuelle.saturating_add(1)
+        }),
         KeyCode::Home | KeyCode::PageUp => Some(0),
         KeyCode::End | KeyCode::PageDown => Some(derniere),
         _ => None,
@@ -1241,7 +1250,7 @@ pub fn choisir_en_ligne(options: &[(&str, &str)], invite: &str) -> Option<String
     };
     let rien = tr!("Rien", "Nothing");
     let toutes: Vec<(&str, &str)> = options.iter().copied().chain(std::iter::once(("↵", rien))).collect();
-    let colonne = toutes.iter().map(|(t, _)| largeur_affichee(t)).max().unwrap_or(1) + 4;
+    let colonne = (toutes.iter().map(|(t, _)| largeur_affichee(t)).max().unwrap_or(1)).saturating_add(4);
     let mut en_cours = 0;
     let dessiner = |sortie: &mut std::io::Stdout, en_cours: usize, redessiner: bool| {
         if redessiner {
@@ -1268,8 +1277,10 @@ pub fn choisir_en_ligne(options: &[(&str, &str)], invite: &str) -> Option<String
             crate::machine::quitter(if k.code == KeyCode::Char('c') { 130 } else { 0 });
         }
         match k.code {
-            KeyCode::Up => en_cours = en_cours.checked_sub(1).unwrap_or(toutes.len() - 1),
-            KeyCode::Down | KeyCode::Tab => en_cours = (en_cours + 1) % toutes.len(),
+            KeyCode::Up => en_cours = en_cours.checked_sub(1).unwrap_or(toutes.len().saturating_sub(1)),
+            KeyCode::Down | KeyCode::Tab => {
+                en_cours = en_cours.saturating_add(1).checked_rem(toutes.len()).unwrap_or(0);
+            }
             KeyCode::Enter => {
                 // `en_cours` reste dans la liste (modulo, position) ; « ↵ » (Rien) est toujours au bout.
                 let t = toutes.get(en_cours).map_or("↵", |(t, _)| *t);
@@ -1425,7 +1436,7 @@ fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
         cases,
         colonne: cases
             .iter()
-            .map(|c| largeur_affichee(&c.texte) + 2)
+            .map(|c| largeur_affichee(&c.texte).saturating_add(2))
             .max()
             .unwrap_or(0)
             .clamp(30, 44),
@@ -1516,7 +1527,7 @@ fn cocher_par_ligne(liste: &Liste<'_>, mut etats: Vec<bool>) -> Option<Vec<bool>
         println!("{l}");
     }
     for (i, c) in cases.iter().enumerate() {
-        println!("{}", rendu_case(i + 1, c, c.cochee, colonne, false));
+        println!("{}", rendu_case(i.saturating_add(1), c, c.cochee, colonne, false));
     }
     loop {
         let reponse = demander(tr!(
@@ -1545,7 +1556,7 @@ fn cocher_par_ligne(liste: &Liste<'_>, mut etats: Vec<bool>) -> Option<Vec<bool>
             }
             for i in trouves {
                 if let (Some(c), Some(&e)) = (cases.get(i), etats.get(i)) {
-                    println!("{}", rendu_case(i + 1, c, e, colonne, false));
+                    println!("{}", rendu_case(i.saturating_add(1), c, e, colonne, false));
                 }
             }
             continue;
@@ -1589,7 +1600,7 @@ fn ecran_de_la_liste(
     let entete = rangees.len();
     rangees.extend(montrees.iter().filter_map(|&i| {
         let (c, e) = (cases.get(i)?, *etat.etats.get(i)?);
-        Some(rendu_case(i + 1, c, e, liste.colonne, i == etat.en_cours))
+        Some(rendu_case(i.saturating_add(1), c, e, liste.colonne, i == etat.en_cours))
     }));
     if montrees.is_empty() {
         rangees.push(format!(
@@ -1603,18 +1614,24 @@ fn ecran_de_la_liste(
     let rang_ecran = rang.unwrap_or(0);
     if rang_ecran == 0 {
         etat.haut = 0;
-    } else if rang_ecran + 1 == montrees.len() {
+    } else if rang_ecran.saturating_add(1) == montrees.len() {
         etat.haut = usize::MAX;
     }
     // La fenêtre se fait à la hauteur de la liste entière ; une recherche, qui la raccourcit, n'y change rien.
     if etat.recherche.is_none() {
-        crate::fenetre::epouser(rangees.len() + DESSOUS_LISTE);
+        crate::fenetre::epouser(rangees.len().saturating_add(DESSOUS_LISTE));
     }
     // Pendant une recherche, la saisie prend une ligne de plus sous l'aide.
     let place = terminal::size()
         .map_or(24, |(_, r)| usize::from(r))
-        .saturating_sub(DESSOUS_LISTE + usize::from(etat.recherche.is_some()));
-    for t in fenetre(&rangees, entete, entete + rang_ecran, place, &mut etat.haut) {
+        .saturating_sub(DESSOUS_LISTE.saturating_add(usize::from(etat.recherche.is_some())));
+    for t in fenetre(
+        &rangees,
+        entete,
+        entete.saturating_add(rang_ecran),
+        place,
+        &mut etat.haut,
+    ) {
         ecran += &t;
         ecran += "\x1b[K\r\n";
     }
@@ -1669,7 +1686,11 @@ fn touche_de_la_liste(
     let derniere = montrees.len().saturating_sub(1);
     let deplacement = match k.code {
         KeyCode::Up | KeyCode::BackTab => Some(rang_ecran.checked_sub(1).unwrap_or(derniere)),
-        KeyCode::Down | KeyCode::Tab => Some(if rang_ecran >= derniere { 0 } else { rang_ecran + 1 }),
+        KeyCode::Down | KeyCode::Tab => Some(if rang_ecran >= derniere {
+            0
+        } else {
+            rang_ecran.saturating_add(1)
+        }),
         KeyCode::Home | KeyCode::PageUp => Some(0),
         KeyCode::End | KeyCode::PageDown => Some(derniere),
         _ => None,
@@ -1738,6 +1759,11 @@ fn lignes_trouvees(recherche: &str, cherche: &[String]) -> Vec<usize> {
         .collect()
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

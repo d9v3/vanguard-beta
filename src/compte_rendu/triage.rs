@@ -9,6 +9,8 @@
 //! jamais de doublon. Une cause déjà traitée par la veille (`etat/alertes-traitees.txt`, ligne
 //! `journal:<cause>:<version>`) ne revient que vue dans une version plus récente.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::BTreeSet;
 use std::io::{Read as _, Seek as _};
 use std::path::Path;
@@ -164,18 +166,18 @@ pub(crate) fn suivre(
     f.seek(std::io::SeekFrom::Start(position))
         .map_err(|e| Echec::io(TRIER, &e))?;
     let mut tranche = Vec::new();
-    f.take(journal::OCTETS_MAX as u64)
+    f.take(u64::try_from(journal::OCTETS_MAX).unwrap_or(u64::MAX))
         .read_to_end(&mut tranche)
         .map_err(|e| Echec::io(TRIER, &e))?;
     // Une tranche qui n'atteint pas la fin du fichier s'arrête au début de sa dernière entrée, lue la nuit suivante ;
     // sans en-tête du tout (une seule entrée démesurée), elle est prise entière.
-    if position + (tranche.len() as u64) < longueur
+    if position.saturating_add(u64::try_from(tranche.len()).unwrap_or(u64::MAX)) < longueur
         && let Some(i) = tranche.windows(4).rposition(|w| w == b"\n== ")
     {
-        tranche.truncate(i + 1);
+        tranche.truncate(i.saturating_add(1));
     }
     let lecture = journal::lire(&tranche);
-    let mut refusees = lecture.refusees + lecture.en_trop;
+    let mut refusees = lecture.refusees.saturating_add(lecture.en_trop);
     // Une version plus récente que le programme du triage (bâti à la tête de la veille, jamais en retard sur une
     // version publiée) est forgée : elle ferait taire la vraie cause (`est_traitee`) ou chasserait ses vraies versions
     // (`VERSIONS_MAX`). Refusée, comptée avec les autres.
@@ -187,8 +189,8 @@ pub(crate) fn suivre(
             ajouter(&mut causes, cause_de(e, provenance));
         }
     }
-    let position = position + tranche.len() as u64;
-    let debut_octets = position.min(debut.len() as u64);
+    let position = position.saturating_add(u64::try_from(tranche.len()).unwrap_or(u64::MAX));
+    let debut_octets = position.min(u64::try_from(debut.len()).unwrap_or(u64::MAX));
     let d = usize::try_from(debut_octets)
         .ok()
         .and_then(|n| debut.get(..n))
@@ -287,8 +289,10 @@ fn lire_borne(chemin: &Path, max: u64) -> Result<Option<Vec<u8>>, Echec> {
         Err(e) => return Err(Echec::io(TRIER, &e)),
     };
     let mut o = Vec::new();
-    f.take(max + 1).read_to_end(&mut o).map_err(|e| Echec::io(TRIER, &e))?;
-    if o.len() as u64 > max {
+    f.take(max.saturating_add(1))
+        .read_to_end(&mut o)
+        .map_err(|e| Echec::io(TRIER, &e))?;
+    if u64::try_from(o.len()).unwrap_or(u64::MAX) > max {
         return Err(Echec::refuse(
             TRIER,
             trf!("{} dépasse {} octets", "{} is over {} bytes", chemin.display(), max),
@@ -351,7 +355,7 @@ pub(crate) fn executer(d: &Demande<'_>) -> Result<Triage, Echec> {
         schema: ETAT_SCHEMA,
         ..Etat::default()
     };
-    let (mut refusees, mut relu) = (0, relu_etat);
+    let (mut refusees, mut relu) = (0usize, relu_etat);
     for (chemin, provenance, suivi_avant, suivi) in [
         (
             d.cet_ordinateur,
@@ -364,7 +368,7 @@ pub(crate) fn executer(d: &Demande<'_>) -> Result<Triage, Echec> {
         let Some(chemin) = chemin else { continue };
         let (s, r, rl) = suivre(chemin, provenance, suivi_avant.clone())?;
         *suivi = s;
-        refusees += r;
+        refusees = refusees.saturating_add(r);
         relu |= rl && suivi_avant.is_some();
     }
     let traitees = match d.traitees {
@@ -417,6 +421,11 @@ pub(crate) fn phrase(t: &Triage) -> String {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::super::journal::{Champs, entree_ecrite};
