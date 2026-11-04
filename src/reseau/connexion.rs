@@ -2,6 +2,8 @@
 //! bufferbloat (le lag qui arrive dès que quelqu'un télécharge ou envoie un fichier sur le réseau).
 //! La latence se mesure par le temps d'établissement d'une connexion TCP : sans droits admin, sur tout système.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -45,7 +47,7 @@ impl Serie {
             return 0.0;
         }
         #[allow(clippy::cast_precision_loss)]
-        let n = (t.len() - 1) as f64;
+        let n = crate::socle::nombres::flottant(t.len().saturating_sub(1));
         t.iter().zip(t.iter().skip(1)).map(|(a, b)| (b - a).abs()).sum::<f64>() / n
     }
 
@@ -54,7 +56,8 @@ impl Serie {
             return 0.0;
         }
         #[allow(clippy::cast_precision_loss)]
-        let p = self.0.iter().filter(|m| m.is_none()).count() as f64 * 100.0 / self.0.len() as f64;
+        let p = crate::socle::nombres::flottant(self.0.iter().filter(|m| m.is_none()).count()) * 100.0
+            / crate::socle::nombres::flottant(self.0.len());
         p
     }
 }
@@ -110,7 +113,7 @@ const MORCEAU_ENVOYE: usize = 2_000_000;
 fn charger(sens: Sens, duree: Duration, arret: &Arc<AtomicBool>) -> Option<f64> {
     let octets = Arc::new(AtomicU64::new(0));
     let debut = Instant::now();
-    let fin = debut + duree;
+    let fin = debut.checked_add(duree).unwrap_or(debut);
     let travailleurs: Vec<_> = (0..4)
         .map(|_| {
             let (octets, arret) = (Arc::clone(&octets), Arc::clone(arret));
@@ -126,7 +129,7 @@ fn charger(sens: Sens, duree: Duration, arret: &Arc<AtomicBool>) -> Option<f64> 
                             };
                             let recu = crate::http::envoyer(demande).is_some_and(|r| r.code == 200);
                             if recu {
-                                octets.fetch_add(MORCEAU_ENVOYE as u64, Ordering::Relaxed);
+                                octets.fetch_add(u64::try_from(MORCEAU_ENVOYE).unwrap_or(u64::MAX), Ordering::Relaxed);
                             }
                             recu
                         }
@@ -144,7 +147,7 @@ fn charger(sens: Sens, duree: Duration, arret: &Arc<AtomicBool>) -> Option<f64> 
     arret.store(true, Ordering::Relaxed);
     let total = octets.load(Ordering::Relaxed);
     #[allow(clippy::cast_precision_loss)]
-    let mbits = total as f64 * 8.0 / debut.elapsed().as_secs_f64() / 1_000_000.0;
+    let mbits = crate::socle::nombres::flottant(total) * 8.0 / debut.elapsed().as_secs_f64() / 1_000_000.0;
     (total > 0).then_some(mbits)
 }
 
@@ -423,13 +426,21 @@ fn ligne(nom: &str, s: &Serie) {
 /// Barre de débit sur une échelle logarithmique : 1 Mbit/s = vide, 1 Gbit/s = pleine.
 fn barre_debit(mbits: f64) -> String {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let pleines = ((mbits.max(1.0).log10() / 3.0 * 10.0).round() as usize).min(10);
+    let pleines = usize::try_from(crate::socle::nombres::entier(
+        (mbits.max(1.0).log10() / 3.0 * 10.0).round(),
+    ))
+    .unwrap_or(10)
+    .min(10);
     let c = match mbits {
         d if d >= 50.0 => VERT,
         d if d >= 15.0 => couleur(Niveau::Moyen),
         _ => couleur(Niveau::Eleve),
     };
-    format!("{c}{}{DISCRET}{}{RESET}", "▰".repeat(pleines), "▱".repeat(10 - pleines))
+    format!(
+        "{c}{}{DISCRET}{}{RESET}",
+        "▰".repeat(pleines),
+        "▱".repeat(10usize.saturating_sub(pleines))
+    )
 }
 
 /// Une ligne du verdict : coche ou croix, critère, valeur, explication.
@@ -697,6 +708,11 @@ pub async fn json() {
     println!("{}", crate::modele::resultat::json(&r));
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

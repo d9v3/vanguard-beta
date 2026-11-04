@@ -6,6 +6,8 @@
 //! ou si la liste refuse le DNS utilisé (Spamhaus refuse les résolveurs publics), c'est dit, jamais compté comme
 //! « pas listée ».
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::net::{Ipv4Addr, ToSocketAddrs};
 
 use crate::risk::Niveau;
@@ -286,15 +288,15 @@ pub fn verifier() {
     };
     trp!("\n  Adresse publique : {ip}\n", "\n  Public address: {ip}\n");
     let mut pire: Option<Niveau> = None;
-    let mut verifiees = 0;
+    let mut verifiees = 0usize;
     for (liste, reponse) in LISTES.iter().zip(&reponses) {
         let (marque, texte) = match reponse {
             Verdict::Absente => {
-                verifiees += 1;
+                verifiees = verifiees.saturating_add(1);
                 (format!("{VERT}✔{RESET}"), tr!("pas listée", "not listed").to_string())
             }
             Verdict::Listee(codes) => {
-                verifiees += 1;
+                verifiees = verifiees.saturating_add(1);
                 let (texte, niveau) = sens(liste.zone, codes);
                 pire = pire.max(niveau);
                 let marque = niveau.map_or_else(|| format!("{GRIS}ℹ{RESET}"), |n| format!("{}✖{RESET}", couleur(n)));
@@ -343,6 +345,11 @@ pub fn json(internet: bool) {
     println!("{}", crate::modele::resultat::json(&r));
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

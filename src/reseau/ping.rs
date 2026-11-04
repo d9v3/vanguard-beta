@@ -3,6 +3,8 @@
 //! règle à tous ; macOS : toujours), sous Windows par IcmpSendEcho (`machine::windows::routes`). `None` : le système
 //! refuse la prise ou l'API, rien n'est prouvé, et l'appelant lance `ping` en secours.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc : prise ICMP (socket, sendto, recvfrom, poll).
 #![allow(unsafe_code)]
 
@@ -49,10 +51,10 @@ fn somme_de_controle(octets: &[u8]) -> u16 {
         .chain(dernier.first().map(|&o| u32::from(u16::from_be_bytes([o, 0]))))
         .sum();
     while somme > 0xffff {
-        somme = (somme & 0xffff) + (somme >> 16);
+        somme = (somme & 0xffff).saturating_add(somme >> 16);
     }
-    #[allow(clippy::cast_possible_truncation)]
-    let somme = somme as u16;
+    // Repliée plus haut sous 0x10000 : elle tient dans un u16.
+    let somme = u16::try_from(somme).unwrap_or(u16::MAX);
     !somme
 }
 
@@ -93,7 +95,8 @@ mod unix {
         let mut donnees = b"Vanguard, la box repond ?".to_vec();
         donnees.extend(marque.to_be_bytes());
         #[allow(clippy::cast_possible_truncation)]
-        let identifiant = std::process::id() as u16;
+        // Les 16 bits de poids faible du PID : un identifiant d'écho, pas un nombre.
+        let identifiant = u16::try_from(std::process::id() & 0xffff).unwrap_or(0);
         let paquet = super::demande(identifiant, 1, &donnees);
         let adresse = libc::sockaddr_in {
             sin_family: libc::sa_family_t::try_from(libc::AF_INET).ok()?,
@@ -125,7 +128,7 @@ mod unix {
                 _ => None,
             };
         }
-        let fin = Instant::now() + delai;
+        let fin = Instant::now().checked_add(delai).unwrap_or_else(Instant::now);
         let mut tampon = [0u8; 1500];
         loop {
             let reste = fin.saturating_duration_since(Instant::now());
@@ -189,6 +192,11 @@ mod unix {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
