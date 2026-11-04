@@ -7,241 +7,280 @@
      le code). Rien de personnel : ni nom, ni réseau, ni adresse Internet publique. -->
 <title>Vanguard {{VERSION_COURTE}}</title>
 <meta name="description" content="Vanguard : cyberdéfense portable des postes et des réseaux, depuis une clé USB. Un exécutable Rust par système (Linux, Windows, macOS), versions signées en Ed25519, une liste fermée d'hôtes joints en HTTPS ; bilan noté de A à F, audit du réseau, détection et blocage, après accord. Logiciel libre, GPL-3.0-or-later.">
-<meta name="theme-color" content="#0b1220">
+<meta name="theme-color" content="#fafbfc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#07080d" media="(prefers-color-scheme: dark)">
 <meta name="claude:viewport-fit-sides" content="cover">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@700&family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400&display=swap">
 <style>
-/* Mise en page : une bande d'ouverture sombre (le message à gauche, la vraie fenêtre du programme à droite), puis des
-   sections claires sur une colonne de 72 rem ; tout passe sur une colonne sur téléphone. */
+/* Mise en page : une ouverture (le message à gauche, la vraie fenêtre du programme à droite), puis les sections sur
+   une colonne de 72 rem ; tout passe sur une colonne sur téléphone. Claire en mode clair, la fenêtre du terminal
+   seule sombre ; toute sombre en mode sombre. Polices du système seulement : aucune requête vers un tiers.
+   La sarcelle ne sert qu'aux liens, au focus et à la fenêtre du programme ; le reste est neutre. Contrastes AA
+   (4,5:1 pour le texte) dans les deux modes. */
 :root {
-  --fond: #f6f8fa;
+  --fond: #fafbfc;
   --surface: #ffffff;
-  --encre: #0f1724;
-  --doux: #556274;
-  --trait: #dde3ea;
-  --nuit: #0b1220;
-  --nuit-texte: #e8edf3;
-  --nuit-doux: #93a1b3;
-  --nuit-trait: #1e2a3b;
+  --surface-2: #eef1f5;
+  --encre: #111827;
+  --doux: #4b5565;
+  --discret: #5d6577;
+  --trait: #e1e5ec;
+  --trait-fort: #cfd5df;
   --accent: #0b7f8f;
-  --accent-fond: #e3f3f5;
-  --bon: #1d7a4b;
-  --titre: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
-  --texte: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --accent-fort: #096a77;
+  --sur-accent: #ffffff;
+  --bon: #15803d;
+  --ombre: 0 1px 2px rgba(17, 24, 39, .06), 0 16px 40px -20px rgba(17, 24, 39, .35);
+  /* La fenêtre du programme, sombre dans les deux modes, comme le vrai terminal. */
+  --term-fond: #0b0d14;
+  --term-trait: #1f2430;
+  --term-texte: #e6e9ef;
+  --term-doux: #8a92a5;
+  --term-accent: #3cc3d4;
+  --texte: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Liberation Sans", Arial, sans-serif;
+  --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Cascadia Mono", "DejaVu Sans Mono", "Liberation Mono", monospace;
+  --rayon-code: 4px;
+  --rayon-bouton: 8px;
+  --rayon: 12px;
+  --rayon-fenetre: 14px;
+  --sortie: cubic-bezier(.22, 1, .36, 1);
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --fond: #05080d; --surface: #0c121b; --encre: #e8edf3; --doux: #9aa8ba; --trait: #1c2634;
-    --nuit: #000000; --nuit-texte: #e8edf3; --nuit-doux: #93a1b3; --nuit-trait: #1a2433;
-    --accent: #3cc3d4; --accent-fond: #0b2730; --bon: #4fc28a;
+    --fond: #07080d; --surface: #0b0d14; --surface-2: #11141c; --encre: #eef0f5; --doux: #a3a9b8; --discret: #7a8296;
+    --trait: #1a1e28; --trait-fort: #262b37; --accent: #3cc3d4; --accent-fort: #6fd3df; --sur-accent: #04141a;
+    --bon: #4cc38a; --ombre: none; --term-trait: #1f2430;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --fond: #05080d; --surface: #0c121b; --encre: #e8edf3; --doux: #9aa8ba; --trait: #1c2634;
-  --nuit: #000000; --nuit-texte: #e8edf3; --nuit-doux: #93a1b3; --nuit-trait: #1a2433;
-  --accent: #3cc3d4; --accent-fond: #0b2730; --bon: #4fc28a;
+  --fond: #07080d; --surface: #0b0d14; --surface-2: #11141c; --encre: #eef0f5; --doux: #a3a9b8; --discret: #7a8296;
+  --trait: #1a1e28; --trait-fort: #262b37; --accent: #3cc3d4; --accent-fort: #6fd3df; --sur-accent: #04141a;
+  --bon: #4cc38a; --ombre: none; --term-trait: #1f2430;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--fond); color: var(--encre); font-family: var(--texte); font-size: 1rem; line-height: 1.6; }
-a { color: var(--accent); }
-a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+body { margin: 0; background: var(--fond); color: var(--encre); font-family: var(--texte); font-size: 1rem; line-height: 1.6; -webkit-text-size-adjust: 100%; }
+a { color: var(--accent); text-underline-offset: .18em; }
+a:hover { color: var(--accent-fort); }
+:where(a, summary, .bouton):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--rayon-code); }
 .cadre {
   max-width: 72rem; margin: 0 auto;
-  padding-left: max(20px, env(safe-area-inset-left, 0px)); padding-right: max(20px, env(safe-area-inset-right, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
 }
-h1, h2, h3 { font-family: var(--titre); text-wrap: balance; margin: 0; }
-.surtitre { font-family: var(--mono); font-size: .75rem; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); margin: 0; }
+h1, h2, h3, h4 { font-family: var(--texte); font-weight: 600; text-wrap: balance; margin: 0; }
+.surtitre { font-family: var(--mono); font-size: .8125rem; line-height: 1.4; color: var(--discret); margin: 0; }
 
-/* Bandeau de tête */
-.ouverture { background: var(--nuit); color: var(--nuit-texte); }
+/* Ouverture */
+.ouverture { background: var(--fond); border-bottom: 1px solid var(--trait); }
 .barre { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-block: 1.1rem; }
-.marque { display: flex; align-items: center; gap: .7rem; color: var(--nuit-texte); text-decoration: none; }
-.plaque { width: 2.4rem; height: 2.4rem; border-radius: .55rem; background: #0d0f12; display: grid; place-items: center; box-shadow: 0 0 0 1px var(--nuit-trait); flex: none; }
+.marque { display: flex; align-items: center; gap: .7rem; color: var(--encre); text-decoration: none; }
+.marque:hover { color: var(--encre); }
+.plaque { width: 2.25rem; height: 2.25rem; border-radius: var(--rayon-bouton); background: #0d0f12; display: grid; place-items: center; box-shadow: 0 0 0 1px var(--trait-fort); flex: none; }
 .plaque svg { width: 64%; height: auto; }
-.marque b { font-family: var(--titre); font-size: 1.35rem; letter-spacing: .04em; }
-.version { font-family: var(--mono); font-size: .72rem; color: var(--nuit-doux); border: 1px solid var(--nuit-trait); border-radius: 999px; padding: .1rem .55rem; }
-.nav { display: flex; gap: 1.4rem; font-size: .92rem; }
-.nav a { color: var(--nuit-doux); text-decoration: none; }
-.nav a:hover { color: var(--nuit-texte); }
-.heros { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr); gap: 3rem; align-items: center; padding-block: 2.5rem 4rem; }
-.heros h1 { font-size: clamp(2.2rem, 4.6vw, 3.5rem); line-height: 1.05; font-weight: 700; }
-.heros .chapeau { color: var(--nuit-doux); font-size: 1.1rem; margin: 1.1rem 0 0; max-width: 34rem; }
-.heros .cap { color: var(--nuit-doux); font-size: .95rem; margin: .7rem 0 0; max-width: 34rem; }
-.heros .cap b { color: var(--nuit-texte); }
-.heros .points { color: var(--nuit-doux); font-size: 1rem; margin: 1rem 0 0; padding-left: 1.3rem; max-width: 34rem; }
-.heros .points li { margin: .35rem 0 0; }
-.heros .points b { color: var(--nuit-texte); }
-.systemes { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1.6rem; }
-.systeme { font-family: var(--mono); font-size: .76rem; color: var(--nuit-texte); background: var(--nuit-trait); border-radius: .4rem; padding: .3rem .6rem; }
-/* Téléchargements : les programmes de la dernière version publiée, et le code. */
-.boutons { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: 1.4rem; }
-.bouton { display: inline-flex; align-items: center; gap: .45rem; font-size: .9rem; font-weight: 600; text-decoration: none; border-radius: .5rem; padding: .55rem .9rem; border: 1px solid var(--nuit-trait); color: var(--nuit-texte); background: #121a28; }
-.bouton.principal { background: var(--accent); border-color: var(--accent); color: #04141a; }
-.bouton:hover { filter: brightness(1.12); }
-.bouton svg { width: 1rem; height: 1rem; }
-.faits { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin-top: 2rem; padding-top: 1.4rem; border-top: 1px solid var(--nuit-trait); }
-.fait b { display: block; font-family: var(--titre); font-size: 1.6rem; line-height: 1.1; font-variant-numeric: tabular-nums; }
-.fait span { font-size: .85rem; color: var(--nuit-doux); }
+.marque b { font-size: 1.125rem; font-weight: 700; }
+.version { font-family: var(--mono); font-size: .75rem; color: var(--discret); border: 1px solid var(--trait-fort); border-radius: var(--rayon-code); padding: .05rem .4rem; }
+.nav { display: flex; gap: 1.5rem; font-size: .9375rem; }
+.nav a { color: var(--doux); text-decoration: none; }
+.nav a:hover { color: var(--encre); }
+.heros { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr); gap: 3.5rem; align-items: start; padding-block: 3rem 4.5rem; }
+.heros .surtitre { margin-bottom: 1rem; }
+.heros h1 { font-size: clamp(2.25rem, 4.2vw, 3.25rem); line-height: 1.08; letter-spacing: -.02em; }
+.heros .chapeau { color: var(--doux); font-size: 1.125rem; line-height: 1.55; margin: 1.25rem 0 0; max-width: 34rem; }
+.heros .cap { color: var(--doux); font-size: .9375rem; margin: 1rem 0 0; max-width: 34rem; }
+.heros .cap b { color: var(--encre); font-weight: 600; }
+.heros .points { color: var(--doux); margin: 1.25rem 0 0; padding-left: 1.4rem; max-width: 34rem; }
+.heros .points li { margin: .4rem 0 0; padding-left: .2rem; }
+.heros .points li::marker { font-family: var(--mono); font-size: .875em; color: var(--discret); }
+.heros .points b { color: var(--encre); font-weight: 600; }
+.systemes { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1.5rem; }
+.systeme { font-family: var(--mono); font-size: .8125rem; color: var(--encre); background: var(--surface-2); border-radius: var(--rayon-code); padding: .2rem .55rem; }
+/* Le code d'abord ; l'installation est en bas de page, à dessein. */
+.boutons { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem 1.25rem; margin-top: 1.75rem; }
+.bouton { display: inline-flex; align-items: center; justify-content: center; min-height: 2.75rem; font-size: .9375rem; font-weight: 600; text-decoration: none; border-radius: var(--rayon-bouton); padding: .6rem 1.1rem; border: 1px solid var(--accent); color: var(--sur-accent); background: var(--accent); }
+.bouton:hover { color: var(--sur-accent); background: var(--accent-fort); border-color: var(--accent-fort); }
+.lien-bas { font-size: .9375rem; font-weight: 600; text-decoration: none; padding: .6rem .2rem; }
+.lien-bas:hover { text-decoration: underline; }
+.faits { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.25rem; margin-top: 2.25rem; padding-top: 1.5rem; border-top: 1px solid var(--trait); }
+.fait b { display: block; font-size: 1.5rem; font-weight: 600; line-height: 1.15; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+.fait span { display: block; margin-top: .2rem; font-size: .875rem; line-height: 1.45; color: var(--doux); }
 
 /* La fenêtre du programme : son texte se règle sur la largeur de la boîte, pour que les 76 colonnes du vrai
-   terminal y tiennent sans défiler (un caractère d'IBM Plex Mono fait 0,6 em). */
-.fenetre { container-type: inline-size; background: #0d1117; border: 1px solid var(--nuit-trait); border-radius: .75rem; box-shadow: 0 24px 60px -24px rgba(0, 0, 0, .65); min-width: 0; }
-.fenetre .titre-fenetre { display: flex; align-items: center; gap: .45rem; padding: .6rem .8rem; border-bottom: 1px solid #1d2430; }
-.fenetre .titre-fenetre i { width: .62rem; height: .62rem; border-radius: 50%; background: #2c3442; }
-.fenetre .titre-fenetre span { margin-left: .4rem; font-family: var(--mono); font-size: .72rem; color: #7d8898; }
-.fenetre pre { margin: 0; padding: 1rem 1.1rem 1.2rem; overflow-x: auto; font-family: var(--mono); font-size: min(.78rem, calc((100cqi - 2.3rem) / 47.5)); line-height: 1.55; color: #e6edf3; }
-.fenetre pre a { color: #e6edf3; text-decoration: none; }
-.fenetre pre a:hover, .fenetre pre a:focus-visible { color: #3cc3d4; }
-.g { color: #7d8898; } .c { color: #3cc3d4; }
-/* Cadre et filets en CSS, pas en caractères ╭─╮ : IBM Plex Mono ne les a pas, et ceux d'une autre police, un peu plus
-   larges, décalaient le bord droit. 1ch = un caractère du terminal. */
-.boite { display: inline-block; width: 76ch; padding: .45em 0; border: 1px solid #7d8898; border-radius: .5em; margin-bottom: .2em; }
-.filet { display: inline-flex; align-items: center; gap: 1ch; width: 74ch; color: #7d8898; }
-.filet::before, .filet::after { content: ""; border-top: 1px solid #7d8898; }
+   terminal y tiennent sans défiler (un caractère des polices à chasse fixe du système fait environ 0,6 em). */
+.fenetre { container-type: inline-size; background: var(--term-fond); color: var(--term-texte); border: 1px solid var(--term-trait); border-radius: var(--rayon-fenetre); box-shadow: var(--ombre); min-width: 0; }
+.fenetre .titre-fenetre { padding: .6rem 1.1rem; border-bottom: 1px solid var(--term-trait); font-family: var(--mono); font-size: .75rem; color: var(--term-doux); }
+.fenetre :focus-visible { outline-color: var(--term-accent); }
+.fenetre pre { margin: 0; padding: 1rem 1.1rem 1.2rem; overflow-x: auto; font-family: var(--mono); font-size: min(.78rem, calc((100cqi - 2.3rem) / 47.5)); line-height: 1.55; color: var(--term-texte); }
+.fenetre pre a { color: var(--term-texte); text-decoration: none; }
+.fenetre pre a:hover, .fenetre pre a:focus-visible { color: var(--term-accent); }
+.g { color: var(--term-doux); } .c { color: var(--term-accent); }
+/* Cadre et filets en CSS, pas en caractères ╭─╮ : ceux d'une autre police, un peu plus larges, décaleraient le bord
+   droit. 1ch = un caractère du terminal. */
+.boite { display: inline-block; width: 76ch; padding: .45em 0; border: 1px solid var(--term-doux); border-radius: .5em; margin-bottom: .2em; }
+.filet { display: inline-flex; align-items: center; gap: 1ch; width: 74ch; color: var(--term-doux); }
+.filet::before, .filet::after { content: ""; border-top: 1px solid var(--term-doux); }
 .filet::before { width: 2ch; }
 .filet::after { flex: 1; }
-.menu-court { display: none; list-style: none; margin: 0; padding: .4rem 1rem 1rem; font-family: var(--mono); font-size: .86rem; }
-.menu-court li a { display: grid; grid-template-columns: 1.8rem 1fr; gap: .6rem; padding: .5rem 0; border-top: 1px solid #1d2430; color: #e6edf3; text-decoration: none; }
+.menu-court { display: none; list-style: none; margin: 0; padding: .4rem 1.1rem 1rem; font-family: var(--mono); font-size: .875rem; }
+.menu-court li a { display: grid; grid-template-columns: 1.8rem 1fr; gap: .6rem; align-items: center; min-height: 2.75rem; padding: .35rem 0; border-top: 1px solid var(--term-trait); color: var(--term-texte); text-decoration: none; }
 .menu-court li:first-child a { border-top: 0; }
-.menu-court .n { color: #3cc3d4; text-align: right; font-variant-numeric: tabular-nums; }
+.menu-court .n { color: var(--term-accent); text-align: right; font-variant-numeric: tabular-nums; }
 
-/* Sections */
-main { display: grid; gap: 5rem; padding-block: 4.5rem 4rem; }
+/* Sections. Chacune porte son numéro et un filet, comme les rubriques du menu du programme (── BILAN DE SÉCURITÉ ──). */
+main { display: grid; gap: 5.5rem; padding-block: 4.5rem 4.5rem; counter-reset: section; }
 /* Une section, élément de grille, prendrait sinon la largeur de son plus long contenu (code, exemple) : la page déborderait sur téléphone. */
 main > section { min-width: 0; }
 /* Les sections loin sous l'écran ne sont mises en page qu'en approchant : la page s'affiche plus vite sur téléphone. */
 main > section + section { content-visibility: auto; contain-intrinsic-size: auto 1200px; }
-.tete-section { display: grid; gap: .6rem; max-width: 46rem; margin-bottom: 2rem; }
-.tete-section h2 { font-size: clamp(1.7rem, 3.2vw, 2.4rem); line-height: 1.12; font-weight: 700; }
-.tete-section p { color: var(--doux); margin: 0; font-size: 1.05rem; }
+.tete-section { display: grid; gap: .75rem; margin-bottom: 2.25rem; }
+.tete-section > :not(.surtitre) { max-width: 46rem; }
+.tete-section .surtitre { display: flex; align-items: center; gap: .75rem; counter-increment: section; margin-bottom: .5rem; }
+.tete-section .surtitre::before { content: counter(section, decimal-leading-zero); color: var(--encre); }
+.tete-section .surtitre::after { content: ""; flex: 1; border-top: 1px solid var(--trait-fort); }
+.tete-section h2 { font-size: clamp(1.625rem, 2.6vw, 2rem); line-height: 1.15; letter-spacing: -.015em; }
+.tete-section p:not(.surtitre) { color: var(--doux); margin: 0; font-size: 1.0625rem; }
 
-.etapes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.25rem; list-style: none; padding: 0; margin: 0; counter-reset: etape; }
-.etapes li { background: var(--surface); border: 1px solid var(--trait); border-radius: .7rem; padding: 1.3rem 1.3rem 1.4rem; counter-increment: etape; }
-.etapes li::before { content: counter(etape); display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: 50%; background: var(--accent-fond); color: var(--accent); font-family: var(--mono); margin-bottom: .9rem; }
-.etapes h3 { font-size: 1.2rem; margin-bottom: .3rem; }
-.etapes p { margin: 0; color: var(--doux); font-size: .96rem; }
+.etapes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2rem; list-style: none; padding: 0; margin: 0; counter-reset: etape; }
+.etapes li { border-top: 1px solid var(--trait-fort); padding-top: 1.1rem; counter-increment: etape; }
+.etapes li::before { content: counter(etape, decimal-leading-zero); display: block; font-family: var(--mono); font-size: .8125rem; color: var(--discret); margin-bottom: .5rem; }
+.etapes h3 { font-size: 1.125rem; margin-bottom: .35rem; }
+.etapes p { margin: 0; color: var(--doux); font-size: .9375rem; }
 
-.domaines { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 21rem), 1fr)); gap: 1.25rem; }
-.domaine { background: var(--surface); border: 1px solid var(--trait); border-radius: .7rem; padding: 1.4rem; display: grid; gap: .8rem; align-content: start; min-width: 0; }
-.domaine header { display: flex; align-items: center; gap: .75rem; }
-.icone { width: 2.4rem; height: 2.4rem; border-radius: .55rem; background: var(--accent-fond); color: var(--accent); display: grid; place-items: center; flex: none; }
+/* Les cartes des menaces en colonnes : chacune garde sa hauteur, sans vide sous les plus courtes. */
+.domaines { columns: 3 20rem; column-gap: 1.25rem; }
+.domaine { break-inside: avoid; margin: 0 0 1.25rem; background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); padding: 1.4rem 1.4rem 1.5rem; display: grid; gap: .85rem; align-content: start; min-width: 0; }
+.domaine header { display: flex; align-items: flex-start; gap: .7rem; }
+.icone { color: var(--doux); display: grid; place-items: center; flex: none; padding-top: .15rem; }
 .icone svg { width: 1.25rem; height: 1.25rem; }
-.domaine h3 { font-size: 1.2rem; }
-.domaine .touche { font-family: var(--mono); font-size: .72rem; color: var(--doux); overflow-wrap: anywhere; }
-.domaine ul { list-style: none; margin: 0; padding: 0; display: grid; gap: .55rem; }
-.domaine li { position: relative; padding-left: 1.2rem; font-size: .95rem; color: var(--doux); }
-.domaine li::before { content: ""; position: absolute; left: 0; top: .62em; width: .45rem; height: .45rem; border-radius: 50%; background: var(--accent); }
+.domaine h3 { font-size: 1.125rem; line-height: 1.35; }
+.domaine .touche { display: block; margin-top: .15rem; font-family: var(--mono); font-size: .75rem; color: var(--discret); overflow-wrap: anywhere; }
+.domaine ul { list-style: none; margin: 0; padding: 0; display: grid; gap: .6rem; }
+.domaine li { position: relative; padding-left: 1.1rem; font-size: .9375rem; color: var(--doux); }
+.domaine li::before { content: ""; position: absolute; left: 0; top: .8em; width: .5rem; border-top: 1px solid var(--trait-fort); }
 .domaine li b { color: var(--encre); font-weight: 600; }
-.nouveau { display: inline-block; font-family: var(--mono); font-size: .66rem; letter-spacing: .06em; text-transform: uppercase; color: var(--bon); border: 1px solid var(--bon); border-radius: .3rem; padding: 0 .35rem; margin-left: .3rem; vertical-align: middle; }
+.nouveau { display: inline-block; font-family: var(--mono); font-size: .75rem; line-height: 1.4; color: var(--bon); border: 1px solid currentColor; border-radius: var(--rayon-code); padding: 0 .35rem; margin-left: .3rem; vertical-align: .1em; }
 
-/* Audit du réseau : six domaines notés. */
-/* Six cases : trois par ligne sur un grand écran, des traits entre elles ; une case seule sur sa ligne ne laisse pas de
-   vide gris derrière elle. */
-.audit { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); background: var(--surface); border: 1px solid var(--trait); border-radius: .7rem; overflow: hidden; }
-.audit div { padding: 1.1rem 1.1rem 1.2rem; min-width: 0; border-right: 1px solid var(--trait); border-bottom: 1px solid var(--trait); margin-right: -1px; margin-bottom: -1px; }
-.audit b { display: block; font-family: var(--titre); font-size: 1.15rem; margin-bottom: .3rem; }
-.audit span { color: var(--doux); font-size: .92rem; }
-.audit .k { display: block; margin-top: .55rem; color: var(--accent); font-size: .74rem; }
+/* Grilles de cases (audit du réseau, systèmes, installation) : des traits entre elles ; une case seule sur sa ligne
+   ne laisse pas de vide gris derrière elle. */
+.audit { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); overflow: hidden; }
+.audit.par-deux { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.audit div { padding: 1.25rem 1.3rem 1.35rem; min-width: 0; border-right: 1px solid var(--trait); border-bottom: 1px solid var(--trait); margin-right: -1px; margin-bottom: -1px; }
+.audit b { display: block; font-size: 1.0625rem; font-weight: 600; margin-bottom: .3rem; }
+.audit span { color: var(--doux); font-size: .9375rem; }
+.audit .k { display: block; margin-top: .6rem; color: var(--discret); font-size: .75rem; }
 
-.nouveautes { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr)); gap: 1rem 2rem; list-style: none; margin: 0; padding: 0; }
-.nouveautes li { border-top: 2px solid var(--accent); padding-top: .8rem; }
-.nouveautes b { display: block; margin-bottom: .2rem; }
-.nouveautes span { color: var(--doux); font-size: .95rem; }
+.nouveautes { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr)); gap: 1.5rem 2rem; list-style: none; margin: 0; padding: 0; }
+.nouveautes li { border-top: 1px solid var(--trait-fort); padding-top: .9rem; }
+.nouveautes b { display: block; font-weight: 600; margin-bottom: .25rem; }
+.nouveautes span { color: var(--doux); font-size: .9375rem; }
 
-.principes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 1.25rem; }
-.principe { display: grid; grid-template-columns: auto 1fr; gap: .8rem; align-items: start; }
-.principe svg { width: 1.3rem; height: 1.3rem; color: var(--bon); margin-top: .2rem; }
-.principe b { display: block; }
-.principe span { color: var(--doux); font-size: .95rem; }
+.principes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 1.5rem 2rem; }
+.principe { display: grid; grid-template-columns: auto 1fr; gap: .75rem; align-items: start; }
+.principe svg { width: 1.25rem; height: 1.25rem; color: var(--bon); margin-top: .2rem; }
+.principe b { display: block; font-weight: 600; }
+.principe span { color: var(--doux); font-size: .9375rem; }
 
-.chiffres { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1.25rem; background: var(--surface); border: 1px solid var(--trait); border-radius: .7rem; padding: 1.6rem; }
-.chiffre b { display: block; font-family: var(--titre); font-size: clamp(1.9rem, 3.5vw, 2.6rem); line-height: 1; font-variant-numeric: tabular-nums; }
-.chiffre span { color: var(--doux); font-size: .9rem; }
-.tableau { background: var(--surface); border: 1px solid var(--trait); border-radius: .7rem; overflow-x: auto; }
-.tableau table { width: 100%; min-width: 44rem; border-collapse: collapse; font-size: .9rem; }
-.tableau th, .tableau td { text-align: left; vertical-align: top; padding: .8rem .95rem; border-bottom: 1px solid var(--trait); }
-.tableau thead th { font-family: var(--mono); font-size: .72rem; font-weight: 400; letter-spacing: .08em; text-transform: uppercase; color: var(--doux); }
-.tableau tbody th { font-family: var(--titre); font-size: 1rem; width: 10rem; }
+.chiffres { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1.5rem; background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); padding: 1.6rem 1.75rem; }
+.chiffre b { display: block; font-size: clamp(1.75rem, 3vw, 2.25rem); font-weight: 600; line-height: 1.05; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.chiffre span { display: block; margin-top: .35rem; color: var(--doux); font-size: .875rem; }
+.tableau { background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); overflow-x: auto; }
+.tableau table { width: 100%; min-width: 44rem; border-collapse: collapse; font-size: .9063rem; line-height: 1.55; }
+.tableau th, .tableau td { text-align: left; vertical-align: top; padding: .9rem 1.1rem; border-bottom: 1px solid var(--trait); }
+.tableau thead th { font-family: var(--mono); font-size: .8125rem; font-weight: 400; color: var(--discret); background: var(--surface-2); padding-block: .65rem; }
+.tableau tbody th { font-size: .9375rem; font-weight: 600; width: 11rem; }
 .tableau td { color: var(--doux); }
 .tableau td b { color: var(--encre); font-weight: 600; }
 .tableau tbody tr:last-child > * { border-bottom: 0; }
-.note { color: var(--doux); font-size: .95rem; margin: 1rem 0 0; max-width: 46rem; }
+.note { color: var(--doux); font-size: .9375rem; margin: 1rem 0 0; max-width: 46rem; }
+
+/* Les vraies captures du programme (celles du README), réduites et intégrées à la page par outils/page-fonctions.py. */
+.captures { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem; align-items: start; margin: 2.5rem 0 0; }
+.capture { margin: 0; min-width: 0; }
+.capture.seule { max-width: 40rem; margin-top: 2rem; }
+.capture img { display: block; width: 100%; height: auto; border-radius: var(--rayon); border: 1px solid var(--trait-fort); background: var(--term-fond); }
+.capture figcaption { margin-top: .65rem; font-size: .875rem; line-height: 1.5; color: var(--doux); }
+.capture figcaption span { display: block; color: var(--discret); }
 
 footer { border-top: 1px solid var(--trait); }
-footer .cadre { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem 1.5rem; padding-block: 1.6rem 2.2rem; color: var(--doux); font-size: .88rem; font-family: var(--mono); }
-footer a { color: var(--doux); }
+footer .cadre { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem 1.5rem; padding-block: 1.6rem 2.2rem; color: var(--discret); font-size: .875rem; font-family: var(--mono); }
+footer a { color: var(--discret); }
+footer a:hover { color: var(--encre); }
 
-/* Fiche technique : des cartes denses, du code en chasse fixe ; aucune table qui déborde sur téléphone. */
-.specs { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr)); gap: 1px; background: var(--trait); border: 1px solid var(--trait); border-radius: .7rem; overflow: hidden; margin: 0; }
-.specs div { background: var(--surface); padding: 1rem 1.1rem; min-width: 0; }
-.specs dt { font-family: var(--mono); font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--doux); }
-.specs dd { margin: .25rem 0 0; font-size: .95rem; }
-code, .k { font-family: var(--mono); font-size: .86em; }
-code { background: var(--accent-fond); color: var(--encre); border-radius: .3rem; padding: .05rem .35rem; overflow-wrap: anywhere; }
-.sous-titre { font-family: var(--titre); font-size: 1.35rem; margin: 2.6rem 0 1rem; }
-.os { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 1.25rem; }
-.os article { background: var(--surface); border: 1px solid var(--trait); border-radius: .7rem; padding: 1.3rem; min-width: 0; }
-.os h4 { font-family: var(--titre); font-size: 1.15rem; margin: 0 0 .2rem; display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; }
-.os h4 span { font-family: var(--mono); font-size: .72rem; font-weight: 400; color: var(--doux); }
-.os ul { list-style: none; margin: .7rem 0 0; padding: 0; display: grid; gap: .5rem; }
-.os li { font-size: .92rem; color: var(--doux); padding-left: .9rem; border-left: 2px solid var(--trait); }
+/* Fiche technique : des lignes nom | valeur, du code en chasse fixe ; aucune table qui déborde sur téléphone. */
+.specs { margin: 0; border-top: 1px solid var(--trait); }
+.specs div { display: grid; grid-template-columns: 11rem minmax(0, 1fr); gap: .25rem 1.5rem; padding: .85rem 0; border-bottom: 1px solid var(--trait); min-width: 0; }
+.specs dt { font-family: var(--mono); font-size: .8125rem; line-height: 1.85; color: var(--discret); }
+.specs dd { margin: 0; font-size: .9375rem; max-width: 46rem; }
+code, .k { font-family: var(--mono); font-size: .875em; }
+code { background: var(--surface-2); color: var(--encre); border-radius: var(--rayon-code); padding: .05rem .2rem; overflow-wrap: anywhere; }
+.sous-titre { font-size: 1.25rem; line-height: 1.3; margin: 3rem 0 1.1rem; }
+.os { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 1.25rem; align-items: start; }
+.os article { background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); padding: 1.3rem 1.4rem 1.4rem; min-width: 0; }
+.os h4 { font-size: 1.0625rem; margin: 0 0 .2rem; display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; }
+.os h4 span { font-family: var(--mono); font-size: .75rem; font-weight: 400; color: var(--discret); }
+.os ul { list-style: none; margin: .8rem 0 0; padding: 0; display: grid; gap: .55rem; }
+.os li { font-size: .9375rem; color: var(--doux); padding-left: .9rem; border-left: 1px solid var(--trait-fort); }
 .os li b { color: var(--encre); font-weight: 600; }
-.sources { display: grid; gap: .6rem; }
-.source { display: grid; grid-template-columns: minmax(0, 12rem) minmax(0, 1fr) minmax(0, 13rem); gap: .4rem 1.2rem; align-items: baseline; background: var(--surface); border: 1px solid var(--trait); border-radius: .6rem; padding: .85rem 1.1rem; }
+.sources { display: grid; border-top: 1px solid var(--trait); }
+.source { display: grid; grid-template-columns: minmax(0, 12rem) minmax(0, 1fr) minmax(0, 13rem); gap: .3rem 1.5rem; align-items: baseline; padding: .9rem 0; border-bottom: 1px solid var(--trait); }
 .source b { font-weight: 600; }
-.source span { color: var(--doux); font-size: .92rem; }
-.source .k { color: var(--accent); font-size: .78rem; }
-.chaine { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); gap: .8rem; list-style: none; margin: 0; padding: 0; counter-reset: maillon; }
-.chaine li { counter-increment: maillon; background: var(--surface); border: 1px solid var(--trait); border-radius: .6rem; padding: 1rem 1.1rem; font-size: .92rem; color: var(--doux); }
-.chaine li::before { content: "0" counter(maillon); display: block; font-family: var(--mono); font-size: .75rem; color: var(--accent); margin-bottom: .3rem; }
-.chaine li b { display: block; color: var(--encre); margin-bottom: .15rem; }
-details.cli { background: var(--surface); border: 1px solid var(--trait); border-radius: .7rem; }
-details.cli summary { cursor: pointer; padding: 1rem 1.2rem; font-weight: 600; list-style-position: inside; }
-details.cli summary span { font-weight: 400; color: var(--doux); font-size: .92rem; }
-details.cli[open] summary { border-bottom: 1px solid var(--trait); }
+.source span { color: var(--doux); font-size: .9375rem; }
+.source .k { color: var(--discret); font-size: .75rem; }
+/* Une chaîne d'étapes : numérotées dans la marge, lues de haut en bas. */
+.chaine { list-style: none; margin: 0; padding: 0; counter-reset: maillon; max-width: 52rem; border-top: 1px solid var(--trait); }
+.chaine li { position: relative; counter-increment: maillon; padding: .9rem 0 .95rem 3rem; border-bottom: 1px solid var(--trait); font-size: .9375rem; color: var(--doux); }
+.chaine li::before { content: counter(maillon, decimal-leading-zero); position: absolute; left: 0; top: .95rem; font-family: var(--mono); font-size: .8125rem; line-height: 1.6rem; color: var(--discret); }
+.chaine li b { display: block; color: var(--encre); font-weight: 600; margin-bottom: .1rem; }
+details.cli { background: var(--surface); border: 1px solid var(--trait); border-radius: var(--rayon); margin-top: 2rem; }
+details.cli summary { cursor: pointer; padding: 1rem 1.25rem; font-weight: 600; list-style-position: inside; border-radius: var(--rayon); }
+details.cli summary span { font-weight: 400; color: var(--doux); font-size: .9375rem; }
+details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius: var(--rayon) var(--rayon) 0 0; }
 /* La liste des commandes vient du programme lui-même (vanguard --help) : en colonnes, chaque entrée insécable. */
-.cli-liste { columns: 3 19rem; column-gap: 2rem; margin: 0; padding: 1.2rem; }
+.cli-liste { columns: 3 19rem; column-gap: 2rem; margin: 0; padding: 1.25rem; }
 .cli-liste div { break-inside: avoid; padding: .3rem 0; }
-.cli-liste dt { font-family: var(--mono); font-size: .84rem; }
-.cli-liste dt i { font-style: normal; color: var(--doux); }
-.cli-liste dd { margin: 0; font-size: .88rem; color: var(--doux); }
-.exemple { background: #0d1117; color: #e6edf3; border-radius: .6rem; padding: 1rem 1.1rem; font-family: var(--mono); font-size: .8rem; line-height: 1.6; overflow-x: auto; margin: 1rem 0 0; }
-.exemple .g { color: #7d8898; }
+.cli-liste dt { font-family: var(--mono); font-size: .8438rem; }
+.cli-liste dt i { font-style: normal; color: var(--discret); }
+.cli-liste dd { margin: 0; font-size: .875rem; color: var(--doux); }
+.exemple { background: var(--surface-2); color: var(--encre); border: 1px solid var(--trait); border-radius: var(--rayon-bouton); padding: 1rem 1.2rem; font-family: var(--mono); font-size: .8125rem; line-height: 1.65; overflow-x: auto; margin: 1rem 0 0; }
+.exemple .g { color: var(--discret); }
 
 @media (max-width: 960px) {
-  .heros { grid-template-columns: 1fr; gap: 2.2rem; padding-block: 1.5rem 3rem; }
+  .heros { grid-template-columns: 1fr; gap: 2.5rem; padding-block: 1.75rem 3rem; }
   .chiffres { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .audit { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 720px) {
   .nav { display: none; }
   .source { grid-template-columns: 1fr; }
-  .etapes { grid-template-columns: 1fr; }
+  .etapes { grid-template-columns: 1fr; gap: 1.5rem; }
+  .audit, .audit.par-deux, .captures { grid-template-columns: 1fr; }
+  .specs div { grid-template-columns: 1fr; }
+  .specs dt { line-height: 1.5; }
+  .chaine li { padding-left: 2.5rem; }
   .fenetre pre { display: none; }
   .menu-court { display: block; }
-  main { gap: 3.5rem; padding-block: 3rem; }
-  .faits { gap: .8rem; }
-  .fait b { font-size: 1.35rem; }
+  main { gap: 4rem; padding-block: 3rem; }
+  .faits { gap: .9rem; }
+  .fait b { font-size: 1.3rem; }
   .tableau { overflow-x: visible; }
   .tableau table, .tableau tbody, .tableau tr, .tableau th, .tableau td { display: block; }
   .tableau table { min-width: 0; }
   .tableau thead { display: none; }
-  .tableau tr { border-bottom: 1px solid var(--trait); padding: .5rem 0; }
+  .tableau tr { border-bottom: 1px solid var(--trait); padding: .6rem 0; }
   .tableau tbody tr:last-child { border-bottom: 0; }
-  .tableau th, .tableau td { border-bottom: 0; padding: .35rem .95rem; }
-  .tableau tbody th { width: auto; }
-  .tableau td::before { content: attr(data-col); display: block; font-family: var(--mono); font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+  .tableau th, .tableau td { border-bottom: 0; padding: .35rem 1rem; }
+  .tableau tbody th { width: auto; font-size: 1rem; }
+  .tableau td::before { content: attr(data-col); display: block; font-family: var(--mono); font-size: .75rem; color: var(--discret); }
 }
 @media (max-width: 420px) {
   .faits { grid-template-columns: 1fr 1fr; }
-  .chiffres { padding: 1.2rem; }
-  .bouton { width: 100%; justify-content: center; }
+  .chiffres { padding: 1.25rem; }
+  .bouton { flex: 1 1 100%; }
+  .lien-bas { flex: 1 1 100%; text-align: center; }
 }
-@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; }
+  a, .bouton, summary { transition: color .15s var(--sortie), background-color .15s var(--sortie), border-color .15s var(--sortie); }
+}
 </style>
 
 <div class="ouverture">
@@ -264,7 +303,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
     <div class="heros">
       <div>
         <p class="surtitre">Logiciel libre · GPL-3.0-or-later · écrit en Rust</p>
-        <h1>Cyberdéfense portable des postes et des réseaux, depuis une clé USB.</h1>
+        <h1>Cyberdéfense portable des postes et des réseaux, depuis une clé USB</h1>
         <p class="chapeau">Un seul exécutable par système (Linux x86_64 statique, Windows x86_64, macOS universel), rien à installer. Il lit et juge sur l'ordinateur même, avec les droits du compte : l'administrateur n'est demandé que pour un geste accepté (pkexec, run0 ou sudo ; UAC). En HTTPS, il ne joint qu'une liste fermée de {{HOTES}} hôtes. Il complète l'antivirus du système (Microsoft Defender, XProtect, ClamAV) : il ne le remplace pas.</p>
         <ol class="points">
           <li><b>Il fait le bilan.</b> {{REGLES}} règles à identifiant stable, chacune avec sa référence (CIS, Microsoft ou ANSSI ; MITRE ATT&amp;CK), une note de A à F pour l'ordinateur ; {{FICHES}} fiches pour le réseau, en six notes.</li>
@@ -277,8 +316,8 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
           <span class="systeme">Linux</span><span class="systeme">Windows 10 · 11</span><span class="systeme">macOS</span><span class="systeme">Français · English</span>
         </div>
         <div class="boutons">
-          <a class="bouton" href="#installer">Comment l'installer ↓</a>
           <a class="bouton" href="https://github.com/d9v3/vanguard-beta">Code source</a>
+          <a class="lien-bas" href="#installer">Installation ↓</a>
         </div>
         <div class="faits">
           <div class="fait"><b>A → F</b><span>une note pour l'ordinateur, une par domaine du réseau</span></div>
@@ -287,7 +326,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         </div>
       </div>
       <div class="fenetre" role="navigation" aria-label="Menu principal de Vanguard">
-        <div class="titre-fenetre"><i></i><i></i><i></i><span>vanguard</span></div>
+        <div class="titre-fenetre">vanguard</div>
 <pre><span class="boite">  <b>VANGUARD {{VERSION_COURTE_TERMINAL}}</b>Cyberdéfense portable des postes et des réseaux</span>
 
   <span class="filet">BILAN DE SÉCURITÉ</span>
@@ -391,10 +430,23 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
     </table></div>
     <p class="note">Les signalements de faille à un éditeur (Microsoft, Google, Mozilla, Apple, avis GitHub, CERT…) sont préparés en brouillon, débarrassés de ce qui est personnel ; la personne les relit et les envoie elle-même. Vanguard ne coupe jamais une connexion à distance en cours (Bureau à distance, SSH). À n'utiliser que sur son propre réseau, ou sur un réseau qu'on a le droit d'auditer.</p>
 
+    <!-- Les vraies captures du README (assets/captures), intégrées par outils/page-fonctions.py : une seule page, sans
+         fichier à côté, pour GitHub Pages comme pour claude.ai. -->
+    <div class="captures">
+      <figure class="capture">
+        <img src="{{CAPTURE_BILAN}}" width="{{CAPTURE_BILAN_L}}" height="{{CAPTURE_BILAN_H}}" loading="lazy" decoding="async" alt="Bilan de sécurité de Vanguard : une note de A à F, chaque problème expliqué avec sa correction">
+        <figcaption>Le bilan de cet ordinateur, dans le terminal : chaque point vérifié, puis la note de la machine.<span lang="en">The security check of this computer, in the terminal: each item checked, then the computer's grade.</span></figcaption>
+      </figure>
+      <figure class="capture">
+        <img src="{{CAPTURE_RAPPORT}}" width="{{CAPTURE_RAPPORT_L}}" height="{{CAPTURE_RAPPORT_H}}" loading="lazy" decoding="async" alt="Rapport HTML de Vanguard : la note de l'ordinateur, celle du réseau, la note globale et leur évolution">
+        <figcaption>Le rapport HTML, dans le navigateur : la note de l'ordinateur, celle du réseau et la note globale, leur évolution, et l'historique des bilans chaînés par leur empreinte.<span lang="en">The HTML report, in the browser: the computer's grade, the network's and the overall grade, how they change, and the history of checks chained by their hash.</span></figcaption>
+      </figure>
+    </div>
+
     <h3 class="sous-titre">Le détail, menace par menace</h3>
     <div class="domaines">
       <article class="domaine" id="bilan">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.1-8 9-4.6-.9-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg></span><div><h3>Le bilan, noté de A à F</h3><span class="touche">menu 1 · 2 · 3 · vanguard bilan · logiciels-perimes · dernieres-failles · autotest</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.1-8 9-4.6-.9-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg></span><div><h3>Le bilan, noté de A à F</h3><span class="touche">menu 1 · 2 · 3 · vanguard bilan · logiciels-perimes · dernieres-failles · autotest</span></div></header>
         <ul>
           <li><b>Les bases</b> : pare-feu, mises à jour et failles connues, chiffrement du disque, antivirus, comptes et mots de passe, heure, fin de support.</li>
           <li><b>Accès à distance</b> : SSH et ses algorithmes faibles, Bureau à distance, partages ouverts à tous, proxy détourné (WPAD).</li>
@@ -409,7 +461,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         </ul>
       </article>
       <article class="domaine" id="exposition">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg></span><div><h3>Exposition vers Internet</h3><span class="touche">vanguard audit-reseau · appareils</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg></span><div><h3>Exposition vers Internet</h3><span class="touche">vanguard audit-reseau · appareils</span></div></header>
         <ul>
           <li><b>Les ports que le routeur ouvre vers Internet</b>, demandés au routeur lui-même (UPnP) : une caméra ou un bureau à distance joignable de n'importe où, c'est critique.</li>
           <li><b>UPnP actif</b> : n'importe quel programme du réseau local peut ouvrir un port ; CGNAT ou double NAT reconnus.</li>
@@ -417,7 +469,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         </ul>
       </article>
       <article class="domaine" id="wifi">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 9a14 14 0 0 1 19 0M6 12.5a9 9 0 0 1 12 0M9.5 16a4 4 0 0 1 5 0"/><circle cx="12" cy="19.5" r="1"/></svg></span><div><h3>Intrus sur le Wi-Fi</h3><span class="touche">vanguard audit-reseau · surveillance · wifi-public</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 9a14 14 0 0 1 19 0M6 12.5a9 9 0 0 1 12 0M9.5 16a4 4 0 0 1 5 0"/><circle cx="12" cy="19.5" r="1"/></svg></span><div><h3>Intrus sur le Wi-Fi</h3><span class="touche">vanguard audit-reseau · surveillance · wifi-public</span></div></header>
         <ul>
           <li><b>Chaque appareil du réseau</b> : fabricant, ports ouverts, risques ; les nouveaux venus signalés toutes les heures, avec un tableau de bord dans le navigateur.</li>
           <li><b>La protection du Wi-Fi</b> lue dans les balises du routeur : WEP ou TKIP, WPS allumé (le code PIN cassable), plusieurs émetteurs pour le même nom (faux point d'accès).</li>
@@ -426,7 +478,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         </ul>
       </article>
       <article class="domaine" id="objets">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4M7 9h4M7 13h2"/></svg></span><div><h3>Objets connectés</h3><span class="touche">vanguard objets-connectes · cameras-cachees</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4M7 9h4M7 13h2"/></svg></span><div><h3>Objets connectés</h3><span class="touche">vanguard objets-connectes · cameras-cachees</span></div></header>
         <ul>
           <li><b>Le routeur et les objets reconnus</b> : caméras, imprimantes, NAS, télés, enceintes, consoles, domotique, avec ce que le routeur annonce (modèle, logiciel).</li>
           <li><b>Mot de passe d'origine à changer</b>, administration en HTTP seul ou en telnet : un conseil clair, jamais un essai de mot de passe.</li>
@@ -434,7 +486,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         </ul>
       </article>
       <article class="domaine" id="infection">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6M11 8v6"/></svg></span><div><h3>Poste infecté</h3><span class="touche">menu 6 · 8 · vanguard blocage · evenements · yara · depanner traces · signaler</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6M11 8v6"/></svg></span><div><h3>Poste infecté</h3><span class="touche">menu 6 · 8 · vanguard blocage · evenements · yara · depanner traces · signaler</span></div></header>
         <ul>
           <li><b>Analyse antivirus en second avis (Defender ou ClamAV), plus de 300 règles YARA et les empreintes</b> de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite ; la dernière copie sert hors ligne) ; quarantaine réversible. Moteur YARA écrit pour Vanguard ; programmes, documents Office et leurs macros, raccourcis, scripts et archives lus par Vanguard lui-même, ce qu'il ne sait pas lire dit non vérifié. <span class="nouveau">nouveau</span></li>
           <li><b>Que s'est-il passé ?</b> Les journaux de Windows (.evtx) lus par Vanguard lui-même, sur ce Windows ou depuis un dossier sous n'importe quel système : des règles (traces effacées, administrateur de plus, mot de passe deviné, Bureau à distance depuis Internet, tâche planifiée ou processus suspects, PowerShell malveillant, Defender désarmé, persistance WMI…) et les alertes dans l'ordre du temps ; au bilan comme au menu Bloquer et réagir. <span class="nouveau">nouveau</span></li>
@@ -452,7 +504,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         </ul>
       </article>
       <article class="domaine" id="dns">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z"/><path d="M9.5 12.5l2 2 3.5-4"/></svg></span><div><h3>DNS et certificats détournés</h3><span class="touche">vanguard audit-reseau · dns-rapide · sites-dangereux</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z"/><path d="M9.5 12.5l2 2 3.5-4"/></svg></span><div><h3>DNS et certificats détournés</h3><span class="touche">vanguard audit-reseau · dns-rapide · sites-dangereux</span></div></header>
         <ul>
           <li><b>Le DNS que le routeur distribue</b> à tous les appareils du réseau comparé à celui de l'ordinateur ; réponses comparées à deux résolveurs publics ; DNSSEC ; DNS chiffré.</li>
           <li><b>HTTPS intercepté en acte</b> : le certificat présenté par un site connu, les racines ajoutées, les exceptions gardées par Firefox.</li>
@@ -461,7 +513,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         </ul>
       </article>
       <article class="domaine" id="arnaques">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v12H8l-4 4z"/><path d="M12 7v4M12 13.5h.01"/></svg></span><div><h3>Arnaques et prise de contrôle</h3><span class="touche">menu 7 · vanguard acces-a-distance · lien · courriel-suspect · verifier-fichier</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v12H8l-4 4z"/><path d="M12 7v4M12 13.5h.01"/></svg></span><div><h3>Arnaques et prise de contrôle</h3><span class="touche">menu 7 · vanguard acces-a-distance · lien · courriel-suspect · verifier-fichier</span></div></header>
         <ul>
           <li><b>Faux technicien</b> : AnyDesk, TeamViewer, RustDesk… installés, lancés ou téléchargés, retirés après accord.</li>
           <li><b>Ce courriel est-il une arnaque ?</b> Un courriel enregistré, lu sans rien ouvrir : vrai expéditeur, SPF, DKIM et DMARC du fournisseur, chaque lien, les pièces jointes passées à YARA et à l'antivirus ; le verdict n'est jamais « sûr ».</li>
@@ -471,7 +523,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         </ul>
       </article>
       <article class="domaine" id="vie-privee">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><div><h3>Vie privée et secrets</h3><span class="touche">menu 6 · 7 · vanguard logiciels-espions · bilan-confidentialite · secrets</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><div><h3>Vie privée et secrets</h3><span class="touche">menu 6 · 7 · vanguard logiciels-espions · bilan-confidentialite · secrets</span></div></header>
         <ul>
           <li><b>Logiciels espions</b> posés par un proche : serveurs et sites connus (liste d'Échap), logiciels de surveillance, programmes qui lisent le clavier, autorisations de surveillance sous macOS ; en lecture seule, car celui qui l'a posé pourrait le voir.</li>
           <li><b>Bilan de confidentialité</b> : qui a accès à la position, aux contacts, à la caméra et au micro.</li>
@@ -496,6 +548,10 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
       <div><b>Postes</b><span>Cet ordinateur vu du réseau, les autres ordinateurs, empoisonneur, botnets, liste noire.</span><span class="k">COM-PST-001 à 003</span></div>
     </div>
     <p class="note">Règles écrites d'après les guides de la NSA, du Centre canadien pour la cybersécurité, de l'ANSSI, du NIST et de l'ETSI pour les objets connectés. La surveillance horaire alerte au changement : redirection nouvelle, DNS du routeur changé, Wi-Fi qui descend, IPv6 nouvelle.</p>
+    <figure class="capture seule">
+      <img src="{{CAPTURE_RESEAU}}" width="{{CAPTURE_RESEAU_L}}" height="{{CAPTURE_RESEAU_H}}" loading="lazy" decoding="async" alt="Scan du réseau local par Vanguard : la note du réseau, chaque appareil trouvé avec sa note, puis ce qui est à regarder">
+      <figcaption>L'audit du réseau, dans le terminal : la note du réseau, chaque appareil trouvé avec la sienne, puis ce qui est à regarder.<span lang="en">The network audit, in the terminal: the network's grade, each device found with its own, then what to look at.</span></figcaption>
+    </figure>
   </section>
 
   <section id="principes">
@@ -504,10 +560,10 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
       <h2>Ce que Vanguard ne fait pas</h2>
     </div>
     <div class="principes">
-      <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Rien sans accord</b><span>Chaque changement est montré avant d'être fait ; la protection active, une fois mise en marche, ne bloque seule que ce qui ne fait aucun doute, et prévient.</span></div></div>
-      <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Jamais « sain » par défaut</b><span>Ce qui n'a pas pu être vérifié est dit clairement.</span></div></div>
-      <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Jamais d'attaque</b><span>Il observe et mesure le réseau ; aucun exploit, aucun mot de passe essayé sur un appareil (seule la lecture SNMP « public », annoncée).</span></div></div>
-      <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Rien d'envoyé en cachette</b><span>Ce qui sort tient dans une liste fermée, écrite dans le <a href="https://github.com/d9v3/vanguard-beta/blob/master/MODELE-DE-MENACE.md">modèle de menace</a> ; le journal des erreurs est anonymisé. Les règles sont reliées à la <a href="https://github.com/d9v3/vanguard-beta/blob/master/COUVERTURE-ATTACK.md">carte MITRE ATT&amp;CK</a>.</span></div></div>
+      <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Rien sans accord</b><span>Chaque changement est montré avant d'être fait ; la protection active, une fois mise en marche, ne bloque seule que ce qui ne fait aucun doute, et prévient.</span></div></div>
+      <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Jamais « sain » par défaut</b><span>Ce qui n'a pas pu être vérifié est dit clairement.</span></div></div>
+      <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Jamais d'attaque</b><span>Il observe et mesure le réseau ; aucun exploit, aucun mot de passe essayé sur un appareil (seule la lecture SNMP « public », annoncée).</span></div></div>
+      <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Rien d'envoyé en cachette</b><span>Ce qui sort tient dans une liste fermée, écrite dans le <a href="https://github.com/d9v3/vanguard-beta/blob/master/MODELE-DE-MENACE.md">modèle de menace</a> ; le journal des erreurs est anonymisé. Les règles sont reliées à la <a href="https://github.com/d9v3/vanguard-beta/blob/master/COUVERTURE-ATTACK.md">carte MITRE ATT&amp;CK</a>.</span></div></div>
     </div>
   </section>
 
@@ -628,7 +684,7 @@ vanguard yara --complet</pre>
     </div>
     <div class="domaines">
       <article class="domaine" id="depannage">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 6.5a4 4 0 0 0-5.3 5.3L3.5 17.5l3 3 5.7-5.7a4 4 0 0 0 5.3-5.3l-2.3 2.3-2.4-.6-.6-2.4z"/></svg></span><div><h3>Dépannage</h3><span class="touche">menu 11 · vanguard depanner · depanner proche</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 6.5a4 4 0 0 0-5.3 5.3L3.5 17.5l3 3 5.7-5.7a4 4 0 0 0 5.3-5.3l-2.3 2.3-2.4-.6-.6-2.4z"/></svg></span><div><h3>Dépannage</h3><span class="touche">menu 11 · vanguard depanner · depanner proche</span></div></header>
         <ul>
           <li><b>Pas à pas</b> : Internet, Wi-Fi, lenteur, son, imprimante, disque plein, une question à la fois.</li>
           <li><b>Ordinateur d'un proche</b> : trois questions, un résumé en mots simples, une page à laisser avec des conseils choisis pour la personne.</li>
@@ -636,7 +692,7 @@ vanguard yara --complet</pre>
         </ul>
       </article>
       <article class="domaine" id="optimiser">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4-6"/></svg></span><div><h3>Optimiser, logiciels et jeu</h3><span class="touche">menu 12 · vanguard test-connexion</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4-6"/></svg></span><div><h3>Optimiser, logiciels et jeu</h3><span class="touche">menu 12 · vanguard test-connexion</span></div></header>
         <ul>
           <li><b>Réglages</b> de confidentialité et de performance qui s'annulent exactement ; nettoyage à cocher ; programmes du démarrage.</li>
           <li><b>Tout remettre comme avant</b> : les corrections du bilan, Optimiser, Gaming, les blocages et le mode Wi-Fi public défaits du plus récent au plus ancien, en une demande administrateur.</li>
@@ -645,14 +701,14 @@ vanguard yara --complet</pre>
         </ul>
       </article>
       <article class="domaine" id="donnees">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/></svg></span><div><h3>Données et sauvegarde</h3><span class="touche">menu 9 · vanguard verifier-sauvegarde · copier-fichiers</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/></svg></span><div><h3>Données et sauvegarde</h3><span class="touche">menu 9 · vanguard verifier-sauvegarde · copier-fichiers</span></div></header>
         <ul>
           <li><b>Sauvegarde automatique</b>, et <b>vérifier ma sauvegarde</b> (copie rsync) : des fichiers réellement relus sur le disque et comparés à l'original ; une copie réécrite après coup, comme par un rançongiciel, est dite abîmée.</li>
           <li><b>Copier mes fichiers</b> (copie vérifiée), puis « Vérifier une copie » : relue sur le disque et comparée aux originaux.</li>
         </ul>
       </article>
       <article class="domaine" id="suivi">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M9 8h6M9 12h6"/></svg></span><div><h3>Suivi, outils et clé USB</h3><span class="touche">menu 10 · 13 · vanguard guide · parametres · agent · extensions · verifier-cle</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M9 8h6M9 12h6"/></svg></span><div><h3>Suivi, outils et clé USB</h3><span class="touche">menu 10 · 13 · vanguard guide · parametres · agent · extensions · verifier-cle</span></div></header>
         <ul>
           <li><b>Rapport HTML</b> avec la courbe des notes, entretien du mois, apprentissage, ce que Vanguard a changé.</li>
           <li><b>Menus au clavier</b> : → entre, ← revient ; la fenêtre ouverte pour Vanguard prend la taille du menu et se centre.</li>
@@ -706,7 +762,7 @@ vanguard yara --complet</pre>
       <p class="surtitre">Systèmes pris en charge</p>
       <h2>Linux d'abord, puis Windows et macOS</h2>
     </div>
-    <div class="audit">
+    <div class="audit par-deux">
       <div><b>Linux</b><span>Arch et dérivées (Omarchy, Manjaro, EndeavourOS, CachyOS), Debian, Ubuntu, Mint, Pop!_OS, Fedora (et RHEL, Rocky, Nobara), openSUSE. Vanguard reconnaît la distribution et propose ses propres commandes : <code>omarchy update</code>, pacman, apt, dnf ou zypper.</span><span class="k">x86_64 · statique (musl)</span></div>
       <div><b>Linux atomique</b><span>Bazzite, Silverblue, Kinoite, Bluefin, Aeon : <code>ujust update</code>, <code>rpm-ostree</code> ou <code>transactional-update</code>.</span><span class="k">x86_64 · statique (musl)</span></div>
       <div><b>Windows</b><span>10 et 11.</span><span class="k">x86_64</span></div>
@@ -732,7 +788,7 @@ vanguard yara --complet</pre>
       <h2>Télécharger, vérifier, installer</h2>
       <p>Les liens sont en bas de page à dessein : un outil de sécurité se télécharge en sachant ce qu'il fait.</p>
     </div>
-    <div class="audit">
+    <div class="audit par-deux">
       <div><b>Ce que fait Vanguard</b><span>Il audite la machine et le réseau, détecte les failles et les intrusions, puis bloque et corrige seulement après accord.</span></div>
       <div><b>Ce qu'il ne fait jamais</b><span>Attaquer un appareil, changer quoi que ce soit sans le montrer d'abord, ou envoyer des données personnelles.</span></div>
       <div><b>Ce qu'il demande</b><span>Les droits d'administrateur seulement pour un geste accepté, par la fenêtre du système (pkexec, run0 ou sudo sous Linux ; UAC sous Windows).</span></div>
