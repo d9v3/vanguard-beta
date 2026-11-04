@@ -181,6 +181,8 @@ impl std::fmt::Display for Echec {
     }
 }
 
+impl std::error::Error for Echec {}
+
 impl From<Echec> for String {
     fn from(e: Echec) -> String {
         e.to_string()

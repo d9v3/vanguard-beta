@@ -1459,6 +1459,15 @@ pub(crate) enum Doute {
     Inconnu,
 }
 
+// Le texte déjà montré par l'interface (`texte`), pour qu'une erreur standard dise la même chose.
+impl std::fmt::Display for Doute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.texte())
+    }
+}
+
+impl std::error::Error for Doute {}
+
 impl Doute {
     /// La raison, au masculin (« le fichier … »), pour quelqu'un qui ne connaît pas les sceaux.
     pub(crate) fn texte(self) -> &'static str {

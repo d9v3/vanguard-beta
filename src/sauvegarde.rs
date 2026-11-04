@@ -200,6 +200,17 @@ pub(crate) enum Refus {
     Identite,
 }
 
+impl std::fmt::Display for Refus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Refus::Controle => crate::tr!("caractère de contrôle dans un chemin", "control character in a path"),
+            Refus::Identite => crate::tr!("identité du disque (UUID) illisible", "disk identity (UUID) unreadable"),
+        })
+    }
+}
+
+impl std::error::Error for Refus {}
+
 /// L'UUID tel qu'il peut entrer dans une ligne d'unité : lettres, chiffres et tirets seulement.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn uuid_valide(uuid: &str) -> bool {

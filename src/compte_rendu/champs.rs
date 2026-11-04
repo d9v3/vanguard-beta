@@ -25,6 +25,8 @@ impl std::fmt::Display for HorsMotif {
     }
 }
 
+impl std::error::Error for HorsMotif {}
+
 /// Un champ texte validé par son motif : `new` le refuse s'il n'a pas exactement la forme permise, et la lecture
 /// (serde) passe par la même porte.
 macro_rules! champ {

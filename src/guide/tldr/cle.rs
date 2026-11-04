@@ -45,6 +45,15 @@ pub(super) enum Refus {
     TropPeu(usize, usize),
 }
 
+// Le texte déjà montré par l'interface (`texte`), pour qu'une erreur standard dise la même chose.
+impl std::fmt::Display for Refus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.texte())
+    }
+}
+
+impl std::error::Error for Refus {}
+
 impl Refus {
     fn texte(self) -> String {
         match self {

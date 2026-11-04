@@ -37,6 +37,15 @@ pub(crate) enum Echec {
     CopieRefusee(Refus, Redemande),
 }
 
+// Le texte déjà montré par l'interface (`raison`), pour qu'une erreur standard dise la même chose.
+impl std::fmt::Display for Echec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.raison())
+    }
+}
+
+impl std::error::Error for Echec {}
+
 /// Ce qu'a donné la redemande d'une copie refusée.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Redemande {
@@ -65,6 +74,15 @@ pub(crate) enum Refus {
     /// Datée dans le futur : elle ne vieillirait jamais.
     DateFuture,
 }
+
+// Le texte déjà montré par l'interface (`texte`), pour qu'une erreur standard dise la même chose.
+impl std::fmt::Display for Refus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.texte())
+    }
+}
+
+impl std::error::Error for Refus {}
 
 impl Refus {
     /// La raison, prête à suivre « copie gardée refusée, ».

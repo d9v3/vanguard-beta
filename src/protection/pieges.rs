@@ -57,6 +57,15 @@ enum Refus {
     Douteuse(crate::sceau::Doute),
 }
 
+// Le texte déjà montré par l'interface (`texte`), pour qu'une erreur standard dise la même chose.
+impl std::fmt::Display for Refus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.texte())
+    }
+}
+
+impl std::error::Error for Refus {}
+
 impl Refus {
     fn texte(self) -> &'static str {
         match self {

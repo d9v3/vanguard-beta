@@ -5785,4 +5785,38 @@ mod tests_menu {
             assert_eq!(manquants, Vec::<String>::new(), "{document}, tableau « {titre} »");
         }
     }
+
+    /// LANG-ERRWRAP (CONFORMITE-ANSSI.md) : les erreurs rendues par le crate sont des erreurs standard, avec un texte.
+    /// Une variante de chaque, de quoi casser la compilation si `Display` ou `Error` venait à manquer.
+    #[test]
+    fn erreurs_standard() {
+        fn dite(e: &dyn std::error::Error) {
+            assert!(!e.to_string().trim().is_empty(), "{e:?}");
+        }
+        use crate::socle::cache;
+        dite(&crate::compte_rendu::envoi::Refus::TropGros);
+        dite(&crate::protection::manifeste::PasEcrit::SansReference);
+        dite(&crate::modele::Echec::new("essai", crate::modele::Raison::Droits));
+        dite(&crate::optimiser::annulables::PourquoiPas::NonReleve);
+        dite(&crate::protection::cles_connues::Refus::CarnetModifie);
+        dite(&crate::sceau::Doute::HorsVanguard);
+        dite(&cache::Refus::Effacee);
+        dite(&cache::Echec::SansReponse);
+        dite(&cache::Echec::CopieRefusee(
+            cache::Refus::DateFuture,
+            cache::Redemande::Attente,
+        ));
+        dite(&crate::chiffrement::Refus::Authentification);
+        dite(&crate::http::Refus::Certificat("UnknownIssuer".into()));
+        dite(&crate::http::Refus::Reseau);
+        dite(&crate::sauvegarde::Refus::Identite);
+        dite(&crate::socle::SansVerrou::Impossible("EACCES".into()));
+        #[cfg(target_os = "linux")]
+        {
+            dite(&crate::machine::linux::veilleur::Refus::Erreur(22));
+            dite(&crate::machine::linux::connexions::PasLue::Illisible("droits".into()));
+        }
+        #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+        dite(&crate::socle::relro::Echec::Mprotect(13));
+    }
 }

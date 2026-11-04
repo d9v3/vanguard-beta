@@ -395,6 +395,8 @@ impl std::fmt::Display for PasEcrit {
     }
 }
 
+impl std::error::Error for PasEcrit {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

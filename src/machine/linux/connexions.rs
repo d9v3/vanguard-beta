@@ -180,6 +180,25 @@ pub(crate) enum PasLue {
     Illisible(String),
 }
 
+impl std::fmt::Display for PasLue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PasLue::Absente => f.write_str(crate::tr!("absente", "missing")),
+            PasLue::Journal => f.write_str(crate::tr!(
+                "écriture en attente dans son journal",
+                "write pending in its journal"
+            )),
+            PasLue::TropGrosse => f.write_str(crate::tr!(
+                "base trop grosse pour Vanguard",
+                "database too big for Vanguard"
+            )),
+            PasLue::Illisible(x) => write!(f, "{} : {x}", crate::tr!("illisible", "unreadable")),
+        }
+    }
+}
+
+impl std::error::Error for PasLue {}
+
 /// Les octets d'une base SQLite, seulement si elle se lit seule : pas de journal WAL ni de journal de retour en
 /// arrière non vide à côté (le mode WAL se lit aux octets 18 et 19 de l'en-tête, à 2).
 pub(crate) fn base(chemin: &Path) -> Result<Vec<u8>, PasLue> {

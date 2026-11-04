@@ -194,6 +194,18 @@ pub(crate) enum SansVerrou {
     Impossible(String),
 }
 
+// Sans le nom du fichier, que seul `erreur` connaît.
+impl std::fmt::Display for SansVerrou {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SansVerrou::Occupe => f.write_str(tr!("tenu par un autre Vanguard", "held by another Vanguard")),
+            SansVerrou::Impossible(r) => write!(f, "{} ({r})", tr!("verrou inutilisable", "lock unusable")),
+        }
+    }
+}
+
+impl std::error::Error for SansVerrou {}
+
 impl SansVerrou {
     /// L'erreur que rend une écriture refusée faute de verrou.
     pub(crate) fn erreur(&self, nom: &str) -> std::io::Error {

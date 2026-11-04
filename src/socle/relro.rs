@@ -51,6 +51,8 @@ impl std::fmt::Display for Echec {
     }
 }
 
+impl std::error::Error for Echec {}
+
 /// La plage à protéger, comme `_dl_protect_relro` de glibc : début et fin arrondis tous deux à la page inférieure.
 /// La dernière page, partagée avec `.data` quand le segment ne finit pas sur une page, reste écrivable : la protéger
 /// rendrait `.data` en lecture seule. `None` : rien à protéger (moins d'une page), ou une adresse qui déborde.

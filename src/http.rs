@@ -305,6 +305,25 @@ pub(crate) enum Refus {
     Reseau,
 }
 
+// Le texte du vérificateur (rustls), tel quel : il ne porte que le nom du site et la cause.
+impl std::fmt::Display for Refus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refus::Certificat(raison) => write!(
+                f,
+                "{}{raison}",
+                crate::tr!("certificat refusé : ", "certificate refused: ")
+            ),
+            Refus::Reseau => f.write_str(crate::tr!(
+                "pas de réponse HTTPS avec un certificat",
+                "no HTTPS answer with a certificate"
+            )),
+        }
+    }
+}
+
+impl std::error::Error for Refus {}
+
 /// Ce qu'un site HTTPS a présenté : le certificat de feuille (DER), tel que reçu, et le code de la réponse.
 pub(crate) struct Presente {
     pub code: u16,

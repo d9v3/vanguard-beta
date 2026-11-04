@@ -110,6 +110,23 @@ pub(crate) enum Refus {
     Authentification,
 }
 
+impl std::fmt::Display for Refus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Refus::Format => crate::tr!(
+                "pas un fichier chiffré de Vanguard, ou tronqué",
+                "not a Vanguard encrypted file, or truncated"
+            ),
+            Refus::Authentification => crate::tr!(
+                "phrase incorrecte, ou fichier modifié",
+                "wrong passphrase, or file changed"
+            ),
+        })
+    }
+}
+
+impl std::error::Error for Refus {}
+
 impl Cle {
     pub(crate) fn nouvelle() -> std::io::Result<Cle> {
         let mut cle = Cle::vide();

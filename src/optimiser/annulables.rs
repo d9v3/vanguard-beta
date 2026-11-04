@@ -152,6 +152,15 @@ pub(crate) enum PourquoiPas {
     Forme(String),
 }
 
+// Le texte déjà montré par l'interface (`texte`), pour qu'une erreur standard dise la même chose.
+impl std::fmt::Display for PourquoiPas {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.texte())
+    }
+}
+
+impl std::error::Error for PourquoiPas {}
+
 impl PourquoiPas {
     pub(crate) fn texte(&self) -> String {
         match self {

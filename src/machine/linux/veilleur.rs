@@ -514,6 +514,15 @@ pub(crate) enum Refus {
     Erreur(i32),
 }
 
+// Le texte déjà montré par l'interface (`raison`), pour qu'une erreur standard dise la même chose.
+impl std::fmt::Display for Refus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.raison())
+    }
+}
+
+impl std::error::Error for Refus {}
+
 impl Refus {
     pub(crate) fn raison(&self) -> String {
         match self {

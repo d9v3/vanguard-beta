@@ -592,6 +592,8 @@ impl std::fmt::Display for PasEcrit {
     }
 }
 
+impl std::error::Error for PasEcrit {}
+
 /// La référence `reference` peut-elle être réécrite d'après la clé `racine` sans accord ? Oui quand elle n'a changé
 /// que dans ce que le déploiement y pose ; une référence absente ne l'est que là où aucune clé n'a encore la sienne
 /// (premier déploiement sur cet ordinateur).
