@@ -636,7 +636,7 @@ mod tests {
             &donnees,
             &base.join("cle-donnees"),
             &base.join("local"),
-            "phrase",
+            &crate::chiffrement::Phrase::from("phrase"),
             (64, 1, 1),
         )
         .unwrap();
@@ -654,7 +654,7 @@ mod tests {
             &donnees,
             &base.join("cle-donnees"),
             &base.join("local"),
-            "phrase",
+            &crate::chiffrement::Phrase::from("phrase"),
             (64, 1, 1),
         )
         .unwrap();

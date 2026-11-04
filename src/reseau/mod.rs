@@ -2134,8 +2134,8 @@ mod tests {
         let carnet = r#"{"reseaux":{"3c:22:fb:00:00:01":{"nom":"Salon","appareils":{}}}}"#;
         std::fs::write(donnees.join("appareils.json"), carnet).unwrap();
         let cle_locale = dossier_local().join("cle-donnees");
-        let phrase = "phrase de test assez longue";
-        crate::chiffrement::proteger_dans(&donnees, &cle_locale, &d.join("local"), phrase, (64, 1, 1)).unwrap();
+        let phrase = crate::chiffrement::Phrase::from("phrase de test assez longue");
+        crate::chiffrement::proteger_dans(&donnees, &cle_locale, &d.join("local"), &phrase, (64, 1, 1)).unwrap();
         let mut base = Base::ouvrir_carnet(&donnees).unwrap();
         assert_eq!(base.reseaux["3c:22:fb:00:00:01"].nom.as_deref(), Some("Salon"));
         base.reseaux.get_mut("3c:22:fb:00:00:01").unwrap().nom = Some("Cuisine".into());
@@ -2296,8 +2296,14 @@ mod tests {
         std::fs::create_dir_all(&local).unwrap();
         std::fs::write(donnees.join("appareils.json"), r#"{"reseaux":{}}"#).unwrap();
         let cle_locale = dossier_local().join("cle-donnees-enveloppe-retiree");
-        crate::chiffrement::proteger_dans(&donnees, &cle_locale, &local, "phrase de test assez longue", (64, 1, 1))
-            .unwrap();
+        crate::chiffrement::proteger_dans(
+            &donnees,
+            &cle_locale,
+            &local,
+            &crate::chiffrement::Phrase::from("phrase de test assez longue"),
+            (64, 1, 1),
+        )
+        .unwrap();
         assert!(crate::protection::cles_connues::noter(&cle));
         std::fs::remove_file(donnees.join(crate::chiffrement::ENVELOPPE)).unwrap();
         let clair = r#"{"reseaux":{"3c:22:fb:00:00:01":{"nom":"Salon","appareils":{}}}}"#;
