@@ -147,6 +147,93 @@ pub(crate) fn contient_mot(texte: &str, motif: &str) -> bool {
     false
 }
 
+/// Le Bureau à distance de Windows (TermService, UmRdpService, SessionEnv, mstsc et ses hôtes de session) et SSH
+/// (sshd) : ce ne sont pas des « outils » de prise de contrôle, et les arrêter couperait une session à distance. Un
+/// service ou un processus de ce nom n'est jamais retiré ni arrêté, même quand son chemin ou son nom affiché
+/// ressemble à un outil du catalogue (défense D6d). `nom` : un nom de service, de processus ou un chemin, « .exe »
+/// ou non, casse ignorée.
+#[cfg(any(windows, test))]
+fn jamais_retire(nom: &str) -> bool {
+    const COMPOSANTS: &[&str] = &[
+        "termservice",
+        "umrdpservice",
+        "sessionenv",
+        "mstsc",
+        "rdpclip",
+        "rdpinit",
+        "rdpshell",
+        "rdpsa",
+        "sshd",
+        "sshd-session",
+        "sshd-auth",
+    ];
+    let fichier = nom
+        .trim()
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let simple = fichier.strip_suffix(".exe").unwrap_or(&fichier);
+    COMPOSANTS.contains(&simple)
+}
+
+/// Ce que le parcours fait d'un outil de prise de contrôle en cours d'exécution, avant toute question.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Fermeture {
+    /// Ni connecté ni pendant une session à distance : la question est posée (« non » par défaut).
+    Question,
+    /// Connecté, ou une session à distance en cours, ou les connexions illisibles : refusé sans question, avec la
+    /// raison ; rien n'est fermé ni retiré.
+    Refus(String),
+}
+
+/// La fermeture d'un outil en cours (`connecte` : un de ses processus a une connexion ouverte en ce moment) selon la
+/// garde de session (`garde` : `None` quand les connexions de cet ordinateur se lisent et qu'aucune session à
+/// distance n'y est ouverte, sinon la raison). Jamais de question qui pourrait couper la session de la personne qui
+/// aide : connecté, c'est refusé, quoi qu'en dise la garde.
+fn fermeture(nom: &str, connecte: bool, garde: Option<&str>) -> Fermeture {
+    if connecte {
+        return Fermeture::Refus(trf!(
+            "{nom} a une connexion ouverte en ce moment : une session à distance est peut-être en cours par lui. Vanguard ne le ferme pas et ne le retire pas. Si vous n'avez rien demandé, débranchez Internet (câble, Wi-Fi), puis revenez ici.",
+            "{nom} has a connection open right now: a remote session may be in progress through it. Vanguard does not close or remove it. If you did not ask for anything, unplug the Internet (cable, Wi-Fi), then come back here."
+        ));
+    }
+    match garde {
+        Some(raison) => Fermeture::Refus(trf!(
+            "{nom} est en cours d'exécution et {raison} : Vanguard ne le ferme pas et ne le retire pas, une session pourrait passer par lui.",
+            "{nom} is running and {raison}: Vanguard does not close or remove it, a session could go through it."
+        )),
+        None => Fermeture::Question,
+    }
+}
+
+/// La garde de session de cet ordinateur, lue à l'instant (`gardes::sessions_a_distance`, le port réel du Bureau à
+/// distance compris, et `gardes::aucune_session`) : `None` si les connexions se lisent et qu'aucune session à
+/// distance n'est ouverte, sinon la raison.
+fn garde_de_session() -> Option<&'static str> {
+    use crate::protection::blocage::gardes;
+    let sessions = gardes::sessions_a_distance();
+    if sessions.is_none() {
+        return Some(tr!(
+            "les connexions de cet ordinateur ne se lisent pas",
+            "this computer's connections cannot be read"
+        ));
+    }
+    (!gardes::aucune_session(sessions.as_ref())).then_some(tr!(
+        "une session à distance est ouverte sur cet ordinateur (Bureau à distance, SSH, prise en main ou tunnel)",
+        "a remote session is open on this computer (Remote Desktop, SSH, remote control or tunnel)"
+    ))
+}
+
+/// Les logiciels du relevé qui ont un processus connecté en ce moment.
+fn connectes_du_releve(trouvailles: &[Trouvaille]) -> Vec<usize> {
+    trouvailles
+        .iter()
+        .filter(|t| t.trace == Trace::EnCours { connecte: true })
+        .map(|t| t.logiciel)
+        .collect()
+}
+
 fn aujourd_hui() -> NaiveDate {
     chrono::Local::now().date_naive()
 }
@@ -424,11 +511,22 @@ fn juger(trouvailles: &[Trouvaille], aujourd_hui: NaiveDate) -> Vec<Constat> {
         // L'objet : le logiciel par son nom français, le même quelle que soit la langue de l'interface.
         let constat = alerte(CAT, niveau, message).avec_objet(crate::modele::Objet::de("logiciel", logiciel.nom[0]));
         let retrait = lignes_du_retrait(&siens, false);
-        constats.push(if en_cours {
+        constats.push(if connecte {
             constat.manuel(
                 tr!(
                     "Vanguard ne coupe pas une connexion à distance en cours. Si vous n'avez rien demandé : débranchez Internet (câble, Wi-Fi), puis menu « Arnaques et vie privée » › « Mon ordinateur est-il contrôlé ? » pour le fermer et le retirer",
                     "Vanguard does not cut a remote connection in progress. If you did not ask for anything: unplug the Internet (cable, Wi-Fi), then menu “Scams and privacy” › “Is my computer being controlled?” to close and remove it"
+                ),
+                &[],
+            )
+        } else if en_cours {
+            // Pas connecté au relevé : la fermeture se propose dans le parcours, qui relit les connexions et la garde
+            // de session juste avant, et pose sa question (« non » par défaut) ; jamais depuis une liste de
+            // corrections, que rien ne rejuge au moment de fermer.
+            constat.manuel(
+                tr!(
+                    "Il tourne sans connexion ouverte en ce moment : menu « Arnaques et vie privée » › « Mon ordinateur est-il contrôlé ? » pour le fermer et le retirer (une question vous sera posée ; Vanguard refuse s'il se connecte entre-temps ou si une session à distance est ouverte)",
+                    "It is running with no connection open right now: menu “Scams and privacy” › “Is my computer being controlled?” to close and remove it (you will be asked; Vanguard refuses if it connects in the meantime or if a remote session is open)"
                 ),
                 &[],
             )
@@ -1703,6 +1801,10 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
         let Some(i) = reconnu(nom).or_else(|| reconnu(affiche)).or_else(|| reconnu(chemin)) else {
             continue;
         };
+        // TermService, sshd… : jamais arrêtés ni retirés, même si leur chemin ressemble à un outil.
+        if jamais_retire(nom) {
+            continue;
+        }
         t.push(Trouvaille {
             logiciel: i,
             trace: Trace::Demarrage,
@@ -1735,6 +1837,11 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
         let Some(i) = reconnu(nom).or_else(|| reconnu(fichier)) else {
             continue;
         };
+        // mstsc, rdpclip, sshd… dans un dossier d'outil : « Stop-Process -Name » fermerait aussi le vrai, et la
+        // session qu'il tient.
+        if jamais_retire(nom) || jamais_retire(fichier) {
+            continue;
+        }
         t.push(Trouvaille {
             logiciel: i,
             trace: Trace::EnCours {
@@ -1930,11 +2037,20 @@ pub fn menu() {
     }
     let mut correctifs: Vec<Vec<String>> = Vec::new();
     let mut noms: Vec<&str> = Vec::new();
+    // Les outils en cours dont la fermeture est acceptée, et la place de leur correctif.
+    let mut fermes: Vec<(usize, &str, usize)> = Vec::new();
     for &(i, logiciel) in &presents {
         let nom = logiciel.nom();
         let siens: Vec<&Trouvaille> = visibles.iter().copied().filter(|t| t.logiciel == i).collect();
         let en_cours = siens.iter().any(|t| matches!(t.trace, Trace::EnCours { .. }));
         if en_cours {
+            let connecte = siens.iter().any(|t| t.trace == Trace::EnCours { connecte: true });
+            if let Fermeture::Refus(raison) = fermeture(nom, connecte, garde_de_session()) {
+                println!();
+                dire(&raison);
+                trp!("  {nom} : gardé.", "  {nom}: kept.");
+                continue;
+            }
             // Le second accord : la personne qui aide peut être connectée par ce programme même.
             println!();
             dire(&trf!(
@@ -1976,11 +2092,45 @@ pub fn menu() {
             );
             continue;
         }
+        if en_cours {
+            fermes.push((i, nom, correctifs.len()));
+        }
         correctifs.push(commandes);
         noms.push(nom);
     }
     if correctifs.is_empty() {
         return;
+    }
+    // Relu juste avant de fermer : un outil connecté depuis la question, ou une session ouverte entre-temps, n'est
+    // ni fermé ni retiré (rien ne rejuge une commande de fermeture une fois partie).
+    if !fermes.is_empty() {
+        // Des processus qui ne se relisent pas : leur état n'est pas su, refusé comme une session.
+        let maintenant = relever_tout()
+            .filter(|r| r.lu.en_cours)
+            .map(|r| connectes_du_releve(&r.trouvailles));
+        let garde = garde_de_session();
+        let mut gardes_ici = Vec::new();
+        // De la dernière place à la première : retirer l'une ne déplace pas celles qui restent à voir.
+        for &(i, nom, place) in fermes.iter().rev() {
+            let connecte = maintenant.as_ref().is_some_and(|c| c.contains(&i));
+            let garde = garde.or_else(|| {
+                maintenant
+                    .is_none()
+                    .then_some(tr!("son état ne se relit pas", "its state cannot be read again"))
+            });
+            if let Fermeture::Refus(raison) = fermeture(nom, connecte, garde) {
+                gardes_ici.push(raison);
+                correctifs.remove(place);
+                noms.remove(place);
+            }
+        }
+        for raison in gardes_ici.iter().rev() {
+            println!();
+            dire(raison);
+        }
+        if correctifs.is_empty() {
+            return;
+        }
     }
     println!();
     let reussites = retirer_les_programmes(&correctifs);
@@ -2768,6 +2918,104 @@ mod tests {
         assert_eq!(
             sans_repetition(["a".to_string(), "b".to_string(), "a".to_string()]),
             ["a", "b"]
+        );
+    }
+
+    /// Défense D6d : un outil connecté est refusé sans question, quoi qu'en dise la garde de session ; pas connecté,
+    /// la question n'est posée que si les connexions se lisent et qu'aucune session à distance n'est ouverte.
+    #[test]
+    fn outil_connecte_refuse_sans_question_et_garde_de_session() {
+        let Fermeture::Refus(raison) = fermeture("AnyDesk", true, None) else {
+            panic!("connecté : jamais de question");
+        };
+        assert!(
+            raison.contains("AnyDesk") && raison.contains("ne le ferme pas"),
+            "{raison}"
+        );
+        assert!(matches!(fermeture("AnyDesk", true, Some("x")), Fermeture::Refus(_)));
+        let Fermeture::Refus(raison) = fermeture("AnyDesk", false, Some("une session à distance est ouverte")) else {
+            panic!("une session ouverte : jamais de question");
+        };
+        assert!(raison.contains("une session à distance est ouverte"), "{raison}");
+        assert_eq!(fermeture("AnyDesk", false, None), Fermeture::Question);
+        // Le relevé d'avant la fermeture : seuls les connectés y comptent.
+        let releve = [
+            trouvaille("AnyDesk", Trace::EnCours { connecte: true }, None, &[]),
+            trouvaille("RustDesk", Trace::EnCours { connecte: false }, None, &[]),
+            trouvaille("TeamViewer", Trace::Installe, None, &[]),
+        ];
+        assert_eq!(connectes_du_releve(&releve), [indice("AnyDesk")]);
+    }
+
+    /// Le bilan : connecté, rien d'autre que « débranchez » ; lancé sans connexion, le parcours est désigné, jamais
+    /// une fermeture depuis la liste des corrections (que rien ne rejugerait au moment de fermer).
+    #[test]
+    fn bilan_outil_lance_sans_connexion_designe_le_parcours() {
+        let aujourd_hui = jour("2026-10-18");
+        for (connecte, attendu) in [(true, "ne coupe pas"), (false, "sans connexion ouverte")] {
+            let t = [
+                trouvaille("AnyDesk", Trace::Installe, None, &["x"]),
+                trouvaille("AnyDesk", Trace::EnCours { connecte }, None, &[]),
+            ];
+            let k = juger(&t, aujourd_hui)[0].correctif.clone().unwrap();
+            assert!(!k.automatique && k.commandes.is_empty(), "{}", k.action);
+            assert!(k.action.contains(attendu), "{}", k.action);
+        }
+    }
+
+    /// TermService, mstsc, sshd… : jamais proposés à l'arrêt ni au retrait, même dans le dossier d'un outil ou sous
+    /// un nom affiché qui en porte le nom.
+    #[test]
+    fn composants_de_session_jamais_proposes() {
+        for nom in [
+            "TermService",
+            "termservice",
+            "UmRdpService",
+            "SessionEnv",
+            "mstsc",
+            "MSTSC.EXE",
+            r"C:\Windows\System32\rdpclip.exe",
+            "sshd",
+            "sshd.exe",
+            "/usr/sbin/sshd",
+            "sshd-session",
+        ] {
+            assert!(jamais_retire(nom), "{nom}");
+        }
+        for nom in ["AnyDesk", "AnyDesk.exe", "xrdp", "rustdesk", "sshd2", "mstsc-anydesk"] {
+            assert!(!jamais_retire(nom), "{nom}");
+        }
+        let sortie = "INS_FIN\n\
+                      SVC|TermService|Remote Desktop Services (AnyDesk)|Running|C:\\Program Files\\AnyDesk\\svchost.exe\n\
+                      SVC|sshd|OpenSSH SSH Server RustDesk|Running|C:\\Program Files\\RustDesk\\sshd.exe\n\
+                      SVC|AnyDesk|AnyDesk Service|Running|\"C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe\" --service\n\
+                      SVC_FIN\n\
+                      PRC|10|mstsc|C:\\Program Files\\AnyDesk\\mstsc.exe\n\
+                      PRC|11|AnyDesk|C:\\Program Files\\RustDesk\\sshd.exe\n\
+                      PRC|12|rdpclip|C:\\Users\\alice\\RustDesk\\rdpclip.exe\n\
+                      PRC|13|AnyDesk|C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe\n\
+                      PRC_FIN\n\
+                      CNX_FIN\n\
+                      RUN_FIN\n\
+                      FIC_FIN\n";
+        let t = lire_windows(sortie).expect("relevé lu");
+        let lignes: Vec<&String> = t.iter().flat_map(|x| x.arret.iter().chain(&x.retrait)).collect();
+        assert!(
+            lignes.iter().all(|l| {
+                let l = l.to_lowercase();
+                !l.contains("termservice") && !l.contains("sshd") && !l.contains("mstsc") && !l.contains("rdpclip")
+            }),
+            "{lignes:#?}"
+        );
+        // Le vrai AnyDesk reste vu, son service et son processus.
+        assert!(
+            t.iter()
+                .any(|x| x.trace == Trace::Demarrage && x.ou.contains("AnyDesk"))
+        );
+        assert_eq!(
+            t.iter().filter(|x| matches!(x.trace, Trace::EnCours { .. })).count(),
+            1,
+            "{t:#?}"
         );
     }
 
