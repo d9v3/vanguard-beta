@@ -7,6 +7,9 @@ la page prête. Rien n'est envoyé d'ici.
   - version et date : Cargo.toml et le jour ;
   - lignes de Rust : src/ et tests/, sans les commentaires ni les lignes vides ;
   - règles du bilan par système et fiches de l'audit du réseau : comptées dans le code (src/) ;
+  - sécurité de Vanguard lui-même : hôtes joints en HTTPS (src/http.rs), cibles de fuzzing (fuzz/Cargo.toml),
+    preuves Kani (outils/preuves/src), modules qui refusent l'unsafe sans recours (src/), cas du corpus de détection
+    (tests/corpus-detection) et règles YARA intégrées (assets/yara), comptés à la source ;
   - commandes en ligne : le programme les dit lui-même (« vanguard --help », en français), la liste comprise ;
   - commandes du guide : le programme les compte lui-même (« vanguard guide » sans terminal, hors ligne) ;
   - tests Linux et Wine : le résumé de la dernière vérification (outils/verifier.sh l'écrit dans
@@ -84,6 +87,27 @@ def regles() -> dict[str, int]:
         "REGLES_LINUX": linux + communes, "REGLES_WINDOWS": windows + communes, "REGLES_MACOS": macos + communes,
         "FICHES": fiches,
     }
+
+
+def securite() -> dict[str, int]:
+    """Les nombres de la section « Sécurité de Vanguard lui-même », comptés à la source comme les règles : les hôtes
+    de la liste fermée `HOTES` (src/http.rs), les cibles de fuzzing (fuzz/Cargo.toml), les preuves Kani
+    (outils/preuves/src), les modules qui portent `#![forbid(unsafe_code)]` en tête de ligne (comme le compte de
+    outils/verifier.sh), les cas du corpus de détection et les règles YARA de ReversingLabs."""
+    http = (RACINE / "src/http.rs").read_text(encoding="utf-8")
+    bloc = re.search(r"^const HOTES: &\[&str\] = &\[\n(.*?)^\];", http, re.S | re.M)
+    hotes = len(re.findall(r'^\s*"[^"]+",', bloc.group(1), re.M)) if bloc else 0
+    fuzz = len(re.findall(r"^\[\[bin\]\]", (RACINE / "fuzz/Cargo.toml").read_text(encoding="utf-8"), re.M))
+    kani = sum(f.read_text(encoding="utf-8").count("#[kani::proof]")
+               for f in (RACINE / "outils/preuves/src").rglob("*.rs"))
+    forbid = sum(1 for f in (RACINE / "src").rglob("*.rs")
+                 if re.search(r"^#!\[forbid\(unsafe_code\)\]$", f.read_text(encoding="utf-8"), re.M))
+    corpus = sum(1 for d in (RACINE / "tests/corpus-detection").iterdir() if (d / "attendu.toml").is_file())
+    yara = len(re.findall(r"^rule\s", (RACINE / "assets/yara/reversinglabs.yara").read_text(encoding="utf-8"), re.M))
+    if not (hotes and fuzz and kani and forbid and corpus and yara):
+        sys.exit("✖ nombres de sécurité introuvables (HOTES, fuzz/Cargo.toml, preuves Kani, forbid, corpus ou règles "
+                 "YARA ont changé ?)")
+    return {"HOTES": hotes, "FUZZ": fuzz, "KANI": kani, "FORBID": forbid, "CORPUS": corpus, "YARA": yara}
 
 
 def lancer(programme: Path, *arguments: str) -> str:
@@ -215,6 +239,7 @@ def main():
         "VM": verifications_vm(),
     }
     valeurs.update({cle: str(n) for cle, n in regles().items()})
+    valeurs.update({cle: str(n) for cle, n in securite().items()})
     valeurs["TESTS_LINUX"], valeurs["TESTS_WINE"] = tests(args)
     page = (RACINE / "outils/page-fonctions.html").read_text(encoding="utf-8")
     page = re.sub(r"<!--.*?-->\n", "", page, count=1, flags=re.S)
@@ -229,8 +254,8 @@ def main():
     args.sortie.parent.mkdir(parents=True, exist_ok=True)
     args.sortie.write_text(page, encoding="utf-8")
     print(f"Page des fonctions prête : {args.sortie}")
-    for cle in ("VERSION", "DATE", "LIGNES", "REGLES", "FICHES", "COMMANDES_CLI", "COMMANDES", "TESTS_LINUX",
-                "TESTS_WINE", "VM"):
+    for cle in ("VERSION", "DATE", "LIGNES", "REGLES", "FICHES", "HOTES", "FUZZ", "KANI", "FORBID", "CORPUS", "YARA",
+                "COMMANDES_CLI", "COMMANDES", "TESTS_LINUX", "TESTS_WINE", "VM"):
         print(f"  {cle.lower():<13} {valeurs[cle]}")
 
 
