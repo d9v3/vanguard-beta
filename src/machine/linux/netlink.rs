@@ -6,6 +6,7 @@
 //! attribut (nlattr) a 4 octets d'en-tête (longueur, type), sa donnée, et un bourrage jusqu'au multiple de 4
 //! (linux/netlink.h).
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 // FFI de libc : prise netlink (socket, setsockopt, sendto, recv).
 #![allow(unsafe_code)]
 
@@ -28,7 +29,7 @@ pub(crate) struct Attributs(pub Vec<u8>);
 impl Attributs {
     /// Un attribut, sa donnée telle quelle, bourré jusqu'au multiple de 4.
     pub(crate) fn brut(&mut self, genre: u16, donnee: &[u8]) {
-        let longueur = u16::try_from(4 + donnee.len()).unwrap_or(u16::MAX);
+        let longueur = u16::try_from(donnee.len().saturating_add(4)).unwrap_or(u16::MAX);
         self.0.extend_from_slice(&longueur.to_ne_bytes());
         self.0.extend_from_slice(&genre.to_ne_bytes());
         self.0.extend_from_slice(donnee);
@@ -55,12 +56,12 @@ impl Attributs {
         let mut dedans = Attributs(std::mem::take(&mut self.0));
         f(&mut dedans);
         self.0 = dedans.0;
-        let longueur = u16::try_from(self.0.len() - debut).unwrap_or(u16::MAX);
+        let longueur = u16::try_from(self.0.len().saturating_sub(debut)).unwrap_or(u16::MAX);
         #[expect(
             clippy::indexing_slicing,
             reason = "les deux octets en `debut` sont posés au début de cette fonction, et `f` n'a que des ajouts"
         )]
-        self.0[debut..debut + 2].copy_from_slice(&longueur.to_ne_bytes());
+        self.0[debut..debut.saturating_add(2)].copy_from_slice(&longueur.to_ne_bytes());
         self.bourrer();
     }
 
@@ -73,8 +74,9 @@ impl Attributs {
 
 /// Un message entier : l'en-tête, puis `corps` (déjà aligné sur 4).
 pub(crate) fn message(genre: u16, drapeaux: u16, sequence: u32, corps: &[u8]) -> Vec<u8> {
-    let longueur = u32::try_from(16 + corps.len()).unwrap_or(u32::MAX);
-    let mut m = Vec::with_capacity(16 + corps.len());
+    let taille = corps.len().saturating_add(16);
+    let longueur = u32::try_from(taille).unwrap_or(u32::MAX);
+    let mut m = Vec::with_capacity(taille);
     m.extend_from_slice(&longueur.to_ne_bytes());
     m.extend_from_slice(&genre.to_ne_bytes());
     m.extend_from_slice(&drapeaux.to_ne_bytes());
@@ -95,8 +97,9 @@ pub(crate) fn attributs(octets: &[u8]) -> impl Iterator<Item = (u16, &[u8])> {
         if longueur < 4 {
             return None;
         }
-        let donnee = octets.get(pos + 4..pos + longueur)?;
-        pos += longueur.next_multiple_of(4);
+        let donnee = octets.get(pos.checked_add(4)?..pos.checked_add(longueur)?)?;
+        // Un alignement qui déborderait : l'attribut suivant ne se lit plus.
+        pos = pos.checked_add(longueur.checked_next_multiple_of(4)?)?;
         Some((genre, donnee))
     })
 }
@@ -120,13 +123,13 @@ pub(crate) fn recus(octets: &[u8]) -> impl Iterator<Item = Recu<'_>> {
         if longueur < 16 {
             return None;
         }
-        let corps = octets.get(pos + 16..pos.checked_add(longueur)?)?;
+        let corps = octets.get(pos.checked_add(16)?..pos.checked_add(longueur)?)?;
         let recu = Recu {
             genre: u16::from_ne_bytes([entete[4], entete[5]]),
             sequence: u32::from_ne_bytes([entete[8], entete[9], entete[10], entete[11]]),
             corps,
         };
-        pos += longueur.next_multiple_of(4);
+        pos = pos.checked_add(longueur.checked_next_multiple_of(4)?)?;
         Some(recu)
     })
 }
@@ -228,7 +231,7 @@ impl Prise {
     /// (-errno, numéro du message visé).
     pub(crate) fn envoyer_et_attendre(&self, octets: &[u8], attendus: &[u32]) -> Result<(), (i32, u32)> {
         self.envoyer(octets)
-            .map_err(|e| (e.raw_os_error().map_or(-libc::EIO, |c| -c), 0))?;
+            .map_err(|e| (e.raw_os_error().map_or(-libc::EIO, i32::saturating_neg), 0))?;
         let mut restants: std::collections::HashSet<u32> = attendus.iter().copied().collect();
         let mut premiere = None;
         while !restants.is_empty() {
@@ -236,7 +239,7 @@ impl Prise {
                 Ok(m) if m.is_empty() => break,
                 Ok(m) => m,
                 // Délai dépassé : un accusé manque, ce n'est pas une réussite.
-                Err(e) => return Err(premiere.unwrap_or((e.raw_os_error().map_or(-libc::EIO, |c| -c), 0))),
+                Err(e) => return Err(premiere.unwrap_or((e.raw_os_error().map_or(-libc::EIO, i32::saturating_neg), 0))),
             };
             for r in recus(&morceau) {
                 if let Some((code, vise)) = erreur(&r) {
@@ -257,12 +260,12 @@ impl Prise {
     /// Envoie une demande de liste (NLM_F_DUMP) et rend les messages reçus jusqu'à NLMSG_DONE, ou l'erreur.
     pub(crate) fn lister(&self, octets: &[u8]) -> Result<Vec<u8>, i32> {
         self.envoyer(octets)
-            .map_err(|e| e.raw_os_error().map_or(-libc::EIO, |c| -c))?;
+            .map_err(|e| e.raw_os_error().map_or(-libc::EIO, i32::saturating_neg))?;
         let mut tout = Vec::new();
         loop {
             let morceau = self
                 .recevoir(true)
-                .map_err(|e| e.raw_os_error().map_or(-libc::EIO, |c| -c))?;
+                .map_err(|e| e.raw_os_error().map_or(-libc::EIO, i32::saturating_neg))?;
             if morceau.is_empty() {
                 return Err(-libc::EIO);
             }
@@ -289,6 +292,11 @@ impl Prise {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

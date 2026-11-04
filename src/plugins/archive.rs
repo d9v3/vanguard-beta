@@ -3,6 +3,8 @@
 //! dossier de dépliage (chemin absolu, lecteur, « .. », lien : refusés), et elle est bornée en taille, en nombre et
 //! en temps.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::path::Path;
 
 use crate::{tr, trf};
@@ -12,11 +14,13 @@ pub const OCTETS_MAX: usize = 50 << 20;
 const FICHIERS_MAX: usize = 500;
 
 fn mot16(o: &[u8], i: usize) -> Option<usize> {
-    Some(usize::from(u16::from_le_bytes(o.get(i..i + 2)?.try_into().ok()?)))
+    Some(usize::from(u16::from_le_bytes(
+        o.get(i..i.saturating_add(2))?.try_into().ok()?,
+    )))
 }
 
 fn mot32(o: &[u8], i: usize) -> Option<usize> {
-    usize::try_from(u32::from_le_bytes(o.get(i..i + 4)?.try_into().ok()?)).ok()
+    usize::try_from(u32::from_le_bytes(o.get(i..i.saturating_add(4))?.try_into().ok()?)).ok()
 }
 
 /// Une entrée lue : son chemin relatif (séparateurs « / ») et son contenu ; `None` pour un dossier.
@@ -39,16 +43,16 @@ pub fn lire(archive: &[u8], echeance: std::time::Instant) -> Result<Vec<Entree>,
     let debut = archive.len().saturating_sub(22 + 0xffff);
     let fin = (debut..archive.len().saturating_sub(21))
         .rev()
-        .find(|&i| archive.get(i..i + 4) == Some(b"PK\x05\x06"))
+        .find(|&i| archive.get(i..i.saturating_add(4)) == Some(b"PK\x05\x06"))
         .ok_or_else(illisible)?;
-    let nombre = mot16(archive, fin + 10).ok_or_else(illisible)?;
+    let nombre = mot16(archive, fin.saturating_add(10)).ok_or_else(illisible)?;
     if nombre > FICHIERS_MAX {
         return Err(trf!(
             "archive de plus de {FICHIERS_MAX} fichiers",
             "archive of more than {FICHIERS_MAX} files"
         ));
     }
-    let mut central = mot32(archive, fin + 16).ok_or_else(illisible)?;
+    let mut central = mot32(archive, fin.saturating_add(16)).ok_or_else(illisible)?;
     let mut entrees = Vec::new();
     let mut total = 0usize;
     // Les octets de chaque fichier lu (en-tête local et données), et les noms vus (en minuscules : deux noms qui ne
@@ -56,21 +60,27 @@ pub fn lire(archive: &[u8], echeance: std::time::Instant) -> Result<Vec<Entree>,
     let mut occupes: Vec<std::ops::Range<usize>> = Vec::new();
     let mut noms = std::collections::HashSet::new();
     for _ in 0..nombre {
-        if archive.get(central..central + 4) != Some(b"PK\x01\x02") {
+        if archive.get(central..central.saturating_add(4)) != Some(b"PK\x01\x02") {
             return Err(illisible());
         }
-        let drapeaux = mot16(archive, central + 8).ok_or_else(illisible)?;
-        let methode = mot16(archive, central + 10).ok_or_else(illisible)?;
-        let compresse = mot32(archive, central + 20).ok_or_else(illisible)?;
-        let decompresse = mot32(archive, central + 24).ok_or_else(illisible)?;
-        let n_nom = mot16(archive, central + 28).ok_or_else(illisible)?;
-        let n_extra = mot16(archive, central + 30).ok_or_else(illisible)?;
-        let n_comm = mot16(archive, central + 32).ok_or_else(illisible)?;
-        let externes = mot32(archive, central + 38).ok_or_else(illisible)?;
-        let local = mot32(archive, central + 42).ok_or_else(illisible)?;
-        let nom = archive.get(central + 46..central + 46 + n_nom).ok_or_else(illisible)?;
+        let drapeaux = mot16(archive, central.saturating_add(8)).ok_or_else(illisible)?;
+        let methode = mot16(archive, central.saturating_add(10)).ok_or_else(illisible)?;
+        let compresse = mot32(archive, central.saturating_add(20)).ok_or_else(illisible)?;
+        let decompresse = mot32(archive, central.saturating_add(24)).ok_or_else(illisible)?;
+        let n_nom = mot16(archive, central.saturating_add(28)).ok_or_else(illisible)?;
+        let n_extra = mot16(archive, central.saturating_add(30)).ok_or_else(illisible)?;
+        let n_comm = mot16(archive, central.saturating_add(32)).ok_or_else(illisible)?;
+        let externes = mot32(archive, central.saturating_add(38)).ok_or_else(illisible)?;
+        let local = mot32(archive, central.saturating_add(42)).ok_or_else(illisible)?;
+        let nom = archive
+            .get(central.saturating_add(46)..central.saturating_add(46).saturating_add(n_nom))
+            .ok_or_else(illisible)?;
         let nom = String::from_utf8(nom.to_vec()).map_err(|_| illisible())?;
-        central += 46 + n_nom + n_extra + n_comm;
+        central = central
+            .saturating_add(46)
+            .saturating_add(n_nom)
+            .saturating_add(n_extra)
+            .saturating_add(n_comm);
         let refus = |pourquoi: &str| {
             trf!(
                 "« {} » dans l'archive : {pourquoi}",
@@ -108,13 +118,15 @@ pub fn lire(archive: &[u8], echeance: std::time::Instant) -> Result<Vec<Entree>,
                 OCTETS_MAX >> 20
             ));
         }
-        if archive.get(local..local + 4) != Some(b"PK\x03\x04") {
+        if archive.get(local..local.saturating_add(4)) != Some(b"PK\x03\x04") {
             return Err(illisible());
         }
+        // Une position qui déborderait : l'archive est illisible, comme une position hors du fichier.
         let donnees = local
-            + 30
-            + mot16(archive, local + 26).ok_or_else(illisible)?
-            + mot16(archive, local + 28).ok_or_else(illisible)?;
+            .checked_add(30)
+            .and_then(|d| d.checked_add(mot16(archive, local.checked_add(26)?)?))
+            .and_then(|d| d.checked_add(mot16(archive, local.checked_add(28)?)?))
+            .ok_or_else(illisible)?;
         let fin_donnees = donnees.checked_add(compresse).ok_or_else(illisible)?;
         let brut = archive.get(donnees..fin_donnees).ok_or_else(illisible)?;
         if occupes.iter().any(|o| o.start < fin_donnees && local < o.end) {
@@ -166,12 +178,16 @@ pub fn deplier(archive: &Path, vers: &Path) -> Result<(), String> {
     };
     let f = super::ouvrir_sans_lien(archive, false).map_err(|_| refus())?;
     let mut octets = Vec::new();
-    std::io::Read::read_to_end(&mut std::io::Read::take(f, OCTETS_MAX as u64 + 1), &mut octets)
-        .map_err(|e| e.to_string())?;
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(f, u64::try_from(OCTETS_MAX).unwrap_or(u64::MAX).saturating_add(1)),
+        &mut octets,
+    )
+    .map_err(|e| e.to_string())?;
     if octets.len() > OCTETS_MAX {
         return Err(refus());
     }
-    for e in lire(&octets, std::time::Instant::now() + DELAI)? {
+    let maintenant = std::time::Instant::now();
+    for e in lire(&octets, maintenant.checked_add(DELAI).unwrap_or(maintenant))? {
         let cible = e.chemin.split('/').fold(vers.to_path_buf(), |c, p| c.join(p));
         let parent = if e.contenu.is_none() {
             Some(cible.as_path())
@@ -193,6 +209,11 @@ pub fn deplier(archive: &Path, vers: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
