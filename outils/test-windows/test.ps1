@@ -1373,11 +1373,12 @@ if ($numeroDefender) {
     if ($numeroDefender -eq '10') { Ok 'Outil présent dans le groupe, en 4.10' } else { Bug "Outil en 4.$numeroDefender, pas en 4.10" }
     LancerAvec 'protection' @() "4.$numeroDefender`n`n`nq`n"
     $t = (Sortie 'protection') -replace '\x1b\[[0-9;]*m', ''
-    # Les dix options, puis les listes, l'ASR et le pare-feu (lignes 11 à 13), puis « Tout voir ».
-    foreach ($titre in 'Protection en temps réel|Real-time protection', 'Blocage des logiciels indésirables|Potentially unwanted apps', 'Protection réseau|Network protection', 'Accès contrôlé aux dossiers|Controlled folder access', 'Blocage à la première détection|Block at first sight', 'Exclusions et programmes permis|Exclusions and allowed apps', 'Règles ASR|ASR rules', 'Pare-feu Windows|Windows Firewall', 'Tout voir|See everything') {
-        if ($t -match $titre) { Ok "Ligne affichée : $($titre.Split('|')[0])" } else { Bug "Ligne ABSENTE : $($titre.Split('|')[0])" }
+    # Hors d'une console, l'outil imprime son rapport complet, pas le menu (6d35a2f7) : les options, les deux
+    # listes (toujours dites, même vides ou masquées), l'ASR et le pare-feu.
+    foreach ($titre in 'Protection en temps réel|Real-time protection', 'Blocage des logiciels indésirables|Potentially unwanted apps', 'Protection réseau|Network protection', 'Accès contrôlé aux dossiers|Controlled folder access', 'Blocage à la première détection|Block at first sight', 'Exclusions de l''analyse|Scan exclusions', 'Programmes permis \(dossiers\)|Allowed apps \(folders\)', 'Règles ASR|ASR rules', 'Pare-feu Windows|Windows Firewall') {
+        if ($t -match $titre) { Ok "Ligne affichée : $($titre.Split('|')[0] -replace '\\', '')" } else { Bug "Ligne ABSENTE : $($titre.Split('|')[0] -replace '\\', '')" }
     }
-    if ($t -match 'Microsoft Defender — (antivirus actif|active antivirus)') { $ditActif = $true } else { $ditActif = $false }
+    if ($t -match 'Antivirus Defender\W+actif|Defender antivirus\W+active') { $ditActif = $true } else { $ditActif = $false }
     if ($modeDefender -eq 'Normal' -and -not $ditActif) { Bug 'Defender actif (Get-MpComputerStatus), mais l''en-tête ne dit pas « antivirus actif »' }
     elseif ($modeDefender -eq 'Normal') { Ok 'En-tête : Microsoft Defender, antivirus actif' }
     if ($t -match 'Lecture seule|Read-only') { Bug 'L''écran se dit encore en lecture seule' }
@@ -1425,9 +1426,9 @@ try {
 # Defender : MSFT_MpComputerStatus et MSFT_MpPreference par WMI (l'outil « Options de défense »).
 if ($numeroDefender) {
     LancerSurveille 'protection-sans-ps' @() "4.$numeroDefender`n`n`nq`n"
-    $t = Sortie 'protection-sans-ps'
+    $t = (Sortie 'protection-sans-ps') -replace '\x1b\[[0-9;]*m', ''
     $modeDefender = (Get-MpComputerStatus -ErrorAction SilentlyContinue).AMRunningMode
-    if ($modeDefender -eq 'Normal' -and $t -notmatch 'antivirus actif|active antivirus') { Bug 'Defender actif selon Get-MpComputerStatus, pas dit actif par la lecture WMI' }
+    if ($modeDefender -eq 'Normal' -and $t -notmatch 'Antivirus Defender\W+actif|Defender antivirus\W+active') { Bug 'Defender actif selon Get-MpComputerStatus, pas dit actif par la lecture WMI' }
     elseif ($t -match 'Protection réseau|Network protection') { Ok "Réglages de Defender lus (Get-MpComputerStatus : $modeDefender)" }
     else { Bug 'Réglages de Defender ABSENTS' }
     Sans-PowerShell 'Options de défense'

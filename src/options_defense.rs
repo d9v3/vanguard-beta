@@ -1084,15 +1084,25 @@ fn section_defender(l: &mut Vec<String>, e: &Etat) {
         );
     }
     imposee(l, e.strategies.exclusions);
-    if let Some(Compte::Nombre(n)) = e.preferences.as_ref().map(|p| p.applis_permises)
-        && n > 0
-    {
-        l.push(pointilles(
-            tr!("Programmes permis (dossiers)", "Allowed apps (folders)"),
-            &n.to_string(),
+    // Toujours dite, comme les exclusions : un programme permis écrit dans les dossiers protégés, et une ligne
+    // absente ne dirait pas si la liste est vide, masquée ou illisible.
+    let (texte, style) = match e.preferences.as_ref().map(|p| p.applis_permises) {
+        None => (
+            tr!("non vérifiés (illisibles)", "not checked (unreadable)").to_string(),
             "",
-        ));
-    }
+        ),
+        Some(Compte::Masque) => (
+            tr!("visibles avec l'accord admin.", "visible with admin approval").to_string(),
+            GRIS,
+        ),
+        Some(Compte::Nombre(0)) => (tr!("aucun", "none").to_string(), VERT),
+        Some(Compte::Nombre(n)) => (n.to_string(), ACCENT),
+    };
+    l.push(pointilles(
+        tr!("Programmes permis (dossiers)", "Allowed apps (folders)"),
+        &texte,
+        style,
+    ));
 }
 
 fn section_asr(l: &mut Vec<String>, e: &Etat) {
@@ -2410,6 +2420,33 @@ mod tests {
         assert_eq!(Compte::depuis(&[]), Compte::Nombre(0));
     }
 
+    /// La ligne des programmes permis est toujours là : vide, masquée et illisible se distinguent.
+    #[test]
+    fn programmes_permis_toujours_dits() {
+        let ligne = |e: &Etat| {
+            lignes(e)
+                .into_iter()
+                .find(|x| x.contains("Programmes permis (dossiers)"))
+                .map(|x| {
+                    [RESET, VERT, GRIS, ACCENT, DISCRET]
+                        .iter()
+                        .fold(x, |t, c| t.replace(c, ""))
+                })
+                .unwrap_or_default()
+        };
+        let mut e = courant();
+        for (compte, attendu) in [
+            (Compte::Nombre(0), " aucun"),
+            (Compte::Masque, " visibles avec l'accord admin."),
+        ] {
+            if let Some(p) = e.preferences.as_mut() {
+                p.applis_permises = compte;
+            }
+            assert!(ligne(&e).trim_end().ends_with(attendu), "{}", ligne(&e));
+        }
+        assert!(ligne(&Etat::default()).contains("non vérifiés"));
+    }
+
     #[test]
     fn falsifications_et_produits() {
         assert_eq!(SourceFalsif::depuis("Intune"), Some(SourceFalsif::Organisation));
@@ -2558,6 +2595,11 @@ mod tests {
         assert!(l.contains("* imposée par une stratégie"));
         assert!(l.contains("1 autre(s) règle(s)"));
         assert!(l.contains("1 dossier(s)"));
+        assert!(
+            l.lines()
+                .any(|x| x.contains("Programmes permis (dossiers)") && x.ends_with(&format!("{ACCENT}2{RESET}"))),
+            "{l}"
+        );
         assert!(l.contains("n'est géré par aucune organisation"));
         let en = crate::langue::en_anglais(|| lignes(&courant()).join("\n"));
         assert!(!en.contains("Read-only"));
