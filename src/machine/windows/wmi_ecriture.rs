@@ -1,12 +1,17 @@
 //! Retirer un abonnement WMI permanent signalé par le bilan, et le recréer, par le processus élevé, sans PowerShell
 //! (lot 3.5, passe c, R49). La ligne désigne le consumer (sa classe et son nom), le processus élevé juge : il relit
 //! root\subscription (`wmi::Abonnements`, qui n'ouvre que cet espace de noms et ne touche qu'à ses quatre classes),
-//! retrouve le consumer, ses liaisons (__FilterToConsumerBinding) et leurs filtres (__EventFilter), refuse tout
-//! abonnement de Windows ou de Defender (`gestes::consumer_wmi_protege`), et le bilan refait sur une lecture complète
-//! de cet instant (`portes::abonnement_signale`) doit proposer cette même ligne. Les propriétés des trois objets sont
-//! notées dans `gestes::WMI_AVANT_CLE` (`gestes::NoteWmi`, bornée, versionnée, avec son empreinte) avant tout
-//! changement, relues juste avant, puis la liaison, le consumer et le filtre qui ne sert à aucune autre liaison sont
-//! supprimés (IWbemServices::DeleteInstance), et l'état réel est relu.
+//! retrouve le consumer, ses liaisons (__FilterToConsumerBinding) et leurs filtres (__EventFilter), refuse un
+//! abonnement qui lance le vrai programme de Windows ou de Defender (`protege::protege` : à sa place et signé par
+//! Microsoft), et le bilan refait sur une lecture complète de cet instant (`portes::abonnement_signale`) doit proposer
+//! cette même ligne. Les propriétés des trois objets sont notées dans `gestes::WMI_AVANT_CLE` (`gestes::NoteWmi`,
+//! bornée, versionnée, avec son empreinte) avant tout changement, relues juste avant, puis la liaison, le consumer et
+//! le filtre qui ne sert à aucune autre liaison sont supprimés (IWbemServices::DeleteInstance), et l'état réel est relu.
+//!
+//! Ce qu'un refus de prudence arrêtait se demande dans la console élevée, non par défaut (D6d) : un nom de Windows ou
+//! de Defender qui n'est pas le vrai ; un retrait que Vanguard ne pourra pas défaire (vrai nom piégé, montré échappé ;
+//! référence de liaison illisible : les filtres restent tous ; filtre introuvable ; note trop longue ou refusée ;
+//! au-delà de 16 liaisons notées). La question est posée hors du fil COM, puis tout est relu et doit être identique.
 //!
 //! La remise est coupée jusqu'à la passe 3.5d : le processus élevé refuse la ligne sans rien lire ni écrire, et la
 //! note reste. En 3.5d, elle reviendra avec une confirmation dans la fenêtre administrateur, parce qu'une ligne
@@ -24,6 +29,7 @@ use winreg::enums::RegType::REG_BINARY;
 use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WOW64_64KEY};
 
 use super::corrections::Resultat;
+use super::protege::Protege;
 use super::wmi::{Abonnements, CLASSE_ABSENTE, Ligne, Parametre, Valeur};
 use crate::machine::gestes::{
     self, AbonnementWmi, Acte, GenreWmi, LiaisonNotee, NoteWmi, ObjetNote, PROPRIETES_FILTRE, PROPRIETES_LIAISON,
@@ -72,7 +78,8 @@ fn meme_cle(a: &str, b: &str) -> bool {
     a.to_lowercase() == b.to_lowercase()
 }
 
-/// Un nom tel que le bilan le lit (`portes::sur_une_ligne`) : sauts de ligne changés en une espace, bordures retirées.
+/// Un nom tel que le bilan le désigne (`portes::sur_une_ligne`, puis `gestes::nom_designe`) : sauts de ligne changés
+/// en une espace, bordures retirées, guillemets et barre oblique inverse changés en « _ ».
 fn lu_par_le_bilan(nom: &str) -> String {
     let mut sortie = String::with_capacity(nom.len());
     let mut saut = false;
@@ -87,7 +94,7 @@ fn lu_par_le_bilan(nom: &str) -> String {
             sortie.push(c);
         }
     }
-    sortie.trim().to_string()
+    gestes::nom_designe(sortie.trim())
 }
 
 fn nom_de(l: &Ligne) -> Option<&str> {
@@ -155,99 +162,237 @@ fn reference_locale(chemin: &str) -> Option<(String, String)> {
     super::portes::reference(relative)
 }
 
-/// Les liaisons lues : (filtre, classe du consumer, nom du consumer, la ligne). Une référence illisible arrête tout :
-/// sans elle, on ne saurait dire si un filtre sert encore à une autre liaison.
-fn liaisons(a: &Abonnements) -> Result<Vec<(String, String, String, Ligne)>, Illisible> {
-    let mut c = champs(&PROPRIETES_LIAISON);
-    c.extend(["Filter", "Consumer"]);
-    instances(a, LIAISON, &c)?
-        .into_iter()
-        .map(|l| {
-            let filtre = l.get("Filter").and_then(Valeur::texte).and_then(reference_locale);
-            let consumer = l.get("Consumer").and_then(Valeur::texte).and_then(reference_locale);
-            match (filtre, consumer) {
-                (Some((_, f)), Some((classe, nom))) => Ok((f, classe, nom, l)),
-                _ => Err(Illisible::Forme(
-                    tr!(
-                        "une liaison de root\\subscription a une référence illisible : rien d'écrit (à retirer à la main)",
-                        "a binding in root\\subscription has an unreadable reference: nothing written (remove by hand)"
-                    )
-                    .to_string(),
-                )),
-            }
-        })
-        .collect()
+/// Une liaison de root\subscription telle que lue : ses deux références (`None` : illisible, ou hors de cet espace de
+/// noms) et la ligne.
+struct LiaisonBrute {
+    filtre: Option<String>,
+    consumer: Option<(String, String)>,
+    ligne: Ligne,
 }
 
-/// L'abonnement `w` tel qu'il est à cet instant, noté ; `Ok(None)` si son consumer n'existe pas.
-fn lire_abonnement(a: &Abonnements, w: &AbonnementWmi) -> Result<Option<NoteWmi>, Illisible> {
+fn liaisons(a: &Abonnements) -> windows::core::Result<Vec<LiaisonBrute>> {
+    let mut c = champs(&PROPRIETES_LIAISON);
+    c.extend(["Filter", "Consumer"]);
+    Ok(instances(a, LIAISON, &c)?
+        .into_iter()
+        .map(|l| LiaisonBrute {
+            filtre: l
+                .get("Filter")
+                .and_then(Valeur::texte)
+                .and_then(reference_locale)
+                .map(|(_, f)| f),
+            consumer: l.get("Consumer").and_then(Valeur::texte).and_then(reference_locale),
+            ligne: l,
+        })
+        .collect())
+}
+
+fn vise(b: &LiaisonBrute, classe: &str, nom: &str) -> bool {
+    b.consumer
+        .as_ref()
+        .is_some_and(|(c, n)| c.eq_ignore_ascii_case(classe) && meme_cle(n, nom))
+}
+
+/// Une liaison du consumer : son chemin, le filtre visé (nom et chemin) s'il se retrouve, s'il peut partir avec le
+/// consumer (il ne sert à rien d'autre, n'a pas un nom de Windows ou de Defender, et toutes les liaisons se lisent),
+/// et sa note (`None` : filtre introuvable, ou une propriété qui ne se note pas).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LiaisonLue {
+    chemin: String,
+    filtre: Option<(String, String)>,
+    filtre_libre: bool,
+    notee: Option<LiaisonNotee>,
+}
+
+/// L'abonnement tel qu'il est à cet instant : tout ce que le retrait touche, et ce que la question a montré (deux
+/// lectures égales : rien n'a changé pendant la question).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Lecture {
+    /// Le vrai nom du consumer, tel que WMI le garde.
+    exact: String,
+    chemin: String,
+    /// Les propriétés du consumer, si elles se notent.
+    consumer: Option<ObjetNote>,
+    /// Ce qu'il lance (programme, ligne de commande, fichier de script), lu tel quel.
+    programmes: Vec<String>,
+    liaisons: Vec<LiaisonLue>,
+    /// Une liaison de root\subscription a une référence illisible : on ne sait pas si un filtre sert encore ailleurs,
+    /// tous restent.
+    reference_illisible: bool,
+}
+
+/// L'abonnement `w` tel qu'il est à cet instant ; `Ok(None)` si aucun consumer ne porte ce nom. Le nom de la ligne est
+/// celui que le bilan lit (`lu_par_le_bilan`) : un seul consumer doit s'y lire, sinon on ne saurait lequel retirer.
+fn lire(a: &Abonnements, w: &AbonnementWmi) -> Result<Option<Lecture>, Illisible> {
+    let consumers = instances(a, w.classe.classe(), &champs(w.classe.proprietes()))?;
+    let toutes = liaisons(a)?;
+    let filtres = instances(a, FILTRE, &champs(&PROPRIETES_FILTRE))?;
+    lire_selon(&consumers, &toutes, &filtres, w)
+}
+
+/// `lire`, les trois classes lues données (pur, pour les tests).
+fn lire_selon(
+    consumers: &[Ligne],
+    toutes: &[LiaisonBrute],
+    filtres: &[Ligne],
+    w: &AbonnementWmi,
+) -> Result<Option<Lecture>, Illisible> {
     let classe = w.classe.classe();
     let proprietes = w.classe.proprietes();
-    let consumers = instances(a, classe, &champs(proprietes))?;
-    let mut trouves = consumers.iter().filter(|l| nom_de(l) == Some(w.nom.texte()));
+    let mut trouves = consumers
+        .iter()
+        .filter(|l| nom_de(l).is_some_and(|n| n == w.nom.texte() || lu_par_le_bilan(n) == w.nom.texte()));
     let forme = |r: &str| Illisible::Forme(r.to_string());
     let Some(lu) = trouves.next() else {
-        // Le bilan lit chaque nom sur une ligne (espaces de bordure retirés, sauts de ligne changés en espace) : un
-        // consumer dont seul le nom ainsi lu correspond existe bel et bien, il n'est pas « déjà retiré ».
-        if consumers
-            .iter()
-            .filter_map(nom_de)
-            .any(|n| lu_par_le_bilan(n) == w.nom.texte())
-        {
-            return Err(forme(tr!(
-                "le vrai nom de ce consumer a des espaces en bordure ou des sauts de ligne : rien d'écrit (à retirer à la main)",
-                "this consumer's real name has leading or trailing spaces or line breaks: nothing written (remove by hand)"
-            )));
-        }
         return Ok(None);
     };
     if trouves.next().is_some() {
         return Err(forme(tr!(
-            "deux consumers portent ce nom : rien d'écrit",
-            "two consumers have this name: nothing written"
+            "deux consumers portent ce nom (ou le même nom, une fois lu sur une ligne) : rien d'écrit",
+            "two consumers have this name (or the same name, once read on one line): nothing written"
         )));
     }
-    let consumer = objet(lu, proprietes).ok_or_else(|| {
+    let exact = nom_de(lu).unwrap_or_default().to_string();
+    let chemin_de = |l: &Ligne| l.get("__RELPATH").and_then(Valeur::texte).map(str::to_string);
+    let sans_chemin = || {
         forme(tr!(
-            "propriété du consumer illisible ou trop longue pour être notée : rien d'écrit",
-            "consumer property unreadable or too long to be noted: nothing written"
+            "un objet de l'abonnement n'a pas de chemin lisible : rien d'écrit",
+            "an object of the subscription has no readable path: nothing written"
         ))
-    })?;
-    let liees = liaisons(a)?;
-    let filtres = instances(a, FILTRE, &champs(&PROPRIETES_FILTRE))?;
-    let a_nous = |c: &str, n: &str| c.eq_ignore_ascii_case(classe) && meme_cle(n, w.nom.texte());
-    let mut notees = Vec::new();
-    for (f, _, _, l) in liees.iter().filter(|(_, c, n, _)| a_nous(c, n)) {
-        let Some(filtre) = filtres.iter().find(|x| nom_de(x).is_some_and(|x| meme_cle(x, f))) else {
-            return Err(forme(tr!(
-                "une liaison de ce consumer vise un filtre introuvable : rien d'écrit (à retirer à la main)",
-                "a binding of this consumer points to a filter that cannot be found: nothing written (remove by hand)"
-            )));
+    };
+    let chemin = chemin_de(lu).ok_or_else(sans_chemin)?;
+    let programmes = proprietes
+        .iter()
+        .filter(|(p, _)| matches!(*p, "ExecutablePath" | "CommandLineTemplate" | "ScriptFileName"))
+        .filter_map(|(p, _)| lu.get(*p).and_then(Valeur::texte))
+        .filter(|t| !t.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    let reference_illisible = toutes.iter().any(|b| b.filtre.is_none() || b.consumer.is_none());
+    let mut lues = Vec::new();
+    for b in toutes.iter().filter(|b| vise(b, classe, &exact)) {
+        let chemin = chemin_de(&b.ligne).ok_or_else(sans_chemin)?;
+        let filtre = b
+            .filtre
+            .as_ref()
+            .and_then(|f| filtres.iter().find(|x| nom_de(x).is_some_and(|x| meme_cle(x, f))));
+        let Some(filtre) = filtre else {
+            lues.push(LiaisonLue {
+                chemin,
+                filtre: None,
+                filtre_libre: false,
+                notee: None,
+            });
+            continue;
         };
-        let partage = liees.iter().any(|(autre, c, n, _)| meme_cle(autre, f) && !a_nous(c, n));
-        let (Some(filtre), Some(liaison)) = (objet(filtre, &PROPRIETES_FILTRE), objet(l, &PROPRIETES_LIAISON)) else {
-            return Err(forme(tr!(
-                "propriété d'un filtre ou d'une liaison illisible ou trop longue pour être notée : rien d'écrit",
-                "property of a filter or binding unreadable or too long to be noted: nothing written"
-            )));
+        let nom_filtre = nom_de(filtre).unwrap_or_default().to_string();
+        // Partagé : une autre liaison le vise, dont le consumer n'est pas celui-ci (ou illisible).
+        let partage = toutes.iter().any(|autre| {
+            autre.filtre.as_ref().is_some_and(|f| meme_cle(f, &nom_filtre)) && !vise(autre, classe, &exact)
+        });
+        let filtre_libre = !partage && !reference_illisible && !gestes::abonnement_wmi_protege(&nom_filtre);
+        let notee = match (objet(filtre, &PROPRIETES_FILTRE), objet(&b.ligne, &PROPRIETES_LIAISON)) {
+            (Some(f), Some(l)) => Some(LiaisonNotee {
+                filtre_retire: filtre_libre,
+                filtre: f,
+                liaison: l,
+            }),
+            _ => None,
         };
-        notees.push(LiaisonNotee {
-            filtre_retire: !partage && !gestes::abonnement_wmi_protege(f),
-            filtre,
-            liaison,
+        lues.push(LiaisonLue {
+            chemin,
+            filtre: Some((nom_filtre, chemin_de(filtre).ok_or_else(sans_chemin)?)),
+            filtre_libre,
+            notee,
         });
     }
-    if notees.len() > gestes::NOTE_WMI_LIAISONS_MAX {
-        return Err(forme(tr!(
-            "trop de liaisons pour ce consumer : rien d'écrit (à retirer à la main)",
-            "too many bindings for this consumer: nothing written (remove by hand)"
-        )));
+    Ok(Some(Lecture {
+        exact,
+        chemin,
+        consumer: objet(lu, proprietes),
+        programmes,
+        liaisons: lues,
+        reference_illisible,
+    }))
+}
+
+/// La note de cette lecture, et ce qui empêchera Vanguard de remettre l'abonnement tel quel (pur). Au-delà de
+/// `NOTE_WMI_LIAISONS_MAX` liaisons, seules les premières sont notées ; pour toute autre raison, aucune note.
+fn note_et_manques(l: &Lecture, w: &AbonnementWmi) -> (Option<NoteWmi>, Vec<String>) {
+    let mut manques = Vec::new();
+    if l.exact != w.nom.texte() {
+        manques.push(trf!(
+            "son vrai nom est {}, que la note ne garde pas",
+            "its real name is {}, which the note does not keep",
+            super::protege::echappe_exact(&l.exact, NOM_MONTRE_MAX)
+        ));
     }
-    Ok(Some(NoteWmi {
+    if l.reference_illisible {
+        manques.push(
+            tr!(
+                "une liaison de root\\subscription a une référence illisible : les liaisons de ce consumer et le consumer partiraient, tous les filtres resteraient",
+                "a binding in root\\subscription has an unreadable reference: this consumer's bindings and the consumer would go, every filter would stay"
+            )
+            .to_string(),
+        );
+    }
+    if l.liaisons.iter().any(|x| x.filtre.is_none()) {
+        manques.push(
+            tr!(
+                "une liaison de ce consumer vise un filtre introuvable",
+                "a binding of this consumer points to a filter that cannot be found"
+            )
+            .to_string(),
+        );
+    }
+    let notees: Option<Vec<LiaisonNotee>> = l.liaisons.iter().map(|x| x.notee.clone()).collect();
+    if l.consumer.is_none() || (notees.is_none() && l.liaisons.iter().all(|x| x.filtre.is_some())) {
+        manques.push(
+            tr!(
+                "une propriété est illisible ou trop longue pour être notée",
+                "a property is unreadable or too long to be noted"
+            )
+            .to_string(),
+        );
+    }
+    let (Some(consumer), Some(mut notees), true) = (l.consumer.clone(), notees, manques.is_empty()) else {
+        return (None, manques);
+    };
+    let n = notees.len();
+    if n > gestes::NOTE_WMI_LIAISONS_MAX {
+        let max = gestes::NOTE_WMI_LIAISONS_MAX;
+        notees.truncate(max);
+        manques.push(trf!(
+            "{n} liaisons : non annulable au-delà des {max} notées",
+            "{n} bindings: not undoable beyond the {max} noted"
+        ));
+    }
+    let note = NoteWmi {
         classe: w.classe,
         consumer,
         liaisons: notees,
-    }))
+    };
+    if !note.valide(w) {
+        manques.push(
+            tr!(
+                "un filtre a un nom piégé (vide, trop long, avec un caractère de contrôle, ou en double) que la note ne garde pas",
+                "a filter has a trapped name (empty, too long, with a control character, or duplicated) that the note does not keep"
+            )
+            .to_string(),
+        );
+        return (None, manques);
+    }
+    if note.octets().is_none() {
+        manques.push(
+            tr!(
+                "l'abonnement est trop long pour être noté",
+                "the subscription is too long to be noted"
+            )
+            .to_string(),
+        );
+        return (None, manques);
+    }
+    (Some(note), manques)
 }
 
 /// Ce que lance le consumer noté : son programme, sa ligne de commande, son fichier de script.
@@ -309,23 +454,35 @@ fn lire_note(nom: &str) -> Option<NoteWmi> {
     NoteWmi::lire(&v.bytes)
 }
 
-/// Dans un fil COM à lui ; si WMI ne répond pas à temps, rien n'est sûr : dit tel quel. Le fil n'est pas arrêté,
-/// seulement abandonné : `abandon` levé, il n'écrit plus rien de neuf (vérifié avant la note, la première suppression
-/// et la première création), mais un geste déjà commencé peut s'achever après le message.
-fn dans_wmi(geste: impl FnOnce(&AtomicBool) -> Resultat + Send + 'static) -> Resultat {
+/// Dans un fil COM à lui ; si WMI ne répond pas à temps, rien n'est sûr : `None`. Le fil n'est pas arrêté, seulement
+/// abandonné : `abandon` levé, il n'écrit plus rien de neuf (vérifié avant la note, la première suppression et la
+/// première création), mais un geste déjà commencé peut s'achever après le message.
+fn dans_wmi_selon<T: Send + 'static>(geste: impl FnOnce(&AtomicBool) -> T + Send + 'static) -> Option<T> {
     let abandon = Arc::new(AtomicBool::new(false));
     let vu_du_fil = Arc::clone(&abandon);
-    super::wmi::com_delai(crate::compte_rendu::Contexte::Wmi, "abonnement WMI", DELAI, move || Ok(geste(&vu_du_fil))).unwrap_or_else(|| {
+    let r = super::wmi::com_delai(crate::compte_rendu::Contexte::Wmi, "abonnement WMI", DELAI, move || {
+        Ok(geste(&vu_du_fil))
+    });
+    if r.is_none() {
         abandon.store(true, Ordering::SeqCst);
-        Resultat::echec(
-            None,
-            tr!(
-                "WMI ne répond pas : l'état de l'abonnement est à relire (relancez le bilan) ; un retrait ou une remise déjà commencé peut s'achever après ce message",
-                "WMI does not answer: the subscription's state must be read again (run the check again); a removal or restore already started may finish after this message"
-            )
-            .to_string(),
+    }
+    r
+}
+
+fn dans_wmi(geste: impl FnOnce(&AtomicBool) -> Resultat + Send + 'static) -> Resultat {
+    dans_wmi_selon(geste).unwrap_or_else(muet)
+}
+
+/// WMI n'a pas répondu à temps.
+fn muet() -> Resultat {
+    Resultat::echec(
+        None,
+        tr!(
+            "WMI ne répond pas : l'état de l'abonnement est à relire (relancez le bilan) ; un retrait ou une remise déjà commencé peut s'achever après ce message",
+            "WMI does not answer: the subscription's state must be read again (run the check again); a removal or restore already started may finish after this message"
         )
-    })
+        .to_string(),
+    )
 }
 
 fn abandonne() -> Resultat {
@@ -338,143 +495,286 @@ fn abandonne() -> Resultat {
     )
 }
 
-/// Ce qui reste de l'abonnement noté : le consumer, une liaison vers lui, un filtre que Vanguard devait retirer.
-fn restes(a: &Abonnements, n: &NoteWmi, w: &AbonnementWmi) -> Result<Vec<String>, Illisible> {
+/// Ce qui reste de l'abonnement lu : le consumer, une liaison vers lui, un filtre que Vanguard devait retirer.
+fn restes(a: &Abonnements, l: &Lecture, w: &AbonnementWmi) -> Result<Vec<String>, Illisible> {
     let mut restes = Vec::new();
     let classe = w.classe.classe();
     if instances(a, classe, &["Name"])?
         .iter()
-        .any(|l| nom_de(l) == Some(w.nom.texte()))
+        .any(|x| nom_de(x) == Some(l.exact.as_str()))
     {
         restes.push(tr!("le consumer", "the consumer").to_string());
     }
-    let liees = liaisons(a)?
-        .iter()
-        .filter(|(_, c, nom, _)| c.eq_ignore_ascii_case(classe) && meme_cle(nom, w.nom.texte()))
-        .count();
+    let liees = liaisons(a)?.iter().filter(|b| vise(b, classe, &l.exact)).count();
     if liees > 0 {
         restes.push(trf!("{liees} liaison(s)", "{liees} binding(s)"));
     }
     let filtres = instances(a, FILTRE, &["Name"])?;
-    for l in n.liaisons.iter().filter(|l| l.filtre_retire) {
-        if filtres.iter().any(|f| nom_de(f) == l.filtre.nom()) {
-            let f = crate::ui::affichable(l.filtre.nom().unwrap_or_default());
+    for (nom, _) in l
+        .liaisons
+        .iter()
+        .filter(|x| x.filtre_libre)
+        .filter_map(|x| x.filtre.as_ref())
+    {
+        if filtres.iter().any(|f| nom_de(f) == Some(nom.as_str())) {
+            let f = crate::ui::affichable(nom);
             restes.push(trf!("le filtre « {f} »", "the filter “{f}”"));
         }
     }
     Ok(restes)
 }
 
-fn decrire(n: &NoteWmi) -> String {
-    let (l, f) = (n.liaisons.len(), n.liaisons.iter().filter(|l| l.filtre_retire).count());
+fn decrire(l: &Lecture) -> String {
+    let (n, f) = (l.liaisons.len(), l.liaisons.iter().filter(|x| x.filtre_libre).count());
     trf!(
-        "abonnement WMI présent ({l} liaison(s), {f} filtre(s) propre(s) à lui)",
-        "WMI subscription present ({l} binding(s), {f} filter(s) of its own)"
+        "abonnement WMI présent ({n} liaison(s), {f} filtre(s) propre(s) à lui)",
+        "WMI subscription present ({n} binding(s), {f} filter(s) of its own)"
     )
 }
 
-/// Dans le processus élevé : retire l'abonnement `w` si et seulement si le bilan, refait ici sur une lecture complète,
-/// le signale et propose cette même ligne.
-pub(super) fn retirer(w: &AbonnementWmi) -> Resultat {
-    let w = w.clone();
-    dans_wmi(move |abandon| retirer_ici(&w, abandon))
+/// Le plus de caractères montrés d'un nom échappé.
+const NOM_MONTRE_MAX: usize = 300;
+
+/// Ce que la console élevée demande avant de retirer. Posée hors du fil COM (son délai court pendant qu'on lit la
+/// question), puis le geste est refait de zéro : l'abonnement relu doit être celui que la personne a vu
+/// (`Accords::vu`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Question {
+    /// Un nom de Windows ou de Defender, ou un programme qui en porte le nom, sans être le vrai.
+    NomSeul { nom: String, programme: String },
+    /// Le retrait ne pourra pas être défait par Vanguard (tout ou partie) : les raisons.
+    SansNote { raisons: Vec<String> },
 }
 
-fn retirer_ici(w: &AbonnementWmi, abandon: &AtomicBool) -> Resultat {
-    let ligne = Acte::WmiAbonnementRetirer(w.clone()).ligne();
-    let protege = tr!(
-        "abonnement de Windows ou de Defender : Vanguard n'y touche jamais ; rien d'écrit",
-        "Windows or Defender subscription: Vanguard never touches it; nothing written"
-    );
-    if gestes::abonnement_wmi_protege(w.nom.texte()) {
-        return refus(protege.to_string());
+/// Les oui déjà donnés, et l'abonnement vu à la première question.
+#[derive(Clone, Debug, Default)]
+struct Accords {
+    nom_seul: bool,
+    /// Les raisons acceptées d'un retrait non annulable.
+    sans_note: Vec<String>,
+    vu: Option<Lecture>,
+}
+
+/// Une étape du geste : fini, ou une question à poser hors du fil COM (avec l'abonnement lu).
+enum Etape {
+    Fini(Resultat),
+    Demander(Question, Box<Lecture>),
+}
+
+/// Le jugement avant d'écrire, pur : le vrai programme de Windows ou de Defender refusé ; le bilan refait doit
+/// proposer la ligne ; un nom seul demandé ; un retrait non annulable demandé. `Ok` : la note à écrire, s'il y en a une.
+fn juger(
+    l: &Lecture,
+    w: &AbonnementWmi,
+    jugements: &[(Protege, &str)],
+    signale: bool,
+    accords: &Accords,
+) -> Result<Option<NoteWmi>, Etape> {
+    if jugements.iter().any(|(j, _)| *j == Protege::Vrai) {
+        return Err(Etape::Fini(refus(
+            tr!(
+                "l'abonnement lance le vrai programme de Sécurité Windows ou de Defender (à sa place, signé par Microsoft) : Vanguard n'y touche jamais ; rien d'écrit",
+                "the subscription starts the real Windows Security or Defender program (in its place, signed by Microsoft): Vanguard never touches it; nothing written"
+            )
+            .to_string(),
+        )));
     }
-    let a = match Abonnements::ouvrir() {
-        Ok(a) => a,
-        Err(e) => return Illisible::from(e).resultat(),
-    };
-    let note = match lire_abonnement(&a, w) {
-        Ok(Some(n)) => n,
-        Ok(None) => {
-            return Resultat::rien(
-                tr!(
-                    "l'abonnement n'existe plus : rien à retirer",
-                    "the subscription no longer exists: nothing to remove"
-                )
-                .to_string(),
-            );
-        }
-        Err(i) => return i.resultat(),
-    };
-    if gestes::consumer_wmi_protege(w.nom.texte(), &programmes(&note)) {
-        return refus(protege.to_string());
-    }
-    if !super::portes::abonnement_signale(&ligne) {
-        return refus(
+    if !signale {
+        return Err(Etape::Fini(refus(
             tr!(
                 "le bilan refait ici ne signale pas cet abonnement : rien d'écrit",
                 "the check run again here does not report this subscription: nothing written"
             )
             .to_string(),
-        );
+        )));
     }
-    if !note.valide(w) {
-        return refus(
-            tr!(
-                "un filtre de cet abonnement a un nom piégé (vide, trop long, avec un caractère de contrôle, ou en double) : rien d'écrit (à retirer à la main)",
-                "a filter of this subscription has a trapped name (empty, too long, with a control character, or duplicated): nothing written (remove by hand)"
-            )
-            .to_string(),
-        );
-    }
-    let Some(octets) = note.octets() else {
-        return refus(
-            tr!(
-                "abonnement trop long pour être noté : rien d'écrit (à retirer à la main)",
-                "subscription too long to be noted: nothing written (remove by hand)"
-            )
-            .to_string(),
-        );
-    };
-    // Notée d'abord : sans note, pas de changement (la remise serait perdue).
-    let nom_note = nom_note(w);
-    if abandon.load(Ordering::SeqCst) {
-        return abandonne();
-    }
-    if let Err(e) = ecrire_note(&nom_note, octets) {
-        return refus(trf!(
-            "les propriétés de l'abonnement ne se notent pas ({e}) : rien d'écrit",
-            "the subscription's properties cannot be noted ({e}): nothing written"
+    let nom_seul = jugements.iter().find(|(j, _)| *j == Protege::NomSeul).map(|(_, p)| *p);
+    if !accords.nom_seul && (nom_seul.is_some() || gestes::abonnement_wmi_protege(&l.exact)) {
+        return Err(Etape::Demander(
+            Question::NomSeul {
+                nom: l.exact.clone(),
+                programme: nom_seul.unwrap_or_default().to_string(),
+            },
+            Box::new(l.clone()),
         ));
     }
-    // Relu juste avant : jamais un abonnement changé depuis le jugement.
-    if !matches!(lire_abonnement(&a, w), Ok(Some(encore)) if encore == note) {
+    let (note, manques) = note_et_manques(l, w);
+    if !manques.iter().all(|m| accords.sans_note.contains(m)) {
+        return Err(Etape::Demander(
+            Question::SansNote { raisons: manques },
+            Box::new(l.clone()),
+        ));
+    }
+    Ok(note)
+}
+
+/// Ce que la console dit avant de demander, pour un nom de Windows ou de Defender qui n'est pas le vrai.
+fn texte_nom_seul(nom: &str, programme: &str) -> String {
+    let nom = super::protege::echappe_exact(nom, NOM_MONTRE_MAX);
+    if programme.is_empty() {
+        trf!(
+            "  Le consumer {nom} porte le nom d'un abonnement de Windows ou de Defender mais n'est pas lui : ceux de Windows écrivent au journal (NTEventLogEventConsumer), celui-ci lance une commande ou un script. Un vrai n'est jamais retiré.",
+            "  The consumer {nom} bears the name of a Windows or Defender subscription but is not it: Windows' own write to the event log (NTEventLogEventConsumer), this one runs a command or a script. A real one is never removed."
+        )
+    } else {
+        super::protege::texte_nom_seul(&nom, programme)
+    }
+}
+
+fn texte_sans_note(raisons: &[String]) -> String {
+    let r = crate::ui::affichable(&raisons.join(tr!(" ; ", "; ")));
+    trf!(
+        "  Vanguard ne pourra pas remettre cet abonnement tel qu'il était : {r}.",
+        "  Vanguard will not be able to put this subscription back as it was: {r}."
+    )
+}
+
+/// Dans le processus élevé : retire l'abonnement `w` si et seulement si le bilan, refait ici sur une lecture complète,
+/// le signale et propose cette même ligne ; une question posée dans la console élevée (non par défaut) pour un nom
+/// seul ou un retrait non annulable.
+pub(super) fn retirer(w: &AbonnementWmi) -> Resultat {
+    let mut accords = Accords::default();
+    // Trois questions au plus (nom seul, sans note, note refusée par le registre) : la quatrième étape finit.
+    for _ in 0..4 {
+        let (abonnement, a) = (w.clone(), accords.clone());
+        let Some(etape) = dans_wmi_selon(move |abandon| retirer_ici(&abonnement, &a, abandon)) else {
+            return muet();
+        };
+        let (question, lue) = match etape {
+            Etape::Fini(r) => return r,
+            Etape::Demander(q, l) => (q, l),
+        };
+        let oui = match &question {
+            Question::NomSeul { nom, programme } => {
+                super::protege::accord(&texte_nom_seul(nom, programme), super::protege::question_quand_meme())
+            }
+            Question::SansNote { raisons } => {
+                super::protege::accord(&texte_sans_note(raisons), super::protege::question_non_annulable())
+            }
+        };
+        if !oui {
+            return refus(super::protege::non_confirme());
+        }
+        match question {
+            Question::NomSeul { .. } => accords.nom_seul = true,
+            Question::SansNote { raisons } => accords.sans_note = raisons,
+        }
+        accords.vu.get_or_insert(*lue);
+    }
+    refus(tr!("geste inachevé : rien d'écrit", "unfinished action: nothing written").to_string())
+}
+
+/// Ce qui se supprime, dans l'ordre : les liaisons d'abord (le consumer ne se déclenche plus), puis le consumer, puis
+/// les filtres propres à lui ; jamais un filtre partagé, protégé, ou quand une liaison se lit mal.
+fn ordre<'a>(l: &'a Lecture, w: &AbonnementWmi) -> Vec<(&'static str, &'a str)> {
+    let mut ordre: Vec<(&str, &str)> = l.liaisons.iter().map(|x| (LIAISON, x.chemin.as_str())).collect();
+    ordre.push((w.classe.classe(), l.chemin.as_str()));
+    ordre.extend(
+        l.liaisons
+            .iter()
+            .filter(|x| x.filtre_libre)
+            .filter_map(|x| x.filtre.as_ref())
+            .map(|(_, chemin)| (FILTRE, chemin.as_str())),
+    );
+    ordre
+}
+
+fn retirer_ici(w: &AbonnementWmi, accords: &Accords, abandon: &AtomicBool) -> Etape {
+    let fini = Etape::Fini;
+    let ligne = Acte::WmiAbonnementRetirer(w.clone()).ligne();
+    let a = match Abonnements::ouvrir() {
+        Ok(a) => a,
+        Err(e) => return fini(Illisible::from(e).resultat()),
+    };
+    let lue = match lire(&a, w) {
+        Ok(Some(l)) => l,
+        Ok(None) => {
+            return fini(Resultat::rien(
+                tr!(
+                    "l'abonnement n'existe plus : rien à retirer",
+                    "the subscription no longer exists: nothing to remove"
+                )
+                .to_string(),
+            ));
+        }
+        Err(i) => return fini(i.resultat()),
+    };
+    if accords.vu.as_ref().is_some_and(|v| *v != lue) {
+        return fini(refus(
+            tr!(
+                "l'abonnement a changé pendant la question ; rien d'écrit",
+                "the subscription changed during the question; nothing written"
+            )
+            .to_string(),
+        ));
+    }
+    let programmes: Vec<String> = lue
+        .programmes
+        .iter()
+        .map(|p| match w.classe {
+            gestes::ClasseConsumer::Commande => crate::commande::decouper_commande(p).0,
+            gestes::ClasseConsumer::Script => p.clone(),
+        })
+        .collect();
+    let mut jugements: Vec<(Protege, &str)> = programmes
+        .iter()
+        .map(|p| (super::protege::protege(&lue.exact, p), p.as_str()))
+        .collect();
+    jugements.push((super::protege::protege(&lue.exact, ""), ""));
+    let signale = super::portes::abonnement_signale(&ligne);
+    let note = match juger(&lue, w, &jugements, signale, accords) {
+        Ok(n) => n,
+        Err(etape) => return etape,
+    };
+    // Notée d'abord : sans note, pas de changement, sauf accord « non annulable ».
+    let nom_note = nom_note(w);
+    if abandon.load(Ordering::SeqCst) {
+        return fini(abandonne());
+    }
+    let notee = if let Some(octets) = note.and_then(|n| n.octets()) {
+        match ecrire_note(&nom_note, octets) {
+            Ok(()) => true,
+            Err(e) => {
+                let mut raisons = note_et_manques(&lue, w).1;
+                raisons.push(trf!(
+                    "les propriétés de l'abonnement ne se notent pas ({e})",
+                    "the subscription's properties cannot be noted ({e})"
+                ));
+                if accords.sans_note != raisons {
+                    return Etape::Demander(Question::SansNote { raisons }, Box::new(lue));
+                }
+                effacer_note(&nom_note);
+                false
+            }
+        }
+    } else {
+        // Une note plus ancienne sous ce nom remettrait un autre abonnement : effacée.
         effacer_note(&nom_note);
-        return refus(
+        false
+    };
+    // Relu juste avant : jamais un abonnement changé depuis le jugement.
+    if !matches!(lire(&a, w), Ok(Some(encore)) if encore == lue) {
+        if notee {
+            effacer_note(&nom_note);
+        }
+        return fini(refus(
             tr!(
                 "l'abonnement a changé entre la lecture et l'écriture ; rien d'écrit",
                 "the subscription changed between reading and writing; nothing written"
             )
             .to_string(),
-        );
+        ));
     }
-    let avant = decrire(&note);
-    // La liaison d'abord (le consumer ne se déclenche plus), puis le consumer, puis les filtres propres à lui.
-    let mut ordre: Vec<(&str, &str)> = note
-        .liaisons
-        .iter()
-        .map(|l| (LIAISON, l.liaison.chemin.as_str()))
-        .collect();
-    ordre.push((w.classe.classe(), note.consumer.chemin.as_str()));
-    ordre.extend(
-        note.liaisons
-            .iter()
-            .filter(|l| l.filtre_retire)
-            .map(|l| (FILTRE, l.filtre.chemin.as_str())),
-    );
+    let mut avant = decrire(&lue);
+    if !notee {
+        avant.push_str(tr!(" ; sans note, non annulable", " ; no note, not undoable"));
+    }
+    let ordre = ordre(&lue, w);
     if abandon.load(Ordering::SeqCst) {
-        effacer_note(&nom_note);
-        return abandonne();
+        if notee {
+            effacer_note(&nom_note);
+        }
+        return fini(abandonne());
     }
     let mut refuse = None;
     for (classe, chemin) in ordre {
@@ -487,7 +787,12 @@ fn retirer_ici(w: &AbonnementWmi, abandon: &AtomicBool) -> Resultat {
             }
         }
     }
-    match restes(&a, &note, w) {
+    let garde = if notee {
+        tr!("la note est gardée", "the note is kept")
+    } else {
+        tr!("sans note", "no note")
+    };
+    fini(match restes(&a, &lue, w) {
         Ok(r) if r.is_empty() => Resultat::fait(avant),
         Ok(r) => {
             let r = r.join(", ");
@@ -495,20 +800,19 @@ fn retirer_ici(w: &AbonnementWmi, abandon: &AtomicBool) -> Resultat {
             Resultat::echec(
                 Some(avant),
                 trf!(
-                    "retrait incomplet{pourquoi} : il reste {r} ; la note est gardée",
-                    "incomplete removal{pourquoi}: {r} remain(s); the note is kept"
+                    "retrait incomplet{pourquoi} : il reste {r} ; {garde}",
+                    "incomplete removal{pourquoi}: {r} remain(s); {garde}"
                 ),
             )
         }
         Err(_) => Resultat::echec(
             Some(avant),
-            tr!(
-                "l'abonnement n'a pas pu être relu après le retrait : état inconnu, à relire (relancez le bilan) ; la note est gardée",
-                "the subscription could not be read again after removal: state unknown, check again (run the check again); the note is kept"
-            )
-            .to_string(),
+            trf!(
+                "l'abonnement n'a pas pu être relu après le retrait : état inconnu, à relire (relancez le bilan) ; {garde}",
+                "the subscription could not be read again after removal: state unknown, check again (run the check again); {garde}"
+            ),
         ),
-    }
+    })
 }
 
 /// Les propriétés d'un objet noté, prêtes pour `Abonnements::creer` ; une valeur absente n'est pas posée (WMI garde
@@ -547,10 +851,9 @@ fn memes_valeurs(notees: &ObjetNote, relues: &ObjetNote) -> bool {
 fn defaire_creation(a: &Abonnements, w: &AbonnementWmi, filtres_crees: &[String]) {
     let classe = w.classe.classe();
     if let Ok(liees) = liaisons(a) {
-        for (_, c, n, l) in &liees {
-            if c.eq_ignore_ascii_case(classe)
-                && meme_cle(n, w.nom.texte())
-                && let Some(chemin) = l.get("__RELPATH").and_then(Valeur::texte)
+        for b in &liees {
+            if vise(b, classe, w.nom.texte())
+                && let Some(chemin) = b.ligne.get("__RELPATH").and_then(Valeur::texte)
             {
                 let _ = a.supprimer(LIAISON, chemin);
             }
@@ -604,11 +907,17 @@ fn remettre_ici(w: &AbonnementWmi, abandon: &AtomicBool) -> Resultat {
             .to_string(),
         );
     };
-    if gestes::consumer_wmi_protege(w.nom.texte(), &programmes(&note)) {
+    // Passe 3.5d : un nom seul demandera, comme au retrait ; d'ici là, tout ce qui porte le nom de Defender est refusé.
+    let nom = note.consumer.nom().unwrap_or_default();
+    if gestes::abonnement_wmi_protege(nom)
+        || programmes(&note)
+            .iter()
+            .any(|p| super::protege::protege(nom, p) != Protege::Non)
+    {
         return refus(
             tr!(
-                "abonnement de Windows ou de Defender : Vanguard n'y touche jamais ; rien d'écrit",
-                "Windows or Defender subscription: Vanguard never touches it; nothing written"
+                "abonnement qui porte le nom de Windows ou de Defender : rien d'écrit",
+                "subscription bearing the name of Windows or Defender: nothing written"
             )
             .to_string(),
         );
@@ -620,7 +929,7 @@ fn remettre_ici(w: &AbonnementWmi, abandon: &AtomicBool) -> Resultat {
         Ok(a) => a,
         Err(e) => return Illisible::from(e).resultat(),
     };
-    match lire_abonnement(&a, w) {
+    match lire(&a, w) {
         Ok(None) => {}
         Ok(Some(_)) => {
             return refus(
@@ -719,7 +1028,7 @@ fn remettre_ici(w: &AbonnementWmi, abandon: &AtomicBool) -> Resultat {
         }
     }
     let avant = tr!("abonnement WMI absent", "WMI subscription absent").to_string();
-    let Ok(Some(relu)) = lire_abonnement(&a, w) else {
+    let Some(relu) = lire(&a, w).ok().flatten().and_then(|l| note_et_manques(&l, w).0) else {
         return Resultat::echec(
             Some(avant),
             tr!(
@@ -809,6 +1118,233 @@ mod tests {
         ] {
             assert_eq!(reference_locale(chemin), None, "{chemin}");
         }
+    }
+
+    fn ligne(champs: &[(&str, &str)]) -> Ligne {
+        champs
+            .iter()
+            .map(|(n, v)| ((*n).to_string(), Valeur::Texte((*v).to_string())))
+            .collect()
+    }
+
+    fn consumer(nom: &str) -> Ligne {
+        ligne(&[
+            ("Name", nom),
+            ("CommandLineTemplate", r"C:\Users\alice\AppData\Roaming\maj.exe -q"),
+            (
+                "__RELPATH",
+                &format!("CommandLineEventConsumer.Name=\"{}\"", nom_designe_essai(nom)),
+            ),
+        ])
+    }
+
+    fn nom_designe_essai(nom: &str) -> String {
+        nom.replace(['\r', '\n'], "")
+    }
+
+    fn filtre(nom: &str) -> Ligne {
+        ligne(&[
+            ("Name", nom),
+            ("Query", "SELECT * FROM __InstanceModificationEvent WITHIN 60"),
+            ("QueryLanguage", "WQL"),
+            ("EventNamespace", r"root\cimv2"),
+            ("__RELPATH", &format!("__EventFilter.Name=\"{nom}\"")),
+        ])
+    }
+
+    fn liaison(i: usize, filtre: Option<&str>, consumer: Option<&str>) -> LiaisonBrute {
+        LiaisonBrute {
+            filtre: filtre.map(str::to_string),
+            consumer: consumer.map(|n| ("CommandLineEventConsumer".to_string(), n.to_string())),
+            ligne: ligne(&[("__RELPATH", &format!("__FilterToConsumerBinding.n{i}"))]),
+        }
+    }
+
+    fn abonnement(nom: &str) -> AbonnementWmi {
+        AbonnementWmi {
+            classe: gestes::ClasseConsumer::Commande,
+            nom: gestes::NomConsumer::nouveau(nom).unwrap(),
+        }
+    }
+
+    fn lu(consumers: &[Ligne], toutes: &[LiaisonBrute], filtres: &[Ligne], w: &AbonnementWmi) -> Lecture {
+        match lire_selon(consumers, toutes, filtres, w) {
+            Ok(Some(l)) => l,
+            _ => panic!("lecture"),
+        }
+    }
+
+    fn question(e: Result<Option<NoteWmi>, Etape>) -> Question {
+        match e {
+            Err(Etape::Demander(q, _)) => q,
+            Err(Etape::Fini(r)) => panic!("fini : {}", r.raison),
+            Ok(_) => panic!("aucune question"),
+        }
+    }
+
+    fn refuse(e: Result<Option<NoteWmi>, Etape>) -> String {
+        match e {
+            Err(Etape::Fini(r)) if !r.reussi && r.avant.is_none() => r.raison,
+            _ => panic!("pas un refus"),
+        }
+    }
+
+    /// Le vrai programme de Defender (à sa place, signé) est refusé sans question, même après un oui au nom seul ; un
+    /// nom de Windows ou de Defender qui n'est pas lui se demande (le jugement du lieu et de la signature est dans
+    /// `protege`) ; un abonnement que le bilan refait ne signale pas est refusé.
+    #[test]
+    fn wmi_seul_le_vrai_est_refuse() {
+        let w = abonnement("Windows Defender Update");
+        let l = lu(
+            &[consumer("Windows Defender Update")],
+            &[liaison(0, Some("F"), Some("Windows Defender Update"))],
+            &[filtre("F")],
+            &w,
+        );
+        let faux = [(Protege::NomSeul, r"C:\Users\alice\AppData\Roaming\maj.exe")];
+        let q = question(juger(&l, &w, &faux, true, &Accords::default()));
+        assert!(
+            matches!(&q, Question::NomSeul { nom, .. } if nom == "Windows Defender Update"),
+            "{q:?}"
+        );
+        let oui = Accords {
+            nom_seul: true,
+            ..Accords::default()
+        };
+        assert!(matches!(juger(&l, &w, &faux, true, &oui), Ok(Some(_))));
+        let vrai = [(Protege::Vrai, r"C:\Program Files\Windows Defender\MpCmdRun.exe")];
+        assert!(refuse(juger(&l, &w, &vrai, true, &oui)).contains("Microsoft"));
+        assert!(refuse(juger(&l, &w, &[(Protege::Non, "")], false, &oui)).contains("bilan"));
+        // Un nom de Windows sur un consumer de commande : jamais le vrai (ceux de Windows écrivent au journal).
+        let w = abonnement("SCM Event Log Consumer");
+        let l = lu(&[consumer("SCM Event Log Consumer")], &[], &[], &w);
+        let q = question(juger(&l, &w, &[(Protege::Non, "")], true, &Accords::default()));
+        assert!(
+            matches!(&q, Question::NomSeul { programme, .. } if programme.is_empty()),
+            "{q:?}"
+        );
+        assert!(texte_nom_seul("SCM Event Log Consumer", "").contains("NTEventLogEventConsumer"));
+    }
+
+    /// Une liaison de root\subscription à la référence illisible : les liaisons de ce consumer et le consumer partent,
+    /// tous les filtres restent ; non annulable, demandé ; accepté, aucune note.
+    #[test]
+    fn wmi_reference_illisible_garde_les_filtres() {
+        let w = abonnement("Updater");
+        let toutes = [
+            liaison(0, Some("F1"), Some("Updater")),
+            liaison(1, Some("F2"), None),
+            liaison(2, None, Some("Autre")),
+        ];
+        let l = lu(&[consumer("Updater")], &toutes, &[filtre("F1"), filtre("F2")], &w);
+        assert!(l.reference_illisible);
+        let o = ordre(&l, &w);
+        assert!(o.iter().all(|(c, _)| *c != FILTRE), "{o:?}");
+        assert_eq!(
+            o,
+            [
+                (LIAISON, "__FilterToConsumerBinding.n0"),
+                ("CommandLineEventConsumer", "CommandLineEventConsumer.Name=\"Updater\"")
+            ]
+        );
+        let Question::SansNote { raisons } = question(juger(&l, &w, &[(Protege::Non, "")], true, &Accords::default()))
+        else {
+            panic!("sans note");
+        };
+        assert!(raisons.iter().any(|r| r.contains("illisible")), "{raisons:?}");
+        let oui = Accords {
+            sans_note: raisons,
+            ..Accords::default()
+        };
+        assert!(matches!(juger(&l, &w, &[(Protege::Non, "")], true, &oui), Ok(None)));
+        // Sans référence illisible, le filtre propre part ; un filtre partagé avec un autre consumer reste.
+        let toutes = [
+            liaison(0, Some("F1"), Some("Updater")),
+            liaison(1, Some("F2"), Some("Updater")),
+            liaison(2, Some("F2"), Some("Autre")),
+        ];
+        let l = lu(&[consumer("Updater")], &toutes, &[filtre("F1"), filtre("F2")], &w);
+        let filtres: Vec<&str> = ordre(&l, &w)
+            .into_iter()
+            .filter(|(c, _)| *c == FILTRE)
+            .map(|(_, p)| p)
+            .collect();
+        assert_eq!(filtres, ["__EventFilter.Name=\"F1\""]);
+        assert!(
+            matches!(juger(&l, &w, &[(Protege::Non, "")], true, &Accords::default()), Ok(Some(n)) if n.liaisons.len() == 2)
+        );
+    }
+
+    /// Un filtre introuvable : demandé, sans note. Plus de 16 liaisons : « non annulable au-delà des 16 notées »,
+    /// demandé, les 16 premières notées, toutes retirées.
+    #[test]
+    fn wmi_filtre_introuvable_et_liaisons_au_dela_de_la_note() {
+        let w = abonnement("Updater");
+        let l = lu(
+            &[consumer("Updater")],
+            &[liaison(0, Some("Parti"), Some("Updater"))],
+            &[],
+            &w,
+        );
+        let (note, manques) = note_et_manques(&l, &w);
+        assert!(
+            note.is_none() && manques.iter().any(|m| m.contains("introuvable")),
+            "{manques:?}"
+        );
+        assert!(matches!(
+            question(juger(&l, &w, &[(Protege::Non, "")], true, &Accords::default())),
+            Question::SansNote { .. }
+        ));
+        let n = gestes::NOTE_WMI_LIAISONS_MAX + 1;
+        let noms: Vec<String> = (0..n).map(|i| format!("F{i}")).collect();
+        let toutes: Vec<LiaisonBrute> = noms
+            .iter()
+            .enumerate()
+            .map(|(i, f)| liaison(i, Some(f), Some("Updater")))
+            .collect();
+        let filtres: Vec<Ligne> = noms.iter().map(|f| filtre(f)).collect();
+        let l = lu(&[consumer("Updater")], &toutes, &filtres, &w);
+        let (note, manques) = note_et_manques(&l, &w);
+        assert_eq!(note.map(|n| n.liaisons.len()), Some(gestes::NOTE_WMI_LIAISONS_MAX));
+        assert!(
+            manques.len() == 1 && (manques[0].contains("au-delà des 16") || manques[0].contains("beyond the 16")),
+            "{manques:?}"
+        );
+        assert_eq!(ordre(&l, &w).iter().filter(|(c, _)| *c == LIAISON).count(), n);
+        let oui = Accords {
+            sans_note: manques,
+            ..Accords::default()
+        };
+        assert!(matches!(juger(&l, &w, &[(Protege::Non, "")], true, &oui), Ok(Some(_))));
+    }
+
+    /// Un vrai nom piégé (espaces de bordure, saut de ligne, guillemet) : la ligne porte le nom tel que le bilan le
+    /// lit ; le processus élevé retrouve le seul consumer qui s'y lit, montre son vrai nom échappé et demande, sans
+    /// note. Deux consumers qui se lisent de même : refusé.
+    #[test]
+    fn wmi_vrai_nom_piege_montre_echappe() {
+        for (vrai, designe) in [(" Upda\r\nter ", "Upda ter"), ("a\"b", "a_b"), ("x\\y'z", "x_y_z")] {
+            let w = abonnement(designe);
+            let l = lu(&[consumer(vrai)], &[], &[], &w);
+            assert_eq!(l.exact, vrai);
+            let (note, manques) = note_et_manques(&l, &w);
+            assert!(note.is_none());
+            let montre = &manques[0];
+            assert!(
+                montre.contains(&super::super::protege::echappe_exact(vrai, NOM_MONTRE_MAX)),
+                "{montre}"
+            );
+            assert!(!montre.chars().any(char::is_control), "{montre:?}");
+            let Question::SansNote { raisons } =
+                question(juger(&l, &w, &[(Protege::Non, "")], true, &Accords::default()))
+            else {
+                panic!("sans note");
+            };
+            assert!(!texte_sans_note(&raisons).chars().any(char::is_control));
+        }
+        let w = abonnement("a_b");
+        assert!(lire_selon(&[consumer("a_b"), consumer("a\"b")], &[], &[], &w).is_err());
+        assert!(matches!(lire_selon(&[consumer("autre")], &[], &[], &w), Ok(None)));
     }
 
     #[test]

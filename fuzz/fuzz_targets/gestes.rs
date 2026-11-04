@@ -420,8 +420,10 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                     let n = w.nom.texte();
                     assert!(!n.is_empty() && n.encode_utf16().count() <= gestes::CONSUMER_NOM_MAX);
                     assert!(!n.chars().any(char::is_control) && !n.contains(['"', '\'', '\\']) && !a.durcit());
-                    // Jamais un abonnement de Windows ou de Defender, même par une ligne forgée.
-                    assert!(!gestes::abonnement_wmi_protege(n));
+                    // Un nom de Windows ou de Defender passe la grammaire (D6d) : le processus élevé juge le vrai
+                    // programme et demande pour un nom seul. La ligne ne désigne que par un nom déjà nettoyé, et ne
+                    // porte jamais la réponse (relue, elle se réécrit à l'identique).
+                    assert_eq!(gestes::nom_designe(n), n);
                 }
                 // Un service : irréversible, donc une protection ; jamais de « \ » ni de « / ».
                 gestes::Acte::ServiceRetirer(ref n) => {

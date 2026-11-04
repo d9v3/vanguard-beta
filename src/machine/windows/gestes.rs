@@ -4443,10 +4443,11 @@ pub(crate) struct AbonnementWmi {
     pub nom: NomConsumer,
 }
 
-/// Les abonnements WMI que Vanguard ne touche jamais, liste fermée (noms comparés sans la casse) : ceux que pose
+/// Les noms d'abonnements WMI de Windows ou de Defender, liste fermée (noms comparés sans la casse) : ceux que pose
 /// Windows (« SCM Event Log Consumer » et son filtre ; « BVTConsumer » et « BVTFilter » des anciennes versions), et tout
-/// nom de Sécurité Windows ou de Defender. Un abonnement malveillant qui en prend le nom reste signalé, à retirer à la
-/// main : un refus de trop ne casse rien, un retrait de trop couperait un abonnement de Windows ou de l'antivirus.
+/// nom de Sécurité Windows ou de Defender. Un filtre de ce nom n'est jamais retiré ; un consumer de commande ou de
+/// script qui en prend le nom n'est pas le vrai (ceux de Windows écrivent au journal) : le processus élevé le montre
+/// et demande, non par défaut.
 pub(crate) fn abonnement_wmi_protege(nom: &str) -> bool {
     const NOMS: [&str; 4] = [
         "scm event log consumer",
@@ -4465,36 +4466,32 @@ pub(crate) fn abonnement_wmi_protege(nom: &str) -> bool {
     NOMS.contains(&n.as_str()) || MOTS.iter().any(|m| n.contains(m))
 }
 
-/// Un consumer qui lance un programme de Sécurité Windows ou de Defender (`run_protege`) : son programme
-/// (ExecutablePath), le premier mot de sa ligne de commande (entre guillemets ou jusqu'à la première espace), ou son
-/// fichier de script.
-pub(crate) fn consumer_wmi_protege(nom: &str, programmes: &[&str]) -> bool {
-    abonnement_wmi_protege(nom)
-        || programmes.iter().any(|p| {
-            let p = p.trim();
-            let premier = match p.strip_prefix('"') {
-                Some(reste) => reste.split('"').next().unwrap_or_default(),
-                None => p.split(' ').next().unwrap_or_default(),
-            };
-            run_protege("", p) || run_protege("", premier)
-        })
+/// Le nom qui désigne un consumer dans une ligne : guillemets et barre oblique inverse changés en « _ » (`NomConsumer`
+/// les refuse). Le processus élevé cherche le consumer dont le nom ainsi lu est celui de la ligne, et montre alors
+/// son vrai nom, échappé, avant de demander.
+pub(crate) fn nom_designe(nom: &str) -> String {
+    nom.chars()
+        .map(|c| if matches!(c, '"' | '\'' | '\\') { '_' } else { c })
+        .collect()
 }
 
 /// La ligne qui retire un abonnement WMI signalé par le bilan ; `None` pour une classe autre que
-/// CommandLineEventConsumer et ActiveScriptEventConsumer, un nom hors de la forme de `NomConsumer`, un nom protégé
-/// (`abonnement_wmi_protege`), ou un nom qui porte « ¦ » (la lecture du bilan y change « | » : ce nom-là n'est pas
-/// forcément le vrai).
+/// CommandLineEventConsumer et ActiveScriptEventConsumer (les vrais consumers de Windows n'écrivent qu'au journal :
+/// NTEventLogEventConsumer, jugés par leur classe et leur espace de noms, jamais par un bout de leur nom), un nom hors
+/// de la forme de `NomConsumer` une fois désigné (`nom_designe`), ou un nom qui porte « ¦ » (la lecture du bilan y
+/// change « | » : ce nom-là n'est pas forcément le vrai). Un nom de Windows ou de Defender a sa ligne : le processus
+/// élevé le montre et demande (`abonnement_wmi_protege`).
 pub(crate) fn ligne_wmi_abonnement_retirer(classe: &str, nom: &str) -> Option<String> {
     let classe = ClasseConsumer::TOUTES
         .into_iter()
         .find(|c| c.classe().eq_ignore_ascii_case(classe))?;
-    if nom.contains('¦') || abonnement_wmi_protege(nom) {
+    if nom.contains('¦') {
         return None;
     }
     Some(
         Acte::WmiAbonnementRetirer(AbonnementWmi {
             classe,
-            nom: NomConsumer::nouveau(nom)?,
+            nom: NomConsumer::nouveau(&nom_designe(nom))?,
         })
         .ligne(),
     )
@@ -5028,8 +5025,9 @@ fn analyser_persistance(ligne: &str) -> Option<Acte> {
         let (mot, hex) = reste.split_once(' ')?;
         Some(AbonnementWmi {
             classe: ClasseConsumer::TOUTES.into_iter().find(|c| c.mot() == mot)?,
-            // Jamais un abonnement de Windows ni de Defender, ni dans un sens ni dans l'autre.
-            nom: NomConsumer::lire(hex).filter(|n| !abonnement_wmi_protege(n.texte()))?,
+            // Un nom de Windows ou de Defender passe : le processus élevé juge le vrai programme (`protege`) et
+            // demande pour un nom seul ; une ligne ne dit jamais « quand même ».
+            nom: NomConsumer::lire(hex)?,
         })
     };
     let acte = if let Some(r) = long(RUN_RETIRER_MACHINE) {
@@ -8890,15 +8888,15 @@ mod tests {
             "MsMpEng",
         ] {
             assert!(abonnement_wmi_protege(n), "{n}");
-            // Ni par la grammaire (ligne forgée), ni par le bilan.
-            for verbe in [WMI_ABONNEMENT_RETIRER, WMI_ABONNEMENT_REMETTRE] {
-                let l = ligne_wmi("commande", n).replacen(WMI_ABONNEMENT_RETIRER, verbe, 1);
-                assert!(analyser_acte(&l).is_none(), "{l}");
+            // Le nom seul ne refuse plus (D6d) : la ligne existe, le processus élevé juge le vrai programme et demande
+            // pour un nom seul (`wmi_ecriture`). Aucune ligne ne porte la réponse : un suffixe la rend illisible.
+            let designe = nom_designe(n);
+            let l = ligne_wmi_abonnement_retirer("CommandLineEventConsumer", n).unwrap_or_else(|| panic!("{n}"));
+            assert_eq!(l, ligne_wmi("commande", &designe));
+            assert!(matches!(analyser_acte(&l), Some(Acte::WmiAbonnementRetirer(w)) if w.nom.texte() == designe));
+            for suffixe in [" oui", " confirme", " sans-note", " quand-meme"] {
+                assert!(analyser_acte(&format!("{l}{suffixe}")).is_none(), "{l}{suffixe}");
             }
-            assert!(
-                ligne_wmi_abonnement_retirer("CommandLineEventConsumer", n).is_none(),
-                "{n}"
-            );
         }
         for n in ["Updater", "BVTConsumer x", "SCM Event Log Consumer 2"] {
             assert!(!abonnement_wmi_protege(n), "{n}");
@@ -8918,12 +8916,10 @@ mod tests {
         ] {
             assert!(ligne_wmi_abonnement_retirer(classe, n).is_none(), "{classe} {n:?}");
         }
-        // Un consumer qui lance Defender, quel que soit son nom.
-        assert!(consumer_wmi_protege(
-            "x",
-            &[r#""C:\Program Files\Windows Defender\MpCmdRun.exe" -Scan"#]
-        ));
-        assert!(!consumer_wmi_protege("x", &[r"C:\Users\alice\AppData\evil.exe -q"]));
+        // Guillemets et barre oblique inverse : désignés par « _ », jamais dans la ligne (la grammaire les refuse).
+        let l = ligne_wmi_abonnement_retirer("CommandLineEventConsumer", r#"a"b'c\d"#).unwrap();
+        assert_eq!(l, ligne_wmi("commande", "a_b_c_d"));
+        assert_eq!(nom_designe("Updater"), "Updater");
     }
 
     fn note_essai() -> (AbonnementWmi, NoteWmi) {

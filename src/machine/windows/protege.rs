@@ -178,6 +178,29 @@ pub(crate) fn texte_nom_seul(nom: &str, programme: &str) -> String {
     )
 }
 
+/// Un nom venu d'ailleurs montré à l'identique : entre guillemets (les espaces de bordure se voient), chaque
+/// caractère de contrôle, invisible ou de mise en page échappé (`\n`, `\r`, `\u{1b}`, `\u{202e}`…), guillemets et
+/// barre oblique inverse aussi : rien ne s'exécute ni ne se cache dans la console. Coupé à `max` caractères montrés.
+pub(crate) fn echappe_exact(texte: &str, max: usize) -> String {
+    let mut sortie = String::from("\"");
+    let mut montres = 0usize;
+    for c in texte.chars() {
+        let mut e: String = c.escape_debug().collect();
+        // escape_debug laisse quelques caractères imprimables que la console sait détourner : ceux d'`affichable`.
+        if e.chars().count() == 1 && crate::ui::affichable(&e) != e {
+            e = format!("\\u{{{:x}}}", u32::from(c));
+        }
+        montres = montres.saturating_add(e.chars().count());
+        if montres > max {
+            sortie.push('…');
+            break;
+        }
+        sortie.push_str(&e);
+    }
+    sortie.push('"');
+    sortie
+}
+
 /// Une question de plus, posée ici, dans la console (élevée ou non), jamais par une ligne de la liste : aucune ligne ne
 /// dit « quand même » ni « sans note », une liste forgée ne peut pas sauter la question. L'explication d'abord (déjà
 /// nettoyée par l'appelant), puis la question ; seul un oui tapé dans une vraie console vaut oui (Entrée seule : non).
@@ -238,6 +261,24 @@ mod tests {
 
     /// Le vrai lieu : dossier de Windows (hors de ses dossiers ouverts aux comptes), Program Files\Windows Defender,
     /// la plateforme de ProgramData ; variables du système, nom seul (System32), « .. » résolus.
+    /// Un nom hostile (saut de ligne, échappement de terminal, retour chariot, espaces de bordure, inversion de sens,
+    /// très long) se montre échappé : aucun caractère de contrôle n'arrive à la console, les bordures se voient, la
+    /// longueur est bornée.
+    #[test]
+    fn nom_hostile_echappe() {
+        assert_eq!(echappe_exact(" Upd\nater ", 80), r#"" Upd\nater ""#);
+        assert_eq!(echappe_exact("a\u{1b}[31mb\rc", 80), r#""a\u{1b}[31mb\rc""#);
+        assert_eq!(echappe_exact(r#"a"b\c'd"#, 80), r#""a\"b\\c\'d""#);
+        assert!(echappe_exact("a\u{202e}b", 80).contains(r"\u{202e}"));
+        let long = echappe_exact(&"x".repeat(10_000), 120);
+        assert!(long.chars().count() <= 123 && long.ends_with("…\""), "{long}");
+        for n in [" a ", "\n", "\r", "\u{1b}[2J", "\u{7}", "\t", "\u{200b}x", "\u{feff}"] {
+            let e = echappe_exact(n, 80);
+            assert!(!e.chars().any(char::is_control), "{e:?}");
+            assert_eq!(crate::ui::affichable(&e), e, "{e:?}");
+        }
+    }
+
     #[test]
     fn le_lieu_du_vrai_defender() {
         for p in [

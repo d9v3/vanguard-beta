@@ -1075,8 +1075,8 @@ fn juger_wmi(sortie: Option<&str>) -> Vec<Constat> {
             ),
             None => constat.manuel(
                 trf!(
-                    "Nom protégé ou piégé : si vous ne l'avez pas posé vous-même, retirer à la main (en administrateur, outil wbemtest, espace root\\subscription) le consommateur « {nom} », sa liaison __FilterToConsumerBinding et son __EventFilter s'il ne sert à rien d'autre, puis lancer une analyse antivirus complète",
-                    "Protected or booby-trapped name: if you did not set it up yourself, remove by hand (as administrator, wbemtest tool, root\\subscription namespace) the consumer “{nom}”, its __FilterToConsumerBinding and its __EventFilter if nothing else uses it, then run a full antivirus scan"
+                    "Nom piégé (vide, trop long, avec « | » ou un caractère de contrôle) : si vous ne l'avez pas posé vous-même, retirer à la main (en administrateur, outil wbemtest, espace root\\subscription) le consommateur « {nom} », sa liaison __FilterToConsumerBinding et son __EventFilter s'il ne sert à rien d'autre, puis lancer une analyse antivirus complète",
+                    "Booby-trapped name (empty, too long, with “|” or a control character): if you did not set it up yourself, remove by hand (as administrator, wbemtest tool, root\\subscription namespace) the consumer “{nom}”, its __FilterToConsumerBinding and its __EventFilter if nothing else uses it, then run a full antivirus scan"
                 ),
                 &[],
             ),
@@ -1580,16 +1580,20 @@ mod tests {
             c[1].correctif.as_ref().unwrap().commandes,
             [gestes::ligne_wmi_abonnement_retirer("ActiveScriptEventConsumer", "Reste").unwrap()]
         );
-        // Un nom de Windows ou de Defender repris par un consumer qui lance une commande, ou un nom où la lecture a
-        // changé « | » : signalé, à retirer à la main, jamais une ligne.
-        for nom in ["SCM Event Log Consumer", "Windows Defender MAJ", "a¦b"] {
+        // Un nom où la lecture a changé « | » : signalé, à retirer à la main, jamais une ligne.
+        let sortie = "ADM|True\nADM_FIN\nFLT_FIN\nCMD|a¦b|C:\\x.exe|\nCMD_FIN\nSCR_FIN\nLIE_FIN";
+        let c = juger_wmi(Some(sortie));
+        let k = c[0].correctif.as_ref().unwrap();
+        assert!(c[0].probleme.is_some() && !k.automatique && k.commandes.is_empty());
+        // Un nom de Windows ou de Defender repris par un consumer qui lance une commande n'est pas le vrai (ceux de
+        // Windows écrivent au journal) : signalé, avec sa ligne ; le processus élevé juge le programme et demande
+        // (`wmi_ecriture`, D6d), jamais sans une vraie console.
+        for nom in ["SCM Event Log Consumer", "Windows Defender MAJ"] {
             let sortie = format!("ADM|True\nADM_FIN\nFLT_FIN\nCMD|{nom}|C:\\x.exe|\nCMD_FIN\nSCR_FIN\nLIE_FIN");
             let c = juger_wmi(Some(&sortie));
             let k = c[0].correctif.as_ref().unwrap();
-            assert!(
-                c[0].probleme.is_some() && !k.automatique && k.commandes.is_empty(),
-                "{nom}"
-            );
+            let ligne = gestes::ligne_wmi_abonnement_retirer("CommandLineEventConsumer", nom).unwrap();
+            assert!(c[0].probleme.is_some() && k.commandes == [ligne], "{nom}");
         }
         // Lecture refusée sans droits : non vérifié, avec la marche à suivre ; PowerShell absent : non vérifié.
         let refus = juger_wmi(Some("ADM|False\nADM_FIN\nFLT_FIN"));
