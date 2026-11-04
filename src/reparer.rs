@@ -3,6 +3,9 @@
 //! Chaque réparation est montrée (pourquoi, durée, commandes) puis confirmée avant d'être lancée ; celles qui
 //! modifient le système proposent d'abord un point de restauration.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::net::IpAddr;
 
 use crate::machine;
@@ -982,7 +985,7 @@ fn proxy_winhttp(octets: &[u8]) -> String {
     match usize::try_from(n)
         .ok()
         .filter(|&n| n > 0)
-        .and_then(|n| octets.get(16..16 + n))
+        .and_then(|n| octets.get(16..n.checked_add(16)?))
     {
         Some(nom) => nom
             .iter()
@@ -1237,7 +1240,7 @@ pub fn menu() {
         } else {
             ""
         };
-        lignes.push(Ligne::choix(&(i + 1).to_string(), r.titre, note));
+        lignes.push(Ligne::choix(&i.saturating_add(1).to_string(), r.titre, note));
     }
     lignes.push(Ligne::Texte(String::new()));
     lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
@@ -1374,6 +1377,11 @@ pub fn lancer(r: &Reparation) {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

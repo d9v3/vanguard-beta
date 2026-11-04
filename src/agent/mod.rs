@@ -33,6 +33,9 @@
 //!
 //! Ce que l'agent dit de lui-même (`sortie`, `vanguard agent --json`) se lit de ses fichiers, sans rien écrire.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 mod budget;
 mod decision;
 pub(crate) mod etat;
@@ -178,7 +181,7 @@ pub(crate) fn sens_sur(lu: &Lecture<'_>, l: &Levier) -> bool {
             t.plancher_min <= apres_min
                 && apres_min < avant_min
                 && avant_min <= t.duree_min
-                && avant_min - apres_min == crate::autotest::cache::PAS_MIN
+                && avant_min.saturating_sub(apres_min) == crate::autotest::cache::PAS_MIN
         }),
         Levier::CacheRallonge {
             regle,
@@ -188,7 +191,7 @@ pub(crate) fn sens_sur(lu: &Lecture<'_>, l: &Levier) -> bool {
             t.plancher_min <= avant_min
                 && avant_min < apres_min
                 && apres_min <= t.duree_min
-                && apres_min - avant_min == crate::autotest::cache::PAS_MIN
+                && apres_min.saturating_sub(avant_min) == crate::autotest::cache::PAS_MIN
         }),
         Levier::CacheCoupee { regle } => crate::autotest::cache::en_cache(regle.texte()).is_some(),
         Levier::SecondEssai {
@@ -250,7 +253,7 @@ pub(crate) fn tic_dans(ctx: &Contexte<'_>, moment: Moment, missions: &[&dyn Tour
     let interrupteurs = etat::lire_dans::<etat::Interrupteurs>(lu.dossier, etat::AGENT).utilisable();
     let mut faits = Vec::new();
     let mut ajustements = Vec::new();
-    let (mut montrees, mut refusees) = (0, 0);
+    let (mut montrees, mut refusees) = (0usize, 0usize);
     // Une mission de réglage a tourné : l'application passe, même sans ajustement, pour que le suivi des règles qui
     // frôlent leur délai s'écrive (une montée écartée aujourd'hui se reprendra).
     let mut reglage_a_tourne = false;
@@ -273,7 +276,7 @@ pub(crate) fn tic_dans(ctx: &Contexte<'_>, moment: Moment, missions: &[&dyn Tour
         }
         for d in decisions {
             if !verifiee(lu, m, &d) {
-                refusees += 1;
+                refusees = refusees.saturating_add(1);
                 faits.push(journal::Fait::Refus {
                     mission: m.id(),
                     decision: d,
@@ -281,7 +284,7 @@ pub(crate) fn tic_dans(ctx: &Contexte<'_>, moment: Moment, missions: &[&dyn Tour
             } else if let Decision::Ajuster(a) = d {
                 ajustements.push((m.id(), a));
             } else {
-                montrees += 1;
+                montrees = montrees.saturating_add(1);
                 faits.push(journal::Fait::Decision {
                     mission: m.id(),
                     decision: d,
@@ -599,5 +602,10 @@ pub(crate) fn couper_dans(dossier: &Path, id: MissionId, coupee: bool, _geste: &
     Ok(change)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests;

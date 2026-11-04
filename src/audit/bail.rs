@@ -5,6 +5,9 @@
 //! réglages réseau de macOS (plist). Ce qui n'est pas lisible est rendu comme tel (`Err`), jamais inventé.
 //! Lecture seule ; partagé par les domaines DNS/TLS et Segmentation de l'audit.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::net::IpAddr;
 
 /// D'où vient un bail.
@@ -676,7 +679,9 @@ fn bail_macos(plist: &crate::plist::Valeur) -> Option<Bail> {
     // débordait, et la version publiée, qui vérifie les dépassements, perdait les domaines Segmentation et DNS/TLS.
     let debut = match plist.cle("LeaseStartDate") {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // une date, pas un calcul
-        Some(Valeur::Date(d)) if *d > 0.0 && *d < 1e11 => Some((*d as u64).saturating_add(978_307_200)),
+        Some(Valeur::Date(d)) if *d > 0.0 && *d < 1e11 => {
+            Some(crate::socle::nombres::entier(*d).saturating_add(978_307_200))
+        }
         _ => None,
     };
     let mut bail = paquet_dhcp(paquet, debut)?;
@@ -754,6 +759,11 @@ pub fn configuration() -> Configuration {
     configuration_systeme()
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -973,6 +983,11 @@ mod tests {
 
 /// Ce que le serveur DHCP (la box, ou ce qui se fait passer pour elle) met dans un bail, et ce que les fichiers du
 /// système en gardent : jamais de panique, une lecture bornée.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod entrees_hostiles {
     use super::*;

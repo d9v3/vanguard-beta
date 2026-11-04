@@ -7,6 +7,9 @@
 //! dit pourquoi ; « rien trouvé » seulement quand tout ce qu'elle cherche a été lu. Une alerte déclarée normale
 //! (`protection::normales`, clé `evenements|<règle>|<objet>`) est tue, et comptée dans le constat de sa règle.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -228,7 +231,9 @@ pub(crate) fn analyser_dossier(dossier: &Path, options: &Options) -> std::io::Re
         options,
         &BornesFichiers::default(),
         BornesMoteur::default(),
-        std::time::Instant::now() + DELAI_DOSSIER,
+        std::time::Instant::now()
+            .checked_add(DELAI_DOSSIER)
+            .unwrap_or_else(std::time::Instant::now),
     )
 }
 
@@ -251,7 +256,7 @@ pub(crate) fn analyser_dossier_borne(
             moteur.recevoir(&e);
             noter_service(&mut services_ordinaires, &e);
         } else {
-            hors_delai += 1;
+            hors_delai = hors_delai.saturating_add(1);
         }
     })?;
     let etats = etats_du_dossier(&bilan.fichiers);
@@ -739,7 +744,7 @@ fn constats_dates(
         for t in &j.trouvailles {
             // Une alerte critique ne se déclare jamais normale : elle revient toujours.
             if taisable(r.id, t) && est_normale(&cle_normale(r.id, &t.objet)) {
-                tues += 1;
+                tues = tues.saturating_add(1);
                 continue;
             }
             let mut c = alerte(CAT, niveau(t.gravite), message(t)).avec_objet(Objet::de("evt", &t.objet));
@@ -774,7 +779,7 @@ fn constats_dates(
                 ),
             )
         } else if j.verifie() {
-            let mut m = if j.trouvailles.len() as u64 > tues || j.au_dela > 0 {
+            let mut m = if u64::try_from(j.trouvailles.len()).unwrap_or(u64::MAX) > tues || j.au_dela > 0 {
                 crate::trf!("{sujet} : lu en entier ({}).", "{sujet}: read in full ({}).", lu(j))
             } else {
                 crate::trf!(
@@ -804,7 +809,7 @@ fn constats_dates(
                     "{tues} alerts declared normal, silenced."
                 ));
             }
-            couverture.verifies += 1;
+            couverture.verifies = couverture.verifies.saturating_add(1);
             ok(CAT, m)
         } else {
             let textes: Vec<(String, Raison)> = j.manques.iter().map(|m| manque(&a.source, m)).collect();

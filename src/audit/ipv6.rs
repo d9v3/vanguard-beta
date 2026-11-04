@@ -4,6 +4,9 @@
 //! commande externe : if-addrs partout, /proc/net/if_inet6 et netlink sous Linux ; ailleurs, les voisins et le
 //! caractère temporaire d'une adresse ne se lisent pas d'ici, et c'est dit tel quel.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::net::Ipv6Addr;
 
 use serde::Serialize;
@@ -135,7 +138,7 @@ fn lire_if_inet6(texte: &str) -> Vec<(Ipv6Addr, bool, String)> {
             }
             let mut octets = [0u8; 16];
             for (i, o) in octets.iter_mut().enumerate() {
-                *o = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
+                *o = u8::from_str_radix(&hex[i.saturating_mul(2)..i.saturating_mul(2).saturating_add(2)], 16).ok()?;
             }
             let drapeaux = u8::from_str_radix(drapeaux, 16).ok()?;
             Some((Ipv6Addr::from(octets), drapeaux & 0x01 != 0, nom.to_string()))
@@ -183,20 +186,20 @@ fn compter_voisins_publics(octets: &[u8]) -> usize {
         }
         let mut adresse = None;
         let mut materielle = None;
-        let mut pos = 12;
-        while let Some(&[l0, l1, g0, g1]) = corps.get(pos..pos + 4) {
+        let mut pos = 12usize;
+        while let Some(&[l0, l1, g0, g1]) = corps.get(pos..pos.saturating_add(4)) {
             let longueur = usize::from(u16::from_ne_bytes([l0, l1]));
             let genre_attribut = u16::from_ne_bytes([g0, g1]);
             if longueur < 4 {
                 break;
             }
-            let valeur = corps.get(pos + 4..pos + longueur);
+            let valeur = corps.get(pos.saturating_add(4)..pos.saturating_add(longueur));
             match genre_attribut {
                 NDA_DST => adresse = valeur.and_then(|a| <[u8; 16]>::try_from(a).ok()).map(Ipv6Addr::from),
                 NDA_LLADDR => materielle = valeur.map(<[u8]>::to_vec),
                 _ => {}
             }
-            pos += longueur.next_multiple_of(4);
+            pos = pos.saturating_add(longueur.next_multiple_of(4));
         }
         if let (Some(ip), Some(mac)) = (adresse, materielle)
             && publique(ip)
@@ -207,6 +210,11 @@ fn compter_voisins_publics(octets: &[u8]) -> usize {
     appareils.len()
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

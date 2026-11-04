@@ -3,6 +3,9 @@
 //! (lpstat) ; Windows : le spouleur et Get-Printer. Vider la file, réactiver l'imprimante ou relancer le service :
 //! montré, puis fait après accord.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
@@ -70,7 +73,7 @@ fn imprimantes_lpstat(texte: &str) -> Vec<Imprimante> {
             && numero.chars().all(|c| c.is_ascii_digit())
             && let Some(i) = liste.iter_mut().find(|i| i.nom == nom)
         {
-            i.en_attente += 1;
+            i.en_attente = i.en_attente.saturating_add(1);
         }
     }
     liste
@@ -429,6 +432,11 @@ mod systeme {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -6,6 +6,9 @@
 //! nom de Wi-Fi, de numéro de série ni de chemin. outils/deployer.sh n'en rapatrie que journal-erreurs.txt : ce
 //! tableau ne part jamais sur GitHub (test `seul_le_journal_quitte_vanguardlog`).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -231,7 +234,7 @@ fn ligne(o: &Ordinateur, aujourd_hui: chrono::NaiveDate, ici: bool) -> String {
         0 => tr!("aucun problème", "no problem").to_string(),
         n => trf!("{n} problème(s)", "{n} problem(s)"),
     };
-    let ancien = date(&o.vu_le).is_some_and(|d| (aujourd_hui - d).num_days() > JOURS_OUBLI);
+    let ancien = date(&o.vu_le).is_some_and(|d| aujourd_hui.signed_duration_since(d).num_days() > JOURS_OUBLI);
     let marque = if ancien { "!" } else { " " };
     let jour = o.vu_le.get(..10).unwrap_or(&o.vu_le);
     let ici = if ici { tr!(" ← ici", " ← here") } else { "" };
@@ -322,7 +325,11 @@ pub fn menu() {
         ];
         for (i, (empreinte, o)) in liste.iter().enumerate() {
             let texte = ligne(o, aujourd_hui, ici.as_deref() == Some(empreinte.as_str()));
-            lignes.push(crate::selection::Ligne::choix(&(i + 1).to_string(), &texte, ""));
+            lignes.push(crate::selection::Ligne::choix(
+                &i.saturating_add(1).to_string(),
+                &texte,
+                "",
+            ));
         }
         lignes.push(crate::selection::Ligne::Texte(String::new()));
         lignes.push(crate::selection::Ligne::choix("↵", tr!("Revenir", "Back"), ""));
@@ -379,6 +386,11 @@ pub fn menu() {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

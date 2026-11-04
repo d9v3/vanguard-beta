@@ -12,6 +12,9 @@
 //! du réseau local et du Wi-Fi sont masqués ; une adresse MAC ne garde que le préfixe du fabricant, une adresse IP
 //! publique devient une adresse de documentation.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::io::Write;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
@@ -292,14 +295,14 @@ fn remplacer(
 
 /// Longueur en octets du début de `texte` égal à `nom` à la casse près, s'il commence par lui.
 fn longueur_sans_casse(texte: &str, nom: &str) -> Option<usize> {
-    let mut lus = 0;
+    let mut lus = 0usize;
     let mut caracteres = texte.chars();
     for n in nom.chars() {
         let c = caracteres.next()?;
         if !c.to_lowercase().eq(n.to_lowercase()) {
             return None;
         }
-        lus += c.len_utf8();
+        lus = lus.saturating_add(c.len_utf8());
     }
     (lus > 0).then_some(lus)
 }
@@ -343,7 +346,10 @@ fn debut_dossier_personnel(texte: &str) -> Option<(usize, bool)> {
             && let Some(n) = longueur_sans_casse(apres, "users")
             && apres[n..].starts_with(separateur)
         {
-            return Some((2 + 2 * separateur.len() + n, true));
+            return Some((
+                separateur.len().saturating_mul(2).saturating_add(n).saturating_add(2),
+                true,
+            ));
         }
     }
     None
@@ -398,14 +404,18 @@ fn masquer_courriels(texte: &str) -> String {
         if i < copie {
             continue;
         }
-        let debut = i - b.iter().take(i).skip(copie).rev().take_while(|c| locale(**c)).count();
-        let mut fin = i + 1 + b.iter().skip(i + 1).take_while(|c| domaine(**c)).count();
-        while fin > i + 1 && b.get(fin - 1) == Some(&b'.') {
-            fin -= 1;
+        let debut = i.saturating_sub(b.iter().take(i).skip(copie).rev().take_while(|c| locale(**c)).count());
+        let mut fin = i
+            .saturating_add(b.iter().skip(i.saturating_add(1)).take_while(|c| domaine(**c)).count())
+            .saturating_add(1);
+        while fin > i.saturating_add(1) && b.get(fin.saturating_sub(1)) == Some(&b'.') {
+            fin = fin.saturating_sub(1);
         }
-        let nom_de_domaine = texte[i + 1..fin].rsplit_once('.').is_some_and(|(nom, fin_du_nom)| {
-            !nom.is_empty() && fin_du_nom.len() >= 2 && fin_du_nom.bytes().all(|c| c.is_ascii_alphabetic())
-        });
+        let nom_de_domaine = texte[i.saturating_add(1)..fin]
+            .rsplit_once('.')
+            .is_some_and(|(nom, fin_du_nom)| {
+                !nom.is_empty() && fin_du_nom.len() >= 2 && fin_du_nom.bytes().all(|c| c.is_ascii_alphabetic())
+            });
         if debut < i && nom_de_domaine {
             sortie.push_str(&texte[copie..debut]);
             sortie.push_str("<courriel>");
@@ -423,22 +433,22 @@ fn masquer_sid(texte: &str) -> String {
     let mut sortie = String::with_capacity(texte.len());
     let mut reste = texte;
     while let Some(i) = reste.find(DEBUT) {
-        sortie.push_str(&reste[..i + DEBUT.len()]);
-        reste = &reste[i + DEBUT.len()..];
+        sortie.push_str(&reste[..i.saturating_add(DEBUT.len())]);
+        reste = &reste[i.saturating_add(DEBUT.len())..];
         let b = reste.as_bytes();
-        let (mut fin, mut nombres) = (0, 0);
+        let (mut fin, mut nombres) = (0, 0usize);
         while nombres < 3 {
             let chiffres = b.iter().skip(fin).take_while(|c| c.is_ascii_digit()).count();
             if chiffres == 0 {
                 break;
             }
-            fin += chiffres;
-            nombres += 1;
+            fin = fin.saturating_add(chiffres);
+            nombres = nombres.saturating_add(1);
             if nombres < 3 {
                 if b.get(fin) != Some(&b'-') {
                     break;
                 }
-                fin += 1;
+                fin = fin.saturating_add(1);
             }
         }
         if nombres == 3 {
@@ -496,28 +506,34 @@ fn valeur_masquee(ligne: &str, cle: &str, par: &str) -> String {
     for (i, c) in ligne.char_indices() {
         if mot_entier(precedent)
             && let Some(n) = longueur_sans_casse(&ligne[i..], cle)
-            && mot_entier(ligne[i + n..].chars().next())
+            && mot_entier(ligne[i.saturating_add(n)..].chars().next())
         {
-            let apres = &ligne[i + n..];
+            let apres = &ligne[i.saturating_add(n)..];
             let separateur = apres.find([':', '=']);
             if let Some(s) = separateur
                 && apres[..s]
                     .chars()
                     .all(|c| c == ' ' || c == '\t' || c == '"' || c.is_ascii_digit())
             {
-                let valeur = &apres[s + 1..];
-                let debut = valeur.len() - valeur.trim_start_matches([' ', '\t', '"']).len();
+                let valeur = &apres[s.saturating_add(1)..];
+                let debut = valeur
+                    .len()
+                    .saturating_sub(valeur.trim_start_matches([' ', '\t', '"']).len());
                 // Un nom de Wi-Fi peut avoir des espaces : jusqu'à la fin de la ligne. Un numéro : un seul mot.
                 let longueur = if par == "<wifi>" {
                     valeur[debut..].trim_end_matches(['\n', '\r', '"', ' ']).len()
                 } else {
                     valeur[debut..]
                         .find([' ', '\t', '"', ',', ';', '\n', '\r'])
-                        .unwrap_or(valeur.len() - debut)
+                        .unwrap_or(valeur.len().saturating_sub(debut))
                 };
                 if longueur > 0 && !valeur[debut..].starts_with('<') {
-                    let depart = i + n + s + 1 + debut;
-                    return format!("{}{par}{}", &ligne[..depart], &ligne[depart + longueur..]);
+                    let depart = i
+                        .saturating_add(n)
+                        .saturating_add(s)
+                        .saturating_add(debut)
+                        .saturating_add(1);
+                    return format!("{}{par}{}", &ligne[..depart], &ligne[depart.saturating_add(longueur)..]);
                 }
             }
         }
@@ -530,14 +546,14 @@ fn entre_guillemets(ligne: &str, ouvrant: &str, fermant: &str, par: &str) -> Str
     let mut sortie = String::with_capacity(ligne.len());
     let mut reste = ligne;
     while let Some(i) = reste.find(ouvrant) {
-        let debut = i + ouvrant.len();
+        let debut = i.saturating_add(ouvrant.len());
         let Some(n) = reste[debut..].find(fermant) else {
             break;
         };
         sortie.push_str(&reste[..debut]);
         sortie.push_str(par);
         sortie.push_str(fermant);
-        reste = &reste[debut + n + fermant.len()..];
+        reste = &reste[debut.saturating_add(n).saturating_add(fermant.len())..];
     }
     sortie.push_str(reste);
     sortie
@@ -558,7 +574,7 @@ fn masquer_noms_locaux(texte: &str) -> String {
         match SUFFIXES.iter().find(|s| bas.ends_with(*s) && bas.len() > s.len()) {
             Some(suffixe) if !mot.starts_with('.') => {
                 sortie.push_str("<appareil>");
-                sortie.push_str(&mot[mot.len() - suffixe.len()..]);
+                sortie.push_str(&mot[mot.len().saturating_sub(suffixe.len())..]);
                 sortie.push_str(&reste[mot.len()..fin]);
             }
             _ => sortie.push_str(&reste[..fin]),
@@ -613,7 +629,7 @@ fn remplacer_passages(texte: &str, trouver: impl Fn(&[u8], usize) -> Option<(usi
             copie = fin;
             i = fin;
         } else {
-            i += 1;
+            i = i.saturating_add(1);
         }
     }
     sortie.push_str(&texte[copie..]);
@@ -632,15 +648,15 @@ fn lire_mac(b: &[u8], i: usize) -> Option<(usize, [u8; 6], u8)> {
                 return None;
             }
             separateur = s;
-            j += 1;
+            j = j.saturating_add(1);
         }
         let chiffres = b.iter().skip(j).take(2).take_while(|c| c.is_ascii_hexdigit()).count();
         if chiffres == 0 {
             return None;
         }
         courts |= chiffres == 1;
-        *octet = u8::from_str_radix(std::str::from_utf8(b.get(j..j + chiffres)?).ok()?, 16).ok()?;
-        j += chiffres;
+        *octet = u8::from_str_radix(std::str::from_utf8(b.get(j..j.saturating_add(chiffres))?).ok()?, 16).ok()?;
+        j = j.saturating_add(chiffres);
     }
     // Suivie d'un autre chiffre ou séparateur : un morceau d'autre chose (adresse IPv6…).
     if (separateur == b'-' && courts) || b.get(j).is_some_and(|c| c.is_ascii_alphanumeric() || b":-".contains(c)) {
@@ -686,10 +702,10 @@ fn masquer_ipv6(texte: &str) -> String {
     let (mut copie, mut i) = (0, 0);
     while let Some(&c) = b.get(i) {
         if !classe(c) || precedent(b, i).is_some_and(|p| p.is_ascii_alphanumeric() || classe(p)) {
-            i += 1;
+            i = i.saturating_add(1);
             continue;
         }
-        let fin = i + b.iter().skip(i).take_while(|c| classe(**c)).count();
+        let fin = i.saturating_add(b.iter().skip(i).take_while(|c| classe(**c)).count());
         let mot = texte[i..fin].trim_end_matches('.');
         if b.get(fin).is_none_or(|c| !c.is_ascii_alphanumeric())
             && mot.matches(':').count() >= 2
@@ -698,7 +714,7 @@ fn masquer_ipv6(texte: &str) -> String {
         {
             sortie.push_str(&texte[copie..i]);
             sortie.push_str(&faux);
-            copie = i + mot.len();
+            copie = i.saturating_add(mot.len());
         }
         i = fin;
     }
@@ -755,7 +771,10 @@ fn masquer_ipv4(texte: &str) -> String {
             return None;
         }
         let (fin, ip) = lire_ipv4(b, i).filter(|(_, ip)| !ipv4_commune(*ip))?;
-        Some((fin, format!("203.0.113.{}", 1 + hasard(&ip.octets()) % 254)))
+        Some((
+            fin,
+            format!("203.0.113.{}", (hasard(&ip.octets()) % 254).saturating_add(1)),
+        ))
     })
 }
 
@@ -769,17 +788,20 @@ fn lire_ipv4(b: &[u8], i: usize) -> Option<(usize, Ipv4Addr)> {
             if b.get(j) != Some(&b'.') {
                 return None;
             }
-            j += 1;
+            j = j.saturating_add(1);
         }
         let chiffres = b.iter().skip(j).take(4).take_while(|c| c.is_ascii_digit()).count();
         if !(1..=3).contains(&chiffres) {
             return None;
         }
-        *octet = std::str::from_utf8(b.get(j..j + chiffres)?).ok()?.parse().ok()?;
-        j += chiffres;
+        *octet = std::str::from_utf8(b.get(j..j.saturating_add(chiffres))?)
+            .ok()?
+            .parse()
+            .ok()?;
+        j = j.saturating_add(chiffres);
     }
     let suite = b.get(j).is_some_and(u8::is_ascii_alphanumeric)
-        || (b.get(j) == Some(&b'.') && b.get(j + 1).is_some_and(u8::is_ascii_digit));
+        || (b.get(j) == Some(&b'.') && b.get(j.saturating_add(1)).is_some_and(u8::is_ascii_digit));
     (!suite).then_some((j, Ipv4Addr::from(octets)))
 }
 
@@ -809,9 +831,9 @@ fn ipv4_commune(ip: Ipv4Addr) -> bool {
 fn commande_anonyme(args: &[String]) -> String {
     let mut args = args.to_vec();
     if let Some(k) = args.iter().position(|a| a == "nommer" || a == "name")
-        && args.len() > k + 2
+        && args.len() > k.saturating_add(2)
     {
-        args.truncate(k + 2);
+        args.truncate(k.saturating_add(2));
         args.push("<surnom>".into());
     }
     args.join(" ")
@@ -965,6 +987,11 @@ fn lieu_de(l: &std::panic::Location<'_>) -> Option<Lieu> {
     Lieu::new(&format!("{}:{}:{}", l.file().replace('\\', "/"), l.line(), l.column()))
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -13,6 +13,9 @@
 //! L'affichage est ici ; le jugement (tri, brouillon, garde-fou, neutralisation Markdown) est dans les sous-modules,
 //! purs et testés seuls.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 mod brouillon;
 mod garde;
 mod markdown;
@@ -226,7 +229,7 @@ fn choisir_sujet(lu: &Lu) -> Option<Sujet> {
             _ => e.resume(),
         };
         lignes.push(Ligne::choix(
-            &(i + 1).to_string(),
+            &i.saturating_add(1).to_string(),
             &crate::modele::resultat::nom_sans_piege(&format!("{} {texte}", quand.get(..10).unwrap_or(&quand)), 40),
             e.quoi.sorte(),
         ));
@@ -234,7 +237,7 @@ fn choisir_sujet(lu: &Lu) -> Option<Sujet> {
     let base = proposes.len();
     for (j, r) in examens.iter().enumerate() {
         lignes.push(Ligne::choix(
-            &(base + j + 1).to_string(),
+            &base.saturating_add(j).saturating_add(1).to_string(),
             &trf!(
                 "Examen {} du {}",
                 "{} examination of {}",
@@ -260,12 +263,12 @@ fn choisir_sujet(lu: &Lu) -> Option<Sujet> {
     if n == 0 {
         return Some(Sujet::Rien);
     }
-    if let Some(e) = proposes.get(n - 1) {
+    if let Some(e) = proposes.get(n.saturating_sub(1)) {
         return sujet_incident(lu, &e.id).ok();
     }
     examens
         .into_iter()
-        .nth(n - 1 - base)
+        .nth(n.saturating_sub(1).saturating_sub(base))
         .map(|r| Sujet::Examen(Box::new(r)))
 }
 
@@ -305,7 +308,7 @@ fn question_nature() -> Option<Tri> {
     ];
     let mut lignes = vec![Ligne::Texte(String::new())];
     for (i, (_, texte, precision)) in natures.iter().enumerate() {
-        lignes.push(Ligne::choix(&(i + 1).to_string(), texte, precision));
+        lignes.push(Ligne::choix(&i.saturating_add(1).to_string(), texte, precision));
     }
     lignes.push(Ligne::Texte(String::new()));
     println!("\n  {}", tr!("Qu'est-ce qui s'est passé ?", "What happened?"));
@@ -320,7 +323,7 @@ fn choisir_programme(produit: &str) -> Option<Programme> {
     let mut lignes = vec![Ligne::Texte(String::new())];
     for (i, p) in ordre.iter().enumerate() {
         let precision = if i == 0 { tr!("proposé", "suggested") } else { "" };
-        lignes.push(Ligne::choix(&(i + 1).to_string(), p.fiche().nom, precision));
+        lignes.push(Ligne::choix(&i.saturating_add(1).to_string(), p.fiche().nom, precision));
     }
     lignes.push(Ligne::Texte(String::new()));
     println!("\n  {}", tr!("À quel programme ?", "To which program?"));
@@ -876,5 +879,10 @@ fn effacer_liste(liste: &[PathBuf]) -> Result<usize, Echec> {
     Ok(liste.len())
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests;

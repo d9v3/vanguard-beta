@@ -1,5 +1,8 @@
 //! Couleurs et petits éléments d'affichage partagés.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 pub use crate::langue::Reponse;
 use crate::risk::Niveau;
 pub use crate::{tr, tre, trf, trp};
@@ -218,13 +221,13 @@ pub(crate) fn contient_un_piege(texte: &str) -> bool {
 
 /// Largeur affichée d'un texte, en colonnes du terminal (sans les codes de couleur).
 pub fn largeur_affichee(t: &str) -> usize {
-    let mut n = 0;
+    let mut n = 0usize;
     let mut code = false;
     for c in t.chars() {
         match (code, c) {
             (false, '\x1b') => code = true,
             (true, 'm') => code = false,
-            (false, _) => n += largeur_car(c),
+            (false, _) => n = n.saturating_add(largeur_car(c)),
             _ => {}
         }
     }
@@ -237,13 +240,13 @@ pub fn couper(t: &str, n: usize) -> String {
         return t.to_string();
     }
     let mut court = String::new();
-    let mut l = 0;
+    let mut l = 0usize;
     for c in t.chars() {
         // Une colonne gardée pour « … ».
-        if l + largeur_car(c) >= n {
+        if l.saturating_add(largeur_car(c)) >= n {
             break;
         }
-        l += largeur_car(c);
+        l = l.saturating_add(largeur_car(c));
         court.push(c);
     }
     court.push('…');
@@ -274,7 +277,12 @@ pub fn envelopper_decale(t: &str, premiere: usize, suivantes: usize) -> Vec<Stri
     let mut ligne = String::new();
     for mot in t.split_whitespace() {
         let largeur = if lignes.is_empty() { premiere } else { suivantes };
-        if !ligne.is_empty() && largeur_affichee(&ligne) + 1 + largeur_affichee(mot) > largeur {
+        if !ligne.is_empty()
+            && largeur_affichee(&ligne)
+                .saturating_add(largeur_affichee(mot))
+                .saturating_add(1)
+                > largeur
+        {
             lignes.push(std::mem::take(&mut ligne));
         }
         if !ligne.is_empty() {
@@ -299,24 +307,26 @@ pub fn mettre_en_lignes(texte: &str) -> String {
     let mut sortie: Vec<String> = Vec::with_capacity(lignes.len());
     let mut i = 0;
     while let Some(&ligne) = lignes.get(i) {
-        i += 1;
+        i = i.saturating_add(1);
         if largeur_affichee(ligne) <= LARGEUR {
             sortie.push(ligne.to_string());
             continue;
         }
         let corps = ligne.trim_start_matches(' ');
-        let retrait = ligne.len() - corps.len();
+        let retrait = ligne.len().saturating_sub(corps.len());
         let mut paragraphe = corps.to_string();
         while let Some(&suivante) = lignes.get(i) {
             let suite = suivante.trim_start_matches(' ');
-            if suivante.len() - suite.len() != retrait || !sans_codes(suite).starts_with(char::is_lowercase) {
+            if suivante.len().saturating_sub(suite.len()) != retrait
+                || !sans_codes(suite).starts_with(char::is_lowercase)
+            {
                 break;
             }
             paragraphe.push(' ');
             paragraphe.push_str(suite);
-            i += 1;
+            i = i.saturating_add(1);
         }
-        let suite = retrait + largeur_de_la_marque(&paragraphe);
+        let suite = retrait.saturating_add(largeur_de_la_marque(&paragraphe));
         let morceaux = envelopper_decale(
             &paragraphe,
             LARGEUR.saturating_sub(retrait).max(12),
@@ -352,7 +362,7 @@ fn largeur_de_la_marque(texte: &str) -> usize {
         .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
     let signe = !premier.is_empty() && premier.chars().all(|c| !c.is_alphanumeric());
     if (signe || chiffre_point) && largeur_affichee(&premier) <= 3 {
-        largeur_affichee(&premier) + 1
+        largeur_affichee(&premier).saturating_add(1)
     } else {
         0
     }
@@ -383,7 +393,7 @@ pub fn titre(t: &str) {
 
 /// La ligne d'un titre de section, pour un menu qui se redessine.
 pub fn ligne_titre(t: &str) -> String {
-    let reste = LARGEUR.saturating_sub(largeur_affichee(t) + 4);
+    let reste = LARGEUR.saturating_sub(largeur_affichee(t).saturating_add(4));
     format!("{ACCENT}━━ {t} {}{RESET}", "━".repeat(reste))
 }
 
@@ -394,7 +404,7 @@ pub fn section(t: &str) {
 
 /// La ligne d'un sous-titre, pour un menu qui se redessine.
 pub fn ligne_section(t: &str) -> String {
-    let reste = LARGEUR.saturating_sub(largeur_affichee(t) + 6);
+    let reste = LARGEUR.saturating_sub(largeur_affichee(t).saturating_add(6));
     format!("  {ACCENT}── {t}{RESET} {GRIS}{}{RESET}", "─".repeat(reste))
 }
 
@@ -408,7 +418,11 @@ pub fn cadre(gauche: &str, droite: &str) {
 /// Les trois lignes du cadre de tête, pour un menu qui se redessine.
 pub fn lignes_cadre(gauche: &str, droite: &str) -> [String; 3] {
     let interieur = LARGEUR - 2;
-    let espace = interieur.saturating_sub(largeur_affichee(gauche) + largeur_affichee(droite) + 4);
+    let espace = interieur.saturating_sub(
+        largeur_affichee(gauche)
+            .saturating_add(largeur_affichee(droite))
+            .saturating_add(4),
+    );
     [
         format!("{ACCENT}╭{}╮{RESET}", "─".repeat(interieur)),
         format!(
@@ -421,12 +435,12 @@ pub fn lignes_cadre(gauche: &str, droite: &str) -> [String; 3] {
 
 /// Barre de score sur 10 cases, de la couleur de sa lettre : « ▰▰▰▰▰▰▰▰▱▱ ».
 pub fn barre(score: u32) -> String {
-    let pleines = (score.min(100) as usize + 5) / 10;
+    let pleines = usize::try_from(score.min(100)).unwrap_or(100).saturating_add(5) / 10;
     format!(
         "{}{}{GRIS}{}{RESET}",
         couleur_note(crate::risk::note(score)),
         "▰".repeat(pleines),
-        "▱".repeat(10 - pleines)
+        "▱".repeat(10usize.saturating_sub(pleines))
     )
 }
 
@@ -455,7 +469,7 @@ pub fn resume(noms: &[impl AsRef<str>], max: usize, separateur: &str) -> String 
         .collect::<Vec<_>>()
         .join(separateur);
     if noms.len() > max {
-        let reste = noms.len() - max;
+        let reste = noms.len().saturating_sub(max);
         t += &crate::trf!(" (et {reste} autre(s))", " (and {reste} more)");
     }
     t
@@ -472,11 +486,11 @@ pub(crate) fn question_en_lignes(question: &str) -> String {
         None => (None, corps),
     };
     // Une colonne pour la réponse.
-    if largeur_affichee(derniere) + fin.len() < LARGEUR {
+    if largeur_affichee(derniere).saturating_add(fin.len()) < LARGEUR {
         return question.to_string();
     }
     let texte = derniere.trim_start_matches(' ');
-    let retrait = derniere.len() - texte.len();
+    let retrait = derniere.len().saturating_sub(texte.len());
     // Une ponctuation seule (« ? », « : ») et l'invite (« [o/N] ») restent avec le mot d'avant : jamais une ligne
     // qui commence par « : ».
     let mut morceaux: Vec<String> = Vec::new();
@@ -490,11 +504,18 @@ pub(crate) fn question_en_lignes(question: &str) -> String {
             _ => morceaux.push(mot.to_string()),
         }
     }
-    let largeur = LARGEUR.saturating_sub(retrait + fin.len() + 1).max(12);
+    let largeur = LARGEUR
+        .saturating_sub(retrait.saturating_add(fin.len()).saturating_add(1))
+        .max(12);
     let mut lignes: Vec<String> = Vec::new();
     for m in morceaux {
         match lignes.last_mut() {
-            Some(l) if largeur_affichee(l) + 1 + largeur_affichee(&m) <= retrait + largeur => {
+            Some(l)
+                if largeur_affichee(l)
+                    .saturating_add(largeur_affichee(&m))
+                    .saturating_add(1)
+                    <= retrait.saturating_add(largeur) =>
+            {
                 l.push(' ');
                 l.push_str(&m);
             }
@@ -621,6 +642,11 @@ pub(crate) fn textes_trop_larges(source: &str) -> Vec<String> {
     trop_larges
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

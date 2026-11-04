@@ -7,6 +7,9 @@
 //! et fichiers spéciaux (tubes, périphériques) jamais ouverts, rien du contenu des journaux utilisé comme chemin.
 //! Ce qui n'a pas pu être lu est dit fichier par fichier, avec le bilan du lecteur tel quel : jamais « rien vu ».
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -204,14 +207,14 @@ pub(crate) fn lire_dossier(
     let mut autres: Vec<(u64, PathBuf)> = Vec::new();
     let ranger_autre = |c: PathBuf, autres: &mut Vec<(u64, PathBuf)>, bilan: &mut BilanDossier| {
         if autres.len() >= bornes.fichiers.saturating_mul(2) {
-            bilan.hors_borne += 1;
+            bilan.hors_borne = bilan.hors_borne.saturating_add(1);
         } else {
             autres.push((taille(&c), c));
         }
     };
     for entree in std::fs::read_dir(dossier)? {
         let Ok(entree) = entree else {
-            bilan.entrees_illisibles += 1;
+            bilan.entrees_illisibles = bilan.entrees_illisibles.saturating_add(1);
             continue;
         };
         let chemin = entree.path();
@@ -220,7 +223,7 @@ pub(crate) fn lire_dossier(
             .and_then(|x| x.to_str())
             .is_some_and(|x| x.eq_ignore_ascii_case("evtx"));
         if !evtx {
-            bilan.autres += 1;
+            bilan.autres = bilan.autres.saturating_add(1);
             continue;
         }
         // `prioritaires` a une case par nom prioritaire : le rang y est toujours.
@@ -249,7 +252,7 @@ pub(crate) fn lire_dossier(
     let mut trous_restants = bornes.trous_dossier;
     for (taille, chemin) in chemins {
         if bilan.fichiers.len() >= bornes.fichiers || octets.saturating_add(taille) > bornes.octets {
-            bilan.hors_borne += 1;
+            bilan.hors_borne = bilan.hors_borne.saturating_add(1);
             continue;
         }
         octets = octets.saturating_add(taille);
@@ -376,7 +379,7 @@ fn lire_fichier_borne(
             } else if origines.len() < bornes.suites_origine {
                 origines.push((cle, vec![origine]));
             } else {
-                bilan.hors_suites += 1;
+                bilan.hors_suites = bilan.hors_suites.saturating_add(1);
             }
         }
         let journal = couper(&e.canal);
@@ -391,17 +394,17 @@ fn lire_fichier_borne(
                 numero_fichier,
             },
         ) else {
-            bilan.sans_identifiant += 1;
+            bilan.sans_identifiant = bilan.sans_identifiant.saturating_add(1);
             return;
         };
         match filtre.juger(&evenement) {
             Ok(()) => {
-                bilan.donnes += 1;
-                bilan.non_verifies += u64::from(!evenement.verifie);
+                bilan.donnes = bilan.donnes.saturating_add(1);
+                bilan.non_verifies = bilan.non_verifies.saturating_add(u64::from(!evenement.verifie));
                 recevoir(evenement);
             }
-            Err(Ecart::Filtre) => bilan.filtres += 1,
-            Err(Ecart::SansDate) => bilan.sans_date += 1,
+            Err(Ecart::Filtre) => bilan.filtres = bilan.filtres.saturating_add(1),
+            Err(Ecart::SansDate) => bilan.sans_date = bilan.sans_date.saturating_add(1),
         }
     });
     match lecture {
@@ -462,12 +465,12 @@ fn signes_de_copie(lu: &Bilan) -> bool {
         .windows(2)
         .enumerate()
         .filter(|(_, w)| matches!(w, [avant, apres] if apres.0 < avant.0))
-        .map(|(i, _)| i + 1)
+        .map(|(i, _)| i.saturating_add(1))
         .collect();
     let recul_isole = reculs.iter().any(|&i| {
         plages
             .get(i)
-            .zip(plages.get(i + 1))
+            .zip(plages.get(i.saturating_add(1)))
             .is_some_and(|(plage, suivant)| plage.1.checked_add(1) != Some(suivant.0))
     });
     zero_au_milieu || reculs.len() > 1 || recul_isole
@@ -512,12 +515,12 @@ fn pertes(lu: &Bilan) -> Vec<u64> {
     // Chacun pour soi : dans un journal tournant, deux morceaux voisins dans le fichier peuvent porter des numéros
     // éloignés. Au-delà de `MAX_RECAPS` pertes, la dernière prend le reste (le bilan ne grossit pas sans fin).
     let pleins = lu.morceaux_hors_borne.saturating_add(lu.morceaux_sans_recap);
-    let un_par_un = pleins.min(evtx::MAX_RECAPS as u64);
+    let un_par_un = pleins.min(u64::try_from(evtx::MAX_RECAPS).unwrap_or(u64::MAX));
     sortie.extend((0..un_par_un).map(|_| CAPACITE_MORCEAU));
     if let Some(dernier) = sortie.last_mut()
         && pleins > un_par_un
     {
-        *dernier = dernier.saturating_add((pleins - un_par_un).saturating_mul(CAPACITE_MORCEAU));
+        *dernier = dernier.saturating_add(pleins.saturating_sub(un_par_un).saturating_mul(CAPACITE_MORCEAU));
     }
     sortie
 }
@@ -531,7 +534,10 @@ fn suites(
     max_trous: usize,
 ) -> Vec<Suite> {
     let pertes = pertes(lu);
-    let morceaux = lu.morceaux.len() as u64 + lu.morceaux_hors_borne + lu.morceaux_sans_recap;
+    let morceaux = u64::try_from(lu.morceaux.len())
+        .unwrap_or(u64::MAX)
+        .saturating_add(lu.morceaux_hors_borne)
+        .saturating_add(lu.morceaux_sans_recap);
     let vide_par_windows = presents.is_empty()
         && lu.morceaux.iter().any(|m| m.etat == EtatMorceau::Prepare)
         && lu
@@ -568,5 +574,10 @@ fn suites(
     sortie
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests;

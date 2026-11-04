@@ -14,6 +14,9 @@
 //! fil à part : le menu n'attend pas, et se redessine quand sa grille change (annoncée par le terminal, ou relue par
 //! `selection` : la vieille console de Windows ne l'annonce pas).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -24,6 +27,13 @@ use crossterm::terminal;
 /// (`selection::COLONNES_AVEC_APERCU`). Un écran trop étroit borne la fenêtre (`placement`) : le panneau ne se montre
 /// pas, le menu reste lisible.
 #[allow(clippy::cast_possible_truncation)]
+#[cfg_attr(
+    target_os = "linux",
+    expect(
+        clippy::as_conversions,
+        reason = "constante : From n'est pas utilisable ici, et la largeur des menus tient dans un u16"
+    )
+)]
 const COLONNES: u16 = crate::selection::COLONNES_AVEC_APERCU as u16;
 
 /// Jamais moins : sous un petit menu, les pauses et les questions des outils ont besoin de place.
@@ -81,7 +91,7 @@ pub fn epouser(rangees: usize) {
         }
         *derniere = Some(rangees);
     }
-    let demande = DEMANDE.fetch_add(1, Ordering::SeqCst) + 1;
+    let demande = DEMANDE.fetch_add(1, Ordering::SeqCst).saturating_add(1);
     let _ = std::thread::Builder::new()
         .name("fenetre".into())
         .spawn(move || ajuster(demande, COLONNES, rangees));
@@ -191,7 +201,7 @@ fn atteinte(m: &Mesure, colonnes: u16, rangees: u16) -> bool {
 
 /// La fenêtre est-elle déjà à sa place ? Quelques pixels d'écart (bordures, arrondis du bureau) ne comptent pas.
 fn centree(m: &Mesure, place: Place) -> bool {
-    (m.x - place.0).abs() <= 4 && (m.y - place.1).abs() <= 4
+    m.x.saturating_sub(place.0).abs() <= 4 && m.y.saturating_sub(place.1).abs() <= 4
 }
 
 /// La place de la fenêtre pour `colonnes` × `rangees` cases : bornée à la zone ; au milieu de la zone avec `centrer`,
@@ -200,10 +210,17 @@ fn placement(m: Mesure, avant: Option<Mesure>, colonnes: u16, rangees: u16, zone
     let l = pixels(m.l, m.colonnes, colonnes, avant.map(|a| (a.l, a.colonnes))).clamp(1, zone.l.max(1));
     let h = pixels(m.h, m.rangees, rangees, avant.map(|a| (a.h, a.rangees))).clamp(1, zone.h.max(1));
     if centrer {
-        (zone.x + (zone.l - l) / 2, zone.y + (zone.h - h) / 2, l, h)
+        (
+            zone.x.saturating_add(zone.l.saturating_sub(l) / 2),
+            zone.y.saturating_add(zone.h.saturating_sub(h) / 2),
+            l,
+            h,
+        )
     } else {
-        let gauche = m.x.clamp(zone.x, (zone.x + zone.l - l).max(zone.x));
-        let haut = m.y.clamp(zone.y, (zone.y + zone.h - h).max(zone.y));
+        let gauche =
+            m.x.clamp(zone.x, zone.x.saturating_add(zone.l).saturating_sub(l).max(zone.x));
+        let haut =
+            m.y.clamp(zone.y, zone.y.saturating_add(zone.h).saturating_sub(h).max(zone.y));
         (gauche, haut, l, h)
     }
 }
@@ -215,36 +232,48 @@ fn placement(m: Mesure, avant: Option<Mesure>, colonnes: u16, rangees: u16, zone
 fn pixels(px: i32, n: u16, cible: u16, avant: Option<(i32, u16)>) -> i32 {
     let (mut pas_px, mut pas_n, mut cible) = (i64::from(px), i64::from(n.max(1)), i64::from(cible));
     let mesuree = avant.and_then(|(px_avant, n_avant)| {
-        let (d_px, d_n) = (i64::from(px) - i64::from(px_avant), i64::from(n) - i64::from(n_avant));
+        let (d_px, d_n) = (
+            i64::from(px).saturating_sub(i64::from(px_avant)),
+            i64::from(n).saturating_sub(i64::from(n_avant)),
+        );
         // Grille et fenêtre ont bougé dans le même sens ; sinon la mesure est fausse (fenêtre encore en mouvement).
-        (d_px * d_n > 0).then_some((d_px.abs(), d_n.abs()))
+        (d_px.saturating_mul(d_n) > 0).then_some((d_px.abs(), d_n.abs()))
     });
     match mesuree {
         Some(pas) => (pas_px, pas_n) = pas,
-        None if cible < i64::from(n) => cible += 1,
+        None if cible < i64::from(n) => cible = cible.saturating_add(1),
         None => {}
     }
-    let ecart = (cible - i64::from(n)) * pas_px;
+    let ecart = cible.saturating_sub(i64::from(n)).saturating_mul(pas_px);
     let ecart = if ecart >= 0 {
-        (ecart + pas_n - 1) / pas_n
+        // Un pas nul ne déplace rien.
+        ecart
+            .saturating_add(pas_n)
+            .saturating_sub(1)
+            .checked_div(pas_n)
+            .unwrap_or(0)
     } else {
-        ecart / pas_n
+        ecart.checked_div(pas_n).unwrap_or(0)
     };
-    i32::try_from(i64::from(px) + ecart).unwrap_or(px)
+    i32::try_from(i64::from(px).saturating_add(ecart)).unwrap_or(px)
 }
 
 /// Attend que le terminal ait fini de suivre la fenêtre : le bureau anime le changement, et la grille passe par
 /// chaque étape. Trois lectures égales après un changement, ou rien de changé après 0,6 s ; 1,5 s au plus.
 fn attendre_la_grille(avant: (u16, u16)) {
     let debut = Instant::now();
-    let (mut derniere, mut egales, mut changee) = (avant, 0, false);
+    let (mut derniere, mut egales, mut changee) = (avant, 0usize, false);
     while debut.elapsed() < Duration::from_millis(1500) {
         std::thread::sleep(Duration::from_millis(40));
         let Ok(taille) = terminal::size() else {
             return;
         };
         changee |= taille != avant;
-        egales = if taille == derniere { egales + 1 } else { 0 };
+        egales = if taille == derniere {
+            egales.saturating_add(1)
+        } else {
+            0
+        };
         derniere = taille;
         if (changee && egales >= 3) || (!changee && debut.elapsed() > Duration::from_millis(600)) {
             return;
@@ -375,14 +404,25 @@ mod systeme {
         };
         let entier = |v: f64| {
             // Une taille d'écran divisée par son échelle : quelques milliers de pixels, positifs.
-            #[allow(clippy::cast_possible_truncation)]
-            let n = (v / echelle).floor() as i32;
-            n
+            let n = crate::socle::nombres::entier_signe((v / echelle).floor());
+            i32::try_from(n.clamp(i64::from(i32::MIN), i64::from(i32::MAX))).unwrap_or(0)
         };
-        let x = i32::try_from(ecran["x"].as_i64()?).ok()? + reserve(0) + MARGE;
-        let y = i32::try_from(ecran["y"].as_i64()?).ok()? + reserve(1) + MARGE;
-        let l = entier(l) - reserve(0) - reserve(2) - 2 * MARGE;
-        let h = entier(h) - reserve(1) - reserve(3) - 2 * MARGE;
+        let x = i32::try_from(ecran["x"].as_i64()?)
+            .ok()?
+            .saturating_add(reserve(0))
+            .saturating_add(MARGE);
+        let y = i32::try_from(ecran["y"].as_i64()?)
+            .ok()?
+            .saturating_add(reserve(1))
+            .saturating_add(MARGE);
+        let l = entier(l)
+            .saturating_sub(reserve(0))
+            .saturating_sub(reserve(2))
+            .saturating_sub(MARGE.saturating_mul(2));
+        let h = entier(h)
+            .saturating_sub(reserve(1))
+            .saturating_sub(reserve(3))
+            .saturating_sub(MARGE.saturating_mul(2));
         (l > 0 && h > 0).then_some(Zone { x, y, l, h })
     }
 
@@ -549,6 +589,11 @@ mod systeme {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,6 +2,9 @@
 //! récents (erreurs du journal et programmes plantés sous Linux ; écrans bleus, arrêts brutaux et programmes plantés
 //! sous Windows). Lecture seule. Une copie texte est enregistrée pour l'envoyer ou la garder.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::fmt::Write;
 
 use crate::risk::Niveau;
@@ -66,7 +69,7 @@ fn duree(secondes: u64) -> String {
 
 fn go(octets: u64) -> String {
     #[allow(clippy::cast_precision_loss)]
-    let g = octets as f64 / f64::from(1u32 << 30);
+    let g = crate::socle::nombres::flottant(octets) / f64::from(1u32 << 30);
     if g >= 1000.0 {
         trf!("{} To", "{} TB", crate::langue::decimal(g / 1024.0, 1))
     } else {
@@ -79,7 +82,7 @@ fn plus_frequentes(sources: &[String], max: usize) -> String {
     let mut comptes: Vec<(String, usize)> = Vec::new();
     for s in sources {
         match comptes.iter_mut().find(|(n, _)| n == s) {
-            Some((_, c)) => *c += 1,
+            Some((_, c)) => *c = (*c).saturating_add(1),
             None => comptes.push((s.clone(), 1)),
         }
     }
@@ -152,7 +155,7 @@ mod systeme {
             .nth(1)?
             .parse::<u64>()
             .ok()
-            .map(|ko| ko * 1024)
+            .map(|ko| ko.saturating_mul(1024))
     }
 
     /// Version du pilote dans /proc/driver/nvidia/version (« … Kernel Module for x86_64  610.57.04  Release … »).
@@ -240,7 +243,7 @@ mod systeme {
         texte
             .lines()
             .filter_map(|l| {
-                let exe = l[l.find(" /")? + 1..].trim_end();
+                let exe = l[(l.find(" /")?).saturating_add(1)..].trim_end();
                 let exe = match exe.rsplit_once(char::is_whitespace) {
                     Some((chemin, _)) if taille_en_fin => chemin.trim_end(),
                     _ => exe,
@@ -1221,6 +1224,11 @@ pub fn json() {
     println!("{}", crate::modele::resultat::json(&r));
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

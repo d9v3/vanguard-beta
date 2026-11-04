@@ -2,6 +2,9 @@
 //! Linux : PulseAudio ou PipeWire (pactl) ; macOS : volume de sortie (osascript) ; Windows : les services du son.
 //! Remettre le son, choisir la sortie ou relancer le service : montré, puis fait après accord.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use super::{Etat, a_savoir, fait, question, verifications};
 use crate::ui::*;
 
@@ -215,7 +218,7 @@ mod systeme {
                 "The sound may be going somewhere else than where you expect. Available outputs:"
             ));
             for (i, s) in candidates.iter().enumerate() {
-                println!("    {TOUCHE}{}{RESET}  {}", i + 1, s.description);
+                println!("    {TOUCHE}{}{RESET}  {}", i.saturating_add(1), s.description);
             }
             let choix = demander(tr!(
                 "\n  Numéro de la sortie à utiliser (Entrée pour garder celle-ci) : ",
@@ -423,6 +426,11 @@ mod systeme {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

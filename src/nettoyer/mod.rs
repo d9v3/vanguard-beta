@@ -3,6 +3,9 @@
 //! est coché d'office, la corbeille jamais. On voit les commandes, on accepte, puis la place libre relue dit ce qui a
 //! vraiment été gagné. Aucun document, aucune photo, aucun réglage n'est touché.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -78,10 +81,17 @@ pub enum Age {
 /// tout (droits) : « vide » et « illisible » ne se confondent pas. Arrêt après deux secondes (un cache de millions
 /// de fichiers) : le total est alors un minimum, comme quand il atteint `u64::MAX` (voir `somme`).
 pub fn taille_dossier(dossier: &Path, age: Age, exclus: &[PathBuf]) -> Option<u64> {
-    let echeance = Instant::now() + Duration::from_secs(2);
+    let echeance = Instant::now()
+        .checked_add(Duration::from_secs(2))
+        .unwrap_or_else(Instant::now);
     let limite = match age {
         Age::Tout => None,
-        Age::NonModifieDepuis(j) => Some(SystemTime::now() - Duration::from_secs(j * 86_400)),
+        // Une date qui déborderait : la limite tombe en 1970, et rien n'est assez vieux pour partir.
+        Age::NonModifieDepuis(j) => Some(
+            SystemTime::now()
+                .checked_sub(Duration::from_secs(j.saturating_mul(86_400)))
+                .unwrap_or(SystemTime::UNIX_EPOCH),
+        ),
     };
     let mut total = 0_u64;
     let mut a_voir = vec![std::fs::read_dir(dossier).ok()?];
@@ -116,8 +126,13 @@ pub fn taille_dossier(dossier: &Path, age: Age, exclus: &[PathBuf]) -> Option<u6
 /// qu'il dort. Un lien symbolique est gardé aussi : il mène souvent le cache sur un autre disque, exprès.
 #[cfg(unix)]
 fn caches_endormis(dossier: &Path, jours: u64, exclus: &[&str]) -> Vec<(String, u64)> {
-    let echeance = Instant::now() + Duration::from_secs(3);
-    let limite = SystemTime::now() - Duration::from_secs(jours * 86_400);
+    let echeance = Instant::now()
+        .checked_add(Duration::from_secs(3))
+        .unwrap_or_else(Instant::now);
+    // Une date qui déborderait : la limite tombe en 1970, aucun cache ne passe pour endormi.
+    let limite = SystemTime::now()
+        .checked_sub(Duration::from_secs(jours.saturating_mul(86_400)))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
     let Ok(entrees) = std::fs::read_dir(dossier) else {
         return Vec::new();
     };
@@ -243,7 +258,11 @@ fn place() -> Option<(u64, u64, u64)> {
 }
 
 fn ligne_place(libre: u64, total: u64) -> String {
-    let occupe = total.saturating_sub(libre).saturating_mul(100) / total.max(1);
+    let occupe = total
+        .saturating_sub(libre)
+        .saturating_mul(100)
+        .checked_div(total.max(1))
+        .unwrap_or(0);
     trf!(
         "  {GRIS}Disque du système : {} libres sur {} (occupé à {occupe} %).{RESET}",
         "  {GRIS}System disk: {} free of {} ({occupe}% used).{RESET}",
@@ -426,6 +445,11 @@ pub fn liste() {
     trp!("  Rien n'a été effacé.", "  Nothing was deleted.");
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

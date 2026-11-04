@@ -4,6 +4,8 @@
 //! système, la puce TPM remise à zéro. Vanguard vérifie et explique ; il n'efface rien lui-même : l'outil du système
 //! sait traiter chaque disque (SSD, puce de sécurité), et c'est à toi d'appuyer.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de kernel32 : LoadLibraryExW et GetProcAddress, le pointeur rendu changé en fonction typée (transmute).
 #![allow(unsafe_code)]
 
@@ -363,7 +365,7 @@ pub(super) fn depart() {
     }
     section(tr!("DANS L'ORDRE", "IN ORDER"));
     for (i, e) in etapes(devenir, copie == 0, copie == 2, chiffre, tpm).iter().enumerate() {
-        println!("  {TOUCHE}{}{RESET} {GRAS}{}{RESET}", i + 1, e.titre);
+        println!("  {TOUCHE}{}{RESET} {GRAS}{}{RESET}", i.saturating_add(1), e.titre);
         afficher_aligne("    ", &e.detail, 4, "");
         if let Some((question, outil)) = e.outil {
             proposer_outil(question, outil);
@@ -382,6 +384,11 @@ pub(super) fn depart() {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -13,6 +13,9 @@
 //! Ordinateur et phrase perdus : le carnet de la clé est perdu, c'est voulu ; une sauvegarde est proposée avant
 //! d'activer la protection.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::path::{Path, PathBuf};
 
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -225,10 +228,10 @@ pub(crate) fn envelopper(cle: &Cle, phrase: &Phrase, parametres: (u32, u32, u32)
 
 /// L'identifiant de la clé écrit dans une enveloppe, sans phrase.
 pub(crate) fn identifiant_de(enveloppe: &[u8]) -> Option<String> {
-    let debut = MAGIQUE_ENVELOPPE.len() + 12 + TAILLE_SEL;
+    let debut = MAGIQUE_ENVELOPPE.len().saturating_add(TAILLE_SEL).saturating_add(12);
     enveloppe
         .strip_prefix(&MAGIQUE_ENVELOPPE[..])
-        .and_then(|_| enveloppe.get(debut..debut + 32))
+        .and_then(|_| enveloppe.get(debut..debut.saturating_add(32)))
         .and_then(|i| std::str::from_utf8(i).ok())
         .map(str::to_string)
 }
@@ -237,7 +240,7 @@ pub(crate) fn ouvrir(enveloppe: &[u8], phrase: &Phrase) -> Result<Cle, Refus> {
     let reste = enveloppe.strip_prefix(&MAGIQUE_ENVELOPPE[..]).ok_or(Refus::Format)?;
     let nombre = |i: usize| -> Result<u32, Refus> {
         let o: [u8; 4] = reste
-            .get(i..i + 4)
+            .get(i..i.saturating_add(4))
             .and_then(|o| o.try_into().ok())
             .ok_or(Refus::Format)?;
         Ok(u32::from_le_bytes(o))
@@ -789,6 +792,11 @@ fn constat_de(donnees: &Path) -> Option<crate::machine::Constat> {
     })
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

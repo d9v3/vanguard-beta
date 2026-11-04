@@ -2,6 +2,9 @@
 //! Échap l'arrête. Jamais une commande marquée ⚠, ni une qui ouvre une fenêtre, occupe tout le terminal, écrit un
 //! fichier ou demande les droits d'administrateur : celles-là se tapent dans un terminal (`pourquoi_pas`).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -158,8 +161,8 @@ pub(super) fn derouler(ligne: &str, delai: Duration, clavier: bool, mut montrer:
         Err(e) => return Fin::PasDemarree(e.to_string()),
     };
     let flux: Vec<Box<dyn Read + Send>> = [
-        enfant.stdout.take().map(|f| Box::new(f) as Box<dyn Read + Send>),
-        enfant.stderr.take().map(|f| Box::new(f) as Box<dyn Read + Send>),
+        enfant.stdout.take().map(|f| -> Box<dyn Read + Send> { Box::new(f) }),
+        enfant.stderr.take().map(|f| -> Box<dyn Read + Send> { Box::new(f) }),
     ]
     .into_iter()
     .flatten()
@@ -186,7 +189,7 @@ pub(super) fn derouler(ligne: &str, delai: Duration, clavier: bool, mut montrer:
         while let Ok(message) = reception.try_recv() {
             match message {
                 Some(l) => montrer(Some(&l)),
-                None => ouverts -= 1,
+                None => ouverts = ouverts.saturating_sub(1),
             }
         }
         montrer(None);
@@ -211,11 +214,13 @@ pub(super) fn derouler(ligne: &str, delai: Duration, clavier: bool, mut montrer:
     };
     // Ce que la commande a écrit juste avant de finir. Deux secondes au plus : un programme resté en arrière-plan peut
     // garder la sortie ouverte.
-    let limite = Instant::now() + Duration::from_secs(2);
+    let limite = Instant::now()
+        .checked_add(Duration::from_secs(2))
+        .unwrap_or_else(Instant::now);
     while ouverts > 0 {
         match reception.recv_timeout(limite.saturating_duration_since(Instant::now())) {
             Ok(Some(l)) => montrer(Some(&l)),
-            Ok(None) => ouverts -= 1,
+            Ok(None) => ouverts = ouverts.saturating_sub(1),
             Err(_) => break,
         }
     }
@@ -241,8 +246,8 @@ pub(super) fn nettoyer(ligne: &str) -> String {
                     .skip(1)
                     .take_while(|c| c.is_ascii_digit() || *c == ';')
                     .collect();
-                if caracteres.clone().nth(parametres.len() + 1) == Some('m') {
-                    for _ in 0..parametres.len() + 2 {
+                if caracteres.clone().nth(parametres.len().saturating_add(1)) == Some('m') {
+                    for _ in 0..parametres.len().saturating_add(2) {
                         caracteres.next();
                     }
                 } else {
@@ -255,13 +260,13 @@ pub(super) fn nettoyer(ligne: &str) -> String {
                 }
             }
             '\t' => {
-                let espaces = 8 - colonne % 8;
+                let espaces = 8usize.saturating_sub(colonne % 8);
                 sortie.extend(std::iter::repeat_n(' ', espaces));
-                colonne += espaces;
+                colonne = colonne.saturating_add(espaces);
             }
             _ => {
                 sortie.push(c);
-                colonne += largeur_car(c);
+                colonne = colonne.saturating_add(largeur_car(c));
             }
         }
     }
@@ -294,7 +299,7 @@ pub(super) fn lancer_ici(c: &Commande) {
     // En mode clavier, le terminal ne revient plus seul au début de la ligne.
     let saut = if clavier { "\r\n" } else { "\n" };
     let debut = Instant::now();
-    let (mut montrees, mut cachees) = (0, 0);
+    let (mut montrees, mut cachees) = (0, 0usize);
     let mut seconde_montree = 0;
     let mut sortie = std::io::stdout();
     let fin = derouler(c.ligne, DELAI, clavier, |ligne| {
@@ -305,10 +310,10 @@ pub(super) fn lancer_ici(c: &Commande) {
                 ecran += "\r\x1b[K  ";
                 ecran += &nettoyer(l);
                 ecran += saut;
-                montrees += 1;
+                montrees = montrees.saturating_add(1);
                 seconde_montree = 0;
             } else {
-                cachees += 1;
+                cachees = cachees.saturating_add(1);
             }
         }
         // L'attente ne paraît qu'après une seconde : une commande rapide ne clignote pas.
@@ -370,6 +375,11 @@ pub(super) fn lancer_ici(c: &Commande) {
     crate::selection::attendre_retour(tr!("\n  Entrée pour revenir : ", "\n  Enter to go back: "));
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

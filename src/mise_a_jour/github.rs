@@ -22,6 +22,9 @@
 //! (`vanguard verifier-moi`). C'est un fichier à part, signé sous un autre domaine : `derniere.txt` garde sa forme, et
 //! les copies d'avant lui (0.85.0 et plus anciennes), qui ne lisent que lui, ne voient rien changer.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::{Mutex, Once, PoisonError};
@@ -185,7 +188,7 @@ fn en_octets(hex: &str) -> Option<[u8; 32]> {
     }
     let mut octets = [0u8; 32];
     for (i, o) in octets.iter_mut().enumerate() {
-        *o = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
+        *o = u8::from_str_radix(&hex[i.saturating_mul(2)..i.saturating_mul(2).saturating_add(2)], 16).ok()?;
     }
     Some(octets)
 }
@@ -550,6 +553,11 @@ fn derniere_vue() -> Option<Version> {
     Some(v)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

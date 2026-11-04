@@ -14,6 +14,9 @@
 //! et c'est dit. Le partage avec l'auteur (`partage`) y est gardé aussi, relu à chaque écriture du relevé et avant
 //! chaque envoi.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 pub(crate) mod agent;
 pub(crate) mod partage;
 
@@ -107,7 +110,7 @@ fn charger_juge(chemin: &Path) -> Result<(Fichier, Option<Douteux>), crate::mode
         Lecture::Adopte(o) => (o, Some(Douteux::Adopte)),
         Lecture::Falsifie(Some(o)) => (o, Some(Douteux::HorsVanguard)),
     };
-    if octets.len() as u64 > TAILLE_MAX {
+    if u64::try_from(octets.len()).unwrap_or(u64::MAX) > TAILLE_MAX {
         return Err(illisible(trf!("plus de {} Kio", "over {} KiB", TAILLE_MAX >> 10)));
     }
     let texte = String::from_utf8(octets).map_err(|e| illisible(e.to_string()))?;
@@ -1026,7 +1029,11 @@ pub fn menu() {
             Ligne::Texte(String::new()),
         ];
         for (i, r) in Reglage::TOUS.iter().enumerate() {
-            lignes.push(Ligne::choix(&(i + 1).to_string(), r.titre(), &couper(&valeur(*r), 33)));
+            lignes.push(Ligne::choix(
+                &i.saturating_add(1).to_string(),
+                r.titre(),
+                &couper(&valeur(*r), 33),
+            ));
         }
         lignes.push(Ligne::Texte(String::new()));
         lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
@@ -1085,7 +1092,7 @@ fn choisir_temps_reel() {
             .map(|c| format!("← {}", temps_reel::echeance(&c)))
             .unwrap_or_default();
         lignes.push(Ligne::choix(
-            &(i + 2).to_string(),
+            &i.saturating_add(2).to_string(),
             &format!("{}, {}", mot_oui_non(false), d.libelle()),
             &couper(&precision, 33),
         ));
@@ -1137,7 +1144,7 @@ fn choisir_valeur(r: Reglage) {
         } else {
             ""
         };
-        lignes.push(Ligne::choix(&(i + 1).to_string(), v, precision));
+        lignes.push(Ligne::choix(&i.saturating_add(1).to_string(), v, precision));
     }
     lignes.push(Ligne::Texte(String::new()));
     lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
@@ -1159,6 +1166,11 @@ fn choisir_valeur(r: Reglage) {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

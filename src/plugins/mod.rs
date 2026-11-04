@@ -10,6 +10,9 @@
 //! c'est la copie vérifiée qui tourne : le remplacer entre la vérification et le lancement ne sert à rien. La
 //! conception (menaces et garde-fous) est résumée dans CONTRIBUTING.md, section Plugins.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 mod archive;
 pub mod labo;
 pub mod manifeste;
@@ -513,7 +516,7 @@ fn ouvrir_sur(chemin: &Path) -> Result<std::fs::File, String> {
 fn lire_sur(chemin: &Path, max: usize) -> Result<Vec<u8>, String> {
     let f = ouvrir_sur(chemin)?;
     let mut octets = Vec::new();
-    f.take(max as u64 + 1)
+    f.take((u64::try_from(max).unwrap_or(u64::MAX)).saturating_add(1))
         .read_to_end(&mut octets)
         .map_err(|e| e.to_string())?;
     if octets.len() > max {
@@ -552,7 +555,7 @@ fn copier_hache(source: &Path, copie: Option<&Path>, proprietaire: bool, max: u6
         if n == 0 {
             break;
         }
-        total += n as u64;
+        total = total.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
         if total > max {
             return Err(trf!("{} : trop gros", "{}: too large", chemin_affichable(source)));
         }
@@ -619,7 +622,7 @@ fn parcourir(
         };
         let cible = vers.map(|v| v.join(&nom));
         let meta = std::fs::symlink_metadata(&source).map_err(|e| e.to_string())?;
-        compte.0 += 1;
+        compte.0 = compte.0.saturating_add(1);
         if compte.0 > COPIE_FICHIERS_MAX {
             return Err(trf!(
                 "plus de {COPIE_FICHIERS_MAX} fichiers",
@@ -643,13 +646,13 @@ fn parcourir(
                 proprietaire,
                 fichiers,
                 compte,
-                profondeur + 1,
+                profondeur.saturating_add(1),
             )?;
         } else if meta.is_file() {
             let reste = COPIE_OCTETS_MAX.saturating_sub(compte.1);
             // Le reste des octets permis : un fichier qui grossit pendant la lecture ne passe pas la borne.
             let (empreinte, octets) = copier_hache(&source, cible.as_deref(), proprietaire, reste)?;
-            compte.1 += octets;
+            compte.1 = compte.1.saturating_add(octets);
             fichiers.insert(chemin, empreinte);
         } else {
             return Err(trf!(
@@ -695,7 +698,7 @@ fn auteur_verifie(m: &Manifeste, copie: &Path, fichiers: &Fichiers) -> Result<Op
     let lue = hex_sig.len() == 128
         && signature.iter_mut().enumerate().all(|(i, o)| {
             hex_sig
-                .get(2 * i..2 * i + 2)
+                .get(i.saturating_mul(2)..i.saturating_mul(2).saturating_add(2))
                 .and_then(|h| u8::from_str_radix(h, 16).ok())
                 .map(|v| *o = v)
                 .is_some()
@@ -1105,7 +1108,7 @@ fn fichiers_et_tailles(d: &Path) -> Vec<(String, u64)> {
 /// Une taille lisible : « 812 o », « 4,2 Kio », « 1,3 Mio ».
 fn taille(octets: u64) -> String {
     #[allow(clippy::cast_precision_loss)] // une taille à montrer, au dixième
-    let f = octets as f64;
+    let f = crate::socle::nombres::flottant(octets);
     if octets < 1024 {
         trf!("{octets} o", "{octets} B")
     } else if octets < 1 << 20 {
@@ -1203,7 +1206,11 @@ fn presenter(
         println!("    {}  {GRIS}{}{RESET}", couper(&affichable(f), 56), taille(*o));
     }
     if tailles.len() > 30 {
-        trp!("    … et {} autre(s)", "    … and {} more", tailles.len() - 30);
+        trp!(
+            "    … et {} autre(s)",
+            "    … and {} more",
+            tailles.len().saturating_sub(30)
+        );
     }
     trp!(
         "  Empreinte du dossier (SHA-256 de chaque fichier) :",
@@ -1281,7 +1288,10 @@ impl Drop for Temporaire {
 
 /// Les copies laissées par un Vanguard arrêté net (plus d'une heure) : retirées.
 fn menage(racine: &Path) {
-    let vieux = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    // Une horloge qui déborderait : la limite tombe en 1970, rien n'est retiré.
+    let vieux = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(3600))
+        .unwrap_or(std::time::UNIX_EPOCH);
     for e in std::fs::read_dir(racine).into_iter().flatten().flatten() {
         let nom = e.file_name().to_string_lossy().into_owned();
         if (nom.starts_with(".lancement-") || nom.starts_with(".ajout-"))
@@ -2089,5 +2099,10 @@ pub fn regler_restrictions(sans: bool) -> i32 {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests;

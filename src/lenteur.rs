@@ -4,6 +4,9 @@
 //! Vanguard règle quoi (Nettoyer, Optimiser, Mises à jour, programmes au démarrage à retirer ou remettre, après accord
 //! et de façon annulable), et l'écran les ouvre.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::HashMap;
 
 use crate::risk::Niveau;
@@ -88,7 +91,7 @@ fn reunir(processus: impl Iterator<Item = Programme>) -> Vec<Programme> {
     for p in processus {
         let e = par_nom.entry(affichable(&p.nom)).or_default();
         e.processeur += p.processeur;
-        e.memoire += p.memoire;
+        e.memoire = e.memoire.saturating_add(p.memoire);
         e.disque = p.disque.map(|d| e.disque.unwrap_or(0.0) + d).or(e.disque);
     }
     par_nom.into_iter().map(|(nom, p)| Programme { nom, ..p }).collect()
@@ -99,7 +102,8 @@ fn reunir(processus: impl Iterator<Item = Programme>) -> Vec<Programme> {
 fn avec_poids(programmes: &[Programme], liste: impl Iterator<Item = (String, String)>) -> Vec<AuDemarrage> {
     let mut par_nom: HashMap<String, u64> = HashMap::new();
     for p in programmes {
-        *par_nom.entry(p.nom.to_lowercase()).or_default() += p.memoire;
+        let fois = par_nom.entry(p.nom.to_lowercase()).or_default();
+        *fois = fois.saturating_add(p.memoire);
     }
     let poids = |programme: &str| par_nom.get(&affichable(programme).to_lowercase()).copied();
     liste
@@ -133,7 +137,7 @@ fn duree_demarrage(t: &InstantsDemarrage) -> Option<(f64, String)> {
     if t.fin == 0 {
         return None;
     }
-    let secondes = |us: u64| us as f64 / 1e6;
+    let secondes = |us: u64| crate::socle::nombres::flottant(us) / 1e6;
     let mut etapes = Vec::new();
     let mut etape = |nom: &str, us: u64| etapes.push(format!("{nom} {}", secondes_lisibles(secondes(us))));
     let systeme = t.fin.saturating_sub(t.espace_utilisateur);
@@ -158,7 +162,11 @@ fn duree_demarrage(t: &InstantsDemarrage) -> Option<(f64, String)> {
         etape("initrd", t.espace_utilisateur.saturating_sub(t.initrd));
     }
     etape(tr!("système", "userspace"), systeme);
-    let total = if noyau > 0 { t.micrologiciel + t.fin } else { systeme };
+    let total = if noyau > 0 {
+        t.micrologiciel.saturating_add(t.fin)
+    } else {
+        systeme
+    };
     Some((secondes(total), etapes.join(" · ")))
 }
 
@@ -206,11 +214,11 @@ fn chaine_critique(
         let us = if u.debut == 0 {
             0
         } else if u.active >= u.debut {
-            u.active - u.debut
+            u.active.saturating_sub(u.debut)
         } else {
             u.inactive.saturating_sub(u.debut)
         };
-        us as f64 / 1e6
+        crate::socle::nombres::flottant(us) / 1e6
     };
     let mut lents: HashMap<String, f64> = HashMap::new();
     if let Some(u) = unite(racine) {
@@ -257,7 +265,7 @@ fn chaine_critique(
 fn secondes_lisibles(s: f64) -> String {
     if s >= 60.0 {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let s = s.round() as u64;
+        let s = crate::socle::nombres::entier(s.round());
         return format!("{} min {:02} s", s / 60, s % 60);
     }
     format!("{} s", crate::langue::decimal(s, 1))
@@ -365,7 +373,11 @@ fn passager(nom: &str) -> Option<&'static str> {
 
 #[allow(clippy::cast_precision_loss)]
 fn pourcent(n: u64, sur: u64) -> f64 {
-    if sur == 0 { 0.0 } else { n as f64 * 100.0 / sur as f64 }
+    if sur == 0 {
+        0.0
+    } else {
+        crate::socle::nombres::flottant(n) * 100.0 / crate::socle::nombres::flottant(sur)
+    }
 }
 
 /// Ce qu'on peut conclure de l'instantané, le plus grave d'abord.
@@ -406,7 +418,7 @@ pub fn conseils(i: &Instantane) -> Vec<Conseil> {
         pousser(true, texte, None, "processeur");
     }
     if let Some((total, dispo)) = i.memoire.filter(|&(t, d)| pourcent(d, t) < 10.0) {
-        let texte = match plus(|p| p.memoire as f64) {
+        let texte = match plus(|p| crate::socle::nombres::flottant(p.memoire)) {
             Some(p) => trf!(
                 "Mémoire presque pleine ({} libres sur {}) : l'ordinateur écrit sur le disque ce qui ne tient plus, d'où la lenteur. {} en occupe {} : le fermer, ou fermer des onglets.",
                 "Memory almost full ({} free out of {}): the computer writes what no longer fits to the disk, hence the slowness. {} uses {}: close it, or close some tabs.",
@@ -484,12 +496,12 @@ pub fn conseils(i: &Instantane) -> Vec<Conseil> {
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn debit(p: &Programme) -> u64 {
-    p.disque.unwrap_or(0.0).max(0.0) as u64
+    crate::socle::nombres::entier(p.disque.unwrap_or(0.0).max(0.0))
 }
 
 fn taille(octets: u64) -> String {
     #[allow(clippy::cast_precision_loss)]
-    let f = octets as f64;
+    let f = crate::socle::nombres::flottant(octets);
     if octets >= 1 << 30 {
         trf!("{} Go", "{} GB", crate::langue::decimal(f / f64::from(1u32 << 30), 1))
     } else if octets >= 1 << 20 {
@@ -508,13 +520,17 @@ fn retards(lents: &[(String, f64)]) -> String {
 /// Une barre de 10 cases (le `clamp` en garde 10 au plus), colorée selon la charge.
 fn jauge(pct: f64) -> String {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let pleines = ((pct.clamp(0.0, 100.0) + 5.0) / 10.0) as usize;
+    let pleines = usize::try_from(crate::socle::nombres::entier((pct.clamp(0.0, 100.0) + 5.0) / 10.0)).unwrap_or(10);
     let c = match pct {
         p if p >= 80.0 => couleur(Niveau::Eleve),
         p if p >= 50.0 => couleur(Niveau::Moyen),
         _ => VERT,
     };
-    format!("{c}{}{GRIS}{}{RESET}", "▰".repeat(pleines), "▱".repeat(10 - pleines))
+    format!(
+        "{c}{}{GRIS}{}{RESET}",
+        "▰".repeat(pleines),
+        "▱".repeat(10usize.saturating_sub(pleines))
+    )
 }
 
 fn ligne_mesure(libelle: &str, valeur: &str) {
@@ -571,7 +587,7 @@ fn afficher(i: &Instantane) {
     #[rustfmt::skip] // une ligne par mesure, que rustfmt étalerait sur six
     let mesures: [Mesure; 3] = [
         (processeur, 1.0, |p| p.processeur, |p| trf!("{:.0} %", "{:.0}%", p.processeur)),
-        (memoire, 100.0 * 1_048_576.0, |p| p.memoire as f64, |p| taille(p.memoire)),
+        (memoire, 100.0 * 1_048_576.0, |p| crate::socle::nombres::flottant(p.memoire), |p| taille(p.memoire)),
         (disque, 1_048_576.0, |p| p.disque.unwrap_or(0.0), |p| format!("{}/s", taille(debit(p)))),
     ];
     for (libelle, seuil, cle, texte) in mesures {
@@ -728,7 +744,7 @@ pub fn menu() {
         }
         if let Some(&outil) = (1..=outils.len())
             .find(|n| n.to_string() == choix)
-            .and_then(|n| outils.get(n - 1))
+            .and_then(|n| outils.get(n.saturating_sub(1)))
         {
             println!();
             match outil {
@@ -765,11 +781,14 @@ fn nom_de_processus(exe: Option<&str>, comm: &str) -> String {
 /// contenir des espaces et des parenthèses : on repart de la dernière « ) ».
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn stat_processus(texte: &str) -> Option<(u64, u64)> {
-    let champs: Vec<&str> = texte.get(texte.rfind(')')? + 1..)?.split_whitespace().collect();
+    let champs: Vec<&str> = texte
+        .get(texte.rfind(')')?.checked_add(1)?..)?
+        .split_whitespace()
+        .collect();
     // Après le nom : état (3e champ), …, utime (14e), stime (15e), …, rss (24e).
     let nombre = |i: usize| champs.get(i)?.parse::<u64>().ok();
     let (utime, stime, rss) = (nombre(11)?, nombre(12)?, nombre(21)?);
-    Some((utime + stime, rss))
+    Some((utime.saturating_add(stime), rss))
 }
 
 /// Première ligne de /proc/stat : (occupé, total) en tops d'horloge, toute la machine.
@@ -779,7 +798,7 @@ fn stat_processeur(texte: &str) -> Option<(u64, u64)> {
     let valeurs: Vec<u64> = ligne.split_whitespace().filter_map(|v| v.parse().ok()).collect();
     // user nice system idle iowait irq softirq steal (guest est déjà compté dans user).
     let total: u64 = valeurs.iter().take(8).sum();
-    let repos = valeurs.get(3)? + valeurs.get(4).copied().unwrap_or(0);
+    let repos = valeurs.get(3)?.saturating_add(valeurs.get(4).copied().unwrap_or(0));
     Some((total.saturating_sub(repos), total))
 }
 
@@ -841,7 +860,9 @@ mod systeme {
                 // Octets lus et écrits : illisibles pour les programmes d'un autre compte.
                 let io = read_to_string(format!("/proc/{pid}/io")).unwrap_or_default();
                 let lire = |cle: &str| io.lines().find_map(|l| l.strip_prefix(cle)?.trim().parse::<u64>().ok());
-                let es = lire("read_bytes:").zip(lire("write_bytes:")).map(|(l, e)| l + e);
+                let es = lire("read_bytes:")
+                    .zip(lire("write_bytes:"))
+                    .map(|(l, e)| l.saturating_add(e));
                 Some((n, (nom, temps, pages, es)))
             })
             .collect();
@@ -987,25 +1008,37 @@ mod systeme {
         let b = echantillon(&disques);
         let ecart_s = b.quand.duration_since(a.quand).as_secs_f64().max(0.001);
         let releves = a.processeur.zip(b.processeur).filter(|((_, ta), (_, tb))| tb > ta);
-        let processeur = releves.map(|((oa, ta), (ob, tb))| ob.saturating_sub(oa) as f64 * 100.0 / (tb - ta) as f64);
+        let processeur = releves.map(|((oa, ta), (ob, tb))| {
+            crate::socle::nombres::flottant(ob.saturating_sub(oa)) * 100.0
+                / crate::socle::nombres::flottant(tb.saturating_sub(ta))
+        });
         let programmes = reunir(b.processus.iter().map(|(pid, (nom, temps, pages, es))| {
             let avant = a.processus.get(pid);
             let tops = avant.map_or(0, |(_, t, ..)| temps.saturating_sub(*t));
             Programme {
                 nom: nom.clone(),
                 // Tops d'horloge → secondes de processeur, rapportées au temps écoulé et à tous les fils.
-                processeur: tops as f64 / horloge as f64 / ecart_s / fils as f64 * 100.0,
-                memoire: pages * page,
+                processeur: crate::socle::nombres::flottant(tops)
+                    / crate::socle::nombres::flottant(horloge)
+                    / ecart_s
+                    / crate::socle::nombres::flottant(fils)
+                    * 100.0,
+                memoire: pages.saturating_mul(page),
                 disque: avant
                     .and_then(|(.., e)| *e)
                     .zip(*es)
-                    .map(|(x, y)| y.saturating_sub(x) as f64 / ecart_s),
+                    .map(|(x, y)| crate::socle::nombres::flottant(y.saturating_sub(x)) / ecart_s),
             }
         }));
         let disque = b
             .disques
             .iter()
-            .filter_map(|(nom, ms)| Some(ms.saturating_sub(*a.disques.get(nom)?) as f64 / (ecart_s * 1000.0) * 100.0))
+            .filter_map(|(nom, ms)| {
+                Some(
+                    crate::socle::nombres::flottant(ms.saturating_sub(*a.disques.get(nom)?)) / (ecart_s * 1000.0)
+                        * 100.0,
+                )
+            })
             .reduce(f64::max)
             .map(|d| d.min(100.0));
         let meminfo = read_to_string("/proc/meminfo").unwrap_or_default();
@@ -1013,7 +1046,7 @@ mod systeme {
             meminfo
                 .lines()
                 .find_map(|l| l.strip_prefix(cle)?.split_whitespace().next()?.parse::<u64>().ok())
-                .map(|ko| ko * 1024)
+                .map(|ko| ko.saturating_mul(1024))
         };
         Instantane {
             processeur,
@@ -1087,18 +1120,18 @@ fn instantane_windows(l: LectureWindows) -> Instantane {
                 .lents
                 .into_iter()
                 .filter(|x| !x.nom.trim().is_empty())
-                .map(|x| (affichable(x.nom.trim()), x.ms as f64 / 1000.0))
+                .map(|x| (affichable(x.nom.trim()), crate::socle::nombres::flottant(x.ms) / 1000.0))
                 .collect();
             lents.sort_by(|a, b| b.1.total_cmp(&a.1));
             // Un même programme ralentit souvent plusieurs démarrages : une fois, avec son pire retard.
             let mut vus = std::collections::HashSet::new();
             lents.retain(|(nom, _)| vus.insert(nom.clone()));
             lents.truncate(5);
-            let total = ms as f64 / 1000.0;
+            let total = crate::socle::nombres::flottant(ms) / 1000.0;
             let apres = l
                 .apres_ms
                 .filter(|&a| a > 0)
-                .map(|a| secondes_lisibles(a as f64 / 1000.0));
+                .map(|a| secondes_lisibles(crate::socle::nombres::flottant(a) / 1000.0));
             let etapes = apres
                 .map(|a| trf!("dont {} après l'ouverture de session", "including {} after login", a))
                 .unwrap_or_default();
@@ -1187,7 +1220,7 @@ mod systeme {
 
     #[allow(clippy::cast_precision_loss)]
     fn nombre(l: &Ligne, champ: &str) -> Option<f64> {
-        l[champ].entier().map(|n| n as f64)
+        l[champ].entier().map(|n| crate::socle::nombres::flottant(n))
     }
 
     /// Part occupée entre deux lectures d'un compteur de repos : 100 × (1 − repos / temps écoulé).
@@ -1227,7 +1260,9 @@ mod systeme {
                 // Temps de processeur en centaines de nanosecondes, comme TotalProcessorTime.Ticks.
                 let cpu = d
                     .and_then(|d| Some(nombre(l, "PercentProcessorTime")? - nombre(d, "PercentProcessorTime")?))
-                    .map_or(0.0, |t| t / 10_000.0 / ms / fils as f64 * 100.0);
+                    .map_or(0.0, |t| {
+                        t / 10_000.0 / ms / crate::socle::nombres::flottant(fils) * 100.0
+                    });
                 let disque = d.and_then(|d| {
                     Some((nombre(l, "IODataBytesPersec")? - nombre(d, "IODataBytesPersec")?) / (ms / 1000.0))
                 });
@@ -1530,7 +1565,7 @@ fn taille_top(texte: &str) -> Option<u64> {
         _ => return None,
     };
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    Some((n * facteur) as u64)
+    Some(crate::socle::nombres::entier(n * facteur))
 }
 
 /// `top -l 2 -s 2 -n 20 -o cpu -stats pid,command,cpu,mem` : la seconde mesure seulement (la première compte depuis le
@@ -1560,7 +1595,7 @@ fn lire_top(texte: &str, fils: usize) -> (Option<f64>, Vec<Programme>) {
             Some(Programme {
                 nom: nom.join(" "),
                 // top compte 100 % par cœur : rapporté à toute la machine.
-                processeur: cpu / fils.max(1) as f64,
+                processeur: cpu / crate::socle::nombres::flottant(fils.max(1)),
                 memoire,
                 disque: None,
             })
@@ -1657,6 +1692,11 @@ mod systeme {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

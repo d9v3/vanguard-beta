@@ -3,6 +3,9 @@
 //! depuis le mois d'avant. Rien n'est changé : c'est un rappel, les outils restent à lancer soi-même. Planifié comme
 //! la surveillance : minuterie systemd (Linux), Planificateur de tâches (Windows), agent launchd (macOS).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::sync::atomic::{AtomicU8, Ordering};
 
 #[cfg(target_os = "macos")]
@@ -273,7 +276,7 @@ pub fn active() -> bool {
         let installe = reussit("launchctl", &["print", &format!("{}/{AGENT_MACOS}", domaine_launchd())]);
         #[cfg(windows)]
         let installe = crate::reseau::surveillance::tache_existe(&[TACHE_WINDOWS]);
-        ETAT.store(1 + u8::from(installe), Ordering::Relaxed);
+        ETAT.store((u8::from(installe)).saturating_add(1), Ordering::Relaxed);
     }
     ETAT.load(Ordering::Relaxed) == 2
 }
@@ -455,6 +458,11 @@ fn installer(exe: &str) -> bool {
     crate::machine::windows::ps(&script_tache(exe, TACHE_WINDOWS)).is_some()
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
