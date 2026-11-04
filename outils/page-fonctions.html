@@ -104,19 +104,22 @@ h1, h2, h3, h4 { font-family: var(--texte); font-weight: 600; text-wrap: balance
 .fait b { display: block; font-size: 1.5rem; font-weight: 600; line-height: 1.15; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
 .fait span { display: block; margin-top: .2rem; font-size: .875rem; line-height: 1.45; color: var(--doux); }
 
-/* La fenêtre du programme : son texte se règle sur la largeur de la boîte, pour que les 76 colonnes du vrai
-   terminal y tiennent sans défiler (un caractère des polices à chasse fixe du système fait environ 0,6 em). */
-.fenetre { container-type: inline-size; background: var(--term-fond); color: var(--term-texte); border: 1px solid var(--term-trait); border-radius: var(--rayon-fenetre); box-shadow: var(--ombre); min-width: 0; }
+/* La fenêtre du programme : son texte se règle sur la largeur de la boîte, pour que les lignes du menu (77 colonnes
+   au plus, dans un cadre de 78) y tiennent sans défiler ni dépasser du cadre (un caractère des polices à chasse
+   fixe du système fait de 0,55 à 0,61 em : 48,5 em laissent la marge). Au bureau, elle reste au milieu de l'écran
+   pendant le texte de l'ouverture (sticky), sans laisser de coin vide sous elle. */
+.fenetre { container-type: inline-size; background: var(--term-fond); color: var(--term-texte); border: 1px solid var(--term-trait); border-radius: var(--rayon-fenetre); box-shadow: var(--ombre); min-width: 0; position: sticky; top: max(1.5rem, calc(50vh - 13rem)); }
 .fenetre .titre-fenetre { padding: .6rem 1.1rem; border-bottom: 1px solid var(--term-trait); font-family: var(--mono); font-size: .75rem; color: var(--term-doux); }
 .fenetre :focus-visible { outline-color: var(--term-accent); }
-.fenetre pre { margin: 0; padding: 1rem 1.1rem 1.2rem; overflow-x: auto; font-family: var(--mono); font-size: min(.78rem, calc((100cqi - 2.3rem) / 47.5)); line-height: 1.55; color: var(--term-texte); }
+.fenetre pre { margin: 0; padding: 1rem 1.1rem 1.2rem; overflow-x: auto; font-family: var(--mono); font-size: min(.78rem, calc((100cqi - 2.3rem) / 48.5)); line-height: 1.55; color: var(--term-texte); }
 .fenetre pre a { color: var(--term-texte); text-decoration: none; }
 .fenetre pre a:hover, .fenetre pre a:focus-visible { color: var(--term-accent); }
 .g { color: var(--term-doux); } .c { color: var(--term-accent); }
 /* Cadre et filets en CSS, pas en caractères ╭─╮ : ceux d'une autre police, un peu plus larges, décaleraient le bord
-   droit. 1ch = un caractère du terminal. */
-.boite { display: inline-block; width: 76ch; padding: .45em 0; border: 1px solid var(--term-doux); border-radius: .5em; margin-bottom: .2em; }
-.filet { display: inline-flex; align-items: center; gap: 1ch; width: 74ch; color: var(--term-doux); }
+   droit. 1ch = un caractère du terminal ; le cadre et les filets vont jusqu'à la 78e colonne, une de plus que la
+   plus longue ligne. */
+.boite { display: inline-block; width: 78ch; padding: .45em 0; border: 1px solid var(--term-doux); border-radius: .5em; margin-bottom: .2em; }
+.filet { display: inline-flex; align-items: center; gap: 1ch; width: 76ch; color: var(--term-doux); }
 .filet::before, .filet::after { content: ""; border-top: 1px solid var(--term-doux); }
 .filet::before { width: 2ch; }
 .filet::after { flex: 1; }
@@ -245,6 +248,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); border-radius
 
 @media (max-width: 960px) {
   .heros { grid-template-columns: 1fr; gap: 2.5rem; padding-block: 1.75rem 3rem; }
+  .fenetre { position: static; }
   .chiffres { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .audit { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
