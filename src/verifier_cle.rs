@@ -9,6 +9,9 @@
 //! rapide (un quart de l'espace libre : repère les fausses clés courantes, dont la vraie capacité est bien moindre
 //! que l'annoncée, et mesure la vitesse) ou complet (tout l'espace libre : la seule preuve).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::fs::{File, OpenOptions};
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -62,13 +65,18 @@ struct Plan {
 /// mode rapide. `None` : trop peu de place pour que l'essai veuille dire quelque chose.
 fn plan(libre: u64, mode: Mode, p: &Parametres) -> Option<Plan> {
     let marge = MARGE_MIN.max(libre / 100);
-    let disponible = libre.saturating_sub(marge) / p.bloc * p.bloc;
-    if disponible < MINIMUM.max(2 * p.bloc) {
+    // Un bloc nul ne fait aucun plan.
+    let disponible = libre.saturating_sub(marge).checked_div(p.bloc)?.saturating_mul(p.bloc);
+    if disponible < MINIMUM.max(p.bloc.saturating_mul(2)) {
         return None;
     }
     let octets = match mode {
         Mode::Complete => disponible,
-        Mode::Rapide => (disponible / 4).max(2 * GIO).min(disponible) / p.bloc * p.bloc,
+        Mode::Rapide => (disponible / 4)
+            .max(GIO.saturating_mul(2))
+            .min(disponible)
+            .checked_div(p.bloc)?
+            .saturating_mul(p.bloc),
     };
     Some(Plan {
         octets,
@@ -130,8 +138,8 @@ fn juger(tampon: &[u8], essai: u64, fichier: u32, bloc: u32) -> Verdict {
 
 /// Un tampon de `taille` octets aligné sur `ALIGNEMENT` : (mémoire, début de la partie alignée).
 fn tampon(taille: usize) -> (Vec<u8>, usize) {
-    let v = vec![0u8; taille + ALIGNEMENT];
-    let debut = (ALIGNEMENT - (v.as_ptr().addr() % ALIGNEMENT)) % ALIGNEMENT;
+    let v = vec![0u8; taille.saturating_add(ALIGNEMENT)];
+    let debut = ALIGNEMENT.saturating_sub(v.as_ptr().addr() % ALIGNEMENT) % ALIGNEMENT;
     (v, debut)
 }
 
@@ -177,7 +185,9 @@ struct Lecture {
 
 impl Lecture {
     fn defauts(&self) -> u64 {
-        self.recouverts + self.faux + self.illisibles
+        self.recouverts
+            .saturating_add(self.faux)
+            .saturating_add(self.illisibles)
     }
 }
 
@@ -210,12 +220,11 @@ fn ouvrir_en_lecture(chemin: &Path) -> std::io::Result<File> {
 fn ecrire(dossier: &Path, octets: u64, p: &Parametres, essai: u64, controle: Controle<'_>) -> Ecriture {
     let debut = Instant::now();
     let mut e = Ecriture::default();
-    #[allow(clippy::cast_possible_truncation)]
-    let (mut memoire, decalage) = tampon(p.bloc as usize);
+    let (mut memoire, decalage) = tampon(usize::try_from(p.bloc).unwrap_or(usize::MAX));
     let mut reste = octets;
     let mut numero: u32 = 0;
     'fichiers: while reste > 0 {
-        let chemin = dossier.join(format!("verif-{:04}.bin", numero + 1));
+        let chemin = dossier.join(format!("verif-{:04}.bin", numero.saturating_add(1)));
         let mut f = match ouvrir_en_ecriture(&chemin) {
             Ok(f) => f,
             Err(err) => {
@@ -235,13 +244,13 @@ fn ecrire(dossier: &Path, octets: u64, p: &Parametres, essai: u64, controle: Con
                 e.fichiers.push((chemin, ecrit_ici));
                 break 'fichiers;
             }
-            #[allow(clippy::cast_possible_truncation)]
-            let taille_bloc = (taille_fichier - ecrit_ici).min(p.bloc) as usize;
+            let taille_bloc =
+                usize::try_from(taille_fichier.saturating_sub(ecrit_ici).min(p.bloc)).unwrap_or(usize::MAX);
             #[expect(
                 clippy::indexing_slicing,
                 reason = "tampon() alloue p.bloc + ALIGNEMENT octets, decalage < ALIGNEMENT, taille_bloc <= p.bloc"
             )]
-            let zone = &mut memoire[decalage..decalage + taille_bloc];
+            let zone = &mut memoire[decalage..decalage.saturating_add(taille_bloc)];
             remplir(zone, essai, numero, bloc);
             if let Err(err) = f.write_all(zone) {
                 let _ = f.sync_all();
@@ -249,9 +258,9 @@ fn ecrire(dossier: &Path, octets: u64, p: &Parametres, essai: u64, controle: Con
                 e.erreur = Some(err);
                 break 'fichiers;
             }
-            ecrit_ici += taille_bloc as u64;
-            e.octets += taille_bloc as u64;
-            bloc += 1;
+            ecrit_ici = ecrit_ici.saturating_add(u64::try_from(taille_bloc).unwrap_or(u64::MAX));
+            e.octets = e.octets.saturating_add(u64::try_from(taille_bloc).unwrap_or(u64::MAX));
+            bloc = bloc.saturating_add(1);
         }
         if let Err(err) = f.sync_all() {
             e.fichiers.push((chemin, ecrit_ici));
@@ -260,8 +269,8 @@ fn ecrire(dossier: &Path, octets: u64, p: &Parametres, essai: u64, controle: Con
         }
         crate::copier::sans_cache(&f);
         e.fichiers.push((chemin, ecrit_ici));
-        reste -= ecrit_ici;
-        numero += 1;
+        reste = reste.saturating_sub(ecrit_ici);
+        numero = numero.saturating_add(1);
     }
     e.duree = debut.elapsed();
     e
@@ -272,8 +281,7 @@ fn relire(fichiers: &[(PathBuf, u64)], p: &Parametres, essai: u64, controle: Con
     let debut = Instant::now();
     let total: u64 = fichiers.iter().map(|(_, t)| t).sum();
     let mut l = Lecture::default();
-    #[allow(clippy::cast_possible_truncation)]
-    let (mut memoire, decalage) = tampon(p.bloc as usize);
+    let (mut memoire, decalage) = tampon(usize::try_from(p.bloc).unwrap_or(usize::MAX));
     let mut position = 0u64;
     let defaut = |l: &mut Lecture, position: u64| {
         if l.premier_defaut.is_none() {
@@ -281,8 +289,7 @@ fn relire(fichiers: &[(PathBuf, u64)], p: &Parametres, essai: u64, controle: Con
         }
     };
     'fichiers: for (numero, (chemin, taille)) in fichiers.iter().enumerate() {
-        #[allow(clippy::cast_possible_truncation)]
-        let numero = numero as u32;
+        let numero = u32::try_from(numero).unwrap_or(u32::MAX);
         let mut f = ouvrir_en_lecture(chemin).ok();
         let mut lu_ici = 0u64;
         let mut bloc: u32 = 0;
@@ -291,13 +298,12 @@ fn relire(fichiers: &[(PathBuf, u64)], p: &Parametres, essai: u64, controle: Con
                 l.arretee = true;
                 break 'fichiers;
             }
-            #[allow(clippy::cast_possible_truncation)]
-            let taille_bloc = (*taille - lu_ici).min(p.bloc) as usize;
+            let taille_bloc = usize::try_from(taille.saturating_sub(lu_ici).min(p.bloc)).unwrap_or(usize::MAX);
             #[expect(
                 clippy::indexing_slicing,
                 reason = "tampon() alloue p.bloc + ALIGNEMENT octets, decalage < ALIGNEMENT, taille_bloc <= p.bloc"
             )]
-            let zone = &mut memoire[decalage..decalage + taille_bloc];
+            let zone = &mut memoire[decalage..decalage.saturating_add(taille_bloc)];
             let lu = f
                 .as_mut()
                 .map_or(Ok(false), |f| lire_exactement(f, zone))
@@ -306,26 +312,28 @@ fn relire(fichiers: &[(PathBuf, u64)], p: &Parametres, essai: u64, controle: Con
                 match juger(zone, essai, numero, bloc) {
                     Verdict::Bon => {}
                     Verdict::AutreBloc { .. } => {
-                        l.recouverts += 1;
+                        l.recouverts = l.recouverts.saturating_add(1);
                         defaut(&mut l, position);
                     }
                     Verdict::Faux => {
-                        l.faux += 1;
+                        l.faux = l.faux.saturating_add(1);
                         defaut(&mut l, position);
                     }
                 }
             } else {
                 // Fichier plus court qu'écrit, ou erreur du disque : le bloc est perdu, le fichier n'est plus lu.
-                l.illisibles += ((*taille - lu_ici).div_ceil(p.bloc)).max(1);
+                l.illisibles = l
+                    .illisibles
+                    .saturating_add(taille.saturating_sub(lu_ici).div_ceil(p.bloc).max(1));
                 defaut(&mut l, position);
-                position += *taille - lu_ici;
-                l.octets += *taille - lu_ici;
+                position = position.saturating_add((*taille).saturating_sub(lu_ici));
+                l.octets = l.octets.saturating_add((*taille).saturating_sub(lu_ici));
                 continue 'fichiers;
             }
-            lu_ici += taille_bloc as u64;
-            l.octets += taille_bloc as u64;
-            position += taille_bloc as u64;
-            bloc += 1;
+            lu_ici = lu_ici.saturating_add(u64::try_from(taille_bloc).unwrap_or(u64::MAX));
+            l.octets = l.octets.saturating_add(u64::try_from(taille_bloc).unwrap_or(u64::MAX));
+            position = position.saturating_add(u64::try_from(taille_bloc).unwrap_or(u64::MAX));
+            bloc = bloc.saturating_add(1);
         }
     }
     l.duree = debut.elapsed();
@@ -338,7 +346,7 @@ fn lire_exactement(f: &mut File, t: &mut [u8]) -> std::io::Result<bool> {
     while let Some(reste) = t.get_mut(fait..).filter(|r| !r.is_empty()) {
         match f.read(reste) {
             Ok(0) => return Ok(false),
-            Ok(n) => fait += n,
+            Ok(n) => fait = fait.saturating_add(n),
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e),
         }
@@ -412,21 +420,21 @@ enum Conclusion {
 fn conclure(mode: Mode, prevu: u64, occupe: u64, total: u64, e: &Ecriture, l: &Lecture) -> Conclusion {
     if l.recouverts > 0 {
         return Conclusion::FausseCle {
-            vraie: occupe + l.premier_defaut.unwrap_or(0),
+            vraie: occupe.saturating_add(l.premier_defaut.unwrap_or(0)),
             annonce: total,
         };
     }
     if l.defauts() > 0 {
         return Conclusion::Defaillante {
             defauts: l.defauts(),
-            premier: occupe + l.premier_defaut.unwrap_or(0),
+            premier: occupe.saturating_add(l.premier_defaut.unwrap_or(0)),
         };
     }
     if e.arretee || l.arretee {
         return Conclusion::Interrompue { verifie: l.octets };
     }
     // Une place qui manque de plus de 5 % par rapport à l'annonce : la table du disque ment ou est abîmée.
-    if e.erreur.is_some() && e.octets < prevu - prevu / 20 {
+    if e.erreur.is_some() && e.octets < prevu.saturating_sub(prevu / 20) {
         return Conclusion::PlaceManquante { ecrit: e.octets, prevu };
     }
     match mode {
@@ -443,15 +451,9 @@ fn conclure(mode: Mode, prevu: u64, occupe: u64, total: u64, e: &Ecriture, l: &L
 
 /// « 24 Mo/s » : un débit.
 fn debit(octets: u64, duree: Duration) -> String {
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
-    )]
-    let par_seconde = (octets as f64 / duree.as_secs_f64().max(0.001)) as u64;
+    let par_seconde = entier(flottant(octets) / duree.as_secs_f64().max(0.001));
     if par_seconde >= GIO {
-        #[allow(clippy::cast_precision_loss)]
-        let go = par_seconde as f64 / GIO as f64;
+        let go = flottant(par_seconde) / flottant(GIO);
         trf!("{} Go/s", "{} GB/s", crate::langue::decimal(go, 1))
     } else {
         trf!("{} Mo/s", "{} MB/s", par_seconde / MIO)
@@ -460,12 +462,7 @@ fn debit(octets: u64, duree: Duration) -> String {
 
 /// Ce que vaut ce débit d'écriture, pour qui ne connaît pas les chiffres.
 fn qualifier_ecriture(octets: u64, duree: Duration) -> &'static str {
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
-    )]
-    let mo_s = (octets as f64 / duree.as_secs_f64().max(0.001) / MIO as f64) as u64;
+    let mo_s = entier(flottant(octets) / duree.as_secs_f64().max(0.001) / flottant(MIO));
     match mo_s {
         0..5 => tr!(
             "très lent, même pour une clé USB 2.0 : elle est usée ou de mauvaise qualité",
@@ -480,16 +477,41 @@ fn qualifier_ecriture(octets: u64, duree: Duration) -> &'static str {
     }
 }
 
+/// Un nombre d'octets ou de secondes en flottant, pour un débit ou une durée à montrer.
+#[allow(clippy::cast_precision_loss)]
+#[cfg_attr(
+    target_os = "linux",
+    expect(
+        clippy::as_conversions,
+        reason = "u64 vers f64 : seul `as` existe ; une valeur à montrer, arrondie"
+    )
+)]
+fn flottant(n: u64) -> f64 {
+    n as f64
+}
+
+/// Un flottant ramené à l'entier : `as` sature (négatif ou NaN : 0, trop grand : u64::MAX).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[cfg_attr(
+    target_os = "linux",
+    expect(
+        clippy::as_conversions,
+        reason = "f64 vers u64 : seul `as` existe, et il sature au lieu de déborder"
+    )
+)]
+fn entier(x: f64) -> u64 {
+    x as u64
+}
+
 /// « environ 12 min » : le temps d'écrire puis de relire `octets` à ce débit (en octets par seconde).
 fn duree_estimee(octets: u64, debit: u64) -> String {
-    let secondes = octets.saturating_mul(2) / debit.max(1);
+    let secondes = octets.saturating_mul(2).checked_div(debit.max(1)).unwrap_or(0);
     if secondes < 90 {
         trf!("environ {secondes} s", "about {secondes} s")
     } else if secondes < 5400 {
         trf!("environ {} min", "about {} min", secondes.div_ceil(60))
     } else {
-        #[allow(clippy::cast_precision_loss)]
-        let heures = secondes as f64 / 3600.0;
+        let heures = flottant(secondes) / 3600.0;
         trf!("environ {} h", "about {} h", crate::langue::decimal(heures, 1))
     }
 }
@@ -575,12 +597,7 @@ impl Avancement {
             debit(fait, ecoule)
         );
         if fait > 0 && ecoule > Duration::from_secs(5) {
-            #[allow(
-                clippy::cast_precision_loss,
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss
-            )]
-            let reste = (ecoule.as_secs_f64() * (total - fait) as f64 / fait as f64) as u64;
+            let reste = entier(ecoule.as_secs_f64() * flottant(total.saturating_sub(fait)) / flottant(fait));
             texte.push_str(&trf!(" · reste {}", " · {} left", minutes(reste)));
         }
         texte.push_str(&trf!("   {GRIS}Échap : arrêter{RESET}", "   {GRIS}Esc: stop{RESET}"));
@@ -652,7 +669,7 @@ fn choisir_disque() -> Option<crate::copier::Disque> {
             taille_lisible(d.libre),
             taille_lisible(d.total)
         );
-        lignes.push(Ligne::choix(&(i + 1).to_string(), &d.nom, &place));
+        lignes.push(Ligne::choix(&i.saturating_add(1).to_string(), &d.nom, &place));
     }
     lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
     lignes.push(Ligne::Texte(String::new()));
@@ -1008,6 +1025,11 @@ pub fn menu() {
     commande(None);
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,6 +3,8 @@
 //! retient ce qu'un clic ferait : l'adresse de chaque lien et le texte qu'il montre, les formulaires, une redirection
 //! automatique, une base qui change la destination des liens.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::Signe;
 use crate::protection::lien;
 use crate::risk::Niveau;
@@ -106,7 +108,7 @@ fn attribut_actif(nom: &str, valeur: &str) -> bool {
 fn prendre(h: &[u8], i: usize, garder: impl Fn(u8) -> bool) -> (&[u8], usize) {
     let reste = h.get(i..).unwrap_or_default();
     let n = reste.iter().take_while(|&&o| garder(o)).count();
-    (reste.get(..n).unwrap_or(reste), i + n)
+    (reste.get(..n).unwrap_or(reste), i.saturating_add(n))
 }
 
 /// Lit la balise qui commence à `debut` (sur « < ») ; rend la balise et l'indice qui suit « > ». En `xml` (une image
@@ -115,10 +117,10 @@ fn prendre(h: &[u8], i: usize, garder: impl Fn(u8) -> bool) -> (&[u8], usize) {
 /// reste fait de lettres, chiffres, « - » et « : » : un « < » suivi d'autre chose y est du texte, et le lire comme une
 /// balise avalerait le lien qui suit.
 fn lire_balise(h: &[u8], debut: usize, xml: bool) -> (Option<Balise>, usize) {
-    let mut i = debut + 1;
+    let mut i = debut.saturating_add(1);
     let fermante = h.get(i) == Some(&b'/');
     if fermante {
-        i += 1;
+        i = i.saturating_add(1);
     }
     let (nom, suite) = if xml {
         prendre(h, i, |o| !o.is_ascii_whitespace() && !matches!(o, b'/' | b'>'))
@@ -127,7 +129,7 @@ fn lire_balise(h: &[u8], debut: usize, xml: bool) -> (Option<Balise>, usize) {
     };
     if nom.is_empty() {
         // « < » seul dans le texte : pas une balise.
-        return (None, debut + 1);
+        return (None, debut.saturating_add(1));
     }
     let nom = String::from_utf8_lossy(nom).to_ascii_lowercase();
     i = suite;
@@ -139,24 +141,24 @@ fn lire_balise(h: &[u8], debut: usize, xml: bool) -> (Option<Balise>, usize) {
             break;
         };
         if o == b'>' {
-            i += 1;
+            i = i.saturating_add(1);
             break;
         }
         let (nom_attr, suite) = prendre(h, i, |o| !o.is_ascii_whitespace() && !matches!(o, b'=' | b'>' | b'/'));
         if nom_attr.is_empty() {
-            i += 1;
+            i = i.saturating_add(1);
             continue;
         }
         let nom_attr = String::from_utf8_lossy(nom_attr).to_ascii_lowercase();
         i = prendre(h, suite, |o| o.is_ascii_whitespace()).1;
         let mut valeur = String::new();
         if h.get(i) == Some(&b'=') {
-            i = prendre(h, i + 1, |o| o.is_ascii_whitespace()).1;
+            i = prendre(h, i.saturating_add(1), |o| o.is_ascii_whitespace()).1;
             if let Some(&q @ (b'"' | b'\'')) = h.get(i) {
                 // Jusqu'au guillemet qui ferme, ou la fin.
-                let (v, fin) = prendre(h, i + 1, |o| o != q);
+                let (v, fin) = prendre(h, i.saturating_add(1), |o| o != q);
                 valeur = String::from_utf8_lossy(v).into_owned();
-                i = (fin + 1).min(h.len());
+                i = fin.saturating_add(1).min(h.len());
             } else {
                 let (v, fin) = prendre(h, i, |o| !o.is_ascii_whitespace() && o != b'>');
                 valeur = String::from_utf8_lossy(v).into_owned();
@@ -188,7 +190,7 @@ fn chercher_casse(h: &[u8], debut: usize, aiguille: &[u8]) -> Option<usize> {
     h.get(debut..)?
         .windows(aiguille.len())
         .position(|w| w.eq_ignore_ascii_case(aiguille))
-        .map(|p| debut + p)
+        .map(|p| debut.saturating_add(p))
 }
 
 /// Une adresse lue dans un attribut, comme le navigateur la lit : sauts de ligne, tabulations et autres caractères de
@@ -224,22 +226,27 @@ pub(crate) fn lire_html(html: &str, max_liens: usize, source: &Source) -> Html {
     while let Some(ici) = h.get(i..).filter(|ici| !ici.is_empty()) {
         if !ici.starts_with(b"<") {
             let (morceau, fin) = prendre(h, i, |c| c != b'<');
-            r.texte_visible += morceau.iter().filter(|c| !c.is_ascii_whitespace()).count();
+            r.texte_visible = r
+                .texte_visible
+                .saturating_add(morceau.iter().filter(|c| !c.is_ascii_whitespace()).count());
             if let Some((_, texte)) = &mut ouvert
                 && texte.len() < AFFICHE_MAX
             {
-                texte.extend(morceau.iter().take(AFFICHE_MAX - texte.len()));
+                texte.extend(morceau.iter().take(AFFICHE_MAX.saturating_sub(texte.len())));
             }
             i = fin;
             continue;
         }
         // Commentaire : un lien qu'il contient n'est pas cliquable.
         if ici.starts_with(b"<!--") {
-            i = chercher_casse(h, i + 4, b"-->").map_or(h.len(), |p| p + 3);
+            i = chercher_casse(h, i.saturating_add(4), b"-->").map_or(h.len(), |p| p.saturating_add(3));
             continue;
         }
         if ici.starts_with(b"<!") || ici.starts_with(b"<?") {
-            i = ici.iter().position(|&c| c == b'>').map_or(h.len(), |p| i + p + 1);
+            i = ici
+                .iter()
+                .position(|&c| c == b'>')
+                .map_or(h.len(), |p| i.saturating_add(p).saturating_add(1));
             continue;
         }
         let (balise, suite) = lire_balise(h, i, false);
@@ -293,7 +300,9 @@ pub(crate) fn lire_html(html: &str, max_liens: usize, source: &Source) -> Html {
                         .map(|reste| {
                             let bas = reste.to_ascii_lowercase();
                             match bas.find("url") {
-                                Some(pos) => reste[pos + 3..].trim_start_matches([' ', '=']).to_string(),
+                                Some(pos) => reste[pos.saturating_add(3)..]
+                                    .trim_start_matches([' ', '='])
+                                    .to_string(),
                                 None => reste.to_string(),
                             }
                         })
@@ -311,11 +320,11 @@ pub(crate) fn lire_html(html: &str, max_liens: usize, source: &Source) -> Html {
             }
             // `<image>` : l'image d'un SVG, désignée comme un lien.
             "img" | "image" => {
-                r.images += 1;
+                r.images = r.images.saturating_add(1);
                 if lue.attribut("src").or_else(|| lue.lien()).is_some_and(|s| {
                     s.trim().get(..4).is_some_and(|d| d.eq_ignore_ascii_case("http")) || s.trim().starts_with("//")
                 }) {
-                    r.images_distantes += 1;
+                    r.images_distantes = r.images_distantes.saturating_add(1);
                 }
             }
             _ => {}
@@ -467,7 +476,7 @@ fn balayer_svg(h: &[u8], xml: bool, echeance: Option<std::time::Instant>) -> Opt
             return None;
         }
         tours = tours.wrapping_add(1);
-        i += debut;
+        i = i.saturating_add(debut);
         let ici = h.get(i..).unwrap_or_default();
         if ici.starts_with(b"<!--") {
             i = fin_du_commentaire(h, i, xml, &mut fins);
@@ -475,11 +484,17 @@ fn balayer_svg(h: &[u8], xml: bool, echeance: Option<std::time::Instant>) -> Opt
         }
         if xml && ici.starts_with(b"<![CDATA[") {
             // Un bloc qui ne se ferme pas : la suite est lue comme des balises, plutôt que tue.
-            i = fins.cdata.depuis(h, i + 9).map_or(i + 9, |p| p + 3);
+            i = fins
+                .cdata
+                .depuis(h, i.saturating_add(9))
+                .map_or(i.saturating_add(9), |p| p.saturating_add(3));
             continue;
         }
         if ici.starts_with(b"<!") || ici.starts_with(b"<?") {
-            i = ici.iter().position(|&c| c == b'>').map_or(h.len(), |p| i + p + 1);
+            i = ici
+                .iter()
+                .position(|&c| c == b'>')
+                .map_or(h.len(), |p| i.saturating_add(p).saturating_add(1));
             continue;
         }
         let (balise, suite) = lire_balise(h, i, true);
@@ -552,29 +567,29 @@ impl Default for FinsDeBloc {
 /// L'indice qui suit le commentaire ouvert en `i` (« <!-- »). XML le ferme sur « --> » seul ; HTML aussi sur « --!> »,
 /// et ferme aussitôt « <!--> » et « <!---> ». Sans fin, il va jusqu'au bout.
 fn fin_du_commentaire(h: &[u8], i: usize, xml: bool, fins: &mut FinsDeBloc) -> usize {
-    let apres = i + 4;
-    let fleche = fins.commentaire.depuis(h, apres).map(|p| p + 3);
+    let apres = i.saturating_add(4);
+    let fleche = fins.commentaire.depuis(h, apres).map(|p| p.saturating_add(3));
     if xml {
         return fleche.unwrap_or(h.len());
     }
     let reste = h.get(apres..).unwrap_or_default();
     if reste.starts_with(b">") {
-        return apres + 1;
+        return apres.saturating_add(1);
     }
     if reste.starts_with(b"->") {
-        return apres + 2;
+        return apres.saturating_add(2);
     }
-    let bang = fins.commentaire_html.depuis(h, apres).map(|p| p + 4);
+    let bang = fins.commentaire_html.depuis(h, apres).map(|p| p.saturating_add(4));
     fleche.into_iter().chain(bang).min().unwrap_or(h.len())
 }
 
 /// Les occurrences de `aiguille` (ASCII, sans tenir compte de la casse) dans `h`.
 fn compter_casse(h: &[u8], aiguille: &[u8]) -> usize {
-    let mut n = 0;
+    let mut n = 0usize;
     let mut i = 0;
     while let Some(p) = chercher_casse(h, i, aiguille) {
-        n += 1;
-        i = p + 1;
+        n = n.saturating_add(1);
+        i = p.saturating_add(1);
     }
     n
 }
@@ -601,35 +616,35 @@ fn lire_dtd(h: &[u8], debut: usize) -> Option<Dtd> {
         match *h.get(i)? {
             b'>' => {
                 return Some(Dtd {
-                    fin: i + 1,
+                    fin: i.saturating_add(1),
                     interne: false,
                     entites: std::collections::HashMap::new(),
                 });
             }
             b'[' => break,
             q @ (b'"' | b'\'') => i = apres_guillemet(h, i, q)?,
-            _ => i += 1,
+            _ => i = i.saturating_add(1),
         }
     }
-    i += 1;
+    i = i.saturating_add(1);
     let mut entites = std::collections::HashMap::new();
     loop {
         i = prendre(h, i, |o| o.is_ascii_whitespace()).1;
         let ici = h.get(i..)?;
         if ici.first() == Some(&b']') {
-            i = prendre(h, i + 1, |o| o.is_ascii_whitespace()).1;
+            i = prendre(h, i.saturating_add(1), |o| o.is_ascii_whitespace()).1;
             return (h.get(i) == Some(&b'>')).then_some(Dtd {
-                fin: i + 1,
+                fin: i.saturating_add(1),
                 interne: true,
                 entites,
             });
         }
         if ici.starts_with(b"<!--") {
-            i = chercher_casse(h, i + 4, b"-->")? + 3;
+            i = chercher_casse(h, i.saturating_add(4), b"-->")?.saturating_add(3);
         } else if ici.starts_with(b"<?") {
-            i = chercher_casse(h, i + 2, b"?>")? + 2;
+            i = chercher_casse(h, i.saturating_add(2), b"?>")?.saturating_add(2);
         } else if ici.get(..8).is_some_and(|d| d.eq_ignore_ascii_case(b"<!entity")) {
-            let (nom, texte, suite) = lire_entite(h, i + 8)?;
+            let (nom, texte, suite) = lire_entite(h, i.saturating_add(8))?;
             if entites.len() >= ENTITES_MAX || entite_active(&texte) {
                 return None;
             }
@@ -645,10 +660,10 @@ fn lire_dtd(h: &[u8], debut: usize) -> Option<Dtd> {
                 match *h.get(i)? {
                     b'>' => break,
                     q @ (b'"' | b'\'') => i = apres_guillemet(h, i, q)?,
-                    _ => i += 1,
+                    _ => i = i.saturating_add(1),
                 }
             }
-            i += 1;
+            i = i.saturating_add(1);
         } else {
             return None;
         }
@@ -657,8 +672,8 @@ fn lire_dtd(h: &[u8], debut: usize) -> Option<Dtd> {
 
 /// L'indice qui suit le guillemet `q` qui ferme celui ouvert en `i`.
 fn apres_guillemet(h: &[u8], i: usize, q: u8) -> Option<usize> {
-    let ferme = h.get(i + 1..)?.iter().position(|&o| o == q)?;
-    Some(i + ferme + 2)
+    let ferme = h.get(i.saturating_add(1)..)?.iter().position(|&o| o == q)?;
+    Some(i.saturating_add(ferme).saturating_add(2))
 }
 
 /// Une déclaration d'entité interne, lue après « <!ENTITY » : son nom, son texte de remplacement (références de
@@ -681,12 +696,12 @@ fn lire_entite(h: &[u8], i: usize) -> Option<(Vec<u8>, Vec<u8>, usize)> {
     let i = prendre(h, i, |o| o.is_ascii_whitespace()).1;
     let q = *h.get(i).filter(|q| matches!(q, b'"' | b'\''))?;
     let fin = apres_guillemet(h, i, q)?;
-    let texte = h.get(i + 1..fin - 1)?;
+    let texte = h.get(i.saturating_add(1)..fin.saturating_sub(1))?;
     let i = prendre(h, fin, |o| o.is_ascii_whitespace()).1;
     if h.get(i) != Some(&b'>') {
         return None;
     }
-    Some((nom.to_vec(), references_de_caracteres(texte), i + 1))
+    Some((nom.to_vec(), references_de_caracteres(texte), i.saturating_add(1)))
 }
 
 /// `texte` où les seules références de caractères (`&#60;`, `&#x3C;`) sont décodées ; les appels d'entités restent,
@@ -753,20 +768,24 @@ fn derouler(
                 return None;
             }
             appels = appels.wrapping_add(1);
-            sortie.extend_from_slice(texte.get(i..i + p).unwrap_or_default());
-            i += p;
+            sortie.extend_from_slice(texte.get(i..i.saturating_add(p)).unwrap_or_default());
+            i = i.saturating_add(p);
             // Le « ; » n'est pas cherché plus loin que le plus long nom permis.
             let appel = texte
-                .get(i + 1..)
+                .get(i.saturating_add(1)..)
                 .and_then(|r| r.iter().take(NOM_ENTITE_MAX + 1).position(|&o| o == b';'))
-                .and_then(|n| entites.get(texte.get(i + 1..i + 1 + n)?).map(|t| (n, t)));
+                .and_then(|n| {
+                    entites
+                        .get(texte.get(i.saturating_add(1)..i.saturating_add(1).saturating_add(n))?)
+                        .map(|t| (n, t))
+                });
             if let Some((n, t)) = appel {
                 sortie.extend_from_slice(t);
-                i += n + 2;
+                i = i.saturating_add(n.saturating_add(2));
                 change = true;
             } else {
                 sortie.push(b'&');
-                i += 1;
+                i = i.saturating_add(1);
             }
             if sortie.len() > HTML_MAX {
                 return None;
@@ -829,9 +848,9 @@ fn reference_numerique(reste: &str) -> Option<(char, usize)> {
     if chiffres.is_empty() {
         return None;
     }
-    let mut longueur = chiffres_debut + chiffres.len();
+    let mut longueur = chiffres_debut.saturating_add(chiffres.len());
     if reste[longueur..].starts_with(';') {
-        longueur += 1;
+        longueur = longueur.saturating_add(1);
     }
     let significatifs = chiffres.trim_start_matches('0');
     let valeur = if significatifs.len() > 8 {
@@ -866,7 +885,12 @@ pub(crate) fn entites(t: &str) -> String {
             continue;
         }
         // Une entité tient en quelques lettres : chercher son « ; » plus loin relirait le texte à chaque « & ».
-        let fin = reste.bytes().skip(1).take(10).position(|c| c == b';').map(|f| f + 1);
+        let fin = reste
+            .bytes()
+            .skip(1)
+            .take(10)
+            .position(|c| c == b';')
+            .map(|f| f.saturating_add(1));
         let decode = fin.and_then(|f| {
             let nom = &reste[1..f];
             let c = match nom {
@@ -889,7 +913,7 @@ pub(crate) fn entites(t: &str) -> String {
                 "Tab" | "NewLine" => Some(None),
                 _ => None,
             };
-            c.map(|c| (c, f + 1))
+            c.map(|c| (c, f.saturating_add(1)))
         });
         if let Some((c, longueur)) = decode {
             s.extend(c);
@@ -917,7 +941,7 @@ pub(crate) fn liens_texte(texte: &str, max: usize, source: &Source) -> Vec<LienT
     let chercher = |depuis: usize, prochains: &mut [usize; 5]| {
         for (m, prochain) in DEBUTS.iter().zip(prochains.iter_mut()) {
             if *prochain != usize::MAX && *prochain < depuis {
-                *prochain = bas[depuis..].find(m).map_or(usize::MAX, |p| depuis + p);
+                *prochain = bas[depuis..].find(m).map_or(usize::MAX, |p| depuis.saturating_add(p));
             }
         }
         prochains.iter().copied().min().filter(|p| *p != usize::MAX)
@@ -935,13 +959,13 @@ pub(crate) fn liens_texte(texte: &str, max: usize, source: &Source) -> Vec<LienT
         let mot_avant = texte[..debut].chars().next_back().is_some_and(char::is_alphanumeric);
         let fin = texte[debut..]
             .find(|c: char| c.is_whitespace() || "<>\"'`«»".contains(c))
-            .map_or(texte.len(), |p| debut + p);
+            .map_or(texte.len(), |p| debut.saturating_add(p));
         let adresse = texte[debut..fin].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}']);
         // Le site est au début : 8 Ko suffisent à le lire. Une « adresse » de 45 Mo sans espace occuperait sinon
         // chaque examen des secondes, et la mémoire en proportion.
         let mut borne = adresse.len().min(ADRESSE_TEXTE_MAX);
         while !adresse.is_char_boundary(borne) {
-            borne -= 1;
+            borne = borne.saturating_sub(1);
         }
         let adresse = &adresse[..borne];
         if !mot_avant && adresse.len() > 4 {
@@ -951,9 +975,9 @@ pub(crate) fn liens_texte(texte: &str, max: usize, source: &Source) -> Vec<LienT
                 source: source.clone(),
             });
         }
-        i = fin.max(debut + 1);
+        i = fin.max(debut.saturating_add(1));
         while !texte.is_char_boundary(i) {
-            i += 1;
+            i = i.saturating_add(1);
         }
     }
     liens
@@ -1025,7 +1049,7 @@ fn deballer(cible: &str) -> String {
         && let Some(p) = bas.find("google.com/amp/s/")
     {
         // Google AMP : « google.com/amp/s/site.example/page » ouvre site.example.
-        return format!("https://{}", &cible[p + "google.com/amp/s/".len()..]);
+        return format!("https://{}", &cible[p.saturating_add("google.com/amp/s/".len())..]);
     }
     if hote == "outlook.com" && bas.contains("safelinks.protection.outlook.com") {
         if let Some(v) = parametre("url") {
@@ -1034,7 +1058,7 @@ fn deballer(cible: &str) -> String {
     } else if hote == "urldefense.com"
         && let Some(p) = cible.find("/v3/__")
     {
-        let reste = &cible[p + 6..];
+        let reste = &cible[p.saturating_add(6)..];
         if let Some(f) = reste.find("__;") {
             return reste[..f].to_string();
         }
@@ -1053,14 +1077,16 @@ fn pourcents(v: &str) -> Vec<u8> {
     let mut i = 0;
     while let Some(&c) = o.get(i) {
         if c == b'%'
-            && let Some(h) = v.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
+            && let Some(h) = v
+                .get(i.saturating_add(1)..i.saturating_add(3))
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
         {
             s.push(h);
-            i += 3;
+            i = i.saturating_add(3);
             continue;
         }
         s.push(if c == b'+' { b' ' } else { c });
-        i += 1;
+        i = i.saturating_add(1);
     }
     s
 }
@@ -1128,7 +1154,7 @@ pub(crate) fn examiner_liens(liens: &[LienTrouve], max_sites: usize) -> ExamenLi
     let mut trompeurs_vus: Vec<String> = Vec::new();
     // Les sites au-delà de la borne, comptés une fois chacun.
     let mut hors_borne = std::collections::HashSet::new();
-    let mut illisibles = 0;
+    let mut illisibles = 0usize;
     let mut passerelles: Vec<String> = Vec::new();
     // Un lien qu'on ne sait pas lire ne passe pas pour rien : son texte montre une adresse, ou son adresse est écrite
     // d'une façon qu'on ne décode pas.
@@ -1141,7 +1167,7 @@ pub(crate) fn examiner_liens(liens: &[LienTrouve], max_sites: usize) -> ExamenLi
         if montre.is_none() && !l.cible.contains(['&', '\\']) {
             return;
         }
-        illisibles += 1;
+        illisibles = illisibles.saturating_add(1);
         if let Some(a) = montre
             && r.trompeurs.len() < 50
         {
@@ -1173,7 +1199,7 @@ pub(crate) fn examiner_liens(liens: &[LienTrouve], max_sites: usize) -> ExamenLi
             illisible(l, &mut r);
             continue;
         };
-        r.examines += 1;
+        r.examines = r.examines.saturating_add(1);
         if PASSERELLES.split_whitespace().any(|p| p == site) && !passerelles.contains(&site) {
             passerelles.push(site.clone());
         }
@@ -1321,6 +1347,11 @@ pub(crate) fn signes_html(h: &Html, ou: &str) -> Vec<Signe> {
     signes
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
