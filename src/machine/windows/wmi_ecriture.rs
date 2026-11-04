@@ -743,13 +743,10 @@ fn retirer_ici(w: &AbonnementWmi, accords: &Accords, abandon: &AtomicBool) -> Et
                 if accords.sans_note != raisons {
                     return Etape::Demander(Question::SansNote { raisons }, Box::new(lue));
                 }
-                effacer_note(&nom_note);
                 false
             }
         }
     } else {
-        // Une note plus ancienne sous ce nom remettrait un autre abonnement : effacée.
-        effacer_note(&nom_note);
         false
     };
     // Relu juste avant : jamais un abonnement changé depuis le jugement.
@@ -775,6 +772,11 @@ fn retirer_ici(w: &AbonnementWmi, accords: &Accords, abandon: &AtomicBool) -> Et
             effacer_note(&nom_note);
         }
         return fini(abandonne());
+    }
+    // Sans note, une note plus ancienne sous ce nom remettrait un autre abonnement : effacée ici seulement, relu
+    // identique et le retrait qui suit (jamais un « rien d'écrit » qui aurait effacé une note).
+    if !notee {
+        effacer_note(&nom_note);
     }
     let mut refuse = None;
     for (classe, chemin) in ordre {

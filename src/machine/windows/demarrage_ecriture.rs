@@ -323,7 +323,9 @@ impl Quarantaine {
 /// Le nom de la note : le chemin en hexadécimal (la ligne de la remise sans son verbe), le même pour la quarantaine et
 /// la remise.
 fn nom_note(f: &CheminFichier) -> String {
-    Acte::DemarrageRemettre(f.clone(), None)
+    // En minuscules : Windows ne distingue pas « x.lnk » de « X.LNK », une seule série de copies pour les deux.
+    let bas = CheminFichier::nouveau(&f.texte().to_lowercase()).unwrap_or_else(|| f.clone());
+    Acte::DemarrageRemettre(bas, None)
         .ligne()
         .strip_prefix(gestes::DEMARRAGE_REMETTRE)
         .unwrap_or_default()
@@ -669,30 +671,121 @@ pub(super) fn quarantaine(f: &CheminFichier, lieu: Lieu) -> Resultat {
         Ok(q) => q,
         Err(r) => return r,
     };
-    for (k, n) in &ajout.effacer {
-        let (Some(fk), Some((_, vs))) = (fichier_de_note(k), toutes.iter().find(|(c, _)| c == k)) else {
-            continue;
-        };
-        if let Err(e) = q.retirer(&notes::nom_copie(nom_de(&fk), *n)) {
+    let (avant_le_depot, apres) = notes::avant_le_depot(&ajout, &nom_note);
+    // Celle des siennes qui cède sa place sous le numéro de la nouvelle (le même nom) : la seule effacée avant le
+    // dépôt, sa note réécrite d'abord (jamais une note qui désigne une copie effacée). Les autres attendent la
+    // nouvelle, déposée et notée : un échec d'ici là n'a effacé qu'elle, et le dit.
+    if avant_le_depot {
+        let restent: Vec<Version> = miennes.iter().filter(|v| v.n != ajout.n).cloned().collect();
+        if let Err(e) = noter(&cle, &nom_note, &restent) {
             return refus(trf!(
-                "une vieille copie ne s'efface pas ({e}) : rien d'autre n'est écrit",
-                "an old copy cannot be erased ({e}): nothing else is written"
+                "la note de ce fichier ne s'écrit pas ({e}) : rien d'écrit",
+                "this file's note cannot be written ({e}): nothing written"
             ));
         }
-        let restent: Vec<Version> = vs.iter().filter(|v| v.n != *n).cloned().collect();
-        if *k == nom_note {
-            miennes.retain(|v| v.n != *n);
+        if let Err(e) = q.retirer(&notes::nom_copie(&nom, ajout.n)) {
+            let _ = noter(&cle, &nom_note, &miennes);
+            return refus(trf!(
+                "une vieille copie ne s'efface pas ({e}) : rien d'écrit",
+                "an old copy cannot be erased ({e}): nothing written"
+            ));
         }
-        let _ = noter(&cle, k, &restent);
-        if let Some(t) = toutes.iter_mut().find(|(c, _)| c == k) {
-            t.1 = restent;
+        miennes = restent;
+    }
+    let fin = deposer_et_retirer(Depot {
+        f,
+        fichier,
+        q: &q,
+        cle: &cle,
+        nom_note: &nom_note,
+        nom: &nom,
+        cible: cible.as_deref(),
+        octets: &octets,
+        taille,
+        mode,
+        n: ajout.n,
+        miennes,
+        sans: &apres,
+    });
+    let fin = if avant_le_depot && !fin.reussi && fin.avant.is_none() {
+        Resultat::echec(
+            None,
+            trf!(
+                "{} (seule la copie n° {} de ce fichier, dont l'effacement a été accepté, est déjà effacée)",
+                "{} (only this file's copy no. {}, whose erasure was accepted, is already erased)",
+                fin.raison,
+                ajout.n
+            ),
+        )
+    } else {
+        fin
+    };
+    // La nouvelle copie est déposée et notée (même si le fichier attend sa fermeture) : les vieilles copies cèdent
+    // leur place maintenant, chaque note réécrite avant d'effacer sa copie ; une note qui ne s'écrit pas garde sa
+    // copie.
+    if fin.avant.is_some() {
+        for (k, n) in &apres {
+            let (Some(fk), Some((_, vs))) = (fichier_de_note(k), toutes.iter().find(|(c, _)| c == k)) else {
+                continue;
+            };
+            if *k != nom_note {
+                let restent: Vec<Version> = vs.iter().filter(|v| v.n != *n).cloned().collect();
+                if noter(&cle, k, &restent).is_err() {
+                    continue;
+                }
+                if let Some(t) = toutes.iter_mut().find(|(c, _)| c == k) {
+                    t.1 = restent;
+                }
+            }
+            let _ = q.retirer(&notes::nom_copie(nom_de(&fk), *n));
         }
     }
-    let copie = notes::nom_copie(&nom, ajout.n);
+    fin
+}
+
+/// Ce que le dépôt de la nouvelle copie reprend de `quarantaine`.
+struct Depot<'a> {
+    f: &'a CheminFichier,
+    /// Le fichier ouvert, fermé ici une fois marqué (il part à sa fermeture).
+    fichier: File,
+    q: &'a Quarantaine,
+    cle: &'a RegKey,
+    nom_note: &'a str,
+    nom: &'a str,
+    cible: Option<&'a str>,
+    octets: &'a [u8],
+    taille: u64,
+    mode: Mode,
+    n: u8,
+    miennes: Vec<Version>,
+    /// Les copies de ce fichier qui cèdent leur place après le dépôt : absentes de sa nouvelle note.
+    sans: &'a [(String, u8)],
+}
+
+/// La nouvelle copie déposée, vérifiée et notée, puis le fichier retiré. `avant` : `Some` dès que la copie est notée.
+fn deposer_et_retirer(d: Depot<'_>) -> Resultat {
+    let Depot {
+        f,
+        fichier,
+        q,
+        cle,
+        nom_note,
+        nom,
+        cible,
+        octets,
+        taille,
+        mode,
+        n,
+        mut miennes,
+        sans,
+    } = d;
+    let ancien = miennes.clone();
+    miennes.retain(|v| !sans.iter().any(|(k, m)| k == nom_note && *m == v.n));
+    let copie = notes::nom_copie(nom, n);
     let chemin_copie = q.chemin(&copie);
     let empreinte = match mode {
         Mode::Copie => {
-            if let Err(e) = q.deposer(&copie, &octets) {
+            if let Err(e) = q.deposer(&copie, octets) {
                 return refus(trf!(
                     "la copie en quarantaine n'a pas pu être faite ({e}) : rien d'écrit",
                     "the quarantine copy could not be made ({e}): nothing written"
@@ -708,7 +801,7 @@ pub(super) fn quarantaine(f: &CheminFichier, lieu: Lieu) -> Resultat {
                     .to_string(),
                 );
             }
-            notes::sha256(&octets)
+            notes::sha256(octets)
         }
         Mode::Deplace => {
             let empreinte = match empreinte_flux(&fichier) {
@@ -771,16 +864,15 @@ pub(super) fn quarantaine(f: &CheminFichier, lieu: Lieu) -> Resultat {
             let _ = renommer(&fichier, Path::new(f.texte()));
         }
     };
-    let ancien = miennes.clone();
     miennes.push(Version {
-        n: ajout.n,
+        n,
         secondes: maintenant(),
         taille,
         mode,
         empreinte,
     });
     // Notée d'abord : sans note, pas de retrait (la remise serait perdue).
-    if let Err(e) = noter(&cle, &nom_note, &miennes) {
+    if let Err(e) = noter(cle, nom_note, &miennes) {
         defaire_copie();
         return refus(trf!(
             "la copie ne se note pas ({e}) : rien d'écrit",
@@ -791,13 +883,13 @@ pub(super) fn quarantaine(f: &CheminFichier, lieu: Lieu) -> Resultat {
         "{} → {} (copie n° {})",
         "{} → {} (copy no. {})",
         f.texte(),
-        cible.as_deref().unwrap_or("?"),
-        ajout.n
+        cible.unwrap_or("?"),
+        n
     ));
     if mode == Mode::Copie
         && let Err(e) = marquer_pour_retrait(&fichier)
     {
-        let _ = noter(&cle, &nom_note, &ancien);
+        let _ = noter(cle, nom_note, &ancien);
         defaire_copie();
         return refus(trf!(
             "le fichier ne se retire pas ({e}) : rien d'écrit",
@@ -962,10 +1054,16 @@ pub(super) fn remettre(f: &CheminFichier, n: Option<u8>, lieu: Lieu) -> Resultat
         Mode::Deplace => remettre_deplace(f, &quarantaine.chemin(&source.copie), &source.empreinte, &absent),
     };
     drop(dossier);
-    if resultat.reussi {
+    if remise_faite(&resultat) {
         terminer();
     }
     resultat
+}
+
+/// La copie et sa note ne partent qu'après une vraie remise : « déjà là, identique » (rien d'écrit) les garde, le
+/// fichier redéposé tel quel pouvant repartir.
+fn remise_faite(r: &Resultat) -> bool {
+    r.reussi && !r.rien
 }
 
 /// La remise d'une copie : relue et vérifiée par son empreinte, écrite dans un fichier créé (jamais par-dessus un
@@ -1163,11 +1261,25 @@ mod tests {
         assert!(!meme_chemin(r"C:\ProgramData\a", r"C:\ProgramData\b"));
     }
 
+    /// « Déjà là, identique » garde la copie et sa note ; une vraie remise seulement les termine.
+    #[test]
+    fn deja_la_garde_la_copie() {
+        assert!(!remise_faite(&Resultat::rien("déjà là, identique".into())));
+        assert!(!remise_faite(&Resultat::echec(None, "x".into())));
+        assert!(remise_faite(&Resultat::fait("absent".into())));
+    }
+
     /// Le nom d'une note se relit en son fichier, et pas autrement.
     #[test]
     fn note_et_fichier() {
         let f = CheminFichier::nouveau(r"C:\Users\alice\Start\x.lnk").unwrap();
-        assert_eq!(fichier_de_note(&nom_note(&f)), Some(f.clone()));
+        assert_eq!(
+            fichier_de_note(&nom_note(&f)),
+            CheminFichier::nouveau(r"c:\users\alice\start\x.lnk")
+        );
+        // Une seule note pour les deux casses du même fichier.
+        let haut = CheminFichier::nouveau(r"C:\USERS\Alice\START\X.LNK").unwrap();
+        assert_eq!(nom_note(&haut), nom_note(&f));
         assert_eq!(nom_de(&f), "x.lnk");
         assert_eq!(fichier_de_note(&format!("{} 3", nom_note(&f))), None);
         assert_eq!(fichier_de_note("zz"), None);

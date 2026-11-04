@@ -294,6 +294,46 @@ pub(super) fn texte_valeur(valeur: &winreg::RegValue) -> String {
 /// Dans le processus élevé : le bilan des lancements automatiques, refait sur cette seule valeur relue, propose-t-il
 /// exactement `ligne` ? La même fonction que le bilan (`juger_persistance`), jamais une copie.
 pub(super) fn run_signale(cle: super::gestes::CleRun, nom: &[u16], valeur: &winreg::RegValue, ligne: &str) -> bool {
+    run_signale_selon(cle, nom, texte_valeur(valeur), ligne)
+}
+
+/// Comme `run_signale`, les variables restées sans valeur (`variables_restees`, celles du compte que le processus
+/// élevé ne relit pas) remplacées par le dossier temporaire du compte, le plus large où un programme du compte peut se
+/// cacher : ce que le bilan aurait vu si la variable du compte y menait. Faux : la valeur ne serait pas signalée,
+/// quelle que soit la variable ; l'écart ne vient pas d'elle.
+pub(super) fn run_signale_au_pire(
+    cle: super::gestes::CleRun,
+    nom: &[u16],
+    valeur: &winreg::RegValue,
+    ligne: &str,
+) -> bool {
+    run_signale_selon(cle, nom, restees_au_pire(&texte_valeur(valeur)), ligne)
+}
+
+/// Les variables restées d'un texte remplacées par le dossier temporaire du compte, casse ignorée.
+fn restees_au_pire(texte: &str) -> String {
+    variables_restees(texte).iter().fold(texte.to_string(), |t, v| {
+        remplacer_sans_casse(&t, v, r"\users\%user%\appdata\local\temp")
+    })
+}
+
+/// `motif` (ASCII) remplacé partout dans `texte`, casse ASCII ignorée.
+fn remplacer_sans_casse(texte: &str, motif: &str, par: &str) -> String {
+    // Les minuscules ASCII gardent la place de chaque octet : les positions trouvées valent pour `texte`.
+    let bas = texte.to_ascii_lowercase();
+    let motif = motif.to_ascii_lowercase();
+    let mut sortie = String::new();
+    let mut fin = 0usize;
+    for (k, _) in bas.match_indices(&motif) {
+        sortie.push_str(texte.get(fin..k).unwrap_or_default());
+        sortie.push_str(par);
+        fin = k.saturating_add(motif.len());
+    }
+    sortie.push_str(texte.get(fin..).unwrap_or_default());
+    sortie
+}
+
+fn run_signale_selon(cle: super::gestes::CleRun, nom: &[u16], texte: String, ligne: &str) -> bool {
     let Some(&nom_cle) = CLES_RUN
         .iter()
         .find(|c| super::gestes::CleRun::depuis_ps(c) == Some(cle))
@@ -304,7 +344,7 @@ pub(super) fn run_signale(cle: super::gestes::CleRun, nom: &[u16], valeur: &winr
         cle: nom_cle,
         nom: String::from_utf16_lossy(nom),
         mots: String::from_utf16(nom).is_err().then(|| nom.to_vec()),
-        valeur: texte_valeur(valeur),
+        valeur: texte,
     };
     propose(&juger_persistance(&[], &[v], &[]), ligne)
 }
@@ -1354,6 +1394,29 @@ mod tests {
             ["%OneDrive%", "%Z%"]
         );
         assert_eq!(variables_restees(r"C:\x.exe 50%"), Vec::<String>::new());
+        // Relecture D6d : une variable du compte ne donne une question que si la valeur serait signalée en menant au
+        // dossier temporaire du compte ; sinon l'écart ne vient pas d'elle, et la ligne est refusée sans question.
+        let valeur_de = |texte: &str| winreg::RegValue {
+            bytes: Cow::Owned(format!("{texte}\0").encode_utf16().flat_map(u16::to_le_bytes).collect()),
+            vtype: REG_EXPAND_SZ,
+        };
+        let cle = CleRun::TOUTES[0];
+        let cache = valeur_de(r"%MonDossier%\x.exe");
+        assert!(!run_signale(cle, &nom, &cache, &ligne));
+        assert!(run_signale_au_pire(cle, &nom, &cache, &ligne));
+        assert!(run_signale_au_pire(
+            cle,
+            &nom,
+            &valeur_de(r"%MONDOSSIER%\a\x.exe %mondossier%"),
+            &ligne
+        ));
+        for sain in [
+            r#""C:\Program Files\Sain\sain.exe" /dossier=%MonDossier%"#,
+            r#""C:\Program Files\Sain\sain.exe""#,
+        ] {
+            assert!(!run_signale_au_pire(cle, &nom, &valeur_de(sain), &ligne), "{sain}");
+        }
+        assert_eq!(remplacer_sans_casse(r"%A%\x %a% é%A%", "%a%", "Z"), r"Z\x Z éZ");
     }
 
     /// Le nom d'une valeur Run est choisi par le programme qui se fait relancer : la correction vise ce nom exact,

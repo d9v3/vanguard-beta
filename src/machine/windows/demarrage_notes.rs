@@ -123,6 +123,8 @@ pub(super) fn lire(texte: &str) -> Option<Vec<Version>> {
 /// nettoyé et coupé, l'empreinte de son nom exact (8 chiffres), puis « .n ». Toujours un seul composant, jamais
 /// « . » ni « .. », jamais un nom de périphérique (il commence par « demarrage- »).
 pub(super) fn nom_copie(nom: &str, n: u8) -> String {
+    // En minuscules, comme le nom de la note : « X.LNK » et « x.lnk » sont un seul fichier pour Windows.
+    let nom = nom.to_lowercase();
     let propre: String = nom
         .chars()
         .take(NOM_PROPRE_MAX)
@@ -204,6 +206,22 @@ pub(super) fn placer(cle: &str, toutes: &[(String, Vec<Version>)], taille: u64, 
         .collect();
     let n = (1..=COPIES_MAX).find(|n| !pris.contains(n))?;
     Some(Ajout { n, effacer })
+}
+
+/// Les copies d'`ajout.effacer` qui partent avant le dépôt de la nouvelle et celles qui attendent qu'elle soit
+/// déposée et notée. Avant : seulement la copie de ce fichier qui porte le numéro de la nouvelle (le même nom dans la
+/// quarantaine) ; toutes les autres après, pour qu'un dépôt manqué n'en ait effacé aucune.
+pub(super) fn avant_le_depot(ajout: &Ajout, cle: &str) -> (bool, Vec<(String, u8)>) {
+    let meme_place = |k: &str, n: u8| k == cle && n == ajout.n;
+    (
+        ajout.effacer.iter().any(|(k, n)| meme_place(k, *n)),
+        ajout
+            .effacer
+            .iter()
+            .filter(|(k, n)| !meme_place(k, *n))
+            .cloned()
+            .collect(),
+    )
 }
 
 /// La copie à remettre : celle qui porte ce numéro, ou la plus récente.
@@ -339,6 +357,7 @@ mod tests {
             }
         }
         assert_ne!(nom_copie("a b.lnk", 1), nom_copie("a_b.lnk", 1));
+        assert_eq!(nom_copie("X.LNK", 1), nom_copie("x.lnk", 1));
         assert_ne!(nom_copie("x.lnk", 1), nom_copie("x.lnk", 2));
     }
 
@@ -360,6 +379,27 @@ mod tests {
         // La plus vieille de ce fichier (la 1), jamais celle d'un autre (« g », plus vieille encore).
         assert_eq!(a.effacer, vec![("f".to_string(), 1)]);
         assert_eq!(a.n, 1);
+        // Celle-là a le nom de la nouvelle : la seule effacée avant le dépôt.
+        assert_eq!(avant_le_depot(&a, "f"), (true, Vec::new()));
+    }
+
+    /// Les copies des autres fichiers (et celles de ce fichier à un autre numéro) n'attendent que le dépôt de la
+    /// nouvelle : un dépôt manqué n'en a effacé aucune.
+    #[test]
+    fn vieilles_copies_effacees_apres_le_depot() {
+        let a = Ajout {
+            n: 2,
+            effacer: vec![("g".to_string(), 2), ("f".to_string(), 1), ("f".to_string(), 2)],
+        };
+        assert_eq!(
+            avant_le_depot(&a, "f"),
+            (true, vec![("g".to_string(), 2), ("f".to_string(), 1)])
+        );
+        let a = Ajout {
+            n: 3,
+            effacer: vec![("g".to_string(), 3)],
+        };
+        assert_eq!(avant_le_depot(&a, "f"), (false, vec![("g".to_string(), 3)]));
     }
 
     /// Les copies tiennent ensemble dans `TOTAL_MAX` : au-delà, les plus vieilles cèdent leur place, et après

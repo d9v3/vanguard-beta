@@ -63,6 +63,9 @@ pub(crate) fn chemin_du_programme(programme: &str, lieux: &LieuxReels) -> Option
             ".." => {
                 parties.pop()?;
             }
+            // Windows ôte le point ou l'espace final d'un composant à l'ouverture (« temp. » ouvre « temp ») ; un
+            // deux-points nomme un flux d'un dossier (« temp:x.exe »). Le lieu ne se juge pas : jamais le vrai.
+            _ if c.ends_with(['.', ' ']) || c.contains(':') => return None,
             _ => parties.push(c),
         }
     }
@@ -70,8 +73,9 @@ pub(crate) fn chemin_du_programme(programme: &str, lieux: &LieuxReels) -> Option
 }
 
 /// Le chemin (de `chemin_du_programme`) est-il là où Windows range ses programmes et ceux de Defender et de Sécurité
-/// Windows : sous le dossier de Windows, sous Program Files\Windows Defender (et Advanced Threat Protection), ou sous
-/// ProgramData\Microsoft\Windows Defender\Platform, où les mises à jour de Defender posent MsMpEng et MpCmdRun.
+/// Windows : directement dans le dossier de Windows, System32 ou SysWOW64, sous Program Files\Windows Defender (et
+/// Advanced Threat Protection), ou sous ProgramData\Microsoft\Windows Defender\Platform, où les mises à jour de
+/// Defender posent MsMpEng et MpCmdRun.
 /// Écrire là demande d'être administrateur (ou TrustedInstaller) : un maliciel du compte ne peut pas s'y ranger.
 pub(crate) fn chemin_reel(chemin: &str, lieux: &LieuxReels) -> bool {
     let sous = |dossier: &str| {
@@ -88,44 +92,45 @@ pub(crate) fn chemin_reel(chemin: &str, lieux: &LieuxReels) -> bool {
         .program_data
         .as_ref()
         .is_some_and(|pd| sous(&format!(r"{pd}\microsoft\windows defender\platform")));
-    // Sous le dossier de Windows, ceux où un compte ordinaire peut écrire n'en sont pas : un maliciel s'y range, puis
-    // se rend illisible (fichier ouvert sans partage) pour passer pour le vrai.
-    let ecrivable = ECRIVABLES_SOUS_WINDOWS
-        .iter()
-        .any(|d| sous(&format!(r"{}\{d}", lieux.windows)));
-    (sous(&lieux.windows) && !ecrivable) || defender || plateforme
+    // Sous le dossier de Windows, seulement un fichier rangé directement dans Windows, System32 ou SysWOW64 (là où
+    // sont SecurityHealthSystray et les autres) : leurs sous-dossiers ouverts aux comptes (Temp, Tasks, FxsTmp,
+    // Com\dmp, spool\PRINTERS…) varient d'une version à l'autre, et un maliciel s'y range puis se rend illisible
+    // (fichier ouvert sans partage) pour passer pour le vrai. Une liste de ceux-là manquerait toujours un dossier.
+    let systeme = DOSSIERS_DU_VRAI.iter().any(|d| {
+        let dossier = if d.is_empty() {
+            lieux.windows.clone()
+        } else {
+            format!(r"{}\{d}", lieux.windows)
+        };
+        chemin
+            .strip_prefix(&dossier)
+            .and_then(|r| r.strip_prefix('\\'))
+            .is_some_and(|f| !f.is_empty() && !f.contains('\\'))
+    });
+    systeme || defender || plateforme
 }
 
-/// Les dossiers sous celui de Windows où un compte ordinaire peut créer un fichier (droits d'origine de Windows 10 et
-/// 11, en minuscules).
-const ECRIVABLES_SOUS_WINDOWS: [&str; 10] = [
-    "temp",
-    "tasks",
-    "tracing",
-    "debug",
-    r"registration\crmlog",
-    r"system32\tasks",
-    r"syswow64\tasks",
-    r"system32\spool\drivers\color",
-    r"system32\microsoft\crypto\rsa\machinekeys",
-    r"syswow64\com\dmp",
-];
+/// Les dossiers sous celui de Windows dont un fichier rangé directement peut être le vrai (en minuscules ; « » : le
+/// dossier de Windows lui-même). Aucun n'est ouvert en écriture aux comptes ordinaires.
+const DOSSIERS_DU_VRAI: [&str; 3] = ["", "system32", "syswow64"];
 
 /// Le jugement, pur : `run_protege` d'abord (rien de Defender : `Non`) ; puis le vrai programme seulement s'il est à
 /// sa place ET signé par Microsoft. Une signature illisible compte comme celle de Microsoft (un refus de trop ne
 /// casse rien ; un maliciel peut aussi se rendre illisible, mais il devrait alors être rangé dans le dossier de
-/// Windows, ce qui demande d'être administrateur).
+/// Windows, ce qui demande d'être administrateur). Sauf un fichier absent : le vrai est toujours à sa place, une
+/// valeur qui vise un fichier qui n'existe pas n'est pas lui.
 pub(crate) fn juger_protege(
     nom: &str,
     programme: &str,
     reel: bool,
     signature: crate::protection::blocage::gardes::Signature,
 ) -> Protege {
-    use crate::protection::blocage::gardes::Signature;
+    use crate::protection::blocage::gardes::{Illisibilite, Signature};
     if !super::gestes::run_protege(nom, programme) {
         return Protege::Non;
     }
     match (reel, signature) {
+        (true, Signature::Illisible(Illisibilite::Absent)) => Protege::NomSeul,
         (true, Signature::Microsoft | Signature::Illisible(_)) => Protege::Vrai,
         _ => Protege::NomSeul,
     }
@@ -242,10 +247,43 @@ pub(super) fn non_confirme() -> String {
     tr!("non confirmé : rien d'écrit", "not confirmed: nothing written").to_string()
 }
 
+/// Un retrait accepté sans note : la note d'une version d'avant (qui remettrait une autre donnée) n'est effacée
+/// qu'une fois la cible relue identique, juste avant le retrait. Relue changée : rien n'est effacé, le geste dit
+/// « rien d'écrit » et c'est vrai. Rend la relecture.
+pub(super) fn relue_puis_effacer(relue_identique: impl FnOnce() -> bool, effacer_l_ancienne: impl FnOnce()) -> bool {
+    let identique = relue_identique();
+    if identique {
+        effacer_l_ancienne();
+    }
+    identique
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::protection::blocage::gardes::{Illisibilite, Signature};
+
+    #[test]
+    fn l_ancienne_note_reste_si_la_relecture_change() {
+        let fait = std::cell::RefCell::new(Vec::new());
+        assert!(!relue_puis_effacer(
+            || {
+                fait.borrow_mut().push("relue");
+                false
+            },
+            || fait.borrow_mut().push("effacée")
+        ));
+        assert_eq!(*fait.borrow(), ["relue"]);
+        fait.borrow_mut().clear();
+        assert!(relue_puis_effacer(
+            || {
+                fait.borrow_mut().push("relue");
+                true
+            },
+            || fait.borrow_mut().push("effacée")
+        ));
+        assert_eq!(*fait.borrow(), ["relue", "effacée"]);
+    }
 
     fn lieux() -> LieuxReels {
         LieuxReels {
@@ -259,7 +297,7 @@ mod tests {
         chemin_du_programme(programme, &lieux()).is_some_and(|c| chemin_reel(&c, &lieux()))
     }
 
-    /// Le vrai lieu : dossier de Windows (hors de ses dossiers ouverts aux comptes), Program Files\Windows Defender,
+    /// Le vrai lieu : un fichier rangé directement dans Windows, System32 ou SysWOW64, Program Files\Windows Defender,
     /// la plateforme de ProgramData ; variables du système, nom seul (System32), « .. » résolus.
     /// Un nom hostile (saut de ligne, échappement de terminal, retour chariot, espaces de bordure, inversion de sens,
     /// très long) se montre échappé : aucun caractère de contrôle n'arrive à la console, les bordures se voient, la
@@ -305,9 +343,23 @@ mod tests {
             r"\\serveur\partage\MsMpEng.exe",
             r"..\MsMpEng.exe",
             r"C:\Windows",
+            // Relecture D6d : des sous-dossiers de Windows ouverts aux comptes, absents de l'ancienne liste.
+            r"C:\Windows\System32\FxsTmp\MsMpEng.exe",
+            r"C:\Windows\SysWOW64\FxsTmp\MsMpEng.exe",
+            r"C:\Windows\System32\Com\dmp\MsMpEng.exe",
+            r"C:\Windows\System32\spool\PRINTERS\MsMpEng.exe",
+            r"C:\Windows\System32\Tasks\SecurityHealthSystray.exe",
+            r"C:\Windows\Tracing\MsMpEng.exe",
+            // Le point ou l'espace final qu'ôte Windows, un flux d'un dossier.
+            r"C:\Windows\Temp.\MsMpEng.exe",
+            r"C:\Windows\Tasks \MsMpEng.exe",
+            r"C:\Windows\System32\SecurityHealthSystray.exe.",
+            r"C:\Windows\Temp:MsMpEng.exe",
+            r"C:\Windows\System32\Temp:x:MsMpEng.exe",
         ] {
             assert!(!reel(p), "{p}");
         }
+        assert!(chemin_du_programme(r"C:\Windows\Temp.\MsMpEng.exe", &lieux()).is_none());
     }
 
     /// Le faux « Windows Defender » hors de sa place : une question ; le vrai signé : refusé ; signature illisible au
@@ -334,6 +386,16 @@ mod tests {
             Protege::Vrai
         );
         assert_eq!(juger_protege("SecurityHealth", vrai, true, illisible), Protege::Vrai);
+        // Relecture D6d : un fichier absent n'est pas le vrai (il est toujours à sa place).
+        assert_eq!(
+            juger_protege(
+                "Windows Defender",
+                vrai,
+                true,
+                Signature::Illisible(Illisibilite::Absent)
+            ),
+            Protege::NomSeul
+        );
         assert_eq!(
             juger_protege("SecurityHealth", vrai, true, Signature::Autre),
             Protege::NomSeul

@@ -154,7 +154,12 @@ pub(super) fn retirer(v: &ValeurRunMachine) -> Resultat {
         || crate::protection::distance::retrait_propose(&ligne);
     if !signale {
         let restees = super::persistance::variables_restees(&texte);
-        if lue.vtype != REG_EXPAND_SZ || restees.is_empty() {
+        // La question seulement si l'écart peut venir de ces variables : la valeur serait signalée si elles menaient
+        // au dossier temporaire du compte. Sinon une ligne qui vise une valeur jamais signalée reste refusée.
+        if lue.vtype != REG_EXPAND_SZ
+            || restees.is_empty()
+            || !super::persistance::run_signale_au_pire(v.cle, v.nom.unites(), &lue, &ligne)
+        {
             return refus(
                 tr!(
                     "le bilan refait ici ne signale pas cette valeur : rien d'écrit",
@@ -165,8 +170,8 @@ pub(super) fn retirer(v: &ValeurRunMachine) -> Resultat {
         }
         let brute = crate::ui::affichable(&super::persistance::texte_brut(&lue));
         let explication = trf!(
-            "  La valeur « {} » est « {brute} ». {} n'est pas une variable du système : le bilan l'a développée avec celles de votre compte, elle ne se rejuge pas ici à l'identique.",
-            "  The value “{}” is “{brute}”. {} is not a system variable: the check expanded it with your account's variables, it cannot be judged again here identically.",
+            "  La valeur « {} » est « {brute} ». {} n'est pas une variable du système : Vanguard ne relit pas ici celles de votre compte. Le bilan ne la signale que si elle mène à un dossier de votre compte où un programme peut se cacher (comme Temp) ; si vous ne savez pas où elle mène, répondez non.",
+            "  The value “{}” is “{brute}”. {} is not a system variable: Vanguard does not read your account's variables here. The check only reports it if it leads to a folder of your account where a program can hide (such as Temp); if you do not know where it leads, answer no.",
             crate::ui::affichable(&nom_valeur),
             crate::ui::affichable(&restees.join(", "))
         );
@@ -226,17 +231,23 @@ pub(super) fn retirer(v: &ValeurRunMachine) -> Resultat {
                     "the previous data cannot be noted ({raison}): nothing written"
                 ));
             }
-            // Une note plus ancienne sous ce nom remettrait une autre donnée : effacée si elle existe.
-            if let Ok(k) = RegKey::predef(HKEY_LOCAL_MACHINE)
-                .open_subkey_with_flags(gestes::RUN_AVANT_CLE, KEY_SET_VALUE | KEY_WOW64_64KEY)
-            {
-                let _ = k.delete_value(&nom_note);
-            }
             Some(raison)
         }
     };
-    // La question a pu durer : relue encore, jamais retirée si elle a changé.
-    if sans_note.is_some() && !cle.get_raw_value(&nom).is_ok_and(|encore| meme(&encore, &lue)) {
+    // La question a pu durer : relue encore, jamais retirée si elle a changé. Une note plus ancienne sous ce nom
+    // remettrait une autre donnée : effacée ensuite seulement, juste avant le retrait.
+    if sans_note.is_some()
+        && !super::protege::relue_puis_effacer(
+            || cle.get_raw_value(&nom).is_ok_and(|encore| meme(&encore, &lue)),
+            || {
+                if let Ok(k) = RegKey::predef(HKEY_LOCAL_MACHINE)
+                    .open_subkey_with_flags(gestes::RUN_AVANT_CLE, KEY_SET_VALUE | KEY_WOW64_64KEY)
+                {
+                    let _ = k.delete_value(&nom_note);
+                }
+            },
+        )
+    {
         return refus(
             tr!(
                 "la valeur a changé entre la lecture et l'écriture ; rien d'écrit",

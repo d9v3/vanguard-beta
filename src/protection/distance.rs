@@ -225,6 +225,19 @@ fn garde_de_session() -> Option<&'static str> {
     ))
 }
 
+/// « Fermer {nom} et le retirer quand même ? » : la fermeture peut couper une session ; seul « o » tapé dans une vraie
+/// console vaut oui, jamais une réponse arrivée par un tube (`printf 'o\no\n' | vanguard …`).
+fn second_accord(nom: &str, console: bool, demander: impl FnOnce(&str) -> String) -> bool {
+    crate::protection::blocage::gardes::confirmer(
+        console,
+        &trf!(
+            "  Fermer {nom} et le retirer quand même ? [o/N] : ",
+            "  Close {nom} and remove it anyway? [y/N]: "
+        ),
+        demander,
+    )
+}
+
 /// Les logiciels du relevé qui ont un processus connecté en ce moment.
 fn connectes_du_releve(trouvailles: &[Trouvaille]) -> Vec<usize> {
     trouvailles
@@ -1535,7 +1548,8 @@ fn installes_du_registre(sortie: &mut String) -> bool {
     une_lue
 }
 
-/// Processus (« PRC|numéro|nom|chemin », le chemin quand Windows le donne et que le logiciel est reconnu) et ceux qui parlent à une autre machine
+/// Processus (« PRC|numéro|nom|chemin », le chemin quand Windows le donne et que le logiciel est reconnu ou que le
+/// processus est connecté) et ceux qui parlent à une autre machine
 /// (« CNX|numéro »), lus par les fonctions de Windows. `false` : Windows n'a rendu aucun processus (refus).
 #[cfg(windows)]
 fn processus_et_connexions(sortie: &mut String) -> bool {
@@ -1543,10 +1557,13 @@ fn processus_et_connexions(sortie: &mut String) -> bool {
     use std::fmt::Write;
     let liste = processus::liste();
     let lus = !liste.is_empty();
+    let connectes = crate::protection::sortantes::processus_connectes();
     for p in liste {
         // Le nom (celui du fichier du programme) suffit à reconnaître un logiciel : le chemin, qui coûte une ouverture
-        // du processus, seulement pour ceux-là, au lieu des deux ou trois cents d'un Windows.
-        let chemin = if reconnu(&p.nom).is_some() {
+        // du processus, seulement pour ceux-là, au lieu des deux ou trois cents d'un Windows. Et pour ceux qui parlent
+        // à une autre machine : rangé dans le dossier d'un outil, un auxiliaire tient peut-être sa session.
+        let connecte = connectes.as_ref().is_some_and(|c| c.contains(&p.pid));
+        let chemin = if connecte || reconnu(&p.nom).is_some() {
             processus::chemin(p.pid).map(|c| sur_une_ligne(&c)).unwrap_or_default()
         } else {
             String::new()
@@ -1554,7 +1571,7 @@ fn processus_et_connexions(sortie: &mut String) -> bool {
         let _ = writeln!(sortie, "PRC|{}|{}|{chemin}", p.pid, sur_une_ligne(&p.nom));
     }
     sortie.push_str("PRC_FIN\n");
-    if let Some(connectes) = crate::protection::sortantes::processus_connectes() {
+    if let Some(connectes) = connectes {
         for pid in connectes {
             let _ = writeln!(sortie, "CNX|{pid}");
         }
@@ -1768,6 +1785,27 @@ fn propose_par(constats: &[Constat], ligne: &str) -> bool {
         .any(|k| k.commandes.iter().any(|l| l == ligne))
 }
 
+/// Le dossier (en minuscules) du programme d'une commande (« "C:\\…\\x.exe" --service », « C:\\…\\x.exe /a » ou un
+/// chemin seul). `None` pour un programme rangé dans Windows (svchost, le spouleur… : toujours connectés, jamais des
+/// auxiliaires d'un outil) ou à la racine d'un disque, et pour un chemin relatif.
+#[cfg(any(windows, test))]
+fn dossier_du_programme(commande: &str) -> Option<String> {
+    let bas = commande.trim().to_lowercase();
+    let programme = match bas.strip_prefix('"') {
+        Some(reste) => reste.split('"').next().unwrap_or_default(),
+        None => bas
+            .find(".exe")
+            .and_then(|p| bas.get(..p.saturating_add(4)))
+            .unwrap_or(&bas),
+    };
+    let (dossier, _) = programme.rsplit_once('\\')?;
+    let mut parties = dossier.split('\\');
+    let disque = parties.next()?;
+    let premier = parties.next()?;
+    let absolu = disque.len() == 2 && disque.ends_with(':');
+    (absolu && !premier.is_empty() && premier != "windows").then(|| dossier.to_owned())
+}
+
 /// Les sections de la lecture PowerShell. `None` sans la section des programmes installés : rien n'est fiable.
 #[cfg(any(windows, test))]
 fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
@@ -1793,6 +1831,10 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
         });
     }
     let installes: Vec<usize> = t.iter().map(|x| x.logiciel).collect();
+    // Les dossiers des programmes reconnus (processus et services) : un auxiliaire au nom inconnu du catalogue qui y
+    // est rangé et qui parle à une autre machine (tv_w32.exe de TeamViewer, le processus d'un service) tient
+    // peut-être la session du logiciel.
+    let mut dossiers: Vec<(usize, String)> = Vec::new();
     for l in section(Some(sortie), "SVC").unwrap_or_default() {
         let champs: Vec<&str> = l.splitn(4, '|').collect();
         let [nom, affiche, _etat, chemin] = champs[..] else {
@@ -1805,6 +1847,7 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
         if jamais_retire(nom) {
             continue;
         }
+        dossiers.extend(dossier_du_programme(chemin).map(|d| (i, d)));
         t.push(Trouvaille {
             logiciel: i,
             trace: Trace::Demarrage,
@@ -1828,6 +1871,7 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
         .iter()
         .filter_map(|l| l.trim().parse().ok())
         .collect();
+    let mut inconnus_connectes: Vec<(&str, &str)> = Vec::new();
     for l in section(Some(sortie), "PRC").unwrap_or_default() {
         let champs: Vec<&str> = l.splitn(3, '|').collect();
         let [pid, nom, chemin] = champs[..] else {
@@ -1835,13 +1879,21 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
         };
         let fichier = chemin.rsplit(['\\', '/']).next().unwrap_or(chemin);
         let Some(i) = reconnu(nom).or_else(|| reconnu(fichier)) else {
+            if pid.trim().parse::<u32>().is_ok_and(|p| connectes.contains(&p)) {
+                inconnus_connectes.push((nom, chemin));
+            }
             continue;
         };
         // mstsc, rdpclip, sshd… dans un dossier d'outil : « Stop-Process -Name » fermerait aussi le vrai, et la
         // session qu'il tient.
         if jamais_retire(nom) || jamais_retire(fichier) {
+            // Connecté depuis le dossier d'un outil, il peut tenir la session de cet outil.
+            if pid.trim().parse::<u32>().is_ok_and(|p| connectes.contains(&p)) {
+                inconnus_connectes.push((nom, chemin));
+            }
             continue;
         }
+        dossiers.extend(dossier_du_programme(chemin).map(|d| (i, d)));
         t.push(Trouvaille {
             logiciel: i,
             trace: Trace::EnCours {
@@ -1856,6 +1908,30 @@ fn lire_windows(sortie: &str) -> Option<Vec<Trouvaille>> {
             )],
             refuse: false,
         });
+    }
+    // Compté connecté sans rien à fermer : le logiciel n'est alors ni fermé ni retiré (jamais couper une session).
+    for (nom, chemin) in inconnus_connectes {
+        let bas = chemin.to_lowercase();
+        let siens = dossiers.iter().filter(|(_, d)| {
+            bas.strip_prefix(d.as_str())
+                .is_some_and(|reste| reste.starts_with('\\'))
+        });
+        let mut vus: Vec<usize> = Vec::new();
+        for &(i, _) in siens {
+            if vus.contains(&i) {
+                continue;
+            }
+            vus.push(i);
+            t.push(Trouvaille {
+                logiciel: i,
+                trace: Trace::EnCours { connecte: true },
+                ou: affichable(if chemin.is_empty() { nom } else { chemin }),
+                depuis: None,
+                retrait: Vec::new(),
+                arret: Vec::new(),
+                refuse: false,
+            });
+        }
     }
     for l in section(Some(sortie), "RUN").unwrap_or_default() {
         let champs: Vec<&str> = l.splitn(3, '|').collect();
@@ -2057,12 +2133,7 @@ pub fn menu() {
                 "{nom} est en cours d'exécution : une session à distance est peut-être ouverte. Si vous êtes vous-même connecté à cet ordinateur par {nom}, répondez non.",
                 "{nom} is running: a remote session may be open. If you are yourself connected to this computer through {nom}, answer no."
             ));
-            if !demander(&trf!(
-                "  Fermer {nom} et le retirer quand même ? [o/N] : ",
-                "  Close {nom} and remove it anyway? [y/N]: "
-            ))
-            .oui()
-            {
+            if !second_accord(nom, crate::protection::blocage::gardes::console_reelle(), demander) {
                 trp!("  {nom} : gardé.", "  {nom}: kept.");
                 continue;
             }
@@ -2601,6 +2672,84 @@ mod tests {
             None
         );
         assert_eq!(retrait_run(r"HKCU:\Software\Ailleurs", "x"), None);
+    }
+
+    #[test]
+    fn second_accord_seulement_tape_dans_une_console() {
+        // Hors console, la question n'est même pas posée : « o » d'un tube vaut non.
+        assert!(!second_accord("AnyDesk", false, |_| panic!("posée hors console")));
+        assert!(second_accord("AnyDesk", true, |q| {
+            assert!(q.contains("AnyDesk"));
+            "o".into()
+        }));
+        for r in ["", "n", "oui oui", "N"] {
+            assert!(!second_accord("AnyDesk", true, |_| r.into()), "{r:?}");
+        }
+    }
+
+    #[test]
+    fn auxiliaire_connecte_dans_le_dossier_d_un_outil() {
+        // L'interface d'AnyDesk n'a pas de connexion ; tv_w32 (inconnu du catalogue), rangé sous le dossier de
+        // TeamViewer, en a une : TeamViewer est connecté, AnyDesk ne l'est pas.
+        let sortie = "INS_FIN\n\
+                      SVC|TeamViewer|TeamViewer|Running|\"C:\\Program Files\\TeamViewer\\TeamViewer_Service.exe\"\n\
+                      SVC|RustDesk|RustDesk Service|Running|C:\\Program Files\\RustDesk\\rustdesk.exe --service\n\
+                      SVC_FIN\n\
+                      PRC|10|AnyDesk|C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe\n\
+                      PRC|20|tv_w32|C:\\Program Files\\TeamViewer\\x64\\tv_w32.exe\n\
+                      PRC|30|nxhelper|C:\\Program Files\\RustDesk\\nxhelper.exe\n\
+                      PRC|40|svchost|C:\\Windows\\System32\\svchost.exe\n\
+                      PRC|50|aide|C:\\Program Files (x86)\\AnyDesk Autre\\aide.exe\n\
+                      PRC_FIN\n\
+                      CNX|20\n\
+                      CNX|30\n\
+                      CNX|40\n\
+                      CNX|50\n\
+                      CNX_FIN\n";
+        let t = lire_windows(sortie).expect("section des programmes présente");
+        let connectes = connectes_du_releve(&t);
+        // Par le dossier d'un service (TeamViewer) ou d'un service à la ligne sans guillemets (RustDesk).
+        assert!(connectes.contains(&indice("TeamViewer")), "{t:#?}");
+        assert!(connectes.contains(&indice("RustDesk")), "{t:#?}");
+        // Un dossier voisin au nom qui commence pareil n'est pas le sien ; svchost, de Windows, n'est à personne.
+        assert!(!connectes.contains(&indice("AnyDesk")), "{t:#?}");
+        // Rien à fermer pour l'auxiliaire : il ne sert qu'à garder le logiciel.
+        assert!(
+            t.iter()
+                .filter(|x| x.ou.contains("tv_w32"))
+                .all(|x| x.arret.is_empty() && x.retrait.is_empty())
+        );
+        // Un sshd connecté sous le dossier d'un outil garde l'outil aussi.
+        let sortie = "INS_FIN\n\
+                      PRC|10|rustdesk|C:\\Outils\\RustDesk\\rustdesk.exe\n\
+                      PRC|11|sshd|C:\\Outils\\RustDesk\\sshd.exe\n\
+                      PRC_FIN\n\
+                      CNX|11\n\
+                      CNX_FIN\n";
+        let t = lire_windows(sortie).unwrap();
+        assert_eq!(connectes_du_releve(&t), [indice("RustDesk")], "{t:#?}");
+    }
+
+    #[test]
+    fn dossier_du_programme_d_une_commande() {
+        assert_eq!(
+            dossier_du_programme(r#""C:\Program Files (x86)\AnyDesk\AnyDesk.exe" --service"#).as_deref(),
+            Some(r"c:\program files (x86)\anydesk")
+        );
+        assert_eq!(
+            dossier_du_programme(r"C:\Program Files\RustDesk\rustdesk.EXE --server").as_deref(),
+            Some(r"c:\program files\rustdesk")
+        );
+        assert_eq!(dossier_du_programme(r"D:\Outils\x").as_deref(), Some(r"d:\outils"));
+        for sans in [
+            r"C:\Windows\System32\svchost.exe -k x",
+            r"C:\x.exe",
+            r"x.exe",
+            "",
+            r"\\serveur\p\x.exe",
+        ] {
+            assert_eq!(dossier_du_programme(sans), None, "{sans}");
+        }
     }
 
     #[test]
