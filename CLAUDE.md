@@ -2,7 +2,7 @@
 
 Outil en Rust (édition 2024) qui sécurise et optimise une machine et son réseau : bilan, corrections, réglages,
 antivirus, scan du réseau, clé USB portable. Linux, Windows, macOS ; français et anglais. Un seul auteur (licence
-GPL-3.0-or-later, double licence possible) : tout le code est écrit pour le projet, rien n'est copié d'un autre.
+GPL-3.0-or-later, double licence possible).
 Réponses à l'utilisateur en français, claires, avec le pourquoi.
 
 ## Commandes
