@@ -5,11 +5,66 @@ English version: README.txt
 Vanguard durcit les ordinateurs, détecte les failles et les intrusions (bilan noté de A à F, audit du réseau,
 chasse aux menaces, analyse YARA, journaux, logiciels espions, logiciels pas à jour, échange de clés
 post-quantique), bloque les menaces trouvées, collecte les traces d'un incident et prépare, sans jamais l'envoyer,
-le signalement d'une faille à son éditeur.
-Chaque constat est expliqué ; rien n'est modifié sans accord. En plus : le dépannage, l'optimisation, les
-données et la sauvegarde ; en développement, des images qui démarrent un ordinateur en panne (dossier ISO).
-Vanguard complète l'antivirus du système (Microsoft Defender, XProtect, ClamAV) : il ne le remplace pas.
+le signalement d'une faille à son éditeur. Chaque constat est expliqué ; chaque correction et chaque blocage
+passent par un accord. En plus : le dépannage, l'optimisation, les données et la sauvegarde ; en développement,
+des images qui démarrent un ordinateur en panne (dossier ISO). Vanguard complète l'antivirus du système (Microsoft
+Defender, XProtect, ClamAV) : il ne le remplace pas.
 
+Sécurité de Vanguard et de la clé
+  - Protection de la clé : elle a deux parties. VANGUARD (tout ce que décrit « Contenu de la clé ») est en lecture
+    seule sous Windows, et sous Linux et macOS Vanguard la remonte lui-même en lecture seule au lancement : un
+    autre ordinateur ne peut pas modifier le programme. Seul l'ordinateur de son propriétaire peut écrire dessus.
+    VANGUARDLOG, petite et modifiable, contient journal-erreurs.txt : les erreurs rencontrées (version, système,
+    message), sans nom d'utilisateur, nom de machine ni dossier personnel. De retour sur l'ordinateur du
+    propriétaire, elles deviennent des tickets GitHub, pour améliorer Vanguard. Elle contient aussi
+    ordinateurs.json (Mes ordinateurs : note et catégories des problèmes de chaque ordinateur, sans nom), qui ne
+    part jamais sur GitHub. Windows ne lance rien tout seul depuis une clé USB (protection contre les virus depuis
+    Windows 7) : il faut double-cliquer.
+  - Données protégées : si le propriétaire a protégé les données de la clé (menu Vanguard), Vanguard demande sa
+    phrase sur un autre ordinateur pour lire le carnet des appareils ; Entrée sans rien, il continue sans le
+    carnet.
+  - Versions signées : la dernière version est décrite par un manifeste (version, taille et empreinte SHA-256
+    du programme de chaque système) signé en Ed25519 hors de GitHub. Vanguard refuse un manifeste mal signé,
+    une version qui n'est pas plus récente que la plus haute déjà vue, et un programme dont la taille,
+    l'empreinte ou la version n'est pas celle signée ; rien ne s'installe sans accord. vanguard verifier-moi
+    affiche la version, la date du dernier commit et l'empreinte SHA-256 du programme, et les compare, après
+    accord, à l'historique signé des versions publiées.
+  - Ce qui sort de l'ordinateur : en HTTPS, une liste fermée de 28 hôtes (listes de menaces, fuites de mots de
+    passe, versions des logiciels, mise à jour de Vanguard, test de débit). Pour un lien, seul le domaine sort ;
+    pour un mot de passe, 5 caractères de son empreinte SHA-1. Le relevé local d'auto-amélioration (des
+    comptes, aucun secret) reste sur l'ordinateur : l'adresse du relais n'existe pas dans le code, et rien
+    ne part (VANGUARD_ENVOI=0 coupe même le relevé).
+  - État scellé : l'état de Vanguard (réglages, listes téléchargées, défenses en marche, tâches, changements
+    faits) est scellé ; modifié hors de Vanguard, il n'accorde rien, ne coupe rien, et le dit. Le journal
+    des événements est chaîné et scellé (vanguard evenements).
+  - Le programme n'a pas de signature d'éditeur (Authenticode, Apple) : SmartScreen peut avertir
+    (« Informations complémentaires » > « Exécuter quand même ») et Microsoft Defender peut le signaler, car
+    il scanne des ports. Son empreinte SHA-256, sur chaque page de version et dans l'historique signé, prouve
+    qu'il est authentique. Le code source est sur la clé et sur GitHub (d9v3/vanguard-beta).
+  - Restent sur chaque ordinateur, jamais sur la clé : l'historique des bilans et la quarantaine de
+    l'antivirus (pour ne jamais transporter de malware).
+
+Garde-fous
+  - Les corrections ne sont jamais appliquées sans confirmation. Sous Windows, quatorze réglages d'une liste
+    fermée (WDigest, NLA du Bureau à distance, NTLMv2, LLMNR, UAC…) sont faits par Vanguard lui-même, relancé en
+    administrateur : la fenêtre de Windows le nomme, et seuls Entrée ou oui les appliquent (le blocage des menaces y
+    ajoute la liste de Microsoft qui bloque les pilotes vulnérables). Les autres corrections, et celles choisies avec
+    elles, sont d'abord écrites dans un script lisible (le chemin est affiché). Toutes demandent l'accord
+    administrateur.
+  - Blocage des menaces : chaque menace trouvée se bloque d'un clic, après accord ; la protection active, une
+    fois mise en marche, bloque toute seule ce qui ne fait aucun doute (empreinte de MalwareBazaar, outil d'attaque
+    connu, serveur de commande), puis prévient ; en administrateur, elle ne bloque rien seule. Chaque blocage
+    s'annule (vanguard blocage annuler), sauf l'arrêt d'un programme. Avant chaque geste, Vanguard relève ce qu'il va
+    effacer (programme, ligne de commande, empreinte, connexions) ; le journal des événements, scellé, relie
+    l'alerte, cette preuve, le geste et son annulation (vanguard evenements).
+  - Chaque correction note d'abord l'état d'avant de ce qu'elle change, et s'annule ensuite dans « Ce que Vanguard
+    a changé » ; celles qui rallument une protection (pare-feu, antivirus, BitLocker, UAC…) ne se défont jamais.
+  - Avant la première correction, mise à jour ou réparation qui modifie le système, un point de restauration est
+    créé automatiquement quand le système le permet (snapper ou timeshift configuré sous Linux, point de
+    restauration sous Windows, instantané local de Time Machine sous macOS).
+  - Pour aider quelqu'un connecté à distance (Bureau à distance, SSH) : Vanguard ne coupe jamais cet accès.
+
+Contenu de la clé
 Cette clé contient le programme pour Linux, Windows et macOS, sa base de données et son code source.
 
   Linux/vanguard        Linux (toutes distributions, aucune installation)
@@ -33,17 +88,6 @@ Cette clé contient le programme pour Linux, Windows et macOS, sa base de donné
 
 Mode d'emploi de chaque version, ligne de commande comprise (Terminal, PowerShell, invite de commandes) :
 LISEZMOI.txt dans les dossiers Linux, Windows et macOS.
-
-Protection : la clé a deux parties. VANGUARD (tout ce qui précède) est en lecture seule sous Windows, et sous
-Linux et macOS Vanguard la remonte lui-même en lecture seule au lancement : un autre ordinateur ne peut pas modifier le
-programme. Seul l'ordinateur de son propriétaire peut écrire dessus. VANGUARDLOG, petite et modifiable, contient
-journal-erreurs.txt : les erreurs rencontrées (version, système, message), sans nom d'utilisateur, nom de
-machine ni dossier personnel. De retour sur l'ordinateur du propriétaire, elles deviennent des tickets GitHub,
-pour améliorer Vanguard. Elle contient aussi ordinateurs.json (Mes ordinateurs : note et catégories des problèmes de
-chaque ordinateur, sans nom), qui ne part jamais sur GitHub.
-Données protégées : si le propriétaire a protégé les données de la clé (menu Vanguard), Vanguard demande sa phrase sur
-un autre ordinateur pour lire le carnet des appareils ; Entrée sans rien, il continue sans le carnet. Windows ne lance rien tout seul depuis une clé USB
-(protection contre les virus depuis Windows 7) : il faut double-cliquer.
 
 Pour commencer : lancer Vanguard, choisir « 1. Bilan de sécurité complet », puis « 2. Corriger ».
 
@@ -232,32 +276,9 @@ Menus décalés dans l'ancienne invite de commandes de Windows : set VANGUARD_EM
 Terminal Windows).
 
 Bon à savoir
-  - Les corrections ne sont jamais appliquées sans confirmation. Sous Windows, quatorze réglages d'une liste
-    fermée (WDigest, NLA du Bureau à distance, NTLMv2, LLMNR, UAC…) sont faits par Vanguard lui-même, relancé en
-    administrateur : la fenêtre de Windows le nomme, et seuls Entrée ou oui les appliquent (le blocage des menaces y
-    ajoute la liste de Microsoft qui bloque les pilotes vulnérables). Les autres corrections, et celles choisies avec
-    elles, sont d'abord écrites dans un script lisible (le chemin est affiché). Toutes demandent l'accord
-    administrateur.
-  - Blocage des menaces : chaque menace trouvée se bloque d'un clic, après accord ; la protection active, une
-    fois mise en marche, bloque toute seule ce qui ne fait aucun doute (empreinte de MalwareBazaar, outil d'attaque
-    connu, serveur de commande), puis prévient ; en administrateur, elle ne bloque rien seule. Chaque blocage
-    s'annule (vanguard blocage annuler), sauf l'arrêt d'un programme. Avant chaque geste, Vanguard relève ce qu'il va
-    effacer (programme, ligne de commande, empreinte, connexions) ; le journal des événements, scellé, relie
-    l'alerte, cette preuve, le geste et son annulation (vanguard evenements).
-  - Chaque correction note d'abord l'état d'avant de ce qu'elle change, et s'annule ensuite dans « Ce que Vanguard
-    a changé » ; celles qui rallument une protection (pare-feu, antivirus, BitLocker, UAC…) ne se défont jamais.
-  - Avant la première correction, mise à jour ou réparation qui modifie le système, un point de restauration est
-    créé automatiquement quand le système le permet (snapper ou timeshift configuré sous Linux, point de
-    restauration sous Windows, instantané local de Time Machine sous macOS).
-  - Pour aider quelqu'un connecté à distance (Bureau à distance, SSH) : Vanguard ne coupe jamais cet accès.
-  - Le programme n'est pas signé : SmartScreen peut avertir (« Informations complémentaires » > « Exécuter
-    quand même ») et Microsoft Defender peut le signaler, car il scanne des ports. Le code source est sur la clé
-    et sur GitHub (d9v3/vanguard-beta).
   - macOS : lancé depuis la clé, Vanguard s'ouvre sans avertissement. Copié depuis Internet ou AirDrop, macOS le
     bloque (« développeur non identifié ») : clic droit > Ouvrir, ou Réglages Système > Confidentialité et
     sécurité > « Ouvrir quand même ». Antivirus, logiciels et gaming passent par Homebrew (proposé s'il manque).
-  - Restent sur chaque ordinateur, jamais sur la clé : l'historique des bilans et la quarantaine de
-    l'antivirus (pour ne jamais transporter de malware).
 
 Vanguard est un logiciel libre (licence GNU GPL v3 ou ultérieure, voir LICENSE.txt), fourni sans garantie.
 Les bibliothèques qu'il inclut sont listées dans LICENCES-TIERCES.txt.

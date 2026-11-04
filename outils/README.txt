@@ -5,10 +5,63 @@ Version française : LISEZMOI.txt
 Vanguard hardens computers, detects vulnerabilities and intrusions (check graded from A to F, network audit,
 threat hunting, YARA scan, logs, spyware, outdated software, post-quantum key exchange), blocks the threats it
 finds, collects the evidence of an incident and prepares, without ever sending it, the report of a flaw to its
-vendor. Every finding is explained; nothing is changed without consent. Also included: troubleshooting,
-optimization, data and backup; in development, images that start a computer that no longer boots (ISO folder).
-Vanguard complements the system's antivirus (Microsoft Defender, XProtect, ClamAV): it does not replace it.
+vendor. Every finding is explained; every fix and every block goes through consent. Also included:
+troubleshooting, optimization, data and backup; in development, images that start a computer that no longer boots
+(ISO folder). Vanguard complements the system's antivirus (Microsoft Defender, XProtect, ClamAV): it does not
+replace it.
 
+Security of Vanguard and of the key
+  - Protection of the key: it has two parts. VANGUARD (everything listed in "Contents of the key") is read-only on
+    Windows, and on Linux and macOS Vanguard remounts it read-only itself at startup: another computer cannot
+    modify the program. Only its owner's computer can write to it. VANGUARDLOG, small and writable, holds
+    journal-erreurs.txt: the errors encountered (version, system, message), without user name, computer name or
+    home folder. Back on the owner's computer, they become GitHub issues, to improve Vanguard. It also holds
+    ordinateurs.json (My computers: grade and problem categories of each computer, without names), which never
+    goes to GitHub. Windows never starts anything by itself from a USB key (protection against viruses since
+    Windows 7): double-click it.
+  - Protected data: if the owner protected the key's data (Vanguard menu), Vanguard asks for the passphrase on
+    another computer to read the device record; Enter with nothing, it goes on without the record.
+  - Signed versions: the latest version is described by a manifest (version, size and SHA-256 fingerprint of
+    each system's program) signed with Ed25519 outside GitHub. Vanguard refuses a badly signed manifest, a
+    version no newer than the highest already seen, and a program whose size, fingerprint or version is not
+    the signed one; nothing is installed without consent. vanguard verifier-moi shows the version, the date
+    of the last commit and the SHA-256 fingerprint of the program, and compares them, after consent, with the
+    signed history of published versions.
+  - What leaves the computer: over HTTPS, a closed list of 28 hosts (threat lists, password leaks, software
+    versions, Vanguard's update, speed test). For a link, only the domain leaves; for a password, 5
+    characters of its SHA-1 fingerprint. The local record of self-improvement (counts, no secrets) stays on
+    the computer: the relay's address does not exist in the code, and nothing leaves (VANGUARD_ENVOI=0 even
+    turns the record off).
+  - Sealed state: Vanguard's state (settings, downloaded lists, defenses turned on, tasks, changes made) is
+    sealed; changed outside Vanguard, it grants nothing, turns nothing off, and says so. The event log is
+    chained and sealed (vanguard events).
+  - The program carries no publisher signature (Authenticode, Apple): SmartScreen may warn ("More info" >
+    "Run anyway") and Microsoft Defender may flag it, because it scans ports. Its SHA-256 fingerprint, on
+    each release page and in the signed history, proves that it is genuine. The source code is on the key and
+    on GitHub (d9v3/vanguard-beta).
+  - Kept on each computer, never on the key: the check history and the antivirus quarantine (so malware
+    never travels on the key).
+
+Safeguards
+  - Fixes are never applied without confirmation. On Windows, fourteen settings from a fixed allowlist (WDigest,
+    Remote Desktop NLA, NTLMv2, LLMNR, UAC…) are made by Vanguard itself, relaunched as administrator: Windows'
+    prompt names it, and only Enter or yes applies them (threat blocking adds Microsoft's vulnerable driver
+    blocklist). The other fixes, and those chosen along with them, are first written to a readable script (its path
+    is shown). All of them ask for administrator approval.
+  - Threat blocking: each threat found can be blocked with one click, after consent; active protection, once
+    enabled, blocks clear-cut threats by itself (MalwareBazaar fingerprint, known attack tool, command server), then
+    lets you know; as administrator, it blocks nothing by itself. Each block can be undone (vanguard blocking
+    undo), except stopping a program. Before each action, Vanguard records what it will erase (program, command
+    line, fingerprint, connections); the sealed event log links the alert, this evidence, the action and its undoing
+    (vanguard events).
+  - Each fix first records the previous state of what it changes, and can then be undone in "What Vanguard
+    changed"; those that turn a protection back on (firewall, antivirus, BitLocker, UAC…) are never undone.
+  - Before the first fix, update or repair that changes the system, a restore point is created automatically when
+    the system allows one (snapper or timeshift configured on Linux, a restore point on Windows, a local Time
+    Machine snapshot on macOS).
+  - If you help someone connected remotely (Remote Desktop, SSH), Vanguard never cuts that access.
+
+Contents of the key
 This USB key holds the program for Linux, Windows and macOS, its database and its source code.
 
   Linux/vanguard        Linux (any distribution, nothing to install)
@@ -32,16 +85,6 @@ This USB key holds the program for Linux, Windows and macOS, its database and it
 
 How to run each version, command line included (Terminal, PowerShell, Command Prompt): README.txt in the
 Linux, Windows and macOS folders.
-
-Protection: the key has two parts. VANGUARD (everything above) is read-only on Windows, and on Linux and macOS
-Vanguard remounts it read-only itself at startup: another computer cannot modify the program. Only its owner's computer
-can write to it. VANGUARDLOG, small and writable, holds journal-erreurs.txt: the errors encountered
-(version, system, message), without user name, computer name or home folder. Back on the owner's computer, they
-become GitHub issues, to improve Vanguard. It also holds ordinateurs.json (My computers: grade and problem categories
-of each computer, without names), which never goes to GitHub.
-Protected data: if the owner protected the key's data (Vanguard menu), Vanguard asks for the passphrase on another
-computer to read the device record; Enter with nothing, it goes on without the record. Windows
-never starts anything by itself from a USB key (protection against viruses since Windows 7): double-click it.
 
 To start: run Vanguard, choose "1. Full security check", then "2. Fix".
 
@@ -222,30 +265,9 @@ Menus shifted in the old Windows command prompt: set VANGUARD_EMOJI=0 (done by d
 Terminal).
 
 Good to know
-  - Fixes are never applied without confirmation. On Windows, fourteen settings from a fixed allowlist (WDigest,
-    Remote Desktop NLA, NTLMv2, LLMNR, UAC…) are made by Vanguard itself, relaunched as administrator: Windows'
-    prompt names it, and only Enter or yes applies them (threat blocking adds Microsoft's vulnerable driver
-    blocklist). The other fixes, and those chosen along with them, are first written to a readable script (its path
-    is shown). All of them ask for administrator approval.
-  - Threat blocking: each threat found can be blocked with one click, after consent; active protection, once
-    enabled, blocks clear-cut threats by itself (MalwareBazaar fingerprint, known attack tool, command server), then
-    lets you know; as administrator, it blocks nothing by itself. Each block can be undone (vanguard blocking
-    undo), except stopping a program. Before each action, Vanguard records what it will erase (program, command
-    line, fingerprint, connections); the sealed event log links the alert, this evidence, the action and its undoing
-    (vanguard events).
-  - Each fix first records the previous state of what it changes, and can then be undone in "What Vanguard
-    changed"; those that turn a protection back on (firewall, antivirus, BitLocker, UAC…) are never undone.
-  - Before the first fix, update or repair that changes the system, a restore point is created automatically when
-    the system allows one (snapper or timeshift configured on Linux, a restore point on Windows, a local Time
-    Machine snapshot on macOS).
-  - If you help someone connected remotely (Remote Desktop, SSH), Vanguard never cuts that access.
-  - The program is not signed: SmartScreen may warn ("More info" > "Run anyway") and Microsoft Defender may
-    flag it, because it scans ports. The source code is on the key and on GitHub (d9v3/vanguard-beta).
   - macOS: run from the key, Vanguard opens without a warning. Copied from the Internet or AirDrop, macOS blocks it
     ("unidentified developer"): right-click > Open, or System Settings > Privacy & Security > "Open Anyway".
     Antivirus, software and gaming go through Homebrew (offered if missing).
-  - Kept on each computer, never on the key: the check history and the antivirus quarantine (so malware
-    never travels on the key).
 
 Vanguard is free software (GNU GPL v3 or later, see LICENSE.txt), provided without warranty.
 The libraries it includes are listed in LICENCES-TIERCES.txt.
