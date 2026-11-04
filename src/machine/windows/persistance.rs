@@ -6,8 +6,8 @@ use crate::commande::decouper_commande;
 /// Pourquoi ce programme lancé automatiquement (tâche planifiée, clé Run, dossier Démarrage) ressemble à un
 /// malware, ou `None`. Seules des formes précises sont retenues : les programmes installés normalement n'y tombent pas.
 pub(super) fn lancement_suspect(exe: &str, args: &str) -> Option<&'static str> {
-    let exe = exe.trim().trim_matches('"').to_lowercase().replace('/', "\\");
-    let args = args.to_lowercase();
+    let exe = sans_variables(&exe.trim().trim_matches('"').to_lowercase().replace('/', "\\"));
+    let args = sans_variables(&args.to_lowercase());
     let tout = format!("{exe} {args}");
     let temporaire = |t: &str| {
         [
@@ -67,6 +67,51 @@ pub(super) fn lancement_suspect(exe: &str, args: &str) -> Option<&'static str> {
         ));
     }
     None
+}
+
+/// Les variables du compte restées telles quelles (« %APPDATA%\\x.vbs », casse ignorée), remplacées par le chemin
+/// qu'elles désignent toujours sous Windows, pour que le jugement les voie comme le dossier lui-même. Le processus
+/// élevé ne prend que les variables du système (`texte_valeur`) : sans cela, une valeur REG_EXPAND_SZ que le bilan
+/// signale (développée avec celles du compte) n'y était plus signalée, et son retrait refusé. `texte` est déjà en
+/// minuscules.
+fn sans_variables(texte: &str) -> String {
+    const VARIABLES: [(&str, &str); 5] = [
+        ("%localappdata%", r"\users\%user%\appdata\local"),
+        ("%appdata%", r"\users\%user%\appdata\roaming"),
+        ("%userprofile%", r"\users\%user%"),
+        ("%temp%", r"\users\%user%\appdata\local\temp"),
+        ("%tmp%", r"\users\%user%\appdata\local\temp"),
+    ];
+    VARIABLES
+        .iter()
+        .fold(texte.to_string(), |t, (variable, chemin)| t.replace(variable, chemin))
+}
+
+/// Les variables d'un texte restées sans valeur (« %ONEDRIVE% »), dans l'ordre, sans doublon : le processus élevé ne
+/// les connaît pas (seules celles du système), le bilan les a peut-être développées avec celles du compte.
+pub(super) fn variables_restees(texte: &str) -> Vec<String> {
+    let mut vues: Vec<String> = Vec::new();
+    let mut reste = texte;
+    while let Some(debut) = reste.find('%') {
+        let apres = &reste[debut + 1..];
+        let Some(fin) = apres.find('%') else { break };
+        let nom = &apres[..fin];
+        if !nom.is_empty() && nom.chars().all(|c| c.is_ascii_alphanumeric() || "_()-".contains(c)) {
+            let nom = format!("%{nom}%");
+            if !vues.iter().any(|v| v.eq_ignore_ascii_case(&nom)) {
+                vues.push(nom);
+            }
+            reste = &apres[fin + 1..];
+        } else {
+            reste = apres;
+        }
+    }
+    vues
+}
+
+/// Le texte d'une valeur sans rien développer (REG_EXPAND_SZ telle qu'écrite) : ce qui se montre avant de demander.
+pub(super) fn texte_brut(valeur: &winreg::RegValue) -> String {
+    valeur_texte_selon(valeur, &|_| None)
 }
 
 /// Les tâches planifiées hors \Microsoft\, lues par PowerShell en secours du planificateur (`planificateur::taches`).
@@ -1265,6 +1310,46 @@ mod tests {
                 &ligne
             ));
         }
+    }
+
+    /// D6d : %APPDATA%, %LOCALAPPDATA%, %USERPROFILE%, %TEMP% restés tels quels (le processus élevé ne prend que
+    /// les variables du système) se jugent comme leur dossier, casse ignorée ; le rejugement élevé signale donc ce que
+    /// le bilan, qui les développe, signalait. Une variable inconnue reste listée pour la question.
+    #[test]
+    fn variables_du_compte_reconnues_telles_quelles() {
+        use super::super::gestes::{CleRun, ligne_run_retirer_machine};
+        use std::borrow::Cow;
+        use winreg::enums::RegType::REG_EXPAND_SZ;
+        for (exe, args) in [
+            ("wscript.exe", r#""%APPDATA%\x.vbs""#),
+            ("WScript.exe", r#""%AppData%\Microsoft\x.vbs""#),
+            (r"%USERPROFILE%\AppData\Local\Temp\x.exe", ""),
+            (r"%LocalAppData%\Temp\x.exe", ""),
+            (r"%Tmp%\x.exe", ""),
+            ("cmd.exe", r"/c %UserProfile%\AppData\Local\Temp\x.cmd"),
+        ] {
+            assert!(lancement_suspect(exe, args).is_some(), "{exe} {args}");
+        }
+        assert!(lancement_suspect(r"%APPDATA%\Sain\sain.exe", "").is_none());
+        assert!(lancement_suspect(r"%USERPROFILE%\Documents\x.exe", "").is_none());
+        let nom: Vec<u16> = "Agent".encode_utf16().collect();
+        let valeur = winreg::RegValue {
+            bytes: Cow::Owned(
+                "wscript.exe \"%APPDATA%\\x.vbs\"\0"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes)
+                    .collect(),
+            ),
+            vtype: REG_EXPAND_SZ,
+        };
+        let ligne = ligne_run_retirer_machine(r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run", &nom).unwrap();
+        assert!(run_signale(CleRun::TOUTES[0], &nom, &valeur, &ligne));
+        assert_eq!(texte_brut(&valeur), "wscript.exe \"%APPDATA%\\x.vbs\"");
+        assert_eq!(
+            variables_restees(r"%OneDrive%\x.exe %onedrive% 100% %% %A B% %Z%"),
+            ["%OneDrive%", "%Z%"]
+        );
+        assert_eq!(variables_restees(r"C:\x.exe 50%"), Vec::<String>::new());
     }
 
     /// Le nom d'une valeur Run est choisi par le programme qui se fait relancer : la correction vise ce nom exact,

@@ -1,10 +1,11 @@
 //! Le retrait d'une valeur de démarrage de la machine (HKLM Run, RunOnce, Run des programmes 32 bits), par le
 //! processus élevé, sans PowerShell (lot 3.5, passe a). La ligne désigne, le processus élevé juge : la valeur est
-//! relue ici, jamais une entrée de Windows ou de Defender (`gestes::run_protege`), rejugée par les fonctions du bilan
-//! (persistance suspecte, ou outil de prise en main à distance qui n'est plus installé), relue encore juste avant le
-//! retrait, sa donnée exacte (type et octets) notée dans `gestes::RUN_AVANT_CLE`, puis retirée et relue absente. La
-//! remise (`run-remettre`) ne remet que ce que le processus élevé a noté lui-même, jamais par-dessus une valeur
-//! présente.
+//! relue ici, jamais le vrai programme de Windows ou de Defender (`protege::protege` ; un nom seul se demande),
+//! rejugée par les fonctions du bilan (persistance suspecte, ou outil de prise en main à distance qui n'est plus
+//! installé ; une variable du compte que le système ne connaît pas se montre et se demande), relue encore juste avant
+//! le retrait, sa donnée exacte (type et octets) notée dans `gestes::RUN_AVANT_CLE` (note impossible : retrait
+//! seulement après une question « non annulable »), puis retirée et relue absente. La remise (`run-remettre`) ne
+//! remet que ce que le processus élevé a noté lui-même, jamais par-dessus une valeur présente.
 
 use std::ffi::OsString;
 use std::io::ErrorKind::NotFound;
@@ -15,6 +16,7 @@ use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WOW6
 use winreg::{RegKey, RegValue};
 
 use super::corrections::{Resultat, avant_notable};
+use super::protege::Protege;
 use crate::machine::gestes::{self, Acte, ValeurRunMachine};
 use crate::ui::{tr, trf};
 
@@ -137,36 +139,51 @@ pub(super) fn retirer(v: &ValeurRunMachine) -> Resultat {
     };
     let texte = super::persistance::texte_valeur(&lue);
     let (programme, _) = crate::commande::decouper_commande(&texte);
-    if gestes::run_protege(&String::from_utf16_lossy(v.nom.unites()), &programme) {
+    let nom_valeur = String::from_utf16_lossy(v.nom.unites());
+    let protege = super::protege::protege(&nom_valeur, &programme);
+    if protege == Protege::Vrai {
         return refus(
             tr!(
-                "entrée de Sécurité Windows ou de Defender : Vanguard ne la retire jamais (à vérifier à la main) ; rien d'écrit",
-                "Windows Security or Defender entry: Vanguard never removes it (check it by hand); nothing written"
+                "entrée de Sécurité Windows ou de Defender (le vrai programme, signé par Microsoft) : Vanguard ne la retire jamais ; rien d'écrit",
+                "Windows Security or Defender entry (the real program, signed by Microsoft): Vanguard never removes it; nothing written"
             )
             .to_string(),
         );
     }
-    if !super::persistance::run_signale(v.cle, v.nom.unites(), &lue, &ligne)
-        && !crate::protection::distance::retrait_propose(&ligne)
+    let signale = super::persistance::run_signale(v.cle, v.nom.unites(), &lue, &ligne)
+        || crate::protection::distance::retrait_propose(&ligne);
+    if !signale {
+        let restees = super::persistance::variables_restees(&texte);
+        if lue.vtype != REG_EXPAND_SZ || restees.is_empty() {
+            return refus(
+                tr!(
+                    "le bilan refait ici ne signale pas cette valeur : rien d'écrit",
+                    "the check run again here does not report this value: nothing written"
+                )
+                .to_string(),
+            );
+        }
+        let brute = crate::ui::affichable(&super::persistance::texte_brut(&lue));
+        let explication = trf!(
+            "  La valeur « {} » est « {brute} ». {} n'est pas une variable du système : le bilan l'a développée avec celles de votre compte, elle ne se rejuge pas ici à l'identique.",
+            "  The value “{}” is “{brute}”. {} is not a system variable: the check expanded it with your account's variables, it cannot be judged again here identically.",
+            crate::ui::affichable(&nom_valeur),
+            crate::ui::affichable(&restees.join(", "))
+        );
+        if !super::protege::accord(&explication, super::protege::question_quand_meme()) {
+            return refus(super::protege::non_confirme());
+        }
+    }
+    if protege == Protege::NomSeul
+        && !super::protege::accord(
+            &super::protege::texte_nom_seul(&nom_valeur, &programme),
+            super::protege::question_quand_meme(),
+        )
     {
-        return refus(
-            tr!(
-                "le bilan refait ici ne signale pas cette valeur : rien d'écrit",
-                "the check run again here does not report this value: nothing written"
-            )
-            .to_string(),
-        );
+        return refus(super::protege::non_confirme());
     }
-    let Some(donnee) = note(&lue.vtype, &lue.bytes) else {
-        return refus(
-            tr!(
-                "type de valeur que Vanguard ne sait pas noter : rien d'écrit",
-                "value type Vanguard cannot note: nothing written"
-            )
-            .to_string(),
-        );
-    };
-    // Relue juste avant : le jugement porte sur ces octets-là, jamais sur ceux qu'un programme aurait mis depuis.
+    // Relue juste avant : le jugement porte sur ces octets-là, jamais sur ceux qu'un programme aurait mis depuis (la
+    // question a pu durer).
     match cle.get_raw_value(&nom) {
         Ok(encore) if meme(&encore, &lue) => {}
         _ => {
@@ -179,25 +196,64 @@ pub(super) fn retirer(v: &ValeurRunMachine) -> Resultat {
             );
         }
     }
-    // Notée d'abord : sans note, pas de retrait (la remise exacte serait perdue).
-    let notee = RegKey::predef(HKEY_LOCAL_MACHINE)
-        .create_subkey_with_flags(gestes::RUN_AVANT_CLE, KEY_SET_VALUE | KEY_WOW64_64KEY)
-        .and_then(|(k, _)| {
-            k.set_raw_value(
-                &nom_note,
-                &RegValue {
-                    bytes: donnee.into(),
-                    vtype: REG_BINARY,
-                },
+    // Notée d'abord : sans note, pas de retrait, sauf accord dit « non annulable » (la remise exacte serait perdue).
+    let notee = match note(&lue.vtype, &lue.bytes) {
+        None => Err(tr!(
+            "type de valeur que Vanguard ne sait pas noter",
+            "value type Vanguard cannot note"
+        )
+        .to_string()),
+        Some(donnee) => RegKey::predef(HKEY_LOCAL_MACHINE)
+            .create_subkey_with_flags(gestes::RUN_AVANT_CLE, KEY_SET_VALUE | KEY_WOW64_64KEY)
+            .and_then(|(k, _)| {
+                k.set_raw_value(
+                    &nom_note,
+                    &RegValue {
+                        bytes: donnee.into(),
+                        vtype: REG_BINARY,
+                    },
+                )
+            })
+            .map_err(|e| e.to_string()),
+    };
+    let sans_note = match notee {
+        Ok(()) => None,
+        Err(raison) => {
+            let raison = crate::ui::affichable(&raison);
+            if !super::protege::accord(&texte_sans_note(&raison), super::protege::question_non_annulable()) {
+                return refus(trf!(
+                    "la donnée d'avant ne se note pas ({raison}) : rien d'écrit",
+                    "the previous data cannot be noted ({raison}): nothing written"
+                ));
+            }
+            // Une note plus ancienne sous ce nom remettrait une autre donnée : effacée si elle existe.
+            if let Ok(k) = RegKey::predef(HKEY_LOCAL_MACHINE)
+                .open_subkey_with_flags(gestes::RUN_AVANT_CLE, KEY_SET_VALUE | KEY_WOW64_64KEY)
+            {
+                let _ = k.delete_value(&nom_note);
+            }
+            Some(raison)
+        }
+    };
+    // La question a pu durer : relue encore, jamais retirée si elle a changé.
+    if sans_note.is_some() && !cle.get_raw_value(&nom).is_ok_and(|encore| meme(&encore, &lue)) {
+        return refus(
+            tr!(
+                "la valeur a changé entre la lecture et l'écriture ; rien d'écrit",
+                "the value changed between reading and writing; nothing written"
             )
-        });
-    if let Err(e) = notee {
-        return refus(trf!(
-            "la donnée d'avant ne se note pas ({e}) : rien d'écrit",
-            "the previous data cannot be noted ({e}): nothing written"
-        ));
+            .to_string(),
+        );
     }
-    let avant = avant_notable(&texte);
+    let avant = match &sans_note {
+        None => avant_notable(&texte),
+        Some(raison) => trf!(
+            "{} ; sans note, non annulable, accepté ({})",
+            "{} ; no note, not undoable, accepted ({})",
+            avant_notable(&texte),
+            crate::ui::couper(raison, RAISON_MAX)
+        ),
+    };
     if let Err(e) = cle.delete_value(&nom)
         && e.kind() != NotFound
     {
@@ -214,6 +270,17 @@ pub(super) fn retirer(v: &ValeurRunMachine) -> Resultat {
             .to_string(),
         ),
     }
+}
+
+/// La raison d'une note manquée, coupée dans ce qui est noté de l'avant (« Ce que Vanguard a changé »).
+const RAISON_MAX: usize = 120;
+
+/// Ce que la console élevée dit avant de demander un retrait sans note.
+fn texte_sans_note(raison: &str) -> String {
+    trf!(
+        "  La donnée d'avant ne se note pas ({raison}) : sans note, Vanguard ne pourra pas remettre cette valeur (à refaire à la main si besoin).",
+        "  The previous data cannot be noted ({raison}): without a note, Vanguard will not be able to put this value back (to redo by hand if needed)."
+    )
 }
 
 /// Dans le processus élevé : remet exactement la donnée que `retirer` a notée pour `v`, jamais par-dessus une valeur

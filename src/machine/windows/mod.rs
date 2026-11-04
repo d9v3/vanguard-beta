@@ -54,6 +54,7 @@ mod pilotes;
 pub(crate) mod planificateur;
 mod portes;
 pub(crate) mod processus;
+mod protege;
 mod quarantaine;
 mod reglages_ecriture;
 mod regles;

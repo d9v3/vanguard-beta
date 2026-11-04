@@ -1,0 +1,320 @@
+//! Le vrai Defender, le vrai Sécurité Windows, et ceux qui en prennent seulement le nom (D6d). Vanguard ne retire
+//! jamais le vrai : rangé là où Windows le range ET signé par Microsoft (signature illisible : traité comme le vrai).
+//! Un lancement qui n'en a que le nom se montre et se demande dans la console élevée, Non par défaut.
+
+use crate::ui::{tr, trf};
+
+/// Ce que Vanguard pense d'un lancement qui ressemble à Sécurité Windows ou à Defender (`run_protege`) : seul le vrai
+/// programme est refusé ; un nom pris ailleurs se montre et se demande (décision D6c, « pas de refus qui nuit à la
+/// défense ») : un maliciel qui se nomme « Windows Defender » doit pouvoir se retirer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Protege {
+    /// Rien de Windows ni de Defender.
+    Non,
+    /// Le nom ou le programme de Defender, mais hors de ses dossiers ou sans la signature de Microsoft.
+    NomSeul,
+    /// Le vrai programme : rangé là où Windows le range, et signé par Microsoft (ou signature illisible).
+    Vrai,
+}
+
+/// Les dossiers des vrais programmes, en minuscules, sans `\` final : celui de Windows, ceux de Program Files
+/// (64 et 32 bits), ProgramData.
+pub(crate) struct LieuxReels {
+    pub(crate) windows: String,
+    pub(crate) program_files: Vec<String>,
+    pub(crate) program_data: Option<String>,
+}
+
+/// Le chemin d'un programme tel que Windows le lancerait, pour en juger le lieu : guillemets ôtés, variables du
+/// système développées (les seules qu'un vrai lancement de Defender porte), « . » et « .. » résolus sans suivre de
+/// lien, préfixe `\\?\` ôté ; un nom seul est cherché dans System32 (ce que fait la recherche de Windows en premier
+/// pour un programme du système). Minuscules, `\` seulement. `None` : chemin relatif, réseau ou qui remonte trop.
+pub(crate) fn chemin_du_programme(programme: &str, lieux: &LieuxReels) -> Option<String> {
+    let mut p = programme.trim().trim_matches('"').to_lowercase().replace('/', "\\");
+    if let Some(r) = p.strip_prefix(r"\\?\") {
+        p = r.to_string();
+    }
+    let pf = lieux.program_files.first().cloned();
+    for (variable, valeur) in [
+        ("%windir%", Some(lieux.windows.clone())),
+        ("%systemroot%", Some(lieux.windows.clone())),
+        ("%programfiles%", pf.clone()),
+        ("%programw6432%", pf),
+        ("%programdata%", lieux.program_data.clone()),
+    ] {
+        if let Some(r) = p.strip_prefix(variable) {
+            p = format!("{}{r}", valeur?);
+        }
+    }
+    if p.contains('%') || p.starts_with('\\') {
+        return None;
+    }
+    if !p.contains('\\') {
+        p = format!(r"{}\system32\{p}", lieux.windows);
+    }
+    let (lecteur, reste) = p.split_once(r":\")?;
+    if lecteur.len() != 1 || !lecteur.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let mut parties: Vec<&str> = Vec::new();
+    for c in reste.split('\\') {
+        match c {
+            "" | "." => {}
+            ".." => {
+                parties.pop()?;
+            }
+            _ => parties.push(c),
+        }
+    }
+    Some(format!(r"{lecteur}:\{}", parties.join(r"\")))
+}
+
+/// Le chemin (de `chemin_du_programme`) est-il là où Windows range ses programmes et ceux de Defender et de Sécurité
+/// Windows : sous le dossier de Windows, sous Program Files\Windows Defender (et Advanced Threat Protection), ou sous
+/// ProgramData\Microsoft\Windows Defender\Platform, où les mises à jour de Defender posent MsMpEng et MpCmdRun.
+/// Écrire là demande d'être administrateur (ou TrustedInstaller) : un maliciel du compte ne peut pas s'y ranger.
+pub(crate) fn chemin_reel(chemin: &str, lieux: &LieuxReels) -> bool {
+    let sous = |dossier: &str| {
+        chemin
+            .strip_prefix(dossier)
+            .is_some_and(|r| r.starts_with('\\') && r.len() > 1)
+    };
+    let defender = lieux.program_files.iter().any(|pf| {
+        ["windows defender", "windows defender advanced threat protection"]
+            .iter()
+            .any(|d| sous(&format!(r"{pf}\{d}")))
+    });
+    let plateforme = lieux
+        .program_data
+        .as_ref()
+        .is_some_and(|pd| sous(&format!(r"{pd}\microsoft\windows defender\platform")));
+    // Sous le dossier de Windows, ceux où un compte ordinaire peut écrire n'en sont pas : un maliciel s'y range, puis
+    // se rend illisible (fichier ouvert sans partage) pour passer pour le vrai.
+    let ecrivable = ECRIVABLES_SOUS_WINDOWS
+        .iter()
+        .any(|d| sous(&format!(r"{}\{d}", lieux.windows)));
+    (sous(&lieux.windows) && !ecrivable) || defender || plateforme
+}
+
+/// Les dossiers sous celui de Windows où un compte ordinaire peut créer un fichier (droits d'origine de Windows 10 et
+/// 11, en minuscules).
+const ECRIVABLES_SOUS_WINDOWS: [&str; 10] = [
+    "temp",
+    "tasks",
+    "tracing",
+    "debug",
+    r"registration\crmlog",
+    r"system32\tasks",
+    r"syswow64\tasks",
+    r"system32\spool\drivers\color",
+    r"system32\microsoft\crypto\rsa\machinekeys",
+    r"syswow64\com\dmp",
+];
+
+/// Le jugement, pur : `run_protege` d'abord (rien de Defender : `Non`) ; puis le vrai programme seulement s'il est à
+/// sa place ET signé par Microsoft. Une signature illisible compte comme celle de Microsoft (un refus de trop ne
+/// casse rien ; un maliciel peut aussi se rendre illisible, mais il devrait alors être rangé dans le dossier de
+/// Windows, ce qui demande d'être administrateur).
+pub(crate) fn juger_protege(
+    nom: &str,
+    programme: &str,
+    reel: bool,
+    signature: crate::protection::blocage::gardes::Signature,
+) -> Protege {
+    use crate::protection::blocage::gardes::Signature;
+    if !super::gestes::run_protege(nom, programme) {
+        return Protege::Non;
+    }
+    match (reel, signature) {
+        (true, Signature::Microsoft | Signature::Illisible(_)) => Protege::Vrai,
+        _ => Protege::NomSeul,
+    }
+}
+
+/// Les dossiers de cette machine pour `chemin_reel`, pris à Windows (jamais à l'environnement du compte).
+pub(crate) fn lieux_reels() -> LieuxReels {
+    let d = super::environnement::dossiers();
+    let texte = |p: &std::path::Path| {
+        p.to_string_lossy()
+            .to_lowercase()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_string()
+    };
+    let mut program_files: Vec<String> = [&d.program_files_x64, &d.program_files, &d.program_files_x86]
+        .into_iter()
+        .flatten()
+        .map(|p| texte(p))
+        .collect();
+    program_files.dedup();
+    LieuxReels {
+        windows: texte(&d.windows),
+        program_files,
+        program_data: d.program_data.as_deref().map(texte),
+    }
+}
+
+/// Le jugement sur cette machine : le lieu, puis la signature lue (seulement si le lieu est le vrai : un programme
+/// rangé ailleurs n'est pas Defender, quelle que soit sa signature).
+pub(crate) fn protege(nom: &str, programme: &str) -> Protege {
+    use crate::protection::blocage::gardes::{Signature, signature_lue};
+    if !super::gestes::run_protege(nom, programme) {
+        return Protege::Non;
+    }
+    let lieux = lieux_reels();
+    let Some(chemin) = chemin_du_programme(programme, &lieux).filter(|c| chemin_reel(c, &lieux)) else {
+        return juger_protege(nom, programme, false, Signature::Autre);
+    };
+    juger_protege(nom, programme, true, signature_lue(&chemin))
+}
+
+/// Ce que la console élevée dit avant de demander, pour un nom de Defender qui n'est pas lui.
+pub(crate) fn texte_nom_seul(nom: &str, programme: &str) -> String {
+    trf!(
+        "  « {} » porte le nom de Defender ou de Sécurité Windows mais n'est pas lui : son programme ({}) n'est pas à la place du vrai, ou n'est pas signé par Microsoft. Le vrai n'est jamais retiré.",
+        "  “{}” bears the name of Defender or Windows Security but is not it: its program ({}) is not where the real one is, or is not signed by Microsoft. The real one is never removed.",
+        crate::ui::affichable(nom),
+        crate::ui::affichable(programme)
+    )
+}
+
+/// Une question de plus, posée ici, dans la console (élevée ou non), jamais par une ligne de la liste : aucune ligne ne
+/// dit « quand même » ni « sans note », une liste forgée ne peut pas sauter la question. L'explication d'abord (déjà
+/// nettoyée par l'appelant), puis la question ; seul un oui tapé dans une vraie console vaut oui (Entrée seule : non).
+pub(super) fn accord(explication: &str, question: &str) -> bool {
+    accord_selon(
+        super::eleve::console_reelle(),
+        explication,
+        question,
+        crate::ui::demander_ou_defaut,
+    )
+}
+
+/// `accord`, la console et la réponse données (les tests).
+pub(super) fn accord_selon(
+    console: bool,
+    explication: &str,
+    question: &str,
+    demander: impl FnOnce(&str) -> String,
+) -> bool {
+    crate::ui::imprimer(explication);
+    crate::machine::reglages::confirmer(console, question, demander)
+}
+
+/// La question d'un geste qui ne pourra pas être défait par Vanguard (note impossible, copie trop grande…).
+pub(super) fn question_non_annulable() -> &'static str {
+    tr!(
+        "  Le faire quand même, non annulable par Vanguard ? [o/N] : ",
+        "  Do it anyway, not undoable by Vanguard? [y/N]: "
+    )
+}
+
+/// La question d'un retrait qui porte le nom de Defender sans être lui.
+pub(super) fn question_quand_meme() -> &'static str {
+    tr!("  Le retirer quand même ? [o/N] : ", "  Remove it anyway? [y/N]: ")
+}
+
+/// Le refus d'une question à laquelle la réponse n'a pas été oui.
+pub(super) fn non_confirme() -> String {
+    tr!("non confirmé : rien d'écrit", "not confirmed: nothing written").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protection::blocage::gardes::{Illisibilite, Signature};
+
+    fn lieux() -> LieuxReels {
+        LieuxReels {
+            windows: r"c:\windows".to_string(),
+            program_files: vec![r"c:\program files".to_string(), r"c:\program files (x86)".to_string()],
+            program_data: Some(r"c:\programdata".to_string()),
+        }
+    }
+
+    fn reel(programme: &str) -> bool {
+        chemin_du_programme(programme, &lieux()).is_some_and(|c| chemin_reel(&c, &lieux()))
+    }
+
+    /// Le vrai lieu : dossier de Windows (hors de ses dossiers ouverts aux comptes), Program Files\Windows Defender,
+    /// la plateforme de ProgramData ; variables du système, nom seul (System32), « .. » résolus.
+    #[test]
+    fn le_lieu_du_vrai_defender() {
+        for p in [
+            r"%windir%\system32\SecurityHealthSystray.exe",
+            r"%SystemRoot%\System32\SecurityHealthSystray.exe",
+            "SecurityHealthSystray.exe",
+            r#""C:\Program Files\Windows Defender\MSASCuiL.exe""#,
+            r"C:\ProgramData\Microsoft\Windows Defender\Platform\4.18.1\MsMpEng.exe",
+            r"c:/windows/system32/securityhealthsystray.exe",
+            r"\\?\C:\Windows\System32\SecurityHealthSystray.exe",
+            r"C:\Program Files (x86)\Windows Defender\MpCmdRun.exe",
+        ] {
+            assert!(reel(p), "{p}");
+        }
+        for p in [
+            r"C:\Users\alice\AppData\Roaming\Windows Defender\MsMpEng.exe",
+            r"C:\Windows\Temp\MsMpEng.exe",
+            r"C:\Windows\Tasks\x\MsMpEng.exe",
+            r"C:\Windows\System32\..\..\Users\Public\MsMpEng.exe",
+            r"C:\Windows\..\..\..\x.exe",
+            r"C:\ProgramData\Microsoft\Windows Defender\Scans\x.exe",
+            r"C:\Program Files\Windows Defender Faux\x.exe",
+            r"%APPDATA%\SecurityHealthSystray.exe",
+            r"\\serveur\partage\MsMpEng.exe",
+            r"..\MsMpEng.exe",
+            r"C:\Windows",
+        ] {
+            assert!(!reel(p), "{p}");
+        }
+    }
+
+    /// Le faux « Windows Defender » hors de sa place : une question ; le vrai signé : refusé ; signature illisible au
+    /// vrai lieu : refusé ; à sa place mais signé par un autre : une question ; rien de Defender : rien.
+    #[test]
+    fn seul_le_vrai_est_refuse() {
+        let illisible = Signature::Illisible(Illisibilite::Verrouille);
+        assert_eq!(
+            juger_protege(
+                "Windows Defender",
+                r"C:\Users\Public\x.cmd",
+                false,
+                Signature::Microsoft
+            ),
+            Protege::NomSeul
+        );
+        assert_eq!(
+            juger_protege("Windows Defender", r"C:\Users\Public\x.cmd", false, illisible),
+            Protege::NomSeul
+        );
+        let vrai = r"%windir%\system32\SecurityHealthSystray.exe";
+        assert_eq!(
+            juger_protege("SecurityHealth", vrai, true, Signature::Microsoft),
+            Protege::Vrai
+        );
+        assert_eq!(juger_protege("SecurityHealth", vrai, true, illisible), Protege::Vrai);
+        assert_eq!(
+            juger_protege("SecurityHealth", vrai, true, Signature::Autre),
+            Protege::NomSeul
+        );
+        assert_eq!(
+            juger_protege("Mise à jour", r"C:\x\y.exe", true, Signature::Microsoft),
+            Protege::Non
+        );
+    }
+
+    /// Une question : Non par défaut (Entrée seule, autre réponse), et non hors d'une vraie console.
+    #[test]
+    fn la_question_vaut_non_par_defaut() {
+        assert!(!accord_selon(true, "x", question_non_annulable(), |_| String::new()));
+        assert!(!accord_selon(true, "x", question_non_annulable(), |_| "oui non".to_string()));
+        assert!(!accord_selon(false, "x", question_non_annulable(), |_| "o".to_string()));
+        assert!(accord_selon(true, "x", question_quand_meme(), |_| "o".to_string()));
+    }
+
+    #[test]
+    fn le_nom_seul_se_montre_nettoye() {
+        let t = texte_nom_seul("Windows Defender\x1b[2K\r", "C:\\x\u{202e}.exe");
+        assert!(!crate::ui::contient_un_piege(&t), "{t}");
+    }
+}
