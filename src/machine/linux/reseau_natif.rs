@@ -5,6 +5,8 @@
 //! Les messages viennent du noyau ; ils restent bornés quand même (attributs lus dans leur message, longueurs
 //! vérifiées), et un message d'une forme inattendue est laissé.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::net::IpAddr;
@@ -161,7 +163,7 @@ pub(crate) fn prises() -> Option<Vec<Prise>> {
 fn demande_route(genre: u16, taille: usize) -> Vec<u8> {
     const NLM_F_REQUEST: u16 = 1;
     const NLM_F_DUMP: u16 = 0x300;
-    let n = 16 + taille;
+    let n = taille.saturating_add(16);
     let mut d = Vec::with_capacity(n);
     d.extend_from_slice(&u32::try_from(n).unwrap_or(0).to_ne_bytes());
     d.extend_from_slice(&genre.to_ne_bytes());
@@ -182,11 +184,19 @@ fn attributs(corps: &[u8], debut: usize) -> HashMap<u16, &[u8]> {
         if longueur < 4 {
             break;
         }
-        if let Some(v) = corps.get(pos + 4..pos + longueur) {
+        if let Some(v) = pos
+            .checked_add(4)
+            .zip(pos.checked_add(longueur))
+            .and_then(|(d, f)| corps.get(d..f))
+        {
             // Le bit 15 (NLA_F_NESTED) et 14 ne font pas partie du type.
             a.insert(u16::from_ne_bytes([g0, g1]) & 0x3fff, v);
         }
-        pos += longueur.next_multiple_of(4);
+        // Un attribut dont la fin déborderait : la suite ne se lit plus.
+        let Some(suite) = longueur.checked_next_multiple_of(4).and_then(|l| pos.checked_add(l)) else {
+            break;
+        };
+        pos = suite;
     }
     a
 }
@@ -424,6 +434,11 @@ pub(crate) fn ecoutes_de_ss(sortie: &str) -> std::collections::HashSet<(bool, u1
         .collect()
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

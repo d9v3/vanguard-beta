@@ -6,6 +6,7 @@
 //! (cela demande des droits et coupe le Wi-Fi une seconde). Les lectures des réponses sont pures et testées sur des
 //! messages fabriqués ; seule `echanger` parle au noyau.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 // FFI de libc : prise netlink nl80211 (socket, sendto, recv) et if_nametoindex.
 #![allow(unsafe_code)]
 
@@ -81,15 +82,17 @@ pub(crate) struct Interface {
 fn messages(octets: &[u8]) -> impl Iterator<Item = (u16, u16, &[u8])> {
     let mut pos = 0usize;
     std::iter::from_fn(move || {
-        let &[l0, l1, l2, l3, g0, g1, d0, d1, ..] = octets.get(pos..pos.checked_add(16)?)?.first_chunk::<16>()?;
+        let debut = pos.checked_add(16)?;
+        let &[l0, l1, l2, l3, g0, g1, d0, d1, ..] = octets.get(pos..debut)?.first_chunk::<16>()?;
         let longueur = usize::try_from(u32::from_ne_bytes([l0, l1, l2, l3])).ok()?;
         if longueur < 16 {
             return None;
         }
         let genre = u16::from_ne_bytes([g0, g1]);
         let drapeaux = u16::from_ne_bytes([d0, d1]);
-        let corps = octets.get(pos + 16..pos.checked_add(longueur)?)?;
-        pos += longueur.next_multiple_of(4);
+        let corps = octets.get(debut..pos.checked_add(longueur)?)?;
+        // Une longueur dont l'alignement déborderait : le message suivant ne se lit plus.
+        pos = pos.checked_add(longueur.checked_next_multiple_of(4)?)?;
         Some((genre, drapeaux, corps))
     })
 }
@@ -99,14 +102,14 @@ fn messages(octets: &[u8]) -> impl Iterator<Item = (u16, u16, &[u8])> {
 fn attributs(corps: &[u8]) -> impl Iterator<Item = (u16, &[u8])> {
     let mut pos = 0usize;
     std::iter::from_fn(move || {
-        let &[l0, l1, g0, g1] = corps.get(pos..pos + 4)?.first_chunk::<4>()?;
+        let &[l0, l1, g0, g1] = corps.get(pos..pos.checked_add(4)?)?.first_chunk::<4>()?;
         let longueur = usize::from(u16::from_ne_bytes([l0, l1]));
         if longueur < 4 {
             return None;
         }
         let genre = u16::from_ne_bytes([g0, g1]) & 0x3FFF;
-        let contenu = corps.get(pos + 4..pos + longueur)?;
-        pos += longueur.next_multiple_of(4);
+        let contenu = corps.get(pos.checked_add(4)?..pos.checked_add(longueur)?)?;
+        pos = pos.checked_add(longueur.checked_next_multiple_of(4)?)?;
         Some((genre, contenu))
     })
 }
@@ -133,7 +136,7 @@ fn demande(famille: u16, drapeaux: u16, commande: u8, attributs: &[(u16, &[u8])]
     m.extend_from_slice(&[commande, 1, 0, 0]);
     for (genre, contenu) in attributs {
         // Nos attributs tiennent sur quelques octets (un numéro d'interface, un nom de famille).
-        let longueur = u16::try_from(4 + contenu.len()).unwrap_or(4);
+        let longueur = u16::try_from(contenu.len().saturating_add(4)).unwrap_or(4);
         m.extend_from_slice(&longueur.to_ne_bytes());
         m.extend_from_slice(&genre.to_ne_bytes());
         m.extend_from_slice(contenu);
@@ -338,10 +341,8 @@ fn echanger(demande: &[u8]) -> Option<Vec<u8>> {
             taille(std::mem::size_of::<libc::timeval>()),
         );
         let mut adresse: libc::sockaddr_nl = std::mem::zeroed();
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        {
-            adresse.nl_family = libc::AF_NETLINK as u16;
-        }
+        // AF_NETLINK (16) tient dans sa_family_t ; sinon la famille inconnue fait refuser l'envoi par le noyau.
+        adresse.nl_family = libc::sa_family_t::try_from(libc::AF_NETLINK).unwrap_or_default();
         let envoye = libc::sendto(
             s,
             demande.as_ptr().cast(),
@@ -502,6 +503,11 @@ fn connexion(interface: &Interface, bornes: &[Balise]) -> Option<Connexion> {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::super::elements::fabrique;

@@ -2,6 +2,8 @@
 //! passe, dossiers de commandes modifiables par d'autres comptes. Chaque système garde ses mots à lui (« la machine », « le Mac ») et ce qu'il vérifie en plus
 //! (machine/linux/privileges.rs, machine/macos/privileges.rs).
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::ffi::OsStr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -127,13 +129,13 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
 /// Règles « sudo sans mot de passe » : (règles qui donnent tout, règles limitées à des commandes précises).
 pub(super) fn regles_nopasswd(liste: &str) -> (Vec<String>, usize) {
     let mut totales = Vec::new();
-    let mut limitees = 0;
+    let mut limitees = 0usize;
     for l in liste.lines().map(str::trim).filter(|l| l.contains("NOPASSWD:")) {
         let commandes = l.split_once("NOPASSWD:").map_or("", |(_, c)| c).trim();
         if commandes == "ALL" || commandes.starts_with("ALL,") {
             totales.push(l.to_string());
         } else {
-            limitees += 1;
+            limitees = limitees.saturating_add(1);
         }
     }
     (totales, limitees)
@@ -449,6 +451,11 @@ pub(super) fn dossiers_de_commandes(racines: &[&str], maison: &Path, proprietair
     juger_dossiers_de_commandes(&vus, proprietaire)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests_sshd {
     use super::*;
@@ -472,6 +479,11 @@ mod tests_sshd {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests_dossiers_de_commandes {
     use super::*;
@@ -507,6 +519,11 @@ mod tests_dossiers_de_commandes {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests_netstat {
     use super::*;

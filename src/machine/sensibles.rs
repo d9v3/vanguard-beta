@@ -4,6 +4,8 @@
 //! navigateur ou de gestionnaire a une colonne « password »). Rien d'autre n'est lu, rien ne part nulle part : le bilan
 //! donne les noms et le conseil (ranger dans un dossier chiffré, ou supprimer ce qui a déjà servi).
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -232,11 +234,11 @@ pub(super) struct Trouve {
 pub(super) fn parcourir(dossier: Dossier, racine: &Path, fin: Instant) -> Vec<Trouve> {
     let mut trouves = Vec::new();
     let mut a_voir: Vec<(PathBuf, usize)> = vec![(racine.to_path_buf(), 0)];
-    let mut vus = 0;
+    let mut vus = 0usize;
     while let Some((d, profondeur)) = a_voir.pop() {
         let Ok(entrees) = std::fs::read_dir(&d) else { continue };
         for e in entrees.flatten() {
-            vus += 1;
+            vus = vus.saturating_add(1);
             if vus > MAX_ENTREES || Instant::now() > fin {
                 return trouves;
             }
@@ -248,8 +250,9 @@ pub(super) fn parcourir(dossier: Dossier, racine: &Path, fin: Instant) -> Vec<Tr
                 continue;
             };
             if meta.is_dir() {
-                if profondeur + 1 < PROFONDEUR {
-                    a_voir.push((e.path(), profondeur + 1));
+                let suivante = profondeur.saturating_add(1);
+                if suivante < PROFONDEUR {
+                    a_voir.push((e.path(), suivante));
                 }
                 continue;
             }
@@ -354,7 +357,9 @@ pub(super) fn juger(trouves: &[Trouve], regardes: &[Dossier]) -> Constat {
 
 /// Au bilan.
 pub fn constats() -> Vec<Constat> {
-    let fin = Instant::now() + BUDGET;
+    let maintenant = Instant::now();
+    // Une horloge qui déborderait : budget épuisé d'emblée, la recherche le dit inachevée.
+    let fin = maintenant.checked_add(BUDGET).unwrap_or(maintenant);
     let dossiers = dossiers();
     let regardes: Vec<Dossier> = dossiers.iter().map(|(d, _)| *d).collect();
     let trouves: Vec<Trouve> = dossiers
@@ -364,6 +369,11 @@ pub fn constats() -> Vec<Constat> {
     vec![juger(&trouves, &regardes)]
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

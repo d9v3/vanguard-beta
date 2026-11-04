@@ -4,6 +4,8 @@
 //! /sys seulement, sans droits). Rien ne se corrige tout seul : on ne tue pas un processus ni ne retire un module sans
 //! enquête, un rootkit qui se sent découvert pouvant tout effacer.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
@@ -106,7 +108,7 @@ fn processus_montre(pid: u32, nom: &str) -> String {
 fn quelques(liste: &[String], n: usize) -> String {
     let mut texte = liste.iter().take(n).cloned().collect::<Vec<_>>().join(", ");
     if liste.len() > n {
-        let reste = liste.len() - n;
+        let reste = liste.len().saturating_sub(n);
         let _ = trw!(texte, " et {reste} autre(s)", " and {reste} more");
     }
     texte
@@ -184,7 +186,13 @@ pub(super) fn ecart_persistant(releves: &[(u32, u32, u32)]) -> Option<u32> {
     if stables.iter().any(|(compte, vus)| vus >= compte) {
         return Some(0);
     }
-    (stables.len() >= 3).then(|| stables.iter().map(|(compte, vus)| compte - vus).min().unwrap_or(0))
+    (stables.len() >= 3).then(|| {
+        stables
+            .iter()
+            .map(|(compte, vus)| compte.saturating_sub(*vus))
+            .min()
+            .unwrap_or(0)
+    })
 }
 
 /// Les fils d'exécution que montre /proc : ceux de chaque processus listé. `None` si un processus encore là ne
@@ -193,7 +201,7 @@ fn fils_visibles(pids: &BTreeSet<u32>) -> Option<u32> {
     let mut n = 0u32;
     for pid in pids {
         match std::fs::read_dir(format!("/proc/{pid}/task")) {
-            Ok(d) => n += u32::try_from(d.count()).unwrap_or(u32::MAX),
+            Ok(d) => n = n.saturating_add(u32::try_from(d.count()).unwrap_or(u32::MAX)),
             // Parti pendant la lecture : le compte du noyau aura bougé, le relevé sera écarté.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return None,
@@ -229,7 +237,7 @@ pub(super) fn sonder(
     let mut trouves = Vec::new();
     for pid in 1..=borne {
         if pid % 512 == 0 && assez() {
-            return (trouves, pid - 1);
+            return (trouves, pid.saturating_sub(1));
         }
         if listes.contains(&pid) {
             continue;
@@ -291,7 +299,7 @@ pub(super) fn juger_processus_caches(caches: &[(u32, String)], couverture: &Couv
             trf!(
                 "Aucun processus caché parmi les PID 1 à {jusqu_a} ; les PID {} à {borne} n'ont pas été vérifiés (trop long).",
                 "No hidden process among PIDs 1 to {jusqu_a}; PIDs {} to {borne} were not checked (too long).",
-                jusqu_a + 1
+                jusqu_a.saturating_add(1)
             ),
         ),
     }
@@ -319,11 +327,18 @@ pub(super) fn processus_caches() -> Constat {
     // PID donnés en tournant : au-delà du dernier donné et du plus grand listé, rien n'existe, sauf après un tour
     // complet (le message dit alors jusqu'où la recherche est allée).
     let plus_grand = premiere.last().copied().unwrap_or(0);
-    let borne = (lire("/proc/sys/kernel/ns_last_pid").unwrap_or(0).max(plus_grand) + 256)
-        .min(lire("/proc/sys/kernel/pid_max").unwrap_or(u32::MAX));
+    let borne = (lire("/proc/sys/kernel/ns_last_pid")
+        .unwrap_or(0)
+        .max(plus_grand)
+        .saturating_add(256))
+    .min(lire("/proc/sys/kernel/pid_max").unwrap_or(u32::MAX));
     let fiche = |pid: u32| std::fs::read_to_string(format!("/proc/{pid}/status")).ok();
     // Pour trouver un écart constaté, plus de temps ; sinon, le bilan doit rester rapide.
-    let limite = std::time::Instant::now() + std::time::Duration::from_millis(if ecart.is_some() { 400 } else { 60 });
+    // Une horloge qui déborderait : recherche arrêtée d'emblée, et le message dit les PID non vérifiés.
+    let maintenant = std::time::Instant::now();
+    let limite = maintenant
+        .checked_add(std::time::Duration::from_millis(if ecart.is_some() { 400 } else { 60 }))
+        .unwrap_or(maintenant);
     let (candidats, jusqu_a) = sonder(&premiere, borne, fiche, || std::time::Instant::now() > limite);
     // Relu : un processus né pendant la recherche répond sans être dans la première liste ; caché, il manque encore
     // à la seconde et garde son nom.
@@ -512,18 +527,18 @@ pub(super) fn programmes_sans_fichier() -> Vec<Constat> {
         let remplace = Path::new(&format!("/proc/{pid}/root{chemin}")).exists();
         juger_exe(l, remplace, &montages)
     };
-    let (mut lus, mut illisibles) = (0, 0);
+    let (mut lus, mut illisibles) = (0usize, 0usize);
     let mut reperes = Vec::new();
     for &pid in pids.iter().filter(|p| **p != moi) {
         match lien(pid) {
             Ok(l) => {
-                lus += 1;
+                lus = lus.saturating_add(1);
                 let l = l.to_string_lossy().into_owned();
                 if let Some(raison) = juger(pid, &l) {
                     reperes.push((pid, l, raison));
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => illisibles += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => illisibles = illisibles.saturating_add(1),
             // Fil du noyau (sans programme) ou processus parti entre-temps.
             Err(_) => {}
         }
@@ -840,6 +855,11 @@ pub(super) fn ecoute_du_reseau() -> Option<Constat> {
     juger_ecoute(&cartes)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

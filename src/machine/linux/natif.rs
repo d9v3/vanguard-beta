@@ -6,6 +6,7 @@
 //! analyseur qui reçoit la racine en paramètre : les tests lui donnent une arborescence inventée. `None` veut dire
 //! « non vérifié » (base absente, format inconnu), jamais « rien trouvé ».
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 // FFI de libc : getgroups, getgrgid_r et sysconf (groupes du compte, constantes du noyau).
 #![allow(unsafe_code)]
 
@@ -202,8 +203,9 @@ pub(crate) fn processus_nomme(nom: &str) -> bool {
 /// serait jamais trouvé.
 fn processus_nomme_sous(racine: &Path, nom: &str) -> bool {
     let mut fin = nom.len().min(15);
+    // 0 est toujours une frontière : la boucle s'arrête avant.
     while !nom.is_char_boundary(fin) {
-        fin -= 1;
+        fin = fin.saturating_sub(1);
     }
     let cherche = &nom[..fin];
     if cherche.is_empty() {
@@ -866,7 +868,7 @@ fn chiffre_en(bloc: &Path, profondeur: u8) -> bool {
         .into_iter()
         .flatten()
         .flatten()
-        .any(|s| chiffre_en(&s.path(), profondeur + 1))
+        .any(|s| chiffre_en(&s.path(), profondeur.saturating_add(1)))
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -898,7 +900,7 @@ pub(crate) fn groupes() -> Option<Vec<String>> {
 fn nom_du_groupe(gid: libc::gid_t) -> Option<String> {
     let mut taille = 1024usize;
     while taille <= 1 << 20 {
-        let mut memoire = vec![0 as libc::c_char; taille];
+        let mut memoire: Vec<libc::c_char> = vec![0; taille];
         // SAFETY: `group` est une structure C de pointeurs et de nombres, valide à zéro.
         let mut groupe: libc::group = unsafe { std::mem::zeroed() };
         let mut resultat: *mut libc::group = std::ptr::null_mut();
@@ -906,7 +908,7 @@ fn nom_du_groupe(gid: libc::gid_t) -> Option<String> {
         // jusqu'à la fin de l'appel ; getgrgid_r n'écrit que dans ces bornes.
         let code = unsafe { libc::getgrgid_r(gid, &raw mut groupe, memoire.as_mut_ptr(), taille, &raw mut resultat) };
         if code == libc::ERANGE {
-            taille *= 4;
+            taille = taille.saturating_mul(4);
             continue;
         }
         if code != 0 || resultat.is_null() || groupe.gr_name.is_null() {
@@ -941,6 +943,11 @@ pub(crate) fn taille_page() -> u64 {
         .unwrap_or(4096)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

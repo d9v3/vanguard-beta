@@ -21,6 +21,8 @@
 //! Seule la table « vanguard » de la famille inet est visée : chaque message la nomme, et le vidage d'une chaîne
 //! nomme la chaîne.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::net::IpAddr;
 
 use crate::modele::Echec;
@@ -307,14 +309,15 @@ fn lot(premier: u32, messages: Vec<Box<dyn FnOnce(u32) -> Vec<u8>>>) -> (Vec<u8>
     let mut numeros = Vec::new();
     let mut n = premier;
     for m in messages {
-        n += 1;
+        // Numéros de séquence netlink : ils font le tour, c'est leur sens.
+        n = n.wrapping_add(1);
         octets.extend(m(n));
         numeros.push(n);
     }
     octets.extend(netlink::message(
         NFNL_MSG_BATCH_END,
         NLM_F_REQUEST,
-        n + 1,
+        n.wrapping_add(1),
         &nfgen(NFPROTO_UNSPEC, res_id).0,
     ));
     (octets, numeros)
@@ -428,7 +431,8 @@ fn refus_texte(code: i32) -> String {
 /// Pose la table de Vanguard et cet élément, puis relit la table : l'élément doit y être, et les trois règles à
 /// leur place. `Err` : pourquoi rien n'est bloqué (le lot n'est jamais appliqué à moitié).
 pub(crate) fn poser(element: Element) -> Result<(), Echec> {
-    let prise = Prise::ouvrir(NETLINK_NETFILTER).map_err(|e| refus(e.raw_os_error().map_or(-libc::EIO, |c| -c)))?;
+    let prise = Prise::ouvrir(NETLINK_NETFILTER)
+        .map_err(|e| refus(e.raw_os_error().map_or(-libc::EIO, i32::saturating_neg)))?;
     let (octets, attendus) = lot_poser(premier_numero(), element);
     prise
         .envoyer_et_attendre(&octets, &attendus)
@@ -473,7 +477,8 @@ pub(crate) enum Retrait {
 
 /// Retire cet élément de la table de Vanguard, et rien d'autre.
 pub(crate) fn retirer(element: Element) -> Result<Retrait, Echec> {
-    let prise = Prise::ouvrir(NETLINK_NETFILTER).map_err(|e| refus(e.raw_os_error().map_or(-libc::EIO, |c| -c)))?;
+    let prise = Prise::ouvrir(NETLINK_NETFILTER)
+        .map_err(|e| refus(e.raw_os_error().map_or(-libc::EIO, i32::saturating_neg)))?;
     let (octets, attendus) = lot_retirer(premier_numero(), element);
     match prise.envoyer_et_attendre(&octets, &attendus) {
         Ok(()) => {}
@@ -639,6 +644,11 @@ fn version_du_noyau() -> Option<String> {
     (!v.is_empty() && !v.contains('/') && v != "..").then_some(v)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

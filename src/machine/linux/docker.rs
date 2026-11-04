@@ -1,5 +1,7 @@
 //! Docker : ports publiés qui passent devant le pare-feu, lus même sans le groupe docker.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::*;
 
 /// Ports de conteneurs joignables depuis le réseau, dans la colonne « Ports » de `docker ps` : tout sauf la
@@ -58,9 +60,9 @@ pub(super) fn docker() -> Vec<Constat> {
 /// Les constats des conteneurs actifs : (nom prêt à montrer, ports exposés au réseau).
 fn constats_docker(liste: Vec<(String, Vec<String>)>) -> Vec<Constat> {
     let mut constats = Vec::new();
-    let mut actifs = 0;
+    let mut actifs = 0usize;
     for (nom, exposes) in liste {
-        actifs += 1;
+        actifs = actifs.saturating_add(1);
         if exposes.is_empty() {
             continue;
         }
@@ -108,7 +110,7 @@ pub(super) fn port_docker_proxy(args: &[String]) -> Option<(String, String)> {
     let valeur = |cle: &str| {
         args.iter()
             .position(|a| a == cle)
-            .and_then(|i| args.get(i + 1))
+            .and_then(|i| args.get(i.checked_add(1)?))
             .cloned()
     };
     let proto = valeur("-proto").unwrap_or_else(|| "tcp".into());
@@ -185,6 +187,11 @@ pub(super) fn docker_sans_acces(procs: &[(String, Vec<String>)]) -> Constat {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

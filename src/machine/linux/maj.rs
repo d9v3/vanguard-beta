@@ -1,5 +1,7 @@
 //! Mises à jour Linux : paquets, Flatpak, Snap, AUR, firmware, failles connues, noyau et pilotes DKMS.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::*;
 
 /// Paquets à mettre à jour, un par ligne commençant par son nom ; `None` si on ne peut pas savoir.
@@ -1090,7 +1092,7 @@ pub(super) fn encoder_url(texte: &str) -> String {
     texte
         .bytes()
         .map(|o| match o {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (o as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => char::from(o).to_string(),
             _ => format!("%{o:02X}"),
         })
         .collect()
@@ -1450,6 +1452,11 @@ pub(super) fn paquets_aur() -> Option<Constat> {
     })
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     /// Un en-tête tar ustar minimal : nom, mode, taille en octal, type, somme de contrôle comprise.
@@ -2144,6 +2151,11 @@ fn juger_apt_auto(conf: &str, outil: bool) -> bool {
             .is_some_and(|v| v.trim() != "0")
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests_maj_automatiques {
     use super::*;

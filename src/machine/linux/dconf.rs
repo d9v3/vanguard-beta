@@ -10,6 +10,8 @@
 //! dconf (`GSETTINGS_BACKEND`), valeur hors de ses choix (GLib la ramène à un alias), valeur par défaut traduite ou
 //! propre à un bureau, type que ce lecteur ne sait pas écrire à l'identique.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
@@ -269,7 +271,7 @@ fn infos_de_cle(sources: &[Table], rang: usize, table: &Table, cle: &str, profon
         }
         let parent = table.valeur(".extends")?;
         let (r, t) = chercher_schema(sources, rang, parent.chaine()?)?;
-        return infos_de_cle(sources, r, &t, cle, profondeur + 1);
+        return infos_de_cle(sources, r, &t, cle, profondeur.saturating_add(1));
     };
     let Variante::Tuple(membres) = brute else {
         return None;
@@ -296,7 +298,7 @@ fn infos_de_cle(sources: &[Table], rang: usize, table: &Table, cle: &str, profon
                 let Variante::Tableau(Genre::Simple(b'u'), mots) = donnee else {
                     return None;
                 };
-                let mut octets = Vec::with_capacity(4 * mots.len());
+                let mut octets = Vec::with_capacity(mots.len().saturating_mul(4));
                 for mot in mots {
                     let Variante::Naturel32(n) = mot else {
                         return None;
@@ -327,18 +329,23 @@ const CHOIX_MOTS_MAX: usize = 17;
 /// deuxième mot. Comparer seulement le début confondait une valeur (255 : ff 00 00 00) avec la chaîne vide. `None`
 /// pour une chaîne plus longue que ce que GLib cherche : elle la dit alors valide sans regarder, laissé à gsettings.
 fn dans_les_choix(choix: &[u8], s: &str) -> Option<bool> {
-    let mots = 2.max((s.len() + 6) >> 2);
+    let mots = 2.max(s.len().saturating_add(6) >> 2);
     if mots > CHOIX_MOTS_MAX {
         return None;
     }
     // `4 * mots` vaut au moins `s.len() + 3` : la chaîne et ses deux 0xff tiennent, le remplissage ne fait que grandir.
-    let mut motif = Vec::with_capacity(4 * mots);
+    // `mots` vaut au plus `CHOIX_MOTS_MAX` ici : ces produits ne saturent pas.
+    let mut motif = Vec::with_capacity(mots.saturating_mul(4));
     motif.push(0xff);
     motif.extend_from_slice(s.as_bytes());
-    motif.resize(4 * mots - 1, 0);
+    motif.resize(mots.saturating_mul(4).saturating_sub(1), 0);
     motif.push(0xff);
     let choix = choix.get(4..).unwrap_or_default();
-    Some((0..choix.len() / 4).any(|i| choix.get(4 * i..).is_some_and(|r| r.starts_with(&motif))))
+    Some((0..choix.len() / 4).any(|i| {
+        i.checked_mul(4)
+            .and_then(|d| choix.get(d..))
+            .is_some_and(|r| r.starts_with(&motif))
+    }))
 }
 
 fn nombre(v: &Variante) -> Option<i128> {
@@ -452,6 +459,11 @@ fn chercher_profil(lieux: &Lieux, nom: &str) -> Result<Option<String>, ()> {
     Ok(None)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::super::gvdb::fabrique::{Contenu, base_dconf, chaines, fichier, valeur};
