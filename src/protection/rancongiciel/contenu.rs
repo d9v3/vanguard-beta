@@ -8,6 +8,9 @@
 //! (intermittent) fait BAISSER l'entropie d'un échantillon de 4 Kio, alors qu'il touche quand même l'en-tête : c'est
 //! le format perdu qui le prend, pas l'entropie.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -22,6 +25,13 @@ pub(crate) const NB_ECHANTILLONS: usize = 3;
 /// L'entropie de Shannon d'une suite d'octets, en bits par octet (0 pour un octet répété, ≈ 8 pour du vrai hasard).
 /// Une suite vide vaut 0.
 #[allow(clippy::cast_precision_loss)] // une mesure statistique : la précision du f32 suffit largement
+#[cfg_attr(
+    target_os = "linux",
+    expect(
+        clippy::as_conversions,
+        reason = "vers f32, Rust n'a que `as` : une mesure statistique, la précision suffit"
+    )
+)]
 pub(crate) fn entropie(octets: &[u8]) -> f32 {
     if octets.is_empty() {
         return 0.0;
@@ -33,7 +43,7 @@ pub(crate) fn entropie(octets: &[u8]) -> f32 {
             reason = "un u8 vaut au plus 255 : toujours une case de [_; 256]"
         )]
         let case = &mut compte[usize::from(o)];
-        *case += 1;
+        *case = (*case).saturating_add(1);
     }
     let total = octets.len() as f32;
     let mut h = 0.0f32;
@@ -213,7 +223,7 @@ pub(crate) fn echantillons(chemin: &Path) -> Result<Vec<Vec<u8>>, Echec> {
 /// Les échantillons d'un lecteur déjà ouvert, de sa taille connue : testable sans fichier réel. Un fichier qui tient
 /// en un échantillon n'en rend qu'un ; un fichier moyen rend début, milieu et fin, sans recouvrement.
 fn echantillons_de<L: Read + Seek>(lecteur: &mut L, taille: u64) -> std::io::Result<Vec<Vec<u8>>> {
-    let bloc = TAILLE_ECHANTILLON as u64;
+    let bloc = u64::try_from(TAILLE_ECHANTILLON).unwrap_or(u64::MAX);
     if taille <= bloc {
         let mut v = Vec::new();
         lecteur.take(bloc).read_to_end(&mut v)?;
@@ -221,14 +231,14 @@ fn echantillons_de<L: Read + Seek>(lecteur: &mut L, taille: u64) -> std::io::Res
     }
     // Trois positions : 0, le milieu, et la fin (sans dépasser). Réduites et dédupliquées pour les fichiers juste au-
     // dessus d'un bloc.
-    let fin = taille - bloc;
-    let milieu = taille / 2 - bloc / 2;
+    let fin = taille.saturating_sub(bloc);
+    let milieu = (taille / 2).saturating_sub(bloc / 2);
     let mut positions = [0u64, milieu, fin];
     positions.sort_unstable();
     let mut sortie = Vec::with_capacity(NB_ECHANTILLONS);
     let mut derniere: Option<u64> = None;
     for &pos in &positions {
-        if derniere.is_some_and(|d| pos < d + bloc) {
+        if derniere.is_some_and(|d| pos < d.saturating_add(bloc)) {
             continue;
         }
         lecteur.seek(SeekFrom::Start(pos))?;
@@ -252,7 +262,7 @@ fn lire_plein<L: Read>(lecteur: &mut L, tampon: &mut [u8]) -> std::io::Result<us
             Ok(0) => break,
             // Un lecteur qui dit avoir lu plus que la place donnée : une erreur, pas un compte qui déborde.
             Ok(n) if n > place => return Err(std::io::Error::other("lecture plus longue que le tampon")),
-            Ok(n) => total += n,
+            Ok(n) => total = total.saturating_add(n),
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e),
         }
@@ -260,6 +270,11 @@ fn lire_plein<L: Read>(lecteur: &mut L, tampon: &mut [u8]) -> std::io::Result<us
     Ok(total)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

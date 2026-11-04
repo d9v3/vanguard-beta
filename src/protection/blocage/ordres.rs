@@ -11,6 +11,9 @@
 //! C'est le changement assumé de la règle « un identifiant sans paramètre » des corrections natives de Windows
 //! (`corrections.rs`) : les paramètres sont permis, parce qu'ils sont typés et rejugés.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::HashSet;
 use std::net::IpAddr;
 
@@ -81,10 +84,12 @@ fn pare_feu_de(t: &str) -> Option<PareFeu> {
 
 fn hex(octets: &[u8]) -> String {
     use std::fmt::Write as _;
-    octets.iter().fold(String::with_capacity(octets.len() * 2), |mut s, o| {
-        let _ = write!(s, "{o:02x}");
-        s
-    })
+    octets
+        .iter()
+        .fold(String::with_capacity(octets.len().saturating_mul(2)), |mut s, o| {
+            let _ = write!(s, "{o:02x}");
+            s
+        })
 }
 
 fn de_hex(t: &str) -> Option<Vec<u8>> {
@@ -93,7 +98,7 @@ fn de_hex(t: &str) -> Option<Vec<u8>> {
     }
     (0..t.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&t[i..i + 2], 16).ok())
+        .map(|i| u8::from_str_radix(&t[i..i.saturating_add(2)], 16).ok())
         .collect()
 }
 
@@ -840,6 +845,11 @@ pub(crate) fn powershell(o: &Ordre) -> Option<String> {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

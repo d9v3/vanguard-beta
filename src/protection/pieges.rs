@@ -12,6 +12,9 @@
 //! alors attendus : le bilan dit que la liste ne peut pas être crue, le veilleur garde les fichiers « !Vanguard »
 //! trouvés dans les dossiers, et seuls ceux que Vanguard reconnaît à leur contenu exact se retirent.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -316,7 +319,7 @@ pub(crate) fn developper(chemin: &str) -> String {
     let mut reste = chemin;
     while let Some(debut) = reste.find('%') {
         sortie.push_str(&reste[..debut]);
-        let apres = &reste[debut + 1..];
+        let apres = &reste[debut.saturating_add(1)..];
         let Some(fin) = apres.find('%') else {
             sortie.push_str(&reste[debut..]);
             reste = "";
@@ -331,7 +334,7 @@ pub(crate) fn developper(chemin: &str) -> String {
                 sortie.push('%');
             }
         }
-        reste = &apres[fin + 1..];
+        reste = &apres[fin.saturating_add(1)..];
     }
     sortie.push_str(reste);
     sortie
@@ -397,17 +400,21 @@ fn pdf() -> Vec<u8> {
     let mut positions = Vec::new();
     for (i, objet) in objets.iter().enumerate() {
         positions.push(sortie.len());
-        let _ = write!(sortie, "{} 0 obj\n{objet}\nendobj\n", i + 1);
+        let _ = write!(sortie, "{} 0 obj\n{objet}\nendobj\n", i.saturating_add(1));
     }
     let table = sortie.len();
-    let _ = write!(sortie, "xref\n0 {}\n0000000000 65535 f \n", objets.len() + 1);
+    let _ = write!(
+        sortie,
+        "xref\n0 {}\n0000000000 65535 f \n",
+        objets.len().saturating_add(1)
+    );
     for p in positions {
         let _ = writeln!(sortie, "{p:010} 00000 n ");
     }
     let _ = write!(
         sortie,
         "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{table}\n%%EOF\n",
-        objets.len() + 1
+        objets.len().saturating_add(1)
     );
     sortie.into_bytes()
 }
@@ -909,6 +916,11 @@ pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
     vec![juger(&etats)]
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

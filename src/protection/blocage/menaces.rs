@@ -1,6 +1,9 @@
 //! Les menaces que le blocage sait arrêter, cherchées sur cet ordinateur : d'où elles viennent, certaines ou
 //! douteuses, et le geste qui les bloque. Rien n'est changé ici : seulement lu.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -330,7 +333,7 @@ pub(crate) fn fichier_de_commande(commande: &str, os: Os) -> Option<String> {
     } else if os == Os::Windows {
         let bas = c.to_ascii_lowercase();
         match bas.find(".exe") {
-            Some(i) => c.get(..i + 4)?.to_string(),
+            Some(i) => c.get(..i.saturating_add(4))?.to_string(),
             None => c.split_whitespace().next()?.to_string(),
         }
     } else {
@@ -580,9 +583,14 @@ fn retirer_bloquees(menaces: &mut Vec<Menace>, en_place: &[(String, crate::chang
 fn retirer_normales(menaces: &mut Vec<Menace>, normale: impl Fn(&str) -> bool) -> usize {
     let avant = menaces.len();
     menaces.retain(|m| m.certaine || !normale(&m.cle_normale()));
-    avant - menaces.len()
+    avant.saturating_sub(menaces.len())
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

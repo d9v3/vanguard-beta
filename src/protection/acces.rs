@@ -5,6 +5,9 @@
 //! l'installation) et Snap ; sous macOS, la base des autorisations du compte (TCC.db), lisible seulement avec
 //! l'accès complet au disque. Ce qui n'a pas pu être lu est dit « non vérifié », jamais compté comme sain.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use crate::ui::*;
 
 mod resultat;
@@ -176,7 +179,7 @@ fn afficher_permission(bilan: &Bilan, p: Permission) {
         trp!(
             "  {GRIS}… et {} autre(s).{RESET}",
             "  {GRIS}… and {} more.{RESET}",
-            acces.len() - 25
+            acces.len().saturating_sub(25)
         );
     }
     for r in remarques {
@@ -722,17 +725,17 @@ mod linux {
                 tr!("Flatpak : aucune application installée.", "Flatpak: no app installed."),
             );
         }
-        let mut illisibles = 0;
+        let mut illisibles = 0usize;
         for a in applications.iter().take(APPLICATIONS_MAX) {
             match permissions(a) {
                 Some(t) => b.ajouter(lire_flatpak_statiques(a, &t)),
-                None => illisibles += 1,
+                None => illisibles = illisibles.saturating_add(1),
             }
         }
         // Au-delà de la borne, les applications restantes ne sont pas examinées : le dire, sinon elles
         // passeraient pour vérifiées.
         if applications.len() > APPLICATIONS_MAX {
-            let restantes = applications.len() - APPLICATIONS_MAX;
+            let restantes = applications.len().saturating_sub(APPLICATIONS_MAX);
             non_verifie(
                 b,
                 &PERMISSIONS,
@@ -793,7 +796,7 @@ mod linux {
             for (cle, valeur) in natif::section_ini(texte, "Context") {
                 let i = contexte.iter().position(|(c, _)| c == cle).unwrap_or_else(|| {
                     contexte.push((cle.to_string(), Vec::new()));
-                    contexte.len() - 1
+                    contexte.len().saturating_sub(1)
                 });
                 #[expect(
                     clippy::indexing_slicing,
@@ -986,6 +989,11 @@ pub fn json() {
     println!("{}", crate::modele::resultat::json(&r));
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

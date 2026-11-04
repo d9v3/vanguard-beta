@@ -1,6 +1,9 @@
 //! Recherche de malwares avec un moteur reconnu (ClamAV sous Linux, Microsoft Defender sous Windows)
 //! et revue des programmes lancés au démarrage, là où un malware cherche à se maintenir.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -75,7 +78,7 @@ pub fn choisir() {
     for (i, (chemin, description)) in volumes.iter().enumerate() {
         println!(
             "  {TOUCHE}{}{RESET}  {}  {DISCRET}{description}{RESET}",
-            i + 1,
+            i.saturating_add(1),
             chemin_affichable(chemin)
         );
     }
@@ -200,7 +203,9 @@ fn bloc_amovible(racine: &std::path::Path, bloc: &std::path::Path, profondeur: u
         .map(|e| e.path())
         .collect();
     if !esclaves.is_empty() {
-        return esclaves.iter().any(|e| bloc_amovible(racine, e, profondeur + 1));
+        return esclaves
+            .iter()
+            .any(|e| bloc_amovible(racine, e, profondeur.saturating_add(1)));
     }
     std::fs::read_to_string(disque.join("removable")).is_ok_and(|r| r.trim() == "1")
         || branche_a_chaud(racine, &disque.join("device"))
@@ -253,14 +258,16 @@ fn sans_hex(t: &str) -> String {
     let mut i = 0;
     while let Some(&c) = o.get(i) {
         if c == b'\\'
-            && o.get(i + 1) == Some(&b'x')
-            && let Some(h) = t.get(i + 2..i + 4).and_then(|h| u8::from_str_radix(h, 16).ok())
+            && o.get(i.saturating_add(1)) == Some(&b'x')
+            && let Some(h) = t
+                .get(i.saturating_add(2)..i.saturating_add(4))
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
         {
             sortie.push(h);
-            i += 4;
+            i = i.saturating_add(4);
         } else {
             sortie.push(c);
-            i += 1;
+            i = i.saturating_add(1);
         }
     }
     String::from_utf8_lossy(&sortie).into_owned()
@@ -285,11 +292,11 @@ fn taille_lsblk(octets: u64) -> String {
     };
     let mut entier = octets >> exposant;
     // Le reste en millièmes de l'unité (tronqués), puis arrondi au dixième.
-    let reste = u128::from(octets & ((1u64 << exposant) - 1));
+    let reste = u128::from(octets & (1u64 << exposant).saturating_sub(1));
     let milliemes = u64::try_from((reste * 1000) >> exposant).unwrap_or(0);
-    let mut dixiemes = (milliemes + 50) / 100;
+    let mut dixiemes = milliemes.saturating_add(50) / 100;
     if dixiemes == 10 {
-        entier += 1;
+        entier = entier.saturating_add(1);
         dixiemes = 0;
     }
     if dixiemes == 0 {
@@ -372,8 +379,10 @@ fn lire_lsblk(texte: &str) -> Vec<(PathBuf, String)> {
         .lines()
         .filter_map(|l| {
             let champ = |nom: &str| {
-                let debut = l.find(&format!("{nom}=\""))? + nom.len() + 2;
-                let fin = l[debut..].find('"')? + debut;
+                let debut = (l.find(&format!("{nom}=\""))?)
+                    .saturating_add(nom.len())
+                    .saturating_add(2);
+                let fin = l[debut..].find('"')?.saturating_add(debut);
                 // lsblk échappe les espaces et caractères spéciaux en \xHH.
                 Some(l[debut..fin].replace("\\x20", " "))
             };
@@ -400,7 +409,8 @@ fn volumes_amovibles() -> Vec<(PathBuf, String)> {
             .into_iter()
             .filter(|l| l.amovible)
             .map(|l| {
-                let taille = crate::langue::decimal(l.total as f64 / f64::from(1u32 << 30), 1);
+                let taille =
+                    crate::langue::decimal(crate::socle::nombres::flottant(l.total) / f64::from(1u32 << 30), 1);
                 (l.racine, affichable(&format!("{} · {taille} Go", l.etiquette)))
             })
             .collect();
@@ -1416,7 +1426,7 @@ fn formes_developpees(exclu: &str, variables: &[(&str, Vec<String>)]) -> Vec<Str
         for f in &mut formes {
             f.push_str(reste.get(..i).unwrap_or_default());
         }
-        let apres = reste.get(i + 1..).unwrap_or_default();
+        let apres = reste.get(i.saturating_add(1)..).unwrap_or_default();
         let Some(j) = apres.find('%') else {
             reste = reste.get(i..).unwrap_or_default();
             break;
@@ -1434,7 +1444,7 @@ fn formes_developpees(exclu: &str, variables: &[(&str, Vec<String>)]) -> Vec<Str
                 .collect(),
             None => formes.into_iter().map(|f| format!("{f}%{nom}%")).collect(),
         };
-        reste = apres.get(j + 1..).unwrap_or_default();
+        reste = apres.get(j.saturating_add(1)..).unwrap_or_default();
     }
     for f in &mut formes {
         f.push_str(reste);
@@ -2324,7 +2334,10 @@ fn clamav(portee: &Portee) {
 /// sautés sans bruit).
 #[cfg(unix)]
 fn fichiers_recents(dossier: &std::path::Path, jours: u64, max: usize) -> Vec<PathBuf> {
-    let limite = std::time::SystemTime::now() - std::time::Duration::from_secs(jours * 86_400);
+    // Une date qui déborderait : la limite tombe en 1970, et tout passe pour récent (plus d'analyse, jamais moins).
+    let limite = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(jours.saturating_mul(86_400)))
+        .unwrap_or(std::time::UNIX_EPOCH);
     let mut trouves = Vec::new();
     let mut a_voir = vec![dossier.to_path_buf()];
     while let Some(d) = a_voir.pop() {
@@ -2393,7 +2406,7 @@ fn lire_resultat(code: Option<i32>, sortie: &str) -> Option<Bilan> {
     let annonces = champ("Infected files:")?;
     let illisibles = champ("Total errors:").unwrap_or(0);
     // Le nombre de fichiers infectés annoncé doit correspondre aux lignes lues, sinon on ne sait pas quoi isoler.
-    if !matches!(code, Some(0..=2)) || annonces != infectes.len() as u64 {
+    if !matches!(code, Some(0..=2)) || annonces != u64::try_from(infectes.len()).unwrap_or(u64::MAX) {
         return None;
     }
     Some(Bilan {
@@ -2589,6 +2602,11 @@ fn demarrage_windows() -> (Vec<String>, Vec<String>) {
     (lignes, non_lus)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests_cle {
     use super::*;
@@ -3936,6 +3954,11 @@ mod tests {
 
 /// Propriétés de la lecture de lsblk : rien ne plante, quelle que soit la sortie ; une clé amovible bien décrite
 /// redonne son point de montage et son étiquette, rendue prête à montrer.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod proprietes {
     use super::*;

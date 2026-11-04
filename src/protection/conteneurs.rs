@@ -3,6 +3,9 @@
 //! ne se met pas à jour toute seule : un conteneur lancé il y a un an garde les failles de ce jour-là. Lecture seule ;
 //! trivy télécharge sa base des failles (plusieurs dizaines de Mo) avant la première analyse.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -168,7 +171,7 @@ pub fn analyser() {
         return;
     }
     let rouge = couleur(crate::risk::Niveau::Eleve);
-    let mut a_mettre_a_jour = 0;
+    let mut a_mettre_a_jour = 0usize;
     for image in &images {
         let nom = affichable(image);
         let Some(failles) = analyser_image(&trivy, source, image) else {
@@ -188,7 +191,7 @@ pub fn analyser() {
             );
             continue;
         }
-        a_mettre_a_jour += 1;
+        a_mettre_a_jour = a_mettre_a_jour.saturating_add(1);
         let critiques = failles.iter().filter(|f| f.critique).count();
         let corrigees = failles.iter().filter(|f| f.corrigee).count();
         println!(
@@ -196,7 +199,7 @@ pub fn analyser() {
             trf!(
                 "{nom} : {critiques} critique(s), {} grave(s) ; {corrigees} corrigée(s) par une version plus récente",
                 "{nom}: {critiques} critical, {} serious; {corrigees} fixed by a newer version",
-                failles.len() - critiques
+                failles.len().saturating_sub(critiques)
             )
         );
         for f in failles.iter().filter(|f| f.critique).take(5) {
@@ -217,6 +220,11 @@ pub fn analyser() {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

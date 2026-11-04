@@ -2,6 +2,9 @@
 //! lue et telle que comparable, où il est et pour qui, et ce qui n'a pas pu être lu (comptes, dossiers refusés),
 //! qui sera dit, jamais compté comme sain.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::path::{Path, PathBuf};
 
 use super::produits::{AppMac, Distribution, Produit};
@@ -184,7 +187,7 @@ impl Inventaire {
     /// Note `n` éléments laissés de côté par une borne.
     pub(crate) fn trop(&mut self, n: usize) {
         if let Some(NonLu::Trop(m)) = self.non_lus.iter_mut().find(|x| matches!(x, NonLu::Trop(_))) {
-            *m += n;
+            *m = (*m).saturating_add(n);
         } else {
             self.non_lus.push(NonLu::Trop(n));
         }
@@ -218,6 +221,11 @@ pub(crate) fn java_dans(dossier: &Path) -> Option<Installe> {
     Some(i)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

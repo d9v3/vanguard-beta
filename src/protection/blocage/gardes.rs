@@ -2,6 +2,9 @@
 //! en quarantaine ni ne se bloque jamais, même quand une liste ou une règle le désigne. Ce qu'ils refusent reste une
 //! alerte, avec sa raison.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::HashSet;
 use std::net::IpAddr;
 
@@ -410,7 +413,7 @@ pub(crate) fn etablies_table(octets: &[u8], ipv6: bool) -> Vec<(u16, IpAddr, u16
     let mot = |o: &[u8], i: usize| o.get(i..)?.first_chunk::<4>().map(|m| u32::from_ne_bytes(*m));
     let port = |o: &[u8], i: usize| o.get(i..)?.first_chunk::<2>().map(|m| u16::from_be_bytes(*m));
     let (taille, port_local, adresse, port_distant, etat, processus) = if ipv6 {
-        (56, 20, 24, 44, 48, 52)
+        (56usize, 20usize, 24usize, 44usize, 48usize, 52usize)
     } else {
         (24, 8, 12, 16, 0, 20)
     };
@@ -425,9 +428,9 @@ pub(crate) fn etablies_table(octets: &[u8], ipv6: bool) -> Vec<(u16, IpAddr, u16
         .filter(|l| mot(l, etat) == Some(5))
         .filter_map(|l| {
             let distante = if ipv6 {
-                IpAddr::from(<[u8; 16]>::try_from(l.get(adresse..adresse + 16)?).ok()?)
+                IpAddr::from(<[u8; 16]>::try_from(l.get(adresse..adresse.saturating_add(16))?).ok()?)
             } else {
-                IpAddr::from(<[u8; 4]>::try_from(l.get(adresse..adresse + 4)?).ok()?)
+                IpAddr::from(<[u8; 4]>::try_from(l.get(adresse..adresse.saturating_add(4))?).ok()?)
             };
             Some((
                 port(l, port_local)?,
@@ -593,6 +596,11 @@ fn lire_etablies() -> Option<Vec<Etablie>> {
     Some(etablies_avec(&n.sortie, &a_moi))
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

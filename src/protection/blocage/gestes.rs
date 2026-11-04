@@ -2,6 +2,9 @@
 //! notés avec de quoi les défaire (changements.rs), puis défaits sur demande. Tout ce qui peut empêcher un geste
 //! (garde-fou, droits, pare-feu absent) est vérifié avant d'y toucher : rien n'est fait à moitié.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -1115,30 +1118,30 @@ fn chaines(texte: &str) -> Vec<(usize, usize)> {
         match c {
             b'"' => {
                 let debut = i;
-                i += 1;
+                i = i.saturating_add(1);
                 while let Some(&x) = o.get(i)
                     && x != b'"'
                 {
-                    i += if x == b'\\' { 2 } else { 1 };
+                    i = i.saturating_add(if x == b'\\' { 2 } else { 1 });
                 }
-                trouvees.push((debut, (i + 1).min(o.len())));
+                trouvees.push((debut, i.saturating_add(1).min(o.len())));
             }
-            b'/' if o.get(i + 1) == Some(&b'/') => {
+            b'/' if o.get(i.saturating_add(1)) == Some(&b'/') => {
                 while o.get(i).is_some_and(|&x| x != b'\n') {
-                    i += 1;
+                    i = i.saturating_add(1);
                 }
             }
-            b'/' if o.get(i + 1) == Some(&b'*') => {
-                i += 2;
+            b'/' if o.get(i.saturating_add(1)) == Some(&b'*') => {
+                i = i.saturating_add(2);
                 // Jusqu'au « */ » ; `get` vaut `None` quand il ne reste plus deux octets.
-                while o.get(i..i + 2).is_some_and(|d| d != b"*/") {
-                    i += 1;
+                while o.get(i..i.saturating_add(2)).is_some_and(|d| d != b"*/") {
+                    i = i.saturating_add(1);
                 }
-                i += 1;
+                i = i.saturating_add(1);
             }
             _ => {}
         }
-        i += 1;
+        i = i.saturating_add(1);
     }
     trouvees
 }
@@ -1187,6 +1190,11 @@ fn remettre_par_defaut(v: &mut serde_json::Value) {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
