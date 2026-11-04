@@ -942,7 +942,11 @@ pub fn installer() {
         // L'emplacement seul va dans la ligne de champs, jamais le message (qui reste dans le détail anonymisé).
         let lieu = info.location().and_then(lieu_de);
         match nature(&message, sous_garde()) {
-            Panique::SortieCoupee => std::process::exit(141),
+            Panique::SortieCoupee => {
+                // `exit` ne déroule pas la pile : la garde de `main` ne passerait pas.
+                crate::chiffrement::oublier_session();
+                std::process::exit(141)
+            }
             Panique::Rattrapee => noter(
                 &Champs::new(Genre::Rattrapee, Contexte::ErreurInterne).lieu(lieu),
                 &message,

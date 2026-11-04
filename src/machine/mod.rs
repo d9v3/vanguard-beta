@@ -1570,6 +1570,7 @@ pub fn quitter(code: i32) -> ! {
     crate::amelioration::ligne_finie();
     crate::agent::tic(crate::agent::Moment::Sortie);
     crate::modele::journal::ecrire_differes();
+    crate::chiffrement::oublier_session();
     std::process::exit(code)
 }
 

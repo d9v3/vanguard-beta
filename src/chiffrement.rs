@@ -35,8 +35,8 @@ pub(crate) struct Cle([u8; 32]);
 
 // La clé effacée dès qu'elle ne sert plus : une mémoire relue plus tard (fichier d'échange, vidage après un
 // plantage) ne la rend pas. Elle est écrite en place (`Cle::vide` puis remplie), jamais composée depuis un tableau de
-// la pile qui en garderait une copie. Restent l'état du chiffreur, et l'exemplaire de la session (`cle_pour`), gardé
-// jusqu'à la fin du programme pour ne demander la phrase qu'une fois : il n'est jamais détruit.
+// la pile qui en garderait une copie. Reste l'état du chiffreur. L'exemplaire de la session (`cle_pour`), gardé pour
+// ne demander la phrase qu'une fois, est détruit à la sortie (`oublier_session`).
 impl Drop for Cle {
     fn drop(&mut self) {
         crate::socle::effacer(&mut self.0);
@@ -301,8 +301,64 @@ pub(crate) fn protegee(donnees: &Path) -> bool {
 /// l'enveloppe, sinon par la phrase (dans un terminal seulement : la surveillance, sans personne devant l'écran,
 /// continue sans le carnet). Ouverte chez le propriétaire, elle y est gardée de nouveau (ordinateur réinstallé).
 fn cle_pour(donnees: &Path) -> Option<Cle> {
-    static SESSION: std::sync::OnceLock<Option<Cle>> = std::sync::OnceLock::new();
-    SESSION.get_or_init(|| obtenir(donnees)).clone()
+    cle_dans(&SESSION, || obtenir(donnees))
+}
+
+/// `cle_pour` sur une session donnée (les essais en ont une à eux : `SESSION` est partagée par tout le programme).
+/// Le verrou tenu pendant la demande de la phrase : un second fil attend la réponse au lieu de la redemander, comme
+/// avec le `OnceLock` d'avant. Un fil qui a paniqué en le tenant ne laisse qu'un état cohérent (rien n'est écrit
+/// avant la fin d'`obtenir`) : le verrou empoisonné est repris tel quel.
+fn cle_dans(session: &std::sync::Mutex<Session>, obtenir: impl FnOnce() -> Option<Cle>) -> Option<Cle> {
+    let mut session = session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    match &*session {
+        Session::Connue(cle) => cle.clone(),
+        Session::Oubliee => None,
+        Session::PasDemandee => {
+            let cle = obtenir();
+            let rendue = cle.clone();
+            *session = Session::Connue(cle);
+            rendue
+        }
+    }
+}
+
+/// L'exemplaire de la clé gardé pour la session, pour ne demander la phrase qu'une fois par lancement.
+enum Session {
+    PasDemandee,
+    /// Cherchée : la clé, ou `None` (pas de phrase, pas de terminal, enveloppe illisible) sans la redemander.
+    Connue(Option<Cle>),
+    /// Effacée à la sortie : plus rien n'est redemandé ni gardé.
+    Oubliee,
+}
+
+static SESSION: std::sync::Mutex<Session> = std::sync::Mutex::new(Session::PasDemandee);
+
+/// À la sortie du programme : l'exemplaire de la session détruit, donc effacé (`Drop` de `Cle`). Une `static` ne
+/// l'est jamais d'elle-même, et un vidage de la mémoire après coup (fichier d'échange, hibernation) la rendrait.
+/// `try_lock` : une sortie (Ctrl+C, tube fermé) pendant qu'un autre fil attend la phrase ne doit pas rester bloquée
+/// derrière lui ; la clé n'est alors pas encore gardée, rien à effacer.
+pub(crate) fn oublier_session() {
+    oublier_dans(&SESSION);
+}
+
+fn oublier_dans(session: &std::sync::Mutex<Session>) {
+    let mut session = match session.try_lock() {
+        Ok(s) => s,
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return,
+    };
+    // L'ancien état détruit ici, verrou tenu : sa clé est effacée avant qu'un autre fil puisse relire `SESSION`.
+    drop(std::mem::replace(&mut *session, Session::Oubliee));
+}
+
+/// Garde posée en tête de `main` : `oublier_session` au retour normal et pendant le déroulement d'une panique.
+/// `std::process::exit` ne détruit rien : chaque sortie de ce genre l'appelle elle-même (`machine::quitter`).
+pub(crate) struct OublierALaSortie;
+
+impl Drop for OublierALaSortie {
+    fn drop(&mut self) {
+        oublier_session();
+    }
 }
 
 fn obtenir(donnees: &Path) -> Option<Cle> {
@@ -719,6 +775,40 @@ fn constat_de(donnees: &Path) -> Option<crate::machine::Constat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La clé de la session : cherchée une fois, rendue ensuite sans redemander ; oubliée, plus rien n'est rendu ni
+    /// redemandé. Une session tenue par un autre fil (phrase en cours de saisie) n'arrête pas la sortie.
+    #[test]
+    fn session_cherchee_une_fois_puis_oubliee() {
+        let session = std::sync::Mutex::new(Session::PasDemandee);
+        let cle = Cle::nouvelle().unwrap();
+        let mut demandes = 0;
+        assert_eq!(
+            cle_dans(&session, || {
+                demandes += 1;
+                Some(cle.clone())
+            }),
+            Some(cle.clone())
+        );
+        assert_eq!(cle_dans(&session, || unreachable!("redemandée")), Some(cle.clone()));
+        assert_eq!(demandes, 1);
+        oublier_dans(&session);
+        assert!(matches!(*session.lock().unwrap(), Session::Oubliee));
+        assert_eq!(cle_dans(&session, || unreachable!("redemandée après l'oubli")), None);
+
+        // Sans clé trouvée : `None` gardé, pas redemandé.
+        let vide = std::sync::Mutex::new(Session::PasDemandee);
+        assert_eq!(cle_dans(&vide, || None), None);
+        assert_eq!(cle_dans(&vide, || unreachable!("redemandée")), None);
+
+        // Verrou tenu ailleurs : l'oubli rend la main sans attendre, l'état intact.
+        let tenue = std::sync::Mutex::new(Session::Connue(Some(cle.clone())));
+        std::thread::scope(|fils| {
+            let garde = tenue.lock().unwrap();
+            fils.spawn(|| oublier_dans(&tenue)).join().unwrap();
+            assert!(matches!(&*garde, Session::Connue(Some(_))));
+        });
+    }
 
     /// La phrase ne se montre pas (`Debug`), se compare, se compte en caractères (pas en octets) ; la clé non plus.
     #[test]
