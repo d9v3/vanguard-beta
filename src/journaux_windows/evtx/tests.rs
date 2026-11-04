@@ -7,6 +7,48 @@ use std::collections::{BTreeMap, HashMap};
 
 use super::*;
 
+/// Les erreurs du lecteur et de ses lecteurs (BinXml, XML, fichiers, filtre) se disent dans les deux langues, sans
+/// dépendre de l'interface ; une erreur d'entrée-sortie reste la cause (`source`) de celle du lecteur.
+#[test]
+fn erreurs_se_disent() {
+    use crate::journaux_windows::{evenement::Ecart, fichiers::ErreurFichier, xml::ErreurXml};
+    use std::error::Error as _;
+    let io = std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "coupé");
+    let e = Erreur::from(io);
+    assert!(e.to_string().contains("coupé"), "{e}");
+    assert!(e.source().is_some_and(|c| c.to_string() == "coupé"));
+    assert!(Erreur::PasUnEvtx.source().is_none());
+    let tous: Vec<Box<dyn std::error::Error>> = vec![
+        Box::new(e),
+        Box::new(Erreur::PasUnEvtx),
+        Box::new(ErreurBinxml::Tronque),
+        Box::new(ErreurBinxml::Jeton(0x2a)),
+        Box::new(ErreurBinxml::Profondeur),
+        Box::new(ErreurBinxml::Travail),
+        Box::new(ErreurBinxml::Noeuds),
+        Box::new(ErreurBinxml::Texte),
+        Box::new(ErreurBinxml::Substitutions),
+        Box::new(ErreurBinxml::Lecture),
+        Box::new(ErreurBinxml::Longueur),
+        Box::new(ErreurBinxml::Gabarit),
+        Box::new(ErreurBinxml::Nom),
+        Box::new(ErreurBinxml::Vide),
+        Box::new(ErreurXml::Demesure),
+        Box::new(ErreurXml::MalForme),
+        Box::new(ErreurFichier::Ouverture(std::io::ErrorKind::PermissionDenied)),
+        Box::new(ErreurFichier::PasUnFichier),
+        Box::new(ErreurFichier::PasUnEvtx),
+        Box::new(ErreurFichier::Lecture(std::io::ErrorKind::UnexpectedEof)),
+        Box::new(Ecart::Filtre),
+        Box::new(Ecart::SansDate),
+    ];
+    for erreur in &tous {
+        let texte = erreur.to_string();
+        assert!(texte.contains(" / "), "{texte}");
+    }
+    assert!(ErreurBinxml::Jeton(0x2a).to_string().contains("0x2a"));
+}
+
 // ---- Fabrication ----
 
 /// Un nœud de gabarit : élément (nom, attributs, contenu) ou morceau de texte.

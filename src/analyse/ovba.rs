@@ -31,6 +31,21 @@ pub(crate) enum Defaut {
     Limite,
 }
 
+// Les deux langues dans une seule chaîne : ce socle n'importe pas l'interface (`tests::sans_interface`).
+impl std::fmt::Display for Defaut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Signature => "pas un flux VBA compressé / not a compressed VBA stream",
+            Self::EnTete => "en-tête de morceau illisible / unreadable chunk header",
+            Self::Copie => "copie hors du morceau / copy outside the chunk",
+            Self::Tronque => "coupé par la fin des données / cut by the end of the data",
+            Self::Limite => "au-delà de la borne de lecture / beyond the read limit",
+        })
+    }
+}
+
+impl std::error::Error for Defaut {}
+
 /// Le résultat : ce qui a été décompressé, et le défaut qui a arrêté la lecture (`None` : tout est lu).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Decompresse {
@@ -163,6 +178,20 @@ fn boucle(c: &[u8], limite: usize, sortie: &mut Vec<u8>) -> Result<(), Defaut> {
 pub(crate) mod essais {
     //! Une compression simple, écrite d'après la même section (2.4.1.3.6 à 2.4.1.3.19.4) : de quoi fabriquer des
     //! modules VBA compressés pour les tests, sans document tiers.
+
+    #[test]
+    fn defaut_se_dit() {
+        for d in [
+            super::Defaut::Signature,
+            super::Defaut::EnTete,
+            super::Defaut::Copie,
+            super::Defaut::Tronque,
+            super::Defaut::Limite,
+        ] {
+            assert!(d.to_string().contains(" / "), "{d:?}");
+            let _: &dyn std::error::Error = &d;
+        }
+    }
 
     /// `donnees` compressées : par morceaux de 4 096, chaque morceau en séquences de jetons ; les copies cherchent
     /// la plus longue répétition dans le morceau (recherche directe, lente mais juste).

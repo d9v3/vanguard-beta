@@ -51,6 +51,32 @@ pub(crate) enum ErreurBinxml {
     Vide,
 }
 
+// Les deux langues dans une seule chaîne : le lecteur ne dépend pas de l'interface (compilé seul par le banc de
+// fuzzing).
+impl std::fmt::Display for ErreurBinxml {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tronque => f.write_str("lecture hors de l'enregistrement / read outside the record"),
+            Self::Jeton(j) => write!(
+                f,
+                "jeton BinXml 0x{j:02x} hors de sa place / BinXml token 0x{j:02x} out of place"
+            ),
+            Self::Profondeur => f.write_str("imbrication trop profonde / nesting too deep"),
+            Self::Travail => f.write_str("borne de travail atteinte / work limit reached"),
+            Self::Noeuds => f.write_str("trop d'éléments / too many elements"),
+            Self::Texte => f.write_str("trop de texte / too much text"),
+            Self::Substitutions => f.write_str("trop de substitutions / too many substitutions"),
+            Self::Lecture => f.write_str("borne de lecture du morceau dépassée / chunk read limit exceeded"),
+            Self::Longueur => f.write_str("longueur d'élément fausse / wrong element length"),
+            Self::Gabarit => f.write_str("gabarit illisible ou récursif / unreadable or recursive template"),
+            Self::Nom => f.write_str("nom illisible ou démesuré / unreadable or oversized name"),
+            Self::Vide => f.write_str("aucun élément rendu / no element rendered"),
+        }
+    }
+}
+
+impl std::error::Error for ErreurBinxml {}
+
 type R<T> = Result<T, ErreurBinxml>;
 
 /// Ce qui a été rendu à peu près, compté pour le bilan : jamais une erreur, toujours dit.

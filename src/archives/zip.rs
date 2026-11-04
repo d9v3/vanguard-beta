@@ -98,6 +98,27 @@ pub(crate) enum Defaut {
     Delai,
 }
 
+// Les deux langues dans une seule chaîne : le lecteur ne dépend pas de l'interface (il est aussi compilé seul par
+// le banc de fuzzing), et une erreur de lecteur se journalise plus qu'elle ne s'affiche.
+impl std::fmt::Display for Defaut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PasUnZip => f.write_str("pas une archive zip, ou coupée / not a zip archive, or truncated"),
+            Self::NonPrise => f.write_str("zip64 ou multi-disques, non pris / zip64 or multi-disk, unsupported"),
+            Self::Demesuree => f.write_str("archive au-delà des bornes / archive beyond the limits"),
+            Self::Illisible(n) => write!(f, "entrée {n} illisible / entry {n} unreadable"),
+            Self::Methode(n) => write!(
+                f,
+                "entrée {n} chiffrée ou méthode inconnue / entry {n} encrypted or unknown method"
+            ),
+            Self::Crc(n) => write!(f, "entrée {n} : CRC-32 faux / entry {n}: wrong CRC-32"),
+            Self::Delai => f.write_str("délai de lecture dépassé / read deadline exceeded"),
+        }
+    }
+}
+
+impl std::error::Error for Defaut {}
+
 /// Une entrée relue par `forme` (pour `lire` et `controler`), avant d'être décompressée.
 struct Entree<'a> {
     nom: &'a [u8],
@@ -664,6 +685,21 @@ pub(crate) enum Refus {
     Illisible,
 }
 
+impl std::fmt::Display for Refus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Chiffree => f.write_str("entrée chiffrée / encrypted entry"),
+            Self::Methode(m) => write!(
+                f,
+                "méthode de compression {m} non prise / compression method {m} unsupported"
+            ),
+            Self::Illisible => f.write_str("données hors du fichier / data outside the file"),
+        }
+    }
+}
+
+impl std::error::Error for Refus {}
+
 /// Une entrée extraite : son contenu (entier ou non : `fin`), et si son CRC-32 est celui annoncé (`None` : contenu
 /// pas entier, ou CRC écrit seulement après les données).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -723,6 +759,34 @@ pub(crate) fn extraire_avant(
 #[cfg(test)]
 pub(crate) mod essais {
     //! Des archives zip fabriquées pour les tests d'ici et de la clé (`guide::tldr::cle`) : aucun zip tiers.
+
+    /// Chaque défaut et chaque refus se dit dans les deux langues, le numéro d'entrée dedans.
+    #[test]
+    fn defaut_et_refus_se_disent() {
+        use super::{Defaut, Refus};
+        for d in [
+            Defaut::PasUnZip,
+            Defaut::NonPrise,
+            Defaut::Demesuree,
+            Defaut::Illisible(7),
+            Defaut::Methode(7),
+            Defaut::Crc(7),
+            Defaut::Delai,
+        ] {
+            let texte = d.to_string();
+            assert!(texte.contains(" / "), "{texte}");
+            if matches!(d, Defaut::Illisible(_) | Defaut::Methode(_) | Defaut::Crc(_)) {
+                assert_eq!(texte.matches('7').count(), 2, "{texte}");
+            }
+            let _: &dyn std::error::Error = &d;
+        }
+        for r in [Refus::Chiffree, Refus::Methode(12), Refus::Illisible] {
+            let texte = r.to_string();
+            assert!(texte.contains(" / "), "{texte}");
+            let _: &dyn std::error::Error = &r;
+        }
+        assert!(Refus::Methode(12).to_string().contains("12"));
+    }
 
     /// Un zip fabriqué ici : (nom, méthode, contenu), le CRC calculé par `crc32`, les tailles justes.
     pub(crate) fn archive_controlee(entrees: &[(&str, u16, &[u8])]) -> Vec<u8> {

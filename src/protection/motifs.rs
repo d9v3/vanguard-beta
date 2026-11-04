@@ -84,6 +84,22 @@ pub(crate) enum Refus {
     SansAtome,
 }
 
+// Les deux langues dans une seule chaîne : le moteur ne dépend pas de l'interface (compilé seul par le banc de
+// fuzzing).
+impl std::fmt::Display for Refus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Vide => "motif vide / empty pattern",
+            Self::Saut => "saut mal placé ou mal borné / misplaced or ill-bounded jump",
+            Self::TropLong => "motif trop long ou trop cher / pattern too long or too costly",
+            Self::Choix => "choix mal formé ou trop profond / malformed or too deep alternation",
+            Self::SansAtome => "aucun octet fixe à chercher / no fixed byte to search for",
+        })
+    }
+}
+
+impl std::error::Error for Refus {}
+
 /// Un motif prêt à chercher : ses éléments, et l'atome tiré de ses éléments du premier niveau.
 #[derive(Clone, Debug)]
 pub(crate) struct Motif {
@@ -385,6 +401,17 @@ pub(crate) enum Echec {
     /// Les données ne se lisent plus.
     Lecture,
 }
+
+impl std::fmt::Display for Echec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Delai => "délai de recherche dépassé / search deadline exceeded",
+            Self::Lecture => "données illisibles en cours de recherche / data unreadable during the search",
+        })
+    }
+}
+
+impl std::error::Error for Echec {}
 
 /// Un état de l'automate en construction.
 #[derive(Default)]
@@ -824,6 +851,25 @@ fn remplir(source: &mut impl Read, mut tampon: &mut [u8]) -> Result<usize, Echec
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// Chaque refus et chaque échec se dit dans les deux langues, sans dépendre de l'interface.
+    #[test]
+    fn refus_et_echec_se_disent() {
+        for r in [
+            Refus::Vide,
+            Refus::Saut,
+            Refus::TropLong,
+            Refus::Choix,
+            Refus::SansAtome,
+        ] {
+            assert!(r.to_string().contains(" / "), "{r:?}");
+            let _: &dyn std::error::Error = &r;
+        }
+        for e in [Echec::Delai, Echec::Lecture] {
+            assert!(e.to_string().contains(" / "), "{e:?}");
+            let _: &dyn std::error::Error = &e;
+        }
+    }
 
     fn o(valeur: u8) -> Element {
         Element::Octet { valeur, masque: 0xFF }

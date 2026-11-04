@@ -60,6 +60,21 @@ pub(crate) enum ErreurFichier {
     Lecture(std::io::ErrorKind),
 }
 
+// Les deux langues dans une seule chaîne : les lecteurs ne dépendent pas de l'interface. `ErrorKind` plutôt que
+// l'erreur : `Copy`, et rien du chemin ni du système dedans.
+impl std::fmt::Display for ErreurFichier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ouverture(k) => write!(f, "ouverture impossible / cannot open: {k}"),
+            Self::PasUnFichier => f.write_str("pas un fichier ordinaire / not a regular file"),
+            Self::PasUnEvtx => f.write_str("pas un journal .evtx / not an .evtx log"),
+            Self::Lecture(k) => write!(f, "lecture interrompue / read interrupted: {k}"),
+        }
+    }
+}
+
+impl std::error::Error for ErreurFichier {}
+
 /// Ce que la lecture d'un fichier a donné.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BilanFichier {
