@@ -31,7 +31,7 @@ clé USB ou de la mise à jour) relèvent d'une autre page : [SECURITY.md](SECUR
 | Une arnaque | Liens examinés sans les ouvrir, fichiers téléchargés vérifiés, fuites de comptes. |
 | Un agent d'IA qui agit trop | Serveurs d'IA ouverts au réseau, agents qui agissent sans demander, serveurs MCP mal protégés. |
 
-Le détail de chaque menace, menu par menu : [Ce que fait Vanguard](README.md#ce-que-fait-vanguard).
+Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace par menace](README.md#fonctions-de-sécurité-menace-par-menace).
 
 ## Ce que Vanguard ne protège pas
 
