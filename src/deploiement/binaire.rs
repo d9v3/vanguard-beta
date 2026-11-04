@@ -767,7 +767,7 @@ mod tests {
             Illisible::Inconnu,
         ] {
             let e: &dyn std::error::Error = &e;
-            assert!(!e.to_string().is_empty());
+            assert_ne!(e.to_string(), "");
         }
     }
     use crate::analyse::elf::essais::{Durci, elf64, elf64_durci, entete};

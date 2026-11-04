@@ -1220,7 +1220,7 @@ mod systeme {
 
     #[allow(clippy::cast_precision_loss)]
     fn nombre(l: &Ligne, champ: &str) -> Option<f64> {
-        l[champ].entier().map(|n| crate::socle::nombres::flottant(n))
+        l[champ].entier().map(crate::socle::nombres::flottant)
     }
 
     /// Part occupée entre deux lectures d'un compteur de repos : 100 × (1 − repos / temps écoulé).
