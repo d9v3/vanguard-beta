@@ -100,7 +100,7 @@ fn niveau(chemin: &Path) -> Result<(), Echec> {
 }
 
 /// Le dossier de la quarantaine, vérifié niveau par niveau.
-fn dossier() -> Result<PathBuf, Echec> {
+pub(super) fn dossier() -> Result<PathBuf, Echec> {
     let base = super::environnement::dossiers().program_data.clone().ok_or_else(|| {
         Echec::echoue(
             "quarantaine/dossier",

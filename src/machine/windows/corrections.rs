@@ -507,7 +507,7 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
                     | Acte::TacheDesactiver(_)
                     | Acte::TacheReactiver(_)
                     | Acte::DemarrageQuarantaine(_)
-                    | Acte::DemarrageRemettre(_)
+                    | Acte::DemarrageRemettre(..)
                     | Acte::LancementDesactiver(..)
                     | Acte::LancementReactiver(_)
                     | Acte::WmiAbonnementRetirer(_)
@@ -1017,15 +1017,19 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
         Acte::DemarrageQuarantaine(f) => {
             let f = crate::ui::affichable(f.texte());
             trf!(
-                "Mettre de côté le fichier « {f} » du dossier Démarrage commun (relu et rejugé ici ; jamais un lien ni une jonction, jamais un programme de Windows ou de Defender). Une copie vérifiée de son contenu est gardée dans ProgramData\\Vanguard\\quarantaine avant le retrait (seulement le contenu : ses dates, ses droits et ses flux, dont la marque « téléchargé d'Internet », ne seront pas remis) ; la remise n'est pas encore proposée dans « Ce que Vanguard a changé »",
-                "Set aside the file “{f}” from the common Startup folder (read and judged again here; never a link or a junction, never a Windows or Defender program). A verified copy of its content is kept in ProgramData\\Vanguard\\quarantaine before removal (content only: its dates, permissions and streams, including the “downloaded from the Internet” mark, will not be restored); putting it back is not offered in “What Vanguard changed” yet"
+                "Mettre de côté le fichier « {f} » du dossier Démarrage commun (relu et rejugé ici ; jamais un lien ni une jonction, jamais le vrai programme de Windows ou de Defender ; un nom seul ou un raccourci illisible se demande). Une copie vérifiée de son contenu est gardée dans ProgramData\\Vanguard\\quarantaine avant le retrait, jusqu'à huit par fichier (au-delà, la plus vieille ne s'efface qu'après une question) ; seulement le contenu : ses dates, ses droits et ses flux, dont la marque « téléchargé d'Internet », ne seront pas remis. Remise : vanguard options-defense --remettre demarrage-commun:<chemin>",
+                "Set aside the file “{f}” from the common Startup folder (read and judged again here; never a link or a junction, never the real Windows or Defender program; a name alone or an unreadable shortcut is asked about). A verified copy of its content is kept in ProgramData\\Vanguard\\quarantaine before removal, up to eight per file (beyond that, the oldest is only erased after a question); content only: its dates, permissions and streams, including the “downloaded from the Internet” mark, will not be restored. Put back: vanguard options-defense --remettre demarrage-commun:<path>"
             )
         }
-        Acte::DemarrageRemettre(f) => {
+        Acte::DemarrageRemettre(f, n) => {
             let f = crate::ui::affichable(f.texte());
+            let copie = match n {
+                Some(n) => trf!("la copie n° {n}", "copy no. {n}"),
+                None => tr!("la copie la plus récente", "the most recent copy").to_string(),
+            };
             trf!(
-                "Remettre le fichier « {f} » du dossier Démarrage commun depuis la copie que Vanguard a gardée, si elle est intacte (refusé sinon, et jamais par-dessus un fichier présent) ; seul le contenu revient : dates, droits et flux, dont la marque « téléchargé d'Internet », ne sont pas remis",
-                "Put back the file “{f}” in the common Startup folder from the copy Vanguard kept, if it is intact (refused otherwise, and never over an existing file); only the content comes back: dates, permissions and streams, including the “downloaded from the Internet” mark, are not restored"
+                "Remettre le fichier « {f} » du dossier Démarrage commun depuis {copie} que Vanguard a gardée, si elle est intacte (refusé sinon, et jamais par-dessus un fichier présent) ; seul le contenu revient : dates, droits et flux, dont la marque « téléchargé d'Internet », ne sont pas remis",
+                "Put back the file “{f}” in the common Startup folder from {copie} Vanguard kept, if it is intact (refused otherwise, and never over an existing file); only the content comes back: dates, permissions and streams, including the “downloaded from the Internet” mark, are not restored"
             )
         }
         Acte::LancementDesactiver(l, _) | Acte::LancementReactiver(l) => {

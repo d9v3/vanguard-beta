@@ -1969,8 +1969,26 @@ pub(crate) fn ligne_remettre(mot: &str) -> Option<String> {
     if let Some(r) = mot.strip_prefix("sshd:") {
         return crate::machine::gestes::ReglageSshd::lire(r).map(crate::machine::gestes::ligne_sshd_reglage_remettre);
     }
+    // Le dossier Démarrage (défense D6d) : celui de la personne par Vanguard non élevé, celui de tous par la fenêtre
+    // administrateur ; la copie n (« 3:C:\… ») ou la plus récente.
+    if let Some(r) = mot.strip_prefix("demarrage:") {
+        return remise_demarrage(r, true);
+    }
+    if let Some(r) = mot.strip_prefix("demarrage-commun:") {
+        return remise_demarrage(r, false);
+    }
     let id = crate::machine::gestes::IdReglage::lire(mot)?;
     crate::machine::gestes::ligne_reglage_remettre(id)
+}
+
+/// « `[n:]<chemin>` » : un seul chiffre avant le premier deux-points est un numéro de copie (un chemin commence par sa
+/// lettre de lecteur) ; le reste est le chemin complet du fichier.
+fn remise_demarrage(reste: &str, compte: bool) -> Option<String> {
+    let (n, chemin) = match reste.split_once(':') {
+        Some((n, chemin)) if n.len() == 1 && n.bytes().all(|b| b.is_ascii_digit()) => (Some(n.parse().ok()?), chemin),
+        _ => (None, reste),
+    };
+    crate::machine::gestes::ligne_demarrage_remettre(chemin, n, compte)
 }
 
 /// Les mots admis par `--remettre`.
@@ -1985,7 +2003,7 @@ fn aide_remettre() -> String {
         .map(|r| format!("sshd:{}", r.mot()))
         .collect();
     format!(
-        "  --remettre <{}|service:<nom>|ssh:cles-admin|ssh-cle:<nom>|{}>",
+        "  --remettre <{}|service:<nom>|ssh:cles-admin|ssh-cle:<nom>|{}|demarrage:[n:]<chemin>|demarrage-commun:[n:]<chemin>>",
         mots.join("|"),
         sshd.join("|")
     )
@@ -2826,5 +2844,34 @@ mod tests {
         assert!(
             aide.contains("ssh:cles-admin") && aide.contains("ssh-cle:<nom>") && aide.contains("sshd:mots-de-passe")
         );
+    }
+
+    /// `--remettre` d'un fichier du dossier Démarrage (défense D6d) : celui de la personne par une ligne du compte
+    /// (jamais par la fenêtre administrateur), celui de tous par un acte ; la copie n de 1 à 8 ou la plus récente.
+    #[test]
+    fn remettre_demarrage_au_choix_de_la_copie() {
+        use crate::machine::gestes::{analyser_acte, analyser_compte, ligne_demarrage_remettre};
+        let f = r"C:\Users\alice\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\x.lnk";
+        let perso = ligne_remettre(&format!("demarrage:{f}")).unwrap();
+        assert_eq!(Some(perso.clone()), ligne_demarrage_remettre(f, None, true));
+        assert!(analyser_compte(&perso).is_some() && analyser_acte(&perso).is_none());
+        let trois = ligne_remettre(&format!("demarrage:3:{f}")).unwrap();
+        assert_eq!(Some(trois.clone()), ligne_demarrage_remettre(f, Some(3), true));
+        assert_ne!(trois, perso);
+        let commun = ligne_remettre(&format!("demarrage-commun:8:{f}")).unwrap();
+        assert!(analyser_acte(&commun).is_some() && analyser_compte(&commun).is_none());
+        for mot in [
+            format!("demarrage:0:{f}"),
+            format!("demarrage:9:{f}"),
+            format!("demarrage:12:{f}"),
+            format!("demarrage-commun:x:{f}"),
+            "demarrage:".to_string(),
+            r"demarrage:x.lnk".to_string(),
+            r"demarrage:C:\a\..\x.lnk".to_string(),
+            format!("demarrage-personne:{f}"),
+        ] {
+            assert_eq!(ligne_remettre(&mot), None, "{mot:?}");
+        }
+        assert!(aide_remettre().contains("demarrage:[n:]<chemin>"));
     }
 }

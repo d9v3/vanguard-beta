@@ -699,8 +699,12 @@ pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
         // Windows (StartupApproved) : relus, rejugés par les fonctions du bilan, l'état d'avant noté.
         Acte::TacheDesactiver(t) => return super::taches_ecriture::desactiver(t),
         Acte::TacheReactiver(t) => return super::taches_ecriture::reactiver(t),
-        Acte::DemarrageQuarantaine(f) => return super::demarrage_ecriture::quarantaine(f),
-        Acte::DemarrageRemettre(f) => return super::demarrage_ecriture::remettre(f),
+        Acte::DemarrageQuarantaine(f) => {
+            return super::demarrage_ecriture::quarantaine(f, super::demarrage_ecriture::Lieu::Commun);
+        }
+        Acte::DemarrageRemettre(f, n) => {
+            return super::demarrage_ecriture::remettre(f, *n, super::demarrage_ecriture::Lieu::Commun);
+        }
         Acte::LancementDesactiver(l, v) => return super::lancement_ecriture::desactiver(l, v),
         Acte::LancementReactiver(l) => return super::lancement_ecriture::reactiver(l),
         // Abonnements WMI permanents (root\subscription, COM) : relus, rejugés par le bilan refait ici, les trois
@@ -781,7 +785,7 @@ pub(crate) fn faire(acte: &Acte, compte: &Result<String, String>) -> Resultat {
         | Acte::TacheDesactiver(_)
         | Acte::TacheReactiver(_)
         | Acte::DemarrageQuarantaine(_)
-        | Acte::DemarrageRemettre(_)
+        | Acte::DemarrageRemettre(..)
         | Acte::LancementDesactiver(..)
         | Acte::LancementReactiver(_)
         | Acte::WmiAbonnementRetirer(_)

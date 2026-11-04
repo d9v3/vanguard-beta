@@ -4082,9 +4082,10 @@ pub(crate) const TACHE_DESACTIVER: &str = "vanguard:tache-desactiver ";
 /// Réactiver une tâche que Vanguard a désactivée : `vanguard:tache-reactiver <chemin en hex>` (passe b).
 pub(crate) const TACHE_REACTIVER: &str = "vanguard:tache-reactiver ";
 /// Mettre en quarantaine un fichier du dossier Démarrage commun : `vanguard:demarrage-quarantaine <chemin en hex>`
-/// (passe b). Le dossier Démarrage de la personne reste à vider soi-même.
+/// (passe b). Celui de la personne, Vanguard non élevé : `GesteCompte::DemarrageQuarantaine` (défense D6d).
 pub(crate) const DEMARRAGE_QUARANTAINE: &str = "vanguard:demarrage-quarantaine ";
-/// Ressortir de la quarantaine un fichier que Vanguard y a mis : `vanguard:demarrage-remettre <chemin en hex>`.
+/// Ressortir de la quarantaine un fichier que Vanguard y a mis : `vanguard:demarrage-remettre <chemin en hex>[ <n>]`,
+/// la copie n (1 à 8) ou, sans numéro, la plus récente (défense D6d).
 pub(crate) const DEMARRAGE_REMETTRE: &str = "vanguard:demarrage-remettre ";
 /// Retirer un abonnement WMI (consumer, binding, filtre non partagé) : `vanguard:wmi-abonnement-retirer
 /// <commande|script> <nom du consumer en hex>` (passe c).
@@ -4111,9 +4112,11 @@ pub(crate) const RUN_AVANT_CLE: &str = r"SOFTWARE\Vanguard\RunAvant";
 /// Où le processus élevé note le XML d'une tâche qu'il désactive, avant et après : la réactivation n'a lieu que si la
 /// tâche est restée telle que Vanguard l'a laissée.
 pub(crate) const TACHE_AVANT_CLE: &str = r"SOFTWARE\Vanguard\TacheAvant";
-/// Où le processus élevé note la copie en quarantaine d'un fichier du dossier Démarrage commun (son nom et son
-/// empreinte) : la remise ne lit qu'elle.
+/// Où le processus élevé note les copies en quarantaine d'un fichier du dossier Démarrage commun (numéro, heure,
+/// taille, mode, empreinte) : la remise ne lit qu'elle.
 pub(crate) const DEMARRAGE_AVANT_CLE: &str = r"SOFTWARE\Vanguard\DemarrageAvant";
+/// Sous le HKCU de la personne, la même note pour son propre dossier Démarrage (Vanguard non élevé, défense D6d).
+pub(crate) const DEMARRAGE_AVANT_COMPTE_CLE: &str = r"Software\Vanguard\DemarrageAvant";
 /// Où le processus élevé note les octets d'avant d'une valeur de StartupApproved qu'il écrit, et ceux qu'il écrit.
 pub(crate) const LANCEMENT_AVANT_CLE: &str = r"SOFTWARE\Vanguard\LancementAvant";
 /// Le plus long nom de valeur de démarrage de la machine, en unités UTF-16 : ce que tient une ligne du tube
@@ -5001,6 +5004,60 @@ fn est_persistance(ligne: &str) -> bool {
     VERBES_PERSISTANCE.iter().any(|v| ligne.starts_with(v))
 }
 
+/// Le fichier et le numéro de copie d'une remise (« `<hex>[ <n>]` », n de 1 à 8) ; la forme exacte est vérifiée par
+/// la relecture de la ligne.
+fn lire_remise(reste: &str) -> Option<(CheminFichier, Option<u8>)> {
+    let (hex, n) = match reste.split_once(' ') {
+        Some((hex, n)) => (
+            hex,
+            // Un seul chiffre, 1 à 8 : ni « 03 », ni « +3 », ni espace de plus ; la ligne se relit à l'identique.
+            Some(match n.as_bytes() {
+                &[c] => char::from(c)
+                    .to_digit(10)
+                    .and_then(|d| u8::try_from(d).ok())
+                    .filter(|d| (1..=COPIES_DEMARRAGE).contains(d))?,
+                _ => return None,
+            }),
+        ),
+        None => (reste, None),
+    };
+    Some((CheminFichier::lire(hex)?, n))
+}
+
+/// Le texte d'une remise : le chemin, puis le numéro de copie s'il y en a un.
+fn texte_remise(f: &CheminFichier, n: Option<u8>) -> String {
+    match n {
+        Some(n) => format!("{} {n}", f.hex()),
+        None => f.hex(),
+    }
+}
+
+/// Les copies gardées par fichier du dossier Démarrage (P13 : huit).
+pub(crate) const COPIES_DEMARRAGE: u8 = 8;
+
+/// La ligne qui remet un fichier du dossier Démarrage depuis sa copie `n` (ou la plus récente), par le processus
+/// élevé (dossier commun) ou par Vanguard non élevé (`compte`, celui de la personne) ; `None` hors de la forme.
+pub(crate) fn ligne_demarrage_remettre(chemin: &str, n: Option<u8>, compte: bool) -> Option<String> {
+    let f = CheminFichier::nouveau(chemin)?;
+    if n.is_some_and(|n| !(1..=COPIES_DEMARRAGE).contains(&n)) {
+        return None;
+    }
+    let ligne = if compte {
+        GesteCompte::DemarrageRemettre(f, n).ligne()
+    } else {
+        Acte::DemarrageRemettre(f, n).ligne()
+    };
+    let borne = if compte { COMPTE_LIGNE_MAX } else { LIGNE_MAX };
+    (ligne.len() <= borne).then_some(ligne)
+}
+
+/// La ligne qui met en quarantaine un fichier du dossier Démarrage de la personne, par Vanguard non élevé ; `None`
+/// hors de la forme de `CheminFichier`.
+pub(crate) fn ligne_demarrage_quarantaine_compte(chemin: &str) -> Option<String> {
+    let ligne = GesteCompte::DemarrageQuarantaine(CheminFichier::nouveau(chemin)?).ligne();
+    (ligne.len() <= COMPTE_LIGNE_MAX).then_some(ligne)
+}
+
 /// L'acte d'une ligne de persistance (lot 3.5), si et seulement si elle est exactement de sa forme. Bornée par
 /// `LIGNE_MAX` (un nom de valeur ou un chemin), `ACTE_NOM_MAX` pour un consumer ou un service.
 fn analyser_persistance(ligne: &str) -> Option<Acte> {
@@ -5041,7 +5098,7 @@ fn analyser_persistance(ligne: &str) -> Option<Acte> {
     } else if let Some(r) = long(DEMARRAGE_QUARANTAINE) {
         CheminFichier::lire(r).map(Acte::DemarrageQuarantaine)
     } else if let Some(r) = long(DEMARRAGE_REMETTRE) {
-        CheminFichier::lire(r).map(Acte::DemarrageRemettre)
+        lire_remise(r).map(|(f, n)| Acte::DemarrageRemettre(f, n))
     } else if let Some(r) = court(WMI_ABONNEMENT_RETIRER) {
         wmi(r).map(Acte::WmiAbonnementRetirer)
     } else if let Some(r) = court(WMI_ABONNEMENT_REMETTRE) {
@@ -5133,8 +5190,8 @@ pub(crate) enum Acte {
     TacheReactiver(CheminTache),
     /// Mettre en quarantaine un fichier du dossier Démarrage commun (passe b).
     DemarrageQuarantaine(CheminFichier),
-    /// Ressortir de la quarantaine un fichier que Vanguard y a mis (passe b).
-    DemarrageRemettre(CheminFichier),
+    /// Ressortir de la quarantaine un fichier que Vanguard y a mis, la copie n ou la plus récente (passe b, D6d).
+    DemarrageRemettre(CheminFichier, Option<u8>),
     /// Retirer un abonnement WMI signalé (passe c).
     WmiAbonnementRetirer(AbonnementWmi),
     /// Recréer un abonnement WMI que Vanguard a retiré (passe c).
@@ -5208,7 +5265,7 @@ impl Acte {
             Acte::TacheDesactiver(t) => format!("{TACHE_DESACTIVER}{}", t.hex()),
             Acte::TacheReactiver(t) => format!("{TACHE_REACTIVER}{}", t.hex()),
             Acte::DemarrageQuarantaine(f) => format!("{DEMARRAGE_QUARANTAINE}{}", f.hex()),
-            Acte::DemarrageRemettre(f) => format!("{DEMARRAGE_REMETTRE}{}", f.hex()),
+            Acte::DemarrageRemettre(f, n) => format!("{DEMARRAGE_REMETTRE}{}", texte_remise(f, *n)),
             Acte::WmiAbonnementRetirer(w) => format!("{WMI_ABONNEMENT_RETIRER}{} {}", w.classe.mot(), w.nom.hex()),
             Acte::WmiAbonnementRemettre(w) => format!("{WMI_ABONNEMENT_REMETTRE}{} {}", w.classe.mot(), w.nom.hex()),
             Acte::ServiceRetirer(n) => format!("{SERVICE_RETIRER}{}", n.hex()),
@@ -5306,7 +5363,7 @@ impl Acte {
             | Acte::TacheDesactiver(_)
             | Acte::TacheReactiver(_)
             | Acte::DemarrageQuarantaine(_)
-            | Acte::DemarrageRemettre(_)
+            | Acte::DemarrageRemettre(..)
             | Acte::WmiAbonnementRetirer(_)
             | Acte::WmiAbonnementRemettre(_)
             // Un programme de démarrage choisi dans Optimiser : un confort, défait par Optimiser lui-même.
@@ -5371,7 +5428,7 @@ impl Acte {
             // Un lancement que le bilan jugeait suspect revient : dit en toutes lettres avant l'accord.
             Acte::RunRemettre(_)
             | Acte::TacheReactiver(_)
-            | Acte::DemarrageRemettre(_)
+            | Acte::DemarrageRemettre(..)
             | Acte::WmiAbonnementRemettre(_)
             // La remise d'un réglage ou d'un chemin de service noté : la valeur faible revient.
             | Acte::ReglageRemettre(_)
@@ -5436,7 +5493,7 @@ impl Acte {
             | Acte::TacheDesactiver(_)
             | Acte::TacheReactiver(_)
             | Acte::DemarrageQuarantaine(_)
-            | Acte::DemarrageRemettre(_)
+            | Acte::DemarrageRemettre(..)
             | Acte::WmiAbonnementRetirer(_)
             | Acte::WmiAbonnementRemettre(_)
             | Acte::ServiceRetirer(_)
@@ -5887,10 +5944,29 @@ pub(crate) enum GesteCompte {
     /// Le mode d'alimentation « Performances élevées » (powercfg, qui n'a pas besoin d'administrateur pour un mode
     /// qui existe).
     Alimentation,
+    /// Un fichier du dossier Démarrage de la personne mis en quarantaine, dans son dossier local (défense D6d).
+    DemarrageQuarantaine(CheminFichier),
+    /// Un fichier du dossier Démarrage de la personne remis depuis sa copie n, ou la plus récente (défense D6d).
+    DemarrageRemettre(CheminFichier, Option<u8>),
 }
 
 const MACROS: &str = "macros-office ";
 const RUN_RETIRER: &str = "run-retirer ";
+const COMPTE_DEMARRAGE_QUARANTAINE: &str = "demarrage-quarantaine ";
+const COMPTE_DEMARRAGE_REMETTRE: &str = "demarrage-remettre ";
+
+/// Un texte montré sans caractère de contrôle, coupé à `NOM_MONTRE_MAX` caractères.
+fn montre(lu: &str) -> String {
+    let mut affiche: String = lu
+        .chars()
+        .take(NOM_MONTRE_MAX)
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect();
+    if lu.chars().count() > NOM_MONTRE_MAX {
+        affiche.push('…');
+    }
+    affiche
+}
 const ALIMENTATION: &str = "alimentation-performances";
 const RUN_DEFAUT: &str = "defaut";
 
@@ -5910,6 +5986,10 @@ impl GesteCompte {
                 format!("{COMPTE}{RUN_RETIRER}{cle} {nom}")
             }
             GesteCompte::Alimentation => format!("{COMPTE}{ALIMENTATION}"),
+            GesteCompte::DemarrageQuarantaine(f) => format!("{COMPTE}{COMPTE_DEMARRAGE_QUARANTAINE}{}", f.hex()),
+            GesteCompte::DemarrageRemettre(f, n) => {
+                format!("{COMPTE}{COMPTE_DEMARRAGE_REMETTRE}{}", texte_remise(f, *n))
+            }
         }
     }
 
@@ -5925,7 +6005,9 @@ impl GesteCompte {
             GesteCompte::RetirerRun { runonce, nom } => {
                 Some(((if *runonce { CLE_RUNONCE } else { CLE_RUN }).to_string(), nom.clone()))
             }
-            GesteCompte::Alimentation => None,
+            GesteCompte::Alimentation | GesteCompte::DemarrageQuarantaine(_) | GesteCompte::DemarrageRemettre(..) => {
+                None
+            }
         }
     }
 
@@ -5935,7 +6017,9 @@ impl GesteCompte {
             GesteCompte::Valeur(v) => Some(v.donnee),
             GesteCompte::Macros { .. } => Some(Donnee::Dword(2)),
             GesteCompte::RetirerRun { .. } => Some(Donnee::Retirer),
-            GesteCompte::Alimentation => None,
+            GesteCompte::Alimentation | GesteCompte::DemarrageQuarantaine(_) | GesteCompte::DemarrageRemettre(..) => {
+                None
+            }
         }
     }
 
@@ -5950,7 +6034,10 @@ impl GesteCompte {
         match self {
             GesteCompte::Valeur(v) => v.durcit,
             GesteCompte::Macros { .. } => true,
-            GesteCompte::RetirerRun { .. } | GesteCompte::Alimentation => false,
+            GesteCompte::RetirerRun { .. }
+            | GesteCompte::Alimentation
+            | GesteCompte::DemarrageQuarantaine(_)
+            | GesteCompte::DemarrageRemettre(..) => false,
         }
     }
 
@@ -5966,15 +6053,7 @@ impl GesteCompte {
                 }
             }
             GesteCompte::RetirerRun { runonce, nom } => {
-                let lu = String::from_utf16_lossy(nom);
-                let mut affiche: String = lu
-                    .chars()
-                    .take(NOM_MONTRE_MAX)
-                    .map(|c| if c.is_control() { '?' } else { c })
-                    .collect();
-                if lu.chars().count() > NOM_MONTRE_MAX {
-                    affiche.push('…');
-                }
+                let affiche = montre(&String::from_utf16_lossy(nom));
                 let cle = if *runonce { "RunOnce" } else { "Run" };
                 match (francais, nom.is_empty()) {
                     (true, true) => format!("Retirer la valeur par défaut du démarrage de ce compte ({cle})"),
@@ -5988,6 +6067,23 @@ impl GesteCompte {
                     "Passer au mode d'alimentation « Performances élevées »".to_string()
                 } else {
                     "Switch to the “High performance” power plan".to_string()
+                }
+            }
+            GesteCompte::DemarrageQuarantaine(f) => {
+                let f = montre(f.texte());
+                if francais {
+                    format!("Mettre en quarantaine « {f} » (dossier Démarrage de ce compte)")
+                } else {
+                    format!("Quarantine “{f}” (this account's Startup folder)")
+                }
+            }
+            GesteCompte::DemarrageRemettre(f, n) => {
+                let f = montre(f.texte());
+                match (francais, n) {
+                    (true, Some(n)) => format!("Remettre « {f} » depuis sa copie n° {n}"),
+                    (true, None) => format!("Remettre « {f} » depuis sa copie la plus récente"),
+                    (false, Some(n)) => format!("Put “{f}” back from its copy no. {n}"),
+                    (false, None) => format!("Put “{f}” back from its most recent copy"),
                 }
             }
         }
@@ -6028,7 +6124,8 @@ fn lire_hex_utf16(hex: &str, max: usize) -> Option<Vec<u16>> {
 
 /// Le geste d'une ligne du compte, si et seulement si elle est exactement de sa forme (relue, elle se réécrit à
 /// l'identique) : un identifiant de `VALEURS_COMPTE`, `macros-office <version> <programme>` des listes d'Office,
-/// `run-retirer <run|runonce> <nom en hexadécimal|defaut>` ou `alimentation-performances`.
+/// `run-retirer <run|runonce> <nom en hexadécimal|defaut>`, `alimentation-performances`,
+/// `demarrage-quarantaine <chemin en hexadécimal>` ou `demarrage-remettre <chemin en hexadécimal>[ <n>]`.
 pub(crate) fn analyser_compte(ligne: &str) -> Option<GesteCompte> {
     let reste = ligne.strip_prefix(COMPTE)?;
     if ligne.len() > COMPTE_LIGNE_MAX || !ligne.is_ascii() {
@@ -6058,6 +6155,11 @@ pub(crate) fn analyser_compte(ligne: &str) -> Option<GesteCompte> {
         GesteCompte::RetirerRun { runonce, nom }
     } else if reste == ALIMENTATION {
         GesteCompte::Alimentation
+    } else if let Some(r) = reste.strip_prefix(COMPTE_DEMARRAGE_QUARANTAINE) {
+        GesteCompte::DemarrageQuarantaine(CheminFichier::lire(r)?)
+    } else if let Some(r) = reste.strip_prefix(COMPTE_DEMARRAGE_REMETTRE) {
+        let (f, n) = lire_remise(r)?;
+        GesteCompte::DemarrageRemettre(f, n)
     } else {
         GesteCompte::Valeur(VALEURS_COMPTE.iter().find(|v| v.id == reste)?)
     };
@@ -8069,6 +8171,73 @@ mod tests {
         ] {
             let attendu = faux == "vanguard:compte run-retirer run 4100";
             assert_eq!(analyser_compte(faux).is_some(), attendu, "{faux}");
+        }
+    }
+
+    /// Le dossier Démarrage : la quarantaine et la remise de la personne sont des gestes du compte, celles du dossier
+    /// commun des actes du processus élevé ; une copie se désigne par un seul chiffre, 1 à 8 ; aucun suffixe (« oui »,
+    /// espace, autre verbe) ne passe, et aucune ligne ne se fait de l'autre côté.
+    #[test]
+    fn demarrage_de_la_personne_et_copie_designee() {
+        let personne = r"C:\Users\alice\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\x.lnk";
+        let quarantaine = ligne_demarrage_quarantaine_compte(personne).unwrap();
+        assert_eq!(
+            quarantaine,
+            format!("{COMPTE}demarrage-quarantaine {}", hex_texte(personne))
+        );
+        assert!(
+            matches!(analyser_compte(&quarantaine), Some(GesteCompte::DemarrageQuarantaine(f)) if f.texte() == personne)
+        );
+        for n in [None, Some(1), Some(8)] {
+            let remise = ligne_demarrage_remettre(personne, n, true).unwrap();
+            let geste = analyser_compte(&remise).unwrap();
+            assert!(matches!(&geste, GesteCompte::DemarrageRemettre(f, m) if f.texte() == personne && *m == n));
+            assert_eq!(geste.ligne(), remise);
+            assert!(!geste.durcit() && geste.valeur().is_none() && geste.donnee().is_none());
+            let eleve = ligne_demarrage_remettre(personne, n, false).unwrap();
+            assert!(
+                matches!(analyser_acte(&eleve), Some(Acte::DemarrageRemettre(f, m)) if f.texte() == personne && m == n)
+            );
+            // Jamais de l'autre côté : la ligne du compte n'est pas un acte, celle du processus élevé pas un geste du
+            // compte ; une liste qui porte la ligne du compte est refusée derrière l'UAC.
+            assert!(analyser_acte(&remise).is_none() && analyser_compte(&eleve).is_none());
+            assert!(!valide(std::slice::from_ref(&remise)) && !valide(&[POINT.to_string(), remise.clone()]));
+        }
+        assert_eq!(ligne_demarrage_remettre(personne, Some(0), true), None);
+        assert_eq!(ligne_demarrage_remettre(personne, Some(9), false), None);
+        let hex = hex_texte(personne);
+        for faux in [
+            format!("{COMPTE}demarrage-remettre {hex} 0"),
+            format!("{COMPTE}demarrage-remettre {hex} 9"),
+            format!("{COMPTE}demarrage-remettre {hex} 03"),
+            format!("{COMPTE}demarrage-remettre {hex} +3"),
+            format!("{COMPTE}demarrage-remettre {hex} 3 "),
+            format!("{COMPTE}demarrage-remettre {hex}  3"),
+            format!("{COMPTE}demarrage-remettre {hex} "),
+            format!("{COMPTE}demarrage-remettre {hex} oui"),
+            format!("{COMPTE}demarrage-remettre {hex} 3 oui"),
+            format!("{COMPTE}demarrage-remettre  {hex}"),
+            format!("{COMPTE}demarrage-remettre {}", hex.to_uppercase()),
+            format!("{COMPTE}demarrage-quarantaine {hex} 3"),
+            format!("{COMPTE}demarrage-quarantaine {hex} oui"),
+            format!("{COMPTE}demarrage-quarantaine {hex} {DEMARRAGE_REMETTRE}{hex}"),
+            format!("{COMPTE}demarrage-quarantaine {hex}\n{COMPTE}demarrage-remettre {hex}"),
+            format!("{COMPTE}demarrage-quarantaine"),
+            format!("{COMPTE}Demarrage-quarantaine {hex}"),
+        ] {
+            assert_eq!(analyser_compte(&faux), None, "{faux}");
+            assert!(analyser_acte(&faux).is_none(), "{faux}");
+        }
+        for faux in [
+            format!("{DEMARRAGE_REMETTRE}{hex} 0"),
+            format!("{DEMARRAGE_REMETTRE}{hex} 03"),
+            format!("{DEMARRAGE_REMETTRE}{hex} 3 oui"),
+            format!("{DEMARRAGE_REMETTRE}{hex} oui"),
+            format!("{DEMARRAGE_QUARANTAINE}{hex} 3"),
+            format!("{DEMARRAGE_QUARANTAINE}{hex} {COMPTE}demarrage-remettre {hex}"),
+        ] {
+            assert!(analyser_acte(&faux).is_none(), "{faux}");
+            assert!(!valide(&[POINT.to_string(), faux.clone()]), "{faux}");
         }
     }
 

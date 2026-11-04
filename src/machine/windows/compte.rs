@@ -82,6 +82,16 @@ fn dire(g: &GesteCompte, r: &Resultat) {
 /// Fait un geste du compte, sous HKCU seulement (ou par powercfg, sans droits), et le relit. Un réglage d'Internet
 /// changé est annoncé à WinINet, pour que les navigateurs le prennent sans fermer la session.
 pub(crate) fn faire(g: &GesteCompte) -> Resultat {
+    // Le dossier Démarrage de la personne (défense D6d) : ni valeur ni donnée, jugé par son propre geste.
+    match g {
+        GesteCompte::DemarrageQuarantaine(f) => {
+            return super::demarrage_ecriture::quarantaine(f, super::demarrage_ecriture::Lieu::Personne);
+        }
+        GesteCompte::DemarrageRemettre(f, n) => {
+            return super::demarrage_ecriture::remettre(f, *n, super::demarrage_ecriture::Lieu::Personne);
+        }
+        _ => {}
+    }
     let r = match g.valeur() {
         Some(_) if matches!(g, GesteCompte::Macros { .. }) => {
             macros_sous(&winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER), g)
@@ -132,7 +142,9 @@ fn faire_sous(racine: &winreg::RegKey, g: &GesteCompte) -> Resultat {
         (Some((cle, nom)), Some(Donnee::SwapEffect)) => ecrire_texte(racine, &cle, &nom, |avant| {
             gestes::avec_swap_effect(avant.unwrap_or_default())
         }),
-        (Some((cle, nom)), Some(Donnee::Retirer)) => retirer(racine, &cle, &nom),
+        (Some((cle, nom)), Some(Donnee::Retirer)) => {
+            retirer(racine, &cle, &nom, matches!(g, GesteCompte::RetirerRun { .. }))
+        }
         // L'alimentation n'a pas de valeur ; aucun geste n'a une clé sans donnée (`GesteCompte::valeur`, `donnee`).
         _ => Resultat::echec(None, tr!("geste incomplet", "incomplete action").to_string()),
     }
@@ -208,22 +220,27 @@ fn ecrire_texte(hkcu: &winreg::RegKey, cle: &str, nom: &[u16], nouveau: impl Fn(
 }
 
 /// Une valeur du compte retirée, puis son absence relue ; sa valeur d'avant notée (texte, DWORD ou type). Déjà
-/// absente (ou sa clé) : rien à faire.
-fn retirer(hkcu: &winreg::RegKey, cle: &str, nom: &[u16]) -> Resultat {
+/// absente (ou sa clé) : rien à faire. Une valeur de démarrage (`run`) n'est jamais le vrai programme de Windows ou
+/// de Defender (place et signature, `protege`) ; un nom seul se demande dans une vraie console, non par défaut.
+fn retirer(hkcu: &winreg::RegKey, cle: &str, unites: &[u16], run: bool) -> Resultat {
     use std::io::ErrorKind::NotFound;
     use winreg::enums::{KEY_QUERY_VALUE, KEY_SET_VALUE};
     let deja = || Resultat::rien(tr!("déjà absente, rien d'écrit", "already absent, nothing written").to_string());
-    let nom = nom_os(nom);
+    let nom = nom_os(unites);
     let k = match hkcu.open_subkey_with_flags(cle, KEY_QUERY_VALUE | KEY_SET_VALUE) {
         Ok(k) => k,
         Err(e) if e.kind() == NotFound => return deja(),
         Err(e) => return illisible(&e),
     };
-    let avant = match k.get_raw_value(&nom) {
-        Ok(brute) => corrections::decrire(&brute),
+    let brute = match k.get_raw_value(&nom) {
+        Ok(brute) => brute,
         Err(e) if e.kind() == NotFound => return deja(),
         Err(e) => return illisible(&e),
     };
+    if run && let Some(refus) = run_protege(unites, &brute) {
+        return refus;
+    }
+    let avant = corrections::decrire(&brute);
     if let Err(e) = k.delete_value(&nom) {
         return Resultat::echec(Some(avant), e.to_string());
     }
@@ -237,6 +254,31 @@ fn retirer(hkcu: &winreg::RegKey, cle: &str, nom: &[u16]) -> Resultat {
             )
             .to_string(),
         ),
+    }
+}
+
+/// Le refus d'un retrait de démarrage du compte qui viserait le vrai Defender ou Sécurité Windows, ou d'un nom seul
+/// que la personne n'a pas confirmé ; `None` : le retrait peut se faire.
+fn run_protege(unites: &[u16], brute: &winreg::RegValue) -> Option<Resultat> {
+    use super::protege::{self, Protege};
+    let texte = super::persistance::texte_valeur(brute);
+    let (programme, _) = crate::commande::decouper_commande(&texte);
+    let nom = String::from_utf16_lossy(unites);
+    match protege::protege(&nom, &programme) {
+        Protege::Non => None,
+        Protege::Vrai => Some(Resultat::echec(
+            None,
+            tr!(
+                "entrée de Sécurité Windows ou de Defender (le vrai programme, signé par Microsoft) : Vanguard ne la retire jamais ; rien d'écrit",
+                "Windows Security or Defender entry (the real program, signed by Microsoft): Vanguard never removes it; nothing written"
+            )
+            .to_string(),
+        )),
+        Protege::NomSeul => (!protege::accord(
+            &protege::texte_nom_seul(&nom, &programme),
+            protege::question_quand_meme(),
+        ))
+        .then(|| Resultat::echec(None, protege::non_confirme())),
     }
 }
 
@@ -472,6 +514,13 @@ mod tests {
         assert_eq!(run.get_value::<String, _>("*").unwrap(), "garde aussi");
         let refait = faire_sous(&r.cle, &g);
         assert!(refait.reussi && refait.rien);
+        // Le nom de Defender sur un autre programme se demande : sans vraie console, refusé, la valeur gardée (D6d).
+        let faux = "Windows Defender";
+        run.set_value(faux, &r"C:\Users\alice\AppData\Roaming\x.cmd").unwrap();
+        let unites: Vec<u16> = faux.encode_utf16().collect();
+        let refuse = faire_sous(&r.cle, &geste(&gestes::ligne_run_retirer(false, &unites).unwrap()));
+        assert!(!refuse.reussi && refuse.avant.is_none(), "{}", refuse.raison);
+        assert!(run.get_raw_value(faux).is_ok());
         // Le proxy : ProxyEnable à 0, le script retiré ; ProxyServer reste.
         let (internet, _) = r
             .cle

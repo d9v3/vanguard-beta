@@ -179,7 +179,7 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                     | gestes::Acte::TacheDesactiver(_)
                     | gestes::Acte::TacheReactiver(_)
                     | gestes::Acte::DemarrageQuarantaine(_)
-                    | gestes::Acte::DemarrageRemettre(_)
+                    | gestes::Acte::DemarrageRemettre(..)
                     | gestes::Acte::LancementDesactiver(..)
                     | gestes::Acte::LancementReactiver(_)
             );
@@ -380,7 +380,12 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                     assert_eq!(gestes::CheminTache::nouveau(c).as_ref(), Some(t));
                 }
                 // Un chemin « X:\… » local : jamais \\?\, \\.\, un partage, un flux « : » ni « .. ».
-                gestes::Acte::DemarrageQuarantaine(ref f) | gestes::Acte::DemarrageRemettre(ref f) => {
+                gestes::Acte::DemarrageQuarantaine(ref f) | gestes::Acte::DemarrageRemettre(ref f, _) => {
+                    if let gestes::Acte::DemarrageRemettre(_, n) = a {
+                        // Une copie désignée : 1 à 8, jamais 0 ni au-delà ; la ligne se reconstruit à l'identique.
+                        assert!(n.is_none_or(|n| (1..=gestes::COPIES_DEMARRAGE).contains(&n)));
+                        assert_eq!(gestes::ligne_demarrage_remettre(f.texte(), n, false).as_deref(), Some(l.as_str()));
+                    }
                     let c = f.texte();
                     let o = c.as_bytes();
                     assert!(o.len() > 3 && o[0].is_ascii_alphabetic() && o[1] == b':' && o[2] == b'\\');
@@ -448,6 +453,20 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                 assert!(nom.len() <= gestes::RUN_NOM_MAX && !nom.contains(&0));
                 let runonce = matches!(g, gestes::GesteCompte::RetirerRun { runonce: true, .. });
                 assert_eq!(gestes::ligne_run_retirer(runonce, nom).as_deref(), Some(l.as_str()));
+            }
+            // Le dossier Démarrage de la personne : un chemin admis par le constructeur, une copie 1 à 8 ; la ligne
+            // se reconstruit à l'identique et n'est jamais celle du processus élevé.
+            match &g {
+                gestes::GesteCompte::DemarrageQuarantaine(f) => {
+                    assert_eq!(gestes::CheminFichier::nouveau(f.texte()).as_ref(), Some(f));
+                    assert_eq!(gestes::ligne_demarrage_quarantaine_compte(f.texte()).as_deref(), Some(l.as_str()));
+                }
+                gestes::GesteCompte::DemarrageRemettre(f, n) => {
+                    assert!(n.is_none_or(|n| (1..=gestes::COPIES_DEMARRAGE).contains(&n)));
+                    assert_eq!(gestes::CheminFichier::nouveau(f.texte()).as_ref(), Some(f));
+                    assert_eq!(gestes::ligne_demarrage_remettre(f.texte(), *n, true).as_deref(), Some(l.as_str()));
+                }
+                _ => {}
             }
         }
         if let Some(s) = gestes::analyser_script(l) {

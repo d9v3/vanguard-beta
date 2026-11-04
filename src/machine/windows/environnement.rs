@@ -182,6 +182,7 @@ static PROFIL: GUID = GUID::from_u128(0x5e6c858f_0e22_4760_9afe_ea3317b67173);
 static APPDATA: GUID = GUID::from_u128(0x3eb685db_65f9_4cf6_a03a_e3ef65729f3d);
 static APPDATA_LOCAL: GUID = GUID::from_u128(0xf1b32785_6fba_4fcf_9d55_7b8e7f157091);
 static DEMARRAGE_COMMUN: GUID = GUID::from_u128(0x82a5ea35_d9cd_47c5_9629_e15d2f714e6e);
+static DEMARRAGE_PERSONNE: GUID = GUID::from_u128(0xb97d20bb_f46a_4c97_ba10_5e3608430854);
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -277,6 +278,13 @@ const PAR_DEFAUT: u32 = 0x0000_0400 | 0x0000_0200;
 /// celui-ci : la ligne qui le vise est refusée.
 pub(crate) fn demarrage_commun() -> Option<PathBuf> {
     dossier_connu(&DEMARRAGE_COMMUN)
+}
+
+/// Le dossier Démarrage du compte qui fait tourner ce processus (FOLDERID_Startup), à son emplacement par défaut :
+/// celui où Vanguard, non élevé, met un fichier en quarantaine (défense D6d). Redirigé ailleurs (User Shell Folders,
+/// que le compte réécrit), ce n'est pas celui-ci : la ligne qui le vise est refusée.
+pub(crate) fn demarrage_personne() -> Option<PathBuf> {
+    dossier_connu(&DEMARRAGE_PERSONNE)
 }
 
 /// La racine du profil du compte qui fait tourner ce processus (celui qui l'a ouvert en administrateur, quand il est

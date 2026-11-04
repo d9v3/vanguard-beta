@@ -27,6 +27,7 @@ mod defender;
 mod defender_ecriture;
 pub(crate) mod defense_etat;
 mod demarrage_ecriture;
+mod demarrage_notes;
 mod durcissement;
 pub(crate) mod ecoute;
 pub(crate) mod eleve;

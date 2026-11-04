@@ -324,11 +324,12 @@ pub(super) fn tache_signalee(lignes: &[String], ligne: &str) -> bool {
     propose(&juger_persistance(&lignes, &[], &[]), ligne)
 }
 
-/// Dans le processus élevé : le bilan, refait sur ce seul fichier relu du dossier Démarrage commun (`commun`, lu par
-/// le processus élevé lui-même), propose-t-il exactement `ligne` ? `cible` vient de `cible_demarrage`.
-pub(super) fn demarrage_signale(fichier: &str, cible: &str, commun: &str, ligne: &str) -> bool {
+/// Dans le geste : le bilan, refait sur ce seul fichier relu d'un dossier Démarrage (`dossiers` : celui de la
+/// personne et celui de tous, lus par le geste lui-même), propose-t-il exactement `ligne` ? `cible` vient de
+/// `cible_demarrage`.
+pub(super) fn demarrage_signale(fichier: &str, cible: &str, dossiers: [Option<&str>; 2], ligne: &str) -> bool {
     let d = format!("{fichier}|{cible}");
-    propose(&juger_persistance_selon(&[], &[], &[&d], Some(commun)), ligne)
+    propose(&juger_persistance_selon(&[], &[], &[&d], dossiers), ligne)
 }
 
 /// Ce que lance un fichier du dossier Démarrage, comme le bilan l'écrit : la cible et les arguments d'un raccourci
@@ -674,13 +675,18 @@ pub(super) fn persistance() -> Vec<Constat> {
             "startup keys not fully read: {cles}"
         ));
     }
-    let [_, commun] = dossiers_demarrage();
-    let commun = commun.map(|c| c.to_string_lossy().into_owned());
+    // Les dossiers où un geste peut agir : à leur emplacement par défaut, comme le geste les lit (un dossier
+    // redirigé est lu par le bilan, ses fichiers signalés sans geste).
+    let [personne, commun] = [
+        super::environnement::demarrage_personne(),
+        super::environnement::demarrage_commun(),
+    ]
+    .map(|d| d.map(|d| d.to_string_lossy().into_owned()));
     let constats = juger_persistance_selon(
         &taches.unwrap_or_default(),
         &run,
         &demarrage.unwrap_or_default(),
-        commun.as_deref(),
+        [personne.as_deref(), commun.as_deref()],
     );
     if non_lus.is_empty() {
         return constats;
@@ -736,10 +742,21 @@ fn info_fenetre_cachee(ou: &str, commande: &str) -> Constat {
     )
 }
 
-/// Le bilan des lancements automatiques, sans dossier Démarrage commun connu (aucun fichier n'y est mis en
-/// quarantaine).
+/// Le bilan des lancements automatiques, sans dossier Démarrage connu (aucun fichier n'y est mis en quarantaine).
 fn juger_persistance(taches: &[&str], run: &[ValeurRun], demarrage: &[&str]) -> Vec<Constat> {
-    juger_persistance_selon(taches, run, demarrage, None)
+    juger_persistance_selon(taches, run, demarrage, [None, None])
+}
+
+/// La ligne qui met en quarantaine ce fichier : par Vanguard non élevé s'il est directement dans le dossier de la
+/// personne, par le processus élevé dans celui de tous ; `None` ailleurs (signalé, à retirer à la main).
+fn ligne_quarantaine(fichier: &str, [personne, commun]: [Option<&str>; 2]) -> Option<String> {
+    if personne.is_some_and(|p| dans_dossier(fichier, p)) {
+        super::gestes::ligne_demarrage_quarantaine_compte(fichier)
+    } else if commun.is_some_and(|c| dans_dossier(fichier, c)) {
+        super::gestes::ligne_demarrage_quarantaine(fichier)
+    } else {
+        None
+    }
 }
 
 /// Le fichier est-il directement dans le dossier `commun` (casse ignorée, comme Windows) ?
@@ -749,16 +766,16 @@ fn dans_dossier(fichier: &str, commun: &str) -> bool {
     !commun.is_empty() && parent.to_lowercase() == commun.to_lowercase()
 }
 
-/// `commun` : le dossier Démarrage de tous. Un de ses fichiers suspects est mis en quarantaine par le processus élevé
-/// (`demarrage-quarantaine`) ; un fichier du dossier de la personne garde sa correction d'avant.
+/// `dossiers` : le dossier Démarrage de la personne et celui de tous. Un de leurs fichiers suspects est mis en
+/// quarantaine, par Vanguard non élevé ou par le processus élevé (`ligne_quarantaine`) ; jamais par PowerShell
+/// (défense D6d : plus de Remove-Item, qui ne gardait rien).
 fn juger_persistance_selon(
     taches: &[&str],
     run: &[ValeurRun],
     demarrage: &[&str],
-    commun: Option<&str>,
+    dossiers: [Option<&str>; 2],
 ) -> Vec<Constat> {
     use crate::modele::Objet;
-    let ps_texte = crate::commande::ps_texte;
     // Noms, chemins et commandes sont choisis par le programme qui se fait relancer : les corrections visent le vrai
     // nom, les messages le montrent rendu inoffensif.
     let montre = crate::ui::affichable;
@@ -893,24 +910,16 @@ fn juger_persistance_selon(
                 ),
             )
             .avec_objet(objet);
-            // Le dossier de tous : mis en quarantaine par le processus élevé, remis depuis elle. Celui de la personne
-            // garde sa correction (décision du lot 3.5).
-            constats.push(if commun.is_some_and(|c| dans_dossier(fichier_brut, c)) {
-                match super::gestes::ligne_demarrage_quarantaine(fichier_brut) {
-                    Some(ligne) => constat.corriger(
-                        trf!(
-                            "Mettre « {fichier} » en quarantaine (remis depuis elle si besoin)",
-                            "Quarantine “{fichier}” (can be put back from it)"
-                        ),
-                        &[&ligne],
+            // Mis en quarantaine, remis depuis elle ; ailleurs que dans les deux dossiers, signalé seulement.
+            constats.push(match ligne_quarantaine(fichier_brut, dossiers) {
+                Some(ligne) => constat.corriger(
+                    trf!(
+                        "Mettre « {fichier} » en quarantaine (remis depuis elle si besoin)",
+                        "Quarantine “{fichier}” (can be put back from it)"
                     ),
-                    None => constat,
-                }
-            } else {
-                constat.corriger(
-                    trf!("Supprimer « {fichier} »", "Delete “{fichier}”"),
-                    &[&format!("Remove-Item -LiteralPath '{}'", ps_texte(fichier_brut))],
-                )
+                    &[&ligne],
+                ),
+                None => constat,
             });
         } else if fenetre_cachee(&exe, &args) {
             let lieu = trf!(
@@ -919,23 +928,18 @@ fn juger_persistance_selon(
                 montre(fichier_brut)
             );
             let constat = info_fenetre_cachee(&lieu, &montre(cible_brute)).avec_objet(objet);
-            // Le dossier de tous seulement, comme plus haut : celui de la personne n'a pas de geste natif.
-            constats.push(
-                match commun
-                    .filter(|c| dans_dossier(fichier_brut, c))
-                    .and_then(|_| super::gestes::ligne_demarrage_quarantaine(fichier_brut))
-                {
-                    Some(ligne) => constat.corriger(
-                        trf!(
-                            "Mettre « {} » en quarantaine si vous ne le reconnaissez pas (remis depuis elle si besoin)",
-                            "Quarantine “{}” if you do not recognize it (can be put back from it)",
-                            nom_court(fichier_brut)
-                        ),
-                        &[&ligne],
+            // Les deux dossiers, comme plus haut.
+            constats.push(match ligne_quarantaine(fichier_brut, dossiers) {
+                Some(ligne) => constat.corriger(
+                    trf!(
+                        "Mettre « {} » en quarantaine si vous ne le reconnaissez pas (remis depuis elle si besoin)",
+                        "Quarantine “{}” if you do not recognize it (can be put back from it)",
+                        nom_court(fichier_brut)
                     ),
-                    None => constat,
-                },
-            );
+                    &[&ligne],
+                ),
+                None => constat,
+            });
         }
     }
     if constats.is_empty() {
@@ -1509,7 +1513,14 @@ mod tests {
         assert_eq!(c.len(), 3);
         // La tâche au nom piégé n'entre pas dans la grammaire : signalée, montrée inoffensive, sans correction.
         assert!(c[0].correctif.is_none() && !crate::ui::contient_un_piege(&c[0].message));
-        for c in &c[1..] {
+        // Le raccourci : jamais de Remove-Item. Hors des deux dossiers Démarrage (aucun n'est connu ici), signalé et
+        // montré inoffensif, sans correction ; dans le dossier de la personne, son nom piégé n'entre pas dans la
+        // grammaire des chemins : signalé aussi, sans geste qui viserait un autre nom.
+        assert!(c[2].correctif.is_none() && !crate::ui::contient_un_piege(&c[2].message));
+        let dossier = r"C:\Users\alice\Start Menu\Programs\Startup";
+        let k = juger_persistance_selon(&[], &[], &dem, [Some(dossier), None]);
+        assert!(k.len() == 1 && k[0].correctif.is_none() && !crate::ui::contient_un_piege(&k[0].message));
+        for c in &c[1..2] {
             let k = c.correctif.as_ref().unwrap();
             assert!(!crate::ui::contient_un_piege(&c.message), "{}", c.message);
             assert!(!crate::ui::contient_un_piege(&k.action), "{}", k.action);
@@ -1524,7 +1535,7 @@ mod tests {
 
     #[test]
     fn demarrage_commun_mis_en_quarantaine() {
-        use super::super::gestes::ligne_demarrage_quarantaine;
+        use super::super::gestes::{ligne_demarrage_quarantaine, ligne_demarrage_quarantaine_compte};
         let commun = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp";
         let fichier = format!(r"{commun}\Maj.lnk");
         let cible = r#""C:\Users\Public\c.exe" "#;
@@ -1532,45 +1543,58 @@ mod tests {
         let ligne = ligne_demarrage_quarantaine(&fichier).unwrap();
         // Dans le dossier de tous (casse ignorée, « \ » final ou non) : la quarantaine par le processus élevé.
         for c in [commun.to_string(), commun.to_uppercase(), format!(r"{commun}\")] {
-            let k = juger_persistance_selon(&[], &[], &[&d], Some(&c));
+            let k = juger_persistance_selon(&[], &[], &[&d], [None, Some(&c)]);
             assert_eq!(
                 k[0].correctif.as_ref().unwrap().commandes,
                 std::slice::from_ref(&ligne),
                 "{c}"
             );
         }
-        assert!(demarrage_signale(&fichier, cible, commun, &ligne));
-        // Dossier de la personne, sous-dossier du commun, commun inconnu : la correction d'avant, à la main.
-        let perso = r"C:\Users\alice\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\Maj.lnk";
+        assert!(demarrage_signale(&fichier, cible, [None, Some(commun)], &ligne));
+        // Le dossier de la personne (D6d) : la quarantaine par Vanguard non élevé, une ligne du compte que le processus
+        // élevé refuse ; plus jamais de Remove-Item, qui ne gardait rien.
+        let dossier_perso = r"C:\Users\alice\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup";
+        let perso = format!(r"{dossier_perso}\Maj.lnk");
+        let ligne_perso = ligne_demarrage_quarantaine_compte(&perso).unwrap();
+        assert!(super::super::gestes::analyser_acte(&ligne_perso).is_none());
+        assert!(super::super::gestes::analyser_compte(&ligne_perso).is_some());
+        let dossiers = [Some(dossier_perso), Some(commun)];
+        let k = juger_persistance_selon(&[], &[], &[&format!("{perso}|{cible}")], dossiers);
+        assert_eq!(
+            k[0].correctif.as_ref().unwrap().commandes,
+            std::slice::from_ref(&ligne_perso)
+        );
+        assert!(demarrage_signale(&perso, cible, dossiers, &ligne_perso));
+        assert!(!demarrage_signale(&perso, cible, dossiers, &ligne));
+        assert!(!demarrage_signale(&fichier, cible, dossiers, &ligne_perso));
+        // Hors des deux dossiers (sous-dossier, dossier inconnu ou vide) : signalé, sans geste ni commande.
         for (f, c) in [
-            (perso.to_string(), Some(commun)),
-            (format!(r"{commun}\sous\Maj.lnk"), Some(commun)),
-            (fichier.clone(), None),
-            (fichier.clone(), Some("")),
+            (perso.clone(), [None, Some(commun)]),
+            (format!(r"{commun}\sous\Maj.lnk"), dossiers),
+            (format!(r"{dossier_perso}\sous\Maj.lnk"), dossiers),
+            (fichier.clone(), [None, None]),
+            (fichier.clone(), [Some(""), Some("")]),
         ] {
             let d = format!("{f}|{cible}");
             let k = juger_persistance_selon(&[], &[], &[&d], c);
-            assert!(
-                k[0].correctif.as_ref().unwrap().commandes[0].starts_with("Remove-Item"),
-                "{f}"
-            );
+            assert!(k[0].probleme.is_some() && k[0].correctif.is_none(), "{f}");
         }
         // L'enfant rejuge : une autre ligne, une cible saine, un fichier hors du commun ne sont pas proposés.
         let autre = ligne_demarrage_quarantaine(&format!(r"{commun}\Autre.lnk")).unwrap();
-        assert!(!demarrage_signale(&fichier, cible, commun, &autre));
+        assert!(!demarrage_signale(&fichier, cible, [None, Some(commun)], &autre));
         assert!(!demarrage_signale(
             &fichier,
             r#""C:\Program Files\Steam\steam.exe" -silent"#,
-            commun,
+            [None, Some(commun)],
             &ligne
         ));
-        assert!(!demarrage_signale(perso, cible, commun, &ligne));
-        assert!(!demarrage_signale(&fichier, cible, r"C:\Autre", &ligne));
+        assert!(!demarrage_signale(&perso, cible, [None, Some(commun)], &ligne));
+        assert!(!demarrage_signale(&fichier, cible, [None, Some(r"C:\Autre")], &ligne));
     }
 
     /// D6c : PowerShell en fenêtre cachée reçoit le geste du lot 3.5 de son lieu (tâche désactivée, valeur Run de la
     /// machine retirée, fichier du Démarrage de tous en quarantaine), et le processus élevé le rejuge par la fonction
-    /// du bilan : la ligne proposée est reconnue, une autre non. Le dossier Démarrage de la personne n'a pas de geste.
+    /// du bilan : la ligne proposée est reconnue, une autre non. Le dossier Démarrage de la personne a le sien (D6d).
     #[test]
     fn fenetre_cachee_se_desactive_par_le_geste_du_lot_3_5() {
         use super::super::gestes::{ligne_demarrage_quarantaine, ligne_run_retirer_machine, ligne_tache_desactiver};
@@ -1607,15 +1631,27 @@ mod tests {
         let fichier = format!(r"{commun}\Maj.lnk");
         let d = format!("{fichier}|{cache}");
         let ligne = ligne_demarrage_quarantaine(&fichier).unwrap();
-        let k = juger_persistance_selon(&[], &[], &[&d], Some(commun));
+        let k = juger_persistance_selon(&[], &[], &[&d], [None, Some(commun)]);
         assert_eq!(k[0].probleme, Some(Niveau::Info));
         assert_eq!(k[0].correctif.as_ref().unwrap().commandes, std::slice::from_ref(&ligne));
-        assert!(demarrage_signale(&fichier, cache, commun, &ligne));
-        let perso = r"C:\Users\alice\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\Maj.lnk";
+        assert!(demarrage_signale(&fichier, cache, [None, Some(commun)], &ligne));
+        let dossier_perso = r"C:\Users\alice\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup";
+        let perso = format!(r"{dossier_perso}\Maj.lnk");
         let d = format!("{perso}|{cache}");
-        let k = juger_persistance_selon(&[], &[], &[&d], Some(commun));
+        // Dossier de la personne inconnu : signalé, sans geste.
+        let k = juger_persistance_selon(&[], &[], &[&d], [None, Some(commun)]);
         assert_eq!(k[0].probleme, Some(Niveau::Info));
         assert!(k[0].correctif.is_none());
+        // Connu : la quarantaine par Vanguard non élevé, rejugée par la même fonction.
+        let dossiers = [Some(dossier_perso), Some(commun)];
+        let ligne_perso = super::super::gestes::ligne_demarrage_quarantaine_compte(&perso).unwrap();
+        let k = juger_persistance_selon(&[], &[], &[&d], dossiers);
+        assert_eq!(k[0].probleme, Some(Niveau::Info));
+        assert_eq!(
+            k[0].correctif.as_ref().unwrap().commandes,
+            std::slice::from_ref(&ligne_perso)
+        );
+        assert!(demarrage_signale(&perso, cache, dossiers, &ligne_perso));
     }
 
     /// D6c : un nom de tâche ou de valeur Run piégé (\x1b[, \r, très long) est montré sans caractère de contrôle et

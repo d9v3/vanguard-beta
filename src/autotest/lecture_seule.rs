@@ -464,8 +464,8 @@ mod tests {
             ),
             (
                 "machine/windows/demarrage_ecriture.rs",
-                1,
-                "processus élevé : remise d'un fichier du Démarrage commun depuis sa copie de quarantaine vérifiée, créé sans écraser (create_new) dans un dossier relu (ni lien ni jonction), hors bilan",
+                4,
+                "Démarrage commun (processus élevé) ou de la personne (Vanguard non élevé, son compte) : remise d'un fichier depuis sa copie de quarantaine vérifiée, créé sans écraser (create_new) dans un dossier relu (ni lien ni jonction) ; copie déposée sans écraser (create_new, jamais à travers un lien) dans la quarantaine vérifiée, retirée si l'écriture échoue ; la plus ancienne copie retirée après une question non annulable (« non » par défaut), hors bilan",
             ),
             (
                 "machine/assistant.rs",
