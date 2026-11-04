@@ -3,6 +3,9 @@
 //! leur ancienne place dans `reseau` ; le bilan, la protection et les traces s'en servent autant, sans rien avoir à
 //! faire du réseau.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::path::PathBuf;
 
 use crate::{tr, trf};
@@ -100,7 +103,7 @@ pub(crate) fn lire_ordinaire(chemin: &std::path::Path, max: u64) -> std::io::Res
     }
     let mut octets = Vec::new();
     f.take(max.saturating_add(1)).read_to_end(&mut octets)?;
-    if octets.len() as u64 > max {
+    if u64::try_from(octets.len()).unwrap_or(u64::MAX) > max {
         return Err(trop_gros(max));
     }
     Ok(octets)
@@ -159,11 +162,11 @@ pub(crate) fn ecriture_sure_pour(euid: libc::uid_t, dossier: &std::path::Path) -
 /// ouvert : Defender qui analyse le fichier qu'on vient d'écrire, un autre fil qui le lit. Quelques essais
 /// rapprochés (une demi-seconde au plus) plutôt qu'une écriture perdue.
 fn remplacer(de: &std::path::Path, vers: &std::path::Path) -> std::io::Result<()> {
-    let mut essais = 0;
+    let mut essais = 0usize;
     loop {
         match std::fs::rename(de, vers) {
             Err(_) if cfg!(windows) && essais < 10 => {
-                essais += 1;
+                essais = essais.saturating_add(1);
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
             r => return r,
@@ -310,7 +313,7 @@ impl Verrou {
             occupe @ SansVerrou::Occupe => occupe,
         })?;
         let chemin = dossier.join(nom);
-        let fin = debut + attente;
+        let fin = debut.checked_add(attente).unwrap_or(debut);
         loop {
             if !partage {
                 match std::fs::OpenOptions::new().write(true).create_new(true).open(&chemin) {
@@ -393,7 +396,9 @@ impl Verrou {
                 tr!("pas un simple fichier", "not a plain file").to_string(),
             ));
         }
-        let fin = std::time::Instant::now() + attente;
+        let fin = std::time::Instant::now()
+            .checked_add(attente)
+            .unwrap_or_else(std::time::Instant::now);
         loop {
             let essai = if partage { f.try_lock_shared() } else { f.try_lock() };
             match essai {
@@ -489,6 +494,11 @@ fn dossier_des_tests() -> PathBuf {
     dossier()
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

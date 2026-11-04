@@ -3,6 +3,8 @@
 //! parcours de /proc, avec chacun sa règle quand il ne se lisait pas : une liste vide, que rien ne distinguait d'un
 //! ordinateur où rien ne tourne. Ici, une liste illisible est `None`, à dire « non vérifié ».
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc : kill, proc_listallpids et proc_pidpath.
 #![allow(unsafe_code)]
 
@@ -137,7 +139,7 @@ pub(crate) fn est_gele(pid: u32) -> Option<bool> {
 /// et des parenthèses, d'où la recherche de la DERNIÈRE « ) ».
 #[cfg(target_os = "linux")]
 pub(crate) fn etat_du_stat(stat: &str) -> Option<char> {
-    let apres = &stat[stat.rfind(')')? + 1..];
+    let (_, apres) = stat.rsplit_once(')')?;
     apres.split_whitespace().next()?.chars().next()
 }
 
