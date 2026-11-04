@@ -2,6 +2,8 @@
 //! table maison, un nom tiré au hasard, une note de rançon. Un rançongiciel laisse l'une ou l'autre de ces traces ;
 //! aucune ne suffit seule, mais ensemble elles séparent une rafale de chiffrement d'un `git clone` ou d'un `tar x`.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 /// L'extension ajoutée à un fichier renommé « rapport.docx » → « rapport.docx.locked » : « locked ». `None` si le
 /// nouveau nom n'est pas l'ancien suivi d'un point et d'un suffixe.
 pub(crate) fn extension_ajoutee(ancien: &str, nouveau: &str) -> Option<String> {
@@ -57,6 +59,10 @@ pub(crate) fn nom_au_hasard(nom: &str) -> bool {
 
 /// L'entropie de Shannon d'une suite de caractères, en bits par caractère.
 #[allow(clippy::cast_precision_loss)] // une mesure statistique : la précision du f32 suffit largement
+#[expect(
+    clippy::as_conversions,
+    reason = "vers f32, Rust n'a que `as` : une mesure, la précision suffit"
+)]
 fn entropie_caracteres(caracteres: &[char]) -> f32 {
     use std::collections::HashMap;
     if caracteres.is_empty() {
@@ -64,7 +70,8 @@ fn entropie_caracteres(caracteres: &[char]) -> f32 {
     }
     let mut compte: HashMap<char, u32> = HashMap::new();
     for &c in caracteres {
-        *compte.entry(c).or_default() += 1;
+        let fois = compte.entry(c).or_default();
+        *fois = fois.saturating_add(1);
     }
     let total = caracteres.len() as f32;
     compte
@@ -117,6 +124,11 @@ pub(crate) fn note_de_rancon(nom: &str) -> bool {
         .any(|m| normalise.contains(&m.chars().filter(char::is_ascii_alphanumeric).collect::<String>()))
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

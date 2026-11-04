@@ -18,6 +18,8 @@
 //! tait plus la notification. Une coupure ne reste jamais muette : la surveillance la notifie à sa première passe,
 //! puis une fois par jour tant qu'elle dure, et l'entretien du mois la redit.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 #[cfg(unix)]
 use crate::socle::personnel::dossier_personnel_de;
 use std::path::{Path, PathBuf};
@@ -216,7 +218,7 @@ fn lire_de(chemin: &Path, maintenant: i64) -> Etat {
         Juge::Douteux(d, _) => return Etat::Illisible(d.texte().to_string()),
         Juge::Illisible(e) => return Etat::Illisible(e),
     };
-    if octets.len() as u64 > TAILLE_MAX {
+    if u64::try_from(octets.len()).unwrap_or(u64::MAX) > TAILLE_MAX {
         return Etat::Illisible(trf!("plus de {} Kio", "over {} KiB", TAILLE_MAX >> 10));
     }
     let texte = String::from_utf8_lossy(&octets);
@@ -634,6 +636,11 @@ pub(crate) fn ce_qui_reste() -> &'static str {
     )
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

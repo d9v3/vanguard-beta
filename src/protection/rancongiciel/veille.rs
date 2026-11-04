@@ -3,6 +3,8 @@
 //! réponse. Le calcul des signaux à partir des changements est une fonction PURE (`signaux_de`), testée sans système
 //! de fichiers ; seules l'écoute, l'échantillonnage et la réponse touchent au disque.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -101,7 +103,8 @@ pub(crate) fn signaux_de(
                 reecrits.push((*chemin).to_path_buf());
                 let ancien_nom = ancien.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if let Some(ext) = noms::extension_ajoutee(ancien_nom, nom) {
-                    *extensions_ajoutees.entry(ext).or_default() += 1;
+                    let fois = extensions_ajoutees.entry(ext).or_default();
+                    *fois = fois.saturating_add(1);
                 }
                 if !noms::extension_connue(nom) {
                     extension_inconnue = true;
@@ -121,7 +124,7 @@ pub(crate) fn signaux_de(
             _ => chemin.extension().and_then(|e| e.to_str()).unwrap_or("").to_string(),
         };
         if format_perdu(chemin, &extension) {
-            format_perdu_n += 1;
+            format_perdu_n = format_perdu_n.saturating_add(1);
         }
     }
     // L'échantillon est borné à ECHANTILLONS_MAX : son taux est ramené à l'ensemble des réécrits, sinon au-delà de
@@ -129,7 +132,11 @@ pub(crate) fn signaux_de(
     // chiffreur était rapide, moins il pouvait être arrêté.
     let echantillonnes = reecrits.len().min(ECHANTILLONS_MAX);
     if echantillonnes > 0 {
-        let estime = u64::from(format_perdu_n) * reecrits.len() as u64 / echantillonnes as u64;
+        let reecrits_n = u64::try_from(reecrits.len()).unwrap_or(u64::MAX);
+        let estime = u64::from(format_perdu_n)
+            .saturating_mul(reecrits_n)
+            .checked_div(u64::try_from(echantillonnes).unwrap_or(u64::MAX))
+            .unwrap_or(0);
         format_perdu_n = u32::try_from(estime).unwrap_or(u32::MAX);
     }
 
@@ -275,20 +282,20 @@ impl Veille {
     /// Note qu'un effacement des copies de secours a été vu (depuis le flux des processus).
     pub(crate) fn noter_copies(&mut self, copies: Copies) {
         // On ne redescend jamais la gravité déjà vue dans la fenêtre ; l'heure est celle du dernier vu.
-        if copies as u8 >= self.copies.0 as u8 {
+        if copies >= self.copies.0 {
             self.copies = (copies, Instant::now());
         }
     }
 
     /// Vide le canal de `notify` dans la fenêtre. Rend le nombre de changements retenus ce tour.
     pub(crate) fn absorber(&mut self) -> usize {
-        let mut n = 0;
+        let mut n = 0usize;
         // Borné : un flot qui arrive aussi vite qu'on le lit ne retient pas le tour pour toujours.
         for _ in 0..2 * CANAL_MAX {
             match self.recepteur.try_recv() {
                 Ok(Message::Changement(c)) => {
                     self.retenir(c);
-                    n += 1;
+                    n = n.saturating_add(1);
                 }
                 Ok(Message::Deborde) => self.deborde = Some(Instant::now()),
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
@@ -299,7 +306,9 @@ impl Veille {
             self.fenetre.noter_perdus(jetes);
             self.sature = Some(Instant::now());
         }
-        self.changements_vus += n as u64;
+        self.changements_vus = self
+            .changements_vus
+            .saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
         n
     }
 
@@ -525,7 +534,7 @@ fn depart(pid: u32) -> Option<u64> {
 }
 
 fn depart_du_stat(stat: &str) -> Option<u64> {
-    let apres = &stat[stat.rfind(')')? + 1..];
+    let (_, apres) = stat.rsplit_once(')')?;
     apres.split_whitespace().nth(19)?.parse().ok()
 }
 
@@ -569,7 +578,7 @@ fn proprietaire(pid: u32) -> Option<u32> {
 /// Le parent d'un processus (PPID, 4e champ de `/proc/<pid>/stat`, après le nom entre parenthèses).
 fn lire_ppid(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let apres = &stat[stat.rfind(')')? + 1..];
+    let (_, apres) = stat.rsplit_once(')')?;
     apres.split_whitespace().nth(1)?.parse().ok()
 }
 
@@ -624,6 +633,11 @@ fn changements_de(evenement: &notify::Event) -> Vec<Changement> {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

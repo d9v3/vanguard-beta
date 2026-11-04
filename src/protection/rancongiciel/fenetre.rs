@@ -3,6 +3,8 @@
 //! `Fenetre` garde les changements des dernières secondes, au plus 4 096 (au-delà, comptés « perdus » : un
 //! débordement est lui-même un signal de rafale, jamais un calme).
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -70,7 +72,7 @@ impl Fenetre {
         let mut deborde = false;
         while self.changements.len() > CHANGEMENTS_MAX {
             self.changements.pop_front();
-            self.perdus += 1;
+            self.perdus = self.perdus.saturating_add(1);
             deborde = true;
         }
         deborde
@@ -102,6 +104,11 @@ impl Fenetre {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

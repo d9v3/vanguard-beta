@@ -3,6 +3,8 @@
 //! rapport (`examens/PRO-LIE-001.json`), au journal des événements, et rendu par `--json`. Le verdict n'est jamais
 //! « sûr » : sans signe et sans manque, il est « sain » au sens de « rien trouvé dans ce qui a été examiné ».
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::{Inscription, Lien, Signe, Verification, site};
 use crate::machine::{Constat, alerte, impossible_par, ok};
 use crate::modele::resultat::{Couverture, Resultat};
@@ -90,7 +92,7 @@ pub(super) fn resultat(lien: &Lien, signes: &[Signe], en_ligne: &EnLigneVu, debu
                         crate::trf!("{} : pas listé{note}", "{}: not listed{note}", v.liste),
                     )),
                 }
-                verifies += 1;
+                verifies = verifies.saturating_add(1);
             }
         }
         EnLigneVu::PasFaites(pourquoi) => non_verifies.push(crate::trf!(
@@ -117,6 +119,11 @@ pub(super) fn refuse(debut: Debut) -> Resultat {
     )
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::super::{decouper, examiner, nettoyer};
