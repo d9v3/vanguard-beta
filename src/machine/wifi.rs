@@ -2,6 +2,13 @@
 //! son nom. Un jumeau se montre souvent sans mot de passe, pour attirer les appareils et voir passer leur trafic :
 //! même nom que le vrai réseau, protection plus faible. Un répéteur protégé comme le réseau principal n'alerte pas.
 
+// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
+#![cfg_attr(
+    all(target_os = "linux", not(test)),
+    warn(clippy::arithmetic_side_effects, clippy::as_conversions)
+)]
+
 use super::{Constat, alerte, impossible, ok};
 use crate::risk::Niveau;
 use crate::ui::affichable;
@@ -249,7 +256,7 @@ fn blocs_system_profiler(sortie: &str) -> Vec<BlocMac<'_>> {
         if l.is_empty() {
             continue;
         }
-        let retrait = ligne.len() - ligne.trim_start().len();
+        let retrait = ligne.len().saturating_sub(ligne.trim_start().len());
         if section.is_some_and(|(r, _)| retrait <= r) {
             section = None;
         }

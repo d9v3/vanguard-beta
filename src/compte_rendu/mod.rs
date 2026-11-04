@@ -10,6 +10,13 @@
 //! Le schéma gardé par la veille (`outils/veille/schema-compte-rendu.json`, que l'IA ne peut pas changer) a les mêmes
 //! clés et les mêmes listes : un essai les compare.
 
+// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
+#![cfg_attr(
+    all(target_os = "linux", not(test)),
+    warn(clippy::arithmetic_side_effects, clippy::as_conversions)
+)]
+
 pub(crate) mod champs;
 // Le lot de schéma 2 (lot A3) : construit et relu seulement, rien ne l'envoie avant A4.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -134,7 +141,7 @@ impl Cause {
         self.versions.sort_by_key(version_cle);
         if self.versions.len() > VERSIONS_MAX {
             // Les plus récentes comptent : une cause qui revient dans une version récente.
-            self.versions.drain(..self.versions.len() - VERSIONS_MAX);
+            self.versions.drain(..self.versions.len().saturating_sub(VERSIONS_MAX));
         }
         for s in autre.systemes {
             if !self.systemes.contains(&s) {
@@ -507,7 +514,7 @@ fn lire_fichier(chemin: &std::path::Path) -> Result<Vec<u8>, Echec> {
     f.take(LECTURE_MAX + 1)
         .read_to_end(&mut o)
         .map_err(|e| Echec::io(LIRE, &e))?;
-    if o.len() as u64 > LECTURE_MAX {
+    if u64::try_from(o.len()).unwrap_or(u64::MAX) > LECTURE_MAX {
         return Err(refus(trf!(
             "compte rendu refusé : plus de {} octets",
             "report refused: more than {} bytes",

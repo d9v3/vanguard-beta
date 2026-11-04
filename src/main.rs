@@ -3,6 +3,13 @@
 //! N'utilise le scan réseau que sur un réseau qui t'appartient ou que tu as le droit d'auditer.
 //! Lancé sans argument, affiche un menu.
 
+// Débordements et `as` refusés dans tout le programme que Linux compile (LANG-ARITH, CONFORMITE-ANSSI.md) : la
+// racine vaut pour chaque module. Les parties Windows et macOS ne sont pas encore relues ; les essais en sont
+// exemptés (y déborder fait échouer l'essai), comme de `unwrap` (clippy.toml).
+#![cfg_attr(
+    all(target_os = "linux", not(test)),
+    warn(clippy::arithmetic_side_effects, clippy::as_conversions)
+)]
 // Pas d'`unsafe` sans raison : chaque module qui appelle le système (FFI) lève ce refus pour lui seul, avec une
 // ligne qui dit pourquoi ; les modules que lit le banc de fuzzing le refusent sans recours (`forbid`). Garde :
 // `chaque_module_fuzze_refuse_unsafe`.
@@ -1280,7 +1287,7 @@ fn lignes_du_menu(etat: Vec<String>) -> Vec<Ligne> {
             .find(|(n, _)| *n == commande)
             .map_or("", |(_, a)| *a);
         lignes.push(
-            Ligne::choix(&(touche + 1).to_string(), texte, precision)
+            Ligne::choix(&touche.saturating_add(1).to_string(), texte, precision)
                 .avec_mots(&format!("{commande} {anciens}"))
                 .avec_description(action.description()),
         );
@@ -1293,7 +1300,7 @@ fn lignes_du_menu(etat: Vec<String>) -> Vec<Ligne> {
         }
         lignes.push(
             Ligne::choix(
-                &(i + 4).to_string(),
+                &i.saturating_add(4).to_string(),
                 &format!("{} {ACCENT}›{RESET}", groupe.titre()),
                 groupe.resume(),
             )
@@ -1308,7 +1315,7 @@ fn lignes_du_menu(etat: Vec<String>) -> Vec<Ligne> {
         GROUPES
             .iter()
             .position(|g| *g == voulu)
-            .map_or(0, |i| i + 4)
+            .map_or(0, |i| i.saturating_add(4))
             .to_string()
     };
     lignes.extend(depanner::lignes_de_recherche(&cle_de(Groupe::Depanner)));
@@ -1317,7 +1324,8 @@ fn lignes_du_menu(etat: Vec<String>) -> Vec<Ligne> {
         let groupe = niveaux
             .next()
             .and_then(|g| g.parse::<usize>().ok())
-            .and_then(|g| GROUPES.get(g - 4));
+            // Les groupes commencent à 4 : un numéro plus petit n'en désigne aucun.
+            .and_then(|g| GROUPES.get(g.checked_sub(4)?));
         let mut ou = groupe.map_or_else(String::new, |g| format!("{} ›", g.titre()));
         // Une variante : l'écran à choix d'où elle vient, après le groupe.
         if let Some(parent) = ECRANS.iter().find(|(_, v)| v.contains(&a)).map(|(e, _)| *e) {
@@ -1405,7 +1413,12 @@ enum Destination {
 /// La destination d'une touche : 1 à 3, un groupe, un chemin, une page du guide, un parcours, un logiciel, une
 /// lettre d'avant la 0.43. Un seul aiguillage pour le menu et `vanguard chercher` ; `None` : rien n'y répond.
 fn destination(choix: &str) -> Option<Destination> {
-    let cle_de = |voulu: Groupe| GROUPES.iter().position(|g| *g == voulu).map(|i| (i + 4).to_string());
+    let cle_de = |voulu: Groupe| {
+        GROUPES
+            .iter()
+            .position(|g| *g == voulu)
+            .map(|i| i.saturating_add(4).to_string())
+    };
     if let Some((groupe, reste)) = choix.split_once('.') {
         if cle_de(Groupe::Guide).as_deref() == Some(groupe) {
             return guide::chemin(reste).map(|(s, p, c)| Destination::Guide(s, p, c));
@@ -1530,7 +1543,7 @@ async fn chercher(requete: &str, premier: bool, json: bool) -> bool {
     let largeur = trouves.iter().map(|t| largeur_affichee(&t.touche)).max().unwrap_or(0);
     for (i, t) in trouves.iter().enumerate() {
         let commande = commande_de(&t.touche);
-        let tete = format!("  {:>2}  {:<largeur$}  ", i + 1, t.touche);
+        let tete = format!("  {:>2}  {:<largeur$}  ", i.saturating_add(1), t.touche);
         let reste = LARGEUR.saturating_sub(largeur_affichee(&tete));
         println!("{tete}{}", couper(&t.texte, reste));
         let detail: Vec<&str> = [t.precision.as_str(), commande.as_str()]
@@ -1570,7 +1583,7 @@ fn cle_du_guide() -> String {
     GROUPES
         .iter()
         .position(|g| *g == Groupe::Guide)
-        .map_or(0, |i| i + 4)
+        .map_or(0, |i| i.saturating_add(4))
         .to_string()
 }
 
@@ -1655,12 +1668,15 @@ fn place_de_commande(nom: &str) -> Option<String> {
         .iter()
         .find(|o| o.commande == nom && !raccourcis.contains(&o.action))?;
     if let Some(i) = principal.iter().position(|a| *a == outil.action) {
-        return Some((i + 1).to_string());
+        return Some(i.saturating_add(1).to_string());
     }
     if let Some(g) = outil.groupe.filter(|g| g.direct())
         && g.actions().first() == Some(&outil.action)
     {
-        return GROUPES.iter().position(|x| *x == g).map(|i| (i + 4).to_string());
+        return GROUPES
+            .iter()
+            .position(|x| *x == g)
+            .map(|i| i.saturating_add(4).to_string());
     }
     touche_de(outil.action)
 }
@@ -1678,7 +1694,11 @@ fn programmes_vanguard() -> &'static [guide::Programme] {
                 let (numero, [fr, en]) = match groupe {
                     None => ("1 2 3".to_string(), ["Bilan de sécurité", "Security check"]),
                     Some(g) => (
-                        GROUPES.iter().position(|x| *x == g).map_or(0, |i| i + 4).to_string(),
+                        GROUPES
+                            .iter()
+                            .position(|x| *x == g)
+                            .map_or(0, |i| i.saturating_add(4))
+                            .to_string(),
                         g.titres(),
                     ),
                 };
@@ -2347,6 +2367,13 @@ const OUTILS: &[Outil] = &[
 ];
 
 // Une action ajoutée sans sa ligne décalerait toutes les suivantes : la compilation s'arrête.
+#[cfg_attr(
+    all(target_os = "linux", not(test)),
+    expect(
+        clippy::as_conversions,
+        reason = "le rang d'une variante : seul `as` le donne, et en constante"
+    )
+)]
 const _: () = assert!(OUTILS.len() == Action::Desinstaller as usize + 1);
 
 /// La précision de la ligne Surveillance. Le temps réel coupé, la minuterie est là, mais chaque passe s'arrête au
@@ -2386,6 +2413,13 @@ impl Action {
         #[expect(
             clippy::indexing_slicing,
             reason = "Desinstaller est la dernière variante et l'assertion const sous OUTILS fixe OUTILS.len() à Desinstaller + 1"
+        )]
+        #[cfg_attr(
+            all(target_os = "linux", not(test)),
+            expect(
+                clippy::as_conversions,
+                reason = "le rang d'une variante sans valeur : seul `as` le donne"
+            )
         )]
         &OUTILS[self as usize]
     }
@@ -2572,13 +2606,13 @@ impl Groupe {
 fn places() -> Vec<(String, Action)> {
     let mut places = Vec::new();
     for (i, groupe) in GROUPES.iter().enumerate() {
-        let cle = i + 4;
+        let cle = i.saturating_add(4);
         let actions = groupe.actions().into_iter().filter(|a| a.disponible());
         if *groupe == Groupe::Depanner {
             // Le groupe s'ouvre sur les parcours (11.1 à 11.12) ; ses autres outils les suivent.
             let parcours = depanner::nombre_de_parcours();
             for (j, a) in actions.filter(|a| *a != Action::Depanner).enumerate() {
-                places.push((format!("{cle}.{}", parcours + j + 1), a));
+                places.push((format!("{cle}.{}", parcours.saturating_add(j).saturating_add(1)), a));
             }
             continue;
         }
@@ -2586,9 +2620,9 @@ fn places() -> Vec<(String, Action)> {
             continue;
         }
         for (j, a) in actions.enumerate() {
-            places.push((format!("{cle}.{}", j + 1), a));
+            places.push((format!("{cle}.{}", j.saturating_add(1)), a));
             for (k, v) in a.variantes().iter().copied().filter(|v| v.disponible()).enumerate() {
-                places.push((format!("{cle}.{}.{}", j + 1, k + 1), v));
+                places.push((format!("{cle}.{}.{}", j.saturating_add(1), k.saturating_add(1)), v));
             }
         }
     }
@@ -2614,7 +2648,7 @@ async fn liste_d_outils(s: &mut Session, chemin: &str, resume: &str, actions: &[
             };
             // Les variantes d'un écran à choix n'ont pas de ligne ici : l'aperçu les montre.
             lignes.push(
-                Ligne::choix(&(i + 1).to_string(), &texte, precision)
+                Ligne::choix(&i.saturating_add(1).to_string(), &texte, precision)
                     .avec_description(a.description())
                     .avec_sous(a.ce_qu_il_ouvre()),
             );
@@ -3339,7 +3373,7 @@ fn rubriques_de_l_aide() -> Vec<(String, Vec<String>)> {
                 None => tr!("Bilan de sécurité", "Security check").to_string(),
                 Some(g) => format!(
                     "{} {}",
-                    GROUPES.iter().position(|x| *x == g).map_or(0, |i| i + 4),
+                    GROUPES.iter().position(|x| *x == g).map_or(0, |i| i.saturating_add(4)),
                     g.titre()
                 ),
             };
@@ -3408,12 +3442,12 @@ fn aide_longue() -> String {
         env!("CARGO_PKG_VERSION")
     );
     let rubriques = rubriques_de_l_aide();
-    let colonne = rubriques.iter().map(|(r, _)| largeur_affichee(r)).max().unwrap_or(0) + 2;
+    let colonne = (rubriques.iter().map(|(r, _)| largeur_affichee(r)).max().unwrap_or(0)).saturating_add(2);
     for (rubrique, noms) in rubriques {
-        let lignes = envelopper(&noms.join(", "), LARGEUR - 2 - colonne);
+        let lignes = envelopper(&noms.join(", "), LARGEUR.saturating_sub(2).saturating_sub(colonne));
         for (i, ligne) in lignes.iter().enumerate() {
             let tete = if i == 0 { rubrique.as_str() } else { "" };
-            let blanc = " ".repeat(colonne - largeur_affichee(tete));
+            let blanc = " ".repeat(colonne.saturating_sub(largeur_affichee(tete)));
             let _ = writeln!(t, "  {tete}{blanc}{ligne}");
         }
     }
@@ -3555,7 +3589,7 @@ async fn main() {
         {
             let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
             if let Some(i) = args.iter().position(|a| a == "--langue")
-                && let Some(l) = args.get(i + 1)
+                && let Some(l) = args.get(i.saturating_add(1))
             {
                 langue::forcer(l == "en");
             }

@@ -11,6 +11,13 @@
 //! garde-fous (`gardes`) passent avant tout : jamais Vanguard ni ce qui le fait tourner, jamais un processus critique
 //! ou un programme du système, jamais une connexion à distance en cours ; sans les droits, rien n'est fait à moitié.
 
+// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
+#![cfg_attr(
+    all(target_os = "linux", not(test)),
+    warn(clippy::arithmetic_side_effects, clippy::as_conversions)
+)]
+
 mod arret;
 mod gardes;
 pub(crate) mod gestes;
@@ -390,7 +397,11 @@ pub fn menu() {
             Ligne::Texte(String::new()),
         ];
         for (i, c) in Categorie::TOUTES.iter().enumerate() {
-            lignes.push(Ligne::choix(&(i + 1).to_string(), c.titre(), p.effectif(*c).libelle()));
+            lignes.push(Ligne::choix(
+                &i.saturating_add(1).to_string(),
+                c.titre(),
+                p.effectif(*c).libelle(),
+            ));
         }
         lignes.push(Ligne::Texte(String::new()));
         lignes.push(Ligne::choix(
@@ -461,7 +472,7 @@ fn regler_categorie(c: Categorie) {
             Mode::UnClic => tr!("montré, puis accepté", "shown, then accepted"),
             Mode::Automatique => tr!("le certain, tout seul", "what is certain, by itself"),
         };
-        lignes.push(Ligne::choix(&(i + 1).to_string(), m.libelle(), precision));
+        lignes.push(Ligne::choix(&i.saturating_add(1).to_string(), m.libelle(), precision));
     }
     lignes.push(Ligne::Texte(String::new()));
     lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
@@ -776,12 +787,12 @@ fn montrer(m: &Menace, pret: &gestes::Pret) {
 /// refusent d'avance reste une alerte, avec sa raison.
 fn proposer(menaces: Vec<Menace>, ctx: &Contexte) {
     let mut restantes: Vec<Menace> = Vec::new();
-    let mut refusees = 0;
+    let mut refusees = 0usize;
     for m in menaces {
         match gestes::preparer(&m, ctx, false) {
             Ok(_) => restantes.push(m),
             Err(r) => {
-                refusees += 1;
+                refusees = refusees.saturating_add(1);
                 afficher_aligne(
                     &format!("  {}ℹ{RESET} ", couleur(crate::risk::Niveau::Info)),
                     &m.quoi,
@@ -819,7 +830,7 @@ fn proposer(menaces: Vec<Menace>, ctx: &Contexte) {
             } else {
                 tr!("douteux", "doubtful")
             };
-            lignes.push(Ligne::choix(&(i + 1).to_string(), &texte, precision));
+            lignes.push(Ligne::choix(&i.saturating_add(1).to_string(), &texte, precision));
         }
         lignes.push(Ligne::Texte(String::new()));
         lignes.push(Ligne::choix(
@@ -971,7 +982,7 @@ pub fn annuler() {
         let mut lignes = vec![Ligne::Texte(String::new())];
         for (i, (date, b)) in liste.iter().enumerate() {
             lignes.push(Ligne::choix(
-                &(i + 1).to_string(),
+                &i.saturating_add(1).to_string(),
                 &couper(&affichable(&b.quoi), 52),
                 date,
             ));

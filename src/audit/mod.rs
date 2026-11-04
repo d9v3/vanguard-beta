@@ -11,6 +11,13 @@
 //! rend rien est dit « non vérifié ». Hors ligne ou sans réseau local, tout finit en moins d'une minute et dit
 //! « non vérifié ».
 
+// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
+#![cfg_attr(
+    all(target_os = "linux", not(test)),
+    warn(clippy::arithmetic_side_effects, clippy::as_conversions)
+)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
@@ -285,7 +292,7 @@ impl DomaineAudite {
             domaine: d.nom(),
             score,
             note: score.map(note),
-            verifies: constats.len() - non_verifies,
+            verifies: constats.len().saturating_sub(non_verifies),
             non_verifies,
             constats,
         }
