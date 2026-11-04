@@ -5,6 +5,8 @@
 //! aucune image n'est lue. Rien n'est coupé ni changé. Une caméra en 4G, ou qui n'enregistre que sur sa carte
 //! mémoire, n'apparaît sur aucun réseau : l'œil reste le meilleur outil.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
@@ -127,7 +129,7 @@ async fn flux(ip: Ipv4Addr, port: u16) -> Flux {
 
 /// Un texte entre `debut` et `fin` (le premier trouvé).
 fn entre<'a>(texte: &'a str, debut: &str, fin: &str) -> Option<&'a str> {
-    let reste = &texte[texte.find(debut)? + debut.len()..];
+    let (_, reste) = texte.split_once(debut)?;
     Some(&reste[..reste.find(fin)?])
 }
 
@@ -205,7 +207,10 @@ fn chercher_onvif() -> BTreeMap<Ipv4Addr, String> {
             break;
         }
         // Toutes les caméras répondent à la même question : elles sont lues jusqu'à la fin du délai.
-        let fin = Instant::now() + Duration::from_millis(1500);
+        let maintenant = Instant::now();
+        let fin = maintenant
+            .checked_add(Duration::from_millis(1500))
+            .unwrap_or(maintenant);
         nat::recevoir(&socket, fin, &mut tampon, |reponse, de| {
             if let SocketAddr::V4(de) = de
                 && let Some(camera) = lire_onvif(&String::from_utf8_lossy(reponse))
@@ -374,6 +379,11 @@ pub async fn chercher_cameras() {
     afficher_aligne(&format!("  {} ", ampoule()), conseil, 5, "");
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,6 +505,11 @@ mod tests {
 
 /// Propriétés de la lecture ONVIF : une réponse à la recherche des caméras vient de n'importe quel appareil. Rien ne
 /// plante, et le nom rendu reste court et inoffensif.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod proprietes {
     use super::*;

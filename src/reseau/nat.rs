@@ -4,6 +4,8 @@
 //! traduction stable (modéré, ouvert avec l'UPnP) ; un port différent par serveur, elle en change à chaque
 //! destination (strict, symétrique), et les autres joueurs ne peuvent pas la joindre directement. Lecture seule.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
@@ -68,7 +70,7 @@ fn recevoir_avec<T>(
     tampon: &mut [u8],
     mut lire: impl FnMut(&[u8], SocketAddr) -> Option<T>,
 ) -> Option<T> {
-    let mut erreurs = 0;
+    let mut erreurs = 0u32;
     loop {
         let reste = fin.saturating_duration_since(Instant::now());
         if reste.is_zero() {
@@ -90,7 +92,7 @@ fn recevoir_avec<T>(
             // erreurs (socket hors d'usage) comptent pour le plafond.
             Err(e) if e.raw_os_error() == Some(WSAEMSGSIZE) || e.kind() == std::io::ErrorKind::ConnectionReset => {}
             Err(_) => {
-                erreurs += 1;
+                erreurs = erreurs.saturating_add(1);
                 if erreurs > ERREURS_MAX {
                     return None;
                 }
@@ -154,7 +156,10 @@ fn lire_reponse(r: &[u8], id: &[u8; 12]) -> Option<SocketAddr> {
             _ => {}
         }
         // Chaque attribut est complété à un multiple de 4 octets.
-        attributs = reste.get(n.div_ceil(4) * 4..).unwrap_or_default();
+        attributs = n
+            .checked_next_multiple_of(4)
+            .and_then(|f| reste.get(f..))
+            .unwrap_or_default();
     }
     simple
 }
@@ -166,7 +171,8 @@ fn interroger(socket: &UdpSocket, serveur: SocketAddr) -> Option<SocketAddr> {
     let mut lire = |r: &[u8], de: SocketAddr| lire_reponse(r, &id).filter(|_| de == serveur);
     for _ in 0..3 {
         socket.send_to(&requete(&id), serveur).ok()?;
-        let fin = Instant::now() + Duration::from_millis(800);
+        let maintenant = Instant::now();
+        let fin = maintenant.checked_add(Duration::from_millis(800)).unwrap_or(maintenant);
         let vue = recevoir(socket, fin, &mut tampon, &mut lire);
         if vue.is_some() {
             return vue;
@@ -421,6 +427,11 @@ pub fn tester() {
     afficher_aligne(&format!("  {} ", ampoule()), conseil, 5, "");
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
@@ -612,6 +623,11 @@ pub(super) mod tests {
 
 /// Propriétés de la lecture STUN : n'importe quel serveur, ou n'importe qui sur le chemin, peut répondre n'importe
 /// quoi. Rien ne plante, et une réponse à une autre requête n'est jamais prise.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod proprietes {
     use super::*;

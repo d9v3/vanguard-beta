@@ -5,6 +5,8 @@
 //! essayé (choix de l'utilisateur) : un appareil qui en a souvent un laisse ce point non vérifié, car rien ne
 //! prouve qu'il a été changé.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::{Appareil, Genre, admin_en_clair, genre};
 use crate::machine::{Constat, alerte, impossible_par, ok};
 use crate::modele::resultat::{Couverture, Resultat};
@@ -64,7 +66,7 @@ pub(super) fn resultat(appareils: Option<&[Appareil]>, debut: Debut) -> Resultat
     if let Some(jour) = appareils.iter().filter_map(|a| a.dernier_vu.as_deref()).max() {
         let age = chrono::NaiveDate::parse_from_str(jour, "%Y-%m-%d")
             .ok()
-            .map(|d| (debut.0.date_naive() - d).num_days());
+            .map(|d| debut.0.date_naive().signed_duration_since(d).num_days());
         if age.is_some_and(|a| a > SCAN_ANCIEN_JOURS) {
             let pourquoi = trf!(
                 "dernier scan du {} : trop ancien pour conclure (plus de {SCAN_ANCIEN_JOURS} jours) ; relancez « Scan du réseau » (vanguard appareils)",
@@ -140,6 +142,11 @@ pub(super) fn resultat(appareils: Option<&[Appareil]>, debut: Debut) -> Resultat
     )
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
