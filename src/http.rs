@@ -7,6 +7,8 @@
 //! Chaque demande tourne sur son propre fil, avec son propre moteur tokio : elle s'appelle de la même façon depuis un
 //! code ordinaire ou depuis la surveillance, déjà asynchrone (reqwest refuse qu'un moteur en bloque un autre).
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -250,7 +252,7 @@ pub(crate) fn envoyer(demande: Demande) -> Option<Reponse> {
         let mut recu = Vec::with_capacity(usize::try_from(annoncee).unwrap_or(0));
         while let Some(morceau) = reponse.chunk().await.ok()? {
             recu.extend_from_slice(&morceau);
-            if recu.len() as u64 > taille_max {
+            if u64::try_from(recu.len()).unwrap_or(u64::MAX) > taille_max {
                 return None;
             }
         }
@@ -394,8 +396,9 @@ pub(crate) fn recevoir_en_comptant(adresse: &str, fin: Instant, octets: &AtomicU
                     let Ok(Some(morceau)) = reponse.chunk().await else {
                         break;
                     };
-                    recus += morceau.len() as u64;
-                    octets.fetch_add(morceau.len() as u64, Ordering::Relaxed);
+                    let n = u64::try_from(morceau.len()).unwrap_or(u64::MAX);
+                    recus = recus.saturating_add(n);
+                    octets.fetch_add(n, Ordering::Relaxed);
                 }
                 Some(recus > 0)
             });
@@ -409,9 +412,19 @@ pub(crate) fn recevoir_en_comptant(adresse: &str, fin: Instant, octets: &AtomicU
     })
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod envois;
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

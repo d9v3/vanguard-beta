@@ -11,6 +11,8 @@
 //! - « Non » est aussi marqué hors du fichier des paramètres (`MARQUE_NON`) : une version d'avant, qui réécrit ce
 //!   fichier sans le partage, ne l'efface pas ; seul un « oui » donné dans Vanguard retire la marque.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::io::IsTerminal as _;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -334,7 +336,7 @@ fn en_retrait(octets: &[u8]) -> Vec<String> {
     let (mut dans_chaine, mut echappe) = (false, false);
     let couper = |ligne: &mut String, profondeur: usize, lignes: &mut Vec<String>| {
         lignes.push(affichable(&std::mem::take(ligne)));
-        *ligne = "  ".repeat(profondeur + 1);
+        *ligne = "  ".repeat(profondeur.saturating_add(1));
     };
     ligne.push_str("  ");
     for c in texte.chars() {
@@ -356,7 +358,7 @@ fn en_retrait(octets: &[u8]) -> Vec<String> {
             }
             '{' | '[' => {
                 ligne.push(c);
-                profondeur += 1;
+                profondeur = profondeur.saturating_add(1);
                 couper(&mut ligne, profondeur, &mut lignes);
             }
             '}' | ']' => {
@@ -741,6 +743,11 @@ pub(crate) fn au_menu() {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

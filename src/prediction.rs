@@ -3,6 +3,8 @@
 //! que le menu sait trouver (textes, précisions, mots cachés des outils et des commandes du guide), et une prédiction
 //! mène toujours à au moins une ligne : elle n'invente rien.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::{HashMap, HashSet};
 
 use crate::selection::simplifier;
@@ -69,9 +71,11 @@ impl Vocabulaire {
                 {
                     continue;
                 }
-                *formes.entry(simple.clone()).or_default().entry(montre).or_default() += 1;
+                let fois = formes.entry(simple.clone()).or_default().entry(montre).or_default();
+                *fois = fois.saturating_add(1);
                 if vus.insert(simple.clone()) {
-                    *lignes.entry(simple).or_default() += 1;
+                    let fois = lignes.entry(simple).or_default();
+                    *fois = fois.saturating_add(1);
                 }
             }
         }
@@ -137,6 +141,11 @@ impl Vocabulaire {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,6 +202,11 @@ mod tests {
 }
 
 /// Menus et saisies au hasard : jamais de plantage, et une suite prédite mène toujours à au moins une ligne.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests_au_hasard {
     use super::*;

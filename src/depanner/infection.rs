@@ -6,6 +6,8 @@
 //! intégrité en détail, connexions sortantes, prise de contrôle à distance), et enfin la liste des mots de passe à
 //! changer, dans l'ordre, depuis un autre appareil. Rien n'est changé sans accord : chaque outil redemande le sien.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::{a_savoir, bilan, conseil, ecran, proposer_outil, question};
 use crate::selection::{Case, cocher};
 use crate::ui::*;
@@ -205,7 +207,7 @@ pub(crate) fn infection() {
         GRIS,
     );
     for (i, m) in mots_de_passe(signe).iter().enumerate() {
-        afficher_aligne(&format!("  {TOUCHE}{}{RESET} ", i + 1), m, 4, "");
+        afficher_aligne(&format!("  {TOUCHE}{}{RESET} ", i.saturating_add(1)), m, 4, "");
     }
     conseil(tr!(
         "Dans le courriel, vérifiez aussi les règles de transfert automatique et les adresses de secours : un intrus s'en sert pour garder l'accès après le changement de mot de passe.",
@@ -421,6 +423,11 @@ fn analyses(signe: Signe, internet: bool) {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

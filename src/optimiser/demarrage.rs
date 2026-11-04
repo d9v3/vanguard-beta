@@ -4,6 +4,8 @@
 //! Ce qui protège ou fait marcher l'ordinateur (Vanguard, antivirus, pare-feu, pilotes, accessibilité, composants du
 //! bureau) est montré sans être proposé.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::borrow::Cow;
 
 use super::{Categorie, Etat, Historique, Reglage, charger, confirmer_et_executer, etat, executer, systeme};
@@ -151,10 +153,12 @@ pub(super) fn liste_approuvee(l: &str) -> Option<&'static str> {
 
 pub(super) fn hex(octets: &[u8]) -> String {
     use std::fmt::Write;
-    octets.iter().fold(String::with_capacity(octets.len() * 2), |mut s, o| {
-        let _ = write!(s, "{o:02x}");
-        s
-    })
+    octets
+        .iter()
+        .fold(String::with_capacity(octets.len().saturating_mul(2)), |mut s, o| {
+            let _ = write!(s, "{o:02x}");
+            s
+        })
 }
 
 pub(super) fn octets(hex: &str) -> Option<Vec<u8>> {
@@ -163,7 +167,11 @@ pub(super) fn octets(hex: &str) -> Option<Vec<u8>> {
     }
     (0..hex.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+        .map(|i| {
+            i.checked_add(2)
+                .and_then(|f| hex.get(i..f))
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        })
         .collect()
 }
 
@@ -179,7 +187,9 @@ pub(super) fn desactive_windows(hex: &str) -> bool {
 pub(super) fn valeur_desactivee(quand: std::time::SystemTime) -> String {
     const DE_1601_A_1970: u64 = 116_444_736_000_000_000;
     let depuis_1970 = quand.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    let temps = u64::try_from(depuis_1970.as_nanos() / 100).unwrap_or(0) + DE_1601_A_1970;
+    let temps = u64::try_from(depuis_1970.as_nanos() / 100)
+        .unwrap_or(0)
+        .saturating_add(DE_1601_A_1970);
     let mut o = vec![3, 0, 0, 0];
     o.extend_from_slice(&temps.to_le_bytes());
     hex(&o)
@@ -239,9 +249,10 @@ pub(super) fn etats_launchd(texte: &str) -> std::collections::HashMap<String, bo
 /// « `<dict>` »…).
 fn valeur_plist(xml: &str) -> Option<&str> {
     let apres = &xml[xml.find("<plist")?..];
-    let apres = apres[apres.find('>')? + 1..].trim_start();
-    let fin = apres.find('>')? + 1;
-    Some(&apres[..fin])
+    let apres = apres.split_once('>')?.1.trim_start();
+    // « > » tient sur un octet : la fin est une frontière de caractère.
+    let fin = apres.find('>')?.checked_add(1)?;
+    apres.get(..fin)
 }
 
 /// Un agent du compte se lance-t-il à l'ouverture de session ? `run_at_load`, `keep_alive` : ces clés de son plist,
@@ -442,6 +453,11 @@ pub fn menu() {
     afficher_aligne("  ", ailleurs(), 2, "");
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

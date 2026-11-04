@@ -8,6 +8,8 @@
 //! Un fil relie un incident : l'objet dont parlent l'alerte, la preuve et le geste (le programme, son fichier,
 //! l'adresse), tout ce qui le concerne remis dans l'ordre du temps.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -215,8 +217,8 @@ fn lire_etat(chemin: &Path) -> Option<std::io::Result<Vec<u8>>> {
     std::fs::symlink_metadata(chemin).ok()?;
     Some(ouvrir_ordinaire(chemin, true).and_then(|f| {
         let mut o = Vec::new();
-        f.take(BORNE_ETAT + 1).read_to_end(&mut o)?;
-        if o.len() as u64 > BORNE_ETAT {
+        f.take(BORNE_ETAT.saturating_add(1)).read_to_end(&mut o)?;
+        if u64::try_from(o.len()).unwrap_or(u64::MAX) > BORNE_ETAT {
             return Err(std::io::Error::other(format!(
                 "plus de {BORNE_ETAT} octets / over {BORNE_ETAT} bytes"
             )));
@@ -372,6 +374,11 @@ fn recopier(p: &mut Partie, dossier: &Path, donnees: &Path, nom: &str) {
     );
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

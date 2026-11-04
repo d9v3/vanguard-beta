@@ -14,6 +14,8 @@
 //! masquer un problème en réécrivant historique.json sans rompre la chaîne : une clé n'est donc crue que si la
 //! seconde empreinte de son bilan colle ; sinon la comparaison retombe sur le texte.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::PathBuf;
@@ -130,7 +132,7 @@ pub enum Chaine {
 }
 
 pub fn verifier_chaine(tous: &[Bilan]) -> Chaine {
-    let mut chaines = 0;
+    let mut chaines = 0usize;
     let mut precedent: Option<&Bilan> = None;
     for (indice, b) in tous.iter().enumerate() {
         let rompue = |contenu| Chaine::Rompue {
@@ -150,7 +152,7 @@ pub fn verifier_chaine(tous: &[Bilan]) -> Chaine {
                 {
                     return rompue(false);
                 }
-                chaines += 1;
+                chaines = chaines.saturating_add(1);
             }
             // Un bilan sans empreinte après des bilans chaînés : ajouté à la main.
             None if precedent.is_some_and(|p| p.empreinte.is_some()) => return rompue(true),
@@ -406,7 +408,8 @@ fn differences<'a>(avant: &'a Bilan, apres: &'a Bilan) -> (Vec<&'a str>, Vec<&'a
 
 fn evolution(nom: &str, avant: Option<u32>, apres: Option<u32>) {
     let (Some(a), Some(b)) = (avant, apres) else { return };
-    let ecart = i64::from(b) - i64::from(a);
+    // Deux u32 en i64 : l'écart tient toujours.
+    let ecart = i64::from(b).saturating_sub(i64::from(a));
     let signe = match ecart {
         e if e > 0 => format!("{VERT}+{e}{RESET}"),
         e if e < 0 => format!("{}{e}{RESET}", couleur(Niveau::Eleve)),
@@ -467,8 +470,8 @@ pub fn courbe(historique: &[Bilan]) -> Option<String> {
     }
     let reseau_actuel = derniers.last()?.nom_reseau.clone();
     let (largeur, hauteur, marge) = (640.0, 200.0, 28.0);
-    #[allow(clippy::cast_precision_loss)]
-    let pas = (largeur - 2.0 * marge) / (derniers.len() - 1) as f64;
+    // Au plus 30 relevés : le compte tient dans un u32, puis f64 sans perte.
+    let pas = (largeur - 2.0 * marge) / f64::from(u32::try_from(derniers.len().saturating_sub(1)).unwrap_or(u32::MAX));
     // Échelle à partir de la dizaine sous la note la plus basse (au plus 40) : le haut de l'échelle reste lisible.
     let plus_basse = derniers
         .iter()
@@ -476,9 +479,11 @@ pub fn courbe(historique: &[Bilan]) -> Option<String> {
         .flatten()
         .min()
         .unwrap_or(40);
-    let bas = plus_basse.min(40) / 10 * 10;
+    let bas = (plus_basse.min(40) / 10).saturating_mul(10);
     let y = |note: u32| {
-        hauteur - marge - f64::from(note.saturating_sub(bas)) / f64::from(100 - bas) * (hauteur - 2.0 * marge)
+        hauteur
+            - marge
+            - f64::from(note.saturating_sub(bas)) / f64::from(100u32.saturating_sub(bas)) * (hauteur - 2.0 * marge)
     };
     let mut svg = format!(
         "<svg viewBox=\"0 0 {largeur} {hauteur}\" role=img aria-label=\"{}\" style=\"width:100%;height:auto\">",
@@ -502,8 +507,7 @@ pub fn courbe(historique: &[Bilan]) -> Option<String> {
             .iter()
             .enumerate()
             .filter_map(|(i, v)| {
-                #[allow(clippy::cast_precision_loss)]
-                let x = marge + i as f64 * pas;
+                let x = marge + f64::from(u32::try_from(i).unwrap_or(u32::MAX)) * pas;
                 v.map(|n| format!("{x:.1},{:.1}", y(n)))
             })
             .collect();
@@ -565,6 +569,11 @@ fn esc_court(date: &str) -> String {
     date.split(' ').next().unwrap_or(date).replace(['<', '>', '&'], "")
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

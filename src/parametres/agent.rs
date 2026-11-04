@@ -3,6 +3,8 @@
 //! se montre vient de `agent::sortie`, la vue que `vanguard agent --json` donne aussi : des noms de la liste fermée,
 //! des identifiants de règle, des nombres et des dates, mis en phrases ici.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use crate::agent::sortie::{self, EtatMission, Fichier, MissionVue, Pourquoi, Sorte, Vue};
 use crate::agent::{Decision, Levier, MissionId};
 use crate::ui::*;
@@ -179,7 +181,7 @@ pub(crate) fn afficher_missions(vue: &Vue) {
     );
     println!();
     for (i, m) in vue.missions.iter().enumerate() {
-        afficher_aligne(&format!("  {TOUCHE}{}{RESET} ", i + 1), &ligne(m), 4, "");
+        afficher_aligne(&format!("  {TOUCHE}{}{RESET} ", i.saturating_add(1)), &ligne(m), 4, "");
         afficher_aligne("    ", role(m.nom), 4, GRIS);
     }
     if matches!(vue.interrupteurs, Fichier::Douteux) {
@@ -235,7 +237,7 @@ pub(crate) fn afficher_journal() {
                 trp!(
                     "  … et {} ligne(s) plus ancienne(s).",
                     "  … and {} older line(s).",
-                    entrees.len() - JOURNAL_MAX
+                    entrees.len().saturating_sub(JOURNAL_MAX)
                 );
             }
         }
@@ -345,6 +347,11 @@ pub(crate) fn commande_mission(mission: &str, etat: &str) -> bool {
     true
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,6 +2,8 @@
 //! mises à jour, chiffrement du disque, sauvegardes, pack de départ, confidentialité, protection (Windows). Vanguard
 //! vérifie d'abord où il en est (le bilan, catégories utiles), puis propose chaque outil ; chacun redemande son accord.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::{a_savoir, bilan, conseil, proposer_outil, question, verifications};
 use crate::machine::Constat;
 use crate::ui::*;
@@ -116,7 +118,10 @@ pub(super) fn etapes(origine: Origine, fichiers_a_ramener: bool, chiffre: Option
                 "\n  Analyser le disque de l'ancien ordinateur (antivirus) avant de copier ? [o/N] : ",
                 "\n  Scan the old computer's disk (antivirus) before copying? [y/N]: "
             ),
-            crate::protection::antivirus::choisir as fn(),
+            {
+                let choisir: fn() = crate::protection::antivirus::choisir;
+                choisir
+            },
         )),
     });
     e.push(Etape {
@@ -195,7 +200,7 @@ pub(super) fn nouveau() {
     let constats = bilan(&categories(origine));
     section(tr!("DANS L'ORDRE", "IN ORDER"));
     for (i, e) in etapes(origine, fichiers == 0, chiffre(&constats)).iter().enumerate() {
-        println!("  {TOUCHE}{}{RESET} {GRAS}{}{RESET}", i + 1, e.titre);
+        println!("  {TOUCHE}{}{RESET} {GRAS}{}{RESET}", i.saturating_add(1), e.titre);
         afficher_aligne("    ", e.pourquoi, 4, "");
         if let Some((question, outil)) = e.outil {
             proposer_outil(question, outil);
@@ -220,6 +225,11 @@ pub(super) fn nouveau() {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

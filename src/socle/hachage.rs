@@ -1,14 +1,18 @@
 //! Les empreintes écrites en hexadécimal, par les fonctions de hachage de RustCrypto (sha1, sha2, md-5).
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use sha2::Digest;
 
 /// Des octets en hexadécimal minuscule.
 pub(crate) fn hexa(octets: &[u8]) -> String {
     use std::fmt::Write;
-    octets.iter().fold(String::with_capacity(octets.len() * 2), |mut t, o| {
-        let _ = write!(t, "{o:02x}");
-        t
-    })
+    octets
+        .iter()
+        .fold(String::with_capacity(octets.len().saturating_mul(2)), |mut t, o| {
+            let _ = write!(t, "{o:02x}");
+            t
+        })
 }
 
 /// L'empreinte SHA-1 de `octets`, en hexadécimal minuscule (40 caractères).
@@ -16,6 +20,11 @@ pub(crate) fn sha1_hexa(octets: &[u8]) -> String {
     hexa(&sha1::Sha1::digest(octets))
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

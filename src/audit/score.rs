@@ -3,6 +3,8 @@
 //! vérifications n'a pas pu se faire (le garde-fou d'`Audit::fiable`), sinon un domaine peu vérifié obtiendrait un
 //! « A » rassurant. La note de l'audit est la plus basse des six, et aucune dès qu'un domaine n'en a pas.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use crate::machine::Constat;
 use crate::risk::Niveau;
 
@@ -26,7 +28,7 @@ pub fn non_verifies(constats: &[Constat]) -> usize {
 /// La note du domaine, ou `None` quand un tiers ou plus des vérifications n'a pas pu se faire (ou sans aucun
 /// constat) : on montre alors « incomplet » et la liste des non vérifiés.
 pub fn noter(constats: &[Constat]) -> Option<u32> {
-    (!constats.is_empty() && non_verifies(constats) * 3 < constats.len()).then(|| score(constats))
+    (!constats.is_empty() && non_verifies(constats).saturating_mul(3) < constats.len()).then(|| score(constats))
 }
 
 /// La note de l'audit : la plus basse des domaines, aucune dès qu'un domaine n'en a pas.
@@ -34,6 +36,11 @@ pub fn globale(scores: &[Option<u32>]) -> Option<u32> {
     scores.iter().copied().try_fold(100, |min, s| Some(min.min(s?)))
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

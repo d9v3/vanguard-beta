@@ -5,6 +5,8 @@
 //! d'abord), et la page à laisser, avec des conseils choisis pour la personne. Le réseau est celui du proche : il
 //! n'est regardé qu'avec son accord.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::{Etat, a_savoir, conseil, ecran, proposer_outil, question};
 use crate::machine::{Audit, Constat};
 use crate::reseau::{Options, Rapport};
@@ -323,10 +325,10 @@ pub(super) fn resume(constats: &[Constat], appareils: Option<usize>, priorite: &
     }
     a_faire.sort_by_key(|(critique, rang, _)| (!critique, *rang));
     bien.sort_by_key(|(rang, _)| *rang);
-    let n_faire = a_faire.len().min(5 - bien.len().min(2));
-    let n_bien = bien.len().min(5 - n_faire).min(3);
+    let n_faire = a_faire.len().min(5usize.saturating_sub(bien.len().min(2)));
+    let n_bien = bien.len().min(5usize.saturating_sub(n_faire)).min(3);
     Resume {
-        autres: a_faire.len() - n_faire,
+        autres: a_faire.len().saturating_sub(n_faire),
         a_faire: a_faire.into_iter().take(n_faire).map(|(_, _, p)| p).collect(),
         bien: bien.into_iter().take(n_bien).map(|(_, p)| p).collect(),
     }
@@ -575,6 +577,11 @@ pub(super) fn proche() {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

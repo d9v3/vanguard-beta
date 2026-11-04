@@ -7,6 +7,8 @@
 //! relue, son CRC-32 recalculé, et assez de pages. Le guide lui-même ne change pas : ce contrôle-là ne vaut que pour
 //! la copie de la clé, qui part chez d'autres.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -25,6 +27,11 @@ const MARGE_FUTUR: Duration = Duration::from_mins(5);
 /// pas une page, et quelques Mo de deflate pourraient sinon en annoncer des Go à recalculer. Autant d'entrées que le
 /// format en permet sans zip64.
 const BORNES: crate::archives::Bornes = crate::archives::Bornes {
+    // `From` n'est pas utilisable dans une constante : u16 vers usize, sans perte sur les cibles livrées (64 bits).
+    #[expect(
+        clippy::as_conversions,
+        reason = "u16 vers usize ne perd rien, et From n'est pas const"
+    )]
     entrees: u16::MAX as usize,
     fichier: 64 << 20,
     total: 512 << 20,
@@ -295,6 +302,11 @@ pub(crate) fn sur_la_cle(dossier: &Path) -> bool {
     )
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
