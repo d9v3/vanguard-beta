@@ -13,6 +13,9 @@
 //! Chaque logiciel est gardé sous une clé sans ses numéros de version (« Outil # (x64) ») : sous Windows, le nom
 //! affiché en contient souvent un, et chaque mise à jour serait prise pour une nouvelle installation.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::NaiveDate;
@@ -260,7 +263,8 @@ fn juger(lus: &[(String, String)], avant: Option<&Vus>, aujourd_hui: NaiveDate) 
     let mut recents: Vec<(&String, &Vu)> = vus
         .iter()
         .filter(|(_, v)| {
-            NaiveDate::parse_from_str(&v.date, "%Y-%m-%d").is_ok_and(|d| (aujourd_hui - d).num_days() < RECENT_JOURS)
+            NaiveDate::parse_from_str(&v.date, "%Y-%m-%d")
+                .is_ok_and(|d| aujourd_hui.signed_duration_since(d).num_days() < RECENT_JOURS)
         })
         .collect();
     recents.sort_by(|a, b| b.1.date.cmp(&a.1.date).then_with(|| a.0.cmp(b.0)));
@@ -406,6 +410,11 @@ fn constat_de(lu: Option<Lu>) -> Constat {
     c
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -6,6 +6,8 @@
 //! Windows rend est copié d'un bloc puis lu octet par octet, chaque borne testée avant la lecture ; les lecteurs sont
 //! purs et testés sur des blocs fabriqués selon wlanapi.h.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de wlanapi.dll chargée à la demande (LoadLibraryExW, GetProcAddress, transmute) et de ses listes.
 #![allow(unsafe_code)]
 
@@ -131,18 +133,22 @@ struct Interface {
 
 #[cfg(any(windows, test))]
 fn u16_a(octets: &[u8], pos: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(*octets.get(pos..pos + 2)?.first_chunk::<2>()?))
+    Some(u16::from_le_bytes(
+        *octets.get(pos..pos.saturating_add(2))?.first_chunk::<2>()?,
+    ))
 }
 
 #[cfg(any(windows, test))]
 fn u32_a(octets: &[u8], pos: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(*octets.get(pos..pos + 4)?.first_chunk::<4>()?))
+    Some(u32::from_le_bytes(
+        *octets.get(pos..pos.saturating_add(4))?.first_chunk::<4>()?,
+    ))
 }
 
 /// Un texte UTF-16 terminé par un zéro, dans un champ de `n` caractères, prêt à montrer.
 #[cfg(any(windows, test))]
 fn texte_large(octets: &[u8], pos: usize, n: usize) -> Option<String> {
-    let champ = octets.get(pos..pos + 2 * n)?;
+    let champ = octets.get(pos..pos.saturating_add(n.saturating_mul(2)))?;
     let mots: Vec<u16> = champ
         .as_chunks::<2>()
         .0
@@ -158,7 +164,7 @@ fn texte_large(octets: &[u8], pos: usize, n: usize) -> Option<String> {
 #[cfg(any(windows, test))]
 fn ssid_a(octets: &[u8], pos: usize) -> Option<String> {
     let longueur = usize::try_from(u32_a(octets, pos)?).ok()?.min(32);
-    let nom = octets.get(pos + 4..pos + 4 + longueur)?;
+    let nom = octets.get(pos.saturating_add(4)..pos.saturating_add(longueur).saturating_add(4))?;
     if nom.iter().all(|&o| o == 0) {
         return Some(String::new());
     }
@@ -179,9 +185,9 @@ fn compte(octets: &[u8], pos: usize) -> usize {
 fn interfaces_de(octets: &[u8]) -> Vec<Interface> {
     (0..compte(octets, 0))
         .filter_map(|i| {
-            let base = ENTETE_LISTE + i * size_of::<WlanInterfaceInfo>();
-            let guid = octets.get(base..base + 16)?;
-            let etat = u32_a(octets, base + offset_of!(WlanInterfaceInfo, etat))?;
+            let base = ENTETE_LISTE.saturating_add(i.saturating_mul(size_of::<WlanInterfaceInfo>()));
+            let guid = octets.get(base..base.saturating_add(16))?;
+            let etat = u32_a(octets, base.saturating_add(offset_of!(WlanInterfaceInfo, etat)))?;
             Some(Interface {
                 guid: <[u8; 16]>::try_from(guid).ok()?,
                 connectee: etat == INTERFACE_CONNECTEE,
@@ -195,16 +201,28 @@ fn interfaces_de(octets: &[u8]) -> Vec<Interface> {
 fn balises_de(octets: &[u8]) -> Vec<Balise> {
     (0..compte(octets, 4))
         .filter_map(|i| {
-            let base = ENTETE_LISTE + i * size_of::<WlanBssEntry>();
-            let ssid = ssid_a(octets, base + offset_of!(WlanBssEntry, ssid))?;
-            let bssid = mac_texte(
-                octets.get(base + offset_of!(WlanBssEntry, bssid)..base + offset_of!(WlanBssEntry, bssid) + 6)?,
-            );
-            let qualite = u32_a(octets, base + offset_of!(WlanBssEntry, qualite))?;
-            let capacites = u16_a(octets, base + offset_of!(WlanBssEntry, capacites))?;
-            let khz = u32_a(octets, base + offset_of!(WlanBssEntry, frequence_centrale_khz))?;
-            let decalage = usize::try_from(u32_a(octets, base + offset_of!(WlanBssEntry, decalage_elements))?).ok()?;
-            let taille = usize::try_from(u32_a(octets, base + offset_of!(WlanBssEntry, taille_elements))?).ok()?;
+            let base = ENTETE_LISTE.saturating_add(i.saturating_mul(size_of::<WlanBssEntry>()));
+            let ssid = ssid_a(octets, base.saturating_add(offset_of!(WlanBssEntry, ssid)))?;
+            let bssid = mac_texte(octets.get(
+                base.saturating_add(offset_of!(WlanBssEntry, bssid))
+                    ..base.saturating_add(offset_of!(WlanBssEntry, bssid)).saturating_add(6),
+            )?);
+            let qualite = u32_a(octets, base.saturating_add(offset_of!(WlanBssEntry, qualite)))?;
+            let capacites = u16_a(octets, base.saturating_add(offset_of!(WlanBssEntry, capacites)))?;
+            let khz = u32_a(
+                octets,
+                base.saturating_add(offset_of!(WlanBssEntry, frequence_centrale_khz)),
+            )?;
+            let decalage = usize::try_from(u32_a(
+                octets,
+                base.saturating_add(offset_of!(WlanBssEntry, decalage_elements)),
+            )?)
+            .ok()?;
+            let taille = usize::try_from(u32_a(
+                octets,
+                base.saturating_add(offset_of!(WlanBssEntry, taille_elements)),
+            )?)
+            .ok()?;
             // Les éléments suivent l'entrée dans le même bloc ; hors du bloc, ils ne sont pas lus (borne sans
             // protection connue, qu'on ne compte pas saine : ni RSN ni WPA la fait passer pour ouverte, ce que le
             // bit « Privacy » corrige en WEP au pire).
@@ -237,11 +255,17 @@ fn connexion_de(octets: &[u8]) -> Option<Connexion> {
         return None;
     }
     let association = offset_of!(WlanConnectionAttributes, association);
-    let ssid = ssid_a(octets, association + offset_of!(WlanAssociationAttributes, ssid))?;
-    let debut = association + offset_of!(WlanAssociationAttributes, bssid);
-    let qualite = u32_a(octets, association + offset_of!(WlanAssociationAttributes, qualite));
+    let ssid = ssid_a(
+        octets,
+        association.saturating_add(offset_of!(WlanAssociationAttributes, ssid)),
+    )?;
+    let debut = association.saturating_add(offset_of!(WlanAssociationAttributes, bssid));
+    let qualite = u32_a(
+        octets,
+        association.saturating_add(offset_of!(WlanAssociationAttributes, qualite)),
+    );
     let securite = offset_of!(WlanConnectionAttributes, securite);
-    let champ = |decalage| u32_a(octets, securite + decalage);
+    let champ = |decalage| u32_a(octets, securite.saturating_add(decalage));
     // Un bloc coupé avant la protection : rien de deviné, la balise la dira.
     let negociee = match (
         champ(offset_of!(WlanSecurityAttributes, authentification)),
@@ -252,7 +276,7 @@ fn connexion_de(octets: &[u8]) -> Option<Connexion> {
     };
     Some(Connexion {
         ssid,
-        bssid: mac_texte(octets.get(debut..debut + 6)?),
+        bssid: mac_texte(octets.get(debut..debut.saturating_add(6))?),
         qualite: qualite.and_then(|q| u8::try_from(q.min(100)).ok()),
         securite: negociee.to_string(),
         ..Connexion::default()
@@ -292,7 +316,13 @@ fn bande_sans_ambiguite(canal: u16) -> Option<Bande> {
 #[cfg(any(windows, test))]
 fn profils_de(octets: &[u8]) -> Vec<String> {
     (0..compte(octets, 0))
-        .filter_map(|i| texte_large(octets, ENTETE_LISTE + i * size_of::<WlanProfileInfo>(), 256))
+        .filter_map(|i| {
+            texte_large(
+                octets,
+                ENTETE_LISTE.saturating_add(i.saturating_mul(size_of::<WlanProfileInfo>())),
+                256,
+            )
+        })
         .filter(|n| !n.is_empty())
         .collect()
 }
@@ -300,9 +330,11 @@ fn profils_de(octets: &[u8]) -> Vec<String> {
 /// Le contenu de la première balise `<nom>` d'un XML de profil, sans espaces autour.
 #[cfg(any(windows, test))]
 fn balise_xml<'a>(xml: &'a str, nom: &str) -> Option<&'a str> {
-    let debut = xml.find(&format!("<{nom}>"))? + nom.len() + 2;
+    let debut = (xml.find(&format!("<{nom}>"))?)
+        .saturating_add(nom.len())
+        .saturating_add(2);
     let fin = xml[debut..].find(&format!("</{nom}>"))?;
-    Some(xml[debut..debut + fin].trim())
+    Some(xml[debut..debut.saturating_add(fin)].trim())
 }
 
 /// Un profil Wi-Fi de Windows (le XML de WlanGetProfile) : son nom, s'il se reconnecte seul (`connectionMode`
@@ -793,6 +825,11 @@ mod natif {
 #[cfg(windows)]
 pub(crate) use natif::{cartes, connexion, lire, profils};
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::super::elements::fabrique;

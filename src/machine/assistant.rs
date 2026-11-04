@@ -22,6 +22,8 @@
 //! ne redemande pas (le mot de passe vaut accord), au contraire de Windows, dont la demande d'administrateur ne montre
 //! que le nom du programme et où la fenêtre élevée est à part.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc : prctl (PR_SET_DUMPABLE, le secret de l'assistant élevé hors des vidages).
 #![allow(unsafe_code)]
 
@@ -213,14 +215,14 @@ fn lire_lignes(source: impl Read) -> Option<Vec<String>> {
 /// n'en est pas un, qu'un groupe est vide, ou qu'il y en a trop.
 fn analyser_liste(lignes: &[String]) -> Option<Vec<Vec<Ordre>>> {
     let mut groupes = vec![Vec::new()];
-    let mut total = 0;
+    let mut total = 0usize;
     for l in lignes {
         if l == SUITE {
             groupes.push(Vec::new());
             continue;
         }
         let o = ordres::analyser(l).filter(Ordre::permis_ici)?;
-        total += 1;
+        total = total.saturating_add(1);
         groupes.last_mut()?.push(o);
     }
     (total > 0 && total <= LIGNES_MAX && groupes.iter().all(|g| !g.is_empty())).then_some(groupes)
@@ -463,6 +465,11 @@ pub(crate) fn executer(langue: Option<&str>, parent: Option<u32>) -> i32 {
     code
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

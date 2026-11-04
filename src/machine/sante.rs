@@ -2,6 +2,8 @@
 //! Un disque qui lâche ou plein, c'est des données perdues ; seuls ces deux cas comptent dans la note.
 //! Batterie et chaleur sont de simples informations.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc : statvfs et statfs (place libre des disques).
 #![allow(unsafe_code)]
 
@@ -15,7 +17,7 @@ const GIO: u64 = 1 << 30;
 
 fn taille(octets: u64) -> String {
     #[allow(clippy::cast_precision_loss)]
-    let go = octets as f64 / GIO as f64;
+    let go = crate::socle::nombres::flottant(octets) / crate::socle::nombres::flottant(GIO);
     if go >= 1000.0 {
         trf!("{} To", "{} TB", crate::langue::decimal(go / 1024.0, 1))
     } else if go >= 10.0 {
@@ -37,7 +39,7 @@ fn juger_volume(v: &Volume) -> Option<Constat> {
     if v.total == 0 {
         return None;
     }
-    let pourcent = v.libre * 100 / v.total;
+    let pourcent = v.libre.saturating_mul(100).checked_div(v.total)?;
     let petit = v.total < 8 * GIO;
     let niveau = if pourcent < 5 || (!petit && v.libre < GIO) {
         Niveau::Eleve
@@ -291,8 +293,8 @@ mod systeme {
             // Seulement montré : prêt à montrer, comme le modèle des disques plus bas.
             volumes.push(Volume {
                 point: crate::ui::affichable(&point),
-                libre: libres * bloc,
-                total: total * bloc,
+                libre: libres.saturating_mul(bloc),
+                total: total.saturating_mul(bloc),
             });
         }
         volumes
@@ -396,7 +398,7 @@ mod systeme {
                 (Some(p), Some(o)) => (p, o),
                 _ => (nombre("charge_full")?, nombre("charge_full_design")?),
             };
-            if let Some(sante) = (plein * 100).checked_div(origine) {
+            if let Some(sante) = plein.saturating_mul(100).checked_div(origine) {
                 return Some(sante.min(100));
             }
         }
@@ -700,7 +702,7 @@ mod systeme {
         let l = crate::commande::section(lectures, "BAT")?;
         let (plein, origine) = l.first()?.trim().split_once('|')?;
         let (plein, origine): (u64, u64) = (plein.parse().ok()?, origine.parse().ok()?);
-        (plein * 100).checked_div(origine).map(|s| s.min(100))
+        plein.saturating_mul(100).checked_div(origine).map(|s| s.min(100))
     }
 
     /// Zones thermiques de la carte mère (en dixièmes de kelvin, sans droits admin ; souvent le processeur sur un
@@ -753,6 +755,11 @@ pub fn sante() -> Vec<Constat> {
     constats
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
