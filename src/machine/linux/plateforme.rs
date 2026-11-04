@@ -567,7 +567,16 @@ mod tests {
             else {
                 return crate::essais::saute("systemctl sans réponse");
             };
-            let Some(natif) = service_tourne_dans(&RACINES_CGROUP.map(Path::new), &format!("{unite}.service")) else {
+            // Le vrai nom de l'unité : sous Debian et Ubuntu, sshd n'est qu'un alias de ssh.service, que systemctl
+            // résout et dont le groupe de contrôle porte le nom.
+            let id = crate::commande::lancer(
+                Command::new("systemctl").args(["show", "-p", "Id", "--value", unite]),
+                10,
+            )
+            .map(|r| r.sortie.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| format!("{unite}.service"));
+            let Some(natif) = service_tourne_dans(&RACINES_CGROUP.map(Path::new), &id) else {
                 return crate::essais::saute("cgroups illisibles");
             };
             assert_eq!(natif, r.sortie.trim() == "active", "{unite} : {}", r.sortie.trim());
