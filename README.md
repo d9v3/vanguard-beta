@@ -4,133 +4,60 @@
 
 <p align="center">
   <b>Cyberdéfense portable des postes et des réseaux, depuis une clé USB.</b><br>
-  Vanguard durcit les ordinateurs et détecte les failles et les intrusions, sur chaque machine comme sur le réseau ;<br>
-  il bloque les menaces trouvées sur l'ordinateur et collecte les traces d'un incident.<br>
-  Chaque constat est expliqué, et rien n'est modifié sans accord. Le dépannage vient en plus.<br>
-  Linux, Windows et macOS, sans installation, en français et en anglais.<br>
+  Écrit en Rust · un seul exécutable par système (Linux x86_64 statique, Windows x86_64, macOS universel), rien à installer<br>
+  Tourne avec les droits du compte : l'administrateur n'est demandé que pour un geste accepté (pkexec, run0 ou sudo ; UAC)<br>
+  Lit et juge sur l'ordinateur même ; en HTTPS, ne joint qu'une liste fermée de 28 hôtes<br>
+  Linux, Windows et macOS · français et anglais<br>
   Il complète l'antivirus du système (Microsoft Defender, XProtect, ClamAV) : il ne le remplace pas.
 </p>
 
-<p align="center"><b>En développement actif · tout en Rust (en cours) · défensif</b></p>
+<p align="center"><b>En développement actif · défensif seulement</b></p>
 
-![Bilan de sécurité de Vanguard : une note de A à F, chaque problème expliqué avec sa correction](assets/captures/bilan.png)
+## Sécurité de Vanguard lui-même
 
-## Cyberdéfense
+Un outil de défense qui tourne sur des ordinateurs à protéger doit d'abord être sûr lui-même. Ce qui est en place
+dans cette version, et comment le vérifier :
 
-- **Durcir.** Chaque faiblesse relevée est expliquée avec sa correction, appliquée après accord et précédée d'un point
-  de restauration quand le système en permet un ; chaque règle cite sa référence (CIS, Microsoft ou ANSSI). Chaque
-  correction note l'état d'avant et s'annule une par une, sauf celles qui rallument une protection ; « Tout remettre
-  comme avant » défait tout ce que Vanguard a changé. Sous Windows, quatorze réglages de durcissement d'une liste
-  fermée sont appliqués par Vanguard lui-même, sans script, quand ils ne sont pas mêlés à d'autres corrections ; les
-  protections de Microsoft Defender (réduction de la surface d'attaque, accès contrôlé aux dossiers) s'activent après
-  accord. Ces deux-là sont des protections : l'annulation ne les défait pas. La personne peut les baisser elle-même,
-  dans Windows ou dans les Options de défense : la baisse est montrée, confirmée et notée, et « Rallumer » la remet
-  ([Baisses par choix](MODELE-DE-MENACE.md#baisses-par-choix)). En déplacement, le mode Wi-Fi public ferme
-  l'ordinateur au réseau d'un café, d'un hôtel ou d'un aéroport.
-- **Détecter.** Les failles connues (mises à jour de sécurité manquantes, avis de sécurité des distributions Linux,
-  failles activement exploitées du catalogue de la CISA, fin de support), les logiciels pas à jour sous Windows et
-  macOS et les mauvais réglages, notés de A à F ; l'audit du réseau en six notes, chaque appareil inventorié et les
-  nouveaux venus signalés ; la chasse aux menaces en direct ; les logiciels espions posés par un proche ; plus de 300 règles
-  YARA et les empreintes de MalwareBazaar (avec une clé abuse.ch gratuite) ; les journaux d'événements de Windows et
-  les tentatives de connexion SSH ratées ; l'échange de clés post-quantique absent de SSH, des navigateurs et de
-  WireGuard. L'autodiagnostic compare les lectures de Vanguard à celles des outils du système, sans rien changer.
-- **Bloquer et répondre.** Chaque menace trouvée se bloque d'un clic : programme arrêté et mis en quarantaine,
-  connexion fermée au pare-feu, lancement retiré du démarrage ; tout s'annule, sauf l'arrêt d'un programme. Avant
-  chaque geste, Vanguard relève ce qu'il va effacer (programme, ligne de commande, empreinte, connexions), et un
-  journal des événements scellé relie l'alerte, cette preuve, le geste et son annulation. Une fois mise en marche, la
-  protection active bloque d'elle-même ce qui ne fait aucun doute. La protection en temps réel (surveillance horaire
-  et protection active) peut être coupée pour une heure, quatre heures ou jusqu'à sa remise en marche ; la coupure
-  reste signalée. Sous Linux, le veilleur anti-rançongiciel repère une rafale de chiffrement en quelques secondes et
-  arrête un rançongiciel quasi certain quand la protection active est en marche. Après une infection, les traces sont
-  collectées avant tout nettoyage, avec la chronologie de l'incident. Sous Windows et sous Linux, ce que le bilan
-  trouve de plus grave (compte caché, service ou lancement ajouté en cachette, programme setuid suspect, abonnement
-  WMI, racine de certificat ajoutée…) se défait aussi par un geste de défense, montré puis confirmé.
-- **Protéger contre les agents d'IA.** Les serveurs d'IA ouverts au réseau, les agents qui agissent sans demander et
-  les serveurs MCP mal protégés sont signalés ; les deux premiers se bloquent d'un clic. La défense contre les
-  nouvelles menaces liées aux agents d'IA est en développement.
-- **Signaler.** Un brouillon de rapport de faille au format du programme de l'éditeur (Microsoft, Google, Mozilla,
-  Apple, avis GitHub, CERT…), trié d'abord et débarrassé de ce qui est personnel, que l'utilisateur relit et envoie
-  lui-même : Vanguard n'envoie rien.
+| Domaine | Ce qui est fait | Pour le vérifier |
+|---|---|---|
+| **Versions signées** | La dernière version est décrite par un manifeste (version, taille et SHA-256 du programme de chaque système) signé en Ed25519 hors de GitHub. Deux clés publiques sont gravées dans le programme : la principale, et une clé de secours gardée hors ligne qui peut révoquer la principale (révocation retenue dans l'état scellé, la principale n'est plus jamais acceptée). Vérification stricte (`verify_strict`) sous un domaine de signature (`vanguard-versions 1`, et `vanguard-historique 1` pour l'historique des versions : une signature ne vaut jamais pour l'autre fichier). Refusés : un manifeste mal signé, une version pas plus récente que la plus haute déjà vue (retenue, scellée), un programme dont la taille, l'empreinte ou la version gravée ne sont pas celles signées. Un manifeste de plus de 45 jours donne « non vérifié », jamais « à jour ». Rien ne s'installe sans accord. | `vanguard verifier-moi` : version, date du dernier commit, empreinte SHA-256, comparée à l'historique signé des versions ; programmes publiés à part, dans [vanguard-update](https://github.com/d9v3/vanguard-update) |
+| **Le programme publié** | Ses protections sont relues dans ses en-têtes avant chaque publication (`vanguard deploiement verifier-binaire`), et un programme qui en manque une ne part pas. Linux : ELF static-pie, marque du RELRO complet (BIND_NOW, appliqué par Vanguard lui-même au démarrage, car le démarrage de musl ne le fait pas), pile non exécutable, aucun segment à la fois écrivable et exécutable. Windows : ASLR (DYNAMIC_BASE, HIGH_ENTROPY_VA), DEP (NX_COMPAT), relocalisations présentes, DLL importées depuis System32 seulement, manifeste `asInvoker`. macOS : chaque tranche (arm64, x86_64) MH_PIE, sans pile exécutable, `__PAGEZERO` sans droits, aucun segment écrivable et exécutable, signature présente. CFG et CET sont affichés, pas exigés. Compilé avec LTO et `overflow-checks = true` : un calcul qui déborde sur une donnée hostile s'arrête au lieu de repartir à zéro. | `vanguard deploiement verifier-binaire <programme>` |
+| **Le code** | `#![deny(unsafe_code)]` à la racine ; l'unsafe n'est permis que module par module, chaque bloc avec son `// SAFETY:` exigé par clippy, et il est refusé sans recours (`forbid`) dans 62 modules. Compté à chaque passe de `outils/verifier.sh` (dans cette version : 357 blocs `unsafe`, 57 blocs `unsafe extern`, 18 fonctions et 3 `impl`). Clippy en mode pédant, avertissements traités comme des erreurs ; `unwrap`, `expect`, `panic!` et l'accès direct par indice refusés hors des tests. Le code est relu selon le [guide Rust sécurisé de l'ANSSI](CONFORMITE-ANSSI.md). | `outils/verifier.sh` (résumé de l'unsafe en fin de passe) |
+| **Lecteurs de données hostiles** | 35 cibles de fuzzing (journaux .evtx et BinXML, en-têtes PE, plist, SQLite, zip, tar, zstd, gzip, client DNS, réponse TLS, D-Bus, journal de systemd, règles YARA, courriel MIME…) : quelques secondes par cible à chaque passe de `verifier.sh`, cinq minutes par cible chaque nuit dans la CI. 6 preuves de Kani sur des lecteurs bornés (DNS, SQLite, zstd), compilées à chaque passe. | `fuzz/`, `outils/fuzz.sh`, `outils/preuves.sh` |
+| **Régression de détection** | 77 cas fabriqués et inoffensifs (`tests/corpus-detection`) : chaque cas donne au jugement de sa règle des données fabriquées et exige un constat d'au moins la gravité attendue ; le même cas propre exige qu'elle se taise. Chaque règle qui cite une technique d'ATT&CK, et chaque outil qui détecte, a son cas ou une raison d'exemption écrite. | `cargo test` (`src/modele/corpus.rs`) |
+| **Dépendances** | cargo deny (failles connues, licences, provenance), cargo audit, cargo vet (chaque bibliothèque relue par un tiers, ou exemptée). Chaque programme porte la liste de ses dépendances (cargo auditable). Nomenclature logicielle (SBOM) CycloneDX 1.5 à chaque version. Workflows de GitHub analysés par zizmor, actions épinglées par commit. | `cargo audit bin <programme>`, [SECURITY.md](SECURITY.md) |
+| **Compilation reproductible** | Une seule recette (`outils/compiler-version.sh`) : chaîne de `rust-toolchain.toml`, Cargo.lock tel quel, date du commit, chemins retirés. La CI recompile le même code et écrit ses empreintes dans son journal. Elles ne sont pas encore les mêmes que celles de l'ordinateur de publication (musl-gcc et MinGW diffèrent entre Arch et Ubuntu) : d'ici là, une publication passe par le passe-droit `VANGUARD_PUBLIER_SANS_EMPREINTES_CI=1`, dit dans les notes de la version et dans l'historique signé. | [CONTRIBUTING.md](CONTRIBUTING.md) (« Compilation reproductible ») |
+| **Secrets** | Ni clé privée ni clé d'API dans le programme : les seules clés gravées sont les deux clés publiques de signature, et la clé privée ne quitte pas l'ordinateur de publication. Les clés d'API sont celles de la personne : abuse.ch, gardée dans le dossier de Vanguard du compte, lisible par lui seul, jamais sur la clé USB, et l'adresse qui la porte n'apparaît dans aucun message, journal, rapport ni JSON ; Have I Been Pwned par `VANGUARD_HIBP_CLE`, envoyée dans un en-tête, jamais sur la ligne de commande d'un programme. | `src/mise_a_jour/github.rs`, `src/protection/abuse_ch.rs` |
+| **Ce qui sort de l'ordinateur** | En HTTPS, une liste fermée de 28 hôtes (listes de menaces, fuites de mots de passe, versions des logiciels, mise à jour de Vanguard, débit) ; sur GitHub, seuls les dépôts lus par Vanguard. Un test compare cette liste, les prises réseau ouvertes à la main et chaque adresse écrite dans le code au [modèle de menace](MODELE-DE-MENACE.md) : un envoi ajouté sans y être écrit fait échouer la vérification. Pour un lien, seul le domaine part ; pour un mot de passe, 5 caractères de son empreinte SHA-1 (k-anonymat). Le relevé local de l'auto-amélioration (comptes agrégés, sans secret) reste sur l'ordinateur : l'adresse du relais n'existe pas dans le code (`RELAIS = None`), et rien ne part. `VANGUARD_ENVOI=0` coupe même le relevé. | [MODELE-DE-MENACE.md](MODELE-DE-MENACE.md) (« Ce qui sort de l'ordinateur ») |
+| **État scellé** | L'état de Vanguard (réglages des extensions, listes téléchargées, défenses mises en marche, tâches, changements faits) est scellé : changé hors de Vanguard, il n'accorde plus rien et ne coupe plus rien, et c'est dit. Le journal des événements est chaîné et scellé. | `vanguard evenements` |
+| **Signaler une faille** | En privé, par l'onglet Security du dépôt (avis de sécurité GitHub). | [SECURITY.md](SECURITY.md) |
 
-**Où va Vanguard.** En cours : la régression de détection (un corpus de cas inoffensifs prouve que chaque règle tire
-encore) ; toutes les corrections faites par Vanguard lui-même, en Rust, sans script. Ensuite, dans l'ordre et sans
-date : les alertes déclarées « normales sur cet ordinateur » gardées d'une version à l'autre ; un guide d'incident pas
-à pas ; un Vanguard qui se surveille lui-même (ses fichiers, son programme et son état vérifiés, un journal dont chaque
-ligne est liée à la précédente, un apprentissage local qui ne peut que le rendre plus attentif, jamais moins) ;
-l'observation du noyau Linux ; plus tard, une application d'IA défensive locale et séparée. La 1.0 : tout ce périmètre
-intégré, testé, documenté en français et en anglais, et vert sur Windows, Linux et macOS. Toujours : écrit en Rust,
-petites briques faites maison, aucune dépendance nouvelle sans décision, cryptographie auditée seulement, rien ne sort
-sans votre accord, défensif seulement : Vanguard n'attaque aucun appareil.
+Les programmes ne portent pas de signature de code d'éditeur (Authenticode, Apple) : leur empreinte SHA-256, sur la
+page de chaque version et dans l'historique signé, est la preuve qu'ils sont bien eux.
 
-**Ce qui sort de l'ordinateur** : Vanguard ne joint qu'une liste fermée de sites, chacun nommé dans le modèle de
-menace ; un test échoue si le code en ajoute un que la page ne nomme pas. Son état (réglages des extensions, listes
-téléchargées, défenses mises en marche, tâches) est scellé : changé hors de Vanguard, il n'accorde plus rien et ne
-coupe plus rien, et c'est dit.
+## Fonctions de sécurité, menace par menace
 
-**Ce que Vanguard protège, et ce qu'il ne protège pas** : le [modèle de menace](MODELE-DE-MENACE.md). **Ce que ses
-règles voient, technique par technique** : la [carte de couverture MITRE ATT&CK](COUVERTURE-ATTACK.md). **Comment son
-code est écrit** : sa [relecture selon le guide Rust de l'ANSSI](CONFORMITE-ANSSI.md).
+Pour chaque menace : ce que Vanguard **lit** (directement dans le système, en Rust, sans lancer un programme par
+lecture), ce qu'il **juge**, et ce qu'il peut **faire**. Rien n'est changé sans accord ; chaque geste est montré
+avant d'être fait, noté avec l'état d'avant et annulable, sauf ceux qui rallument une protection ; « Tout remettre
+comme avant » défait tout ce que Vanguard a changé. Vanguard ne baisse jamais une protection de lui-même : la personne
+peut le faire, dans Windows ou dans les Options de défense, où la baisse est montrée, confirmée et notée, et
+« Rallumer » la remet ([Baisses par choix](MODELE-DE-MENACE.md#baisses-par-choix)).
 
-## En plus
+| Menace | Ce qu'il lit | Ce qu'il juge | Ce qu'il peut faire |
+|---|---|---|---|
+| **Le bilan, noté de A à F** | Linux : sysctl, `sshd_config` dans l'ordre de ses `Include`, version d'OpenSSH lue sans la lancer, horloge par `adjtimex`. Windows : registre, WMI et COM (Defender, BitLocker, Windows Update, disque), `NetUserEnum`, `NetShareEnum` ; PowerShell en secours seulement. macOS : plist (lecteur maison), autorisations TCC (lecteur SQLite maison) | 171 règles à identifiant stable (`LNX-SSH-006`) : 94 sous Linux, 82 sous Windows, 71 sous macOS, communes comprises. Chacune cite sa référence (CIS, Microsoft ou ANSSI ; ATT&CK, T… pour ce qu'elle détecte, M… pour ce qu'elle durcit) et a son délai. Ce qui n'a pas pu être vérifié est dit, jamais compté comme sain | Correction après accord, précédée d'un point de restauration quand le système en a un (snapper ou timeshift, Windows, Time Machine). Sous Windows, quatorze réglages d'une liste fermée appliqués par Vanguard lui-même, relancé en administrateur (une demande UAC, tube nommé vérifié des deux côtés) ; le reste par un script lisible. Correction de sshd validée par `sshd -t` |
+| **Exposition vers Internet** | Le routeur par UPnP IGD (client Rust : SSDP, SOAP en lecture seule), les ports en écoute (netlink sous Linux, `GetExtendedTcpTable` sous Windows), l'IPv6 publique, la page d'administration du routeur | L'audit du réseau : 34 fiches en six notes (exposition, Wi-Fi, séparation des appareils, DNS et certificats, objets connectés, ordinateurs) ; après accord, l'adresse publique dans quatre listes noires | Signale ; rien n'est attaqué, aucun mot de passe essayé (seule exception, annoncée : une demande SNMP en lecture avec le mot de passe d'usine « public ») |
+| **Intrus sur le Wi-Fi et le réseau local** | Wi-Fi par nl80211 (Linux) ou la WLAN API (Windows), voisins par netlink ; scan TCP « connect » sans root, mDNS, SSDP ; noms tirés au hasard demandés en LLMNR, NBT-NS et mDNS | Chiffrement (WEP, WPA2, WPA3), WPS, faux point d'accès qui copie le nom, serveur DHCP qui n'est pas le routeur, ARP, empoisonneur comme Responder (qui répond à un nom qui n'existe pas), nouveaux venus | Signale, et toutes les heures avec la surveillance ; le mode Wi-Fi public ferme l'ordinateur au réseau et le remet comme avant |
+| **Objets connectés** | Fabricant, ports ouverts (TCP et UDP), annonces mDNS et SSDP | Routeur, caméras, imprimantes, NAS, télés, domotique ; mot de passe d'origine à changer, caméras cachées | Signale, avec ce qu'il faut changer |
+| **Poste infecté** | Fichiers (moteur YARA écrit pour Vanguard, 4 fils, 308 règles de ReversingLabs, empreintes de MalwareBazaar) ; mémoire des programmes à la demande (`/proc/<pid>/mem`, `ReadProcessMemory` : jamais LSASS ni un processus protégé) ; connexions de chaque programme ; démarrage, services, pilotes ; `/proc` (PID cachés, programmes sans fichier, modules) ; journaux de Windows (lecteur .evtx maison, EvtQuery) et de systemd | Règles des journaux (`EVT-…`), serveurs de commande de botnets (ThreatFox, Feodo Tracker), pilotes vulnérables (LOLDrivers), rafale de chiffrement (veilleur anti-rançongiciel, Linux), fichiers-pièges ; le certain séparé du douteux | **Bloquer**, d'un clic : programme arrêté et mis en quarantaine (réversible), connexion fermée au pare-feu (ufw, ou une table nftables `inet vanguard` écrite par netlink ; Pare-feu Windows par INetFwPolicy2 ; ancre pf sous macOS), lancement retiré du démarrage. Avant chaque geste, la preuve est relevée (programme, ligne de commande, empreinte, connexions) et liée au geste dans le journal des événements scellé. La protection active, mise en marche une fois, bloque seule le certain. Traces collectées avant tout nettoyage, avec la chronologie. Sous Windows et sous Linux, le plus grave du bilan (compte caché, service ou lancement ajouté en cachette, programme setuid suspect, abonnement WMI, racine de certificat ajoutée…) se défait par un geste de défense, montré puis confirmé ; les Options de défense règlent Defender, les règles ASR et le pare-feu (ufw, firewalld ou nftables sous Linux). **Refusé exprès** : Vanguard et ce qui le fait tourner, les PID 0, 1 et 4 et les processus critiques (lsass, csrss, winlogon, svchost, MsMpEng, systemd, launchd…), un programme du système, une connexion à distance en cours |
+| **DNS et certificats détournés** | DNS réellement utilisé (mémoire DNS par varlink sous Linux), comparé à deux résolveurs publics sur des noms stables ; certificats racine ; proxy, fichier hosts, WPAD ; extensions de navigateur | Réponses inventées, racine ajoutée (HTTPS intercepté), proxy imposé, extensions qui lisent tous les sites | Signale ; WPAD fait partie des réglages corrigés sous Windows |
+| **Arnaques et prise de contrôle** | Logiciels de prise de contrôle à distance installés ou en marche ; un lien, sans l'ouvrir ; un fichier téléchargé | Lien : domaine comparé à URLhaus, Spamhaus DBL et SURBL, âge du domaine par RDAP (seul le domaine sort) ; mot de passe : Have I Been Pwned par k-anonymat ; fichier : YARA et empreintes | Signale ; bac à sable pour un programme inconnu |
+| **Vie privée et logiciels espions** | Indicateurs publics d'Échap comparés aux connexions et à la mémoire DNS ; caméra et micro (Linux : `/dev/video*` et flux de PipeWire ou PulseAudio ; Windows : l'historique du système) ; autorisations de surveillance ; mots de passe du navigateur ; historique git | Logiciel espion posé par un proche, programme qui lit le clavier, programme lancé depuis un dossier temporaire qui se sert de la caméra, secrets laissés en clair | Signale ; bloquer comme une menace |
+| **Agents d'IA** | Serveurs d'IA locaux (Ollama, LM Studio, ComfyUI, Gradio) ; réglages de Claude Code, Claude Desktop, Cursor, VS Code, Windsurf et Gemini CLI (aucune valeur secrète affichée ni gardée) | Serveur ouvert au réseau sans mot de passe, agent réglé pour tout faire sans demander, serveur MCP sans version fixée, joint en HTTP ou avec une clé en clair | Bloquer d'un clic les deux premiers ; rien ne se corrige tout seul. La défense contre les nouvelles menaces liées aux agents d'IA est en développement |
 
-- **Dépannage** : les pannes courantes pas à pas (Internet, Wi-Fi, son, imprimante, disque plein), l'aide pour
-  l'ordinateur d'un proche, le diagnostic de l'ordinateur, « Pourquoi c'est lent ? »
-- **Optimisation** : réglages de confidentialité et de performance qui s'annulent exactement, nettoyage avec mesure
-  de l'espace libéré, logiciels installés depuis leur source officielle, test de la connexion pour le jeu.
-- **Données et sauvegarde** : sauvegarde automatique par l'outil du système et sa vérification (copie rsync), copie
-  de fichiers vérifiée.
-- **Suivi, outils et clé USB** : rapport HTML, paramètres réunis au même endroit, extensions (plugins et scripts
-  vérifiés avant de tourner), guide des commandes ; une clé USB pour tous les ordinateurs, protégée en écriture
-  ailleurs que sur l'ordinateur de son propriétaire. Une clé qui démarre aussi les ordinateurs en panne est en
-  développement.
-
-## Démarrer
-
-**Télécharger** (dernière version) : [Windows](../../releases/latest/download/vanguard-windows-x86_64.exe) ·
-[Linux](../../releases/latest/download/vanguard-linux-x86_64) · [macOS](../../releases/latest/download/vanguard-macos)
-— ou toute la [page des versions](../../releases/latest), avec les empreintes SHA-256. Ce qu'a apporté chaque
-version : [historique](CHANGELOG.md).
-
-- **Windows** : double-clic sur le programme. Il n'est pas signé : SmartScreen peut avertir (« Informations
-  complémentaires » puis « Exécuter quand même »). Microsoft Defender le prend parfois à tort pour un virus
-  (« Trojan:Win32/Bearfoos.A!ml », une détection automatique sur un programme neuf) : c'est un faux positif ;
-  vérifier l'empreinte SHA-256 sur la page de la version.
-- **Linux** : `chmod +x vanguard-linux-x86_64`, puis `./vanguard-linux-x86_64` dans un terminal (toutes les
-  distributions, rien à installer).
-- **macOS** : copié depuis Internet, le programme est bloqué la première fois : `xattr -d com.apple.quarantine
-  vanguard-macos`, puis `./vanguard-macos` dans le Terminal. Testé automatiquement sur un Mac de GitHub, jamais essayé
-  sur un vrai Mac ; maintenu, sans nouveautés propres au Mac.
-- **Depuis la clé USB** : `Windows/vanguard.exe`, `Linux/vanguard`, ou `Lancer Vanguard.command` sous macOS ; le guide
-  de la clé est dans `LISEZMOI.txt`.
-
-Dans le menu, choisir **1** (bilan de sécurité complet), puis **2** (corriger). Les flèches ↑ ↓ pour se déplacer, Entrée ou → pour
-choisir ; Échap, ← ou Retour arrière pour revenir. La fenêtre se met à la taille du menu quand elle a été ouverte pour
-Vanguard.
-
-Le menu range les outils en deux parties. **Cyberdéfense** : 4 Cet ordinateur, 5 Réseau et Internet, 6 Virus et
-logiciels espions, 7 Arnaques et vie privée, 8 Bloquer et réagir. **En plus** : 9 Données et sauvegardes, 10 Guide des
-commandes, 11 Dépanner pas à pas, 12 Optimiser et installer, 13 Vanguard (paramètres, mise à jour, extensions). Un mot
-tapé au menu principal (« antivirus », « sauvegarde ») retrouve n'importe quel outil ; son chemin (« 6.1.3 ») l'ouvre
-directement.
-
-## Ce que fait Vanguard
-
-### Cyberdéfense, menace par menace
-
-Les menaces des postes et du réseau, une par une : ce que le routeur expose à Internet, un intrus sur le Wi-Fi ou un
-réseau public, un objet connecté vulnérable, un logiciel pas à jour, un ordinateur infecté, un DNS ou un certificat
-détourné, les arnaques, un logiciel espion et les autres atteintes à la vie privée.
-
-| Menace ou domaine | Ce que fait Vanguard |
-|---|---|
-| **Le bilan** | Une note de A à F sur tout ce qui suit, et aussi : pare-feu, mises à jour et failles connues, chiffrement, comptes, SSH, partages ouverts à tous, heure, fin de support, comptes oubliés, santé des disques… ; les logiciels pas à jour sous Windows et macOS (navigateurs, Office, Java…) et leurs failles exploitées ; l'échange de clés post-quantique (SSH, navigateurs, WireGuard), en lecture seule. Chaque règle cite sa référence (CIS, Microsoft ou ANSSI). Chaque problème est expliqué, avec sa correction, appliquée après accord et annulable. L'autodiagnostic vérifie les lectures du bilan elles-mêmes, sans rien changer. |
-| **Exposition vers Internet** | L'audit du réseau en six notes (exposition, Wi-Fi, séparation des appareils, DNS et certificats, objets connectés, ordinateurs) ; les ports que le routeur ouvre vers Internet (UPnP), les ports ouverts et le pare-feu de cet ordinateur, l'adresse Internet publique sur liste noire, la page d'administration du routeur en HTTP seul. |
-| **Intrus sur le Wi-Fi** | Chaque appareil du réseau, son fabricant, ses ports ouverts et ses risques ; les nouveaux venus signalés toutes les heures, avec un tableau de bord dans le navigateur ; la protection du Wi-Fi (WEP, WPA2, WPA3), le faux point d'accès qui copie son nom, les appareils Bluetooth appairés depuis peu ; le mode Wi-Fi public, qui ferme l'ordinateur au réseau d'un café, d'un hôtel ou d'un aéroport et le remet comme avant en partant. |
-| **Objets connectés** | Le routeur et les objets du réseau (caméras, imprimantes, NAS, télés, domotique…) reconnus, avec leur mot de passe d'origine à changer ; les caméras cachées, dans une location ou chez quelqu'un. |
-| **Poste infecté** | Analyse antivirus en second avis (Defender ou ClamAV), plus de 300 règles YARA et les empreintes de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite), la mémoire des programmes qui tournent (à la demande), la chasse aux menaces en direct (mot de passe deviné, programmes en marche suspects), le blocage des menaces, d'un clic ou tout seul pour ce qui ne fait aucun doute (protection active), avec la preuve relevée avant chaque geste et un journal des événements scellé, fichiers-pièges et veilleur anti-rançongiciel (Linux), options de défense en un écran (Defender, règles ASR et pare-feu sous Windows ; ufw, firewalld ou nftables sous Linux), gestes de défense confirmés, ce qui se lance en cachette, portes dérobées, portes cachées de Windows et pilotes vulnérables, signes de rootkit, journaux d'événements suspects, connexions vers des serveurs de botnets connus, un voleur de mots de passe comme Responder démasqué, agents d'IA trop permissifs, intégrité des fichiers critiques, failles des images Docker (trivy, s'il est installé), quarantaine réversible, et les traces collectées avant de nettoyer, avec la chronologie de l'incident ; un brouillon de signalement préparé pour l'éditeur quand un logiciel se comporte mal, jamais envoyé. |
-| **DNS et certificats détournés** | Le DNS réellement utilisé (et les réponses inventées), les certificats racine ajoutés (interception du HTTPS), le proxy imposé et les sites redirigés par le fichier hosts, la recherche automatique du proxy (WPAD), les extensions de navigateur qui lisent tous les sites. |
-| **Arnaques et prise de contrôle** | Faux technicien (logiciels de prise de contrôle à distance), liens dangereux examinés sans les ouvrir, fichiers téléchargés vérifiés, mots de passe et adresses courriel fuités, compte piraté, bac à sable pour un programme inconnu. |
-| **Vie privée et secrets** | Logiciels espions posés par un proche (serveurs connus, programmes qui lisent le clavier, autorisations de surveillance, logiciels de surveillance connus), bilan de confidentialité (qui a accès à la position, aux contacts, à la caméra et au micro), caméra et micro, mots de passe du navigateur sans protection, fichiers sensibles laissés en clair, secrets oubliés dans l'historique des projets git, données de la clé protégées par une phrase. |
+Les signalements de faille à un éditeur (Microsoft, Google, Mozilla, Apple, avis GitHub, CERT…) sont préparés en
+brouillon, débarrassés de ce qui est personnel ; la personne les relit et les envoie elle-même.
 
 <details>
 <summary><b>Le détail, menace par menace</b></summary>
@@ -539,7 +466,19 @@ de son empreinte seulement).
 
 </details>
 
-### En plus, domaine par domaine
+Vanguard ne coupe jamais une connexion à distance en cours (Bureau à distance, SSH). À n'utiliser que sur son propre
+réseau, ou sur un réseau qu'on a le droit d'auditer.
+
+**Ce que Vanguard protège, et ce qu'il ne protège pas** : le [modèle de menace](MODELE-DE-MENACE.md). **Ce que ses
+règles voient, technique par technique** : la [carte de couverture MITRE ATT&CK](COUVERTURE-ATTACK.md). **Comment son
+code est écrit** : sa [relecture selon le guide Rust de l'ANSSI](CONFORMITE-ANSSI.md).
+
+**En cours de développement**, sans date : la défense montée par l'Agent Vanguard lui-même (dans cette version,
+l'Agent ne règle que Vanguard : il n'a accès ni aux corrections ni au blocage) et l'autoréparation ; toutes les
+corrections faites par Vanguard lui-même, en Rust, sans script ; une clé qui démarre aussi les ordinateurs en panne
+(son démarrage sur un vrai ordinateur n'a pas encore été essayé).
+
+## En plus
 
 Au-delà de la défense : le dépannage, l'optimisation, les données, puis le suivi, les outils et la clé USB.
 
@@ -786,10 +725,9 @@ ne les ayant pas vérifiées.
 
 </details>
 
-Vanguard ne coupe jamais une connexion à distance en cours (Bureau à distance, SSH). À n'utiliser que sur son propre
-réseau, ou sur un réseau qu'on a le droit d'auditer.
-
 ## En images
+
+![Bilan de sécurité de Vanguard : une note de A à F, chaque problème expliqué avec sa correction](assets/captures/bilan.png)
 
 <table>
   <tr>
@@ -813,14 +751,43 @@ masqués.</sub>
 
 | Système | Versions |
 |---|---|
-| Windows | 10 et 11 |
-| macOS | 12 et plus récents, Apple Silicon et Intel (testé sur les Mac de GitHub, pas encore sur un vrai Mac) |
 | Linux | Arch et dérivées (Omarchy, Manjaro, EndeavourOS, CachyOS), Debian, Ubuntu, Mint, Pop!_OS, Fedora (et RHEL, Rocky, Nobara), openSUSE |
 | Linux atomique | Bazzite, Silverblue, Kinoite, Bluefin, Aeon |
+| Windows | 10 et 11 |
+| macOS | 12 et plus récents, Apple Silicon et Intel : publié et maintenu tel quel, sans nouvelles fonctions propres au Mac ; testé automatiquement sur les Mac de GitHub, jamais sur un vrai Mac |
 
 Vanguard reconnaît la distribution et propose ses propres commandes : `omarchy update` / `omarchy pkg add` sous
 Omarchy, `ujust update` sur Bazzite, `rpm-ostree` ou `transactional-update` sur un système atomique, sinon pacman,
 apt, dnf ou zypper.
+
+## Installation et premier lancement
+
+**Télécharger** (dernière version) : [Windows](../../releases/latest/download/vanguard-windows-x86_64.exe) ·
+[Linux](../../releases/latest/download/vanguard-linux-x86_64) · [macOS](../../releases/latest/download/vanguard-macos)
+— ou toute la [page des versions](../../releases/latest), avec les empreintes SHA-256. Ce qu'a apporté chaque
+version : [historique](CHANGELOG.md).
+
+- **Windows** : double-clic sur le programme. Il n'est pas signé : SmartScreen peut avertir (« Informations
+  complémentaires » puis « Exécuter quand même »). Microsoft Defender le prend parfois à tort pour un virus
+  (« Trojan:Win32/Bearfoos.A!ml », une détection automatique sur un programme neuf) : c'est un faux positif ;
+  vérifier l'empreinte SHA-256 sur la page de la version.
+- **Linux** : `chmod +x vanguard-linux-x86_64`, puis `./vanguard-linux-x86_64` dans un terminal (toutes les
+  distributions, rien à installer).
+- **macOS** : copié depuis Internet, le programme est bloqué la première fois : `xattr -d com.apple.quarantine
+  vanguard-macos`, puis `./vanguard-macos` dans le Terminal. Testé automatiquement sur un Mac de GitHub, jamais essayé
+  sur un vrai Mac ; maintenu, sans nouveautés propres au Mac.
+- **Depuis la clé USB** : `Windows/vanguard.exe`, `Linux/vanguard`, ou `Lancer Vanguard.command` sous macOS ; le guide
+  de la clé est dans `LISEZMOI.txt`.
+
+Dans le menu, choisir **1** (bilan de sécurité complet), puis **2** (corriger). Les flèches ↑ ↓ pour se déplacer, Entrée ou → pour
+choisir ; Échap, ← ou Retour arrière pour revenir. La fenêtre se met à la taille du menu quand elle a été ouverte pour
+Vanguard.
+
+Le menu range les outils en deux parties. **Cyberdéfense** : 4 Cet ordinateur, 5 Réseau et Internet, 6 Virus et
+logiciels espions, 7 Arnaques et vie privée, 8 Bloquer et réagir. **En plus** : 9 Données et sauvegardes, 10 Guide des
+commandes, 11 Dépanner pas à pas, 12 Optimiser et installer, 13 Vanguard (paramètres, mise à jour, extensions). Un mot
+tapé au menu principal (« antivirus », « sauvegarde ») retrouve n'importe quel outil ; son chemin (« 6.1.3 ») l'ouvre
+directement.
 
 ## Commandes
 

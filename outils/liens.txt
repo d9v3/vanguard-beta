@@ -98,3 +98,7 @@ ignorer https://WWW.CISA.GOV/x
 ignorer https://github.com/alice/fuite
 ignorer https://raw.githubusercontent.com/alice/fuite
 ignorer https://codeload.github.com/alice/fuite
+
+# Adresse d'exemple du relais dans ses essais (relais/essais/relais.test.mjs) : jamais ouverte, le relais n'est pas
+# en service.
+ignorer https://relais.exemple.workers.dev

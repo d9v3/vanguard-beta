@@ -7,7 +7,7 @@ une seule publication par jour, qui regroupe le travail de la journée ; le 21 o
 la 0.84 au soir, qui reprend la 0.83 livrée juste avant elle. Seule la dernière version a sa page de téléchargement ;
 chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par exemple), pour être recompilée au besoin.
 
-## 0.89.1 (pas encore publiée)
+## 3 novembre 2026 : version 0.89.1
 
 - **Agent Vanguard (sans IA).** Une partie de Vanguard qui l'aide à mieux tourner sur votre ordinateur, sans IA et
   sans rien envoyer. Il a quatre missions, chacune avec son interrupteur (Paramètres › Agent Vanguard,

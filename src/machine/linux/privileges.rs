@@ -308,7 +308,8 @@ mod tests {
     }
 
     /// Sur cet ordinateur, les mêmes groupes que `id -nG`, quand il est là (l'ordre des groupes secondaires peut
-    /// différer : seul compte ce qui y est).
+    /// différer, et le `id` d'Ubuntu 26.04 (uutils) répète un groupe que le noyau rend plusieurs fois, comme
+    /// `nogroup` dans un conteneur : seul compte ce qui y est).
     #[test]
     fn groupes_comme_id() {
         let Some(id) = crate::commande::lancer(Command::new("id").arg("-nG"), 5)
@@ -320,6 +321,7 @@ mod tests {
         let trier = |t: &str| {
             let mut v: Vec<String> = t.split_whitespace().map(str::to_string).collect();
             v.sort();
+            v.dedup();
             v
         };
         assert_eq!(trier(&groupes_du_compte().unwrap()), trier(&id));

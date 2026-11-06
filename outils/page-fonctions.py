@@ -7,11 +7,17 @@ la page prête. Rien n'est envoyé d'ici.
   - version et date : Cargo.toml et le jour ;
   - lignes de Rust : src/ et tests/, sans les commentaires ni les lignes vides ;
   - règles du bilan par système et fiches de l'audit du réseau : comptées dans le code (src/) ;
+  - sécurité de Vanguard lui-même : hôtes joints en HTTPS (src/http.rs), cibles de fuzzing (fuzz/Cargo.toml),
+    preuves Kani (outils/preuves/src), modules qui refusent l'unsafe sans recours (src/), cas du corpus de détection
+    (tests/corpus-detection) et règles YARA intégrées (assets/yara), comptés à la source ;
   - commandes en ligne : le programme les dit lui-même (« vanguard --help », en français), la liste comprise ;
   - commandes du guide : le programme les compte lui-même (« vanguard guide » sans terminal, hors ligne) ;
   - tests Linux et Wine : le résumé de la dernière vérification (outils/verifier.sh l'écrit dans
     ~/.cache/vanguard-dev/verifier-dernier.txt), ou --verifier SORTIE, ou les nombres donnés ;
-  - vérifications sur le vrai Windows : la dernière passe réussie de la VM (historique.txt).
+  - vérifications sur le vrai Windows : la dernière passe réussie de la VM (historique.txt) ;
+  - captures : celles du README (assets/captures, déjà masquées par outils/captures.py), en WebP sans perte et
+    intégrées à la page (data:) : une seule page, sans fichier à côté, pour GitHub Pages comme pour claude.ai. Il y
+    faut Pillow (python-pillow).
 
     python3 outils/page-fonctions.py [--complet] [--programme VANGUARD] [--sortie PAGE]
     python3 outils/page-fonctions.py --verifier SORTIE --tests-linux 693 --tests-wine 613 --version 0.82.0
@@ -20,8 +26,10 @@ la page prête. Rien n'est envoyé d'ici.
 claude.ai habille lui-même.
 """
 import argparse
+import base64
 import datetime
 import html
+import io
 import os
 import re
 import subprocess
@@ -84,6 +92,27 @@ def regles() -> dict[str, int]:
         "REGLES_LINUX": linux + communes, "REGLES_WINDOWS": windows + communes, "REGLES_MACOS": macos + communes,
         "FICHES": fiches,
     }
+
+
+def securite() -> dict[str, int]:
+    """Les nombres de la section « Sécurité de Vanguard lui-même », comptés à la source comme les règles : les hôtes
+    de la liste fermée `HOTES` (src/http.rs), les cibles de fuzzing (fuzz/Cargo.toml), les preuves Kani
+    (outils/preuves/src), les modules qui portent `#![forbid(unsafe_code)]` en tête de ligne (comme le compte de
+    outils/verifier.sh), les cas du corpus de détection et les règles YARA de ReversingLabs."""
+    http = (RACINE / "src/http.rs").read_text(encoding="utf-8")
+    bloc = re.search(r"^const HOTES: &\[&str\] = &\[\n(.*?)^\];", http, re.S | re.M)
+    hotes = len(re.findall(r'^\s*"[^"]+",', bloc.group(1), re.M)) if bloc else 0
+    fuzz = len(re.findall(r"^\[\[bin\]\]", (RACINE / "fuzz/Cargo.toml").read_text(encoding="utf-8"), re.M))
+    kani = sum(f.read_text(encoding="utf-8").count("#[kani::proof]")
+               for f in (RACINE / "outils/preuves/src").rglob("*.rs"))
+    forbid = sum(1 for f in (RACINE / "src").rglob("*.rs")
+                 if re.search(r"^#!\[forbid\(unsafe_code\)\]$", f.read_text(encoding="utf-8"), re.M))
+    corpus = sum(1 for d in (RACINE / "tests/corpus-detection").iterdir() if (d / "attendu.toml").is_file())
+    yara = len(re.findall(r"^rule\s", (RACINE / "assets/yara/reversinglabs.yara").read_text(encoding="utf-8"), re.M))
+    if not (hotes and fuzz and kani and forbid and corpus and yara):
+        sys.exit("✖ nombres de sécurité introuvables (HOTES, fuzz/Cargo.toml, preuves Kani, forbid, corpus ou règles "
+                 "YARA ont changé ?)")
+    return {"HOTES": hotes, "FUZZ": fuzz, "KANI": kani, "FORBID": forbid, "CORPUS": corpus, "YARA": yara}
 
 
 def lancer(programme: Path, *arguments: str) -> str:
@@ -159,6 +188,36 @@ def verifications_vm() -> str:
     return nombres[-1]
 
 
+# Les captures de la page : nom dans assets/captures, et la partie gardée (gauche, haut, droite, bas), None pour toute.
+# Celle du réseau s'arrête après le premier appareil « À REGARDER », sur une ligne vide (captures.py : 22 px de marge
+# en haut, puis 20 px par ligne de terminal).
+CAPTURES = {
+    "BILAN": ("bilan.png", None),
+    "RAPPORT": ("rapport.png", None),
+    "RESEAU": ("reseau.png", (0, 0, 780, 22 + 36 * 20)),
+}
+
+
+def captures() -> dict[str, str]:
+    """Chaque capture en data: URI (WebP sans perte : le texte du terminal reste net, quatre fois plus léger que le
+    PNG), avec sa largeur et sa hauteur pour que la page ne saute pas au chargement."""
+    try:
+        from PIL import Image
+    except ImportError:
+        sys.exit("✖ Pillow manque pour intégrer les captures (python-pillow, ou pip install pillow)")
+    valeurs = {}
+    for cle, (nom, partie) in CAPTURES.items():
+        with Image.open(RACINE / "assets/captures" / nom) as image:
+            image = image.convert("RGB")
+            if partie:
+                image = image.crop(partie)
+            tampon = io.BytesIO()
+            image.save(tampon, "WEBP", lossless=True, method=6)
+        valeurs[f"CAPTURE_{cle}"] = "data:image/webp;base64," + base64.b64encode(tampon.getvalue()).decode("ascii")
+        valeurs[f"CAPTURE_{cle}_L"], valeurs[f"CAPTURE_{cle}_H"] = str(image.width), str(image.height)
+    return valeurs
+
+
 def alleger(page: str) -> str:
     """La page publiée sans ce qui ne sert qu'à la tenir : commentaires HTML et CSS, indentation et lignes vides. Les
     blocs <pre> gardent leurs espaces, qui y sont le texte même."""
@@ -215,10 +274,12 @@ def main():
         "VM": verifications_vm(),
     }
     valeurs.update({cle: str(n) for cle, n in regles().items()})
+    valeurs.update({cle: str(n) for cle, n in securite().items()})
     valeurs["TESTS_LINUX"], valeurs["TESTS_WINE"] = tests(args)
+    images = captures()
     page = (RACINE / "outils/page-fonctions.html").read_text(encoding="utf-8")
     page = re.sub(r"<!--.*?-->\n", "", page, count=1, flags=re.S)
-    for cle, valeur in valeurs.items():
+    for cle, valeur in (valeurs | images).items():
         page = page.replace("{{" + cle + "}}", valeur)
     page = alleger(page)
     reste = re.findall(r"\{\{[A-Z_]+\}\}", page)
@@ -229,9 +290,11 @@ def main():
     args.sortie.parent.mkdir(parents=True, exist_ok=True)
     args.sortie.write_text(page, encoding="utf-8")
     print(f"Page des fonctions prête : {args.sortie}")
-    for cle in ("VERSION", "DATE", "LIGNES", "REGLES", "FICHES", "COMMANDES_CLI", "COMMANDES", "TESTS_LINUX",
-                "TESTS_WINE", "VM"):
+    for cle in ("VERSION", "DATE", "LIGNES", "REGLES", "FICHES", "HOTES", "FUZZ", "KANI", "FORBID", "CORPUS", "YARA",
+                "COMMANDES_CLI", "COMMANDES", "TESTS_LINUX", "TESTS_WINE", "VM"):
         print(f"  {cle.lower():<13} {valeurs[cle]}")
+    poids = sum(len(v) for c, v in images.items() if not c.endswith(("_L", "_H")))
+    print(f"  {'captures':<13} {len(CAPTURES)}, {poids // 1024} Ko ; page {len(page.encode()) // 1024} Ko")
 
 
 if __name__ == "__main__":

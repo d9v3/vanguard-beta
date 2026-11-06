@@ -1398,7 +1398,9 @@ mod tests {
         std::fs::create_dir_all(&dossier).unwrap();
         // Le chemin réel : sous macOS, /var/folders est un lien vers /private/var/folders, que le système rend.
         let dossier = dossier.canonicalize().unwrap();
-        let copie = dossier.join("dormeur");
+        // Nommée « sleep » : les coreutils en Rust d'Ubuntu 26.04 (uutils) sont un seul programme qui choisit
+        // l'utilitaire par son nom ; copié sous un autre nom, il refuse et finit aussitôt, sans rien à arrêter.
+        let copie = dossier.join("sleep");
         let sleep = ["/usr/bin/sleep", "/bin/sleep"]
             .into_iter()
             .find(|c| Path::new(c).exists())

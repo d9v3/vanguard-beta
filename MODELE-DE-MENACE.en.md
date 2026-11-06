@@ -30,7 +30,7 @@ program, the USB key or the update) belong on another page: [SECURITY.md](SECURI
 | A scam | Links examined without opening them, downloaded files checked, leaked accounts. |
 | An AI agent that does too much | AI servers open to the network, agents that act without asking, poorly protected MCP servers. |
 
-Each threat in detail, menu by menu: [What Vanguard does](README.en.md#what-vanguard-does).
+Each threat in detail, menu by menu: [Security functions, threat by threat](README.en.md#security-functions-threat-by-threat).
 
 ## What Vanguard does not protect
 
