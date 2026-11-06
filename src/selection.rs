@@ -691,12 +691,31 @@ impl ModeClavier {
     pub(crate) fn activer() -> Option<Self> {
         terminal::enable_raw_mode().ok().map(|()| ModeClavier)
     }
+
+    /// Pour une liste redessinée à chaque touche : le curseur caché, sinon il court d'une ligne à l'autre pendant
+    /// le dessin et paraît sauter (la console de Windows surtout). Rendu à la sortie (`drop`, `rendre_le_terminal`).
+    pub(crate) fn activer_sans_curseur() -> Option<Self> {
+        let mode = Self::activer()?;
+        let mut sortie = std::io::stdout();
+        let _ = sortie.write_all(b"\x1b[?25l");
+        let _ = sortie.flush();
+        Some(mode)
+    }
 }
 
 impl Drop for ModeClavier {
     fn drop(&mut self) {
-        let _ = terminal::disable_raw_mode();
+        rendre_le_terminal();
     }
+}
+
+/// Le terminal comme avant le mode clavier : touches lues ligne par ligne, curseur visible. Aussi avant chaque
+/// `quitter` sur une touche lue en mode clavier : `std::process::exit` ne passe pas par `drop`.
+pub(crate) fn rendre_le_terminal() {
+    let _ = terminal::disable_raw_mode();
+    let mut sortie = std::io::stdout();
+    let _ = sortie.write_all(b"\x1b[?25h");
+    let _ = sortie.flush();
 }
 
 /// Montre le menu et attend un choix : la touche de la ligne choisie, ce qui a été tapé (raccourci), ou `None` pour
@@ -822,7 +841,7 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
     let visibles: Vec<&str> = choix.iter().filter(|c| c.visible).map(|c| c.touche).collect();
     let colonne = colonne(lignes);
     let clavier = au_clavier(!visibles.is_empty());
-    let Some(_mode) = clavier.then(ModeClavier::activer).flatten() else {
+    let Some(_mode) = clavier.then(ModeClavier::activer_sans_curseur).flatten() else {
         for t in lignes.iter().filter_map(|l| texte(l, colonne, false)) {
             println!("{t}");
         }
@@ -1126,7 +1145,7 @@ fn touche_du_menu(
         return ControlFlow::Break(Some(choix.to_string()));
     } else if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
         // Ctrl-C arrête Vanguard ; Ctrl-D (fin de l'entrée) le quitte, comme avant.
-        let _ = terminal::disable_raw_mode();
+        rendre_le_terminal();
         println!();
         crate::machine::quitter(if k.code == KeyCode::Char('c') { 130 } else { 0 });
     } else if matches!(k.code, KeyCode::Esc | KeyCode::Left) || (k.code == KeyCode::Backspace && etat.tape.is_empty()) {
@@ -1215,7 +1234,7 @@ pub fn attendre_retour_avant(question: &str, fin: Option<std::time::Instant>) ->
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
-            let _ = terminal::disable_raw_mode();
+            rendre_le_terminal();
             println!();
             crate::machine::quitter(if k.code == KeyCode::Char('c') { 130 } else { 0 });
         }
@@ -1237,7 +1256,7 @@ pub fn attendre_retour_avant(question: &str, fin: Option<std::time::Instant>) ->
 pub fn choisir_en_ligne(options: &[(&str, &str)], invite: &str) -> Option<String> {
     let clavier = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let mut sortie = std::io::stdout();
-    let Some(_mode) = clavier.then(ModeClavier::activer).flatten() else {
+    let Some(_mode) = clavier.then(ModeClavier::activer_sans_curseur).flatten() else {
         let r = demander(invite).trim().to_lowercase();
         return options.iter().any(|(t, _)| *t == r).then_some(r);
     };
@@ -1265,7 +1284,7 @@ pub fn choisir_en_ligne(options: &[(&str, &str)], invite: &str) -> Option<String
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
-            let _ = terminal::disable_raw_mode();
+            rendre_le_terminal();
             println!();
             crate::machine::quitter(if k.code == KeyCode::Char('c') { 130 } else { 0 });
         }
@@ -1319,7 +1338,7 @@ fn lire_ou_revenir(question: &str) -> String {
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
-            let _ = terminal::disable_raw_mode();
+            rendre_le_terminal();
             println!();
             crate::machine::quitter(if k.code == KeyCode::Char('c') { 130 } else { 0 });
         }
@@ -1441,7 +1460,7 @@ fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
         usize::from(largeur) > LARGEUR && usize::from(rangees) >= RANGEES_MINIMUM + DESSOUS_LISTE - 2
     });
     let clavier = std::io::stdin().is_terminal() && std::io::stdout().is_terminal() && tient;
-    let Some(_mode) = clavier.then(ModeClavier::activer).flatten() else {
+    let Some(_mode) = clavier.then(ModeClavier::activer_sans_curseur).flatten() else {
         return cocher_par_ligne(&liste, etats);
     };
 
@@ -1683,7 +1702,7 @@ fn touche_de_la_liste(
         return ControlFlow::Continue(());
     }
     if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
-        let _ = terminal::disable_raw_mode();
+        rendre_le_terminal();
         println!();
         crate::machine::quitter(if k.code == KeyCode::Char('c') { 130 } else { 0 });
     }

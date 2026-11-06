@@ -214,6 +214,11 @@ function Question($texte, $reponseAuto = 'n') {
     Write-Host "      ? $texte [o/n] " -ForegroundColor Yellow -NoNewline
     Vider-Clavier
     $r = Read-Host
+    # Une Entrée seule (souvent celle qui termine la commande d'avant) n'est pas une réponse : redemandée.
+    while (-not "$r".Trim()) {
+        Write-Host '      Réponds o ou n : ' -ForegroundColor Yellow -NoNewline
+        $r = Read-Host
+    }
     Journal "QUESTION : $texte -> $r"
     $oui = $r -match '^(o|oui|y)'
     return $oui
@@ -431,9 +436,10 @@ Etape 'Comptes et démarrage lus sans PowerShell (0.82) : les mêmes réponses q
 try {
     $audit = Sortie 'machine-json' | ConvertFrom-Json
     $messages = @($audit.constats | ForEach-Object { $_.message })
-    # Les noms que le bilan cite dans les messages qui suivent l'un des motifs (anglais ou français).
+    # Les noms que le bilan cite dans les messages qui suivent l'un des motifs (anglais ou français). Un constat des
+    # journaux (EVT-…) cite un bloc de script, celui de ce test compris, qui contient les motifs eux-mêmes : écarté.
     function Noms-Cites([string[]]$motifs) {
-        @($messages | ForEach-Object { $m = $_; foreach ($motif in $motifs) { if ($m -match $motif) { $Matches[1] } } })
+        @($messages | Where-Object { $_ -notmatch '^EVT-' } | ForEach-Object { $m = $_; foreach ($motif in $motifs) { if ($m -match $motif) { $Matches[1] } } })
     }
     # Deux listes de noms, sans ordre ni casse (Compare-Object refuse une liste vide).
     function Meme-Liste($quoi, [string[]]$windows, [string[]]$vanguard) {
@@ -1526,17 +1532,16 @@ function Protection-Reseau-Attendue([int]$voulue) {
 $npAvant = [int](Get-MpPreference).EnableNetworkProtection
 # Déjà active (une passe d'avant l'a laissée ainsi) : annulée d'abord, puis remise ; sinon activée, puis annulée.
 $npAutre = if ($npAvant -eq 1) { 0 } else { 1 }
-# La touche de la valeur dans le sous-écran de la protection réseau (ligne 5) : 1 bloquer, 2 audit, 3 coupée.
-function Touche-Reseau([int]$v) { switch ($v) { 1 { '1' } 2 { '2' } default { '3' } } }
+# Le mot de la valeur pour « options-defense --choisir reseau » : 1 bloquer, 2 audit, 0 coupée. La sous-commande, et
+# non l'écran : la sortie redirigée, l'écran ne montre que le rapport, sans question (rapport_seul).
+function Mot-Reseau([int]$v) { switch ($v) { 1 { 'bloquer' } 2 { 'audit' } default { 'coupe' } } }
 if (-not $numeroDefender) { Sautee 'Sautée : outil absent.' }
 elseif (Question 'Faire ce test (deux fenêtres UAC à accepter) ?') {
     Write-Host '      Clique OUI dans les deux fenêtres UAC. Un refus ne change rien et fait échouer le test.' -ForegroundColor Yellow
     Write-Host '      Si la fenêtre administrateur demande « Continue without a restore point? », réponds y (la VM n''a pas de' -ForegroundColor Yellow
     Write-Host '      points de restauration) : sinon, rien n''est changé.' -ForegroundColor Yellow
     Write-Host '      Une baisse (protection coupée) se confirme encore dans la fenêtre administrateur : réponds o.' -ForegroundColor Yellow
-    # Ligne 5 de l'écran : la protection réseau ; sa valeur choisie, puis « a » applique (récapitulatif, une fenêtre
-    # administrateur), Entrée revient, Entrée sort.
-    LancerAvec 'protection-changer' @() "4.$numeroDefender`n5`n$(Touche-Reseau $npAutre)`na`n`n`nq`n"
+    Lancer 'protection-changer' @('options-defense', '--choisir', 'reseau', (Mot-Reseau $npAutre))
     $np = Protection-Reseau-Attendue $npAutre
     if ($np -eq $npAutre) { Ok "Protection réseau passée de $npAvant à $npAutre par Vanguard" }
     elseif ((Sortie 'protection-changer') -match "Administrator prompt refused|Demande d'administrateur refusée") { Bug 'Fenêtre UAC refusée : rien changé (le test demande OUI)' }
@@ -1548,7 +1553,7 @@ elseif (Question 'Faire ce test (deux fenêtres UAC à accepter) ?') {
     # Rien n'a changé : une « remise » acceptée basculerait la protection au lieu de la remettre.
     if ($np -ne $npAutre) { Sautee 'Remise sautée : rien n''avait changé' }
     else {
-        LancerAvec 'protection-remettre' @() "4.$numeroDefender`n5`n$(Touche-Reseau $npAvant)`na`n`n`nq`n"
+        Lancer 'protection-remettre' @('options-defense', '--choisir', 'reseau', (Mot-Reseau $npAvant))
         $np = Protection-Reseau-Attendue $npAvant
         if ($np -eq $npAvant) { Ok 'Protection réseau remise comme avant' } else { Bug "Protection réseau PAS remise ($np au lieu de $npAvant)" }
     }
@@ -1565,7 +1570,7 @@ if (Question 'Faire ce test ?') {
     Write-Host '      Réponds « o » pour le pare-feu, puis clique NON dans la fenêtre UAC. Réponds « n » à tout le reste.' -ForegroundColor Yellow
     Vider-Clavier
     & $exe corriger
-    Constat 'Vanguard a-t-il dit « Demande d''administrateur refusée : rien n''a été modifié » et PAS « ✔ fait » ?'
+    Constat 'Vanguard a-t-il dit « Demande d''administrateur refusée. Rien n''a changé » et PAS « ✔ fait » ?'
     if ((Get-NetFirewallProfile -Profile Private).Enabled) { Bug 'Pare-feu Privé réactivé malgré le refus' } else { Ok 'Refus respecté : pare-feu Privé toujours coupé' }
 
     Write-Host ''
@@ -1574,7 +1579,17 @@ if (Question 'Faire ce test ?') {
     & $exe corriger
     if ((Get-NetFirewallProfile -Profile Private).Enabled) { Ok 'Pare-feu Privé réactivé par Vanguard' }
     else {
-        Bug 'Pare-feu Privé toujours coupé après la correction : remis en marche par le script'
+        # Pendant le Bureau à distance, Vanguard refuse d'allumer un profil courant s'il ne voit aucune règle active qui
+        # garde 3389 ouvert sur ce profil (gestes::refus_profil_session) : ce qu'il a lu est noté pour en juger.
+        Ref 'Profil réseau courant' { Get-NetConnectionProfile | Select-Object InterfaceAlias, NetworkCategory | Format-Table -AutoSize }
+        Ref 'Règles entrantes de 3389' {
+            Get-NetFirewallPortFilter -Protocol TCP -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -contains '3389' } |
+                Get-NetFirewallRule | Where-Object Direction -eq Inbound |
+                Select-Object DisplayName, Enabled, Profile, Action | Format-Table -AutoSize
+        }
+        if (Question 'Vanguard a-t-il refusé en disant que ça couperait la session à distance ?') { Info 'Pare-feu Privé laissé coupé par la garde de la session à distance : voir « Règles entrantes de 3389 » dans la référence' }
+        else { Bug 'Pare-feu Privé toujours coupé après la correction, sans refus de la garde de session' }
+        Info 'Pare-feu Privé remis en marche par le script'
         Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile', '-Command', 'Set-NetFirewallProfile -Profile Private -Enabled True'
     }
     Ref 'Règles Vanguard créées' { Get-NetFirewallRule -DisplayName 'Vanguard : bloquer *' -ErrorAction SilentlyContinue | Select-Object DisplayName, Enabled, Action | Format-Table -AutoSize }
@@ -1775,9 +1790,10 @@ $profil = Sortie 'guide-profil'
 if ($profil -match 'NetworkCategory' -and $profil -match 'Done in|Terminée en') { Ok 'Profil réseau lancé depuis le guide, sortie montrée' }
 else { Bug 'Profil réseau : commande du guide pas lancée ou sortie absente' }
 
-Etape 'Compte sans mot de passe exigé : signalé, à corriger soi-même (UAC pour le créer)'
-# Le drapeau « mot de passe exigé » ne donne pas de mot de passe : Vanguard ne le lève pas tout seul, il renvoie aux
-# Paramètres. Le compte de test est retiré à la fin.
+Etape 'Compte sans mot de passe exigé : signalé, mot de passe posé par Vanguard (UAC pour le créer)'
+# Le drapeau « mot de passe exigé » ne donne pas de mot de passe : depuis la défense D6b, la correction de Vanguard
+# fait taper un mot de passe dans sa fenêtre administrateur (rien d'affiché, rien de gardé), puis l'exige. Le compte de
+# test est retiré à la fin.
 Info 'Crée un compte de test « vanguard-essai » sans mot de passe exigé, puis regarde ce que Vanguard en dit.'
 if (Question 'Faire ce test ?') {
     Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile', '-Command', 'New-LocalUser -Name vanguard-essai -NoPassword | Out-Null; Set-LocalUser -Name vanguard-essai -PasswordRequired $false'
@@ -1788,8 +1804,8 @@ if (Question 'Faire ce test ?') {
         try {
             $vu = @((Sortie 'machine-compte-essai' | ConvertFrom-Json).constats | Where-Object { $_.probleme -and $_.message -match 'vanguard-essai' })
             if (-not $vu.Count) { Bug 'Compte sans mot de passe exigé NON signalé' }
-            elseif ($vu[0].correctif -and -not $vu[0].correctif.automatique) { Ok 'Compte signalé, correction à faire soi-même (mot de passe dans les Paramètres)' }
-            else { Bug 'Compte signalé, mais Vanguard propose de le corriger tout seul : le drapeau ne donne pas de mot de passe' }
+            elseif ($vu[0].correctif -and $vu[0].correctif.automatique -and @($vu[0].correctif.commandes) -match '^vanguard:compte-mot-de-passe ') { Ok 'Compte signalé, mot de passe tapé dans la fenêtre administrateur de Vanguard' }
+            else { Bug "Compte signalé, sans la correction « compte-mot-de-passe » : $(@($vu[0].correctif.commandes) -join ' ; ')" }
         } catch { Bug "machine --json illisible : $($_.Exception.Message)" }
     }
     Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile', '-Command', 'Remove-LocalUser -Name vanguard-essai -ErrorAction SilentlyContinue'
