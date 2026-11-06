@@ -106,7 +106,10 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
 
 ## Principes du produit
 
-- Ne jamais affaiblir la sécurité : pas de pare-feu coupé, pas de Defender, BitLocker ou UAC désactivés.
+- Vanguard n'affaiblit jamais la sécurité de lui-même : aucun pare-feu coupé, aucun Defender, BitLocker ou UAC désactivé
+  par « Tout corriger », les réglages recommandés, la réponse automatique ni l'Agent. Une baisse n'existe que par choix
+  de la personne (Options de défense) : montrée, confirmée, notée, Rallumer ; jamais dans une liste mêlée ni remise
+  par « Tout remettre comme avant » (voir « Baisses par choix » de MODELE-DE-MENACE.md).
 - Rien n'est changé sans être montré puis accepté ; point de restauration avant de toucher au système ; un réglage
   doit s'annuler exactement (valeur d'avant notée, voir `optimiser/`).
 - Ne jamais couper une connexion à distance en cours (SSH, Bureau à distance).
