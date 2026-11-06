@@ -66,7 +66,23 @@ pub fn journaux() -> Vec<Constat> {
         .flatten()
         .flatten()
         .any(|d| d.path().join("fss").exists());
-    vec![juger_journald(persistant, scelle)]
+    let c = juger_journald(persistant, scelle);
+    vec![if persistant { c } else { garder_sur_disque(c) }]
+}
+
+/// Sous Linux, le journal gardé sur le disque par un geste de défense : un complément de journald
+/// (Storage=persistent), journald relancé, puis le journal en mémoire recopié sur le disque. Non annulable : un
+/// historique gardé ne se retire pas.
+#[cfg(target_os = "linux")]
+fn garder_sur_disque(c: Constat) -> Constat {
+    super::defense::corriger_sans_defaire(
+        c,
+        tr!(
+            "Conserver le journal sur disque (un réglage de journald, qui est relancé ; non annulable)",
+            "Keep the journal on disk (a journald setting, which is restarted; cannot be undone)"
+        ),
+        &[super::gestes_unix::Defense::GarderJournal],
+    )
 }
 
 /// Un journal effacé, relevé par Windows (événement 104) : le jour (AAAA-MM-JJ, à l'heure de l'ordinateur), l'instant
@@ -280,6 +296,21 @@ mod tests {
             instant: instant.map(utc),
             detail: detail.to_string(),
         }
+    }
+
+    /// Linux : le journal gardé sur le disque par le geste de défense, dit non annulable.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn journal_garde_par_un_geste() {
+        use crate::machine::gestes_unix::{self, Defense, GesteUnix};
+        let k = garder_sur_disque(juger_journald(false, false)).correctif.unwrap();
+        assert!(k.automatique);
+        assert_eq!(k.defaire, crate::machine::Defaire::Inconnu);
+        assert!(matches!(
+            gestes_unix::analyser(&k.commandes[0]),
+            Some(GesteUnix::Defense(Defense::GarderJournal, _))
+        ));
+        assert_eq!(k.commandes.len(), 1);
     }
 
     #[test]

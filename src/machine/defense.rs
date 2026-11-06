@@ -33,6 +33,22 @@ pub(crate) fn corriger(c: Constat, action: impl Into<String>, gestes: &[Defense]
     c.corriger(action, &lignes).annulable(defaire)
 }
 
+/// Le constat `c` corrigé par ces gestes de défense qui ne se défont pas (un retrait, un arrêt, un appareil oublié) :
+/// chacun garde sa note (la copie de ce qu'il retire), la correction est dite non annulable avant d'être appliquée.
+pub(crate) fn corriger_sans_defaire(c: Constat, action: impl Into<String>, gestes: &[Defense]) -> Constat {
+    if gestes.is_empty() {
+        return c;
+    }
+    let mut lignes = Vec::with_capacity(gestes.len());
+    for &g in gestes {
+        let Some(id) = nouvel_id() else {
+            return c;
+        };
+        lignes.push(GesteUnix::Defense(g, id).ligne());
+    }
+    c.corriger(action, &lignes)
+}
+
 /// Au plus autant de gestes par constat : au-delà, la liste se relit mal sur le terminal, et c'est un nettoyage à
 /// mener soi-même (la correction reste à la main).
 pub(crate) const GESTES_MAX: usize = 8;
@@ -70,6 +86,32 @@ pub(crate) fn retirer_ligne(fichier: &str, ligne: &str) -> Option<Defense> {
         super::defense_eleve::empreinte_de_ligne(ligne.as_bytes()),
         chemin,
     ))
+}
+
+/// Le geste qui met en commentaire la ligne de proxy `ligne` de `fichier` (un fichier du système admis) ; sinon
+/// `None`.
+pub(crate) fn commenter_proxy(fichier: &str, ligne: &str) -> Option<Defense> {
+    match retirer_ligne(fichier, ligne)? {
+        Defense::RetirerLigne(e, c) => Some(Defense::CommenterProxy(e, c)),
+        _ => None,
+    }
+}
+
+/// Le geste qui retire ce fichier d'ancre de confiance, s'il est dans l'un des dossiers d'ancres ; sinon `None`.
+pub(crate) fn retirer_ancre(fichier: &str) -> Option<Defense> {
+    let c = CheminDesigne::nouveau(fichier.as_bytes())?;
+    super::gestes_unix::ancre_admise(fichier.as_bytes()).then_some(Defense::RetirerAncre(c))
+}
+
+/// Le geste qui arrête ce programme, désigné par son numéro et sa naissance (relue de `/proc/<pid>/stat` : un numéro
+/// repris par un autre programme n'est jamais arrêté) ; `None` s'il est parti ou illisible.
+pub(crate) fn arreter_programme(pid: u32) -> Option<Defense> {
+    if pid <= 1 {
+        return None;
+    }
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, _, debut) = super::defense_eleve::naissance_du_stat(&stat)?;
+    Some(Defense::ArreterProgramme(pid, debut))
 }
 
 #[cfg(test)]

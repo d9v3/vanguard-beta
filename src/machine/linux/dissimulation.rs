@@ -359,7 +359,7 @@ pub(crate) enum SansFichier {
 }
 
 impl SansFichier {
-    fn niveau(self) -> Niveau {
+    pub(crate) fn niveau(self) -> Niveau {
         match self {
             SansFichier::Memoire | SansFichier::EffaceTemporaire => Niveau::Eleve,
             SansFichier::Efface | SansFichier::Temporaire => Niveau::Moyen,
@@ -367,7 +367,7 @@ impl SansFichier {
         }
     }
 
-    fn raison(self) -> &'static str {
+    pub(crate) fn raison(self) -> &'static str {
         match self {
             SansFichier::Memoire => tr!("en mémoire seulement (memfd)", "in memory only (memfd)"),
             SansFichier::EffaceTemporaire => tr!(
@@ -543,7 +543,38 @@ pub(super) fn programmes_sans_fichier() -> Vec<Constat> {
             (pid, nom, raison)
         })
         .collect();
-    juger_sans_fichier(&reperes, lus, illisibles, &deuxieme_avis())
+    let mut constats = juger_sans_fichier(&reperes, lus, illisibles, &deuxieme_avis());
+    let signes: Vec<u32> = reperes
+        .iter()
+        .filter(|r| r.2 != SansFichier::AJour)
+        .map(|r| r.0)
+        .collect();
+    if let Some(c) = constats
+        .iter_mut()
+        .find(|c| c.categorie == "Persistance" && c.probleme.is_some())
+    {
+        *c = arreter_sans_fichier(c.clone(), &signes);
+    }
+    constats
+}
+
+/// Les programmes sans fichier d'une alerte, arrêtés par des gestes de défense après la copie de leurs traces, comme
+/// ceux de `chasse` (tous ou aucun) : chacun relu dans /proc ; un seul parti ou illisible, ou la liste des
+/// programmes illisible, et tout reste à la main.
+fn arreter_sans_fichier(c: Constat, pids: &[u32]) -> Constat {
+    use crate::machine::chasse;
+    let Some((_, intouchables)) = chasse::en_marche() else {
+        return c;
+    };
+    let Some(vus) = pids
+        .iter()
+        .map(|&p| chasse::en_marche_de(p))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return c;
+    };
+    let vus: Vec<&chasse::EnMarche> = vus.iter().collect();
+    chasse::arreter_les_programmes(c, &vus, &intouchables, crate::machine::defense::arreter_programme)
 }
 
 // ───────────────────────────── Modules du noyau ─────────────────────────────

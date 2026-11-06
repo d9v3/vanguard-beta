@@ -506,6 +506,86 @@ impl std::fmt::Debug for IdNote {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Empreinte(pub(crate) [u8; 32]);
 
+/// Le réglage du serveur SSH qu'un geste de défense ferme (lot D7b), chacun dans son propre fichier de
+/// /etc/ssh/sshd_config.d, validé par `sshd -t` avant que sshd ne le relise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReglageSsh {
+    /// `PermitEmptyPasswords no`.
+    MotsDePasseVides,
+    /// `PermitRootLogin no`.
+    Root,
+    /// `PasswordAuthentication no` et `KbdInteractiveAuthentication no` : les clés seules.
+    MotsDePasse,
+}
+
+impl ReglageSsh {
+    pub(crate) const TOUS: [ReglageSsh; 3] = [ReglageSsh::MotsDePasseVides, ReglageSsh::Root, ReglageSsh::MotsDePasse];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ReglageSsh::MotsDePasseVides => "vides",
+            ReglageSsh::Root => "root",
+            ReglageSsh::MotsDePasse => "mots-de-passe",
+        }
+    }
+
+    fn depuis_mot(m: &str) -> Option<Self> {
+        Self::TOUS.into_iter().find(|r| r.mot() == m)
+    }
+}
+
+/// Une adresse Bluetooth (six octets), telle que `bluetoothctl` l'écrit : `AA:BB:CC:DD:EE:FF`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AdresseBt(pub(crate) [u8; 6]);
+
+impl AdresseBt {
+    /// L'adresse en majuscules séparées par « : », seule forme passée à `bluetoothctl`.
+    pub(crate) fn texte(self) -> String {
+        self.0.iter().map(|o| format!("{o:02X}")).collect::<Vec<_>>().join(":")
+    }
+
+    /// Relue de la forme `AA:BB:CC:DD:EE:FF` (majuscules ou minuscules), et d'elle seule.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn lue(t: &str) -> Option<Self> {
+        let morceaux: Vec<&str> = t.split(':').collect();
+        if morceaux.len() != 6 {
+            return None;
+        }
+        let mut o = [0u8; 6];
+        for (octet, m) in o.iter_mut().zip(&morceaux) {
+            if m.len() != 2 || !m.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return None;
+            }
+            *octet = u8::from_str_radix(m, 16).ok()?;
+        }
+        Some(AdresseBt(o))
+    }
+}
+
+/// Les dossiers où l'on ajoute des certificats racine à ceux du système (ceux que lit `certificats`) : un geste
+/// de défense n'y retire qu'un fichier, directement dedans ou dans un sous-dossier, jamais ailleurs.
+pub(crate) const DOSSIERS_D_ANCRES: [&str; 4] = [
+    "/etc/ca-certificates/trust-source/anchors/",
+    "/usr/local/share/ca-certificates/",
+    "/etc/pki/ca-trust/source/anchors/",
+    "/etc/pki/trust/anchors/",
+];
+
+/// Le fichier d'ancres que ce geste peut retirer : sous l'un des `DOSSIERS_D_ANCRES`, chemin admis.
+pub(crate) fn ancre_admise(c: &[u8]) -> bool {
+    chemin_admis(c)
+        && DOSSIERS_D_ANCRES
+            .iter()
+            .any(|d| c.len() > d.len() && c.starts_with(d.as_bytes()))
+}
+
+/// Un nombre décimal écrit sans signe, sans zéro devant ni espace : la seule forme qu'un champ numérique admet.
+fn decimal<T: std::str::FromStr>(t: &str) -> Option<T> {
+    let propre =
+        !t.is_empty() && t.len() <= 20 && t.bytes().all(|b| b.is_ascii_digit()) && (t == "0" || !t.starts_with('0'));
+    if propre { t.parse().ok() } else { None }
+}
+
 /// Les groupes qui donnent des droits d'administrateur, directement ou par un détour (`linux::privileges`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GroupeSensible {
@@ -714,6 +794,22 @@ pub(crate) enum Defense {
     DesactiverService(NomUnite),
     /// La ligne de ce fichier du système dont l'empreinte est celle-là, retirée ; le fichier entier est noté.
     RetirerLigne(Empreinte, CheminDesigne),
+    /// Lot D7b. Un réglage du serveur SSH fermé par un fichier de sshd_config.d, validé (`sshd -t`), puis sshd
+    /// rechargé : les sessions ouvertes restent.
+    DurcirSsh(ReglageSsh),
+    /// `kernel.unprivileged_bpf_disabled=2` (et, si la personne le veut, un fichier de /etc/sysctl.d pour que ça dure).
+    ReserverBpf,
+    /// `Storage=persistent` pour journald, par un fichier de journald.conf.d.
+    GarderJournal,
+    /// Un fichier ajouté aux certificats racine que Vanguard ne sait pas lire en entier, retiré (copié dans la note).
+    RetirerAncre(CheminDesigne),
+    /// La ligne de réglage du proxy de ce fichier du système (`*_proxy=`) mise en commentaire (fichier copié).
+    CommenterProxy(Empreinte, CheminDesigne),
+    /// `bluetoothctl remove` d'un appareil jumelé : non annulable (il faudra le re-jumeler).
+    OublierBluetooth(AdresseBt),
+    /// Arrêter ce programme suspect (PID et sa naissance, en tops d'horloge depuis le démarrage), ses traces copiées
+    /// d'abord dans /var/lib/vanguard/traces.
+    ArreterProgramme(u32, u64),
     /// Remet l'état que la note d'« avant » de ce geste a gardé, puis retire la note.
     Remettre,
 }
@@ -729,6 +825,13 @@ impl Defense {
             Defense::RendreDossierARoot(_) => "rendre-a-root",
             Defense::DesactiverService(_) => "desactiver-service",
             Defense::RetirerLigne(..) => "retirer-ligne",
+            Defense::DurcirSsh(_) => "durcir-ssh",
+            Defense::ReserverBpf => "reserver-bpf",
+            Defense::GarderJournal => "garder-journal",
+            Defense::RetirerAncre(_) => "retirer-ancre",
+            Defense::CommenterProxy(..) => "commenter-proxy",
+            Defense::OublierBluetooth(_) => "oublier-bluetooth",
+            Defense::ArreterProgramme(..) => "arreter-programme",
             Defense::Remettre => "remettre",
         }
     }
@@ -738,12 +841,20 @@ impl Defense {
         match self {
             Defense::VerrouillerCompte(n) | Defense::DurcirSudo(n) => format!(" {}", n.as_str()),
             Defense::RetirerDuGroupe(g, n) => format!(" {} {}", g.mot(), n.as_str()),
-            Defense::RetirerSetuid(c) | Defense::RetirerCapacites(c) | Defense::RendreDossierARoot(c) => {
+            Defense::RetirerSetuid(c)
+            | Defense::RetirerCapacites(c)
+            | Defense::RendreDossierARoot(c)
+            | Defense::RetirerAncre(c) => {
                 format!(" {}", hex(c.octets()))
             }
             Defense::DesactiverService(u) => format!(" {}", u.as_str()),
-            Defense::RetirerLigne(e, c) => format!(" {} {}", hex(&e.0), hex(c.octets())),
-            Defense::Remettre => String::new(),
+            Defense::RetirerLigne(e, c) | Defense::CommenterProxy(e, c) => {
+                format!(" {} {}", hex(&e.0), hex(c.octets()))
+            }
+            Defense::DurcirSsh(r) => format!(" {}", r.mot()),
+            Defense::OublierBluetooth(b) => format!(" {}", hex(&b.0)),
+            Defense::ArreterProgramme(pid, debut) => format!(" {pid} {debut}"),
+            Defense::Remettre | Defense::ReserverBpf | Defense::GarderJournal => String::new(),
         }
     }
 
@@ -831,6 +942,57 @@ impl Defense {
                     "Remove the suspicious line from {} (the whole file is kept in the note)",
                     c.lisible()
                 ),
+            ),
+            Defense::DurcirSsh(ReglageSsh::MotsDePasseVides) => (
+                "Refuser en SSH les comptes sans mot de passe (PermitEmptyPasswords no)".to_string(),
+                "Refuse accounts without a password over SSH (PermitEmptyPasswords no)".to_string(),
+            ),
+            Defense::DurcirSsh(ReglageSsh::Root) => (
+                "Interdire la connexion SSH en root (PermitRootLogin no)".to_string(),
+                "Forbid root login over SSH (PermitRootLogin no)".to_string(),
+            ),
+            Defense::DurcirSsh(ReglageSsh::MotsDePasse) => (
+                "N'accepter que les clés en SSH, plus les mots de passe (PasswordAuthentication no)".to_string(),
+                "Accept only keys over SSH, no more passwords (PasswordAuthentication no)".to_string(),
+            ),
+            Defense::ReserverBpf => (
+                "Réserver BPF aux administrateurs (kernel.unprivileged_bpf_disabled=2)".to_string(),
+                "Keep BPF for administrators only (kernel.unprivileged_bpf_disabled=2)".to_string(),
+            ),
+            Defense::GarderJournal => (
+                "Garder le journal du système après un redémarrage (Storage=persistent)".to_string(),
+                "Keep the system log after a restart (Storage=persistent)".to_string(),
+            ),
+            Defense::RetirerAncre(c) => (
+                format!(
+                    "Retirer le fichier ajouté aux certificats racine {} (il est copié dans la note)",
+                    c.lisible()
+                ),
+                format!(
+                    "Remove the file added to the root certificates {} (it is copied into the note)",
+                    c.lisible()
+                ),
+            ),
+            Defense::CommenterProxy(_, c) => (
+                format!(
+                    "Mettre en commentaire le réglage du proxy de {} (le fichier entier est copié dans la note)",
+                    c.lisible()
+                ),
+                format!(
+                    "Comment out the proxy setting in {} (the whole file is copied into the note)",
+                    c.lisible()
+                ),
+            ),
+            Defense::OublierBluetooth(b) => (
+                format!("Oublier l'appareil Bluetooth {} (il faudra le re-jumeler)", b.texte()),
+                format!(
+                    "Forget the Bluetooth device {} (it will have to be paired again)",
+                    b.texte()
+                ),
+            ),
+            Defense::ArreterProgramme(pid, _) => (
+                format!("Arrêter le programme suspect de PID {pid}, après avoir copié ses traces"),
+                format!("Stop the suspicious program with PID {pid}, after copying its traces"),
             ),
             Defense::Remettre => (
                 "Remettre ce qu'un geste de défense de Vanguard avait changé".to_string(),
@@ -924,6 +1086,18 @@ impl GesteUnix {
             GesteUnix::Defense(Defense::RetirerLigne(_, c), _) if !fichier_de_ligne_admis(c.octets()) => Some((
                 "Vanguard ne retire une ligne que des fichiers de démarrage du système qu'il connaît",
                 "Vanguard only removes a line from the system startup files it knows",
+            )),
+            GesteUnix::Defense(Defense::CommenterProxy(_, c), _) if !fichier_de_ligne_admis(c.octets()) => Some((
+                "Vanguard ne change le réglage du proxy que des fichiers de démarrage du système qu'il connaît",
+                "Vanguard only changes the proxy setting in the system startup files it knows",
+            )),
+            GesteUnix::Defense(Defense::RetirerAncre(c), _) if !ancre_admise(c.octets()) => Some((
+                "Vanguard ne retire un certificat que des dossiers où le système range ceux qu'on ajoute",
+                "Vanguard only removes a certificate from the folders where the system keeps the added ones",
+            )),
+            GesteUnix::Defense(Defense::ArreterProgramme(pid, _), _) if pid <= 1 => Some((
+                "Vanguard n'arrête jamais le premier processus du système ni le noyau",
+                "Vanguard never stops the system's first process or the kernel",
             )),
             _ => None,
         }
@@ -1019,7 +1193,9 @@ impl GesteUnix {
             | GesteUnix::Designee(..)
             | GesteUnix::ReinitialiserEchecs
             | GesteUnix::SignaturesClamav
-            | GesteUnix::Defense(Defense::DesactiverService(_), _) => true,
+            | GesteUnix::Defense(Defense::DesactiverService(_) | Defense::DurcirSsh(_) | Defense::GarderJournal, _) => {
+                true
+            }
             GesteUnix::Programme(_) | GesteUnix::Defense(..) => false,
         }
     }
@@ -1178,6 +1354,15 @@ fn defense(mot: &str, champs: &[&str]) -> Option<Defense> {
         ("rendre-a-root", [c]) => Defense::RendreDossierARoot(chemin(c)?),
         ("desactiver-service", [u]) => Defense::DesactiverService(NomUnite::nouveau(u)?),
         ("retirer-ligne", [e, c]) => Defense::RetirerLigne(Empreinte(depuis_hex(e, 32)?.try_into().ok()?), chemin(c)?),
+        ("durcir-ssh", [r]) => Defense::DurcirSsh(ReglageSsh::depuis_mot(r)?),
+        ("reserver-bpf", []) => Defense::ReserverBpf,
+        ("garder-journal", []) => Defense::GarderJournal,
+        ("retirer-ancre", [c]) => Defense::RetirerAncre(chemin(c)?),
+        ("commenter-proxy", [e, c]) => {
+            Defense::CommenterProxy(Empreinte(depuis_hex(e, 32)?.try_into().ok()?), chemin(c)?)
+        }
+        ("oublier-bluetooth", [b]) => Defense::OublierBluetooth(AdresseBt(depuis_hex(b, 6)?.try_into().ok()?)),
+        ("arreter-programme", [p, d]) => Defense::ArreterProgramme(decimal(p)?, decimal(d)?),
         ("remettre", []) => Defense::Remettre,
         _ => return None,
     })
@@ -1576,8 +1761,19 @@ mod tests {
                 CheminDesigne::nouveau(b"/etc/ld.so.preload").unwrap(),
             ),
             Defense::Remettre,
+            Defense::ReserverBpf,
+            Defense::GarderJournal,
+            Defense::RetirerAncre(CheminDesigne::nouveau(b"/usr/local/share/ca-certificates/x\n\x1b[31m.crt").unwrap()),
+            Defense::CommenterProxy(
+                Empreinte([0xcd; 32]),
+                CheminDesigne::nouveau(b"/etc/environment").unwrap(),
+            ),
+            Defense::OublierBluetooth(AdresseBt([0x00, 0x1a, 0x7d, 0xda, 0x71, 0x13])),
+            Defense::ArreterProgramme(4242, 123_456),
+            Defense::ArreterProgramme(u32::MAX, u64::MAX),
         ];
         v.extend(GroupeSensible::TOUS.map(|g| Defense::RetirerDuGroupe(g, n)));
+        v.extend(ReglageSsh::TOUS.map(Defense::DurcirSsh));
         v
     }
 
@@ -1595,7 +1791,13 @@ mod tests {
             );
             assert!(g.demande_accord(), "{l}");
             assert!(!g.coupe_session());
-            assert_eq!(g.par_systemd(), matches!(d, Defense::DesactiverService(_)));
+            assert_eq!(
+                g.par_systemd(),
+                matches!(
+                    d,
+                    Defense::DesactiverService(_) | Defense::DurcirSsh(_) | Defense::GarderJournal
+                )
+            );
         }
         assert_eq!(
             GesteUnix::Defense(Defense::VerrouillerCompte(NomCompte::nouveau("alice").unwrap()), id()).ligne(),
@@ -1690,6 +1892,40 @@ mod tests {
             "vanguard:geste defense  remettre 0123456789abcdef".to_string(),
             "vanguard:geste defense remettre 0123456789abcdef ".to_string(),
             "vanguard:geste defense effacer 0123456789abcdef".to_string(),
+            // Lot D7b : réglage inconnu, champ en trop, PID 0 ou 1, nombre signé, à zéro devant ou trop grand,
+            // adresse trop courte ou en majuscules, ancre hors des dossiers d'ajouts, proxy d'un fichier inconnu.
+            "vanguard:geste defense durcir-ssh tout 0123456789abcdef".to_string(),
+            "vanguard:geste defense durcir-ssh root root 0123456789abcdef".to_string(),
+            "vanguard:geste defense durcir-ssh 0123456789abcdef".to_string(),
+            "vanguard:geste defense reserver-bpf 2 0123456789abcdef".to_string(),
+            "vanguard:geste defense garder-journal volatile 0123456789abcdef".to_string(),
+            "vanguard:geste defense arreter-programme 1 5 0123456789abcdef".to_string(),
+            "vanguard:geste defense arreter-programme 0 5 0123456789abcdef".to_string(),
+            "vanguard:geste defense arreter-programme +42 5 0123456789abcdef".to_string(),
+            "vanguard:geste defense arreter-programme 042 5 0123456789abcdef".to_string(),
+            "vanguard:geste defense arreter-programme 42 0123456789abcdef".to_string(),
+            "vanguard:geste defense arreter-programme 4294967296 5 0123456789abcdef".to_string(),
+            "vanguard:geste defense arreter-programme 42 -5 0123456789abcdef".to_string(),
+            "vanguard:geste defense oublier-bluetooth 001a7dda71 0123456789abcdef".to_string(),
+            "vanguard:geste defense oublier-bluetooth 001A7DDA7113 0123456789abcdef".to_string(),
+            "vanguard:geste defense oublier-bluetooth 00:1a:7d:da:71:13 0123456789abcdef".to_string(),
+            format!(
+                "vanguard:geste defense retirer-ancre {} 0123456789abcdef",
+                h(b"/etc/ssl/certs/x.pem")
+            ),
+            format!(
+                "vanguard:geste defense retirer-ancre {} 0123456789abcdef",
+                h(b"/usr/local/share/ca-certificates/")
+            ),
+            format!(
+                "vanguard:geste defense retirer-ancre {} 0123456789abcdef",
+                h(b"/usr/local/share/ca-certificates/../../../etc/shadow")
+            ),
+            format!(
+                "vanguard:geste defense commenter-proxy {} {} 0123456789abcdef",
+                "ab".repeat(32),
+                h(b"/home/alice/.bashrc")
+            ),
         ] {
             assert_eq!(analyser(&l), None, "{l:?}");
         }

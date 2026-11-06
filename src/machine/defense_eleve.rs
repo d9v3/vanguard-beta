@@ -36,6 +36,12 @@ use crate::modele::Echec;
 use crate::protection::blocage::ordres::Resultat;
 use crate::{tr, trf};
 
+mod programme;
+mod systeme;
+
+pub(crate) use programme::naissance_du_stat;
+pub(crate) use systeme::ligne_de_proxy;
+
 /// Le dossier des notes d'« avant », à root, ni lisible ni modifiable par les autres comptes. Il se traverse (0711) :
 /// le parent sans droits voit si la note de son geste existe (`optimiser::systeme::Changement::Defense`), sans pouvoir
 /// lister les autres, les lire ni en poser une.
@@ -151,6 +157,21 @@ pub(crate) trait Acces {
     /// ne modifient.
     fn note_lire(&self, id: IdNote) -> Result<Option<Vec<u8>>, Echec>;
     fn note_retirer(&mut self, id: IdNote) -> Result<(), Echec>;
+    /// Lot D7b. Crée un dossier de root avec ces droits, dans un dossier de root fermé aux autres.
+    fn creer_dossier(&mut self, p: &Path, mode: u32) -> Result<(), Echec>;
+    /// Ce que /proc dit du processus `pid` ; `None` : il n'existe plus.
+    fn processus(&self, pid: u32) -> Option<VueProcessus>;
+    /// Ce que Vanguard trouve de suspect à ce processus, relu par root (`chasse::juger_programme`, programme sans
+    /// fichier), déjà dans la langue de l'interface et échappé ; `None` : rien.
+    fn soupcon(&self, pid: u32, v: &VueProcessus) -> Option<String>;
+    /// Pourquoi ce processus ne s'arrête jamais (vital, Vanguard lui-même ou sa lignée, programme du système) ; `None` :
+    /// aucune garde ne le retient.
+    fn garde(&self, pid: u32, v: &VueProcessus) -> Option<String>;
+    /// Copie les traces du processus (programme, commande, environnement, fichiers ouverts) dans
+    /// /var/lib/vanguard/traces : le dossier où elles sont.
+    fn copier_traces(&mut self, pid: u32, v: &VueProcessus) -> Result<PathBuf, Echec>;
+    /// Arrête le processus s'il fait encore tourner le programme vu (`blocage::arreter_confirme`).
+    fn arreter(&mut self, pid: u32, v: &VueProcessus) -> Result<(), Echec>;
 }
 
 /// Ce que l'enfant demande au gestionnaire de services (le bus système, par `assistant::Monde`).
@@ -181,9 +202,20 @@ struct Plan {
     texte: String,
     avertissement: Option<String>,
     non_annulable: bool,
+    /// Une seconde question, posée après le premier oui (lot D7b).
+    seconde: Option<Seconde>,
     /// Les valeurs d'avant, pour la note.
     champs: Vec<(String, Vec<u8>)>,
     action: Action,
+}
+
+/// La seconde question d'un plan, `[o/N]` comme la première, Entrée seule disant non.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Seconde {
+    /// Un second oui est exigé : un clavier ou une souris oubliés, par exemple. Non : rien n'est fait.
+    Obligatoire(String),
+    /// Un choix : oui fait cette autre action à la place de celle du plan ; non garde celle du plan.
+    Choix(String, Action),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,6 +232,38 @@ enum Action {
     Retirer(PathBuf, Fiche, [u8; 32]),
     Unites(Vec<ActionUnite>, NomUnite),
     Reecrire(PathBuf, Fiche, Vec<u8>),
+    /// Lot D7b. Ces actions l'une après l'autre ; la première qui échoue arrête la suite.
+    Suite(Vec<Action>),
+    /// Un dossier de root créé, avec ces droits (il ne doit pas exister).
+    CreerDossier(PathBuf, u32),
+    /// Un fichier neuf de root, avec ces droits (il ne doit pas exister).
+    Ecrire(PathBuf, Vec<u8>, u32),
+    /// Une unité nommée par Vanguard lui-même (jamais par la ligne du parent).
+    UniteSysteme(ActionUnite, &'static str),
+    /// Le fichier de sshd_config.d posé, validé par `sshd -t` (sinon retiré, rien n'est rechargé), relu par
+    /// `sshd -T` (sans effet : retiré), puis sshd rechargé s'il tourne : les sessions ouvertes restent.
+    PoserSsh {
+        fichier: PathBuf,
+        contenu: Vec<u8>,
+        reglage: gestes_unix::ReglageSsh,
+        unite: Option<&'static str>,
+    },
+    /// Les traces du programme copiées d'abord ; puis, s'il est encore celui qui a été vu, arrêté.
+    Arreter(u32, VueProcessus),
+}
+
+/// Ce que l'enfant voit d'un processus dans /proc : de quoi le reconnaître au moment d'agir (sa naissance, en tops
+/// d'horloge depuis le démarrage : un PID repris par un autre programme ne s'y confond pas).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VueProcessus {
+    pub(crate) debut: u64,
+    pub(crate) tgid: u32,
+    pub(crate) nom: String,
+    /// Le lien `/proc/<pid>/exe`, tel quel (« (deleted) » compris) ; `None` : illisible, ou un fil du noyau.
+    pub(crate) exe: Option<String>,
+    pub(crate) uid: u32,
+    pub(crate) noyau: bool,
+    pub(crate) zombie: bool,
 }
 
 type Jugement = Result<Option<Plan>, Echec>;
@@ -262,9 +326,10 @@ pub(crate) fn faire(d: Defense, id: IdNote, a: &mut dyn Acces, s: &mut dyn Servi
         }
         Err(r) => return Resultat::echec(r),
     };
-    if let Err(r) = demander(a, &phrase, &p1) {
-        return Resultat::echec(r);
-    }
+    let choisi = match demander(a, &phrase, &p1) {
+        Ok(c) => c,
+        Err(r) => return Resultat::echec(r),
+    };
     // La réponse a pu attendre : ce qui a été montré doit être encore ce qui est.
     if juger(d, a, s) != Ok(Some(p1.clone())) {
         return Resultat::echec(change_pendant_la_question());
@@ -286,7 +351,11 @@ pub(crate) fn faire(d: Defense, id: IdNote, a: &mut dyn Acces, s: &mut dyn Servi
             "the \"before\" note cannot be written ({r}): nothing is done"
         ));
     }
-    let fait = agir(&p1.action, a, s);
+    let action = match &p1.seconde {
+        Some(Seconde::Choix(_, autre)) if choisi => autre,
+        _ => &p1.action,
+    };
+    let fait = agir(action, a, s);
     let relu = juger(d, a, s);
     match (fait, relu) {
         (Ok(()), Ok(None)) if p1.non_annulable => Resultat::ok_note(trf!("{phrase} : fait", "{phrase}: done")),
@@ -324,8 +393,9 @@ fn sans_systemd() -> &'static str {
     )
 }
 
-/// Montre le plan et pose la question `[o/N]` sur le terminal : seul un oui tapé le fait, Entrée seule dit non.
-fn demander(a: &mut dyn Acces, phrase: &str, p: &Plan) -> Result<(), Echec> {
+/// Montre le plan et pose la question `[o/N]` sur le terminal : seul un oui tapé le fait, Entrée seule dit non. Puis
+/// la seconde question du plan, s'il en a une : `Ok(true)` quand elle a reçu un oui.
+fn demander(a: &mut dyn Acces, phrase: &str, p: &Plan) -> Result<bool, Echec> {
     let mut q = trf!(
         "Vanguard (administrateur) : {phrase}.",
         "Vanguard (administrator): {phrase}."
@@ -345,6 +415,25 @@ fn demander(a: &mut dyn Acces, phrase: &str, p: &Plan) -> Result<(), Echec> {
             "This step cannot be undone: Vanguard will not be able to undo it."
         ));
     }
+    if !oui_au_terminal(a, &q)? {
+        return Err(pas_dit_oui());
+    }
+    match &p.seconde {
+        None => Ok(false),
+        Some(Seconde::Obligatoire(q2)) => {
+            if oui_au_terminal(a, q2)? {
+                Ok(true)
+            } else {
+                Err(pas_dit_oui())
+            }
+        }
+        Some(Seconde::Choix(q2, _)) => oui_au_terminal(a, q2),
+    }
+}
+
+/// Pose `q` sur le terminal, suivie de « [o/N] » : vrai pour un oui tapé ; sans terminal, refusé.
+fn oui_au_terminal(a: &mut dyn Acces, q: &str) -> Result<bool, Echec> {
+    let mut q = q.to_string();
     q.push('\n');
     q.push_str(tr!(
         "D'accord ? [o/N] (Entrée seule : non)",
@@ -356,13 +445,13 @@ fn demander(a: &mut dyn Acces, phrase: &str, p: &Plan) -> Result<(), Echec> {
             "this step needs your agreement, and no terminal is there to give it: nothing is done. Start Vanguard from a terminal"
         )
         .to_string())),
-        Ok(Some(r)) if super::assistant::est_oui(&r) => Ok(()),
-        Ok(_) => Err(refus(tr!(
-            "pas fait : vous n'avez pas dit oui",
-            "not done: you did not say yes"
-        )
-        .to_string())),
+        Ok(Some(r)) => Ok(super::assistant::est_oui(&r)),
+        Ok(None) => Ok(false),
     }
+}
+
+fn pas_dit_oui() -> Echec {
+    refus(tr!("pas fait : vous n'avez pas dit oui", "not done: you did not say yes").to_string())
 }
 
 #[allow(
@@ -379,6 +468,13 @@ fn juger(d: Defense, a: &mut dyn Acces, s: &mut dyn Services) -> Jugement {
         Defense::RendreDossierARoot(c) => juger_dossier(&c, a),
         Defense::DesactiverService(u) => juger_service(u, a, s),
         Defense::RetirerLigne(e, c) => juger_ligne(e, &c, a),
+        Defense::DurcirSsh(r) => systeme::juger_ssh(r, a, s),
+        Defense::ReserverBpf => systeme::juger_bpf(a),
+        Defense::GarderJournal => systeme::juger_journal(a),
+        Defense::RetirerAncre(c) => systeme::juger_ancre(&c, a),
+        Defense::CommenterProxy(e, c) => systeme::juger_proxy(e, &c, a),
+        Defense::OublierBluetooth(b) => systeme::juger_bluetooth(b, a, s),
+        Defense::ArreterProgramme(pid, debut) => programme::juger_arret(pid, debut, a),
         Defense::Remettre => Err(refus(tr!("geste refusé", "step refused").to_string())),
     }
 }
@@ -421,6 +517,31 @@ fn agir(action: &Action, a: &mut dyn Acces, s: &mut dyn Services) -> Result<(), 
                 avant: Some(*f),
             },
         ),
+        Action::Suite(liste) => {
+            for x in liste {
+                agir(x, a, s)?;
+            }
+            Ok(())
+        }
+        Action::CreerDossier(p, mode) => a.creer_dossier(p, *mode),
+        Action::Ecrire(p, contenu, mode) => a.ecrire(
+            p,
+            contenu,
+            Ecriture {
+                mode: *mode,
+                uid: 0,
+                gid: 0,
+                avant: None,
+            },
+        ),
+        Action::UniteSysteme(act, u) => s.unite(*act, u),
+        Action::PoserSsh {
+            fichier,
+            contenu,
+            reglage,
+            unite,
+        } => systeme::poser_ssh(fichier, contenu, *reglage, *unite, a, s),
+        Action::Arreter(pid, v) => programme::arreter(*pid, v, a),
     }
 }
 
@@ -698,6 +819,7 @@ fn juger_verrou(n: NomCompte, a: &mut dyn Acces) -> Jugement {
         ),
         avertissement,
         non_annulable: false,
+        seconde: None,
         champs: vec![
             ("verrouille".into(), note_verrou.to_vec()),
             ("expiration".into(), expire.into_bytes()),
@@ -752,6 +874,7 @@ fn remettre_verrou(n: NomCompte, note: &Note, a: &mut dyn Acces) -> Jugement {
         texte,
         avertissement: None,
         non_annulable: false,
+        seconde: None,
         champs: Vec::new(),
         action: Action::Outils(vec![("usermod", arguments)]),
     }))
@@ -837,6 +960,7 @@ fn juger_groupe(g: GroupeSensible, n: NomCompte, a: &mut dyn Acces) -> Jugement 
         ),
         avertissement,
         non_annulable: false,
+        seconde: None,
         champs: vec![("groupes".into(), groupes.join(",").into_bytes())],
         action: Action::Outils(
             groupes
@@ -872,6 +996,7 @@ fn remettre_groupe(g: GroupeSensible, n: NomCompte, note: &Note, a: &mut dyn Acc
         ),
         avertissement: None,
         non_annulable: false,
+        seconde: None,
         champs: Vec::new(),
         action: Action::Outils(
             a_remettre
@@ -1035,6 +1160,7 @@ fn juger_sudo(n: NomCompte, a: &mut dyn Acces) -> Jugement {
         ),
         avertissement,
         non_annulable: false,
+        seconde: None,
         champs: vec![("contenu".into(), contenu.clone().into_bytes())],
         action: Action::PoserSudo {
             nom: n,
@@ -1120,6 +1246,7 @@ fn remettre_sudo(n: NomCompte, note: &Note, a: &mut dyn Acces) -> Jugement {
         ),
         avertissement: None,
         non_annulable: false,
+        seconde: None,
         champs: Vec::new(),
         action: Action::Retirer(p, f, attendu),
     }))
@@ -1273,6 +1400,7 @@ fn juger_droits(c: &CheminDesigne, capacites: bool, a: &mut dyn Acces) -> Jugeme
         texte,
         avertissement,
         non_annulable,
+        seconde: None,
         champs: vec![
             ("mode".into(), f.mode.to_string().into_bytes()),
             ("uid".into(), f.uid.to_string().into_bytes()),
@@ -1332,6 +1460,7 @@ fn remettre_droits(c: &CheminDesigne, capacites: bool, note: &Note, a: &mut dyn 
         ),
         avertissement: None,
         non_annulable: false,
+        seconde: None,
         champs: Vec::new(),
         action: Action::Changer(p, f, vec![modif]),
     }))
@@ -1360,6 +1489,7 @@ fn juger_dossier(c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
         ),
         avertissement: None,
         non_annulable: false,
+        seconde: None,
         champs: vec![
             ("mode".into(), f.mode.to_string().into_bytes()),
             ("uid".into(), f.uid.to_string().into_bytes()),
@@ -1394,6 +1524,7 @@ fn remettre_dossier(c: &CheminDesigne, note: &Note, a: &mut dyn Acces) -> Jugeme
         ),
         avertissement: None,
         non_annulable: false,
+        seconde: None,
         champs: Vec::new(),
         action: Action::Changer(p, f, vec![Modif::Proprietaire(uid, gid), Modif::Mode(mode)]),
     }))
@@ -1471,6 +1602,7 @@ fn juger_service(u: NomUnite, a: &mut dyn Acces, s: &mut dyn Services) -> Jugeme
         ),
         avertissement: None,
         non_annulable: false,
+        seconde: None,
         champs: vec![
             ("etat".into(), etat.into_bytes()),
             ("activite".into(), activite.into_bytes()),
@@ -1528,6 +1660,7 @@ fn remettre_service(u: NomUnite, note: &Note, a: &mut dyn Acces, s: &mut dyn Ser
         texte,
         avertissement: None,
         non_annulable: false,
+        seconde: None,
         champs: Vec::new(),
         action: Action::Unites(actions, u),
     }))
@@ -1604,6 +1737,7 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
         texte,
         avertissement: None,
         non_annulable: false,
+        seconde: None,
         champs: vec![
             ("contenu".into(), contenu.clone()),
             ("apres".into(), apres.to_vec()),
@@ -1637,6 +1771,7 @@ fn remettre_ligne(c: &CheminDesigne, note: &Note, a: &mut dyn Acces) -> Jugement
         ),
         avertissement: None,
         non_annulable: false,
+        seconde: None,
         champs: Vec::new(),
         action: Action::Reecrire(p, Fiche { mode, uid, gid, ..f }, avant.to_vec()),
     }))
@@ -1658,6 +1793,18 @@ fn remettre_juger(d: Defense, note: &Note, a: &mut dyn Acces, s: &mut dyn Servic
         Defense::RendreDossierARoot(c) => remettre_dossier(&c, note, a),
         Defense::DesactiverService(u) => remettre_service(u, note, a, s),
         Defense::RetirerLigne(_, c) => remettre_ligne(&c, note, a),
+        Defense::DurcirSsh(r) => systeme::remettre_ssh(r, a, s),
+        Defense::ReserverBpf => systeme::remettre_bpf(note, a),
+        // Non annulables : la note garde la copie de ce qui a été retiré, à remettre à la main.
+        Defense::GarderJournal
+        | Defense::RetirerAncre(_)
+        | Defense::CommenterProxy(..)
+        | Defense::OublierBluetooth(_)
+        | Defense::ArreterProgramme(..) => Err(refus(tr!(
+            "ce geste est non annulable : Vanguard ne le défait pas (la note d'« avant » garde la copie de ce qu'il a changé, dans /var/lib/vanguard/avant)",
+            "this step cannot be undone: Vanguard does not undo it (the \"before\" note keeps the copy of what it changed, in /var/lib/vanguard/avant)"
+        )
+        .to_string())),
         Defense::Remettre => Err(note_abimee()),
     }
 }
@@ -2142,6 +2289,30 @@ impl Acces for Reel {
         essais_sans_ecriture()?;
         std::fs::remove_file(Path::new(DOSSIER_NOTES).join(id.as_str())).map_err(|e| echoue(e.to_string()))
     }
+
+    fn creer_dossier(&mut self, p: &Path, mode: u32) -> Result<(), Echec> {
+        programme::creer_dossier_reel(p, mode)
+    }
+
+    fn processus(&self, pid: u32) -> Option<VueProcessus> {
+        programme::processus_reel(pid)
+    }
+
+    fn soupcon(&self, pid: u32, v: &VueProcessus) -> Option<String> {
+        programme::soupcon_reel(pid, v)
+    }
+
+    fn garde(&self, pid: u32, v: &VueProcessus) -> Option<String> {
+        programme::garde_reelle(pid, v, self.demandeur)
+    }
+
+    fn copier_traces(&mut self, pid: u32, v: &VueProcessus) -> Result<PathBuf, Echec> {
+        programme::copier_traces_reel(pid, v, self.date())
+    }
+
+    fn arreter(&mut self, pid: u32, v: &VueProcessus) -> Result<(), Echec> {
+        programme::arreter_reel(pid, v)
+    }
 }
 
 #[cfg(test)]
@@ -2186,6 +2357,18 @@ mod tests {
         ino: u64,
         /// Un fichier changé pendant la question.
         pendant_la_question: Option<(PathBuf, Vec<u8>)>,
+        /// Lot D7b : les processus vus, leurs soupçons et leurs gardes.
+        processus: BTreeMap<u32, VueProcessus>,
+        soupcons: BTreeMap<u32, String>,
+        gardes: BTreeMap<u32, String>,
+        /// Le code de `sshd -t`.
+        sshd_t: i32,
+        /// sshd -T ne voit pas les fichiers de Vanguard (un réglage lu avant eux l'emporte).
+        sshd_sans_effet: bool,
+        /// sshd -T sans les fichiers de Vanguard : clé, valeur.
+        sshd_base: Vec<(String, String)>,
+        /// Ce que `bluetoothctl info` dit de l'appareil ; `None` : il n'est pas connu.
+        bluetooth: Option<String>,
     }
 
     fn fiche(genre: Genre, mode: u32, uid: u32, ino: u64) -> Fiche {
@@ -2222,6 +2405,24 @@ mod tests {
                 sudo_apres: String::new(),
                 ino: 100,
                 pendant_la_question: None,
+                processus: BTreeMap::new(),
+                soupcons: BTreeMap::new(),
+                gardes: BTreeMap::new(),
+                sshd_t: 0,
+                sshd_sans_effet: false,
+                sshd_base: [
+                    ("permitemptypasswords", "no"),
+                    ("permitrootlogin", "prohibit-password"),
+                    ("passwordauthentication", "yes"),
+                    ("kbdinteractiveauthentication", "yes"),
+                    ("pubkeyauthentication", "yes"),
+                    ("authenticationmethods", "any"),
+                    ("authorizedkeysfile", ".ssh/authorized_keys .ssh/authorized_keys2"),
+                ]
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+                bluetooth: None,
             };
             f.poser("/etc/passwd", PASSWD_DE.as_bytes(), 0o644);
             f.poser("/etc/shadow", SHADOW_DE.as_bytes(), 0o640);
@@ -2353,10 +2554,50 @@ mod tests {
                 }
                 "visudo" if a.iter().any(|x| x == "-f") => self.visudo_seul,
                 "visudo" => self.visudo_tout,
+                "sshd" if a == ["-t"] => self.sshd_t,
+                "sysctl" => {
+                    let v = a[1].strip_prefix("kernel.unprivileged_bpf_disabled=").unwrap();
+                    self.fichiers.get_mut(Path::new(BPF_FAUX)).unwrap().contenu = format!("{v}\n").into_bytes();
+                    0
+                }
+                "journalctl" => {
+                    if self
+                        .fichiers
+                        .contains_key(Path::new("/etc/systemd/journald.conf.d/zz-vanguard-persistant.conf"))
+                    {
+                        self.dossier("/var/log/journal", 0o2755, 0);
+                    }
+                    0
+                }
                 _ => 0,
             }
         }
+
+        /// Ce que `sshd -T` dirait : la base, puis les fichiers 00-vanguard-*.conf posés (s'ils ont effet).
+        fn sshd_grand_t(&self) -> String {
+            let mut cfg = self.sshd_base.clone();
+            if !self.sshd_sans_effet {
+                for (p, f) in &self.fichiers {
+                    let p = p.to_string_lossy();
+                    if !p.starts_with("/etc/ssh/sshd_config.d/00-vanguard-") {
+                        continue;
+                    }
+                    for l in String::from_utf8_lossy(&f.contenu).lines() {
+                        let (k, v) = l.split_once(' ').unwrap();
+                        let k = k.to_ascii_lowercase();
+                        cfg.retain(|(c, _)| *c != k);
+                        cfg.push((k, v.to_string()));
+                    }
+                }
+            }
+            cfg.iter().fold(String::new(), |mut s, (k, v)| {
+                let _ = writeln!(s, "{k} {v}");
+                s
+            })
+        }
     }
+
+    const BPF_FAUX: &str = "/proc/sys/kernel/unprivileged_bpf_disabled";
 
     impl Acces for Faux {
         fn question(&mut self, texte: &str) -> Result<Option<String>, ()> {
@@ -2390,6 +2631,29 @@ mod tests {
                 };
                 return Some(Sortie {
                     code: Some(0),
+                    sortie,
+                    erreurs: String::new(),
+                });
+            }
+            if outil == "sshd" && a == ["-T"] {
+                return Some(Sortie {
+                    code: Some(0),
+                    sortie: self.sshd_grand_t(),
+                    erreurs: String::new(),
+                });
+            }
+            if outil == "bluetoothctl" {
+                let (code, sortie) = match (a[0].as_str(), &self.bluetooth) {
+                    ("info", Some(t)) => (0, t.clone()),
+                    ("remove", Some(_)) => {
+                        self.bluetooth = None;
+                        (0, "Device has been removed\n".to_string())
+                    }
+                    (_, None) => (1, format!("Device {} not available\n", a[1])),
+                    _ => (1, String::new()),
+                };
+                return Some(Sortie {
+                    code: Some(code),
                     sortie,
                     erreurs: String::new(),
                 });
@@ -2514,6 +2778,37 @@ mod tests {
             self.notes.remove(id.as_str());
             Ok(())
         }
+
+        fn creer_dossier(&mut self, p: &Path, mode: u32) -> Result<(), Echec> {
+            if self.fichiers.contains_key(p) {
+                return Err(refus("existe"));
+            }
+            self.journal.push(format!("dossier {}", p.display()));
+            self.dossier(&p.to_string_lossy(), mode, 0);
+            Ok(())
+        }
+
+        fn processus(&self, pid: u32) -> Option<VueProcessus> {
+            self.processus.get(&pid).cloned()
+        }
+
+        fn soupcon(&self, pid: u32, _: &VueProcessus) -> Option<String> {
+            self.soupcons.get(&pid).cloned()
+        }
+
+        fn garde(&self, pid: u32, _: &VueProcessus) -> Option<String> {
+            self.gardes.get(&pid).cloned()
+        }
+
+        fn copier_traces(&mut self, pid: u32, v: &VueProcessus) -> Result<PathBuf, Echec> {
+            self.journal.push(format!("traces {pid}"));
+            Ok(PathBuf::from(format!("/var/lib/vanguard/traces/{pid}-{}", v.debut)))
+        }
+
+        fn arreter(&mut self, pid: u32, _: &VueProcessus) -> Result<(), Echec> {
+            self.journal.push(format!("arreter {pid}"));
+            self.processus.remove(&pid).map(|_| ()).ok_or_else(|| refus("absent"))
+        }
     }
 
     struct FauxServices {
@@ -2577,8 +2872,10 @@ mod tests {
             let (e, a) = match action {
                 ActionUnite::Desactiver => ("disabled".to_string(), "inactive".to_string()),
                 ActionUnite::Activer => ("enabled".to_string(), lance),
-                ActionUnite::Demarrer => (self.etat.clone(), lance),
+                // Démarré ou redémarré : il repart comme au démarrage ; rechargé : il tourne toujours.
+                ActionUnite::Demarrer | ActionUnite::Redemarrer => (self.etat.clone(), lance),
                 ActionUnite::ActiverSansDemarrer => ("enabled".to_string(), self.activite.clone()),
+                ActionUnite::Recharger => (self.etat.clone(), self.activite.clone()),
                 _ => (self.etat.clone(), "inactive".to_string()),
             };
             self.etat = e;
@@ -3463,4 +3760,6 @@ mod tests {
         assert!(problemes_sudo("User alice may run:\n    (ALL) NOPASSWD: ALL\n    (ALL\nx) NOPASSWD: ALL\n").is_err());
         assert!(problemes_sudo("User a may run:\n    (ALL=#) NOPASSWD: ALL\n").is_err());
     }
+
+    mod d7b;
 }

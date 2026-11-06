@@ -5,3 +5,11 @@ vanguard:geste defense rendre-a-root 2f7573722f6c6f63616c2f62696e 0123456789abcd
 vanguard:geste defense desactiver-service sauvegarde.service 0123456789abcdef
 vanguard:geste defense retirer-ligne abababababababababababababababababababababababababababababababab 2f6574632f6c642e736f2e7072656c6f6164 0123456789abcdef
 vanguard:geste defense remettre 0123456789abcdef
+vanguard:geste defense durcir-ssh mots-de-passe 0123456789abcdef
+vanguard:geste defense durcir-ssh root 0123456789abcdef
+vanguard:geste defense reserver-bpf 0123456789abcdef
+vanguard:geste defense garder-journal 0123456789abcdef
+vanguard:geste defense retirer-ancre 2f7573722f6c6f63616c2f73686172652f63612d6365727469666963617465732f782e637274 0123456789abcdef
+vanguard:geste defense commenter-proxy abababababababababababababababababababababababababababababababab 2f6574632f656e7669726f6e6d656e74 0123456789abcdef
+vanguard:geste defense oublier-bluetooth 001a7dda7113 0123456789abcdef
+vanguard:geste defense arreter-programme 4242 123456 0123456789abcdef

@@ -844,44 +844,56 @@ fn ssh_serveur() -> Constat {
             ),
         );
     };
-    if mots_de_passe_vides_sshd(&conf) {
-        return alerte(
-            "SSH",
-            Niveau::Critique,
-            tr!(
-                "SSH accepte les comptes sans mot de passe : un compte sans mot de passe s'ouvre depuis le réseau sans rien taper.",
-                "SSH accepts accounts without a password: an account without a password opens from the network without typing anything."
+    let a_des_cles = std::fs::metadata(format!("{}/.ssh/authorized_keys", home())).is_ok_and(|m| m.len() > 0);
+    juger_ssh_serveur(&conf, a_des_cles)
+}
+
+/// Le jugement de la configuration de sshd en marche (`sshd -T`) : chaque réglage corrigé par un geste de défense
+/// (un fichier de sshd_config.d validé par `sshd -t`, puis sshd rechargé : les sessions ouvertes restent), que
+/// l'enfant root refuse depuis une session SSH. `a_des_cles` : le compte de ce bilan a des clés autorisées (l'enfant
+/// le revérifie pour chaque personne devant l'écran) ; sans elles, couper les mots de passe reste à la main.
+fn juger_ssh_serveur(conf: &str, a_des_cles: bool) -> Constat {
+    use crate::machine::gestes_unix::{Defense, ReglageSsh};
+    let durcir = |c: Constat, action: &str, r: ReglageSsh| {
+        // Sans le hasard d'une note, la correction reste à la main (le fichier dit, sans rien lancer).
+        let c = c.manuel(
+            trf!(
+                "{action}, à la main dans {SSHD_VANGUARD}, puis :",
+                "{action}, by hand in {SSHD_VANGUARD}, then:"
             ),
-        )
-        .corriger(
+            &[RECHARGER_SSHD],
+        );
+        crate::machine::defense::corriger(c, action, &[Defense::DurcirSsh(r)])
+    };
+    if mots_de_passe_vides_sshd(conf) {
+        return durcir(
+            alerte(
+                "SSH",
+                Niveau::Critique,
+                tr!(
+                    "SSH accepte les comptes sans mot de passe : un compte sans mot de passe s'ouvre depuis le réseau sans rien taper.",
+                    "SSH accepts accounts without a password: an account without a password opens from the network without typing anything."
+                ),
+            ),
             tr!(
                 "Refuser les mots de passe vides en SSH (le réglage de sshd)",
                 "Refuse empty passwords over SSH (sshd's setting)"
             ),
-            &[
-                &format!("echo 'PermitEmptyPasswords no' | sudo tee -a {SSHD_VANGUARD} >/dev/null"),
-                RECHARGER_SSHD,
-            ],
-        )
-        .annulable(vec![Geste::fichier(SSHD_VANGUARD)]);
+            ReglageSsh::MotsDePasseVides,
+        );
     }
-    if valeur_sshd(&conf, "PermitRootLogin").as_deref() == Some("yes") {
-        return alerte(
-            "SSH",
-            Niveau::Eleve,
-            tr!("Connexion root autorisée en SSH.", "Root login allowed over SSH."),
-        )
-        .corriger(
+    if valeur_sshd(conf, "PermitRootLogin").as_deref() == Some("yes") {
+        return durcir(
+            alerte(
+                "SSH",
+                Niveau::Eleve,
+                tr!("Connexion root autorisée en SSH.", "Root login allowed over SSH."),
+            ),
             tr!("Interdire la connexion SSH en root", "Forbid root login over SSH"),
-            &[
-                &format!("echo 'PermitRootLogin no' | sudo tee -a {SSHD_VANGUARD} >/dev/null"),
-                RECHARGER_SSHD,
-            ],
-        )
-        .annulable(vec![Geste::fichier(SSHD_VANGUARD)]);
+            ReglageSsh::Root,
+        );
     }
-    if mots_de_passe_sshd(&conf) {
-        let a_des_cles = std::fs::metadata(format!("{}/.ssh/authorized_keys", home())).is_ok_and(|m| m.len() > 0);
+    if mots_de_passe_sshd(conf) {
         let c = alerte(
             "SSH",
             Niveau::Moyen,
@@ -891,16 +903,16 @@ fn ssh_serveur() -> Constat {
             ),
         );
         return if a_des_cles {
-            c.corriger(
-                tr!("N'accepter que les clés SSH (vous avez déjà des clés autorisées)", "Accept SSH keys only (you already have authorized keys)"),
-                &[
-                    &format!("printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n' | sudo tee -a {SSHD_VANGUARD} >/dev/null"),
-                    RECHARGER_SSHD,
-                ],
+            durcir(
+                c,
+                tr!(
+                    "N'accepter que les clés SSH (vous avez déjà des clés autorisées)",
+                    "Accept SSH keys only (you already have authorized keys)"
+                ),
+                ReglageSsh::MotsDePasse,
             )
-            .annulable(vec![Geste::fichier(SSHD_VANGUARD)])
         } else {
-            // Sans clé autorisée, couper les mots de passe t'enfermerait dehors.
+            // Sans clé autorisée, couper les mots de passe vous enfermerait dehors.
             c.manuel(
                 tr!("Ajoutez d'abord votre clé depuis l'autre ordinateur (ssh-copy-id), puis relancez la correction. Ou désactivez SSH si inutile :", "First add your key from the other computer (ssh-copy-id), then run the fix again. Or turn SSH off if unused:"),
                 &["sudo systemctl disable --now sshd"],
@@ -2849,6 +2861,44 @@ pas-un-uuid;rm -rf ~:802-11-wireless:yes:Piège
         assert!(commandes[0].starts_with("echo 'X11Forwarding no' | sudo tee -a"));
         assert!(commandes[1].starts_with("echo 'MaxAuthTries 6' | sudo tee -a"));
         assert_eq!(commandes[2], RECHARGER_SSHD);
+    }
+
+    /// Chaque réglage dangereux de sshd est corrigé par un geste de défense, rejugé par l'enfant root (jamais une
+    /// commande du bilan) ; sans clé autorisée, couper les mots de passe reste à la main.
+    #[test]
+    fn serveur_ssh_par_gestes() {
+        use crate::machine::gestes_unix::{self, Defense, GesteUnix, ReglageSsh};
+        let geste = |c: Constat| {
+            let k = c.correctif.unwrap();
+            assert!(k.automatique);
+            assert!(
+                matches!(k.defaire, crate::machine::Defaire::Gestes(_)),
+                "{:?}",
+                k.defaire
+            );
+            let [ligne] = k.commandes.as_slice() else {
+                panic!("une seule ligne : {:?}", k.commandes)
+            };
+            match gestes_unix::analyser(ligne) {
+                Some(GesteUnix::Defense(Defense::DurcirSsh(r), _)) => r,
+                _ => panic!("geste de défense attendu : {ligne}"),
+            }
+        };
+        let base = "passwordauthentication yes\nkbdinteractiveauthentication yes\n";
+        let c = juger_ssh_serveur(&format!("permitemptypasswords yes\n{base}"), true);
+        assert_eq!(c.probleme, Some(Niveau::Critique));
+        assert_eq!(geste(c), ReglageSsh::MotsDePasseVides);
+        let c = juger_ssh_serveur(&format!("permitrootlogin yes\n{base}"), false);
+        assert_eq!(c.probleme, Some(Niveau::Eleve));
+        assert_eq!(geste(c), ReglageSsh::Root);
+        assert_eq!(geste(juger_ssh_serveur(base, true)), ReglageSsh::MotsDePasse);
+        let k = juger_ssh_serveur(base, false).correctif.unwrap();
+        assert!(!k.automatique && k.action.contains("ssh-copy-id"));
+        let c = juger_ssh_serveur(
+            "permitrootlogin prohibit-password\npasswordauthentication no\nkbdinteractiveauthentication no\n",
+            true,
+        );
+        assert!(c.probleme.is_none() && c.correctif.is_none());
     }
 
     #[test]

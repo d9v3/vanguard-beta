@@ -131,6 +131,14 @@ pub(crate) fn protection_active() -> bool {
 #[cfg(target_os = "linux")]
 pub(crate) use gardes::processus_gelable;
 
+/// Lot D7b : l'arrêt d'un programme que la personne a accepté, sur le terminal de l'assistant élevé. Les gardes des
+/// sessions à distance et de la signature passent encore juste avant le signal ; `attendu` : son programme, sans
+/// « (deleted) ».
+#[cfg(target_os = "linux")]
+pub(crate) fn arreter_confirme(pid: u32, attendu: &str) -> Result<(), crate::modele::Echec> {
+    arret::arreter(pid, attendu, &arret::Confirmation::Jamais).map(|_| ())
+}
+
 /// L'arrêt automatique d'un programme est-il permis en ce moment ? La catégorie Programmes réglée en automatique avec
 /// l'accord (menace certaine), Vanguard non administrateur, protection en temps réel non coupée (plan §2.5).
 #[cfg(target_os = "linux")]

@@ -164,7 +164,7 @@ fn noms_du_fichier(octets: &[u8]) -> Vec<String> {
 /// sujet sans CN, O ni OU, un fichier vide ou d'un autre format : le système peut lui faire confiance (p11-kit,
 /// update-ca-trust) sans que Vanguard sache dire lequel ; jamais compté comme « rien d'ajouté ».
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn lire_ancre(octets: &[u8]) -> (Vec<String>, bool) {
+pub(crate) fn lire_ancre(octets: &[u8]) -> (Vec<String>, bool) {
     let noms = noms_du_fichier(octets);
     let blocs = String::from_utf8_lossy(octets).matches("-----BEGIN ").count().max(1);
     let entier = noms.len() >= blocs;
@@ -187,6 +187,26 @@ fn ancre_non_nommee(ou: &str, retirer: &[String]) -> Constat {
     .manuel(
         trf!("Retirer le fichier {ou}", "Remove the file {ou}"),
         &commandes,
+    )
+}
+
+/// Sous Linux, un fichier d'ancres illisible retiré par un geste de défense, s'il est dans l'un des dossiers d'ancres :
+/// l'enfant root le relit (il refuse un fichier qu'il sait lire en entier ou qui vient d'un paquet), le copie en
+/// entier dans la note, le retire sur confirmation, puis refait la liste du système. Non annulable ; ailleurs, la
+/// commande reste à faire soi-même.
+#[cfg(target_os = "linux")]
+fn retirer_par_geste(c: Constat, chemin: &str) -> Constat {
+    let Some(g) = super::defense::retirer_ancre(chemin) else {
+        return c;
+    };
+    let ou = crate::ui::affichable(chemin);
+    super::defense::corriger_sans_defaire(
+        c,
+        trf!(
+            "Retirer le fichier {ou} (copié en entier dans la note de Vanguard ; non annulable), puis refaire la liste des certificats du système",
+            "Remove the file {ou} (copied whole into Vanguard's note; cannot be undone), then rebuild the system's certificate list"
+        ),
+        &[g],
     )
 }
 
@@ -408,7 +428,10 @@ fn ancres(trouves: Vec<std::path::PathBuf>, illisibles: &[std::path::PathBuf]) -
             constats.push(juger(&nom, &chemin, false, &retirer, false));
         }
         if !entier {
-            constats.push(ancre_non_nommee(&chemin, &retirer));
+            let c = ancre_non_nommee(&chemin, &retirer);
+            #[cfg(target_os = "linux")]
+            let c = retirer_par_geste(c, &chemin);
+            constats.push(c);
         }
     }
     if constats.is_empty() {
@@ -743,6 +766,36 @@ xo1zjuQ=
         // Aucun fichier : vert.
         assert!(ancres(Vec::new(), &[]).iter().all(|c| c.probleme.is_none()));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Linux : un fichier d'ancres illisible d'un dossier d'ancres se retire par un geste de défense (non annulable) ;
+    /// ailleurs, la commande reste à la main. Les dossiers parcourus sont exactement ceux que le geste admet.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ancre_illisible_retiree_par_un_geste() {
+        use crate::machine::gestes_unix::{self, DOSSIERS_D_ANCRES, Defense, GesteUnix};
+        let c = || ancre_non_nommee("x", &["sudo rm -f x".to_string()]);
+        let k = retirer_par_geste(c(), "/usr/local/share/ca-certificates/inconnu.crt")
+            .correctif
+            .unwrap();
+        assert!(k.automatique && k.defaire == crate::machine::Defaire::Inconnu);
+        let Some(GesteUnix::Defense(Defense::RetirerAncre(chemin), _)) = gestes_unix::analyser(&k.commandes[0]) else {
+            panic!("retrait d'ancre attendu : {:?}", k.commandes)
+        };
+        assert_eq!(chemin.octets(), b"/usr/local/share/ca-certificates/inconnu.crt");
+        for hors in [
+            "/tmp/x.crt",
+            "/usr/local/share/ca-certificates/",
+            "/etc/ssl/certs/x.pem",
+        ] {
+            let k = retirer_par_geste(c(), hors).correctif.unwrap();
+            assert!(!k.automatique, "{hors}");
+        }
+        let admis: Vec<String> = DOSSIERS_D_ANCRES
+            .iter()
+            .map(|d| d.trim_end_matches('/').to_string())
+            .collect();
+        assert_eq!(admis, DOSSIERS_AJOUTS);
     }
 
     /// Relecture du lot correctifs-c6 : un dossier d'ancres que `read_dir` ne sait pas ouvrir (ici, un fichier à la

@@ -1328,7 +1328,7 @@ mod tests_sh_chaine {
         ("machine/linux/dissimulation.rs", 3),
         ("machine/linux/durcissement.rs", 4),
         ("machine/linux/maj.rs", 5),
-        ("machine/linux/mod.rs", 45),
+        ("machine/linux/mod.rs", 42),
         ("machine/linux/persistance.rs", 1),
         ("machine/linux/plateforme.rs", 1),
         ("machine/linux/privileges.rs", 5),

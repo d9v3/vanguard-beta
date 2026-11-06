@@ -180,6 +180,10 @@ fn juger(etat: &Etat, avant: Option<&Vus>, aujourd_hui: NaiveDate) -> (Vec<Const
             )
             .manuel(retrait(), commandes),
         );
+        #[cfg(target_os = "linux")]
+        if let Some(c) = constats.pop() {
+            constats.push(oublier_par_geste(c, &a.adresse));
+        }
     }
     if constats.is_empty() {
         let noms: Vec<String> = etat.appareils.iter().map(|a| affichable(&a.nom)).collect();
@@ -201,6 +205,24 @@ fn juger(etat: &Etat, avant: Option<&Vus>, aujourd_hui: NaiveDate) -> (Vec<Const
         ));
     }
     (constats, Vus { vus })
+}
+
+/// Sous Linux, l'appareil retiré par un geste de Vanguard (confirmé dans le terminal, une question de plus pour un
+/// clavier ou une souris) ; une adresse qui ne se relit pas laisse la marche à suivre.
+#[cfg(target_os = "linux")]
+fn oublier_par_geste(c: Constat, adresse: &str) -> Constat {
+    use super::gestes_unix::{AdresseBt, Defense};
+    match AdresseBt::lue(adresse) {
+        Some(b) => super::defense::corriger_sans_defaire(
+            c,
+            tr!(
+                "Le retirer (non annulable : il faudra le re-jumeler s'il est à vous)",
+                "Remove it (cannot be undone: it will have to be paired again if it is yours)"
+            ),
+            &[Defense::OublierBluetooth(b)],
+        ),
+        None => c,
+    }
 }
 
 /// Comment retirer un appareil appairé, sur ce système.
@@ -650,7 +672,25 @@ mod tests {
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].probleme, Some(Niveau::Moyen));
         assert!(c[0].message.contains("Clavier�[2K") && c[0].message.contains("C8:3F:26:44:55:66"));
-        assert!(!c[0].correctif.as_ref().unwrap().automatique);
+        let k = c[0].correctif.as_ref().unwrap();
+        // Linux : un seul geste de Vanguard, qui désigne cette adresse et rien d'autre (confirmé dans le terminal,
+        // non annulable) ; ailleurs, la marche à suivre.
+        #[cfg(target_os = "linux")]
+        {
+            assert!(k.automatique);
+            assert_eq!(k.commandes.len(), 1);
+            let Some(crate::machine::gestes_unix::GesteUnix::Defense(
+                crate::machine::gestes_unix::Defense::OublierBluetooth(b),
+                _,
+            )) = crate::machine::gestes_unix::analyser(&k.commandes[0])
+            else {
+                panic!("{:?}", k.commandes);
+            };
+            assert_eq!(b.0, [0xC8, 0x3F, 0x26, 0x44, 0x55, 0x66]);
+            assert!(k.action.contains("non annulable"));
+        }
+        #[cfg(not(target_os = "linux"))]
+        assert!(!k.automatique);
         let (c, _) = juger(&etat, Some(&vus), jour(18));
         assert_eq!(c[0].probleme, Some(Niveau::Moyen));
         let (c, _) = juger(&etat, Some(&vus), jour(19));

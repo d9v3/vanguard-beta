@@ -400,6 +400,18 @@ pub(super) fn juger_bpf(valeur: Option<i64>) -> Option<Constat> {
             &["sudo sysctl -w kernel.unprivileged_bpf_disabled=2"],
         )
     })
+    .map(|c| {
+        // Par un geste de défense : 2 jusqu'au redémarrage, et, si la personne le veut, un fichier de /etc/sysctl.d
+        // pour que ça dure (une seconde question) ; Défaire remet 0 et retire ce fichier.
+        crate::machine::defense::corriger(
+            c,
+            tr!(
+                "Le réserver à root (jusqu'au redémarrage, ou pour de bon si vous le voulez)",
+                "Reserve it for root (until restart, or for good if you want)"
+            ),
+            &[crate::machine::gestes_unix::Defense::ReserverBpf],
+        )
+    })
 }
 
 pub(super) fn bpf() -> Option<Constat> {
@@ -729,6 +741,17 @@ mod tests {
     fn bpf_et_journal_d_audit() {
         assert!(juger_bpf(Some(2)).is_none() && juger_bpf(Some(1)).is_none() && juger_bpf(None).is_none());
         assert_eq!(juger_bpf(Some(0)).map(|c| c.probleme), Some(Some(Niveau::Info)));
+        // Corrigé par le geste de défense, annulable.
+        let k = juger_bpf(Some(0)).unwrap().correctif.unwrap();
+        assert!(k.automatique && matches!(k.defaire, crate::machine::Defaire::Gestes(_)));
+        assert!(matches!(
+            crate::machine::gestes_unix::analyser(&k.commandes[0]),
+            Some(crate::machine::gestes_unix::GesteUnix::Defense(
+                crate::machine::gestes_unix::Defense::ReserverBpf,
+                _
+            ))
+        ));
+        assert_eq!(k.commandes.len(), 1);
         assert!(juger_journal_audit(false, false).is_none());
         assert_eq!(juger_journal_audit(true, true).map(|c| c.probleme), Some(None));
         assert!(juger_journal_audit(true, false).is_some_and(|c| c.correctif.is_some()));

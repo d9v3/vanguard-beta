@@ -235,8 +235,28 @@ fn connexion_forcee() -> Vec<Constat> {
     match tentatives_lues() {
         None => Vec::new(),
         Some(Err(refus)) => vec![refus],
+        #[cfg(target_os = "linux")]
+        Some(Ok(lues)) => vec![couper_mots_de_passe_ssh(juger_lues(&lues, Os::actuel()))],
+        #[cfg(not(target_os = "linux"))]
         Some(Ok(lues)) => vec![juger_lues(&lues, Os::actuel())],
     }
+}
+
+/// Sous Linux, un mot de passe deviné en SSH : couper la connexion SSH par mot de passe, par un geste de défense que
+/// l'enfant root refuse sans clé SSH posée pour la personne devant l'écran, ou depuis une session SSH (il ne coupe
+/// jamais la connexion en cours). Le reste du conseil (changer le mot de passe, regarder les traces) reste à faire soi-même.
+#[cfg(target_os = "linux")]
+fn couper_mots_de_passe_ssh(c: Constat) -> Constat {
+    use super::gestes_unix::{Defense, ReglageSsh};
+    let Some(k) = c.correctif.as_ref().filter(|_| c.probleme == Some(Niveau::Critique)) else {
+        return c;
+    };
+    let action = trf!(
+        "Couper la connexion SSH par mot de passe (refusé sans clé SSH posée, ou depuis une session SSH). Ensuite, vous-même : {}",
+        "Turn off password sign-in for SSH (refused without an SSH key in place, or from an SSH session). Then, yourself: {}",
+        k.action
+    );
+    super::defense::corriger(c, action, &[Defense::DurcirSsh(ReglageSsh::MotsDePasse)])
 }
 
 /// Sous Linux : le journal de sshd des dernières 24 h.
@@ -1053,11 +1073,33 @@ fn conseil_programmes() -> &'static str {
 
 /// Les constats d'après les programmes en marche, ceux de Vanguard (`ecartes`) mis à part. `partiel` : ce que la
 /// lecture n'a pas pu voir, dit avec le constat sain.
+#[cfg_attr(
+    all(target_os = "linux", not(test)),
+    allow(
+        dead_code,
+        reason = "sous Linux, le bilan passe par juger_programmes_avec ; le corpus de détection, par elle"
+    )
+)]
 pub(crate) fn juger_programmes(
     liste: &[EnMarche],
     systeme: Os,
     ecartes: &HashSet<u32>,
     partiel: Option<&str>,
+) -> Vec<Constat> {
+    juger_programmes_avec(liste, systeme, ecartes, partiel, &|c, _| c)
+}
+
+/// Une correction posée sur une alerte de programmes, d'après les programmes qu'elle nomme.
+type CorrigerProgrammes<'a> = &'a dyn Fn(Constat, &[&EnMarche]) -> Constat;
+
+/// `juger_programmes`, chaque alerte passée à `corriger` avec les programmes qu'elle nomme (sous Linux : les arrêter
+/// par des gestes de défense, après la copie de leurs traces).
+fn juger_programmes_avec(
+    liste: &[EnMarche],
+    systeme: Os,
+    ecartes: &HashSet<u32>,
+    partiel: Option<&str>,
+    corriger: CorrigerProgrammes,
 ) -> Vec<Constat> {
     let examines: Vec<&EnMarche> = liste.iter().filter(|p| !ecartes.contains(&p.pid)).collect();
     let mut reperes: Vec<(&EnMarche, Soupcon)> = examines
@@ -1066,13 +1108,15 @@ pub(crate) fn juger_programmes(
         .collect();
     reperes.sort_by_key(|(p, s)| (std::cmp::Reverse(s.niveau), p.pid));
     let mut constats = Vec::new();
+    let nommes =
+        |n: Niveau| -> Vec<&EnMarche> { reperes.iter().filter(|(_, s)| s.niveau == n).map(|(p, _)| *p).collect() };
     let eleves: Vec<String> = reperes
         .iter()
         .filter(|(_, s)| s.niveau == Niveau::Eleve)
         .map(|(p, s)| montrer(p, s))
         .collect();
     if !eleves.is_empty() {
-        constats.push(
+        constats.push(corriger(
             alerte(
                 "Programmes",
                 Niveau::Eleve,
@@ -1086,7 +1130,8 @@ pub(crate) fn juger_programmes(
                 conseil_programmes(),
                 &["vanguard depanner traces", "vanguard depanner infection"],
             ),
-        );
+            &nommes(Niveau::Eleve),
+        ));
     }
     let moyens: Vec<String> = reperes
         .iter()
@@ -1094,7 +1139,7 @@ pub(crate) fn juger_programmes(
         .map(|(p, s)| montrer(p, s))
         .collect();
     if !moyens.is_empty() {
-        constats.push(
+        constats.push(corriger(
             alerte(
                 "Programmes",
                 Niveau::Moyen,
@@ -1105,7 +1150,8 @@ pub(crate) fn juger_programmes(
                 ),
             )
             .manuel(conseil_programmes(), &["vanguard depanner traces"]),
-        );
+            &nommes(Niveau::Moyen),
+        ));
     }
     if constats.is_empty() {
         let n = examines.len();
@@ -1157,7 +1203,96 @@ fn programmes_suspects() -> Vec<Constat> {
         c.strip_suffix(" (deleted)").unwrap_or(&c).to_string()
     });
     let ecartes = de_vanguard(&liste, std::process::id(), mon_programme.as_deref());
+    #[cfg(target_os = "linux")]
+    {
+        let mut intouchables = ecartes.clone();
+        intouchables.extend(ancetres(&liste, std::process::id()));
+        juger_programmes_avec(&liste, Os::actuel(), &ecartes, partiel, &|c, ps| {
+            arreter_les_programmes(c, ps, &intouchables, super::defense::arreter_programme)
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
     juger_programmes(&liste, Os::actuel(), &ecartes, partiel)
+}
+
+/// Sous Linux, les programmes d'une alerte arrêtés par des gestes de défense : leurs traces copiées d'abord (dans
+/// /var/lib/vanguard/traces), puis chacun arrêté sur confirmation, rejugé par l'enfant root (non annulable). Tous ou
+/// aucun : un seul que le blocage ne touche jamais (vital, Vanguard ou ce qui le fait tourner, programme du
+/// système), parti ou illisible, et tout reste à la main. `geste` : le geste d'un numéro (`defense::arreter_programme`,
+/// qui relit sa naissance).
+#[cfg(target_os = "linux")]
+pub(crate) fn arreter_les_programmes(
+    c: Constat,
+    ps: &[&EnMarche],
+    intouchables: &HashSet<u32>,
+    geste: impl Fn(u32) -> Option<super::gestes_unix::Defense>,
+) -> Constat {
+    use crate::protection::blocage::gardes::processus_intouchable;
+    let gardes = ps.iter().any(|p| {
+        processus_intouchable(p.pid, &p.nom, p.chemin.as_deref(), intouchables, Os::Linux).is_some()
+            || p.chemin
+                .as_deref()
+                .and_then(|c| std::path::Path::new(c).file_name())
+                .is_some_and(|f| {
+                    processus_intouchable(
+                        p.pid,
+                        &f.to_string_lossy(),
+                        p.chemin.as_deref(),
+                        intouchables,
+                        Os::Linux,
+                    )
+                    .is_some()
+                })
+    });
+    if gardes {
+        return c;
+    }
+    let gestes = super::defense::tous(ps.iter().map(|p| p.pid), geste);
+    super::defense::corriger_sans_defaire(
+        c,
+        tr!(
+            "Copier les traces de chacun (dans /var/lib/vanguard/traces), puis l'arrêter (non annulable) ; ensuite, s'il n'est pas à vous : vanguard depanner infection",
+            "Copy each one's traces (into /var/lib/vanguard/traces), then stop it (cannot be undone); then, if it is not yours: vanguard depanner infection"
+        ),
+        &gestes,
+    )
+}
+
+/// Un programme en marche d'après /proc (`programmes_en_marche`) ; `None` : parti, ou un fil du noyau.
+#[cfg(target_os = "linux")]
+pub(crate) fn en_marche_de(pid: u32) -> Option<EnMarche> {
+    let racine = std::path::PathBuf::from(format!("/proc/{pid}"));
+    let status = std::fs::read_to_string(racine.join("status")).ok()?;
+    let champ = |nom: &str| status.lines().find_map(|l| l.strip_prefix(nom)).map(str::trim);
+    let nom = champ("Name:")?.to_string();
+    let parent = champ("PPid:").and_then(|p| p.parse().ok());
+    let ligne = std::fs::read(racine.join("cmdline"))
+        .ok()
+        .map(|o| {
+            o.split(|&b| b == 0)
+                .filter(|m| !m.is_empty())
+                .map(String::from_utf8_lossy)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|l| !l.is_empty());
+    let lien = std::fs::read_link(racine.join("exe"))
+        .ok()
+        .map(|l| l.to_string_lossy().into_owned());
+    if ligne.is_none() && lien.is_none() {
+        return None;
+    }
+    let sans_fichier = lien.as_deref().is_some_and(|l| l.ends_with(" (deleted)"));
+    let chemin = lien.map(|l| l.strip_suffix(" (deleted)").map_or_else(|| l.clone(), str::to_string));
+    Some(EnMarche {
+        pid,
+        parent,
+        nom,
+        chemin,
+        ligne,
+        sans_fichier,
+        ne: None,
+    })
 }
 
 /// Les programmes en marche d'après /proc, sans droits : le nom et le parent (status), la ligne de commande
@@ -1168,43 +1303,7 @@ fn programmes_en_marche() -> Option<(Vec<EnMarche>, Option<&'static str>)> {
     use super::linux::dissimulation::{pids_listes, proc_masque};
     let pids = pids_listes()?;
     let montages = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
-    let liste = pids
-        .into_iter()
-        .filter_map(|pid| {
-            let racine = std::path::PathBuf::from(format!("/proc/{pid}"));
-            let status = std::fs::read_to_string(racine.join("status")).ok()?;
-            let champ = |nom: &str| status.lines().find_map(|l| l.strip_prefix(nom)).map(str::trim);
-            let nom = champ("Name:")?.to_string();
-            let parent = champ("PPid:").and_then(|p| p.parse().ok());
-            let ligne = std::fs::read(racine.join("cmdline"))
-                .ok()
-                .map(|o| {
-                    o.split(|&b| b == 0)
-                        .filter(|m| !m.is_empty())
-                        .map(String::from_utf8_lossy)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
-                .filter(|l| !l.is_empty());
-            let lien = std::fs::read_link(racine.join("exe"))
-                .ok()
-                .map(|l| l.to_string_lossy().into_owned());
-            if ligne.is_none() && lien.is_none() {
-                return None;
-            }
-            let sans_fichier = lien.as_deref().is_some_and(|l| l.ends_with(" (deleted)"));
-            let chemin = lien.map(|l| l.strip_suffix(" (deleted)").map_or_else(|| l.clone(), str::to_string));
-            Some(EnMarche {
-                pid,
-                parent,
-                nom,
-                chemin,
-                ligne,
-                sans_fichier,
-                ne: None,
-            })
-        })
-        .collect();
+    let liste = pids.into_iter().filter_map(en_marche_de).collect();
     let partiel = proc_masque(&montages).then_some(tr!(
         "/proc ne montre que vos programmes (hidepid) : ceux des autres comptes ne sont pas vérifiés.",
         "/proc only shows your programs (hidepid): those of other accounts are not checked."
@@ -1449,6 +1548,76 @@ mod tests {
         };
         let c = juger_intrusions(&[piege], Os::Linux, None);
         assert!(!c.message.contains('\x1b') && !c.correctif.unwrap().action.contains('\x1b'));
+    }
+
+    /// Linux : les programmes d'une alerte arrêtés par des gestes de défense (traces copiées d'abord), tous ou aucun :
+    /// un seul vital, de Vanguard, du système, sans chemin, ou parti, et tout reste à la main.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn programmes_arretes_par_gestes() {
+        use crate::machine::gestes_unix::{self, Defense, GesteUnix};
+        let geste = |pid: u32| (pid != 4300).then_some(Defense::ArreterProgramme(pid, 77));
+        let alerte_de = |ps: &[&EnMarche], intouchables: &HashSet<u32>| {
+            let c = alerte("Programmes", Niveau::Eleve, "essai").manuel("À la main", &["vanguard depanner traces"]);
+            arreter_les_programmes(c, ps, intouchables, geste).correctif.unwrap()
+        };
+        let a = programme(4242, "xmrig", Some("/tmp/.x/xmrig"), Some("xmrig -o pool"));
+        let b = programme(4243, "nc", Some("/dev/shm/nc"), None);
+        let k = alerte_de(&[&a, &b], &HashSet::new());
+        assert!(k.automatique && k.action.contains("traces"), "{}", k.action);
+        assert_eq!(k.defaire, crate::machine::Defaire::Inconnu, "non annulable");
+        let pids: Vec<u32> = k
+            .commandes
+            .iter()
+            .map(|l| match gestes_unix::analyser(l) {
+                Some(GesteUnix::Defense(Defense::ArreterProgramme(pid, 77), _)) => pid,
+                _ => panic!("arrêt attendu : {l}"),
+            })
+            .collect();
+        assert_eq!(pids, [4242, 4243]);
+        // Un seul intouchable, et rien n'est proposé.
+        let vital = programme(4250, "systemd", Some("/tmp/systemd"), None);
+        let sans_chemin = programme(4251, "x", None, Some("x"));
+        let systeme = programme(4252, "bash", Some("/usr/bin/bash"), None);
+        let parti = programme(4300, "y", Some("/tmp/y"), None);
+        let par_fichier = programme(4253, "anodin", Some("/tmp/sshd"), None);
+        for p in [&vital, &sans_chemin, &systeme, &parti, &par_fichier] {
+            let k = alerte_de(&[&a, p], &HashSet::new());
+            assert!(!k.automatique, "{}", p.nom);
+            assert_eq!(k.commandes, ["vanguard depanner traces"]);
+        }
+        let k = alerte_de(&[&a], &HashSet::from([4242]));
+        assert!(!k.automatique);
+    }
+
+    /// Linux : un mot de passe deviné en SSH se corrige par le geste qui coupe les mots de passe de sshd, avec le
+    /// conseil d'avant à suivre soi-même ; un constat sain reste sans correction.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn intrusion_coupe_les_mots_de_passe() {
+        use crate::machine::gestes_unix::{self, Defense, GesteUnix, ReglageSsh};
+        let i = Intrusion {
+            adresse: ip("203.0.113.7"),
+            compte: "alice".into(),
+            echecs: 42,
+        };
+        let k = couper_mots_de_passe_ssh(juger_intrusions(&[i], Os::Linux, None))
+            .correctif
+            .unwrap();
+        assert!(k.automatique && k.action.contains("alice") && k.action.contains("passwd"));
+        let [ligne] = k.commandes.as_slice() else {
+            panic!("une seule ligne")
+        };
+        assert!(matches!(
+            gestes_unix::analyser(ligne),
+            Some(GesteUnix::Defense(Defense::DurcirSsh(ReglageSsh::MotsDePasse), _))
+        ));
+        assert!(matches!(k.defaire, crate::machine::Defaire::Gestes(_)));
+        assert!(
+            couper_mots_de_passe_ssh(juger_intrusions(&[], Os::Linux, None))
+                .correctif
+                .is_none()
+        );
     }
 
     /// macOS : rien n'écoute sur 22 ni sur le port de ssh et aucun sshd ne tourne : rien à lire, comme sous Linux sans

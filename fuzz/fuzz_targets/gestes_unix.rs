@@ -58,8 +58,21 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                 assert!(gestes_unix::IdNote::nouveau(id.as_str()) == Some(id));
                 assert_eq!(l.split(' ').nth(1), Some("defense"));
                 assert!(g.demande_accord());
-                if let D::RetirerSetuid(c) | D::RetirerCapacites(c) | D::RendreDossierARoot(c) | D::RetirerLigne(_, c) = d {
+                if let D::RetirerSetuid(c)
+                | D::RetirerCapacites(c)
+                | D::RendreDossierARoot(c)
+                | D::RetirerLigne(_, c)
+                | D::RetirerAncre(c)
+                | D::CommenterProxy(_, c) = d
+                {
                     assert!(gestes_unix::chemin_admis(c.octets()));
+                }
+                // Une ancre hors des dossiers d'ajouts, un proxy hors des fichiers connus, le PID 0 ou 1 : jamais relus.
+                match d {
+                    D::RetirerAncre(c) => assert!(gestes_unix::ancre_admise(c.octets())),
+                    D::CommenterProxy(_, c) => assert!(gestes_unix::fichier_de_ligne_admis(c.octets())),
+                    D::ArreterProgramme(pid, _) => assert!(pid > 1),
+                    _ => {}
                 }
                 if g.refus().is_some() {
                     assert!(match d {
