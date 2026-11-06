@@ -162,11 +162,14 @@ fn liste_lisible(tables: &[(String, String)]) -> String {
 /// par un programme qui tourne (`flags owner`) ou celle d'iptables (Docker, libvirt, fail2ban…) n'est jamais retirée.
 pub(super) fn juger_table(f: &str, n: &str, r: &Sortie) -> Result<(), Echec> {
     let vu = format!("{f} {n}");
-    // D'abord iptables : nft écrit son avertissement (« # Warning: table … is managed by iptables-nft ») en tête.
-    if r.sortie.contains("iptables-nft") || r.erreurs.contains("iptables-nft") {
+    // D'abord iptables. nft écrit son avertissement (« # Warning: table … is managed by iptables-nft ») sur la sortie
+    // d'erreur, et seulement quand la table a des expressions d'iptables (`xt`) ; une table d'iptables-nft aux règles
+    // simples (une adresse refusée) n'a aucune marque (essai QEMU de D7c, Arch, iptables 1.8.13, nft 1.1.7) : elle se
+    // reconnaît à sa forme, un nom de table et une chaîne de base d'iptables.
+    if r.sortie.contains("iptables-nft") || r.erreurs.contains("iptables-nft") || forme_iptables(f, n, &r.sortie) {
         return Err(refus(trf!(
-            "la table {vu} est celle d'iptables (Docker, libvirt, fail2ban…) : Vanguard ne la retire pas",
-            "the table {vu} is iptables' (Docker, libvirt, fail2ban…): Vanguard does not remove it"
+            "la table {vu} est (ou a la forme de) celle d'iptables (Docker, libvirt, fail2ban…) : Vanguard ne la retire pas",
+            "the table {vu} is (or looks like) iptables' (Docker, libvirt, fail2ban…): Vanguard does not remove it"
         )));
     }
     if r.sortie.lines().find(|l| !l.starts_with('#')).map(str::trim_end) != Some(&format!("table {f} {n} {{")) {
@@ -187,6 +190,22 @@ pub(super) fn juger_table(f: &str, n: &str, r: &Sortie) -> Result<(), Echec> {
         )));
     }
     Ok(())
+}
+
+/// Une table à la forme de celles d'iptables-nft, ebtables ou arptables : son nom est celui d'une table d'iptables, et
+/// elle a une chaîne au nom d'une chaîne de base d'iptables (en majuscules). Une table écrite à la main sur ce modèle
+/// est refusée aussi, par prudence (rien n'est fait, et le message le dit).
+pub(super) fn forme_iptables(f: &str, n: &str, liste: &str) -> bool {
+    const TABLES: [&str; 6] = ["filter", "nat", "mangle", "raw", "security", "broute"];
+    const CHAINES: [&str; 6] = ["INPUT", "OUTPUT", "FORWARD", "PREROUTING", "POSTROUTING", "BROUTING"];
+    matches!(f, "ip" | "ip6" | "arp" | "bridge")
+        && TABLES.contains(&n)
+        && liste.lines().any(|l| {
+            l.trim()
+                .strip_prefix("chain ")
+                .and_then(|c| c.strip_suffix(" {"))
+                .is_some_and(|c| CHAINES.contains(&c))
+        })
 }
 
 /// La sauvegarde des tables : pour chacune, `add table`, `delete table`, puis sa liste ; rechargée d'un bloc, elle les

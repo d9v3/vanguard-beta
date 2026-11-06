@@ -589,6 +589,9 @@ fn nftables_tables_tenues_par_un_programme_refusees() {
         "\tflags owner,persist\n",
         "\tcomment \"x\"\n\tflags persist\n",
         "# Warning: table ip filter is managed by iptables-nft, do not touch!\n\tchain INPUT {\n\t}\n",
+        // Posée par `iptables -A INPUT -s 203.0.113.9 -j DROP` (iptables-nft 1.8.13, nft 1.1.7) : aucune marque
+        // d'iptables dans la liste, ni d'avertissement ; seule sa forme la dit (essai QEMU de D7c, Arch).
+        "\tchain INPUT {\n\t\ttype filter hook input priority filter; policy accept;\n\t\tip saddr 203.0.113.9 counter drop\n\t}\n",
     ] {
         let (a, mut s) = faux_nft();
         let mut a = a.repondre("o");
@@ -609,6 +612,43 @@ fn nftables_table_d_iptables_nommee_meme_avertissement_en_tete() {
     );
     let e = pare_feu::juger_table("ip", "filter", &r).unwrap_err();
     assert!(format!("{e:?}").contains("celle d'iptables"), "{e:?}");
+    // L'avertissement de nft sur la sortie d'erreur (nft 1.1.7, table avec `xt`), et une table sans marque, à la forme
+    // d'iptables (ip6tables -A INPUT … -j DROP) : iptables aussi.
+    let mut r = sortie(
+        0,
+        "table ip nat {\n\tchain POSTROUTING {\n\t\tip saddr 172.17.0.0/16 counter xt target \"MASQUERADE\"\n\t}\n}\n",
+    );
+    r.erreurs = "# Warning: table ip nat is managed by iptables-nft, do not touch!\n".into();
+    let e = pare_feu::juger_table("ip", "nat", &r).unwrap_err();
+    assert!(format!("{e:?}").contains("celle d'iptables"), "{e:?}");
+    let r = sortie(
+        0,
+        "table ip6 filter {\n\tchain INPUT {\n\t\tip6 saddr 2001:db8::9 counter drop\n\t}\n}\n",
+    );
+    let e = pare_feu::juger_table("ip6", "filter", &r).unwrap_err();
+    assert!(format!("{e:?}").contains("celle d'iptables"), "{e:?}");
+    // La même forme hors des tables d'iptables (inet, ou un autre nom), ou des chaînes en minuscules : une table de la
+    // personne, jugée comme les autres.
+    assert!(!pare_feu::forme_iptables(
+        "inet",
+        "filter",
+        "table inet filter {\n\tchain INPUT {\n\t}\n}\n"
+    ));
+    assert!(!pare_feu::forme_iptables(
+        "ip",
+        "perso",
+        "table ip perso {\n\tchain INPUT {\n\t}\n}\n"
+    ));
+    assert!(!pare_feu::forme_iptables(
+        "ip",
+        "filter",
+        "table ip filter {\n\tchain input {\n\t}\n}\n"
+    ));
+    assert!(pare_feu::forme_iptables(
+        "bridge",
+        "filter",
+        "table bridge filter {\n\tchain FORWARD {\n\t}\n}\n"
+    ));
     // Une ligne « # » en tête sans iptables ne change pas le jugement de la table qui suit.
     let r = sortie(0, "# note\ntable inet filter {\n\tchain input {\n\t}\n}\n");
     assert!(pare_feu::juger_table("inet", "filter", &r).is_ok());
