@@ -1166,11 +1166,14 @@ fn aucune_ligne_du_bilan_n_est_une_baisse() {
         let l = l.trim();
         l.starts_with(gestes::DEFENDER_CHOIX.trim_end())
             || l.starts_with(gestes::DEFENDER_ASR_CHOIX.trim_end())
-            || gestes::analyser_acte(l).is_some_and(|a| a.choix().is_some())
+            || gestes::analyser_acte(l).is_some_and(|a| a.choix().is_some() || a.baisse_par_type())
     };
-    // Le garde-fou se juge lui-même : une ligne de baisse est bien reconnue.
+    // Le garde-fou se juge lui-même : une ligne de baisse est bien reconnue, celle d'un choix comme celle qui baisse
+    // par sa nature (le profil Public moins bloqué, D8).
     let pua = gestes::ligne_baisse_defender(gestes::ReglageDefender::Pua, gestes::ChoixDefender::Coupe);
     assert!(pua.as_deref().is_some_and(est_baisse), "{pua:?}");
+    let public = gestes::ligne_pare_feu_public(&[(gestes::ReglagePublic::EntrantBloque, gestes::ValeurPublic::Non)]);
+    assert!(public.as_deref().is_some_and(est_baisse), "{public:?}");
     assert!(!est_baisse(&gestes::ligne_rallumer(gestes::IdChoix::Defender(
         gestes::ReglageDefender::Pua
     ))));

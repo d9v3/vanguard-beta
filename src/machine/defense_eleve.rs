@@ -408,7 +408,13 @@ pub(crate) fn faire(d: Defense, id: IdNote, a: &mut dyn Acces, s: &mut dyn Servi
             if matches!(d, Defense::RallumerPareFeu(_)) && p1.champs.is_empty() {
                 let _ = a.note_retirer(id);
             }
-            Resultat::ok_note(trf!("{phrase} : fait", "{phrase}: done"))
+            // Le repère dit au parent de ne pas noter cette correction « annulable » : son Défaire passerait par un
+            // élévateur qui n'existe plus, ou serait refusé ici.
+            Resultat::ok_note(format!(
+                "{}{}",
+                crate::protection::blocage::ordres::NON_ANNULABLE,
+                trf!("{phrase} : fait", "{phrase}: done")
+            ))
         }
         (Ok(()), Ok(None)) => Resultat::ok_note(trf!(
             "{phrase} : fait ; Défaire le remet comme avant",
@@ -824,10 +830,19 @@ fn juger_verrou(n: NomCompte, a: &mut dyn Acces) -> Jugement {
     let j = jour(a);
     let personnes = a.personnes();
     let mut raisons = Vec::new();
-    if root {
+    let autre_administrateur = c.autre_administrateur(nom, j);
+    // « sudo continue de marcher » seulement s'il reste quelqu'un pour s'en servir : sans autre administrateur à mot
+    // de passe utilisable (le dernier retiré du groupe plus haut dans la même liste, par exemple), la phrase
+    // contredirait l'avertissement qui suit.
+    if root && autre_administrateur {
         raisons.push(tr!(
             "c'est le compte root lui-même : « su - » et la console de secours ne s'ouvriront plus avec son mot de passe (sudo continue de marcher pour les administrateurs)",
             "this is the root account itself: \"su -\" and the rescue console will no longer open with its password (sudo keeps working for administrators)"
+        ));
+    } else if root {
+        raisons.push(tr!(
+            "c'est le compte root lui-même : « su - » et la console de secours ne s'ouvriront plus avec son mot de passe",
+            "this is the root account itself: \"su -\" and the rescue console will no longer open with its password"
         ));
     }
     if personnes.contains(&uid) {
@@ -837,7 +852,7 @@ fn juger_verrou(n: NomCompte, a: &mut dyn Acces) -> Jugement {
         ));
     }
     // Même sans mot de passe à lui (clé SSH seule, règle NOPASSWD), le dernier administrateur verrouillé ferme tout.
-    if !c.autre_administrateur(nom, j) && (root || c.administrateurs().iter().any(|x| x == nom)) {
+    if !autre_administrateur && (root || c.administrateurs().iter().any(|x| x == nom)) {
         raisons.push(tr!(
             "aucun autre administrateur n'a de mot de passe utilisable : après ce geste, plus personne ne pourra devenir administrateur",
             "no other administrator has a usable password: after this step, no one will be able to become administrator"
@@ -1623,6 +1638,68 @@ fn fichier_de_service(u: NomUnite, a: &dyn Acces) -> Result<(PathBuf, Fiche), Ec
     Ok((p, f))
 }
 
+/// Le fichier d'un service ajouté à la main, lu au plus : au-delà, il n'est pas jugé (refusé).
+const SERVICE_MAX: usize = 256 * 1024;
+
+/// Les programmes qui chargent, changent ou vident des règles de pare-feu.
+const PROGRAMMES_DE_PARE_FEU: [&str; 27] = [
+    "nft",
+    "nft-restore",
+    "iptables",
+    "iptables-restore",
+    "iptables-nft",
+    "iptables-nft-restore",
+    "iptables-legacy",
+    "iptables-legacy-restore",
+    "ip6tables",
+    "ip6tables-restore",
+    "ip6tables-nft",
+    "ip6tables-nft-restore",
+    "ip6tables-legacy",
+    "ip6tables-legacy-restore",
+    "xtables-nft-multi",
+    "xtables-legacy-multi",
+    "ebtables",
+    "ebtables-restore",
+    "arptables",
+    "arptables-restore",
+    "ufw",
+    "firewall-cmd",
+    "firewall-offline-cmd",
+    "firewalld",
+    "shorewall",
+    "shorewall6",
+    "ferm",
+];
+
+/// Un mot de commande qui nomme un programme de pare-feu, par son seul nom de base, sans casse : `/usr/sbin/nft`,
+/// `-nft` (préfixes de systemd), `"nft` (dans un `sh -c "…"`). Les mots sont coupés aux espaces et aux signes du
+/// shell : en refuser trop est sans danger, en laisser passer un ne l'est pas.
+fn nomme_un_pare_feu(texte: &str) -> bool {
+    texte
+        .split(|c: char| c.is_whitespace() || ";|&()'\"`$<>={}".contains(c))
+        .map(|m| {
+            m.rsplit('/')
+                .next()
+                .unwrap_or(m)
+                .trim_start_matches(['-', '@', '+', '!', ':'])
+        })
+        .any(|m| PROGRAMMES_DE_PARE_FEU.iter().any(|p| m.eq_ignore_ascii_case(p)))
+}
+
+/// Le service lance-t-il un programme de pare-feu ? Ce que le gestionnaire a en mémoire (lancement et arrêt, chemin
+/// et arguments), et chaque mot de son fichier, pas seulement des lignes `Exec…=` : une ligne continuée (`\` en fin
+/// de ligne) ou un commentaire comptent aussi, au prix d'un refus de trop.
+fn service_de_pare_feu(lu: Option<&ArretCharge>, fichier: &[u8]) -> bool {
+    let en_memoire = lu.is_some_and(|lu| {
+        lu.lancement
+            .iter()
+            .chain(&lu.arret)
+            .any(|c| nomme_un_pare_feu(&c.chemin) || c.arguments.iter().any(|x| nomme_un_pare_feu(x)))
+    });
+    en_memoire || nomme_un_pare_feu(&String::from_utf8_lossy(fichier))
+}
+
 fn juger_service(u: NomUnite, a: &mut dyn Acces, s: &mut dyn Services) -> Jugement {
     let nom = u.as_str();
     let (p, f) = fichier_de_service(u, a)?;
@@ -1637,7 +1714,25 @@ fn juger_service(u: NomUnite, a: &mut dyn Acces, s: &mut dyn Services) -> Jugeme
     if !lance_au_demarrage(&etat) && !tourne(&activite) {
         return Ok(None);
     }
-    if let Some(lu) = s.arret_charge(nom)? {
+    let lu = s.arret_charge(nom)?;
+    // Un service qui charge des règles de pare-feu (`ExecStart=nft -f …`, la façon courante de se passer de
+    // nftables.service) ne se reconnaît pas à son nom : le couper ferait tomber le pare-feu au prochain démarrage,
+    // sous le nom d'un renforcement, sans la question ni la note des Options de défense. Lu deux fois : la mémoire
+    // du gestionnaire (fichiers ajoutés dans `.d/` compris), et le fichier lui-même (un service qui a fini sa tâche
+    // n'est plus en mémoire). Un fichier qui ne se lit pas ne se juge pas.
+    let texte = a.lire(&p, SERVICE_MAX).ok_or_else(|| {
+        refus(trf!(
+            "le fichier de {nom} ne se lit pas",
+            "the file of {nom} cannot be read"
+        ))
+    })?;
+    if service_de_pare_feu(lu.as_ref(), &texte) {
+        return Err(refus(trf!(
+            "{nom} lance un programme de pare-feu : le couper ferait tomber des règles. Un pare-feu se coupe par les Options de défense (vanguard defense), jamais ici",
+            "{nom} runs a firewall program: turning it off would drop rules. A firewall is turned off from the defense Options (vanguard defense), never here"
+        )));
+    }
+    if let Some(lu) = lu {
         // Ce que l'arrêt lancerait est revu, et une session qui passe par lui (celle de Vanguard comprise) le refuse.
         arret_designe::juger_arret(nom, &lu, &|c| s.chemin(c))?;
         let lignee = s.groupes_de_la_lignee();
@@ -3143,6 +3238,34 @@ mod tests {
         }
     }
 
+    /// Relecture D8 (L4) : root verrouillé quand aucun autre administrateur n'a de mot de passe utilisable ; le texte
+    /// ne promet plus que « sudo continue de marcher », il dit que plus personne ne s'élèvera. Avec un autre
+    /// administrateur, la parenthèse reste, sans l'avertissement du dernier.
+    #[test]
+    fn root_verrouille_sans_autre_administrateur_ne_promet_pas_sudo() {
+        for (alice, autre) in [("!$6$a", false), ("$6$a", true)] {
+            let mut a = Faux::nouveau().repondre("");
+            a.champ(SHADOW, "root", 1, "$6$r");
+            a.champ(SHADOW, "alice", 1, alice);
+            a.champ(SHADOW, "bob", 1, "*");
+            let r = faire_avec(
+                Defense::VerrouillerCompte(compte("root")),
+                &mut a,
+                &mut FauxServices::nouveau(),
+            );
+            assert!(!r.reussi);
+            assert_eq!(a.valeur(SHADOW, "root", 1), "$6$r");
+            let q = &a.questions[0];
+            assert!(q.contains("c'est le compte root lui-même"), "{q}");
+            assert_eq!(q.contains("sudo continue de marcher"), autre, "{q}");
+            assert_eq!(
+                q.contains("plus personne ne pourra devenir administrateur"),
+                !autre,
+                "{q}"
+            );
+        }
+    }
+
     /// Mot de passe vide à l'origine : dit d'avance, et Défaire rouvre le compte sans --unlock (que usermod refuse).
     #[test]
     fn verrou_d_un_mot_de_passe_vide_defait() {
@@ -3282,6 +3405,12 @@ mod tests {
         assert!(a.questions[0].contains("non annulable"), "{}", a.questions[0]);
         assert!(a.questions[0].contains("live USB"));
         assert_eq!(a.mode("/usr/bin/su"), 0o755);
+        // Le parent lit ce repère pour ne pas noter la correction « annulable » (relecture du lot, L2).
+        let note = r.note.unwrap_or_default();
+        assert!(
+            note.starts_with(crate::protection::blocage::ordres::NON_ANNULABLE) && !note.contains("Défaire"),
+            "{note}"
+        );
     }
 
     /// Une issue qui ne s'ouvre pas ne compte pas : su avec root verrouillé, pkexec sans administrateur à mot de passe.
@@ -3740,6 +3869,68 @@ mod tests {
             assert!(!faire_avec(Defense::DesactiverService(u), &mut a, &mut s).reussi);
         }
         assert!(a.questions.is_empty() && s.faits.is_empty());
+    }
+
+    /// Relecture D8 (L3) : un service ajouté à la main qui charge des règles de pare-feu (son nom n'en dit rien) est
+    /// refusé, jamais désactivé comme un renforcement : par son fichier, par la mémoire du gestionnaire (un `sh -c`
+    /// compris), ou par une ligne continuée. Un service qui ne fait que se ranger après un pare-feu passe.
+    #[test]
+    fn service_qui_charge_un_pare_feu_refuse() {
+        let commande = |chemin: &str, arguments: &[&str]| arret_designe::Commande {
+            chemin: chemin.into(),
+            arguments: arguments.iter().map(|x| (*x).to_string()).collect(),
+        };
+        let cas: [(&[u8], Option<ArretCharge>); 5] = [
+            (
+                b"[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/sbin/nft -f /etc/filtre.nft\n",
+                None,
+            ),
+            (b"[Service]\nExecStop=-/usr/bin/ufw disable\n", None),
+            (
+                b"[Service]\nExecStart=/bin/sh -c \\\n  \"IPTABLES-RESTORE < /etc/regles\"\n",
+                None,
+            ),
+            (
+                b"[Service]\nExecStart=/opt/m\n",
+                Some(ArretCharge {
+                    lancement: vec![commande("/bin/sh", &["sh", "-c", "iptables-restore</etc/regles"])],
+                    ..ArretCharge::default()
+                }),
+            ),
+            (
+                b"[Service]\nExecStart=/opt/m\n",
+                Some(ArretCharge {
+                    arret: vec![commande("/usr/sbin/nft", &["nft", "flush", "ruleset"])],
+                    ..ArretCharge::default()
+                }),
+            ),
+        ];
+        for (fichier, charge) in cas {
+            let mut a = Faux::nouveau().repondre("o");
+            a.poser("/etc/systemd/system/filtre.service", fichier, 0o644);
+            let mut s = FauxServices::nouveau();
+            s.charge = charge;
+            let u = NomUnite::nouveau("filtre.service").unwrap();
+            let r = faire_avec(Defense::DesactiverService(u), &mut a, &mut s);
+            let vu = String::from_utf8_lossy(fichier);
+            assert!(!r.reussi, "{vu}");
+            assert!(r.raison.contains("programme de pare-feu"), "{vu} : {}", r.raison);
+            assert!(
+                a.questions.is_empty() && s.faits.is_empty() && a.notes.is_empty(),
+                "{vu}"
+            );
+        }
+        // Rangé après un pare-feu, sans en lancer : désactivé comme avant.
+        let mut a = Faux::nouveau().repondre("o");
+        a.poser(
+            "/etc/systemd/system/minage.service",
+            b"[Unit]\nAfter=nftables.service ufw.service\n[Service]\nExecStart=/opt/nftool\n",
+            0o644,
+        );
+        let mut s = FauxServices::nouveau();
+        let u = NomUnite::nouveau("minage.service").unwrap();
+        let r = faire_avec(Defense::DesactiverService(u), &mut a, &mut s);
+        assert!(r.reussi, "{}", r.raison);
     }
 
     #[test]

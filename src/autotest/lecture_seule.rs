@@ -591,6 +591,26 @@ mod tests {
             "options_defense/ecran/pare_feu.rs",
             "reseau/wifi_public/mod.rs",
         ];
+        // La sortie du mode Wi-Fi public (D0) : la remise du profil Public et de la catégorie du réseau.
+        const WIFI: &[&str] = &["machine/windows/gestes.rs", "reseau/wifi_public/windows.rs"];
+        // Les remises de la persistance (D6d) : la ligne de commande des Options, et le processus élevé qui les
+        // fait, où la ligne ne sert qu'à nommer la note d'« avant ».
+        const PERSISTANCE: &[&str] = &[
+            "machine/windows/gestes.rs",
+            "options_defense.rs",
+            "machine/windows/taches_ecriture.rs",
+            "machine/windows/demarrage_ecriture.rs",
+            "machine/windows/wmi_ecriture.rs",
+        ];
+        // La coupure d'un pare-feu Linux (D7c) : les Options, la grammaire des gestes, l'enfant (qui la compare à
+        // sa note, sans rien envoyer) et ses essais (`defense_eleve/tests/`, déclarés dans `mod tests`).
+        const COUPER_LINUX: &[&str] = &[
+            "options_defense/linux.rs",
+            "machine/gestes_unix.rs",
+            "machine/defense_eleve.rs",
+            "machine/defense_eleve/pare_feu.rs",
+            "machine/defense_eleve/tests/d7c.rs",
+        ];
         // Un fichier qui n'est tout entier qu'un module d'essais (déclaré sous `#[cfg(test)]` par son parent, ce que
         // l'essai vérifie) : ses lignes ne partent jamais dans le programme.
         const ESSAIS_SEULS: &[(&str, &str, &str)] = &[(
@@ -657,6 +677,34 @@ mod tests {
             ("Acte::SshdReglageRemettre(", PERMIS),
             ("ligne_remettre(", &["options_defense.rs"]),
             ("options_defense::remettre(", &["main.rs"]),
+            // Défense D8 (W1) : le profil Public moins bloqué et un réseau remis en Privé, que le processus élevé juge
+            // comme des baisses (`Acte::baisse_par_type`) ; seule la sortie du mode Wi-Fi public les fabrique.
+            ("ligne_pare_feu_public(", WIFI),
+            ("ligne_reseau_categorie(", WIFI),
+            ("PARE_FEU_PUBLIC", WIFI),
+            ("RESEAU_CATEGORIE", WIFI),
+            ("pare-feu-public ", WIFI),
+            ("reseau-categorie ", WIFI),
+            ("Acte::PareFeuPublic(", WIFI),
+            ("Acte::ReseauCategorie(", WIFI),
+            // Défense D8 (W2) : la remise d'un lancement jugé suspect (D6d), une baisse elle aussi : « --remettre
+            // demarrage: » des Options, et le processus élevé qui la fait (le nom de sa note vient de la ligne).
+            ("RUN_REMETTRE", PERSISTANCE),
+            ("TACHE_REACTIVER", PERSISTANCE),
+            ("DEMARRAGE_REMETTRE", PERSISTANCE),
+            ("WMI_ABONNEMENT_REMETTRE", PERSISTANCE),
+            ("run-remettre ", PERSISTANCE),
+            ("tache-reactiver ", PERSISTANCE),
+            ("demarrage-remettre ", PERSISTANCE),
+            ("wmi-abonnement-remettre ", PERSISTANCE),
+            ("ligne_demarrage_remettre(", PERSISTANCE),
+            ("Acte::TacheReactiver(", PERSISTANCE),
+            ("Acte::DemarrageRemettre(", PERSISTANCE),
+            ("Acte::WmiAbonnementRemettre(", PERSISTANCE),
+            // Défense D8 (L1) : la coupure d'un pare-feu Linux (D7c), une baisse que seules les Options fabriquent ;
+            // la grammaire la lit, l'enfant la juge et la remet, ses essais la forgent.
+            ("ligne_couper(", &["options_defense/linux.rs"]),
+            ("Defense::CouperPareFeu(", COUPER_LINUX),
         ];
         let racine = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for (fichier, parent, declaration) in ESSAIS_SEULS {
@@ -716,7 +764,8 @@ mod tests {
     /// Motif : `Acte::X(..)`, `Acte::X(_)`, `if let … Acte::X(…) =` (à gauche du `=`), ou un bras `Acte::X(a, b) =>` (la flèche après
     /// lui, pas avant : `y => Acte::X(a).ligne()` le fabrique).
     fn motif(ligne: &str, mot: &str) -> bool {
-        if !mot.starts_with("Acte::") {
+        // Un geste de défense Linux (`Defense::X(..)`) se lit comme un acte de Windows.
+        if !mot.starts_with("Acte::") && !mot.starts_with("Defense::") {
             return false;
         }
         ligne.match_indices(mot).all(|(i, _)| {
@@ -742,6 +791,19 @@ mod tests {
         // Dans un `if let`, seulement à gauche du `=` : à droite, il est fabriqué.
         assert!(!motif("    if let Some(l) = Some(Acte::ChoixNoter(id).ligne()) {", m));
         assert!(!motif("    if let Some(l) = Acte::ChoixNoter(id).ligne().get(..) {", m));
+        let d = "Defense::CouperPareFeu(";
+        assert!(motif(
+            "            Defense::CouperPareFeu(_) => \"couper-pare-feu\",",
+            d
+        ));
+        assert!(motif(
+            "    Demande::Geste(GesteUnix::Defense(gestes_unix::Defense::CouperPareFeu(_), _))",
+            d
+        ));
+        assert!(!motif(
+            "    GesteUnix::Defense(Defense::CouperPareFeu(p), p.note()).ligne()",
+            d
+        ));
         // Un mot qui n'est pas un acte n'est jamais un motif.
         assert!(!motif("    ligne_noter(id) => 1", "ligne_noter("));
     }

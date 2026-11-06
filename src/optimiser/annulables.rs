@@ -338,6 +338,25 @@ fn apres_application_dans(issues: &[(String, bool)], dossier: &Path) {
     }
 }
 
+/// Oublie ces notes sans rien défaire : la correction est faite, mais l'enfant l'a dite non annulable (le dernier
+/// élévateur retiré) ; « Tout remettre » ne doit plus la proposer.
+#[cfg(not(windows))]
+pub(crate) fn oublier(ids: &[String]) {
+    if !ids.is_empty() {
+        oublier_dans(ids, &crate::reseau::dossier_local());
+    }
+}
+
+#[cfg(any(not(windows), test))]
+fn oublier_dans(ids: &[String], dossier: &Path) {
+    let mut h = charger_dans(dossier);
+    let avant = h.reglages.len();
+    h.reglages.retain(|id, _| !ids.contains(id));
+    if h.reglages.len() != avant {
+        sauver_dans(&h, dossier);
+    }
+}
+
 /// Une note hors du catalogue (correction du bilan, réglage pour jouer) : rebâtie d'après ses gestes.
 fn hors_du_catalogue(id: &str) -> bool {
     id.starts_with(BILAN) || id.starts_with(JEUX)
@@ -866,6 +885,25 @@ mod tests {
             jeux_repris: false,
             protections: std::collections::BTreeSet::default(),
         }
+    }
+
+    /// Une note oubliée (geste dit non annulable par l'enfant) quitte l'historique scellé ; les autres restent.
+    #[test]
+    fn oublier_ne_retire_que_les_notes_nommees() {
+        let d = dossier("oublier");
+        let a = note(
+            "bilan:a",
+            "2026-11-06",
+            &["defense|00112233445566778899aabbccddeeff"],
+            &[None],
+        );
+        let b = note("bilan:b", "2026-11-06", &["droits|/home/alice/.netrc"], &[Some("0644")]);
+        assert!(sauver_dans(&historique(vec![a, b.clone()]), &d));
+        oublier_dans(&["bilan:a".to_string(), "bilan:absente".to_string()], &d);
+        let relu = charger_dans(&d);
+        assert!(!relu.reglages.contains_key("bilan:a"));
+        assert_eq!(relu.reglages.get("bilan:b"), Some(&b.1));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Les commandes qui remettent une note, telles que `systeme::ecrire_avec` les lancerait.

@@ -170,8 +170,8 @@ fn decrire(e: &Element) -> String {
         .to_string(),
         Element::ProfilPublic { parametre, avant } => match parametre.as_str() {
             "Enabled" => tr!(
-                "Pare-feu (profil Public) allumé : il était coupé, il le restera",
-                "Firewall (Public profile) turned on: it was off, it will stay on"
+                "Pare-feu (profil Public) allumé : il était coupé ; Vanguard ne le recoupe pas de lui-même",
+                "Firewall (Public profile) turned on: it was off; Vanguard never turns it off by itself"
             )
             .to_string(),
             "DefaultInboundAction" => trf!(
@@ -736,6 +736,38 @@ fn unites_dans_l_ordre(remises: &mut [(&Element, Option<String>)]) {
     }
 }
 
+/// Les envois de l'extinction, en places de `remises` : les remises ordinaires ensemble (une demande
+/// d'administrateur), puis chaque remise qui baisse la protection seule, dans son propre envoi (`Acte::baisse_par_type`
+/// : le profil Public moins bloqué, le réseau remis en Privé). Le processus élevé refuse une baisse mêlée à d'autres
+/// lignes et demande chacune par une question [o/N], non par défaut : séparées ici, elles restent remises, une
+/// question chacune. Refusée, une remise reste dans l'état (« vanguard wifi-public off » la redemande). Une remise
+/// sans commande n'est dans aucun envoi.
+fn envois(remises: &[(&Element, Option<String>)]) -> Vec<Vec<usize>> {
+    let mut ordinaires = Vec::new();
+    let mut seules = Vec::new();
+    for (i, (_, c)) in remises.iter().enumerate() {
+        match c.as_deref() {
+            Some(_) if baisse_remise(c.as_deref()) => seules.push(vec![i]),
+            Some(_) => ordinaires.push(i),
+            None => {}
+        }
+    }
+    let mut envois = Vec::new();
+    if !ordinaires.is_empty() {
+        envois.push(ordinaires);
+    }
+    envois.extend(seules);
+    envois
+}
+
+/// La commande d'une remise baisse-t-elle la protection par sa nature (une ligne `vanguard:` que le processus élevé
+/// juge comme une baisse) ?
+fn baisse_remise(commande: Option<&str>) -> bool {
+    commande
+        .and_then(crate::machine::gestes::analyser_acte)
+        .is_some_and(|a| a.baisse_par_type())
+}
+
 /// Les éléments qui restent dans l'état après une remise : retiré seulement s'il est relu à sa valeur d'avant, ou
 /// s'il n'y a rien à remettre (pare-feu laissé allumé). `relu` : la relecture ; `None` (ne se relit pas sans droits,
 /// la table nft) se juge sur la commande elle-même, qui relit en administrateur — jamais sous Windows, où la
@@ -767,7 +799,8 @@ fn commandes_extinction_sure() -> Vec<String> {
     vec![linux::retirer_nft()]
 }
 
-/// Applique des groupes de commandes, en une seule demande administrateur sous Windows ; refusé sous les tests.
+/// Applique des groupes de commandes, en une seule demande administrateur sous Windows (à l'extinction, une par
+/// envoi : `envois`) ; refusé sous les tests.
 fn appliquer(groupes: &[Vec<String>]) -> Vec<bool> {
     if cfg!(test) || groupes.is_empty() {
         return vec![false; groupes.len()];
@@ -1258,6 +1291,17 @@ fn eteindre() {
     for (x, commande) in &remises {
         let marque = if commande.is_some() { "−" } else { "·" };
         afficher_aligne(&format!("    {marque} "), &decrire(x), 6, "");
+        if baisse_remise(commande.as_deref()) {
+            afficher_aligne(
+                "      ",
+                tr!(
+                    "baisse la protection : la fenêtre administrateur le demande à part, [o/N]",
+                    "lowers protection: the administrator window asks for it separately, [y/N]"
+                ),
+                6,
+                GRIS,
+            );
+        }
         if x.jamais_remis() {
             afficher_aligne(
                 "      ",
@@ -1301,12 +1345,18 @@ fn eteindre() {
     if !ecrire_etat(&e) {
         return;
     }
-    let groupes: Vec<Vec<String>> = remises.iter().filter_map(|(_, c)| c.clone().map(|c| vec![c])).collect();
-    let mut faits = appliquer(&groupes).into_iter();
-    let reussis: Vec<bool> = remises
-        .iter()
-        .map(|(_, c)| c.is_some() && faits.next().unwrap_or(false))
-        .collect();
+    let mut reussis = vec![false; remises.len()];
+    for envoi in envois(&remises) {
+        let groupes: Vec<Vec<String>> = envoi
+            .iter()
+            .filter_map(|&i| remises.get(i).and_then(|(_, c)| c.clone()).map(|c| vec![c]))
+            .collect();
+        for (&i, fait) in envoi.iter().zip(appliquer(&groupes)) {
+            if let Some(r) = reussis.get_mut(i) {
+                *r = fait;
+            }
+        }
+    }
     let r = Relecture::maintenant(&e);
     let relus: Vec<Option<bool>> = remises.iter().map(|(x, _)| r.a_l_avant(x)).collect();
     let reste = restants(&remises, &relus, &reussis);
@@ -2228,6 +2278,52 @@ mod tests {
                 Some(Acte::PareFeuProfil(ProfilPareFeu::Public, ReglagePareFeu::Actif, false))
             ));
         }
+    }
+
+    /// D8 (W1) : à l'extinction, les remises qui baissent le pare-feu (le profil Public moins bloqué, le réseau
+    /// remis en Privé) partent chacune dans son propre envoi, après les remises ordinaires envoyées ensemble : le
+    /// processus élevé refuserait une baisse mêlée et la demande seule ([o/N]). La remise durcie, NetBIOS et le DNS
+    /// restent ensemble ; une remise sans commande n'est envoyée nulle part.
+    #[test]
+    fn les_remises_qui_baissent_partent_chacune_seule() {
+        let guid = "{0B8C2F4E-1A2B-4C3D-9E8F-001122334455}";
+        let categorie = Element::Categorie {
+            guid: guid.into(),
+            avant: "Private".into(),
+        };
+        let entrant = Element::ProfilPublic {
+            parametre: "DefaultInboundAction".into(),
+            avant: "Allow".into(),
+        };
+        let regles = Element::ProfilPublic {
+            parametre: "AllowInboundRules".into(),
+            avant: "NotConfigured".into(),
+        };
+        let durcie = Element::ProfilPublic {
+            parametre: "AllowInboundRules".into(),
+            avant: "False".into(),
+        };
+        let netbios = Element::NetBios {
+            carte: guid.into(),
+            avant: 1,
+        };
+        let coupe = Element::ProfilPublic {
+            parametre: "Enabled".into(),
+            avant: "False".into(),
+        };
+        let remises: Vec<(&Element, Option<String>)> = [&categorie, &netbios, &entrant, &durcie, &regles, &coupe]
+            .into_iter()
+            .map(|x| (x, windows::remettre(x)))
+            .collect();
+        assert!(remises.iter().take(5).all(|(_, c)| c.is_some()), "{remises:?}");
+        assert_eq!(remises[5].1, None, "un pare-feu trouvé coupé n'est jamais recoupé");
+        assert_eq!(envois(&remises), vec![vec![1, 3], vec![0], vec![2], vec![4]]);
+        for (i, (_, c)) in remises.iter().enumerate() {
+            assert_eq!(baisse_remise(c.as_deref()), [0, 2, 4].contains(&i), "{c:?}");
+        }
+        // Rien qui baisse : un seul envoi, comme avant.
+        assert_eq!(envois(&remises[1..2]), vec![vec![0]]);
+        assert_eq!(envois(&[]), Vec::<Vec<usize>>::new());
     }
 
     /// Tout relu à sa valeur d'avant : plus rien dans l'état, il est effacé. Ce qui ne se relit pas se juge sur sa

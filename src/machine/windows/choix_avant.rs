@@ -26,6 +26,17 @@ pub(crate) const CLE: &str = r"SOFTWARE\Vanguard\ChoixAvant";
 /// Le plus de valeurs que la clé peut garder : une note neuve au-delà est refusée (`echec note`).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) const VALEURS_MAX: usize = 256;
+/// La raison d'une note neuve refusée parce que la clé garde déjà `VALEURS_MAX` valeurs, partagées par les choix (D2),
+/// les réglages du registre et les services (D6b) et SSH (D6c) : le remède suit, pour que la personne sache quoi
+/// faire au lieu d'un échec du registre sans suite.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn trop_de_notes() -> &'static str {
+    tr!(
+        "trop de valeurs d'« avant » déjà notées (256 au plus) ; « Rallumer » une protection baissée, ou « Tout remettre comme avant » dans « Ce que Vanguard a changé », en libère",
+        "too many “before” values already noted (256 at most); “Turn back on” for a lowered protection, or “Put everything back” in “What Vanguard changed”, frees some"
+    )
+}
+
 /// Ce que le processus élevé lit et écrit pour un choix : Defender et le registre sous Windows, un faux dans les
 /// essais.
 pub(crate) trait Monde {
@@ -58,8 +69,9 @@ pub(crate) enum Issue {
     Rien(String),
     /// Rien de compté comme fait ; `avant` : la valeur lue, si elle l'a été.
     Echec { avant: Option<String>, raison: String },
-    /// La note ne s'écrit pas : rien n'est baissé.
-    EchecNote,
+    /// La note ne s'écrit pas : rien n'est baissé. L'échec de l'écriture, s'il y en a un (une note trop longue ou
+    /// relue autre n'en a pas) : la borne des notes (`trop_de_notes`) dit son remède, au lieu d'un « registre » muet.
+    EchecNote(Option<Echec>),
     /// Devenue une baisse depuis l'affichage sans avoir été montrée comme telle, ou une baisse dont la valeur relue
     /// n'est plus celle montrée : refusée, rien d'écrit.
     Change,
@@ -193,13 +205,18 @@ pub(crate) fn faire_choix(m: &mut impl Monde, id: IdChoix, cible: i64, montre: O
                 date: m.maintenant(),
             }
             .octets();
-            if note.len() > NOTE_MAX || m.ecrire_note(&nom, &note).is_err() {
+            let ecrite = if note.len() > NOTE_MAX {
+                Err(None)
+            } else {
+                m.ecrire_note(&nom, &note).map_err(Some)
+            };
+            if let Err(e) = ecrite {
                 remettre_note(m, &nom, ancienne.as_deref());
-                return Issue::EchecNote;
+                return Issue::EchecNote(e);
             }
             if m.lire_note(&nom).as_deref() != Some(note.as_slice()) {
                 remettre_note(m, &nom, ancienne.as_deref());
-                return Issue::EchecNote;
+                return Issue::EchecNote(None);
             }
             if let Err(e) = m.ecrire(id, cible) {
                 // Délai dépassé : l'écriture peut encore se faire après coup ; la note reste, pour que le bilan dise
@@ -386,12 +403,21 @@ pub(crate) fn noter(m: &mut impl Monde, id: IdChoix, montre: Option<Montre>) -> 
         date: m.maintenant(),
     }
     .octets();
-    if octets.len() > NOTE_MAX
-        || m.ecrire_note(&nom, &octets).is_err()
-        || m.lire_note(&nom).as_deref() != Some(&octets[..])
-    {
+    let ecrite = if octets.len() > NOTE_MAX {
+        Err(None)
+    } else {
+        m.ecrire_note(&nom, &octets).map_err(Some)
+    };
+    let ecrite = ecrite.and_then(|()| {
+        if m.lire_note(&nom).as_deref() == Some(&octets[..]) {
+            Ok(())
+        } else {
+            Err(None)
+        }
+    });
+    if let Err(e) = ecrite {
         remettre_note(m, &nom, ancienne.as_deref());
-        return Issue::EchecNote;
+        return Issue::EchecNote(e);
     }
     m.journal(&trf!(
         "Vanguard : protection baissée notée « par votre choix » à la demande de la personne, confirmée dans la fenêtre administrateur : {nom}={}. « Rallumer » dans Vanguard la remet.",
@@ -575,10 +601,7 @@ mod registre {
         let neuve = k.get_raw_value(nom).is_err();
         let compte = k.query_info().map_or(usize::MAX, |i| i.values as usize);
         if neuve && compte >= VALEURS_MAX {
-            return Err(Echec::refuse(
-                CONTEXTE,
-                crate::ui::tr!("trop de notes", "too many notes"),
-            ));
+            return Err(Echec::refuse(CONTEXTE, super::trop_de_notes()));
         }
         k.set_raw_value(
             nom,
@@ -598,22 +621,39 @@ mod registre {
         }
     }
 
-    /// Les noms et octets des notes, lisibles sans droits d'administrateur (pour « Tout remettre » et l'écran).
-    pub(crate) fn toutes() -> Vec<(String, Vec<u8>)> {
+    /// Les noms et octets des notes d'un nom reconnu, lisibles sans droits d'administrateur (pour « Tout remettre »
+    /// et l'écran).
+    pub(crate) fn toutes(reconnue: impl Fn(&str) -> bool) -> Vec<(String, Vec<u8>)> {
         let Ok(k) = cle(false) else {
             return Vec::new();
         };
-        k.enum_values()
-            .flatten()
-            .take(VALEURS_MAX)
-            .filter(|(_, v)| v.vtype == REG_BINARY && v.bytes.len() <= NOTE_MAX)
-            .map(|(n, v)| (n, v.bytes.to_vec()))
-            .collect()
+        super::retenues(
+            k.enum_values().flatten().map(|(n, v)| {
+                let note = v.vtype == REG_BINARY && v.bytes.len() <= NOTE_MAX;
+                (n, note.then(|| v.bytes.to_vec()))
+            }),
+            reconnue,
+        )
     }
 }
 
 #[cfg(windows)]
 pub(crate) use registre::{ecrire as ecrire_brut, effacer as effacer_brut, lire as lire_brut};
+
+/// Les notes gardées parmi les valeurs de la clé, dans l'ordre du registre : une note (`Some`, du bon type et pas
+/// trop longue) d'un nom reconnu, au plus `VALEURS_MAX`. Le tri se fait avant la coupe : des valeurs étrangères (un
+/// autre programme, une ancienne version, les notes D6b et D6c pour les choix) ne cachent jamais une note de choix
+/// au bilan ni à « Tout remettre comme avant ».
+fn retenues(
+    valeurs: impl Iterator<Item = (String, Option<Vec<u8>>)>,
+    reconnue: impl Fn(&str) -> bool,
+) -> Vec<(String, Vec<u8>)> {
+    valeurs
+        .filter(|(nom, _)| reconnue(nom))
+        .filter_map(|(nom, o)| Some((nom, o?)))
+        .take(VALEURS_MAX)
+        .collect()
+}
 
 /// Les notes de cet ordinateur, chacune avec son réglage : la note si elle se relit, `None` si elle est abîmée
 /// (« Rallumer » vise alors la valeur sûre, mais le réglage reste à remettre) ; une valeur dont le nom n'est pas un
@@ -621,7 +661,7 @@ pub(crate) use registre::{ecrire as ecrire_brut, effacer as effacer_brut, lire a
 pub(crate) fn notes() -> Vec<(IdChoix, Option<Note>)> {
     #[cfg(windows)]
     {
-        registre::toutes()
+        registre::toutes(|nom| IdChoix::lire(nom).is_some())
             .into_iter()
             .filter_map(|(nom, o)| Some((IdChoix::lire(&nom)?, Note::lire(&nom, &o))))
             .collect()
@@ -651,6 +691,8 @@ mod tests {
         notes: HashMap<String, Vec<u8>>,
         illisible: bool,
         note_refusee: bool,
+        /// La clé garde déjà `VALEURS_MAX` valeurs : une note neuve est refusée comme le registre le ferait.
+        notes_pleines: bool,
         /// La note s'écrit, mais se relit autre.
         note_alteree: bool,
         /// Windows garde la valeur sans erreur (protection contre les falsifications).
@@ -700,6 +742,9 @@ mod tests {
         fn ecrire_note(&mut self, nom: &str, octets: &[u8]) -> Result<(), Echec> {
             if self.note_refusee {
                 return Err(Echec::refuse("essai", "refus"));
+            }
+            if self.notes_pleines && !self.notes.contains_key(nom) {
+                return Err(Echec::refuse("essai", trop_de_notes()));
             }
             let mut o = octets.to_vec();
             if self.note_alteree {
@@ -846,7 +891,7 @@ mod tests {
             let mut m = Faux::avec(RTP, Some(0));
             m.note_refusee = !alteree;
             m.note_alteree = alteree;
-            assert_eq!(baisser(&mut m, RTP, 1), Issue::EchecNote);
+            assert!(matches!(baisser(&mut m, RTP, 1), Issue::EchecNote(_)));
             assert_eq!(m.ecritures, Vec::<(String, i64)>::new());
             assert_eq!(m.valeur(RTP), Some(0));
             assert!(m.notes.is_empty() && m.journal.is_empty());
@@ -856,13 +901,48 @@ mod tests {
         let ancienne = note(PUA, Some(1), 2);
         m.notes.insert(PUA.texte(), ancienne.clone());
         m.note_alteree = true;
-        assert_eq!(baisser(&mut m, PUA, 0), Issue::EchecNote);
+        assert_eq!(baisser(&mut m, PUA, 0), Issue::EchecNote(None));
         assert_eq!(m.ecritures, Vec::<(String, i64)>::new());
         assert_eq!(
             m.notes[&PUA.texte()].len(),
             ancienne.len() + 1,
             "remise par le même chemin d'écriture"
         );
+    }
+
+    /// Relecture D8 (N1) : la borne des notes atteinte, la baisse n'est pas faite et l'issue garde la raison, qui dit
+    /// le remède (Rallumer ou « Tout remettre comme avant ») ; la même pour une baisse notée par choix (`noter`).
+    #[test]
+    fn notes_pleines_dites_avec_leur_remede() {
+        let mut m = Faux::avec(RTP, Some(0));
+        m.notes_pleines = true;
+        let Issue::EchecNote(Some(e)) = baisser(&mut m, RTP, 1) else {
+            panic!("echec note attendu, avec sa raison")
+        };
+        assert!(e.to_string().contains(trop_de_notes()), "{e}");
+        assert!(trop_de_notes().contains("Rallumer") && trop_de_notes().contains("Tout remettre"));
+        assert_eq!(m.ecritures, Vec::<(String, i64)>::new());
+        assert!(m.notes.is_empty());
+        // Une note déjà là se réécrit (elle n'est pas neuve) : la borne ne bloque pas une baisse déjà notée.
+        let mut m = Faux::avec(PUA, Some(2));
+        m.notes.insert(PUA.texte(), note(PUA, Some(1), 2));
+        m.notes_pleines = true;
+        assert!(!matches!(baisser(&mut m, PUA, 0), Issue::EchecNote(_)));
+    }
+
+    /// Relecture D8 (N2) : 300 valeurs étrangères avant une note de choix ne la cachent pas ; la coupe porte sur les
+    /// seules notes reconnues, et une valeur d'un autre type ou trop longue n'est jamais rendue.
+    #[test]
+    fn valeurs_etrangeres_ne_cachent_pas_une_note() {
+        let reconnue = |n: &str| IdChoix::lire(n).is_some();
+        let etrangeres = (0..300).map(|i| (format!("reg-salon{i}"), Some(vec![1u8])));
+        let choix = (PUA.texte(), Some(note(PUA, Some(1), 0)));
+        let autre_type = (RTP.texte(), None);
+        let gardees = retenues(etrangeres.chain([autre_type, choix.clone()]), reconnue);
+        assert_eq!(gardees, vec![(choix.0, choix.1.unwrap())]);
+        // La coupe reste : au plus `VALEURS_MAX` notes reconnues.
+        let beaucoup = (0..VALEURS_MAX + 10).map(|_| (PUA.texte(), Some(vec![0u8])));
+        assert_eq!(retenues(beaucoup, reconnue).len(), VALEURS_MAX);
     }
 
     /// Windows garde la valeur (protection contre les falsifications) : échec honnête, la note neuve retirée.

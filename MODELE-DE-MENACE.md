@@ -128,9 +128,12 @@ pour qu'un autre programme ne puisse pas le faire à sa place.
   (`--remettre`) ;
 - sous Linux, le pare-feu (ufw, firewalld ou nftables), coupé ou rallumé.
 
-Ailleurs, deux baisses seulement, chacune seule et avec la même question : à la sortie du mode Wi-Fi public, recouper
-le pare-feu Public qui était coupé avant le mode ; sous Linux, retirer un pare-feu (reconnu par son paquet) des
-programmes au démarrage.
+Ailleurs, deux baisses seulement, chacune seule et avec la même question : à la sortie du mode Wi-Fi public, chaque
+remise qui rend le profil Public moins bloqué (entrées permises, règles entrantes de nouveau suivies) ou remet le
+réseau en Privé, dans sa propre fenêtre administrateur (un pare-feu Public trouvé coupé à l'entrée est allumé, et
+jamais recoupé) ; sous Linux, retirer un pare-feu (reconnu par son paquet) des programmes au démarrage. Un service
+ajouté à la main qui lance un programme de pare-feu (nft, iptables, ufw, firewall-cmd…) ne se désactive pas depuis
+le bilan : un pare-feu se coupe par les Options de défense.
 
 **Pourquoi c'est permis, et comment.**
 
@@ -144,9 +147,13 @@ programmes au démarrage.
   réponse n'est lue que d'une vraie console ; sous Linux, sur le terminal de la personne (/dev/tty), jamais sur
   l'entrée du programme. Sans console ni terminal, la réponse vaut non.
 - **Elle est notée d'abord.** La valeur d'avant est écrite avant le geste ; si la note ne s'écrit pas, rien n'est
-  baissé. Sous Windows, la note est sous HKLM `SOFTWARE\Vanguard\ChoixAvant`, que seuls les administrateurs écrivent,
-  avec son empreinte SHA-256. Sous Linux, elle est dans `/var/lib/vanguard/avant`, à root : le dossier ne se liste pas
-  et le fichier ne se lit pas sans droits (0711 et 0600), et une note qui n'est pas à root n'est pas lue. Seul le
+  baissé. Sous Windows, les notes sont sous HKLM `SOFTWARE\Vanguard\ChoixAvant`, que seuls les administrateurs
+  écrivent, chacune avec son empreinte SHA-256 : une famille de notes par chemin de remise, toutes sous cette clé
+  (les choix des Options, que « Rallumer » remet ; les valeurs changées par une correction, remises par « Ce que
+  Vanguard a changé » et « Tout remettre comme avant »), 256 valeurs au plus, et un dépassement dit son remède. Sous
+  Linux, elles sont dans `/var/lib/vanguard/avant`, à root, un fichier par geste, avec trois noms fixes pour les
+  pare-feu (ufw, firewalld, nftables) : le dossier ne se liste pas et un fichier ne se lit pas sans droits (0711 et
+  0600), et une note qui n'est pas à root n'est pas lue. Seul le
   processus administrateur ou root se sert de cette note pour remettre ; la copie gardée dans « Ce que Vanguard a
   changé » ne sert qu'à l'affichage.
 - **Elle laisse une trace.** Sous Windows, chaque baisse écrit aussi une entrée dans le journal d'événements de

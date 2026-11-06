@@ -5439,6 +5439,19 @@ impl Acte {
         }
     }
 
+    /// L'acte baisse-t-il la protection par sa seule nature, sans valeur à relire ? Le processus élevé le juge alors
+    /// comme une baisse (`Sens::Baisse`) : seul ou avec d'autres baisses, il est montré puis demandé ([o/N], non par
+    /// défaut) ; mêlé à un autre geste, la liste est refusée en entier. Sans cela, la remise du profil Public ou
+    /// d'un réseau en Privé (la sortie du mode Wi-Fi public) passait après un simple Entrée, et pouvait se cacher
+    /// parmi des corrections ordinaires, alors que la même valeur, coupée par les Options de défense, demande un oui
+    /// tapé. Les remises de réglages et de SSH (D6b, D6c) ont leur propre jugement, avec leur texte
+    /// (`reglages_ecriture::juger`) ; elles restent vraies ici aussi, par prudence. La remise d'un service (UPnP,
+    /// « Défaire ») n'en est pas : elle part avec les autres remises de « Tout remettre », que ce jugement
+    /// refuserait mêlées.
+    pub(crate) fn baisse_par_type(&self) -> bool {
+        !matches!(self, Acte::Service(_)) && self.affaiblit()
+    }
+
     /// L'équivalent PowerShell, pour le chemin par script (Wine). Le dossier de Windows vient de .NET, jamais d'une
     /// variable d'environnement nue, et un dossier vide arrête la ligne : « Join-Path '' 'Temp' » viserait le dossier
     /// courant. Un fichier encore ouvert reste, comme avant.
@@ -6785,6 +6798,26 @@ mod tests {
             raison_du_script(1, &vec![true; ETATS_MAX + 9]).len(),
             "code=1 etats=".len() + ETATS_MAX
         );
+    }
+
+    /// Un geste du compte (`COMPTE`) n'est jamais fait par le processus élevé, même quand l'autre validateur
+    /// accepterait tout : seul, mêlé à une ligne permise ou dans un envoi, la liste tombe ; les gestes élevés qui
+    /// commencent par « vanguard:compte- » restent les leurs (relecture du lot, doute Windows).
+    #[test]
+    fn un_geste_du_compte_ne_passe_jamais_par_l_eleve() {
+        let tout = |_: &str| Some(());
+        for compte in [
+            "vanguard:compte ps-strategie",
+            "vanguard:compte run-retirer run 00",
+            "vanguard:compte demarrage-remettre 00",
+            "vanguard:compte ",
+        ] {
+            assert!(valider(&lignes(&[compte]), tout).is_none(), "{compte:?}");
+            assert!(valider(&lignes(&[POINT, compte]), tout).is_none(), "{compte:?}");
+            assert!(valider(&lignes(&[compte, POINT]), tout).is_none(), "{compte:?}");
+        }
+        let eleve = |l: &str| l.starts_with(COMPTE_DESACTIVER).then_some(());
+        assert!(valider(&lignes(&["vanguard:compte-desactiver 1002"]), eleve).is_some());
     }
 
     /// Les bornes recopiées ici (module sans dépendance, pour le banc de fuzzing) restent celles des ordres.
@@ -8784,6 +8817,60 @@ mod tests {
     /// La ligne passe-t-elle `valider`, seule (aucune ligne autre qu'un acte admise) ?
     fn valide_seule(ligne: &str) -> bool {
         valider(&[ligne.to_string()], |_| None::<()>).is_some()
+    }
+
+    /// D8 (W1, W2) : les remises du mode Wi-Fi public qui baissent le pare-feu (profil Public moins bloqué, réseau
+    /// remis en Privé) et les remises de persistance (D6d) baissent par leur nature, comme les remises D6b/D6c ; ce
+    /// qui durcit, la catégorie Public, un retrait et la remise d'un service (UPnP, « Tout remettre ») n'en sont pas.
+    #[test]
+    fn remises_qui_baissent_par_leur_nature() {
+        let a = |l: Option<String>| {
+            let l = l.expect("ligne");
+            analyser_acte(&l).unwrap_or_else(|| panic!("{l}"))
+        };
+        let guid = "{0B8C2F4E-1A2B-4C3D-9E8F-001122334455}";
+        let run = ligne_run_retirer_machine(r"HKLM:\Software\Microsoft\Windows\CurrentVersion\Run", &[0x61]);
+        let tache = ligne_tache_desactiver(r"\Salon", "x");
+        let wmi = ligne_wmi_abonnement_retirer("ActiveScriptEventConsumer", "Salon");
+        let commun = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\x.lnk";
+        let baisses = [
+            ligne_pare_feu_public(&[(ReglagePublic::EntrantBloque, ValeurPublic::Non)]),
+            ligne_pare_feu_public(&[(ReglagePublic::ReglesEntrantes, ValeurPublic::Oui)]),
+            ligne_pare_feu_public(&[(ReglagePublic::ReglesEntrantes, ValeurPublic::Absent)]),
+            ligne_pare_feu_public(&[
+                (ReglagePublic::Actif, ValeurPublic::Oui),
+                (ReglagePublic::EntrantBloque, ValeurPublic::Non),
+            ]),
+            ligne_reseau_categorie(guid, Categorie::Prive),
+            run.as_ref().map(|l| l.replacen(RUN_RETIRER_MACHINE, RUN_REMETTRE, 1)),
+            tache.as_ref().map(|l| l.replacen(TACHE_DESACTIVER, TACHE_REACTIVER, 1)),
+            wmi.as_ref()
+                .map(|l| l.replacen(WMI_ABONNEMENT_RETIRER, WMI_ABONNEMENT_REMETTRE, 1)),
+            ligne_demarrage_remettre(commun, None, false),
+            ligne_reglage_remettre(IdReglage::tous().into_iter().find(|id| id.annulable()).unwrap()),
+        ];
+        for l in baisses {
+            let acte = a(l);
+            assert!(acte.baisse_par_type(), "{}", acte.ligne());
+        }
+        let autres = [
+            ligne_pare_feu_public(&[
+                (ReglagePublic::Actif, ValeurPublic::Oui),
+                (ReglagePublic::EntrantBloque, ValeurPublic::Oui),
+                (ReglagePublic::ReglesEntrantes, ValeurPublic::Non),
+            ]),
+            ligne_reseau_categorie(guid, Categorie::Public),
+            Some(PARE_FEU_ACTIF.to_string()),
+            run,
+            tache,
+            wmi,
+            Some(ligne_service("SSDPSRV", Action::Manuel)),
+            Some(ligne_service("SSDPSRV", Action::Desactive)),
+        ];
+        for l in autres {
+            let acte = a(l);
+            assert!(!acte.baisse_par_type(), "{}", acte.ligne());
+        }
     }
 
     #[test]

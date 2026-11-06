@@ -1441,13 +1441,60 @@ pub(crate) fn appliquer_annulables(correctifs: &[Vec<String>], annulables: &[Opt
     // systemctl confiées à bash. Une liste faite en partie est dite ici : « non appliqué » seul laisserait croire que
     // rien n'a bougé.
     #[cfg(not(windows))]
-    let (resultats, notes) = melees_par(correctifs, lancer_lignes);
+    let (resultats, mut notes) = melees_par(correctifs, lancer_lignes);
     #[cfg(windows)]
     let (resultats, notes) = lancer_chacune(correctifs);
+    // Un geste que l'enfant a dit non annulable perd sa promesse de retour : ni « (annulable) » dans l'historique, ni
+    // proposé par « Tout remettre », dont le Défaire passerait par un élévateur qui n'existe plus.
+    #[cfg(not(windows))]
+    let annulables = &{
+        let (gardes, a_oublier) = sans_defaire(&mut notes, &resultats, annulables);
+        crate::optimiser::annulables::oublier(&a_oublier);
+        gardes
+    };
     // Gardé sur cet ordinateur : « Ce que Vanguard a changé » (changements.rs), avec la valeur d'avant quand le
     // processus élevé l'a lue, et le lien vers la note qui l'annule exactement.
     crate::changements::noter_annulables(&notes, &resultats, annulables);
     resultats
+}
+
+/// Les notes de chaque correction, avec le repère `ordres::NON_ANNULABLE` dit en clair ; rend les liens vers les notes
+/// d'annulation à garder (aucun pour une correction dont un geste est non annulable) et les notes à oublier : celles
+/// qu'aucune autre correction réussie et annulable ne partage (`annulables::regrouper`).
+#[cfg(not(windows))]
+fn sans_defaire(
+    notes: &mut [Vec<String>],
+    resultats: &[bool],
+    annulables: &[Option<String>],
+) -> (Vec<Option<String>>, Vec<String>) {
+    use crate::protection::blocage::ordres::{NON_ANNULABLE, note_lisible};
+    let non: Vec<bool> = notes
+        .iter()
+        .map(|n| n.iter().any(|l| l.contains(NON_ANNULABLE)))
+        .collect();
+    for l in notes.iter_mut().flatten() {
+        *l = note_lisible(l);
+    }
+    let est_non = |i: usize| non.get(i).copied().unwrap_or(false);
+    let gardes: Vec<Option<String>> = annulables
+        .iter()
+        .enumerate()
+        .map(|(i, id)| if est_non(i) { None } else { id.clone() })
+        .collect();
+    let mut a_oublier: Vec<String> = Vec::new();
+    for (i, id) in annulables.iter().enumerate() {
+        let Some(id) = id.as_ref().filter(|_| est_non(i)) else {
+            continue;
+        };
+        let partagee = gardes
+            .iter()
+            .zip(resultats)
+            .any(|(g, &ok)| ok && g.as_ref() == Some(id));
+        if !partagee && !a_oublier.contains(id) {
+            a_oublier.push(id.clone());
+        }
+    }
+    (gardes, a_oublier)
 }
 
 /// Les listes du bilan par `gestes_puis_commandes`, avec `lancer` à la place de `lancer_lignes` (les essais en passent
@@ -2023,6 +2070,45 @@ mod tests {
 
     /// L6c : seul le passage horaire se sert de la cache. Son interrupteur retombe après, même quand le passage
     /// panique : un bilan lancé ensuite par la personne vérifie tout à neuf.
+    /// Relecture du lot, L2 : un geste que l'enfant dit non annulable (le dernier élévateur retiré) ne garde ni son lien
+    /// « (annulable) » ni sa note pour « Tout remettre » ; une note partagée avec une correction annulable reste.
+    #[cfg(not(windows))]
+    #[test]
+    fn un_geste_non_annulable_perd_sa_promesse_de_retour() {
+        use crate::protection::blocage::ordres::{self, NON_ANNULABLE, Resultat};
+        // La réponse de l'enfant passe par le fil, comme pour de vrai.
+        let par_le_fil = |r: Resultat| ordres::lire_reponse(&ordres::ligne_reponse(&r));
+        let enfant = par_le_fil(Resultat::ok_note(format!("{NON_ANNULABLE}retirer le setuid : fait")));
+        let annulable = par_le_fil(Resultat::ok_note("retirer : fait ; Défaire le remet comme avant"));
+        let ligne = "vanguard:defense retirer-setuid /usr/bin/su";
+        let mut notes = vec![
+            vec![note_d_ordre(ligne, &enfant)],
+            vec![note_d_ordre(ligne, &annulable)],
+            vec![note_d_ordre(ligne, &enfant)],
+            vec![note_d_ordre(ligne, &enfant)],
+        ];
+        let ids = [
+            Some("bilan:seule".to_string()),
+            Some("bilan:partagee".to_string()),
+            Some("bilan:partagee".to_string()),
+            None,
+        ];
+        let (gardes, a_oublier) = sans_defaire(&mut notes, &[true; 4], &ids);
+        assert_eq!(gardes, [None, Some("bilan:partagee".to_string()), None, None]);
+        assert_eq!(a_oublier, ["bilan:seule"]);
+        assert!(notes.iter().flatten().all(|l| !l.contains(NON_ANNULABLE)), "{notes:?}");
+        assert!(
+            notes[0][0].contains("non annulable, retirer le setuid : fait"),
+            "{notes:?}"
+        );
+        // Sans repère, rien ne change ; une liste plus courte que les notes (`appliquer`) non plus.
+        let mut sans = vec![vec![note_d_ordre(ligne, &annulable)]];
+        let (gardes, a_oublier) = sans_defaire(&mut sans, &[true], &[Some("bilan:x".to_string())]);
+        assert_eq!((gardes, a_oublier), (vec![Some("bilan:x".to_string())], vec![]));
+        let (gardes, a_oublier) = sans_defaire(&mut notes, &[true; 4], &[]);
+        assert!(gardes.is_empty() && a_oublier.is_empty());
+    }
+
     #[test]
     fn l_interrupteur_du_passage_horaire_retombe() {
         let actif = || AUTOMATIQUE.with(std::cell::Cell::get);

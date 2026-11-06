@@ -147,6 +147,18 @@ impl Resultat {
     }
 }
 
+/// Le début de la note d'un geste fait que Vanguard ne pourra pas défaire (le retrait du dernier élévateur, sans run0) :
+/// un repère fixe, hors de toute langue, que le parent lit pour ne plus promettre un « Défaire » que plus rien ne
+/// lancerait. Un repère qui s'égare ne fait que retirer une promesse, jamais en ajouter une.
+#[cfg(any(unix, test))]
+pub(crate) const NON_ANNULABLE: &str = "non-annulable:";
+
+/// La note telle qu'on la montre : le repère `NON_ANNULABLE` dit dans la langue de la personne.
+#[cfg(any(unix, test))]
+pub(crate) fn note_lisible(n: &str) -> String {
+    n.replace(NON_ANNULABLE, tr!("non annulable, ", "cannot be undone, "))
+}
+
 /// Une réponse sur une ligne : « ok », « ok note=… » ou « echec … » (retours à la ligne ôtés).
 #[cfg(any(unix, test))]
 pub(crate) fn ligne_reponse(r: &Resultat) -> String {
@@ -415,7 +427,10 @@ pub(crate) fn executer_en_groupes<D>(
                     };
                     arret |= !r.reussi;
                     annoncer(&match (&r.reussi, &r.note) {
-                        (true, Some(n)) => trf!("  OK ({n})", "  OK ({n})"),
+                        (true, Some(n)) => {
+                            let n = note_lisible(n);
+                            trf!("  OK ({n})", "  OK ({n})")
+                        }
                         (true, None) => "  OK".to_string(),
                         (false, _) => trf!("  Échec : {}", "  Failed: {}", r.raison),
                     });

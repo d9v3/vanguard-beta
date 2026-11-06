@@ -124,9 +124,12 @@ program cannot make it in their place.
   Vanguard fix had changed (`--put-back`);
 - on Linux, the firewall (ufw, firewalld or nftables), turned off or back on.
 
-Elsewhere, only two lowerings, each on its own and with the same question: when leaving public Wi-Fi mode, turning
-the Public firewall back off if it was off before the mode; on Linux, removing a firewall (recognized by its package)
-from the programs at startup.
+Elsewhere, only two lowerings, each on its own and with the same question: when leaving public Wi-Fi mode, each
+restore that makes the Public profile less blocked (incoming allowed, inbound rules followed again) or puts the
+network back to Private, in its own administrator window (a Public firewall found off on entry is turned on, and
+never turned back off); on Linux, removing a firewall (recognized by its package) from the programs at startup. A
+hand-added service that runs a firewall program (nft, iptables, ufw, firewall-cmd…) is not disabled from the check:
+a firewall is turned off through the Defense options.
 
 **Why it is allowed, and how.**
 
@@ -140,9 +143,13 @@ from the programs at startup.
   a real console; on Linux, from the person's terminal (/dev/tty), never from the program's input. With no console
   or terminal, the answer is no.
 - **It is noted first.** The previous value is written before the action; if the note cannot be written, nothing is
-  lowered. On Windows, the note is under HKLM `SOFTWARE\Vanguard\ChoixAvant`, which only administrators can write,
-  with its SHA-256 hash. On Linux, it is in `/var/lib/vanguard/avant`, owned by root: without rights the folder
-  cannot be listed and the file cannot be read (0711 and 0600), and a note not owned by root is not read. Only the
+  lowered. On Windows, the notes are under HKLM `SOFTWARE\Vanguard\ChoixAvant`, which only administrators can
+  write, each with its SHA-256 hash: one family of notes per way of putting back, all under this key (the Options
+  choices, put back by “Turn back on”; the values a fix changed, put back by “What Vanguard changed” and “Put
+  everything back”), 256 values at most, and going over says how to free some. On Linux, they are in
+  `/var/lib/vanguard/avant`, owned by root, one file per action, with three fixed names for the firewalls (ufw,
+  firewalld, nftables): without rights the folder cannot be listed and a file cannot be read (0711 and 0600), and a
+  note not owned by root is not read. Only the
   administrator or root process uses this note to put things back; the copy kept in “What Vanguard changed” is for
   display only.
 - **It leaves a trace.** On Windows, each lowering also writes an entry to the Windows event log (Application,

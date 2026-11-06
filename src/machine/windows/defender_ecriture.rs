@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use super::corrections::{NOTE_CHOIX, Resultat, avant_notable, echec_note};
+use super::corrections::{NOTE_CHOIX, Resultat, avant_notable, echec_note_de};
 use super::exclusions;
 use super::wmi::{self, CLASSE_ABSENTE, Ligne, Parametre, Retour, Valeur};
 use crate::machine::choix_avant;
@@ -332,7 +332,7 @@ fn resultat(issue: choix_avant::Issue) -> Resultat {
         Issue::Fait { avant, note: false } => Resultat::fait(avant_notable(&avant)),
         Issue::Rien(t) => Resultat::rien(t),
         Issue::Echec { avant, raison } => Resultat::echec(avant.map(|a| avant_notable(&a)), raison),
-        Issue::EchecNote => Resultat::echec(None, echec_note().to_string()),
+        Issue::EchecNote(e) => Resultat::echec(None, echec_note_de(e.as_ref())),
         Issue::Change => Resultat::echec(
             None,
             tr!(

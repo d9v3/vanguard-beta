@@ -1367,6 +1367,16 @@ pub(crate) fn echec_note() -> &'static str {
     )
 }
 
+/// La raison rendue d'une baisse non faite faute de note : `echec_note`, suivie de ce que l'écriture a dit (la borne
+/// des notes porte son remède, `choix_avant::trop_de_notes`). Elle commence toujours par `echec_note` : le fils la
+/// reconnaît ainsi pour répondre « echec note » au parent, et la montre entière dans sa console.
+pub(crate) fn echec_note_de(e: Option<&crate::modele::Echec>) -> String {
+    match e {
+        Some(e) => format!("{} ({e})", echec_note()),
+        None => echec_note().to_string(),
+    }
+}
+
 /// Une valeur d'avant prête à noter : sans caractère de contrôle, et courte (le parent borne chaque ligne du tube).
 pub(crate) fn avant_notable(v: &str) -> String {
     crate::ui::couper(&crate::ui::affichable(v), AVANT_MAX)

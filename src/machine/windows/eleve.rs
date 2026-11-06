@@ -228,7 +228,7 @@ fn ligne_resultat(r: &Resultat) -> String {
         (true, None) => "ok".to_string(),
         (false, _) if r.raison == arret_demande() => ARRETEE.to_string(),
         // La valeur d'avant n'a pas pu être notée : aucun geste, rien à noter chez le parent.
-        (false, _) if r.raison == corrections::echec_note() => ECHEC_NOTE.to_string(),
+        (false, _) if r.raison.starts_with(corrections::echec_note()) => ECHEC_NOTE.to_string(),
         (false, _) if r.raison.starts_with(au_redemarrage()) => AU_REDEMARRAGE.to_string(),
         // Un échec qui a déjà touché quelque chose (racine retirée d'un seul magasin, valeur relue autre) : la valeur
         // d'avant va au parent, notée à côté de la ligne en échec ; la raison reste dans la console du fils.
@@ -529,15 +529,53 @@ fn juger_liste(liste: &[Element], compte: &Result<String, String>) -> Option<Jug
         .iter()
         .map(|e| match e {
             // Une remise de réglage ou de chemin de service (D6b) : une baisse, montrée puis confirmée.
-            Element::Acte(a) => {
-                super::defender_ecriture::juger(a).or_else(|| super::reglages_ecriture::juger(a, personne))
-            }
+            Element::Acte(a) => super::defender_ecriture::juger(a)
+                .or_else(|| super::reglages_ecriture::juger(a, personne))
+                .or_else(|| baisse_par_type(a)),
             _ => None,
         })
         .collect();
     let seuls: Vec<Option<gestes::Sens>> = sens.iter().map(|s| s.as_ref().map(|(m, _)| m.sens)).collect();
     let baisse = gestes::liste_pure(&seuls).ok()?;
     Some((sens, baisse))
+}
+
+/// Une ligne qui baisse la protection par sa nature (`Acte::baisse_par_type` : le profil Public ou un réseau en
+/// Privé remis comme avant le mode Wi-Fi public, un lancement jugé suspect remis), montrée comme une baisse ; `None`
+/// pour un autre acte.
+fn baisse_par_type(a: &gestes::Acte) -> Option<(gestes::Montre, String)> {
+    use gestes::Acte;
+    if !a.baisse_par_type() {
+        return None;
+    }
+    let texte = match a {
+        // Chaque texte tient dans la ligne de `montrer`, sous son retrait et avant « (baisse la protection) ».
+        Acte::PareFeuPublic(_) => tr!(
+            "profil Public : plus d'entrées permises",
+            "Public profile: more inbound allowed"
+        ),
+        Acte::ReseauCategorie(_) => tr!(
+            "réseau rangé en Privé (plus le profil Public)",
+            "network set to Private (no Public profile)"
+        ),
+        Acte::RunRemettre(_)
+        | Acte::TacheReactiver(_)
+        | Acte::DemarrageRemettre(..)
+        | Acte::WmiAbonnementRemettre(_) => {
+            tr!(
+                "un lancement jugé suspect revient",
+                "a startup entry judged suspicious comes back"
+            )
+        }
+        _ => tr!("un état d'avant revient", "a previous state comes back"),
+    };
+    Some((
+        gestes::Montre {
+            sens: gestes::Sens::Baisse,
+            lue: None,
+        },
+        texte.to_string(),
+    ))
 }
 
 /// La raison d'une liste mêlée, pour chacune de ses lignes.
@@ -1677,6 +1715,51 @@ mod tests {
         ))));
     }
 
+    /// D8 (W1, W2) : la remise du profil Public, d'un réseau en Privé ou d'un lancement suspect est jugée comme une
+    /// baisse : seule ou avec d'autres baisses, une liste de baisses (la question [o/N]) ; mêlée à une correction
+    /// ordinaire, refusée en entier. La remise durcie du profil Public reste une ligne ordinaire.
+    #[test]
+    fn les_remises_qui_baissent_sont_demandees_et_jamais_melees() {
+        use gestes::{Categorie, ReglagePublic, ValeurPublic};
+        let el = |l: &Option<String>| Element::Acte(gestes::analyser_acte(l.as_ref().unwrap()).unwrap());
+        let compte: Result<String, String> = Err(String::new());
+        let baisses = [
+            gestes::ligne_pare_feu_public(&[(ReglagePublic::EntrantBloque, ValeurPublic::Non)]),
+            gestes::ligne_pare_feu_public(&[(ReglagePublic::ReglesEntrantes, ValeurPublic::Oui)]),
+            gestes::ligne_reseau_categorie("{0B8C2F4E-1A2B-4C3D-9E8F-001122334455}", Categorie::Prive),
+            gestes::ligne_demarrage_remettre(
+                r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\x.lnk",
+                None,
+                false,
+            ),
+        ];
+        let actif = Some(gestes::PARE_FEU_ACTIF.to_string());
+        for b in &baisses {
+            let (sens, baisse) = juger_liste(&[el(b)], &compte).expect("seule, une liste de baisses");
+            assert!(baisse, "{b:?}");
+            let Some(Some((m, texte))) = sens.first() else {
+                panic!("{b:?} : aucun sens");
+            };
+            assert_eq!(m.sens, gestes::Sens::Baisse, "{b:?}");
+            // La ligne de `montrer` : quatre colonnes, le texte, puis « (baisse la protection) ».
+            let suite = crate::ui::largeur_affichee(tr!("  (baisse la protection)", "  (lowers protection)"));
+            assert!(
+                4 + crate::ui::largeur_affichee(texte) + suite <= crate::ui::LARGEUR,
+                "{texte}"
+            );
+            assert!(juger_liste(&[el(&actif), el(b)], &compte).is_none(), "mêlée : {b:?}");
+            assert!(juger_liste(&[el(b), el(&actif)], &compte).is_none(), "mêlée : {b:?}");
+        }
+        let toutes: Vec<Element> = baisses.iter().map(el).collect();
+        assert!(juger_liste(&toutes, &compte).is_some_and(|(_, baisse)| baisse));
+        let durcie = gestes::ligne_pare_feu_public(&[
+            (ReglagePublic::EntrantBloque, ValeurPublic::Oui),
+            (ReglagePublic::ReglesEntrantes, ValeurPublic::Non),
+        ]);
+        let (sens, baisse) = juger_liste(&[el(&durcie), el(&actif)], &compte).unwrap();
+        assert!(!baisse && sens.iter().all(Option::is_none));
+    }
+
     /// Ce qui reste actif après une baisse tient dans la largeur de l'écran, sous son retrait, pour chaque réglage des
     /// choix : coupé aux espaces, sans rien perdre.
     #[test]
@@ -2037,6 +2120,15 @@ mod tests {
         assert_eq!(note, ECHEC_NOTE);
         let r = lire_reponse(&note);
         assert!(!r.reussi && r.avant.is_none() && !r.arretee && r.note.is_none());
+        // Relecture D8 (N1) : la raison gardée (la borne des notes et son remède) reste dans la console du fils ; le
+        // parent reçoit toujours « echec note ».
+        let pleine = crate::modele::Echec::refuse("essai", crate::machine::choix_avant::trop_de_notes());
+        let raison = corrections::echec_note_de(Some(&pleine));
+        assert!(
+            raison.starts_with(corrections::echec_note()) && raison.contains("Rallumer"),
+            "{raison}"
+        );
+        assert_eq!(ligne_resultat(&Resultat::echec(None, raison)), ECHEC_NOTE);
     }
 
     /// Le tube porte au plus deux listes séparées par « suite » (P7), chacune validée comme une liste seule ; une

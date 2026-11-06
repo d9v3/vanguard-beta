@@ -160,6 +160,43 @@ mod tests {
         assert_eq!(g[0].0, format!("defense|{}", id.as_str()));
     }
 
+    /// Un constat du bilan qui couperait un pare-feu par erreur : son identifiant tiré au hasard n'est jamais celui,
+    /// fixe, de la note du pare-feu, et la grammaire (`refus`, que l'assistant passe en lisant la ligne) le refuse. Seules les Options de défense
+    /// coupent un pare-feu (la règle statique de `lecture_seule` le garde).
+    #[test]
+    fn un_constat_ne_coupe_jamais_un_pare_feu() {
+        for p in [
+            gestes_unix::PareFeu::Ufw,
+            gestes_unix::PareFeu::Firewalld,
+            gestes_unix::PareFeu::Nftables,
+        ] {
+            for c in [
+                corriger(
+                    crate::machine::alerte("Pare-feu", crate::risk::Niveau::Eleve, "essai"),
+                    "Couper",
+                    &[Defense::CouperPareFeu(p)],
+                ),
+                corriger_sans_defaire(
+                    crate::machine::alerte("Pare-feu", crate::risk::Niveau::Eleve, "essai"),
+                    "Couper",
+                    &[Defense::CouperPareFeu(p)],
+                ),
+            ] {
+                let k = c.correctif.unwrap();
+                let [ligne] = k.commandes.as_slice() else {
+                    panic!("une seule ligne")
+                };
+                // La ligne est bien celle d'une coupure, sous un identifiant neuf…
+                let id = ligne.rsplit(' ').next().and_then(IdNote::nouveau).unwrap();
+                assert_ne!(id, p.note());
+                assert_eq!(*ligne, GesteUnix::Defense(Defense::CouperPareFeu(p), id).ligne());
+                // … que `refus()` rejette, et donc `analyser` aussi : l'assistant ne la lira jamais.
+                assert!(GesteUnix::Defense(Defense::CouperPareFeu(p), id).refus().is_some());
+                assert!(gestes_unix::analyser(ligne).is_none(), "{ligne}");
+            }
+        }
+    }
+
     /// Plusieurs gestes : une note chacun, jamais partagée ; sans geste, le constat garde sa correction à la main.
     #[test]
     fn plusieurs_gestes_et_aucun() {
