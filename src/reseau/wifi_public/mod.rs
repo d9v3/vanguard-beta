@@ -170,8 +170,8 @@ fn decrire(e: &Element) -> String {
         .to_string(),
         Element::ProfilPublic { parametre, avant } => match parametre.as_str() {
             "Enabled" => tr!(
-                "Pare-feu (profil Public) allumé : il était coupé ; Vanguard ne le recoupe pas de lui-même",
-                "Firewall (Public profile) turned on: it was off; Vanguard never turns it off by itself"
+                "Pare-feu (profil Public) allumé : il était coupé, même si c'était votre choix ; à la sortie, Vanguard ne le recoupe que si vous le demandez",
+                "Firewall (Public profile) turned on: it was off, even if that was your choice; on exit, Vanguard turns it off again only if you ask"
             )
             .to_string(),
             "DefaultInboundAction" => trf!(
@@ -2245,6 +2245,25 @@ mod tests {
         v.as_object_mut().unwrap().remove("pare_feu_coupe");
         let ancien: Etat = serde_json::from_value(v).unwrap();
         assert_eq!(ancien.pare_feu_coupe, Vec::<String>::new());
+    }
+
+    /// Contre-relecture D8 (C1) : l'écran d'entrée (« Ce qui change ») dit que le pare-feu Public trouvé coupé est
+    /// rallumé même s'il l'était par choix (une note de ChoixAvant), et que la sortie ne le recoupe que sur demande.
+    #[test]
+    fn rallumage_du_pare_feu_dit_le_choix() {
+        let coupe = Element::ProfilPublic {
+            parametre: "Enabled".into(),
+            avant: "False".into(),
+        };
+        let texte = decrire(&coupe);
+        assert!(
+            texte.contains(tr!("même si c'était votre choix", "even if that was your choice")),
+            "{texte}"
+        );
+        assert!(
+            texte.contains(tr!("que si vous le demandez", "only if you ask")),
+            "{texte}"
+        );
     }
 
     /// Le pare-feu Public trouvé coupé : la remise ne le recoupe jamais (aucune commande), la question à part ne

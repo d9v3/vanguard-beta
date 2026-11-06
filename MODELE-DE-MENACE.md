@@ -130,10 +130,12 @@ pour qu'un autre programme ne puisse pas le faire à sa place.
 
 Ailleurs, deux baisses seulement, chacune seule et avec la même question : à la sortie du mode Wi-Fi public, chaque
 remise qui rend le profil Public moins bloqué (entrées permises, règles entrantes de nouveau suivies) ou remet le
-réseau en Privé, dans sa propre fenêtre administrateur (un pare-feu Public trouvé coupé à l'entrée est allumé, et
-jamais recoupé) ; sous Linux, retirer un pare-feu (reconnu par son paquet) des programmes au démarrage. Un service
-ajouté à la main qui lance un programme de pare-feu (nft, iptables, ufw, firewall-cmd…) ne se désactive pas depuis
-le bilan : un pare-feu se coupe par les Options de défense.
+réseau en Privé, dans sa propre fenêtre administrateur (un pare-feu Public trouvé coupé à l'entrée est allumé,
+même s'il l'était par choix, et recoupé seulement si la personne le demande, par une question à part) ; sous Linux,
+retirer un pare-feu (reconnu par son paquet) des programmes au démarrage. Un service ajouté à la main qui lance un
+programme de pare-feu (nft, iptables, ufw, firewall-cmd…), directement ou par un script qu'il nomme (un niveau), ou
+qui en pilote un par `systemctl` ou `service`, ne se désactive pas depuis le bilan : un pare-feu se coupe par les
+Options de défense.
 
 **Pourquoi c'est permis, et comment.**
 

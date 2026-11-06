@@ -1672,32 +1672,112 @@ const PROGRAMMES_DE_PARE_FEU: [&str; 27] = [
     "ferm",
 ];
 
-/// Un mot de commande qui nomme un programme de pare-feu, par son seul nom de base, sans casse : `/usr/sbin/nft`,
-/// `-nft` (préfixes de systemd), `"nft` (dans un `sh -c "…"`). Les mots sont coupés aux espaces et aux signes du
-/// shell : en refuser trop est sans danger, en laisser passer un ne l'est pas.
-fn nomme_un_pare_feu(texte: &str) -> bool {
+/// Les services de pare-feu qu'un `systemctl` ou un `service` peut arrêter ou démarrer (`.service` ôté).
+const UNITES_DE_PARE_FEU: [&str; 11] = [
+    "nftables",
+    "ufw",
+    "firewalld",
+    "iptables",
+    "ip6tables",
+    "ebtables",
+    "arptables",
+    "shorewall",
+    "shorewall6",
+    "ferm",
+    "netfilter-persistent",
+];
+
+/// Au plus autant de scripts suivis par service : la garde ne doit pas lire sans fin.
+const SCRIPTS_MAX: usize = 32;
+
+/// Les mots d'une commande, coupés aux espaces et aux signes du shell, préfixes de systemd ôtés (`-`, `@`, `+`,
+/// `!`, `:`) : en couper trop est sans danger, en laisser un collé à son voisin ne l'est pas.
+fn mots(texte: &str) -> impl Iterator<Item = &str> {
     texte
         .split(|c: char| c.is_whitespace() || ";|&()'\"`$<>={}".contains(c))
-        .map(|m| {
-            m.rsplit('/')
-                .next()
-                .unwrap_or(m)
-                .trim_start_matches(['-', '@', '+', '!', ':'])
-        })
+        .map(|m| m.trim_start_matches(['-', '@', '+', '!', ':']))
+        .filter(|m| !m.is_empty())
+}
+
+/// Le nom de base d'un mot (`/usr/sbin/nft` → `nft`).
+fn nom_de_base(m: &str) -> &str {
+    m.rsplit('/')
+        .next()
+        .unwrap_or(m)
+        .trim_start_matches(['-', '@', '+', '!', ':'])
+}
+
+/// Un mot de commande qui nomme un programme de pare-feu, par son seul nom de base, sans casse : `/usr/sbin/nft`,
+/// `-nft` (préfixes de systemd), `"nft` (dans un `sh -c "…"`).
+fn nomme_un_pare_feu(texte: &str) -> bool {
+    mots(texte)
+        .map(nom_de_base)
         .any(|m| PROGRAMMES_DE_PARE_FEU.iter().any(|p| m.eq_ignore_ascii_case(p)))
 }
 
-/// Le service lance-t-il un programme de pare-feu ? Ce que le gestionnaire a en mémoire (lancement et arrêt, chemin
-/// et arguments), et chaque mot de son fichier, pas seulement des lignes `Exec…=` : une ligne continuée (`\` en fin
-/// de ligne) ou un commentaire comptent aussi, au prix d'un refus de trop.
-fn service_de_pare_feu(lu: Option<&ArretCharge>, fichier: &[u8]) -> bool {
-    let en_memoire = lu.is_some_and(|lu| {
-        lu.lancement
-            .iter()
-            .chain(&lu.arret)
-            .any(|c| nomme_un_pare_feu(&c.chemin) || c.arguments.iter().any(|x| nomme_un_pare_feu(x)))
-    });
-    en_memoire || nomme_un_pare_feu(&String::from_utf8_lossy(fichier))
+/// Une ligne qui passe par `systemctl` ou `service` et nomme un service de pare-feu (`systemctl start nftables`,
+/// `service ufw stop`) : couper le service qui la lance ferait tomber ce pare-feu tout autant. Ligne par ligne (les
+/// lignes continuées par `\` jointes) : `After=nftables.service`, seul sur sa ligne, n'est pas une commande.
+fn pilote_un_pare_feu(texte: &str) -> bool {
+    texte.replace("\\\n", " ").lines().any(|ligne| {
+        let noms: Vec<&str> = mots(ligne).map(nom_de_base).collect();
+        noms.iter()
+            .any(|m| m.eq_ignore_ascii_case("systemctl") || m.eq_ignore_ascii_case("service"))
+            && noms.iter().any(|m| {
+                let m = m.to_ascii_lowercase();
+                let unite = m.strip_suffix(".service").unwrap_or(&m);
+                UNITES_DE_PARE_FEU.contains(&unite)
+            })
+    })
+}
+
+/// Les scripts nommés par chemin absolu dans ces textes, lus un niveau (`ExecStart=/usr/local/sbin/regles.sh` qui
+/// fait `nft -f`) : seulement un fichier ordinaire qui commence par `#!`, lu au plus `SERVICE_MAX` (lien suivi par
+/// son chemin réel). Un chemin qui ne se lit pas (absent, dossier, trop gros) est passé : c'est le plus souvent un
+/// fichier de réglages, pas un programme. Un script appelé par un script n'est pas suivi.
+fn scripts_nommes(textes: &[String], a: &dyn Acces) -> Vec<String> {
+    let mut vus: Vec<&str> = Vec::new();
+    for m in textes.iter().flat_map(|t| mots(t)) {
+        if m.starts_with('/') && !vus.contains(&m) {
+            vus.push(m);
+        }
+    }
+    vus.into_iter()
+        .take(SCRIPTS_MAX)
+        .filter_map(|m| {
+            let p = Path::new(m);
+            a.lire(p, SERVICE_MAX)
+                .or_else(|| a.lire(&a.reel(p)?, SERVICE_MAX))
+                .filter(|o| o.starts_with(b"#!"))
+                .map(|o| String::from_utf8_lossy(&o).into_owned())
+        })
+        .collect()
+}
+
+/// Le service lance-t-il un programme de pare-feu, ou en pilote-t-il un ? Ce que le gestionnaire a en mémoire
+/// (lancement et arrêt, chemin et arguments), chaque mot de son fichier, pas seulement des lignes `Exec…=` (une ligne
+/// continuée ou un commentaire comptent aussi, au prix d'un refus de trop), et les scripts qu'ils nomment, un niveau.
+fn service_de_pare_feu(lu: Option<&ArretCharge>, fichier: &[u8], a: &dyn Acces) -> bool {
+    let mut textes: Vec<String> = lu
+        .map(|lu| {
+            lu.lancement
+                .iter()
+                .chain(&lu.arret)
+                .map(|c| {
+                    std::iter::once(c.chemin.as_str())
+                        .chain(c.arguments.iter().map(String::as_str))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    textes.push(String::from_utf8_lossy(fichier).into_owned());
+    let scripts = scripts_nommes(&textes, a);
+    textes
+        .iter()
+        .chain(&scripts)
+        .any(|t| nomme_un_pare_feu(t) || pilote_un_pare_feu(t))
 }
 
 fn juger_service(u: NomUnite, a: &mut dyn Acces, s: &mut dyn Services) -> Jugement {
@@ -1726,7 +1806,7 @@ fn juger_service(u: NomUnite, a: &mut dyn Acces, s: &mut dyn Services) -> Jugeme
             "the file of {nom} cannot be read"
         ))
     })?;
-    if service_de_pare_feu(lu.as_ref(), &texte) {
+    if service_de_pare_feu(lu.as_ref(), &texte, &*a) {
         return Err(refus(trf!(
             "{nom} lance un programme de pare-feu : le couper ferait tomber des règles. Un pare-feu se coupe par les Options de défense (vanguard defense), jamais ici",
             "{nom} runs a firewall program: turning it off would drop rules. A firewall is turned off from the defense Options (vanguard defense), never here"
@@ -3920,6 +4000,56 @@ mod tests {
                 "{vu}"
             );
         }
+        // Contre-relecture D8 (C3) : un script enveloppe qui fait `nft -f` (suivi d'un niveau, lien compris), et un
+        // `systemctl` ou un `service` qui pilote un pare-feu, dans le fichier ou dans la mémoire du gestionnaire.
+        let script: &[u8] = b"#!/bin/sh\nset -e\nnft -f /etc/regles.nft\n";
+        let cas: [(&[u8], Option<ArretCharge>); 5] = [
+            (b"[Service]\nExecStart=/usr/local/sbin/charger-regles.sh\n", None),
+            (b"[Service]\nExecStart=/usr/local/sbin/regles\n", None),
+            (b"[Service]\nExecStart=/usr/bin/systemctl start nftables\n", None),
+            (b"[Service]\nExecStop=/usr/sbin/service ufw.service stop\n", None),
+            (
+                b"[Service]\nExecStart=/opt/m\n",
+                Some(ArretCharge {
+                    arret: vec![commande(
+                        "/bin/sh",
+                        &["sh", "-c", "systemctl stop netfilter-persistent"],
+                    )],
+                    ..ArretCharge::default()
+                }),
+            ),
+        ];
+        for (fichier, charge) in cas {
+            let mut a = Faux::nouveau().repondre("o");
+            a.poser("/etc/systemd/system/filtre.service", fichier, 0o644);
+            a.poser("/usr/local/sbin/charger-regles.sh", script, 0o755);
+            a.liens.insert(
+                PathBuf::from("/usr/local/sbin/regles"),
+                PathBuf::from("/usr/local/sbin/charger-regles.sh"),
+            );
+            let mut s = FauxServices::nouveau();
+            s.charge = charge;
+            let u = NomUnite::nouveau("filtre.service").unwrap();
+            let r = faire_avec(Defense::DesactiverService(u), &mut a, &mut s);
+            let vu = String::from_utf8_lossy(fichier);
+            assert!(!r.reussi, "{vu}");
+            assert!(r.raison.contains("programme de pare-feu"), "{vu} : {}", r.raison);
+            assert!(s.faits.is_empty() && a.notes.is_empty(), "{vu}");
+        }
+        // Un script qui ne touche aucun pare-feu, un fichier de réglages qui n'est pas un script, et un `systemctl`
+        // qui ne pilote pas de pare-feu : désactivé comme avant.
+        let mut a = Faux::nouveau().repondre("o");
+        a.poser(
+            "/etc/systemd/system/sauver.service",
+            b"[Service]\nExecStart=/usr/local/bin/sauver.sh /etc/sauver.conf\nExecStartPost=/usr/bin/systemctl restart rsyncd\n",
+            0o644,
+        );
+        a.poser("/usr/local/bin/sauver.sh", b"#!/bin/sh\nrsync -a /srv /mnt\n", 0o755);
+        a.poser("/etc/sauver.conf", b"nft=1\n", 0o644);
+        let mut s = FauxServices::nouveau();
+        let u = NomUnite::nouveau("sauver.service").unwrap();
+        let r = faire_avec(Defense::DesactiverService(u), &mut a, &mut s);
+        assert!(r.reussi, "{}", r.raison);
         // Rangé après un pare-feu, sans en lancer : désactivé comme avant.
         let mut a = Faux::nouveau().repondre("o");
         a.poser(

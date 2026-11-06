@@ -227,7 +227,9 @@ fn ligne_resultat(r: &Resultat) -> String {
         (true, None) if !r.raison.is_empty() => format!("ok note={}", r.raison.replace(['\r', '\n'], " ")),
         (true, None) => "ok".to_string(),
         (false, _) if r.raison == arret_demande() => ARRETEE.to_string(),
-        // La valeur d'avant n'a pas pu être notée : aucun geste, rien à noter chez le parent.
+        // La valeur d'avant n'a pas pu être notée : aucun geste. Si c'est la borne des notes de ChoixAvant, le parent
+        // note son remède à côté de la ligne (contre-relecture D8, C2) ; sinon rien à noter chez lui.
+        (false, None) if r.raison.contains(crate::machine::choix_avant::trop_de_notes()) => ECHEC_NOTE_TROP.to_string(),
         (false, _) if r.raison.starts_with(corrections::echec_note()) => ECHEC_NOTE.to_string(),
         (false, _) if r.raison.starts_with(au_redemarrage()) => AU_REDEMARRAGE.to_string(),
         // Un échec qui a déjà touché quelque chose (racine retirée d'un seul magasin, valeur relue autre) : la valeur
@@ -263,6 +265,9 @@ const SANS_POINT: &str = "ok sans-point";
 const ARRETEE: &str = "echec arret";
 /// La réponse d'une baisse non faite faute d'avoir pu noter sa valeur d'avant (rien n'a été écrit).
 const ECHEC_NOTE: &str = "echec note";
+/// La même, parce que la clé des notes est pleine : le parent note le remède (`choix_avant::trop_de_notes`) à côté de
+/// la ligne, au lieu d'un échec sans suite.
+const ECHEC_NOTE_TROP: &str = "echec note=trop";
 
 /// La réponse d'un geste laissé à la personne (chkdsk 3).
 const AU_REDEMARRAGE: &str = "echec redemarrage";
@@ -299,6 +304,8 @@ fn lire_reponse(ligne: &str) -> Reponse {
         Some(corrections::NOTE_CHOIX.to_string())
     } else if ligne == SANS_POINT {
         Some(sans_point_accepte().to_string())
+    } else if ligne == ECHEC_NOTE_TROP {
+        Some(crate::machine::choix_avant::trop_de_notes().to_string())
     } else {
         ligne.strip_prefix("ok note=").or(rien).map(str::to_string)
     };
@@ -2120,15 +2127,22 @@ mod tests {
         assert_eq!(note, ECHEC_NOTE);
         let r = lire_reponse(&note);
         assert!(!r.reussi && r.avant.is_none() && !r.arretee && r.note.is_none());
-        // Relecture D8 (N1) : la raison gardée (la borne des notes et son remède) reste dans la console du fils ; le
-        // parent reçoit toujours « echec note ».
+        // Relecture D8 (N1) : la raison gardée (la borne des notes et son remède) reste dans la console du fils.
+        // Contre-relecture (C2) : le parent la reçoit aussi, par une ligne fixe, et note le remède dans sa langue à
+        // côté de la ligne en échec ; une autre note manquée reste « echec note », sans note.
         let pleine = crate::modele::Echec::refuse("essai", crate::machine::choix_avant::trop_de_notes());
         let raison = corrections::echec_note_de(Some(&pleine));
         assert!(
             raison.starts_with(corrections::echec_note()) && raison.contains("Rallumer"),
             "{raison}"
         );
-        assert_eq!(ligne_resultat(&Resultat::echec(None, raison)), ECHEC_NOTE);
+        let trop = ligne_resultat(&Resultat::echec(None, raison));
+        assert_eq!(trop, ECHEC_NOTE_TROP);
+        let r = lire_reponse(&trop);
+        assert!(!r.reussi && r.avant.is_none() && !r.arretee && !r.au_redemarrage);
+        assert_eq!(r.note.as_deref(), Some(crate::machine::choix_avant::trop_de_notes()));
+        let autre = corrections::echec_note_de(Some(&crate::modele::Echec::refuse("essai", "disque plein")));
+        assert_eq!(ligne_resultat(&Resultat::echec(None, autre)), ECHEC_NOTE);
     }
 
     /// Le tube porte au plus deux listes séparées par « suite » (P7), chacune validée comme une liste seule ; une

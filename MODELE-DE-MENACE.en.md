@@ -126,10 +126,12 @@ program cannot make it in their place.
 
 Elsewhere, only two lowerings, each on its own and with the same question: when leaving public Wi-Fi mode, each
 restore that makes the Public profile less blocked (incoming allowed, inbound rules followed again) or puts the
-network back to Private, in its own administrator window (a Public firewall found off on entry is turned on, and
-never turned back off); on Linux, removing a firewall (recognized by its package) from the programs at startup. A
-hand-added service that runs a firewall program (nft, iptables, ufw, firewall-cmd…) is not disabled from the check:
-a firewall is turned off through the Defense options.
+network back to Private, in its own administrator window (a Public firewall found off on entry is turned on, even
+if it was off by choice, and turned back off only if the person asks, through a separate question); on Linux,
+removing a firewall (recognized by its package) from the programs at startup. A hand-added service that runs a
+firewall program (nft, iptables, ufw, firewall-cmd…), directly or through a script it names (one level), or that
+drives one through `systemctl` or `service`, is not disabled from the check: a firewall is turned off through the
+Defense options.
 
 **Why it is allowed, and how.**
 
