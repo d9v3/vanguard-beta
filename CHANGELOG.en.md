@@ -7,6 +7,51 @@ a day, gathering the day's work; October 21 had two, 0.82 in the morning and 0.8
 delivered just before it. Only the latest version has its download page; every version keeps its tag in the repository
 (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 
+## November 6, 2026: version 0.90.0
+
+- **Defense options, on one screen** (`vanguard defense-options`, tool 4.10 on Windows, 4.9 on Linux). What defends the
+  computer, each option read along with what enforces it and adjustable from here:
+  - on Windows: Microsoft Defender's settings, its exclusions and allowed programs; the 19 attack surface reduction
+    (ASR) rules, each one to block, audit or off; Windows Firewall for each profile and its existing rules; the
+    policies (GPO, Intune) that enforce a value, a third-party antivirus, a managed PC;
+  - on Linux: the firewall (ufw, firewalld or nftables), its state, turning it off or back on.
+
+  Strengthening is done after consent. **Lowering is the person's choice, never Vanguard's**: the lowering is shown by
+  the administrator process (root on Linux), confirmed by a typed "y" (Enter alone means no), its previous value
+  recorded first; the check-up calls it "your choice" and "Turn back on" restores it. MODELE-DE-MENACE.en.md has a
+  "Lowered by choice" section that also says what Vanguard refuses no matter what: bypassing tamper protection,
+  stopping the Defender or firewall service, closing the firewall on the network of an ongoing remote session,
+  removing the iptables-nft tables of Docker, libvirt or fail2ban.
+
+- **Confirmed defense actions, on Windows and Linux.** Much of what the check-up and threat hunting find is no longer
+  advice "to do by hand": Vanguard undoes it itself, as administrator (root on Linux), after judging again what it
+  sees, showing the action and getting a yes. The previous value is recorded and "What Vanguard changed" undoes it; an
+  action that cannot be undone is called "cannot be undone" before the question.
+  - Windows: SmartScreen, memory integrity, LSA protection and Credential Guard turned back on; weakening policies
+    removed outside a domain or management; Defender exclusions removed; local account disabled; password set on an
+    account without one, typed in the administrator window only; Sticky Keys restored by `sfc /scanfile`; OpenSSH
+    fixed; added certificate roots removed; hidden launches (Run, tasks, Startup folder, WMI subscriptions) removed,
+    the real Defender recognized by its location and signature, never by its name alone; a remote control tool
+    launched but not connected removed (connected: refused).
+  - Linux: hidden account locked (never deleted), account removed from a sensitive group, passwordless sudo
+    tightened (validated by visudo), suspicious setuid or capabilities removed, secretly added service or startup
+    undone, SSH server hardened (validated by `sshd -t`, open sessions stay), suspicious program stopped after its
+    traces are copied, Vanguard program replaced outside Vanguard restored (the impostor kept in quarantine). An action
+    that could lock the person out of their computer gets a WARNING, and the question defaults to no.
+
+- **Blocking safeguards.** Blocking never touches the ongoing remote session (judged by the program's ancestry and by
+  the actual Remote Desktop port); a Microsoft signature only ever refuses an action, never allows it for another
+  program; Edge, Office and Teams signed by Microsoft are not quarantined, with no immunity for a program taking their
+  name; an administrator quarantine never follows a link; a short (8.3) path is also judged in its long form.
+  `vanguard blocking juger` says what blocking would do, without doing anything.
+
+- **Less PowerShell, on Windows and Linux alike.** Accounts, certificate roots and shares, persistence (Run, tasks,
+  common Startup, WMI subscriptions) and Defender go through Vanguard's administrator process without PowerShell; on
+  Linux, services are handled by systemd over the bus, with polkit, without `sudo systemctl`.
+
+- **Small things.** In menus, the terminal cursor no longer jumps from one line to another. A fix returns an exit code
+  that says what was done. The .evtx log reader follows evtx 0.15.1 (RUSTSEC-2026-0431).
+
 ## November 3, 2026: version 0.89.1
 
 - **Vanguard Agent (no AI).** A part of Vanguard that helps it run better on your computer, with no AI and without

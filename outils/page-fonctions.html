@@ -735,18 +735,16 @@ vanguard yara --complet</pre>
     <div class="tete-section">
       <p class="surtitre">Nouveautés de la version {{VERSION_COURTE}}</p>
       <h2>Ce qui vient d'arriver</h2>
-      <p>Une version où les corrections de Windows se font sans PowerShell, et où un verdict ne ment plus : une menace notée, une pièce jointe piégée ou un échec sont dits comme tels. La 0.89.1 y ajoute l'Agent Vanguard, sans IA, et prépare le partage avec l'auteur, sans rien envoyer.</p>
+      <p>Une version où ce qui défend l'ordinateur tient en un écran, et où ce que le bilan trouve de plus grave se défait par un geste montré puis confirmé, sous Windows comme sous Linux. Baisser une protection reste le choix de la personne, jamais celui de Vanguard.</p>
     </div>
     <ul class="nouveautes">
-      <li><b>Agent Vanguard (sans IA)</b><span>Il règle Vanguard lui-même, dans le sens sûr seulement : un délai qui monte, une cache qui raccourcit ou se coupe ; quatre missions, un interrupteur chacune, tout s'annule.</span></li>
-      <li><b>Partage avec l'auteur, préparé</b><span>Un relevé local, lisible tel quel, effacé par « Non » ; rien ne part dans cette version, faute de relais en service.</span></li>
-      <li><b>Services de Windows sans PowerShell</b><span>Arrêter, démarrer, désactiver ou remettre un service passe directement par Windows ; aucune action ne peut couper une protection.</span></li>
-      <li><b>Pare-feu et type de réseau sans PowerShell</b><span>Chaque changement est relu ; jamais de blocage des entrées pendant une connexion à distance.</span></li>
-      <li><b>Onze corrections du registre sans PowerShell</b><span>Bureau à distance, NetBIOS, SMBv1, débogueurs piégés… : la valeur est rejugée juste avant d'écrire, et celle d'avant notée pour Défaire.</span></li>
-      <li><b>Pièces jointes piégées</b><span>Scripts cachés dans les images SVG, archives zip relues sans croire leur sommaire, noms truqués par des caractères invisibles.</span></li>
-      <li><b>Defender sans « ✔ » à tort</b><span>Une menace notée compte toujours ; une exclusion qui couvre le fichier enlève le « ✔ ».</span></li>
-      <li><b>Point de restauration vérifié</b><span>Seul un point nouveau dans la liste de Windows compte ; sinon la raison est dite avant de continuer.</span></li>
-      <li><b>Fenêtre administrateur figée</b><span>Les outils de Windows sont pris dans le dossier du système, avec un environnement réduit : un programme posé dans le compte ne peut plus se glisser à leur place.</span></li>
+      <li><b>Options de défense</b><span>Defender, les 19 règles ASR et le Pare-feu Windows de chaque profil ; sous Linux, ufw, firewalld ou nftables. Chaque option lue avec ce qui l'impose et réglable d'ici.</span></li>
+      <li><b>Baisses par choix</b><span>Une baisse est montrée par le processus administrateur, confirmée par un « o » tapé, sa valeur d'avant notée ; le bilan la dit « par votre choix » et « Rallumer » la remet.</span></li>
+      <li><b>Gestes de défense sous Windows</b><span>Protections rallumées, stratégies qui affaiblissent retirées, comptes, racines de certificat, OpenSSH et lancements cachés défaits ; le vrai Defender reconnu à sa signature, jamais à son nom.</span></li>
+      <li><b>Gestes de défense sous Linux</b><span>Compte caché verrouillé, sudo sans mot de passe durci, setuid suspect retiré, SSH durci et validé, programme de Vanguard remplacé remis ; un geste qui pourrait vous couper de l'ordinateur dit non par défaut.</span></li>
+      <li><b>Session à distance gardée</b><span>Le blocage et le pare-feu ne coupent jamais la session à distance en cours, jugée par l'ascendance du programme et par le port réel du Bureau à distance.</span></li>
+      <li><b>Moins de PowerShell</b><span>Comptes, partages, persistance et Defender passent par le processus administrateur de Vanguard ; sous Linux, les services par systemd et polkit, sans <code>sudo systemctl</code>.</span></li>
+      <li><b>Curseur tranquille</b><span>Dans les menus, le curseur du terminal ne sautille plus d'une ligne à l'autre.</span></li>
     </ul>
   </section>
 

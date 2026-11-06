@@ -7,6 +7,54 @@ une seule publication par jour, qui regroupe le travail de la journée ; le 21 o
 la 0.84 au soir, qui reprend la 0.83 livrée juste avant elle. Seule la dernière version a sa page de téléchargement ;
 chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par exemple), pour être recompilée au besoin.
 
+## 6 novembre 2026 : version 0.90.0
+
+- **Options de défense, en un écran** (`vanguard options-defense`, outil 4.10 sous Windows, 4.9 sous Linux). Ce qui
+  défend l'ordinateur, chaque option lue avec ce qui l'impose et réglable d'ici :
+  - sous Windows : les réglages de Microsoft Defender, ses exclusions et ses programmes permis ; les 19 règles de
+    réduction de la surface d'attaque (ASR), chacune à bloquer, en audit ou désactivée ; le Pare-feu Windows de chaque
+    profil et ses règles existantes ; les stratégies (GPO, Intune) qui imposent une valeur, un antivirus tiers, un PC
+    géré ;
+  - sous Linux : le pare-feu (ufw, firewalld ou nftables), son état, le couper ou le rallumer.
+
+  Renforcer se fait après accord. **Baisser est le choix de la personne, jamais celui de Vanguard** : la baisse est
+  montrée par le processus administrateur (root sous Linux), confirmée par un « o » tapé (Entrée seule dit non), sa
+  valeur d'avant notée d'abord ; le bilan la dit « par votre choix » et « Rallumer » la remet. MODELE-DE-MENACE.md a
+  une section « Baisses par choix » qui dit aussi ce que Vanguard refuse quoi qu'il arrive : contourner la protection
+  contre les falsifications, arrêter le service de Defender ou du pare-feu, fermer le pare-feu sur le réseau d'une
+  session à distance en cours, retirer les tables d'iptables-nft de Docker, libvirt ou fail2ban.
+
+- **Gestes de défense confirmés, sous Windows et sous Linux.** Une bonne part de ce que le bilan et la chasse aux
+  menaces trouvent ne reste plus un conseil « à faire à la main » : Vanguard le défait lui-même, en administrateur
+  (root sous Linux), après avoir rejugé ce qu'il voit, montré le geste et reçu un oui. La valeur d'avant est notée et
+  « Ce que Vanguard a changé » l'annule ; un geste qui ne s'annulera pas est dit « non annulable » avant la question.
+  - Windows : SmartScreen, intégrité de la mémoire, protection LSA et Credential Guard rallumés ; stratégies qui
+    affaiblissent retirées hors domaine et hors gestion ; exclusions de Defender retirées ; compte local désactivé ;
+    mot de passe posé sur un compte qui n'en a pas, tapé dans la fenêtre administrateur seulement ; touches
+    rémanentes remises par `sfc /scanfile` ; OpenSSH corrigé ; racines de certificat ajoutées retirées ; lancements
+    cachés (Run, tâches, dossier Démarrage, abonnements WMI) retirés, le vrai Defender reconnu à sa place et à sa
+    signature, jamais à son seul nom ; un outil de prise de contrôle lancé mais pas connecté retiré (connecté :
+    refusé).
+  - Linux : compte caché verrouillé (jamais supprimé), compte retiré d'un groupe sensible, sudo sans mot de passe
+    durci (validé par visudo), setuid ou capacités suspects retirés, service ou démarrage ajouté en cachette défait,
+    serveur SSH durci (validé par `sshd -t`, les sessions ouvertes restent), programme suspect arrêté après la copie de
+    ses traces, programme de Vanguard remplacé hors de Vanguard remis (l'imposteur gardé en quarantaine). Un geste qui
+    pourrait couper la personne de son ordinateur reçoit un AVERTISSEMENT, et la question dit non par défaut.
+
+- **Gardes du blocage.** Le blocage ne touche jamais la session à distance en cours (jugée par l'ascendance du
+  programme et par le port réel du Bureau à distance) ; une signature Microsoft ne fait que refuser un geste, jamais
+  l'autoriser pour un autre programme ; Edge, Office et Teams signés Microsoft ne sont pas mis en quarantaine, sans
+  immunité pour un programme qui prendrait leur nom ; une quarantaine en administrateur ne suit jamais un lien ; un
+  chemin court (8.3) se juge aussi en long. `vanguard blocage juger` dit ce que le blocage ferait, sans rien faire.
+
+- **Moins de PowerShell, sous Windows comme sous Linux.** Les comptes, racines de certificat et partages, la
+  persistance (Run, tâches, Démarrage commun, abonnements WMI) et Defender passent par le processus administrateur de
+  Vanguard sans PowerShell ; sous Linux, les services se règlent par systemd sur le bus, avec polkit, sans `sudo
+  systemctl`.
+
+- **Petites choses.** Dans les menus, le curseur du terminal ne sautille plus d'une ligne à l'autre. Une correction
+  rend un code de sortie qui dit ce qui a été fait. Le lecteur des journaux .evtx suit evtx 0.15.1 (RUSTSEC-2026-0431).
+
 ## 3 novembre 2026 : version 0.89.1
 
 - **Agent Vanguard (sans IA).** Une partie de Vanguard qui l'aide à mieux tourner sur votre ordinateur, sans IA et
