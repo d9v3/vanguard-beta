@@ -35,6 +35,9 @@ pub(crate) enum EtatPf {
     Coupe,
     /// Lancé au démarrage mais arrêté, ou l'inverse.
     AMoitie,
+    /// ufw : ENABLED=yes, son unité arrêtée. `ufw enable` charge ses règles sans lancer l'unité : il filtre
+    /// peut-être (essai QEMU de D7c) ; seul `ufw status`, en root, le dit. Ni « allumé » ni « coupé ».
+    AuDemarrage,
     /// Rien de sûr sans droits root (les règles de nftables, un état de systemd qui ne répond pas).
     NonVerifie,
 }
@@ -45,6 +48,7 @@ impl EtatPf {
             EtatPf::Allume => "allume",
             EtatPf::Coupe => "coupe",
             EtatPf::AMoitie => "a-moitie",
+            EtatPf::AuDemarrage => "au-demarrage",
             EtatPf::NonVerifie => "non-verifie",
         }
     }
@@ -109,7 +113,7 @@ pub(crate) fn juger(p: PareFeu, m: &Mesures) -> Lu {
             let etat = match (m.conf_ufw.as_deref().and_then(ufw_enabled), m.active) {
                 (Some(false), _) => EtatPf::Coupe,
                 (Some(true), Some(true)) => EtatPf::Allume,
-                (Some(true), Some(false)) => EtatPf::AMoitie,
+                (Some(true), Some(false)) => EtatPf::AuDemarrage,
                 _ => EtatPf::NonVerifie,
             };
             (installe, etat, None)
@@ -199,12 +203,13 @@ pub(crate) fn lire() -> Vec<Lu> {
     PareFeu::TOUS.iter().map(|&p| juger(p, &mesurer(p))).collect()
 }
 
-/// Le pare-feu coupé par le choix de la personne (sa note est là), pour le bilan (P9) : le plus récent.
-pub(crate) fn coupe_par_choix() -> Option<(PareFeu, u64)> {
+/// Les pare-feu coupés par le choix de la personne (leur note est là), pour le bilan (P9) : tous, car deux coupures
+/// peuvent coexister (ufw coupé, puis firewalld installé et coupé à son tour).
+pub(crate) fn coupes_par_choix() -> Vec<(PareFeu, u64)> {
     PareFeu::TOUS
         .iter()
         .filter_map(|&p| Some((p, note_de(p).flatten()?)))
-        .max_by_key(|(_, d)| *d)
+        .collect()
 }
 
 /// La note de la coupure de `p` est-elle là ? `None` : illisible.
@@ -226,6 +231,11 @@ fn texte_etat(l: &Lu) -> String {
         EtatPf::AMoitie => tr!(
             "à moitié (lancé au démarrage ou en marche, pas les deux)",
             "half (started at boot or running, not both)"
+        )
+        .to_string(),
+        EtatPf::AuDemarrage => tr!(
+            "lancé au démarrage ; en marche : lu seulement avec les droits root",
+            "started at boot; running: read only with root rights"
         )
         .to_string(),
         EtatPf::NonVerifie => tr!("non vérifié", "not checked").to_string(),
@@ -376,8 +386,9 @@ pub(crate) fn ligne_rallumer(p: PareFeu, note: bool) -> Option<String> {
 
 /// Coupe `p` : la ligne seule (liste pure), envoyée à l'enfant élevé, qui lit les règles, montre la baisse, avertit
 /// et demande [o/N] sur le terminal, puis écrit la note d'« avant ». La note est aussi gardée dans « Ce que Vanguard a
-/// changé » (Défaire), relevée et scellée avant : sans elle, rien ne part. Une note de root déjà là (coupé par votre
-/// choix, ou rallumé depuis hors de Vanguard) : l'enfant la juge ; Défaire n'est alors pas noté une seconde fois,
+/// changé » (Défaire), relevée et scellée avant : si elle ne peut pas être écrite, rien ne part. Si elle ne peut pas
+/// être relevée (une note de root déjà là : coupé par votre choix, ou rallumé depuis hors de Vanguard ; ou le dossier
+/// illisible), la ligne part sans elle : l'enfant juge sa propre note ; Défaire n'est alors pas noté une seconde fois,
 /// « Rallumer » la remet.
 pub(crate) fn couper(p: PareFeu) -> bool {
     let titre = trf!("Pare-feu {} coupé", "Firewall {} turned off", p.mot());
@@ -516,7 +527,8 @@ mod tests {
         let j = |c, a| juger(PareFeu::Ufw, &m(c, true, None, a)).etat;
         assert_eq!(j(Some("ENABLED=yes"), Some(true)), EtatPf::Allume);
         assert_eq!(j(Some("ENABLED=no"), Some(true)), EtatPf::Coupe);
-        assert_eq!(j(Some("ENABLED=yes"), Some(false)), EtatPf::AMoitie);
+        // Unité arrêtée après un `ufw enable` : il filtre peut-être ; ni « à moitié », ni « allumé », ni « coupé ».
+        assert_eq!(j(Some("ENABLED=yes"), Some(false)), EtatPf::AuDemarrage);
         // Non lu n'est jamais « allumé » ni « coupé ».
         assert_eq!(j(Some("ENABLED=yes"), None), EtatPf::NonVerifie);
         assert_eq!(j(None, Some(true)), EtatPf::NonVerifie);

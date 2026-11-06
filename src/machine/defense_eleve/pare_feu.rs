@@ -162,7 +162,14 @@ fn liste_lisible(tables: &[(String, String)]) -> String {
 /// par un programme qui tourne (`flags owner`) ou celle d'iptables (Docker, libvirt, fail2ban…) n'est jamais retirée.
 pub(super) fn juger_table(f: &str, n: &str, r: &Sortie) -> Result<(), Echec> {
     let vu = format!("{f} {n}");
-    if r.sortie.lines().next().map(str::trim_end) != Some(&format!("table {f} {n} {{")) {
+    // D'abord iptables : nft écrit son avertissement (« # Warning: table … is managed by iptables-nft ») en tête.
+    if r.sortie.contains("iptables-nft") || r.erreurs.contains("iptables-nft") {
+        return Err(refus(trf!(
+            "la table {vu} est celle d'iptables (Docker, libvirt, fail2ban…) : Vanguard ne la retire pas",
+            "the table {vu} is iptables' (Docker, libvirt, fail2ban…): Vanguard does not remove it"
+        )));
+    }
+    if r.sortie.lines().find(|l| !l.starts_with('#')).map(str::trim_end) != Some(&format!("table {f} {n} {{")) {
         return Err(refus(trf!(
             "la table {vu} de nftables a une forme que Vanguard ne relit pas : rien n'est fait",
             "the nftables table {vu} has a form Vanguard does not read: nothing is done"
@@ -177,12 +184,6 @@ pub(super) fn juger_table(f: &str, n: &str, r: &Sortie) -> Result<(), Echec> {
         return Err(refus(trf!(
             "la table {vu} appartient à un programme qui tourne (flags owner) : Vanguard ne la retire pas. Arrêtez ce programme d'abord",
             "the table {vu} belongs to a running program (flags owner): Vanguard does not remove it. Stop that program first"
-        )));
-    }
-    if r.sortie.contains("iptables-nft") || r.erreurs.contains("iptables-nft") {
-        return Err(refus(trf!(
-            "la table {vu} est celle d'iptables (Docker, libvirt, fail2ban…) : Vanguard ne la retire pas",
-            "the table {vu} is iptables' (Docker, libvirt, fail2ban…): Vanguard does not remove it"
         )));
     }
     Ok(())
@@ -211,8 +212,8 @@ fn sauvegarde(a: &mut dyn Acces, tables: &[(String, String)]) -> Result<String, 
 }
 
 /// Une session SSH est-elle peut-être ouverte sur cet ordinateur ? Vrai aussi quand on ne peut pas dire le contraire :
-/// la lignée de Vanguard illisible ou dans sshd, les sessions illisibles, une session distante, ou une connexion TCP
-/// établie sur le port 22.
+/// la lignée de Vanguard illisible ou dans sshd, les sessions illisibles, une session distante, une connexion TCP
+/// établie sur le port 22, ou une connexion entrante venue d'ailleurs sur un port en écoute (sshd sur un autre port).
 pub(super) fn ssh_peut_etre_ouvert(a: &dyn Acces, s: &mut dyn Services) -> bool {
     let lignee = s.groupes_de_la_lignee();
     if lignee.is_empty() || lignee.iter().any(|g| systeme::groupe_ssh(g)) {
@@ -233,19 +234,46 @@ pub(super) fn ssh_peut_etre_ouvert(a: &dyn Acces, s: &mut dyn Services) -> bool 
     })
 }
 
-/// Une connexion établie (état 01) dont le port local est 22 (0016), dans /proc/net/tcp ou tcp6.
+/// Dans /proc/net/tcp ou tcp6 : une connexion établie (état 01) dont le port local est 22 (0016), ou dont le port local
+/// est aussi en écoute (état 0A : une connexion entrante, pas une sortante) et l'adresse distante n'est pas la boucle
+/// locale. sshd peut écouter sur un autre port que 22 (relecture de D7c) ; une autre connexion entrante (VNC, Bureau à
+/// distance) avertit aussi, par prudence.
 pub(super) fn tcp_ssh_etabli(t: &str) -> bool {
-    t.lines().skip(1).any(|l| {
-        let m: Vec<&str> = l.split_whitespace().collect();
-        matches!((m.get(1), m.get(3)), (Some(local), Some(&"01")) if local.rsplit(':').next() == Some("0016"))
+    let lignes: Vec<Vec<&str>> = t.lines().skip(1).map(|l| l.split_whitespace().collect()).collect();
+    let port = |adresse: &str| adresse.rsplit(':').next().map(str::to_ascii_uppercase);
+    let ecoute: std::collections::HashSet<String> = lignes
+        .iter()
+        .filter(|m| m.get(3) == Some(&"0A"))
+        .filter_map(|m| port(m.get(1)?))
+        .collect();
+    lignes.iter().any(|m| {
+        let (Some(local), Some(distante), Some(&"01")) = (m.get(1), m.get(2), m.get(3)) else {
+            return false;
+        };
+        let Some(p) = port(local) else {
+            return false;
+        };
+        p == "0016" || (ecoute.contains(&p) && !boucle_locale(distante.split(':').next().unwrap_or("")))
     })
+}
+
+/// Une adresse de /proc/net/tcp (127.0.0.0/8, octets à l'envers) ou tcp6 (::1, ou 127.x.x.x vue en IPv6) en hexadécimal.
+fn boucle_locale(hex: &str) -> bool {
+    let h = hex.to_ascii_uppercase();
+    match h.len() {
+        8 => h.ends_with("7F"),
+        32 => {
+            h == "00000000000000000000000001000000" || (h.starts_with("0000000000000000FFFF0000") && h.ends_with("7F"))
+        }
+        _ => false,
+    }
 }
 
 fn avertissement_ssh(a: &dyn Acces, s: &mut dyn Services, quoi: &str) -> Option<String> {
     ssh_peut_etre_ouvert(a, s).then(|| {
         trf!(
-            "une session SSH est peut-être ouverte sur cet ordinateur (ou Vanguard ne peut pas dire le contraire). {quoi} Si vous êtes connecté de loin, répondez non et faites-le depuis l'écran de l'ordinateur.",
-            "an SSH session may be open on this computer (or Vanguard cannot tell otherwise). {quoi} If you are connected from afar, answer no and do it from the computer's own screen."
+            "une session SSH (ou une autre connexion venue d'ailleurs) est peut-être ouverte sur cet ordinateur (ou Vanguard ne peut pas dire le contraire). {quoi} Si vous êtes connecté de loin, répondez non et faites-le depuis l'écran de l'ordinateur.",
+            "an SSH session (or another connection from elsewhere) may be open on this computer (or Vanguard cannot tell otherwise). {quoi} If you are connected from afar, answer no and do it from the computer's own screen."
         )
     })
 }
@@ -800,11 +828,25 @@ fn rallumer_nftables(a: &mut dyn Acces, s: &mut dyn Services) -> Jugement {
     if charger {
         // Charger la configuration du système commence d'ordinaire par vider toutes les règles (`flush ruleset`) :
         // les blocages de Vanguard partiraient avec.
-        if lire_tables(a)?.iter().any(de_vanguard) {
-            return Err(refus(tr!(
-                "les blocages de Vanguard sont en place (ses tables de nftables) : charger la configuration de nftables les viderait. Rien n'est fait ; levez-les d'abord, ou rallumez nftables après",
-                "Vanguard's blocks are in place (its nftables tables): loading the nftables configuration would empty them. Nothing is done; lift them first, or turn nftables back on afterwards"
-            )));
+        let presentes = lire_tables(a)?;
+        let a_lui = |nom: &str| presentes.iter().any(|t| de_vanguard(t) && t.1 == nom);
+        let quoi = match (a_lui("vanguard"), a_lui("vanguard_public")) {
+            (false, false) => None,
+            (true, false) => Some(tr!(
+                "les blocages de Vanguard sont en place (table inet vanguard) : charger la configuration de nftables les viderait. Rien n'est fait ; levez-les d'abord, ou rallumez nftables après",
+                "Vanguard's blocks are in place (table inet vanguard): loading the nftables configuration would empty them. Nothing is done; lift them first, or turn nftables back on afterwards"
+            )),
+            (false, true) => Some(tr!(
+                "le mode Wi-Fi public de Vanguard est en place (table inet vanguard_public) : charger la configuration de nftables le viderait. Rien n'est fait ; sortez du mode Wi-Fi public d'abord, ou rallumez nftables après",
+                "Vanguard's public Wi-Fi mode is on (table inet vanguard_public): loading the nftables configuration would empty it. Nothing is done; leave public Wi-Fi mode first, or turn nftables back on afterwards"
+            )),
+            (true, true) => Some(tr!(
+                "les blocages et le mode Wi-Fi public de Vanguard sont en place (tables inet vanguard et inet vanguard_public) : charger la configuration de nftables les viderait. Rien n'est fait ; levez les blocages et sortez du mode Wi-Fi public d'abord, ou rallumez nftables après",
+                "Vanguard's blocks and public Wi-Fi mode are on (tables inet vanguard and inet vanguard_public): loading the nftables configuration would empty them. Nothing is done; lift the blocks and leave public Wi-Fi mode first, or turn nftables back on afterwards"
+            )),
+        };
+        if let Some(q) = quoi {
+            return Err(refus(q));
         }
         actions.push(Action::UniteSysteme(
             if tourne(&e.1) {

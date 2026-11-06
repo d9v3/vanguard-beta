@@ -506,21 +506,41 @@ fn zone_par_defaut(conf: &str) -> Option<String> {
 }
 
 /// La date de la coupure de `p` par les Options de défense, si sa note est là.
-fn choix_pare_feu(p: crate::machine::gestes_unix::PareFeu) -> Option<u64> {
-    crate::options_defense::linux::coupe_par_choix().and_then(|(q, d)| (q == p).then_some(d))
-}
-
-/// Un pare-feu coupé par la personne (sa note est là) : une information, jamais « sain » ni une correction faite
-/// d'office ; « Rallumer » est proposé (P9). Les ports ouverts restent dits sans pare-feu (le constat a un niveau).
-fn par_votre_choix(p: crate::machine::gestes_unix::PareFeu, date: u64) -> Constat {
-    let date = crate::machine::choix_avant::date_note(date);
-    let nom = p.mot();
+/// Les pare-feu coupés par la personne (leur note est là) : une information, jamais « sain » ni une correction faite
+/// d'office ; « Rallumer » est proposé pour chacun (P9). Les ports ouverts restent dits sans pare-feu (le constat a un
+/// niveau). nftables : sans droits root, seule la note le dit, et c'est écrit.
+fn par_votre_choix(coupes: &[(crate::machine::gestes_unix::PareFeu, u64)]) -> Constat {
+    use crate::machine::gestes_unix::PareFeu;
+    let noms: Vec<String> = coupes
+        .iter()
+        .map(|&(p, date)| {
+            let date = crate::machine::choix_avant::date_note(date);
+            let nom = p.mot();
+            if p == PareFeu::Nftables {
+                trf!(
+                    "{nom} : coupé par votre choix le {date} (d'après la note de Vanguard ; Couper ou Rallumer la met à jour)",
+                    "{nom}: turned off by your choice on {date} (according to Vanguard's note; Turn off or Turn back on updates it)"
+                )
+            } else {
+                trf!(
+                    "{nom} : coupé par votre choix le {date}",
+                    "{nom}: turned off by your choice on {date}"
+                )
+            }
+        })
+        .collect();
+    let commandes: Vec<String> = coupes
+        .iter()
+        .map(|&(p, _)| crate::options_defense::linux::commande_rallumer(p))
+        .collect();
+    let commandes: Vec<&str> = commandes.iter().map(String::as_str).collect();
     alerte(
         "Pare-feu",
         Niveau::Info,
         trf!(
-            "Pare-feu {nom} : coupé par votre choix le {date}. Tout service ouvert est joignable depuis le réseau. Si ce n'est pas vous : Rallumer.",
-            "Firewall {nom}: turned off by your choice on {date}. Every open service can be reached from the network. If it was not you: Turn back on."
+            "Pare-feu {}. Tout service ouvert est joignable depuis le réseau. Si ce n'est pas vous : Rallumer.",
+            "Firewall {}. Every open service can be reached from the network. If it was not you: Turn back on.",
+            noms.join(" ; ")
         ),
     )
     .manuel(
@@ -528,7 +548,7 @@ fn par_votre_choix(p: crate::machine::gestes_unix::PareFeu, date: u64) -> Consta
             "Rallumer (Options de défense), si ce n'est pas vous qui l'avez coupé",
             "Turn back on (Defense options), if you did not turn it off"
         ),
-        &[&crate::options_defense::linux::commande_rallumer(p)],
+        &commandes,
     )
 }
 
@@ -549,6 +569,7 @@ fn pare_feu() -> Constat {
         );
     }
     let actif = |nom: &str| SERVICES.iter().zip(&etats).any(|(n, e)| *n == nom && *e == Some(true));
+    let coupes = crate::options_defense::linux::coupes_par_choix();
     if ufw_active_dans_sa_configuration() && actif("ufw") {
         // Actif ne suffit pas : encore faut-il qu'il bloque les connexions entrantes par défaut.
         let politique = std::fs::read_to_string("/etc/default/ufw")
@@ -608,9 +629,12 @@ fn pare_feu() -> Constat {
             ),
             None => ok("Pare-feu", tr!("firewalld est actif.", "firewalld is running.")),
         }
-    } else if let Some(date) = choix_pare_feu(crate::machine::gestes_unix::PareFeu::Nftables) {
+    } else if coupes
+        .iter()
+        .any(|(p, _)| *p == crate::machine::gestes_unix::PareFeu::Nftables)
+    {
         // Couper nftables vide ses règles sans arrêter son service (toujours « active ») : la note seule le dit.
-        par_votre_choix(crate::machine::gestes_unix::PareFeu::Nftables, date)
+        par_votre_choix(&coupes)
     } else if let Some(s) = ["nftables", "iptables", "ip6tables"].into_iter().find(|s| actif(s)) {
         ok(
             "Pare-feu",
@@ -619,8 +643,8 @@ fn pare_feu() -> Constat {
                 "{s} is running (rules not readable without root rights)."
             ),
         )
-    } else if let Some((p, date)) = crate::options_defense::linux::coupe_par_choix() {
-        par_votre_choix(p, date)
+    } else if !coupes.is_empty() {
+        par_votre_choix(&coupes)
     } else {
         let installer_ufw = match Paquets::detecter() {
             Some(g) => g.installer("ufw"),
@@ -3160,10 +3184,17 @@ Failed password for alice from 10.0.0.12 port 50001 ssh2";
     fn pare_feu_coupe_par_votre_choix() {
         use crate::machine::gestes_unix::PareFeu;
         for p in PareFeu::TOUS {
-            let c = par_votre_choix(p, 1_762_400_000);
+            let c = par_votre_choix(&[(p, 1_762_400_000)]);
             assert_eq!(c.probleme, Some(Niveau::Info));
             assert!(c.verifie);
             assert!(c.message.contains(p.mot()));
+            // nftables : sans droits root, seule la note le dit (relecture de D7c, B4).
+            assert_eq!(
+                c.message.contains("note de Vanguard"),
+                p == PareFeu::Nftables,
+                "{}",
+                c.message
+            );
             let k = c.correctif.expect("Rallumer proposé");
             assert!(!k.automatique);
             assert_eq!(
@@ -3171,6 +3202,20 @@ Failed password for alice from 10.0.0.12 port 50001 ssh2";
                 [format!("vanguard options-defense --rallumer pare-feu-{}", p.mot())]
             );
         }
+        // Deux coupures à la fois : les deux nommées, un Rallumer pour chacune (relecture de D7c, B2).
+        let c = par_votre_choix(&[(PareFeu::Ufw, 1_762_400_000), (PareFeu::Firewalld, 1_762_500_000)]);
+        assert!(
+            c.message.contains("ufw") && c.message.contains("firewalld"),
+            "{}",
+            c.message
+        );
+        assert_eq!(
+            c.correctif.expect("Rallumer proposé").commandes,
+            [
+                "vanguard options-defense --rallumer pare-feu-ufw",
+                "vanguard options-defense --rallumer pare-feu-firewalld"
+            ]
+        );
     }
 
     #[test]

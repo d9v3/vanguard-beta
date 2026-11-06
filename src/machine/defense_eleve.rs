@@ -402,7 +402,14 @@ pub(crate) fn faire(d: Defense, id: IdNote, a: &mut dyn Acces, s: &mut dyn Servi
     let fait = agir(action, a, s);
     let relu = juger(d, a, s);
     match (fait, relu) {
-        (Ok(()), Ok(None)) if p1.non_annulable => Resultat::ok_note(trf!("{phrase} : fait", "{phrase}: done")),
+        (Ok(()), Ok(None)) if p1.non_annulable => {
+            // Rallumer un pare-feu sans note (D7c) : rien à garder (champs vides) et Défaire le refuse ; la note
+            // resterait à jamais dans le dossier des notes.
+            if matches!(d, Defense::RallumerPareFeu(_)) && p1.champs.is_empty() {
+                let _ = a.note_retirer(id);
+            }
+            Resultat::ok_note(trf!("{phrase} : fait", "{phrase}: done"))
+        }
         (Ok(()), Ok(None)) => Resultat::ok_note(trf!(
             "{phrase} : fait ; Défaire le remet comme avant",
             "{phrase}: done; Undo puts it back as before"

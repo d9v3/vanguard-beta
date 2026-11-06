@@ -153,6 +153,8 @@ struct ServicesPf {
     faits: Vec<String>,
     tables: Tables,
     conf_nft: Vec<Table>,
+    /// Cette action (son mot) échoue, sans rien changer.
+    echoue: Option<&'static str>,
 }
 
 impl ServicesPf {
@@ -164,6 +166,7 @@ impl ServicesPf {
             faits: Vec::new(),
             tables: Rc::clone(tables),
             conf_nft: Vec::new(),
+            echoue: None,
         }
     }
 
@@ -199,6 +202,9 @@ impl Services for ServicesPf {
     }
     fn unite(&mut self, action: ActionUnite, u: &str) -> Result<(), Echec> {
         self.faits.push(format!("{} {u}", action.mot()));
+        if self.echoue == Some(action.mot()) {
+            return Err(echoue("refusé"));
+        }
         let e = self.unites.get_mut(u).ok_or_else(|| echoue("absente"))?;
         let (etat, activite) = match action {
             ActionUnite::Activer => ("enabled", "active"),
@@ -426,8 +432,17 @@ fn rallumer_sans_note_est_non_annulable() {
         "{:?}",
         a.notes
     );
+    // Ni aucune autre : la note vide du geste, qui ne servirait à rien, est retirée (relecture de D7c, B1).
+    assert!(a.notes.is_empty(), "{:?}", a.notes);
+    // Défaire n'a donc rien à remettre : rien n'est fait (le pare-feu n'est pas recoupé).
     let mut a = a.repondre("o");
-    assert!(!faire(Defense::Remettre, id(), &mut a, &mut s).reussi);
+    let d = faire(Defense::Remettre, id(), &mut a, &mut s);
+    assert!(
+        d.note.as_deref().is_some_and(|n| n.contains("rien à remettre")),
+        "{:?}",
+        d.note
+    );
+    assert_eq!(a.questions.len(), 1, "{:?}", a.questions);
     assert_eq!(s.faits.len(), 1, "{:?}", s.faits);
     assert!(!r.note.unwrap().contains("Défaire"));
 
@@ -529,6 +544,28 @@ fn nftables_couper_garde_vanguard_puis_defaire() {
 }
 
 #[test]
+fn nftables_suite_interrompue_note_gardee_puis_defaire() {
+    // Les tables retirées, puis le service refuse d'être désactivé : la note d'avant reste, et Défaire remet les
+    // tables (relecture de D7c, essai n° 2).
+    let (a, mut s) = faux_nft();
+    let mut a = a.repondre("o");
+    s.echoue = Some(ActionUnite::DesactiverSansArreter.mot());
+    let r = couper(PareFeu::Nftables, &mut a, &mut s);
+    assert!(!r.reussi, "{}", r.raison);
+    assert_eq!(*a.pf.tables.borrow(), [table("inet", "vanguard", BLOCAGE)]);
+    assert_eq!(s.etat(NFTABLES), ("enabled", "active"));
+    assert!(a.notes.contains_key(PareFeu::Nftables.note().as_str()), "{:?}", a.notes);
+    s.echoue = None;
+    let mut a = a.repondre("o");
+    let r = remettre_pf(PareFeu::Nftables, &mut a, &mut s);
+    assert!(r.reussi, "{}", r.raison);
+    let t = a.pf.tables.borrow().clone();
+    assert!(t.contains(&table("inet", "filter", FILTRE)) && t.len() == 2, "{t:?}");
+    assert_eq!(s.etat(NFTABLES), ("enabled", "active"));
+    assert!(a.notes.is_empty(), "{:?}", a.notes);
+}
+
+#[test]
 fn nftables_sauvegarde_refusee_par_nft_c_rien_coupe() {
     let (a, mut s) = faux_nft();
     let mut a = a.repondre("o");
@@ -561,6 +598,22 @@ fn nftables_tables_tenues_par_un_programme_refusees() {
         assert!(!r.reussi, "{corps}");
         rien_change(&a, &s, &avant);
     }
+}
+
+#[test]
+fn nftables_table_d_iptables_nommee_meme_avertissement_en_tete() {
+    // nft écrit son avertissement avant la ligne `table` : le refus dit iptables, pas « une forme » (relecture, B6).
+    let r = sortie(
+        0,
+        "# Warning: table ip filter is managed by iptables-nft, do not touch!\ntable ip filter {\n\tchain INPUT {\n\t}\n}\n",
+    );
+    let e = pare_feu::juger_table("ip", "filter", &r).unwrap_err();
+    assert!(format!("{e:?}").contains("celle d'iptables"), "{e:?}");
+    // Une ligne « # » en tête sans iptables ne change pas le jugement de la table qui suit.
+    let r = sortie(0, "# note\ntable inet filter {\n\tchain input {\n\t}\n}\n");
+    assert!(pare_feu::juger_table("inet", "filter", &r).is_ok());
+    let r = sortie(0, "# note\ntable inet autre {\n}\n");
+    assert!(pare_feu::juger_table("inet", "filter", &r).is_err());
 }
 
 #[test]
@@ -615,7 +668,26 @@ fn nftables_rallumer_refuse_si_le_blocage_de_vanguard_est_la() {
     let r = rallumer(PareFeu::Nftables, &mut a, &mut s);
     assert!(!r.reussi);
     assert!(r.raison.contains("blocages de Vanguard"), "{}", r.raison);
+    assert!(!r.raison.contains("Wi-Fi public"), "{}", r.raison);
     rien_change(&a, &s, &avant);
+    // Le mode Wi-Fi public seul, puis les deux : le refus nomme ce qui est en place (relecture de D7c, B5).
+    let blocage = a.pf.tables.borrow().clone();
+    *a.pf.tables.borrow_mut() = vec![table("inet", "vanguard_public", "")];
+    let avant_public = a.pf.tables.borrow().clone();
+    let r = rallumer(PareFeu::Nftables, &mut a, &mut s);
+    assert!(!r.reussi);
+    assert!(
+        r.raison.contains("mode Wi-Fi public") && !r.raison.contains("blocages"),
+        "{}",
+        r.raison
+    );
+    rien_change(&a, &s, &avant_public);
+    a.pf.tables.borrow_mut().extend(blocage);
+    let avant_deux = a.pf.tables.borrow().clone();
+    let r = rallumer(PareFeu::Nftables, &mut a, &mut s);
+    assert!(!r.reussi);
+    assert!(r.raison.contains("blocages et le mode Wi-Fi public"), "{}", r.raison);
+    rien_change(&a, &s, &avant_deux);
     // Sans blocage : la configuration du système est chargée, au démarrage aussi.
     a.pf.tables.borrow_mut().clear();
     let mut a = a.repondre("o");
@@ -679,6 +751,20 @@ fn ssh_ouvert_avertit_et_entree_dit_non() {
         "en-tête\n   0: 0F02000A:D2F0 0202000A:0016 01 0:0 0:0 0 0 0 1\n   1: 00000000:0016 00000000:0000 0A 0:0 0:0 0 0 0 1\n"
     ));
     assert!(pare_feu::tcp_ssh_etabli(&String::from_utf8_lossy(TCP_SSH)));
+    // sshd sur le port 2222 (08AE) : une connexion entrante venue d'ailleurs sur un port en écoute avertit, en IPv4
+    // comme en IPv6 (adresse IPv4 vue en IPv6) ; une connexion sortante (port local hors écoute), ou venue de la boucle
+    // locale, non (relecture de D7c, B3).
+    let ecoute = "   0: 00000000:08AE 00000000:0000 0A 0:0 0:0 0 0 0 1\n";
+    let entrante = format!("en-tête\n{ecoute}   1: 0F02000A:08AE 0202000A:D2F0 01 0:0 0:0 0 0 0 1\n");
+    assert!(pare_feu::tcp_ssh_etabli(&entrante));
+    let entrante6 = "en-tête\n   0: 00000000000000000000000000000000:08AE 00000000000000000000000000000000:0000 0A 0:0 0:0 0 0 0 1\n   1: 0000000000000000FFFF00000F02000A:08AE 0000000000000000FFFF00000202000A:D2F0 01 0:0 0:0 0 0 0 1\n";
+    assert!(pare_feu::tcp_ssh_etabli(entrante6));
+    let sortante = format!("en-tête\n{ecoute}   1: 0F02000A:D2F0 0202000A:08AE 01 0:0 0:0 0 0 0 1\n");
+    assert!(!pare_feu::tcp_ssh_etabli(&sortante));
+    let boucle = format!("en-tête\n{ecoute}   1: 0100007F:08AE 0100007F:D2F0 01 0:0 0:0 0 0 0 1\n");
+    assert!(!pare_feu::tcp_ssh_etabli(&boucle));
+    let boucle6 = "en-tête\n   0: 00000000000000000000000000000000:08AE 00000000000000000000000000000000:0000 0A 0:0 0:0 0 0 0 1\n   1: 00000000000000000000000001000000:08AE 00000000000000000000000001000000:D2F0 01 0:0 0:0 0 0 0 1\n";
+    assert!(!pare_feu::tcp_ssh_etabli(boucle6));
 }
 
 #[test]

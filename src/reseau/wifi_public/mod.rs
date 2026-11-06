@@ -1448,7 +1448,9 @@ fn a_recouper(
         .filter(|l| avant.iter().any(|m| m == l.p.mot()) && l.installe && l.note == Some(None))
         .filter(|l| match l.p {
             PareFeu::Nftables => true,
-            PareFeu::Ufw | PareFeu::Firewalld => matches!(l.etat, EtatPf::Allume | EtatPf::AMoitie),
+            PareFeu::Ufw | PareFeu::Firewalld => {
+                matches!(l.etat, EtatPf::Allume | EtatPf::AMoitie | EtatPf::AuDemarrage)
+            }
         })
         .map(|l| l.p)
         .collect()
@@ -2179,6 +2181,9 @@ mod tests {
             lu(PareFeu::Nftables, EtatPf::NonVerifie, Some(None)),
         ];
         assert_eq!(a_recouper(&coupes, &rallumes), [PareFeu::Ufw, PareFeu::Nftables]);
+        // `ufw --force enable` sans lancer son unité (essai QEMU) : rallumé au démarrage, la question vient.
+        let ufw_au_demarrage = vec![lu(PareFeu::Ufw, EtatPf::AuDemarrage, Some(None))];
+        assert_eq!(a_recouper(&coupes, &ufw_au_demarrage), [PareFeu::Ufw]);
         // Une note illisible ou un état non lu : pas de question.
         let flous = vec![
             lu(PareFeu::Ufw, EtatPf::NonVerifie, Some(None)),
