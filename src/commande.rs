@@ -2029,10 +2029,13 @@ mod tests_environnement_propre {
         ] {
             assert_eq!(valeur(n), None, "{n}");
         }
-        // Le système d'abord : aucun dossier personnel ni relatif, et /usr/bin avant /usr/local/bin.
+        // Le système d'abord : aucun dossier personnel (/home, /Users ; /opt/homebrew n'en est pas un) ni relatif,
+        // et /usr/bin avant /usr/local/bin.
         let dossiers: Vec<&str> = super::PATH_PROPRE.split(':').collect();
         assert!(
-            dossiers.iter().all(|d| d.starts_with('/') && !d.contains("home")),
+            dossiers
+                .iter()
+                .all(|d| d.starts_with('/') && !d.starts_with("/home") && !d.starts_with("/Users")),
             "{dossiers:?}"
         );
         let rang = |d: &str| dossiers.iter().position(|x| *x == d);
