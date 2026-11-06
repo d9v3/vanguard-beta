@@ -23,7 +23,7 @@ program, the USB key or the update) belong on another page: [SECURITY.md](SECURI
 |---|---|
 | Known malware on the computer | The system antivirus as a second opinion, YARA rules, MalwareBazaar hashes, program memory, startup entries, signs of a rootkit; blocking after consent, or on its own for what leaves no doubt (active protection). |
 | Ransomware | Trap files checked every hour; on Linux, once turned on, a live watcher that stops a near-certain case when active protection is on. |
-| A weak setting or an unpatched vulnerability | A security check graded A to F, missing updates, actively exploited vulnerabilities from the CISA catalog, end of support; every fix after consent, undoable except one that turns a protection back on (firewall, antivirus, encryption, UAC, SELinux, Gatekeeper, kernel hardening on Linux, Windows hardening and Defender protections). |
+| A weak setting or an unpatched vulnerability | A security check graded A to F, missing updates, actively exploited vulnerabilities from the CISA catalog, end of support; every fix after consent, undoable except one that turns a protection back on (firewall, antivirus, encryption, UAC, SELinux, Gatekeeper, kernel hardening on Linux, Windows hardening and Defender protections). Lowering a protection remains the person's choice, never Vanguard's (see [Lowered by choice](#lowered-by-choice)). |
 | Exposure to the Internet | Ports the router opens (asked of the router itself, UPnP openings included), public IPv6 without a firewall; in the logs, guessed passwords and Remote Desktop connections from outside. |
 | An intruder on the local network or the Wi-Fi | Inventory of the devices and of newcomers, fake access point, hijacked DNS and certificates; public Wi-Fi mode when traveling. |
 | Someone close who spies on the person | Spyware, remote control (fake technician). |
@@ -99,14 +99,95 @@ Each threat in detail, menu by menu: [What Vanguard does](README.en.md#what-vang
 - **The person decides.** Nothing is changed without their consent. What they accept can be undone one fix at a
   time, except what turns a protection back on (kernel hardening on Linux included) and the stopping of a program; a
   fix whose previous state cannot be read is reported as “not undoable” before it is applied. Windows hardening
-  settings (WDigest, NLA…) and Defender protections are protections too: Vanguard does not undo them, and a forged
-  note can no longer lower them; the person can still change them in Windows (to be proven in the Windows VM). An
-  undo note accepted without an earlier seal (outside an update from a version that already seals, 0.86 or later)
-  is not put back: a barrier against a file planted by another program, not a closed door, since a program that
-  also rewrites Vanguard's seals goes unseen (see above). That is why protections are no longer undone at all.
+  settings (WDigest, NLA…) and Defender protections are protections too: undoing does not reverse them, and a
+  forged note can no longer lower them. An undo note accepted without an earlier seal (outside an update from a
+  version that already seals, 0.86 or later) is not put back: a barrier against a file planted by another program,
+  not a closed door, since a program that also rewrites Vanguard's seals goes unseen (see above). That is why
+  protections are no longer reversed at all by undoing. The person can still lower them themselves, in Windows or in
+  the Defense options, by the path described below.
 - **Testing has its limits.** Vanguard is tested on the author's computer, a Windows VM, a second Windows PC and
   GitHub's machines (Windows, Mac, real Linux distributions). It has never run on a real Mac; other cases are still to
   be tried on real hardware (other distributions, a real UPnP router, booting the key).
+
+## Lowered by choice
+
+Vanguard never lowers a protection on its own. The person can lower one: it is their computer, and a setting that is
+too strict can get in the way of software they need. That choice always takes the same path, built so that another
+program cannot make it in their place.
+
+**What they can lower.** In the Defense options (`vanguard defense-options`, tool 4.10 on Windows, 4.9 on Linux):
+
+- on Windows, each Microsoft Defender option (real-time, cloud, sample submission, potentially unwanted apps, network
+  protection, controlled folder access, behavior, downloads, scripts, block at first sight), a scan exclusion, a
+  program allowed despite controlled folder access, each of the 19 ASR rules (block, audit or off), Windows Firewall
+  for each profile (on, inbound, outbound, block all) and its existing rules, and putting back a value that a
+  Vanguard fix had changed (`--put-back`);
+- on Linux, the firewall (ufw, firewalld or nftables), turned off or back on.
+
+Elsewhere, only two lowerings, each on its own and with the same question: when leaving public Wi-Fi mode, turning
+the Public firewall back off if it was off before the mode; on Linux, removing a firewall (recognized by its package)
+from the programs at startup.
+
+**Why it is allowed, and how.**
+
+- **The lowering goes alone.** A list that mixes a lowering with other changes is refused as a whole: a lowering
+  cannot slip into a list of fixes accepted in one go.
+- **It is judged again, then shown.** The administrator process (Windows) or root (Linux) reads the state itself and
+  decides whether the action strengthens or lowers, without trusting what the request says. It shows what changes;
+  on Windows, also what still protects.
+- **It is confirmed.** The question says: “These changes make your PC LESS protected. Did you ask for them yourself,
+  in Vanguard, just now? If it was not you, answer N.” Enter alone means no. On Windows, the answer is read only from
+  a real console; on Linux, from the person's terminal (/dev/tty), never from the program's input. With no console
+  or terminal, the answer is no.
+- **It is noted first.** The previous value is written before the action; if the note cannot be written, nothing is
+  lowered. On Windows, the note is under HKLM `SOFTWARE\Vanguard\ChoixAvant`, which only administrators can write,
+  with its SHA-256 hash. On Linux, it is in `/var/lib/vanguard/avant`, owned by root: without rights the folder
+  cannot be listed and the file cannot be read (0711 and 0600), and a note not owned by root is not read. Only the
+  administrator or root process uses this note to put things back; the copy kept in “What Vanguard changed” is for
+  display only.
+- **It leaves a trace.** On Windows, each lowering also writes an entry to the Windows event log (Application,
+  source “Vanguard”), which remains if Vanguard is removed. The check reports the protection lowered “by your
+  choice”, with the date, followed by “If it was not you: Turn back on”: a lowering is never counted as healthy.
+- **“Turn back on” restores it.** On Windows, it puts back the previous value if it protects at least as much as
+  “on”, otherwise the safe value: a forged or damaged note never turns anything back on weaker. On Linux, it puts
+  back the state noted before turning off; with no note, it turns the firewall on, a strengthening that cannot be
+  undone. Turning back on is never reversed by undoing.
+- **“It was me”.** A protection lowered outside Vanguard can be noted “by your choice” (`--note`), with the same
+  question; the check then stops alerting, and “Turn back on” stays offered.
+
+**What Vanguard refuses, whatever happens.**
+
+- **Defender's tamper protection** is never bypassed. When it blocks a setting, Vanguard opens the Windows page
+  where it lives: the person turns it off, then back on.
+- **The defense services themselves.** Vanguard does not offer to stop Defender's service (WinDefend), the firewall
+  service (mpssvc) or the filtering engine (BFE).
+- **The remote session in progress.** On Windows, during a remote session (Remote Desktop, SSH, AnyDesk, VPN…), or
+  when connections cannot be read, the firewall of the current network cannot block everything, block outbound
+  traffic, close a port of the session or disable a rule that lets it through. Turning the firewall off only opens
+  more: it is not refused for that reason. On Linux, a defense action never disables a unit that carries a session
+  (sshd, the login screen: gdm, sddm, lightdm…, systemd-logind, dbus, polkit, xrdp), nor the network, tunnel, VPN or
+  firewall they go through, nor the service Vanguard's own session comes from. It is a refusal, with no question.
+- **Other people's nftables tables.** Turning nftables off removes, in a single transaction and after a backup
+  checked by `nft -c`, each table that is not Vanguard's; never the whole ruleset at once. iptables-nft tables
+  (Docker, libvirt, fail2ban…), recognized by their name or their shape, and tables marked `owner` or `persist` are
+  never removed; Vanguard's own are not either.
+
+**Guards against lockout (Linux).** A defense action that could cut the person off from their computer (locking
+root or their own account, removing the last administrator, making sudo, su and pkexec unusable) is not refused: it
+may be what needs doing. It is preceded by a WARNING, and the `[y/N]` question defaults to no; if it cannot be
+undone, that is said (“not undoable”). Turning the firewall off while an SSH session may be open also gives a
+warning: “If you are connected from afar, answer no”.
+
+**What Vanguard never does on its own.** No lowering comes from “Fix the problems found”, the “Recommended settings”,
+“Put everything back”, the automatic response to alerts (active protection) or monitoring. “Put everything back” turns
+back on what was lowered, never the reverse. Public Wi-Fi mode turns on a firewall found off and never turns it back
+off on its own. On Windows, a test checks in the code that lowering lines are built only in the Defense options and
+when leaving public Wi-Fi mode.
+
+**Limit.** On Windows, a program that drives the real Vanguard can make the question appear, but it cannot answer
+it: Windows prevents a non-elevated program from sending keys to the administrator window. If Vanguard already runs
+as administrator, or if User Account Control (UAC) is off, a hostile program driving it is itself an administrator:
+it has already won (see above). The same goes, on Linux, for a program already running as root.
 
 ## What leaves the computer
 

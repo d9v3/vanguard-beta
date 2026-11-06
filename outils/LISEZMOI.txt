@@ -68,8 +68,9 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
          (et gitleaks, s'il est là) · Failles des images Docker : failles connues, graves ou critiques (trivy)
        4.9 Logiciels pas à jour (Windows, macOS) : navigateurs, Office, Acrobat, Java, 7-Zip… et leurs failles
          exploitées (lecture seule ; vanguard logiciels-perimes)
-       4.10 Options de défense (Windows) : chaque option de Defender, exclusions, règles ASR, pare-feu par profil,
-         ce qu'une stratégie impose ; une baisse montrée puis confirmée, « Rallumer » (vanguard options-defense)
+       4.10 Options de défense (4.9 sous Linux) : sous Windows, chaque option de Defender, exclusions, règles ASR,
+         pare-feu par profil et ses règles, ce qu'une stratégie impose ; sous Linux, le pare-feu (ufw, firewalld,
+         nftables) ; une baisse montrée puis confirmée, « Rallumer » (vanguard options-defense)
   5  Réseau et Internet ›
        5.1 Appareils du réseau › Scan du réseau (et démasquer un voleur de mots de passe comme Responder) ·
          Tous les ports d'un appareil (scan approfondi ; vanguard appareils)
@@ -220,7 +221,10 @@ programmes lancés au démarrage, programmes en marche suspects, portes dérobé
 fond sous macOS, pilotes vulnérables, signes de rootkit sous Linux, journaux d'événements de Windows, logiciels
 espions, agents d'IA trop permissifs, DNS, certificats racine ajoutés, extensions de navigateur, Bluetooth, heure,
 fin de support, comptes oubliés, mots de passe du navigateur, fichiers sensibles, sauvegardes, santé des disques
-et de la batterie, échange de clés post-quantique (SSH, navigateurs, WireGuard ; en lecture seule). Chaque règle
+et de la batterie, échange de clés post-quantique (SSH, navigateurs, WireGuard ; en lecture seule). Sous Windows et
+sous Linux, le plus grave (compte caché, lancement ou service ajouté en cachette, programme setuid suspect, racine
+de certificat ajoutée…) se défait par un geste de défense de Vanguard, en administrateur, montré puis confirmé ; un
+geste qui ne s'annule pas est dit « non annulable » avant la question. Chaque règle
 cite sa référence (CIS, Microsoft ou ANSSI). Autodiagnostic : vanguard autotest fait tourner chaque règle sans
 rien changer et compare les lectures de Vanguard à celles des outils du système (pacman, systemctl, ss,
 PowerShell…) ; la surveillance le refait chaque semaine.

@@ -23,8 +23,10 @@
   comme avant » défait tout ce que Vanguard a changé. Sous Windows, quatorze réglages de durcissement d'une liste
   fermée sont appliqués par Vanguard lui-même, sans script, quand ils ne sont pas mêlés à d'autres corrections ; les
   protections de Microsoft Defender (réduction de la surface d'attaque, accès contrôlé aux dossiers) s'activent après
-  accord. Ces deux-là sont des protections : Vanguard ne les défait pas, la personne peut les changer dans Windows. En déplacement, le mode Wi-Fi public ferme l'ordinateur au réseau d'un café, d'un
-  hôtel ou d'un aéroport.
+  accord. Ces deux-là sont des protections : l'annulation ne les défait pas. La personne peut les baisser elle-même,
+  dans Windows ou dans les Options de défense : la baisse est montrée, confirmée et notée, et « Rallumer » la remet
+  ([Baisses par choix](MODELE-DE-MENACE.md#baisses-par-choix)). En déplacement, le mode Wi-Fi public ferme
+  l'ordinateur au réseau d'un café, d'un hôtel ou d'un aéroport.
 - **Détecter.** Les failles connues (mises à jour de sécurité manquantes, avis de sécurité des distributions Linux,
   failles activement exploitées du catalogue de la CISA, fin de support), les logiciels pas à jour sous Windows et
   macOS et les mauvais réglages, notés de A à F ; l'audit du réseau en six notes, chaque appareil inventorié et les
@@ -40,7 +42,9 @@
   et protection active) peut être coupée pour une heure, quatre heures ou jusqu'à sa remise en marche ; la coupure
   reste signalée. Sous Linux, le veilleur anti-rançongiciel repère une rafale de chiffrement en quelques secondes et
   arrête un rançongiciel quasi certain quand la protection active est en marche. Après une infection, les traces sont
-  collectées avant tout nettoyage, avec la chronologie de l'incident.
+  collectées avant tout nettoyage, avec la chronologie de l'incident. Sous Windows et sous Linux, ce que le bilan
+  trouve de plus grave (compte caché, service ou lancement ajouté en cachette, programme setuid suspect, abonnement
+  WMI, racine de certificat ajoutée…) se défait aussi par un geste de défense, montré puis confirmé.
 - **Protéger contre les agents d'IA.** Les serveurs d'IA ouverts au réseau, les agents qui agissent sans demander et
   les serveurs MCP mal protégés sont signalés ; les deux premiers se bloquent d'un clic. La défense contre les
   nouvelles menaces liées aux agents d'IA est en développement.
@@ -123,7 +127,7 @@ détourné, les arnaques, un logiciel espion et les autres atteintes à la vie p
 | **Exposition vers Internet** | L'audit du réseau en six notes (exposition, Wi-Fi, séparation des appareils, DNS et certificats, objets connectés, ordinateurs) ; les ports que le routeur ouvre vers Internet (UPnP), les ports ouverts et le pare-feu de cet ordinateur, l'adresse Internet publique sur liste noire, la page d'administration du routeur en HTTP seul. |
 | **Intrus sur le Wi-Fi** | Chaque appareil du réseau, son fabricant, ses ports ouverts et ses risques ; les nouveaux venus signalés toutes les heures, avec un tableau de bord dans le navigateur ; la protection du Wi-Fi (WEP, WPA2, WPA3), le faux point d'accès qui copie son nom, les appareils Bluetooth appairés depuis peu ; le mode Wi-Fi public, qui ferme l'ordinateur au réseau d'un café, d'un hôtel ou d'un aéroport et le remet comme avant en partant. |
 | **Objets connectés** | Le routeur et les objets du réseau (caméras, imprimantes, NAS, télés, domotique…) reconnus, avec leur mot de passe d'origine à changer ; les caméras cachées, dans une location ou chez quelqu'un. |
-| **Poste infecté** | Analyse antivirus en second avis (Defender ou ClamAV), plus de 300 règles YARA et les empreintes de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite), la mémoire des programmes qui tournent (à la demande), la chasse aux menaces en direct (mot de passe deviné, programmes en marche suspects), le blocage des menaces, d'un clic ou tout seul pour ce qui ne fait aucun doute (protection active), avec la preuve relevée avant chaque geste et un journal des événements scellé, fichiers-pièges et veilleur anti-rançongiciel (Linux), options de Windows Defender en un écran, ce qui se lance en cachette, portes dérobées, portes cachées de Windows et pilotes vulnérables, signes de rootkit, journaux d'événements suspects, connexions vers des serveurs de botnets connus, un voleur de mots de passe comme Responder démasqué, agents d'IA trop permissifs, intégrité des fichiers critiques, failles des images Docker (trivy, s'il est installé), quarantaine réversible, et les traces collectées avant de nettoyer, avec la chronologie de l'incident ; un brouillon de signalement préparé pour l'éditeur quand un logiciel se comporte mal, jamais envoyé. |
+| **Poste infecté** | Analyse antivirus en second avis (Defender ou ClamAV), plus de 300 règles YARA et les empreintes de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite), la mémoire des programmes qui tournent (à la demande), la chasse aux menaces en direct (mot de passe deviné, programmes en marche suspects), le blocage des menaces, d'un clic ou tout seul pour ce qui ne fait aucun doute (protection active), avec la preuve relevée avant chaque geste et un journal des événements scellé, fichiers-pièges et veilleur anti-rançongiciel (Linux), options de défense en un écran (Defender, règles ASR et pare-feu sous Windows ; ufw, firewalld ou nftables sous Linux), gestes de défense confirmés, ce qui se lance en cachette, portes dérobées, portes cachées de Windows et pilotes vulnérables, signes de rootkit, journaux d'événements suspects, connexions vers des serveurs de botnets connus, un voleur de mots de passe comme Responder démasqué, agents d'IA trop permissifs, intégrité des fichiers critiques, failles des images Docker (trivy, s'il est installé), quarantaine réversible, et les traces collectées avant de nettoyer, avec la chronologie de l'incident ; un brouillon de signalement préparé pour l'éditeur quand un logiciel se comporte mal, jamais envoyé. |
 | **DNS et certificats détournés** | Le DNS réellement utilisé (et les réponses inventées), les certificats racine ajoutés (interception du HTTPS), le proxy imposé et les sites redirigés par le fichier hosts, la recherche automatique du proxy (WPAD), les extensions de navigateur qui lisent tous les sites. |
 | **Arnaques et prise de contrôle** | Faux technicien (logiciels de prise de contrôle à distance), liens dangereux examinés sans les ouvrir, fichiers téléchargés vérifiés, mots de passe et adresses courriel fuités, compte piraté, bac à sable pour un programme inconnu. |
 | **Vie privée et secrets** | Logiciels espions posés par un proche (serveurs connus, programmes qui lisent le clavier, autorisations de surveillance, logiciels de surveillance connus), bilan de confidentialité (qui a accès à la position, aux contacts, à la caméra et au micro), caméra et micro, mots de passe du navigateur sans protection, fichiers sensibles laissés en clair, secrets oubliés dans l'historique des projets git, données de la clé protégées par une phrase. |
@@ -315,16 +319,55 @@ les alertes déclarées normales et les passages de version, sur cet ordinateur 
 ligne porte l'empreinte de la précédente et la tête est scellée ; une ligne retirée, changée ou ajoutée se voit, et
 une chaîne rompue est dite au bilan. `--incident <id>` suit le fil d'un incident, de l'alerte à l'annulation.
 
-**Options de défense** — les réglages de Microsoft Defender en un écran (`vanguard options-defense`, outil 4.10) :
-temps réel, cloud, échantillons, logiciels indésirables, protection réseau contre les sites dangereux, accès contrôlé
-aux dossiers contre les rançongiciels, comportement, téléchargements, scripts, blocage à la première détection, puis
-exclusions et programmes permis. Chacun est lu avec ce qui l'impose (stratégie, protection contre les falsifications)
-et se règle d'ici : une baisse est montrée, puis confirmée dans la fenêtre administrateur ; le bilan la dit « par
-votre choix » et « Rallumer » la remet. Une exclusion posée hors de Vanguard est signalée. Vanguard ne contourne
-jamais la protection contre les falsifications. En plus de son propre blocage, il active aussi, après accord, les
-règles de réduction de la surface d'attaque (vol des mots de passe en mémoire, pilotes vulnérables, documents Office
-et pièces jointes piégés), chacune nommée avant l'accord ; celles qui bloqueraient Vanguard sur sa clé ou le dépannage
-ne sont jamais activées, et rien n'est proposé si un autre antivirus remplace Defender.
+**Options de défense** (`vanguard options-defense`, outil 4.10 sous Windows, 4.9 sous Linux) — ce qui défend l'ordinateur, en un écran, chaque
+option lue avec ce qui l'impose et réglable d'ici. Sous Windows : les réglages de Microsoft Defender (temps réel,
+cloud, échantillons, logiciels indésirables, protection réseau contre les sites dangereux, accès contrôlé aux
+dossiers contre les rançongiciels, comportement, téléchargements, scripts, blocage à la première détection), ses
+exclusions et ses programmes permis ; les 19 règles de réduction de la surface d'attaque (ASR), chacune à bloquer, en
+audit ou désactivée ; le Pare-feu Windows de chaque profil (allumé, entrées, sorties, tout bloquer) et ses règles
+existantes ; les stratégies (GPO, Intune) qui imposent une valeur, un antivirus tiers, un PC géré. Sous Linux : le
+pare-feu (ufw, firewalld ou nftables), son état, le couper ou le rallumer. Renforcer se fait après accord. Baisser
+est le choix de la personne, jamais celui de Vanguard : la baisse part seule, montrée par le processus administrateur
+(root sous Linux), confirmée par un « o » tapé (Entrée seule dit non), sa valeur d'avant notée d'abord ; le bilan la
+dit « par votre choix » et « Rallumer » la remet. Le détail, et ce que Vanguard refuse quoi qu'il arrive :
+[Baisses par choix](MODELE-DE-MENACE.md#baisses-par-choix). Une exclusion posée hors de Vanguard est signalée, et
+« C'est moi » note une baisse faite ailleurs. Vanguard ne contourne jamais la protection contre les falsifications :
+il ouvre la page de Windows où la couper. Il ne propose pas d'arrêter le service de Defender ni celui du pare-feu.
+Pendant une session à distance, le pare-feu ne se ferme pas sur le réseau en cours ; sous Linux, couper le pare-feu
+avertit si une session SSH peut en dépendre, et les tables d'iptables-nft (Docker, libvirt, fail2ban…) ne sont jamais
+retirées. En plus de son propre blocage, Vanguard active aussi, après accord, les règles ASR qui protègent le mieux
+(vol des mots de passe en mémoire, pilotes vulnérables, documents Office et pièces jointes piégés), chacune nommée
+avant l'accord ; celles qui bloqueraient Vanguard sur sa clé ou le dépannage ne sont jamais activées d'office, et rien
+n'est proposé si un autre antivirus remplace Defender.
+
+**Gestes de défense confirmés** — une bonne part de ce que le bilan et la chasse aux menaces trouvent ne reste plus un
+conseil « à faire à la main » : Vanguard le défait lui-même, en administrateur (root sous Linux), après avoir rejugé ce qu'il voit, montré
+le geste et reçu un oui. La valeur d'avant est notée et « Ce que Vanguard a changé » l'annule ; un geste qui ne
+s'annulera pas est dit « non annulable » avant la question.
+- Windows : SmartScreen, intégrité de la mémoire (HVCI), protection LSA et Credential Guard rallumés sans verrou du
+  micrologiciel ; mises à jour remises en route ; assistance à distance et ouverture de session automatique coupées
+  (le mot de passe en clair retiré) ; signature des partages exigée ; stratégies qui affaiblissent (macros d'Office,
+  invité, PowerShell, navigateurs) retirées sur un PC hors domaine et hors gestion ; exclusions de Defender retirées ;
+  compte local désactivé (jamais activé) ; mot de passe posé sur un compte qui n'en a pas, tapé dans la fenêtre
+  administrateur seulement ; accès d'un compte retiré d'un partage ; chemin de service mis entre guillemets ;
+  débogueur caché sur un programme retiré ; touches rémanentes remises par `sfc /scanfile` ; OpenSSH (droits des
+  clés, sshd_config) ; racines de certificat ajoutées hors de Windows retirées ; lancements cachés (Run, tâches,
+  dossier Démarrage, abonnements WMI) retirés ou désactivés, le vrai Defender reconnu à sa place et à sa signature,
+  jamais à son seul nom ; un outil de prise de contrôle lancé mais pas connecté retiré (connecté : refusé).
+- Linux : compte caché ou oublié verrouillé (jamais supprimé), compte retiré d'un groupe sensible (docker, groupe
+  administrateur), sudo qui ne demande rien durci (validé par visudo), bit setuid ou capacités suspects retirés,
+  dossier du système rendu à root, service ajouté à la main désactivé, ligne de démarrage suspecte retirée, serveur
+  SSH durci (validé par `sshd -t`, les sessions ouvertes restent), BPF réservé à root, journal gardé, ancre de
+  certificat illisible retirée, proxy imposé mis en commentaire, appareil Bluetooth récent oublié, programme suspect
+  arrêté après la copie de ses traces, programme de Vanguard remplacé hors de Vanguard remis (programme signé,
+  imposteur gardé en quarantaine). Un geste qui pourrait couper la personne de son ordinateur reçoit un
+  AVERTISSEMENT, et la question dit non par défaut.
+
+Ce qui reste à la main, et pourquoi : la protection contre les falsifications de Defender (Vanguard ne la contourne
+pas) ; une stratégie imposée sur un PC d'entreprise ou d'école (montrée, à régler par qui gère l'ordinateur) ; le mot
+de passe d'un compte Microsoft (Windows le gère en ligne) ; la protection contre les sites frauduleux de Firefox
+coupée par une stratégie ; un rootkit du noyau (sauvegarder et réinstaller : rien ne l'enlève sûrement). Sous macOS,
+les Options de défense et ces gestes ne sont pas proposés.
 
 **Collecter les traces** — après une infection, avant de nettoyer ou de réinstaller : ce qu'un spécialiste voudra
 voir, gardé dans un dossier daté sur la clé VANGUARD (ou dans le dossier de Vanguard de l'ordinateur), dans l'ordre
@@ -804,7 +847,7 @@ Chaque entrée du menu existe aussi en commande.
 | `vanguard secrets` | secrets oubliés dans l'historique des projets git (et gitleaks, s'il est installé ; lecture seule) |
 | `vanguard conteneurs` | failles connues des images Docker ou Podman (trivy, s'il est installé ; lecture seule) |
 | `vanguard logiciels-perimes` | logiciels pas à jour (Windows, macOS) : navigateurs, Office, Acrobat, Java, 7-Zip, PuTTY, Slack comparés à leur dernière version ; failles exploitées (lecture seule) |
-| `vanguard options-defense` | options de défense de Windows : chaque option de Defender (temps réel, cloud, PUA, accès contrôlé aux dossiers…), exclusions, règles ASR, pare-feu par profil, stratégies (GPO, Intune) qui imposent une valeur, antivirus tiers, PC géré ; une baisse montrée, puis confirmée dans la fenêtre administrateur, « Rallumer » ; `--json` sans chemin ni nom (Windows) |
+| `vanguard options-defense [--json] [--choisir ID VALEUR] [--rallumer ID]` | options de défense. Windows : chaque option de Defender (temps réel, cloud, PUA, accès contrôlé aux dossiers…), exclusions, règles ASR, pare-feu par profil et ses règles, stratégies (GPO, Intune) qui imposent une valeur, antivirus tiers, PC géré. Linux : le pare-feu (`--choisir pare-feu-ufw coupe`, ou firewalld, nftables ; `allume`). Une baisse montrée, puis confirmée par un oui tapé, sa valeur d'avant notée ; `--rallumer` la remet ; Windows seulement : `--exclure GENRE TEXTE`, `--permettre PROGRAMME`, `--noter ID` (« C'est moi »), `--remettre MOT` ; `--json` sans chemin ni nom |
 | **5 Réseau et Internet** | |
 | `vanguard appareils [cible] [-p courants\|tous\|22,80,8000-8100] [--json]` | scan du réseau ou d'un appareil |
 | `vanguard audit-reseau [--json] [--html] [--invite]` | audit du réseau par domaine : six notes (exposition, Wi-Fi, séparation des appareils, DNS et certificats, objets connectés, ordinateurs), sans rien attaquer ; `--invite` : sur le réseau invité, vérifie qu'il est bien séparé du réseau principal |

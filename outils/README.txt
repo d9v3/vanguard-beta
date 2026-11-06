@@ -66,8 +66,9 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
          present) · Flaws in Docker images: known serious or critical flaws (trivy, if present)
        4.9 Outdated software (Windows, macOS): browsers, Office, Acrobat, Java, 7-Zip… and their exploited flaws
          (read-only; vanguard outdated-software)
-       4.10 Defense options (Windows): each Defender option, exclusions, ASR rules, firewall per profile, what a
-         policy enforces; lowering shown then confirmed, “Turn back on” (vanguard defense-options)
+       4.10 Defense options (4.9 on Linux): on Windows, each Defender option, exclusions, ASR rules, firewall per
+         profile and its rules, what a policy enforces; on Linux, the firewall (ufw, firewalld, nftables); lowering
+         shown then confirmed, “Turn back on” (vanguard defense-options)
   5  Network and Internet ›
        5.1 Devices on the network › Network scan (and unmask a password thief like Responder) · All ports of one
          device (deep scan; vanguard devices)
@@ -211,7 +212,10 @@ running programs, Windows backdoors and hidden doors (LSA packages, print monito
 off, startup security and background items on macOS, vulnerable drivers, rootkit signs on Linux, Windows event
 logs, spyware, overly permissive AI agents, DNS, added root certificates, browser extensions, Bluetooth, clock,
 end of support, forgotten accounts, browser passwords, sensitive files, backups, disk and battery health,
-post-quantum key exchange (SSH, browsers, WireGuard; read-only). Each rule cites its reference (CIS, Microsoft or
+post-quantum key exchange (SSH, browsers, WireGuard; read-only). On Windows and Linux, the most serious findings
+(hidden account, startup entry or service added in secret, suspicious setuid program, added certificate root…) are
+undone by a Vanguard defense action, as administrator, shown then confirmed; an action that cannot be undone is
+called “not undoable” before the question. Each rule cites its reference (CIS, Microsoft or
 ANSSI). Self-test: vanguard self-test runs every rule without changing anything and compares Vanguard's readings
 with those of the system's tools (pacman, systemctl, ss, PowerShell…); the monitoring runs it again every week.
 

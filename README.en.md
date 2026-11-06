@@ -22,9 +22,10 @@
   state and can be undone one by one, except those that turn a protection back on; “Put everything back” undoes
   everything Vanguard changed. On Windows, fourteen hardening settings from a fixed allowlist are applied by Vanguard
   itself, without scripts, when they are not mixed with other fixes; Microsoft Defender's protections (attack surface
-  reduction, controlled folder access) are turned on after consent. Both are protections: Vanguard does not undo
-  them, the person can change them in Windows. On the go, public
-  Wi-Fi mode closes the computer to the network of a café, a hotel or an airport.
+  reduction, controlled folder access) are turned on after consent. Both are protections: undoing does not turn them
+  off. The person can lower them personally, in Windows or in the Defense options: the lowering is shown, confirmed
+  and noted, and “Turn back on” restores it ([Lowered by choice](MODELE-DE-MENACE.en.md#lowered-by-choice)). On the
+  go, public Wi-Fi mode closes the computer to the network of a café, a hotel or an airport.
 - **Detect.** Known vulnerabilities (missing security updates, Linux distribution security advisories, actively
   exploited flaws from CISA's catalog, end of support), outdated software on Windows and macOS and misconfigurations,
   graded from A to F; a six-grade network audit, with every device inventoried and newcomers flagged; live threat
@@ -38,7 +39,9 @@
   threats on its own. Real-time protection (hourly monitoring and active protection) can be paused for one hour, four
   hours or until it is turned back on; the pause remains flagged. On Linux, the ransomware watcher spots an encryption
   burst within seconds and stops an almost-certain ransomware when active protection is on. After an infection, the
-  evidence is collected before any cleanup, with the incident timeline.
+  evidence is collected before any cleanup, with the incident timeline. On Windows and Linux, the most serious
+  findings of the check (hidden account, service or startup entry added in secret, suspicious setuid program, WMI
+  subscription, added certificate root…) can also be undone by a defense action, shown then confirmed.
 - **Protect against AI agents.** AI servers open to the network, agents that act without asking and poorly secured MCP
   servers are flagged; the first two can be blocked with one click. Defense against emerging threats from AI agents is
   in development.
@@ -114,7 +117,7 @@ certificate, scams, spyware and other privacy intrusions.
 | **Exposure to the Internet** | The network audit in six grades (exposure, Wi-Fi, device separation, DNS and certificates, connected devices, computers); the ports the router opens to the Internet (UPnP), this computer's open ports and firewall, the public Internet address on a blocklist, the router's admin page over HTTP only. |
 | **Intruders on the Wi-Fi** | Every device on the network, its manufacturer, its open ports and its risks; newcomers flagged every hour, with a dashboard in the browser; the Wi-Fi's protection (WEP, WPA2, WPA3), the fake access point copying its name, Bluetooth devices paired recently; public Wi-Fi mode, which closes the computer to the network of a café, a hotel or an airport and puts it back as it was when you leave. |
 | **Connected devices** | The router and the devices on the network (cameras, printers, NAS, TVs, smart home…) recognized, with their default password to change; hidden cameras, in a rental or at someone's place. |
-| **Infected computer** | Antivirus scan as a second opinion (Defender or ClamAV), over 300 YARA rules and the fingerprints of known malware from MalwareBazaar (free abuse.ch key), the memory of running programs (on demand), live threat hunting (guessed password, suspicious running programs), threat blocking, with one click or by itself for clear-cut threats (active protection), with the evidence recorded before each action and a sealed event log, decoy files and the ransomware watcher (Linux), Windows Defender's options on one screen, what starts in secret, backdoors, Windows' hidden doors and vulnerable drivers, rootkit signs, suspicious event logs, connections to known botnet servers, a password thief like Responder unmasked, overly permissive AI agents, integrity of critical files, flaws in Docker images (trivy, when installed), reversible quarantine, and the traces collected before cleaning up, with the incident timeline; a draft report prepared for the vendor when a program misbehaves, never sent. |
+| **Infected computer** | Antivirus scan as a second opinion (Defender or ClamAV), over 300 YARA rules and the fingerprints of known malware from MalwareBazaar (free abuse.ch key), the memory of running programs (on demand), live threat hunting (guessed password, suspicious running programs), threat blocking, with one click or by itself for clear-cut threats (active protection), with the evidence recorded before each action and a sealed event log, decoy files and the ransomware watcher (Linux), defense options on one screen (Defender, ASR rules and firewall on Windows; ufw, firewalld or nftables on Linux), confirmed defense actions, what starts in secret, backdoors, Windows' hidden doors and vulnerable drivers, rootkit signs, suspicious event logs, connections to known botnet servers, a password thief like Responder unmasked, overly permissive AI agents, integrity of critical files, flaws in Docker images (trivy, when installed), reversible quarantine, and the traces collected before cleaning up, with the incident timeline; a draft report prepared for the vendor when a program misbehaves, never sent. |
 | **Hijacked DNS and certificates** | The DNS really in use (and made-up answers), added root certificates (HTTPS interception), a forced proxy and sites redirected by the hosts file, automatic proxy discovery (WPAD), browser extensions that read every site. |
 | **Scams and remote control** | Tech-support scam (remote control tools), dangerous links checked without opening them, downloaded files checked, leaked passwords and email addresses, hacked account, a sandbox for an unknown program. |
 | **Privacy and secrets** | Spyware planted by someone close (known servers, programs reading the keyboard, monitoring permissions, known monitoring software), privacy check (who can access location, contacts, camera and microphone), camera and microphone, browser passwords without protection, sensitive files left in clear text, secrets forgotten in git project history, key data protected by a passphrase. |
@@ -292,16 +295,52 @@ each line carries the fingerprint of the previous one and the head is sealed; a 
 and a broken chain is reported by the check. `--incident <id>` follows an incident's thread, from the alert to the
 undo.
 
-**Defense options** — Microsoft Defender's settings on one screen (`vanguard defense-options`, tool 4.10): real-time,
-cloud, samples, unwanted apps, network protection against dangerous sites, controlled folder access against
-ransomware, behavior, downloads, scripts, block at first sight, then exclusions and allowed apps. Each one is read
-with what enforces it (policy, tamper protection) and can be set from here: a lowering is shown, then confirmed in
-the administrator window; the check calls it “your choice” and “Turn back on” restores it. An exclusion added outside
-Vanguard is flagged. Vanguard never gets around tamper protection. On top of its own blocking, it also turns on,
-after your consent, the attack surface reduction rules (password theft from memory, vulnerable drivers,
-booby-trapped Office documents and attachments), each one named before you agree; those that would block Vanguard on
-its USB drive or troubleshooting are never turned on, and nothing is offered when another antivirus replaces
-Defender.
+**Defense options** (`vanguard defense-options`, tool 4.10 on Windows, 4.9 on Linux) — what defends the computer, on one screen, each option
+read with what enforces it and adjustable from here. On Windows: Microsoft Defender's settings (real-time, cloud,
+samples, unwanted apps, network protection against dangerous sites, controlled folder access against ransomware,
+behavior, downloads, scripts, block at first sight), its exclusions and allowed apps; the 19 attack surface reduction
+(ASR) rules, each one blocked, in audit or off; Windows Firewall for each profile (on, inbound, outbound, block all)
+and its existing rules; the policies (GPO, Intune) that enforce a value, a third-party antivirus, a managed PC. On
+Linux: the firewall (ufw, firewalld or nftables), its state, turning it off or back on. Strengthening is done after
+consent. Lowering is the person's choice, never Vanguard's: the lowering goes alone, shown by the administrator
+process (root on Linux), confirmed by a typed “y” (Enter alone means no), its previous value noted first; the check
+calls it “your choice” and “Turn back on” restores it. The details, and what Vanguard refuses no matter what:
+[Lowered by choice](MODELE-DE-MENACE.en.md#lowered-by-choice). An exclusion added outside Vanguard is flagged, and
+“It was me” notes a lowering made elsewhere. Vanguard never gets around tamper protection: it opens the Windows page
+where it is turned off. It does not offer to stop Defender's service or the firewall's. During a remote session, the
+firewall does not close on the current network; on Linux, turning the firewall off warns when an SSH session may
+depend on it, and iptables-nft tables (Docker, libvirt, fail2ban…) are never removed. On top of its own blocking,
+Vanguard also turns on, after your consent, the ASR rules that protect best (password theft from memory, vulnerable
+drivers, booby-trapped Office documents and attachments), each one named before you agree; those that would block
+Vanguard on its USB drive or troubleshooting are never turned on unasked, and nothing is offered when another
+antivirus replaces Defender.
+
+**Confirmed defense actions** — much of what the check and the threat hunt find no longer stays a “do it by hand”
+tip: Vanguard undoes it itself, as administrator (root on Linux), after judging again what it sees, showing the action and
+getting a yes. The previous value is noted and “What Vanguard changed” undoes it; an action that cannot be undone is
+called “not undoable” before the question.
+- Windows: SmartScreen, memory integrity (HVCI), LSA protection and Credential Guard turned back on without a
+  firmware lock; updates resumed; remote assistance and automatic sign-in turned off (the plain-text password
+  removed); share signing required; weakening policies (Office macros, guest, PowerShell, browsers) removed on a PC
+  outside any domain or management; Defender exclusions removed; local account disabled (never enabled); password set
+  on an account that has none, typed in the administrator window only; an account's access removed from a share;
+  service path put in quotes; debugger hidden on a program removed; sticky keys restored by `sfc /scanfile`; OpenSSH
+  (key permissions, sshd_config); certificate roots added outside Windows removed; hidden startup entries (Run,
+  tasks, Startup folder, WMI subscriptions) removed or disabled, the real Defender recognized by its location and
+  signature, never by its name alone; a remote control tool running but not connected removed (connected: refused).
+- Linux: hidden or forgotten account locked (never deleted), account removed from a sensitive group (docker,
+  administrator group), sudo that asks nothing hardened (checked by visudo), suspicious setuid bit or capabilities
+  removed, system folder given back to root, service added by hand disabled, suspicious startup line removed, SSH
+  server hardened (checked by `sshd -t`, open sessions stay), BPF reserved for root, journal kept, unreadable
+  certificate anchor removed, enforced proxy commented out, recent Bluetooth device forgotten, suspicious program
+  stopped after copying its traces, Vanguard program replaced outside Vanguard restored (signed program, impostor
+  kept in quarantine). An action that could lock the person out of the computer gets a WARNING, and the question
+  says no by default.
+
+What stays manual, and why: Defender's tamper protection (Vanguard does not get around it); a policy enforced on a
+work or school PC (shown, to be set by whoever manages the computer); a Microsoft account's password (Windows
+manages it online); Firefox's protection against fraudulent sites turned off by a policy; a kernel rootkit (back up
+and reinstall: nothing removes it safely). On macOS, the Defense options and these actions are not offered.
 
 **Collect the traces** — after an infection, before cleaning up or reinstalling: what a specialist will want to
 see, kept in a dated folder on the VANGUARD key (or in this computer's Vanguard folder), in the order it vanishes.
@@ -755,7 +794,7 @@ Each menu entry is also a command.
 | `vanguard secrets` | secrets forgotten in the history of git projects (and gitleaks, if installed; read-only) |
 | `vanguard containers` | known flaws in Docker or Podman images (trivy, if installed; read-only) |
 | `vanguard outdated-software` | outdated software (Windows, macOS): browsers, Office, Acrobat, Java, 7-Zip, PuTTY, Slack compared with their latest version; exploited flaws (read-only) |
-| `vanguard defense-options` | Windows defense options: each Defender option (real-time, cloud, PUA, controlled folder access…), exclusions, ASR rules, firewall per profile, policies (GPO, Intune) that enforce a value, third-party antivirus, managed PC; lowering shown, then confirmed in the administrator window, “Turn back on”; `--json` without paths or names (Windows) |
+| `vanguard defense-options [--json] [--choose ID VALUE] [--turn-back-on ID]` | defense options. Windows: each Defender option (real-time, cloud, PUA, controlled folder access…), exclusions, ASR rules, firewall per profile and its rules, policies (GPO, Intune) that enforce a value, third-party antivirus, managed PC. Linux: the firewall (`--choose pare-feu-ufw coupe`, or firewalld, nftables; `allume`). Lowering shown, then confirmed by a typed yes, its previous value noted; `--turn-back-on` restores it; Windows only: `--exclude KIND TEXT`, `--allow PROGRAM`, `--note ID` (“It was me”), `--put-back WORD`; `--json` without paths or names |
 | **5 Network and Internet** | |
 | `vanguard devices [target] [-p common\|all\|22,80,8000-8100] [--json]` | scan the network or one device |
 | `vanguard network-audit [--json] [--html] [--guest]` | network audit by domain: six grades (exposure, Wi-Fi, device separation, DNS and certificates, connected devices, computers), attacking nothing; `--guest`: on the guest network, checks that it is really separated from the main one |

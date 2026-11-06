@@ -24,7 +24,7 @@ clé USB ou de la mise à jour) relèvent d'une autre page : [SECURITY.md](SECUR
 |---|---|
 | Un logiciel malveillant connu sur l'ordinateur | Antivirus du système en second avis, règles YARA, empreintes de MalwareBazaar, mémoire des programmes, lancements au démarrage, signes d'un rootkit ; blocage après accord, ou de lui-même pour ce qui ne fait aucun doute (protection active). |
 | Un rançongiciel | Fichiers-pièges vérifiés chaque heure ; sous Linux, une fois allumé, un veilleur en direct qui arrête un cas quasi certain avec la protection active. |
-| Une faiblesse de réglage ou une faille non corrigée | Bilan noté de A à F, mises à jour manquantes, failles activement exploitées du catalogue de la CISA, fin de support ; chaque correction après accord, annulable sauf celle qui rallume une protection (pare-feu, antivirus, chiffrement, UAC, SELinux, Gatekeeper, durcissement du noyau sous Linux, durcissement de Windows et protections de Defender). |
+| Une faiblesse de réglage ou une faille non corrigée | Bilan noté de A à F, mises à jour manquantes, failles activement exploitées du catalogue de la CISA, fin de support ; chaque correction après accord, annulable sauf celle qui rallume une protection (pare-feu, antivirus, chiffrement, UAC, SELinux, Gatekeeper, durcissement du noyau sous Linux, durcissement de Windows et protections de Defender). Baisser une protection reste le choix de la personne, jamais celui de Vanguard (voir [Baisses par choix](#baisses-par-choix)). |
 | Une exposition vers Internet | Ports que le routeur ouvre (demandés au routeur lui-même, ouvertures UPnP comprises), IPv6 publique sans pare-feu ; dans les journaux, les mots de passe devinés et les connexions au Bureau à distance depuis l'extérieur. |
 | Un intrus sur le réseau local ou le Wi-Fi | Inventaire des appareils et des nouveaux venus, faux point d'accès, DNS et certificats détournés ; mode Wi-Fi public en déplacement. |
 | Un proche qui surveille la personne | Logiciels espions, prise de contrôle à distance (faux technicien). |
@@ -101,15 +101,101 @@ Le détail de chaque menace, menu par menu : [Ce que fait Vanguard](README.md#ce
 - **La personne décide.** Rien n'est modifié sans son accord. Ce qu'elle accepte s'annule une correction à la fois,
   sauf ce qui rallume une protection (dont le durcissement du noyau sous Linux) et l'arrêt d'un programme ; une
   correction dont l'état d'avant ne se relève pas est dite « non annulable » avant d'être appliquée. Les réglages de
-  durcissement de Windows (WDigest, NLA…) et les protections de Defender sont, eux aussi, des protections : Vanguard
-  ne les défait pas, et une note forgée ne peut plus les faire baisser ; la personne peut toujours les changer dans
-  Windows (à prouver dans la VM Windows). Une note d'annulation acceptée sans sceau d'avant (hors d'une mise à jour
-  depuis une version qui scelle déjà, 0.86 ou plus) n'est pas remise : c'est une barrière contre un fichier posé par
-  un autre programme, pas une porte fermée, puisqu'un programme qui réécrit aussi les sceaux de Vanguard n'est pas vu
-  (voir plus haut). C'est pourquoi les protections ne se défont plus du tout.
+  durcissement de Windows (WDigest, NLA…) et les protections de Defender sont, eux aussi, des protections : l'annulation
+  ne les défait pas, et une note forgée ne peut plus les faire baisser. Une note d'annulation acceptée sans sceau
+  d'avant (hors d'une mise à jour depuis une version qui scelle déjà, 0.86 ou plus) n'est pas remise : c'est une
+  barrière contre un fichier posé par un autre programme, pas une porte fermée, puisqu'un programme qui réécrit aussi
+  les sceaux de Vanguard n'est pas vu (voir plus haut). C'est pourquoi les protections ne se défont plus du tout par
+  l'annulation. La personne peut toujours les baisser elle-même, dans Windows ou dans les Options de défense, par le
+  chemin décrit plus bas.
 - **Les essais ont leurs limites.** Vanguard est essayé sur l'ordinateur de l'auteur, une VM Windows, un second PC
   Windows et les machines de GitHub (Windows, Mac, vraies distributions Linux). Il n'a jamais tourné sur un vrai Mac ;
   d'autres cas restent à essayer sur du vrai matériel (autres distributions, vrai routeur UPnP, démarrage de la clé).
+
+## Baisses par choix
+
+Vanguard ne baisse jamais une protection de lui-même. La personne, elle, peut en baisser une : c'est son ordinateur,
+et un réglage trop strict peut gêner un logiciel dont elle a besoin. Ce choix passe toujours par le même chemin, fait
+pour qu'un autre programme ne puisse pas le faire à sa place.
+
+**Ce qu'elle peut baisser.** Dans les Options de défense (`vanguard options-defense`, outil 4.10 sous Windows, 4.9 sous Linux) :
+
+- sous Windows, chaque option de Microsoft Defender (temps réel, cloud, envoi d'échantillons, logiciels indésirables,
+  protection réseau, accès contrôlé aux dossiers, comportement, téléchargements, scripts, blocage à la première
+  détection), une exclusion de l'analyse, un programme permis malgré l'accès contrôlé aux dossiers, chacune des 19
+  règles ASR (bloquer, audit ou désactivée), le Pare-feu Windows de chaque profil (allumé, entrées, sorties, tout
+  bloquer) et ses règles existantes, et la remise d'une valeur qu'une correction de Vanguard avait changée
+  (`--remettre`) ;
+- sous Linux, le pare-feu (ufw, firewalld ou nftables), coupé ou rallumé.
+
+Ailleurs, deux baisses seulement, chacune seule et avec la même question : à la sortie du mode Wi-Fi public, recouper
+le pare-feu Public qui était coupé avant le mode ; sous Linux, retirer un pare-feu (reconnu par son paquet) des
+programmes au démarrage.
+
+**Pourquoi c'est permis, et comment.**
+
+- **La baisse part seule.** Une liste qui mêle une baisse à d'autres changements est refusée en entier : une baisse
+  ne peut pas se glisser dans une liste de corrections acceptée d'un bloc.
+- **Elle est jugée de nouveau, puis montrée.** Le processus administrateur (Windows) ou root (Linux) relit l'état
+  lui-même et décide si le geste renforce ou baisse, sans croire ce que la demande en dit. Il montre ce qui change ;
+  sous Windows, aussi ce qui protège encore.
+- **Elle est confirmée.** La question dit : « Ces changements rendent votre PC MOINS protégé. Les avez-vous demandés
+  vous-même, dans Vanguard, à l'instant ? Si ce n'est pas vous, répondez N. » Entrée seule dit non. Sous Windows, la
+  réponse n'est lue que d'une vraie console ; sous Linux, sur le terminal de la personne (/dev/tty), jamais sur
+  l'entrée du programme. Sans console ni terminal, la réponse vaut non.
+- **Elle est notée d'abord.** La valeur d'avant est écrite avant le geste ; si la note ne s'écrit pas, rien n'est
+  baissé. Sous Windows, la note est sous HKLM `SOFTWARE\Vanguard\ChoixAvant`, que seuls les administrateurs écrivent,
+  avec son empreinte SHA-256. Sous Linux, elle est dans `/var/lib/vanguard/avant`, à root : le dossier ne se liste pas
+  et le fichier ne se lit pas sans droits (0711 et 0600), et une note qui n'est pas à root n'est pas lue. Seul le
+  processus administrateur ou root se sert de cette note pour remettre ; la copie gardée dans « Ce que Vanguard a
+  changé » ne sert qu'à l'affichage.
+- **Elle laisse une trace.** Sous Windows, chaque baisse écrit aussi une entrée dans le journal d'événements de
+  Windows (Application, source « Vanguard »), qui reste si Vanguard est retiré. Le bilan dit la protection baissée
+  « par votre choix », avec la date, suivie de « Si ce n'est pas vous : Rallumer » : la baisse n'est jamais comptée
+  comme saine.
+- **« Rallumer » la remet.** Sous Windows, il remet la valeur d'avant si elle protège au moins comme « allumé »,
+  sinon la valeur sûre : une note forgée ou abîmée ne fait jamais rallumer plus faible. Sous Linux, il remet l'état
+  noté avant la coupure ; sans note, il allume le pare-feu, un renforcement non annulable. Un rallumage n'est jamais
+  recoupé par l'annulation.
+- **« C'est moi ».** Une protection baissée hors de Vanguard peut être notée « par votre choix »
+  (`--noter`), avec la même question ; le bilan cesse alors d'alerter, et « Rallumer » reste proposé.
+
+**Ce que Vanguard refuse, quoi qu'il arrive.**
+
+- **La protection contre les falsifications de Defender** (Tamper Protection) n'est jamais contournée. Quand elle
+  bloque un réglage, Vanguard ouvre la page de Windows où elle se trouve : c'est la personne qui la coupe, puis la
+  rallume.
+- **Les services de défense eux-mêmes.** Vanguard ne propose pas d'arrêter le service de Defender (WinDefend), celui
+  du pare-feu (mpssvc) ni le moteur de filtrage (BFE).
+- **La session à distance en cours.** Sous Windows, pendant une session à distance (Bureau à distance, SSH, AnyDesk,
+  VPN…), ou quand les connexions ne se lisent pas, le pare-feu du réseau en cours ne peut pas tout bloquer, bloquer
+  les sorties, fermer un port de la session ni désactiver une règle qui la laisse passer. Couper le pare-feu
+  n'ouvre que davantage : ce n'est pas refusé pour cette raison. Sous Linux, un geste de défense ne désactive jamais
+  une unité qui porte une session (sshd, l'écran de connexion : gdm, sddm, lightdm…, systemd-logind, dbus, polkit,
+  xrdp), ni le réseau, le tunnel, le VPN ou le pare-feu qu'elles traversent, ni le service d'où descend la session de
+  Vanguard. C'est un refus, sans question.
+- **Les tables nftables des autres.** Couper nftables retire, en une seule transaction et après une sauvegarde
+  vérifiée par `nft -c`, chaque table qui n'est pas à Vanguard ; jamais tout le jeu de règles d'un coup. Les tables
+  d'iptables-nft (Docker, libvirt, fail2ban…), reconnues à leur nom ou à leur forme, et les tables marquées `owner`
+  ou `persist` ne sont jamais retirées ; celles de Vanguard non plus.
+
+**Les gardes contre le verrouillage (Linux).** Un geste de défense qui peut couper la personne de son ordinateur
+(verrouiller root ou son propre compte, retirer le dernier administrateur, rendre sudo, su et pkexec inutilisables)
+n'est pas refusé : c'est peut-être ce qu'il faut faire. Il est précédé d'un AVERTISSEMENT, et la question `[o/N]` dit
+non par défaut ; s'il ne pourra pas être défait, c'est dit (« non annulable »). Couper le pare-feu alors qu'une
+session SSH est peut-être ouverte donne aussi un avertissement : « Si vous êtes connecté de loin, répondez non ».
+
+**Ce que Vanguard ne fait jamais de lui-même.** Aucune baisse ne vient de « Corriger les problèmes trouvés », des
+« Réglages recommandés », de « Tout remettre comme avant », de la réponse automatique aux alertes (protection active) ni de la
+surveillance. « Tout remettre comme avant » rallume ce qui a été baissé, jamais l'inverse. Le mode Wi-Fi public
+allume un pare-feu trouvé coupé et ne le recoupe jamais de lui-même. Sous Windows, un essai vérifie dans le code que
+les lignes de baisse ne se fabriquent que dans les Options de défense et à la sortie du mode Wi-Fi public.
+
+**Limite.** Sous Windows, un programme qui pilote le vrai Vanguard peut faire apparaître la question, mais il ne
+peut pas y répondre : Windows empêche un programme non élevé d'envoyer des touches à la fenêtre administrateur. Si
+Vanguard tourne déjà en administrateur, ou si le contrôle de compte (UAC) est coupé, un programme hostile qui le
+pilote est lui-même administrateur : il a déjà gagné (voir plus haut). Il en va de même, sous Linux, d'un programme
+qui tourne déjà en root.
 
 ## Ce qui sort de l'ordinateur
 
