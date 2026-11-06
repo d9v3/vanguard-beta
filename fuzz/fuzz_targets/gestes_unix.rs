@@ -63,15 +63,18 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                 | D::RendreDossierARoot(c)
                 | D::RetirerLigne(_, c)
                 | D::RetirerAncre(c)
-                | D::CommenterProxy(_, c) = d
+                | D::CommenterProxy(_, c)
+                | D::RemettreProgramme(c) = d
                 {
                     assert!(gestes_unix::chemin_admis(c.octets()));
                 }
-                // Une ancre hors des dossiers d'ajouts, un proxy hors des fichiers connus, le PID 0 ou 1 : jamais relus.
+                // Une ancre hors des dossiers d'ajouts, un proxy hors des fichiers connus, le PID 0 ou 1, un programme
+                // à remettre qui n'est pas celui de Vanguard : jamais relus.
                 match d {
                     D::RetirerAncre(c) => assert!(gestes_unix::ancre_admise(c.octets())),
                     D::CommenterProxy(_, c) => assert!(gestes_unix::fichier_de_ligne_admis(c.octets())),
                     D::ArreterProgramme(pid, _) => assert!(pid > 1),
+                    D::RemettreProgramme(c) => assert!(gestes_unix::programme_pose_admis(c.octets())),
                     _ => {}
                 }
                 if g.refus().is_some() {

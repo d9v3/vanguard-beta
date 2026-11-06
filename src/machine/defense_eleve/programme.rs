@@ -12,7 +12,7 @@ const FIL_DU_NOYAU: u64 = 0x0020_0000;
 /// La taille la plus grande d'un fichier de /proc copié.
 const PROC_MAX: usize = 4 * 1024 * 1024;
 /// La taille la plus grande d'un programme copié ; au-delà, son empreinte seulement.
-const PROGRAMME_MAX: usize = 64 * 1024 * 1024;
+pub(super) const PROGRAMME_MAX: usize = 64 * 1024 * 1024;
 /// Les fichiers ouverts notés au plus.
 const FD_MAX: usize = 1024;
 

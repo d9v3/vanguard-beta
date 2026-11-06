@@ -957,6 +957,7 @@ impl Monde for Systeme {
         {
             let mut acces = super::defense_eleve::Reel {
                 demandeur: self.demandeur,
+                signees: std::cell::RefCell::default(),
             };
             super::defense_eleve::faire(d, id, &mut acces, &mut ServicesDuMonde(self))
         }
@@ -2483,6 +2484,10 @@ mod tests {
             "vanguard:geste defense retirer-du-groupe wheel alice 0123456789abcdef",
             "vanguard:geste defense desactiver-service sshd.service 0123456789abcdef",
             "vanguard:geste defense retirer-ligne 00 2f6574632f736861646f77 0123456789abcdef",
+            // « Refaire » (D7b) : un autre programme que celui de Vanguard, un dossier d'un compte, un champ en trop.
+            "vanguard:geste defense remettre-programme 2f7573722f62696e2f7375646f 0123456789abcdef",
+            "vanguard:geste defense remettre-programme 2f686f6d652f616c6963652f76616e6775617264 0123456789abcdef",
+            "vanguard:geste defense remettre-programme 2f7573722f6c6f63616c2f62696e2f76616e6775617264 00 0123456789abcdef",
         ] {
             let l = vec![juste.to_string(), forge.to_string()];
             assert_eq!(analyser_liste(&l), None, "{forge:?}");

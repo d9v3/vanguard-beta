@@ -13,3 +13,4 @@ vanguard:geste defense retirer-ancre 2f7573722f6c6f63616c2f73686172652f63612d636
 vanguard:geste defense commenter-proxy abababababababababababababababababababababababababababababababab 2f6574632f656e7669726f6e6d656e74 0123456789abcdef
 vanguard:geste defense oublier-bluetooth 001a7dda7113 0123456789abcdef
 vanguard:geste defense arreter-programme 4242 123456 0123456789abcdef
+vanguard:geste defense remettre-programme 2f7573722f6c6f63616c2f62696e2f76616e6775617264 0123456789abcdef

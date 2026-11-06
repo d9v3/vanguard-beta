@@ -386,6 +386,10 @@ fn constat_de(t: Tache, programme: &Path, j: &Jugement, signee: Option<&Signee>)
         )
     };
     let eleve = |texte: String| Some(crate::machine::alerte(CAT, Niveau::Eleve, texte).manuel(remettre(), &[]));
+    // Lot D7b, « Refaire » : le programme lui-même n'est plus celui de Vanguard ; un programme publié et signé peut
+    // y être remis par root, celui qui y est mis en quarantaine. Une tâche qui lance un autre chemin, ou dont le texte
+    // a changé, se refait par la tâche : remettre le programme n'y changerait rien.
+    let refaire = |c: Option<Constat>| c.map(|c| remis(c, t, programme));
     match j {
         Jugement::Sain | Jugement::Soi | Jugement::Premier => None,
         Jugement::AutreChemin(pose) => eleve(trf!(
@@ -402,7 +406,7 @@ fn constat_de(t: Tache, programme: &Path, j: &Jugement, signee: Option<&Signee>)
                     "The program {tache} starts ({chemin}) was updated outside Vanguard, to version {v}, published and signed by the author: Vanguard noted it."
                 ),
             )),
-            Some(Signee::Inconnu(e)) => Some(
+            Some(Signee::Inconnu(e)) => refaire(Some(
                 crate::machine::Constat {
                     verifie: false,
                     ..crate::machine::alerte(
@@ -415,21 +419,21 @@ fn constat_de(t: Tache, programme: &Path, j: &Jugement, signee: Option<&Signee>)
                     )
                 }
                 .manuel(remettre(), &[]),
-            ),
-            Some(Signee::Non) | None => eleve(trf!(
+            )),
+            Some(Signee::Non) | None => refaire(eleve(trf!(
                 "Le programme que lance {tache} ({chemin}) a été remplacé hors de Vanguard : ce ne sont plus les octets que Vanguard a posés, ni une version publiée et signée. Ce qu'il fait et dit ne vient peut-être plus de Vanguard.",
                 "The program {tache} starts ({chemin}) was replaced outside Vanguard: these are no longer the bytes Vanguard placed, nor a published and signed version. What it does and says may no longer come from Vanguard."
-            )),
+            ))),
         },
         Jugement::TexteChange => eleve(trf!(
             "La tâche de {tache} a été changée hors de Vanguard : ce n'est plus celle que Vanguard a posée (un programme lancé en plus, une heure changée, une condition qui la fait sauter…). Un logiciel malveillant peut s'en servir pour la couper ou lancer autre chose sous son nom.",
             "The task of {tache} was changed outside Vanguard: it is no longer the one Vanguard set up (an extra program started, a changed schedule, a condition that skips it…). Malware can use this to switch it off or run something else under its name."
         )),
-        Jugement::ListeForgee => eleve(trf!(
+        Jugement::ListeForgee => refaire(eleve(trf!(
             "La liste des programmes posés par Vanguard a été changée hors de Vanguard, et {tache} lance un programme qui n'est pas ce Vanguard-ci ({chemin}).",
             "The list of programs placed by Vanguard was changed outside Vanguard, and {tache} starts a program that is not this Vanguard ({chemin})."
-        )),
-        Jugement::NonVerifie(raison) => Some(
+        ))),
+        Jugement::NonVerifie(raison) => refaire(Some(
             crate::machine::impossible(
                 CAT,
                 &trf!(
@@ -445,8 +449,27 @@ fn constat_de(t: Tache, programme: &Path, j: &Jugement, signee: Option<&Signee>)
                 ),
                 &[],
             ),
-        ),
+        )),
     }
+}
+
+/// Le constat `c`, avec le geste « Refaire » de Linux quand le programme se désigne (`defense::remettre_programme`) :
+/// remettre un programme publié et signé, celui qui y est en quarantaine, non annulable. Sinon `c` tel quel.
+fn remis(c: Constat, t: Tache, programme: &Path) -> Constat {
+    #[cfg(target_os = "linux")]
+    if let Some(g) = crate::machine::defense::remettre_programme(programme) {
+        return crate::machine::defense::corriger_sans_defaire(
+            c,
+            trf!(
+                "Remettre le programme de Vanguard publié et signé par l'auteur (signature Ed25519 vérifiée) ; celui qui y est va en quarantaine dans /var/lib/vanguard/quarantaine (non annulable). Si c'est vous qui l'avez changé : « {} » refait la tâche",
+                "Put back the Vanguard program published and signed by the author (Ed25519 signature checked); the one there goes to quarantine in /var/lib/vanguard/quarantaine (cannot be undone). If you changed it yourself: “{}” redoes the task",
+                t.refaire()
+            ),
+            &[g],
+        );
+    }
+    let _ = (t, programme);
+    c
 }
 
 /// Le constat d'une tâche qui lance `programme` (un nom sans chemin, que rien d'ici ne situe) alors que Vanguard a posé
@@ -586,6 +609,50 @@ mod tests {
         )
         .unwrap();
         assert!(c.probleme == Some(Niveau::Moyen) && !c.verifie, "{}", c.message);
+    }
+
+    /// Lot D7b, « Refaire » : le programme remplacé (ni posé, ni signé, ou l'historique muet), la liste forgée et le
+    /// programme non vérifié portent le geste qui remet un programme signé, à un chemin de root seulement ; une tâche
+    /// qui lance un autre chemin ou dont le texte a changé se refait par la tâche, à la main.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn refaire_porte_le_geste_de_remise() {
+        let pose = Path::new("/usr/local/bin/vanguard");
+        let ligne = format!(
+            "vanguard:geste defense remettre-programme {} ",
+            crate::machine::gestes_unix::hex(b"/usr/local/bin/vanguard")
+        );
+        let inconnu = Signee::Inconnu("hors ligne".into());
+        let avec = [
+            (Jugement::Remplace, None),
+            (Jugement::Remplace, Some(&Signee::Non)),
+            (Jugement::Remplace, Some(&inconnu)),
+            (Jugement::ListeForgee, None),
+            (Jugement::NonVerifie("illisible".into()), None),
+        ];
+        for (j, s) in &avec {
+            let c = constat_de(Tache::Surveillance, pose, j, *s).unwrap();
+            let k = c.correctif.expect("correction");
+            assert!(k.automatique, "{j:?}");
+            assert_eq!(k.commandes.len(), 1, "{j:?}");
+            assert!(k.commandes[0].starts_with(&ligne), "{j:?} : {:?}", k.commandes);
+            assert!(
+                k.action.contains("quarantaine") && k.action.contains("non annulable"),
+                "{}",
+                k.action
+            );
+        }
+        // Le programme dans le dossier du compte : root n'y écrit pas, la correction reste à la main.
+        let compte = Path::new("/home/alice/.local/share/vanguard/bin/vanguard");
+        let sans = [
+            (Jugement::Remplace, compte),
+            (Jugement::AutreChemin("/usr/local/bin/vanguard".into()), pose),
+            (Jugement::TexteChange, pose),
+        ];
+        for (j, p) in &sans {
+            let c = constat_de(Tache::Surveillance, p, j, None).unwrap();
+            assert!(c.correctif.is_none_or(|k| k.commandes.is_empty()), "{j:?}");
+        }
     }
 
     /// L'unité pointée vers un autre programme : l'autre chemin est dit, même s'il existe, et même aux octets du

@@ -379,6 +379,8 @@ pub(crate) const CONTEXTES_ECHEC: &[&str] = &[
     "maj/fwupd",
     "manifeste/image",
     "manifeste/relire",
+    "mise_a_jour/historique",
+    "mise_a_jour/remise",
     "networkmanager",
     "partages/retirer",
     "plateforme/fwupd",

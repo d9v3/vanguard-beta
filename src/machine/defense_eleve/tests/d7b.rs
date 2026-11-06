@@ -73,6 +73,8 @@ fn ssh_t_en_echec_rien_recharge() {
     let mut a = faux_ssh().repondre("o");
     regler(&mut a, "permitrootlogin", "yes");
     a.sshd_t = 255;
+    // Le dossier de Vanguard déjà là (la note le crée sinon, et il reste) : le compte ci-dessous est exact.
+    a.dossier(DOSSIER_VANGUARD, 0o755, 0);
     let avant = a.fichiers.clone();
     let mut s = FauxServices::nouveau();
     let r = faire_avec(Defense::DurcirSsh(ReglageSsh::Root), &mut a, &mut s);
@@ -774,4 +776,268 @@ fn naissance_lue_du_stat() {
     assert!(drapeaux & 0x0020_0000 != 0);
     assert_eq!(naissance_du_stat("4242 (court) S 1"), None);
     assert_eq!(naissance_du_stat("sans parenthèse"), None);
+}
+
+// ————— « Refaire » : un programme de tâche remis par un programme signé —————
+
+const POSE: &str = "/usr/local/bin/vanguard";
+const SIGNE: &[u8] = b"vanguard 0.89.1 publie et signe";
+const IMPOSTEUR: &[u8] = b"vanguard change hors de Vanguard";
+
+fn sha(o: &[u8]) -> [u8; 32] {
+    Sha256::digest(o).into()
+}
+
+fn quarantaine() -> PathBuf {
+    PathBuf::from(format!(
+        "/var/lib/vanguard/quarantaine/{}-vanguard",
+        gestes_unix::hex(&sha(IMPOSTEUR)[..8])
+    ))
+}
+
+/// /usr/local/bin/vanguard remplacé par un imposteur ; l'historique signé connaît la 0.89.1, et elle se reçoit.
+fn faux_pose() -> Faux {
+    let mut a = Faux::nouveau();
+    for d in ["/", "/usr", "/usr/local", "/usr/local/bin", "/var", "/var/lib"] {
+        a.dossier(d, 0o755, 0);
+    }
+    a.poser(POSE, IMPOSTEUR, 0o755);
+    a.fichiers.get_mut(Path::new(POSE)).unwrap().fiche.taille = IMPOSTEUR.len() as u64;
+    a.historique = Some([(sha(SIGNE), "0.89.1".to_string())].into());
+    a.signe = Some(("0.89.1".into(), SIGNE.to_vec()));
+    a
+}
+
+fn remise() -> Defense {
+    Defense::RemettreProgramme(chemin(POSE))
+}
+
+#[test]
+fn programme_remis_imposteur_en_quarantaine() {
+    let mut a = faux_pose().repondre("o");
+    a.fichiers.get_mut(Path::new(POSE)).unwrap().caps = Some(vec![1, 2, 3, 4]);
+    let r = faire_avec(remise(), &mut a, &mut FauxServices::nouveau());
+    assert!(r.reussi, "{}", r.raison);
+    let q = quarantaine();
+    // L'imposteur copié d'abord, à root, lisible par root seul, jamais effacé ; puis le programme signé posé.
+    assert_eq!(a.fichiers[&q].contenu, IMPOSTEUR);
+    assert_eq!(a.fichiers[&q].fiche.mode, 0o400);
+    assert_eq!(a.fichiers[Path::new(POSE)].contenu, SIGNE);
+    assert_eq!(a.fichiers[Path::new(POSE)].fiche.mode, 0o755);
+    assert_eq!(a.fichiers[Path::new(POSE)].fiche.uid, 0);
+    let copie = a
+        .journal
+        .iter()
+        .position(|l| l == &format!("ecrire {}", q.display()))
+        .unwrap();
+    let posee = a.journal.iter().position(|l| l == &format!("ecrire {POSE}")).unwrap();
+    assert!(copie < posee, "{:?}", a.journal);
+    assert_eq!(a.fichiers[Path::new("/var/lib/vanguard/quarantaine")].fiche.mode, 0o700);
+    let question = &a.questions[0];
+    assert!(question.contains("non annulable"), "{question}");
+    assert!(question.contains(&gestes_unix::hex(&sha(IMPOSTEUR))), "{question}");
+    assert!(question.contains("Ed25519"), "{question}");
+    assert!(question.contains("compte d'uid 0, mode 755"), "{question}");
+    assert_eq!(a.notes.len(), 1);
+    // Relecture : ses capacités notées (la copie en quarantaine ne les garde pas), avec mode et propriétaire.
+    let note = Note::lire(a.notes.keys().next().unwrap(), a.notes.values().next().unwrap()).unwrap();
+    let champ = |k: &str| note.champs.iter().find(|(c, _)| c == k).map(|(_, v)| v.clone());
+    assert_eq!(champ("capacites").as_deref(), Some(&b"01020304"[..]));
+    assert_eq!(champ("mode").as_deref(), Some(&b"493"[..]));
+    // Non annulable : Défaire refuse, rien ne revient.
+    let mut a = a.repondre("o");
+    assert!(!defaire(&mut a, &mut FauxServices::nouveau()).reussi);
+    assert_eq!(a.fichiers[Path::new(POSE)].contenu, SIGNE);
+}
+
+#[test]
+fn programme_remis_entree_dit_non() {
+    let mut a = faux_pose().repondre("");
+    let avant = a.fichiers.clone();
+    let r = faire_avec(remise(), &mut a, &mut FauxServices::nouveau());
+    assert!(!r.reussi);
+    assert_eq!(a.questions.len(), 1);
+    rien_ecrit(&a, &avant);
+    assert!(!a.journal.iter().any(|l| l.starts_with("recevoir")), "{:?}", a.journal);
+    assert_eq!(a.fichiers[Path::new(POSE)].contenu, IMPOSTEUR);
+}
+
+/// Déjà une version publiée et signée : rien à faire, sans question.
+#[test]
+fn programme_deja_signe() {
+    let mut a = faux_pose().repondre("o");
+    a.fichiers.get_mut(Path::new(POSE)).unwrap().contenu = SIGNE.to_vec();
+    let r = faire_avec(remise(), &mut a, &mut FauxServices::nouveau());
+    assert!(r.reussi, "{}", r.raison);
+    assert_eq!(a.questions, Vec::<String>::new());
+    assert!(a.journal.is_empty(), "{:?}", a.journal);
+}
+
+/// Chaque garde avant la question : refusé, rien demandé, rien écrit.
+#[test]
+fn programme_remis_refuse_avant_la_question() {
+    type Preparer = Box<dyn Fn(&mut Faux)>;
+    let cas: Vec<(&str, Preparer)> = vec![
+        // Un dossier au-dessus modifiable par un autre compte, ou d'un autre compte.
+        (
+            "/usr/local/bin",
+            Box::new(|a| a.fichiers.get_mut(Path::new("/usr/local/bin")).unwrap().fiche.mode = 0o777),
+        ),
+        (
+            "/usr/local",
+            Box::new(|a| a.fichiers.get_mut(Path::new("/usr/local")).unwrap().fiche.uid = 1000),
+        ),
+        // Un lien sur le chemin : jamais suivi.
+        (
+            "lien",
+            Box::new(|a| {
+                a.liens.insert(PathBuf::from(POSE), PathBuf::from("/etc/shadow"));
+            }),
+        ),
+        // Un fichier d'un paquet : se réinstalle par son paquet.
+        (
+            "paquet",
+            Box::new(|a| {
+                a.paquets
+                    .insert(PathBuf::from(POSE), EtatPaquet::Modifie("vanguard".into()));
+            }),
+        ),
+        (
+            "le gestionnaire",
+            Box::new(|a| {
+                a.paquets.insert(PathBuf::from(POSE), EtatPaquet::Illisible);
+            }),
+        ),
+        // L'historique signé ne se lit pas (pas d'Internet) : rien n'est cru, l'erreur échappée.
+        ("historique", Box::new(|a| a.historique = None)),
+        // Trop grand pour être gardé en quarantaine.
+        (
+            "trop grand",
+            Box::new(|a| a.fichiers.get_mut(Path::new(POSE)).unwrap().fiche.taille = u64::MAX),
+        ),
+        // Une copie en quarantaine au même nom, qui n'est pas la sienne.
+        (
+            "existe déjà",
+            Box::new(|a| {
+                a.dossier("/var/lib/vanguard", 0o755, 0);
+                a.dossier("/var/lib/vanguard/quarantaine", 0o700, 0);
+                a.poser(&quarantaine().to_string_lossy(), b"autre", 0o400);
+            }),
+        ),
+        // Le dossier de quarantaine ouvert aux autres.
+        (
+            "quarantaine",
+            Box::new(|a| {
+                a.dossier("/var/lib/vanguard", 0o755, 0);
+                a.dossier("/var/lib/vanguard/quarantaine", 0o755, 0);
+            }),
+        ),
+    ];
+    for (attendu, preparer) in &cas {
+        let mut a = faux_pose().repondre("o");
+        preparer(&mut a);
+        let avant = a.fichiers.clone();
+        let r = faire_avec(remise(), &mut a, &mut FauxServices::nouveau());
+        assert!(!r.reussi, "{attendu}");
+        assert!(r.raison.contains(attendu), "{attendu} : {}", r.raison);
+        assert!(!r.raison.contains('\x1b'), "{:?}", r.raison);
+        assert!(a.questions.is_empty(), "{attendu}");
+        rien_ecrit(&a, &avant);
+    }
+}
+
+/// Après le oui : le programme reçu n'est pas dans l'historique signé, ou ne se reçoit pas, ou l'imposteur a changé
+/// pendant la question : rien n'est remplacé, l'imposteur reste où il est.
+#[test]
+fn programme_remis_refuse_apres_le_oui() {
+    type Preparer = Box<dyn Fn(&mut Faux)>;
+    let cas: Vec<(&str, Preparer)> = vec![
+        (
+            "historique signé",
+            Box::new(|a| a.signe = Some(("0.89.1".into(), b"autre programme".to_vec()))),
+        ),
+        // Une version annoncée qui n'est pas celle que l'historique donne à ces octets.
+        (
+            "historique signé",
+            Box::new(|a| a.signe = Some(("0.99.0".into(), SIGNE.to_vec()))),
+        ),
+        ("ne se reçoit pas", Box::new(|a| a.signe = None)),
+        (
+            "",
+            Box::new(|a| a.pendant_la_question = Some((PathBuf::from(POSE), b"encore un autre".to_vec()))),
+        ),
+    ];
+    for (attendu, preparer) in &cas {
+        let mut a = faux_pose().repondre("o");
+        preparer(&mut a);
+        let r = faire_avec(remise(), &mut a, &mut FauxServices::nouveau());
+        assert!(!r.reussi, "{attendu}");
+        assert!(r.raison.contains(attendu), "{attendu} : {}", r.raison);
+        assert!(
+            !a.journal.iter().any(|l| l == &format!("ecrire {POSE}")),
+            "{:?}",
+            a.journal
+        );
+        assert!(!a.fichiers.contains_key(&quarantaine()), "{attendu}");
+        assert_ne!(a.fichiers[Path::new(POSE)].contenu, SIGNE);
+    }
+}
+
+/// Un chemin piégé (saut de ligne, échappement du terminal) dans un dossier admis : montré échappé par le fils.
+#[test]
+fn programme_remis_chemin_piege_echappe() {
+    let piege = "/opt/x\n\x1b[31m\r/vanguard";
+    let mut a = faux_pose().repondre("");
+    a.dossier("/opt", 0o755, 0);
+    a.dossier("/opt/x\n\x1b[31m\r", 0o755, 0);
+    a.poser(piege, IMPOSTEUR, 0o755);
+    let _ = faire_avec(
+        Defense::RemettreProgramme(chemin(piege)),
+        &mut a,
+        &mut FauxServices::nouveau(),
+    );
+    let q = &a.questions[0];
+    assert!(!q.contains('\x1b') && !q.contains('\r'), "{q:?}");
+    assert!(q.contains("/opt/x\\x0a"), "{q}");
+}
+
+/// Une ligne qui désigne un autre programme, ou un programme dans le dossier d'un compte : refusée par le fils avant
+/// tout jugement.
+#[test]
+fn programme_remis_ligne_hors_garde_refusee() {
+    for p in [
+        "/usr/bin/passwd",
+        "/home/alice/.local/share/vanguard/bin/vanguard",
+        "/tmp/vanguard",
+    ] {
+        let mut a = faux_pose().repondre("o");
+        a.poser(p, IMPOSTEUR, 0o755);
+        let avant = a.fichiers.clone();
+        let r = faire_avec(
+            Defense::RemettreProgramme(chemin(p)),
+            &mut a,
+            &mut FauxServices::nouveau(),
+        );
+        assert!(!r.reussi, "{p}");
+        assert!(r.raison.contains("son propre programme"), "{}", r.raison);
+        assert_eq!(a.questions, Vec::<String>::new());
+        rien_ecrit(&a, &avant);
+    }
+}
+
+/// Relecture : une empreinte trouvée dans l'historique signé le reste le temps du geste (Internet qui tombe après le
+/// remplacement ne fait pas dire « pas fait ») ; un échec ne se garde pas, il se redemande.
+#[test]
+fn historique_garde_le_temps_du_geste() {
+    let m = std::cell::RefCell::default();
+    let e = [7u8; 32];
+    let coupe = || Err(echoue("pas d'Internet"));
+    assert!(de_memoire(&m, &e, coupe).is_err());
+    assert_eq!(
+        de_memoire(&m, &e, || Ok(Some("0.89.1".into()))),
+        Ok(Some("0.89.1".into()))
+    );
+    assert_eq!(de_memoire(&m, &e, coupe), Ok(Some("0.89.1".into())));
+    assert_eq!(de_memoire(&m, &[8; 32], || Ok(None)), Ok(None));
+    assert_eq!(de_memoire(&m, &[8; 32], coupe), Ok(None));
 }

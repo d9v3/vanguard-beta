@@ -579,6 +579,24 @@ pub(crate) fn ancre_admise(c: &[u8]) -> bool {
             .any(|d| c.len() > d.len() && c.starts_with(d.as_bytes()))
 }
 
+/// Les noms que porte le programme de Vanguard : celui de sa copie, celui du fichier publié pour Linux.
+pub(crate) const NOMS_DU_PROGRAMME: [&str; 2] = ["vanguard", "vanguard-linux-x86_64"];
+
+/// Les dossiers des comptes et les dossiers temporaires : un compte sans droits y écrit, et root n'y remplace jamais
+/// un programme (un lien ou un renommage posé au bon moment détournerait son écriture).
+pub(crate) const DOSSIERS_DES_COMPTES: [&str; 6] =
+    ["/tmp/", "/var/tmp/", "/dev/shm/", "/run/user/", "/home/", "/root/"];
+
+/// Le programme qu'un geste « Refaire » peut remettre (lot D7b, `programmes_poses`) : un chemin admis, au nom du
+/// programme de Vanguard, hors des dossiers des comptes.
+pub(crate) fn programme_pose_admis(c: &[u8]) -> bool {
+    chemin_admis(c)
+        && c.rsplit(|o| *o == b'/')
+            .next()
+            .is_some_and(|nom| NOMS_DU_PROGRAMME.iter().any(|n| n.as_bytes() == nom))
+        && !DOSSIERS_DES_COMPTES.iter().any(|d| c.starts_with(d.as_bytes()))
+}
+
 /// Un nombre décimal écrit sans signe, sans zéro devant ni espace : la seule forme qu'un champ numérique admet.
 fn decimal<T: std::str::FromStr>(t: &str) -> Option<T> {
     let propre =
@@ -810,6 +828,10 @@ pub(crate) enum Defense {
     /// Arrêter ce programme suspect (PID et sa naissance, en tops d'horloge depuis le démarrage), ses traces copiées
     /// d'abord dans /var/lib/vanguard/traces.
     ArreterProgramme(u32, u64),
+    /// Lot D7b, « Refaire » : le programme d'une tâche de Vanguard remplacé hors de Vanguard, remis par un programme
+    /// publié et signé par l'auteur (historique signé en Ed25519) ; celui qui y était est gardé en quarantaine
+    /// (/var/lib/vanguard/quarantaine), jamais effacé. Non annulable.
+    RemettreProgramme(CheminDesigne),
     /// Remet l'état que la note d'« avant » de ce geste a gardé, puis retire la note.
     Remettre,
 }
@@ -832,6 +854,7 @@ impl Defense {
             Defense::CommenterProxy(..) => "commenter-proxy",
             Defense::OublierBluetooth(_) => "oublier-bluetooth",
             Defense::ArreterProgramme(..) => "arreter-programme",
+            Defense::RemettreProgramme(_) => "remettre-programme",
             Defense::Remettre => "remettre",
         }
     }
@@ -844,7 +867,8 @@ impl Defense {
             Defense::RetirerSetuid(c)
             | Defense::RetirerCapacites(c)
             | Defense::RendreDossierARoot(c)
-            | Defense::RetirerAncre(c) => {
+            | Defense::RetirerAncre(c)
+            | Defense::RemettreProgramme(c) => {
                 format!(" {}", hex(c.octets()))
             }
             Defense::DesactiverService(u) => format!(" {}", u.as_str()),
@@ -994,6 +1018,16 @@ impl Defense {
                 format!("Arrêter le programme suspect de PID {pid}, après avoir copié ses traces"),
                 format!("Stop the suspicious program with PID {pid}, after copying its traces"),
             ),
+            Defense::RemettreProgramme(c) => (
+                format!(
+                    "Remettre à {} un programme de Vanguard publié et signé par l'auteur (celui qui y est va en quarantaine)",
+                    c.lisible()
+                ),
+                format!(
+                    "Put back at {} a Vanguard program published and signed by the author (the one there goes to quarantine)",
+                    c.lisible()
+                ),
+            ),
             Defense::Remettre => (
                 "Remettre ce qu'un geste de défense de Vanguard avait changé".to_string(),
                 "Put back what a Vanguard defense step had changed".to_string(),
@@ -1094,6 +1128,10 @@ impl GesteUnix {
             GesteUnix::Defense(Defense::RetirerAncre(c), _) if !ancre_admise(c.octets()) => Some((
                 "Vanguard ne retire un certificat que des dossiers où le système range ceux qu'on ajoute",
                 "Vanguard only removes a certificate from the folders where the system keeps the added ones",
+            )),
+            GesteUnix::Defense(Defense::RemettreProgramme(c), _) if !programme_pose_admis(c.octets()) => Some((
+                "Vanguard ne remet que son propre programme, hors des dossiers des comptes et des dossiers temporaires",
+                "Vanguard only puts back its own program, outside the accounts' folders and the temporary folders",
             )),
             GesteUnix::Defense(Defense::ArreterProgramme(pid, _), _) if pid <= 1 => Some((
                 "Vanguard n'arrête jamais le premier processus du système ni le noyau",
@@ -1363,6 +1401,7 @@ fn defense(mot: &str, champs: &[&str]) -> Option<Defense> {
         }
         ("oublier-bluetooth", [b]) => Defense::OublierBluetooth(AdresseBt(depuis_hex(b, 6)?.try_into().ok()?)),
         ("arreter-programme", [p, d]) => Defense::ArreterProgramme(decimal(p)?, decimal(d)?),
+        ("remettre-programme", [c]) => Defense::RemettreProgramme(chemin(c)?),
         ("remettre", []) => Defense::Remettre,
         _ => return None,
     })
@@ -1771,6 +1810,8 @@ mod tests {
             Defense::OublierBluetooth(AdresseBt([0x00, 0x1a, 0x7d, 0xda, 0x71, 0x13])),
             Defense::ArreterProgramme(4242, 123_456),
             Defense::ArreterProgramme(u32::MAX, u64::MAX),
+            Defense::RemettreProgramme(CheminDesigne::nouveau(b"/usr/local/bin/vanguard").unwrap()),
+            Defense::RemettreProgramme(CheminDesigne::nouveau(b"/opt/x\n\x1b[31m/vanguard-linux-x86_64").unwrap()),
         ];
         v.extend(GroupeSensible::TOUS.map(|g| Defense::RetirerDuGroupe(g, n)));
         v.extend(ReglageSsh::TOUS.map(Defense::DurcirSsh));
@@ -1925,6 +1966,33 @@ mod tests {
                 "vanguard:geste defense commenter-proxy {} {} 0123456789abcdef",
                 "ab".repeat(32),
                 h(b"/home/alice/.bashrc")
+            ),
+            // « Refaire » : un autre programme que celui de Vanguard, un dossier d'un compte ou temporaire, un nom qui
+            // ne fait que commencer comme le sien, un champ en trop.
+            format!(
+                "vanguard:geste defense remettre-programme {} 0123456789abcdef",
+                h(b"/usr/bin/sudo")
+            ),
+            format!(
+                "vanguard:geste defense remettre-programme {} 0123456789abcdef",
+                h(b"/home/alice/.local/share/vanguard/bin/vanguard")
+            ),
+            format!(
+                "vanguard:geste defense remettre-programme {} 0123456789abcdef",
+                h(b"/tmp/vanguard")
+            ),
+            format!(
+                "vanguard:geste defense remettre-programme {} 0123456789abcdef",
+                h(b"/usr/local/bin/vanguard.sh")
+            ),
+            format!(
+                "vanguard:geste defense remettre-programme {} 0123456789abcdef",
+                h(b"/usr/local/bin/../../../etc/vanguard")
+            ),
+            format!(
+                "vanguard:geste defense remettre-programme {} {} 0123456789abcdef",
+                h(b"/usr/local/bin/vanguard"),
+                h(b"/usr/bin/sudo")
             ),
         ] {
             assert_eq!(analyser(&l), None, "{l:?}");

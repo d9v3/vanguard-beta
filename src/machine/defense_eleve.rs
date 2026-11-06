@@ -36,6 +36,7 @@ use crate::modele::Echec;
 use crate::protection::blocage::ordres::Resultat;
 use crate::{tr, trf};
 
+mod pose;
 mod programme;
 mod systeme;
 
@@ -172,6 +173,12 @@ pub(crate) trait Acces {
     fn copier_traces(&mut self, pid: u32, v: &VueProcessus) -> Result<PathBuf, Echec>;
     /// Arrête le processus s'il fait encore tourner le programme vu (`blocage::arreter_confirme`).
     fn arreter(&mut self, pid: u32, v: &VueProcessus) -> Result<(), Echec>;
+    /// Lot D7b. La version publiée et signée par l'auteur, pour ce système, du programme d'empreinte `sha256`, d'après
+    /// l'historique signé des versions (Ed25519) ; `Ok(None)` : il n'y est pas ; `Err` : on ne sait pas (pourquoi).
+    fn version_signee(&self, sha256: &[u8; 32]) -> Result<Option<String>, Echec>;
+    /// Lot D7b. Un programme de Vanguard publié et signé, reçu en mémoire et vérifié (`mise_a_jour`) : sa version,
+    /// ses octets ; rien n'est écrit.
+    fn programme_signe(&mut self) -> Result<(String, Vec<u8>), Echec>;
 }
 
 /// Ce que l'enfant demande au gestionnaire de services (le bus système, par `assistant::Monde`).
@@ -250,6 +257,15 @@ enum Action {
     },
     /// Les traces du programme copiées d'abord ; puis, s'il est encore celui qui a été vu, arrêté.
     Arreter(u32, VueProcessus),
+    /// Un programme de tâche remis : le programme signé reçu et revérifié dans l'historique, celui qui y est copié
+    /// d'abord en quarantaine (`copier` : la copie n'y est pas encore), puis remplacé s'il est encore celui vu.
+    RemettreProgramme {
+        chemin: PathBuf,
+        fiche: Fiche,
+        empreinte: [u8; 32],
+        quarantaine: PathBuf,
+        copier: bool,
+    },
 }
 
 /// Ce que l'enfant voit d'un processus dans /proc : de quoi le reconnaître au moment d'agir (sa naissance, en tops
@@ -475,6 +491,7 @@ fn juger(d: Defense, a: &mut dyn Acces, s: &mut dyn Services) -> Jugement {
         Defense::CommenterProxy(e, c) => systeme::juger_proxy(e, &c, a),
         Defense::OublierBluetooth(b) => systeme::juger_bluetooth(b, a, s),
         Defense::ArreterProgramme(pid, debut) => programme::juger_arret(pid, debut, a),
+        Defense::RemettreProgramme(c) => pose::juger_remise(&c, a),
         Defense::Remettre => Err(refus(tr!("geste refusé", "step refused").to_string())),
     }
 }
@@ -542,6 +559,13 @@ fn agir(action: &Action, a: &mut dyn Acces, s: &mut dyn Services) -> Result<(), 
             unite,
         } => systeme::poser_ssh(fichier, contenu, *reglage, *unite, a, s),
         Action::Arreter(pid, v) => programme::arreter(*pid, v, a),
+        Action::RemettreProgramme {
+            chemin,
+            fiche,
+            empreinte,
+            quarantaine,
+            copier,
+        } => pose::remettre(chemin, fiche, empreinte, quarantaine, *copier, a),
     }
 }
 
@@ -1800,7 +1824,8 @@ fn remettre_juger(d: Defense, note: &Note, a: &mut dyn Acces, s: &mut dyn Servic
         | Defense::RetirerAncre(_)
         | Defense::CommenterProxy(..)
         | Defense::OublierBluetooth(_)
-        | Defense::ArreterProgramme(..) => Err(refus(tr!(
+        | Defense::ArreterProgramme(..)
+        | Defense::RemettreProgramme(_) => Err(refus(tr!(
             "ce geste est non annulable : Vanguard ne le défait pas (la note d'« avant » garde la copie de ce qu'il a changé, dans /var/lib/vanguard/avant)",
             "this step cannot be undone: Vanguard does not undo it (the \"before\" note keeps the copy of what it changed, in /var/lib/vanguard/avant)"
         )
@@ -1888,6 +1913,24 @@ fn remettre(id: IdNote, a: &mut dyn Acces, s: &mut dyn Services) -> Resultat {
 /// Le vrai ordinateur, pour l'enfant root. `demandeur` : le Vanguard qui a demandé (`--parent`).
 pub(crate) struct Reel {
     pub(crate) demandeur: Option<u32>,
+    /// Les empreintes déjà trouvées dans l'historique signé pendant ce geste : les trois jugements d'un même geste
+    /// lisent la même réponse, et Internet qui tombe après le remplacement ne le fait pas dire « pas fait ».
+    pub(crate) signees: std::cell::RefCell<std::collections::HashMap<[u8; 32], Option<String>>>,
+}
+
+/// La réponse de l'historique signé pour `sha256`, gardée dans `memoire` quand elle est sûre (`Ok`) ; un échec n'est
+/// jamais gardé (il se redemande).
+fn de_memoire(
+    memoire: &std::cell::RefCell<std::collections::HashMap<[u8; 32], Option<String>>>,
+    sha256: &[u8; 32],
+    lire: impl FnOnce() -> Result<Option<String>, Echec>,
+) -> Result<Option<String>, Echec> {
+    if let Some(v) = memoire.borrow().get(sha256) {
+        return Ok(v.clone());
+    }
+    let v = lire()?;
+    memoire.borrow_mut().insert(*sha256, v.clone());
+    Ok(v)
 }
 
 /// L'uid réel d'un processus (`/proc/<pid>/status`).
@@ -2313,6 +2356,20 @@ impl Acces for Reel {
     fn arreter(&mut self, pid: u32, v: &VueProcessus) -> Result<(), Echec> {
         programme::arreter_reel(pid, v)
     }
+
+    fn version_signee(&self, sha256: &[u8; 32]) -> Result<Option<String>, Echec> {
+        if cfg!(test) {
+            return Err(echoue("essais : pas de réseau"));
+        }
+        de_memoire(&self.signees, sha256, || crate::mise_a_jour::version_signee_ici(sha256))
+    }
+
+    fn programme_signe(&mut self) -> Result<(String, Vec<u8>), Echec> {
+        if cfg!(test) {
+            return Err(echoue("essais : pas de réseau"));
+        }
+        crate::mise_a_jour::programme_signe_a_remettre()
+    }
 }
 
 #[cfg(test)]
@@ -2371,6 +2428,10 @@ mod tests {
         sshd_base: Vec<(String, String)>,
         /// Ce que `bluetoothctl info` dit de l'appareil ; `None` : il n'est pas connu.
         bluetooth: Option<String>,
+        /// L'historique signé des versions : empreinte, version ; `None` : il ne se lit pas.
+        historique: Option<BTreeMap<[u8; 32], String>>,
+        /// Le programme signé reçu : version, octets ; `None` : rien reçu.
+        signe: Option<(String, Vec<u8>)>,
     }
 
     fn fiche(genre: Genre, mode: u32, uid: u32, ino: u64) -> Fiche {
@@ -2426,6 +2487,8 @@ mod tests {
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect(),
                 bluetooth: None,
+                historique: Some(BTreeMap::new()),
+                signe: None,
             };
             f.poser("/etc/passwd", PASSWD_DE.as_bytes(), 0o644);
             f.poser("/etc/shadow", SHADOW_DE.as_bytes(), 0o640);
@@ -2769,6 +2832,10 @@ mod tests {
             if self.notes.contains_key(id.as_str()) {
                 return Err(refus("existe"));
             }
+            // Comme le vrai : le dossier de Vanguard est créé avec la première note.
+            if !self.fichiers.contains_key(Path::new(DOSSIER_VANGUARD)) {
+                self.dossier(DOSSIER_VANGUARD, 0o755, 0);
+            }
             self.notes.insert(id.as_str().to_string(), octets.to_vec());
             Ok(())
         }
@@ -2816,6 +2883,19 @@ mod tests {
         fn arreter(&mut self, pid: u32, _: &VueProcessus) -> Result<(), Echec> {
             self.journal.push(format!("arreter {pid}"));
             self.processus.remove(&pid).map(|_| ()).ok_or_else(|| refus("absent"))
+        }
+
+        fn version_signee(&self, sha256: &[u8; 32]) -> Result<Option<String>, Echec> {
+            let h = self
+                .historique
+                .as_ref()
+                .ok_or_else(|| echoue("pas d'Internet\x1b[31m"))?;
+            Ok(h.get(sha256).cloned())
+        }
+
+        fn programme_signe(&mut self) -> Result<(String, Vec<u8>), Echec> {
+            self.journal.push("recevoir le programme signé".into());
+            self.signe.clone().ok_or_else(|| echoue("rien reçu"))
         }
     }
 

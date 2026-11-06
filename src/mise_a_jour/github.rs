@@ -30,6 +30,7 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use super::{TAILLE_MAX, Version, ecrire, lire_version};
+use crate::modele::Echec;
 use crate::ui::*;
 
 /// Les fichiers de la dernière version publiée : le lien « latest » de GitHub suit toujours la plus récente.
@@ -460,30 +461,15 @@ fn recevoir(nom: &str, max: u64, secondes: u64) -> Option<Vec<u8>> {
     .map(|r| r.corps)
 }
 
+/// Le nom de ce système dans le manifeste et l'historique (« linux-x86_64 ») ; `None` : rien n'y est publié pour lui.
+#[cfg(target_os = "linux")]
+pub(super) fn systeme() -> Option<&'static str> {
+    SYSTEME.map(|(s, _)| s)
+}
+
 /// La dernière version publiée pour ce système, manifeste téléchargé et vérifié ; `Err` : pourquoi on ne sait pas.
 pub(super) fn derniere() -> Result<Publiee, String> {
-    let (systeme, fichier) = SYSTEME.ok_or_else(|| {
-        tr!(
-            "pas de version publiée pour ce système",
-            "no published version for this system"
-        )
-        .to_string()
-    })?;
-    let pas_de_reponse = || {
-        tr!(
-            "pas de réponse (pas d'Internet, ou aucune version publiée pour tous)",
-            "no answer (no Internet, or no version published for everyone)"
-        )
-        .to_string()
-    };
-    // Un réglage, pas l'absence d'Internet : le dire tel quel, sans quoi un programme qui l'a posé passerait pour une
-    // panne de réseau.
-    if crate::parametres::hors_ligne() {
-        return Err(crate::parametres::raison_hors_ligne().into());
-    }
-    let manifeste = recevoir("derniere.txt", MANIFESTE_MAX, 20).ok_or_else(pas_de_reponse)?;
-    let signature = recevoir("derniere.txt.sig", 64, 20).ok_or_else(pas_de_reponse)?;
-    let publiee = juger(&manifeste, &signature, systeme, fichier)?;
+    let publiee = derniere_recue()?;
     if publiee.revoque {
         retenir_revocation().map_err(|e| e.to_string())?;
     }
@@ -494,6 +480,41 @@ pub(super) fn derniere() -> Result<Publiee, String> {
         let _ = crate::sceau::ecrire(crate::sceau::VERSIONS, format!("{}.{}.{}+{}", v.0, v.1, v.2, v.3));
     }
     Ok(publiee)
+}
+
+/// La dernière version publiée pour ce système, manifeste téléchargé et sa signature vérifiée, sans rien retenir
+/// (`derniere` retient la révocation et la plus haute version vue ; l'assistant élevé, lui, n'écrit pas les sceaux
+/// d'un compte).
+pub(super) fn derniere_recue() -> Result<Publiee, Echec> {
+    let (systeme, fichier) = SYSTEME.ok_or_else(|| {
+        Echec::echoue(
+            "mise_a_jour/remise",
+            tr!(
+                "pas de version publiée pour ce système",
+                "no published version for this system"
+            ),
+        )
+    })?;
+    let pas_de_reponse = || {
+        Echec::echoue(
+            "mise_a_jour/remise",
+            tr!(
+                "pas de réponse (pas d'Internet, ou aucune version publiée pour tous)",
+                "no answer (no Internet, or no version published for everyone)"
+            ),
+        )
+    };
+    // Un réglage, pas l'absence d'Internet : le dire tel quel, sans quoi un programme qui l'a posé passerait pour une
+    // panne de réseau.
+    if crate::parametres::hors_ligne() {
+        return Err(Echec::echoue(
+            "mise_a_jour/remise",
+            crate::parametres::raison_hors_ligne(),
+        ));
+    }
+    let manifeste = recevoir("derniere.txt", MANIFESTE_MAX, 20).ok_or_else(pas_de_reponse)?;
+    let signature = recevoir("derniere.txt.sig", 64, 20).ok_or_else(pas_de_reponse)?;
+    juger(&manifeste, &signature, systeme, fichier).map_err(|e| Echec::echoue("mise_a_jour/remise", e))
 }
 
 /// Télécharge le programme de `p` et rend ses octets, seulement si leur taille et leur empreinte sont celles signées.

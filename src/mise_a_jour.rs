@@ -406,6 +406,79 @@ pub(crate) fn version_signee(sha256: &[u8; 32]) -> Result<Option<(String, String
     github::dans_l_historique(sha256).map(|t| t.map(|(v, systeme)| (format!("{}.{}.{}", v.0, v.1, v.2), systeme)))
 }
 
+/// La version publiée et signée de ce système dont le programme a l'empreinte `sha256`, d'après l'historique signé ;
+/// `Ok(None)` : il n'y est pas, ou seulement pour un autre système.
+#[cfg(target_os = "linux")]
+pub(crate) fn version_signee_ici(sha256: &[u8; 32]) -> Result<Option<String>, crate::modele::Echec> {
+    let ici = systeme_publie(github::systeme())?;
+    let vue = version_signee(sha256).map_err(|e| crate::modele::Echec::echoue("mise_a_jour/historique", e))?;
+    Ok(vue.and_then(|(v, s)| (s == ici).then_some(v)))
+}
+
+/// Le système d'ici tel que l'historique le nomme ; aucun : refusé avant de lire l'historique, sans quoi tout
+/// programme passerait pour « ni posé ni signé » et le geste échouerait après le oui.
+#[cfg(target_os = "linux")]
+fn systeme_publie(ici: Option<&'static str>) -> Result<&'static str, crate::modele::Echec> {
+    ici.ok_or_else(|| {
+        crate::modele::Echec::echoue(
+            "mise_a_jour/historique",
+            tr!(
+                "pas de version publiée pour ce système",
+                "no published version for this system"
+            ),
+        )
+    })
+}
+
+/// Lot D7b, « Refaire » (`machine::defense_eleve`) : un programme de Vanguard publié et signé par l'auteur, à remettre
+/// à la place d'un programme de tâche remplacé hors de Vanguard ; (version, octets). Ce Vanguard-ci, s'il est dans
+/// l'historique signé pour ce système ; sinon la dernière version publiée, manifeste vérifié (Ed25519), jamais plus
+/// vieille que ce Vanguard-ci, téléchargée en mémoire, taille et empreinte signées, version gravée relue. Rien n'est
+/// écrit, ni sur le disque ni dans les sceaux ; l'appelant revérifie les octets dans l'historique signé.
+#[cfg(target_os = "linux")]
+pub(crate) fn programme_signe_a_remettre() -> Result<(String, Vec<u8>), crate::modele::Echec> {
+    use crate::modele::Echec;
+    use sha2::{Digest, Sha256};
+    let ici =
+        lire_octets(Path::new("/proc/self/exe"), TAILLE_MAX).map_err(|e| Echec::echoue("mise_a_jour/remise", e))?;
+    let e: [u8; 32] = Sha256::digest(&ici).into();
+    if let Some(v) = version_signee_ici(&e)? {
+        return Ok((v, ici));
+    }
+    let courante = courante().ok_or_else(|| {
+        Echec::echoue(
+            "mise_a_jour/remise",
+            tr!(
+                "la version de ce Vanguard ne se lit pas",
+                "this Vanguard's version cannot be read"
+            ),
+        )
+    })?;
+    let p = github::derniere_recue()?;
+    if p.version < courante {
+        return Err(Echec::refuse(
+            "mise_a_jour/remise",
+            trf!(
+                "la dernière version publiée ({}) est plus vieille que ce Vanguard ({}) : refusée",
+                "the latest published version ({}) is older than this Vanguard ({}): refused",
+                ecrire(p.version),
+                ecrire(courante)
+            ),
+        ));
+    }
+    let octets = github::programme_verifie(&p).map_err(|e| Echec::echoue("mise_a_jour/remise", e))?;
+    if version_gravee(&octets) != Some(p.version) {
+        return Err(Echec::refuse(
+            "mise_a_jour/remise",
+            tr!(
+                "le programme reçu ne porte pas la version signée : refusé",
+                "the received program does not carry the signed version: refused"
+            ),
+        ));
+    }
+    Ok((ecrire(p.version), octets))
+}
+
 /// Copie `source` à la place de `cible` : à côté d'abord, sa version revérifiée (ce qui a été montré est ce qui
 /// s'installe : la clé a pu changer depuis l'affichage), relue et comparée, puis renommée d'un coup ; une copie
 /// interrompue ou abîmée ne remplace jamais celle qui marche, et ne reste pas sur le disque.
@@ -823,6 +896,16 @@ fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Relecture D7b : sans version publiée pour ce système, refusé (avant de lire l'historique, dans
+    /// `version_signee_ici`) ; ici, le système publié.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn version_signee_pour_ce_systeme_seulement() {
+        assert!(systeme_publie(None).is_err());
+        assert_eq!(systeme_publie(Some("linux-x86_64")), Ok("linux-x86_64"));
+        assert_eq!(github::systeme(), Some("linux-x86_64"));
+    }
 
     /// Une copie posée par Vanguard (`installer`) renote l'empreinte de la tâche qui la lance : la mise à jour
     /// légitime ne se dit pas « remplacée hors de Vanguard ».

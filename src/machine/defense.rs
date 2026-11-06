@@ -103,6 +103,16 @@ pub(crate) fn retirer_ancre(fichier: &str) -> Option<Defense> {
     super::gestes_unix::ancre_admise(fichier.as_bytes()).then_some(Defense::RetirerAncre(c))
 }
 
+/// Le geste « Refaire » qui remet un programme de Vanguard publié et signé à la place de ce programme de tâche, s'il
+/// porte le nom du programme de Vanguard hors des dossiers des comptes ; sinon `None` (la correction reste à la main :
+/// root n'écrit pas où un compte peut écrire).
+pub(crate) fn remettre_programme(programme: &std::path::Path) -> Option<Defense> {
+    use std::os::unix::ffi::OsStrExt;
+    let octets = programme.as_os_str().as_bytes();
+    let c = CheminDesigne::nouveau(octets)?;
+    super::gestes_unix::programme_pose_admis(octets).then_some(Defense::RemettreProgramme(c))
+}
+
 /// Le geste qui arrête ce programme, désigné par son numéro et sa naissance (relue de `/proc/<pid>/stat` : un numéro
 /// repris par un autre programme n'est jamais arrêté) ; `None` s'il est parti ou illisible.
 pub(crate) fn arreter_programme(pid: u32) -> Option<Defense> {
