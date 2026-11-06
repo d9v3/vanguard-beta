@@ -114,6 +114,8 @@ fn fichiers_suspects(e: &Entree) -> Vec<Constat> {
         capacites_lues: !e.de("getcap").iter().any(|c| c[0] == "absent"),
         path_dangereux: e.de("path").iter().map(|c| c[0].to_string()).collect(),
         reinstaller: "sudo pacman -S --noconfirm corpus".into(),
+        gestes_modifies: Vec::new(),
+        gestes_anormaux: Vec::new(),
     };
     super::persistance::juger_fichiers_suspects(&releve)
 }

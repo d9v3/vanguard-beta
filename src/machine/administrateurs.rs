@@ -135,7 +135,8 @@ fn juger(admins: &[String], avant: Option<&Vus>, aujourd_hui: NaiveDate) -> (Con
         };
         vus.entry(cle.clone()).or_insert(date);
     }
-    let recents: Vec<String> = admins
+    // Les noms tels que le système les donne (pour un geste), puis tels qu'affichés.
+    let recents_bruts: Vec<&str> = admins
         .iter()
         .zip(&cles)
         .filter(|(_, cle)| {
@@ -143,8 +144,9 @@ fn juger(admins: &[String], avant: Option<&Vus>, aujourd_hui: NaiveDate) -> (Con
                 .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
                 .is_some_and(|d| (aujourd_hui - d).num_days() < RECENT_JOURS)
         })
-        .map(|(a, _)| affichable(a))
+        .map(|(a, _)| a.as_str())
         .collect();
+    let recents: Vec<String> = recents_bruts.iter().map(|a| affichable(a)).collect();
     let constat = if recents.is_empty() {
         let noms: Vec<String> = admins.iter().map(|a| affichable(a)).collect();
         ok(
@@ -160,7 +162,7 @@ fn juger(admins: &[String], avant: Option<&Vus>, aujourd_hui: NaiveDate) -> (Con
             ),
         )
     } else {
-        alerte(
+        let constat = alerte(
             CAT,
             Niveau::Eleve,
             trf!(
@@ -175,9 +177,33 @@ fn juger(admins: &[String], avant: Option<&Vus>, aujourd_hui: NaiveDate) -> (Con
             r.sort();
             r.join(",")
         }))
-        .manuel(retrait(), &[])
+        .manuel(retrait(), &[]);
+        retirer_par_geste(constat, &recents_bruts)
     };
     (constat, Vus { vus })
+}
+
+/// Linux : chacun retiré du groupe des administrateurs par un geste de défense (tous ou aucun), défait par sa note.
+/// Vous-même, ou le dernier administrateur : l'enfant root avertit, dit comment revenir, et Entrée seule dit non.
+#[cfg(target_os = "linux")]
+fn retirer_par_geste(constat: Constat, noms: &[&str]) -> Constat {
+    use super::gestes_unix::{Defense, GroupeSensible, NomCompte};
+    let gestes = super::defense::tous(noms.iter().copied(), |n| {
+        NomCompte::nouveau(n).map(|n| Defense::RetirerDuGroupe(GroupeSensible::Administrateurs, n))
+    });
+    super::defense::corriger(
+        constat,
+        tr!(
+            "S'il n'est pas à vous : le retirer du groupe des administrateurs (effectif à sa prochaine session), puis changer vos mots de passe et lancer l'antivirus",
+            "If it is not yours: remove it from the administrators group (effective at its next session), then change your passwords and run the antivirus"
+        ),
+        &gestes,
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn retirer_par_geste(constat: Constat, _noms: &[&str]) -> Constat {
+    constat
 }
 
 fn retrait() -> &'static str {
@@ -260,6 +286,30 @@ mod tests {
         assert!(!douteux && avant.is_none());
         let (c, _) = juger(&admins, avant.as_ref(), jour(10));
         assert!(c.probleme.is_none(), "{}", c.message);
+    }
+
+    /// Linux (D7a) : le nouvel administrateur se retire du groupe par un geste ; un nom forgé laisse tout à la main.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn nouvel_administrateur_retire_par_geste() {
+        use crate::machine::gestes_unix::{Defense, GesteUnix, GroupeSensible, analyser};
+        let vus = Vus {
+            vus: BTreeMap::from([("alice".to_string(), String::new())]),
+        };
+        let admins = vec!["alice".to_string(), "intrus".to_string()];
+        let k = juger(&admins, Some(&vus), jour(10)).0.correctif.unwrap();
+        assert!(k.automatique);
+        let [ligne] = k.commandes.as_slice() else {
+            panic!("un geste attendu")
+        };
+        assert!(matches!(
+            analyser(ligne),
+            Some(GesteUnix::Defense(Defense::RetirerDuGroupe(GroupeSensible::Administrateurs, n), _))
+                if n.as_str() == "intrus"
+        ));
+        let admins = vec!["alice".to_string(), "x;reboot".to_string()];
+        let k = juger(&admins, Some(&vus), jour(10)).0.correctif.unwrap();
+        assert!(!k.automatique);
     }
 
     #[test]

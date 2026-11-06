@@ -15,7 +15,14 @@
 //!   mais que `protection::distance` a trouvée (un logiciel de prise de contrôle à distance) ; le nom suit une règle
 //!   stricte (`nom_admis`), et l'enfant relit le fichier de l'unité et le reconnaît lui-même avant d'agir ;
 //! - `signatures-clamav` : le geste composé de la mise à jour des signatures (arrêter clamav-freshclam, freshclam,
-//!   le réactiver), pour qu'aucun « arrêter clamav-freshclam » isolé n'existe.
+//!   le réactiver), pour qu'aucun « arrêter clamav-freshclam » isolé n'existe ;
+//! - `defense <mot> <champs> <id>` : une correction du bilan qui retire un accès, un droit ou un lancement
+//!   (`Defense` : verrouiller un compte, le retirer d'un groupe, faire redemander son mot de passe par sudo, retirer
+//!   setuid ou des capacités, rendre un dossier à root, désactiver un service ajouté, retirer une ligne d'un fichier
+//!   de démarrage), ou `remettre <id>`, qui la défait. Un compte suit `nom_compte_admis`, un chemin s'écrit en
+//!   hexadécimal (`hex`) et se montre échappé (`echappe`), l'identifiant (`IdNote`) nomme la note d'« avant » que
+//!   l'enfant écrit (`note_avant_unix`). Ni sshd ni le gestionnaire de session (`UNITES_DE_SESSION`), ni un fichier
+//!   hors de `fichier_de_ligne_admis` : la ligne ne se relit pas.
 //!
 //! Les familles des paquets, des fichiers de configuration et du réseau suivront (plan du lot Unix, U2, U4 à U7), sur
 //! le même canal et avec les mêmes bornes ; elles reprendront `unite` telle quelle (masquer et démasquer y viendront
@@ -37,10 +44,10 @@ pub(crate) const PREFIXE: &str = "vanguard:geste ";
 /// banc de fuzzing lise ce module seul ; l'essai `bornes_du_canal_communes_avec_les_ordres` les garde égales). Le
 /// nombre de lignes d'une liste est borné par le canal lui-même (`ordres::LIGNES_MAX`, lu par l'assistant).
 pub(crate) const LIGNE_MAX: usize = 8448;
-/// La plus longue ligne d'un geste : la famille, l'action et un nom d'unité de `NOM_UNITE_MAX` octets
-/// (« vanguard:geste unite-designee desactiver-sans-arreter », espace comprise, + 128 = 182) ; tout ce qui dépasse est refusé avant
-/// d'être découpé.
-pub(crate) const GESTE_MAX: usize = 192;
+/// La plus longue ligne d'un geste : celle qui retire une ligne d'un fichier (« vanguard:geste defense retirer-ligne »,
+/// espace comprise, 38 octets, l'empreinte en 64 chiffres, un chemin de `CHEMIN_MAX` octets en 512 chiffres et
+/// l'identifiant de 16, chacun précédé d'une espace : 633) ; tout ce qui dépasse est refusé avant d'être découpé.
+pub(crate) const GESTE_MAX: usize = 640;
 const _: () = assert!(GESTE_MAX <= LIGNE_MAX, "un geste tient dans une ligne du canal");
 
 /// Un programme figé : l'outil, cherché par l'enfant dans les dossiers du système, et ses arguments, tous écrits ici.
@@ -307,7 +314,494 @@ impl std::fmt::Debug for NomUnite {
     }
 }
 
+/// Le plus long nom de compte qu'un geste de défense désigne (useradd en admet 32).
+pub(crate) const NOM_COMPTE_MAX: usize = 32;
+
+/// Un nom de compte qu'un geste de défense peut porter : une minuscule ou « _ » d'abord (jamais une option), puis
+/// minuscules, chiffres, « _ », « - », « . » seulement ; 32 octets au plus. La règle de Debian (NAME_REGEX), un peu
+/// élargie : un compte dont le nom n'y tient pas reste une commande montrée, jamais un geste.
+pub(crate) fn nom_compte_admis(nom: &str) -> bool {
+    let mut o = nom.bytes();
+    o.next().is_some_and(|p| p.is_ascii_lowercase() || p == b'_')
+        && nom.len() <= NOM_COMPTE_MAX
+        && o.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_-.".contains(&c))
+}
+
+/// Un nom de compte admis (`nom_compte_admis`), recopié : le geste reste `Copy`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NomCompte {
+    octets: [u8; NOM_COMPTE_MAX],
+    longueur: u8,
+}
+
+impl NomCompte {
+    pub(crate) fn nouveau(nom: &str) -> Option<Self> {
+        if !nom_compte_admis(nom) {
+            return None;
+        }
+        let mut octets = [0; NOM_COMPTE_MAX];
+        octets.get_mut(..nom.len())?.copy_from_slice(nom.as_bytes());
+        Some(NomCompte {
+            octets,
+            longueur: u8::try_from(nom.len()).ok()?,
+        })
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        self.octets
+            .get(..usize::from(self.longueur))
+            .and_then(|o| std::str::from_utf8(o).ok())
+            .unwrap_or_default()
+    }
+}
+
+impl std::fmt::Debug for NomCompte {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("NomCompte").field(&self.as_str()).finish()
+    }
+}
+
+/// Le plus long chemin qu'un geste de défense désigne, en octets.
+pub(crate) const CHEMIN_MAX: usize = 256;
+
+/// Un chemin absolu désigné par un geste de défense, octets tels quels (un nom de fichier hostile, saut de ligne ou
+/// échappement de terminal compris, reste désignable : c'est souvent celui qu'il faut traiter). Sur la ligne, il
+/// s'écrit en hexadécimal : ni espace, ni « / », ni octet de contrôle n'y passent. Admis : commence par « / », 256
+/// octets au plus, ni octet nul, ni « // », ni composant « . » ou « .. », ni « / » final. L'enfant le résout encore
+/// lui-même (il doit être son propre chemin réel) avant d'agir.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CheminDesigne {
+    octets: [u8; CHEMIN_MAX],
+    longueur: u16,
+}
+
+/// Le chemin a-t-il la forme stricte d'un `CheminDesigne` ?
+pub(crate) fn chemin_admis(c: &[u8]) -> bool {
+    if c.len() < 2 || c.len() > CHEMIN_MAX || c.first() != Some(&b'/') || c.last() == Some(&b'/') || c.contains(&0) {
+        return false;
+    }
+    c.get(1..).is_some_and(|reste| {
+        reste
+            .split(|o| *o == b'/')
+            .all(|p| !p.is_empty() && p != b"." && p != b"..")
+    })
+}
+
+impl CheminDesigne {
+    pub(crate) fn nouveau(c: &[u8]) -> Option<Self> {
+        if !chemin_admis(c) {
+            return None;
+        }
+        let mut octets = [0; CHEMIN_MAX];
+        octets.get_mut(..c.len())?.copy_from_slice(c);
+        Some(CheminDesigne {
+            octets,
+            longueur: u16::try_from(c.len()).ok()?,
+        })
+    }
+
+    pub(crate) fn octets(&self) -> &[u8] {
+        self.octets.get(..usize::from(self.longueur)).unwrap_or_default()
+    }
+
+    /// Le chemin, lisible : les octets imprimables d'ASCII tels quels, tout autre en « \xNN » (« \ » doublé). Pur,
+    /// borné à 120 octets du chemin (« … » au-delà) : ni saut de ligne, ni échappement de terminal, ni caractère
+    /// de direction n'arrive à l'écran.
+    pub(crate) fn lisible(&self) -> String {
+        echappe(self.octets())
+    }
+}
+
+/// Les octets lisibles : ASCII imprimable tel quel, « \ » doublé, le reste en « \xNN » ; 120 octets au plus.
+pub(crate) fn echappe(octets: &[u8]) -> String {
+    let mut s = String::new();
+    for &o in octets.iter().take(120) {
+        match o {
+            b'\\' => s.push_str("\\\\"),
+            0x20..=0x7e => s.push(char::from(o)),
+            _ => {
+                s.push_str("\\x");
+                s.push(hex_chiffre(o >> 4));
+                s.push(hex_chiffre(o & 0x0f));
+            }
+        }
+    }
+    if octets.len() > 120 {
+        s.push('…');
+    }
+    s
+}
+
+impl std::fmt::Debug for CheminDesigne {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("CheminDesigne").field(&self.lisible()).finish()
+    }
+}
+
+fn hex_chiffre(v: u8) -> char {
+    char::from(b"0123456789abcdef".get(usize::from(v & 0x0f)).copied().unwrap_or(b'0'))
+}
+
+/// Des octets en hexadécimal minuscule.
+pub(crate) fn hex(octets: &[u8]) -> String {
+    let mut s = String::with_capacity(octets.len().saturating_mul(2));
+    for &o in octets {
+        s.push(hex_chiffre(o >> 4));
+        s.push(hex_chiffre(o & 0x0f));
+    }
+    s
+}
+
+/// L'hexadécimal minuscule, strict (une majuscule, un nombre impair de chiffres : refusés) ; `max` octets au plus.
+pub(crate) fn depuis_hex(t: &str, max: usize) -> Option<Vec<u8>> {
+    let o = t.as_bytes();
+    if o.is_empty() || !o.len().is_multiple_of(2) || o.len() / 2 > max {
+        return None;
+    }
+    let chiffre = |c: u8| match c {
+        b'0'..=b'9' => c.checked_sub(b'0'),
+        b'a'..=b'f' => c.checked_sub(b'a').and_then(|v| v.checked_add(10)),
+        _ => None,
+    };
+    o.chunks(2)
+        .map(|p| match p {
+            [h, b] => Some(chiffre(*h)?.checked_mul(16)?.checked_add(chiffre(*b)?)?),
+            _ => None,
+        })
+        .collect()
+}
+
+/// L'identifiant de la note d'« avant » d'un geste de défense : 16 chiffres hexadécimaux minuscules, tirés au
+/// hasard par le parent (`machine::defense`). Il nomme le fichier de la note (`/var/lib/vanguard/avant/<id>`) : rien
+/// d'autre qu'eux n'y passe.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IdNote([u8; 16]);
+
+impl IdNote {
+    pub(crate) fn nouveau(t: &str) -> Option<Self> {
+        let o: [u8; 16] = t.as_bytes().try_into().ok()?;
+        o.iter()
+            .all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+            .then_some(IdNote(o))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.0).unwrap_or_default()
+    }
+}
+
+impl std::fmt::Debug for IdNote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("IdNote").field(&self.as_str()).finish()
+    }
+}
+
+/// L'empreinte SHA-256 d'une ligne de fichier (sans son saut de ligne), qui la désigne sans la porter.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Empreinte(pub(crate) [u8; 32]);
+
+/// Les groupes qui donnent des droits d'administrateur, directement ou par un détour (`linux::privileges`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GroupeSensible {
+    Docker,
+    Lxd,
+    IncusAdmin,
+    Libvirt,
+    Disk,
+    /// Le groupe des administrateurs (sudo) : wheel, sudo ou admin selon la distribution.
+    Administrateurs,
+}
+
+impl GroupeSensible {
+    pub(crate) const TOUS: [GroupeSensible; 6] = [
+        GroupeSensible::Docker,
+        GroupeSensible::Lxd,
+        GroupeSensible::IncusAdmin,
+        GroupeSensible::Libvirt,
+        GroupeSensible::Disk,
+        GroupeSensible::Administrateurs,
+    ];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            GroupeSensible::Docker => "docker",
+            GroupeSensible::Lxd => "lxd",
+            GroupeSensible::IncusAdmin => "incus-admin",
+            GroupeSensible::Libvirt => "libvirt",
+            GroupeSensible::Disk => "disk",
+            GroupeSensible::Administrateurs => "administrateurs",
+        }
+    }
+
+    /// Les noms de groupe de /etc/group qu'il couvre (lus par les gestes de Linux seulement).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn noms(self) -> &'static [&'static str] {
+        match self {
+            GroupeSensible::Docker => &["docker"],
+            GroupeSensible::Lxd => &["lxd"],
+            GroupeSensible::IncusAdmin => &["incus-admin"],
+            GroupeSensible::Libvirt => &["libvirt"],
+            GroupeSensible::Disk => &["disk"],
+            GroupeSensible::Administrateurs => &["wheel", "sudo", "admin"],
+        }
+    }
+
+    /// Le groupe sensible de ce nom de /etc/group.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn de_nom(nom: &str) -> Option<Self> {
+        Self::TOUS.into_iter().find(|g| g.noms().contains(&nom))
+    }
+
+    fn depuis_mot(mot: &str) -> Option<Self> {
+        Self::TOUS.into_iter().find(|g| g.mot() == mot)
+    }
+}
+
+/// Les unités qui portent une session (la connexion à distance, l'écran de connexion, la session elle-même) : jamais
+/// désactivées par un geste de défense, même ajoutées à la main. Un refus, pas un avertissement : ce n'est pas un
+/// verrouillage dont on se sort, c'est la session en cours qui tomberait.
+pub(crate) const UNITES_DE_SESSION: [&str; 18] = [
+    "sshd.service",
+    "ssh.service",
+    "sshd.socket",
+    "ssh.socket",
+    "display-manager.service",
+    "gdm.service",
+    "gdm3.service",
+    "sddm.service",
+    "lightdm.service",
+    "lxdm.service",
+    "xdm.service",
+    "greetd.service",
+    "ly.service",
+    "systemd-logind.service",
+    "dbus.service",
+    "dbus-broker.service",
+    "polkit.service",
+    "xrdp.service",
+];
+
+/// Les fichiers du système dont un geste de défense retire une ligne (un lancement suspect, une ouverture de session
+/// automatique) : une liste fermée, dans /etc seulement. Un nom de fichier libre (« * ») : lettres ASCII, chiffres,
+/// « . _ @ - », sans point au début.
+pub(crate) fn fichier_de_ligne_admis(c: &[u8]) -> bool {
+    const EXACTS: [&str; 19] = [
+        "/etc/ld.so.preload",
+        "/etc/environment",
+        "/etc/profile",
+        "/etc/bash.bashrc",
+        "/etc/bashrc",
+        "/etc/zshenv",
+        "/etc/zprofile",
+        "/etc/zshrc",
+        "/etc/zsh/zshenv",
+        "/etc/zsh/zprofile",
+        "/etc/zsh/zshrc",
+        "/etc/crontab",
+        "/etc/rc.local",
+        "/etc/gdm/custom.conf",
+        "/etc/gdm3/custom.conf",
+        "/etc/gdm3/daemon.conf",
+        "/etc/sddm.conf",
+        "/etc/lightdm/lightdm.conf",
+        "/etc/anacrontab",
+    ];
+    const DOSSIERS: [(&str, &[&str]); 8] = [
+        ("/etc/profile.d/", &[".sh", ".zsh"]),
+        ("/etc/environment.d/", &[".conf"]),
+        ("/etc/cron.d/", &[""]),
+        ("/etc/systemd/system/", &[".service", ".timer", ".socket", ".path"]),
+        ("/etc/xdg/autostart/", &[".desktop"]),
+        ("/etc/sddm.conf.d/", &[".conf"]),
+        ("/etc/lightdm/lightdm.conf.d/", &[".conf"]),
+        ("/etc/X11/Xsession.d/", &[""]),
+    ];
+    let Ok(t) = std::str::from_utf8(c) else {
+        return false;
+    };
+    if !chemin_admis(c) {
+        return false;
+    }
+    if EXACTS.contains(&t) {
+        return true;
+    }
+    let nom_libre = |n: &str| {
+        !n.starts_with('.') && !n.is_empty() && n.bytes().all(|o| o.is_ascii_alphanumeric() || b"._@-".contains(&o))
+    };
+    if DOSSIERS.iter().any(|(d, fins)| {
+        t.strip_prefix(d)
+            .is_some_and(|n| nom_libre(n) && fins.iter().any(|f| n.ends_with(f) && n.len() > f.len()))
+    }) {
+        return true;
+    }
+    // Un complément d'unité : /etc/systemd/system/<unité>.d/<nom>.conf.
+    t.strip_prefix("/etc/systemd/system/")
+        .and_then(|r| r.split_once('/'))
+        .is_some_and(|(d, n)| {
+            d.strip_suffix(".d").is_some_and(nom_admis)
+                && nom_libre(n)
+                && n.len() > 5
+                && n.as_bytes().ends_with(b".conf")
+        })
+}
+
+/// Un geste de défense (lot D7a du plan des outils de défense) : une correction du bilan qui retire un accès, un
+/// droit ou un lancement, faite par l'enfant root après l'avoir rejugée, notée avant (note d'« avant », dans
+/// /var/lib/vanguard/avant, que seul root écrit) et défaite par `Remettre`. Chacun demande l'accord de la personne
+/// sur son terminal ; ceux qui peuvent la couper de son ordinateur (un compte, sudo, le dernier administrateur)
+/// l'avertissent d'abord, et Entrée seule dit non.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Defense {
+    /// `usermod --lock --expiredate 1 --shell nologin` : le compte ne s'ouvre plus, ni par mot de passe ni par clé ;
+    /// rien n'est supprimé.
+    VerrouillerCompte(NomCompte),
+    /// `gpasswd -d` de chaque groupe de cette famille dont le compte est membre (effectif à sa prochaine session).
+    RetirerDuGroupe(GroupeSensible, NomCompte),
+    /// Un complément de sudo (`/etc/sudoers.d/zz-vanguard-<nom>`) qui redemande le mot de passe de ce compte, validé
+    /// par visudo avant d'être posé.
+    DurcirSudo(NomCompte),
+    /// `chmod u-s,g-s` d'un programme setuid ou setgid suspect.
+    RetirerSetuid(CheminDesigne),
+    /// `setcap -r` d'un programme aux capacités suspectes.
+    RetirerCapacites(CheminDesigne),
+    /// Un dossier du système à un autre compte, ou ouvert en écriture au groupe : rendu à root (0:0, sans écriture du
+    /// groupe ni des autres).
+    RendreDossierARoot(CheminDesigne),
+    /// `disable --now` d'un service ajouté à la main dans /etc/systemd/system.
+    DesactiverService(NomUnite),
+    /// La ligne de ce fichier du système dont l'empreinte est celle-là, retirée ; le fichier entier est noté.
+    RetirerLigne(Empreinte, CheminDesigne),
+    /// Remet l'état que la note d'« avant » de ce geste a gardé, puis retire la note.
+    Remettre,
+}
+
+impl Defense {
+    fn mot(self) -> &'static str {
+        match self {
+            Defense::VerrouillerCompte(_) => "verrouiller-compte",
+            Defense::RetirerDuGroupe(..) => "retirer-du-groupe",
+            Defense::DurcirSudo(_) => "durcir-sudoers",
+            Defense::RetirerSetuid(_) => "retirer-setuid",
+            Defense::RetirerCapacites(_) => "retirer-capacites",
+            Defense::RendreDossierARoot(_) => "rendre-a-root",
+            Defense::DesactiverService(_) => "desactiver-service",
+            Defense::RetirerLigne(..) => "retirer-ligne",
+            Defense::Remettre => "remettre",
+        }
+    }
+
+    /// Les champs de la ligne, entre le mot et l'identifiant.
+    fn champs(self) -> String {
+        match self {
+            Defense::VerrouillerCompte(n) | Defense::DurcirSudo(n) => format!(" {}", n.as_str()),
+            Defense::RetirerDuGroupe(g, n) => format!(" {} {}", g.mot(), n.as_str()),
+            Defense::RetirerSetuid(c) | Defense::RetirerCapacites(c) | Defense::RendreDossierARoot(c) => {
+                format!(" {}", hex(c.octets()))
+            }
+            Defense::DesactiverService(u) => format!(" {}", u.as_str()),
+            Defense::RetirerLigne(e, c) => format!(" {} {}", hex(&e.0), hex(c.octets())),
+            Defense::Remettre => String::new(),
+        }
+    }
+
+    fn phrase(self) -> (String, String) {
+        match self {
+            Defense::VerrouillerCompte(n) => (
+                format!(
+                    "Verrouiller le compte {} (il ne s'ouvre plus ; rien n'est supprimé, réactivable)",
+                    n.as_str()
+                ),
+                format!(
+                    "Lock the account {} (it no longer opens; nothing is deleted, can be re-enabled)",
+                    n.as_str()
+                ),
+            ),
+            Defense::RetirerDuGroupe(GroupeSensible::Administrateurs, n) => (
+                format!(
+                    "Retirer le compte {} du groupe des administrateurs (effectif à sa prochaine session)",
+                    n.as_str()
+                ),
+                format!(
+                    "Remove the account {} from the administrators group (effective at its next session)",
+                    n.as_str()
+                ),
+            ),
+            Defense::RetirerDuGroupe(g, n) => (
+                format!(
+                    "Retirer le compte {} du groupe {} (effectif à sa prochaine session)",
+                    n.as_str(),
+                    g.mot()
+                ),
+                format!(
+                    "Remove the account {} from the {} group (effective at its next session)",
+                    n.as_str(),
+                    g.mot()
+                ),
+            ),
+            Defense::DurcirSudo(n) => (
+                format!(
+                    "Faire redemander son mot de passe au compte {} (complément de sudo, vérifié par visudo)",
+                    n.as_str()
+                ),
+                format!(
+                    "Ask the account {} for its password again (an addition to sudo, checked by visudo)",
+                    n.as_str()
+                ),
+            ),
+            Defense::RetirerSetuid(c) => (
+                format!("Retirer le droit « setuid/setgid » du programme {}", c.lisible()),
+                format!("Remove the setuid/setgid right from the program {}", c.lisible()),
+            ),
+            Defense::RetirerCapacites(c) => (
+                format!("Retirer les capacités (droits du noyau) du programme {}", c.lisible()),
+                format!(
+                    "Remove the capabilities (kernel rights) from the program {}",
+                    c.lisible()
+                ),
+            ),
+            Defense::RendreDossierARoot(c) => (
+                format!(
+                    "Rendre le dossier {} à root (fermé en écriture aux autres comptes)",
+                    c.lisible()
+                ),
+                format!(
+                    "Give the folder {} back to root (closed to writing by other accounts)",
+                    c.lisible()
+                ),
+            ),
+            Defense::DesactiverService(u) => (
+                format!(
+                    "Désactiver le service {} (tout de suite et aux prochains démarrages)",
+                    u.as_str()
+                ),
+                format!(
+                    "Turn off the service {} (right away and at the next startups)",
+                    u.as_str()
+                ),
+            ),
+            Defense::RetirerLigne(_, c) => (
+                format!(
+                    "Retirer la ligne suspecte de {} (le fichier entier est gardé dans la note)",
+                    c.lisible()
+                ),
+                format!(
+                    "Remove the suspicious line from {} (the whole file is kept in the note)",
+                    c.lisible()
+                ),
+            ),
+            Defense::Remettre => (
+                "Remettre ce qu'un geste de défense de Vanguard avait changé".to_string(),
+                "Put back what a Vanguard defense step had changed".to_string(),
+            ),
+        }
+    }
+}
+
 /// Un geste désigné par une ligne, relu.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "copié par valeur, une ligne à la fois : quelques centaines d'octets, jamais en masse"
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GesteUnix {
     Programme(&'static Programme),
@@ -320,6 +814,8 @@ pub(crate) enum GesteUnix {
     /// Arrêter clamav-freshclam s'il tourne (il verrouille la base), lancer freshclam, puis le redémarrer dans tous
     /// les cas ; son lancement au démarrage n'est jamais changé (rien ne le noterait pour le défaire).
     SignaturesClamav,
+    /// Un geste de défense, et l'identifiant de sa note d'« avant ».
+    Defense(Defense, IdNote),
 }
 
 impl GesteUnix {
@@ -331,6 +827,7 @@ impl GesteUnix {
             GesteUnix::Designee(a, n) => format!("{PREFIXE}unite-designee {} {}", a.mot(), n.as_str()),
             GesteUnix::ReinitialiserEchecs => format!("{PREFIXE}unite reinitialiser-echecs"),
             GesteUnix::SignaturesClamav => format!("{PREFIXE}signatures-clamav"),
+            GesteUnix::Defense(d, id) => format!("{PREFIXE}defense {}{} {}", d.mot(), d.champs(), id.as_str()),
         }
     }
 
@@ -354,6 +851,7 @@ impl GesteUnix {
                     .to_string(),
                 "Update the ClamAV virus signatures (their automatic update stays as it was)".to_string(),
             ),
+            GesteUnix::Defense(d, _) => d.phrase(),
         }
     }
 
@@ -376,6 +874,14 @@ impl GesteUnix {
                     "a service named by its name can only be stopped, or no longer started at startup",
                 ))
             }
+            GesteUnix::Defense(Defense::DesactiverService(u), _) if UNITES_DE_SESSION.contains(&u.as_str()) => Some((
+                "ce service porte les sessions (connexion à distance, écran de connexion) : Vanguard ne le désactive jamais",
+                "this service carries the sessions (remote connection, login screen): Vanguard never turns it off",
+            )),
+            GesteUnix::Defense(Defense::RetirerLigne(_, c), _) if !fichier_de_ligne_admis(c.octets()) => Some((
+                "Vanguard ne retire une ligne que des fichiers de démarrage du système qu'il connaît",
+                "Vanguard only removes a line from the system startup files it knows",
+            )),
             _ => None,
         }
     }
@@ -422,6 +928,17 @@ impl GesteUnix {
                 "ceci ouvre cet ordinateur au réseau local",
                 "this opens this computer to the local network",
             )),
+            // Un geste de défense change un compte, un droit ou un fichier du système : l'enfant le montre avec ce
+            // qu'il a relu, et avertit de ce qui peut couper l'accès (`assistant::defense`). Le remettre rouvre ce
+            // qu'il avait fermé.
+            GesteUnix::Defense(Defense::Remettre, _) => Some((
+                "ceci rouvre ce qu'un geste de défense avait fermé",
+                "this reopens what a defense step had closed",
+            )),
+            GesteUnix::Defense(..) => Some((
+                "ceci change un compte, un droit ou un fichier du système",
+                "this changes an account, a right or a system file",
+            )),
             _ => None,
         }
     }
@@ -446,13 +963,22 @@ impl GesteUnix {
             GesteUnix::Designee(..)
             | GesteUnix::Programme(_)
             | GesteUnix::ReinitialiserEchecs
-            | GesteUnix::SignaturesClamav => false,
+            | GesteUnix::SignaturesClamav
+            | GesteUnix::Defense(..) => false,
         }
     }
 
-    /// Le geste passe-t-il par systemd (le bus système) ? Sans systemd, l'enfant le refuse en le disant.
+    /// Le geste passe-t-il par systemd (le bus système) ? Sans systemd, l'enfant le refuse en le disant. La
+    /// remise d'un service désactivé le demande aussi, mais seul l'enfant sait, en lisant la note, ce qu'il remet.
     pub(crate) fn par_systemd(self) -> bool {
-        !matches!(self, GesteUnix::Programme(_))
+        match self {
+            GesteUnix::Unite(..)
+            | GesteUnix::Designee(..)
+            | GesteUnix::ReinitialiserEchecs
+            | GesteUnix::SignaturesClamav
+            | GesteUnix::Defense(Defense::DesactiverService(_), _) => true,
+            GesteUnix::Programme(_) | GesteUnix::Defense(..) => false,
+        }
     }
 
     /// Le geste a-t-il un sens sur ce système ? Linux seulement : sous macOS, rien n'est converti avant un essai sur un
@@ -581,12 +1107,33 @@ pub(crate) fn analyser(ligne: &str) -> Option<GesteUnix> {
             GesteUnix::Designee(ActionUnite::depuis_mot(action)?, NomUnite::nouveau(nom)?)
         }
         ["signatures-clamav"] => GesteUnix::SignaturesClamav,
+        ["defense", mot, champs @ .., id] => GesteUnix::Defense(defense(mot, champs)?, IdNote::nouveau(id)?),
         _ => return None,
     };
     if geste.refus().is_some() {
         return None;
     }
     (geste.ligne() == ligne).then_some(geste)
+}
+
+/// Le geste de défense de ce mot et de ces champs, relus strictement (la ligne entière est encore réécrite et
+/// comparée par `analyser`).
+fn defense(mot: &str, champs: &[&str]) -> Option<Defense> {
+    let chemin = |h: &str| CheminDesigne::nouveau(&depuis_hex(h, CHEMIN_MAX)?);
+    Some(match (mot, champs) {
+        ("verrouiller-compte", [n]) => Defense::VerrouillerCompte(NomCompte::nouveau(n)?),
+        ("retirer-du-groupe", [g, n]) => {
+            Defense::RetirerDuGroupe(GroupeSensible::depuis_mot(g)?, NomCompte::nouveau(n)?)
+        }
+        ("durcir-sudoers", [n]) => Defense::DurcirSudo(NomCompte::nouveau(n)?),
+        ("retirer-setuid", [c]) => Defense::RetirerSetuid(chemin(c)?),
+        ("retirer-capacites", [c]) => Defense::RetirerCapacites(chemin(c)?),
+        ("rendre-a-root", [c]) => Defense::RendreDossierARoot(chemin(c)?),
+        ("desactiver-service", [u]) => Defense::DesactiverService(NomUnite::nouveau(u)?),
+        ("retirer-ligne", [e, c]) => Defense::RetirerLigne(Empreinte(depuis_hex(e, 32)?.try_into().ok()?), chemin(c)?),
+        ("remettre", []) => Defense::Remettre,
+        _ => return None,
+    })
 }
 
 /// La ligne commence-t-elle comme un geste (bien formé ou non) ? Une telle ligne n'est jamais confiée à un shell :
@@ -961,5 +1508,232 @@ mod tests {
     fn permis_sous_linux_seulement() {
         assert_eq!(GesteUnix::Programme(&FRESHCLAM).permis_ici(), cfg!(target_os = "linux"));
         assert!(!GesteUnix::Programme(&FRESHCLAM).demande_accord());
+    }
+
+    fn id() -> IdNote {
+        IdNote::nouveau("0123456789abcdef").unwrap()
+    }
+
+    fn tous_les_gestes_de_defense() -> Vec<Defense> {
+        let n = NomCompte::nouveau("alice").unwrap();
+        let c = CheminDesigne::nouveau(b"/tmp/x\n\x1b[31m").unwrap();
+        let mut v = vec![
+            Defense::VerrouillerCompte(n),
+            Defense::DurcirSudo(n),
+            Defense::RetirerSetuid(c),
+            Defense::RetirerCapacites(c),
+            Defense::RendreDossierARoot(CheminDesigne::nouveau(b"/opt/bin").unwrap()),
+            Defense::DesactiverService(NomUnite::nouveau("minage.service").unwrap()),
+            Defense::RetirerLigne(
+                Empreinte([0xab; 32]),
+                CheminDesigne::nouveau(b"/etc/ld.so.preload").unwrap(),
+            ),
+            Defense::Remettre,
+        ];
+        v.extend(GroupeSensible::TOUS.map(|g| Defense::RetirerDuGroupe(g, n)));
+        v
+    }
+
+    /// Chaque geste de défense se relit tel quel, tient dans la borne, ne porte ni « / », ni octet de contrôle, et
+    /// demande l'accord de la personne sur son terminal.
+    #[test]
+    fn defense_aller_retour_et_accord() {
+        for d in tous_les_gestes_de_defense() {
+            let g = GesteUnix::Defense(d, id());
+            let l = g.ligne();
+            assert_eq!(analyser(&l), Some(g), "{l}");
+            assert!(
+                l.len() <= GESTE_MAX && l.is_ascii() && !l.contains(['/', '\n', '\r', '\x1b', '\t', '\0']),
+                "{l}"
+            );
+            assert!(g.demande_accord(), "{l}");
+            assert!(!g.coupe_session());
+            assert_eq!(g.par_systemd(), matches!(d, Defense::DesactiverService(_)));
+        }
+        assert_eq!(
+            GesteUnix::Defense(Defense::VerrouillerCompte(NomCompte::nouveau("alice").unwrap()), id()).ligne(),
+            "vanguard:geste defense verrouiller-compte alice 0123456789abcdef"
+        );
+        assert_eq!(
+            GesteUnix::Defense(Defense::RetirerSetuid(CheminDesigne::nouveau(b"/tmp/a").unwrap()), id()).ligne(),
+            "vanguard:geste defense retirer-setuid 2f746d702f61 0123456789abcdef"
+        );
+        // La plus longue ligne possible tient dans la borne.
+        let mut long = b"/etc/systemd/system/".to_vec();
+        long.extend(std::iter::repeat_n(b'a', CHEMIN_MAX - long.len() - 8));
+        long.extend(b".service");
+        let plus_long = GesteUnix::Defense(
+            Defense::RetirerLigne(Empreinte([0xff; 32]), CheminDesigne::nouveau(&long).unwrap()),
+            id(),
+        );
+        assert_eq!(plus_long.ligne().len(), 631);
+        assert!(plus_long.ligne().len() <= GESTE_MAX);
+        assert_eq!(analyser(&plus_long.ligne()), Some(plus_long));
+    }
+
+    /// Une ligne de défense forgée ne se relit pas : champ en plus ou en moins, majuscule dans l'hexadécimal,
+    /// identifiant trop court, chemin relatif ou qui remonte, compte hostile, service de session, fichier hors de la
+    /// liste.
+    #[test]
+    fn defense_forgee_refusee() {
+        let h = |c: &[u8]| hex(c);
+        for l in [
+            "vanguard:geste defense verrouiller-compte alice".to_string(),
+            "vanguard:geste defense verrouiller-compte alice 0123456789ABCDEF".to_string(),
+            "vanguard:geste defense verrouiller-compte alice 0123456789abcde".to_string(),
+            "vanguard:geste defense verrouiller-compte alice bob 0123456789abcdef".to_string(),
+            "vanguard:geste defense verrouiller-compte -oroot 0123456789abcdef".to_string(),
+            "vanguard:geste defense verrouiller-compte Alice 0123456789abcdef".to_string(),
+            format!(
+                "vanguard:geste defense verrouiller-compte {} 0123456789abcdef",
+                "a".repeat(33)
+            ),
+            "vanguard:geste defense retirer-du-groupe wheel alice 0123456789abcdef".to_string(),
+            "vanguard:geste defense retirer-du-groupe root alice 0123456789abcdef".to_string(),
+            format!("vanguard:geste defense retirer-setuid {} 0123456789abcdef", h(b"tmp/x")),
+            format!(
+                "vanguard:geste defense retirer-setuid {} 0123456789abcdef",
+                h(b"/tmp/../etc/shadow")
+            ),
+            format!(
+                "vanguard:geste defense retirer-setuid {} 0123456789abcdef",
+                h(b"/tmp//x")
+            ),
+            format!(
+                "vanguard:geste defense retirer-setuid {} 0123456789abcdef",
+                h(b"/tmp/x/")
+            ),
+            format!(
+                "vanguard:geste defense retirer-setuid {} 0123456789abcdef",
+                h(b"/tmp/\0x")
+            ),
+            format!(
+                "vanguard:geste defense retirer-setuid {} 0123456789abcdef",
+                h(b"/tmp/x").to_uppercase()
+            ),
+            format!(
+                "vanguard:geste defense retirer-setuid {}0 0123456789abcdef",
+                h(b"/tmp/x")
+            ),
+            "vanguard:geste defense desactiver-service sshd.service 0123456789abcdef".to_string(),
+            "vanguard:geste defense desactiver-service gdm.service 0123456789abcdef".to_string(),
+            "vanguard:geste defense desactiver-service ufw.service 0123456789abcdef".to_string(),
+            format!(
+                "vanguard:geste defense retirer-ligne {} {} 0123456789abcdef",
+                "ab".repeat(32),
+                h(b"/etc/shadow")
+            ),
+            format!(
+                "vanguard:geste defense retirer-ligne {} {} 0123456789abcdef",
+                "ab".repeat(31),
+                h(b"/etc/profile")
+            ),
+            format!(
+                "vanguard:geste defense retirer-ligne {} {} 0123456789abcdef",
+                "ab".repeat(32),
+                h(b"/etc/profile.d/../shadow")
+            ),
+            format!(
+                "vanguard:geste defense retirer-ligne {} {} 0123456789abcdef",
+                "ab".repeat(32),
+                h(b"/etc/cron.d/.cache")
+            ),
+            "vanguard:geste defense remettre".to_string(),
+            "vanguard:geste defense remettre x 0123456789abcdef".to_string(),
+            "vanguard:geste defense  remettre 0123456789abcdef".to_string(),
+            "vanguard:geste defense remettre 0123456789abcdef ".to_string(),
+            "vanguard:geste defense effacer 0123456789abcdef".to_string(),
+        ] {
+            assert_eq!(analyser(&l), None, "{l:?}");
+        }
+        assert!(analyser("vanguard:geste defense remettre 0123456789abcdef").is_some());
+    }
+
+    /// Un nom de fichier hostile se désigne, mais ne s'affiche qu'échappé : ni saut de ligne, ni retour chariot, ni
+    /// échappement de terminal, borné.
+    #[test]
+    fn chemin_hostile_echappe() {
+        let c = CheminDesigne::nouveau(b"/tmp/a\nb\rc\x1b[2Jd\\e\xc3\xa9").unwrap();
+        assert_eq!(c.lisible(), "/tmp/a\\x0ab\\x0dc\\x1b[2Jd\\\\e\\xc3\\xa9");
+        let mut long = b"/tmp/".to_vec();
+        long.extend(std::iter::repeat_n(b'\x1b', 200));
+        let l = CheminDesigne::nouveau(&long).unwrap().lisible();
+        assert!(l.ends_with('…') && !l.contains('\x1b') && l.len() < 600);
+        let (fr, en) = GesteUnix::Defense(Defense::RetirerSetuid(c), id()).phrase();
+        assert!(!fr.contains(['\n', '\r', '\x1b']) && !en.contains(['\n', '\r', '\x1b']));
+        assert!(CheminDesigne::nouveau(&[b'/'; 1]).is_none());
+        let mut trop = b"/".to_vec();
+        trop.extend(std::iter::repeat_n(b'a', CHEMIN_MAX));
+        assert!(CheminDesigne::nouveau(&trop).is_none());
+        for (h, attendu) in [
+            ("", None),
+            ("0", None),
+            ("0A", None),
+            ("zz", None),
+            ("00ff", Some(vec![0, 255])),
+        ] {
+            assert_eq!(depuis_hex(h, 8), attendu, "{h}");
+        }
+        assert_eq!(depuis_hex("000000", 2), None);
+    }
+
+    /// Les fichiers dont une ligne se retire : la liste fermée, et rien d'autre.
+    #[test]
+    fn fichiers_de_ligne() {
+        // L'instance d'un modèle (getty, tty1) écrite par morceaux : son nom complet a la forme d'un courriel.
+        let instance = format!("/etc/systemd/system/getty@tty1.{}.d/override.conf", "service");
+        for f in [
+            "/etc/ld.so.preload",
+            "/etc/profile.d/x.sh",
+            "/etc/cron.d/minage",
+            "/etc/systemd/system/minage.service",
+            instance.as_str(),
+            "/etc/xdg/autostart/a.desktop",
+            "/etc/gdm3/daemon.conf",
+            "/etc/sddm.conf.d/autologin.conf",
+        ] {
+            assert!(fichier_de_ligne_admis(f.as_bytes()), "{f}");
+        }
+        for f in [
+            "/etc/shadow",
+            "/etc/sudoers",
+            "/etc/profile.d/.sh",
+            "/etc/profile.d/x.py",
+            "/etc/profile.d/a/b.sh",
+            "/etc/cron.d/.x",
+            "/etc/cron.d/a b",
+            "/etc/systemd/system/x.service.d/a/b.conf",
+            "/etc/systemd/system/.d/a.conf",
+            "/home/alice/.bashrc",
+            "/etc/ld.so.preload/x",
+        ] {
+            assert!(!fichier_de_ligne_admis(f.as_bytes()), "{f}");
+        }
+    }
+
+    /// Les noms de compte : minuscules, jamais une option, 32 octets au plus.
+    #[test]
+    fn noms_de_compte() {
+        for n in ["alice", "_apt", "bob-2", "a.b", &"a".repeat(32)] {
+            assert!(nom_compte_admis(n), "{n}");
+        }
+        for n in [
+            "",
+            "-r",
+            "Alice",
+            "1a",
+            "a b",
+            "a\n",
+            "a:b",
+            "a/b",
+            "é",
+            &"a".repeat(33),
+            "a$",
+        ] {
+            assert!(!nom_compte_admis(n), "{n:?}");
+        }
+        assert_eq!(GroupeSensible::de_nom("wheel"), Some(GroupeSensible::Administrateurs));
+        assert_eq!(GroupeSensible::de_nom("docker"), Some(GroupeSensible::Docker));
+        assert_eq!(GroupeSensible::de_nom("users"), None);
     }
 }

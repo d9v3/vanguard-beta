@@ -19,8 +19,14 @@ pub(super) fn fichiers_secrets() -> Vec<Constat> {
 /// Groupes qui donnent en pratique les droits root sans mot de passe.
 pub(super) fn groupes_privilegies() -> Option<Constat> {
     let groupes = groupes_du_compte()?;
-    let risques = groupes_a_risque(&groupes);
-    Some(if risques.is_empty() {
+    let moi = crate::socle::personnel::compte_de(crate::socle::uid()).and_then(|(nom, _)| nom.into_string().ok());
+    Some(juger_groupes_privilegies(&groupes, moi.as_deref()))
+}
+
+/// `moi` : le nom du compte, d'après la base des comptes ; sans lui (ou root), la sortie du groupe reste à la main.
+fn juger_groupes_privilegies(groupes: &str, moi: Option<&str>) -> Constat {
+    let risques = groupes_a_risque(groupes);
+    if risques.is_empty() {
         ok(
             "Groupes",
             tr!(
@@ -29,7 +35,7 @@ pub(super) fn groupes_privilegies() -> Option<Constat> {
             ),
         )
     } else {
-        alerte(
+        let constat = alerte(
             "Groupes",
             Niveau::Moyen,
             trf!(
@@ -40,8 +46,23 @@ pub(super) fn groupes_privilegies() -> Option<Constat> {
         .manuel(
             tr!("Si vous n'en avez pas besoin chaque jour, sortez du groupe (l'outil demandera alors sudo) ; sinon, gardez-le en connaissance de cause", "If you do not need it every day, leave the group (the tool will then ask for sudo); otherwise, keep it knowingly"),
             &[&format!("sudo gpasswd -d $USER {}", risques.first().copied().unwrap_or("docker"))],
+        );
+        // Un geste par groupe, défait par sa note (gpasswd -a) ; root n'est pas « vous » ici.
+        let gestes = match moi.filter(|m| *m != "root").and_then(gestes_unix::NomCompte::nouveau) {
+            Some(n) => crate::machine::defense::tous(risques.iter().copied(), |g| {
+                gestes_unix::GroupeSensible::de_nom(g).map(|g| Defense::RetirerDuGroupe(g, n))
+            }),
+            None => Vec::new(),
+        };
+        crate::machine::defense::corriger(
+            constat,
+            tr!(
+                "Sortir de ce groupe (effectif à votre prochaine session ; l'outil demandera alors sudo), si vous n'en avez pas besoin chaque jour",
+                "Leave this group (effective at your next session; the tool will then ask for sudo), if you do not need it every day"
+            ),
+            &gestes,
         )
-    })
+    }
 }
 
 /// Groupes de `id -nG` qui valent root : docker, lxd et incus-admin par un conteneur qui monte /, libvirt par une
@@ -77,7 +98,7 @@ pub(super) fn tout_permis() -> &'static str {
 }
 
 /// Les dossiers où root cherche ses commandes : le `secure_path` de sudo des grandes distributions.
-const DOSSIERS_DE_ROOT: &[&str] = &[
+pub(crate) const DOSSIERS_DE_ROOT: &[&str] = &[
     "/usr/local/sbin",
     "/usr/local/bin",
     "/usr/sbin",
@@ -253,6 +274,39 @@ mod tests {
         assert_eq!(groupes_a_risque("alice wheel video audio kvm"), Vec::<&str>::new());
     }
 
+    /// D7a : sortir de chaque groupe qui vaut root, un geste par groupe ; sans nom de compte sûr (ou root), à la main.
+    #[test]
+    fn sortie_des_groupes_par_geste() {
+        let k = juger_groupes_privilegies("alice wheel libvirt docker", Some("alice"))
+            .correctif
+            .unwrap();
+        assert!(k.automatique);
+        let groupes: Vec<gestes_unix::GroupeSensible> = k
+            .commandes
+            .iter()
+            .map(|l| match gestes_unix::analyser(l) {
+                Some(GesteUnix::Defense(Defense::RetirerDuGroupe(g, n), _)) if n.as_str() == "alice" => g,
+                _ => panic!("geste attendu : {l}"),
+            })
+            .collect();
+        assert_eq!(
+            groupes,
+            [
+                gestes_unix::GroupeSensible::Libvirt,
+                gestes_unix::GroupeSensible::Docker
+            ]
+        );
+        for moi in [None, Some("root"), Some("al ice"), Some("-alice")] {
+            let k = juger_groupes_privilegies("alice docker", moi).correctif.unwrap();
+            assert!(!k.automatique, "{moi:?}");
+        }
+        assert!(
+            juger_groupes_privilegies("alice wheel", Some("alice"))
+                .correctif
+                .is_none()
+        );
+    }
+
     /// Sur cet ordinateur, les mêmes groupes que `id -nG`, quand il est là (l'ordre des groupes secondaires peut
     /// différer : seul compte ce qui y est).
     #[test]
@@ -277,6 +331,23 @@ mod tests {
         assert_eq!(regles_nopasswd(omarchy), (vec![], 1));
         let tout = "    (ALL : ALL) NOPASSWD: ALL\n";
         assert_eq!(regles_nopasswd(tout).0.len(), 1);
+        // Reprise plus bas, même cible : sudo applique la dernière règle, le mot de passe est demandé.
+        for reprise in ["(ALL : ALL) PASSWD: ALL", "(ALL : ALL) ALL"] {
+            assert_eq!(
+                regles_nopasswd(&format!("{tout}    {reprise}\n")).0.len(),
+                0,
+                "{reprise}"
+            );
+        }
+        // Reprise avant, autre cible, ou règle « ALL, !… » : elle compte toujours.
+        for liste in [
+            "    (ALL : ALL) ALL\n    (ALL : ALL) NOPASSWD: ALL\n",
+            "    (ALL : ALL) NOPASSWD: ALL\n    (root) PASSWD: ALL\n",
+            "    (ALL) NOPASSWD: ALL, !/usr/bin/su\n    (ALL) PASSWD: ALL\n",
+            "    (ALL : ALL) NOPASSWD: ALL\n    (ALL : ALL) PASSWD: /usr/bin/ls\n",
+        ] {
+            assert_eq!(regles_nopasswd(liste).0.len(), 1, "{liste}");
+        }
     }
 
     #[test]

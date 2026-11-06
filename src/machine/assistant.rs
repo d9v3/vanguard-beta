@@ -23,7 +23,8 @@
 //! terminal), rejuge chaque ordre avec ses propres yeux (`ordres::juger`), le fait, puis répond une ligne par ordre.
 //! Un geste de Linux est fait par le chemin absolu de son outil, dans un environnement vidé
 //! (`commande::environnement_propre`) : rien de ce que le compte a posé (PATH, BASH_ENV, LD_PRELOAD) ne le suit.
-//! Il n'écrit aucun fichier et ne lit rien du dossier de Vanguard.
+//! Il ne lit rien du dossier de Vanguard, et n'écrit de fichier que pour un geste de défense (`defense_eleve`) : sa
+//! note d'« avant » dans /var/lib/vanguard/avant, à root et fermée aux autres, et le fichier que le geste corrige.
 //!
 //! L'accord. Le parent a montré la liste avant de demander les droits : pour un geste ordinaire, le mot de passe vaut
 //! accord. Un geste qui baisse une protection ou supprime quelque chose (`GesteUnix::demande_accord`) est redemandé
@@ -72,6 +73,7 @@ const SANS_DROITS: i32 = 9;
 /// canal et ses bornes (`ordres::LIGNE_MAX`, `ordres::LIGNES_MAX`) sans se recouvrir : « vanguard:geste » n'est le
 /// verbe d'aucun ordre.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant, reason = "une demande par ligne lue, jamais en masse")]
 pub(crate) enum Demande {
     Ordre(Ordre),
     Geste(GesteUnix),
@@ -119,6 +121,10 @@ impl Demande {
     }
 }
 
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "un geste lu d'une ligne, copié une fois : quelques centaines d'octets"
+)]
 fn texte_du_geste(g: GesteUnix) -> String {
     let (fr, en) = g.phrase();
     if crate::langue::anglais() { en } else { fr }
@@ -670,6 +676,10 @@ fn executer_demandes(
 /// pour éprouver l'ordre des vérifications sans rien toucher.
 trait Monde {
     /// L'accord de la personne pour un geste qui baisse une protection (`accord_au_terminal`).
+    #[allow(
+        clippy::large_types_passed_by_value,
+        reason = "un geste lu d'une ligne, copié une fois : quelques centaines d'octets"
+    )]
     fn accord(&mut self, g: GesteUnix) -> Result<(), Refus>;
     /// systemd gère-t-il ce système ?
     fn systemd(&self) -> bool;
@@ -703,6 +713,47 @@ trait Monde {
     /// « Êtes-vous connecté par lui ? », sur le terminal de la personne : la ligne qu'elle a tapée ; `None` sans
     /// terminal, à la fin de l'entrée, ou sur une erreur de lecture.
     fn connecte(&mut self, nom: &str) -> Option<String>;
+    /// Un geste de défense (`defense_eleve::faire`) : il pose lui-même sa question, sur le terminal.
+    #[allow(
+        clippy::large_types_passed_by_value,
+        reason = "un geste lu d'une ligne, copié une fois : quelques centaines d'octets"
+    )]
+    fn defense(&mut self, d: gestes_unix::Defense, id: gestes_unix::IdNote) -> Resultat;
+}
+
+/// Le gestionnaire de services d'un `Monde`, prêté aux gestes de défense.
+#[cfg(target_os = "linux")]
+struct ServicesDuMonde<'a>(&'a mut dyn Monde);
+
+#[cfg(target_os = "linux")]
+impl super::defense_eleve::Services for ServicesDuMonde<'_> {
+    fn systemd(&self) -> bool {
+        self.0.systemd()
+    }
+    fn fichier_sur(&self, unite: &str) -> Result<bool, Echec> {
+        self.0.fichier_sur(unite)
+    }
+    fn arret_charge(&mut self, unite: &str) -> Result<Option<ArretCharge>, Echec> {
+        self.0.arret_charge(unite)
+    }
+    fn etat_du_fichier(&mut self, unite: &str) -> Result<Option<String>, Echec> {
+        self.0.etat_du_fichier(unite)
+    }
+    fn etat_d_activite(&mut self, unite: &str) -> Result<Option<String>, Echec> {
+        self.0.etat_d_activite(unite)
+    }
+    fn unite(&mut self, action: ActionUnite, unite: &str) -> Result<(), Echec> {
+        self.0.unite(action, unite)
+    }
+    fn groupes_de_la_lignee(&self) -> Vec<String> {
+        self.0.groupes_de_la_lignee()
+    }
+    fn sessions(&mut self) -> Option<Vec<SessionVue>> {
+        self.0.sessions()
+    }
+    fn chemin(&self, chemin: &str) -> Chemin {
+        self.0.chemin(chemin)
+    }
 }
 
 /// Le vrai ordinateur : le bus système (joint de nouveau pour chaque geste : un job long ne garde pas une prise
@@ -880,6 +931,25 @@ impl Monde for Systeme {
             "Vanguard (administrator): are you yourself connected to this computer through {vu} right now, from another device? Stopping it would cut your session. Type \"no\" then Enter to stop it (\"yes\", Enter alone or anything else: it keeps running):"
         );
         question_au_terminal(&question).ok().flatten()
+    }
+
+    fn defense(&mut self, d: gestes_unix::Defense, id: gestes_unix::IdNote) -> Resultat {
+        #[cfg(target_os = "linux")]
+        {
+            let mut acces = super::defense_eleve::Reel {
+                demandeur: self.demandeur,
+            };
+            super::defense_eleve::faire(d, id, &mut acces, &mut ServicesDuMonde(self))
+        }
+        // Ailleurs, aucun geste de défense n'est permis (`permis_ici`) : jamais appelé.
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (d, id);
+            Resultat::echec(tr!(
+                "ce geste n'est pas prévu sur ce système : rien n'est fait",
+                "this step is not meant for this system: nothing is done"
+            ))
+        }
     }
 }
 
@@ -1292,7 +1362,10 @@ fn unite_touchee(g: &GesteUnix) -> Option<(ActionUnite, &str)> {
     match g {
         GesteUnix::Unite(a, u) => Some((*a, u.nom)),
         GesteUnix::Designee(a, nom) => Some((*a, nom.as_str())),
-        GesteUnix::Programme(_) | GesteUnix::ReinitialiserEchecs | GesteUnix::SignaturesClamav => None,
+        GesteUnix::Programme(_)
+        | GesteUnix::ReinitialiserEchecs
+        | GesteUnix::SignaturesClamav
+        | GesteUnix::Defense(..) => None,
     }
 }
 
@@ -1357,6 +1430,10 @@ fn unite_revue(nom: &str, monde: &dyn Monde) -> Result<(), Echec> {
 /// une unité pas chargée aussi (rien à arrêter, et systemd la chargerait pour refuser). Son arrêt seul est refusé,
 /// dit, plutôt qu'un échec du gestionnaire. Une lecture qui échoue laisse le geste tel quel : l'arrêt tenté dira
 /// lui-même s'il échoue.
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "un geste lu d'une ligne, copié une fois : quelques centaines d'octets"
+)]
 fn selon_l_arret(g: GesteUnix, monde: &mut dyn Monde) -> Result<(Option<GesteUnix>, Option<String>), Echec> {
     let Some((a @ (ActionUnite::Desactiver | ActionUnite::Arreter), nom)) = unite_touchee(&g) else {
         return Ok((Some(g), None));
@@ -1400,6 +1477,10 @@ fn selon_l_arret(g: GesteUnix, monde: &mut dyn Monde) -> Result<(Option<GesteUni
 /// reconnue, le fichier de l'unité revu (de la table comme désignée : un complément posé par un autre compte ferait
 /// lancer ce qu'il veut en root, É-2 du lot U3), l'arrêt permis par systemd, puis l'accord de la personne s'il en
 /// demande un, et enfin, juste avant le geste, la session et le fichier revus encore.
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "un geste lu d'une ligne, copié une fois : quelques centaines d'octets"
+)]
 fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
     if !g.permis_ici() {
         return Resultat::echec(tr!(
@@ -1412,6 +1493,10 @@ fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
     }
     if g.par_systemd() && !monde.systemd() {
         return Resultat::echec(sans_systemd());
+    }
+    // Un geste de défense se rejuge, se montre et se demande lui-même (`defense_eleve`) : jamais l'accord commun.
+    if let GesteUnix::Defense(d, id) = g {
+        return monde.defense(d, id);
     }
     // Le geste demandé, pas celui qu'il deviendrait : une session ouverte bloque tout ce qui touche au réseau.
     let coupe_session = g.coupe_session();
@@ -1512,6 +1597,8 @@ fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
         GesteUnix::Designee(a, nom) => fait(monde.unite(a, nom.as_str())),
         GesteUnix::ReinitialiserEchecs => fait(monde.reinitialiser_echecs()),
         GesteUnix::SignaturesClamav => signatures_clamav(monde),
+        // Fait plus haut, par `Monde::defense`.
+        GesteUnix::Defense(..) => Resultat::echec(tr!("geste refusé", "step refused")),
     }
 }
 
@@ -1822,7 +1909,7 @@ impl Drop for SignauxIgnores {
 
 /// Les variables que l'outil reçoit de l'assistant : sa langue et son terminal, rien d'autre (ni HOME, ni le bus de
 /// la session : il tourne en root, pour le système).
-fn langue_ou_terminal(nom: &std::ffi::OsStr) -> bool {
+pub(super) fn langue_ou_terminal(nom: &std::ffi::OsStr) -> bool {
     nom.to_str()
         .is_some_and(|n| n == "LANG" || n == "TERM" || n.strip_prefix("LC_").is_some_and(|r| !r.is_empty()))
 }
@@ -1883,7 +1970,7 @@ fn lancer_programme(p: &Programme) -> Resultat {
 
 /// La dernière ligne non vide d'une sortie, filtrée (`ui::affichable`) et coupée à 200 caractères : la raison d'un
 /// échec, telle que l'outil l'a dite.
-fn derniere_ligne(texte: &str) -> Option<String> {
+pub(super) fn derniere_ligne(texte: &str) -> Option<String> {
     let l = texte.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
     Some(crate::ui::affichable(&l.chars().take(200).collect::<String>()))
 }
@@ -1896,7 +1983,7 @@ fn accord(question: &str, lecteur: &mut impl BufRead, ecrivain: &mut impl Write)
 }
 
 /// Seuls « o », « oui », « y » et « yes » (casse et espaces autour ignorés) valent un accord.
-fn est_oui(reponse: &str) -> bool {
+pub(super) fn est_oui(reponse: &str) -> bool {
     matches!(reponse.trim().to_lowercase().as_str(), "o" | "oui" | "y" | "yes")
 }
 
@@ -1913,7 +2000,7 @@ fn reponse(question: &str, lecteur: &mut impl BufRead, ecrivain: &mut impl Write
 
 /// Pose `question` sur le terminal de la personne (/dev/tty), jamais sur le canal du parent, après avoir vidé ce qui
 /// a été tapé d'avance : la ligne lue (`reponse`). `Err(())` : aucun terminal.
-fn question_au_terminal(question: &str) -> Result<Option<String>, ()> {
+pub(super) fn question_au_terminal(question: &str) -> Result<Option<String>, ()> {
     use std::os::fd::AsRawFd;
     let tty = std::fs::OpenOptions::new()
         .read(true)
@@ -1929,6 +2016,10 @@ fn question_au_terminal(question: &str) -> Result<Option<String>, ()> {
 }
 
 /// Pourquoi ce geste demande l'accord, dans la langue de l'interface (`GesteUnix::pourquoi_l_accord`).
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "un geste lu d'une ligne, copié une fois : quelques centaines d'octets"
+)]
 fn pourquoi_dit(g: GesteUnix) -> &'static str {
     match g.pourquoi_l_accord() {
         Some((fr, en)) => {
@@ -1944,6 +2035,10 @@ fn pourquoi_dit(g: GesteUnix) -> &'static str {
 
 /// L'accord d'un geste qui affaiblit, supprime, coupe le réseau ou l'ouvre, demandé sur le terminal de la personne (/dev/tty), jamais sur le
 /// canal du parent. Sans terminal, refusé.
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "un geste lu d'une ligne, copié une fois : quelques centaines d'octets"
+)]
 fn accord_au_terminal(g: GesteUnix) -> Result<(), Refus> {
     let question = trf!(
         "Vanguard (administrateur) : {} — {}. D'accord ? Tapez « oui » puis Entrée (autre chose refuse) :",
@@ -2339,6 +2434,44 @@ mod tests {
         }
     }
 
+    /// Un geste de défense passe par le même canal ; une ligne de défense forgée (champ en plus, identifiant hors de la
+    /// forme, mot inconnu, nom qui commence par « - », saut de ligne glissé) fait refuser toute la liste, même mêlée à
+    /// des lignes justes. Accepté, il est confié à `Monde::defense`, sans passer par l'accord commun.
+    #[test]
+    fn les_gestes_de_defense_forges_sont_refuses() {
+        let juste = "vanguard:geste defense verrouiller-compte alice 0123456789abcdef";
+        let lignes = vec![juste.to_string()];
+        let groupes = analyser_liste(&lignes);
+        if !cfg!(target_os = "linux") {
+            assert_eq!(groupes, None);
+            return;
+        }
+        let groupes = groupes.unwrap();
+        let [Demande::Geste(g)] = groupes[0].as_slice() else {
+            panic!("{groupes:?}");
+        };
+        let mut m = FauxMonde::nouveau();
+        assert!(faire_geste(*g, &mut m).reussi);
+        assert_eq!(m.journal.len(), 1, "{:?}", m.journal);
+        assert!(m.journal[0].starts_with("defense "), "{:?}", m.journal);
+        for forge in [
+            "vanguard:geste defense verrouiller-compte alice 0123456789abcdef x",
+            "vanguard:geste defense verrouiller-compte alice 0123456789ABCDEF",
+            "vanguard:geste defense verrouiller-compte alice 0123",
+            "vanguard:geste defense verrouiller-compte -alice 0123456789abcdef",
+            "vanguard:geste defense verrouiller-compte alice\nroot 0123456789abcdef",
+            "vanguard:geste defense supprimer-compte alice 0123456789abcdef",
+            "vanguard:geste defense retirer-du-groupe wheel alice 0123456789abcdef",
+            "vanguard:geste defense desactiver-service sshd.service 0123456789abcdef",
+            "vanguard:geste defense retirer-ligne 00 2f6574632f736861646f77 0123456789abcdef",
+        ] {
+            let l = vec![juste.to_string(), forge.to_string()];
+            assert_eq!(analyser_liste(&l), None, "{forge:?}");
+            let l = lire_lignes(format!("{juste}\n{forge}\nfin\n").as_bytes());
+            assert!(l.is_none_or(|l| analyser_liste(&l).is_none()), "{forge:?}");
+        }
+    }
+
     /// Seul un oui franc vaut accord ; une ligne vide, autre chose, ou un terminal qui se ferme disent non. La
     /// question est écrite là où la réponse est lue.
     #[test]
@@ -2543,6 +2676,10 @@ mod tests {
                 self.sessions = Some(s);
             }
             self.reponse.map(String::from)
+        }
+        fn defense(&mut self, d: gestes_unix::Defense, _: gestes_unix::IdNote) -> Resultat {
+            self.journal.push(format!("defense {d:?}"));
+            Resultat::ok_note("défense")
         }
     }
 

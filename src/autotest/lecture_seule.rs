@@ -473,6 +473,11 @@ mod tests {
                 "terminal de la personne (/dev/tty) ouvert pour demander l'accord d'un geste : rien n'est écrit sur le disque",
             ),
             (
+                "machine/defense_eleve.rs",
+                9,
+                "enfant élevé de Défense (Linux) : fichier créé sans écraser ni suivre de lien (create_new, O_NOFOLLOW), avec son propriétaire et ses droits, écrit jusqu'au disque, dans un dossier de root fermé aux autres comptes ; remplacé par un voisin renommé seulement si le fichier n'a pas changé depuis la question ; un lien dur pour déplacer (rien n'est remplacé) ; la note d'avant retirée une fois le geste défait ; jamais sous les essais, hors bilan",
+            ),
+            (
                 "machine/linux/veilleur.rs",
                 10,
                 "veilleur : son état et le « chiffrement voulu » de l'anti-rançongiciel, hors bilan",

@@ -2,7 +2,7 @@
 //! la découpe commune (src/machine/decoupe.rs) telle que Linux et macOS s'en servent : une ligne « vanguard:… » est
 //! native, toute autre passe à bash. Familles et identifiants hors de la table, espaces doublées, champs en plus,
 //! octets nuls, majuscules, lignes démesurées ; noms d'unité hostiles (remontée, gabarit, sans suffixe, pare-feu
-//! désigné).
+//! désigné) ; gestes de défense (identifiant de note, chemins désignés).
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (src/) : refusé sans recours, un allow ne compile pas.
 #![forbid(unsafe_code)]
@@ -50,6 +50,26 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             }
             gestes_unix::GesteUnix::ReinitialiserEchecs => assert_eq!(l.split(' ').count(), 3),
             gestes_unix::GesteUnix::SignaturesClamav => assert_eq!(l.split(' ').count(), 2),
+            // Un geste de défense : une note à l'identifiant strict, un chemin désigné absolu sans « . » ni « .. »,
+            // et toujours l'accord de la personne demandé sur son terminal. Seuls refus possibles : une unité de
+            // session, une ligne d'un fichier que Vanguard ne connaît pas.
+            gestes_unix::GesteUnix::Defense(d, id) => {
+                use gestes_unix::Defense as D;
+                assert!(gestes_unix::IdNote::nouveau(id.as_str()) == Some(id));
+                assert_eq!(l.split(' ').nth(1), Some("defense"));
+                assert!(g.demande_accord());
+                if let D::RetirerSetuid(c) | D::RetirerCapacites(c) | D::RendreDossierARoot(c) | D::RetirerLigne(_, c) = d {
+                    assert!(gestes_unix::chemin_admis(c.octets()));
+                }
+                if g.refus().is_some() {
+                    assert!(match d {
+                        D::DesactiverService(u) => gestes_unix::UNITES_DE_SESSION.contains(&u.as_str()),
+                        D::RetirerLigne(_, c) => !gestes_unix::fichier_de_ligne_admis(c.octets()),
+                        _ => false,
+                    });
+                }
+                continue;
+            }
         }
         assert!(g.refus().is_none());
     }

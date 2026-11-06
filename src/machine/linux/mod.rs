@@ -8,7 +8,7 @@ use std::process::Command;
 use super::sshd::{mots_de_passe_sshd, mots_de_passe_vides_sshd, valeur_sshd};
 use super::unix::configuration_sshd;
 use super::{Audit, Constat, alerte, cles_ssh, impossible, ok, sortie};
-use crate::machine::gestes_unix::{self, ActionUnite, GesteUnix};
+use crate::machine::gestes_unix::{self, ActionUnite, Defense, GesteUnix};
 use crate::optimiser::Geste;
 use crate::risk::{Niveau, info_port};
 use crate::{tr, trf, trw};
@@ -40,6 +40,8 @@ pub(crate) mod paquets;
 mod persistance;
 mod plateforme;
 mod privileges;
+// Partagé avec les gestes de défense de l'assistant élevé (`machine::defense_eleve`).
+pub(crate) use privileges::DOSSIERS_DE_ROOT;
 mod regles;
 pub(crate) mod reseau_natif;
 pub(crate) mod unites;
@@ -1301,11 +1303,19 @@ fn fichiers_de_connexion() -> Vec<(String, String)> {
 /// Session qui s'ouvre toute seule : sans disque chiffré, un ordinateur volé s'allume directement sur les fichiers.
 /// Avec un disque chiffré (Omarchy), le mot de passe du disque protège : c'est dit, sans alerte.
 fn ouverture_automatique() -> Option<Constat> {
-    let (compte, fichier) = ouverture_automatique_de(&fichiers_de_connexion())?;
-    Some(juger_ouverture_automatique(&compte, &fichier, racine_chiffree()))
+    let fichiers = fichiers_de_connexion();
+    let (compte, fichier) = ouverture_automatique_de(&fichiers)?;
+    let gestes = gestes_d_ouverture(&fichiers, &fichier);
+    Some(juger_ouverture_automatique(
+        &compte,
+        &fichier,
+        racine_chiffree(),
+        &gestes,
+    ))
 }
 
-fn juger_ouverture_automatique(compte: &str, fichier: &str, chiffree: Option<bool>) -> Constat {
+/// `gestes` : ceux qui coupent l'ouverture automatique (`gestes_d_ouverture`) ; vide, la correction reste à la main.
+fn juger_ouverture_automatique(compte: &str, fichier: &str, chiffree: Option<bool>, gestes: &[Defense]) -> Constat {
     let compte = crate::ui::affichable(compte);
     if chiffree == Some(true) {
         return ok(
@@ -1316,7 +1326,7 @@ fn juger_ouverture_automatique(compte: &str, fichier: &str, chiffree: Option<boo
             ),
         );
     }
-    alerte(
+    let constat = alerte(
         "Comptes",
         Niveau::Moyen,
         trf!(
@@ -1330,7 +1340,181 @@ fn juger_ouverture_automatique(compte: &str, fichier: &str, chiffree: Option<boo
             "Turn off automatic login: the desktop's user settings (GNOME: Settings > Users; KDE: Login Screen), or the account's line in {fichier}"
         ),
         &[],
+    );
+    super::defense::corriger(
+        constat,
+        trf!(
+            "Couper l'ouverture automatique (la ligne de {fichier} retirée ; le mot de passe sera demandé au prochain démarrage)",
+            "Turn off automatic login (the line in {fichier} removed; the password will be asked at the next startup)"
+        ),
+        gestes,
     )
+}
+
+/// Ce que le gestionnaire de paquets dit d'un fichier, pour un geste de défense (`machine::defense_eleve`) : à aucun
+/// paquet, à un paquet et intact, à un paquet et modifié depuis son installation, ou illisible (gestionnaire inconnu,
+/// base qui ne se lit pas, empreinte absente). « Illisible » n'est jamais compté comme « aucun » : le geste est refusé.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EtatPaquet {
+    Aucun,
+    Intact(String),
+    Modifie(String),
+    Illisible,
+}
+
+/// Le paquet de `fichier` (chemin réel, déjà revu) et s'il a changé. pacman et dpkg par leur base lue directement,
+/// rpm par sa commande (chemin du système, environnement vidé, en anglais) : seule sa phrase « is not owned by any
+/// package » dit « aucun » ; tout autre échec est illisible.
+pub(crate) fn etat_paquet(fichier: &Path) -> EtatPaquet {
+    let Some(p) = Paquets::detecter() else {
+        return EtatPaquet::Illisible;
+    };
+    let proprietaire = match p {
+        Paquets::Pacman | Paquets::Apt => {
+            let lire: fn(&[&Path]) -> Proprietaires = if p == Paquets::Pacman {
+                natif::proprietaire_pacman
+            } else {
+                proprietaire_dpkg
+            };
+            match proprietaires_selon(&[fichier.to_path_buf()], lire) {
+                Some(mut v) => v.pop().flatten(),
+                None => return EtatPaquet::Illisible,
+            }
+        }
+        Paquets::Dnf | Paquets::Zypper => {
+            let mut trouve = proprietaire_rpm(fichier);
+            if trouve == Ok(None)
+                && let Some(ancien) = chemin_hors_usr(fichier)
+            {
+                trouve = proprietaire_rpm(&ancien);
+            }
+            match trouve {
+                Ok(n) => n,
+                Err(()) => return EtatPaquet::Illisible,
+            }
+        }
+    };
+    let Some(nom) = proprietaire else {
+        return EtatPaquet::Aucun;
+    };
+    match p.modifies(&nom, &[fichier.to_path_buf()]).pop().flatten() {
+        Some(true) => EtatPaquet::Modifie(nom),
+        Some(false) => EtatPaquet::Intact(nom),
+        None => EtatPaquet::Illisible,
+    }
+}
+
+/// `rpm -qf` d'un fichier : `Ok(None)` seulement sur la phrase de rpm qui dit qu'aucun paquet ne l'a.
+fn proprietaire_rpm(fichier: &Path) -> Result<Option<String>, ()> {
+    let r = crate::commande::outil_propre("rpm")
+        .and_then(|mut c| {
+            crate::commande::lancer(
+                c.args(["-qf", "--qf", "%{NAME}\\n"]).arg(fichier).env("LC_ALL", "C"),
+                60,
+            )
+        })
+        .ok_or(())?;
+    lecture_rpm(r.code, &r.sortie, &r.erreurs)
+}
+
+fn lecture_rpm(code: Option<i32>, sortie: &str, erreurs: &str) -> Result<Option<String>, ()> {
+    match code {
+        Some(0) => sortie
+            .lines()
+            .next()
+            .map(str::trim)
+            .filter(|n| !n.is_empty() && n.bytes().all(|o| o.is_ascii_graphic()))
+            .map(|n| Some(n.to_string()))
+            .ok_or(()),
+        Some(1)
+            if sortie.contains("is not owned by any package") || erreurs.contains("is not owned by any package") =>
+        {
+            Ok(None)
+        }
+        _ => Err(()),
+    }
+}
+
+/// La ligne de ce fichier du système (`gestes_unix::fichier_de_ligne_admis`) est-elle de celles qu'un geste de
+/// défense retire : un préchargement (toute ligne de /etc/ld.so.preload, LD_PRELOAD, LD_AUDIT), une commande lancée
+/// suspecte (`commande_suspecte`), ou l'ouverture automatique d'une session (`ouvre_une_session`) ? Revu par le fils
+/// root avant de la retirer : seule une telle ligne part, jamais une autre que la liste lui aurait désignée.
+pub(crate) fn ligne_suspecte(fichier: &str, ligne: &str) -> bool {
+    if commentaire(ligne) {
+        return false;
+    }
+    if fichier == "/etc/ld.so.preload" || ouvre_une_session(fichier, ligne) || definit_prechargement(ligne) {
+        return true;
+    }
+    let cachee = |c: &str| {
+        let programme = c
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim_matches(|o| o == '"' || o == '\'');
+        ["/home/", "/root/"].iter().any(|d| programme.starts_with(d)) && programme.contains("/.")
+    };
+    commande_suspecte(ligne, false).is_some()
+        || commande_lancee(ligne).is_some_and(|c| commande_suspecte(&c, true).is_some() || cachee(&c))
+}
+
+/// La ligne ouvre-t-elle une session toute seule, d'après le gestionnaire de connexion du fichier (comme
+/// `ouverture_automatique_de`) : GDM « AutomaticLoginEnable » ou « TimedLoginEnable » à vrai, SDDM « User= » d'un
+/// compte, LightDM « autologin-user= » d'un compte.
+pub(crate) fn ouvre_une_session(fichier: &str, ligne: &str) -> bool {
+    let Some((cle, valeur)) = ligne.trim().split_once('=') else {
+        return false;
+    };
+    let (cle, valeur) = (cle.trim(), valeur.trim());
+    if fichier.contains("/gdm") {
+        (cle.eq_ignore_ascii_case("AutomaticLoginEnable") || cle.eq_ignore_ascii_case("TimedLoginEnable"))
+            && (valeur.eq_ignore_ascii_case("true") || valeur == "1")
+    } else if fichier.contains("sddm") {
+        cle.eq_ignore_ascii_case("User") && !valeur.is_empty()
+    } else if fichier.contains("lightdm") {
+        cle.eq_ignore_ascii_case("autologin-user") && !valeur.is_empty()
+    } else {
+        false
+    }
+}
+
+/// Les gestes qui coupent l'ouverture automatique : retirer de `fichier` chaque ligne qui l'allume (lignes coupées
+/// au seul « \n », comme les relit le fils root, qui en recalcule l'empreinte). Seulement si `fichier` est de ceux
+/// qu'un geste a le droit de modifier, et si, ces lignes parties, plus aucun fichier n'ouvre de session : sinon un
+/// réglage d'avant (sous /usr, dans un autre fichier) reprendrait la main sans rien dire, et la correction reste à
+/// la main.
+fn gestes_d_ouverture(fichiers: &[(String, String)], fichier: &str) -> Vec<Defense> {
+    let Some((_, texte)) = fichiers.iter().rev().find(|(c, _)| c == fichier) else {
+        return Vec::new();
+    };
+    let mut lignes: Vec<&str> = Vec::new();
+    for l in texte.split('\n') {
+        if !commentaire(l) && ouvre_une_session(fichier, l) && !lignes.contains(&l) {
+            lignes.push(l);
+        }
+    }
+    let Some(gestes) = lignes
+        .iter()
+        .map(|l| super::defense::retirer_ligne(fichier, l))
+        .collect::<Option<Vec<Defense>>>()
+    else {
+        return Vec::new();
+    };
+    let apres: Vec<(String, String)> = fichiers
+        .iter()
+        .map(|(c, t)| {
+            if c == fichier {
+                let garde: Vec<&str> = t.split('\n').filter(|l| !lignes.contains(l)).collect();
+                (c.clone(), garde.join("\n"))
+            } else {
+                (c.clone(), t.clone())
+            }
+        })
+        .collect();
+    if gestes.is_empty() || ouverture_automatique_de(&apres).is_some() {
+        return Vec::new();
+    }
+    gestes
 }
 
 /// `pacman -Qo` en anglais : « /usr/bin/su is owned by util-linux 2.42.4-1 », une ligne par fichier qui a un paquet.
@@ -1511,7 +1695,7 @@ pub(super) fn juger_comptes(passwd: &str) -> Constat {
     if uid0.is_empty() {
         ok("Comptes", tr!("Seul root a l'UID 0.", "Only root has UID 0."))
     } else {
-        alerte(
+        let constat = alerte(
             "Comptes",
             Niveau::Critique,
             trf!(
@@ -1526,6 +1710,15 @@ pub(super) fn juger_comptes(passwd: &str) -> Constat {
                 "Possible sign of intrusion: do not delete blindly, check where they come from first"
             ),
             &["grep ':0:' /etc/passwd"],
+        );
+        // Verrouillés, jamais supprimés : le compte et ses fichiers restent pour comprendre d'où il vient.
+        super::defense::corriger(
+            constat,
+            tr!(
+                "Verrouiller ces comptes (ils ne s'ouvrent plus ; rien n'est supprimé), puis chercher leur origine : signe possible d'intrusion",
+                "Lock these accounts (they no longer open; nothing is deleted), then look for where they come from: possible sign of intrusion"
+            ),
+            &super::defense::verrouiller(uid0.iter().copied()),
         )
     }
 }
@@ -2443,15 +2636,90 @@ mod tests {
             "alice"
         );
         // Jugement : disque chiffré, sans alerte ; sinon moyen.
-        assert!(juger_ouverture_automatique("alice", "x", Some(true)).probleme.is_none());
+        assert!(
+            juger_ouverture_automatique("alice", "x", Some(true), &[])
+                .probleme
+                .is_none()
+        );
         assert_eq!(
-            juger_ouverture_automatique("alice", "x", Some(false)).probleme,
+            juger_ouverture_automatique("alice", "x", Some(false), &[]).probleme,
             Some(Niveau::Moyen)
         );
         assert_eq!(
-            juger_ouverture_automatique("alice", "x", None).probleme,
+            juger_ouverture_automatique("alice", "x", None, &[]).probleme,
             Some(Niveau::Moyen)
         );
+        // Sans geste : à la main.
+        let k = juger_ouverture_automatique("alice", "x", None, &[]).correctif.unwrap();
+        assert!(!k.automatique);
+    }
+
+    /// D7a : l'ouverture automatique se coupe par un geste seulement si toutes ses lignes sont dans un fichier admis
+    /// et que, parties, plus rien n'ouvre de session.
+    #[test]
+    fn ouverture_automatique_coupee_par_geste() {
+        const AUCUN: [Defense; 0] = [];
+        let f = |chemin: &str, texte: &str| (chemin.to_string(), texte.to_string());
+        let empreinte = crate::machine::defense_eleve::empreinte_de_ligne;
+        // SDDM d'Omarchy : la ligne du compte, telle quelle (fin « \r » comprise, comme la relit le fils root).
+        let sddm = [f(
+            "/etc/sddm.conf.d/autologin.conf",
+            "[Autologin]\nUser=alice\r\nSession=omarchy.desktop\n",
+        )];
+        let g = gestes_d_ouverture(&sddm, "/etc/sddm.conf.d/autologin.conf");
+        let [Defense::RetirerLigne(lue, fichier)] = g.as_slice() else {
+            panic!("un geste attendu : {g:?}")
+        };
+        assert_eq!(*lue, empreinte(b"User=alice\r"));
+        assert_eq!(fichier.octets(), b"/etc/sddm.conf.d/autologin.conf");
+        let k = juger_ouverture_automatique("alice", "/etc/sddm.conf.d/autologin.conf", None, &g)
+            .correctif
+            .unwrap();
+        assert!(k.automatique);
+        assert!(matches!(k.defaire, crate::machine::Defaire::Gestes(ref v) if v.len() == 1));
+        // GDM : les deux interrupteurs, deux gestes ; le compte nommé reste.
+        let gdm = [f(
+            "/etc/gdm3/custom.conf",
+            "[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=bob\nTimedLoginEnable=true\nTimedLogin=bob\n",
+        )];
+        assert_eq!(gestes_d_ouverture(&gdm, "/etc/gdm3/custom.conf").len(), 2);
+        // Un réglage de la distribution (sous /usr) reprendrait la main : rien d'automatique.
+        let dessous = [
+            f("/usr/lib/sddm/sddm.conf.d/auto.conf", "[Autologin]\nUser=alice\n"),
+            f("/etc/sddm.conf", "[Autologin]\nUser=alice\n"),
+        ];
+        assert_eq!(gestes_d_ouverture(&dessous, "/etc/sddm.conf"), AUCUN);
+        // Fichier hors de la liste admise : à la main.
+        let ailleurs = [f("/usr/lib/sddm/sddm.conf.d/auto.conf", "[Autologin]\nUser=alice\n")];
+        assert_eq!(
+            gestes_d_ouverture(&ailleurs, "/usr/lib/sddm/sddm.conf.d/auto.conf"),
+            AUCUN
+        );
+        // Un nom de fichier hostile n'est jamais admis.
+        let hostile = [f("/etc/sddm.conf.d/a;rm -rf.conf", "[Autologin]\nUser=alice\n")];
+        assert_eq!(gestes_d_ouverture(&hostile, "/etc/sddm.conf.d/a;rm -rf.conf"), AUCUN);
+    }
+
+    /// D7a : un compte caché à l'UID 0 se verrouille par un geste (jamais supprimé) ; un nom forgé laisse la liste
+    /// entière à la main.
+    #[test]
+    fn comptes_uid0_verrouilles() {
+        let passwd =
+            "root:x:0:0::/root:/bin/bash\ntoor:x:0:0::/root:/bin/sh\nalice:x:1000:1000::/home/alice:/bin/bash\n";
+        let k = juger_comptes(passwd).correctif.unwrap();
+        assert!(k.automatique);
+        let [ligne] = k.commandes.as_slice() else {
+            panic!("un geste attendu")
+        };
+        assert!(matches!(
+            gestes_unix::analyser(ligne),
+            Some(GesteUnix::Defense(Defense::VerrouillerCompte(n), _)) if n.as_str() == "toor"
+        ));
+        assert!(juger_comptes("root:x:0:0::/root:/bin/bash\n").correctif.is_none());
+        let forge = "toor:x:0:0::/root:/bin/sh\n$(reboot):x:0:0::/:/bin/sh\n";
+        let k = juger_comptes(forge).correctif.unwrap();
+        assert!(!k.automatique);
+        assert!(k.commandes.iter().all(|c| !gestes_unix::a_le_prefixe(c)));
     }
 
     #[test]

@@ -1,0 +1,7 @@
+vanguard:geste defense verrouiller-compte alice 0123456789abcdef
+vanguard:geste defense durcir-sudoers alice 0123456789abcdef
+vanguard:geste defense retirer-setuid 2f746d702f61 0123456789abcdef
+vanguard:geste defense rendre-a-root 2f7573722f6c6f63616c2f62696e 0123456789abcdef
+vanguard:geste defense desactiver-service sauvegarde.service 0123456789abcdef
+vanguard:geste defense retirer-ligne abababababababababababababababababababababababababababababababab 2f6574632f6c642e736f2e7072656c6f6164 0123456789abcdef
+vanguard:geste defense remettre 0123456789abcdef

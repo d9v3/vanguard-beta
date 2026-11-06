@@ -82,6 +82,17 @@ pub(crate) mod arret_designe;
 // le banc de fuzzing.
 #[cfg(unix)]
 pub(crate) mod gestes_unix;
+// La note d'« avant » d'un geste de défense de Linux, écrite par l'assistant élevé : du code pur, lu aussi par le banc
+// de fuzzing.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) mod note_avant_unix;
+// Les gestes de défense de Linux faits par l'assistant élevé, en root : rejugés, montrés, confirmés sur le terminal,
+// notés, puis défaits sur demande.
+#[cfg(target_os = "linux")]
+pub(crate) mod defense_eleve;
+// Les corrections du bilan faites par un geste de défense de Linux, côté parent : l'identifiant de la note et la ligne.
+#[cfg(target_os = "linux")]
+pub(crate) mod defense;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(unix)]

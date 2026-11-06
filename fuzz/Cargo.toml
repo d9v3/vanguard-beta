@@ -251,6 +251,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "note_avant_unix"
+path = "fuzz_targets/note_avant_unix.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "envoi_lot"
 path = "fuzz_targets/envoi_lot.rs"
 test = false

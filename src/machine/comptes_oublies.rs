@@ -41,11 +41,21 @@ fn juger(comptes: &[Compte], aujourd_hui: chrono::NaiveDate) -> Vec<Constat> {
                 Some(_) => return None,
             };
             // Le compte par son nom tel que le système le donne : la date qui change ne fait pas un autre objet.
-            Some(
-                alerte(CAT, Niveau::Info, message)
-                    .avec_objet(crate::modele::Objet::de("compte", &c.nom))
-                    .manuel(desactiver(), &[]),
-            )
+            let constat = alerte(CAT, Niveau::Info, message)
+                .avec_objet(crate::modele::Objet::de("compte", &c.nom))
+                .manuel(desactiver(), &[]);
+            // Linux : verrouillé par un geste de défense, réactivable ; le compte de la session en cours est rejugé
+            // et averti par l'enfant root, qui le sait mieux que ce bilan.
+            #[cfg(target_os = "linux")]
+            let constat = super::defense::corriger(
+                constat,
+                trf!(
+                    "Verrouiller le compte « {nom} » (il ne s'ouvre plus ; ses fichiers restent, réactivable)",
+                    "Lock the “{nom}” account (it no longer opens; its files stay, can be re-enabled)"
+                ),
+                &super::defense::verrouiller([c.nom.as_str()]),
+            );
+            Some(constat)
         })
         .collect()
 }
@@ -384,10 +394,41 @@ mod tests {
         assert_eq!(c.len(), 2);
         assert!(c[0].message.contains("ancien") && c[0].message.contains("2025-12-01"));
         assert!(c[1].message.contains("jamais"));
-        assert!(
-            c.iter()
-                .all(|x| x.probleme == Some(Niveau::Info) && !x.correctif.as_ref().unwrap().automatique)
-        );
+        assert!(c.iter().all(|x| x.probleme == Some(Niveau::Info)));
+        // Linux (D7a) : verrouillé par un geste de défense, défait par sa note ; ailleurs, à la main.
+        for (x, nom) in c.iter().zip(["ancien", "depannage"]) {
+            let k = x.correctif.as_ref().unwrap();
+            #[cfg(target_os = "linux")]
+            {
+                use crate::machine::gestes_unix::{Defense, GesteUnix, analyser};
+                assert!(k.automatique);
+                let [ligne] = k.commandes.as_slice() else {
+                    panic!("un geste attendu")
+                };
+                assert!(matches!(
+                    analyser(ligne),
+                    Some(GesteUnix::Defense(Defense::VerrouillerCompte(n), _)) if n.as_str() == nom
+                ));
+                assert!(matches!(k.defaire, crate::machine::Defaire::Gestes(ref g) if g.len() == 1));
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = nom;
+                assert!(!k.automatique);
+            }
+        }
+    }
+
+    /// Un nom que le système n'admettrait pas (forgé dans /etc/passwd) : rien d'automatique, le conseil seul.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn compte_oublie_au_nom_forge() {
+        let comptes = [Compte {
+            nom: "$(reboot)".into(),
+            derniere: None,
+        }];
+        let c = juger(&comptes, jour(2026, 10, 19));
+        assert!(!c[0].correctif.as_ref().unwrap().automatique);
     }
 
     /// L'oracle : la dernière connexion de chaque compte de cet ordinateur, lue par Vanguard (lastlog2.db,

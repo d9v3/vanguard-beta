@@ -54,6 +54,11 @@ impl Geste {
     pub(crate) fn ntp() -> Geste {
         Geste("ntp".into())
     }
+
+    /// Un geste de défense, par l'identifiant de sa note d'« avant » (`machine::defense`).
+    pub(crate) fn defense(id: crate::machine::gestes_unix::IdNote) -> Geste {
+        Geste(format!("defense|{}", id.as_str()))
+    }
 }
 
 #[cfg(unix)]

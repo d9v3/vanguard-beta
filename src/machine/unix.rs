@@ -124,14 +124,26 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
     constats
 }
 
-/// Règles « sudo sans mot de passe » : (règles qui donnent tout, règles limitées à des commandes précises).
-pub(super) fn regles_nopasswd(liste: &str) -> (Vec<String>, usize) {
+/// Règles « sudo sans mot de passe » : (règles qui donnent tout, règles limitées à des commandes précises). Une règle
+/// « (cible) NOPASSWD: ALL » suivie plus bas de « (cible) ALL » ou « (cible) PASSWD: ALL », la même cible écrite à
+/// l'identique, ne compte plus : sudo applique la dernière règle qui correspond (c'est ainsi que Défense corrige).
+pub(crate) fn regles_nopasswd(liste: &str) -> (Vec<String>, usize) {
+    let lignes: Vec<&str> = liste.lines().map(str::trim).collect();
     let mut totales = Vec::new();
     let mut limitees = 0;
-    for l in liste.lines().map(str::trim).filter(|l| l.contains("NOPASSWD:")) {
+    for (i, l) in lignes.iter().enumerate().filter(|(_, l)| l.contains("NOPASSWD:")) {
         let commandes = l.split_once("NOPASSWD:").map_or("", |(_, c)| c).trim();
         if commandes == "ALL" || commandes.starts_with("ALL,") {
-            totales.push(l.to_string());
+            let reprise = (commandes == "ALL")
+                .then(|| l.strip_prefix('(').and_then(|r| r.split_once(") NOPASSWD:")))
+                .flatten()
+                .is_some_and(|(cible, _)| {
+                    let (tout, passwd) = (format!("({cible}) ALL"), format!("({cible}) PASSWD: ALL"));
+                    lignes.iter().skip(i + 1).any(|m| *m == tout || *m == passwd)
+                });
+            if !reprise {
+                totales.push((*l).to_string());
+            }
         } else {
             limitees += 1;
         }
@@ -143,7 +155,7 @@ pub(super) fn regles_nopasswd(liste: &str) -> (Vec<String>, usize) {
 /// que risque ce système).
 /// Réglages par défaut de sudo qui valent pour ce compte (« Matching Defaults entries », première section de
 /// `sudo -l`) : (sudo ne demande jamais le mot de passe, délai de mémorisation en minutes s'il est donné).
-pub(super) fn defauts_sudo(liste: &str) -> (bool, Option<f64>) {
+pub(crate) fn defauts_sudo(liste: &str) -> (bool, Option<f64>) {
     let mut sans_mot_de_passe = false;
     let mut delai = None;
     let mut lignes = liste
@@ -172,7 +184,46 @@ pub(super) fn sudo_sans_mot_de_passe(tout_permis: &str) -> Vec<Constat> {
     else {
         return Vec::new();
     };
-    juger_sudo(&liste, tout_permis)
+    let constats = juger_sudo(&liste, tout_permis);
+    #[cfg(target_os = "linux")]
+    let constats = {
+        let moi = crate::socle::personnel::compte_de(crate::socle::uid()).and_then(|(n, _)| n.into_string().ok());
+        durcir_sudo(constats, &liste, moi.as_deref())
+    };
+    constats
+}
+
+/// Linux (D7a) : le premier constat de sudo à corriger reçoit le geste qui pose le complément de sudo de ce compte
+/// (`Defense::DurcirSudo`, validé par visudo avant d'être posé, défait par sa note) : un seul geste, qui couvre tous
+/// les réglages signalés ; les suivants gardent leur conseil (le complément ne se pose qu'une fois). Seulement si
+/// chaque règle sans mot de passe a la forme simple que l'enfant root sait corriger, et pour un compte nommé (pas
+/// root, pas de point : sudo ne lirait pas son complément). Sinon, tout reste à la main.
+#[cfg(target_os = "linux")]
+pub(super) fn durcir_sudo(mut constats: Vec<Constat>, liste: &str, moi: Option<&str>) -> Vec<Constat> {
+    use super::gestes_unix::{Defense, NomCompte};
+    let Some(nom) = moi
+        .filter(|m| *m != "root" && !m.contains('.'))
+        .and_then(NomCompte::nouveau)
+    else {
+        return constats;
+    };
+    if !super::defense_eleve::problemes_sudo(liste).is_ok_and(|p| p.a_corriger()) {
+        return constats;
+    }
+    if let Some(c) = constats
+        .iter_mut()
+        .find(|c| c.categorie == "Sudo" && c.probleme.is_some() && c.correctif.is_some())
+    {
+        *c = super::defense::corriger(
+            c.clone(),
+            tr!(
+                "Faire redemander votre mot de passe (un complément de sudo, dans /etc/sudoers.d, vérifié par visudo avant d'être posé ; il couvre tous les réglages signalés ici)",
+                "Ask for your password again (an addition to sudo, in /etc/sudoers.d, checked by visudo before it is put in place; it covers every setting reported here)"
+            ),
+            &[Defense::DurcirSudo(nom)],
+        );
+    }
+    constats
 }
 
 /// Le jugement de la sortie de `sudo -n -l` : séparé de sa lecture pour que le corpus de détection l'exerce.
@@ -448,7 +499,43 @@ pub(super) fn dossiers_de_commandes(racines: &[&str], maison: &Path, proprietair
             }),
         }
     }
-    juger_dossiers_de_commandes(&vus, proprietaire)
+    let constat = juger_dossiers_de_commandes(&vus, proprietaire);
+    #[cfg(target_os = "linux")]
+    let constat = constat.map(|c| if proprietaire { rendre_a_root(c, &vus) } else { c });
+    constat
+}
+
+/// Linux : les dossiers de root pris par un autre compte (la correction à la main de `juger_dossiers_de_commandes`)
+/// rendus à root par un geste de défense chacun, propriétaire et mode notés, que Défaire remet. Tous ou aucun : un
+/// dossier fautif hors des dossiers de root (`DOSSIERS_DE_ROOT`, chemin réel), et tout reste à la main ; sans
+/// dossier pris (seulement ouverts à tous), la correction par chmod o-w reste celle du bilan.
+#[cfg(target_os = "linux")]
+pub(super) fn rendre_a_root(constat: Constat, dossiers: &[DossierDeCommandes]) -> Constat {
+    use super::gestes_unix::{CheminDesigne, Defense};
+    let fautifs: Vec<&DossierDeCommandes> = dossiers
+        .iter()
+        .filter(|d| d.mode & 0o002 != 0 || (d.de_root && d.proprietaire != 0))
+        .collect();
+    if !fautifs
+        .iter()
+        .any(|d| d.de_root && d.proprietaire != 0 && d.mode & 0o002 == 0)
+    {
+        return constat;
+    }
+    let gestes = super::defense::tous(fautifs, |d| {
+        if !super::linux::DOSSIERS_DE_ROOT.contains(&d.chemin.as_str()) {
+            return None;
+        }
+        CheminDesigne::nouveau(d.chemin.as_bytes()).map(Defense::RendreDossierARoot)
+    });
+    super::defense::corriger(
+        constat,
+        tr!(
+            "Rendre ces dossiers à root (propriétaire root, sans écriture du groupe ni des autres ; chacun demandé à part). L'outil qui les a pris peut cesser de s'y mettre à jour : Défaire les lui rend",
+            "Give these folders back to root (owner root, no write access for the group or others; each asked separately). The tool that took them may stop updating there: Undo gives them back to it"
+        ),
+        &gestes,
+    )
 }
 
 #[cfg(test)]
@@ -507,6 +594,54 @@ mod tests_dossiers_de_commandes {
         // macOS : /usr/local/bin à la personne (Homebrew sur un Mac Intel), rien à dire.
         assert!(juger_dossiers_de_commandes(&[d("/usr/local/bin", 0o755, 501, true)], false).is_none());
     }
+
+    /// D7a : un dossier de root pris par un autre compte est rendu à root par un geste ; tous ou aucun.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dossiers_rendus_a_root_par_geste() {
+        use crate::machine::gestes_unix::{Defense, GesteUnix, analyser};
+        let d = |chemin: &str, mode: u32, proprietaire: u32, de_root: bool| DossierDeCommandes {
+            chemin: chemin.to_string(),
+            mode: 0o40000 | mode,
+            proprietaire,
+            de_root,
+        };
+        let juger = |v: &[DossierDeCommandes]| rendre_a_root(juger_dossiers_de_commandes(v, true).unwrap(), v);
+        let v = [
+            d("/usr/local/bin", 0o755, 1000, true),
+            d("/usr/local/sbin", 0o777, 0, true),
+        ];
+        let k = juger(&v).correctif.unwrap();
+        assert!(k.automatique);
+        let chemins: Vec<Vec<u8>> = k
+            .commandes
+            .iter()
+            .map(|l| match analyser(l) {
+                Some(GesteUnix::Defense(Defense::RendreDossierARoot(c), _)) => c.octets().to_vec(),
+                _ => panic!("geste attendu : {l}"),
+            })
+            .collect();
+        assert_eq!(chemins, [b"/usr/local/bin".to_vec(), b"/usr/local/sbin".to_vec()]);
+        assert!(matches!(k.defaire, crate::machine::Defaire::Gestes(ref g) if g.len() == 2));
+        // Mêlé à un dossier qui n'est pas de root : tout à la main.
+        let v = [
+            d("/usr/local/bin", 0o755, 1000, true),
+            d("/opt/outil/bin", 0o777, 1000, false),
+        ];
+        assert!(!juger(&v).correctif.unwrap().automatique);
+        // Un chemin de root qui n'est pas dans la liste (forgé, ou réel ailleurs) : à la main.
+        let v = [d("/usr/local/bin/../../tmp", 0o755, 1000, true)];
+        assert!(!juger(&v).correctif.unwrap().automatique);
+        // Seulement ouvert à tous : la correction chmod o-w du bilan reste.
+        let v = [d("/usr/local/bin", 0o777, 0, true)];
+        assert_eq!(
+            juger(&v).correctif.unwrap().commandes,
+            ["sudo chmod o-w '/usr/local/bin'"]
+        );
+        // /tmp dans le PATH avec un dossier pris : à la main.
+        let v = [d("/usr/local/bin", 0o755, 1000, true), d("/tmp", 0o1777, 0, false)];
+        assert!(!juger(&v).correctif.unwrap().automatique);
+    }
 }
 
 #[cfg(test)]
@@ -527,5 +662,55 @@ mod tests_netstat {
         );
         let udp = "udp4       0      0  *.5353                 *.*\nudp6       0      0  ::1.123  *.*\n";
         assert_eq!(lire_netstat(udp, false), [("*".into(), 5353), ("::1".into(), 123)]);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests_durcir_sudo {
+    use super::*;
+    use crate::machine::gestes_unix::{Defense, GesteUnix, analyser};
+
+    const LISTE: &str = "Matching Defaults entries for alice on salon:\n    env_reset, !authenticate\n\nUser alice may run the following commands on salon:\n    (ALL : ALL) NOPASSWD: ALL\n";
+
+    /// D7a : un seul geste, sur le premier constat à corriger ; les suivants gardent leur conseil.
+    #[test]
+    fn un_seul_complement_pour_tout() {
+        let c = durcir_sudo(juger_sudo(LISTE, "tout"), LISTE, Some("alice"));
+        let auto: Vec<&Constat> = c
+            .iter()
+            .filter(|c| c.correctif.as_ref().is_some_and(|k| k.automatique))
+            .collect();
+        let [premier] = auto.as_slice() else {
+            panic!("un seul constat corrigé par un geste")
+        };
+        let k = premier.correctif.as_ref().unwrap();
+        let [ligne] = k.commandes.as_slice() else {
+            panic!("une ligne")
+        };
+        assert!(matches!(
+            analyser(ligne),
+            Some(GesteUnix::Defense(Defense::DurcirSudo(n), _)) if n.as_str() == "alice"
+        ));
+        assert!(c.iter().filter(|c| c.probleme.is_some()).count() >= 2);
+    }
+
+    /// Root, un nom à point (sudo sauterait le complément), un nom forgé, ou une règle que l'enfant ne sait pas
+    /// corriger : tout reste à la main.
+    #[test]
+    fn a_la_main_sinon() {
+        for moi in [None, Some("root"), Some("alice.b"), Some("al ice")] {
+            let c = durcir_sudo(juger_sudo(LISTE, "tout"), LISTE, moi);
+            assert!(
+                c.iter().all(|c| c.correctif.as_ref().is_none_or(|k| !k.automatique)),
+                "{moi:?}"
+            );
+        }
+        let piege = "User alice may run the following commands on salon:\n    (ALL : ALL, `reboot`) NOPASSWD: ALL\n";
+        let c = durcir_sudo(juger_sudo(piege, "tout"), piege, Some("alice"));
+        assert!(c.iter().all(|c| c.correctif.as_ref().is_none_or(|k| !k.automatique)));
+        // Rien à corriger : rien d'ajouté.
+        let sain = "User alice may run the following commands on salon:\n    (ALL : ALL) ALL\n";
+        let c = durcir_sudo(juger_sudo(sain, "tout"), sain, Some("alice"));
+        assert!(c.iter().all(|c| c.correctif.is_none()));
     }
 }

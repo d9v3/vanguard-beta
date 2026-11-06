@@ -8,8 +8,14 @@ use std::process::Command;
 use super::demarrage::Programme;
 use super::{Categorie, Reglage, Valeur};
 use crate::commande::sh_chaine;
+use crate::machine::defense_eleve::DOSSIER_NOTES;
+use crate::machine::gestes_unix::{Defense, GesteUnix, IdNote};
 use crate::machine::linux::natif;
 use crate::ui::*;
+
+/// La présence de la note d'un geste de défense (`Changement::Defense`), seule valeur relevée : son contenu n'est lu
+/// que par root.
+const NOTE_PRESENTE: &str = "note";
 
 /// Ce que retire un réglage de démarrage.
 pub enum Entree {
@@ -71,6 +77,11 @@ pub enum Changement {
     Droits { chemin: PathBuf },
     /// Heure réglée par le réseau (`timedatectl`) : « yes » ou « no ».
     Ntp,
+    /// Un geste de défense, fait par l'enfant root (`machine::defense_eleve`), qui a noté avant lui l'état d'avant dans
+    /// `/var/lib/vanguard/avant/<id>`, que seul root lit. Ici, seule la présence de cette note se relève (le dossier se
+    /// traverse sans se lister) : absente avant le geste, elle se remet en faisant défaire le geste par l'enfant
+    /// (`Defense::Remettre`), qui rejuge la note, redemande à la personne et la retire.
+    Defense { id: IdNote },
 }
 
 /// Ce qu'un fichier posé par Vanguard peut contenir pour qu'une valeur notée y soit remise avec sudo.
@@ -526,7 +537,8 @@ impl Changement {
             | Changement::Pose { .. }
             | Changement::Module { .. }
             | Changement::Droits { .. }
-            | Changement::Ntp => self.relever().flatten(),
+            | Changement::Ntp
+            | Changement::Defense { .. } => self.relever().flatten(),
         }
     }
 
@@ -548,6 +560,12 @@ impl Changement {
             ),
             Changement::Droits { chemin } => super::annulables::droits_lus(chemin).map(Some),
             Changement::Ntp => ntp_lu().map(Some),
+            // Illisible (le dossier d'une autre forme, fermé) : ni présente ni absente, rien n'est noté.
+            Changement::Defense { id } => match std::fs::symlink_metadata(Path::new(DOSSIER_NOTES).join(id.as_str())) {
+                Ok(_) => Some(Some(NOTE_PRESENTE.to_string())),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
+                Err(_) => None,
+            },
             // Remis par « enable/disable --now », qui lance ou arrête aussi le service ; relu, seul le mode de
             // démarrage compte. Activé mais arrêté (ou l'inverse), l'état d'avant ne reviendrait pas et la relecture
             // le dirait revenu : non noté, la correction est dite non annulable avant d'être appliquée.
@@ -584,6 +602,7 @@ impl Changement {
                 chemin: PathBuf::from(cible),
             }),
             "ntp" if cible.is_empty() => Some(Changement::Ntp),
+            "defense" => IdNote::nouveau(cible).map(|id| Changement::Defense { id }),
             _ => None,
         }
     }
@@ -604,7 +623,8 @@ impl Changement {
             | Changement::Pose { .. }
             | Changement::Module { .. }
             | Changement::Droits { .. }
-            | Changement::Ntp => "?".to_string(),
+            | Changement::Ntp
+            | Changement::Defense { .. } => "?".to_string(),
         })
     }
 
@@ -630,7 +650,8 @@ impl Changement {
             | Changement::Pose { .. }
             | Changement::Module { .. }
             | Changement::Droits { .. }
-            | Changement::Ntp => Some("?".to_string()),
+            | Changement::Ntp
+            | Changement::Defense { .. } => Some("?".to_string()),
         }
     }
 
@@ -745,6 +766,8 @@ impl Changement {
             Changement::Module { .. } => v == "charge",
             Changement::Droits { .. } => super::annulables::droits_admis(v),
             Changement::Ntp => matches!(v, "yes" | "no"),
+            // Une note déjà là avant le geste : l'enfant refuse alors de le faire, rien ne se note.
+            Changement::Defense { .. } => false,
         }
     }
 
@@ -856,6 +879,19 @@ impl Changement {
                 "timedatectl set-ntp {}",
                 if v == Some("yes") { "true" } else { "false" }
             ),
+            Changement::Defense { id } => {
+                let id = id.as_str();
+                match v {
+                    None => trf!(
+                        "geste de défense {id} défait par Vanguard (administrateur), sa note retirée",
+                        "defense step {id} undone by Vanguard (administrator), its note removed"
+                    ),
+                    Some(_) => trf!(
+                        "geste de défense {id} fait, sa note gardée par root",
+                        "defense step {id} done, its note kept by root"
+                    ),
+                }
+            }
         }
     }
 
@@ -978,6 +1014,11 @@ impl Changement {
                 "yes" => "sudo timedatectl set-ntp true".to_string(),
                 "no" => "sudo timedatectl set-ntp false".to_string(),
                 _ => return None,
+            },
+            // Le geste de l'assistant, par sa ligne : jamais une commande sudo, qui écrirait sans rejuger.
+            Changement::Defense { id } => match v {
+                None => GesteUnix::Defense(Defense::Remettre, *id).ligne(),
+                Some(_) => return None,
             },
         })
     }
@@ -1678,6 +1719,38 @@ mod tests {
             cible: None,
         };
         assert!(service.valeur_admise(Some("disabled")) && !service.valeur_admise(Some("on")));
+    }
+
+    /// Un geste de défense noté ne se remet que par la ligne `remettre` de l'assistant, avec le même identifiant :
+    /// jamais une commande sudo, ni un identifiant forgé (majuscules, trop court, chemin), ni une note déjà là avant.
+    #[test]
+    fn geste_de_defense_note() {
+        let id = "0123456789abcdef";
+        let c = Changement::depuis_geste(&format!("defense|{id}")).unwrap();
+        assert!(matches!(c, Changement::Defense { id: i } if i.as_str() == id));
+        assert!(c.valeur_admise(None));
+        assert!(!c.valeur_admise(Some(NOTE_PRESENTE)) && !c.valeur_admise(Some("autre")));
+        assert_eq!(
+            c.commande(None).as_deref(),
+            Some("vanguard:geste defense remettre 0123456789abcdef")
+        );
+        assert_eq!(c.commande(Some(NOTE_PRESENTE)), None);
+        assert!(c.admin() && c.refus(None).is_none());
+        assert_eq!((c.cible(), c.defaut()), (Some("?".into()), Some("?".into())));
+        for forge in [
+            "defense|0123456789ABCDEF",
+            "defense|0123456789abcde",
+            "defense|0123456789abcdef0",
+            "defense|../../etc/passwd",
+            "defense|0123456789abcdef|x",
+            "defense",
+        ] {
+            assert!(Changement::depuis_geste(forge).is_none(), "{forge}");
+        }
+        assert_eq!(
+            super::super::Geste::defense(IdNote::nouveau(id).unwrap()).0,
+            format!("defense|{id}")
+        );
     }
 
     #[test]
