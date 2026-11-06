@@ -2361,6 +2361,8 @@ mod tests {
         processus: BTreeMap<u32, VueProcessus>,
         soupcons: BTreeMap<u32, String>,
         gardes: BTreeMap<u32, String>,
+        /// Le programme change pendant la copie de ses traces (relancé sous le même numéro).
+        change_pendant_traces: bool,
         /// Le code de `sshd -t`.
         sshd_t: i32,
         /// sshd -T ne voit pas les fichiers de Vanguard (un réglage lu avant eux l'emporte).
@@ -2406,6 +2408,7 @@ mod tests {
                 ino: 100,
                 pendant_la_question: None,
                 processus: BTreeMap::new(),
+                change_pendant_traces: false,
                 soupcons: BTreeMap::new(),
                 gardes: BTreeMap::new(),
                 sshd_t: 0,
@@ -2802,6 +2805,11 @@ mod tests {
 
         fn copier_traces(&mut self, pid: u32, v: &VueProcessus) -> Result<PathBuf, Echec> {
             self.journal.push(format!("traces {pid}"));
+            if self.change_pendant_traces
+                && let Some(p) = self.processus.get_mut(&pid)
+            {
+                p.debut += 1;
+            }
             Ok(PathBuf::from(format!("/var/lib/vanguard/traces/{pid}-{}", v.debut)))
         }
 
@@ -2822,6 +2830,8 @@ mod tests {
         condition_refusee: bool,
         /// Un lancement le laisse arrêté pour une autre raison (il échoue), conditions remplies.
         ne_demarre_pas: bool,
+        /// Un rechargement échoue (bus occupé, délai dépassé).
+        recharger_echoue: bool,
     }
 
     impl FauxServices {
@@ -2838,6 +2848,7 @@ mod tests {
                 faits: Vec::new(),
                 condition_refusee: false,
                 ne_demarre_pas: false,
+                recharger_echoue: false,
             }
         }
     }
@@ -2863,6 +2874,9 @@ mod tests {
         }
         fn unite(&mut self, action: ActionUnite, unite: &str) -> Result<(), Echec> {
             self.faits.push(format!("{} {unite}", action.mot()));
+            if self.recharger_echoue && matches!(action, ActionUnite::Recharger) {
+                return Err(echoue("systemctl reload : délai dépassé"));
+            }
             let lance = if self.condition_refusee || self.ne_demarre_pas {
                 "inactive"
             } else {

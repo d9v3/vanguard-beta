@@ -373,6 +373,18 @@ fn lire_fichiers_proxy() -> Vec<(String, Option<Vec<u8>>)> {
                 Err(_) => return Some((c, None)),
                 Ok(m) => m,
             };
+            // Un lien (Debian pose /etc/profile.d/70-systemd-shell-extra.sh vers /usr/lib) : lu à travers seulement
+            // pour savoir s'il règle un proxy ; s'il en règle un, ou ne se lit pas, tout reste à la main (aucun geste
+            // ne passe par un lien).
+            if m.file_type().is_symlink() {
+                let cible = std::fs::metadata(&c).ok().filter(|m| m.is_file() && m.len() <= MAX);
+                let mut contenu = Vec::new();
+                let lu = cible.is_some()
+                    && std::fs::File::open(&c)
+                        .and_then(|f| f.take(MAX + 1).read_to_end(&mut contenu))
+                        .is_ok_and(|n| n as u64 <= MAX);
+                return (!lu || !sans_proxy(&contenu)).then_some((c, None));
+            }
             if !m.file_type().is_file() || m.len() > MAX {
                 return Some((c, None));
             }
@@ -383,6 +395,14 @@ fn lire_fichiers_proxy() -> Vec<(String, Option<Vec<u8>>)> {
             Some((c, lu.then_some(contenu)))
         })
         .collect()
+}
+
+/// Aucune ligne de ce contenu ne règle un proxy (lu comme `gestes_proxy` le lit).
+#[cfg(target_os = "linux")]
+fn sans_proxy(contenu: &[u8]) -> bool {
+    !contenu
+        .split(|o| *o == b'\n')
+        .any(|l| crate::machine::defense_eleve::ligne_de_proxy(String::from_utf8_lossy(l).as_bytes()))
 }
 
 /// Un geste pour chaque ligne de proxy de ces fichiers, tous ou aucun : un fichier qui ne se lit pas, une ligne de
@@ -1814,6 +1834,11 @@ mod tests {
             g[0],
             crate::machine::defense::commenter_proxy("/etc/environment", "https_proxy=http://10.0.0.9:3128").unwrap()
         );
+        // Un lien du système sans proxy est laissé de côté ; un lien qui en règle un (même en octets qui ne sont pas du
+        // texte) laisse tout à la main.
+        assert!(sans_proxy(b"# systemd\n[ -n \"$BASH_VERSION\" ] && . /usr/lib/x\n"));
+        assert!(!sans_proxy(b"export https_proxy=http://10.0.0.9:3128\n"));
+        assert!(!sans_proxy(b"http_proxy=\xff\n"));
         // Rien à faire.
         assert_eq!(
             gestes_proxy(vec![f("/etc/environment", b"LANG=fr_CA.UTF-8\n")]),

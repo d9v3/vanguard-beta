@@ -251,10 +251,15 @@ fn couper_mots_de_passe_ssh(c: Constat) -> Constat {
     let Some(k) = c.correctif.as_ref().filter(|_| c.probleme == Some(Niveau::Critique)) else {
         return c;
     };
+    // Le geste remplace le correctif à la main : ses commandes passent dans le texte, pour ne pas les perdre.
+    let mut ensuite = k.action.clone();
+    if !k.commandes.is_empty() {
+        ensuite.push_str(&trf!(" (puis : {})", " (then: {})", k.commandes.join(" ; ")));
+    }
     let action = trf!(
         "Couper la connexion SSH par mot de passe (refusé sans clé SSH posée, ou depuis une session SSH). Ensuite, vous-même : {}",
         "Turn off password sign-in for SSH (refused without an SSH key in place, or from an SSH session). Then, yourself: {}",
-        k.action
+        ensuite
     );
     super::defense::corriger(c, action, &[Defense::DurcirSsh(ReglageSsh::MotsDePasse)])
 }
@@ -1605,6 +1610,8 @@ mod tests {
             .correctif
             .unwrap();
         assert!(k.automatique && k.action.contains("alice") && k.action.contains("passwd"));
+        // Les commandes à la main du constat restent dites.
+        assert!(k.action.contains("vanguard depanner traces"), "{}", k.action);
         let [ligne] = k.commandes.as_slice() else {
             panic!("une seule ligne")
         };

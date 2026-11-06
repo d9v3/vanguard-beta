@@ -75,8 +75,8 @@ pub(super) fn juger_arret(pid: u32, debut: u64, a: &mut dyn Acces) -> Jugement {
     let uid = v.uid;
     Ok(Some(Plan {
         texte: trf!(
-            "Programme {nom} (numéro {pid}, compte {uid}) : {montre}\nSuspect : {raison}.\nSes traces (programme, ligne de commande, environnement, fichiers ouverts) sont copiées d'abord dans {traces}, puis il est arrêté. Ce qu'il faisait n'est pas défait : relancez le bilan ensuite.",
-            "Program {nom} (number {pid}, account {uid}): {montre}\nSuspicious: {raison}.\nIts traces (program, command line, environment, open files) are copied first into {traces}, then it is stopped. What it did is not undone: run the check again afterwards."
+            "Programme {nom} (numéro {pid}, compte {uid}) : {montre}\nSuspect : {raison}.\nSes traces (programme, ligne de commande, environnement, fichiers ouverts) sont copiées d'abord dans {traces}, lisible par root seulement (l'environnement peut contenir des mots de passe : effacez ce dossier une fois lu), puis il est arrêté. Ce qu'il faisait n'est pas défait : relancez le bilan ensuite.",
+            "Program {nom} (number {pid}, account {uid}): {montre}\nSuspicious: {raison}.\nIts traces (program, command line, environment, open files) are copied first into {traces}, readable by root only (the environment may contain passwords: delete this folder once read), then it is stopped. What it did is not undone: run the check again afterwards."
         ),
         avertissement: None,
         non_annulable: true,

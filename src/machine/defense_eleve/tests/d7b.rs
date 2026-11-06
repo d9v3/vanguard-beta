@@ -16,6 +16,7 @@ fn faux_ssh() -> Faux {
     a.outils.push("sshd");
     a.dossier("/etc/ssh", 0o755, 0);
     a.dossier(SSHD_D, 0o755, 0);
+    a.dossier("/home/alice", 0o755, 1000);
     a.dossier("/home/alice/.ssh", 0o700, 1000);
     a.poser(
         CLES,
@@ -149,6 +150,21 @@ fn ssh_autre_session_ssh_permise() {
     assert!(r.reussi, "{}", r.raison);
 }
 
+/// sshd validé mais son rechargement en échec : le fichier est retiré, rien ne reste qui s'appliquerait au prochain
+/// lancement de sshd sous un « pas fait ».
+#[test]
+fn ssh_rechargement_en_echec_retire_le_fichier() {
+    let mut a = faux_ssh().repondre("o");
+    regler(&mut a, "permitrootlogin", "yes");
+    let mut s = FauxServices::nouveau();
+    s.recharger_echoue = true;
+    let r = faire_avec(Defense::DurcirSsh(ReglageSsh::Root), &mut a, &mut s);
+    assert!(!r.reussi);
+    assert!(r.raison.contains("délai dépassé"), "{}", r.raison);
+    assert!(!a.fichiers.contains_key(&fichier_ssh(ReglageSsh::Root)));
+    assert_eq!(s.faits, ["recharger sshd.service"]);
+}
+
 /// Couper les mots de passe : seulement si la personne a une clé que sshd accepterait.
 #[test]
 fn ssh_mots_de_passe_sans_cle_refuse() {
@@ -166,6 +182,13 @@ fn ssh_mots_de_passe_sans_cle_refuse() {
         // Un lien.
         Box::new(|a| {
             a.liens.insert(PathBuf::from(CLES), PathBuf::from("/tmp/cles"));
+        }),
+        // StrictModes : ~/.ssh ou le dossier personnel ouvert au groupe, ou à un autre compte (sshd refuserait la clé).
+        Box::new(|a| a.fichiers.get_mut(Path::new("/home/alice/.ssh")).unwrap().fiche.mode = 0o775),
+        Box::new(|a| a.fichiers.get_mut(Path::new("/home/alice")).unwrap().fiche.mode = 0o777),
+        Box::new(|a| a.fichiers.get_mut(Path::new("/home/alice/.ssh")).unwrap().fiche.uid = 1001),
+        Box::new(|a| {
+            a.fichiers.remove(Path::new("/home/alice"));
         }),
         // sshd ne lit pas ce fichier.
         Box::new(|a| regler(a, "authorizedkeysfile", "/etc/ssh/cles/%u")),
@@ -197,6 +220,19 @@ fn ssh_mots_de_passe_sans_cle_refuse() {
         &mut FauxServices::nouveau(),
     );
     assert!(r.raison.contains("ssh-copy-id"), "{}", r.raison);
+    // ~/.ssh ouvert : la phrase nomme le dossier et dit quoi faire.
+    let mut a = faux_ssh().repondre("o");
+    a.fichiers.get_mut(Path::new("/home/alice/.ssh")).unwrap().fiche.mode = 0o777;
+    let r = faire_avec(
+        Defense::DurcirSsh(ReglageSsh::MotsDePasse),
+        &mut a,
+        &mut FauxServices::nouveau(),
+    );
+    assert!(
+        r.raison.contains("/home/alice/.ssh") && r.raison.contains("chmod go-w"),
+        "{}",
+        r.raison
+    );
 }
 
 #[test]
@@ -681,6 +717,18 @@ fn arret_refuse() {
     let mut a = faux_programme(vue("mineur")).repondre("");
     assert!(!faire_avec(ARRET, &mut a, &mut FauxServices::nouveau()).reussi);
     assert_eq!(a.journal, Vec::<String>::new());
+}
+
+/// Changé entre la copie de ses traces et l'arrêt (son numéro repris) : les traces restent, rien n'est arrêté.
+#[test]
+fn arret_change_pendant_les_traces() {
+    let mut a = faux_programme(vue("mineur")).repondre("o");
+    a.change_pendant_traces = true;
+    let r = faire_avec(ARRET, &mut a, &mut FauxServices::nouveau());
+    assert!(!r.reussi);
+    assert!(r.raison.contains("pendant la copie"), "{}", r.raison);
+    assert_eq!(a.journal, ["traces 4242"]);
+    assert!(a.processus.contains_key(&4242));
 }
 
 /// Parti, ou son numéro repris par un autre programme (autre naissance), ou zombie : rien à faire, sans question.

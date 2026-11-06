@@ -203,15 +203,29 @@ fn cles_presentes(a: &mut dyn Acces, cfg: &[(String, String)]) -> Result<(), Ech
                 "account {uid} is not in /etc/passwd: its SSH key cannot be checked. Nothing is done"
             )));
         };
-        let a_une_cle = motifs
+        let cles: Vec<PathBuf> = motifs
             .split_whitespace()
             .filter(|m| *m != "none")
             .filter_map(|m| chemin_de_cles(m, nom, uid, maison))
-            .any(|p| {
-                fiche_designee(&p, Genre::Fichier, a).is_ok_and(|f| (f.uid == uid || f.uid == 0) && f.mode & 0o022 == 0)
-                    && a.lire(&p, CLES_MAX).is_some_and(|o| contient_une_cle(&o))
-            });
-        if !a_une_cle {
+            .filter(|p| {
+                fiche_designee(p, Genre::Fichier, a).is_ok_and(|f| (f.uid == uid || f.uid == 0) && f.mode & 0o022 == 0)
+                    && a.lire(p, CLES_MAX).is_some_and(|o| contient_une_cle(&o))
+            })
+            .collect();
+        let ouvert = cles
+            .iter()
+            .map(|p| dossier_ouvert(p, uid, Path::new(maison), a))
+            .collect::<Vec<_>>();
+        if !cles.is_empty() && ouvert.iter().all(Option::is_some) {
+            let d = ouvert.into_iter().flatten().next().unwrap_or_default();
+            return Err(refus(trf!(
+                "{} est à un autre compte ou modifiable par d'autres : sshd refuserait la clé SSH de {} (StrictModes), et couper les mots de passe le couperait de cet ordinateur à distance. Rien n'est fait ; fermez-le (chmod go-w), puis refaites-le",
+                "{} belongs to another account or can be changed by others: sshd would refuse the SSH key of {} (StrictModes), and turning off passwords would cut it off from this computer remotely. Nothing is done; close it (chmod go-w), then do it again",
+                lisible(&d),
+                echappe(nom.as_bytes())
+            )));
+        }
+        if cles.is_empty() {
             return Err(refus(trf!(
                 "le compte {} n'a aucune clé SSH que sshd accepterait (authorized_keys) : couper les mots de passe le couperait de cet ordinateur à distance. Rien n'est fait ; posez d'abord sa clé (ssh-copy-id), puis refaites-le",
                 "the account {} has no SSH key sshd would accept (authorized_keys): turning off passwords would cut it off from this computer remotely. Nothing is done; add its key first (ssh-copy-id), then do it again",
@@ -220,6 +234,24 @@ fn cles_presentes(a: &mut dyn Acces, cfg: &[(String, String)]) -> Result<(), Ech
         }
     }
     Ok(())
+}
+
+/// Le premier dossier, du fichier de clés jusqu'au dossier personnel (ou jusqu'à / hors de lui), que sshd ne jugerait
+/// pas sûr : ni au compte ni à root, modifiable par le groupe ou les autres, ou qui n'est pas un vrai dossier. Avec
+/// StrictModes (le réglage par défaut), sshd refuse alors la clé ; Vanguard l'exige même sans, par prudence.
+fn dossier_ouvert(cles: &Path, uid: u32, maison: &Path, a: &dyn Acces) -> Option<PathBuf> {
+    for d in cles.ancestors().skip(1) {
+        let sur = a
+            .fiche(d)
+            .is_some_and(|f| f.genre == Genre::Dossier && (f.uid == uid || f.uid == 0) && f.mode & 0o022 == 0);
+        if !sur {
+            return Some(d.to_path_buf());
+        }
+        if d == maison {
+            break;
+        }
+    }
+    None
 }
 
 /// Le service de sshd qui tourne, à recharger ; `None` : sshd ne tourne pas en service (lancé par sa socket à chaque
@@ -353,8 +385,11 @@ pub(super) fn poser_ssh(
         }
         Err(e) => return retire(a, e),
     }
-    if let Some(u) = unite {
-        s.unite(ActionUnite::Recharger, u)?;
+    // Rechargement en échec : le fichier est retiré, pour que « pas fait » reste vrai au prochain lancement de sshd.
+    if let Some(u) = unite
+        && let Err(e) = s.unite(ActionUnite::Recharger, u)
+    {
+        return retire(a, e);
     }
     Ok(())
 }
