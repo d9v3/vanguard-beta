@@ -75,6 +75,11 @@ pub(crate) struct Etat {
     #[serde(default)]
     pub entrees_ouvertes: bool,
     pub elements: Vec<Element>,
+    /// Linux : les pare-feu (ufw, firewalld, nftables) coupés à l'allumage du mode, par votre choix ou trouvés
+    /// coupés. Le mode ne les touche pas (sa table à part ferme les entrées) ; à la sortie, celui qui a été rallumé
+    /// entre-temps fait poser une question à part, jamais une remise (`jamais_remis`).
+    #[serde(default)]
+    pub pare_feu_coupe: Vec<String>,
 }
 
 impl Etat {
@@ -294,6 +299,7 @@ mod tests {
             },
             portail_jusqu_a: None,
             entrees_ouvertes: false,
+            pare_feu_coupe: Vec::new(),
             elements: vec![
                 Element::NftTable {
                     interface: "wlan0".into(),

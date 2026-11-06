@@ -1582,7 +1582,7 @@ pub(crate) fn json(e: &Etat) -> serde_json::Value {
 }
 
 /// Le JSON hors de Windows : fermé, sans rien lire.
-#[cfg(any(not(windows), test))]
+#[cfg(any(not(any(windows, target_os = "linux")), test))]
 fn json_hors_windows() -> serde_json::Value {
     serde_json::json!({
         "version": 1,
@@ -2061,6 +2061,17 @@ fn aide_choix() -> String {
 /// `vanguard options-defense --choisir <id> <valeur>` : un choix de la personne, montré puis fait dans la fenêtre
 /// administrateur (une baisse y est confirmée). Faux si la commande est refusée ou si le geste n'a pas réussi.
 pub fn choisir(id: &str, valeur: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    if linux::de_l_id(id).is_some() {
+        return linux::choisir(id, valeur).unwrap_or_else(|| {
+            eprintln!(
+                "{}\n{}",
+                tr!("Choix inconnu. Admis :", "Unknown choice. Allowed:"),
+                linux::aide()
+            );
+            false
+        });
+    }
     let Some(ligne) = ligne_choix(id, valeur) else {
         eprintln!(
             "{}\n{}",
@@ -2111,6 +2122,10 @@ pub fn noter(id: &str) -> bool {
 
 /// `vanguard options-defense --rallumer <id>` : remet la valeur d'avant notée si elle protège, sinon la valeur sûre.
 pub fn rallumer(id: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    if let Some(p) = linux::de_l_id(id) {
+        return linux::rallumer(p);
+    }
     let Some(i) = id_de(id) else {
         eprintln!(
             "{}\n{}",
@@ -2133,6 +2148,16 @@ fn appliquer_choix(ligne: String) -> bool {
     #[cfg(not(windows))]
     {
         let _ = ligne;
+        #[cfg(target_os = "linux")]
+        eprintln!(
+            "{}\n{}",
+            tr!(
+                "Sous Linux, seul le pare-feu se règle ici. Admis :",
+                "On Linux, only the firewall is set here. Allowed:"
+            ),
+            linux::aide()
+        );
+        #[cfg(not(target_os = "linux"))]
         eprintln!(
             "{}",
             tr!(
@@ -2147,7 +2172,7 @@ fn appliquer_choix(ligne: String) -> bool {
 /// Sortie vers un fichier ou un tube (`vanguard options-defense > etat.txt`) : le rapport complet, sans rien
 /// demander. Depuis D3, le menu s'y affichait et attendait « Votre choix » que personne ne voyait (le banc D1 de la
 /// VM semblait gelé). Pure, pour l'essayer.
-#[cfg_attr(not(windows), allow(dead_code))] // hors de Windows, pas de menu : un texte seulement
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))] // macOS : un texte seulement
 fn rapport_seul(sortie_console: bool) -> bool {
     !sortie_console
 }
@@ -2167,9 +2192,16 @@ pub fn afficher() {
     }
     #[cfg(windows)]
     ecran::ecran();
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::IsTerminal as _;
+        linux::ecran(!rapport_seul(
+            std::io::stdout().is_terminal() && std::io::stdin().is_terminal(),
+        ));
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     crate::ui::titre(titre());
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     crate::ui::afficher_aligne(
         "  ",
         tr!(
@@ -2185,13 +2217,18 @@ pub fn afficher() {
 pub fn afficher_json() {
     #[cfg(windows)]
     let v = json(&crate::machine::windows::defense_etat::lire());
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    let v = linux::json(&linux::lire());
+    #[cfg(not(any(windows, target_os = "linux")))]
     let v = json_hors_windows();
     println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
 mod ecran;
+
+#[cfg(target_os = "linux")]
+pub(crate) mod linux;
 
 #[cfg(test)]
 mod tests {

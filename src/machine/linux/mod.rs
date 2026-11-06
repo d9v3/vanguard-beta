@@ -505,6 +505,33 @@ fn zone_par_defaut(conf: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// La date de la coupure de `p` par les Options de défense, si sa note est là.
+fn choix_pare_feu(p: crate::machine::gestes_unix::PareFeu) -> Option<u64> {
+    crate::options_defense::linux::coupe_par_choix().and_then(|(q, d)| (q == p).then_some(d))
+}
+
+/// Un pare-feu coupé par la personne (sa note est là) : une information, jamais « sain » ni une correction faite
+/// d'office ; « Rallumer » est proposé (P9). Les ports ouverts restent dits sans pare-feu (le constat a un niveau).
+fn par_votre_choix(p: crate::machine::gestes_unix::PareFeu, date: u64) -> Constat {
+    let date = crate::machine::choix_avant::date_note(date);
+    let nom = p.mot();
+    alerte(
+        "Pare-feu",
+        Niveau::Info,
+        trf!(
+            "Pare-feu {nom} : coupé par votre choix le {date}. Tout service ouvert est joignable depuis le réseau. Si ce n'est pas vous : Rallumer.",
+            "Firewall {nom}: turned off by your choice on {date}. Every open service can be reached from the network. If it was not you: Turn back on."
+        ),
+    )
+    .manuel(
+        tr!(
+            "Rallumer (Options de défense), si ce n'est pas vous qui l'avez coupé",
+            "Turn back on (Defense options), if you did not turn it off"
+        ),
+        &[&crate::options_defense::linux::commande_rallumer(p)],
+    )
+}
+
 fn pare_feu() -> Constat {
     const SERVICES: [&str; 5] = ["ufw", "firewalld", "nftables", "iptables", "ip6tables"];
     if !systemd() {
@@ -581,6 +608,9 @@ fn pare_feu() -> Constat {
             ),
             None => ok("Pare-feu", tr!("firewalld est actif.", "firewalld is running.")),
         }
+    } else if let Some(date) = choix_pare_feu(crate::machine::gestes_unix::PareFeu::Nftables) {
+        // Couper nftables vide ses règles sans arrêter son service (toujours « active ») : la note seule le dit.
+        par_votre_choix(crate::machine::gestes_unix::PareFeu::Nftables, date)
     } else if let Some(s) = ["nftables", "iptables", "ip6tables"].into_iter().find(|s| actif(s)) {
         ok(
             "Pare-feu",
@@ -589,6 +619,8 @@ fn pare_feu() -> Constat {
                 "{s} is running (rules not readable without root rights)."
             ),
         )
+    } else if let Some((p, date)) = crate::options_defense::linux::coupe_par_choix() {
+        par_votre_choix(p, date)
     } else {
         let installer_ufw = match Paquets::detecter() {
             Some(g) => g.installer("ufw"),
@@ -3120,6 +3152,25 @@ Failed password for alice from 10.0.0.12 port 50001 ssh2";
             Some("ACCEPT")
         );
         assert_eq!(politique_ufw("rien"), None);
+    }
+
+    /// Coupé par votre choix (P9) : une information avec un niveau (les ports ouverts restent dits sans pare-feu),
+    /// vérifiée, et « Rallumer » proposé à la main, jamais fait d'office.
+    #[test]
+    fn pare_feu_coupe_par_votre_choix() {
+        use crate::machine::gestes_unix::PareFeu;
+        for p in PareFeu::TOUS {
+            let c = par_votre_choix(p, 1_762_400_000);
+            assert_eq!(c.probleme, Some(Niveau::Info));
+            assert!(c.verifie);
+            assert!(c.message.contains(p.mot()));
+            let k = c.correctif.expect("Rallumer proposé");
+            assert!(!k.automatique);
+            assert_eq!(
+                k.commandes,
+                [format!("vanguard options-defense --rallumer pare-feu-{}", p.mot())]
+            );
+        }
     }
 
     #[test]

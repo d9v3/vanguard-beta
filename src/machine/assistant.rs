@@ -328,6 +328,18 @@ fn analyser_liste(lignes: &[String]) -> Option<Vec<Vec<Demande>>> {
         total += 1;
         groupes.last_mut()?.push(o);
     }
+    // Lot D7c : une baisse (un pare-feu coupé) n'arrive que seule, du choix fait dans les Options de défense. Mêlée à
+    // d'autres lignes, elle aurait pu être glissée dans une liste de corrections que la personne accepte d'un bloc :
+    // toute la liste est refusée.
+    let baisse = groupes.iter().flatten().any(|d| {
+        matches!(
+            d,
+            Demande::Geste(GesteUnix::Defense(gestes_unix::Defense::CouperPareFeu(_), _))
+        )
+    });
+    if baisse && total != 1 {
+        return None;
+    }
     (total > 0 && total <= LIGNES_MAX && groupes.iter().all(|g| !g.is_empty())).then_some(groupes)
 }
 
@@ -2020,7 +2032,7 @@ fn reponse(question: &str, lecteur: &mut impl BufRead, ecrivain: &mut impl Write
 
 /// Pose `question` sur le terminal de la personne (/dev/tty), jamais sur le canal du parent, après avoir vidé ce qui
 /// a été tapé d'avance : la ligne lue (`reponse`). `Err(())` : aucun terminal.
-pub(super) fn question_au_terminal(question: &str) -> Result<Option<String>, ()> {
+pub(crate) fn question_au_terminal(question: &str) -> Result<Option<String>, ()> {
     use std::os::fd::AsRawFd;
     let tty = std::fs::OpenOptions::new()
         .read(true)
@@ -2493,6 +2505,36 @@ mod tests {
             assert_eq!(analyser_liste(&l), None, "{forge:?}");
             let l = lire_lignes(format!("{juste}\n{forge}\nfin\n").as_bytes());
             assert!(l.is_none_or(|l| analyser_liste(&l).is_none()), "{forge:?}");
+        }
+    }
+
+    /// Lot D7c. Une coupure de pare-feu n'arrive que seule : mêlée à une autre ligne (avant, après, dans un autre
+    /// groupe, deux coupures), toute la liste est refusée ; seule, elle passe (sous Linux).
+    #[test]
+    fn une_coupure_de_pare_feu_n_arrive_que_seule() {
+        let coupe = "vanguard:geste defense couper-pare-feu ufw 000000000000fe01";
+        let autre = "vanguard:geste defense verrouiller-compte alice 0123456789abcdef";
+        let seule = analyser_liste(&[coupe.to_string()]);
+        if cfg!(target_os = "linux") {
+            assert!(seule.is_some_and(|g| g.len() == 1 && g[0].len() == 1));
+        } else {
+            assert_eq!(seule, None);
+        }
+        for meles in [
+            vec![coupe, autre],
+            vec![autre, coupe],
+            vec![coupe, SUITE, autre],
+            vec![autre, SUITE, coupe],
+            vec![coupe, coupe],
+            vec![
+                coupe,
+                "vanguard:geste defense couper-pare-feu firewalld 000000000000fe02",
+            ],
+            vec![coupe, "vanguard:geste programme freshclam"],
+            vec![coupe, "vanguard:couper-connexions 203.0.113.7"],
+        ] {
+            let l: Vec<String> = meles.iter().map(|s| (*s).to_string()).collect();
+            assert_eq!(analyser_liste(&l), None, "{meles:?}");
         }
     }
 

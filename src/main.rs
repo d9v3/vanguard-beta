@@ -472,18 +472,21 @@ enum Commande {
     },
     /// Options de défense de Windows : Microsoft Defender (mode, temps réel, cloud, protection contre les
     /// falsifications, chaque option), exclusions, règles ASR, Pare-feu Windows par profil, stratégies (GPO, Intune)
-    /// qui imposent une valeur, antivirus tiers, PC géré. Chaque option se choisit, ce qu'une baisse change est dit ;
-    /// rien n'est changé sans être montré, puis confirmé dans la fenêtre administrateur.
+    /// qui imposent une valeur, antivirus tiers, PC géré. Sous Linux : le pare-feu (ufw, firewalld, nftables), allumé
+    /// ou coupé. Chaque option se choisit, ce qu'une baisse change est dit ; rien n'est changé sans être montré, puis
+    /// confirmé (fenêtre administrateur, ou question [o/N] de Vanguard administrateur sous Linux).
     #[command(name = "options-defense", visible_aliases = ["defense-options", "defender"])]
     OptionsDefense {
         /// Le résultat en JSON, pour un script (sans chemin, nom de compte ni nom de machine).
         #[arg(long)]
         json: bool,
-        /// Un choix de Defender ou du pare-feu (pua bloquer, asr-GUID audit, pare-feu-prive-actif non…), montré puis
-        /// fait dans la fenêtre administrateur ; une baisse y est confirmée par un oui tapé, sa valeur d'avant notée.
+        /// Un choix de Defender ou du pare-feu (pua bloquer, asr-GUID audit, pare-feu-prive-actif non… ; sous Linux,
+        /// pare-feu-ufw coupe…), montré puis fait en administrateur ; une baisse y est confirmée par un oui tapé, sa
+        /// valeur d'avant notée.
         #[arg(long, visible_alias = "choose", num_args = 2, value_names = ["ID", "VALEUR"], conflicts_with_all = ["json", "rallumer", "exclure", "permettre", "noter"])]
         choisir: Option<Vec<String>>,
-        /// Remet un réglage : la valeur d'avant notée si elle protège, sinon la valeur sûre.
+        /// Remet un réglage : la valeur d'avant notée si elle protège, sinon la valeur sûre (sous Linux,
+        /// pare-feu-ufw, pare-feu-firewalld ou pare-feu-nftables : l'état noté avant la coupure).
         #[arg(long, visible_alias = "turn-back-on", value_name = "ID", conflicts_with_all = ["json", "exclure", "permettre", "noter"])]
         rallumer: Option<String>,
         /// Une exclusion de l'analyse (dossier, programme ou type, puis le texte), montrée puis confirmée dans la
@@ -2041,7 +2044,7 @@ const OUTILS: &[Outil] = &[
         precision: ["Defender, règles ASR, pare-feu", "Defender, ASR rules, firewall"],
         mots: "defender antivirus temps réel real-time cloud asr pare-feu firewall exclusion pua couper turn off \
                rallumer turn on falsifications tamper gpo intune stratégie policy options défense defense bloquer \
-               block exploit dossiers contrôlés controlled folder" },
+               block exploit dossiers contrôlés controlled folder ufw firewalld nftables" },
     // 5 Réseau et Internet.
     Outil { action: Action::Appareils, commande: "appareils", groupe: Some(Groupe::Reseau), lettre: "",
         titre: ["Appareils du réseau", "Devices on the network"],
@@ -2466,6 +2469,9 @@ impl Action {
             Action::Blocage => protection::blocage::etat_court(),
             Action::Veilleur => precision_veilleur(),
             Action::WifiPublic => reseau::wifi_public::etat_court(),
+            Action::OptionsDefense if cfg!(target_os = "linux") => {
+                tr!("pare-feu ufw, firewalld, nftables", "ufw, firewalld, nftables firewall")
+            }
             _ => texte(self.outil().precision),
         };
         (texte(self.outil().titre), precision)
@@ -2478,8 +2484,8 @@ impl Action {
             #[cfg(not(target_os = "macos"))]
             Action::OptimiserPerformance => reglages_disponibles(optimiser::Categorie::Performance),
             Action::OptimiserConfort => reglages_disponibles(optimiser::Categorie::Confort),
-            // Lecture de Defender, du pare-feu et du registre de Windows : rien à lire ailleurs.
-            Action::OptionsDefense => cfg!(windows),
+            // Defender, le pare-feu et le registre de Windows ; sous Linux, le pare-feu (ufw, firewalld, nftables).
+            Action::OptionsDefense => cfg!(any(windows, target_os = "linux")),
             // Deux flux du noyau Linux : ailleurs, la ligne ne serait que du bruit.
             Action::Veilleur => cfg!(target_os = "linux"),
             // Sous Linux, le gestionnaire de paquets et le catalogue de la CISA (bilan, Failles connues) s'en chargent.
@@ -3125,9 +3131,10 @@ const AIDES_EN: &[(&str, &str)] = &[
                            advisories, Microsoft's list). Read-only"),
     ("options-defense", "Windows defense options: Microsoft Defender (mode, real-time, cloud, tamper protection, \
                          each option), exclusions, ASR rules, Windows Firewall per profile, policies (GPO, Intune) \
-                         that enforce a value, third-party antivirus, managed PC. Each option can be chosen, what \
-                         lowering changes is said; nothing is changed without being shown, then confirmed in the \
-                         administrator window"),
+                         that enforce a value, third-party antivirus, managed PC. On Linux: the firewall (ufw, \
+                         firewalld, nftables), on or off. Each option can be chosen, what lowering changes is said; \
+                         nothing is changed without being shown, then confirmed (administrator window, or a [y/N] \
+                         question from Vanguard as administrator on Linux)"),
     ("signaler", "Prepare a report for a vendor (MSRC, Google, Chrome, Mozilla, Apple, GHSA advisory, CERT/CC, \
                   CERT-FR, Vanguard): sorted first (a known flaw is fixed by an update, malware is not a flaw), a \
                   draft in the program's format, what is personal removed, written on this computer and shown in \
@@ -3266,10 +3273,12 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("logiciels-perimes", "json", "The result as JSON, for a script"),
     ("options-defense", "json", "The result as JSON, for a script (no path, account name or computer name)"),
     ("options-defense", "choisir", "A Defender or firewall choice (pua bloquer, asr-GUID audit, \
-                                    pare-feu-prive-actif non…), shown then made in the administrator window; \
-                                    lowering is confirmed there by a typed yes, its previous value noted"),
+                                    pare-feu-prive-actif non…; on Linux, pare-feu-ufw coupe…), shown then made as \
+                                    administrator; lowering is confirmed there by a typed yes, its previous value \
+                                    noted"),
     ("options-defense", "rallumer", "Turns a setting back on: the noted previous value if it protects, otherwise \
-                                     the safe value"),
+                                     the safe value (on Linux, pare-feu-ufw, pare-feu-firewalld or \
+                                     pare-feu-nftables: the state noted before turning it off)"),
     ("options-defense", "exclure", "A scan exclusion (folder, program or type, then the text), shown then confirmed \
                                     in the administrator window like lowering"),
     ("options-defense", "permettre", "An app allowed despite controlled folder access, shown then confirmed like \
@@ -4273,7 +4282,12 @@ mod tests_menu {
     fn options_de_defense_toujours_en_4_10_sous_windows() {
         assert_eq!(
             touche_de(Action::OptionsDefense).as_deref(),
-            cfg!(windows).then_some("4.10")
+            if cfg!(windows) {
+                Some("4.10")
+            } else {
+                // Sous Linux, juste après les lignes communes (pas de logiciels pas à jour) ; macOS : rien.
+                cfg!(target_os = "linux").then_some("4.9")
+            }
         );
         assert_eq!(
             touche_de(Action::LogicielsPerimes).as_deref(),

@@ -352,13 +352,20 @@ fn defender_mene_aux_options_de_defense() {
     if !cfg!(windows) {
         let r = vanguard("en", &["defender"], "", 30);
         assert_eq!(r.code, Some(0));
-        assert!(sans_couleurs(&r.texte).contains("Windows only"), "{}", r.texte);
+        // Sous Linux, l'écran du pare-feu de Linux (D7c) ; ailleurs, « Windows seulement ».
+        let attendu = if cfg!(target_os = "linux") {
+            "Linux firewall"
+        } else {
+            "Windows only"
+        };
+        assert!(sans_couleurs(&r.texte).contains(attendu), "{}", r.texte);
     }
 }
 
-/// Options de défense, sans rien choisir (l'entrée se ferme tout de suite). Hors de Windows, l'écran dit « Windows
-/// seulement » et le JSON se ferme sans rien lire ; sous Windows (Wine compris), il ne plante pas, ne demande rien à
-/// l'administrateur et ne porte aucun texte du système dans le JSON.
+/// Options de défense, sans rien choisir (l'entrée se ferme tout de suite). Sous macOS, l'écran dit « Windows
+/// seulement » et le JSON se ferme sans rien lire ; sous Linux, l'état du pare-feu de Linux est lu sans droits (rien
+/// demandé, rien de fait, aucune règle dans le JSON) ; sous Windows (Wine compris), il ne plante pas, ne demande rien
+/// à l'administrateur et ne porte aucun texte du système dans le JSON.
 #[test]
 fn options_defense_sans_choix() {
     let aide = vanguard("en", &["options-defense", "--help"], "", 30);
@@ -368,9 +375,22 @@ fn options_defense_sans_choix() {
     for o in ["--choisir", "--rallumer", "--exclure", "--permettre", "--noter"] {
         assert!(t.contains(o), "{o} : {t}");
     }
+    let linux = cfg!(target_os = "linux");
     for (langue, titre, seulement) in [
-        ("fr", "Options de défense", "Windows seulement"),
-        ("en", "Defense options", "Windows only"),
+        (
+            "fr",
+            "Options de défense",
+            if linux {
+                "Pare-feu de Linux"
+            } else {
+                "Windows seulement"
+            },
+        ),
+        (
+            "en",
+            "Defense options",
+            if linux { "Linux firewall" } else { "Windows only" },
+        ),
     ] {
         let r = vanguard(langue, &["options-defense"], "", 60);
         assert_eq!(r.code, Some(0), "{}", r.erreurs);
@@ -388,8 +408,15 @@ fn options_defense_sans_choix() {
     let v: serde_json::Value = serde_json::from_str(&r.texte).expect("JSON");
     assert_eq!(v["version"], 1);
     assert_eq!(v["lecture_seule"], true);
-    assert_eq!(v["disponible"], cfg!(windows));
-    if !cfg!(windows) {
+    assert_eq!(v["disponible"], cfg!(windows) || linux);
+    if linux {
+        assert_eq!(v["systeme"], "linux");
+        let pf = v["pare_feu"].as_array().expect("pare_feu");
+        let ids: Vec<&str> = pf.iter().filter_map(|x| x["id"].as_str()).collect();
+        assert_eq!(ids, ["pare-feu-ufw", "pare-feu-firewalld", "pare-feu-nftables"]);
+        // Des identifiants et des états seulement : aucune règle n'est lue sans droits.
+        assert!(pf.iter().all(|x| x["regles_lues"] == false), "{v}");
+    } else if !cfg!(windows) {
         assert_eq!(v["raison"], "windows-seulement");
     }
 }

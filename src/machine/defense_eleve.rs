@@ -36,6 +36,7 @@ use crate::modele::Echec;
 use crate::protection::blocage::ordres::Resultat;
 use crate::{tr, trf};
 
+mod pare_feu;
 mod pose;
 mod programme;
 mod systeme;
@@ -266,6 +267,12 @@ enum Action {
         quarantaine: PathBuf,
         copier: bool,
     },
+    /// Lot D7c. Des règles de nftables passées par un fichier de root (0600) : vérifiées par `nft -c -f`, puis
+    /// chargées d'un bloc si `appliquer` ; le fichier est retiré dans tous les cas.
+    Nft {
+        contenu: Vec<u8>,
+        appliquer: bool,
+    },
 }
 
 /// Ce que l'enfant voit d'un processus dans /proc : de quoi le reconnaître au moment d'agir (sa naissance, en tops
@@ -323,6 +330,27 @@ pub(crate) fn faire(d: Defense, id: IdNote, a: &mut dyn Acces, s: &mut dyn Servi
     }
     match a.note_lire(id) {
         Ok(None) => {}
+        // Lot D7c : la note d'une coupure de pare-feu rallumé hors de Vanguard (déjà comme avant) est retirée, et
+        // la coupure jugée à neuf ; encore coupé par ce choix : rien n'est fait.
+        Ok(Some(o)) if matches!(d, Defense::CouperPareFeu(_)) => {
+            let Defense::CouperPareFeu(p) = d else {
+                return Resultat::echec(note_abimee());
+            };
+            match pare_feu::note_perimee(p, &o, a, s) {
+                Ok(true) => {
+                    if let Err(r) = a.note_retirer(id) {
+                        return Resultat::echec(r);
+                    }
+                }
+                Ok(false) => {
+                    return Resultat::ok_note(tr!(
+                        "ce pare-feu est déjà coupé par votre choix : rien n'est fait (Rallumer, dans les Options de défense, le remet)",
+                        "this firewall is already off by your choice: nothing is done (Turn back on, in the Defense options, puts it back)"
+                    ));
+                }
+                Err(r) => return Resultat::echec(r),
+            }
+        }
         Ok(Some(_)) => {
             return Resultat::echec(tr!(
                 "une note de ce geste existe déjà : rien n'est fait",
@@ -492,6 +520,8 @@ fn juger(d: Defense, a: &mut dyn Acces, s: &mut dyn Services) -> Jugement {
         Defense::OublierBluetooth(b) => systeme::juger_bluetooth(b, a, s),
         Defense::ArreterProgramme(pid, debut) => programme::juger_arret(pid, debut, a),
         Defense::RemettreProgramme(c) => pose::juger_remise(&c, a),
+        Defense::CouperPareFeu(p) => pare_feu::juger_couper(p, a, s),
+        Defense::RallumerPareFeu(p) => pare_feu::juger_rallumer(p, a, s),
         Defense::Remettre => Err(refus(tr!("geste refusé", "step refused").to_string())),
     }
 }
@@ -566,6 +596,7 @@ fn agir(action: &Action, a: &mut dyn Acces, s: &mut dyn Services) -> Result<(), 
             quarantaine,
             copier,
         } => pose::remettre(chemin, fiche, empreinte, quarantaine, *copier, a),
+        Action::Nft { contenu, appliquer } => pare_feu::nft_fichier(contenu, *appliquer, a),
     }
 }
 
@@ -1819,6 +1850,12 @@ fn remettre_juger(d: Defense, note: &Note, a: &mut dyn Acces, s: &mut dyn Servic
         Defense::RetirerLigne(_, c) => remettre_ligne(&c, note, a),
         Defense::DurcirSsh(r) => systeme::remettre_ssh(r, a, s),
         Defense::ReserverBpf => systeme::remettre_bpf(note, a),
+        Defense::CouperPareFeu(p) => pare_feu::remettre(p, note, a, s),
+        Defense::RallumerPareFeu(_) => Err(refus(tr!(
+            "rallumer un pare-feu ne se défait pas : pour le recouper, passez par les Options de défense",
+            "turning a firewall back on is not undone: to turn it off again, go through the Defense options"
+        )
+        .to_string())),
         // Non annulables : la note garde la copie de ce qui a été retiré, à remettre à la main.
         Defense::GarderJournal
         | Defense::RetirerAncre(_)
@@ -2432,6 +2469,8 @@ mod tests {
         historique: Option<BTreeMap<[u8; 32], String>>,
         /// Le programme signé reçu : version, octets ; `None` : rien reçu.
         signe: Option<(String, Vec<u8>)>,
+        /// Lot D7c : ufw et nftables imités.
+        pf: d7c::FauxPareFeu,
     }
 
     fn fiche(genre: Genre, mode: u32, uid: u32, ino: u64) -> Fiche {
@@ -2489,6 +2528,7 @@ mod tests {
                 bluetooth: None,
                 historique: Some(BTreeMap::new()),
                 signe: None,
+                pf: d7c::FauxPareFeu::default(),
             };
             f.poser("/etc/passwd", PASSWD_DE.as_bytes(), 0o644);
             f.poser("/etc/shadow", SHADOW_DE.as_bytes(), 0o640);
@@ -2688,6 +2728,9 @@ mod tests {
             }
             let a: Vec<String> = arguments.iter().map(|x| x.to_string_lossy().into_owned()).collect();
             self.journal.push(format!("{outil} {}", a.join(" ")));
+            if let Some(r) = d7c::imiter(self, outil, &a) {
+                return Some(r);
+            }
             if outil == "sudo" {
                 let pose = self.fichiers.contains_key(&chemin_sudo(compte(a.last().unwrap())));
                 let sortie = if pose {
@@ -3856,4 +3899,5 @@ mod tests {
     }
 
     mod d7b;
+    mod d7c;
 }

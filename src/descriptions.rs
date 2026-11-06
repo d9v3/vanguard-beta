@@ -63,6 +63,10 @@ impl Action {
                 "Compare la version installée des navigateurs, d'Office, d'Acrobat, de Java et d'autres logiciels courants à la dernière publiée. Lecture seule.",
                 "Compares the installed version of browsers, Office, Acrobat, Java and other common software with the latest release. Read-only."
             ),
+            Action::OptionsDefense if cfg!(target_os = "linux") => tr!(
+                "Le pare-feu de Linux (ufw, firewalld ou nftables) : son état, le couper ou le rallumer. Couper est une baisse : Vanguard montre ce qui change, avertit si une session SSH en dépend, demande, et note l'état d'avant pour « Rallumer ».",
+                "The Linux firewall (ufw, firewalld or nftables): its state, turning it off or back on. Turning off is lowering: Vanguard shows what changes, warns if an SSH session depends on it, asks, and notes the previous state for “Turn back on”."
+            ),
             Action::OptionsDefense => tr!(
                 "Chaque option de Defender, ses exclusions, ses règles ASR et le Pare-feu Windows : ce qui s'applique vraiment, ce qu'une stratégie impose, et vos choix. Une baisse est montrée, puis confirmée.",
                 "Each Defender option, its exclusions, its ASR rules and Windows Firewall: what really applies, what a policy enforces, and your choices. Lowering is shown, then confirmed."

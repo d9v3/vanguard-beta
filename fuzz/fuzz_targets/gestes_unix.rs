@@ -2,7 +2,7 @@
 //! la découpe commune (src/machine/decoupe.rs) telle que Linux et macOS s'en servent : une ligne « vanguard:… » est
 //! native, toute autre passe à bash. Familles et identifiants hors de la table, espaces doublées, champs en plus,
 //! octets nuls, majuscules, lignes démesurées ; noms d'unité hostiles (remontée, gabarit, sans suffixe, pare-feu
-//! désigné) ; gestes de défense (identifiant de note, chemins désignés).
+//! désigné) ; gestes de défense (identifiant de note, chemins désignés, identifiant fixe d'un pare-feu coupé).
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (src/) : refusé sans recours, un allow ne compile pas.
 #![forbid(unsafe_code)]
@@ -76,6 +76,13 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                     D::ArreterProgramme(pid, _) => assert!(pid > 1),
                     D::RemettreProgramme(c) => assert!(gestes_unix::programme_pose_admis(c.octets())),
                     _ => {}
+                }
+                // Lot D7c : une coupure de pare-feu ne se note que sous l'identifiant fixe de son pare-feu, et ces
+                // identifiants ne servent à aucun autre geste que Remettre.
+                match d {
+                    D::CouperPareFeu(p) => assert!(id == p.note()),
+                    D::Remettre => {}
+                    _ => assert!(gestes_unix::PareFeu::de_la_note(id).is_none()),
                 }
                 if g.refus().is_some() {
                     assert!(match d {

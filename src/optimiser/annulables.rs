@@ -449,6 +449,21 @@ fn notes_de(h: &Historique, origine: Option<Origine>) -> Vec<Note> {
     l
 }
 
+/// Les notes dont le seul geste est `g` : la coupure d'un pare-feu notée par les Options de défense, que « Rallumer »
+/// défait par `defaire` (qui la retire une fois l'état d'avant relu, au lieu de la laisser « annulable » sur rien).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn notes_du_geste(g: &Geste) -> Vec<String> {
+    notes_du_geste_dans(&charger(), g)
+}
+
+fn notes_du_geste_dans(h: &Historique, g: &Geste) -> Vec<String> {
+    h.reglages
+        .iter()
+        .filter(|(_, a)| a.gestes.len() == 1 && a.gestes.first() == Some(&g.0))
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
 /// Le nombre de notes de cette origine.
 pub(crate) fn nombre(origine: Origine) -> usize {
     notes(Some(origine)).len()
@@ -1123,6 +1138,25 @@ mod tests {
         assert_eq!(issues, [("bilan:1".to_string(), Issue::Absent)]);
         assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o7777, 0o600);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// « Rallumer » ne défait que les notes dont la coupure est le seul geste : une correction du bilan qui la mêle
+    /// à autre chose n'est pas la sienne.
+    #[test]
+    fn notes_du_geste_seul() {
+        let g = Geste("defense|000000000000fe01".into());
+        let h = historique(vec![
+            note("bilan:1", "2026-11-06 10:00", &["defense|000000000000fe01"], &[None]),
+            note(
+                "bilan:2",
+                "2026-11-06 10:01",
+                &["defense|000000000000fe01", "ntp"],
+                &[None, Some("yes")],
+            ),
+            note("bilan:3", "2026-11-06 10:02", &["defense|000000000000fe02"], &[None]),
+        ]);
+        assert_eq!(notes_du_geste_dans(&h, &g), ["bilan:1"]);
+        assert_eq!(notes_du_geste_dans(&historique(Vec::new()), &g), Vec::<String>::new());
     }
 
     /// Un historique venu d'une version sans sceaux (0.85 ou avant) : sceaux.json absent, reglages.json là. Il n'est

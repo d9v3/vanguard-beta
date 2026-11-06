@@ -1017,6 +1017,9 @@ fn allumer() {
         portail_jusqu_a: None,
         entrees_ouvertes: plan.entrees_ouvertes,
         elements: etat::fusionner(&anciens, prevus),
+        pare_feu_coupe: ancien
+            .as_ref()
+            .map_or_else(pare_feu_coupes_maintenant, |a| a.pare_feu_coupe.clone()),
     };
     if !ecrire_etat(&e) {
         return;
@@ -1332,6 +1335,8 @@ fn eteindre() {
         if pare_feu_trouve_coupe(remises.iter().map(|(x, _)| *x)) {
             recouper_si_voulu();
         }
+        #[cfg(target_os = "linux")]
+        recouper_linux_si_voulu(&source.pare_feu_coupe);
     } else {
         e.elements = reste;
         ecrire_etat_apres(&e);
@@ -1401,9 +1406,89 @@ fn recouper_si_voulu() {
     }
 }
 
-/// Linux (lot D7) et macOS (gelé) : le pare-feu trouvé coupé reste allumé, comme avant.
+/// Linux : `recouper_linux_si_voulu` (le mode n'y allume pas de pare-feu de la personne) ; macOS (gelé) : le
+/// pare-feu trouvé coupé reste allumé, comme avant.
 #[cfg(not(windows))]
 fn recouper_si_voulu() {}
+
+/// Linux : les pare-feu coupés à l'allumage du mode (note de votre choix là, ou ufw et firewalld lus coupés).
+#[cfg(target_os = "linux")]
+fn pare_feu_coupes_maintenant() -> Vec<String> {
+    coupes_a_l_allumage(&crate::options_defense::linux::lire())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pare_feu_coupes_maintenant() -> Vec<String> {
+    Vec::new()
+}
+
+/// Pure : coupé = la note de votre choix est là, ou l'état lu est « coupé » (installé). Non vérifié n'est pas
+/// « coupé » : jamais de question sur un état qu'on n'a pas lu.
+#[cfg(target_os = "linux")]
+fn coupes_a_l_allumage(lus: &[crate::options_defense::linux::Lu]) -> Vec<String> {
+    use crate::options_defense::linux::EtatPf;
+    lus.iter()
+        .filter(|l| l.date_du_choix().is_some() || (l.installe && l.etat == EtatPf::Coupe))
+        .map(|l| l.p.mot().to_string())
+        .collect()
+}
+
+/// Pure : ceux qui étaient coupés à l'allumage et sont rallumés à la sortie (plus de note de votre choix, lue
+/// absente, et l'état lu n'est plus « coupé ») ; nftables, dont les règles ne se lisent pas sans droits, seulement si
+/// sa note était là et ne l'est plus. Une note illisible ou un état non lu : pas de question.
+#[cfg(target_os = "linux")]
+fn a_recouper(
+    avant: &[String],
+    maintenant: &[crate::options_defense::linux::Lu],
+) -> Vec<crate::machine::gestes_unix::PareFeu> {
+    use crate::machine::gestes_unix::PareFeu;
+    use crate::options_defense::linux::EtatPf;
+    maintenant
+        .iter()
+        .filter(|l| avant.iter().any(|m| m == l.p.mot()) && l.installe && l.note == Some(None))
+        .filter(|l| match l.p {
+            PareFeu::Nftables => true,
+            PareFeu::Ufw | PareFeu::Firewalld => matches!(l.etat, EtatPf::Allume | EtatPf::AMoitie),
+        })
+        .map(|l| l.p)
+        .collect()
+}
+
+/// À part de la liste de remise, après l'extinction : pour chaque pare-feu coupé avant le mode et rallumé depuis, la
+/// question explicite, « non » par défaut, puis sa coupure seule (liste pure), que Vanguard administrateur relit,
+/// montre, avertit (SSH) et redemande avant de noter l'état d'avant (« Rallumer » le défait).
+#[cfg(target_os = "linux")]
+fn recouper_linux_si_voulu(avant: &[String]) {
+    for p in a_recouper(avant, &crate::options_defense::linux::lire()) {
+        if !demander(&trf!(
+            "\n  Le pare-feu {} était coupé avant le mode Wi-Fi public. Le recouper ? [o/N] : ",
+            "\n  The {} firewall was off before public Wi-Fi mode. Turn it off again? [y/N]: ",
+            p.mot()
+        ))
+        .oui()
+        {
+            trp!("  Laissé allumé.", "  Left on.");
+            continue;
+        }
+        if crate::options_defense::linux::couper(p) {
+            afficher_aligne(
+                "  ",
+                &trf!(
+                    "Pare-feu {} recoupé, par votre choix. Options de défense › « Rallumer » le rallume.",
+                    "Firewall {} turned off again, by your choice. Defense options › “Turn back on” turns it on.",
+                    p.mot()
+                ),
+                2,
+                "",
+            );
+        } else {
+            trp!(
+                "  ✖ Pas recoupé : voir le message ci-dessus. Le pare-feu reste allumé.",
+                "  ✖ Not turned off: see the message above. The firewall stays on."
+            );
+        }
+    }
+}
 
 /// L'état ne peut pas être cru : rien de ce qu'il contient n'est remis. Seul ce qui est sans ambiguïté à Vanguard
 /// est retiré (Linux : sa table) ; les réglages plus sûrs restent, masques runtime compris, et c'est dit.
@@ -1981,6 +2066,7 @@ mod tests {
             portail_jusqu_a: None,
             entrees_ouvertes: false,
             elements,
+            pare_feu_coupe: Vec::new(),
         }
     }
 
@@ -2022,6 +2108,88 @@ mod tests {
         // Rejouable : le même état donne les mêmes commandes.
         let (encore, _) = plan_extinction(&e);
         assert_eq!(remises, encore);
+    }
+
+    /// Aucune remise, pour aucun élément, ne contient une coupure de pare-feu de Linux ni la note fixe d'une coupure :
+    /// la baisse ne part que de la question à part.
+    #[test]
+    fn remise_sans_coupure_de_pare_feu() {
+        let mut tous = exemple().elements;
+        tous.extend([
+            Element::UniteRuntime {
+                unite: "smbd.service".into(),
+                actif_avant: false,
+            },
+            Element::Categorie {
+                guid: "{0b8c2f4e-1a2b-4c3d-9e8f-001122334455}".into(),
+                avant: "Private".into(),
+            },
+            Element::ProfilPublic {
+                parametre: "Enabled".into(),
+                avant: "False".into(),
+            },
+            Element::NetBios {
+                carte: "{0b8c2f4e-1a2b-4c3d-9e8f-001122334455}".into(),
+                avant: 0,
+            },
+            Element::MacPareFeu {
+                option: "globalstate".into(),
+                avant: "off".into(),
+            },
+        ]);
+        for x in &tous {
+            if let Some(c) = commande_remise(x) {
+                assert!(!c.contains("couper-pare-feu"), "{c}");
+                // Les notes fixes des trois pare-feu (…fe01 à …fe03), lues en clair là où gestes_unix n'existe pas.
+                assert!(!c.contains("000000000000fe0"), "{c}");
+                #[cfg(unix)]
+                for p in crate::machine::gestes_unix::PareFeu::TOUS {
+                    assert!(!c.contains(p.note().as_str()), "{c}");
+                }
+            }
+        }
+    }
+
+    /// Linux : seuls les pare-feu coupés à l'allumage (note de votre choix, ou lus coupés) et rallumés depuis font
+    /// poser la question ; un état non lu ou une note illisible, jamais.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recoupage_linux_seulement_si_rallume() {
+        use crate::machine::gestes_unix::PareFeu;
+        use crate::options_defense::linux::{EtatPf, Lu};
+        let lu = |p, etat, note: Option<Option<u64>>| Lu {
+            p,
+            installe: true,
+            etat,
+            note,
+            detail: None,
+        };
+        let avant = vec![
+            lu(PareFeu::Ufw, EtatPf::Coupe, Some(None)),
+            lu(PareFeu::Firewalld, EtatPf::NonVerifie, Some(None)),
+            lu(PareFeu::Nftables, EtatPf::NonVerifie, Some(Some(1_762_400_000))),
+        ];
+        let coupes = coupes_a_l_allumage(&avant);
+        assert_eq!(coupes, ["ufw", "nftables"], "non vérifié n'est pas coupé");
+        // Rien n'a bougé : aucune question.
+        assert_eq!(a_recouper(&coupes, &avant), Vec::<PareFeu>::new());
+        let rallumes = vec![
+            lu(PareFeu::Ufw, EtatPf::Allume, Some(None)),
+            lu(PareFeu::Firewalld, EtatPf::Allume, Some(None)),
+            lu(PareFeu::Nftables, EtatPf::NonVerifie, Some(None)),
+        ];
+        assert_eq!(a_recouper(&coupes, &rallumes), [PareFeu::Ufw, PareFeu::Nftables]);
+        // Une note illisible ou un état non lu : pas de question.
+        let flous = vec![
+            lu(PareFeu::Ufw, EtatPf::NonVerifie, Some(None)),
+            lu(PareFeu::Nftables, EtatPf::NonVerifie, None),
+        ];
+        assert_eq!(a_recouper(&coupes, &flous), Vec::<PareFeu>::new());
+        // Un ancien état, sans le champ : rien à recouper.
+        let mut v = serde_json::to_value(etat(Vec::new())).unwrap();
+        v.as_object_mut().unwrap().remove("pare_feu_coupe");
+        let ancien: Etat = serde_json::from_value(v).unwrap();
+        assert_eq!(ancien.pare_feu_coupe, Vec::<String>::new());
     }
 
     /// Le pare-feu Public trouvé coupé : la remise ne le recoupe jamais (aucune commande), la question à part ne

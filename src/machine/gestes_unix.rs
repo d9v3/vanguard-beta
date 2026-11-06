@@ -534,6 +534,47 @@ impl ReglageSsh {
     }
 }
 
+/// Le pare-feu de Linux qu'un geste de défense coupe ou rallume (lot D7c), sur le choix de la personne seulement
+/// (Options de défense) : ufw, firewalld, ou les règles de nftables quand aucun des deux ne les gère.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PareFeu {
+    Ufw,
+    Firewalld,
+    Nftables,
+}
+
+impl PareFeu {
+    pub(crate) const TOUS: [PareFeu; 3] = [PareFeu::Ufw, PareFeu::Firewalld, PareFeu::Nftables];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            PareFeu::Ufw => "ufw",
+            PareFeu::Firewalld => "firewalld",
+            PareFeu::Nftables => "nftables",
+        }
+    }
+
+    pub(crate) fn depuis_mot(m: &str) -> Option<Self> {
+        Self::TOUS.into_iter().find(|p| p.mot() == m)
+    }
+
+    /// L'identifiant FIXE de la note de sa coupure : le Vanguard non élevé sait, par la seule présence de
+    /// `/var/lib/vanguard/avant/<id>` (que root seul crée), que ce pare-feu est coupé par le choix de la personne
+    /// (bilan, Rallumer, mode Wi-Fi public). Aucun autre geste ne prend ces identifiants (`GesteUnix::refus`).
+    pub(crate) fn note(self) -> IdNote {
+        match self {
+            PareFeu::Ufw => IdNote(*b"000000000000fe01"),
+            PareFeu::Firewalld => IdNote(*b"000000000000fe02"),
+            PareFeu::Nftables => IdNote(*b"000000000000fe03"),
+        }
+    }
+
+    /// Le pare-feu dont `id` est la note de coupure, s'il y en a un.
+    pub(crate) fn de_la_note(id: IdNote) -> Option<Self> {
+        Self::TOUS.into_iter().find(|p| p.note() == id)
+    }
+}
+
 /// Une adresse Bluetooth (six octets), telle que `bluetoothctl` l'écrit : `AA:BB:CC:DD:EE:FF`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AdresseBt(pub(crate) [u8; 6]);
@@ -832,6 +873,13 @@ pub(crate) enum Defense {
     /// publié et signé par l'auteur (historique signé en Ed25519) ; celui qui y était est gardé en quarantaine
     /// (/var/lib/vanguard/quarantaine), jamais effacé. Non annulable.
     RemettreProgramme(CheminDesigne),
+    /// Lot D7c. Couper ce pare-feu : une BAISSE, faite seulement depuis les Options de défense, sur le choix de la
+    /// personne (question de baisse, Entrée seule : non). Sa note porte l'identifiant fixe du pare-feu
+    /// (`PareFeu::note`) ; Défaire, ou Rallumer, la remet.
+    CouperPareFeu(PareFeu),
+    /// Lot D7c. Rallumer ce pare-feu quand aucune note de coupure n'existe : un renforcement, non annulable (Vanguard
+    /// ne le recoupe pas de lui-même).
+    RallumerPareFeu(PareFeu),
     /// Remet l'état que la note d'« avant » de ce geste a gardé, puis retire la note.
     Remettre,
 }
@@ -855,6 +903,8 @@ impl Defense {
             Defense::OublierBluetooth(_) => "oublier-bluetooth",
             Defense::ArreterProgramme(..) => "arreter-programme",
             Defense::RemettreProgramme(_) => "remettre-programme",
+            Defense::CouperPareFeu(_) => "couper-pare-feu",
+            Defense::RallumerPareFeu(_) => "rallumer-pare-feu",
             Defense::Remettre => "remettre",
         }
     }
@@ -876,6 +926,7 @@ impl Defense {
                 format!(" {} {}", hex(&e.0), hex(c.octets()))
             }
             Defense::DurcirSsh(r) => format!(" {}", r.mot()),
+            Defense::CouperPareFeu(p) | Defense::RallumerPareFeu(p) => format!(" {}", p.mot()),
             Defense::OublierBluetooth(b) => format!(" {}", hex(&b.0)),
             Defense::ArreterProgramme(pid, debut) => format!(" {pid} {debut}"),
             Defense::Remettre | Defense::ReserverBpf | Defense::GarderJournal => String::new(),
@@ -1028,6 +1079,14 @@ impl Defense {
                     c.lisible()
                 ),
             ),
+            Defense::CouperPareFeu(p) => (
+                format!("Couper le pare-feu {} (votre choix : une protection baissée)", p.mot()),
+                format!("Turn off the {} firewall (your choice: a lowered protection)", p.mot()),
+            ),
+            Defense::RallumerPareFeu(p) => (
+                format!("Rallumer le pare-feu {}", p.mot()),
+                format!("Turn the {} firewall back on", p.mot()),
+            ),
             Defense::Remettre => (
                 "Remettre ce qu'un geste de défense de Vanguard avait changé".to_string(),
                 "Put back what a Vanguard defense step had changed".to_string(),
@@ -1137,6 +1196,21 @@ impl GesteUnix {
                 "Vanguard n'arrête jamais le premier processus du système ni le noyau",
                 "Vanguard never stops the system's first process or the kernel",
             )),
+            // La note d'une coupure porte l'identifiant fixe de son pare-feu, et lui seul : le parent la reconnaît à
+            // sa seule présence. Un autre geste qui le prendrait ferait croire un pare-feu coupé par choix (ou
+            // effacerait la note d'une vraie coupure) ; Remettre, lui, le prend pour la rallumer.
+            GesteUnix::Defense(Defense::CouperPareFeu(p), id) if id != p.note() => Some((
+                "la coupure d'un pare-feu ne se note que sous l'identifiant de ce pare-feu",
+                "a firewall's turning off is only noted under that firewall's identifier",
+            )),
+            GesteUnix::Defense(d, id)
+                if !matches!(d, Defense::CouperPareFeu(_) | Defense::Remettre) && PareFeu::de_la_note(id).is_some() =>
+            {
+                Some((
+                    "cet identifiant est réservé à la coupure d'un pare-feu",
+                    "this identifier is reserved for turning off a firewall",
+                ))
+            }
             _ => None,
         }
     }
@@ -1186,6 +1260,14 @@ impl GesteUnix {
             // Un geste de défense change un compte, un droit ou un fichier du système : l'enfant le montre avec ce
             // qu'il a relu, et avertit de ce qui peut couper l'accès (`assistant::defense`). Le remettre rouvre ce
             // qu'il avait fermé.
+            GesteUnix::Defense(Defense::CouperPareFeu(_), _) => Some((
+                "ceci baisse une protection : le pare-feu est coupé",
+                "this lowers a protection: the firewall is turned off",
+            )),
+            GesteUnix::Defense(Defense::RallumerPareFeu(_), _) => Some((
+                "ceci change les règles du pare-feu : de nouvelles connexions peuvent être refusées",
+                "this changes the firewall rules: new connections may be refused",
+            )),
             GesteUnix::Defense(Defense::Remettre, _) => Some((
                 "ceci rouvre ce qu'un geste de défense avait fermé",
                 "this reopens what a defense step had closed",
@@ -1231,9 +1313,14 @@ impl GesteUnix {
             | GesteUnix::Designee(..)
             | GesteUnix::ReinitialiserEchecs
             | GesteUnix::SignaturesClamav
-            | GesteUnix::Defense(Defense::DesactiverService(_) | Defense::DurcirSsh(_) | Defense::GarderJournal, _) => {
-                true
-            }
+            | GesteUnix::Defense(
+                Defense::DesactiverService(_)
+                | Defense::DurcirSsh(_)
+                | Defense::GarderJournal
+                | Defense::CouperPareFeu(PareFeu::Firewalld)
+                | Defense::RallumerPareFeu(PareFeu::Firewalld | PareFeu::Nftables),
+                _,
+            ) => true,
             GesteUnix::Programme(_) | GesteUnix::Defense(..) => false,
         }
     }
@@ -1402,6 +1489,8 @@ fn defense(mot: &str, champs: &[&str]) -> Option<Defense> {
         ("oublier-bluetooth", [b]) => Defense::OublierBluetooth(AdresseBt(depuis_hex(b, 6)?.try_into().ok()?)),
         ("arreter-programme", [p, d]) => Defense::ArreterProgramme(decimal(p)?, decimal(d)?),
         ("remettre-programme", [c]) => Defense::RemettreProgramme(chemin(c)?),
+        ("couper-pare-feu", [p]) => Defense::CouperPareFeu(PareFeu::depuis_mot(p)?),
+        ("rallumer-pare-feu", [p]) => Defense::RallumerPareFeu(PareFeu::depuis_mot(p)?),
         ("remettre", []) => Defense::Remettre,
         _ => return None,
     })
@@ -1815,7 +1904,17 @@ mod tests {
         ];
         v.extend(GroupeSensible::TOUS.map(|g| Defense::RetirerDuGroupe(g, n)));
         v.extend(ReglageSsh::TOUS.map(Defense::DurcirSsh));
+        v.extend(PareFeu::TOUS.map(Defense::CouperPareFeu));
+        v.extend(PareFeu::TOUS.map(Defense::RallumerPareFeu));
         v
+    }
+
+    /// L'identifiant d'essai, sauf pour une coupure de pare-feu, qui ne se note que sous le sien.
+    fn id_de(d: &Defense) -> IdNote {
+        match d {
+            Defense::CouperPareFeu(p) => p.note(),
+            _ => id(),
+        }
     }
 
     /// Chaque geste de défense se relit tel quel, tient dans la borne, ne porte ni « / », ni octet de contrôle, et
@@ -1823,7 +1922,7 @@ mod tests {
     #[test]
     fn defense_aller_retour_et_accord() {
         for d in tous_les_gestes_de_defense() {
-            let g = GesteUnix::Defense(d, id());
+            let g = GesteUnix::Defense(d, id_de(&d));
             let l = g.ligne();
             assert_eq!(analyser(&l), Some(g), "{l}");
             assert!(
@@ -1836,7 +1935,11 @@ mod tests {
                 g.par_systemd(),
                 matches!(
                     d,
-                    Defense::DesactiverService(_) | Defense::DurcirSsh(_) | Defense::GarderJournal
+                    Defense::DesactiverService(_)
+                        | Defense::DurcirSsh(_)
+                        | Defense::GarderJournal
+                        | Defense::CouperPareFeu(PareFeu::Firewalld)
+                        | Defense::RallumerPareFeu(PareFeu::Firewalld | PareFeu::Nftables)
                 )
             );
         }
@@ -1859,6 +1962,74 @@ mod tests {
         assert_eq!(plus_long.ligne().len(), 631);
         assert!(plus_long.ligne().len() <= GESTE_MAX);
         assert_eq!(analyser(&plus_long.ligne()), Some(plus_long));
+    }
+
+    /// Lot D7c. Une coupure de pare-feu ne se relit que sous l'identifiant fixe de son pare-feu ; ces identifiants
+    /// ne servent à aucun autre geste (sauf Remettre, qui rallume) ; un pare-feu hors des trois, une majuscule, un
+    /// champ en plus : refusés. La coupure baisse une protection, et le dit.
+    #[test]
+    fn pare_feu_coupe_sous_son_seul_identifiant() {
+        for p in PareFeu::TOUS {
+            assert_eq!(PareFeu::depuis_mot(p.mot()), Some(p));
+            assert_eq!(PareFeu::de_la_note(p.note()), Some(p));
+            assert_eq!(IdNote::nouveau(p.note().as_str()), Some(p.note()));
+            assert_ne!(p.note(), id());
+            let coupe = GesteUnix::Defense(Defense::CouperPareFeu(p), p.note());
+            assert_eq!(analyser(&coupe.ligne()), Some(coupe));
+            assert_eq!(
+                coupe.pourquoi_l_accord().map(|(fr, _)| fr),
+                Some("ceci baisse une protection : le pare-feu est coupé")
+            );
+            // Sous un identifiant au hasard, ou celui d'un autre pare-feu : jamais.
+            let ailleurs = GesteUnix::Defense(Defense::CouperPareFeu(p), id());
+            assert!(ailleurs.refus().is_some());
+            assert_eq!(analyser(&ailleurs.ligne()), None);
+            for q in PareFeu::TOUS.into_iter().filter(|q| *q != p) {
+                let croise = GesteUnix::Defense(Defense::CouperPareFeu(p), q.note());
+                assert_eq!(analyser(&croise.ligne()), None, "{}", croise.ligne());
+            }
+            // Remettre prend l'identifiant fixe (Défaire, Rallumer) ; aucun autre geste.
+            let remettre = GesteUnix::Defense(Defense::Remettre, p.note());
+            assert_eq!(analyser(&remettre.ligne()), Some(remettre));
+            for d in tous_les_gestes_de_defense()
+                .into_iter()
+                .filter(|d| !matches!(d, Defense::CouperPareFeu(_) | Defense::Remettre))
+            {
+                let g = GesteUnix::Defense(d, p.note());
+                assert!(g.refus().is_some(), "{}", g.ligne());
+                assert_eq!(analyser(&g.ligne()), None, "{}", g.ligne());
+            }
+            assert_eq!(
+                GesteUnix::Defense(Defense::RallumerPareFeu(p), id()).ligne(),
+                format!("vanguard:geste defense rallumer-pare-feu {} 0123456789abcdef", p.mot())
+            );
+        }
+        assert_eq!(
+            GesteUnix::Defense(Defense::CouperPareFeu(PareFeu::Ufw), PareFeu::Ufw.note()).ligne(),
+            "vanguard:geste defense couper-pare-feu ufw 000000000000fe01"
+        );
+        for l in [
+            "vanguard:geste defense couper-pare-feu iptables 000000000000fe01",
+            "vanguard:geste defense couper-pare-feu UFW 000000000000fe01",
+            "vanguard:geste defense couper-pare-feu  ufw 000000000000fe01",
+            "vanguard:geste defense couper-pare-feu ufw firewalld 000000000000fe01",
+            "vanguard:geste defense couper-pare-feu 000000000000fe01",
+            "vanguard:geste defense couper-pare-feu ufw 000000000000FE01",
+            "vanguard:geste defense couper-pare-feu ufw 000000000000fe01 ",
+            "vanguard:geste defense couper-pare-feu ufw\n 000000000000fe01",
+            "vanguard:geste defense couper-pare-feu ufw\x1b[31m 000000000000fe01",
+            "vanguard:geste defense couper-pare-feu ufw\r 000000000000fe01",
+            "vanguard:geste defense rallumer-pare-feu nft 0123456789abcdef",
+            "vanguard:geste defense rallumer-pare-feu ufw 000000000000fe01",
+            "vanguard:geste defense desactiver-service minage.service 000000000000fe03",
+        ] {
+            assert_eq!(analyser(l), None, "{l}");
+        }
+        let long = format!(
+            "vanguard:geste defense couper-pare-feu {} 000000000000fe01",
+            "u".repeat(5000)
+        );
+        assert_eq!(analyser(&long), None);
     }
 
     /// Une ligne de défense forgée ne se relit pas : champ en plus ou en moins, majuscule dans l'hexadécimal,

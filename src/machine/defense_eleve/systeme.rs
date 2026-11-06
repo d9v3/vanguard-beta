@@ -92,7 +92,7 @@ fn en_vigueur(r: ReglageSsh, cfg: &[(String, String)]) -> Result<bool, Echec> {
 }
 
 /// Un groupe de contrôle de sshd (ou dropbear) lui-même : un processus de la lignée y est, la session vient de lui.
-fn groupe_ssh(g: &str) -> bool {
+pub(super) fn groupe_ssh(g: &str) -> bool {
     let dernier = g.rsplit('/').next().unwrap_or(g);
     (dernier.starts_with("ssh") && dernier.ends_with(".service"))
         || g.contains("/system-sshd")

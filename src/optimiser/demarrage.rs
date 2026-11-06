@@ -63,15 +63,56 @@ pub(super) fn notes(h: &Historique) -> Vec<Reglage> {
 
 /// Pourquoi un programme reste au démarrage, s'il le doit : il protège ou fait marcher l'ordinateur. Comparé en
 /// minuscules au nom et à la commande ; un motif court est un mot entier (« avg » ne doit pas trouver « savgame »).
+#[cfg_attr(target_os = "linux", allow(dead_code))] // Linux : `classer`, qui ajoute le paquet
 pub(crate) fn a_garder(nom: &str, commande: &str, bureau: bool) -> Option<&'static str> {
+    a_garder_hors_pare_feu(nom, commande, bureau).or_else(|| {
+        (!cfg!(target_os = "linux") && nom_de_pare_feu(nom, commande))
+            .then(|| tr!("à garder : sécurité", "keep: security"))
+    })
+}
+
+/// Des motifs de pare-feu (ou d'interfaces de pare-feu) dans le nom ou la commande. Sous Windows et macOS, ils gardent
+/// l'élément (« sécurité ») ; sous Linux, le nom seul ne prouve rien : seul le paquet qui fournit le programme le
+/// reconnaît (`classer`), et ces motifs ne servent qu'à refuser quand ce paquet ne se lit pas.
+#[rustfmt::skip]
+const PARE_FEU: &[&str] = &["firewall", "firewalld", "gufw", "ufw", "opensnitch", "little snitch", "lulu", "nftables"];
+
+/// Les paquets de pare-feu de Linux (Debian, Fedora, Arch, openSUSE) et de leurs interfaces.
+#[rustfmt::skip]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const PAQUETS_PARE_FEU: &[&str] = &[
+    "ufw", "gufw", "firewalld", "firewall-applet", "firewall-config", "firewalld-applet", "python3-firewall",
+    "python-firewall", "nftables", "opensnitch", "opensnitch-ui", "python3-opensnitch-ui", "plasma-firewall",
+];
+
+/// Un mot-motif, comme `a_garder` le compare : six lettres au moins, ou une espace ou un tiret, dans le texte ; plus
+/// court, un mot entier.
+fn motifs_trouves(nom: &str, commande: &str, motifs: &[&str]) -> bool {
+    let texte = format!("{nom} {commande}").to_lowercase();
+    let mots: Vec<&str> = texte.split(|c: char| !c.is_alphanumeric()).collect();
+    motifs.iter().any(|m| {
+        if m.len() < 6 && !m.contains([' ', '-']) {
+            mots.contains(m)
+        } else {
+            texte.contains(m)
+        }
+    })
+}
+
+fn nom_de_pare_feu(nom: &str, commande: &str) -> bool {
+    motifs_trouves(nom, commande, PARE_FEU)
+}
+
+/// Ce qui reste au démarrage, hors pare-feu : antivirus et autres protections, Vanguard, pilotes, accessibilité,
+/// bureau.
+fn a_garder_hors_pare_feu(nom: &str, commande: &str, bureau: bool) -> Option<&'static str> {
     const VANGUARD: &[&str] = &["vanguard"];
     // Des listes de motifs, que rustfmt étalerait sur une ligne chacun.
     #[rustfmt::skip]
     const SECURITE: &[&str] = &[
         "securityhealth", "windows security", "defender", "msmpeng", "smartscreen", "mcafee", "norton", "symantec",
         "avast", "avg", "avira", "bitdefender", "eset", "kaspersky", "avp", "malwarebytes", "mbam", "sophos",
-        "trendmicro", "trend micro", "f-secure", "webroot", "clamav", "clamtk", "firewall", "firewalld", "gufw", "ufw",
-        "opensnitch", "little snitch", "lulu",
+        "trendmicro", "trend micro", "f-secure", "webroot", "clamav", "clamtk",
         // Notifications d'AppArmor (Ubuntu), contrôle des clés USB.
         "apparmor", "usbguard",
         // Protections d'entreprise et autres antivirus.
@@ -116,6 +157,184 @@ pub(crate) fn a_garder(nom: &str, commande: &str, bureau: bool) -> Option<&'stat
         (bureau || trouve(BUREAU), tr!("à garder : le bureau", "keep: desktop")),
     ];
     raisons.into_iter().find_map(|(oui, raison)| oui.then_some(raison))
+}
+
+/// Ce que la liste fait d'un programme : le garder (montré, jamais proposé), le proposer comme pare-feu (le retirer
+/// est une baisse, avec sa question), ou comme n'importe quel programme.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Garde {
+    Garder(&'static str),
+    PareFeu,
+    Ordinaire,
+}
+
+/// Sous Linux : le programme lancé (premier mot de la commande) et le paquet qui le fournit. Sous Windows et macOS :
+/// `a_garder`, comme avant.
+fn classer(p: &Programme) -> Garde {
+    #[cfg(target_os = "linux")]
+    {
+        classer_linux(
+            &p.nom,
+            &p.commande,
+            p.bureau,
+            chemin_reel,
+            crate::machine::linux::etat_paquet,
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        a_garder(&p.nom, &p.commande, p.bureau).map_or(Garde::Ordinaire, Garde::Garder)
+    }
+}
+
+/// Le premier mot d'une ligne `Exec=` ou `ExecStart=` : préfixes de systemd (`-`, `@`, `:`, `+`, `!`) et guillemets
+/// ôtés. `None` : vide, ou une enveloppe (env, un shell, une affectation `NOM=valeur`) qui cache le vrai programme.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn executable(commande: &str) -> Option<&str> {
+    let premier = commande
+        .trim()
+        .trim_start_matches(['-', '@', ':', '+', '!'])
+        .split_whitespace()
+        .next()?
+        .trim_matches(['"', '\'']);
+    let base = premier.rsplit('/').next().unwrap_or(premier);
+    let enveloppe = matches!(
+        base,
+        "env"
+            | "sh"
+            | "bash"
+            | "dash"
+            | "zsh"
+            | "fish"
+            | "nohup"
+            | "setsid"
+            | "flatpak"
+            | "snap"
+            | "python3"
+            | "python"
+    ) || premier.contains('=')
+        || premier.is_empty();
+    (!enveloppe).then_some(premier)
+}
+
+/// Le vrai chemin du programme : absolu tel quel, sinon cherché dans les dossiers du système (jamais dans le PATH du
+/// compte, que n'importe quel programme peut allonger), puis liens résolus.
+#[cfg(target_os = "linux")]
+fn chemin_reel(programme: &str) -> Option<std::path::PathBuf> {
+    const DOSSIERS: [&str; 6] = [
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+    ];
+    let p = std::path::Path::new(programme);
+    let trouve = if p.is_absolute() {
+        Some(p.to_path_buf())
+    } else if programme.contains('/') {
+        None
+    } else {
+        DOSSIERS
+            .iter()
+            .map(|d| std::path::Path::new(d).join(programme))
+            .find(|c| c.is_file())
+    }?;
+    std::fs::canonicalize(trouve).ok().filter(|c| c.is_file())
+}
+
+/// Pure : `chemin` trouve le programme, `paquet` dit qui le fournit. Le nom seul ne fait jamais un pare-feu : un faux
+/// « ufw » posé dans le dossier du compte est un programme comme un autre. Paquet illisible, fichier du paquet
+/// modifié, ou programme qu'on ne peut pas suivre (enveloppe, introuvable), avec un nom de pare-feu : traité comme le
+/// vrai pare-feu par prudence (R15), donc gardé, et c'est dit.
+#[cfg(target_os = "linux")]
+fn classer_linux(
+    nom: &str,
+    commande: &str,
+    bureau: bool,
+    chemin: impl Fn(&str) -> Option<std::path::PathBuf>,
+    paquet: impl Fn(&std::path::Path) -> crate::machine::linux::EtatPaquet,
+) -> Garde {
+    use crate::machine::linux::EtatPaquet;
+    if let Some(r) = a_garder_hors_pare_feu(nom, commande, bureau) {
+        return Garde::Garder(r);
+    }
+    let illisible = || {
+        if nom_de_pare_feu(nom, commande) {
+            Garde::Garder(tr!("pare-feu ? paquet illisible", "firewall? package unreadable"))
+        } else {
+            Garde::Ordinaire
+        }
+    };
+    let Some(reel) = executable(commande).and_then(&chemin) else {
+        return illisible();
+    };
+    match paquet(&reel) {
+        EtatPaquet::Intact(n) if PAQUETS_PARE_FEU.contains(&n.as_str()) => Garde::PareFeu,
+        EtatPaquet::Modifie(n) if PAQUETS_PARE_FEU.contains(&n.as_str()) => {
+            Garde::Garder(tr!("pare-feu : fichier modifié", "firewall: file modified"))
+        }
+        EtatPaquet::Illisible => illisible(),
+        EtatPaquet::Aucun | EtatPaquet::Intact(_) | EtatPaquet::Modifie(_) => Garde::Ordinaire,
+    }
+}
+
+/// La question de baisse (§2.0), posée sur le terminal de la personne (/dev/tty), jamais sur l'entrée du programme :
+/// une réponse glissée dans un tube ne compte pas. Entrée, ou pas de terminal : non.
+#[cfg(target_os = "linux")]
+fn baisse_acceptee(noms: &[&str]) -> bool {
+    println!();
+    for n in noms {
+        afficher_aligne(
+            "    − ",
+            &trf!(
+                "{n} (pare-feu) : se lance à l'ouverture de session → NE SE LANCE PLUS",
+                "{n} (firewall): starts at login → NO LONGER STARTS"
+            ),
+            6,
+            "",
+        );
+    }
+    afficher_aligne(
+        "  ",
+        tr!(
+            "Le pare-feu du système garde ses règles ; ce programme (son interface ou ses questions) ne se lance plus.",
+            "The system firewall keeps its rules; this program (its window or its questions) no longer starts."
+        ),
+        2,
+        GRIS,
+    );
+    let question = tr!(
+        "\n  Ces changements rendent votre ordinateur MOINS protégé.\n  Les avez-vous demandés vous-même, dans Vanguard, à l'instant ? Si ce n'est pas vous, répondez N.\n  Faire ces changements ? [o/N] :",
+        "\n  These changes make your computer LESS protected.\n  Did you ask for them yourself, in Vanguard, just now? If it was not you, answer N.\n  Make these changes? [y/N]:"
+    );
+    match crate::machine::assistant::question_au_terminal(question) {
+        Ok(Some(r)) => crate::langue::oui(&r),
+        Ok(None) => false,
+        Err(()) => {
+            trp!(
+                "  ✖ Aucun terminal où demander : rien n'est retiré.",
+                "  ✖ No terminal to ask on: nothing is removed."
+            );
+            false
+        }
+    }
+}
+
+/// Une liste pure (§2.0) : le retrait d'un pare-feu part seul, jamais mêlé à d'autres changements.
+fn liste_admise(baisses: usize, changements: usize) -> bool {
+    baisses == 0 || (baisses == 1 && changements == 1)
+}
+
+#[cfg(target_os = "linux")]
+fn baisse_ok(noms: &[&str]) -> bool {
+    baisse_acceptee(noms)
+}
+
+/// Hors de Linux, aucun programme n'est « pare-feu » ici (`classer`) : jamais appelé ; refusé par prudence.
+#[cfg(not(target_os = "linux"))]
+fn baisse_ok(_noms: &[&str]) -> bool {
+    false
 }
 
 /// Ce que Vanguard ne retire pas d'ici, et où le faire.
@@ -249,9 +468,24 @@ struct Ligne {
     commande: String,
     actif: bool,
     machine: bool,
-    garder: Option<&'static str>,
+    garde: Garde,
     par_vanguard: bool,
     reglage: Reglage,
+}
+
+impl Ligne {
+    /// Pourquoi il reste, s'il le doit.
+    fn garder(&self) -> Option<&'static str> {
+        match self.garde {
+            Garde::Garder(r) => Some(r),
+            Garde::PareFeu | Garde::Ordinaire => None,
+        }
+    }
+
+    /// Un pare-feu reconnu par son paquet : le retirer est une baisse.
+    fn pare_feu(&self) -> bool {
+        self.garde == Garde::PareFeu
+    }
 }
 
 /// Ce qui se montre : les programmes qui se lancent, et ceux que Vanguard a retirés (pour pouvoir les remettre). Un
@@ -259,13 +493,14 @@ struct Ligne {
 fn lignes(programmes: Vec<Programme>, h: &Historique) -> Vec<Ligne> {
     let mut l: Vec<Ligne> = Vec::new();
     for p in programmes {
+        let garde = if p.actif { classer(&p) } else { Garde::Ordinaire };
         let Some(r) = reglage(&p.nom, p.changement) else {
             continue;
         };
         let par_vanguard = h.reglages.contains_key(r.id.as_ref());
         if p.actif || par_vanguard {
             l.push(Ligne {
-                garder: a_garder(&p.nom, &p.commande, p.bureau),
+                garde,
                 nom: affichable(&p.nom),
                 commande: affichable(&p.commande),
                 actif: p.actif,
@@ -284,7 +519,7 @@ fn lignes(programmes: Vec<Programme>, h: &Historique) -> Vec<Ligne> {
                 commande: affichable(identite),
                 actif: false,
                 machine: false,
-                garder: None,
+                garde: Garde::Ordinaire,
                 par_vanguard: true,
                 reglage: r,
             });
@@ -307,11 +542,11 @@ pub struct AuDemarrage {
 }
 
 /// Les programmes qui se lancent à l'ouverture de session, sauf ceux à garder (sécurité, Vanguard, pilotes,
-/// accessibilité, bureau) : ceux-là ne sont jamais proposés, ni ici ni au blocage.
+/// accessibilité, bureau) et les pare-feu : ceux-là ne sont jamais proposés au blocage.
 pub fn retirables() -> Vec<AuDemarrage> {
     systeme::au_demarrage()
         .into_iter()
-        .filter(|p| p.actif && a_garder(&p.nom, &p.commande, p.bureau).is_none())
+        .filter(|p| p.actif && classer(p) == Garde::Ordinaire)
         .filter_map(|p| {
             let (nom, commande, machine) = (affichable(&p.nom), p.commande.clone(), p.machine);
             let r = reglage(&p.nom, p.changement)?;
@@ -330,7 +565,7 @@ pub fn retirables() -> Vec<AuDemarrage> {
 pub fn retirer(id: &str) -> Option<bool> {
     let r = systeme::au_demarrage()
         .into_iter()
-        .filter(|p| p.actif)
+        .filter(|p| p.actif && classer(p) == Garde::Ordinaire)
         .filter_map(|p| reglage(&p.nom, p.changement))
         .find(|r| r.id == id)?;
     let mut h = charger();
@@ -364,8 +599,9 @@ pub fn menu() {
     let cases: Vec<Case> = l
         .iter()
         .map(|x| {
-            let precision = match (x.garder, x.actif) {
+            let precision = match (x.garder(), x.actif) {
                 (Some(raison), _) => raison,
+                (None, true) if x.pare_feu() => tr!("pare-feu : retrait = baisse", "firewall: removing = lowering"),
                 (None, true) => tr!("se lance", "starts"),
                 (None, false) => tr!("retiré par Vanguard", "removed by Vanguard"),
             };
@@ -383,7 +619,7 @@ pub fn menu() {
                 cochee: x.actif,
                 recommandee: false,
                 // À garder : montré, jamais proposé.
-                fixe: x.garder.is_some() && x.actif,
+                fixe: x.garder().is_some() && x.actif,
             }
         })
         .collect();
@@ -410,12 +646,30 @@ pub fn menu() {
             .map(|(x, _)| &x.reglage)
             .collect()
     };
-    let a_retirer = choisis(|x, v| x.actif && !v && x.garder.is_none());
+    let a_retirer = choisis(|x, v| x.actif && !v && x.garder().is_none());
     let a_remettre = choisis(|x, v| !x.actif && v && x.par_vanguard);
+    let baisses: Vec<&str> = l
+        .iter()
+        .zip(&voulu)
+        .filter(|(x, v)| x.actif && !**v && x.garder().is_none() && x.pare_feu())
+        .map(|(x, _)| x.nom.as_str())
+        .collect();
     if a_retirer.is_empty() && a_remettre.is_empty() {
         trp!("  {GRIS}Rien à changer.{RESET}", "  {GRIS}Nothing to change.{RESET}");
-    } else {
+    } else if !liste_admise(baisses.len(), a_retirer.len() + a_remettre.len()) {
+        afficher_aligne(
+            "  ✖ ",
+            tr!(
+                "Liste refusée : elle mêle le retrait d'un pare-feu, qui baisse votre protection, à d'autres changements. Retirez-le seul.",
+                "List refused: it mixes removing a firewall, which lowers your protection, with other changes. Remove it alone."
+            ),
+            4,
+            "",
+        );
+    } else if baisses.is_empty() || baisse_ok(&baisses) {
         confirmer_et_executer(&a_retirer, &a_remettre);
+    } else {
+        trp!("  Annulé : rien n'a changé.", "  Cancelled: nothing changed.");
     }
     println!();
     afficher_aligne("  ", ailleurs(), 2, "");
@@ -502,6 +756,117 @@ mod tests {
         assert_eq!(liste_approuvee(r"Run\..\Autre"), None);
     }
 
+    /// Sous Linux, un pare-feu n'est reconnu que par le paquet qui fournit son programme, jamais par son nom ; un
+    /// paquet illisible (ou un programme qu'on ne peut pas suivre) avec un nom de pare-feu le fait garder ; ClamAV et
+    /// AppArmor restent gardés quoi qu'il arrive.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pare_feu_reconnu_par_son_paquet() {
+        use crate::machine::linux::EtatPaquet;
+        use std::path::{Path, PathBuf};
+        let classe = |nom: &str, commande: &str, paquet: EtatPaquet| {
+            classer_linux(
+                nom,
+                commande,
+                false,
+                |p: &str| Some(PathBuf::from(p)),
+                |_: &Path| paquet.clone(),
+            )
+        };
+        let intact = |n: &str| EtatPaquet::Intact(n.to_string());
+        assert_eq!(
+            classe("OpenSnitch", "/usr/bin/opensnitch-ui", intact("opensnitch-ui")),
+            Garde::PareFeu
+        );
+        // Un nom quelconque, mais le paquet d'un pare-feu : reconnu.
+        assert_eq!(
+            classe("Applet réseau", "/usr/bin/applet", intact("firewall-applet")),
+            Garde::PareFeu
+        );
+        // Un nom de pare-feu sur un faux programme : un programme comme un autre.
+        assert_eq!(
+            classe("ufw", "/home/alice/.local/bin/ufw", EtatPaquet::Aucun),
+            Garde::Ordinaire
+        );
+        assert_eq!(classe("Firewall", "/usr/bin/steam", intact("steam")), Garde::Ordinaire);
+        // Paquet illisible : traité comme le vrai pare-feu (gardé), et dit ; sans nom de pare-feu, rien à protéger.
+        assert!(matches!(
+            classe("gufw", "/usr/bin/gufw", EtatPaquet::Illisible),
+            Garde::Garder(r) if r.contains("illisible") || r.contains("unreadable")
+        ));
+        assert_eq!(
+            classe("Syncthing", "/usr/bin/syncthing", EtatPaquet::Illisible),
+            Garde::Ordinaire
+        );
+        // Le fichier du pare-feu modifié depuis son installation : gardé.
+        assert!(matches!(
+            classe(
+                "firewall-applet",
+                "/usr/bin/firewall-applet",
+                EtatPaquet::Modifie("firewall-applet".into())
+            ),
+            Garde::Garder(_)
+        ));
+        // Une enveloppe ou un programme introuvable cache le vrai : gardé s'il porte un nom de pare-feu.
+        for c in ["env QT_SCALE=2 opensnitch-ui", "sh -c 'gufw'", "QT_X=1 gufw"] {
+            assert!(
+                matches!(classe("opensnitch-ui", c, intact("opensnitch-ui")), Garde::Garder(_)),
+                "{c}"
+            );
+        }
+        assert!(matches!(
+            classer_linux("ufw-tray", "ufw-tray", false, |_: &str| None, |_: &Path| intact("ufw")),
+            Garde::Garder(_)
+        ));
+        // ClamAV et AppArmor : toujours gardés, quel que soit le paquet.
+        for (nom, commande) in [
+            ("ClamTk", "/usr/bin/clamtk"),
+            ("AppArmor Notify", "/usr/bin/aa-notify -p -s 1"),
+        ] {
+            assert!(
+                matches!(classe(nom, commande, EtatPaquet::Aucun), Garde::Garder(_)),
+                "{nom}"
+            );
+            assert!(
+                matches!(classe(nom, commande, intact("ufw")), Garde::Garder(_)),
+                "{nom}"
+            );
+        }
+        // Le premier mot, préfixes de systemd et guillemets ôtés.
+        assert_eq!(executable("-/usr/bin/gufw --tray"), Some("/usr/bin/gufw"));
+        assert_eq!(executable("\"/usr/bin/gufw\" %u"), Some("/usr/bin/gufw"));
+        assert_eq!(executable("/usr/bin/env gufw"), None);
+        assert_eq!(executable(""), None);
+    }
+
+    /// Le retrait d'un pare-feu part seul (liste pure) ; sinon la liste entière est refusée.
+    #[test]
+    fn retrait_du_pare_feu_seul() {
+        assert!(liste_admise(0, 3));
+        assert!(liste_admise(1, 1));
+        assert!(!liste_admise(1, 2));
+        assert!(!liste_admise(2, 2));
+        #[cfg(not(target_os = "linux"))]
+        assert!(!baisse_ok(&["gufw"]));
+    }
+
+    /// Hors de Linux, les noms de pare-feu gardent l'élément, comme avant ; sous Linux, le nom seul ne garde rien.
+    #[test]
+    fn nom_de_pare_feu_selon_le_systeme() {
+        for (nom, commande) in [
+            ("GUFW", "gufw"),
+            ("Firewall", "fw.exe"),
+            ("LuLu", "/Applications/LuLu.app"),
+        ] {
+            assert_eq!(
+                a_garder(nom, commande, false).is_some(),
+                !cfg!(target_os = "linux"),
+                "{nom}"
+            );
+        }
+        assert!(a_garder("ClamTk", "clamtk", false).is_some());
+    }
+
     /// Montrés : ceux qui se lancent, et ceux que Vanguard a retirés, même introuvables (un service désactivé ne se
     /// liste plus) ; pas ceux retirés ailleurs.
     #[cfg(target_os = "linux")]
@@ -539,7 +904,7 @@ mod tests {
         );
         let vus: Vec<(&str, bool, bool, bool)> = l
             .iter()
-            .map(|x| (x.nom.as_str(), x.actif, x.par_vanguard, x.garder.is_some()))
+            .map(|x| (x.nom.as_str(), x.actif, x.par_vanguard, x.garder().is_some()))
             .collect();
         assert_eq!(
             vus,
