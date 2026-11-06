@@ -1317,7 +1317,7 @@ mod tests_sh_chaine {
         // Défense (D7a) : la liste des programmes qui donnent les droits (sudo, pkexec, doas, pour ne pas les rendre
         // tous inutilisables d'un coup), les avertissements qui disent ce que deviendra sudo, et `sudo -n -l -U`
         // lancé par l'enfant déjà root, qui ne fait que lire les règles d'un compte : aucune élévation.
-        ("machine/defense_eleve.rs", 47),
+        ("machine/defense_eleve.rs", 46),
         ("machine/dns.rs", 1),
         // Le nom du groupe des administrateurs sous Debian (« sudo »), dans la liste des groupes sensibles : aucun appel.
         ("machine/gestes_unix.rs", 1),

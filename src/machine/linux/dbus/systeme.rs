@@ -350,6 +350,7 @@ pub(crate) fn agir_sur_unite(bus: &mut Bus, action: ActionUnite, unite: &str) ->
             liens.et_puis(unite, Some(job))
         }
         ActionUnite::DesactiverSansArreter => bus.fichiers(false, unite, &mut fins)?.et_puis(unite, None),
+        ActionUnite::ActiverSansDemarrer => bus.fichiers(true, unite, &mut fins)?.et_puis(unite, None),
         ActionUnite::Demarrer => bus.job("StartUnit", unite, &mut fins),
         ActionUnite::Arreter => bus.job("StopUnit", unite, &mut fins),
         ActionUnite::Redemarrer => bus.job("TryRestartUnit", unite, &mut fins),
@@ -817,7 +818,7 @@ mod tests {
     /// Chaque action, avec les appels qu'elle fait, dans l'ordre ; seul « done » vaut « fait ».
     #[test]
     fn chaque_action_et_la_fin_du_job() {
-        let attendus: [(ActionUnite, &[&str]); 7] = [
+        let attendus: [(ActionUnite, &[&str]); 8] = [
             (
                 ActionUnite::Activer,
                 &["EnableUnitFiles", "Reload", "AddMatch", "Subscribe", "StartUnit"],
@@ -827,6 +828,7 @@ mod tests {
                 &["DisableUnitFiles", "Reload", "AddMatch", "Subscribe", "StopUnit"],
             ),
             (ActionUnite::DesactiverSansArreter, &["DisableUnitFiles", "Reload"]),
+            (ActionUnite::ActiverSansDemarrer, &["EnableUnitFiles", "Reload"]),
             (ActionUnite::Demarrer, &["AddMatch", "Subscribe", "StartUnit"]),
             (ActionUnite::Arreter, &["AddMatch", "Subscribe", "StopUnit"]),
             (ActionUnite::Redemarrer, &["AddMatch", "Subscribe", "TryRestartUnit"]),
@@ -847,7 +849,10 @@ mod tests {
                     }
                 });
                 let r = agir_sur_unite(&mut bus, action, "cups-browsed.service");
-                let sans_job = action == ActionUnite::DesactiverSansArreter;
+                let sans_job = matches!(
+                    action,
+                    ActionUnite::DesactiverSansArreter | ActionUnite::ActiverSansDemarrer
+                );
                 assert_eq!(r.is_ok(), sans_job || resultat == "done", "{action:?} {resultat} {r:?}");
                 if let Err(e) = r {
                     assert!(

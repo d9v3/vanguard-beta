@@ -21,8 +21,8 @@
 //!   setuid ou des capacités, rendre un dossier à root, désactiver un service ajouté, retirer une ligne d'un fichier
 //!   de démarrage), ou `remettre <id>`, qui la défait. Un compte suit `nom_compte_admis`, un chemin s'écrit en
 //!   hexadécimal (`hex`) et se montre échappé (`echappe`), l'identifiant (`IdNote`) nomme la note d'« avant » que
-//!   l'enfant écrit (`note_avant_unix`). Ni sshd ni le gestionnaire de session (`UNITES_DE_SESSION`), ni un fichier
-//!   hors de `fichier_de_ligne_admis` : la ligne ne se relit pas.
+//!   l'enfant écrit (`note_avant_unix`). Ni sshd, ni le gestionnaire de session, ni le réseau
+//!   (`unite_portant_les_sessions`), ni un fichier hors de `fichier_de_ligne_admis` : la ligne ne se relit pas.
 //!
 //! Les familles des paquets, des fichiers de configuration et du réseau suivront (plan du lot Unix, U2, U4 à U7), sur
 //! le même canal et avec les mêmes bornes ; elles reprendront `unite` telle quelle (masquer et démasquer y viendront
@@ -96,6 +96,11 @@ pub(crate) enum ActionUnite {
     Desactiver,
     /// `disable` seul : DisableUnitFiles, Reload ; l'unité tourne jusqu'au prochain démarrage.
     DesactiverSansArreter,
+    /// `enable` seul : EnableUnitFiles, Reload ; l'unité n'est pas lancée. Seulement pour Défaire, dans l'enfant de
+    /// Défense : un service activé qui ne tournait pas revient ainsi, sans être lancé un instant (`enable --now` puis
+    /// `stop` l'aurait fait). Hors de `TOUTES` : aucune ligne du parent ne la nomme.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    ActiverSansDemarrer,
     /// `start`.
     Demarrer,
     /// `stop`.
@@ -123,6 +128,7 @@ impl ActionUnite {
             ActionUnite::Activer => "activer",
             ActionUnite::Desactiver => "desactiver",
             ActionUnite::DesactiverSansArreter => "desactiver-sans-arreter",
+            ActionUnite::ActiverSansDemarrer => "activer-sans-demarrer",
             ActionUnite::Demarrer => "demarrer",
             ActionUnite::Arreter => "arreter",
             ActionUnite::Redemarrer => "redemarrer",
@@ -581,6 +587,43 @@ pub(crate) const UNITES_DE_SESSION: [&str; 18] = [
     "xrdp.service",
 ];
 
+/// Une unité qui porte les sessions (`UNITES_DE_SESSION`), ou le réseau qu'elles traversent : réseau, tunnel, VPN,
+/// pare-feu, même maison (`wg-quick` d'une interface, `pare-feu.service` qui charge nft). La couper peut faire tomber
+/// une connexion à distance, que le cgroup de l'unité ne montre pas. Reconnue par un morceau de son nom, sans casse :
+/// en refuser trop est sans danger, en couper une ne l'est pas.
+pub(crate) fn unite_portant_les_sessions(nom: &str) -> bool {
+    const MORCEAUX: [&str; 26] = [
+        "wg-quick",
+        "wireguard",
+        "openvpn",
+        "tailscale",
+        "zerotier",
+        "netbird",
+        "nebula",
+        "strongswan",
+        "ipsec",
+        "networkmanager",
+        "systemd-networkd",
+        "systemd-resolved",
+        "networking",
+        "wpa_supplicant",
+        "iwd",
+        "dhcpcd",
+        "connman",
+        "netplan",
+        "firewalld",
+        "ufw",
+        "nftables",
+        "iptables",
+        "ip6tables",
+        "shorewall",
+        "firewall",
+        "pare-feu",
+    ];
+    let bas = nom.to_ascii_lowercase();
+    UNITES_DE_SESSION.contains(&nom) || MORCEAUX.iter().any(|m| bas.contains(m))
+}
+
 /// Les fichiers du système dont un geste de défense retire une ligne (un lancement suspect, une ouverture de session
 /// automatique) : une liste fermée, dans /etc seulement. Un nom de fichier libre (« * ») : lettres ASCII, chiffres,
 /// « . _ @ - », sans point au début.
@@ -874,9 +917,9 @@ impl GesteUnix {
                     "a service named by its name can only be stopped, or no longer started at startup",
                 ))
             }
-            GesteUnix::Defense(Defense::DesactiverService(u), _) if UNITES_DE_SESSION.contains(&u.as_str()) => Some((
-                "ce service porte les sessions (connexion à distance, écran de connexion) : Vanguard ne le désactive jamais",
-                "this service carries the sessions (remote connection, login screen): Vanguard never turns it off",
+            GesteUnix::Defense(Defense::DesactiverService(u), _) if unite_portant_les_sessions(u.as_str()) => Some((
+                "ce service porte les sessions ou le réseau qu'elles traversent (connexion à distance, écran de connexion, réseau, VPN, pare-feu) : Vanguard ne le désactive jamais",
+                "this service carries the sessions or the network they go through (remote connection, login screen, network, VPN, firewall): Vanguard never turns it off",
             )),
             GesteUnix::Defense(Defense::RetirerLigne(_, c), _) if !fichier_de_ligne_admis(c.octets()) => Some((
                 "Vanguard ne retire une ligne que des fichiers de démarrage du système qu'il connaît",
@@ -1008,6 +1051,10 @@ fn phrase_d_unite(a: ActionUnite, fr: &str, en: &str) -> (String, String) {
         ActionUnite::DesactiverSansArreter => (
             format!("Ne plus lancer {fr} au démarrage (sans l'arrêter maintenant)"),
             format!("Stop starting {en} at startup (without stopping it now)"),
+        ),
+        ActionUnite::ActiverSansDemarrer => (
+            format!("Lancer {fr} aux prochains démarrages (sans le lancer maintenant)"),
+            format!("Start {en} at the next startups (without starting it now)"),
         ),
         ActionUnite::Demarrer => (format!("Démarrer {fr}"), format!("Start {en}")),
         ActionUnite::Arreter => (format!("Arrêter {fr}"), format!("Stop {en}")),
@@ -1735,5 +1782,33 @@ mod tests {
         assert_eq!(GroupeSensible::de_nom("wheel"), Some(GroupeSensible::Administrateurs));
         assert_eq!(GroupeSensible::de_nom("docker"), Some(GroupeSensible::Docker));
         assert_eq!(GroupeSensible::de_nom("users"), None);
+    }
+
+    /// Le réseau que traverse une session (tunnel, VPN, pare-feu, même maison) n'est jamais désactivé par un geste ; un
+    /// service ordinaire ajouté, si.
+    #[test]
+    fn reseau_des_sessions_jamais_desactive() {
+        let wg = format!("wg-quick@wg0.{}", "service");
+        for nom in [
+            wg.as_str(),
+            "openvpn-salon.service",
+            "networking.service",
+            "wpa_supplicant.service",
+            "nftables.service",
+            "pare-feu.service",
+            "tailscaled.service",
+            "sshd.service",
+        ] {
+            assert!(unite_portant_les_sessions(nom), "{nom}");
+            let d = GesteUnix::Defense(
+                Defense::DesactiverService(NomUnite::nouveau(nom).unwrap()),
+                IdNote::nouveau("0123456789abcdef").unwrap(),
+            );
+            assert!(d.refus().is_some(), "{nom}");
+            assert_eq!(analyser(&d.ligne()), None, "{nom}");
+        }
+        for nom in ["minage.service", "alice-sauvegarde.timer"] {
+            assert!(!unite_portant_les_sessions(nom), "{nom}");
+        }
     }
 }

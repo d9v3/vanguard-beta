@@ -651,10 +651,8 @@ fn juger_verrou(n: NomCompte, a: &mut dyn Acces) -> Jugement {
             "this is your own account, the one of this session: it will no longer open, neither by password nor by SSH key; this session goes on until it is closed"
         ));
     }
-    if c.mot_de_passe_utilisable(nom, j)
-        && !c.autre_administrateur(nom, j)
-        && (root || c.administrateurs().iter().any(|x| x == nom))
-    {
+    // Même sans mot de passe à lui (clé SSH seule, règle NOPASSWD), le dernier administrateur verrouillé ferme tout.
+    if !c.autre_administrateur(nom, j) && (root || c.administrateurs().iter().any(|x| x == nom)) {
         raisons.push(tr!(
             "aucun autre administrateur n'a de mot de passe utilisable : après ce geste, plus personne ne pourra devenir administrateur",
             "no other administrator has a usable password: after this step, no one will be able to become administrator"
@@ -674,8 +672,21 @@ fn juger_verrou(n: NomCompte, a: &mut dyn Acces) -> Jugement {
     arguments.extend([os("--"), os(nom)]);
     let etat = if verrouille {
         tr!("déjà verrouillé", "already locked")
+    } else if hash.is_empty() {
+        tr!(
+            "vide (Défaire rouvrira le compte, mais ne remettra pas un mot de passe vide)",
+            "empty (Undo will reopen the account, but will not put back an empty password)"
+        )
     } else {
         tr!("actif", "active")
+    };
+    // « vide » : usermod --unlock refuse de rendre un mot de passe vide ; Défaire rouvre sans lui.
+    let note_verrou: &[u8] = if hash.starts_with('!') {
+        b"oui"
+    } else if hash.is_empty() {
+        b"vide"
+    } else {
+        b"non"
     };
     Ok(Some(Plan {
         texte: trf!(
@@ -686,14 +697,7 @@ fn juger_verrou(n: NomCompte, a: &mut dyn Acces) -> Jugement {
         avertissement,
         non_annulable: false,
         champs: vec![
-            (
-                "verrouille".into(),
-                if hash.starts_with('!') {
-                    b"oui".to_vec()
-                } else {
-                    b"non".to_vec()
-                },
-            ),
+            ("verrouille".into(), note_verrou.to_vec()),
             ("expiration".into(), expire.into_bytes()),
             ("shell".into(), shell.into_bytes()),
             ("uid".into(), uid.to_string().into_bytes()),
@@ -731,11 +735,19 @@ fn remettre_verrou(n: NomCompte, note: &Note, a: &mut dyn Acces) -> Jugement {
         return Ok(None);
     }
     arguments.extend([os("--"), os(nom)]);
-    Ok(Some(Plan {
-        texte: trf!(
+    let texte = if note.texte("verrouille") == Some("vide") {
+        trf!(
+            "Compte {nom} : rouvert, sans mot de passe (il était vide ; pour en donner un : « passwd {nom} », en administrateur).",
+            "Account {nom}: reopened, without a password (it was empty; to give one: \"passwd {nom}\", as administrator)."
+        )
+    } else {
+        trf!(
             "Compte {nom} : rouvert comme avant.",
             "Account {nom}: reopened as before."
-        ),
+        )
+    };
+    Ok(Some(Plan {
+        texte,
         avertissement: None,
         non_annulable: false,
         champs: Vec::new(),
@@ -827,7 +839,7 @@ fn juger_groupe(g: GroupeSensible, n: NomCompte, a: &mut dyn Acces) -> Jugement 
         action: Action::Outils(
             groupes
                 .iter()
-                .map(|gr| ("gpasswd", vec![os("-d"), os(nom), os(gr)]))
+                .map(|gr| ("gpasswd", vec![os("-d"), os(nom), os("--"), os(gr)]))
                 .collect(),
         ),
     }))
@@ -862,7 +874,7 @@ fn remettre_groupe(g: GroupeSensible, n: NomCompte, note: &Note, a: &mut dyn Acc
         action: Action::Outils(
             a_remettre
                 .iter()
-                .map(|gr| ("gpasswd", vec![os("-a"), os(nom), os(gr)]))
+                .map(|gr| ("gpasswd", vec![os("-a"), os(nom), os("--"), os(gr)]))
                 .collect(),
         ),
     }))
@@ -996,28 +1008,19 @@ fn juger_sudo(n: NomCompte, a: &mut dyn Acces) -> Jugement {
             "rule \"({cible}) NOPASSWD: ALL\": the password will be asked again"
         ));
     }
-    let j = jour(a);
-    let mut raisons = Vec::new();
-    if !c.mot_de_passe_utilisable(nom, j) {
-        raisons.push(trf!(
-            "le compte {nom} n'a pas de mot de passe utilisable : sudo lui demandera un mot de passe qu'il n'a pas, et ne marchera plus pour lui. Donnez-lui d'abord un mot de passe (sudo passwd {nom})",
-            "the account {nom} has no usable password: sudo will ask it for a password it does not have, and will no longer work for it. Give it a password first (sudo passwd {nom})"
-        ));
+    // Sans mot de passe utilisable, sudo lui demanderait un mot de passe qu'il n'a pas : la personne perdrait sudo,
+    // et Défaire, qui passe par sudo, ne pourrait plus la tirer de là. Refusé, sans question.
+    if !c.mot_de_passe_utilisable(nom, jour(a)) {
+        return Err(refus(trf!(
+            "le compte {nom} n'a pas de mot de passe utilisable : sudo lui demanderait un mot de passe qu'il n'a pas, et ne marcherait plus pour lui. Donnez-lui d'abord un mot de passe (« passwd {nom} », en administrateur), puis refaites ce geste",
+            "the account {nom} has no usable password: sudo would ask it for a password it does not have, and would no longer work for it. Give it a password first (\"passwd {nom}\", as administrator), then do this step again"
+        )));
     }
-    if !a.outil("pkexec") && !a.outil("run0") {
-        raisons.push(
-            tr!(
-                "ni pkexec ni run0 n'est installé : sudo restera le seul chemin vers les droits d'administrateur",
-                "neither pkexec nor run0 is installed: sudo will remain the only way to administrator rights"
-            )
-            .to_string(),
-        );
-    }
-    let avertissement = (!raisons.is_empty()).then(|| {
+    // Ce complément ne fait que redemander le mot de passe (que le compte a) : sudo reste le chemin du retour.
+    let avertissement = (!a.outil("pkexec") && !a.outil("run0")).then(|| {
         trf!(
-            "{}. Pour revenir : Défaire dans Vanguard tout de suite (sudo garde le mot de passe quelques minutes), « su - » si root a un mot de passe, ou une clé USB de secours (live USB) pour retirer {}.",
-            "{}. To come back: Undo in Vanguard right away (sudo remembers the password for a few minutes), \"su -\" if root has a password, or a rescue USB stick (live USB) to remove {}.",
-            raisons.join(" ; "),
+            "ni pkexec ni run0 n'est installé : sudo restera le seul chemin vers les droits d'administrateur. Pour revenir : Défaire dans Vanguard (sudo demandera votre mot de passe), « su - » si root a un mot de passe, ou une clé USB de secours (live USB) pour retirer {}.",
+            "neither pkexec nor run0 is installed: sudo will remain the only way to administrator rights. To come back: Undo in Vanguard (sudo will ask for your password), \"su -\" if root has a password, or a rescue USB stick (live USB) to remove {}.",
             chemin_sudo(n).display()
         )
     });
@@ -1165,12 +1168,26 @@ fn paquet_suspect(p: &Path, a: &dyn Acces) -> Result<Option<String>, Echec> {
 
 /// Reste-t-il, sans `p`, un programme qui donne les droits d'administrateur par setuid ?
 fn elevateur_restant(p: &Path, a: &dyn Acces) -> bool {
+    // su ne sert que si root a un mot de passe (Debian et Ubuntu le verrouillent), pkexec que si un administrateur en
+    // a un ; sudo et doas se règlent aussi par leurs fichiers : leur seule présence compte.
+    let j = jour(a);
+    let comptes = Comptes::lire(a).ok();
+    let su_ouvre = comptes.as_ref().is_some_and(|c| c.mot_de_passe_utilisable("root", j));
+    let pkexec_ouvre = comptes
+        .as_ref()
+        .is_some_and(|c| c.administrateurs().iter().any(|x| c.mot_de_passe_utilisable(x, j)));
     ELEVATEURS.iter().any(|e| {
-        a.reel(Path::new(e)).is_some_and(|r| {
-            r != p
-                && a.fiche(&r)
-                    .is_some_and(|f| f.genre == Genre::Fichier && f.uid == 0 && f.mode & 0o4000 != 0)
-        })
+        let ouvre = match e.rsplit('/').next() {
+            Some("su") => su_ouvre,
+            Some("pkexec") => pkexec_ouvre,
+            _ => true,
+        };
+        ouvre
+            && a.reel(Path::new(e)).is_some_and(|r| {
+                r != p
+                    && a.fiche(&r)
+                        .is_some_and(|f| f.genre == Genre::Fichier && f.uid == 0 && f.mode & 0o4000 != 0)
+            })
     })
 }
 
@@ -1482,7 +1499,8 @@ fn remettre_service(u: NomUnite, note: &Note, a: &mut dyn Acces, s: &mut dyn Ser
     }
     let actions = match (lance0, tourne0) {
         (true, true) => vec![ActionUnite::Activer],
-        (true, false) => vec![ActionUnite::Activer, ActionUnite::Arreter],
+        // Activé mais arrêté : activé seulement, jamais lancé un instant (`enable --now` puis `stop` l'aurait fait).
+        (true, false) => vec![ActionUnite::ActiverSansDemarrer],
         (false, true) => vec![ActionUnite::Demarrer],
         (false, false) => return Ok(None),
     };
@@ -1547,12 +1565,26 @@ fn juger_ligne(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
         )));
     }
     let apres: [u8; 32] = Sha256::digest(&garde).into();
-    Ok(Some(Plan {
-        texte: trf!(
+    // ld.so.preload : une ligne peut nommer plusieurs bibliothèques (espaces ou « : ») ; toutes partent avec elle.
+    let bibliotheques = ligne
+        .split(|o| o.is_ascii_whitespace() || *o == b':')
+        .filter(|m| !m.is_empty())
+        .count();
+    let texte = if fichier == "/etc/ld.so.preload" && bibliotheques > 1 {
+        trf!(
+            "Fichier {vu}, ligne retirée en entier, avec les {bibliotheques} bibliothèques qu'elle nomme (remettez à la main celles que vous reconnaissez, ou Défaire) : {}",
+            "File {vu}, line removed whole, with the {bibliotheques} libraries it names (put back by hand the ones you recognize, or Undo): {}",
+            echappe(ligne)
+        )
+    } else {
+        trf!(
             "Fichier {vu}, ligne retirée : {}",
             "File {vu}, line removed: {}",
             echappe(ligne)
-        ),
+        )
+    };
+    Ok(Some(Plan {
+        texte,
         avertissement: None,
         non_annulable: false,
         champs: vec![
@@ -1712,6 +1744,32 @@ fn uid_de_connexion(pid: &str) -> Option<u32> {
         .filter(|u| *u != u32::MAX)
 }
 
+/// Le terminal de contrôle d'après `/proc/<pid>/stat` (7e champ, `tty_nr`, après le nom entre parenthèses, qui peut
+/// en contenir) : son numéro de périphérique et le chemin où il se trouve, pour un pseudo-terminal (majeur 136) ou
+/// une console (majeur 4, mineur 1 à 63). `tty_nr` s'écrit comme un `st_rdev` : les deux se comparent tels quels.
+fn terminal_de_controle(stat: &str) -> Option<(u64, PathBuf)> {
+    let apres = &stat[stat.rfind(')')? + 1..];
+    let tty: u64 = apres.split_whitespace().nth(4)?.parse().ok()?;
+    let majeur = ((tty >> 8) & 0xfff) | ((tty >> 32) & !0xfff);
+    let mineur = (tty & 0xff) | ((tty >> 12) & !0xff);
+    let chemin = match majeur {
+        136 => format!("/dev/pts/{mineur}"),
+        4 if (1..64).contains(&mineur) => format!("/dev/tty{mineur}"),
+        _ => return None,
+    };
+    Some((tty, PathBuf::from(chemin)))
+}
+
+/// Le compte à qui appartient le terminal de contrôle du fils, celui où la question est posée : c'est la personne qui
+/// répondra, quoi que le parent ait dit de lui. Un terminal de root ne dit rien de plus (console libre, ou root
+/// lui-même, que ses gestes avertissent déjà).
+fn uid_du_terminal() -> Option<u32> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let (tty, chemin) = terminal_de_controle(&std::fs::read_to_string("/proc/self/stat").ok()?)?;
+    let m = std::fs::symlink_metadata(chemin).ok()?;
+    (m.file_type().is_char_device() && m.rdev() == tty && m.uid() != 0).then(|| m.uid())
+}
+
 fn fiche_de(m: &std::fs::Metadata) -> Fiche {
     use std::os::unix::fs::MetadataExt;
     let t = m.file_type();
@@ -1865,6 +1923,7 @@ impl Acces for Reel {
             v.extend(uid_de_connexion(&d.to_string()));
         }
         v.extend(uid_de_connexion("self"));
+        v.extend(uid_du_terminal());
         for var in ["SUDO_UID", "PKEXEC_UID"] {
             v.extend(std::env::var(var).ok().and_then(|u| u.parse::<u32>().ok()));
         }
@@ -2236,6 +2295,10 @@ mod tests {
                             }
                             "--unlock" => {
                                 let h = self.valeur(SHADOW, &nom, 1);
+                                // Comme le vrai : pas de compte rendu sans mot de passe.
+                                if h == "!" {
+                                    return 1;
+                                }
                                 self.champ(SHADOW, &nom, 1, h.strip_prefix('!').unwrap_or(&h));
                             }
                             "--expiredate" => {
@@ -2255,7 +2318,11 @@ mod tests {
                     0
                 }
                 "gpasswd" => {
-                    let (op, nom, groupe) = (a[0].as_str(), a[1].as_str(), a[2].as_str());
+                    // Le groupe vient après « -- » : sans lui, l'outil imité refuse.
+                    if a.len() != 4 || a[2] != "--" {
+                        return 2;
+                    }
+                    let (op, nom, groupe) = (a[0].as_str(), a[1].as_str(), a[3].as_str());
                     let membres = self.valeur(GROUP, groupe, 3);
                     let mut m: Vec<&str> = membres.split(',').filter(|x| !x.is_empty()).collect();
                     if op == "-d" {
@@ -2479,6 +2546,7 @@ mod tests {
                 ActionUnite::Desactiver => ("disabled".to_string(), "inactive".to_string()),
                 ActionUnite::Activer => ("enabled".to_string(), "active".to_string()),
                 ActionUnite::Demarrer => (self.etat.clone(), "active".to_string()),
+                ActionUnite::ActiverSansDemarrer => ("enabled".to_string(), self.activite.clone()),
                 _ => (self.etat.clone(), "inactive".to_string()),
             };
             self.etat = e;
@@ -2552,6 +2620,79 @@ mod tests {
         assert!(a.notes.is_empty());
     }
 
+    /// Le terminal de contrôle lu dans /proc/<pid>/stat, même quand le nom du programme contient « ) » et des espaces.
+    #[test]
+    fn terminal_de_controle_lu() {
+        let pts3 = (136 << 8) | 3;
+        // pts/300 : le mineur dépasse 255, ses bits hauts passent au-dessus du majeur.
+        let pts300 = (136 << 8) | (0x12c & 0xff) | ((0x12c & !0xff) << 12);
+        let ligne = |nom: &str, tty: u64| format!("4242 ({nom}) S 1 4242 4242 {tty} 4242 4194560 0 0");
+        assert_eq!(
+            terminal_de_controle(&ligne("vanguard", pts3)),
+            Some((pts3, PathBuf::from("/dev/pts/3")))
+        );
+        assert_eq!(
+            terminal_de_controle(&ligne("a) S 1 2 3 99 (b", pts300)),
+            Some((pts300, PathBuf::from("/dev/pts/300")))
+        );
+        assert_eq!(
+            terminal_de_controle(&ligne("agetty", (4 << 8) | 2)),
+            Some(((4 << 8) | 2, PathBuf::from("/dev/tty2")))
+        );
+        for tty in [0, 4 << 8, (4 << 8) | 64, (5 << 8) | 1] {
+            assert_eq!(terminal_de_controle(&ligne("x", tty)), None, "{tty}");
+        }
+        assert_eq!(terminal_de_controle("4242 (x S 1"), None);
+    }
+
+    /// Le dernier administrateur, même à clé SSH seule (hash « * ») : verrouillé, plus personne ne s'élève ; c'est dit.
+    #[test]
+    fn dernier_administrateur_sans_mot_de_passe_averti() {
+        for (autre, averti) in [("!$6$a", true), ("$6$a", false)] {
+            let mut a = Faux::nouveau().repondre("");
+            a.champ(SHADOW, "root", 1, "!$6$r");
+            a.champ(SHADOW, "alice", 1, autre);
+            a.champ(SHADOW, "bob", 1, "*");
+            let r = faire_avec(
+                Defense::VerrouillerCompte(compte("bob")),
+                &mut a,
+                &mut FauxServices::nouveau(),
+            );
+            assert!(!r.reussi);
+            assert_eq!(a.valeur(SHADOW, "bob", 1), "*");
+            assert!(a.notes.is_empty());
+            assert_eq!(
+                a.questions[0].contains("plus personne ne pourra devenir administrateur"),
+                averti,
+                "{}",
+                a.questions[0]
+            );
+        }
+    }
+
+    /// Mot de passe vide à l'origine : dit d'avance, et Défaire rouvre le compte sans --unlock (que usermod refuse).
+    #[test]
+    fn verrou_d_un_mot_de_passe_vide_defait() {
+        let mut a = Faux::nouveau().repondre("o");
+        a.champ(SHADOW, "bob", 1, "");
+        let mut s = FauxServices::nouveau();
+        let r = faire_avec(Defense::VerrouillerCompte(compte("bob")), &mut a, &mut s);
+        assert!(r.reussi, "{}", r.raison);
+        assert!(
+            a.questions[0].contains("ne remettra pas un mot de passe vide"),
+            "{}",
+            a.questions[0]
+        );
+        assert_eq!(a.valeur(SHADOW, "bob", 1), "!");
+        let mut a = a.repondre("o");
+        let r = defaire(&mut a, &mut s);
+        assert!(r.reussi, "{}", r.raison);
+        assert!(!a.journal.iter().any(|l| l.contains("--unlock")));
+        assert_eq!(a.valeur(SHADOW, "bob", 7), "");
+        assert_eq!(a.valeur(PASSWD, "bob", 6), "/bin/bash");
+        assert!(a.notes.is_empty());
+    }
+
     /// Chaque avertissement anti-verrouillage : une question, Entrée seule = non, rien d'écrit.
     #[test]
     fn avertissements_entree_dit_non() {
@@ -2588,14 +2729,6 @@ mod tests {
                     a.sudo_avant = sudo_l(false);
                 }),
             ),
-            // sudo durci, compte sans mot de passe utilisable.
-            (
-                Defense::DurcirSudo(compte("alice")),
-                Box::new(|a| {
-                    a.champ(SHADOW, "alice", 1, "*");
-                    a.sudo_avant = sudo_l(false);
-                }),
-            ),
             // Le droit setuid retiré du dernier programme qui élève.
             (
                 Defense::RetirerSetuid(CheminDesigne::nouveau(b"/usr/bin/su").unwrap()),
@@ -2620,6 +2753,45 @@ mod tests {
         }
     }
 
+    /// Relecture D7a : sudo durci pour un compte sans mot de passe utilisable lui ôterait sudo, et Défaire avec :
+    /// refusé, sans question, rien d'écrit, même avec un « o » prêt.
+    #[test]
+    fn sudo_durci_sans_mot_de_passe_refuse() {
+        let mut a = Faux::nouveau().repondre("o");
+        a.champ(SHADOW, "alice", 1, "*");
+        a.sudo_avant = sudo_l(false);
+        let avant = a.fichiers.clone();
+        let r = faire_avec(
+            Defense::DurcirSudo(compte("alice")),
+            &mut a,
+            &mut FauxServices::nouveau(),
+        );
+        assert!(!r.reussi);
+        assert!(r.raison.contains("« passwd alice »"), "{}", r.raison);
+        assert_eq!(a.questions.len(), 0);
+        rien_ecrit(&a, &avant);
+    }
+
+    /// Relecture D7a : l'avertissement de sudo durci ne promet plus un mot de passe « gardé quelques minutes » (rien
+    /// n'est gardé après une règle sans mot de passe) ; il dit la vraie voie du retour.
+    #[test]
+    fn sudo_durci_avertissement_dit_vrai() {
+        let mut a = Faux::nouveau().repondre("");
+        a.outils.retain(|o| *o != "pkexec" && *o != "run0");
+        a.sudo_avant = sudo_l(false);
+        let _ = faire_avec(
+            Defense::DurcirSudo(compte("alice")),
+            &mut a,
+            &mut FauxServices::nouveau(),
+        );
+        let q = &a.questions[0];
+        assert!(!q.contains("quelques minutes"), "{q}");
+        assert!(
+            q.contains("sudo demandera votre mot de passe") && q.contains("live USB"),
+            "{q}"
+        );
+    }
+
     /// « non annulable » est dit quand c'est vrai : le dernier élévateur sans run0.
     #[test]
     fn setuid_du_dernier_elevateur_non_annulable() {
@@ -2637,6 +2809,45 @@ mod tests {
         assert!(a.questions[0].contains("non annulable"), "{}", a.questions[0]);
         assert!(a.questions[0].contains("live USB"));
         assert_eq!(a.mode("/usr/bin/su"), 0o755);
+    }
+
+    /// Une issue qui ne s'ouvre pas ne compte pas : su avec root verrouillé, pkexec sans administrateur à mot de passe.
+    #[test]
+    fn elevateur_inutilisable_ne_compte_pas() {
+        // Le geste, le programme désigné, la machine préparée, l'avertissement attendu.
+        type Cas = (fn() -> Defense, &'static str, fn(&mut Faux), bool);
+        let pkexec = || Defense::RetirerSetuid(CheminDesigne::nouveau(b"/usr/bin/pkexec").unwrap());
+        let su = || Defense::RetirerSetuid(CheminDesigne::nouveau(b"/usr/bin/su").unwrap());
+        let cas: [Cas; 4] = [
+            (pkexec, "/usr/bin/pkexec", |_| {}, false),
+            (pkexec, "/usr/bin/pkexec", |a| a.champ(SHADOW, "root", 1, "!$6$r"), true),
+            (su, "/usr/bin/su", |_| {}, false),
+            (
+                su,
+                "/usr/bin/su",
+                |a| {
+                    a.champ(SHADOW, "alice", 1, "!$6$a");
+                    a.champ(SHADOW, "bob", 1, "*");
+                },
+                true,
+            ),
+        ];
+        for (i, (d, chemin, preparer, averti)) in cas.into_iter().enumerate() {
+            let mut a = Faux::nouveau().repondre("");
+            a.paquets
+                .insert(chemin.into(), EtatPaquet::Modifie("util-linux".into()));
+            preparer(&mut a);
+            let r = faire_avec(d(), &mut a, &mut FauxServices::nouveau());
+            assert!(!r.reussi, "cas {i}");
+            assert_eq!(a.questions.len(), 1, "cas {i}");
+            assert_eq!(
+                a.questions[0].contains("AVERTISSEMENT"),
+                averti,
+                "cas {i} : {}",
+                a.questions[0]
+            );
+            assert_eq!(a.mode(chemin), 0o4755, "cas {i}");
+        }
     }
 
     #[test]
@@ -2704,7 +2915,7 @@ mod tests {
             &mut s,
         );
         assert!(r.reussi, "{}", r.raison);
-        assert!(a.journal.contains(&"gpasswd -d alice docker".to_string()));
+        assert!(a.journal.contains(&"gpasswd -d alice -- docker".to_string()));
         assert_eq!(a.valeur(GROUP, "docker", 3), "");
         assert!(a.questions[0].contains("prochaine session"));
         let mut a = a.repondre("o");
@@ -2968,10 +3179,36 @@ mod tests {
         assert_eq!(s.faits, ["desactiver minage.service", "activer minage.service"]);
     }
 
+    /// Relecture D7a : un service activé qui ne tournait pas revient activé, sans être lancé un instant (pas de
+    /// `enable --now` suivi de `stop`) ; il reste arrêté.
+    #[test]
+    fn service_active_mais_arrete_remis_sans_etre_lance() {
+        let mut a = Faux::nouveau().repondre("o");
+        service(&mut a);
+        let mut s = FauxServices::nouveau();
+        s.activite = "inactive".into();
+        let u = NomUnite::nouveau("minage.service").unwrap();
+        assert!(faire_avec(Defense::DesactiverService(u), &mut a, &mut s).reussi);
+        let mut a = a.repondre("o");
+        assert!(defaire(&mut a, &mut s).reussi);
+        assert_eq!(
+            s.faits,
+            ["desactiver minage.service", "activer-sans-demarrer minage.service"]
+        );
+        assert_eq!((s.etat.as_str(), s.activite.as_str()), ("enabled", "inactive"));
+    }
+
     /// La session en cours (sshd, gestionnaire de session) : refus, jamais une question.
     #[test]
     fn service_de_session_refuse() {
-        for nom in ["sshd.service", "gdm.service", "sddm.service", "ssh.socket"] {
+        for nom in [
+            "sshd.service",
+            "gdm.service",
+            "sddm.service",
+            "ssh.socket",
+            "openvpn-salon.service",
+            "nftables.service",
+        ] {
             let mut a = Faux::nouveau().repondre("o");
             a.poser(&format!("/etc/systemd/system/{nom}"), b"[Service]\n", 0o644);
             let mut s = FauxServices::nouveau();
@@ -3018,6 +3255,30 @@ mod tests {
         let mut a = a.repondre("o");
         assert!(defaire(&mut a, &mut s).reussi);
         assert_eq!(a.fichiers[Path::new("/etc/ld.so.preload")].contenu, avant);
+    }
+
+    /// Une ligne de ld.so.preload qui nomme plusieurs bibliothèques part en entier : c'est dit avant la question.
+    #[test]
+    fn ligne_de_plusieurs_bibliotheques_dite() {
+        for (ligne, dit) in [
+            (&b"/usr/lib/libalice.so /tmp/.x/libhook.so"[..], true),
+            (b"/usr/lib/libalice.so:/tmp/.x/libhook.so", true),
+            (b"/tmp/.x/libhook.so", false),
+        ] {
+            let mut a = Faux::nouveau().repondre("");
+            let mut contenu = ligne.to_vec();
+            contenu.push(b'\n');
+            a.poser("/etc/ld.so.preload", &contenu, 0o644);
+            let c = CheminDesigne::nouveau(b"/etc/ld.so.preload").unwrap();
+            let r = faire_avec(
+                Defense::RetirerLigne(empreinte_de_ligne(ligne), c),
+                &mut a,
+                &mut FauxServices::nouveau(),
+            );
+            assert!(!r.reussi);
+            assert_eq!(a.questions[0].contains("2 bibliothèques"), dit, "{}", a.questions[0]);
+            assert_eq!(a.fichiers[Path::new("/etc/ld.so.preload")].contenu, contenu);
+        }
     }
 
     /// Une ligne qui n'est pas suspecte (un réglage ordinaire) : refusée, même désignée par son empreinte.

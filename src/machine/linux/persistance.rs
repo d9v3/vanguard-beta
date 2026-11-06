@@ -611,9 +611,7 @@ fn juger_services_ajoutes(ajoutes: &[String], gestes: bool) -> Option<Constat> {
         return Some(constat);
     }
     let gestes = crate::machine::defense::tous(
-        ajoutes
-            .iter()
-            .filter(|n| !gestes_unix::UNITES_DE_SESSION.contains(&n.as_str())),
+        ajoutes.iter().filter(|n| !gestes_unix::unite_portant_les_sessions(n)),
         |n| gestes_unix::NomUnite::nouveau(n).map(Defense::DesactiverService),
     );
     Some(crate::machine::defense::corriger(
@@ -756,9 +754,12 @@ fn programmes_privilegies() -> (
     };
     // Capacités (setcap) : droits root partiels, invisibles dans « ls -l ». Poser une capacité demande root.
     // Lancé tout de suite, en même temps que les parcours : getcap relit tout /usr/lib (0,6 s).
+    // Par son chemin : sous Debian, /usr/sbin n'est pas dans le PATH d'un compte ordinaire, et getcap n'y serait
+    // jamais trouvé (les capacités jamais lues).
     let capacites = std::thread::spawn(|| {
+        let getcap = crate::commande::outil_systeme("getcap")?;
         sortie(
-            "getcap",
+            &getcap.to_string_lossy(),
             &[
                 "-r",
                 "/usr/bin",
@@ -952,6 +953,17 @@ pub(super) fn juger_fichiers_suspects(r: &Releve) -> Vec<Constat> {
             gestes_anormaux,
         ));
     }
+    // Un programme privilégié trouvé ne dit rien des capacités : getcap muet, elles n'ont pas été lues, et c'est dit.
+    let trouves = !modifies.is_empty() || !anormaux.is_empty();
+    if !capacites_lues && trouves {
+        constats.push(crate::machine::impossible(
+            "Fichiers suspects",
+            tr!(
+                "capacités des programmes : getcap absent",
+                "program capabilities: getcap missing"
+            ),
+        ));
+    }
     if modifies.is_empty() && anormaux.is_empty() {
         let mut message = match (gestion, non_verifies) {
             (false, _) => trf!(
@@ -1063,16 +1075,19 @@ mod tests {
         assert!(!lancement(noms.iter().map(|f| Some((f.as_str(), "curl x | sh"))).collect()).automatique);
     }
 
-    /// D7a : chaque service ajouté à la main se désactive par un geste, jamais une unité de session ; un nom qu'un
-    /// geste ne porte pas laisse tout à la main, et le nom montré dans la commande est échappé.
+    /// D7a : chaque service ajouté à la main se désactive par un geste, jamais une unité de session ni du réseau ; un
+    /// nom qu'un geste ne porte pas laisse tout à la main, et le nom montré dans la commande est échappé.
     #[test]
     fn services_ajoutes_par_gestes() {
         use crate::machine::gestes_unix::{Defense, GesteUnix, analyser};
         let noms = |v: &[&str]| v.iter().map(|n| (*n).to_string()).collect::<Vec<_>>();
-        let k = juger_services_ajoutes(&noms(&["maj.timer", "sauvegarde.service", "sshd.service"]), true)
-            .unwrap()
-            .correctif
-            .unwrap();
+        let k = juger_services_ajoutes(
+            &noms(&["maj.timer", "nftables.service", "sauvegarde.service", "sshd.service"]),
+            true,
+        )
+        .unwrap()
+        .correctif
+        .unwrap();
         assert!(k.automatique);
         let unites: Vec<String> = k
             .commandes
@@ -1101,6 +1116,29 @@ mod tests {
             k.commandes
         );
         assert!(juger_services_ajoutes(&[], true).is_none());
+    }
+
+    /// Essai QEMU D7a (Debian) : getcap muet et un setuid hors paquet trouvé, les capacités non lues sont dites à part
+    /// (jamais tues derrière l'alerte) ; getcap lu, rien de plus.
+    #[test]
+    fn capacites_non_lues_dites_meme_avec_une_alerte() {
+        let releve = |capacites_lues| Releve {
+            modifies: Vec::new(),
+            anormaux: vec![std::path::PathBuf::from("/usr/local/bin/alice-x")],
+            systeme: 3,
+            gestion: true,
+            non_verifies: 0,
+            capacites_lues,
+            path_dangereux: Vec::new(),
+            reinstaller: String::new(),
+            gestes_modifies: Vec::new(),
+            gestes_anormaux: Vec::new(),
+        };
+        let muet = juger_fichiers_suspects(&releve(false));
+        assert!(muet.iter().any(|c| !c.verifie && c.message.contains("getcap")));
+        let lu = juger_fichiers_suspects(&releve(true));
+        assert!(lu.iter().all(|c| c.verifie));
+        assert_eq!(muet.len(), lu.len() + 1);
     }
 
     /// D7a : un programme privilégié perd son setuid ou ses capacités par un geste ; tous ou aucun : un chemin qu'un
