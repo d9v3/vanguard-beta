@@ -696,6 +696,12 @@ trait Monde {
     fn etat_du_fichier(&mut self, unite: &str) -> Result<Option<String>, Echec>;
     /// L'état d'activité de l'unité (« active », « inactive »…) ; `None` : aucune unité chargée de ce nom.
     fn etat_d_activite(&mut self, unite: &str) -> Result<Option<String>, Echec>;
+    /// systemd a-t-il refusé de lancer l'unité à cause de ses propres conditions, à sa dernière tentative
+    /// (`dbus::condition_refusee`) ? Faux par défaut : rien n'en est conclu.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn condition_refusee(&mut self, _unite: &str) -> Result<bool, Echec> {
+        Ok(false)
+    }
     fn unite(&mut self, action: ActionUnite, unite: &str) -> Result<(), Echec>;
     fn reinitialiser_echecs(&mut self) -> Result<(), Echec>;
     fn programme(&mut self, p: &'static Programme) -> Resultat;
@@ -741,6 +747,9 @@ impl super::defense_eleve::Services for ServicesDuMonde<'_> {
     }
     fn etat_d_activite(&mut self, unite: &str) -> Result<Option<String>, Echec> {
         self.0.etat_d_activite(unite)
+    }
+    fn condition_refusee(&mut self, unite: &str) -> Result<bool, Echec> {
+        self.0.condition_refusee(unite)
     }
     fn unite(&mut self, action: ActionUnite, unite: &str) -> Result<(), Echec> {
         self.0.unite(action, unite)
@@ -836,6 +845,16 @@ impl Monde for Systeme {
         {
             use crate::machine::linux::dbus;
             dbus::systeme::bus_pour_agir().and_then(|mut bus| dbus::etat_d_activite(&mut bus, unite))
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(refus(format!("{unite} : {}", sans_systemd())))
+    }
+
+    fn condition_refusee(&mut self, unite: &str) -> Result<bool, Echec> {
+        #[cfg(target_os = "linux")]
+        {
+            use crate::machine::linux::dbus;
+            dbus::systeme::bus_pour_agir().and_then(|mut bus| dbus::condition_refusee(&mut bus, unite))
         }
         #[cfg(not(target_os = "linux"))]
         Err(refus(format!("{unite} : {}", sans_systemd())))

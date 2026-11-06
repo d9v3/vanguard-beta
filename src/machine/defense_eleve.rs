@@ -160,6 +160,8 @@ pub(crate) trait Services {
     fn arret_charge(&mut self, unite: &str) -> Result<Option<ArretCharge>, Echec>;
     fn etat_du_fichier(&mut self, unite: &str) -> Result<Option<String>, Echec>;
     fn etat_d_activite(&mut self, unite: &str) -> Result<Option<String>, Echec>;
+    /// systemd a-t-il refusé de lancer l'unité à cause de ses propres conditions, à sa dernière tentative ?
+    fn condition_refusee(&mut self, unite: &str) -> Result<bool, Echec>;
     fn unite(&mut self, action: ActionUnite, unite: &str) -> Result<(), Echec>;
     fn groupes_de_la_lignee(&self) -> Vec<String>;
     fn sessions(&mut self) -> Option<Vec<SessionVue>>;
@@ -1494,7 +1496,14 @@ fn remettre_service(u: NomUnite, note: &Note, a: &mut dyn Acces, s: &mut dyn Ser
     let etat = s.etat_du_fichier(nom)?.unwrap_or_default();
     let activite = s.etat_d_activite(nom)?.unwrap_or_default();
     let (lance0, tourne0) = (lance_au_demarrage(etat0), tourne(activite0));
-    if lance_au_demarrage(&etat) == lance0 && tourne(&activite) == tourne0 {
+    let lance_comme_avant = lance_au_demarrage(&etat) == lance0;
+    if lance_comme_avant && tourne(&activite) == tourne0 {
+        return Ok(None);
+    }
+    // Il tournait, il ne tourne plus, et systemd a refusé de le relancer à cause de ses propres conditions (un service
+    // du premier démarrage, `ConditionFirstBoot=`, par exemple) : le relancer encore n'y changerait rien, et la note
+    // gardée bloquerait pour toujours les remises suivantes. Son démarrage revenu, il est comme le système le veut.
+    if lance_comme_avant && tourne0 && s.condition_refusee(nom)? {
         return Ok(None);
     }
     let actions = match (lance0, tourne0) {
@@ -1504,11 +1513,19 @@ fn remettre_service(u: NomUnite, note: &Note, a: &mut dyn Acces, s: &mut dyn Ser
         (false, true) => vec![ActionUnite::Demarrer],
         (false, false) => return Ok(None),
     };
-    Ok(Some(Plan {
-        texte: trf!(
+    let texte = if tourne0 {
+        trf!(
+            "Service {nom} : remis comme avant. S'il ne se relance pas parce que systemd refuse ses propres conditions (un service du premier démarrage, par exemple), seul son lancement au démarrage revient, comme le système le ferait de lui-même.",
+            "Service {nom}: put back as before. If it does not start again because systemd refuses its own conditions (a first-boot service, for example), only its start at boot comes back, as the system itself would do."
+        )
+    } else {
+        trf!(
             "Service {nom} : remis comme avant.",
             "Service {nom}: put back as before."
-        ),
+        )
+    };
+    Ok(Some(Plan {
+        texte,
         avertissement: None,
         non_annulable: false,
         champs: Vec::new(),
@@ -2506,6 +2523,10 @@ mod tests {
         lignee: Vec<String>,
         sessions: Option<Vec<SessionVue>>,
         faits: Vec<String>,
+        /// Ses conditions refusées : un lancement le laisse arrêté, et `condition_refusee` le dit.
+        condition_refusee: bool,
+        /// Un lancement le laisse arrêté pour une autre raison (il échoue), conditions remplies.
+        ne_demarre_pas: bool,
     }
 
     impl FauxServices {
@@ -2520,6 +2541,8 @@ mod tests {
                 lignee: vec!["/user.slice/user-1000.slice/session-2.scope".into()],
                 sessions: Some(Vec::new()),
                 faits: Vec::new(),
+                condition_refusee: false,
+                ne_demarre_pas: false,
             }
         }
     }
@@ -2540,12 +2563,21 @@ mod tests {
         fn etat_d_activite(&mut self, _: &str) -> Result<Option<String>, Echec> {
             Ok(Some(self.activite.clone()))
         }
+        fn condition_refusee(&mut self, _: &str) -> Result<bool, Echec> {
+            Ok(self.condition_refusee)
+        }
         fn unite(&mut self, action: ActionUnite, unite: &str) -> Result<(), Echec> {
             self.faits.push(format!("{} {unite}", action.mot()));
+            let lance = if self.condition_refusee || self.ne_demarre_pas {
+                "inactive"
+            } else {
+                "active"
+            }
+            .to_string();
             let (e, a) = match action {
                 ActionUnite::Desactiver => ("disabled".to_string(), "inactive".to_string()),
-                ActionUnite::Activer => ("enabled".to_string(), "active".to_string()),
-                ActionUnite::Demarrer => (self.etat.clone(), "active".to_string()),
+                ActionUnite::Activer => ("enabled".to_string(), lance),
+                ActionUnite::Demarrer => (self.etat.clone(), lance),
                 ActionUnite::ActiverSansDemarrer => ("enabled".to_string(), self.activite.clone()),
                 _ => (self.etat.clone(), "inactive".to_string()),
             };
@@ -3196,6 +3228,34 @@ mod tests {
             ["desactiver minage.service", "activer-sans-demarrer minage.service"]
         );
         assert_eq!((s.etat.as_str(), s.activite.as_str()), ("enabled", "inactive"));
+    }
+
+    /// Essai QEMU D7a (Arch, pacman-init.service, `ConditionFirstBoot=yes`) : un service qui tournait et que systemd
+    /// refuse de relancer à cause de ses propres conditions revient lancé au démarrage, et sa note se retire (gardée,
+    /// elle bloquait pour toujours les remises suivantes). Un service qui ne se relance pas pour une autre raison
+    /// reste un échec, sa note gardée.
+    #[test]
+    fn service_a_condition_refusee_remis_au_demarrage() {
+        for (refusee, reussi) in [(true, true), (false, false)] {
+            let mut a = Faux::nouveau().repondre("o");
+            service(&mut a);
+            let mut s = FauxServices::nouveau();
+            let u = NomUnite::nouveau("minage.service").unwrap();
+            assert!(faire_avec(Defense::DesactiverService(u), &mut a, &mut s).reussi);
+            s.condition_refusee = refusee;
+            s.ne_demarre_pas = !refusee;
+            let mut a = a.repondre("o");
+            let r = defaire(&mut a, &mut s);
+            assert_eq!(r.reussi, reussi, "{refusee} {}", r.raison);
+            assert_eq!(s.faits, ["desactiver minage.service", "activer minage.service"]);
+            assert_eq!((s.etat.as_str(), s.activite.as_str()), ("enabled", "inactive"));
+            assert_eq!(a.notes.is_empty(), reussi, "{refusee}");
+            let question = a.questions.last().cloned().unwrap_or_default();
+            assert!(
+                question.contains("seul son lancement au démarrage revient"),
+                "{question}"
+            );
+        }
     }
 
     /// La session en cours (sshd, gestionnaire de session) : refus, jamais une question.

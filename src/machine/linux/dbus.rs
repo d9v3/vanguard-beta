@@ -1197,6 +1197,19 @@ pub(crate) fn nom_d_unite(nom: &str) -> String {
 /// c'est vérifié.
 pub(crate) fn etat_d_activite(bus: &mut Bus, nom: &str) -> Result<Option<String>, crate::modele::raison::Echec> {
     let echec = |e: String| crate::modele::raison::Echec::echoue("dbus/etat_d_activite", e);
+    let Some(chemin) = chemin_d_unite_chargee(bus, nom)? else {
+        return Ok(None);
+    };
+    let etat = bus.propriete(SYSTEMD, &chemin, UNITE, "ActiveState").map_err(echec)?;
+    etat.texte()
+        .map(|t| Some(t.to_string()))
+        .ok_or_else(|| echec(mal_forme("ActiveState")))
+}
+
+/// Le chemin d'objet d'une unité chargée, par GetUnit (qui la trouve aussi sous un autre de ses noms) ; `Ok(None)` :
+/// aucune unité chargée de ce nom.
+fn chemin_d_unite_chargee(bus: &mut Bus, nom: &str) -> Result<Option<String>, crate::modele::raison::Echec> {
+    let echec = |e: String| crate::modele::raison::Echec::echoue("dbus/etat_d_activite", e);
     let unite = nom_d_unite(nom);
     let corps = match bus.appeler(
         SYSTEMD,
@@ -1210,15 +1223,37 @@ pub(crate) fn etat_d_activite(bus: &mut Bus, nom: &str) -> Result<Option<String>
         Err(e) if e.starts_with("org.freedesktop.systemd1.NoSuchUnit ") => return Ok(None),
         Err(e) => return Err(echec(e)),
     };
-    let chemin = corps
+    corps
         .first()
         .and_then(Valeur::texte)
-        .ok_or_else(|| echec(mal_forme("GetUnit sans chemin")))?
-        .to_string();
-    let etat = bus.propriete(SYSTEMD, &chemin, UNITE, "ActiveState").map_err(echec)?;
-    etat.texte()
-        .map(|t| Some(t.to_string()))
-        .ok_or_else(|| echec(mal_forme("ActiveState")))
+        .map(|c| Some(c.to_string()))
+        .ok_or_else(|| echec(mal_forme("GetUnit sans chemin")))
+}
+
+/// systemd a-t-il refusé de lancer l'unité à cause de ses propres conditions (`ConditionFirstBoot=`,
+/// `ConditionPathExists=`…), lors de sa dernière tentative ? Vrai seulement si ces conditions ont été évaluées
+/// (`ConditionTimestamp` non nul : avant toute tentative, `ConditionResult` vaut faux sans rien dire) et ont échoué.
+/// Une unité non chargée : faux.
+pub(crate) fn condition_refusee(bus: &mut Bus, nom: &str) -> Result<bool, crate::modele::raison::Echec> {
+    // Le contexte de la lecture d'état d'une unité, dont celle-ci est une suite : la liste des contextes est fermée.
+    let echec = |e: String| crate::modele::raison::Echec::echoue("dbus/etat_d_activite", e);
+    let Some(chemin) = chemin_d_unite_chargee(bus, nom)? else {
+        return Ok(false);
+    };
+    let quand = bus
+        .propriete(SYSTEMD, &chemin, UNITE, "ConditionTimestamp")
+        .map_err(echec)?;
+    let quand = quand.entier().ok_or_else(|| echec(mal_forme("ConditionTimestamp")))?;
+    if quand == 0 {
+        return Ok(false);
+    }
+    let resultat = bus
+        .propriete(SYSTEMD, &chemin, UNITE, "ConditionResult")
+        .map_err(echec)?;
+    resultat
+        .booleen()
+        .map(|b| !b)
+        .ok_or_else(|| echec(mal_forme("ConditionResult")))
 }
 
 /// Les noms d'une liste d'unités `a(ssssssouso)` (nom, description, chargement, activité, sous-état, suivie…), triés ;
@@ -1960,5 +1995,52 @@ mod tests {
         let mut bus = Bus::sur(client).unwrap();
         assert!(etat_d_activite(&mut bus, "ufw").is_err());
         fil.join().unwrap();
+    }
+
+    /// Condition refusée seulement si elle a été évaluée (horodatage non nul) et a échoué ; jamais évaluée, ou
+    /// remplie : non refusée, et ConditionResult n'est alors pas même lu quand l'horodatage est nul.
+    #[test]
+    fn condition_refusee_par_un_faux_bus() {
+        let unite_chemin = "/org/freedesktop/systemd1/unit/pacman_2dinit_2eservice";
+        let cas = |quand: u64, rempli: Option<bool>| {
+            move |s: &mut UnixStream, appel: Message| {
+                assert_eq!(appel.membre.as_deref(), Some("GetUnit"));
+                assert_eq!(appel.corps, vec![t("pacman-init.service")]);
+                s.write_all(&retour(&appel, "o", vec![t(unite_chemin)])).unwrap();
+                let get = lire_message(s);
+                assert_eq!(get.chemin.as_deref(), Some(unite_chemin));
+                assert_eq!(get.corps, vec![t(UNITE), t("ConditionTimestamp")]);
+                s.write_all(&retour(
+                    &get,
+                    "v",
+                    vec![Valeur::Variante("t".into(), Box::new(Valeur::U64(quand)))],
+                ))
+                .unwrap();
+                if let Some(r) = rempli {
+                    let get = lire_message(s);
+                    assert_eq!(get.corps, vec![t(UNITE), t("ConditionResult")]);
+                    s.write_all(&retour(
+                        &get,
+                        "v",
+                        vec![Valeur::Variante("b".into(), Box::new(Valeur::Booleen(r)))],
+                    ))
+                    .unwrap();
+                }
+            }
+        };
+        for (quand, rempli, attendu) in [
+            (1_793_577_600_000_000, Some(false), true),
+            (1_793_577_600_000_000, Some(true), false),
+            (0, None, false),
+        ] {
+            let (client, fil) = faux_bus(cas(quand, rempli));
+            let mut bus = Bus::sur(client).unwrap();
+            assert_eq!(
+                condition_refusee(&mut bus, "pacman-init"),
+                Ok(attendu),
+                "{quand} {rempli:?}"
+            );
+            fil.join().unwrap();
+        }
     }
 }
