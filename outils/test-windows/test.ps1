@@ -754,7 +754,17 @@ if ($mj -match 'search failed, offline\?|recherche impossible, hors ligne') {
     else { Bug "Vanguard dit « à jour » alors que la recherche de Windows Update échoue ici ($rechercheWu)" }
 } elseif ($mj -match '(\d+) (update\(s\) pending|mise\(s\) à jour en attente)') {
     $vuesVanguard = [int]$Matches[1]
-    if ($wuNombre -eq 0) { Bug "Vanguard : $vuesVanguard mise(s) à jour en attente, Windows Update aucune" }
+    $apres = if ($mj -match '(?:update\(s\) pending|mise\(s\) à jour en attente) ?: (.*)$') { $Matches[1] } else { '' }
+    # Microsoft Defender installe seul ses signatures (KB2267602, plusieurs fois par jour) : entre la recherche de
+    # Vanguard et celle-ci, quelques minutes plus tard, elles ont pu s'installer. Seulement si TOUTES les mises à jour
+    # que Vanguard a listées en sont (toutes affichées : 3 au plus, chaque titre reconnu depuis son début) ; tout
+    # autre écart reste un défaut.
+    $titresVanguard = @($apres -split ' ?; ' | Where-Object { $_ } | Select-Object -First $vuesVanguard)
+    $signatureDefender = '^(Security Intelligence Update|Mise à jour de la veille de sécurité)\b[^;]*?\bKB2267602\b'
+    $queSignatures = $vuesVanguard -le 3 -and $titresVanguard.Count -eq $vuesVanguard -and
+        @($titresVanguard | Where-Object { $_ -notmatch $signatureDefender }).Count -eq 0
+    if ($wuNombre -eq 0 -and $queSignatures) { Info "Windows Update : $vuesVanguard signature(s) de Defender en attente pour Vanguard, installée(s) entre-temps par Defender (recherche faite ici : aucune)" }
+    elseif ($wuNombre -eq 0) { Bug "Vanguard : $vuesVanguard mise(s) à jour en attente, Windows Update aucune" }
     elseif ($wuNombre -eq $vuesVanguard) { Ok "Windows Update : $vuesVanguard en attente, comme la recherche faite ici" }
     else { Info "Windows Update : Vanguard $vuesVanguard, recherche faite ici $wuNombre (la liste change d'une recherche à l'autre)" }
 } else { Bug 'Windows Update : rien dit' }
