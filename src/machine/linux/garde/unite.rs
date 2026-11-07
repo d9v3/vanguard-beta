@@ -39,7 +39,7 @@ StateDirectoryMode=0700
 PrivateNetwork=yes
 RestrictAddressFamilies=AF_UNIX
 MemoryDenyWriteExecute=yes
-SystemCallFilter=@system-service fanotify_init fanotify_mark openat2
+SystemCallFilter=@system-service fanotify_init fanotify_mark
 SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native
 RestrictNamespaces=yes
@@ -111,14 +111,11 @@ mod tests {
             ("PrivateNetwork", "yes"),
             ("RestrictAddressFamilies", "AF_UNIX"),
             ("MemoryDenyWriteExecute", "yes"),
-            // openat2 n'est pas dans @system-service (systemd 257 le refuse par ENOSYS) : sans lui, le garde ne lit
-            // aucune liste du compte (ouvrir.rs).
-            (
-                "SystemCallFilter",
-                "@system-service fanotify_init fanotify_mark openat2",
-            ),
+            ("SystemCallFilter", "@system-service fanotify_init fanotify_mark"),
             ("SystemCallArchitectures", "native"),
             ("RestrictNamespaces", "yes"),
+            // Rend openat2 ENOSYS (ses drapeaux ne se filtrent pas) : ouvrir.rs refait alors le chemin pas à pas.
+            ("RestrictSUIDSGID", "yes"),
             ("LockPersonality", "yes"),
             ("RestrictRealtime", "yes"),
             ("ProtectKernelModules", "yes"),
