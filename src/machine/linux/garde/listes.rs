@@ -121,6 +121,54 @@ pub(crate) struct Union {
     pub retirees: u64,
     /// Les empreintes reçues non ajoutées : l'union serait passée au-delà de `max` (gardée telle quelle, et dite).
     pub bloquees: u64,
+    /// Les empreintes ajoutées à une union qui existait déjà (N-1) : la croissance, jugée par `croissance_anormale`. La
+    /// première union (après une pose ou une mise à jour) n'en compte aucune : elle n'a pas d'avant.
+    pub ajoutees: u64,
+}
+
+/// La croissance normale d'une liste, par jour, au plus : MalwareBazaar publie de l'ordre de 1 000 à 3 000 nouvelles
+/// empreintes SHA-256 par jour, la base quotidienne de ClamAV (daily) quelques milliers de signatures d'empreintes ;
+/// moins de 10 000 par jour en tout. Le double laisse la marge des jours chargés. Au-delà, un ajout d'un coup n'est pas
+/// un rafraîchissement : le compte (qui prépare les listes, P22) a pu y mettre les empreintes de programmes sains pour
+/// les faire refuser (N-1). Ce n'est dit qu'au-delà : une poignée d'empreintes ajoutées ne se distingue pas ainsi.
+pub(crate) const CROISSANCE_PAR_JOUR: u64 = 20_000;
+
+/// Les empreintes d'un ajout de `ajoutees` à une liste dont l'union a grandi pour la dernière fois il y a `depuis`
+/// (`None` : on ne sait pas, compté comme un jour) qui dépassent la croissance normale : toutes, si l'ajout passe
+/// `CROISSANCE_PAR_JOUR` par jour écoulé (un jour au moins : plusieurs relectures le même jour se partagent un jour) ;
+/// 0 sinon. Une horloge qui recule compte un jour.
+pub(crate) fn croissance_anormale(ajoutees: u64, depuis: Option<std::time::Duration>) -> u64 {
+    let jours = depuis.map_or(1, |d| d.as_secs().div_ceil(86_400)).max(1);
+    if ajoutees > CROISSANCE_PAR_JOUR.saturating_mul(jours) {
+        ajoutees
+    } else {
+        0
+    }
+}
+
+/// Relit le compte de la croissance anormale gardé en root (`nom` dans `dossier`, le dossier d'état) : un nombre en
+/// décimal, écrit par le garde lui-même. Absent : 0. Illisible ou mal formé : 0, et la raison.
+pub(crate) fn charger_croissance(dossier: &Path, nom: &str) -> (u64, Option<String>) {
+    let chemin = dossier.join(nom);
+    match crate::socle::lire_ordinaire(&chemin, 32) {
+        Ok(octets) => match std::str::from_utf8(&octets)
+            .ok()
+            .and_then(|t| t.trim().parse::<u64>().ok())
+        {
+            Some(n) => (n, None),
+            None => (0, Some(format!("liste: {}: mal formé", chemin.display()))),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (0, None),
+        Err(e) => (0, Some(format!("liste: {}: {e}", chemin.display()))),
+    }
+}
+
+/// Écrit le compte de la croissance anormale, d'un coup, lisible par root seulement.
+pub(crate) fn ecrire_croissance(dossier: &Path, nom: &str, n: u64) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let chemin = dossier.join(nom);
+    crate::socle::ecrire_atomique(&chemin, n.to_string().as_bytes())?;
+    std::fs::set_permissions(&chemin, std::fs::Permissions::from_mode(0o600))
 }
 
 /// D'où vient une empreinte, dans la fusion de deux listes triées.
@@ -173,6 +221,7 @@ pub(crate) fn unir(union: Option<&ListeSha256>, recue: ListeSha256, max: usize) 
                 liste: Some(recue),
                 retirees: 0,
                 bloquees: 0,
+                ajoutees: 0,
             };
         }
         let bloquees = u64::try_from(recue.nombre()).unwrap_or(u64::MAX);
@@ -180,6 +229,7 @@ pub(crate) fn unir(union: Option<&ListeSha256>, recue: ListeSha256, max: usize) 
             liste: None,
             retirees: 0,
             bloquees,
+            ajoutees: 0,
         };
     };
     let (mut retirees, mut ajoutees) = (0u64, 0usize);
@@ -193,6 +243,7 @@ pub(crate) fn unir(union: Option<&ListeSha256>, recue: ListeSha256, max: usize) 
             liste: None,
             retirees,
             bloquees: 0,
+            ajoutees: 0,
         };
     }
     if union.nombre().saturating_add(ajoutees) > max {
@@ -200,6 +251,7 @@ pub(crate) fn unir(union: Option<&ListeSha256>, recue: ListeSha256, max: usize) 
             liste: None,
             retirees,
             bloquees: u64::try_from(ajoutees).unwrap_or(u64::MAX),
+            ajoutees: 0,
         };
     }
     let mut octets = Vec::with_capacity(union.nombre().saturating_add(ajoutees).saturating_mul(32));
@@ -212,6 +264,7 @@ pub(crate) fn unir(union: Option<&ListeSha256>, recue: ListeSha256, max: usize) 
         liste: ListeSha256::lire(octets),
         retirees,
         bloquees: 0,
+        ajoutees: u64::try_from(ajoutees).unwrap_or(u64::MAX),
     }
 }
 
@@ -523,10 +576,10 @@ mod tests {
     /// M-N1 : une liste du compte ne retire rien de l'union ; ce qu'elle n'a plus est compté.
     #[test]
     fn l_union_ne_retrecit_jamais() {
-        // Aucune union encore : la liste reçue la devient.
+        // Aucune union encore : la liste reçue la devient, sans croissance (pas d'avant).
         let u = unir(None, liste(&[1, 3]), 10);
         assert_eq!(octets(u.liste.as_ref().unwrap()), [1, 3]);
-        assert_eq!((u.retirees, u.bloquees), (0, 0));
+        assert_eq!((u.retirees, u.bloquees, u.ajoutees), (0, 0, 0));
         let union = u.liste.unwrap();
         // Vide : rien ne change, deux retirées dites.
         let u = unir(Some(&union), liste(&[]), 10);
@@ -543,15 +596,45 @@ mod tests {
         // Une autre, qui ajoute et retire : l'union grandit, rien n'en sort, la retirée est dite.
         let u = unir(Some(&union), liste(&[0, 2, 3, 9]), 10);
         assert_eq!(octets(u.liste.as_ref().unwrap()), [0, 1, 2, 3, 9]);
-        assert_eq!((u.retirees, u.bloquees), (1, 0));
+        assert_eq!((u.retirees, u.bloquees, u.ajoutees), (1, 0, 3));
         // Au-delà du plafond : l'union reste, ce qui n'y entre pas est dit.
         let u = unir(Some(&union), liste(&[0, 2, 4]), 4);
         assert!(u.liste.is_none());
-        assert_eq!((u.retirees, u.bloquees), (2, 3));
+        assert_eq!((u.retirees, u.bloquees, u.ajoutees), (2, 3, 0));
         let u = unir(None, liste(&[0, 2, 4]), 2);
         assert!(u.liste.is_none());
         assert_eq!(u.bloquees, 3);
         assert_eq!(union_max(), 2 << 20);
+    }
+
+    /// N-1 : le rafraîchissement normal (MalwareBazaar et ClamAV, quelques milliers par jour) ne dit rien, même après
+    /// des jours sans relecture ; un ajout d'un coup bien au-delà est compté en entier. Le compte gardé en root se relit.
+    #[test]
+    fn la_croissance_anormale_est_comptee() {
+        use std::time::Duration;
+        let jour = Duration::from_hours(24);
+        // Un rafraîchissement quotidien, ou trois relectures dans la même heure.
+        assert_eq!(croissance_anormale(8_000, Some(jour)), 0);
+        assert_eq!(croissance_anormale(8_000, Some(Duration::from_secs(60))), 0);
+        assert_eq!(croissance_anormale(CROISSANCE_PAR_JOUR, None), 0);
+        // Une semaine éteint : sept jours d'ajouts normaux passent.
+        assert_eq!(croissance_anormale(60_000, Some(jour * 7)), 0);
+        // D'un coup, bien au-delà : tout est compté.
+        assert_eq!(croissance_anormale(300_000, Some(jour)), 300_000);
+        assert_eq!(
+            croissance_anormale(CROISSANCE_PAR_JOUR + 1, Some(Duration::ZERO)),
+            CROISSANCE_PAR_JOUR + 1
+        );
+        assert_eq!(croissance_anormale(1_000_000, Some(Duration::MAX)), 0);
+
+        let d = crate::essais::Jetable::nouveau("croissance");
+        assert_eq!(charger_croissance(&d, "croissance"), (0, None));
+        ecrire_croissance(&d, "croissance", 300_000).unwrap();
+        assert_eq!(charger_croissance(&d, "croissance"), (300_000, None));
+        std::fs::write(d.join("croissance"), b"abc").unwrap();
+        let (n, alerte) = charger_croissance(&d, "croissance");
+        assert_eq!(n, 0);
+        assert!(alerte.unwrap().contains("mal formé"));
     }
 
     /// M-N1 et f1 : l'union s'écrit en root (0600) et se relit telle quelle ; absente, elle ne dit rien ; mal formée,

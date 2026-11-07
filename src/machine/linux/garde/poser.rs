@@ -19,8 +19,8 @@ use crate::protection::blocage::ordres::Resultat;
 use crate::{tr, trf};
 
 use super::{
-    DOSSIER_ETAT, DOSSIER_PROGRAMME, DOSSIER_REGLAGES, FICHIER_UNITE, LISTE_MD5, LISTE_SHA256, PERMISES_MAX, PROGRAMME,
-    REGLAGES, REGLAGES_TAILLE_MAX, Reglages, UNITE, VANGUARD_MAX, VERSION_REGLAGES,
+    CROISSANCE, DOSSIER_ETAT, DOSSIER_PROGRAMME, DOSSIER_REGLAGES, FICHIER_UNITE, LISTE_MD5, LISTE_SHA256,
+    PERMISES_MAX, PROGRAMME, REGLAGES, REGLAGES_TAILLE_MAX, Reglages, UNITE, VANGUARD_MAX, VERSION_REGLAGES,
 };
 
 /// Le programme copié, au plus (Vanguard fait ~30 Mo).
@@ -292,7 +292,7 @@ fn mettre_a_jour() -> Result<Option<String>, Echec> {
 /// Seuls ces ordres root le font. Le garde encore en marche peut la réécrire avant d'être redémarré (une liste du
 /// compte changée à cet instant) : elle est alors plus large, jamais plus courte.
 fn effacer_union() -> Result<(), Echec> {
-    let fichiers = [LISTE_SHA256, LISTE_MD5].map(|n| Path::new(DOSSIER_ETAT).join(n));
+    let fichiers = [LISTE_SHA256, LISTE_MD5, CROISSANCE].map(|n| Path::new(DOSSIER_ETAT).join(n));
     let echecs = crate::reseau::surveillance::retirer_fichiers(&fichiers);
     if echecs.is_empty() {
         Ok(())

@@ -60,6 +60,9 @@ pub(crate) const EVENEMENTS_ANCIENS: &str = "/run/vanguard/garde/evenements.1.js
 /// Les deux listes de l'ensemble CERTAIN, dans le dossier du compte nommé par les réglages.
 pub(crate) const LISTE_SHA256: &str = "certain-sha256.bin";
 pub(crate) const LISTE_MD5: &str = "certain-md5.bin";
+/// La croissance anormale des listes (N-1), comptée depuis la dernière pose ou mise à jour : dans le dossier d'état, à
+/// côté de l'union, effacée avec elle.
+pub(crate) const CROISSANCE: &str = "croissance-anormale";
 /// La version des réglages.
 pub(crate) const VERSION_REGLAGES: u32 = 1;
 /// Les empreintes permises par la personne, au plus.

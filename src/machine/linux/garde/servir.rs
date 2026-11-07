@@ -76,6 +76,10 @@ struct Config {
     /// Par liste (SHA-256, MD5) : ce que la dernière liste du compte n'a plus, ce que l'union pleine n'a pas pris.
     retirees: [u64; 2],
     bloquees: [u64; 2],
+    /// Par liste : ce que la dernière lecture a ajouté à l'union.
+    ajoutees: [u64; 2],
+    /// La croissance anormale depuis la dernière pose ou mise à jour (N-1), gardée en root (`CROISSANCE`).
+    croissance: u64,
 }
 
 impl Config {
@@ -483,9 +487,12 @@ impl Relecture {
     /// L'union gardée en root, relue avant READY=1 (f1) : un disque local à root, jamais le dossier du compte, donc
     /// sans attente possible de lui. Les listes du compte s'y ajoutent ensuite.
     fn charger_union(&self, p: &Partage) {
-        let ([sha256, md5], alertes) = listes::charger_union(&self.union, NOMS);
+        let ([sha256, md5], mut alertes) = listes::charger_union(&self.union, NOMS);
+        let (croissance, alerte) = listes::charger_croissance(&self.union, super::CROISSANCE);
+        alertes.extend(alerte);
         let mut c = p.config.write().unwrap_or_else(PoisonError::into_inner);
         c.certain = Certain { sha256, md5 };
+        c.croissance = croissance;
         // Préfixe « union » : ces alertes-là restent (celles des listes du compte sont remplacées à chaque lecture).
         c.alertes.extend(alertes.into_iter().map(|a| format!("union {a}")));
     }
@@ -627,10 +634,28 @@ impl Relecture {
                         listes::unir(liste_de(&c.certain, i), l, listes::union_max())
                     };
                     if let Some(nouvelle) = u.liste {
-                        if let Some(nom) = NOMS.get(i)
-                            && let Err(e) = listes::ecrire_union(&self.union, nom, &nouvelle)
-                        {
-                            alertes.push(format!("liste: {}: {e}", self.union.join(nom).display()));
+                        if let Some(nom) = NOMS.get(i) {
+                            // N-1 : un ajout bien au-delà de la croissance normale depuis la dernière (la date de
+                            // l'union, à root) est compté et gardé ; il est dit jusqu'à la prochaine mise à jour.
+                            let depuis = std::fs::metadata(self.union.join(nom))
+                                .and_then(|m| m.modified())
+                                .ok()
+                                .and_then(|t| t.elapsed().ok());
+                            let anormale = listes::croissance_anormale(u.ajoutees, depuis);
+                            if anormale > 0 {
+                                let total = {
+                                    let mut c = p.config.write().unwrap_or_else(PoisonError::into_inner);
+                                    c.croissance = c.croissance.saturating_add(anormale);
+                                    c.croissance
+                                };
+                                if let Err(e) = listes::ecrire_croissance(&self.union, super::CROISSANCE, total) {
+                                    alertes
+                                        .push(format!("liste: {}: {e}", self.union.join(super::CROISSANCE).display()));
+                                }
+                            }
+                            if let Err(e) = listes::ecrire_union(&self.union, nom, &nouvelle) {
+                                alertes.push(format!("liste: {}: {e}", self.union.join(nom).display()));
+                            }
                         }
                         changees = true;
                         let mut c = p.config.write().unwrap_or_else(PoisonError::into_inner);
@@ -638,8 +663,10 @@ impl Relecture {
                     }
                     let mut c = p.config.write().unwrap_or_else(PoisonError::into_inner);
                     let c = &mut *c;
-                    if let (Some(r), Some(b)) = (c.retirees.get_mut(i), c.bloquees.get_mut(i)) {
-                        (*r, *b) = (u.retirees, u.bloquees);
+                    if let (Some(r), Some(b), Some(a)) =
+                        (c.retirees.get_mut(i), c.bloquees.get_mut(i), c.ajoutees.get_mut(i))
+                    {
+                        (*r, *b, *a) = (u.retirees, u.bloquees, u.ajoutees);
                     }
                 }
                 Err(e) => alertes.push(format!("liste: {e}")),
@@ -662,7 +689,16 @@ fn alerter_listes(p: &Partage, alertes: Vec<String>) {
 
 /// Écrit etat.json d'un coup.
 fn ecrire_etat(p: &Partage, demarre: u64, marques: &Marques) {
-    let (refus, pause_jusqu_a, certain, mut alertes, listes_retirees, listes_bloquees) = {
+    let (
+        refus,
+        pause_jusqu_a,
+        certain,
+        mut alertes,
+        listes_retirees,
+        listes_bloquees,
+        listes_ajoutees,
+        listes_croissance,
+    ) = {
         let c = p.config.read().unwrap_or_else(PoisonError::into_inner);
         let somme = |v: [u64; 2]| v.iter().fold(0u64, |a, n| a.saturating_add(*n));
         (
@@ -672,6 +708,8 @@ fn ecrire_etat(p: &Partage, demarre: u64, marques: &Marques) {
             c.alertes.clone(),
             somme(c.retirees),
             somme(c.bloquees),
+            somme(c.ajoutees),
+            c.croissance,
         )
     };
     alertes.extend(
@@ -699,6 +737,8 @@ fn ecrire_etat(p: &Partage, demarre: u64, marques: &Marques) {
         compteurs: p.compteurs.lire(),
         listes_retirees,
         listes_bloquees,
+        listes_ajoutees,
+        listes_croissance,
     };
     let Ok(texte) = serde_json::to_vec(&etat) else {
         return;
@@ -1086,6 +1126,57 @@ mod tests {
         assert!(liste_de(&c, 1).is_none());
         poser_liste(&mut c, 1, listes::ListeSha256::lire([3u8; 32].to_vec()).unwrap());
         assert_eq!(c.nombre(), 3);
+    }
+
+    /// N-1 : une liste du compte qui ajoute d'un coup bien plus que la croissance normale est comptée, gardée en root
+    /// et relue au démarrage ; un rafraîchissement ordinaire est compté comme ajout, sans croissance anormale.
+    #[test]
+    fn la_croissance_anormale_est_gardee() {
+        let d = crate::essais::Jetable::nouveau("garde-servir-croissance");
+        let (p, _evenements) = partage(&[[0xff; 32]]);
+        let union = liste_de(&p.config.read().unwrap().certain, 0)
+            .unwrap()
+            .empreintes()
+            .as_flattened()
+            .to_vec();
+        listes::ecrire_union(&d, LISTE_SHA256, &listes::ListeSha256::lire(union).unwrap()).unwrap();
+        let liste = |n: u64| {
+            let mut e: Vec<[u8; 32]> = (0..n)
+                .map(|i| {
+                    let mut x = [0u8; 32];
+                    x[..8].copy_from_slice(&i.to_be_bytes());
+                    x
+                })
+                .collect();
+            e.push([0xff; 32]);
+            listes::ListeSha256::lire(e.concat()).unwrap()
+        };
+        let lues = |l: listes::ListeSha256| ListesLues {
+            dossier: PathBuf::from("/home/alice/listes"),
+            compte: 4242,
+            resultats: vec![Ok(((1, 0, 1, 32), Some(l))), Ok(((1, 0, 2, 0), None))],
+        };
+        let mut r = Relecture::nouvelle(d.to_path_buf());
+        let gonfle = listes::CROISSANCE_PAR_JOUR + 1_000;
+        r.appliquer(&p, lues(liste(gonfle)));
+        {
+            let c = p.config.read().unwrap();
+            assert_eq!((c.ajoutees[0], c.croissance), (gonfle, gonfle));
+            assert_eq!(c.certain.nombre(), usize::try_from(gonfle + 1).unwrap());
+        }
+        // Le même jour, cinq de plus : un ajout ordinaire.
+        r.appliquer(&p, lues(liste(gonfle + 5)));
+        assert_eq!(p.config.read().unwrap().ajoutees[0], 5);
+        assert_eq!(p.config.read().unwrap().croissance, gonfle);
+        // Au redémarrage, l'alerte est toujours là.
+        let (p2, _e2) = partage(&[]);
+        Relecture::nouvelle(d.to_path_buf()).charger_union(&p2);
+        let c = p2.config.read().unwrap();
+        assert_eq!(
+            (c.croissance, c.certain.nombre()),
+            (gonfle, usize::try_from(gonfle + 6).unwrap())
+        );
+        assert!(c.alertes.is_empty(), "{:?}", c.alertes);
     }
 
     /// Un partage d'essai : un groupe sur /dev/null, en refus, avec `certain` comme liste.

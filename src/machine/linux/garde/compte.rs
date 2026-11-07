@@ -344,6 +344,16 @@ pub(crate) fn juger(posee: bool, etat: Option<&Etat>, maintenant: u64) -> Consta
             ),
         );
     }
+    if e.listes_croissance > 0 {
+        let n = e.listes_croissance;
+        hausser(
+            Niveau::Moyen,
+            trf!(
+                "{n} empreintes ont été ajoutées d'un coup aux listes du garde, bien au-delà de leur croissance normale (MalwareBazaar et ClamAV) : un programme sous votre compte a pu y mettre celles de programmes sains pour les faire refuser. Si vous venez d'installer ou de mettre à jour la base de ClamAV, c'est elle ; sinon, « vanguard garde maj » dans un terminal repart des listes refaites.",
+                "{n} hashes were added at once to the guard's lists, far beyond their normal growth (MalwareBazaar and ClamAV): a program under your account may have put in those of safe programs to have them refused. If you just installed or updated the ClamAV database, that is it; otherwise, “vanguard guard update” in a terminal starts over from freshly made lists."
+            ),
+        );
+    }
     if e.listes_bloquees > 0 {
         let n = e.listes_bloquees;
         hausser(
@@ -675,7 +685,7 @@ fn mettre_a_jour() {
     let pose_la = empreinte_de_fichier(Path::new(PROGRAMME));
     // Le garde garde l'union de ce qu'il a reçu : des listes du compte plus courtes n'y retirent rien. Seul l'ordre
     // root (mettre à jour) l'efface et repart des listes du compte.
-    let repartir = etat().is_some_and(|e| e.listes_retirees > 0 || e.listes_bloquees > 0);
+    let repartir = etat().is_some_and(|e| e.listes_retirees > 0 || e.listes_bloquees > 0 || e.listes_croissance > 0);
     if ici.is_some() && ici == pose_la && !repartir {
         trp!(
             "  Le programme du garde est déjà celui-ci.",
@@ -883,6 +893,19 @@ mod tests {
         let mut perdus = etat(maintenant);
         perdus.compteurs.rattrapages_perdus = 9;
         assert_eq!(juger(true, Some(&perdus), maintenant).probleme, Some(Niveau::Moyen));
+        // N-1 : un rafraîchissement normal ne dit rien ; une croissance anormale, au moins moyenne, et le nombre.
+        let rafraichi = Etat {
+            listes_ajoutees: 4_000,
+            ..etat(maintenant)
+        };
+        assert_eq!(juger(true, Some(&rafraichi), maintenant).probleme, None);
+        let gonflee = Etat {
+            listes_croissance: 300_000,
+            ..etat(maintenant)
+        };
+        let c = juger(true, Some(&gonflee), maintenant);
+        assert_eq!(c.probleme, Some(Niveau::Moyen));
+        assert!(c.message.contains("300000"), "{}", c.message);
         // En pause aussi : l'alerte haute l'emporte.
         let pause = Etat {
             pause_jusqu_a: Some(maintenant + 60),
@@ -893,6 +916,7 @@ mod tests {
         let ancien = br#"{"version":"0.90.0","pid":1,"demarre":1,"battement":1,"refus":true,"pause_jusqu_a":null,"certain":2,"alertes":[],"marques":1,"compteurs":{"demandes":0,"cache":0,"hachees":0,"notees":0,"refusees":0,"delais":0,"non_verifiees":0,"file_pleine":0,"debordements":0}}"#;
         let e = Etat::lire(ancien).unwrap();
         assert_eq!((e.listes_retirees, e.compteurs.certains_passes), (0, 0));
+        assert_eq!((e.listes_ajoutees, e.listes_croissance), (0, 0));
     }
 
     #[test]
