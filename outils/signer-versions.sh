@@ -27,6 +27,11 @@
 #   outils/signer-versions.sh --passe-droit NOM …     un passe-droit pris par outils/publier-version.sh pour cette
 #                                                 version (sans-empreintes-ci, sans-vm), gardé dans son bloc de
 #                                                 l'historique signé : jamais dans derniere.txt. Répétable.
+#   outils/signer-versions.sh --ci-apres COMMIT …     la compilation reproductible de la CI à laquelle les programmes
+#                                                 sont identiques a tourné sur COMMIT (40 chiffres hexadécimaux), un
+#                                                 commit d'après celui de la version qui ne change rien de compilé
+#                                                 (outils/publier-version.sh, CI_APRES) : gardé dans son bloc de
+#                                                 l'historique signé, comme un passe-droit ; jamais dans derniere.txt.
 # LE POINT SÛR : le dernier historique que cet ordinateur a publié, gardé ici par outils/publier-version.sh une fois la
 # version en ligne (~/.local/state/vanguard-dev/historique-publie.txt et .sig ; VANGUARD_HISTORIQUE_PUBLIE pour un
 # autre), signé par une clé gravée. Ce qui est téléchargé de vanguard-update s'y compare : la clé principale volée et le
@@ -53,6 +58,7 @@ SECOURS=
 PREMIER=
 REVOQUER=
 PASSE_DROITS=()
+CI_APRES=
 POINT_SUR=${VANGUARD_HISTORIQUE_PUBLIE:-${XDG_STATE_HOME:-$HOME/.local/state}/vanguard-dev/historique-publie.txt}
 ARGS=()
 while (($#)); do
@@ -62,6 +68,7 @@ while (($#)); do
     --revoquer) REVOQUER=1 ;;
     --point-sur) POINT_SUR=${2:?--point-sur FICHIER}; shift ;;
     --passe-droit) PASSE_DROITS+=("${2:?--passe-droit sans-empreintes-ci|sans-vm}"); shift ;;
+    --ci-apres) CI_APRES=${2:?--ci-apres COMMIT}; shift ;;
     *) ARGS+=("$1") ;;
   esac
   shift
@@ -86,6 +93,7 @@ erreur() { echo "✖ $*" >&2; exit 1; }
 for p in "${PASSE_DROITS[@]+"${PASSE_DROITS[@]}"}"; do
   [[ $p == sans-empreintes-ci || $p == sans-vm ]] || erreur "passe-droit inconnu : $p (sans-empreintes-ci ou sans-vm)"
 done
+[[ -z $CI_APRES || $CI_APRES =~ ^[0-9a-f]{40}$ ]] || erreur "--ci-apres : un commit en 40 chiffres hexadécimaux"
 # Ce qui retient la révocation sur un ordinateur s'efface avec ses sceaux (github.rs, revocation_retenue) : les
 # programmes qui révoquent retirent donc aussi la principale de leur code, et une fois installés, elle n'y revient plus.
 # Lu dans chacun (github.rs, PRINCIPALE_GRAVEE), pas dans le code source, qui a pu changer depuis ; avant la phrase de
@@ -345,12 +353,14 @@ anciens=$(tr '|' '\n' <<<"$anciens")
 # Un passe-droit pris pour cette version, dans son bloc et pour toujours (les versions suivantes reprennent le bloc
 # tel quel) : « passe-droit-NOM », une empreinte de zéros et une taille nulle. Sous la forme d'une ligne de programme,
 # la seule que lire_historique (src/mise_a_jour/github.rs) accepte : les copies déjà installées refuseraient sinon
-# l'historique entier. Aucun programme n'a une empreinte de zéros : la ligne ne désigne jamais un fichier.
+# l'historique entier. Aucun programme n'a une empreinte de zéros : la ligne ne désigne jamais un fichier. De même,
+# « ci-apres-COMMIT » : le commit d'après celui de la version sur lequel la CI a fait la compilation reproductible.
 {
   grep -v '^revoque ' "$D/derniere.txt"
   for p in "${PASSE_DROITS[@]+"${PASSE_DROITS[@]}"}"; do
     echo "passe-droit-$p $(printf '0%.0s' {1..64}) 0"
   done
+  [[ -z $CI_APRES ]] || echo "ci-apres-$CI_APRES $(printf '0%.0s' {1..64}) 0"
   [[ -z $anciens ]] || printf '%s\n' "$anciens"
 } >"$D/historique.txt"
 { printf '%s\n' "$DOMAINE_HISTORIQUE"; cat "$D/historique.txt"; } >"$message"

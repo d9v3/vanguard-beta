@@ -56,7 +56,8 @@
 #      de leurs empreintes ; deployer.sh, sur ce qui part ; un refus arrête tout.
 #   6d. Un passe-droit de publier-version.sh (VANGUARD_PUBLIER_SANS_EMPREINTES_CI, VANGUARD_PUBLIER_SANS_VM) est dit
 #      en tête des notes de la page (notes, face à un faux gh) et gardé dans le bloc de sa version de l'historique
-#      signé (signer-versions.sh --passe-droit), sous la forme que lit github.rs, jamais dans derniere.txt.
+#      signé (signer-versions.sh --passe-droit), sous la forme que lit github.rs, jamais dans derniere.txt ; de même
+#      le commit entier d'une CI faite après la version (--ci-apres), retrouvé et revérifié par publier-version.sh.
 #   6. Les nomenclatures attestées que la page publie viennent d'une exécution de master : publier-version.sh (sa
 #      fonction avec_nomenclatures, face à un faux gh) écarte celle d'une autre branche, même plus récente et du même
 #      commit ; et les travaux « nomenclatures » et « attester » de ci.yml ne reprennent aucun cache, « attester » ne
@@ -938,6 +939,29 @@ fi
 rm -rf "$T/v-inconnu" && programmes "$T/v-inconnu" 0.86.0+1792600000
 signer "$T/passe" "$T/v-inconnu" --premier --passe-droit rien && ko "passe-droit inconnu accepté" ||
   ok "passe-droit : un nom inconnu est refusé"
+# La CI faite après la version (publier-version.sh, CI_APRES) : « ci-apres-COMMIT » dans le bloc de sa version, à la
+# forme que lit github.rs (relecture adverse du lot publier-version, T3) ; derniere.txt inchangé ; un commit qui n'a
+# pas la forme d'un sha complet est refusé.
+CI_SHA=$(printf 'ab%.0s' {1..20})
+rm -rf "$T/v-apres" && programmes "$T/v-apres" 0.86.0+1792600000
+if signer "$T/passe" "$T/v-apres" --premier --ci-apres "$CI_SHA"; then
+  grep -qxF "ci-apres-$CI_SHA $ZEROS 0" "$T/v-apres/historique.txt" &&
+    awk 'NR == 1 && !/^version / { exit 1 } /^version / { next } NF != 3 { exit 1 }' "$T/v-apres/historique.txt" &&
+    signe "$T/v-apres/historique.txt" 'vanguard-historique 1' &&
+    cmp -s "$T/v-apres/derniere.txt" "$T/v-sans/derniere.txt" &&
+    ok "CI faite après la version : gardée dans le bloc de l'historique signé, à la forme lue par github.rs" ||
+    ko "CI faite après la version absente de l'historique, ou forme cassée : $(cat "$T/v-apres/historique.txt")"
+else
+  ko "CI faite après la version : refusée par signer-versions.sh ($(tail -n 2 "$T/v-apres.log"))"
+fi
+refus=0
+for mauvais in "${CI_SHA:0:12}" "${CI_SHA^^}" "$CI_SHA 0" "${CI_SHA}0" "-"; do
+  rm -rf "$T/v-apres-mal" && programmes "$T/v-apres-mal" 0.86.0+1792600000
+  signer "$T/passe" "$T/v-apres-mal" --premier --ci-apres "$mauvais" || [[ -f $T/v-apres-mal/historique.txt.sig ]] ||
+    refus=$((refus + 1))
+done
+((refus == 5)) && ok "CI faite après la version : un commit abrégé, en majuscules ou d'une autre forme est refusé" ||
+  ko "CI faite après la version : $((5 - refus)) forme(s) de commit acceptée(s)"
 # Les notes de la page : le passe-droit en tête, en français et en anglais ; aucun sans passe-droit.
 mkdir -p "$T/faux-gh-notes"
 printf '#!/bin/sh\nexit 1\n' >"$T/faux-gh-notes/gh"
@@ -964,6 +988,22 @@ awk '/VANGUARD_PUBLIER_SANS_EMPREINTES_CI:-/ { e = 1 } e && /PASSE_DROITS\+=\(sa
   END { exit !(a && b && p && s) }' "$DEPOT/outils/publier-version.sh" &&
   ok "publier-version.sh note chaque passe-droit pris et le passe à la signature" ||
   ko "publier-version.sh : un passe-droit pris n'est ni noté ni signé"
+# Le commit entier de la CI faite après la version : retrouvé dans la ligne de master à partir de ses 12 premiers
+# chiffres, revérifié, puis passé à la signature ; introuvable, ou pas dans la ligne : rien de publié.
+awk '/CI_APRES_COMPLET=\$\(git rev-list/,/introuvable ou ambigu/' "$DEPOT/outils/publier-version.sh" >"$T/ci-apres-complet.sh"
+complet() { # 12 premiers chiffres, tête de master : le commit entier, ou « refus »
+  (cd "$H" && CI_APRES=$1 COMPILE=$H_COMPILE COMMIT=$2 bash -c \
+    "set -euo pipefail; source '$T/descendant.sh'; source '$T/ci-apres-complet.sh'; echo \"\$CI_APRES_COMPLET\"" \
+    2>/dev/null || echo refus)
+}
+[[ $(wc -l <"$T/ci-apres-complet.sh") -ge 3 && $(complet "${H_PAGE:0:12}" "$H_PAGE") == "$H_PAGE" &&
+  $(complet "${H_CAPTURES:0:12}" "$H_PAGE") == "$H_CAPTURES" && $(complet "${COTE:0:12}" "$H_PAGE") == *refus &&
+  $(complet "${H_COMPILE:0:12}" "$H_PAGE") == *refus && $(complet "${LIEN:0:12}" "$LIEN") == *refus ]] &&
+  awk '/PASSES\+=\(--ci-apres "\$CI_APRES_COMPLET"\)/ { p = 1 }
+    p && /outils\/signer-versions.sh .*"\$\{PASSES\[@\]\}" "\$DOSSIER"/ { s = 1 } END { exit !s }' \
+    "$DEPOT/outils/publier-version.sh" &&
+  ok "publier-version.sh passe le commit entier de la CI faite après la version à la signature, revérifié" ||
+  ko "publier-version.sh : commit de la CI faite après la version mal retrouvé, ou pas signé"
 
 # 6e. Une exécution de GitHub qui ne finit jamais (runner en attente) ne tient pas publier-version.sh ouvert pour
 # toujours : attendre_execution abandonne au délai, le dit, et rend 124 ; chaque attente du script passe par elle.

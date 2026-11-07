@@ -55,8 +55,10 @@ without being matched against the CI's reproducible build (VANGUARD_PUBLIER_SANS
 }
 
 # La compilation reproductible de la CI retenue, quand elle a tourné sur un commit d'après celui de la version
-# (CI_APRES, descendant_hors_compilation) : dit en tête des notes, avec ce commit, pour qui veut la retrouver.
+# (CI_APRES, descendant_hors_compilation) : dit en tête des notes, avec ce commit, pour qui veut la retrouver, et
+# gardé en entier (CI_APRES_COMPLET) dans le bloc de la version de l'historique signé (signer-versions.sh --ci-apres).
 CI_APRES=
+CI_APRES_COMPLET=
 ci_apres_notes() {
   [[ -n $CI_APRES ]] || return 0
   printf '%s\n' "ℹ Programmes Linux et Windows identiques à ceux de la compilation reproductible de la CI, faite sur \
@@ -357,6 +359,11 @@ if ((CODE_CI == 0)); then
   if [[ $EMPREINTES_CI == *", après "* ]]; then
     CI_APRES=$(sed -nE 's/^exécution [0-9]+, ([0-9a-f]{12}), après .*/\1/p' <<<"$EMPREINTES_CI")
     [[ -n $CI_APRES ]] || { echo "Provenance de la CI illisible ($EMPREINTES_CI) : rien de publié."; exit 1; }
+    # Le commit entier, pour l'historique signé : le seul de la ligne entre la version et la tête qui commence ainsi,
+    # et qui passe encore descendant_hors_compilation ; sinon, rien de publié.
+    CI_APRES_COMPLET=$(git rev-list "$COMPILE..$COMMIT" 2>/dev/null | grep -xE "${CI_APRES}[0-9a-f]{28}" || true)
+    [[ $CI_APRES_COMPLET =~ ^[0-9a-f]{40}$ ]] && descendant_hors_compilation "$COMPILE" "$CI_APRES_COMPLET" ||
+      { echo "Commit de la CI $CI_APRES introuvable ou ambigu dans la ligne de master : rien de publié."; exit 1; }
   fi
 elif [[ -n ${VANGUARD_PUBLIER_SANS_EMPREINTES_CI:-} ]]; then
   [[ -z $EMPREINTES_CI ]] || echo "$EMPREINTES_CI"
@@ -567,11 +574,13 @@ else
 outils/publier-version.sh --premier ; sinon, il a été vidé, et l'historique ne repart pas de zéro."
     fi
   fi
-  # Les passe-droits pris plus haut, gardés dans le bloc de cette version de l'historique signé.
+  # Les passe-droits pris plus haut, et la CI faite après la version, gardés dans le bloc de cette version de
+  # l'historique signé.
   PASSES=()
   for p in "${PASSE_DROITS[@]+"${PASSE_DROITS[@]}"}"; do
     PASSES+=(--passe-droit "$p")
   done
+  [[ -z $CI_APRES_COMPLET ]] || PASSES+=(--ci-apres "$CI_APRES_COMPLET")
   outils/signer-versions.sh "${PREMIER[@]}" "${PASSES[@]}" "$DOSSIER" ||
     { echo "✖ Signature refusée (voir ci-dessus) : rien de publié, ni page ni mise à jour."; exit 1; }
   SIGNEE=1

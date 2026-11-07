@@ -309,8 +309,8 @@ lignes `OUTILS-VANGUARD` du journal de la CI), et `outils/publier-version.sh` mo
 chaîne C, épinglée des deux côtés, donnera les mêmes octets ; ce n'est pas encore fait. La CI écrit l'empreinte de ses compilations dans son journal (`EMPREINTE-VANGUARD-LINUX`, `-WINDOWS`), à
 comparer à `SHA256SUMS.txt` ; `outils/publier-version.sh` prend celles d'une exécution de master sur le commit
 compilé, ou sur un commit d'après qui ne change que des fichiers jamais compilés (captures d'écran, image de partage,
-page des fonctions : la liste fermée `HORS_COMPILATION`), en ligne droite et sans fusion, et le dit alors dans les
-notes. Elles ne sont pas encore les mêmes que celles de l'ordinateur de l'auteur tant que ces
+page des fonctions : la liste fermée `HORS_COMPILATION`), en ligne droite, sans fusion et en fichiers ordinaires, et le dit alors
+dans les notes et dans l'historique signé. Elles ne sont pas encore les mêmes que celles de l'ordinateur de l'auteur tant que ces
 outils diffèrent (Arch contre Ubuntu). D'ici là, `outils/publier-version.sh` refuse de publier : il faut le passe-droit
 `VANGUARD_PUBLIER_SANS_EMPREINTES_CI=1`, qui est dit sur la page de la version (notes, en français et en anglais) et
 dans l'historique signé des versions (`historique.txt`, ligne `passe-droit-sans-empreintes-ci`, de même

@@ -308,7 +308,8 @@ leaves its name and version in the `.comment` section (16.2.1 here, Ubuntu's 15.
 toolchain, pinned on both sides, will give the same bytes; this is not done yet. CI writes the fingerprint of its builds in its log (`EMPREINTE-VANGUARD-LINUX`,
 `-WINDOWS`), to compare with `SHA256SUMS.txt`; `outils/publier-version.sh` takes those of a master run on the built commit, or on
 a later commit that only changes files that are never compiled (screenshots, social preview, features page: the
-closed list `HORS_COMPILATION`), in a straight line and without a merge, and then says so in the notes. They are not
+closed list `HORS_COMPILATION`), in a straight line, without a merge and as plain files, and then says so in the notes and in the
+signed history. They are not
 yet the same as the author's computer's while these tools
 differ (Arch versus Ubuntu). Until then, `outils/publier-version.sh` refuses to publish: it needs the override
 `VANGUARD_PUBLIER_SANS_EMPREINTES_CI=1`, which is stated on the release page (notes, in French and English) and in the
