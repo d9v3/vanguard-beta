@@ -12,10 +12,11 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::protection::antivirus::{Examen, Portee};
 use crate::protection::empreintes::{self, Empreintes};
+use crate::protection::moteur;
 use crate::protection::moteur_yara::Regles;
 use crate::protection::regles_yara::Raison;
 use crate::ui::*;
@@ -161,49 +162,58 @@ fn fichiers(cible: &Path, illisibles: &mut Vec<PathBuf>) -> Vec<PathBuf> {
     trouves
 }
 
-/// Un fichier passé aux règles : les rangs des règles qui correspondent, ou `Err` s'il n'a pas pu être lu en entier
-/// (illisible, changé pendant la lecture, ou trop long à lire). Un fichier ordinaire seulement, ouvert sans attendre
-/// (un tube nommé glissé à sa place bloquerait la lecture), lu jusqu'à la taille qu'il avait à l'ouverture.
-fn analyser_fichier(regles: &Regles, chemin: &Path) -> Result<Vec<usize>, ()> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    // Sans suivre de lien : un fichier listé puis remplacé par un lien (vers un autre fichier, un tube) avant d'être
-    // ouvert est illisible, jamais un autre fichier analysé sous son nom. Le descripteur ouvert est ensuite jugé. Pas
-    // d'équivalent sous Windows : FILE_FLAG_OPEN_REPARSE_POINT ouvrirait aussi sans leur pilote les fichiers
-    // compressés par le système (WOF) ou dédupliqués, dont on lirait la souche au lieu du contenu.
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK | libc::O_NOFOLLOW);
-    let mut fichier = options.open(chemin).map_err(|_| ())?;
-    let meta = fichier.metadata().map_err(|_| ())?;
-    if !meta.is_file() || meta.len() > TAILLE_MAX {
-        return Err(());
-    }
-    regles
-        .analyser_flux(
-            &mut fichier,
-            meta.len(),
-            Some(
-                Instant::now()
-                    .checked_add(DELAI_PAR_FICHIER)
-                    .unwrap_or_else(Instant::now),
-            ),
-        )
-        .map_err(|_| ())
+/// Ce qu'un fichier a laissé lire.
+#[derive(Debug, Clone, PartialEq)]
+enum Lu {
+    /// En entier, chaque partie passée aux règles.
+    Tout,
+    /// Lu, mais une partie au moins n'a pas pu être vérifiée (la première, avec sa raison, prête à montrer).
+    EnPartie(String),
+    /// Illisible, changé pendant la lecture, ou trop long à lire : rien n'est conclu.
+    Non,
 }
 
-/// Les règles appliquées à des fichiers, par `FILS` fils, et l'empreinte de chaque fichier cherchée dans celles de
-/// MalwareBazaar : (correspondances, fichiers illisibles ou trop longs à lire).
+/// Un fichier passé aux règles par le moteur d'analyse (`moteur::examiner`) : ouvert sans suivre de lien et sans
+/// attendre (un tube nommé glissé à sa place bloquerait la lecture), découpé en parties (entrées d'archive, flux
+/// OLE, source des macros, octets ajoutés…), chacune passée aux règles. `Err` : rien n'a pu être conclu.
+fn analyser_fichier(regles: &Regles, chemin: &Path) -> Result<moteur::Constat, ()> {
+    moteur::examiner(chemin, regles, DELAI_PAR_FICHIER)
+}
+
+/// Les règles appliquées à des fichiers, par `FILS` fils, et l'empreinte de chaque fichier (et de chaque partie qu'il
+/// contient) cherchée dans celles de MalwareBazaar : (correspondances, fichiers illisibles ou trop longs à lire,
+/// fichiers vérifiés en partie seulement avec la raison).
 fn analyser_fichiers(
     regles: &Regles,
     empreintes: Option<&Empreintes>,
     liste: &[PathBuf],
-) -> (Vec<Trouve>, Vec<PathBuf>) {
+) -> (Vec<Trouve>, Vec<PathBuf>, Vec<(PathBuf, String)>) {
     par_lots(
         liste,
         || (),
         |(), f| match analyser_fichier(regles, f) {
-            Ok(r) => (r.into_iter().map(|k| Trouve::nouveau(regles.nom(k), f)).collect(), true),
-            Err(()) => (Vec::new(), false),
+            Ok(constat) => {
+                let mut trouves: Vec<Trouve> = constat
+                    .regles
+                    .iter()
+                    .map(|k| Trouve::nouveau(regles.nom(*k), f))
+                    .collect();
+                // Un logiciel malveillant connu caché dans une archive : l'archive entière est désignée.
+                if let Some(e) = empreintes {
+                    for contenue in constat.contenues.iter().filter(|c| e.contient(c)) {
+                        let nom = format!("{MALWAREBAZAAR}{}", empreintes::hex(contenue));
+                        if !trouves.iter().any(|t| t.regle == nom) {
+                            trouves.push(Trouve::nouveau(&nom, f));
+                        }
+                    }
+                }
+                let lu = match constat.non_verifie.into_iter().next() {
+                    None => Lu::Tout,
+                    Some(raison) => Lu::EnPartie(raison),
+                };
+                (trouves, lu)
+            }
+            Err(()) => (Vec::new(), Lu::Non),
         },
         // Le fichier vient d'être lu : il est encore en mémoire, l'empreinte coûte peu.
         |f| {
@@ -218,7 +228,7 @@ fn analyser_fichiers(
 }
 
 /// `liste` répartie en `FILS` lots, un fil par lot avec son propre analyseur (`nouveau`) ; `un` passe un fichier aux
-/// règles : (correspondances, lu jusqu'au bout) ; `empreinte` le cherche ensuite parmi les empreintes connues. Un
+/// règles : (correspondances, ce qui a été lu) ; `empreinte` le cherche ensuite parmi les empreintes connues. Un
 /// fichier piégé qui ferait paniquer le moteur (un dépassement de capacité oublié, que la version publiée vérifie aussi)
 /// est alors rendu illisible, jamais sain, sans emporter les autres fichiers de son lot, et l'analyseur, peut-être
 /// resté au milieu de l'analyse interrompue, n'est plus réutilisé. L'empreinte, qui ne dépend pas des règles, a sa
@@ -228,9 +238,9 @@ fn analyser_fichiers(
 fn par_lots<A>(
     liste: &[PathBuf],
     nouveau: impl Fn() -> A + Sync,
-    un: impl Fn(&mut A, &PathBuf) -> (Vec<Trouve>, bool) + Sync,
+    un: impl Fn(&mut A, &PathBuf) -> (Vec<Trouve>, Lu) + Sync,
     empreinte: impl Fn(&PathBuf) -> Vec<Trouve> + Sync,
-) -> (Vec<Trouve>, Vec<PathBuf>) {
+) -> (Vec<Trouve>, Vec<PathBuf>, Vec<(PathBuf, String)>) {
     let (nouveau, un, empreinte) = (&nouveau, &un, &empreinte);
     let lots: Vec<&[PathBuf]> = liste.chunks(liste.len().div_ceil(FILS).max(1)).collect();
     std::thread::scope(|s| {
@@ -239,12 +249,14 @@ fn par_lots<A>(
             .map(|lot| {
                 let fil = s.spawn(move || {
                     let mut analyseur = nouveau();
-                    let (mut trouves, mut echecs) = (Vec::new(), Vec::new());
+                    let (mut trouves, mut echecs, mut partiels) = (Vec::new(), Vec::new(), Vec::new());
                     for f in lot {
                         let regles = crate::journal::rattraper(std::panic::AssertUnwindSafe(|| un(&mut analyseur, f)));
                         let connu = crate::journal::rattraper(std::panic::AssertUnwindSafe(|| empreinte(f)));
-                        if !(matches!(regles, Ok((_, true))) && connu.is_ok()) {
-                            echecs.push(f.clone());
+                        match (&regles, connu.is_ok()) {
+                            (Ok((_, Lu::Tout)), true) => {}
+                            (Ok((_, Lu::EnPartie(raison))), true) => partiels.push((f.clone(), raison.clone())),
+                            _ => echecs.push(f.clone()),
                         }
                         match regles {
                             Ok((t, _)) => trouves.extend(t),
@@ -252,22 +264,23 @@ fn par_lots<A>(
                         }
                         trouves.extend(connu.unwrap_or_default());
                     }
-                    (trouves, echecs)
+                    (trouves, echecs, partiels)
                 });
                 (lot, fil)
             })
             .collect();
-        let (mut trouves, mut echecs) = (Vec::new(), Vec::new());
+        let (mut trouves, mut echecs, mut partiels) = (Vec::new(), Vec::new(), Vec::new());
         for (lot, fil) in fils {
             match fil.join() {
-                Ok((t, e)) => {
+                Ok((t, e, p)) => {
                     trouves.extend(t);
                     echecs.extend(e);
+                    partiels.extend(p);
                 }
                 Err(_) => echecs.extend(lot.iter().cloned()),
             }
         }
-        (trouves, echecs)
+        (trouves, echecs, partiels)
     })
 }
 
@@ -280,6 +293,20 @@ fn illisible(cible: &Path, echecs: &[PathBuf]) -> Option<String> {
         chemin_affichable(cible),
         echecs.len(),
         chemin_affichable(premier)
+    ))
+}
+
+/// Ce qui n'a été vérifié qu'en partie dans une cible, en une phrase : le nombre, et le premier pour exemple avec sa
+/// raison. Rien n'est conclu pour ces parties-là.
+fn en_partie(cible: &Path, partiels: &[(PathBuf, String)]) -> Option<String> {
+    let (premier, raison) = partiels.first()?;
+    Some(trf!(
+        "{} : {} fichier(s) vérifié(s) en partie seulement, dont {} ({})",
+        "{}: {} file(s) only partly checked, including {} ({})",
+        chemin_affichable(cible),
+        partiels.len(),
+        chemin_affichable(premier),
+        affichable(raison)
     ))
 }
 
@@ -338,10 +365,11 @@ fn appliquer(cibles: &[PathBuf]) -> Option<(Vec<Trouve>, Vec<String>, empreintes
         let mut echecs = Vec::new();
         let liste = fichiers(cible, &mut echecs);
         listes = listes.saturating_add(liste.len());
-        let (t, e) = analyser_fichiers(regles, empreintes.ok(), &liste);
+        let (t, e, p) = analyser_fichiers(regles, empreintes.ok(), &liste);
         trouves.extend(t);
         echecs.extend(e);
         erreurs.extend(illisible(cible, &echecs));
+        erreurs.extend(en_partie(cible, &p));
     }
     Some((trouves, erreurs, empreintes, listes))
 }
@@ -672,13 +700,20 @@ mod tests {
         let mut illisibles = Vec::new();
         let liste = fichiers(&dossier, &mut illisibles);
         assert_eq!(liste.len(), 2, "{liste:?}");
-        let (trouves, echecs) = analyser_fichiers(&essai, None, &liste);
+        let (trouves, echecs, partiels) = analyser_fichiers(&essai, None, &liste);
         // Le trop gros n'est pas lu, mais il est dit.
         assert!(
             illisibles.len() == 1 && illisibles[0].ends_with("image.iso"),
             "{illisibles:?}"
         );
         assert_eq!(echecs, Vec::<PathBuf>::new());
+        // « MZ » sans en-tête PE : un programme DOS, que Vanguard n'ouvre pas ; lu par les règles, mais pas vérifié
+        // en entier, et dit.
+        assert!(
+            partiels.len() == 1 && partiels[0].0.ends_with("sous/facture.exe") && partiels[0].1.contains("DOS"),
+            "{partiels:?}"
+        );
+        assert!(en_partie(&dossier, &partiels).is_some_and(|p| p.contains("facture.exe")));
         assert_eq!(trouves.len(), 1);
         assert_eq!(trouves[0].regle, "Win32_Trojan_Essai");
         assert!(trouves[0].chemin.ends_with("sous/facture.exe"));
@@ -705,8 +740,31 @@ mod tests {
         assert!(illisible(&dossier, &absents).is_some());
         // Un fichier qui disparaît entre la liste et la lecture : illisible, pas sain.
         let parti = dossier.join("parti.exe");
-        let (trouves, echecs) = analyser_fichiers(&essai, None, std::slice::from_ref(&parti));
-        assert!(trouves.is_empty() && echecs == [parti]);
+        let (trouves, echecs, partiels) = analyser_fichiers(&essai, None, std::slice::from_ref(&parti));
+        assert!(trouves.is_empty() && echecs == [parti] && partiels.is_empty());
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Un fichier de MalwareBazaar caché dans une archive (zip, compressé) : son empreinte n'est pas celle de
+    /// l'archive, mais celle d'une partie lue par le socle ; l'archive est désignée.
+    #[test]
+    fn un_fichier_connu_cache_dans_un_zip_est_trouve() {
+        let dossier = crate::protection::isoler::dossier_jetable().unwrap();
+        let cache = b"contenu invente pour l'essai, vanguard-essai-empreinte".repeat(8);
+        let zip =
+            crate::archives::zip::essais::archive_controlee(&[("outil.bin", 8, &cache), ("note.txt", 0, b"rien")]);
+        let archive = dossier.join("colis.zip");
+        std::fs::write(&archive, zip).unwrap();
+        let connue: [u8; 32] = {
+            use sha2::Digest;
+            sha2::Sha256::digest(&cache).into()
+        };
+        let connues = Empreintes::depuis(vec![connue]);
+        let (trouves, echecs, _) = analyser_fichiers(regles().unwrap(), Some(&connues), std::slice::from_ref(&archive));
+        assert_eq!(echecs, Vec::<PathBuf>::new());
+        assert_eq!(trouves.len(), 1, "{trouves:?}");
+        assert_eq!(trouves[0].chemin, archive);
+        assert_eq!(trouves[0].regle, format!("{MALWAREBAZAAR}{}", empreintes::hex(&connue)));
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
@@ -749,7 +807,7 @@ mod tests {
             .collect();
         liste.insert(4, piege.clone());
         let connues = Empreintes::depuis(vec![empreintes::sha256(&piege).unwrap()]);
-        let (trouves, echecs) = analyser_fichiers(&essai, Some(&connues), &liste);
+        let (trouves, echecs, _) = analyser_fichiers(&essai, Some(&connues), &liste);
         assert_eq!(echecs, Vec::<PathBuf>::new());
         for f in &liste {
             assert!(
@@ -775,13 +833,13 @@ mod tests {
         let liste: Vec<PathBuf> = (0..8).map(|i| PathBuf::from(format!("/home/alice/f{i}"))).collect();
         let piege = liste[4].clone();
         // L'analyseur compte les fichiers qu'il a vus : le voisin du piège doit être le premier d'un analyseur neuf.
-        let (trouves, echecs) = par_lots(
+        let (trouves, echecs, _) = par_lots(
             &liste,
             || 0_usize,
             |vus, f| {
                 *vus += 1;
                 assert!(*f != piege, "fichier piégé");
-                (vec![Trouve::nouveau(&vus.to_string(), f)], true)
+                (vec![Trouve::nouveau(&vus.to_string(), f)], Lu::Tout)
             },
             |_| Vec::new(),
         );
@@ -792,7 +850,7 @@ mod tests {
             "{trouves:?}"
         );
         // Seul, comme examiner() le passe : illisible, donc « impossible à vérifier », et plus « sain ».
-        let (trouves, echecs) = par_lots(
+        let (trouves, echecs, _) = par_lots(
             std::slice::from_ref(&piege),
             || (),
             |(), _| panic!("fichier piégé"),
@@ -803,10 +861,10 @@ mod tests {
         assert!(illisible(Path::new("/home/alice"), &echecs).is_some());
         // Le premier analyseur créé panique : son fil tombe, ses deux fichiers sont illisibles, les six autres lus.
         let premier = AtomicBool::new(true);
-        let (trouves, mut echecs) = par_lots(
+        let (trouves, mut echecs, _) = par_lots(
             &liste,
             || assert!(!premier.swap(false, Ordering::SeqCst), "analyseur impossible à créer"),
-            |(), f| (vec![Trouve::nouveau("lu", f)], true),
+            |(), f| (vec![Trouve::nouveau("lu", f)], Lu::Tout),
             |_| Vec::new(),
         );
         assert_eq!((trouves.len(), echecs.len()), (6, 2));
@@ -849,12 +907,12 @@ mod tests {
     fn l_empreinte_ne_depend_pas_des_regles() {
         let liste: Vec<PathBuf> = (0..8).map(|i| PathBuf::from(format!("/home/alice/f{i}"))).collect();
         let (connu, piege) = (liste[2].clone(), liste[5].clone());
-        let (trouves, mut echecs) = par_lots(
+        let (trouves, mut echecs, _) = par_lots(
             &liste,
             || (),
             |(), f| {
                 assert!(*f != connu, "fichier piégé");
-                (vec![Trouve::nouveau("regle", f)], true)
+                (vec![Trouve::nouveau("regle", f)], Lu::Tout)
             },
             |f| {
                 assert!(*f != piege, "empreinte impossible");

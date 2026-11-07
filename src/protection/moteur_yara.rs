@@ -189,7 +189,16 @@ impl Regles {
 
     /// Comme `analyser_tampon`, sur une source qu'on lit par blocs (un fichier), sans jamais la garder en entière ; au
     /// plus `taille` octets en sont lus, et une source plus courte qu'annoncé (fichier raccourci entre-temps) est une
-    /// erreur de lecture, jamais un fichier sain.
+    /// erreur de lecture, jamais un fichier sain. Les analyses de fichiers passent désormais par le socle d'analyse
+    /// (`moteur::examiner`, partie par partie) ; cette lecture reste celle du banc de fuzzing et de l'oracle YARA-X,
+    /// et de qui devra lire un fichier sans le garder en mémoire.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "plus appelée par Vanguard depuis le socle d'analyse : fuzzing et oracle"
+        )
+    )]
     pub(crate) fn analyser_flux<S: Read + Seek>(
         &self,
         source: &mut S,

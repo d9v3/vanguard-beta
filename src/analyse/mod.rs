@@ -43,8 +43,10 @@ mod tests;
 
 use std::time::Duration;
 
-#[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use arbre::{analyser, analyser_fichier};
+pub(crate) use arbre::analyser_fichier;
+// Les octets déjà en mémoire : pour le banc de fuzzing et les essais ; les analyses de Vanguard partent d'un fichier.
+#[cfg(test)]
+pub(crate) use arbre::analyser;
 
 /// Les bornes d'une analyse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

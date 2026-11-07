@@ -27,6 +27,7 @@ pub mod lien;
 pub mod manifeste;
 pub mod memoire;
 pub(crate) mod memoire_dns;
+pub(crate) mod moteur;
 pub(crate) mod moteur_yara;
 pub(crate) mod motifs;
 pub(crate) mod normales;

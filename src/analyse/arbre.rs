@@ -101,8 +101,11 @@ pub(crate) fn analyser_fichier(
     use std::io::Read;
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
+    // Sans attendre (un tube nommé glissé à la place du fichier bloquerait la lecture) et sans suivre de lien : un
+    // fichier listé puis remplacé par un lien avant d'être ouvert est illisible, jamais un autre fichier analysé sous
+    // son nom.
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK | libc::O_NOFOLLOW);
     let fichier = options.open(chemin)?;
     let meta = fichier.metadata()?;
     if !meta.is_file() {
