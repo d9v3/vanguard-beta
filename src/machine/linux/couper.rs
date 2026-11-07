@@ -3,6 +3,10 @@
 //! identifiant complet (ports, adresses, interface et témoin, pour ne jamais viser une autre prise venue entre-temps)
 //! et son accusé lu. Il faut CAP_NET_ADMIN et un noyau avec CONFIG_INET_DIAG_DESTROY : sinon, c'est dit (la
 //! connexion déjà ouverte continue), jamais avalé.
+//!
+//! La coupure du réseau d'un programme (Défense R3) coupe de même les prises d'un processus, reconnues par leur
+//! numéro d'inode (celui de « socket:[N] » dans /proc/<pid>/fd) : une prise garde le cgroup où elle est née, si bien
+//! que celles ouvertes avant le changement de cgroup échapperaient sinon à la règle.
 
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 
@@ -25,6 +29,9 @@ const IPPROTO_UDP: u8 = 17;
 /// prise reliée à une adresse est ESTABLISHED (1).
 const ETATS_TCP: u32 = (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 8) | (1 << 9) | (1 << 11);
 const ETATS_UDP: u32 = 1 << 1;
+/// Tous les états : les prises d'un processus coupé le sont toutes, celles qui écoutent comprises (une prise qui
+/// écoute, née avant la coupure, accepterait encore).
+const TOUS_LES_ETATS: u32 = u32::MAX;
 
 /// inet_diag_req_v2 (56 octets) : famille, protocole, extensions, bourrage, états, puis l'identifiant de prise
 /// (inet_diag_sockid, 48 octets).
@@ -55,6 +62,38 @@ pub(crate) fn prises_vers(octets: &[u8], ip: IpAddr) -> Vec<(u8, [u8; 48])> {
         .collect()
 }
 
+/// Les prises d'une liste sock_diag dont l'inode est l'un de ceux-là (idiag_inode : octets 68 à 72 du message,
+/// après l'identifiant, expires, rqueue, wqueue et uid).
+pub(crate) fn prises_de(octets: &[u8], inodes: &[u64]) -> Vec<(u8, [u8; 48])> {
+    recus(octets)
+        .filter(|r| r.genre == SOCK_DIAG_BY_FAMILY && r.corps.len() >= 72)
+        .filter_map(|r| {
+            let [famille, _, _, _, id @ ..] = *r.corps.first_chunk::<52>()?;
+            let inode = u32::from_ne_bytes(*r.corps.get(68..72)?.first_chunk::<4>()?);
+            (inode != 0 && inodes.contains(&u64::from(inode))).then_some((famille, id))
+        })
+        .collect()
+}
+
+/// Les inodes des prises ouvertes par ce processus (« socket:[N] » dans /proc/<pid>/fd).
+pub(crate) fn inodes_du_processus(pid: u32) -> Vec<u64> {
+    let Ok(lus) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+        return Vec::new();
+    };
+    let mut inodes: Vec<u64> = lus
+        .flatten()
+        .filter_map(|e| std::fs::read_link(e.path()).ok())
+        .filter_map(|l| inode_de_lien(&l.to_string_lossy()))
+        .collect();
+    inodes.sort_unstable();
+    inodes.dedup();
+    inodes
+}
+
+fn inode_de_lien(lien: &str) -> Option<u64> {
+    lien.strip_prefix("socket:[")?.strip_suffix(']')?.parse().ok()
+}
+
 /// Ce que la coupure a donné.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Coupure {
@@ -66,18 +105,48 @@ pub(crate) struct Coupure {
 /// Coupe les connexions TCP et UDP ouvertes vers cette adresse. `Err` : pourquoi une connexion ouverte n'a pas pu
 /// l'être (noyau sans INET_DIAG_DESTROY, droits manquants).
 pub(crate) fn couper_vers(ip: IpAddr) -> Result<Coupure, Echec> {
-    let prise = Prise::ouvrir(NETLINK_SOCK_DIAG).map_err(|e| Echec::io(OU, &e))?;
     let familles: &[u8] = if ip.to_canonical().is_ipv4() {
         &[AF_INET, AF_INET6]
     } else {
         &[AF_INET6]
     };
+    couper_choisies(
+        familles,
+        &[(IPPROTO_TCP, ETATS_TCP), (IPPROTO_UDP, ETATS_UDP)],
+        |liste| prises_vers(liste, ip),
+    )
+}
+
+/// Coupe les prises TCP et UDP (IPv4 et IPv6, tous états) ouvertes par ce processus. Les inodes sont lus avant :
+/// une prise ouverte après la lecture est née dans le cgroup coupé, la règle la tient.
+pub(crate) fn couper_processus(pid: u32) -> Result<Coupure, Echec> {
+    let inodes = inodes_du_processus(pid);
+    if inodes.is_empty() {
+        return Ok(Coupure {
+            coupees: 0,
+            deja_fermees: 0,
+        });
+    }
+    couper_choisies(
+        &[AF_INET, AF_INET6],
+        &[(IPPROTO_TCP, TOUS_LES_ETATS), (IPPROTO_UDP, TOUS_LES_ETATS)],
+        |liste| prises_de(liste, &inodes),
+    )
+}
+
+/// Liste les prises de ces familles et protocoles, et coupe celles que `choisir` retient.
+fn couper_choisies(
+    familles: &[u8],
+    protocoles: &[(u8, u32)],
+    choisir: impl Fn(&[u8]) -> Vec<(u8, [u8; 48])>,
+) -> Result<Coupure, Echec> {
+    let prise = Prise::ouvrir(NETLINK_SOCK_DIAG).map_err(|e| Echec::io(OU, &e))?;
     let mut resultat = Coupure {
         coupees: 0,
         deja_fermees: 0,
     };
     let mut sequence = 1u32;
-    for &(protocole, etats) in &[(IPPROTO_TCP, ETATS_TCP), (IPPROTO_UDP, ETATS_UDP)] {
+    for &(protocole, etats) in protocoles {
         for &famille in familles {
             // Un numéro de séquence netlink : il fait le tour, c'est son sens.
             sequence = sequence.wrapping_add(1);
@@ -102,7 +171,7 @@ pub(crate) fn couper_vers(ip: IpAddr) -> Result<Coupure, Echec> {
                     ));
                 }
             };
-            for (f, id) in prises_vers(&reponse, ip) {
+            for (f, id) in choisir(&reponse) {
                 sequence = sequence.wrapping_add(1);
                 let m = netlink::message(
                     SOCK_DESTROY,
@@ -189,6 +258,33 @@ mod tests {
         assert_eq!(&d[8..], &vers[0].1[..]);
     }
 
+    #[test]
+    fn prises_choisies_par_leur_inode() {
+        let avec_inode = |famille: u8, inode: u32| {
+            let mut m = diag(famille, &[127, 0, 0, 1]);
+            // L'en-tête netlink (16 octets), puis idiag_inode à l'octet 68 du corps.
+            m[16 + 68..16 + 72].copy_from_slice(&inode.to_ne_bytes());
+            m
+        };
+        let mut liste = avec_inode(AF_INET, 4242);
+        liste.extend(avec_inode(AF_INET6, 777));
+        liste.extend(avec_inode(AF_INET, 0));
+        let choisies = prises_de(&liste, &[777, 4242, 0]);
+        assert_eq!(choisies.len(), 2, "l'inode 0 (prise sans fichier) n'est jamais choisi");
+        assert_eq!(choisies[1].0, AF_INET6);
+        assert_eq!(prises_de(&liste, &[5]), []);
+        assert_eq!(inode_de_lien("socket:[123456]"), Some(123_456));
+        assert_eq!(inode_de_lien("pipe:[12]"), None);
+        assert_eq!(inode_de_lien("/home/x/socket:[1]"), None);
+        // Ce processus : ses prises sont listées, et elles seules.
+        let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let ino = std::os::unix::fs::MetadataExt::ino(
+            &std::fs::metadata(format!("/proc/self/fd/{}", std::os::fd::AsRawFd::as_raw_fd(&s))).unwrap(),
+        );
+        assert!(inodes_du_processus(std::process::id()).contains(&ino));
+        assert!(inodes_du_processus(0).is_empty());
+    }
+
     /// Dedans un espace de noms réseau à part : une vraie connexion TCP sur la boucle locale, coupée par
     /// SOCK_DESTROY. Lancé par `coupure_dans_un_espace_a_part`, jamais seul.
     #[test]
@@ -223,6 +319,18 @@ mod tests {
         assert!(matches!(lu, Err(_) | Ok(0)), "{lu:?}");
         // Plus rien vers cette adresse.
         assert_eq!(couper_vers("127.0.0.3".parse().unwrap()).unwrap().coupees, 0);
+        // Les prises d'un processus (ici l'essai lui-même) : la connexion et la prise qui écoute.
+        let ecoute = std::net::TcpListener::bind("127.0.0.4:0").unwrap();
+        let mut client = std::net::TcpStream::connect(ecoute.local_addr().unwrap()).unwrap();
+        let (serveur, _) = ecoute.accept().unwrap();
+        let c = couper_processus(std::process::id()).unwrap();
+        assert!(c.coupees >= 3, "écoute, client et serveur : {c:?}");
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let lu = client.read(&mut octet);
+        assert!(matches!(lu, Err(_) | Ok(0)), "{lu:?}");
+        drop(serveur);
     }
 
     /// La coupure éprouvée sur une vraie connexion, dans un espace de noms réseau à part (rien ne touche les

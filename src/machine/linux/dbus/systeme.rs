@@ -3,8 +3,9 @@
 //! actions du bus de la session (`actions.rs`), dont elle reprend l'envoi et l'attente du job.
 //!
 //! Seul le fils root s'en sert, et seulement pour un geste de `machine::gestes_unix` déjà rejugé (`unite`,
-//! `unite-designee`, `signatures-clamav`) : aucune fonction ne prend une méthode, et chaque nom d'unité passe la règle
-//! stricte de `gestes_unix::nom_admis` avant tout envoi. Le drapeau ALLOW_INTERACTIVE_AUTHORIZATION n'est jamais
+//! `unite-designee`, `signatures-clamav`) ou pour la coupure du réseau d'un programme (ordre rejugé,
+//! `CouperReseauProgramme`) : aucune fonction ne prend une méthode, et chaque nom d'unité passe la règle stricte de
+//! `gestes_unix::nom_admis` (ou celle des scopes de coupure, `nom_de_coupure`) avant tout envoi. Le drapeau ALLOW_INTERACTIVE_AUTHORIZATION n'est jamais
 //! posé : le fils est déjà root, une fenêtre polkit ne viendrait que d'une erreur.
 //!
 //! Comme `systemctl` sans `--no-block`, une action qui lance un job (démarrer, arrêter…) s'abonne d'abord
@@ -43,7 +44,70 @@ pub(crate) const ACTIONS_SYSTEME: &[Action] = &[
     (SYSTEMD, CHEMIN_SYSTEMD, GESTIONNAIRE, "ResetFailed", ""),
     (SYSTEMD, CHEMIN_SYSTEMD, GESTIONNAIRE, "MaskUnitFiles", "asbb"),
     (SYSTEMD, CHEMIN_SYSTEMD, GESTIONNAIRE, "UnmaskUnitFiles", "asb"),
+    // La coupure du réseau d'un programme : un scope à lui sous vanguard.slice (propriétés écrites ici seulement,
+    // `scope_de_coupure`), puis le retour du processus dans l'unité d'où il venait.
+    (
+        SYSTEMD,
+        CHEMIN_SYSTEMD,
+        GESTIONNAIRE,
+        "StartTransientUnit",
+        "ssa(sv)a(sa(sv))",
+    ),
+    (SYSTEMD, CHEMIN_SYSTEMD, GESTIONNAIRE, "AttachProcessesToUnit", "ssau"),
 ];
+
+/// La tranche des scopes de coupure : la règle de nf_tables vise le niveau 2 sous la racine (`vanguard.slice`, puis
+/// le scope).
+pub(crate) const TRANCHE_DES_COUPURES: &str = "vanguard.slice";
+
+/// Le nom du scope de coupure d'un processus : `coupe-<pid>-<départ>.scope` (le départ, en tops d'horloge depuis le
+/// démarrage, distingue un pid repris par un autre processus).
+pub(crate) fn nom_de_coupure(pid: u32, depart: u64) -> String {
+    format!("coupe-{pid}-{depart}.scope")
+}
+
+/// Un nom de scope de coupure, et rien d'autre : « coupe- », deux nombres, « .scope ».
+pub(crate) fn est_nom_de_coupure(nom: &str) -> bool {
+    let Some(milieu) = nom.strip_prefix("coupe-").and_then(|n| n.strip_suffix(".scope")) else {
+        return false;
+    };
+    let Some((pid, depart)) = milieu.split_once('-') else {
+        return false;
+    };
+    let nombre = |t: &str| !t.is_empty() && t.len() <= 20 && t.bytes().all(|o| o.is_ascii_digit());
+    nombre(pid) && nombre(depart) && pid.parse::<u32>().is_ok_and(|p| p != 0) && depart.parse::<u64>().is_ok()
+}
+
+/// L'unité où remettre un processus (celle d'où il venait, lue dans /proc/<pid>/cgroup par l'assistant) : un nom
+/// d'unité tel qu'il paraît dans un chemin de cgroup (« \\x2d » compris), .service ou .scope, 255 octets au plus.
+pub(crate) fn unite_de_retour_admise(nom: &str) -> bool {
+    !nom.is_empty()
+        && nom.len() <= 255
+        && !nom.contains("..")
+        && nom.bytes().next().is_some_and(|o| o.is_ascii_alphanumeric())
+        && nom
+            .bytes()
+            .all(|o| o.is_ascii_alphanumeric() || b":_.@-\\".contains(&o))
+        && (nom.ends_with(".service") || nom.ends_with(".scope"))
+}
+
+/// Le sous-cgroup sous cette unité (vide, ou « /a/b » dans une unité déléguée) : des composants admis comme un nom
+/// d'unité, sans « .. », 1024 octets au plus.
+pub(crate) fn sous_cgroupe_admis(chemin: &str) -> bool {
+    if chemin.is_empty() {
+        return true;
+    }
+    let Some(reste) = chemin.strip_prefix('/') else {
+        return false;
+    };
+    chemin.len() <= 1024
+        && reste.split('/').all(|c| {
+            !c.is_empty()
+                && c != "."
+                && !c.contains("..")
+                && c.bytes().all(|o| o.is_ascii_alphanumeric() || b":_.@-\\".contains(&o))
+        })
+}
 
 /// Le temps laissé à un job du système (un service qui démarre ou s'arrête ; systemd en laisse 90 par défaut à un
 /// arrêt, TimeoutStopSec) : au-delà, « pas vérifié ».
@@ -166,6 +230,19 @@ impl Bus {
     /// Lance `methode` (StartUnit, StopUnit…) sur `unite` et attend la fin de son job : abonné AVANT de le lancer,
     /// sans quoi sa fin peut passer avant l'abonnement.
     fn job(&mut self, methode: &str, unite: &str, fins: &mut Vec<FinDeJob>) -> Result<(), Echec> {
+        let arguments = vec![Valeur::texte_de(unite), Valeur::texte_de("replace")];
+        self.job_avec(methode, unite, arguments, fins)
+    }
+
+    /// `job`, avec les arguments de la méthode (le premier est toujours le nom de l'unité : il filtre les fins de
+    /// job, voir `agir_dans`).
+    fn job_avec(
+        &mut self,
+        methode: &str,
+        unite: &str,
+        arguments: Vec<Valeur>,
+        fins: &mut Vec<FinDeJob>,
+    ) -> Result<(), Echec> {
         self.agir_systeme("AddMatch", vec![Valeur::texte_de(FILTRE_FIN_DE_JOB)], None, fins)?;
         let (reponse, _) = self
             .agir_dans(ACTIONS_SYSTEME, GESTIONNAIRE, "Subscribe", Vec::new(), None, fins)
@@ -174,12 +251,7 @@ impl Bus {
         let systemd = reponse
             .expediteur
             .ok_or_else(|| pas_fait(super::mal_forme("expéditeur absent")))?;
-        let corps = self.agir_systeme(
-            methode,
-            vec![Valeur::texte_de(unite), Valeur::texte_de("replace")],
-            Some(&systemd),
-            fins,
-        )?;
+        let corps = self.agir_systeme(methode, arguments, Some(&systemd), fins)?;
         let chemin = corps
             .first()
             .and_then(Valeur::texte)
@@ -356,6 +428,67 @@ pub(crate) fn agir_sur_unite(bus: &mut Bus, action: ActionUnite, unite: &str) ->
         ActionUnite::Redemarrer => bus.job("TryRestartUnit", unite, &mut fins),
         ActionUnite::Recharger => bus.job("ReloadOrTryRestartUnit", unite, &mut fins),
     }
+}
+
+/// Les propriétés du scope de coupure : le processus (PIDs), la tranche de Vanguard, une description, et le ramassage
+/// du scope même en échec (il ne reste pas « failed » après la fin du processus).
+fn proprietes_de_coupure(pid: u32, description: &str) -> Valeur {
+    let propriete = |nom: &str, signature: &str, v: Valeur| {
+        Valeur::Structure(vec![
+            Valeur::texte_de(nom),
+            Valeur::Variante(signature.into(), Box::new(v)),
+        ])
+    };
+    Valeur::Tableau(vec![
+        propriete("PIDs", "au", Valeur::Tableau(vec![Valeur::U32(pid)])),
+        propriete("Slice", "s", Valeur::texte_de(TRANCHE_DES_COUPURES)),
+        propriete("Description", "s", Valeur::texte_de(description)),
+        propriete("CollectMode", "s", Valeur::texte_de("inactive-or-failed")),
+    ])
+}
+
+/// Met le processus `pid` dans le scope de coupure `nom` (StartTransientUnit, PIDs = [pid], Slice = vanguard.slice),
+/// et attend que systemd confirme (« done »). Jamais un déplacement à la main dans /sys/fs/cgroup : systemd tient les
+/// cgroups, et le scope se ramasse seul quand le processus finit. Le pid est passé en nombre (le bus ne passe pas ici
+/// de descripteur, PIDFDs) : l'appelant revérifie le départ du processus et son cgroup après coup.
+pub(crate) fn scope_de_coupure(bus: &mut Bus, nom: &str, pid: u32, description: &str) -> Result<(), Echec> {
+    if !est_nom_de_coupure(nom) || pid == 0 {
+        return Err(echec(tr!(
+            "nom de scope refusé : rien n'est envoyé",
+            "scope name refused: nothing is sent"
+        )));
+    }
+    // Une description sur une ligne, bornée : elle paraît dans « systemctl status ».
+    let description: String = description.chars().filter(|c| !c.is_control()).take(200).collect();
+    let arguments = vec![
+        Valeur::texte_de(nom),
+        Valeur::texte_de("fail"),
+        proprietes_de_coupure(pid, &description),
+        Valeur::Tableau(Vec::new()),
+    ];
+    bus.job_avec("StartTransientUnit", nom, arguments, &mut Vec::new())
+}
+
+/// Remet le processus dans l'unité d'où il venait (AttachProcessesToUnit : unité, sous-cgroup, pid). Le scope de
+/// coupure, vide, est ramassé par systemd ; il n'est jamais arrêté (StopUnit tuerait le processus).
+pub(crate) fn remettre_dans(bus: &mut Bus, unite: &str, sous_cgroupe: &str, pid: u32) -> Result<(), Echec> {
+    if !unite_de_retour_admise(unite) || !sous_cgroupe_admis(sous_cgroupe) || pid == 0 {
+        return Err(echec(tr!(
+            "unité de retour refusée : rien n'est envoyé",
+            "return unit refused: nothing is sent"
+        )));
+    }
+    bus.agir_systeme(
+        "AttachProcessesToUnit",
+        vec![
+            Valeur::texte_de(unite),
+            Valeur::texte_de(sous_cgroupe),
+            Valeur::Tableau(vec![Valeur::U32(pid)]),
+        ],
+        None,
+        &mut Vec::new(),
+    )
+    .map(|_| ())
 }
 
 /// L'échec des liens d'une activation (ou d'une désactivation) « maintenant », complété : le démarrage (ou l'arrêt)
@@ -731,7 +864,6 @@ mod tests {
         for interdite in [
             "PowerOff",
             "Reboot",
-            "StartTransientUnit",
             "KillUnit",
             "SetUnitProperties",
             "LinkUnitFiles",
@@ -743,6 +875,162 @@ mod tests {
         }
         // Sous les essais, le vrai bus système n'est jamais joint pour agir.
         assert!(bus_pour_agir().is_err());
+        // StartTransientUnit ne part que de `scope_de_coupure`, qui écrit lui-même ses propriétés : aucun autre appel
+        // dans ce module (hors essais), ni ailleurs dans le programme.
+        let source = include_str!("systeme.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap();
+        assert_eq!(
+            code.matches("\"StartTransientUnit\"").count(),
+            2,
+            "la liste et scope_de_coupure"
+        );
+        assert_eq!(
+            code.matches("\"AttachProcessesToUnit\"").count(),
+            2,
+            "la liste et remettre_dans"
+        );
+    }
+
+    /// Le gestionnaire de services du compte 1000, écrit en deux morceaux : la garde de confidentialité des commits
+    /// (outils/confidentialite.py) lirait le nom entier comme un courriel.
+    const UNITE_DU_COMPTE: &str = concat!("user", "@1000.service");
+
+    /// Les noms des scopes de coupure et des unités de retour : rien d'autre ne part.
+    #[test]
+    fn noms_de_coupure_et_de_retour() {
+        assert_eq!(nom_de_coupure(4242, 123_456), "coupe-4242-123456.scope");
+        assert!(est_nom_de_coupure(&nom_de_coupure(1, 0)));
+        for refuse in [
+            "coupe-0-1.scope",
+            "coupe-1.scope",
+            "coupe-a-1.scope",
+            "coupe-1-1.service",
+            "x-1-1.scope",
+            "coupe-1-1-1.scope",
+            "coupe--1.scope",
+            "coupe-1-/x.scope",
+            "coupe-99999999999-1.scope",
+        ] {
+            assert!(!est_nom_de_coupure(refuse), "{refuse}");
+        }
+        for admise in [
+            UNITE_DU_COMPTE,
+            "session-3.scope",
+            "app-org.mozilla.firefox-1234.scope",
+            "systemd-fsck@dev-disk-by\\x2duuid-1.service",
+        ] {
+            assert!(unite_de_retour_admise(admise), "{admise}");
+        }
+        for refusee in [
+            "",
+            "../x.service",
+            "a/b.service",
+            "-x.scope",
+            "x.slice",
+            "x y.service",
+            "x.socket",
+        ] {
+            assert!(!unite_de_retour_admise(refusee), "{refusee}");
+        }
+        for admis in ["", "/app.slice/app-x.scope", "/init.scope", "/a\\x2db"] {
+            assert!(sous_cgroupe_admis(admis), "{admis}");
+        }
+        for refuse in ["app.slice", "/", "//x", "/x/../y", "/x/./y", "/x/", "/x y", "/x\ny"] {
+            assert!(!sous_cgroupe_admis(refuse), "{refuse}");
+        }
+        // Rien ne part vers le bus avec un nom refusé.
+        let (mut bus, fil) = faux_bus(|_, _| {});
+        assert!(scope_de_coupure(&mut bus, "coupe-1.scope", 1, "x").is_err());
+        assert!(scope_de_coupure(&mut bus, "coupe-1-1.scope", 0, "x").is_err());
+        assert!(remettre_dans(&mut bus, "x.slice", "", 1).is_err());
+        assert!(remettre_dans(&mut bus, "x.service", "/../y", 1).is_err());
+        drop(bus);
+        assert_eq!(fil.join().unwrap(), Vec::<String>::new());
+    }
+
+    /// Le scope de coupure par le faux bus : AddMatch, Subscribe, StartTransientUnit avec ses propriétés, la fin du
+    /// job ; seul « done » vaut « fait ». Puis le retour (AttachProcessesToUnit, sans job).
+    #[test]
+    fn scope_de_coupure_et_retour_par_le_faux_bus() {
+        for resultat in ["done", "failed"] {
+            let (mut bus, fil) = faux_bus(move |s, vus| {
+                for _ in 0..3 {
+                    let a = lire(s);
+                    let m = a.membre.clone().unwrap();
+                    let r = if m == "StartTransientUnit" {
+                        assert_eq!(a.signature, "ssa(sv)a(sa(sv))");
+                        assert_eq!(a.corps[0], Valeur::texte_de("coupe-77-5.scope"));
+                        assert_eq!(a.corps[1], Valeur::texte_de("fail"));
+                        assert_eq!(a.corps[2], proprietes_de_coupure(77, "essai"));
+                        assert_eq!(a.corps[3], Valeur::Tableau(Vec::new()));
+                        let job = "/org/freedesktop/systemd1/job/12";
+                        s.write_all(&signal_fin_de(job, "coupe-77-5.scope", resultat, ":1.2"))
+                            .unwrap();
+                        retour(&a, "o", vec![Valeur::texte_de(job)], ":1.2")
+                    } else {
+                        repondre(s, &a, resultat)
+                    };
+                    vus.push(m);
+                    s.write_all(&r).unwrap();
+                }
+            });
+            let r = scope_de_coupure(&mut bus, "coupe-77-5.scope", 77, "essai\n");
+            assert_eq!(r.is_ok(), resultat == "done", "{resultat} {r:?}");
+            assert_eq!(fil.join().unwrap(), ["AddMatch", "Subscribe", "StartTransientUnit"]);
+        }
+        let (mut bus, fil) = faux_bus(|s, vus| {
+            let a = lire(s);
+            assert_eq!(a.signature, "ssau");
+            assert_eq!(
+                a.corps,
+                [
+                    Valeur::texte_de(UNITE_DU_COMPTE),
+                    Valeur::texte_de("/app.slice/app-x.scope"),
+                    Valeur::Tableau(vec![Valeur::U32(77)]),
+                ]
+            );
+            vus.push(a.membre.clone().unwrap());
+            s.write_all(&retour(&a, "", Vec::new(), ":1.2")).unwrap();
+        });
+        remettre_dans(&mut bus, UNITE_DU_COMPTE, "/app.slice/app-x.scope", 77).unwrap();
+        assert_eq!(fil.join().unwrap(), ["AttachProcessesToUnit"]);
+    }
+
+    /// StartTransientUnit, octet par octet, contre un encodeur écrit à part d'après la spécification D-Bus (le même
+    /// procédé que `messages_octet_par_octet`) : série 4 (AddMatch 2, Subscribe 3), propriétés a(sv) alignées à 8, le
+    /// tableau vide a(sa(sv)) suivi de son bourrage.
+    #[test]
+    fn scope_de_coupure_octet_par_octet() {
+        let attendu = hexa(
+            "
+             6c010001b800000004000000b600000001016f00190000002f6f72672f667265656465736b746f702f73797374656d64
+             310000000000000002017300200000006f72672e667265656465736b746f702e73797374656d64312e4d616e61676572
+             0000000000000000030173001200000053746172745472616e7369656e74556e69740000000000000601730018000000
+             6f72672e667265656465736b746f702e73797374656d6431000000000000000008016700107373612873762961287361
+             287376292900000010000000636f7570652d37372d352e73636f706500000000040000006661696c000000008b000000
+             04000000504944730002617500000000040000004d00000005000000536c696365000173000000000e00000076616e67
+             756172642e736c6963650000000000000b0000004465736372697074696f6e0001730000050000006573736169000000
+             0b000000436f6c6c6563744d6f6465000173000012000000696e6163746976652d6f722d6661696c6564000000000000",
+        );
+        let (mut bus, fil) = faux_bus(|s, vus| {
+            for _ in 0..3 {
+                let brut = lire_brut(s);
+                let a = Message::decoder_si(&brut, |_| true).unwrap();
+                let r = if a.membre.as_deref() == Some("StartTransientUnit") {
+                    let job = "/org/freedesktop/systemd1/job/12";
+                    s.write_all(&signal_fin_de(job, "coupe-77-5.scope", "done", ":1.2"))
+                        .unwrap();
+                    retour(&a, "o", vec![Valeur::texte_de(job)], ":1.2")
+                } else {
+                    repondre(s, &a, "done")
+                };
+                vus.push(brut.iter().map(|o| format!("{o:02x}")).collect::<Vec<_>>().concat());
+                s.write_all(&r).unwrap();
+            }
+        });
+        scope_de_coupure(&mut bus, "coupe-77-5.scope", 77, "essai").unwrap();
+        let envoyes = fil.join().unwrap();
+        assert_eq!(hexa(&envoyes[2]), attendu);
     }
 
     /// Hors de la règle des noms, rien ne part, même à un faux bus.
