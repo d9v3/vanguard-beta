@@ -113,6 +113,7 @@ struct Compteurs2 {
     evenements_perdus: AtomicU64,
     certains_passes: AtomicU64,
     rattrapages_perdus: AtomicU64,
+    changes_avant_jugement: AtomicU64,
 }
 
 fn plus(c: &AtomicU64) {
@@ -134,6 +135,7 @@ impl Compteurs2 {
             debordements: l(&self.debordements),
             certains_passes: l(&self.certains_passes),
             rattrapages_perdus: l(&self.rattrapages_perdus),
+            changes_avant_jugement: l(&self.changes_avant_jugement),
         }
     }
 }
@@ -164,6 +166,20 @@ struct Demande {
     cle: Option<Cle>,
     /// Déjà hachée (en cache, et certaine) : seulement les exceptions et le mode à juger.
     connu: Option<Connu>,
+    /// L'heure de sa réception (secondes, nanosecondes depuis 1970, l'horloge des ctime) : une clé lue après la
+    /// réponse, avec une ctime plus récente, dit un fichier changé après le lancement (C7-5).
+    recue: (i64, i64),
+}
+
+/// L'heure, comme une ctime : un appel à l'horloge, rien qui attende un système de fichiers (le lecteur s'en sert).
+fn horodatage() -> (i64, i64) {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    (
+        i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
+        i64::from(d.subsec_nanos()),
+    )
 }
 
 fn verrou<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -277,12 +293,20 @@ fn preparer(p: &Partage, d: &mut Demande) -> bool {
     let cle = if let Some(c) = d.cle {
         c
     } else {
+        // Déjà répondue (le délai, la file pleine) : le lancement a pu finir, et le fichier changer depuis.
+        let tard = !verrou(&p.attentes).contient(d.fd, &d.fichier);
         let Some(c) = cle_de(&d.fichier) else {
             plus(&p.compteurs.non_verifiees);
             p.repondre(d.fd, &d.fichier, true);
             return false;
         };
         d.cle = Some(c);
+        // C7-5 : changé depuis la réception (une ctime ne se recule pas sans root) : ce qui serait haché n'est plus
+        // ce qui a tourné ; le dire, plutôt que de juger propre un autre contenu.
+        if tard && (c.ctime, c.ctime_ns) >= d.recue {
+            change_avant_jugement(p, d);
+            return false;
+        }
         c
     };
     let connu = verrou(&p.cache).lire(&cle);
@@ -293,6 +317,16 @@ fn preparer(p: &Partage, d: &mut Demande) -> bool {
     }
     d.connu = connu;
     true
+}
+
+/// C7-5 : le fichier d'un lancement a changé avant d'être jugé ; son verdict n'est ni rendu propre ni gardé.
+fn change_avant_jugement(p: &Partage, d: &Demande) {
+    plus(&p.compteurs.changes_avant_jugement);
+    p.repondre(d.fd, &d.fichier, true);
+    let mut e = evenement("change-avant-jugement");
+    e.pid = d.pid;
+    e.chemin = sortie::borner(&chemin_de(d.fd));
+    p.noter(e);
 }
 
 /// Confie une demande à `vers` (le tri, ou les fils de décision) ; sa file pleine, elle est permise sans attendre (P9)
@@ -378,7 +412,15 @@ fn decider(p: &Partage, d: &Demande, max: u64, vers_rattrapage: Option<&SyncSend
         };
         plus(&p.compteurs.hachees);
         let c = juger_hache(p, &h);
-        verrou(&p.cache).noter(cle, c);
+        // C7-5 : relu après le hachage ; changé pendant (tronqué, réécrit), l'empreinte peut mêler deux contenus. Une
+        // empreinte certaine reste une preuve (elle ne s'obtient que du contenu certain) ; propre, elle ne prouve
+        // rien : le lancement est dit, et rien n'est gardé.
+        if cle_de(&d.fichier) == Some(cle) {
+            verrou(&p.cache).noter(cle, c);
+        } else if c.certain.is_none() {
+            change_avant_jugement(p, d);
+            return;
+        }
         c
     };
     let Some(certitude) = connu.certain else {
@@ -1123,6 +1165,7 @@ fn recevoir(
         pid: ev.pid,
         cle: None,
         connu: None,
+        recue: horodatage(),
     };
     confier(p, demande, vers_tri, vers_rattrapage);
 }
@@ -1326,6 +1369,7 @@ mod tests {
                 fiable: true,
             }),
             connu: None,
+            recue: (i64::MAX, 0),
         }
     }
 
@@ -1425,6 +1469,63 @@ mod tests {
         assert_eq!(p.compteurs.lire().rattrapages_perdus, 2);
     }
 
+    /// C7-5 : un fichier tronqué (ou réécrit) entre le lancement et son jugement après coup n'est pas jugé propre :
+    /// le cas est compté et dit, et rien n'est gardé au cache ; ni avant la lecture de la clé (sa ctime est plus
+    /// récente que la réception), ni entre la clé et le hachage (relue après).
+    #[test]
+    fn un_fichier_change_avant_jugement_est_dit() {
+        let d = crate::essais::Jetable::nouveau("garde-servir-change");
+        let contenu = b"un programme malveillant invente, court, qui sort vite";
+        let empreinte = listes::hacher(&contenu[..]).unwrap().sha256;
+        let (p, evenements) = partage(&[empreinte]);
+        // La clé lue avant le changement : relue après le hachage.
+        let tronque = demande(&d, "tronque", contenu);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(d.join("tronque"))
+            .unwrap()
+            .set_len(4)
+            .unwrap();
+        decider(&p, &tronque, HACHAGE_MAX, None);
+        let k = p.compteurs.lire();
+        assert_eq!((k.changes_avant_jugement, k.certains_passes, k.hachees), (1, 0, 1));
+        assert!(verrou(&p.cache).lire(&tronque.cle.unwrap()).is_none());
+        assert_eq!(evenements.try_recv().unwrap().genre, "change-avant-jugement");
+        // Reçue, déjà permise, puis changée avant que la clé soit lue : vue par la ctime.
+        let fichier = d.join("reecrit");
+        std::fs::write(&fichier, contenu).unwrap();
+        let ouvert = Arc::new(File::open(&fichier).unwrap());
+        let recue = horodatage();
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&fichier, b"autre").unwrap();
+        let mut reecrit = Demande {
+            fd: std::os::fd::AsRawFd::as_raw_fd(&*ouvert),
+            fichier: ouvert,
+            pid: i32::MAX,
+            cle: None,
+            connu: None,
+            recue,
+        };
+        assert!(!preparer(&p, &mut reecrit));
+        let k = p.compteurs.lire();
+        assert_eq!((k.changes_avant_jugement, k.hachees), (2, 1));
+        // Non changé depuis sa réception : jugé comme avant, et certain, compté comme passé.
+        std::fs::write(d.join("intact"), contenu).unwrap();
+        let intact = Arc::new(File::open(d.join("intact")).unwrap());
+        let mut intact = Demande {
+            fd: std::os::fd::AsRawFd::as_raw_fd(&*intact),
+            fichier: intact,
+            pid: i32::MAX,
+            cle: None,
+            connu: None,
+            recue: horodatage(),
+        };
+        assert!(preparer(&p, &mut intact));
+        decider(&p, &intact, HACHAGE_MAX, None);
+        let k = p.compteurs.lire();
+        assert_eq!((k.changes_avant_jugement, k.certains_passes), (2, 1));
+    }
+
     /// L-2 : le fil lecteur (celui qui bat le chien de garde) ne fait aucun appel qui puisse attendre un système de
     /// fichiers : ni fstat, ni fstatfs, ni lecture de /proc, ni hachage ; le tri s'en charge.
     #[test]
@@ -1477,6 +1578,7 @@ mod tests {
             pid: i32::MAX,
             cle: None,
             connu: None,
+            recue: (i64::MAX, 0),
         };
         verrou(&p.attentes).ajouter(revue.fd, Arc::clone(&revue.fichier), Instant::now());
         assert!(!preparer(&p, &mut revue));
@@ -1492,6 +1594,7 @@ mod tests {
             pid: i32::MAX,
             cle: None,
             connu: None,
+            recue: (i64::MAX, 0),
         };
         assert!(preparer(&p, &mut apres));
         assert!(verrou(&p.cache).lire(&cle).is_none());

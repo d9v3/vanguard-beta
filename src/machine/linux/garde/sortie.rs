@@ -46,6 +46,10 @@ pub(crate) struct Compteurs {
     /// 512 Mio.
     #[serde(default)]
     pub rattrapages_perdus: u64,
+    /// Permis sans verdict à temps, puis changés (tronqués, réécrits) avant d'être jugés : ce qui a tourné ne peut
+    /// plus être haché (C7-5).
+    #[serde(default)]
+    pub changes_avant_jugement: u64,
 }
 
 /// etat.json.

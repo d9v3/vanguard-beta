@@ -43,8 +43,8 @@ impl<T> Attentes<T> {
         }
     }
 
-    /// La demande attend-elle encore sa réponse ? (Les essais seulement : le garde juge aussi ce qui n'attend plus.)
-    #[cfg(test)]
+    /// La demande attend-elle encore sa réponse ? Le garde juge aussi ce qui n'attend plus ; il s'en sert pour savoir
+    /// si le fichier a pu changer après le lancement (C7-5).
     pub(crate) fn contient(&self, fd: i32, porteur: &Arc<T>) -> bool {
         self.demandes.get(&fd).is_some_and(|(p, _)| Arc::ptr_eq(p, porteur))
     }

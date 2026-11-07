@@ -344,6 +344,16 @@ pub(crate) fn juger(posee: bool, etat: Option<&Etat>, maintenant: u64) -> Consta
             ),
         );
     }
+    if k.changes_avant_jugement > 0 {
+        let n = k.changes_avant_jugement;
+        hausser(
+            Niveau::Moyen,
+            trf!(
+                "{n} programmes lancés sans verdict à temps (garde saturé) ont changé avant d'être jugés : ce qui a tourné ne peut plus être vérifié. Un programme d'essai effacé juste après (une compilation) le fait aussi ; sinon, un programme a pu se cacher ainsi (vanguard garde montre les derniers événements).",
+                "{n} programs launched without a timely verdict (guard saturated) changed before being judged: what ran can no longer be checked. A test program deleted right after (a build) does this too; otherwise, a program may have hidden this way (vanguard guard shows the latest events)."
+            ),
+        );
+    }
     if k.non_verifiees > 0 {
         let n = k.non_verifiees;
         hausser(
@@ -475,6 +485,7 @@ fn genre_affiche(genre: &str) -> String {
         "delai" => tr!("permis faute de verdict", "allowed, no verdict in time").into(),
         "non-verifie" => tr!("non vérifié", "not checked").into(),
         "trop-gros" => tr!("trop gros, jamais jugé", "too big, never judged").into(),
+        "change-avant-jugement" => tr!("changé avant d'être jugé", "changed before being judged").into(),
         "file-pleine" => tr!("file pleine", "queue full").into(),
         "debordement" => tr!("débordement", "overflow").into(),
         "demarrage" => tr!("démarrage", "start").into(),
@@ -920,6 +931,10 @@ mod tests {
         let c = juger(true, Some(&gros), maintenant);
         assert_eq!(c.probleme, Some(Niveau::Info));
         assert!(c.message.contains("512"), "{}", c.message);
+        // C7-5 : un fichier changé avant d'être jugé, au moins moyen.
+        let mut change = etat(maintenant);
+        change.compteurs.changes_avant_jugement = 1;
+        assert_eq!(juger(true, Some(&change), maintenant).probleme, Some(Niveau::Moyen));
         // C7-1 : un débordement de la file du noyau, haut, et la borne voulue dite.
         let mut deborde = etat(maintenant);
         deborde.compteurs.debordements = 2;
