@@ -2002,17 +2002,23 @@ public static class AttenteCourte { public static void Main() { System.Threading
 }
 $bloc = Join-Path $dossierR1 'bloc-r1.exe'
 try {
-    Copy-Item (Join-Path $env:SystemRoot 'System32\notepad.exe') $bloc -Force
-    $signe = Start-Process -FilePath $bloc -PassThru -WindowStyle Minimized
+    # PING.EXE plutôt que notepad.exe : sous Windows 11, notepad.exe de System32 n'est qu'un lanceur de l'application
+    # du Store, fini en une seconde ; une copie de ping tourne tant qu'on la laisse et reste signée par le catalogue.
+    Copy-Item (Join-Path $env:SystemRoot 'System32\PING.EXE') $bloc -Force
+    $signe = Start-Process -FilePath $bloc -ArgumentList @('-n', '600', '127.0.0.1') -PassThru -WindowStyle Hidden
     Start-Sleep -Seconds 1
-    LancerAvec 'blocage-suspendre-microsoft' @('blocage', 'suspendre', "$($signe.Id)") "o`no`n"
-    $t = "$(Sortie 'blocage-suspendre-microsoft')"
-    $etat = Fils-Suspendus $signe.Id
-    if ($t -match "Rien n'est suspendu|Nothing is suspended" -and $etat -ne $true) { Ok 'Copie de notepad.exe (signée Microsoft) : suspension refusée, avec sa raison' }
-    else { Bug "Copie de notepad.exe : suspension non refusée (fils suspendus : $etat)" }
+    if ($signe.HasExited) { Bug "Copie de PING.EXE finie avant l'essai (code $($signe.ExitCode)) : refus de la suspension pas vérifié" }
+    else {
+        LancerAvec 'blocage-suspendre-microsoft' @('blocage', 'suspendre', "$($signe.Id)") "o`no`n"
+        # Le texte est coupé à la largeur de la console : espaces et retours ramenés à un seul espace avant de lire.
+        $t = "$(Sortie 'blocage-suspendre-microsoft')" -replace '\s+', ' '
+        $etat = Fils-Suspendus $signe.Id
+        if ($t -match "Rien n'est suspendu|Nothing is suspended" -and $t -match 'signé par Microsoft|signed by Microsoft' -and $etat -ne $true) { Ok 'Copie de PING.EXE (signée Microsoft) : suspension refusée, avec sa raison' }
+        else { Bug "Copie de PING.EXE : suspension non refusée ou sans sa raison (fils suspendus : $etat ; $((Lignes (Sortie 'blocage-suspendre-microsoft') | Where-Object { $_ -match '✖' }) -join ' / '))" }
+    }
     Start-Process -FilePath $exe -ArgumentList @('blocage', 'reprendre') -NoNewWindow -Wait | Out-Null
     Stop-Process -Id $signe.Id -Force -ErrorAction SilentlyContinue
-} catch { Sautee "Copie de notepad.exe non lancée : $($_.Exception.Message)" }
+} catch { Sautee "Copie de PING.EXE non lancée : $($_.Exception.Message)" }
 Lancer 'alerte-forgee' @('alerte', '../../x')
 if ("$(Sortie 'alerte-forgee')" -match 'Identifiant d''alerte invalide|Invalid alert identifier') { Ok 'vanguard alerte refuse un identifiant forgé' }
 else { Bug 'vanguard alerte ne refuse pas un identifiant forgé' }
