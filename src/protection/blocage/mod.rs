@@ -32,7 +32,7 @@ pub(crate) mod pare_feu;
 pub(crate) mod surveiller;
 pub(crate) mod suspension;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io::IsTerminal;
 
 use gestes::Contexte;
@@ -280,8 +280,8 @@ pub fn commande(mots: &[String]) {
 fn usage() {
     let categories = Categorie::TOUTES.map(Categorie::mot).join(", ");
     trp!(
-        "  Usage : vanguard blocage [chercher | annuler | etat | auto | clic | <catégorie> <mode> | juger <PID | parent | fichier> | juger destination <dossier> | suspendre <PID> | reprendre [<PID>]]\n  Catégories : {categories}. Modes : off, clic, auto (programmes et connexions seulement). « juger » montre ce que le blocage refuserait, et pourquoi, sans rien faire. « suspendre » gèle un processus (réversible) ; « reprendre » le relance (sans PID : tous ceux que Vanguard a suspendus).",
-        "  Usage: vanguard blocking [search | undo | status | auto | click | <category> <mode> | judge <PID | parent | file> | judge destination <folder> | suspend <PID> | resume [<PID>]]\n  Categories: {categories}. Modes: off, click, auto (programs and connections only). “judge” shows what blocking would refuse, and why, without doing anything. “suspend” freezes a process (reversible); “resume” starts it again (without a PID: all those Vanguard suspended)."
+        "  Usage : vanguard blocage [chercher | annuler | etat | auto | clic | <catégorie> <mode> | juger <PID | parent | fichier> | juger destination <dossier> | suspendre <PID> | reprendre [<PID>]]\n  Catégories : {categories}. Modes : off, clic, auto (programmes et connexions seulement). « juger » montre ce que le blocage refuserait, et pourquoi, sans rien faire. « suspendre » gèle un processus (réversible ; pas les programmes qu'il a déjà lancés) ; « reprendre » le relance (sans PID : tous ceux que Vanguard a suspendus).",
+        "  Usage: vanguard blocking [search | undo | status | auto | click | <category> <mode> | judge <PID | parent | file> | judge destination <folder> | suspend <PID> | resume [<PID>]]\n  Categories: {categories}. Modes: off, click, auto (programs and connections only). “judge” shows what blocking would refuse, and why, without doing anything. “suspend” freezes a process (reversible; not the programs it already started); “resume” starts it again (without a PID: all those Vanguard suspended)."
     );
 }
 
@@ -302,7 +302,8 @@ fn suspendre_par_pid(mot: &str) {
         pid,
         chemin: chemin.clone(),
     };
-    if let Some(raison) = ordres::juger(&o, &ordres::Juge::lire(None)) {
+    let intouchables = crate::machine::chasse::en_marche().map_or_else(HashSet::new, |(_, i)| i);
+    if let Some(raison) = ordres::juger(&o, &ordres::Juge::lire(None).avec(&intouchables)) {
         afficher_aligne(
             "  ✖ ",
             &trf!("Rien n'est suspendu : {raison}.", "Nothing is suspended: {raison}."),
@@ -311,41 +312,62 @@ fn suspendre_par_pid(mot: &str) {
         );
         return;
     }
-    afficher_aligne(
-        "  ",
-        &trf!(
-            "Suspendre « {} » (PID {pid}) : il ne fait plus rien mais reste là. « vanguard blocage reprendre {pid} » le relance.",
-            "Suspend “{}” (PID {pid}): it does nothing more but stays there. “vanguard blocking resume {pid}” starts it again.",
-            affichable(&chemin)
-        ),
-        2,
-        "",
-    );
-    if !demander(tr!("\n  Suspendre ? [o/N] : ", "\n  Suspend? [y/N]: ")).oui() {
-        trp!("  Rien n'a été fait.", "  Nothing was done.");
+    if !confirmer_la_suspension(pid, &chemin, &chemin) {
         return;
     }
     let quoi = trf!("Suspendu à la main : {}", "Suspended by hand: {}", chemin);
-    match suspension::suspendre(pid, &chemin, &quoi, None) {
+    let intouchables = crate::machine::chasse::en_marche().map_or_else(HashSet::new, |(_, i)| i);
+    match suspension::suspendre(pid, &chemin, &quoi, None, &intouchables) {
         Ok(()) => trp!("  {VERT}✔{RESET} Suspendu.", "  {VERT}✔{RESET} Suspended."),
         Err(e) => trp!("  ✖ {e}", "  ✖ {e}"),
     }
 }
 
-/// `vanguard blocage reprendre [<PID>]` : seulement ce que Vanguard a suspendu (sa liste scellée), et toujours le
-/// même programme.
+/// `vanguard blocage reprendre [<PID>]` : ce que Vanguard a suspendu (sa liste scellée), toujours le même programme,
+/// repris par les droits de ce compte ou par l'assistant élevé ; rien n'est dit repris qui ne l'ait été. Une liste
+/// changée hors de Vanguard est dite : un PID donné est relu et repris s'il est gelé (reprendre ne relâche aucune
+/// défense), sans PID rien n'est repris sur sa foi.
 fn reprendre_les_suspendus(pid: Option<u32>) {
-    if let Err(r) = suspension::lisible() {
-        trp!("  ✖ {r} : rien n'est repris.", "  ✖ {r}: nothing is resumed.");
-        return;
+    use suspension::Reprise;
+    let r = suspension::reprendre(pid);
+    if let Some((raison, nommes)) = &r.liste_refusee {
+        let nommes = if nommes.is_empty() {
+            String::new()
+        } else {
+            trf!(" Elle nommait les PID {nommes}.", " It named PIDs {nommes}.")
+        };
+        let suite = match pid {
+            Some(_) => tr!(
+                "le processus donné est relu ici, et repris s'il est gelé.",
+                "the given process is read again here, and resumed if it is frozen."
+            ),
+            None => tr!(
+                "rien n'est repris sur sa foi, et une liste neuve la remplace ; « vanguard blocage reprendre <PID> » reprend un programme gelé.",
+                "nothing is resumed on its word, and a new list replaces it; “vanguard blocking resume <PID>” resumes a frozen program."
+            ),
+        };
+        afficher_aligne(
+            &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
+            &trf!(
+                "{} : elle ne compte plus ;{nommes} {suite}",
+                "{}: it no longer counts;{nommes} {suite}",
+                capitale(raison)
+            ),
+            4,
+            "",
+        );
     }
-    let faits = suspension::reprendre(pid);
-    if faits.is_empty() {
+    if r.faits.is_empty() {
         match pid {
+            Some(p) if r.liste_refusee.is_some() => trp!(
+                "  Le processus {p} est fini, ou son programme ne se lit pas : rien n'est repris.",
+                "  Process {p} has ended, or its program cannot be read: nothing is resumed."
+            ),
             Some(p) => trp!(
                 "  Le processus {p} n'a pas été suspendu par Vanguard : rien n'est repris.",
                 "  Process {p} was not suspended by Vanguard: nothing is resumed."
             ),
+            None if r.liste_refusee.is_some() => {}
             None => trp!(
                 "  Aucun programme suspendu par Vanguard.",
                 "  No program suspended by Vanguard."
@@ -353,21 +375,51 @@ fn reprendre_les_suspendus(pid: Option<u32>) {
         }
         return;
     }
-    for (s, r) in faits {
+    for (s, fait) in r.faits {
         // Une menace dit déjà son PID ; « Suspendu à la main » non.
         let quoi = if s.quoi.contains(&format!("PID {}", s.pid)) {
             affichable(&s.quoi)
         } else {
             format!("{} (PID {})", affichable(&s.quoi), s.pid)
         };
-        match r {
-            Ok(()) => trp!(
-                "  {VERT}✔{RESET} Repris (ou déjà fini) : {quoi}.",
-                "  {VERT}✔{RESET} Resumed (or already ended): {quoi}."
+        let eleve = couleur(crate::risk::Niveau::Eleve);
+        match fait {
+            Ok(Reprise::Faite) => trp!("  {VERT}✔{RESET} Repris : {quoi}.", "  {VERT}✔{RESET} Resumed: {quoi}."),
+            Ok(Reprise::NonRelu) => trp!(
+                "  {VERT}✔{RESET} Repris par l'assistant élevé : {quoi} (son état ne se relit pas d'ici).",
+                "  {VERT}✔{RESET} Resumed by the elevated helper: {quoi} (its state cannot be read from here)."
             ),
-            Err(e) => trp!("  ✖ {quoi} : {e}", "  ✖ {quoi}: {e}"),
+            Ok(Reprise::TenuAilleurs) => trp!(
+                "  {eleve}⚠{RESET} {quoi} : la suspension de Vanguard est levée, mais il reste suspendu par un autre programme (un débogueur, ou lui-même).",
+                "  {eleve}⚠{RESET} {quoi}: Vanguard's suspension is lifted, but it stays suspended by another program (a debugger, or itself)."
+            ),
+            Ok(Reprise::DejaFini) => trp!(
+                "  {GRIS}·{RESET} Déjà fini : {quoi}.",
+                "  {GRIS}·{RESET} Already ended: {quoi}."
+            ),
+            Ok(Reprise::DejaRepris) => trp!(
+                "  {GRIS}·{RESET} Il tournait déjà (un autre programme l'avait repris) : {quoi}.",
+                "  {GRIS}·{RESET} It was already running (another program had resumed it): {quoi}."
+            ),
+            Ok(Reprise::Autre) => trp!(
+                "  {GRIS}·{RESET} Ce numéro est maintenant un autre programme : rien n'est touché ({quoi}).",
+                "  {GRIS}·{RESET} This number is now another program: nothing is touched ({quoi})."
+            ),
+            Err(e) => trp!(
+                "  ✖ {quoi} : {e}. Il reste noté ; « vanguard blocage reprendre {} » réessaie.",
+                "  ✖ {quoi}: {e}. It stays noted; “vanguard blocking resume {}” tries again.",
+                s.pid
+            ),
         }
     }
+}
+
+/// La première lettre en capitale.
+fn capitale(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map(|p| p.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
 }
 
 /// L'état des quatre catégories, et de la protection active.
@@ -679,7 +731,8 @@ fn chercher_et_proposer() {
 /// elle est seulement dite, sans question).
 pub fn au_bilan() {
     // Ce que la personne a suspendu ou demandé de surveiller se rappelle à chaque bilan, même le blocage coupé : un
-    // programme gelé et oublié tient ses fichiers, et un tiers qui l'a repris est vu (et le programme resuspendu).
+    // programme gelé et oublié tient ses fichiers ; un tiers qui l'a repris est vu (et le programme resuspendu si ce
+    // compte en a les droits, sinon c'est dit) ; un programme qui ne se relit pas d'ici est dit, jamais oublié.
     suspension::rappeler();
     surveiller::rappeler();
     let p = parametres();
@@ -819,7 +872,7 @@ fn bloquer_tout_seul(m: &Menace, ctx: &Contexte, signalees: Option<(&BTreeSet<St
 /// L'alerte est reliée, dans le journal des événements, au geste qu'elle annonce (ou à son échec, noté aussi) : le
 /// fil va de l'alerte de détection à la preuve, au geste, puis à cette alerte, au lieu d'alertes sans lien.
 fn alerter_blocage(m: &Menace, titre: &str, texte: &str) {
-    let cle = m.cle_normale();
+    let cle = m.cle_normale_ici();
     if !m.certaine && crate::protection::normales::est_normale(&cle) {
         return;
     }
@@ -1006,8 +1059,12 @@ fn id_d_alerte_valide(id: &str) -> bool {
 /// La menace cherchée maintenant est-elle celle que désigne la clé d'une alerte du journal ? Celle du blocage (sa clé
 /// « normale »), ou celle du veilleur (« veilleur|raison|chemin ») pour un programme au même chemin.
 fn alerte_designe(m: &Menace, cle: &str) -> bool {
-    if m.cle_normale() == cle {
+    if m.cle_normale() == cle || m.cle_normale_ici() == cle {
         return true;
+    }
+    // La surveillance rapprochée (« veilleur|rapprochee|<empreinte> ») : le même fichier.
+    if let Some(e) = cle.strip_prefix("veilleur|rapprochee|") {
+        return m.empreinte().is_some_and(|m| surveiller::hex(&m) == e);
     }
     let menaces::Geste::Programme { chemin: Some(c), .. } = &m.geste else {
         return false;
@@ -1226,21 +1283,12 @@ fn suspendre_la_menace(m: &Menace) -> bool {
     else {
         return false;
     };
-    afficher_aligne(
-        "  ",
-        &trf!(
-            "Suspendre « {} » (PID {pid}) : il ne fait plus rien mais reste là (fichiers, mémoire), le temps de regarder. Rien n'est effacé ; « vanguard blocage reprendre {pid} » le relance. Un programme malveillant qui a les droits d'administrateur peut se reprendre lui-même : le bilan le revoit et le resuspend.",
-            "Suspend “{}” (PID {pid}): it does nothing more but stays there (files, memory), while you look. Nothing is deleted; “vanguard blocking resume {pid}” starts it again. A malicious program with administrator rights can resume itself: the check sees it and suspends it again.",
-            affichable(nom)
-        ),
-        2,
-        "",
-    );
-    if !demander(tr!("\n  Suspendre ? [o/N] : ", "\n  Suspend? [y/N]: ")).oui() {
-        trp!("  Rien n'a été fait.", "  Nothing was done.");
+    let chemin = chemin.to_string_lossy();
+    if !confirmer_la_suspension(*pid, nom, &chemin) {
         return false;
     }
-    match suspension::suspendre(*pid, &chemin.to_string_lossy(), &m.quoi, Some(&m.cle_normale())) {
+    let intouchables = crate::machine::chasse::en_marche().map_or_else(HashSet::new, |(_, i)| i);
+    match suspension::suspendre(*pid, &chemin, &m.quoi, Some(&m.cle_normale()), &intouchables) {
         Ok(()) => trp!(
             "  {VERT}✔{RESET} Suspendu. Pour le reprendre : vanguard blocage reprendre {pid} ; pour l'arrêter : Bloquer.",
             "  {VERT}✔{RESET} Suspended. To resume it: vanguard blocking resume {pid}; to stop it: Block."
@@ -1250,7 +1298,39 @@ fn suspendre_la_menace(m: &Menace) -> bool {
     false
 }
 
-/// Surveiller de plus près : 7 jours, une alerte à chaque lancement (le veilleur Linux).
+/// Ce que suspendre fait et ne fait pas, le rôle d'un programme du système nommé, puis la question : `true` si la
+/// personne confirme.
+fn confirmer_la_suspension(pid: u32, nom: &str, chemin: &str) -> bool {
+    afficher_aligne(
+        "  ",
+        &trf!(
+            "Suspendre « {} » (PID {pid}) : il ne fait plus rien mais reste là (fichiers, mémoire), le temps de regarder. Rien n'est effacé ; « vanguard blocage reprendre {pid} » le relance. Seul ce processus est suspendu : les programmes qu'il a déjà lancés (ses enfants) continuent. Un autre programme peut le reprendre (sous Linux, tout processus du même compte peut envoyer SIGCONT ; un administrateur aussi) : le bilan le revoit et le suspend de nouveau si ce compte en a les droits, sinon il le dit.",
+            "Suspend “{}” (PID {pid}): it does nothing more but stays there (files, memory), while you look. Nothing is deleted; “vanguard blocking resume {pid}” starts it again. Only this process is suspended: the programs it already started (its children) keep running. Another program can resume it (on Linux, any process of the same account can send SIGCONT; an administrator too): the check sees it and suspends it again if this account has the rights, otherwise it says so.",
+            affichable(nom)
+        ),
+        2,
+        "",
+    );
+    let Some(role) = suspension::role(pid, chemin) else {
+        return demander(tr!("\n  Suspendre ? [o/N] : ", "\n  Suspend? [y/N]: ")).oui();
+    };
+    afficher_aligne(
+        &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
+        &trf!(
+            "C'est {role} : tant qu'il est suspendu, ce qu'il fait pour l'ordinateur s'arrête aussi.",
+            "This is {role}: while it is suspended, what it does for the computer stops too."
+        ),
+        4,
+        "",
+    );
+    demander(&trf!(
+        "\n  Suspendre {role} quand même ? [o/N] : ",
+        "\n  Suspend {role} anyway? [y/N]: "
+    ))
+    .oui()
+}
+
+/// Surveiller de plus près : 7 jours, une alerte quand il se lance, au plus une par heure (le veilleur Linux).
 fn surveiller_la_menace(m: &Menace) -> bool {
     let (Some(fichier), Some(empreinte)) = (m.fichier_du_programme(), m.empreinte()) else {
         return false;
@@ -1260,8 +1340,8 @@ fn surveiller_la_menace(m: &Menace) -> bool {
             afficher_aligne(
                 &format!("  {VERT}✔{RESET} "),
                 &trf!(
-                    "Surveillé de près jusqu'au {fin} : le veilleur alerte à chaque lancement (s'il est en marche : vanguard veilleur). Rien n'est arrêté.",
-                    "Watched closely until {fin}: the watcher alerts at each start (if it is running: vanguard watcher). Nothing is stopped."
+                    "Surveillé de près jusqu'au {fin} : le veilleur alerte quand il se lance, au plus une fois par heure (s'il est en marche : vanguard veilleur). Rien n'est arrêté.",
+                    "Watched closely until {fin}: the watcher alerts when it starts, at most once per hour (if it is running: vanguard watcher). Nothing is stopped."
                 ),
                 4,
                 "",
@@ -1278,7 +1358,7 @@ fn surveiller_la_menace(m: &Menace) -> bool {
 /// Un douteux : c'est normal ici, 90 jours.
 fn declarer_normale(m: &Menace) -> bool {
     match crate::protection::normales::declarer(
-        &m.cle_normale(),
+        &m.cle_normale_ici(),
         crate::reseau::tableau::nom_genre(Genre::Blocage),
         tr!("Menace déclarée normale", "Threat declared normal"),
         &m.quoi,

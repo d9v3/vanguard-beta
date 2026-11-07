@@ -218,8 +218,10 @@ button. Four categories (programs, connections, startup and drivers, AI agents),
 local address or a public DNS; an interpreter (python3, PowerShell) is never quarantined, at most the script it
 runs. As administrator, nothing is blocked by itself: the blocking settings can be written by any program of the
 account, and clear-cut threats are offered with one click there. Each threat also offers **Suspend** (the program
-frozen, reversible with `vanguard blocking resume`, recalled at each check), **Watch more closely** (Linux: an alert
-at each start for 7 days), **Trust** (a certain file: a typed word, tied to its fingerprint, 90 days) and Ignore; an
+frozen, reversible with `vanguard blocking resume`, recalled at each check; only this process is frozen, not the
+programs it already started; on Linux, any process of the same account can resume it: the check suspends it again if
+this account has the rights, otherwise it says so), **Watch more closely** (Linux: an alert when it starts, at most one
+per hour, for 7 days), **Trust** (a certain file: a typed word, tied to its fingerprint, 90 days) and Ignore; an
 action refused by a safeguard stays visible, greyed, with its reason. A notified alert is taken up again with
 `vanguard alert <id>`: read again from the sealed log, the threat judged again.
 

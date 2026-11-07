@@ -1275,6 +1275,9 @@ mod tests_sh_chaine {
         ("machine/unix.rs", 28),
         ("nettoyer/linux.rs", 14),
         ("optimiser/linux.rs", 19),
+        // Défense R1 : les noms des programmes dont dépend la reprise (sudo, pkexec), que la suspension refuse de
+        // geler : une liste de refus, aucun appel.
+        ("protection/blocage/gardes.rs", 2),
         ("protection/blocage/pare_feu.rs", 9),
         ("protection/conteneurs.rs", 2),
         ("protection/distance.rs", 3),

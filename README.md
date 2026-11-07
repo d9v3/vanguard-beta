@@ -229,8 +229,10 @@ programme du système, un processus critique, une session à distance en cours, 
 interpréteur (python3, PowerShell) n'est jamais mis en quarantaine, au plus le script qu'il lance. En administrateur,
 rien n'est bloqué tout seul : les réglages du blocage peuvent être écrits par n'importe quel programme du compte, et
 ce qui ne fait aucun doute s'y propose d'un clic. Chaque menace propose aussi **Suspendre** (le programme gelé,
-réversible par `vanguard blocage reprendre`, rappelé à chaque bilan), **Surveiller de plus près** (Linux : une alerte
-à chaque lancement pendant 7 jours), **Faire confiance** (un fichier certain : mot tapé, lié à son empreinte, 90
+réversible par `vanguard blocage reprendre`, rappelé à chaque bilan ; seul ce processus est gelé, pas les programmes
+qu'il a déjà lancés ; sous Linux, tout processus du même compte peut le reprendre : le bilan le resuspend si ce compte
+en a les droits, sinon il le dit), **Surveiller de plus près** (Linux : une alerte quand il se lance, au plus une par
+heure, pendant 7 jours), **Faire confiance** (un fichier certain : mot tapé, lié à son empreinte, 90
 jours) et Ignorer ; un geste refusé par un garde-fou reste visible, grisé, avec sa raison. Une alerte notifiée se
 reprend par `vanguard alerte <id>` : relue dans le journal scellé, la menace rejugée.
 

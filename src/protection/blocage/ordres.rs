@@ -371,7 +371,7 @@ fn juger_processus(pid: u32, chemin: &str, demande: bool, j: &Juge, suspendre: b
     #[cfg(target_os = "linux")]
     let garde = |nom: &str| {
         if suspendre {
-            gardes::processus_gelable(pid, nom, Some(&actuel), &j.intouchables)
+            gardes::processus_suspendable(pid, nom, Some(&actuel), &j.intouchables)
         } else {
             gardes::processus_intouchable(pid, nom, Some(&actuel), &j.intouchables, j.os)
         }
@@ -394,15 +394,13 @@ fn juger_processus(pid: u32, chemin: &str, demande: bool, j: &Juge, suspendre: b
 /// La garde d'une reprise : le même programme, et gelé (Linux) ; une note forgée ne fait rien d'autre que lever un
 /// gel que ce programme-là porte déjà.
 fn juger_reprise(pid: u32, chemin: &str) -> Option<String> {
-    let meme = super::gestes::chemin_du_processus(pid).is_some_and(|a| super::gestes::meme_chemin(&a, chemin));
-    #[cfg(target_os = "linux")]
-    let gele = crate::socle::processus::est_gele(pid) == Some(true);
-    #[cfg(not(target_os = "linux"))]
-    let gele = true;
-    (!meme || !gele).then(|| {
+    use super::suspension::{Lu, lire};
+    // Le même programme, et suspendu (Windows : au moins un fil) ; un processus qui ne se relit pas d'ici n'est pas
+    // repris à l'aveugle (l'assistant élevé, lui, le relit).
+    (!matches!(lire(pid, chemin, None), Lu::Gele | Lu::EnPartie)).then(|| {
         trf!(
-            "le processus {pid} n'est plus ce programme, est fini ou n'est pas suspendu : rien n'est repris",
-            "process {pid} no longer runs this program, has ended or is not suspended: nothing is resumed"
+            "le processus {pid} n'est plus ce programme, est fini, n'est pas suspendu ou ne se relit pas : rien n'est repris",
+            "process {pid} no longer runs this program, has ended, is not suspended or cannot be read: nothing is resumed"
         )
     })
 }
@@ -463,8 +461,8 @@ pub(crate) fn executer_groupes(
     executer_en_groupes(groupes, Ordre::texte, |o| juger_et_faire(o, juge), annoncer)
 }
 
-/// Un ordre rejugé, puis fait s'il passe (l'assistant élevé de Linux ; la suspension, partout, quand ce compte en a
-/// les droits).
+/// Un ordre rejugé, puis fait s'il passe (l'assistant élevé de Linux).
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn juger_et_faire(o: &Ordre, juge: &Juge) -> Resultat {
     juger(o, juge).map_or_else(|| faire(o, juge), Resultat::echec)
 }
@@ -531,7 +529,11 @@ pub(crate) fn faire(o: &Ordre, j: &Juge) -> Resultat {
     }
     match o {
         Ordre::SuspendreProcessus { pid, chemin } => {
-            return super::suspension::suspendre_ici(*pid, chemin)
+            // Déjà gelé : une seconde suspension Windows ne serait pas retirée par la reprise de Vanguard.
+            if super::suspension::lire(*pid, chemin, None) == super::suspension::Lu::Gele {
+                return Resultat::echec(super::suspension::deja_gele(*pid).to_string());
+            }
+            return super::suspension::suspendre_ici(*pid, chemin, None, true)
                 .map_or_else(|e| Resultat::echec(e.to_string()), |_| Resultat::ok());
         }
         Ordre::ReprendreProcessus { pid, chemin } => {

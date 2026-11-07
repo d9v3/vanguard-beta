@@ -1910,7 +1910,8 @@ try {
 
 Etape 'Suspendre et reprendre un programme (blocage, défense R1) : sans course, réversible, refusé à un programme de Microsoft'
 # Un programme jetable, compilé ici (non signé : la garde de signature le laisse suspendre), qui attend sans rien faire.
-# Suspendu, chacun de ses fils doit être « Suspended » pour Windows ; repris, aucun. Une copie de notepad.exe (signée
+# Suspendu, chacun de ses fils doit être « Suspended » pour Windows ; une seconde suspension est refusée ; repris une
+# fois, aucun fil ne reste suspendu. Une copie de notepad.exe (signée
 # Microsoft) doit être refusée, grisée avec sa raison. Enfin « vanguard alerte » refuse un identifiant forgé.
 $dossierR1 = Join-Path $env:TEMP 'vanguard-essai-r1'
 New-Item -ItemType Directory -Force $dossierR1 | Out-Null
@@ -1941,13 +1942,19 @@ if ($jetable -and -not $jetable.HasExited) {
     $etat = Fils-Suspendus $id
     if ($etat -eq $true) { Ok 'Chaque fil du programme est suspendu pour Windows (effet mesuré)' }
     else { Bug "Les fils du programme ne sont pas tous suspendus (Get-Process : $etat)" }
+    # Une seconde suspension ne s'empile pas : refusée (« déjà suspendu »), elle laisse une seule reprise suffire.
+    LancerAvec 'blocage-suspendre-double' @('blocage', 'suspendre', "$id") "o`no`n"
+    $t = "$(Sortie 'blocage-suspendre-double')"
+    if ($t -match 'déjà suspendu|already suspended') { Ok 'Une seconde suspension du même programme est refusée (déjà suspendu)' }
+    else { Bug "Une seconde suspension n'est pas refusée ($((Lignes $t | Where-Object { $_ -match '✖|✔' }) -join ' / '))" }
     Lancer 'blocage-reprendre' @('blocage', 'reprendre', "$id")
     $t = "$(Sortie 'blocage-reprendre')"
-    if ($t -match 'Repris|Resumed') { Ok "vanguard blocage reprendre $id : dit repris" }
-    else { Bug "vanguard blocage reprendre $id : pas « Repris » ($((Lignes $t | Where-Object { $_ -match '✖' }) -join ' / '))" }
+    if ($t -match 'Repris :|Repris par|Resumed:|Resumed by') { Ok "vanguard blocage reprendre $id : dit repris" }
+    else { Bug "vanguard blocage reprendre $id : pas « Repris » ($((Lignes $t | Where-Object { $_ -match '✖|⚠' }) -join ' / '))" }
     $etat = Fils-Suspendus $id
-    if ($etat -eq $false) { Ok 'Plus aucun fil suspendu après la reprise (effet mesuré)' }
-    else { Bug "Le programme reste suspendu après la reprise (Get-Process : $etat)" }
+    $encore = @((Get-Process -Id $id -ErrorAction SilentlyContinue).Threads | Where-Object { $_.ThreadState -eq 'Wait' -and $_.WaitReason -eq 'Suspended' }).Count
+    if ($etat -eq $false -and $encore -eq 0) { Ok 'Une seule reprise libère chaque fil, même après une seconde suspension refusée (effet mesuré)' }
+    else { Bug "Le programme reste suspendu après la reprise (Get-Process : $etat, fils suspendus : $encore)" }
     Lancer 'blocage-reprendre-vide' @('blocage', 'reprendre', "$id")
     if ("$(Sortie 'blocage-reprendre-vide')" -match "pas été suspendu par Vanguard|was not suspended by Vanguard") { Ok 'Une seconde reprise ne touche à rien : il n''est plus dans la liste' }
     else { Bug 'Une seconde reprise ne dit pas « pas été suspendu par Vanguard »' }

@@ -1,7 +1,9 @@
 //! « Surveiller de plus près » : un programme douteux qu'on ne veut ni bloquer ni taire est inscrit, avec son
 //! empreinte, pour 7 jours dans une liste scellée (`sceau::SURVEILLES`). Le veilleur Linux la relit chaque minute et
-//! alerte à chaque nouveau lancement de ce programme (le même chemin, ou le même fichier ailleurs : la même empreinte).
-//! Une alerte seulement : rien n'est arrêté ni gelé. Windows : après le veilleur de Windows (W1), dit dans le menu.
+//! alerte quand ce programme se lance (le même chemin, ou le même fichier ailleurs : la même empreinte), au plus une
+//! notification par heure et par programme (les lancements suivants de la même heure sont comptés comme répétés, pas
+//! notés, pour ne pas inonder le tableau de bord), avec `vanguard alerte <id>` pour choisir quoi faire. Une alerte
+//! seulement : rien n'est arrêté ni gelé. Windows : après le veilleur de Windows (W1), dit dans le menu.
 //!
 //! Les connexions et les fichiers écrits ne sont pas suivis ici : une connexion fermée ne dit pas son programme au
 //! veilleur (le noyau ne le donne pas), et les dossiers piégés ne disent pas qui écrit.
@@ -103,8 +105,22 @@ fn designe<'a>(
 }
 
 /// Inscrit le programme pour 7 jours ; rend la date de fin (à dire). `Err` : rien n'est inscrit, et pourquoi.
+///
+/// Une liste changée hors de Vanguard (ou illisible) ne compte pas : elle est remplacée par une liste neuve, et c'est
+/// dit (ce qu'elle disait n'était déjà plus surveillé).
 pub(crate) fn ajouter(chemin: &str, empreinte: &[u8; 32], quoi: &str) -> Result<String, Echec> {
-    let l = charger().map_err(|r| Echec::refuse(OU, r))?;
+    let l = charger().unwrap_or_else(|r| {
+        afficher_aligne(
+            &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
+            &trf!(
+                "{r} : elle ne comptait plus (rien de ce qu'elle disait n'était surveillé) ; une liste neuve la remplace.",
+                "{r}: it no longer counted (nothing it said was watched); a new list replaces it."
+            ),
+            4,
+            "",
+        );
+        Liste::default()
+    });
     let quand = maintenant();
     let fin = quand
         .checked_add_signed(chrono::Duration::days(JOURS))
@@ -136,6 +152,7 @@ pub(crate) fn ajouter(chemin: &str, empreinte: &[u8; 32], quoi: &str) -> Result<
 }
 
 /// Les programmes surveillés en ce moment (rien si la liste a été changée hors de Vanguard ou ne se lit plus).
+#[cfg(target_os = "linux")]
 pub(crate) fn en_cours() -> Vec<Surveille> {
     let quand = maintenant();
     charger()
@@ -165,7 +182,9 @@ pub(crate) fn designe_par(chemin: Option<&str>, empreinte: Option<&[u8; 32]>) ->
 #[cfg(target_os = "linux")]
 pub(crate) fn alerte(s: &Surveille, pid: u32, chemin: &str) -> (String, &'static str, String) {
     (
-        format!("rapprochee|{}|{pid}", s.empreinte),
+        // Sans le PID : le débit des alertes (une par heure, `veilleur`) et `vanguard alerte` reconnaissent le
+        // programme.
+        format!("rapprochee|{}", s.empreinte),
         tr!(
             "Vanguard : programme surveillé de près lancé",
             "Vanguard: closely watched program started"
@@ -180,9 +199,25 @@ pub(crate) fn alerte(s: &Surveille, pid: u32, chemin: &str) -> (String, &'static
     )
 }
 
-/// Au bilan : ce qui est surveillé de près, et jusqu'à quand.
+/// Au bilan : ce qui est surveillé de près, et jusqu'à quand ; une liste changée hors de Vanguard est dite.
 pub(crate) fn rappeler() {
-    let l = en_cours();
+    let quand = maintenant();
+    let l: Vec<Surveille> = match charger() {
+        Ok(l) => l.surveilles.into_iter().filter(|s| en_vigueur(s, quand)).collect(),
+        Err(r) => {
+            crate::ui::section(tr!("SURVEILLÉS DE PRÈS", "CLOSELY WATCHED"));
+            afficher_aligne(
+                &format!("  {}✖{RESET} ", couleur(crate::risk::Niveau::Eleve)),
+                &trf!(
+                    "{r} : plus rien n'est surveillé de près tant que « Surveiller de plus près » n'est pas choisi de nouveau.",
+                    "{r}: nothing is watched closely until “Watch more closely” is chosen again."
+                ),
+                4,
+                "",
+            );
+            return;
+        }
+    };
     if l.is_empty() {
         return;
     }
@@ -191,8 +226,8 @@ pub(crate) fn rappeler() {
         afficher_aligne(
             &format!("  {GRIS}◉{RESET} "),
             &trf!(
-                "{} : alerte à chaque lancement, jusqu'au {}.",
-                "{}: an alert at each start, until {}.",
+                "{} : une alerte quand il se lance (au plus une par heure), jusqu'au {}.",
+                "{}: an alert when it starts (at most one per hour), until {}.",
                 affichable(&s.chemin),
                 s.jusqu_a
             ),

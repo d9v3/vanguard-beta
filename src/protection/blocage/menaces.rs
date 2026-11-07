@@ -107,6 +107,25 @@ impl Menace {
         }
     }
 
+    /// La clé « c'est normal ici » : liée à l'empreinte du fichier du programme quand elle se lit
+    /// (« `blocage|sha256:<hex>|<clé normale>` »), pour qu'un autre fichier posé au même chemin n'hérite pas du
+    /// silence ; sinon (pas de fichier, une connexion, un fichier illisible), `cle_normale`. Le chemin reste en dernier.
+    pub(crate) fn cle_normale_ici(&self) -> String {
+        self.cle_normale_avec(self.empreinte().as_ref())
+    }
+
+    /// `cle_normale_ici`, l'empreinte donnée. Pur.
+    pub(crate) fn cle_normale_avec(&self, empreinte: Option<&[u8; 32]>) -> String {
+        let cle = self.cle_normale();
+        match empreinte {
+            Some(e) => {
+                let reste = cle.strip_prefix("blocage|").unwrap_or(&cle);
+                crate::protection::normales::cle_blocage(&format!("sha256:{}|{reste}", super::surveiller::hex(e)))
+            }
+            None => cle,
+        }
+    }
+
     /// L'empreinte SHA-256 du fichier du programme, lue maintenant (`None` : pas de fichier, ou illisible).
     pub(crate) fn empreinte(&self) -> Option<[u8; 32]> {
         self.fichier_du_programme().and_then(empreintes::sha256)
@@ -577,7 +596,9 @@ fn retirer_normales(
         if m.certaine {
             !confiance(m)
         } else {
-            !normale(&m.cle_normale())
+            // Par l'empreinte quand elle se lit : une ancienne déclaration par le chemin seul ne tait plus un fichier
+            // qui se lit (il revient une fois, puis se redéclare par son empreinte).
+            !normale(&m.cle_normale_ici())
         }
     });
     avant.saturating_sub(menaces.len())
@@ -849,6 +870,40 @@ mod tests {
         assert_eq!(
             script.cle_normale(),
             "blocage|commande qui télécharge|/home/alice/outil.py|/usr/bin/python3"
+        );
+    }
+
+    /// « C'est normal ici » lié à l'empreinte : un autre fichier au même chemin a une autre clé, et la déclaration
+    /// d'avant, par le chemin seul, ne le tait plus ; sans fichier lisible, la clé par le chemin reste.
+    #[test]
+    fn normale_ici_par_l_empreinte() {
+        let dossier = crate::essais::Jetable::nouveau("normale-ici");
+        let f = dossier.join("outil.py");
+        std::fs::write(&f, "print(1)").unwrap();
+        let m = menace_de(false, Some("/usr/bin/python3"), Some(&f.to_string_lossy()), "r");
+        let premiere = m.cle_normale_ici();
+        assert!(premiere.starts_with("blocage|sha256:"), "{premiere}");
+        assert!(
+            premiere.ends_with("|/usr/bin/python3"),
+            "le chemin en dernier : {premiere}"
+        );
+        std::fs::write(&f, "print(2)").unwrap();
+        assert_ne!(m.cle_normale_ici(), premiere, "un autre fichier au même chemin");
+        let mut menaces = vec![menace_de(
+            false,
+            Some("/usr/bin/python3"),
+            Some(&f.to_string_lossy()),
+            "r",
+        )];
+        let par_chemin = menaces[0].cle_normale();
+        assert_eq!(retirer_normales(&mut menaces, |c| c == par_chemin, |_| false), 0);
+        let ici = menaces[0].cle_normale_ici();
+        assert_eq!(retirer_normales(&mut menaces, |c| c == ici, |_| false), 1);
+        let sans = menace_de(false, Some("/usr/bin/python3"), None, "r");
+        assert_eq!(sans.cle_normale_ici(), sans.cle_normale());
+        assert_eq!(
+            sans.cle_normale_avec(Some(&[0; 32])),
+            format!("blocage|sha256:{}|r|/usr/bin/python3", "0".repeat(64))
         );
     }
 

@@ -136,7 +136,8 @@ pub(crate) const SAUVEGARDE: &str = "sauvegarde.json";
 /// minutes alors qu'elle était coupée.
 pub(crate) const SURVEILLANCE_PASSE: &str = "surveillance-passe.txt";
 /// Les programmes suspendus par Vanguard (`protection::blocage::suspension`) : forgée, la liste aurait fait rappeler
-/// ou resuspendre un autre programme (la reprise relit toujours le programme du processus).
+/// ou resuspendre un autre programme (la reprise relit toujours le programme du processus) ; changée, elle ne compte
+/// plus, et le bilan le dit.
 pub(crate) const SUSPENDUS: &str = "blocage-suspendus.json";
 /// Les programmes sous surveillance rapprochée (`protection::blocage::surveiller`), lus par le veilleur de Linux :
 /// forgée, elle aurait fait sonner le lancement d'un programme sain, ou taire celui qu'on surveille.

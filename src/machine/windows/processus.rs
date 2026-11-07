@@ -335,7 +335,8 @@ fn compte_du_fil(processus: u32, fil: u32, suspendre: bool) -> Option<u32> {
         }
         let compte = if GetProcessIdOfThread(poignee) == processus {
             let avant = SuspendThread(poignee);
-            if avant != ECHEC_FIL && !(suspendre && avant == 0) {
+            if avant != ECHEC_FIL && !crate::protection::blocage::suspension::comptes::reste_suspendu(avant, suspendre)
+            {
                 ResumeThread(poignee);
             }
             (avant != ECHEC_FIL).then_some(avant)
@@ -364,19 +365,25 @@ fn passe(processus: u32, suspendre: bool) -> (usize, usize) {
 }
 
 /// Suspend le processus `processus` seulement s'il fait encore tourner `attendu` (et, si donnée, depuis `creation`) :
-/// la poignée qui lit le chemin est celle qui suspend (NtSuspendProcess, tous les fils d'un coup), puis des passes
-/// fil par fil rattrapent ceux nés pendant (au plus `PASSES_MAX`), jusqu'à une passe qui n'en trouve aucun qui
-/// tourne. `false` : refusé, fini, un autre programme, ou instable (des fils naissent sans cesse).
+/// la poignée qui lit le chemin et l'heure de création est celle qui suspend (NtSuspendProcess, une suspension à
+/// chaque fil d'un coup), puis des passes fil par fil rattrapent ceux nés pendant (au plus `PASSES_MAX`), jusqu'à
+/// une passe qui n'en trouve aucun qui tourne. Rend l'heure de création lue par cette poignée ; `None` : refusé, fini,
+/// un autre programme, heure illisible, ou instable (des fils naissent sans cesse).
 // FFI : NtSuspendProcess sur la poignée vérifiée.
 #[allow(unsafe_code)]
-pub(crate) fn suspendre_si(processus: u32, attendu: &str, creation: Option<u64>) -> bool {
-    let Some(tenu) = suspensible(processus, attendu, creation) else {
-        return false;
-    };
+pub(crate) fn suspendre_si(processus: u32, attendu: &str, creation: Option<u64>) -> Option<u64> {
+    let tenu = suspensible(processus, attendu, creation)?;
+    // Sans heure de création, le bilan ne saurait pas reconnaître ce processus : rien n'est suspendu.
+    let lue = tenu.creation()?;
     // SAFETY: la poignée est ouverte, avec le droit de suspendre, tant que `tenu` vit ; l'appel ne lit rien chez nous.
     if unsafe { NtSuspendProcess(tenu.0) } < 0 {
-        return false;
+        return None;
     }
+    rattraper(processus).then_some(lue)
+}
+
+/// Des passes jusqu'à ce qu'aucun fil ne tourne (au plus `PASSES_MAX`, puis une lecture) : vrai si c'est le cas.
+fn rattraper(processus: u32) -> bool {
     for _ in 0..PASSES_MAX {
         if passe(processus, true).0 == 0 {
             return true;
@@ -385,9 +392,19 @@ pub(crate) fn suspendre_si(processus: u32, attendu: &str, creation: Option<u64>)
     passe(processus, false).0 == 0
 }
 
+/// Resuspend ce qu'un tiers a repris d'un processus déjà suspendu par Vanguard : seulement les fils qui tournent, un
+/// par un, sans NtSuspendProcess (qui ajouterait une suspension à chaque fil, que la reprise de Vanguard ne retirerait
+/// pas : `suspension::comptes`). Même vérification que `suspendre_si` ; rend l'heure de création.
+pub(crate) fn resuspendre_si(processus: u32, attendu: &str, creation: Option<u64>) -> Option<u64> {
+    let tenu = suspensible(processus, attendu, creation)?;
+    let lue = tenu.creation()?;
+    rattraper(processus).then_some(lue)
+}
+
 /// Reprend le processus `processus` suspendu par `suspendre_si`, seulement s'il fait encore tourner `attendu` (et, si
-/// donnée, depuis `creation`) : NtResumeProcess retire une suspension à chaque fil, celle que Vanguard a mise (les
-/// fils rattrapés un par un n'en ont qu'une aussi). `false` : refusé, fini ou un autre programme.
+/// donnée, depuis `creation`) : NtResumeProcess retire une suspension à chaque fil suspendu, la seule que Vanguard y a
+/// mise (les fils rattrapés un par un et les resuspensions n'en mettent qu'à ceux qui tournaient). Un fil que son
+/// programme ou un tiers tient aussi suspendu le reste. `false` : refusé, fini ou un autre programme.
 // FFI : NtResumeProcess sur la poignée vérifiée.
 #[allow(unsafe_code)]
 pub(crate) fn reprendre_si(processus: u32, attendu: &str, creation: Option<u64>) -> bool {
@@ -398,13 +415,43 @@ pub(crate) fn reprendre_si(processus: u32, attendu: &str, creation: Option<u64>)
     unsafe { NtResumeProcess(tenu.0) >= 0 }
 }
 
-/// Le processus `processus`, s'il fait encore tourner `attendu` (et depuis `creation`), est-il suspendu (aucun de ses
-/// fils ne tourne) ? Sert à resuspendre ce qu'un tiers aurait repris. `None` : fini, autre programme, ou illisible.
-pub(crate) fn est_suspendu_si(processus: u32, attendu: &str, creation: Option<u64>) -> Option<bool> {
-    // La poignée tenue pendant la lecture : le numéro ne peut pas être repris, ses fils sont bien les siens.
-    let _tenu = suspensible(processus, attendu, creation)?;
-    let (tournants, lus) = passe(processus, false);
-    (lus > 0).then_some(tournants == 0)
+/// Ce qu'on lit du processus `processus` noté avec `attendu` et `creation` (voir `suspension::Lu`). La poignée tenue
+/// pendant la lecture : le numéro ne peut pas être repris, ses fils sont bien les siens.
+pub(crate) fn etat_si(
+    processus: u32,
+    attendu: &str,
+    creation: Option<u64>,
+) -> crate::protection::blocage::suspension::Lu {
+    use crate::protection::blocage::suspension::Lu;
+    /// ERROR_INVALID_PARAMETER : plus aucun processus à ce numéro.
+    const AUCUN: i32 = 87;
+    let tenu = match Tenu::ouvrir_avec(processus, SUSPENSION_ET_LECTURE) {
+        Ok(t) => t,
+        Err(e) if e.raw_os_error() == Some(AUCUN) => return Lu::Fini,
+        // Refusé : un processus élevé ou d'un autre compte, peut-être toujours suspendu.
+        Err(_) => return Lu::Illisible,
+    };
+    match tenu.chemin() {
+        None => return Lu::Illisible,
+        Some(c) if !c.eq_ignore_ascii_case(attendu) => return Lu::Autre,
+        Some(_) => {}
+    }
+    if let Some(attendue) = creation {
+        match tenu.creation() {
+            None => return Lu::Illisible,
+            Some(c) if c != attendue => return Lu::Autre,
+            Some(_) => {}
+        }
+    }
+    if fils(processus).is_empty() {
+        return Lu::Fini;
+    }
+    match passe(processus, false) {
+        (_, 0) => Lu::Illisible,
+        (0, _) => Lu::Gele,
+        (t, l) if t == l => Lu::Tourne,
+        _ => Lu::EnPartie,
+    }
 }
 
 /// Ce compte a-t-il le droit de suspendre ce processus ? La poignée de suspension est demandée puis refermée aussitôt.
@@ -596,6 +643,7 @@ fn sid_valide(sid: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protection::blocage::suspension::Lu;
 
     /// PROCESSENTRY32W mise à zéro avant Process32FirstW (exercé sous Miri par outils/preuves.sh) : zéro est une
     /// valeur permise de chaque champ, et la taille est celle de tlhelp32.h sur x86_64.
@@ -710,7 +758,7 @@ mod tests {
         let mut lu = None;
         for _ in 0..200 {
             lu = chemin(pid).zip(creation(pid));
-            if lu.is_some() && est_suspendu_si(pid, &lu.as_ref().unwrap().0, None).is_some() {
+            if lu.as_ref().is_some_and(|(c, _)| etat_si(pid, c, None) == Lu::Tourne) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -721,20 +769,25 @@ mod tests {
         };
         let autre = suspendre_si(pid, r"C:\autre\programme.exe", None);
         let mauvaise_heure = suspendre_si(pid, &programme, Some(nee.wrapping_add(1)));
-        let libre = est_suspendu_si(pid, &programme, Some(nee));
+        let libre = etat_si(pid, &programme, Some(nee));
         let suspendu = suspendre_si(pid, &programme, Some(nee));
-        let fige = est_suspendu_si(pid, &programme, Some(nee));
+        let fige = etat_si(pid, &programme, Some(nee));
+        let autre_lu = etat_si(pid, r"C:\autre\programme.exe", Some(nee));
+        let resuspendu = resuspendre_si(pid, &programme, Some(nee));
         let repris_faux = reprendre_si(pid, r"C:\autre\programme.exe", None);
-        let toujours = est_suspendu_si(pid, &programme, Some(nee));
+        let toujours = etat_si(pid, &programme, Some(nee));
+        // Une seule reprise suffit, même après une resuspension (qui n'ajoute rien à un fil suspendu).
         let repris = reprendre_si(pid, &programme, Some(nee));
-        let apres = est_suspendu_si(pid, &programme, Some(nee));
+        let apres = etat_si(pid, &programme, Some(nee));
         let _ = enfant.kill();
         let _ = enfant.wait();
-        assert_eq!((autre, mauvaise_heure, libre), (false, false, Some(false)));
-        assert_eq!((suspendu, fige), (true, Some(true)));
-        assert_eq!((repris_faux, toujours), (false, Some(true)));
-        assert_eq!((repris, apres), (true, Some(false)));
-        assert!(!suspendre_si(u32::MAX - 3, &programme, None));
+        assert_eq!((autre, mauvaise_heure, libre), (None, None, Lu::Tourne));
+        assert_eq!((suspendu, fige, autre_lu), (Some(nee), Lu::Gele, Lu::Autre));
+        assert_eq!(resuspendu, Some(nee));
+        assert_eq!((repris_faux, toujours), (false, Lu::Gele));
+        assert_eq!((repris, apres), (true, Lu::Tourne));
+        assert!(suspendre_si(u32::MAX - 3, &programme, None).is_none());
+        assert_eq!(etat_si(u32::MAX - 3, &programme, None), Lu::Fini);
         assert!(!peut_suspendre(u32::MAX - 3));
     }
 }

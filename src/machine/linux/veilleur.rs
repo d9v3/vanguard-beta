@@ -1235,8 +1235,9 @@ fn juger_lance_avec(l: &Lance, fichiers: &mut crate::protection::sources::Fichie
     juger_lance(l).map(Juge::Alerte)
 }
 
-/// Un programme que la personne a demandé de surveiller de plus près (`blocage::surveiller`, 7 jours) : une alerte à
-/// chaque lancement, notifiée, reconnue par son chemin ou par l'empreinte de l'inode lancé. Rien n'est arrêté.
+/// Un programme que la personne a demandé de surveiller de plus près (`blocage::surveiller`, 7 jours) : une alerte
+/// quand il se lance (au plus une par heure : `cle_du_debit`), notifiée avec `vanguard alerte <id>`, reconnue par son
+/// chemin ou par l'empreinte de l'inode lancé. Rien n'est arrêté.
 fn surveille_de_pres(l: &Lance, fichiers: &mut crate::protection::sources::Fichiers) -> Option<Alerte> {
     if l.de_vanguard {
         return None;
@@ -2463,14 +2464,34 @@ fn traiter(
     // Déclarée normale ici (« Ce que Vanguard a appris ») : ni notée ni notifiée, tant que le choix vaut. Lu
     // seulement quand le débit la laisserait passer : une alerte répétée mille fois ne relit pas mille fois la liste.
     let normale = || crate::protection::normales::est_normale(&cle);
-    match debit.decider(&a.cle, a.grave, maintenant()) {
+    let quand = maintenant();
+    let rapprochee = a.cle.starts_with(RAPPROCHEE);
+    match debit.decider(&cle_du_debit(&a.cle, quand), a.grave, quand) {
         Decision::Noter { .. } if normale() => {}
+        // Surveillé de près : la notification dit `vanguard alerte <id>`, qui ouvre les gestes de la menace.
+        Decision::Noter { notifier: true } if rapprochee => {
+            crate::reseau::surveillance::alerter_cle_a_choisir(a.genre, &cle, &a.titre, &a.texte);
+        }
         Decision::Noter { notifier: true } => {
             crate::reseau::surveillance::alerter_cle(a.genre, &cle, &a.titre, &a.texte);
         }
         Decision::Noter { notifier: false } => tableau::noter_alerte_cle(a.genre, Some(&cle), &a.titre, &a.texte),
         Decision::Repete => {}
         Decision::Taire => etat.tus = etat.tus.saturating_add(1),
+    }
+}
+
+/// Le début de la clé d'une alerte de surveillance rapprochée (`blocage::surveiller::alerte`).
+const RAPPROCHEE: &str = "rapprochee|";
+
+/// La clé sous laquelle le débit compte une alerte : la sienne, et pour un programme surveillé de près l'heure en
+/// plus (`maintenant` en secondes) : relancé en boucle, il fait une alerte par heure au plus, pas une par lancement ni
+/// une seule pour six heures.
+fn cle_du_debit(cle: &str, maintenant: i64) -> String {
+    if cle.starts_with(RAPPROCHEE) {
+        format!("{cle}|{}", maintenant.checked_div(3600).unwrap_or(0))
+    } else {
+        cle.to_string()
     }
 }
 
@@ -4709,6 +4730,32 @@ mod tests {
         assert!(etrangere.contains("rien n'est posé"), "{etrangere}");
         assert!(place_libre(Ok(vec![0xff, 0xfe])).is_err());
         assert!(place_libre(Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))).is_err());
+    }
+
+    /// Un programme surveillé de près relancé en boucle : une alerte la première fois, plus rien dans la même heure,
+    /// une de nouveau l'heure suivante (pas six heures de silence). Les autres alertes gardent leur clé.
+    #[test]
+    fn surveillance_rapprochee_une_par_heure() {
+        let mut d = Debit::default();
+        let cle = "rapprochee|ab12";
+        let t = 500_000 * 3600;
+        assert!(matches!(
+            d.decider(&cle_du_debit(cle, t), true, t),
+            Decision::Noter { .. }
+        ));
+        assert_eq!(d.decider(&cle_du_debit(cle, t + 60), true, t + 60), Decision::Repete);
+        assert_eq!(
+            d.decider(&cle_du_debit(cle, t + 3599), true, t + 3599),
+            Decision::Repete
+        );
+        assert!(matches!(
+            d.decider(&cle_du_debit(cle, t + 3600), true, t + 3600),
+            Decision::Noter { .. }
+        ));
+        assert_eq!(
+            cle_du_debit("dossier temporaire|/tmp/x", t),
+            "dossier temporaire|/tmp/x"
+        );
     }
 
     #[test]

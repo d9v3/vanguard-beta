@@ -10,11 +10,23 @@
 //! - Windows : la poignée qui lit le chemin et l'heure de création est celle qui suspend (NtSuspendProcess), puis des
 //!   passes fil par fil rattrapent les fils nés pendant (`machine::windows::processus::suspendre_si`).
 //!
-//! Ce qui est suspendu est noté dans une liste scellée (`sceau::SUSPENDUS`) : au bilan, ce qu'un tiers a repris est
-//! resuspendu, ce qui reste suspendu est rappelé (un programme gelé et oublié tient ses fichiers), ce qui est fini
-//! est oublié.
+//! Seul le processus visé est gelé : les programmes qu'il a déjà lancés (ses enfants) continuent, et c'est dit avant
+//! de suspendre. Sous Linux, tout programme du même compte (un enfant du malware, par exemple) peut le reprendre
+//! (SIGCONT), un administrateur aussi ; sous Windows, tout programme qui a le droit de reprendre ses fils.
+//!
+//! Ce qui est suspendu est noté dans une liste scellée (`sceau::SUSPENDUS`). Au bilan, chacun est relu : toujours
+//! suspendu, il est rappelé (un programme gelé et oublié tient ses fichiers) ; repris par un tiers, il est resuspendu
+//! si ce compte en a les droits et que son départ est connu, sinon c'est dit ; illisible d'ici (un processus élevé ou
+//! d'un autre compte), il est gardé et dit tel quel, jamais oublié en silence ; fini, il est oublié ; devenu un autre
+//! programme, c'est dit, puis il est oublié. Une liste changée hors de Vanguard est annoncée.
+//!
+//! Windows compte les suspensions de chaque fil : Vanguard n'en pose qu'une par processus (NtSuspendProcess, une
+//! seule fois, puis les fils qui tournent encore, un par un) ; une resuspension ne touche qu'aux fils qui tournent ;
+//! la reprise (NtResumeProcess) retire donc exactement la sienne (`comptes`, essai `compte_des_fils`).
 
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +43,8 @@ const SUSPENDUS_MAX: usize = 64;
 pub(crate) struct Suspendu {
     pub(crate) pid: u32,
     /// Son départ (Linux : 22e champ de stat ; Windows : heure de création) : un numéro repris par un autre processus
-    /// n'est jamais resuspendu ni repris à sa place. `None` : illisible au moment de suspendre.
+    /// n'est jamais resuspendu ni repris à sa place. `None` : illisible au moment de suspendre ; il n'est alors jamais
+    /// resuspendu par le bilan.
     pub(crate) depart: Option<u64>,
     pub(crate) chemin: String,
     /// Ce que la menace disait (« Programme malveillant en marche : x »), pour le rappel.
@@ -46,19 +59,47 @@ struct Liste {
     suspendus: Vec<Suspendu>,
 }
 
-/// La liste ; changée hors de Vanguard (ou acceptée sans sceau, ce fichier étant né avec eux) : la raison. Une liste
-/// forgée ne fait rien reprendre : la reprise relit le programme du processus et ne vise qu'un processus gelé.
-fn charger() -> Result<Liste, &'static str> {
+/// Une liste qui ne compte pas : pourquoi, et ce qu'elle dit (sans foi : une liste changée hors de Vanguard ne fait
+/// jamais rien suspendre ni reprendre d'elle-même ; elle sert à nommer ses numéros).
+struct Refus {
+    raison: &'static str,
+    dit: Vec<Suspendu>,
+}
+
+/// La liste ; changée hors de Vanguard (ou acceptée sans sceau, ce fichier étant né avec eux) ou illisible : le refus.
+fn charger() -> Result<Liste, Refus> {
     use crate::sceau::Lecture;
+    let dit = |o: &[u8]| {
+        serde_json::from_slice::<Liste>(o)
+            .map(|l| l.suspendus)
+            .unwrap_or_default()
+    };
     match crate::sceau::lire(crate::sceau::SUSPENDUS) {
         Lecture::Absent | Lecture::Inconnu => Ok(Liste::default()),
-        Lecture::Intact(o) => serde_json::from_slice(&o).map_err(|_| illisible()),
-        Lecture::Adopte(_) | Lecture::Falsifie(_) => Err(tr!(
-            "la liste des programmes suspendus a été changée hors de Vanguard",
-            "the list of suspended programs was changed outside Vanguard"
-        )),
-        Lecture::Illisible(_) => Err(illisible()),
+        Lecture::Intact(o) => serde_json::from_slice(&o).map_err(|_| Refus {
+            raison: illisible(),
+            dit: Vec::new(),
+        }),
+        Lecture::Adopte(o) | Lecture::Falsifie(Some(o)) => Err(Refus {
+            raison: falsifiee(),
+            dit: dit(&o),
+        }),
+        Lecture::Falsifie(None) => Err(Refus {
+            raison: falsifiee(),
+            dit: Vec::new(),
+        }),
+        Lecture::Illisible(_) => Err(Refus {
+            raison: illisible(),
+            dit: Vec::new(),
+        }),
     }
+}
+
+fn falsifiee() -> &'static str {
+    tr!(
+        "la liste des programmes suspendus a été changée hors de Vanguard",
+        "the list of suspended programs was changed outside Vanguard"
+    )
 }
 
 fn illisible() -> &'static str {
@@ -109,13 +150,116 @@ fn depart(pid: u32) -> Option<u64> {
     }
 }
 
-/// Suspend `pid` s'il fait toujours tourner `chemin`, avec les droits de ce processus, sans autre garde (celles de
-/// `ordres::juger` sont passées avant) : le départ du processus suspendu, ou pourquoi rien ne l'est.
-pub(crate) fn suspendre_ici(pid: u32, chemin: &str) -> Result<Option<u64>, Echec> {
+/// Les comptes de suspension des fils d'un processus (Windows), en fonctions pures : ce que chaque appel de Vanguard
+/// y fait. L'essai `compte_des_fils` rejoue avec elles ce qu'un tiers peut faire entre la suspension et la reprise.
+#[cfg(any(windows, test))]
+pub(crate) mod comptes {
+    /// Une passe fil par fil (`suspendre`) : un fil qui tournait (`avant` = 0) reste suspendu ; les autres, comptés
+    /// en passant (suspendus puis repris aussitôt), gardent leur compte. Ainsi une resuspension n'ajoute rien à un fil
+    /// déjà suspendu, et la reprise de Vanguard (une seule) suffit toujours.
+    #[must_use]
+    pub(crate) fn reste_suspendu(avant: u32, suspendre: bool) -> bool {
+        suspendre && avant == 0
+    }
+
+    /// NtSuspendProcess : une suspension de plus à chaque fil.
+    #[cfg(test)]
+    pub(crate) fn tout_suspendre(fils: &mut [u32]) {
+        for f in fils {
+            *f = f.saturating_add(1);
+        }
+    }
+
+    /// NtResumeProcess : une suspension de moins à chaque fil suspendu.
+    #[cfg(test)]
+    pub(crate) fn tout_reprendre(fils: &mut [u32]) {
+        for f in fils {
+            *f = f.saturating_sub(1);
+        }
+    }
+
+    /// Une passe : chaque fil compté, et suspendu s'il tournait (`suspendre`).
+    #[cfg(test)]
+    pub(crate) fn passe(fils: &mut [u32], suspendre: bool) {
+        for f in fils {
+            if reste_suspendu(*f, suspendre) {
+                *f = f.saturating_add(1);
+            }
+        }
+    }
+}
+
+/// Ce qu'on lit d'un processus noté.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lu {
+    /// Gelé : aucun de ses fils ne tourne.
+    Gele,
+    /// Windows : des fils suspendus, d'autres repris par un tiers.
+    EnPartie,
+    /// Il tourne.
+    Tourne,
+    /// Plus rien à ce numéro.
+    Fini,
+    /// Un autre processus sur ce numéro, ou ce processus fait tourner un autre programme.
+    Autre,
+    /// Là, mais son programme ou son état ne se relit pas d'ici (droits : un processus élevé, d'un autre compte) :
+    /// peut-être toujours suspendu.
+    Illisible,
+}
+
+/// Le processus `pid` fait-il toujours tourner `chemin` (depuis `depart`, s'il est connu), et est-il gelé ?
+pub(crate) fn lire(pid: u32, chemin: &str, depart_connu: Option<u64>) -> Lu {
     #[cfg(target_os = "linux")]
     {
         use crate::socle::processus;
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return Lu::Fini;
+        };
+        if matches!(processus::etat_du_stat(&stat), Some('Z' | 'X')) {
+            return Lu::Fini;
+        }
+        let Some(d) = processus::debut_du_stat(&stat) else {
+            return Lu::Illisible;
+        };
+        if depart_connu.is_some_and(|attendu| attendu != d) {
+            return Lu::Autre;
+        }
+        // /proc/<pid>/exe ne se lit que pour un processus de ce compte (ou en root) : là mais illisible.
+        match super::gestes::chemin_du_processus(pid) {
+            None => return Lu::Illisible,
+            Some(a) if !super::gestes::meme_chemin(&a, chemin) => return Lu::Autre,
+            Some(_) => {}
+        }
+        match processus::est_gele(pid) {
+            Some(true) => Lu::Gele,
+            Some(false) => Lu::Tourne,
+            None => Lu::Fini,
+        }
+    }
+    #[cfg(windows)]
+    {
+        crate::machine::windows::processus::etat_si(pid, chemin, depart_connu)
+    }
+}
+
+/// Suspend `pid` s'il fait toujours tourner `chemin` (depuis `depart_attendu`, s'il est donné), avec les droits de ce
+/// processus, sans autre garde (celles de `ordres::juger` sont passées avant) : le départ du processus suspendu, ou
+/// pourquoi rien ne l'est. `premiere` : la suspension de Vanguard ; sinon une resuspension (Windows : seuls les fils
+/// qui tournent sont suspendus, voir `comptes`).
+pub(crate) fn suspendre_ici(
+    pid: u32,
+    chemin: &str,
+    depart_attendu: Option<u64>,
+    premiere: bool,
+) -> Result<Option<u64>, Echec> {
+    #[cfg(target_os = "linux")]
+    {
+        use crate::socle::processus;
+        let _ = premiere;
         let d = processus::debut(pid).ok_or_else(|| reaffecte(pid))?;
+        if depart_attendu.is_some_and(|attendu| attendu != d) {
+            return Err(reaffecte(pid));
+        }
         if !super::gestes::chemin_du_processus(pid).is_some_and(|a| super::gestes::meme_chemin(&a, chemin)) {
             return Err(reaffecte(pid));
         }
@@ -144,12 +288,12 @@ pub(crate) fn suspendre_ici(pid: u32, chemin: &str) -> Result<Option<u64>, Echec
     #[cfg(windows)]
     {
         use crate::machine::windows::processus;
-        let c = processus::creation(pid);
-        if processus::suspendre_si(pid, chemin, c) {
-            Ok(c)
+        let fait = if premiere {
+            processus::suspendre_si(pid, chemin, depart_attendu)
         } else {
-            Err(refuse_par_le_systeme(pid))
-        }
+            processus::resuspendre_si(pid, chemin, depart_attendu)
+        };
+        fait.map(Some).ok_or_else(|| refuse_par_le_systeme(pid))
     }
 }
 
@@ -185,22 +329,20 @@ pub(crate) fn reprendre_ici(pid: u32, chemin: &str, depart_connu: Option<u64>) -
     }
 }
 
-/// Ce processus noté est-il encore là et suspendu ? `None` : fini, ou un autre processus sur ce numéro.
-fn est_suspendu(s: &Suspendu) -> Option<bool> {
+/// Le rôle d'un programme du système à nommer avant de le suspendre (« montré et confirmé ») ; `None` : un programme
+/// du compte. Windows : les programmes du système ne se suspendent pas du tout (gardes de l'arrêt).
+pub(crate) fn role(pid: u32, chemin: &str) -> Option<String> {
     #[cfg(target_os = "linux")]
     {
-        use crate::socle::processus;
-        if s.depart.is_some_and(|d| processus::debut(s.pid) != Some(d)) {
-            return None;
-        }
-        if !super::gestes::chemin_du_processus(s.pid).is_some_and(|a| super::gestes::meme_chemin(&a, &s.chemin)) {
-            return None;
-        }
-        processus::est_gele(s.pid)
+        use std::os::unix::fs::MetadataExt;
+        let uid = std::fs::metadata(format!("/proc/{pid}")).ok().map(|m| m.uid());
+        let nom = crate::socle::processus::nom_court(pid).unwrap_or_default();
+        super::gardes::role_a_confirmer(&nom, chemin, uid)
     }
     #[cfg(windows)]
     {
-        crate::machine::windows::processus::est_suspendu_si(s.pid, &s.chemin, s.depart)
+        let _ = (pid, chemin);
+        None
     }
 }
 
@@ -217,54 +359,100 @@ fn sans_droits_de_plus(pid: u32) -> bool {
     }
 }
 
-/// Fait un ordre de suspension ou de reprise : ici si ce compte en a les droits (rejugé ici), sinon par l'assistant
-/// élevé (qui le rejuge à son tour). `Err` : ce qui l'a empêché.
-fn faire_l_ordre(o: &Ordre, pid: u32) -> Result<(), Echec> {
-    if sans_droits_de_plus(pid) {
-        let r = ordres::juger_et_faire(o, &ordres::Juge::lire(None));
-        return if r.reussi {
-            Ok(())
-        } else {
-            Err(Echec::refuse(OU, r.raison))
-        };
-    }
-    // Jugé ici d'abord : un refus évident ne demande pas les droits pour rien.
-    if let Some(raison) = ordres::juger(o, &ordres::Juge::lire(None)) {
-        return Err(Echec::refuse(OU, raison));
-    }
+/// Un ordre confié à l'assistant élevé (Linux) ou au processus élevé (Windows), qui le rejuge lui-même.
+fn par_l_assistant(o: &Ordre) -> Result<(), Echec> {
     let (fait, notes) = crate::machine::appliquer_sans_noter(&[o.ligne()]);
     if fait {
-        Ok(())
-    } else {
-        let raison = notes.join(" ; ");
-        Err(Echec::refuse(
-            OU,
-            if raison.is_empty() {
-                tr!("refusé ou droits non accordés", "refused or rights not granted").to_string()
-            } else {
-                raison
-            },
-        ))
+        return Ok(());
     }
+    let raison = notes.join(" ; ");
+    Err(Echec::refuse(
+        OU,
+        if raison.is_empty() {
+            tr!("refusé ou droits non accordés", "refused or rights not granted").to_string()
+        } else {
+            raison
+        },
+    ))
 }
 
-/// Suspend le programme d'une menace, demandé par la personne : garde-fous rejugés, geste sans course, puis noté
-/// (liste scellée et journal). `cle` : la clé de la menace, au journal.
-pub(crate) fn suspendre(pid: u32, chemin: &str, quoi: &str, cle: Option<&str>) -> Result<(), Echec> {
+/// Suspend le programme d'une menace, demandé par la personne : garde-fous rejugés (avec les processus que Vanguard
+/// protège, `intouchables`, comme au menu), geste sans course, puis noté (liste scellée et journal). `cle` : la clé de
+/// la menace, au journal.
+pub(crate) fn suspendre(
+    pid: u32,
+    chemin: &str,
+    quoi: &str,
+    cle: Option<&str>,
+    intouchables: &HashSet<u32>,
+) -> Result<(), Echec> {
     let o = Ordre::SuspendreProcessus {
         pid,
         chemin: chemin.to_string(),
     };
-    let resultat = faire_l_ordre(&o, pid);
+    let juge = ordres::Juge::lire(None).avec(intouchables);
+    if let Some(raison) = ordres::juger(&o, &juge) {
+        return Err(Echec::refuse(OU, raison));
+    }
+    // Lu avant l'ordre : le processus que l'ordre vise, et pas un autre venu après sur ce numéro.
+    let avant = depart(pid);
+    let lu = lire(pid, chemin, avant);
+    if lu == Lu::Gele {
+        return Err(deja_gele(pid));
+    }
+    // Noté par Vanguard et repris en partie par un tiers (Windows) : seulement ses fils qui tournent, sa suspension à
+    // lui y est déjà (`comptes`).
+    let premiere = !(lu == Lu::EnPartie && note(pid, avant));
+    let resultat = if lu != Lu::Illisible && sans_droits_de_plus(pid) {
+        suspendre_ici(pid, chemin, avant, premiere)
+    } else {
+        par_l_assistant(&o).and_then(|()| depart_apres_l_assistant(pid, chemin, avant))
+    };
     noter_au_journal(&o, resultat.is_ok(), cle);
-    resultat?;
+    let d = resultat?;
     retenir(Suspendu {
         pid,
-        depart: depart(pid),
+        depart: d,
         chemin: chemin.to_string(),
         quoi: quoi.to_string(),
         le: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
     })
+}
+
+/// Ce processus (ce numéro et ce départ) est-il dans la liste ?
+fn note(pid: u32, d: Option<u64>) -> bool {
+    d.is_some() && charger().is_ok_and(|l| l.suspendus.iter().any(|s| s.pid == pid && s.depart == d))
+}
+
+/// Le refus d'un programme déjà gelé (par Vanguard ou un autre) : une seconde suspension Windows ajouterait une
+/// suspension à chaque fil, que la reprise de Vanguard ne retirerait pas.
+pub(crate) fn deja_gele(pid: u32) -> Echec {
+    Echec::refuse(
+        OU,
+        trf!(
+            "le processus {pid} est déjà suspendu (par Vanguard ou un autre programme) : rien n'est ajouté",
+            "process {pid} is already suspended (by Vanguard or another program): nothing is added"
+        ),
+    )
+}
+
+/// Le départ à retenir d'un processus suspendu par l'assistant, qui ne le rend pas : celui lu avant l'ordre, s'il n'a
+/// pas changé ; changé, celui d'après seulement s'il est bien gelé (sinon rien n'est retenu, et c'est dit).
+fn depart_apres_l_assistant(pid: u32, chemin: &str, avant: Option<u64>) -> Result<Option<u64>, Echec> {
+    let apres = depart(pid);
+    if apres == avant {
+        return Ok(avant);
+    }
+    match apres {
+        Some(d) if lire(pid, chemin, Some(d)) == Lu::Gele => Ok(Some(d)),
+        _ => Err(Echec::refuse(
+            OU,
+            trf!(
+                "le processus {pid} a changé pendant la suspension (fini, ou un autre sur ce numéro) : rien n'est retenu",
+                "process {pid} changed during the suspension (ended, or another one on this number): nothing is saved"
+            ),
+        )),
+    }
 }
 
 /// Le geste au journal des événements, avec sa ligne d'ordre : ce qui a été suspendu ou repris, et quand.
@@ -273,10 +461,16 @@ fn noter_au_journal(o: &Ordre, reussi: bool, cle: Option<&str>) {
     crate::modele::journal::noter(Evenement::action(Source::Utilisateur, &o.texte(), reussi, &[o.ligne()]).cle(cle));
 }
 
-/// Ajoute un suspendu à la liste (le même numéro remplacé). Une liste changée hors de Vanguard est remise à neuf :
-/// le programme reste suspendu, c'est dit.
+/// Ajoute un suspendu à la liste (le même numéro remplacé). Une liste changée hors de Vanguard ne compte pas : elle
+/// est remplacée par une liste neuve, et c'est dit, avec les numéros qu'elle nommait.
 fn retenir(s: Suspendu) -> Result<(), Echec> {
-    let mut l = charger().unwrap_or_default();
+    let mut l = match charger() {
+        Ok(l) => l,
+        Err(r) => {
+            dire_liste_remplacee(&r);
+            Liste::default()
+        }
+    };
     l.suspendus.retain(|x| x.pid != s.pid);
     l.suspendus.push(s);
     if l.suspendus.len() > SUSPENDUS_MAX {
@@ -285,10 +479,49 @@ fn retenir(s: Suspendu) -> Result<(), Echec> {
     enregistrer(&l).map_err(|e| Echec::ecriture(OU, &e))
 }
 
-/// Les programmes suspendus retenus (vide si la liste ne compte pas).
+/// Les numéros qu'une liste nomme, pour les dire (« 4242, 4243 »), au plus dix.
+fn numeros(l: &[Suspendu]) -> String {
+    let mut n: Vec<String> = l.iter().take(10).map(|s| s.pid.to_string()).collect();
+    if l.len() > 10 {
+        n.push("…".into());
+    }
+    n.join(", ")
+}
+
+fn dire_liste_remplacee(r: &Refus) {
+    let nommes = if r.dit.is_empty() {
+        String::new()
+    } else {
+        trf!(
+            " Elle nommait les PID {} : s'ils sont encore gelés, « vanguard blocage reprendre <PID> » les reprend.",
+            " It named PIDs {}: if they are still frozen, “vanguard blocking resume <PID>” resumes them.",
+            numeros(&r.dit)
+        )
+    };
+    afficher_aligne(
+        &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
+        &trf!(
+            "{} : elle ne compte plus, une liste neuve la remplace.{nommes}",
+            "{}: it no longer counts, a new list replaces it.{nommes}",
+            capitale(r.raison)
+        ),
+        4,
+        "",
+    );
+}
+
+/// La première lettre en capitale (« la liste… » → « La liste… »).
+fn capitale(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map(|p| p.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
+}
+
 /// La liste se lit-elle (pas changée hors de Vanguard) ? Sinon, pourquoi.
-pub(crate) fn lisible() -> Result<(), &'static str> {
-    charger().map(|_| ())
+#[cfg(test)]
+fn lisible() -> Result<(), &'static str> {
+    charger().map(|_| ()).map_err(|r| r.raison)
 }
 
 #[cfg(test)]
@@ -296,40 +529,127 @@ fn suspendus() -> Vec<Suspendu> {
     charger().map(|l| l.suspendus).unwrap_or_default()
 }
 
-/// Reprend un programme suspendu par Vanguard (`pid`), ou tous (`None`) : chacun relu, repris par ses droits ou ceux
-/// de l'assistant, puis oublié. Rend, pour chacun, ce qu'il est et le résultat.
-pub(crate) fn reprendre(pid: Option<u32>) -> Vec<(Suspendu, Result<(), Echec>)> {
-    let Ok(mut l) = charger() else {
-        return Vec::new();
+/// Ce qu'une reprise a fait.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Reprise {
+    /// Repris, et relu : il tourne.
+    Faite,
+    /// Repris par l'assistant élevé ; son état ne se relit pas d'ici.
+    NonRelu,
+    /// La suspension de Vanguard est levée, mais un autre programme le tient encore suspendu (Windows : une
+    /// suspension à lui ; Linux : un traceur).
+    TenuAilleurs,
+    /// Plus rien à ce numéro : rien à reprendre.
+    DejaFini,
+    /// Il tournait déjà (un autre programme l'avait repris).
+    DejaRepris,
+    /// Ce numéro est maintenant un autre processus, ou un autre programme : rien n'est touché.
+    Autre,
+}
+
+/// Reprend un programme suspendu : relu, puis repris par ses droits, ou par l'assistant élevé s'il ne se relit pas
+/// d'ici ou que ce compte n'a pas les droits (l'assistant le rejuge : le même programme, et suspendu). Rien n'est dit
+/// repris qui ne l'ait été.
+fn reprendre_un(s: &Suspendu) -> Result<Reprise, Echec> {
+    let lu = lire(s.pid, &s.chemin, s.depart);
+    match lu {
+        Lu::Fini => return Ok(Reprise::DejaFini),
+        Lu::Autre => return Ok(Reprise::Autre),
+        Lu::Tourne => return Ok(Reprise::DejaRepris),
+        Lu::Gele | Lu::EnPartie | Lu::Illisible => {}
+    }
+    let o = Ordre::ReprendreProcessus {
+        pid: s.pid,
+        chemin: s.chemin.clone(),
+    };
+    let r = if lu != Lu::Illisible && sans_droits_de_plus(s.pid) {
+        reprendre_ici(s.pid, &s.chemin, s.depart)
+    } else {
+        par_l_assistant(&o)
+    };
+    noter_au_journal(&o, r.is_ok(), None);
+    r?;
+    // Relu : un SIGCONT se sert quand le noyau sert le processus, un instant après (2 s au plus).
+    let mut apres = lire(s.pid, &s.chemin, s.depart);
+    for _ in 0..200u8 {
+        if apres != Lu::Gele {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        apres = lire(s.pid, &s.chemin, s.depart);
+    }
+    Ok(match apres {
+        Lu::Tourne | Lu::EnPartie => Reprise::Faite,
+        Lu::Gele => Reprise::TenuAilleurs,
+        Lu::Illisible => Reprise::NonRelu,
+        Lu::Fini => Reprise::DejaFini,
+        Lu::Autre => Reprise::Autre,
+    })
+}
+
+/// Ce que `reprendre` a fait : la liste ne comptait pas (pourquoi, et les numéros qu'elle nommait), puis chaque
+/// programme visé et son issue.
+pub(crate) struct Reprises {
+    pub(crate) liste_refusee: Option<(&'static str, String)>,
+    pub(crate) faits: Vec<(Suspendu, Result<Reprise, Echec>)>,
+}
+
+/// Reprend un programme suspendu par Vanguard (`pid`), ou tous (`None`) : chacun relu et repris (`reprendre_un`),
+/// puis oublié, sauf s'il n'a pas pu l'être.
+///
+/// Liste changée hors de Vanguard : elle ne vaut rien, mais reprendre ne relâche aucune défense. Un `pid` donné à la
+/// main est relu ici et repris s'il est gelé (son programme lu maintenant, ou celui que la liste nomme s'il ne se lit
+/// pas d'ici : l'assistant le rejuge) ; sans `pid`, rien n'est repris sur la foi de la liste, ses numéros sont dits,
+/// et une liste neuve la remplace.
+pub(crate) fn reprendre(pid: Option<u32>) -> Reprises {
+    let mut l = match charger() {
+        Ok(l) => l,
+        Err(r) => {
+            let nommes = numeros(&r.dit);
+            let faits = if let Some(p) = pid {
+                reprendre_hors_liste(p, &r.dit).into_iter().collect()
+            } else {
+                let _ = enregistrer(&Liste::default());
+                Vec::new()
+            };
+            return Reprises {
+                liste_refusee: Some((r.raison, nommes)),
+                faits,
+            };
+        }
     };
     let (vises, gardes): (Vec<Suspendu>, Vec<Suspendu>) =
         l.suspendus.drain(..).partition(|s| pid.is_none_or(|p| p == s.pid));
     l.suspendus = gardes;
     let mut faits = Vec::new();
     for s in vises {
-        // Fini ou remplacé : il n'y a plus rien à reprendre, il est oublié.
-        let r = if est_suspendu(&s).is_none() {
-            Ok(())
-        } else {
-            let o = Ordre::ReprendreProcessus {
-                pid: s.pid,
-                chemin: s.chemin.clone(),
-            };
-            let r = if sans_droits_de_plus(s.pid) {
-                reprendre_ici(s.pid, &s.chemin, s.depart)
-            } else {
-                faire_l_ordre(&o, s.pid)
-            };
-            noter_au_journal(&o, r.is_ok(), None);
-            r
-        };
+        let r = reprendre_un(&s);
         if r.is_err() {
             l.suspendus.push(s.clone());
         }
         faits.push((s, r));
     }
     let _ = enregistrer(&l);
-    faits
+    Reprises {
+        liste_refusee: None,
+        faits,
+    }
+}
+
+/// La reprise d'un `pid` donné à la main quand la liste ne compte pas : son programme lu maintenant (ou, illisible
+/// d'ici, celui que la liste nommait : l'assistant le rejuge), son départ lu maintenant. `None` : rien à ce numéro.
+fn reprendre_hors_liste(pid: u32, dit: &[Suspendu]) -> Option<(Suspendu, Result<Reprise, Echec>)> {
+    let chemin = super::gestes::chemin_du_processus(pid)
+        .or_else(|| dit.iter().find(|s| s.pid == pid).map(|s| s.chemin.clone()))?;
+    let s = Suspendu {
+        pid,
+        depart: depart(pid),
+        chemin,
+        quoi: tr!("Processus nommé à la main", "Process named by hand").to_string(),
+        le: String::new(),
+    };
+    let r = reprendre_un(&s);
+    Some((s, r))
 }
 
 /// Ce que le bilan constate d'un programme suspendu.
@@ -339,63 +659,119 @@ pub(crate) enum Constat {
     Suspendu,
     /// Un tiers l'avait repris : resuspendu.
     Resuspendu,
-    /// Un tiers l'a repris, et il ne se resuspend pas (droits) : il tourne.
+    /// Un tiers l'a repris, et il ne se resuspend pas d'ici (droits, ou départ inconnu) : il tourne.
     Repris,
+    /// Il ne se relit pas d'ici (droits) : peut-être toujours suspendu ; gardé.
+    Illisible,
+    /// Ce numéro est un autre processus, ou un autre programme : dit une fois, puis oublié.
+    Autre,
 }
 
-/// Que faire d'un suspendu, d'après ce qu'on lit : `None` (fini, remplacé) l'oublie ; repris par un tiers, il se
-/// resuspend. Pur.
-pub(crate) fn constat(lu: Option<bool>, resuspendu: impl FnOnce() -> bool) -> Option<Constat> {
-    match lu? {
-        true => Some(Constat::Suspendu),
-        false if resuspendu() => Some(Constat::Resuspendu),
-        false => Some(Constat::Repris),
+impl Constat {
+    /// Reste-t-il dans la liste ?
+    pub(crate) fn garde(&self) -> bool {
+        *self != Constat::Autre
     }
 }
 
-/// Au bilan : chaque suspendu relu, resuspendu s'il a été repris, oublié s'il est fini ; la liste de ce qui reste.
-pub(crate) fn verifier() -> Vec<(Suspendu, Constat)> {
-    let Ok(mut l) = charger() else {
-        return Vec::new();
-    };
+/// Que faire d'un suspendu, d'après ce qu'on lit : fini, il est oublié (`None`) ; repris par un tiers, il se
+/// resuspend si possible ; illisible, il est gardé et dit. Pur.
+pub(crate) fn constat(lu: Lu, resuspendu: impl FnOnce() -> bool) -> Option<Constat> {
+    match lu {
+        Lu::Fini => None,
+        Lu::Autre => Some(Constat::Autre),
+        Lu::Illisible => Some(Constat::Illisible),
+        Lu::Gele => Some(Constat::Suspendu),
+        Lu::Tourne | Lu::EnPartie => Some(if resuspendu() {
+            Constat::Resuspendu
+        } else {
+            Constat::Repris
+        }),
+    }
+}
+
+/// Au bilan : chaque suspendu relu, resuspendu s'il a été repris (par ce compte, et seulement le même processus :
+/// son départ connu), oublié s'il est fini ; ce qui est constaté. `Err` : la liste ne compte pas (pourquoi, et les
+/// numéros qu'elle nommait).
+fn verifier() -> Result<Vec<(Suspendu, Constat)>, (&'static str, String)> {
+    let mut l = charger().map_err(|r| (r.raison, numeros(&r.dit)))?;
     let mut restent = Vec::new();
     let mut constats = Vec::new();
     for s in l.suspendus.drain(..) {
-        let c = constat(est_suspendu(&s), || {
-            sans_droits_de_plus(s.pid) && suspendre_ici(s.pid, &s.chemin).is_ok()
+        let c = constat(lire(s.pid, &s.chemin, s.depart), || {
+            s.depart.is_some() && sans_droits_de_plus(s.pid) && suspendre_ici(s.pid, &s.chemin, s.depart, false).is_ok()
         });
         if let Some(c) = c {
-            restent.push(s.clone());
+            if c.garde() {
+                restent.push(s.clone());
+            }
             constats.push((s, c));
         }
     }
     l.suspendus = restent;
     let _ = enregistrer(&l);
-    constats
+    Ok(constats)
 }
 
-/// Au bilan : rappelle ce qui reste suspendu, et ce qu'un tiers a repris.
+/// Au bilan : rappelle ce qui reste suspendu, ce qu'un tiers a repris, ce qui ne se relit pas ; et une liste changée
+/// hors de Vanguard.
 pub(crate) fn rappeler() {
-    let constats = verifier();
+    let constats = match verifier() {
+        Ok(c) => c,
+        Err((raison, nommes)) => {
+            crate::ui::section(tr!("PROGRAMMES SUSPENDUS", "SUSPENDED PROGRAMS"));
+            let nommes = if nommes.is_empty() {
+                String::new()
+            } else {
+                trf!(" Elle nomme les PID {nommes}.", " It names PIDs {nommes}.")
+            };
+            afficher_aligne(
+                &format!("  {}✖{RESET} ", couleur(crate::risk::Niveau::Eleve)),
+                &trf!(
+                    "{} : ce qu'elle dit ne compte plus, et rien n'est resuspendu.{nommes} Un programme gelé se reprend par « vanguard blocage reprendre <PID> » si vous connaissez son numéro ; « vanguard blocage reprendre » remet la liste à neuf.",
+                    "{}: what it says no longer counts, and nothing is suspended again.{nommes} A frozen program is resumed with “vanguard blocking resume <PID>” if you know its number; “vanguard blocking resume” resets the list.",
+                    capitale(raison)
+                ),
+                4,
+                "",
+            );
+            return;
+        }
+    };
     if constats.is_empty() {
         return;
     }
     crate::ui::section(tr!("PROGRAMMES SUSPENDUS", "SUSPENDED PROGRAMS"));
     for (s, c) in &constats {
+        let eleve = couleur(crate::risk::Niveau::Eleve);
         let (signe, etat) = match c {
             Constat::Suspendu => (format!("{GRIS}‖{RESET}"), tr!("toujours suspendu", "still suspended")),
             Constat::Resuspendu => (
-                format!("{}‖{RESET}", couleur(crate::risk::Niveau::Eleve)),
+                format!("{eleve}‖{RESET}"),
                 tr!(
                     "un autre programme l'avait repris : suspendu de nouveau",
                     "another program had resumed it: suspended again"
                 ),
             ),
             Constat::Repris => (
-                format!("{}⚠{RESET}", couleur(crate::risk::Niveau::Eleve)),
+                format!("{eleve}⚠{RESET}"),
                 tr!(
-                    "un autre programme l'a repris, et il ne se suspend plus d'ici",
-                    "another program resumed it, and it can no longer be suspended from here"
+                    "un autre programme l'a repris, et il ne se resuspend pas d'ici (droits, ou départ inconnu) : il tourne ; « vanguard blocage suspendre <PID> » le suspend de nouveau",
+                    "another program resumed it, and it cannot be suspended again from here (rights, or unknown start): it is running; “vanguard blocking suspend <PID>” suspends it again"
+                ),
+            ),
+            Constat::Illisible => (
+                format!("{eleve}?{RESET}"),
+                tr!(
+                    "ne se relit pas d'ici (droits) : peut-être toujours suspendu ; « vanguard blocage reprendre <PID> » le reprend par l'assistant élevé",
+                    "cannot be read from here (rights): perhaps still suspended; “vanguard blocking resume <PID>” resumes it through the elevated helper"
+                ),
+            ),
+            Constat::Autre => (
+                format!("{GRIS}·{RESET}"),
+                tr!(
+                    "fini, son numéro pris par un autre processus, ou devenu un autre programme : oublié",
+                    "ended, its number taken by another process, or turned into another program: forgotten"
                 ),
             ),
         };
@@ -411,16 +787,18 @@ pub(crate) fn rappeler() {
             "",
         );
     }
-    afficher_aligne(
-        "    ",
-        &trf!(
-            "Pour le reprendre : vanguard blocage reprendre {} ; pour l'arrêter, choisissez « Bloquer » à sa menace.",
-            "To resume it: vanguard blocking resume {}; to stop it, choose “Block” on its threat.",
-            constats.first().map_or(0, |(s, _)| s.pid)
-        ),
-        4,
-        GRIS,
-    );
+    if let Some((s, _)) = constats.iter().find(|(_, c)| c.garde()) {
+        afficher_aligne(
+            "    ",
+            &trf!(
+                "Pour le reprendre : vanguard blocage reprendre {} ; pour l'arrêter, choisissez « Bloquer » à sa menace.",
+                "To resume it: vanguard blocking resume {}; to stop it, choose “Block” on its threat.",
+                s.pid
+            ),
+            4,
+            GRIS,
+        );
+    }
 }
 
 #[allow(
@@ -432,16 +810,56 @@ pub(crate) fn rappeler() {
 mod tests {
     use super::*;
 
-    /// Fini ou remplacé : oublié ; suspendu : rappelé ; repris par un tiers : resuspendu si possible, sinon dit.
+    /// Fini : oublié ; autre programme : dit, puis oublié ; suspendu : rappelé ; illisible d'ici : gardé et dit, jamais
+    /// oublié en silence ; repris par un tiers : resuspendu si possible, sinon dit.
     #[test]
     fn constats_du_bilan() {
-        assert_eq!(constat(None, || panic!("rien à resuspendre")), None);
-        assert_eq!(constat(Some(true), || panic!("déjà suspendu")), Some(Constat::Suspendu));
-        assert_eq!(constat(Some(false), || true), Some(Constat::Resuspendu));
-        assert_eq!(constat(Some(false), || false), Some(Constat::Repris));
+        assert_eq!(constat(Lu::Fini, || panic!("rien à resuspendre")), None);
+        let autre = constat(Lu::Autre, || panic!("pas le même"));
+        assert_eq!(autre, Some(Constat::Autre));
+        assert!(!autre.unwrap().garde());
+        let illisible = constat(Lu::Illisible, || panic!("illisible : rien à resuspendre d'ici"));
+        assert_eq!(illisible, Some(Constat::Illisible));
+        assert!(illisible.unwrap().garde());
+        assert_eq!(constat(Lu::Gele, || panic!("déjà suspendu")), Some(Constat::Suspendu));
+        assert_eq!(constat(Lu::Tourne, || true), Some(Constat::Resuspendu));
+        assert_eq!(constat(Lu::EnPartie, || true), Some(Constat::Resuspendu));
+        assert_eq!(constat(Lu::Tourne, || false), Some(Constat::Repris));
+        assert!(Constat::Repris.garde() && Constat::Suspendu.garde());
     }
 
-    /// La liste se relit telle qu'écrite (dossier jetable des essais) ; un même numéro remplace l'ancien.
+    /// Les comptes de suspension des fils (Windows) : la suspension de Vanguard, un tiers qui reprend un fil, un fil né
+    /// pendant, la resuspension du bilan, puis la reprise de Vanguard ; chaque fil revient à son compte d'avant (le
+    /// fil 2, suspendu par son propre programme, le reste).
+    #[test]
+    fn compte_des_fils() {
+        let avant = [0u32, 0, 1];
+        let mut fils = avant.to_vec();
+        comptes::tout_suspendre(&mut fils);
+        comptes::passe(&mut fils, true);
+        assert_eq!(fils, [1, 1, 2]);
+        // Un tiers reprend le fil 0 ; un fil naît, qui tourne.
+        fils[0] -= 1;
+        fils.push(0);
+        // Le bilan : des passes seulement, jamais NtSuspendProcess.
+        comptes::passe(&mut fils, true);
+        comptes::passe(&mut fils, true);
+        assert_eq!(fils, [1, 1, 2, 1]);
+        comptes::tout_reprendre(&mut fils);
+        assert_eq!(fils, [0, 0, 1, 0]);
+        // Une seconde suspension refusée (`deja_gele`) : sinon il en resterait une après la reprise.
+        let mut deux = avant.to_vec();
+        comptes::tout_suspendre(&mut deux);
+        comptes::tout_suspendre(&mut deux);
+        comptes::tout_reprendre(&mut deux);
+        assert_ne!(deux, avant);
+        assert!(comptes::reste_suspendu(0, true));
+        assert!(!comptes::reste_suspendu(1, true) && !comptes::reste_suspendu(0, false));
+    }
+
+    /// La liste se relit telle qu'écrite (dossier jetable des essais) ; un même numéro remplace l'ancien. Changée hors
+    /// de Vanguard : elle ne compte plus, c'est dit (avec ses numéros), reprendre tout ne reprend rien sur sa foi et la
+    /// remet à neuf, et retenir repart d'une liste neuve. Un seul essai : la liste est un fichier partagé.
     #[test]
     fn liste_relue() {
         let s = |pid, quoi: &str| Suspendu {
@@ -457,10 +875,31 @@ mod tests {
         let l = suspendus();
         assert!(l.contains(&s(4243, "b")) && l.contains(&s(4242, "c")));
         assert!(!l.contains(&s(4242, "a")));
+        assert!(lisible().is_ok());
+
+        let fichier = crate::socle::dossier_local().join(crate::sceau::SUSPENDUS);
+        let changee = Liste {
+            suspendus: vec![s(4244, "d")],
+        };
+        std::fs::write(&fichier, serde_json::to_string(&changee).unwrap()).unwrap();
+        assert!(lisible().is_err());
+        let r = reprendre(None);
+        let (raison, nommes) = r.liste_refusee.expect("la liste changée est dite");
+        assert_eq!(raison, falsifiee());
+        assert_eq!(nommes, "4244");
+        assert!(r.faits.is_empty(), "rien n'est repris sur la foi d'une liste changée");
+        assert!(lisible().is_ok() && suspendus().is_empty(), "remise à neuf");
+
+        std::fs::write(&fichier, serde_json::to_string(&changee).unwrap()).unwrap();
+        assert!(verifier().is_err(), "le bilan dit la liste changée");
+        retenir(s(4245, "e")).unwrap();
+        assert_eq!(suspendus(), vec![s(4245, "e")]);
+        retenir(s(4245, "e")).unwrap();
+        let _ = enregistrer(&Liste::default());
     }
 
     /// Un enfant jetable (`sleep`) suspendu sans course : un autre programme attendu ne le touche pas ; le bon le
-    /// gèle ; la reprise par un programme faux ne fait rien, la bonne le reprend.
+    /// gèle ; la reprise par un programme faux ne fait rien, la bonne le reprend. `lire` suit chaque état.
     #[cfg(target_os = "linux")]
     #[test]
     fn suspension_d_un_enfant() {
@@ -484,13 +923,19 @@ mod tests {
             let _ = enfant.kill();
             return crate::essais::saute("l'enfant ne passe pas à sleep");
         };
-        let autre = suspendre_ici(pid, "/autre/programme");
+        let autre = suspendre_ici(pid, "/autre/programme", None, true);
         let libre = est_gele(pid);
-        let bon = suspendre_ici(pid, &programme);
+        let lu_libre = lire(pid, &programme, None);
+        let mauvais_depart = suspendre_ici(pid, &programme, Some(1), true);
+        let bon = suspendre_ici(pid, &programme, None, true);
+        let d = bon.as_ref().ok().copied().flatten();
         let gele = est_gele(pid);
+        let lu_gele = lire(pid, &programme, d);
+        let lu_autre = lire(pid, "/autre/programme", d);
+        let lu_autre_depart = lire(pid, &programme, d.map(|d| d.wrapping_add(1)));
         let reprise_fausse = reprendre_ici(pid, "/autre/programme", None);
         let toujours = est_gele(pid);
-        let reprise = reprendre_ici(pid, &programme, bon.as_ref().ok().copied().flatten());
+        let reprise = reprendre_ici(pid, &programme, d);
         let mut repris = est_gele(pid);
         for _ in 0..200 {
             if repris != Some(true) {
@@ -503,12 +948,21 @@ mod tests {
         let _ = enfant.wait();
         assert!(autre.is_err());
         assert_eq!(libre, Some(false));
+        assert_eq!(lu_libre, Lu::Tourne);
+        assert!(mauvais_depart.is_err());
         assert!(bon.as_ref().is_ok_and(Option::is_some), "{bon:?}");
         assert_eq!(gele, Some(true));
+        assert_eq!(lu_gele, Lu::Gele);
+        assert_eq!(lu_autre, Lu::Autre);
+        assert_eq!(lu_autre_depart, Lu::Autre);
         assert!(reprise_fausse.is_err());
         assert_eq!(toujours, Some(true));
         assert!(reprise.is_ok(), "{reprise:?}");
         assert_eq!(repris, Some(false));
-        assert!(suspendre_ici(pid, &programme).is_err(), "fini : rien à suspendre");
+        assert!(
+            suspendre_ici(pid, &programme, None, true).is_err(),
+            "fini : rien à suspendre"
+        );
+        assert_eq!(lire(pid, &programme, d), Lu::Fini);
     }
 }

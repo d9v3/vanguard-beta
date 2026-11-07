@@ -191,11 +191,49 @@ fn jugees_les_deux_formes(
     }
 }
 
+/// Les programmes du système dont le gel enfermerait la personne : la voie de la reprise (polkit et l'assistant
+/// élevé qui passe par lui, sudo, le bus système qui les relie, la session), le compositeur et l'écran de connexion
+/// (un bureau gelé ne clique plus rien). Refusés au gel quand ils sont dans un dossier du système ; un programme
+/// ailleurs qui prend leur nom n'en est pas un (il reste gelable, comme tout programme du compte).
+#[cfg(target_os = "linux")]
+const NOMS_DE_LA_REPRISE: &[&str] = &[
+    "polkitd",
+    "polkit-agent-helper-1",
+    "pkexec",
+    "pkttyagent",
+    "sudo",
+    "su",
+    "dbus-daemon",
+    "dbus-broker",
+    "dbus-broker-launch",
+    "systemd-logind",
+    "hyprland",
+    "sway",
+    "kwin_wayland",
+    "kwin_x11",
+    "gnome-shell",
+    "mutter",
+    "xwayland",
+    "xorg",
+    "x",
+    "weston",
+    "river",
+    "niri",
+    "labwc",
+    "wayfire",
+    "gdm",
+    "sddm",
+    "lightdm",
+    "greetd",
+];
+
 /// Pourquoi ce processus ne doit jamais être GELÉ, ou `None`. Mêmes garde-fous que l'arrêt, sauf la règle « programme
 /// du système » : geler python3 ou un outil du système est permis (c'est réversible et rien n'est effacé), l'arrêter
-/// non. Jamais le noyau, init/systemd, le compositeur, la session, un terminal ou un shell (PID et noms critiques), ni
-/// Vanguard et ce qu'il fait tourner : un bureau gelé ne pourrait plus cliquer « Reprendre ». Sans chemin lisible,
-/// on ne gèle pas à l'aveugle.
+/// non ; demandé par la personne, ce gel-là est montré et confirmé (`role_a_confirmer`), et plus restreint encore
+/// (`processus_suspendable`). Jamais : le noyau, init et systemd (PID et noms critiques) ; Vanguard, ce qu'il a lancé
+/// et ce qui le fait tourner (`intouchables` : son terminal, sa session). Le compositeur, un autre terminal ou un
+/// shell qui n'est pas de la lignée de Vanguard ne sont pas protégés ici. Sans chemin lisible, on ne gèle pas à
+/// l'aveugle.
 #[cfg(target_os = "linux")]
 pub(crate) fn processus_gelable(
     pid: u32,
@@ -220,6 +258,135 @@ pub(crate) fn processus_gelable(
             "chemin du programme illisible : rien n'est gelé à l'aveugle",
             "program path unreadable: nothing is frozen blindly"
         ));
+    }
+    None
+}
+
+/// Pourquoi la personne ne peut pas SUSPENDRE ce processus, ou `None` : `processus_gelable`, et jamais un programme
+/// du système de `NOMS_DE_LA_REPRISE` (polkit, sudo, le bus système, la session, le compositeur, l'écran de
+/// connexion), sans lesquels la suspension ne se lèverait plus (`vanguard blocage reprendre` passe par polkit). La
+/// réponse au rançongiciel, qui gèle et reprend elle-même, garde `processus_gelable` seul.
+#[cfg(target_os = "linux")]
+pub(crate) fn processus_suspendable(
+    pid: u32,
+    nom: &str,
+    chemin: Option<&str>,
+    intouchables: &HashSet<u32>,
+) -> Option<&'static str> {
+    if let Some(raison) = processus_gelable(pid, nom, chemin, intouchables) {
+        return Some(raison);
+    }
+    let chemin = chemin?;
+    let simple = nom_simple(nom);
+    (dossier_systeme(chemin, Os::Linux) && (de_la_reprise(&simple) || de_la_reprise(&nom_simple(chemin)))).then(|| {
+        tr!(
+            "programme dont dépend la reprise (polkit, sudo, bus système, session, compositeur, écran de connexion) : le suspendre empêcherait de le reprendre, jamais suspendu",
+            "program the resume depends on (polkit, sudo, system bus, session, compositor, login screen): suspending it would prevent resuming it, never suspended"
+        )
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn de_la_reprise(nom: &str) -> bool {
+    NOMS_DE_LA_REPRISE.contains(&nom) || nom.contains("polkit")
+}
+
+/// Le rôle d'un programme du système que la personne demande de suspendre, à nommer dans la question avant de le
+/// faire (« montré et confirmé ») ; `None` : un programme du compte, rien de plus à dire. `uid` : le compte du
+/// processus (`None` : illisible, tenu pour du système). Pur.
+#[cfg(target_os = "linux")]
+pub(crate) fn role_a_confirmer(nom: &str, chemin: &str, uid: Option<u32>) -> Option<String> {
+    const ROLES: &[(&[&str], &str, &str)] = &[
+        (
+            &["pipewire", "pipewire-pulse", "wireplumber", "pulseaudio"],
+            "le serveur du son",
+            "the sound server",
+        ),
+        (
+            &[
+                "networkmanager",
+                "wpa_supplicant",
+                "iwd",
+                "dhcpcd",
+                "systemd-networkd",
+                "connmand",
+            ],
+            "le réseau de cet ordinateur",
+            "this computer's network",
+        ),
+        (
+            &["systemd-resolved", "dnsmasq", "unbound", "nextdns"],
+            "la résolution des noms (DNS)",
+            "name resolution (DNS)",
+        ),
+        (&["cupsd", "cups-browsed"], "l'impression", "printing"),
+        (&["bluetoothd"], "le Bluetooth", "Bluetooth"),
+        (
+            &["systemd-journald", "rsyslogd", "syslog-ng"],
+            "les journaux du système",
+            "the system logs",
+        ),
+        (
+            &["udisksd", "systemd-udevd", "udevd"],
+            "les disques et les appareils branchés",
+            "disks and plugged devices",
+        ),
+        (
+            &["upowerd", "power-profiles-daemon", "tlp"],
+            "l'alimentation",
+            "power management",
+        ),
+        (
+            &["avahi-daemon"],
+            "la découverte du réseau local",
+            "local network discovery",
+        ),
+        (
+            &[
+                "xdg-desktop-portal",
+                "xdg-desktop-portal-hyprland",
+                "xdg-desktop-portal-gtk",
+                "xdg-desktop-portal-wlr",
+            ],
+            "les fenêtres d'ouverture de fichiers et le partage d'écran",
+            "file dialogs and screen sharing",
+        ),
+        (
+            &["gnome-keyring-daemon", "kwalletd5", "kwalletd6"],
+            "le trousseau des mots de passe",
+            "the password keyring",
+        ),
+        (
+            &["systemd-timesyncd", "chronyd", "ntpd"],
+            "l'heure du système",
+            "the system clock",
+        ),
+        (
+            &["crond", "cronie", "fcron"],
+            "les tâches planifiées",
+            "scheduled tasks",
+        ),
+        (&["fwupd"], "les mises à jour des micrologiciels", "firmware updates"),
+        (&["snapperd", "restic"], "les sauvegardes", "backups"),
+    ];
+    let simple = nom_simple(nom);
+    let fichier = nom_simple(chemin);
+    for (noms, fr, en) in ROLES {
+        if noms.iter().any(|n| *n == simple || *n == fichier) && dossier_systeme(chemin, Os::Linux) {
+            return Some((if crate::langue::anglais() { *en } else { *fr }).to_string());
+        }
+    }
+    if dossier_systeme(chemin, Os::Linux) {
+        return Some(tr!("un programme du système", "a system program").to_string());
+    }
+    if uid.is_none_or(|u| u < 1000) {
+        return Some(
+            tr!(
+                "un service du système (compte système)",
+                "a system service (system account)"
+            )
+            .to_string(),
+        );
     }
     None
 }
@@ -2966,5 +3133,45 @@ mod tests {
             Some(ip("198.51.100.20"))
         );
         assert_eq!(client_ssh(""), None);
+    }
+
+    /// Le gel refuse la voie de la reprise (polkit, sudo, bus système, session, compositeur) quand elle est du
+    /// système ; un imitateur ailleurs reste gelable. Les autres programmes du système sont nommés à la question.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gel_de_la_voie_de_la_reprise() {
+        let rien = HashSet::new();
+        for (nom, chemin) in [
+            ("polkitd", "/usr/lib/polkit-1/polkitd"),
+            ("dbus-daemon", "/usr/bin/dbus-daemon"),
+            ("dbus-broker", "/usr/bin/dbus-broker"),
+            ("systemd-logind", "/usr/lib/systemd/systemd-logind"),
+            ("pkexec", "/usr/bin/pkexec"),
+            ("sudo", "/usr/bin/sudo"),
+            ("Hyprland", "/usr/bin/Hyprland"),
+            (
+                "polkit-gnome-au",
+                "/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1",
+            ),
+        ] {
+            assert!(processus_suspendable(4000, nom, Some(chemin), &rien).is_some(), "{nom}");
+        }
+        assert!(processus_suspendable(4000, "polkitd", Some("/home/a/.cache/polkitd"), &rien).is_none());
+        assert!(processus_suspendable(4000, "python3", Some("/usr/bin/python3.13"), &rien).is_none());
+        assert!(processus_suspendable(1, "x", Some("/home/a/x"), &rien).is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn role_des_programmes_du_systeme() {
+        let son = role_a_confirmer("pipewire", "/usr/bin/pipewire", Some(1000)).unwrap();
+        assert!(son.contains("son") || son.contains("sound"), "{son}");
+        let reseau = role_a_confirmer("NetworkManager", "/usr/bin/NetworkManager", Some(0)).unwrap();
+        assert!(reseau.contains("réseau") || reseau.contains("network"), "{reseau}");
+        assert!(role_a_confirmer("python3", "/usr/bin/python3.13", Some(1000)).is_some());
+        assert!(role_a_confirmer("x", "/home/a/x", Some(999)).is_some());
+        assert!(role_a_confirmer("x", "/home/a/x", None).is_some());
+        assert!(role_a_confirmer("pipewire", "/home/a/.cache/pipewire", Some(1000)).is_none());
+        assert!(role_a_confirmer("x", "/home/a/x", Some(1000)).is_none());
     }
 }

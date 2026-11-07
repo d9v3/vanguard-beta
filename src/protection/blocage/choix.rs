@@ -16,7 +16,8 @@ pub(crate) enum Choix {
     Bloquer,
     /// Geler le processus, réversible (`suspension`).
     Suspendre,
-    /// Alerter à chaque lancement pendant 7 jours (`surveiller`), Linux seulement pour l'instant.
+    /// Alerter quand il se lance (au plus une fois par heure) pendant 7 jours (`surveiller`), Linux seulement pour
+    /// l'instant.
     Surveiller,
     /// Certain : faire confiance à ce fichier précis (son empreinte), 90 jours, confirmation tapée. Douteux : c'est
     /// normal ici, 90 jours.
@@ -125,7 +126,7 @@ pub(crate) fn precision(c: Choix, e: &Etat) -> &'static str {
         (_, Etat::Confirmer(_)) => tr!("à confirmer", "to confirm"),
         (Choix::Bloquer, _) => tr!("prévu", "planned"),
         (Choix::Suspendre, _) => tr!("« reprendre » le lève", "“resume” lifts it"),
-        (Choix::Surveiller, _) => tr!("une alerte par lancement", "an alert per start"),
+        (Choix::Surveiller, _) => tr!("une alerte par heure au plus", "at most one alert per hour"),
         (Choix::Confiance, _) => tr!("90 jours", "90 days"),
         (Choix::Ignorer, _) => "",
     }
