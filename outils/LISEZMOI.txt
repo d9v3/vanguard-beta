@@ -12,7 +12,7 @@ Defender, XProtect, ClamAV) : il ne le remplace pas.
 
 Sécurité de Vanguard et de la clé
   - Protection de la clé : elle a deux parties. VANGUARD (tout ce que décrit « Contenu de la clé ») est en lecture
-    seule sous Windows, et sous Linux et macOS Vanguard la remonte lui-même en lecture seule au lancement : un
+    seule sous Windows, et sous Linux Vanguard la remonte lui-même en lecture seule au lancement : un
     autre ordinateur ne peut pas modifier le programme. Seul l'ordinateur de son propriétaire peut écrire dessus.
     VANGUARDLOG, petite et modifiable, contient journal-erreurs.txt : les erreurs rencontrées (version, système,
     message), sans nom d'utilisateur, nom de machine ni dossier personnel. De retour sur l'ordinateur du
@@ -37,7 +37,7 @@ Sécurité de Vanguard et de la clé
   - État scellé : l'état de Vanguard (réglages, listes téléchargées, défenses en marche, tâches, changements
     faits) est scellé ; modifié hors de Vanguard, il n'accorde rien, ne coupe rien, et le dit. Le journal
     des événements est chaîné et scellé (vanguard evenements).
-  - Le programme n'a pas de signature d'éditeur (Authenticode, Apple) : SmartScreen peut avertir
+  - Le programme n'a pas de signature d'éditeur (Authenticode) : SmartScreen peut avertir
     (« Informations complémentaires » > « Exécuter quand même ») et Microsoft Defender peut le signaler, car
     il scanne des ports. Son empreinte SHA-256, sur chaque page de version et dans l'historique signé, prouve
     qu'il est authentique. Le code source est sur la clé et sur GitHub (d9v3/vanguard-beta).
@@ -61,18 +61,15 @@ Garde-fous
     a changé » ; celles qui rallument une protection (pare-feu, antivirus, BitLocker, UAC…) ne se défont jamais.
   - Avant la première correction, mise à jour ou réparation qui modifie le système, un point de restauration est
     créé automatiquement quand le système le permet (snapper ou timeshift configuré sous Linux, point de
-    restauration sous Windows, instantané local de Time Machine sous macOS).
+    restauration sous Windows).
   - Pour aider quelqu'un connecté à distance (Bureau à distance, SSH) : Vanguard ne coupe jamais cet accès.
 
 Contenu de la clé
-Cette clé contient le programme pour Linux, Windows et macOS, sa base de données et son code source.
+Cette clé contient le programme pour Linux et Windows, sa base de données et son code source.
 
   Linux/vanguard        Linux (toutes distributions, aucune installation)
                         Double-cliquer autorun.sh, ou dans un terminal (hors de la clé) :  <clé>/Linux/vanguard
   Windows/vanguard.exe  Windows 10/11 : double-cliquer (ou « Lancer Vanguard.bat » à la racine).
-  macOS/vanguard        macOS 12 et plus récents (Apple Silicon et Intel) : double-cliquer « Lancer Vanguard.command »
-                        à la racine (le Terminal s'ouvre). Testé sur un Mac de GitHub, jamais sur un vrai Mac ;
-                        maintenu, sans nouveautés propres au Mac.
   autorun.sh            Linux : GNOME propose de le lancer au branchement ; sinon, double-clic ou ./autorun.sh
   donnees/              Base des appareils (un carnet par réseau : celui du propriétaire, celui de chaque ami)
                         et dernier rapport (rapport.html, et rapport.md en texte simple, lisible sans navigateur). Elle voyage avec la clé : tout Vanguard qui voit la clé branchée l'utilise. Sur un autre
@@ -87,7 +84,7 @@ Cette clé contient le programme pour Linux, Windows et macOS, sa base de donné
   vanguard.cle          Fichier témoin qui fait reconnaître la clé : ne pas le supprimer.
 
 Mode d'emploi de chaque version, ligne de commande comprise (Terminal, PowerShell, invite de commandes) :
-LISEZMOI.txt dans les dossiers Linux, Windows et macOS.
+LISEZMOI.txt dans les dossiers Linux et Windows.
 
 Pour commencer : lancer Vanguard, choisir « 1. Bilan de sécurité complet », puis « 2. Corriger ».
 
@@ -110,7 +107,7 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
        4.7 Rapport à laisser : une page simple pour la personne dépannée, posée sur son Bureau
        4.8 Pour les développeurs › Secrets dans les projets git : mots de passe et clés oubliés dans l'historique
          (et gitleaks, s'il est là) · Failles des images Docker : failles connues, graves ou critiques (trivy)
-       4.9 Logiciels pas à jour (Windows, macOS) : navigateurs, Office, Acrobat, Java, 7-Zip… et leurs failles
+       4.9 Logiciels pas à jour (Windows) : navigateurs, Office, Acrobat, Java, 7-Zip… et leurs failles
          exploitées (lecture seule ; vanguard logiciels-perimes)
        4.10 Options de défense (4.9 sous Linux) : sous Windows, chaque option de Defender, exclusions, règles ASR,
          pare-feu par profil et ses règles, ce qu'une stratégie impose ; sous Linux, le pare-feu (ufw, firewalld,
@@ -176,7 +173,7 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
          ce qui est personnel retiré ; rien n'est jamais envoyé (vanguard signaler)
        8.10 Journaux de Windows, que s'est-il passé ? Les règles EVT- (traces effacées, administrateur de plus,
          mot de passe deviné, service ou tâche planifiée d'attaque, processus suspects, PowerShell, Defender…)
-         sur les journaux de ce Windows ; sous Linux et macOS, sur un dossier de .evtx demandé (winevt\Logs d'un
+         sur les journaux de ce Windows ; sous Linux, sur un dossier de .evtx demandé (winevt\Logs d'un
          disque monté depuis la clé). Les alertes dans l'ordre du temps (lecture seule ; vanguard journaux-windows)
        8.11 Veilleur (Linux) : programmes lancés et connexions fermées vus sur le moment, coupé par défaut
          (vanguard veilleur on) ; et, sur demande, les dossiers personnels surveillés en direct contre les
@@ -190,7 +187,7 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
          à leur original · Une copie (un dossier) : relue sur le disque et comparée aux originaux
        9.4 Vérifier une clé USB ou un disque : vraie capacité (fausses clés), vitesses, blocs en erreur ; écrit dans
          le libre, puis efface
- 10  Guide des commandes › les commandes utiles d'Omarchy, Arch, Fedora, Debian, Windows 11, macOS et de tous les
+ 10  Guide des commandes › les commandes utiles d'Omarchy, Arch, Fedora, Debian, Windows 11 et de tous les
        systèmes, par programme, chacune expliquée (⚠ : elle change quelque chose), avec des marches à suivre pas à
        pas (mettre à jour, réparer, réseau, faire de la place…). Les commandes paraissent au fil de
        la frappe ; chacune se copie, ou se lance ici si elle ne fait que lire.
@@ -213,8 +210,7 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
        12.3 Pourquoi c'est lent ? (processeur, mémoire, disque, démarrage, programmes à l'ouverture de session)
        12.4 Programmes au démarrage : les retirer du démarrage ou les remettre, après accord (vanguard demarrage)
        12.5 Réglages recommandés, en une fois
-       12.6 Jeux vidéo (Windows : Visual C++, DirectX… ; Linux : Steam, Vulkan, GameMode, MangoHud, Wine, Lutris… ;
-         macOS : Rosetta 2, Steam, Heroic, Epic, GOG, Prism, compteur Metal)
+       12.6 Jeux vidéo (Windows : Visual C++, DirectX… ; Linux : Steam, Vulkan, GameMode, MangoHud, Wine, Lutris…)
        12.7 DNS le plus rapide (mesuré ici ; un DNS qui protège est gardé)
        12.8 Test de connexion (ping, gigue, débit, bufferbloat), comparé aux mesures habituelles
        12.9 Type de NAT pour le jeu (ouvert, modéré ou strict)
@@ -256,14 +252,14 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
   i intégrité, n nommer, c connexion, a clé USB, b bac à sable, p mots de passe, e courriel, l logiciels,
   g jeux vidéo, d exporter ou importer.
 
-Le bilan vérifie notamment : pare-feu, ports ouverts, mises à jour, logiciels pas à jour (Windows, macOS) et
+Le bilan vérifie notamment : pare-feu, ports ouverts, mises à jour, logiciels pas à jour (Windows) et
 logiciels installés depuis le dernier bilan, chiffrement, comptes, règle des mots de passe, SSH (ses tentatives de
 connexion ratées, ses algorithmes cassés ; sous Windows, le serveur OpenSSH et les clés sans phrase de passe), mot
 de passe deviné (connexion réussie après une rafale d'échecs), Wi-Fi (et faux point d'accès qui copie son nom),
 programmes lancés au démarrage, programmes en marche suspects, portes dérobées et portes cachées de Windows
-(paquets de LSA, moniteurs d'impression…), protections de Defender coupées, sécurité du démarrage et éléments de
-fond sous macOS, pilotes vulnérables, signes de rootkit sous Linux, journaux d'événements de Windows, logiciels
-espions, agents d'IA trop permissifs, DNS, certificats racine ajoutés, extensions de navigateur, Bluetooth, heure,
+(paquets de LSA, moniteurs d'impression…), protections de Defender coupées, pilotes vulnérables, signes de rootkit
+sous Linux, journaux d'événements de Windows, logiciels espions, agents d'IA trop permissifs, DNS, certificats racine
+ajoutés, extensions de navigateur, Bluetooth, heure,
 fin de support, comptes oubliés, mots de passe du navigateur, fichiers sensibles, sauvegardes, santé des disques
 et de la batterie, échange de clés post-quantique (SSH, navigateurs, WireGuard ; en lecture seule). Sous Windows et
 sous Linux, le plus grave (compte caché, lancement ou service ajouté en cachette, programme setuid suspect, racine
@@ -276,14 +272,8 @@ PowerShell…) ; la surveillance le refait chaque semaine.
 Langue : français ou anglais selon le système. Pour forcer le français : menu Paramètres (« s »), ou
   Linux :   VANGUARD_LANG=fr ./vanguard
   Windows : dans l'invite de commandes, set VANGUARD_LANG=fr puis vanguard.exe
-  macOS :   VANGUARD_LANG=fr <clé>/macOS/vanguard
 Menus décalés dans l'ancienne invite de commandes de Windows : set VANGUARD_EMOJI=0 (fait d'office sans le
 Terminal Windows).
-
-Bon à savoir
-  - macOS : lancé depuis la clé, Vanguard s'ouvre sans avertissement. Copié depuis Internet ou AirDrop, macOS le
-    bloque (« développeur non identifié ») : clic droit > Ouvrir, ou Réglages Système > Confidentialité et
-    sécurité > « Ouvrir quand même ». Antivirus, logiciels et gaming passent par Homebrew (proposé s'il manque).
 
 Vanguard est un logiciel libre (licence GNU GPL v3 ou ultérieure, voir LICENSE.txt), fourni sans garantie.
 Les bibliothèques qu'il inclut sont listées dans LICENCES-TIERCES.txt.

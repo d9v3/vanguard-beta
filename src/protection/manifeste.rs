@@ -461,9 +461,11 @@ fn garder_empreintes(fichiers: &mut [Entree], avant: &[Entree]) {
 
 /// Ce que le déploiement (outils/deployer.sh, outils/publier-version.sh) pose lui-même sur la clé, et réécrit à
 /// chaque passage : les programmes et leurs modes d'emploi, les lanceurs et guides de la racine, les témoins, le code
-/// source (une copie exacte, rsync --delete) et les archives de tldr-pages. Seul un écart sur ces chemins-là peut
-/// entrer dans la référence sans accord : le déploiement vient de les écrire. Tout le reste (un raccourci planté à la
-/// racine, une image, le menu de Ventoy, un fichier ajouté dans Linux/) attend `--forcer`.
+/// source (une copie exacte, rsync --delete) et les archives de tldr-pages ; et ce qu'il retire de la clé à chaque
+/// passage, le programme macOS, son mode d'emploi et son lanceur, posés par les déploiements d'avant le retrait du
+/// Mac (outils/deployer.sh). Seul un écart sur ces chemins-là peut entrer dans la référence sans accord : le
+/// déploiement vient de les écrire ou de les effacer. Tout le reste (un raccourci planté à la racine, une image, le
+/// menu de Ventoy, un fichier ajouté dans Linux/) attend `--forcer`.
 fn depose_par_le_deploiement(chemin: &str) -> bool {
     const RACINE: &[&str] = &[
         "vanguard.cle",
@@ -476,12 +478,14 @@ fn depose_par_le_deploiement(chemin: &str) -> bool {
         "autorun.inf",
         "autorun.sh",
         "Lancer Vanguard.bat",
+        // Retiré par le déploiement, comme macOS/ plus bas : sa disparition d'une clé d'avant n'est pas un écart.
         "Lancer Vanguard.command",
         ".metadata_never_index",
     ];
     const PROGRAMMES: &[(&str, &str)] = &[
         ("Linux", "vanguard"),
         ("Windows", "vanguard.exe"),
+        // Plus posé : effacé d'une clé d'avant le retrait du Mac, avec son mode d'emploi.
         ("macOS", "vanguard"),
     ];
     // Le code source est une copie exacte (rsync --delete), sauf ce que rsync laisse de côté : jamais écrit par lui.
@@ -503,14 +507,13 @@ fn depose_par_le_deploiement(chemin: &str) -> bool {
     })
 }
 
-/// La reprise d'un déploiement arrêté en route : ce qu'il pose lui-même et qui diffère de la référence est retiré de
-/// la clé, pour qu'il le repose, au lieu d'être seulement écarté de la comparaison. Écarté, un fichier qu'il ne
-/// réécrit pas à coup sûr (macOS/vanguard sans compilation Mac, archive tldr déjà rafraîchie dans la journée, fichier
-/// de source/ à la même taille et à la même date que rsync saute) entrait tel quel dans la référence (campagne
-/// d'attaque n° 4). Le jeton reste comparé : le déploiement le garde, ne le repose pas. Rien n'est retiré tant qu'un
-/// autre écart demeure : le déploiement sera refusé de toute façon, et la clé garde la preuve de ce qui a changé
-/// (relecture adverse de la campagne 4). Rend l'écart qui reste (l'écart entier si rien n'est retiré) et les chemins
-/// retirés.
+/// La reprise d'un déploiement arrêté en route : ce qu'il pose lui-même et qui diffère de la référence est retiré de la
+/// clé, pour qu'il le repose, au lieu d'être seulement écarté de la comparaison. Écarté, un fichier qu'il ne réécrit
+/// pas à coup sûr (archive tldr déjà rafraîchie dans la journée, fichier de source/ à la même taille et à la même date
+/// que rsync saute) entrait tel quel dans la référence (campagne d'attaque n° 4). Le jeton reste comparé : le
+/// déploiement le garde, ne le repose pas. Rien n'est retiré tant qu'un autre écart demeure : le déploiement sera
+/// refusé de toute façon, et la clé garde la preuve de ce qui a changé (relecture adverse de la campagne 4). Rend
+/// l'écart qui reste (l'écart entier si rien n'est retiré) et les chemins retirés.
 fn retirer_le_suspens(racine: &Path, ecart: Ecart) -> std::io::Result<(Ecart, Vec<String>)> {
     let suspect = |c: &String| c != crate::protection::cles_connues::JETON && depose_par_le_deploiement(c);
     // D'abord le reste, sans toucher à la clé.
@@ -541,14 +544,13 @@ fn retirer_le_suspens(racine: &Path, ecart: Ecart) -> std::io::Result<(Ecart, Ve
     Ok((reste, retires))
 }
 
-/// Ce que le déploiement fera du chemin `c` retiré à la reprise : il ne repose pas à coup sûr le programme macOS
-/// (seulement si une compilation Mac de GitHub est récupérée) ni les archives tldr (seulement s'il peut les
-/// télécharger).
+/// Ce que le déploiement fera du chemin `c` retiré à la reprise : il ne repose jamais le programme macOS ni son
+/// lanceur (Vanguard ne vise plus le Mac), ni à coup sûr les archives tldr (seulement s'il peut les télécharger).
 fn sera_repose(c: &str) -> &'static str {
-    if c.starts_with("macOS/") {
+    if c.starts_with("macOS/") || c == "Lancer Vanguard.command" {
         tr!(
-            "le déploiement le repose s'il récupère une compilation Mac ; sinon la clé reste sans lui",
-            "the deployment puts it back if it gets a Mac build; otherwise the key stays without it"
+            "le déploiement ne le repose pas : Vanguard ne vise plus le Mac",
+            "the deployment does not put it back: Vanguard no longer targets the Mac"
         )
     } else if c.starts_with("tldr/") {
         tr!(
@@ -1899,6 +1901,17 @@ mod tests {
         assert!(!depose_par_le_deploiement("source/.claude/worktrees/a/b"));
         assert!(!depose_par_le_deploiement("tldr/tldr-pages.piege.zip"));
         assert!(depose_par_le_deploiement("tldr/tldr-pages.en.zip"));
+        // Une clé d'avant le retrait du Mac : ce que le déploiement en efface n'est pas un écart ; rien d'autre dans
+        // macOS/.
+        for efface in [
+            "macOS/vanguard",
+            "macOS/LISEZMOI.txt",
+            "macOS/README.txt",
+            "Lancer Vanguard.command",
+        ] {
+            assert!(depose_par_le_deploiement(efface), "{efface}");
+        }
+        assert!(!depose_par_le_deploiement("macOS/libpiege.dylib"));
         let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_dir_all(&racine);
     }
@@ -1975,6 +1988,7 @@ mod tests {
         assert!(refus.1.contains("Linux/vanguard"), "{}", refus.1);
         // Le message dit ce qui ne sera peut-être pas reposé.
         assert!(sera_repose("macOS/vanguard").contains("Mac"));
+        assert!(sera_repose("Lancer Vanguard.command").contains("Mac"));
         assert!(
             sera_repose("tldr/tldr-pages.en.zip").contains("hors ligne") || sera_repose("tldr/x").contains("offline")
         );

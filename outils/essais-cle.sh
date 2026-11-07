@@ -745,7 +745,7 @@ for c in "--plan /dev/sdz" "--telecharger $BANC/dossier0" "--ecrire /dev/sdz $BA
 done
 bash outils/cle-secours.sh --a-jour "$BANC/cle0" >>"$BANC/sortie0" 2>&1
 c1=$?
-voir "CLE_SECOURS=non : cle-secours.sh refuse tout (images, Ventoy, WIN11, MACOS) et le dit ; --a-jour ne fait rien" \
+voir "CLE_SECOURS=non : cle-secours.sh refuse tout (images, Ventoy, WIN11) et le dit ; --a-jour ne fait rien" \
   eval '((c1 == 0)) && pas_dit "$BANC/sortie0" ACCEPTÉE &&
     [[ $(grep -c "clé de secours coupée sur cet ordinateur : rien n" "$BANC/sortie0") == 8 ]] &&
     dit "$BANC/sortie0" "ni Ventoy ni Windows 11 à tenir à jour" && [[ ! -e $BANC/dossier0 ]] &&

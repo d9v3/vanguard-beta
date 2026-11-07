@@ -28,9 +28,8 @@
 # Chaque image est vérifiée par la signature de son projet, avec une clé fixée ici (outils/cles-images/ et les
 # empreintes ci-dessous) : jamais une clé lue sur le serveur qui sert l'image, qu'un serveur piégé fournirait avec
 # son image. Une nouvelle clé (Fedora en change à chaque version) arrive avec une mise à jour de Vanguard ; d'ici là,
-# l'image est refusée et la notification le dit. Windows 11 et la récupération de macOS restent à part
-# (cle-secours.sh) : Microsoft ne donne qu'un lien de 24 heures, et la récupération de macOS télécharge macOS
-# elle-même.
+# l'image est refusée et la notification le dit. Windows 11 reste à part (cle-secours.sh) : Microsoft ne donne
+# qu'un lien de 24 heures.
 set -euo pipefail
 # Ctrl-C (lancé à la main) arrête tout : sans ce piège, bash attendrait la fin de la commande en cours, puis
 # continuerait comme si de rien n'était (aria2c, que Ctrl-C atteint par timeout --foreground, s'arrête proprement et
@@ -43,7 +42,7 @@ CLES=$PWD/outils/cles-images
 MIO=$((1024 * 1024))
 # Place gardée sur la clé pour Vanguard, sa base et ses rapports.
 MARGE_MIO=512
-# La clé de secours (ces images, Ventoy pour les démarrer, les partitions WIN11 et MACOS de cle-secours.sh) se fait
+# La clé de secours (ces images, Ventoy pour les démarrer, la partition WIN11 de cle-secours.sh) se fait
 # par défaut. Un ordinateur dont le réglage local la coupe (CLE_SECOURS=non) ne prépare qu'une clé qui porte le
 # programme seul (Vanguard, sa base, ses rapports, VANGUARDLOG) : rien n'est cherché, copié, importé ni proposé, les
 # commandes qui poseraient une image refusent en disant comment la rallumer, et les minuteries de recopie ne font rien.
@@ -87,8 +86,7 @@ fi
 if [[ $choix == oui ]]; then
   SECOURS=oui
   voulues=$PAR_DEFAUT
-  # La ligne IMAGES présente, même vide : elle seule dit les images (vide : aucune image Linux, WIN11 et MACOS
-  # restent).
+  # La ligne IMAGES présente, même vide : elle seule dit les images (vide : aucune image Linux, WIN11 reste).
   [[ ! -r $REGLAGE || -z $(sed -n 's/\r//g; s/#.*//; /^[[:space:]]*IMAGES[[:space:]]*=/p' "$REGLAGE") ]] ||
     voulues=$(reglage IMAGES | tail -1)
   voulues+=" $(reglage IMAGES_EN_PLUS | tail -1)"

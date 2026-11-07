@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Clé de secours : la clé VANGUARD démarre aussi les ordinateurs, pour réparer ou réinstaller Linux, Windows et macOS.
+# Clé de secours : la clé VANGUARD démarre aussi les ordinateurs, pour réparer ou réinstaller Linux et Windows.
 # FAITE PAR DÉFAUT, sauf sur un ordinateur dont le réglage local la coupe : une ligne CLE_SECOURS=non dans
 # ~/.config/vanguard/images-cle.conf (le détail : en-tête de outils/images-cle.sh). Là, une clé ne porte que le
-# programme (outils/preparer-cle.sh : VANGUARD et VANGUARDLOG, ni images, ni Ventoy, ni WIN11, ni MACOS), et chaque
-# commande ci-dessous refuse en le disant, sauf --a-jour (appelée au branchement et chaque jour), qui ne fait rien, et
+# programme (outils/preparer-cle.sh : VANGUARD et VANGUARDLOG, ni images, ni Ventoy, ni WIN11), et chaque commande
+# ci-dessous refuse en le disant, sauf --a-jour (appelée au branchement et chaque jour), qui ne fait rien, et
 # --ventoy-publie, qui ne fait que lire GitHub (--racine, la partie root, ne part que de --ecrire).
 #   1 VANGUARD     partition de Ventoy, exFAT : Vanguard comme avant (témoin vanguard.cle), et ses images dans ISO/ :
 #                 Omarchy (installateur complet), Arch Linux, Debian et Fedora en installateurs par Internet, SystemRescue
@@ -14,12 +14,13 @@
 #                 (bit 60) : Windows la monte en lecture seule.
 #   2 VTOYEFI     32 Mio, démarrage de Ventoy (UEFI) ; ne jamais y toucher.
 #   3 VANGUARDLOG  64 Mio, exFAT, modifiable partout : le journal des erreurs (src/journal.rs).
-#   4 MACOS       HFS+ : la récupération de macOS, téléchargée chez Apple (BaseSystem), pour les Mac Intel.
-#   5 WIN11       FAT32 : l'installation de Windows 11, qui démarre d'elle-même (menu de démarrage du PC), Secure Boot
+#   4 WIN11       FAT32 : l'installation de Windows 11, qui démarre d'elle-même (menu de démarrage du PC), Secure Boot
 #                 actif, sans ajouter de clé (MOK) au PC comme Ventoy le demande. install.wim y est découpé en morceaux
 #                 de moins de 4 Go (limite d'un fichier en FAT32) par wimlib ; l'installation de Windows les relit.
 # Ventoy (GPL-3.0) démarre les images posées dans la partition 1 ; il exige d'y rester, suivi de sa partition
-# VTOYEFI, et laisse ajouter les nôtres dans la place réservée en fin de clé (-r).
+# VTOYEFI, et laisse ajouter les nôtres dans la place réservée en fin de clé (-r). Une clé écrite avant le retrait du
+# Mac garde sa partition 4 MACOS (récupération de macOS) et WIN11 en 5, jusqu'à sa prochaine réécriture par --ecrire :
+# rien ici ne l'efface d'office, et WIN11 s'y cherche par son nom.
 #
 # PRÉPARATION : rien n'est écrit sur un disque sans --ecrire, qui EFFACE la clé (après une sauvegarde).
 #   outils/cle-secours.sh --plan [/dev/sdX] [DOSSIER] la disposition, la place, les commandes ; rien n'est lancé
@@ -70,17 +71,9 @@ elif [[ -n ${VANGUARD_RACINE:-} ]]; then
 fi
 # Ce qui a été proposé ou dit (une fois par jour au plus), et les journaux des mises à jour de Ventoy.
 ETAT=${XDG_STATE_HOME:-$HOME/.local/state}/vanguard
-OPENCORE=1.0.8
-MACRECOVERY_SHA256=3023a9b4ca79a5255d93c00f25ab5df37e6f938b729b797d9ecea56184b17aff
-# Récupération de macOS : Monterey par défaut, la plus récente des Mac Intel sans puce T2 (2015 à 2017), qui
-# démarrent sur une clé sans réglage ; les Mac T2 (2018 à 2020) le refusent tant qu'on ne l'a pas permis dans
-# Utilitaire Sécurité au démarrage. Autre version : VANGUARD_MACOS_CARTE (identifiants de macrecovery).
-MACOS_CARTE=${VANGUARD_MACOS_CARTE:-Mac-E43C1C25D4880AD6}
 MIO=$((1024 * 1024))
 JOURNAL_MIO=64
 VTOYEFI_MIO=$((VTOYEFI_OCTETS / MIO))
-# Taille de la récupération de Monterey (volume HFS+ de 2,68 Gio) arrondie ; mesurée sur l'image quand elle est là.
-MACOS_MIO_ESTIME=2816
 # Images Linux (Omarchy 6,4 Go, Arch 1,5, Debian 0,8, Fedora 1,2, SystemRescue 1,3 en 2026) avec de quoi grandir ; mesurées dans
 # le cache de images-cle.sh quand elles y sont. Windows 11 : l'ISO multi-édition, de 7,2 à 7,9 Go selon la langue.
 LINUX_MIO_ESTIME=12032
@@ -98,7 +91,6 @@ FAT32_MAX=4294967295
 MARGE_VANGUARD_MIO=512
 TYPE_DONNEES=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7
 TYPE_EFI=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
-TYPE_HFS=48465300-0000-11AA-AA11-00306543ECAC
 
 # Taille d'un fichier en Mio (arrondie au-dessus), ou la valeur donnée s'il manque.
 taille_mio() { # fichier valeur_par_defaut
@@ -110,7 +102,6 @@ taille_mio() { # fichier valeur_par_defaut
 # L'image de Windows : « Win11_25H2_French_x64.iso » autrefois, « Windows11_Client_x64_fr-ca_….iso » maintenant. Les
 # dossiers d'images peuvent être des liens vers un autre disque : find -H les suit.
 fichier_windows() { find -H "$1" -maxdepth 1 \( -iname 'Win11*.iso' -o -iname 'Windows11*.iso' \) -print -quit; }
-fichier_macos() { echo "$1/macos/BaseSystem.dmg"; }
 
 # Empreinte attendue de l'image de Windows, celle que Microsoft publie pour cette langue : VANGUARD_WINDOWS_SHA256,
 # sinon le fichier <image>.sha256 posé à côté (sa première ligne). Vide si aucune des deux, ou si ce n'en est pas une.
@@ -176,12 +167,6 @@ kali_mio() {
   octets=$(find -H "$IMAGES_LINUX" -maxdepth 1 -name 'kali-linux-*-live-everything-amd64.iso' \
     -exec test -f {}.sha256 \; -printf '%s\n' 2>/dev/null | head -1)
   if [[ -n $octets ]]; then echo $(((octets + MIO - 1) / MIO)); else echo "$KALI_MIO_ESTIME"; fi
-}
-
-# Volume HFS+ de la récupération de macOS dans l'image d'Apple : (nom dans l'image, taille en octets).
-volume_macos() { # BaseSystem.dmg
-  # Colonnes de 7z : [date heure] attributs taille taille_compressée nom.
-  7z l -tdmg "$1" 2>/dev/null | awk '$NF ~ /\.hfs$/ && $(NF-2) ~ /^[0-9]+$/ {print $NF, $(NF-2); exit}'
 }
 
 # L'image de Windows a-t-elle un sources/install.wim ? awk lit toute la liste : avec « | grep -q », grep s'arrête à la
@@ -266,15 +251,6 @@ verifier() { # dossier [cle : aussi la partition WIN11, si elle est montée]
     tout=1
   elif empreinte_ok "$windows" "$attendue"; then echo "  ✔ Windows 11 ($(basename "$windows"))"
   else echo "  ✖ Windows 11 différent de l'empreinte de Microsoft"; tout=1; fi
-  # macOS : macrecovery a vérifié l'image au téléchargement (liste des morceaux signée par Apple) ; on revérifie
-  # avec sa propre fonction.
-  if [[ -f $(fichier_macos "$d") ]] && empreinte_ok "$d/macrecovery.py" "$MACRECOVERY_SHA256" &&
-    python3 -I -c 'import importlib.util as u, sys
-s = u.spec_from_file_location("macrecovery", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)
-m.verify_image(sys.argv[2], sys.argv[3])' "$d/macrecovery.py" "$(fichier_macos "$d")" "$d/macos/BaseSystem.chunklist" \
-      >/dev/null 2>&1 && [[ -n $(volume_macos "$(fichier_macos "$d")") ]]; then
-    echo "  ✔ Récupération de macOS (signée par Apple)"
-  else echo "  ✖ Récupération de macOS absente ou pas vérifiée"; tout=1; fi
   # La partition WIN11 d'une clé déjà faite, si elle est montée : comparée à l'image (seulement à la demande, pas
   # avant d'effacer : la clé à refaire peut garder une version plus ancienne de Windows).
   if [[ -n $avec_cle ]]; then
@@ -296,7 +272,7 @@ m.verify_image(sys.argv[2], sys.argv[3])' "$d/macrecovery.py" "$(fichier_macos "
 
 telecharger() { # dossier
   local d=$1
-  mkdir -p "$d/macos"
+  mkdir -p "$d"
   local recuperer=(curl -fL --retry 3 --progress-bar)
   empreinte_ok "$d/ventoy-$VENTOY-linux.tar.gz" "$VENTOY_SHA256" ||
     "${recuperer[@]}" -o "$d/ventoy-$VENTOY-linux.tar.gz" \
@@ -304,12 +280,6 @@ telecharger() { # dossier
   # Omarchy, Arch, Debian, Fedora et SystemRescue : dans le cache de images-cle.sh, vérifiés par la signature de leur
   # projet.
   outils/images-cle.sh --chercher || true
-  # macrecovery (OpenCorePkg, licence BSD) demande l'image de récupération aux serveurs d'Apple et la vérifie.
-  "${recuperer[@]}" -o "$d/macrecovery.py" \
-    "https://raw.githubusercontent.com/acidanthera/OpenCorePkg/$OPENCORE/Utilities/macrecovery/macrecovery.py"
-  empreinte_ok "$d/macrecovery.py" "$MACRECOVERY_SHA256" || erreur "macrecovery.py n'est pas celui attendu."
-  [[ -f $(fichier_macos "$d") ]] ||
-    python3 -I "$d/macrecovery.py" -b "$MACOS_CARTE" -m 00000000000000000 -o "$d/macos" download
   cat <<EOF
 
 Windows 11 se télécharge à la main (Microsoft ne donne qu'un lien valable 24 heures) :
@@ -328,21 +298,8 @@ EOF
 
 # --- Disposition ----------------------------------------------------------------------------------------------------
 
-# Place réservée par Ventoy en fin de clé : le journal, macOS, Windows, et 2 Mio d'alignement et de table GPT de
-# secours.
-reserve_mio() { echo $((JOURNAL_MIO + $1 + $2 + 2)); } # macos_mio windows_mio
-
-# Taille de la partition macOS : le volume d'Apple arrondi au multiple de 64 Mio au-dessus.
-macos_mio() { # dossier (facultatif)
-  local volume
-  volume=$([[ -n ${1:-} && -f $(fichier_macos "$1") ]] && volume_macos "$(fichier_macos "$1")" || true)
-  if [[ -n $volume ]]; then
-    local blocs=$(((${volume#* } + 64 * MIO - 1) / (64 * MIO)))
-    echo $((blocs * 64))
-  else
-    echo "$MACOS_MIO_ESTIME"
-  fi
-}
+# Place réservée par Ventoy en fin de clé : le journal, Windows, et 2 Mio d'alignement et de table GPT de secours.
+reserve_mio() { echo $((JOURNAL_MIO + $1 + 2)); } # windows_mio
 
 # Taille de la partition WIN11 : le contenu de l'image, plus 5 % et 256 Mio (tables de FAT32, en-têtes des morceaux
 # de install.wim, pilotes ajoutés plus tard), arrondie au multiple de 64 Mio au-dessus. Estimée sans l'image, ou si
@@ -360,11 +317,24 @@ windows_mio() { # dossier (facultatif)
   fi
 }
 
-# Partitions 3, 4 et 5, ajoutées dans la place réservée, pour sfdisk --append.
-partitions_ajoutees() { # macos_mio windows_mio
+# Partitions 3 et 4, ajoutées dans la place réservée, pour sfdisk --append.
+partitions_ajoutees() { # windows_mio
   printf 'size=%dMiB, type=%s, name="VANGUARDLOG"\n' "$JOURNAL_MIO" "$TYPE_DONNEES"
-  printf 'size=%dMiB, type=%s, name="MACOS"\n' "$1" "$TYPE_HFS"
-  printf 'size=%dMiB, type=%s, name="WIN11"\n' "$2" "$TYPE_DONNEES"
+  printf 'size=%dMiB, type=%s, name="WIN11"\n' "$1" "$TYPE_DONNEES"
+}
+
+# La partition WIN11 d'une clé déjà faite : la 4, ou la 5 sur une clé écrite avant le retrait du Mac (sa partition 4
+# MACOS y reste jusqu'à la prochaine réécriture). Rien, code 1, si aucune des deux ne porte ce nom.
+partition_win11() { # disque
+  local n p
+  for n in 4 5; do
+    p=$(partition "$1" "$n")
+    if [[ -b $p && $(lsblk -dno PARTLABEL "$p" 2>/dev/null) == WIN11 ]]; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
 }
 
 # La place de VANGUARD : d'abord Vanguard et sa base (marge), les images Linux ; Kali Linux, puis Windows en secours,
@@ -393,21 +363,19 @@ place_vanguard() { # vanguard_mio iso_windows_mio
 }
 
 plan() { # disque (facultatif), dossier (facultatif)
-  local disque=${1:-/dev/sdX} d=${2:-} octets macos windows iso_windows
+  local disque=${1:-/dev/sdX} d=${2:-} octets windows iso_windows
   octets=$([[ -b $disque ]] && lsblk -bdno SIZE "$disque" || echo 31037849600)
-  macos=$(macos_mio "$d")
   windows=$(windows_mio "$d")
   iso_windows=$(taille_mio "$([[ -n $d && -d $d ]] && fichier_windows "$d" || true)" "$WINDOWS_ISO_MIO_ESTIME")
   local reserve vanguard
-  reserve=$(reserve_mio "$macos" "$windows")
+  reserve=$(reserve_mio "$windows")
   vanguard=$((octets / MIO - 1 - VTOYEFI_MIO - reserve))
   cat <<EOF
 Clé de $(numfmt --to=iec-i --suffix=o --format='%.1f' "$octets") ($disque), table GPT :
   1 VANGUARD     $(printf '%6d' "$vanguard") Mio  exFAT, Ventoy + Vanguard + ISO/ (lecture seule sous Windows)
   2 VTOYEFI     $(printf '%6d' "$VTOYEFI_MIO") Mio  FAT, démarrage de Ventoy
   3 VANGUARDLOG  $(printf '%6d' "$JOURNAL_MIO") Mio  exFAT, journal des erreurs
-  4 MACOS       $(printf '%6d' "$macos") Mio  HFS+, récupération de macOS (Mac Intel)
-  5 WIN11       $(printf '%6d' "$windows") Mio  FAT32, installation de Windows 11 (démarre seule, Secure Boot actif)
+  4 WIN11       $(printf '%6d' "$windows") Mio  FAT32, installation de Windows 11 (démarre seule, Secure Boot actif)
 
 Dans VANGUARD : Vanguard et sa base ($MARGE_VANGUARD_MIO Mio gardés), les images Linux $(linux_mio) Mio (Omarchy, Arch,
 Debian, Fedora, SystemRescue).
@@ -417,12 +385,11 @@ Commandes de --ecrire (rien n'est lancé ici) :
   avant d'effacer                 → images vérifiées ; install.wim découpé en morceaux de $MORCEAU_MIO Mio
                                     (wimlib-imagex split), à côté des images, et relu (wimlib-imagex verify)
   sauvegarde de la clé montée     → ${XDG_DATA_HOME:-$HOME/.local/share}/vanguard/sauvegarde-cle-<date>/
-                                    (sans ISO/, ni les partitions MACOS et WIN11 : elles se refont)
+                                    (sans ISO/, ni la partition WIN11 : elle se refait)
   pkexec (une fenêtre)            → sh Ventoy2Disk.sh -I -g -r $reserve -L VANGUARD $disque
-                                    sfdisk --append $disque   (VANGUARDLOG, MACOS, WIN11)
+                                    sfdisk --append $disque   (VANGUARDLOG, WIN11)
                                     mkfs.exfat -L VANGUARDLOG $(partition "$disque" 3)
-                                    7z e -so -tdmg BaseSystem.dmg <volume>.hfs | dd of=$(partition "$disque" 4)
-                                    mkfs.fat -F 32 -n WIN11 $(partition "$disque" 5)
+                                    mkfs.fat -F 32 -n WIN11 $(partition "$disque" 4)
                                     sfdisk --part-attrs $disque 1 GUID:60
   sans root                       → témoins, ISO/ (images-cle.sh --toutes) et ventoy/ventoy.json ; WIN11 : 7z x de l'image sans
                                     install.wim, ses morceaux .swm, vérification, démontage ; base remise,
@@ -488,51 +455,41 @@ p = json.load(sys.stdin)["partitiontable"]["partitions"][int(sys.argv[1]) - 1]
 print(p["start"], p["size"])' "$2"
 }
 
-essai() { # dossier d'images (facultatif : la récupération de macOS y est écrite pour de vrai, l'image de Windows lue)
+essai() { # dossier d'images (facultatif : l'image de Windows y est lue)
   local images=${1:-} dossier image octets=31037849600
-  # Dans le cache, pas dans /tmp : /tmp est souvent en mémoire, avec un quota trop petit pour une clé de 29 Gio
-  # (l'image est creuse, mais la récupération de macOS y est écrite pour de vrai).
+  # Dans le cache, pas dans /tmp : /tmp est souvent en mémoire, avec un quota trop petit pour une image de 29 Gio,
+  # même creuse.
   mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}/vanguard-dev"
   dossier=$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/vanguard-dev/cle-secours-essai.XXXX")
   image=$dossier/cle.img
   truncate -s "$octets" "$image"
-  local macos windows reserve vanguard
-  macos=$(macos_mio "$images")
+  local windows reserve vanguard
   windows=$(windows_mio "$images")
-  reserve=$(reserve_mio "$macos" "$windows")
+  reserve=$(reserve_mio "$windows")
   vanguard=$((octets / MIO - 1 - VTOYEFI_MIO - reserve))
   # Ce que fait Ventoy2Disk.sh -g -r : partition 1 au premier Mio, VTOYEFI juste après, la place réservée au bout.
   sfdisk --quiet --label gpt "$image" <<EOF
 start=2048, size=${vanguard}MiB, type=$TYPE_DONNEES, name="Ventoy"
 size=${VTOYEFI_MIO}MiB, type=$TYPE_EFI, name="VTOYEFI"
 EOF
-  # Puis ce que fait --ecrire : les partitions 3, 4 et 5 dans la place réservée, la lecture seule de la 1.
-  partitions_ajoutees "$macos" "$windows" | sfdisk --quiet --append "$image"
+  # Puis ce que fait --ecrire : les partitions 3 et 4 dans la place réservée, la lecture seule de la 1.
+  partitions_ajoutees "$windows" | sfdisk --quiet --append "$image"
   sfdisk --quiet --part-attrs "$image" 1 GUID:60
-  local debut3 debut4 taille4 debut5 taille5
+  local debut3 debut4 taille4
   read -r debut3 _ < <(debut_taille "$image" 3)
   read -r debut4 taille4 < <(debut_taille "$image" 4)
-  read -r debut5 taille5 < <(debut_taille "$image" 5)
   truncate -s "${JOURNAL_MIO}M" "$dossier/journal.img"
   mkfs.exfat -L VANGUARDLOG "$dossier/journal.img" >/dev/null
   dd if="$dossier/journal.img" of="$image" bs=1M seek="$((debut3 * 512))" oflag=seek_bytes conv=notrunc,sparse status=none
-  if [[ -n $images && -f $(fichier_macos "$images") ]]; then
-    local volume
-    volume=$(volume_macos "$(fichier_macos "$images")")
-    ((${volume#* } <= taille4 * 512)) || erreur "le volume de macOS ne tient pas dans sa partition"
-    7z e -so -tdmg "$(fichier_macos "$images")" "${volume% *}" 2>/dev/null |
-      dd of="$image" bs=4M seek="$((debut4 * 512))" oflag=seek_bytes conv=notrunc,sparse status=none
-  fi
   # FAT32 formatée dans l'image même, à sa place : mkfs.fat --offset, sans monter ni root (taille en blocs d'1 Kio).
   # Il prévient que l'image continue après la partition (table GPT de secours) : seule une erreur est montrée.
-  mkfs.fat -F 32 -n WIN11 --offset="$debut5" "$image" "$((taille5 / 2))" >/dev/null 2>"$dossier/mkfs.txt" ||
+  mkfs.fat -F 32 -n WIN11 --offset="$debut4" "$image" "$((taille4 / 2))" >/dev/null 2>"$dossier/mkfs.txt" ||
     { cat "$dossier/mkfs.txt" >&2; erreur "mkfs.fat n'a pas formaté la partition WIN11 de l'image."; }
   echo "Image d'essai : $image"
   sfdisk --dump "$image" | sed 's/^/  /'
   local n debut
-  for n in 3 4 5; do
+  for n in 3 4; do
     read -r debut _ < <(debut_taille "$image" "$n")
-    [[ $n == 4 && ! (-n $images && -f $(fichier_macos "$images")) ]] && continue
     echo "Partition $n : $(blkid -p -O "$((debut * 512))" -o export "$image" | grep -E '^(TYPE|LABEL|VERSION)=' |
       tr '\n' ' ')"
   done
@@ -542,8 +499,8 @@ EOF
   if command -v mcopy >/dev/null; then
     echo "WIN11 : fichier d'essai copié par mcopy dans la FAT32 de l'image, puis relu :"
     echo "vanguard" >"$dossier/essai.txt"
-    mcopy -i "$image@@$((debut5 * 512))" "$dossier/essai.txt" ::/
-    mdir -i "$image@@$((debut5 * 512))" ::/ | sed 's/^/  /'
+    mcopy -i "$image@@$((debut4 * 512))" "$dossier/essai.txt" ::/
+    mdir -i "$image@@$((debut4 * 512))" ::/ | sed 's/^/  /'
   else
     echo "WIN11 : mtools absent, la copie dans la FAT32 n'est pas essayée ici (seulement son formatage)."
   fi
@@ -562,12 +519,12 @@ EOF
 
 # --- Écriture de la clé ----------------------------------------------------------------------------------------------
 
-# Partie root, lancée par pkexec : Ventoy, partitions 3 à 5, formatage, macOS, lecture seule. Le disque est
+# Partie root, lancée par pkexec : Ventoy, partitions 3 et 4, formatage, lecture seule. Le disque est
 # revérifié ici (même numéro de série, même taille) : entre la question et la fenêtre de mot de passe, une autre
 # clé a pu prendre son nom.
-racine() { # disque serie octets dossier macos_mio windows_mio
-  local disque=$1 serie=$2 octets=$3 d=$4 macos=$5 windows=$6
-  [[ $macos =~ ^[0-9]+$ && $windows =~ ^[0-9]+$ ]] || erreur "tailles de partitions incomprises."
+racine() { # disque serie octets dossier windows_mio
+  local disque=$1 serie=$2 octets=$3 d=$4 windows=$5
+  [[ $windows =~ ^[0-9]+$ ]] || erreur "tailles de partitions incomprises."
   [[ $(lsblk -dno RM,TRAN "$disque" | tr -s ' ') == "1 usb" ]] || erreur "$disque n'est plus une clé USB."
   [[ $(lsblk -dno SERIAL "$disque") == "$serie" && $(lsblk -bdno SIZE "$disque") == "$octets" ]] ||
     erreur "$disque n'est plus la clé choisie."
@@ -584,23 +541,20 @@ racine() { # disque serie octets dossier macos_mio windows_mio
   tar -xzf "$tmp/ventoy.tar.gz" -C "$tmp"
   # Ventoy demande deux fois s'il peut tout effacer : la question a déjà été posée, en clair, avant. -L : le nom
   # VANGUARD, que Vanguard et deployer.sh cherchent (avec le témoin vanguard.cle).
-  (cd "$tmp/ventoy-$VENTOY" && printf 'y\ny\n' | sh Ventoy2Disk.sh -I -g -r "$(reserve_mio "$macos" "$windows")" \
+  (cd "$tmp/ventoy-$VENTOY" && printf 'y\ny\n' | sh Ventoy2Disk.sh -I -g -r "$(reserve_mio "$windows")" \
     -L VANGUARD "$disque")
   udevadm settle
   # Le bureau monte tout seul les partitions neuves de Ventoy (VTOYEFI, VANGUARD) : sfdisk refuse alors un disque
   # « utilisé ». On démonte, on ajoute les partitions sans relire tout le disque (--no-reread), et le noyau les prend
   # par partx, ce qu'il accepte même si le bureau remonte une partition entre-temps.
   demonter_partitions "$disque"
-  partitions_ajoutees "$macos" "$windows" | sfdisk --no-reread --append "$disque"
+  partitions_ajoutees "$windows" | sfdisk --no-reread --append "$disque"
   partx -u "$disque"
   udevadm settle
   local n
-  for n in 3 4 5; do liberer "$(partition "$disque" "$n")"; done
+  for n in 3 4; do liberer "$(partition "$disque" "$n")"; done
   mkfs.exfat -L VANGUARDLOG "$(partition "$disque" 3)"
-  local volume
-  volume=$(volume_macos "$(fichier_macos "$d")")
-  7z e -so -tdmg "$(fichier_macos "$d")" "${volume% *}" | dd of="$(partition "$disque" 4)" bs=4M conv=fsync status=progress
-  mkfs.fat -F 32 -n WIN11 "$(partition "$disque" 5)"
+  mkfs.fat -F 32 -n WIN11 "$(partition "$disque" 4)"
   sfdisk --no-reread --part-attrs "$disque" 1 GUID:60
   sync
   rm -rf "$tmp"
@@ -637,8 +591,7 @@ monter() { # partition
 # morceaux de install.wim ajoutés, puis tout est revérifié.
 completer_windows() { # disque dossier
   local disque=$1 d=$2 part win prep
-  part=$(partition "$disque" 5)
-  [[ -b $part && $(lsblk -no PARTLABEL "$part") == WIN11 ]] ||
+  part=$(partition_win11 "$disque") ||
     erreur "$disque n'a pas de partition WIN11 : ce n'est pas une clé de secours (voir --ecrire)."
   command -v wimlib-imagex >/dev/null ||
     erreur "il manque wimlib-imagex, qui découpe install.wim pour la partition FAT32 : sudo pacman -S wimlib."
@@ -663,11 +616,10 @@ ecrire() { # disque dossier
     erreur "il manque wimlib-imagex, qui découpe install.wim pour la partition FAT32 : sudo pacman -S wimlib."
   verifier "$d" || erreur "toutes les images doivent être vérifiées avant d'effacer la clé."
   # Tout ce qui peut échouer se fait avant d'effacer : la place, puis le découpage de install.wim.
-  local octets macos windows reserve vanguard
+  local octets windows reserve vanguard
   octets=$(lsblk -bdno SIZE "$disque")
-  macos=$(macos_mio "$d")
   windows=$(windows_mio "$d")
-  reserve=$(reserve_mio "$macos" "$windows")
+  reserve=$(reserve_mio "$windows")
   vanguard=$((octets / MIO - 1 - VTOYEFI_MIO - reserve))
   place_vanguard "$vanguard" "$(taille_mio "$(fichier_windows "$d")" "$WINDOWS_ISO_MIO_ESTIME")" >/dev/null ||
     erreur "clé trop petite pour Vanguard et les images Linux (voir --plan) : rien n'a été effacé."
@@ -678,7 +630,8 @@ ecrire() { # disque dossier
   read -rp "Tout le contenu de $disque va être effacé. Taper EFFACER pour continuer : " reponse
   [[ $reponse == EFFACER ]] || exit 1
   # Sauvegarde de ce qui est monté (la base donnees/ surtout), puis démontage. Sans ISO/ (une clé de secours déjà
-  # faite y garde ~15 Go d'images, qui se retéléchargent), ni les partitions MACOS et WIN11, qui se refont.
+  # faite y garde ~15 Go d'images, qui se retéléchargent), ni la partition WIN11, qui se refait, ni la MACOS d'une
+  # clé écrite avant le retrait du Mac, qui disparaît.
   local sauvegarde part point
   sauvegarde="${XDG_DATA_HOME:-$HOME/.local/share}/vanguard/sauvegarde-cle-$(date +%Y%m%d-%H%M%S)"
   while read -r part; do
@@ -696,7 +649,7 @@ ecrire() { # disque dossier
   done < <(lsblk -lnpo NAME "$disque" | tail -n +2)
   [[ -d $sauvegarde ]] && echo "Sauvegarde : $sauvegarde"
   pkexec --keep-cwd "$PWD/outils/cle-secours.sh" --racine "$disque" "$(lsblk -dno SERIAL "$disque")" \
-    "$octets" "$(realpath "$d")" "$macos" "$windows"
+    "$octets" "$(realpath "$d")" "$windows"
   udevadm settle
   # Le démarrage que Ventoy vient d'écrire, depuis l'archive épinglée : sa référence (controler_vtoyefi).
   local version_vt empreinte_vt
@@ -705,13 +658,13 @@ ecrire() { # disque dossier
   local cle journal win
   cle=$(monter "$(partition "$disque" 1)") || erreur "partition VANGUARD impossible à monter."
   journal=$(monter "$(partition "$disque" 3)") || erreur "partition VANGUARDLOG impossible à monter."
-  win=$(monter "$(partition "$disque" 5)") || erreur "partition WIN11 impossible à monter."
+  win=$(monter "$(partition "$disque" 4)") || erreur "partition WIN11 impossible à monter."
   touch "$cle/vanguard.cle" "$journal/vanguard-journal.cle"
   mkdir -p "$cle/ISO" "$cle/ventoy"
   local windows_iso
   windows_iso=$(fichier_windows "$d")
   remplir_windows "$win" "$windows_iso" "$prep"
-  udisksctl unmount -b "$(partition "$disque" 5)" >/dev/null
+  udisksctl unmount -b "$(partition "$disque" 4)" >/dev/null
   outils/images-cle.sh --toutes "$cle"
   # Windows aussi dans ISO/, en secours pour un PC dont le menu ne propose pas WIN11, s'il reste la place : c'est
   # la première image laissée de côté.
@@ -1216,12 +1169,12 @@ outils/ventoy-racine.sh). L'archive n'est pas signée : comparer son empreinte �
 # partition WIN11, sinon celui de l'image dans ISO/). Plus de six mois : dit, au plus une fois par mois. Rien ne la
 # remplace tout seul : Microsoft ne donne qu'un lien de 24 heures, et l'empreinte qui la vérifie se lit sur sa page.
 verifier_windows_age() { # point de la clé
-  local point=$1 disque p5 win=${VANGUARD_WIN11:-} date="" iso quand
+  local point=$1 disque part win=${VANGUARD_WIN11:-} date="" iso quand
   if [[ -z $win ]]; then
     disque=$(disque_de "$point")
-    p5=$([[ -n $disque ]] && partition "$disque" 5 || true)
-    if [[ -n $p5 && -b $p5 && $(lsblk -dno PARTLABEL "$p5" 2>/dev/null) == WIN11 ]]; then
-      win=$(findmnt -nro TARGET -S "$p5" 2>/dev/null | head -1 || true)
+    part=$([[ -n $disque ]] && partition_win11 "$disque" || true)
+    if [[ -n $part ]]; then
+      win=$(findmnt -nro TARGET -S "$part" 2>/dev/null | head -1 || true)
     fi
   fi
   if [[ -n $win && -f $win/setup.exe ]]; then
@@ -1262,9 +1215,6 @@ a_jour() { # point de la clé (facultatif)
     return 0
   fi
   verifier_windows_age "$point"
-  # La récupération de macOS n'a pas d'âge qui compte : elle installe le dernier macOS, pris chez Apple au moment
-  # d'installer. La réécrire demanderait root et --ecrire, qui efface la clé.
-  echo "· Récupération de macOS : rien à tenir à jour (elle prend le dernier macOS chez Apple en installant)."
   verifier_ventoy "$point"
 }
 
@@ -1288,8 +1238,8 @@ case ${1:-} in
   --plan | --essai | --telecharger | --verifier | --ecrire | --windows | --ventoy-maj | --installer-racine | \
     --accepter-vtoyefi)
     secours_ici ||
-      erreur "clé de secours coupée sur cet ordinateur : rien n'est préparé (ni images, ni Ventoy, ni WIN11, ni \
-MACOS) ; la clé ne porte que le programme (outils/preparer-cle.sh). Pour la rallumer ici : retirer la ligne \
+      erreur "clé de secours coupée sur cet ordinateur : rien n'est préparé (ni images, ni Ventoy, ni WIN11) ; la \
+clé ne porte que le programme (outils/preparer-cle.sh). Pour la rallumer ici : retirer la ligne \
 CLE_SECOURS=non de ${XDG_CONFIG_HOME:-$HOME/.config}/vanguard/images-cle.conf (le détail : en-tête de \
 outils/images-cle.sh)."
     ;;
@@ -1320,5 +1270,5 @@ case ${1:-} in
   --accepter-vtoyefi) accepter_vtoyefi ;;
   --installer-racine) installer_racine ;;
   --ventoy-publie) ventoy_publie ;;
-  *) sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

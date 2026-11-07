@@ -12,7 +12,7 @@ replace it.
 
 Security of Vanguard and of the key
   - Protection of the key: it has two parts. VANGUARD (everything listed in "Contents of the key") is read-only on
-    Windows, and on Linux and macOS Vanguard remounts it read-only itself at startup: another computer cannot
+    Windows, and on Linux Vanguard remounts it read-only itself at startup: another computer cannot
     modify the program. Only its owner's computer can write to it. VANGUARDLOG, small and writable, holds
     journal-erreurs.txt: the errors encountered (version, system, message), without user name, computer name or
     home folder. Back on the owner's computer, they become GitHub issues, to improve Vanguard. It also holds
@@ -35,7 +35,7 @@ Security of Vanguard and of the key
   - Sealed state: Vanguard's state (settings, downloaded lists, defenses turned on, tasks, changes made) is
     sealed; changed outside Vanguard, it grants nothing, turns nothing off, and says so. The event log is
     chained and sealed (vanguard events).
-  - The program carries no publisher signature (Authenticode, Apple): SmartScreen may warn ("More info" >
+  - The program carries no publisher signature (Authenticode): SmartScreen may warn ("More info" >
     "Run anyway") and Microsoft Defender may flag it, because it scans ports. Its SHA-256 fingerprint, on
     each release page and in the signed history, proves that it is genuine. The source code is on the key and
     on GitHub (d9v3/vanguard-beta).
@@ -57,19 +57,15 @@ Safeguards
   - Each fix first records the previous state of what it changes, and can then be undone in "What Vanguard
     changed"; those that turn a protection back on (firewall, antivirus, BitLocker, UAC…) are never undone.
   - Before the first fix, update or repair that changes the system, a restore point is created automatically when
-    the system allows one (snapper or timeshift configured on Linux, a restore point on Windows, a local Time
-    Machine snapshot on macOS).
+    the system allows one (snapper or timeshift configured on Linux, a restore point on Windows).
   - If you help someone connected remotely (Remote Desktop, SSH), Vanguard never cuts that access.
 
 Contents of the key
-This USB key holds the program for Linux, Windows and macOS, its database and its source code.
+This USB key holds the program for Linux and Windows, its database and its source code.
 
   Linux/vanguard        Linux (any distribution, nothing to install)
                         Double-click autorun.sh, or in a terminal (outside the key):  <key>/Linux/vanguard
   Windows/vanguard.exe  Windows 10/11: double-click (or "Lancer Vanguard.bat" at the root).
-  macOS/vanguard        macOS 12 and later (Apple Silicon and Intel): double-click "Lancer Vanguard.command" at the
-                        root (Terminal opens). Tested on a GitHub Mac, never on a real Mac; maintained, without
-                        Mac-specific new features.
   autorun.sh            Linux: GNOME offers to run it when the key is plugged in; otherwise double-click or ./autorun.sh
   donnees/              Device database (one notebook per network: the owner's, each friend's) and the latest
                         report (rapport.html, and rapport.md as plain text, readable without a browser). It travels with the key: any Vanguard that sees the key plugged in uses it. On another
@@ -84,7 +80,7 @@ This USB key holds the program for Linux, Windows and macOS, its database and it
   vanguard.cle          Marker file that makes the key recognized: do not delete it.
 
 How to run each version, command line included (Terminal, PowerShell, Command Prompt): README.txt in the
-Linux, Windows and macOS folders.
+Linux and Windows folders.
 
 To start: run Vanguard, choose "1. Full security check", then "2. Fix".
 
@@ -107,7 +103,7 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
        4.7 Report to leave behind: a simple page for the person you helped, put on their Desktop
        4.8 For developers › Secrets in git projects: passwords and keys forgotten in the history (and gitleaks, if
          present) · Flaws in Docker images: known serious or critical flaws (trivy, if present)
-       4.9 Outdated software (Windows, macOS): browsers, Office, Acrobat, Java, 7-Zip… and their exploited flaws
+       4.9 Outdated software (Windows): browsers, Office, Acrobat, Java, 7-Zip… and their exploited flaws
          (read-only; vanguard outdated-software)
        4.10 Defense options (4.9 on Linux): on Windows, each Defender option, exclusions, ASR rules, firewall per
          profile and its rules, what a policy enforces; on Linux, the firewall (ufw, firewalld, nftables); lowering
@@ -169,7 +165,7 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
          personal removed; nothing is ever sent (vanguard disclose)
        8.10 Windows logs, what happened? The EVT- rules (cleared traces, one more administrator, guessed
          password, attack service or scheduled task, suspicious processes, PowerShell, Defender…) on this
-         Windows' logs; on Linux and macOS, on a folder of .evtx it asks for (winevt\Logs of a disk mounted
+         Windows' logs; on Linux, on a folder of .evtx it asks for (winevt\Logs of a disk mounted
          from the drive). The alerts in time order (read-only; vanguard windows-logs)
        8.11 Watcher (Linux): programs started and connections closed seen as they happen, off by default
          (vanguard watcher on); and, on request, personal folders watched live against ransomware: an alert
@@ -183,7 +179,7 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
          A copy (a folder): read back from the disk and compared with the originals
        9.4 Check a USB drive or a disk: real capacity (fake drives), speeds, bad blocks; writes into the free
          space, then erases
- 10  Command guide › the useful commands of Omarchy, Arch, Fedora, Debian, Windows 11, macOS and all systems, by
+ 10  Command guide › the useful commands of Omarchy, Arch, Fedora, Debian, Windows 11 and all systems, by
        program, each one explained (⚠: it changes something), with step-by-step guides (update, repair, network,
        free up space…). Type what you are looking for: commands show up as
        you type; each one can be copied, or run here if it only reads. And the tldr-pages examples, already on
@@ -205,8 +201,7 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
        12.3 Why is it slow? (processor, memory, disk, startup, programs started at login)
        12.4 Startup programs: remove them from startup or put them back, after your consent (vanguard startup)
        12.5 Recommended settings, in one go
-       12.6 Gaming (Windows: Visual C++, DirectX…; Linux: Steam, Vulkan, GameMode, MangoHud, Wine, Lutris…;
-         macOS: Rosetta 2, Steam, Heroic, Epic, GOG, Prism, Metal counter)
+       12.6 Gaming (Windows: Visual C++, DirectX…; Linux: Steam, Vulkan, GameMode, MangoHud, Wine, Lutris…)
        12.7 Fastest DNS (measured here; a DNS that protects you is kept)
        12.8 Connection test (ping, jitter, speed, bufferbloat), compared with your habits
        12.9 NAT type for gaming (open, moderate or strict)
@@ -247,12 +242,12 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
   Shortcuts from earlier versions, in the main menu: u updates, r repair, o diagnostics, i integrity,
   n name, c connection, a USB drive, b sandbox, p passwords, e email, l software, g gaming, d export/import.
 
-The check covers, among others: firewall, open ports, updates, outdated software (Windows, macOS) and software
+The check covers, among others: firewall, open ports, updates, outdated software (Windows) and software
 installed since the last check, encryption, accounts, password policy, SSH (its failed login attempts, its broken
 algorithms; on Windows, the OpenSSH server and keys without a passphrase), guessed password (successful sign-in
 after a burst of failures), Wi-Fi (and fake access points copying its name), programs started at boot, suspicious
 running programs, Windows backdoors and hidden doors (LSA packages, print monitors…), Defender protections turned
-off, startup security and background items on macOS, vulnerable drivers, rootkit signs on Linux, Windows event
+off, vulnerable drivers, rootkit signs on Linux, Windows event
 logs, spyware, overly permissive AI agents, DNS, added root certificates, browser extensions, Bluetooth, clock,
 end of support, forgotten accounts, browser passwords, sensitive files, backups, disk and battery health,
 post-quantum key exchange (SSH, browsers, WireGuard; read-only). On Windows and Linux, the most serious findings
@@ -265,14 +260,8 @@ with those of the system's tools (pacman, systemctl, ss, PowerShell…); the mon
 Language: French or English, following the system. To force English: the Settings menu ("s"), or
   Linux:   VANGUARD_LANG=en ./vanguard
   Windows: in the command prompt, set VANGUARD_LANG=en then vanguard.exe
-  macOS:   VANGUARD_LANG=en <key>/macOS/vanguard
 Menus shifted in the old Windows command prompt: set VANGUARD_EMOJI=0 (done by default outside Windows
 Terminal).
-
-Good to know
-  - macOS: run from the key, Vanguard opens without a warning. Copied from the Internet or AirDrop, macOS blocks it
-    ("unidentified developer"): right-click > Open, or System Settings > Privacy & Security > "Open Anyway".
-    Antivirus, software and gaming go through Homebrew (offered if missing).
 
 Vanguard is free software (GNU GPL v3 or later, see LICENSE.txt), provided without warranty.
 The libraries it includes are listed in LICENCES-TIERCES.txt.
