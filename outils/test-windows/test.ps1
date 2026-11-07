@@ -1908,6 +1908,72 @@ try {
     else { Ok 'Aucune détection de Defender pendant l''analyse de la mémoire' }
 } catch { Info "Détections de Defender illisibles sans droits : $($_.Exception.Message)" }
 
+Etape 'Suspendre et reprendre un programme (blocage, défense R1) : sans course, réversible, refusé à un programme de Microsoft'
+# Un programme jetable, compilé ici (non signé : la garde de signature le laisse suspendre), qui attend sans rien faire.
+# Suspendu, chacun de ses fils doit être « Suspended » pour Windows ; repris, aucun. Une copie de notepad.exe (signée
+# Microsoft) doit être refusée, grisée avec sa raison. Enfin « vanguard alerte » refuse un identifiant forgé.
+$dossierR1 = Join-Path $env:TEMP 'vanguard-essai-r1'
+New-Item -ItemType Directory -Force $dossierR1 | Out-Null
+$attente = Join-Path $dossierR1 'attente-r1.exe'
+$jetable = $null
+try {
+    if (-not (Test-Path $attente)) {
+        Add-Type -OutputType ConsoleApplication -OutputAssembly $attente -TypeDefinition @'
+public static class Attente { public static void Main() { System.Threading.Thread.Sleep(600000); } }
+'@
+    }
+    $jetable = Start-Process -FilePath $attente -PassThru -WindowStyle Hidden
+    Start-Sleep -Seconds 1
+} catch { Sautee "Programme jetable non compilé (Add-Type) : $($_.Exception.Message)" }
+function Fils-Suspendus($id) {
+    $p = Get-Process -Id $id -ErrorAction SilentlyContinue
+    if (-not $p) { return $null }
+    $p.Refresh()
+    $fils = @($p.Threads)
+    @($fils | Where-Object { $_.ThreadState -eq 'Wait' -and $_.WaitReason -eq 'Suspended' }).Count -eq $fils.Count -and $fils.Count -gt 0
+}
+if ($jetable -and -not $jetable.HasExited) {
+    $id = $jetable.Id
+    LancerAvec 'blocage-suspendre' @('blocage', 'suspendre', "$id") "o`no`n"
+    $t = "$(Sortie 'blocage-suspendre')"
+    if ($t -match 'Suspendu\.|Suspended\.') { Ok "vanguard blocage suspendre $id : dit suspendu" }
+    else { Bug "vanguard blocage suspendre $id : pas « Suspendu. » ($((Lignes $t | Where-Object { $_ -match '✖' }) -join ' / '))" }
+    $etat = Fils-Suspendus $id
+    if ($etat -eq $true) { Ok 'Chaque fil du programme est suspendu pour Windows (effet mesuré)' }
+    else { Bug "Les fils du programme ne sont pas tous suspendus (Get-Process : $etat)" }
+    Lancer 'blocage-reprendre' @('blocage', 'reprendre', "$id")
+    $t = "$(Sortie 'blocage-reprendre')"
+    if ($t -match 'Repris|Resumed') { Ok "vanguard blocage reprendre $id : dit repris" }
+    else { Bug "vanguard blocage reprendre $id : pas « Repris » ($((Lignes $t | Where-Object { $_ -match '✖' }) -join ' / '))" }
+    $etat = Fils-Suspendus $id
+    if ($etat -eq $false) { Ok 'Plus aucun fil suspendu après la reprise (effet mesuré)' }
+    else { Bug "Le programme reste suspendu après la reprise (Get-Process : $etat)" }
+    Lancer 'blocage-reprendre-vide' @('blocage', 'reprendre', "$id")
+    if ("$(Sortie 'blocage-reprendre-vide')" -match "pas été suspendu par Vanguard|was not suspended by Vanguard") { Ok 'Une seconde reprise ne touche à rien : il n''est plus dans la liste' }
+    else { Bug 'Une seconde reprise ne dit pas « pas été suspendu par Vanguard »' }
+    Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+}
+$bloc = Join-Path $dossierR1 'bloc-r1.exe'
+try {
+    Copy-Item (Join-Path $env:SystemRoot 'System32\notepad.exe') $bloc -Force
+    $signe = Start-Process -FilePath $bloc -PassThru -WindowStyle Minimized
+    Start-Sleep -Seconds 1
+    LancerAvec 'blocage-suspendre-microsoft' @('blocage', 'suspendre', "$($signe.Id)") "o`no`n"
+    $t = "$(Sortie 'blocage-suspendre-microsoft')"
+    $etat = Fils-Suspendus $signe.Id
+    if ($t -match "Rien n'est suspendu|Nothing is suspended" -and $etat -ne $true) { Ok 'Copie de notepad.exe (signée Microsoft) : suspension refusée, avec sa raison' }
+    else { Bug "Copie de notepad.exe : suspension non refusée (fils suspendus : $etat)" }
+    Start-Process -FilePath $exe -ArgumentList @('blocage', 'reprendre') -NoNewWindow -Wait | Out-Null
+    Stop-Process -Id $signe.Id -Force -ErrorAction SilentlyContinue
+} catch { Sautee "Copie de notepad.exe non lancée : $($_.Exception.Message)" }
+Lancer 'alerte-forgee' @('alerte', '../../x')
+if ("$(Sortie 'alerte-forgee')" -match 'Identifiant d''alerte invalide|Invalid alert identifier') { Ok 'vanguard alerte refuse un identifiant forgé' }
+else { Bug 'vanguard alerte ne refuse pas un identifiant forgé' }
+Lancer 'alerte-inconnue' @('alerte', 'abc-123')
+if ("$(Sortie 'alerte-inconnue')" -match 'Aucune alerte de cet identifiant|No alert with this identifier') { Ok 'vanguard alerte : un identifiant absent du journal ne fait rien' }
+else { Bug 'vanguard alerte : un identifiant absent du journal n''est pas dit absent' }
+Remove-Item -LiteralPath $dossierR1 -Recurse -Force -ErrorAction SilentlyContinue
+
 Journal "FIN $(Get-Date -Format 'HH:mm:ss')"
 $rapport = Rapport
 $toutes = @($script:etapes | ForEach-Object { $_.Verifs })
