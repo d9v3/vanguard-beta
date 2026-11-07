@@ -311,10 +311,12 @@ check, connections against the botnet command servers already downloaded; what i
 and as a notification. With active protection and a separate consent (offered when it is turned on, or
 `vanguard watcher known on`), it also stops by itself, as it starts, a certain program of the account: its fingerprint
 is that of known malware (MalwareBazaar), or it carries the EICAR test mark inside an executable. The judgment is on
-the file the kernel started, never on what is later at its path; the program and what it started are frozen, the
-evidence is recorded, then it is stopped and quarantined, with the blocking safeguards. Never a system program, a
-critical process, Vanguard or remote access during a session, nor a program of another account (an alert, and
-“Block” with administrator rights). A malicious program in the account can switch the watcher off. A program gone
+the file the kernel started, never on what is later at its path; the program, what it started and its other running copies are frozen, the evidence is recorded, then it is stopped
+(even renamed: it is recognised by the file started) and quarantined, with the blocking safeguards. Only a file of the
+account placed in its folders (home folder, temporary folders): never a system program, an installed program (/opt,
+Flatpak, Steam, AppImage), a critical process, Vanguard or remote access during a session (an alert only). A program of
+another account, setuid or that makes itself unreadable is not read: the scan and “Block” see it; a child that started
+another program and left its lineage escapes the freeze. A malicious program in the account can switch the watcher off. A program gone
 before it could be read is counted as such, never judged safe, and the program of a closed connection is not known
 (the kernel does not give it).
 

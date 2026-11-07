@@ -5,15 +5,11 @@
 use super::*;
 use crate::archives::zip::essais::archive_controlee as zip_de;
 
-/// La chaîne d'essai EICAR, assemblée à l'exécution : le source ne la contient pas d'un bloc (un antivirus qui
-/// lirait le dépôt n'a pas à s'en alarmer).
+/// La chaîne d'essai EICAR, démasquée à l'exécution (`sources::marque_d_essai`) : ni le source ni le binaire des
+/// essais ne la contiennent entière (deux morceaux littéraux, l'éditeur de liens les rangeait bout à bout, et un
+/// antivirus mettait le programme d'essai en quarantaine).
 fn eicar() -> Vec<u8> {
-    [
-        r"X5O!P%@AP[4\PZX54(P^)7CC)7}$",
-        "EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*",
-    ]
-    .concat()
-    .into_bytes()
+    crate::protection::sources::marque_d_essai()
 }
 
 fn analyse(octets: &[u8], nom: &str) -> Analyse {

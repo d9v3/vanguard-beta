@@ -6,8 +6,8 @@
 // Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use crate::protection::blocage;
 use crate::socle::processus;
@@ -32,6 +32,11 @@ pub(crate) struct Cible {
     /// geler ni arrêter un autre programme. `None` : la racine se juge maintenant (le rançongiciel, attribué à
     /// l'instant).
     pub debut: Option<u64>,
+    /// L'inode lancé (périphérique, numéro), tenu par qui l'a jugé, avec `debut` : le programme à arrêter se
+    /// reconnaît à lui, plus à son chemin. Le chemin est relu juste avant l'arrêt et le fichier n'est mis en
+    /// quarantaine que s'il y désigne encore cet inode (`chemin` et `fichier` ne servent alors plus) : un programme
+    /// qui renomme son fichier n'échappe pas à l'arrêt, et un fichier mis à sa place n'est jamais isolé.
+    pub inode: Option<(u64, u64)>,
 }
 
 /// Ce qu'a donné la réponse.
@@ -47,6 +52,10 @@ pub(crate) enum Issue {
 
 /// Un membre de la lignée, tel que l'appelant le relit (pid, nom, chemin).
 pub(crate) type Membre = (u32, String, Option<PathBuf>);
+
+/// Essais d'arrêt au plus quand le fichier lancé change encore de nom entre la relecture de son chemin et l'arrêt
+/// (un processus hors de la lignée gelée le renomme) ; au-delà, il est arrêté par son pidfd, sans quarantaine.
+const ESSAIS_RENOMME: usize = 3;
 
 /// Nombre de passes de gel au plus : un `fork` entre la liste et le signal échappe au gel, donc on répète liste + gel
 /// jusqu'à deux passes sans nouveau membre, sans dépasser cinq.
@@ -74,7 +83,9 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
         return Issue::Refuse(raison.to_string());
     }
 
-    let mut geles: HashSet<u32> = HashSet::new();
+    // Chaque membre gelé avec son départ, lu une fois gelé : regelé ou tué plus tard par un pidfd seulement s'il est
+    // encore ce processus-là (un numéro libéré puis repris, même gelé par Ctrl-Z, n'est jamais touché).
+    let mut geles: HashMap<u32, Option<u64>> = HashMap::new();
     match cible.debut {
         #[cfg(target_os = "linux")]
         Some(debut) => {
@@ -102,7 +113,7 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
             processus::geler(cible.racine);
         }
     }
-    geles.insert(cible.racine);
+    geles.insert(cible.racine, processus::debut(cible.racine));
 
     // Un membre pris dans la lignée (le même groupe de processus) sans descendre de la racine, sous un hôte de session
     // à distance (SSH, xrdp), n'est ni gelé ni tué : ce serait figer ou couper cette session (défense D6a, relecture).
@@ -117,7 +128,7 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
     for _ in 0..PASSES_MAX {
         let mut nouveau = false;
         for (pid, nom, chemin) in lignee() {
-            if geles.contains(&pid) {
+            if geles.contains_key(&pid) {
                 continue;
             }
             let c = chemin.as_ref().map(|c| c.to_string_lossy().into_owned());
@@ -125,7 +136,7 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
                 && hors_session(pid, sessions.as_ref())
                 && processus::geler(pid)
             {
-                geles.insert(pid);
+                geles.insert(pid, processus::debut(pid));
                 nouveau = true;
             }
         }
@@ -135,10 +146,12 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
         }
     }
 
-    // Un tiers a pu envoyer SIGCONT : regeler ce qui n'est plus « T ».
-    for &pid in &geles {
-        if processus::est_gele(pid) == Some(false) {
-            processus::geler(pid);
+    // Un tiers a pu envoyer SIGCONT : regeler ce qui n'est plus « T », s'il est encore ce processus-là.
+    for (&pid, &debut) in &geles {
+        if processus::est_gele(pid) == Some(false)
+            && let Some(debut) = debut
+        {
+            processus::geler_si(pid, debut);
         }
     }
 
@@ -148,7 +161,7 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
     if let Some(debut) = cible.debut
         && processus::debut(cible.racine) != Some(debut)
     {
-        let mut v: Vec<u32> = geles.into_iter().filter(|&p| p != cible.racine).collect();
+        let mut v: Vec<u32> = geles.into_keys().filter(|&p| p != cible.racine).collect();
         v.sort_unstable();
         reprendre(&v);
         return Issue::Refuse(
@@ -161,37 +174,137 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
     }
 
     // Arrêt + quarantaine de la racine, sous les garde-fous du blocage (preuve relevée avant).
-    match blocage::arreter_programme_automatique(
-        &intouchables,
-        cible.racine,
-        &cible.nom,
-        cible.chemin.clone(),
-        cible.fichier.clone(),
-        &cible.detection,
-        &cible.cle,
-    ) {
+    let fait = match (cible.debut, cible.inode) {
+        (Some(debut), Some(inode)) => arreter_tenu(cible, &intouchables, debut, inode),
+        _ => blocage::arreter_programme_automatique(
+            &intouchables,
+            cible.racine,
+            &cible.nom,
+            cible.chemin.clone(),
+            cible.fichier.clone(),
+            &cible.detection,
+            &cible.cle,
+        )
+        .map_err(|e| Fin::Garde(String::from(e))),
+    };
+    match fait {
         Ok(quoi) => {
             // La racine arrêtée, tuer le reste de la lignée gelée (le chiffrement était déjà figé).
-            // Seulement ce qui est encore gelé : un numéro libéré entre-temps a pu être repris par un autre
-            // programme, qui n'a pas à être tué (comme « Reprendre » ne dégèle que ce qui l'est encore).
-            // Les sessions relues, comme avant tout arrêt : une ouverte depuis le gel compte.
+            // Seulement ce qui est encore gelé, et encore le processus gelé (son départ) : un numéro libéré
+            // entre-temps a pu être repris par un autre programme, qui n'a pas à être tué (comme « Reprendre » ne
+            // dégèle que ce qui l'est encore). Les sessions relues, comme avant tout arrêt : une ouverte depuis le gel
+            // compte.
             let sessions = blocage::gardes::sessions_a_distance();
-            for &pid in &geles {
-                if pid != cible.racine && processus::est_gele(pid) == Some(true) && hors_session(pid, sessions.as_ref())
+            for (&pid, &debut) in &geles {
+                if pid != cible.racine
+                    && processus::est_gele(pid) == Some(true)
+                    && hors_session(pid, sessions.as_ref())
+                    && let Some(debut) = debut
                 {
-                    tuer(pid);
+                    processus::tuer_si(pid, debut);
                 }
             }
             Issue::Arrete(quoi)
         }
-        Err(e) => {
-            let mut v: Vec<u32> = geles.into_iter().collect();
+        Err(Fin::Garde(raison)) => {
+            let mut v: Vec<u32> = geles.into_keys().collect();
             v.sort_unstable();
-            Issue::Gele {
-                raison: String::from(e),
-                geles: v,
-            }
+            Issue::Gele { raison, geles: v }
         }
+        Err(Fin::Autre(raison)) => {
+            let mut v: Vec<u32> = geles.into_keys().collect();
+            v.sort_unstable();
+            reprendre(&v);
+            Issue::Refuse(raison)
+        }
+    }
+}
+
+/// Pourquoi l'arrêt n'a pas eu lieu.
+enum Fin {
+    /// Un garde-fou du blocage l'a refusé (programme intouchable, session à distance, droits) : la raison.
+    Garde(String),
+    /// Le processus ne tourne plus le programme jugé : la raison ; rien n'est arrêté et sa lignée est reprise.
+    Autre(String),
+}
+
+/// Le chemin actuel du programme lancé par `pid`, si `pid` est encore le processus parti à `debut` et tourne encore
+/// l'inode `inode` (« (deleted) » retiré, comme le blocage le relit) ; `None` sinon.
+fn chemin_tenu(pid: u32, debut: u64, inode: (u64, u64)) -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    if processus::debut(pid) != Some(debut) {
+        return None;
+    }
+    let m = std::fs::metadata(format!("/proc/{pid}/exe")).ok()?;
+    if (m.dev(), m.ino()) != inode {
+        return None;
+    }
+    let lien = processus::programme(pid)?;
+    let lien = lien.to_string_lossy();
+    Some(PathBuf::from(lien.strip_suffix(" (deleted)").unwrap_or(&lien)))
+}
+
+/// `chemin` désigne-t-il encore l'inode `inode`, en fichier ordinaire ? Sinon (effacé, ou un autre fichier mis à sa
+/// place), ce qui est là n'est pas ce qui a été jugé : jamais mis en quarantaine.
+pub(crate) fn fichier_tenu(chemin: &Path, inode: (u64, u64)) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(chemin).is_ok_and(|m| m.is_file() && (m.dev(), m.ino()) == inode)
+}
+
+/// Arrête la racine reconnue par son départ et son inode lancé (le veilleur) : le chemin relu juste avant l'arrêt est
+/// celui que le blocage attend. Un programme qui renomme son fichier (lui-même avant le gel, ou un autre processus
+/// depuis) est arrêté quand même : un refus parce que le chemin a encore changé se rejoue, puis, au-delà de
+/// `ESSAIS_RENOMME`, l'arrêt passe par le pidfd, après les mêmes garde-fous (intouchable, système, session).
+fn arreter_tenu(cible: &Cible, intouchables: &HashSet<u32>, debut: u64, inode: (u64, u64)) -> Result<String, Fin> {
+    let parti = || {
+        Fin::Autre(
+            tr!(
+                "le processus ne tourne plus le programme jugé (parti, ou numéro repris) : rien n'est arrêté, sa lignée est reprise",
+                "the process no longer runs the judged program (exited, or number reused): nothing is stopped, its lineage is resumed"
+            )
+            .to_string(),
+        )
+    };
+    for _ in 0..ESSAIS_RENOMME {
+        let chemin = chemin_tenu(cible.racine, debut, inode).ok_or_else(parti)?;
+        let fichier = fichier_tenu(&chemin, inode).then(|| chemin.clone());
+        match blocage::arreter_programme_automatique(
+            intouchables,
+            cible.racine,
+            &cible.nom,
+            Some(chemin.clone()),
+            fichier,
+            &cible.detection,
+            &cible.cle,
+        ) {
+            Ok(quoi) => return Ok(quoi),
+            // Toujours ce processus et cet inode, sous un autre nom : le refus ne venait que du chemin, on relit.
+            Err(_) if chemin_tenu(cible.racine, debut, inode).is_some_and(|c| c != chemin) => {}
+            Err(e) => return Err(Fin::Garde(String::from(e))),
+        }
+    }
+    let chemin = chemin_tenu(cible.racine, debut, inode).ok_or_else(parti)?;
+    let texte = chemin.to_string_lossy();
+    let sessions = blocage::gardes::sessions_a_distance();
+    if let Some(raison) = blocage::gardes::processus_intouchable(
+        cible.racine,
+        &cible.nom,
+        Some(&texte),
+        intouchables,
+        crate::machine::regles::Os::Linux,
+    )
+    .or_else(|| blocage::gardes::lignee_de_session(cible.racine, sessions.as_ref()))
+    {
+        return Err(Fin::Garde(raison.to_string()));
+    }
+    if processus::tuer_si(cible.racine, debut) {
+        Ok(tr!(
+            "arrêté par son pidfd ; son fichier change de nom sans cesse : pas mis en quarantaine",
+            "stopped through its pidfd; its file keeps changing name: not quarantined"
+        )
+        .to_string())
+    } else {
+        Err(parti())
     }
 }
 
@@ -204,18 +317,3 @@ pub(crate) fn reprendre(pids: &[u32]) {
         }
     }
 }
-
-#[cfg(unix)]
-// FFI de libc : kill (SIGKILL au processus fautif).
-#[allow(unsafe_code)]
-fn tuer(pid: u32) {
-    if let Ok(pid) = libc::pid_t::try_from(pid) {
-        // SAFETY: SIGKILL à un numéro de processus ; il arrête aussi un processus gelé.
-        unsafe {
-            libc::kill(pid, libc::SIGKILL);
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn tuer(_pid: u32) {}

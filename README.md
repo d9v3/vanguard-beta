@@ -328,9 +328,12 @@ téléchargés ; le grave va au tableau de bord et en notification. Avec la prot
 (proposé à l'allumage, ou `vanguard veilleur connus on`), il arrête aussi tout seul, à son lancement, un programme
 certain du compte : son empreinte est celle d'un malware connu (MalwareBazaar), ou il porte la marque d'essai EICAR
 dans un exécutable. Le jugement porte sur le fichier que le noyau a lancé, jamais sur ce qui est ensuite à son chemin ;
-le programme et ce qu'il a lancé sont gelés, la preuve est relevée, puis il est arrêté et mis en quarantaine, sous les
-garde-fous du blocage. Jamais un programme du système, un processus critique, Vanguard ni un accès à distance pendant
-une session, ni un programme d'un autre compte (une alerte, et « Bloquer » avec les droits d'administrateur). Un
+le programme, ce qu'il a lancé et ses autres copies en marche sont gelés, la preuve est relevée, puis il est arrêté
+(même renommé : il se reconnaît à son fichier lancé) et mis en quarantaine, sous les garde-fous du blocage. Seulement un
+fichier du compte posé dans ses dossiers (dossier personnel, dossiers temporaires) : jamais un programme du système, un
+programme installé (/opt, Flatpak, Steam, AppImage), un processus critique, Vanguard ni un accès à distance pendant une
+session (une alerte seulement). Un programme d'un autre compte, setuid ou qui se rend illisible n'est pas lu : le bilan
+et « Bloquer » le voient ; un enfant qui a lancé un autre programme et quitté sa lignée échappe au gel. Un
 programme malveillant du compte peut éteindre le veilleur. Un programme parti avant d'être lu est compté tel quel,
 jamais jugé sain, et le programme d'une connexion fermée n'est pas connu (le noyau ne le donne pas).
 

@@ -201,6 +201,20 @@ pub(crate) fn tenir(pid: u32) -> Option<Tenu> {
 /// Sans pidfd (noyau d'avant 5.3, filtre d'appels), rien n'est gelé : jamais de signal envoyé au numéro seul ici.
 #[cfg(target_os = "linux")]
 pub(crate) fn geler_si(pid: u32, debut_attendu: u64) -> bool {
+    signaler_si(pid, debut_attendu, libc::SIGSTOP)
+}
+
+/// Arrête (SIGKILL) le processus `pid` seulement s'il est encore celui qui a démarré à `debut`, par un pidfd comme
+/// `geler_si` : un numéro repris entre le gel et l'arrêt (un programme du compte suspendu par Ctrl-Z, gelé lui aussi)
+/// n'est jamais tué à sa place.
+#[cfg(target_os = "linux")]
+pub(crate) fn tuer_si(pid: u32, debut_attendu: u64) -> bool {
+    signaler_si(pid, debut_attendu, libc::SIGKILL)
+}
+
+/// `signal` au processus `pid` par un pidfd, seulement s'il a démarré à `debut_attendu` (voir `geler_si`).
+#[cfg(target_os = "linux")]
+fn signaler_si(pid: u32, debut_attendu: u64, signal: libc::c_int) -> bool {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     let Ok(p) = libc::pid_t::try_from(pid) else {
         return false;
@@ -220,7 +234,7 @@ pub(crate) fn geler_si(pid: u32, debut_attendu: u64) -> bool {
         libc::syscall(
             libc::SYS_pidfd_send_signal,
             fd.as_raw_fd(),
-            libc::SIGSTOP,
+            signal,
             std::ptr::null::<libc::siginfo_t>(),
             0u32,
         )
@@ -273,7 +287,7 @@ mod tests {
     /// Ce processus se tient lui-même (son programme, son départ, son compte) ; un départ faux ne gèle rien : le
     /// numéro seul ne suffit jamais à envoyer le signal.
     #[test]
-    fn tenir_soi_et_ne_geler_que_le_bon_depart() {
+    fn tenir_soi_et_ne_geler_ni_tuer_que_le_bon_depart() {
         use std::os::unix::fs::MetadataExt;
         let moi = std::process::id();
         let t = tenir(moi).expect("ce processus se tient");
@@ -312,11 +326,22 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
             gele_par_le_bon = est_gele(pid);
         }
+        // L'arrêt de même : un départ faux ne tue rien (l'enfant reste là, gelé), le bon le tue.
+        let tue_par_le_faux = depart.map(|d| tuer_si(pid, d.wrapping_add(1)));
+        let encore_la = est_gele(pid);
+        let tue_par_le_bon = depart.map(|d| tuer_si(pid, d));
         let _ = enfant.kill();
-        let _ = enfant.wait();
+        let fin = enfant.wait().ok();
         assert!(depart.is_some(), "l'enfant ne se lit pas");
         assert_eq!((faux, gele_par_le_faux), (Some(false), Some(false)));
         assert_eq!((bon, gele_par_le_bon), (Some(true), Some(true)));
+        assert_eq!((tue_par_le_faux, encore_la), (Some(false), Some(true)));
+        assert_eq!(tue_par_le_bon, Some(true));
+        assert_eq!(
+            fin.and_then(|f| std::os::unix::process::ExitStatusExt::signal(&f)),
+            Some(libc::SIGKILL)
+        );
+        assert!(!tuer_si(u32::MAX, 0));
     }
 
     #[test]
