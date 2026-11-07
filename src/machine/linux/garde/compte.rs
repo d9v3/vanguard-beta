@@ -582,13 +582,15 @@ fn nettoyer_le_compte() {
         );
     }
     let dossier = dossier_listes();
-    if let Err(e) = effacer_listes(&dossier) {
+    let restes = effacer_listes(&dossier);
+    if !restes.is_empty() {
         afficher_aligne(
             "  ⚠ ",
             &trf!(
-                "Listes du garde non effacées ({}) : {e}",
-                "Guard lists not erased ({}): {e}",
-                dossier.display()
+                "Listes du garde non effacées ({}) : {}",
+                "Guard lists not erased ({}): {}",
+                dossier.display(),
+                restes.join(", ")
             ),
             4,
             "",
@@ -598,18 +600,15 @@ fn nettoyer_le_compte() {
 
 /// Efface les deux listes, puis leur dossier s'il est vide : rien d'autre (un fichier que la personne y aurait mis
 /// reste, avec le dossier).
-fn effacer_listes(dossier: &Path) -> Result<(), crate::modele::raison::Echec> {
-    use crate::modele::raison::Echec;
-    let restes = crate::reseau::surveillance::retirer_fichiers(&[dossier.join(LISTE_SHA256), dossier.join(LISTE_MD5)]);
-    if !restes.is_empty() {
-        return Err(Echec::refuse("garde/listes", &restes.join(", ")));
-    }
+fn effacer_listes(dossier: &Path) -> Vec<String> {
+    let mut restes =
+        crate::reseau::surveillance::retirer_fichiers(&[dossier.join(LISTE_SHA256), dossier.join(LISTE_MD5)]);
     match std::fs::remove_dir(dossier) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()),
-        Err(e) => Err(Echec::io("garde/listes", &e)),
-        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound || e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
+        Err(e) => restes.push(format!("{} ({e})", dossier.display())),
+        Ok(()) => {}
     }
+    restes
 }
 
 /// L'empreinte d'un programme, s'il se lit.
@@ -871,13 +870,13 @@ mod tests {
         let d = crate::essais::Jetable::nouveau("garde-effacer");
         let dossier = d.join("garde");
         ecrire_dans(&dossier, &[[2u8; 32]], &[], &[], Vec::new()).unwrap();
-        effacer_listes(&dossier).unwrap();
+        assert_eq!(effacer_listes(&dossier), Vec::<String>::new());
         assert!(!dossier.exists());
         // Déjà effacées : rien à redire.
-        effacer_listes(&dossier).unwrap();
+        assert_eq!(effacer_listes(&dossier), Vec::<String>::new());
         ecrire_dans(&dossier, &[[2u8; 32]], &[], &[], Vec::new()).unwrap();
         std::fs::write(dossier.join("a-moi.txt"), b"x").unwrap();
-        effacer_listes(&dossier).unwrap();
+        assert_eq!(effacer_listes(&dossier), Vec::<String>::new());
         assert!(dossier.join("a-moi.txt").exists());
         assert!(!dossier.join(LISTE_SHA256).exists() && !dossier.join(LISTE_MD5).exists());
     }
