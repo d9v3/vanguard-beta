@@ -301,6 +301,7 @@ fn suspendre_par_pid(mot: &str) {
     let o = ordres::Ordre::SuspendreProcessus {
         pid,
         chemin: chemin.clone(),
+        depart: None,
     };
     let intouchables = crate::machine::chasse::en_marche().map_or_else(HashSet::new, |(_, i)| i);
     if let Some(raison) = ordres::juger(&o, &ordres::Juge::lire(None).avec(&intouchables)) {
@@ -325,8 +326,8 @@ fn suspendre_par_pid(mot: &str) {
 
 /// `vanguard blocage reprendre [<PID>]` : ce que Vanguard a suspendu (sa liste scellée), toujours le même programme,
 /// repris par les droits de ce compte ou par l'assistant élevé ; rien n'est dit repris qui ne l'ait été. Une liste
-/// changée hors de Vanguard est dite : un PID donné est relu et repris s'il est gelé (reprendre ne relâche aucune
-/// défense), sans PID rien n'est repris sur sa foi.
+/// changée hors de Vanguard est dite : un PID donné est relu ici et repris seulement s'il s'y relit et qu'il est gelé
+/// (rien de la liste n'est cru), sans PID rien n'est repris sur sa foi.
 fn reprendre_les_suspendus(pid: Option<u32>) {
     use suspension::Reprise;
     let r = suspension::reprendre(pid);
@@ -334,16 +335,19 @@ fn reprendre_les_suspendus(pid: Option<u32>) {
         let nommes = if nommes.is_empty() {
             String::new()
         } else {
-            trf!(" Elle nommait les PID {nommes}.", " It named PIDs {nommes}.")
+            trf!(
+                " Elle nommait les PID {nommes} : des numéros écrits hors de Vanguard, à ne pas croire.",
+                " It named PIDs {nommes}: numbers written outside Vanguard, not to be trusted."
+            )
         };
         let suite = match pid {
             Some(_) => tr!(
-                "le processus donné est relu ici, et repris s'il est gelé.",
-                "the given process is read again here, and resumed if it is frozen."
+                "le processus donné est relu ici, et repris seulement s'il se relit d'ici et qu'il est gelé ; rien de la liste n'est cru.",
+                "the given process is read again here, and resumed only if it can be read from here and is frozen; nothing from the list is believed."
             ),
             None => tr!(
-                "rien n'est repris sur sa foi, et une liste neuve la remplace ; « vanguard blocage reprendre <PID> » reprend un programme gelé.",
-                "nothing is resumed on its word, and a new list replaces it; “vanguard blocking resume <PID>” resumes a frozen program."
+                "rien n'est repris sur sa foi, et une liste neuve la remplace.",
+                "nothing is resumed on its word, and a new list replaces it."
             ),
         };
         afficher_aligne(
@@ -360,8 +364,8 @@ fn reprendre_les_suspendus(pid: Option<u32>) {
     if r.faits.is_empty() {
         match pid {
             Some(p) if r.liste_refusee.is_some() => trp!(
-                "  Le processus {p} est fini, ou son programme ne se lit pas : rien n'est repris.",
-                "  Process {p} has ended, or its program cannot be read: nothing is resumed."
+                "  Le processus {p} est fini : rien n'est repris.",
+                "  Process {p} has ended: nothing is resumed."
             ),
             Some(p) => trp!(
                 "  Le processus {p} n'a pas été suspendu par Vanguard : rien n'est repris.",
@@ -1154,6 +1158,7 @@ fn faits_de(m: &Menace, ctx: &Contexte, pret: &Result<gestes::Pret, crate::model
             &ordres::Ordre::SuspendreProcessus {
                 pid: *pid,
                 chemin: c.to_string_lossy().into_owned(),
+                depart: None,
             },
             &ordres::Juge::lire(None).avec(&ctx.intouchables),
         ),

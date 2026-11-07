@@ -4,3 +4,6 @@ vanguard:suspendre-processus 7 433a5c55736572735c782e657865
 vanguard:reprendre-processus 0 2f78
 vanguard:suspendre-processus 42 2f780a
 vanguard:suspendre-processus-demande 42 2f78
+vanguard:suspendre-processus 4242 2f686f6d652f616c6963652f2e63616368652f78 1337
+vanguard:reprendre-processus 7 433a5c55736572735c782e657865 133000000000000000
+vanguard:suspendre-processus 42 2f78 01

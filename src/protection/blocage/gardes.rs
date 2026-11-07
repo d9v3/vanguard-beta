@@ -207,6 +207,15 @@ const NOMS_DE_LA_REPRISE: &[&str] = &[
     "dbus-broker",
     "dbus-broker-launch",
     "systemd-logind",
+    "gnome-session",
+    "gnome-session-binary",
+    "ksmserver",
+    "plasma_session",
+    "xfce4-session",
+    "lxsession",
+    "lxqt-session",
+    "mate-session",
+    "cinnamon-session",
     "hyprland",
     "sway",
     "kwin_wayland",
@@ -288,7 +297,8 @@ pub(crate) fn processus_suspendable(
 
 #[cfg(target_os = "linux")]
 fn de_la_reprise(nom: &str) -> bool {
-    NOMS_DE_LA_REPRISE.contains(&nom) || nom.contains("polkit")
+    // L'agent d'authentification de chaque bureau : polkit-gnome, lxpolkit, polkit-kde, lxqt-policykit-agent…
+    NOMS_DE_LA_REPRISE.contains(&nom) || nom.contains("polkit") || nom.contains("policykit")
 }
 
 /// Le rôle d'un programme du système que la personne demande de suspendre, à nommer dans la question avant de le
@@ -3153,10 +3163,25 @@ mod tests {
                 "polkit-gnome-au",
                 "/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1",
             ),
+            ("lxqt-policykit-", "/usr/bin/lxqt-policykit-agent"),
+            ("lxpolkit", "/usr/bin/lxpolkit"),
+            ("xfce4-session", "/usr/bin/xfce4-session"),
+            ("ksmserver", "/usr/bin/ksmserver"),
+            ("gnome-session-b", "/usr/libexec/gnome-session-binary"),
+            ("lxqt-session", "/usr/bin/lxqt-session"),
         ] {
             assert!(processus_suspendable(4000, nom, Some(chemin), &rien).is_some(), "{nom}");
         }
         assert!(processus_suspendable(4000, "polkitd", Some("/home/a/.cache/polkitd"), &rien).is_none());
+        assert!(
+            processus_suspendable(
+                4000,
+                "lxqt-policykit-",
+                Some("/home/a/.local/bin/lxqt-policykit-agent"),
+                &rien
+            )
+            .is_none()
+        );
         assert!(processus_suspendable(4000, "python3", Some("/usr/bin/python3.13"), &rien).is_none());
         assert!(processus_suspendable(1, "x", Some("/home/a/x"), &rien).is_some());
     }

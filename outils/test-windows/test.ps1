@@ -1960,6 +1960,46 @@ if ($jetable -and -not $jetable.HasExited) {
     else { Bug 'Une seconde reprise ne dit pas « pas été suspendu par Vanguard »' }
     Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
 }
+# Un programme administrateur (lancé par une fenêtre UAC) : ce compte n'a pas le droit de le suspendre, l'assistant
+# élevé le fait (une fenêtre UAC à chaque commande). Une seconde suspension est refusée de l'autre côté aussi (aucune
+# suspension empilée) : une seule reprise libère chaque fil. Ce programme se termine seul après deux minutes, une fois
+# repris (ce compte ne peut pas l'arrêter). Sauté sans personne au clavier (-Auto) ou si ce script est administrateur.
+$adminR1 = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($adminR1) { Sautee 'Suspension d''un programme administrateur : ce script l''est déjà' }
+elseif (-not (Question 'Suspendre un programme administrateur (3 ou 4 fenêtres UAC à accepter) ?')) { Sautee 'Suspension d''un programme administrateur : non demandée' }
+else {
+    $court = Join-Path $dossierR1 'attente-r1-court.exe'
+    $eleve = $null
+    try {
+        if (-not (Test-Path $court)) {
+            Add-Type -OutputType ConsoleApplication -OutputAssembly $court -TypeDefinition @'
+public static class AttenteCourte { public static void Main() { System.Threading.Thread.Sleep(120000); } }
+'@
+        }
+        $eleve = Start-Process -FilePath $court -Verb RunAs -PassThru -WindowStyle Hidden
+        Start-Sleep -Seconds 1
+    } catch { Sautee "Programme administrateur non lancé (UAC refusée ?) : $($_.Exception.Message)" }
+    if ($eleve -and -not $eleve.HasExited) {
+        $id = $eleve.Id
+        LancerAvec 'blocage-suspendre-eleve' @('blocage', 'suspendre', "$id") "o`no`n"
+        $t = "$(Sortie 'blocage-suspendre-eleve')"
+        $etat = Fils-Suspendus $id
+        if ($t -match 'Suspendu\.|Suspended\.' -and $etat -eq $true) { Ok "Programme administrateur $id : suspendu par l'assistant élevé, chaque fil suspendu (effet mesuré)" }
+        else { Bug "Programme administrateur $id : pas suspendu (fils suspendus : $etat ; $((Lignes $t | Where-Object { $_ -match '✖' }) -join ' / '))" }
+        LancerAvec 'blocage-suspendre-eleve-double' @('blocage', 'suspendre', "$id") "o`no`n"
+        $t = "$(Sortie 'blocage-suspendre-eleve-double')"
+        if ($t -notmatch 'Suspendu\.|Suspended\.') { Ok 'Programme administrateur : une seconde suspension est refusée' }
+        else { Bug 'Programme administrateur : une seconde suspension est dite faite (suspension empilée ?)' }
+        Lancer 'blocage-reprendre-eleve' @('blocage', 'reprendre', "$id")
+        $t = "$(Sortie 'blocage-reprendre-eleve')"
+        if ($t -match 'Repris :|Repris par|Resumed:|Resumed by') { Ok "Programme administrateur $id : dit repris" }
+        else { Bug "Programme administrateur $id : pas « Repris » ($((Lignes $t | Where-Object { $_ -match '✖|⚠' }) -join ' / '))" }
+        $etat = Fils-Suspendus $id
+        $encore = @((Get-Process -Id $id -ErrorAction SilentlyContinue).Threads | Where-Object { $_.ThreadState -eq 'Wait' -and $_.WaitReason -eq 'Suspended' }).Count
+        if ($etat -eq $false -and $encore -eq 0) { Ok 'Programme administrateur : une seule reprise libère chaque fil, même après une seconde suspension refusée (effet mesuré)' }
+        else { Bug "Programme administrateur : reste suspendu après la reprise (Get-Process : $etat, fils suspendus : $encore) ; il ne se terminera pas seul" }
+    }
+}
 $bloc = Join-Path $dossierR1 'bloc-r1.exe'
 try {
     Copy-Item (Join-Path $env:SystemRoot 'System32\notepad.exe') $bloc -Force

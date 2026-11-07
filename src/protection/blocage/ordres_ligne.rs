@@ -60,11 +60,16 @@ pub(crate) enum Ordre {
     SuspendreProcessus {
         pid: u32,
         chemin: String,
+        /// Son départ lu avant l'ordre (Linux : 22e champ de stat ; Windows : heure de création), s'il se lit : le
+        /// processus élevé n'agit que sur ce processus-là, pas sur un autre venu sur ce numéro avec ce programme.
+        depart: Option<u64>,
     },
-    /// Lever la suspension de ce processus, seulement s'il fait toujours tourner ce programme.
+    /// Lever la suspension de ce processus, seulement s'il fait toujours tourner ce programme (depuis `depart`, s'il
+    /// est connu).
     ReprendreProcessus {
         pid: u32,
         chemin: String,
+        depart: Option<u64>,
     },
     /// Windows : la liste de blocage des pilotes vulnérables remise à sa valeur d'avant (`None` : valeur absente).
     RemettrePilotes {
@@ -144,11 +149,19 @@ impl Ordre {
                 };
                 format!("{PREFIXE}{verbe} {pid} {}", hex(chemin.as_bytes()))
             }
-            Ordre::SuspendreProcessus { pid, chemin } => {
-                format!("{PREFIXE}suspendre-processus {pid} {}", hex(chemin.as_bytes()))
+            Ordre::SuspendreProcessus { pid, chemin, depart } => {
+                format!(
+                    "{PREFIXE}suspendre-processus {pid} {}{}",
+                    hex(chemin.as_bytes()),
+                    avec_depart(*depart)
+                )
             }
-            Ordre::ReprendreProcessus { pid, chemin } => {
-                format!("{PREFIXE}reprendre-processus {pid} {}", hex(chemin.as_bytes()))
+            Ordre::ReprendreProcessus { pid, chemin, depart } => {
+                format!(
+                    "{PREFIXE}reprendre-processus {pid} {}{}",
+                    hex(chemin.as_bytes()),
+                    avec_depart(*depart)
+                )
             }
             Ordre::RemettrePilotes { avant: Some(v) } => format!("{PREFIXE}remettre-pilotes {v}"),
             Ordre::RemettrePilotes { avant: None } => format!("{PREFIXE}remettre-pilotes absent"),
@@ -190,13 +203,15 @@ pub(crate) fn analyser(ligne: &str) -> Option<Ordre> {
             chemin: chemin_de(c)?,
             demande: *verbe == "arreter-processus-demande",
         },
-        ["suspendre-processus", n, c] => Ordre::SuspendreProcessus {
+        ["suspendre-processus", n, c, d @ ..] if d.len() <= 1 => Ordre::SuspendreProcessus {
             pid: pid_de(n)?,
             chemin: chemin_de(c)?,
+            depart: depart_de(d).ok()?,
         },
-        ["reprendre-processus", n, c] => Ordre::ReprendreProcessus {
+        ["reprendre-processus", n, c, d @ ..] if d.len() <= 1 => Ordre::ReprendreProcessus {
             pid: pid_de(n)?,
             chemin: chemin_de(c)?,
+            depart: depart_de(d).ok()?,
         },
         ["remettre-pilotes", "absent"] => Ordre::RemettrePilotes { avant: None },
         // Les deux seules valeurs que cette clé a jamais eues avant un blocage de Vanguard.
@@ -204,6 +219,20 @@ pub(crate) fn analyser(ligne: &str) -> Option<Ordre> {
         _ => return None,
     };
     (ordre.ligne() == ligne).then_some(ordre)
+}
+
+/// Le départ en fin de ligne d'une suspension ou d'une reprise : absent, ou un entier non nul.
+fn avec_depart(d: Option<u64>) -> String {
+    d.map(|d| format!(" {d}")).unwrap_or_default()
+}
+
+/// Le départ relu : aucun mot (`Ok(None)`), ou un entier non nul ; autre chose, `Err` (ligne refusée).
+fn depart_de(d: &[&str]) -> Result<Option<u64>, ()> {
+    match d {
+        [] => Ok(None),
+        [t] => t.parse::<u64>().ok().filter(|d| *d != 0).map(Some).ok_or(()),
+        _ => Err(()),
+    }
 }
 
 /// Un numéro de processus : ni zéro (« tout le groupe » pour kill), ni autre chose qu'un entier.

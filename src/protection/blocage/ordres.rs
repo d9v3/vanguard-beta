@@ -72,12 +72,12 @@ impl Ordre {
                 "Stop process {pid} ({}), only if it still runs this program; if its signature cannot be read, you will see why and confirm first",
                 crate::ui::affichable(chemin)
             ),
-            Ordre::SuspendreProcessus { pid, chemin } => trf!(
+            Ordre::SuspendreProcessus { pid, chemin, .. } => trf!(
                 "Suspendre le processus {pid} ({}) sans l'arrêter, seulement s'il fait toujours tourner ce programme",
                 "Suspend process {pid} ({}) without stopping it, only if it still runs this program",
                 crate::ui::affichable(chemin)
             ),
-            Ordre::ReprendreProcessus { pid, chemin } => trf!(
+            Ordre::ReprendreProcessus { pid, chemin, .. } => trf!(
                 "Reprendre le processus {pid} ({}) suspendu, seulement s'il fait toujours tourner ce programme",
                 "Resume the suspended process {pid} ({}), only if it still runs this program",
                 crate::ui::affichable(chemin)
@@ -307,9 +307,9 @@ pub(crate) fn juger(o: &Ordre, j: &Juge) -> Option<String> {
         // Suspendre passe les mêmes gardes qu'un arrêt demandé : jamais un processus vital, ni ce qui descend d'une
         // session à distance, ni un programme signé Microsoft ; une signature illisible ne refuse pas (le geste se
         // défait, la personne l'a choisi dans le menu).
-        Ordre::SuspendreProcessus { pid, chemin } => juger_processus(*pid, chemin, true, j, true),
+        Ordre::SuspendreProcessus { pid, chemin, .. } => juger_processus(*pid, chemin, true, j, true),
         // Reprendre ne fait que lever un gel : seulement s'il fait toujours tourner ce programme, et s'il est gelé.
-        Ordre::ReprendreProcessus { pid, chemin } => juger_reprise(*pid, chemin),
+        Ordre::ReprendreProcessus { pid, chemin, depart } => juger_reprise(*pid, chemin, *depart),
         // Défaire n'est permis que pour ce que Vanguard a pu poser : il ne bloque jamais une adresse locale ou un DNS
         // public, ne ferme jamais SSH ni le Bureau à distance. Une note forgée qui viserait la règle d'un autre (ufw ne
         // distingue pas les siennes) pour rouvrir ces portes-là est refusée.
@@ -393,16 +393,29 @@ fn juger_processus(pid: u32, chemin: &str, demande: bool, j: &Juge, suspendre: b
 
 /// La garde d'une reprise : le même programme, et gelé (Linux) ; une note forgée ne fait rien d'autre que lever un
 /// gel que ce programme-là porte déjà.
-fn juger_reprise(pid: u32, chemin: &str) -> Option<String> {
+fn juger_reprise(pid: u32, chemin: &str, depart: Option<u64>) -> Option<String> {
     use super::suspension::{Lu, lire};
-    // Le même programme, et suspendu (Windows : au moins un fil) ; un processus qui ne se relit pas d'ici n'est pas
-    // repris à l'aveugle (l'assistant élevé, lui, le relit).
-    (!matches!(lire(pid, chemin, None), Lu::Gele | Lu::EnPartie)).then(|| {
-        trf!(
-            "le processus {pid} n'est plus ce programme, est fini, n'est pas suspendu ou ne se relit pas : rien n'est repris",
-            "process {pid} no longer runs this program, has ended, is not suspended or cannot be read: nothing is resumed"
-        )
-    })
+    // Le même processus (son départ, s'il est donné), le même programme, et suspendu (Windows : au moins un fil) ; un
+    // processus qui ne se relit pas d'ici n'est pas repris à l'aveugle (l'assistant élevé, lui, le relit).
+    match lire(pid, chemin, depart) {
+        Lu::Gele | Lu::EnPartie => None,
+        Lu::Fini => Some(trf!(
+            "le processus {pid} est fini : rien n'est repris",
+            "process {pid} has ended: nothing is resumed"
+        )),
+        Lu::Autre => Some(trf!(
+            "le processus {pid} n'est plus celui qui a été suspendu (un autre processus, ou un autre programme) : rien n'est repris",
+            "process {pid} is no longer the one that was suspended (another process, or another program): nothing is resumed"
+        )),
+        Lu::Tourne => Some(trf!(
+            "le processus {pid} n'est pas suspendu : rien n'est repris",
+            "process {pid} is not suspended: nothing is resumed"
+        )),
+        Lu::Illisible => Some(trf!(
+            "le processus {pid} ne se relit pas : rien n'est repris",
+            "process {pid} cannot be read: nothing is resumed"
+        )),
+    }
 }
 
 /// La garde de signature du rejugement : Microsoft lisible refuse toujours ; illisible refuse un ordre automatique,
@@ -528,16 +541,21 @@ pub(crate) fn faire(o: &Ordre, j: &Juge) -> Resultat {
         };
     }
     match o {
-        Ordre::SuspendreProcessus { pid, chemin } => {
-            // Déjà gelé : une seconde suspension Windows ne serait pas retirée par la reprise de Vanguard.
-            if super::suspension::lire(*pid, chemin, None) == super::suspension::Lu::Gele {
-                return Resultat::echec(super::suspension::deja_gele(*pid).to_string());
-            }
-            return super::suspension::suspendre_ici(*pid, chemin, None, true)
+        Ordre::SuspendreProcessus { pid, chemin, depart } => {
+            use super::suspension::{Lu, deja_gele, lire, suspendre_ici};
+            // Déjà gelé : une seconde suspension Windows ne serait pas retirée par la reprise de Vanguard. Gelé en
+            // partie (un tiers a repris des fils) : seulement les fils qui tournent, jamais un NtSuspendProcess
+            // empilé sur ceux qui portent déjà une suspension (`suspension::comptes`).
+            let premiere = match lire(*pid, chemin, *depart) {
+                Lu::Gele => return Resultat::echec(deja_gele(*pid).to_string()),
+                Lu::EnPartie => false,
+                _ => true,
+            };
+            return suspendre_ici(*pid, chemin, *depart, premiere)
                 .map_or_else(|e| Resultat::echec(e.to_string()), |_| Resultat::ok());
         }
-        Ordre::ReprendreProcessus { pid, chemin } => {
-            return super::suspension::reprendre_ici(*pid, chemin, None)
+        Ordre::ReprendreProcessus { pid, chemin, depart } => {
+            return super::suspension::reprendre_ici(*pid, chemin, *depart)
                 .map_or_else(|e| Resultat::echec(e.to_string()), |()| Resultat::ok());
         }
         _ => {}
@@ -757,10 +775,22 @@ mod tests {
             Ordre::SuspendreProcessus {
                 pid: 4242,
                 chemin: "/home/alice/.cache/x m'rig".into(),
+                depart: None,
+            },
+            Ordre::SuspendreProcessus {
+                pid: 4242,
+                chemin: "/home/alice/.cache/x m'rig".into(),
+                depart: Some(133_000_000_000_000_000),
             },
             Ordre::ReprendreProcessus {
                 pid: 7,
                 chemin: r"C:\Users\alice\AppData\Local\Temp\l'outil.exe".into(),
+                depart: None,
+            },
+            Ordre::ReprendreProcessus {
+                pid: 7,
+                chemin: r"C:\Users\alice\AppData\Local\Temp\l'outil.exe".into(),
+                depart: Some(u64::MAX),
             },
             Ordre::RemettrePilotes { avant: None },
             Ordre::RemettrePilotes { avant: Some(0) },
@@ -797,17 +827,37 @@ mod tests {
             Ordre::SuspendreProcessus {
                 pid: 1,
                 chemin: "/a b".into(),
+                depart: None,
             }
             .ligne(),
             "vanguard:suspendre-processus 1 2f612062"
         );
         assert_eq!(
+            Ordre::SuspendreProcessus {
+                pid: 1,
+                chemin: "/a b".into(),
+                depart: Some(4242),
+            }
+            .ligne(),
+            "vanguard:suspendre-processus 1 2f612062 4242"
+        );
+        assert_eq!(
             Ordre::ReprendreProcessus {
                 pid: 1,
                 chemin: "/a b".into(),
+                depart: None,
             }
             .ligne(),
             "vanguard:reprendre-processus 1 2f612062"
+        );
+        assert_eq!(
+            Ordre::ReprendreProcessus {
+                pid: 1,
+                chemin: "/a b".into(),
+                depart: Some(7),
+            }
+            .ligne(),
+            "vanguard:reprendre-processus 1 2f612062 7"
         );
     }
 
@@ -846,7 +896,15 @@ mod tests {
             "vanguard:suspendre-processus 42 7878",
             "vanguard:suspendre-processus 42 2f780d",
             "vanguard:suspendre-processus 42 2f7800",
-            "vanguard:suspendre-processus 42 2f78 1",
+            "vanguard:suspendre-processus 42 2f78 0",
+            "vanguard:suspendre-processus 42 2f78 01",
+            "vanguard:suspendre-processus 42 2f78 +1",
+            "vanguard:suspendre-processus 42 2f78 -",
+            "vanguard:suspendre-processus 42 2f78 1 2",
+            "vanguard:suspendre-processus 42 2f78 1 ",
+            "vanguard:suspendre-processus 42 2f78 18446744073709551616",
+            "vanguard:reprendre-processus 42 2f78 0",
+            "vanguard:reprendre-processus 42 2f78 1x",
             "vanguard:suspendre-processus-demande 42 2f78",
             "vanguard:reprendre-processus 42",
             "vanguard:reprendre-processus 042 2f78",
@@ -959,14 +1017,20 @@ mod tests {
             let suspendre_moi = Ordre::SuspendreProcessus {
                 pid: moi,
                 chemin: chemin.clone(),
+                depart: None,
             };
             assert!(juger(&suspendre_moi, &Juge::lire(None)).is_some());
             let suspendre_autre = Ordre::SuspendreProcessus {
                 pid: moi,
                 chemin: "/autre/programme".into(),
+                depart: None,
             };
             assert!(juger(&suspendre_autre, &juge).is_some());
-            let reprendre_moi = Ordre::ReprendreProcessus { pid: moi, chemin };
+            let reprendre_moi = Ordre::ReprendreProcessus {
+                pid: moi,
+                chemin,
+                depart: None,
+            };
             if cfg!(target_os = "linux") {
                 assert!(juger(&reprendre_moi, &juge).is_some(), "pas gelé");
             }
@@ -1059,6 +1123,7 @@ mod tests {
             powershell(&Ordre::SuspendreProcessus {
                 pid: 4242,
                 chemin: r"C:\Users\alice\l'outil.exe".into(),
+                depart: None,
             })
             .is_none()
         );

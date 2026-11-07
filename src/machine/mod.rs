@@ -1554,6 +1554,12 @@ pub(crate) fn appliquer_sans_noter(commandes: &[String]) -> (bool, Vec<String>) 
     (resultats == [true], notes.into_iter().next().unwrap_or_default())
 }
 
+/// Comme `appliquer_sans_noter`, pour plusieurs groupes indépendants en une seule demande de droits : la réussite et
+/// les notes de chacun, dans l'ordre reçu.
+pub(crate) fn appliquer_chacune_sans_noter(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
+    lancer_chacune(correctifs)
+}
+
 /// La ligne notée d'une commande faite : la commande, et ce qu'il faut en garder (valeur d'avant, précision, raison
 /// de l'échec).
 #[cfg(unix)]

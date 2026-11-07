@@ -425,11 +425,33 @@ pub(crate) fn etat_si(
     use crate::protection::blocage::suspension::Lu;
     /// ERROR_INVALID_PARAMETER : plus aucun processus à ce numéro.
     const AUCUN: i32 = 87;
+    // Vanguard lui-même (un PID donné à la main) : il tourne, et une passe sur ses propres fils suspendrait celui qui
+    // compte (blocage sans fin).
+    if processus == std::process::id() {
+        return Lu::Tourne;
+    }
     let tenu = match Tenu::ouvrir_avec(processus, SUSPENSION_ET_LECTURE) {
         Ok(t) => t,
         Err(e) if e.raw_os_error() == Some(AUCUN) => return Lu::Fini,
-        // Refusé : un processus élevé ou d'un autre compte, peut-être toujours suspendu.
-        Err(_) => return Lu::Illisible,
+        // Refusé : un processus élevé, d'un autre compte ou de SYSTEM, peut-être toujours suspendu. Ou un autre venu
+        // sur ce numéro : la poignée limitée (chemin, création), puis le nom de la liste des processus, le disent.
+        Err(_) => {
+            let limitee = Tenu::ouvrir(processus).ok();
+            let chemin_lu = limitee.as_ref().and_then(Tenu::chemin);
+            let creation_lue = limitee.as_ref().and_then(Tenu::creation);
+            let nom = if chemin_lu.is_none() {
+                liste().into_iter().find(|p| p.pid == processus).map(|p| p.nom)
+            } else {
+                None
+            };
+            return crate::protection::blocage::suspension::sans_droit_de_suspendre(
+                attendu,
+                creation,
+                chemin_lu.as_deref(),
+                creation_lue,
+                nom.as_deref(),
+            );
+        }
     };
     match tenu.chemin() {
         None => return Lu::Illisible,
