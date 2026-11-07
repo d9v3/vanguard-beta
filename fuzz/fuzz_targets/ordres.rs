@@ -15,7 +15,7 @@ mod ordres_ligne;
 #[path = "../../src/machine/gestes_unix.rs"]
 mod gestes_unix;
 
-/// Ce qu'ordres_ligne.rs demande à `super::pare_feu` : les quatre pare-feu de
+/// Ce qu'ordres_ligne.rs demande à `super::pare_feu` : les trois pare-feu de
 /// src/protection/blocage/pare_feu.rs, sans le reste du module (qui lance des commandes).
 mod pare_feu {
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -23,7 +23,6 @@ mod pare_feu {
         Ufw,
         Nftables,
         Windows,
-        Pf,
     }
 }
 

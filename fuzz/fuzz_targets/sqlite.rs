@@ -26,6 +26,10 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
         {
             // Chaque ligne a autant de valeurs que de colonnes demandées : jamais une de plus, jamais décalée.
             assert!(lignes.iter().all(|l| l.len() == 5));
+            // Les valeurs telles que les lit Linux (lastlog2, wtmpdb) : un entier ou un texte, jamais une panique.
+            for v in lignes.iter().flatten() {
+                let _ = (sqlite::Valeur::entier(v), sqlite::Valeur::texte(v));
+            }
         }
     }
 });
