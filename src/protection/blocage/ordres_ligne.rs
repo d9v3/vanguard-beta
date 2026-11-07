@@ -86,6 +86,11 @@ pub(crate) enum Ordre {
         chemin: String,
         depart: u64,
     },
+    /// Windows : retirer les deux règles de coupure de Vanguard sur ce fichier, sans processus (retrouvées par leur
+    /// nom dans le Pare-feu quand la liste de Vanguard ne les connaît plus).
+    RendreReseauFichier {
+        chemin: String,
+    },
     /// Windows : la liste de blocage des pilotes vulnérables remise à sa valeur d'avant (`None` : valeur absente).
     RemettrePilotes {
         avant: Option<u32>,
@@ -190,6 +195,9 @@ impl Ordre {
                     hex(chemin.as_bytes())
                 )
             }
+            Ordre::RendreReseauFichier { chemin } => {
+                format!("{PREFIXE}rendre-reseau-fichier {}", hex(chemin.as_bytes()))
+            }
             Ordre::RemettrePilotes { avant: Some(v) } => format!("{PREFIXE}remettre-pilotes {v}"),
             Ordre::RemettrePilotes { avant: None } => format!("{PREFIXE}remettre-pilotes absent"),
         }
@@ -250,6 +258,7 @@ pub(crate) fn analyser(ligne: &str) -> Option<Ordre> {
             chemin: chemin_de(c)?,
             depart: depart_de(&[d]).ok()??,
         },
+        ["rendre-reseau-fichier", c] => Ordre::RendreReseauFichier { chemin: chemin_de(c)? },
         ["remettre-pilotes", "absent"] => Ordre::RemettrePilotes { avant: None },
         // Les deux seules valeurs que cette clé a jamais eues avant un blocage de Vanguard.
         ["remettre-pilotes", v @ ("0" | "1")] => Ordre::RemettrePilotes { avant: v.parse().ok() },

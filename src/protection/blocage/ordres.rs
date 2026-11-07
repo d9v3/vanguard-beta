@@ -102,6 +102,11 @@ impl Ordre {
                 "Give the network back to process {pid} ({}) that Vanguard cut",
                 crate::ui::affichable(chemin)
             ),
+            Ordre::RendreReseauFichier { chemin } => trf!(
+                "Rendre le réseau au programme {} : retirer les deux règles de Vanguard qui le coupent encore, que sa liste ne connaît plus",
+                "Give the network back to program {}: remove the two Vanguard rules still cutting it, which its list no longer knows",
+                crate::ui::affichable(chemin)
+            ),
             Ordre::RemettrePilotes { avant: Some(v) } => trf!(
                 "Remettre la liste de blocage des pilotes vulnérables comme avant (VulnerableDriverBlocklistEnable = {v})",
                 "Put the vulnerable driver blocklist back as before (VulnerableDriverBlocklistEnable = {v})"
@@ -134,7 +139,7 @@ impl Ordre {
             | Ordre::ReprendreProcessus { .. }
             | Ordre::CouperReseauProgramme { .. }
             | Ordre::RendreReseauProgramme { .. } => true,
-            Ordre::RemettrePilotes { .. } => os == Os::Windows,
+            Ordre::RemettrePilotes { .. } | Ordre::RendreReseauFichier { .. } => os == Os::Windows,
         }
     }
 }
@@ -336,7 +341,7 @@ pub(crate) fn juger(o: &Ordre, j: &Juge) -> Option<String> {
         Ordre::CouperReseauProgramme { pid, chemin, depart } => juger_coupure(*pid, chemin, *depart, j),
         // Rendre ne fait que lever une coupure : sous Linux, seulement celle que l'assistant a notée lui-même (dans
         // /run, à root), jamais d'après la ligne ; sous Windows, seulement les règles au nom de Vanguard.
-        Ordre::RendreReseauProgramme { .. } => None,
+        Ordre::RendreReseauProgramme { .. } | Ordre::RendreReseauFichier { .. } => None,
         // Reprendre ne fait que lever un gel : seulement s'il fait toujours tourner ce programme, et s'il est gelé.
         Ordre::ReprendreProcessus { pid, chemin, depart } => juger_reprise(*pid, chemin, *depart),
         // Défaire n'est permis que pour ce que Vanguard a pu poser : il ne bloque jamais une adresse locale ou un DNS
@@ -629,6 +634,7 @@ pub(crate) fn faire(o: &Ordre, j: &Juge) -> Resultat {
         Ordre::RendreReseauProgramme { pid, chemin, depart } => {
             return super::coupure::rendre_ici(*pid, chemin, *depart);
         }
+        Ordre::RendreReseauFichier { chemin } => return super::coupure::rendre_fichier_ici(chemin),
         _ => {}
     }
     #[cfg(target_os = "linux")]
@@ -740,6 +746,7 @@ mod linux {
             | Ordre::ReprendreProcessus { .. }
             | Ordre::CouperReseauProgramme { .. }
             | Ordre::RendreReseauProgramme { .. }
+            | Ordre::RendreReseauFichier { .. }
             | Ordre::RemettrePilotes { .. } => {
                 Resultat::echec(tr!("ordre d'un autre système", "order from another system"))
             }
@@ -875,6 +882,9 @@ mod tests {
                 chemin: r"C:\Users\alice\AppData\Local\Temp\l'outil.exe".into(),
                 depart: u64::MAX,
             },
+            Ordre::RendreReseauFichier {
+                chemin: r"C:\Users\alice\AppData\Local\Temp\l'outil.exe".into(),
+            },
             Ordre::RemettrePilotes { avant: None },
             Ordre::RemettrePilotes { avant: Some(0) },
         ]
@@ -959,6 +969,10 @@ mod tests {
             }
             .ligne(),
             "vanguard:rendre-reseau-programme 1 2f612062 7"
+        );
+        assert_eq!(
+            Ordre::RendreReseauFichier { chemin: "/a b".into() }.ligne(),
+            "vanguard:rendre-reseau-fichier 2f612062"
         );
     }
 
@@ -1286,6 +1300,9 @@ mod tests {
                 pid: 4242,
                 chemin: r"C:\Users\alice\l'outil.exe".into(),
                 depart: 1,
+            },
+            Ordre::RendreReseauFichier {
+                chemin: r"C:\Users\alice\l'outil.exe".into(),
             },
         ] {
             assert!(powershell(&o).is_none());

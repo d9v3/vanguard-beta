@@ -372,6 +372,7 @@ fn couper_le_reseau_par_pid(mot: &str) {
         chemin: chemin.clone(),
         depart,
     };
+    // Lus une fois : le jugement d'ici et celui de `coupure::couper` sur les mêmes processus protégés.
     let intouchables = crate::machine::chasse::en_marche().map_or_else(HashSet::new, |(_, i)| i);
     if let Some(raison) = ordres::juger(&o, &ordres::Juge::lire(None).avec(&intouchables)) {
         afficher_aligne(
@@ -390,7 +391,6 @@ fn couper_le_reseau_par_pid(mot: &str) {
         "Cut from the network by hand: {}",
         chemin
     );
-    let intouchables = crate::machine::chasse::en_marche().map_or_else(HashSet::new, |(_, i)| i);
     match coupure::couper(
         pid,
         &chemin,
@@ -399,17 +399,31 @@ fn couper_le_reseau_par_pid(mot: &str) {
         &intouchables,
         crate::modele::evenement::Source::Utilisateur,
     ) {
-        Ok(precision) => dire_coupe(pid, &precision),
+        Ok(c) => dire_coupe(pid, &c),
         Err(e) => trp!("  ✖ {e}", "  ✖ {e}"),
     }
 }
 
-/// La coupure faite : ce que l'élevé en a dit (connexions coupées, combien de temps), et comment la lever.
-fn dire_coupe(pid: u32, precision: &str) {
-    let precision = if precision.is_empty() {
+/// La coupure faite : ce que l'élevé en a dit (connexions coupées, combien de temps), et comment la lever. Partielle
+/// (les connexions déjà ouvertes non coupées) : jamais un « ✔ » ; Bloquer, qui arrête le programme, les ferme.
+fn dire_coupe(pid: u32, c: &coupure::Coupee) {
+    if c.partielle {
+        afficher_aligne(
+            &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
+            &trf!(
+                "Réseau coupé en partie ({}). Ce qu'il a déjà ouvert continue : Bloquer (« vanguard blocage chercher », ou le menu de la menace) l'arrête et ferme tout. Pour lui rendre le réseau : vanguard blocage rendre-reseau {pid}.",
+                "Network partly cut ({}). What it already opened goes on: Block (“vanguard blocking search”, or the threat's menu) stops it and closes everything. To give the network back: vanguard blocking restore-network {pid}.",
+                c.precision
+            ),
+            4,
+            "",
+        );
+        return;
+    }
+    let precision = if c.precision.is_empty() {
         String::new()
     } else {
-        format!(" ({precision})")
+        format!(" ({})", c.precision)
     };
     afficher_aligne(
         &format!("  {VERT}✔{RESET} "),
@@ -460,7 +474,7 @@ fn confirmer_la_coupure(pid: u32, nom: &str, chemin: &str) -> bool {
 /// `vanguard blocage rendre-reseau [<PID>]` : ce que Vanguard a coupé (sa liste scellée), ou un PID relu ici ;
 /// l'élevé ne lève que ce qu'il a posé lui-même, et rien n'est dit rendu qui ne l'ait été.
 fn rendre_le_reseau(pid: Option<u32>) {
-    let (rendus, refus) = coupure::rendre(pid);
+    let (rendus, refus) = coupure::rendre(pid, crate::modele::evenement::Source::Utilisateur);
     if let Some(raison) = refus {
         afficher_aligne(
             &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
@@ -488,7 +502,15 @@ fn rendre_le_reseau(pid: Option<u32>) {
         return;
     }
     for r in rendus {
-        let quoi = format!("{} (PID {})", affichable(&r.chemin), r.pid);
+        let quoi = match r.pid {
+            Some(p) => format!("{} (PID {p})", affichable(&r.chemin)),
+            None => trf!(
+                "{} (règles du Pare-feu retrouvées par leur nom)",
+                "{} (Firewall rules found by their name)",
+                affichable(&r.chemin)
+            ),
+        };
+        let reessai = r.pid.map(|p| format!(" {p}")).unwrap_or_default();
         match r.issue {
             Ok(None) => trp!(
                 "  {VERT}✔{RESET} Rendu : {quoi}.",
@@ -501,9 +523,8 @@ fn rendre_le_reseau(pid: Option<u32>) {
                 "",
             ),
             Err(e) => trp!(
-                "  ✖ {quoi} : {e}. Il reste noté ; « vanguard blocage rendre-reseau {} » réessaie.",
-                "  ✖ {quoi}: {e}. It stays noted; “vanguard blocking restore-network {}” tries again.",
-                r.pid
+                "  ✖ {quoi} : {e}. Il reste noté ; « vanguard blocage rendre-reseau{reessai} » réessaie.",
+                "  ✖ {quoi}: {e}. It stays noted; “vanguard blocking restore-network{reessai}” tries again."
             ),
         }
     }
@@ -2110,7 +2131,7 @@ fn couper_le_reseau_de_la_menace(m: &Menace) -> bool {
         &intouchables,
         crate::modele::evenement::Source::Utilisateur,
     ) {
-        Ok(precision) => dire_coupe(*pid, &precision),
+        Ok(c) => dire_coupe(*pid, &c),
         Err(e) => trp!("  ✖ {e}", "  ✖ {e}"),
     }
     false

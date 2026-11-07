@@ -63,6 +63,10 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                 assert!(!chemin.is_empty() && chemin.len() <= ordres_ligne::CHEMIN_MAX);
                 assert!(!chemin.contains(['\0', '\n', '\r']));
             }
+            ordres_ligne::Ordre::RendreReseauFichier { chemin } => {
+                assert!(!chemin.is_empty() && chemin.len() <= ordres_ligne::CHEMIN_MAX);
+                assert!(!chemin.contains(['\0', '\n', '\r']));
+            }
             _ => {}
         }
     }

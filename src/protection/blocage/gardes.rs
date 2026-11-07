@@ -405,7 +405,7 @@ pub(crate) fn role_a_confirmer(nom: &str, chemin: &str, uid: Option<u32>) -> Opt
 /// Linux : les gardes du gel (`processus_suspendable` : ce que R1 refuse de geler ne se coupe pas non plus, le bus
 /// système et polkit compris, par où passe le retour) ; un programme du système passe, montré et confirmé
 /// (`role_a_confirmer`). Windows : celles de l'arrêt (un programme du système est refusé : la règle vise le fichier,
-/// tous ses processus, svchost compris). Partout : jamais Vanguard (son fichier, pas seulement ses processus), ni un
+/// tous ses processus, svchost compris ; svchost reconnu à son dossier, pas à son nom). Partout : jamais Vanguard (son fichier, pas seulement ses processus), ni un
 /// programme d'accès à distance ou de VPN (la session en dépend) ; sous Windows, jamais le programme qui écoute sur le
 /// port du Bureau à distance (`porteurs_du_bureau` : ses noms, sans « .exe »).
 pub(crate) fn reseau_intouchable(
@@ -432,6 +432,15 @@ pub(crate) fn reseau_intouchable(
             ));
         }
     }
+    // svchost se reconnaît à son dossier (System32, SysWOW64), pas à son nom : un « svchost.exe » posé ailleurs (un
+    // dossier du compte) n'est pas celui de Windows et se coupe comme un autre programme ; son chemin reste jugé.
+    let faux_svchost =
+        os == Os::Windows && chemin.is_some_and(|c| nom_simple(c) == "svchost" && !svchost_de_windows(c));
+    let nom = if faux_svchost && nom_simple(nom) == "svchost" {
+        ""
+    } else {
+        nom
+    };
     #[cfg(target_os = "linux")]
     let premiere = processus_suspendable(pid, nom, chemin, intouchables);
     #[cfg(not(target_os = "linux"))]
@@ -453,14 +462,25 @@ pub(crate) fn reseau_intouchable(
     }
     let chemin = chemin?;
     let (simple, fichier) = (nom_simple(nom), nom_simple(chemin));
-    let du_bureau = |n: &str| n == "svchost" || porteurs_du_bureau.iter().any(|p| nom_simple(p) == n);
-    if os == Os::Windows && (du_bureau(&simple) || du_bureau(&fichier)) {
+    let du_bureau =
+        |n: &str| !(faux_svchost && n == "svchost") && porteurs_du_bureau.iter().any(|p| nom_simple(p) == n);
+    if os == Os::Windows && (svchost_de_windows(chemin) || du_bureau(&simple) || du_bureau(&fichier)) {
         return Some(tr!(
             "programme qui porte le Bureau à distance (port 3389 ou le sien) : son réseau n'est jamais coupé",
             "program that carries Remote Desktop (port 3389 or its own): its network is never cut"
         ));
     }
     None
+}
+
+/// `chemin` est-il le svchost de Windows (`<lecteur>:\Windows\System32\svchost.exe` ou `SysWOW64`, casse ignorée) ?
+fn svchost_de_windows(chemin: &str) -> bool {
+    let c = chemin.to_lowercase().replace('/', "\\");
+    let c = c.strip_prefix(r"\\?\").unwrap_or(&c);
+    let sans_lecteur = c
+        .get(1..)
+        .filter(|_| c.chars().next().is_some_and(|l| l.is_ascii_alphabetic()));
+    sans_lecteur.is_some_and(|r| r == r":\windows\system32\svchost.exe" || r == r":\windows\syswow64\svchost.exe")
 }
 
 /// `chemin` est-il le fichier de ce Vanguard (Windows : sans tenir compte de la casse) ?
@@ -3261,8 +3281,8 @@ mod tests {
     }
 
     /// Couper le réseau (R3) : jamais Vanguard lui-même (son nom ou son fichier), ni un programme dont dépend une
-    /// session à distance (sshd, xrdp), ni ce que Vanguard protège ; sous Windows, ni svchost ni ce qui porte le Bureau
-    /// à distance (3389 ou son port). Un programme du compte, si.
+    /// session à distance (sshd, xrdp), ni ce que Vanguard protège ; sous Windows, ni le svchost de Windows ni ce qui
+    /// porte le Bureau à distance (3389 ou son port). Un programme du compte, si.
     #[test]
     fn le_reseau_de_vanguard_et_des_sessions_n_est_jamais_coupe() {
         let rien = HashSet::new();
@@ -3306,8 +3326,25 @@ mod tests {
         assert!(reseau_intouchable(4000, "outil.exe", Some(outil), &rien, w, &[]).is_none());
         let porteur = ["Outil.exe".to_string()];
         assert!(reseau_intouchable(4000, "outil.exe", Some(outil), &rien, w, &porteur).is_some());
-        let svchost = r"C:\Users\a\svchost.exe";
-        assert!(reseau_intouchable(4000, "svchost.exe", Some(svchost), &rien, w, &[]).is_some());
+        // svchost se reconnaît à son dossier : celui de Windows, jamais ; un « svchost.exe » du compte, si (son nom
+        // ne le protège pas, même vu sur le port du Bureau à distance, que tient le vrai).
+        for vrai in [
+            r"C:\Windows\System32\svchost.exe",
+            r"c:\windows\SysWOW64\SVCHOST.EXE",
+            r"\\?\D:\Windows\system32\svchost.exe",
+        ] {
+            assert!(
+                reseau_intouchable(4000, "svchost.exe", Some(vrai), &rien, w, &[]).is_some(),
+                "{vrai}"
+            );
+        }
+        let faux = r"C:\Users\a\svchost.exe";
+        assert!(reseau_intouchable(4000, "svchost.exe", Some(faux), &rien, w, &[]).is_none());
+        let svchost_au_bureau = ["svchost".to_string()];
+        assert!(reseau_intouchable(4000, "svchost.exe", Some(faux), &rien, w, &svchost_au_bureau).is_none());
+        assert!(svchost_de_windows(r"C:\Windows\System32\svchost.exe"));
+        assert!(!svchost_de_windows(r"C:\Windows\System32\x\svchost.exe"));
+        assert!(!svchost_de_windows(r"C:\Users\a\Windows\System32\svchost.exe"));
     }
 
     #[cfg(target_os = "linux")]

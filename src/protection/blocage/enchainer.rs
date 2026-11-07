@@ -319,16 +319,23 @@ fn couper_reseau(m: &Menace, ctx: &Contexte, automatique: bool) -> Issue {
         &ctx.intouchables,
         source,
     ) {
-        Ok(precision) => {
+        Ok(c) => {
             let rendre = trf!(
                 "« vanguard blocage rendre-reseau {pid} » le lui rend",
                 "“vanguard blocking restore-network {pid}” gives it back"
             );
-            Issue::Fait(if precision.is_empty() {
+            let texte = if c.precision.is_empty() {
                 rendre
             } else {
-                format!("{precision} ; {rendre}")
-            })
+                format!("{} ; {rendre}", c.precision)
+            };
+            // Partielle : la règle reste (les nouvelles connexions coupées), mais ce n'est pas fait ; Bloquer, s'il
+            // suit dans la suite, ferme le reste en arrêtant le programme.
+            if c.partielle {
+                Issue::Echoue(texte)
+            } else {
+                Issue::Fait(texte)
+            }
         }
         Err(e) => Issue::Echoue(e.to_string()),
     }

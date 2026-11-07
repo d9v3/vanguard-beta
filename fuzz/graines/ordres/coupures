@@ -10,3 +10,6 @@ vanguard:couper-reseau-programme 42 2F78 5
 vanguard:rendre-reseau-programme 42 2f78 5 6
 vanguard:couper-reseau-programme 42 7878 5
 vanguard:couper-reseau-programme 42 2f78 18446744073709551616
+vanguard:rendre-reseau-fichier 433a5c55736572735c782e657865
+vanguard:rendre-reseau-fichier 7878
+vanguard:rendre-reseau-fichier 433a5c55736572735c782e657865 5

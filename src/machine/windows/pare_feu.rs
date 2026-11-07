@@ -124,7 +124,7 @@ fn conforme(regle: &INetFwRule, v: &Voulue) -> bool {
                         && tout(regle.LocalPorts())
                         && regle
                             .ApplicationName()
-                            .is_ok_and(|a| a.to_string().eq_ignore_ascii_case(programme))
+                            .is_ok_and(|a| meme_programme(&a.to_string(), programme))
                 }
                 (Some(ip), _) => {
                     regle.Protocol().is_ok_and(|x| x == NET_FW_IP_PROTOCOL_ANY.0)
@@ -138,6 +138,34 @@ fn conforme(regle: &INetFwRule, v: &Voulue) -> bool {
             };
         bloque && active && sens && vise
     }
+}
+
+/// Le programme relu d'une règle est-il celui posé ? Sans tenir compte de la casse, des « / » ni du préfixe « \\?\ »,
+/// et avec les variables d'environnement que le Pare-feu peut y mettre (« %SystemDrive%\… ») développées : une
+/// écriture différente du même fichier n'est pas un écart (elle ferait retirer une règle juste) ; un autre fichier,
+/// si.
+fn meme_programme(relu: &str, pose: &str) -> bool {
+    let windows = super::environnement::dossier_windows()
+        .map_or_else(|| r"C:\Windows".to_string(), |d| d.to_string_lossy().into_owned());
+    meme_programme_selon(relu, pose, &windows)
+}
+
+/// `meme_programme`, le dossier de Windows donné (les essais le posent).
+fn meme_programme_selon(relu: &str, pose: &str, windows: &str) -> bool {
+    let lecteur = windows.get(..2).unwrap_or("C:");
+    let forme = |c: &str| {
+        let c = crate::machine::vidage::developper_windows(c, windows);
+        let variable = "%SystemDrive%";
+        let c = match c.get(..variable.len()) {
+            Some(tete) if tete.eq_ignore_ascii_case(variable) => {
+                format!("{lecteur}{}", c.get(variable.len()..).unwrap_or_default())
+            }
+            _ => c,
+        }
+        .replace('/', "\\");
+        c.strip_prefix(r"\\?\").unwrap_or(&c).to_lowercase()
+    };
+    forme(relu) == forme(pose)
 }
 
 /// RemoteAddresses relu (« 203.0.113.7/255.255.255.255 », ou l'adresse seule) désigne-t-il cette adresse, et elle
@@ -255,12 +283,19 @@ fn poser(v: Voulue) -> Resultat {
         }
         match trouver(r, &v.nom) {
             Some(relue) if conforme(&relue, &v) => Resultat::ok(),
-            _ => {
+            relue => {
+                // Le programme relu, dit : une écriture du chemin que le Pare-feu changerait se verrait ainsi.
+                let lu = relue
+                    .filter(|_| v.programme.is_some())
+                    // SAFETY: objet COM valide ; la lecture rend une copie.
+                    .and_then(|regle| unsafe { regle.ApplicationName() }.ok())
+                    .map(|a| trf!(" (programme relu : {a})", " (program read back: {a})"))
+                    .unwrap_or_default();
                 // Comptée en échec, donc sans note pour l'annuler : retirée aussitôt.
                 let _ = retirer_toutes(r, &v.nom);
-                Resultat::echec(tr!(
-                    "la règle relue n'est pas celle posée : rien n'est compté comme bloqué",
-                    "the rule read back is not the one added: nothing is counted as blocked"
+                Resultat::echec(trf!(
+                    "la règle relue n'est pas celle posée{lu} : rien n'est compté comme bloqué",
+                    "the rule read back is not the one added{lu}: nothing is counted as blocked"
                 ))
             }
         }
@@ -332,11 +367,33 @@ pub(crate) fn couper_programme(chemin: &str) -> Resultat {
     entree
 }
 
-/// Retire les deux règles de Vanguard qui coupent ce programme (et rien d'autre : leur nom est celui de Vanguard).
+/// Retire les deux règles de Vanguard qui coupent ce programme (et rien d'autre : leur nom est celui de Vanguard) :
+/// toujours les deux tentées, et chacune dite si elle reste.
 pub(crate) fn rendre_programme(chemin: &str) -> Resultat {
     let sortie = enlever(crate::protection::blocage::coupure::nom_de_regle(chemin, true));
     let entree = enlever(crate::protection::blocage::coupure::nom_de_regle(chemin, false));
-    if sortie.reussi { entree } else { sortie }
+    match (sortie.reussi, entree.reussi) {
+        (true, true) if sortie.note.is_some() && entree.note.is_some() => {
+            Resultat::ok_note(tr!("déjà retirées", "already removed"))
+        }
+        (true, true) => Resultat::ok(),
+        (false, true) => Resultat::echec(trf!(
+            "règle sortante non retirée ({}) ; l'entrante l'est",
+            "outbound rule not removed ({}); the inbound one is",
+            sortie.raison
+        )),
+        (true, false) => Resultat::echec(trf!(
+            "règle entrante non retirée ({}) ; la sortante l'est",
+            "inbound rule not removed ({}); the outbound one is",
+            entree.raison
+        )),
+        (false, false) => Resultat::echec(trf!(
+            "règle sortante non retirée ({}) ; règle entrante non retirée ({})",
+            "outbound rule not removed ({}); inbound rule not removed ({})",
+            sortie.raison,
+            entree.raison
+        )),
+    }
 }
 
 // ------------------------------------------------------------- les actes
@@ -1285,6 +1342,37 @@ fn domaine() -> Resultat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Le programme d'une règle de coupure relu autrement écrit (casse, « / », « \\?\ », %SystemDrive%, %SystemRoot%)
+    /// reste le même fichier ; un autre fichier, non.
+    #[test]
+    fn programme_relu_autrement_ecrit() {
+        let w = r"D:\Windows";
+        let pose = r"D:\Users\alice\outil.exe";
+        for relu in [
+            r"D:\Users\alice\outil.exe",
+            r"d:\users\ALICE\Outil.EXE",
+            "D:/Users/alice/outil.exe",
+            r"\\?\D:\Users\alice\outil.exe",
+            r"%SystemDrive%\Users\alice\outil.exe",
+            r"%systemdrive%\Users\alice\outil.exe",
+        ] {
+            assert!(meme_programme_selon(relu, pose, w), "{relu}");
+        }
+        assert!(meme_programme_selon(
+            r"%SystemRoot%\System32\x.exe",
+            r"D:\Windows\System32\x.exe",
+            w
+        ));
+        for autre in [
+            r"C:\Users\alice\outil.exe",
+            r"D:\Users\alice\outil.exe.bak",
+            r"%SystemRoot%\Users\alice\outil.exe",
+            "",
+        ] {
+            assert!(!meme_programme_selon(autre, pose, w), "{autre}");
+        }
+    }
 
     #[test]
     fn noms_et_adresses_relues() {
