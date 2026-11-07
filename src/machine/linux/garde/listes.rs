@@ -11,12 +11,13 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 
+use std::fs::File;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use md5::Digest;
 
-use crate::protection::clamav::hashes::ListeSha256;
+pub(crate) use crate::protection::clamav::hashes::ListeSha256;
 
 use super::decision::Certitude;
 
@@ -103,33 +104,101 @@ pub(crate) fn hacher(lu: impl Read) -> Option<Hache> {
     })
 }
 
-/// Relit une liste du compte : sans suivre de lien, sans attendre (un tube), un fichier ordinaire à ce compte, pas
-/// trop gros, bien formé. `None` : absente ou refusée (la raison est rendue pour etat.json).
-pub(crate) fn lire(chemin: &Path, compte: u32) -> Result<ListeSha256, String> {
+/// L'identité d'une liste sur le disque (fstat de son descripteur) : mtime (s, ns), inode, taille. La même : pas
+/// relue.
+pub(crate) type Signature = (i64, i64, u64, u64);
+
+/// Le dossier de départ des ouvertures dans le dossier des listes : son premier dossier parent qui est au compte (son
+/// dossier personnel ; ceux du dessus sont à root, le compte ne peut pas les remplacer), ouvert sans le suivre s'il
+/// est un lien, sur un système de fichiers local. Rend aussi le chemin des listes sous lui.
+pub(crate) fn depart(dossier: &Path, compte: u32) -> Result<(File, PathBuf), String> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let parents: Vec<&Path> = dossier.ancestors().collect();
+    let personnel = parents
+        .iter()
+        .rev()
+        .find(|d| std::fs::symlink_metadata(d).is_ok_and(|m| m.uid() == compte))
+        .ok_or_else(|| format!("{}: aucun dossier parent au compte {compte}", dossier.display()))?;
     let f = std::fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(chemin)
-        .map_err(|e| format!("{}: {e}", chemin.display()))?;
+        .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(personnel)
+        .map_err(|e| format!("{}: {e}", personnel.display()))?;
+    let m = f.metadata().map_err(|e| e.to_string())?;
+    if m.uid() != compte {
+        return Err(format!("{}: n'est pas au compte {compte}", personnel.display()));
+    }
+    verifier_local(&f, personnel)?;
+    let relatif = dossier
+        .strip_prefix(personnel)
+        .map_err(|e| e.to_string())?
+        .to_path_buf();
+    Ok((f, relatif))
+}
+
+/// Le système de fichiers de `f` est-il local (la liste blanche des marques, L2) ?
+fn verifier_local(f: &File, chemin: &Path) -> Result<(), String> {
+    use std::os::fd::AsFd;
+    let magie = super::ouvrir::type_fs(f.as_fd()).map_err(|e| format!("{}: fstatfs: {e}", chemin.display()))?;
+    match crate::machine::linux::fanotify::lecture::genre_de_magie(magie) {
+        Some(g) if crate::machine::linux::fanotify::lecture::local(g) => Ok(()),
+        _ => Err(format!(
+            "{}: système de fichiers {magie:#x} non local",
+            chemin.display()
+        )),
+    }
+}
+
+/// Relit une liste du compte, `relatif` sous `depart` (`depart`) : par openat2 (sans lien, sans remonter, sans
+/// changer de système de fichiers), sans attendre (un tube), un fichier ordinaire à ce compte, sur un système de
+/// fichiers local, pas trop gros, bien formé. `Ok((signature, None))` : la même qu'`avant`, pas relue. `Err` : absente
+/// ou refusée (la raison est rendue pour etat.json). Bloquer reste possible (un disque qui ne répond plus) : le garde
+/// l'appelle dans un fil à part.
+pub(crate) fn lire_sous(
+    depart: &File,
+    relatif: &Path,
+    compte: u32,
+    avant: Option<Signature>,
+) -> Result<(Signature, Option<ListeSha256>), String> {
+    use std::os::fd::AsFd;
+    use std::os::unix::fs::MetadataExt;
+    let montre = relatif.display();
+    let f = super::ouvrir::sous(depart.as_fd(), relatif, false).map_err(|e| format!("{montre}: {e}"))?;
     let m = f.metadata().map_err(|e| e.to_string())?;
     if !m.is_file() {
-        return Err(format!("{}: pas un fichier ordinaire", chemin.display()));
+        return Err(format!("{montre}: pas un fichier ordinaire"));
     }
     if m.uid() != compte {
-        return Err(format!("{}: n'est pas au compte {compte}", chemin.display()));
+        return Err(format!("{montre}: n'est pas au compte {compte}"));
     }
     if m.len() > TAILLE_MAX {
-        return Err(format!("{}: plus de {TAILLE_MAX} octets", chemin.display()));
+        return Err(format!("{montre}: plus de {TAILLE_MAX} octets"));
+    }
+    verifier_local(&f, relatif)?;
+    let signature = (m.mtime(), m.mtime_nsec(), m.ino(), m.len());
+    if avant == Some(signature) {
+        return Ok((signature, None));
     }
     let mut octets = Vec::new();
     f.take(TAILLE_MAX.saturating_add(1))
         .read_to_end(&mut octets)
         .map_err(|e| e.to_string())?;
     if u64::try_from(octets.len()).unwrap_or(u64::MAX) > TAILLE_MAX {
-        return Err(format!("{}: a grandi pendant la lecture", chemin.display()));
+        return Err(format!("{montre}: a grandi pendant la lecture"));
     }
-    ListeSha256::lire(octets).ok_or_else(|| format!("{}: pas une liste triée de 32 octets", chemin.display()))
+    let l = ListeSha256::lire(octets).ok_or_else(|| format!("{montre}: pas une liste triée de 32 octets"))?;
+    Ok((signature, Some(l)))
+}
+
+/// Relit une liste par son chemin complet (`depart` puis `lire_sous`).
+#[cfg(test)]
+pub(crate) fn lire(chemin: &Path, compte: u32) -> Result<ListeSha256, String> {
+    let dossier = chemin.parent().ok_or("sans dossier")?;
+    let nom = chemin.file_name().ok_or("sans nom")?;
+    let (d, relatif) = depart(dossier, compte)?;
+    lire_sous(&d, &relatif.join(nom), compte, None)?
+        .1
+        .ok_or_else(|| "pas relue".to_string())
 }
 
 #[allow(
@@ -189,11 +258,39 @@ mod tests {
     #[test]
     fn listes_du_compte_relues_avec_prudence() {
         use std::os::unix::fs::MetadataExt;
-        let d = crate::essais::Jetable::nouveau("garde-listes");
-        let moi = std::fs::metadata(&*d).unwrap().uid();
+        let jetable = crate::essais::Jetable::nouveau("garde-listes");
+        // Le chemin réel : un lien sur le chemin (target, ici) est refusé, comme pour le garde.
+        let d = jetable.canonicalize().unwrap();
+        let moi = std::fs::metadata(&d).unwrap().uid();
         let bonne = d.join("bonne.bin");
         std::fs::write(&bonne, [[1u8; 32], [2u8; 32]].concat()).unwrap();
-        assert_eq!(lire(&bonne, moi).unwrap().nombre(), 2);
+        match lire(&bonne, moi) {
+            Ok(l) => assert_eq!(l.nombre(), 2),
+            Err(e) if e.contains("os error 38") || e.contains("non local") => {
+                return crate::essais::saute(
+                    "openat2 absent, ou dossier des essais sur un système de fichiers non local",
+                );
+            }
+            Err(e) => panic!("{e}"),
+        }
+        // Relue sans changement : pas relue.
+        let (depart_, relatif) = depart(&d, moi).unwrap();
+        let (sig, l) = lire_sous(&depart_, &relatif.join("bonne.bin"), moi, None).unwrap();
+        assert!(l.is_some());
+        assert!(
+            lire_sous(&depart_, &relatif.join("bonne.bin"), moi, Some(sig))
+                .unwrap()
+                .1
+                .is_none()
+        );
+        // Un dossier lien au milieu du chemin, un tube à la place d'une liste : refusés sans attendre.
+        std::fs::create_dir(d.join("vraies")).unwrap();
+        std::fs::write(d.join("vraies/l.bin"), [1u8; 32]).unwrap();
+        std::os::unix::fs::symlink(d.join("vraies"), d.join("par-lien")).unwrap();
+        assert!(lire(&d.join("par-lien/l.bin"), moi).is_err());
+        let tube = d.join("tube.bin");
+        crate::essais::tube_nomme(&tube).unwrap();
+        assert!(lire(&tube, moi).unwrap_err().contains("pas un fichier ordinaire"));
         // Un autre compte, une liste en désordre ou tronquée, un lien, un dossier, rien : refusées.
         assert!(lire(&bonne, moi.wrapping_add(1)).is_err());
         let desordre = d.join("desordre.bin");
@@ -208,7 +305,7 @@ mod tests {
         let lien = d.join("lien.bin");
         std::os::unix::fs::symlink(&bonne, &lien).unwrap();
         assert!(lire(&lien, moi).is_err());
-        assert!(lire(&d, moi).is_err());
+        assert!(lire(&d.join("vraies"), moi).is_err());
         assert!(lire(&d.join("absente"), moi).is_err());
         // Vide : une liste valide, sans rien.
         let vide = d.join("vide.bin");

@@ -593,8 +593,9 @@ mod tests {
 
     #[test]
     fn listes_ecrites_relues_par_le_garde() {
-        let d = crate::essais::Jetable::nouveau("garde-compte");
-        let dossier = d.join("garde");
+        let jetable = crate::essais::Jetable::nouveau("garde-compte");
+        // Le garde n'ouvre rien à travers un lien : le dossier d'essai, par son vrai chemin.
+        let dossier = jetable.canonicalize().unwrap().join("garde");
         let md5 = super::super::listes::enregistrement_md5(&[4; 16], 68);
         let p = ecrire_dans(&dossier, &[[2u8; 32]], &[1u8; 32], &md5, Vec::new()).unwrap();
         assert_eq!((p.sha256, p.md5), (2, 1));

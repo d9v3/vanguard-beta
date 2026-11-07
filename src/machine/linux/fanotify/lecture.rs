@@ -194,6 +194,24 @@ pub(crate) fn local(genre: &str) -> bool {
     LOCAUX.contains(&genre)
 }
 
+/// Le type d'un système de fichiers d'après son numéro magique (f_type de fstatfs), parmi les `LOCAUX` seulement : un
+/// numéro inconnu (fuse, nfs…) n'en a pas. ext2, ext3 et ext4 partagent le leur ; vfat et msdos aussi.
+pub(crate) fn genre_de_magie(magie: u64) -> Option<&'static str> {
+    Some(match magie {
+        0xEF53 => "ext4",
+        0x9123_683E => "btrfs",
+        0x5846_5342 => "xfs",
+        0xF2F5_2010 => "f2fs",
+        0x0102_1994 => "tmpfs",
+        0x4D44 => "vfat",
+        0x2011_BAB0 => "exfat",
+        0x7366_746E => "ntfs3",
+        0xCA45_1A4E => "bcachefs",
+        0x3153_464A => "jfs",
+        _ => return None,
+    })
+}
+
 /// Une ligne de /proc/self/mountinfo, réduite à ce que le garde en fait.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Montage {
@@ -272,6 +290,34 @@ mod tests {
             fd,
             pid,
             pidfd: None,
+        }
+    }
+
+    /// Chaque numéro magique connu donne un type local ; FUSE, NFS, CIFS, overlay, squashfs et 9p n'en donnent pas.
+    #[test]
+    fn numeros_magiques_des_seuls_locaux() {
+        for m in [
+            0xEF53,
+            0x9123_683E,
+            0x5846_5342,
+            0xF2F5_2010,
+            0x0102_1994,
+            0x4D44,
+            0x2011_BAB0,
+            0x7366_746E,
+        ] {
+            assert!(genre_de_magie(m).is_some_and(local), "{m:#x}");
+        }
+        for m in [
+            0x6573_5546,
+            0x6969,
+            0xFF53_4D42,
+            0x794C_7630,
+            0x7371_7368,
+            0x0102_1997,
+            0,
+        ] {
+            assert_eq!(genre_de_magie(m), None, "{m:#x}");
         }
     }
 

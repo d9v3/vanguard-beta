@@ -7,9 +7,11 @@
 //! - deux fils de DÉCISION hachent le descripteur rendu par le noyau (borné à 64 Mio, au-delà : permis et noté) et
 //!   jugent (`decision`) ; leur nombre borne les hachages concurrents ;
 //! - le fil du DÉLAI permet toute demande sans verdict après 250 ms (P9), et la note ;
-//! - le fil d'ENTRETIEN marque les montages faits plus tard, relit réglages et listes, écrit etat.json et
-//!   evenements.jsonl, et envoie WATCHDOG=1 tant que le lecteur bat (un lecteur figé : systemd tue le garde, et la
-//!   fermeture du groupe laisse passer tout ce qui attend) ;
+//! - le fil d'ENTRETIEN marque les montages faits plus tard, relit les réglages, écrit etat.json et evenements.jsonl,
+//!   et envoie WATCHDOG=1 tant que le lecteur bat (un lecteur figé : systemd tue le garde, et la fermeture du groupe
+//!   laisse passer tout ce qui attend) ; il n'attend jamais rien du dossier du compte ;
+//! - un fil des LISTES, lancé par l'entretien, relit l'ensemble CERTAIN dans le dossier du compte (openat2) ; s'il
+//!   reste bloqué, l'entretien le dit et n'en lance pas d'autre ;
 //! - le fil des SIGNAUX : à SIGTERM, tout ce qui attend est permis, puis le garde sort.
 
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
@@ -369,40 +371,98 @@ fn signature(chemin: &Path) -> Option<Signature> {
     Some((m.mtime(), m.mtime_nsec(), m.ino(), m.len()))
 }
 
-/// Relit les réglages (s'ils ont changé) et les listes (si elles ont changé, ou leur dossier) ; vide le cache.
-struct Relecture {
-    reglages: Option<Signature>,
-    listes: Option<(PathBuf, [Option<Signature>; 2])>,
-    derniere: Option<Instant>,
+/// Une lecture des listes, faite dans un fil à part.
+struct ListesLues {
+    dossier: PathBuf,
+    compte: u32,
+    resultats: Vec<Result<(listes::Signature, Option<listes::ListeSha256>), String>>,
 }
 
+/// Relit les réglages (s'ils ont changé) et les listes (si elles ont changé, ou leur dossier) ; vide le cache.
+///
+/// Les listes sont dans le dossier personnel du compte, qu'il contrôle : leur lecture peut bloquer (un montage qui ne
+/// répond plus, quoi qu'openat2 refuse d'en traverser). Elle se fait donc dans un fil à part, un seul à la fois ;
+/// l'entretien n'attend jamais sa réponse et continue d'envoyer WATCHDOG=1. Une lecture sans réponse depuis
+/// `LISTES_DELAI` est dite dans etat.json ; les listes d'avant restent en vigueur.
+struct Relecture {
+    reglages: Option<Signature>,
+    /// Le dossier, le compte et l'identité des deux listes lues la dernière fois.
+    listes: Option<(PathBuf, u32, [Option<listes::Signature>; 2])>,
+    derniere: Option<Instant>,
+    en_cours: Option<(Receiver<ListesLues>, Instant)>,
+}
+
+/// Une lecture des listes sans réponse depuis plus longtemps est dite.
+const LISTES_DELAI: Duration = Duration::from_secs(10);
+
 impl Relecture {
-    fn faire(&mut self, p: &Partage, premiere: bool) {
-        let sig = signature(Path::new(super::REGLAGES));
-        let reglages_changes = premiere || sig != self.reglages;
-        if reglages_changes {
-            self.reglages = sig;
-            let lus = crate::socle::lire_ordinaire(Path::new(super::REGLAGES), super::REGLAGES_TAILLE_MAX)
-                .ok()
-                .and_then(|o| String::from_utf8(o).ok())
-                .and_then(|t| Reglages::lire(&t));
-            let mut c = p.config.write().unwrap_or_else(PoisonError::into_inner);
-            c.alertes.retain(|a| !a.starts_with("reglages"));
-            if lus.is_none() {
-                c.alertes.push(format!(
-                    "reglages: {} absent ou illisible (observation)",
-                    super::REGLAGES
-                ));
-            }
-            let empreintes = |v: &[String]| v.iter().filter_map(|e| super::empreinte_de(e)).collect();
-            c.permises = lus.as_ref().map(|r| empreintes(&r.permises)).unwrap_or_default();
-            c.vanguard = lus.as_ref().map(|r| empreintes(&r.vanguard)).unwrap_or_default();
-            c.reglages = lus;
-            drop(c);
-            verrou(&p.cache).vider();
+    fn nouvelle() -> Relecture {
+        Relecture {
+            reglages: None,
+            listes: None,
+            derniere: None,
+            en_cours: None,
         }
-        let a_regarder = reglages_changes || self.derniere.is_none_or(|d| d.elapsed() >= LISTES_TOUTES_LES);
-        if !a_regarder {
+    }
+
+    /// Les réglages (/etc/vanguard, à root) : relus tout de suite s'ils ont changé. Vrai s'ils ont changé.
+    fn relire_reglages(&mut self, p: &Partage, premiere: bool) -> bool {
+        let sig = signature(Path::new(super::REGLAGES));
+        if !premiere && sig == self.reglages {
+            return false;
+        }
+        self.reglages = sig;
+        let lus = crate::socle::lire_ordinaire(Path::new(super::REGLAGES), super::REGLAGES_TAILLE_MAX)
+            .ok()
+            .and_then(|o| String::from_utf8(o).ok())
+            .and_then(|t| Reglages::lire(&t));
+        let mut c = p.config.write().unwrap_or_else(PoisonError::into_inner);
+        c.alertes.retain(|a| !a.starts_with("reglages"));
+        if lus.is_none() {
+            c.alertes.push(format!(
+                "reglages: {} absent ou illisible (observation)",
+                super::REGLAGES
+            ));
+        }
+        let empreintes = |v: &[String]| v.iter().filter_map(|e| super::empreinte_de(e)).collect();
+        c.permises = lus.as_ref().map(|r| empreintes(&r.permises)).unwrap_or_default();
+        c.vanguard = lus.as_ref().map(|r| empreintes(&r.vanguard)).unwrap_or_default();
+        c.reglages = lus;
+        drop(c);
+        verrou(&p.cache).vider();
+        true
+    }
+
+    /// Un tour de l'entretien : jamais bloquant.
+    fn faire(&mut self, p: &Partage) {
+        if self.relire_reglages(p, false) {
+            // D'autres réglages : les listes sont relues en entier.
+            self.listes = None;
+            self.derniere = None;
+        }
+        if let Some((recu, depuis)) = &self.en_cours {
+            match recu.try_recv() {
+                Ok(lues) => {
+                    self.en_cours = None;
+                    self.appliquer(p, lues);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    let attente = depuis.elapsed();
+                    if attente > LISTES_DELAI {
+                        alerter_listes(
+                            p,
+                            vec![format!(
+                                "liste: lecture sans réponse depuis {} s (listes d'avant en vigueur)",
+                                attente.as_secs()
+                            )],
+                        );
+                    }
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.en_cours = None,
+            }
+        }
+        if self.derniere.is_some_and(|d| d.elapsed() < LISTES_TOUTES_LES) {
             return;
         }
         self.derniere = Some(Instant::now());
@@ -413,34 +473,78 @@ impl Relecture {
                 None => return,
             }
         };
-        let chemins = [dossier.join(LISTE_SHA256), dossier.join(LISTE_MD5)];
-        let sigs = [signature(&chemins[0]), signature(&chemins[1])];
-        let vu = Some((dossier.clone(), sigs));
-        if vu == self.listes && !reglages_changes {
+        let avant = match &self.listes {
+            Some((d, c, sigs)) if *d == dossier && *c == compte => *sigs,
+            _ => [None, None],
+        };
+        let (vers, recu) = std::sync::mpsc::sync_channel(1);
+        let lancer = std::thread::Builder::new().name("garde-listes".into()).spawn(move || {
+            let resultats = match listes::depart(&dossier, compte) {
+                Ok((depart, relatif)) => [LISTE_SHA256, LISTE_MD5]
+                    .iter()
+                    .zip(avant)
+                    .map(|(nom, a)| listes::lire_sous(&depart, &relatif.join(nom), compte, a))
+                    .collect(),
+                Err(e) => vec![Err(e.clone()), Err(e)],
+            };
+            let _ = vers.send(ListesLues {
+                dossier,
+                compte,
+                resultats,
+            });
+        });
+        if lancer.is_ok() {
+            self.en_cours = Some((recu, Instant::now()));
+        }
+    }
+
+    /// Met en vigueur ce qu'un fil a lu ; une liste refusée laisse l'ancienne.
+    fn appliquer(&mut self, p: &Partage, lues: ListesLues) {
+        let a_jour = {
+            let c = p.config.read().unwrap_or_else(PoisonError::into_inner);
+            c.reglages
+                .as_ref()
+                .is_some_and(|r| r.compte == lues.compte && Path::new(&r.listes) == lues.dossier)
+        };
+        if !a_jour {
+            // Les réglages ont changé pendant la lecture : la suivante lira le bon dossier.
             return;
         }
-        self.listes = vu;
         let mut alertes = Vec::new();
-        // Une à la fois, pour ne pas tenir quatre listes en mémoire ; une liste refusée laisse l'ancienne.
-        for (i, chemin) in chemins.iter().enumerate() {
-            match listes::lire(chemin, compte) {
-                Ok(l) => {
-                    let mut c = p.config.write().unwrap_or_else(PoisonError::into_inner);
-                    if i == 0 {
-                        c.certain.sha256 = Some(l);
-                    } else {
-                        c.certain.md5 = Some(l);
+        let mut sigs = [None, None];
+        let mut changees = false;
+        for (i, r) in lues.resultats.into_iter().enumerate().take(2) {
+            match r {
+                Ok((sig, l)) => {
+                    if let Some(s) = sigs.get_mut(i) {
+                        *s = Some(sig);
+                    }
+                    if let Some(l) = l {
+                        changees = true;
+                        let mut c = p.config.write().unwrap_or_else(PoisonError::into_inner);
+                        if i == 0 {
+                            c.certain.sha256 = Some(l);
+                        } else {
+                            c.certain.md5 = Some(l);
+                        }
                     }
                 }
                 Err(e) => alertes.push(format!("liste: {e}")),
             }
         }
-        let mut c = p.config.write().unwrap_or_else(PoisonError::into_inner);
-        c.alertes.retain(|a| !a.starts_with("liste"));
-        c.alertes.extend(alertes);
-        drop(c);
-        verrou(&p.cache).vider();
+        self.listes = Some((lues.dossier, lues.compte, sigs));
+        alerter_listes(p, alertes);
+        if changees {
+            verrou(&p.cache).vider();
+        }
     }
+}
+
+/// Remplace les alertes des listes.
+fn alerter_listes(p: &Partage, alertes: Vec<String>) {
+    let mut c = p.config.write().unwrap_or_else(PoisonError::into_inner);
+    c.alertes.retain(|a| !a.starts_with("liste"));
+    c.alertes.extend(alertes);
 }
 
 /// Écrit etat.json d'un coup.
@@ -486,13 +590,14 @@ fn ecrire_etat(p: &Partage, demarre: u64, marques: &Marques) {
 }
 
 /// Le fil d'entretien.
-fn entretien(p: &Partage, evenements: &Receiver<Evenement>, notifier: &Notifier, mut marques: Marques) {
+fn entretien(
+    p: &Partage,
+    evenements: &Receiver<Evenement>,
+    notifier: &Notifier,
+    mut marques: Marques,
+    mut relecture: Relecture,
+) {
     let demarre = super::maintenant();
-    let mut relecture = Relecture {
-        reglages: None,
-        listes: None,
-        derniere: None,
-    };
     let mut montages = Montages::ouvrir().ok();
     while !p.arret.load(Ordering::Relaxed) {
         let change = if let Some(m) = &montages {
@@ -513,7 +618,7 @@ fn entretien(p: &Partage, evenements: &Receiver<Evenement>, notifier: &Notifier,
                 p.noter(e);
             }
         }
-        relecture.faire(p, false);
+        relecture.faire(p);
         let mut lignes = String::new();
         while let Ok(e) = evenements.try_recv() {
             lignes.push_str(&sortie::ligne(&e));
@@ -602,13 +707,11 @@ pub(crate) fn servir() -> i32 {
         evenements: vers_sortie,
         arret: AtomicBool::new(false),
     });
-    // Les réglages et les listes avant la première marque : rien ne passe sans l'ensemble CERTAIN qu'on a.
-    Relecture {
-        reglages: None,
-        listes: None,
-        derniere: None,
-    }
-    .faire(&p, true);
+    // Les réglages (à root) avant la première marque : le mode est connu dès la première demande. Les listes, dans le
+    // dossier du compte, viennent après READY=1, dans un fil à part : un dossier qui ne répond pas laisse le garde
+    // vivant, sans listes (seule la marque d'essai est alors certaine).
+    let mut relecture = Relecture::nouvelle();
+    relecture.relire_reglages(&p, true);
     let mut marques = Marques::default();
     let info = Montages::ouvrir().and_then(|mut m| m.lire()).unwrap_or_default();
     marques.completer(&p.groupe, &info);
@@ -640,7 +743,7 @@ pub(crate) fn servir() -> i32 {
         let p = Arc::clone(&p);
         std::thread::spawn(move || {
             let notifier = Notifier::depuis_environnement();
-            entretien(&p, &evenements, &notifier, marques);
+            entretien(&p, &evenements, &notifier, marques, relecture);
         });
     }
     {
