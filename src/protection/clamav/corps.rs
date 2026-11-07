@@ -64,6 +64,8 @@ struct Sous {
     decalage: Decalage,
     /// La borne de ses sauts sans fin (voir `OUVERTS`).
     ouvert: u32,
+    /// Un de ses sauts sans fin a été borné : non trouvée, elle n'est pas pour autant absente.
+    approchee: bool,
     modificateurs: Modificateurs,
     /// L'atome de la forme étroite, puis de la forme large (`::w`).
     atomes: [Option<Atome>; 2],
@@ -102,16 +104,20 @@ pub(crate) struct Corps {
 /// La forme étroite et la forme large d'une sous-signature, en éléments.
 type Formes = [Option<Vec<Element>>; 2];
 
-/// Les formes d'une sous-signature, ses sauts sans fin bornés à `ouvert` ; et s'il y en a.
-fn formes(hex: &str, ouvert: u32, m: Modificateurs) -> Result<(Formes, bool), NonLu> {
+/// Les formes d'une sous-signature, ses sauts sans fin bornés à `ouvert` ; et s'il y en a. `partout` : son décalage
+/// est `*` (voir `ndb::crochets_etroits`, pour la forme étroite seule : en texte large, `[n-m]` est un saut).
+fn formes(hex: &str, ouvert: u32, m: Modificateurs, partout: bool) -> Result<(Formes, bool), NonLu> {
     let lu = ndb::lire_hex(hex, ouvert)?;
+    if !m.large || m.etroit_aussi {
+        ndb::crochets_etroits(&lu, partout)?;
+    }
     let etroite = if m.sans_casse {
         ndb::sans_casse(&lu.elements)?
     } else {
         lu.elements
     };
     let formes = if m.large {
-        let large = ndb::large(&etroite)?;
+        let large = ndb::large(&etroite);
         [m.etroit_aussi.then_some(etroite), Some(large)]
     } else {
         [Some(etroite), None]
@@ -128,10 +134,10 @@ fn raison(r: Refus) -> NonLu {
 }
 
 /// Les motifs d'une sous-signature, avec la borne de ses sauts sans fin, et si elle est approchée.
-fn motifs(hex: &str, m: Modificateurs) -> Result<([Option<Motif>; 2], u32, bool), NonLu> {
+fn motifs(hex: &str, m: Modificateurs, partout: bool) -> Result<([Option<Motif>; 2], u32, bool), NonLu> {
     let mut derniere = NonLu::Illisible;
     for ouvert in OUVERTS {
-        let (formes, approchee) = formes(hex, ouvert, m)?;
+        let (formes, approchee) = formes(hex, ouvert, m, partout)?;
         let [etroite, large] = formes;
         let compiler = |f: Option<Vec<Element>>| f.map(Motif::nouveau).transpose();
         match (compiler(etroite), compiler(large)) {
@@ -150,7 +156,7 @@ fn motifs(hex: &str, m: Modificateurs) -> Result<([Option<Motif>; 2], u32, bool)
 
 /// Le motif de la forme `f` d'une sous-signature déjà acceptée au chargement.
 fn motif(hex: &str, s: &Sous, f: usize) -> Option<Motif> {
-    let (formes, _) = formes(hex, s.ouvert, s.modificateurs).ok()?;
+    let (formes, _) = formes(hex, s.ouvert, s.modificateurs, s.decalage.ancre == Ancre::Partout).ok()?;
     let [etroite, large] = formes;
     let forme = if f == 0 { etroite } else { large };
     Motif::nouveau(forme?).ok()
@@ -235,9 +241,9 @@ impl Corps {
         let mut preparees = Vec::with_capacity(sous.len());
         let mut approchee = false;
         for s in sous {
-            let (motifs, ouvert, a) = motifs(s.hex, s.modificateurs)?;
+            let (motifs, ouvert, a) = motifs(s.hex, s.modificateurs, s.decalage.ancre == Ancre::Partout)?;
             approchee |= a;
-            preparees.push((s, motifs, ouvert));
+            preparees.push((s, motifs, ouvert, a));
         }
         let place = |t: usize| u32::try_from(t).map_err(|_| NonLu::Bornes);
         let premiere = place(self.sous.len())?;
@@ -245,13 +251,13 @@ impl Corps {
         let nom_debut = place(self.noms.len())?;
         place(self.noms.len().saturating_add(nom.len()).saturating_add(1))?;
         let mut textes = self.textes.len();
-        for (s, _, _) in &preparees {
+        for (s, _, _, _) in &preparees {
             textes = textes.saturating_add(s.hex.len());
         }
         place(textes)?;
         let n = u8::try_from(sous.len()).map_err(|_| NonLu::Bornes)?;
         let n_ops = u16::try_from(ops.len()).map_err(|_| NonLu::Bornes)?;
-        for (s, motifs, ouvert) in preparees {
+        for (s, motifs, ouvert, a) in preparees {
             let mut atomes = [None, None];
             for (atome, m) in atomes.iter_mut().zip(motifs) {
                 if let Some(m) = m {
@@ -265,6 +271,7 @@ impl Corps {
                 longueur: place(s.hex.len())?,
                 decalage: s.decalage,
                 ouvert,
+                approchee: a,
                 modificateurs: s.modificateurs,
                 atomes,
             });
@@ -455,9 +462,17 @@ impl Corps {
         }
         let mut trouvees = Vec::new();
         for (k, sig) in candidates {
-            let (_, ops) = self.parts(sig).ok_or(Echec::Lecture)?;
+            let (sous, ops) = self.parts(sig).ok_or(Echec::Lecture)?;
+            // Une approchée dont l'atome est là mais que la recherche bornée n'a pas confirmée peut se trouver plus
+            // loin que sa borne : inconnue, jamais absente (sous une négation, « absente » ferait un faux positif).
             let etat = |i: u8| match sig.sous.checked_add(u32::from(i)).and_then(|g| presentes.get(&g)) {
                 Some(true) => Etat::Presente,
+                _ if sous
+                    .get(usize::from(i))
+                    .is_some_and(|s| s.approchee && s.atomes.iter().any(vu)) =>
+                {
+                    Etat::Inconnue
+                }
                 _ => Etat::Absente,
             };
             if ldb::juger(ops, etat).ok_or(Echec::Lecture)? == Etat::Presente {
@@ -618,6 +633,64 @@ mod tests {
         assert_eq!(noms(&c, b"petit et long", &tout), [] as [String; 0]);
     }
 
+    /// Une sous-signature approchée (saut sans fin borné) sous une négation : au-delà de sa borne, elle n'est pas
+    /// confirmée, mais pas dite absente non plus ; la signature qui l'exclut n'est donc pas rendue (pas de faux
+    /// positif). Son atome absent, elle est vraiment absente, et l'exclusion vaut.
+    #[test]
+    fn approchee_sous_une_negation() {
+        // Deux moitiés sans paire d'octets commune : l'atome de la sous-signature est dans l'une seulement.
+        let (debut, fin): (&[u8], &[u8]) = (b"OUVRE-ICI", b"#FERME#");
+        let ligne = format!(
+            "Essai.Exclue;Target:0;0&1=0;{};{}*{}",
+            hex(b"premier"),
+            hex(debut),
+            hex(fin)
+        );
+        let c = corps(&[], &[&ligne]);
+        let tout = Cadre::simple(Cible::Tout);
+        let texte = |parts: &[&[u8]]| parts.join(&b' ');
+        assert_eq!(noms(&c, b"premier", &tout), ["Essai.Exclue"]);
+        assert_eq!(noms(&c, &texte(&[b"premier", debut, fin]), &tout), [] as [String; 0]);
+        let mut loin = texte(&[b"premier", debut]);
+        loin.resize(loin.len() + (100 << 10), b'x');
+        loin.extend_from_slice(fin);
+        assert_eq!(noms(&c, &loin, &tout), [] as [String; 0]);
+        // L'atome d'une seule moitié : la sous-signature ne peut pas être là, quelle que soit la borne.
+        let atome = c.sous[1].atomes[0].unwrap();
+        let (avec, sans) = if c.atomes_vus([debut, b""], None).unwrap()[0][atome.numero as usize] {
+            (debut, fin)
+        } else {
+            (fin, debut)
+        };
+        assert_eq!(noms(&c, &texte(&[b"premier", avec]), &tout), [] as [String; 0]);
+        assert_eq!(noms(&c, &texte(&[b"premier", sans]), &tout), ["Essai.Exclue"]);
+    }
+
+    /// `[n-m]` lu comme ClamAV : un octet à `n`-`m` octets du reste ; en texte large, un saut en octets, non doublé
+    /// (comme `{n-m}`, que ClamAV recopie tel quel).
+    #[test]
+    fn crochets_et_sauts_en_texte_large() {
+        let c = corps(
+            &["Essai.Crochet:0:*:aa[1-2]bbcc", "Essai.Interne:0:2:1122*dd[1-2]eeff"],
+            &[&format!("Essai.Large;Target:0;0;{}{{1}}{}::w", hex(b"A"), hex(b"B"))],
+        );
+        let tout = Cadre::simple(Cible::Tout);
+        // Devant, avec un décalage : ClamAV le mesure depuis `bbcc`, refusée.
+        let l = ndb::lire_ligne("Essai.Decale:0:4:aa[1-2]bbcc").unwrap();
+        assert_eq!(Corps::default().ajouter_ndb(&l), Err(NonLu::Forme));
+        assert_eq!(noms(&c, b"\xaa-\xbb\xcc", &tout), ["Essai.Crochet"]);
+        assert_eq!(noms(&c, b"\xaa--\xbb\xcc", &tout), ["Essai.Crochet"]);
+        assert_eq!(noms(&c, b"\xaa\xbb\xcc", &tout), [] as [String; 0]);
+        assert_eq!(noms(&c, b"\xaa---\xbb\xcc", &tout), [] as [String; 0]);
+        assert_eq!(noms(&c, b"A\0-B\0", &tout), ["Essai.Large"]);
+        assert_eq!(noms(&c, b"A\0-\0B\0", &tout), [] as [String; 0]);
+        // Au bout d'une partie intérieure, contre `*` : le décalage vaut pour `1122`, l'octet est à 1 ou 2 de `eeff`.
+        assert_eq!(noms(&c, b"..\x11\x22...\xdd-\xee\xff", &tout), ["Essai.Interne"]);
+        assert_eq!(noms(&c, b"..\x11\x22\xdd--\xee\xff", &tout), ["Essai.Interne"]);
+        assert_eq!(noms(&c, b"..\x11\x22\xdd---\xee\xff", &tout), [] as [String; 0]);
+        assert_eq!(noms(&c, b"...\x11\x22\xdd-\xee\xff", &tout), [] as [String; 0]);
+    }
+
     #[test]
     fn refus_sans_trace() {
         let mut c = Corps::default();
@@ -634,6 +707,35 @@ mod tests {
         assert_eq!(c.ajouter_ndb(&l), Ok(true));
         c.finir().unwrap();
         assert_eq!(c.nombre(), 1);
+    }
+
+    /// Une échéance qui tombe pendant la recherche (pas avant) : la recherche s'arrête là, sans rendre de résultat.
+    /// La taille des données grandit jusqu'à une recherche d'au moins 80 ms, puis l'échéance est mise au quart.
+    #[test]
+    fn delai_pendant_la_recherche() {
+        // Décalage à étendue : chaque place essayée compare jusqu'à 255 octets avant d'échouer.
+        let ligne = format!("Essai.Lent:0:0,{}:{}62", u32::MAX, "61".repeat(255));
+        let c = corps(&[&ligne], &[]);
+        let tout = Cadre::simple(Cible::Tout);
+        let mut taille = 64usize << 10;
+        loop {
+            let mut donnees = vec![b'a'; taille];
+            donnees.push(b'b');
+            let debut = Instant::now();
+            assert_eq!(
+                noms(&c, &donnees, &tout),
+                ["Essai.Lent"],
+                "sans échéance, trouvée au bout"
+            );
+            let duree = debut.elapsed();
+            if duree >= std::time::Duration::from_millis(80) || taille >= 256 << 20 {
+                let echeance = Instant::now() + duree / 4;
+                assert_eq!(c.examiner(&donnees, &tout, Some(echeance)), Err(Echec::Delai));
+                assert!(Instant::now() < echeance + duree, "arrêtée bien avant la fin");
+                return;
+            }
+            taille *= 4;
+        }
     }
 
     #[test]
