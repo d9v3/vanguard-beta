@@ -693,6 +693,42 @@ fn version_firefox(nom: &str, compatibilite: &str) -> Option<u32> {
         .filter(|v| *v > 0)
 }
 
+/// Le dossier du programme qui a ouvert le profil en dernier, d'après compatibility.ini (« LastPlatformDir= ») :
+/// un chemin absolu, sinon rien.
+fn dossier_plateforme(compatibilite: &str) -> Option<std::path::PathBuf> {
+    let d = compatibilite
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("LastPlatformDir="))?
+        .trim();
+    let d = std::path::PathBuf::from(d);
+    d.is_absolute().then_some(d)
+}
+
+/// La version majeure de Gecko, le moteur de toute la famille Firefox (Zen, Floorp, Waterfox numérotent leur
+/// programme à leur façon, pas leur moteur), d'après le platform.ini de ce dossier : « [Build] Milestone=144.0.2 ».
+fn version_gecko(platform: &str) -> Option<u32> {
+    platform
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Milestone="))?
+        .split('.')
+        .next()?
+        .trim()
+        .parse()
+        .ok()
+        .filter(|v| *v > 0)
+}
+
+/// La version majeure d'un navigateur de la famille Firefox : compatibility.ini pour Firefox et LibreWolf, sinon le
+/// platform.ini du dossier du programme (lecture bornée d'un simple fichier, jamais exécuté).
+fn version_famille_firefox(nom: &str, compatibilite: &str) -> Option<u32> {
+    version_firefox(nom, compatibilite).or_else(|| {
+        let platform =
+            crate::socle::lire_texte_ordinaire(&dossier_plateforme(compatibilite)?.join("platform.ini"), 64 * 1024)
+                .ok()?;
+        version_gecko(&platform)
+    })
+}
+
 /// Les premières versions qui proposent l'échange post-quantique sans réglage : Firefox 132 (X25519MLKEM768),
 /// Chrome 124 (X25519Kyber768, remplacé par X25519MLKEM768 en 131).
 const FIREFOX_PQ_PAR_DEFAUT: u32 = 132;
@@ -935,7 +971,8 @@ pub fn post_quantique() -> Vec<Constat> {
                             std::fs::read_to_string(chemin.join("compatibility.ini")).unwrap_or_default();
                         let sans = SansCoupure {
                             firefox: true,
-                            version: version_firefox(nom, &compatibilite).map_or(Version::Illisible, Version::Lue),
+                            version: version_famille_firefox(nom, &compatibilite)
+                                .map_or(Version::Illisible, Version::Lue),
                             allume: pq_allume_firefox(&prefs),
                         };
                         juger_pq(&navigateur, coupure.as_ref(), &sans)
@@ -1284,6 +1321,30 @@ mod tests {
         assert_eq!(version_firefox("LibreWolf", ini), Some(128));
         assert_eq!(version_firefox("Zen", ini), None);
         assert_eq!(version_firefox("Firefox", ""), None);
+        // Zen, Floorp, Waterfox : la version de Gecko, dans le platform.ini du dossier du programme.
+        let zen = "[Compatibility]\nLastVersion=1.17.3b_20261020000000/20261020000000\nLastPlatformDir=/opt/zen-browser-bin\n";
+        #[cfg(unix)]
+        assert_eq!(
+            dossier_plateforme(zen),
+            Some(std::path::PathBuf::from("/opt/zen-browser-bin"))
+        );
+        #[cfg(windows)]
+        assert_eq!(dossier_plateforme(zen), None);
+        assert_eq!(dossier_plateforme("LastPlatformDir=relatif/zen\n"), None);
+        assert_eq!(dossier_plateforme(ini), None);
+        let platform = "[Build]\nBuildID=20261020000000\nMilestone=144.0.2\nSourceRepository=https://exemple.invalid\n";
+        assert_eq!(version_gecko(platform), Some(144));
+        assert_eq!(version_gecko("[Build]\nBuildID=1\n"), None);
+        assert_eq!(version_gecko("[Build]\nMilestone=0\n"), None);
+        assert_eq!(version_gecko("[Build]\nMilestone=abc\n"), None);
+        // Bout à bout, dans un dossier d'essai : lu ; absent : pas de version.
+        let d = crate::essais::Jetable::nouveau("gecko");
+        std::fs::write(d.join("platform.ini"), platform).unwrap();
+        let compat = format!("LastPlatformDir={}\n", d.display());
+        assert_eq!(version_famille_firefox("Zen", &compat), Some(144));
+        assert_eq!(version_famille_firefox("Firefox", ini), Some(128));
+        std::fs::remove_file(d.join("platform.ini")).unwrap();
+        assert_eq!(version_famille_firefox("Zen", &compat), None);
         assert!(pq_allume_firefox("user_pref(\"security.tls.enable_kyber\", true);\n"));
         assert!(!pq_allume_firefox(""));
     }
