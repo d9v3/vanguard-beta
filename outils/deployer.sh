@@ -563,7 +563,9 @@ copier "$LINUX" "$CLE/Linux/vanguard"
 # Vanguard ne vise plus le Mac : le programme macOS, son mode d'emploi et son lanceur, posés par les déploiements
 # d'avant, sont retirés de la clé, eux seulement (la clé a déjà été comparée à sa référence, plus haut ; celle réécrite
 # à la fin ne les a plus). Rien d'autre n'est touché dans macOS/ : le dossier reste s'il n'est pas vide.
-rm -f "$CLE/macOS/vanguard" "$CLE/macOS/LISEZMOI.txt" "$CLE/macOS/README.txt" "$CLE/Lancer Vanguard.command"
+# Un macOS/ en lien symbolique ferait effacer ailleurs que sur la clé : refusé.
+[[ ! -L $CLE/macOS ]] || { echo "✖ $CLE/macOS est un lien symbolique : rien n'est effacé."; exit 1; }
+rm -f -- "$CLE/macOS/vanguard" "$CLE/macOS/LISEZMOI.txt" "$CLE/macOS/README.txt" "$CLE/Lancer Vanguard.command"
 [[ ! -d $CLE/macOS ]] || rmdir "$CLE/macOS" 2>/dev/null || true
 # Un Mac où la clé est branchée y écrit dès le branchement (index Spotlight, journal des changements, corbeille) : ces
 # témoins l'en dispensent, la clé (et ses données) reste propre même là.

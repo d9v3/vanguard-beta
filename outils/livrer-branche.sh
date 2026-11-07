@@ -29,7 +29,6 @@ fi
 echo "· fusion et déploiement"
 cd "$DEPOT"
 git merge -q --ff-only "$BRANCHE"
-git push -q origin --delete "$BRANCHE" 2>/dev/null || true
 git worktree remove "$ARBRE"
 # Fusionnée à l'instant (fusion rapide) : -D, car -d refuse une branche qui suit origin/master pas encore à jour.
 git merge-base --is-ancestor "$BRANCHE" master && git branch -q -D "$BRANCHE"

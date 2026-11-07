@@ -288,13 +288,23 @@ else
   exit 1
 fi
 
+# Une exécution dont les nomenclatures valent d'être publiées : « attester » réussi, et ses essais avec, « linux »
+# réussi et « windows » réussi ou sauté (ci.yml le saute quand le code Windows n'a pas changé). Sans ça, un commit dont
+# les essais Linux échouaient aurait ses nomenclatures attestées quand même : « attester » ne dépend que d'elles.
+attestee_et_essayee() {
+  [[ $(gh run view "$1" --json jobs -q '[.jobs[] | select(
+      (.name == "attester" and .conclusion == "success") or (.name == "linux" and .conclusion == "success")
+      or (.name == "windows" and (.conclusion == "success" or .conclusion == "skipped")))
+    | .name] | unique | length') == 3 ]]
+}
+
 # Les nomenclatures (SBOM) attestées de ce code : celles du travail « nomenclatures » de ci.yml pour ce commit, ou pour
 # un commit d'avant dont le programme est le même (seuls des captures, la documentation ou les outils ont changé
 # depuis : .github/hors-code.txt, la liste que lit aussi ci.yml). Seulement une exécution de master (headBranch relu),
 # lancée par un envoi, la nuit ou à la main : celle d'une autre branche, ou d'une demande de fusion, tourne avec le
 # ci.yml qu'elle apporte, et un compte GitHub pris ferait ainsi publier des nomenclatures faites ailleurs. Sur master,
-# le travail tourne sans cache (ci.yml). Son code d'ensemble ne compte pas (un autre travail en échec n'y change
-# rien) : seul compte son travail « attester », réussi, et l'artefact « nomenclatures » encore là.
+# le travail tourne sans cache (ci.yml). Son code d'ensemble ne compte pas (la nuit, un fuzzing en échec n'y change
+# rien) : comptent « attester » et les essais (attestee_et_essayee), et l'artefact « nomenclatures » encore là.
 avec_nomenclatures() {
   local id sha
   while read -r id sha; do
@@ -307,10 +317,9 @@ avec_nomenclatures() {
       # Ce qui fait les nomenclatures est « hors code » : changé depuis, celles d'ici ne seraient plus les siennes.
       git diff --quiet "$sha" "$COMMIT" -- outils/sbom.sh outils/date-du-code.sh .github/hors-code.txt || continue
     fi
-    # Seulement un passage dont le travail « attester » a réussi : celui d'une attestation en échec ne se publierait
-    # pas (plus bas) ; on en relance plutôt un neuf.
-    [[ -n $(gh run view "$id" --json jobs \
-      -q '.jobs[] | select(.name == "attester" and .conclusion == "success") | .name') ]] || continue
+    # Seulement un passage dont le travail « attester » a réussi (celui d'une attestation en échec ne se publierait
+    # pas, plus bas) et dont les essais n'ont pas échoué : on en relance plutôt un neuf.
+    attestee_et_essayee "$id" || continue
     if [[ -n $(gh api "repos/{owner}/{repo}/actions/runs/$id/artifacts" \
       -q '.artifacts[] | select(.name == "nomenclatures" and (.expired | not)) | .name') ]]; then
       echo "$id"
@@ -347,7 +356,7 @@ if [[ -z $RUN ]]; then
     sleep 5
   done
   [[ -n $RUN ]] || { echo "La CI relancée n'a pas démarré : rien de publié."; exit 1; }
-  # Son code ne compte pas : seuls « nomenclatures » et « attester » comptent, relus plus bas. Deux heures : son plus
+  # Son code ne compte pas : seuls « attester », « linux » et « windows » comptent, relus plus bas. Deux heures : son plus
   # long travail en a 75 minutes au plus (ci.yml), plus l'attente d'un runner.
   CODE_RUN=0
   attendre_execution "$RUN" 7200 || CODE_RUN=$?
@@ -355,9 +364,8 @@ if [[ -z $RUN ]]; then
     echo "La CI relancée n'a pas fini à temps : rien de publié."
     exit 1
   fi
-  [[ -n $(gh run view "$RUN" --json jobs \
-    -q '.jobs[] | select(.name == "attester" and .conclusion == "success") | .name') ]] ||
-    { echo "Nomenclatures de la CI relancée ($RUN) pas attestées : rien de publié."; exit 1; }
+  attestee_et_essayee "$RUN" ||
+    { echo "CI relancée ($RUN) : nomenclatures pas attestées ou essais Linux/Windows en échec : rien de publié."; exit 1; }
 fi
 gh run download "$RUN" -n nomenclatures -D "$DOSSIER/ci" >/dev/null
 # Relu sur l'exécution même dont on publie les nomenclatures, quelle que soit la façon dont elle a été trouvée.

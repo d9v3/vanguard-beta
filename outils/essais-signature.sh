@@ -397,32 +397,51 @@ if command -v jq >/dev/null; then
 JSON
   cat >"$T/faux-gh/gh" <<'GH'
 #!/usr/bin/env bash
-q=. branche=
+q=. branche= vue=
 while [[ $# -gt 0 ]]; do
   case $1 in
     -q) q=$2; shift ;;
     --branch) branche=$2; shift ;;
+    view) vue=1 ;;
   esac
   shift
 done
-if [[ -n $branche ]]; then
+if [[ -n $vue ]]; then
+  # « run view … --json jobs » : les travaux de jobs.json, pareils pour chaque passage.
+  jq -r "$q" "$(dirname "$0")/jobs.json"
+elif [[ -n $branche ]]; then
   jq -r --arg b "$branche" "[.[] | select(.headBranch == \$b)] | $q" "$(dirname "$0")/runs.json"
 else
-  # « api …/artifacts » ou « run list » sans branche : chaque passage a ses nomenclatures ; « run view … jobs » :
-  # chacun a réussi son travail « attester ».
+  # « api …/artifacts » ou « run list » sans branche : chaque passage a ses nomenclatures.
   case $q in
     *artifacts*) echo nomenclatures ;;
-    *attester*) echo attester ;;
     *) jq -r "$q" "$(dirname "$0")/runs.json" ;;
   esac
 fi
 GH
   chmod +x "$T/faux-gh/gh"
-  awk '/^avec_nomenclatures\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" >"$T/avec_nomenclatures.sh"
-  choisi=$(PATH="$T/faux-gh:$PATH" COMMIT=c0ffee HORS_CODE= bash -c \
-    "source '$T/avec_nomenclatures.sh'; avec_nomenclatures")
+  awk '/^(attestee_et_essayee|avec_nomenclatures)\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" \
+    >"$T/avec_nomenclatures.sh"
+  # $1 : conclusion du travail « linux », $2 : celle de « windows » ; « attester » a réussi.
+  choix() {
+    printf '{"jobs": [{"name": "attester", "conclusion": "success"}, {"name": "linux", "conclusion": "%s"},
+      {"name": "windows", "conclusion": "%s"}, {"name": "fuzzing", "conclusion": "failure"}]}' "$1" "$2" \
+      >"$T/faux-gh/jobs.json"
+    PATH="$T/faux-gh:$PATH" COMMIT=c0ffee HORS_CODE= bash -c "source '$T/avec_nomenclatures.sh'; avec_nomenclatures"
+  }
+  choisi=$(choix success success)
   [[ $choisi == 1 ]] && ok "publier-version.sh prend les nomenclatures de master, pas celles d'une autre branche" ||
     ko "publier-version.sh a pris les nomenclatures de « ${choisi:-aucune} » (attendu : 1, celles de master)"
+  choisi=$(choix success skipped)
+  [[ $choisi == 1 ]] && ok "publier-version.sh prend les nomenclatures d'un passage au travail Windows sauté" ||
+    ko "nomenclatures d'un passage au travail Windows sauté refusées (« ${choisi:-aucune} »)"
+  choisi=$(choix failure success)$(choix success failure)$(choix success cancelled)$(choix skipped skipped)
+  [[ -z $choisi ]] && ok "publier-version.sh refuse les nomenclatures d'un passage aux essais Linux ou Windows ratés" ||
+    ko "nomenclatures prises malgré des essais Linux ou Windows ratés (« $choisi »)"
+  # La relance relit les mêmes travaux.
+  grep -q '^  attestee_et_essayee "\$RUN" ||$' "$DEPOT/outils/publier-version.sh" &&
+    ok "publier-version.sh relit les essais de la CI qu'il relance" ||
+    ko "la CI relancée n'est pas relue (attester, linux, windows)"
   # Relue sur l'exécution même dont les nomenclatures partent : master, par un envoi, la nuit ou à la main ; tout le
   # reste arrête la publication.
   awk '/^case \$BRANCHE_RUN in$/ { c = 1; next }
