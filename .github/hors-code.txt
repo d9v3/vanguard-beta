@@ -1,5 +1,6 @@
 # Les fichiers que le programme n'intègre pas (documentation, captures, outils de développement, banc de fuzzing…) :
-# un changement qui ne touche qu'eux ne relance ni le Mac (macos.yml), ni Windows et la compilation reproductible de
-# nuit (ci.yml), et une compilation macOS d'avant vaut encore pour la page de la version (outils/publier-version.sh).
-# Une seule liste, lue par les trois : une expression régulière étendue (grep -E), sur la ligne qui suit.
+# un changement qui ne touche qu'eux ne relance ni Windows ni la compilation reproductible de nuit (ci.yml), et les
+# nomenclatures attestées d'avant valent encore pour la page de la version (outils/publier-version.sh).
+# Une seule liste, lue par ci.yml et par outils/ (publier-version.sh, date-du-code.sh, deployer.sh) : une expression
+# régulière étendue (grep -E), sur la ligne qui suit.
 ^(.*\.md|\.claude/.*|\.relecture/.*|outils/.*|assets/captures/.*|assets/partage\.png|\.github/depot\.json|\.github/hors-code\.txt|LICENCES-TIERCES\.txt|\.gitignore|docs/.*|fuzz/.*|deny\.toml|\.cargo/audit\.toml)$

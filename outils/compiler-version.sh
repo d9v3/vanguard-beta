@@ -50,7 +50,8 @@ for cible in x86_64_unknown_linux_musl x86_64_pc_windows_gnu; do
   export "CFLAGS_$cible=-ffile-prefix-map=$RACINE=/vanguard -ffile-prefix-map=$CARGO_DOSSIER=/cargo"
 done
 # La date gravée : celle du code (outils/date-du-code.sh), pas du dernier commit, pour que les commits des captures et
-# de la page des fonctions ne la changent pas et que le Mac de GitHub grave la même. Une date déjà donnée l'emporte.
+# de la page des fonctions ne la changent pas et que les nomenclatures de GitHub portent la même. Une date déjà donnée
+# l'emporte.
 if [[ -z ${SOURCE_DATE_EPOCH:-} ]]; then
   DATE_DU_CODE=$(bash outils/date-du-code.sh 2>/dev/null || true)
   [[ -z $DATE_DU_CODE ]] || export SOURCE_DATE_EPOCH=$DATE_DU_CODE

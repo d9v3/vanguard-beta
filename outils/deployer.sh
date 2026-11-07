@@ -17,8 +17,8 @@
 # elle a changé depuis son dernier déploiement (comparée à sa référence AVANT toute écriture) : ce qui y a été planté
 # en voyage n'entre jamais en silence dans la référence. Notification, puis --accepter-cle si c'est voulu.
 # VANGUARD_INTERMEDIAIRE=1 : une version d'une série livrée d'affilée. Pas de page (la dernière de la série reprend
-# leurs notes) ni de dépôt dans la VM Windows (son test automatique passerait sur chacune) : le Mac de GitHub et la VM
-# ne voient que la dernière.
+# leurs notes) ni de dépôt dans la VM Windows (son test automatique passerait sur chacune) : la VM ne voit que la
+# dernière.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -325,8 +325,7 @@ PROGRAMMES=("$LINUX")
 [[ -f $WINDOWS ]] && PROGRAMMES+=("$WINDOWS")
 outils/failles-programmes.sh "${PROGRAMMES[@]}" || refuser
 # Page de la version sur GitHub (Releases) : chaque publication a la sienne, 0.x.0 comme 0.x.y. Il n'y en a qu'une par
-# jour : le lien « dernière version » du README mène toujours à celle du jour, et le Mac de GitHub ne compile qu'une
-# fois par jour. Une version intermédiaire (VANGUARD_INTERMEDIAIRE) va sur la clé et sur GitHub (le code) sans page :
+# jour : le lien « dernière version » du README mène toujours à celle du jour. Une version intermédiaire (VANGUARD_INTERMEDIAIRE) va sur la clé et sur GitHub (le code) sans page :
 # la suivante la reprend (outils/publier-version.sh).
 # Captures d'écran du README (assets/captures/) : refaites pour chaque page publiée, puisque le menu montre le numéro
 # de la version téléchargée. Vanguard y tourne sur une copie des données, sans rien toucher de vrai, et ce qui
@@ -380,7 +379,7 @@ elif git remote get-url origin >/dev/null 2>&1; then
     echo "Rien n'est envoyé sur GitHub : un détail personnel paraît dans les commits (voir ci-dessus)."
   # Une page de version suit : les liens de téléchargement du README se vérifient contre ses fichiers, pas contre la
   # dernière version en ligne (absente sur un dépôt neuf, d'une version en retard sinon).
-  elif ! python3 outils/liens.py ${A_PUBLIER:+--version vanguard-windows-x86_64.exe vanguard-linux-x86_64 vanguard-macos SHA256SUMS.txt $(bash outils/sbom.sh --noms)}; then
+  elif ! python3 outils/liens.py ${A_PUBLIER:+--version vanguard-windows-x86_64.exe vanguard-linux-x86_64 SHA256SUMS.txt $(bash outils/sbom.sh --noms)}; then
     echo "Rien n'est envoyé sur GitHub : un lien est mort (voir ci-dessus)."
   # La sortie est gardée : un refus de GitHub (règles de master, historique qui a divergé) n'est pas une panne
   # d'Internet, et le redire au prochain déploiement n'y changerait rien.
@@ -453,8 +452,8 @@ elif [[ -d $HOME/Windows && -f $WINDOWS ]]; then
   fi
 fi
 
-# Nouvelle version envoyée : sa page sur GitHub (Releases), en dernier, car la version macOS se compile sur un Mac de
-# GitHub (quelques minutes d'attente) ; la clé et la VM sont alors déjà à jour.
+# Nouvelle version envoyée : sa page sur GitHub (Releases), en dernier, car GitHub fait et atteste ses nomenclatures
+# (ci.yml, quelques minutes d'attente) ; la clé et la VM sont alors déjà à jour.
 publier_la_version() {
   [[ -n ${PUBLIER:-} ]] || return 0
   echo "Nouvelle version v$VERSION : sa page sur GitHub…"
@@ -514,7 +513,7 @@ T_CLE=$SECONDS
 # les reprenait, et le bilan disait « la clé n'a pas changé » (campagne d'attaque n° 3).
 # Un déploiement arrêté en route (clé retirée, rsync ou copie en échec) laisse son repère, au jeton de la clé : le
 # suivant retire de la clé ce que le déploiement pose lui-même et qui diffère de la référence (il le repose ; ce qu'il
-# ne repose pas, un programme Mac sans compilation, n'y revient pas), tout le reste compte. Retiré une fois la
+# ne repose pas, une archive tldr hors ligne, n'y revient pas), tout le reste compte. Retiré une fois la
 # référence réécrite.
 REPRISE=${XDG_STATE_HOME:-$HOME/.local/state}/vanguard/deploiement-en-cours-$(jeton_du_volume "$CLE")
 REPRENDRE=()
@@ -561,71 +560,19 @@ fi
 mkdir -p "$CLE"/{Linux,Windows,donnees,source}
 copier "$LINUX" "$CLE/Linux/vanguard"
 [[ -f $WINDOWS ]] && copier "$WINDOWS" "$CLE/Windows/vanguard.exe"
-# Version macOS : compilée sur un Mac de GitHub (.github/workflows/macos.yml, chaque nuit si le code a changé),
-# récupérée ici quand une compilation plus récente a réussi. Sans Internet ou sans gh : on garde la dernière.
-MAC=target/macos
-if [[ -z $LOCAL ]] && command -v gh >/dev/null; then
-  # La dernière compilation réussie qui a vraiment produit le programme : une exécution de nuit sautée (code
-  # inchangé) réussit aussi, sans rien produire. Comme pour la page de la version (outils/publier-version.sh) :
-  # seulement une exécution de master, lancée par la nuit ou à la main (celle d'une autre branche tourne avec son
-  # macos.yml et le cache qu'elle a pu préparer), d'un commit déjà dans celui-ci ; puis son commit.txt et l'empreinte
-  # que son journal annonce, relus sur ce qui est téléchargé (campagne d'attaque n° 3).
-  RUN=""
-  for execution in $(timeout 20 gh run list --workflow macos.yml --branch master --status success --limit 20 \
-    --json databaseId,headSha,headBranch,event \
-    -q '.[] | select(.headBranch == "master" and (.event == "schedule" or .event == "workflow_dispatch"))
-      | "\(.databaseId):\(.headSha)"' 2>/dev/null || true); do
-    git merge-base --is-ancestor "${execution#*:}" HEAD 2>/dev/null || continue
-    if [[ -n $(timeout 20 gh api "repos/{owner}/{repo}/actions/runs/${execution%%:*}/artifacts" \
-      -q '.artifacts[] | select(.name == "vanguard-macos" and (.expired | not)) | .name' 2>/dev/null) ]]; then
-      RUN="${execution%%:*} ${execution#*:}"
-      break
-    fi
-  done
-  # Jamais une compilation plus ancienne que celle déjà là (celle de la dernière page, copiée par
-  # publier-version.sh).
-  ACTUEL=$(cat "$MAC/commit.txt" 2>/dev/null || true)
-  if [[ -n $RUN && ${RUN#* } != "$ACTUEL" ]] &&
-    ! { [[ -n $ACTUEL ]] && git merge-base --is-ancestor "${RUN#* }" "$ACTUEL" 2>/dev/null; }; then
-    rm -rf "$MAC.nouveau"
-    if timeout 120 gh run download "${RUN%% *}" -n vanguard-macos -D "$MAC.nouveau" >/dev/null 2>&1; then
-      ANNONCEE=$(timeout 60 gh run view "${RUN%% *}" --log 2>/dev/null | grep -oE 'EMPREINTE-VANGUARD-MACOS [0-9a-f]{64}' |
-        tail -1 | cut -d' ' -f2 || true)
-      if [[ $(tr -d '[:space:]' <"$MAC.nouveau/commit.txt" 2>/dev/null) != "${RUN#* }" || -z $ANNONCEE ||
-        $ANNONCEE != "$(sha256sum "$MAC.nouveau/vanguard" 2>/dev/null | cut -d' ' -f1)" ]]; then
-        echo "Version macOS de GitHub écartée : commit.txt ou empreinte différents de son exécution (${RUN%% *})."
-        rm -rf "$MAC.nouveau"
-      else
-        rm -rf "$MAC" && mv "$MAC.nouveau" "$MAC" && echo "Version macOS récupérée de GitHub (commit ${RUN#* })."
-      fi
-    fi
-  fi
-fi
-# La version macOS passe la même vérification que les deux autres (outils/failles-programmes.sh, moitié par moitié) :
-# un artefact compilé avant cargo auditable, donc sans sa liste, ou une faille parue depuis, et la clé garde la sienne.
-if [[ -f $MAC/vanguard ]] && ! outils/failles-programmes.sh "$MAC/vanguard"; then
-  echo "Version macOS pas copiée sur la clé (voir ci-dessus) : elle y reste telle qu'elle était."
-elif [[ -f $MAC/vanguard ]]; then
-  mkdir -p "$CLE/macOS"
-  copier "$MAC/vanguard" "$CLE/macOS/vanguard"
-  cp -f "outils/cle/Lancer Vanguard.command" "$CLE/"
-  # Le Mac de GitHub ne compile pas chaque version (la nuit si le code a changé, et pour chaque page publiée) : la
-  # version macOS de la clé peut retarder sur les deux autres, et c'est dit.
-  VERSION_MAC=$(git show "$(cat "$MAC/commit.txt" 2>/dev/null):Cargo.toml" 2>/dev/null |
-    sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
-  VERSION_ICI=$(./"$LINUX" --version | awk '{print $2}')
-  if [[ -n $VERSION_MAC && $VERSION_MAC != "$VERSION_ICI" ]]; then
-    echo "Clé : macOS en $VERSION_MAC (dernière compilation sur un Mac de GitHub), Linux et Windows en $VERSION_ICI."
-  fi
-fi
-# macOS écrit dès le branchement (index Spotlight, journal des changements, corbeille) : ces témoins l'en
-# dispensent, la clé reste propre même avant que Vanguard la protège.
+# Vanguard ne vise plus le Mac : le programme macOS, son mode d'emploi et son lanceur, posés par les déploiements
+# d'avant, sont retirés de la clé, eux seulement (la clé a déjà été comparée à sa référence, plus haut ; celle réécrite
+# à la fin ne les a plus). Rien d'autre n'est touché dans macOS/ : le dossier reste s'il n'est pas vide.
+rm -f "$CLE/macOS/vanguard" "$CLE/macOS/LISEZMOI.txt" "$CLE/macOS/README.txt" "$CLE/Lancer Vanguard.command"
+[[ ! -d $CLE/macOS ]] || rmdir "$CLE/macOS" 2>/dev/null || true
+# Un Mac où la clé est branchée y écrit dès le branchement (index Spotlight, journal des changements, corbeille) : ces
+# témoins l'en dispensent, la clé (et ses données) reste propre même là.
 touch "$CLE/.metadata_never_index" "$CLE/.Trashes"
 mkdir -p "$CLE/.fseventsd" && touch "$CLE/.fseventsd/no_log"
 cp -f outils/LISEZMOI.txt "$CLE/LISEZMOI.txt"
 cp -f outils/README.txt "$CLE/README.txt"
 # Mode d'emploi de chaque version, à côté de son programme : double-clic, terminal, PowerShell, invite de commandes.
-for systeme in Linux Windows macOS; do
+for systeme in Linux Windows; do
   if [[ -d $CLE/$systeme ]]; then
     cp -f "outils/cle/$systeme/LISEZMOI.txt" "outils/cle/$systeme/README.txt" "$CLE/$systeme/"
   fi

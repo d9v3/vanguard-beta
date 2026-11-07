@@ -1,13 +1,14 @@
 # Intégration continue. Le travail principal lance outils/verifier.sh, la vérification complète de l'ordinateur de
-# l'auteur (mise en forme, clippy sans remarque sur les quatre cibles, tests, la suite refaite sans Internet, scripts
+# l'auteur (mise en forme, clippy sans remarque sur les deux cibles, tests, la suite refaite sans Internet, scripts
 # PowerShell, shell et Python, extensions, essais des outils de la clé, liens internes, dépendances, failles connues,
 # banc de fuzzing), sauf Wine : une seule logique, la même ici et là-bas, au lieu d'une copie qui divergeait. Il tourne
 # à chaque envoi sur master (la publication du jour) et à chaque demande de fusion, avec le garde-fou de
 # confidentialité. Sur un vrai Windows de GitHub (PowerShell, registre, winget) : à chaque envoi et à chaque demande de
 # fusion, la nuit si le code a changé, et à la demande (gh workflow run ci.yml) ; la compilation reproductible et
 # l'essai du .exe livré (MinGW) aussi, sauf pour une demande de fusion. Chaque nuit, même sans changement : les failles
-# connues des dépendances, leurs licences et leur provenance, et cinq minutes de fuzzing par cible. macOS a son propre
-# workflow (macos.yml), qui teste et compile le programme universel pour la clé.
+# connues des dépendances, leurs licences et leur provenance, et cinq minutes de fuzzing par cible. Sur master, à
+# chaque envoi et à la demande : les nomenclatures (SBOM) des programmes, attestées (Sigstore) pour la page de la
+# version.
 #
 # Le dépôt est public depuis le 20 octobre 2026 : les minutes de Linux et de Windows ne sont plus comptées, Windows
 # tourne donc à chaque envoi.
@@ -15,14 +16,14 @@ name: CI
 
 on:
   # master seulement : l'étiquette vX.Y.Z que crée outils/publier-version.sh vise un commit déjà testé, et une
-  # branche n'est poussée que pour son passage sur le Mac (outils/livrer-branche.sh), avant la fusion.
+  # branche se vérifie sur l'ordinateur de l'auteur (outils/livrer-branche.sh), avant la fusion.
   # La CI tournait deux fois sur le même commit à chaque publication (la branche, puis master après la fusion).
   push:
     branches: [master]
   pull_request:
   workflow_dispatch:
   schedule:
-    # 3 h 43, heure de Montréal (après macos.yml). GitHub la lance souvent bien plus tard (4 h 30 de retard le
+    # 3 h 43, heure de Montréal. GitHub la lance souvent bien plus tard (4 h 30 de retard le
     # 18 oct. 2026, 7 h 15 le 19) : regarder `gh run list --workflow ci.yml --event schedule` avant de la croire
     # absente.
     - cron: "43 7 * * *"
@@ -54,15 +55,14 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       # Compilateurs C : YARA-X (par wasmtime) compile un petit fichier C pour chaque cible ; musl-gcc pour Linux, le
-      # gcc de MinGW pour Windows (et le préprocesseur de windres, pour l'icône et le manifeste), clang pour les cibles
-      # Mac, qu'il vise sans les outils d'Apple (outils/mac-entetes). La chaîne Rust est celle de rust-toolchain.toml,
-      # avec ses cibles et ses composants ; nightly pour le banc de fuzzing seulement.
+      # gcc de MinGW pour Windows (et le préprocesseur de windres, pour l'icône et le manifeste). La chaîne Rust est
+      # celle de rust-toolchain.toml, avec ses cibles et ses composants ; nightly pour le banc de fuzzing seulement.
       - name: Rust, cibles et outils de compilation croisée
         run: |
           rustup toolchain install
           rustup toolchain install nightly --profile minimal
           sudo apt-get update -qq
-          sudo apt-get install -y -qq musl-tools gcc-mingw-w64-x86-64 clang
+          sudo apt-get install -y -qq musl-tools gcc-mingw-w64-x86-64
           git branch -f master origin/master 2>/dev/null || true
       # Les tests sans Internet (unshare -rn) et les essais des outils de la clé (unshare -rmn) demandent des espaces
       # de noms d'utilisateur, qu'AppArmor refuse par défaut sur Ubuntu 24.04.
@@ -212,8 +212,8 @@ jobs:
           retention-days: 30
 
   # Windows à chaque envoi, à chaque demande de fusion et à la demande ; la nuit, seulement si le code a changé depuis
-  # le dernier passage réussi (comme macos.yml). La liste des fichiers que le programme n'intègre pas est dans
-  # .github/hors-code.txt, la même pour macos.yml et outils/publier-version.sh.
+  # le dernier passage réussi. La liste des fichiers que le programme n'intègre pas est dans .github/hors-code.txt, la
+  # même pour outils/publier-version.sh.
   utile:
     runs-on: ubuntu-latest
     outputs:
@@ -422,3 +422,61 @@ jobs:
           name: essai-windows-livre
           path: audit.json
           retention-days: 14
+
+  # Les nomenclatures (SBOM) des programmes de la version (outils/sbom.sh), sur master, à chaque envoi et à la demande
+  # (outils/publier-version.sh relance ce workflow s'il n'en trouve pas pour le commit qu'il publie) : les mêmes octets
+  # que celles qu'outils/publier-version.sh refait chez l'auteur, qu'il compare avant de les joindre à la page. Sans
+  # cache, comme tout ce qui part vers la page de la version : un cache se reprend d'un passage à l'autre, et un compte
+  # GitHub pris pourrait en préparer un piégé. Ref complète : une étiquette nommée master n'en a pas.
+  nomenclatures:
+    if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Tout l'historique : la date des nomenclatures est celle du code (outils/date-du-code.sh), le dernier commit
+      # qui a touché le programme.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Rust (rust-toolchain.toml)
+        run: rustup toolchain install
+      # cargo-cyclonedx dans la version qu'épingle outils/sbom.sh (empreintes vérifiées, aucun repli).
+      - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
+        with:
+          tool: cargo-cyclonedx@0.5.9
+          fallback: none
+      - name: Nomenclatures (SBOM)
+        run: |
+          bash outils/sbom.sh sbom
+          echo "${{ github.sha }}" > commit.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nomenclatures
+          path: |
+            commit.txt
+            sbom/*.cdx.json
+          retention-days: 30
+
+  # L'attestation de provenance (actions/attest, Sigstore) des nomenclatures : signée au nom de ce fichier, de ce dépôt
+  # et de ce commit, inscrite au registre public Rekor, que tout le monde vérifie avec « gh attestation verify ».
+  # outils/publier-version.sh l'exige avant de publier. Master seulement ; ref complète, une étiquette nommée master
+  # n'en a pas.
+  # Un travail à part, qui ne lance rien du dépôt : le jeton OIDC (id-token) qui signe une attestation n'est jamais
+  # à portée des scripts de compilation des dépendances, qui sinon pourraient faire attester n'importe quel fichier.
+  attester:
+    needs: nomenclatures
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nomenclatures
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: sbom/*.cdx.json

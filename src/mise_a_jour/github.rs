@@ -22,7 +22,7 @@
 //! (`vanguard verifier-moi`). C'est un fichier à part, signé sous un autre domaine : `derniere.txt` garde sa forme, et
 //! les copies d'avant lui (0.85.0 et plus anciennes), qui ne lisent que lui, ne voient rien changer.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : la partie Windows n'est pas encore relue ; le lint y viendra avec elle.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::io::IsTerminal;
@@ -144,12 +144,12 @@ const HISTORIQUE_MAX: u64 = 4 << 20;
 const FRAICHE: Duration = Duration::from_hours(12);
 
 /// Le programme de ce système : son nom dans le manifeste, puis sur GitHub (ceux de `outils/publier-version.sh`).
+/// Plus de Mac : le manifeste n'a plus de ligne « macos », et un Vanguard pour Mac déjà installé n'y trouve
+/// simplement plus de version (« sans version pour ce système »), sans rien casser.
 const SYSTEME: Option<(&str, &str)> = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
     Some(("linux-x86_64", "vanguard-linux-x86_64"))
 } else if cfg!(all(windows, target_arch = "x86_64")) {
     Some(("windows-x86_64", "vanguard-windows-x86_64.exe"))
-} else if cfg!(target_os = "macos") {
-    Some(("macos", "vanguard-macos"))
 } else {
     None
 };
@@ -599,8 +599,10 @@ mod tests {
 
     const MANIFESTE: &str = "version 0.79.0+1792540000\n\
         linux-x86_64 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff 26214400\n\
-        windows-x86_64 ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100 27262976\n\
-        macos 0000000000000000000000000000000000000000000000000000000000000001 30000000\n";
+        windows-x86_64 ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100 27262976\n";
+
+    /// La ligne d'un programme Mac, dans les blocs des versions publiées avant le retrait du Mac (0.89.1 et d'avant).
+    const LIGNE_MAC: &str = "macos 0000000000000000000000000000000000000000000000000000000000000001 30000000\n";
 
     fn signer_historique(cle: &ed25519_dalek::SigningKey, historique: &str) -> Vec<u8> {
         let mut message = DOMAINE_HISTORIQUE.to_vec();
@@ -610,6 +612,7 @@ mod tests {
 
     /// Une copie qui n'est plus la dernière se retrouve dans l'historique signé : sa version et son système, par
     /// l'empreinte de son programme. Signé par une autre clé, sous le domaine du manifeste, abîmé ou mal formé : refusé.
+    /// Les blocs d'avant le retrait du Mac (trois programmes) et ceux d'après (deux) se lisent dans le même historique.
     #[test]
     fn une_ancienne_copie_se_retrouve_dans_l_historique() {
         let ancien = MANIFESTE.replace("0.79.0+1792540000", "0.78.0+1792400000").replacen(
@@ -617,7 +620,7 @@ mod tests {
             "linux-x86_64 aa11",
             1,
         );
-        let historique = format!("{MANIFESTE}{ancien}");
+        let historique = format!("{MANIFESTE}{ancien}{LIGNE_MAC}");
         let cle = cle_d_essai();
         let cles = [cle.verifying_key().to_bytes()];
         let signature = signer_historique(&cle, &historique);
@@ -632,6 +635,12 @@ mod tests {
         assert_eq!(
             chercher_avec(&cles, historique.as_bytes(), &signature, &linux_0_78).unwrap(),
             Some(((0, 78, 0, 1_792_400_000), "linux-x86_64".to_string()))
+        );
+        let mut mac = [0; 32];
+        mac[31] = 1;
+        assert_eq!(
+            chercher_avec(&cles, historique.as_bytes(), &signature, &mac).unwrap(),
+            Some(((0, 78, 0, 1_792_400_000), "macos".to_string()))
         );
         assert_eq!(
             chercher_avec(&cles, historique.as_bytes(), &signature, &[0x42; 32]).unwrap(),
@@ -699,11 +708,13 @@ passe-droit-sans-vm {zeros} 0
         assert_eq!(v, (0, 79, 0, 1_792_540_000));
         assert_eq!((sha[0], sha[31], taille), (0xff, 0x00, 27_262_976));
         assert!(lire_manifeste(MANIFESTE, "freebsd").is_none());
+        // Plus de ligne macos : un Mac n'y trouve aucune version, le manifeste reste lisible pour les deux autres.
+        assert!(lire_manifeste(MANIFESTE, "macos").is_none());
         // Le moindre écart de forme : refusé.
-        assert!(lire_manifeste(&MANIFESTE.replace("version ", "version: "), "macos").is_none());
-        assert!(lire_manifeste(&MANIFESTE.replace(" 30000000", " 3e7"), "macos").is_none());
-        assert!(lire_manifeste(&MANIFESTE.replace("0001 ", "01 "), "macos").is_none());
-        assert!(lire_manifeste(&MANIFESTE.replace(" 26214400", " 26214400 en-trop"), "macos").is_none());
+        assert!(lire_manifeste(&MANIFESTE.replace("version ", "version: "), "windows-x86_64").is_none());
+        assert!(lire_manifeste(&MANIFESTE.replace(" 27262976", " 2.7e7"), "windows-x86_64").is_none());
+        assert!(lire_manifeste(&MANIFESTE.replace("1100 ", "11 "), "windows-x86_64").is_none());
+        assert!(lire_manifeste(&MANIFESTE.replace(" 26214400", " 26214400 en-trop"), "windows-x86_64").is_none());
     }
 
     #[test]
@@ -817,25 +828,30 @@ passe-droit-sans-vm {zeros} 0
             }
             None
         }
-        // La forme exacte qu'écrit signer-versions.sh : « version X », puis les trois systèmes dans cet ordre.
-        let (a, b, c) = ("ab".repeat(32), "cd".repeat(32), "ef".repeat(32));
-        let manifeste = format!(
-            "version 0.86.0+1792600000\nlinux-x86_64 {a} 26214400\nwindows-x86_64 {b} 27262976\nmacos {c} 30000000\n"
-        );
-        for systeme in ["linux-x86_64", "windows-x86_64", "macos"] {
+        // La forme exacte qu'écrit signer-versions.sh : « version X », puis les deux systèmes dans cet ordre.
+        let (a, b) = ("ab".repeat(32), "cd".repeat(32));
+        let manifeste = format!("version 0.86.0+1792600000\nlinux-x86_64 {a} 26214400\nwindows-x86_64 {b} 27262976\n");
+        for systeme in ["linux-x86_64", "windows-x86_64"] {
             let ancien = lire_manifeste_0_85(&manifeste, systeme);
             assert!(ancien.is_some(), "{systeme}");
             assert_eq!(ancien, lire_manifeste(&manifeste, systeme), "{systeme}");
         }
         assert_eq!(
-            lire_manifeste_0_85(MANIFESTE, "macos"),
-            lire_manifeste(MANIFESTE, "macos")
+            lire_manifeste_0_85(MANIFESTE, "windows-x86_64"),
+            lire_manifeste(MANIFESTE, "windows-x86_64")
         );
-        // La ligne de révocation (signer-versions.sh --secours --revoquer) vient après les trois programmes : le
+        // Un Vanguard pour Mac déjà installé (0.85 à 0.89.1) : sans ligne macos, il ne trouve aucune version, comme
+        // le lecteur d'aujourd'hui ; rien ne casse. Une ligne macos à un ou deux champs, elle, lui ferait refuser le
+        // manifeste entier, et aux Linux et Windows de la même époque aussi.
+        assert_eq!(lire_manifeste_0_85(&manifeste, "macos"), None);
+        assert_eq!(lire_manifeste(&manifeste, "macos"), None);
+        let tronquee = format!("version 0.86.0+1792600000\nmacos\nlinux-x86_64 {a} 26214400\n");
+        assert_eq!(lire_manifeste_0_85(&tronquee, "linux-x86_64"), None);
+        // La ligne de révocation (signer-versions.sh --secours --revoquer) vient après les deux programmes : le
         // lecteur de la 0.85 trouve le sien avant elle, et lit la même chose (la 0.85 ne connaît pas la clé de
         // secours : elle refuse ce manifeste pour sa signature, jamais pour sa forme).
         let revoque = format!("{manifeste}{LIGNE_REVOCATION}\n");
-        for systeme in ["linux-x86_64", "windows-x86_64", "macos"] {
+        for systeme in ["linux-x86_64", "windows-x86_64"] {
             assert_eq!(
                 lire_manifeste_0_85(&revoque, systeme),
                 lire_manifeste(&manifeste, systeme),
@@ -859,19 +875,19 @@ passe-droit-sans-vm {zeros} 0
         ];
         let avec_ligne = format!("{MANIFESTE}{LIGNE_REVOCATION}\n");
         // Le lecteur d'aujourd'hui lit toujours chaque programme.
-        for systeme in ["linux-x86_64", "windows-x86_64", "macos"] {
+        for systeme in ["linux-x86_64", "windows-x86_64"] {
             assert_eq!(lire_manifeste(&avec_ligne, systeme), lire_manifeste(MANIFESTE, systeme));
         }
         assert!(revoque_la_principale(avec_ligne.as_bytes()) && !revoque_la_principale(MANIFESTE.as_bytes()));
         // Avant : les deux clés passent.
         let par_principale = signer(&principale, MANIFESTE);
-        assert!(juger_avec(&cles, MANIFESTE.as_bytes(), &par_principale, "macos", "m").is_ok());
+        assert!(juger_avec(&cles, MANIFESTE.as_bytes(), &par_principale, "windows-x86_64", "m").is_ok());
         // Signée par la principale, la ligne ne révoque rien (sinon un voleur couperait la clé de secours).
         let p = juger_avec(
             &cles,
             avec_ligne.as_bytes(),
             &signer(&principale, &avec_ligne),
-            "macos",
+            "windows-x86_64",
             "m",
         )
         .unwrap();
@@ -880,18 +896,33 @@ passe-droit-sans-vm {zeros} 0
             &cles,
             avec_ligne.as_bytes(),
             &signer(&secours, &avec_ligne),
-            "macos",
+            "windows-x86_64",
             "m",
         );
         assert!(s.unwrap().revoque);
         // Sans la ligne, la clé de secours signe sans rien révoquer.
-        let s = juger_avec(&cles, MANIFESTE.as_bytes(), &signer(&secours, MANIFESTE), "macos", "m");
+        let s = juger_avec(
+            &cles,
+            MANIFESTE.as_bytes(),
+            &signer(&secours, MANIFESTE),
+            "windows-x86_64",
+            "m",
+        );
         assert!(!s.unwrap().revoque);
         // Après : la principale est refusée, et le refus le dit.
         let apres = &cles[1..];
-        let refus = juger_avec(apres, MANIFESTE.as_bytes(), &par_principale, "macos", "m");
+        let refus = juger_avec(apres, MANIFESTE.as_bytes(), &par_principale, "windows-x86_64", "m");
         assert!(refus.is_err());
-        assert!(juger_avec(apres, MANIFESTE.as_bytes(), &signer(&secours, MANIFESTE), "macos", "m").is_ok());
+        assert!(
+            juger_avec(
+                apres,
+                MANIFESTE.as_bytes(),
+                &signer(&secours, MANIFESTE),
+                "windows-x86_64",
+                "m"
+            )
+            .is_ok()
+        );
         // Les clés gravées : révoquée, la principale ne reste pas dans la liste.
         assert_eq!(cles_acceptees(false), &CLES);
         assert_eq!(cles_acceptees(true), &[CLE_SECOURS]);

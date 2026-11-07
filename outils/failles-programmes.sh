@@ -6,9 +6,8 @@
 # crates.io (yanked), elle, est seulement signalée. Les seules exceptions sont celles de deny.toml, où est leur preuve :
 # cargo audit lit aussi le .cargo/audit.toml du dossier courant (à défaut, celui de ~/.cargo) et ajoute ses exceptions
 # sans le dire ; il tourne donc dans un dossier à lui, dont l'audit.toml vide masque les autres. Un programme sans sa
-# liste est refusé : cargo audit n'en retrouverait qu'une partie (messages de panique) et pourrait dire vert à tort. Un
-# programme universel de macOS, que cargo audit ne lit pas tel quel, est vérifié moitié par moitié. La liste vient de
-# cargo metadata : elle compte parfois une dépendance facultative qui n'est pas compilée (9 de plus que cargo tree pour
+# liste est refusé : cargo audit n'en retrouverait qu'une partie (messages de panique) et pourrait dire vert à tort. La
+# liste vient de cargo metadata : elle compte parfois une dépendance facultative qui n'est pas compilée (9 de plus que cargo tree pour
 # Linux comme pour Windows, le 21 oct. 2026), d'où au pire une alerte de trop, jamais une de moins. cargo-audit est
 # celui de la CI (.github/workflows/ci.yml) : le même jugement ici et là-bas.
 #   outils/failles-programmes.sh <programme>...
@@ -16,9 +15,8 @@
 #   outils/failles-programmes.sh --depot   Cargo.lock du dépôt, jugé de même (étape « failles connues » de
 #                                          outils/verifier.sh, que la CI lance aussi chaque nuit) : code 77 sans
 #                                          cargo-audit ou sans Internet, où une base pas à jour dirait vert à tort
-# Lancé par outils/deployer.sh (après chaque compilation, et sur la version macOS avant de la copier sur la clé), par
-# outils/publier-version.sh sur les trois programmes qu'il publie, et par la CI sur ceux qu'elle compile (ci.yml,
-# macos.yml). Sans Internet : la base RustSec du dernier téléchargement, et c'est dit.
+# Lancé par outils/deployer.sh (après chaque compilation), par outils/publier-version.sh sur les deux programmes qu'il
+# publie, et par la CI sur ceux qu'elle compile (ci.yml). Sans Internet : la base RustSec du dernier téléchargement, et c'est dit.
 set -euo pipefail
 RACINE=$(cd "$(dirname "$0")/.." && pwd)
 
@@ -87,37 +85,9 @@ if [[ $1 == --depot ]]; then
   exit "$CODE"
 fi
 
-# Un programme universel de macOS (en-tête « fat », gros-boutiste) : chaque moitié écrite à part, une ligne
-# « architecture<tab>chemin » par moitié ; rien pour un autre programme. Une classe Java a la même magie, mais ses
-# quatre octets suivants disent sa version (45 et plus), pas un nombre de moitiés.
-MOITIES='
-import struct
-import sys
-from pathlib import Path
-
-chemin, dossier = Path(sys.argv[1]), Path(sys.argv[2])
-try:
-    donnees = chemin.read_bytes()
-except OSError:
-    sys.exit()
-magie, nombre = struct.unpack_from(">II", donnees) if len(donnees) >= 8 else (0, 0)
-if magie not in (0xCAFEBABE, 0xCAFEBABF) or not 0 < nombre < 20:
-    sys.exit()
-forme, taille = (">iiIII", 20) if magie == 0xCAFEBABE else (">iiQQII", 32)
-noms = {0x01000007: "x86_64", 0x0100000C: "arm64"}
-dossier.mkdir()
-for i in range(nombre):
-    cpu, _, debut, longueur = struct.unpack_from(forme, donnees, 8 + i * taille)[:4]
-    nom = noms.get(cpu, f"cpu-{cpu:#x}")
-    moitie = dossier / f"{i}-{chemin.name}-{nom}"
-    moitie.write_bytes(donnees[debut:debut + longueur])
-    print(f"{nom}\t{moitie}")
-'
 # Chaque programme par son chemin complet (cargo audit tourne dans son dossier à lui), sous son nom pour l'affichage.
-# (Pas de tableau vide : le bash 3.2 d'un Mac le refuse sous set -u.)
 NOMS=()
 CHEMINS=()
-n=0
 for programme in "$@"; do
   if [[ ! -f $programme ]]; then
     echo "✖ $programme : introuvable. Ces programmes ne partent nulle part."
@@ -127,18 +97,8 @@ for programme in "$@"; do
     /*) chemin=$programme ;;
     *) chemin=$PWD/$programme ;;
   esac
-  n=$((n + 1))
-  moities=$(python3 -I -c "$MOITIES" "$chemin" "$TRAVAIL/$n") ||
-    { echo "✖ $programme : programme universel illisible. Ces programmes ne partent nulle part."; exit 1; }
-  if [[ -z $moities ]]; then
-    NOMS+=("$programme")
-    CHEMINS+=("$chemin")
-  else
-    while IFS=$'\t' read -r architecture moitie; do
-      NOMS+=("$programme ($architecture)")
-      CHEMINS+=("$moitie")
-    done <<<"$moities"
-  fi
+  NOMS+=("$programme")
+  CHEMINS+=("$chemin")
 done
 
 CODE=0

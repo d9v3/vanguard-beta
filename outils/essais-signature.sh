@@ -3,14 +3,17 @@
 # la vraie clé de signature n'est lu, rien n'est publié.
 #   1. derniere.txt et derniere.txt.sig sont identiques, à l'octet, à ceux du script de master (la version que les
 #      copies déjà installées, 0.85.0 et d'avant, savent lire) : mêmes programmes, même clé, Ed25519 déterministe.
-#      L'historique des versions est un fichier à part : ce que lisent ces copies ne change pas.
+#      Tant que le script de master signe encore un programme Mac : le même derniere.txt sans sa ligne macos, signé
+#      par la même clé, que le lecteur de la 0.85.0 lit pour Linux et Windows et où il ne trouve rien pour macos (un
+#      ancien Mac ne se voit proposer aucune version, rien ne casse). L'historique des versions est un fichier à part :
+#      ce que lisent ces copies ne change pas.
 #   2. L'historique signé grandit d'une version à l'autre, la plus récente en tête, et commence au manifeste signé de
 #      la version d'avant quand il n'y a pas encore d'historique.
 #   3. Un historique d'avant signé par une autre clé est refusé : rien ne s'ajoute à un historique douteux.
 #   4. Sans rien d'avant ni --premier (un téléchargement raté chez publier-version.sh), rien n'est signé : l'historique
 #      ne repart pas de zéro avant que les pages d'avant soient effacées.
 #   5. La révocation de la clé principale (--secours --revoquer) : la ligne « revoque principale » vient après les
-#      trois programmes, que le lecteur de la 0.85.0 (refait ici en awk, comme github.rs le recopie) trouve tous
+#      deux programmes, que le lecteur de la 0.85.0 (refait ici en awk, comme github.rs le recopie) trouve tous
 #      avant elle ; jamais dans l'historique ; refusée sans --secours, ou si un programme garde la principale (sans
 #      la marque de PRINCIPALE_RETIREE à true) ; signés par la principale, des programmes qui la retirent ou sans
 #      marque sont refusés (5b). La phrase de la clé de secours d'essai (chiffrée, comme la vraie) passe par un
@@ -35,20 +38,19 @@
 #   6c. Au branchement de la clé, deployer.sh (ci_verte, face à un faux gh) ne récupère ni ne compile un commit de
 #      GitHub sans CI verte sur ce commit exact (ci.yml, master ; campagne d'attaque n° 6, F4), et dit à part gh sans
 #      compte connecté ou introuvable (sinon, sous le service de la clé, « réessayé » pour toujours sans alerte).
-#   6e. publier-version.sh n'attend pas sans fin une exécution de GitHub (CI, Mac) bloquée : attendre_execution,
-#      face à un faux gh qui ne finit jamais, abandonne au délai.
+#   6e. publier-version.sh n'attend pas sans fin une exécution de GitHub (CI) bloquée : attendre_execution, face à un
+#      faux gh qui ne finit jamais, abandonne au délai.
 #   6f. Les protections des programmes qui partent (vanguard deploiement verifier-binaire) : publier-version.sh les
 #      fait lire (verifier_binaires, face à un faux programme Linux) sur les copies Linux et Windows, après la relecture
-#      de leurs empreintes, et sur la version macOS récupérée ; deployer.sh, sur ce qui part ; un refus arrête tout.
-#   6g. livrer-branche.sh n'attend pas sans fin le Mac de GitHub : attendre_mac, face au même faux gh, abandonne au
-#      délai et dit quoi faire, sans rien fusionner.
+#      de leurs empreintes ; deployer.sh, sur ce qui part ; un refus arrête tout.
 #   6d. Un passe-droit de publier-version.sh (VANGUARD_PUBLIER_SANS_EMPREINTES_CI, VANGUARD_PUBLIER_SANS_VM) est dit
 #      en tête des notes de la page (notes, face à un faux gh) et gardé dans le bloc de sa version de l'historique
 #      signé (signer-versions.sh --passe-droit), sous la forme que lit github.rs, jamais dans derniere.txt.
-#   6. Le programme Mac que la clé signe vient d'une exécution de master : publier-version.sh (sa fonction
-#      avec_programme, face à un faux gh) écarte celle d'une autre branche, même plus récente et du même commit ; et
-#      macos.yml ne reprend aucun cache sur master. Sans jq, cet essai est sauté et dit. Chaque action des workflows
-#      est épinglée à un commit, jamais à une étiquette qui bouge.
+#   6. Les nomenclatures attestées que la page publie viennent d'une exécution de master : publier-version.sh (sa
+#      fonction avec_nomenclatures, face à un faux gh) écarte celle d'une autre branche, même plus récente et du même
+#      commit ; et les travaux « nomenclatures » et « attester » de ci.yml ne reprennent aucun cache, « attester » ne
+#      lance rien du dépôt. Sans jq, cet essai est sauté et dit. Chaque action des workflows est épinglée à un commit,
+#      jamais à une étiquette qui bouge.
 # Lancé par outils/verifier.sh ; code 77 (sauté) sans la branche master ici (clone partiel) ou sans openssl.
 #   outils/essais-signature.sh
 set -uo pipefail
@@ -85,8 +87,9 @@ banc() { # $1 : dossier, $2 : script, $3 : version de Cargo.toml
     "$(gravee principale)" "$(gravee secours)" >"$1/src/mise_a_jour/github.rs"
   printf '[package]\nname = "vanguard"\nversion = "%s"\n' "$3" >"$1/Cargo.toml"
 }
-# Trois faux programmes à la forme attendue (ELF x86-64, PE x86-64, Mach-O universel arm64 + x86_64), avec leur
-# version gravée et la principale gardée, comme le marque github.rs (RETIREE=true : retirée, pour --revoquer).
+# Deux faux programmes à la forme attendue (ELF x86-64, PE x86-64), avec leur version gravée et la principale gardée,
+# comme le marque github.rs (RETIREE=true : retirée, pour --revoquer). MAC=1 : un troisième, Mach-O universel arm64 +
+# x86_64, pour le script de master tant qu'il signe encore un programme Mac.
 programmes() { # $1 : dossier, $2 : version gravée
   mkdir -p "$1"
   local v="VANGUARD-VERSION:$2; VANGUARD-PRINCIPALE:GARDEE;"
@@ -94,6 +97,7 @@ programmes() { # $1 : dossier, $2 : version gravée
   { printf '\x7fELF\x02\x01'; head -c 12 /dev/zero; printf '\x3e\x00'; printf 'linux %s' "$v"; } >"$1/vanguard-linux-x86_64"
   { printf 'MZ'; head -c 58 /dev/zero; printf '\x40\x00\x00\x00'; printf 'PE\x00\x00\x64\x86'; printf 'windows %s' "$v"; } \
     >"$1/vanguard-windows-x86_64.exe"
+  [[ -n ${MAC:-} ]] || return 0
   { printf '\xca\xfe\xba\xbe\x00\x00\x00\x02'; printf '\x01\x00\x00\x0c'; head -c 16 /dev/zero
     printf '\x01\x00\x00\x07'; head -c 16 /dev/zero; printf 'macos %s' "$v"; } >"$1/vanguard-macos"
 }
@@ -110,22 +114,53 @@ signe() { # $1 : fichier, $2 : domaine
   openssl pkeyutl -verify -pubin -inkey "$T/publique.pem" -rawin -in "$T/message" -sigfile "$1.sig" >/dev/null 2>&1
 }
 
+# Le lecteur de la 0.85.0 (lire_manifeste) : la version en tête, puis la ligne du système cherché trouvée avant toute
+# ligne qui n'a pas trois champs.
+lu_par_la_0_85() { # $1 : manifeste, $2 : système ; affiche « empreinte taille »
+  awk -v s="$2" 'NR == 1 { if ($0 !~ /^version /) exit 1; next } NF != 3 { exit 1 } $1 == s { print $2, $3; trouve = 1; exit }
+    END { exit !trouve }' "$1"
+}
+
 git show master:outils/signer-versions.sh >"$T/ancien.sh"
 banc "$T/ancien" "$T/ancien.sh" 0.86.0
 banc "$T/nouveau" "$DEPOT/outils/signer-versions.sh" 0.86.0
-programmes "$T/v86-ancien" 0.86.0+1792600000
-cp -r "$T/v86-ancien" "$T/v86"
+# Le script de master signe-t-il encore un programme Mac ? Il lui faut alors le sien, et son derniere.txt a une ligne
+# macos de plus que celui d'ici.
+MAC_ANCIEN=
+grep -q 'vanguard-macos' "$T/ancien.sh" && MAC_ANCIEN=1
+MAC=$MAC_ANCIEN programmes "$T/v86-ancien" 0.86.0+1792600000
+programmes "$T/v86" 0.86.0+1792600000
 # Le script de master connaît --premier depuis qu'il tient l'historique (0.86) : sans rien d'avant, il l'exige.
 premier_ancien=()
 grep -q -- '--premier' "$T/ancien.sh" && premier_ancien=(--premier)
 signer "$T/ancien" "$T/v86-ancien" "${premier_ancien[@]}" || { ko "script de master : $(tail -n 1 "$T/v86-ancien.log")"; }
 if signer "$T/nouveau" "$T/v86" --premier; then
-  if cmp -s "$T/v86/derniere.txt" "$T/v86-ancien/derniere.txt" &&
-    cmp -s "$T/v86/derniere.txt.sig" "$T/v86-ancien/derniere.txt.sig"; then
-    ok "derniere.txt et sa signature identiques à l'octet à ceux du script de master (ce que lit la 0.85.0)"
+  if [[ -z $MAC_ANCIEN ]]; then
+    if cmp -s "$T/v86/derniere.txt" "$T/v86-ancien/derniere.txt" &&
+      cmp -s "$T/v86/derniere.txt.sig" "$T/v86-ancien/derniere.txt.sig"; then
+      ok "derniere.txt et sa signature identiques à l'octet à ceux du script de master (ce que lit la 0.85.0)"
+    else
+      ko "derniere.txt ou sa signature diffèrent de ceux du script de master"
+    fi
+  # Le Mac retiré : la même forme, la même clé et le même domaine, une ligne de moins. Jamais une ligne macos à un ou
+  # deux champs, que le lecteur de la 0.85.0 refuserait pour tous les systèmes.
+  elif grep -q '^macos ' "$T/v86-ancien/derniere.txt" &&
+    cmp -s <(grep -v '^macos ' "$T/v86-ancien/derniere.txt") "$T/v86/derniere.txt" &&
+    signe "$T/v86/derniere.txt" 'vanguard-versions 1'; then
+    ok "derniere.txt : celui du script de master sans sa ligne macos, signé par la même clé et sous le même domaine"
   else
-    ko "derniere.txt ou sa signature diffèrent de ceux du script de master"
+    ko "derniere.txt diffère de celui du script de master autrement que par sa ligne macos, ou est mal signé"
   fi
+  pareil=1
+  for s in linux-x86_64 windows-x86_64; do
+    attendu=$(grep "^$s " "$T/v86/derniere.txt" | cut -d' ' -f2-)
+    [[ -n $attendu && $(lu_par_la_0_85 "$T/v86/derniere.txt" "$s") == "$attendu" ]] || pareil=
+  done
+  [[ -n $pareil ]] && ok "le lecteur de la 0.85.0 lit Linux et Windows dans derniere.txt" ||
+    ko "le lecteur de la 0.85.0 ne lit plus derniere.txt"
+  ! grep -qE '^macos( |$)' "$T/v86/derniere.txt" && ! lu_par_la_0_85 "$T/v86/derniere.txt" macos >/dev/null &&
+    ok "aucune ligne macos : un ancien Mac n'y trouve aucune version, sans erreur pour les autres" ||
+    ko "derniere.txt a encore une ligne macos"
   signe "$T/v86/historique.txt" 'vanguard-historique 1' && ok "historique signé sous son propre domaine" ||
     ko "signature de l'historique"
   signe "$T/v86/historique.txt" 'vanguard-versions 1' && ko "l'historique se vérifie sous le domaine du manifeste" ||
@@ -196,35 +231,30 @@ elif grep -q -- "--revoquer va avec --secours" "$T/v91.log"; then
 else
   ko "refus pour une autre raison : $(tail -n 1 "$T/v91.log")"
 fi
-# La révocation par des programmes qui gardent la principale (un seul suffit, ici celui de macOS, lu en dernier) :
+# La révocation par des programmes qui gardent la principale (un seul suffit, ici celui de Windows, lu en dernier) :
 # refusée avant toute signature, la phrase de la clé n'est même pas demandée.
 programmes "$T/sans-retrait" 0.88.0+1793100000
-RETIREE=false programmes "$T/garde" 0.88.0+1793100000 && cp "$T/garde/vanguard-macos" "$T/sans-retrait/"
+RETIREE=false programmes "$T/garde" 0.88.0+1793100000 &&
+  cp "$T/garde/vanguard-windows-x86_64.exe" "$T/sans-retrait/"
 if signer "$T/nouveau88" "$T/sans-retrait" --secours --revoquer; then
   ko "--revoquer a signé des programmes qui acceptent encore la principale"
-elif grep -q "vanguard-macos accepte encore la principale" "$T/sans-retrait.log" &&
+elif grep -q "vanguard-windows-x86_64.exe accepte encore la principale" "$T/sans-retrait.log" &&
   [[ ! -e $T/sans-retrait/derniere.txt.sig ]]; then
   ok "--revoquer avec un programme qui garde la principale : refusé, rien n'est signé"
 else
   ko "refus pour une autre raison : $(tail -n 1 "$T/sans-retrait.log")"
 fi
-# Les deux marques dans un même programme (macOS universel à moitié recompilé) : refusé de même.
+# Les deux marques dans un même programme (assemblé de morceaux de compilations différentes) : refusé de même.
 programmes "$T/deux-marques" 0.88.0+1793100000
-printf 'VANGUARD-PRINCIPALE:GARDEE;' >>"$T/deux-marques/vanguard-macos"
+printf 'VANGUARD-PRINCIPALE:GARDEE;' >>"$T/deux-marques/vanguard-windows-x86_64.exe"
 if signer "$T/nouveau88" "$T/deux-marques" --secours --revoquer; then
   ko "--revoquer a signé un programme qui porte aussi la marque de la principale gardée"
-elif grep -q "vanguard-macos accepte encore la principale" "$T/deux-marques.log" &&
+elif grep -q "vanguard-windows-x86_64.exe accepte encore la principale" "$T/deux-marques.log" &&
   [[ ! -e $T/deux-marques/derniere.txt.sig ]]; then
   ok "--revoquer avec un programme aux deux marques : refusé, rien n'est signé"
 else
   ko "refus pour une autre raison : $(tail -n 1 "$T/deux-marques.log")"
 fi
-# Le lecteur de la 0.85.0 (lire_manifeste) : la version en tête, puis la ligne du système cherché trouvée avant toute
-# ligne qui n'a pas trois champs.
-lu_par_la_0_85() { # $1 : manifeste, $2 : système ; affiche « empreinte taille »
-  awk -v s="$2" 'NR == 1 { if ($0 !~ /^version /) exit 1; next } NF != 3 { exit 1 } $1 == s { print $2, $3; trouve = 1; exit }
-    END { exit !trouve }' "$1"
-}
 if command -v script >/dev/null; then
   openssl pkcs8 -topk8 -v2 aes-256-cbc -in "$T/secours.pem" -out "$T/secours-chiffree.pem" -passout pass:essai \
     2>/dev/null
@@ -236,7 +266,7 @@ if command -v script >/dev/null; then
   if [[ -f $T/v91/derniere.txt.sig ]] && [[ $(tail -n 1 "$T/v91/derniere.txt") == "revoque principale" ]]; then
     ok "--secours --revoquer : « revoque principale » en dernière ligne"
     pareil=1
-    for s in linux-x86_64 windows-x86_64 macos; do
+    for s in linux-x86_64 windows-x86_64; do
       attendu=$(grep "^$s " "$T/v91/derniere.txt" | cut -d' ' -f2-)
       [[ -n $attendu && $(lu_par_la_0_85 "$T/v91/derniere.txt" "$s") == "$attendu" ]] || pareil=
     done
@@ -256,8 +286,8 @@ if command -v script >/dev/null; then
   }
   forger() { # dossier : avant/historique.txt = le bloc forgé puis l'historique v88, signé par la principale
     mkdir -p "$1/avant"
-    { printf 'version 0.87.5+1792999999\nlinux-x86_64 %s 123\nwindows-x86_64 %s 1\nmacos %s 1\n' \
-      "$(printf 'f%.0s' {1..64})" "$(printf 'e%.0s' {1..64})" "$(printf 'd%.0s' {1..64})"
+    { printf 'version 0.87.5+1792999999\nlinux-x86_64 %s 123\nwindows-x86_64 %s 1\n' \
+      "$(printf 'f%.0s' {1..64})" "$(printf 'e%.0s' {1..64})"
       cat "$T/v88/historique.txt"; } >"$1/avant/historique.txt"
     { printf '%s\n' 'vanguard-historique 1'; cat "$1/avant/historique.txt"; } >"$T/message"
     openssl pkeyutl -sign -inkey "$T/principale.pem" -rawin -in "$T/message" -out "$1/avant/historique.txt.sig"
@@ -352,18 +382,18 @@ programmes "$T/v101" 0.88.0+1794100000
 sed 's/VANGUARD-PRINCIPALE:GARDEE;//' "$T/v101/vanguard-linux-x86_64" >"$T/v101/vanguard-linux-x86_64.tmp"
 mv "$T/v101/vanguard-linux-x86_64.tmp" "$T/v101/vanguard-linux-x86_64"
 refus "$T/v101" "seule marque de la principale gardée" "principale : un programme sans marque est refusé"
-# Les deux marques (un macOS universel dont une moitié la retire) : refusé aussi, sans --secours.
+# Les deux marques (un programme dont un morceau la retire) : refusé aussi, sans --secours.
 programmes "$T/v102" 0.88.0+1794200000
-printf 'VANGUARD-PRINCIPALE:RETIREE;' >>"$T/v102/vanguard-macos"
+printf 'VANGUARD-PRINCIPALE:RETIREE;' >>"$T/v102/vanguard-windows-x86_64.exe"
 refus "$T/v102" "seule marque de la principale gardée" "principale : un programme aux deux marques est refusé"
 
-# Le Mac signé : seulement une exécution de master. Un faux gh répond comme GitHub (jq applique les -q), avec deux
-# passages réussis du même commit : le plus récent sur une autre branche, l'autre sur master par la nuit.
+# Les nomenclatures publiées : seulement une exécution de master. Un faux gh répond comme GitHub (jq applique les -q),
+# avec deux passages réussis du même commit : le plus récent sur une autre branche, l'autre sur master par un envoi.
 if command -v jq >/dev/null; then
   mkdir -p "$T/faux-gh"
   cat >"$T/faux-gh/runs.json" <<'JSON'
 [{"databaseId": 2, "headSha": "c0ffee", "headBranch": "piege", "event": "workflow_dispatch"},
- {"databaseId": 1, "headSha": "c0ffee", "headBranch": "master", "event": "schedule"}]
+ {"databaseId": 1, "headSha": "c0ffee", "headBranch": "master", "event": "push"}]
 JSON
   cat >"$T/faux-gh/gh" <<'GH'
 #!/usr/bin/env bash
@@ -378,33 +408,35 @@ done
 if [[ -n $branche ]]; then
   jq -r --arg b "$branche" "[.[] | select(.headBranch == \$b)] | $q" "$(dirname "$0")/runs.json"
 else
-  # « api …/artifacts » ou « run list » sans branche : chaque passage a son programme ; « run view … jobs » : chacun a
-  # réussi son travail « attester ».
+  # « api …/artifacts » ou « run list » sans branche : chaque passage a ses nomenclatures ; « run view … jobs » :
+  # chacun a réussi son travail « attester ».
   case $q in
-    *artifacts*) echo vanguard-macos ;;
+    *artifacts*) echo nomenclatures ;;
     *attester*) echo attester ;;
     *) jq -r "$q" "$(dirname "$0")/runs.json" ;;
   esac
 fi
 GH
   chmod +x "$T/faux-gh/gh"
-  awk '/^avec_programme\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" >"$T/avec_programme.sh"
-  choisi=$(PATH="$T/faux-gh:$PATH" COMMIT=c0ffee HORS_CODE= bash -c "source '$T/avec_programme.sh'; avec_programme")
-  [[ $choisi == 1 ]] && ok "publier-version.sh prend la compilation Mac de master, pas celle d'une autre branche" ||
-    ko "publier-version.sh a pris la compilation Mac « ${choisi:-aucune} » (attendu : 1, celle de master)"
-  grep -q 'BRANCHE_RUN != "master schedule"' "$DEPOT/outils/publier-version.sh" &&
-    ok "publier-version.sh relit la branche de l'exécution qu'il signe" || ko "branche de l'exécution signée non relue"
-  # L'attestation du programme Mac et des nomenclatures : exigée, liée à macos.yml, à master et au commit du passage.
-  awk '/gh attestation verify/ { v = 1 } /--signer-workflow "\$DEPOT_CODE\/.github\/workflows\/macos.yml"/ { w = 1 }
+  awk '/^avec_nomenclatures\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" >"$T/avec_nomenclatures.sh"
+  choisi=$(PATH="$T/faux-gh:$PATH" COMMIT=c0ffee HORS_CODE= bash -c \
+    "source '$T/avec_nomenclatures.sh'; avec_nomenclatures")
+  [[ $choisi == 1 ]] && ok "publier-version.sh prend les nomenclatures de master, pas celles d'une autre branche" ||
+    ko "publier-version.sh a pris les nomenclatures de « ${choisi:-aucune} » (attendu : 1, celles de master)"
+  # Relue sur l'exécution même dont les nomenclatures partent : master, par un envoi, la nuit ou à la main ; tout le
+  # reste arrête la publication.
+  awk '/^case \$BRANCHE_RUN in$/ { c = 1; next }
+    c && /^  "master push" \| "master schedule" \| "master workflow_dispatch"\) ;;$/ { m = 1; next }
+    c && m && /^  \*\)$/ { a = 1; next } c && a && /^    exit 1$/ { x = 1 } /^esac$/ { c = 0 }
+    END { exit !(m && a && x) }' "$DEPOT/outils/publier-version.sh" &&
+    ok "publier-version.sh relit la branche de l'exécution dont il publie les nomenclatures" ||
+    ko "branche de l'exécution des nomenclatures non relue"
+  # L'attestation des nomenclatures : exigée, liée à ci.yml, à master et au commit du passage.
+  awk '/gh attestation verify/ { v = 1 } /--signer-workflow "\$DEPOT_CODE\/.github\/workflows\/ci.yml"/ { w = 1 }
     /--source-ref refs\/heads\/master --source-digest "\$SHA_RUN"/ { r = 1 } END { exit !(v && w && r) }' \
     "$DEPOT/outils/publier-version.sh" &&
-    ok "publier-version.sh exige l'attestation du Mac et des nomenclatures (macos.yml, master, commit du passage)" ||
-    ko "publier-version.sh publie sans vérifier l'attestation de macos.yml sur master"
-  # La version macOS mise sur la clé : de master aussi (campagne d'attaque n° 3), commit et empreinte relus.
-  awk '/gh run list --workflow macos.yml --branch master/ { b = 1 } /select\(.headBranch == "master"/ { s = 1 }
-    /EMPREINTE-VANGUARD-MACOS/ { e = 1 } END { exit !(b && s && e) }' "$DEPOT/outils/deployer.sh" &&
-    ok "deployer.sh ne met sur la clé que la compilation macOS de master, commit et empreinte relus" ||
-    ko "deployer.sh prend la compilation macOS de n'importe quelle branche"
+    ok "publier-version.sh exige l'attestation des nomenclatures (ci.yml, master, commit du passage)" ||
+    ko "publier-version.sh publie sans vérifier l'attestation de ci.yml sur master"
 else
   echo "  (sauté : jq absent, pas de faux gh pour essayer publier-version.sh)"
 fi
@@ -594,14 +626,13 @@ sortie=$(attente_sourde "$T/attendre_execution.sh" attendre_execution 2>&1)
 # Aucun « gh run watch » hors d'elle, et ses deux appels avec un délai en secondes.
 awk '/^attendre_execution\(\) \{/,/^\}/ { next } /^ *#/ { next } /gh run watch/ { exit 1 } /attendre_execution "\$EN_COURS" [0-9]+/ { c = 1 }
   /attendre_execution "\$RUN" [0-9]+/ { m = 1 } END { exit !(c && m) }' "$DEPOT/outils/publier-version.sh" &&
-  ok "publier-version.sh : chaque attente de GitHub (CI, Mac) a un délai" ||
+  ok "publier-version.sh : chaque attente de GitHub (CI) a un délai" ||
   ko "publier-version.sh : un « gh run watch » sans délai"
 
 # 6f. Les protections des programmes qui partent, lues par la copie Linux qui part : verifier_binaires, face à un faux
 # programme Linux qui note ce qu'on lui demande, lui passe le système attendu et chaque fichier, et rend son refus.
 # Chaque appel arrête tout sur un refus : dans publier-version.sh, Linux et Windows après la relecture de leurs
-# empreintes et avant d'attendre GitHub, la version macOS une fois son empreinte relue ; dans deployer.sh, le programme
-# Linux et vanguard.exe, avant toute copie. Chacun avec son système (--attendu) : un fichier échangé ou d'une autre
+# empreintes et avant d'attendre GitHub ; dans deployer.sh, le programme Linux et vanguard.exe, avant toute copie. Chacun avec son système (--attendu) : un fichier échangé ou d'une autre
 # architecture est refusé. Le nom d'avant (verifier-pe, alias) n'est plus appelé, ni verifier-binaire sans --attendu.
 D=$T/faux-verificateur
 mkdir -p "$D"
@@ -622,10 +653,8 @@ awk '/Copie des programmes différente de leur compilation/ { e = NR }
   v && NR == v + 1 && /^  verifier_binaires windows "\$DOSSIER\/vanguard-windows-x86_64\.exe"; \} \|\|$/ { w = 1 }
   v && NR == v + 2 && /rien de publié."; exit 1; }$/ { lw = 1 }
   /attendre_execution "\$/ && !a { a = NR }
-  /EMPREINTE-VANGUARD-MACOS/ { m = NR }
-  /^verifier_binaires macos "\$DOSSIER\/vanguard-macos" \|\| \{ .*rien de publié."; exit 1; \}$/ { mac = NR }
-  END { exit !(e && w && lw && e < v && v < a && m && m < mac) }' "$DEPOT/outils/publier-version.sh" &&
-  ok "publier-version.sh : Linux, Windows et macOS vérifiés là où il faut, chaque refus arrête la publication" ||
+  END { exit !(e && w && lw && e < v && v < a) }' "$DEPOT/outils/publier-version.sh" &&
+  ok "publier-version.sh : Linux et Windows vérifiés là où il faut, chaque refus arrête la publication" ||
   ko "publier-version.sh : un programme publié sans « verifier-binaire », ou vérifié trop tôt, ou refus ignoré"
 awk '/^\.\/"\$LINUX" deploiement verifier-binaire --attendu linux "\$LINUX" \|\| \{$/ { l = NR }
   l && !x && NR > l && /^  exit 1$/ { x = NR }
@@ -642,34 +671,6 @@ sans_attendu=$(grep -nE 'deploiement verifier[-]binaire( |"|$)' "$DEPOT/outils/"
   grep -v 'deploiement verifier-binaire --attendu ' | grep -vE '^[^:]+:[0-9]+: *#' | grep -v '«' | grep -v '/outils/essais-')
 [[ -z $sans_attendu ]] && ok "chaque appel à verifier-binaire dit le système attendu (--attendu)" ||
   ko "verifier-binaire appelé sans --attendu : $sans_attendu"
-# 6g. Le Mac de GitHub qui ne finit jamais ne tient pas livrer-branche.sh ouvert pour toujours : attendre_mac abandonne
-# au délai, dit quoi faire, et rend 124 ; la livraison s'arrête alors avant la fusion.
-rm -f "$F/fini"
-awk '/^attendre_mac\(\) \{/,/^\}/' "$DEPOT/outils/livrer-branche.sh" >"$T/attendre_mac.sh"
-attente_mac() { # secondes ; la sortie, puis le code
-  PATH="$F:$PATH" bash -c "source '$T/attendre_mac.sh'; attendre_mac 42 $1; echo \"code \$?\""
-}
-debut_attente=$SECONDS
-sortie=$(attente_mac 1 2>&1)
-[[ $sortie == *"code 124"* && $sortie == *"pas fini après"*"rien n'est fusionné"*"gh run view 42"* &&
-  $((SECONDS - debut_attente)) -lt 30 ]] &&
-  ok "livrer-branche.sh : un Mac de GitHub qui ne finit jamais est abandonné au délai, et dit" ||
-  ko "livrer-branche.sh attend sans fin le Mac de GitHub (${sortie:-rien})"
-touch "$F/fini"
-[[ $(attente_mac 5 2>&1) == "code 0" ]] && ok "livrer-branche.sh : un Mac fini à temps rend le code de gh" ||
-  ko "livrer-branche.sh : un Mac fini à temps ne rend pas 0"
-debut_attente=$SECONDS
-sortie=$(attente_sourde "$T/attendre_mac.sh" attendre_mac 2>&1)
-[[ $sortie == *"code 124"* && $sortie == *"pas fini après"* && $((SECONDS - debut_attente)) -lt 30 ]] &&
-  ok "livrer-branche.sh : un gh qui ignore TERM est tué au délai" ||
-  ko "livrer-branche.sh attend un gh qui ignore TERM (${sortie:-rien}, $((SECONDS - debut_attente)) s)"
-# Aucun « gh run watch » hors d'elle, et son appel avec le délai, suivi de l'arrêt.
-awk '/^attendre_mac\(\) \{/,/^\}/ { next } /^ *#/ { next } /gh run watch/ { exit 1 }
-  /attendre_mac "\$ID" "\$ATTENTE_MAC" \|\| exit 1/ { m = 1 } /^ATTENTE_MAC=\$\(\([0-9]+ \* 60\)\)$/ { d = 1 }
-  END { exit !(m && d) }' "$DEPOT/outils/livrer-branche.sh" &&
-  ok "livrer-branche.sh : l'attente du Mac de GitHub a un délai" ||
-  ko "livrer-branche.sh : un « gh run watch » sans délai"
-
 # 6c. Au branchement de la clé, un commit de GitHub n'est récupéré et compilé qu'avec une CI verte sur ce commit
 # exact (deployer.sh, ci_verte, campagne d'attaque n° 6, F4). Un faux gh filtre les exécutions par --commit comme
 # GitHub. Sans jq, sauté et dit.
@@ -743,11 +744,24 @@ GH
 else
   echo "  (sauté : jq absent, pas de faux gh pour le branchement de la clé)"
 fi
-# Par le nom court : une étiquette nommée master a le même headBranch que la branche, que publier-version.sh
-# accepte ; « github.ref != 'refs/heads/master' » lui laissait reprendre un cache préparé.
-awk '/uses: Swatinem\/rust-cache/ { getline; exit !($0 ~ /if: github.ref_name != .master.$/) }' \
-  "$DEPOT/.github/workflows/macos.yml" && ok "macos.yml : aucun cache repris sur master (branche ou étiquette)" ||
-  ko "macos.yml reprend un cache sur master ou une étiquette « master » (le programme signé en sortirait)"
+# Les travaux de ci.yml dont la page publie le fruit : « nomenclatures » ne reprend aucun cache (un compte GitHub pris
+# pourrait en préparer un piégé), « attester », qui tient le jeton OIDC, ne lance rien du dépôt (ni extraction, ni
+# run:) et ne vient qu'après lui ; tous deux sur la ref complète de master (une étiquette nommée master n'en a pas).
+awk '/^  [a-z-]+:$/ { t = $1; next } /^ *#/ { next }
+  t == "nomenclatures:" && /if: github.ref == .refs\/heads\/master./ { ni = 1 }
+  t == "nomenclatures:" && /rust-cache|actions\/cache/ { cache = 1 }
+  t == "attester:" && /needs: nomenclatures$/ { an = 1 }
+  t == "attester:" && /if: github.ref == .refs\/heads\/master.$/ { ai = 1 }
+  t == "attester:" && /id-token: write$/ { jeton = 1 }
+  t == "attester:" && /actions\/checkout|^ *(- )?run:|rust-cache|actions\/cache/ { lance = 1 }
+  t == "attester:" && /subject-path: sbom\/\*\.cdx\.json$/ { sujet = 1 }
+  END { exit !(ni && !cache && an && ai && jeton && !lance && sujet) }' "$DEPOT/.github/workflows/ci.yml" &&
+  ok "ci.yml : nomenclatures sans cache, attestation à part qui ne lance rien du dépôt, master seulement" ||
+  ko "ci.yml : nomenclatures avec un cache, ou attestation qui lance du code du dépôt, ou hors de master"
+! grep -q 'id-token' <(awk '/^  [a-z-]+:$/ { t = $1 } /^ *#/ { next } t != "attester:"' \
+  "$DEPOT/.github/workflows/ci.yml") &&
+  ok "ci.yml : le jeton OIDC (id-token) n'est donné qu'au travail « attester »" ||
+  ko "ci.yml : un autre travail que « attester » reçoit le jeton OIDC"
 # Une étiquette se déplace (« v7 » suit chaque version) : quiconque la pousse chez l'éditeur de l'action change ce
 # qui tourne avec les secrets et le programme signé. Chaque action, officielle comme tierce, à un commit nommé
 # (campagne d'attaque n° 4, U-B3), l'étiquette en commentaire pour la relire. Tout fichier que GitHub lit : .yml et
@@ -797,7 +811,7 @@ GIT_COMMITTER_DATE="@$((DATE1 + 100)) +0000" git -C "$G" -c user.name=essai -c u
 [[ $(compilation) == "$C1" ]] && ok "publier : un commit hors du programme (documentation) ne les change pas" ||
   ko "publier après un commit de documentation : $(compilation)"
 [[ $(cd "$G" && bash outils/date-du-code.sh) == "$DATE1" ]] &&
-  ok "date du code : celle du dernier commit qui touche le programme (le Mac et Linux gravent la même)" ||
+  ok "date du code : celle du dernier commit qui touche le programme (GitHub et l'auteur gravent la même)" ||
   ko "date du code : $(cd "$G" && bash outils/date-du-code.sh) au lieu de $DATE1"
 programmes_g $((DATE1 + 100))
 compilation >/dev/null && ko "publier : la date d'un commit de documentation gravée est acceptée" ||

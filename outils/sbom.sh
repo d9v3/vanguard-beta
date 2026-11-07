@@ -1,20 +1,18 @@
 #!/usr/bin/env bash
 # Les nomenclatures logicielles (SBOM, CycloneDX 1.5 en JSON) des programmes publiés : toutes les dépendances compilées
 # dans chacun, versions et licences comprises, sans celles qui ne servent qu'à compiler (--no-build-deps). Une par
-# cible : Linux, Windows et les deux moitiés du programme Mac universel, qui n'ont pas tout à fait les mêmes.
-# Les mêmes octets ici et sur le Mac de GitHub : .github/workflows/macos.yml les fait attester avec le programme Mac,
-# et outils/publier-version.sh les refait ici, les compare à celles du passage et vérifie l'attestation avant de les
-# joindre à la page. D'où la date du code (outils/date-du-code.sh) plutôt que l'heure, une version de cargo-cyclonedx
-# épinglée, et le chemin du dépôt sur la machine (dossier personnel ici, celui du Mac là-bas) ramené à « . ».
-# Tourne aussi sur le bash 3.2 de macOS.
+# cible : Linux et Windows, qui n'ont pas tout à fait les mêmes.
+# Les mêmes octets ici et sur le Linux de GitHub : le travail « nomenclatures » de .github/workflows/ci.yml les fait
+# attester (sur master), et outils/publier-version.sh les refait ici, les compare à celles du passage et vérifie
+# l'attestation avant de les joindre à la page. D'où la date du code (outils/date-du-code.sh) plutôt que l'heure, une
+# version de cargo-cyclonedx épinglée, et le chemin du dépôt sur la machine (dossier personnel ici, celui de GitHub
+# là-bas) ramené à « . ».
 #   outils/sbom.sh <dossier de sortie>
 #   outils/sbom.sh --noms        les noms des fichiers, un par ligne, sans rien faire (liens.py --version)
 set -euo pipefail
 VERSION=0.5.9
 CIBLES='linux-x86_64 x86_64-unknown-linux-musl
-windows-x86_64 x86_64-pc-windows-gnu
-macos-aarch64 aarch64-apple-darwin
-macos-x86_64 x86_64-apple-darwin'
+windows-x86_64 x86_64-pc-windows-gnu'
 [[ $# -eq 1 ]] || { echo "usage : outils/sbom.sh <dossier de sortie> | --noms" >&2; exit 2; }
 if [[ $1 == --noms ]]; then
   while read -r nom _; do echo "vanguard-$nom.cdx.json"; done <<<"$CIBLES"
@@ -25,7 +23,7 @@ SORTIE=$(cd "$1" && pwd)
 cd "$(dirname "$0")/.."
 RACINE=$(pwd -P)
 
-# Une autre version écrirait d'autres octets que celle du Mac de GitHub : refusée, jamais suivie.
+# Une autre version écrirait d'autres octets que celle du passage de GitHub : refusée, jamais suivie.
 if [[ $(cargo cyclonedx --version 2>/dev/null) != *" $VERSION" ]]; then
   echo "sbom.sh : cargo-cyclonedx $VERSION attendu, pas « $(cargo cyclonedx --version 2>/dev/null || echo absent) »" >&2
   echo "  (cargo install --locked cargo-cyclonedx@$VERSION ; pacman peut en poser une plus récente)" >&2
@@ -42,7 +40,7 @@ trap 'rm -f sbom-*.json' EXIT
 while read -r nom cible; do
   cargo cyclonedx </dev/null -q -f json --spec-version 1.5 --no-build-deps --target "$cible" --override-filename "sbom-$nom"
   # cargo abrège l'identifiant du paquet en « #0.89.0 » quand le dossier du dépôt s'appelle comme lui (vanguard ici),
-  # et écrit « #vanguard@0.89.0 » sinon (vanguard-beta sur le Mac de GitHub) : toujours la forme longue.
+  # et écrit « #vanguard@0.89.0 » sinon (vanguard-beta sur GitHub) : toujours la forme longue.
   sed -e "s#path+file://$RACINE#path+file://.#g" -e 's|path+file://\.#\([0-9]\)|path+file://.#vanguard@\1|g' \
     "sbom-$nom.json" >"$SORTIE/vanguard-$nom.cdx.json"
   rm -f "sbom-$nom.json"

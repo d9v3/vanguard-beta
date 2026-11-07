@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tout vérifier en une commande, avant un commit ou une livraison : mise en forme, clippy sur les quatre cibles, tests
+# Tout vérifier en une commande, avant un commit ou une livraison : mise en forme, clippy sur les deux cibles, tests
 # Linux et Windows (sous Wine, avec le lanceur de la clé : outils/essais-lanceur.sh), les tests Linux refaits sans
 # Internet, scripts PowerShell, shell et Python, essais des outils de la clé (outils/essais-cle.sh), de la signature
 # des versions (outils/essais-signature.sh) et de ce script même sous --seulement (outils/essais-verifier.sh), liens
@@ -10,7 +10,7 @@
 # src/modele/corpus.rs, Linux et Wine), dépendances (cargo deny) et leurs failles connues (cargo audit), banc de
 # fuzzing compilé et passé quelques secondes par cible, preuves de Kani compilées (lancées par outils/preuves.sh).
 # La CI lance ce même script (.github/workflows/ci.yml) : une seule logique, ici.
-# Chaque cible de compilation a sa chaîne (clippy, puis ses tests) et les quatre tournent en même temps : cargo garde
+# Chaque cible de compilation a sa chaîne (clippy, puis ses tests) et les deux tournent en même temps : cargo garde
 # un dossier par cible, elles ne s'attendent presque pas. À la fin, une ligne par étape ; le code de sortie dit si tout
 # est vert. Chaque cargo compile avec --locked : un Cargo.lock qui ne suit plus Cargo.toml est une erreur, jamais
 # réécrit en silence avec d'autres versions que celles que cargo deny et cargo audit ont jugées.
@@ -92,16 +92,9 @@ etape() {
 internet() { [[ -z ${VANGUARD_HORS_LIGNE:-} ]] && curl -fsI --max-time 5 https://github.com >/dev/null 2>&1; }
 
 # ring (TLS du client HTTPS) et YARA-X (l'oracle des tests, par wasmtime) compilent un peu de C : musl-gcc pour Linux, le gcc de MinGW pour
-# Windows, clang pour les cibles Mac, visées sans les outils d'Apple (outils/mac-entetes, ring sans en-têtes du
-# système) ; clippy n'assemble jamais le programme.
+# Windows ; clippy n'assemble jamais le programme.
 clippy() {
-  case $1 in
-    *-apple-darwin)
-      local v=${1//-/_}
-      env "CC_$v=clang" "CFLAGS_$v=-ffreestanding -nostdlibinc -DRING_CORE_NOSTDLIBINC -I$PWD/outils/mac-entetes" \
-        cargo clippy -q --locked --all-targets --target "$1" -- -D warnings ;;
-    *) cargo clippy -q --locked --all-targets --target "$1" -- -D warnings ;;
-  esac
+  cargo clippy -q --locked --all-targets --target "$1" -- -D warnings
 }
 
 # La régression de détection (src/modele/corpus.rs) : le corpus seul, pour que sa ligne se voie au résumé à côté des
@@ -138,8 +131,8 @@ cas_qui_tirent() {
 }
 
 # Les compilateurs C qu'il faut ici, dits d'emblée plutôt qu'au milieu d'une compilation.
-for outil in musl-gcc x86_64-w64-mingw32-gcc clang; do
-  command -v "$outil" >/dev/null || echo "⚠ $outil manque (Arch : musl, mingw-w64-gcc, clang) : la compilation de ring et de YARA-X (tests) échouera."
+for outil in musl-gcc x86_64-w64-mingw32-gcc; do
+  command -v "$outil" >/dev/null || echo "⚠ $outil manque (Arch : musl, mingw-w64-gcc) : la compilation de ring et de YARA-X (tests) échouera."
 done
 
 # Les tests sautés (src/essais.rs) d'une étape : un fichier par étape, qu'ils remplissent d'une ligne chacun.
@@ -401,8 +394,8 @@ relectures() {
 }
 
 # Les nomenclatures (SBOM) des programmes publiés (outils/sbom.sh), faites deux fois : elles doivent sortir, sans
-# chemin de cette machine, et identiques d'une fois à l'autre (le Mac de GitHub fait les mêmes octets, que
-# outils/publier-version.sh compare). Sautée sans cargo-cyclonedx 0.5.9, celui qu'épingle macos.yml.
+# chemin de cette machine, et identiques d'une fois à l'autre (le Linux de GitHub fait les mêmes octets, que
+# outils/publier-version.sh compare). Sautée sans cargo-cyclonedx 0.5.9, celui qu'épingle ci.yml.
 nomenclatures() {
   [[ $(cargo cyclonedx --version 2>/dev/null) == *" 0.5.9" ]] ||
     { echo "cargo-cyclonedx 0.5.9 absent (cargo install --locked cargo-cyclonedx@0.5.9)"; return "$SAUTEE"; }
@@ -478,8 +471,6 @@ if [[ $MODE != --rapide ]]; then
         etape regression-detection-windows regression_windows
     } &
   fi
-  etape clippy-macos-arm clippy aarch64-apple-darwin &
-  etape clippy-macos-intel clippy x86_64-apple-darwin &
   etape powershell scripts_powershell &
   etape rejeu-powershell rejeu_powershell &
   etape shell scripts_shell &
@@ -635,8 +626,6 @@ if [[ $MODE != --rapide ]]; then
     printf '  · %-34s non lancé (%s) : le vrai Windows de la CI fait tourner son cargo test\n' "régression de détection Windows" "$MODE" | tee -a "$RESUME"
     NON_VERIFIEES+=("tests Windows sous Wine")
   fi
-  ligne clippy-macos-arm "clippy macOS Apple Silicon"
-  ligne clippy-macos-intel "clippy macOS Intel"
   ligne powershell "scripts PowerShell"
   ligne rejeu-powershell "PowerShell du programme rejoué"
   ligne shell "scripts shell"

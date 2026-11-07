@@ -10,7 +10,7 @@
 # installées (0.85.0 et d'avant) le lisent sans rien savoir de l'historique (outils/essais-signature.sh le prouve).
 # Vanguard n'installe qu'un programme décrit par un manifeste que la clé principale ou la clé de secours a signé
 # (src/mise_a_jour/github.rs : CLE_PUBLIQUE, CLE_SECOURS).
-#   outils/signer-versions.sh DOSSIER             DOSSIER : celui de publier-version.sh, avec les trois programmes
+#   outils/signer-versions.sh DOSSIER             DOSSIER : celui de publier-version.sh, avec les deux programmes
 #   outils/signer-versions.sh --secours DOSSIER   signé par la clé de secours (la principale perdue ou volée)
 #   outils/signer-versions.sh --secours --revoquer DOSSIER
 #                                                 la clé principale volée : « revoque principale » ajoutée à la fin
@@ -91,8 +91,8 @@ done
 # Lu dans chacun (github.rs, PRINCIPALE_GRAVEE), pas dans le code source, qui a pu changer depuis ; avant la phrase de
 # la clé. Un programme absent est refusé plus bas.
 if [[ -n $REVOQUER ]]; then
-  for f in "${1:-.}"/vanguard-{linux-x86_64,windows-x86_64.exe,macos}; do
-    # Les deux marques à la fois (un programme macOS universel dont une seule moitié la retire) : refusé aussi.
+  for f in "${1:-.}"/vanguard-{linux-x86_64,windows-x86_64.exe}; do
+    # Les deux marques à la fois (un programme assemblé de morceaux de compilations différentes) : refusé aussi.
     [[ ! -f $f ]] || { grep -aq 'VANGUARD-PRINCIPALE:RETIREE;' "$f" && ! grep -aq 'VANGUARD-PRINCIPALE:GARDEE;' "$f"; } ||
       erreur "--revoquer : $f accepte encore la principale ; mettez PRINCIPALE_RETIREE à true dans \
 src/mise_a_jour/github.rs, puis recompilez les programmes à signer avec (outils/compiler-version.sh)"
@@ -102,7 +102,7 @@ fi
 # plus rien de ce qu'elle signe (seule la clé de secours le mettrait encore à jour) ; un programme sans marque ne vient
 # pas de ce code. Lu dans chacun, comme pour --revoquer.
 if [[ -z $SECOURS ]]; then
-  for f in "${1:-.}"/vanguard-{linux-x86_64,windows-x86_64.exe,macos}; do
+  for f in "${1:-.}"/vanguard-{linux-x86_64,windows-x86_64.exe}; do
     [[ ! -f $f ]] || { grep -aq 'VANGUARD-PRINCIPALE:GARDEE;' "$f" && ! grep -aq 'VANGUARD-PRINCIPALE:RETIREE;' "$f"; } ||
       erreur "$f ne porte pas la seule marque de la principale gardée (VANGUARD-PRINCIPALE:GARDEE) : \
 PRINCIPALE_RETIREE à false dans src/mise_a_jour/github.rs, puis recompilez (outils/compiler-version.sh)"
@@ -165,11 +165,10 @@ octets() { od -An -tx1 -v -j "$2" -N "$3" "$1" | tr -d ' \n'; }
 # Un entier de 4 octets petit-boutiste lu à DEBUT.
 entier_le() { local h; h=$(octets "$1" "$2" 4); echo $((16#${h:6:2}${h:4:2}${h:2:2}${h:0:2})); }
 
-# Chaque programme est-il bien celui de son système ? Le Mac vient d'un runner de GitHub, et c'est la clé de l'auteur
-# qui le signe : au moins sa forme se vérifie ici (Mach-O universel, Apple Silicon et Intel, rien d'autre), comme
-# celle des deux autres (ELF x86-64, PE x86-64), avant que la signature ne s'y engage.
+# Chaque programme est-il bien celui de son système ? Sa forme se vérifie ici (ELF x86-64, PE x86-64), avant que la
+# signature ne s'y engage : un fichier échangé ou d'une autre architecture est refusé.
 architecture_attendue() {
-  local systeme=$1 f=$2 h pe
+  local systeme=$1 f=$2 pe
   case $systeme in
     linux-x86_64)
       # ELF, 64 bits, petit-boutiste ; e_machine (octet 18) = 0x3e, x86-64.
@@ -181,27 +180,21 @@ architecture_attendue() {
       pe=$(entier_le "$f" 60)
       [[ $(octets "$f" "$pe" 6) == 504500006486 ]]
       ;;
-    macos)
-      # Mach-O universel (0xcafebabe, gros-boutiste) à deux architectures : arm64 (0x0100000c) et x86_64
-      # (0x01000007), dans n'importe quel ordre.
-      h=$(octets "$f" 0 48)
-      [[ ${h:0:16} == cafebabe00000002 ]] || return 1
-      local a=${h:16:8} b=${h:56:8}
-      [[ "$a $b" == "0100000c 01000007" || "$a $b" == "01000007 0100000c" ]]
-      ;;
     *) return 1 ;;
   esac
 }
 
-declare -A FICHIERS=([linux-x86_64]=vanguard-linux-x86_64 [windows-x86_64]=vanguard-windows-x86_64.exe [macos]=vanguard-macos)
+# Plus de ligne macos (Vanguard ne vise plus le Mac) : jamais une ligne à un ou deux champs à la place, les copies déjà
+# installées refuseraient tout le manifeste ; sans ligne, un ancien Mac ne trouve simplement pas sa version.
+declare -A FICHIERS=([linux-x86_64]=vanguard-linux-x86_64 [windows-x86_64]=vanguard-windows-x86_64.exe)
 version=
-for systeme in linux-x86_64 windows-x86_64 macos; do
+for systeme in linux-x86_64 windows-x86_64; do
   f=$D/${FICHIERS[$systeme]}
   [[ -f $f ]] || erreur "programme absent : $f"
   architecture_attendue "$systeme" "$f" || erreur "$f n'est pas un programme $systeme (forme ou architecture)"
   v=$(grep -aoE 'VANGUARD-VERSION:[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+;' "$f" | head -1 | sed 's/^VANGUARD-VERSION://; s/;$//')
   [[ -n $v ]] || erreur "pas de version gravée dans $f"
-  # Les trois viennent du même commit : même numéro, même date. Sinon, l'un d'eux n'est pas de cette version.
+  # Les deux viennent du même commit : même numéro, même date. Sinon, l'un d'eux n'est pas de cette version.
   [[ -z $version || $v == "$version" ]] || erreur "versions différentes : $version et $v ($f)"
   version=$v
 done
@@ -213,7 +206,7 @@ cargo=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 rm -f "$D/derniere.txt.sig" "$D/historique.txt.sig"
 {
   echo "version $version"
-  for systeme in linux-x86_64 windows-x86_64 macos; do
+  for systeme in linux-x86_64 windows-x86_64; do
     f=$D/${FICHIERS[$systeme]}
     echo "$systeme $(sha256sum "$f" | cut -d' ' -f1) $(stat -c %s "$f")"
   done

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # La date du code d'un commit (HEAD par défaut) : celle du dernier commit, lui ou un ancêtre, qui a touché ce que le
 # programme intègre (tout sauf .github/hors-code.txt), en secondes. Gravée dans les programmes (SOURCE_DATE_EPOCH,
-# build.rs) par outils/compiler-version.sh et par .github/workflows/macos.yml, et revérifiée par
-# outils/publier-version.sh : les commits des captures et de la page des fonctions, faits après la compilation, ne
-# changent plus la date des programmes, et les trois systèmes d'une même version gravent la même (campagne d'attaque
-# n° 3 : le Mac compilait la tête, Linux et Windows le commit d'avant). Sans hors-code.txt ou sans git : la date du
-# commit lui-même.
+# build.rs) par outils/compiler-version.sh et dans les nomenclatures (outils/sbom.sh, ici et dans ci.yml), et
+# revérifiée par outils/publier-version.sh : les commits des captures et de la page des fonctions, faits après la
+# compilation, ne changent plus la date des programmes, et ce qui est fait ici et sur GitHub pour une même version
+# porte la même (campagne d'attaque n° 3 : GitHub compilait la tête, l'ordinateur de l'auteur le commit d'avant). Sans
+# hors-code.txt ou sans git : la date du commit lui-même.
 #   outils/date-du-code.sh [commit]
 set -euo pipefail
 cd "$(dirname "$0")/.."
