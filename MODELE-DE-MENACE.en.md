@@ -53,6 +53,15 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   launch with no verdict within 250 ms also goes through, noted. The program watcher remains the second line. The
   guard refuses only what is certain (a hash from the lists, or the test mark), never a system program, Vanguard or
   what init launches.
+- **What the launch guard does not see (Linux).** It judges the file an `execve` opens (the program, or the script
+  launched directly and its interpreter), on a local file system it has marked. It does not judge a script passed to
+  its interpreter (`bash script.sh`, `python3 script.py`), a program passed to the dynamic linker (`ld.so ./program`),
+  or a library loaded by dlopen or LD_PRELOAD: these are plain opens. It sees no launch from FUSE (AppImages included),
+  overlay, squashfs (snaps), a network share (NFS, SMB, 9p), or from a new file system mounted in a private namespace
+  (`unshare`, without root on most distributions). A mark covers a whole file system (its superblock): a bind mount of
+  the same disk, even in a private namespace, stays covered. A file system mounted after the guard started (a USB
+  key) is marked within about a second; a launch in that second is not seen. The antivirus and the program watcher
+  remain the line for these paths.
 - **The page being visited.** Vanguard has no browser extension: the open page is not examined. It examines a link
   it is given, blocks known dangerous sites through the hosts file after consent (`vanguard sites-dangereux`), and
   public Wi-Fi mode switches to a filtering DNS.

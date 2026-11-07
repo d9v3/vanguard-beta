@@ -26,8 +26,10 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-/// FAN_OPEN_EXEC_PERM : la demande de permission avant chaque exécution d'un fichier (et chargement par l'éditeur de
-/// liens dynamiques).
+/// FAN_OPEN_EXEC_PERM : la demande de permission avant l'ouverture d'un fichier pour l'exécuter (execve, execveat,
+/// uselib) : le programme, ou le script lancé directement et son interprète. Pas les bibliothèques (.so) que ld.so ou
+/// dlopen ouvrent et projettent en mémoire, ni un programme passé à ld.so, ni un script passé à son interprète : ceux-là
+/// sont de simples ouvertures (MODELE-DE-MENACE.md, « Ce que le garde des lancements ne voit pas »).
 pub(crate) const OUVERTURE_EXEC_PERM: u64 = 0x0004_0000;
 /// FAN_Q_OVERFLOW : la file du groupe a débordé ; des demandes sont passées sans être vues.
 pub(crate) const DEBORDEMENT: u64 = 0x0000_4000;
@@ -319,6 +321,18 @@ impl Marques {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// C7-4 : la description de FAN_OPEN_EXEC_PERM ne promet pas plus que ce que le noyau donne : les bibliothèques
+    /// chargées par ld.so ou dlopen n'y passent pas.
+    #[test]
+    fn la_description_de_l_execution_ne_surevalue_rien() {
+        let source = include_str!("fanotify.rs");
+        let fin = source.find("pub(crate) const OUVERTURE_EXEC_PERM").unwrap();
+        let debut = source[..fin].rfind("\n\n").unwrap();
+        let doc = &source[debut..fin];
+        assert!(doc.contains("Pas les bibliothèques"), "{doc}");
+        assert!(!doc.contains("chargement par"), "{doc}");
+    }
 
     /// Sans CAP_SYS_ADMIN (les essais ne tournent jamais en root sur ce PC), le noyau refuse le groupe de permissions :
     /// l'erreur est rendue, rien ne panique. Le groupe lui-même s'essaie en VM (essais-qemu-l2l3.md).
