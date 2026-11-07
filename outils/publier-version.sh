@@ -491,6 +491,98 @@ outils/publier-version.sh --premier ; sinon, il a été vidé, et l'historique n
     { echo "✖ Signature refusée (voir ci-dessus) : rien de publié, ni page ni mise à jour."; exit 1; }
   SIGNEE=1
 fi
+
+# Seule la dernière version garde son étiquette dans le dépôt du code (les vieilles ont été retirées le 7 nov. 2026,
+# sauf avec-macos) : celle de la version qui précède est retirée, elle seule, une fois la nouvelle page en ligne et
+# relue. Toutes ces conditions, sinon rien n'est retiré et c'est dit :
+#  - PRECEDENTE, la page « dernière » relevée juste avant la création de celle-ci, a la forme vX.Y.Z, est plus petite
+#    que cette version, et c'est la plus haute des étiquettes vX.Y.Z du dépôt sous elle : jamais avec-macos, jamais
+#    une étiquette plus vieille ou plus récente ;
+#  - la page de TAG est en ligne, ni brouillon ni préversion, ses fichiers exactement ceux de DOSSIER (mêmes noms,
+#    mêmes empreintes SHA-256 relevées par GitHub), et son étiquette, légère, vise le commit compilé ;
+#  - la page de PRECEDENTE n'est plus là (retirée juste avant) ;
+#  - l'étiquette de PRECEDENTE est légère (celle que pose gh release create) et vise un commit d'avant le commit compilé.
+# Une API muette ou illisible vaut refus. Le retrait est noté avant d'être demandé (date, étiquette, commit, version
+# qui la remplace) dans ETIQUETTES_RETIREES, hors du dépôt : de quoi la reposer au besoin
+# (git push origin <commit>:refs/tags/<étiquette>). Lue telle quelle par outils/essais-signature.sh.
+ETIQUETTES_RETIREES=${VANGUARD_ETIQUETTES_RETIREES:-${XDG_STATE_HOME:-$HOME/.local/state}/vanguard-dev/etiquettes-retirees.txt}
+etiquettes_du_depot() { # une ligne « refs/tags/<nom> <type> <commit> » par étiquette ; code ≠ 0 si l'API ne répond pas
+  gh api --paginate "repos/$DEPOT_CODE/git/matching-refs/tags/" -q '.[] | "\(.ref) \(.object.type) \(.object.sha)"'
+}
+retirer_etiquette_precedente() {
+  local garde page fichiers attendus refs nouvelle avant plus_haute pages lignes _ type sha f
+  garde="Étiquette de la version d'avant (${PRECEDENTE:-aucune page relevée}) gardée"
+  if ! [[ $PRECEDENTE =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && $PRECEDENTE != avec-macos && $PRECEDENTE != "$TAG" ]]; then
+    echo "$garde : pas une étiquette de version d'avant."
+    return 1
+  fi
+  if [[ $(printf '%s\n' "${PRECEDENTE#v}" "$VERSION" | sort -V | head -n 1) != "${PRECEDENTE#v}" ]]; then
+    echo "$garde : plus récente que $TAG."
+    return 1
+  fi
+  page=$(gh release view "$TAG" -R "$DEPOT_CODE" --json tagName,isDraft,isPrerelease \
+    -q '"\(.tagName) \(.isDraft) \(.isPrerelease)"' 2>/dev/null) || page=
+  if [[ $page != "$TAG false false" ]]; then
+    echo "$garde : la page de $TAG n'est pas en ligne telle quelle (${page:-illisible})."
+    return 1
+  fi
+  attendus=$(for f in "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" \
+    "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/"*.cdx.json; do
+    printf '%s sha256:%s\n' "${f##*/}" "$(sha256sum "$f" | cut -d' ' -f1)"
+  done | LC_ALL=C sort)
+  fichiers=$(gh release view "$TAG" -R "$DEPOT_CODE" --json assets -q '.assets[] | "\(.name) \(.digest)"' \
+    2>/dev/null | LC_ALL=C sort) || fichiers=
+  if [[ -z $fichiers || $fichiers != "$attendus" ]]; then
+    echo "$garde : les fichiers de la page de $TAG ne sont pas ceux publiés d'ici (noms ou empreintes)."
+    return 1
+  fi
+  refs=$(etiquettes_du_depot 2>/dev/null) || refs=
+  nouvelle=$(awk -v r="refs/tags/$TAG" '$1 == r' <<<"$refs")
+  if [[ $nouvelle != "refs/tags/$TAG commit $COMPILE" ]]; then
+    echo "$garde : l'étiquette $TAG ne vise pas le commit compilé (${nouvelle:-absente ou illisible})."
+    return 1
+  fi
+  plus_haute=$(awk '{ print $1 }' <<<"$refs" | sed -n 's|^refs/tags/v\([0-9]\{1,\}\.[0-9]\{1,\}\.[0-9]\{1,\}\)$|\1|p' |
+    sort -uV | awk -v v="$VERSION" '$0 == v { print p; exit } { p = $0 }')
+  if [[ v$plus_haute != "$PRECEDENTE" ]]; then
+    echo "$garde : la version d'avant dans le dépôt est ${plus_haute:-introuvable}, pas $PRECEDENTE."
+    return 1
+  fi
+  pages=$(gh release list -R "$DEPOT_CODE" --limit 500 --json tagName -q '.[].tagName' 2>/dev/null) || pages=
+  if ! grep -qxF -- "$TAG" <<<"$pages"; then
+    echo "$garde : liste des pages illisible."
+    return 1
+  fi
+  if grep -qxF -- "$PRECEDENTE" <<<"$pages"; then
+    echo "$garde : sa page est encore en ligne."
+    return 1
+  fi
+  avant=$(awk -v r="refs/tags/$PRECEDENTE" '$1 == r' <<<"$refs")
+  lignes=$(grep -c . <<<"$avant" || true)
+  read -r _ type sha <<<"$avant"
+  if [[ $lignes != 1 || $type != commit || ! $sha =~ ^[0-9a-f]{40}$ || $sha == "$COMPILE" ]] ||
+    ! git merge-base --is-ancestor "$sha" "$COMPILE" 2>/dev/null; then
+    echo "$garde : elle n'est pas une étiquette légère sur un commit d'avant celui-ci (${avant:-absente})."
+    return 1
+  fi
+  if ! { mkdir -p "$(dirname "$ETIQUETTES_RETIREES")" &&
+    printf '%s %s %s remplacee-par %s\n' "$(date -u +%FT%TZ)" "$PRECEDENTE" "$sha" "$TAG" >>"$ETIQUETTES_RETIREES"; }; then
+    echo "$garde : impossible de noter son retrait ($ETIQUETTES_RETIREES)."
+    return 1
+  fi
+  if ! gh api -X DELETE "repos/$DEPOT_CODE/git/refs/tags/$PRECEDENTE" >/dev/null 2>&1; then
+    echo "⚠ Étiquette $PRECEDENTE : GitHub a refusé son retrait, elle reste (noté quand même dans $ETIQUETTES_RETIREES)."
+    return 1
+  fi
+  refs=$(etiquettes_du_depot 2>/dev/null) || refs=
+  if [[ -z $refs ]] || awk -v r="refs/tags/$PRECEDENTE" '$1 == r { t = 1 } END { exit !t }' <<<"$refs"; then
+    echo "⚠ Étiquette $PRECEDENTE : retrait demandé, mais pas confirmé par GitHub."
+    return 1
+  fi
+  echo "Étiquette $PRECEDENTE retirée de $DEPOT_CODE (commit ${sha:0:12} ; noté dans $ETIQUETTES_RETIREES)."
+}
+# La page « dernière » d'avant, relevée avant que celle-ci la remplace.
+PRECEDENTE=$(gh release view -R "$DEPOT_CODE" --json tagName -q .tagName 2>/dev/null || true)
 gh release create "$TAG" --target "$COMPILE" --title "$NOM $VERSION" --notes "$NOTES" \
   "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/SHA256SUMS.txt" \
   "$DOSSIER/"*.cdx.json
@@ -515,13 +607,15 @@ elif [[ -n $SIGNEE ]]; then
   echo "✖ Version non publiée dans $DEPOT_VERSIONS : relancer gh release create à la main (DOSSIER gardé : $DOSSIER)."
   trap - EXIT
 fi
-# Seule la dernière version a sa page : CHANGELOG.md garde ce que chacune a apporté. Les pages d'avant sont retirées,
-# leurs étiquettes restent dans le dépôt (sans --cleanup-tag), pour recompiler une ancienne version au besoin. Pas
-# tant que la mise à jour signée n'est pas en ligne : la page d'avant reste celle qu'on peut vérifier.
+# Seule la dernière version a sa page : CHANGELOG.md garde ce que chacune a apporté. Les pages d'avant sont retirées
+# sans leur étiquette (sans --cleanup-tag) ; puis l'étiquette de la seule version qui précède, une fois tout relu
+# (retirer_etiquette_precedente) ; une plus vieille, ou une autre, reste. Rien de cela tant que la mise à jour signée
+# n'est pas en ligne : la page d'avant reste celle qu'on peut vérifier.
 if [[ -z $SIGNEE || -n $PUBLIEE_SIGNEE ]]; then
   for ancienne in $(gh release list --limit 500 --json tagName -q '.[].tagName' | grep -vxF "$TAG"); do
-    gh release delete "$ancienne" --yes >/dev/null && echo "Page de $ancienne retirée (son étiquette reste)."
+    gh release delete "$ancienne" --yes >/dev/null && echo "Page de $ancienne retirée."
   done
+  retirer_etiquette_precedente || true
 fi
 command -v notify-send >/dev/null &&
   notify-send -a Vanguard -i vanguard "$NOM $VERSION publiée sur GitHub" "Page de la version : les deux programmes, leurs empreintes et leurs nomenclatures." || true

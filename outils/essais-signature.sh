@@ -35,6 +35,10 @@
 #   6b. Linux et Windows publiés portent les empreintes de la compilation reproductible de la CI (ci.yml, master) :
 #      publier-version.sh (empreintes_de_la_ci, face à un faux gh) refuse un octet changé, un travail en échec ou
 #      un journal sans empreintes, et ignore une autre branche (campagne d'attaque n° 6, F1).
+#   6g. À la publication, l'étiquette de la version d'avant est retirée du dépôt du code (retirer_etiquette_precedente,
+#      face à un faux gh), elle seule et notée, une fois la nouvelle page en ligne et ses fichiers relus ; jamais
+#      avec-macos, une plus vieille, une plus récente, une annotée, une hors de la ligne de la version, celle d'une
+#      page encore en ligne, ni sans pouvoir lire les étiquettes ou noter le retrait.
 #   6c. Au branchement de la clé, deployer.sh (ci_verte, face à un faux gh) ne récupère ni ne compile un commit de
 #      GitHub sans CI verte sur ce commit exact (ci.yml, master ; campagne d'attaque n° 6, F4), et dit à part gh sans
 #      compte connecté ou introuvable (sinon, sous le service de la clé, « réessayé » pour toujours sans alerte).
@@ -543,6 +547,174 @@ JSON
     ko "publier-version.sh publie sans comparer Linux et Windows à la CI"
 else
   echo "  (sauté : jq absent, pas de faux gh pour les empreintes de la CI)"
+fi
+
+# 6g. L'étiquette de la version d'avant, retirée du dépôt du code à la publication de la suivante : elle seule, une
+# fois la nouvelle page en ligne et relue, et notée (retirer_etiquette_precedente, face à un faux gh qui tient les
+# pages, les fichiers d'une page et les étiquettes, et note chaque retrait demandé). Sans jq, sauté et dit.
+if command -v jq >/dev/null; then
+  F=$T/faux-gh-etiquette
+  E=$T/depot-etiquette
+  mkdir -p "$F" "$E" "$T/dossier-etiquette"
+  git -C "$E" init -q
+  commit_e() { git -C "$E" -c user.name=essai -c user.email=essai@exemple.invalid commit -q --allow-empty -m "$1" &&
+    git -C "$E" rev-parse HEAD; }
+  E_AVANT=$(commit_e "version d'avant")
+  E_COMPILE=$(commit_e "cette version")
+  git -C "$E" checkout -q -b cote "$E_AVANT"
+  E_COTE=$(commit_e "à côté")
+  git -C "$E" checkout -q -
+  D=$T/dossier-etiquette
+  printf 'MZ windows' >"$D/vanguard-windows-x86_64.exe"
+  printf 'ELF linux' >"$D/vanguard-linux-x86_64"
+  printf 'sommes' >"$D/SHA256SUMS.txt"
+  printf '{}' >"$D/vanguard-linux-x86_64.cdx.json"
+  printf '{ }' >"$D/vanguard-windows-x86_64.cdx.json"
+  cat >"$F/gh" <<'GH'
+#!/usr/bin/env bash
+# release view T → page-T.json ; release list → pages.json ; api …/matching-refs/tags/ → refs.json (ou une panne si
+# le fichier panne-refs existe) ; api -X DELETE …/git/refs/tags/X → noté dans appels, X retiré de refs.json.
+d=$(dirname "$0") q=. methode=GET chemin= sorte= vue=
+case "$1 $2" in
+  "release view") sorte=vue vue=$3 ;;
+  "release list") sorte=liste ;;
+  api*) sorte=api ;;
+esac
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -q) q=$2; shift ;;
+    -X) methode=$2; shift ;;
+    repos/*) chemin=$1 ;;
+  esac
+  shift
+done
+case $sorte in
+  vue) [[ -f $d/page-$vue.json ]] || exit 1; jq -r "$q" "$d/page-$vue.json" ;;
+  liste) jq -r "$q" "$d/pages.json" ;;
+  api)
+    if [[ $methode == DELETE ]]; then
+      echo "DELETE $chemin" >>"$d/appels"
+      jq --arg r "refs/${chemin##*/git/refs/}" '[.[] | select(.ref != $r)]' "$d/refs.json" >"$d/refs.neuf" &&
+        mv "$d/refs.neuf" "$d/refs.json"
+    else
+      [[ ! -f $d/panne-refs ]] || exit 1
+      jq -r "$q" "$d/refs.json"
+    fi
+    ;;
+  *) exit 1 ;;
+esac
+GH
+  chmod +x "$F/gh"
+  # L'état de GitHub juste après la publication de v0.92.0 : sa page seule (celle de v0.91.0 vient d'être retirée),
+  # ses fichiers ceux du dossier, les étiquettes avec-macos, v0.90.1 (oubliée), v0.91.0 et v0.92.0.
+  etat_etiquette() {
+    rm -f "$F/appels" "$F/panne-refs" "$T/etiquettes-retirees.txt"
+    echo '[{"tagName": "v0.92.0"}]' >"$F/pages.json"
+    (cd "$D" && for f in *; do printf '%s %s\n' "$f" "$(sha256sum "$f" | cut -d' ' -f1)"; done) |
+      jq -Rn '{tagName: "v0.92.0", isDraft: false, isPrerelease: false,
+        assets: [inputs | split(" ") | {name: .[0], digest: ("sha256:" + .[1])}]}' >"$F/page-v0.92.0.json"
+    jq -n --arg avant "$E_AVANT" --arg compile "$E_COMPILE" '[
+      {ref: "refs/tags/avec-macos", object: {type: "commit", sha: $avant}},
+      {ref: "refs/tags/v0.90.1", object: {type: "commit", sha: $avant}},
+      {ref: "refs/tags/v0.91.0", object: {type: "commit", sha: $avant}},
+      {ref: "refs/tags/v0.92.0", object: {type: "commit", sha: $compile}}]' >"$F/refs.json"
+  }
+  vise() { # étiquette, type, commit : change ce que vise une étiquette du faux dépôt
+    jq --arg r "refs/tags/$1" --arg t "$2" --arg s "$3" \
+      'map(if .ref == $r then .object = {type: $t, sha: $s} else . end)' "$F/refs.json" >"$F/refs.neuf" &&
+      mv "$F/refs.neuf" "$F/refs.json"
+  }
+  { grep '^ETIQUETTES_RETIREES=' "$DEPOT/outils/publier-version.sh"
+    awk '/^etiquettes_du_depot\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"
+    awk '/^retirer_etiquette_precedente\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"; } >"$T/etiquette.sh"
+  etiquette() { # étiquette d'avant relevée [version publiée] : la sortie, puis « code N »
+    local code=0 sortie
+    sortie=$(cd "$E" && PATH="$F:$PATH" PRECEDENTE=$1 VERSION=${2:-0.92.0} TAG=v${2:-0.92.0} COMPILE=$E_COMPILE \
+      DOSSIER=$D DEPOT_CODE=essai/depot VANGUARD_ETIQUETTES_RETIREES=$T/etiquettes-retirees.txt \
+      bash -c "source '$T/etiquette.sh'; retirer_etiquette_precedente" 2>&1) || code=$?
+    printf '%s\ncode %s\n' "$sortie" "$code"
+  }
+  aucun_retrait() { [[ ! -s $F/appels ]]; }
+
+  etat_etiquette
+  r=$(etiquette v0.91.0)
+  [[ $r == *"retirée"*"code 0" && $(cat "$F/appels") == "DELETE repos/essai/depot/git/refs/tags/v0.91.0" ]] &&
+    grep -qE "^[0-9T:-]+Z v0\.91\.0 $E_AVANT remplacee-par v0\.92\.0\$" "$T/etiquettes-retirees.txt" &&
+    [[ $(jq -r '.[].ref' "$F/refs.json" | tr '\n' ' ') == "refs/tags/avec-macos refs/tags/v0.90.1 refs/tags/v0.92.0 " ]] &&
+    ok "publier : l'étiquette de la version d'avant, elle seule, retirée et notée (avec-macos et les autres restent)" ||
+    ko "publier : retrait de l'étiquette d'avant ($r ; $(cat "$F/appels" 2>/dev/null))"
+  for cas in "avec-macos|avec-macos" "v0.92.0|la version publiée elle-même" "v0.93.0|une version plus récente" \
+    "v0.90.1|une version plus vieille que celle d'avant" "|aucune page relevée" "v0.91.0 |une forme inattendue"; do
+    etat_etiquette
+    r=$(etiquette "${cas%%|*}")
+    [[ $r == *"gardée"*"code 1" ]] && aucun_retrait && ok "publier : étiquette gardée, $(cut -d'|' -f2 <<<"$cas")" ||
+      ko "publier : étiquette retirée pour $(cut -d'|' -f2 <<<"$cas") ($r)"
+  done
+  etat_etiquette
+  jq '.isDraft = true' "$F/page-v0.92.0.json" >"$F/p" && mv "$F/p" "$F/page-v0.92.0.json"
+  r=$(etiquette v0.91.0)
+  [[ $r == *"code 1" ]] && aucun_retrait && ok "publier : rien retiré tant que la nouvelle page est un brouillon" ||
+    ko "publier : étiquette retirée avec une page en brouillon ($r)"
+  etat_etiquette
+  rm "$F/page-v0.92.0.json"
+  r=$(etiquette v0.91.0)
+  [[ $r == *"code 1" ]] && aucun_retrait && ok "publier : rien retiré sans la nouvelle page en ligne" ||
+    ko "publier : étiquette retirée sans nouvelle page ($r)"
+  etat_etiquette
+  jq '.assets[1].digest = "sha256:'"$(printf '0%.0s' {1..64})"'"' "$F/page-v0.92.0.json" >"$F/p" &&
+    mv "$F/p" "$F/page-v0.92.0.json"
+  r=$(etiquette v0.91.0)
+  [[ $r == *"empreintes"*"code 1" ]] && aucun_retrait &&
+    ok "publier : rien retiré si un fichier en ligne n'a pas l'empreinte de celui d'ici" ||
+    ko "publier : étiquette retirée avec un fichier en ligne différent ($r)"
+  etat_etiquette
+  jq 'del(.assets[0])' "$F/page-v0.92.0.json" >"$F/p" && mv "$F/p" "$F/page-v0.92.0.json"
+  r=$(etiquette v0.91.0)
+  [[ $r == *"code 1" ]] && aucun_retrait && ok "publier : rien retiré s'il manque un fichier à la nouvelle page" ||
+    ko "publier : étiquette retirée avec un fichier manquant ($r)"
+  etat_etiquette
+  vise v0.92.0 commit "$E_COTE"
+  r=$(etiquette v0.91.0)
+  [[ $r == *"commit compilé"*"code 1" ]] && aucun_retrait &&
+    ok "publier : rien retiré si la nouvelle étiquette ne vise pas le commit compilé" ||
+    ko "publier : étiquette retirée, la nouvelle sur un autre commit ($r)"
+  etat_etiquette
+  echo '[{"tagName": "v0.92.0"}, {"tagName": "v0.91.0"}]' >"$F/pages.json"
+  r=$(etiquette v0.91.0)
+  [[ $r == *"encore en ligne"*"code 1" ]] && aucun_retrait &&
+    ok "publier : l'étiquette d'une page encore en ligne reste" ||
+    ko "publier : étiquette retirée sous une page en ligne ($r)"
+  etat_etiquette
+  vise v0.91.0 tag "$E_AVANT"
+  r=$(etiquette v0.91.0)
+  [[ $r == *"légère"*"code 1" ]] && aucun_retrait && ok "publier : une étiquette annotée (pas posée par la publication) reste" ||
+    ko "publier : étiquette annotée retirée ($r)"
+  etat_etiquette
+  vise v0.91.0 commit "$E_COTE"
+  r=$(etiquette v0.91.0)
+  [[ $r == *"code 1" ]] && aucun_retrait && ok "publier : une étiquette sur un commit hors de la ligne de la version reste" ||
+    ko "publier : étiquette d'un commit à côté retirée ($r)"
+  etat_etiquette
+  touch "$F/panne-refs"
+  r=$(etiquette v0.91.0)
+  [[ $r == *"code 1" ]] && aucun_retrait && ok "publier : étiquettes illisibles (API muette) : rien retiré" ||
+    ko "publier : étiquette retirée sans pouvoir lire les étiquettes ($r)"
+  etat_etiquette
+  mkdir "$T/etiquettes-retirees.txt"
+  r=$(etiquette v0.91.0)
+  rmdir "$T/etiquettes-retirees.txt"
+  [[ $r == *"noter"*"code 1" ]] && aucun_retrait && ok "publier : rien retiré sans pouvoir le noter" ||
+    ko "publier : étiquette retirée sans être notée ($r)"
+  # Le passage lui-même : la page d'avant relevée avant la création de la nouvelle, et le retrait de son étiquette
+  # après celui des pages, sous la même condition (mise à jour signée en ligne).
+  awk '/^PRECEDENTE=\$\(gh release view -R "\$DEPOT_CODE"/ { p = NR } /^gh release create "\$TAG" --target/ { c = NR }
+    /^if \[\[ -z \$SIGNEE \|\| -n \$PUBLIEE_SIGNEE \]\]; then$/ { s = NR } s && /gh release delete "\$ancienne" --yes/ { d = NR }
+    d && /^  retirer_etiquette_precedente \|\| true$/ { r = NR } s && !f && /^fi$/ { f = NR }
+    END { exit !(p && c && p < c && s > c && d > s && r > d && f > r) }' "$DEPOT/outils/publier-version.sh" &&
+    ok "publier-version.sh relève la page d'avant avant de publier, et retire son étiquette après sa page" ||
+    ko "publier-version.sh : relevé ou retrait de l'étiquette d'avant hors de leur place"
+else
+  echo "  (sauté : jq absent, pas de faux gh pour l'étiquette d'avant)"
 fi
 
 # 6d. Les passe-droits de publier-version.sh : dans les notes de la page et dans l'historique signé (relecture du lot
