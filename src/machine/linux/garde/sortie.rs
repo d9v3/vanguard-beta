@@ -38,6 +38,13 @@ pub(crate) struct Compteurs {
     pub file_pleine: u64,
     /// Débordements de la file du noyau.
     pub debordements: u64,
+    /// Certains, et refusés si le verdict était venu à temps, mais permis faute de verdict (délai, file pleine) : jugés
+    /// quand même, après coup (alerte haute ; le verdict est gardé pour le lancement suivant).
+    #[serde(default)]
+    pub certains_passes: u64,
+    /// Permis par la file pleine, et pas jugés après coup non plus : la file de rattrapage était pleine elle aussi.
+    #[serde(default)]
+    pub rattrapages_perdus: u64,
 }
 
 /// etat.json.
@@ -59,6 +66,13 @@ pub(crate) struct Etat {
     /// Les systèmes de fichiers marqués.
     pub marques: u64,
     pub compteurs: Compteurs,
+    /// Les empreintes que le garde garde (son union, à root) mais que les listes du compte n'ont plus : une liste ne
+    /// retire rien ; ce qu'elle a en moins est dit (alerte haute).
+    #[serde(default)]
+    pub listes_retirees: u64,
+    /// Les empreintes des listes du compte que l'union, pleine, n'a pas prises (alerte haute).
+    #[serde(default)]
+    pub listes_bloquees: u64,
 }
 
 impl Etat {

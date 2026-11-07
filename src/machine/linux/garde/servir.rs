@@ -6,12 +6,16 @@
 //!   lancements et ceux dont l'inode est en cache comme propre (servis en premier), et confie le reste à la file ;
 //! - deux fils de DÉCISION hachent le descripteur rendu par le noyau (borné à 64 Mio, au-delà : permis et noté) et
 //!   jugent (`decision`) ; leur nombre borne les hachages concurrents ;
-//! - le fil du DÉLAI permet toute demande sans verdict après 250 ms (P9), et la note ;
+//! - le fil du DÉLAI permet toute demande sans verdict après 250 ms (P9), et la note ; elle reste dans la file et
+//!   est jugée quand même : son verdict va au cache, et un fichier certain passé ainsi est dit (alerte haute) ;
+//! - le fil de RATTRAPAGE juge de même, après coup, les demandes permises parce que la file était pleine ; sa file à
+//!   lui est courte, et pleine, la demande n'est que comptée (le travail d'après coup reste borné) ;
 //! - le fil d'ENTRETIEN marque les montages faits plus tard, relit les réglages, écrit etat.json et evenements.jsonl,
 //!   et envoie WATCHDOG=1 tant que le lecteur bat (un lecteur figé : systemd tue le garde, et la fermeture du groupe
 //!   laisse passer tout ce qui attend) ; il n'attend jamais rien du dossier du compte ;
 //! - un fil des LISTES, lancé par l'entretien, relit l'ensemble CERTAIN dans le dossier du compte (openat2) ; s'il
-//!   reste bloqué, l'entretien le dit et n'en lance pas d'autre ;
+//!   reste bloqué, l'entretien le dit, puis l'abandonne et en lance un autre, au plus `LECTEURS_MAX` en vie. Ce qui
+//!   est lu s'ajoute à l'union gardée en root (`listes::unir`), relue avant READY=1 au démarrage ;
 //! - le fil des SIGNAUX : à SIGTERM, tout ce qui attend est permis, puis le garde sort.
 
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
@@ -22,7 +26,7 @@ use std::io::Read;
 use std::os::fd::AsFd;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
@@ -42,8 +46,10 @@ use crate::tr;
 pub(crate) const HACHAGE_MAX: u64 = 64 << 20;
 /// Les fils de décision.
 const DECIDEURS: usize = 2;
-/// La file vers les fils de décision ; pleine, la demande est permise et notée.
+/// La file vers les fils de décision ; pleine, la demande est permise, notée, et confiée au rattrapage.
 const FILE: usize = 256;
+/// La file du rattrapage (un seul fil) ; pleine, la demande permise n'est que comptée.
+const RATTRAPAGE: usize = 32;
 /// Les événements gardés en mémoire avant d'être écrits ; au-delà, ils sont comptés sans être écrits.
 const EVENEMENTS_EN_FILE: usize = 1024;
 /// Le lecteur bat au moins toutes ces millisecondes.
@@ -67,6 +73,9 @@ struct Config {
     permises: HashSet<[u8; 32]>,
     vanguard: HashSet<[u8; 32]>,
     alertes: Vec<String>,
+    /// Par liste (SHA-256, MD5) : ce que la dernière liste du compte n'a plus, ce que l'union pleine n'a pas pris.
+    retirees: [u64; 2],
+    bloquees: [u64; 2],
 }
 
 impl Config {
@@ -90,6 +99,8 @@ struct Compteurs2 {
     file_pleine: AtomicU64,
     debordements: AtomicU64,
     evenements_perdus: AtomicU64,
+    certains_passes: AtomicU64,
+    rattrapages_perdus: AtomicU64,
 }
 
 fn plus(c: &AtomicU64) {
@@ -109,6 +120,8 @@ impl Compteurs2 {
             non_verifiees: l(&self.non_verifiees),
             file_pleine: l(&self.file_pleine),
             debordements: l(&self.debordements),
+            certains_passes: l(&self.certains_passes),
+            rattrapages_perdus: l(&self.rattrapages_perdus),
         }
     }
 }
@@ -221,12 +234,10 @@ impl Read for ParPosition<'_> {
     }
 }
 
-/// Juge une demande et y répond.
+/// Juge une demande et y répond, si personne ne l'a fait. Déjà permise (le délai, la file pleine), elle est jugée
+/// quand même : le verdict va au cache (le lancement suivant est jugé tout de suite), et un fichier certain qui aurait
+/// été refusé est compté (`certains_passes`, alerte haute) et noté.
 fn decider(p: &Partage, d: &Demande) {
-    // Déjà permise par le délai : rien à faire.
-    if !verrou(&p.attentes).contient(d.fd, &d.fichier) {
-        return;
-    }
     let connu = if let Some(c) = d.connu {
         c
     } else {
@@ -296,6 +307,9 @@ fn decider(p: &Partage, d: &Demande) {
     if a_temps && !verdict.permet() {
         plus(&p.compteurs.refusees);
     }
+    if !a_temps && !verdict.permet() {
+        plus(&p.compteurs.certains_passes);
+    }
     let mut e = evenement(if a_temps { verdict.nom() } else { "delai" });
     e.certitude = Some(nom_certitude(certitude).into());
     e.exception = match verdict {
@@ -348,6 +362,13 @@ fn decideur(p: &Partage, file: &Mutex<Receiver<Demande>>) {
     }
 }
 
+/// Le fil du rattrapage : les demandes permises par la file pleine, jugées après coup, une à la fois.
+fn rattraper(p: &Partage, file: &Receiver<Demande>) {
+    while let Ok(d) = file.recv() {
+        decider(p, &d);
+    }
+}
+
 /// Le fil du délai.
 fn delai(p: &Partage) {
     while !p.arret.load(Ordering::Relaxed) {
@@ -391,19 +412,82 @@ struct Relecture {
     listes: Option<(PathBuf, u32, [Option<listes::Signature>; 2])>,
     derniere: Option<Instant>,
     en_cours: Option<(Receiver<ListesLues>, Instant)>,
+    /// Le dossier de l'union, à root (DOSSIER_ETAT).
+    union: PathBuf,
+    /// Les fils des listes en vie, abandonnés compris.
+    vivants: Arc<AtomicUsize>,
 }
 
 /// Une lecture des listes sans réponse depuis plus longtemps est dite.
 const LISTES_DELAI: Duration = Duration::from_secs(10);
+/// … et abandonnée, depuis plus longtemps encore : une autre peut partir (son fil reste compté tant qu'il vit).
+const LISTES_ABANDON: Duration = Duration::from_secs(30);
+/// Les fils des listes en vie, au plus : un gelé et un neuf. Chacun peut tenir deux listes en mémoire (MemoryMax).
+const LECTEURS_MAX: usize = 2;
+
+/// Un fil des listes en vie : compté à sa création, décompté quand il se termine (ou s'il n'a pas pu partir).
+struct Vivant(Arc<AtomicUsize>);
+
+impl Vivant {
+    /// Un de plus, s'il en reste la place.
+    fn prendre(vivants: &Arc<AtomicUsize>) -> Option<Vivant> {
+        vivants
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < LECTEURS_MAX).then(|| n.saturating_add(1))
+            })
+            .ok()
+            .map(|_| Vivant(Arc::clone(vivants)))
+    }
+}
+
+impl Drop for Vivant {
+    fn drop(&mut self) {
+        let _ = self
+            .0
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| Some(n.saturating_sub(1)));
+    }
+}
+
+/// Ce que l'entretien fait d'une lecture sans réponse depuis `attente` : la dire, l'abandonner (f2).
+fn sans_reponse(attente: Duration) -> (bool, bool) {
+    (attente > LISTES_DELAI, attente > LISTES_ABANDON)
+}
+
+/// Les deux listes, dans l'ordre des résultats d'une lecture : SHA-256, puis MD5.
+const NOMS: [&str; 2] = [LISTE_SHA256, LISTE_MD5];
+
+fn liste_de(c: &Certain, i: usize) -> Option<&listes::ListeSha256> {
+    if i == 0 { c.sha256.as_ref() } else { c.md5.as_ref() }
+}
+
+fn poser_liste(c: &mut Certain, i: usize, l: listes::ListeSha256) {
+    if i == 0 {
+        c.sha256 = Some(l);
+    } else {
+        c.md5 = Some(l);
+    }
+}
 
 impl Relecture {
-    fn nouvelle() -> Relecture {
+    fn nouvelle(union: PathBuf) -> Relecture {
         Relecture {
             reglages: None,
             listes: None,
             derniere: None,
             en_cours: None,
+            union,
+            vivants: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// L'union gardée en root, relue avant READY=1 (f1) : un disque local à root, jamais le dossier du compte, donc
+    /// sans attente possible de lui. Les listes du compte s'y ajoutent ensuite.
+    fn charger_union(&self, p: &Partage) {
+        let ([sha256, md5], alertes) = listes::charger_union(&self.union, NOMS);
+        let mut c = p.config.write().unwrap_or_else(PoisonError::into_inner);
+        c.certain = Certain { sha256, md5 };
+        // Préfixe « union » : ces alertes-là restent (celles des listes du compte sont remplacées à chaque lecture).
+        c.alertes.extend(alertes.into_iter().map(|a| format!("union {a}")));
     }
 
     /// Les réglages (/etc/vanguard, à root) : relus tout de suite s'ils ont changé. Vrai s'ils ont changé.
@@ -449,7 +533,8 @@ impl Relecture {
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
                     let attente = depuis.elapsed();
-                    if attente > LISTES_DELAI {
+                    let (dire, abandonner) = sans_reponse(attente);
+                    if dire {
                         alerter_listes(
                             p,
                             vec![format!(
@@ -458,7 +543,11 @@ impl Relecture {
                             )],
                         );
                     }
-                    return;
+                    if !abandonner {
+                        return;
+                    }
+                    // Abandonnée : son fil reste compté dans `vivants` tant qu'il vit ; une autre lecture peut partir.
+                    self.en_cours = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.en_cours = None,
             }
@@ -478,8 +567,18 @@ impl Relecture {
             Some((d, c, sigs)) if *d == dossier && *c == compte => *sigs,
             _ => [None, None],
         };
+        let Some(vivant) = Vivant::prendre(&self.vivants) else {
+            alerter_listes(
+                p,
+                vec![format!(
+                    "liste: {LECTEURS_MAX} lectures sans réponse, aucune autre n'est lancée (listes d'avant en vigueur)"
+                )],
+            );
+            return;
+        };
         let (vers, recu) = std::sync::mpsc::sync_channel(1);
         let lancer = std::thread::Builder::new().name("garde-listes".into()).spawn(move || {
+            let _vivant = vivant;
             let resultats = match listes::depart(&dossier, compte) {
                 Ok((depart, relatif)) => [LISTE_SHA256, LISTE_MD5]
                     .iter()
@@ -520,14 +619,27 @@ impl Relecture {
                     if let Some(s) = sigs.get_mut(i) {
                         *s = Some(sig);
                     }
-                    if let Some(l) = l {
+                    let Some(l) = l else { continue };
+                    // M-N1 : la liste du compte s'ajoute à l'union ; ce qu'elle n'a plus reste, et est compté. Seul
+                    // l'entretien change l'ensemble : l'union lue ici est encore celle en vigueur à l'écriture.
+                    let u = {
+                        let c = p.config.read().unwrap_or_else(PoisonError::into_inner);
+                        listes::unir(liste_de(&c.certain, i), l, listes::union_max())
+                    };
+                    if let Some(nouvelle) = u.liste {
+                        if let Some(nom) = NOMS.get(i)
+                            && let Err(e) = listes::ecrire_union(&self.union, nom, &nouvelle)
+                        {
+                            alertes.push(format!("liste: {}: {e}", self.union.join(nom).display()));
+                        }
                         changees = true;
                         let mut c = p.config.write().unwrap_or_else(PoisonError::into_inner);
-                        if i == 0 {
-                            c.certain.sha256 = Some(l);
-                        } else {
-                            c.certain.md5 = Some(l);
-                        }
+                        poser_liste(&mut c.certain, i, nouvelle);
+                    }
+                    let mut c = p.config.write().unwrap_or_else(PoisonError::into_inner);
+                    let c = &mut *c;
+                    if let (Some(r), Some(b)) = (c.retirees.get_mut(i), c.bloquees.get_mut(i)) {
+                        (*r, *b) = (u.retirees, u.bloquees);
                     }
                 }
                 Err(e) => alertes.push(format!("liste: {e}")),
@@ -550,13 +662,16 @@ fn alerter_listes(p: &Partage, alertes: Vec<String>) {
 
 /// Écrit etat.json d'un coup.
 fn ecrire_etat(p: &Partage, demarre: u64, marques: &Marques) {
-    let (refus, pause_jusqu_a, certain, mut alertes) = {
+    let (refus, pause_jusqu_a, certain, mut alertes, listes_retirees, listes_bloquees) = {
         let c = p.config.read().unwrap_or_else(PoisonError::into_inner);
+        let somme = |v: [u64; 2]| v.iter().fold(0u64, |a, n| a.saturating_add(*n));
         (
             c.reglages.as_ref().is_some_and(|r| r.refus),
             c.reglages.as_ref().and_then(|r| r.pause_jusqu_a),
             u64::try_from(c.certain.nombre()).unwrap_or(u64::MAX),
             c.alertes.clone(),
+            somme(c.retirees),
+            somme(c.bloquees),
         )
     };
     alertes.extend(
@@ -582,6 +697,8 @@ fn ecrire_etat(p: &Partage, demarre: u64, marques: &Marques) {
         alertes,
         marques: u64::try_from(marques.marques.len()).unwrap_or(u64::MAX),
         compteurs: p.compteurs.lire(),
+        listes_retirees,
+        listes_bloquees,
     };
     let Ok(texte) = serde_json::to_vec(&etat) else {
         return;
@@ -708,11 +825,12 @@ pub(crate) fn servir() -> i32 {
         evenements: vers_sortie,
         arret: AtomicBool::new(false),
     });
-    // Les réglages (à root) avant la première marque : le mode est connu dès la première demande. Les listes, dans le
-    // dossier du compte, viennent après READY=1, dans un fil à part : un dossier qui ne répond pas laisse le garde
-    // vivant, sans listes (seule la marque d'essai est alors certaine).
-    let mut relecture = Relecture::nouvelle();
+    // Les réglages et l'union des listes reçues (à root, sur un disque local) avant la première marque : le mode et
+    // l'ensemble CERTAIN d'avant sont en vigueur dès la première demande (f1). Les listes du compte, dans son dossier,
+    // viennent après READY=1, dans un fil à part : un dossier qui ne répond pas laisse le garde vivant, avec l'union.
+    let mut relecture = Relecture::nouvelle(PathBuf::from(super::DOSSIER_ETAT));
     relecture.relire_reglages(&p, true);
+    relecture.charger_union(&p);
     let mut marques = Marques::default();
     let info = Montages::ouvrir().and_then(|mut m| m.lire()).unwrap_or_default();
     marques.completer(&p.groupe, &info);
@@ -734,6 +852,11 @@ pub(crate) fn servir() -> i32 {
     for _ in 0..DECIDEURS {
         let (p, file) = (Arc::clone(&p), Arc::clone(&file));
         std::thread::spawn(move || decideur(&p, &file));
+    }
+    let (vers_rattrapage, rattrapage) = std::sync::mpsc::sync_channel::<Demande>(RATTRAPAGE);
+    {
+        let p = Arc::clone(&p);
+        std::thread::spawn(move || rattraper(&p, &rattrapage));
     }
     {
         let p = Arc::clone(&p);
@@ -764,11 +887,11 @@ pub(crate) fn servir() -> i32 {
     }
     p.battre();
     notifier.envoyer("READY=1");
-    lire(&p, &vers_decideurs)
+    lire(&p, &vers_decideurs, &vers_rattrapage)
 }
 
 /// Le fil lecteur ; ne rend la main que sur une lecture fautive.
-fn lire(p: &Partage, vers_decideurs: &SyncSender<Demande>) -> i32 {
+fn lire(p: &Partage, vers_decideurs: &SyncSender<Demande>, vers_rattrapage: &SyncSender<Demande>) -> i32 {
     let moi = i32::try_from(std::process::id()).unwrap_or(-1);
     let mut tampon = vec![0u8; fanotify::TAMPON];
     loop {
@@ -793,7 +916,7 @@ fn lire(p: &Partage, vers_decideurs: &SyncSender<Demande>) -> i32 {
         };
         let lu = lecture::evenements(tampon.get(..n).unwrap_or_default());
         for ev in lu.evenements {
-            recevoir(p, vers_decideurs, &ev, moi);
+            recevoir(p, vers_decideurs, vers_rattrapage, &ev, moi);
         }
         if let Some(d) = lu.defaut {
             eprintln!("garde: lecture fautive: {d:?}");
@@ -804,7 +927,13 @@ fn lire(p: &Partage, vers_decideurs: &SyncSender<Demande>) -> i32 {
 }
 
 /// Une demande lue.
-fn recevoir(p: &Partage, vers_decideurs: &SyncSender<Demande>, ev: &lecture::Evenement, moi: i32) {
+fn recevoir(
+    p: &Partage,
+    vers_decideurs: &SyncSender<Demande>,
+    vers_rattrapage: &SyncSender<Demande>,
+    ev: &lecture::Evenement,
+    moi: i32,
+) {
     // Le pidfd ne sert pas : le processus attend son exec, son numéro ne peut pas être repris.
     drop(ev.pidfd.and_then(fanotify::prendre));
     if ev.masque & fanotify::DEBORDEMENT != 0 {
@@ -861,6 +990,10 @@ fn recevoir(p: &Partage, vers_decideurs: &SyncSender<Demande>, ev: &lecture::Eve
             e.pid = d.pid;
             p.noter(e);
         }
+        // M-N2 : permise sans attendre (P9), mais jugée après coup ; la file du rattrapage pleine, seulement comptée.
+        if vers_rattrapage.try_send(d).is_err() {
+            plus(&p.compteurs.rattrapages_perdus);
+        }
     }
 }
 
@@ -904,6 +1037,170 @@ mod tests {
             return crate::essais::saute("lancé en root : le garde ne tourne jamais sur ce PC hors VM");
         }
         assert_eq!(servir(), SORTIE_PAS_ROOT);
+    }
+
+    /// f2 : une lecture gelée est dite à 10 s, abandonnée à 30 s ; les fils des listes en vie sont bornés, et un fil
+    /// qui finit (ou qui n'a pas pu partir) rend sa place.
+    #[test]
+    fn lecture_gelee_abandonnee_et_fils_bornes() {
+        assert_eq!(sans_reponse(Duration::from_secs(5)), (false, false));
+        assert_eq!(sans_reponse(Duration::from_secs(11)), (true, false));
+        assert_eq!(sans_reponse(Duration::from_secs(31)), (true, true));
+        let vivants = Arc::new(AtomicUsize::new(0));
+        let un = Vivant::prendre(&vivants).unwrap();
+        let deux = Vivant::prendre(&vivants).unwrap();
+        assert!(Vivant::prendre(&vivants).is_none());
+        assert_eq!(vivants.load(Ordering::Relaxed), LECTEURS_MAX);
+        drop(un);
+        let trois = std::thread::spawn({
+            let v = Vivant::prendre(&vivants).unwrap();
+            move || drop(v)
+        });
+        trois.join().unwrap();
+        assert_eq!(vivants.load(Ordering::Relaxed), 1);
+        drop(deux);
+        assert_eq!(vivants.load(Ordering::Relaxed), 0);
+    }
+
+    /// M-N1 et f1 : l'union relue au démarrage est en vigueur avant toute liste du compte, et une liste vide ne la
+    /// réduit pas (le reste de `appliquer` passe par `listes::unir`, essayé à part).
+    #[test]
+    fn l_union_relue_et_jamais_reduite() {
+        let d = crate::essais::Jetable::nouveau("garde-servir-union");
+        let union = listes::ListeSha256::lire([[1u8; 32], [2u8; 32]].concat()).unwrap();
+        listes::ecrire_union(&d, LISTE_SHA256, &union).unwrap();
+        let (lues, alertes) = listes::charger_union(&d, NOMS);
+        assert!(alertes.is_empty(), "{alertes:?}");
+        let mut c = Certain {
+            sha256: None,
+            md5: None,
+        };
+        let [sha256, md5] = lues;
+        c.sha256 = sha256;
+        c.md5 = md5;
+        assert_eq!(c.nombre(), 2);
+        let vide = listes::ListeSha256::lire(Vec::new()).unwrap();
+        let u = listes::unir(liste_de(&c, 0), vide, listes::union_max());
+        assert!(u.liste.is_none());
+        assert_eq!(u.retirees, 2);
+        assert!(liste_de(&c, 1).is_none());
+        poser_liste(&mut c, 1, listes::ListeSha256::lire([3u8; 32].to_vec()).unwrap());
+        assert_eq!(c.nombre(), 3);
+    }
+
+    /// Un partage d'essai : un groupe sur /dev/null, en refus, avec `certain` comme liste.
+    fn partage(certain: &[[u8; 32]]) -> (Partage, Receiver<Evenement>) {
+        let nul = File::options().write(true).open("/dev/null").unwrap();
+        let (vers, evenements) = std::sync::mpsc::sync_channel(64);
+        let mut tries = certain.to_vec();
+        tries.sort_unstable();
+        let config = Config {
+            reglages: Some(Reglages {
+                version: super::super::VERSION_REGLAGES,
+                compte: 4242,
+                listes: "/home/alice/listes".into(),
+                refus: true,
+                pause_jusqu_a: None,
+                permises: Vec::new(),
+                vanguard: Vec::new(),
+            }),
+            certain: Certain {
+                sha256: listes::ListeSha256::lire(tries.concat()),
+                md5: None,
+            },
+            ..Config::default()
+        };
+        let p = Partage {
+            groupe: Groupe::pour_essai(std::os::fd::OwnedFd::from(nul)),
+            attentes: Mutex::new(Attentes::default()),
+            config: RwLock::new(config),
+            cache: Mutex::new(Cache::default()),
+            compteurs: Compteurs2::default(),
+            battement: AtomicU64::new(0),
+            debut: Instant::now(),
+            evenements: vers,
+            arret: AtomicBool::new(false),
+        };
+        (p, evenements)
+    }
+
+    /// Une demande pour le fichier `nom` de `d`, écrit avec `contenu`.
+    fn demande(d: &Path, nom: &str, contenu: &[u8]) -> Demande {
+        use std::os::fd::AsRawFd;
+        let chemin = d.join(nom);
+        std::fs::write(&chemin, contenu).unwrap();
+        let fichier = Arc::new(File::open(&chemin).unwrap());
+        let m = fichier.metadata().unwrap();
+        Demande {
+            fd: fichier.as_raw_fd(),
+            fichier,
+            pid: i32::MAX,
+            cle: Cle {
+                dev: m.dev(),
+                ino: m.ino(),
+                ctime: m.ctime(),
+                ctime_ns: m.ctime_nsec(),
+                taille: m.size(),
+                fiable: true,
+            },
+            connu: None,
+        }
+    }
+
+    /// M-N2 : une demande déjà permise (délai, file pleine) est jugée quand même ; certaine, elle est comptée et dite,
+    /// et son verdict va au cache ; à temps, elle est refusée sans être comptée comme passée.
+    #[test]
+    fn deja_permise_jugee_apres_coup() {
+        let dossier = crate::essais::Jetable::nouveau("garde-servir-rattrapage");
+        let d: &Path = &dossier;
+        let contenu = b"un programme malveillant invente pour l'essai";
+        let empreinte = listes::hacher(&contenu[..]).unwrap().sha256;
+        let (p, evenements) = partage(&[empreinte]);
+        // Déjà permise : n'attend plus.
+        let tard = demande(d, "tard", contenu);
+        decider(&p, &tard);
+        let k = p.compteurs.lire();
+        assert_eq!((k.certains_passes, k.refusees, k.hachees), (1, 0, 1));
+        let connu = verrou(&p.cache).lire(&tard.cle).unwrap();
+        assert!(connu.certain.is_some());
+        let e = evenements.try_recv().unwrap();
+        assert_eq!((e.genre.as_str(), e.trop_tard.as_deref()), ("delai", Some("refuse")));
+        // Le lancement suivant : jugé depuis le cache, à temps, refusé.
+        let suivant = Demande {
+            connu: Some(connu),
+            ..demande(d, "suivant", contenu)
+        };
+        verrou(&p.attentes).ajouter(suivant.fd, Arc::clone(&suivant.fichier), Instant::now());
+        decider(&p, &suivant);
+        let k = p.compteurs.lire();
+        assert_eq!((k.certains_passes, k.refusees, k.hachees), (1, 1, 1));
+        assert!(!verrou(&p.attentes).contient(suivant.fd, &suivant.fichier));
+        // Propre et déjà permis : haché, gardé au cache comme propre, rien de compté.
+        let propre = demande(d, "propre", b"un programme propre invente");
+        decider(&p, &propre);
+        assert!(verrou(&p.cache).lire(&propre.cle).unwrap().certain.is_none());
+        assert_eq!(p.compteurs.lire().certains_passes, 1);
+    }
+
+    /// M-N2 : le fil du rattrapage juge ce que la file pleine a permis, une demande à la fois, puis s'arrête avec sa
+    /// file ; sa file est bornée.
+    #[test]
+    fn le_rattrapage_juge_apres_coup_et_reste_borne() {
+        let d = crate::essais::Jetable::nouveau("garde-servir-rattrapage-fil");
+        let contenu = b"un autre programme malveillant invente";
+        let h = listes::hacher(&contenu[..]).unwrap();
+        let (p, _evenements) = partage(&[h.sha256]);
+        let (vers, file) = std::sync::mpsc::sync_channel::<Demande>(RATTRAPAGE);
+        let mut pleine = 0;
+        for i in 0..=RATTRAPAGE {
+            if vers.try_send(demande(&d, &format!("f{i}"), contenu)).is_err() {
+                pleine += 1;
+            }
+        }
+        assert_eq!(pleine, 1);
+        drop(vers);
+        rattraper(&p, &file);
+        assert_eq!(p.compteurs.lire().certains_passes, RATTRAPAGE as u64);
     }
 
     #[test]

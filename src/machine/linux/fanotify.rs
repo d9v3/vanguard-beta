@@ -76,6 +76,18 @@ fn init(options: Options) -> io::Result<OwnedFd> {
 }
 
 impl Groupe {
+    /// Un groupe d'essai sur un descripteur quelconque (/dev/null) : ses réponses ne vont nulle part.
+    #[cfg(test)]
+    pub(crate) fn pour_essai(fd: OwnedFd) -> Groupe {
+        Groupe {
+            fd,
+            options: Options {
+                pidfd: false,
+                audit: false,
+            },
+        }
+    }
+
     /// Ouvre le groupe, avec le PIDFD et l'audit si le noyau et les droits les donnent (`audit` : CAP_AUDIT_WRITE
     /// est là), sinon sans. Refusé (EPERM sans CAP_SYS_ADMIN, ENOSYS sans fanotify) : l'erreur du dernier essai.
     pub(crate) fn ouvrir(audit: bool) -> io::Result<Groupe> {

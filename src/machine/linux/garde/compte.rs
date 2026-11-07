@@ -308,6 +308,52 @@ pub(crate) fn juger(posee: bool, etat: Option<&Etat>, maintenant: u64) -> Consta
             ),
         )
     };
+    let mut hausser = |niveau: Niveau, texte: String| {
+        c.message.push(' ');
+        c.message.push_str(&texte);
+        c.probleme = c.probleme.max(Some(niveau));
+    };
+    let k = &e.compteurs;
+    if k.certains_passes > 0 {
+        let n = k.certains_passes;
+        hausser(
+            Niveau::Eleve,
+            trf!(
+                "{n} lancements de programmes certainement malveillants ont été permis faute de verdict à temps (garde saturé) : jugés après coup, leur verdict est gardé pour le lancement suivant (vanguard garde montre les derniers événements).",
+                "{n} launches of certainly malicious programs were allowed for lack of a timely verdict (guard saturated): judged afterwards, their verdict is kept for the next launch (vanguard guard shows the latest events)."
+            ),
+        );
+    }
+    if k.rattrapages_perdus > 0 {
+        let n = k.rattrapages_perdus;
+        hausser(
+            Niveau::Moyen,
+            trf!(
+                "{n} lancements ont été permis sans jamais être jugés (garde saturé).",
+                "{n} launches were allowed without ever being judged (guard saturated)."
+            ),
+        );
+    }
+    if e.listes_retirees > 0 {
+        let n = e.listes_retirees;
+        hausser(
+            Niveau::Eleve,
+            trf!(
+                "Les listes du compte n'ont plus {n} empreintes que le garde avait reçues : il les garde (une liste ne retire rien). Si c'est voulu (une base allégée), « vanguard garde maj » dans un terminal repart des listes du compte ; sinon, un programme a touché aux listes.",
+                "The account's lists no longer have {n} hashes the guard had received: it keeps them (a list removes nothing). If intended (a smaller database), “vanguard guard update” in a terminal starts over from the account's lists; otherwise, a program tampered with the lists."
+            ),
+        );
+    }
+    if e.listes_bloquees > 0 {
+        let n = e.listes_bloquees;
+        hausser(
+            Niveau::Eleve,
+            trf!(
+                "{n} empreintes des listes du compte n'entrent plus dans celles du garde, pleines : « vanguard garde maj » dans un terminal repart des listes du compte.",
+                "{n} hashes from the account's lists no longer fit in the guard's, which are full: “vanguard guard update” in a terminal starts over from the account's lists."
+            ),
+        );
+    }
     if !e.alertes.is_empty() {
         c.message.push_str(&trf!(
             " À voir : {}.",
@@ -627,7 +673,10 @@ fn mettre_a_jour() {
     // Le garde relit les listes de lui-même ; seul un autre programme demande l'assistant root.
     let ici = std::env::current_exe().ok().and_then(|c| empreinte_de_fichier(&c));
     let pose_la = empreinte_de_fichier(Path::new(PROGRAMME));
-    if ici.is_some() && ici == pose_la {
+    // Le garde garde l'union de ce qu'il a reçu : des listes du compte plus courtes n'y retirent rien. Seul l'ordre
+    // root (mettre à jour) l'efface et repart des listes du compte.
+    let repartir = etat().is_some_and(|e| e.listes_retirees > 0 || e.listes_bloquees > 0);
+    if ici.is_some() && ici == pose_la && !repartir {
         trp!(
             "  Le programme du garde est déjà celui-ci.",
             "  The guard's program is already this one."
@@ -636,11 +685,24 @@ fn mettre_a_jour() {
     }
     // Lancé par la minuterie du jour : rien à demander à personne, seulement le dire.
     if !crate::protection::blocage::gardes::console_reelle() {
-        trp!(
-            "  Le programme du garde n'est pas celui-ci : « vanguard garde maj » dans un terminal le met à jour.",
-            "  The guard's program is not this one: “vanguard guard update” in a terminal updates it."
-        );
+        if repartir {
+            trp!(
+                "  Les listes du garde ne sont plus celles du compte : « vanguard garde maj » dans un terminal le fait repartir des listes du compte.",
+                "  The guard's lists no longer match the account's: “vanguard guard update” in a terminal makes it start over from the account's lists."
+            );
+        } else {
+            trp!(
+                "  Le programme du garde n'est pas celui-ci : « vanguard garde maj » dans un terminal le met à jour.",
+                "  The guard's program is not this one: “vanguard guard update” in a terminal updates it."
+            );
+        }
         return;
+    }
+    if repartir {
+        trp!(
+            "  Le garde repartira des listes du compte (elles n'ont plus toutes ses empreintes).",
+            "  The guard will start over from the account's lists (they no longer have all its hashes)."
+        );
     }
     envoyer(&Ordre::GardeMettreAJour, le_faire());
 }
@@ -795,6 +857,42 @@ mod tests {
         let c = juger(true, Some(&alertes), maintenant);
         assert_eq!(c.probleme, Some(Niveau::Info));
         assert!(!c.message.contains('\u{1b}'), "{}", c.message);
+    }
+
+    /// M-N1 et M-N2 : des listes du compte amputées, une union pleine, un certain passé faute de verdict : alerte
+    /// haute, même quand tout le reste va bien ; un lancement jamais jugé : moyenne.
+    #[test]
+    fn listes_amputees_et_certains_passes_en_alerte_haute() {
+        let maintenant = 5_000;
+        assert_eq!(juger(true, Some(&etat(maintenant)), maintenant).probleme, None);
+        let retirees = Etat {
+            listes_retirees: 3,
+            ..etat(maintenant)
+        };
+        let c = juger(true, Some(&retirees), maintenant);
+        assert_eq!(c.probleme, Some(Niveau::Eleve));
+        assert!(c.message.contains('3'), "{}", c.message);
+        let bloquees = Etat {
+            listes_bloquees: 1,
+            ..etat(maintenant)
+        };
+        assert_eq!(juger(true, Some(&bloquees), maintenant).probleme, Some(Niveau::Eleve));
+        let mut passes = etat(maintenant);
+        passes.compteurs.certains_passes = 1;
+        assert_eq!(juger(true, Some(&passes), maintenant).probleme, Some(Niveau::Eleve));
+        let mut perdus = etat(maintenant);
+        perdus.compteurs.rattrapages_perdus = 9;
+        assert_eq!(juger(true, Some(&perdus), maintenant).probleme, Some(Niveau::Moyen));
+        // En pause aussi : l'alerte haute l'emporte.
+        let pause = Etat {
+            pause_jusqu_a: Some(maintenant + 60),
+            ..retirees
+        };
+        assert_eq!(juger(true, Some(&pause), maintenant).probleme, Some(Niveau::Eleve));
+        // Un état d'avant, sans ces champs, se relit (zéro).
+        let ancien = br#"{"version":"0.90.0","pid":1,"demarre":1,"battement":1,"refus":true,"pause_jusqu_a":null,"certain":2,"alertes":[],"marques":1,"compteurs":{"demandes":0,"cache":0,"hachees":0,"notees":0,"refusees":0,"delais":0,"non_verifiees":0,"file_pleine":0,"debordements":0}}"#;
+        let e = Etat::lire(ancien).unwrap();
+        assert_eq!((e.listes_retirees, e.compteurs.certains_passes), (0, 0));
     }
 
     #[test]
