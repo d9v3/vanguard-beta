@@ -2,13 +2,15 @@
 //!
 //! Confiance (P17) : aucune vérification de la signature RSA des .cvd (freshclam l'a faite en l'installant) ; la base
 //! est crue parce que seul le système a pu l'écrire. Sous Linux, son dossier, chacun de ses parents et chaque fichier
-//! lu appartiennent à root ou au compte du service (clamav, clamupdate), jamais au compte qui lit ; ni le dossier ni
+//! lu appartiennent à root ou au compte du service (clamav, clamupdate, vscan), jamais au compte qui lit ; ni le dossier ni
 //! un fichier ne s'écrit par « autres », ni par ce compte (le noyau en juge, ACL comprises), et ce compte n'est pas
 //! membre de leur groupe (un compte du groupe clamav peut, un jour, y écrire) ; un parent écrivable par tous n'est
 //! admis que collant (/tmp). Chaque fichier est ouvert sans suivre de lien et jugé sur ce qui a été ouvert. Sous
 //! Windows (P16), la base de ClamAV pour Windows (`Program Files\ClamAV\database`), dont le dossier et chaque fichier
 //! sont réservés aux administrateurs ; Vanguard ne télécharge jamais de base lui-même. Un seul fichier douteux : toute
-//! la base est « non fiable : non lue ».
+//! la base est « non fiable : non lue ». Un fichier que ce compte n'a pas le droit de lire n'est pas douteux, il est
+//! dit « inaccessible » : écarté s'il ne porte que des signatures, sinon (exceptions, conteneur) toute la base
+//! reste non lue, car perdre une exception ajouterait des faux positifs.
 //!
 //! Jamais en administrateur (P22) : un défaut d'un lecteur de format, devant une base ou un fichier piégés, y
 //! deviendrait une prise de contrôle de l'ordinateur. Le garde, en root, ne reçoit que la liste binaire des
@@ -38,7 +40,9 @@ use crate::{tr, trf};
 const ENTREES_MAX: usize = 4096;
 /// Les fichiers lus, au plus (bases .cvd/.cld et fichiers de signatures à part).
 const FICHIERS_MAX: usize = 256;
-/// Les octets gardés en mémoire pendant le chargement, au plus : main.cvd décompressé et daily.cld font 322 Mo.
+/// Les octets des fichiers gardés en mémoire en même temps pendant le chargement, au plus : comptés à mesure qu'ils
+/// sont lus ou décompressés, la décompression bornée à ce qui reste (main.cvd décompressé et daily.cld font 322 Mo ;
+/// pendant la décompression de main.cvd, ≈ 410 Mo).
 const TOTAL_MAX: usize = 1 << 30;
 
 /// Pourquoi la base n'est pas chargée.
@@ -52,6 +56,10 @@ pub(crate) enum Refus {
     NonFiable(PathBuf, String),
     /// Le dossier ne se lit pas.
     Illisible(PathBuf, String),
+    /// Un fichier que ce compte n'a pas le droit de lire (EACCES, EPERM) : rien n'y est douteux, mais une base sans
+    /// lui pourrait manquer d'exceptions (.ign2, .fp, ou celles d'un .cvd/.cld) : non lue. Un fichier à part qui
+    /// n'ajoute que des signatures est seulement écarté (voir `charger_dans`).
+    Inaccessible(PathBuf),
     /// Plus que `TOTAL_MAX` octets, ou plus de `FICHIERS_MAX` fichiers.
     TropGrosse,
     /// Aucun fichier de signatures lisible, avec les bases écartées (nom, raison) s'il y en a.
@@ -77,6 +85,11 @@ impl std::fmt::Display for Refus {
             Refus::Illisible(chemin, pourquoi) => f.write_str(&trf!(
                 "base ClamAV illisible : {} ({pourquoi})",
                 "unreadable ClamAV database: {} ({pourquoi})",
+                chemin.display()
+            )),
+            Refus::Inaccessible(chemin) => f.write_str(&trf!(
+                "base ClamAV non lue : lecture de {} refusée à ce compte (droits du fichier)",
+                "ClamAV database not read: this account may not read {} (file permissions)",
                 chemin.display()
             )),
             Refus::TropGrosse => f.write_str(tr!("base ClamAV trop grosse", "ClamAV database too large")),
@@ -148,11 +161,8 @@ impl Regles {
                     tr!("groupes du compte illisibles", "account groups unreadable").into(),
                 )
             })?;
-        let mut proprietaires = vec![0];
-        if let Ok(passwd) = crate::socle::lire_texte_ordinaire(Path::new("/etc/passwd"), 4 << 20) {
-            proprietaires.extend(comptes_du_service(&passwd));
-        }
-        proprietaires.retain(|p| !comptes.contains(p));
+        let passwd = crate::socle::lire_texte_ordinaire(Path::new("/etc/passwd"), 4 << 20).unwrap_or_default();
+        let proprietaires = proprietaires_admis(&passwd, &comptes);
         Ok(Regles {
             proprietaires,
             comptes,
@@ -206,7 +216,44 @@ fn groupes_du_processus(status: &str) -> Option<Vec<u32>> {
     (vus == 2).then_some(groupes)
 }
 
-/// Les comptes du service ClamAV d'un /etc/passwd (clamav ; clamupdate chez Fedora).
+/// Ce que /proc/self/status dit des droits du processus : root à l'un de ses quatre comptes (`Uid` : réel, effectif,
+/// sauvé, système de fichiers), ou une capacité effective (`CapEff` non nul). `None` : illisible.
+#[cfg(unix)]
+fn privilegie(status: &str) -> Option<bool> {
+    let (mut root, mut capacites) = (None, None);
+    for l in status.lines() {
+        let Some((cle, valeur)) = l.split_once(':') else {
+            continue;
+        };
+        match cle {
+            "Uid" => {
+                let comptes = valeur
+                    .split_whitespace()
+                    .map(|u| u.parse::<u32>().ok())
+                    .collect::<Option<Vec<u32>>>()?;
+                if comptes.len() != 4 {
+                    return None;
+                }
+                root = Some(comptes.contains(&0));
+            }
+            "CapEff" => capacites = Some(u64::from_str_radix(valeur.trim(), 16).ok()? != 0),
+            _ => {}
+        }
+    }
+    Some(root? || capacites?)
+}
+
+/// Les propriétaires admis : root et les comptes du service, sauf le compte qui lit (`comptes`) : lancé sous le
+/// compte du service lui-même, Vanguard n'en croit plus les fichiers (il peut les écrire).
+#[cfg(unix)]
+fn proprietaires_admis(passwd: &str, comptes: &[u32]) -> Vec<u32> {
+    let mut proprietaires = vec![0];
+    proprietaires.extend(comptes_du_service(passwd));
+    proprietaires.retain(|p| !comptes.contains(p));
+    proprietaires
+}
+
+/// Les comptes du service ClamAV d'un /etc/passwd (clamav ; clamupdate chez Fedora ; vscan chez openSUSE).
 #[cfg(unix)]
 fn comptes_du_service(passwd: &str) -> Vec<u32> {
     passwd
@@ -215,7 +262,7 @@ fn comptes_du_service(passwd: &str) -> Vec<u32> {
             let mut champs = l.split(':');
             let nom = champs.next()?;
             let numero = champs.nth(1)?.parse().ok()?;
-            matches!(nom, "clamav" | "clamupdate").then_some(numero)
+            matches!(nom, "clamav" | "clamupdate" | "vscan").then_some(numero)
         })
         .collect()
 }
@@ -232,11 +279,18 @@ impl Regles {
     }
 }
 
-/// Vanguard tourne-t-il en administrateur ? Sous Windows, un jeton illisible compte pour oui (échouer fermé).
+/// Vanguard tourne-t-il en administrateur ? Sous Linux : root en compte réel, effectif, sauvé ou du système de
+/// fichiers, ou une capacité effective (CAP_DAC_OVERRIDE, CAP_DAC_READ_SEARCH, CAP_SYS_ADMIN… : toutes comptent).
+/// Sous Windows, un jeton élevé. Illisible : oui (échouer fermé).
 fn administrateur() -> bool {
     #[cfg(unix)]
     {
-        crate::socle::euid() == 0
+        crate::socle::uid() == 0
+            || crate::socle::euid() == 0
+            || crate::socle::lire_texte_ordinaire(Path::new("/proc/self/status"), 1 << 20)
+                .ok()
+                .and_then(|t| privilegie(&t))
+                .unwrap_or(true)
     }
     #[cfg(windows)]
     {
@@ -321,12 +375,10 @@ fn lire_fiable(chemin: &Path, max: usize, regles: &Regles) -> Result<Vec<u8>, Re
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
         .open(chemin)
-        .map_err(|e| {
-            if e.raw_os_error() == Some(libc::ELOOP) {
-                non_fiable(tr!("lien symbolique", "symbolic link").into())
-            } else {
-                illisible(e)
-            }
+        .map_err(|e| match e.raw_os_error() {
+            Some(libc::ELOOP) => non_fiable(tr!("lien symbolique", "symbolic link").into()),
+            Some(libc::EACCES | libc::EPERM) => Refus::Inaccessible(chemin.to_path_buf()),
+            _ => illisible(e),
         })?;
     let m = f.metadata().map_err(illisible)?;
     if !m.file_type().is_file() {
@@ -355,7 +407,20 @@ fn lire_fiable(chemin: &Path, max: usize, regles: &Regles) -> Result<Vec<u8>, Re
     }
     // Ni lien ni jonction suivis, ni tube : un simple fichier, borné.
     let max = u64::try_from(max).unwrap_or(u64::MAX);
-    crate::socle::lire_ordinaire(chemin, max).map_err(|e| Refus::Illisible(chemin.to_path_buf(), e.to_string()))
+    crate::socle::lire_ordinaire(chemin, max).map_err(|e| {
+        // `lire_ordinaire` ne garde pas la raison d'un refus d'ouverture : redemandée, pour la dire juste.
+        use std::os::windows::fs::OpenOptionsExt;
+        let refuse = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(0x0020_0000)
+            .open(chemin)
+            .is_err_and(|o| o.kind() == std::io::ErrorKind::PermissionDenied);
+        if refuse {
+            Refus::Inaccessible(chemin.to_path_buf())
+        } else {
+            Refus::Illisible(chemin.to_path_buf(), e.to_string())
+        }
+    })
 }
 
 #[cfg(unix)]
@@ -394,6 +459,32 @@ fn raison_cvd(e: &cvd::Erreur) -> String {
     }
 }
 
+/// Les octets des fichiers de la base en mémoire pendant le chargement, sous `TOTAL_MAX`.
+#[derive(Default)]
+struct Memoire {
+    pris: usize,
+}
+
+impl Memoire {
+    /// Ce qui reste à prendre.
+    fn reste(&self) -> usize {
+        TOTAL_MAX.saturating_sub(self.pris)
+    }
+
+    fn prendre(&mut self, n: usize) -> Result<(), Refus> {
+        self.pris = self
+            .pris
+            .checked_add(n)
+            .filter(|&t| t <= TOTAL_MAX)
+            .ok_or(Refus::TropGrosse)?;
+        Ok(())
+    }
+
+    fn rendre(&mut self, n: usize) {
+        self.pris = self.pris.saturating_sub(n);
+    }
+}
+
 /// Charge la base du dossier `dossier`, jugée par `regles`.
 pub(crate) fn charger_dans(dossier: &Path, options: Options, regles: &Regles) -> Result<Base, Refus> {
     let dossier = verifier_dossier(dossier, regles)?;
@@ -418,20 +509,17 @@ pub(crate) fn charger_dans(dossier: &Path, options: Options, regles: &Regles) ->
     if lus > FICHIERS_MAX {
         return Err(Refus::TropGrosse);
     }
-    let mut total = 0usize;
-    let mut compter = |n: usize| {
-        total = total
-            .checked_add(n)
-            .filter(|&t| t <= TOTAL_MAX)
-            .ok_or(Refus::TropGrosse)?;
-        Ok::<(), Refus>(())
-    };
+    // Les octets en mémoire en même temps : chaque fichier compté dès sa lecture (au plus ce qui reste), chaque
+    // contenu décompressé avant d'être produit (la décompression s'arrête à ce qui reste).
+    let mut memoire = Memoire::default();
     // Par nom sans extension, la base la plus récente (freshclam laisse daily.cld, ou daily.cvd, rarement les deux).
     let mut choisies: BTreeMap<String, (String, Vec<u8>)> = BTreeMap::new();
     let mut ecartes: Vec<(String, String)> = Vec::new();
     for nom in noms.iter().filter(|n| conteneur(n)) {
-        let octets = lire_fiable(&dossier.join(nom), cvd::FICHIER_MAX, regles)?;
+        let octets = lire_fiable(&dossier.join(nom), memoire.reste().min(cvd::FICHIER_MAX), regles)?;
+        memoire.prendre(octets.len())?;
         let Some(en_tete) = cvd::en_tete(&octets) else {
+            memoire.rendre(octets.len());
             ecartes.push((nom.clone(), raison_cvd(&cvd::Erreur::EnTete)));
             continue;
         };
@@ -441,23 +529,43 @@ pub(crate) fn charger_dans(dossier: &Path, options: Options, regles: &Regles) ->
             .and_then(|(_, o)| cvd::en_tete(o))
             .is_none_or(|e| en_tete.version > e.version);
         if plus_recente {
-            choisies.insert(racine, (nom.clone(), octets));
+            if let Some((_, ancienne)) = choisies.insert(racine, (nom.clone(), octets)) {
+                memoire.rendre(ancienne.len());
+            }
+        } else {
+            memoire.rendre(octets.len());
         }
     }
     let mut cvds: Vec<(String, Cvd)> = Vec::new();
     for (_, (nom, octets)) in choisies {
-        match cvd::lire(octets) {
+        let lus = octets.len();
+        // Gzip : le fichier et son contenu en même temps. Sinon le contenu est le fichier (rien de plus).
+        let lu = cvd::lire_au_plus(octets, memoire.reste());
+        memoire.rendre(lus);
+        match lu {
             Ok(c) => {
-                compter(c.membres().fold(0usize, |t, (_, o)| t.saturating_add(o.len())))?;
+                memoire.prendre(c.taille())?;
                 cvds.push((nom, c));
             }
+            Err(cvd::Erreur::TropGrosse) => return Err(Refus::TropGrosse),
             Err(e) => ecartes.push((nom, raison_cvd(&e))),
         }
     }
     let mut a_part: Vec<(String, Vec<u8>)> = Vec::new();
     for nom in noms.iter().filter(|n| !conteneur(n) && signatures::a_lire(n)) {
-        let octets = lire_fiable(&dossier.join(nom), cvd::FICHIER_MAX, regles)?;
-        compter(octets.len())?;
+        let octets = match lire_fiable(&dossier.join(nom), memoire.reste().min(cvd::FICHIER_MAX), regles) {
+            Ok(o) => o,
+            // Des signatures seules, sans exception : sans elles, la base trouve moins, jamais plus. Écarté et dit.
+            Err(Refus::Inaccessible(_)) if signatures::sans_exception(nom) => {
+                ecartes.push((
+                    nom.clone(),
+                    tr!("lecture refusée à ce compte", "read denied to this account").into(),
+                ));
+                continue;
+            }
+            Err(r) => return Err(r),
+        };
+        memoire.prendre(octets.len())?;
         a_part.push((nom.clone(), octets));
     }
     if cvds.is_empty() && a_part.is_empty() {
@@ -947,20 +1055,47 @@ mod tests {
         if !autre.proprietaires.contains(&std::fs::metadata(&b).unwrap().uid()) {
             assert_eq!(non_fiable(&autre).0, std::fs::canonicalize(&b).unwrap());
         }
-        // Au compte qui lit.
+        let canonique = std::fs::canonicalize(&b).unwrap();
+        // Au compte qui lit, même s'il est celui du service (Vanguard lancé sous clamav) : le dossier d'abord.
         let mut lecteur = regles(&b);
         lecteur.comptes.push(std::fs::metadata(&b).unwrap().uid());
-        non_fiable(&lecteur);
-        // Le compte est membre du groupe des fichiers (clamav).
+        let (chemin, pourquoi) = non_fiable(&lecteur);
+        assert_eq!(chemin, canonique);
+        assert!(
+            pourquoi.contains(&std::fs::metadata(&b).unwrap().uid().to_string()),
+            "{pourquoi}"
+        );
+        // Le compte est membre du groupe des fichiers (clamav) : le dossier, puis un fichier.
         let mut groupe = regles(&b);
-        groupe
-            .groupes
-            .push(std::fs::metadata(b.join("main.cvd")).unwrap().gid());
-        non_fiable(&groupe);
-        // Écrivable par lui (ACL).
+        let gid = std::fs::metadata(b.join("main.cvd")).unwrap().gid();
+        groupe.groupes.push(gid);
+        let (chemin, pourquoi) = non_fiable(&groupe);
+        assert!(chemin.starts_with(&canonique), "{}", chemin.display());
+        assert!(pourquoi.contains(&gid.to_string()), "{pourquoi}");
+        // Écrivable par lui (ACL) : le dossier.
         let mut acl = regles(&b);
         acl.ecrivable = |_| true;
-        non_fiable(&acl);
+        let (chemin, pourquoi) = non_fiable(&acl);
+        assert_eq!(chemin, canonique);
+        assert!(pourquoi.contains(tr!("ce compte", "this account")), "{pourquoi}");
+        // Un fichier seul écrivable par lui.
+        let mut acl_fichier = regles(&b);
+        acl_fichier.ecrivable = |p| p.file_name().is_some_and(|n| n == "daily.cld");
+        let (chemin, _) = non_fiable(&acl_fichier);
+        assert_eq!(chemin, canonique.join("daily.cld"));
+        // Un parent collant écrivable par tous (comme /tmp) : admis ; le dossier lui-même ne l'est pas (plus bas).
+        let parent = jet.join("collant");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        let dessous = parent.join("base");
+        std::fs::create_dir(&dessous).unwrap();
+        poser_base(&dessous);
+        assert!(charger_dans(&dessous, COMPLETE, &regles(&dessous)).is_ok());
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let Err(Refus::NonFiable(chemin, _)) = charger_dans(&dessous, COMPLETE, &regles(&dessous)) else {
+            panic!("un parent écrivable par tous, sans le bit collant, est refusé")
+        };
+        assert_eq!(chemin, std::fs::canonicalize(&parent).unwrap());
         // Un fichier écrivable par tous.
         let main = b.join("main.cvd");
         std::fs::set_permissions(&main, std::fs::Permissions::from_mode(0o646)).unwrap();
@@ -1008,6 +1143,7 @@ mod tests {
         for r in [
             Refus::Absente,
             Refus::Administrateur,
+            Refus::Inaccessible(PathBuf::from("alice")),
             Refus::TropGrosse,
             Refus::Vide(Vec::new()),
         ] {
@@ -1044,8 +1180,108 @@ mod tests {
         assert_eq!(groupes_du_processus("Gid:\t1000\n"), None, "sans Groups, illisible");
         assert_eq!(groupes_du_processus("Gid:\tx\nGroups:\t\n"), None);
         let passwd = "root:x:0:0::/root:/bin/bash\nclamav:x:64:64:Clam AntiVirus:/:/usr/bin/nologin\n\
-                      alice:x:1000:1000::/home/alice:/bin/bash\nclamupdate:x:977:977::/var/lib/clamav:/sbin/nologin\n";
-        assert_eq!(comptes_du_service(passwd), [64, 977]);
+                      alice:x:1000:1000::/home/alice:/bin/bash\nclamupdate:x:977:977::/var/lib/clamav:/sbin/nologin\n\
+                      vscan:x:65:485::/var/spool/amavis:/bin/false\n_clamav:x:66:66::/:/bin/false\n";
+        assert_eq!(
+            comptes_du_service(passwd),
+            [64, 977, 65],
+            "ni root, ni alice, ni un autre nom"
+        );
+        assert_eq!(proprietaires_admis(passwd, &[1000, 1000]), [0, 64, 977, 65]);
+        assert_eq!(
+            proprietaires_admis(passwd, &[64, 64]),
+            [0, 977, 65],
+            "lancé sous clamav : ses fichiers ne sont plus crus"
+        );
+        assert_eq!(proprietaires_admis("", &[1000, 1000]), [0], "sans passwd : root seul");
+    }
+
+    /// Administrateur : root à l'un des quatre comptes, ou une capacité effective ; illisible, `None` (refus).
+    #[cfg(unix)]
+    #[test]
+    fn privileges_du_processus() {
+        let status = |uid: &str, cap: &str| format!("Name:\tvanguard\nUid:\t{uid}\nCapInh:\t0\nCapEff:\t{cap}\n");
+        assert_eq!(
+            privilegie(&status("1000\t1000\t1000\t1000", "0000000000000000")),
+            Some(false)
+        );
+        for uid in [
+            "0\t1000\t1000\t1000",
+            "1000\t0\t1000\t1000",
+            "1000\t1000\t0\t1000",
+            "1000\t1000\t1000\t0",
+        ] {
+            assert_eq!(privilegie(&status(uid, "0000000000000000")), Some(true), "{uid}");
+        }
+        // CAP_DAC_OVERRIDE (bit 1), CAP_DAC_READ_SEARCH (bit 2), CAP_SYS_ADMIN (bit 21).
+        for cap in ["0000000000000002", "0000000000000004", "0000000000200000"] {
+            assert_eq!(privilegie(&status("1000\t1000\t1000\t1000", cap)), Some(true), "{cap}");
+        }
+        assert_eq!(privilegie("Uid:\t1000\t1000\t1000\t1000\n"), None, "sans CapEff");
+        assert_eq!(privilegie("CapEff:\t0\n"), None, "sans Uid");
+        assert_eq!(privilegie(&status("1000\t1000", "0")), None);
+        assert_eq!(privilegie(&status("1000\t1000\t1000\t1000", "zz")), None);
+        // Le processus des essais : ce que dit /proc, comme `administrateur`.
+        let ici = crate::socle::lire_texte_ordinaire(Path::new("/proc/self/status"), 1 << 20).unwrap();
+        assert_eq!(
+            privilegie(&ici).map(|p| p || crate::socle::euid() == 0),
+            Some(administrateur())
+        );
+    }
+
+    /// Un fichier que ce compte ne peut pas lire : écarté s'il n'apporte que des signatures, la base entière non lue
+    /// s'il porte des exceptions (.ign2, .fp, ou un .cvd) ; jamais dit « non fiable ».
+    #[cfg(unix)]
+    #[test]
+    fn fichier_inaccessible() {
+        use std::os::unix::fs::PermissionsExt;
+        if administrateur() {
+            return crate::essais::saute("en administrateur, les droits de lecture ne refusent rien");
+        }
+        let jet = crate::essais::Jetable::nouveau("clamav-inaccessible");
+        let b = jet.join("base");
+        std::fs::create_dir(&b).unwrap();
+        poser_base(&b);
+        let r = regles(&b);
+        let ferme = |nom: &str, mode: u32| {
+            std::fs::set_permissions(b.join(nom), std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        std::fs::write(
+            b.join("local.ndb"),
+            format!("Essai.Local-1:0:*:{}\n", hex(b"marque-locale")),
+        )
+        .unwrap();
+        ferme("local.ndb", 0o000);
+        let base = charger_dans(&b, COMPLETE, &r).unwrap();
+        assert!(
+            base.ecartes.contains(&(
+                "local.ndb".to_owned(),
+                tr!("lecture refusée à ce compte", "read denied to this account").into()
+            )),
+            "{:?}",
+            base.ecartes
+        );
+        assert!(!base.a_part.contains(&"local.ndb".to_owned()));
+        assert_eq!(
+            noms(&examiner_octets(&base, &jet, "e.com", &eicar())),
+            ["Essai.Eicar-1"]
+        );
+        std::fs::write(b.join("local.ign2"), "Essai.Eicar-1\n").unwrap();
+        ferme("local.ign2", 0o000);
+        let chemin = std::fs::canonicalize(&b).unwrap().join("local.ign2");
+        assert_eq!(
+            charger_dans(&b, COMPLETE, &r).err(),
+            Some(Refus::Inaccessible(chemin.clone()))
+        );
+        assert!(
+            !Refus::Inaccessible(chemin)
+                .to_string()
+                .contains(tr!("fiable", "trusted"))
+        );
+        std::fs::remove_file(b.join("local.ign2")).unwrap();
+        ferme("main.cvd", 0o000);
+        assert!(matches!(charger_dans(&b, COMPLETE, &r), Err(Refus::Inaccessible(_))));
+        ferme("main.cvd", 0o644);
     }
 
     /// Le banc de la vraie base de cet ordinateur (lecture seule, rien gardé) : temps de chargement, mémoire, ce qui

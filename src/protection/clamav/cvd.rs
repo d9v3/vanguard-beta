@@ -16,6 +16,7 @@
 // Ni `unsafe` : refusé sans recours, aucun `allow` intérieur ne le lève (garde : chaque_module_fuzze_refuse_unsafe).
 #![forbid(unsafe_code)]
 
+use std::collections::{HashMap, HashSet};
 use std::ops::{ControlFlow, Range};
 
 use sha2::{Digest, Sha256};
@@ -51,7 +52,8 @@ pub(crate) struct EnTete {
 pub(crate) enum Erreur {
     /// Pas d'en-tête « ClamAV-VDB: » lisible.
     EnTete,
-    /// Plus grande que `FICHIER_MAX`.
+    /// Plus grande que `FICHIER_MAX`, ou son contenu ne tient pas dans le plafond donné à `lire_au_plus` (plus bas
+    /// que `CONTENU_MAX` : la mémoire permise au chargement est presque prise).
     TropGrosse,
     /// Le gzip est coupé, abîmé (CRC, taille), suivi d'autre chose, ou dépasse `CONTENU_MAX` une fois décompressé.
     Compression,
@@ -77,6 +79,11 @@ pub(crate) struct Cvd {
 }
 
 impl Cvd {
+    /// Les octets de son contenu en mémoire (sa capacité : la décompression en réserve plus qu'elle n'écrit).
+    pub(crate) fn taille(&self) -> usize {
+        self.contenu.capacity()
+    }
+
     /// Les membres listés par `.info` (sans elle), dans l'ordre de l'archive.
     pub(crate) fn membres(&self) -> impl Iterator<Item = (&str, &[u8])> {
         self.membres
@@ -103,14 +110,28 @@ pub(crate) fn en_tete(octets: &[u8]) -> Option<EnTete> {
 }
 
 /// La base entière de `octets` (le fichier, pris pour éviter une copie de son contenu quand il n'est pas compressé).
-pub(crate) fn lire(mut octets: Vec<u8>) -> Result<Cvd, Erreur> {
+#[cfg(any(test, fuzzing))]
+pub(crate) fn lire(octets: Vec<u8>) -> Result<Cvd, Erreur> {
+    lire_au_plus(octets, CONTENU_MAX)
+}
+
+/// `lire`, le contenu décompressé gardé sous `plafond` octets (et `CONTENU_MAX`) : la décompression s'arrête là, avant
+/// d'avoir pris plus de mémoire. Un fichier non compressé n'est pas copié : il est déjà compté par l'appelant.
+pub(crate) fn lire_au_plus(mut octets: Vec<u8>, plafond: usize) -> Result<Cvd, Erreur> {
     if octets.len() > FICHIER_MAX {
         return Err(Erreur::TropGrosse);
     }
     let en_tete = en_tete(&octets).ok_or(Erreur::EnTete)?;
     let corps = octets.get(EN_TETE..).ok_or(Erreur::EnTete)?;
     let contenu = if gzip::est_gzip(corps) {
-        gzip::degzip_controle(corps, CONTENU_MAX).ok_or(Erreur::Compression)?
+        let limite = plafond.min(CONTENU_MAX);
+        // Sous un plafond abaissé, rien ne distingue un gzip abîmé d'un trop gros : compté trop gros (refus entier).
+        let echec = if limite < CONTENU_MAX {
+            Erreur::TropGrosse
+        } else {
+            Erreur::Compression
+        };
+        gzip::degzip_controle(corps, limite).ok_or(echec)?
     } else {
         octets.drain(..EN_TETE);
         octets
@@ -158,7 +179,8 @@ pub(crate) fn lire(mut octets: Vec<u8>) -> Result<Cvd, Erreur> {
 }
 
 /// Les membres listés par le `.info` de l'archive, après contrôle de leur taille et de leur empreinte, et le nombre
-/// de ceux qui n'y sont pas.
+/// de ceux qui n'y sont pas. Linéaire : les membres sont indexés par nom, et la liste n'a pas plus de lignes que
+/// l'archive n'a de membres (au-delà, elle est fausse).
 fn controler(contenu: &[u8], membres: &[Membre]) -> Result<(Vec<Membre>, usize), Erreur> {
     let octets = |r: &Range<usize>| contenu.get(r.clone()).ok_or(Erreur::Archive);
     let mut infos = membres
@@ -168,15 +190,16 @@ fn controler(contenu: &[u8], membres: &[Membre]) -> Result<(Vec<Membre>, usize),
     if infos.next().is_some() {
         return Err(Erreur::Archive);
     }
-    let liste = octets(r)?;
-    let mut listes: Vec<(&str, usize, [u8; 32])> = Vec::new();
-    for ligne in liste.split(|&o| o == b'\n') {
-        let ligne = std::str::from_utf8(ligne.strip_suffix(b"\r").unwrap_or(ligne))
-            .map_err(|_| Erreur::ListeFausse(nom_info.clone()))?;
+    // Les noms sont uniques (`lire` refuse les doublons).
+    let index: HashMap<&str, &Range<usize>> = membres.iter().map(|(n, r)| (n.as_str(), r)).collect();
+    let faux = || Erreur::ListeFausse(nom_info.clone());
+    let mut gardes: Vec<Membre> = Vec::new();
+    let mut listes: HashSet<&str> = HashSet::new();
+    for ligne in octets(r)?.split(|&o| o == b'\n') {
+        let ligne = std::str::from_utf8(ligne.strip_suffix(b"\r").unwrap_or(ligne)).map_err(|_| faux())?;
         if ligne.is_empty() || ligne.starts_with("ClamAV-VDB:") || ligne.starts_with("DSIG:") {
             continue;
         }
-        let faux = || Erreur::ListeFausse(nom_info.clone());
         let mut champs = ligne.split(':');
         let (Some(nom), Some(taille), Some(empreinte), None) =
             (champs.next(), champs.next(), champs.next(), champs.next())
@@ -185,23 +208,20 @@ fn controler(contenu: &[u8], membres: &[Membre]) -> Result<(Vec<Membre>, usize),
         };
         let taille: usize = taille.parse().map_err(|_| faux())?;
         let empreinte = hex_fixe::<32>(empreinte).ok_or_else(faux)?;
-        listes.push((nom, taille, empreinte));
-    }
-    let mut gardes = Vec::new();
-    for (nom, taille, empreinte) in &listes {
-        let (_, r) = membres
-            .iter()
-            .find(|(n, _)| n == nom)
-            .ok_or_else(|| Erreur::ListeFausse((*nom).to_owned()))?;
-        let o = octets(r)?;
-        if o.len() != *taille || Sha256::digest(o).as_slice() != empreinte.as_slice() {
-            return Err(Erreur::ListeFausse((*nom).to_owned()));
+        // Un nom listé deux fois, ou plus de lignes que de membres : une liste fausse.
+        if !listes.insert(nom) || listes.len() > membres.len() {
+            return Err(faux());
         }
-        gardes.push(((*nom).to_owned(), r.clone()));
+        let r = index.get(nom).ok_or_else(|| Erreur::ListeFausse(nom.to_owned()))?;
+        let o = octets(r)?;
+        if o.len() != taille || Sha256::digest(o).as_slice() != empreinte.as_slice() {
+            return Err(Erreur::ListeFausse(nom.to_owned()));
+        }
+        gardes.push((nom.to_owned(), (*r).clone()));
     }
     let hors_liste = membres
         .iter()
-        .filter(|(n, _)| n != nom_info && !listes.iter().any(|(l, _, _)| l == n))
+        .filter(|(n, _)| n != nom_info && !listes.contains(n.as_str()))
         .count();
     // Dans l'ordre de l'archive : celui où ClamAV les lit.
     gardes.sort_by_key(|(_, r)| r.start);
@@ -354,6 +374,19 @@ mod tests {
             ("main.hdb", HDB),
         ]));
         assert_eq!(lire(b).unwrap_err(), Erreur::Archive);
+        // Un nom listé deux fois ; une liste plus longue que l'archive, refusée sans la parcourir toute.
+        let mut deux = info.clone();
+        deux.extend_from_slice(&info);
+        let mut b = essais::en_tete(1);
+        b.extend_from_slice(&essais::tar(&[("main.info", &deux), ("main.hdb", HDB)]));
+        assert_eq!(lire(b).unwrap_err(), Erreur::ListeFausse("main.info".into()));
+        // Autant de membres que la borne en permet presque, tous listés : lu sans coût quadratique.
+        let noms: Vec<String> = (0..MEMBRES_MAX - 10).map(|k| format!("m{k}.hdb")).collect();
+        let fichiers: Vec<(&str, &[u8])> = noms.iter().map(|n| (n.as_str(), HDB)).collect();
+        let debut = std::time::Instant::now();
+        let cvd = lire(essais::base("main", 1, &fichiers, false)).unwrap();
+        assert_eq!(cvd.membres().count(), MEMBRES_MAX - 10);
+        assert!(debut.elapsed() < std::time::Duration::from_secs(10));
         // Une ligne de liste de trop de champs.
         let mut b = essais::en_tete(1);
         b.extend_from_slice(&essais::tar(&[("main.info", b"main.hdb:1:2:3\n")]));

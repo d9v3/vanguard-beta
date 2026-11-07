@@ -97,7 +97,12 @@ fn degzip_controle_avant(octets: &[u8], limite: usize, echeance: std::time::Inst
         if crc != super::crc32::crc32(&membre) || taille != u32::from_le_bytes([l0, l1, l2, l3]) {
             return None;
         }
-        contenu.extend_from_slice(&membre);
+        // Le premier membre (souvent le seul) est pris tel quel : pas de copie, pas deux fois sa taille en mémoire.
+        if contenu.is_empty() {
+            contenu = membre;
+        } else {
+            contenu.extend_from_slice(&membre);
+        }
         debut = fin.checked_add(8)?;
         if debut == octets.len() {
             return Some(contenu);

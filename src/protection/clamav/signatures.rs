@@ -92,6 +92,15 @@ pub(crate) fn a_lire(nom: &str) -> bool {
     sorte(nom).0 != Sorte::Autre
 }
 
+/// Un fichier qui n'apporte que des signatures (ni liste blanche ni signatures ignorées) : sans lui, la base trouve
+/// moins, jamais plus.
+pub(crate) fn sans_exception(nom: &str) -> bool {
+    matches!(
+        sorte(nom).0,
+        Sorte::Fichier | Sorte::Section | Sorte::Ndb | Sorte::Ldb | Sorte::NonLue(_)
+    )
+}
+
 /// Le nom de signature d'une ligne, sans la lire toute : pour juger tôt une signature ignorée ou PUA.
 fn nom_de(sorte: Sorte, ligne: &str) -> Option<&str> {
     match sorte {
