@@ -879,7 +879,7 @@ impl Session {
         self.choisis
             .get(chemin)
             .and_then(|a| actions.iter().position(|b| b == a))
-            .map_or(1, |i| i + 1)
+            .map_or(1, |i| i.saturating_add(1))
             .to_string()
     }
 
