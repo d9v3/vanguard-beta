@@ -2,8 +2,12 @@
 //!
 //! Les fils :
 //! - le LECTEUR (le fil principal) lit le groupe fanotify, et n'ouvre jamais de fichier : une ouverture par le garde
-//!   dans un système de fichiers marqué pourrait produire sa propre demande. Il permet tout de suite ses propres
-//!   lancements et ceux dont l'inode est en cache comme propre (servis en premier), et confie le reste à la file ;
+//!   dans un système de fichiers marqué pourrait produire sa propre demande. Il bat le chien de garde : il ne fait
+//!   donc aucun appel qui puisse attendre un système de fichiers (L-2), pas même un fstat. Il permet tout de suite ses
+//!   propres lancements, met chaque autre demande en attente et la confie au tri ;
+//! - le fil du TRI lit la clé du fichier (fstat, fstatfs), permet tout de suite ce que le cache sait propre (servi en
+//!   premier), et confie le reste à la file des fils de décision ; s'il reste pris, le délai permet ce qui attend, et
+//!   sa file pleine, le lecteur permet et confie au rattrapage ;
 //! - deux fils de DÉCISION hachent le descripteur rendu par le noyau (borné à 64 Mio, au-delà : permis et noté) et
 //!   jugent (`decision`) ; leur nombre borne les hachages concurrents ;
 //! - le fil du DÉLAI permet toute demande sans verdict après 250 ms (P9), et la note ; elle reste dans la file et
@@ -144,12 +148,13 @@ struct Partage {
     arret: AtomicBool,
 }
 
-/// Une demande confiée aux fils de décision.
+/// Une demande confiée au tri, puis aux fils de décision.
 struct Demande {
     fd: i32,
     fichier: Arc<File>,
     pid: i32,
-    cle: Cle,
+    /// Lue par le tri ou le rattrapage (`preparer`), jamais par le lecteur (L-2) ; `None` : pas encore lue.
+    cle: Option<Cle>,
     /// Déjà hachée (en cache, et certaine) : seulement les exceptions et le mode à juger.
     connu: Option<Connu>,
 }
@@ -238,20 +243,95 @@ impl Read for ParPosition<'_> {
     }
 }
 
+/// La clé d'un fichier lancé, lue sur son descripteur (fstat, fstatfs) : ces appels peuvent attendre le système de
+/// fichiers, ils ne se font jamais sur le fil lecteur (L-2). `None` : illisible.
+fn cle_de(fichier: &File) -> Option<Cle> {
+    let m = fichier.metadata().ok()?;
+    Some(Cle {
+        dev: m.dev(),
+        ino: m.ino(),
+        ctime: m.ctime(),
+        ctime_ns: m.ctime_nsec(),
+        taille: m.size(),
+        // Un appel de plus par lancement, sans attente : le type du système de fichiers du fichier lui-même.
+        fiable: super::cache::ctime_fiable(super::ouvrir::type_fs(fichier.as_fd()).ok()),
+    })
+}
+
+/// Lit la clé de la demande (si ce n'est fait) et y cherche le verdict au cache. Faux : la demande est répondue
+/// (permise : propre en cache, ou illisible) ; vrai : elle reste à juger.
+fn preparer(p: &Partage, d: &mut Demande) -> bool {
+    let cle = if let Some(c) = d.cle {
+        c
+    } else {
+        let Some(c) = cle_de(&d.fichier) else {
+            plus(&p.compteurs.non_verifiees);
+            p.repondre(d.fd, &d.fichier, true);
+            return false;
+        };
+        d.cle = Some(c);
+        c
+    };
+    let connu = verrou(&p.cache).lire(&cle);
+    if connu.is_some_and(|c| c.certain.is_none()) {
+        plus(&p.compteurs.cache);
+        p.repondre(d.fd, &d.fichier, true);
+        return false;
+    }
+    d.connu = connu;
+    true
+}
+
+/// Confie une demande à `vers` (le tri, ou les fils de décision) ; sa file pleine, elle est permise sans attendre (P9)
+/// et confiée au rattrapage, qui la juge après coup (M-N2) ; la file du rattrapage pleine, elle n'est que comptée.
+/// Rien ici n'attend un système de fichiers : le lecteur s'en sert.
+fn confier(p: &Partage, d: Demande, vers: &SyncSender<Demande>, vers_rattrapage: &SyncSender<Demande>) {
+    if let Err(TrySendError::Full(d) | TrySendError::Disconnected(d)) = vers.try_send(d) {
+        plus(&p.compteurs.file_pleine);
+        if p.repondre(d.fd, &d.fichier, true) {
+            let mut e = evenement("file-pleine");
+            e.pid = d.pid;
+            p.noter(e);
+        }
+        if vers_rattrapage.try_send(d).is_err() {
+            plus(&p.compteurs.rattrapages_perdus);
+        }
+    }
+}
+
+/// Le fil du tri.
+fn trier(
+    p: &Partage,
+    file: &Receiver<Demande>,
+    vers_decideurs: &SyncSender<Demande>,
+    vers_rattrapage: &SyncSender<Demande>,
+) {
+    while let Ok(mut d) = file.recv() {
+        if preparer(p, &mut d) {
+            confier(p, d, vers_decideurs, vers_rattrapage);
+        }
+    }
+}
+
 /// Juge une demande et y répond, si personne ne l'a fait. Déjà permise (le délai, la file pleine), elle est jugée
 /// quand même : le verdict va au cache (le lancement suivant est jugé tout de suite), et un fichier certain qui aurait
 /// été refusé est compté (`certains_passes`, alerte haute) et noté.
 fn decider(p: &Partage, d: &Demande) {
+    let Some(cle) = d.cle else {
+        // Jamais : `preparer` la lit avant.
+        p.repondre(d.fd, &d.fichier, true);
+        return;
+    };
     let connu = if let Some(c) = d.connu {
         c
     } else {
-        if d.cle.taille > HACHAGE_MAX {
+        if cle.taille > HACHAGE_MAX {
             plus(&p.compteurs.non_verifiees);
             if p.repondre(d.fd, &d.fichier, true) {
                 let mut e = evenement("non-verifie");
                 e.pid = d.pid;
                 e.chemin = sortie::borner(&chemin_de(d.fd));
-                e.taille = Some(d.cle.taille);
+                e.taille = Some(cle.taille);
                 p.noter(e);
             }
             return;
@@ -259,7 +339,7 @@ fn decider(p: &Partage, d: &Demande) {
         let lecteur = ParPosition {
             fichier: &d.fichier,
             position: 0,
-            fin: d.cle.taille,
+            fin: cle.taille,
         };
         let Some(h) = listes::hacher(lecteur) else {
             plus(&p.compteurs.non_verifiees);
@@ -268,7 +348,7 @@ fn decider(p: &Partage, d: &Demande) {
         };
         plus(&p.compteurs.hachees);
         let c = juger_hache(p, &h);
-        verrou(&p.cache).noter(d.cle, c);
+        verrou(&p.cache).noter(cle, c);
         c
     };
     let Some(certitude) = connu.certain else {
@@ -368,8 +448,10 @@ fn decideur(p: &Partage, file: &Mutex<Receiver<Demande>>) {
 
 /// Le fil du rattrapage : les demandes permises par la file pleine, jugées après coup, une à la fois.
 fn rattraper(p: &Partage, file: &Receiver<Demande>) {
-    while let Ok(d) = file.recv() {
-        decider(p, &d);
+    while let Ok(mut d) = file.recv() {
+        if preparer(p, &mut d) {
+            decider(p, &d);
+        }
     }
 }
 
@@ -898,6 +980,11 @@ pub(crate) fn servir() -> i32 {
         let p = Arc::clone(&p);
         std::thread::spawn(move || rattraper(&p, &rattrapage));
     }
+    let (vers_tri, tri) = std::sync::mpsc::sync_channel::<Demande>(FILE);
+    {
+        let (p, vers_rattrapage) = (Arc::clone(&p), vers_rattrapage.clone());
+        std::thread::spawn(move || trier(&p, &tri, &vers_decideurs, &vers_rattrapage));
+    }
     {
         let p = Arc::clone(&p);
         std::thread::spawn(move || delai(&p));
@@ -927,11 +1014,11 @@ pub(crate) fn servir() -> i32 {
     }
     p.battre();
     notifier.envoyer("READY=1");
-    lire(&p, &vers_decideurs, &vers_rattrapage)
+    lire(&p, &vers_tri, &vers_rattrapage)
 }
 
 /// Le fil lecteur ; ne rend la main que sur une lecture fautive.
-fn lire(p: &Partage, vers_decideurs: &SyncSender<Demande>, vers_rattrapage: &SyncSender<Demande>) -> i32 {
+fn lire(p: &Partage, vers_tri: &SyncSender<Demande>, vers_rattrapage: &SyncSender<Demande>) -> i32 {
     let moi = i32::try_from(std::process::id()).unwrap_or(-1);
     let mut tampon = vec![0u8; fanotify::TAMPON];
     loop {
@@ -956,7 +1043,7 @@ fn lire(p: &Partage, vers_decideurs: &SyncSender<Demande>, vers_rattrapage: &Syn
         };
         let lu = lecture::evenements(tampon.get(..n).unwrap_or_default());
         for ev in lu.evenements {
-            recevoir(p, vers_decideurs, vers_rattrapage, &ev, moi);
+            recevoir(p, vers_tri, vers_rattrapage, &ev, moi);
         }
         if let Some(d) = lu.defaut {
             eprintln!("garde: lecture fautive: {d:?}");
@@ -966,10 +1053,10 @@ fn lire(p: &Partage, vers_decideurs: &SyncSender<Demande>, vers_rattrapage: &Syn
     }
 }
 
-/// Une demande lue.
+/// Une demande lue : rien ici n'attend un système de fichiers (L-2, `le_lecteur_n_attend_aucun_fichier`).
 fn recevoir(
     p: &Partage,
-    vers_decideurs: &SyncSender<Demande>,
+    vers_tri: &SyncSender<Demande>,
     vers_rattrapage: &SyncSender<Demande>,
     ev: &lecture::Evenement,
     moi: i32,
@@ -995,46 +1082,15 @@ fn recevoir(
         permettre_ici(p);
         return;
     }
-    let Ok(m) = fichier.metadata() else {
-        plus(&p.compteurs.non_verifiees);
-        permettre_ici(p);
-        return;
-    };
-    let cle = Cle {
-        dev: m.dev(),
-        ino: m.ino(),
-        ctime: m.ctime(),
-        ctime_ns: m.ctime_nsec(),
-        taille: m.size(),
-        // Un appel de plus par lancement, sans attente : le type du système de fichiers du fichier lui-même.
-        fiable: super::cache::ctime_fiable(super::ouvrir::type_fs(fichier.as_fd()).ok()),
-    };
-    let connu = verrou(&p.cache).lire(&cle);
-    if connu.is_some_and(|c| c.certain.is_none()) {
-        plus(&p.compteurs.cache);
-        permettre_ici(p);
-        return;
-    }
     verrou(&p.attentes).ajouter(ev.fd, Arc::clone(&fichier), Instant::now());
     let demande = Demande {
         fd: ev.fd,
         fichier,
         pid: ev.pid,
-        cle,
-        connu,
+        cle: None,
+        connu: None,
     };
-    if let Err(TrySendError::Full(d) | TrySendError::Disconnected(d)) = vers_decideurs.try_send(demande) {
-        plus(&p.compteurs.file_pleine);
-        if p.repondre(d.fd, &d.fichier, true) {
-            let mut e = evenement("file-pleine");
-            e.pid = d.pid;
-            p.noter(e);
-        }
-        // M-N2 : permise sans attendre (P9), mais jugée après coup ; la file du rattrapage pleine, seulement comptée.
-        if vers_rattrapage.try_send(d).is_err() {
-            plus(&p.compteurs.rattrapages_perdus);
-        }
-    }
+    confier(p, demande, vers_tri, vers_rattrapage);
 }
 
 #[allow(
@@ -1226,14 +1282,14 @@ mod tests {
             fd: fichier.as_raw_fd(),
             fichier,
             pid: i32::MAX,
-            cle: Cle {
+            cle: Some(Cle {
                 dev: m.dev(),
                 ino: m.ino(),
                 ctime: m.ctime(),
                 ctime_ns: m.ctime_nsec(),
                 taille: m.size(),
                 fiable: true,
-            },
+            }),
             connu: None,
         }
     }
@@ -1252,7 +1308,7 @@ mod tests {
         decider(&p, &tard);
         let k = p.compteurs.lire();
         assert_eq!((k.certains_passes, k.refusees, k.hachees), (1, 0, 1));
-        let connu = verrou(&p.cache).lire(&tard.cle).unwrap();
+        let connu = verrou(&p.cache).lire(&tard.cle.unwrap()).unwrap();
         assert!(connu.certain.is_some());
         let e = evenements.try_recv().unwrap();
         assert_eq!((e.genre.as_str(), e.trop_tard.as_deref()), ("delai", Some("refuse")));
@@ -1269,7 +1325,7 @@ mod tests {
         // Propre et déjà permis : haché, gardé au cache comme propre, rien de compté.
         let propre = demande(d, "propre", b"un programme propre invente");
         decider(&p, &propre);
-        assert!(verrou(&p.cache).lire(&propre.cle).unwrap().certain.is_none());
+        assert!(verrou(&p.cache).lire(&propre.cle.unwrap()).unwrap().certain.is_none());
         assert_eq!(p.compteurs.lire().certains_passes, 1);
     }
 
@@ -1292,6 +1348,76 @@ mod tests {
         drop(vers);
         rattraper(&p, &file);
         assert_eq!(p.compteurs.lire().certains_passes, RATTRAPAGE as u64);
+    }
+
+    /// L-2 : le fil lecteur (celui qui bat le chien de garde) ne fait aucun appel qui puisse attendre un système de
+    /// fichiers : ni fstat, ni fstatfs, ni lecture de /proc, ni hachage ; le tri s'en charge.
+    #[test]
+    fn le_lecteur_n_attend_aucun_fichier() {
+        let source = include_str!("servir.rs");
+        for f in ["fn lire(", "fn recevoir(", "fn confier("] {
+            let debut = source.find(f).unwrap();
+            let fin = debut + source[debut..].find("\n}\n").unwrap();
+            let corps = &source[debut..fin];
+            for interdit in [
+                "metadata",
+                "type_fs",
+                "cle_de",
+                "preparer",
+                "fstat",
+                "chemin_de",
+                "nom_de",
+                "hacher",
+                "read_link",
+                "read_to_string",
+                "File::open",
+                "p.cache",
+            ] {
+                assert!(!corps.contains(interdit), "{f} : {interdit}");
+            }
+        }
+    }
+
+    /// L-2 : le tri lit la clé et sert le cache ; une demande propre en cache est permise sans aller plus loin, une
+    /// inconnue reste à juger avec sa clé.
+    #[test]
+    fn le_tri_lit_la_cle_et_sert_le_cache() {
+        let d = crate::essais::Jetable::nouveau("garde-servir-tri");
+        let (p, _evenements) = partage(&[]);
+        let mut inconnue = Demande {
+            cle: None,
+            ..demande(&d, "inconnue", b"un programme propre invente")
+        };
+        verrou(&p.attentes).ajouter(inconnue.fd, Arc::clone(&inconnue.fichier), Instant::now());
+        assert!(preparer(&p, &mut inconnue));
+        let cle = inconnue.cle.unwrap();
+        assert_eq!(cle.taille, 27);
+        decider(&p, &inconnue);
+        assert!(!verrou(&p.attentes).contient(inconnue.fd, &inconnue.fichier));
+        // Relancé : le même fichier, propre au cache, permis par le tri.
+        let fichier = Arc::new(File::open(d.join("inconnue")).unwrap());
+        let mut revue = Demande {
+            fd: std::os::fd::AsRawFd::as_raw_fd(&*fichier),
+            fichier,
+            pid: i32::MAX,
+            cle: None,
+            connu: None,
+        };
+        verrou(&p.attentes).ajouter(revue.fd, Arc::clone(&revue.fichier), Instant::now());
+        assert!(!preparer(&p, &mut revue));
+        assert_eq!(revue.cle, Some(cle));
+        assert_eq!(p.compteurs.lire().cache, 1);
+        assert!(!verrou(&p.attentes).contient(revue.fd, &revue.fichier));
+        // Une file pleine : permise tout de suite, confiée au rattrapage ; pleine aussi, comptée.
+        let (vers, _file) = std::sync::mpsc::sync_channel::<Demande>(0);
+        let (vers_r, file_r) = std::sync::mpsc::sync_channel::<Demande>(1);
+        let a = demande(&d, "a", b"a");
+        verrou(&p.attentes).ajouter(a.fd, Arc::clone(&a.fichier), Instant::now());
+        confier(&p, a, &vers, &vers_r);
+        confier(&p, demande(&d, "b", b"b"), &vers, &vers_r);
+        let k = p.compteurs.lire();
+        assert_eq!((k.file_pleine, k.rattrapages_perdus), (2, 1));
+        assert!(file_r.try_recv().is_ok());
     }
 
     #[test]
