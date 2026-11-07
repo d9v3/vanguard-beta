@@ -46,6 +46,13 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
 - **Everything, in real time.** Apart from the two Linux watchers (programs and connections, anti-ransomware; both off
   by default), the live integrity monitoring of critical files and Defender's blocking, monitoring runs every hour,
   between two checks.
+- **Every launch, with no time gap (launch guard, Linux).** The guard (`vanguard guard on`, off by default) never
+  locks the computer up: when it cannot answer, it lets the launch through. Two windows follow from this. While the
+  guard restarts (about one second), launches are allowed without being seen. A frozen guard makes each launch wait
+  until its watchdog (about five seconds); systemd then kills it and everything that was waiting goes through. A
+  launch with no verdict within 250 ms also goes through, noted. The program watcher remains the second line. The
+  guard refuses only what is certain (a hash from the lists, or the test mark), never a system program, Vanguard or
+  what init launches.
 - **The page being visited.** Vanguard has no browser extension: the open page is not examined. It examines a link
   it is given, blocks known dangerous sites through the hosts file after consent (`vanguard sites-dangereux`), and
   public Wi-Fi mode switches to a filtering DNS.

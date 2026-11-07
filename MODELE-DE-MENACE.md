@@ -49,6 +49,13 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
 - **Tout, en temps réel.** Hors des deux veilleurs de Linux (programmes et connexions, anti-rançongiciel ; coupés par
   défaut), de la surveillance en direct de l'intégrité des fichiers critiques et du blocage de Defender, la
   surveillance passe chaque heure, entre deux bilans.
+- **Chaque lancement, sans exception de temps (garde des lancements, Linux).** Le garde (`vanguard garde on`, coupé
+  par défaut) ne bloque jamais l'ordinateur : quand il ne peut pas répondre, il laisse passer. Deux fenêtres en
+  découlent. Pendant une relance du garde (environ une seconde), les lancements sont permis sans être vus. Un garde
+  figé fait attendre chaque lancement jusqu'à son chien de garde (environ cinq secondes), puis systemd le tue et tout
+  ce qui attendait passe. Un lancement sans verdict en 250 ms passe aussi, noté. Le veilleur des programmes reste la
+  deuxième ligne. Le garde ne refuse que le certain (une empreinte des listes, ou la marque d'essai), jamais un
+  programme du système, de Vanguard ou lancé par init.
 - **La page visitée.** Vanguard n'a pas d'extension de navigateur : la page ouverte n'est pas examinée. Il examine un
   lien qu'on lui donne, bloque après accord des sites dangereux connus par le fichier hosts
   (`vanguard sites-dangereux`), et le mode Wi-Fi public passe à un DNS qui filtre.
