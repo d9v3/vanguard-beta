@@ -10,6 +10,9 @@ pub mod acces;
 pub mod antivirus;
 pub mod blocage;
 pub mod camera;
+// Interface prête pour le moteur commun (AV4), le garde (L3) et le veilleur, qui ne l'appellent pas encore.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod clamav;
 #[cfg(unix)]
 pub mod cle;
 pub mod cles_connues;

@@ -1861,7 +1861,7 @@ fn option_base() -> Option<String> {
 
 /// Le dossier qui contient les signatures de ClamAV.
 #[cfg(unix)]
-fn dossier_de_base() -> Option<PathBuf> {
+pub(crate) fn dossier_de_base() -> Option<PathBuf> {
     dossier_de_base_parmi(&CONFS_FRESHCLAM, &["/var/lib/clamav", "/usr/local/var/lib/clamav"])
 }
 

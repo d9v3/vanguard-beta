@@ -1,8 +1,8 @@
-//! Le compte du processus (getuid, geteuid) et, sous Linux, celui du programme à l'autre bout d'une prise Unix
-//! (SO_PEERCRED) : trois appels à libc, une fois ici, pour que les modules qui s'en servent (dont le client D-Bus que
-//! lit le banc de fuzzing) restent sans `unsafe`.
+//! Le compte du processus (getuid, geteuid), ce qu'il peut écrire (faccessat) et, sous Linux, le compte du programme à
+//! l'autre bout d'une prise Unix (SO_PEERCRED) : quatre appels à libc, une fois ici, pour que les modules qui s'en
+//! servent (dont le client D-Bus que lit le banc de fuzzing) restent sans `unsafe`.
 
-// FFI de libc : getuid, geteuid et getsockopt n'ont pas d'équivalent sûr dans std.
+// FFI de libc : getuid, geteuid, faccessat et getsockopt n'ont pas d'équivalent sûr dans std.
 #![allow(unsafe_code)]
 
 /// Le compte réel du processus.
@@ -15,6 +15,24 @@ pub(crate) fn uid() -> u32 {
 pub(crate) fn euid() -> u32 {
     // SAFETY: geteuid ne prend aucun argument, ne touche aucune mémoire et ne peut pas échouer.
     unsafe { libc::geteuid() }
+}
+
+/// Le compte effectif peut-il écrire à `chemin` ? Le noyau en juge avec tout ce qu'il sait (droits étendus, ACL,
+/// capacités), ce que le propriétaire et les bits de droits seuls ne disent pas. Une question qui échoue autrement
+/// que par un refus net (EACCES, EPERM, système en lecture seule) répond oui : qui s'en sert pour accorder sa
+/// confiance doit échouer fermé.
+pub(crate) fn ecrivable(chemin: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(chemin.as_os_str().as_bytes()) else {
+        return true;
+    };
+    // SAFETY: `c` est une chaîne terminée par un zéro, vivante pendant l'appel ; faccessat ne fait que la lire.
+    let r = unsafe { libc::faccessat(libc::AT_FDCWD, c.as_ptr(), libc::W_OK, libc::AT_EACCESS) };
+    r == 0
+        || !matches!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EACCES | libc::EPERM | libc::EROFS)
+        )
 }
 
 /// Le compte du programme à l'autre bout de la prise (SO_PEERCRED), tel que le noyau le connaît ; `None` si la
@@ -56,6 +74,25 @@ mod tests {
         assert_eq!(std::fs::metadata(&f).unwrap().uid(), super::euid());
         let _ = std::fs::remove_file(&f);
         assert_eq!(super::uid(), super::euid());
+    }
+
+    /// Un fichier à soi s'écrit ; un dossier fermé à tous (000) ne s'écrit pas, sauf en root (qui passe outre).
+    #[test]
+    fn ecrivable_par_le_compte() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = crate::essais::Jetable::nouveau("ecrivable");
+        let f = d.join("f");
+        std::fs::write(&f, b"").unwrap();
+        assert!(super::ecrivable(&f));
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o444)).unwrap();
+        if super::euid() == 0 {
+            return crate::essais::saute("en root, un fichier en lecture seule s'écrit quand même");
+        }
+        assert!(!super::ecrivable(&f));
+        assert!(
+            super::ecrivable(&d.join("absent")),
+            "une question qui échoue répond oui"
+        );
     }
 
     /// Les deux bouts d'une paire de prises sont au même compte : le nôtre.

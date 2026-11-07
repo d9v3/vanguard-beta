@@ -32,7 +32,7 @@ pub(crate) struct Constat {
 
 /// Un manque du socle qui laisse une partie non vérifiée. Ni un format inconnu (ses octets sont passés tels quels aux
 /// règles, comme avant le socle), ni une « quine » (le contenu, égal à l'un de ses ancêtres, a déjà été vérifié).
-fn laisse_non_verifie(raison: &Raison) -> bool {
+pub(crate) fn laisse_non_verifie(raison: &Raison) -> bool {
     !matches!(raison, Raison::FormatInconnu | Raison::Quine)
 }
 
@@ -67,7 +67,7 @@ fn nom_du_format(t: Type) -> &'static str {
 }
 
 /// Un manque, en quelques mots.
-fn raison(r: &Raison) -> String {
+pub(crate) fn raison(r: &Raison) -> String {
     match r {
         Raison::FormatInconnu => tr!("format inconnu", "unknown format").into(),
         Raison::FormatNonLu(t) => trf!("contenu {} non ouvert", "{} content not opened", nom_du_format(*t)),

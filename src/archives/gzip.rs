@@ -68,7 +68,7 @@ fn degzip_avant(octets: &[u8], limite: usize, echeance: std::time::Instant) -> O
 /// pas.
 const DELAI: std::time::Duration = std::time::Duration::from_secs(30);
 
-#[cfg(any(windows, test, fuzzing))] // logiciels pas à jour
+#[cfg(any(windows, target_os = "linux", test, fuzzing))] // logiciels pas à jour, bases de ClamAV
 /// Le contenu d'un gzip téléchargé, au plus `limite` octets en tout : chaque membre (un serveur peut en mettre
 /// plusieurs bout à bout) est décompressé, puis son CRC-32 et sa taille, écrits à sa fin, sont vérifiés. `None` : pas
 /// du gzip, coupé, abîmé, plus grand que la limite (une « bombe » de quelques Kio qui en donnerait des Go s'arrête à
@@ -77,7 +77,7 @@ pub(crate) fn degzip_controle(octets: &[u8], limite: usize) -> Option<Vec<u8>> {
     degzip_controle_avant(octets, limite, std::time::Instant::now().checked_add(DELAI)?)
 }
 
-#[cfg(any(windows, test, fuzzing))] // logiciels pas à jour
+#[cfg(any(windows, target_os = "linux", test, fuzzing))] // logiciels pas à jour, bases de ClamAV
 /// `degzip_controle`, tous les membres lus avant `echeance`.
 fn degzip_controle_avant(octets: &[u8], limite: usize, echeance: std::time::Instant) -> Option<Vec<u8>> {
     let mut contenu = Vec::new();

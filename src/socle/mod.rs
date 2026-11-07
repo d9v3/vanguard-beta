@@ -30,7 +30,7 @@ pub(crate) use fichiers::{
 #[cfg(target_os = "linux")]
 pub(crate) use identite::compte_d_en_face;
 #[cfg(unix)]
-pub(crate) use identite::{euid, uid};
+pub(crate) use identite::{ecrivable, euid, uid};
 #[cfg(unix)]
 pub use personnel::volume;
 pub use personnel::{maison, taille_lisible};

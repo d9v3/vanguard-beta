@@ -304,7 +304,7 @@ impl Motif {
         self.longueur_max
     }
 
-    #[cfg(test)]
+    /// Les octets fixes (au plus `ATOME_MAX`) que toute occurrence contient : la clé d'une recherche en deux temps.
     pub(crate) fn atome(&self) -> &[u8] {
         &self.atome
     }
