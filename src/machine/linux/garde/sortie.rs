@@ -32,7 +32,7 @@ pub(crate) struct Compteurs {
     pub refusees: u64,
     /// Permises faute de verdict à temps (250 ms).
     pub delais: u64,
-    /// Permises sans hachage : plus de 64 Mio, ou illisibles.
+    /// Permises sans hachage à temps : plus de 64 Mio (hachées après coup par le rattrapage), ou illisibles.
     pub non_verifiees: u64,
     /// Permises parce que la file des fils de décision était pleine.
     pub file_pleine: u64,
@@ -42,7 +42,8 @@ pub(crate) struct Compteurs {
     /// quand même, après coup (alerte haute ; le verdict est gardé pour le lancement suivant).
     #[serde(default)]
     pub certains_passes: u64,
-    /// Permis par la file pleine, et pas jugés après coup non plus : la file de rattrapage était pleine elle aussi.
+    /// Permis sans être jugés après coup non plus : la file de rattrapage était pleine, ou le fichier dépassait
+    /// 512 Mio.
     #[serde(default)]
     pub rattrapages_perdus: u64,
 }

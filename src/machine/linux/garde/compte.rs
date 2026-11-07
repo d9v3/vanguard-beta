@@ -339,8 +339,18 @@ pub(crate) fn juger(posee: bool, etat: Option<&Etat>, maintenant: u64) -> Consta
         hausser(
             Niveau::Moyen,
             trf!(
-                "{n} lancements ont été permis sans jamais être jugés (garde saturé).",
-                "{n} launches were allowed without ever being judged (guard saturated)."
+                "{n} lancements ont été permis sans jamais être jugés (garde saturé, ou fichier de plus de 512 Mio).",
+                "{n} launches were allowed without ever being judged (guard saturated, or file over 512 MiB)."
+            ),
+        );
+    }
+    if k.non_verifiees > 0 {
+        let n = k.non_verifiees;
+        hausser(
+            Niveau::Info,
+            trf!(
+                "{n} lancements ont été permis sans vérification à temps (plus de 64 Mio, ou illisibles) : les gros sont hachés après coup, jusqu'à 512 Mio, et un programme certainement malveillant passé ainsi est dit.",
+                "{n} launches were allowed without a timely check (over 64 MiB, or unreadable): big ones are hashed afterwards, up to 512 MiB, and a certainly malicious program that passed this way is reported."
             ),
         );
     }
@@ -464,6 +474,7 @@ fn genre_affiche(genre: &str) -> String {
         "permise" => tr!("permis par vous", "allowed by you").into(),
         "delai" => tr!("permis faute de verdict", "allowed, no verdict in time").into(),
         "non-verifie" => tr!("non vérifié", "not checked").into(),
+        "trop-gros" => tr!("trop gros, jamais jugé", "too big, never judged").into(),
         "file-pleine" => tr!("file pleine", "queue full").into(),
         "debordement" => tr!("débordement", "overflow").into(),
         "demarrage" => tr!("démarrage", "start").into(),
@@ -903,6 +914,12 @@ mod tests {
         let mut perdus = etat(maintenant);
         perdus.compteurs.rattrapages_perdus = 9;
         assert_eq!(juger(true, Some(&perdus), maintenant).probleme, Some(Niveau::Moyen));
+        // C7-2 : des lancements permis sans vérification à temps sont dits (au moins une information).
+        let mut gros = etat(maintenant);
+        gros.compteurs.non_verifiees = 4;
+        let c = juger(true, Some(&gros), maintenant);
+        assert_eq!(c.probleme, Some(Niveau::Info));
+        assert!(c.message.contains("512"), "{}", c.message);
         // C7-1 : un débordement de la file du noyau, haut, et la borne voulue dite.
         let mut deborde = etat(maintenant);
         deborde.compteurs.debordements = 2;

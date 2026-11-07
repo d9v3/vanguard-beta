@@ -8,12 +8,13 @@
 //! - le fil du TRI lit la clé du fichier (fstat, fstatfs), permet tout de suite ce que le cache sait propre (servi en
 //!   premier), et confie le reste à la file des fils de décision ; s'il reste pris, le délai permet ce qui attend, et
 //!   sa file pleine, le lecteur permet et confie au rattrapage ;
-//! - deux fils de DÉCISION hachent le descripteur rendu par le noyau (borné à 64 Mio, au-delà : permis et noté) et
-//!   jugent (`decision`) ; leur nombre borne les hachages concurrents ;
+//! - deux fils de DÉCISION hachent le descripteur rendu par le noyau (borné à 64 Mio, au-delà : permis, noté et
+//!   confié au rattrapage) et jugent (`decision`) ; leur nombre borne les hachages concurrents ;
 //! - le fil du DÉLAI permet toute demande sans verdict après 250 ms (P9), et la note ; elle reste dans la file et
 //!   est jugée quand même : son verdict va au cache, et un fichier certain passé ainsi est dit (alerte haute) ;
-//! - le fil de RATTRAPAGE juge de même, après coup, les demandes permises parce que la file était pleine ; sa file à
-//!   lui est courte, et pleine, la demande n'est que comptée (le travail d'après coup reste borné) ;
+//! - le fil de RATTRAPAGE juge de même, après coup, les demandes permises parce que la file était pleine, et hache
+//!   les fichiers trop gros pour l'être à temps (jusqu'à 512 Mio) ; sa file à lui est courte, et pleine, la demande
+//!   n'est que comptée (le travail d'après coup reste borné) ;
 //! - le fil d'ENTRETIEN marque les montages faits plus tard, relit les réglages, écrit etat.json et evenements.jsonl,
 //!   et envoie WATCHDOG=1 tant que le lecteur bat (un lecteur figé : systemd tue le garde, et la fermeture du groupe
 //!   laisse passer tout ce qui attend) ; il n'attend jamais rien du dossier du compte ;
@@ -46,8 +47,11 @@ use super::sortie::{self, Compteurs, Etat, Evenement};
 use super::{LISTE_MD5, LISTE_SHA256, Reglages};
 use crate::tr;
 
-/// Un fichier plus gros n'est pas haché à temps : permis, noté « non vérifié ».
+/// Un fichier plus gros n'est pas haché à temps : permis, noté « non vérifié », et confié au rattrapage (C7-2).
 pub(crate) const HACHAGE_MAX: u64 = 64 << 20;
+/// Le rattrapage hache après coup jusqu'à cette taille (un seul fil, quelques secondes par fichier au plus) ; au-delà,
+/// la demande permise n'est que comptée, comme une file de rattrapage pleine : le travail d'après coup reste borné.
+const RATTRAPAGE_HACHAGE_MAX: u64 = 512 << 20;
 /// Les fils de décision.
 const DECIDEURS: usize = 2;
 /// La file vers les fils de décision ; pleine, la demande est permise, notée, et confiée au rattrapage.
@@ -151,6 +155,7 @@ struct Partage {
 }
 
 /// Une demande confiée au tri, puis aux fils de décision.
+#[derive(Clone)]
 struct Demande {
     fd: i32,
     fichier: Arc<File>,
@@ -324,7 +329,10 @@ fn trier(
 /// Juge une demande et y répond, si personne ne l'a fait. Déjà permise (le délai, la file pleine), elle est jugée
 /// quand même : le verdict va au cache (le lancement suivant est jugé tout de suite), et un fichier certain qui aurait
 /// été refusé est compté (`certains_passes`, alerte haute) et noté.
-fn decider(p: &Partage, d: &Demande) {
+///
+/// `max` : la taille hachée au plus ; au-delà, permise, et confiée à `vers_rattrapage` s'il y en a un (les fils de
+/// décision : il la hache après coup, jusqu'à `RATTRAPAGE_HACHAGE_MAX`), sinon seulement comptée (le rattrapage).
+fn decider(p: &Partage, d: &Demande, max: u64, vers_rattrapage: Option<&SyncSender<Demande>>) {
     let Some(cle) = d.cle else {
         // Jamais : `preparer` la lit avant.
         p.repondre(d.fd, &d.fichier, true);
@@ -333,14 +341,28 @@ fn decider(p: &Partage, d: &Demande) {
     let connu = if let Some(c) = d.connu {
         c
     } else {
-        if cle.taille > HACHAGE_MAX {
+        if cle.taille > max {
+            let a_temps = p.repondre(d.fd, &d.fichier, true);
+            let Some(vers) = vers_rattrapage else {
+                plus(&p.compteurs.rattrapages_perdus);
+                let mut e = evenement("trop-gros");
+                e.pid = d.pid;
+                e.chemin = sortie::borner(&chemin_de(d.fd));
+                e.taille = Some(cle.taille);
+                p.noter(e);
+                return;
+            };
             plus(&p.compteurs.non_verifiees);
-            if p.repondre(d.fd, &d.fichier, true) {
+            if a_temps {
                 let mut e = evenement("non-verifie");
                 e.pid = d.pid;
                 e.chemin = sortie::borner(&chemin_de(d.fd));
                 e.taille = Some(cle.taille);
                 p.noter(e);
+            }
+            // C7-2 : haché après coup ; son verdict va au cache, et un fichier certain passé ainsi est dit.
+            if vers.try_send(d.clone()).is_err() {
+                plus(&p.compteurs.rattrapages_perdus);
             }
             return;
         }
@@ -444,21 +466,22 @@ fn nom_exception(e: Exception) -> &'static str {
 }
 
 /// Un fil de décision.
-fn decideur(p: &Partage, file: &Mutex<Receiver<Demande>>) {
+fn decideur(p: &Partage, file: &Mutex<Receiver<Demande>>, vers_rattrapage: &SyncSender<Demande>) {
     loop {
         let d = verrou(file).recv();
         match d {
-            Ok(d) => decider(p, &d),
+            Ok(d) => decider(p, &d, HACHAGE_MAX, Some(vers_rattrapage)),
             Err(_) => return,
         }
     }
 }
 
-/// Le fil du rattrapage : les demandes permises par la file pleine, jugées après coup, une à la fois.
+/// Le fil du rattrapage : les demandes permises par la file pleine, ou trop grosses pour être hachées à temps,
+/// jugées après coup, une à la fois.
 fn rattraper(p: &Partage, file: &Receiver<Demande>) {
     while let Ok(mut d) = file.recv() {
         if preparer(p, &mut d) {
-            decider(p, &d);
+            decider(p, &d, RATTRAPAGE_HACHAGE_MAX, None);
         }
     }
 }
@@ -978,13 +1001,13 @@ pub(crate) fn servir() -> i32 {
     });
     p.noter(e);
 
+    let (vers_rattrapage, rattrapage) = std::sync::mpsc::sync_channel::<Demande>(RATTRAPAGE);
     let (vers_decideurs, file) = std::sync::mpsc::sync_channel::<Demande>(FILE);
     let file = Arc::new(Mutex::new(file));
     for _ in 0..DECIDEURS {
-        let (p, file) = (Arc::clone(&p), Arc::clone(&file));
-        std::thread::spawn(move || decideur(&p, &file));
+        let (p, file, vers_rattrapage) = (Arc::clone(&p), Arc::clone(&file), vers_rattrapage.clone());
+        std::thread::spawn(move || decideur(&p, &file, &vers_rattrapage));
     }
-    let (vers_rattrapage, rattrapage) = std::sync::mpsc::sync_channel::<Demande>(RATTRAPAGE);
     {
         let p = Arc::clone(&p);
         std::thread::spawn(move || rattraper(&p, &rattrapage));
@@ -1317,7 +1340,7 @@ mod tests {
         let (p, evenements) = partage(&[empreinte]);
         // Déjà permise : n'attend plus.
         let tard = demande(d, "tard", contenu);
-        decider(&p, &tard);
+        decider(&p, &tard, HACHAGE_MAX, None);
         let k = p.compteurs.lire();
         assert_eq!((k.certains_passes, k.refusees, k.hachees), (1, 0, 1));
         let connu = verrou(&p.cache).lire(&tard.cle.unwrap()).unwrap();
@@ -1330,13 +1353,13 @@ mod tests {
             ..demande(d, "suivant", contenu)
         };
         verrou(&p.attentes).ajouter(suivant.fd, Arc::clone(&suivant.fichier), Instant::now());
-        decider(&p, &suivant);
+        decider(&p, &suivant, HACHAGE_MAX, None);
         let k = p.compteurs.lire();
         assert_eq!((k.certains_passes, k.refusees, k.hachees), (1, 1, 1));
         assert!(!verrou(&p.attentes).contient(suivant.fd, &suivant.fichier));
         // Propre et déjà permis : haché, gardé au cache comme propre, rien de compté.
         let propre = demande(d, "propre", b"un programme propre invente");
-        decider(&p, &propre);
+        decider(&p, &propre, HACHAGE_MAX, None);
         assert!(verrou(&p.cache).lire(&propre.cle.unwrap()).unwrap().certain.is_none());
         assert_eq!(p.compteurs.lire().certains_passes, 1);
     }
@@ -1360,6 +1383,46 @@ mod tests {
         drop(vers);
         rattraper(&p, &file);
         assert_eq!(p.compteurs.lire().certains_passes, RATTRAPAGE as u64);
+    }
+
+    /// C7-2 : un fichier trop gros pour être haché à temps est permis, compté « non vérifié », et confié au
+    /// rattrapage, qui le hache après coup : certain, il est compté comme passé (alerte haute), et son verdict va au
+    /// cache ; trop gros pour le rattrapage aussi, il n'est que compté. La taille au plus est passée en paramètre :
+    /// l'essai n'écrit pas 64 Mio.
+    #[test]
+    fn un_gros_fichier_est_hache_apres_coup() {
+        let d = crate::essais::Jetable::nouveau("garde-servir-gros");
+        let contenu = b"un gros programme malveillant invente pour l'essai";
+        let empreinte = listes::hacher(&contenu[..]).unwrap().sha256;
+        let (p, evenements) = partage(&[empreinte]);
+        let (vers, file) = std::sync::mpsc::sync_channel::<Demande>(RATTRAPAGE);
+        let gros = demande(&d, "gros", contenu);
+        verrou(&p.attentes).ajouter(gros.fd, Arc::clone(&gros.fichier), Instant::now());
+        decider(&p, &gros, 16, Some(&vers));
+        assert!(!verrou(&p.attentes).contient(gros.fd, &gros.fichier));
+        let k = p.compteurs.lire();
+        assert_eq!((k.non_verifiees, k.hachees, k.certains_passes), (1, 0, 0));
+        assert_eq!(evenements.try_recv().unwrap().genre, "non-verifie");
+        drop(vers);
+        rattraper(&p, &file);
+        let k = p.compteurs.lire();
+        assert_eq!(
+            (k.non_verifiees, k.hachees, k.certains_passes, k.rattrapages_perdus),
+            (1, 1, 1, 0)
+        );
+        assert!(verrou(&p.cache).lire(&gros.cle.unwrap()).unwrap().certain.is_some());
+        let e = evenements.try_recv().unwrap();
+        assert_eq!((e.genre.as_str(), e.trop_tard.as_deref()), ("delai", Some("refuse")));
+        // Trop gros pour le rattrapage : compté comme jamais jugé, et dit.
+        let enorme = demande(&d, "enorme", contenu);
+        decider(&p, &enorme, 16, None);
+        let k = p.compteurs.lire();
+        assert_eq!((k.hachees, k.rattrapages_perdus), (1, 1));
+        assert_eq!(evenements.try_recv().unwrap().genre, "trop-gros");
+        // La file du rattrapage pleine : compté aussi.
+        let (plein, _file) = std::sync::mpsc::sync_channel::<Demande>(0);
+        decider(&p, &demande(&d, "encore", contenu), 16, Some(&plein));
+        assert_eq!(p.compteurs.lire().rattrapages_perdus, 2);
     }
 
     /// L-2 : le fil lecteur (celui qui bat le chien de garde) ne fait aucun appel qui puisse attendre un système de
@@ -1404,7 +1467,7 @@ mod tests {
         assert!(preparer(&p, &mut inconnue));
         let cle = inconnue.cle.unwrap();
         assert_eq!(cle.taille, 27);
-        decider(&p, &inconnue);
+        decider(&p, &inconnue, HACHAGE_MAX, None);
         assert!(!verrou(&p.attentes).contient(inconnue.fd, &inconnue.fichier));
         // Relancé : le même fichier, propre au cache, permis par le tri.
         let fichier = Arc::new(File::open(d.join("inconnue")).unwrap());
