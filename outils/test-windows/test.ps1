@@ -136,6 +136,19 @@ function Optimiser-Possible([string]$quoi) {
         $filtre = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction SilentlyContinue).FilterAdministratorToken -eq 1
         $attendu = ([Security.Principal.WindowsPrincipal]$identite).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) -and
             $uac -and ($filtre -or -not $identite.User.Value.EndsWith('-500'))
+        # Une session SSH ou WinRM d'un administrateur reçoit un jeton plein sans jeton lié (TokenElevationType 1), même
+        # avec l'UAC : aucun compte ordinaire à qui redemander les droits, Vanguard ne refuse pas, comme voulu.
+        if ($attendu) {
+            Add-Type -Namespace VanguardTest -Name Jeton -MemberDefinition @'
+[DllImport("advapi32.dll", SetLastError = true)]
+public static extern bool GetTokenInformation(IntPtr jeton, int classe, out int valeur, int taille, out int lu);
+'@
+            $typeElevation = 0; $lu = 0
+            if ([VanguardTest.Jeton]::GetTokenInformation($identite.Token, 18, [ref]$typeElevation, 4, [ref]$lu) -and $typeElevation -eq 1) {
+                Info 'Administrateur sans jeton lié (session SSH, WinRM…) : Optimiser n''a pas à refuser'
+                $attendu = $false
+            }
+        }
         $vide = Join-Path $res 'refus-optimiser.entree.txt'
         Set-Content -LiteralPath $vide -Value ''
         $p = Start-Process -FilePath $exe -ArgumentList @('jeux') -NoNewWindow -Wait -PassThru -RedirectStandardInput $vide `
@@ -436,6 +449,8 @@ try {
         '^journal \S+ désactivé : il n''écrit plus rien, ce qui est lu est ancien$',
         '^log \S+ disabled: it writes nothing anymore, what is read is old$',
         '^journal \S+ lu mais vide sur la période : vidé, remplacé, ou son audit coupé$',
+        '^journal \S+ présent mais vide sur la période : rien n''y est vérifié \(.+\)$',
+        '^log \S+ present but empty over the period: nothing in it is checked \(.+\)$',
         '^log \S+ read but empty over the period: cleared, replaced, or its auditing turned off$',
         '^journal \S+ lu seulement depuis le .+? : plus ancien écrasé, effacé, ou rien écrit$',
         '^log \S+ only read from .+?: older events overwritten, cleared, or never written$',
@@ -445,10 +460,11 @@ try {
         '^\S+: nothing proves Windows writes these events \(.+\)$',
         '^\S+ : plus rien ne prouve ces événements depuis le [^(]+ \(.+\)$',
         '^\S+: nothing proves these events since [^(]+ \(.+\)$')
+    # Raisons séparées par « ; », sauf entre parenthèses, où une raison en a parfois une à elle.
     $auditEteint = @($impossibles | Where-Object {
         $_.regle -eq 'WIN-JRN-003' -and
         $_.message -match '^(Non vérifié|Not verified) — (.+?) ?: EVT-[A-Z]+-\d+ \(.+\)\.$' -and
-        @($Matches[2] -split ' ; ' | Where-Object { $r = $_; -not ($etatDeLaMachine | Where-Object { $r -match $_ }) }).Count -eq 0 })
+        @($Matches[2] -split ' ; (?![^(]*\))' | Where-Object { $r = $_; -not ($etatDeLaMachine | Where-Object { $r -match $_ }) }).Count -eq 0 })
     $auditEteint | ForEach-Object { Info "Non vérifié, audit de cette machine éteint (attendu) : $($_.categorie) — $($_.message)" }
     $impossibles = @($impossibles | Where-Object { $auditEteint -notcontains $_ })
     if ($impossibles.Count) { $impossibles | ForEach-Object { Bug "Vérification impossible : $($_.categorie) — $($_.message)" } }
