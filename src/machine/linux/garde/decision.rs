@@ -109,7 +109,11 @@ pub(crate) fn exception(l: &Lancement<'_>) -> Option<Exception> {
     if l.de_vanguard || (a_root && l.chemin == super::PROGRAMME) {
         return Some(Exception::Vanguard);
     }
-    if a_root && gardes::dossier_systeme(l.chemin, crate::machine::regles::Os::Linux) {
+    // Un chemin qui remonte (« .. ») n'épargne rien ici (f4) : `dossier_systeme` le tient pour du système, ce qui
+    // est prudent pour ne pas arrêter un processus, pas pour laisser passer un lancement. Le noyau n'en donne pas
+    // (/proc/self/fd), mais l'exception ne dépend pas de la source du chemin.
+    let remonte = l.chemin.split('/').any(|c| c == "..");
+    if a_root && !remonte && gardes::dossier_systeme(l.chemin, crate::machine::regles::Os::Linux) {
         return Some(Exception::Systeme);
     }
     if l.pid == PID_INIT {
@@ -218,6 +222,14 @@ mod tests {
             assert_eq!(exception(&Lancement { chemin, ..systeme }), None, "{chemin}");
         }
         assert_eq!(exception(&Lancement { pid: 1, ..l }), Some(Exception::Critique));
+        // f4 : un chemin qui remonte n'est jamais du système pour le garde, même à root.
+        for chemin in [
+            "/usr/bin/../../tmp/outil",
+            "/usr/lib/..",
+            "/usr/bin/x/../../../home/alice/outil",
+        ] {
+            assert_eq!(exception(&Lancement { chemin, ..systeme }), None, "{chemin}");
+        }
     }
 
     /// B1 : un fichier certain au compte, renommé comme un outil de session ou un processus vital, ou lancé par un
