@@ -513,8 +513,8 @@ fn regler(refus: bool) {
         afficher_aligne(
             "  ",
             tr!(
-                "En mode refus, le lancement d'un programme dont l'empreinte est dans les listes est refusé (« Opération non permise »), sauf pour le système, Vanguard et les processus critiques. Un programme refusé à tort se permet avec « vanguard garde permettre <SHA-256> ».",
-                "In refuse mode, launching a program whose hash is in the lists is refused (“Operation not permitted”), except for the system, Vanguard and critical processes. A program refused by mistake is allowed with “vanguard guard allow <SHA-256>”."
+                "En mode refus, le lancement d'un programme dont l'empreinte est dans les listes est refusé (« Opération non permise »), sauf pour les programmes du système, Vanguard et ce que lance init. Un programme refusé à tort se permet avec « vanguard garde permettre <SHA-256> ».",
+                "In refuse mode, launching a program whose hash is in the lists is refused (“Operation not permitted”), except for system programs, Vanguard and what init launches. A program refused by mistake is allowed with “vanguard guard allow <SHA-256>”."
             ),
             2,
             "",

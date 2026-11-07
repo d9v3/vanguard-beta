@@ -45,8 +45,8 @@ const NOMS_CRITIQUES: &[&str] = &[
     "xrdp-sesman",
 ];
 
-/// Un processus critique du système (ses premiers numéros, ou un nom de `NOMS_CRITIQUES`) : jamais arrêté ni gelé, et
-/// le garde des lancements (Défense L3, P11) ne refuse jamais ce qu'il lance.
+/// Un processus critique du système (ses premiers numéros, ou un nom de `NOMS_CRITIQUES`) : jamais arrêté ni gelé. Le
+/// garde des lancements ne s'en sert pas : le nom d'un lanceur est choisi par lui, il n'épargne rien (`garde::decision`).
 pub(crate) fn processus_critique(pid: u32, nom: &str) -> bool {
     PID_CRITIQUES.contains(&pid) || NOMS_CRITIQUES.contains(&nom_simple(nom).as_str())
 }

@@ -189,25 +189,11 @@ fn chemin_de(fd: i32) -> String {
         .unwrap_or_default()
 }
 
-/// Le nom (comm) d'un processus.
+/// Le nom (comm) d'un processus, pour l'affichage seulement : le processus le choisit (`prctl`), il ne décide rien.
 fn nom_de(pid: i32) -> String {
     std::fs::read_to_string(format!("/proc/{pid}/comm"))
         .map(|n| n.trim_end().to_string())
         .unwrap_or_default()
-}
-
-/// Un outil d'accès à distance tourne-t-il (une session ouverte) ? Par les noms de /proc : avec PrivateNetwork, le
-/// garde ne voit pas les connexions de l'hôte.
-fn session_ouverte(sauf: i32) -> bool {
-    let Ok(entrees) = std::fs::read_dir("/proc") else {
-        return false;
-    };
-    entrees
-        .flatten()
-        .take(1 << 16)
-        .filter_map(|e| e.file_name().to_str().and_then(|n| n.parse::<i32>().ok()))
-        .filter(|pid| *pid != sauf)
-        .any(|pid| crate::protection::blocage::gardes::programme_de_session(&nom_de(pid)))
 }
 
 /// Un lecteur de `fichier` par position (pread), borné à sa taille : la position du descripteur n'est jamais partagée.
@@ -295,9 +281,8 @@ fn decider(p: &Partage, d: &Demande) {
                 mode: meta.as_ref().map_or(0o777, MetadataExt::mode),
                 de_vanguard,
                 pid: u32::try_from(d.pid).unwrap_or(u32::MAX),
-                nom: &nom,
             };
-            match decision::exception(&lancement, || session_ouverte(d.pid)) {
+            match decision::exception(&lancement) {
                 Some(x) => Verdict::Epargne(cert, x),
                 None => verdict,
             }
@@ -346,7 +331,6 @@ fn nom_exception(e: Exception) -> &'static str {
         Exception::Systeme => "systeme",
         Exception::Vanguard => "vanguard",
         Exception::Critique => "critique",
-        Exception::Session => "session",
     }
 }
 
