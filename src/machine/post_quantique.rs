@@ -8,7 +8,7 @@
 //! la lecture dépend du système. Aucun programme n'est lancé : ni « sshd -T », ni « wg show » (il afficherait les
 //! clés en clair, et c'est un programme tiers lancé en administrateur).
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use super::{Constat, alerte, impossible_par, ok, sans_objet};
@@ -555,9 +555,9 @@ pub(crate) enum Wireguard {
     /// Les tunnels en marche (nom de l'interface) et ce qui s'en sait.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Tunnels(Vec<(String, Tunnel)>),
-    /// Présent, mais rangé là où Vanguard ne lit pas (configurations chiffrées pour SYSTEM, trousseau de macOS) :
+    /// Présent, mais rangé là où Vanguard ne lit pas (configurations chiffrées pour SYSTEM) :
     /// la raison.
-    #[cfg_attr(target_os = "linux", allow(dead_code))] // Windows et macOS
+    #[cfg_attr(target_os = "linux", allow(dead_code))] // Windows
     Hors(String),
 }
 
@@ -759,29 +759,6 @@ fn lire_serveur() -> Lecture<Serveur> {
     })
 }
 
-#[cfg(target_os = "macos")]
-fn lire_serveur() -> Lecture<Serveur> {
-    // Seulement si « Session à distance » écoute le réseau (port 22), comme la règle du serveur SSH du Mac.
-    let Some(netstat) = super::sortie("netstat", &["-an", "-p", "tcp"]) else {
-        return Lecture::Illisible(Raison::Absente("netstat".into()));
-    };
-    let ecoute = super::unix::lire_netstat(&netstat, true)
-        .iter()
-        .any(|(adresse, port)| *port == 22 && !(adresse.starts_with("127.") || adresse == "::1"));
-    if !ecoute {
-        return Lecture::Absent(Absence::Inactif);
-    }
-    let Some(conf) = super::unix::configuration_sshd() else {
-        return Lecture::Illisible(Raison::Droits);
-    };
-    Lecture::Lu(Serveur {
-        segments: vec![("/etc/ssh/sshd_config".into(), conf)],
-        version: std::fs::read("/usr/sbin/sshd")
-            .ok()
-            .and_then(|o| crate::machine::sshd::version_dans_le_programme(&o)),
-    })
-}
-
 #[cfg(windows)]
 fn lire_serveur() -> Lecture<Serveur> {
     use winreg::enums::HKEY_LOCAL_MACHINE;
@@ -858,18 +835,9 @@ fn inclus_du_systeme(motif: &str) -> Vec<(String, String)> {
 fn lire_client() -> Lecture<Client> {
     #[cfg(target_os = "linux")]
     let version = crate::machine::linux::version_ssh();
-    #[cfg(target_os = "macos")]
-    let version = std::fs::read("/usr/bin/ssh")
-        .ok()
-        .and_then(|o| crate::machine::sshd::version_dans_le_programme(&o));
-    let present = [
-        "/usr/bin/ssh",
-        "/bin/ssh",
-        "/usr/local/bin/ssh",
-        "/opt/homebrew/bin/ssh",
-    ]
-    .iter()
-    .any(|p| std::path::Path::new(p).exists());
+    let present = ["/usr/bin/ssh", "/bin/ssh", "/usr/local/bin/ssh"]
+        .iter()
+        .any(|p| std::path::Path::new(p).exists());
     if !present && version.is_none() {
         return Lecture::Absent(Absence::Logiciel);
     }
@@ -1003,27 +971,6 @@ fn lire_wireguard() -> Wireguard {
         "{} tunnel(s) running; their configurations are encrypted for the SYSTEM account, which Vanguard does not impersonate to read them",
         noms.len()
     ))
-}
-
-#[cfg(target_os = "macos")]
-fn lire_wireguard() -> Wireguard {
-    let present = [
-        "/Applications/WireGuard.app",
-        "/opt/homebrew/bin/wg-quick",
-        "/usr/local/bin/wg-quick",
-    ]
-    .iter()
-    .any(|p| std::path::Path::new(p).exists());
-    if !present {
-        return Wireguard::Aucun(Absence::Logiciel);
-    }
-    Wireguard::Hors(
-        tr!(
-            "l'application WireGuard garde ses tunnels dans le trousseau et son extension réseau, que Vanguard ne lit pas",
-            "the WireGuard app keeps its tunnels in the keychain and its network extension, which Vanguard does not read"
-        )
-        .into(),
-    )
 }
 
 #[allow(

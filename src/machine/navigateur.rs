@@ -2,7 +2,7 @@
 //! DNS chiffré. Un navigateur n'écrit un réglage que s'il a été changé : sans valeur écrite, on retient sa valeur
 //! par défaut. Une stratégie imposée (fichier de /etc sous Linux, registre sous Windows, policies.json de Firefox)
 //! passe avant les Paramètres : un logiciel indésirable s'en sert pour couper la protection sans qu'on puisse la
-//! rallumer. Celles de macOS (profils gérés) ne sont pas lues. À part (COM-NAV-004) : l'échange de clés
+//! rallumer. À part (COM-NAV-004) : l'échange de clés
 //! post-quantique (X25519MLKEM768) coupé par une préférence ou une stratégie, pour ne pas mêler sa clé à celles
 //! des réglages ci-dessus.
 
@@ -143,7 +143,7 @@ fn firefox_coupe(politiques: &Value) -> (Option<&'static str>, Option<&'static s
     (imposee, par_defaut)
 }
 
-/// Les stratégies du navigateur `nom` (celui de `extensions::racines`). Pas lues : celles de macOS (profils gérés),
+/// Les stratégies du navigateur `nom` (celui de `extensions::racines`). Pas lues : celles
 /// des navigateurs en Flatpak (extensions de politiques). Firefox sous Windows : le registre (la stratégie
 /// post-quantique et les Preferences), sinon distribution\policies.json.
 #[cfg(target_os = "linux")]
@@ -289,11 +289,6 @@ fn strategies_de(nom: &str, sid: Option<&str>) -> Strategies {
     s
 }
 
-#[cfg(target_os = "macos")]
-fn strategies(_nom: &str) -> Strategies {
-    Strategies::default()
-}
-
 /// Les stratégies de Firefox lues dans une racine du registre, mises sous la forme de policies.json pour être
 /// jugées pareil : la valeur PostQuantumKeyAgreementEnabled, le JSON de la valeur Preferences, et l'ancienne
 /// forme (une valeur DWORD par préférence sous la clé Preferences, verrouillée comme une valeur nue). `None` :
@@ -368,7 +363,7 @@ fn retrait(id: Option<IdReglage>, hors_gestion: impl FnOnce() -> bool) -> Retrai
     }
 }
 
-/// Le PC est-il hors domaine et hors gestion (lecture qui manque : non) ? Sous Linux et macOS, les stratégies sont des
+/// Le PC est-il hors domaine et hors gestion (lecture qui manque : non) ? Sous Linux, les stratégies sont des
 /// fichiers, que Vanguard ne retire pas (défense D7) : non.
 fn hors_gestion() -> bool {
     #[cfg(windows)]

@@ -1,5 +1,5 @@
 //! La grammaire des gestes de Linux que l'assistant élevé lit du Vanguard non élevé (src/machine/gestes_unix.rs), et
-//! la découpe commune (src/machine/decoupe.rs) telle que Linux et macOS s'en servent : une ligne « vanguard:… » est
+//! la découpe commune (src/machine/decoupe.rs) telle que Linux s'en sert : une ligne « vanguard:… » est
 //! native, toute autre passe à bash. Familles et identifiants hors de la table, espaces doublées, champs en plus,
 //! octets nuls, majuscules, lignes démesurées ; noms d'unité hostiles (remontée, gabarit, sans suffixe, pare-feu
 //! désigné) ; gestes de défense (identifiant de note, chemins désignés, identifiant fixe d'un pare-feu coupé).
@@ -96,7 +96,7 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
         }
         assert!(g.refus().is_none());
     }
-    // La découpe à la façon de Linux et macOS : des correctifs séparés par une ligne vide. Un correctif n'est fait
+    // La découpe à la façon de Linux : des correctifs séparés par une ligne vide. Un correctif n'est fait
     // par l'assistant que s'il ne donne qu'un morceau natif, par bash que s'il ne donne qu'un morceau de commandes ;
     // une ligne native et une commande dans le même correctif donnent toujours plusieurs morceaux (refusé).
     let correctifs: Vec<Vec<String>> = texte

@@ -8,9 +8,9 @@
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 
 use super::{Instantane, conseils, mesure_complete};
-use crate::machine::{Constat, alerte, impossible_par, ok, sans_objet};
+use crate::machine::{Constat, alerte, impossible_par, ok};
 use crate::modele::resultat::{Couverture, Resultat};
-use crate::modele::{Absence, Objet, Raison};
+use crate::modele::{Objet, Raison};
 use crate::risk::Niveau;
 use crate::{tr, trf};
 
@@ -60,10 +60,6 @@ pub(super) fn resultat(i: &Instantane, debut: Debut) -> Resultat {
     );
     match &i.demarrage {
         Ok(_) => verifies = verifies.saturating_add(1),
-        // macOS ne note pas la durée de son démarrage : rien à juger, ce n'est pas une lecture qui a échoué.
-        Err(raison) if cfg!(target_os = "macos") => {
-            constats.push(sans_objet(CAT, Absence::Plateforme, raison.clone()));
-        }
         Err(raison) => non_verifies.push(trf!("durée du démarrage : {raison}", "startup duration: {raison}")),
     }
     let conseils = conseils(i);

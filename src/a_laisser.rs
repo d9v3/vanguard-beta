@@ -197,10 +197,6 @@ fn bureau() -> Option<PathBuf> {
             .map(|c| PathBuf::from(crate::protection::pieges::developper(&c)))
             .filter(|d| d.is_dir())
     }
-    #[cfg(target_os = "macos")]
-    {
-        Some(crate::socle::maison().join("Desktop")).filter(|d| d.is_dir())
-    }
 }
 
 /// Menu Cette machine › Rapport à laisser (`vanguard rapport-a-laisser`) : d'après le dernier bilan de la session, ou un neuf.

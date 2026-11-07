@@ -9,14 +9,10 @@
 //!   UTF-8 et asInvoker), plus ASLR (DYNAMIC_BASE, et en 64 bits HIGH_ENTROPY_VA avec LARGE_ADDRESS_AWARE, qu'il
 //!   exige), DEP (NX_COMPAT) et des
 //!   relocalisations présentes et pas retirées (sans elles, Windows ne déplace pas l'image, bit ou non) ; CFG et CET
-//!   affichés seulement ;
-//! - Mac (Mach-O universel, `analyse::macho`) : les deux tranches (arm64, x86_64), chacune lue et vérifiée : MH_EXECUTE,
-//!   MH_PIE, sans MH_ALLOW_STACK_EXECUTION, __PAGEZERO sans droits (de 4 Gio en 64 bits), aucun segment écrivable et
-//!   exécutable (droits initiaux), et la signature (une seule LC_CODE_SIGNATURE, non vide et dans la tranche) que
-//!   macOS exige sur arm64.
+//!   affichés seulement.
 //!
-//! Chaque programme doit aussi être d'une architecture qu'on livre (ELF 64 bits petit-boutiste x86-64, PE32+ AMD64,
-//! tranches arm64 et x86_64) et, avec `--attendu`, du système que le script annonce : un ELF posé à la place du .exe
+//! Chaque programme doit aussi être d'une architecture qu'on livre (ELF 64 bits petit-boutiste x86-64, PE32+ AMD64)
+//! et, avec `--attendu`, du système que le script annonce : un ELF posé à la place du .exe
 //! porterait toutes ses protections, et ne démarrerait pas.
 //!
 //! Un seul refus par fichier, qui nomme chaque protection manquante et le champ lu. Ce qui ne se lit pas est refusé :
@@ -26,14 +22,12 @@ use std::io::Read;
 use std::path::Path;
 
 use super::Systeme;
-use crate::analyse::{elf, macho};
+use crate::analyse::elf;
 use crate::pe;
 use crate::ui::*;
 
 /// Au-delà, ce n'est pas un programme de Vanguard : lu en entier en mémoire, le fichier est borné.
 const TAILLE_MAX: u64 = 512 << 20;
-/// La __PAGEZERO que ld64 donne à un exécutable 64 bits : les 4 premiers Gio, toute adresse qui tient sur 32 bits.
-const PAGE_ZERO_64: u64 = 1 << 32;
 
 /// Une protection exigée, nommée sans dépendre de la langue (les essais la reconnaissent ainsi).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,13 +51,6 @@ pub(super) enum Protection {
     AslrHauteEntropie,
     Dep,
     Relocalisations,
-    // Mach-O
-    Universel,
-    Tranche,
-    Executable,
-    PageZero,
-    Signature,
-    Commandes,
 }
 
 /// Une protection manquante, et ce qu'en dit le fichier, dans la langue de l'interface.
@@ -144,7 +131,7 @@ pub(super) enum Illisible {
     Elf,
     /// Commence comme un PE, mais ses en-têtes ne se lisent pas.
     Pe,
-    /// Ni ELF, ni PE, ni Mach-O.
+    /// Ni ELF, ni PE.
     Inconnu,
 }
 
@@ -160,8 +147,8 @@ impl std::fmt::Display for Illisible {
                 "not a readable Windows program"
             )),
             Self::Inconnu => f.write_str(tr!(
-                "format inconnu : ni ELF, ni PE, ni Mach-O",
-                "unknown format: neither ELF, PE nor Mach-O"
+                "format inconnu : ni ELF, ni PE",
+                "unknown format: neither ELF nor PE"
             )),
         }
     }
@@ -174,7 +161,6 @@ fn nom_systeme(s: Systeme) -> &'static str {
     match s {
         Systeme::Linux => tr!("programme Linux (ELF)", "Linux program (ELF)"),
         Systeme::Windows => tr!("programme Windows (PE)", "Windows program (PE)"),
-        Systeme::Macos => tr!("programme macOS (Mach-O)", "macOS program (Mach-O)"),
     }
 }
 
@@ -192,19 +178,6 @@ pub(super) fn juger(fichier: &Path, attendu: Option<Systeme>) -> Result<Jugement
         )
         .ok_or(Illisible::Pe)?;
         (Systeme::Windows, juger_pe(&g))
-    } else if let Some(u) = macho::universel(&octets) {
-        (Systeme::Macos, juger_universel(&octets, &u))
-    } else if macho::lire(&octets).is_some() {
-        let mut j = Jugement::default();
-        j.manque(
-            Protection::Universel,
-            tr!(
-                "Mach-O d'une seule architecture, universel attendu (arm64 et x86_64)",
-                "single-architecture Mach-O, universal expected (arm64 and x86_64)"
-            )
-            .to_string(),
-        );
-        (Systeme::Macos, j)
     } else {
         return Err(Illisible::Inconnu);
     };
@@ -569,184 +542,6 @@ fn gardes_pe(g: &pe::Gardes, j: &mut Jugement) {
     }
 }
 
-/// Le nom d'une architecture Mac.
-fn architecture(cpu: u32) -> String {
-    match cpu {
-        macho::CPU_ARM64 => "arm64".to_string(),
-        macho::CPU_X86_64 => "x86_64".to_string(),
-        autre => format!("cpu 0x{autre:X}"),
-    }
-}
-
-/// Un programme Mac universel : les deux architectures attendues, chaque tranche lue et vérifiée. Ne vérifier que la
-/// première laisserait passer l'autre.
-fn juger_universel(octets: &[u8], u: &macho::Universel) -> Jugement {
-    let mut j = Jugement {
-        resume: tr!(
-            "Mach-O universel (arm64, x86_64) : MH_EXECUTE, PIE, pile non exécutable, __PAGEZERO, aucun segment écrivable et exécutable, arm64 signé",
-            "universal Mach-O (arm64, x86_64): MH_EXECUTE, PIE, non-executable stack, __PAGEZERO, no writable and executable segment, arm64 signed"
-        )
-        .to_string(),
-        ..Jugement::default()
-    };
-    for attendue in [macho::CPU_ARM64, macho::CPU_X86_64] {
-        if !u.tranches.iter().any(|t| t.cpu == attendue) {
-            let a = architecture(attendue);
-            j.manque(
-                Protection::Universel,
-                trf!("tranche {a} manquante", "{a} slice missing"),
-            );
-        }
-    }
-    if u.tranches_hors_fichier > 0 {
-        let n = u.tranches_hors_fichier;
-        j.manque(
-            Protection::Tranche,
-            trf!(
-                "{n} tranche(s) hors du fichier, non vérifiée(s)",
-                "{n} slice(s) outside the file, not checked"
-            ),
-        );
-    }
-    for t in &u.tranches {
-        let a = architecture(t.cpu);
-        if t.cpu != macho::CPU_ARM64 && t.cpu != macho::CPU_X86_64 {
-            j.manque(
-                Protection::Architecture,
-                trf!(
-                    "tranche {a} : architecture non livrée (arm64 et x86_64 seulement)",
-                    "{a} slice: architecture not shipped (arm64 and x86_64 only)"
-                ),
-            );
-        }
-        let tranche = usize::try_from(t.position)
-            .ok()
-            .zip(usize::try_from(t.taille).ok())
-            .and_then(|(p, n)| octets.get(p..p.checked_add(n)?))
-            .and_then(macho::lire);
-        match tranche {
-            None => j.manque(
-                Protection::Tranche,
-                trf!("tranche {a} illisible", "{a} slice unreadable"),
-            ),
-            Some(m) if m.cpu != t.cpu => {
-                let lue = architecture(m.cpu);
-                j.manque(
-                    Protection::Tranche,
-                    trf!(
-                        "tranche annoncée {a}, lue {lue}",
-                        "slice announced as {a}, read as {lue}"
-                    ),
-                );
-            }
-            Some(m) => juger_tranche(&a, &m, &mut j),
-        }
-    }
-    j.infos.push(
-        tr!(
-            "chaque tranche lue par le programme Linux, pas par le Mac lui-même",
-            "each slice read by the Linux program, not by the Mac one itself"
-        )
-        .to_string(),
-    );
-    j
-}
-
-/// Une tranche d'un programme Mac.
-fn juger_tranche(a: &str, m: &macho::MachO, j: &mut Jugement) {
-    if m.commandes_illisibles {
-        j.manque(
-            Protection::Commandes,
-            trf!(
-                "{a} : commandes de chargement illisibles",
-                "{a}: unreadable load commands"
-            ),
-        );
-    }
-    if m.type_fichier != macho::MH_EXECUTE {
-        let t = m.type_fichier;
-        j.manque(
-            Protection::Executable,
-            trf!(
-                "{a} : pas un exécutable (filetype {t})",
-                "{a}: not an executable (filetype {t})"
-            ),
-        );
-    }
-    let flags = m.drapeaux;
-    if flags & macho::MH_PIE == 0 {
-        j.manque(
-            Protection::Pie,
-            trf!(
-                "{a} : PIE absent (flags 0x{flags:08X})",
-                "{a}: PIE missing (flags 0x{flags:08X})"
-            ),
-        );
-    }
-    if flags & macho::MH_ALLOW_STACK_EXECUTION != 0 {
-        j.manque(
-            Protection::PileNonExecutable,
-            trf!(
-                "{a} : pile exécutable (MH_ALLOW_STACK_EXECUTION, flags 0x{flags:08X})",
-                "{a}: executable stack (MH_ALLOW_STACK_EXECUTION, flags 0x{flags:08X})"
-            ),
-        );
-    }
-    let page_zero = m
-        .segments
-        .iter()
-        .find(|s| s.nom == "__PAGEZERO" && s.adresse == 0 && s.maxprot == 0 && s.initprot == 0);
-    match page_zero {
-        None => j.manque(
-            Protection::PageZero,
-            trf!(
-                "{a} : __PAGEZERO absent ou accessible",
-                "{a}: __PAGEZERO missing or accessible"
-            ),
-        ),
-        // En 64 bits, ld64 la fait de 4 Gio : un pointeur tronqué à 32 bits tombe alors dedans et plante, au lieu
-        // de lire ou d'écrire de la vraie mémoire. Une seule page ne garde que contre le pointeur nul.
-        Some(zero) if m.bits64 && zero.taille_memoire < PAGE_ZERO_64 => {
-            let taille = zero.taille_memoire;
-            j.manque(
-                Protection::PageZero,
-                trf!(
-                    "{a} : __PAGEZERO de 0x{taille:X} octets, moins des 4 Gio attendus en 64 bits",
-                    "{a}: __PAGEZERO of 0x{taille:X} bytes, less than the 4 GiB expected on 64-bit"
-                ),
-            );
-        }
-        Some(_) => {}
-    }
-    for s in m.segments.iter().filter(|s| s.ecrivable_executable()) {
-        let nom = &s.nom;
-        j.manque(
-            Protection::SansEcrivableExecutable,
-            trf!(
-                "{a} : segment écrivable et exécutable ({nom})",
-                "{a}: writable and executable segment ({nom})"
-            ),
-        );
-    }
-    if m.cpu == macho::CPU_ARM64 && !m.signature {
-        j.manque(
-            Protection::Signature,
-            trf!(
-                "{a} : signature absente (LC_CODE_SIGNATURE, exigée par macOS sur arm64)",
-                "{a}: signature missing (LC_CODE_SIGNATURE, required by macOS on arm64)"
-            ),
-        );
-    } else if m.cpu == macho::CPU_ARM64 && !m.signature_dans_le_fichier {
-        j.manque(
-            Protection::Signature,
-            trf!(
-                "{a} : signature vide, hors de la tranche ou en double (LC_CODE_SIGNATURE ne signe rien de sûr)",
-                "{a}: signature empty, outside the slice or duplicated (LC_CODE_SIGNATURE signs nothing reliable)"
-            ),
-        );
-    }
-}
-
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::as_conversions,
@@ -771,7 +566,6 @@ mod tests {
         }
     }
     use crate::analyse::elf::essais::{Durci, elf64, elf64_durci, entete};
-    use crate::analyse::macho::essais::{MacDurci, macho64, macho64_durci, universel_de};
     use crate::pe::essais::{Retrait, gardes_d_essai, sans_protection};
 
     /// Une protection retirée des réglages d'un binaire fabriqué, et celle que le refus doit nommer.
@@ -800,13 +594,6 @@ mod tests {
 
     fn pe_durci() -> Vec<u8> {
         gardes_d_essai(Some((148, 148, 0x800)), Some(MANIFESTE), 1)
-    }
-
-    fn mac(arm: MacDurci, x86: MacDurci) -> Vec<u8> {
-        universel_de(&[
-            (macho::CPU_ARM64, macho64_durci(macho::CPU_ARM64, arm)),
-            (macho::CPU_X86_64, macho64_durci(macho::CPU_X86_64, x86)),
-        ])
     }
 
     #[test]
@@ -1013,102 +800,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    #[test]
-    fn mac_chaque_protection_retiree_est_refusee() {
-        let d = dossier();
-        let complet = MacDurci::COMPLET;
-        assert_eq!(manques(&d, &mac(complet, complet)), []);
-        let retraits: [Retire<MacDurci>; 6] = [
-            (|x| x.pie = false, Protection::Pie),
-            (|x| x.pile_non_executable = false, Protection::PileNonExecutable),
-            (
-                |x| x.sans_ecrivable_executable = false,
-                Protection::SansEcrivableExecutable,
-            ),
-            (|x| x.page_zero = false, Protection::PageZero),
-            (|x| x.signature = false, Protection::Signature),
-            (|x| x.executable = false, Protection::Executable),
-        ];
-        for (retirer, protection) in retraits {
-            let mut tranche = complet;
-            retirer(&mut tranche);
-            // Sur l'une ou l'autre tranche : vérifier la seule première laisserait passer la seconde.
-            assert_eq!(
-                manques(&d, &mac(tranche, complet)),
-                [protection],
-                "arm64 {protection:?}"
-            );
-            let attendu: &[Protection] = if protection == Protection::Signature {
-                // La signature n'est exigée que sur arm64.
-                &[]
-            } else {
-                &[protection]
-            };
-            assert_eq!(manques(&d, &mac(complet, tranche)), attendu, "x86_64 {protection:?}");
-        }
-        // Une seule architecture, dans un universel ou seule.
-        let arm = macho64_durci(macho::CPU_ARM64, complet);
-        assert_eq!(
-            manques(&d, &universel_de(&[(macho::CPU_ARM64, arm.clone())])),
-            [Protection::Universel]
-        );
-        assert_eq!(manques(&d, &arm), [Protection::Universel]);
-        // Une tranche annoncée x86_64 qui est arm64, ou qui n'est pas un Mach-O.
-        let faux = universel_de(&[(macho::CPU_ARM64, arm.clone()), (macho::CPU_X86_64, arm.clone())]);
-        assert_eq!(manques(&d, &faux), [Protection::Tranche]);
-        let illisible = universel_de(&[(macho::CPU_ARM64, arm), (macho::CPU_X86_64, vec![0u8; 0x400])]);
-        assert_eq!(manques(&d, &illisible), [Protection::Tranche]);
-        // Dans une tranche de macho64_durci : en-tête (32 octets), __PAGEZERO (72), __TEXT (72), LC_CODE_SIGNATURE.
-        let (page_zero, signature) = (32, 32 + 72 + 72);
-        let avec = |retouche: &dyn Fn(&mut Vec<u8>)| {
-            let mut arm = macho64_durci(macho::CPU_ARM64, complet);
-            retouche(&mut arm);
-            universel_de(&[
-                (macho::CPU_ARM64, arm),
-                (macho::CPU_X86_64, macho64_durci(macho::CPU_X86_64, complet)),
-            ])
-        };
-        // Une signature annoncée hors de la tranche, ou vide : macOS ne trouve rien à vérifier.
-        let hors = avec(&|v| v[signature + 8..signature + 12].copy_from_slice(&0x1_0000u32.to_le_bytes()));
-        let j = jugement(&d, &hors);
-        assert_eq!(
-            j.manques.iter().map(|m| m.protection).collect::<Vec<_>>(),
-            [Protection::Signature]
-        );
-        assert!(j.manques[0].texte.contains("hors de la tranche"), "{:?}", j.manques);
-        let vide = avec(&|v| v[signature + 12..signature + 16].fill(0));
-        assert_eq!(manques(&d, &vide), [Protection::Signature]);
-        // Une seconde LC_CODE_SIGNATURE après la bonne, hors de la tranche ou non : codesign n'en écrit qu'une, et on
-        // ne sait pas laquelle macOS lirait.
-        for position in [0x1_0000u32, 0x380] {
-            let double = avec(&|v| {
-                let suite = signature + 16;
-                for (k, x) in [0x1du32, 16, position, 0x80].into_iter().enumerate() {
-                    v[suite + 4 * k..suite + 4 * k + 4].copy_from_slice(&x.to_le_bytes());
-                }
-                v[16..20].copy_from_slice(&4u32.to_le_bytes());
-                v[20..24].copy_from_slice(&(72u32 + 72 + 16 + 16).to_le_bytes());
-            });
-            assert_eq!(
-                manques(&d, &double),
-                [Protection::Signature],
-                "seconde à 0x{position:X}"
-            );
-        }
-        // __PAGEZERO d'une seule page : en 64 bits, il doit couvrir les 4 premiers Gio (un pointeur tronqué à 32 bits
-        // tombe dedans).
-        let petite = avec(&|v| v[page_zero + 32..page_zero + 40].copy_from_slice(&0x1000u64.to_le_bytes()));
-        let j = jugement(&d, &petite);
-        assert_eq!(
-            j.manques.iter().map(|m| m.protection).collect::<Vec<_>>(),
-            [Protection::PageZero]
-        );
-        assert!(j.manques[0].texte.contains("0x1000"), "{:?}", j.manques);
-        // L'ancien Mach-O d'essai (sans PIE ? si : MH_PIE posé ; sans __PAGEZERO ni signature) seul : pas universel.
-        assert_eq!(manques(&d, &macho64(5, false)), [Protection::Universel]);
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
     /// Un programme d'une architecture qu'on ne livre pas, ou d'un autre système que celui attendu : refusé, même
     /// avec toutes ses protections.
     #[test]
@@ -1128,16 +819,10 @@ mod tests {
                 .map(|m| m.protection)
                 .collect()
         };
-        let complet = MacDurci::COMPLET;
         let linux = ecrire("vanguard", &elf64_durci(Durci::COMPLET));
         let windows = ecrire("vanguard.exe", &pe_durci());
-        let macos = ecrire("vanguard-macos", &mac(complet, complet));
-        let systemes = [Systeme::Linux, Systeme::Windows, Systeme::Macos];
-        for (f, s) in [
-            (&linux, Systeme::Linux),
-            (&windows, Systeme::Windows),
-            (&macos, Systeme::Macos),
-        ] {
+        let systemes = [Systeme::Linux, Systeme::Windows];
+        for (f, s) in [(&linux, Systeme::Linux), (&windows, Systeme::Windows)] {
             assert_eq!(protections(f, None), [], "{s:?}");
             assert_eq!(protections(f, Some(s)), [], "{s:?}");
             assert!(verifier(std::slice::from_ref(f), Some(s)));
@@ -1213,18 +898,6 @@ mod tests {
             assert_eq!(protections(&f, None), [Protection::Architecture], "0x{machine:04X}");
             assert_eq!(protections(&f, Some(Systeme::Windows)), [Protection::Architecture]);
         }
-        // Une troisième tranche Mac d'une autre architecture (i386), durcie : refusée.
-        let trois = universel_de(&[
-            (macho::CPU_ARM64, macho64_durci(macho::CPU_ARM64, complet)),
-            (macho::CPU_X86_64, macho64_durci(macho::CPU_X86_64, complet)),
-            (7, macho64_durci(7, complet)),
-        ]);
-        let f = ecrire("trois", &trois);
-        assert_eq!(protections(&f, None), [Protection::Architecture]);
-        assert_eq!(
-            juger(&f, None).unwrap().manques[0].texte,
-            "tranche cpu 0x7 : architecture non livrée (arm64 et x86_64 seulement)"
-        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -1254,17 +927,6 @@ mod tests {
             crate::langue::en_anglais(|| jugement(&d, &v)).manques[0].texte,
             "BIND_NOW missing, partial RELRO (DT_FLAGS 0x0, DT_FLAGS_1 0x8000000, no DT_BIND_NOW)"
         );
-        let mut tranche = MacDurci::COMPLET;
-        tranche.pie = false;
-        let v = mac(MacDurci::COMPLET, tranche);
-        assert_eq!(
-            jugement(&d, &v).manques[0].texte,
-            "x86_64 : PIE absent (flags 0x00000085)"
-        );
-        assert_eq!(
-            crate::langue::en_anglais(|| jugement(&d, &v)).manques[0].texte,
-            "x86_64: PIE missing (flags 0x00000085)"
-        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -1287,10 +949,10 @@ mod tests {
         let f = d.join("texte");
         std::fs::write(&f, b"#!/bin/sh\necho bonjour\n").unwrap();
         assert_eq!(juger(&f, None).unwrap_err(), Illisible::Inconnu);
-        assert_eq!(
-            Illisible::Inconnu.to_string(),
-            "format inconnu : ni ELF, ni PE, ni Mach-O"
-        );
+        assert_eq!(Illisible::Inconnu.to_string(), "format inconnu : ni ELF, ni PE");
+        // Un programme Mac (Mach-O universel) : Vanguard n'en livre plus, refusé comme inconnu.
+        std::fs::write(&f, [0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 2]).unwrap();
+        assert_eq!(juger(&f, None).unwrap_err(), Illisible::Inconnu);
         std::fs::write(&f, b"MZ pas un programme").unwrap();
         assert_eq!(juger(&f, None).unwrap_err(), Illisible::Pe);
         std::fs::write(&f, b"\x7fELF").unwrap();

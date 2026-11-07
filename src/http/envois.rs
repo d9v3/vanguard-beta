@@ -255,10 +255,6 @@ const MONTRES: &[(&str, &str)] = &[
         "bugzilla.mozilla.org",
         "Signaler : page ouverte dans le navigateur après accord",
     ),
-    (
-        "captive.apple.com",
-        "portail du Wi-Fi public, ouvert dans le navigateur après accord",
-    ),
     ("cert.cyber.gouv.fr", "Signaler : source citée"),
     ("chromium.googlesource.com", "Signaler : source citée"),
     (
@@ -301,7 +297,6 @@ const MONTRES: &[(&str, &str)] = &[
     ("trivy.dev", "site d'un outil, montré"),
     ("wiki.mozilla.org", "Signaler : source citée"),
     ("www.amd.com", "page des pilotes, montrée"),
-    ("www.apple.com", "DTD d'un fichier plist, jamais téléchargée"),
     (
         "www.cyber.gc.ca",
         "Signaler : page ouverte dans le navigateur après accord",
@@ -327,13 +322,10 @@ const MONTRES: &[(&str, &str)] = &[
 
 /// Les hôtes d'une adresse du code joints par un programme externe que Vanguard lance sur un geste de la personne :
 /// la page les nomme, sans que `http.rs` les ferme.
-const EXTERNES: &[(&str, &str)] = &[
-    ("brew.sh", "Homebrew, montré et installé après accord"),
-    (
-        "dl.flathub.org",
-        "flatpak, dépôt Flathub ajouté avant une installation acceptée",
-    ),
-];
+const EXTERNES: &[(&str, &str)] = &[(
+    "dl.flathub.org",
+    "flatpak, dépôt Flathub ajouté avant une installation acceptée",
+)];
 
 /// Les sources de src/ hors tests, par chemin relatif : (chemin, code sans le module de tests ni les commentaires).
 fn sources() -> Vec<(String, String)> {

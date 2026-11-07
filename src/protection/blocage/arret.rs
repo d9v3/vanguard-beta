@@ -5,11 +5,9 @@
 //!   (`/proc/<pid>/exe`), puis un signal 0 par le pidfd vérifie que le même processus vit encore (tant qu'il vit, même
 //!   zombie, son numéro ne peut pas être repris), et SIGKILL part par le même pidfd. Sa fin se lit sur le pidfd
 //!   (lisible à la mort). Noyau plus ancien : kill(2) juste après la relecture, la fenêtre de course reste, très courte.
-//! - macOS : pas de pidfd. L'heure de démarrage du processus (proc_pidinfo, PROC_PIDTBSDINFO) est lue avant et après
-//!   la relecture du programme (proc_pidpath) : un numéro repris entre-temps aurait une autre heure.
 //! - Windows : la poignée qui lit le chemin est celle qui arrête (`processus::terminer_si`).
 
-// FFI de libc : pidfd_open (syscall), poll, kill, proc_pidinfo et proc_pidpath.
+// FFI de libc : pidfd_open (syscall), poll et kill.
 #![allow(unsafe_code)]
 
 use std::collections::HashSet;
@@ -100,10 +98,6 @@ fn arreter_sans_question(pid: u32, attendu: &str) -> Result<(), Echec> {
     #[cfg(target_os = "linux")]
     {
         linux::arreter(pid, attendu)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        macos::arreter(pid, attendu)
     }
     #[cfg(windows)]
     {
@@ -344,60 +338,6 @@ mod linux {
         } else {
             Err(refus(
                 std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO),
-            ))
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) mod macos {
-    use super::{meme_programme, reaffecte};
-    use crate::modele::Echec;
-
-    /// Les informations BSD d'un processus (proc_pidinfo, PROC_PIDTBSDINFO).
-    pub(crate) fn infos(pid: u32) -> Option<libc::proc_bsdinfo> {
-        let pid = libc::c_int::try_from(pid).ok()?;
-        // SAFETY: proc_bsdinfo n'a que des entiers et des tableaux d'octets : zéro est une valeur valide.
-        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-        let taille = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
-        // SAFETY: `info` est à nous, de la taille annoncée, vivant pendant l'appel.
-        let lu = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), taille) };
-        (lu == taille).then_some(info)
-    }
-
-    fn programme(pid: u32) -> Option<String> {
-        let pid = libc::c_int::try_from(pid).ok()?;
-        let mut tampon = vec![0u8; 4096];
-        let taille = u32::try_from(tampon.len()).ok()?;
-        // SAFETY: le tampon est à nous, de la taille annoncée ; proc_pidpath y écrit au plus `taille` octets.
-        let n = unsafe { libc::proc_pidpath(pid, tampon.as_mut_ptr().cast(), taille) };
-        let n = usize::try_from(n).ok().filter(|n| *n > 0)?;
-        tampon.truncate(n);
-        String::from_utf8(tampon).ok()
-    }
-
-    pub(super) fn arreter(pid: u32, attendu: &str) -> Result<(), Echec> {
-        let depart = |i: &libc::proc_bsdinfo| (i.pbi_start_tvsec, i.pbi_start_tvusec);
-        let avant = infos(pid).ok_or_else(|| reaffecte(pid))?;
-        if !programme(pid).is_some_and(|p| meme_programme(&p, attendu)) {
-            return Err(reaffecte(pid));
-        }
-        let apres = infos(pid).ok_or_else(|| reaffecte(pid))?;
-        if depart(&avant) != depart(&apres) {
-            return Err(reaffecte(pid));
-        }
-        let pid = libc::pid_t::try_from(pid).map_err(|_| reaffecte(0))?;
-        // SAFETY: kill ne lit aucune mémoire.
-        if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
-            Ok(())
-        } else {
-            Err(Echec::echoue(
-                super::OU,
-                crate::trf!(
-                    "le signal d'arrêt est refusé : {}",
-                    "the stop signal is refused: {}",
-                    std::io::Error::last_os_error()
-                ),
             ))
         }
     }

@@ -162,7 +162,7 @@ fn deplacer_donnees(vieux: &Path, nouveau: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Retire la minuterie, l'agent ou la tâche planifiée d'avant, de ce nom ; dit s'il était actif (il est alors recréé
+/// Retire la minuterie ou la tâche planifiée d'avant, de ce nom ; dit s'il était actif (il est alors recréé
 /// sous le nouveau nom, avec le programme d'aujourd'hui).
 fn retirer_minuterie(nom: &str) -> bool {
     #[cfg(target_os = "linux")]
@@ -173,19 +173,6 @@ fn retirer_minuterie(nom: &str) -> bool {
         }
         let actif = crate::reseau::surveillance::minuterie_activee(&format!("{nom}.timer"));
         let _ = retirer_unites(nom, &dossier);
-        actif
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let agent = format!("com.{}", nom.replacen('-', ".", 1));
-        let plist = crate::socle::maison().join(format!("Library/LaunchAgents/{agent}.plist"));
-        if !plist.exists() {
-            return false;
-        }
-        let domaine = crate::reseau::surveillance::domaine_launchd();
-        let actif = crate::reseau::surveillance::reussit("launchctl", &["print", &format!("{domaine}/{agent}")]);
-        let _ = crate::reseau::surveillance::reussit("launchctl", &["bootout", &domaine, &plist.display().to_string()]);
-        let _ = std::fs::remove_file(&plist);
         actif
     }
     #[cfg(windows)]
@@ -290,9 +277,9 @@ fn retirer_raccourci() -> Option<PathBuf> {
     (!nouveau.exists()).then_some(nouveau)
 }
 
-/// Ce raccourci a-t-il été posé par la version d'avant ? Un .desktop ou un .command porte sa marque ; un .lnk, qui ne
-/// se lit pas comme du texte, doit viser son programme (le nom s'y trouve en octets simples ou en UTF-16) : l'ancien
-/// nom est un mot courant, et un raccourci de ce nom vers un autre programme n'est pas à elle.
+/// Ce raccourci a-t-il été posé par la version d'avant ? Un .desktop porte sa marque ; un .lnk, qui ne se lit pas comme
+/// du texte, doit viser son programme (le nom s'y trouve en octets simples ou en UTF-16) : l'ancien nom est un mot
+/// courant, et un raccourci de ce nom vers un autre programme n'est pas à elle.
 fn raccourci_d_avant(vieux: &Path) -> bool {
     let Ok(octets) = std::fs::read(vieux) else {
         return false;
@@ -345,8 +332,6 @@ pub(crate) enum Reste {
         nom: String,
         dossier: PathBuf,
     },
-    /// Le plist d'un agent launchd d'avant.
-    Agent(PathBuf),
     /// Une tâche du Planificateur d'avant, par son nom.
     Tache(String),
     Raccourci(PathBuf),
@@ -375,10 +360,6 @@ impl Reste {
                 1 => tr!("minuterie d'entretien", "check-up timer"),
                 _ => tr!("minuterie de sauvegarde", "backup timer"),
             },
-            Reste::Agent(p) => match genre(&p.file_stem().unwrap_or_default().to_string_lossy()) {
-                0 => tr!("agent de surveillance", "monitoring agent"),
-                _ => tr!("agent d'entretien", "check-up agent"),
-            },
             Reste::Tache(nom) if nom.ends_with("du mois") => tr!("tâche d'entretien", "check-up task"),
             Reste::Tache(_) => tr!("tâche de surveillance", "monitoring task"),
             Reste::Raccourci(_) => tr!("raccourci", "shortcut"),
@@ -397,9 +378,7 @@ impl Reste {
                 .map(|e| dossier.join(format!("{nom}.{e}")))
                 .filter(|p| std::fs::symlink_metadata(p).is_ok())
                 .collect(),
-            Reste::Agent(p) | Reste::Raccourci(p) | Reste::Icone(p) | Reste::Programme(p) | Reste::Donnees(p) => {
-                vec![p.clone()]
-            }
+            Reste::Raccourci(p) | Reste::Icone(p) | Reste::Programme(p) | Reste::Donnees(p) => vec![p.clone()],
             Reste::Tache(_) => Vec::new(),
         }
     }
@@ -433,14 +412,6 @@ pub(crate) fn restes(l: &crate::desinstaller::Lieux) -> Vec<(Reste, PathBuf)> {
                     },
                     montre,
                 ));
-            }
-        }
-    }
-    if let Some(agents) = &l.agents {
-        for quoi in ["surveillance", "entretien"] {
-            let plist = agents.join(format!("com.{}.{quoi}.plist", ancien("vanguard")));
-            if plist.is_file() {
-                restes.push((Reste::Agent(plist.clone()), plist));
             }
         }
     }
@@ -486,17 +457,6 @@ pub(crate) fn dossier_d_un_autre(l: &crate::desinstaller::Lieux) -> Option<PathB
 pub(crate) fn retirer_reste(r: &Reste) -> Result<(), String> {
     match r {
         Reste::Minuterie { nom, dossier } => retirer_unites(nom, dossier),
-        Reste::Agent(plist) => {
-            #[cfg(target_os = "macos")]
-            {
-                let domaine = crate::reseau::surveillance::domaine_launchd();
-                let _ = crate::reseau::surveillance::reussit(
-                    "launchctl",
-                    &["bootout", &domaine, &plist.display().to_string()],
-                );
-            }
-            std::fs::remove_file(plist).map_err(|e| e.to_string())
-        }
         Reste::Tache(nom) => retirer_tache(nom),
         Reste::Raccourci(p) | Reste::Icone(p) | Reste::Programme(p) => {
             std::fs::remove_file(p).map_err(|e| e.to_string())
@@ -627,8 +587,6 @@ mod tests {
         ecrire(&unites.join("gardien-entretien.service"), b"[Service]\n");
         ecrire(&unites.join("gardien-autre.timer"), b"[Timer]\n");
         ecrire(&l.unites[1].join("gardien-sauvegarde.timer"), b"[Timer]\n");
-        let agents = l.agents.clone().unwrap();
-        ecrire(&agents.join("com.gardien.surveillance.plist"), b"<plist/>");
         let raccourci = l.raccourci.clone().unwrap();
         let vieux = raccourci.with_file_name("Gardien.desktop");
         ecrire(
@@ -662,7 +620,6 @@ mod tests {
                     nom: "gardien-sauvegarde".into(),
                     dossier: l.unites[1].clone()
                 },
-                Reste::Agent(agents.join("com.gardien.surveillance.plist")),
                 Reste::Raccourci(vieux.clone()),
                 Reste::Icone(icone.clone()),
                 Reste::Programme(bin),

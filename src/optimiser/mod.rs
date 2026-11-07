@@ -10,8 +10,6 @@ pub(crate) mod defender;
 mod demarrage;
 #[cfg(target_os = "linux")]
 pub(crate) mod linux;
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(windows)]
 mod windows;
 
@@ -27,8 +25,6 @@ pub(crate) use linux::OLLAMA_VANGUARD;
 
 #[cfg(target_os = "linux")]
 use linux as systeme;
-#[cfg(target_os = "macos")]
-use macos as systeme;
 #[cfg(all(windows, test))]
 pub(crate) use systeme::{geste_de_protection, reglage_protege};
 #[cfg(windows)]
@@ -47,8 +43,6 @@ pub type Valeur = Option<String>;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Categorie {
     Confidentialite,
-    // Rien dans cette catégorie pour macOS, pour l'instant.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     Performance,
     Confort,
     /// Protections de Defender qui bloquent les attaques (Windows seulement).
@@ -338,7 +332,7 @@ fn note_admise<'a>(r: &Reglage, h: &'a Historique) -> Option<&'a Avant> {
 }
 
 /// Une liste d'adresses IP séparées par des virgules (vide : aucune), telle qu'un réglage de DNS la note.
-#[cfg_attr(not(any(target_os = "linux", windows, target_os = "macos")), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
 pub(crate) fn adresses_ip(liste: &str) -> bool {
     liste
         .split(',')
@@ -1138,8 +1132,6 @@ mod tests {
         let note = "0b8c2f4e-1a2b-4c3d-9e8f-001122334455\n|no||no";
         #[cfg(windows)]
         let note = "{0B8C2F4E-1A2B-4C3D-9E8F-001122334455}\n|";
-        #[cfg(target_os = "macos")]
-        let note = "Wi-Fi\n";
         h.reglages.insert(
             DNS.into(),
             Avant {

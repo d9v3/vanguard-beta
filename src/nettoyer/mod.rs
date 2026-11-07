@@ -3,20 +3,16 @@
 //! est coché d'office, la corbeille jamais. On voit les commandes, on accepte, puis la place libre relue dit ce qui a
 //! vraiment été gagné. Aucun document, aucune photo, aucun réglage n'est touché.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(windows)]
 mod windows;
 
 #[cfg(target_os = "linux")]
 use linux as systeme;
-#[cfg(target_os = "macos")]
-use macos as systeme;
 #[cfg(windows)]
 use windows as systeme;
 
@@ -205,27 +201,6 @@ fn effacer_caches(dossier: &str, caches: &[(String, u64)]) -> String {
 #[cfg(target_os = "linux")]
 pub fn lectures_datees(chemin: &Path) -> bool {
     statvfs(chemin).is_some_and(|s| s.f_flag & libc::ST_NOATIME == 0)
-}
-
-/// Sous macOS, statvfs ne dit rien de `noatime` : statfs, si.
-#[cfg(target_os = "macos")]
-// FFI de libc : statfs (option noatime sous macOS).
-#[allow(unsafe_code)]
-pub fn lectures_datees(chemin: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    let Ok(c) = std::ffi::CString::new(chemin.as_os_str().as_bytes()) else {
-        return false;
-    };
-    let mut s = std::mem::MaybeUninit::<libc::statfs>::uninit();
-    // SAFETY: `c` est une chaîne C valide pendant tout l'appel ; statfs remplit `s` en entier quand elle réussit
-    // (retour 0), et `s` n'est lue qu'après.
-    let s = unsafe {
-        if libc::statfs(c.as_ptr(), s.as_mut_ptr()) != 0 {
-            return false;
-        }
-        s.assume_init()
-    };
-    u32::try_from(libc::MNT_NOATIME).is_ok_and(|noatime| s.f_flags & noatime == 0)
 }
 
 /// « Caches d'applications inutilisées » dans `cache` (écrit `affiche` dans la commande montrée), sans les dossiers

@@ -248,9 +248,7 @@ fn lire_wps(corps: &[u8], w: &mut Wps) {
     }
 }
 
-/// Lit les éléments d'une balise ; `capacites` est le champ des capacités de la trame (bit « Privacy »). macOS ne
-/// donne pas ses balises (CoreWLAN) : rien ne l'appelle là-bas.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+/// Lit les éléments d'une balise ; `capacites` est le champ des capacités de la trame (bit « Privacy »).
 pub(crate) fn lire(ies: &[u8], capacites: u16) -> Elements {
     let mut e = Elements {
         protection: Protection {
@@ -296,7 +294,6 @@ pub(crate) fn lire(ies: &[u8], capacites: u16) -> Elements {
 }
 
 /// Une adresse MAC en texte, « aa:bb:cc:dd:ee:ff » ; vide si ce n'en est pas une.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) fn mac_texte(octets: &[u8]) -> String {
     if octets.len() != 6 {
         return String::new();

@@ -3,7 +3,7 @@
 //! Chaque réparation est montrée (pourquoi, durée, commandes) puis confirmée avant d'être lancée ; celles qui
 //! modifient le système proposent d'abord un point de restauration.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::net::IpAddr;
@@ -55,7 +55,6 @@ fn disque_plein() -> Reparation {
 }
 
 impl Reparation {
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn avec_restauration(mut self) -> Self {
         self.restauration = true;
         self
@@ -222,7 +221,7 @@ fn navigation_detournee(pourquoi: String, commandes: Vec<String>) -> Reparation 
     }
 }
 
-/// « Navigation détournée » sous Linux et macOS : un point de restauration si le fichier hosts change, « rien à
+/// « Navigation détournée » sous Linux : un point de restauration si le fichier hosts change, « rien à
 /// faire » sans commande.
 #[cfg(unix)]
 fn finir_navigation(pourquoi: String, commandes: Vec<String>, hosts: bool) -> Reparation {
@@ -853,200 +852,6 @@ pub fn liste() -> Vec<Reparation> {
     l
 }
 
-// ───────────────────────────── macOS ─────────────────────────────
-
-/// Instantané local de Time Machine (APFS) : macOS le garde 24 heures, de quoi revenir en arrière si la
-/// réparation tourne mal (Récupération > Restaurer depuis Time Machine).
-#[cfg(target_os = "macos")]
-#[allow(clippy::unnecessary_wraps)] // même signature que sous Linux, où l'outil peut manquer
-pub(crate) fn point_restauration(_titre: &str) -> Option<(&'static str, String)> {
-    Some(("Time Machine", "tmutil localsnapshot".to_string()))
-}
-
-/// Services réseau actifs de macOS (« Wi-Fi », « Ethernet »…), pour networksetup : lus dans les réglages
-/// (SCPreferences), `networksetup -listallnetworkservices` en secours.
-#[cfg(target_os = "macos")]
-fn services_reseau() -> Vec<String> {
-    if let Some(services) = crate::machine::macos::config_reseau::services() {
-        return services.into_iter().filter(|s| s.actif).map(|s| s.nom).collect();
-    }
-    crate::commande::lancer(
-        std::process::Command::new("networksetup").arg("-listallnetworkservices"),
-        10,
-    )
-    .map(|r| r.sortie)
-    .unwrap_or_default()
-    .lines()
-    .skip(1)
-    .filter(|l| !l.starts_with('*') && !l.trim().is_empty())
-    .map(str::to_string)
-    .collect()
-}
-
-/// Proxy imposé (`scutil --proxy` : « HTTPEnable : 1 ») et redirections du fichier hosts.
-#[cfg(target_os = "macos")]
-fn navigation_macos() -> Reparation {
-    let detournees = redirections(&std::fs::read_to_string("/etc/hosts").unwrap_or_default());
-    // Demandé à configd ; scutil en secours.
-    let proxy = crate::machine::macos::config_reseau::proxy_comme_scutil()
-        .or_else(|| crate::commande::lancer(std::process::Command::new("scutil").arg("--proxy"), 5).map(|r| r.sortie))
-        .unwrap_or_default();
-    let actifs: Vec<&str> = ["HTTPEnable", "HTTPSEnable", "SOCKSEnable", "ProxyAutoConfigEnable"]
-        .into_iter()
-        .filter(|cle| {
-            proxy
-                .lines()
-                .any(|l| l.trim().starts_with(cle) && l.trim().ends_with(": 1"))
-        })
-        .collect();
-    let mut constats = Vec::new();
-    let mut commandes = Vec::new();
-    if !detournees.is_empty() {
-        constats.push(constat_hosts(&detournees));
-        commandes.push("sudo cp -p /etc/hosts /etc/hosts.vanguard-$(date +%Y%m%d-%H%M%S)".to_string());
-        // sed de macOS : -i demande un suffixe (vide) ; puis vider le cache DNS pour que ça compte tout de suite.
-        commandes.push(format!(
-            "sudo sed -i '' -E 's/^([[:space:]]*({})[[:space:]])/# Vanguard : \\1/' /etc/hosts",
-            motif_adresses(&detournees)
-        ));
-        commandes.push("sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder".to_string());
-    }
-    if !actifs.is_empty() {
-        constats.push(trf!("proxy actif ({})", "proxy on ({})", actifs.join(", ")));
-        for service in services_reseau() {
-            let s = entre_apostrophes(&service);
-            commandes.push(format!(
-                "sudo networksetup -setwebproxystate {s} off; sudo networksetup -setsecurewebproxystate {s} off; \
-                 sudo networksetup -setsocksfirewallproxystate {s} off; sudo networksetup -setautoproxystate {s} off"
-            ));
-        }
-    }
-    finir_navigation(
-        trf!(
-            "Met en commentaire les lignes du fichier hosts qui envoient un site vers une adresse d'Internet (une copie est gardée) et coupe les proxys réglés dans le réseau. Les listes de blocage (0.0.0.0) et les appareils du réseau local ne sont pas touchés. Trouvé : {}.",
-            "Comments out the hosts file lines that send a site to an Internet address (a copy is kept) and turns off the proxies set in the network settings. Block lists (0.0.0.0) and local network devices are left alone. Found: {}.",
-            constats.join(" ; ")
-        ),
-        commandes,
-        !detournees.is_empty(),
-    )
-}
-
-#[cfg(target_os = "macos")]
-pub fn liste() -> Vec<Reparation> {
-    const PARE_FEU: &str = "/usr/libexec/ApplicationFirewall/socketfilterfw";
-    let mut l = Vec::new();
-
-    // Réseau : cache DNS, nouvelle adresse (DHCP) et Wi-Fi coupé puis rallumé, sur chaque interface active.
-    let mut r = rep(
-        tr!("Internet ne marche plus", "Internet no longer works"),
-        tr!(
-            "Vide le cache DNS, redemande une adresse au routeur et relance le Wi-Fi (sites introuvables, Wi-Fi bloqué).",
-            "Clears the DNS cache, asks the router for a new address and restarts Wi-Fi (sites not found, Wi-Fi stuck)."
-        ),
-        tr!("quelques secondes", "a few seconds"),
-        &[
-            "sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder",
-            // Seulement les interfaces déjà en DHCP (getpacket) : une adresse réglée à la main ne doit pas y passer.
-            // « ; true » : la boucle prend le code de la dernière interface, souvent sans DHCP, et arrêterait la suite.
-            "for i in $(ifconfig -lu); do ipconfig getpacket $i >/dev/null 2>&1 && sudo ipconfig set $i DHCP; done; true",
-            "W=$(networksetup -listallhardwareports | awk '/Wi-Fi/{getline; print $2}'); \
-             [ -n \"$W\" ] && networksetup -setairportpower $W off && sleep 3 && networksetup -setairportpower $W on; true",
-        ],
-    );
-    sauf_en_ssh(&mut r);
-    l.push(r);
-    l.push(navigation_macos());
-
-    let actif = crate::commande::lancer(std::process::Command::new(PARE_FEU).arg("--getglobalstate"), 5)
-        .is_some_and(|r| r.sortie.contains("enabled"));
-    let mut feu = rep(
-        tr!("Pare-feu coupé", "Firewall off"),
-        tr!(
-            "Active le pare-feu de macOS et son mode furtif (le Mac ne répond plus aux sondes du réseau).",
-            "Turns on the macOS firewall and its stealth mode (the Mac no longer answers network probes)."
-        ),
-        tr!("quelques secondes", "a few seconds"),
-        &[
-            &format!("sudo {PARE_FEU} --setglobalstate on"),
-            &format!("sudo {PARE_FEU} --setstealthmode on"),
-        ],
-    );
-    if actif {
-        feu.inutile = Some(tr!("le pare-feu est déjà actif", "the firewall is already on").into());
-    }
-    l.push(feu);
-
-    // Antivirus : signatures ClamAV de Homebrew.
-    let freshclam = machine::macos::homebrew()
-        .map(|b| std::path::Path::new(b).with_file_name("freshclam"))
-        .filter(|f| f.is_file());
-    let mut av = rep(
-        tr!("Antivirus pas à jour", "Antivirus out of date"),
-        tr!(
-            "Télécharge les dernières signatures de virus de ClamAV.",
-            "Downloads the latest ClamAV virus signatures."
-        ),
-        tr!("une minute", "one minute"),
-        &[],
-    );
-    match freshclam {
-        Some(f) => {
-            av.commandes = vec![crate::protection::antivirus::commande_freshclam(
-                &f.display().to_string(),
-            )];
-        }
-        None => {
-            av.inutile = Some(String::from(tr!(
-                "ClamAV n'est pas installé : l'analyse antivirus propose de l'installer",
-                "ClamAV is not installed: the antivirus scan offers to install it"
-            )));
-        }
-    }
-    l.push(av);
-
-    if let Some(brew) = machine::macos::homebrew() {
-        l.push(rep(
-            tr!("Homebrew en erreur", "Homebrew failing"),
-            tr!(
-                "Remet Homebrew dans un état propre (dépôts réalignés), puis montre ce qu'il reste à corriger.",
-                "Puts Homebrew back in a clean state (repositories realigned), then shows what is left to fix."
-            ),
-            tr!("quelques minutes", "a few minutes"),
-            &[
-                &format!("{brew} update-reset"),
-                &format!("{brew} update"),
-                &format!("{brew} doctor; true"),
-            ],
-        ));
-    }
-
-    l.push(rep(
-        tr!("Disque : santé et erreurs", "Disk: health and errors"),
-        tr!(
-            "Lit l'état SMART du disque interne et vérifie le volume du système (sans le démonter). Pour réparer, Utilitaire de disque > S.O.S. en mode de secours.",
-            "Reads the SMART state of the internal disk and checks the system volume (without unmounting it). To repair, Disk Utility > First Aid in Recovery."
-        ),
-        tr!("quelques minutes", "a few minutes"),
-        &[
-            "diskutil info disk0 | grep -i smart",
-            "diskutil verifyVolume /",
-        ],
-    ));
-    l.push(disque_plein());
-
-    l.push(rep(
-        tr!("Heure fausse", "Wrong time"),
-        tr!(
-            "Réactive la mise à l'heure automatique et resynchronise tout de suite (une heure fausse casse le HTTPS et les mises à jour).",
-            "Turns automatic time back on and syncs right away (a wrong time breaks HTTPS and updates)."
-        ),
-        tr!("quelques secondes", "a few seconds"),
-        &["sudo systemsetup -setusingnetworktime on", "sudo sntp -sS time.apple.com"],
-    ));
-    l
-}
-
 /// Ce que la réparation Windows doit savoir avant d'ouvrir le menu, lu dans le registre : proxy de l'utilisateur,
 /// proxy WinHTTP (services, mises à jour), profils du pare-feu.
 #[cfg(windows)]
@@ -1414,10 +1219,6 @@ pub(crate) fn navigation_ici() -> Reparation {
     #[cfg(target_os = "linux")]
     {
         navigation()
-    }
-    #[cfg(target_os = "macos")]
-    {
-        navigation_macos()
     }
     #[cfg(windows)]
     {

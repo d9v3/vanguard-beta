@@ -33,7 +33,7 @@
 //!
 //! Ce que l'agent dit de lui-même (`sortie`, `vanguard agent --json`) se lit de ses fichiers, sans rien écrire.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 mod budget;

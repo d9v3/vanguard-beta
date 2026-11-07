@@ -1,9 +1,8 @@
 //! Un lecteur SQLite écrit pour Vanguard, sans bibliothèque ni programme sqlite3 : un fichier lu en mémoire, page par
 //! page. Il compte les lignes d'une table (identifiants des navigateurs, sans en décoder une seule) et lit quelques
-//! colonnes d'une table (la base des autorisations de macOS, TCC.db ; sous Linux, les dernières connexions de
-//! lastlog2 et les sessions de wtmpdb). Lecture seule, bornée : une base abîmée ou
-//! fabriquée (page qui renvoie à elle-même, débordement sans fin, arbre trop profond) est refusée, jamais suivie.
-//! Le journal WAL n'est pas lu : l'appelant dit que les changements récents peuvent manquer.
+//! colonnes d'une table (sous Linux, les dernières connexions de lastlog2 et les sessions de wtmpdb). Lecture seule,
+//! bornée : une base abîmée ou fabriquée (page qui renvoie à elle-même, débordement sans fin, arbre trop profond) est
+//! refusée, jamais suivie. Le journal WAL n'est pas lu : l'appelant dit que les changements récents peuvent manquer.
 
 // Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
@@ -227,16 +226,12 @@ pub(crate) fn compter_lignes(octets: &[u8], table: &str) -> Option<usize> {
 
 // ───────────────────────────── Lire des colonnes ─────────────────────────────
 
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
+#[cfg(target_os = "linux")]
 pub(crate) use colonnes::Valeur;
-/// La lecture des colonnes ne sert qu'à macOS (TCC.db) ; ailleurs, seulement aux essais et au banc de fuzzing
-/// (fuzz/, où cargo-fuzz pose `--cfg fuzzing`).
-#[cfg(any(target_os = "macos", test, fuzzing))]
-pub(crate) use colonnes::compteur;
-#[cfg(any(target_os = "macos", target_os = "linux", test, fuzzing))]
+#[cfg(any(target_os = "linux", test, fuzzing))]
 pub(crate) use colonnes::lignes;
 
-#[cfg(any(target_os = "macos", target_os = "linux", test, fuzzing))]
+#[cfg(any(target_os = "linux", test, fuzzing))]
 mod colonnes {
     use super::{Sqlite, taille_colonne, u32be, varint};
     use std::collections::HashSet;
@@ -264,42 +259,16 @@ mod colonnes {
                 _ => None,
             }
         }
-
-        /// L'entier que lirait un programme qui demande un entier à SQLite (sqlite3_column_int) : un entier tel quel,
-        /// et un texte par son début numérique (blancs, signe, chiffres ; aucun chiffre : 0). Une colonne INTEGER
-        /// accepte un texte qui ne se convertit pas : lu comme entier seulement, « 2 » ou « 2x » rangé en texte
-        /// échappait au contrôle, alors que le programme qui le lit y voit 2. `None` : nul, ou d'un autre type.
-        #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))] // bases TCC du Mac
-        pub(crate) fn entier_lu(&self) -> Option<i64> {
-            match self {
-                Valeur::Entier(n) => Some(*n),
-                Valeur::Texte(t) => {
-                    let t = t.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
-                    let (negatif, chiffres) = match t.as_bytes().first() {
-                        Some(b'-') => (true, &t[1..]),
-                        Some(b'+') => (false, &t[1..]),
-                        _ => (false, t),
-                    };
-                    let mut n: i64 = 0;
-                    for chiffre in chiffres.chars().map_while(|c| c.to_digit(10)) {
-                        n = n.saturating_mul(10).saturating_add(i64::from(chiffre));
-                    }
-                    // `n` est positif ou nul : son opposé existe toujours.
-                    Some(if negatif { n.checked_neg()? } else { n })
-                }
-                _ => None,
-            }
-        }
     }
 
-    /// Pages de débordement suivies pour une seule cellule : une ligne de TCC.db tient dans une page ; au-delà de 64
+    /// Pages de débordement suivies pour une seule cellule : une ligne lue ici tient dans une page ; au-delà de 64
     /// pages (256 Ko avec des pages de 4 Ko), c'est une chaîne fabriquée ou qui boucle.
     const PAGES_DEBORDEMENT: usize = 64;
-    /// Lignes lues au plus dans une table : TCC.db en a quelques centaines.
+    /// Lignes lues au plus dans une table : celles lues ici en ont quelques centaines.
     const LIGNES_MAX: usize = 100_000;
     /// Valeurs créées au plus par un parcours (32 octets chacune, soit environ 32 Mo) : le budget d'octets ne suffit
     /// pas, car un en-tête fait de types 0 (Nul, aucun octet de corps) crée une valeur par octet de charge. Borne
-    /// fixe, sans lien avec la taille du fichier, pour qu'une vraie TCC.db de petite taille ne soit jamais refusée.
+    /// fixe, sans lien avec la taille du fichier, pour qu'une vraie base de petite taille ne soit jamais refusée.
     pub(super) const VALEURS_MAX: usize = 1_000_000;
 
     /// Un entier signé de 1 à 8 octets, poids fort d'abord (complément à deux).
@@ -563,16 +532,6 @@ mod colonnes {
                 .collect(),
         )
     }
-
-    /// Le compteur de changements du fichier (octets 24 à 27 de l'en-tête), qui avance à chaque écriture validée : deux
-    /// lectures qui le voient différent n'ont pas lu la même base.
-    #[cfg_attr(not(any(target_os = "macos", test, fuzzing)), allow(dead_code))]
-    pub(crate) fn compteur(octets: &[u8]) -> Option<u32> {
-        if octets.get(..16)? != b"SQLite format 3\0" {
-            return None;
-        }
-        u32be(octets, 24)
-    }
 }
 
 #[allow(
@@ -668,8 +627,6 @@ mod tests {
         // Base tronquée, ou qui n'en est pas une : refusée, jamais une table vide.
         assert_eq!(lignes(&base[..base.len() / 2], "access", &["client"]), None);
         assert_eq!(lignes(b"pas une base", "access", &["client"]), None);
-        assert_eq!(compteur(base).map(|c| c > 0), Some(true));
-        assert_eq!(compteur(b"pas une base"), None);
     }
 
     #[test]

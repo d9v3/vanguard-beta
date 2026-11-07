@@ -4,7 +4,7 @@
 //! « --temps-reel » surveille ces fichiers en direct ; « --accepter » prend l'état actuel comme référence
 //! (après une mise à jour du système, qui modifie légitimement certains d'entre eux).
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::collections::BTreeMap;
@@ -48,34 +48,6 @@ fn cibles() -> Vec<PathBuf> {
         ".ssh/authorized_keys",
         ".config/autostart",
         ".config/systemd/user",
-    ];
-    // macOS : /etc est un lien vers /private/etc ; les démons et agents de launchd sont le démarrage automatique.
-    #[cfg(target_os = "macos")]
-    let systeme: &[&str] = &[
-        "/etc/hosts",
-        "/etc/sudoers",
-        "/etc/sudoers.d",
-        "/etc/pam.d",
-        "/etc/ssh/sshd_config",
-        "/etc/ssh/sshd_config.d",
-        "/etc/zshrc",
-        "/etc/zprofile",
-        "/etc/profile",
-        "/etc/paths",
-        "/etc/paths.d",
-        "/etc/periodic/daily",
-        "/Library/LaunchDaemons",
-        "/Library/LaunchAgents",
-    ];
-    #[cfg(target_os = "macos")]
-    let utilisateur: &[&str] = &[
-        ".zshrc",
-        ".zprofile",
-        ".zshenv",
-        ".bash_profile",
-        ".profile",
-        ".ssh/authorized_keys",
-        "Library/LaunchAgents",
     ];
     // Profils PowerShell (relancés à chaque ouverture de PowerShell) et scripts des stratégies de groupe : des
     // endroits où un programme malveillant aime se faire relancer.

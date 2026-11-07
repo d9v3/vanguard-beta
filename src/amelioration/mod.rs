@@ -11,7 +11,7 @@
 //! Jamais relevé : sous les essais (`cfg(test)`), sous Wine, dans la CI, avec `VANGUARD_ENVOI=0` (qui l'emporte
 //! toujours), ni depuis une clé VANGUARD (son programme sert sur des ordinateurs qui ne sont pas les siens).
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 pub(crate) mod materiel;

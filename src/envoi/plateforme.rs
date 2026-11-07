@@ -73,12 +73,6 @@ pub(crate) fn edition_windows(id: &str) -> Option<Edition> {
     }
 }
 
-/// macOS : le majeur de `ProductVersion` (« 15.1.1 » → « 15 »).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn macos(version: &str) -> Option<SystemeVersion> {
-    SystemeVersion::new(version.trim().split('.').next().unwrap_or_default())
-}
-
 /// L'architecture de ce programme ; une autre que les deux de la liste ne fait pas de lot.
 fn arch() -> Option<Arch> {
     if cfg!(target_arch = "x86_64") {
@@ -112,12 +106,6 @@ fn systeme() -> Option<(FamilleFine, SystemeVersion, Option<Edition>)> {
     let edition: String = v.get_value("EditionID").unwrap_or_default();
     let (famille, version) = windows(&build)?;
     Some((famille, version, edition_windows(&edition)))
-}
-
-#[cfg(target_os = "macos")]
-fn systeme() -> Option<(FamilleFine, SystemeVersion, Option<Edition>)> {
-    let v = crate::machine::macos::version_systeme("ProductVersion")?;
-    Some((FamilleFine::Macos, macos(&v)?, None))
 }
 
 /// La plateforme de ce processus. `administrateur` : lancé élevé sous Windows ; ailleurs toujours faux, puisqu'en

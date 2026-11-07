@@ -1,4 +1,4 @@
-//! Ce que Linux et macOS partagent pour les traces : tâches cron, fichiers du shell et clés SSH autorisées, la fin
+//! Ce que les traces de Linux lisent à la façon d'Unix : tâches cron, fichiers du shell et clés SSH autorisées, la fin
 //! d'un fichier journal, un journal écrit par sa commande dans une borne, les événements de la chronologie repris
 //! dans les journaux écrits.
 
@@ -254,7 +254,6 @@ pub(super) fn journal_vers(
 
 /// `journal_vers`, `borne` octets au plus (le témoin d'un relevé, plus court que le journal lui-même).
 #[allow(clippy::too_many_arguments)]
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(super) fn journal_vers_borne(
     dossier: &Path,
     nom: &str,
@@ -348,9 +347,9 @@ pub(super) fn journaux_classiques(p: &mut Partie, dossier: &Path, fichiers: &[&s
 }
 
 /// Les événements de la chronologie dans les journaux texte que la collecte vient d'écrire (05-*.txt : journal de
-/// systemd, fin des fichiers de /var/log, journal unifié de macOS), sauf `sauf` : ces fichiers sont relus, pas
-/// l'ordinateur. Aucun journal écrit (place, droits, commande absente) : dit si `signaler_absence`. `sans_droits` :
-/// le journal écrit lu sans droits (celui de systemd, par un compte ordinaire), qui ne montre que le compte.
+/// systemd, fin des fichiers de /var/log), sauf `sauf` : ces fichiers sont relus, pas l'ordinateur. Aucun journal écrit
+/// (place, droits, commande absente) : dit si `signaler_absence`. `sans_droits` : le journal écrit lu sans droits
+/// (celui de systemd, par un compte ordinaire), qui ne montre que le compte.
 pub(super) fn journaux_ecrits(
     dossier: &Path,
     sauf: Option<&str>,
@@ -390,7 +389,7 @@ pub(super) fn journaux_ecrits(
                 apport.evenements.append(&mut lecture.evenements);
                 // Un journal qui ne couvre pas la semaine : ce qui précède manque à la chronologie, et c'est dit avec
                 // sa vraie raison. Seul un journal lu en entier, avec les droits, dit ce que le système a gardé ; les
-                // bornes de Vanguard (50 Mo, la fin d'un fichier, le dernier jour de macOS) ne l'accusent pas.
+                // bornes de Vanguard (50 Mo, la fin d'un fichier) ne l'accusent pas.
                 if let Some(q) = lecture.plus_ancienne.filter(|q| *q > debut.saturating_add(3600)) {
                     let depuis = chronologie::date_locale(q, &chrono::Local);
                     let borne = std::fs::metadata(&chemin).is_ok_and(|m| m.len() >= super::BORNE_JOURNAL);
@@ -452,7 +451,6 @@ impl Lecture {
 }
 
 /// Un journal en texte, déjà en mémoire (la sortie bornée de journalctl).
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(super) fn lire_texte(texte: &str, maintenant: chrono::NaiveDateTime) -> Lecture {
     let mut lecture = Lecture::default();
     for l in texte.lines() {
@@ -539,8 +537,8 @@ mod tests {
     }
 
     /// Un journal qui ne couvre pas la semaine, avec sa vraie raison : coupé ou limité par Vanguard (la fin d'un
-    /// fichier, le dernier jour de macOS), lu sans droits, ou seulement alors pas gardé par le système. Les journaux
-    /// sont inventés, datés d'hier, et écrits par les vraies fonctions de la collecte.
+    /// fichier), lu sans droits, ou seulement alors pas gardé par le système. Les journaux sont inventés, datés d'hier,
+    /// et écrits par les vraies fonctions de la collecte.
     #[test]
     fn raison_d_un_journal_court() {
         let dossier = crate::socle::dossier_local().join("chronologie-raisons");

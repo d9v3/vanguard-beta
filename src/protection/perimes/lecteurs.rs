@@ -77,7 +77,6 @@ pub(crate) fn release(texte: &str) -> Option<Release> {
     })
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code))] // lu par l'inventaire de Windows
 /// La version écrite dans `application.ini` de Firefox : clé `Version` de la section `[App]` (une autre section,
 /// `[Gecko]`, a aussi des versions, qui ne sont pas celle de Firefox).
 pub(crate) fn application_ini(texte: &str) -> Option<String> {

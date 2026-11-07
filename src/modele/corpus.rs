@@ -19,7 +19,7 @@
 //! grossièrement mais sûrement ; le suivre en vrai, sur une racine fabriquée, est l'affaire de S3b.
 //!
 //! Où tournent les cas : Linux ici et dans la CI, Windows sous Wine (verifier.sh complet) et sur le vrai Windows de
-//! la CI (cargo test de ci.yml), macOS sur le Mac de GitHub (macos.yml). En `--ci`, verifier.sh ne lance pas Wine.
+//! la CI (cargo test de ci.yml). En `--ci`, verifier.sh ne lance pas Wine.
 //!
 //! Un dossier de cas : `attendu.toml` (la gravité exacte du cas fabriqué, mots attendus, ce que le cas propre peut
 //! dire au plus, systèmes où il tourne), `fabrique.txt` et `propre.txt` (les données, au format que lit l'adaptateur de la règle).
@@ -122,13 +122,7 @@ pub(crate) type Juge = fn(&Entree) -> Vec<Constat>;
 
 /// Ce système, comme `attendu.toml` le nomme.
 fn ce_systeme() -> &'static str {
-    if cfg!(windows) {
-        "windows"
-    } else if cfg!(target_os = "macos") {
-        "macos"
-    } else {
-        "linux"
-    }
+    if cfg!(windows) { "windows" } else { "linux" }
 }
 
 /// Les cas qui tournent ici, de toutes les tables.
@@ -139,8 +133,6 @@ fn tous_les_cas() -> Vec<(&'static str, Juge)> {
     cas.extend_from_slice(crate::machine::linux::corpus::CAS);
     #[cfg(windows)]
     cas.extend_from_slice(crate::machine::windows::corpus::CAS);
-    #[cfg(target_os = "macos")]
-    cas.extend_from_slice(crate::machine::macos::corpus::CAS);
     cas.extend_from_slice(crate::journaux_windows::regles::corpus::CAS);
     cas.extend_from_slice(crate::audit::corpus::CAS);
     cas.extend_from_slice(CAS_DES_OUTILS);
@@ -304,16 +296,8 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
             ("machine/windows/evenements.rs", "tentatives_lues"),
         ],
     ),
-    (
-        "COM-CPT-003",
-        &[
-            ("machine/chasse.rs", "connexion_forcee"),
-            ("machine/chasse.rs", "tentatives_lues@macos"),
-            ("machine/chasse.rs", "tentatives_sans_journal"),
-        ],
-    ),
-    // Linux passe par la lecture des fichiers d'ancres (un fichier sans nom y a son constat) ; Windows et macOS
-    // jugent directement ce que leur magasin nomme.
+    // Linux passe par la lecture des fichiers d'ancres (un fichier sans nom y a son constat) ; Windows juge
+    // directement ce que son magasin nomme.
     (
         "COM-CRT-001",
         &[
@@ -327,13 +311,6 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
         "COM-CRT-001",
         &[
             ("machine/certificats.rs", "certificats@windows"),
-            ("machine/certificats.rs", "juger"),
-        ],
-    ),
-    (
-        "COM-CRT-001",
-        &[
-            ("machine/certificats.rs", "certificats@macos"),
             ("machine/certificats.rs", "juger"),
         ],
     ),
@@ -378,14 +355,6 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
-        "MAC-PRV-004",
-        &[
-            ("machine/macos/privileges.rs", "dossiers_de_commandes"),
-            ("machine/unix.rs", "dossiers_de_commandes"),
-            ("machine/unix.rs", "juger_dossiers_de_commandes"),
-        ],
-    ),
-    (
         "LNX-PRS-003",
         &[
             ("machine/linux/dissimulation.rs", "processus_caches"),
@@ -411,20 +380,6 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("machine/linux/dissimulation.rs", "ecoute_du_reseau"),
             ("machine/linux/dissimulation.rs", "juger_ecoute"),
-        ],
-    ),
-    (
-        "MAC-PRS-002",
-        &[
-            ("machine/macos/parite.rs", "elements_d_ouverture"),
-            ("machine/macos/parite.rs", "juger_btm"),
-        ],
-    ),
-    (
-        "MAC-PRS-003",
-        &[
-            ("machine/macos/parite.rs", "crochets_et_extensions"),
-            ("machine/macos/parite.rs", "juger_crochets"),
         ],
     ),
     (
@@ -562,28 +517,6 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
             ("machine/linux/privileges.rs", "sudo_sans_mot_de_passe"),
             ("machine/unix.rs", "sudo_sans_mot_de_passe"),
             ("machine/unix.rs", "juger_sudo"),
-        ],
-    ),
-    (
-        "MAC-PRV-002",
-        &[
-            ("machine/macos/privileges.rs", "sudo_sans_mot_de_passe"),
-            ("machine/unix.rs", "sudo_sans_mot_de_passe"),
-            ("machine/unix.rs", "juger_sudo"),
-        ],
-    ),
-    (
-        "MAC-PRS-001",
-        &[
-            ("machine/macos/persistance.rs", "persistance"),
-            ("machine/macos/persistance.rs", "persistance_dans"),
-        ],
-    ),
-    (
-        "MAC-SYS-003",
-        &[
-            ("machine/macos/durcissement.rs", "extensions_tierces"),
-            ("machine/macos/durcissement.rs", "juger_extensions"),
         ],
     ),
     (
@@ -943,12 +876,8 @@ fn lire_attendu(texte: &str) -> Result<Attendu, Refus> {
     {
         return Err("propre : il doit rester sous la gravité du cas fabriqué".into());
     }
-    if systemes.is_empty()
-        || systemes
-            .iter()
-            .any(|s| !["linux", "windows", "macos"].contains(&s.as_str()))
-    {
-        return Err("systemes : linux, windows ou macos".into());
+    if systemes.is_empty() || systemes.iter().any(|s| !["linux", "windows"].contains(&s.as_str())) {
+        return Err("systemes : linux ou windows".into());
     }
     Ok(Attendu {
         gravite,
@@ -1231,7 +1160,7 @@ fn chaque_regle_de_detection_a_son_cas() {
         )
         .collect();
     // La carte doit compter : un format changé qui ne rendrait plus rien viderait la liste sans bruit.
-    assert!(regles_qui_detectent().len() >= 60, "carte ATT&CK mal lue");
+    assert!(regles_qui_detectent().len() >= 55, "carte ATT&CK mal lue");
     let cas = dossiers_de_cas();
     let mises_a_part: Vec<(&str, &str)> = EXEMPTEES
         .iter()
@@ -1361,7 +1290,7 @@ fn homonymes(texte: &str, nom: &str) -> Vec<(String, String)> {
 }
 
 /// Les systèmes pour lesquels Vanguard se compile.
-const SYSTEMES: [&str; 3] = ["linux", "windows", "macos"];
+const SYSTEMES: [&str; 2] = ["linux", "windows"];
 
 /// Les débuts des signatures `fn nom(` ou `fn nom<…>(` (générique) dans le code.
 fn signatures(texte: &str, nom: &str) -> Vec<usize> {
@@ -1729,13 +1658,14 @@ fn le_fil_voit_une_regle_debranchee() {
     );
     assert_eq!(homonymes(deux, "certificats@macos"), []);
     // Deuxième passe : `not(windows)` n'est pas Windows ; un cfg étalé sur plusieurs lignes est lu ; une fonction
-    // générique est une version ; un module d'essais au milieu du fichier, même sous `all(test, …)`, ne compte pas.
+    // générique est une version ; un module d'essais au milieu du fichier, même sous `all(test, …)`, ne compte pas ;
+    // une fonction que seul un système que Vanguard ne vise plus (macOS) compilerait n'est pas une version.
     let etales = "#[cfg(not(windows))]\nfn lire() {\n    a();\n}\n\n\
                   #[cfg(all(\n    windows,\n    not(target_os = \"linux\")\n))]\nfn lire() {\n    b();\n}\n\n\
                   #[cfg(all(test, windows))]\nmod essais {\n    fn lire() {\n        c();\n    }\n}\n\n\
                   #[cfg(target_os = \"macos\")]\npub(crate) fn lire<T: Copy>(x: T) {\n    d(x);\n}\n";
     let corps_de = |s: &str| -> Vec<String> { homonymes(etales, s).into_iter().map(|(_, c)| c).collect() };
-    assert_eq!(homonymes(etales, "lire").len(), 3, "{:?}", homonymes(etales, "lire"));
+    assert_eq!(homonymes(etales, "lire").len(), 2, "{:?}", homonymes(etales, "lire"));
     assert!(
         corps_de("lire@windows").iter().all(|c| nomme(c, "b")),
         "{:?}",
@@ -1744,8 +1674,7 @@ fn le_fil_voit_une_regle_debranchee() {
     assert_eq!(corps_de("lire@windows").len(), 1);
     assert_eq!(corps_de("lire@linux").len(), 1);
     assert!(nomme(&corps_de("lire@linux")[0], "a"));
-    assert_eq!(corps_de("lire@macos").len(), 2);
-    assert!(corps_de("lire").iter().all(|c| !nomme(c, "c")));
+    assert!(corps_de("lire").iter().all(|c| !nomme(c, "c") && !nomme(c, "d")));
     // Ce qui ne se compile pas dans le programme publié (banc de fuzzing, mode débogage, fonctionnalité de Cargo)
     // n'est pas une version ; son contraire en est une, et un nom inconnu compte.
     let publie = "#[cfg(fuzzing)]\nfn lire() {\n    f();\n}\n\n#[cfg(debug_assertions)]\nfn lire() {\n    g();\n}\n\n\

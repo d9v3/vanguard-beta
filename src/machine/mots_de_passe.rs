@@ -2,7 +2,7 @@
 //! les garde dans logins.json, chiffrés avec key4.db ; sans mot de passe principal, la clé est sur le disque à côté et
 //! qui ouvre ta session (ou un programme malveillant) les lit tous ; Vanguard ne peut pas voir si ce mot de passe
 //! principal est défini, et le dit. Chrome, Edge, Brave, Vivaldi et Chromium les gardent dans la base « Login Data »,
-//! protégés seulement par la session (DPAPI sous Windows, trousseau sous macOS, porte-clés ou rien sous Linux). Vanguard
+//! protégés seulement par la session (DPAPI sous Windows, porte-clés ou rien sous Linux). Vanguard
 //! compte les entrées sans en lire une seule : logins.json est compté dans sa structure, la base SQLite est parcourue
 //! page par page pour compter les lignes de la table « logins », sans décoder leur contenu ni dépendre de SQLite.
 
@@ -104,11 +104,6 @@ fn protection_chromium() -> &'static str {
         tr!(
             "protégés par votre session Windows seulement (DPAPI) : qui ouvre votre session, ou un programme qui tourne dedans, les lit",
             "protected by your Windows session only (DPAPI): whoever opens your session, or a program running in it, reads them"
-        )
-    } else if cfg!(target_os = "macos") {
-        tr!(
-            "la clé est dans le trousseau : un programme qui tourne dans votre session peut la demander",
-            "the key is in the keychain: a program running in your session can ask for it"
         )
     } else {
         tr!(

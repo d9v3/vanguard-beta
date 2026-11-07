@@ -2,7 +2,7 @@
 //! son nom. Un jumeau se montre souvent sans mot de passe, pour attirer les appareils et voir passer leur trafic :
 //! même nom que le vrai réseau, protection plus faible. Un répéteur protégé comme le réseau principal n'alerte pas.
 
-// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// Le programme sous Linux : ses parties Windows ne sont pas encore relues, et les essais en sont exemptés
 // (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
 #![cfg_attr(
     all(target_os = "linux", not(test)),
@@ -20,10 +20,6 @@ pub(crate) mod networkmanager;
 pub(crate) mod nl80211;
 pub(crate) mod profils;
 pub(crate) mod wlanapi;
-
-/// Nom d'un réseau que macOS 14 cache sans l'autorisation de localisation : sa protection se lit encore, mais il ne
-/// se compare pas aux autres.
-pub(super) const CACHE: &str = "<redacted>";
 
 /// Un réseau Wi-Fi visible d'ici.
 #[derive(Debug, PartialEq)]
@@ -158,7 +154,6 @@ pub(crate) fn ouverts_des_profils(profils: &[profils::ProfilEnregistre]) -> Opti
 /// système dit la protection négociée. Le réseau connecté est la borne que le système dit active, ou celle de la
 /// connexion. Vide : la lecture n'a vu aucune borne (Windows 11 sans
 /// l'autorisation de localisation), et l'appelant demande alors au système.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) fn visibles_de(lecture: &Lecture) -> Vec<Visible> {
     // Sans BSSID (le balayage ne montre plus la borne associée), le nom seul ne dit pas laquelle des bornes de ce nom
     // est la vraie. Si leurs protections diffèrent, l'une peut être un jumeau ouvert : la marquer « connectée »
@@ -205,7 +200,7 @@ pub(crate) fn visibles_de(lecture: &Lecture) -> Vec<Visible> {
 /// est en WPA2 ou mieux : la signature d'un jumeau maléfique.
 pub(super) fn jumeau(visibles: &[Visible]) -> Option<Constat> {
     let actif = visibles.iter().find(|v| v.actif)?;
-    if force(&actif.securite) < 2 || actif.ssid == CACHE {
+    if force(&actif.securite) < 2 {
         return None;
     }
     let faible = visibles
@@ -236,70 +231,6 @@ pub(super) fn jumeau(visibles: &[Visible]) -> Option<Constat> {
     )
 }
 
-/// Un réseau de `system_profiler SPAirPortDataType` : son nom, s'il est le réseau connecté, ses lignes de détail.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-struct BlocMac<'a> {
-    nom: String,
-    actif: bool,
-    details: Vec<&'a str>,
-}
-
-/// Sous « Current Network Information: » (le réseau connecté) et « Other Local Wi-Fi Networks: », un nom par réseau
-/// puis ses détails (« Security: WPA2 Personal », « Channel: 36 (5GHz, 80MHz) »…), plus en retrait.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn blocs_system_profiler(sortie: &str) -> Vec<BlocMac<'_>> {
-    let mut blocs: Vec<BlocMac> = Vec::new();
-    let mut section: Option<(usize, bool)> = None;
-    let mut retrait_nom: Option<usize> = None;
-    for ligne in sortie.lines() {
-        let l = ligne.trim();
-        if l.is_empty() {
-            continue;
-        }
-        let retrait = ligne.len().saturating_sub(ligne.trim_start().len());
-        if section.is_some_and(|(r, _)| retrait <= r) {
-            section = None;
-        }
-        if l == "Current Network Information:" || l == "Other Local Wi-Fi Networks:" {
-            section = Some((retrait, l.starts_with("Current")));
-            retrait_nom = None;
-            continue;
-        }
-        let Some((_, actif)) = section else {
-            continue;
-        };
-        if retrait == *retrait_nom.get_or_insert(retrait) {
-            blocs.push(BlocMac {
-                nom: affichable(l.trim_end_matches(':')),
-                actif,
-                details: Vec::new(),
-            });
-        } else if let Some(b) = blocs.last_mut() {
-            b.details.push(l);
-        }
-    }
-    blocs.retain(|b| !b.nom.is_empty());
-    blocs
-}
-
-/// `system_profiler SPAirPortDataType` : la protection de chaque réseau (« Security: WPA2 Personal »).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn lire_system_profiler(sortie: &str) -> Vec<Visible> {
-    blocs_system_profiler(sortie)
-        .into_iter()
-        .map(|b| Visible {
-            securite: b
-                .details
-                .iter()
-                .find_map(|d| d.strip_prefix("Security:"))
-                .map(|s| affichable(s.trim()))
-                .unwrap_or_default(),
-            ssid: b.nom,
-            actif: b.actif,
-        })
-        .collect()
-}
-
 /// Bande de fréquences d'un réseau Wi-Fi.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Bande {
@@ -326,24 +257,6 @@ impl Bande {
             1..=14 => Some(Bande::G24),
             32..=177 => Some(Bande::G5),
             _ => None,
-        }
-    }
-
-    /// D'après un texte du système : « 2.4 GHz », « 2,4 GHz », « 5 GHz », « 2GHz » (macOS)…
-    pub(crate) fn de_texte(t: &str) -> Option<Bande> {
-        let t: String = t
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect::<String>()
-            .to_ascii_lowercase();
-        if t.starts_with("2.4") || t.starts_with("2,4") || t.starts_with("2ghz") {
-            Some(Bande::G24)
-        } else if t.starts_with('5') {
-            Some(Bande::G5)
-        } else if t.starts_with('6') {
-            Some(Bande::G6)
-        } else {
-            None
         }
     }
 
@@ -458,8 +371,6 @@ pub(crate) struct Lecture {
     pub voisins: Voisins,
 }
 
-// macOS lit encore son Wi-Fi par system_profiler, sans lecture native : ni bilan ni réserve.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 impl Lecture {
     /// Pourquoi la liste des voisins ne suffit pas à conclure (jumeau absent, canal libre) ; `None` : elle suffit.
     pub(crate) fn reserve_voisins(&self) -> Option<String> {
@@ -511,7 +422,6 @@ pub(crate) fn lecture_linux() -> Result<Lecture, &'static str> {
 /// active ou du BSSID de la connexion, enfin celle du réseau connecté selon `visibles_de` (une seule protection pour
 /// ce nom). `None` : la borne n'est pas dans la liste, ou plusieurs du même nom diffèrent (l'une peut être un jumeau).
 /// `visibles` : `visibles_de(l)`.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) fn protection_connectee(l: &Lecture, visibles: &[Visible]) -> Option<String> {
     let c = l.connexion.as_ref()?;
     if !c.securite.is_empty() {
@@ -535,7 +445,6 @@ pub(crate) fn protection_connectee(l: &Lecture, visibles: &[Visible]) -> Option<
 /// pas l'absence de jumeau : c'est dit non vérifié. La borne de la connexion n'est jamais devinée parmi plusieurs du
 /// même nom aux protections différentes (l'une peut être le jumeau) : la protection est alors dite non vérifiée.
 /// `admin` : commandes pour ouvrir l'administration de la box.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(super) fn bilan(l: &Lecture, admin: &[&str]) -> Vec<Constat> {
     let Some(c) = &l.connexion else {
         return l
@@ -601,39 +510,6 @@ pub(super) fn bilan(l: &Lecture, admin: &[&str]) -> Vec<Constat> {
     }
     constats.extend(jumeau(&visibles));
     constats
-}
-
-/// `system_profiler SPAirPortDataType` : « Channel: 36 (5GHz, 80MHz) » et, pour le réseau connecté (et parfois les
-/// autres), « Signal / Noise: -50 dBm / -90 dBm ».
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn bornes_system_profiler(sortie: &str) -> Vec<Borne> {
-    blocs_system_profiler(sortie)
-        .into_iter()
-        .filter_map(|b| {
-            let (canal, reste) = b
-                .details
-                .iter()
-                .find_map(|d| d.strip_prefix("Channel:"))?
-                .trim()
-                .split_once(' ')?;
-            let canal: u16 = canal.parse().ok()?;
-            let bande = Bande::de_texte(reste.trim_start_matches('('))?;
-            let signal = b
-                .details
-                .iter()
-                .find_map(|d| d.strip_prefix("Signal / Noise:"))
-                .and_then(|s| s.split_whitespace().next()?.parse::<i32>().ok())
-                .map(pourcentage);
-            Some(Borne {
-                ssid: if b.nom == CACHE { String::new() } else { b.nom },
-                bssid: String::new(),
-                bande,
-                canal,
-                signal,
-                actif: b.actif,
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -801,47 +677,6 @@ mod tests {
         assert!(jumeau(&[visible("Salon", "--", true), visible("Salon", "--", false)]).is_none());
     }
 
-    #[test]
-    fn reseaux_de_system_profiler() {
-        let sortie = "Wi-Fi:
-
-      Software Versions:
-          CoreWLAN: 16.0 (1657)
-      Interfaces:
-        en0:
-          Card Type: Wi-Fi  (0x14E4, 0x4387)
-          Status: Connected
-          Current Network Information:
-            Salon:
-              PHY Mode: 802.11ax
-              Channel: 36 (5GHz, 80MHz)
-              Network Type: Infrastructure
-              Security: WPA2 Personal
-              Signal / Noise: -50 dBm / -90 dBm
-          Other Local Wi-Fi Networks:
-            Salon:
-              PHY Mode: 802.11n
-              Network Type: Infrastructure
-              Security: None
-            <redacted>:
-              Security: WPA2 Personal
-        awdl0:
-          MAC Address: 12:34:56:78:9a:bc
-";
-        let reseaux = lire_system_profiler(sortie);
-        assert_eq!(
-            reseaux,
-            [
-                visible("Salon", "WPA2 Personal", true),
-                visible("Salon", "None", false),
-                visible(CACHE, "WPA2 Personal", false),
-            ]
-        );
-        assert!(jumeau(&reseaux).is_some());
-        // Noms cachés par macOS : rien ne se compare.
-        assert!(jumeau(&[visible(CACHE, "WPA2 Personal", true), visible(CACHE, "None", false)]).is_none());
-    }
-
     fn borne(ssid: &str, bande: Bande, canal: u16, signal: Option<u8>, actif: bool) -> Borne {
         Borne {
             ssid: ssid.into(),
@@ -863,16 +698,6 @@ mod tests {
         assert_eq!(Bande::de_canal(11), Some(Bande::G24));
         assert_eq!(Bande::de_canal(36), Some(Bande::G5));
         assert_eq!(Bande::de_canal(0), None);
-        for (texte, bande) in [
-            ("2.4 GHz", Bande::G24),
-            ("2,4 GHz", Bande::G24),
-            ("2GHz, 20MHz)", Bande::G24),
-            ("5 GHz", Bande::G5),
-            ("5GHz, 80MHz)", Bande::G5),
-            ("6 GHz", Bande::G6),
-        ] {
-            assert_eq!(Bande::de_texte(texte), Some(bande), "{texte}");
-        }
         assert_eq!(pourcentage(-45), 100);
         assert_eq!(pourcentage(-75), 50);
         assert_eq!(pourcentage(-110), 0);
@@ -882,20 +707,12 @@ mod tests {
     /// Un nom de réseau, choisi par n'importe qui à portée de Wi-Fi : séquence OSC 52 (presse-papier), effacement de la
     /// ligne, retour chariot, retournement bidi. Lu par chaque outil, il arrive inoffensif, « � » à la place de chaque
     /// caractère piégé ; la protection aussi.
-    const PIEGE: &str = "Salon\x1b]52;c;ZWNobyBQSVJBVEU=\x07\x1b[2K\rFaux\u{202e}";
     const VU: &str = "Salon�]52;c;ZWNobyBQSVJBVEU=��[2K�Faux�";
 
     #[test]
     fn noms_de_reseaux_pieges_rendus_inoffensifs() {
-        let profiler = format!(
-            "Wi-Fi:\n      Interfaces:\n        en0:\n          Current Network Information:\n            \
-             {PIEGE}:\n              Channel: 36 (5GHz, 80MHz)\n              Security: WPA2\x1b[8m\n\
-             \x20         Other Local Wi-Fi Networks:\n            {PIEGE}:\n              Security: None\n"
-        );
-        let v = lire_system_profiler(&profiler);
-        assert_eq!(v, [visible(VU, "WPA2�[8m", true), visible(VU, "None", false)]);
+        let v = [visible(VU, "WPA2�[8m", true), visible(VU, "None", false)];
         assert!(jumeau(&v).is_some_and(|c| !crate::ui::contient_un_piege(&c.message)));
-        assert_eq!(bornes_system_profiler(&profiler)[0].ssid, VU);
         // Les messages de l'audit Wi-Fi ne portent plus rien qui pilote le terminal.
         let c = securite(&v[0].ssid, &v[0].securite, &[]);
         assert!(!crate::ui::contient_un_piege(&c.message), "{}", c.message);
@@ -1047,76 +864,16 @@ mod tests {
         l.note = Some("localisation");
         assert_eq!(l.reserve_voisins().as_deref(), Some("localisation"));
     }
-
-    #[test]
-    fn bornes_de_system_profiler() {
-        let sortie = "Wi-Fi:
-      Interfaces:
-        en0:
-          Current Network Information:
-            Salon:
-              PHY Mode: 802.11ax
-              Channel: 36 (5GHz, 80MHz)
-              Security: WPA2 Personal
-              Signal / Noise: -50 dBm / -90 dBm
-          Other Local Wi-Fi Networks:
-            Voisin:
-              Channel: 6 (2GHz, 20MHz)
-              Security: WPA2 Personal
-            <redacted>:
-              Channel: 149 (5GHz, 80MHz)
-              Signal / Noise: -70 dBm / -92 dBm
-";
-        assert_eq!(
-            bornes_system_profiler(sortie),
-            [
-                borne("Salon", Bande::G5, 36, Some(100), true),
-                borne("Voisin", Bande::G24, 6, None, false),
-                borne("", Bande::G5, 149, Some(60), false),
-            ]
-        );
-        // La lecture des protections, elle, est la même qu'avant.
-        assert_eq!(lire_system_profiler(sortie).len(), 3);
-    }
 }
 
-/// Propriétés des lectures, sur des sorties tirées au hasard : aucune ne plante, quoi qu'écrive l'outil ou l'appareil
-/// d'en face ; un nom lu ne porte jamais de quoi piloter le terminal ; une sortie bien formée redonne ses valeurs.
+/// Propriétés des calculs, sur des valeurs tirées au hasard : aucun ne plante, quoi que dise l'appareil d'en face.
 #[cfg(test)]
 mod proprietes {
     use super::*;
     use proptest::prelude::*;
 
-    /// Une sortie d'outil quelconque : des lignes de n'importe quels caractères, deux-points, tabulations,
-    /// séquences d'échappement et écritures bidirectionnelles compris.
-    fn sortie() -> impl Strategy<Value = String> {
-        prop::collection::vec(
-            prop_oneof![
-                any::<String>(),
-                "[ -~\\t\u{1b}\u{202e}\u{200b}é:%()\\[\\]]{0,60}",
-                "(SSID|BSSID|Channel|Canal|Band|Signal|Authentication|freq|signal|BSS|Security|Channel) ?[0-9]* ?: ?[ -~]{0,30}",
-            ],
-            0..12,
-        )
-        .prop_map(|l| l.join("\n"))
-    }
-
     proptest! {
         #![proptest_config(ProptestConfig { cases: 256, failure_persistence: None, ..ProptestConfig::default() })]
-
-        #[test]
-        fn lectures_sans_plantage_ni_piege(t in sortie()) {
-            let visibles = lire_system_profiler(&t);
-            let bornes = bornes_system_profiler(&t);
-            for v in &visibles {
-                prop_assert!(!crate::ui::contient_un_piege(&v.ssid) && !crate::ui::contient_un_piege(&v.securite));
-            }
-            for b in &bornes {
-                prop_assert!(!crate::ui::contient_un_piege(&b.ssid));
-                prop_assert!(b.signal.is_none_or(|s| s <= 100));
-            }
-            let _ = jumeau(&visibles);
-        }
 
         #[test]
         fn pourcentage_borne_et_croissant(a in any::<i32>(), b in any::<i32>()) {

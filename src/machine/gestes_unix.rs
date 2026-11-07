@@ -1325,9 +1325,8 @@ impl GesteUnix {
         }
     }
 
-    /// Le geste a-t-il un sens sur ce système ? Linux seulement : sous macOS, rien n'est converti avant un essai sur un
-    /// vrai Mac (plan du lot Unix, D8). L'absence de systemd n'y entre pas : elle se dit à part (`par_systemd`), sans
-    /// faire refuser toute la liste comme une liste étrangère.
+    /// Le geste a-t-il un sens sur ce système ? Linux seulement. L'absence de systemd n'y entre pas : elle se dit à
+    /// part (`par_systemd`), sans faire refuser toute la liste comme une liste étrangère.
     #[allow(
         clippy::unused_self,
         reason = "les familles à venir (paquets) diront chacune où elles valent"
@@ -1863,7 +1862,7 @@ mod tests {
         }
     }
 
-    /// Un geste de Linux n'est permis que sous Linux (aucun sous macOS, plan D8).
+    /// Un geste de Linux n'est permis que sous Linux.
     #[test]
     fn permis_sous_linux_seulement() {
         assert_eq!(GesteUnix::Programme(&FRESHCLAM).permis_ici(), cfg!(target_os = "linux"));

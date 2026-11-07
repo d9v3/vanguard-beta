@@ -155,7 +155,8 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     local("versions", "mise_a_jour::github, protection::perimes"),
     local("raccourci-retrait", "raccourci"),
     // L'état de l'entretien du mois d'avant et la note de la sauvegarde mise en place : une alerte inscrite d'avance ne
-    // se disait pas nouvelle ; une note forgée faisait couper Time Machine à l'annulation.
+    // se disait pas nouvelle ; une note forgée faisait remettre à l'annulation des réglages de Déjà Dup choisis par
+    // un autre programme.
     scelle(sceau::ENTRETIEN, "entretien"),
     scelle(sceau::SAUVEGARDE, "sauvegarde"),
     local("verifier-sauvegarde", "sauvegarde"),
@@ -1134,16 +1135,23 @@ mod tests {
             .collect()
     }
 
-    /// Le code sans ses commentaires, ses littéraux gardés.
+    /// Le code sans ses commentaires, ses littéraux gardés tels qu'écrits : un texte brut (`r"\\?\"`) récrit entre
+    /// guillemets simples serait relu autrement (`\"` n'y ferme plus rien) et décalerait tout le reste du fichier.
     fn lexer_commentaires(code: &str) -> String {
+        let o: Vec<char> = code.chars().collect();
         let (blanchi, litteraux) = lexer(code);
         let mut sortie: Vec<char> = blanchi.chars().collect();
         for (pos, valeur) in litteraux {
-            let texte: Vec<char> = format!("\"{valeur}\"").chars().collect();
-            for (k, c) in texte.into_iter().enumerate() {
-                if let Some(place) = sortie.get_mut(pos + k) {
-                    *place = c;
-                }
+            let n = valeur.chars().count();
+            // Brut : r, ses dièses, les deux guillemets, autant de dièses à la fin. Sinon les deux guillemets seuls.
+            let longueur = if o.get(pos) == Some(&'r') {
+                let dieses = o[pos + 1..].iter().take_while(|&&c| c == '#').count();
+                n + 3 + 2 * dieses
+            } else {
+                n + 2
+            };
+            for (place, &c) in sortie.iter_mut().zip(&o).take(pos + longueur).skip(pos) {
+                *place = c;
             }
         }
         sortie.into_iter().collect()

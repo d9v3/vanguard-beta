@@ -10,7 +10,7 @@
 //! « Ne pas partager » dans ce processus. Le lot posté est celui que la lecture stricte du schéma 2 vient de relire ;
 //! de la réponse, seul le code est lu (`http::poster_sans_lire`).
 
-// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// Le programme sous Linux : ses parties Windows ne sont pas encore relues, et les essais en sont exemptés
 // (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
 #![cfg_attr(
     all(target_os = "linux", not(test)),

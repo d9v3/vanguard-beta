@@ -8,7 +8,14 @@
 pub(crate) const PREFIXES: &[(&str, (&str, &str))] = &[
     ("LNX", ("règles du bilan sous Linux", "check rules on Linux")),
     ("WIN", ("règles du bilan sous Windows", "check rules on Windows")),
-    ("MAC", ("règles du bilan sous macOS", "check rules on macOS")),
+    // Gardé pour les identifiants retirés de tests/regles-connues.txt, qui ne doivent jamais être repris.
+    (
+        "MAC",
+        (
+            "règles du bilan sous macOS, retirées (jusqu'à 0.89.1)",
+            "check rules on macOS, retired (up to 0.89.1)",
+        ),
+    ),
     (
         "COM",
         (

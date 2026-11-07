@@ -460,7 +460,7 @@ pub fn routeurs_ipv6_linux(table: &str) -> Vec<RouteurIpv6> {
 }
 
 /// Les appareils qui se présentent comme routeur IPv6, lus dans les tables du noyau ; `None` ailleurs que sous
-/// Linux (Windows : table des routes par iphlpapi, macOS : sysctl, à venir).
+/// Linux (Windows : table des routes par iphlpapi, à venir).
 fn routeurs_ipv6() -> Option<Vec<RouteurIpv6>> {
     #[cfg(target_os = "linux")]
     {

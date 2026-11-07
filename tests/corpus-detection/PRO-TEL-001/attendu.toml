@@ -2,4 +2,4 @@
 gravite = "eleve"
 mots = ["facture-corpus.pdf.exe"]
 propre = "info"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]

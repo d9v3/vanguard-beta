@@ -4,7 +4,7 @@
 //! chaque appareil pour la première fois (bluetooth.json, jamais sur la clé) et signale ceux de la dernière semaine ;
 //! ceux qui étaient là au premier passage sont connus d'avant. Sans adaptateur Bluetooth, rien n'est dit.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::collections::BTreeMap;
@@ -40,8 +40,8 @@ struct Visible {
 struct Etat {
     /// Au moins un adaptateur est allumé.
     allume: bool,
-    /// Les adaptateurs allumés et visibles sans limite de temps (Linux) ; Windows et macOS ne le sont que réglages
-    /// ouverts.
+    /// Les adaptateurs allumés et visibles sans limite de temps (Linux) ; ceux de Windows ne le sont que
+    /// réglages ouverts.
     visibles: Vec<Visible>,
     /// Les adaptateurs vus en tout : avec un seul, c'est celui que `bluetoothctl` règle sans qu'on le nomme.
     adaptateurs: usize,
@@ -238,11 +238,6 @@ fn retrait() -> &'static str {
             "Paramètres › Bluetooth et appareils › Appareils : « Supprimer l'appareil »",
             "Settings › Bluetooth & devices › Devices: “Remove device”"
         )
-    } else if cfg!(target_os = "macos") {
-        tr!(
-            "Réglages Système › Bluetooth : (i) à côté de l'appareil › « Oublier cet appareil »",
-            "System Settings › Bluetooth: (i) next to the device › “Forget This Device”"
-        )
     } else {
         tr!(
             "Le retirer des réglages Bluetooth, ou avec la commande ci-dessous",
@@ -431,49 +426,6 @@ fn nom_utf8(octets: &[u8]) -> String {
     String::from_utf8_lossy(&nom).trim().to_string()
 }
 
-#[cfg(target_os = "macos")]
-fn lire() -> Option<Etat> {
-    let r = crate::commande::lancer(
-        std::process::Command::new("system_profiler").args(["-json", "SPBluetoothDataType"]),
-        20,
-    )?;
-    lire_profil(&r.sortie)
-}
-
-/// `system_profiler -json SPBluetoothDataType` : l'état du contrôleur, et les appareils appairés, connectés ou non
-/// (macOS 12 et plus récents).
-#[cfg(any(target_os = "macos", test))]
-fn lire_profil(json: &str) -> Option<Etat> {
-    let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    let bloc = v.get("SPBluetoothDataType")?.get(0)?;
-    let controleur = bloc.get("controller_properties")?;
-    let allume = controleur.get("controller_state").and_then(|s| s.as_str()) == Some("attrib_on");
-    let mut appareils = Vec::new();
-    for liste in ["device_connected", "device_not_connected"] {
-        for entree in bloc.get(liste).and_then(|l| l.as_array()).into_iter().flatten() {
-            let Some(objet) = entree.as_object() else { continue };
-            for (nom, proprietes) in objet {
-                if let Some(a) = proprietes
-                    .get("device_address")
-                    .and_then(|a| a.as_str())
-                    .and_then(adresse)
-                {
-                    appareils.push(Appareil {
-                        adresse: a,
-                        nom: nom.clone(),
-                    });
-                }
-            }
-        }
-    }
-    Some(Etat {
-        allume,
-        adaptateurs: 1,
-        appareils,
-        ..Etat::default()
-    })
-}
-
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::as_conversions,
@@ -639,24 +591,6 @@ mod tests {
             lus.len(),
             outil.len()
         );
-    }
-
-    #[test]
-    fn lecture_de_system_profiler() {
-        let json = r#"{"SPBluetoothDataType":[{"controller_properties":{"controller_state":"attrib_on",
-            "controller_discoverable":"attrib_off"},
-            "device_connected":[{"AirPods d'Alice":{"device_address":"F4:65:A6:11:22:33"}}],
-            "device_not_connected":[{"Magic Keyboard":{"device_address":"04-4B-ED-44-55-66"}},{"Sans adresse":{}}]}]}"#;
-        let e = lire_profil(json).unwrap();
-        assert!(e.allume && e.visibles.is_empty());
-        assert_eq!(
-            e.appareils,
-            [
-                appareil("F4:65:A6:11:22:33", "AirPods d'Alice"),
-                appareil("04:4B:ED:44:55:66", "Magic Keyboard")
-            ]
-        );
-        assert_eq!(lire_profil(r#"{"SPBluetoothDataType":[{}]}"#), None);
     }
 
     #[test]

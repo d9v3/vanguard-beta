@@ -1,6 +1,6 @@
 //! Privilèges : fichiers secrets lisibles, groupes équivalents à root, sudo sans mot de passe, dossiers de commandes
 //! modifiables par d'autres comptes, blocage des comptes et longueur des mots de passe (PAM). Fichiers secrets, sudo et
-//! dossiers de commandes se vérifient comme sous macOS (machine/unix.rs).
+//! dossiers de commandes se vérifient dans machine/unix.rs.
 
 use super::*;
 #[cfg(test)]
@@ -110,7 +110,7 @@ pub(crate) const DOSSIERS_DE_ROOT: &[&str] = &[
 
 /// Sous Linux, un dossier de root qui appartient à un autre compte est fautif aussi.
 pub(super) fn dossiers_de_commandes() -> Option<Constat> {
-    crate::machine::unix::dossiers_de_commandes(DOSSIERS_DE_ROOT, Path::new(&home()), true)
+    crate::machine::unix::dossiers_de_commandes(DOSSIERS_DE_ROOT, Path::new(&home()))
 }
 
 /// Les fichiers de PAM où se règlent l'ouverture de session et les mots de passe : Arch et Fedora, puis Debian et

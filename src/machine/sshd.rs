@@ -1,4 +1,4 @@
-//! La lecture de sshd_config, commune à Linux, macOS et Windows (le serveur OpenSSH de Microsoft lit le même format,
+//! La lecture de sshd_config, commune à Linux et Windows (le serveur OpenSSH de Microsoft lit le même format,
 //! dans %ProgramData%\ssh) : la partie qui vaut pour toutes les connexions et la valeur d'un réglage, telles que
 //! sshd les retient ; la version d'OpenSSH lue sans le lancer ; et la liste d'échanges de clés que sshd ou ssh
 //! retiennent vraiment (valeurs par défaut de la version, puis « + », « - », « ^ » ou liste écrite), pour dire si

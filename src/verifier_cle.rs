@@ -3,13 +3,13 @@
 //! clé qui meurt rend des blocs faux ou illisibles. Vanguard écrit dans l'espace libre, dans un dossier à lui, un
 //! contenu déterministe (chaque bloc porte l'essai, son fichier et son numéro), relit tout en contournant le cache du
 //! système (sinon on relirait la mémoire de l'ordinateur et une fausse clé passerait pour bonne : fsync puis
-//! `posix_fadvise DONTNEED` sous Linux, `F_NOCACHE` sous macOS, `FILE_FLAG_NO_BUFFERING` sous Windows), mesure les
+//! `posix_fadvise DONTNEED` sous Linux, `FILE_FLAG_NO_BUFFERING` sous Windows), mesure les
 //! vitesses d'écriture et de lecture, puis efface tout. Une marge est laissée libre ; jamais sur la clé VANGUARD ni sur
 //! le disque du système ; rien n'est écrit sans être montré et accepté ; Échap ou Ctrl-C arrêtent et nettoient. Mode
 //! rapide (un quart de l'espace libre : repère les fausses clés courantes, dont la vraie capacité est bien moindre
 //! que l'annoncée, et mesure la vitesse) ou complet (tout l'espace libre : la seule preuve).
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::fs::{File, OpenOptions};
@@ -192,14 +192,12 @@ impl Lecture {
 }
 
 fn ouvrir_en_ecriture(chemin: &Path) -> std::io::Result<File> {
-    let f = OpenOptions::new().write(true).create_new(true).open(chemin)?;
-    // macOS : sans cache dès l'écriture ; Linux : sans effet ici (les pages sont retirées après fsync).
-    crate::copier::sans_cache(&f);
-    Ok(f)
+    // Les pages écrites sont retirées du cache après fsync (`ouvrir_en_lecture`).
+    OpenOptions::new().write(true).create_new(true).open(chemin)
 }
 
 /// Lecture qui contourne le cache du système : Windows ouvre sans mise en mémoire (tampons et tailles alignés sur le
-/// secteur) ; Linux retire du cache les pages du fichier, propres depuis le fsync ; macOS lit sans cache.
+/// secteur) ; Linux retire du cache les pages du fichier, propres depuis le fsync.
 fn ouvrir_en_lecture(chemin: &Path) -> std::io::Result<File> {
     #[cfg(windows)]
     let f = {

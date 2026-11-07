@@ -11,7 +11,7 @@
 //! rend rien est dit « non vérifié ». Hors ligne ou sans réseau local, tout finit en moins d'une minute et dit
 //! « non vérifié ».
 
-// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// Le programme sous Linux : ses parties Windows ne sont pas encore relues, et les essais en sont exemptés
 // (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
 #![cfg_attr(
     all(target_os = "linux", not(test)),
@@ -750,7 +750,10 @@ mod tests {
             crate::machine::alerte("Pare-feu", Niveau::Eleve, "Aucun pare-feu actif."),
             "LNX-PFE-001",
         );
-        let furtif = regle(crate::machine::ok("Pare-feu", "Mode furtif actif."), "MAC-PFE-002");
+        let furtif = regle(
+            crate::machine::ok("Pare-feu", "Réglage secondaire actif."),
+            "LNX-PFE-002",
+        );
         let inconnu = regle(crate::machine::impossible("Pare-feu", "systemd absent"), "LNX-PFE-001");
         assert_eq!(pare_feu_local(&[actif.clone(), furtif.clone()]), Some(true));
         assert_eq!(pare_feu_local(&[coupe]), Some(false));
@@ -781,7 +784,7 @@ mod tests {
         for id in [
             "LNX-PFE-001",
             "WIN-RES-002",
-            "MAC-SSH-002",
+            "LNX-SSH-002",
             "LNX-SSH-005",
             "WIN-DIS-001",
             "COM-PAR-001",

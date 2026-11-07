@@ -2,7 +2,7 @@
 //! place dans `nettoyer`, mais demandés partout (bilan, traces d'incident, protection, Gaming). Le dossier
 //! personnel était relu dans une quarantaine d'endroits, chacun avec sa règle quand HOME manque.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc : getpwuid_r et statvfs.
 #![allow(unsafe_code)]
@@ -17,7 +17,7 @@ use crate::{tr, trf};
 const MEGA: u64 = 1 << 20;
 
 /// Le dossier personnel du compte : HOME quand c'est un chemin complet, sinon (HOME vide, relatif ou absent : un
-/// service, un `env -i`) celui que la base des comptes donne au compte, sous Linux et macOS ; sous Windows,
+/// service, un `env -i`) celui que la base des comptes donne au compte, sous Linux ; sous Windows,
 /// USERPROFILE quand HOME manque. `None` : aucun des deux, jamais un chemin vide, qui se lirait depuis le dossier
 /// courant.
 pub(crate) fn dossier_personnel() -> Option<PathBuf> {

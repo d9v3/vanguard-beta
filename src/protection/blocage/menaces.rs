@@ -1,7 +1,7 @@
 //! Les menaces que le blocage sait arrêter, cherchées sur cet ordinateur : d'où elles viennent, certaines ou
 //! douteuses, et le geste qui les bloque. Rien n'est changé ici : seulement lu.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::collections::HashSet;
@@ -108,31 +108,9 @@ const SEMAINE: std::time::Duration = std::time::Duration::from_hours(7 * 24);
 pub(crate) use crate::protection::sources::{Jugement, juger_programme};
 
 /// Les shells et autres programmes qui exécutent le code qu'on leur donne, en plus des interpréteurs de `chasse`.
-const SHELLS: [&str; 24] = [
-    "sh",
-    "bash",
-    "dash",
-    "zsh",
-    "fish",
-    "ksh",
-    "mksh",
-    "csh",
-    "tcsh",
-    "busybox",
-    "env",
-    "cmd",
-    "cscript",
-    "wscript",
-    "mshta",
-    "osascript",
-    "php",
-    "lua",
-    "luajit",
-    "deno",
-    "bun",
-    "tclsh",
-    "rscript",
-    "julia",
+const SHELLS: [&str; 23] = [
+    "sh", "bash", "dash", "zsh", "fish", "ksh", "mksh", "csh", "tcsh", "busybox", "env", "cmd", "cscript", "wscript",
+    "mshta", "php", "lua", "luajit", "deno", "bun", "tclsh", "rscript", "julia",
 ];
 
 /// Un interpréteur ou un shell, quelle que soit sa version (« python3.12 », « pwsh.exe », « bash ») : jamais mis en
@@ -146,7 +124,7 @@ pub(crate) fn lance_du_code(fichier: &str) -> bool {
     SHELLS.contains(&nom.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.'))
 }
 
-/// Un chemin complet, sous Linux, macOS ou Windows, quel que soit le système où tourne le test.
+/// Un chemin complet, sous Linux ou Windows, quel que soit le système où tourne le test.
 fn absolu(chemin: &str) -> bool {
     let o = chemin.as_bytes();
     chemin.starts_with('/')
@@ -460,18 +438,8 @@ pub(crate) fn serveurs_ouverts(
 
 fn agents(t: &mut Trouvees) {
     use crate::machine::agents_ia;
-    match agents_ia::prises_et_noms() {
-        Some((prises, noms)) => {
-            // macOS sans lsof : seuls les ports connus des serveurs d'IA se reconnaissent, comme le bilan le dit.
-            if noms == agents_ia::Noms::Aucun {
-                t.non_verifie.push(
-                    tr!(
-                        "serveurs d'IA : programmes en écoute non nommés (lsof), seuls les ports connus regardés",
-                        "AI servers: listening programs not named (lsof), only the known ports checked"
-                    )
-                    .to_string(),
-                );
-            }
+    match agents_ia::prises() {
+        Some(prises) => {
             for (port, nom) in serveurs_ouverts(&prises, &agents_ia::ports_fermes()) {
                 let nom = affichable(&nom);
                 t.menaces.push(Menace {
@@ -701,7 +669,7 @@ mod tests {
         assert_eq!(a_isoler(&lazagne, j.script.as_deref(), None, |_: &Path| false), None);
         assert_eq!(
             a_isoler(
-                &programme("bash", "/opt/homebrew/bin/bash", "bash -c id"),
+                &programme("bash", "/home/alice/.local/bin/bash", "bash -c id"),
                 None,
                 None,
                 partout

@@ -1,7 +1,6 @@
-//! La table fermée des logiciels suivis : pour chacun, où le trouver (chemins connus sous Windows, identifiant
-//! d'application exact sous macOS), quelle version lire, quelles sources le jugent et quelles lignes du catalogue de
-//! la CISA le concernent. Rien n'est rapproché par ressemblance de nom : un logiciel absent de la table n'est pas
-//! jugé, et un identifiant voisin (« com.google.Chrome.canary ») n'est pas pris pour un autre.
+//! La table fermée des logiciels suivis : pour chacun, où le trouver (chemins connus sous Windows), quelle version
+//! lire, quelles sources le jugent et quelles lignes du catalogue de la CISA le concernent. Rien n'est rapproché par
+//! ressemblance de nom : un logiciel absent de la table n'est pas jugé.
 
 /// Les distributions de Java dont endoflife.date suit les versions ; les autres (Azul, IBM…) restent non vérifiées :
 /// leur numéro n'est pas toujours celui de Java.
@@ -85,70 +84,18 @@ impl Produit {
     }
 }
 
-/// La clé de l'Info.plist qui porte la version comparable : selon l'éditeur, la version visible ou la build.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CleMac {
-    /// `CFBundleShortVersionString`.
-    Courte,
-    /// `CFBundleVersion` : Office la compare à « Update Version » de Microsoft AutoUpdate.
-    Build,
-}
-
-impl CleMac {
-    #[cfg_attr(windows, allow(dead_code))] // lu par l'inventaire de macOS
-    pub(crate) fn nom(self) -> &'static str {
-        match self {
-            CleMac::Courte => "CFBundleShortVersionString",
-            CleMac::Build => "CFBundleVersion",
-        }
-    }
-}
-
-/// Une application Mac suivie, reconnue à son identifiant exact.
-#[derive(Debug)]
-pub(crate) struct AppMac {
-    pub bundle_id: &'static str,
-    #[cfg_attr(windows, allow(dead_code))] // lu par l'inventaire de macOS
-    pub cle: CleMac,
-    /// Sa propre source, quand le produit en a une par application (Office : un manifeste MAU par application).
-    pub source: Option<&'static str>,
-}
-
 /// Une ligne de la table.
 pub(crate) struct Fiche {
     /// Pour Java, `Java(Autre)` : la distribution se lit dans le fichier `release`.
     pub produit: Produit,
     /// Sous Windows, l'exécutable (ou le fichier de version) relatif à `Program Files`, `Program Files (x86)` et
     /// `AppData\Local` de chaque compte, par morceaux de chemin.
-    #[cfg_attr(target_os = "macos", allow(dead_code))] // lu par l'inventaire de Windows
     pub windows: &'static [&'static [&'static str]],
-    #[cfg_attr(windows, allow(dead_code))] // lu par l'inventaire de macOS
-    pub mac: &'static [AppMac],
     /// Les sources qui le jugent (identifiants de `sources::SOURCES`).
     pub sources: &'static [&'static str],
-    /// Sous macOS, les formules de Homebrew qui l'installent (dossiers `Cellar/<formule>/<version>`), pour un
-    /// logiciel sans application.
-    #[cfg_attr(windows, allow(dead_code))] // lu par l'inventaire de macOS
-    pub homebrew: &'static [&'static str],
     /// Une ligne du catalogue de la CISA (éditeur, produit) le concerne : couples exacts, mesurés sur le catalogue
     /// du 21 oct. 2026.
     pub kev: fn(&str, &str) -> bool,
-}
-
-const fn mac(bundle_id: &'static str, cle: CleMac) -> AppMac {
-    AppMac {
-        bundle_id,
-        cle,
-        source: None,
-    }
-}
-
-const fn office(bundle_id: &'static str, source: &'static str) -> AppMac {
-    AppMac {
-        bundle_id,
-        cle: CleMac::Build,
-        source: Some(source),
-    }
 }
 
 /// Chromium : les failles du moteur, que Chrome et Edge partagent. « Chrome for Android » n'est pas le Chrome d'un
@@ -211,116 +158,73 @@ const CHROME: &[&str] = &[
     "chrome-win64-extended",
     "chrome-win_arm64-stable",
     "chrome-win_arm64-extended",
-    "chrome-mac-stable",
-    "chrome-mac-extended",
-    "chrome-mac_arm64-stable",
-    "chrome-mac_arm64-extended",
 ];
 
-/// La table. Firefox ESR pour Mac garde l'identifiant de Firefox (`org.mozilla.firefox`) : un identifiant à part
-/// n'est pas confirmé, la branche se lit dans `channel-prefs.js`.
+/// La table.
 pub(crate) const FICHES: &[Fiche] = &[
     Fiche {
         produit: Produit::Chrome,
         windows: &[&["Google", "Chrome", "Application", "chrome.exe"]],
-        mac: &[mac("com.google.Chrome", CleMac::Courte)],
         sources: CHROME,
-        homebrew: &[],
         kev: kev_chrome,
     },
     Fiche {
         produit: Produit::Edge,
         windows: &[&["Microsoft", "Edge", "Application", "msedge.exe"]],
-        mac: &[mac("com.microsoft.edgemac", CleMac::Courte)],
         sources: &["edge"],
-        homebrew: &[],
         kev: kev_edge,
     },
     Fiche {
         produit: Produit::Firefox,
         windows: &[&["Mozilla Firefox", "application.ini"]],
-        mac: &[mac("org.mozilla.firefox", CleMac::Courte)],
         sources: &["mozilla", "mfsa"],
-        homebrew: &[],
         kev: kev_firefox,
     },
     Fiche {
         produit: Produit::Brave,
         windows: &[&["BraveSoftware", "Brave-Browser", "Application", "brave.exe"]],
-        mac: &[mac("com.brave.Browser", CleMac::Courte)],
-        sources: &[
-            "brave-windows-x64",
-            "brave-windows-arm64",
-            "brave-macos-arm64",
-            "brave-macos-x64",
-        ],
-        homebrew: &[],
+        sources: &["brave-windows-x64", "brave-windows-arm64"],
         kev: kev_aucune,
     },
     // Sous Windows, Office Click-to-Run se lit dans le registre ; en MSI, il reste à `fin_de_support`.
     Fiche {
         produit: Produit::Office,
         windows: &[],
-        mac: &[
-            office("com.microsoft.Word", "mau-MSWD2019"),
-            office("com.microsoft.Excel", "mau-XCEL2019"),
-            office("com.microsoft.Powerpoint", "mau-PPT32019"),
-            office("com.microsoft.Outlook", "mau-OPIM2019"),
-            office("com.microsoft.onenote.mac", "mau-ONMC2019"),
-        ],
-        sources: &[
-            "office",
-            "mau-MSWD2019",
-            "mau-XCEL2019",
-            "mau-PPT32019",
-            "mau-OPIM2019",
-            "mau-ONMC2019",
-        ],
-        homebrew: &[],
+        sources: &["office"],
         kev: kev_office,
     },
     // Acrobat et Reader sous Windows : par leurs clés Uninstall (nom et éditeur exacts), puis l'exécutable.
     Fiche {
         produit: Produit::Acrobat,
         windows: &[],
-        mac: &[mac("com.adobe.Acrobat.Pro", CleMac::Courte)],
         sources: &["adobe-acrobat"],
-        homebrew: &[],
         kev: kev_adobe,
     },
     Fiche {
         produit: Produit::Reader,
         windows: &[],
-        mac: &[mac("com.adobe.Reader", CleMac::Courte)],
         sources: &["adobe-reader"],
-        homebrew: &[],
         kev: kev_adobe,
     },
     // Java : par son fichier `release`, dans les dossiers connus de chaque distribution.
     Fiche {
         produit: Produit::Java(Distribution::Autre),
         windows: &[],
-        mac: &[],
         sources: &["eol"],
-        homebrew: &[],
         kev: kev_java,
     },
-    // 7-Zip et PuTTY : l'exécutable sous Windows (ressource de version) ; sous macOS, sans application, la formule
-    // de Homebrew qui les installe. Leur dernière version vient de formula.json (Homebrew suit l'amont).
+    // 7-Zip et PuTTY : l'exécutable sous Windows (ressource de version). Leur dernière version vient de formula.json
+    // (Homebrew suit l'amont).
     Fiche {
         produit: Produit::SevenZip,
         windows: &[&["7-Zip", "7z.exe"]],
-        mac: &[],
         sources: &["formules"],
-        homebrew: &["sevenzip"],
         kev: kev_7zip,
     },
     Fiche {
         produit: Produit::PuTTY,
         windows: &[&["PuTTY", "putty.exe"]],
-        mac: &[],
         sources: &["formules"],
-        homebrew: &["putty"],
         kev: kev_aucune,
     },
     // Slack : par machine sous `Program Files\Slack` (MSI, sans mise à jour automatique), par compte sous
@@ -328,20 +232,10 @@ pub(crate) const FICHES: &[Fiche] = &[
     Fiche {
         produit: Produit::Slack,
         windows: &[&["slack", "slack.exe"]],
-        mac: &[mac("com.tinyspeck.slackmacgap", CleMac::Courte)],
-        sources: &["slack-windows", "slack-macos"],
-        homebrew: &[],
+        sources: &["slack-windows"],
         kev: kev_aucune,
     },
 ];
-
-/// L'application Mac de cet identifiant exact, et son produit.
-#[cfg_attr(windows, allow(dead_code))] // lu par l'inventaire de macOS
-pub(crate) fn app_mac(bundle_id: &str) -> Option<(Produit, &'static AppMac)> {
-    FICHES
-        .iter()
-        .find_map(|f| f.mac.iter().find(|a| a.bundle_id == bundle_id).map(|a| (f.produit, a)))
-}
 
 #[cfg(test)]
 mod tests {
@@ -350,11 +244,6 @@ mod tests {
 
     #[test]
     fn table_sans_double_et_sources_connues() {
-        let mut ids: Vec<&str> = FICHES.iter().flat_map(|f| f.mac.iter().map(|a| a.bundle_id)).collect();
-        let n = ids.len();
-        ids.sort_unstable();
-        ids.dedup();
-        assert_eq!(ids.len(), n, "identifiant Mac en double");
         let mut chemins: Vec<String> = FICHES
             .iter()
             .flat_map(|f| f.windows.iter().map(|c| c.join("/").to_lowercase()))
@@ -371,7 +260,7 @@ mod tests {
                 f.produit
             );
             assert!(!f.sources.is_empty(), "{:?}", f.produit);
-            for s in f.sources.iter().copied().chain(f.mac.iter().filter_map(|a| a.source)) {
+            for s in f.sources.iter().copied() {
                 assert!(SOURCES.iter().any(|x| x.id == s), "source inconnue : {s}");
             }
             assert!(
@@ -419,19 +308,6 @@ mod tests {
             assert!(FICHES.iter().any(|f| f.produit == attendu), "{p:?} sans fiche");
         }
         assert_ne!(Produit::Java(Autre).noms()[0], Produit::Java(Autre).noms()[1]);
-    }
-
-    #[test]
-    fn identifiants_exacts() {
-        assert_eq!(app_mac("com.google.Chrome").map(|(p, _)| p), Some(Produit::Chrome));
-        assert!(app_mac("com.google.Chrome.canary").is_none());
-        assert!(app_mac("com.google.chrome").is_none());
-        let (p, app) = app_mac("com.microsoft.Excel").unwrap();
-        assert_eq!(
-            (p, app.cle, app.source),
-            (Produit::Office, CleMac::Build, Some("mau-XCEL2019"))
-        );
-        assert_eq!(CleMac::Build.nom(), "CFBundleVersion");
     }
 
     #[test]
@@ -488,18 +364,18 @@ mod tests {
         assert!(!kev(Produit::Slack, "Google", "Chromium V8"));
     }
 
-    /// Les formules de Homebrew de la table sont celles que le lecteur de formula.json garde, et inversement.
+    /// Les logiciels jugés par formula.json sont ceux dont le lecteur des formules garde la version, et inversement.
     #[test]
     fn formules_de_homebrew() {
         use crate::protection::perimes::sources::homebrew::FORMULES_SUIVIES;
-        let mut table: Vec<&str> = FICHES.iter().flat_map(|f| f.homebrew.iter().copied()).collect();
-        table.sort_unstable();
+        let par_formule: Vec<Produit> = FICHES
+            .iter()
+            .filter(|f| f.sources.contains(&"formules"))
+            .map(|f| f.produit)
+            .collect();
+        assert_eq!(par_formule, [Produit::SevenZip, Produit::PuTTY]);
         let mut suivies = FORMULES_SUIVIES.to_vec();
         suivies.sort_unstable();
-        assert_eq!(table, suivies);
-        assert_eq!(
-            app_mac("com.tinyspeck.slackmacgap").map(|(p, _)| p),
-            Some(Produit::Slack)
-        );
+        assert_eq!(suivies, ["putty", "sevenzip"]);
     }
 }

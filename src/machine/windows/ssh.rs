@@ -1,4 +1,4 @@
-//! SSH sous Windows, à parité avec Linux et macOS : le serveur OpenSSH de Microsoft (service `sshd`, sa
+//! SSH sous Windows, à parité avec Linux : le serveur OpenSSH de Microsoft (service `sshd`, sa
 //! configuration dans %ProgramData%\ssh, l'authentification par mot de passe, le fichier des clés des
 //! administrateurs) et les clés privées du compte (%USERPROFILE%\.ssh). Tout est lu en Rust : le registre pour le
 //! service, WMI pour son état, les fichiers eux-mêmes et leurs droits (`securite`).

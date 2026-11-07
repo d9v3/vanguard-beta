@@ -11,7 +11,7 @@
 //! authentification). Rien vers les autres appareils du réseau.
 //! Ce qui ne se lit pas, ou pas hors ligne, est dit « non vérifié », jamais compté sain.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -434,14 +434,6 @@ fn fichiers_de_politique() -> Vec<PathBuf> {
         ]
         .map(PathBuf::from),
     );
-    #[cfg(target_os = "macos")]
-    liste.extend(
-        [
-            "/Applications/Firefox.app/Contents/Resources/distribution/policies.json",
-            "/Library/Application Support/Mozilla/policies.json",
-        ]
-        .map(PathBuf::from),
-    );
     #[cfg(windows)]
     for variable in ["ProgramFiles", "ProgramFiles(x86)"] {
         if let Some(programmes) = std::env::var_os(variable) {
@@ -566,8 +558,8 @@ fn certificat_du_site() -> Tls {
 }
 
 /// Un proxy est-il réglé pour HTTPS, là où le client HTTPS de Vanguard ou les navigateurs le prennent : variables
-/// d'environnement partout, le registre sous Windows, les réglages réseau sous macOS, ceux du bureau sous Linux
-/// (GNOME, KDE : Chrome et Firefox les suivent, pas la sonde). `None` : illisible (sous Windows et macOS).
+/// d'environnement partout, le registre sous Windows, ceux du bureau sous Linux
+/// (GNOME, KDE : Chrome et Firefox les suivent, pas la sonde). `None` : illisible (sous Windows).
 #[cfg_attr(target_os = "linux", allow(clippy::unnecessary_wraps))]
 fn proxy_du_systeme() -> Option<bool> {
     let variable = ["https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"]
@@ -588,14 +580,6 @@ fn proxy_du_systeme() -> Option<bool> {
             .get_value::<String, _>("AutoConfigURL")
             .is_ok_and(|v| !v.trim().is_empty());
         Some(actif || pac)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let r = crate::commande::lancer(std::process::Command::new("scutil").arg("--proxy"), 5)?;
-        Some(r.sortie.lines().any(|l| {
-            let l = l.split_whitespace().collect::<String>();
-            l == "HTTPSEnable:1" || l == "ProxyAutoConfigEnable:1"
-        }))
     }
     #[cfg(target_os = "linux")]
     {
@@ -1446,20 +1430,6 @@ fn constat_chiffrement(e: &Entree) -> Constat {
                 trf!(
                     "Les questions DNS de cet ordinateur partent chiffrées ({comment}, vers {serveur}).",
                     "This computer's DNS questions leave encrypted ({comment}, to {serveur})."
-                ),
-            ),
-            ID,
-        );
-    }
-    // Rien ne dit que c'est chiffré. Sous macOS sans résolveur local connu, on ne sait pas lire un profil de DNS
-    // chiffré : non vérifié plutôt que « en clair ».
-    if cfg!(target_os = "macos") && e.utilise.as_ref().is_none_or(|u| u.chiffre.is_none()) {
-        return regle(
-            impossible(
-                CAT_DNS,
-                tr!(
-                    "DNS chiffré du système non lisible sans programme externe (profil macOS)",
-                    "system encrypted DNS not readable without an external program (macOS profile)"
                 ),
             ),
             ID,

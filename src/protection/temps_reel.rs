@@ -178,12 +178,7 @@ fn dossier_appelant(
     let uid: libc::uid_t = appelant?.trim().parse().ok().filter(|&u| u != 0)?;
     let maison = dossier_de(uid).filter(|d| d.is_absolute())?;
     // Le dossier par défaut de `crate::socle::dossier_local` (le XDG_DATA_HOME du compte ne se lit pas d'ici).
-    let sous = if cfg!(target_os = "macos") {
-        "Library/Application Support/vanguard"
-    } else {
-        ".local/share/vanguard"
-    };
-    Some(maison.join(sous))
+    Some(maison.join(".local/share/vanguard"))
 }
 
 fn maintenant() -> i64 {

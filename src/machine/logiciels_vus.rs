@@ -3,17 +3,16 @@
 //! espion ou un programme installé à son insu (souvent par un autre installateur). L'inventaire ne quitte jamais
 //! l'ordinateur : il reste dans le dossier de Vanguard, jamais envoyé ni noté au journal des erreurs.
 //!
-//! Ce qui est lu : sous Windows, le panneau « Applications installées » (machine et ce compte ; pas les autres
-//! sessions ouvertes, qui vont et viennent : leurs logiciels reviendraient « nouveaux » à chaque reconnexion) ;
-//! sous Linux, les paquets (pacman, dpkg, rpm en secours) et les applications Flatpak ; sous macOS, les applications
-//! de /Applications et ~/Applications. Une source qui ne se lit pas rend tout le bilan non vérifié : une liste sans
-//! elle oublierait ses logiciels, qui reviendraient ensuite comme nouveaux. Ceux du premier passage sont connus
-//! d'avant. La surveillance horaire voit l'alerte apparaître comme tout nouveau problème.
+//! Ce qui est lu : sous Windows, le panneau « Applications installées » (machine et ce compte ; pas les autres sessions
+//! ouvertes, qui vont et viennent : leurs logiciels reviendraient « nouveaux » à chaque reconnexion) ; sous Linux, les
+//! paquets (pacman, dpkg, rpm en secours) et les applications Flatpak. Une source qui ne se lit pas rend tout le bilan
+//! non vérifié : une liste sans elle oublierait ses logiciels, qui reviendraient ensuite comme nouveaux. Ceux du
+//! premier passage sont connus d'avant. La surveillance horaire voit l'alerte apparaître comme tout nouveau problème.
 //!
 //! Chaque logiciel est gardé sous une clé sans ses numéros de version (« Outil # (x64) ») : sous Windows, le nom
 //! affiché en contient souvent un, et chaque mise à jour serait prise pour une nouvelle installation.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -76,7 +75,7 @@ struct Vus {
 const SANS_NOM_MAX: usize = 1000;
 
 /// Ce qui a été lu : (nom, version, vide si inconnue), et pourquoi la liste n'est pas entière quand une borne de
-/// lecture a été atteinte (sous-clés, entrées d'un dossier). Une liste coupée n'est jamais jugée : ce qui manque
+/// lecture a été atteinte (sous-clés du registre, clés sans nom). Une liste coupée n'est jamais jugée : ce qui manque
 /// serait oublié, puis redit « nouveau », et un programme caché derrière la borne ne serait jamais vu.
 struct Lu {
     logiciels: Vec<(String, String)>,
@@ -164,63 +163,6 @@ fn avec_flatpak(
         None => {}
     }
     Some(l)
-}
-
-/// Entrées lues au plus par dossier d'applications.
-#[cfg(target_os = "macos")]
-const ENTREES_MAX: usize = 5_000;
-
-#[cfg(target_os = "macos")]
-fn lire() -> Option<Lu> {
-    use std::path::PathBuf;
-    let version = |app: &std::path::Path| match crate::plist::lire_fichier(&app.join("Contents/Info.plist")) {
-        Ok(crate::plist::Lu::Plist(v)) => v
-            .cle("CFBundleShortVersionString")
-            .and_then(crate::plist::Valeur::texte)
-            .unwrap_or_default()
-            .to_string(),
-        _ => String::new(),
-    };
-    let dossiers = [
-        PathBuf::from("/Applications"),
-        PathBuf::from("/Applications/Utilities"),
-        crate::socle::maison().join("Applications"),
-    ];
-    // /Applications illisible : rien ne vaut lecture. Un autre dossier là mais illisible non plus : ses applications
-    // seraient oubliées, puis redites « nouvelles ».
-    std::fs::read_dir(&dossiers[0]).ok()?;
-    let mut l = Vec::new();
-    let mut coupe = None;
-    for d in &dossiers {
-        let entrees = match std::fs::read_dir(d) {
-            Ok(e) => e,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => return None,
-        };
-        // Une entrée de plus que la borne est demandée pour savoir qu'elle est atteinte : la liste est alors dite
-        // coupée, jamais prise pour entière.
-        let mut n = 0;
-        for e in entrees.flatten() {
-            n += 1;
-            if n > ENTREES_MAX {
-                coupe = Some(trf!(
-                    "plus de {ENTREES_MAX} entrées dans {}",
-                    "more than {ENTREES_MAX} entries in {}",
-                    affichable(&d.to_string_lossy())
-                ));
-                break;
-            }
-            let p = e.path();
-            if p.extension().is_some_and(|x| x == "app") {
-                let nom = p
-                    .file_stem()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                l.push((nom, version(&p)));
-            }
-        }
-    }
-    Some(Lu { logiciels: l, coupe })
 }
 
 fn juger(lus: &[(String, String)], avant: Option<&Vus>, aujourd_hui: NaiveDate) -> (Constat, Vus) {
@@ -590,7 +532,7 @@ mod tests {
         assert!(c.message.contains(&LOGICIELS_MAX.to_string()), "{}", c.message);
         let c = constat_de(Some(Lu {
             logiciels: l(&[("Firefox", "")]),
-            coupe: Some("plus de 5000 entrées dans /Applications".into()),
+            coupe: Some("trop de sous-clés dans HKLM\\…\\Uninstall".into()),
         }));
         assert!(matches!(c.etat(), Etat::NonVerifie(_)), "{:?}", c.etat());
     }

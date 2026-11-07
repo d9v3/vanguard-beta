@@ -1,7 +1,7 @@
 //! Le matériel, pour le relevé local (plan d'auto-amélioration, §1) : des classes fermées (fabricant, sorte de disque,
 //! machine virtuelle, mémoire arrondie à une puissance de 2), et le seul modèle du processeur en voie ouverte, nettoyé.
 //! Jamais de numéro de série, jamais `journal::systeme()`, jamais de commande : des lectures natives seulement (/proc
-//! et /sys sous Linux, WMI et le registre sous Windows, sysctl sous macOS). Ce qui n'a pas pu être lu le dit
+//! et /sys sous Linux, WMI et le registre sous Windows). Ce qui n'a pas pu être lu le dit
 //! (`TroisEtats::Inconnu`, `Disque::Inconnu`).
 
 use crate::compte_rendu::envoi::{
@@ -427,44 +427,7 @@ mod systeme {
     }
 }
 
-#[cfg(target_os = "macos")]
-mod systeme {
-    use super::*;
-    use crate::machine::macos::{sysctl_nombre, sysctl_texte};
-
-    pub(crate) fn lire() -> Option<Materiel> {
-        let memoire = sysctl_nombre("hw.memsize")?;
-        let fils = sysctl_nombre("hw.logicalcpu").unwrap_or_else(fils);
-        let marque = sysctl_texte("machdep.cpu.brand_string").unwrap_or_default();
-        let apple = cfg!(target_arch = "aarch64");
-        let modele_mac = sysctl_texte("hw.model").unwrap_or_default();
-        Some(Materiel {
-            processeur: if apple {
-                Processeur::Apple
-            } else {
-                processeur_de(&marque)
-            },
-            coeurs: nombre::<COEURS_MAX>(sysctl_nombre("hw.physicalcpu").unwrap_or(fils))?,
-            fils: nombre::<FILS_MAX>(fils)?,
-            memoire_go: memoire_de_octets(memoire),
-            // Sans IOKit (FFI), la sorte du disque reste inconnue.
-            disque: Disque::Inconnu,
-            virtuelle: if sysctl_nombre("kern.hv_vmm_present") == Some(1) {
-                Virtuelle::Autre
-            } else {
-                Virtuelle::Aucune
-            },
-            portable: modele_mac.starts_with("MacBook"),
-            tpm: TroisEtats::Inconnu,
-            demarrage_securise: TroisEtats::Inconnu,
-            graphique: if apple { Graphique::Apple } else { Graphique::Autre },
-            modele_processeur: modele(&marque),
-            modele_graphique: None,
-        })
-    }
-}
-
-#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", windows)))]
 mod systeme {
     pub(crate) fn lire() -> Option<super::Materiel> {
         None

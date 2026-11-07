@@ -1,6 +1,6 @@
 //! Partages de fichiers ouverts à tout le monde : un dossier partagé sur le réseau sans mot de passe (invité, « Tout
 //! le monde »), que n'importe quel appareil du réseau (un visiteur sur le Wi-Fi, un appareil infecté) peut lire, et
-//! souvent modifier. Samba et NFS sous Linux, partages SMB sous Windows, Partage de fichiers sous macOS. Un partage
+//! souvent modifier. Samba et NFS sous Linux, partages SMB sous Windows. Un partage
 //! réservé à des comptes nommés n'est pas signalé : c'est l'accès sans mot de passe qui compte. La correction ferme
 //! cet accès-là seulement ; les comptes nommés gardent le leur.
 
@@ -32,7 +32,7 @@ struct Partage {
     chemin: String,
     /// À qui : « l'invité », « Tout le monde »…
     a_qui: String,
-    /// `None` : pas su (macOS ne le dit pas).
+    /// `None` : pas su.
     ecriture: Option<bool>,
     nuance: Nuance,
     /// Commandes qui ferment l'accès sans mot de passe ; vides : à faire soi-même.
@@ -510,82 +510,6 @@ mod systeme {
     }
 }
 
-// ───────────────────────────── macOS ─────────────────────────────
-
-/// Les points de partage de `sharing -l` dont un protocole (smb, afp, ftp) est partagé avec l'accès invité.
-#[cfg(any(target_os = "macos", test))]
-fn lire_sharing(sortie: &str, nuance: Nuance, dossier_modifiable: impl Fn(&str) -> Option<bool>) -> Vec<Partage> {
-    use crate::commande::sh_chaine;
-    let mut partages = Vec::new();
-    let (mut nom, mut chemin, mut partage, mut invite) = (String::new(), String::new(), false, false);
-    let mut ouvert = false;
-    let clore = |nom: &str, chemin: &str, ouvert: bool, partages: &mut Vec<Partage>| {
-        if ouvert && !nom.is_empty() {
-            partages.push(Partage {
-                nom: nom.to_string(),
-                chemin: chemin.to_string(),
-                a_qui: tr!("l'invité (sans mot de passe)", "the guest (no password)").to_string(),
-                ecriture: dossier_modifiable(chemin),
-                nuance,
-                fermeture: vec![format!("sudo sharing -e {} -g 000", sh_chaine(nom))],
-            });
-        }
-    };
-    for ligne in sortie.lines() {
-        let indente = ligne.starts_with(['\t', ' ']);
-        let (cle, valeur) = ligne
-            .trim()
-            .split_once(':')
-            .map_or(("", ""), |(c, v)| (c.trim(), v.trim()));
-        match (indente, cle) {
-            (false, "name") => {
-                clore(&nom, &chemin, ouvert, &mut partages);
-                nom = valeur.to_string();
-                chemin.clear();
-                ouvert = false;
-            }
-            (false, "path") => chemin = valeur.to_string(),
-            (true, "afp" | "smb" | "ftp") => (partage, invite) = (false, false),
-            (true, "shared") => partage = valeur == "1",
-            (true, "guest access") => invite = valeur == "1",
-            (true, "") if ligne.trim() == "}" => ouvert |= partage && invite,
-            _ => {}
-        }
-    }
-    clore(&nom, &chemin, ouvert, &mut partages);
-    partages
-}
-
-#[cfg(target_os = "macos")]
-mod systeme {
-    use super::{Nuance, Releve};
-
-    pub fn relever() -> Option<Releve> {
-        let sortie = super::super::sortie("sharing", &["-l"])?;
-        // smbd et AppleFileServer ne tournent que si le partage de fichiers est activé.
-        // Demandé au noyau ; pgrep -x en secours quand la liste des processus ne se lit pas.
-        let lance = ["smbd", "AppleFileServer"].iter().any(|p| {
-            crate::machine::macos::noyau::en_marche(p).unwrap_or_else(|| {
-                crate::commande::lancer(std::process::Command::new("pgrep").args(["-x", p]), 10)
-                    .is_some_and(|r| r.code == Some(0))
-            })
-        });
-        let nuance = if lance { Nuance::Aucune } else { Nuance::ServiceArrete };
-        let modifiable = |chemin: &str| {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::metadata(chemin)
-                .ok()
-                .map(|m| m.permissions().mode() & 0o002 != 0)
-        };
-        let partages = super::lire_sharing(&sortie, nuance, modifiable);
-        Some(Releve {
-            service_vu_arrete: partages.is_empty() && !lance,
-            partages,
-            illisibles: Vec::new(),
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -852,23 +776,5 @@ mod tests {
                 ("Mesure", Some(true))
             ]
         );
-    }
-
-    #[test]
-    fn lecture_de_sharing_macos() {
-        let sortie = "List of Share Points\nname:\t\tPublic\npath:\t\t/Users/alice/Public\n\
-                      \tafp:\t\t{\n\t\tname:\t\tPublic\n\t\tshared:\t\t1\n\t\tguest access:\t1\n\t\tinherit perms:\t0\n\t}\n\
-                      \tftp:\t\t{\n\t\tname:\t\tPublic\n\t\tshared:\t\t0\n\t\tguest access:\t0\n\t}\n\
-                      \tsmb:\t\t{\n\t\tname:\t\tPublic\n\t\tshared:\t\t1\n\t\tguest access:\t1\n\t}\n\
-                      name:\t\tTravail\npath:\t\t/Users/alice/Travail\n\
-                      \tafp:\t\t{\n\t\tshared:\t\t0\n\t\tguest access:\t1\n\t}\n\
-                      \tsmb:\t\t{\n\t\tshared:\t\t1\n\t\tguest access:\t0\n\t}\n";
-        let p = lire_sharing(sortie, Nuance::Aucune, |chemin| Some(chemin.ends_with("Public")));
-        assert_eq!(p.len(), 1, "{p:#?}");
-        assert_eq!(
-            (p[0].nom.as_str(), p[0].chemin.as_str(), p[0].ecriture),
-            ("Public", "/Users/alice/Public", Some(true))
-        );
-        assert_eq!(p[0].fermeture, ["sudo sharing -e 'Public' -g 000"]);
     }
 }

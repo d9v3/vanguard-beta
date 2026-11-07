@@ -1824,7 +1824,7 @@ mod tests {
     #[test]
     fn chaque_regle_a_un_identifiant_garde() {
         use crate::machine::regles::{Os, regles};
-        for os in [Os::Linux, Os::Windows, Os::MacOs, Os::Tous] {
+        for os in [Os::Linux, Os::Windows, Os::Tous] {
             for r in regles(os) {
                 assert!(id_valide(r.id), "{}", r.id);
             }
@@ -1866,7 +1866,7 @@ mod tests {
                 "coupures": coupures, "relances": relances,
             }))
             .unwrap();
-            let toutes: Vec<_> = [Os::Linux, Os::Windows, Os::MacOs, Os::Tous].into_iter().flat_map(regles).collect();
+            let toutes: Vec<_> = [Os::Linux, Os::Windows, Os::Tous].into_iter().flat_map(regles).collect();
             for contenu in [octets, json] {
                 let e = lire_de(&contenu);
                 prop_assert!(e.montees.len() <= MONTEES_MAX);

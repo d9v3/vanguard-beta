@@ -1,9 +1,9 @@
 //! Logiciels : les meilleurs de chaque usage, libres pour la plupart, pour préparer un ordinateur neuf (ou celui
 //! d'un ami) en quelques choix. Chaque logiciel est montré installé ou non, puis installé seulement après accord,
 //! depuis la source officielle du système, qui vérifie chaque téléchargement (empreinte ou signature) : paquets de
-//! la distribution ou Flathub sous Linux, winget sous Windows, Homebrew sous macOS. Rien n'est désinstallé ici.
+//! la distribution ou Flathub sous Linux, winget sous Windows. Rien n'est désinstallé ici.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 mod catalogue;
@@ -25,7 +25,7 @@ struct Offre {
     flatpak: bool,
 }
 
-/// Ce qu'il faut installer avant les logiciels, s'il manque : Flatpak (Linux), Homebrew (macOS), winget (Windows,
+/// Ce qu'il faut installer avant les logiciels, s'il manque : Flatpak (Linux), winget (Windows,
 /// qui vient du Microsoft Store : on ouvre sa page).
 struct Prealable {
     nom: &'static str,
@@ -53,7 +53,7 @@ enum Suite {
 
 /// `nom` commence par `motif` (sans tenir compte des majuscules), suivi de rien ou d'un séparateur : « Git » et
 /// « Git 2.44 » sont Git, « GitHub Desktop » ne l'est pas.
-#[cfg(any(windows, target_os = "macos", test))]
+#[cfg(any(windows, test))]
 fn correspond(nom: &str, motif: &str) -> bool {
     let (nom, motif) = (nom.to_lowercase(), motif.to_lowercase());
     nom.strip_prefix(&motif)
@@ -203,45 +203,6 @@ fn lire_par_powershell() -> Result<Lu, String> {
     )
     .ok_or_else(|| tr!("PowerShell ne répond pas", "PowerShell is not responding").to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
-}
-
-/// Noms des applications de /Applications et ~/Applications, sans « .app ».
-#[cfg(target_os = "macos")]
-fn applications_mac() -> Vec<String> {
-    let maison = crate::socle::maison();
-    [std::path::PathBuf::from("/Applications"), maison.join("Applications")]
-        .iter()
-        .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
-        .filter_map(|e| e.file_name().to_str()?.strip_suffix(".app").map(str::to_string))
-        .collect()
-}
-
-/// macOS : Homebrew ; une application déjà dans /Applications (installée par Homebrew ou à la main) compte.
-#[cfg(target_os = "macos")]
-#[allow(clippy::unnecessary_wraps)] // même signature que sous Linux et Windows, où la lecture peut échouer
-fn lire() -> Result<Etat, String> {
-    use crate::machine::macos::{INSTALLER_HOMEBREW, brew, homebrew};
-    let apps = applications_mac();
-    let offres = CATALOGUE
-        .iter()
-        .filter_map(|l| {
-            let (cask, app) = l.mac?;
-            Some(Offre {
-                logiciel: l,
-                installe: apps.iter().any(|a| correspond(a, app)),
-                commandes: vec![format!("{} install --cask {cask}", brew())],
-                source: format!("Homebrew, {cask}"),
-                flatpak: false,
-            })
-        })
-        .collect();
-    let prealable = homebrew().is_none().then(|| Prealable {
-        nom: "Homebrew",
-        commandes: vec![INSTALLER_HOMEBREW.into()],
-        lien: None,
-        pour_flatpak: false,
-    });
-    Ok(Etat { offres, prealable })
 }
 
 fn role(l: &Logiciel) -> &'static str {
@@ -477,7 +438,7 @@ pub fn lignes_de_recherche(cle: &str) -> Vec<crate::selection::Ligne> {
         .collect()
 }
 
-/// Un logiciel a-t-il une source sur ce système (paquet ou Flathub sous Linux, winget, Homebrew) ? Sinon la
+/// Un logiciel a-t-il une source sur ce système (paquet ou Flathub sous Linux, winget) ? Sinon la
 /// recherche ne le propose pas : sa catégorie s'ouvrirait sans lui.
 fn pour_ce_systeme(l: &Logiciel) -> bool {
     // Comme `lire` : le paquet de cette distribution, sinon Flathub s'il est là. Lu une fois : l'index de la
@@ -492,8 +453,6 @@ fn pour_ce_systeme(l: &Logiciel) -> bool {
     }
     #[cfg(windows)]
     return l.winget.is_some();
-    #[cfg(target_os = "macos")]
-    return l.mac.is_some();
 }
 
 /// Les catégories qui ont au moins un logiciel sur ce système, dans l'ordre du menu Logiciels (2, 3… après le pack).
@@ -690,11 +649,7 @@ mod tests {
         for l in CATALOGUE {
             assert!(!l.role.0.is_empty() && !l.role.1.is_empty(), "{}", l.nom);
             let linux = l.paquets.iter().any(|p| !p.is_empty()) || l.flatpak.is_some();
-            assert!(
-                linux || l.winget.is_some() || l.mac.is_some(),
-                "{} ne s'installe nulle part",
-                l.nom
-            );
+            assert!(linux || l.winget.is_some(), "{} ne s'installe nulle part", l.nom);
             // Tout finit dans une commande : seulement des caractères sans effet dans un shell ou PowerShell.
             for p in l.paquets.iter().flat_map(|p| p.iter()) {
                 assert!(valide(p, "+._-"), "{} : paquet {p}", l.nom);
@@ -713,9 +668,6 @@ mod tests {
                     l.nom
                 );
             }
-            if let Some((cask, app)) = l.mac {
-                assert!(valide(cask, "@._-") && !app.is_empty(), "{} : cask {cask}", l.nom);
-            }
             for c in l.commandes {
                 assert!(valide(c, "._-"), "{} : programme {c}", l.nom);
             }
@@ -728,14 +680,13 @@ mod tests {
     fn propose(systeme: &str, l: &Logiciel) -> bool {
         match systeme {
             "Linux" => l.paquets.iter().any(|p| !p.is_empty()) || l.flatpak.is_some(),
-            "Windows" => l.winget.is_some(),
-            _ => l.mac.is_some(),
+            _ => l.winget.is_some(),
         }
     }
 
     #[test]
     fn chaque_systeme_a_son_pack_et_ses_categories() {
-        for systeme in ["Linux", "Windows", "macOS"] {
+        for systeme in ["Linux", "Windows"] {
             let pack = CATALOGUE.iter().filter(|l| l.recommande && propose(systeme, l)).count();
             assert_eq!(pack, 5, "{systeme} : pack de départ de {pack} logiciels");
             for c in Categorie::TOUTES {

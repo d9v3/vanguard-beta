@@ -4,7 +4,7 @@
 //! commande externe : if-addrs partout, /proc/net/if_inet6 et netlink sous Linux ; ailleurs, les voisins et le
 //! caractère temporaire d'une adresse ne se lisent pas d'ici, et c'est dit tel quel.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::net::Ipv6Addr;

@@ -6,7 +6,7 @@
 //! fait que lire (`lancement`). Tous les systèmes se lisent partout : sous Linux, on peut lire les commandes de
 //! Windows.
 
-// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// Le programme sous Linux : ses parties Windows ne sont pas encore relues, et les essais en sont exemptés
 // (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
 #![cfg_attr(
     all(target_os = "linux", not(test)),
@@ -18,7 +18,6 @@ mod debian;
 mod fedora;
 mod lancement;
 mod linux;
-mod macos;
 mod omarchy;
 mod tldr;
 mod tous;
@@ -53,8 +52,7 @@ pub enum Systeme {
     /// openSUSE, et les distributions que le guide ne range pas à part.
     AutresLinux,
     Windows,
-    MacOs,
-    /// Les commandes qui s'écrivent pareil sous les trois.
+    /// Les commandes qui s'écrivent pareil sous Linux et Windows.
     Tous,
     /// Les programmes communs à toutes les distributions.
     Linux,
@@ -66,14 +64,13 @@ pub enum Systeme {
 }
 
 /// Les systèmes du menu, dans l'ordre : leur rang fait leur touche (« 3 » : Fedora).
-pub const SYSTEMES: [Systeme; 10] = [
+pub const SYSTEMES: [Systeme; 9] = [
     Systeme::Omarchy,
     Systeme::Arch,
     Systeme::Fedora,
     Systeme::Debian,
     Systeme::AutresLinux,
     Systeme::Windows,
-    Systeme::MacOs,
     Systeme::Tous,
     Systeme::Tldr,
     // En fin : les numéros d'avant (6 Windows 11, 9 tldr…) ne bougent pas.
@@ -88,8 +85,6 @@ impl Systeme {
     fn actuel() -> Systeme {
         if cfg!(windows) {
             Systeme::Windows
-        } else if cfg!(target_os = "macos") {
-            Systeme::MacOs
         } else {
             *DISTRIBUTION.get_or_init(|| {
                 // Une Omarchy qui se dit Arch se reconnaît à son outil.
@@ -129,7 +124,6 @@ impl Systeme {
             Systeme::Debian => "Debian, Ubuntu",
             Systeme::AutresLinux => tr!("Autres Linux", "Other Linux"),
             Systeme::Windows => "Windows 11",
-            Systeme::MacOs => "macOS",
             Systeme::Tous => tr!("Tous les systèmes", "All systems"),
             Systeme::Linux => "Linux",
             Systeme::Tldr => "tldr-pages",
@@ -146,7 +140,6 @@ impl Systeme {
             Systeme::Debian => &["debian", "ubuntu", "mint"],
             Systeme::AutresLinux => &["opensuse", "suse", "autres", "other"],
             Systeme::Windows => &["windows", "win", "windows11"],
-            Systeme::MacOs => &["macos", "mac", "osx"],
             Systeme::Tous => &["tous", "all", "general"],
             Systeme::Linux => &["linux"],
             Systeme::Tldr => &["tldr"],
@@ -163,7 +156,6 @@ impl Systeme {
             Systeme::Debian => debian::PROGRAMMES,
             Systeme::AutresLinux => linux::AUTRES,
             Systeme::Windows => windows::PROGRAMMES,
-            Systeme::MacOs => macos::PROGRAMMES,
             Systeme::Tous => tous::PROGRAMMES,
             Systeme::Linux => linux::COMMUNS,
             // Ses pages se téléchargent : `programmes` les prend dans `tldr`.
@@ -180,7 +172,6 @@ impl Systeme {
             Systeme::Fedora => fedora::PAS_A_PAS,
             Systeme::Debian => debian::PAS_A_PAS,
             Systeme::Windows => windows::PAS_A_PAS,
-            Systeme::MacOs => macos::PAS_A_PAS,
             Systeme::AutresLinux => linux::PAS_A_PAS,
             Systeme::Tous => tous::PAS_A_PAS,
             _ => &[],
@@ -214,13 +205,9 @@ impl Systeme {
                 "Windows 11 (et 10) : logiciels par winget ou le Microsoft Store, mises à jour par Windows Update, sécurité par Microsoft Defender. Les commandes se tapent dans le Terminal (PowerShell).",
                 "Windows 11 (and 10): software through winget or the Microsoft Store, updates through Windows Update, security through Microsoft Defender. Commands are typed in the Terminal (PowerShell)."
             ),
-            Systeme::MacOs => tr!(
-                "macOS : logiciels par l'App Store ou Homebrew (brew), mises à jour par softwareupdate, sauvegardes par Time Machine. sudo demande le mot de passe de votre session.",
-                "macOS: software through the App Store or Homebrew (brew), updates through softwareupdate, backups through Time Machine. sudo asks for your session password."
-            ),
             Systeme::Tous => tr!(
-                "Les commandes qui s'écrivent pareil sous Linux, Windows et macOS : réseau, connexions à distance, projets git, et Vanguard lui-même en ligne de commande.",
-                "The commands typed the same way on Linux, Windows and macOS: network, remote connections, git projects, and Vanguard itself from the command line."
+                "Les commandes qui s'écrivent pareil sous Linux et Windows : réseau, connexions à distance, projets git, et Vanguard lui-même en ligne de commande.",
+                "The commands typed the same way on Linux and Windows: network, remote connections, git projects, and Vanguard itself from the command line."
             ),
             Systeme::Linux => tr!(
                 "Les programmes communs à toutes les distributions de Linux.",
@@ -270,10 +257,6 @@ impl Systeme {
                 "Terminal : Windows+X, puis Terminal (Windows 11) ou Windows PowerShell (Windows 10) ; leur version « (admin) » pour les commandes marquées ⚠.",
                 "Terminal: Windows+X, then Terminal (Windows 11) or Windows PowerShell (Windows 10); their “(Admin)” version for the commands marked ⚠."
             ),
-            Systeme::MacOs => tr!(
-                "Terminal : Cmd+Espace, taper « Terminal », puis Entrée.",
-                "Terminal: Cmd+Space, type “Terminal”, then Enter."
-            ),
             Systeme::Tous | Systeme::Tldr | Systeme::Vanguard => tr!(
                 "Dans tout terminal : Tab complète un nom, ↑ rappelle la commande d'avant, Ctrl-C arrête celle en cours.",
                 "In any terminal: Tab completes a name, ↑ brings back the previous command, Ctrl-C stops the running one."
@@ -290,7 +273,6 @@ impl Systeme {
             Systeme::Debian => "apt, dpkg, snap, ufw, Mint…",
             Systeme::AutresLinux => tr!("openSUSE : zypper, firewalld…", "openSUSE: zypper, firewalld…"),
             Systeme::Windows => "winget, sfc, DISM, PowerShell…",
-            Systeme::MacOs => "brew, diskutil, Time Machine…",
             Systeme::Tous => "Vanguard, ping, ssh, git, curl…",
             Systeme::Linux => "systemctl, journalctl, ip, nmcli…",
             Systeme::Tldr => tr!("des milliers d'exemples, à copier", "thousands of examples, to copy"),
@@ -490,7 +472,6 @@ const NOMS_EN: &[(&str, &str)] = &[
     ("Pas à pas : sécurité", "Step by step: security"),
     ("Pas à pas : lenteur", "Step by step: slowness"),
     ("Pas à pas : réparer le disque", "Step by step: repair the disk"),
-    ("Pas à pas : Time Machine", "Step by step: Time Machine"),
     ("Pas à pas : revenir en arrière", "Step by step: roll back"),
     ("Pas à pas : clé SSH", "Step by step: SSH key"),
     ("Pas à pas : git", "Step by step: git"),
@@ -544,7 +525,7 @@ fn installe(p: &Programme) -> bool {
 }
 
 /// Ce fichier est-il là ? Cherché dans le PATH, et dans les dossiers des outils d'administration que le PATH d'un
-/// compte ordinaire omet parfois (Debian), ou de Homebrew (macOS) ; un chemin complet, tel quel.
+/// compte ordinaire omet parfois (Debian) ; un chemin complet, tel quel.
 fn installe_ici(executable: &str) -> bool {
     // Un lien vers un programme compte : les alias d'applications de Windows (winget) en sont, illisibles comme
     // fichiers ordinaires.
@@ -556,16 +537,7 @@ fn installe_ici(executable: &str) -> bool {
         .map(|chemins| std::env::split_paths(&chemins).collect())
         .unwrap_or_default();
     if cfg!(unix) {
-        dossiers.extend(
-            [
-                "/usr/sbin",
-                "/sbin",
-                "/usr/local/sbin",
-                "/opt/homebrew/bin",
-                "/usr/local/bin",
-            ]
-            .map(PathBuf::from),
-        );
+        dossiers.extend(["/usr/sbin", "/sbin", "/usr/local/sbin", "/usr/local/bin"].map(PathBuf::from));
     }
     let noms: Vec<String> = if cfg!(windows) {
         [".exe", ".com", ".cmd", ".bat"]
@@ -601,16 +573,13 @@ fn afficher_commande(c: &Commande) {
     }
 }
 
-/// Les façons de remplir le presse-papier sous Linux et macOS, à essayer dans l'ordre : des scripts `sh` qui
+/// Les façons de remplir le presse-papier sous Linux, à essayer dans l'ordre : des scripts `sh` qui
 /// reçoivent le texte en premier argument (« $1 »), jamais mêlé au script, pour qu'aucun caractère de la commande ne
 /// s'y exécute. Leurs sorties vont à /dev/null : wl-copy et xclip restent en fond pour servir le presse-papier, et
 /// garderaient sinon ouverte la sortie que lit `commande::lancer`.
 #[cfg(any(not(windows), test))]
-fn scripts_presse_papier(macos: bool, wayland: bool, x11: bool) -> Vec<&'static str> {
+fn scripts_presse_papier(wayland: bool, x11: bool) -> Vec<&'static str> {
     let mut scripts = Vec::new();
-    if macos {
-        scripts.push("printf %s \"$1\" | pbcopy");
-    }
     if wayland {
         scripts.push("wl-copy -- \"$1\" >/dev/null 2>&1");
     }
@@ -621,7 +590,7 @@ fn scripts_presse_papier(macos: bool, wayland: bool, x11: bool) -> Vec<&'static 
     scripts
 }
 
-/// Met `texte` dans le presse-papier par l'outil du système (Set-Clipboard, pbcopy, wl-copy, xclip ou xsel). Faux
+/// Met `texte` dans le presse-papier par l'outil du système (Set-Clipboard, wl-copy, xclip ou xsel). Faux
 /// si aucun n'a marché : pas de bureau (SSH, console), ou outil absent.
 fn copier(texte: &str) -> bool {
     #[cfg(windows)]
@@ -636,16 +605,12 @@ fn copier(texte: &str) -> bool {
     #[cfg(not(windows))]
     {
         let present = |variable: &str| std::env::var_os(variable).is_some_and(|v| !v.is_empty());
-        scripts_presse_papier(
-            cfg!(target_os = "macos"),
-            present("WAYLAND_DISPLAY"),
-            present("DISPLAY"),
-        )
-        .into_iter()
-        .any(|script| {
-            crate::commande::lancer(std::process::Command::new("sh").args(["-c", script, "sh", texte]), 5)
-                .is_some_and(|r| r.code == Some(0))
-        })
+        scripts_presse_papier(present("WAYLAND_DISPLAY"), present("DISPLAY"))
+            .into_iter()
+            .any(|script| {
+                crate::commande::lancer(std::process::Command::new("sh").args(["-c", script, "sh", texte]), 5)
+                    .is_some_and(|r| r.code == Some(0))
+            })
     }
 }
 
@@ -752,7 +717,6 @@ fn ordre_de_recherche() -> Vec<Systeme> {
         Systeme::AutresLinux,
         Systeme::Omarchy,
         Systeme::Windows,
-        Systeme::MacOs,
         Systeme::Vanguard,
     ] {
         if !ordre.contains(&s) {
@@ -842,7 +806,7 @@ pub fn chemin(texte: &str) -> Option<(usize, Option<usize>, Option<usize>)> {
     parties.next().is_none().then_some((systeme, programme, commande))
 }
 
-/// Ouvre une page du guide trouvée par la recherche : un système (1 à 8), l'un de ses programmes, ou l'une de ses
+/// Ouvre une page du guide trouvée par la recherche : un système (1 à 9), l'un de ses programmes, ou l'une de ses
 /// commandes.
 pub fn ouvrir(systeme: usize, programme: Option<usize>, commande: Option<usize>) {
     let Some(&s) = systeme.checked_sub(1).and_then(|i| SYSTEMES.get(i)) else {
@@ -865,7 +829,7 @@ fn place(s: Systeme, p: &Programme, commande: Option<usize>) -> Option<String> {
     let candidats: Vec<(usize, Systeme)> = SYSTEMES
         .iter()
         .enumerate()
-        // Une page de tldr-pages se range sous tldr (9), son système propriétaire étant sa plateforme.
+        // Une page de tldr-pages se range sous tldr (8), son système propriétaire étant sa plateforme.
         .filter(|(_, x)| **x != Systeme::Tldr || tldr::plateforme(p).is_some())
         .map(|(rang, x)| (rang, *x))
         .collect();
@@ -1450,7 +1414,7 @@ fn lignes_de_tldr() -> Vec<Ligne> {
         .collect()
 }
 
-/// Le système désigné par un mot (« mac », « Fedora », « tous », « linux » pour les programmes communs).
+/// Le système désigné par un mot (« win », « Fedora », « tous », « linux » pour les programmes communs).
 fn systeme(mot: &str) -> Option<Systeme> {
     let m = simplifier(mot);
     SYSTEMES
@@ -1571,19 +1535,14 @@ mod tests {
     use super::*;
 
     /// Les chemins que d'autres citent (le test de la VM, le CHANGELOG, l'aide) ne changent jamais de sens : un
-    /// système ou un programme ajouté va en fin de liste.
+    /// système ou un programme ajouté va en fin de liste. Seul le retrait de macOS (7) a avancé d'un rang les trois
+    /// suivants.
     #[test]
     fn chemins_figes() {
         let systeme = |n: usize| SYSTEMES[n - 1];
         assert_eq!(
-            [systeme(6), systeme(7), systeme(8), systeme(9), systeme(10)],
-            [
-                Systeme::Windows,
-                Systeme::MacOs,
-                Systeme::Tous,
-                Systeme::Tldr,
-                Systeme::Vanguard
-            ]
+            [systeme(6), systeme(7), systeme(8), systeme(9)],
+            [Systeme::Windows, Systeme::Tous, Systeme::Tldr, Systeme::Vanguard]
         );
         let programme = |s: usize, p: usize| systeme(s).programmes()[p - 1].1.nom;
         assert_eq!(programme(6, 7), "winget");
@@ -1591,7 +1550,7 @@ mod tests {
         assert_eq!(programme(6, 36), "Get-NetConnectionProfile");
     }
 
-    /// Les commandes de Vanguard (10.10) : chaque commande visible y est, une fois.
+    /// Les commandes de Vanguard (10.9) : chaque commande visible y est, une fois.
     #[test]
     fn chaque_commande_dans_commandes_de_vanguard() {
         use clap::CommandFactory;
@@ -1679,19 +1638,20 @@ mod tests {
 
     #[test]
     fn le_presse_papier_suit_le_bureau() {
-        assert_eq!(scripts_presse_papier(false, false, false), [] as [&str; 0]);
-        assert!(scripts_presse_papier(true, false, false)[0].contains("pbcopy"));
-        let linux = scripts_presse_papier(false, true, true);
+        assert_eq!(scripts_presse_papier(false, false), [] as [&str; 0]);
+        assert!(scripts_presse_papier(false, true)[0].contains("xclip"));
+        let linux = scripts_presse_papier(true, true);
         assert!(linux[0].contains("wl-copy") && linux[1].contains("xclip") && linux[2].contains("xsel"));
     }
 
     /// La commande copiée arrive telle quelle à l'outil : ni « $( ) », ni apostrophe, ni « ; » ne s'exécutent. `cat`
-    /// prend la place de pbcopy pour lire ce qu'il reçoit.
+    /// prend la place de xclip (et de son renvoi vers /dev/null) pour lire ce qu'il reçoit.
     #[cfg(unix)]
     #[test]
     fn la_commande_copiee_reste_du_texte() {
         let piege = r#"-n echo "$(touch /tmp/x)" '; echo INJECTE; ' `id` $HOME \ <fichier>"#;
-        let script = scripts_presse_papier(true, false, false)[0].replace("pbcopy", "cat");
+        let script = scripts_presse_papier(false, true)[0].replace("xclip -selection clipboard >/dev/null 2>&1", "cat");
+        assert!(script.ends_with("| cat"), "{script}");
         let r =
             crate::commande::lancer(std::process::Command::new("sh").args(["-c", &script, "sh", piege]), 5).unwrap();
         assert_eq!((r.code, r.sortie.as_str()), (Some(0), piege));
@@ -1716,7 +1676,7 @@ mod tests {
     /// Une apostrophe ou un guillemet oublié ne se verrait que chez quelqu'un, en tapant la commande.
     #[cfg(unix)]
     #[test]
-    fn les_commandes_de_linux_et_macos_sont_du_shell_valide() {
+    fn les_commandes_de_linux_sont_du_shell_valide() {
         for (s, p, c) in toutes().filter(|(s, ..)| *s != Systeme::Windows) {
             let mut l = c.ligne.to_string();
             for mot in a_remplacer(c.ligne) {
@@ -1774,7 +1734,8 @@ mod tests {
 
     #[test]
     fn systeme_ou_programme_par_son_nom() {
-        assert_eq!(systeme("Mac"), Some(Systeme::MacOs));
+        assert_eq!(systeme("Win"), Some(Systeme::Windows));
+        assert_eq!(systeme("mac"), None);
         assert_eq!(systeme("tous"), Some(Systeme::Tous));
         assert_eq!(systeme("winget"), None);
         assert_eq!(programmes_nommes("WINGET").len(), 1);
@@ -1888,13 +1849,7 @@ mod tests {
     #[test]
     fn ce_que_vanguard_lance_ici() {
         let trouve = |l: &str| toutes().find(|(_, _, c)| c.ligne == l).unwrap().2;
-        for l in [
-            "ip -br a",
-            "journalctl -f",
-            "Get-NetAdapter",
-            "ping 1.1.1.1",
-            "tmutil status",
-        ] {
+        for l in ["ip -br a", "journalctl -f", "Get-NetAdapter", "ping 1.1.1.1"] {
             assert_eq!(lancement::obstacle(trouve(l)), None, "{l}");
         }
         for l in [
@@ -1905,7 +1860,6 @@ mod tests {
             "start ms-settings:windowsupdate",
             "powercfg /batteryreport",
             "chkdsk C:",
-            "open -a Console",
         ] {
             assert!(lancement::obstacle(trouve(l)).is_some(), "{l}");
         }

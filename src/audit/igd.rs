@@ -1,4 +1,4 @@
-//! Client UPnP IGD (Internet Gateway Device) en Rust pur, le même sur Linux, Windows et macOS : il demande à la box
+//! Client UPnP IGD (Internet Gateway Device) en Rust pur, le même sur Linux et Windows : il demande à la box
 //! ce qu'elle ouvre vers Internet, sans miniupnpc ni PowerShell. Trois étapes, chacune bornée : une recherche SSDP
 //! (deux M-SEARCH en multidiffusion, les réponses lues 1,5 s), la description XML de la box (GET par `http_local`,
 //! qui refuse toute adresse hors du réseau local), puis des actions SOAP de lecture seule : `GetExternalIPAddress`,

@@ -2,4 +2,4 @@
 gravite = "eleve"
 mots = ["e4:5d:51:99:88:77"]
 propre = "aucun"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]

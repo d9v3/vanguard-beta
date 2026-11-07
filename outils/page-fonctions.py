@@ -68,7 +68,7 @@ def lignes_de_rust() -> str:
 
 
 def regles() -> dict[str, int]:
-    """Les règles du bilan déclarées dans le code, par système (Os::Linux, Windows, MacOs, Tous), et les fiches
+    """Les règles du bilan déclarées dans le code, par système (Os::Linux, Windows, Tous), et les fiches
     de l'audit du réseau (src/audit/fiches.rs) : comptées à la source, pas tapées à la main."""
     ids: dict[str, set[str]] = defaultdict(set)
     for f in (RACINE / "src").rglob("*.rs"):
@@ -79,17 +79,17 @@ def regles() -> dict[str, int]:
             ids[m.group(2)].add(m.group(1))
         for m in re.finditer(r'id:\s*"([A-Z]{3}-[A-Z]{3}-\d{3})",\s*systeme:\s*Os::(\w+)', texte):
             ids[m.group(2)].add(m.group(1))
-    linux, windows, macos, communes = (len(ids[s]) for s in ("Linux", "Windows", "MacOs", "Tous"))
-    if not (linux and windows and macos and communes):
+    linux, windows, communes = (len(ids[s]) for s in ("Linux", "Windows", "Tous"))
+    if not (linux and windows and communes):
         sys.exit("✖ règles du bilan introuvables dans src/ (la déclaration a changé de forme ?)")
     fiches_rs = RACINE / "src/audit/fiches.rs"
     fiches = len(set(re.findall(r'"(COM-[A-Z]{3}-\d{3})"', fiches_rs.read_text(encoding="utf-8")))) \
         if fiches_rs.is_file() else 0
     return {
-        "REGLES": linux + windows + macos + communes,
+        "REGLES": linux + windows + communes,
         "REGLES_COMMUNES": communes,
-        "REGLES_LINUX_SEULES": linux, "REGLES_WINDOWS_SEULES": windows, "REGLES_MACOS_SEULES": macos,
-        "REGLES_LINUX": linux + communes, "REGLES_WINDOWS": windows + communes, "REGLES_MACOS": macos + communes,
+        "REGLES_LINUX_SEULES": linux, "REGLES_WINDOWS_SEULES": windows,
+        "REGLES_LINUX": linux + communes, "REGLES_WINDOWS": windows + communes,
         "FICHES": fiches,
     }
 

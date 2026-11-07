@@ -1,5 +1,5 @@
 //! Les règles `EVT-` changées en constats et en couverture (`modele::resultat`), et leurs deux points d'entrée : un
-//! dossier de .evtx (Linux, macOS, Windows : journaux rapportés, `winevt\Logs` d'un disque monté) et l'ordinateur
+//! dossier de .evtx (Linux, Windows : journaux rapportés, `winevt\Logs` d'un disque monté) et l'ordinateur
 //! vivant (Windows). Sans écran : la commande (`journaux_windows::commande`) et la chronologie
 //! (`journaux_windows::chronologie`) le reprennent.
 //!
@@ -7,7 +7,7 @@
 //! dit pourquoi ; « rien trouvé » seulement quand tout ce qu'elle cherche a été lu. Une alerte déclarée normale
 //! (`protection::normales`, clé `evenements|<règle>|<objet>`) est tue, et comptée dans le constat de sa règle.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::path::{Path, PathBuf};

@@ -1,7 +1,7 @@
 //! Ports ouverts vers Internet par UPnP : les redirections que des appareils du réseau (console, caméra, objet
 //! connecté…) ont demandées à la box, sans que personne ne les voie. Lecture seule. D'abord en Rust pur, le même
 //! client sur les trois systèmes (`audit::igd` : SSDP, description, SOAP) ; si la question n'a même pas pu partir,
-//! les lectures d'avant en repli : `upnpc -l` (miniupnpc) sous Linux et macOS, l'interface UPnP de Windows sous
+//! les lectures d'avant en repli : `upnpc -l` (miniupnpc) sous Linux, l'interface UPnP de Windows sous
 //! Windows. Les constats (règle COM-EXP-001) sont dans `audit::exposition`.
 
 use std::net::Ipv4Addr;
@@ -55,11 +55,6 @@ pub fn etat_et_adresse() -> (Etat, Option<Ipv4Addr>) {
 #[cfg(target_os = "linux")]
 pub fn outil_de_repli() -> String {
     crate::machine::linux::commande_installation("miniupnpc")
-}
-
-#[cfg(target_os = "macos")]
-pub fn outil_de_repli() -> String {
-    crate::machine::macos::commande_installation("miniupnpc")
 }
 
 #[cfg(windows)]

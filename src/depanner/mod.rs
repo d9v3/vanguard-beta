@@ -3,7 +3,7 @@
 //! qu'il a trouvé, et propose la bonne réparation (celles de Réparer) ou le bon outil (Nettoyer, Copier mes
 //! fichiers…). Rien n'est changé sans être montré et accepté.
 
-// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// Le programme sous Linux : ses parties Windows ne sont pas encore relues, et les essais en sont exemptés
 // (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
 #![cfg_attr(
     all(target_os = "linux", not(test)),
@@ -497,34 +497,6 @@ fn volumes() -> Vec<(String, u64, u64)> {
                 Some((affichable(&point), libre, total))
             })
             .collect()
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let donnees = if std::path::Path::new("/System/Volumes/Data").is_dir() {
-            "/System/Volumes/Data"
-        } else {
-            "/"
-        };
-        std::iter::once(std::path::PathBuf::from(donnees))
-            .chain(
-                std::fs::read_dir("/Volumes")
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| !p.to_string_lossy().contains("com.apple.") && !crate::copier::est_la_cle(p)),
-            )
-            .filter_map(|p| {
-                let (libre, total) = crate::socle::volume(&p)?;
-                Some((chemin_affichable(&p), libre, total))
-            })
-            .fold(Vec::new(), |mut v, x| {
-                // « Macintosh HD » est le même volume que le système : une fois.
-                if !v.iter().any(|(_, l, t): &(String, u64, u64)| *l == x.1 && *t == x.2) {
-                    v.push(x);
-                }
-                v
-            })
     }
     #[cfg(windows)]
     {

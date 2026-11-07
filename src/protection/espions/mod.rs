@@ -1,14 +1,14 @@
 //! Logiciels espions : en ai-je un ? Les signes qu'un ordinateur est épié par quelqu'un de l'entourage : connexions
 //! et noms demandés vers les serveurs et sites des logiciels espions connus (liste d'Échap, CC-BY 4.0), logiciels de
 //! surveillance connus installés ou en marche, et ce que chaque système laisse voir des programmes qui lisent le
-//! clavier (Linux : /dev/input ; macOS : les autorisations de surveillance). Lecture seule : rien n'est retiré ni
+//! clavier (Linux : /dev/input). Lecture seule : rien n'est retiré ni
 //! bloqué, car celui qui a posé le logiciel peut le voir disparaître ; l'écran le dit, avec qui appeler.
 //!
 //! Ce qui n'a pas pu être vérifié est dit et compté : le verdict n'est jamais « aucun logiciel espion », seulement
 //! « aucun signe parmi ce qui a été vérifié ». Un logiciel de prise de contrôle à distance est renvoyé à « Mon
 //! ordinateur est-il contrôlé ? ».
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 #[cfg(any(target_os = "linux", test))]
@@ -16,8 +16,6 @@ mod clavier;
 mod connus;
 mod echap;
 pub(crate) mod resultat;
-#[cfg(any(target_os = "macos", test))]
-pub(crate) mod tcc;
 #[cfg(windows)]
 mod windows;
 
@@ -62,7 +60,7 @@ pub(super) enum Section {
     Indicateurs,
     /// Logiciels de surveillance connus.
     Programmes,
-    /// Ce qui est propre au système : lecteurs du clavier, autorisations de macOS.
+    /// Ce qui est propre au système : lecteurs du clavier.
     Systeme,
 }
 
@@ -83,10 +81,10 @@ pub(super) struct Trouvaille {
 #[derive(Debug, Default)]
 pub(super) struct Releve {
     pub trouvailles: Vec<Trouvaille>,
-    /// Ce qui ressemble à de la surveillance mais est normal (compositeur, autorisation d'OBS) : montré, jamais caché.
+    /// Ce qui ressemble à de la surveillance mais est normal (compositeur, OBS) : montré, jamais caché.
     pub reconnus: Vec<String>,
     pub non_verifies: Vec<String>,
-    /// Remarques sans alerte (groupe input, session X11, journal WAL).
+    /// Remarques sans alerte (groupe input, session X11).
     pub notes: Vec<String>,
     /// Logiciels de prise de contrôle à distance vus : renvoyés à `distance.rs`.
     pub a_distance: BTreeSet<String>,
@@ -412,11 +410,9 @@ fn relever_linux(r: &mut Releve, ind: Option<&Indicateurs>) {
 fn relever_systeme(r: &mut Releve, ind: Option<&Indicateurs>) {
     #[cfg(target_os = "linux")]
     relever_linux(r, ind);
-    #[cfg(target_os = "macos")]
-    tcc::relever(r, ind);
     #[cfg(windows)]
     windows::relever(r, ind);
-    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     let _ = (r, ind);
 }
 
@@ -609,8 +605,6 @@ fn ecran() -> Option<Niveau> {
             tr!("Qui lit le clavier ?", "Who reads the keyboard?"),
             Some(rien_clavier(&r)),
         )
-    } else if cfg!(target_os = "macos") {
-        (tr!("Autorisations de surveillance", "Monitoring permissions"), None)
     } else {
         (tr!("Ce que Windows ne montre pas", "What Windows does not show"), None)
     };
@@ -705,19 +699,11 @@ fn constats_avec(ind: Result<&Indicateurs, &String>, systeme: fn(&mut Releve, Op
             "Échap list not checked: {raison}"
         )),
         // Le bilan ne regarde ni les connexions ni la mémoire DNS (l'écran le fait) : les serveurs de la liste n'y
-        // sont pas comparés, et un « aucun signe » sans le dire les compterait comme sains. Sous macOS, tcc.rs dit
-        // déjà les connexions.
-        Ok(_) => r.non_verifie(if cfg!(target_os = "macos") {
-            tr!(
-                "mémoire DNS non comparée à la liste dans le bilan (vanguard logiciels-espions)",
-                "DNS cache not compared with the list in the audit (vanguard spyware)"
-            )
-        } else {
-            tr!(
-                "connexions et mémoire DNS non comparées à la liste dans le bilan (vanguard logiciels-espions)",
-                "connections and DNS cache not compared with the list in the audit (vanguard spyware)"
-            )
-        }),
+        // sont pas comparés, et un « aucun signe » sans le dire les compterait comme sains.
+        Ok(_) => r.non_verifie(tr!(
+            "connexions et mémoire DNS non comparées à la liste dans le bilan (vanguard logiciels-espions)",
+            "connections and DNS cache not compared with the list in the audit (vanguard spyware)"
+        )),
     }
     systeme(&mut r, ind.ok());
     constats_de(&r)
@@ -954,7 +940,7 @@ mod tests {
     #[test]
     fn rien_seulement_pour_ce_qui_a_ete_lu() {
         let mut r = Releve::default();
-        // Liste lue, mais ni connexions ni mémoire DNS (macOS ; Linux sans root) : aucune ligne verte.
+        // Liste lue, mais ni connexions ni mémoire DNS (Linux sans root) : aucune ligne verte.
         assert_eq!(rien_indicateurs(&r, true), None);
         r.dns_lu = true;
         assert_eq!(

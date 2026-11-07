@@ -8,7 +8,7 @@
 //! (intermittent) fait BAISSER l'entropie d'un échantillon de 4 Kio, alors qu'il touche quand même l'en-tête : c'est
 //! le format perdu qui le prend, pas l'entropie.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::io::{Read, Seek, SeekFrom};

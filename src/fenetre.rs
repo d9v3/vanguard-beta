@@ -5,8 +5,8 @@
 //!
 //! Seulement une fenêtre ouverte pour Vanguard : sous Hyprland, la fenêtre flottante du terminal qui l'a lancé
 //! lui-même (le raccourci du menu des applications) ; sous Windows, une console où Vanguard est seul (double-clic),
-//! la vieille console comme le Terminal Windows. Lancé depuis un terminal déjà ouvert, sur les autres bureaux Linux
-//! et sous macOS, rien ne dit que la fenêtre est la sienne : elle ne bouge pas.
+//! la vieille console comme le Terminal Windows. Lancé depuis un terminal déjà ouvert, ou sur les autres bureaux
+//! Linux, rien ne dit que la fenêtre est la sienne : elle ne bouge pas.
 //!
 //! Le terminal arrondit la fenêtre à ses cases, et ses bordures ne se voient pas de l'intérieur : la taille d'une case
 //! se devine d'abord (la fenêtre divisée par la grille, bordures comprises, donc un peu grande), puis se mesure entre
@@ -14,7 +14,7 @@
 //! fil à part : le menu n'attend pas, et se redessine quand sa grille change (annoncée par le terminal, ou relue par
 //! `selection` : la vieille console de Windows ne l'annonce pas).
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::sync::Mutex;

@@ -3,10 +3,9 @@
 //! commande de botnet connu (bloqué seulement si la protection active a été activée : protection/blocage). La
 //! protection en temps réel coupée (`protection::temps_reel`), chaque passe s'arrête au début, sans rien regarder ni
 //! notifier ; c'est aussi la passe qui constate l'échéance de la coupure et remet la protection.
-//! Planificateur natif de chaque système : timer systemd (Linux), Planificateur de tâches (Windows), agent launchd
-//! (macOS).
+//! Planificateur natif de chaque système : timer systemd (Linux), Planificateur de tâches (Windows).
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::path::{Path, PathBuf};
@@ -19,10 +18,9 @@ use crate::reseau::{self, Options, upnp};
 use crate::risk::Niveau;
 use crate::ui::*;
 
-/// Les noms de ce que la surveillance pose sur chaque système : les unités systemd (Linux), l'agent launchd (macOS),
-/// la tâche du Planificateur (Windows). Connus partout : la désinstallation les cherche par leur nom exact.
+/// Les noms de ce que la surveillance pose sur chaque système : les unités systemd (Linux), la tâche du
+/// Planificateur (Windows). Connus partout : la désinstallation les cherche par leur nom exact.
 pub(crate) const NOM: &str = "vanguard-surveillance";
-pub(crate) const AGENT_MACOS: &str = "com.vanguard.surveillance";
 /// Nom lisible de la tâche dans le Planificateur de tâches Windows.
 pub(crate) const TACHE_WINDOWS: &str = "vanguard - surveillance du reseau";
 
@@ -48,7 +46,7 @@ pub(crate) fn minuterie_activee(timer: &str) -> bool {
 /// récente). `None` : elle n'a pas pu se faire, et c'est dit ; le chemin de la clé n'est jamais rendu à sa place,
 /// une minuterie qui le lancerait s'arrêterait sans bruit une fois la clé débranchée.
 pub(crate) fn executable() -> Option<String> {
-    // Sous Linux et macOS, le programme peut tourner depuis une copie temporaire (protection de la clé), effacée
+    // Sous Linux, le programme peut tourner depuis une copie temporaire (protection de la clé), effacée
     // à la fin.
     #[cfg(unix)]
     let exe = crate::protection::cle::exe_d_origine();
@@ -112,21 +110,6 @@ pub(crate) fn notifier(titre: &str, corps: &str) {
             // option.
             Command::new("notify-send")
                 .args(["-a", "Vanguard", "-i", "vanguard", "-u", "critical", "--", titre, corps]),
-            10,
-        );
-    }
-    // macOS : notification du Centre de notifications, par AppleScript (texte entre guillemets échappés). osascript
-    // fait foi (outil gardé, §4) : UNUserNotificationCenter demande une application signée, ce que n'est pas un
-    // programme en ligne de commande. Lancé sans shell.
-    #[cfg(target_os = "macos")]
-    {
-        let e = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
-        let _ = crate::commande::lancer(
-            Command::new("osascript").arg("-e").arg(format!(
-                "display notification \"{}\" with title \"{}\" sound name \"Basso\"",
-                e(corps),
-                e(titre)
-            )),
             10,
         );
     }
@@ -939,15 +922,13 @@ pub fn active() -> bool {
     active
 }
 
-/// La minuterie, la tâche planifiée (non désactivée) ou l'agent existent-ils ? Sans rien noter (l'envoi le demande
+/// La minuterie ou la tâche planifiée (non désactivée) existent-elles ? Sans rien noter (l'envoi le demande
 /// pour son lot, `active` le note en plus).
 pub(crate) fn installee() -> bool {
     #[cfg(target_os = "linux")]
     return minuterie_activee(&format!("{NOM}.timer"));
     #[cfg(windows)]
     return tache_active(TACHE_WINDOWS);
-    #[cfg(target_os = "macos")]
-    return reussit("launchctl", &["print", &format!("{}/{AGENT_MACOS}", domaine_launchd())]);
 }
 
 /// Au bilan : la surveillance voulue a disparu (minuterie ou tâche retirée, ou désactivée), ou elle est là mais le
@@ -1056,12 +1037,12 @@ pub(crate) fn juger_planifie(
 }
 
 /// Le texte de la tâche `quoi` tel que le système le garde, pour le comparer à celui que Vanguard a posé. Linux : le
-/// service puis la minuterie ; macOS : le plist de l'agent ; Windows : le XML de la tâche, lu par le planificateur.
+/// service puis la minuterie ; Windows : le XML de la tâche, lu par le planificateur.
 pub(crate) fn texte_planifie(quoi: Planifie) -> std::io::Result<Vec<u8>> {
-    let (nom, agent, tache) = quoi.noms();
+    let (nom, tache) = quoi.noms();
     #[cfg(target_os = "linux")]
     {
-        let _ = (agent, tache);
+        let _ = tache;
         let dossier = dossier_unites_maison();
         let mut texte = std::fs::read(dossier.join(format!("{nom}.service")))?;
         texte.push(0);
@@ -1072,14 +1053,9 @@ pub(crate) fn texte_planifie(quoi: Planifie) -> std::io::Result<Vec<u8>> {
         }
         Ok(texte)
     }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = (nom, tache);
-        std::fs::read(plist_agent_nomme(agent))
-    }
     #[cfg(windows)]
     {
-        let _ = (nom, agent);
+        let _ = nom;
         crate::machine::windows::planificateur::xml(tache)
             .map(String::into_bytes)
             .ok_or_else(|| std::io::Error::other(tr!("planificateur non lu", "task scheduler not read")))
@@ -1119,15 +1095,11 @@ pub(crate) enum Planifie {
 }
 
 impl Planifie {
-    /// (unités systemd, agent launchd, tâche du Planificateur).
-    pub(crate) fn noms(self) -> (&'static str, &'static str, &'static str) {
+    /// (unités systemd, tâche du Planificateur).
+    pub(crate) fn noms(self) -> (&'static str, &'static str) {
         match self {
-            Planifie::Surveillance => (NOM, AGENT_MACOS, TACHE_WINDOWS),
-            Planifie::Entretien => (
-                crate::entretien::NOM,
-                crate::entretien::AGENT_MACOS,
-                crate::entretien::TACHE_WINDOWS,
-            ),
+            Planifie::Surveillance => (NOM, TACHE_WINDOWS),
+            Planifie::Entretien => (crate::entretien::NOM, crate::entretien::TACHE_WINDOWS),
         }
     }
 
@@ -1165,33 +1137,17 @@ pub(crate) enum Lecture {
 
 /// Lit la tâche planifiée `quoi` de cet ordinateur : le programme qu'elle lance. Linux : la ligne ExecStart= du
 /// service, et, pour la surveillance, sa minuterie relue telle que posée (`minuterie_d_avant`) ; celle de l'entretien
-/// n'a jamais changé. macOS : le plist de l'agent, et son RunAtLoad ; Windows : le planificateur lui-même, PowerShell
-/// en secours, et son réglage de rattrapage.
+/// n'a jamais changé. Windows : le planificateur lui-même, PowerShell en secours, et son réglage de rattrapage.
 pub(crate) fn lire_planifie(quoi: Planifie) -> Lecture {
-    let (nom, agent, tache) = quoi.noms();
+    let (nom, tache) = quoi.noms();
     #[cfg(target_os = "linux")]
     {
-        let _ = (agent, tache);
+        let _ = tache;
         lire_unites(&dossier_unites_maison(), nom, quoi == Planifie::Surveillance)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = (nom, tache);
-        match std::fs::read(plist_agent_nomme(agent)) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Lecture::Absente,
-            Err(e) => Lecture::Illisible(e.to_string()),
-            Ok(o) => lire_plist(&o).map_or_else(
-                || Lecture::Illisible(tr!("plist illisible", "unreadable plist").to_string()),
-                |(programme, au_lancement)| Lecture::Lue {
-                    programme,
-                    a_jour: Ok(au_lancement),
-                },
-            ),
-        }
     }
     #[cfg(windows)]
     {
-        let _ = (nom, agent);
+        let _ = nom;
         match definitions_windows(&[tache]) {
             None => Lecture::Illisible(tr!("planificateur non lu", "task scheduler not read").to_string()),
             Some(lues) => {
@@ -1280,11 +1236,7 @@ fn sur_un_lecteur_absent(programme: &Path, cle: Option<&Path>, existe: &impl Fn(
             .next()
             .is_some_and(|c| matches!(c, std::path::Component::Prefix(_)));
     };
-    let montage = |a: &Path| {
-        ["/media", "/run/media", "/Volumes", "/mnt"]
-            .iter()
-            .any(|m| a == Path::new(m))
-    };
+    let montage = |a: &Path| ["/media", "/run/media", "/mnt"].iter().any(|m| a == Path::new(m));
     montage(present) || present.parent().is_some_and(montage)
 }
 
@@ -1413,11 +1365,6 @@ pub(crate) fn juger_tache(
         tr!(
             "La surveillance horaire a été planifiée par une version d'avant : elle ne rattrape pas une heure manquée pendant une veille, la passe suivante attend la fin de l'heure entamée au réveil.",
             "The hourly monitoring was scheduled by an earlier version: it does not catch up an hour missed during sleep; the next run waits for the rest of the hour after wake-up."
-        )
-    } else if cfg!(target_os = "macos") {
-        tr!(
-            "La surveillance horaire a été planifiée par une version d'avant : elle ne passe pas à l'ouverture de session, la première passe attend une heure.",
-            "The hourly monitoring was scheduled by an earlier version: it does not run at sign-in; the first run waits an hour."
         )
     } else {
         tr!(
@@ -1555,10 +1502,10 @@ fn desinstaller() -> Result<(), String> {
 /// (`trouves`), le planificateur rechargé, puis relus : un fichier encore là est un échec, avec son chemin. Rend la
 /// raison d'un échec, jamais un succès supposé.
 pub(crate) fn retirer_planifie(quoi: Planifie, trouves: &[PathBuf]) -> Result<(), String> {
-    let (nom, agent, tache) = quoi.noms();
+    let (nom, tache) = quoi.noms();
     #[cfg(target_os = "linux")]
     {
-        let _ = (agent, tache);
+        let _ = tache;
         let dossier = dossier_unites_maison();
         let mut fichiers = vec![
             dossier.join(format!("{nom}.timer")),
@@ -1618,36 +1565,9 @@ pub(crate) fn retirer_planifie(quoi: Planifie, trouves: &[PathBuf]) -> Result<()
         }
         Ok(())
     }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = (nom, tache);
-        let mut fichiers = vec![plist_agent_nomme(agent)];
-        for f in trouves {
-            if !fichiers.contains(f) {
-                fichiers.push(f.clone());
-            }
-        }
-        // bootout échoue aussi pour un agent déjà déchargé : son résultat ne dit rien, l'état relu ensuite si.
-        for f in &fichiers {
-            let _ = reussit("launchctl", &["bootout", &domaine_launchd(), &f.display().to_string()]);
-        }
-        let mut echecs = retirer_fichiers(&fichiers);
-        echecs.extend(encore_la(&fichiers));
-        if !echecs.is_empty() {
-            return Err(trf!("non retiré : {}", "not removed: {}", echecs.join(", ")));
-        }
-        if reussit("launchctl", &["print", &format!("{}/{agent}", domaine_launchd())]) {
-            return Err(tr!(
-                "fichier retiré (vérifié), mais l'agent reste chargé jusqu'à la prochaine ouverture de session",
-                "file removed (checked), but the agent stays loaded until the next sign-in"
-            )
-            .to_string());
-        }
-        Ok(())
-    }
     #[cfg(windows)]
     {
-        let _ = (nom, agent, trouves);
+        let _ = (nom, trouves);
         // Le planificateur dit qu'elle n'existe pas : rien à retirer, et Unregister-ScheduledTask échouerait pour rien.
         // Illisible, on essaie quand même : son échec sera dit.
         if crate::machine::windows::planificateur::etat(&[tache])
@@ -1854,68 +1774,6 @@ fn installer(exe: &str, r: Reglages) -> bool {
         let _ = retirer_horodatage(dossier_horodatages_maison().as_deref(), NOM);
     }
     posee
-}
-
-#[cfg(target_os = "macos")]
-fn plist_agent_nomme(nom: &str) -> std::path::PathBuf {
-    crate::socle::maison().join(format!("Library/LaunchAgents/{nom}.plist"))
-}
-
-#[cfg(target_os = "macos")]
-fn plist_agent() -> std::path::PathBuf {
-    plist_agent_nomme(AGENT_MACOS)
-}
-
-/// Domaine launchd de la session graphique de l'utilisateur (« gui/501 »).
-#[cfg(target_os = "macos")]
-pub(crate) fn domaine_launchd() -> String {
-    let uid = crate::socle::uid();
-    format!("gui/{uid}")
-}
-
-/// Agent launchd : relancé toutes les heures (StartInterval), et dès l'ouverture de session (RunAtLoad).
-#[cfg(any(target_os = "macos", test))]
-fn plist_surveillance(exe: &str, nom: &str, r: Reglages) -> String {
-    let exe = exe.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-    let au_lancement = if r == Reglages::Aujourdhui {
-        "\t<key>RunAtLoad</key>\n\t<true/>\n"
-    } else {
-        ""
-    };
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <plist version=\"1.0\">\n<dict>\n\
-         \t<key>Label</key>\n\t<string>{nom}</string>\n\
-         \t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>{exe}</string>\n\t\t<string>surveiller</string>\n\t</array>\n\
-         \t<key>StartInterval</key>\n\t<integer>3600</integer>\n\
-         {au_lancement}\
-         \t<key>LowPriorityIO</key>\n\t<true/>\n\
-         \t<key>Nice</key>\n\t<integer>10</integer>\n\
-         </dict>\n</plist>\n"
-    )
-}
-
-/// Le programme que lance un agent launchd (le premier de ProgramArguments), et s'il passe à l'ouverture de session.
-#[cfg(any(target_os = "macos", test))]
-pub(crate) fn lire_plist(octets: &[u8]) -> Option<(PathBuf, bool)> {
-    let v = crate::plist::lire(octets)?;
-    let programme = v.cle("ProgramArguments")?.tableau()?.first()?.texte()?;
-    let au_lancement = v.cle("RunAtLoad") == Some(&crate::plist::Valeur::Booleen(true));
-    Some((PathBuf::from(programme), au_lancement))
-}
-
-#[cfg(target_os = "macos")]
-fn installer(exe: &str, r: Reglages) -> bool {
-    let plist = plist_agent();
-    let _ = std::fs::create_dir_all(plist.parent().unwrap_or(&plist));
-    if std::fs::write(&plist, plist_surveillance(exe, AGENT_MACOS, r)).is_err() {
-        return false;
-    }
-    let chemin = plist.display().to_string();
-    // Déjà chargé (réactivation) : on le retire d'abord, sinon bootstrap refuse.
-    let _ = reussit("launchctl", &["bootout", &domaine_launchd(), &chemin]);
-    reussit("launchctl", &["bootstrap", &domaine_launchd(), &chemin])
 }
 
 /// La tâche existe et n'est pas désactivée : une tâche désactivée ne surveille plus rien.
@@ -2253,24 +2111,6 @@ mod tests {
                 assert_eq!(minuterie_activee(nom), etat == "enabled", "{ligne}");
             }
         }
-    }
-
-    #[test]
-    fn agent_launchd() {
-        let exe = "/Users/a b/Library/Application Support/vanguard & co/bin/<vanguard>";
-        let p = plist_surveillance(exe, "com.vanguard.surveillance", Reglages::Aujourdhui);
-        assert!(p.contains(
-            "<string>/Users/a b/Library/Application Support/vanguard &amp; co/bin/&lt;vanguard&gt;</string>"
-        ));
-        assert!(p.contains("<key>StartInterval</key>\n\t<integer>3600</integer>"));
-        assert!(p.contains("<string>surveiller</string>"));
-        assert!(p.contains("<key>RunAtLoad</key>\n\t<true/>"));
-        // Relu tel qu'écrit : le programme d'origine, et le passage à l'ouverture de session.
-        assert_eq!(lire_plist(p.as_bytes()), Some((PathBuf::from(exe), true)));
-        // Une tâche reprise d'une version d'avant garde ses réglages : sans RunAtLoad, et relue comme telle.
-        let avant = plist_surveillance(exe, "com.vanguard.surveillance", Reglages::DAvant);
-        assert!(!avant.contains("RunAtLoad"));
-        assert_eq!(lire_plist(avant.as_bytes()), Some((PathBuf::from(exe), false)));
     }
 
     #[test]

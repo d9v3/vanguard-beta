@@ -3,4 +3,4 @@
 gravite = "eleve"
 mots = ["encode|powershell"]
 propre = "aucun"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]

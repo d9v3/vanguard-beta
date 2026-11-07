@@ -13,7 +13,7 @@
 //! L'affichage est ici ; le jugement (tri, brouillon, garde-fou, neutralisation Markdown) est dans les sous-modules,
 //! purs et testés seuls.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 mod brouillon;

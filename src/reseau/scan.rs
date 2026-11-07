@@ -1,6 +1,6 @@
 //! Découverte des machines et scan TCP « connect » (aucun privilège root requis).
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::collections::{BTreeMap, HashMap};
@@ -180,24 +180,6 @@ pub fn passerelle() -> Option<Ipv4Addr> {
             .min()
             .map(|(_, ip)| ip)
     }
-    // macOS : la route par défaut lue dans la table du noyau (sysctl NET_RT_DUMP) ; « gateway: 10.0.0.1 » de
-    // `route -n get default` en secours, tant que l'oracle de macos.yml n'a pas prouvé la lecture native.
-    #[cfg(target_os = "macos")]
-    {
-        crate::machine::macos::noyau::passerelle()
-            .or_else(
-                || match crate::machine::macos::config_reseau::principal()?.passerelle? {
-                    std::net::IpAddr::V4(ip) => Some(ip),
-                    std::net::IpAddr::V6(_) => None,
-                },
-            )
-            .or_else(|| {
-                commande("route", &["-n", "get", "default"])
-                    .lines()
-                    .find_map(|l| l.trim().strip_prefix("gateway:"))
-                    .and_then(|g| g.trim().parse().ok())
-            })
-    }
 }
 
 /// Route par défaut dans /proc/net/route (Iface Destination Gateway Flags RefCnt Use Metric…).
@@ -254,27 +236,6 @@ pub fn table_arp() -> HashMap<Ipv4Addr, String> {
                 .flatten()
         })
         .collect();
-    // macOS : la table ARP du noyau (sysctl, RTF_LLINFO), par la même lecture des messages de route que la passerelle
-    // (`machine::darwin`) ; `arp -an` en secours (« ? (10.0.0.1) at f8:79:a:d:3:a2 on
-    // en0 ifscope [ethernet] », « (incomplete) » sans réponse).
-    #[cfg(target_os = "macos")]
-    let entrees: Vec<(String, String)> = match crate::machine::macos::noyau::voisins() {
-        Some(v) => v
-            .into_iter()
-            .map(|v| {
-                let mac: Vec<String> = v.mac.iter().map(|o| format!("{o:02x}")).collect();
-                (v.ip.to_string(), mac.join(":"))
-            })
-            .collect(),
-        None => commande("arp", &["-an"])
-            .lines()
-            .filter_map(|l| {
-                let ip = l.split_once('(')?.1.split_once(')')?.0;
-                let mac = l.split_once(" at ")?.1.split_whitespace().next()?;
-                Some((ip.to_string(), mac.to_string()))
-            })
-            .collect(),
-    };
     // Windows : la table des voisins (GetIpNetTable2) ; `arp -a` (« 10.0.0.1   f8-79-0a-0d-03-a2   dynamique »)
     // seulement si Windows la refuse.
     #[cfg(windows)]
@@ -842,33 +803,7 @@ pub fn nom_wifi() -> Option<String> {
         .ok()
         .flatten()
         .map(|c| c.ssid);
-    // macOS : « SSID : Salon » dans le résumé de l'interface Wi-Fi (en0 en général). Depuis macOS 14, le nom peut
-    // être masqué (« <redacted> ») faute d'autorisation de localisation : le réseau est alors reconnu par sa box.
-    #[cfg(target_os = "macos")]
-    let nom = ["en0", "en1"]
-        .iter()
-        .find_map(|i| nom_wifi_ipconfig(&commande_sortie("ipconfig", &["getsummary", i])));
     nom.filter(|n| !n.is_empty())
-}
-
-/// Le réseau connecté dans `ipconfig getsummary en0` (« SSID : Salon ») ; un nom masqué (« <redacted> ») ne dit rien.
-/// Le nom, que n'importe qui à portée peut choisir, est lu prêt à montrer (`affichable`), comme par les lectures
-/// natives de Linux et de Windows.
-#[cfg(any(target_os = "macos", test))]
-fn nom_wifi_ipconfig(sortie: &str) -> Option<String> {
-    sortie
-        .lines()
-        .map(str::trim)
-        .find_map(|l| l.strip_prefix("SSID : "))
-        .filter(|n| !n.starts_with('<'))
-        .map(affichable)
-}
-
-#[cfg(target_os = "macos")]
-fn commande_sortie(cmd: &str, args: &[&str]) -> String {
-    crate::commande::lancer(crate::commande::systeme(cmd).args(args), 10)
-        .map(|r| r.sortie)
-        .unwrap_or_default()
 }
 
 #[allow(
@@ -1058,17 +993,6 @@ mod tests {
             nom_inverse(ip, "tele\x1b]52;c;eA==\x07\x1b[2K\r\u{202e}.local").as_deref(),
             Some("tele�]52;c;eA==��[2K��.local")
         );
-    }
-
-    /// Le nom du réseau connecté, gardé dans la base et montré en tête du scan : lu tel quel s'il est normal, rendu
-    /// inoffensif s'il est piégé (macOS ici ; Linux et Windows le lisent par nl80211 et wlanapi, testés là).
-    #[test]
-    fn nom_du_wifi_connecte() {
-        const PIEGE: &str = "Salon\x1b]52;c;ZWNobyBQSVJBVEU=\x07\x1b[2K\rFaux\u{202e}";
-        const VU: &str = "Salon�]52;c;ZWNobyBQSVJBVEU=��[2K�Faux�";
-        assert_eq!(nom_wifi_ipconfig("  SSID : Chez Max\n").as_deref(), Some("Chez Max"));
-        assert_eq!(nom_wifi_ipconfig(&format!("  SSID : {PIEGE}\n")).as_deref(), Some(VU));
-        assert_eq!(nom_wifi_ipconfig("  SSID : <redacted>\n"), None);
     }
 
     #[test]

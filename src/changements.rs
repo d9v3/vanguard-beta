@@ -1140,7 +1140,6 @@ mod tests {
                         crate::protection::blocage::pare_feu::PareFeu::Ufw,
                         8188,
                     )
-                    .unwrap()
                     .retirer,
                     port: Some("8188/tcp".into()),
                     inverse: None,

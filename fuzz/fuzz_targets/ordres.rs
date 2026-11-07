@@ -1,4 +1,4 @@
-//! La forme des ordres du blocage que l'assistant élevé de Linux et macOS et le processus élevé de Windows lisent du
+//! La forme des ordres du blocage que l'assistant élevé de Linux et le processus élevé de Windows lisent du
 //! Vanguard non élevé (src/protection/blocage/ordres_ligne.rs) : verbes hors de la liste, pare-feu inconnus,
 //! adresses écrites autrement (IPv4 en IPv6, zéros de tête), ports nuls ou démesurés, chemins en hexadécimal piégés
 //! (majuscules, longueur impaire, relatif, NUL, saut de ligne), lignes démesurées ; et le non-recouvrement avec les

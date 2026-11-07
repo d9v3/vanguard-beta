@@ -1,14 +1,12 @@
 //! Comptes oubliés : un compte de l'ordinateur encore actif mais que personne n'utilise plus (l'ancien employé, le
 //! compte créé pour un dépannage, celui d'un enfant parti). C'est une porte de plus, souvent avec un vieux mot de
 //! passe. Vanguard cherche la dernière trace d'utilisation : la dernière connexion notée par le système (Windows,
-//! lastlog2 ou lastlog sous Linux, l'historique utmpx sous macOS), et la date du dossier personnel (Linux, macOS :
-//! une connexion graphique n'est pas toujours notée). Rien depuis six mois : une information, avec la façon de le
-//! désactiver. Le compte qui lance Vanguard n'est jamais compté.
+//! lastlog2 ou lastlog sous Linux), et la date du dossier personnel (Linux : une connexion graphique n'est pas toujours
+//! notée). Rien depuis six mois : une information, avec la façon de le désactiver. Le compte qui lance Vanguard n'est
+//! jamais compté.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
-// FFI de libc : getpwent et getutxent (comptes et dernières connexions), wtmp de macOS.
-#![allow(unsafe_code)]
 
 use super::{Constat, alerte};
 use crate::risk::Niveau;
@@ -68,11 +66,6 @@ fn desactiver() -> &'static str {
         tr!(
             "Si personne ne s'en sert, le désactiver (ses fichiers restent) : Gestion de l'ordinateur › Utilisateurs locaux, ou « Disable-LocalUser -Name <nom> » en administrateur",
             "If nobody uses it, disable it (its files stay): Computer Management › Local Users, or “Disable-LocalUser -Name <name>” as administrator"
-        )
-    } else if cfg!(target_os = "macos") {
-        tr!(
-            "Si personne ne s'en sert, le supprimer en gardant son dossier : Réglages Système › Utilisateurs et groupes",
-            "If nobody uses it, delete it while keeping its folder: System Settings › Users & Groups"
         )
     } else {
         tr!(
@@ -185,165 +178,6 @@ pub fn constats() -> Vec<Constat> {
         })
         .collect();
     juger(&comptes, chrono::Local::now().date_naive())
-}
-
-/// macOS : les comptes de session (UID à partir de 501, sans les comptes de service « _ »), lus dans la base des
-/// comptes par `getpwent` (la même que `dscl . -list /Users`, sans lancer de programme) avec leur vrai dossier
-/// personnel (NFSHomeDirectory, que `pw_dir` rend : pas toujours /Users/<nom>, un volume externe parfois). La
-/// dernière trace : la session la plus récente que le système a notée (utmpx, ce que `last` lit), sinon la date du
-/// dossier personnel.
-#[cfg(target_os = "macos")]
-pub fn constats() -> Vec<Constat> {
-    let comptes = comptes_macos(&base_des_comptes(), &dernieres_sessions(), &moi(), date_de);
-    juger(&comptes, chrono::Local::now().date_naive())
-}
-
-/// Les comptes de session parmi ceux de la base (nom, UID, dossier personnel) : UID à partir de 501 (ceux créés
-/// dans Réglages Système), sans les comptes de service (« _ ») ni celui qui lance Vanguard. La dernière trace est
-/// la plus récente de la dernière session et de la date du dossier. Un nom rendu deux fois par la base (deux
-/// sources d'Open Directory) ne compte qu'une fois : la première.
-#[cfg(any(target_os = "macos", test))]
-fn comptes_macos(
-    base: &[(String, u32, std::path::PathBuf)],
-    sessions: &std::collections::HashMap<String, chrono::NaiveDate>,
-    moi: &str,
-    date_dossier: impl Fn(&std::path::Path) -> Option<chrono::NaiveDate>,
-) -> Vec<Compte> {
-    let mut vus = std::collections::HashSet::new();
-    base.iter()
-        .filter(|(nom, uid, _)| *uid >= 501 && !nom.starts_with('_') && nom != moi)
-        .filter(|(nom, _, _)| vus.insert(nom.as_str()))
-        .map(|(nom, _, maison)| Compte {
-            nom: nom.clone(),
-            derniere: sessions.get(nom).copied().max(date_dossier(maison)),
-        })
-        .collect()
-}
-
-/// La base des comptes (nom, UID, dossier personnel), une entrée par `getpwent` : sous macOS, elle vient d'Open
-/// Directory, comme `dscl`. Bornée en entrées lues, celles sans nom comprises : une base en boucle ne ferait pas
-/// tourner Vanguard sans fin.
-#[cfg(target_os = "macos")]
-fn base_des_comptes() -> Vec<(String, u32, std::path::PathBuf)> {
-    const ENTREES_MAX: usize = 10_000;
-    let mut comptes = Vec::new();
-    let _garde = crate::machine::macos::noyau::VERROU_COMPTES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // SAFETY: setpwent, getpwent et endpwent s'enchaînent dans ce seul fil, sous le verrou que prend tout autre
-    // parcours de la base des comptes (noyau::comptes) ; la struct passwd rendue reste valable jusqu'à l'appel suivant et elle est lue
-    // tout de suite ; pw_name et pw_dir sont des chaînes C terminées par un nul, ou nuls (vérifié avant la lecture).
-    unsafe {
-        libc::setpwent();
-        for _ in 0..ENTREES_MAX {
-            let p = libc::getpwent();
-            if p.is_null() {
-                break;
-            }
-            let (nom, uid, maison) = ((*p).pw_name, (*p).pw_uid, (*p).pw_dir);
-            let Some(nom) = chaine_c(nom) else {
-                continue;
-            };
-            let maison = chaine_c(maison).unwrap_or_default();
-            comptes.push((nom, uid, std::path::PathBuf::from(maison)));
-        }
-        libc::endpwent();
-    }
-    comptes
-}
-
-/// Une chaîne C en `String` ; `None` : pointeur nul. L'appelant garantit que le pointeur, s'il n'est pas nul,
-/// désigne une chaîne terminée par un nul, valable pendant l'appel.
-#[cfg(target_os = "macos")]
-unsafe fn chaine_c(p: *const libc::c_char) -> Option<String> {
-    if p.is_null() {
-        return None;
-    }
-    // SAFETY: non nul (vérifié), terminé par un nul et vivant pendant la lecture (garanti par l'appelant).
-    Some(unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned())
-}
-
-// L'historique des sessions de macOS, celui que `last` lit : des extensions d'Apple à utmpx, dans libSystem, que le
-// crate libc ne déclare pas.
-#[cfg(target_os = "macos")]
-unsafe extern "C" {
-    fn setutxent_wtmp(avant: libc::c_int);
-    fn getutxent_wtmp() -> *mut libc::utmpx;
-    fn endutxent_wtmp();
-}
-
-/// La dernière session de chaque compte, d'après l'historique (`getutxent_wtmp`) puis les sessions ouvertes en ce
-/// moment (`getutxent`). Bornée en entrées lues : un historique démesuré n'est pas relu en entier.
-#[cfg(target_os = "macos")]
-fn dernieres_sessions() -> std::collections::HashMap<String, chrono::NaiveDate> {
-    const ENTREES_MAX: usize = 100_000;
-    let mut sessions = std::collections::HashMap::new();
-    let _garde = crate::machine::macos::noyau::VERROU_SESSIONS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // SAFETY: chaque lecteur est ouvert, parcouru puis refermé dans ce seul fil, sous le verrou que prend tout autre
-    // parcours des sessions (noyau::sessions_ouvertes) ; l'entrée rendue reste valable
-    // jusqu'à l'appel suivant, et elle est lue tout de suite (un pointeur non nul, vérifié, vers une struct utmpx
-    // entière) ; ut_user est un tableau de taille fixe, lu jusqu'au premier nul ou à sa fin, jamais au-delà.
-    unsafe {
-        setutxent_wtmp(0);
-        for _ in 0..ENTREES_MAX {
-            let e = getutxent_wtmp();
-            if e.is_null() {
-                break;
-            }
-            noter_session(&mut sessions, &*e);
-        }
-        endutxent_wtmp();
-        libc::setutxent();
-        for _ in 0..ENTREES_MAX {
-            let e = libc::getutxent();
-            if e.is_null() {
-                break;
-            }
-            noter_session(&mut sessions, &*e);
-        }
-        libc::endutxent();
-    }
-    sessions
-}
-
-/// Une session d'utilisateur (USER_PROCESS) datée note son jour pour ce compte ; le plus récent est gardé.
-#[cfg(target_os = "macos")]
-fn noter_session(sessions: &mut std::collections::HashMap<String, chrono::NaiveDate>, e: &libc::utmpx) {
-    if e.ut_type != libc::USER_PROCESS {
-        return;
-    }
-    let Some(jour) = jour_unix(e.ut_tv.tv_sec) else {
-        return;
-    };
-    let nom = nom_utmpx(&e.ut_user);
-    if nom.is_empty() {
-        return;
-    }
-    let d = sessions.entry(nom).or_insert(jour);
-    *d = (*d).max(jour);
-}
-
-/// Le nom d'une entrée utmpx : un tableau de taille fixe, pas forcément terminé par un nul.
-#[cfg(any(target_os = "macos", all(test, unix)))]
-fn nom_utmpx(champ: &[libc::c_char]) -> String {
-    let octets: Vec<u8> = champ
-        .iter()
-        .map(|c| c.to_ne_bytes()[0])
-        .take_while(|&b| b != 0)
-        .collect();
-    String::from_utf8_lossy(&octets).into_owned()
-}
-
-/// Le jour local d'un instant Unix (secondes) ; `None` : hors de ce que chrono représente.
-#[cfg(any(target_os = "macos", all(test, unix)))]
-fn jour_unix(secondes: i64) -> Option<chrono::NaiveDate> {
-    Some(
-        chrono::DateTime::from_timestamp(secondes, 0)?
-            .with_timezone(&chrono::Local)
-            .date_naive(),
-    )
 }
 
 /// Windows : les comptes locaux actifs et leur dernière connexion, sauf les comptes intégrés (Administrateur, Invité,
@@ -480,67 +314,6 @@ mod tests {
             Some(jour(2026, 3, 2))
         );
         assert_eq!(lire_lastlog("ancien                    **Never logged in**"), None);
-    }
-
-    /// macOS, sur une base inventée : les comptes de service et celui qui lance Vanguard sont écartés ; la dernière
-    /// session l'emporte sur un dossier plus vieux, et un dossier hors de /Users (volume externe) est daté quand même.
-    #[test]
-    fn comptes_macos_sur_une_base_inventee() {
-        let base = vec![
-            ("root".to_string(), 0, std::path::PathBuf::from("/var/root")),
-            ("_spotlight".to_string(), 89, std::path::PathBuf::from("/var/empty")),
-            ("alice".to_string(), 501, std::path::PathBuf::from("/Users/alice")),
-            ("bob".to_string(), 502, std::path::PathBuf::from("/Volumes/Externe/bob")),
-            ("zoé".to_string(), 503, std::path::PathBuf::from("/Users/zoé")),
-            // Rendu une seconde fois par la base : déjà compté.
-            ("bob".to_string(), 502, std::path::PathBuf::from("/Users/bob")),
-        ];
-        let sessions = std::collections::HashMap::from([("alice".to_string(), jour(2026, 10, 18))]);
-        let dossiers = |chemin: &std::path::Path| match chemin.to_str() {
-            Some("/Users/alice") => Some(jour(2026, 3, 1)),
-            Some("/Volumes/Externe/bob") => Some(jour(2026, 9, 9)),
-            _ => None,
-        };
-        let comptes = comptes_macos(&base, &sessions, "alice", dossiers);
-        assert_eq!(comptes.len(), 2);
-        assert_eq!(
-            comptes[0],
-            Compte {
-                nom: "bob".into(),
-                derniere: Some(jour(2026, 9, 9))
-            }
-        );
-        assert_eq!(
-            comptes[1],
-            Compte {
-                nom: "zoé".into(),
-                derniere: None
-            }
-        );
-        let comptes = comptes_macos(&base, &sessions, "bob", dossiers);
-        assert_eq!(
-            comptes[0],
-            Compte {
-                nom: "alice".into(),
-                derniere: Some(jour(2026, 10, 18))
-            }
-        );
-    }
-
-    /// Sous Unix seulement : le type `c_char` vient de libc, que Windows n'a pas.
-    #[cfg(unix)]
-    #[test]
-    fn nom_et_jour_d_une_entree_utmpx() {
-        let champ: Vec<libc::c_char> = b"alice\0xx".iter().map(|&b| libc::c_char::from_ne_bytes([b])).collect();
-        assert_eq!(nom_utmpx(&champ), "alice");
-        // Sans nul : tout le tableau, jamais au-delà.
-        let plein: Vec<libc::c_char> = b"bob".iter().map(|&b| libc::c_char::from_ne_bytes([b])).collect();
-        assert_eq!(nom_utmpx(&plein), "bob");
-        assert_eq!(nom_utmpx(&[]), "");
-        // 2026-10-17 12:00:00 UTC : le jour local, à l'heure de cet ordinateur.
-        let j = jour_unix(1_792_238_400).unwrap();
-        assert!((jour(2026, 10, 17) - j).num_days().abs() <= 1);
-        assert_eq!(jour_unix(i64::MAX), None);
     }
 
     /// T4 : un compte oublié se reconnaît à son nom, pas à sa date ni à la langue.

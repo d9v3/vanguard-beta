@@ -3,4 +3,4 @@
 gravite = "eleve"
 mots = ["tache-corpus-attribut", "maj-corpus.exe"]
 propre = "info"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]

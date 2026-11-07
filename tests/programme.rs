@@ -362,10 +362,9 @@ fn defender_mene_aux_options_de_defense() {
     }
 }
 
-/// Options de défense, sans rien choisir (l'entrée se ferme tout de suite). Sous macOS, l'écran dit « Windows
-/// seulement » et le JSON se ferme sans rien lire ; sous Linux, l'état du pare-feu de Linux est lu sans droits (rien
-/// demandé, rien de fait, aucune règle dans le JSON) ; sous Windows (Wine compris), il ne plante pas, ne demande rien
-/// à l'administrateur et ne porte aucun texte du système dans le JSON.
+/// Options de défense, sans rien choisir (l'entrée se ferme tout de suite). Sous Linux, l'état du pare-feu de Linux est
+/// lu sans droits (rien demandé, rien de fait, aucune règle dans le JSON) ; sous Windows (Wine compris), il ne plante
+/// pas, ne demande rien à l'administrateur et ne porte aucun texte du système dans le JSON.
 #[test]
 fn options_defense_sans_choix() {
     let aide = vanguard("en", &["options-defense", "--help"], "", 30);
@@ -987,7 +986,7 @@ fn verifier_fichier_verdicts() {
     let verifier = |langue: &str, fichier: &Path, empreinte: Option<&str>| {
         let mut args = vec!["verifier-fichier", fichier.to_str().unwrap()];
         args.extend(empreinte);
-        // Sans ClamAV (Mac de GitHub, CI), Vanguard propose de l'installer : la fin de l'entrée vaut « non », et le
+        // Sans ClamAV (CI), Vanguard propose de l'installer : la fin de l'entrée vaut « non », et le
         // verdict suit (`verifier_fichier_sans_clamav_ni_reponse`).
         let s = vanguard(langue, &args, "", 120);
         assert_eq!(s.code, Some(0), "{}", s.erreurs);
@@ -1484,7 +1483,7 @@ fn bilan_de_confidentialite_en_lecture_seule() {
 }
 
 /// Raccourci sur cet ordinateur, dans un dossier personnel jetable : refusé, rien n'est posé ; posé puis retiré, il
-/// apparaît puis disparaît. Linux seulement : sous Windows et macOS, il va sur le Bureau.
+/// apparaît puis disparaît. Linux seulement : sous Windows, il va sur le Bureau.
 #[test]
 fn raccourci_pose_puis_retire() {
     if !cfg!(target_os = "linux") {
@@ -1922,8 +1921,6 @@ fn partage_non_efface_oui_date_falsifie_ignore() {
 fn dossier_vanguard(maison: &Path) -> PathBuf {
     if cfg!(windows) {
         maison.join("local").join("vanguard")
-    } else if cfg!(target_os = "macos") {
-        maison.join("Library").join("Application Support").join("vanguard")
     } else {
         maison.join("donnees").join("vanguard")
     }
@@ -2145,11 +2142,9 @@ fn wifi_public_sans_rien_changer() {
 #[test]
 fn signaler_en_json_sur_un_journal_d_essai() {
     let maison = maison_jetable();
-    // Le dossier de données de chaque système (comme les essais plus haut) : sous macOS, Library/Application Support.
+    // Le dossier de données de chaque système (comme les essais plus haut).
     let donnees = if cfg!(windows) {
         maison.join("local")
-    } else if cfg!(target_os = "macos") {
-        maison.join("Library").join("Application Support")
     } else {
         maison.join("donnees")
     };

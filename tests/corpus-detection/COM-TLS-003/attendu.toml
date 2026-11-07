@@ -2,5 +2,5 @@
 gravite = "info"
 mots = ["corpus-entreprise.der"]
 propre = "aucun"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]
 reserve = "le magasin des navigateurs (cert9.db) ne se lit pas sans NSS : la règle le dit toujours"

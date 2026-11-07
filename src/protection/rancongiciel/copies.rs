@@ -8,7 +8,7 @@ use crate::machine::regles::Os;
 /// Ce que l'effacement des copies touche, en français et en anglais ; `None` si le programme n'en efface pas.
 /// `os` : sous Windows, un processus non élevé peut ne voir que le NOM de l'outil (vssadmin.exe…), pas sa ligne de
 /// commande ; le nom seul suffit alors, car ces outils ont peu d'usages hors d'une suppression (score.rs décide de
-/// la gravité selon la rafale). Sous Linux et macOS, on exige le verbe de suppression dans la ligne.
+/// la gravité selon la rafale). Sous Linux, on exige le verbe de suppression dans la ligne.
 pub(crate) fn effacement(p: &EnMarche, os: Os) -> Option<(&'static str, &'static str)> {
     let nom = crate::machine::chasse::nom_de_fichier(&p.nom).to_ascii_lowercase();
     let nom = nom.strip_suffix(".exe").unwrap_or(&nom);
@@ -16,10 +16,7 @@ pub(crate) fn effacement(p: &EnMarche, os: Os) -> Option<(&'static str, &'static
     match os {
         Os::Windows => effacement_windows(nom, &ligne),
         Os::Linux => effacement_linux(nom, &ligne),
-        Os::MacOs => effacement_macos(nom, &ligne),
-        Os::Tous => effacement_windows(nom, &ligne)
-            .or_else(|| effacement_linux(nom, &ligne))
-            .or_else(|| effacement_macos(nom, &ligne)),
+        Os::Tous => effacement_windows(nom, &ligne).or_else(|| effacement_linux(nom, &ligne)),
     }
 }
 
@@ -77,16 +74,6 @@ fn effacement_linux(nom: &str, ligne: &str) -> Option<(&'static str, &'static st
     None
 }
 
-fn effacement_macos(nom: &str, ligne: &str) -> Option<(&'static str, &'static str)> {
-    if nom == "tmutil" && ligne.contains("deletelocalsnapshots") {
-        return Some((
-            "efface les instantanés locaux de Time Machine",
-            "is deleting Time Machine local snapshots",
-        ));
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,11 +118,5 @@ mod tests {
         assert!(effacement(&prog("timeshift", "--delete --snapshot 2024"), Os::Linux).is_some());
         assert!(effacement(&prog("snapper", "list"), Os::Linux).is_none());
         assert!(effacement(&prog("rm", "-rf /tmp/x"), Os::Linux).is_none());
-    }
-
-    #[test]
-    fn t1490_macos() {
-        assert!(effacement(&prog("tmutil", "deletelocalsnapshots /"), Os::MacOs).is_some());
-        assert!(effacement(&prog("tmutil", "listlocalsnapshots /"), Os::MacOs).is_none());
     }
 }

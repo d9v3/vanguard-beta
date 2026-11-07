@@ -1,5 +1,5 @@
 //! La mémoire DNS de l'ordinateur : les noms qu'il a demandés récemment, même quand la connexion est déjà fermée.
-//! Windows la donne à chaque compte ; sous Linux, systemd-resolved ne la donne qu'en root ; macOS ne la montre pas.
+//! Windows la donne à chaque compte ; sous Linux, systemd-resolved ne la donne qu'en root.
 //! Lecture seule : rien n'est vidé.
 
 /// Les noms en mémoire, en minuscules, sans le point final. `Err` : pourquoi ils n'ont pas pu être lus, à montrer.
@@ -160,15 +160,6 @@ fn lire() -> Result<Vec<String>, String> {
         }
     }
     Ok(noms)
-}
-
-#[cfg(target_os = "macos")]
-fn lire() -> Result<Vec<String>, String> {
-    Err(crate::tr!(
-        "macOS ne montre pas sa mémoire DNS",
-        "macOS does not show its DNS cache"
-    )
-    .to_string())
 }
 
 #[cfg(test)]

@@ -799,7 +799,7 @@ fn le_noyau_garde_son_majeur_mineur() {
 }
 
 #[test]
-fn windows_et_macos_se_reduisent() {
+fn windows_se_reduit() {
     let w = |b| plateforme::windows(b).map(|(f, v)| (f, v.as_str().to_string()));
     assert_eq!(w("19045"), Some((FamilleFine::Windows10, "19045".into())));
     assert_eq!(w("26100"), Some((FamilleFine::Windows11, "26100".into())));
@@ -812,9 +812,6 @@ fn windows_et_macos_se_reduisent() {
     assert_eq!(e("Education"), Some(Edition::Entreprise));
     assert_eq!(e("ServerStandard"), Some(Edition::Serveur));
     assert_eq!(e("Salon"), None);
-    let m = |v| plateforme::macos(v).map(|v| v.as_str().to_string());
-    assert_eq!(m("15.1.1").as_deref(), Some("15"));
-    assert_eq!(m("x"), None);
 }
 
 // --- L'accord (A5) -------------------------------------------------------------------------------------------------

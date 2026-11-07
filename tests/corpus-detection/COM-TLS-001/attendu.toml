@@ -2,4 +2,4 @@
 gravite = "eleve"
 mots = ["Corpus"]
 propre = "aucun"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]

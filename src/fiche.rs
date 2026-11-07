@@ -3,7 +3,7 @@
 //! Les numéros de série s'affichent à l'écran seulement : ni dans le JSON (`vanguard fiche-ordinateur --json`), ni dans un
 //! fichier, ni dans le journal des erreurs. Ils identifient un appareil, et une fiche se partage facilement.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use serde::Serialize;
@@ -121,7 +121,6 @@ impl Fiche {
 }
 
 /// « fabricant modèle », sans répéter le fabricant quand le modèle le contient déjà (« LENOVO » + « LENOVO 21AH »).
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) fn avec_fabricant(fabricant: &str, modele: &str) -> String {
     let (f, m) = (propre(fabricant), propre(modele));
     match (f.is_empty(), m.is_empty()) {
@@ -133,7 +132,6 @@ pub(crate) fn avec_fabricant(fabricant: &str, modele: &str) -> String {
 }
 
 /// « version (date) » du BIOS ou d'un pilote : la version seule sans date, rien sans version.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn version_datee(version: &str, date: &str) -> String {
     match (propre(version), date.trim()) {
         (v, d) if v.is_empty() || d.is_empty() => v,
@@ -791,147 +789,6 @@ fn lire() -> Fiche {
     .map_or_else(Fiche::default, fiche_windows)
 }
 
-/// Le premier objet de la section `cle` de `system_profiler`, `Null` s'il manque : la même lecture que
-/// `json[cle][0]`, sans indexation.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn premier_de<'a>(json: &'a serde_json::Value, cle: &str) -> &'a serde_json::Value {
-    static NUL: serde_json::Value = serde_json::Value::Null;
-    json.get(cle).and_then(|v| v.get(0)).unwrap_or(&NUL)
-}
-
-/// La fiche d'après `system_profiler -json SPHardwareDataType SPMemoryDataType SPDisplaysDataType` (séparée pour être
-/// testée partout).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn fiche_macos(json: &serde_json::Value) -> Fiche {
-    let texte = |objet: &serde_json::Value, cle: &str| champ(objet, cle).trim().to_string();
-    let materiel = premier_de(json, "SPHardwareDataType");
-    let mut f = Fiche {
-        modele: [texte(materiel, "machine_name"), texte(materiel, "machine_model")]
-            .into_iter()
-            .filter(|t| !t.is_empty())
-            .collect::<Vec<_>>()
-            .join(" · "),
-        processeur: [texte(materiel, "chip_type"), texte(materiel, "cpu_type")]
-            .into_iter()
-            .find(|t| !t.is_empty())
-            .unwrap_or_default(),
-        bios: texte(materiel, "boot_rom_version"),
-        // « proc 10:4:6 » (Apple Silicon : total, performance, efficacité) ou un nombre (Intel).
-        coeurs: texte(materiel, "number_processors")
-            .trim_start_matches("proc ")
-            .split(':')
-            .next()
-            .and_then(|n| n.trim().parse().ok())
-            .or_else(|| materiel["number_processors"].as_u64().and_then(|n| n.try_into().ok())),
-        memoire: taille_lue(&texte(materiel, "physical_memory")),
-        ..Fiche::default()
-    };
-    let numero = texte(materiel, "serial_number");
-    if !numero.is_empty() {
-        f.series.push((tr!("Ordinateur", "Computer").to_string(), numero));
-    }
-    let memoire = premier_de(json, "SPMemoryDataType");
-    if let Some(items) = memoire["_items"].as_array() {
-        // Mac Intel : une fiche par barrette.
-        for b in items {
-            let Some(taille) = taille_lue(&texte(b, "dimm_size")) else {
-                continue;
-            };
-            let quoi = trf!("Barrette {}", "Memory module {}", texte(b, "_name"));
-            f.serie(&quoi, &texte(b, "dimm_serial_number"));
-            f.barrettes.push(Barrette {
-                taille,
-                sorte: texte(b, "dimm_type"),
-                vitesse: texte(b, "dimm_speed")
-                    .split_whitespace()
-                    .next()
-                    .and_then(|v| v.parse().ok()),
-                fabricant: propre(&texte(b, "dimm_manufacturer")),
-                reference: propre(&texte(b, "dimm_part_number")),
-                emplacement: texte(b, "_name"),
-            });
-        }
-    } else if let Some(taille) = taille_lue(&texte(memoire, "SPMemoryDataType")) {
-        // Apple Silicon : la mémoire fait partie de la puce, une seule « barrette ».
-        f.barrettes.push(Barrette {
-            taille,
-            sorte: texte(memoire, "dimm_type"),
-            fabricant: texte(memoire, "dimm_manufacturer"),
-            emplacement: tr!("dans la puce", "on the chip").into(),
-            ..Barrette::default()
-        });
-    }
-    f.barrettes_illisibles = f.barrettes.is_empty();
-    for g in json["SPDisplaysDataType"].as_array().into_iter().flatten() {
-        let nom = [texte(g, "sppci_model"), texte(g, "_name")]
-            .into_iter()
-            .find(|t| !t.is_empty())
-            .unwrap_or_default();
-        let nom = match texte(g, "sppci_cores") {
-            coeurs if coeurs.is_empty() => nom,
-            coeurs => trf!("{nom} ({coeurs} cœurs)", "{nom} ({coeurs} cores)"),
-        };
-        let pilote = tr!("intégré à macOS", "built into macOS").into();
-        f.graphique.push(Graphique { nom, pilote });
-    }
-    f
-}
-
-/// « 16 GB », « 8 Go », « 512 MB » → octets.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn taille_lue(texte: &str) -> Option<u64> {
-    let mut mots = texte.split_whitespace();
-    let nombre: f64 = mots.next()?.replace(',', ".").parse().ok()?;
-    let facteur: u64 = match mots.next()?.to_ascii_uppercase().as_str() {
-        "TB" | "TO" => 1 << 40,
-        "GB" | "GO" => 1 << 30,
-        "MB" | "MO" => 1 << 20,
-        _ => return None,
-    };
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    #[allow(clippy::cast_precision_loss)]
-    Some(crate::socle::nombres::entier(
-        nombre * crate::socle::nombres::flottant(facteur),
-    ))
-}
-
-#[cfg(target_os = "macos")]
-fn lire() -> Fiche {
-    let sortie = |cmd: &str, args: &[&str]| {
-        crate::commande::lancer(std::process::Command::new(cmd).args(args), 60)
-            .filter(|r| r.code == Some(0))
-            .map(|r| r.sortie.trim().to_string())
-            .unwrap_or_default()
-    };
-    let sections = ["-json", "SPHardwareDataType", "SPMemoryDataType", "SPDisplaysDataType"];
-    let profil = sortie("system_profiler", &sections);
-    let mut f = fiche_macos(&serde_json::from_str(&profil).unwrap_or_default());
-    let version = |cle: &str| crate::machine::macos::version_systeme(cle).unwrap_or_default();
-    f.systeme = format!(
-        "{} {} ({})",
-        version("ProductName"),
-        version("ProductVersion"),
-        version("ProductBuildVersion")
-    );
-    // diskutil en -plist : des clés qui ne changent pas avec la langue du Mac (« Solid State: Yes » se traduit).
-    let plist = |args: &[&str]| crate::plist::lire(sortie("diskutil", args).as_bytes());
-    let disques = plist(&["list", "-plist", "internal", "physical"])
-        .map(|l| crate::machine::darwin::disques_entiers(&l))
-        .unwrap_or_default();
-    for disque in disques {
-        let info = plist(&["info", "-plist", &disque])
-            .map(|i| crate::machine::darwin::info_disque(&i))
-            .unwrap_or_default();
-        f.disques.push(Disque {
-            modele: info.modele.unwrap_or_default(),
-            taille: info.taille.unwrap_or(0),
-            sorte: sorte_disque("", info.ssd != Some(true)),
-            nom: disque,
-        });
-    }
-    f.prete_a_montrer()
-}
-
 fn taille(octets: u64) -> String {
     #[allow(clippy::cast_precision_loss)]
     let g = crate::socle::nombres::flottant(octets) / f64::from(1u32 << 30);
@@ -1383,36 +1240,6 @@ mod tests {
         assert!(!json.contains("PF0ESSAI") && !json.contains("E823_8FA6"), "{json}");
     }
 
-    #[test]
-    fn fiche_macos_apple_silicon_et_intel() {
-        let silicon: serde_json::Value = serde_json::from_str(
-            r#"{"SPHardwareDataType":[{"machine_name":"MacBook Air","machine_model":"Mac14,2","chip_type":"Apple M2",
-                "number_processors":"proc 8:4:4","physical_memory":"16 GB","serial_number":"C02ESSAI"}],
-                "SPMemoryDataType":[{"SPMemoryDataType":"16 GB","dimm_manufacturer":"Hynix","dimm_type":"LPDDR5"}],
-                "SPDisplaysDataType":[{"_name":"Apple M2","sppci_model":"Apple M2","sppci_cores":"10"}]}"#,
-        )
-        .unwrap();
-        let f = fiche_macos(&silicon);
-        assert_eq!(f.modele, "MacBook Air · Mac14,2");
-        assert_eq!((f.processeur.as_str(), f.coeurs), ("Apple M2", Some(8)));
-        assert_eq!(f.memoire, Some(16 << 30));
-        assert_eq!(f.barrettes[0].sorte, "LPDDR5");
-        assert_eq!(f.graphique[0].nom, "Apple M2 (10 cœurs)");
-        assert!(!serde_json::to_string(&f).unwrap().contains("C02ESSAI"));
-        let intel: serde_json::Value = serde_json::from_str(
-            r#"{"SPHardwareDataType":[{"machine_name":"iMac","cpu_type":"Quad-Core Intel Core i5","number_processors":4,"physical_memory":"8 GB"}],
-                "SPMemoryDataType":[{"_items":[{"_name":"BANK 0/DIMM0","dimm_size":"4 GB","dimm_speed":"2400 MHz","dimm_type":"DDR4"},
-                                               {"_name":"BANK 1/DIMM0","dimm_size":"empty","dimm_type":"empty"}]}]}"#,
-        )
-        .unwrap();
-        let f = fiche_macos(&intel);
-        assert_eq!(f.coeurs, Some(4));
-        assert_eq!(f.barrettes.len(), 1);
-        assert_eq!(f.barrettes[0].vitesse, Some(2400));
-        assert_eq!(taille_lue("512 MB"), Some(512 << 20));
-        assert_eq!(taille_lue("vide"), None);
-    }
-
     /// Le WMI de Wine connaît le système : la fiche se lit sans PowerShell, avec les clés qu'attend fiche_windows.
     #[cfg(windows)]
     #[test]
@@ -1507,51 +1334,6 @@ mod tests {
             f.series
                 .iter()
                 .all(|(q, n)| !crate::ui::contient_un_piege(q) && !crate::ui::contient_un_piege(n))
-        );
-    }
-
-    #[test]
-    fn fiche_macos_cas_limites() {
-        // Rien de lisible : une fiche vide, qui le dit pour les barrettes.
-        let vide = fiche_macos(&serde_json::json!({"SPHardwareDataType": {"machine_name": "pas un tableau"}}));
-        assert_eq!(
-            serde_json::to_value(&vide).unwrap(),
-            serde_json::json!({
-                "systeme": "", "modele": "", "carte_mere": "", "bios": "", "processeur": "", "coeurs": null,
-                "fils": null, "memoire": null, "barrettes": [], "barrettes_illisibles": true, "graphique": [],
-                "disques": []
-            })
-        );
-        assert_eq!(vide.series, Vec::<(String, String)>::new());
-        let mac: serde_json::Value = serde_json::from_str(
-            r#"{"SPHardwareDataType":[{"machine_model":"Macmini9,1","chip_type":" ","cpu_type":"Intel",
-                "number_processors":"6","boot_rom_version":"1.0","serial_number":"Unknown","physical_memory":"1,5 TB"}],
-                "SPMemoryDataType":[{"_items":[{"_name":"DIMM0","dimm_size":"8 Go","dimm_speed":"vite",
-                    "dimm_manufacturer":"0x80CE","dimm_part_number":"Unknown","dimm_serial_number":"ESSAI42"}]}],
-                "SPDisplaysDataType":[{"_name":"Carte d'essai"},{"sppci_model":"","_name":""}]}"#,
-        )
-        .unwrap();
-        let f = fiche_macos(&mac);
-        assert_eq!(
-            serde_json::to_value(&f).unwrap(),
-            serde_json::json!({
-                "systeme": "", "modele": "Macmini9,1", "carte_mere": "", "bios": "1.0", "processeur": "Intel",
-                "coeurs": 6, "fils": null, "memoire": 1_649_267_441_664_u64,
-                "barrettes": [{"taille": 8_589_934_592_u64, "sorte": "", "vitesse": null, "fabricant": "0x80CE",
-                               "reference": "", "emplacement": "DIMM0"}],
-                "barrettes_illisibles": false,
-                "graphique": [{"nom": "Carte d'essai", "pilote": "intégré à macOS"},
-                              {"nom": "", "pilote": "intégré à macOS"}],
-                "disques": []
-            })
-        );
-        // Sur Mac, le numéro de l'ordinateur est montré tel qu'il est lu ; celui d'une barrette, s'il est renseigné.
-        assert_eq!(
-            f.series,
-            [
-                ("Ordinateur".to_string(), "Unknown".to_string()),
-                ("Barrette DIMM0".to_string(), "ESSAI42".to_string())
-            ]
         );
     }
 

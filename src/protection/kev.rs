@@ -3,7 +3,7 @@
 //! liste des logiciels de l'ordinateur ne sort jamais), gardé un jour ; hors ligne, la copie d'avant sert jusqu'à un
 //! mois. Le catalogue suit les faits : une faille exploitée d'hier peut ne pas y être encore (PHP2Shell, 21 oct. 2026).
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::time::Duration;

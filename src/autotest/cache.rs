@@ -106,24 +106,6 @@ pub(crate) const TABLE: &[EnCache] = &[
         ),
     },
     EnCache {
-        regle: "MAC-MAJ-002",
-        duree_min: 120,
-        plancher_min: 45,
-        raison: (
-            "softwareupdate interroge Apple (souvent des dizaines de secondes) ; change rarement dans la journée",
-            "softwareupdate queries Apple (often tens of seconds); rarely changes within a day",
-        ),
-    },
-    EnCache {
-        regle: "MAC-MAJ-003",
-        duree_min: 90,
-        plancher_min: 45,
-        raison: (
-            "Homebrew interroge ses dépôts ; change quelques fois par jour",
-            "Homebrew queries its repositories; changes a few times a day",
-        ),
-    },
-    EnCache {
         regle: "WIN-MAJ-001",
         duree_min: 120,
         plancher_min: 45,
@@ -277,7 +259,7 @@ struct Entree {
 pub(crate) struct Moment {
     /// Secondes depuis 1970 (UTC) : l'heure du système, qu'on peut changer.
     pub mur: i64,
-    /// Le démarrage en cours (Linux : `boot_id` ; macOS : `kern.bootsessionuuid` ; Windows : rien, le compteur repart
+    /// Le démarrage en cours (Linux : `boot_id` ; Windows : rien, le compteur repart
     /// de zéro et l'écart avec l'heure trahit un redémarrage).
     pub demarrage: String,
     /// Millisecondes depuis ce démarrage, sommeil compris : l'heure ne le change pas.
@@ -324,14 +306,6 @@ fn ms_d_uptime(texte: &str) -> Option<u64> {
         .checked_add(fraction.parse::<u64>().ok()?)
 }
 
-#[cfg(target_os = "macos")]
-fn depuis_le_demarrage() -> Option<(String, u64)> {
-    Some((
-        crate::machine::macos::sysctl_texte("kern.bootsessionuuid")?,
-        crate::machine::macos::depuis_le_demarrage_ms()?,
-    ))
-}
-
 #[cfg(windows)]
 // FFI de Windows : GetTickCount64, le compteur du démarrage.
 #[allow(unsafe_code)]
@@ -342,7 +316,7 @@ fn depuis_le_demarrage() -> Option<(String, u64)> {
     (ms > 0).then(|| (String::new(), ms))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn depuis_le_demarrage() -> Option<(String, u64)> {
     None
 }
@@ -1495,7 +1469,6 @@ mod tests {
         let ids: BTreeSet<&str> = inventory::iter::<Regle>.into_iter().map(|r| r.id).collect();
         let ailleurs = [
             include_str!("../machine/linux/regles.rs"),
-            include_str!("../machine/macos/regles.rs"),
             include_str!("../machine/windows/regles.rs"),
         ];
         let mut vues = BTreeSet::new();
@@ -1521,13 +1494,11 @@ mod tests {
             assert!(!e.raison.0.is_empty() && !e.raison.1.is_empty());
         }
         // Les mises à jour qui jugent une défense (coupées, en pause) ou qui sont notifiées restent dehors, comme les
-        // logiciels périmés (WIN-MAJ-002, MAC-MAJ-004) : une faille exploitée (KEV) y lève une alerte critique.
+        // logiciels périmés (WIN-MAJ-002) : une faille exploitée (KEV) y lève une alerte critique.
         for id in [
             "WIN-MAJ-002",
-            "MAC-MAJ-004",
             "WIN-MAJ-003",
             "LNX-MAJ-002",
-            "MAC-MAJ-001",
             "LNX-MAJ-003",
             "COM-MAJ-001",
         ] {

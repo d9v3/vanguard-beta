@@ -306,8 +306,9 @@ fn est_id_installation(s: &str) -> bool {
     s.len() == 16 && s.bytes().all(|o| o.is_ascii_digit() || (b'a'..=b'f').contains(&o))
 }
 
-/// La version du système, réduite (plan de l'envoi, §3) : build de Windows, majeure de macOS, majeur.mineur du noyau
-/// Linux. Jamais la chaîne entière (« 6.17.2-1-maison » trahirait un noyau compilé à la main).
+/// La version du système, réduite (plan de l'envoi, §3) : build de Windows, majeur.mineur du noyau Linux (majeure seule
+/// pour les anciennes versions pour Mac). Jamais la chaîne entière (« 6.17.2-1-maison » trahirait un noyau compilé à la
+/// main).
 fn est_systeme_version(s: &str) -> bool {
     let (majeur, mineur) = s.split_once('.').map_or((s, None), |(a, b)| (a, Some(b)));
     chiffres(majeur, 6) && mineur.is_none_or(|m| chiffres(m, 3))
@@ -449,6 +450,8 @@ fermee!(
     FamilleFine {
         Windows10 = "windows-10",
         Windows11 = "windows-11",
+        // Accepté et lu (les envois des anciennes versions pour Mac, jusqu'à 0.89.1), jamais écrit par cette
+        // version : le relais et les schémas de la veille l'acceptent encore.
         Macos = "macos",
         Arch = "arch",
         Debian = "debian",

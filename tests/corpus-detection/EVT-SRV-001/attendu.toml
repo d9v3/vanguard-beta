@@ -2,4 +2,4 @@
 gravite = "critique"
 mots = ["eventlog"]
 propre = "aucun"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]

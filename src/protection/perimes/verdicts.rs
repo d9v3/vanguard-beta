@@ -1,6 +1,6 @@
 //! Le verdict de chaque logiciel installé, une règle par produit (étude §6, contre-vérification §10) : à jour,
 //! dépassé, branche finie, ou non vérifié avec sa raison. Rien n'est deviné : une source absente, une copie trop
-//! vieille pour dire « à jour », un canal sans source fixe (Edge Extended Stable, Acrobat Classic, App Store) ou une
+//! vieille pour dire « à jour », un canal sans source fixe (Edge Extended Stable, Acrobat Classic) ou une
 //! version d'une forme inconnue donnent « non vérifié », jamais « à jour ».
 //!
 //! Les fichiers sont lus une fois (`Faits::de`) ; les règles ne font ensuite aucune lecture, ce qui les rend
@@ -47,7 +47,7 @@ pub(crate) struct Faits {
     pub chrome: Vec<(&'static str, &'static str, Fait<Vec<Version>>)>,
     pub edge: Fait<Vec<EdgeStable>>,
     pub office: Fait<Vec<CanalOffice>>,
-    /// Les sources d'une seule version (manifestes MAU, Adobe, Brave, Slack), par identifiant de source.
+    /// Les sources d'une seule version (Adobe, Brave, Slack), par identifiant de source.
     pub versions: Vec<(&'static str, Fait<Version>)>,
     pub eol: Fait<Vec<ProduitEol>>,
     /// Les versions des formules suivies de Homebrew (7-Zip, PuTTY), telles qu'écrites.
@@ -86,7 +86,6 @@ impl Faits {
                 Lecteur::Chrome(p, c) => faits
                     .chrome
                     .push((p, c, lire(releve, id, |o| editeurs::chrome(o, p, c)))),
-                Lecteur::Mau(app) => faits.versions.push((id, lire(releve, id, |o| editeurs::mau(o, app)))),
                 Lecteur::Adobe => faits.versions.push((id, lire(releve, id, editeurs::adobe))),
                 Lecteur::Brave => faits.versions.push((id, lire(releve, id, editeurs::brave))),
                 Lecteur::Slack(p) => faits.versions.push((id, lire(releve, id, |o| editeurs::slack(o, p)))),
@@ -156,15 +155,6 @@ fn sans_source(nom: &str, raison: &str) -> Verdict {
 
 /// Le verdict de `i` d'après les faits.
 pub(crate) fn juger(i: &Installe, f: &Faits) -> Verdict {
-    if i.branche == Branche::Canal("App Store".into()) {
-        return Verdict::NonVerifie(
-            tr!(
-                "installé par l'App Store, qui le met à jour",
-                "installed from the App Store, which updates it"
-            )
-            .to_string(),
-        );
-    }
     let Some(v) = i.version else {
         return Verdict::NonVerifie(if i.brute.is_empty() {
             tr!("version illisible", "unreadable version").to_string()
@@ -181,29 +171,17 @@ pub(crate) fn juger(i: &Installe, f: &Faits) -> Verdict {
         Produit::Edge => edge(i, v, f),
         Produit::Firefox => firefox(i, v, f),
         Produit::Brave => brave(i, v, f),
-        Produit::Office => match (f.systeme, i.app.and_then(|a| a.source)) {
-            (Systeme::MacOs, Some(id)) => simple(v, f.version(id), "Microsoft"),
-            (Systeme::MacOs, None) => {
-                Verdict::NonVerifie(tr!("application sans source", "app without a source").to_string())
-            }
-            (Systeme::Windows, _) => office(i, v, f),
-        },
+        Produit::Office => office(i, v, f),
         Produit::Acrobat | Produit::Reader => adobe(i, v, f),
         Produit::Java(d) => java(d, v, f),
         Produit::SevenZip => formule(v, f, "sevenzip"),
         Produit::PuTTY => formule(v, f, "putty"),
-        Produit::Slack => {
-            let id = match f.systeme {
-                Systeme::Windows => "slack-windows",
-                Systeme::MacOs => "slack-macos",
-            };
-            simple(v, f.version(id), "Slack")
-        }
+        Produit::Slack => simple(v, f.version("slack-windows"), "Slack"),
     }
 }
 
 /// 7-Zip et PuTTY : comparés à la version stable de leur formule de Homebrew, qui suit celle de l'amont (la même
-/// sous Windows). Homebrew peut retarder de quelques jours : une version plus récente que la sienne est à jour.
+/// que celle de Windows). Homebrew peut retarder de quelques jours : une version plus récente que la sienne est à jour.
 fn formule(v: Version, f: &Faits, nom: &str) -> Verdict {
     const SOURCE: &str = "Homebrew";
     let lu = match &f.formules {
@@ -233,14 +211,10 @@ fn formule(v: Version, f: &Faits, nom: &str) -> Verdict {
     )
 }
 
-/// Edge Stable dont le canal est sûr : pas Extended Stable ni un autre canal réglé, et sous macOS (où la stratégie
-/// n'est pas lue) pas un majeur à deux près du Stable, qui peut être l'Extended Stable. L'Extended Stable reçoit les
+/// Edge Stable dont le canal est sûr : pas Extended Stable ni un autre canal réglé. L'Extended Stable reçoit les
 /// correctifs sous d'autres numéros : une version Stable plus récente ne dit rien de lui.
-fn edge_stable_sur(i: &Installe, v: Version, stable: &EdgeStable, systeme: Systeme) -> bool {
-    match &i.branche {
-        Branche::Canal(c) if c != "stable" => false,
-        _ => !(systeme == Systeme::MacOs && (1..=2).contains(&stable.version.majeur().saturating_sub(v.majeur()))),
-    }
+fn edge_stable_sur(i: &Installe) -> bool {
+    !matches!(&i.branche, Branche::Canal(c) if c != "stable")
 }
 
 /// Les Edge Stable de la plateforme d'un Edge installé (toutes les architectures du système si la sienne n'est pas
@@ -250,7 +224,7 @@ fn edge_de_sa_plateforme<'a>(i: &Installe, systeme: Systeme, stables: &'a [EdgeS
         Plateforme::X86 => Some("x86"),
         Plateforme::X64 => Some("x64"),
         Plateforme::Arm64 => Some("arm64"),
-        _ => None,
+        Plateforme::Inconnue => None,
     };
     stables
         .iter()
@@ -258,7 +232,6 @@ fn edge_de_sa_plateforme<'a>(i: &Installe, systeme: Systeme, stables: &'a [EdgeS
             Systeme::Windows => {
                 s.plateforme == "Windows" && architecture.is_none_or(|a| s.architecture.eq_ignore_ascii_case(a))
             }
-            Systeme::MacOs => s.plateforme == "MacOS",
         })
         .collect()
 }
@@ -279,10 +252,7 @@ pub(crate) fn failles_edge(
         return Err(String::new());
     };
     let stables = edge_de_sa_plateforme(i, f.systeme, &lu.valeur);
-    let Some(plus_haute) = stables.iter().max_by_key(|s| s.version) else {
-        return Err(String::new());
-    };
-    if !edge_stable_sur(i, v, plus_haute, f.systeme) {
+    if stables.is_empty() || !edge_stable_sur(i) {
         return Err(String::new());
     }
     // Le correctif d'une CVE est la plus ancienne version qui la cite : listée aussi par une version déjà installée
@@ -336,9 +306,6 @@ fn chrome(i: &Installe, v: Version, f: &Faits) -> Verdict {
         (Systeme::Windows, Plateforme::X64) => &["win64"],
         (Systeme::Windows, Plateforme::Arm64) => &["win_arm64"],
         (Systeme::Windows, _) => &["win", "win64", "win_arm64"],
-        (Systeme::MacOs, Plateforme::X64) => &["mac"],
-        (Systeme::MacOs, Plateforme::Arm64) => &["mac_arm64"],
-        (Systeme::MacOs, _) => &["mac", "mac_arm64"],
     };
     let (mut stable, mut extended, mut age) = (Vec::new(), Vec::new(), Duration::ZERO);
     let mut manque: Option<(&str, String)> = None;
@@ -389,8 +356,7 @@ fn chrome(i: &Installe, v: Version, f: &Faits) -> Verdict {
 }
 
 /// Edge : comparé au Stable de sa plateforme. Le canal Extended Stable n'a aucune source fixe ; un Stable publié il
-/// y a moins de trois jours est encore en déploiement. Sous macOS, où la stratégie de canal n'est pas lue, un
-/// majeur à deux près peut être l'Extended Stable.
+/// y a moins de trois jours est encore en déploiement.
 fn edge(i: &Installe, v: Version, f: &Faits) -> Verdict {
     match &i.branche {
         Branche::Canal(c) if c == "extended" => {
@@ -433,15 +399,6 @@ fn edge(i: &Installe, v: Version, f: &Faits) -> Verdict {
             "déploiement de la {derniere} en cours",
             "rollout of {derniere} in progress"
         ));
-    }
-    if f.systeme == Systeme::MacOs && (1..=2).contains(&ecart) {
-        return Verdict::NonVerifie(
-            tr!(
-                "peut-être le canal Extended Stable (sa stratégie n'est pas lue sous macOS)",
-                "maybe the Extended Stable channel (its policy is not read on macOS)"
-            )
-            .to_string(),
-        );
     }
     Verdict::Depassee {
         derniere,
@@ -511,9 +468,6 @@ fn brave(i: &Installe, v: Version, f: &Faits) -> Verdict {
             return sans_source("Brave", tr!("aucune source pour 32 bits", "no source for 32-bit"));
         }
         (Systeme::Windows, _) => &["brave-windows-x64", "brave-windows-arm64"],
-        (Systeme::MacOs, Plateforme::X64) => &["brave-macos-x64"],
-        (Systeme::MacOs, Plateforme::Arm64) => &["brave-macos-arm64"],
-        (Systeme::MacOs, _) => &["brave-macos-arm64", "brave-macos-x64"],
     };
     let mut lues: Vec<Lu<Version>> = Vec::new();
     let mut manque = None;
@@ -759,13 +713,10 @@ pub(crate) mod tests {
                 c("win64", "extended", &["152.0.7977.169", "156.0.8078.48"]),
                 c("win", "stable", &["156.0.8078.48"]),
                 ("win", "extended", Err("pas d'Internet ?".into())),
-                c("mac_arm64", "stable", &["156.0.8078.48"]),
-                c("mac_arm64", "extended", &["152.0.7977.169"]),
             ],
             edge: lu(vec![
                 edge("Windows", "x64", "156.0.4314.42", "2026-10-22"),
                 edge("Windows", "arm64", "155.0.4283.61", "2026-10-10"),
-                edge("MacOS", "universal", "155.0.4283.61", "2026-10-10"),
             ]),
             office: lu(vec![
                 CanalOffice {
@@ -798,15 +749,11 @@ pub(crate) mod tests {
                 },
             ]),
             versions: vec![
-                ("mau-MSWD2019", lu(v("16.114.26102031"))),
                 ("adobe-acrobat", lu(v("26.2.22031"))),
                 ("adobe-reader", lu(v("26.2.22031"))),
                 ("brave-windows-x64", lu(v("1.98.60"))),
                 ("brave-windows-arm64", Err("le serveur a répondu 503".into())),
-                ("brave-macos-arm64", lu(v("1.98.60"))),
-                ("brave-macos-x64", lu(v("1.98.59"))),
                 ("slack-windows", lu(v("4.52.182"))),
-                ("slack-macos", Err("le serveur a répondu 503".into())),
             ],
             eol: lu(vec![
                 ProduitEol {
@@ -884,14 +831,6 @@ pub(crate) mod tests {
         assert!(raison(&j("156.0.8078.48", Plateforme::Arm64)).contains("Google"));
         // Plateforme inconnue : toutes celles du système, la lecture la plus indulgente.
         assert!(est_a_jour(&j("152.0.7977.169", Plateforme::Inconnue)));
-        let m = faits(Systeme::MacOs);
-        let i = installe(
-            Produit::Chrome,
-            "152.0.7977.169",
-            Branche::Release,
-            Plateforme::Universel,
-        );
-        assert!(est_a_jour(&juger(&i, &m)));
     }
 
     #[test]
@@ -906,17 +845,6 @@ pub(crate) mod tests {
         assert!(est_depassee(&j("155.0.4283.50", Branche::Release, Plateforme::Arm64)));
         assert!(raison(&j("150.0.1.2", Branche::Canal("extended".into()), Plateforme::X64)).contains("Extended"));
         assert!(raison(&j("157.0.1.2", Branche::Canal("beta".into()), Plateforme::X64)).contains("beta"));
-        // Sous macOS : un majeur à deux près peut être l'Extended Stable.
-        let m = faits(Systeme::MacOs);
-        let i = |ver: &str| {
-            juger(
-                &installe(Produit::Edge, ver, Branche::Release, Plateforme::Universel),
-                &m,
-            )
-        };
-        assert!(raison(&i("153.0.1.2")).contains("Extended"));
-        assert!(est_depassee(&i("155.0.4283.1")));
-        assert!(est_depassee(&i("150.0.1.2")));
     }
 
     #[test]
@@ -1014,25 +942,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn office_mac_adobe_brave_java() {
-        let mac = faits(Systeme::MacOs);
-        let mut word = installe(
-            Produit::Office,
-            "16.114.26102031",
-            Branche::Release,
-            Plateforme::Universel,
-        );
-        word.app = crate::protection::perimes::produits::app_mac("com.microsoft.Word").map(|(_, a)| a);
-        assert!(est_a_jour(&juger(&word, &mac)));
-        word.version = Some(v("16.113.26092000"));
-        assert!(est_depassee(&juger(&word, &mac)));
-        let mut excel = word.clone();
-        excel.app = crate::protection::perimes::produits::app_mac("com.microsoft.Excel").map(|(_, a)| a);
-        assert!(raison(&juger(&excel, &mac)).contains("Microsoft"));
-        let mut app_store = word.clone();
-        app_store.branche = Branche::Canal("App Store".into());
-        assert!(raison(&juger(&app_store, &mac)).contains("App Store"));
-
+    fn adobe_brave_java() {
         let win = faits(Systeme::Windows);
         let acro = |ver: &str, b: Branche| juger(&installe(Produit::Reader, ver, b, Plateforme::X64), &win);
         assert!(est_a_jour(&acro("26.2.22031.0", Branche::Release)));
@@ -1044,8 +954,6 @@ pub(crate) mod tests {
         assert!(est_depassee(&brv("1.98.59", Plateforme::X64, &win)));
         assert!(raison(&brv("1.98.60", Plateforme::Arm64, &win)).contains("503"));
         assert!(raison(&brv("1.98.60", Plateforme::X86, &win)).contains("32"));
-        // Universelle : la plus basse des deux (1.98.59) suffit pour « à jour ».
-        assert!(est_a_jour(&brv("1.98.59", Plateforme::Universel, &mac)));
 
         let j = |d, ver: &str| {
             juger(
@@ -1097,13 +1005,6 @@ pub(crate) mod tests {
         assert!(est_depassee(&j(Produit::PuTTY, "0.81.0.0", &f)));
         assert!(est_a_jour(&j(Produit::Slack, "4.52.182.0", &f)));
         assert!(est_depassee(&j(Produit::Slack, "4.41.105.0", &f)));
-        // Sous macOS, la source de Slack a manqué : non vérifié, avec sa raison ; de l'App Store : non vérifié.
-        let m = faits(Systeme::MacOs);
-        let slack_mac = installe(Produit::Slack, "4.52.182", Branche::Release, Plateforme::Universel);
-        assert!(raison(&juger(&slack_mac, &m)).contains("503"));
-        let mut magasin = slack_mac.clone();
-        magasin.branche = Branche::Canal("App Store".into());
-        assert!(raison(&juger(&magasin, &m)).contains("App Store"));
         // Formule absente, d'une forme inconnue, ou fichier manquant : non vérifié, jamais à jour.
         if let Ok(lu) = &mut f.formules {
             lu.valeur.remove("putty");
@@ -1206,28 +1107,6 @@ pub(crate) mod tests {
             fe("155.0.4283.61", Branche::Inconnue, Plateforme::X64, &g)
                 .unwrap_err()
                 .contains("Microsoft")
-        );
-        // Sous macOS, un majeur à deux près du Stable peut être l'Extended Stable : rien.
-        let mut m = faits(Systeme::MacOs);
-        if let Ok(lu) = &mut m.edge {
-            lu.valeur[2].correctifs = vec![correctif("155.0.4283.61", Some(&["CVE-2099-0001"]))];
-        }
-        assert_eq!(
-            fe("153.0.1.2", Branche::Inconnue, Plateforme::Universel, &m),
-            Err(String::new())
-        );
-        assert_eq!(
-            fe("155.0.4283.1", Branche::Inconnue, Plateforme::Universel, &m),
-            Ok(vec![("CVE-2099-0001".into(), v("155.0.4283.61"))])
-        );
-        assert_eq!(
-            fe("150.0.1.2", Branche::Inconnue, Plateforme::Universel, &m).map(|l| l.len()),
-            Ok(1)
-        );
-        m.edge = Err("pas d'Internet ?".into());
-        assert_eq!(
-            fe("150.0.1.2", Branche::Inconnue, Plateforme::Universel, &m),
-            Err(String::new())
         );
     }
 

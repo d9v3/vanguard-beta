@@ -14,7 +14,7 @@
 //! et c'est dit. Le partage avec l'auteur (`partage`) y est gardé aussi, relu à chaque écriture du relevé et avant
 //! chaque envoi.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 pub(crate) mod agent;
@@ -268,7 +268,7 @@ pub(crate) fn hors_ligne() -> bool {
 /// Télécharger les fichiers des dernières versions des logiciels ? Oui par défaut ; lu dans le fichier à chaque
 /// usage, pour qu'un changement vaille aussitôt. Un fichier illisible vaut les défauts, comme au lancement. Le travail
 /// sans Internet (`hors_ligne`) coupe aussi ce téléchargement, à part.
-#[cfg(any(windows, target_os = "macos", test))]
+#[cfg(any(windows, test))]
 pub(crate) fn versions_logiciels() -> bool {
     !charger_de(&fichier()).unwrap_or_default().sans_versions
 }

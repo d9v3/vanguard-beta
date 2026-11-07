@@ -2,5 +2,5 @@
 gravite = "critique"
 mots = ["aide-corpus$"]
 propre = "aucun"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]
 reserve = "le bilan des journaux dit toujours les journaux restés vides, non vérifiés"

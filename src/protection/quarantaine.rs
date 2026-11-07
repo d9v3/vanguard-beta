@@ -1,11 +1,11 @@
 //! Quarantaine réversible : un fichier jugé dangereux (antivirus, YARA) est déplacé dans le dossier de Vanguard sur cet
 //! ordinateur (jamais sur la clé : on ne transporte pas de logiciel malveillant), rendu inutilisable (aucune
-//! permission sous Linux et macOS ; sous Windows, une extension qui empêche de le lancer d'un double-clic, et lecture
+//! permission sous Linux ; sous Windows, une extension qui empêche de le lancer d'un double-clic, et lecture
 //! seule), et noté : d'où il vient, ses permissions, la détection, la date. Une détection peut se tromper : « Remettre »
 //! le replace exactement où il était, avec ses permissions d'avant, sans jamais écraser un fichier qui aurait pris sa
 //! place. Les fichiers isolés avant la 0.61 (journal.txt seulement) se remettent aussi.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::path::{Path, PathBuf};
@@ -28,7 +28,7 @@ struct Entree {
     detection: String,
     /// « AAAA-MM-JJ HH:MM:SS ».
     date: String,
-    /// Permissions d'origine (Linux, macOS), pour les remettre ; absentes pour un fichier isolé avant la 0.61.
+    /// Permissions d'origine (Linux), pour les remettre ; absentes pour un fichier isolé avant la 0.61.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mode: Option<u32>,
     /// Empreinte SHA-256 relevée avant l'isolement : pour le chercher (VirusTotal) et prouver que c'est le même
@@ -142,7 +142,7 @@ pub(crate) fn isoler(chemin: &Path, detection: &str, d: Demande) -> std::io::Res
 
 /// Supprime pour de bon un fichier trouvé par une analyse, après accord : relevé d'abord (son empreinte disparaît
 /// avec lui), puis noté dans « Ce que Vanguard a changé », sans rien à annuler. Les traces d'incident le reprennent,
-/// comme une quarantaine. ClamAV, seul à le proposer, n'est lancé d'ici que sous Linux et macOS.
+/// comme une quarantaine. ClamAV, seul à le proposer, n'est lancé d'ici que sous Linux.
 #[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn supprimer_apres_analyse(chemin: &Path, detection: &str) -> std::io::Result<()> {
     let cle = format!("fichier:{}", chemin.display());

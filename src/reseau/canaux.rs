@@ -4,14 +4,9 @@
 //! 80 MHz en occupe quatre d'un coup : ils se comptent par blocs. Lecture seule : le canal se règle dans
 //! l'administration de la box.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
-#[cfg(target_os = "macos")]
-use std::process::Command;
-
-#[cfg(target_os = "macos")]
-use crate::commande::lancer;
 use crate::machine::wifi::{self, Bande, Borne};
 use crate::ui::*;
 
@@ -178,30 +173,6 @@ fn lire() -> Result<Lecture, crate::modele::raison::Echec> {
             "canaux/lire",
             trf!("Réseaux Wi-Fi illisibles : {r}.", "Wi-Fi networks unreadable: {r}."),
         )),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn lire() -> Result<Lecture, crate::modele::raison::Echec> {
-    let Some(r) = lancer(Command::new("system_profiler").arg("SPAirPortDataType"), 40) else {
-        return Err(crate::modele::raison::Echec::echoue(
-            "canaux/lire",
-            tr!("Réseaux Wi-Fi illisibles.", "Wi-Fi networks unreadable."),
-        ));
-    };
-    match wifi::bornes_system_profiler(&r.sortie) {
-        b if b.is_empty() => Err(crate::modele::raison::Echec::echoue(
-            "canaux/lire",
-            tr!(
-                "Pas de Wi-Fi sur ce Mac, ou il est éteint.",
-                "No Wi-Fi on this Mac, or it is turned off."
-            ),
-        )),
-        bornes => Ok(Lecture {
-            bornes,
-            note: None,
-            reserve: None,
-        }),
     }
 }
 

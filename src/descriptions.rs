@@ -116,8 +116,8 @@ impl Action {
                 "Closes the computer's inbound access, turns off sharing and sets a protective DNS. Each change is shown; turning it off restores all."
             ),
             Action::Antivirus => tr!(
-                "Cherche les logiciels malveillants avec ClamAV (Linux, macOS) ou Microsoft Defender (Windows), ou avec les règles YARA intégrées.",
-                "Looks for malware with ClamAV (Linux, macOS) or Microsoft Defender (Windows), or with the built-in YARA rules."
+                "Cherche les logiciels malveillants avec ClamAV (Linux) ou Microsoft Defender (Windows), ou avec les règles YARA intégrées.",
+                "Looks for malware with ClamAV (Linux) or Microsoft Defender (Windows), or with the built-in YARA rules."
             ),
             Action::AntivirusRapide => tr!(
                 "Analyse les endroits où arrivent les menaces, puis montre ce qui se lance au démarrage. Un fichier détecté : quarantaine ou suppression, au choix.",
@@ -156,8 +156,8 @@ impl Action {
                 "Compares its checksum with the one the site publishes, spots a program disguised as a document, then scans it. Nothing is moved."
             ),
             Action::Bac => tr!(
-                "Lance le programme à l'écart avec l'outil du système (bubblewrap, Windows Sandbox, sandbox-exec). Votre dossier personnel lui est caché.",
-                "Runs the program apart using the system's tool (bubblewrap, Windows Sandbox, sandbox-exec). Your home folder is hidden from it."
+                "Lance le programme à l'écart avec l'outil du système (bubblewrap, Windows Sandbox). Votre dossier personnel lui est caché.",
+                "Runs the program apart using the system's tool (bubblewrap, Windows Sandbox). Your home folder is hidden from it."
             ),
             Action::Quarantaine => tr!(
                 "Les fichiers isolés par l'antivirus ou YARA ; celui que vous choisissez revient à sa place, avec ses permissions, sans rien écraser.",
@@ -188,8 +188,8 @@ impl Action {
                 "Looks up your address in known leaks (XposedOrNot, or Have I Been Pwned with a key). The address itself is sent to the service."
             ),
             Action::CameraMicro => tr!(
-                "Windows : qui s'en est servi, et quand. Linux : qui s'en sert en ce moment. macOS : où le voir. Lecture seule.",
-                "Windows: who used them, and when. Linux: who is using them right now. macOS: where to look. Read-only."
+                "Windows : qui s'en est servi, et quand. Linux : qui s'en sert en ce moment. Lecture seule.",
+                "Windows: who used them, and when. Linux: who is using them right now. Read-only."
             ),
             Action::Acces => tr!(
                 "Les applications autorisées et, si le système le note, leur dernière utilisation. Lecture seule : la marche à suivre pour retirer est donnée.",
@@ -244,8 +244,8 @@ impl Action {
                 "Copies Documents, Pictures, Desktop, Videos and Music to a dated folder, then reads each file back. Nothing is deleted or overwritten."
             ),
             Action::SauvegardeAuto => tr!(
-                "Met en place l'outil du système (Déjà Dup ou rsync, Time Machine ; guidé sous Windows), après accord. S'annule exactement.",
-                "Sets up the system's tool (Déjà Dup or rsync, Time Machine; guided on Windows), with your consent. Undone exactly."
+                "Met en place l'outil du système (Déjà Dup ou rsync ; guidé sous Windows), après accord. S'annule exactement.",
+                "Sets up the system's tool (Déjà Dup or rsync; guided on Windows), with your consent. Undone exactly."
             ),
             Action::VerifierCopies => tr!(
                 "Relit une copie ou la sauvegarde sur le disque et compare des fichiers à leurs originaux. Rien n'est écrit ni effacé.",
@@ -280,8 +280,8 @@ impl Action {
                 "Hardware, system and recent problems, such as crashes or blue screens, with a text copy saved. Read-only."
             ),
             Action::Logiciels => tr!(
-                "Chacun est montré installé ou non, puis installé après accord depuis la source officielle (paquets, Flathub, winget, Homebrew).",
-                "Each is shown as installed or not, then installed with consent from the official source (packages, Flathub, winget, Homebrew)."
+                "Chacun est montré installé ou non, puis installé après accord depuis la source officielle (paquets, Flathub, winget).",
+                "Each is shown as installed or not, then installed with consent from the official source (packages, Flathub, winget)."
             ),
             Action::Nettoyer => tr!(
                 "Montre la place que chaque élément libère ; ce qui se refait seul est coché, la corbeille jamais. Aucun document ni réglage n'est touché.",
@@ -327,7 +327,6 @@ impl Action {
                 "Rend le système plus pratique au quotidien. Chaque réglage montre son état, s'applique après accord et s'annule exactement.",
                 "Makes the system handier day to day. Each setting shows its state, applies with consent and undoes exactly."
             ),
-            #[cfg(not(target_os = "macos"))]
             Action::OptimiserPerformance => tr!(
                 "Réglages de vitesse et de fiabilité. Chacun montre son état, s'applique après accord et s'annule exactement.",
                 "Speed and reliability settings. Each shows its state, applies with consent and undoes exactly."
@@ -417,8 +416,8 @@ impl Groupe {
                 "Keep your files safe on another disk and check that the copy reads back."
             ),
             Groupe::Guide => tr!(
-                "Retrouver une commande utile de Linux, Windows ou macOS, expliquée, à copier ou à lancer.",
-                "Find a useful Linux, Windows or macOS command, explained, to copy or run."
+                "Retrouver une commande utile de Linux ou Windows, expliquée, à copier ou à lancer.",
+                "Find a useful Linux or Windows command, explained, to copy or run."
             ),
             Groupe::Depanner => tr!(
                 "Régler une panne courante pas à pas, en répondant à quelques questions.",

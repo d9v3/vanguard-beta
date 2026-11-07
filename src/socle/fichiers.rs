@@ -3,7 +3,7 @@
 //! leur ancienne place dans `reseau` ; le bilan, la protection et les traces s'en servent autant, sans rien avoir à
 //! faire du réseau.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::path::PathBuf;
@@ -434,8 +434,6 @@ impl Drop for Verrou {
 pub fn dossier_local() -> PathBuf {
     #[cfg(windows)]
     let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    #[cfg(target_os = "macos")]
-    let base = super::personnel::dossier_personnel().map(|h| h.join("Library/Application Support"));
     #[cfg(target_os = "linux")]
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
@@ -487,7 +485,7 @@ fn dossier_des_tests() -> PathBuf {
         extern "C" fn retirer() {
             let _ = std::fs::remove_dir_all(dossier());
         }
-        // SAFETY: atexit de la bibliothèque C, présent sous Linux, Windows (msvcrt) et macOS ; il reçoit une
+        // SAFETY: atexit de la bibliothèque C, présent sous Linux et Windows (msvcrt) ; il reçoit une
         // fonction sans argument qui vit tout le programme, appelée une fois à la sortie normale du processus.
         unsafe { atexit(retirer) };
     });

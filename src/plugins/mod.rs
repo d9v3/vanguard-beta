@@ -10,7 +10,7 @@
 //! c'est la copie vérifiée qui tourne : le remplacer entre la vérification et le lancement ne sert à rien. La
 //! conception (menaces et garde-fous) est résumée dans CONTRIBUTING.md, section Plugins.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 mod archive;
@@ -956,11 +956,7 @@ fn du_systeme(programme: &Path) -> bool {
     }
 }
 
-// Sans /usr/local/bin ni /opt/homebrew/bin : sous macOS, Homebrew les donne au compte qui l'a installé, qui y
-// poserait un faux pwsh ou python3 lancé ensuite sous un autre compte.
-#[cfg(target_os = "macos")]
-const PATH_SYSTEME: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(unix)]
 const PATH_SYSTEME: &str = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin";
 
 /// Ce qui lance `programme` : un script shell par /bin/sh (une copie depuis une clé exFAT perd le droit d'exécution),
@@ -1553,7 +1549,7 @@ pub enum Auto {
     Surveillance,
 }
 
-/// Comment lancer : `isole` (Linux : bubblewrap ; macOS : sandbox-exec) sans réseau, dossier personnel invisible ;
+/// Comment lancer : `isole` (Linux : bubblewrap) sans réseau, dossier personnel invisible ;
 /// `auto`, sans personne devant l'écran.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Facon {
@@ -1596,26 +1592,10 @@ fn commande_de(
             c.args(a);
             c
         }
-        // macOS : sandbox-exec, le bac à sable du système, avec le profil de `isoler` (pas de réseau, dossier
-        // personnel illisible, écriture dans le jetable seulement).
-        #[cfg(target_os = "macos")]
-        Some(jetable) => {
-            let ligne: Vec<String> = std::iter::once(p.to_string_lossy().into_owned()).chain(tout).collect();
-            let a = crate::protection::isoler::arguments_extension(jetable, dossier, &ligne).ok_or_else(|| {
-                tr!(
-                    "Isolement impossible : sandbox-exec n'est pas là.",
-                    "Isolation not possible: sandbox-exec is not there."
-                )
-                .to_string()
-            })?;
-            let mut c = Command::new("/usr/bin/sandbox-exec");
-            c.args(a);
-            c
-        }
         // Windows Sandbox est une machine à part, effacée à la fermeture : la sortie de l'extension n'en reviendrait
         // pas à Vanguard (ni son filtre, ni ses constats). Sans équivalent léger dans le système, l'isolement est dit
         // indisponible, jamais promis.
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(not(target_os = "linux"))]
         Some(_) => {
             return Err(tr!(
                 "Isolement non disponible sous Windows : Windows Sandbox est une machine à part, d'où la sortie de l'extension ne reviendrait pas.",
@@ -1627,11 +1607,6 @@ fn commande_de(
     c.current_dir(dossier);
     if !libre {
         environnement(&mut c);
-    }
-    // Isolée sous macOS, l'extension écrit chez elle dans le jetable : son dossier personnel est illisible.
-    #[cfg(target_os = "macos")]
-    if let Some(j) = isole {
-        c.env("HOME", j).env("TMPDIR", j);
     }
     #[cfg(unix)]
     {

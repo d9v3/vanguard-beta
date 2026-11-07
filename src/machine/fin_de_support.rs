@@ -1,7 +1,7 @@
 //! Fin de support : ce qui ne reçoit plus de corrections de sécurité. Le système lui-même (Windows 10 depuis le
-//! 14 octobre 2025, les premières versions de Windows 11, les macOS de plus de trois ans) et les programmes que leur
+//! 14 octobre 2025, les premières versions de Windows 11) et les programmes que leur
 //! éditeur a abandonnés (Flash, Silverlight, QuickTime pour Windows, Java 6 et 7, Office 2016 et plus anciens…) : leurs
-//! failles ne seront jamais corrigées. Les navigateurs installés à part (Windows, macOS) sont jugés par les logiciels
+//! failles ne seront jamais corrigées. Les navigateurs installés à part (Windows) sont jugés par les logiciels
 //! pas à jour (`protection::perimes`), qui comparent leur version à la dernière publiée ; quand elle ne se compare
 //! pas, ils reprennent d'ici l'âge du fichier (`age_jours`, `constat_navigateur`) : un seul constat par navigateur.
 //! Sous Linux, le gestionnaire de paquets tient tout cela : seuls Python 2 et le greffon Flash sont cherchés.
@@ -12,7 +12,7 @@ use crate::{tr, trf};
 
 const CAT: &str = "Fin de support";
 /// Au-delà, un navigateur qui se met à jour toutes les quatre semaines a cessé de le faire.
-#[cfg(any(windows, target_os = "macos", test))]
+#[cfg(any(windows, test))]
 pub(crate) const NAVIGATEUR_JOURS: u64 = 60;
 
 /// Un programme abandonné : un morceau de son nom (en minuscules, tel que l'affiche la liste des programmes), le nom
@@ -99,7 +99,7 @@ pub(crate) fn constat_navigateur(nom: &str, jours: u64) -> Constat {
 }
 
 /// Âge en jours d'un fichier (sa date de modification : celle de la version installée).
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(windows)]
 pub(crate) fn age_jours(chemin: &std::path::Path) -> Option<u64> {
     let m = std::fs::metadata(chemin).ok()?.modified().ok()?;
     Some(std::time::SystemTime::now().duration_since(m).ok()?.as_secs() / 86_400)
@@ -162,37 +162,6 @@ fn systeme_windows(build: u32, edition: &str) -> Option<Constat> {
     })
 }
 
-/// macOS : Apple corrige les trois dernières versions. Depuis macOS 26, la numérotation suit l'année : 26, 15 et 14
-/// sont corrigées en 2026 ; 13 Ventura et plus anciens ne le sont plus.
-#[cfg(any(target_os = "macos", test))]
-fn systeme_macos(version: &str) -> Option<Constat> {
-    let majeure: u32 = version.trim().split('.').next()?.parse().ok()?;
-    let nom = match majeure {
-        10 => "macOS 10",
-        11 => "macOS 11 Big Sur",
-        12 => "macOS 12 Monterey",
-        13 => "macOS 13 Ventura",
-        _ => return None,
-    };
-    Some(
-        alerte(
-            CAT,
-            Niveau::Eleve,
-            trf!(
-                "{nom} ne reçoit plus de corrections de sécurité : Apple ne corrige que les trois dernières versions de macOS.",
-                "{nom} receives no more security fixes: Apple only fixes the last three versions of macOS."
-            ),
-        )
-        .manuel(
-            tr!(
-                "Réglages Système › Général › Mise à jour de logiciels : installer la dernière version que ce Mac accepte",
-                "System Settings › General › Software Update: install the latest version this Mac accepts"
-            ),
-            &[],
-        ),
-    )
-}
-
 // ───────────────────────────── Lectures ─────────────────────────────
 
 #[cfg(windows)]
@@ -214,31 +183,6 @@ pub fn constats() -> Vec<Constat> {
         .iter()
         .map(|n| crate::ui::affichable(n))
         .collect();
-    constats.extend(abandonnes(&noms).into_iter().map(|(n, a)| constat_abandonne(n, a)));
-    constats
-}
-
-#[cfg(target_os = "macos")]
-pub fn constats() -> Vec<Constat> {
-    let mut constats = Vec::new();
-    if let Some(version) = super::macos::version_systeme("ProductVersion")
-        && let Some(c) = systeme_macos(&version)
-    {
-        constats.push(c);
-    }
-    let maison = crate::socle::maison();
-    let present = |p: &str| std::path::Path::new(p).exists() || maison.join(p.trim_start_matches('/')).exists();
-    let mut noms = Vec::new();
-    for (chemin, nom) in [
-        ("/Library/Internet Plug-Ins/Flash Player.plugin", "Adobe Flash Player"),
-        ("/Library/PreferencePanes/Flash Player.prefPane", "Adobe Flash Player"),
-        ("/Library/Internet Plug-Ins/Silverlight.plugin", "Microsoft Silverlight"),
-        ("/Applications/Microsoft Office 2011", "Microsoft Office 2010"),
-    ] {
-        if present(chemin) {
-            noms.push(nom.to_string());
-        }
-    }
     constats.extend(abandonnes(&noms).into_iter().map(|(n, a)| constat_abandonne(n, a)));
     constats
 }
@@ -316,15 +260,6 @@ mod tests {
         // 25H2 et les builds inconnus : rien à dire.
         assert!(systeme_windows(26200, "Professional").is_none());
         assert!(systeme_windows(99999, "Core").is_none());
-    }
-
-    #[test]
-    fn fin_de_macos() {
-        assert!(systeme_macos("12.7.6\n").unwrap().message.contains("Monterey"));
-        assert!(systeme_macos("13.7").is_some());
-        assert!(systeme_macos("14.8").is_none());
-        assert!(systeme_macos("26.1").is_none());
-        assert!(systeme_macos("").is_none());
     }
 
     #[test]

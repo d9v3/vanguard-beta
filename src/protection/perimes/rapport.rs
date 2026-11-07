@@ -9,7 +9,7 @@
 //! ferait chuter), un constat critique à part pour Firefox ou Edge antérieur au correctif d'une faille exploitée, et un
 //! seul « impossible » qui donne tout ce qui n'a pas pu être vérifié, jamais compté comme sain.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::time::Duration;
@@ -185,21 +185,9 @@ pub(crate) fn juger_tout(
 
 // ───────────────────────────── Textes ─────────────────────────────
 
-/// Le nom montré : celui de l'application pour Office sous macOS (une par application), sinon celui du produit.
-fn nom_app(i: &Installe) -> &'static str {
-    match i.app.map(|a| a.bundle_id) {
-        Some("com.microsoft.Word") => "Microsoft Word",
-        Some("com.microsoft.Excel") => "Microsoft Excel",
-        Some("com.microsoft.Powerpoint") => "Microsoft PowerPoint",
-        Some("com.microsoft.Outlook") => "Microsoft Outlook",
-        Some("com.microsoft.onenote.mac") => "Microsoft OneNote",
-        _ => i.produit.nom(),
-    }
-}
-
 /// « Google Chrome 156.0.8078.48 (compte alice) ».
 fn nomme(i: &Installe) -> String {
-    let mut t = nom_app(i).to_string();
+    let mut t = i.produit.nom().to_string();
     if !i.brute.is_empty() {
         t = format!("{t} {}", i.brute);
     }
@@ -460,7 +448,7 @@ pub(crate) fn constats_de(b: &Bilan) -> Vec<Constat> {
     for j in b.juges.iter().filter(|j| !j.touche()) {
         if let Some(jours) = j.vieux {
             constats.push(crate::machine::fin_de_support::constat_navigateur(
-                nom_app(&j.installe),
+                j.installe.produit.nom(),
                 jours,
             ));
         }
@@ -607,43 +595,31 @@ fn corps(b: &Bilan) {
 
 // ───────────────────────────── Lectures ─────────────────────────────
 
-/// L'âge, en jours, du fichier qui change à chaque mise à jour d'un navigateur : son exécutable sous Windows, son
-/// Info.plist sous macOS.
-#[cfg(any(windows, target_os = "macos"))]
+/// L'âge, en jours, du fichier qui change à chaque mise à jour d'un navigateur : son exécutable.
+#[cfg(windows)]
 fn age_fichier(i: &Installe) -> Option<u64> {
-    let chemin = if cfg!(windows) {
-        let exe = match i.produit {
-            Produit::Chrome => "chrome.exe",
-            Produit::Edge => "msedge.exe",
-            Produit::Brave => "brave.exe",
-            Produit::Firefox => "firefox.exe",
-            _ => return None,
-        };
-        i.lieu.join(exe)
-    } else {
-        i.lieu.join("Contents").join("Info.plist")
+    let exe = match i.produit {
+        Produit::Chrome => "chrome.exe",
+        Produit::Edge => "msedge.exe",
+        Produit::Brave => "brave.exe",
+        Produit::Firefox => "firefox.exe",
+        _ => return None,
     };
-    crate::machine::fin_de_support::age_jours(&chemin)
+    crate::machine::fin_de_support::age_jours(&i.lieu.join(exe))
 }
 
 /// Le relevé de cet ordinateur : l'inventaire, les sources et le catalogue de la CISA lus en même temps (une minute
 /// au pire), puis chaque logiciel jugé.
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(windows)]
 fn relever() -> Bilan {
     use super::sources::{self, Systeme};
-    let systeme = if cfg!(windows) {
-        Systeme::Windows
-    } else {
-        Systeme::MacOs
-    };
+    let systeme = Systeme::Windows;
     let coupure = sources::coupure();
     let (inventaire, releve, kev) = std::thread::scope(|portee| {
         let releve = portee.spawn(|| sources::rafraichir(systeme));
         let kev = portee.spawn(|| crate::protection::kev::catalogue_selon(coupure.as_deref()));
         #[cfg(windows)]
         let inventaire = super::windows::inventaire();
-        #[cfg(target_os = "macos")]
-        let inventaire = super::macos::inventaire();
         let releve = releve
             .join()
             .unwrap_or_else(|_| sources::Releve { sources: Vec::new() });
@@ -675,7 +651,7 @@ fn relever() -> Bilan {
 }
 
 /// `vanguard logiciels-perimes`.
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(windows)]
 pub(crate) fn afficher() {
     entete();
     afficher_aligne(
@@ -694,7 +670,7 @@ pub(crate) fn afficher() {
 }
 
 /// Le relevé jugé en résultat, versé au rapport et au journal (`--json`).
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(windows)]
 pub(super) fn resultat_verse(
     debut: (chrono::DateTime<chrono::Utc>, std::time::Instant),
 ) -> crate::modele::resultat::Resultat {
@@ -704,7 +680,7 @@ pub(super) fn resultat_verse(
 }
 
 /// Les constats du bilan : le même relevé que l'écran (téléchargé une fois par jour, sauf réglage coupé).
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(windows)]
 pub(crate) fn constats() -> Vec<Constat> {
     constats_de(&relever())
 }
@@ -733,7 +709,7 @@ mod tests {
             Produit::Java(_) => super::super::version::java_release(version),
             _ => Version::lire(version),
         };
-        let mut i = Installe::nouveau(produit, version, normale, Path::new("/Applications/Essai.app"));
+        let mut i = Installe::nouveau(produit, version, normale, Path::new(r"C:\\Program Files\\Essai"));
         i.branche = branche;
         i.plateforme = Plateforme::X64;
         i
@@ -989,7 +965,7 @@ mod tests {
     /// Sur de vraies copies, gardées à la main hors du dépôt (jamais versionnées : sources sans licence publiée ou
     /// MPL-2.0), si `VANGUARD_ESSAI_PERIMES` donne leur dossier : `firefox_versions.json`, `products` (Edge),
     /// `OfficeReleases`, `chrome-win-stable.json`, `foundation-security-advisories.tar.gz`, `kev.json`, et s'ils y
-    /// sont `slack-windows.json` et `slack-macos.json`. Sans lui, rien.
+    /// est `slack-windows.json`. Sans lui, rien.
     #[test]
     fn vraies_copies_si_presentes() {
         use crate::protection::perimes::sources::editeurs;
@@ -1018,10 +994,8 @@ mod tests {
         let office = editeurs::office(&lire("OfficeReleases")).unwrap();
         assert!(office.iter().all(|c| !c.guids.is_empty()), "chaque canal a son GUID");
         assert!(editeurs::chrome(&lire("chrome-win-stable.json"), "win", "stable").is_some());
-        for (nom, plateforme) in [("slack-windows.json", "win32"), ("slack-macos.json", "darwin")] {
-            if let Ok(o) = std::fs::read(dossier.join(nom)) {
-                assert!(editeurs::slack(&o, plateforme).is_some(), "{nom}");
-            }
+        if let Ok(o) = std::fs::read(dossier.join("slack-windows.json")) {
+            assert!(editeurs::slack(&o, "win32").is_some());
         }
         let tar =
             crate::archives::gzip::degzip_controle(&lire("foundation-security-advisories.tar.gz"), 64 << 20).unwrap();

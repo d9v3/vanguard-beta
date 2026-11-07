@@ -70,7 +70,7 @@ pub(crate) struct Reponses {
 
 /// Le contexte lu par Vanguard.
 pub(crate) struct Contexte {
-    /// « Arch Linux 6.17.2 », « Windows 10.0.26200.9711 », « macOS 15.1 (Apple Silicon) ».
+    /// « Arch Linux 6.17.2 », « Windows 10.0.26200.9711 ».
     pub systeme: String,
     /// L'état de la chaîne du journal, pour un incident.
     pub journal: Option<Lecture>,

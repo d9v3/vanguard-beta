@@ -2,7 +2,7 @@
 //! en quarantaine ni ne se bloque jamais, même quand une liste ou une règle le désigne. Ce qu'ils refusent reste une
 //! alerte, avec sa raison.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::collections::HashSet;
@@ -11,7 +11,7 @@ use std::net::IpAddr;
 use crate::machine::regles::Os;
 use crate::{tr, trf};
 
-/// Le noyau ou Idle (0), init, systemd ou launchd (1), System de Windows (4).
+/// Le noyau ou Idle (0), init ou systemd (1), System de Windows (4).
 const PID_CRITIQUES: [u32; 3] = [0, 1, 4];
 
 /// Les processus dont l'arrêt fait tomber le système ou la session (écran bleu, déconnexion), ou coupe une connexion
@@ -34,14 +34,10 @@ const NOMS_CRITIQUES: &[&str] = &[
     "dwm",
     "fontdrvhost",
     "msmpeng",
-    // Linux et macOS.
+    // Linux.
     "systemd",
     "init",
     "kthreadd",
-    "launchd",
-    "kernel_task",
-    "loginwindow",
-    "windowserver",
     // Les sessions à distance en cours, de part et d'autre.
     "sshd",
     "sshd-session",
@@ -79,7 +75,7 @@ pub(crate) fn dossier_systeme(chemin: &str, os: Os) -> bool {
                 .any(|d| reste.starts_with(d))
             })
         }
-        Os::Linux | Os::MacOs | Os::Tous => {
+        Os::Linux | Os::Tous => {
             if chemin.contains("/../") || chemin.ends_with("/..") {
                 return true;
             }
@@ -95,9 +91,7 @@ pub(crate) fn dossier_systeme(chemin: &str, os: Os) -> bool {
                 "/lib/",
                 "/lib64/",
             ];
-            let mac = ["/System/", "/Library/Apple/", "/private/var/db/"];
             communs.iter().any(|d| chemin.starts_with(d))
-                || (os == Os::MacOs && mac.iter().any(|d| chemin.starts_with(d)))
         }
     }
 }
@@ -674,72 +668,6 @@ pub(crate) fn etablies_table(octets: &[u8], ipv6: bool) -> Vec<(u16, IpAddr, u16
         .collect()
 }
 
-/// « 192.168.1.5.22 » (netstat de macOS) ou « 192.168.1.5:22 », « [2001:db8::7]:443 » (lsof) → (adresse, port).
-#[cfg(any(target_os = "macos", test))]
-fn point_texte(t: &str, separateur: char) -> Option<(IpAddr, u16)> {
-    let (ip, port) = t.rsplit_once(separateur)?;
-    let ip = ip.trim_start_matches('[').trim_end_matches(']');
-    Some((
-        ip.split('%').next()?.parse::<IpAddr>().ok()?.to_canonical(),
-        port.parse().ok()?,
-    ))
-}
-
-/// Les connexions établies sous macOS : toutes d'après `netstat -anp tcp` (« tcp4 0 0 192.168.1.5.22
-/// 192.168.1.20.51234 ESTABLISHED »), et leur programme d'après `lsof -F pcn` (« p », « c », « n
-/// locale->distante »), qui ne voit que celles de ce compte : une connexion que lsof ne voit pas est d'un autre.
-#[cfg(test)]
-pub(crate) fn etablies_macos(netstat: &str, lsof: &str) -> Vec<Etablie> {
-    etablies_avec(netstat, &etablies_lsof(lsof))
-}
-
-/// Les connexions de ce compte d'après `lsof -F pcn` : (programme, port local, adresse distante, port distant).
-#[cfg(any(target_os = "macos", test))]
-fn etablies_lsof(lsof: &str) -> Vec<(String, u16, IpAddr, u16)> {
-    let mut a_moi: Vec<(String, u16, IpAddr, u16)> = Vec::new();
-    let mut programme = String::new();
-    for l in lsof.lines() {
-        let mut lettres = l.chars();
-        match lettres.next() {
-            Some('c') => programme = lettres.as_str().to_string(),
-            Some('n') => {
-                if let Some((locale, distante)) = lettres.as_str().split_once("->")
-                    && let (Some((_, pl)), Some((ip, pd))) = (point_texte(locale, ':'), point_texte(distante, ':'))
-                {
-                    a_moi.push((programme.clone(), pl, ip, pd));
-                }
-            }
-            _ => {}
-        }
-    }
-    a_moi
-}
-
-/// Toutes les connexions établies de `netstat -anp tcp`, chacune avec son programme quand elle est dans `a_moi` (les
-/// connexions lues de ce compte) ; les autres sont d'un autre compte.
-#[cfg(any(target_os = "macos", test))]
-fn etablies_avec(netstat: &str, a_moi: &[(String, u16, IpAddr, u16)]) -> Vec<Etablie> {
-    netstat
-        .lines()
-        .filter(|l| l.contains("ESTABLISHED"))
-        .filter_map(|l| {
-            let mots: Vec<&str> = l.split_whitespace().collect();
-            let (_, port_local) = point_texte(mots.get(3)?, '.')?;
-            let (distante, port_distant) = point_texte(mots.get(4)?, '.')?;
-            let mien = a_moi
-                .iter()
-                .find(|(_, pl, ip, pd)| *pl == port_local && *ip == distante && *pd == port_distant);
-            Some(Etablie {
-                distante,
-                port_local,
-                port_distant,
-                programme: mien.map(|(p, ..)| p.clone()),
-                autre_compte: mien.is_none(),
-            })
-        })
-        .collect()
-}
-
 /// Ce que les connexions en cours interdisent de couper sur cet ordinateur : les sessions à distance, entrantes comme
 /// sortantes, celle du client SSH de Vanguard, et les adresses des connexions d'autres comptes. `None` : la table des
 /// connexions ne se lit pas, ou le port réel du Bureau à distance non plus (`port_rdp_de`).
@@ -810,34 +738,6 @@ fn lire_etablies_win(les_deux: bool) -> Option<Vec<Etablie>> {
     )
 }
 
-/// netstat fait foi pour les connexions de tous les comptes (xinpcb_n est privé) ; celles de ce compte se lisent au
-/// noyau (libproc), lsof en secours tant que l'oracle de macos.yml n'a pas prouvé la lecture native.
-#[cfg(target_os = "macos")]
-fn lire_etablies() -> Option<Vec<Etablie>> {
-    use std::process::Command;
-    let n = crate::commande::lancer(Command::new("netstat").args(["-anp", "tcp"]), 15).filter(|r| r.code == Some(0))?;
-    let natives: Option<Vec<(String, u16, IpAddr, u16)>> = crate::machine::macos::noyau::prises()
-        .map(|lues| {
-            lues.prises
-                .into_iter()
-                .filter(|(_, _, p)| p.tcp && p.etat == crate::machine::darwin::TSI_S_ESTABLISHED)
-                .map(|(_, nom, p)| (nom, p.port_local, p.distante.to_canonical(), p.port_distant))
-                .collect()
-        })
-        .filter(|l: &Vec<_>| !l.is_empty());
-    let a_moi = natives.unwrap_or_else(|| {
-        // lsof répond 1 quand il ne trouve rien : alors rien n'est à ce compte.
-        let lsof = crate::commande::lancer(
-            Command::new("lsof").args(["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-F", "pcn"]),
-            20,
-        )
-        .map(|r| r.sortie)
-        .unwrap_or_default();
-        etablies_lsof(&lsof)
-    });
-    Some(etablies_avec(&n.sortie, &a_moi))
-}
-
 /// Les hôtes des sessions à distance : SSH (le serveur, et le processus de chaque connexion depuis OpenSSH 9.8),
 /// WinRM (PowerShell à distance, winrs), le Bureau à distance (RemoteApp de Windows, xrdp de Linux). Ce qu'ils font
 /// tourner EST la session : rien de ce qui descend d'eux n'est arrêté (défense D6a).
@@ -859,8 +759,8 @@ const PROFONDEUR_MAX: usize = 64;
 pub(crate) struct Fiche {
     pub parent: u32,
     pub nom: String,
-    /// L'heure de création, dans l'unité du système (FILETIME sous Windows, tops depuis le démarrage sous Linux,
-    /// microsecondes sous macOS) ; `None` : illisible.
+    /// L'heure de création, dans l'unité du système (FILETIME sous Windows, tops depuis le démarrage sous
+    /// Linux) ; `None` : illisible.
     pub creation: Option<u64>,
 }
 
@@ -974,7 +874,7 @@ fn fiche_du_stat(stat: &str) -> Option<Fiche> {
 }
 
 /// La garde d'ascendance, lue sur ce système : un instantané des processus (Toolhelp32 et GetProcessTimes sous
-/// Windows, `/proc` sous Linux, proc_pidinfo sous macOS).
+/// Windows, `/proc` sous Linux).
 pub(crate) fn lignee_de_session(pid: u32, sessions: Option<&Sessions>) -> Option<&'static str> {
     lignee_lue(pid, sessions, None)
 }
@@ -1017,32 +917,6 @@ fn lignee_lue(pid: u32, sessions: Option<&Sessions>, racine: Option<u32>) -> Opt
         ascendance_selon(
             pid,
             |p| fiche_du_stat(&std::fs::read_to_string(format!("/proc/{p}/stat")).ok()?),
-            aucune,
-            lecture,
-        )
-    }
-    #[cfg(target_os = "macos")]
-    {
-        ascendance_selon(
-            pid,
-            |p| {
-                let i = super::arret::macos::infos(p)?;
-                let nom: Vec<u8> = i
-                    .pbi_comm
-                    .iter()
-                    .take_while(|&&c| c != 0)
-                    .map(|&c| c.cast_unsigned())
-                    .collect();
-                let creation = i
-                    .pbi_start_tvsec
-                    .checked_mul(1_000_000)?
-                    .checked_add(i.pbi_start_tvusec);
-                Some(Fiche {
-                    parent: i.pbi_ppid,
-                    nom: String::from_utf8_lossy(&nom).into_owned(),
-                    creation,
-                })
-            },
             aucune,
             lecture,
         )
@@ -2635,8 +2509,6 @@ mod tests {
             "winlogon.exe",
             "svchost.exe",
             "systemd",
-            "launchd",
-            "kernel_task",
             "sshd",
         ] {
             // Même lancé hors de son dossier (un imposteur) : une alerte seulement, jamais d'arrêt.
@@ -2648,7 +2520,6 @@ mod tests {
         assert!(j(4242, "outil", Some(r"C:\Windows\System32\outil.exe"), Os::Windows).is_some());
         assert!(j(4242, "outil", Some(r"\\?\D:\WINDOWS\SysWOW64\outil.exe"), Os::Windows).is_some());
         assert!(j(4242, "python3", Some("/usr/bin/python3.12"), Os::Linux).is_some());
-        assert!(j(4242, "outil", Some("/System/Library/x"), Os::MacOs).is_some());
         assert!(j(4242, "outil", None, Os::Linux).is_some());
         // Vanguard, ce qu'il a lancé, son terminal : intouchables.
         let vanguard: HashSet<u32> = [4300, 4301, 4299].into();
@@ -2678,10 +2549,8 @@ mod tests {
             Os::Linux
         ));
         assert!(!dossier_systeme("/opt/outil/outil", Os::Linux));
-        // /System n'est du système que sous macOS ; /Library/Apple aussi.
+        // /System n'est pas un dossier du système sous Linux.
         assert!(!dossier_systeme("/System/x", Os::Linux));
-        assert!(dossier_systeme("/Library/Apple/System/x", Os::MacOs));
-        assert!(!dossier_systeme("/Users/alice/Library/x", Os::MacOs));
         assert!(dossier_systeme(r"c:\windows\explorer.exe", Os::Windows));
         assert!(dossier_systeme("C:/Windows/System32/cmd.exe", Os::Windows));
         assert!(dossier_systeme(
@@ -3091,25 +2960,6 @@ mod tests {
                 (3389, ip("198.51.100.9"), 50_000, 1234),
                 (50_001, ip("203.0.113.7"), 443, 4321)
             ]
-        );
-        // macOS : netstat voit tout, lsof seulement ce compte.
-        let netstat = "tcp4       0      0  192.168.1.5.22         192.168.1.20.51234     ESTABLISHED
-tcp4       0      0  192.168.1.5.51000      203.0.113.7.443        ESTABLISHED
-tcp6       0      0  2001:db8::5.51001      2001:db8::7.5938       ESTABLISHED
-";
-        let lsof = "p501\ncfirefox\nn192.168.1.5:51000->203.0.113.7:443\np502\ncTeamViewer\nn[2001:db8::5]:51001->[2001:db8::7]:5938\n";
-        let e = etablies_macos(netstat, lsof);
-        assert_eq!(
-            e,
-            [
-                etablie("192.168.1.20", 22, 51234, None, true),
-                etablie("203.0.113.7", 51000, 443, Some("firefox"), false),
-                etablie("2001:db8::7", 51001, 5938, Some("TeamViewer"), false),
-            ]
-        );
-        assert_eq!(
-            juger_etablies(&e, None, None).sessions,
-            [ip("192.168.1.20"), ip("2001:db8::7")]
         );
         assert_eq!(
             client_ssh("198.51.100.20 51234 192.168.1.5 22"),

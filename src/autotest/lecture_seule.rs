@@ -11,7 +11,7 @@
 //! écrirait son « déjà vu » après coup. Les fichiers de l'autotest lui-même s'écrivent par un chemin exempté nommé
 //! (`ecrire_resultat`), dans le seul fil qui l'ouvre, et pour une liste fermée de fichiers.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::cell::Cell;
@@ -424,11 +424,6 @@ mod tests {
                 "machine/vidage.rs",
                 2,
                 "actes du processus élevé de Windows (vider un dossier de Windows, mettre un cache de côté) : des fichiers retirés ou renommés, pas un fichier de Vanguard à écrire",
-            ),
-            (
-                "machine/macos/corpus.rs",
-                1,
-                "module de tests (cfg(test)) : pose le fichier d'agent fabriqué d'un cas du corpus dans un dossier jetable",
             ),
             (
                 "machine/linux/corpus.rs",

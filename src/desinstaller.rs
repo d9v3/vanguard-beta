@@ -10,7 +10,7 @@
 //! changements faits sur le système, que la désinstallation propose de défaire d'abord par leurs propres outils.
 //! Sans droits d'administrateur.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::io::IsTerminal;
@@ -32,8 +32,6 @@ pub(crate) struct Lieux {
     /// L'unité du veilleur (Linux ; `None` ailleurs), posée seulement par « vanguard veilleur on ».
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub veilleur: Option<PathBuf>,
-    /// Le dossier des agents launchd (macOS).
-    pub agents: Option<PathBuf>,
     /// Les tâches du Planificateur aux noms de Vanguard (Windows) ; `None` : le planificateur n'a pas pu être lu.
     pub taches: Option<Vec<TacheLue>>,
     /// Où va le raccourci sur ce système (`raccourci::chemin`).
@@ -85,10 +83,6 @@ impl Lieux {
         let veilleur = Some(crate::machine::linux::veilleur::fichier_unite()).filter(|p| p.is_absolute());
         #[cfg(not(target_os = "linux"))]
         let veilleur = None;
-        #[cfg(target_os = "macos")]
-        let agents = Some(crate::socle::maison().join("Library/LaunchAgents")).filter(|d| d.is_absolute());
-        #[cfg(not(target_os = "macos"))]
-        let agents = None;
         #[cfg(windows)]
         let taches = {
             let mut noms = vec![
@@ -117,7 +111,6 @@ impl Lieux {
             donnees,
             unites,
             veilleur,
-            agents,
             taches,
             raccourci: crate::raccourci::chemin(),
             programme,
@@ -134,7 +127,6 @@ impl Lieux {
             donnees: racine.join("donnees/vanguard"),
             unites: vec![racine.join(".config/systemd/user"), racine.join("config/systemd/user")],
             veilleur: Some(racine.join(".config/systemd/user/vanguard-veilleur.service")),
-            agents: Some(racine.join("Library/LaunchAgents")),
             taches: Some(Vec::new()),
             raccourci: Some(racine.join("donnees/applications/Vanguard.desktop")),
             programme: None,
@@ -167,7 +159,7 @@ pub(crate) enum Genre {
 /// Comment le retirer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Retrait {
-    /// Avec ses fichiers trouvés (unités systemd dans chacun des dossiers, agent launchd) : tous sont retirés, pas
+    /// Avec ses fichiers trouvés (unités systemd dans chacun des dossiers) : tous sont retirés, pas
     /// seulement ceux du dossier où Vanguard les pose aujourd'hui.
     Surveillance(Vec<PathBuf>),
     Entretien(Vec<PathBuf>),
@@ -202,7 +194,7 @@ pub(crate) struct Element {
 #[derive(Default)]
 pub(crate) struct Recensement {
     pub elements: Vec<Element>,
-    /// Ce qui reste à faire soi-même, avec la commande (Time Machine, programme en marche sous Windows…).
+    /// Ce qui reste à faire soi-même, avec la commande (programme en marche sous Windows…).
     pub a_faire: Vec<String>,
     /// Ce qui n'est pas à Vanguard ou pas à retirer d'ici (le programme sur la clé…) : gardé, dit.
     pub pas_a_lui: Vec<String>,
@@ -245,42 +237,17 @@ fn taille(d: &Path) -> u64 {
     dans(d, 0)
 }
 
-/// Le programme d'un raccourci : la ligne Exec= d'un .desktop, la ligne exec d'un .command (citée pour sh) ; aucun
-/// pour un .lnk, qui ne se lit pas comme du texte.
+/// Le programme d'un raccourci : la ligne Exec= d'un .desktop ; aucun pour un .lnk, qui ne se lit pas comme du texte.
 fn programme_du_raccourci(p: &Path) -> Option<PathBuf> {
     let texte = std::fs::read_to_string(p).ok()?;
-    if let Some(v) = texte.lines().find_map(|l| l.strip_prefix("Exec=")) {
-        return surveillance::premier_mot_cite(v);
-    }
-    let v = texte.lines().find_map(|l| l.strip_prefix("exec "))?;
-    let mut mot = String::new();
-    let mut car = v.trim_start().chars();
-    while let Some(c) = car.next() {
-        match c {
-            '\'' => mot.extend(car.by_ref().take_while(|&c| c != '\'')),
-            '\\' => mot.extend(car.next()),
-            c if c.is_whitespace() => break,
-            c => mot.push(c),
-        }
-    }
-    (!mot.is_empty()).then(|| PathBuf::from(mot))
+    let v = texte.lines().find_map(|l| l.strip_prefix("Exec="))?;
+    surveillance::premier_mot_cite(v)
 }
 
-/// Le programme que lance un agent launchd.
-#[cfg(any(target_os = "macos", test))]
-fn programme_d_un_agent(p: &Path) -> Option<PathBuf> {
-    surveillance::lire_plist(&std::fs::read(p).ok()?).map(|(programme, _)| programme)
-}
-
-#[cfg(not(any(target_os = "macos", test)))]
-fn programme_d_un_agent(_: &Path) -> Option<PathBuf> {
-    None
-}
-
-/// La surveillance ou l'entretien, s'ils sont planifiés quelque part dans les lieux : unités systemd, agent launchd,
-/// tâche du Planificateur, chacun à son nom exact.
+/// La surveillance ou l'entretien, s'ils sont planifiés quelque part dans les lieux : unités systemd, tâche du
+/// Planificateur, chacune à son nom exact.
 fn planifie(l: &Lieux, quoi: Planifie) -> Option<Element> {
-    let (nom, agent, tache) = quoi.noms();
+    let (nom, tache) = quoi.noms();
     let mut trouve: Vec<String> = Vec::new();
     let mut fichiers: Vec<PathBuf> = Vec::new();
     let mut lance: Option<PathBuf> = None;
@@ -300,14 +267,6 @@ fn planifie(l: &Lieux, quoi: Planifie) -> Option<Element> {
                     .ok()
                     .and_then(|t| surveillance::programme_d_une_unite(&t));
             }
-        }
-    }
-    if let Some(a) = &l.agents {
-        let plist = a.join(format!("{agent}.plist"));
-        if plist.is_file() {
-            trouve.push(chemin_affichable(&plist));
-            lance = lance.or_else(|| programme_d_un_agent(&plist));
-            fichiers.push(plist);
         }
     }
     if let Some(t) = l.taches.iter().flatten().find(|t| t.nom.eq_ignore_ascii_case(tache)) {
@@ -377,7 +336,7 @@ fn sauvegarde(l: &Lieux, r: &mut Recensement) {
     let precision = tr!("retirée, vos copies restent", "removed, your copies stay").to_string();
     let montre: Vec<String> = unites.iter().map(|p| chemin_affichable(p)).collect();
     let rsync_texte = tr!("Sauvegarde automatique (rsync)", "Automatic backup (rsync)").to_string();
-    // Une note qui ne peut pas être crue ne fait rien défaire (Time Machine, Déjà Dup) : c'est dit, avec quoi faire.
+    // Une note qui ne peut pas être crue ne fait rien défaire (Déjà Dup, minuterie) : c'est dit, avec quoi faire.
     if let Some(t) = crate::sauvegarde::note_douteuse_de(&l.donnees) {
         r.a_faire.push(t);
     }
@@ -416,14 +375,6 @@ fn sauvegarde(l: &Lieux, r: &mut Recensement) {
                 lance: None,
                 retrait: Retrait::Sauvegarde(Some(m), Vec::new()),
             }
-        }
-        // Time Machine se défait avec sudo : jamais lancé d'ici, dit avec sa commande.
-        Some(MiseEnPlace::TimeMachine { .. }) => {
-            r.a_faire.push(tr!(
-                "Time Machine : la destination ajoutée par Vanguard reste ; « vanguard sauvegarde-auto --annuler » la retire (mot de passe administrateur).",
-                "Time Machine: the destination added by Vanguard stays; “vanguard auto-backup --undo” removes it (administrator password)."
-            ).to_string());
-            return;
         }
         None if !unites.is_empty() => Element {
             genre: Genre::Sauvegarde,
@@ -2174,13 +2125,7 @@ mod tests {
             )),
             "avant",
         );
-        // Un agent launchd, le raccourci marqué et son icône.
-        let agent = l
-            .agents
-            .as_ref()
-            .unwrap()
-            .join(format!("{}.plist", surveillance::AGENT_MACOS));
-        ecrire(&agent, "<?xml version=\"1.0\"?><plist><dict></dict></plist>");
+        // Le raccourci marqué et son icône.
         let raccourci = l.raccourci.clone().unwrap();
         ecrire(
             &raccourci,
@@ -2710,11 +2655,11 @@ mod tests {
             "{}",
             rec.elements[1].precision
         );
-        // Les fichiers trouvés (les deux unités, l'agent launchd) vont avec la tâche, pour être tous retirés.
+        // Les fichiers trouvés (les deux unités) vont avec la tâche, pour être tous retirés.
         let Retrait::Surveillance(f) = &rec.elements[0].retrait else {
             panic!("{:?}", rec.elements[0]);
         };
-        assert_eq!(f.len(), 3, "{f:?}");
+        assert_eq!(f.len(), 2, "{f:?}");
         // Un raccourci .lnk ne se lit pas : il vise la copie de bin/, qui reste s'il est gardé.
         let lnk = r.join("Bureau/Vanguard.lnk");
         ecrire(&lnk, b"L\0\0\0binaire");

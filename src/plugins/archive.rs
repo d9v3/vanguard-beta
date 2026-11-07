@@ -56,7 +56,7 @@ pub fn lire(archive: &[u8], echeance: std::time::Instant) -> Result<Vec<Entree>,
     let mut entrees = Vec::new();
     let mut total = 0usize;
     // Les octets de chaque fichier lu (en-tête local et données), et les noms vus (en minuscules : deux noms qui ne
-    // diffèrent que par la casse sont un seul fichier sous Windows et macOS).
+    // diffèrent que par la casse sont un seul fichier sous Windows).
     let mut occupes: Vec<std::ops::Range<usize>> = Vec::new();
     let mut noms = std::collections::HashSet::new();
     for _ in 0..nombre {

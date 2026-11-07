@@ -1,14 +1,14 @@
 //! Raccourci sur cet ordinateur : lancer Vanguard d'un clic, sans passer par la clé. Le programme est d'abord copié
 //! dans le dossier de Vanguard de cet ordinateur (lancé depuis la clé, il disparaîtrait avec elle), puis un raccourci
 //! le lance : une entrée du menu des applications sous Linux (avec son icône), un raccourci sur le Bureau sous
-//! Windows, un fichier « Vanguard.command » sur le Bureau sous macOS. Montré puis accepté ; retiré aussi simplement.
+//! Windows. Montré puis accepté ; retiré aussi simplement.
 //! Un raccourci qui n'a pas été posé par Vanguard n'est jamais remplacé ni retiré.
 
 use std::path::{Path, PathBuf};
 
 use crate::ui::*;
 
-/// Ce qui marque un raccourci posé par Vanguard (Linux : une clé du fichier .desktop ; macOS : un commentaire).
+/// Ce qui marque un raccourci posé par Vanguard (Linux : une clé du fichier .desktop).
 pub(crate) const MARQUE: &str = "X-Vanguard-Raccourci=1";
 #[cfg(any(target_os = "linux", test))]
 const ICONE: &[u8] = include_bytes!("../assets/icones/vanguard-128.png");
@@ -53,7 +53,6 @@ pub(crate) fn de_vanguard(p: &Path) -> bool {
 }
 
 /// Où va le raccourci sur ce système.
-#[cfg_attr(target_os = "macos", allow(clippy::unnecessary_wraps))] // même signature que sous Linux et Windows
 pub(crate) fn chemin() -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     {
@@ -72,10 +71,6 @@ pub(crate) fn chemin() -> Option<PathBuf> {
             .or_else(|| std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join("Desktop")))?;
         Some(bureau.join("Vanguard.lnk"))
     }
-    #[cfg(target_os = "macos")]
-    {
-        Some(crate::socle::maison().join("Desktop/Vanguard.command"))
-    }
 }
 
 /// L'entrée du menu des applications, Linux : Vanguard s'ouvre dans un terminal.
@@ -93,12 +88,6 @@ fn bureau_linux(exe: &str) -> String {
             "Portable cyber defense for endpoints and networks"
         )
     )
-}
-
-/// Le fichier du Bureau, macOS : un script que le Finder ouvre dans le Terminal.
-#[cfg(any(target_os = "macos", test))]
-fn commande_macos(exe: &str) -> String {
-    format!("#!/bin/sh\n# {MARQUE}\nexec {}\n", crate::commande::sh_chaine(exe))
 }
 
 /// Le raccourci existe-t-il, et est-il de Vanguard ?
@@ -219,12 +208,6 @@ fn poser(exe: &str, ou: &Path) -> Result<(), String> {
         }
         Ok(())
     }
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::write(ou, commande_macos(exe)).map_err(|e| e.to_string())?;
-        std::fs::set_permissions(ou, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())
-    }
     #[cfg(windows)]
     {
         let e = crate::commande::ps_texte;
@@ -317,9 +300,6 @@ mod tests {
             "{d}"
         );
         assert!(d.contains("Terminal=true") && d.contains(MARQUE));
-        let m = commande_macos("/Users/alice/Library/Application Support/vanguard/bin/vanguard");
-        assert!(m.starts_with("#!/bin/sh\n") && m.contains(MARQUE));
-        assert!(m.contains("exec '/Users/alice/Library/Application Support/vanguard/bin/vanguard'"));
     }
 
     /// L'icône d'aujourd'hui est reconnue à son empreinte : un nouveau logo fait échouer ce test tant que la sienne

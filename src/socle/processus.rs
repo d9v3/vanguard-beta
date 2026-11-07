@@ -1,9 +1,9 @@
-//! La liste des processus sous Linux et macOS, comme `machine::windows::processus` sous Windows. Linux la lit dans
-//! /proc, macOS la demande au noyau (proc_listallpids, proc_pidpath) ; une douzaine de modules faisaient chacun leur
+//! La liste des processus sous Linux, comme `machine::windows::processus` sous Windows. Linux la lit dans
+//! /proc ; une douzaine de modules faisaient chacun leur
 //! parcours de /proc, avec chacun sa règle quand il ne se lisait pas : une liste vide, que rien ne distinguait d'un
 //! ordinateur où rien ne tourne. Ici, une liste illisible est `None`, à dire « non vérifié ».
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc : kill, proc_listallpids et proc_pidpath.
 #![allow(unsafe_code)]
@@ -45,20 +45,11 @@ pub(crate) fn nom_court(pid: u32) -> Option<String> {
 
 /// Le programme que le processus fait tourner. Linux : `/proc/<pid>/exe`, lisible pour les processus de son compte
 /// seulement (ceux des autres comptes, en root) ; un programme effacé du disque garde son chemin suivi de
-/// « (deleted) ». macOS : demandé au noyau.
+/// « (deleted) ».
 pub(crate) fn programme(pid: u32) -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     {
         std::fs::read_link(format!("/proc/{pid}/exe")).ok()
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let mut tampon = vec![0u8; 4096];
-        let taille = u32::try_from(tampon.len()).ok()?;
-        // SAFETY: proc_pidpath écrit au plus `taille` octets dans `tampon` et rend leur nombre (0 : refus).
-        let lus = unsafe { libc::proc_pidpath(libc::c_int::try_from(pid).ok()?, tampon.as_mut_ptr().cast(), taille) };
-        let chemin = String::from_utf8_lossy(tampon.get(..usize::try_from(lus).ok()?)?).into_owned();
-        chemin.starts_with('/').then(|| PathBuf::from(chemin))
     }
 }
 
@@ -98,19 +89,6 @@ fn hidepid(montages: &str) -> bool {
                 .filter_map(|o| o.strip_prefix("hidepid="))
                 .any(|v| !matches!(v, "0" | "off"))
         })
-}
-
-/// Les numéros des processus, demandés au noyau ; `None` : l'appel n'a rien rendu (Vanguard au moins tourne, donc
-/// une liste vide est un échec).
-#[cfg(target_os = "macos")]
-pub(crate) fn pids() -> Option<Vec<u32>> {
-    let mut pids: Vec<libc::c_int> = vec![0; 8192];
-    let taille = libc::c_int::try_from(pids.len() * std::mem::size_of::<libc::c_int>()).ok()?;
-    // SAFETY: proc_listallpids écrit au plus `taille` octets dans `pids` et rend le nombre de processus écrits.
-    let n = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), taille) };
-    let n = usize::try_from(n).unwrap_or(0).min(pids.len());
-    let liste: Vec<u32> = pids.iter().take(n).filter_map(|&p| u32::try_from(p).ok()).collect();
-    (!liste.is_empty()).then_some(liste)
 }
 
 /// Gèle un processus (SIGSTOP) : il cesse d'agir sans que rien ne soit effacé, sa mémoire reste. Réversible par

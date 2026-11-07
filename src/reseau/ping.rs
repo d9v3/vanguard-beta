@@ -1,9 +1,9 @@
-//! Un écho ICMP (« ping ») vers une adresse IPv4, sans lancer `ping` : sous Linux et macOS par une prise ICMP
-//! « datagramme », qui ne demande aucun droit (Linux : si net.ipv4.ping_group_range couvre le groupe, ce que systemd
-//! règle à tous ; macOS : toujours), sous Windows par IcmpSendEcho (`machine::windows::routes`). `None` : le système
+//! Un écho ICMP (« ping ») vers une adresse IPv4, sans lancer `ping` : sous Linux par une prise ICMP
+//! « datagramme », qui ne demande aucun droit si net.ipv4.ping_group_range couvre le groupe (ce que systemd règle à
+//! tous), sous Windows par IcmpSendEcho (`machine::windows::routes`). `None` : le système
 //! refuse la prise ou l'API, rien n'est prouvé, et l'appelant lance `ping` en secours.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc : prise ICMP (socket, sendto, recvfrom, poll).
 #![allow(unsafe_code)]
@@ -58,16 +58,12 @@ fn somme_de_controle(octets: &[u8]) -> u16 {
     !somme
 }
 
-/// La réponse reçue est-elle l'écho de notre demande ? macOS rend l'en-tête IP devant le message ICMP, Linux non :
-/// il est sauté s'il est là. Une réponse d'écho (type 0) qui porte nos données, venue de la cible ; un autre message
-/// (un « injoignable » d'un routeur, l'écho d'un autre programme) ne compte pas.
+/// La réponse reçue est-elle l'écho de notre demande ? Le message ICMP seul (la prise « datagramme » de Linux ne rend
+/// pas l'en-tête IP) : une réponse d'écho (type 0) qui porte nos données, venue de la cible ; un autre message (un
+/// « injoignable » d'un routeur, l'écho d'un autre programme) ne compte pas.
 #[cfg_attr(windows, allow(dead_code))]
 fn est_notre_echo(recu: &[u8], depuis: Ipv4Addr, cible: Ipv4Addr, donnees: &[u8]) -> bool {
-    let icmp = match recu.first() {
-        Some(&o) if o >> 4 == 4 && recu.len() >= 20 => recu.get(usize::from(o & 0x0f) * 4..).unwrap_or_default(),
-        _ => recu,
-    };
-    depuis == cible && icmp.first() == Some(&0) && icmp.get(8..) == Some(donnees)
+    depuis == cible && recu.first() == Some(&0) && recu.get(8..) == Some(donnees)
 }
 
 #[cfg(unix)]
@@ -86,8 +82,7 @@ mod unix {
             }
             OwnedFd::from_raw_fd(fd)
         };
-        // Des données propres à cet essai : elles distinguent notre écho de celui d'un autre programme (macOS ne
-        // réécrit pas l'identifiant comme Linux).
+        // Des données propres à cet essai : elles distinguent notre écho de celui d'un autre programme.
         let marque = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.subsec_nanos())
@@ -105,8 +100,6 @@ mod unix {
                 s_addr: u32::from_ne_bytes(cible.octets()),
             },
             sin_zero: [0; 8],
-            #[cfg(target_os = "macos")]
-            sin_len: u8::try_from(std::mem::size_of::<libc::sockaddr_in>()).ok()?,
         };
         let taille_adresse = libc::socklen_t::try_from(std::mem::size_of::<libc::sockaddr_in>()).ok()?;
         // SAFETY: le paquet et l'adresse sont à nous, de la taille annoncée, vivants pendant l'appel.
@@ -157,8 +150,6 @@ mod unix {
                 sin_port: 0,
                 sin_addr: libc::in_addr { s_addr: 0 },
                 sin_zero: [0; 8],
-                #[cfg(target_os = "macos")]
-                sin_len: 0,
             };
             let mut taille_depuis = taille_adresse;
             // SAFETY: le tampon et l'adresse sont à nous, de la taille annoncée, vivants pendant l'appel ; recvfrom
@@ -222,11 +213,11 @@ mod tests {
         let mut reponse = demande(7, 1, donnees);
         reponse[0] = 0;
         assert!(est_notre_echo(&reponse, boite, boite, donnees));
-        // Avec l'en-tête IP devant (macOS) : sauté.
+        // Avec un en-tête IP devant, que la prise de Linux ne rend jamais : pas lu comme un écho.
         let mut ip = vec![0x45];
         ip.resize(20, 0);
         ip.extend(&reponse);
-        assert!(est_notre_echo(&ip, boite, boite, donnees));
+        assert!(!est_notre_echo(&ip, boite, boite, donnees));
         // Venu d'ailleurs, les données d'un autre, un « injoignable » (type 3) : pas notre écho.
         assert!(!est_notre_echo(
             &reponse,

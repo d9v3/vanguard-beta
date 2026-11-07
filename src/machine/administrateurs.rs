@@ -1,10 +1,10 @@
-//! Nouveaux administrateurs : un compte ajouté au groupe des administrateurs (wheel, sudo ou admin sous Linux, admin
-//! sous macOS, Administrateurs sous Windows) a tous les droits. Un intrus qui s'installe se les donne souvent ainsi.
+//! Nouveaux administrateurs : un compte ajouté au groupe des administrateurs (wheel, sudo ou admin sous Linux,
+//! Administrateurs sous Windows) a tous les droits. Un intrus qui s'installe se les donne souvent ainsi.
 //! Vanguard note la première fois qu'il voit chaque administrateur (administrateurs.json, sur cet ordinateur) et
 //! signale ceux de la dernière semaine ; ceux du premier passage sont connus d'avant. La surveillance horaire suit la
 //! catégorie « Comptes » : un nouvel administrateur y fait une notification.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::collections::BTreeMap;
@@ -53,49 +53,11 @@ fn lire_groupes(texte: &str) -> Vec<String> {
     noms
 }
 
-/// « GroupMembership: root alice » (dscl . -read /Groups/admin GroupMembership).
-#[cfg(any(target_os = "macos", test))]
-fn lire_dscl(texte: &str) -> Vec<String> {
-    texte
-        .split_once("GroupMembership:")
-        .map(|(_, r)| sans_root(r.split_whitespace().map(String::from).collect()))
-        .unwrap_or_default()
-}
-
-/// Les membres sans root (toujours là, il n'est pas une personne), triés, chacun une fois.
-#[cfg(any(target_os = "macos", test))]
-fn sans_root(mut membres: Vec<String>) -> Vec<String> {
-    membres.retain(|n| n != "root");
-    membres.sort();
-    membres.dedup();
-    membres
-}
-
-/// macOS : les membres du groupe admin rendus par la bibliothèque du système (getgrnam_r, la base que lit dscl),
-/// sans lancer de programme. dscl (sa sortie, demandée par `secours`) ne sert que si cette lecture ne rend personne
-/// d'autre que root : un Mac a toujours un administrateur, une liste vide est une lecture manquée (groupe dont Open
-/// Directory ne remplit pas les noms), pas un groupe vidé. Il en va de même après dscl : une liste vide y rend `None`,
-/// comme une lecture impossible, sinon le bilan dirait « aucun en dehors de root » sur une liste jamais lue.
-#[cfg(any(target_os = "macos", test))]
-fn admins_macos(natif: Option<Vec<String>>, secours: impl FnOnce() -> Option<String>) -> Option<Vec<String>> {
-    natif
-        .map(sans_root)
-        .filter(|m| !m.is_empty())
-        .or_else(|| secours().map(|t| lire_dscl(&t)).filter(|m| !m.is_empty()))
-}
-
 /// Les administrateurs de cet ordinateur ; `None` : la liste ne se lit pas.
 fn lire() -> Option<Vec<String>> {
     #[cfg(target_os = "linux")]
     {
         std::fs::read_to_string("/etc/group").ok().map(|t| lire_groupes(&t))
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // `sortie` exige le code 0 : un dscl en erreur (groupe introuvable, Open Directory muet) ne vaut pas lecture.
-        admins_macos(super::macos::membres_admin(), || {
-            super::sortie("dscl", &[".", "-read", "/Groups/admin", "GroupMembership"])
-        })
     }
     #[cfg(windows)]
     {
@@ -215,11 +177,6 @@ fn retrait() -> &'static str {
             "S'il n'est pas à vous : le retirer des administrateurs (Gestion de l'ordinateur › Utilisateurs et groupes locaux › Groupes › Administrateurs), puis changer vos mots de passe et lancer l'antivirus",
             "If it is not yours: remove it from administrators (Computer Management › Local Users and Groups › Groups › Administrators), then change your passwords and run the antivirus"
         )
-    } else if cfg!(target_os = "macos") {
-        tr!(
-            "S'il n'est pas à vous : Réglages Système › Utilisateurs et groupes, lui retirer « Administrateur », puis changer vos mots de passe",
-            "If it is not yours: System Settings › Users & Groups, remove “Administrator”, then change your passwords"
-        )
     } else {
         tr!(
             "S'il n'est pas à vous : le retirer du groupe (« sudo gpasswd -d <compte> wheel », ou sudo), puis changer vos mots de passe et lancer l'antivirus",
@@ -333,35 +290,6 @@ mod tests {
     fn lectures() {
         let group = "root:x:0:root\nwheel:x:998:alice,bob\nsudo:x:27:alice\nvideo:x:985:alice,carol\n";
         assert_eq!(lire_groupes(group), ["alice", "bob"]);
-        assert_eq!(lire_dscl("GroupMembership: root alice bob\n"), ["alice", "bob"]);
-        assert_eq!(lire_dscl("No such key: GroupMembership"), Vec::<String>::new());
-    }
-
-    /// macOS, sur des listes inventées : la lecture par la bibliothèque du système suffit dès qu'elle rend une
-    /// personne ; dscl ne sert que si elle échoue ou ne rend que root.
-    #[test]
-    fn administrateurs_macos_sans_dscl() {
-        let noms = |v: &[&str]| v.iter().map(|n| (*n).to_string()).collect::<Vec<_>>();
-        let jamais = || -> Option<String> { panic!("dscl lancé alors que la lecture native suffit") };
-        assert_eq!(
-            admins_macos(Some(noms(&["root", "bob", "alice", "bob"])), jamais),
-            Some(noms(&["alice", "bob"]))
-        );
-        let dscl = || Some("GroupMembership: root carol\n".to_string());
-        assert_eq!(admins_macos(Some(noms(&["root"])), dscl), Some(noms(&["carol"])));
-        assert_eq!(admins_macos(Some(Vec::new()), dscl), Some(noms(&["carol"])));
-        assert_eq!(admins_macos(None, dscl), Some(noms(&["carol"])));
-        // Ni l'une ni l'autre : rien n'est affirmé.
-        assert_eq!(admins_macos(None, || None), None);
-        // dscl lisible mais sans personne : une lecture manquée aussi, jamais « aucun en dehors de root ».
-        for texte in ["No such key: GroupMembership", "GroupMembership: root\n", ""] {
-            assert_eq!(admins_macos(None, || Some(texte.into())), None, "{texte:?}");
-            assert_eq!(
-                admins_macos(Some(noms(&["root"])), || Some(texte.into())),
-                None,
-                "{texte:?}"
-            );
-        }
     }
 
     #[test]

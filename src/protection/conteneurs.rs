@@ -3,7 +3,7 @@
 //! ne se met pas à jour toute seule : un conteneur lancé il y a un an garde les failles de ce jour-là. Lecture seule ;
 //! trivy télécharge sa base des failles (plusieurs dizaines de Mo) avant la première analyse.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::path::{Path, PathBuf};
@@ -19,7 +19,6 @@ const TRIVY: Externe = Externe {
         "trivy (open source, Apache 2.0 license) looks for known flaws in images; it is not installed.",
     ),
     linux: Linux::Arch,
-    brew: "trivy",
     winget: "AquaSecurity.Trivy",
     site: "https://trivy.dev",
 };

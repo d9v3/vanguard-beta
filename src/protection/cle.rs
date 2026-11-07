@@ -1,9 +1,9 @@
-//! Protection de la clé USB sous Linux et macOS. Sous Windows, la partition VANGUARD est en lecture seule grâce à
-//! son attribut GPT ; Linux et macOS ignorent cet attribut. Sur tout ordinateur autre que celui du propriétaire,
+//! Protection de la clé USB sous Linux. Sous Windows, la partition VANGUARD est en lecture seule grâce à
+//! son attribut GPT ; Linux ignore cet attribut. Sur tout ordinateur autre que celui du propriétaire,
 //! Vanguard remonte donc lui-même la partition en lecture seule (udisks ou diskutil, sans mot de passe) avant de
 //! commencer.
 //!
-//! Le propriétaire est reconnu par l'empreinte SHA-1 de son /etc/machine-id (IOPlatformUUID sous macOS), que
+//! Le propriétaire est reconnu par l'empreinte SHA-1 de son /etc/machine-id, que
 //! outils/deployer.sh écrit dans le fichier témoin `vanguard.cle`. Témoin vide (clé jamais déployée) : pas de
 //! protection.
 //!
@@ -21,8 +21,6 @@ const ORIGINE: &str = "VANGUARD_ORIGINE";
 /// Dossier du programme sur la clé.
 #[cfg(target_os = "linux")]
 const DOSSIER_PROGRAMME: &str = "Linux";
-#[cfg(target_os = "macos")]
-const DOSSIER_PROGRAMME: &str = "macOS";
 
 /// Le programme tel que lancé par la personne (sur la clé), même quand c'est sa copie temporaire qui tourne. Décidé
 /// une fois par lancement (la copie temporaire s'efface au démarrage, `proteger_cle` le demande avant).
@@ -112,32 +110,6 @@ pub(crate) fn montage(dossier: &Path) -> Option<(String, bool)> {
     })
 }
 
-/// Périphérique et état du point de montage `dossier`, d'après `mount` :
-/// « /dev/disk4s1 on /Volumes/VANGUARD (exfat, local, nodev, nosuid, read-only, noowners) ».
-/// Demandé au noyau (getmntinfo) d'abord ; `mount` en secours tant que l'oracle de macos.yml n'a pas prouvé la
-/// lecture native, ou quand elle ne connaît pas ce point.
-#[cfg(target_os = "macos")]
-fn montage(dossier: &Path) -> Option<(String, bool)> {
-    let natif = crate::machine::macos::noyau::montages().and_then(|liste| {
-        liste
-            .into_iter()
-            .find(|m| Path::new(&m.point) == dossier)
-            .map(|m| (m.source, m.lecture_seule))
-    });
-    if natif.is_some() {
-        return natif;
-    }
-    let r = crate::commande::lancer(&mut std::process::Command::new("mount"), 10)?;
-    let marque = format!(" on {} (", dossier.display());
-    r.sortie.lines().find_map(|l| {
-        let (source, reste) = l.split_once(&marque)?;
-        Some((
-            source.to_string(),
-            reste.split(", ").any(|o| o.trim_end_matches(')') == "read-only"),
-        ))
-    })
-}
-
 /// Lance l'outil de montage (udisksctl, diskutil) ; en cas d'échec, son message d'erreur.
 fn outil(cmd: &str, args: &[&str]) -> Result<(), String> {
     match crate::commande::lancer(std::process::Command::new(cmd).args(args), 30) {
@@ -161,20 +133,6 @@ fn monter(peripherique: &str, lecture_seule: bool) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn demonter(peripherique: &str) -> Result<(), String> {
-    outil("diskutil", &["unmount", peripherique])
-}
-
-#[cfg(target_os = "macos")]
-fn monter(peripherique: &str, lecture_seule: bool) -> Result<(), String> {
-    if lecture_seule {
-        outil("diskutil", &["mount", "readOnly", peripherique])
-    } else {
-        outil("diskutil", &["mount", peripherique])
-    }
-}
-
 /// Cet ordinateur est-il celui du propriétaire de la clé (empreinte écrite par deployer.sh dans le témoin) ?
 pub fn chez_le_proprietaire(cle: &Path) -> bool {
     let attendue = empreinte_attendue(cle);
@@ -188,7 +146,7 @@ fn empreinte_attendue(cle: &Path) -> String {
 
 /// Au démarrage : sur un ordinateur qui n'est pas celui du propriétaire, remonte la clé en lecture seule.
 pub fn proteger_cle() {
-    // L'origine se décide avant que la copie temporaire ne s'efface : sans elle, rien ne se compare plus (macOS).
+    // L'origine se décide avant que la copie temporaire ne s'efface : sans elle, rien ne se compare plus.
     let _ = exe_d_origine();
     // Copie temporaire relancée : elle supprime son fichier (Linux le garde lisible jusqu'à la fin du programme).
     if std::env::var_os(ORIGINE).is_some()
@@ -263,7 +221,7 @@ pub fn proteger_cle() {
 }
 
 /// Où faire la copie temporaire, dans l'ordre essayé. Linux : d'abord `/run/user/<uid>`, réservé à la personne (/tmp
-/// est partagé par tous les comptes de l'ordinateur) ; macOS : son dossier temporaire, déjà personnel.
+/// est partagé par tous les comptes de l'ordinateur).
 fn dossiers_temporaires() -> Vec<PathBuf> {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -361,11 +319,6 @@ mod tests {
 
     #[test]
     fn montage_de_la_racine() {
-        // macOS : la racine est le volume système scellé, en lecture seule ; les données sont à part.
-        #[cfg(target_os = "macos")]
-        assert!(montage(Path::new("/")).expect("/ est monté").1);
-        #[cfg(target_os = "macos")]
-        let donnees = Path::new("/System/Volumes/Data");
         #[cfg(target_os = "linux")]
         let donnees = Path::new("/");
         let (_, lecture_seule) = montage(donnees).expect("volume de données monté");

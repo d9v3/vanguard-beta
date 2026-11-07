@@ -14,7 +14,7 @@
 //! journal des mesures (`mesures`). Hors ligne par défaut ; `--internet` le permet à la main. Ce qui ne va pas va au
 //! journal des erreurs, sans aucune valeur lue sur la machine : identifiants, nombres, genres d'écart.
 
-// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// Le programme sous Linux : ses parties Windows ne sont pas encore relues, et les essais en sont exemptés
 // (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
 #![cfg_attr(
     all(target_os = "linux", not(test)),
@@ -178,7 +178,6 @@ struct Contredite {
 fn systeme() -> &'static str {
     match crate::machine::regles::Os::actuel() {
         crate::machine::regles::Os::Windows => "windows",
-        crate::machine::regles::Os::MacOs => "macos",
         _ => "linux",
     }
 }
@@ -619,7 +618,6 @@ pub(crate) fn compte_rendu(r: &Rapport) -> crate::compte_rendu::CompteRendu {
     let version = cr.version.clone();
     let famille = match r.systeme {
         "windows" => Famille::Windows,
-        "macos" => Famille::Macos,
         _ => Famille::Linux,
     };
     let jour = r.debut.get(..10).and_then(Jour::new).unwrap_or_else(Jour::aujourdhui);
@@ -844,7 +842,7 @@ fn afficher(r: &Rapport, croisees: &[(&'static Croisee, Comparaison)], detail: b
     println!();
     afficher_regles(&r.regles);
     section(tr!("Lectures croisées", "Cross-checks"));
-    afficher_croisees(r.systeme, croisees, detail);
+    afficher_croisees(croisees, detail);
     section(tr!("Rien changé ?", "Nothing changed?"));
     let p = &r.preuve;
     afficher_aligne(
@@ -922,21 +920,13 @@ fn afficher_regles(reg: &Regles) {
     }
 }
 
-/// Une ligne par lecture croisée ; aucune, c'est dit non vérifié (`systeme` : la phrase propre à macOS). Avec
-/// `detail`, les valeurs d'un écart en dessous.
-fn afficher_croisees(systeme: &str, croisees: &[(&'static Croisee, Comparaison)], detail: bool) {
+/// Une ligne par lecture croisée ; aucune, c'est dit non vérifié. Avec `detail`, les valeurs d'un écart en dessous.
+fn afficher_croisees(croisees: &[(&'static Croisee, Comparaison)], detail: bool) {
     if croisees.is_empty() {
-        let texte = if systeme == "macos" {
-            tr!(
-                "Aucune lecture croisée n'existe encore sous macOS : ce point n'est pas vérifié.",
-                "No cross-check exists yet on macOS: this point is not checked."
-            )
-        } else {
-            tr!(
-                "Aucune lecture croisée ici : non vérifié.",
-                "No cross-check here: not checked."
-            )
-        };
+        let texte = tr!(
+            "Aucune lecture croisée ici : non vérifié.",
+            "No cross-check here: not checked."
+        );
         afficher_aligne(&format!("  {} ", icone(false, true)), texte, 4, "");
     }
     for (c, x) in croisees {

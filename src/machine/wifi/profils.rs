@@ -1,11 +1,11 @@
-//! Les réseaux Wi-Fi enregistrés sur cet ordinateur, ceux auxquels il se reconnecte tout seul, lus dans les fichiers
-//! du système sans lancer nmcli, iwctl ni networksetup : NetworkManager (`/etc/NetworkManager/system-connections`,
-//! un fichier clé par connexion, plus ceux de `/run` et `/usr/lib` : netplan, profils fournis), iwd (`/var/lib/iwd`, un fichier par réseau, nommé d'après lui), macOS
-//! (`com.apple.wifi.known-networks.plist`). Ces fichiers n'appartiennent qu'à l'administrateur : sans ses droits,
-//! c'est « non vérifié », et le bilan de la machine garde sa lecture par nmcli. Windows lit les siens par l'API WLAN
-//! (wlanapi.rs). Les lecteurs sont purs ; seuls `lire_linux` et `lire_macos` touchent le disque.
+//! Les réseaux Wi-Fi enregistrés sur cet ordinateur, ceux auxquels il se reconnecte tout seul, lus dans les fichiers du
+//! système sans lancer nmcli ni iwctl : NetworkManager (`/etc/NetworkManager/system-connections`, un fichier clé par
+//! connexion, plus ceux de `/run` et `/usr/lib` : netplan, profils fournis), iwd (`/var/lib/iwd`, un fichier par
+//! réseau, nommé d'après lui). Ces fichiers n'appartiennent qu'à l'administrateur : sans ses droits, c'est « non
+//! vérifié », et le bilan de la machine garde sa lecture par nmcli. Windows lit les siens par l'API WLAN (wlanapi.rs).
+//! Les lecteurs sont purs ; seul `lire_linux` touche le disque.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use crate::ui::affichable;
@@ -25,8 +25,8 @@ pub(crate) struct ProfilEnregistre {
     pub commande_sure: bool,
 }
 
-/// Fichiers lus au plus par dossier (et réseaux connus d'un Mac).
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
+/// Fichiers lus au plus par dossier.
+#[cfg(target_os = "linux")]
 const FICHIERS_MAX: usize = 200;
 /// Taille lue au plus par fichier.
 #[cfg(target_os = "linux")]
@@ -133,61 +133,6 @@ pub(crate) fn iwd(nom_fichier: &str, texte: &str) -> Option<ProfilEnregistre> {
     })
 }
 
-/// Les réseaux connus d'un Mac, dans `com.apple.wifi.known-networks.plist` (macOS 11 et après : une entrée
-/// « wifi.network.ssid.<nom> » par réseau, `SecurityType` « Open » pour un réseau ouvert, `AutoJoinDisabled` quand la
-/// reconnexion est coupée) ou l'ancien `com.apple.airport.preferences.plist` (dictionnaire `KnownNetworks`,
-/// `SSIDString`, `SecurityType`, `Disabled`). Les deux clés de reconnexion sont tolérées : absentes, le Mac rejoint
-/// le réseau tout seul.
-#[cfg(any(target_os = "macos", test))]
-pub(crate) fn connus_macos(plist: &crate::plist::Valeur) -> Vec<ProfilEnregistre> {
-    use crate::plist::Valeur;
-    let entrees: Vec<(&str, &Valeur)> = match plist {
-        Valeur::Dico(paires) => match plist.cle("KnownNetworks") {
-            Some(Valeur::Dico(anciens)) => anciens.iter().map(|(k, v)| (k.as_str(), v)).collect(),
-            _ => paires
-                .iter()
-                .filter(|(k, _)| k.starts_with("wifi.network.ssid."))
-                .map(|(k, v)| (k.as_str(), v))
-                .collect(),
-        },
-        _ => Vec::new(),
-    };
-    let booleen = |v: &Valeur, cle: &str| match v.cle(cle) {
-        Some(Valeur::Booleen(b)) => Some(*b),
-        Some(Valeur::Entier(n)) => Some(*n != 0),
-        _ => None,
-    };
-    entrees
-        .into_iter()
-        .take(FICHIERS_MAX)
-        .filter_map(|(cle, v)| {
-            let nom = match (v.cle("SSIDString").and_then(Valeur::texte), v.cle("SSID")) {
-                (Some(t), _) => t.to_string(),
-                (None, Some(Valeur::Donnees(octets))) => String::from_utf8_lossy(octets).into_owned(),
-                (None, Some(Valeur::Texte(t))) => t.clone(),
-                _ => cle.strip_prefix("wifi.network.ssid.").unwrap_or(cle).to_string(),
-            };
-            let nom = affichable(&nom);
-            if nom.is_empty() {
-                return None;
-            }
-            let securite = v.cle("SecurityType").and_then(Valeur::texte).unwrap_or("");
-            let ouvert = securite.eq_ignore_ascii_case("open") || securite.eq_ignore_ascii_case("none");
-            let coupee = booleen(v, "AutoJoinDisabled") == Some(true)
-                || booleen(v, "AutoJoin") == Some(false)
-                || booleen(v, "Disabled") == Some(true);
-            let sur: String = nom.chars().filter(|c| !matches!(c, '"' | '\n' | '\r')).collect();
-            Some(ProfilEnregistre {
-                nom,
-                automatique: !coupee,
-                ouvert,
-                commande: format!("networksetup -removepreferredwirelessnetwork en0 \"{sur}\""),
-                commande_sure: false,
-            })
-        })
-        .collect()
-}
-
 /// Les fichiers ordinaires d'un dossier, lus jusqu'à la taille bornée : (nom, contenu). `Err` : dossier ou un de ses
 /// fichiers interdit.
 #[cfg(target_os = "linux")]
@@ -263,39 +208,6 @@ pub(crate) fn lire_linux() -> Result<Vec<ProfilEnregistre>, &'static str> {
     Ok(profils)
 }
 
-/// Les réseaux connus du Mac. `Err` : le fichier est réservé à l'administrateur.
-#[cfg(target_os = "macos")]
-pub(crate) fn lire_macos() -> Result<Vec<ProfilEnregistre>, &'static str> {
-    let chemins = [
-        "/Library/Preferences/com.apple.wifi.known-networks.plist",
-        "/Library/Preferences/SystemConfiguration/com.apple.airport.preferences.plist",
-    ];
-    let mut profils = Vec::new();
-    let (mut interdit, mut illisible) = (false, false);
-    for chemin in chemins {
-        match crate::plist::lire_fichier(std::path::Path::new(chemin)) {
-            Ok(crate::plist::Lu::Plist(plist)) => profils.extend(connus_macos(&plist)),
-            // Trop gros, hostile ou d'un format inconnu : rien à en tirer, et rien à confier à plutil.
-            Ok(_) => illisible = true,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => interdit = true,
-        }
-    }
-    if profils.is_empty() && interdit {
-        return Err(crate::tr!(
-            "lisibles seulement en administrateur (sudo)",
-            "readable only as administrator (sudo)"
-        ));
-    }
-    if profils.is_empty() && illisible {
-        return Err(crate::tr!(
-            "fichier des réseaux connus illisible",
-            "known networks file unreadable"
-        ));
-    }
-    Ok(profils)
-}
-
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::as_conversions,
@@ -322,7 +234,6 @@ mod tests {
     }
 
     use super::*;
-    use crate::plist::Valeur;
 
     #[test]
     fn fichier_cle_de_networkmanager() {
@@ -385,66 +296,6 @@ mod tests {
         let p = iwd("=476172652220616d7020646f22.open", "").unwrap();
         assert_eq!(p.nom, "Gare\" amp do\"");
         assert_eq!(p.commande.matches('"').count(), 2);
-    }
-
-    fn reseau(cle: &str, nom: Option<&str>, securite: &str, extras: &[(&str, Valeur)]) -> (String, Valeur) {
-        let mut d = vec![("SecurityType".to_string(), Valeur::Texte(securite.into()))];
-        if let Some(n) = nom {
-            d.push(("SSID".into(), Valeur::Donnees(n.as_bytes().to_vec())));
-        }
-        for (k, v) in extras {
-            d.push(((*k).to_string(), v.clone()));
-        }
-        (cle.to_string(), Valeur::Dico(d))
-    }
-
-    #[test]
-    fn reseaux_connus_du_mac() {
-        let plist = Valeur::Dico(vec![
-            reseau("wifi.network.ssid.Salon", Some("Salon"), "WPA2 Personal", &[]),
-            reseau("wifi.network.ssid.Aéroport", Some("Aéroport"), "Open", &[]),
-            reseau(
-                "wifi.network.ssid.Hôtel",
-                Some("Hôtel"),
-                "Open",
-                &[("AutoJoinDisabled", Valeur::Booleen(true))],
-            ),
-            reseau(
-                "wifi.network.ssid.Gare",
-                None,
-                "Open",
-                &[("AutoJoin", Valeur::Booleen(false))],
-            ),
-            ("Version".into(), Valeur::Entier(1)),
-        ]);
-        let p = connus_macos(&plist);
-        assert_eq!(p.len(), 4);
-        assert!(!p[0].ouvert && p[0].automatique);
-        assert!(p[1].ouvert && p[1].automatique);
-        assert_eq!(
-            p[1].commande,
-            "networksetup -removepreferredwirelessnetwork en0 \"Aéroport\""
-        );
-        assert!(p[2].ouvert && !p[2].automatique);
-        assert_eq!(p[3].nom, "Gare");
-        assert!(!p[3].automatique);
-        // L'ancien format.
-        let ancien = Valeur::Dico(vec![(
-            "KnownNetworks".into(),
-            Valeur::Dico(vec![(
-                "wifi.ssid.<53616c6f6e>".into(),
-                Valeur::Dico(vec![
-                    ("SSIDString".into(), Valeur::Texte("Café\x1b[2K".into())),
-                    ("SecurityType".into(), Valeur::Texte("Open".into())),
-                    ("Disabled".into(), Valeur::Booleen(false)),
-                ]),
-            )]),
-        )]);
-        let p = connus_macos(&ancien);
-        assert_eq!(p.len(), 1);
-        assert_eq!(p[0].nom, "Café�[2K");
-        assert!(p[0].ouvert && p[0].automatique);
-        assert_eq!(connus_macos(&Valeur::Texte("rien".into())), [] as [ProfilEnregistre; 0]);
     }
 
     #[test]

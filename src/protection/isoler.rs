@@ -1,8 +1,7 @@
 //! Bac à sable : lancer un programme inconnu à l'écart du reste. Linux : bubblewrap (ou firejail), système en
 //! lecture seule, dossier personnel et /tmp vides, pas de réseau, programme copié dans un dossier jetable.
 //! Windows : Windows Sandbox, une machine jetable effacée à la fermeture, dossier du programme en lecture seule,
-//! réseau coupé. macOS : sandbox-exec (le bac à sable intégré au système), pas de réseau, dossier personnel
-//! illisible, écriture seulement dans le dossier jetable.
+//! réseau coupé.
 
 use std::path::{Path, PathBuf};
 
@@ -269,79 +268,6 @@ fn lancer(source: &Path) {
     dire_la_fin(statut);
 }
 
-/// Profil de sandbox-exec : tout est permis sauf le réseau, la lecture du dossier personnel et des disques branchés
-/// (/Volumes), l'écriture hors du dossier jetable (et des terminaux, pour afficher), et les services qui lancent ou
-/// pilotent une autre application. `open` passe par LaunchServices : l'application (un navigateur avec une adresse
-/// qui porte des données) est lancée par launchd, hors du bac à sable et avec le réseau. Les Apple Events piloteraient
-/// une application déjà ouverte, le presse-papiers ferait sortir ce qui y est copié. Profil non essayé sur un Mac.
-#[cfg(any(target_os = "macos", test))]
-fn profil_sandbox(jetable: &str, maison: &str) -> String {
-    let echapper = |t: &str| t.replace('\\', "\\\\").replace('"', "\\\"");
-    let (jetable, maison) = (echapper(jetable), echapper(maison));
-    format!(
-        "(version 1)\n(allow default)\n(deny network*)\n\
-         (deny mach-lookup (global-name \"com.apple.coreservices.launchservicesd\") \
-         (global-name-regex #\"^com\\.apple\\.lsd\\.\") \
-         (global-name \"com.apple.coreservices.appleevents\") (global-name \"com.apple.pasteboard.1\"))\n\
-         (deny file-read* (subpath \"{maison}\"))\n\
-         (deny file-read* (subpath \"/Volumes\"))\n\
-         (deny file-write*)\n\
-         (allow file-read* file-write* (subpath \"{jetable}\"))\n\
-         (allow file-write* (literal \"/dev/null\") (regex #\"^/dev/tty\") (regex #\"^/dev/fd/\"))\n"
-    )
-}
-
-/// Les arguments de sandbox-exec pour une extension lancée avec `--isole` (macOS) : le profil du bac à sable (pas de
-/// réseau, dossier personnel illisible, écriture seulement dans le dossier jetable), le dossier de l'extension relu
-/// mais jamais écrit, puis la commande. Les chemins sont les chemins réels : sandbox-exec les compare ainsi (/var est
-/// un lien vers /private/var). `None` : sandbox-exec n'est pas là.
-#[cfg(target_os = "macos")]
-pub(crate) fn arguments_extension(jetable: &Path, dossier: &Path, commande: &[String]) -> Option<Vec<String>> {
-    if commande.is_empty() || !Path::new("/usr/bin/sandbox-exec").is_file() {
-        return None;
-    }
-    let reel =
-        |p: &Path| std::fs::canonicalize(p).map_or_else(|_| p.display().to_string(), |r| r.display().to_string());
-    let maison = std::env::var("HOME").unwrap_or_default();
-    let maison = reel(Path::new(&maison));
-    let echapper = |t: &str| t.replace('\\', "\\\\").replace('"', "\\\"");
-    let mut profil = profil_sandbox(&reel(jetable), &maison);
-    // Après l'écriture permise dans le jetable (le dossier de l'extension y est souvent) : la relecture du dossier
-    // de l'extension, jamais son écriture. Dans un profil, la dernière règle qui correspond l'emporte.
-    let d = echapper(&reel(dossier));
-    profil.push_str("(allow file-read* (subpath \"");
-    profil.push_str(&d);
-    profil.push_str("\"))\n(deny file-write* (subpath \"");
-    profil.push_str(&d);
-    profil.push_str("\"))\n");
-    let mut a = vec!["-p".to_string(), profil];
-    a.extend(commande.iter().cloned());
-    Some(a)
-}
-
-#[cfg(target_os = "macos")]
-fn lancer(source: &Path) {
-    // sandbox-exec compare des chemins réels : /var est un lien vers /private/var.
-    let Some((jetable, copie)) = copie_jetable(source, true) else {
-        return;
-    };
-    let maison = crate::socle::maison();
-    let maison = std::fs::canonicalize(&maison).unwrap_or(maison).display().to_string();
-    trp!(
-        "  {GRIS}Isolé : pas de réseau, dossier personnel illisible, écriture seulement dans la copie jetable : {}{RESET}\n",
-        "  {GRIS}Isolated: no network, home folder unreadable, writing only in the disposable copy: {}{RESET}\n",
-        chemin_affichable(&copie)
-    );
-    let statut = std::process::Command::new("sandbox-exec")
-        .arg("-p")
-        .arg(profil_sandbox(&jetable.display().to_string(), &maison))
-        .arg(&copie)
-        .current_dir(&jetable)
-        .status();
-    let _ = std::fs::remove_dir_all(&jetable);
-    dire_la_fin(statut);
-}
-
 #[cfg(windows)]
 fn lancer(source: &Path) {
     let sandbox = crate::commande::systeme32("WindowsSandbox.exe");
@@ -398,22 +324,6 @@ mod tests {
             };
             assert_eq!(present(cmd), r.code == Some(0), "{cmd}");
         }
-    }
-
-    #[test]
-    fn profil_de_sandbox_exec() {
-        let p = profil_sandbox("/private/var/folders/x/T/vanguard-bac-1", "/Users/a \"b\"");
-        assert!(p.contains("(deny network*)"));
-        // Ni open (LaunchServices), ni Apple Events, ni presse-papiers : une application lancée par launchd sortirait
-        // du bac à sable, avec le réseau.
-        assert!(p.contains(
-            "(deny mach-lookup (global-name \"com.apple.coreservices.launchservicesd\") \
-             (global-name-regex #\"^com\\.apple\\.lsd\\.\") \
-             (global-name \"com.apple.coreservices.appleevents\") (global-name \"com.apple.pasteboard.1\"))\n"
-        ));
-        assert!(p.contains("(deny file-read* (subpath \"/Volumes\"))"));
-        assert!(p.contains("(deny file-read* (subpath \"/Users/a \\\"b\\\"\"))"));
-        assert!(p.contains("(allow file-read* file-write* (subpath \"/private/var/folders/x/T/vanguard-bac-1\"))"));
     }
 
     #[test]

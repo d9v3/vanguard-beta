@@ -103,7 +103,7 @@ pub(crate) enum Prise {
 }
 
 /// Les prises d'une adresse de bus (« unix:path=…[,guid=…];unix:abstract=… »), dans l'ordre ; les autres transports
-/// (tcp, launchd…) sont laissés.
+/// (tcp, unixexec…) sont laissés.
 pub(crate) fn prises_de(adresse: &str) -> Vec<Prise> {
     adresse
         .split(';')

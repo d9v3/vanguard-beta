@@ -8,13 +8,12 @@
 //! Lecture seule, à la demande seulement, jamais en fond : aucun processus n'est touché. Sous Windows, LSASS, les
 //! processus protégés et les processus critiques ne sont jamais lus (lire LSASS est le geste d'un voleur de mots de
 //! passe, que Defender bloque) ; un nom ne suffit pas à écarter un processus : seul le programme de System32 qui le
-//! porte l'est, et un autre qui prend ce nom est lu et signalé (masquage). Sous Linux et macOS, le nom d'un processus
+//! porte l'est, et un autre qui prend ce nom est lu et signalé (masquage). Sous Linux, le nom d'un processus
 //! est choisi par le programme lui-même : rien n'est écarté sur lui, seul Vanguard ne se lit pas. Rien de ce qui est
 //! lu n'est gardé nulle part : seulement la règle, le PID, le programme et l'adresse. Ce qui n'a pas pu être lu est
-//! dit, jamais compté comme sain. Sur macOS, la mémoire d'autrui demande des droits spéciaux (task_for_pid) : non
-//! vérifié, dit tel quel.
+//! dit, jamais compté comme sain.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::time::{Duration, Instant};
@@ -264,7 +263,7 @@ fn a_sa_place(nom: &str, programme: &str, system32: &str) -> bool {
     !system32.is_empty() && programme.eq_ignore_ascii_case(&attendu)
 }
 
-/// Vanguard lui-même (`moi`) n'est jamais lu, partout. `windows` : `None` sous Linux et macOS, où le nom (comm, ps)
+/// Vanguard lui-même (`moi`) n'est jamais lu, partout. `windows` : `None` sous Linux, où le nom (comm, ps)
 /// est choisi par le programme : rien d'autre n'est écarté. Sous Windows, Idle (0) et System (4) sont écartés par leur
 /// numéro, et un nom critique ne l'est que si son programme est celui de System32.
 fn trier(pid: u32, nom: &str, moi: u32, windows: Option<&Lieux>) -> Tri {
@@ -878,7 +877,6 @@ enum Acces {
     Protege,
     /// Le système refuse (droits insuffisants) : non lu, dit.
     Refuse,
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     Ouvert(plateforme::Lecteur),
 }
 
@@ -1008,64 +1006,6 @@ mod plateforme {
             None => Acces::Refuse,
             Some(true) => Acces::Protege,
             Some(false) => Lecteur::ouvrir(pid).map_or(Acces::Refuse, Acces::Ouvert),
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-mod plateforme {
-    use super::{Acces, Processus, Region};
-
-    /// La liste des processus, pour dire combien ne sont pas lus : task_for_pid demande root et un droit spécial que
-    /// Vanguard n'a pas ; rien n'est lu, rien n'est conclu. Demandée au noyau, `ps` en secours.
-    pub(super) fn processus() -> Vec<Processus> {
-        if let Some(liste) = crate::machine::macos::noyau::processus(false) {
-            return liste
-                .iter()
-                .map(|p| Processus {
-                    pid: p.pid,
-                    nom: crate::ui::affichable(&p.nom()),
-                })
-                .collect();
-        }
-        let mut ps = std::process::Command::new("ps");
-        ps.args(["-axo", "pid=,comm="]);
-        let Some(resultat) = crate::commande::lancer(&mut ps, 10) else {
-            return Vec::new();
-        };
-        resultat
-            .sortie
-            .lines()
-            .filter_map(|l| {
-                let (pid, nom) = l.trim().split_once(' ')?;
-                Some(Processus {
-                    pid: pid.parse().ok()?,
-                    nom: crate::ui::affichable(nom.trim()),
-                })
-            })
-            .collect()
-    }
-
-    pub(super) fn ouvrir(_pid: u32) -> Acces {
-        Acces::Refuse
-    }
-
-    /// Aucun niveau de protection ici : le tri n'en demande jamais (rien n'y est « incertain »).
-    pub(super) fn protege(_pid: u32) -> bool {
-        false
-    }
-
-    /// Jamais construit ici (`Infallible`) : la forme attendue par le reste du module.
-    #[allow(dead_code)]
-    pub(super) struct Lecteur(std::convert::Infallible);
-
-    impl Lecteur {
-        pub(super) fn regions(&self) -> super::Releve {
-            match self.0 {}
-        }
-
-        pub(super) fn lire(&self, _region: &Region, _zone: &mut [u8]) -> usize {
-            match self.0 {}
         }
     }
 }
@@ -1402,12 +1342,6 @@ pub fn analyser() {
     ) {
         println!("  {ligne}");
     }
-    if cfg!(target_os = "macos") {
-        avertir(tr!(
-            "Sur macOS, la mémoire d'un autre processus ne se lit pas sans un droit spécial (task_for_pid) : non vérifié, rien n'est conclu.",
-            "On macOS, another process's memory cannot be read without a special right (task_for_pid): not verified, nothing is concluded."
-        ));
-    }
     let regles = match yara::regles() {
         Ok(r) => r,
         Err(e) => {
@@ -1444,7 +1378,7 @@ mod tests {
         }
     }
 
-    /// Sous Linux et macOS, le nom (comm, ps) est choisi par le programme : un maliciel qui s'appelle « lsass » ou
+    /// Sous Linux, le nom (comm, ps) est choisi par le programme : un maliciel qui s'appelle « lsass » ou
     /// « services » est lu comme les autres ; seul Vanguard, par son numéro, ne l'est pas.
     #[test]
     fn tri_sans_windows() {

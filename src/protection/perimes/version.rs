@@ -225,7 +225,7 @@ pub(crate) fn adobe(texte: &str) -> Option<Version> {
     Version::lire(texte).filter(|v| v.longueur() == 3)
 }
 
-/// Brave, comparé aux trois champs que Brave publie (« 1.98.60 »). Son exécutable et son Info.plist peuvent les
+/// Brave, comparé aux trois champs que Brave publie (« 1.98.60 »). Son exécutable peut les
 /// précéder du majeur de Chromium (« 156.1.98.60 », forme vue chez des tiers, à confirmer sur une vraie
 /// installation) : seulement quand ce premier champ dépasse le suivant, sinon ce serait une autre forme, devinée.
 /// La forme « 198.60 » (CFBundleVersion selon des tiers) est ambiguë : `None`.

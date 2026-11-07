@@ -34,13 +34,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)", "cfg(kani)"] }
 members = ["."]
 
 [[bin]]
-name = "plist"
-path = "fuzz_targets/plist.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "http_local"
 path = "fuzz_targets/http_local.rs"
 test = false

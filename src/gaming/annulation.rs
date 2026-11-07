@@ -94,12 +94,6 @@ fn convertir_une(id: &str, nom: &str, v: Option<&str>) -> Option<(Geste, Option<
     super::windows::convertir(id, nom, v)
 }
 
-/// macOS n'a jamais noté de réglage pour jouer.
-#[cfg(target_os = "macos")]
-fn convertir_une(_id: &str, _nom: &str, _v: Option<&str>) -> Option<(Geste, Option<String>)> {
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

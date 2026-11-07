@@ -6,7 +6,7 @@
 //! journal des événements, d'où une alerte non critique peut être déclarée normale (« Ce que Vanguard a appris ») ;
 //! rien n'est demandé.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::path::{Path, PathBuf};

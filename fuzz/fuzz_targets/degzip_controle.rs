@@ -1,4 +1,4 @@
-//! Les fichiers gzip téléchargés (endoflife.date, formula.json et cask.json de Homebrew, archive des avis de
+//! Les fichiers gzip téléchargés (endoflife.date, formula.json de Homebrew, archive des avis de
 //! Mozilla) : en-têtes aux champs facultatifs démesurés, flux deflate abîmés, CRC et taille faux, membres bout à bout,
 //! bombes de décompression. La lecture des fichiers de cet ordinateur (`degzip`) passe aussi.
 #![no_main]

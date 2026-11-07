@@ -21,7 +21,7 @@ pub(crate) enum Etape {
 }
 
 /// Le réseau du mode : son nom (affiché seulement), sa carte, et l'identité de sa connexion (Linux : l'UUID du profil
-/// de NetworkManager ; Windows : le GUID de la carte ; macOS : le service réseau).
+/// de NetworkManager ; Windows : le GUID de la carte).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Reseau {
     pub nom: String,
@@ -52,8 +52,6 @@ pub(crate) enum Element {
     ProfilPublic { parametre: String, avant: String },
     /// Windows : NetBIOS de la carte (NetbiosOptions : 0 selon DHCP, 1 allumé ; le mode met 2).
     NetBios { carte: String, avant: u32 },
-    /// macOS : une option du pare-feu applicatif (globalstate, blockall, stealthmode), « on » ou « off » avant.
-    MacPareFeu { option: String, avant: String },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -119,8 +117,6 @@ pub(crate) const PARAMETRES_PROFIL: [(&str, &[&str]); 3] = [
     ("DefaultInboundAction", &["Allow", "Block", "NotConfigured"]),
     ("AllowInboundRules", &["True", "False", "NotConfigured"]),
 ];
-
-pub(crate) const OPTIONS_MAC: [&str; 3] = ["globalstate", "blockall", "stealthmode"];
 
 /// Un nom de carte réseau : il entre dans le script nft et dans les commandes.
 pub(crate) fn interface_valide(t: &str) -> bool {
@@ -192,26 +188,11 @@ pub(crate) fn dns_valide_windows(v: &str) -> bool {
     guid_valide(guid) && c.len() == 2 && c.iter().all(|l| liste_valide(l, false))
 }
 
-/// macOS : « service\nserveurs » (forme d'`optimiser::macos`) ; le nom du service entre dans la commande entre
-/// apostrophes.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn dns_valide_macos(v: &str) -> bool {
-    let Some((service, liste)) = v.split_once('\n') else {
-        return false;
-    };
-    (1..=64).contains(&service.chars().count())
-        && !service.chars().any(char::is_control)
-        && !liste.contains('|')
-        && liste_valide(liste, false)
-}
-
 fn dns_valide(v: &str) -> bool {
     #[cfg(target_os = "linux")]
     return dns_valide_linux(v);
     #[cfg(windows)]
     return dns_valide_windows(v);
-    #[cfg(target_os = "macos")]
-    return dns_valide_macos(v);
 }
 
 fn dans(table: &[(&str, &[&str])], cle: &str, valeur: &str) -> bool {
@@ -229,9 +210,6 @@ impl Element {
             Element::Categorie { guid, avant } => guid_valide(guid) && avant == "Private",
             Element::ProfilPublic { parametre, avant } => dans(&PARAMETRES_PROFIL, parametre, avant),
             Element::NetBios { carte, avant } => guid_valide(carte) && *avant <= 1,
-            Element::MacPareFeu { option, avant } => {
-                OPTIONS_MAC.contains(&option.as_str()) && ["on", "off"].contains(&avant.as_str())
-            }
         }
     }
 
@@ -245,7 +223,6 @@ impl Element {
             Element::Categorie { guid, .. } => format!("categorie:{guid}"),
             Element::ProfilPublic { parametre, .. } => format!("profil:{parametre}"),
             Element::NetBios { carte, .. } => format!("netbios:{carte}"),
-            Element::MacPareFeu { option, .. } => format!("alf:{option}"),
         }
     }
 
@@ -253,7 +230,6 @@ impl Element {
     pub(crate) fn jamais_remis(&self) -> bool {
         match self {
             Element::ProfilPublic { parametre, avant } => parametre == "Enabled" && avant == "False",
-            Element::MacPareFeu { option, avant } => option == "globalstate" && avant == "off",
             _ => false,
         }
     }
@@ -392,14 +368,6 @@ mod tests {
                 carte: "{0B8C2F4E-1A2B-4C3D-9E8F-001122334455}".into(),
                 avant: 2,
             },
-            Element::MacPareFeu {
-                option: "allowsigned".into(),
-                avant: "on".into(),
-            },
-            Element::MacPareFeu {
-                option: "blockall".into(),
-                avant: "1".into(),
-            },
         ];
         for e in &refuses {
             assert!(!e.valide(), "{e:?}");
@@ -416,10 +384,6 @@ mod tests {
             Element::NetBios {
                 carte: "{0B8C2F4E-1A2B-4C3D-9E8F-001122334455}".into(),
                 avant: 0,
-            },
-            Element::MacPareFeu {
-                option: "stealthmode".into(),
-                avant: "off".into(),
             },
             Element::UniteRuntime {
                 unite: "wsdd.service".into(),
@@ -461,11 +425,6 @@ mod tests {
             "pas de nom sous Windows"
         );
         assert!(!dns_valide_windows(&format!("{g}\n'); Remove-Item C:\\ #|")));
-        assert!(dns_valide_macos("Wi-Fi\n149.112.121.20,2620:10a:80bb::20"));
-        assert!(dns_valide_macos("Wi-Fi\n"));
-        assert!(!dns_valide_macos("Wi-Fi\n1.1.1.1|2.2.2.2"));
-        assert!(!dns_valide_macos("\n1.1.1.1"));
-        assert!(!dns_valide_macos("Wi\u{7}Fi\n1.1.1.1"));
     }
 
     #[test]
@@ -509,19 +468,5 @@ mod tests {
             avant: "NotConfigured".into(),
         };
         assert!(!non_configure.jamais_remis());
-        assert!(
-            Element::MacPareFeu {
-                option: "globalstate".into(),
-                avant: "off".into()
-            }
-            .jamais_remis()
-        );
-        assert!(
-            !Element::MacPareFeu {
-                option: "blockall".into(),
-                avant: "off".into()
-            }
-            .jamais_remis()
-        );
     }
 }

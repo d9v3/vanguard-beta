@@ -1,7 +1,7 @@
 //! L'heure réglée automatiquement : une horloge qui dérive de quelques minutes fait échouer les sites sécurisés
 //! (certificats « pas encore valides » ou « expirés »), Windows Update et les codes de double authentification.
 //! Vanguard regarde si le système règle l'heure tout seul (NTP) ; il ne mesure pas l'écart lui-même, ce qui
-//! demanderait d'interroger un serveur. Sous macOS, le réglage ne se lit pas sans droits administrateur : rien n'est dit.
+//! demanderait d'interroger un serveur.
 
 use super::{Constat, alerte, gestes, ok};
 use crate::risk::Niveau;
@@ -175,11 +175,6 @@ fn lire() -> Option<Etat> {
 #[cfg(windows)]
 pub(crate) fn type_synchronise(genre: &str) -> bool {
     !genre.eq_ignore_ascii_case("NoSync")
-}
-
-#[cfg(target_os = "macos")]
-fn lire() -> Option<Etat> {
-    None
 }
 
 pub fn constat() -> Option<Constat> {

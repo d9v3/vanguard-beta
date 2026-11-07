@@ -37,7 +37,6 @@ const NOMS_D_ESSAI: &[(&str, &str)] = &[
     ("chrome-win-stable", "chrome-win-stable.json"),
     ("mfsa", "foundation-security-advisories.tar.gz"),
     ("slack-windows", "slack-windows.json"),
-    ("slack-macos", "slack-macos.json"),
     ("kev", "kev.json"),
     ("echap", "ioc.yaml"),
 ];
@@ -173,7 +172,7 @@ fn canaris_telecharger() {
 }
 
 /// Le logiciel suivi dont la fiche reconnaît cette ligne du catalogue (nom interne fixe), sinon `None` : une faille
-/// exploitée hors de la table des logiciels suivis sous Windows et macOS (écart de couverture).
+/// exploitée hors de la table des logiciels suivis sous Windows (écart de couverture).
 fn couvert_par(e: &crate::protection::kev::Exploitee) -> Option<String> {
     FICHES
         .iter()

@@ -35,7 +35,7 @@
 //! nommé posé à sa place figeait la surveillance pour toujours. En root, les sceaux ne s'écrivent que dans un dossier
 //! à root (`socle::ecriture_sure`).
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -129,7 +129,7 @@ pub(crate) const MANIFESTE_CLE: &str = "manifeste-cle.json";
 pub(crate) const MANIFESTES_CLE: &str = "manifestes-cle";
 /// L'état de l'entretien du mois d'avant (`entretien`) : une alerte inscrite d'avance n'était jamais dite nouvelle.
 pub(crate) const ENTRETIEN: &str = "entretien.json";
-/// La note de la sauvegarde automatique mise en place (`sauvegarde`) : forgée, son annulation coupait Time Machine ou
+/// La note de la sauvegarde automatique mise en place (`sauvegarde`) : forgée, son annulation
 /// remettait des réglages de Déjà Dup choisis par un autre programme.
 pub(crate) const SAUVEGARDE: &str = "sauvegarde.json";
 /// La dernière passe de la surveillance (`reseau::tableau`) : forgée, le tableau la disait passée il y a cinq
@@ -803,7 +803,7 @@ fn rattraper_si(dossier: &Path, mut r: Registre, ecrire: bool) -> Registre {
 enum Avant {
     /// Une vraie mise à jour depuis la 0.86 ou la 0.87 : ce qu'elle ne scellait pas encore est repris, et cru.
     MiseAJour,
-    /// Une version plus ancienne a servi ici après celle-ci (une clé ou un Mac restés en arrière) : rien n'est repris.
+    /// Une version plus ancienne a servi ici après celle-ci (une copie restée en arrière) : rien n'est repris.
     Ancienne,
     /// Rien ne le prouve : ramenés en arrière hors de Vanguard, rien n'est repris et c'est dit comme des sceaux refaits.
     Recule,
@@ -1107,8 +1107,8 @@ fn falsifies_dans(dossier: &Path) -> Releve {
     r
 }
 
-/// Une version plus ancienne de Vanguard a servi ici après celle-ci (une clé ou un Mac restés en arrière, un retour
-/// à une version d'avant) : elle a réécrit les sceaux à sa façon. Pas des sceaux abîmés hors de Vanguard, mais rien
+/// Une version plus ancienne de Vanguard a servi ici après celle-ci (une copie restée en arrière, un retour à une
+/// version d'avant) : elle a réécrit les sceaux à sa façon. Pas des sceaux abîmés hors de Vanguard, mais rien
 /// de ce qu'elle a laissé n'est repris : ce qu'elle a accepté tel quel se redit, un mois.
 fn juger_ancienne(adoptes: &[&str], jour: &str, aujourd_hui: chrono::NaiveDate) -> Option<Constat> {
     let jours = chrono::NaiveDate::parse_from_str(jour, "%Y-%m-%d")
@@ -2414,7 +2414,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// F4 (relecture) : 0.87, puis cette version, puis la 0.87 de nouveau (une clé ou un Mac restés en arrière), puis
+    /// F4 (relecture) : 0.87, puis cette version, puis la 0.87 de nouveau (une copie restée en arrière), puis
     /// cette version : la 0.87 a réécrit la tête du journal et les sceaux à sa façon (sans leur forme ni `repris`).
     /// Pas « sceaux effacés ou abîmés hors de Vanguard » (élevé) : une version plus ancienne a servi ici, dit moyen,
     /// et rien de ce qu'elle a laissé n'est repris.

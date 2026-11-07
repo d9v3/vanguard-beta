@@ -1,13 +1,13 @@
-//! Ce que l'inventaire a trouvé, le même sous Windows et macOS : chaque logiciel suivi installé, sa version telle que
+//! Ce que l'inventaire de Windows a trouvé : chaque logiciel suivi installé, sa version telle que
 //! lue et telle que comparable, où il est et pour qui, et ce qui n'a pas pu être lu (comptes, dossiers refusés),
 //! qui sera dit, jamais compté comme sain.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::path::{Path, PathBuf};
 
-use super::produits::{AppMac, Distribution, Produit};
+use super::produits::{Distribution, Produit};
 use super::version::{self, Version};
 use crate::trf;
 
@@ -23,7 +23,7 @@ pub(crate) enum Branche {
     Release,
     /// Firefox ESR.
     Esr,
-    /// Un canal nommé : Edge « extended », Office (nom ou GUID de son adresse, en minuscules), « App Store ».
+    /// Un canal nommé : Edge « extended », Office (nom ou GUID de son adresse, en minuscules).
     Canal(String),
     /// Acrobat et Reader des pistes 2020 et 2024 : aucune source fixe.
     Classic,
@@ -37,9 +37,6 @@ pub(crate) enum Plateforme {
     X86,
     X64,
     Arm64,
-    /// Une application Mac qui contient Intel et Apple Silicon.
-    #[cfg_attr(windows, allow(dead_code))] // vu par l'inventaire de macOS
-    Universel,
     Inconnue,
 }
 
@@ -74,7 +71,7 @@ pub(crate) struct Installe {
     pub brute: String,
     /// `None` : illisible ou d'une forme inconnue, le logiciel sera dit « non vérifié ».
     pub version: Option<Version>,
-    /// Le dossier (ou l'application Mac) ; montré par `ui::chemin_affichable`.
+    /// Le dossier ; montré par `ui::chemin_affichable`.
     pub lieu: PathBuf,
     /// Le compte pour qui il est installé ; `None` : pour toute la machine.
     pub compte: Option<String>,
@@ -86,8 +83,6 @@ pub(crate) struct Installe {
     /// Une autre version vue au même endroit (dossier de version d'un navigateur qui ne dit pas la même chose que
     /// son exécutable).
     pub ecart: Option<Version>,
-    /// L'application Mac, quand le produit a une source par application (Office).
-    pub app: Option<&'static AppMac>,
 }
 
 impl Installe {
@@ -104,7 +99,6 @@ impl Installe {
             plateforme: Plateforme::Inconnue,
             attente: false,
             ecart: None,
-            app: None,
         }
     }
 }
@@ -118,11 +112,7 @@ pub(crate) enum NonLu {
     Dossier(PathBuf),
     /// Le registre d'un compte dont la session est fermée (sa ruche n'est pas chargée, et Vanguard ne la charge
     /// pas) : seuls ses dossiers sont lus.
-    #[cfg_attr(target_os = "macos", allow(dead_code))] // vu par l'inventaire de Windows
     Registre(String),
-    /// Une application dont l'Info.plist est illisible ou refusé par les bornes.
-    #[cfg_attr(windows, allow(dead_code))] // vu par l'inventaire de macOS
-    Illisible(PathBuf),
     /// Logiciels au-delà de 64, ou applications au-delà de la borne du parcours.
     Trop(usize),
 }
@@ -143,11 +133,6 @@ impl NonLu {
                 "registre du compte {} non lu (session fermée) : ses dossiers seulement",
                 "registry of account {} not read (logged off): its folders only",
                 crate::ui::affichable(c)
-            ),
-            NonLu::Illisible(d) => trf!(
-                "application illisible : {}",
-                "unreadable application: {}",
-                crate::ui::chemin_affichable(d)
             ),
             NonLu::Trop(n) => trf!(
                 "{n} logiciel(s) au-delà de la borne, non vérifié(s)",
@@ -233,13 +218,13 @@ mod tests {
     #[test]
     fn doublons_et_borne() {
         let mut inv = Inventaire::default();
-        let lieu = Path::new("/Applications/Google Chrome.app");
+        let lieu = Path::new(r"C:\Program Files\Google\Chrome");
         inv.ajouter(Installe::nouveau(Produit::Chrome, "156.0.8078.48", None, lieu));
         inv.ajouter(Installe::nouveau(
             Produit::Chrome,
             "1",
             None,
-            Path::new("/applications/google chrome.app"),
+            Path::new(r"c:\program files\google\chrome"),
         ));
         inv.ajouter(Installe::nouveau(Produit::Brave, "1", None, lieu));
         assert_eq!(inv.installes.len(), 2);
@@ -258,7 +243,6 @@ mod tests {
         assert_eq!(inv.non_lus.len(), 2);
         inv.non_lu(NonLu::Registre("bob".into()));
         inv.non_lu(NonLu::Dossier(PathBuf::from("/x")));
-        inv.non_lu(NonLu::Illisible(PathBuf::from("/y")));
         assert!(inv.non_lus.iter().all(|n| !n.texte().is_empty()));
     }
 

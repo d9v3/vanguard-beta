@@ -5,7 +5,7 @@
 //! invisibles sans droits d'administrateur : comptées à part, jamais comme saines. Lecture seule : rien n'est coupé
 //! ni bloqué.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::collections::{BTreeSet, HashMap};
@@ -66,15 +66,6 @@ Spotify | spotify.com
 GitHub | github.com";
 
 // ───────────────────────────── Lecture des connexions ─────────────────────────────
-
-/// « 140.82.112.4:443 », « [2606:4700::1111]:443 », « 192.168.1.2%wlan0:68 » → (adresse, port).
-#[cfg(any(target_os = "macos", test))]
-fn adresse_et_port(t: &str) -> Option<(IpAddr, u16)> {
-    let (hote, port) = t.rsplit_once(':')?;
-    let hote = hote.trim_start_matches('[').trim_end_matches(']');
-    let hote = hote.split('%').next()?;
-    Some((hote.parse().ok()?, port.parse().ok()?))
-}
 
 /// Une adresse de /proc/net : des mots de 32 bits en hexadécimal (un pour IPv4, quatre pour IPv6), chacun écrit tel que
 /// la machine le range en mémoire. Ses octets, dans l'ordre de la machine, sont donc ceux du réseau.
@@ -146,61 +137,6 @@ pub(crate) fn proprietaires() -> HashMap<u64, u32> {
         }
     }
     liste
-}
-
-/// Sortie de `lsof -nP -iTCP -sTCP:ESTABLISHED -F pcn` : un champ par ligne, « p » (processus), « c » (nom),
-/// « n » (« locale->distante »).
-#[cfg(any(target_os = "macos", test))]
-fn lire_lsof(sortie: &str) -> Vec<Connexion> {
-    let (mut pid, mut programme) = (None, None);
-    let mut liste = Vec::new();
-    for l in sortie.lines() {
-        let mut lettres = l.chars();
-        let champ = lettres.next();
-        let valeur = lettres.as_str();
-        match champ {
-            Some('p') => {
-                pid = valeur.parse().ok();
-                programme = None;
-            }
-            Some('c') => programme = Some(affichable(valeur)),
-            Some('n') => {
-                if let Some((distante, port)) = valeur.split_once("->").and_then(|(_, d)| adresse_et_port(d)) {
-                    liste.push(Connexion {
-                        pid,
-                        programme: programme.clone(),
-                        ..Connexion::vers(distante, port)
-                    });
-                }
-            }
-            _ => {}
-        }
-    }
-    liste
-}
-
-/// Connexions établies d'après `netstat -anp tcp` (macOS : « 142.250.1.1.443 », le port après le dernier point),
-/// moins celles que lsof a rattachées à un programme : ce qui reste appartient à d'autres comptes.
-#[cfg(any(target_os = "macos", test))]
-fn invisibles(netstat: &str, visibles: &[Connexion]) -> Vec<Connexion> {
-    let mut restantes: Vec<(IpAddr, u16)> = visibles.iter().map(|c| (c.distante, c.port)).collect();
-    netstat
-        .lines()
-        .filter(|l| l.contains("ESTABLISHED"))
-        .filter_map(|l| {
-            let distante = l.split_whitespace().nth(4)?;
-            let (ip, port) = distante.rsplit_once('.')?;
-            Some((ip.split('%').next()?.parse::<IpAddr>().ok()?, port.parse::<u16>().ok()?))
-        })
-        .filter(|cle| match restantes.iter().position(|v| v == cle) {
-            Some(i) => {
-                restantes.swap_remove(i);
-                false
-            }
-            None => true,
-        })
-        .map(|(distante, port)| Connexion::vers(distante, port))
-        .collect()
 }
 
 /// Lu dans /proc, sans lancer ss : rien à installer, et rien qu'un programme posé plus tôt dans le PATH puisse remplacer.
@@ -340,56 +276,6 @@ fn connexions() -> Option<Vec<Connexion>> {
     )
 }
 
-/// macOS : les connexions établies des programmes lisibles (ceux du compte sans droits admin), lues au noyau
-/// (libproc) ; lsof en secours tant que le test d'oracle de macos.yml n'a pas prouvé la lecture native, ou quand elle
-/// est muette. Puis netstat, qui fait foi pour celles de tous les comptes (xinpcb_n est privé) : ce qui reste après
-/// les programmes lus appartient à d'autres comptes.
-#[cfg(target_os = "macos")]
-fn connexions() -> Option<Vec<Connexion>> {
-    use std::process::Command;
-    let natives = crate::machine::macos::noyau::prises().map(|lues| {
-        lues.prises
-            .into_iter()
-            .filter(|(_, _, p)| p.tcp && p.etat == crate::machine::darwin::TSI_S_ESTABLISHED)
-            .map(|(pid, nom, p)| Connexion {
-                pid: Some(pid),
-                programme: Some(affichable(&nom)),
-                ..Connexion::vers(p.distante, p.port_distant)
-            })
-            .collect::<Vec<_>>()
-    });
-    let mut liste = if let Some(l) = natives.filter(|l| !l.is_empty()) {
-        l
-    } else {
-        // lsof répond 1 quand il ne trouve rien : une liste vide, pas une panne.
-        let lsof = crate::commande::lancer(
-            Command::new("lsof").args(["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-F", "pcn"]),
-            20,
-        )?;
-        lire_lsof(&lsof.sortie)
-    };
-    let pids: BTreeSet<u32> = liste.iter().filter_map(|c| c.pid).collect();
-    // Le chemin de chaque programme, demandé au noyau (proc_pidpath), sans lancer ps pour chacun.
-    let chemins: HashMap<u32, String> = pids
-        .into_iter()
-        .filter_map(|pid| {
-            Some((
-                pid,
-                crate::socle::processus::programme(pid)?.to_string_lossy().into_owned(),
-            ))
-        })
-        .collect();
-    for c in &mut liste {
-        c.chemin = c.pid.and_then(|p| chemins.get(&p).cloned());
-    }
-    // Sans netstat, les connexions des autres comptes manquent : la liste n'est pas entière, donc illisible (une liste
-    // du seul compte dirait à tort « aucune connexion suspecte »).
-    let n = crate::commande::lancer(Command::new("netstat").args(["-anp", "tcp"]), 15).filter(|r| r.code == Some(0))?;
-    let autres = invisibles(&n.sortie, &liste);
-    liste.extend(autres);
-    Some(liste)
-}
-
 /// Une connexion établie, telle que « Logiciels espions » la compare aux serveurs connus.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConnexionVue {
@@ -401,8 +287,7 @@ pub(crate) struct ConnexionVue {
     pub port: u16,
 }
 
-/// Les connexions en cours, lues par Vanguard lui-même (Linux : /proc ; Windows : les fonctions de Windows ; macOS :
-/// libproc pour le compte, lsof en secours, netstat pour les autres comptes).
+/// Les connexions en cours, lues par Vanguard lui-même (Linux : /proc ; Windows : les fonctions de Windows).
 pub(crate) fn connexions_vues() -> Option<Vec<ConnexionVue>> {
     connexions().map(|liste| {
         liste
@@ -475,20 +360,11 @@ fn dans_le_temporaire_du_compte(chemin: &str) -> bool {
 /// Un dossier d'où un vrai programme ne se lance pas d'habitude.
 pub(crate) fn dossier_risque(chemin: &str, montages: &str) -> Option<&'static str> {
     let c = chemin.to_lowercase().replace('\\', "/");
-    // macOS : une app téléchargée lancée sur place tourne depuis un dossier temporaire « AppTranslocation ».
-    if c.contains("/apptranslocation/") || appimage(chemin, montages) {
+    if appimage(chemin, montages) {
         return None;
     }
-    // Dossiers temporaires : à la racine sous Linux et macOS, sous le dossier du compte ou de Windows ailleurs. Sous
-    // macOS, celui du compte ($TMPDIR) se lit sous deux noms : /var/folders est un lien vers /private/var/folders.
-    let racines = [
-        "/tmp/",
-        "/var/tmp/",
-        "/dev/shm/",
-        "/private/tmp/",
-        "/private/var/folders/",
-        "/var/folders/",
-    ];
+    // Dossiers temporaires : à la racine sous Linux, sous le dossier du compte ou de Windows ailleurs.
+    let racines = ["/tmp/", "/var/tmp/", "/dev/shm/"];
     if racines.iter().any(|t| c.starts_with(t))
         || ["/appdata/local/temp/", "/windows/temp/"].iter().any(|t| c.contains(t))
         || dans_le_temporaire_du_compte(&c)
@@ -2017,18 +1893,6 @@ mod tests {
     }
 
     #[test]
-    fn adresses() {
-        assert_eq!(adresse_et_port("140.82.112.4:443"), Some((ip("140.82.112.4"), 443)));
-        assert_eq!(
-            adresse_et_port("[2606:4700::1111]:443"),
-            Some((ip("2606:4700::1111"), 443))
-        );
-        assert_eq!(adresse_et_port("192.168.1.20%wlan0:68"), Some((ip("192.168.1.20"), 68)));
-        assert_eq!(adresse_et_port("[fe80::1%wlan0]:22"), Some((ip("fe80::1"), 22)));
-        assert_eq!(adresse_et_port("users:((x"), None);
-    }
-
-    #[test]
     fn proc_net_linux() {
         // Lignes à la forme de /proc/net, adresses écrites comme la machine les range (ici, celle qui fait les tests :
         // x86 ou ARM, petit-boutistes) : 127.0.0.1 est « 0100007F ».
@@ -2049,32 +1913,6 @@ mod tests {
             lire_proc_net("en-tête\n 0: 0100007F:0035 +100007F:01BB 01 0 0 0 0 0 1\n 1: x\n"),
             Vec::new()
         );
-    }
-
-    #[test]
-    fn windows_et_macos() {
-        let lsof = "p501\ncGoogle Chrome\nf23\nn192.168.1.20:50000->142.250.1.1:443\np777\ncssh\nf3\nn[2a01:db8::2]:50001->[2001:db8::7]:22\n";
-        let m = lire_lsof(lsof);
-        assert_eq!(m.len(), 2);
-        assert_eq!(m[0].programme.as_deref(), Some("Google Chrome"));
-        assert_eq!(m[0].pid, Some(501));
-        assert_eq!(m[1].port, 22);
-        let netstat = "Active Internet connections (including servers)\n\
-                       tcp4 0 0 192.168.1.20.50000 142.250.1.1.443 ESTABLISHED\n\
-                       tcp4 0 0 192.168.1.20.50010 17.253.1.1.443 ESTABLISHED\n\
-                       tcp4 0 0 *.22 *.* LISTEN\n";
-        let autres = invisibles(netstat, &m);
-        assert_eq!(autres.len(), 1);
-        assert_eq!(autres[0].distante, ip("17.253.1.1"));
-        assert_eq!(autres[0].programme, None);
-    }
-
-    /// N'importe quel programme choisit son nom (et celui de son fichier) : piégé, le nom arrive inoffensif dans
-    /// chaque lecture ; le chemin, lui, reste tel quel pour juger d'où le programme a été lancé.
-    #[test]
-    fn noms_de_programmes_pieges() {
-        let lsof = lire_lsof("p501\ncChrome\x1b[8m\u{2066}\nf23\nn192.168.1.20:50000->142.250.1.1:443\n");
-        assert_eq!(lsof[0].programme.as_deref(), Some("Chrome�[8m�"));
     }
 
     #[test]
@@ -2099,8 +1937,7 @@ mod tests {
     #[test]
     fn jugement() {
         assert_eq!(dossier_risque("/tmp/.x/miner", ""), Some("un dossier temporaire"));
-        // macOS : le dossier temporaire du compte, sous ses deux noms.
-        for t in ["/var/folders/ab/cdef/T/miner", "/private/var/folders/ab/cdef/T/miner"] {
+        for t in ["/var/tmp/x/miner", "/dev/shm/miner"] {
             assert_eq!(dossier_risque(t, ""), Some("un dossier temporaire"), "{t}");
         }
         assert_eq!(
@@ -2115,12 +1952,10 @@ mod tests {
             dossier_risque("C:\\Users\\Public\\svc.exe", ""),
             Some("le dossier Public, partagé par tous les comptes")
         );
+        // Un dossier nommé comme celui des apps de macOS lancées sur place n'excuse plus rien.
         assert_eq!(
-            dossier_risque(
-                "/private/var/folders/x/AppTranslocation/y/App.app/Contents/MacOS/App",
-                ""
-            ),
-            None
+            dossier_risque("/tmp/AppTranslocation/y/App", ""),
+            Some("un dossier temporaire")
         );
         assert_eq!(dossier_risque("/usr/lib/firefox/firefox", ""), None);
         // Le dossier temporaire du compte, où qu'il soit (TEMP déplacé sous Windows, TMPDIR ailleurs).
@@ -2682,18 +2517,6 @@ mod proprietes {
         #[test]
         fn lectures_sans_plantage(t in sortie()) {
             let _ = lire_proc_net(&t);
-            let connexions = lire_lsof(&t);
-            let _ = invisibles(&t, &connexions);
-            for c in &connexions {
-                prop_assert!(c.programme.as_deref().is_none_or(|p| !crate::ui::contient_un_piege(p)));
-            }
-        }
-
-        #[test]
-        fn adresse_redonnee(a in any::<SocketAddr>()) {
-            // « 1.2.3.4:443 », « [2606:4700::1]:443 » : ce que ss et lsof écrivent.
-            let lue = adresse_et_port(&a.to_string());
-            prop_assert_eq!(lue, Some((a.ip(), a.port())));
         }
 
         #[test]
@@ -2709,24 +2532,6 @@ mod proprietes {
             };
             let ligne = format!("en-tête\n 0: 0100007F:0035 {hex}:{:04X} 01 0:0 00:0 0 1000 0 {inode} 1\n", distante.port());
             prop_assert_eq!(lire_proc_net(&ligne), [(distante.ip(), distante.port(), inode)]);
-        }
-
-        #[test]
-        fn netstat_ne_compte_pas_deux_fois_ce_que_lsof_a_vu(
-            vues in prop::collection::vec((any::<std::net::Ipv4Addr>(), any::<u16>()), 0..6),
-            autres in prop::collection::vec((any::<std::net::Ipv4Addr>(), any::<u16>()), 0..6),
-        ) {
-            let lsof = vues.iter().map(|(ip, port)| format!("p1\ncx\nn10.0.0.2:50000->{ip}:{port}\n")).collect::<Vec<_>>().concat();
-            let visibles = lire_lsof(&lsof);
-            prop_assert_eq!(visibles.len(), vues.len());
-            let netstat = vues
-                .iter()
-                .chain(&autres)
-                .map(|(ip, port)| format!("tcp4 0 0 10.0.0.2.50000 {ip}.{port} ESTABLISHED\n"))
-                .collect::<Vec<_>>()
-                .concat();
-            let restantes = invisibles(&netstat, &visibles);
-            prop_assert_eq!(restantes.len(), autres.len());
         }
     }
 }

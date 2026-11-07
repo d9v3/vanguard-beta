@@ -2,7 +2,7 @@
 //! Un disque qui lâche ou plein, c'est des données perdues ; seuls ces deux cas comptent dans la note.
 //! Batterie et chaleur sont de simples informations.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc : statvfs et statfs (place libre des disques).
 #![allow(unsafe_code)]
@@ -57,11 +57,6 @@ fn juger_volume(v: &Volume) -> Option<Constat> {
         });
         format!(
             "Get-ChildItem '{racine}' -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {{ [pscustomobject]@{{ Go = [math]::Round(((Get-ChildItem $_.FullName -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum) / 1GB, 1); Dossier = $_.FullName }} }} | Sort-Object Go -Descending | Select-Object -First 15 | Format-Table -AutoSize"
-        )
-    } else if cfg!(target_os = "macos") {
-        format!(
-            "du -xh -d 2 {} 2>/dev/null | sort -h | tail -15",
-            crate::commande::sh_chaine(&v.point)
         )
     } else {
         format!(
@@ -232,7 +227,6 @@ fn constat_temperatures(mesures: &[(&'static str, f64, f64)]) -> Option<Constat>
     })
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn degres_nvidia() -> Option<f64> {
     let r = crate::commande::lancer(
         crate::commande::systeme("nvidia-smi").args(["--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"]),
@@ -452,74 +446,6 @@ mod systeme {
             mesures.push(("SSD", t, 75.0));
         }
         mesures
-    }
-}
-
-#[cfg(target_os = "macos")]
-mod systeme {
-    use super::{Disque, Volume};
-
-    fn sortie(cmd: &str, args: &[&str]) -> String {
-        crate::commande::lancer(std::process::Command::new(cmd).args(args), 20)
-            .map(|r| r.sortie)
-            .unwrap_or_default()
-    }
-
-    /// Le volume de données (le volume système scellé partage la même place), par statfs : ce que lit `df`, sans le
-    /// lancer. Libre = la place disponible pour un compte ordinaire (la colonne « Available » de df).
-    pub fn volumes() -> Vec<Volume> {
-        let point = if std::path::Path::new("/System/Volumes/Data").is_dir() {
-            c"/System/Volumes/Data"
-        } else {
-            c"/"
-        };
-        // SAFETY: une struct statfs faite de nombres, que statfs remplit avant toute lecture.
-        let mut infos: libc::statfs = unsafe { std::mem::zeroed() };
-        // SAFETY: chemin C terminé par un nul, infos vit pendant l'appel.
-        if unsafe { libc::statfs(point.as_ptr(), &raw mut infos) } != 0 {
-            return Vec::new();
-        }
-        let bloc = u64::from(infos.f_bsize);
-        vec![Volume {
-            point: "/".into(),
-            libre: infos.f_bavail.saturating_mul(bloc),
-            total: infos.f_blocks.saturating_mul(bloc),
-        }]
-    }
-
-    /// Disques physiques internes et leur état SMART selon diskutil (« Verified », « Failing », « Not Supported »),
-    /// lus dans ses sorties -plist : des clés qui ne changent pas avec la langue du Mac.
-    pub fn disques() -> Vec<Disque> {
-        let liste = crate::plist::lire(sortie("diskutil", &["list", "-plist", "internal", "physical"]).as_bytes());
-        liste
-            .as_ref()
-            .map(crate::machine::darwin::disques_entiers)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|disque| {
-                let info = crate::machine::darwin::info_disque(&crate::plist::lire(
-                    sortie("diskutil", &["info", "-plist", &disque]).as_bytes(),
-                )?);
-                let etat = info.smart?;
-                (etat != "Not Supported").then(|| Disque {
-                    modele: crate::ui::affichable(&info.modele.unwrap_or(disque)),
-                    defaillant: etat == "Failing",
-                    ..Disque::default()
-                })
-            })
-            .collect()
-    }
-
-    /// Santé de la batterie en % : capacité maximale actuelle / capacité d'origine, d'après `ioreg -a` (sa sortie en
-    /// plist, lue par crate::plist).
-    pub fn batterie() -> Option<u64> {
-        let ioreg = sortie("ioreg", &["-a", "-rn", "AppleSmartBattery"]);
-        crate::machine::darwin::sante_batterie(&crate::plist::lire(ioreg.as_bytes())?)
-    }
-
-    /// Les capteurs de température demandent les droits root sous macOS (powermetrics) : rien sans eux.
-    pub fn temperatures() -> Vec<(&'static str, f64, f64)> {
-        Vec::new()
     }
 }
 
@@ -778,16 +704,6 @@ mod tests {
                 assert!(v.point.ends_with(':') && v.total >= v.libre);
             }
         }
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn lecture_de_diskutil() {
-        let plist = "<dict>\n\t<key>MediaName</key>\n\t<string>APPLE SSD AP0512Z</string>\n\t<key>SMARTStatus</key>\n\t<string>Verified</string>\n</dict>";
-        let info = crate::machine::darwin::info_disque(&crate::plist::lire(plist.as_bytes()).unwrap());
-        assert_eq!(info.smart.as_deref(), Some("Verified"));
-        assert_eq!(info.modele.as_deref(), Some("APPLE SSD AP0512Z"));
-        assert_eq!(info.taille, None);
     }
 
     #[test]

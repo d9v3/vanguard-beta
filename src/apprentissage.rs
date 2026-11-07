@@ -774,37 +774,6 @@ mod tests {
         }
     }
 
-    /// macOS : accepter un agent de démarrage ne fait taire ni un autre programme lancé par le même fichier, ni ce
-    /// fichier devenu illisible.
-    #[test]
-    fn agent_accepte_puis_reecrit() {
-        let plist = "/Users/alice/Library/LaunchAgents/com.exemple.aide.plist";
-        let agent = |lance: Option<&str>| {
-            let mut c = constat(
-                "Persistance",
-                Niveau::Eleve,
-                "« com.exemple.aide » se relance à chaque démarrage.",
-            )
-            .avec_objet(crate::modele::Objet::agent(plist, lance));
-            c.regle = "MAC-PRS-001";
-            c
-        };
-        let mut a = Appris::default();
-        retenir(
-            &mut a,
-            &agent(Some("/opt/exemple/aide ")),
-            Niveau::Eleve,
-            jour("2026-10-22"),
-        );
-        let mut meme = [agent(Some("/opt/exemple/aide "))];
-        assert_eq!(appliquer_le(&a, &mut meme, jour("2026-10-23")), 1);
-        for autre in [Some("/tmp/x "), None] {
-            let mut c = [agent(autre)];
-            assert_eq!(appliquer_le(&a, &mut c, jour("2026-10-23")), 0);
-            assert_eq!(c[0].probleme, Some(Niveau::Eleve));
-        }
-    }
-
     use proptest::prelude::*;
 
     proptest! {

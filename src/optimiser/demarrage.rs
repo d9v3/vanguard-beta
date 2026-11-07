@@ -73,7 +73,7 @@ pub(crate) fn a_garder(nom: &str, commande: &str, bureau: bool) -> Option<&'stat
     })
 }
 
-/// Des motifs de pare-feu (ou d'interfaces de pare-feu) dans le nom ou la commande. Sous Windows et macOS, ils gardent
+/// Des motifs de pare-feu (ou d'interfaces de pare-feu) dans le nom ou la commande. Sous Windows, ils gardent
 /// l'élément (« sécurité ») ; sous Linux, le nom seul ne prouve rien : seul le paquet qui fournit le programme le
 /// reconnaît (`classer`), et ces motifs ne servent qu'à refuser quand ce paquet ne se lit pas.
 #[rustfmt::skip]
@@ -121,8 +121,6 @@ fn a_garder_hors_pare_feu(nom: &str, commande: &str, bureau: bool) -> Option<&'s
         "crowdstrike", "csfalcon", "sentinelone", "cylance", "carbon black", "cbdefense", "comodo", "zonealarm",
         "panda", "emsisoft", "antivirus", "gdata", "avktray", "hitmanpro", "zemana", "acronis", "forticlient",
         "globalprotect", "zscaler", "netskope",
-        // Mac : Intego, ClamXAV, les outils d'Objective-See (BlockBlock, KnockKnock, LuLu…).
-        "intego", "virusbarrier", "clamxav", "objective-see", "blockblock",
         // Un VPN qui démarre avec la session protège la connexion (souvent avec un coupe-circuit).
         "wireguard", "openvpn", "protonvpn", "mullvad", "nordvpn", "expressvpn", "surfshark",
     ];
@@ -170,7 +168,7 @@ pub(crate) enum Garde {
     Ordinaire,
 }
 
-/// Sous Linux : le programme lancé (premier mot de la commande) et le paquet qui le fournit. Sous Windows et macOS :
+/// Sous Linux : le programme lancé (premier mot de la commande) et le paquet qui le fournit. Sous Windows :
 /// `a_garder`, comme avant.
 fn classer(p: &Programme) -> Garde {
     #[cfg(target_os = "linux")]
@@ -346,11 +344,6 @@ fn ailleurs() -> &'static str {
             "Les tâches planifiées et les services ne sont pas dans cette liste : Gestionnaire des tâches, ou Virus et logiciels espions › Analyse antivirus › Analyse rapide (revue du démarrage).",
             "Scheduled tasks and services are not in this list: Task Manager, or Viruses and spyware › Antivirus scan › Quick scan (startup review)."
         )
-    } else if cfg!(target_os = "macos") {
-        tr!(
-            "Éléments de connexion et agents de tout l'ordinateur : Réglages Système › Général › Ouverture (« − » pour retirer). Ils demandent un geste dans les Réglages ou l'administrateur. Les agents qui ne partent qu'à la demande ou à heure fixe ne sont pas dans cette liste.",
-            "Login items and machine-wide agents: System Settings › General › Login Items (“−” to remove). They need a step in Settings or an administrator. Agents that only start on demand or on a schedule are not in this list."
-        )
     } else {
         tr!(
             "Ce que lance la configuration du bureau (exec-once de Hyprland, par exemple), les services du système, et les entrées qui sont des liens (dotfiles, home-manager) : dans leurs fichiers.",
@@ -414,63 +407,6 @@ pub(super) fn valeur_desactivee(quand: std::time::SystemTime) -> String {
     let mut o = vec![3, 0, 0, 0];
     o.extend_from_slice(&temps.to_le_bytes());
     hex(&o)
-}
-
-// ── macOS : agents de launchd du compte ─────────────────────────────────────────────────────────────────────────
-
-/// Un nom d'agent de launchd (« com.exemple.agent ») : il entre tel quel dans une commande.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(super) fn label_valide(t: &str) -> bool {
-    !t.is_empty() && t.len() <= 255 && t.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
-}
-
-/// Les réglages de launchd pour ce compte, d'après `launchctl print-disabled gui/<uid>` : nom de l'agent → désactivé.
-/// « "com.x" => disabled » ou « => enabled » (« => true » ou « => false » sur les anciens macOS). Un agent absent de
-/// la liste suit la clé « Disabled » de son plist.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(super) fn etats_launchd(texte: &str) -> std::collections::HashMap<String, bool> {
-    texte
-        .lines()
-        .filter_map(|l| {
-            let (label, etat) = l.trim().split_once("=>")?;
-            let desactive = match etat.trim() {
-                "disabled" | "true" => true,
-                "enabled" | "false" => false,
-                _ => return None,
-            };
-            Some((label.trim().trim_matches('"').to_string(), desactive))
-        })
-        .collect()
-}
-
-/// La valeur d'une clé extraite par `plutil -extract <clé> xml1` : le premier élément sous `<plist …>` (« `<true/>` »,
-/// « `<dict>` »…).
-fn valeur_plist(xml: &str) -> Option<&str> {
-    let apres = &xml[xml.find("<plist")?..];
-    let apres = apres.split_once('>')?.1.trim_start();
-    // « > » tient sur un octet : la fin est une frontière de caractère.
-    let fin = apres.find('>')?.checked_add(1)?;
-    apres.get(..fin)
-}
-
-/// Un agent du compte se lance-t-il à l'ouverture de session ? `run_at_load`, `keep_alive` : ces clés de son plist,
-/// extraites en XML (`None` : absentes). Sans « RunAtLoad » vrai ni « KeepAlive » (vrai, ou des conditions), il ne part
-/// qu'à la demande ou à heure fixe, comme une tâche planifiée : il n'est pas dans la liste.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(super) fn agent_au_demarrage(run_at_load: Option<&str>, keep_alive: Option<&str>) -> bool {
-    run_at_load.and_then(valeur_plist) == Some("<true/>")
-        || keep_alive.and_then(valeur_plist).is_some_and(|v| v != "<false/>")
-}
-
-/// L'agent est-il actif ? Le réglage de launchd (`surcharge`, désactivé ou non) l'emporte sur la clé « Disabled » du
-/// plist (`disabled`, extraite en XML). Sans ce calcul, un agent que son plist désactive paraissait actif : le retirer
-/// puis le remettre l'aurait activé (« launchctl enable » l'emporte sur le plist), ce qu'il n'était pas avant.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(super) fn agent_actif(surcharge: Option<bool>, disabled: Option<&str>) -> bool {
-    match surcharge {
-        Some(desactive) => !desactive,
-        None => disabled.and_then(valeur_plist) != Some("<true/>"),
-    }
 }
 
 /// Un programme de la liste : ce qui l'affiche et le réglage qui le retire.
@@ -718,19 +654,11 @@ mod tests {
             None
         );
         assert_eq!(a_garder("Steam", "/usr/bin/steam -silent", false), None);
-        // Outils de sécurité ajoutés : notifications d'AppArmor, protections d'entreprise, VPN, outils du Mac.
+        // Outils de sécurité ajoutés : notifications d'AppArmor, protections d'entreprise, VPN.
         assert!(a_garder("AppArmor Notify", "aa-notify -p -s 1 -w 60 -f /var/log/kern.log", false).is_some());
         assert!(
             a_garder("SentinelOne", r"C:\Program Files\SentinelOne\SentinelUI.exe", false)
                 .is_some_and(|r| r.contains("sécurité") || r.contains("security"))
-        );
-        assert!(
-            a_garder(
-                "blockblock",
-                "/Applications/BlockBlock Helper.app/Contents/MacOS/BlockBlock",
-                false
-            )
-            .is_some()
         );
         assert!(a_garder("NordVPN", r"C:\Program Files\NordVPN\NordVPN.exe", false).is_some());
         assert!(a_garder("mullvad-vpn", "/opt/Mullvad VPN/mullvad-gui", false).is_some());
@@ -869,11 +797,7 @@ mod tests {
     /// Hors de Linux, les noms de pare-feu gardent l'élément, comme avant ; sous Linux, le nom seul ne garde rien.
     #[test]
     fn nom_de_pare_feu_selon_le_systeme() {
-        for (nom, commande) in [
-            ("GUFW", "gufw"),
-            ("Firewall", "fw.exe"),
-            ("LuLu", "/Applications/LuLu.app"),
-        ] {
+        for (nom, commande) in [("GUFW", "gufw"), ("Firewall", "fw.exe")] {
             assert_eq!(
                 a_garder(nom, commande, false).is_some(),
                 !cfg!(target_os = "linux"),
@@ -961,41 +885,5 @@ mod tests {
             "{}",
             l[0].reglage.titre
         );
-    }
-
-    #[test]
-    fn agents_desactives_de_launchd() {
-        let texte = "disabled services = {\n\t\"com.exemple.agent\" => disabled\n\t\"com.exemple.autre\" => enabled\n\t\"org.ancien.mac\" => true\n\t\"org.ancien.actif\" => false\n}\n";
-        let e = etats_launchd(texte);
-        assert_eq!(e.get("com.exemple.agent"), Some(&true));
-        assert_eq!(e.get("org.ancien.mac"), Some(&true));
-        assert_eq!(e.get("com.exemple.autre"), Some(&false));
-        assert_eq!(e.get("org.ancien.actif"), Some(&false));
-        assert_eq!(e.get("com.absent"), None);
-        // Valeurs extraites par plutil en XML.
-        let xml = |v: &str| {
-            format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n{v}\n</plist>\n"
-            )
-        };
-        let (vrai, faux) = (xml("<true/>"), xml("<false/>"));
-        let conditions = xml("<dict>\n\t<key>SuccessfulExit</key>\n\t<false/>\n</dict>");
-        assert_eq!(valeur_plist(&vrai), Some("<true/>"));
-        assert_eq!(valeur_plist(&conditions), Some("<dict>"));
-        // Au démarrage : RunAtLoad vrai, ou KeepAlive vrai ou à conditions ; pas un agent à la demande.
-        assert!(agent_au_demarrage(Some(&vrai), None));
-        assert!(agent_au_demarrage(None, Some(&vrai)));
-        assert!(agent_au_demarrage(Some(&faux), Some(&conditions)));
-        assert!(!agent_au_demarrage(Some(&faux), Some(&faux)));
-        assert!(!agent_au_demarrage(None, None));
-        // Actif : le réglage de launchd d'abord, sinon la clé Disabled du plist.
-        assert!(agent_actif(None, None));
-        assert!(!agent_actif(None, Some(&vrai)));
-        assert!(agent_actif(None, Some(&faux)));
-        assert!(agent_actif(Some(false), Some(&vrai)));
-        assert!(!agent_actif(Some(true), None));
-        assert!(label_valide("com.exemple.agent-2_b"));
-        assert!(!label_valide("com.exemple;rm"));
-        assert!(!label_valide(""));
     }
 }

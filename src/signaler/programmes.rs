@@ -311,15 +311,12 @@ impl Programme {
 pub(crate) enum Plateforme {
     Linux,
     Windows,
-    Macos,
 }
 
 impl Plateforme {
     pub(crate) fn d_ici() -> Plateforme {
         if cfg!(windows) {
             Plateforme::Windows
-        } else if cfg!(target_os = "macos") {
-            Plateforme::Macos
         } else {
             Plateforme::Linux
         }
@@ -371,7 +368,6 @@ pub(crate) fn propose(produit: &str, systeme: Plateforme) -> Vec<Programme> {
     }
     ordre.extend(match systeme {
         Plateforme::Windows => [Programme::Msrc, Programme::Chrome, Programme::Mozilla],
-        Plateforme::Macos => [Programme::Apple, Programme::Chrome, Programme::Mozilla],
         Plateforme::Linux => [Programme::Chrome, Programme::Mozilla, Programme::Ghsa],
     });
     ordre.extend(PROGRAMMES.iter().map(|f| f.programme));
@@ -439,7 +435,6 @@ mod tests {
     fn le_programme_propose_suit_le_produit_et_le_systeme() {
         assert_eq!(propose("Firefox 132", Plateforme::Windows)[0], Programme::Mozilla);
         assert_eq!(propose("Windows Defender", Plateforme::Linux)[0], Programme::Msrc);
-        assert_eq!(propose("", Plateforme::Macos)[0], Programme::Apple);
         assert_eq!(propose("", Plateforme::Linux)[0], Programme::Chrome);
         assert_eq!(propose("Vanguard 0.85", Plateforme::Linux)[0], Programme::Vanguard);
         assert_eq!(propose("Microsoft Edge 120", Plateforme::Linux)[0], Programme::Msrc);

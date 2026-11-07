@@ -3,7 +3,7 @@
 //! qui s'est passé, et quand ». Une ligne par événement : l'heure locale, d'où il vient, ce qui s'est passé, et la
 //! technique MITRE ATT&CK quand elle est évidente.
 //!
-//! Rien n'est relu sur l'ordinateur : chaque partie note ses dates en lisant, les journaux texte (Linux, macOS) sont
+//! Rien n'est relu sur l'ordinateur : chaque partie note ses dates en lisant, les journaux texte (Linux) sont
 //! repris dans les fichiers que la collecte vient d'écrire, et sous Windows les événements voulus sont lus une fois,
 //! par les fonctions de Windows (wevtapi), sans PowerShell.
 
@@ -60,7 +60,7 @@ impl Source {
 /// Ce qui s'est passé.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Genre {
-    // Journaux de Linux et macOS.
+    // Journaux de Linux.
     #[cfg_attr(windows, allow(dead_code))]
     SshAccepte,
     #[cfg_attr(windows, allow(dead_code))]
@@ -419,7 +419,7 @@ const FICHIERS_DU_SHELL: &[&str] = &[
 ];
 
 /// La technique MITRE ATT&CK que désigne l'endroit d'un lancement automatique ou d'un fichier : unité de systemd,
-/// démarrage de session, agent ou démon de launchd, dossier Démarrage ou clé Run de Windows, tâche planifiée, cron,
+/// démarrage de session, dossier Démarrage ou clé Run de Windows, tâche planifiée, cron,
 /// clés SSH autorisées, bibliothèque préchargée, fichiers du shell. Ailleurs (un téléchargement, /tmp) : aucune.
 pub(crate) fn mitre_du_chemin(chemin: &str) -> Option<&'static str> {
     let c = chemin.replace('\\', "/").to_lowercase();
@@ -430,12 +430,6 @@ pub(crate) fn mitre_du_chemin(chemin: &str) -> Option<&'static str> {
         "T1543.002"
     } else if dans("/autostart/") {
         "T1547.013"
-    } else if dans("/launchagents/") {
-        "T1543.001"
-    } else if dans("/launchdaemons/") {
-        "T1543.004"
-    } else if dans("/startupitems/") {
-        "T1037.005"
     } else if dans("/start menu/programs/startup/") || dans("/currentversion/run") || dans("/startupapproved/run") {
         "T1547.001"
     } else if dans("/system32/tasks/") {
@@ -673,7 +667,7 @@ pub(crate) fn partie(dossier: &Path, parties: &[Partie], apport: Apport, mainten
     p
 }
 
-// ───────────────────────────── Journaux texte (Linux, macOS) ─────────────────────────────
+// ───────────────────────────── Journaux texte (Linux) ─────────────────────────────
 
 /// Le numéro d'un mois en anglais (« Oct »), comme l'écrivent syslog et last.
 #[cfg(any(unix, test))]
@@ -1230,11 +1224,6 @@ mod tests {
             ("/etc/rc.local", Some("T1037.004")),
             ("/home/alice/.bashrc", Some("T1546.004")),
             ("/etc/profile.d/x.sh", Some("T1546.004")),
-            (
-                "/Users/alice/Library/LaunchAgents/com.exemple.x.plist",
-                Some("T1543.001"),
-            ),
-            ("/Library/LaunchDaemons/com.exemple.x.plist", Some("T1543.004")),
             (
                 r"C:\Users\alice\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\x.lnk",
                 Some("T1547.001"),

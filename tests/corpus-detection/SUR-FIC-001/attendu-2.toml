@@ -2,4 +2,4 @@
 gravite = "eleve"
 mots = ["/etc/corpus-critique"]
 propre = "aucun"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]

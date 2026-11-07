@@ -1,9 +1,8 @@
-//! Les fichiers de Homebrew (licence BSD-2-Clause), pris en entier par HTTPS sans vérifier leur signature (décision
-//! de l'auteur) : `cask.json` (19 Mo, 2 Mo en gzip) et `formula.json` (32 Mo, 5 Mo en gzip). Jamais l'adresse d'un
-//! cask ou d'une formule en particulier, qui dirait le logiciel cherché ; `formula.json` est pris par tous ou par
-//! personne, jamais selon que Homebrew est installé. Lus en structures typées : seuls le nom et la version de chaque
-//! entrée (et `auto_updates` d'un cask), le reste (artefacts, dépendances, variations par macOS) ignoré sans être
-//! gardé.
+//! Le fichier des formules de Homebrew (licence BSD-2-Clause), pris en entier par HTTPS sans vérifier sa signature
+//! (décision de l'auteur) : `formula.json` (32 Mo, 5 Mo en gzip). Jamais l'adresse d'une formule en particulier, qui
+//! dirait le logiciel cherché ; `formula.json` est pris par tous ou par personne, jamais selon que Homebrew est
+//! installé. Lu en structures typées : seuls le nom et la version de chaque entrée, le reste (dépendances,
+//! variations par système) ignoré sans être gardé.
 
 use std::collections::HashMap;
 
@@ -11,71 +10,12 @@ use serde::Deserialize;
 
 use super::{Choisis, Choix, Souple};
 
-/// Au-dessous, ce n'est pas le fichier complet (7 803 casks le 23 oct. 2026).
-const CASKS_MIN: usize = 1000;
-/// De même pour les formules (8 667 le 23 oct. 2026).
+/// Au-dessous, ce n'est pas le fichier complet (8 667 formules le 23 oct. 2026).
 const FORMULES_MIN: usize = 1000;
-/// Les formules dont la version est gardée : celles qui suivent l'amont d'un logiciel suivi sous Windows aussi
-/// (7-Zip, PuTTY, mesurées égales à 7-zip.org et au site de PuTTY le 23 oct. 2026). Les autres sont lues pour être
-/// comptées, puis oubliées.
+/// Les formules dont la version est gardée : celles qui suivent l'amont d'un logiciel suivi sous Windows (7-Zip,
+/// PuTTY, mesurées égales à 7-zip.org et au site de PuTTY le 23 oct. 2026). Les autres sont lues pour être comptées,
+/// puis oubliées.
 pub(crate) const FORMULES_SUIVIES: &[&str] = &["sevenzip", "putty"];
-
-#[derive(Deserialize)]
-struct CaskBrut {
-    token: Souple<String>,
-    #[serde(default)]
-    version: Option<Souple<String>>,
-    #[serde(default)]
-    auto_updates: Option<Souple<bool>>,
-}
-
-/// La version d'un cask, telle que Homebrew l'écrit avant la virgule (« 156.0.4314.42,uuid » → « 156.0.4314.42 »),
-/// et s'il se met à jour tout seul.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Cask {
-    pub version: String,
-    pub auto_updates: bool,
-}
-
-/// Les casks par nom. Un cask à `version: "latest"` (sans numéro) est écarté : il ne dit rien. `None` : pas le
-/// fichier attendu (moins de 1 000 casks, JSON illisible).
-pub(crate) fn casks(octets: &[u8]) -> Option<HashMap<String, Cask>> {
-    casks_au_moins(octets, CASKS_MIN)
-}
-
-/// Un cask sans version utile ne sert à rien : oublié dès qu'il est lu.
-impl Choix for CaskBrut {
-    fn garder(&self) -> bool {
-        matches!(&self.version, Some(Souple::Bon(_)))
-    }
-}
-
-fn casks_au_moins(octets: &[u8], minimum: usize) -> Option<HashMap<String, Cask>> {
-    // En flux et plafonné (`Choisis`) : jamais le tableau entier en mémoire avant le tri.
-    let Choisis(bruts, n) = serde_json::from_slice::<Choisis<CaskBrut>>(octets).ok()?;
-    if n < minimum {
-        return None;
-    }
-    Some(
-        bruts
-            .into_iter()
-            .filter_map(|c| {
-                let version = c.version.and_then(Souple::bon)?;
-                let version = version.split(',').next()?.trim();
-                if version.is_empty() || version == "latest" {
-                    return None;
-                }
-                Some((
-                    c.token.bon()?,
-                    Cask {
-                        version: version.to_string(),
-                        auto_updates: c.auto_updates.and_then(Souple::bon).unwrap_or(false),
-                    },
-                ))
-            })
-            .collect(),
-    )
-}
 
 #[derive(Deserialize)]
 struct FormuleBrute {
@@ -144,59 +84,6 @@ fn formules_au_moins(octets: &[u8], minimum: usize) -> Option<HashMap<String, St
 mod tests {
     use super::*;
 
-    /// Copie réduite du fichier réel (BSD-2-Clause, voir assets/essais/LICENCES-ESSAIS.txt).
-    const EXTRAIT: &[u8] = include_bytes!("../../../../assets/essais/cask-extrait.json");
-
-    #[test]
-    fn copie_reduite_lue() {
-        // Le vrai fichier a des milliers de casks : la copie réduite n'est pas prise pour lui.
-        assert_eq!(casks(EXTRAIT), None);
-        let lus = casks_au_moins(EXTRAIT, 1).unwrap();
-        for nom in [
-            "google-chrome",
-            "firefox",
-            "microsoft-word",
-            "adobe-acrobat-reader",
-            "brave-browser",
-            "temurin",
-        ] {
-            let cask = lus
-                .get(nom)
-                .unwrap_or_else(|| panic!("{nom} absent : {:?}", lus.keys()));
-            assert!(!cask.version.contains(','), "{nom} {}", cask.version);
-            assert!(
-                cask.version.starts_with(|c: char| c.is_ascii_digit()),
-                "{nom} {}",
-                cask.version
-            );
-        }
-        assert!(lus["google-chrome"].auto_updates);
-        // « latest » : écarté.
-        assert!(lus.len() < EXTRAIT.windows(8).filter(|f| f == b"\"token\":").count());
-    }
-
-    #[test]
-    fn formes_inattendues() {
-        let json = br#"[
-            {"token": "a", "version": "1.2,abc", "auto_updates": null},
-            {"token": "b", "version": "latest"},
-            {"token": "c", "version": 3},
-            {"token": 4, "version": "1.0"},
-            {"token": "d"}
-        ]"#;
-        let lus = casks_au_moins(json, 1).unwrap();
-        assert_eq!(lus.len(), 1);
-        assert_eq!(
-            lus["a"],
-            Cask {
-                version: "1.2".into(),
-                auto_updates: false
-            }
-        );
-        assert_eq!(casks_au_moins(b"{}", 1), None);
-        assert_eq!(casks_au_moins(b"<html>", 1), None);
-    }
-
     /// Formules inventées, à la forme réelle de formula.json (vue le 23 oct. 2026) : seules les suivies sont gardées,
     /// une version d'un autre type ou absente est ignorée sans rendre le fichier illisible.
     #[test]
@@ -259,10 +146,6 @@ mod tests {
             assert!(lues.is_some());
             assert!(alloue < 4 << 20, "{alloue} octets alloués");
         }
-        let gros = format!(r#"[{{"token": "a", "version": [{zeros}], "auto_updates": [{zeros}]}}]"#);
-        let (lus, alloue) = super::super::tests::allocations(|| casks_au_moins(gros.as_bytes(), 1));
-        assert!(lus.unwrap().is_empty());
-        assert!(alloue < 4 << 20, "{alloue} octets alloués");
     }
 
     /// Beaucoup de petites entrées (des `{}` par millions tiennent dans 100 Kio de gzip) : lues en flux, les formules
@@ -273,10 +156,6 @@ mod tests {
         let sous = tableau(20_000);
         let (lues, alloue) = super::super::tests::allocations(|| formules_au_moins(sous.as_bytes(), 1));
         assert_eq!(lues, Some(HashMap::new()));
-        assert!(alloue < 1 << 20, "{alloue} octets alloués");
-        let sous_casks = sous.replace("{}", r#"{"token":"a"}"#);
-        let (casks, alloue) = super::super::tests::allocations(|| casks_au_moins(sous_casks.as_bytes(), 1));
-        assert_eq!(casks, Some(HashMap::new()));
         assert!(alloue < 1 << 20, "{alloue} octets alloués");
         let trop = tableau(super::super::ENTREES_MAX + 1);
         let (lues, alloue) = super::super::tests::allocations(|| formules_au_moins(trop.as_bytes(), 1));
@@ -305,7 +184,6 @@ mod tests {
         #![proptest_config(proptest::prelude::ProptestConfig { cases: 500, failure_persistence: None, ..proptest::prelude::ProptestConfig::default() })]
         #[test]
         fn jamais_de_plantage(octets in proptest::collection::vec(proptest::num::u8::ANY, 0..300)) {
-            let _ = casks_au_moins(&octets, 0);
             let _ = formules_au_moins(&octets, 0);
         }
     }

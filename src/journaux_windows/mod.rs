@@ -1,6 +1,6 @@
 //! Les journaux d'événements de Windows, lus par Vanguard lui-même (sans Hayabusa ni autre programme) :
 //!
-//! - `evtx` : le lecteur de fichiers .evtx, qui sert aussi sous Linux et macOS (journaux rapportés, disque monté
+//! - `evtx` : le lecteur de fichiers .evtx, qui sert aussi sous Linux (journaux rapportés, disque monté
 //!   depuis la clé de secours) ;
 //! - `evenement` : la forme commune d'un événement (`EvenementWindows`) et le filtre, quelle que soit la source ;
 //! - `fichiers` : la source « fichiers », un dossier de .evtx lu par `evtx`, en flux ;

@@ -1,7 +1,7 @@
 //! Audit de sécurité de cette machine : types communs, affichage et exécution des correctifs.
-//! Les vérifications elles-mêmes dépendent du système (linux/, windows/, macos/).
+//! Les vérifications elles-mêmes dépendent du système (linux/, windows/).
 
-// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// Le programme sous Linux : ses parties Windows ne sont pas encore relues, et les essais en sont exemptés
 // (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
 #![cfg_attr(
     all(target_os = "linux", not(test)),
@@ -25,8 +25,6 @@ pub(crate) mod chasse;
 mod comptes_oublies;
 #[cfg(test)]
 pub(crate) mod corpus;
-#[cfg(any(target_os = "macos", test))]
-pub(crate) mod darwin;
 pub(crate) mod dns;
 pub(crate) mod extensions;
 pub(crate) mod fin_de_support;
@@ -73,7 +71,7 @@ pub(crate) mod reglages;
 #[cfg_attr(not(windows), allow(dead_code))]
 #[path = "windows/ssh_regles.rs"]
 pub(crate) mod ssh_regles;
-// Où une liste de correctifs passe des lignes natives de Vanguard au reste : commune à Windows et à Linux et macOS.
+// Où une liste de correctifs passe des lignes natives de Vanguard au reste : commune à Windows et à Linux.
 pub(crate) mod decoupe;
 // Vider un dossier de Windows et mettre un cache de côté (actes du processus élevé) : sans appel système propre à
 // Windows hors des attributs, compilé partout pour essayer sous Linux qu'un lien ne fait jamais effacer ailleurs.
@@ -100,12 +98,8 @@ pub(crate) mod defense_eleve;
 // Les corrections du bilan faites par un geste de défense de Linux, côté parent : l'identifiant de la note et la ligne.
 #[cfg(target_os = "linux")]
 pub(crate) mod defense;
-#[cfg(target_os = "macos")]
-pub mod macos;
 #[cfg(unix)]
 pub(crate) mod unix;
-#[cfg(target_os = "macos")]
-use macos as os;
 
 #[derive(Serialize, Clone)]
 pub struct Correctif {
@@ -239,7 +233,7 @@ impl Audit {
     /// une « erreur interne » d'une autre catégorie, reconnue à son identifiant (« LNX-PFE-001 »). Un constat
     /// « sans objet » ne compte pas parmi les vérifications : rien n'y a été jugé, il ne dilue pas les non vérifiés.
     /// Le garde-fou vise la lecture du pare-feu lui-même (règle `*-PFE-001`, plantage et règle muette compris) : un
-    /// réglage secondaire illisible, comme le mode furtif de macOS, compte comme toute vérification dans la limite du
+    /// réglage secondaire illisible (une autre règle de la catégorie) compte comme toute vérification dans la limite du
     /// tiers, sans retirer la note à lui seul. Un constat sans règle (les tests) compte par sa catégorie.
     pub fn fiable(&self) -> bool {
         let pare_feu =
@@ -362,7 +356,6 @@ impl Constat {
     }
 
     /// La correction bloque ce port (« 8080/tcp ») dans le pare-feu.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn bloquant(mut self, port: String) -> Self {
         if let Some(k) = &mut self.correctif {
             k.bloque = Some(port);
@@ -790,7 +783,7 @@ fn score(constats: &[Constat]) -> u32 {
     100u32.saturating_sub(constats.iter().filter_map(|c| c.probleme).map(Niveau::penalite).sum())
 }
 
-/// Un port ouvert sur le réseau par un programme, sous Linux et macOS : (niveau qu'il vaut derrière ce pare-feu,
+/// Un port ouvert sur le réseau par un programme, sous Linux : (niveau qu'il vaut derrière ce pare-feu,
 /// alerte).
 #[cfg(unix)]
 fn port_expose(
@@ -815,7 +808,6 @@ fn port_expose(
 }
 
 /// Le verrouillage de l'écran d'après son délai en secondes (0 = jamais), avec où l'activer quand il manque.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn verrouillage_selon_delai(secondes: u64, ou_l_activer: &str) -> Constat {
     match secondes {
         0 => alerte(
@@ -854,7 +846,7 @@ fn verrouillage_selon_delai(secondes: u64, ou_l_activer: &str) -> Constat {
     }
 }
 
-/// Aucun service exposé au réseau, sous Linux et macOS.
+/// Aucun service exposé au réseau, sous Linux.
 #[cfg(unix)]
 fn aucun_port_expose() -> Constat {
     ok(
@@ -1209,22 +1201,13 @@ pub(crate) fn ports_bloques() -> std::collections::HashSet<String> {
     blocages_dans(&crate::socle::dossier_local())
 }
 
-/// À appeler après une correction réussie : retient le port qu'elle a bloqué.
-/// Empreinte de cet ordinateur : SHA-1 de son identifiant (/etc/machine-id sous Linux, IOPlatformUUID sous macOS,
-/// MachineGuid sous Windows). La clé s'en sert pour reconnaître l'ordinateur de son propriétaire, et « Mes
-/// ordinateurs » pour retrouver l'entrée d'un ordinateur ; elle ne dit pas qui est la personne.
+/// À appeler après une correction réussie : retient le port qu'elle a bloqué. Empreinte de cet ordinateur : SHA-1 de
+/// son identifiant (/etc/machine-id sous Linux, MachineGuid sous Windows). La clé s'en sert pour reconnaître
+/// l'ordinateur de son propriétaire, et « Mes ordinateurs » pour retrouver l'entrée d'un ordinateur ; elle ne dit pas
+/// qui est la personne.
 pub fn empreinte_machine() -> Option<String> {
     #[cfg(target_os = "linux")]
     let id = std::fs::read_to_string("/etc/machine-id").ok()?;
-    // « "IOPlatformUUID" = "564D…" »
-    #[cfg(target_os = "macos")]
-    let id = crate::commande::lancer(Command::new("ioreg").args(["-rd1", "-c", "IOPlatformExpertDevice"]), 10)?
-        .sortie
-        .lines()
-        .find(|l| l.contains("\"IOPlatformUUID\""))?
-        .rsplit('"')
-        .nth(1)?
-        .to_string();
     #[cfg(windows)]
     let id: String = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
         .open_subkey(r"SOFTWARE\Microsoft\Cryptography")
@@ -1288,7 +1271,7 @@ pub fn appliquer(commandes: &[String]) -> bool {
 }
 
 /// Applique plusieurs correctifs indépendants (chacun sa liste de commandes) et dit lesquels ont réussi : un
-/// correctif en échec n'empêche pas les suivants. Sous Linux et macOS, les commandes d'un correctif s'arrêtent à la
+/// correctif en échec n'empêche pas les suivants. Sous Linux, les commandes d'un correctif s'arrêtent à la
 /// première en échec ; sous Windows, une seule fenêtre UAC pour tous.
 pub fn appliquer_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
     appliquer_annulables(correctifs, &[])
@@ -1582,11 +1565,11 @@ fn note_d_ordre(ligne: &str, r: &crate::protection::blocage::ordres::Resultat) -
     }
 }
 
-/// Les ordres typés du blocage (`protection::blocage::ordres`) et les gestes de Linux (`gestes_unix`), sous Linux et
-/// macOS : tous les groupes faits de lignes « vanguard: » passent ensemble par l'assistant élevé (une seule demande
-/// de droits), ou par Vanguard lui-même s'il est root. Un groupe qui mêle lignes de Vanguard et commandes n'est pas
-/// fait (une liste de Vanguard ne les mêle jamais), ni un groupe dont une ligne « vanguard: » ne se relit pas : elle
-/// n'est jamais confiée à bash.
+/// Les ordres typés du blocage (`protection::blocage::ordres`) et les gestes de Linux (`gestes_unix`), sous Linux :
+/// tous les groupes faits de lignes « vanguard: » passent ensemble par l'assistant élevé (une seule demande de droits),
+/// ou par Vanguard lui-même s'il est root. Un groupe qui mêle lignes de Vanguard et commandes n'est pas fait (une liste
+/// de Vanguard ne les mêle jamais), ni un groupe dont une ligne « vanguard: » ne se relit pas : elle n'est jamais
+/// confiée à bash.
 #[cfg(unix)]
 fn lancer_les_ordres(correctifs: &[Vec<String>], resultats: &mut [Option<Vec<bool>>], notes: &mut [Vec<String>]) {
     use crate::protection::blocage::ordres;
@@ -1806,66 +1789,6 @@ fn lancer_par_bash(c: &str) -> bool {
     bash.status().is_ok_and(|s| s.success())
 }
 
-/// Prises en écoute de `lsof -nP -iTCP -sTCP:LISTEN`, chacune avec son adresse (crochets d'IPv6 ôtés), son port et
-/// le nom de son programme. « COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME » … « llama-server 512 alice 9u
-/// IPv4 … TCP *:8080 (LISTEN) » → (« * », 8080, « llama-server »). Deux programmes peuvent tenir le même port sur
-/// deux adresses (127.0.0.1:8080 et *:8080).
-#[cfg(any(target_os = "macos", test))]
-pub(crate) fn lire_lsof_prises(sortie: &str) -> Vec<(String, u16, String)> {
-    let mut prises = Vec::new();
-    for l in sortie.lines().skip(1) {
-        let c: Vec<&str> = l.split_whitespace().collect();
-        let prise = c.iter().rev().find_map(|m| {
-            let (adresse, port) = m.rsplit_once(':')?;
-            Some((adresse.trim_matches(['[', ']']).to_string(), port.parse::<u16>().ok()?))
-        });
-        if let (Some((adresse, port)), Some(nom)) = (prise, c.first()) {
-            // lsof échappe les espaces des noms : « Google\x20Chrome ».
-            prises.push((adresse, port, affichable(&nom.replace("\\x20", " "))));
-        }
-    }
-    prises
-}
-
-/// macOS : les prises en écoute nommées par lsof, sans droits admin (les programmes du compte seulement). `None` :
-/// lsof absent ou en échec. Sans aucune prise à montrer, lsof répond 1 sans rien écrire, ni sortie ni erreur : une
-/// liste vide, pas un échec.
-#[cfg(target_os = "macos")]
-pub(crate) fn prises_lsof() -> Option<Vec<(String, u16, String)>> {
-    let r = crate::commande::lancer(
-        Command::new("lsof").args(["+c", "0", "-nP", "-iTCP", "-sTCP:LISTEN"]),
-        30,
-    )?;
-    let vide = r.code == Some(1) && r.sortie.trim().is_empty() && r.erreurs.trim().is_empty();
-    (r.code == Some(0) || vide).then(|| lire_lsof_prises(&r.sortie))
-}
-
-/// macOS : les prises TCP en écoute des programmes lisibles (ceux du compte sans droits admin, comme lsof), avec
-/// leur adresse (« * » pour toutes), leur port et le nom de leur programme. Lues au noyau (libproc) d'abord ; lsof
-/// reste en secours tant que le test d'oracle de macos.yml (machine/macos/noyau.rs) ne l'a pas remplacé, et prend le
-/// relais quand la lecture native est muette.
-#[cfg(target_os = "macos")]
-pub(crate) fn prises_du_compte() -> Option<Vec<(String, u16, String)>> {
-    macos::noyau::prises()
-        .map(|lues| {
-            lues.prises
-                .into_iter()
-                .filter(|(_, _, p)| p.tcp && p.etat == darwin::TSI_S_LISTEN)
-                .map(|(_, nom, p)| {
-                    let adresse = if p.locale.is_unspecified() {
-                        "*".to_string()
-                    } else {
-                        p.locale.to_string()
-                    };
-                    (adresse, p.port_local, affichable(&nom))
-                })
-                .collect::<Vec<_>>()
-        })
-        // Aucune prise en écoute lue : peut-être une lecture native qui ne comprend pas ce macOS ; lsof tranche.
-        .filter(|prises| !prises.is_empty())
-        .or_else(prises_lsof)
-}
-
 /// Programme qui écoute sur chaque port TCP de cette machine (port → nom du programme, que chaque programme choisit :
 /// prêt à montrer). Sans droits admin, les programmes de root/SYSTEM restent souvent anonymes.
 pub fn programmes_en_ecoute() -> std::collections::HashMap<u16, String> {
@@ -1882,15 +1805,6 @@ pub fn programmes_en_ecoute() -> std::collections::HashMap<u16, String> {
             map.insert(p.port, nom);
         }
     }
-    // Sans droits admin, le noyau (comme lsof) ne montre que les programmes de l'utilisateur. Le nom est celui du
-    // fichier du programme, entier : un nom coupé (« llama-ser ») ne reconnaîtrait plus un serveur d'IA.
-    #[cfg(target_os = "macos")]
-    map.extend(
-        prises_du_compte()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(_, port, nom)| (port, nom)),
-    );
     // netstat et tasklist, sans PowerShell ; PowerShell seulement s'ils ne répondent pas.
     #[cfg(windows)]
     let paires = windows::ports_tcp_et_noms().unwrap_or_else(|| {
@@ -1919,8 +1833,6 @@ pub fn ouvrir(cible: &str) {
     // ShellExecuteExW dans un fil à part, sans cmd : ni « & » ni « %VAR% » d'un lien ou d'un dossier n'y sont lus.
     #[cfg(windows)]
     windows::ouvrir::ouvrir(cible, None);
-    #[cfg(target_os = "macos")]
-    let _ = Command::new("open").arg(cible).spawn();
 }
 
 /// Ouvre un programme du système avec ses paramètres (« C:\Windows\System32\control.exe », « /name
@@ -2452,38 +2364,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    #[test]
-    fn noms_entiers_de_lsof() {
-        let l = lire_lsof_prises(
-            "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n\
-             llama-server 512 alice 9u IPv4 0x1 0t0 TCP *:8080 (LISTEN)\n\
-             LM\\x20Studio 600 alice 12u IPv6 0x2 0t0 TCP [::1]:1234 (LISTEN)\n",
-        );
-        let nom = |port: u16| l.iter().find(|(_, p, _)| *p == port).map(|(_, _, n)| n.as_str());
-        assert_eq!(nom(8080), Some("llama-server"));
-        assert_eq!(nom(1234), Some("LM Studio"));
-    }
-
-    /// Le même port sur deux adresses : chaque prise garde son programme ; l'IPv6 perd ses crochets.
-    #[test]
-    fn prises_de_lsof_par_adresse() {
-        let p = lire_lsof_prises(
-            "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n\
-             nginx 300 alice 6u IPv4 0x1 0t0 TCP 127.0.0.1:8080 (LISTEN)\n\
-             llama-server 512 alice 9u IPv4 0x2 0t0 TCP 192.168.1.20:8080 (LISTEN)\n\
-             LM\\x20Studio 600 alice 12u IPv6 0x3 0t0 TCP [::1]:1234 (LISTEN)\n",
-        );
-        let vues: Vec<(&str, u16, &str)> = p.iter().map(|(a, port, n)| (a.as_str(), *port, n.as_str())).collect();
-        assert_eq!(
-            vues,
-            [
-                ("127.0.0.1", 8080, "nginx"),
-                ("192.168.1.20", 8080, "llama-server"),
-                ("::1", 1234, "LM Studio")
-            ]
-        );
-    }
-
     fn audit(etats: &[(&'static str, Option<Niveau>, &str)]) -> Audit {
         let constats: Vec<Constat> = etats
             .iter()
@@ -2641,40 +2521,40 @@ Host *
             ("Comptes", None, "Seul root a l'UID 0."),
         ]);
         assert!(!sans_constat.fiable());
-        // La règle du pare-feu a planté (« erreur interne » de catégorie Audit), mais le mode furtif de macOS, de
+        // La règle du pare-feu a planté (« erreur interne » de catégorie Audit), mais un réglage secondaire, de
         // catégorie Pare-feu, a répondu : toujours pas de note.
         let mut plante = audit(&[
-            ("Pare-feu", None, "Mode furtif actif."),
+            ("Pare-feu", None, "Réglage secondaire du pare-feu actif."),
             (
                 "Audit",
                 Some(Niveau::Info),
-                "Impossible de vérifier (erreur interne, règle MAC-PFE-001).",
+                "Impossible de vérifier (erreur interne, règle LNX-PFE-001).",
             ),
             ("SSH", None, "Serveur SSH désactivé."),
             ("Mises à jour", None, "Système à jour."),
             ("Comptes", None, "Seul root a l'UID 0."),
         ]);
-        plante.constats[1].regle = "MAC-PFE-001";
+        plante.constats[1].regle = "LNX-PFE-001";
         assert!(!plante.fiable());
     }
 
-    /// macOS : le mode furtif illisible (MAC-PFE-002) ne retire plus la note quand le pare-feu, lui, a été lu ; le
-    /// pare-feu illisible (MAC-PFE-001), toujours.
+    /// Un réglage secondaire du pare-feu illisible (une règle `*-PFE-` autre que 001) ne retire pas la note quand le
+    /// pare-feu, lui, a été lu ; le pare-feu illisible (`*-PFE-001`), toujours.
     #[test]
-    fn mode_furtif_illisible_garde_la_note() {
-        let inconnu = "Impossible de vérifier (mode furtif illisible).";
+    fn reglage_secondaire_illisible_garde_la_note() {
+        let inconnu = "Impossible de vérifier (réglage secondaire illisible).";
         let mut a = audit(&[
-            ("Pare-feu", None, "Pare-feu de macOS actif."),
+            ("Pare-feu", None, "Pare-feu actif."),
             ("Pare-feu", Some(Niveau::Info), inconnu),
             ("SSH", None, "Serveur SSH désactivé."),
             ("Mises à jour", None, "Système à jour."),
             ("Comptes", None, "Seul root a l'UID 0."),
         ]);
-        a.constats[0].regle = "MAC-PFE-001";
-        a.constats[1].regle = "MAC-PFE-002";
+        a.constats[0].regle = "LNX-PFE-001";
+        a.constats[1].regle = "LNX-PFE-002";
         a.constats[1].verifie = false;
         for c in &mut a.constats[2..] {
-            c.regle = "MAC-TST-001";
+            c.regle = "LNX-TST-001";
         }
         assert!(a.fiable());
         a.constats[0].verifie = false;
@@ -2809,7 +2689,6 @@ mod tests_au_hasard {
             let _ = constats_config_ssh(&lignes);
             let _ = unix::defauts_sudo(&t);
             let _ = unix::regles_nopasswd(&t);
-            let _ = unix::juger_sshd_mac(&t);
         }
 
         #[test]

@@ -2,13 +2,10 @@
 //! dernière fois qu'il a utilisé la caméra ou le micro (et s'il s'en sert en ce moment) : Vanguard le lit et le date,
 //! en signalant un programme lancé depuis un dossier temporaire ou Téléchargements. Sous Linux, aucun historique
 //! n'existe : Vanguard dit ce qui tient la caméra (/dev/video*) et ce qui enregistre le micro (flux de PipeWire ou
-//! PulseAudio) en ce moment, pour les programmes de ce compte. Sous macOS, la liste est protégée par le système :
-//! Vanguard dit où la voir.
+//! PulseAudio) en ce moment, pour les programmes de ce compte.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
-// macOS n'a ni historique ni liste lisible : seule l'explication sert.
-#![cfg_attr(target_os = "macos", allow(dead_code))]
 
 use crate::ui::*;
 
@@ -125,18 +122,6 @@ pub fn afficher_tout() {
             );
         } else {
             conclure(camera.iter().flatten().chain(micro.iter().flatten()));
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        for l in envelopper(
-            tr!(
-                "macOS protège cette liste : un point vert (caméra) ou orange (micro) s'allume en haut de l'écran quand un programme s'en sert, et le Centre de contrôle dit lequel. Les programmes autorisés : Réglages Système › Confidentialité et sécurité › Caméra, et › Micro ; retirez ceux que vous ne reconnaissez pas.",
-                "macOS protects this list: a green (camera) or orange (microphone) dot lights up at the top of the screen when a program uses them, and Control Center says which one. The allowed programs: System Settings › Privacy & Security › Camera, and › Microphone; remove those you do not recognize."
-            ),
-            LARGEUR - 2,
-        ) {
-            println!("  {l}");
         }
     }
 }

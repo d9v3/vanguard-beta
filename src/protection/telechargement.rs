@@ -3,7 +3,7 @@
 //! programme déguisé en document) ; puis l'analyse YARA et l'antivirus. Un moteur absent ou en échec est dit, jamais
 //! compté comme sain. Vanguard ne déplace ni ne supprime rien (Defender, lui, met en quarantaine ce qu'il reconnaît).
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::path::{Path, PathBuf};
@@ -136,7 +136,7 @@ fn empreinte_a_cote(fichier: &Path) -> Option<(Algo, String, PathBuf)> {
     })
 }
 
-/// L'empreinte du fichier : calculée ici sous Linux et macOS (sha2, sha1, md-5), par Windows
+/// L'empreinte du fichier : calculée ici sous Linux (sha2, sha1, md-5), par Windows
 /// lui-même sous Windows (BCrypt, Get-FileHash en secours).
 pub(crate) fn calculer(fichier: &Path, algo: Algo) -> Result<String, String> {
     #[cfg(windows)]
@@ -692,7 +692,6 @@ fn montrer_le_verdict(v: &Verification) {
 
 /// Le dossier des téléchargements : celui que déclare le bureau (user-dirs.dirs sous Linux, le registre sous Windows,
 /// déplacé dans OneDrive le cas échéant), sinon le nom usuel.
-#[cfg_attr(target_os = "macos", allow(clippy::unnecessary_wraps))] // même signature que sous Linux et Windows
 pub(crate) fn dossier_telechargements() -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     {
@@ -716,10 +715,6 @@ pub(crate) fn dossier_telechargements() -> Option<PathBuf> {
             .map(|c| PathBuf::from(crate::protection::pieges::developper(&c)))
             .or_else(|| std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join("Downloads")))
     }
-    #[cfg(target_os = "macos")]
-    {
-        Some(crate::socle::maison().join("Downloads"))
-    }
 }
 
 /// Un fichier en cours de téléchargement : il sera renommé à la fin, et vu alors.
@@ -732,7 +727,7 @@ fn en_cours(nom: &str) -> bool {
 
 /// Instant d'arrivée d'un fichier, en secondes depuis 1970 : sa dernière modification, ou son arrivée dans le dossier
 /// si elle est plus récente (un navigateur renomme « x.exe.part » en « x.exe » à la fin, ce qui ne change pas la date
-/// de modification : sous Linux et macOS, le changement d'état le note ; sous Windows, la création).
+/// de modification : sous Linux, le changement d'état le note ; sous Windows, la création).
 fn arrivee(meta: &std::fs::Metadata) -> u64 {
     let secondes = |t: std::io::Result<std::time::SystemTime>| {
         t.ok()

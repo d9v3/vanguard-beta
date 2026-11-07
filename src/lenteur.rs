@@ -4,7 +4,7 @@
 //! Vanguard règle quoi (Nettoyer, Optimiser, Mises à jour, programmes au démarrage à retirer ou remettre, après accord
 //! et de façon annulable), et l'écran les ouvre.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::collections::HashMap;
@@ -355,7 +355,6 @@ const PASSAGERS: &str = "\
 msmpeng mpdefendercoreservice | l'antivirus de Windows analyse les fichiers | Windows' antivirus is scanning files
 tiworker trustedinstaller | Windows installe des mises à jour | Windows is installing updates
 searchindexer | Windows indexe les fichiers pour la recherche | Windows is indexing files for search
-mdworker mds_stores | macOS indexe les fichiers pour Spotlight | macOS is indexing files for Spotlight
 localsearch tracker-miner | le bureau indexe les fichiers pour la recherche | the desktop is indexing files for search
 baloo_file | KDE indexe les fichiers pour la recherche | KDE is indexing files for search
 packagekitd | les mises à jour se téléchargent | updates are downloading
@@ -750,10 +749,7 @@ pub fn menu() {
             match outil {
                 Outil::Nettoyer => crate::nettoyer::menu(),
                 Outil::Demarrage => crate::optimiser::programmes_au_demarrage(),
-                #[cfg(not(target_os = "macos"))]
                 Outil::Performance => crate::optimiser::menu(crate::optimiser::Categorie::Performance),
-                #[cfg(target_os = "macos")]
-                Outil::Performance => {}
                 Outil::MisesAJour => crate::maj::executer(),
             }
         }
@@ -824,7 +820,7 @@ mod systeme {
     use crate::machine::linux::natif;
 
     /// Durée entre les deux mesures : assez pour lisser un pic, assez courte pour qu'on attende sans s'impatienter.
-    /// (Windows et macOS mesurent eux-mêmes sur deux secondes : PowerShell, top.)
+    /// (Windows mesure lui-même sur deux secondes : PowerShell.)
     const ECART: Duration = Duration::from_secs(2);
 
     struct Echantillon {
@@ -1550,148 +1546,6 @@ mod systeme {
     }
 }
 
-// ───────────────────────────── macOS ─────────────────────────────
-
-/// « 1234M », « 12K », « 1.2G », « 512B » (colonne MEM de top, parfois suivie de « + » ou « - ») → octets.
-fn taille_top(texte: &str) -> Option<u64> {
-    let t = texte.trim_end_matches(['+', '-']);
-    let (nombre, unite) = t.split_at(t.len().checked_sub(1)?);
-    let n: f64 = nombre.parse().ok()?;
-    let facteur: f64 = match unite {
-        "B" => 1.0,
-        "K" => 1024.0,
-        "M" => 1_048_576.0,
-        "G" => 1_073_741_824.0,
-        _ => return None,
-    };
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    Some(crate::socle::nombres::entier(n * facteur))
-}
-
-/// `top -l 2 -s 2 -n 20 -o cpu -stats pid,command,cpu,mem` : la seconde mesure seulement (la première compte depuis le
-/// lancement de top). Rend (processeur occupé en %, programmes).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-#[allow(clippy::cast_precision_loss)]
-fn lire_top(texte: &str, fils: usize) -> (Option<f64>, Vec<Programme>) {
-    let derniere = texte.rsplit("Processes:").next().unwrap_or_default();
-    let processeur = derniere.lines().find_map(|l| {
-        let repos = l.strip_prefix("CPU usage:")?.split(',').find(|p| p.contains("idle"))?;
-        Some(100.0 - repos.trim().split('%').next()?.trim().parse::<f64>().ok()?)
-    });
-    // Les lignes sous l'en-tête « PID COMMAND %CPU MEM », sans l'en-tête.
-    let en_tete = |l: &&str| l.trim_start().starts_with("PID");
-    let programmes = derniere
-        .lines()
-        .skip_while(|l| !en_tete(l))
-        .filter(|l| !en_tete(l))
-        .filter_map(|l| {
-            let mots: Vec<&str> = l.split_whitespace().collect();
-            let [_pid, nom @ .., cpu, mem] = mots.as_slice() else {
-                return None;
-            };
-            let (Ok(cpu), Some(memoire)) = (cpu.parse::<f64>(), taille_top(mem)) else {
-                return None;
-            };
-            Some(Programme {
-                nom: nom.join(" "),
-                // top compte 100 % par cœur : rapporté à toute la machine.
-                processeur: cpu / crate::socle::nombres::flottant(fils.max(1)),
-                memoire,
-                disque: None,
-            })
-        });
-    (processeur, reunir(programmes))
-}
-
-#[cfg(target_os = "macos")]
-mod systeme {
-    use std::path::{Path, PathBuf};
-    use std::process::Command;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    use super::*;
-    use crate::commande::lancer;
-
-    /// La sortie d'une commande qui a réussi (« sysctl -n hw.memsize »), vide sinon.
-    fn sortie(commande: &str) -> String {
-        let mut mots = commande.split(' ');
-        lancer(Command::new(mots.next().unwrap_or_default()).args(mots), 30)
-            .filter(|r| r.code == Some(0))
-            .map(|r| r.sortie)
-            .unwrap_or_default()
-    }
-
-    pub fn instantane() -> Instantane {
-        use crate::machine::macos::{demarrage, noyau, sysctl_nombre};
-        let fils = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-        // top reste l'outil qui fait foi pour le processeur de chaque programme : le noyau ne donne le temps de
-        // processeur (PROC_PIDTASKINFO) que pour les processus du compte, et ceux de root disparaîtraient.
-        let top = sortie("top -l 2 -s 2 -n 20 -o cpu -stats pid,command,cpu,mem");
-        let (processeur, programmes) = lire_top(&top, fils);
-        // Mémoire, échange et démarrage demandés au noyau (sysctlbyname), les outils en secours tant que l'oracle
-        // de macos.yml n'a pas prouvé la lecture native.
-        let total: Option<u64> =
-            sysctl_nombre("hw.memsize").or_else(|| sortie("sysctl -n hw.memsize").trim().parse().ok());
-        // La mémoire libre en %, celle que `memory_pressure` affiche (« System-wide memory free percentage: 63% »).
-        let libre_pct: Option<u64> = sysctl_nombre("kern.memorystatus_level")
-            .filter(|p| *p <= 100)
-            .or_else(|| {
-                sortie("memory_pressure")
-                    .lines()
-                    .find_map(|l| l.strip_prefix("System-wide memory free percentage:"))
-                    .and_then(|v| v.trim().trim_end_matches('%').parse().ok())
-            });
-        let echange = noyau::echange().or_else(|| {
-            // « total = 2048.00M  used = 1024.50M  free = 1023.50M  (encrypted) ».
-            let echange = sortie("sysctl -n vm.swapusage");
-            let valeur = |cle: &str| {
-                let mo = echange.split(cle).nth(1)?.split_whitespace().next()?;
-                mo.trim_end_matches('M').parse::<f64>().ok()
-            };
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            valeur("total = ")
-                .zip(valeur("used = "))
-                .map(|(t, u)| ((t * 1_048_576.0) as u64, (u * 1_048_576.0) as u64))
-        });
-        let maintenant = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let allume_depuis = demarrage()
-            .or_else(|| {
-                sortie("sysctl -n kern.boottime")
-                    .split_once("sec = ")
-                    .and_then(|(_, r)| r.split(',').next()?.trim().parse::<u64>().ok())
-            })
-            .and_then(|s| maintenant.checked_sub(s));
-        let maison = crate::socle::maison();
-        // Agents lancés à l'ouverture de session par des programmes installés (pas ceux d'Apple).
-        let dossiers = [maison, PathBuf::from("/")].map(|d| d.join("Library/LaunchAgents"));
-        let au_demarrage = dossiers
-            .iter()
-            .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
-            .filter_map(|f| {
-                let nom = affichable(f.file_name().to_string_lossy().strip_suffix(".plist")?);
-                (!nom.starts_with("com.apple.")).then_some(AuDemarrage { nom, poids: None })
-            })
-            .collect();
-        let donnees = Path::new("/System/Volumes/Data");
-        Instantane {
-            processeur,
-            fils,
-            memoire: total.zip(libre_pct).map(|(t, p)| (t, t / 100 * p)),
-            echange,
-            disque: None,
-            programmes,
-            demarrage: Err(tr!(
-                "macOS ne note pas la durée du démarrage",
-                "macOS does not record the startup duration"
-            )
-            .into()),
-            au_demarrage,
-            allume_depuis,
-            place: crate::socle::volume(if donnees.is_dir() { donnees } else { Path::new("/") }),
-        }
-    }
-}
-
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::as_conversions,
@@ -2028,20 +1882,6 @@ mod tests {
             entree_autostart(actions, ""),
             Some(("Appli".to_string(), "appli".to_string()))
         );
-    }
-
-    #[test]
-    fn lecture_de_top_sous_macos() {
-        let top = "Processes: 1 total\nCPU usage: 50.0% user, 10.0% sys, 40.0% idle\nPID COMMAND %CPU MEM\n1 premier 99.0 1G\n\
-                   Processes: 512 total, 3 running\nLoad Avg: 1.23\nCPU usage: 12.5% user, 6.25% sys, 81.25% idle\n\
-                   PhysMem: 15G used (2048M wired), 1024M unused.\n\nPID    COMMAND          %CPU MEM\n\
-                   123    WindowServer     12.0 512M\n456    Google Chrome He 8.0 1024M+\n789    Google Chrome He 4.0 512M\n";
-        let (processeur, programmes) = lire_top(top, 4);
-        assert_eq!(processeur, Some(18.75));
-        let chrome = programmes.iter().find(|p| p.nom == "Google Chrome He").unwrap();
-        assert!((chrome.processeur - 3.0).abs() < 1e-9 && chrome.memoire == 1536 << 20);
-        assert_eq!(taille_top("12K"), Some(12 * 1024));
-        assert_eq!(taille_top("x"), None);
     }
 
     #[test]

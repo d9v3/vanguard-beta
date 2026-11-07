@@ -11,7 +11,7 @@
 //! mais illisible rend l'outil « non vérifié », jamais « aucun agent ». Aucune valeur secrète n'est affichée ni
 //! gardée : seulement le nom du serveur et celui de la clé. Rien ne se corrige tout seul.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 #[cfg(test)]
@@ -68,22 +68,10 @@ pub(crate) fn ports_fermes() -> HashSet<u16> {
     fermes.collect()
 }
 
-/// Ce que le système dit des programmes derrière les prises.
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // chaque système n'en construit qu'une partie
-pub(crate) enum Noms {
-    /// Les noms que le système donne sans réserve propre au contrôle : Windows nomme chaque prise ; Linux nomme les
-    /// services (root compris, par leur groupe de contrôle) et les programmes du compte, comme le bilan des ports.
-    Complets,
-    /// Seulement ceux du compte en cours (lsof sans droits admin, macOS).
-    CompteSeul,
-    /// Aucun nom (lsof absent ou en échec) : seuls les ports connus des serveurs d'IA se reconnaissent.
-    Aucun,
-}
-
 /// `fermes` : les ports que Vanguard a fermés au réseau (blocage) ; un serveur derrière l'un d'eux n'est plus ouvert.
-/// `noms` : sans noms complets, « aucun serveur » se dit avec sa réserve, et sans aucun nom il n'est pas vérifié.
-fn juger_exposition(prises: &[Prise], fermes: &HashSet<u16>, noms: Noms) -> Constat {
+/// Les programmes derrière les prises sont nommés par le système : Windows nomme chaque prise ; Linux nomme les
+/// services (root compris, par leur groupe de contrôle) et les programmes du compte, comme le bilan des ports.
+fn juger_exposition(prises: &[Prise], fermes: &HashSet<u16>) -> Constat {
     let mut ouverts: Vec<String> = Vec::new();
     let mut proteges: Vec<String> = Vec::new();
     for p in prises.iter().filter(|p| {
@@ -105,45 +93,22 @@ fn juger_exposition(prises: &[Prise], fermes: &HashSet<u16>, noms: Noms) -> Cons
     ouverts.dedup();
     proteges.sort();
     proteges.dedup();
-    let reserve = match noms {
-        Noms::Complets => String::new(),
-        Noms::CompteSeul => tr!(
-            " (seuls les programmes du compte en cours sont nommés sans droits d'administrateur : un serveur d'IA d'un autre compte ne se reconnaît qu'à ses ports connus)",
-            " (without administrator rights, only the current account's programs are named: an AI server from another account is only recognized by its known ports)"
-        )
-        .to_string(),
-        Noms::Aucun => tr!(
-            " (lsof n'a pas nommé les programmes en écoute : seuls les ports connus des serveurs d'IA ont été regardés)",
-            " (lsof did not name the listening programs: only the known ports of AI servers were checked)"
-        )
-        .to_string(),
-    };
-    // Sans aucun nom, un serveur sur un autre port reste invisible, qu'un autre soit fermé par Vanguard ou non.
-    if ouverts.is_empty() && noms == Noms::Aucun {
-        return impossible(
-            CAT,
-            tr!(
-                "serveurs d'IA ouverts au réseau : lsof n'a pas nommé les programmes en écoute, seuls les ports connus des serveurs d'IA ont été regardés",
-                "AI servers open to the network: lsof did not name the listening programs, only the known ports of AI servers were checked"
-            ),
-        );
-    }
     if ouverts.is_empty() && !proteges.is_empty() {
         let liste = couper(&affichable(&proteges.join(", ")), 200);
         return ok(
             CAT,
             trf!(
-                "Serveur d'IA fermé au réseau par une règle de pare-feu de Vanguard : {liste}{reserve}",
-                "AI server closed to the network by a Vanguard firewall rule: {liste}{reserve}"
+                "Serveur d'IA fermé au réseau par une règle de pare-feu de Vanguard : {liste}",
+                "AI server closed to the network by a Vanguard firewall rule: {liste}"
             ),
         );
     }
     if ouverts.is_empty() {
         return ok(
             CAT,
-            trf!(
-                "Aucun serveur d'IA local ouvert au réseau{reserve}",
-                "No local AI server open to the network{reserve}"
+            tr!(
+                "Aucun serveur d'IA local ouvert au réseau",
+                "No local AI server open to the network"
             ),
         );
     }
@@ -188,73 +153,14 @@ pub(crate) fn prises() -> Option<Vec<Prise>> {
     )
 }
 
-/// macOS : `netstat -an -p tcp`, lu comme pour le bilan des ports (netstat fait foi pour les prises de tous les
-/// comptes : leurs structures du noyau, xinpcb_n, sont privées) ; les noms viennent du noyau (libproc, lsof en
-/// secours), qui sans droits admin ne nomme que les programmes du compte en cours (`Noms::CompteSeul`), et pas du tout
-/// s'il échoue (`Noms::Aucun`).
-#[cfg(target_os = "macos")]
-pub(crate) fn prises_et_noms() -> Option<(Vec<Prise>, Noms)> {
-    let netstat = super::sortie("netstat", &["-an", "-p", "tcp"])?;
-    Some(match super::prises_du_compte() {
-        Some(lsof) => (prises_netstat(&netstat, &lsof), Noms::CompteSeul),
-        None => (prises_netstat(&netstat, &[]), Noms::Aucun),
-    })
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) fn prises_et_noms() -> Option<(Vec<Prise>, Noms)> {
-    prises().map(|p| (p, Noms::Complets))
-}
-
-/// Les ports TCP en écoute du netstat des BSD, dans la forme que `juger_exposition` attend. « * » (toutes les
-/// adresses, tcp4 comme tcp6) devient 0.0.0.0 : la même ligne pour les deux, ouverte au réseau. Une adresse de lien
-/// de la boucle (« fe80::1%lo0 ») devient ::1, pour rester locale ; celle d'une vraie interface (« %en0 ») garde sa
-/// zone, que l'analyse d'adresse refuse : ouverte, puisque les voisins du Wi-Fi la joignent.
-/// `lsof` : (adresse, port, programme) ; chaque prise prend les noms de la même adresse et du même port, sinon ceux
-/// de tous les programmes du port : un serveur d'IA parmi eux reste reconnu plutôt que caché derrière un autre. Tous
-/// les noms, pas le premier : « * » vaut pour tcp4 comme pour tcp6, et une prise héritée a plusieurs programmes.
-#[cfg(unix)]
-#[cfg_attr(target_os = "linux", allow(dead_code))]
-fn prises_netstat(netstat: &str, lsof: &[(String, u16, String)]) -> Vec<Prise> {
-    let programme = |adresse: &str, port: u16| {
-        let noms = |meme_adresse: bool| {
-            let mut noms: Vec<&str> = lsof
-                .iter()
-                .filter(|(a, p, _)| *p == port && (!meme_adresse || a == adresse))
-                .map(|(_, _, nom)| nom.as_str())
-                .collect();
-            noms.sort_unstable();
-            noms.dedup();
-            noms.join(", ")
-        };
-        Some(noms(true))
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| noms(false))
-    };
-    super::unix::lire_netstat(netstat, true)
-        .into_iter()
-        .map(|(adresse, port)| Prise {
-            programme: programme(&adresse, port),
-            adresse: if adresse == "*" {
-                "0.0.0.0".to_string()
-            } else if adresse.split_once('%').is_some_and(|(_, zone)| zone.starts_with("lo")) {
-                "::1".to_string()
-            } else {
-                adresse
-            },
-            port,
-        })
-        .collect()
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub(crate) fn prises() -> Option<Vec<Prise>> {
     None
 }
 
 pub(crate) fn exposition() -> Vec<Constat> {
-    match prises_et_noms() {
-        Some((p, noms)) => vec![juger_exposition(&p, &ports_fermes(), noms)],
+    match prises() {
+        Some(p) => vec![juger_exposition(&p, &ports_fermes())],
         None => vec![impossible(
             CAT,
             tr!(
@@ -645,8 +551,6 @@ pub(crate) fn fichiers_de_reglages() -> Vec<(&'static str, PathBuf)> {
     }
     let config = if cfg!(windows) {
         PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default())
-    } else if cfg!(target_os = "macos") {
-        maison.join("Library/Application Support")
     } else {
         std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| maison.join(".config"), PathBuf::from)
     };
@@ -731,133 +635,33 @@ mod tests {
             prise("0.0.0.0", 22, "sshd"),
         ];
         let aucun = HashSet::new();
-        assert!(juger_exposition(&locaux, &aucun, Noms::Complets).probleme.is_none());
+        assert!(juger_exposition(&locaux, &aucun).probleme.is_none());
         let ouvert = [prise("0.0.0.0", 11434, "ollama"), prise("[::]", 8188, "python3")];
-        let c = juger_exposition(&ouvert, &aucun, Noms::Complets);
+        let c = juger_exposition(&ouvert, &aucun);
         assert_eq!(c.probleme, Some(Niveau::Eleve));
         assert!(c.message.contains("Ollama (0.0.0.0:11434)") && c.message.contains("ComfyUI"));
         // Reconnu par son nom, sur un autre port.
         assert!(
-            juger_exposition(&[prise("192.168.1.20", 9000, "llama-server")], &aucun, Noms::Complets)
+            juger_exposition(&[prise("192.168.1.20", 9000, "llama-server")], &aucun)
                 .probleme
                 .is_some()
         );
         // Fermé au réseau par une règle de Vanguard (blocage) : plus une alerte, mais dit.
-        let un_ferme = juger_exposition(&ouvert, &[11434].into(), Noms::Complets);
+        let un_ferme = juger_exposition(&ouvert, &[11434].into());
         assert!(un_ferme.probleme.is_some() && !un_ferme.message.contains("11434"));
-        let fermes = juger_exposition(&ouvert, &[11434, 8188].into(), Noms::Complets);
+        let fermes = juger_exposition(&ouvert, &[11434, 8188].into());
         assert!(fermes.probleme.is_none() && fermes.message.contains("Ollama (0.0.0.0:11434)"));
     }
 
-    /// macOS : netstat → prises, jugées comme sous Linux et Windows.
-    #[cfg(unix)]
+    /// Un programme inconnu en écoute n'est pas un serveur d'IA : « aucun serveur », vérifié, sans réserve. Un serveur
+    /// sur un port connu est vu même sans nom de programme.
     #[test]
-    fn prises_du_netstat_des_bsd() {
-        let netstat = "Active Internet connections (including servers)\n\
-                       Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)\n\
-                       tcp46      0      0  *.11434                *.*                    LISTEN\n\
-                       tcp6       0      0  *.11434                *.*                    LISTEN\n\
-                       tcp4       0      0  127.0.0.1.1234         *.*                    LISTEN\n\
-                       tcp6       0      0  ::1.8188               *.*                    LISTEN\n\
-                       tcp6       0      0  fe80::1%lo0.7860       *.*                    LISTEN\n\
-                       tcp4       0      0  192.168.1.20.9000      *.*                    LISTEN\n\
-                       tcp4       0      0  10.0.0.20.51234        17.57.146.20.443       ESTABLISHED\n";
-        let programmes = [
-            ("*".to_string(), 11434, "ollama".to_string()),
-            ("192.168.1.20".to_string(), 9000, "llama-server".to_string()),
-        ];
-        let p = prises_netstat(netstat, &programmes);
-        let vues: Vec<(&str, u16, &str)> = p
-            .iter()
-            .map(|p| (p.adresse.as_str(), p.port, p.programme.as_str()))
-            .collect();
-        assert_eq!(
-            vues,
-            [
-                ("0.0.0.0", 11434, "ollama"),
-                ("0.0.0.0", 11434, "ollama"),
-                ("127.0.0.1", 1234, ""),
-                ("::1", 8188, ""),
-                ("::1", 7860, ""),
-                ("192.168.1.20", 9000, "llama-server"),
-            ]
-        );
-        // Ollama sur toutes les adresses (une seule ligne pour tcp46 et tcp6) et llama-server sur le Wi-Fi : ouverts ;
-        // les trois autres restent sur la boucle.
-        let c = juger_exposition(&p, &HashSet::new(), Noms::CompteSeul);
-        assert_eq!(c.probleme, Some(Niveau::Eleve));
-        assert_eq!(c.message.matches("Ollama (0.0.0.0:11434)").count(), 1);
-        assert!(c.message.contains("llama-server (192.168.1.20:9000)"));
-        assert!(!c.message.contains("LM Studio") && !c.message.contains("ComfyUI") && !c.message.contains("Gradio"));
-        // Zone d'une vraie interface : ouverte.
-        let lien = prises_netstat("tcp6  0  0  fe80::1c2:3%en0.11434  *.*  LISTEN\n", &programmes);
-        assert!(
-            juger_exposition(&lien, &HashSet::new(), Noms::CompteSeul)
-                .probleme
-                .is_some()
-        );
-    }
-
-    /// macOS : le même port sur deux adresses. Chaque prise prend le programme de son adresse : llama-server ouvert au
-    /// Wi-Fi n'est pas caché par nginx sur la boucle, et l'inverse ne donne pas de fausse alerte. Sans adresse
-    /// correspondante, tous les noms du port.
-    #[cfg(unix)]
-    #[test]
-    fn meme_port_deux_adresses() {
-        let netstat = "tcp4  0  0  127.0.0.1.8080  *.*  LISTEN\n\
-                       tcp4  0  0  192.168.1.20.8080  *.*  LISTEN\n";
-        let ia_ouvert = [
-            ("192.168.1.20".to_string(), 8080, "llama-server".to_string()),
-            ("127.0.0.1".to_string(), 8080, "nginx".to_string()),
-        ];
-        let c = juger_exposition(&prises_netstat(netstat, &ia_ouvert), &HashSet::new(), Noms::CompteSeul);
-        assert!(c.message.contains("llama-server (192.168.1.20:8080)"), "{}", c.message);
-        let ia_local = [
-            ("127.0.0.1".to_string(), 8080, "llama-server".to_string()),
-            ("192.168.1.20".to_string(), 8080, "nginx".to_string()),
-        ];
-        let c = juger_exposition(&prises_netstat(netstat, &ia_local), &HashSet::new(), Noms::CompteSeul);
-        assert!(c.probleme.is_none(), "{}", c.message);
-        // nginx en IPv4 et llama-server en IPv6 seul, tous deux sur « * » : les deux noms, le serveur d'IA vu.
-        let deux_familles = [
-            ("*".to_string(), 8080, "nginx".to_string()),
-            ("*".to_string(), 8080, "llama-server".to_string()),
-        ];
-        let p = prises_netstat(
-            "tcp4  0  0  *.8080  *.*  LISTEN\ntcp6  0  0  *.8080  *.*  LISTEN\n",
-            &deux_familles,
-        );
-        assert!(p.iter().all(|p| p.programme == "llama-server, nginx"));
-        assert!(
-            juger_exposition(&p, &HashSet::new(), Noms::CompteSeul)
-                .probleme
-                .is_some()
-        );
-        let ailleurs = [("10.0.0.5".to_string(), 8080, "llama-server".to_string())];
-        let p = prises_netstat("tcp4  0  0  *.8080  *.*  LISTEN\n", &ailleurs);
-        assert_eq!(p[0].programme, "llama-server");
-    }
-
-    /// Sans noms complets, « aucun serveur » porte sa réserve ; sans aucun nom, il n'est pas vérifié. Un serveur sur un
-    /// port connu reste vu dans les deux cas.
-    #[test]
-    fn reserve_sans_noms_complets() {
+    fn inconnu_ou_connu_par_son_port() {
         let inconnu = [prise("0.0.0.0", 8080, "")];
-        let complets = juger_exposition(&inconnu, &HashSet::new(), Noms::Complets);
-        assert!(complets.verifie && !complets.message.contains('('));
-        let compte = juger_exposition(&inconnu, &HashSet::new(), Noms::CompteSeul);
-        assert!(compte.probleme.is_none() && compte.verifie && compte.message.len() > complets.message.len());
-        let aucun = juger_exposition(&inconnu, &HashSet::new(), Noms::Aucun);
-        assert!(!aucun.verifie && aucun.message.contains("lsof"), "{}", aucun.message);
-        let connu = juger_exposition(&[prise("0.0.0.0", 11434, "")], &HashSet::new(), Noms::Aucun);
+        let complets = juger_exposition(&inconnu, &HashSet::new());
+        assert!(complets.verifie && complets.probleme.is_none() && !complets.message.contains('('));
+        let connu = juger_exposition(&[prise("0.0.0.0", 11434, "")], &HashSet::new());
         assert_eq!(connu.probleme, Some(Niveau::Eleve));
-        // Un serveur fermé par Vanguard ne rend pas vert ce qui n'a pas pu être nommé.
-        let ferme = juger_exposition(
-            &[prise("0.0.0.0", 11434, ""), prise("0.0.0.0", 9000, "")],
-            &[11434].into(),
-            Noms::Aucun,
-        );
-        assert!(!ferme.verifie, "{}", ferme.message);
     }
 
     #[test]

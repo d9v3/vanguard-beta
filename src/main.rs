@@ -4,7 +4,7 @@
 //! Lancé sans argument, affiche un menu.
 
 // Débordements et `as` refusés dans tout le programme que Linux compile (LANG-ARITH, CONFORMITE-ANSSI.md) : la
-// racine vaut pour chaque module. Les parties Windows et macOS ne sont pas encore relues ; les essais en sont
+// racine vaut pour chaque module. Les parties Windows ne sont pas encore relues ; les essais en sont
 // exemptés (y déborder fait échouer l'essai), comme de `unwrap` (clippy.toml).
 #![cfg_attr(
     all(target_os = "linux", not(test)),
@@ -76,8 +76,6 @@ mod ordinateurs;
 mod parametres;
 mod passage;
 mod pe;
-#[cfg(any(target_os = "macos", test))]
-mod plist;
 mod plugins;
 mod prediction;
 mod programmes_poses;
@@ -203,7 +201,7 @@ enum Commande {
         #[arg(long, visible_alias = "guest")]
         invite: bool,
     },
-    /// Recherche de malwares : ClamAV (Linux, macOS) ou Microsoft Defender (Windows).
+    /// Recherche de malwares : ClamAV (Linux) ou Microsoft Defender (Windows).
     Antivirus {
         /// Tout le dossier personnel au lieu des endroits à risque.
         #[arg(long, visible_alias = "full")]
@@ -269,8 +267,8 @@ enum Commande {
     /// Réparations courantes : réseau, navigation détournée, pare-feu, antivirus, fichiers système, disque, place, mises à jour, heure.
     #[command(visible_alias = "repair")]
     Reparer,
-    /// Gaming : composants pour les jeux (Windows : Visual C++, DirectX… ; Linux : Steam, Vulkan, GameMode, Wine… ;
-    /// macOS : Rosetta, Steam, Epic…) et réglages du système.
+    /// Gaming : composants pour les jeux (Windows : Visual C++, DirectX… ; Linux : Steam, Vulkan, GameMode, Wine…) et
+    /// réglages du système.
     #[command(name = "jeux", visible_alias = "gaming")]
     Gaming,
     /// Diagnostic de l'ordinateur : matériel, système et problèmes récents (plantages, erreurs). Lecture seule.
@@ -299,7 +297,7 @@ enum Commande {
         #[arg(long, visible_alias = "list")]
         liste: bool,
     },
-    /// Optimiser : les réglages recommandés, ceux de confidentialité, de performance (sauf macOS) et de confort, chacun
+    /// Optimiser : les réglages recommandés, ceux de confidentialité, de performance et de confort, chacun
     /// montré, accepté puis annulable exactement ; « annuler » remet tout comme avant. Sans argument : le menu
     /// Optimiser.
     #[command(visible_alias = "optimize")]
@@ -461,15 +459,15 @@ enum Commande {
         #[arg(long)]
         json: bool,
     },
-    /// Logiciels espions : serveurs et sites connus (liste d'Échap), programmes qui lisent le clavier, autorisations
-    /// de surveillance, logiciels de surveillance connus. Lecture seule.
+    /// Logiciels espions : serveurs et sites connus (liste d'Échap), programmes qui lisent le clavier, logiciels de
+    /// surveillance connus. Lecture seule.
     #[command(name = "logiciels-espions", visible_alias = "spyware")]
     LogicielsEspions {
         /// Le résultat en JSON, pour un script.
         #[arg(long)]
         json: bool,
     },
-    /// Logiciels pas à jour (Windows, macOS) : navigateurs, Office, Acrobat, Java, 7-Zip, PuTTY, Slack comparés à leur
+    /// Logiciels pas à jour (Windows) : navigateurs, Office, Acrobat, Java, 7-Zip, PuTTY, Slack comparés à leur
     /// dernière version ; failles exploitées. Lecture seule.
     #[command(name = "logiciels-perimes", visible_alias = "outdated-software")]
     LogicielsPerimes {
@@ -599,11 +597,11 @@ enum Commande {
         /// Le surnom ; vide pour le retirer.
         surnom: Vec<String>,
     },
-    /// Guide des commandes : celles d'Omarchy, d'Arch, de Fedora, de Debian, des autres Linux, de Windows, de macOS et
-    /// de tous les systèmes, rangées par programme, avec des marches à suivre ; et les exemples de tldr-pages,
+    /// Guide des commandes : celles d'Omarchy, d'Arch, de Fedora, de Debian, des autres Linux, de Windows et de
+    /// tous les systèmes, rangées par programme, avec des marches à suivre ; et les exemples de tldr-pages,
     /// téléchargés chaque semaine.
     Guide {
-        /// Un système (omarchy, arch, fedora, debian, windows, macos, tous ; linux : les programmes communs ; tldr ;
+        /// Un système (omarchy, arch, fedora, debian, windows, tous ; linux : les programmes communs ; tldr ;
         /// vanguard), un programme (systemctl, winget, tar…), un chemin (6.7.2) ou des mots à chercher.
         quoi: Vec<String>,
         /// Pour un système : la liste de ses programmes et leur chemin, sans leurs commandes.
@@ -645,7 +643,7 @@ enum Commande {
         dossier: Option<std::path::PathBuf>,
     },
     /// Vérifier ma sauvegarde : la sauvegarde mise en place par Vanguard relue pour de vrai, des fichiers répartis
-    /// sur toute la sauvegarde comparés à leur original ; pour Time Machine, Déjà Dup et l'Historique des fichiers,
+    /// sur toute la sauvegarde comparés à leur original ; pour Déjà Dup et l'Historique des fichiers,
     /// la marche à suivre. Rien n'est écrit ni effacé.
     #[command(name = "verifier-sauvegarde", visible_alias = "check-backup")]
     VerifierSauvegarde,
@@ -690,8 +688,8 @@ enum Commande {
         #[arg(long)]
         json: bool,
     },
-    /// Sauvegarde automatique : mise en place avec l'outil du système (Déjà Dup ou rsync chaque jour, Time Machine,
-    /// Historique des fichiers) vers un disque externe, après accord, annulable exactement.
+    /// Sauvegarde automatique : mise en place avec l'outil du système (Déjà Dup ou rsync chaque jour, Historique
+    /// des fichiers) vers un disque externe, après accord, annulable exactement.
     #[command(name = "sauvegarde-auto", visible_alias = "auto-backup")]
     SauvegardeAuto {
         /// Retirer la sauvegarde automatique mise en place par Vanguard (les fichiers sauvegardés restent).
@@ -699,7 +697,7 @@ enum Commande {
         annuler: bool,
     },
     /// Raccourci sur cet ordinateur : Vanguard copié ici et lancé d'un clic (menu des applications sous Linux, Bureau
-    /// sous Windows et macOS). Sans argument : l'état, puis la proposition.
+    /// sous Windows). Sans argument : l'état, puis la proposition.
     #[command(visible_alias = "shortcut")]
     Raccourci {
         #[arg(value_parser = interrupteur, value_name = "on|off")]
@@ -848,7 +846,7 @@ enum Commande {
     /// Windows : le processus élevé qui applique les corrections natives (lancé par Vanguard lui-même, après la
     /// demande d'administrateur ; voir machine/windows/eleve.rs).
     #[command(name = "appliquer-eleve", hide = true)]
-    /// Linux et macOS : l'assistant élevé qui fait les ordres du blocage (lancé par Vanguard lui-même, par pkexec, run0
+    /// Linux : l'assistant élevé qui fait les ordres du blocage (lancé par Vanguard lui-même, par pkexec, run0
     /// ou sudo ; voir machine/assistant.rs).
     AppliquerEleve {
         #[arg(long)]
@@ -1629,7 +1627,7 @@ fn cle_du_guide() -> String {
 }
 
 /// Les commandes qui ne changent rien sur l'ordinateur (elles lisent, montrent, cherchent ; au plus une page ou un
-/// rapport dans le dossier de Vanguard) : le guide (10.10) les dit « ✔ ne fait que lire ». Toute autre est marquée ⚠,
+/// rapport dans le dossier de Vanguard) : le guide (10.9) les dit « ✔ ne fait que lire ». Toute autre est marquée ⚠,
 /// même si chaque changement demande un accord.
 const COMMANDES_EN_LECTURE: &[&str] = &[
     "bilan",
@@ -1723,7 +1721,7 @@ fn place_de_commande(nom: &str) -> Option<String> {
     touche_de(outil.action)
 }
 
-/// Les commandes de Vanguard pour le guide (10.10) : un programme par rubrique de `--help`, une commande par ligne,
+/// Les commandes de Vanguard pour le guide (10.9) : un programme par rubrique de `--help`, une commande par ligne,
 /// avec son aide et sa place au menu. Construites une fois, depuis le menu et clap.
 fn programmes_vanguard() -> &'static [guide::Programme] {
     static PROGRAMMES: std::sync::OnceLock<Vec<guide::Programme>> = std::sync::OnceLock::new();
@@ -1967,7 +1965,6 @@ enum Action {
     WifiCanaux,
     OptimiserConfidentialite,
     OptimiserConfort,
-    #[cfg(not(target_os = "macos"))]
     OptimiserPerformance,
     Parametres,
     Appris,
@@ -2275,7 +2272,7 @@ const OUTILS: &[Outil] = &[
     // 10 et 11 s'ouvrent directement ; 11.13 et 11.14 suivent les douze parcours.
     Outil { action: Action::Guide, commande: "guide", groupe: Some(Groupe::Guide), lettre: "",
         titre: ["Guide des commandes", "Command guide"],
-        precision: ["Linux, Windows, macOS, tous", "Linux, Windows, macOS, all"],
+        precision: ["Linux, Windows, tous", "Linux, Windows, all"],
         mots: "commandes commands terminal aide help" },
     Outil { action: Action::Depanner, commande: "depanner", groupe: Some(Groupe::Depanner), lettre: "",
         titre: ["Dépanner pas à pas", "Troubleshoot step by step"],
@@ -2312,7 +2309,6 @@ const OUTILS: &[Outil] = &[
     Outil { action: Action::Gaming, commande: "jeux", groupe: Some(Groupe::Optimiser), lettre: "g",
         titre: ["Jeux vidéo", "Gaming"],
         precision: if cfg!(windows) { ["composants et réglages de Windows", "components and Windows settings"] }
-            else if cfg!(target_os = "macos") { ["Rosetta, Steam, Epic, GOG…", "Rosetta, Steam, Epic, GOG…"] }
             else { ["Steam, Vulkan, GameMode, Wine…", "Steam, Vulkan, GameMode, Wine…"] },
         mots: "jeux games steam directx vulkan" },
     Outil { action: Action::DnsRapide, commande: "dns-rapide", groupe: Some(Groupe::Optimiser), lettre: "",
@@ -2335,16 +2331,13 @@ const OUTILS: &[Outil] = &[
     Outil { action: Action::OptimiserConfidentialite, commande: "optimiser", groupe: Some(Groupe::Optimiser), lettre: "",
         titre: ["Réglages de confidentialité", "Privacy settings"],
         precision: if cfg!(windows) { ["télémétrie, publicités, suivi", "telemetry, ads, tracking"] }
-            else if cfg!(target_os = "macos") { ["publicités, analyses", "ads, analytics"] }
             else { ["rapports et statistiques", "reports and statistics"] },
         mots: "télémétrie telemetry vie privée privacy publicité ads" },
     Outil { action: Action::OptimiserConfort, commande: "optimiser", groupe: Some(Groupe::Optimiser), lettre: "",
         titre: ["Confort et fichiers", "Comfort and files"],
         precision: if cfg!(windows) { ["extensions, clés USB, clic droit", "extensions, USB drives, menus"] }
-            else if cfg!(target_os = "macos") { ["extensions, .DS_Store, Finder", "extensions, .DS_Store, Finder"] }
             else { ["annonces d'Ubuntu", "Ubuntu announcements"] },
         mots: "extensions fichiers cachés hidden files" },
-    #[cfg(not(target_os = "macos"))]
     Outil { action: Action::OptimiserPerformance, commande: "optimiser", groupe: Some(Groupe::Optimiser), lettre: "",
         titre: ["Performance et fiabilité", "Performance and reliability"],
         precision: if cfg!(windows) { ["démarrage rapide, widgets…", "fast startup, widgets…"] }
@@ -2515,7 +2508,6 @@ impl Action {
     fn disponible(self) -> bool {
         match self {
             Action::OptimiserConfidentialite => reglages_disponibles(optimiser::Categorie::Confidentialite),
-            #[cfg(not(target_os = "macos"))]
             Action::OptimiserPerformance => reglages_disponibles(optimiser::Categorie::Performance),
             Action::OptimiserConfort => reglages_disponibles(optimiser::Categorie::Confort),
             // Defender, le pare-feu et le registre de Windows ; sous Linux, le pare-feu (ufw, firewalld, nftables).
@@ -2523,7 +2515,7 @@ impl Action {
             // Deux flux du noyau Linux : ailleurs, la ligne ne serait que du bruit.
             Action::Veilleur => cfg!(target_os = "linux"),
             // Sous Linux, le gestionnaire de paquets et le catalogue de la CISA (bilan, Failles connues) s'en chargent.
-            Action::LogicielsPerimes => cfg!(any(windows, target_os = "macos")),
+            Action::LogicielsPerimes => cfg!(windows),
             _ => true,
         }
     }
@@ -2624,7 +2616,7 @@ impl Groupe {
             Groupe::Arnaques => tr!("liens, courriels, mots de passe", "links, emails, passwords"),
             Groupe::Reagir => tr!("blocage, incident, tout annuler", "blocking, incidents, undo all"),
             Groupe::Donnees => tr!("copier, sauvegarder, vérifier", "copy, back up, verify"),
-            Groupe::Guide => tr!("Linux, Windows, macOS, pas à pas", "Linux, Windows, macOS, how-tos"),
+            Groupe::Guide => tr!("Linux, Windows, pas à pas", "Linux, Windows, how-tos"),
             Groupe::Depanner => tr!("Internet, son, lenteur, réparer", "Internet, sound, slowness, repair"),
             Groupe::Optimiser => tr!("logiciels, nettoyage, réglages", "software, cleanup, settings"),
             Groupe::Vanguard => tr!("réglages, mise à jour, extensions", "settings, update, extensions"),
@@ -2908,7 +2900,6 @@ async fn executer_outil(s: &mut Session, action: Action) {
         Action::Nettoyer => nettoyer::menu(),
         Action::OptimiserRecommandes => optimiser::recommandes(),
         Action::OptimiserConfidentialite => optimiser::menu(optimiser::Categorie::Confidentialite),
-        #[cfg(not(target_os = "macos"))]
         Action::OptimiserPerformance => optimiser::menu(optimiser::Categorie::Performance),
         Action::OptimiserConfort => optimiser::menu(optimiser::Categorie::Confort),
         Action::OptionsDefense => options_defense::afficher(),
@@ -3079,7 +3070,7 @@ const AIDES_EN: &[(&str, &str)] = &[
                       connected devices, computers) from the local network scan, this computer's network findings and \
                       a few more read-only checks, attacking nothing; what could not be checked is said, never counted \
                       as safe"),
-    ("antivirus", "Malware scan: ClamAV (Linux, macOS) or Microsoft Defender (Windows)"),
+    ("antivirus", "Malware scan: ClamAV (Linux) or Microsoft Defender (Windows)"),
     ("surveillance", "Turn hourly network monitoring on or off (notification for unknown devices)"),
     ("tableau-de-bord", "Monitoring dashboard in the browser: its state, the alerts day by day, the new devices and the \
                  suspicious connections. Local page, nothing is sent"),
@@ -3155,10 +3146,9 @@ const AIDES_EN: &[(&str, &str)] = &[
                           text against real address) and the attachments (name, content, YARA, antivirus); after \
                           your consent, the domains' age and public lists"),
     ("logiciels-espions", "Spyware: known stalkerware servers and sites (Échap list, CC-BY 4.0) in current \
-                           connections and the DNS cache, programs reading the keyboard, apps allowed input \
-                           monitoring, accessibility or screen recording (macOS), known monitoring software. \
-                           Read-only"),
-    ("logiciels-perimes", "Outdated software (Windows, macOS): browsers, Office, Acrobat, Java, 7-Zip, PuTTY and \
+                           connections and the DNS cache, programs reading the keyboard, known monitoring \
+                           software. Read-only"),
+    ("logiciels-perimes", "Outdated software (Windows): browsers, Office, Acrobat, Java, 7-Zip, PuTTY and \
                            Slack compared with their latest version (publishers' sites, endoflife.date, Homebrew; \
                            public files downloaded in full, nothing about this computer is sent), each product's \
                            exploited flaws in CISA's catalog, Firefox and Edge checked flaw by flaw (Mozilla \
@@ -3182,10 +3172,10 @@ const AIDES_EN: &[(&str, &str)] = &[
     ("exporter", "Back up the device database and the monitoring state to a JSON file"),
     ("importer", "Add a backup (or an appareils.json) to the current database, without erasing anything"),
     ("nommer", "Give a nickname to a device of the database (“HP printer”), by its IP or MAC"),
-    ("jeux", "Gaming: components for games (Windows: Visual C++, DirectX…; Linux: Steam, Vulkan, GameMode, Wine…; \
-                macOS: Rosetta, Steam, Epic…) and system settings"),
-    ("guide", "Command guide: the useful commands of Omarchy, Arch, Fedora, Debian, other Linux, Windows, macOS and \
-               all systems, sorted by program, with step-by-step guides; plus the tldr-pages examples, downloaded \
+    ("jeux", "Gaming: components for games (Windows: Visual C++, DirectX…; Linux: Steam, Vulkan, GameMode, Wine…) \
+                and system settings"),
+    ("guide", "Command guide: the useful commands of Omarchy, Arch, Fedora, Debian, other Linux, Windows and all \
+               systems, sorted by program, with step-by-step guides; plus the tldr-pages examples, downloaded \
                every week"),
     ("lenteur", "Why is it slow? What keeps the processor, memory and disk busy, startup, the programs started at \
                  login. Read only"),
@@ -3198,7 +3188,7 @@ const AIDES_EN: &[(&str, &str)] = &[
     ("verifier-copie", "Check a copy made by “Copy my files” (restore test): files spread over the whole copy, read \
                         back from the disk and compared with their original. Nothing is written or deleted"),
     ("verifier-sauvegarde", "Check my backup: the backup set up by Vanguard really read back, files spread over the \
-                             whole backup compared with their original; for Time Machine, Déjà Dup and File History, \
+                             whole backup compared with their original; for Déjà Dup and File History, \
                              the steps. Nothing is written or deleted"),
     ("verifier-cle", "Check my drive: real capacity (fake drives), speeds and bad blocks of a USB stick or an \
                       external disk. Writes into the free space after your consent, reads back, then erases; your \
@@ -3211,10 +3201,10 @@ const AIDES_EN: &[(&str, &str)] = &[
                           logs (Windows) or a folder of .evtx (any system), then the alerts in time order. Read only"),
     ("rapport-a-laisser", "Report to leave behind: a simple page for the person you just helped (grade, what is left to do, \
                    what is fine), put on their Desktop after consent and opened in the browser"),
-    ("sauvegarde-auto", "Automatic backup: set up with the system's tool (Déjà Dup or rsync every day, Time Machine, \
-                         File History) to an external disk, after your consent, exactly undoable"),
+    ("sauvegarde-auto", "Automatic backup: set up with the system's tool (Déjà Dup or rsync every day, File \
+                         History) to an external disk, after your consent, exactly undoable"),
     ("raccourci", "Shortcut on this computer: Vanguard copied here and started with one click (applications menu on \
-                   Linux, Desktop on Windows and macOS). Without argument: the state, then the offer"),
+                   Linux, Desktop on Windows). Without argument: the state, then the offer"),
     ("regles", "The check rules declared for this system: stable identifier, subject, hardening references"),
     ("autotest", "Self-test: Vanguard checks its own readings on this computer. Every check rule under a guard and a \
                   time limit, read only and proven so (fingerprints before and after), and its readings compared with \
@@ -3255,7 +3245,7 @@ const AIDES_EN: &[(&str, &str)] = &[
     ("agent", "The Vanguard Agent (no AI), read-only: its missions (time limits, cache, local record, notes on \
                fixes), their last run and its journal, without any personal data. Nothing is changed or sent. \
                Its switches are in Settings (“settings auto-tuning”)"),
-    ("optimiser", "Optimize: the recommended settings, the privacy, performance (except macOS) and comfort ones, each \
+    ("optimiser", "Optimize: the recommended settings, the privacy, performance and comfort ones, each \
                    shown, accepted, then exactly undoable; “undo” puts everything back as it was. No argument: the \
                    Optimize menu"),
 ];
@@ -3299,7 +3289,7 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
                                      Outlook on the web “Download”"),
     ("verifier-fichier", "empreinte", "The checksum published by the site (preferably SHA-256). Otherwise: a \
                                        SHA256SUMS or .sha256 next to it"),
-    ("guide", "quoi", "A system (omarchy, arch, fedora, debian, windows, macos, all; linux: the common programs; tldr; \
+    ("guide", "quoi", "A system (omarchy, arch, fedora, debian, windows, all; linux: the common programs; tldr; \
                        vanguard), a program (systemctl, winget, tar…), a path (6.7.2) or words to look for"),
     ("fiche-ordinateur", "json", "The specs as JSON, for a script (without the serial numbers)"),
     ("evenements", "json", "The log as JSON, for a script"),
@@ -3466,7 +3456,7 @@ fn rubriques_de_l_aide() -> Vec<(String, Vec<String>)> {
 }
 
 /// Les commandes visibles rangées comme le menu, par leur nom français : (groupe, aucun pour la rubrique du bilan ;
-/// noms dans l'ordre des lignes). Sans langue : `--help` et le guide (10.10) s'en servent.
+/// noms dans l'ordre des lignes). Sans langue : `--help` et le guide (10.9) s'en servent.
 fn rubriques_des_commandes() -> Vec<(Option<Groupe>, Vec<&'static str>)> {
     let clap = Args::command();
     let existe = |commande: &str| {
@@ -3605,7 +3595,6 @@ async fn optimiser_en_ligne_de_commande(quoi: Option<&str>) {
         None => return sous_menu(&mut s, Groupe::Optimiser).await,
         Some("recommandes" | "recommended") => Action::OptimiserRecommandes,
         Some("confidentialite" | "privacy") => Action::OptimiserConfidentialite,
-        #[cfg(not(target_os = "macos"))]
         Some("performance") => Action::OptimiserPerformance,
         Some("confort" | "comfort") => Action::OptimiserConfort,
         Some("annuler" | "undo") => Action::OptimiserAnnuler,
@@ -4283,7 +4272,7 @@ mod tests_menu {
     }
 
     /// Les lignes propres à un système vont en fin de groupe : les places annoncées (4.1 à 4.8, 8.1 à 8.9, 12.1 à
-    /// 12.10…) sont les mêmes sous Linux, Windows et macOS.
+    /// 12.10…) sont les mêmes sous Linux et Windows.
     #[test]
     fn lignes_propres_a_un_systeme_en_fin() {
         let propres = [
@@ -4292,7 +4281,6 @@ mod tests_menu {
             Action::Veilleur,
             Action::OptimiserConfidentialite,
             Action::OptimiserConfort,
-            #[cfg(not(target_os = "macos"))]
             Action::OptimiserPerformance,
         ];
         for g in GROUPES {
@@ -4306,13 +4294,9 @@ mod tests_menu {
                 );
             }
         }
-        #[cfg(not(target_os = "macos"))]
         assert_eq!(Groupe::Optimiser.actions().last(), Some(&Action::OptimiserPerformance));
         assert!(Action::Signaler.disponible());
-        assert_eq!(
-            Action::LogicielsPerimes.disponible(),
-            cfg!(any(windows, target_os = "macos"))
-        );
+        assert_eq!(Action::LogicielsPerimes.disponible(), cfg!(windows));
     }
 
     /// Le test de la VM ouvre les Options de défense en 4.10 : toujours là sous Windows, juste après les logiciels
@@ -4324,13 +4308,13 @@ mod tests_menu {
             if cfg!(windows) {
                 Some("4.10")
             } else {
-                // Sous Linux, juste après les lignes communes (pas de logiciels pas à jour) ; macOS : rien.
+                // Sous Linux, juste après les lignes communes (pas de logiciels pas à jour).
                 cfg!(target_os = "linux").then_some("4.9")
             }
         );
         assert_eq!(
             touche_de(Action::LogicielsPerimes).as_deref(),
-            cfg!(any(windows, target_os = "macos")).then_some("4.9")
+            cfg!(windows).then_some("4.9")
         );
     }
 
@@ -4583,7 +4567,7 @@ mod tests_menu {
             "{:?}",
             trois("gimp")
         );
-        // Proton VPN et Mullvad VPN n'ont de paquet que sous Arch (et winget, Homebrew) : ailleurs, la recherche ne
+        // Proton VPN et Mullvad VPN n'ont de paquet que sous Arch (et winget) : ailleurs, la recherche ne
         // propose pas un logiciel qu'elle ne saurait installer (`pour_ce_systeme`), la CI Ubuntu comprise.
         let vpn_ici = lignes.iter().any(|l| {
             matches!(l, Ligne::Cachee { touche, texte, .. } if touche.starts_with(&logiciels) && texte.contains("VPN"))
@@ -5426,11 +5410,8 @@ mod tests_menu {
     #[test]
     fn les_essais_n_ecrivent_pas_dans_le_dossier_temporaire() {
         let permis: std::collections::BTreeMap<&str, usize> = [
-            // Le programme : bac à sable, fichier pour ClamAV, disques exclus, dossiers risqués, traces de Windows
-            // et de macOS (`TMPDIR` lu), dossier d'une extension isolée sous macOS (`TMPDIR` donné).
+            // Le programme : bac à sable, fichier pour ClamAV, disques exclus, dossiers risqués, traces de Windows.
             ("src/protection/isoler.rs", 1),
-            ("src/traces/macos.rs", 1),
-            ("src/plugins/mod.rs", 1),
             ("src/protection/antivirus.rs", 1),
             ("src/protection/cle.rs", 1),
             ("src/traces/windows.rs", 2),

@@ -2,7 +2,7 @@
 //! les noms de sites), lu par des essais qui ne changent rien : une adresse sur le réseau, la box qui répond, trois
 //! serveurs d'Internet joignables (Cloudflare, Quad9, Google), deux noms de sites traduits en adresses.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc : socket et ioctl (état des cartes réseau).
 #![allow(unsafe_code)]
@@ -141,8 +141,6 @@ fn box_repond(box_: Ipv4Addr) -> bool {
     }
     #[cfg(target_os = "linux")]
     let essai = ["-c", "1", "-W", "2", &ip];
-    #[cfg(target_os = "macos")]
-    let essai = ["-c", "1", "-t", "2", &ip];
     #[cfg(windows)]
     let essai = ["-n", "1", "-w", "2000", &ip];
     lancer("ping", &essai).is_some_and(|r| ping_repond(r.code, &r.sortie, cfg!(windows)))
@@ -472,31 +470,6 @@ pub(super) struct Signal {
     pub economie: Option<bool>,
 }
 
-/// `system_profiler SPAirPortDataType` (macOS) : « Signal / Noise: -58 dBm / -94 dBm » et « Channel: 36 (5GHz,
-/// 80MHz) » du réseau en cours (le premier bloc). Qualité : 2 × (dBm + 100), bornée à 0-100, l'usage courant.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn signal_airport(texte: &str) -> Option<Signal> {
-    let en_cours = texte.split("Current Network Information:").nth(1)?;
-    let dbm: i32 = en_cours
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("Signal / Noise:"))?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()?;
-    let qualite = u8::try_from(dbm.saturating_add(100).saturating_mul(2).clamp(0, 100)).ok()?;
-    // « Channel: 37 (6GHz, 160MHz) » : le numéro, puis la bande entre parenthèses.
-    let canal = en_cours.lines().find_map(|l| l.trim().strip_prefix("Channel:"));
-    Some(Signal {
-        qualite,
-        canal: canal.and_then(|v| v.split_whitespace().next()?.parse().ok()),
-        bande: canal
-            .and_then(|v| v.split_once('('))
-            .and_then(|(_, b)| Bande::de_texte(b)),
-        economie: None,
-    })
-}
-
 /// Les cartes Wi-Fi : le noyau donne un dossier « wireless » à chacune dans /sys/class/net (ce que listait
 /// `iw dev`). Triées, pour que la première soit toujours la même.
 #[cfg(target_os = "linux")]
@@ -601,7 +574,7 @@ fn signal_natif() -> Option<(String, Signal)> {
 }
 
 /// Le Wi-Fi de la connexion en cours. `Ok(None)` : pas connecté ; `Err` : le système ne se laisse pas lire (pas
-/// connecté n'est alors pas prouvé). Seul Windows peut refuser (sans la localisation) ; Linux et macOS se taisent.
+/// connecté n'est alors pas prouvé). Seul Windows peut refuser (sans la localisation) ; Linux se tait.
 #[cfg_attr(not(windows), allow(clippy::unnecessary_wraps))]
 fn signal() -> Result<Option<Signal>, &'static str> {
     #[cfg(target_os = "linux")]
@@ -627,19 +600,10 @@ fn signal() -> Result<Option<Signal>, &'static str> {
     {
         Ok(crate::machine::wifi::wlanapi::connexion()?.and_then(|c| signal_de_connexion(&c)))
     }
-    #[cfg(target_os = "macos")]
-    {
-        Ok(crate::commande::lancer(
-            std::process::Command::new("system_profiler").arg("SPAirPortDataType"),
-            30,
-        )
-        .and_then(|r| signal_airport(&r.sortie)))
-    }
 }
 
 /// Le signal d'une connexion lue nativement (Windows, NetworkManager) : sa qualité (sans elle, rien à montrer), son
 /// canal et sa bande.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn signal_de_connexion(c: &crate::machine::wifi::Connexion) -> Option<Signal> {
     Some(Signal {
         qualite: c.qualite?,
@@ -709,11 +673,6 @@ fn economie_d_energie() -> &'static str {
         tr!(
             "Gestionnaire de périphériques › Cartes réseau › votre carte Wi-Fi › Gestion de l'alimentation : décochez « Autoriser l'ordinateur à éteindre ce périphérique pour économiser l'énergie ».",
             "Device Manager › Network adapters › your Wi-Fi card › Power Management: uncheck “Allow the computer to turn off this device to save power”."
-        )
-    } else if cfg!(target_os = "macos") {
-        tr!(
-            "Réglages Système › Wi-Fi › Détails du réseau : « Oublier ce réseau », puis s'y reconnecter ; et garder macOS à jour, qui corrige souvent ces coupures.",
-            "System Settings › Wi-Fi › network Details: “Forget This Network”, then reconnect; and keep macOS up to date, which often fixes these drops."
         )
     } else {
         tr!(
@@ -880,17 +839,11 @@ mod tests {
             }),
             None
         );
-        let airport = "Wi-Fi:\n  Interfaces:\n    en0:\n      Current Network Information:\n        Salon:\n          Channel: 36 (5GHz, 80MHz)\n          Signal / Noise: -58 dBm / -94 dBm\n      Other Local Wi-Fi Networks:\n          Signal / Noise: -80 dBm / -94 dBm\n";
-        assert_eq!(
-            signal_airport(airport).map(|s| (s.qualite, s.canal)),
-            Some((84, Some(36)))
-        );
-        assert_eq!(signal_airport(airport).and_then(|s| s.bande), Some(Bande::G5));
         assert!(signal_non_verifie("x").contains('x'));
     }
 
     /// En 6 GHz (Wi-Fi 6E et 7), les canaux reprennent les petits numéros : le canal 5 n'est pas du 2,4 GHz. La bande
-    /// vient de la fréquence ou de la borne (Linux, Windows), sinon du texte du canal (macOS).
+    /// vient de la fréquence ou de la borne.
     #[test]
     fn six_ghz_pas_pris_pour_du_2_4() {
         let c = crate::machine::wifi::Connexion {
@@ -900,8 +853,6 @@ mod tests {
             ..crate::machine::wifi::Connexion::default()
         };
         assert_eq!(signal_de_connexion(&c).and_then(|s| s.bande), Some(Bande::G6));
-        let airport = "      Current Network Information:\n        Salon:\n          Channel: 37 (6GHz, 160MHz)\n          Signal / Noise: -50 dBm / -94 dBm\n";
-        assert_eq!(signal_airport(airport).and_then(|s| s.bande), Some(Bande::G6));
     }
 
     /// Une entrée de voisin périmée, en échec ou incomplète ne dit pas que la box répond ; seule REACHABLE compte.
@@ -1071,10 +1022,6 @@ mod proprietes {
 
         #[test]
         fn lectures_sans_plantage(t in sortie()) {
-            // system_profiler dit des dBm, ramenés à 0-100.
-            if let Some(s) = signal_airport(&t) {
-                prop_assert!(s.qualite <= 100);
-            }
             let _ = voisin_confirme(&t);
         }
 
@@ -1082,14 +1029,6 @@ mod proprietes {
         fn seul_reachable_confirme(etat in "(REACHABLE|STALE|FAILED|INCOMPLETE|DELAY|PROBE|PERMANENT|NOARP|router REACHABLE)", mac in "([0-9a-f]{2}:){5}[0-9a-f]{2}") {
             let ligne = format!("192.168.1.1 dev wlan0 lladdr {mac} {etat}\n");
             prop_assert_eq!(voisin_confirme(&ligne), etat.ends_with("REACHABLE"));
-        }
-
-        #[test]
-        fn signal_airport_borne(dbm in -200i32..100) {
-            let texte = format!("      Current Network Information:\n        Salon:\n          Channel: 36 (5GHz, 80MHz)\n          Signal / Noise: {dbm} dBm / -94 dBm\n");
-            let s = signal_airport(&texte).unwrap();
-            prop_assert!(s.qualite <= 100);
-            prop_assert_eq!(s.bande, Some(Bande::G5));
         }
     }
 }

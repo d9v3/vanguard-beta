@@ -2,6 +2,6 @@
 gravite = "eleve"
 mots = ["192.168.50.66"]
 propre = "aucun"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]
 propre_vide = "la sonde a tourné sans réponse : l'état sain est l'absence même"
 reserve = "les connexions de cet ordinateur et la liste noire ne se lisent pas ici : non vérifiés, dits"

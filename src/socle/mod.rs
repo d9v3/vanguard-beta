@@ -72,11 +72,11 @@ mod tests {
         }
     }
 
-    /// Les structures C que Vanguard remet à zéro par `std::mem::zeroed` avant de les confier au système (Linux,
-    /// macOS) : zéro doit être une valeur permise pour chacune (aucune référence, aucun pointeur de fonction non nul,
-    /// aucune énumération sans variante nulle). Sous Miri, une valeur interdite est une erreur ; la liste suit
-    /// `grep -rn 'mem::zeroed' src`, une structure ajoutée là s'ajoute ici (celles de Windows : leurs modules).
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    /// Les structures C que Vanguard remet à zéro par `std::mem::zeroed` avant de les confier au système (Linux) : zéro
+    /// doit être une valeur permise pour chacune (aucune référence, aucun pointeur de fonction non nul, aucune
+    /// énumération sans variante nulle). Sous Miri, une valeur interdite est une erreur ; la liste suit `grep -rn
+    /// 'mem::zeroed' src`, une structure ajoutée là s'ajoute ici (celles de Windows : leurs modules).
+    #[cfg(target_os = "linux")]
     #[test]
     fn structures_c_mises_a_zero() {
         // std::mem::zeroed : l'essai (sous Miri) des structures C mises à zéro.
@@ -98,10 +98,6 @@ mod tests {
             let _: libc::utsname = zero();
             let _: libc::sigaction = zero();
             let _: [libc::sigaction; 2] = zero();
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let _: libc::proc_bsdinfo = zero();
         }
     }
 }

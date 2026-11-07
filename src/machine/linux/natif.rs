@@ -10,7 +10,7 @@
 // FFI de libc : getgroups, getgrgid_r et sysconf (groupes du compte, constantes du noyau).
 #![allow(unsafe_code)]
 
-// La recherche dans le PATH est commune à Linux et macOS (`machine::unix`).
+// La recherche dans le PATH est dans `machine::unix`.
 use crate::machine::unix::chemin_dans;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;

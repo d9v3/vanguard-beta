@@ -6,7 +6,7 @@
 //! nom de Wi-Fi, de numéro de série ni de chemin. outils/deployer.sh n'en rapatrie que journal-erreurs.txt : ce
 //! tableau ne part jamais sur GitHub (test `seul_le_journal_quitte_vanguardlog`).
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::collections::BTreeMap;
@@ -200,17 +200,6 @@ fn nom_windows(produit: &str, build: &str, version: &str) -> String {
     } else {
         format!("{nom} {version}")
     }
-}
-
-#[cfg(target_os = "macos")]
-fn systeme_et_modele() -> (String, String) {
-    use crate::machine::macos::{sysctl_texte, version_systeme};
-    let systeme = format!(
-        "{} {}",
-        version_systeme("ProductName").unwrap_or_default(),
-        version_systeme("ProductVersion").unwrap_or_default()
-    );
-    (systeme.trim().to_string(), sysctl_texte("hw.model").unwrap_or_default())
 }
 
 // ───────────────────────────── Tableau ─────────────────────────────
@@ -479,12 +468,12 @@ mod tests {
         t.ordinateurs.get_mut("e1").unwrap().surnom = "portable de maman".into();
         ecrire(&t, &chemin).unwrap();
         noter_dans(&chemin, "e1", "Windows 11 Pro 25H2", "Dell XPS 13", &audit(), None);
-        noter_dans(&chemin, "e2", "macOS 15.1", "", &audit(), None);
+        noter_dans(&chemin, "e2", "Fedora Linux 43", "", &audit(), None);
         let t = lire(&chemin);
         assert_eq!(t.ordinateurs.len(), 2);
         assert_eq!(t.ordinateurs["e1"].surnom, "portable de maman");
         assert_eq!(t.ordinateurs["e1"].systeme, "Windows 11 Pro 25H2");
-        assert_eq!(t.ordinateurs["e2"].surnom, "macOS 15.1");
+        assert_eq!(t.ordinateurs["e2"].surnom, "Fedora Linux 43");
         // Un tableau illisible repart de zéro au lieu de bloquer.
         std::fs::write(&chemin, "{ pas du json").unwrap();
         assert_eq!(lire(&chemin), Tableau::default());

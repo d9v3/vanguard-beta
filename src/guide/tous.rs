@@ -1,4 +1,4 @@
-//! Guide : les commandes qui s'écrivent pareil sous Linux, Windows et macOS, Vanguard en tête. Sous Windows, ssh, scp,
+//! Guide : les commandes qui s'écrivent pareil sous Linux et Windows, Vanguard en tête. Sous Windows, ssh, scp,
 //! curl et tar sont fournis depuis Windows 10 (2018).
 
 use super::{Programme, changer, traduite, voir};
@@ -12,8 +12,8 @@ pub const PROGRAMMES: &[Programme] = &[
             traduite(
                 "vanguard",
                 "vanguard",
-                "Le menu. Depuis la clé : <clé>/Linux/vanguard, <clé>\\Windows\\vanguard.exe, <clé>/macOS/vanguard.",
-                "The menu. From the key: <key>/Linux/vanguard, <key>\\Windows\\vanguard.exe, <key>/macOS/vanguard.",
+                "Le menu. Depuis la clé : <clé>/Linux/vanguard, <clé>\\Windows\\vanguard.exe.",
+                "The menu. From the key: <key>/Linux/vanguard, <key>\\Windows\\vanguard.exe.",
                 false,
             ),
             traduite(

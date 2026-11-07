@@ -1,8 +1,8 @@
 //! Parcours « Pas de son » : le service du son tourne-t-il, quelle sortie est choisie, est-elle muette, à quel volume.
-//! Linux : PulseAudio ou PipeWire (pactl) ; macOS : volume de sortie (osascript) ; Windows : les services du son.
+//! Linux : PulseAudio ou PipeWire (pactl) ; Windows : les services du son.
 //! Remettre le son, choisir la sortie ou relancer le service : montré, puis fait après accord.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use super::{Etat, a_savoir, fait, question, verifications};
@@ -245,71 +245,6 @@ mod systeme {
             ),
             &relancer(),
         ) {
-            fait(tr!("Service relancé.", "Service restarted."));
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-mod systeme {
-    use std::process::Command;
-
-    use super::{Etat, fait};
-    use crate::ui::*;
-
-    /// osascript fait foi (outil gardé, §4) : le volume de sortie n'a pas d'interface publique hors CoreAudio, en
-    /// Objective-C. Lancé sans shell.
-    fn osascript(script: &str) -> Option<String> {
-        let r = crate::commande::lancer(Command::new("osascript").args(["-e", script]), 10)?;
-        (r.code == Some(0)).then(|| r.sortie.trim().to_string())
-    }
-
-    pub fn verifier(_ou: usize, _voulue: usize) {
-        let muet = osascript("output muted of (get volume settings)");
-        let volume: Option<u32> = osascript("output volume of (get volume settings)").and_then(|v| v.parse().ok());
-        match (muet.as_deref(), volume) {
-            (Some("true"), _) => {
-                Etat::Mauvais.dire(tr!("Le son est coupé (muet).", "The sound is muted."));
-                if demander(tr!("\n  Remettre le son ? [o/N] : ", "\n  Unmute? [y/N]: ")).oui()
-                    && crate::machine::appliquer(&["osascript -e 'set volume without output muted'".to_string()])
-                {
-                    fait(tr!("Son remis.", "Sound unmuted."));
-                }
-            }
-            (_, Some(v)) if v < 10 => {
-                Etat::Mauvais.dire(&trf!("Volume très bas ({v} %).", "Volume very low ({v}%)."));
-                if demander(tr!(
-                    "\n  Mettre le volume à 50 % ? [o/N] : ",
-                    "\n  Set the volume to 50%? [y/N]: "
-                ))
-                .oui()
-                    && crate::machine::appliquer(&["osascript -e 'set volume output volume 50'".to_string()])
-                {
-                    fait(tr!("Volume à 50 %.", "Volume at 50%."));
-                }
-            }
-            (_, Some(v)) => Etat::Bon.dire(&trf!("Volume à {v} %, son non coupé.", "Volume at {v}%, not muted.")),
-            _ => Etat::Info.dire(tr!("Volume illisible.", "Volume not readable.")),
-        }
-        Etat::Info.dire(tr!(
-            "La sortie se choisit dans Réglages Système › Son › Sortie (ou en cliquant sur le haut-parleur de la barre des menus).",
-            "The output is chosen in System Settings › Sound › Output (or by clicking the speaker in the menu bar)."
-        ));
-        if demander(tr!(
-            "\n  Ouvrir les réglages du son ? [o/N] : ",
-            "\n  Open the sound settings? [y/N]: "
-        ))
-        .oui()
-        {
-            crate::machine::ouvrir("x-apple.systempreferences:com.apple.Sound-Settings.extension");
-        }
-        if demander(tr!(
-            "\n  Toujours rien ? Relancer le service du son (mot de passe administrateur) ? [o/N] : ",
-            "\n  Still nothing? Restart the sound service (administrator password)? [y/N]: "
-        ))
-        .oui()
-            && crate::machine::appliquer(&["sudo killall coreaudiod".to_string()])
-        {
             fait(tr!("Service relancé.", "Service restarted."));
         }
     }

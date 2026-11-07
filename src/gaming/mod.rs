@@ -4,15 +4,12 @@
 
 use crate::machine;
 use crate::selection::{Case, cocher};
-#[cfg(not(target_os = "macos"))]
 use crate::selection::{Ligne, choisir};
 use crate::ui::*;
 
 mod annulation;
 #[cfg(target_os = "linux")]
 pub(crate) mod linux;
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(windows)]
 pub(crate) mod windows;
 
@@ -32,8 +29,6 @@ pub(crate) struct Element {
 }
 
 impl Element {
-    // macOS : pas de réglage du système à remettre (le compteur de Metal dit comment l'enlever).
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub(crate) fn annulable(mut self, id: &'static str, gestes: Vec<crate::optimiser::Geste>) -> Element {
         self.annulable = Some((id, gestes));
         self
@@ -228,9 +223,7 @@ pub(crate) fn proposer(nom: &str, liste: &[Element], restauration: bool) {
 }
 
 /// Le menu de Linux et de Windows : deux listes (composants, réglages), « 3 » pour remettre les réglages appliqués
-/// par Vanguard, et ce qu'il faut savoir dessous. Rend la touche choisie ; `None` pour revenir. (macOS n'a qu'une
-/// liste, ouverte directement.)
-#[cfg(not(target_os = "macos"))]
+/// par Vanguard, et ce qu'il faut savoir dessous. Rend la touche choisie ; `None` pour revenir.
 pub(crate) fn choisir_liste(composants: (&str, &str), reglages: (&str, &str), note: Option<String>) -> Option<String> {
     let notes = reglages_notes();
     let mut lignes = vec![
@@ -267,19 +260,13 @@ pub(crate) fn choisir_liste(composants: (&str, &str), reglages: (&str, &str), no
 
 /// Remet comme avant les réglages pour jouer appliqués par Vanguard (choix 3 du menu), par le mécanisme d'Optimiser :
 /// ceux cochés reprennent leurs valeurs notées, puis ne perdent leur note que si elles sont relues en place.
-#[cfg(not(target_os = "macos"))]
 pub(crate) fn remettre() {
     crate::optimiser::annulables::remettre_jeux();
 }
 
-/// Le nombre de réglages pour jouer changés par Vanguard, à remettre comme avant (choix 3 du menu). macOS n'a pas
-/// cette liste : rien à y remettre d'ici.
+/// Le nombre de réglages pour jouer changés par Vanguard, à remettre comme avant (choix 3 du menu).
 pub(crate) fn reglages_notes() -> usize {
-    if cfg!(target_os = "macos") {
-        0
-    } else {
-        crate::optimiser::annulables::nombre(crate::optimiser::annulables::Origine::Jeux)
-    }
+    crate::optimiser::annulables::nombre(crate::optimiser::annulables::Origine::Jeux)
 }
 
 pub fn menu() {
@@ -287,8 +274,6 @@ pub fn menu() {
     windows::menu();
     #[cfg(target_os = "linux")]
     linux::menu();
-    #[cfg(target_os = "macos")]
-    macos::menu();
 }
 
 #[cfg(test)]
@@ -301,7 +286,6 @@ pub(crate) mod tests {
         let larges: Vec<String> = [
             include_str!("mod.rs"),
             include_str!("linux.rs"),
-            include_str!("macos.rs"),
             include_str!("windows.rs"),
         ]
         .into_iter()

@@ -2,4 +2,4 @@
 gravite = "eleve"
 mots = ["203.0.113.53"]
 propre = "aucun"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]

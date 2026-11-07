@@ -49,7 +49,7 @@ titre_fr = "Essai du salon"
 titre_en = "Living room test"
 description_fr = "Un plugin inventé."
 description_en = "A made-up plugin."
-systemes = ["linux", "macos", "windows"]
+systemes = ["linux", "windows"]
 delai = {delai}
 commande = "essai.sh"
 arguments = ["alice"]
@@ -873,46 +873,6 @@ mod labo_unix {
         assert_eq!(
             b.sortie.split_whitespace().collect::<Vec<_>>(),
             ["1", chemin_remonte, "ecrit"],
-            "{}",
-            b.erreurs
-        );
-        assert!(!Path::new(&maison).join(".vanguard-isole-essai").exists());
-    }
-
-    /// Isolé sous macOS (sandbox-exec) : le dossier personnel ni lu ni écrit, pas de réseau, le dossier de
-    /// l'extension relu mais pas écrit ; l'écriture permise reste celle du dossier jetable (HOME de l'extension).
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn isole_sous_macos_sans_reseau_ni_dossier_personnel() {
-        if !Path::new("/usr/bin/sandbox-exec").is_file() {
-            return crate::essais::saute("sandbox-exec absent");
-        }
-        let j = Jetable::nouveau();
-        let racine = j.racine();
-        poser(
-            &j,
-            "isole.sh",
-            "ls \"$1\" >/dev/null 2>&1 && echo lit\n\
-             touch \"$1/.vanguard-isole-essai\" 2>/dev/null && echo ecrit\n\
-             /usr/bin/nc -z -G 2 1.1.1.1 53 >/dev/null 2>&1 && echo reseau\n\
-             touch ./essai 2>/dev/null && echo dossier\n\
-             touch \"$HOME/essai\" 2>/dev/null && echo jetable\n",
-        );
-        let maison = std::env::var("HOME").unwrap_or_default();
-        let b = labo::lancer(
-            &racine,
-            "isole.sh",
-            std::slice::from_ref(&maison),
-            Facon {
-                isole: true,
-                auto: None,
-            },
-            |_| true,
-        )
-        .unwrap();
-        assert_eq!(
-            b.sortie.split_whitespace().collect::<Vec<_>>(),
-            ["jetable"],
             "{}",
             b.erreurs
         );

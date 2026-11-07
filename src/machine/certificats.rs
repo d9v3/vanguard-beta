@@ -2,7 +2,7 @@
 //! site et lire tout le trafic HTTPS (banque, courriel), sans le moindre avertissement du navigateur.
 //! Les certificats livrés par le système ne sont pas examinés : seulement ceux ajoutés à côté.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use super::{Constat, alerte, ok};
@@ -449,66 +449,6 @@ fn ancres(trouves: Vec<std::path::PathBuf>, illisibles: &[std::path::PathBuf]) -
     constats
 }
 
-/// Noms des certificats auxquels une confiance particulière a été donnée (`security dump-trust-settings`) :
-/// « Cert 0: Charles Proxy CA (12 Jan 2023, MacBook) ». Les racines d'Apple n'y figurent pas : elles ont leur
-/// propre trousseau, que l'utilisateur ne modifie pas.
-#[cfg(any(target_os = "macos", test))]
-fn lire_reglages_confiance(sortie: &str) -> Vec<String> {
-    sortie
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("Cert ")?.split_once(": ").map(|(_, nom)| nom))
-        // La date et la machine d'ajout, entre parenthèses à la fin, ne font pas partie du nom.
-        .map(|nom| {
-            nom.rsplit_once(" (")
-                .filter(|_| nom.ends_with(')'))
-                .map_or(nom, |(n, _)| n)
-        })
-        .map(|nom| nom.trim().to_string())
-        .collect()
-}
-
-/// macOS : certificats rendus « de confiance » par l'administrateur (trousseau Système) ou par l'utilisateur
-/// (trousseau de session). C'est ce que font les outils d'interception et les logiciels publicitaires.
-#[cfg(target_os = "macos")]
-pub fn certificats() -> Vec<Constat> {
-    let mut constats = Vec::new();
-    for (admin, ou) in [
-        (true, tr!("trousseau Système", "System keychain")),
-        (false, tr!("trousseau de session", "login keychain")),
-    ] {
-        let args: &[&str] = if admin {
-            &["dump-trust-settings", "-d"]
-        } else {
-            &["dump-trust-settings"]
-        };
-        // Sans réglage, la commande répond « No Trust Settings were found » avec un code d'erreur.
-        let sortie = crate::commande::lancer(std::process::Command::new("security").args(args), 20)
-            .map(|r| r.sortie)
-            .unwrap_or_default();
-        for nom in lire_reglages_confiance(&sortie) {
-            let nom_cite = crate::commande::sh_chaine(&nom);
-            let retirer = if admin {
-                vec![format!(
-                    "sudo security delete-certificate -c {nom_cite} /Library/Keychains/System.keychain"
-                )]
-            } else {
-                vec![format!("security delete-certificate -c {nom_cite}")]
-            };
-            constats.push(juger(&nom, ou, false, &retirer, false));
-        }
-    }
-    if constats.is_empty() {
-        constats.push(ok(
-            CAT,
-            tr!(
-                "Aucun certificat racine ajouté aux certificats du système.",
-                "No root certificate added to the system certificates."
-            ),
-        ));
-    }
-    constats
-}
-
 /// Racines des magasins de la machine et de l'utilisateur : « CERT|magasin|clé privée|empreinte|sujet ».
 /// Le magasin de l'utilisateur montre aussi ceux de la machine : un certificat présent dans les deux est de la
 /// machine. Windows met à jour lui-même ses racines : seules les marques d'un ajout sont examinées.
@@ -627,16 +567,6 @@ pub(super) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn reglages_de_confiance_macos() {
-        let sortie = "Number of trusted certs = 2\nCert 0: Charles Proxy CA (12 Jan 2023, MacBook)\n   Number of trust settings : 0\nCert 1: mitmproxy\n";
-        assert_eq!(lire_reglages_confiance(sortie), ["Charles Proxy CA", "mitmproxy"]);
-        assert_eq!(
-            lire_reglages_confiance("SecTrustSettingsCopyCertificates: No Trust Settings were found."),
-            Vec::<String>::new()
-        );
-    }
-
     /// Certificat autosigné « CN=Vanguard Test CA, O=Vanguard » (openssl req -x509, clé EC P-256).
     const PEM: &str = "-----BEGIN CERTIFICATE-----
 MIIBsTCCAVegAwIBAgIUNk+0eAFwLwngOVYPiSUQLdrH6QAwCgYIKoZIzj0EAwIw
@@ -678,20 +608,20 @@ xo1zjuQ=
     }
 
     /// Le sujet d'un certificat est écrit par qui l'a fabriqué : celui qui installe une fausse autorité peut y mettre
-    /// de quoi effacer l'alerte. Montré inoffensif ; la commande qui le retire garde le vrai nom (macOS le cherche par
-    /// son nom).
+    /// de quoi effacer l'alerte, et le nom de son fichier aussi. Montrés inoffensifs ; la commande qui le retire garde
+    /// le vrai chemin.
     #[test]
     fn sujet_piege() {
         let piege = "Faux CA\x1b]52;c;eA==\x07\x1b[2K\r\u{202e}";
-        let retirer = vec![format!("security delete-certificate -c '{piege}'")];
+        let chemin = "/etc/x\x1b[8m.pem";
+        let retirer = vec![format!("sudo rm -f {}", crate::commande::sh_chaine(chemin))];
         for cle_privee in [false, true] {
-            let c = juger(piege, "/etc/x\x1b[8m.pem", cle_privee, &retirer, false);
+            let c = juger(piege, chemin, cle_privee, &retirer, false);
             assert!(!crate::ui::contient_un_piege(&c.message), "{}", c.message);
             let k = c.correctif.as_ref().unwrap();
             assert!(!crate::ui::contient_un_piege(&k.action), "{}", k.action);
             assert_eq!(k.commandes, retirer);
         }
-        assert_eq!(lire_reglages_confiance(&format!("Cert 0: {piege}\n")), [piege]);
     }
 
     #[test]

@@ -386,21 +386,6 @@ fn nom_du_compte(uid: u32, passwd: &str) -> String {
     nom.map_or_else(|| uid.to_string(), |n| format!("{n} ({uid})"))
 }
 
-/// macOS : ps, par son chemin complet (rien de posé plus tôt dans le PATH).
-#[cfg(target_os = "macos")]
-fn lire_processus(pr: &mut Processus) -> Option<(&'static str, &'static str)> {
-    let r = crate::commande::lancer(
-        std::process::Command::new("/bin/ps").args(["-o", "ppid=,user=,args=", "-p", &pr.pid.to_string()]),
-        10,
-    )?;
-    let ligne = r.sortie.trim();
-    let mut mots = ligne.splitn(3, char::is_whitespace).filter(|m| !m.is_empty());
-    pr.parent = mots.next().and_then(|n| n.parse().ok());
-    pr.compte = mots.next().map(str::to_string);
-    pr.ligne = mots.next().map(|l| borner(l.trim()));
-    None
-}
-
 /// Windows : Win32_Process par WMI, le compte lu dans le jeton du processus.
 #[cfg(windows)]
 fn lire_processus(pr: &mut Processus) -> Option<(&'static str, &'static str)> {

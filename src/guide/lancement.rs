@@ -2,7 +2,7 @@
 //! Échap l'arrête. Jamais une commande marquée ⚠, ni une qui ouvre une fenêtre, occupe tout le terminal, écrit un
 //! fichier ou demande les droits d'administrateur : celles-là se tapent dans un terminal (`pourquoi_pas`).
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
@@ -19,7 +19,7 @@ use crate::selection::ModeClavier;
 use crate::ui::*;
 
 /// Au-delà, la commande est arrêtée : une commande qui suit un journal (journalctl -f) ou qui ne finit pas d'elle-même
-/// (ping sous Linux et macOS) ne tourne pas sans fin si on oublie Vanguard.
+/// (ping sous Linux) ne tourne pas sans fin si on oublie Vanguard.
 const DELAI: Duration = Duration::from_secs(120);
 
 /// Au-delà, les lignes sont comptées sans être montrées : l'écran ne se noie pas sous un journal entier.
@@ -102,7 +102,7 @@ pub(super) fn pourquoi_pas(s: Systeme, p: &Programme, c: &Commande) -> Option<St
     })
 }
 
-/// Le programme qui lance la ligne : sh sous Linux et macOS ; sous Windows, Windows PowerShell, où se tapent les
+/// Le programme qui lance la ligne : sh sous Linux ; sous Windows, Windows PowerShell, où se tapent les
 /// commandes du guide pour Windows, sa sortie en UTF-8 et sans barre de progression (elle s'écrirait par-dessus
 /// l'écran de Vanguard).
 fn processus(ligne: &str) -> Command {
@@ -446,7 +446,7 @@ mod tests {
         assert!(debut.elapsed() < Duration::from_secs(10));
     }
 
-    /// Sous Wine, PowerShell n'est qu'un bouchon : seulement sous Linux et macOS.
+    /// Sous Wine, PowerShell n'est qu'un bouchon : seulement sous Linux.
     #[cfg(unix)]
     #[test]
     fn un_programme_absent_ne_demarre_pas_ou_echoue() {

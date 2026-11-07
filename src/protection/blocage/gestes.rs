@@ -2,7 +2,7 @@
 //! notés avec de quoi les défaire (changements.rs), puis défaits sur demande. Tout ce qui peut empêcher un geste
 //! (garde-fou, droits, pare-feu absent) est vérifié avant d'y toucher : rien n'est fait à moitié.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::collections::HashSet;
@@ -198,16 +198,7 @@ pub(crate) fn preparer(m: &Menace, ctx: &Contexte, automatique: bool) -> Result<
                 return Err(Echec::refuse(OU, raison));
             }
             let pf = ctx.pare_feu.clone()?;
-            let (Some(regle), Some(avant)) = (pare_feu::entrante(pf, *port), pare_feu::ancien::entrante(pf, *port))
-            else {
-                return Err(Echec::refuse(
-                    OU,
-                    trf!(
-                        "non disponible ici : faites écouter {nom} sur 127.0.0.1 seulement (Ollama : OLLAMA_HOST=127.0.0.1)",
-                        "not available here: make {nom} listen on 127.0.0.1 only (Ollama: OLLAMA_HOST=127.0.0.1)"
-                    ),
-                ));
-            };
+            let (regle, avant) = (pare_feu::entrante(pf, *port), pare_feu::ancien::entrante(pf, *port));
             let mut etapes = vec![trf!(
                 "Fermer au réseau le port {port} ({nom}) dans {} : il reste joignable depuis cet ordinateur seulement",
                 "Close port {port} ({nom}) to the network in {}: it stays reachable from this computer only",
@@ -429,7 +420,7 @@ fn preparer_programme(
     ))
 }
 
-/// Ce compte peut-il arrêter ce processus sans droits de plus ? Sous Linux et macOS : un processus de ce compte ;
+/// Ce compte peut-il arrêter ce processus sans droits de plus ? Sous Linux : un processus de ce compte ;
 /// sous Windows : la poignée d'arrêt accordée.
 fn arret_sans_droits(pid: u32) -> bool {
     #[cfg(windows)]
@@ -459,12 +450,6 @@ fn comptes_status(status: &str) -> Option<(u32, u32)> {
     Some((reel, sauve))
 }
 
-/// macOS : proc_pidinfo (PROC_PIDTBSDINFO), sans lancer ps.
-#[cfg(target_os = "macos")]
-fn comptes(pid: u32) -> Option<(u32, u32)> {
-    super::arret::macos::infos(pid).map(|i| (i.pbi_ruid, i.pbi_svuid))
-}
-
 /// Le programme que fait tourner ce processus en ce moment, `None` s'il est fini (ou illisible).
 fn chemin_du_processus_tel(pid: Option<u32>) -> Option<String> {
     chemin_du_processus(pid?)
@@ -480,10 +465,6 @@ pub(crate) fn chemin_du_processus(pid: u32) -> Option<String> {
     #[cfg(windows)]
     {
         crate::machine::windows::processus::chemin(pid)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        Some(crate::socle::processus::programme(pid)?.to_string_lossy().into_owned())
     }
 }
 
@@ -902,14 +883,6 @@ fn processus_present(pid: u32) -> bool {
             .and_then(|s| crate::socle::processus::etat_du_stat(&s))
             .is_some_and(|e| !matches!(e, 'Z' | 'X'))
     }
-    #[cfg(target_os = "macos")]
-    {
-        let Ok(p) = libc::pid_t::try_from(pid) else {
-            return false;
-        };
-        // SAFETY: kill avec le signal 0 n'envoie rien, il dit seulement si le processus existe.
-        unsafe { libc::kill(p, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
-    }
     #[cfg(windows)]
     {
         crate::machine::windows::processus::liste().iter().any(|p| p.pid == pid)
@@ -1014,7 +987,7 @@ pub(crate) fn commandes_d_annulation(
     match inverse {
         Inverse::Sortante { pare_feu, adresse } => Some((pare_feu::sortante(pare_feu, adresse).retirer, None)),
         Inverse::Entrante { pare_feu, port } => {
-            let regle = pare_feu::entrante(pare_feu, port)?;
+            let regle = pare_feu::entrante(pare_feu, port);
             let retenu = (pare_feu == PareFeu::Ufw).then(|| format!("{port}/tcp"));
             Some((regle.retirer, retenu))
         }
@@ -1056,7 +1029,7 @@ pub(crate) fn refus_d_annulation(commandes: &[String]) -> String {
 /// adresse, un port ou une valeur d'avant ? Les valeurs essayées sont celles qui se lisent dans les commandes ; tout
 /// autre texte (une commande ajoutée, changée d'un caractère) ne colle à rien.
 pub(crate) fn inverse_reconnue(commandes: &[String], port: Option<&str>) -> Option<Inverse> {
-    const TOUS: [PareFeu; 4] = [PareFeu::Ufw, PareFeu::Nftables, PareFeu::Windows, PareFeu::Pf];
+    const TOUS: [PareFeu; 3] = [PareFeu::Ufw, PareFeu::Nftables, PareFeu::Windows];
     let morceaux: Vec<&str> = commandes
         .iter()
         .flat_map(|c| c.split(|x: char| !(x.is_ascii_hexdigit() || x == '.' || x == ':')))
@@ -1075,9 +1048,7 @@ pub(crate) fn inverse_reconnue(commandes: &[String], port: Option<&str>) -> Opti
     for p in morceaux.iter().filter_map(|m| m.parse::<u16>().ok()) {
         for pf in TOUS {
             let retenu = (pf == PareFeu::Ufw).then(|| format!("{p}/tcp"));
-            if pare_feu::ancien::entrante(pf, p).is_some_and(|r| r.retirer == commandes)
-                && (port.is_none() || port == retenu.as_deref())
-            {
+            if pare_feu::ancien::entrante(pf, p).retirer == commandes && (port.is_none() || port == retenu.as_deref()) {
                 return Some(Inverse::Entrante { pare_feu: pf, port: p });
             }
         }
@@ -1404,7 +1375,7 @@ mod tests {
         // Une copie de sleep hors des dossiers du système : un programme du système n'est jamais arrêté.
         let dossier = crate::essais::temporaire().join(format!("vanguard-arret-compte-{}", std::process::id()));
         std::fs::create_dir_all(&dossier).unwrap();
-        // Le chemin réel : sous macOS, /var/folders est un lien vers /private/var/folders, que le système rend.
+        // Le chemin réel, liens résolus, comme le système le rend.
         let dossier = dossier.canonicalize().unwrap();
         // Nommée « sleep » : les coreutils en Rust d'Ubuntu 26.04 (uutils) sont un seul programme qui choisit
         // l'utilitaire par son nom ; copié sous un autre nom, il refuse et finit aussitôt, sans rien à arrêter.
@@ -1567,7 +1538,7 @@ mod tests {
     fn annulation_d_avant_forgee_sur_un_port_de_session_refusee() {
         for pf in [PareFeu::Ufw, PareFeu::Nftables, PareFeu::Windows] {
             for p in [22, 3389] {
-                let forgee = pare_feu::ancien::entrante(pf, p).unwrap().retirer;
+                let forgee = pare_feu::ancien::entrante(pf, p).retirer;
                 let retenu = (pf == PareFeu::Ufw).then(|| format!("{p}/tcp"));
                 assert!(inverse_reconnue(&forgee, retenu.as_deref()).is_some(), "{pf:?} {p}");
                 assert_eq!(
@@ -1589,7 +1560,7 @@ mod tests {
             assert_eq!(commandes_d_annulation(&forgee, None, None), None, "{ip}");
         }
         // Rien de ce qui sort n'est une commande de shell : que des ordres typés, rejugés par celui qui agit.
-        let ancienne = pare_feu::ancien::entrante(PareFeu::Ufw, 8188).unwrap().retirer;
+        let ancienne = pare_feu::ancien::entrante(PareFeu::Ufw, 8188).retirer;
         let (c, _) = commandes_d_annulation(&ancienne, Some("8188/tcp"), None).unwrap();
         assert!(c.iter().all(|l| super::super::ordres::est_ordre(l)), "{c:?}");
     }
@@ -1629,7 +1600,7 @@ mod tests {
         );
         // Une note d'avant, telle que Vanguard l'écrivait, est refaite en ordres typés (rejugés), jamais rejouée
         // telle quelle par bash ; le port retenu est oublié avec elle.
-        let ancienne = pare_feu::ancien::entrante(PareFeu::Ufw, 11434).unwrap().retirer;
+        let ancienne = pare_feu::ancien::entrante(PareFeu::Ufw, 11434).retirer;
         assert_eq!(
             commandes_d_annulation(&ancienne, Some("11434/tcp"), None),
             Some((
@@ -1648,7 +1619,7 @@ mod tests {
             Some((vec!["vanguard:remettre-pilotes 0".to_string()], None))
         );
         // Les notes d'avant, telles que Vanguard les écrivait, se reconnaissent sur chaque pare-feu.
-        for pf in [PareFeu::Ufw, PareFeu::Nftables, PareFeu::Windows, PareFeu::Pf] {
+        for pf in [PareFeu::Ufw, PareFeu::Nftables, PareFeu::Windows] {
             for ip in ["203.0.113.7", "2001:db8::7"] {
                 let ip: std::net::IpAddr = ip.parse().unwrap();
                 let ancienne = pare_feu::ancien::sortante(pf, ip).retirer;
@@ -1661,16 +1632,15 @@ mod tests {
                     "{pf:?} {ip}"
                 );
             }
-            if let Some(r) = pare_feu::ancien::entrante(pf, 11434) {
-                let port = (pf == PareFeu::Ufw).then_some("11434/tcp");
-                assert_eq!(
-                    inverse_reconnue(&r.retirer, port),
-                    Some(Inverse::Entrante {
-                        pare_feu: pf,
-                        port: 11434
-                    })
-                );
-            }
+            let r = pare_feu::ancien::entrante(pf, 11434);
+            let port = (pf == PareFeu::Ufw).then_some("11434/tcp");
+            assert_eq!(
+                inverse_reconnue(&r.retirer, port),
+                Some(Inverse::Entrante {
+                    pare_feu: pf,
+                    port: 11434
+                })
+            );
         }
         for avant in [None, Some(0), Some(1)] {
             assert_eq!(

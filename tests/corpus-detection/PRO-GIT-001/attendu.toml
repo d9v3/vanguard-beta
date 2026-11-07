@@ -2,4 +2,4 @@
 gravite = "eleve"
 mots = ["git.exemple.invalid"]
 propre = "aucun"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]

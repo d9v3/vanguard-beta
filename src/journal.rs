@@ -12,7 +12,7 @@
 //! du réseau local et du Wi-Fi sont masqués ; une adresse MAC ne garde que le préfixe du fabricant, une adresse IP
 //! publique devient une adresse de documentation.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::io::Write;
@@ -113,7 +113,7 @@ pub(crate) fn sous_wine() -> bool {
     crate::commande::sous_wine()
 }
 
-/// Système et version, pour situer l'erreur (« Windows 10.0.26200.9711 », « Arch Linux 6.17.2 », « macOS 15.1 »).
+/// Système et version, pour situer l'erreur (« Windows 10.0.26200.9711 », « Arch Linux 6.17.2 »).
 pub(crate) fn systeme() -> &'static str {
     static SYSTEME: OnceLock<String> = OnceLock::new();
     SYSTEME.get_or_init(|| {
@@ -122,12 +122,6 @@ pub(crate) fn systeme() -> &'static str {
             let nom = crate::socle::systeme::nom();
             let noyau = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
             format!("{nom} {}", noyau.trim())
-        }
-        // « macOS 15.1 (Apple Silicon) »
-        #[cfg(target_os = "macos")]
-        {
-            let version = crate::machine::macos::version_systeme("ProductVersion").unwrap_or_default();
-            format!("macOS {version} ({})", crate::machine::macos::architecture())
         }
         #[cfg(windows)]
         {
@@ -153,21 +147,11 @@ fn noms_personnels() -> &'static [(String, &'static str)] {
             .filter_map(|v| std::env::var(v).ok())
             .map(|n| (n, "<utilisateur>"))
             .collect();
-        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-        let mut machines: Vec<String> = ["COMPUTERNAME", "HOSTNAME"]
+        let machines: Vec<String> = ["COMPUTERNAME", "HOSTNAME"]
             .iter()
             .filter_map(|v| std::env::var(v).ok())
             .chain(std::fs::read_to_string("/proc/sys/kernel/hostname").ok())
             .collect();
-        // macOS n'exporte pas le nom de la machine et n'a pas /proc : on le demande (nom affiché « MacBook Pro de… »,
-        // nom réseau, nom d'hôte « ….local »).
-        #[cfg(target_os = "macos")]
-        {
-            use crate::machine::macos::{nom_hote, nom_machine};
-            machines.extend(nom_machine("ComputerName"));
-            machines.extend(nom_machine("LocalHostName"));
-            machines.extend(nom_hote());
-        }
         noms.extend(machines.into_iter().map(|n| (n.trim().to_string(), "<machine>")));
         // Un nom très court (« pc », « a ») remplacerait des morceaux de mots.
         noms.retain(|(n, _)| n.chars().count() >= 3);
@@ -845,7 +829,7 @@ fn arguments_lisibles(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec
     args.into_iter().map(|a| a.to_string_lossy().into_owned()).collect()
 }
 
-/// Les erreurs du fils élevé de Linux et macOS (`appliquer-eleve`), gardées pour le parent quand ce n'est pas `None` :
+/// Les erreurs du fils élevé de Linux (`appliquer-eleve`), gardées pour le parent quand ce n'est pas `None` :
 /// root, il les écrirait sous /root, que le compte ne lit pas, alors que ce qu'il montre renvoie au journal des erreurs
 /// (É-3 du lot U3). Le parent les écrit dans le sien, anonymisées comme toutes les autres.
 static RELAIS: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
@@ -948,7 +932,7 @@ pub(crate) fn noter(champs: &Champs, detail: &str) {
 }
 
 /// Une sortie coupée par celui qui la lit (`vanguard regles | head`) : println! panique sur le tube fermé. Ce n'est pas
-/// un plantage, juste la fin de la lecture (Linux, macOS : EPIPE ; Windows : « le canal de communication est fermé »).
+/// un plantage, juste la fin de la lecture (Linux : EPIPE ; Windows : « le canal de communication est fermé »).
 fn sortie_coupee(message: &str) -> bool {
     message.contains("failed printing to std")
         && ["os error 32)", "os error 232)", "Broken pipe"]
@@ -1161,13 +1145,11 @@ mod tests {
             let t = anonymiser(&format!("hôte {nom} injoignable"));
             assert!(!t.contains(nom.as_str()), "{t}");
         }
-        // Linux le lit dans /proc, macOS le demande à scutil : il doit avoir été trouvé, sauf s'il est trop court
-        // pour être masqué (« vm », « pc »), comme le veut noms_personnels.
+        // Linux le lit dans /proc : il doit avoir été trouvé, sauf s'il est trop court pour être masqué (« vm »,
+        // « pc »), comme le veut noms_personnels.
         #[cfg(target_os = "linux")]
         let masquable =
             std::fs::read_to_string("/proc/sys/kernel/hostname").is_ok_and(|n| n.trim().chars().count() >= 3);
-        #[cfg(target_os = "macos")]
-        let masquable = true;
         #[cfg(unix)]
         if masquable {
             assert!(noms_personnels().iter().any(|(_, r)| *r == "<machine>"));

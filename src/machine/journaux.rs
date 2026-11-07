@@ -3,7 +3,7 @@
 //! d'événements a-t-il été effacé récemment (Windows note lui-même chaque effacement, événement 104).
 //! Aucun programme local ne peut empêcher l'administrateur d'agir : seule une copie hors de la machine le peut.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use super::{Constat, alerte, ok};
@@ -216,13 +216,6 @@ pub(super) fn systeme_lu(bilan: u64) -> Option<SystemeLu> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .filter(|(n, _)| *n == bilan)
         .map(|(_, lu)| lu)
-}
-
-/// macOS : le journal unifié est géré par le système, qui le garde et ne permet pas de l'effacer simplement ;
-/// rien à vérifier ici.
-#[cfg(target_os = "macos")]
-pub fn journaux() -> Vec<Constat> {
-    Vec::new()
 }
 
 #[cfg(windows)]

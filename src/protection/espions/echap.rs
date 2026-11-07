@@ -135,9 +135,9 @@ fn partagee(ip: IpAddr) -> bool {
 /// Noms d'entrées jamais comparés aux noms des programmes : mots courants (« Observer », « Dash »), projets libres ou
 /// outils qui ne sont pas des logiciels espions sur un ordinateur (Traccar, Metasploit), applications de contrôle
 /// parental ou de localisation de téléphone, logiciel de bureau à distance (WiseMo : renvoyé à « Mon ordinateur est-il
-/// contrôlé ? ») et noms qui sont aussi ceux d'éléments ordinaires d'un système (« Screen Time » de macOS, « Mobile Backup »,
-/// « System Framework »). Normalisés (minuscules, lettres et chiffres seulement). Tout nom de moins de 6 caractères
-/// est écarté aussi.
+/// contrôlé ? ») et noms qui sont aussi ceux d'éléments ordinaires d'un système (« Screen Time », « Mobile Backup »,
+/// « System Framework »). Normalisés (minuscules, lettres et chiffres seulement). Tout nom de moins de 6 caractères est
+/// écarté aussi.
 const EXCLUS: &[&str] = &[
     "stalkerware",
     "observer",

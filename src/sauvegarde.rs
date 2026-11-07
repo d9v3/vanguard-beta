@@ -1,12 +1,12 @@
 //! Sauvegarde automatique guidée : la meilleure défense contre un disque qui lâche, un vol ou un rançongiciel, mise en
 //! place avec l'outil du système, vers un disque externe, après accord, et annulable exactement. Linux : Déjà Dup s'il
-//! est là (ses réglages gsettings, valeurs d'avant notées), sinon une minuterie systemd de l'utilisateur qui lance rsync
-//! chaque jour vers le disque (et se tait quand il n'est pas branché) ; macOS : Time Machine (`tmutil`) ; Windows :
-//! l'Historique des fichiers, que Vanguard vérifie au bilan et guide pas à pas (il se règle dans le Panneau de
-//! configuration, rien ne se fait à sa place). Ce que Vanguard a posé est noté (sauvegarde.json) pour ne retirer que ça.
-//! Jamais vers la clé VANGUARD ni le disque du système : la liste des disques de Copier mes fichiers les exclut.
+//! est là (ses réglages gsettings, valeurs d'avant notées), sinon une minuterie systemd de l'utilisateur qui lance
+//! rsync chaque jour vers le disque (et se tait quand il n'est pas branché). Windows : l'Historique des fichiers, que
+//! Vanguard vérifie au bilan et guide pas à pas (il se règle dans le Panneau de configuration, rien ne se fait à sa
+//! place). Ce que Vanguard a posé est noté (sauvegarde.json) pour ne retirer que ça. Jamais vers la clé VANGUARD ni le
+//! disque du système : la liste des disques de Copier mes fichiers les exclut.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::path::{Path, PathBuf};
@@ -47,13 +47,6 @@ pub enum MiseEnPlace {
         destination: String,
         avant: Vec<(String, String)>,
     },
-    /// macOS : destination ajoutée à Time Machine (son identifiant), et si Time Machine était déjà actif.
-    TimeMachine {
-        date: String,
-        destination: String,
-        identifiant: Option<String>,
-        deja_actif: bool,
-    },
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq, Eq)]
@@ -63,8 +56,7 @@ struct Notes {
 }
 
 /// La note de ce qui a été mis en place, dans le dossier de données, scellée (`sceau::SAUVEGARDE`) : écrite par un
-/// autre programme du compte, son annulation coupait Time Machine (`deja_actif` faux) ou remettait des réglages de
-/// Déjà Dup choisis par lui.
+/// autre programme du compte, son annulation remettait des réglages de Déjà Dup choisis par lui.
 pub(crate) const NOTES: &str = crate::sceau::SAUVEGARDE;
 
 fn dossier_notes() -> PathBuf {
@@ -95,8 +87,8 @@ fn charger_de(dossier: &Path) -> Notes {
 /// Ce qui se dit quand la note ne peut pas être crue : rien n'est annulé d'après elle.
 fn note_douteuse(d: crate::sceau::Doute) -> String {
     trf!(
-        "La note de ce que Vanguard a mis en place (sauvegarde.json) ne peut pas être crue ({}) : rien n'est annulé ni vérifié d'après elle. Si une sauvegarde automatique ne vous sert plus, retirez-la avec l'outil du système (Time Machine, Déjà Dup, minuterie de systemd).",
-        "The note of what Vanguard set up (sauvegarde.json) cannot be trusted ({}): nothing is undone or checked from it. If an automatic backup is no longer useful to you, remove it with the system's tool (Time Machine, Déjà Dup, systemd timer).",
+        "La note de ce que Vanguard a mis en place (sauvegarde.json) ne peut pas être crue ({}) : rien n'est annulé ni vérifié d'après elle. Si une sauvegarde automatique ne vous sert plus, retirez-la avec l'outil du système (Déjà Dup, minuterie de systemd).",
+        "The note of what Vanguard set up (sauvegarde.json) cannot be trusted ({}): nothing is undone or checked from it. If an automatic backup is no longer useful to you, remove it with the system's tool (Déjà Dup, systemd timer).",
         d.texte()
     )
 }
@@ -453,30 +445,6 @@ fn schema_gsettings_dans(dossiers: &[PathBuf], schema: &str, cle: Option<&str>) 
     Some(cle.is_none_or(|c| element.contains(&format!("name=\"{c}\""))))
 }
 
-// ───────────────────────────── macOS : Time Machine ─────────────────────────────
-
-/// Les identifiants des destinations de `tmutil destinationinfo` (« ID : 1234-… »).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn identifiants_time_machine(texte: &str) -> Vec<String> {
-    texte
-        .lines()
-        .filter_map(|l| {
-            let (cle, valeur) = l.split_once(':')?;
-            let id = valeur.trim();
-            // Un identifiant de destination : des chiffres hexadécimaux et des tirets. Il repart plus tard dans une
-            // commande lancée avec sudo : rien d'autre n'y passe.
-            (cle.trim() == "ID" && !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
-                .then(|| id.to_string())
-        })
-        .collect()
-}
-
-/// L'identifiant apparu après l'ajout : celui d'après qui n'était pas là avant.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn nouvel_identifiant(avant: &[String], apres: &[String]) -> Option<String> {
-    apres.iter().find(|id| !avant.contains(id)).cloned()
-}
-
 // ───────────────────────────── Windows : Historique des fichiers ─────────────────────────────
 
 /// Le nom du lecteur cible dans Config1.xml de l'Historique des fichiers (« `<TargetName>…` »).
@@ -559,7 +527,7 @@ fn historique_des_fichiers() -> Constat {
 }
 
 /// Au bilan : l'Historique des fichiers sous Windows ; sous Linux, la minuterie rsync posée par Vanguard lance-t-elle
-/// encore un rsync qui existe (Linux et macOS ont déjà, ailleurs, leur vérification des sauvegardes).
+/// encore un rsync qui existe (Linux a déjà, ailleurs, leur vérification des sauvegardes).
 pub fn constats() -> Vec<Constat> {
     #[cfg(windows)]
     {
@@ -568,10 +536,6 @@ pub fn constats() -> Vec<Constat> {
     #[cfg(target_os = "linux")]
     {
         rsync_disparu().into_iter().collect()
-    }
-    #[cfg(target_os = "macos")]
-    {
-        Vec::new()
     }
 }
 
@@ -728,10 +692,6 @@ fn decrire(m: &MiseEnPlace) -> String {
         MiseEnPlace::DejaDup { date, destination, .. } => trf!(
             "Mise en place par Vanguard le {date} : Déjà Dup, chaque jour, vers {destination}.",
             "Set up by Vanguard on {date}: Déjà Dup, every day, to {destination}."
-        ),
-        MiseEnPlace::TimeMachine { date, destination, .. } => trf!(
-            "Mise en place par Vanguard le {date} : Time Machine vers {destination}.",
-            "Set up by Vanguard on {date}: Time Machine to {destination}."
         ),
     }
 }
@@ -1025,57 +985,6 @@ fn mettre_en_place() -> Option<MiseEnPlace> {
     Some(mise_en_place)
 }
 
-/// macOS : ajoute le disque choisi aux destinations de Time Machine et l'active.
-#[cfg(target_os = "macos")]
-fn mettre_en_place() -> Option<MiseEnPlace> {
-    let disque = choisir_disque()?;
-    let avant = crate::machine::sortie("tmutil", &["destinationinfo"]).unwrap_or_default();
-    let deja_actif = avant.contains("Name");
-    let chemin = disque.racine.display().to_string();
-    let commandes = vec![
-        format!("sudo tmutil setdestination -a {}", crate::commande::sh_chaine(&chemin)),
-        "sudo tmutil enable".to_string(),
-    ];
-    section(tr!("CE QUE VANGUARD VA FAIRE", "WHAT VANGUARD WILL DO"));
-    afficher_aligne(
-        "  ",
-        &trf!(
-            "Ajouter « {} » ({} libres) aux disques de Time Machine et l'activer : sauvegardes toutes les heures, tout le Mac, restauration dans le Finder ou à la réinstallation. Le mot de passe d'administrateur sera demandé.",
-            "Add “{}” ({} free) to Time Machine's disks and turn it on: hourly backups, the whole Mac, restore from the Finder or at reinstall. The administrator password will be asked.",
-            disque.nom,
-            taille_lisible(disque.libre)
-        ),
-        2,
-        "",
-    );
-    for c in &commandes {
-        println!("    {GRIS}$ {c}{RESET}");
-    }
-    if !demander(tr!("\n  Appliquer ? [o/N] : ", "\n  Apply? [y/N]: ")).oui() {
-        return None;
-    }
-    if !crate::machine::appliquer(&commandes) {
-        mauvais(tr!(
-            "tmutil a refusé ; rien n'est noté.",
-            "tmutil refused; nothing is noted."
-        ));
-        return None;
-    }
-    let apres = crate::machine::sortie("tmutil", &["destinationinfo"]).unwrap_or_default();
-    let identifiant = nouvel_identifiant(&identifiants_time_machine(&avant), &identifiants_time_machine(&apres));
-    bon(&trf!(
-        "Time Machine sauvegarde vers « {} ». Laissez le disque branché : la première sauvegarde prend du temps.",
-        "Time Machine backs up to “{}”. Leave the disk plugged in: the first backup takes time.",
-        disque.nom
-    ));
-    Some(MiseEnPlace::TimeMachine {
-        date: aujourd_hui(),
-        destination: chemin,
-        identifiant,
-        deja_actif,
-    })
-}
-
 /// Windows : l'Historique des fichiers se règle dans le Panneau de configuration ; Vanguard guide et l'ouvre.
 #[cfg(windows)]
 fn mettre_en_place() -> Option<MiseEnPlace> {
@@ -1203,28 +1112,6 @@ fn annuler_mise_en_place(m: &MiseEnPlace) -> (bool, Vec<PathBuf>) {
                 }
                 (ok, Vec::new())
             }
-        }
-        MiseEnPlace::TimeMachine {
-            identifiant,
-            deja_actif,
-            ..
-        } => {
-            let mut commandes = Vec::new();
-            // L'identifiant a été lu dans les notes, que n'importe quel programme du compte peut réécrire : vérifié de
-            // nouveau avant de partir dans une commande lancée avec sudo.
-            if let Some(id) = identifiant
-                .as_deref()
-                .filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
-            {
-                commandes.push(format!("sudo tmutil removedestination {id}"));
-            }
-            if !deja_actif {
-                commandes.push("sudo tmutil disable".to_string());
-            }
-            (
-                commandes.is_empty() || crate::machine::appliquer(&commandes),
-                Vec::new(),
-            )
         }
     }
 }
@@ -1533,10 +1420,6 @@ pub fn verifier_sauvegarde() {
             Some(MiseEnPlace::DejaDup { .. }) => tr!(
                 "Déjà Dup compresse et chiffre ses sauvegardes : Vanguard ne les relit pas. Pour l'essayer : Déjà Dup › Restaurer, un fichier vers un autre dossier, puis l'ouvrir. Non vérifié ici.",
                 "Déjà Dup compresses and encrypts its backups: Vanguard does not read them back. To try it: Déjà Dup › Restore, one file to another folder, then open it. Not checked here."
-            ),
-            Some(MiseEnPlace::TimeMachine { .. }) => tr!(
-                "Time Machine : « Entrer dans Time Machine » depuis le Finder, restaurer un fichier, puis l'ouvrir. Non vérifié ici.",
-                "Time Machine: “Enter Time Machine” from the Finder, restore one file, then open it. Not checked here."
             ),
             _ if cfg!(windows) => tr!(
                 "Historique des fichiers : Panneau de configuration › Historique des fichiers › Restaurer des fichiers personnels, un fichier vers un autre dossier. Non vérifié ici.",
@@ -2000,11 +1883,10 @@ mod tests {
         .unwrap();
         assert_eq!(charger_de(&f).mise_en_place, Some(m.clone()));
         assert!(decrire(&m).contains("rsync") && decrire(&m).contains("2026-10-18"));
-        let t = MiseEnPlace::TimeMachine {
+        let t = MiseEnPlace::DejaDup {
             date: "2026-10-18".into(),
-            destination: "/Volumes/Externe".into(),
-            identifiant: Some("ABC".into()),
-            deja_actif: false,
+            destination: "/run/media/alice/Externe".into(),
+            avant: vec![("org.gnome.DejaDup periodic".into(), "false".into())],
         };
         ecrire_dans(
             &f,
@@ -2020,18 +1902,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&f);
     }
 
-    /// S2c : une note forgée (Time Machine « pas actif avant », réglages de Déjà Dup choisis) ne fait rien annuler :
+    /// S2c : une note forgée (réglages de Déjà Dup « d'avant » choisis par un autre programme) ne fait rien annuler :
     /// elle n'est pas crue, et c'est dit.
     #[test]
     fn note_forgee_ne_fait_rien_annuler() {
         let f = crate::essais::temporaire().join(format!("vanguard-sauvegarde-forgee-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&f);
         std::fs::create_dir_all(&f).unwrap();
-        let vraie = MiseEnPlace::TimeMachine {
+        let vraie = MiseEnPlace::DejaDup {
             date: "2026-10-18".into(),
-            destination: "/Volumes/Externe".into(),
-            identifiant: None,
-            deja_actif: true,
+            destination: "/run/media/alice/Externe".into(),
+            avant: vec![("org.gnome.DejaDup periodic".into(), "false".into())],
         };
         ecrire_dans(
             &f,
@@ -2042,11 +1923,10 @@ mod tests {
         .unwrap();
         assert_eq!(charger_dans(&f).unwrap().mise_en_place, Some(vraie));
         let forgee = Notes {
-            mise_en_place: Some(MiseEnPlace::TimeMachine {
+            mise_en_place: Some(MiseEnPlace::DejaDup {
                 date: "2026-10-18".into(),
-                destination: "/Volumes/Externe".into(),
-                identifiant: None,
-                deja_actif: false,
+                destination: "/run/media/alice/Externe".into(),
+                avant: vec![("org.gnome.DejaDup periodic".into(), "true".into())],
             }),
         };
         std::fs::write(f.join(NOTES), serde_json::to_vec(&forgee).unwrap()).unwrap();
@@ -2061,25 +1941,6 @@ mod tests {
         let vide = crate::essais::temporaire().join(format!("vanguard-sauvegarde-sans-note-{}", std::process::id()));
         assert!(note_douteuse_de(&vide).is_none());
         let _ = std::fs::remove_dir_all(&f);
-    }
-
-    #[test]
-    fn destinations_de_time_machine() {
-        let avant = "> Name          : Externe\n  Kind          : Local\n  Mount Point   : /Volumes/Externe\n  ID            : 1111-AAAA\n";
-        let apres = format!(
-            "{avant}====================================================\n> Name          : Neuf\n  Kind          : Local\n  ID            : 2222-BBBB\n"
-        );
-        assert_eq!(identifiants_time_machine(avant), ["1111-AAAA"]);
-        assert_eq!(
-            nouvel_identifiant(&identifiants_time_machine(avant), &identifiants_time_machine(&apres)),
-            Some("2222-BBBB".into())
-        );
-        assert_eq!(nouvel_identifiant(&["a".into()], &["a".into()]), None);
-        assert_eq!(identifiants_time_machine("tmutil: No destinations configured").len(), 0);
-        assert_eq!(
-            identifiants_time_machine("ID : 1A2B-3C4D\nID : x; rm -rf ~\nID : \n"),
-            ["1A2B-3C4D"]
-        );
     }
 
     #[test]

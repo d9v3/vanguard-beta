@@ -226,7 +226,7 @@ mod tests {
     }
 
     /// Ce que le système ne liste pas (programmes classiques sous Linux et Windows) : jamais « aucune application n'a
-    /// accès », jamais compté vérifié ; ce qui est listé reste dit. Un journal WAL non lu (macOS) : non vérifié.
+    /// accès », jamais compté vérifié ; ce qui est listé reste dit. Une base illisible : non vérifié.
     #[test]
     fn ce_qui_n_est_pas_liste() {
         let debut = (chrono::Utc::now(), std::time::Instant::now());
@@ -281,19 +281,16 @@ mod tests {
                 .any(|c| c.etat == "sain" && c.message.contains("Visio"))
         );
         assert_eq!((r.verdict(), r.couverture.verifies), ("non-verifie", 3));
-        // macOS : le journal WAL non lu touche caméra, micro et contacts, pas la position.
+        // Une base illisible qui touche caméra, micro et contacts, pas la position.
         let mut b = Bilan::default();
         b.remarque_sur(
             &[Permission::Contacts, Permission::Camera, Permission::Micro],
             false,
-            "journal WAL non lu",
+            "base illisible",
         );
         let r = resultat(&b, debut);
         assert_eq!((r.verdict(), r.couverture.verifies), ("non-verifie", 1));
-        assert_eq!(
-            r.couverture.non_verifies,
-            ["contacts, caméra, micro : journal WAL non lu"]
-        );
+        assert_eq!(r.couverture.non_verifies, ["contacts, caméra, micro : base illisible"]);
         assert!(
             !r.constats
                 .iter()

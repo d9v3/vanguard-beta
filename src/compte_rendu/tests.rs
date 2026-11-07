@@ -109,7 +109,7 @@ fn version_du_programme() {
 #[test]
 fn identifiants_du_programme() {
     use crate::machine::regles::{Os, regles};
-    for os in [Os::Linux, Os::Windows, Os::MacOs] {
+    for os in [Os::Linux, Os::Windows] {
         for r in regles(os) {
             assert!(Regle::new(r.id).is_some(), "{}", r.id);
         }

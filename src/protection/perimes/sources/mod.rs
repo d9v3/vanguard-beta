@@ -9,7 +9,7 @@
 //! copie (`crate::socle::cache::liste_validee`). Un fichier gzip est gardé tel que reçu, et relu par `degzip_controle` (CRC et
 //! taille vérifiés) : un téléchargement coupé ne passe pas pour un fichier entier.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 pub(crate) mod editeurs;
@@ -39,20 +39,13 @@ const SOUS_DOSSIER: &str = "versions";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Systeme {
     Windows,
-    MacOs,
 }
 
 impl Systeme {
     /// Le système qui tourne ; `None` sous Linux.
     #[cfg(test)]
     pub(crate) fn courant() -> Option<Systeme> {
-        if cfg!(windows) {
-            Some(Systeme::Windows)
-        } else if cfg!(target_os = "macos") {
-            Some(Systeme::MacOs)
-        } else {
-            None
-        }
+        if cfg!(windows) { Some(Systeme::Windows) } else { None }
     }
 }
 
@@ -64,15 +57,12 @@ pub(crate) enum Lecteur {
     Chrome(&'static str, &'static str),
     Edge,
     Office,
-    /// L'identifiant d'application du manifeste de Microsoft AutoUpdate.
-    Mau(&'static str),
     Adobe,
     Brave,
     Eol,
-    Cask,
     /// `formula.json` de Homebrew : 7-Zip et PuTTY, dont les formules suivent l'amont.
     Formules,
-    /// La plateforme que la réponse de Slack doit nommer (« win32 », « darwin »).
+    /// La plateforme que la réponse de Slack doit nommer (« win32 »).
     Slack(&'static str),
     /// L'archive des avis de sécurité de Mozilla (tar en gzip).
     Mfsa,
@@ -95,8 +85,6 @@ pub(crate) struct Source {
 }
 
 const W: &[Systeme] = &[Systeme::Windows];
-const M: &[Systeme] = &[Systeme::MacOs];
-const WM: &[Systeme] = &[Systeme::Windows, Systeme::MacOs];
 
 /// Une source de versionhistory (Chrome) : une adresse par plateforme et par canal, toutes prises.
 macro_rules! chrome {
@@ -119,25 +107,6 @@ macro_rules! chrome {
     };
 }
 
-/// Un manifeste de Microsoft AutoUpdate (Office pour Mac) : un par application, tous pris.
-macro_rules! mau {
-    ($id:literal) => {
-        Source {
-            id: concat!("mau-", $id),
-            adresse: concat!(
-                "https://res.public.onecdn.static.microsoft/mro1cdnstorage/C1297A47-86C4-4C1F-97FA-950631F94777/MacAutoupdate/0409",
-                $id,
-                "-chk.xml"
-            ),
-            lecteur: Lecteur::Mau($id),
-            systemes: M,
-            taille_max: 64 << 10,
-            gzip: None,
-            delai: 30,
-        }
-    };
-}
-
 /// Un petit fichier texte d'un éditeur (Adobe, Brave).
 macro_rules! texte {
     ($id:literal, $adresse:literal, $lecteur:expr, $s:expr) => {
@@ -153,7 +122,7 @@ macro_rules! texte {
     };
 }
 
-/// La table : 17 fichiers sous Windows, 21 sous macOS (adresses finales, mesurées le 23 oct. 2026 : aucune
+/// La table : 17 fichiers sous Windows (adresses finales, mesurées le 23 oct. 2026 : aucune
 /// redirection, qu'un en-tête interdirait de suivre vers un autre hôte, voir `http::envoyer`). Le catalogue de la
 /// CISA s'y ajoute, par `kev::catalogue`.
 pub(crate) const SOURCES: &[Source] = &[
@@ -161,7 +130,7 @@ pub(crate) const SOURCES: &[Source] = &[
         id: "mozilla",
         adresse: "https://product-details.mozilla.org/1.0/firefox_versions.json",
         lecteur: Lecteur::Firefox,
-        systemes: WM,
+        systemes: W,
         taille_max: 64 << 10,
         gzip: None,
         delai: 30,
@@ -172,15 +141,11 @@ pub(crate) const SOURCES: &[Source] = &[
     chrome!("win64", "extended", W),
     chrome!("win_arm64", "stable", W),
     chrome!("win_arm64", "extended", W),
-    chrome!("mac", "stable", M),
-    chrome!("mac", "extended", M),
-    chrome!("mac_arm64", "stable", M),
-    chrome!("mac_arm64", "extended", M),
     Source {
         id: "edge",
         adresse: "https://edgeupdates.microsoft.com/api/products",
         lecteur: Lecteur::Edge,
-        systemes: WM,
+        systemes: W,
         taille_max: 1 << 20,
         gzip: None,
         delai: 30,
@@ -194,24 +159,18 @@ pub(crate) const SOURCES: &[Source] = &[
         gzip: None,
         delai: 30,
     },
-    mau!("MSWD2019"),
-    mau!("XCEL2019"),
-    mau!("PPT32019"),
-    mau!("OPIM2019"),
-    mau!("ONMC2019"),
-    mau!("MSau04"),
     // Seul le chemin « mac/ » existe chez Adobe (« win/ » répond 404) ; la piste Continuous porte le même numéro.
     texte!(
         "adobe-reader",
         "https://armmf.adobe.com/arm-manifests/mac/AcrobatDC/reader/current_version.txt",
         Lecteur::Adobe,
-        WM
+        W
     ),
     texte!(
         "adobe-acrobat",
         "https://armmf.adobe.com/arm-manifests/mac/AcrobatDC/acrobat/current_version.txt",
         Lecteur::Adobe,
-        WM
+        W
     ),
     texte!(
         "brave-windows-x64",
@@ -225,23 +184,11 @@ pub(crate) const SOURCES: &[Source] = &[
         Lecteur::Brave,
         W
     ),
-    texte!(
-        "brave-macos-arm64",
-        "https://versions.brave.com/latest/release-macos-arm64.version",
-        Lecteur::Brave,
-        M
-    ),
-    texte!(
-        "brave-macos-x64",
-        "https://versions.brave.com/latest/release-macos-x64.version",
-        Lecteur::Brave,
-        M
-    ),
     Source {
         id: "eol",
         adresse: "https://endoflife.date/api/v1/products/full",
         lecteur: Lecteur::Eol,
-        systemes: WM,
+        systemes: W,
         taille_max: 8 << 20,
         gzip: Some(16 << 20),
         delai: 30,
@@ -252,14 +199,14 @@ pub(crate) const SOURCES: &[Source] = &[
         id: "mfsa",
         adresse: "https://codeload.github.com/mozilla/foundation-security-advisories/tar.gz/main",
         lecteur: Lecteur::Mfsa,
-        systemes: WM,
+        systemes: W,
         taille_max: 8 << 20,
         gzip: Some(64 << 20),
         delai: 60,
     },
     // Slack : une adresse fixe par système, la même pour tous (API non documentée, mesurée le 23 oct. 2026 :
-    // « variant=msi » est l'installation par machine, sans mise à jour automatique ; « universal » sert les deux
-    // architectures du Mac). « redirect=false » : la réponse est le JSON, pas un renvoi vers le fichier à installer.
+    // « variant=msi » est l'installation par machine, sans mise à jour automatique). « redirect=false » : la réponse
+    // est le JSON, pas un renvoi vers le fichier à installer.
     Source {
         id: "slack-windows",
         adresse: "https://slack.com/api/desktop.latestRelease?arch=x64&variant=msi&redirect=false",
@@ -269,36 +216,16 @@ pub(crate) const SOURCES: &[Source] = &[
         gzip: None,
         delai: 30,
     },
-    Source {
-        id: "slack-macos",
-        adresse: "https://slack.com/api/desktop.latestRelease?arch=universal&variant=dmg&redirect=false",
-        lecteur: Lecteur::Slack("darwin"),
-        systemes: M,
-        taille_max: 4 << 10,
-        gzip: None,
-        delai: 30,
-    },
-    // Les formules de Homebrew, prises sous Windows aussi : 7-Zip et PuTTY y suivent l'amont, et n'ont aucun autre
-    // fichier fixe. 5 Mio en gzip, 32 Mio une fois décompressé le 23 oct. 2026 ; pris par tous ou par personne,
-    // jamais selon que Homebrew est installé.
+    // Les formules de Homebrew : 7-Zip et PuTTY y suivent l'amont, et n'ont aucun autre fichier fixe. 5 Mio en
+    // gzip, 32 Mio une fois décompressé le 23 oct. 2026 ; pris par tous ou par personne, jamais selon que Homebrew
+    // est installé.
     Source {
         id: "formules",
         adresse: "https://formulae.brew.sh/api/formula.json",
         lecteur: Lecteur::Formules,
-        systemes: WM,
+        systemes: W,
         taille_max: 24 << 20,
         gzip: Some(96 << 20),
-        delai: 60,
-    },
-    // HTTPS seulement, sans vérifier la signature (cask.jws.json) : décision de l'auteur, pour ne pas prendre ring
-    // en direct.
-    Source {
-        id: "cask",
-        adresse: "https://formulae.brew.sh/api/cask.json",
-        lecteur: Lecteur::Cask,
-        systemes: M,
-        taille_max: 40 << 20,
-        gzip: Some(64 << 20),
         delai: 60,
     },
 ];
@@ -308,9 +235,8 @@ pub(crate) fn du_systeme(systeme: Systeme) -> impl Iterator<Item = &'static Sour
     SOURCES.iter().filter(move |s| s.systemes.contains(&systeme))
 }
 
-/// Une source sert si un logiciel de la table s'en sert : les autres ne sont pas téléchargées (cask.json attend la
-/// longue traîne de macOS ; le manifeste de Microsoft AutoUpdate lui-même n'est pas jugé). Ne dépend que des deux
-/// tables fixes, jamais de ce qui est installé.
+/// Une source sert si un logiciel de la table s'en sert : les autres ne sont pas téléchargées. Ne dépend que des
+/// deux tables fixes, jamais de ce qui est installé.
 pub(crate) fn sert(source: &Source) -> bool {
     super::produits::FICHES.iter().any(|f| f.sources.contains(&source.id))
 }
@@ -419,8 +345,8 @@ impl<E: Forme> Forme for Souple<E> {
     }
 }
 
-/// Les entrées d'un tableau lu, au plus. Les vrais fichiers en ont au plus quelques milliers (8 667 formules et
-/// 7 803 casks le 23 oct. 2026) ; sans plafond, 100 Kio de `{},` en gzip, décompressés jusqu'à leur limite, faisaient
+/// Les entrées d'un tableau lu, au plus. Les vrais fichiers en ont au plus quelques milliers (8 667 formules le
+/// 23 oct. 2026) ; sans plafond, 100 Kio de `{},` en gzip, décompressés jusqu'à leur limite, faisaient
 /// allouer des Gio d'entrées vides, et le programme s'arrêtait faute de mémoire.
 pub(crate) const ENTREES_MAX: usize = 50_000;
 
@@ -673,11 +599,9 @@ fn lisible(lecteur: Lecteur, octets: &[u8]) -> bool {
         Lecteur::Chrome(plateforme, canal) => editeurs::chrome(octets, plateforme, canal).is_some(),
         Lecteur::Edge => editeurs::edge(octets).is_some(),
         Lecteur::Office => editeurs::office(octets).is_some(),
-        Lecteur::Mau(id) => editeurs::mau(octets, id).is_some(),
         Lecteur::Adobe => editeurs::adobe(octets).is_some(),
         Lecteur::Brave => editeurs::brave(octets).is_some(),
         Lecteur::Eol => eol::lire(octets).is_some(),
-        Lecteur::Cask => homebrew::casks(octets).is_some(),
         Lecteur::Formules => homebrew::formules(octets).is_some(),
         Lecteur::Slack(plateforme) => editeurs::slack(octets, plateforme).is_some(),
         Lecteur::Mfsa => super::avis_de_l_archive(octets).is_some(),
@@ -832,7 +756,7 @@ mod tests {
         id: "essai-eol",
         adresse: "https://endoflife.date/api/v1/products/full",
         lecteur: Lecteur::Eol,
-        systemes: WM,
+        systemes: W,
         taille_max: 1 << 20,
         gzip: Some(1 << 20),
         delai: 5,
@@ -841,7 +765,7 @@ mod tests {
     const EOL: &[u8] = include_bytes!("../../../../assets/essais/eol-extrait.json");
 
     /// La table : les mêmes fichiers pour tous les ordinateurs d'un système, en HTTPS, sans rien de variable dans
-    /// l'adresse, jamais l'adresse d'un logiciel en particulier (cask par cask) ni winget.
+    /// l'adresse, jamais l'adresse d'un logiciel en particulier (formule par formule) ni winget.
     #[test]
     fn table_fermee_et_fixe() {
         let mut ids: Vec<&str> = SOURCES.iter().map(|s| s.id).collect();
@@ -849,11 +773,10 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), SOURCES.len(), "identifiants en double");
         assert_eq!(du_systeme(Systeme::Windows).count(), 17);
-        assert_eq!(du_systeme(Systeme::MacOs).count(), 21);
-        // Toutes servent, sauf celles qu'aucun logiciel jugé n'utilise encore (Microsoft AutoUpdate lui-même, la
-        // longue traîne de macOS par cask.json) : pas téléchargées pour rien.
+        assert_eq!(du_systeme(Systeme::Windows).count(), SOURCES.len());
+        // Toutes servent : aucune n'est téléchargée pour rien.
         let inutiles: Vec<&str> = SOURCES.iter().filter(|s| !sert(s)).map(|s| s.id).collect();
-        assert_eq!(inutiles, ["mau-MSau04", "cask"]);
+        assert!(inutiles.is_empty(), "{inutiles:?}");
         for s in SOURCES {
             assert!(s.adresse.starts_with("https://"), "{}", s.adresse);
             assert!(
@@ -871,15 +794,7 @@ mod tests {
             if let Some((_, requete)) = s.adresse.split_once('?') {
                 for p in requete.split('&') {
                     assert!(
-                        [
-                            "filter=endtime=none",
-                            "arch=x64",
-                            "arch=universal",
-                            "variant=msi",
-                            "variant=dmg",
-                            "redirect=false"
-                        ]
-                        .contains(&p),
+                        ["filter=endtime=none", "arch=x64", "variant=msi", "redirect=false"].contains(&p),
                         "{} : {p}",
                         s.adresse
                     );
@@ -900,20 +815,16 @@ mod tests {
                 );
             }
         }
-        // formula.json pour tous, sous les deux systèmes (jamais selon que Homebrew est là) ; Slack, une adresse par
-        // système.
-        for systeme in [Systeme::Windows, Systeme::MacOs] {
-            assert!(du_systeme(systeme).any(|s| s.id == "formules"), "{systeme:?}");
-            assert_eq!(
-                du_systeme(systeme)
-                    .filter(|s| matches!(s.lecteur, Lecteur::Slack(_)))
-                    .count(),
-                1,
-                "{systeme:?}"
-            );
-        }
+        // formula.json (jamais selon que Homebrew est là) ; Slack, une seule adresse.
+        assert!(du_systeme(Systeme::Windows).any(|s| s.id == "formules"));
+        assert_eq!(
+            du_systeme(Systeme::Windows)
+                .filter(|s| matches!(s.lecteur, Lecteur::Slack(_)))
+                .count(),
+            1
+        );
         // Chaque plateforme de Chrome a ses deux canaux (sans extended, un Chrome d'entreprise serait dit dépassé).
-        for p in ["win", "win64", "win_arm64", "mac", "mac_arm64"] {
+        for p in ["win", "win64", "win_arm64"] {
             for c in ["stable", "extended"] {
                 assert!(SOURCES.iter().any(|s| s.lecteur == Lecteur::Chrome(p, c)), "{p} {c}");
             }
@@ -1020,7 +931,7 @@ mod tests {
     fn rien_ne_part_dans_les_tests() {
         // Sous Linux, aucun système suivi : le gestionnaire de paquets tient les versions.
         assert_eq!(Systeme::courant().is_none(), cfg!(target_os = "linux"));
-        for systeme in [Systeme::Windows, Systeme::MacOs] {
+        for systeme in [Systeme::Windows] {
             let releve = rafraichir(systeme);
             assert_eq!(releve.sources.len(), du_systeme(systeme).filter(|s| sert(s)).count());
             for (s, r) in &releve.sources {

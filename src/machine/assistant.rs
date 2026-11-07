@@ -1,4 +1,4 @@
-//! L'assistant élevé de Linux et macOS : Vanguard se relance lui-même avec les droits d'administrateur, sous la
+//! L'assistant élevé de Linux : Vanguard se relance lui-même avec les droits d'administrateur, sous la
 //! sous-commande cachée `appliquer-eleve`, pour faire des ordres du blocage (`protection::blocage::ordres`) et des
 //! gestes de Linux (`machine::gestes_unix`) sans aucun shell : jamais « sudo sh -c », jamais une commande écrite en
 //! texte.
@@ -8,9 +8,9 @@
 //! terminal), sudo (dans le terminal ; use_pty, la règle par défaut depuis sudo 1.9.14, passe nos tubes tels quels),
 //! sinon c'est dit et rien n'est fait. Le programme lancé est, sous Linux, `/proc/<pid>/exe` de ce Vanguard : ce lien
 //! désigne l'image qui tourne, même si le fichier est remplacé entre-temps (sudo et run0 l'exécutent tel quel).
-//! pkexec, lui, le résout en chemin réel avant de l'exécuter (realpath dans pkexec.c), et macOS n'a pas de /proc :
-//! par chemin, seulement un programme que le compte ne peut pas remplacer (à root, dossiers compris) ; sinon pkexec
-//! est sauté (run0 ou sudo prennent la suite), et sous macOS c'est dit. pkexec reçoit donc ce chemin réel lui-même :
+//! pkexec, lui, le résout en chemin réel avant de l'exécuter (realpath dans pkexec.c) : par chemin, seulement un
+//! programme que le compte ne peut pas remplacer (à root, dossiers compris) ; sinon pkexec est sauté (run0 ou sudo
+//! prennent la suite). pkexec reçoit donc ce chemin réel lui-même :
 //! il vérifie d'abord le chemin reçu avec l'identité de la personne (access() de pkexec 126), et le lien
 //! `/proc/<pid>/exe` d'un processus non « dumpable » lui est fermé (É-7 du lot U3).
 //!
@@ -45,7 +45,7 @@
 //! oui (use_pty). Une liste qui contient un tel geste ne passe donc que par sudo, lancé depuis un terminal
 //! (`methodes`).
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc : prctl (PR_SET_DUMPABLE, le secret de l'assistant élevé hors des vidages).
 #![allow(unsafe_code)]
@@ -135,9 +135,7 @@ fn texte_du_geste(g: GesteUnix) -> String {
 /// Une façon d'obtenir les droits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Methode {
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     Pkexec,
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     Run0,
     Sudo,
 }
@@ -177,13 +175,11 @@ fn methodes(graphique: bool, terminal: bool, accord: bool, existe: impl Fn(&str)
         };
     }
     let mut m = Vec::new();
-    if cfg!(target_os = "linux") {
-        if graphique && existe("pkexec") {
-            m.push(Methode::Pkexec);
-        }
-        if terminal && existe("run0") {
-            m.push(Methode::Run0);
-        }
+    if graphique && existe("pkexec") {
+        m.push(Methode::Pkexec);
+    }
+    if terminal && existe("run0") {
+        m.push(Methode::Run0);
     }
     if existe("sudo") {
         m.push(Methode::Sudo);
@@ -200,8 +196,8 @@ fn avec_polkit(polkit: bool, existe: impl Fn(&str) -> bool) -> impl Fn(&str) -> 
 }
 
 /// Le programme et tous ses dossiers appartiennent-ils à root, sans écriture pour le groupe ni les autres ? Alors
-/// personne d'autre que root ne peut le remplacer entre l'accord et son lancement par chemin (macOS, ou pkexec qui
-/// résout `/proc/<pid>/exe` en chemin réel avant de l'exécuter). Un programme dans un dossier du compte
+/// personne d'autre que root ne peut le remplacer entre l'accord et son lancement par chemin (pkexec, qui résout
+/// `/proc/<pid>/exe` en chemin réel avant de l'exécuter). Un programme dans un dossier du compte
 /// (Téléchargements, la clé) ne l'est pas.
 fn chemin_sur(chemin: &std::path::Path) -> bool {
     use std::os::unix::fs::MetadataExt;
@@ -223,7 +219,7 @@ fn image_sure() -> bool {
     std::env::current_exe().is_ok_and(|c| chemin_sur(&c))
 }
 
-/// Le programme à relancer : l'image qui tourne (Linux), ou son chemin (macOS, sans /proc ; pkexec).
+/// Le programme à relancer : l'image qui tourne, ou son chemin pour pkexec.
 ///
 /// pkexec reçoit le chemin réel (É-7 du lot U3) : pkexec 126 (Debian 13) vérifie le chemin reçu par access(), avec
 /// l'identité de la personne, et pendant le dialogue ce processus n'est plus « dumpable » (`Inaccessible`) : son
@@ -231,10 +227,10 @@ fn image_sure() -> bool {
 /// n'est relâché pour autant : pkexec exécutait déjà ce chemin réel (realpath), et il n'est pris que s'il passe
 /// `image_sure` ; rendre ce processus « dumpable » pendant l'élévation rouvrirait ses tubes au compte.
 fn programme(m: Methode) -> Option<std::ffi::OsString> {
-    if cfg!(target_os = "linux") && m != Methode::Pkexec {
-        Some(format!("/proc/{}/exe", std::process::id()).into())
-    } else {
+    if m == Methode::Pkexec {
         std::env::current_exe().ok().map(std::path::PathBuf::into_os_string)
+    } else {
+        Some(format!("/proc/{}/exe", std::process::id()).into())
     }
 }
 
@@ -409,10 +405,9 @@ fn essayer(m: Methode, groupes: &[Vec<Demande>]) -> Issue {
     let (Some(chemin), Some(programme)) = (outil(m.nom()), programme(m)) else {
         return Issue::Indisponible;
     };
-    // pkexec exécute le chemin réel du programme, et macOS n'a pas de /proc : par chemin, seulement un programme que
-    // le compte ne peut pas remplacer.
-    let par_chemin = m == Methode::Pkexec || cfg!(not(target_os = "linux"));
-    if par_chemin && !image_sure() {
+    // pkexec exécute le chemin réel du programme : par chemin, seulement un programme que le compte ne peut pas
+    // remplacer.
+    if m == Methode::Pkexec && !image_sure() {
         return Issue::Indisponible;
     }
     let terminal = terminal();
@@ -510,14 +505,6 @@ pub(crate) fn appliquer(groupes: &[Vec<Demande>]) -> Vec<Vec<Resultat>> {
     // à nous (ptrace) pour glisser une autre liste au fils, ou lui répondre à sa place : un processus non
     // « dumpable » n'est plus accessible qu'à root.
     let _garde = Inaccessible::poser();
-    if cfg!(not(target_os = "linux")) && !image_sure() {
-        let raison = tr!(
-            "Vanguard tourne depuis un dossier que ce compte peut modifier : il ne se relance pas en administrateur par son chemin (il pourrait être remplacé entre-temps). Installez-le dans /Applications ou /usr/local/bin, ou lancez-le avec sudo",
-            "Vanguard runs from a folder this account can change: it does not relaunch itself as administrator by its path (it could be replaced meanwhile). Install it in /Applications or /usr/local/bin, or start it with sudo"
-        );
-        trp!("    ✖ {}", "    ✖ {}", raison);
-        return tous_en_echec(groupes, raison);
-    }
     for m in possibles {
         match essayer(m, groupes) {
             Issue::Fait(r) => return r,
@@ -590,7 +577,7 @@ impl Drop for Inaccessible {
 
 // ------------------------------------------------------------------ le fils
 
-/// La sous-commande `appliquer-eleve` sous Linux et macOS : rend le code de sortie du processus.
+/// La sous-commande `appliquer-eleve` sous Linux : rend le code de sortie du processus.
 pub(crate) fn executer(langue: Option<&str>, parent: Option<u32>) -> i32 {
     if let Some(l) = langue {
         crate::langue::forcer(l == "en");
@@ -2113,11 +2100,7 @@ mod tests {
     use crate::protection::blocage::pare_feu::PareFeu;
 
     fn pf() -> PareFeu {
-        if cfg!(target_os = "macos") {
-            PareFeu::Pf
-        } else {
-            PareFeu::Nftables
-        }
+        PareFeu::Nftables
     }
 
     /// Un programme dans un dossier du compte n'est jamais relancé par son chemin ; un programme du système l'est.
@@ -2300,24 +2283,20 @@ mod tests {
     #[test]
     fn l_ordre_des_methodes() {
         let tout = |_: &str| true;
-        if cfg!(target_os = "linux") {
-            assert_eq!(
-                methodes(true, true, false, avec_polkit(true, tout)),
-                [Methode::Pkexec, Methode::Run0, Methode::Sudo]
-            );
-            // Sans session graphique : pas de pkexec ; sans terminal : pas de run0.
-            assert_eq!(
-                methodes(false, true, false, avec_polkit(true, tout)),
-                [Methode::Run0, Methode::Sudo]
-            );
-            assert_eq!(methodes(false, false, false, avec_polkit(true, tout)), [Methode::Sudo]);
-            assert_eq!(
-                methodes(true, false, false, avec_polkit(true, |n| n == "pkexec")),
-                [Methode::Pkexec]
-            );
-        } else {
-            assert_eq!(methodes(true, true, false, avec_polkit(true, tout)), [Methode::Sudo]);
-        }
+        assert_eq!(
+            methodes(true, true, false, avec_polkit(true, tout)),
+            [Methode::Pkexec, Methode::Run0, Methode::Sudo]
+        );
+        // Sans session graphique : pas de pkexec ; sans terminal : pas de run0.
+        assert_eq!(
+            methodes(false, true, false, avec_polkit(true, tout)),
+            [Methode::Run0, Methode::Sudo]
+        );
+        assert_eq!(methodes(false, false, false, avec_polkit(true, tout)), [Methode::Sudo]);
+        assert_eq!(
+            methodes(true, false, false, avec_polkit(true, |n| n == "pkexec")),
+            [Methode::Pkexec]
+        );
         // Sans polkit (images cloud de Fedora et d'Arch) : run0 et pkexec présents ne sont pas essayés, sudo l'est
         // (B-1) ; sans sudo non plus, rien, et c'est dit.
         assert_eq!(methodes(true, true, false, avec_polkit(false, tout)), [Methode::Sudo]);
@@ -2344,9 +2323,6 @@ mod tests {
     /// désigne l'image qui tourne même remplacée.
     #[test]
     fn pkexec_recoit_le_chemin_reel() {
-        if !cfg!(target_os = "linux") {
-            return crate::essais::saute("seul Linux relance l'image par /proc/<pid>/exe");
-        }
         let image = std::env::current_exe().map(std::path::PathBuf::into_os_string).ok();
         assert!(image.is_some());
         assert_eq!(programme(Methode::Pkexec), image);
@@ -2456,12 +2432,7 @@ mod tests {
         let groupes = vec![vec![geste.clone()]];
         let lignes = lire_lignes(envoi(&groupes).as_bytes()).unwrap();
         assert_eq!(lignes, ["vanguard:geste programme freshclam"]);
-        if cfg!(target_os = "linux") {
-            assert_eq!(analyser_liste(&lignes), Some(groupes));
-        } else {
-            // Sous macOS, aucun geste de Linux n'est permis (plan du lot Unix, D8).
-            assert_eq!(analyser_liste(&lignes), None);
-        }
+        assert_eq!(analyser_liste(&lignes), Some(groupes));
         assert_eq!(Demande::analyser(&geste.ligne()), Some(geste));
         for hostile in [
             "vanguard:geste programme freshclam --config-file=/home/alice/x\nfin\n",
@@ -2480,12 +2451,7 @@ mod tests {
     fn les_gestes_de_defense_forges_sont_refuses() {
         let juste = "vanguard:geste defense verrouiller-compte alice 0123456789abcdef";
         let lignes = vec![juste.to_string()];
-        let groupes = analyser_liste(&lignes);
-        if !cfg!(target_os = "linux") {
-            assert_eq!(groupes, None);
-            return;
-        }
-        let groupes = groupes.unwrap();
+        let groupes = analyser_liste(&lignes).unwrap();
         let [Demande::Geste(g)] = groupes[0].as_slice() else {
             panic!("{groupes:?}");
         };
@@ -2516,17 +2482,13 @@ mod tests {
     }
 
     /// Lot D7c. Une coupure de pare-feu n'arrive que seule : mêlée à une autre ligne (avant, après, dans un autre
-    /// groupe, deux coupures), toute la liste est refusée ; seule, elle passe (sous Linux).
+    /// groupe, deux coupures), toute la liste est refusée ; seule, elle passe.
     #[test]
     fn une_coupure_de_pare_feu_n_arrive_que_seule() {
         let coupe = "vanguard:geste defense couper-pare-feu ufw 000000000000fe01";
         let autre = "vanguard:geste defense verrouiller-compte alice 0123456789abcdef";
         let seule = analyser_liste(&[coupe.to_string()]);
-        if cfg!(target_os = "linux") {
-            assert!(seule.is_some_and(|g| g.len() == 1 && g[0].len() == 1));
-        } else {
-            assert_eq!(seule, None);
-        }
+        assert!(seule.is_some_and(|g| g.len() == 1 && g[0].len() == 1));
         for meles in [
             vec![coupe, autre],
             vec![autre, coupe],

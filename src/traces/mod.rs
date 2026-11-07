@@ -11,7 +11,7 @@
 //! Rien ne part sur Internet : le bilan joint est fait sans ses règles de mises à jour, les seules qui interrogent des
 //! serveurs.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 mod chronologie;
@@ -20,8 +20,6 @@ mod chronologie;
 mod journaux_windows;
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(unix)]
 mod unix;
 pub(crate) mod vanguard;
@@ -30,8 +28,6 @@ mod windows;
 
 #[cfg(target_os = "linux")]
 use linux as os;
-#[cfg(target_os = "macos")]
-use macos as os;
 #[cfg(windows)]
 use windows as os;
 
@@ -96,7 +92,7 @@ pub(crate) use bi;
 /// Pourquoi quelque chose n'a pas pu être lu.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Raison {
-    /// Réservé à root (Linux, macOS) ou à l'administrateur (Windows).
+    /// Réservé à root (Linux) ou à l'administrateur (Windows).
     Droits,
     /// La commande n'existe pas sur cet ordinateur.
     Absente(String),
@@ -244,7 +240,7 @@ impl Partie {
         self.manques.push(Manque { quoi, raison });
     }
 
-    /// Écrit un fichier de la partie (réservé au compte sous Linux et macOS) et le note ; un échec devient un manque.
+    /// Écrit un fichier de la partie (réservé au compte sous Linux) et le note ; un échec devient un manque.
     pub(crate) fn ecrire(&mut self, dossier: &Path, nom: &str, contenu: &str, description: Bi) -> bool {
         let ecrit = creer_fichier(&dossier.join(nom)).and_then(|mut f| f.write_all(contenu.as_bytes()));
         self.noter(nom, description, ecrit)
@@ -699,7 +695,7 @@ pub(crate) fn date_iso_secondes(secondes: i64) -> String {
         .map_or_else(String::new, |d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
 }
 
-/// Crée un fichier neuf des traces : jamais un fichier existant écrasé, réservé au compte sous Linux et macOS.
+/// Crée un fichier neuf des traces : jamais un fichier existant écrasé, réservé au compte sous Linux.
 pub(crate) fn creer_fichier(chemin: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -840,55 +836,6 @@ pub(crate) fn partie_processus(dossier: &Path, mut liste: Vec<Processus>, mut ma
     p
 }
 
-// ───────────────────────────── Processus de macOS (ps) ─────────────────────────────
-
-/// « ps -axww -o pid=,ppid=,user=,lstart=,comm= » (en anglais) : « 4242 1 alice Mon Oct 20 14:03:22 2026
-/// /Applications/X.app/Contents/MacOS/X ». La date de démarrage fait toujours cinq mots ; le programme, à la fin,
-/// peut contenir des espaces.
-#[cfg(any(target_os = "macos", test))]
-pub(crate) fn lire_ps(sortie: &str) -> Vec<(u32, Option<u32>, String, String, String)> {
-    sortie
-        .lines()
-        .filter_map(|l| {
-            let mots: Vec<&str> = l.split_whitespace().collect();
-            // Neuf mots au moins : pid, parent, compte, la date en cinq mots, puis le programme.
-            let [pid, parent, compte, d1, d2, d3, d4, d5, _, ..] = mots[..] else {
-                return None;
-            };
-            let pid = pid.parse().ok()?;
-            let parent = parent.parse().ok();
-            let debut = [d1, d2, d3, d4, d5].join(" ");
-            // Le programme : tout ce qui suit la date, espaces compris.
-            let programme = apres_mots(l, 8)?;
-            Some((pid, parent, compte.to_string(), debut, programme.to_string()))
-        })
-        .collect()
-}
-
-/// Ce qui suit les `n` premiers mots d'une ligne.
-#[cfg(any(target_os = "macos", test))]
-fn apres_mots(l: &str, n: usize) -> Option<&str> {
-    let mut reste = l;
-    for _ in 0..n {
-        reste = reste.trim_start();
-        let fin = reste.find(char::is_whitespace)?;
-        reste = &reste[fin..];
-    }
-    Some(reste.trim())
-}
-
-/// « ps -axww -o pid=,args= » : la ligne de commande de chaque processus.
-#[cfg(any(target_os = "macos", test))]
-pub(crate) fn lire_args(sortie: &str) -> std::collections::HashMap<u32, String> {
-    sortie
-        .lines()
-        .filter_map(|l| {
-            let (pid, args) = l.trim_start().split_once(' ')?;
-            Some((pid.parse().ok()?, args.trim().to_string()))
-        })
-        .collect()
-}
-
 // ───────────────────────────── Fichiers récents ─────────────────────────────
 
 /// Extensions de fichiers dont l'empreinte compte, en plus des programmes et scripts reconnus à leur contenu :
@@ -923,14 +870,14 @@ pub(crate) struct Entree {
     pub chemin: String,
     pub taille: u64,
     pub modifie: Option<SystemTime>,
-    /// Sous Linux et macOS, le dernier changement de ses métadonnées (droits, nom, contenu) : un fichier antidaté
+    /// Sous Linux, le dernier changement de ses métadonnées (droits, nom, contenu) : un fichier antidaté
     /// (date de modification mise dans le passé) ne peut pas reculer celle-ci.
     pub change: Option<SystemTime>,
     pub cree: Option<SystemTime>,
-    /// Droits sous Linux et macOS (« 0755 »), « l » pour un lien ; vide sous Windows.
+    /// Droits sous Linux (« 0755 »), « l » pour un lien ; vide sous Windows.
     pub mode: String,
     pub empreinte: Option<Empreinte>,
-    /// Caché par son attribut (Windows) ; sous Linux et macOS, un nom en « . » le dit déjà.
+    /// Caché par son attribut (Windows) ; sous Linux, un nom en « . » le dit déjà.
     pub cache: bool,
 }
 
@@ -970,7 +917,7 @@ struct Parcours {
 /// `exclu` (le dossier des traces lui-même) ; 200 000 fichiers et 20 secondes au plus. Jamais dans un autre système de
 /// fichiers : un montage FUSE de /tmp (presse-papiers de xfreerdp, AppImage) peut ne jamais répondre, et une seule
 /// lecture bloquée figeait la collecte au-delà de toute limite (vu le 20 octobre, la VM Windows ouverte). Les points
-/// de `montages` sont écartés sans être interrogés ; ailleurs (macOS), un dossier d'un autre appareil que sa racine.
+/// de `montages` sont écartés sans être interrogés, comme un dossier d'un autre appareil que sa racine.
 fn parcourir(racines: &[PathBuf], exclu: &Path, depuis: SystemTime, montages: &[PathBuf]) -> Parcours {
     let fin = Instant::now()
         .checked_add(Duration::from_secs(20))
@@ -1288,7 +1235,7 @@ pub(crate) fn nom_du_dossier(date: chrono::NaiveDateTime, n: u32) -> String {
     if n > 1 { format!("{base}-{n}") } else { base }
 }
 
-/// Crée le dossier daté, réservé au compte sous Linux et macOS (0700) ; jamais un dossier existant réutilisé.
+/// Crée le dossier daté, réservé au compte sous Linux (0700) ; jamais un dossier existant réutilisé.
 fn creer_dossier(parent: &Path) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(parent)?;
     let maintenant = chrono::Local::now().naive_local();
@@ -1443,15 +1390,14 @@ pub(crate) fn lisezmoi(c: &Contexte, parties: &[Partie]) -> String {
                 t,
                 "  {}",
                 s(
-                    "Ce qui est « réservé » se lit en relançant la collecte en administrateur (Windows) ou avec sudo (Linux, macOS).",
-                    "What is “restricted” can be read by running the collection again as administrator (Windows) or with sudo (Linux, macOS)."
+                    "Ce qui est « réservé » se lit en relançant la collecte en administrateur (Windows) ou avec sudo (Linux).",
+                    "What is “restricted” can be read by running the collection again as administrator (Windows) or with sudo (Linux)."
                 )
             );
         }
         let _ = writeln!(t);
         let _ = writeln!(t, "{}", s("VÉRIFIER LE MANIFESTE", "CHECKING THE MANIFEST"));
         let _ = writeln!(t, "  Linux : sha256sum -c MANIFESTE.txt");
-        let _ = writeln!(t, "  macOS : shasum -a 256 -c MANIFESTE.txt");
         let _ = writeln!(t, "  Windows (PowerShell) : Get-FileHash -Algorithm SHA256 *");
     }
     t
@@ -1493,11 +1439,6 @@ fn empreintes_du_dossier(d: &Path) -> Vec<(String, String)> {
 fn machine_et_compte() -> (String, String) {
     #[cfg(target_os = "linux")]
     let machine = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
-    // gethostname, ce qu'affiche `hostname`, sans le lancer.
-    #[cfg(target_os = "macos")]
-    let machine = crate::machine::macos::nom_hote()
-        .or_else(|| crate::commande::lancer(&mut Command::new("hostname"), 5).map(|r| r.sortie))
-        .unwrap_or_default();
     #[cfg(windows)]
     let machine = std::env::var("COMPUTERNAME").unwrap_or_default();
     let compte = ["USER", "LOGNAME", "USERNAME"]
@@ -1508,10 +1449,6 @@ fn machine_et_compte() -> (String, String) {
     #[cfg(unix)]
     let compte = compte.or_else(|| {
         let uid = crate::socle::euid();
-        // macOS : l'annuaire (getpwuid_r) ; /etc/passwd n'y liste pas les comptes des personnes.
-        #[cfg(target_os = "macos")]
-        let nom = crate::machine::macos::noyau::compte(uid);
-        #[cfg(not(target_os = "macos"))]
         let nom = std::fs::read_to_string("/etc/passwd").ok().and_then(|t| {
             t.lines().find_map(|l| {
                 let c: Vec<&str> = l.split(':').collect();
@@ -2189,25 +2126,5 @@ mod tests {
             assert!(m.contains(garde), "{garde} manque :\n{m}");
         }
         assert_eq!(m.lines().count(), texte.lines().count());
-    }
-
-    #[test]
-    fn sorties_de_ps() {
-        let ps = "  4242     1 alice    Mon Oct 20 14:03:22 2026     /Applications/Mon Outil.app/Contents/MacOS/Mon Outil\n\
-                  1     0 root     Sun Oct 19 08:00:01 2026     /sbin/launchd\n\
-                  2026  1 bob      Sun Oct 19 08:00:01 2026     /tmp/2026 x\n\
-                  incomplet\n";
-        let l = lire_ps(ps);
-        assert_eq!(l.len(), 3);
-        assert_eq!(l[2].4, "/tmp/2026 x");
-        assert_eq!(l[0].0, 4242);
-        assert_eq!(l[0].2, "alice");
-        assert_eq!(l[0].3, "Mon Oct 20 14:03:22 2026");
-        assert_eq!(l[0].4, "/Applications/Mon Outil.app/Contents/MacOS/Mon Outil");
-        assert_eq!(l[1].4, "/sbin/launchd");
-        let args =
-            lire_args("  4242 /Applications/Mon Outil.app/Contents/MacOS/Mon Outil -psn_0\n    1 /sbin/launchd\n");
-        assert_eq!(args.get(&1).map(String::as_str), Some("/sbin/launchd"));
-        assert!(args.get(&4242).is_some_and(|a| a.ends_with("-psn_0")));
     }
 }

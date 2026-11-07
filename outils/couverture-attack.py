@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Écrit la carte de couverture MITRE ATT&CK de Vanguard (COUVERTURE-ATTACK.md et .en.md, à la racine du dépôt).
 
-Les règles se lisent dans les sources, pour les trois systèmes à la fois (chaque programme ne compile que les
+Les règles se lisent dans les sources, pour les deux systèmes à la fois (chaque programme ne compile que les
 siennes) : celles du bilan (`regle!` et `Regle { id: … }` de src/machine), les fiches de l'audit du réseau
 (src/audit/fiches.rs) et les règles des journaux de Windows (src/journaux_windows/regles/jeu.rs, champ
 `techniques`). Une règle de détection cite la technique qu'elle voit (« MITRE ATT&CK T1547.005 »), une règle de
@@ -77,7 +77,7 @@ TEXTES = {
         "sans_intro": "{n} règles sur {total} ne citent encore ni technique ni mesure (ce n'est pas une "
                       "obligation : une vérification de l'état de l'ordinateur n'a pas toujours sa technique). "
                       "Les règles par famille :",
-        "famille": {"COM": "communes et audit du réseau", "LNX": "Linux", "WIN": "Windows", "MAC": "macOS",
+        "famille": {"COM": "communes et audit du réseau", "LNX": "Linux", "WIN": "Windows",
                     "EVT": "journaux de Windows"},
         "droits": "Droits",
         "droits_texte": "Les identifiants, tactiques et noms viennent d'ATT&CK, reproduits selon les conditions "
@@ -112,7 +112,7 @@ TEXTES = {
         "sans_intro": "{n} rules out of {total} cite neither a technique nor a mitigation yet (this is not "
                       "required: a check of the computer's state does not always have a technique). The rules by "
                       "family:",
-        "famille": {"COM": "common and network audit", "LNX": "Linux", "WIN": "Windows", "MAC": "macOS",
+        "famille": {"COM": "common and network audit", "LNX": "Linux", "WIN": "Windows",
                     "EVT": "Windows event logs"},
         "droits": "Rights",
         "droits_texte": "Identifiers, tactics and names come from ATT&CK, reproduced under MITRE's terms of use "

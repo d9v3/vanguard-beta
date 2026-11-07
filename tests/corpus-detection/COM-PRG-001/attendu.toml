@@ -2,4 +2,4 @@
 gravite = "moyen"
 mots = ["maj-corpus"]
 propre = "aucun"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]

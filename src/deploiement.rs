@@ -21,9 +21,8 @@ pub(crate) enum Etape {
     },
     /// Vérifier les protections d'un programme livré, lu sans être lancé (`binaire`) : Linux (ELF x86-64 : PIE,
     /// statique, marque RELRO, pile non exécutable, rien d'écrivable et exécutable), Windows (PE32+ AMD64 : DLL
-    /// importées depuis System32, manifeste UTF-8 et asInvoker, ASLR, DEP, relocalisations) et Mac (Mach-O universel
-    /// arm64 et x86_64, chaque tranche). Une architecture qu'on ne livre pas est refusée. Réussit seulement si tous
-    /// les fichiers passent.
+    /// importées depuis System32, manifeste UTF-8 et asInvoker, ASLR, DEP, relocalisations). Une architecture qu'on ne
+    /// livre pas est refusée. Réussit seulement si tous les fichiers passent.
     #[command(name = "verifier-binaire")]
     VerifierBinaire {
         /// Le système de chaque fichier : un autre format est refusé (un programme Linux posé à la place du .exe
@@ -80,7 +79,6 @@ pub(crate) enum Etape {
 pub(crate) enum Systeme {
     Linux,
     Windows,
-    Macos,
 }
 
 /// 0 : l'étape a réussi ; 1 : elle a échoué, et l'a dit.
@@ -430,18 +428,16 @@ mod tests {
         let deux = [PathBuf::from("a"), PathBuf::from("b.exe")];
         let e = Essai::try_parse_from(["vanguard", "verifier-binaire", "a", "b.exe"]).unwrap();
         assert!(matches!(&e.etape, Etape::VerifierBinaire { attendu: None, fichiers } if fichiers == &deux));
-        for (valeur, systeme) in [
-            ("linux", Systeme::Linux),
-            ("windows", Systeme::Windows),
-            ("macos", Systeme::Macos),
-        ] {
+        for (valeur, systeme) in [("linux", Systeme::Linux), ("windows", Systeme::Windows)] {
             let e = Essai::try_parse_from(["vanguard", "verifier-binaire", "--attendu", valeur, "a", "b.exe"]).unwrap();
             assert!(
                 matches!(&e.etape, Etape::VerifierBinaire { attendu: Some(s), fichiers } if *s == systeme && fichiers == &deux),
                 "{valeur}"
             );
         }
-        assert!(Essai::try_parse_from(["vanguard", "verifier-binaire", "--attendu", "android", "a"]).is_err());
+        for refuse in ["android", "macos"] {
+            assert!(Essai::try_parse_from(["vanguard", "verifier-binaire", "--attendu", refuse, "a"]).is_err());
+        }
         let e = Essai::try_parse_from(["vanguard", "verifier-pe", "a", "b.exe"]).unwrap();
         assert!(matches!(&e.etape, Etape::VerifierPe { fichiers } if fichiers == &deux));
         for nom in ["verifier-binaire", "verifier-pe"] {

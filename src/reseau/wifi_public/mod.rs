@@ -15,14 +15,12 @@
 //! jamais recoupé ; une session SSH ou Bureau à distance en cours n'est jamais coupée. L'écriture élevée est celle du
 //! projet (`machine::appliquer_chacune` : sudo, ou une seule fenêtre PowerShell administrateur sous Windows).
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 mod etat;
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(any(target_os = "macos", test))]
-mod macos;
 mod portail;
 #[cfg(any(windows, test))]
 mod windows;
@@ -195,18 +193,6 @@ fn decrire(e: &Element) -> String {
                 tr!("selon le réseau", "per the network")
             }
         ),
-        Element::MacPareFeu { option, .. } => match option.as_str() {
-            "globalstate" => tr!(
-                "Pare-feu de macOS allumé : il était coupé, il le restera",
-                "macOS firewall turned on: it was off, it will stay on"
-            ),
-            "blockall" => tr!(
-                "Pare-feu : tout bloquer sauf l'essentiel (avant : non)",
-                "Firewall: block all but essential (before: no)"
-            ),
-            _ => tr!("Mode furtif (avant : non)", "Stealth mode (before: no)"),
-        }
-        .to_string(),
     }
 }
 
@@ -361,8 +347,8 @@ fn plan_dns(plan: &mut Plan, chiffre: bool, dot: impl FnOnce() -> Option<(String
             if !chiffre {
                 plan.notes.push(
                     tr!(
-                        "Le DNS protecteur n'est pas chiffré ici (Windows, macOS, ou Linux sans systemd-resolved) : le réseau voit encore les noms des sites visités.",
-                        "The protective DNS is not encrypted here (Windows, macOS, or Linux without systemd-resolved): the network still sees the names of the sites visited."
+                        "Le DNS protecteur n'est pas chiffré ici (Windows, ou Linux sans systemd-resolved) : le réseau voit encore les noms des sites visités.",
+                        "The protective DNS is not encrypted here (Windows, or Linux without systemd-resolved): the network still sees the names of the sites visited."
                     )
                     .to_string(),
                 );
@@ -596,58 +582,6 @@ fn relever() -> Result<Plan, String> {
     Ok(plan)
 }
 
-#[cfg(target_os = "macos")]
-fn relever() -> Result<Plan, String> {
-    let (carte, service, ssid, securite) = macos::lecture::wifi().ok_or_else(|| {
-        tr!(
-            "Aucun Wi-Fi connecté, ou lecture impossible (networksetup, system_profiler).",
-            "No Wi-Fi connected, or reading not possible (networksetup, system_profiler)."
-        )
-        .to_string()
-    })?;
-    let mut plan = Plan::new(Reseau {
-        nom: ssid,
-        interface: carte,
-        id: service,
-    });
-    plan.signaux = portail::Signaux {
-        force: Some(crate::machine::wifi::force(&securite)),
-        deja_public: false,
-        portail: None,
-    };
-    let mut commandes = Vec::new();
-    let mut elements = Vec::new();
-    for option in etat::OPTIONS_MAC {
-        match macos::lecture::option(option) {
-            Some("on") => {}
-            Some(_) => {
-                commandes.push(macos::regler(option, "on"));
-                elements.push(Element::MacPareFeu {
-                    option: option.to_string(),
-                    avant: "off".to_string(),
-                });
-            }
-            None => {
-                plan.entrees_ouvertes = true;
-                plan.notes.push(trf!(
-                    "Pare-feu ({option}) illisible : pas changé.",
-                    "Firewall ({option}) unreadable: not changed."
-                ));
-            }
-        }
-    }
-    plan.ajouter(commandes, elements, false);
-    plan.notes.push(
-        tr!(
-            "AirDrop et Bonjour ne sont pas touchés (le pare-feu laisse passer Bonjour).",
-            "AirDrop and Bonjour are not touched (the firewall lets Bonjour through)."
-        )
-        .to_string(),
-    );
-    plan_dns(&mut plan, false, || None);
-    Ok(plan)
-}
-
 // ---------------------------------------------------------------------------------------------------------------
 // Relire et remettre
 
@@ -689,8 +623,6 @@ impl Relecture {
         return linux::lecture::a_l_avant(e, self.meme_demarrage);
         #[cfg(windows)]
         return windows::lecture::a_l_avant(e, self.pare_feu.as_ref(), self.en_direct);
-        #[cfg(target_os = "macos")]
-        return macos::lecture::a_l_avant(e);
     }
 }
 
@@ -706,8 +638,6 @@ fn commande_remise(e: &Element) -> Option<String> {
     return linux::remettre(e);
     #[cfg(windows)]
     return windows::remettre(e);
-    #[cfg(target_os = "macos")]
-    return macos::remettre(e);
 }
 
 /// Les remises d'un état fiable, dans l'ordre inverse de l'allumage : (élément, commande). Les éléments invalides
@@ -843,10 +773,7 @@ fn point_de_restauration() -> Result<Option<String>, ()> {
 fn ferme_les_entrees(x: &Element) -> bool {
     matches!(
         x,
-        Element::NftTable { .. }
-            | Element::ProfilPublic { .. }
-            | Element::MacPareFeu { .. }
-            | Element::Categorie { .. }
+        Element::NftTable { .. } | Element::ProfilPublic { .. } | Element::Categorie { .. }
     )
 }
 
@@ -940,8 +867,8 @@ fn expliquer() {
     afficher_aligne(
         "  ",
         tr!(
-            "Pour un réseau public (café, hôtel, aéroport) : l'ordinateur n'accepte plus aucune connexion venue de ce réseau, ne partage plus ses fichiers ni n'annonce son nom (sous macOS, le pare-feu ferme le partage ; Bonjour et AirDrop restent), et passe par un DNS qui bloque les sites dangereux (un résolveur qui tourne déjà sur l'ordinateur est gardé). Internet marche comme avant ; rien n'est envoyé pour décider. Tout se remet exactement en éteignant le mode.",
-            "For a public network (café, hotel, airport): the computer no longer accepts any connection from this network, stops sharing its files and announcing its name (on macOS, the firewall closes sharing; Bonjour and AirDrop stay), and uses a DNS that blocks dangerous sites (a resolver already running on the computer is kept). The Internet works as before; nothing is sent to decide. Everything is put back exactly when the mode is turned off."
+            "Pour un réseau public (café, hôtel, aéroport) : l'ordinateur n'accepte plus aucune connexion venue de ce réseau, ne partage plus ses fichiers ni n'annonce son nom, et passe par un DNS qui bloque les sites dangereux (un résolveur qui tourne déjà sur l'ordinateur est gardé). Internet marche comme avant ; rien n'est envoyé pour décider. Tout se remet exactement en éteignant le mode.",
+            "For a public network (café, hotel, airport): the computer no longer accepts any connection from this network, stops sharing its files and announcing its name, and uses a DNS that blocks dangerous sites (a resolver already running on the computer is kept). The Internet works as before; nothing is sent to decide. Everything is put back exactly when the mode is turned off."
         ),
         2,
         "",
@@ -1459,8 +1386,7 @@ fn recouper_si_voulu() {
     }
 }
 
-/// Linux : `recouper_linux_si_voulu` (le mode n'y allume pas de pare-feu de la personne) ; macOS (gelé) : le
-/// pare-feu trouvé coupé reste allumé, comme avant.
+/// Linux : `recouper_linux_si_voulu` (le mode n'y allume pas de pare-feu de la personne).
 #[cfg(not(windows))]
 fn recouper_si_voulu() {}
 
@@ -1946,12 +1872,6 @@ fn suggestion_ici() -> Option<String> {
         deja_public: windows::lecture::lire().profil.is_some_and(|(_, c, _)| c == "Public"),
         portail: None,
     };
-    #[cfg(target_os = "macos")]
-    let s = portail::Signaux {
-        force: macos::lecture::wifi().map(|(_, _, _, securite)| crate::machine::wifi::force(&securite)),
-        deja_public: false,
-        portail: None,
-    };
     portail::suggestion(s)
 }
 
@@ -2197,10 +2117,6 @@ mod tests {
                 carte: "{0b8c2f4e-1a2b-4c3d-9e8f-001122334455}".into(),
                 avant: 0,
             },
-            Element::MacPareFeu {
-                option: "globalstate".into(),
-                avant: "off".into(),
-            },
         ]);
         for x in &tous {
             if let Some(c) = commande_remise(x) {
@@ -2370,9 +2286,9 @@ mod tests {
         let reste = restants(&remises, &[Some(true), Some(false), Some(true), Some(true)], &tout);
         assert_eq!(reste, vec![e.elements[2].clone()]);
         // Un pare-feu trouvé coupé sort de l'état sans commande : il reste allumé.
-        let coupe = Element::MacPareFeu {
-            option: "globalstate".into(),
-            avant: "off".into(),
+        let coupe = Element::ProfilPublic {
+            parametre: "Enabled".into(),
+            avant: "False".into(),
         };
         assert_eq!(restants(&[(&coupe, None)], &[Some(false)], &[false]), vec![]);
         // La table nft ne se relit pas sans droits : elle se juge sur sa commande en administrateur, qui la relit.

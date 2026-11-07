@@ -7,9 +7,6 @@
 //! n'emporte que des nombres et un genre hors de l'écran ; les valeurs (noms de paquets, d'unités, de comptes) ne
 //! s'affichent qu'avec `--detail`, sur l'ordinateur où l'on est.
 
-// Aucune lecture croisée sous macOS encore (lot macOS) : les outils de comparaison n'y servent pas.
-#![cfg_attr(target_os = "macos", allow(dead_code))]
-
 use std::collections::BTreeMap;
 
 use crate::machine::regles::Os;
@@ -158,7 +155,6 @@ inventory::collect!(Croisee);
 
 /// Déclare une lecture croisée : identifiant, système, sujet (français, anglais), outil, règles, comparaison. Un
 /// identifiant mal formé ne compile pas.
-#[cfg_attr(target_os = "macos", allow(unused_macros))] // aucune lecture croisée sous macOS encore
 macro_rules! croisee {
     ($id:literal, $os:expr, $sujet:expr, $outil:literal, $regles:expr, $comparer:expr $(,)?) => {
         const _: () = assert!(
@@ -177,7 +173,6 @@ macro_rules! croisee {
         }
     };
 }
-#[cfg_attr(target_os = "macos", allow(unused_imports))]
 pub(crate) use croisee;
 
 /// Les lectures croisées de ce système, par identifiant.
@@ -377,7 +372,6 @@ mod tests {
             let attendu = match c.systeme {
                 Os::Linux => "AUT-LNX-",
                 Os::Windows => "AUT-WIN-",
-                Os::MacOs => "AUT-MAC-",
                 Os::Tous => "AUT-COM-",
             };
             assert!(c.id.starts_with(attendu), "{} : préfixe {attendu} attendu", c.id);

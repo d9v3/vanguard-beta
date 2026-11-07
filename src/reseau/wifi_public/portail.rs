@@ -60,8 +60,6 @@ pub(crate) fn adresse() -> Option<String> {
     return super::linux::lecture::uri_de_connectivite();
     #[cfg(windows)]
     return Some("http://www.msftconnecttest.com/redirect".to_string());
-    #[cfg(target_os = "macos")]
-    return Some("http://captive.apple.com".to_string());
 }
 
 /// Ouvre la page de connexion (après accord), puis attend que la personne s'y soit connectée, jusqu'à `fin` au plus :

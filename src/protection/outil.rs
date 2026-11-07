@@ -1,6 +1,6 @@
 //! Outils externes que Vanguard lance quand ils sont installés (trivy ; gitleaks en complément) : trouvés dans le PATH, ou là où
 //! winget les pose sous Windows, et proposés à l'installation après accord, par l'outil du système. Vanguard ne
-//! télécharge jamais un programme lui-même : la distribution, Homebrew ou winget en répondent.
+//! télécharge jamais un programme lui-même : la distribution ou winget en répondent.
 
 use std::path::PathBuf;
 
@@ -19,8 +19,6 @@ pub(crate) struct Externe {
     pub presentation: (&'static str, &'static str),
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub linux: Linux,
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    pub brew: &'static str,
     #[cfg_attr(not(windows), allow(dead_code))]
     pub winget: &'static str,
     pub site: &'static str,
@@ -60,10 +58,6 @@ fn commande_d_installation(e: &Externe) -> Option<String> {
             (Linux::Arch, _) => None,
         }
     }
-    #[cfg(target_os = "macos")]
-    {
-        crate::machine::macos::homebrew().map(|brew| format!("{brew} install {}", e.brew))
-    }
     #[cfg(windows)]
     {
         Some(format!(
@@ -98,8 +92,8 @@ pub(crate) fn proposer(e: &Externe) -> Option<PathBuf> {
     if !demander_ou_defaut(tr!("  L'installer maintenant ? [o/N] : ", "  Install it now? [y/N]: ")).oui() {
         return None;
     }
-    // Au premier plan : sudo ou winget peuvent poser une question. Par le lanceur des corrections sous Linux et
-    // macOS, noté dans « Ce que Vanguard a changé » ; winget reste hors de la fenêtre administrateur, et se note à part.
+    // Au premier plan : sudo ou winget peuvent poser une question. Par le lanceur des corrections sous Linux,
+    // noté dans « Ce que Vanguard a changé » ; winget reste hors de la fenêtre administrateur, et se note à part.
     #[cfg(unix)]
     let fait = crate::machine::appliquer(std::slice::from_ref(&commande));
     #[cfg(windows)]

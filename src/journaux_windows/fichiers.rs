@@ -1,5 +1,5 @@
 //! La source « fichiers » des événements de Windows : un dossier de journaux .evtx (celui qu'exporte `vanguard
-//! traces`, ou `Windows\System32\winevt\Logs` d'un disque monté depuis la clé de secours), lu sous Linux, macOS ou
+//! traces`, ou `Windows\System32\winevt\Logs` d'un disque monté depuis la clé de secours), lu sous Linux ou
 //! Windows par le lecteur maison, en flux : morceau par morceau, chaque événement voulu donné un à un.
 //!
 //! Les fichiers viennent d'ailleurs, parfois d'un Windows piraté : nombre de fichiers et octets lus bornés (les
@@ -7,7 +7,7 @@
 //! et fichiers spéciaux (tubes, périphériques) jamais ouverts, rien du contenu des journaux utilisé comme chemin.
 //! Ce qui n'a pas pu être lu est dit fichier par fichier, avec le bilan du lecteur tel quel : jamais « rien vu ».
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::path::{Path, PathBuf};

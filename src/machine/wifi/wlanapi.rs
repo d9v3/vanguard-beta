@@ -6,7 +6,7 @@
 //! Windows rend est copié d'un bloc puis lu octet par octet, chaque borne testée avant la lecture ; les lecteurs sont
 //! purs et testés sur des blocs fabriqués selon wlanapi.h.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de wlanapi.dll chargée à la demande (LoadLibraryExW, GetProcAddress, transmute) et de ses listes.
 #![allow(unsafe_code)]

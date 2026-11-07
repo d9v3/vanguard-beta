@@ -96,14 +96,6 @@ impl Geste {
     }
 }
 
-#[cfg(target_os = "macos")]
-impl Geste {
-    /// Une préférence de texte de la liste fermée (`defaults`).
-    pub(crate) fn preference(domaine: &str, cle: &str) -> Geste {
-        Geste(format!("preference|{domaine}|{cle}"))
-    }
-}
-
 /// Un fichier du dossier personnel, sans « .. » : ses droits se remettent sans sudo, et une note ne peut pas en
 /// viser un autre. Les tests travaillent dans leur dossier jetable (`essais::temporaire`), jamais dans le vrai dossier
 /// personnel.
@@ -702,7 +694,6 @@ pub(crate) fn dire_issue(issue: &Issue, titre: &str) {
 }
 
 /// Le choix 3 du menu Gaming : les réglages pour jouer notés, cochés pour être remis comme avant.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) fn remettre_jeux() {
     let notes = notes(Some(Origine::Jeux));
     if notes.is_empty() {
@@ -1424,28 +1415,6 @@ mod tests {
         );
         assert_eq!(std::fs::read_to_string(&copie).unwrap(), contenu);
         let _ = std::fs::remove_dir_all(&d);
-    }
-
-    /// Aller-retour des corrections de macOS : la préférence d'AirDrop notée est remise telle quelle, ou retirée si
-    /// elle manquait ; une valeur hors de sa liste n'entre dans aucune commande.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn aller_retour_de_chaque_genre_macos() {
-        let airdrop = "preference|com.apple.sharingd|DiscoverableMode";
-        let h = historique(vec![
-            note("bilan:airdrop", "", &[airdrop], &[Some("Everyone")]),
-            note("bilan:absent", "", &[airdrop], &[None]),
-        ]);
-        assert_eq!(
-            commandes(&h, "bilan:airdrop"),
-            [
-                "defaults write com.apple.sharingd DiscoverableMode -string 'Everyone'; killall sharingd 2>/dev/null; true"
-            ]
-        );
-        assert!(commandes(&h, "bilan:absent")[0].starts_with("defaults delete com.apple.sharingd DiscoverableMode"));
-        let piege = historique(vec![note("bilan:p", "", &[airdrop], &[Some("Everyone'; rm -rf ~; '")])]);
-        assert!(note_admise(&rebatis(&piege)[0], &piege).is_none());
-        assert_eq!(commandes(&piege, "bilan:p"), Vec::<String>::new());
     }
 
     /// Les notes de Gaming d'avant (jeux.json) sont reprises une fois dans reglages.json, scellé, sans en perdre :

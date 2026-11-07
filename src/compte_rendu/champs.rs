@@ -309,6 +309,8 @@ liste!(
     /// La famille du système : rien de plus fin (ni version, ni nom d'ordinateur).
     Famille {
         Windows = "windows",
+        /// Accepté et lu (les comptes rendus des anciennes versions pour Mac, jusqu'à 0.89.1), jamais écrit par
+        /// cette version : le relais et les schémas de la veille l'acceptent encore.
         Macos = "macos",
         Linux = "linux",
     }

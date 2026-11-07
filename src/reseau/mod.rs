@@ -840,23 +840,11 @@ pub fn cles_montees() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Les volumes où une clé peut être montée : ceux de l'utilisateur sous Linux, /Volumes sous macOS, les lecteurs
-/// D: à Z: sous Windows.
+/// Les volumes où une clé peut être montée : ceux de l'utilisateur sous Linux, les lecteurs D: à Z: sous Windows.
 pub(crate) fn volumes_montes() -> Vec<PathBuf> {
     #[cfg(target_os = "linux")]
     {
         sans_doublons(cles_montees())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        sans_doublons(
-            std::fs::read_dir("/Volumes")
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|d| d.path())
-                .collect(),
-        )
     }
     #[cfg(windows)]
     {
@@ -940,7 +928,7 @@ pub fn etat_de_la_cle() -> EtatCle {
 /// La clé d'où tourne le programme (exe dans <clé>/Linux/, <clé>/Windows/…), trouvée par son seul chemin, sans
 /// parcourir les lecteurs : un lecteur réseau déconnecté ferait attendre.
 pub(crate) fn cle_du_programme() -> Option<PathBuf> {
-    // Sous Linux et macOS, le programme peut tourner depuis une copie temporaire (protection de la clé) : on part
+    // Sous Linux, le programme peut tourner depuis une copie temporaire (protection de la clé) : on part
     // du programme d'origine.
     #[cfg(unix)]
     let exe = crate::protection::cle::exe_d_origine();

@@ -2,4 +2,4 @@
 gravite = "eleve"
 mots = ["AnyDesk"]
 propre = "aucun"
-systemes = ["linux", "macos"]
+systemes = ["linux"]

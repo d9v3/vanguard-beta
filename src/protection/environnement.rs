@@ -1,10 +1,9 @@
 //! L'environnement dans lequel Vanguard démarre. Une bibliothèque injectée dans tous les programmes de la session
-//! (LD_PRELOAD, LD_AUDIT, /etc/ld.so.preload sous Linux ; DYLD_INSERT_LIBRARIES sous macOS ; AppInit_DLLs sous
-//! Windows) tourne aussi dans Vanguard et peut lui mentir : ce qu'il lit du système passe par elle. On le dit avant
-//! tout bilan, sur la sortie d'erreur (une sortie JSON reste propre). LD_PRELOAD a des usages légitimes (GameMode,
-//! l'overlay Steam, libgtk3-nocsd, fakeroot) : une bibliothèque d'un paquet du système, hors d'un dossier que
-//! l'utilisateur peut écrire, est une information ; le reste, une alerte. Même jugement que la persistance pour
-//! /etc/ld.so.preload.
+//! (LD_PRELOAD, LD_AUDIT, /etc/ld.so.preload sous Linux ; AppInit_DLLs sous Windows) tourne aussi dans Vanguard et peut
+//! lui mentir : ce qu'il lit du système passe par elle. On le dit avant tout bilan, sur la sortie d'erreur (une sortie
+//! JSON reste propre). LD_PRELOAD a des usages légitimes (GameMode, l'overlay Steam, libgtk3-nocsd, fakeroot) : une
+//! bibliothèque d'un paquet du système, hors d'un dossier que l'utilisateur peut écrire, est une information ; le
+//! reste, une alerte. Même jugement que la persistance pour /etc/ld.so.preload.
 
 use crate::risk::Niveau;
 use crate::ui::*;
@@ -72,7 +71,7 @@ fn juger_lib(lib: &str, du_systeme: &dyn Fn(&str) -> bool) -> Niveau {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
+#[cfg(any(target_os = "linux", test))]
 fn avis_variable(source: &str, valeur: &str, niveau: Niveau) -> Avis {
     let valeur = affichable(valeur);
     let texte = if niveau == Niveau::Info {
@@ -119,16 +118,6 @@ fn avis() -> Vec<Avis> {
         }
     }
     liste
-}
-
-/// macOS : DYLD_INSERT_LIBRARIES n'a presque jamais de raison d'être posée pour toute une session.
-#[cfg(target_os = "macos")]
-fn avis() -> Vec<Avis> {
-    std::env::var_os("DYLD_INSERT_LIBRARIES")
-        .filter(|v| !v.is_empty())
-        .map(|v| avis_variable("DYLD_INSERT_LIBRARIES", &v.to_string_lossy(), Niveau::Eleve))
-        .into_iter()
-        .collect()
 }
 
 /// Windows : AppInit_DLLs, chargées par le système dans chaque programme qui affiche une fenêtre (Vanguard, lancé dans

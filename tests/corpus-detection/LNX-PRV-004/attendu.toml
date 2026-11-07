@@ -2,4 +2,4 @@
 gravite = "eleve"
 mots = ["/usr/local/bin"]
 propre = "rien"
-systemes = ["linux", "macos"]
+systemes = ["linux"]

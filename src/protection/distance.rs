@@ -8,7 +8,7 @@
 //! par le bilan, et le parcours redemande un accord exprès, en rappelant que la personne qui aide peut être connectée
 //! par ce programme même. Un programme que la personne utilise elle-même se déclare normal (« i » à la correction).
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 #[cfg(unix)]
@@ -86,7 +86,7 @@ const LOGICIELS: &[Logiciel] = &[
 /// Comment un logiciel a été trouvé.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Trace {
-    /// Installé : Programmes et fonctionnalités, gestionnaire de paquets, /Applications.
+    /// Installé : Programmes et fonctionnalités, gestionnaire de paquets.
     Installe,
     /// En cours d'exécution ; `connecte` : avec une connexion réseau ouverte en ce moment.
     EnCours { connecte: bool },
@@ -617,7 +617,7 @@ fn sortie_de(cmd: &str, args: &[&str], secondes: u64) -> Option<String> {
 
 /// Les programmes et installateurs posés à la racine de ces dossiers (Téléchargements, Bureau, temporaires) : le faux
 /// technicien fait télécharger la version portable d'AnyDesk, qui ne s'installe nulle part.
-/// `false` : un de ces dossiers existe sans se lire (sous macOS, Téléchargements et Bureau sans l'autorisation).
+/// `false` : un de ces dossiers existe sans se lire.
 #[cfg(unix)]
 fn fichiers_poses(t: &mut Vec<Trouvaille>, dossiers: &[PathBuf]) -> bool {
     let mut lus = true;
@@ -1349,115 +1349,6 @@ fn nom_active(lien: &str, chemin: &std::path::Path) -> String {
     } else {
         lien.to_string()
     }
-}
-
-// ───────────────────────────── Relevé : macOS ─────────────────────────────
-
-// Même signature que sous Windows, où la lecture peut échouer.
-#[allow(clippy::unnecessary_wraps)]
-#[cfg(target_os = "macos")]
-fn relever_tout() -> Option<Releve> {
-    let maison = crate::socle::maison();
-    let mut t = Vec::new();
-    let mut lu = Lu {
-        installes: true,
-        demarrage: true,
-        ..Lu::default()
-    };
-    for (dossier, sudo) in [
-        (PathBuf::from("/Applications"), "sudo "),
-        (maison.join("Applications"), ""),
-    ] {
-        lu.installes &= lisible_ou_absent(&dossier);
-        for e in std::fs::read_dir(&dossier).into_iter().flatten().flatten() {
-            let nom = e.file_name().to_string_lossy().into_owned();
-            if !nom.to_lowercase().ends_with(".app") {
-                continue;
-            }
-            let Some(i) = reconnu(&nom) else {
-                continue;
-            };
-            let chemin = e.path();
-            t.push(Trouvaille {
-                logiciel: i,
-                trace: Trace::Installe,
-                ou: chemin_affichable(&chemin),
-                depuis: date_de(e.metadata().and_then(|m| m.created())),
-                retrait: vec![format!("{sudo}rm -rf {}", sh_chaine(&chemin.to_string_lossy()))],
-                arret: Vec::new(),
-                refuse: false,
-            });
-        }
-    }
-    for (dossier, domaine, sudo) in [
-        (PathBuf::from("/Library/LaunchAgents"), "system", "sudo "),
-        (PathBuf::from("/Library/LaunchDaemons"), "system", "sudo "),
-        (maison.join("Library/LaunchAgents"), "gui/$(id -u)", ""),
-    ] {
-        lu.demarrage &= lisible_ou_absent(&dossier);
-        for e in std::fs::read_dir(&dossier).into_iter().flatten().flatten() {
-            let nom = e.file_name().to_string_lossy().into_owned();
-            let Some(i) = reconnu(&nom) else {
-                continue;
-            };
-            let chemin = sh_chaine(&e.path().to_string_lossy());
-            t.push(Trouvaille {
-                logiciel: i,
-                trace: Trace::Demarrage,
-                ou: chemin_affichable(&e.path()),
-                depuis: None,
-                retrait: vec![format!("{sudo}rm -f {chemin}")],
-                arret: vec![format!("{sudo}launchctl bootout {domaine} {chemin} || true")],
-                refuse: false,
-            });
-        }
-    }
-    // lsof : « p1234 » puis les connexions « n192.168.1.5:51234->1.2.3.4:443 » du processus.
-    let mut connectes = std::collections::BTreeSet::new();
-    if let Some(lsof) = sortie_de("lsof", &["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-F", "pn"], 20) {
-        let mut pid = None;
-        for l in lsof.lines() {
-            if let Some(p) = l.strip_prefix('p') {
-                pid = p.parse::<u32>().ok();
-            } else if l.starts_with('n')
-                && l.contains("->")
-                && !l.contains("->127.0.0.1:")
-                && !l.contains("->[::1]:")
-                && let Some(p) = pid
-            {
-                connectes.insert(p);
-            }
-        }
-    }
-    if let Some(ps) = sortie_de("ps", &["-axo", "pid=,comm="], 15) {
-        lu.en_cours = true;
-        for l in ps.lines() {
-            let Some((pid, comm)) = l.trim().split_once(char::is_whitespace) else {
-                continue;
-            };
-            let comm = comm.trim();
-            let court = comm.rsplit('/').next().unwrap_or(comm);
-            let Some(i) = reconnu(comm) else {
-                continue;
-            };
-            t.push(Trouvaille {
-                logiciel: i,
-                trace: Trace::EnCours {
-                    connecte: pid.parse::<u32>().is_ok_and(|p| connectes.contains(&p)),
-                },
-                ou: affichable(comm),
-                depuis: None,
-                retrait: Vec::new(),
-                arret: vec![format!("pkill -x {} || true", sh_chaine(court))],
-                refuse: false,
-            });
-        }
-    }
-    lu.fichiers = fichiers_poses(&mut t, &[maison.join("Downloads"), maison.join("Desktop")]);
-    Some(Releve {
-        trouvailles: sans_doublons(t),
-        lu,
-    })
 }
 
 // ───────────────────────────── Relevé : Windows ─────────────────────────────

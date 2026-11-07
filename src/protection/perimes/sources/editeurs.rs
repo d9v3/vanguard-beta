@@ -299,25 +299,6 @@ pub(crate) fn guid_de(adresse: &str) -> Option<String> {
     forme.then_some(dernier)
 }
 
-// ───────────────────────────── Office (Mac) ─────────────────────────────
-
-/// Un manifeste de Microsoft AutoUpdate (`0409XCEL2019-chk.xml`, un plist) : la version servie (« Update
-/// Version »), si l'identifiant d'application est bien `id`.
-#[cfg(any(target_os = "macos", test))]
-pub(crate) fn mau(octets: &[u8], id: &str) -> Option<Version> {
-    let plist = crate::plist::lire(octets)?;
-    if plist.cle("Application ID")?.texte()? != id {
-        return None;
-    }
-    Version::lire(plist.cle("Update Version")?.texte()?)
-}
-
-/// Hors de macOS, le lecteur des plists n'est pas compilé : ces fichiers ne s'y lisent pas.
-#[cfg(not(any(target_os = "macos", test)))]
-pub(crate) fn mau(_octets: &[u8], _id: &str) -> Option<Version> {
-    None
-}
-
 // ───────────────────────────── Slack ─────────────────────────────
 
 #[derive(Deserialize)]
@@ -536,29 +517,6 @@ mod tests {
         assert_eq!(guid_de("\\\\serveur\\partage"), None);
     }
 
-    const MAU: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>Application ID</key>
-	<string>XCEL2019</string>
-	<key>Date</key>
-	<date>2026-10-20T08:00:00Z</date>
-	<key>Type</key>
-	<string>Recommended</string>
-	<key>Update Version</key>
-	<string>16.114.26102031</string>
-</dict>
-</plist>"#;
-
-    #[test]
-    fn manifeste_de_mau() {
-        assert_eq!(mau(MAU.as_bytes(), "XCEL2019"), Some(v("16.114.26102031")));
-        // Le manifeste d'une autre application n'est pas pris pour celui-ci.
-        assert_eq!(mau(MAU.as_bytes(), "MSWD2019"), None);
-        assert_eq!(mau(b"<html></html>", "XCEL2019"), None);
-    }
-
     /// Les CVE d'Edge : forme vérifiée, majuscules, entrées étrangères ignorées, liste démesurée ou d'un autre type
     /// refusée (sans rendre la version illisible).
     #[test]
@@ -655,7 +613,6 @@ mod tests {
             let _ = chrome(&octets, "win", "stable");
             let _ = edge(&octets);
             let _ = office(&octets);
-            let _ = mau(&octets, "XCEL2019");
             let _ = adobe(&octets);
             let _ = brave(&octets);
             let _ = slack(&octets, "win32");

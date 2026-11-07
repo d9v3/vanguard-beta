@@ -2,4 +2,4 @@
 gravite = "critique"
 mots = ["corpus"]
 propre = "info"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]

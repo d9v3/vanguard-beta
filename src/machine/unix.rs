@@ -1,6 +1,6 @@
-//! Ce que Linux et macOS vérifient de la même façon : fichiers secrets lisibles par d'autres comptes, sudo sans mot de
-//! passe, dossiers de commandes modifiables par d'autres comptes. Chaque système garde ses mots à lui (« la machine », « le Mac ») et ce qu'il vérifie en plus
-//! (machine/linux/privileges.rs, machine/macos/privileges.rs).
+//! Ce que Linux vérifie hors de machine/linux/ : fichiers secrets lisibles par d'autres comptes, sudo sans mot de
+//! passe, dossiers de commandes modifiables par d'autres comptes. Ce qu'il vérifie en plus est dans
+//! machine/linux/privileges.rs.
 
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 
@@ -61,7 +61,7 @@ pub(super) fn secret_expose(mode: u32) -> bool {
 }
 
 /// Les fichiers secrets de `maison`, et le dossier personnel lui-même. `dossier_ouvert` : le texte de l'alerte quand
-/// les autres comptes peuvent lire le dossier personnel (il nomme la machine ou le Mac).
+/// les autres comptes peuvent lire le dossier personnel (il nomme la machine).
 pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Constat> {
     let mut exposes = Vec::new();
     let mut commandes = Vec::new();
@@ -99,8 +99,7 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
             .annulable(gestes),
         );
     }
-    // Le dossier personnel lui-même (macOS le ferme d'origine, droits 750) : ouvert en lecture, il laisse voir tous tes
-    // fichiers aux autres comptes.
+    // Le dossier personnel lui-même : ouvert en lecture, il laisse voir tous tes fichiers aux autres comptes.
     if std::fs::metadata(maison).is_ok_and(|m| m.permissions().mode() & 0o007 != 0) {
         constats.push(
             alerte("Fichiers secrets", Niveau::Info, dossier_ouvert)
@@ -309,7 +308,7 @@ pub(super) fn juger_sudo(liste: &str, tout_permis: &str) -> Vec<Constat> {
 }
 
 // Lecture de sshd_config, la même sous Windows (OpenSSH de Microsoft) : `machine::sshd`.
-pub(super) use super::sshd::{mots_de_passe_vides_sshd, partie_globale_sshd, valeur_sshd};
+pub(super) use super::sshd::partie_globale_sshd;
 
 /// Configuration de sshd qui vaut pour toutes les connexions ; `None` si elle est réservée à root.
 pub(super) fn configuration_sshd() -> Option<String> {
@@ -335,62 +334,6 @@ pub(super) fn configuration_sshd() -> Option<String> {
     Some(conf)
 }
 
-/// Serveur SSH du Mac (Remote Login) : ses mots de passe sont l'usage normal, pas une alerte. Seuls comptent un
-/// compte sans mot de passe accepté et la connexion root. `None` : rien à dire.
-#[cfg_attr(target_os = "linux", allow(dead_code))]
-pub(super) fn juger_sshd_mac(conf: &str) -> Option<Constat> {
-    let ou = tr!(
-        "dans /etc/ssh/sshd_config, puis couper et rallumer « Session à distance » (Réglages Système > Général > Partage)",
-        "in /etc/ssh/sshd_config, then turn “Remote Login” off and on again (System Settings > General > Sharing)"
-    );
-    if mots_de_passe_vides_sshd(conf) {
-        return Some(
-            alerte(
-                "SSH",
-                Niveau::Critique,
-                tr!(
-                    "La session à distance accepte les comptes sans mot de passe : un tel compte s'ouvre depuis le réseau sans rien taper.",
-                    "Remote Login accepts accounts without a password: such an account opens from the network without typing anything."
-                ),
-            )
-            .manuel(trf!("Mettre « PermitEmptyPasswords no » {ou}", "Set “PermitEmptyPasswords no” {ou}"), &[]),
-        );
-    }
-    (valeur_sshd(conf, "PermitRootLogin").as_deref() == Some("yes")).then(|| {
-        alerte(
-            "SSH",
-            Niveau::Eleve,
-            tr!(
-                "La session à distance accepte une connexion en root : le compte qui a tous les droits s'ouvre depuis le réseau.",
-                "Remote Login accepts root logins: the account with every right opens from the network."
-            ),
-        )
-        .manuel(trf!("Mettre « PermitRootLogin no » {ou}", "Set “PermitRootLogin no” {ou}"), &[])
-    })
-}
-
-/// Ports en écoute de `netstat -an -p tcp|udp` : « tcp4  0  0  *.22  *.*  LISTEN » → (adresse, port).
-/// L'adresse et le port sont séparés par le dernier point (« 127.0.0.1.631 », « ::1.631 », « *.5900 »). Le netstat
-/// des BSD, celui du Mac : ici pour que ses tests tournent aussi sous Linux.
-#[cfg_attr(target_os = "linux", allow(dead_code))]
-pub(super) fn lire_netstat(sortie: &str, tcp: bool) -> Vec<(String, u16)> {
-    sortie
-        .lines()
-        .filter(|l| {
-            if tcp {
-                l.contains("LISTEN")
-            } else {
-                l.starts_with("udp")
-            }
-        })
-        .filter_map(|l| {
-            let local = l.split_whitespace().nth(3)?;
-            let (adresse, port) = local.rsplit_once('.')?;
-            Some((adresse.to_string(), port.parse().ok()?))
-        })
-        .collect()
-}
-
 /// Un dossier de commandes tel qu'il est lu : son chemin réel, ses droits, son propriétaire, et si root y cherche ses
 /// commandes.
 pub(super) struct DossierDeCommandes {
@@ -405,13 +348,12 @@ pub(super) struct DossierDeCommandes {
 /// la tape, root compris après sudo. Un dossier ouvert à tous est fautif où qu'il soit ; un dossier de root qui
 /// appartient à un autre compte que root l'est aussi. Le bit « sticky » (/tmp) n'y change rien : il empêche de
 /// supprimer les fichiers des autres, pas d'en ajouter. Ailleurs, un dossier à un autre compte est voulu (Homebrew
-/// sous Linux) : rien à dire. `proprietaire` : regarder aussi à qui sont les dossiers de root ; pas sous macOS, où
-/// Homebrew prend /usr/local/bin à son compte sur les Mac Intel, et où sudo garde le PATH de la personne.
-pub(super) fn juger_dossiers_de_commandes(dossiers: &[DossierDeCommandes], proprietaire: bool) -> Option<Constat> {
+/// sous Linux) : rien à dire.
+pub(super) fn juger_dossiers_de_commandes(dossiers: &[DossierDeCommandes]) -> Option<Constat> {
     let ouverts: Vec<&DossierDeCommandes> = dossiers.iter().filter(|d| d.mode & 0o002 != 0).collect();
     let a_d_autres: Vec<&DossierDeCommandes> = dossiers
         .iter()
-        .filter(|d| proprietaire && d.de_root && d.proprietaire != 0 && d.mode & 0o002 == 0)
+        .filter(|d| d.de_root && d.proprietaire != 0 && d.mode & 0o002 == 0)
         .collect();
     if ouverts.is_empty() && a_d_autres.is_empty() {
         return None;
@@ -476,7 +418,7 @@ pub(super) fn juger_dossiers_de_commandes(dossiers: &[DossierDeCommandes], propr
 
 /// Les dossiers de root (`racines`), puis ceux du PATH de la personne, sous leur chemin réel (« /bin » mène souvent à
 /// « /usr/bin ») et sans doublon. Un dossier absent est sauté ; le dossier personnel aussi, qui est à la personne.
-pub(super) fn dossiers_de_commandes(racines: &[&str], maison: &Path, proprietaire: bool) -> Option<Constat> {
+pub(super) fn dossiers_de_commandes(racines: &[&str], maison: &Path) -> Option<Constat> {
     use std::os::unix::fs::MetadataExt;
     let maison = std::fs::canonicalize(maison).ok();
     let path = std::env::var("PATH").unwrap_or_default();
@@ -504,9 +446,9 @@ pub(super) fn dossiers_de_commandes(racines: &[&str], maison: &Path, proprietair
             }),
         }
     }
-    let constat = juger_dossiers_de_commandes(&vus, proprietaire);
+    let constat = juger_dossiers_de_commandes(&vus);
     #[cfg(target_os = "linux")]
-    let constat = constat.map(|c| if proprietaire { rendre_a_root(c, &vus) } else { c });
+    let constat = constat.map(|c| rendre_a_root(c, &vus));
     constat
 }
 
@@ -549,34 +491,6 @@ pub(super) fn rendre_a_root(constat: Constat, dossiers: &[DossierDeCommandes]) -
     reason = "essais : y déborder fait échouer l'essai"
 )]
 #[cfg(test)]
-mod tests_sshd {
-    use super::*;
-
-    #[test]
-    fn serveur_ssh_du_mac() {
-        // Mots de passe permis : l'usage normal de la session à distance, rien à dire.
-        assert!(juger_sshd_mac("").is_none());
-        assert!(juger_sshd_mac("PermitRootLogin prohibit-password\n").is_none());
-        assert_eq!(
-            juger_sshd_mac("PermitRootLogin yes\n").unwrap().probleme,
-            Some(Niveau::Eleve)
-        );
-        assert_eq!(
-            juger_sshd_mac("PermitEmptyPasswords yes\n").unwrap().probleme,
-            Some(Niveau::Critique)
-        );
-        // Mots de passe coupés : un mot de passe vide ne sert à rien.
-        let cles = "PasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitEmptyPasswords yes\n";
-        assert!(juger_sshd_mac(cles).is_none());
-    }
-}
-
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::as_conversions,
-    reason = "essais : y déborder fait échouer l'essai"
-)]
-#[cfg(test)]
 mod tests_dossiers_de_commandes {
     use super::*;
 
@@ -589,25 +503,23 @@ mod tests_dossiers_de_commandes {
             de_root,
         };
         let sains = [d("/usr/bin", 0o755, 0, true), d("/opt/outil/bin", 0o755, 1001, false)];
-        assert!(juger_dossiers_de_commandes(&sains, true).is_none());
+        assert!(juger_dossiers_de_commandes(&sains).is_none());
         // Ouvert à tous, même avec le bit sticky : corrigé par chmod o-w, le nom protégé.
-        let ouvert = juger_dossiers_de_commandes(&[d("/usr/local/bin", 0o1777, 0, true)], true).unwrap();
+        let ouvert = juger_dossiers_de_commandes(&[d("/usr/local/bin", 0o1777, 0, true)]).unwrap();
         assert_eq!(ouvert.probleme, Some(Niveau::Eleve));
         assert_eq!(ouvert.correctif.unwrap().commandes, ["sudo chmod o-w '/usr/local/bin'"]);
-        let a_moi = juger_dossiers_de_commandes(&[d("/opt/l'outil/bin", 0o777, 1000, false)], true).unwrap();
+        let a_moi = juger_dossiers_de_commandes(&[d("/opt/l'outil/bin", 0o777, 1000, false)]).unwrap();
         assert_eq!(a_moi.probleme, Some(Niveau::Moyen));
         assert_eq!(
             a_moi.correctif.unwrap().commandes,
             ["sudo chmod o-w '/opt/l'\\''outil/bin'"]
         );
         // Un dossier de root à un autre compte : à décider soi-même.
-        let pris = juger_dossiers_de_commandes(&[d("/usr/local/bin", 0o755, 1000, true)], true).unwrap();
+        let pris = juger_dossiers_de_commandes(&[d("/usr/local/bin", 0o755, 1000, true)]).unwrap();
         assert!(pris.probleme == Some(Niveau::Eleve) && !pris.correctif.unwrap().automatique);
         // /tmp dans le PATH : ouvert à tous mais temporaire, jamais chmod : à sortir du PATH.
-        let tmp = juger_dossiers_de_commandes(&[d("/tmp", 0o1777, 0, false)], true).unwrap();
+        let tmp = juger_dossiers_de_commandes(&[d("/tmp", 0o1777, 0, false)]).unwrap();
         assert!(!tmp.correctif.unwrap().automatique);
-        // macOS : /usr/local/bin à la personne (Homebrew sur un Mac Intel), rien à dire.
-        assert!(juger_dossiers_de_commandes(&[d("/usr/local/bin", 0o755, 501, true)], false).is_none());
     }
 
     /// D7a : un dossier de root pris par un autre compte est rendu à root par un geste ; tous ou aucun.
@@ -621,7 +533,7 @@ mod tests_dossiers_de_commandes {
             proprietaire,
             de_root,
         };
-        let juger = |v: &[DossierDeCommandes]| rendre_a_root(juger_dossiers_de_commandes(v, true).unwrap(), v);
+        let juger = |v: &[DossierDeCommandes]| rendre_a_root(juger_dossiers_de_commandes(v).unwrap(), v);
         let v = [
             d("/usr/local/bin", 0o755, 1000, true),
             d("/usr/local/sbin", 0o777, 0, true),
@@ -656,32 +568,6 @@ mod tests_dossiers_de_commandes {
         // /tmp dans le PATH avec un dossier pris : à la main.
         let v = [d("/usr/local/bin", 0o755, 1000, true), d("/tmp", 0o1777, 0, false)];
         assert!(!juger(&v).correctif.unwrap().automatique);
-    }
-}
-
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::as_conversions,
-    reason = "essais : y déborder fait échouer l'essai"
-)]
-#[cfg(test)]
-mod tests_netstat {
-    use super::*;
-
-    #[test]
-    fn lecture_de_netstat() {
-        let tcp = "Active Internet connections (including servers)\n\
-                   Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)\n\
-                   tcp4       0      0  *.22                   *.*                    LISTEN\n\
-                   tcp4       0      0  127.0.0.1.631          *.*                    LISTEN\n\
-                   tcp6       0      0  *.5900                 *.*                    LISTEN\n\
-                   tcp4       0      0  10.0.0.20.51234        17.57.146.20.443       ESTABLISHED\n";
-        assert_eq!(
-            lire_netstat(tcp, true),
-            [("*".into(), 22), ("127.0.0.1".into(), 631), ("*".into(), 5900)]
-        );
-        let udp = "udp4       0      0  *.5353                 *.*\nudp6       0      0  ::1.123  *.*\n";
-        assert_eq!(lire_netstat(udp, false), [("*".into(), 5353), ("::1".into(), 123)]);
     }
 }
 

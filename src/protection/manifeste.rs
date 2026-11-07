@@ -35,7 +35,7 @@
 //! coffre : qui remplace le programme peut mentir sur tout cela ; c'est pourquoi la référence reste chez le
 //! propriétaire et l'empreinte est publiée ailleurs.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::path::{Path, PathBuf};
@@ -216,7 +216,7 @@ fn plus_ancienne(a: &str, b: &str) -> bool {
 }
 
 /// L'identifiant du système de fichiers de la clé (UUID que le formatage lui donne, « 1A2B-3C4D » en exFAT), d'après
-/// le périphérique monté et /dev/disk/by-uuid. Sous Windows et macOS, aucun : le déploiement, qui écrit les
+/// le périphérique monté et /dev/disk/by-uuid. Sous Windows, aucun : le déploiement, qui écrit les
 /// références, se fait sous Linux ; l'ancienne référence unique y sert encore.
 #[cfg(target_os = "linux")]
 pub(crate) fn identifiant_volume(racine: &Path) -> Option<String> {
@@ -1124,7 +1124,7 @@ fn reference_douteuse(d: &Douteuse) -> Constat {
 enum SansReference {
     /// Son jeton est celui d'une référence d'ici, sous un autre identifiant de volume (`identifiant_change`).
     IdentifiantChange,
-    /// Identifiant de volume pas lu (udev en retard, montage non résolu ; toujours sous Windows et macOS).
+    /// Identifiant de volume pas lu (udev en retard, montage non résolu ; toujours sous Windows).
     IdentifiantIllisible,
     /// Ni son identifiant ni son jeton n'ont de référence ici.
     Inconnue,
@@ -1510,11 +1510,10 @@ mod tests {
     }
 
     /// B7 (campagne 6) : des dossiers imbriqués sur des centaines de niveaux se parcourent sur une petite pile, sans
-    /// arrêter le processus ; le fichier du fond est vu. macOS borne un chemin à 1024 octets (PATH_MAX), Linux à 4096 :
-    /// 400 niveaux y tiennent avec le dossier temporaire du Mac.
+    /// arrêter le processus ; le fichier du fond est vu.
     #[test]
     fn dossiers_tres_imbriques() {
-        const NIVEAUX: usize = if cfg!(target_os = "macos") { 400 } else { 600 };
+        const NIVEAUX: usize = 600;
         let racine = dossier_jetable("profond");
         let mut fond = racine.clone();
         for _ in 0..NIVEAUX {
@@ -2149,7 +2148,7 @@ mod tests {
         std::fs::write(&a, b"{}").unwrap();
         assert_eq!(reference_lue(&base, Some("1A2B-3C4D")), Some(a));
         assert_eq!(reference_lue(&base, Some("5E6F-7A8B")), None);
-        // Sans identifiant (Windows, macOS) : l'ancienne.
+        // Sans identifiant (Windows) : l'ancienne.
         assert_eq!(reference_lue(&base, None), Some(base.join(ANCIENNE_REFERENCE)));
         assert_eq!(reference_ecrite(&base, None), base.join(ANCIENNE_REFERENCE));
         // L'identifiant devient un nom de fichier : rien qui sorte du dossier.

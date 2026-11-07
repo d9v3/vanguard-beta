@@ -8,25 +8,17 @@ use super::{Constat, Verification};
 
 /// Le système d'une règle.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[allow(clippy::enum_variant_names)] // MacOs, comme partout ailleurs dans Vanguard.
 pub enum Os {
     Linux,
     Windows,
-    MacOs,
-    /// Les trois : les vérifications communes, montrées après celles du système.
+    /// Les deux : les vérifications communes, montrées après celles du système.
     Tous,
 }
 
 impl Os {
     /// Celui où tourne Vanguard.
     pub const fn actuel() -> Os {
-        if cfg!(windows) {
-            Os::Windows
-        } else if cfg!(target_os = "macos") {
-            Os::MacOs
-        } else {
-            Os::Linux
-        }
+        if cfg!(windows) { Os::Windows } else { Os::Linux }
     }
 
     /// Le début des identifiants de ses règles.
@@ -35,7 +27,6 @@ impl Os {
         match self {
             Os::Linux => "LNX",
             Os::Windows => "WIN",
-            Os::MacOs => "MAC",
             Os::Tous => "COM",
         }
     }
@@ -255,24 +246,6 @@ pub(crate) const MUETTES_TOLEREES: &[&str] = &[
     "LNX-SSH-004",
     "LNX-SSH-005",
     "LNX-SSH-006",
-    "MAC-DIS-001",
-    "MAC-MAJ-002",
-    "MAC-MAJ-003",
-    "MAC-MAJ-004",
-    "MAC-PAR-001",
-    "MAC-PRF-001",
-    "MAC-PRS-001",
-    "MAC-PRV-001",
-    "MAC-PRV-002",
-    "MAC-PRV-003",
-    "MAC-PRV-004",
-    "MAC-RES-002",
-    "MAC-SAV-002",
-    "MAC-SES-001",
-    "MAC-SES-002",
-    "MAC-SSH-001",
-    "MAC-SYS-001",
-    "MAC-SYS-002",
     "WIN-ANV-001",
     "WIN-ANV-002",
     "WIN-CPT-001",
@@ -298,7 +271,7 @@ pub(crate) const MUETTES_TOLEREES: &[&str] = &[
 
 /// Le plafond du cliquet : baisser ce nombre quand une règle sort de la liste, jamais le monter.
 #[cfg(test)]
-const MUETTES_TOLEREES_AU_PLUS: usize = 95;
+const MUETTES_TOLEREES_AU_PLUS: usize = 77;
 
 /// Les vérifications du bilan pour ce système, une par règle, dans l'ordre des rangs (le bilan les lance par
 /// `machine::bilan_des_regles`).
@@ -311,7 +284,7 @@ pub(super) fn verifications<'a>() -> Vec<Verification<'a>> {
 /// relire des journaux), assez court pour qu'un bilan figé (fichier sur un montage réseau mort, appel du système qui
 /// ne revient pas) finisse et nomme la règle fautive.
 pub(crate) const DELAI: std::time::Duration = std::time::Duration::from_mins(10);
-/// Celui des règles qui attendent Internet ou le gestionnaire de mises à jour (domaine « MAJ ») : softwareupdate,
+/// Celui des règles qui attendent Internet ou le gestionnaire de mises à jour (domaine « MAJ ») :
 /// winget, la recherche de Windows Update et les sources des logiciels pas à jour prennent parfois plusieurs minutes.
 pub(crate) const DELAI_LONG: std::time::Duration = std::time::Duration::from_mins(30);
 
@@ -591,9 +564,9 @@ mod tests {
         assert_eq!(reference_de(""), None);
     }
 
-    /// Les références des règles des trois systèmes, lues dans les sources : chaque système ne compile que les
-    /// siennes, et les règles de Windows et de macOS ne passeraient sinon ce test que sous Wine et sur le Mac de
-    /// GitHub. (identifiant, références) de chaque `regle!` et de chaque `Regle { id: … }` de src/machine.
+    /// Les références des règles des deux systèmes, lues dans les sources : chaque système ne compile que les siennes,
+    /// et les règles de Windows ne passeraient sinon ce test que sous Wine. (identifiant, références) de chaque
+    /// `regle!` et de chaque `Regle { id: … }` de src/machine.
     fn regles_des_sources() -> Vec<(String, Vec<String>)> {
         fn parcourir(d: &std::path::Path, sortie: &mut Vec<(String, Vec<String>)>) {
             for e in std::fs::read_dir(d).unwrap().flatten() {
@@ -638,17 +611,16 @@ mod tests {
 
     /// Les seules règles dont le relevé local garde le nom de l'objet (plan d'auto-amélioration, §1 et P1) : ce nom
     /// y est le sujet même (logiciel périmé, paquet à faille, service en échec, pilote vulnérable, espion connu).
-    const PARTAGE_DU_NOM: [&str; 6] = [
+    const PARTAGE_DU_NOM: [&str; 5] = [
         "COM-ESP-001",
         "LNX-MAJ-003",
         "LNX-SRV-001",
-        "MAC-MAJ-004",
         "WIN-MAJ-002",
         "WIN-PRS-012",
     ];
 
-    /// Garde de `partage`, pour les trois systèmes (lu dans les sources) et pour celui-ci (règles enregistrées) :
-    /// exactement les six règles de `PARTAGE_DU_NOM` disent `partage = Nom` ; les logiciels nouveaux, les
+    /// Garde de `partage`, pour les deux systèmes (lu dans les sources) et pour celui-ci (règles enregistrées) :
+    /// exactement les cinq règles de `PARTAGE_DU_NOM` disent `partage = Nom` ; les logiciels nouveaux, les
     /// extensions, les fichiers, le réseau, le Wi-Fi, le DNS, les partages et les sites n'en gardent que la sorte.
     /// Une règle de plus demande de changer la liste ici, donc une relecture.
     #[test]
@@ -705,10 +677,10 @@ mod tests {
         }
     }
 
-    /// C5, pour les trois systèmes : toute règle déclarée dans les sources cite une référence reconnue ; la lecture
+    /// C5, pour les deux systèmes : toute règle déclarée dans les sources cite une référence reconnue ; la lecture
     /// des sources trouve bien les règles de chaque système, nouvelles comprises.
     #[test]
-    fn chaque_regle_des_trois_systemes_a_sa_reference() {
+    fn chaque_regle_des_deux_systemes_a_sa_reference() {
         use crate::modele::reference::{mesure_cis_bien_ecrite, principale};
         let lues = regles_des_sources();
         for (id, refs) in &lues {
@@ -723,8 +695,6 @@ mod tests {
             "WIN-SSH-001",
             "WIN-ANV-003",
             "WIN-DUR-005",
-            "MAC-CPT-002",
-            "MAC-PRS-003",
             "LNX-RES-003",
             "COM-LOG-001",
             "LNX-PLT-001",
@@ -742,10 +712,10 @@ mod tests {
                 r.id
             );
         }
-        assert!(lues.len() >= 150, "{} règles lues seulement", lues.len());
+        assert!(lues.len() >= 120, "{} règles lues seulement", lues.len());
     }
 
-    /// Lot 7b : chaque identifiant d'ATT&CK cité par une règle (bilan des trois systèmes, audit du réseau, journaux
+    /// Lot 7b : chaque identifiant d'ATT&CK cité par une règle (bilan des deux systèmes, audit du réseau, journaux
     /// de Windows) existe dans la version 20 : ni faute de frappe ni ancien numéro. La carte COUVERTURE-ATTACK.md
     /// en est tirée (outils/couverture-attack.py) ; citer ATT&CK n'est pas obligatoire.
     #[test]
@@ -775,7 +745,7 @@ mod tests {
             }
         }
         assert!(fautes.is_empty(), "{}", fautes.join("\n"));
-        assert!(cites >= 200, "{cites} citations d'ATT&CK seulement");
+        assert!(cites >= 176, "{cites} citations d'ATT&CK seulement");
     }
 
     /// T5 : le cliquet des muettes tolérées : rangées, une seule fois, au plus ce qu'elles étaient, toutes connues,

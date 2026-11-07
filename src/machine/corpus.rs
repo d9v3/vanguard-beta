@@ -21,8 +21,6 @@ pub(crate) const CAS: &[(&str, Juge)] = &[
     ("COM-PRG-001", programmes),
     #[cfg(unix)]
     ("LNX-PRV-004", dossiers_de_root),
-    #[cfg(unix)]
-    ("MAC-PRV-004", dossiers_du_mac),
 ];
 
 /// COM-CPT-003 : des lignes du journal de sshd.
@@ -50,10 +48,9 @@ fn programmes(e: &Entree) -> Vec<Constat> {
     juger_programmes(&liste, Os::Linux, &HashSet::new(), None)
 }
 
-/// LNX-PRV-004 (le propriétaire compte) et MAC-PRV-004 (il ne compte pas) : `chemin|mode en octal|uid|root` (« oui » :
-/// root y cherche ses commandes).
+/// LNX-PRV-004 : `chemin|mode en octal|uid|root` (« oui » : root y cherche ses commandes).
 #[cfg(unix)]
-fn dossiers_de_commandes(e: &Entree, proprietaire: bool) -> Vec<Constat> {
+fn dossiers_de_root(e: &Entree) -> Vec<Constat> {
     let dossiers: Vec<super::unix::DossierDeCommandes> = e
         .champs()
         .iter()
@@ -64,19 +61,9 @@ fn dossiers_de_commandes(e: &Entree, proprietaire: bool) -> Vec<Constat> {
             de_root: c[3] == "oui",
         })
         .collect();
-    super::unix::juger_dossiers_de_commandes(&dossiers, proprietaire)
+    super::unix::juger_dossiers_de_commandes(&dossiers)
         .into_iter()
         .collect()
-}
-
-#[cfg(unix)]
-fn dossiers_de_root(e: &Entree) -> Vec<Constat> {
-    dossiers_de_commandes(e, true)
-}
-
-#[cfg(unix)]
-fn dossiers_du_mac(e: &Entree) -> Vec<Constat> {
-    dossiers_de_commandes(e, false)
 }
 
 /// COM-INT-001 : la référence et l'état actuel des fichiers critiques (protection/integrite.rs).

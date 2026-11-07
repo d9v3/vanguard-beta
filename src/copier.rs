@@ -6,7 +6,7 @@
 //! reprend là où elle s'est arrêtée : ce qui est déjà copié, à l'identique, n'est pas recopié. Jamais vers la clé
 //! VANGUARD ni vers le disque du système.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc : statfs, fcntl et posix_fadvise (copie sans cache, système de fichiers de la cible).
 #![allow(unsafe_code)]
@@ -45,7 +45,7 @@ pub enum Sorte {
     Musique,
 }
 
-/// Où trouver chaque dossier : user-dirs.dirs, puis noms usuels (Linux) ; registre, puis profil (Windows) ; macOS.
+/// Où trouver chaque dossier : user-dirs.dirs, puis noms usuels (Linux) ; registre, puis profil (Windows).
 #[rustfmt::skip] // une ligne par dossier, que rustfmt étalerait sur huit
 const DOSSIERS: [(Sorte, &str, &[&str], [&str; 3]); 5] = [
     (Sorte::Documents, "XDG_DOCUMENTS_DIR", &["Documents"], ["Personal", "Documents", "Documents"]),
@@ -101,12 +101,6 @@ fn chemin_de(sorte: Sorte) -> Option<PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join(profil)))
 }
 
-#[cfg(target_os = "macos")]
-fn chemin_de(sorte: Sorte) -> Option<PathBuf> {
-    let &(.., [_, _, nom]) = DOSSIERS.iter().find(|d| d.0 == sorte)?;
-    Some(crate::socle::maison().join(nom))
-}
-
 pub struct Disque {
     pub racine: PathBuf,
     pub nom: String,
@@ -156,8 +150,8 @@ fn montage<'a>(montages: &'a str, chemin: &Path) -> Option<(&'a str, &'a str)> {
         .map(|(_, dev, genre)| (dev, genre))
 }
 
-/// Un système de fichiers qui ne garde pas un fichier de 4 Go ou plus : FAT32 (« vfat » sous Linux, « msdos » sous
-/// macOS, « FAT32 » sous Windows).
+/// Un système de fichiers qui ne garde pas un fichier de 4 Go ou plus : FAT32 (« vfat » sous Linux, « FAT32 » sous
+/// Windows, « msdos » ailleurs).
 pub(crate) fn limite_4_go(genre: &str) -> bool {
     matches!(genre.to_ascii_lowercase().as_str(), "vfat" | "msdos" | "fat32" | "fat")
 }
@@ -167,21 +161,6 @@ pub(crate) fn limite_4_go(genre: &str) -> bool {
 pub(crate) fn genre_du_volume(p: &Path) -> Option<String> {
     let montages = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
     montage(&montages, &p.canonicalize().ok()?).map(|(_, genre)| genre.to_string())
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn genre_du_volume(p: &Path) -> Option<String> {
-    use std::os::unix::ffi::OsStrExt;
-    let c = std::ffi::CString::new(p.as_os_str().as_bytes()).ok()?;
-    // SAFETY: `statfs` est une structure C de nombres et de tableaux de caractères, valide à zéro.
-    let mut s: libc::statfs = unsafe { std::mem::zeroed() };
-    // SAFETY: `c` est une chaîne C terminée par un zéro, `s` une structure à nous, écrite par statfs seulement.
-    if unsafe { libc::statfs(c.as_ptr(), &raw mut s) } != 0 {
-        return None;
-    }
-    // SAFETY: statfs a rempli f_fstypename, une chaîne terminée par un zéro dans son tableau.
-    let nom = unsafe { std::ffi::CStr::from_ptr(s.f_fstypename.as_ptr()) };
-    Some(nom.to_string_lossy().into_owned())
 }
 
 #[cfg(windows)]
@@ -244,18 +223,8 @@ pub(crate) fn sans_echappements(t: &str) -> String {
     String::from_utf8_lossy(&sortie).into_owned()
 }
 
-/// macOS : chaque volume a son `st_dev` (les volumes d'un même conteneur APFS aussi, mais le compte est sur celui des
-/// données, comparé lui aussi).
-#[cfg(target_os = "macos")]
-fn sur_le_systeme(p: &Path) -> Option<bool> {
-    use std::os::unix::fs::MetadataExt;
-    let volume = |p: &Path| std::fs::metadata(p).ok().map(|m| m.dev());
-    let v = volume(p)?;
-    Some([volume(Path::new("/")), volume(&crate::socle::maison())].contains(&Some(v)))
-}
-
 #[cfg(windows)]
-#[allow(clippy::unnecessary_wraps)] // même signature que sous Linux et macOS, où le volume peut être illisible
+#[allow(clippy::unnecessary_wraps)] // même signature que sous Linux, où le volume peut être illisible
 fn sur_le_systeme(p: &Path) -> Option<bool> {
     let lecteur: String = p
         .to_string_lossy()
@@ -342,85 +311,6 @@ fn disque_de_la_partition(source: &str) -> Option<String> {
     } else {
         sys.exists().then_some(nom)
     }
-}
-
-/// macOS : « /dev/disk4s1 on /Volumes/VANGUARD (…) » (sortie de mount) → (point de montage, « disk4 »).
-#[cfg(any(target_os = "macos", test))]
-fn disques_de_mount(sortie: &str) -> Vec<(PathBuf, String)> {
-    sortie
-        .lines()
-        .filter_map(|l| {
-            let (source, reste) = l.split_once(" on ")?;
-            let point = reste.rsplit_once(" (")?.0;
-            Some((PathBuf::from(point), disque_de(source)?))
-        })
-        .collect()
-}
-
-/// « /dev/disk4s1 » → « disk4 » : le dernier « s » suivi de chiffres est la partition. `None` : pas un appareil.
-#[cfg(any(target_os = "macos", test))]
-fn disque_de(source: &str) -> Option<String> {
-    let nom = source.strip_prefix("/dev/")?;
-    let disque = match nom.rfind('s') {
-        Some(i)
-            if i > 4
-                && nom[i.saturating_add(1)..].chars().all(|c| c.is_ascii_digit())
-                && i.saturating_add(1) < nom.len() =>
-        {
-            &nom[..i]
-        }
-        _ => nom,
-    };
-    Some(disque.to_string())
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn disques() -> Vec<Disque> {
-    use std::os::unix::fs::MetadataExt;
-    let systeme = std::fs::metadata("/").ok().map(|m| m.dev());
-    // Les autres partitions de la clé VANGUARD (MACOS…), sur le même support qu'elle : exclues aussi.
-    // Les montages demandés au noyau (getmntinfo) ; `mount` en secours tant que l'oracle de macos.yml n'a pas prouvé
-    // la lecture native.
-    let montages: Vec<(PathBuf, String)> = crate::machine::macos::noyau::montages()
-        .map(|liste| {
-            liste
-                .into_iter()
-                .filter_map(|m| Some((PathBuf::from(m.point), disque_de(&m.source)?)))
-                .collect()
-        })
-        .or_else(|| {
-            crate::commande::lancer(&mut std::process::Command::new("mount"), 10).map(|r| disques_de_mount(&r.sortie))
-        })
-        .unwrap_or_default();
-    let de_la_cle: Vec<&String> = montages
-        .iter()
-        .filter(|(point, _)| est_la_cle(point))
-        .map(|(_, d)| d)
-        .collect();
-    let sur_la_cle = |racine: &Path| {
-        montages
-            .iter()
-            .any(|(point, d)| point == racine && de_la_cle.contains(&d))
-    };
-    std::fs::read_dir("/Volumes")
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| {
-            let (racine, nom) = (e.path(), e.file_name().to_string_lossy().into_owned());
-            let dev = std::fs::metadata(&racine).ok()?.dev();
-            if Some(dev) == systeme || nom.starts_with("com.apple.") || est_la_cle(&racine) || sur_la_cle(&racine) {
-                return None;
-            }
-            let (libre, total) = crate::socle::volume(&racine)?;
-            Some(Disque {
-                racine,
-                nom: affichable(&nom),
-                libre,
-                total,
-            })
-        })
-        .collect()
 }
 
 /// Windows : les lecteurs prêts, amovibles ou fixes, sauf celui du système et la clé.
@@ -599,7 +489,7 @@ pub(crate) fn empreinte(chemin: &Path) -> std::io::Result<blake3::Hash> {
 
 /// L'empreinte relue sur le disque, pas dans la mémoire où la copie vient de passer : sans cela, une erreur
 /// d'écriture du disque passerait inaperçue. Linux : les pages du fichier, propres après `sync_all`, sont retirées du
-/// cache avant de lire ; macOS : lecture sans cache. Windows : voir l'autre version, juste en dessous.
+/// cache avant de lire. Windows : voir l'autre version, juste en dessous.
 #[cfg(not(windows))]
 pub(crate) fn empreinte_relue(chemin: &Path) -> std::io::Result<blake3::Hash> {
     let f = File::open(chemin)?;
@@ -670,16 +560,6 @@ pub(crate) fn sans_cache(f: &File) {
     // (retirer du cache les pages propres du fichier) et n'écrit dans aucune mémoire de ce programme.
     unsafe {
         libc::posix_fadvise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
-    }
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn sans_cache(f: &File) {
-    use std::os::fd::AsRawFd;
-    // SAFETY: un descripteur ouvert, gardé par `f` pendant l'appel ; F_NOCACHE change seulement la façon dont le
-    // système lit ce fichier, sans toucher à la mémoire de ce programme.
-    unsafe {
-        libc::fcntl(f.as_raw_fd(), libc::F_NOCACHE, 1);
     }
 }
 
@@ -1738,14 +1618,6 @@ mod tests {
 
     #[test]
     fn partitions_de_la_cle_reconnues_par_leur_disque() {
-        let mount = "/dev/disk1s1 on / (apfs, local, read-only)\n\
-                     /dev/disk4s1 on /Volumes/VANGUARD (exfat, local, nodev, nosuid, read-only)\n\
-                     /dev/disk4s5 on /Volumes/WIN11 (msdos, local)\n\
-                     /dev/disk5s1 on /Volumes/Mon disque (hfs, local)\n";
-        let d = disques_de_mount(mount);
-        assert_eq!(d[1], (PathBuf::from("/Volumes/VANGUARD"), "disk4".to_string()));
-        assert_eq!(d[2].1, "disk4");
-        assert_eq!(d[3], (PathBuf::from("/Volumes/Mon disque"), "disk5".to_string()));
         let w =
             disques_des_lecteurs("E:\\|VANGUARD|1|2|1\nF:\\|WIN11|3|4|1\nG:\\|Sauvegarde|5|6|2\nH:\\|Réseau|7|8|\n");
         assert_eq!(w.len(), 3);

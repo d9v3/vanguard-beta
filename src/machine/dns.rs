@@ -308,97 +308,6 @@ fn resolved_par_dbus() -> Result<Resolved, crate::modele::Echec> {
     })
 }
 
-/// Serveurs de `scutil --dns` (« nameserver[0] : 10.0.0.1 »), section principale seulement : celle « for scoped
-/// queries » répète les mêmes serveurs par interface.
-#[cfg(any(target_os = "macos", test))]
-pub(crate) fn lire_scutil(sortie: &str) -> Vec<IpAddr> {
-    let mut liste = Vec::new();
-    for l in sortie.lines().take_while(|l| !l.contains("for scoped queries")) {
-        if let Some((cle, valeur)) = l.split_once(':')
-            && cle.trim().starts_with("nameserver[")
-            && let Some(ip) = adresse(valeur.trim())
-            && !liste.contains(&ip)
-        {
-            liste.push(ip);
-        }
-    }
-    liste
-}
-
-/// Résolveurs locaux connus : (processus, nom affiché, chiffre ses requêtes).
-#[cfg(target_os = "macos")]
-const RESOLVEURS: &[(&str, &str, bool)] = &[
-    ("nextdns", "NextDNS", true),
-    ("dnscrypt-proxy", "dnscrypt-proxy", true),
-    ("cloudflared", "cloudflared", true),
-    ("AdGuardHome", "AdGuard Home", false),
-    ("unbound", "Unbound", false),
-    ("dnsmasq", "dnsmasq", false),
-];
-
-/// macOS : serveurs en service d'après configd (SCDynamicStore) ; un serveur est « réglé à la main » s'il figure dans
-/// les réglages d'un service réseau actif (SCPreferences), sinon il vient de la box (DHCP). `scutil --dns` et
-/// `networksetup` restent en secours tant que le test d'oracle de macos.yml n'a pas prouvé la lecture native.
-#[cfg(target_os = "macos")]
-fn serveurs() -> Option<Serveurs> {
-    use super::macos::config_reseau;
-    // Une liste native vide (configd sans résolveur, ou lecture qui ne comprend pas ce macOS) : scutil tranche.
-    let liste = match config_reseau::dns_en_vigueur().filter(|l| !l.is_empty()) {
-        Some(l) => l,
-        None => lire_scutil(&super::sortie("scutil", &["--dns"])?),
-    };
-    // (nom du service, serveurs réglés à la main) des services actifs.
-    let reglages: Vec<(String, Vec<IpAddr>)> = match config_reseau::services() {
-        Some(s) => s.into_iter().filter(|s| s.actif).map(|s| (s.nom, s.dns)).collect(),
-        None => super::sortie("networksetup", &["-listallnetworkservices"])
-            .unwrap_or_default()
-            .lines()
-            .skip(1)
-            // Un service désactivé commence par « * ».
-            .filter(|l| !l.starts_with('*') && !l.trim().is_empty())
-            .map(|service| {
-                let dns = super::sortie("networksetup", &["-getdnsservers", service])
-                    .unwrap_or_default()
-                    .lines()
-                    .filter_map(|l| adresse(l.trim()))
-                    .collect();
-                (service.to_string(), dns)
-            })
-            .collect(),
-    };
-    let mut manuels: Vec<(IpAddr, String)> = Vec::new();
-    for (service, dns) in &reglages {
-        for ip in dns {
-            let cite = crate::commande::sh_chaine(service);
-            manuels.push((*ip, format!("sudo networksetup -setdnsservers {cite} empty")));
-        }
-    }
-    let mut resolveur_local = None;
-    let mut chiffre = None;
-    if liste.iter().any(IpAddr::is_loopback)
-        && let Some((_, nom, chiffrant)) = RESOLVEURS
-            .iter()
-            // Demandé au noyau ; pgrep -x en secours quand la liste des processus ne se lit pas.
-            .find(|(p, _, _)| {
-                super::macos::noyau::en_marche(p).unwrap_or_else(|| super::sortie("pgrep", &["-x", p]).is_some())
-            })
-    {
-        resolveur_local = Some(*nom);
-        if *chiffrant {
-            chiffre = Some(true);
-        }
-    }
-    Some(Serveurs {
-        liste: liste
-            .iter()
-            .map(|ip| (*ip, manuels.iter().any(|(m, _)| m == ip)))
-            .collect(),
-        chiffre,
-        resolveur_local,
-        remise: manuels,
-    })
-}
-
 /// Lignes « DNS|index|adresse|manuel|{GUID} » : les serveurs de chaque carte réseau active. « manuel » : l'adresse
 /// est écrite dans le registre de la carte (NameServer), donc réglée à la main ou par un programme, pas par le DHCP.
 /// La remise en automatique est un geste natif du processus élevé (`vanguard:dns-auto {GUID}`), sans PowerShell : il
@@ -774,14 +683,6 @@ mod tests {
         assert!(
             !bouclier_canadien_filtrant(ip("149.112.121.10")) && !bouclier_canadien_filtrant(ip("2620:10a:80bb::10"))
         );
-    }
-
-    #[test]
-    fn lecture_de_scutil() {
-        let sortie = "DNS configuration\n\nresolver #1\n  search domain[0] : home\n  nameserver[0] : 10.0.0.1\n  \
-                      nameserver[1] : 2001:db8::1\n  if_index : 14 (en0)\n\nresolver #2\n  domain   : local\n\n\
-                      DNS configuration (for scoped queries)\n\nresolver #1\n  nameserver[0] : 9.9.9.9\n";
-        assert_eq!(lire_scutil(sortie), [ip("10.0.0.1"), ip("2001:db8::1")]);
     }
 
     #[test]

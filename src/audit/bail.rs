@@ -1,11 +1,11 @@
 //! Le bail DHCP de cette machine : ce que la box (ou ce qui se fait passer pour elle) lui a distribué — adresse,
 //! passerelle, serveur DHCP, serveurs DNS — et la configuration DNS effective de la machine. Tout est lu dans les
 //! fichiers et le registre, sans programme externe : état de NetworkManager (`/run/NetworkManager/devices`, lisible
-//! sans root), baux de systemd-networkd, de dhcpcd et de dhclient, registre Tcpip de Windows (winreg), baux et
-//! réglages réseau de macOS (plist). Ce qui n'est pas lisible est rendu comme tel (`Err`), jamais inventé.
-//! Lecture seule ; partagé par les domaines DNS/TLS et Segmentation de l'audit.
+//! sans root), baux de systemd-networkd, de dhcpcd et de dhclient, registre Tcpip de Windows (winreg). Ce qui n'est pas
+//! lisible est rendu comme tel (`Err`), jamais inventé. Lecture seule ; partagé par les domaines DNS/TLS et
+//! Segmentation de l'audit.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::net::IpAddr;
@@ -25,9 +25,6 @@ pub enum Source {
     /// Registre de Windows (Tcpip\Parameters\Interfaces).
     #[cfg_attr(not(windows), allow(dead_code))]
     Registre,
-    /// Baux du client DHCP de macOS.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    MacOs,
 }
 
 /// Un bail DHCP reçu par cette machine, tel que le client l'a gardé.
@@ -77,7 +74,7 @@ pub struct DohWindows {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Configuration {
     /// Serveurs par fichier (Linux : « /etc/resolv.conf », « /run/systemd/resolve/resolv.conf » = ceux à qui
-    /// systemd-resolved transmet) ou par carte réglée à la main (Windows : NameServer ; macOS : service réseau).
+    /// systemd-resolved transmet) ou par carte réglée à la main (Windows : NameServer).
     pub serveurs: Vec<(String, Vec<IpAddr>)>,
     pub resolved: Option<Resolved>,
     /// Windows : serveurs DoH déclarés, et DoH automatique pour les serveurs connus (EnableAutoDoh).
@@ -112,9 +109,9 @@ fn adresses(texte: &str) -> Vec<IpAddr> {
     liste
 }
 
-/// Un paquet DHCP (BOOTP, RFC 2131) gardé tel quel par dhcpcd (`.lease`) et par macOS (`PacketData`) : l'adresse
-/// reçue (yiaddr), puis les options 3 (routeurs), 6 (DNS), 15 (domaine), 51 (durée), 54 (serveur).
-#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+/// Un paquet DHCP (BOOTP, RFC 2131) gardé tel quel par dhcpcd (`.lease`) : l'adresse reçue (yiaddr), puis les options 3
+/// (routeurs), 6 (DNS), 15 (domaine), 51 (durée), 54 (serveur).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn paquet_dhcp(octets: &[u8], debut: Option<u64>) -> Option<Bail> {
     const COOKIE: [u8; 4] = [0x63, 0x82, 0x53, 0x63];
     let (entete, mut options) = octets.split_at_checked(240)?;
@@ -628,122 +625,6 @@ fn configuration_systeme() -> Configuration {
     registre::configuration()
 }
 
-/// macOS : les baux du client DHCP (`/private/var/db/dhcpclient/leases/<carte>-…`, un plist avec le paquet reçu dans
-/// `PacketData`), s'ils se lisent.
-#[cfg(target_os = "macos")]
-fn lire_systeme() -> Result<Vec<Bail>, String> {
-    const DOSSIER: &str = "/private/var/db/dhcpclient/leases";
-    let entrees = std::fs::read_dir(DOSSIER).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::PermissionDenied {
-            crate::tr!(
-                "baux DHCP de macOS réservés à root",
-                "macOS DHCP leases readable only as root"
-            )
-            .to_string()
-        } else {
-            crate::tr!("aucun bail DHCP gardé par macOS", "no DHCP lease kept by macOS").to_string()
-        }
-    })?;
-    let mut baux = Vec::new();
-    for e in entrees.flatten() {
-        let chemin = e.path();
-        let Some(plist) = crate::plist::lire_fichier(&chemin)
-            .ok()
-            .and_then(crate::plist::Lu::valeur)
-        else {
-            continue;
-        };
-        if let Some(mut b) = bail_macos(&plist) {
-            b.interface = chemin
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .and_then(|n| n.split('-').next().map(str::to_string));
-            baux.push(b);
-        }
-    }
-    if baux.is_empty() {
-        return Err(crate::tr!("aucun bail DHCP lisible chez macOS", "no readable DHCP lease on macOS").to_string());
-    }
-    Ok(baux)
-}
-
-/// Un bail de macOS : le paquet DHCP reçu (`PacketData`) daté de `LeaseStartDate`.
-#[cfg(any(target_os = "macos", test))]
-fn bail_macos(plist: &crate::plist::Valeur) -> Option<Bail> {
-    use crate::plist::Valeur;
-    let Some(Valeur::Donnees(paquet)) = plist.cle("PacketData") else {
-        return None;
-    };
-    // Dates d'Apple : secondes depuis le 1er janvier 2001. Un plist binaire abîmé peut en porter une démesurée
-    // (1e300, l'infini) : passé 1e11 s (vers l'an 5170), elle est ignorée, comme absente. Ajoutée telle quelle, elle
-    // débordait, et la version publiée, qui vérifie les dépassements, perdait les domaines Segmentation et DNS/TLS.
-    let debut = match plist.cle("LeaseStartDate") {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // une date, pas un calcul
-        Some(Valeur::Date(d)) if *d > 0.0 && *d < 1e11 => {
-            Some(crate::socle::nombres::entier(*d).saturating_add(978_307_200))
-        }
-        _ => None,
-    };
-    let mut bail = paquet_dhcp(paquet, debut)?;
-    bail.source = Some(Source::MacOs);
-    if bail.passerelle.is_none()
-        && let Some(r) = plist.cle("RouterIPAddress").and_then(Valeur::texte)
-    {
-        bail.passerelle = r.parse().ok();
-    }
-    Some(bail)
-}
-
-/// macOS : les serveurs DNS réglés à la main par service réseau dans preferences.plist
-/// (`NetworkServices › <id> › DNS › ServerAddresses`), nommés par `UserDefinedName`.
-#[cfg(any(target_os = "macos", test))]
-fn manuels_macos(plist: &crate::plist::Valeur) -> Vec<(String, Vec<IpAddr>)> {
-    use crate::plist::Valeur;
-    let Some(Valeur::Dico(services)) = plist.cle("NetworkServices") else {
-        return Vec::new();
-    };
-    let mut liste = Vec::new();
-    for (id, service) in services {
-        let Some(serveurs) = service
-            .cle("DNS")
-            .and_then(|d| d.cle("ServerAddresses"))
-            .and_then(Valeur::tableau)
-        else {
-            continue;
-        };
-        let adresses: Vec<IpAddr> = serveurs
-            .iter()
-            .filter_map(Valeur::texte)
-            .filter_map(|t| t.trim().parse().ok())
-            .collect();
-        if adresses.is_empty() {
-            continue;
-        }
-        let nom = service
-            .cle("UserDefinedName")
-            .and_then(Valeur::texte)
-            .map_or_else(|| id.clone(), str::to_string);
-        liste.push((nom, adresses));
-    }
-    liste
-}
-
-#[cfg(target_os = "macos")]
-fn configuration_systeme() -> Configuration {
-    let mut c = Configuration::default();
-    if let Ok(texte) = std::fs::read_to_string("/etc/resolv.conf") {
-        c.serveurs.push(("/etc/resolv.conf".to_string(), resolv_conf(&texte)));
-    }
-    let chemin = std::path::Path::new("/Library/Preferences/SystemConfiguration/preferences.plist");
-    if let Some(plist) = crate::plist::lire_fichier(chemin)
-        .ok()
-        .and_then(crate::plist::Lu::valeur)
-    {
-        c.serveurs.extend(manuels_macos(&plist));
-    }
-    c
-}
-
 /// Les baux DHCP en cours de cette machine, ou pourquoi aucun ne se lit (à dire : « non vérifié »).
 pub fn lire() -> Result<Vec<Bail>, String> {
     let maintenant = maintenant();
@@ -920,55 +801,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn plists_de_macos() {
-        use crate::plist::Valeur;
-        let bail = Valeur::Dico(vec![
-            ("IPAddress".into(), Valeur::Texte("10.0.0.42".into())),
-            ("LeaseStartDate".into(), Valeur::Date(800_000_000.0)),
-            ("PacketData".into(), Valeur::Donnees(paquet())),
-            ("RouterIPAddress".into(), Valeur::Texte("10.0.0.1".into())),
-        ]);
-        let b = bail_macos(&bail).unwrap();
-        assert_eq!(b.source, Some(Source::MacOs));
-        assert_eq!(b.dns, [ip("10.0.0.1"), ip("203.0.113.53")]);
-        assert_eq!(b.expire, Some(800_000_000 + 978_307_200 + 86_400));
-        assert!(bail_macos(&Valeur::Dico(vec![])).is_none());
-        // Une date démesurée (plist binaire abîmé) : ignorée, le reste du bail lu. Elle débordait (« as u64 » sature,
-        // puis l'addition), et le domaine entier devenait une erreur interne. proptest l'avait trouvée aussi (1e30).
-        for demesuree in [1e300, f64::INFINITY, 1e30] {
-            let bail = Valeur::Dico(vec![
-                ("LeaseStartDate".into(), Valeur::Date(demesuree)),
-                ("PacketData".into(), Valeur::Donnees(paquet())),
-            ]);
-            let b = bail_macos(&bail).unwrap();
-            assert_eq!((b.expire, b.dns.len()), (None, 2), "{demesuree}");
-        }
-        let preferences = Valeur::Dico(vec![(
-            "NetworkServices".into(),
-            Valeur::Dico(vec![
-                (
-                    "A1".into(),
-                    Valeur::Dico(vec![
-                        ("UserDefinedName".into(), Valeur::Texte("Wi-Fi".into())),
-                        (
-                            "DNS".into(),
-                            Valeur::Dico(vec![(
-                                "ServerAddresses".into(),
-                                Valeur::Tableau(vec![Valeur::Texte("9.9.9.9".into()), Valeur::Texte("x".into())]),
-                            )]),
-                        ),
-                    ]),
-                ),
-                ("B2".into(), Valeur::Dico(vec![("DNS".into(), Valeur::Dico(vec![]))])),
-            ]),
-        )]);
-        assert_eq!(
-            manuels_macos(&preferences),
-            [("Wi-Fi".to_string(), vec![ip("9.9.9.9")])]
-        );
-    }
-
     /// La vraie lecture sur cette machine : un bail ou une raison, une configuration, jamais un plantage.
     #[test]
     fn lecture_reelle_sans_plantage() {
@@ -991,7 +823,6 @@ mod tests {
 #[cfg(test)]
 mod entrees_hostiles {
     use super::*;
-    use crate::plist::Valeur;
     use proptest::prelude::*;
 
     /// Une valeur d'adresse : des adresses vraies (IPv4, IPv6 avec zone, entre crochets ou guillemets) séparées comme
@@ -1138,43 +969,6 @@ mod entrees_hostiles {
                 lease_terminates_time,
             };
             let _ = bail_du_registre(&c, maintenant);
-        }
-
-        /// Les plists de macOS : le paquet reçu, daté d'un réel quelconque (infini, NaN, négatif, démesuré), et les
-        /// serveurs réglés à la main.
-        #[test]
-        fn plists_de_macos(
-            p in paquet(),
-            date in prop_oneof![any::<f64>(), Just(f64::INFINITY), Just(f64::MAX), Just(f64::NAN), 0.0..1e10f64],
-            routeur in any::<String>(),
-            nom in any::<String>(),
-            serveurs in prop::collection::vec(valeur(), 0..4),
-        ) {
-            let bail = Valeur::Dico(vec![
-                ("PacketData".to_string(), Valeur::Donnees(p)),
-                ("LeaseStartDate".to_string(), Valeur::Date(date)),
-                ("RouterIPAddress".to_string(), Valeur::Texte(routeur)),
-            ]);
-            if let Some(b) = bail_macos(&bail) {
-                prop_assert!(borne(&b));
-            }
-            let services = Valeur::Dico(vec![(
-                "NetworkServices".to_string(),
-                Valeur::Dico(vec![(
-                    "0F1E2D3C".to_string(),
-                    Valeur::Dico(vec![
-                        ("UserDefinedName".to_string(), Valeur::Texte(nom)),
-                        (
-                            "DNS".to_string(),
-                            Valeur::Dico(vec![(
-                                "ServerAddresses".to_string(),
-                                Valeur::Tableau(serveurs.into_iter().map(Valeur::Texte).collect()),
-                            )]),
-                        ),
-                    ]),
-                )]),
-            )]);
-            let _ = manuels_macos(&services);
         }
     }
 }

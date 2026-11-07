@@ -10,7 +10,7 @@
 //! Le schéma gardé par la veille (`outils/veille/schema-compte-rendu.json`, que l'IA ne peut pas changer) a les mêmes
 //! clés et les mêmes listes : un essai les compare.
 
-// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// Le programme sous Linux : ses parties Windows ne sont pas encore relues, et les essais en sont exemptés
 // (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
 #![cfg_attr(
     all(target_os = "linux", not(test)),

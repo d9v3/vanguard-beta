@@ -1,9 +1,7 @@
 //! Les logiciels proposés : les meilleurs de chaque usage, libres pour la plupart, chacun avec sa source officielle
 //! sur chaque système. Identifiants vérifiés en octobre 2026 : paquets des distributions (Repology, dépôts
-//! officiels), Flathub, Homebrew et le dépôt winget de Microsoft. Absent d'une distribution, un logiciel passe par
-//! Flathub ; un logiciel qui ne convient pas à un système n'y est pas proposé (VeraCrypt sur Mac demande une
-//! extension du noyau qui oblige à baisser la sécurité du système, qBittorrent n'y passe plus la vérification
-//! d'Apple).
+//! officiels), Flathub et le dépôt winget de Microsoft. Absent d'une distribution, un logiciel passe par Flathub ; un
+//! logiciel qui ne convient pas à un système n'y est pas proposé.
 
 use crate::ui::tr;
 
@@ -75,9 +73,6 @@ pub struct Logiciel {
     /// Identifiant winget, et le début du nom affiché dans « Applications installées ».
     #[cfg_attr(not(windows), allow(dead_code))]
     pub winget: Option<(&'static str, &'static str)>,
-    /// macOS : application Homebrew (cask) et début du nom de l'app dans /Applications.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    pub mac: Option<(&'static str, &'static str)>,
 }
 
 const AUCUN: [&[&str]; 4] = [&[], &[], &[], &[]];
@@ -101,7 +96,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.mozilla.firefox"),
         commandes: &["firefox", "firefox-esr"],
         winget: Some(("Mozilla.Firefox", "Mozilla Firefox")),
-        mac: Some(("firefox", "Firefox")),
     },
     Logiciel {
         nom: "Brave",
@@ -116,7 +110,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("com.brave.Browser"),
         commandes: &["brave", "brave-browser"],
         winget: Some(("Brave.Brave", "Brave")),
-        mac: Some(("brave-browser", "Brave Browser")),
     },
     Logiciel {
         nom: "LibreWolf",
@@ -131,7 +124,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("io.gitlab.librewolf-community"),
         commandes: &["librewolf"],
         winget: Some(("LibreWolf.LibreWolf", "LibreWolf")),
-        mac: Some(("librewolf", "LibreWolf")),
     },
     Logiciel {
         nom: "Google Chrome",
@@ -143,7 +135,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("com.google.Chrome"),
         commandes: &["google-chrome-stable", "google-chrome"],
         winget: Some(("Google.Chrome", "Google Chrome")),
-        mac: Some(("google-chrome", "Google Chrome")),
     },
     Logiciel {
         nom: "Thunderbird",
@@ -163,7 +154,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.mozilla.Thunderbird"),
         commandes: &["thunderbird"],
         winget: Some(("Mozilla.Thunderbird", "Mozilla Thunderbird")),
-        mac: Some(("thunderbird", "Thunderbird")),
     },
     // ── Messagerie et partage ──
     Logiciel {
@@ -179,7 +169,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.signal.Signal"),
         commandes: &["signal-desktop"],
         winget: Some(("OpenWhisperSystems.Signal", "Signal")),
-        mac: Some(("signal", "Signal")),
     },
     Logiciel {
         nom: "Discord",
@@ -194,7 +183,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("com.discordapp.Discord"),
         commandes: &["discord"],
         winget: Some(("Discord.Discord", "Discord")),
-        mac: Some(("discord", "Discord")),
     },
     Logiciel {
         nom: "LocalSend",
@@ -209,7 +197,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.localsend.localsend_app"),
         commandes: &["localsend", "localsend_app"],
         winget: Some(("LocalSend.LocalSend", "LocalSend")),
-        mac: Some(("localsend", "LocalSend")),
     },
     Logiciel {
         nom: "qBittorrent",
@@ -224,7 +211,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.qbittorrent.qBittorrent"),
         commandes: &["qbittorrent"],
         winget: Some(("qBittorrent.qBittorrent", "qBittorrent")),
-        mac: None,
     },
     // ── Comptes et chiffrement (puis Vie privée et réseau, plus bas : Tor Browser, Proton VPN, Wireshark) ──
     Logiciel {
@@ -241,7 +227,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("io.ente.auth"),
         commandes: &["enteauth"],
         winget: Some(("ente-io.auth-desktop", "Ente Auth")),
-        mac: Some(("ente-auth", "Ente Auth")),
     },
     Logiciel {
         nom: "Bitwarden",
@@ -250,7 +235,7 @@ pub const CATALOGUE: &[Logiciel] = &[
             "Gestionnaire de mots de passe synchronisé : un mot de passe différent par site.",
             "Synced password manager: a different password for each site.",
         ),
-        // winget et Homebrew installent encore la version GPL-3.0, Flathub la version commerciale (voir
+        // winget installe encore la version GPL-3.0, Flathub la version commerciale (voir
         // FLATHUB_PAS_LIBRE) : Bitwarden a annoncé le 9 octobre 2026 une licence commerciale pour ses applications
         // distribuées. À revérifier à chaque version.
         licence: Some("GPL-3.0"),
@@ -260,7 +245,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("com.bitwarden.desktop"),
         commandes: &["bitwarden", "bitwarden-desktop"],
         winget: Some(("Bitwarden.Bitwarden", "Bitwarden")),
-        mac: Some(("bitwarden", "Bitwarden")),
     },
     Logiciel {
         nom: "KeePassXC",
@@ -276,7 +260,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.keepassxc.KeePassXC"),
         commandes: &["keepassxc"],
         winget: Some(("KeePassXCTeam.KeePassXC", "KeePassXC")),
-        mac: Some(("keepassxc", "KeePassXC")),
     },
     Logiciel {
         nom: "Proton Pass",
@@ -293,7 +276,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: None,
         commandes: &["proton-pass"],
         winget: Some(("Proton.ProtonPass", "ProtonPass")),
-        mac: Some(("proton-pass", "Proton Pass")),
     },
     Logiciel {
         nom: "VeraCrypt",
@@ -311,7 +293,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: None,
         commandes: &["veracrypt"],
         winget: Some(("IDRIX.VeraCrypt", "VeraCrypt")),
-        mac: None,
     },
     Logiciel {
         nom: "Cryptomator",
@@ -326,7 +307,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.cryptomator.Cryptomator"),
         commandes: &["cryptomator"],
         winget: Some(("Cryptomator.Cryptomator", "Cryptomator")),
-        mac: Some(("cryptomator", "Cryptomator")),
     },
     // ── Bureautique et lecture ──
     Logiciel {
@@ -347,7 +327,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.libreoffice.LibreOffice"),
         commandes: &["libreoffice", "soffice"],
         winget: Some(("TheDocumentFoundation.LibreOffice", "LibreOffice")),
-        mac: Some(("libreoffice", "LibreOffice")),
     },
     Logiciel {
         nom: "ONLYOFFICE",
@@ -362,7 +341,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.onlyoffice.desktopeditors"),
         commandes: &["onlyoffice-desktopeditors", "desktopeditors"],
         winget: Some(("ONLYOFFICE.DesktopEditors", "ONLYOFFICE")),
-        mac: Some(("onlyoffice", "ONLYOFFICE")),
     },
     Logiciel {
         nom: "SumatraPDF",
@@ -377,7 +355,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: None,
         commandes: &[],
         winget: Some(("SumatraPDF.SumatraPDF", "SumatraPDF")),
-        mac: None,
     },
     Logiciel {
         nom: "Calibre",
@@ -392,7 +369,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("com.calibre_ebook.calibre"),
         commandes: &["calibre"],
         winget: Some(("calibre.calibre", "calibre")),
-        mac: Some(("calibre", "calibre")),
     },
     Logiciel {
         nom: "Joplin",
@@ -407,7 +383,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("net.cozic.joplin_desktop"),
         commandes: &[],
         winget: Some(("Joplin.Joplin", "Joplin")),
-        mac: Some(("joplin", "Joplin")),
     },
     // ── Vidéo et musique ──
     Logiciel {
@@ -423,7 +398,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.videolan.VLC"),
         commandes: &["vlc"],
         winget: Some(("VideoLAN.VLC", "VLC media player")),
-        mac: Some(("vlc", "VLC")),
     },
     Logiciel {
         nom: "OBS Studio",
@@ -438,7 +412,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("com.obsproject.Studio"),
         commandes: &["obs"],
         winget: Some(("OBSProject.OBSStudio", "OBS Studio")),
-        mac: Some(("obs", "OBS")),
     },
     Logiciel {
         nom: "Audacity",
@@ -453,7 +426,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.audacityteam.Audacity"),
         commandes: &["audacity"],
         winget: Some(("Audacity.Audacity", "Audacity")),
-        mac: Some(("audacity", "Audacity")),
     },
     Logiciel {
         nom: "HandBrake",
@@ -469,7 +441,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("fr.handbrake.ghb"),
         commandes: &["ghb"],
         winget: Some(("HandBrake.HandBrake", "HandBrake")),
-        mac: Some(("handbrake-app", "HandBrake")),
     },
     Logiciel {
         nom: "Kdenlive",
@@ -484,7 +455,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.kde.kdenlive"),
         commandes: &["kdenlive"],
         winget: Some(("KDE.Kdenlive", "Kdenlive")),
-        mac: Some(("kdenlive", "kdenlive")),
     },
     // ── Images et création ──
     Logiciel {
@@ -500,7 +470,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.gimp.GIMP"),
         commandes: &["gimp"],
         winget: Some(("GIMP.GIMP.3", "GIMP")),
-        mac: Some(("gimp", "GIMP")),
     },
     Logiciel {
         nom: "Inkscape",
@@ -515,7 +484,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.inkscape.Inkscape"),
         commandes: &["inkscape"],
         winget: Some(("Inkscape.Inkscape", "Inkscape")),
-        mac: Some(("inkscape", "Inkscape")),
     },
     Logiciel {
         nom: "Krita",
@@ -530,7 +498,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.kde.krita"),
         commandes: &["krita"],
         winget: Some(("KDE.Krita", "Krita")),
-        mac: Some(("krita", "krita")),
     },
     Logiciel {
         nom: "Blender",
@@ -546,7 +513,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.blender.Blender"),
         commandes: &["blender"],
         winget: Some(("BlenderFoundation.Blender", "Blender")),
-        mac: Some(("blender", "Blender")),
     },
     Logiciel {
         nom: "ShareX",
@@ -561,7 +527,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: None,
         commandes: &[],
         winget: Some(("ShareX.ShareX", "ShareX")),
-        mac: None,
     },
     // ── Outils système ──
     Logiciel {
@@ -577,22 +542,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: None,
         commandes: &["7z", "7zz"],
         winget: Some(("7zip.7zip", "7-Zip")),
-        mac: None,
-    },
-    Logiciel {
-        nom: "Keka",
-        categorie: Categorie::Systeme,
-        role: (
-            "Ouvre et crée les archives (zip, 7z, rar…) : le 7-Zip du Mac.",
-            "Opens and creates archives (zip, 7z, rar…): the Mac's 7-Zip.",
-        ),
-        licence: None,
-        recommande: true,
-        paquets: AUCUN,
-        flatpak: None,
-        commandes: &[],
-        winget: None,
-        mac: Some(("keka", "Keka")),
     },
     Logiciel {
         nom: "BleachBit",
@@ -607,7 +556,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: None,
         commandes: &["bleachbit"],
         winget: Some(("BleachBit.BleachBit", "BleachBit")),
-        mac: None,
     },
     Logiciel {
         nom: "PowerToys",
@@ -622,7 +570,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: None,
         commandes: &[],
         winget: Some(("Microsoft.PowerToys", "PowerToys")),
-        mac: None,
     },
     Logiciel {
         nom: "CrystalDiskInfo",
@@ -637,7 +584,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: None,
         commandes: &[],
         winget: Some(("CrystalDewWorld.CrystalDiskInfo", "CrystalDiskInfo")),
-        mac: None,
     },
     Logiciel {
         nom: "WinDirStat",
@@ -652,7 +598,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: None,
         commandes: &[],
         winget: Some(("WinDirStat.WinDirStat", "WinDirStat")),
-        mac: None,
     },
     Logiciel {
         nom: "Rufus",
@@ -667,7 +612,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: None,
         commandes: &[],
         winget: Some(("Rufus.Rufus", "Rufus")),
-        mac: None,
     },
     Logiciel {
         nom: "Mission Center",
@@ -682,37 +626,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("io.missioncenter.MissionCenter"),
         commandes: &["missioncenter"],
         winget: None,
-        mac: None,
-    },
-    Logiciel {
-        nom: "Rectangle",
-        categorie: Categorie::Systeme,
-        role: (
-            "Range les fenêtres au clavier ou en les glissant vers les bords de l'écran.",
-            "Arranges windows with shortcuts or by dragging them to the screen edges.",
-        ),
-        licence: Some("MIT"),
-        recommande: false,
-        paquets: AUCUN,
-        flatpak: None,
-        commandes: &[],
-        winget: None,
-        mac: Some(("rectangle", "Rectangle")),
-    },
-    Logiciel {
-        nom: "Stats",
-        categorie: Categorie::Systeme,
-        role: (
-            "Processeur, mémoire, réseau et températures dans la barre des menus.",
-            "CPU, memory, network and temperatures in the menu bar.",
-        ),
-        licence: Some("MIT"),
-        recommande: false,
-        paquets: AUCUN,
-        flatpak: None,
-        commandes: &[],
-        winget: None,
-        mac: Some(("stats", "Stats")),
     },
     // ── Programmation ──
     Logiciel {
@@ -728,7 +641,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("com.vscodium.codium"),
         commandes: &["codium"],
         winget: Some(("VSCodium.VSCodium", "VSCodium")),
-        mac: Some(("vscodium", "VSCodium")),
     },
     Logiciel {
         nom: "Git",
@@ -743,7 +655,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: None,
         commandes: &["git"],
         winget: Some(("Git.Git", "Git")),
-        mac: None,
     },
     Logiciel {
         nom: "Notepad++",
@@ -758,7 +669,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: None,
         commandes: &[],
         winget: Some(("Notepad++.Notepad++", "Notepad++")),
-        mac: None,
     },
     Logiciel {
         nom: "Windows Terminal",
@@ -774,7 +684,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         commandes: &[],
         // Application du Store (MSIX) : reconnue par le nom de son paquet, pas dans « Applications installées ».
         winget: Some(("Microsoft.WindowsTerminal", "Microsoft.WindowsTerminal")),
-        mac: None,
     },
     // ── Vie privée et réseau ──
     Logiciel {
@@ -796,7 +705,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.torproject.torbrowser-launcher"),
         commandes: &["torbrowser-launcher"],
         winget: Some(("TorProject.TorBrowser", "Tor Browser")),
-        mac: Some(("tor-browser", "Tor Browser")),
     },
     Logiciel {
         nom: "Mullvad Browser",
@@ -812,7 +720,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: None,
         commandes: &["mullvad-browser"],
         winget: Some(("MullvadVPN.MullvadBrowser", "Mullvad Browser")),
-        mac: Some(("mullvad-browser", "Mullvad Browser")),
     },
     Logiciel {
         nom: "Proton VPN",
@@ -828,7 +735,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: None,
         commandes: &["protonvpn-app"],
         winget: Some(("Proton.ProtonVPN", "Proton VPN")),
-        mac: Some(("protonvpn", "ProtonVPN")),
     },
     Logiciel {
         nom: "Mullvad VPN",
@@ -844,7 +750,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: None,
         commandes: &["mullvad"],
         winget: Some(("MullvadVPN.MullvadVPN", "Mullvad VPN")),
-        mac: Some(("mullvad-vpn", "Mullvad VPN")),
     },
     Logiciel {
         nom: "Wireshark",
@@ -864,23 +769,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: None,
         commandes: &["wireshark"],
         winget: Some(("WiresharkFoundation.Wireshark", "Wireshark")),
-        mac: Some(("wireshark-app", "Wireshark")),
-    },
-    Logiciel {
-        nom: "LuLu",
-        categorie: Categorie::VieReseau,
-        role: (
-            "Pare-feu sortant : vous demande avant qu'un programme inconnu se connecte.",
-            "Outbound firewall: asks you before an unknown program connects out.",
-        ),
-        licence: Some("GPL-3.0"),
-        recommande: false,
-        // macOS seulement (Objective-See) : une Network Extension, à part de l'ancre pf que pose Vanguard.
-        paquets: AUCUN,
-        flatpak: None,
-        commandes: &[],
-        winget: None,
-        mac: Some(("lulu", "LuLu")),
     },
     // ── Sauvegarde ──
     Logiciel {
@@ -893,12 +781,11 @@ pub const CATALOGUE: &[Logiciel] = &[
         licence: Some("Apache-2.0"),
         recommande: false,
         // Pas sous Linux : KopiaUI n'est dans aucune distribution, et le Flathub io.kopia.KopiaUI dit lui-même ne pas venir du
-        // projet. La 0.23.0 corrige CVE-2026-45695 ; winget et Homebrew sont en 0.23.1 (vérifié le 24 oct. 2026).
+        // projet. La 0.23.0 corrige CVE-2026-45695 ; winget est en 0.23.1 (vérifié le 24 oct. 2026).
         paquets: AUCUN,
         flatpak: None,
         commandes: &[],
         winget: Some(("Kopia.KopiaUI", "KopiaUI")),
-        mac: Some(("kopiaui", "KopiaUI")),
     },
     Logiciel {
         nom: "Déjà Dup",
@@ -914,6 +801,5 @@ pub const CATALOGUE: &[Logiciel] = &[
         flatpak: Some("org.gnome.DejaDup"),
         commandes: &["deja-dup"],
         winget: None,
-        mac: None,
     },
 ];

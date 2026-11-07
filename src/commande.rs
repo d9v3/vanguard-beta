@@ -1,7 +1,7 @@
 //! Lancement des commandes système avec un délai maximal : un outil qui ne répond plus (systemctl, gsettings,
 //! PowerShell, gestionnaire de paquets hors ligne…) ne doit jamais figer Vanguard.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc (setsid, getpgid, kill, waitid : groupe de processus et attente) et de kernel32 (GetSystemDirectoryW ;
 // GetModuleHandleW et GetProcAddress, pour reconnaître Wine).
@@ -39,13 +39,6 @@ fn lire_en_fond(mut flux: impl Read + Send + 'static) -> mpsc::Receiver<String> 
 /// (elle est alors tuée) ou si ses sorties ne se terminent pas.
 pub fn lancer(commande: &mut Command, secondes: u64) -> Option<Resultat> {
     lancer_entree(commande, None, secondes)
-}
-
-/// Comme `lancer`, avec `entree` écrite sur l'entrée du programme puis fermée (pfctl -f - y lit ses règles) : jamais
-/// un shell pour la lui passer.
-#[cfg(any(target_os = "macos", all(test, unix)))]
-pub(crate) fn lancer_avec_entree(commande: &mut Command, entree: &[u8], secondes: u64) -> Option<Resultat> {
-    lancer_entree(commande, Some(entree.to_vec()), secondes)
 }
 
 fn lancer_entree(commande: &mut Command, entree: Option<Vec<u8>>, secondes: u64) -> Option<Resultat> {
@@ -376,26 +369,22 @@ pub(crate) fn outil_propre(nom: &str) -> Option<Command> {
 
 /// Le PATH des commandes qu'une correction lance (`environnement_propre`) : les dossiers du système d'abord, pour qu'un
 /// faux « sudo » posé par un programme du compte dans un dossier à lui (~/.local/bin, ~/bin) ne soit jamais pris.
-/// /usr/local vient après le système : sous Debian, il a longtemps appartenu au groupe staff, et sous macOS, Homebrew le
-/// donne au compte qui l'a installé (comme /opt/homebrew, mis en dernier pour `brew` et ce qu'il installe). NixOS met
-/// ses programmes setuid (sudo) dans /run/wrappers/bin, et le reste dans /run/current-system/sw/bin.
+/// /usr/local vient après le système : sous Debian, il a longtemps appartenu au groupe staff. NixOS met ses programmes
+/// setuid (sudo) dans /run/wrappers/bin, et le reste dans /run/current-system/sw/bin.
 ///
 /// Ce que cet ordre ne protège PAS : l'outil que sudo lance en root. sudo le cherche dans le `secure_path` de sudoers,
 /// pas dans ce PATH, et Debian comme Fedora y mettent /usr/local/sbin et /usr/local/bin EN TÊTE : un
 /// /usr/local/bin/apt-get écrit par le groupe staff passe avant le vrai. Raison de plus pour les gestes par chemin
-/// absolu (U2+). Sous macOS, aucune ligne `sudo` ne lance un outil de Homebrew (dossier du compte) : à garder ainsi.
-/// À l'inverse, `outil_systeme` ignore /usr/local : un freshclam compilé à la main y passe pour « pas installé ».
+/// absolu (U2+). À l'inverse, `outil_systeme` ignore /usr/local : un freshclam compilé à la main y passe pour « pas
+/// installé ».
 ///
 /// Absents exprès (à revoir avec les gestes par chemin absolu, U2+) : les dossiers de snap (/snap/bin), de Flatpak
 /// (…/flatpak/exports/bin), de Nix pour le compte (~/.nix-profile/bin, `/etc/profiles/per-user/<compte>/bin`), de
 /// Linuxbrew (son compte à part dans /home) et de MacPorts (/opt/local/bin) : un outil qui n'est installé que là
 /// échoue « introuvable », ce qui se voit. Plusieurs appartiennent au compte, et aucun n'est sûr pour root.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(unix)]
 pub(crate) const PATH_PROPRE: &str =
     "/run/wrappers/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/usr/local/sbin:/run/current-system/sw/bin";
-#[cfg(target_os = "macos")]
-pub(crate) const PATH_PROPRE: &str =
-    "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/usr/local/sbin:/opt/homebrew/bin:/opt/homebrew/sbin";
 
 /// Les variables de la personne qu'une commande de correction garde : sa langue, son terminal, son bureau et sa
 /// session D-Bus (gsettings, systemctl --user), ses dossiers XDG (flatpak --user y installe), et son proxy. Rien
@@ -494,9 +483,8 @@ pub(crate) fn bash_propre(
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Garder {
     /// Le début : la commande est arrêtée à la borne (journalctl --reverse, le plus récent d'abord).
-    #[cfg_attr(target_os = "macos", allow(dead_code))] // journalctl n'existe que sous Linux
     Debut,
-    /// La fin : tout est lu, seuls les derniers octets restent (log show de macOS, le plus ancien d'abord).
+    /// La fin : tout est lu, seuls les derniers octets restent (un journal écrit du plus ancien au plus récent).
     Fin,
 }
 
@@ -676,11 +664,10 @@ fn parent_linux(stat: &str) -> Option<(u32, u32)> {
     Some((pid, parent))
 }
 
-/// Tous les (processus, parent) de l'ordinateur, sans lancer de commande sous Linux et Windows ; pgrep sur macOS.
-fn processus_et_parents(racine: u32) -> Vec<(u32, u32)> {
+/// Tous les (processus, parent) de l'ordinateur, sans lancer de commande (Linux et Windows).
+fn processus_et_parents() -> Vec<(u32, u32)> {
     #[cfg(target_os = "linux")]
     {
-        let _ = racine;
         crate::socle::processus::pids()
             .unwrap_or_default()
             .into_iter()
@@ -689,40 +676,10 @@ fn processus_et_parents(racine: u32) -> Vec<(u32, u32)> {
     }
     #[cfg(windows)]
     {
-        let _ = racine;
         crate::machine::windows::processus::liste()
             .into_iter()
             .map(|p| (p.pid, p.parent))
             .collect()
-    }
-    // macOS : pas de /proc ; les enfants demandés au noyau (proc_listchildpids), de proche en proche ; pgrep -P en
-    // secours pour un processus dont le noyau ne répond pas, tant que l'oracle de macos.yml ne l'a pas remplacé.
-    #[cfg(target_os = "macos")]
-    {
-        let mut liste = Vec::new();
-        let mut a_voir = vec![racine];
-        while let Some(pid) = a_voir.pop()
-            && liste.len() < 1000
-        {
-            let enfants = crate::machine::macos::noyau::enfants(pid).unwrap_or_else(|| {
-                // Pas par `lancer` : son délai dépassé rappelle `arreter`, qui reviendrait ici.
-                Command::new("pgrep")
-                    .args(["-P", &pid.to_string()])
-                    .output()
-                    .map(|o| {
-                        String::from_utf8_lossy(&o.stdout)
-                            .split_whitespace()
-                            .filter_map(|p| p.parse::<u32>().ok())
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            });
-            for enfant in enfants {
-                liste.push((enfant, pid));
-                a_voir.push(enfant);
-            }
-        }
-        liste
     }
 }
 
@@ -739,7 +696,7 @@ pub fn arreter(enfant: &mut Child) {
         // SAFETY: simple envoi d'un signal à un numéro de processus ; SIGKILL arrête aussi un processus suspendu.
         unsafe { libc::kill(pid, libc::SIGSTOP) };
     }
-    for pid in descendants(&processus_et_parents(racine), racine) {
+    for pid in descendants(&processus_et_parents(), racine) {
         #[cfg(windows)]
         crate::machine::windows::processus::terminer(pid);
         #[cfg(unix)]
@@ -892,13 +849,6 @@ mod tests_powershell {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-
-    /// L'entrée donnée arrive au programme, puis se ferme : il ne l'attend pas sans fin.
-    #[test]
-    fn l_entree_arrive_et_se_ferme() {
-        let r = lancer_avec_entree(&mut Command::new("cat"), b"table <vanguard> persist\n", 5).unwrap();
-        assert_eq!((r.code, r.sortie.as_str()), (Some(0), "table <vanguard> persist\n"));
-    }
 
     #[test]
     fn arbre_des_processus() {
@@ -1066,12 +1016,6 @@ mod tests_sh_chaine {
             "risques.first().copied().unwrap_or(\"docker\")",
             "noms de groupes du code",
         ),
-        (
-            "machine/macos/maj.rs",
-            "noms.iter() .map(|n| crate::commande::sh_chaine(n)) .collect::<Vec<_>>() .join(\" \")",
-            "chaque étiquette passe par sh_chaine",
-        ),
-        ("machine/macos/mod.rs", "cle", "clés de defaults du code"),
         ("optimiser/linux.rs", "nom", "noms d'unités du code"),
         ("optimiser/linux.rs", "etat_unite(e)", "enable, disable ou mask"),
         (
@@ -1089,11 +1033,6 @@ mod tests_sh_chaine {
         ("optimiser/linux.rs", "oui_non(ignore4)", "yes ou no"),
         ("optimiser/linux.rs", "oui_non(ignore6)", "yes ou no"),
         (
-            "optimiser/macos.rs",
-            "serveurs",
-            "adresses IP relues par IpAddr, ou « empty »",
-        ),
-        (
             "protection/blocage/pare_feu.rs",
             "lot",
             "lignes de nft du code, chacune passée par sh_chaine ; l'élément est une adresse ou un port analysés",
@@ -1110,18 +1049,8 @@ mod tests_sh_chaine {
         ),
         (
             "reparer.rs",
-            "s",
-            "entre_apostrophes, qui passe par sh_chaine sous Unix",
-        ),
-        (
-            "reparer.rs",
             "motif_adresses(&detournees)",
             "adresses IP validées, points protégés pour sed",
-        ),
-        (
-            "sauvegarde.rs",
-            "id",
-            "chiffres hexadécimaux et tirets, vérifié juste avant",
         ),
         (
             "reseau/wifi_public/linux.rs",
@@ -1137,16 +1066,6 @@ mod tests_sh_chaine {
             "reseau/wifi_public/linux.rs",
             "paires.join(\" \")",
             "propriétés et valeurs des ensembles fermés etat::PROPRIETES_NM, vérifiées juste avant",
-        ),
-        (
-            "reseau/wifi_public/macos.rs",
-            "option",
-            "option de la liste fermée etat::OPTIONS_MAC, vérifiée juste avant",
-        ),
-        (
-            "reseau/wifi_public/macos.rs",
-            "valeur",
-            "« on » ou « off », vérifié juste avant",
         ),
     ];
 
@@ -1325,22 +1244,19 @@ mod tests_sh_chaine {
         // « relancez sans sudo » : un conseil affiché, sans appel.
         ("amelioration/mod.rs", 2),
         ("changements.rs", 2),
-        ("depanner/imprimante.rs", 2),
-        ("depanner/son.rs", 1),
+        ("depanner/imprimante.rs", 1),
         ("gaming/linux.rs", 8),
-        ("gaming/macos.rs", 1),
         ("machine/administrateurs.rs", 3),
         // Une liste de refus : les commandes d'arrêt qui passeraient par un outil d'élévation ne sont pas lancées.
         ("machine/arret_designe.rs", 3),
-        ("machine/assistant.rs", 25),
-        ("machine/certificats.rs", 4),
+        ("machine/assistant.rs", 23),
+        ("machine/certificats.rs", 3),
         ("machine/chasse.rs", 6),
         ("machine/comptes_oublies.rs", 2),
         // Défense (D7a) : la liste des programmes qui donnent les droits (sudo, pkexec, doas, pour ne pas les rendre
         // tous inutilisables d'un coup), les avertissements qui disent ce que deviendra sudo, et `sudo -n -l -U`
         // lancé par l'enfant déjà root, qui ne fait que lire les règles d'un compte : aucune élévation.
         ("machine/defense_eleve.rs", 46),
-        ("machine/dns.rs", 1),
         // Le nom du groupe des administrateurs sous Debian (« sudo »), dans la liste des groupes sensibles : aucun appel.
         ("machine/gestes_unix.rs", 1),
         ("machine/heure.rs", 1),
@@ -1355,33 +1271,22 @@ mod tests_sh_chaine {
         ("machine/linux/plateforme.rs", 1),
         ("machine/linux/privileges.rs", 5),
         ("machine/linux/regles.rs", 2),
-        ("machine/macos/durcissement.rs", 4),
-        ("machine/macos/maj.rs", 1),
-        ("machine/macos/mod.rs", 8),
-        ("machine/macos/parite.rs", 10),
-        ("machine/macos/persistance.rs", 3),
-        ("machine/macos/privileges.rs", 2),
-        ("machine/macos/regles.rs", 2),
-        ("machine/partages.rs", 8),
+        ("machine/partages.rs", 7),
         ("machine/unix.rs", 28),
         ("nettoyer/linux.rs", 14),
-        ("nettoyer/macos.rs", 1),
         ("optimiser/linux.rs", 19),
-        ("optimiser/macos.rs", 3),
-        ("protection/blocage/pare_feu.rs", 16),
+        ("protection/blocage/pare_feu.rs", 9),
         ("protection/conteneurs.rs", 2),
-        ("protection/distance.rs", 6),
+        ("protection/distance.rs", 3),
         ("protection/espions/mod.rs", 2),
         ("protection/memoire_dns.rs", 2),
         ("protection/quarantaine.rs", 4),
         ("protection/rancongiciel/veille.rs", 2),
         ("protection/sites_bloques.rs", 1),
         ("protection/sortantes.rs", 2),
-        ("reparer.rs", 47),
+        ("reparer.rs", 32),
         ("reseau/wifi_public/linux.rs", 9),
-        ("reseau/wifi_public/macos.rs", 1),
         ("risk.rs", 2),
-        ("sauvegarde.rs", 4),
         ("traces/chronologie.rs", 7),
         ("traces/linux.rs", 1),
         ("traces/mod.rs", 2),
@@ -1690,7 +1595,7 @@ mod tests_lancer_borne {
 
     /// Un programme dans sa propre session (comme un plugin) qui laisse un petit-enfant détaché : celui-ci est arrêté
     /// avec lui, il n'écrit plus rien ensuite. Linux seulement : c'est waitid (WNOWAIT) qui laisse arrêter le groupe
-    /// avant que son numéro ne resserve, et macOS ne le permet pas (le CHANGELOG le dit ; vu sur le Mac de GitHub).
+    /// avant que son numéro ne resserve.
     #[cfg(target_os = "linux")]
     #[test]
     fn un_petit_enfant_detache_ne_survit_pas() {
@@ -2061,7 +1966,7 @@ mod tests_environnement_propre {
         ] {
             assert_eq!(valeur(n), None, "{n}");
         }
-        // Le système d'abord : aucun dossier personnel (/home, /Users ; /opt/homebrew n'en est pas un) ni relatif,
+        // Le système d'abord : aucun dossier personnel (/home, /Users) ni relatif,
         // et /usr/bin avant /usr/local/bin.
         let dossiers: Vec<&str> = super::PATH_PROPRE.split(':').collect();
         assert!(

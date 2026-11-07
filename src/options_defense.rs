@@ -2182,7 +2182,7 @@ fn appliquer_choix(ligne: String) -> bool {
 /// Sortie vers un fichier ou un tube (`vanguard options-defense > etat.txt`) : le rapport complet, sans rien
 /// demander. Depuis D3, le menu s'y affichait et attendait « Votre choix » que personne ne voyait (le banc D1 de la
 /// VM semblait gelé). Pure, pour l'essayer.
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))] // macOS : un texte seulement
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))] // autre système : un texte seulement
 fn rapport_seul(sortie_console: bool) -> bool {
     !sortie_console
 }

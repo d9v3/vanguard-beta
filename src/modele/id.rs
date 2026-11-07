@@ -65,22 +65,6 @@ impl Objet {
         }
     }
 
-    /// Un fichier ou un dossier, son chemin normalisé (`chemin`).
-    #[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))] // les règles de macOS (parite.rs) et les tests
-    pub(crate) fn fichier(chemin_brut: &str) -> Objet {
-        Objet::de("fichier", &chemin(chemin_brut))
-    }
-
-    /// Un agent de démarrage : son fichier et ce qu'il lance (`None` : illisible ou fabriqué, rien de lisible). Le
-    /// fichier seul ne suffit pas : accepter l'agent d'aujourd'hui ne doit pas faire taire un autre programme que ce
-    /// même fichier lancerait demain. La commande, écrite par qui a posé l'agent et sans borne de longueur, n'entre
-    /// dans la clé que par son empreinte (`trace`).
-    #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))] // agents de démarrage de macOS
-    pub(crate) fn agent(chemin_brut: &str, lance: Option<&str>) -> Objet {
-        let quoi = lance.map_or_else(|| "illisible".to_string(), trace);
-        Objet::de("agent", &format!("{}#{quoi}", chemin(chemin_brut)))
-    }
-
     /// Le texte de l'objet dans une clé : vide pour `Seul`, `None` pour `NonMigre`.
     pub(crate) fn texte(&self) -> Option<&str> {
         match self {
@@ -134,7 +118,7 @@ impl fmt::Display for Cle {
 
 /// L'empreinte courte d'un texte écrit par un tiers (une ligne lancée au démarrage, une commande) : ce qui change
 /// dès que le texte change, sans mettre dans la clé un texte long ou fabriqué. Les blancs du bord ne comptent pas.
-#[cfg_attr(not(any(target_os = "macos", target_os = "linux", test)), allow(dead_code))] // persistance Linux et macOS
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))] // persistance de Linux
 pub(crate) fn trace(texte: &str) -> String {
     blake3::hash(texte.trim().as_bytes()).to_hex()[..12].to_string()
 }
@@ -244,23 +228,13 @@ mod tests {
         );
         assert_eq!(chemin_sous(r"C:\Windows\System32\", w, true), "c:/windows/system32");
         assert_eq!(chemin_sous("/tmp/x", None, false), "/tmp/x");
-        assert_eq!(Objet::fichier("/etc/cron.d/"), Objet::De("fichier:/etc/cron.d".into()));
     }
 
-    /// Un agent : même fichier, autre programme lancé (ou devenu illisible), autre objet ; même commande, même objet.
+    /// L'empreinte d'un texte écrit par un tiers : courte, et les blancs du bord n'y comptent pas.
     #[test]
-    fn agent_garde_ce_qu_il_lance() {
-        let plist = "/Users/alice/Library/LaunchAgents/com.exemple.aide.plist";
-        let aide = Objet::agent(plist, Some("/opt/exemple/aide "));
-        assert_eq!(aide, Objet::agent(plist, Some("/opt/exemple/aide")));
-        assert_ne!(aide, Objet::agent(plist, Some("/tmp/x")));
-        assert_ne!(aide, Objet::agent(plist, None));
-        assert_ne!(aide, Objet::fichier(plist));
-        let texte = aide.texte().unwrap().to_string();
-        assert!(
-            texte.starts_with("agent:") && texte.contains("com.exemple.aide.plist#"),
-            "{texte}"
-        );
+    fn trace_courte_sans_les_blancs_du_bord() {
         assert_eq!(trace("a").len(), 12);
+        assert_eq!(trace(" /opt/exemple/aide "), trace("/opt/exemple/aide"));
+        assert_ne!(trace("/opt/exemple/aide"), trace("/tmp/x"));
     }
 }

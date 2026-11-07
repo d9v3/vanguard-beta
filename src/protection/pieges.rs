@@ -12,7 +12,7 @@
 //! alors attendus : le bilan dit que la liste ne peut pas être crue, le veilleur garde les fichiers « !Vanguard »
 //! trouvés dans les dossiers, et seuls ceux que Vanguard reconnaît à leur contenu exact se retirent.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::fmt::Write as _;
@@ -338,15 +338,6 @@ pub(crate) fn developper(chemin: &str) -> String {
     }
     sortie.push_str(reste);
     sortie
-}
-
-#[cfg(target_os = "macos")]
-fn dossiers_du_systeme() -> Vec<PathBuf> {
-    let maison = crate::socle::maison();
-    ["Documents", "Pictures", "Desktop"]
-        .iter()
-        .map(|d| maison.join(d))
-        .collect()
 }
 
 /// Code tiré au hasard (4 chiffres hexadécimaux), pour que le nom change d'un ordinateur et d'une pose à l'autre.

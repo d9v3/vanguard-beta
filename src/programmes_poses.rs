@@ -13,7 +13,7 @@
 //! premier bilan de la nouvelle version. Ailleurs, le chemin du programme lancé peut désigner un fichier remplacé
 //! depuis son lancement : seul le sceau compte.
 //!
-//! Le texte de la tâche (l'unité et sa minuterie, le plist, le XML de la tâche) est scellé aussi : changé hors de
+//! Le texte de la tâche (l'unité et sa minuterie, le XML de la tâche) est scellé aussi : changé hors de
 //! Vanguard, c'est une alerte élevée, quoi qu'il change. Une tâche posée par une version d'avant, sans rien de noté,
 //! est notée telle quelle au premier bilan (confiance au premier usage, comme `sceau`), jamais par-dessus une liste
 //! qui ne peut pas être crue. Un programme remplacé par une version publiée et signée (l'historique signé des versions
@@ -80,9 +80,9 @@ impl Tache {
 struct Pose {
     chemin: String,
     empreinte: String,
-    /// L'empreinte BLAKE3 du texte de la tâche tel que Vanguard l'a posé (Linux : le service et sa minuterie ; macOS :
-    /// le plist ; Windows : le XML de la tâche). Le programme seul ne suffit pas : une ligne `ExecCondition=` ajoutée,
-    /// une seconde `ExecStart=` ou une minuterie annuelle coupent la défense, ou lancent autre chose, sous son nom.
+    /// L'empreinte BLAKE3 du texte de la tâche tel que Vanguard l'a posé (Linux : le service et sa minuterie ;
+    /// Windows : le XML de la tâche). Le programme seul ne suffit pas : une ligne `ExecCondition=` ajoutée, une seconde
+    /// `ExecStart=` ou une minuterie annuelle coupent la défense, ou lancent autre chose, sous son nom.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     texte: Option<String>,
 }
@@ -279,7 +279,7 @@ enum Jugement {
     AutreChemin(String),
     /// Le chemin posé, mais d'autres octets.
     Remplace,
-    /// Le texte de la tâche (unité, minuterie, plist, XML) n'est plus celui que Vanguard a posé.
+    /// Le texte de la tâche (unité, minuterie, XML) n'est plus celui que Vanguard a posé.
     TexteChange,
     /// La liste des programmes posés a été changée hors de Vanguard, et le programme lancé n'est pas celui qui tourne.
     ListeForgee,

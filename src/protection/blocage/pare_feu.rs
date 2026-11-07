@@ -2,8 +2,7 @@
 //! ordres typés (`ordres`), construits ici en fonctions pures (testées) puis faits par `machine::appliquer_sans_noter`
 //! (l'assistant élevé, ou Vanguard lui-même s'il est administrateur). Linux : ufw s'il est actif (appelé sans shell,
 //! il fait foi : il réécrit ses chaînes depuis ses fichiers), sinon une table nf_tables à Vanguard (`inet vanguard`,
-//! écrite par netlink : `machine::linux::nftables`) ; Windows : le Pare-feu Windows (INetFwPolicy2) ; macOS : une
-//! ancre de pf (`com.apple/vanguard`, que le pf.conf d'Apple lit déjà), par pfctl sans shell. Sinon : « non
+//! écrite par netlink : `machine::linux::nftables`) ; Windows : le Pare-feu Windows (INetFwPolicy2). Sinon : « non
 //! disponible ».
 
 use std::net::IpAddr;
@@ -22,8 +21,6 @@ pub(crate) enum PareFeu {
     Nftables,
     #[cfg_attr(not(windows), allow(dead_code))]
     Windows,
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    Pf,
 }
 
 impl PareFeu {
@@ -32,7 +29,6 @@ impl PareFeu {
             PareFeu::Ufw => "ufw",
             PareFeu::Nftables => "nftables",
             PareFeu::Windows => tr!("le Pare-feu Windows", "the Windows Firewall"),
-            PareFeu::Pf => "pf",
         }
     }
 }
@@ -70,13 +66,13 @@ fn jusqu_au_redemarrage() -> &'static str {
 }
 
 /// La règle sortante vers une adresse. La connexion déjà ouverte est coupée là où le système le permet (sock_diag
-/// sous Linux, pfctl -k sous macOS) ; sinon, seules les nouvelles sont bloquées, et c'est dit.
+/// sous Linux) ; sinon, seules les nouvelles sont bloquées, et c'est dit.
 pub(crate) fn sortante(pf: PareFeu, ip: IpAddr) -> Regle {
     let ip = ip.to_canonical();
     let couper = vec![Ordre::CouperConnexions { ip }.ligne()];
     let (apres, limite) = match pf {
         PareFeu::Ufw => (couper, None),
-        PareFeu::Nftables | PareFeu::Pf => (couper, Some(jusqu_au_redemarrage())),
+        PareFeu::Nftables => (couper, Some(jusqu_au_redemarrage())),
         PareFeu::Windows => (
             Vec::new(),
             Some(tr!(
@@ -94,22 +90,21 @@ pub(crate) fn sortante(pf: PareFeu, ip: IpAddr) -> Regle {
 }
 
 /// La règle qui ferme un port TCP en entrée, sauf depuis cet ordinateur. Sous Windows, la règle porte le nom que le
-/// bilan reconnaît déjà (« Vanguard : bloquer `<port>` »). `None` : pas de règle entrante ici (pf).
-pub(crate) fn entrante(pf: PareFeu, port: u16) -> Option<Regle> {
+/// bilan reconnaît déjà (« Vanguard : bloquer `<port>` »).
+pub(crate) fn entrante(pf: PareFeu, port: u16) -> Regle {
     let limite = match pf {
-        PareFeu::Pf => return None,
         PareFeu::Nftables => Some(jusqu_au_redemarrage()),
         PareFeu::Ufw | PareFeu::Windows => None,
     };
-    Some(Regle {
+    Regle {
         poser: vec![Ordre::FermerPort { pare_feu: pf, port }.ligne()],
         apres: Vec::new(),
         retirer: vec![Ordre::RouvrirPort { pare_feu: pf, port }.ligne()],
         limite,
-    })
+    }
 }
 
-/// Ce que les versions d'avant écrivaient, mot pour mot : des commandes de shell (sudo, nft, ufw, pfctl) et de
+/// Ce que les versions d'avant écrivaient, mot pour mot : des commandes de shell (sudo, nft, ufw) et de
 /// PowerShell. Plus rien ne les lance pour poser une règle ; elles servent à reconnaître une note d'annulation écrite
 /// par une version d'avant (`gestes::inverse_reconnue`), qui est alors refaite en ordres typés (jamais rejouée
 /// telle quelle : bash ne rejugeait rien), et à remplir le champ `commandes` des nouvelles notes, que seules les
@@ -195,44 +190,34 @@ pub(crate) mod ancien {
                     )],
                 }
             }
-            PareFeu::Pf => Regle {
-                poser: vec![
-                    "sudo pfctl -a com.apple/vanguard -s rules 2>/dev/null | grep -q vanguard || printf '%s\\n' 'table <vanguard> persist' 'block drop out quick to <vanguard>' | sudo pfctl -a com.apple/vanguard -f -".to_string(),
-                    format!("sudo pfctl -a com.apple/vanguard -t vanguard -T add {adresse}"),
-                    format!("sudo pfctl -k 0.0.0.0/0 -k {adresse} >/dev/null 2>&1 || true"),
-                    "sudo pfctl -E >/dev/null 2>&1; sudo pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'".to_string(),
-                ],
-                retirer: vec![format!("sudo pfctl -a com.apple/vanguard -t vanguard -T delete {adresse}")],
-            },
         }
     }
 
-    /// La règle qui fermait un port TCP en entrée, telle que les versions d'avant l'écrivaient ; `None` : pf.
-    pub(crate) fn entrante(pf: PareFeu, port: u16) -> Option<Regle> {
+    /// La règle qui fermait un port TCP en entrée, telle que les versions d'avant l'écrivaient.
+    pub(crate) fn entrante(pf: PareFeu, port: u16) -> Regle {
         match pf {
             PareFeu::Ufw => {
                 let regle = sh_chaine(&format!("{port}/tcp"));
-                Some(Regle {
+                Regle {
                     poser: vec![format!("sudo ufw prepend deny {regle}")],
                     retirer: vec![format!("sudo ufw delete deny {regle}")],
-                })
+                }
             }
-            PareFeu::Nftables => Some(Regle {
+            PareFeu::Nftables => Regle {
                 poser: vec![nft_avec(&format!("add element inet vanguard ports {{ {port} }}"))],
                 retirer: vec![nft_sans("ports", &port.to_string())],
-            }),
+            },
             PareFeu::Windows => {
                 let nom = super::nom_entrante(port);
-                Some(Regle {
+                Regle {
                     poser: vec![format!(
                         "if (-not (Get-NetFirewallRule -DisplayName '{nom}' -ErrorAction SilentlyContinue)) {{ New-NetFirewallRule -DisplayName '{nom}' -Direction Inbound -Protocol TCP -LocalPort {port} -Action Block | Out-Null }}"
                     )],
                     retirer: vec![format!(
                         "Get-NetFirewallRule -DisplayName '{nom}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule"
                     )],
-                })
+                }
             }
-            PareFeu::Pf => None,
         }
     }
 }
@@ -323,12 +308,8 @@ fn sans_pare_feu_linux() -> crate::modele::Echec {
 }
 
 /// Le pare-feu par lequel bloquer ici ; `Err` : pourquoi il n'y en a pas (« non disponible »).
-#[cfg_attr(windows, allow(clippy::unnecessary_wraps))] // même signature que sous Linux et macOS, où il peut manquer
+#[cfg_attr(windows, allow(clippy::unnecessary_wraps))] // même signature que sous Linux, où il peut manquer
 pub(crate) fn detecter() -> Result<PareFeu, crate::modele::Echec> {
-    #[cfg(target_os = "macos")]
-    use crate::modele::{Echec, Raison};
-    #[cfg(target_os = "macos")]
-    const OU: &str = "blocage/pare-feu";
     #[cfg(target_os = "linux")]
     {
         if crate::machine::linux::ufw_actif() {
@@ -343,14 +324,6 @@ pub(crate) fn detecter() -> Result<PareFeu, crate::modele::Echec> {
     #[cfg(windows)]
     {
         Ok(PareFeu::Windows)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if std::path::Path::new("/sbin/pfctl").exists() {
-            Ok(PareFeu::Pf)
-        } else {
-            Err(Echec::new(OU, Raison::Absente("/sbin/pfctl".into())))
-        }
     }
 }
 
@@ -402,9 +375,7 @@ mod tests {
             w.apres.is_empty() && w.limite.is_some(),
             "Windows ne coupe pas, et le dit"
         );
-        let p = sortante(PareFeu::Pf, ip("203.0.113.7"));
-        assert_eq!(p.retirer, ["vanguard:debloquer-sortie pf 203.0.113.7"]);
-        for pf in [PareFeu::Ufw, PareFeu::Nftables, PareFeu::Windows, PareFeu::Pf] {
+        for pf in [PareFeu::Ufw, PareFeu::Nftables, PareFeu::Windows] {
             let r = sortante(pf, ip("198.51.100.9"));
             for l in r.poser.iter().chain(&r.apres).chain(&r.retirer) {
                 assert!(super::super::ordres::est_ordre(l), "{l}");
@@ -438,17 +409,11 @@ mod tests {
                 "Get-NetFirewallRule -DisplayName 'Vanguard : bloquer vers 203.0.113.7' -ErrorAction SilentlyContinue | Remove-NetFirewallRule"
             ]
         );
-        let pf = ancien::sortante(PareFeu::Pf, ip("203.0.113.7"));
-        assert_eq!(
-            pf.retirer,
-            ["sudo pfctl -a com.apple/vanguard -t vanguard -T delete '203.0.113.7'"]
-        );
-        let port_ufw = ancien::entrante(PareFeu::Ufw, 11434).unwrap();
+        let port_ufw = ancien::entrante(PareFeu::Ufw, 11434);
         assert_eq!(port_ufw.poser, ["sudo ufw prepend deny '11434/tcp'"]);
         assert_eq!(port_ufw.retirer, ["sudo ufw delete deny '11434/tcp'"]);
-        let port_nft = ancien::entrante(PareFeu::Nftables, 7860).unwrap();
+        let port_nft = ancien::entrante(PareFeu::Nftables, 7860);
         assert!(port_nft.retirer[0].starts_with("sudo nft delete element inet vanguard 'ports' '{ 7860 }'"));
-        assert_eq!(ancien::entrante(PareFeu::Pf, 11434), None);
     }
 
     /// Défaut de la relecture : un refus ajouté après une autorisation du même port ne ferme rien. Le port n'est dit
@@ -484,13 +449,13 @@ mod tests {
 
     #[test]
     fn regles_entrantes_et_leur_inverse() {
-        let u = entrante(PareFeu::Ufw, 11434).unwrap();
+        let u = entrante(PareFeu::Ufw, 11434);
         assert_eq!(u.poser, ["vanguard:fermer-port ufw 11434"]);
         assert_eq!(u.retirer, ["vanguard:rouvrir-port ufw 11434"]);
-        let n = entrante(PareFeu::Nftables, 7860).unwrap();
+        let n = entrante(PareFeu::Nftables, 7860);
         assert!(n.limite.is_some());
         assert_eq!(n.retirer, ["vanguard:rouvrir-port nftables 7860"]);
-        let w = ancien::entrante(PareFeu::Windows, 8188).unwrap();
+        let w = ancien::entrante(PareFeu::Windows, 8188);
         // Le nom que le bilan reconnaît (« Ports en écoute ») : le port n'y est plus compté comme ouvert.
         assert!(
             w.poser[0]
@@ -503,6 +468,5 @@ mod tests {
             ),
             Some(8188)
         );
-        assert_eq!(entrante(PareFeu::Pf, 11434), None);
     }
 }

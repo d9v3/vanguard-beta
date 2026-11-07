@@ -65,8 +65,8 @@ pub(super) fn etapes(origine: Origine, fichiers_a_ramener: bool, chiffre: Option
         e.push(Etape {
             titre: tr!("Réinstaller le système", "Reinstall the system"),
             pourquoi: tr!(
-                "Un ordinateur d'occasion a eu une autre vie : programmes, comptes, réglages, parfois un mouchard. La seule certitude est le système remis à neuf : Windows « Réinitialiser ce PC » (Supprimer tout), macOS « Effacer contenu et réglages », ou Linux installé depuis la clé VANGUARD. Les vérifications ci-dessus disent ce que Vanguard a trouvé en attendant.",
-                "A used computer had another life: programs, accounts, settings, sometimes a spy. The only certainty is a fresh system: Windows “Reset this PC” (Remove everything), macOS “Erase All Content and Settings”, or Linux installed from the VANGUARD key. The checks above say what Vanguard found meanwhile."
+                "Un ordinateur d'occasion a eu une autre vie : programmes, comptes, réglages, parfois un mouchard. La seule certitude est le système remis à neuf : Windows « Réinitialiser ce PC » (Supprimer tout), ou Linux installé depuis la clé VANGUARD. Les vérifications ci-dessus disent ce que Vanguard a trouvé en attendant.",
+                "A used computer had another life: programs, accounts, settings, sometimes a spy. The only certainty is a fresh system: Windows “Reset this PC” (Remove everything), or Linux installed from the VANGUARD key. The checks above say what Vanguard found meanwhile."
             ),
             outil: None,
         });
@@ -86,16 +86,16 @@ pub(super) fn etapes(origine: Origine, fichiers_a_ramener: bool, chiffre: Option
         titre: tr!("Chiffrement du disque", "Disk encryption"),
         pourquoi: match chiffre {
             Some(true) => tr!(
-                "Déjà chiffré : gardez la clé de récupération (compte Microsoft, iCloud, ou imprimée) hors de l'ordinateur ; sans elle, un disque chiffré qui ne démarre plus est perdu.",
-                "Already encrypted: keep the recovery key (Microsoft account, iCloud, or printed) away from the computer; without it, an encrypted disk that no longer boots is lost."
+                "Déjà chiffré : gardez la clé de récupération (compte Microsoft ou imprimée) hors de l'ordinateur ; sans elle, un disque chiffré qui ne démarre plus est perdu.",
+                "Already encrypted: keep the recovery key (Microsoft account or printed) away from the computer; without it, an encrypted disk that no longer boots is lost."
             ),
             Some(false) => tr!(
                 "Pas chiffré : un ordinateur perdu ou volé livre tous ses fichiers à qui le branche ailleurs. À activer maintenant, tant qu'il n'y a presque rien dessus (c'est rapide) : la marche à suivre est dans le bilan ci-dessus.",
                 "Not encrypted: a lost or stolen computer hands over all its files to whoever plugs it elsewhere. Turn it on now, while there is almost nothing on it (it is quick): the steps are in the check above."
             ),
             None => tr!(
-                "Vanguard n'a pas pu lire l'état du chiffrement : vérifiez-le vous-même (BitLocker, FileVault ou LUKS). Un ordinateur perdu ou volé non chiffré livre tous ses fichiers.",
-                "Vanguard could not read the encryption state: check it yourself (BitLocker, FileVault or LUKS). A lost or stolen unencrypted computer hands over all its files."
+                "Vanguard n'a pas pu lire l'état du chiffrement : vérifiez-le vous-même (BitLocker ou LUKS). Un ordinateur perdu ou volé non chiffré livre tous ses fichiers.",
+                "Vanguard could not read the encryption state: check it yourself (BitLocker or LUKS). A lost or stolen unencrypted computer hands over all its files."
             ),
         },
         outil: None,

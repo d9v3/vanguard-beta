@@ -2,10 +2,9 @@
 //! et, quand le système le note, la dernière fois qu'elles s'en sont servies. En lecture seule : rien n'est retiré,
 //! la marche à suivre est donnée. Sous Windows, le registre des autorisations (ConsentStore, lu par le module
 //! `camera`) ; sous Linux, les permissions des applications Flatpak (portails et permissions fixées à
-//! l'installation) et Snap ; sous macOS, la base des autorisations du compte (TCC.db), lisible seulement avec
-//! l'accès complet au disque. Ce qui n'a pas pu être lu est dit « non vérifié », jamais compté comme sain.
+//! l'installation) et Snap. Ce qui n'a pas pu être lu est dit « non vérifié », jamais compté comme sain.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use crate::ui::*;
@@ -58,7 +57,7 @@ struct Remarque {
     texte: String,
     verifie: bool,
     /// Les permissions qu'elle touche, pour le résultat : la sienne, ou toutes pour une remarque générale, sauf quand
-    /// celle-ci en nomme certaines (le journal WAL de macOS, qui ne touche pas la position).
+    /// celle-ci en nomme certaines.
     touchees: Vec<Permission>,
     /// Ce que le système ne liste pas (les programmes classiques, qui ne demandent rien) : un fait vrai à l'écran
     /// (`verifie`), mais pour le résultat un manque sous chaque permission touchée. « Aucune application n'a accès à
@@ -93,7 +92,6 @@ impl Bilan {
 
     /// Ce que le système ne liste pas pour `touchees` : affiché comme un fait, jamais compté vérifié dans le
     /// résultat. Sans permission touchée (toutes coupées pour ces programmes), un simple fait.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn hors_liste(&mut self, touchees: &[Permission], texte: impl Into<String>) {
         self.remarque_sur(touchees, true, texte);
         if let Some(r) = self.remarques.last_mut() {
@@ -241,11 +239,6 @@ fn marche_a_suivre() -> &'static str {
             "Pour retirer un accès : Paramètres › Confidentialité et sécurité › Position (ou Contacts, Caméra, Microphone). Un programme classique n'a pas d'interrupteur à lui : « Autoriser les applications de bureau » les coupe tous, sinon désinstallez-le (Logiciels).",
             "To remove an access: Settings › Privacy & security › Location (or Contacts, Camera, Microphone). A classic program has no switch of its own: “Let desktop apps access” turns them all off, otherwise uninstall it (Software)."
         )
-    } else if cfg!(target_os = "macos") {
-        tr!(
-            "Pour retirer un accès : Réglages Système › Confidentialité et sécurité › Service de localisation (ou Contacts, Caméra, Micro), puis décochez l'application que vous ne reconnaissez pas.",
-            "To remove an access: System Settings › Privacy & Security › Location Services (or Contacts, Camera, Microphone), then untick the app you do not recognize."
-        )
     } else {
         tr!(
             "Pour retirer un accès : Flatpak, avec Flatseal ou « flatpak override --user --nodevice=all --nosocket=pulseaudio <application> » ; une autorisation de portail, « flatpak permission-remove <table> <objet> <application> ». Snap : « snap disconnect <snap>:camera » (ou audio-record, location-observe).",
@@ -260,8 +253,6 @@ fn lire() -> Bilan {
     windows::lire(&mut bilan);
     #[cfg(target_os = "linux")]
     linux::lire(&mut bilan);
-    #[cfg(target_os = "macos")]
-    macos::lire(&mut bilan);
     bilan
 }
 
@@ -877,109 +868,6 @@ mod linux {
     }
 }
 
-// ───────────────────────────────────────── macOS ─────────────────────────────────────────
-
-/// Les accès d'une base TCC, lue par le lecteur SQLite de Vanguard (comme les autorisations d'épier, voir
-/// espions/tcc.rs) : caméra, micro et contacts autorisés (`auth_value` 2) ou autorisés en partie (3), avec la date du
-/// réglage. Avant Big Sur, la colonne s'appelait `allowed` (0 ou 1) : 1 vaut alors une autorisation pleine. `None` :
-/// la base ne se lit pas.
-#[cfg(any(target_os = "macos", test))]
-fn lire_tcc(octets: &[u8]) -> Option<Vec<Acces>> {
-    let lignes = crate::sqlite::lignes(
-        octets,
-        "access",
-        &["service", "client", "auth_value", "allowed", "last_modified"],
-    )?;
-    let mut acces = Vec::new();
-    for l in lignes {
-        // `lignes` rend une valeur par colonne demandée : une autre forme serait une base mal lue, dite illisible
-        // plutôt qu'une ligne sautée sans rien dire.
-        let [service, client, valeur, permis, modifiee] = l.as_slice() else {
-            return None;
-        };
-        let permission = match service.texte() {
-            Some("kTCCServiceCamera") => Permission::Camera,
-            Some("kTCCServiceMicrophone") => Permission::Micro,
-            Some("kTCCServiceAddressBook") => Permission::Contacts,
-            _ => continue,
-        };
-        // Lus comme tccd les lit : un texte rangé dans une colonne d'entiers compte par son début
-        // numérique ; un nombre à virgule ou un blob (`Autre`) compte comme autorisé, jamais sauté.
-        let auth = if *valeur == crate::sqlite::Valeur::Autre {
-            Some(2)
-        } else {
-            valeur.entier_lu()
-        };
-        let source = match auth.or_else(|| permis.entier_lu().map(|a| a.saturating_mul(2))) {
-            Some(2) => tr!("autorisée", "allowed"),
-            Some(3) => tr!("autorisée en partie", "partly allowed"),
-            _ => continue,
-        };
-        let quand = modifiee
-            .entier()
-            .filter(|s| *s > 0)
-            .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
-            .map(|d| {
-                let jour = d.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string();
-                trf!("réglée le {jour}", "set on {jour}")
-            });
-        acces.push(Acces {
-            permission,
-            application: client.texte().unwrap_or_default().to_string(),
-            source: source.to_string(),
-            quand,
-            en_cours: false,
-        });
-    }
-    Some(acces)
-}
-
-#[cfg(target_os = "macos")]
-mod macos {
-    use super::{Bilan, Permission, lire_tcc};
-    use crate::tr;
-
-    pub(super) fn lire(b: &mut Bilan) {
-        let base = crate::socle::maison().join("Library/Application Support/com.apple.TCC/TCC.db");
-        match crate::protection::espions::tcc::lire_base_avec(&base, lire_tcc) {
-            Some((acces, wal)) => {
-                b.ajouter(acces);
-                if wal {
-                    // Un accès accordé à l'instant peut n'être encore que dans le journal : non vérifié.
-                    b.remarque_sur(
-                        &[Permission::Contacts, Permission::Camera, Permission::Micro],
-                        false,
-                        tr!(
-                            "un changement récent de la caméra, du micro ou des contacts peut manquer (journal WAL non lu).",
-                            "a recent change to the camera, microphone or contacts may be missing (WAL journal not read)."
-                        ),
-                    );
-                }
-            }
-            None => {
-                for p in [Permission::Contacts, Permission::Camera, Permission::Micro] {
-                    b.remarque(
-                        Some(p),
-                        false,
-                        tr!(
-                            "la liste est protégée par macOS. Pour que Vanguard la lise : Réglages Système › Confidentialité et sécurité › Accès complet au disque, ajoutez le Terminal, puis relancez. Sinon, regardez-la à la même page.",
-                            "macOS protects the list. For Vanguard to read it: System Settings › Privacy & Security › Full Disk Access, add Terminal, then run again. Otherwise, look at it on the same page."
-                        ),
-                    );
-                }
-            }
-        }
-        b.remarque(
-            Some(Permission::Position),
-            false,
-            tr!(
-                "macOS garde ces autorisations hors de portée des programmes. Regardez-les dans Réglages Système › Confidentialité et sécurité › Service de localisation.",
-                "macOS keeps these permissions out of programs' reach. See them in System Settings › Privacy & Security › Location Services."
-            ),
-        );
-    }
-}
-
 /// `vanguard bilan-confidentialite --json` : la même lecture que l'écran, jugée en résultat et versée comme lui.
 /// Lecture seule, aucune question.
 pub fn json() {
@@ -1359,51 +1247,5 @@ mod tests {
         );
         assert_eq!(a[1].source, "Snap (camera)");
         assert_eq!(lire_snap(""), Vec::<Acces>::new());
-    }
-
-    /// La base TCC lue par le lecteur SQLite de Vanguard, dans les deux formats (bases inventées) : seulement la
-    /// caméra, le micro et les contacts autorisés ; une tabulation dans un nom ne décale plus les colonnes.
-    #[test]
-    fn base_tcc_de_macos() {
-        let base = include_bytes!("../../assets/essais/tcc-acces.sqlite");
-        let a = lire_tcc(base).unwrap();
-        let resume: Vec<(Permission, &str)> = a.iter().map(|x| (x.permission, x.application.as_str())).collect();
-        assert_eq!(
-            resume,
-            [
-                (Permission::Camera, "com.example.Visio"),
-                (Permission::Contacts, "com.example.Courrier"),
-                (Permission::Micro, "/Users/alice/Downloads/outil"),
-                (Permission::Camera, "com.example.Avec\ttabulation"),
-            ]
-        );
-        assert!(
-            a[0].quand
-                .as_deref()
-                .is_some_and(|q| q.starts_with("réglée le 2026-10-1"))
-        );
-        assert_eq!(a[1].quand, None);
-        assert_eq!(a[1].source, "autorisée en partie");
-        assert_eq!(a[3].source, "autorisée");
-        assert!(super::super::camera::lieu_suspect(&a[2].application));
-        // Avant Big Sur : « allowed » 1 vaut une autorisation pleine, sans date.
-        let ancien = lire_tcc(include_bytes!("../../assets/essais/tcc-acces-ancien.sqlite")).unwrap();
-        let resume: Vec<(Permission, &str, &str)> = ancien
-            .iter()
-            .map(|x| (x.permission, x.application.as_str(), x.source.as_str()))
-            .collect();
-        assert_eq!(resume, [(Permission::Camera, "com.example.Ancien", "autorisée")]);
-        assert_eq!(ancien[0].quand, None);
-        // Les bases des autorisations d'épier : rien de la caméra, du micro ni des contacts n'y est permis.
-        assert_eq!(
-            lire_tcc(include_bytes!("../../assets/essais/tcc-bigsur.sqlite")),
-            Some(Vec::new())
-        );
-        assert_eq!(
-            lire_tcc(include_bytes!("../../assets/essais/tcc-ancien.sqlite")),
-            Some(Vec::new())
-        );
-        // Une base coupée ne se lit pas : jamais une liste vide à sa place.
-        assert_eq!(lire_tcc(&base[..1000]), None);
     }
 }

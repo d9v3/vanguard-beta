@@ -1,9 +1,9 @@
 //! Parcours « L'imprimante ne marche pas » : le service d'impression tourne-t-il, l'imprimante est-elle installée,
-//! en pause, joignable sur le réseau, des impressions sont-elles bloquées dans la file. Linux et macOS : CUPS
+//! en pause, joignable sur le réseau, des impressions sont-elles bloquées dans la file. Linux : CUPS
 //! (lpstat) ; Windows : le spouleur et Get-Printer. Vider la file, réactiver l'imprimante ou relancer le service :
 //! montré, puis fait après accord.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -211,11 +211,6 @@ pub(super) fn imprimante() {
                 "Ajouter une imprimante : Paramètres › Bluetooth et appareils › Imprimantes et scanners › Ajouter un appareil.",
                 "Add a printer: Settings › Bluetooth & devices › Printers & scanners › Add device."
             )
-        } else if cfg!(target_os = "macos") {
-            tr!(
-                "Ajouter une imprimante : Réglages Système › Imprimantes et scanners › Ajouter une imprimante.",
-                "Add a printer: System Settings › Printers & Scanners › Add Printer."
-            )
         } else {
             tr!(
                 "Ajouter une imprimante : les réglages du bureau (Imprimantes), ou l'interface de CUPS dans le navigateur, http://localhost:631. La plupart des imprimantes récentes marchent sans pilote (IPP Everywhere).",
@@ -259,10 +254,8 @@ mod systeme {
                 "Le service d'impression (CUPS) est arrêté.",
                 "The printing service (CUPS) is stopped."
             ));
-            // Sous Linux, le geste de l'assistant élevé, par le bus système (lot U3) ; sous macOS, launchctl.
-            let demarrer = if cfg!(target_os = "macos") {
-                "sudo launchctl kickstart -k system/org.cups.cupsd".to_string()
-            } else {
+            // Sous Linux, le geste de l'assistant élevé, par le bus système (lot U3).
+            let demarrer = {
                 use crate::machine::gestes_unix::{ActionUnite, CUPS, GesteUnix};
                 GesteUnix::Unite(ActionUnite::Activer, &CUPS).ligne()
             };

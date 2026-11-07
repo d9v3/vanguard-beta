@@ -2,4 +2,4 @@
 gravite = "critique"
 mots = ["javascript:void(0)"]
 propre = "aucun"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]

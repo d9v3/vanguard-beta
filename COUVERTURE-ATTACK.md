@@ -14,8 +14,8 @@ Citer une technique ne veut pas dire tout en voir : une règle peut ne voir qu'u
 | TA0042 Préparation des moyens | 0 | 9 |
 | TA0001 Accès initial | 2 | 11 |
 | TA0002 Exécution | 5 | 22 |
-| TA0003 Persistance | 12 | 22 |
-| TA0004 Élévation de privilèges | 9 | 13 |
+| TA0003 Persistance | 11 | 22 |
+| TA0004 Élévation de privilèges | 8 | 13 |
 | TA0005 Furtivité | 7 | 31 |
 | TA0112 Neutralisation des défenses | 3 | 18 |
 | TA0006 Accès aux identifiants | 5 | 18 |
@@ -123,7 +123,7 @@ Citer une technique ne veut pas dire tout en voir : une règle peut ne voir qu'u
 | | *3 sous-techniques, aucune citée* | |
 | T1574 | Hijack Execution Flow | `WIN-PRS-011` |
 | ↳ T1574.006 | Dynamic Linker Hijacking | `LNX-PRS-002` |
-| ↳ T1574.007 | Path Interception by PATH Environment Variable | `LNX-PRV-004`, `MAC-PRV-004` |
+| ↳ T1574.007 | Path Interception by PATH Environment Variable | `LNX-PRV-004` |
 | ↳ T1574.009 | Path Interception by Unquoted Path | `WIN-SRV-001` |
 | | *3 sur 12 sous-techniques citées* | |
 | T1609 | Container Administration Command | — |
@@ -141,8 +141,7 @@ Citer une technique ne veut pas dire tout en voir : une règle peut ne voir qu'u
 | Technique | Nom (MITRE) | Règles de Vanguard |
 |---|---|---|
 | T1037 | Boot or Logon Initialization Scripts | — |
-| ↳ T1037.002 | Login Hook | `MAC-PRS-003` |
-| | *1 sur 5 sous-techniques citées* | |
+| | *5 sous-techniques, aucune citée* | |
 | T1053 | Scheduled Task/Job | — |
 | ↳ T1053.003 | Cron | `COM-INT-001`, `LNX-PRS-002` |
 | ↳ T1053.005 | Scheduled Task | `EVT-TAC-001`, `WIN-JRN-003`, `WIN-PRS-001` |
@@ -171,11 +170,9 @@ Citer une technique ne veut pas dire tout en voir : une règle peut ne voir qu'u
 | T1542 | Pre-OS Boot | — |
 | | *5 sous-techniques, aucune citée* | |
 | T1543 | Create or Modify System Process | — |
-| ↳ T1543.001 | Launch Agent | `MAC-PRS-001` |
 | ↳ T1543.002 | Systemd Service | `COM-INT-001`, `LNX-PRS-002` |
 | ↳ T1543.003 | Windows Service | `EVT-SRV-001`, `WIN-JRN-003`, `WIN-PRS-012` |
-| ↳ T1543.004 | Launch Daemon | `MAC-PRS-001` |
-| | *4 sur 5 sous-techniques citées* | |
+| | *2 sur 5 sous-techniques citées* | |
 | T1546 | Event Triggered Execution | — |
 | ↳ T1546.003 | Windows Management Instrumentation Event Subscription | `EVT-WMI-001`, `WIN-PRS-006` |
 | ↳ T1546.004 | Unix Shell Configuration Modification | `LNX-PRS-002` |
@@ -190,11 +187,10 @@ Citer une technique ne veut pas dire tout en voir : une règle peut ne voir qu'u
 | ↳ T1547.003 | Time Providers | `WIN-PRS-010` |
 | ↳ T1547.004 | Winlogon Helper DLL | `WIN-PRS-004` |
 | ↳ T1547.005 | Security Support Provider | `WIN-PRS-007` |
-| ↳ T1547.006 | Kernel Modules and Extensions | `LNX-NOY-006`, `MAC-SYS-003` |
+| ↳ T1547.006 | Kernel Modules and Extensions | `LNX-NOY-006` |
 | ↳ T1547.010 | Port Monitors | `WIN-PRS-009` |
 | ↳ T1547.013 | XDG Autostart Entries | `LNX-PRS-002` |
-| ↳ T1547.015 | Login Items | `MAC-PRS-002` |
-| | *9 sur 14 sous-techniques citées* | |
+| | *8 sur 14 sous-techniques citées* | |
 | T1554 | Compromise Host Software Binary | — |
 | T1556 | Modify Authentication Process | — |
 | ↳ T1556.002 | Password Filter DLL | `WIN-PRS-007` |
@@ -209,8 +205,7 @@ Citer une technique ne veut pas dire tout en voir : une règle peut ne voir qu'u
 | Technique | Nom (MITRE) | Règles de Vanguard |
 |---|---|---|
 | T1037 | Boot or Logon Initialization Scripts | — |
-| ↳ T1037.002 | Login Hook | `MAC-PRS-003` |
-| | *1 sur 5 sous-techniques citées* | |
+| | *5 sous-techniques, aucune citée* | |
 | T1053 | Scheduled Task/Job | — |
 | ↳ T1053.003 | Cron | `COM-INT-001`, `LNX-PRS-002` |
 | ↳ T1053.005 | Scheduled Task | `EVT-TAC-001`, `WIN-JRN-003`, `WIN-PRS-001` |
@@ -228,11 +223,9 @@ Citer une technique ne veut pas dire tout en voir : une règle peut ne voir qu'u
 | T1484 | Domain or Tenant Policy Modification | — |
 | | *2 sous-techniques, aucune citée* | |
 | T1543 | Create or Modify System Process | — |
-| ↳ T1543.001 | Launch Agent | `MAC-PRS-001` |
 | ↳ T1543.002 | Systemd Service | `COM-INT-001`, `LNX-PRS-002` |
 | ↳ T1543.003 | Windows Service | `EVT-SRV-001`, `WIN-JRN-003`, `WIN-PRS-012` |
-| ↳ T1543.004 | Launch Daemon | `MAC-PRS-001` |
-| | *4 sur 5 sous-techniques citées* | |
+| | *2 sur 5 sous-techniques citées* | |
 | T1546 | Event Triggered Execution | — |
 | ↳ T1546.003 | Windows Management Instrumentation Event Subscription | `EVT-WMI-001`, `WIN-PRS-006` |
 | ↳ T1546.004 | Unix Shell Configuration Modification | `LNX-PRS-002` |
@@ -247,14 +240,13 @@ Citer une technique ne veut pas dire tout en voir : une règle peut ne voir qu'u
 | ↳ T1547.003 | Time Providers | `WIN-PRS-010` |
 | ↳ T1547.004 | Winlogon Helper DLL | `WIN-PRS-004` |
 | ↳ T1547.005 | Security Support Provider | `WIN-PRS-007` |
-| ↳ T1547.006 | Kernel Modules and Extensions | `LNX-NOY-006`, `MAC-SYS-003` |
+| ↳ T1547.006 | Kernel Modules and Extensions | `LNX-NOY-006` |
 | ↳ T1547.010 | Port Monitors | `WIN-PRS-009` |
 | ↳ T1547.013 | XDG Autostart Entries | `LNX-PRS-002` |
-| ↳ T1547.015 | Login Items | `MAC-PRS-002` |
-| | *9 sur 14 sous-techniques citées* | |
+| | *8 sur 14 sous-techniques citées* | |
 | T1548 | Abuse Elevation Control Mechanism | — |
 | ↳ T1548.001 | Setuid and Setgid | `LNX-PRS-001` |
-| ↳ T1548.003 | Sudo and Sudo Caching | `LNX-PRV-003`, `MAC-PRV-002` |
+| ↳ T1548.003 | Sudo and Sudo Caching | `LNX-PRV-003` |
 | | *2 sur 6 sous-techniques citées* | |
 | T1611 | Escape to Host | — |
 
@@ -302,7 +294,7 @@ Citer une technique ne veut pas dire tout en voir : une règle peut ne voir qu'u
 | | *14 sous-techniques, aucune citée* | |
 | T1574 | Hijack Execution Flow | `WIN-PRS-011` |
 | ↳ T1574.006 | Dynamic Linker Hijacking | `LNX-PRS-002` |
-| ↳ T1574.007 | Path Interception by PATH Environment Variable | `LNX-PRV-004`, `MAC-PRV-004` |
+| ↳ T1574.007 | Path Interception by PATH Environment Variable | `LNX-PRV-004` |
 | ↳ T1574.009 | Path Interception by Unquoted Path | `WIN-SRV-001` |
 | | *3 sur 12 sous-techniques citées* | |
 | T1612 | Build Image on Host | — |
@@ -583,11 +575,11 @@ Les mesures d'ATT&CK que les règles de durcissement appliquent ou vérifient.
 | M1019 | Threat Intelligence Program | — |
 | M1020 | SSL/TLS Inspection | — |
 | M1021 | Restrict Web-Based Content | — |
-| M1022 | Restrict File and Directory Permissions | `LNX-PRV-001`, `LNX-PRV-004`, `LNX-SSH-003`, `MAC-PRV-003`, `MAC-PRV-004`, `MAC-SSH-001`, `WIN-SSH-002` |
+| M1022 | Restrict File and Directory Permissions | `LNX-PRV-001`, `LNX-PRV-004`, `LNX-SSH-003`, `WIN-SSH-002` |
 | M1024 | Restrict Registry Permissions | — |
 | M1025 | Privileged Process Integrity | `WIN-DUR-001` |
-| M1026 | Privileged Account Management | `LNX-PRV-002`, `LNX-PRV-003`, `MAC-PRV-001`, `MAC-PRV-002`, `WIN-CPT-001` |
-| M1027 | Password Policies | `COM-APP-004`, `COM-MDP-001`, `LNX-CPT-002`, `LNX-SSH-003`, `MAC-CPT-002`, `MAC-SSH-001`, `WIN-CPT-002`, `WIN-SSH-002` |
+| M1026 | Privileged Account Management | `LNX-PRV-002`, `LNX-PRV-003`, `WIN-CPT-001` |
+| M1027 | Password Policies | `COM-APP-004`, `COM-MDP-001`, `LNX-CPT-002`, `LNX-SSH-003`, `WIN-CPT-002`, `WIN-SSH-002` |
 | M1028 | Operating System Configuration | `LNX-NOY-002`, `LNX-NOY-003`, `LNX-NOY-005`, `LNX-NOY-007`, `LNX-RES-003`, `WIN-DUR-002` |
 | M1029 | Remote Data Storage | — |
 | M1030 | Network Segmentation | `COM-SEG-001`, `COM-SEG-002` |
@@ -595,26 +587,26 @@ Les mesures d'ATT&CK que les règles de durcissement appliquent ou vérifient.
 | M1032 | Multi-factor Authentication | — |
 | M1033 | Limit Software Installation | — |
 | M1034 | Limit Hardware Installation | — |
-| M1035 | Limit Access to Resource Over Network | `COM-AGT-001`, `COM-APP-001`, `COM-APP-002`, `COM-EXP-001`, `COM-EXP-004`, `COM-PAR-001`, `COM-PST-001`, `COM-PST-002`, `LNX-CTN-001`, `LNX-RES-001`, `LNX-SES-003`, `MAC-RES-001`, `WIN-DIS-001`, `WIN-RES-001`, `WIN-RES-002` |
-| M1036 | Account Use Policies | `LNX-CPT-002`, `MAC-CPT-002` |
-| M1037 | Filter Network Traffic | `COM-EXP-003`, `LNX-PFE-001`, `MAC-PFE-001`, `MAC-PFE-002`, `WIN-PFE-001` |
-| M1038 | Execution Prevention | `MAC-SYS-001`, `WIN-DUR-005` |
+| M1035 | Limit Access to Resource Over Network | `COM-AGT-001`, `COM-APP-001`, `COM-APP-002`, `COM-EXP-001`, `COM-EXP-004`, `COM-PAR-001`, `COM-PST-001`, `COM-PST-002`, `LNX-CTN-001`, `LNX-RES-001`, `LNX-SES-003`, `WIN-DIS-001`, `WIN-RES-001`, `WIN-RES-002` |
+| M1036 | Account Use Policies | `LNX-CPT-002` |
+| M1037 | Filter Network Traffic | `COM-EXP-003`, `LNX-PFE-001`, `WIN-PFE-001` |
+| M1038 | Execution Prevention | `WIN-DUR-005` |
 | M1039 | Environment Variable Permissions | — |
 | M1040 | Behavior Prevention on Endpoint | `WIN-ANV-003` |
-| M1041 | Encrypt Sensitive Information | `COM-CLE-002`, `LNX-CHF-001`, `MAC-CHF-001`, `MAC-SAV-002`, `WIN-CHF-001` |
-| M1042 | Disable or Remove Feature or Program | `COM-APP-002`, `COM-BLU-001`, `COM-WIF-002`, `MAC-PAR-001`, `MAC-RES-002`, `WIN-DUR-003`, `WIN-DUR-004`, `WIN-RES-003`, `WIN-SSH-001` |
+| M1041 | Encrypt Sensitive Information | `COM-CLE-002`, `LNX-CHF-001`, `WIN-CHF-001` |
+| M1042 | Disable or Remove Feature or Program | `COM-APP-002`, `COM-BLU-001`, `COM-WIF-002`, `WIN-DUR-003`, `WIN-DUR-004`, `WIN-RES-003`, `WIN-SSH-001` |
 | M1043 | Credential Access Protection | `WIN-DUR-001` |
 | M1044 | Restrict Library Loading | — |
-| M1045 | Code Signing | `LNX-NOY-001`, `MAC-SYS-001`, `MAC-SYS-002` |
-| M1046 | Boot Integrity | `LNX-DEM-001`, `LNX-PLT-001`, `MAC-DEM-001`, `WIN-DEM-001` |
+| M1045 | Code Signing | `LNX-NOY-001` |
+| M1046 | Boot Integrity | `LNX-DEM-001`, `LNX-PLT-001`, `WIN-DEM-001` |
 | M1047 | Audit | `COM-FIC-001`, `LNX-JRN-001`, `WIN-JRN-001`, `WIN-JRN-002` |
 | M1048 | Application Isolation and Sandboxing | `LNX-NOY-004` |
-| M1049 | Antivirus/Antimalware | `MAC-ANV-001`, `WIN-ANV-001` |
+| M1049 | Antivirus/Antimalware | `WIN-ANV-001` |
 | M1050 | Exploit Protection | `LNX-NOY-003`, `WIN-DUR-001` |
-| M1051 | Update Software | `COM-APP-004`, `COM-MAJ-001`, `LNX-MAJ-001`, `LNX-MAJ-002`, `LNX-MAJ-003`, `LNX-MAJ-004`, `LNX-MAJ-005`, `MAC-MAJ-001`, `MAC-MAJ-002`, `MAC-MAJ-003`, `MAC-MAJ-004`, `WIN-MAJ-001`, `WIN-MAJ-002`, `WIN-MAJ-003` |
+| M1051 | Update Software | `COM-APP-004`, `COM-MAJ-001`, `LNX-MAJ-001`, `LNX-MAJ-002`, `LNX-MAJ-003`, `LNX-MAJ-004`, `LNX-MAJ-005`, `WIN-MAJ-001`, `WIN-MAJ-002`, `WIN-MAJ-003` |
 | M1052 | User Account Control | `WIN-PRV-001` |
-| M1053 | Data Backup | `COM-SAV-001`, `LNX-SAV-001`, `MAC-SAV-001` |
-| M1054 | Software Configuration | `COM-AGT-002`, `COM-NAV-002`, `COM-WIF-004`, `LNX-SSH-001`, `LNX-SSH-004`, `LNX-SSH-005`, `LNX-SSH-006`, `MAC-SSH-002` |
+| M1053 | Data Backup | `COM-SAV-001`, `LNX-SAV-001` |
+| M1054 | Software Configuration | `COM-AGT-002`, `COM-NAV-002`, `COM-WIF-004`, `LNX-SSH-001`, `LNX-SSH-004`, `LNX-SSH-005`, `LNX-SSH-006` |
 | M1055 | Do Not Mitigate | — |
 | M1056 | Pre-compromise | — |
 | M1057 | Data Loss Prevention | — |
@@ -622,12 +614,11 @@ Les mesures d'ATT&CK que les règles de durcissement appliquent ou vérifient.
 
 ## Règles sans identifiant ATT&CK
 
-46 règles sur 206 ne citent encore ni technique ni mesure (ce n'est pas une obligation : une vérification de l'état de l'ordinateur n'a pas toujours sa technique). Les règles par famille :
+40 règles sur 173 ne citent encore ni technique ni mesure (ce n'est pas une obligation : une vérification de l'état de l'ordinateur n'a pas toujours sa technique). Les règles par famille :
 
 - **communes et audit du réseau** (30) : COM-APP-003, COM-APP-005, COM-ARP-003, COM-CLE-001, COM-CLE-003, COM-DNS-001, COM-DNS-002, COM-DNS-003, COM-DNS-005, COM-ESP-001, COM-ETA-001, COM-EXP-002, COM-HEU-001, COM-HIS-001, COM-LOG-001, COM-MAT-001, COM-NAV-003, COM-NAV-004, COM-PQC-001, COM-PQC-002, COM-PQC-003, COM-PUB-001, COM-SUR-001, COM-SUR-002, COM-SUR-003, COM-TLS-002, COM-TLS-004, COM-TLS-005, COM-WIF-001, COM-WIF-005
 - **Linux** (7) : LNX-MAJ-006, LNX-MAT-001, LNX-SES-001, LNX-SES-002, LNX-SRV-001, LNX-SUR-001, LNX-WIF-001
 - **Windows** (3) : WIN-SES-001, WIN-SES-002, WIN-WIF-001
-- **macOS** (6) : MAC-CPT-001, MAC-DIS-001, MAC-PRF-001, MAC-SES-001, MAC-SES-002, MAC-WIF-001
 
 ## Droits
 

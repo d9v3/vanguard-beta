@@ -2,4 +2,4 @@
 gravite = "eleve"
 mots = ["%%8448"]
 propre = "info"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]

@@ -1,10 +1,10 @@
 //! Parcours « Ordinateur qui part » (vente, don, retour à l'employeur, recyclage) : ce qu'il faut faire, dans
 //! l'ordre, pour qu'il parte sans tes fichiers ni tes comptes : une copie vérifiée d'abord, les comptes déconnectés
-//! (et le verrou d'activation levé), la clé BitLocker ou FileVault mise de côté, l'effacement sûr par l'outil du
+//! (et le verrou d'activation levé), la clé BitLocker ou LUKS mise de côté, l'effacement sûr par l'outil du
 //! système, la puce TPM remise à zéro. Vanguard vérifie et explique ; il n'efface rien lui-même : l'outil du système
 //! sait traiter chaque disque (SSD, puce de sécurité), et c'est à toi d'appuyer.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de kernel32 : LoadLibraryExW et GetProcAddress, le pointeur rendu changé en fonction typée (transmute).
 #![allow(unsafe_code)]
@@ -41,8 +41,7 @@ pub(super) struct Etape {
 }
 
 /// La puce TPM : présente, absente, ou illisible. Sous Linux, le noyau l'expose dans /sys ; sous Windows, le service
-/// TPM de base (TBS), qui répond sans droits, puis Get-Tpm (réservé à l'administrateur) en secours ; un Mac n'en a pas
-/// (sa puce de sécurité est effacée avec le reste).
+/// TPM de base (TBS), qui répond sans droits, puis Get-Tpm (réservé à l'administrateur) en secours.
 fn tpm() -> Option<bool> {
     #[cfg(target_os = "linux")]
     {
@@ -51,10 +50,6 @@ fn tpm() -> Option<bool> {
     #[cfg(windows)]
     {
         tpm_tbs().or_else(|| crate::machine::windows::ps("(Get-Tpm).TpmPresent").and_then(|s| tpm_de_ps(&s)))
-    }
-    #[cfg(target_os = "macos")]
-    {
-        None
     }
 }
 
@@ -145,11 +140,6 @@ fn effacement() -> &'static str {
             "Paramètres > Système > Récupération > Réinitialiser ce PC > Supprimer tout, puis « Modifier les paramètres » et « Nettoyer les données : Oui ». Sans ce nettoyage, les fichiers supprimés se récupèrent avec un outil gratuit.",
             "Settings > System > Recovery > Reset this PC > Remove everything, then “Change settings” and “Clean data: Yes”. Without that cleaning, deleted files are recovered with a free tool."
         )
-    } else if cfg!(target_os = "macos") {
-        tr!(
-            "Réglages Système > Général > Transférer ou réinitialiser > Effacer contenu et réglages : il déconnecte l'identifiant Apple, désactive Localiser, efface les clés de la puce de sécurité et réinstalle macOS. Sur un Mac Intel sans puce T2 : démarrer sur la récupération, Utilitaire de disque, effacer le disque, puis réinstaller.",
-            "System Settings > General > Transfer or Reset > Erase All Content and Settings: it signs out the Apple ID, turns off Find My, erases the security chip's keys and reinstalls macOS. On an Intel Mac without a T2 chip: boot to Recovery, Disk Utility, erase the disk, then reinstall."
-        )
     } else {
         tr!(
             "Démarrez sur la clé VANGUARD (SystemRescue) : un SSD s'efface en entier avec « blkdiscard » (ou « nvme format » pour un NVMe), un disque dur avec « shred -n 1 » ; puis réinstallez le système pour le prochain. Un disque chiffré LUKS devient illisible dès que son en-tête est effacé (« cryptsetup erase »).",
@@ -165,11 +155,6 @@ fn comptes() -> &'static str {
             "Paramètres > Comptes : déconnectez le compte Microsoft, et retirez l'appareil de votre liste sur account.microsoft.com (Appareils) ; Paramètres > Confidentialité et sécurité > Localiser mon appareil : désactivé. Déconnectez aussi le navigateur (synchronisation), Office, Steam, Adobe (désautoriser).",
             "Settings > Accounts: sign out of the Microsoft account, and remove the device from your list on account.microsoft.com (Devices); Settings > Privacy & security > Find my device: off. Also sign out of the browser (sync), Office, Steam, Adobe (deauthorize)."
         )
-    } else if cfg!(target_os = "macos") {
-        tr!(
-            "Réglages Système > Identifiant Apple : désactivez Localiser mon Mac, puis déconnectez-vous ; sinon le verrou d'activation rend le Mac inutilisable pour le prochain. Déconnectez aussi iMessage, Musique (désautoriser l'ordinateur), le navigateur, Steam, Adobe.",
-            "System Settings > Apple ID: turn off Find My Mac, then sign out; otherwise the Activation Lock makes the Mac unusable for the next person. Also sign out of iMessage, Music (deauthorize this computer), the browser, Steam, Adobe."
-        )
     } else {
         tr!(
             "Déconnectez le navigateur (synchronisation Firefox ou Google), les comptes en ligne du bureau (GNOME, KDE), Steam, et retirez les clés SSH et jetons (~/.ssh, gestionnaires de mots de passe) qui ouvrent vos serveurs et services depuis cet ordinateur.",
@@ -184,10 +169,6 @@ fn cle_de_recuperation(chiffre: Option<bool>) -> &'static str {
         Some(true) if cfg!(windows) => tr!(
             "Le disque est chiffré (BitLocker) : la clé de récupération est dans votre compte Microsoft (account.microsoft.com > Appareils > clés de récupération). Gardez-la jusqu'à la fin : un effacement interrompu laisse un disque chiffré qui ne démarre plus, et elle seule le rouvre. Après l'effacement, elle ne sert plus.",
             "The disk is encrypted (BitLocker): the recovery key is in your Microsoft account (account.microsoft.com > Devices > recovery keys). Keep it until the end: an interrupted wipe leaves an encrypted disk that no longer boots, and only the key reopens it. After the wipe, it is useless."
-        ),
-        Some(true) if cfg!(target_os = "macos") => tr!(
-            "Le disque est chiffré (FileVault) : la clé de secours est celle notée à l'activation, ou dans iCloud. Gardez-la jusqu'à la fin de l'effacement ; après, elle ne sert plus.",
-            "The disk is encrypted (FileVault): the recovery key is the one noted at activation, or in iCloud. Keep it until the wipe is done; afterwards, it is useless."
         ),
         Some(true) => tr!(
             "Le disque est chiffré (LUKS) : bonne nouvelle, les données sont déjà illisibles sans la phrase de passe ; effacer l'en-tête LUKS suffit à les rendre irrécupérables, même pour vous.",
@@ -206,9 +187,6 @@ fn cle_de_recuperation(chiffre: Option<bool>) -> &'static str {
 
 /// La puce TPM : à remettre à zéro après l'effacement, pour que les clés de ton disque n'y restent pas.
 fn puce(tpm: Option<bool>) -> Option<&'static str> {
-    if cfg!(target_os = "macos") {
-        return None;
-    }
     match tpm {
         Some(false) => None,
         Some(true) if cfg!(windows) => Some(tr!(
@@ -357,7 +335,6 @@ pub(super) fn depart() {
     match tpm {
         Some(true) => Etat::Info.dire(tr!("Puce TPM présente.", "TPM chip present.")),
         Some(false) => Etat::Info.dire(tr!("Pas de puce TPM.", "No TPM chip.")),
-        None if cfg!(target_os = "macos") => {}
         None => Etat::Info.dire(tr!(
             "Puce TPM : état illisible (droits d'administrateur).",
             "TPM chip: state unreadable (administrator rights)."
@@ -420,10 +397,9 @@ mod tests {
         );
         let vendu = etapes(Devenir::VenduOuDonne, true, false, Some(false), Some(true));
         let t = titres(&vendu);
-        // Un Mac n'a pas de puce TPM (sa puce de sécurité s'efface avec le reste) : pas d'étape pour elle.
+        // Vendu ou donné : l'effacement, puis la puce TPM remise à zéro.
         assert!(
-            t.iter().any(|x| x.contains("effacement"))
-                && t.iter().any(|x| x.contains("TPM")) != cfg!(target_os = "macos"),
+            t.iter().any(|x| x.contains("effacement")) && t.iter().any(|x| x.contains("TPM")),
             "{t:?}"
         );
         // Les données de Vanguard ferment la liste, dans tous les cas.
@@ -432,10 +408,6 @@ mod tests {
 
     #[test]
     fn la_puce_selon_ce_qu_on_sait() {
-        if cfg!(target_os = "macos") {
-            assert!(puce(Some(true)).is_none());
-            return;
-        }
         assert!(puce(Some(false)).is_none());
         assert!(puce(Some(true)).is_some_and(|p| p.contains("présente")));
         assert!(puce(None).is_some_and(|p| p.contains("illisible")));

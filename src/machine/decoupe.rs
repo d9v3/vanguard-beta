@@ -1,4 +1,4 @@
-//! La découpe d'une liste de correctifs, commune à Windows (`gestes`, le processus élevé) et à Linux et macOS
+//! La découpe d'une liste de correctifs, commune à Windows (`gestes`, le processus élevé) et à Linux
 //! (`machine::lancer_les_ordres`, l'assistant élevé) : où chaque correctif passe des lignes natives de Vanguard (des
 //! gestes relus par celui qui agit) au reste (PowerShell sous Windows, bash ailleurs). Du code pur, lu aussi par le
 //! banc de fuzzing (fuzz/fuzz_targets/gestes.rs et gestes_unix.rs).

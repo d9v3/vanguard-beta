@@ -6300,7 +6300,7 @@ pub(crate) fn valider<E>(lignes: &[String], mut autre: impl FnMut(&str) -> Optio
 
 // ---------------------------------------------------------------- la découpe
 
-// Commune avec Linux et macOS (`machine::decoupe`) : où une liste de correctifs passe du natif au reste.
+// Commune avec Linux (`machine::decoupe`) : où une liste de correctifs passe du natif au reste.
 #[cfg_attr(not(windows), allow(unused_imports))]
 pub(crate) use super::decoupe::{Morceau, decouper};
 

@@ -134,16 +134,6 @@ fn lecture_native() -> Result<Lecture, &'static str> {
     wifi::wlanapi::lire()
 }
 
-/// macOS ne donne ses balises qu'à CoreWLAN (Objective-C), hors de portée d'ici : non vérifié, dit tel quel. Le
-/// bilan de la machine garde sa lecture de la protection par system_profiler.
-#[cfg(target_os = "macos")]
-fn lecture_native() -> Result<Lecture, &'static str> {
-    Err(tr!(
-        "les bornes Wi-Fi ne se lisent pas d'ici sur macOS (CoreWLAN) ; le bilan garde la protection du réseau",
-        "Wi-Fi access points cannot be read from here on macOS (CoreWLAN); the check-up keeps the network's protection"
-    ))
-}
-
 #[cfg(target_os = "linux")]
 fn profils_natifs() -> Result<Vec<ProfilEnregistre>, &'static str> {
     wifi::profils::lire_linux()
@@ -152,11 +142,6 @@ fn profils_natifs() -> Result<Vec<ProfilEnregistre>, &'static str> {
 #[cfg(windows)]
 fn profils_natifs() -> Result<Vec<ProfilEnregistre>, &'static str> {
     wifi::wlanapi::profils()
-}
-
-#[cfg(target_os = "macos")]
-fn profils_natifs() -> Result<Vec<ProfilEnregistre>, &'static str> {
-    wifi::profils::lire_macos()
 }
 
 /// L'adresse MAC de la box : Linux la lit dans /proc (route par défaut, table ARP) ; ailleurs, elle vient du scan.

@@ -2,4 +2,4 @@
 gravite = "critique"
 mots = ["temoin-touche.txt"]
 propre = "aucun"
-systemes = ["linux", "windows", "macos"]
+systemes = ["linux", "windows"]

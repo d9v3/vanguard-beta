@@ -12,7 +12,7 @@
 //! rien d'autre ne change ; dans le bloc, que des « 0.0.0.0 nom » et « :: nom », jamais un nom protégé), la montre
 //! avant l'accord, puis remplace le hosts d'un coup (ReplaceFileW) en gardant une copie d'avant.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::collections::BTreeSet;
@@ -156,11 +156,7 @@ fn empreinte(octets: &[u8]) -> String {
 #[cfg(not(windows))]
 fn commandes(prepare: &str, nouveau: &[u8], avant: &[u8]) -> Vec<String> {
     let (nouvelle, avant) = (empreinte(nouveau), empreinte(avant));
-    let (sha, vider) = if cfg!(target_os = "macos") {
-        ("shasum -a 256", "dscacheutil -flushcache; killall -HUP mDNSResponder")
-    } else {
-        ("sha256sum", "resolvectl flush-caches")
-    };
+    let (sha, vider) = ("sha256sum", "resolvectl flush-caches");
     vec![format!(
         "sudo sh -c 't=$(mktemp) && o=$(mktemp) && cat \"$1\" > \"$t\" && [ \"$({sha} < \"$t\" | cut -d\" \" -f1)\" = \"$2\" ] && [ \"$({sha} < /etc/hosts | cut -d\" \" -f1)\" = \"$3\" ] && cat /etc/hosts > \"$o\" && {{ cat \"$t\" > /etc/hosts || {{ cat \"$o\" > /etc/hosts; false; }}; }}; r=$?; rm -f \"$t\" \"$o\"; [ $r = 0 ] && {{ {vider}; }} 2>/dev/null; exit $r' sh {} {} {}",
         crate::commande::sh_chaine(prepare),

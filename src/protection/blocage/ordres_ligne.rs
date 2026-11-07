@@ -1,7 +1,7 @@
 //! La forme des lignes des ordres du blocage (`ordres`) : la liste fermée des gestes, chacun avec ses paramètres
 //! typés, écrits sous une seule forme admise et relus exactement. Du code pur, sans E/S ni texte pour la personne
 //! (la phrase de chaque ordre, son permis par système, le rejugement et l'exécution restent dans `ordres`), lu aussi
-//! par le banc de fuzzing (fuzz/fuzz_targets/ordres.rs) : c'est ce que l'assistant élevé de Linux et macOS, et le
+//! par le banc de fuzzing (fuzz/fuzz_targets/ordres.rs) : c'est ce que l'assistant élevé de Linux, et le
 //! processus élevé de Windows, lisent d'un Vanguard non élevé.
 
 // Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
@@ -43,7 +43,7 @@ pub(crate) enum Ordre {
         pare_feu: PareFeu,
         port: u16,
     },
-    /// Couper les connexions déjà ouvertes vers une adresse (Linux : sock_diag ; macOS : pfctl -k).
+    /// Couper les connexions déjà ouvertes vers une adresse (Linux : sock_diag).
     CouperConnexions {
         ip: IpAddr,
     },
@@ -66,12 +66,11 @@ fn nom_pare_feu(p: PareFeu) -> &'static str {
         PareFeu::Ufw => "ufw",
         PareFeu::Nftables => "nftables",
         PareFeu::Windows => "windows",
-        PareFeu::Pf => "pf",
     }
 }
 
 fn pare_feu_de(t: &str) -> Option<PareFeu> {
-    [PareFeu::Ufw, PareFeu::Nftables, PareFeu::Windows, PareFeu::Pf]
+    [PareFeu::Ufw, PareFeu::Nftables, PareFeu::Windows]
         .into_iter()
         .find(|p| nom_pare_feu(*p) == t)
 }

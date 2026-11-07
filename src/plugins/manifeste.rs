@@ -3,7 +3,9 @@
 //! lieu de l'ignorer : une faute de frappe (« comande ») se voit, elle ne lance pas autre chose que prévu.
 //!
 //! Reconnu : commentaires `#`, clés nues, chaînes "…" (échappements \" \\ \n \t \r \uXXXX \UXXXXXXXX) et '…', entiers,
-//! tableaux de chaînes (sur plusieurs lignes, virgule finale permise), sections `[linux]`, `[windows]`, `[macos]`.
+//! tableaux de chaînes (sur plusieurs lignes, virgule finale permise), sections `[linux]`, `[windows]`. Un manifeste
+//! d'avant peut nommer macOS (`RETIRE`), que Vanguard ne vise plus : dans `systemes` comme en section, il est lu et
+//! ignoré, jamais refusé.
 
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 
@@ -33,19 +35,20 @@ pub const RESERVES: [&str; 10] = [
     "lab",
 ];
 
+/// Le système qu'un manifeste d'avant pouvait viser et que Vanguard ne vise plus : accepté et ignoré, dans `systemes`
+/// comme en section (ses clés y sont vérifiées quand même, une faute de frappe se voit).
+const RETIRE: &str = "macos";
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Systeme {
     Linux,
     Windows,
-    Macos,
 }
 
 impl Systeme {
     pub fn ici() -> Systeme {
         if cfg!(windows) {
             Systeme::Windows
-        } else if cfg!(target_os = "macos") {
-            Systeme::Macos
         } else {
             Systeme::Linux
         }
@@ -55,7 +58,6 @@ impl Systeme {
         match nom {
             "linux" => Some(Systeme::Linux),
             "windows" => Some(Systeme::Windows),
-            "macos" => Some(Systeme::Macos),
             _ => None,
         }
     }
@@ -64,7 +66,6 @@ impl Systeme {
         match self {
             Systeme::Linux => "linux",
             Systeme::Windows => "windows",
-            Systeme::Macos => "macos",
         }
     }
 }
@@ -472,6 +473,9 @@ fn construire(paires: Vec<Paire>) -> Result<Manifeste, String> {
 fn lire_paires(paires: Vec<Paire>) -> Result<Lus, Echec> {
     let mut vues: Vec<(Option<String>, String)> = Vec::new();
     let mut lus = Lus::default();
+    // La section du système retiré : rangée à part, puis oubliée.
+    let mut retire = Lus::default();
+    retire.commandes.push((None, None, None));
     for (section, cle, valeur, ligne) in paires {
         let erreur = |quoi: &str| trf!("ligne {ligne} : {quoi}", "line {ligne}: {quoi}");
         if vues.contains(&(section.clone(), cle.clone())) {
@@ -481,14 +485,19 @@ fn lire_paires(paires: Vec<Paire>) -> Result<Lus, Echec> {
             ));
         }
         vues.push((section.clone(), cle.clone()));
+        if section.as_deref() == Some(RETIRE) {
+            ranger(&mut retire, true, &cle, valeur, 0)
+                .map_err(|quoi| Echec::refuse(CONTEXTE, erreur(&String::from(quoi))))?;
+            continue;
+        }
         let systeme = match &section {
             None => None,
             Some(s) => Some(Systeme::depuis(s).ok_or_else(|| {
                 Echec::refuse(
                     CONTEXTE,
                     erreur(&trf!(
-                        "section inconnue « {s} » (linux, windows ou macos)",
-                        "unknown section “{s}” (linux, windows or macos)"
+                        "section inconnue « {s} » (linux ou windows)",
+                        "unknown section “{s}” (linux or windows)"
                     )),
                 )
             })?),
@@ -685,12 +694,15 @@ fn textes_lus(
 fn systemes_lus(systemes: Option<Vec<String>>) -> Result<Vec<Systeme>, Echec> {
     let mut liste = Vec::new();
     for s in systemes.ok_or_else(|| Echec::refuse(CONTEXTE, manque("systemes")))? {
+        if s == RETIRE {
+            continue;
+        }
         let s = Systeme::depuis(&s).ok_or_else(|| {
             Echec::refuse(
                 CONTEXTE,
                 trf!(
-                    "système inconnu « {} » (linux, windows ou macos)",
-                    "unknown system “{}” (linux, windows or macos)",
+                    "système inconnu « {} » (linux ou windows)",
+                    "unknown system “{}” (linux or windows)",
                     crate::ui::affichable(&s)
                 ),
             )
@@ -793,6 +805,9 @@ arguments = ["--bonjour", "alice"]
 
 [windows]
 commande = 'essai.ps1'
+
+[macos]
+commande = "essai-mac.sh"
 "#;
 
     #[test]
@@ -801,7 +816,8 @@ commande = 'essai.ps1'
         assert_eq!(m.nom, "salon-test");
         assert_eq!(m.titre, ["Essai du salon".to_string(), "Living room test".to_string()]);
         assert_eq!(m.description[0], "Deux constats inventés écrits \"ici\".");
-        assert_eq!(m.systemes, [Systeme::Linux, Systeme::Macos, Systeme::Windows]);
+        // macOS, que Vanguard ne vise plus : lu dans `systemes` et en section, ignoré.
+        assert_eq!(m.systemes, [Systeme::Linux, Systeme::Windows]);
         assert_eq!(m.delai, 20);
         assert!(!m.confiance_totale && !m.dans_le_bilan);
         let m2 =
@@ -917,8 +933,30 @@ commande = 'essai.ps1'
 
     #[test]
     fn un_systeme_non_vise_n_a_pas_de_commande() {
-        let m = lire(&EXEMPLE.replace("  \"macos\",\n", "")).unwrap();
-        assert!(m.commande(Systeme::Macos).is_none());
+        let m = lire(&EXEMPLE.replace("  \"windows\",\n", "")).unwrap();
+        assert!(m.commande(Systeme::Windows).is_none());
         assert!(m.commande(Systeme::Linux).is_some());
+    }
+
+    /// La section du système retiré est ignorée, pas ses fautes : une clé inconnue, en double ou du mauvais type y est
+    /// refusée comme ailleurs. Nommé seul, il ne laisse aucun système.
+    #[test]
+    fn le_systeme_retire_est_ignore_pas_ses_fautes() {
+        for (ajout, attendu) in [
+            ("comande = \"x\"", "clé inconnue"),
+            ("commande = \"x\"", "double"),
+            ("arguments = \"x\"", "tableau"),
+        ] {
+            let texte = EXEMPLE.replace(
+                "commande = \"essai-mac.sh\"",
+                &format!("commande = \"essai-mac.sh\"\n{ajout}"),
+            );
+            let e = lire(&texte).unwrap_err();
+            assert!(e.contains(attendu), "{ajout} → {e}");
+        }
+        let seul = EXEMPLE
+            .replace("  \"linux\",   # le script shell\n", "")
+            .replace("  \"windows\",\n", "");
+        assert!(lire(&seul).is_err());
     }
 }

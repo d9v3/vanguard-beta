@@ -1,7 +1,7 @@
 //! Les ordres du blocage : la liste fermée des gestes que Vanguard fait avec les droits d'administrateur, chacun
 //! avec des paramètres typés (une adresse, un port, un numéro de processus et son programme, une valeur d'avant).
 //! Une ligne « `vanguard:<verbe>` <paramètres> » les porte du Vanguard qui demande à celui qui agit en administrateur
-//! (l'assistant élevé de Linux et macOS, `machine::assistant` ; le processus élevé de Windows,
+//! (l'assistant élevé de Linux, `machine::assistant` ; le processus élevé de Windows,
 //! `machine::windows::eleve`), ou à lui-même quand il l'est déjà. Celui qui agit relit chaque ligne (forme exacte,
 //! paramètres reparsés, rien d'autre accepté), puis REJUGE chaque geste avec ses propres yeux : les garde-fous du
 //! blocage (`gardes`) sont refaits de son côté, sur ce qu'il lit lui-même de l'ordinateur (sessions à distance en
@@ -11,7 +11,7 @@
 //! C'est le changement assumé de la règle « un identifiant sans paramètre » des corrections natives de Windows
 //! (`corrections.rs`) : les paramètres sont permis, parce qu'ils sont typés et rejugés.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::collections::HashSet;
@@ -24,7 +24,7 @@ use crate::{tr, trf};
 #[cfg(test)]
 use super::ordres_ligne::CHEMIN_MAX;
 pub(crate) use super::ordres_ligne::{LIGNE_MAX, LIGNES_MAX, Ordre, analyser};
-// Le préfixe ne sert qu'à l'assistant élevé de Linux et macOS (`machine::lancer_les_ordres`, `gestes_unix`).
+// Le préfixe ne sert qu'à l'assistant élevé de Linux (`machine::lancer_les_ordres`, `gestes_unix`).
 #[cfg(unix)]
 pub(crate) use super::ordres_ligne::PREFIXE;
 
@@ -91,13 +91,12 @@ impl Ordre {
             Ordre::BloquerSortie { pare_feu, .. } | Ordre::DebloquerSortie { pare_feu, .. } => match os {
                 Os::Linux => matches!(pare_feu, PareFeu::Ufw | PareFeu::Nftables),
                 Os::Windows => *pare_feu == PareFeu::Windows,
-                Os::MacOs => *pare_feu == PareFeu::Pf,
                 Os::Tous => false,
             },
             Ordre::FermerPort { pare_feu, .. } | Ordre::RouvrirPort { pare_feu, .. } => match os {
                 Os::Linux => matches!(pare_feu, PareFeu::Ufw | PareFeu::Nftables),
                 Os::Windows => *pare_feu == PareFeu::Windows,
-                Os::MacOs | Os::Tous => false,
+                Os::Tous => false,
             },
             Ordre::CouperConnexions { .. } => os != Os::Windows,
             Ordre::ArreterProcessus { .. } => true,
@@ -247,8 +246,6 @@ pub(crate) fn ancetres(pid: u32) -> Vec<u32> {
         let parent = std::fs::read_to_string(format!("/proc/{courant}/stat"))
             .ok()
             .and_then(|s| parent_du_stat(&s));
-        #[cfg(target_os = "macos")]
-        let parent = super::arret::macos::infos(courant).map(|i| i.pbi_ppid);
         #[cfg(windows)]
         let parent = parents.get(&courant).copied();
         match parent {
@@ -467,10 +464,6 @@ pub(crate) fn faire(o: &Ordre, j: &Juge) -> Resultat {
     {
         linux::faire(o)
     }
-    #[cfg(target_os = "macos")]
-    {
-        macos::faire(o)
-    }
     #[cfg(windows)]
     {
         windows::faire(o)
@@ -589,124 +582,6 @@ mod linux {
     }
 }
 
-#[cfg(target_os = "macos")]
-mod macos {
-    use super::{Ordre, Resultat};
-    use crate::{tr, trf};
-
-    const PFCTL: &str = "/sbin/pfctl";
-    const ANCRE: &str = "com.apple/vanguard";
-
-    fn pfctl(args: &[&str], entree: Option<&[u8]>) -> Option<crate::commande::Resultat> {
-        let mut c = std::process::Command::new(PFCTL);
-        c.args(args).env("LC_ALL", "C");
-        match entree {
-            Some(e) => crate::commande::lancer_avec_entree(&mut c, e, 60),
-            None => crate::commande::lancer(&mut c, 60),
-        }
-    }
-
-    fn echec_de(r: Option<crate::commande::Resultat>) -> Resultat {
-        match r {
-            Some(r) => Resultat::echec(trf!(
-                "pfctl a refusé (code {}) : {}",
-                "pfctl refused (code {}): {}",
-                r.code.map_or_else(|| "?".to_string(), |c| c.to_string()),
-                crate::ui::affichable(r.erreurs.trim().lines().last().unwrap_or(""))
-            )),
-            None => Resultat::echec(tr!("pfctl n'a pas répondu", "pfctl did not answer")),
-        }
-    }
-
-    fn reussi(r: Option<&crate::commande::Resultat>) -> bool {
-        r.is_some_and(|r| r.code == Some(0))
-    }
-
-    /// pf est-il en marche ? (« Status: Enabled » de pfctl -s info)
-    fn en_marche() -> bool {
-        pfctl(&["-s", "info"], None).is_some_and(|r| r.code == Some(0) && r.sortie.contains("Status: Enabled"))
-    }
-
-    fn bloquer(ip: std::net::IpAddr) -> Resultat {
-        let adresse = ip.to_canonical().to_string();
-        // Les règles de l'ancre seulement si elles n'y sont pas : les recharger viderait la table.
-        let regles = pfctl(&["-a", ANCRE, "-s", "rules"], None);
-        if !regles
-            .as_ref()
-            .is_some_and(|r| r.code == Some(0) && r.sortie.contains("vanguard"))
-        {
-            let charge = pfctl(
-                &["-a", ANCRE, "-f", "-"],
-                Some(b"table <vanguard> persist\nblock drop out quick to <vanguard>\n"),
-            );
-            if !reussi(charge.as_ref()) {
-                return echec_de(charge);
-            }
-        }
-        let ajout = pfctl(&["-a", ANCRE, "-t", "vanguard", "-T", "add", &adresse], None);
-        if !reussi(ajout.as_ref()) {
-            return echec_de(ajout);
-        }
-        // pf seulement s'il est arrêté, et une seule fois : « pfctl -E » prend une référence à chaque appel, que
-        // rien ne rendait. pf déjà en marche n'est pas touché.
-        let mut note = None;
-        if !en_marche() {
-            let marche = pfctl(&["-E"], None);
-            if !reussi(marche.as_ref()) {
-                return echec_de(marche);
-            }
-            note = Some(
-                tr!(
-                    "pf était arrêté : mis en marche (il le reste jusqu'au redémarrage)",
-                    "pf was stopped: started (it stays on until restart)"
-                )
-                .to_string(),
-            );
-        }
-        if !en_marche() {
-            return Resultat::echec(tr!(
-                "pf ne se dit pas en marche après coup : rien n'est compté comme bloqué",
-                "pf does not report itself running afterwards: nothing is counted as blocked"
-            ));
-        }
-        note.map_or_else(Resultat::ok, Resultat::ok_note)
-    }
-
-    fn debloquer(ip: std::net::IpAddr) -> Resultat {
-        let adresse = ip.to_canonical().to_string();
-        let r = pfctl(&["-a", ANCRE, "-t", "vanguard", "-T", "delete", &adresse], None);
-        match r {
-            Some(r) if r.code == Some(0) => Resultat::ok(),
-            // Après un redémarrage, l'ancre n'a plus de table : rien à retirer.
-            Some(r) if r.erreurs.contains("Table does not exist") => Resultat::ok_note(tr!(
-                "plus de table de Vanguard (l'ordinateur a redémarré) : rien à retirer",
-                "no Vanguard table any more (the computer restarted): nothing to remove"
-            )),
-            r => echec_de(r),
-        }
-    }
-
-    fn couper(ip: std::net::IpAddr) -> Resultat {
-        let ip = ip.to_canonical();
-        let tout = if ip.is_ipv4() { "0.0.0.0/0" } else { "::/0" };
-        let r = pfctl(&["-k", tout, "-k", &ip.to_string()], None);
-        if reussi(r.as_ref()) {
-            Resultat::ok()
-        } else {
-            Resultat::ok_note(format!("{} : {}", super::note_non_coupee(), echec_de(r).raison))
-        }
-    }
-
-    pub(super) fn faire(o: &Ordre) -> Resultat {
-        match o {
-            Ordre::BloquerSortie { ip, .. } => bloquer(*ip),
-            Ordre::DebloquerSortie { ip, .. } => debloquer(*ip),
-            Ordre::CouperConnexions { ip } => couper(*ip),
-            _ => Resultat::echec(tr!("ordre d'un autre système", "order from another system")),
-        }
-    }
-}
-
 #[cfg(windows)]
 mod windows {
     use super::{Ordre, Resultat};
@@ -741,11 +616,11 @@ pub(crate) fn powershell(o: &Ordre) -> Option<String> {
         Ordre::FermerPort {
             pare_feu: PareFeu::Windows,
             port,
-        } => ancien::entrante(PareFeu::Windows, *port)?.poser.into_iter().next(),
+        } => ancien::entrante(PareFeu::Windows, *port).poser.into_iter().next(),
         Ordre::RouvrirPort {
             pare_feu: PareFeu::Windows,
             port,
-        } => ancien::entrante(PareFeu::Windows, *port)?.retirer.into_iter().next(),
+        } => ancien::entrante(PareFeu::Windows, *port).retirer.into_iter().next(),
         Ordre::RemettrePilotes { avant } => super::gestes::annuler_pilotes(*avant).into_iter().next(),
         // Sans équivalent, l'arrêt d'un processus compris : par script, il échapperait au dernier mot
         // d'`arret::arreter` (sessions relues, ascendance, signature, juste avant l'arrêt) ; refusé plutôt que fait
@@ -902,7 +777,6 @@ mod tests {
         let juge = Juge::essai(Some(sessions), HashSet::new());
         let pf = match Os::actuel() {
             Os::Windows => PareFeu::Windows,
-            Os::MacOs => PareFeu::Pf,
             Os::Linux | Os::Tous => PareFeu::Nftables,
         };
         let bloquer = |ip: &str| Ordre::BloquerSortie {
@@ -920,19 +794,17 @@ mod tests {
         }
         let sans = Juge::essai(None, HashSet::new());
         assert!(juger(&bloquer("203.0.113.7"), &sans).is_some(), "sessions illisibles");
-        if Os::actuel() != Os::MacOs {
-            assert!(juger(&Ordre::FermerPort { pare_feu: pf, port: 22 }, &juge).is_some());
-            assert!(
-                juger(
-                    &Ordre::FermerPort {
-                        pare_feu: pf,
-                        port: 3389
-                    },
-                    &juge
-                )
-                .is_some()
-            );
-        }
+        assert!(juger(&Ordre::FermerPort { pare_feu: pf, port: 22 }, &juge).is_some());
+        assert!(
+            juger(
+                &Ordre::FermerPort {
+                    pare_feu: pf,
+                    port: 3389
+                },
+                &juge
+            )
+            .is_some()
+        );
         let autre = if pf == PareFeu::Windows {
             PareFeu::Ufw
         } else {
@@ -971,9 +843,6 @@ mod tests {
     /// n'est pas fermé (la règle couperait la session) ; un port voisin, si ; sans connexions lisibles, aucun.
     #[test]
     fn un_port_qui_porte_une_session_n_est_pas_ferme() {
-        if Os::actuel() == Os::MacOs {
-            return crate::essais::saute("macOS : le blocage n'y ferme pas de port");
-        }
         let pf = if Os::actuel() == Os::Windows {
             PareFeu::Windows
         } else {
@@ -1004,8 +873,6 @@ mod tests {
         // Le pare-feu de ce système : un autre serait refusé avant la lecture des sessions que l'essai attend.
         let pf = if cfg!(windows) {
             PareFeu::Windows
-        } else if cfg!(target_os = "macos") {
-            PareFeu::Pf
         } else {
             PareFeu::Nftables
         };

@@ -1,7 +1,7 @@
 //! Recherche de malwares avec un moteur reconnu (ClamAV sous Linux, Microsoft Defender sous Windows)
 //! et revue des programmes lancés au démarrage, là où un malware cherche à se maintenir.
 
-// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+// Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 use std::path::PathBuf;
@@ -274,7 +274,7 @@ fn sans_hex(t: &str) -> String {
 }
 
 /// Une taille écrite comme lsblk l'écrit : en puissances de 1024, une lettre (« 512B », « 47G », « 28,9G »), un
-/// chiffre après la virgule quand il n'est pas nul, arrondi comme util-linux le fait. macOS l'écrit de même.
+/// chiffre après la virgule quand il n'est pas nul, arrondi comme util-linux le fait.
 #[cfg(any(unix, test))]
 fn taille_lsblk(octets: u64) -> String {
     const LETTRES: [&str; 6] = ["K", "M", "G", "T", "P", "E"];
@@ -305,69 +305,6 @@ fn taille_lsblk(octets: u64) -> String {
         let virgule = if crate::langue::anglais() { '.' } else { ',' };
         format!("{entier}{virgule}{dixiemes}{lettre}")
     }
-}
-
-/// Clés et disques externes montés sous macOS : tout ce qui est dans /Volumes, sauf le disque du système (un
-/// lien vers « / »). Description : nom et taille (`tailles_des_volumes`), prête à montrer (l'étiquette vient de qui a préparé la clé).
-#[cfg(target_os = "macos")]
-fn volumes_amovibles() -> Vec<(PathBuf, String)> {
-    let racine = std::fs::canonicalize("/").unwrap_or_default();
-    let tailles = tailles_des_volumes();
-    std::fs::read_dir("/Volumes")
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|d| d.path())
-        .filter(|p| std::fs::canonicalize(p).is_ok_and(|r| r != racine))
-        .map(|p| {
-            let taille = tailles.get(&p).map(|&o| taille_lsblk(o)).unwrap_or_default();
-            let nom = p
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            (p, affichable(&format!("{nom} · {taille}")))
-        })
-        .collect()
-}
-
-/// La taille de chaque système de fichiers monté (point de montage → octets), lue par getfsstat avec MNT_NOWAIT :
-/// les valeurs que le noyau garde, sans interroger chaque volume, si bien qu'un volume réseau qui ne répond plus ne
-/// fait rien attendre (df, lancé avant, pouvait y rester bloqué jusqu'à son délai).
-#[cfg(target_os = "macos")]
-// FFI de libc : getfsstat.
-#[allow(unsafe_code)]
-fn tailles_des_volumes() -> std::collections::HashMap<PathBuf, u64> {
-    use std::os::unix::ffi::OsStrExt;
-    // SAFETY: sans tampon, getfsstat rend seulement le nombre de systèmes de fichiers montés.
-    let n = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
-    let Ok(n) = usize::try_from(n) else {
-        return std::collections::HashMap::new();
-    };
-    // Quelques places de plus : un volume monté entre les deux appels n'est pas perdu.
-    // SAFETY: statfs n'est fait que d'entiers et de tableaux d'octets, pour qui zéro est une valeur permise.
-    let mut tampon: Vec<libc::statfs> = vec![unsafe { std::mem::zeroed() }; n + 8];
-    let Ok(taille) = libc::c_int::try_from(tampon.len() * std::mem::size_of::<libc::statfs>()) else {
-        return std::collections::HashMap::new();
-    };
-    // SAFETY: le tampon fait `taille` octets, à nous ; getfsstat y écrit au plus autant de structures et rend leur
-    // nombre.
-    let lus = unsafe { libc::getfsstat(tampon.as_mut_ptr(), taille, libc::MNT_NOWAIT) };
-    let lus = usize::try_from(lus).unwrap_or(0).min(tampon.len());
-    tampon
-        .iter()
-        .take(lus)
-        .map(|f| {
-            // f_mntonname : un nom C terminé par un zéro dans un tableau de 1024 octets.
-            let octets: Vec<u8> = f
-                .f_mntonname
-                .iter()
-                .take_while(|&&c| c != 0)
-                .map(|&c| c.cast_unsigned())
-                .collect();
-            let point = PathBuf::from(std::ffi::OsStr::from_bytes(&octets));
-            (point, f.f_blocks.saturating_mul(u64::from(f.f_bsize)))
-        })
-        .collect()
 }
 
 /// Lignes de `lsblk -P` : RM="1" HOTPLUG="1" LABEL="CLE" SIZE="28,9G" MOUNTPOINT="/run/media/alice/CLE". La
@@ -1882,7 +1819,7 @@ pub(crate) fn examiner(fichier: &std::path::Path) -> Examen {
         );
     }
     let Some(r) = crate::commande::lancer(
-        Command::new(outil_clamav("clamscan"))
+        Command::new("clamscan")
             .args(["-i", "--max-filesize=200M", "--max-scansize=400M"])
             .args(option_base())
             .arg(fichier),
@@ -1902,12 +1839,11 @@ pub(crate) fn examiner(fichier: &std::path::Path) -> Examen {
 
 // ───────────────────────────── Linux : ClamAV ─────────────────────────────
 
-/// Les configurations de freshclam : Debian et Arch, Fedora, Homebrew (Apple Silicon, puis Intel).
+/// Les configurations de freshclam : Debian et Arch, Fedora, puis un ClamAV installé dans /usr/local.
 #[cfg(unix)]
-const CONFS_FRESHCLAM: [&str; 4] = [
+const CONFS_FRESHCLAM: [&str; 3] = [
     "/etc/clamav/freshclam.conf",
     "/etc/freshclam.conf",
-    "/opt/homebrew/etc/clamav/freshclam.conf",
     "/usr/local/etc/clamav/freshclam.conf",
 ];
 
@@ -1926,15 +1862,7 @@ fn option_base() -> Option<String> {
 /// Le dossier qui contient les signatures de ClamAV.
 #[cfg(unix)]
 fn dossier_de_base() -> Option<PathBuf> {
-    // Homebrew : /opt/homebrew (Apple Silicon) ou /usr/local (Intel).
-    dossier_de_base_parmi(
-        &CONFS_FRESHCLAM,
-        &[
-            "/var/lib/clamav",
-            "/opt/homebrew/var/lib/clamav",
-            "/usr/local/var/lib/clamav",
-        ],
-    )
+    dossier_de_base_parmi(&CONFS_FRESHCLAM, &["/var/lib/clamav", "/usr/local/var/lib/clamav"])
 }
 
 #[cfg(unix)]
@@ -1972,40 +1900,13 @@ fn base_dans(dossier: &std::path::Path) -> bool {
     })
 }
 
-/// freshclam sous macOS : ClamAV de Homebrew y écrit « ERROR: NULL X509 store » à chaque téléchargement, alors que
-/// les signatures arrivent et sont vérifiées (cause inconnue même des auteurs : Cisco-Talos/clamav#1421). Le
-/// message, alarmant et sans conséquence, est retiré ; le code de retour de freshclam est gardé.
-#[cfg(target_os = "macos")]
-pub(crate) fn commande_freshclam(freshclam: &str) -> String {
-    format!(
-        "set -o pipefail; {} 2>&1 | {{ grep -v 'NULL X509 store' || true; }}",
-        crate::commande::sh_chaine(freshclam)
-    )
-}
-
-/// Chemin d'un outil de ClamAV. Sous macOS, Homebrew n'est pas toujours dans le PATH du Terminal.
-#[cfg(unix)]
-fn outil_clamav(nom: &str) -> String {
-    #[cfg(target_os = "macos")]
-    if let Some(brew) = crate::machine::macos::homebrew() {
-        let chemin = std::path::Path::new(brew).with_file_name(nom);
-        if chemin.is_file() {
-            return chemin.display().to_string();
-        }
-    }
-    nom.to_string()
-}
-
 /// Installe ClamAV et télécharge les signatures si besoin. Retourne `false` si l'utilisateur refuse. Chaque commande
 /// est montrée avant la question qui l'accepte (comme `outil::proposer`) : on dit oui à ce qu'on a vu.
 #[cfg(unix)]
 fn preparer() -> bool {
     // Linux : le PATH parcouru sur le disque, sans lancer de shell.
     #[cfg(target_os = "linux")]
-    let present = crate::machine::linux::natif::present(&outil_clamav("clamscan"));
-    // macOS aussi : le PATH parcouru sur le disque, sans bash (le chemin y était collé entre apostrophes).
-    #[cfg(target_os = "macos")]
-    let present = crate::machine::unix::present(&outil_clamav("clamscan"));
+    let present = crate::machine::linux::natif::present("clamscan");
     if !present {
         trp!(
             "  ClamAV (antivirus open source) n'est pas installé.",
@@ -2048,16 +1949,13 @@ fn preparer() -> bool {
             "  Downloading the virus signatures…"
         );
         // Le téléchargement seul ne change rien à noter sous Linux ; le geste composé, qui arrête et redémarre un
-        // service du système, est noté (sans changer son lancement au démarrage). Sous macOS, la configuration posée
-        // est notée, comme toute correction.
+        // service du système, est noté (sans changer son lancement au démarrage).
         #[cfg(target_os = "linux")]
         let ok = if telechargement == crate::machine::gestes_unix::GesteUnix::SignaturesClamav.ligne() {
             crate::machine::appliquer(&[telechargement])
         } else {
             crate::machine::appliquer_sans_noter(&[telechargement]).0
         } && service.is_none_or(|s| crate::machine::appliquer(&[s]));
-        #[cfg(target_os = "macos")]
-        let ok = crate::machine::appliquer(&[telechargement]);
         if !ok {
             return false;
         }
@@ -2082,18 +1980,6 @@ fn commande_d_installation() -> Option<String> {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn commande_d_installation() -> Option<String> {
-    let Some(brew) = crate::machine::macos::homebrew() else {
-        trp!(
-            "  Homebrew est nécessaire pour installer ClamAV : https://brew.sh",
-            "  Homebrew is needed to install ClamAV: https://brew.sh"
-        );
-        return None;
-    };
-    Some(format!("{brew} install clamav"))
-}
-
 /// Le geste du premier téléchargement des signatures, fait par l'assistant élevé sans shell (lot U3) ; rien après :
 /// le lancement au démarrage de leur mise à jour automatique reste ce qu'il était.
 #[cfg(target_os = "linux")]
@@ -2110,35 +1996,16 @@ fn commandes_des_signatures() -> (String, Option<String>) {
     (geste.ligne(), None)
 }
 
-/// Homebrew livre seulement un modèle de configuration (« Example » à retirer) ; pas besoin de sudo.
-#[cfg(target_os = "macos")]
-fn commandes_des_signatures() -> (String, Option<String>) {
-    let freshclam = outil_clamav("freshclam");
-    let prefixe = std::path::Path::new(&freshclam)
-        .parent()
-        .and_then(std::path::Path::parent)
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    (
-        format!(
-            "C='{prefixe}/etc/clamav/freshclam.conf'; [ -f \"$C\" ] || sed '/^Example/d' \"$C.sample\" > \"$C\"; {}",
-            commande_freshclam(&freshclam)
-        ),
-        None,
-    )
-}
-
-/// Les endroits à risque du dossier personnel sous Linux et macOS : là où arrivent les menaces (téléchargements,
+/// Les endroits à risque du dossier personnel sous Linux : là où arrivent les menaces (téléchargements,
 /// bureau, démarrage automatique, programmes de l'utilisateur). L'analyse rapide de l'antivirus et celle de YARA.
 #[cfg(unix)]
-pub(crate) const ENDROITS_A_RISQUE: [&str; 7] = [
+pub(crate) const ENDROITS_A_RISQUE: [&str; 6] = [
     "Downloads",
     "Téléchargements",
     "Desktop",
     "Bureau",
     ".local/bin",
     ".config/autostart",
-    "Library/LaunchAgents",
 ];
 
 #[cfg(unix)]
@@ -2203,20 +2070,13 @@ fn clamav(portee: &Portee) {
         ".local/share/vanguard/quarantaine",
         ".snapshots",
         ".Trash",
-        // macOS : caches et conteneurs d'apps (énormes), quarantaine de Vanguard.
-        "Library/Caches",
-        "Library/Containers",
-        "Library/Application Support/vanguard/quarantaine",
     ];
     let exclusions: &[&str] = if matches!(portee, Portee::Dossier(_)) {
-        &[
-            ".local/share/vanguard/quarantaine",
-            "Library/Application Support/vanguard/quarantaine",
-        ]
+        &[".local/share/vanguard/quarantaine"]
     } else {
         &tout
     };
-    let mut cmd = Command::new(outil_clamav("clamscan"));
+    let mut cmd = Command::new("clamscan");
     // Le bilan final (fichiers analysés, infectés, erreurs) sert à juger si l'analyse a vraiment eu lieu.
     cmd.args(["-r", "-i", "--max-filesize=200M", "--max-scansize=400M"]);
     cmd.args(option_base());
@@ -2473,23 +2333,6 @@ fn demarrage() {
                         "{} (system service not from a package)",
                         chemin_affichable(&p)
                     ));
-                }
-            }
-        }
-    }
-
-    // macOS : agents et démons de launchd ajoutés par des programmes (ceux d'Apple sont dans /System).
-    #[cfg(target_os = "macos")]
-    {
-        let h = home();
-        for d in [
-            h.join("Library/LaunchAgents"),
-            "/Library/LaunchAgents".into(),
-            "/Library/LaunchDaemons".into(),
-        ] {
-            for f in std::fs::read_dir(&d).into_iter().flatten().flatten() {
-                if f.path().extension().is_some_and(|e| e == "plist") {
-                    entrees.push(chemin_affichable(&f.path()));
                 }
             }
         }

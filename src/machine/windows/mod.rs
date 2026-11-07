@@ -951,7 +951,7 @@ fn pare_feu_de(
     let off = coupes_sans_choix(profils, &choisis);
     match (profils.is_empty(), off.join(", ")) {
         // Rien de lu n'est rien de vérifié : sans constat vérifié du pare-feu, le bilan ne donne pas de note
-        // (`Audit::fiable`), comme sous Linux et macOS.
+        // (`Audit::fiable`), comme sous Linux.
         (true, _) => impossible(
             "Pare-feu",
             tr!(

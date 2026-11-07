@@ -1,4 +1,4 @@
-//! Les commandes de tldr-pages (tldr.sh, licence CC BY 4.0) : des milliers d'exemples pour Linux, Windows, macOS et
+//! Les commandes de tldr-pages (tldr.sh, licence CC BY 4.0) : des milliers d'exemples pour Linux, Windows et
 //! d'autres systèmes, écrits et tenus à jour par une communauté. Vanguard télécharge leurs archives (anglais et
 //! français) au plus une fois par semaine, en arrière-plan quand le guide s'ouvre, ou pendant la surveillance et
 //! l'entretien du mois, et les lit sans rien exécuter : ces commandes se copient, elles ne se lancent jamais d'ici,
@@ -363,7 +363,7 @@ fn systeme_de(plateforme: &str) -> (Systeme, &'static str) {
     match plateforme {
         "common" => (Systeme::Tous, crate::tr!("tous", "all")),
         "linux" => (Systeme::Linux, "linux"),
-        "osx" => (Systeme::MacOs, "macOS"),
+        "osx" => (Systeme::Tldr, "osx"),
         "windows" => (Systeme::Windows, "windows"),
         "android" => (Systeme::Tldr, "android"),
         "freebsd" => (Systeme::Tldr, "freebsd"),
@@ -390,8 +390,7 @@ fn charger() -> &'static [PageTldr] {
         "linux" => 0,
         "common" => 1,
         "windows" => 2,
-        "osx" => 3,
-        _ => 4,
+        _ => 3,
     };
     let dossiers = dossiers();
     let langues: &[&str] = if crate::langue::anglais() { &["en"] } else { &LANGUES };
@@ -595,7 +594,7 @@ mod tests {
     #[test]
     fn plateformes_rangees_dans_le_guide() {
         assert_eq!(systeme_de("linux").0, Systeme::Linux);
-        assert_eq!(systeme_de("osx").0, Systeme::MacOs);
+        assert_eq!(systeme_de("osx").0, Systeme::Tldr);
         assert_eq!(systeme_de("windows").0, Systeme::Windows);
         assert_eq!(systeme_de("common").0, Systeme::Tous);
         assert_eq!(systeme_de("android").0, Systeme::Tldr);
