@@ -14,6 +14,11 @@ par passage (PLAFOND_PASSAGE : tickets créés, commentaires) et par jour (PLAFO
 SIGNATURES_MAX erreurs distinctes n'est pas une suite de vraies erreurs : rien ne part sans l'accord de l'auteur
 (--accord). Chaque passage dit ce qu'il a envoyé (sortie, et notification au branchement, où personne ne lit).
 
+Les vérifications impossibles attendues (Windows sans administrateur, audit de Windows éteint, accord de l'AUR pas
+donné, déploiement d'Edge en cours : l'état de l'ordinateur ou un choix de la personne, pas un défaut du code) ne
+partent pas : elles restent dans journal-erreurs.txt, à côté, et le passage le dit (`attendue`). Depuis le lot J1 le
+programme ne les écrit plus ; ceci est le filet des versions déjà déployées (0.88 à 0.91), reconnues au texte.
+
 Les entrées d'une même erreur (même signature) dans un même envoi partent ensemble : un seul ticket, ou un seul
 commentaire qui les réunit (« vu N fois, systèmes…, versions… »), coupé sous la limite d'un corps de GitHub.
 
@@ -51,6 +56,48 @@ ACCORD = 10
 COMPTEURS = "envois-github.json"
 # Un identifiant de règle ou de lecture (« LNX-PFE-001 », « AUT-LNX-002 ») : gardé tel quel dans la signature.
 IDENTIFIANT = re.compile(r"\b[A-Z]{3}-[A-Z]{3}-\d{3}\b")
+# La ligne de champs (src/compte_rendu/journal.rs, `Champs::ligne`), depuis la 0.89.1.
+LIGNE_CHAMPS = re.compile(
+    r"^§ genre=(?P<genre>\S+) contexte=(?P<contexte>\S+) regle=(?P<regle>\S+) code=(?P<code>\S+) lieu=(?P<lieu>\S+)$")
+# Les codes de raison (modele::Raison) d'une vérification impossible attendue : l'état de l'ordinateur ou un choix de
+# la personne, jamais un défaut du code. « droits » n'y est PAS : depuis le lot J1, le programme ne note un refus faute
+# de droits que s'il tourne élevé (administrateur, root), et ce refus-là est un vrai défaut, à rapporter.
+CODES_ATTENDUS = {"sans-accord", "audit-coupe", "en-cours"}
+# Avant le code dans la ligne de champs (0.88 à 0.91) : chaque raison du message, reconnue en entier. Les textes sont
+# ceux du programme (src/journaux_windows/regles/resultat.rs `manque`, machine/windows/ssh.rs et evenements.rs,
+# machine/linux/maj.rs `sans_accord_aur`, protection/perimes/verdicts.rs), en français et en anglais ; les premiers
+# reprennent $etatDeLaMachine de outils/test-windows/test.ps1. Un détail coupé (« […] ») ne se reconnaît pas : envoyé.
+RAISONS_ATTENDUES = [re.compile(m) for m in (
+    # Audit de Windows éteint ou historique court (WIN-JRN-003).
+    r"journal \S+ absent de cet ordinateur", r"log \S+ missing on this computer",
+    r"journal \S+ désactivé : il n'écrit plus rien, ce qui est lu est ancien",
+    r"log \S+ disabled: it writes nothing anymore, what is read is old",
+    r"journal \S+ lu mais vide sur la période : vidé, remplacé, ou son audit coupé",
+    r"log \S+ read but empty over the period: cleared, replaced, or its auditing turned off",
+    r"journal \S+ présent mais vide sur la période : rien n'y est vérifié \(.+\)",
+    r"log \S+ present but empty over the period: nothing in it is checked \(.+\)",
+    r"journal \S+ lu seulement depuis le .+? : plus ancien écrasé, effacé, ou rien écrit",
+    r"log \S+ only read from .+?: older events overwritten, cleared, or never written",
+    r"\S+ : la politique d'audit de ces événements a été réduite pendant la période \(4719\)",
+    r"\S+: the audit policy of these events was reduced during the period \(4719\)",
+    r"\S+ : rien ne prouve que Windows écrit ces événements \(.+\)",
+    r"\S+: nothing proves Windows writes these events \(.+\)",
+    r"\S+ : plus rien ne prouve ces événements depuis le [^(]+ \(.+\)",
+    r"\S+: nothing proves these events since [^(]+ \(.+\)",
+    # Windows sans administrateur (le programme d'avant J1 ne disait pas s'il était élevé).
+    r"journal \S+ réservé à l'administrateur", r"log \S+ restricted to administrators",
+    r"journal de sécurité lisible seulement en administrateur : relancer Vanguard en administrateur",
+    r"security log readable only as administrator: run Vanguard again as administrator",
+    r"Impossible de vérifier les droits de .+ \(réservés à l'administrateur\)\.",
+    r"Could not check the rights of .+ \(administrator only\)\.",
+    # Paquets de l'AUR sans l'accord donné dans Paramètres.
+    r"les noms des paquets hors des dépôts ne sont envoyés à aur\.archlinux\.org qu'avec votre accord "
+    r"\(Paramètres › Paquets de l'AUR\)",
+    r"the names of the packages outside the repositories are sent to aur\.archlinux\.org only with your consent "
+    r"\(Settings › AUR packages\)",
+    # Déploiement par vagues d'une nouvelle version (Edge, Office).
+    r"\S.* \(déploiement de la \S+ en cours\)", r"\S.* \(rollout of \S+ in progress\)",
+)]
 
 
 def entrees(texte):
@@ -58,14 +105,77 @@ def entrees(texte):
     return [b.strip("\n") for b in re.split(r"(?m)^(?=== )", texte) if b.startswith("== ")]
 
 
+def champs(entree):
+    """Les champs de la ligne « § … » (dict), ou None : entrée d'avant la 0.89.1, ou ligne mal formée."""
+    for l in entree.splitlines()[2:]:
+        m = LIGNE_CHAMPS.match(l)
+        if m:
+            return m.groupdict()
+    return None
+
+
+def couper_raisons(texte):
+    """Les raisons d'un message, séparées par « ; » hors parenthèses (une raison en a parfois une à elle)."""
+    raisons, profondeur, debut = [], 0, 0
+    for i, c in enumerate(texte):
+        if c == "(":
+            profondeur += 1
+        elif c == ")":
+            profondeur = max(0, profondeur - 1)
+        elif c == ";" and profondeur == 0:
+            raisons.append(texte[debut:i].strip())
+            debut = i + 1
+    raisons.append(texte[debut:].strip())
+    return raisons
+
+
+def raisons_du_message(message):
+    """Les raisons d'un constat non vérifié : celles de WIN-JRN-003 (« Non vérifié — R1 ; R2 : EVT-… (…). »), celles
+    d'un « Impossible de vérifier (R1 ; R2). », sinon le message entier, seule raison."""
+    m = (re.fullmatch(r"(?:Non vérifié|Not verified) — (.+?) ?: EVT-[A-Z]+-\d+ \(.+\)\.", message)
+         or re.fullmatch(r"(?:Impossible de vérifier|Could not check) \((.+)\)\.", message))
+    return couper_raisons(m.group(1)) if m else [message]
+
+
+def attendue(entree):
+    """Une vérification impossible qui n'est pas un défaut du code (l'état de l'ordinateur, un choix de la personne) :
+    gardée dans journal-erreurs.txt, jamais envoyée. Avec le code de raison (lot J1 et après) : seulement l'ensemble
+    fermé CODES_ATTENDUS ; un autre code n'est jamais attendu, quel que soit le texte. Sans code (0.88 à 0.91) :
+    seulement si TOUTES les raisons du message sont reconnues, comme test.ps1 ; une seule autre, et l'entrée part."""
+    lignes = entree.splitlines()
+    if len(lignes) < 3 or lignes[1].strip() != "[vérification impossible]":
+        return False
+    c = champs(entree)
+    if c is not None and c["genre"] != "impossible":
+        return False
+    if c is not None and c["code"] != "-":
+        return c["code"] in CODES_ATTENDUS
+    # Le détail : une seule ligne « catégorie : message » (src/machine/mod.rs, `auditer`).
+    detail = [l for l in lignes[2:] if l.strip() and not l.startswith("§ ")]
+    if len(detail) != 1:
+        return False
+    _, separateur, message = detail[0].strip().partition(" : ")
+    if not separateur:
+        return False
+    return all(any(r.fullmatch(raison) for r in RAISONS_ATTENDUES) for raison in raisons_du_message(message))
+
+
 def signature(entree):
     """Contexte, première ligne du détail, et une empreinte qui ignore les nombres (délais, codes, lignes) et les
-    adresses : leurs remplaçants sont tirés au hasard à chaque envoi, la même erreur doit retrouver son ticket."""
+    adresses : leurs remplaçants sont tirés au hasard à chaque envoi, la même erreur doit retrouver son ticket.
+    Une vérification impossible à la ligne de champs avec sa règle : un ticket par règle et par code de raison, quel
+    que soit le détail (WIN-JRN-003 regroupe ses constats par « ce qui a manqué », et en avait fait huit tickets pour un
+    seul bilan) ; le détail de chaque entrée va dans le corps ou le commentaire."""
     lignes = entree.splitlines()
     contexte = lignes[1].strip() if len(lignes) > 1 else ""
     # La ligne de champs (« § genre=… », depuis la 0.89.1) vient après le détail et ne compte pas : une entrée au
     # détail vide garde la signature qu'elle avait avant.
     detail = next((l.strip() for l in lignes[2:] if l.strip() and not l.startswith("§ ")), "")
+    c = champs(entree)
+    if c is not None and c["genre"] == "impossible" and IDENTIFIANT.fullmatch(c["regle"]):
+        stable = f"{contexte} regle={c['regle']} code={c['code']}"
+        titre = f"{c['regle']} (raison {c['code']}) — {detail}"
+        return contexte, titre, hashlib.sha1(stable.encode()).hexdigest()[:12]
     stable = f"{contexte} {detail}"
     for adresse in (confidentialite.MAC, confidentialite.MAC_TIRETS, confidentialite.IPV6, confidentialite.IPV4):
         stable = adresse.sub("<adresse>", stable)
@@ -165,6 +275,16 @@ def main():
     chemin = arguments[0]
     with open(chemin, encoding="utf-8") as f:
         liste = entrees(f.read())
+    if not liste:
+        return
+    # Les vérifications impossibles attendues sortent d'ici (deployer.sh les a déjà copiées dans journal-erreurs.txt,
+    # pour le triage local) : le fichier est réécrit sans elles, même si rien d'autre ne part.
+    attendues = [e for e in liste if attendue(e)]
+    if attendues:
+        liste = [e for e in liste if not attendue(e)]
+        remplacer(chemin, "".join(x + "\n\n" for x in liste))
+        print(f"Journal : {len(attendues)} vérification(s) impossible(s) attendue(s) (état de l'ordinateur), "
+              "gardée(s) dans journal-erreurs.txt, pas envoyée(s).")
     if not liste:
         return
     gh("label", "create", ETIQUETTE, "--color", "B60205",

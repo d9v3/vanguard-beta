@@ -2817,6 +2817,76 @@ fn tickets_du_journal_regroupes() {
     assert!(gros.contains("coupé") && gros.len() < 70_000, "{}", gros.len());
     // Tout est parti : le fichier est vidé.
     assert_eq!(std::fs::read_to_string(&fichier).unwrap().trim(), "");
+
+    // Vérifications impossibles : l'état de l'ordinateur ne part pas (filet des 0.88 à 0.91, reconnu au texte, toutes
+    // les raisons du message), le reste d'une même règle fait un seul ticket par code de raison.
+    let impossible = |version: &str, detail: &str, champs: &str| {
+        format!(
+            "== 2026-10-27 17:27 UTC · vanguard {version} · Windows · fr · menu\n[vérification impossible]\n  {detail}\n{champs}\n"
+        )
+    };
+    let jrn = "§ genre=impossible contexte=verification-impossible regle=WIN-JRN-003 code=- lieu=-";
+    let mut texte = String::new();
+    // Comme les tickets #8 à #16 : Security refusé hors administrateur, audit éteint, historique court, accord de
+    // l'AUR, déploiement d'Edge.
+    for detail in [
+        "Journaux d'événements : Non vérifié — journal Security réservé à l'administrateur ; Security : rien ne prouve que Windows écrit ces événements (aucune ouverture de session journalisée : l'audit des ouvertures de session est peut-être coupé) : EVT-MDP-001 (mots de passe devinés).",
+        "Journaux d'événements : Non vérifié — journal System lu seulement depuis le 2026-10-24 13:33 : plus ancien écrasé, effacé, ou rien écrit : EVT-SRV-001 (service d'attaque installé).",
+        "Journaux d'événements : Non vérifié — journal PowerShellCore/Operational absent de cet ordinateur : EVT-PSH-001 (PowerShell malveillant).",
+        "SSH : Impossible de vérifier les droits de %ProgramData%\\ssh\\administrators_authorized_keys (réservés à l'administrateur).",
+        "Logiciels pas à jour : Impossible de vérifier (Microsoft Edge 156.0.4314.42 (déploiement de la 156.0.4314.50 en cours)).",
+        "Paquets AUR : Could not check (the names of the packages outside the repositories are sent to aur.archlinux.org only with your consent (Settings › AUR packages)).",
+    ] {
+        texte += &impossible("0.88.0", detail, "");
+        texte += &impossible("0.91.0", detail, jrn);
+    }
+    // Une raison non attendue dans le message : envoyée, et deux détails différents de WIN-JRN-003, un seul ticket.
+    texte += &impossible(
+        "0.91.0",
+        "Journaux d'événements : Non vérifié — journal Security réservé à l'administrateur ; journal System illisible : accès refusé : EVT-EFF-001 (traces effacées).",
+        jrn,
+    );
+    texte += &impossible(
+        "0.91.0",
+        "Journaux d'événements : Non vérifié — journal Application illisible : délai : EVT-SRV-001 (service).",
+        jrn,
+    );
+    // Zen sans version (le ticket #5) : pas un état de l'ordinateur, envoyé.
+    texte += &impossible(
+        "0.88.0",
+        "Post-quantique : Impossible de vérifier (Zen : version illisible, échange de clés post-quantique par défaut non vérifié).",
+        "",
+    );
+    std::fs::write(&fichier, &texte).unwrap();
+    std::fs::remove_file(&appels).unwrap();
+    let chemin = format!("{}:{}", faux.display(), std::env::var("PATH").unwrap_or_default());
+    let s = Command::new("python3")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("outils/journal-vers-github.py"))
+        .arg(&fichier)
+        .env("PATH", chemin)
+        .env("HOME", &*d)
+        .output()
+        .unwrap();
+    assert!(s.status.success(), "{}", String::from_utf8_lossy(&s.stderr));
+    let sortie = String::from_utf8_lossy(&s.stdout);
+    assert!(
+        sortie.contains("12 vérification(s) impossible(s) attendue(s)"),
+        "{sortie}"
+    );
+    let journal = std::fs::read_to_string(&appels).unwrap();
+    let crees: Vec<&str> = journal.lines().filter(|l| l.starts_with("issue create")).collect();
+    assert_eq!(crees.len(), 2, "{journal}");
+    let regle = crees.iter().find(|l| l.contains("WIN-JRN-003")).unwrap();
+    assert!(
+        regle.contains("Vu 2 fois") && regle.contains("EVT-EFF-001") && regle.contains("journal Application illisible"),
+        "{regle}"
+    );
+    assert!(crees.iter().any(|l| l.contains("Zen")), "{journal}");
+    assert!(
+        !journal.contains("EVT-PSH-001") && !journal.contains("aur.archlinux.org"),
+        "{journal}"
+    );
+    assert_eq!(std::fs::read_to_string(&fichier).unwrap().trim(), "");
     let _ = std::fs::remove_dir_all(&d);
 }
 

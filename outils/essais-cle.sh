@@ -1381,7 +1381,7 @@ envoyer() { # arguments… : sortie dans $BANC/sortie
   PATH=$BANC/faux-gh:$PATH python3 -I outils/journal-vers-github.py "$@" "$BANC/retours/a-envoyer-github.txt" \
     >"$BANC/sortie" 2>&1
 }
-tickets() { grep -c '^issue create' "$BANC/gh.log" 2>/dev/null || true; }
+tickets() { cat "$BANC/gh.log" 2>/dev/null | grep -c '^issue create' || true; } # aucun appel à gh : 0
 journal_force 3
 envoyer
 voir "doublons regroupés : une erreur vue deux fois, un seul ticket ; l'envoi dit (notification)" \
@@ -1416,6 +1416,45 @@ ESSAI_GH_TUER=3 envoyer
 voir "passage arrêté en route (SIGTERM) : les deux tickets faits comptés et notés, le reste attend" \
   eval '[[ $(jq .tickets "$BANC/retours/envois-github.json") == 2 && $(jq length "$BANC/retours/tickets-github.json") == 2 &&
     $(grep -c "^== " "$BANC/retours/a-envoyer-github.txt") == 6 ]]' || montrer "$BANC/sortie"
+# Vérifications impossibles : l'état de l'ordinateur n'est pas un défaut du code (filet `attendue`), et une même règle
+# fait un seul ticket par code de raison.
+rm -f "$BANC/retours/envois-github.json" "$BANC/retours/tickets-github.json" "$BANC/gh.n"
+impossible() { # version, détail, ligne de champs (vide : aucune, comme en 0.88)
+  printf '== 2026-10-27 17:27 UTC · vanguard %s · Windows · fr · menu\n[vérification impossible]\n  %s\n%s\n' "$1" "$2" \
+    "${3:+$3
+}"
+}
+SECURITE="Journaux d'événements : Non vérifié — journal Security réservé à l'administrateur : EVT-ADM-001 (un administrateur de plus)."
+impossible 0.88.0 "$SECURITE" >"$BANC/retours/a-envoyer-github.txt"
+envoyer
+voir "0.88, « réservé à l'administrateur » seul : attendu, aucun ticket, retiré de l'envoi et dit" \
+  eval '[[ $(tickets) == 0 && ! -s $BANC/retours/a-envoyer-github.txt ]] &&
+    dit "$BANC/sortie" "1 vérification(s) impossible(s) attendue(s)"' || { montrer "$BANC/sortie"; montrer "$BANC/gh.log"; }
+impossible 0.88.0 "${SECURITE/administrateur :/administrateur ; journal System illisible : accès refusé :}" \
+  >"$BANC/retours/a-envoyer-github.txt"
+envoyer
+voir "la même avec « illisible » en plus : une raison n'est pas attendue, un ticket" \
+  eval '[[ $(tickets) == 1 ]]' || { montrer "$BANC/sortie"; montrer "$BANC/gh.log"; }
+for j in Application System Setup; do
+  impossible 0.92.0 "Journaux d'événements : Non vérifié — journal $j illisible : x : EVT-SRV-001 (service)." \
+    "§ genre=impossible contexte=verification-impossible regle=WIN-JRN-003 code=illisible lieu=-"
+done >"$BANC/retours/a-envoyer-github.txt"
+envoyer
+voir "trois entrées WIN-JRN-003 aux détails différents, même code : un seul ticket qui les réunit" \
+  eval '[[ $(tickets) == 1 ]] && dit "$BANC/gh.log" "Vu 3 fois"' || { montrer "$BANC/sortie"; montrer "$BANC/gh.log"; }
+{
+  impossible 0.92.0 "Paquets AUR : Impossible de vérifier (réservé à l'administrateur)." \
+    "§ genre=impossible contexte=verification-impossible regle=LNX-MAJ-006 code=panique lieu=-"
+  impossible 0.92.0 "SSH : Impossible de vérifier les droits de x (réservés à l'administrateur)." \
+    "§ genre=impossible contexte=verification-impossible regle=WIN-SSH-001 code=droits lieu=-"
+  impossible 0.92.0 "Journaux d'événements : Non vérifié — n'importe quoi : EVT-PRC-001 (x)." \
+    "§ genre=impossible contexte=verification-impossible regle=WIN-JRN-003 code=audit-coupe lieu=-"
+} >"$BANC/retours/a-envoyer-github.txt"
+envoyer
+voir "avec le code : « panique » envoyé malgré le texte, « droits » (noté élevé) envoyé, « audit-coupe » gardé ici" \
+  eval '[[ $(tickets) == 2 ]] && dit "$BANC/gh.log" "LNX-MAJ-006" && dit "$BANC/gh.log" "WIN-SSH-001" &&
+    pas_dit "$BANC/gh.log" "EVT-PRC-001" && [[ ! -s $BANC/retours/a-envoyer-github.txt ]]' ||
+  { montrer "$BANC/sortie"; montrer "$BANC/gh.log"; }
 
 # --- Ménage (menage-dev.sh) ------------------------------------------------------------------------------------------
 
