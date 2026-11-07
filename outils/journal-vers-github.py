@@ -66,7 +66,8 @@ CODES_ATTENDUS = {"sans-accord", "audit-coupe", "en-cours"}
 # Avant le code dans la ligne de champs (0.88 à 0.91) : chaque raison du message, reconnue en entier. Les textes sont
 # ceux du programme (src/journaux_windows/regles/resultat.rs `manque`, machine/windows/ssh.rs et evenements.rs,
 # machine/linux/maj.rs `sans_accord_aur`, protection/perimes/verdicts.rs), en français et en anglais ; les premiers
-# reprennent $etatDeLaMachine de outils/test-windows/test.ps1. Un détail coupé (« […] ») ne se reconnaît pas : envoyé.
+# reprennent ceux que outils/test-windows/test.ps1 reconnaissait avant de lire la raison typée. Un détail coupé
+# (« […] ») ne se reconnaît pas : envoyé.
 RAISONS_ATTENDUES = [re.compile(m) for m in (
     # Audit de Windows éteint ou historique court (WIN-JRN-003).
     r"journal \S+ absent de cet ordinateur", r"log \S+ missing on this computer",
@@ -141,7 +142,7 @@ def attendue(entree):
     """Une vérification impossible qui n'est pas un défaut du code (l'état de l'ordinateur, un choix de la personne) :
     gardée dans journal-erreurs.txt, jamais envoyée. Avec le code de raison (lot J1 et après) : seulement l'ensemble
     fermé CODES_ATTENDUS ; un autre code n'est jamais attendu, quel que soit le texte. Sans code (0.88 à 0.91) :
-    seulement si TOUTES les raisons du message sont reconnues, comme test.ps1 ; une seule autre, et l'entrée part."""
+    seulement si TOUTES les raisons du message sont reconnues ; une seule autre, et l'entrée part."""
     lignes = entree.splitlines()
     if len(lignes) < 3 or lignes[1].strip() != "[vérification impossible]":
         return False

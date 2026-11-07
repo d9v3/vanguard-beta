@@ -39,6 +39,15 @@ pub(crate) enum Raison {
     Refuse(String),
     /// La commande ou le système a dit non (code de sortie, erreur rendue).
     Echoue(String),
+    /// La personne n'a pas donné l'accord qu'il faut (envoyer des noms vers un service en ligne) : son choix.
+    #[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))] // posée par les paquets AUR, sous Linux
+    SansAccord,
+    /// L'ordinateur n'écrit pas ce qu'il faudrait lire (audit de Windows éteint, journal désactivé, vide ou absent,
+    /// historique court) : son état, dit par la phrase, pas un défaut de Vanguard.
+    AuditCoupe(String),
+    /// Un état passager qui se règle seul (une nouvelle version en cours de déploiement) : la phrase dit lequel.
+    #[cfg_attr(not(any(test, windows)), allow(dead_code))] // posée par les logiciels périmés, jugés sous Windows
+    EnCours(String),
 }
 
 impl Raison {
@@ -57,7 +66,45 @@ impl Raison {
             Raison::Falsifie => "falsifie",
             Raison::Refuse(_) => "refuse",
             Raison::Echoue(_) => "echoue",
+            Raison::SansAccord => "sans-accord",
+            Raison::AuditCoupe(_) => "audit-coupe",
+            Raison::EnCours(_) => "en-cours",
         }
+    }
+
+    /// Un « non vérifié » attendu : l'état de l'ordinateur ou un choix de la personne, pas un défaut du code. Le
+    /// journal des erreurs ne le note pas (`machine::a_noter`) ; le bilan, lui, le dit toujours « non vérifié », jamais
+    /// sain. `eleve` : Vanguard tourne-t-il en administrateur (Windows) ou en root (Unix) ? Sans, un refus faute de
+    /// droits est la règle ; élevé, il est un vrai défaut, à noter.
+    pub(crate) fn attendue(&self, eleve: bool) -> bool {
+        match self {
+            Raison::Droits => !eleve,
+            Raison::SansAccord | Raison::AuditCoupe(_) | Raison::EnCours(_) => true,
+            Raison::Absente(_)
+            | Raison::Illisible(_)
+            | Raison::Muette
+            | Raison::Panique
+            | Raison::Delai
+            | Raison::VersionAncienne
+            | Raison::NonPrecisee
+            | Raison::Introuvable
+            | Raison::Falsifie
+            | Raison::Refuse(_)
+            | Raison::Echoue(_) => false,
+        }
+    }
+
+    /// La raison d'un constat qui en réunit plusieurs (« Security refusé ; journal System illisible ») : la première
+    /// qui n'est jamais attendue, sinon la première qui ne l'est que sans élévation (`Droits`), sinon la première.
+    /// Prendre simplement la première tairait au journal l'illisible derrière un refus attendu ; et un refus faute de
+    /// droits derrière un audit éteint ne serait plus noté quand Vanguard tourne élevé. Rien : `NonPrecisee`.
+    pub(crate) fn du_groupe(raisons: impl IntoIterator<Item = Raison>) -> Raison {
+        let raisons: Vec<Raison> = raisons.into_iter().collect();
+        let premiere = |f: &dyn Fn(&Raison) -> bool| raisons.iter().find(|r| f(r)).cloned();
+        premiere(&|r| !r.attendue(false))
+            .or_else(|| premiere(&|r| !r.attendue(true)))
+            .or_else(|| raisons.first().cloned())
+            .unwrap_or(Raison::NonPrecisee)
     }
 
     /// Le texte en français et en anglais : montré par le canal d'erreur commun ; vérifié par T11.
@@ -80,7 +127,10 @@ impl Raison {
             Raison::NonPrecisee => ("raison dans le message".into(), "reason in the message".into()),
             Raison::Introuvable => ("introuvable".into(), "not found".into()),
             Raison::Falsifie => ("changé hors de Vanguard".into(), "changed outside Vanguard".into()),
-            Raison::Refuse(p) | Raison::Echoue(p) => (p.clone(), p.clone()),
+            Raison::SansAccord => ("sans votre accord".into(), "without your consent".into()),
+            Raison::Refuse(p) | Raison::Echoue(p) | Raison::AuditCoupe(p) | Raison::EnCours(p) => {
+                (p.clone(), p.clone())
+            }
         }
     }
 
@@ -209,6 +259,9 @@ mod tests {
             Raison::Falsifie,
             Raison::Refuse("valeur hors des bornes".into()),
             Raison::Echoue("code de sortie 1".into()),
+            Raison::SansAccord,
+            Raison::AuditCoupe("journal désactivé".into()),
+            Raison::EnCours("déploiement de la 156.0.4314.50 en cours".into()),
         ];
         let mut codes = std::collections::HashSet::new();
         for r in &toutes {
@@ -216,7 +269,19 @@ mod tests {
             assert!(r.code().chars().all(|c| c.is_ascii_lowercase() || c == '-'));
             let (fr, en) = r.textes();
             assert!(!fr.is_empty() && !en.is_empty(), "{r:?}");
+            // Chaque code va dans la ligne de champs du journal : la liste fermée des codes le connaît.
+            assert!(
+                crate::compte_rendu::champs::est_code(r.code()),
+                "{} absent de CODES",
+                r.code()
+            );
         }
+        // Attendues (le journal des erreurs se tait) : seulement l'état de l'ordinateur et les choix de la personne,
+        // et les droits seulement sans élévation. Tout le reste est un défaut possible du code, noté.
+        let attendues: Vec<&str> = toutes.iter().filter(|r| r.attendue(false)).map(Raison::code).collect();
+        assert_eq!(attendues, ["droits", "sans-accord", "audit-coupe", "en-cours"]);
+        let eleve: Vec<&str> = toutes.iter().filter(|r| r.attendue(true)).map(Raison::code).collect();
+        assert_eq!(eleve, ["sans-accord", "audit-coupe", "en-cours"]);
     }
 
     /// Une écriture qui échoue (disque plein, fichier en lecture seule ou tenu par un autre programme) : jamais dite
@@ -294,5 +359,18 @@ mod tests {
             n <= ERREURS_EN_TEXTE_AU_PLUS,
             "{n} fonctions rendent leur erreur en texte, plafond {ERREURS_EN_TEXTE_AU_PLUS} : ne pas en ajouter"
         );
+    }
+
+    /// La raison d'un groupe de manques : celle qui doit être notée l'emporte, pour qu'un manque attendu (audit éteint)
+    /// ne cache jamais un défaut (lecture qui échoue) au journal des erreurs.
+    #[test]
+    fn raison_du_groupe() {
+        let coupe = Raison::AuditCoupe("audit éteint".into());
+        let echoue = Raison::Echoue("wevtutil".into());
+        assert_eq!(Raison::du_groupe([coupe.clone(), echoue.clone()]), echoue);
+        assert_eq!(Raison::du_groupe([coupe.clone(), Raison::Droits]), Raison::Droits);
+        assert_eq!(Raison::du_groupe([Raison::Droits, echoue.clone()]), echoue);
+        assert_eq!(Raison::du_groupe([coupe.clone(), Raison::SansAccord]), coupe);
+        assert_eq!(Raison::du_groupe([]), Raison::NonPrecisee);
     }
 }

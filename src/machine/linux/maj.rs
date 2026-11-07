@@ -1401,8 +1401,14 @@ pub(super) fn paquets_aur() -> Option<Constat> {
         return None;
     }
     // Leurs noms sont une partie de la liste des logiciels : ils ne sortent qu'avec l'accord donné dans Paramètres.
+    // Le choix de la personne, pas un défaut du code : typé `SansAccord`, le journal des erreurs ne le note pas.
     if !crate::parametres::paquets_aur() {
-        return Some(impossible("Paquets AUR", sans_accord_aur()));
+        let quoi = sans_accord_aur();
+        return Some(crate::machine::impossible_par(
+            "Paquets AUR",
+            crate::modele::Raison::SansAccord,
+            trf!("Impossible de vérifier ({quoi}).", "Could not check ({quoi})."),
+        ));
     }
     let Some(resultats) = fiches_aur(&installes) else {
         return Some(impossible(

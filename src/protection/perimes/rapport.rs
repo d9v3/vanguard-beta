@@ -19,7 +19,7 @@ use super::mozilla_avis::{self, Jugement};
 use super::produits::Produit;
 use super::verdicts::{self, Faits, Verdict};
 use super::version::Version;
-use crate::machine::{Constat, alerte, impossible, ok};
+use crate::machine::{Constat, alerte, impossible, impossible_par, ok};
 use crate::protection::kev::Exploitee;
 use crate::risk::Niveau;
 use crate::ui::*;
@@ -54,7 +54,7 @@ impl Juge {
     }
 
     pub(super) fn non_verifie(&self) -> bool {
-        !self.touche() && self.vieux.is_none() && matches!(self.verdict, Verdict::NonVerifie(_))
+        !self.touche() && self.vieux.is_none() && self.verdict.raison_non_verifiee().is_some()
     }
 }
 
@@ -163,7 +163,7 @@ pub(crate) fn juger_tout(
         .into_iter()
         .map(|i| {
             let verdict = verdicts::juger(&i, faits);
-            let vieux = (matches!(verdict, Verdict::NonVerifie(_)) && navigateur(i.produit))
+            let vieux = (verdict.raison_non_verifiee().is_some() && navigateur(i.produit))
                 .then(|| age_fichier(&i))
                 .flatten()
                 .filter(|j| *j > crate::machine::fin_de_support::NAVIGATEUR_JOURS);
@@ -227,7 +227,7 @@ fn ligne(j: &Juge) -> String {
         }
         return t;
     }
-    if let (Some(jours), Verdict::NonVerifie(raison)) = (j.vieux, &j.verdict) {
+    if let (Some(jours), Some(raison)) = (j.vieux, j.verdict.raison_non_verifiee()) {
         return trf!(
             "{nom} — pas mis à jour depuis {jours} jours (version non comparée : {raison})",
             "{nom} — not updated for {jours} days (version not compared: {raison})"
@@ -260,7 +260,7 @@ fn ligne(j: &Juge) -> String {
             "{nom} — branche plus corrigée ({source})",
             "{nom} — branch no longer fixed ({source})"
         ),
-        Verdict::NonVerifie(raison) => format!("{nom} ({raison})"),
+        Verdict::NonVerifie(raison) | Verdict::EnCours(raison) => format!("{nom} ({raison})"),
     };
     // L'exécutable et le dossier de version d'un navigateur ne disent pas la même chose : la plus haute a été
     // gardée, l'autre se dit.
@@ -476,7 +476,24 @@ pub(crate) fn constats_de(b: &Bilan) -> Vec<Constat> {
         constats.push(ok(CAT, aucun()));
     }
     if !raisons.is_empty() {
-        constats.push(impossible(CAT, &resume(&raisons, 5, " ; ")));
+        let texte = resume(&raisons, 5, " ; ");
+        // Un déploiement en cours (Edge, Office) est un état passager de la machine : typé `Raison::EnCours`, que le
+        // journal des erreurs tait, mais seulement quand c'est la seule chose non vérifiée ; sinon la raison reste non
+        // précisée et le constat est noté. Toujours un seul constat : le bilan, la note et la couverture ne changent pas.
+        let seulement_en_cours = b.non_lus.is_empty()
+            && b.juges
+                .iter()
+                .filter(|j| j.non_verifie())
+                .all(|j| matches!(j.verdict, Verdict::EnCours(_)));
+        constats.push(if seulement_en_cours {
+            impossible_par(
+                CAT,
+                crate::modele::Raison::EnCours(texte.clone()),
+                trf!("Impossible de vérifier ({texte}).", "Could not check ({texte})."),
+            )
+        } else {
+            impossible(CAT, &texte)
+        });
     }
     constats
 }
@@ -960,6 +977,42 @@ mod tests {
             &|_| None,
         ));
         assert!(c.len() == 1 && !c[0].verifie);
+    }
+
+    /// Un déploiement en cours (Edge, Office), seul non vérifié : le même constat « impossible », typé `EnCours` pour
+    /// que le journal des erreurs le taise. Avec autre chose de non vérifié, la raison reste non précisée (notée). Le
+    /// nombre de constats, leur message et la couverture ne changent pas.
+    #[test]
+    fn deploiement_en_cours_type_a_part() {
+        use crate::modele::{Etat, Raison};
+        let office = || installe(Produit::Office, "16.0.1.2", Branche::Inconnue);
+        let en_cours = || Verdict::EnCours("déploiement de la 16.0.9 en cours".into());
+        let mut b = bilan(vec![office()], vec![], &|_| None);
+        b.juges[0].verdict = en_cours();
+        let c = constats_de(&b);
+        assert_eq!(c.len(), 1, "{:?}", c.iter().map(|c| &c.message).collect::<Vec<_>>());
+        assert!(!c[0].verifie && c[0].probleme == Some(Niveau::Info));
+        assert!(
+            matches!(c[0].etat(), Etat::NonVerifie(Raison::EnCours(_))),
+            "{:?}",
+            c[0].etat()
+        );
+        assert!(c[0].message.contains("16.0.9"), "{}", c[0].message);
+        assert_eq!(non_verifies(&b).len(), 1);
+        assert!(!b.juges[0].a_jour() && b.juges[0].non_verifie());
+        // Un autre logiciel non vérifié pour une autre raison : un seul constat, raison non précisée.
+        let mut b = bilan(vec![office(), office()], vec![], &|_| None);
+        b.juges[0].verdict = en_cours();
+        let c = constats_de(&b);
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].etat(), Etat::NonVerifie(Raison::NonPrecisee));
+        assert_eq!(non_verifies(&b).len(), 2);
+        // Des comptes non lus : pareil.
+        let mut b = bilan(vec![office()], vec![NonLu::Comptes(1)], &|_| None);
+        b.juges[0].verdict = en_cours();
+        let c = constats_de(&b);
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].etat(), Etat::NonVerifie(Raison::NonPrecisee));
     }
 
     /// Sur de vraies copies, gardées à la main hors du dépôt (jamais versionnées : sources sans licence publiée ou

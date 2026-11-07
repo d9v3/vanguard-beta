@@ -1891,18 +1891,51 @@ pub fn auditer(bavard: bool) -> Audit {
     // Vérifications impossibles : souvent une version de Windows ou une distribution que le code ne connaît pas.
     // Seulement à la demande : la surveillance horaire répéterait les mêmes lignes.
     if bavard {
-        for c in a.constats.iter().filter(|c| !c.verifie) {
+        for c in a_noter(&a.constats, eleve()) {
+            let code = match c.etat() {
+                Etat::NonVerifie(r) => crate::compte_rendu::Code::new(r.code()),
+                _ => None,
+            };
             crate::journal::noter(
                 &crate::compte_rendu::journal::Champs::new(
                     crate::compte_rendu::Genre::Impossible,
                     crate::compte_rendu::Contexte::VerificationImpossible,
                 )
-                .regle(crate::compte_rendu::Regle::new(c.regle)),
+                .regle(crate::compte_rendu::Regle::new(c.regle))
+                .code(code),
                 &format!("{} : {}", c.categorie, c.message),
             );
         }
     }
     a
+}
+
+/// Les constats non vérifiés à noter au journal des erreurs : ceux dont la raison typée n'est pas attendue
+/// (`Raison::attendue`), jamais jugés sur leur texte. Un « non vérifié » qui dit l'état de l'ordinateur ou le choix
+/// de la personne (pas administrateur, audit de Windows éteint, accord de l'AUR pas donné, déploiement en cours)
+/// n'est pas un défaut du code : il n'en sort pas de ticket. Le bilan, la note et `Audit::fiable` n'en changent pas.
+pub(crate) fn a_noter(constats: &[Constat], eleve: bool) -> Vec<&Constat> {
+    constats
+        .iter()
+        .filter(|c| match c.etat() {
+            Etat::NonVerifie(r) => !r.attendue(eleve),
+            Etat::Sain | Etat::SansObjet(_) | Etat::Probleme { .. } => false,
+        })
+        .collect()
+}
+
+/// Vanguard tourne-t-il élevé ? Unix : compte effectif root ; Windows : jeton élevé, et un jeton illisible compte pour
+/// élevé. Pour le journal des erreurs, qui doit pencher du côté de noter : un refus faute de droits n'est tu que si
+/// l'on sait que Vanguard n'est pas élevé.
+fn eleve() -> bool {
+    #[cfg(unix)]
+    {
+        crate::socle::euid() == 0
+    }
+    #[cfg(windows)]
+    {
+        windows::processus::eleve_ou_inconnu()
+    }
 }
 
 /// Le bilan du passage horaire de la surveillance : `auditer(false)`, dont les règles lentes de la cache
@@ -2869,5 +2902,61 @@ mod tests_etat {
                 }
             }
         }
+    }
+
+    /// Le journal des erreurs tait les « non vérifié » attendus (l'état de l'ordinateur, un choix de la personne),
+    /// choisis par leur raison typée et non par leur texte ; un refus faute de droits n'est tu que si Vanguard n'est
+    /// pas élevé. Tout le reste est noté, et rien n'est retiré du bilan.
+    #[test]
+    fn journal_tait_les_non_verifies_attendus() {
+        let droits = impossible_par("SSH", Raison::Droits, "réservé à l'administrateur");
+        let coupe = impossible_par("Journaux", Raison::AuditCoupe("audit éteint".into()), "audit éteint");
+        let accord = impossible_par("Paquets AUR", Raison::SansAccord, "pas d'accord");
+        let en_cours = impossible_par("Logiciels", Raison::EnCours("Edge 130".into()), "déploiement");
+        let ancien = impossible("Pare-feu", "réservé à l'administrateur");
+        let muette = impossible_par("Audit", Raison::Muette, "rien");
+        let panique = impossible_par("Audit", Raison::Panique, "plantée");
+        let illisible = impossible_par("Audit", Raison::Illisible("accès refusé".into()), "illisible");
+        let echoue = impossible_par("Journaux", Raison::Echoue("wevtutil".into()), "échec");
+        let sain = ok("Pare-feu", "actif");
+        let probleme = alerte("Ports en écoute", Niveau::Moyen, "ouvert");
+        let tous = vec![
+            droits, coupe, accord, en_cours, ancien, muette, panique, illisible, echoue, sain, probleme,
+        ];
+        let categories = |eleve: bool| {
+            a_noter(&tous, eleve)
+                .iter()
+                .map(|c| (c.categorie, c.etat()))
+                .collect::<Vec<_>>()
+        };
+        // Pas élevé : le refus faute de droits est la règle ; le texte « administrateur » d'un ancien constat ne le
+        // tait pas, sa raison n'est pas précisée.
+        let noter_sans = vec![
+            ("Pare-feu", Etat::NonVerifie(Raison::NonPrecisee)),
+            ("Audit", Etat::NonVerifie(Raison::Muette)),
+            ("Audit", Etat::NonVerifie(Raison::Panique)),
+            ("Audit", Etat::NonVerifie(Raison::Illisible("accès refusé".into()))),
+            ("Journaux", Etat::NonVerifie(Raison::Echoue("wevtutil".into()))),
+        ];
+        assert_eq!(categories(false), noter_sans);
+        // Élevé : un refus faute de droits est un vrai défaut.
+        let mut noter_eleve = vec![("SSH", Etat::NonVerifie(Raison::Droits))];
+        noter_eleve.extend(noter_sans);
+        assert_eq!(categories(true), noter_eleve);
+        // Le bilan, lui, garde tout : le filtre ne fait que lire.
+        assert_eq!(tous.iter().filter(|c| !c.verifie).count(), 9);
+        assert!(tous.iter().all(Constat::coherent));
+    }
+
+    /// La boucle du journal dans `auditer` passe par `a_noter` (la raison typée), jamais par le texte du message.
+    #[test]
+    fn journal_filtre_par_la_raison() {
+        let source = include_str!("mod.rs");
+        let debut = source.find("    if bavard {\n        for c in a_noter(&a.constats, eleve()) {");
+        assert!(debut.is_some(), "la boucle du journal ne passe plus par a_noter");
+        let boucle = &source[debut.unwrap_or(0)..];
+        let boucle = &boucle[..boucle.find("\n    a\n}").unwrap_or(boucle.len())];
+        assert!(!boucle.contains(".message.contains("), "filtre sur le texte : {boucle}");
+        assert!(!boucle.contains("administrat"), "filtre sur le texte : {boucle}");
     }
 }

@@ -122,15 +122,27 @@ pub(crate) enum Verdict {
     },
     /// La raison, prête à suivre « non vérifié : ».
     NonVerifie(String),
+    /// Non vérifié parce que l'éditeur déploie encore la dernière version (Edge, Office) : la raison, comme
+    /// `NonVerifie`. À part, pour que le journal des erreurs taise cet état passager de la machine
+    /// (`modele::Raison::EnCours`).
+    EnCours(String),
 }
 
 impl Verdict {
+    /// La raison d'un verdict non vérifié, déploiement en cours compris.
+    pub(crate) fn raison_non_verifiee(&self) -> Option<&str> {
+        match self {
+            Verdict::NonVerifie(r) | Verdict::EnCours(r) => Some(r),
+            _ => None,
+        }
+    }
+
     /// Pour comparer deux verdicts : plus c'est grand, pire c'est.
     #[cfg(test)]
     fn gravite(&self) -> u8 {
         match self {
             Verdict::AJour { .. } => 0,
-            Verdict::NonVerifie(_) => 1,
+            Verdict::NonVerifie(_) | Verdict::EnCours(_) => 1,
             Verdict::Depassee { .. } | Verdict::BrancheFinie { .. } => 2,
         }
     }
@@ -395,7 +407,7 @@ fn edge(i: &Installe, v: Version, f: &Faits) -> Verdict {
         .publiee
         .is_none_or(|p| f.maintenant.signed_duration_since(p) < EDGE_DEPLOIEMENT);
     if recente && ecart <= 1 {
-        return Verdict::NonVerifie(trf!(
+        return Verdict::EnCours(trf!(
             "déploiement de la {derniere} en cours",
             "rollout of {derniere} in progress"
         ));
@@ -570,7 +582,7 @@ fn office(i: &Installe, v: Version, f: &Faits) -> Verdict {
         .and_then(|d| d.disponible)
         .is_some_and(|d| aujourd_hui.signed_duration_since(d) < OFFICE_DEPLOIEMENT);
     if en_cours && precedente.is_some_and(|p| v >= p) {
-        return Verdict::NonVerifie(trf!(
+        return Verdict::EnCours(trf!(
             "déploiement de la {} en cours",
             "rollout of {} in progress",
             canal.derniere
@@ -794,10 +806,7 @@ pub(crate) mod tests {
     }
 
     fn raison(verdict: &Verdict) -> &str {
-        match verdict {
-            Verdict::NonVerifie(r) => r,
-            autre => panic!("{autre:?}"),
-        }
+        verdict.raison_non_verifiee().unwrap_or_else(|| panic!("{verdict:?}"))
     }
 
     #[test]
@@ -840,6 +849,10 @@ pub(crate) mod tests {
         assert!(est_a_jour(&j("156.0.4314.42", Branche::Release, Plateforme::X64)));
         // Stable publiée hier : la version d'avant n'est pas encore due.
         assert!(raison(&j("155.0.4283.61", Branche::Release, Plateforme::X64)).contains("156.0.4314.42"));
+        assert!(matches!(
+            j("155.0.4283.61", Branche::Release, Plateforme::X64),
+            Verdict::EnCours(_)
+        ));
         assert!(est_depassee(&j("153.0.1.2", Branche::Release, Plateforme::X64)));
         // Publiée il y a 13 jours (ARM) : même majeur, dépassée.
         assert!(est_depassee(&j("155.0.4283.50", Branche::Release, Plateforme::Arm64)));
@@ -889,6 +902,9 @@ pub(crate) mod tests {
         assert!(est_a_jour(&j("16.0.20527.20088", actuel)));
         // La dernière, servie depuis deux jours : celle d'avant n'est pas encore due ; plus vieille, dépassée.
         assert!(raison(&j("16.0.20430.20182", actuel)).contains("20527"));
+        assert!(matches!(j("16.0.20430.20182", actuel), Verdict::EnCours(_)));
+        // Un canal inconnu reste un non vérifié ordinaire, pas un déploiement en cours.
+        assert!(matches!(j("16.0.20527.20088", "InsiderFast"), Verdict::NonVerifie(_)));
         assert!(est_depassee(&j("16.0.20326.20230", actuel)));
         // Semi-annuel : plusieurs builds servies, chacune à jour à sa dernière révision.
         assert!(est_a_jour(&j("16.0.20326.20230", "Deferred")));

@@ -154,6 +154,9 @@ pub(crate) const CODES: &[&str] = &[
     "falsifie",
     "refuse",
     "echoue",
+    "sans-accord",
+    "audit-coupe",
+    "en-cours",
     // invariants de l'autotest
     "sans-regle",
     "etat-incoherent",

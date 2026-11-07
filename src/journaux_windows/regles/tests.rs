@@ -3807,3 +3807,59 @@ fn tache_commentaires_et_cdata() {
         1
     );
 }
+
+/// Ce que cet ordinateur n'écrit pas (journal désactivé, vide, absent ici, audit coupé ou réduit, historique court)
+/// est typé `AuditCoupe` : non vérifié au bilan, tu au journal des erreurs. Une lecture qui échoue, un journal muet,
+/// un dossier incomplet ou un refus faute de droits gardent leur raison, et sont notés.
+#[test]
+fn manques_de_l_ordinateur_types_audit_coupe() {
+    use crate::modele::Raison;
+    let quand = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+    let quoi = ("connexions", "logons");
+    let coupes = [
+        Manque::Absent("Microsoft-Windows-Essai/Operational".into()),
+        Manque::Desactive("Essai".into()),
+        Manque::Vide("Security".into()),
+        Manque::VideCalme("Windows PowerShell".into()),
+        Manque::AuditReduit {
+            journal: "Security".into(),
+        },
+        Manque::NonAudite {
+            journal: "Security".into(),
+            quoi,
+        },
+        Manque::ChampCoupe {
+            journal: "Security".into(),
+            depuis: quand,
+            quoi,
+        },
+        Manque::PeriodeCourte {
+            journal: "Security".into(),
+            debut: quand,
+        },
+    ];
+    for m in &coupes {
+        let (texte, raison) = resultat::manque(&Source::Vivant, m);
+        assert_eq!(raison, Raison::AuditCoupe(texte.clone()), "{m:?}");
+        assert!(raison.attendue(true) && raison.attendue(false), "{m:?}");
+    }
+    // Un dossier copié d'ailleurs : ce qui manque est un oubli de la copie, pas l'état de l'ordinateur.
+    let dossier = Source::Dossier(std::path::PathBuf::from("essai"));
+    assert_eq!(resultat::manque(&dossier, &coupes[0]).1, Raison::Introuvable);
+    let notes = [
+        Manque::Muet {
+            journal: "System".into(),
+            depuis: quand,
+        },
+        Manque::Illisible("Security".into(), "accès refusé".into()),
+        Manque::Partiel("Security".into(), "un morceau".into()),
+        Manque::Bornes(3),
+    ];
+    for m in &notes {
+        let (_, raison) = resultat::manque(&Source::Vivant, m);
+        assert!(!raison.attendue(true) && !raison.attendue(false), "{m:?} : {raison:?}");
+    }
+    // Refusé faute de droits : tu sans élévation seulement.
+    let (_, refuse) = resultat::manque(&Source::Vivant, &Manque::Refuse("Security".into()));
+    assert_eq!(refuse, Raison::Droits);
+}

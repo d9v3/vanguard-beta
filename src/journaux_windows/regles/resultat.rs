@@ -479,21 +479,28 @@ fn journal_dit(source: &Source, journal: &str) -> String {
     }
 }
 
-/// Un manque, dans la langue du moment, et sa raison typée.
+/// Un manque, dans la langue du moment, et sa raison typée. `AuditCoupe` : ce que cet ordinateur n'écrit pas (audit
+/// éteint par défaut, journal désactivé, vide ou absent, historique court) ; c'est son état, dit « non vérifié »
+/// sans le compter sain, pas un défaut de Vanguard : le journal des erreurs ne le note pas (`Raison::attendue`).
 pub(crate) fn manque(source: &Source, m: &Manque) -> (String, Raison) {
     let ill = |t: &str| Raison::Illisible(t.to_string());
+    let coupe = |t: &str| Raison::AuditCoupe(t.to_string());
     match m {
-        Manque::Absent(j) => (
-            match source {
-                Source::Dossier(_) => crate::trf!(
+        Manque::Absent(j) => match source {
+            // Un dossier copié d'ailleurs : ce qui manque est un oubli de la copie, pas l'état de cet ordinateur.
+            Source::Dossier(_) => (
+                crate::trf!(
                     "journal {} absent du dossier",
                     "log {} missing from the folder",
                     journal_dit(source, j)
                 ),
-                Source::Vivant => crate::trf!("journal {j} absent de cet ordinateur", "log {j} missing on this computer"),
-            },
-            Raison::Introuvable,
-        ),
+                Raison::Introuvable,
+            ),
+            Source::Vivant => {
+                let t = crate::trf!("journal {j} absent de cet ordinateur", "log {j} missing on this computer");
+                (t.clone(), coupe(&t))
+            }
+        },
         Manque::Refuse(j) => (
             crate::trf!(
                 "journal {j} réservé à l'administrateur",
@@ -510,7 +517,7 @@ pub(crate) fn manque(source: &Source, m: &Manque) -> (String, Raison) {
                 "journal {j} désactivé : il n'écrit plus rien, ce qui est lu est ancien",
                 "log {j} disabled: it writes nothing anymore, what is read is old"
             );
-            (t.clone(), Raison::Echoue(t))
+            (t.clone(), coupe(&t))
         }
         Manque::Partiel(j, x) if j.is_empty() => (x.clone(), ill(x)),
         Manque::Partiel(j, x) => {
@@ -522,14 +529,14 @@ pub(crate) fn manque(source: &Source, m: &Manque) -> (String, Raison) {
                 "journal {j} lu mais vide sur la période : vidé, remplacé, ou son audit coupé",
                 "log {j} read but empty over the period: cleared, replaced, or its auditing turned off"
             );
-            (t.clone(), Raison::Echoue(t))
+            (t.clone(), coupe(&t))
         }
         Manque::VideCalme(j) => {
             let t = crate::trf!(
                 "journal {j} présent mais vide sur la période : rien n'y est vérifié (courant si rien ne s'est passé ; un journal vidé ressemble à cela)",
                 "log {j} present but empty over the period: nothing in it is checked (common if nothing happened; a cleared log looks the same)"
             );
-            (t.clone(), Raison::Echoue(t))
+            (t.clone(), coupe(&t))
         }
         Manque::Muet { journal, depuis } => {
             let t = crate::trf!(
@@ -544,7 +551,7 @@ pub(crate) fn manque(source: &Source, m: &Manque) -> (String, Raison) {
                 "{journal} : la politique d'audit de ces événements a été réduite pendant la période (4719)",
                 "{journal}: the audit policy of these events was reduced during the period (4719)"
             );
-            (t.clone(), Raison::Echoue(t))
+            (t.clone(), coupe(&t))
         }
         Manque::NonVerifies { journal, nombre } => {
             let t = crate::trf!(
@@ -559,7 +566,7 @@ pub(crate) fn manque(source: &Source, m: &Manque) -> (String, Raison) {
                 "{journal} : rien ne prouve que Windows écrit ces événements ({q})",
                 "{journal}: nothing proves Windows writes these events ({q})"
             );
-            (t.clone(), Raison::Echoue(t))
+            (t.clone(), coupe(&t))
         }
         Manque::ChampCoupe { journal, depuis, quoi } => {
             let q = texte(*quoi);
@@ -568,16 +575,16 @@ pub(crate) fn manque(source: &Source, m: &Manque) -> (String, Raison) {
                 "{journal}: nothing proves these events since {} ({q})",
                 date(*depuis)
             );
-            (t.clone(), Raison::Echoue(t))
+            (t.clone(), coupe(&t))
         }
-        Manque::PeriodeCourte { journal, debut } => (
-            crate::trf!(
+        Manque::PeriodeCourte { journal, debut } => {
+            let t = crate::trf!(
                 "journal {journal} lu seulement depuis le {} : plus ancien écrasé, effacé, ou rien écrit",
                 "log {journal} only read from {}: older events overwritten, cleared, or never written",
                 date(*debut)
-            ),
-            Raison::Introuvable,
-        ),
+            );
+            (t.clone(), coupe(&t))
+        }
         Manque::Bornes(n) => {
             let t = crate::trf!(
                 "{n} événements au-delà des bornes de l'analyse, pas jugés",
@@ -823,7 +830,7 @@ fn constats_dates(
             for t in &liste {
                 couverture.non_verifies.push(format!("{} : {t}", r.id));
             }
-            let raison = textes.into_iter().next().map_or(Raison::NonPrecisee, |(_, r)| r);
+            let raison = Raison::du_groupe(textes.into_iter().map(|(_, r)| r));
             let deja = if j.trouvailles.is_empty() {
                 String::new()
             } else {
@@ -897,7 +904,7 @@ pub(crate) fn constats_du_bilan(a: &Analyse, est_normale: &dyn Fn(&str) -> bool)
             }
         }
         let cle = liste.join(" ; ");
-        let raison = textes.into_iter().next().map_or(Raison::NonPrecisee, |(_, r)| r);
+        let raison = Raison::du_groupe(textes.into_iter().map(|(_, r)| r));
         let regle = format!("{} ({})", r.id, texte(r.sujet));
         match non_verifiees.iter_mut().find(|(c, x, _)| *c == cle && *x == raison) {
             Some((_, _, regles)) => regles.push(regle),

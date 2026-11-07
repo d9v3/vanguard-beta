@@ -920,7 +920,7 @@ const SCHEMA = {
     },
     "Code": {
       "type": "string",
-      "pattern": "^(?:droits|absente|illisible|muette|panique|delai|version-ancienne|non-precisee|introuvable|falsifie|refuse|echoue|sans-regle|etat-incoherent|message-vide|absent-natif|en-trop-natif|valeur-differente|champ-illisible|sortie-inattendue|-?[0-9]{1,10})$"
+      "pattern": "^(?:droits|absente|illisible|muette|panique|delai|version-ancienne|non-precisee|introuvable|falsifie|refuse|echoue|sans-accord|audit-coupe|en-cours|sans-regle|etat-incoherent|message-vide|absent-natif|en-trop-natif|valeur-differente|champ-illisible|sortie-inattendue|-?[0-9]{1,10})$"
     },
     "Gabarit": {
       "type": "string",
