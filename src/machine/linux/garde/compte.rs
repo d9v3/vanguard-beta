@@ -319,8 +319,8 @@ pub(crate) fn juger(posee: bool, etat: Option<&Etat>, maintenant: u64) -> Consta
         hausser(
             Niveau::Eleve,
             trf!(
-                "{n} lancements de programmes certainement malveillants ont été permis faute de verdict à temps (garde saturé) : jugés après coup, leur verdict est gardé pour le lancement suivant (vanguard garde montre les derniers événements).",
-                "{n} launches of certainly malicious programs were allowed for lack of a timely verdict (guard saturated): judged afterwards, their verdict is kept for the next launch (vanguard guard shows the latest events)."
+                "{n} lancements de programmes certainement malveillants ont été permis faute de verdict à temps (garde saturé, ou fichier de plus de 64 Mio) : jugés après coup, leur verdict est gardé pour le lancement suivant (vanguard garde montre les derniers événements).",
+                "{n} launches of certainly malicious programs were allowed for lack of a timely verdict (guard saturated, or file over 64 MiB): judged afterwards, their verdict is kept for the next launch (vanguard guard shows the latest events)."
             ),
         );
     }
