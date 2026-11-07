@@ -1,7 +1,8 @@
 //! La forme des ordres du blocage que l'assistant élevé de Linux et le processus élevé de Windows lisent du
 //! Vanguard non élevé (src/protection/blocage/ordres_ligne.rs) : verbes hors de la liste, pare-feu inconnus,
 //! adresses écrites autrement (IPv4 en IPv6, zéros de tête), ports nuls ou démesurés, chemins en hexadécimal piégés
-//! (majuscules, longueur impaire, relatif, NUL, saut de ligne), lignes démesurées ; et le non-recouvrement avec les
+//! (majuscules, longueur impaire, relatif, NUL, saut de ligne), départs absents ou nuls de la coupure du réseau d'un
+//! programme, lignes démesurées ; et le non-recouvrement avec les
 //! gestes de Linux (src/machine/gestes_unix.rs), qui passent par le même canal.
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (src/) : refusé sans recours, un allow ne compile pas.
@@ -51,6 +52,14 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             | ordres_ligne::Ordre::SuspendreProcessus { pid, chemin, .. }
             | ordres_ligne::Ordre::ReprendreProcessus { pid, chemin, .. } => {
                 assert_ne!(pid, 0);
+                assert!(!chemin.is_empty() && chemin.len() <= ordres_ligne::CHEMIN_MAX);
+                assert!(!chemin.contains(['\0', '\n', '\r']));
+            }
+            // La coupure du réseau d'un programme : le départ est toujours là, jamais nul (anti-course).
+            ordres_ligne::Ordre::CouperReseauProgramme { pid, chemin, depart }
+            | ordres_ligne::Ordre::RendreReseauProgramme { pid, chemin, depart } => {
+                assert_ne!(pid, 0);
+                assert_ne!(depart, 0);
                 assert!(!chemin.is_empty() && chemin.len() <= ordres_ligne::CHEMIN_MAX);
                 assert!(!chemin.contains(['\0', '\n', '\r']));
             }

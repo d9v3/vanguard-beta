@@ -78,7 +78,7 @@ pub(crate) fn est_nom_de_coupure(nom: &str) -> bool {
     nombre(pid) && nombre(depart) && pid.parse::<u32>().is_ok_and(|p| p != 0) && depart.parse::<u64>().is_ok()
 }
 
-/// L'unité où remettre un processus (celle d'où il venait, lue dans /proc/<pid>/cgroup par l'assistant) : un nom
+/// L'unité où remettre un processus (celle d'où il venait, lue dans `/proc/<pid>/cgroup` par l'assistant) : un nom
 /// d'unité tel qu'il paraît dans un chemin de cgroup (« \\x2d » compris), .service ou .scope, 255 octets au plus.
 pub(crate) fn unite_de_retour_admise(nom: &str) -> bool {
     !nom.is_empty()
@@ -88,7 +88,13 @@ pub(crate) fn unite_de_retour_admise(nom: &str) -> bool {
         && nom
             .bytes()
             .all(|o| o.is_ascii_alphanumeric() || b":_.@-\\".contains(&o))
-        && (nom.ends_with(".service") || nom.ends_with(".scope"))
+        && est_unite_de_processus(nom)
+}
+
+/// Le nom d'une unité qui porte des processus : un service ou un scope (les noms d'unité ont leur casse).
+fn est_unite_de_processus(nom: &str) -> bool {
+    nom.rsplit_once('.')
+        .is_some_and(|(_, genre)| genre == "service" || genre == "scope")
 }
 
 /// Le sous-cgroup sous cette unité (vide, ou « /a/b » dans une unité déléguée) : des composants admis comme un nom
@@ -447,7 +453,7 @@ fn proprietes_de_coupure(pid: u32, description: &str) -> Valeur {
     ])
 }
 
-/// Met le processus `pid` dans le scope de coupure `nom` (StartTransientUnit, PIDs = [pid], Slice = vanguard.slice),
+/// Met le processus `pid` dans le scope de coupure `nom` (StartTransientUnit, `PIDs = [pid]`, `Slice = vanguard.slice`),
 /// et attend que systemd confirme (« done »). Jamais un déplacement à la main dans /sys/fs/cgroup : systemd tient les
 /// cgroups, et le scope se ramasse seul quand le processus finit. Le pid est passé en nombre (le bus ne passe pas ici
 /// de descripteur, PIDFDs) : l'appelant revérifie le départ du processus et son cgroup après coup.

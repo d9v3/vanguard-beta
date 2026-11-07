@@ -5,7 +5,7 @@
 //! connexion déjà ouverte continue), jamais avalé.
 //!
 //! La coupure du réseau d'un programme (Défense R3) coupe de même les prises d'un processus, reconnues par leur
-//! numéro d'inode (celui de « socket:[N] » dans /proc/<pid>/fd) : une prise garde le cgroup où elle est née, si bien
+//! numéro d'inode (celui de `socket:[N]` dans `/proc/<pid>/fd`) : une prise garde le cgroup où elle est née, si bien
 //! que celles ouvertes avant le changement de cgroup échapperaient sinon à la règle.
 
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
@@ -75,7 +75,7 @@ pub(crate) fn prises_de(octets: &[u8], inodes: &[u64]) -> Vec<(u8, [u8; 48])> {
         .collect()
 }
 
-/// Les inodes des prises ouvertes par ce processus (« socket:[N] » dans /proc/<pid>/fd).
+/// Les inodes des prises ouvertes par ce processus (`socket:[N]` dans `/proc/<pid>/fd`).
 pub(crate) fn inodes_du_processus(pid: u32) -> Vec<u64> {
     let Ok(lus) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
         return Vec::new();
@@ -282,7 +282,7 @@ mod tests {
             &std::fs::metadata(format!("/proc/self/fd/{}", std::os::fd::AsRawFd::as_raw_fd(&s))).unwrap(),
         );
         assert!(inodes_du_processus(std::process::id()).contains(&ino));
-        assert!(inodes_du_processus(0).is_empty());
+        assert_eq!(inodes_du_processus(0), Vec::<u64>::new());
     }
 
     /// Dedans un espace de noms réseau à part : une vraie connexion TCP sur la boucle locale, coupée par

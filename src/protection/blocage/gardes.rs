@@ -401,6 +401,80 @@ pub(crate) fn role_a_confirmer(nom: &str, chemin: &str, uid: Option<u32>) -> Opt
     None
 }
 
+/// Pourquoi le réseau de ce processus ne doit jamais être coupé (« couper le réseau du programme »), ou `None`.
+/// Linux : les gardes du gel (`processus_suspendable` : ce que R1 refuse de geler ne se coupe pas non plus, le bus
+/// système et polkit compris, par où passe le retour) ; un programme du système passe, montré et confirmé
+/// (`role_a_confirmer`). Windows : celles de l'arrêt (un programme du système est refusé : la règle vise le fichier,
+/// tous ses processus, svchost compris). Partout : jamais Vanguard (son fichier, pas seulement ses processus), ni un
+/// programme d'accès à distance ou de VPN (la session en dépend) ; sous Windows, jamais le programme qui écoute sur le
+/// port du Bureau à distance (`porteurs_du_bureau` : ses noms, sans « .exe »).
+pub(crate) fn reseau_intouchable(
+    pid: u32,
+    nom: &str,
+    chemin: Option<&str>,
+    intouchables: &HashSet<u32>,
+    os: Os,
+    porteurs_du_bureau: &[String],
+) -> Option<&'static str> {
+    // Vanguard et l'accès à distance d'abord : leur raison est la plus juste (sshd est aussi un nom critique du gel).
+    if let Some(chemin) = chemin {
+        let (simple, fichier) = (nom_simple(nom), nom_simple(chemin));
+        if fichier == "vanguard" || simple == "vanguard" || fichier_de_vanguard(chemin, os) {
+            return Some(tr!(
+                "Vanguard lui-même : son réseau n'est jamais coupé",
+                "Vanguard itself: its network is never cut"
+            ));
+        }
+        if programme_de_session(nom) || programme_de_session(chemin) {
+            return Some(tr!(
+                "programme d'accès à distance ou de VPN : une session à distance en dépend, son réseau n'est jamais coupé",
+                "remote access or VPN program: a remote session depends on it, its network is never cut"
+            ));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    let premiere = processus_suspendable(pid, nom, chemin, intouchables);
+    #[cfg(not(target_os = "linux"))]
+    let premiere = processus_intouchable(pid, nom, chemin, intouchables, os);
+    if let Some(raison) = premiere {
+        // La raison du gel, dite pour le réseau quand elle parle de gel.
+        let critique_au_gel = tr!(
+            "processus critique du système : jamais gelé",
+            "critical system process: never frozen"
+        );
+        return Some(if raison == critique_au_gel {
+            tr!(
+                "processus critique du système : son réseau n'est jamais coupé",
+                "critical system process: its network is never cut"
+            )
+        } else {
+            raison
+        });
+    }
+    let chemin = chemin?;
+    let (simple, fichier) = (nom_simple(nom), nom_simple(chemin));
+    let du_bureau = |n: &str| n == "svchost" || porteurs_du_bureau.iter().any(|p| nom_simple(p) == n);
+    if os == Os::Windows && (du_bureau(&simple) || du_bureau(&fichier)) {
+        return Some(tr!(
+            "programme qui porte le Bureau à distance (port 3389 ou le sien) : son réseau n'est jamais coupé",
+            "program that carries Remote Desktop (port 3389 or its own): its network is never cut"
+        ));
+    }
+    None
+}
+
+/// `chemin` est-il le fichier de ce Vanguard (Windows : sans tenir compte de la casse) ?
+fn fichier_de_vanguard(chemin: &str, os: Os) -> bool {
+    std::env::current_exe().is_ok_and(|moi| {
+        let moi = moi.to_string_lossy();
+        if os == Os::Windows {
+            moi.eq_ignore_ascii_case(chemin)
+        } else {
+            moi == chemin
+        }
+    })
+}
+
 /// Pourquoi ce fichier ne doit jamais être mis en quarantaine, ou `None` : un fichier du système, ou Vanguard.
 pub(crate) fn fichier_intouchable(chemin: &str, os: Os, mon_programme: Option<&str>) -> Option<&'static str> {
     fichier_intouchable_selon(chemin, os, mon_programme, &chemin_long)
@@ -3184,6 +3258,56 @@ mod tests {
         );
         assert!(processus_suspendable(4000, "python3", Some("/usr/bin/python3.13"), &rien).is_none());
         assert!(processus_suspendable(1, "x", Some("/home/a/x"), &rien).is_some());
+    }
+
+    /// Couper le réseau (R3) : jamais Vanguard lui-même (son nom ou son fichier), ni un programme dont dépend une
+    /// session à distance (sshd, xrdp), ni ce que Vanguard protège ; sous Windows, ni svchost ni ce qui porte le Bureau
+    /// à distance (3389 ou son port). Un programme du compte, si.
+    #[test]
+    fn le_reseau_de_vanguard_et_des_sessions_n_est_jamais_coupe() {
+        let rien = HashSet::new();
+        let os = Os::actuel();
+        let curl = "/home/a/.cache/curl";
+        assert!(reseau_intouchable(4000, "curl", Some(curl), &rien, os, &[]).is_none());
+        assert!(reseau_intouchable(4000, "vanguard", Some("/home/a/.local/bin/vanguard"), &rien, os, &[]).is_some());
+        let moi = std::env::current_exe().unwrap();
+        let moi = moi.to_string_lossy();
+        assert!(reseau_intouchable(4000, "essai", Some(&moi), &rien, os, &[]).is_some());
+        // La raison dite est celle du réseau : sshd est un accès à distance (pas « jamais gelé ») ; init, critique.
+        let sshd = reseau_intouchable(4000, "sshd", Some("/usr/sbin/sshd"), &rien, os, &[]);
+        assert!(sshd.is_some_and(|r| r.contains("VPN")), "{sshd:?}");
+        #[cfg(target_os = "linux")]
+        {
+            let init = reseau_intouchable(1, "systemd", Some("/usr/lib/systemd/systemd"), &rien, os, &[]);
+            assert_eq!(
+                init,
+                Some(tr!(
+                    "processus critique du système : son réseau n'est jamais coupé",
+                    "critical system process: its network is never cut"
+                ))
+            );
+        }
+        for (nom, chemin) in [
+            ("sshd", "/usr/bin/sshd"),
+            ("sshd", "/home/a/.cache/sshd"),
+            ("xrdp", "/usr/sbin/xrdp"),
+            ("xrdp-sesman", "/usr/sbin/xrdp-sesman"),
+        ] {
+            assert!(
+                reseau_intouchable(4000, nom, Some(chemin), &rien, os, &[]).is_some(),
+                "{nom}"
+            );
+        }
+        let protege: HashSet<u32> = [4000].into();
+        assert!(reseau_intouchable(4000, "curl", Some(curl), &protege, os, &[]).is_some());
+        // Sous Windows : svchost porte le Bureau à distance ; et ce qu'on a vu écouter sur son port.
+        let outil = r"C:\Users\a\AppData\Local\Temp\outil.exe";
+        let w = Os::Windows;
+        assert!(reseau_intouchable(4000, "outil.exe", Some(outil), &rien, w, &[]).is_none());
+        let porteur = ["Outil.exe".to_string()];
+        assert!(reseau_intouchable(4000, "outil.exe", Some(outil), &rien, w, &porteur).is_some());
+        let svchost = r"C:\Users\a\svchost.exe";
+        assert!(reseau_intouchable(4000, "svchost.exe", Some(svchost), &rien, w, &[]).is_some());
     }
 
     #[cfg(target_os = "linux")]

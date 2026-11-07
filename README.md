@@ -231,7 +231,11 @@ rien n'est bloqué tout seul : les réglages du blocage peuvent être écrits pa
 ce qui ne fait aucun doute s'y propose d'un clic. Chaque menace propose aussi **Suspendre** (le programme gelé,
 réversible par `vanguard blocage reprendre`, rappelé à chaque bilan ; seul ce processus est gelé, pas les programmes
 qu'il a déjà lancés ; sous Linux, tout processus du même compte peut le reprendre : le bilan le resuspend si ce compte
-en a les droits, sinon il le dit), **Surveiller de plus près** (Linux : une alerte quand il se lance, au plus une par
+en a les droits, sinon il le dit), **Couper son réseau** (le programme tourne mais ne parle plus à personne,
+réversible par `vanguard blocage rendre-reseau` ; sous Linux, ce processus seul, jusqu'au redémarrage, ses connexions
+déjà ouvertes coupées dans le même geste ; sous Windows, deux règles du pare-feu sur son fichier : tous les processus de
+ce fichier, connexions déjà ouvertes non coupées, jusqu'au retour même après un redémarrage ; jamais Vanguard ni ce qui
+porte une session à distance), **Surveiller de plus près** (Linux : une alerte quand il se lance, au plus une par
 heure, pendant 7 jours), **Faire confiance** (un fichier certain : mot tapé, lié à son empreinte, 90
 jours) et Ignorer ; un geste refusé par un garde-fou reste visible, grisé, avec sa raison. Une alerte notifiée se
 reprend par `vanguard alerte <id>` : relue dans le journal scellé, la menace rejugée.
@@ -846,7 +850,7 @@ Chaque entrée du menu existe aussi en commande.
 | `vanguard camera-micro` | caméra et micro : qui s'en sert ? (lecture seule) |
 | `vanguard bilan-confidentialite [--json]` | bilan de confidentialité : qui a accès à la position, aux contacts, à la caméra et au micro (lecture seule) |
 | **8 Bloquer et réagir** | |
-| `vanguard blocage [chercher\|annuler\|auto\|clic\|catégorie mode\|suspendre PID\|reprendre [PID]]` | blocage des menaces : « Bloquer » d'un clic pour chaque menace (geste montré, noté, annulable) ; protection active, après un accord, qui bloque toute seule ce qui ne fait aucun doute (empreinte de MalwareBazaar, outil d'attaque connu, serveur de commande) |
+| `vanguard blocage [chercher\|annuler\|auto\|clic\|catégorie mode\|suspendre PID\|reprendre [PID]\|couper-reseau PID\|rendre-reseau [PID]]` | blocage des menaces : « Bloquer » d'un clic pour chaque menace (geste montré, noté, annulable) ; protection active, après un accord, qui bloque toute seule ce qui ne fait aucun doute (empreinte de MalwareBazaar, outil d'attaque connu, serveur de commande) |
 | `vanguard sites-dangereux [on\|off]` | sites dangereux bloqués par le fichier hosts (URLhaus, serveurs de commande de ThreatFox), après accord ; `off` les retire exactement |
 | `vanguard evenements [--json] [--incident id]` | le journal des événements : alertes, preuves relevées avant un geste, gestes, annulations, alertes déclarées normales et passages de version, reliés ; l'état de sa chaîne scellée d'abord |
 | `vanguard changements` | ce que Vanguard a changé : chaque correction lancée ici, sa date et son résultat ; une correction marquée « annulable » s'y annule, puis l'état d'avant est relu |

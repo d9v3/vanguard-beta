@@ -93,7 +93,8 @@ pub(crate) enum Etape {
     Suspendre,
     /// Couper ses connexions déjà ouvertes.
     CouperConnexions,
-    /// Couper le réseau d'un programme (R3) : pas encore disponible ; nommé, il est dit et sauté.
+    /// Couper le réseau du processus désigné (`coupure`), ses connexions déjà ouvertes avec : il tourne, mais ne
+    /// parle plus à personne (réversible : `vanguard blocage rendre-reseau`).
     CouperReseau,
     /// Relever la preuve (processus, fichier, connexions) avant qu'un geste ne l'efface.
     Preuve,
@@ -146,14 +147,14 @@ impl Etape {
         }
     }
 
-    /// Ce qui le défait, un par un (au plus 33 colonnes) : seuls Suspendre et Bloquer changent quelque chose, et
-    /// chacun a sa propre annulation, à part de celles des autres gestes de la même suite.
+    /// Ce qui le défait, un par un (au plus 33 colonnes) : seuls Suspendre, Couper le réseau et Bloquer changent
+    /// quelque chose, et chacun a sa propre annulation, à part de celles des autres gestes de la même suite.
     pub(crate) fn annulation(self) -> &'static str {
         match self {
             Etape::Suspendre => tr!("« reprendre » le lève", "“resume” lifts it"),
             Etape::Bloquer => tr!("« annuler » le défait, seul", "“undo” reverts it, alone"),
             Etape::Surveiller => tr!("prend fin après 7 jours", "ends after 7 days"),
-            Etape::CouperReseau => tr!("pas encore disponible", "not available yet"),
+            Etape::CouperReseau => tr!("« rendre-reseau » le lève", "“restore-network” lifts it"),
             Etape::CouperConnexions | Etape::Preuve | Etape::Prevenir => {
                 tr!("rien à défaire", "nothing to undo")
             }
@@ -161,21 +162,16 @@ impl Etape {
     }
 
     /// La précision du geste dans l'éditeur d'une suite de ce type (au plus 33 colonnes) : son annulation, sauf
-    /// « couper ses connexions » d'un programme, qui n'a pas d'objet sans Bloquer tant que « couper le réseau d'un
-    /// programme » (R3) n'est pas là : c'est dit d'avance, plutôt que découvert à l'alerte.
+    /// « couper ses connexions » d'un programme, qui n'a pas d'objet seul : celles d'un programme se coupent avec
+    /// « Couper le réseau du programme » (ou Bloquer) ; c'est dit d'avance, plutôt que découvert à l'alerte.
     pub(crate) fn precision(self, t: Type) -> &'static str {
         match (self, t) {
             (
                 Etape::CouperConnexions,
                 Type::Rancongiciel | Type::OutilDAttaque | Type::MalwareConnu | Type::Famille | Type::LancementRefuse,
-            ) => tr!("seul : pas encore disponible", "alone: not available yet"),
+            ) => tr!("seul : par « Couper le réseau »", "alone: by “Cut the network”"),
             _ => self.annulation(),
         }
-    }
-
-    /// Le geste existe-t-il déjà ? « Couper le réseau d'un programme » attend R3.
-    pub(crate) fn disponible(self) -> bool {
-        self != Etape::CouperReseau
     }
 }
 
@@ -352,8 +348,6 @@ pub(crate) enum Plan {
     AvecBloquer(&'static str),
     /// Sans objet ici : sauté, et c'est dit.
     SansObjet(&'static str),
-    /// Pas encore disponible (R3) : dit et sauté, la suite continue.
-    PasDisponible,
 }
 
 /// Le plan de la suite pour cette cible : chaque geste, dans l'ordre, fait ou sauté (avec pourquoi). Un geste
@@ -365,11 +359,26 @@ pub(crate) enum Plan {
 )]
 pub(crate) fn planifier(s: &[Etape], c: Cible, surveillance_ici: bool, bloquer_possible: bool) -> Vec<(Etape, Plan)> {
     let bloquer = s.iter().position(|e| *e == Etape::Bloquer).filter(|_| bloquer_possible);
+    let coupe_le_reseau = s.contains(&Etape::CouperReseau);
     s.iter()
         .enumerate()
         .map(|(i, &e)| {
             let plan = match (e, c) {
-                (Etape::CouperReseau, _) => Plan::PasDisponible,
+                (Etape::CouperReseau, Cible::Programme { en_marche: true, .. }) if bloquer.is_some_and(|b| b < i) => {
+                    Plan::SansObjet(tr!(
+                        "arrêté juste avant : plus rien à couper",
+                        "stopped just before: nothing left to cut"
+                    ))
+                }
+                (Etape::CouperReseau, Cible::Programme { en_marche: true, .. }) => Plan::Faire,
+                (Etape::CouperReseau, Cible::Programme { .. }) => Plan::SansObjet(tr!(
+                    "aucun processus en marche à couper",
+                    "no running process to cut"
+                )),
+                (Etape::CouperReseau, _) => Plan::SansObjet(tr!(
+                    "aucun programme désigné : seules ses connexions se coupent",
+                    "no program designated: only its connections are cut"
+                )),
                 (Etape::Bloquer | Etape::Prevenir, _) => Plan::Faire,
                 (Etape::Preuve, _) if bloquer.is_some() => Plan::AvecBloquer(tr!(
                     "relevée par Bloquer, juste avant son geste",
@@ -398,9 +407,13 @@ pub(crate) fn planifier(s: &[Etape], c: Cible, surveillance_ici: bool, bloquer_p
                     "un programme gelé n'envoie plus rien ; arrêté, ses connexions se ferment",
                     "a frozen program sends nothing more; stopped, its connections close"
                 )),
+                (Etape::CouperConnexions, Cible::Programme { .. }) if coupe_le_reseau => Plan::SansObjet(tr!(
+                    "coupées par « Couper le réseau du programme », dans le même geste",
+                    "cut by “Cut the program's network”, in the same action"
+                )),
                 (Etape::CouperConnexions, Cible::Programme { .. }) => Plan::SansObjet(tr!(
-                    "seules, les connexions d'un programme se coupent avec « couper le réseau d'un programme », pas encore disponible",
-                    "on their own, a program's connections are cut by “cut a program's network”, not available yet"
+                    "seules, les connexions d'un programme se coupent avec « Couper le réseau du programme » : ajoutez-le à la suite",
+                    "on their own, a program's connections are cut by “Cut the program's network”: add it to the suite"
                 )),
                 (Etape::CouperConnexions, Cible::Port) => Plan::SansObjet(tr!(
                     "seules, celles d'un port se coupent avec la règle qui le ferme (Bloquer)",
@@ -474,7 +487,6 @@ mod tests {
         for t in Type::TOUS {
             let d = defaut(t);
             assert!(plancher_tenu(t, &d), "{t:?}");
-            assert!(d.iter().all(|e| e.disponible()), "{t:?}");
             assert_eq!(
                 lire(&json!({ t.nom(): d.iter().map(|e| e.nom()).collect::<Vec<_>>() }), t),
                 Ok(Some(d))
@@ -536,7 +548,7 @@ mod tests {
         assert!(plancher_tenu(Type::Rancongiciel, &[Suspendre, Bloquer, Prevenir]));
         assert!(!plancher_tenu(Type::ServeurDeCommande, &[CouperConnexions, Prevenir]));
         assert!(plancher_tenu(Type::ServeurDeCommande, &[Bloquer, Prevenir]));
-        // Plus que le plancher (surveiller, couper le réseau à venir) : gardé tel quel en automatique.
+        // Plus que le plancher (surveiller, couper le réseau) : gardé tel quel en automatique.
         let plus = vec![Suspendre, CouperReseau, Preuve, Bloquer, Surveiller, Prevenir];
         assert_eq!(retenir(Type::Rancongiciel, Ok(Some(plus.clone())), true).etapes, plus);
     }
@@ -563,10 +575,10 @@ mod tests {
     }
 
     /// L'ordre est gardé, et le plan suit l'ordre : la preuve et la coupure se font avec Bloquer s'il est dans la
-    /// suite ; Suspendre après Bloquer n'a plus d'objet ; « couper le réseau » (R3) est dit et sauté sans casser la
-    /// suite.
+    /// suite ; Suspendre ou Couper le réseau après Bloquer n'ont plus d'objet ; sans processus en marche, Couper le
+    /// réseau est dit et sauté sans casser la suite.
     #[test]
-    fn plan_dans_l_ordre_et_geste_a_venir_saute() {
+    fn plan_dans_l_ordre_et_geste_sans_objet_saute() {
         let prog = Cible::Programme {
             en_marche: true,
             empreinte: true,
@@ -582,13 +594,38 @@ mod tests {
 
         let s = [CouperReseau, Bloquer, Suspendre, Surveiller, Prevenir];
         let p = planifier(&s, prog, true, true);
-        assert_eq!(p[0].1, Plan::PasDisponible);
+        assert_eq!(p[0].1, Plan::Faire);
         assert_eq!(p[1].1, Plan::Faire);
         assert!(matches!(p[2].1, Plan::SansObjet(_)));
         assert_eq!(p[3].1, Plan::Faire);
         assert_eq!(p[4].1, Plan::Faire);
         assert!(matches!(planifier(&s, prog, false, true)[3].1, Plan::SansObjet(_)));
-
+        // Couper le réseau : après Bloquer, plus rien à couper ; sans processus en marche ou sans programme, sauté ;
+        // il coupe lui-même les connexions du programme (Couper ses connexions, seul, le dit).
+        assert!(matches!(
+            planifier(&[Bloquer, CouperReseau], prog, true, true)[1].1,
+            Plan::SansObjet(_)
+        ));
+        assert_eq!(planifier(&[Bloquer, CouperReseau], prog, true, false)[1].1, Plan::Faire);
+        let arrete = Cible::Programme {
+            en_marche: false,
+            empreinte: true,
+        };
+        assert!(matches!(
+            planifier(&[CouperReseau], arrete, true, true)[0].1,
+            Plan::SansObjet(_)
+        ));
+        assert!(matches!(
+            planifier(&[CouperReseau], Cible::Adresse, true, true)[0].1,
+            Plan::SansObjet(_)
+        ));
+        let p = planifier(&[CouperReseau, CouperConnexions], prog, true, true);
+        assert_eq!(p[0].1, Plan::Faire);
+        assert!(matches!(p[1].1, Plan::SansObjet(r) if r.contains(tr!("même geste", "same action"))));
+        assert!(matches!(
+            planifier(&[CouperConnexions], prog, true, true)[0].1,
+            Plan::SansObjet(r) if r.contains(tr!("ajoutez-le", "add it"))
+        ));
         // Une adresse : la coupure seule se fait ; avec Bloquer, elle suit la règle.
         assert_eq!(
             planifier(&[CouperConnexions], Cible::Adresse, true, true)[0].1,
@@ -634,8 +671,8 @@ mod tests {
             assert_ne!(e.annulation(), "");
             assert!(e.annulation().chars().count() <= 33, "{e:?}");
         }
-        assert!(!CouperReseau.disponible());
-        assert_eq!(Etape::TOUTES.iter().filter(|e| !e.disponible()).count(), 1);
+        assert_ne!(CouperReseau.annulation(), Suspendre.annulation());
+        assert_ne!(CouperReseau.annulation(), Bloquer.annulation());
     }
 
     /// L'éditeur : écrire puis relire donne la même suite, dans son ordre ; remettre par défaut la retire du
@@ -681,8 +718,8 @@ mod tests {
                 assert!(e.precision(t).chars().count() <= 33, "{e:?} {t:?}");
             }
         }
-        // « Couper ses connexions » d'un programme : dit d'avance pas encore disponible seul ; d'une adresse, son
-        // annulation.
+        // « Couper ses connexions » d'un programme : dit d'avance qu'il se fait par « Couper le réseau » ; d'une
+        // adresse, son annulation.
         assert_ne!(
             Etape::CouperConnexions.precision(Type::OutilDAttaque),
             Etape::CouperConnexions.annulation()

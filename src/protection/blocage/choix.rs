@@ -1,4 +1,5 @@
-//! Le menu des gestes d'une menace : le geste prévu (Bloquer) en tête, puis Suspendre, Surveiller de plus près,
+//! Le menu des gestes d'une menace : le geste prévu (Bloquer) en tête, puis Suspendre, Couper son réseau, Surveiller
+//! de plus près,
 //! Faire confiance (ou « c'est normal ici ») et Ignorer. Chaque geste est permis, à confirmer (un cas que les
 //! garde-fous laissent à la personne : signature illisible, confiance à un programme certain), ou grisé avec sa
 //! raison : un geste refusé reste visible, pour qu'on sache pourquoi il n'est pas offert.
@@ -16,6 +17,8 @@ pub(crate) enum Choix {
     Bloquer,
     /// Geler le processus, réversible (`suspension`).
     Suspendre,
+    /// Couper le réseau du processus, réversible (`coupure`).
+    CouperReseau,
     /// Alerter quand il se lance (au plus une fois par heure) pendant 7 jours (`surveiller`), Linux seulement pour
     /// l'instant.
     Surveiller,
@@ -45,6 +48,8 @@ pub(crate) struct Faits {
     /// La suspension rejugée (`ordres::juger`) : `None` si permise, sinon pourquoi pas ; `Some` aussi quand la menace
     /// n'a pas de processus en marche.
     pub(crate) suspendre: Option<String>,
+    /// La coupure du réseau rejugée (`ordres::juger`) : comme `suspendre`.
+    pub(crate) couper_reseau: Option<String>,
     /// L'empreinte du fichier du programme se lit (surveillance et confiance s'y attachent).
     pub(crate) empreinte: bool,
     /// Ce système sait surveiller de plus près (Linux, par le veilleur).
@@ -64,10 +69,12 @@ pub(crate) fn gestes(f: &Faits) -> Vec<(Choix, Etat)> {
         ),
         Err(r) => Etat::Grise(r.clone()),
     };
-    let suspendre = match &f.suspendre {
+    let permis_ou_grise = |refus: &Option<String>| match refus {
         None => Etat::Permis,
         Some(r) => Etat::Grise(r.clone()),
     };
+    let suspendre = permis_ou_grise(&f.suspendre);
+    let couper_reseau = permis_ou_grise(&f.couper_reseau);
     let sans_fichier = || {
         tr!(
             "aucun fichier de programme dont l'empreinte se lit",
@@ -102,6 +109,7 @@ pub(crate) fn gestes(f: &Faits) -> Vec<(Choix, Etat)> {
     vec![
         (Choix::Bloquer, bloquer),
         (Choix::Suspendre, suspendre),
+        (Choix::CouperReseau, couper_reseau),
         (Choix::Surveiller, surveiller),
         (Choix::Confiance, confiance),
         (Choix::Ignorer, Etat::Permis),
@@ -113,6 +121,7 @@ pub(crate) fn texte(c: Choix, certaine: bool) -> &'static str {
     match c {
         Choix::Bloquer => tr!("Bloquer (le geste prévu)", "Block (the planned action)"),
         Choix::Suspendre => tr!("Suspendre (réversible)", "Suspend (reversible)"),
+        Choix::CouperReseau => tr!("Couper son réseau (réversible)", "Cut its network (reversible)"),
         Choix::Surveiller => tr!("Surveiller de plus près (7 jours)", "Watch more closely (7 days)"),
         Choix::Confiance if certaine => tr!("Faire confiance à ce fichier", "Trust this file"),
         Choix::Confiance => tr!("C'est normal ici (90 jours)", "This is normal here (90 days)"),
@@ -126,6 +135,7 @@ pub(crate) fn precision(c: Choix, e: &Etat) -> &'static str {
         (_, Etat::Confirmer(_)) => tr!("à confirmer", "to confirm"),
         (Choix::Bloquer, _) => tr!("prévu", "planned"),
         (Choix::Suspendre, _) => tr!("« reprendre » le lève", "“resume” lifts it"),
+        (Choix::CouperReseau, _) => tr!("« rendre-reseau » le lève", "“restore-network” lifts it"),
         (Choix::Surveiller, _) => tr!("une alerte par heure au plus", "at most one alert per hour"),
         (Choix::Confiance, _) => tr!("90 jours", "90 days"),
         (Choix::Ignorer, _) => "",
@@ -173,6 +183,7 @@ mod tests {
             certaine: false,
             bloquer: Ok(false),
             suspendre: None,
+            couper_reseau: None,
             empreinte: true,
             surveillance_ici: true,
         }
@@ -182,7 +193,7 @@ mod tests {
         g.iter().find(|(x, _)| *x == c).map(|(_, e)| e.clone()).unwrap()
     }
 
-    /// Le prévu en tête, Ignorer en dernier, toujours les cinq.
+    /// Le prévu en tête, Ignorer en dernier, toujours les six.
     #[test]
     fn l_ordre_du_menu() {
         let g = gestes(&faits());
@@ -192,6 +203,7 @@ mod tests {
             [
                 Choix::Bloquer,
                 Choix::Suspendre,
+                Choix::CouperReseau,
                 Choix::Surveiller,
                 Choix::Confiance,
                 Choix::Ignorer
@@ -206,10 +218,15 @@ mod tests {
         let mut f = faits();
         f.bloquer = Err("processus critique".into());
         f.suspendre = Some("Vanguard lui-même".into());
+        f.couper_reseau = Some("porte la session à distance".into());
         let g = gestes(&f);
         assert_eq!(etat(&g, Choix::Bloquer), Etat::Grise("processus critique".into()));
         assert_eq!(etat(&g, Choix::Suspendre), Etat::Grise("Vanguard lui-même".into()));
-        assert_eq!(g.len(), 5);
+        assert_eq!(
+            etat(&g, Choix::CouperReseau),
+            Etat::Grise("porte la session à distance".into())
+        );
+        assert_eq!(g.len(), 6);
         f.bloquer = Ok(true);
         assert!(matches!(etat(&gestes(&f), Choix::Bloquer), Etat::Confirmer(_)));
     }
@@ -260,6 +277,7 @@ mod tests {
         for c in [
             Choix::Bloquer,
             Choix::Suspendre,
+            Choix::CouperReseau,
             Choix::Surveiller,
             Choix::Confiance,
             Choix::Ignorer,

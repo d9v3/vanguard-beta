@@ -139,7 +139,7 @@ fn refuse_par_le_systeme(pid: u32) -> Echec {
 }
 
 /// Le départ du processus `pid` (voir `Suspendu::depart`).
-fn depart(pid: u32) -> Option<u64> {
+pub(crate) fn depart_de(pid: u32) -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
         crate::socle::processus::debut(pid)
@@ -445,7 +445,7 @@ pub(crate) fn suspendre(
 ) -> Result<(), Echec> {
     // Lu avant l'ordre, et porté par lui : le processus que l'ordre vise, et pas un autre venu après sur ce numéro
     // (l'assistant élevé n'agit que sur ce départ-là).
-    let avant = depart(pid);
+    let avant = depart_de(pid);
     let o = Ordre::SuspendreProcessus {
         pid,
         chemin: chemin.to_string(),
@@ -508,7 +508,7 @@ pub(crate) fn deja_gele(pid: u32) -> Echec {
 /// Le départ à retenir d'un processus suspendu par l'assistant, qui ne le rend pas : celui lu avant l'ordre, s'il n'a
 /// pas changé ; changé, celui d'après seulement s'il est bien gelé (sinon rien n'est retenu, et c'est dit).
 fn depart_apres_l_assistant(pid: u32, chemin: &str, avant: Option<u64>) -> Result<Option<u64>, Echec> {
-    let apres = depart(pid);
+    let apres = depart_de(pid);
     if apres == avant {
         return Ok(avant);
     }
@@ -764,7 +764,7 @@ pub(crate) fn reprendre(pid: Option<u32>) -> Reprises {
 /// son départ sont lus maintenant, sur le processus vivant ; il n'est repris (ici ou par l'assistant élevé) que s'il
 /// se relit d'ici et qu'il est gelé. Illisible d'ici, rien n'est repris, et c'est dit. `None` : rien à ce numéro.
 fn reprendre_hors_liste(pid: u32) -> Option<(Suspendu, Result<Reprise, Echec>)> {
-    let d = depart(pid);
+    let d = depart_de(pid);
     let chemin = super::gestes::chemin_du_processus(pid);
     let s = Suspendu {
         pid,

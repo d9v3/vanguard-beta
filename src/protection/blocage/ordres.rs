@@ -82,6 +82,26 @@ impl Ordre {
                 "Resume the suspended process {pid} ({}), only if it still runs this program",
                 crate::ui::affichable(chemin)
             ),
+            Ordre::CouperReseauProgramme { pid, chemin, .. } if cfg!(windows) => trf!(
+                "Couper le réseau du programme {} (PID {pid}) : TOUS les processus de ce fichier, pas seulement celui-ci, par deux règles du Pare-feu Windows (sortante et entrante) qui restent après un redémarrage",
+                "Cut the network of program {} (PID {pid}): ALL processes of this file, not only this one, with two Windows Firewall rules (outbound and inbound) that stay after a restart",
+                crate::ui::affichable(chemin)
+            ),
+            Ordre::CouperReseauProgramme { pid, chemin, .. } => trf!(
+                "Couper le réseau du processus {pid} ({}) jusqu'au redémarrage, seulement s'il fait toujours tourner ce programme : ses connexions ouvertes sont coupées et il n'en ouvre plus (les programmes qu'il a déjà lancés gardent le leur)",
+                "Cut the network of process {pid} ({}) until restart, only if it still runs this program: its open connections are cut and it opens no more (the programs it already started keep theirs)",
+                crate::ui::affichable(chemin)
+            ),
+            Ordre::RendreReseauProgramme { pid, chemin, .. } if cfg!(windows) => trf!(
+                "Rendre le réseau au programme {} (PID {pid}) : retirer les deux règles de Vanguard qui le coupent",
+                "Give the network back to program {} (PID {pid}): remove the two Vanguard rules that cut it",
+                crate::ui::affichable(chemin)
+            ),
+            Ordre::RendreReseauProgramme { pid, chemin, .. } => trf!(
+                "Rendre le réseau au processus {pid} ({}) que Vanguard a coupé",
+                "Give the network back to process {pid} ({}) that Vanguard cut",
+                crate::ui::affichable(chemin)
+            ),
             Ordre::RemettrePilotes { avant: Some(v) } => trf!(
                 "Remettre la liste de blocage des pilotes vulnérables comme avant (VulnerableDriverBlocklistEnable = {v})",
                 "Put the vulnerable driver blocklist back as before (VulnerableDriverBlocklistEnable = {v})"
@@ -109,9 +129,11 @@ impl Ordre {
                 Os::Tous => false,
             },
             Ordre::CouperConnexions { .. } => os != Os::Windows,
-            Ordre::ArreterProcessus { .. } | Ordre::SuspendreProcessus { .. } | Ordre::ReprendreProcessus { .. } => {
-                true
-            }
+            Ordre::ArreterProcessus { .. }
+            | Ordre::SuspendreProcessus { .. }
+            | Ordre::ReprendreProcessus { .. }
+            | Ordre::CouperReseauProgramme { .. }
+            | Ordre::RendreReseauProgramme { .. } => true,
             Ordre::RemettrePilotes { .. } => os == Os::Windows,
         }
     }
@@ -164,11 +186,10 @@ impl Resultat {
 /// Le début de la note d'un geste fait que Vanguard ne pourra pas défaire (le retrait du dernier élévateur, sans run0) :
 /// un repère fixe, hors de toute langue, que le parent lit pour ne plus promettre un « Défaire » que plus rien ne
 /// lancerait. Un repère qui s'égare ne fait que retirer une promesse, jamais en ajouter une.
-#[cfg(any(unix, test))]
 pub(crate) const NON_ANNULABLE: &str = "non-annulable:";
 
-/// La note telle qu'on la montre : le repère `NON_ANNULABLE` dit dans la langue de la personne.
-#[cfg(any(unix, test))]
+/// La note telle qu'on la montre : le repère `NON_ANNULABLE` dit dans la langue de la personne (aussi sous Windows,
+/// où la précision d'une coupure revient par la même note).
 pub(crate) fn note_lisible(n: &str) -> String {
     n.replace(NON_ANNULABLE, tr!("non annulable, ", "cannot be undone, "))
 }
@@ -303,11 +324,19 @@ pub(crate) fn juger(o: &Ordre, j: &Juge) -> Option<String> {
         // Une règle entrante Block coupe aussi ce qui est établi : le port d'une session en cours (prise en main sur
         // 5900, RustDesk…) n'est pas fermé, et rien ne l'est sans connexions lisibles.
         Ordre::FermerPort { port, .. } => gardes::port_a_garder(*port, j.sessions.as_ref()).map(str::to_string),
-        Ordre::ArreterProcessus { pid, chemin, demande } => juger_processus(*pid, chemin, *demande, j, false),
+        Ordre::ArreterProcessus { pid, chemin, demande } => {
+            juger_processus(*pid, chemin, *demande, j, SurProcessus::Arret)
+        }
         // Suspendre passe les mêmes gardes qu'un arrêt demandé : jamais un processus vital, ni ce qui descend d'une
         // session à distance, ni un programme signé Microsoft ; une signature illisible ne refuse pas (le geste se
         // défait, la personne l'a choisi dans le menu).
-        Ordre::SuspendreProcessus { pid, chemin, .. } => juger_processus(*pid, chemin, true, j, true),
+        Ordre::SuspendreProcessus { pid, chemin, .. } => juger_processus(*pid, chemin, true, j, SurProcessus::Gel),
+        // Couper le réseau : le même processus (son départ, porté par l'ordre), le même programme, et les gardes de la
+        // coupure (`gardes::reseau_intouchable`) ; l'élevé le relit encore en le coupant.
+        Ordre::CouperReseauProgramme { pid, chemin, depart } => juger_coupure(*pid, chemin, *depart, j),
+        // Rendre ne fait que lever une coupure : sous Linux, seulement celle que l'assistant a notée lui-même (dans
+        // /run, à root), jamais d'après la ligne ; sous Windows, seulement les règles au nom de Vanguard.
+        Ordre::RendreReseauProgramme { .. } => None,
         // Reprendre ne fait que lever un gel : seulement s'il fait toujours tourner ce programme, et s'il est gelé.
         Ordre::ReprendreProcessus { pid, chemin, depart } => juger_reprise(*pid, chemin, *depart),
         // Défaire n'est permis que pour ce que Vanguard a pu poser : il ne bloque jamais une adresse locale ou un DNS
@@ -334,13 +363,45 @@ pub(crate) fn juger(o: &Ordre, j: &Juge) -> Option<String> {
     }
 }
 
-/// Les gardes d'un geste sur un processus (arrêt, suspension) : le même programme, aucun nom critique, rien qui
-/// descend d'une session à distance, la signature. `suspendre` : seulement les mots du refus changent.
-fn juger_processus(pid: u32, chemin: &str, demande: bool, j: &Juge, suspendre: bool) -> Option<String> {
-    let rien = if suspendre {
-        tr!("rien n'est suspendu", "nothing is suspended")
-    } else {
-        tr!("rien n'est arrêté", "nothing is stopped")
+/// Le geste sur un processus que `juger_processus` juge : ses gardes et les mots de son refus.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SurProcessus {
+    Arret,
+    Gel,
+    Coupure,
+}
+
+/// La garde d'une coupure : le départ porté par l'ordre est celui du processus (un numéro repris par un autre n'est
+/// jamais coupé à sa place), puis les gardes de `juger_processus`.
+fn juger_coupure(pid: u32, chemin: &str, depart: u64, j: &Juge) -> Option<String> {
+    if super::suspension::depart_de(pid) != Some(depart) {
+        return Some(trf!(
+            "le processus {pid} n'est plus celui qui a été montré (fini, ou un autre sur ce numéro) : rien n'est coupé",
+            "process {pid} is no longer the one shown (ended, or another one on this number): nothing is cut"
+        ));
+    }
+    juger_processus(pid, chemin, true, j, SurProcessus::Coupure)
+}
+
+/// Les noms des programmes qui écoutent sur le port du Bureau à distance (3389, ou celui de RDP-Tcp) : jamais coupés.
+#[cfg(windows)]
+fn porteurs_du_bureau() -> Vec<String> {
+    let ports = [Some(3389), gardes::port_rdp()];
+    crate::machine::windows::ecoute::ecoutes()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.tcp && ports.contains(&Some(e.port)))
+        .map(|e| e.nom)
+        .collect()
+}
+
+/// Les gardes d'un geste sur un processus (arrêt, gel, coupure du réseau) : le même programme, aucun nom critique,
+/// rien qui descend d'une session à distance, la signature (sauf un gel Linux).
+fn juger_processus(pid: u32, chemin: &str, demande: bool, j: &Juge, geste: SurProcessus) -> Option<String> {
+    let rien = match geste {
+        SurProcessus::Arret => tr!("rien n'est arrêté", "nothing is stopped"),
+        SurProcessus::Gel => tr!("rien n'est suspendu", "nothing is suspended"),
+        SurProcessus::Coupure => tr!("rien n'est coupé", "nothing is cut"),
     };
     let Some(actuel) = super::gestes::chemin_du_processus(pid) else {
         return Some(trf!(
@@ -368,24 +429,28 @@ fn juger_processus(pid: u32, chemin: &str, demande: bool, j: &Juge, suspendre: b
     let noms = [Some(fichier), None];
     // Suspendre (Linux) : les gardes du gel, qui permettent un outil du système (c'est réversible) ; ailleurs, et pour
     // un arrêt, celles de l'arrêt.
-    #[cfg(target_os = "linux")]
-    let garde = |nom: &str| {
-        if suspendre {
-            gardes::processus_suspendable(pid, nom, Some(&actuel), &j.intouchables)
-        } else {
-            gardes::processus_intouchable(pid, nom, Some(&actuel), &j.intouchables, j.os)
-        }
+    #[cfg(windows)]
+    let porteurs = if geste == SurProcessus::Coupure {
+        porteurs_du_bureau()
+    } else {
+        Vec::new()
     };
-    #[cfg(not(target_os = "linux"))]
-    let garde = |nom: &str| gardes::processus_intouchable(pid, nom, Some(&actuel), &j.intouchables, j.os);
+    #[cfg(not(windows))]
+    let porteurs: Vec<String> = Vec::new();
+    let garde = |nom: &str| match geste {
+        SurProcessus::Coupure => gardes::reseau_intouchable(pid, nom, Some(&actuel), &j.intouchables, j.os, &porteurs),
+        #[cfg(target_os = "linux")]
+        SurProcessus::Gel => gardes::processus_suspendable(pid, nom, Some(&actuel), &j.intouchables),
+        _ => gardes::processus_intouchable(pid, nom, Some(&actuel), &j.intouchables, j.os),
+    };
     let refus = noms
         .iter()
         .flatten()
         .find_map(|nom| garde(nom))
         .or_else(|| gardes::lignee_de_session(pid, j.sessions.as_ref()))
         .map(str::to_string);
-    // Un gel Linux se lève : la signature (Microsoft) ne le concerne pas.
-    if suspendre && cfg!(target_os = "linux") {
+    // Un gel ou une coupure Linux se lèvent : la signature (Microsoft) ne les concerne pas.
+    if geste != SurProcessus::Arret && cfg!(target_os = "linux") {
         return refus;
     }
     refus.or_else(|| signature_avant_arret(&actuel, demande))
@@ -558,6 +623,12 @@ pub(crate) fn faire(o: &Ordre, j: &Juge) -> Resultat {
             return super::suspension::reprendre_ici(*pid, chemin, *depart)
                 .map_or_else(|e| Resultat::echec(e.to_string()), |()| Resultat::ok());
         }
+        Ordre::CouperReseauProgramme { pid, chemin, depart } => {
+            return super::coupure::couper_ici(*pid, chemin, *depart);
+        }
+        Ordre::RendreReseauProgramme { pid, chemin, depart } => {
+            return super::coupure::rendre_ici(*pid, chemin, *depart);
+        }
         _ => {}
     }
     #[cfg(target_os = "linux")]
@@ -667,6 +738,8 @@ mod linux {
             Ordre::ArreterProcessus { .. }
             | Ordre::SuspendreProcessus { .. }
             | Ordre::ReprendreProcessus { .. }
+            | Ordre::CouperReseauProgramme { .. }
+            | Ordre::RendreReseauProgramme { .. }
             | Ordre::RemettrePilotes { .. } => {
                 Resultat::echec(tr!("ordre d'un autre système", "order from another system"))
             }
@@ -792,6 +865,16 @@ mod tests {
                 chemin: r"C:\Users\alice\AppData\Local\Temp\l'outil.exe".into(),
                 depart: Some(u64::MAX),
             },
+            Ordre::CouperReseauProgramme {
+                pid: 4242,
+                chemin: "/home/alice/.cache/x m'rig".into(),
+                depart: 1,
+            },
+            Ordre::RendreReseauProgramme {
+                pid: 7,
+                chemin: r"C:\Users\alice\AppData\Local\Temp\l'outil.exe".into(),
+                depart: u64::MAX,
+            },
             Ordre::RemettrePilotes { avant: None },
             Ordre::RemettrePilotes { avant: Some(0) },
         ]
@@ -859,6 +942,24 @@ mod tests {
             .ligne(),
             "vanguard:reprendre-processus 1 2f612062 7"
         );
+        assert_eq!(
+            Ordre::CouperReseauProgramme {
+                pid: 1,
+                chemin: "/a b".into(),
+                depart: 7,
+            }
+            .ligne(),
+            "vanguard:couper-reseau-programme 1 2f612062 7"
+        );
+        assert_eq!(
+            Ordre::RendreReseauProgramme {
+                pid: 1,
+                chemin: "/a b".into(),
+                depart: 7,
+            }
+            .ligne(),
+            "vanguard:rendre-reseau-programme 1 2f612062 7"
+        );
     }
 
     /// Tout ce qui n'est pas exactement une ligne d'ordre est refusé : une commande, un shell glissé dans un
@@ -909,6 +1010,22 @@ mod tests {
             "vanguard:reprendre-processus 42",
             "vanguard:reprendre-processus 042 2f78",
             "vanguard:reprendre-processus 4294967296 2f78",
+            // Couper le réseau : le départ est obligatoire, non nul, écrit sans zéro de tête ; rien après.
+            "vanguard:couper-reseau-programme 42 2f78",
+            "vanguard:couper-reseau-programme 42 2f78 0",
+            "vanguard:couper-reseau-programme 42 2f78 07",
+            "vanguard:couper-reseau-programme 42 2f78 -7",
+            "vanguard:couper-reseau-programme 42 2f78 7 8",
+            "vanguard:couper-reseau-programme 42 2f78 7 ",
+            "vanguard:couper-reseau-programme 0 2f78 7",
+            "vanguard:couper-reseau-programme 42 7878 7",
+            "vanguard:couper-reseau-programme 42 2f780a 7",
+            "vanguard:couper-reseau-programme 42 2f78 18446744073709551616",
+            "vanguard:rendre-reseau-programme 42 2f78",
+            "vanguard:rendre-reseau-programme 42 2F78 7",
+            "vanguard:rendre-reseau-programme 042 2f78 7",
+            "vanguard:couper-reseau 42 2f78 7",
+            "vanguard:couper-reseau-programme-demande 42 2f78 7",
             "vanguard:remettre-pilotes 2",
             "vanguard:remettre-pilotes",
             "vanguard:wdigest-coupe",
@@ -1028,11 +1145,36 @@ mod tests {
             assert!(juger(&suspendre_autre, &juge).is_some());
             let reprendre_moi = Ordre::ReprendreProcessus {
                 pid: moi,
-                chemin,
+                chemin: chemin.clone(),
                 depart: None,
             };
             if cfg!(target_os = "linux") {
                 assert!(juger(&reprendre_moi, &juge).is_some(), "pas gelé");
+            }
+            // Couper le réseau : jamais Vanguard lui-même ; un départ qui n'est plus le sien (un autre processus venu
+            // sur ce numéro) est refusé avant tout le reste ; rendre ne se juge pas (il ne lève que ce que l'élevé a
+            // posé lui-même).
+            let depart = crate::protection::blocage::suspension::depart_de(moi);
+            if let Some(depart) = depart {
+                let couper_moi = Ordre::CouperReseauProgramme {
+                    pid: moi,
+                    chemin: chemin.clone(),
+                    depart,
+                };
+                assert!(juger(&couper_moi, &juge).is_some(), "Vanguard lui-même");
+                let couper_autre_depart = Ordre::CouperReseauProgramme {
+                    pid: moi,
+                    chemin: chemin.clone(),
+                    depart: depart.wrapping_add(1).max(1),
+                };
+                let raison = juger(&couper_autre_depart, &juge).unwrap();
+                assert!(raison.contains(tr!("rien n'est coupé", "nothing is cut")), "{raison}");
+                let rendre_moi = Ordre::RendreReseauProgramme {
+                    pid: moi,
+                    chemin: chemin.clone(),
+                    depart,
+                };
+                assert!(juger(&rendre_moi, &juge).is_none());
             }
         }
     }
@@ -1133,6 +1275,21 @@ mod tests {
             })
             .is_none()
         );
+        // Couper le réseau d'un programme non plus : l'élevé relit le processus avant de poser ses règles.
+        for o in [
+            Ordre::CouperReseauProgramme {
+                pid: 4242,
+                chemin: r"C:\Users\alice\l'outil.exe".into(),
+                depart: 1,
+            },
+            Ordre::RendreReseauProgramme {
+                pid: 4242,
+                chemin: r"C:\Users\alice\l'outil.exe".into(),
+                depart: 1,
+            },
+        ] {
+            assert!(powershell(&o).is_none());
+        }
         assert!(
             powershell(&Ordre::RemettrePilotes { avant: None })
                 .unwrap()

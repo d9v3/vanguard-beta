@@ -579,7 +579,8 @@ enum Commande {
         /// « chercher », « annuler », « etat », « auto » ou « clic » (la protection active), une catégorie
         /// (programmes, connexions, demarrage, agents) suivie d'un mode (off, clic, auto), ou « juger » un PID,
         /// « parent » ou un fichier (ce que le blocage refuserait, et pourquoi, sans rien faire), « suspendre » un PID
-        /// (réversible) ou « reprendre » (un PID, ou tous ceux que Vanguard a suspendus).
+        /// (réversible) ou « reprendre » (un PID, ou tous ceux que Vanguard a suspendus), « couper-reseau » un PID
+        /// (réversible) ou « rendre-reseau » (un PID, ou tous ceux que Vanguard a coupés).
         quoi: Vec<String>,
     },
     /// Une alerte notifiée, par l'identifiant que donne sa notification : l'alerte est relue dans le journal scellé,

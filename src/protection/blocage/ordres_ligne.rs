@@ -71,6 +71,21 @@ pub(crate) enum Ordre {
         chemin: String,
         depart: Option<u64>,
     },
+    /// Couper le réseau de ce processus (Défense R3), seulement s'il fait toujours tourner ce programme depuis
+    /// `depart` (obligatoire : sans lui, rien ne distingue un autre processus venu sur ce numéro). Linux : le processus
+    /// dans un scope à lui, dont nf_tables jette les prises, et ses prises déjà ouvertes coupées ; Windows : deux
+    /// règles du pare-feu sur le programme (tous ses processus).
+    CouperReseauProgramme {
+        pid: u32,
+        chemin: String,
+        depart: u64,
+    },
+    /// Rendre le réseau coupé par l'ordre précédent (les mêmes pid, chemin et départ).
+    RendreReseauProgramme {
+        pid: u32,
+        chemin: String,
+        depart: u64,
+    },
     /// Windows : la liste de blocage des pilotes vulnérables remise à sa valeur d'avant (`None` : valeur absente).
     RemettrePilotes {
         avant: Option<u32>,
@@ -163,6 +178,18 @@ impl Ordre {
                     avec_depart(*depart)
                 )
             }
+            Ordre::CouperReseauProgramme { pid, chemin, depart } => {
+                format!(
+                    "{PREFIXE}couper-reseau-programme {pid} {} {depart}",
+                    hex(chemin.as_bytes())
+                )
+            }
+            Ordre::RendreReseauProgramme { pid, chemin, depart } => {
+                format!(
+                    "{PREFIXE}rendre-reseau-programme {pid} {} {depart}",
+                    hex(chemin.as_bytes())
+                )
+            }
             Ordre::RemettrePilotes { avant: Some(v) } => format!("{PREFIXE}remettre-pilotes {v}"),
             Ordre::RemettrePilotes { avant: None } => format!("{PREFIXE}remettre-pilotes absent"),
         }
@@ -212,6 +239,16 @@ pub(crate) fn analyser(ligne: &str) -> Option<Ordre> {
             pid: pid_de(n)?,
             chemin: chemin_de(c)?,
             depart: depart_de(d).ok()?,
+        },
+        ["couper-reseau-programme", n, c, d] => Ordre::CouperReseauProgramme {
+            pid: pid_de(n)?,
+            chemin: chemin_de(c)?,
+            depart: depart_de(&[d]).ok()??,
+        },
+        ["rendre-reseau-programme", n, c, d] => Ordre::RendreReseauProgramme {
+            pid: pid_de(n)?,
+            chemin: chemin_de(c)?,
+            depart: depart_de(&[d]).ok()??,
         },
         ["remettre-pilotes", "absent"] => Ordre::RemettrePilotes { avant: None },
         // Les deux seules valeurs que cette clé a jamais eues avant un blocage de Vanguard.

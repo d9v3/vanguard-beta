@@ -31,6 +31,8 @@ mod menaces;
 pub(crate) mod ordres;
 // La forme des lignes des ordres : du code pur, lu aussi par le banc de fuzzing.
 pub(crate) mod choix;
+// Couper le réseau d'un programme sans l'arrêter (R3).
+pub(crate) mod coupure;
 mod ordres_ligne;
 pub(crate) mod parametres;
 pub(crate) mod pare_feu;
@@ -269,6 +271,12 @@ pub fn commande(mots: &[String]) {
             Ok(p) if p > 0 => reprendre_les_suspendus(Some(p)),
             _ => usage(),
         },
+        [m, pid] if est(m, &["couper-reseau", "cut-network"]) => couper_le_reseau_par_pid(pid),
+        [m] if est(m, &["rendre-reseau", "restore-network"]) => rendre_le_reseau(None),
+        [m, pid] if est(m, &["rendre-reseau", "restore-network"]) => match pid.parse::<u32>() {
+            Ok(p) if p > 0 => rendre_le_reseau(Some(p)),
+            _ => usage(),
+        },
         [m] if est(m, &["auto", "actif", "active", "on"]) => {
             for c in Categorie::TOUTES.into_iter().filter(|c| c.a_du_certain()) {
                 if !changer_mode(c, Mode::Automatique) {
@@ -294,8 +302,8 @@ pub fn commande(mots: &[String]) {
 fn usage() {
     let categories = Categorie::TOUTES.map(Categorie::mot).join(", ");
     trp!(
-        "  Usage : vanguard blocage [chercher | annuler | etat | auto | clic | <catégorie> <mode> | juger <PID | parent | fichier> | juger destination <dossier> | suspendre <PID> | reprendre [<PID>]]\n  Catégories : {categories}. Modes : off, clic, auto (programmes et connexions seulement). « juger » montre ce que le blocage refuserait, et pourquoi, sans rien faire. « suspendre » gèle un processus (réversible ; pas les programmes qu'il a déjà lancés) ; « reprendre » le relance (sans PID : tous ceux que Vanguard a suspendus).",
-        "  Usage: vanguard blocking [search | undo | status | auto | click | <category> <mode> | judge <PID | parent | file> | judge destination <folder> | suspend <PID> | resume [<PID>]]\n  Categories: {categories}. Modes: off, click, auto (programs and connections only). “judge” shows what blocking would refuse, and why, without doing anything. “suspend” freezes a process (reversible; not the programs it already started); “resume” starts it again (without a PID: all those Vanguard suspended)."
+        "  Usage : vanguard blocage [chercher | annuler | etat | auto | clic | <catégorie> <mode> | juger <PID | parent | fichier> | juger destination <dossier> | suspendre <PID> | reprendre [<PID>] | couper-reseau <PID> | rendre-reseau [<PID>]]\n  Catégories : {categories}. Modes : off, clic, auto (programmes et connexions seulement). « juger » montre ce que le blocage refuserait, et pourquoi, sans rien faire. « suspendre » gèle un processus (réversible ; pas les programmes qu'il a déjà lancés) ; « reprendre » le relance (sans PID : tous ceux que Vanguard a suspendus). « couper-reseau » coupe le réseau d'un processus sans l'arrêter (réversible ; sous Windows, tous les processus de ce fichier) ; « rendre-reseau » le lui rend (sans PID : à tous ceux que Vanguard a coupés).",
+        "  Usage: vanguard blocking [search | undo | status | auto | click | <category> <mode> | judge <PID | parent | file> | judge destination <folder> | suspend <PID> | resume [<PID>] | cut-network <PID> | restore-network [<PID>]]\n  Categories: {categories}. Modes: off, click, auto (programs and connections only). “judge” shows what blocking would refuse, and why, without doing anything. “suspend” freezes a process (reversible; not the programs it already started); “resume” starts it again (without a PID: all those Vanguard suspended). “cut-network” cuts a process's network without stopping it (reversible; on Windows, all processes of that file); “restore-network” gives it back (without a PID: to all those Vanguard cut)."
     );
 }
 
@@ -342,6 +350,162 @@ fn suspendre_par_pid(mot: &str) {
     ) {
         Ok(()) => trp!("  {VERT}✔{RESET} Suspendu.", "  {VERT}✔{RESET} Suspended."),
         Err(e) => trp!("  ✖ {e}", "  ✖ {e}"),
+    }
+}
+
+/// `vanguard blocage couper-reseau <PID>` : le programme du processus lu, les gardes de la coupure rejugées, montré,
+/// confirmé ; puis l'ordre confié à l'élevé, qui relit et rejuge le processus.
+fn couper_le_reseau_par_pid(mot: &str) {
+    let Some(pid) = mot.parse::<u32>().ok().filter(|p| *p > 0) else {
+        usage();
+        return;
+    };
+    let (Some(chemin), Some(depart)) = (chemin_du_processus(pid), suspension::depart_de(pid)) else {
+        trp!(
+            "  ✖ Le processus {pid} est fini, ou son programme ne se lit pas : rien n'est coupé.",
+            "  ✖ Process {pid} has ended, or its program cannot be read: nothing is cut."
+        );
+        return;
+    };
+    let o = ordres::Ordre::CouperReseauProgramme {
+        pid,
+        chemin: chemin.clone(),
+        depart,
+    };
+    let intouchables = crate::machine::chasse::en_marche().map_or_else(HashSet::new, |(_, i)| i);
+    if let Some(raison) = ordres::juger(&o, &ordres::Juge::lire(None).avec(&intouchables)) {
+        afficher_aligne(
+            "  ✖ ",
+            &trf!("Rien n'est coupé : {raison}.", "Nothing is cut: {raison}."),
+            4,
+            "",
+        );
+        return;
+    }
+    if !confirmer_la_coupure(pid, &chemin, &chemin) {
+        return;
+    }
+    let quoi = trf!(
+        "Coupé du réseau à la main : {}",
+        "Cut from the network by hand: {}",
+        chemin
+    );
+    let intouchables = crate::machine::chasse::en_marche().map_or_else(HashSet::new, |(_, i)| i);
+    match coupure::couper(
+        pid,
+        &chemin,
+        &quoi,
+        None,
+        &intouchables,
+        crate::modele::evenement::Source::Utilisateur,
+    ) {
+        Ok(precision) => dire_coupe(pid, &precision),
+        Err(e) => trp!("  ✖ {e}", "  ✖ {e}"),
+    }
+}
+
+/// La coupure faite : ce que l'élevé en a dit (connexions coupées, combien de temps), et comment la lever.
+fn dire_coupe(pid: u32, precision: &str) {
+    let precision = if precision.is_empty() {
+        String::new()
+    } else {
+        format!(" ({precision})")
+    };
+    afficher_aligne(
+        &format!("  {VERT}✔{RESET} "),
+        &trf!(
+            "Réseau coupé{precision}. Pour le lui rendre : vanguard blocage rendre-reseau {pid}.",
+            "Network cut{precision}. To give it back: vanguard blocking restore-network {pid}."
+        ),
+        4,
+        "",
+    );
+}
+
+/// Ce que couper le réseau fait et ne fait pas (selon le système), le rôle d'un programme du système nommé, puis la
+/// question : `true` si la personne confirme.
+fn confirmer_la_coupure(pid: u32, nom: &str, chemin: &str) -> bool {
+    let nom = affichable(nom);
+    let texte = if cfg!(windows) {
+        trf!(
+            "Couper le réseau de « {nom} » (PID {pid}) : il tourne toujours mais ne parle plus à personne, le temps de regarder. Deux règles du Pare-feu Windows visent son FICHIER : TOUS les processus de ce fichier sont coupés, pas seulement ce PID. Les connexions déjà ouvertes ne sont pas coupées par une règle. Les règles restent après un redémarrage ; « vanguard blocage rendre-reseau {pid} » les retire. Il faut les droits d'administrateur.",
+            "Cut the network of “{nom}” (PID {pid}): it keeps running but talks to no one, while you look. Two Windows Firewall rules target its FILE: ALL processes of that file are cut, not only this PID. Connections already open are not cut by a rule. The rules stay after a restart; “vanguard blocking restore-network {pid}” removes them. Administrator rights are needed."
+        )
+    } else {
+        trf!(
+            "Couper le réseau de « {nom} » (PID {pid}) : il tourne toujours mais ne parle plus à personne, ni vers l'extérieur ni de l'extérieur, le temps de regarder ; ses connexions déjà ouvertes sont coupées aussi. Seul ce processus est coupé : les programmes qu'il a déjà lancés gardent leur réseau. Jusqu'au redémarrage ; « vanguard blocage rendre-reseau {pid} » le lui rend. Il faut les droits d'administrateur.",
+            "Cut the network of “{nom}” (PID {pid}): it keeps running but talks to no one, neither out nor in, while you look; its connections already open are cut too. Only this process is cut: the programs it already started keep their network. Until restart; “vanguard blocking restore-network {pid}” gives it back. Administrator rights are needed."
+        )
+    };
+    afficher_aligne("  ", &texte, 2, "");
+    let Some(role) = coupure::role(pid, chemin) else {
+        return demander(tr!("\n  Couper son réseau ? [o/N] : ", "\n  Cut its network? [y/N]: ")).oui();
+    };
+    afficher_aligne(
+        &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
+        &trf!(
+            "C'est {role} : tant que son réseau est coupé, ce qu'il fait en ligne pour l'ordinateur s'arrête aussi.",
+            "This is {role}: while its network is cut, what it does online for the computer stops too."
+        ),
+        4,
+        "",
+    );
+    demander(&trf!(
+        "\n  Couper le réseau de {role} quand même ? [o/N] : ",
+        "\n  Cut the network of {role} anyway? [y/N]: "
+    ))
+    .oui()
+}
+
+/// `vanguard blocage rendre-reseau [<PID>]` : ce que Vanguard a coupé (sa liste scellée), ou un PID relu ici ;
+/// l'élevé ne lève que ce qu'il a posé lui-même, et rien n'est dit rendu qui ne l'ait été.
+fn rendre_le_reseau(pid: Option<u32>) {
+    let (rendus, refus) = coupure::rendre(pid);
+    if let Some(raison) = refus {
+        afficher_aligne(
+            &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
+            &trf!(
+                "{} : elle ne compte plus ; un PID donné est relu ici, rien de la liste n'est cru.",
+                "{}: it no longer counts; a given PID is read again here, nothing from the list is believed.",
+                capitale(raison)
+            ),
+            4,
+            "",
+        );
+    }
+    if rendus.is_empty() {
+        match pid {
+            Some(p) => trp!(
+                "  Le processus {p} est fini, ou son programme ne se lit pas : rien à rendre (sous Linux, sa coupure est partie avec lui).",
+                "  Process {p} has ended, or its program cannot be read: nothing to give back (on Linux, its cut went with it)."
+            ),
+            None if refus.is_some() => {}
+            None => trp!(
+                "  Aucun programme coupé du réseau par Vanguard.",
+                "  No program cut from the network by Vanguard."
+            ),
+        }
+        return;
+    }
+    for r in rendus {
+        let quoi = format!("{} (PID {})", affichable(&r.chemin), r.pid);
+        match r.issue {
+            Ok(None) => trp!(
+                "  {VERT}✔{RESET} Rendu : {quoi}.",
+                "  {VERT}✔{RESET} Given back: {quoi}."
+            ),
+            Ok(Some(n)) => afficher_aligne(
+                &format!("  {VERT}✔{RESET} "),
+                &trf!("Rendu : {quoi} ({n}).", "Given back: {quoi} ({n})."),
+                4,
+                "",
+            ),
+            Err(e) => trp!(
+                "  ✖ {quoi} : {e}. Il reste noté ; « vanguard blocage rendre-reseau {} » réessaie.",
+                "  ✖ {quoi}: {e}. It stays noted; “vanguard blocking restore-network {}” tries again.",
+                r.pid
+            ),
+        }
     }
 }
 
@@ -913,17 +1077,6 @@ fn choisir_geste_a_ajouter(t: suites::Type, manquants: &[suites::Etape]) -> Opti
         .parse::<usize>()
         .ok()
         .and_then(|i| manquants.get(i.checked_sub(1)?))?;
-    if !e.disponible() {
-        afficher_aligne(
-            "  ",
-            tr!(
-                "Ce geste n'existe pas encore : la suite le nomme, il sera dit et sauté sans casser la suite.",
-                "This action does not exist yet: the suite names it, it will be said and skipped without breaking the suite."
-            ),
-            2,
-            GRIS,
-        );
-    }
     Some(e)
 }
 
@@ -1038,6 +1191,7 @@ pub fn au_bilan() {
     // programme gelé et oublié tient ses fichiers ; un tiers qui l'a repris est vu (et le programme resuspendu si ce
     // compte en a les droits, sinon c'est dit) ; un programme qui ne se relit pas d'ici est dit, jamais oublié.
     suspension::rappeler();
+    coupure::rappeler();
     surveiller::rappeler();
     let p = parametres();
     if p.rien() {
@@ -1237,17 +1391,33 @@ fn alerte_de_la_suite(m: &Menace, d: &enchainer::Deroule, dit: Option<&str>) -> 
         .map(|(e, i)| i.ligne(*e))
         .collect();
     let suspendu = d.a_reprendre;
+    let coupe = d
+        .issues
+        .iter()
+        .any(|(e, i)| *e == suites::Etape::CouperReseau && matches!(i, enchainer::Issue::Fait(_)));
     if !autres.is_empty() {
         texte += &trf!(". Suite : {}", ". Suite: {}", autres.join(" ; "));
     }
     if let Some(d) = dit {
         texte += &trf!(" ({d})", " ({d})");
     }
-    // Chaque geste se défait à part : le blocage par « annuler », la suspension par « reprendre ».
-    if suspendu {
-        texte += tr!(
-            ". Pour annuler, chaque geste à part : vanguard blocage annuler, vanguard blocage reprendre.",
-            ". To undo, each action on its own: vanguard blocking undo, vanguard blocking resume."
+    // Chaque geste se défait à part : le blocage par « annuler », la suspension par « reprendre », la coupure du
+    // réseau par « rendre-reseau ».
+    if suspendu || coupe {
+        let mut defaire = vec!["vanguard blocage annuler"];
+        let mut undo = vec!["vanguard blocking undo"];
+        if suspendu {
+            defaire.push("vanguard blocage reprendre");
+            undo.push("vanguard blocking resume");
+        }
+        if coupe {
+            defaire.push("vanguard blocage rendre-reseau");
+            undo.push("vanguard blocking restore-network");
+        }
+        let (defaire, undo) = (defaire.join(", "), undo.join(", "));
+        texte += &trf!(
+            ". Pour annuler, chaque geste à part : {defaire}.",
+            ". To undo, each action on its own: {undo}."
         );
     } else if matches!(d.bloque, Some(Ok(_))) {
         texte += tr!(
@@ -1619,6 +1789,24 @@ fn faits_de(m: &Menace, ctx: &Contexte, pret: &Result<gestes::Pret, crate::model
         ),
         _ => Some(tr!("aucun processus en marche à suspendre", "no running process to suspend").to_string()),
     };
+    let couper_reseau = match &m.geste {
+        menaces::Geste::Programme {
+            pid: Some(pid),
+            chemin: Some(c),
+            ..
+        } => match suspension::depart_de(*pid) {
+            Some(depart) => ordres::juger(
+                &ordres::Ordre::CouperReseauProgramme {
+                    pid: *pid,
+                    chemin: c.to_string_lossy().into_owned(),
+                    depart,
+                },
+                &ordres::Juge::lire(None).avec(&ctx.intouchables),
+            ),
+            None => Some(tr!("le processus est fini", "the process has ended").to_string()),
+        },
+        _ => Some(tr!("aucun processus en marche à couper", "no running process to cut").to_string()),
+    };
     choix::Faits {
         certaine: m.certaine,
         bloquer: match pret {
@@ -1626,6 +1814,7 @@ fn faits_de(m: &Menace, ctx: &Contexte, pret: &Result<gestes::Pret, crate::model
             Err(e) => Err(e.to_string()),
         },
         suspendre,
+        couper_reseau,
         empreinte: m.empreinte().is_some(),
         surveillance_ici: cfg!(target_os = "linux"),
     }
@@ -1719,6 +1908,7 @@ fn agir(m: &Menace, ctx: &Contexte, p: &Parametres) -> bool {
             }
         },
         choix::Choix::Suspendre => suspendre_la_menace(m),
+        choix::Choix::CouperReseau => couper_le_reseau_de_la_menace(m),
         choix::Choix::Surveiller => surveiller_la_menace(m),
         choix::Choix::Confiance if m.certaine => faire_confiance(m),
         choix::Choix::Confiance => declarer_normale(m),
@@ -1765,14 +1955,6 @@ fn toute_la_suite(
                 trf!("{} : sauté, {pourquoi}", "{}: skipped, {pourquoi}", e.texte()),
                 true,
             ),
-            suites::Plan::PasDisponible => (
-                trf!(
-                    "{} : pas encore disponible, sauté",
-                    "{}: not available yet, skipped",
-                    e.texte()
-                ),
-                true,
-            ),
         };
         afficher_aligne(&format!("    {n}. "), &texte, 7, if gris { GRIS } else { "" });
         if *e == suites::Etape::Suspendre
@@ -1805,8 +1987,8 @@ fn toute_la_suite(
     afficher_aligne(
         "  ",
         tr!(
-            "Chaque geste est noté et s'annule à part (vanguard blocage annuler ; reprendre pour une suspension).",
-            "Each action is noted and undone on its own (vanguard blocking undo; resume for a suspension)."
+            "Chaque geste est noté et s'annule à part (vanguard blocage annuler ; reprendre pour une suspension ; rendre-reseau pour une coupure du réseau).",
+            "Each action is noted and undone on its own (vanguard blocking undo; resume for a suspension; restore-network for a network cut)."
         ),
         2,
         GRIS,
@@ -1898,6 +2080,37 @@ fn suspendre_la_menace(m: &Menace) -> bool {
             "  {VERT}✔{RESET} Suspendu. Pour le reprendre : vanguard blocage reprendre {pid} ; pour l'arrêter : Bloquer.",
             "  {VERT}✔{RESET} Suspended. To resume it: vanguard blocking resume {pid}; to stop it: Block."
         ),
+        Err(e) => trp!("  ✖ {e}", "  ✖ {e}"),
+    }
+    false
+}
+
+/// Couper son réseau : montré, confirmé, puis fait sous les gardes de la coupure (rejugées juste avant, puis par
+/// l'élevé). La menace reste dans la liste : Bloquer peut suivre.
+fn couper_le_reseau_de_la_menace(m: &Menace) -> bool {
+    let menaces::Geste::Programme {
+        pid: Some(pid),
+        chemin: Some(chemin),
+        nom,
+        ..
+    } = &m.geste
+    else {
+        return false;
+    };
+    let chemin = chemin.to_string_lossy();
+    if !confirmer_la_coupure(*pid, nom, &chemin) {
+        return false;
+    }
+    let intouchables = crate::machine::chasse::en_marche().map_or_else(HashSet::new, |(_, i)| i);
+    match coupure::couper(
+        *pid,
+        &chemin,
+        &m.quoi,
+        Some(&m.cle_normale()),
+        &intouchables,
+        crate::modele::evenement::Source::Utilisateur,
+    ) {
+        Ok(precision) => dire_coupe(*pid, &precision),
         Err(e) => trp!("  ✖ {e}", "  ✖ {e}"),
     }
     false

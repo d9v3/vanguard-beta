@@ -519,7 +519,7 @@ pub(crate) fn lot_couper(premier: u32, cgroupe: u64, niveau: u32) -> (Vec<u8>, V
     }
     messages.push(Box::new(move |n| {
         nft(NFT_MSG_NEWSETELEM, creer, n, |a| {
-            element_liste(a, Element::Cgroupe(cgroupe))
+            element_liste(a, Element::Cgroupe(cgroupe));
         })
     }));
     lot(premier, messages)
@@ -725,7 +725,7 @@ pub(crate) fn couper_cgroupe(cgroupe: u64, niveau: u32) -> Result<(), Echec> {
         .envoyer_et_attendre(&octets, &attendus)
         .map_err(|(code, _)| refus_de_coupe(code))?;
     let element = Element::Cgroupe(cgroupe);
-    let attendues: Vec<(String, usize)> = CHAINES_DE_COUPE.iter().map(|(c, _)| ((*c).to_string(), 1)).collect();
+    let regles_voulues: Vec<(String, usize)> = CHAINES_DE_COUPE.iter().map(|(c, _)| ((*c).to_string(), 1)).collect();
     let probleme = match relire(&prise) {
         Err(e) => Some(e.to_string()),
         Ok(relue) if !relue.elements.contains(&element) => Some(
@@ -735,7 +735,7 @@ pub(crate) fn couper_cgroupe(cgroupe: u64, niveau: u32) -> Result<(), Echec> {
             )
             .to_string(),
         ),
-        Ok(relue) if relue.regles_de_coupe != attendues => Some(
+        Ok(relue) if relue.regles_de_coupe != regles_voulues => Some(
             tr!(
                 "les règles de coupure relues ne sont pas celles de Vanguard : rien n'est compté comme coupé",
                 "the cut rules read back are not Vanguard's: nothing is counted as cut"
@@ -1287,7 +1287,7 @@ mod tests {
         };
         let voisin = || TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_secs(4)).is_ok();
         assert!(essayer(), "avant la coupure, le processus passe");
-        assert!(cgroupes_coupes().unwrap().is_empty());
+        assert_eq!(cgroupes_coupes().unwrap(), Vec::<u64>::new());
         couper_cgroupe(id, niveau).unwrap();
         // Deux fois : toujours une règle par chaîne, un seul élément.
         couper_cgroupe(id, niveau).unwrap();

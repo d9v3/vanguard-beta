@@ -52,6 +52,8 @@ struct Voulue {
     /// Une adresse distante (sortante), ou un port local TCP (entrante).
     adresse: Option<IpAddr>,
     port: Option<u16>,
+    /// Un programme (ApplicationName) : tout son trafic, dans ce sens, quelle que soit l'adresse ou le port.
+    programme: Option<String>,
 }
 
 pub(super) fn politique() -> windows::core::Result<INetFwPolicy2> {
@@ -115,6 +117,15 @@ fn conforme(regle: &INetFwRule, v: &Voulue) -> bool {
             && tout(regle.RemotePorts());
         let vise = partout
             && match (v.adresse, v.port) {
+                _ if v.programme.is_some() => {
+                    let programme = v.programme.as_deref().unwrap_or_default();
+                    regle.Protocol().is_ok_and(|x| x == NET_FW_IP_PROTOCOL_ANY.0)
+                        && tout(regle.RemoteAddresses())
+                        && tout(regle.LocalPorts())
+                        && regle
+                            .ApplicationName()
+                            .is_ok_and(|a| a.to_string().eq_ignore_ascii_case(programme))
+                }
                 (Some(ip), _) => {
                     regle.Protocol().is_ok_and(|x| x == NET_FW_IP_PROTOCOL_ANY.0)
                         && regle.RemoteAddresses().is_ok_and(|a| adresse_visee(&a.to_string(), ip))
@@ -155,6 +166,10 @@ fn creer(r: &INetFwRules, v: &Voulue) -> windows::core::Result<()> {
             "Added by Vanguard's blocking; removed with “vanguard blocking undo”"
         )))?;
         match (v.adresse, v.port) {
+            _ if v.programme.is_some() => {
+                regle.SetProtocol(NET_FW_IP_PROTOCOL_ANY.0)?;
+                regle.SetApplicationName(&BSTR::from(v.programme.as_deref().unwrap_or_default()))?;
+            }
             (Some(ip), _) => {
                 regle.SetProtocol(NET_FW_IP_PROTOCOL_ANY.0)?;
                 regle.SetRemoteAddresses(&BSTR::from(ip.to_canonical().to_string()))?;
@@ -270,6 +285,7 @@ pub(crate) fn bloquer_sortie(ip: IpAddr) -> Resultat {
         sens: NET_FW_RULE_DIR_OUT,
         adresse: Some(ip.to_canonical()),
         port: None,
+        programme: None,
     })
 }
 
@@ -283,11 +299,44 @@ pub(crate) fn fermer_port(port: u16) -> Resultat {
         sens: NET_FW_RULE_DIR_IN,
         adresse: None,
         port: Some(port),
+        programme: None,
     })
 }
 
 pub(crate) fn rouvrir_port(port: u16) -> Resultat {
     enlever(nom_entrante(port))
+}
+
+/// Coupe le réseau d'un programme : une règle sortante et une entrante sur son fichier (ApplicationName), donc TOUS
+/// ses processus. La première posée qui manque la seconde est retirée : jamais une coupure à moitié comptée.
+pub(crate) fn couper_programme(chemin: &str) -> Resultat {
+    let voulue = |sortie: bool| Voulue {
+        nom: crate::protection::blocage::coupure::nom_de_regle(chemin, sortie),
+        sens: if sortie {
+            NET_FW_RULE_DIR_OUT
+        } else {
+            NET_FW_RULE_DIR_IN
+        },
+        adresse: None,
+        port: None,
+        programme: Some(chemin.to_string()),
+    };
+    let sortie = poser(voulue(true));
+    if !sortie.reussi {
+        return sortie;
+    }
+    let entree = poser(voulue(false));
+    if !entree.reussi {
+        let _ = enlever(crate::protection::blocage::coupure::nom_de_regle(chemin, true));
+    }
+    entree
+}
+
+/// Retire les deux règles de Vanguard qui coupent ce programme (et rien d'autre : leur nom est celui de Vanguard).
+pub(crate) fn rendre_programme(chemin: &str) -> Resultat {
+    let sortie = enlever(crate::protection::blocage::coupure::nom_de_regle(chemin, true));
+    let entree = enlever(crate::protection::blocage::coupure::nom_de_regle(chemin, false));
+    if sortie.reussi { entree } else { sortie }
 }
 
 // ------------------------------------------------------------- les actes

@@ -139,6 +139,10 @@ pub(crate) const SURVEILLANCE_PASSE: &str = "surveillance-passe.txt";
 /// ou resuspendre un autre programme (la reprise relit toujours le programme du processus) ; changée, elle ne compte
 /// plus, et le bilan le dit.
 pub(crate) const SUSPENDUS: &str = "blocage-suspendus.json";
+/// Les programmes dont Vanguard a coupé le réseau (`protection::blocage::coupure`) : forgée, le bilan aurait tu un
+/// programme coupé, ou fait rendre le réseau à un autre (le retour relit toujours le processus) ; changée, elle ne
+/// compte plus, et le bilan le dit.
+pub(crate) const COUPURES: &str = "blocage-coupures.json";
 /// Les programmes sous surveillance rapprochée (`protection::blocage::surveiller`), lus par le veilleur de Linux :
 /// forgée, elle aurait fait sonner le lancement d'un programme sain, ou taire celui qu'on surveille.
 pub(crate) const SURVEILLES: &str = "surveillance-rapprochee.json";

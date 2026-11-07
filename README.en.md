@@ -220,7 +220,11 @@ runs. As administrator, nothing is blocked by itself: the blocking settings can 
 account, and clear-cut threats are offered with one click there. Each threat also offers **Suspend** (the program
 frozen, reversible with `vanguard blocking resume`, recalled at each check; only this process is frozen, not the
 programs it already started; on Linux, any process of the same account can resume it: the check suspends it again if
-this account has the rights, otherwise it says so), **Watch more closely** (Linux: an alert when it starts, at most one
+this account has the rights, otherwise it says so), **Cut its network** (the program runs but talks to no one,
+reversible with `vanguard blocking restore-network`; on Linux, this process only, until restart, its connections
+already open cut in the same step; on Windows, two firewall rules on its file: all processes of this file, connections
+already open not cut, until given back even after a restart; never Vanguard nor what carries a remote session),
+**Watch more closely** (Linux: an alert when it starts, at most one
 per hour, for 7 days), **Trust** (a certain file: a typed word, tied to its fingerprint, 90 days) and Ignore; an
 action refused by a safeguard stays visible, greyed, with its reason. A notified alert is taken up again with
 `vanguard alert <id>`: read again from the sealed log, the threat judged again.
@@ -801,7 +805,7 @@ Each menu entry is also a command.
 | `vanguard camera-mic` | camera and microphone: who uses them? (read-only) |
 | `vanguard privacy-review [--json]` | privacy check: who can access location, contacts, camera and microphone (read-only) |
 | **8 Block and respond** | |
-| `vanguard blocking [search\|undo\|auto\|click\|category mode\|suspend PID\|resume [PID]]` | threat blocking: one-click “Block” for each threat (action shown, written down, undoable); active protection, after a consent, that blocks clear-cut threats by itself (MalwareBazaar fingerprint, known attack tool, command server) |
+| `vanguard blocking [search\|undo\|auto\|click\|category mode\|suspend PID\|resume [PID]\|cut-network PID\|restore-network [PID]]` | threat blocking: one-click “Block” for each threat (action shown, written down, undoable); active protection, after a consent, that blocks clear-cut threats by itself (MalwareBazaar fingerprint, known attack tool, command server) |
 | `vanguard dangerous-sites [on\|off]` | dangerous sites blocked by the hosts file (URLhaus, ThreatFox command servers), after your consent; `off` removes them exactly |
 | `vanguard events [--json] [--incident id]` | the event log: alerts, evidence recorded before an action, actions, undos, alerts declared normal and version changes, linked; the state of its sealed chain first |
 | `vanguard changes` | what Vanguard changed: each fix run here, its date and its result; a fix marked “undoable” is undone there, then the previous state is read back |

@@ -1,5 +1,6 @@
 //! Dérouler une suite (`suites`) : chaque geste à son tour, fait par le geste de R1 qui le rejuge lui-même
-//! (`suspension::suspendre` et ses gardes, `gestes::preparer` puis `faire`, `surveiller::ajouter`, `ordres::juger`).
+//! (`suspension::suspendre` et ses gardes, `coupure::couper`, `gestes::preparer` puis `faire`, `surveiller::ajouter`,
+//! `ordres::juger`).
 //! Un geste refusé par un garde-fou reste refusé dans une suite ; un geste sauté ou refusé ne casse jamais la suite,
 //! la suivante se fait.
 //!
@@ -14,7 +15,7 @@ use std::path::PathBuf;
 use super::gestes::{self, Contexte, Pret};
 use super::menaces::{Geste, Menace};
 use super::suites::{Cible, Etape, Plan, Type, planifier};
-use super::{ordres, surveiller, suspension};
+use super::{coupure, ordres, surveiller, suspension};
 use crate::modele::Echec;
 use crate::{tr, trf};
 
@@ -24,7 +25,7 @@ pub(super) enum Issue {
     Fait(String),
     /// Fait par le geste Bloquer de la même suite (la preuve juste avant lui, les connexions avec lui).
     AvecBloquer(String),
-    /// Sauté, sans objet ici ou pas encore disponible : la suite continue.
+    /// Sauté, sans objet ici : la suite continue.
     Saute(String),
     /// Refusé (garde-fou, droits) ou échoué : la suite continue.
     Echoue(String),
@@ -132,7 +133,6 @@ pub(super) fn derouler(
     let mut faire_appele = false;
     for (e, p) in plan {
         let issue = match p {
-            Plan::PasDisponible => Issue::Saute(tr!("pas encore disponible", "not available yet").to_string()),
             Plan::SansObjet(r) => Issue::Saute(r.to_string()),
             Plan::AvecBloquer(r) => Issue::AvecBloquer(r.to_string()),
             Plan::Faire => match e {
@@ -179,7 +179,7 @@ pub(super) fn derouler(
                     ),
                 },
                 Etape::Prevenir => prevenir(&d),
-                Etape::CouperReseau => Issue::Saute(tr!("pas encore disponible", "not available yet").to_string()),
+                Etape::CouperReseau => couper_reseau(m, ctx, automatique),
             },
         };
         if e == Etape::Suspendre && matches!(issue, Issue::Fait(_)) {
@@ -284,6 +284,56 @@ fn suspendre(m: &Menace, ctx: &Contexte, automatique: bool) -> Issue {
     }
 }
 
+/// Couper le réseau du processus, à son tour : sous ses gardes (`coupure::couper` les rejuge, l'élevé aussi). Un
+/// programme du système se coupe seulement à part (`vanguard blocage couper-reseau`), montré et confirmé : jamais
+/// dans une suite. Il faut toujours les droits d'administrateur : sans clic, rien ne les demande à personne.
+fn couper_reseau(m: &Menace, ctx: &Contexte, automatique: bool) -> Issue {
+    let Geste::Programme {
+        pid: Some(pid),
+        chemin: Some(chemin),
+        ..
+    } = &m.geste
+    else {
+        return Issue::Saute(tr!("aucun processus en marche", "no running process").to_string());
+    };
+    let chemin = chemin.to_string_lossy();
+    if let Some(role) = coupure::role(*pid, &chemin) {
+        return Issue::Saute(trf!(
+            "c'est {role} : son réseau se coupe seulement à part (vanguard blocage couper-reseau), montré et confirmé",
+            "this is {role}: its network is only cut on its own (vanguard blocking cut-network), shown and confirmed"
+        ));
+    }
+    if automatique && !ctx.admin && !ctx.interactif {
+        return Issue::Echoue(gestes::droits_manquants());
+    }
+    let source = if automatique {
+        crate::modele::evenement::Source::Blocage
+    } else {
+        crate::modele::evenement::Source::Utilisateur
+    };
+    match coupure::couper(
+        *pid,
+        &chemin,
+        &m.quoi,
+        Some(&m.cle_normale()),
+        &ctx.intouchables,
+        source,
+    ) {
+        Ok(precision) => {
+            let rendre = trf!(
+                "« vanguard blocage rendre-reseau {pid} » le lui rend",
+                "“vanguard blocking restore-network {pid}” gives it back"
+            );
+            Issue::Fait(if precision.is_empty() {
+                rendre
+            } else {
+                format!("{precision} ; {rendre}")
+            })
+        }
+        Err(e) => Issue::Echoue(e.to_string()),
+    }
+}
+
 /// Couper seules les connexions déjà ouvertes vers une adresse (sans la règle de Bloquer) : l'ordre est rejugé ici,
 /// puis par celui qui a les droits.
 fn couper(m: &Menace, ctx: &Contexte, automatique: bool) -> Issue {
@@ -327,7 +377,7 @@ mod tests {
     use crate::protection::blocage::parametres::Categorie;
 
     /// Une suite sans Bloquer sur un programme qui n'est plus là : rien ne se fait sur le système, chaque geste est
-    /// sauté avec sa raison (« couper le réseau » dit pas encore disponible), Prévenir se fait quand même, à son
+    /// sauté avec sa raison (« couper le réseau » : aucun processus en marche), Prévenir se fait quand même, à son
     /// tour, et la suite entière est notée.
     #[test]
     fn suite_sans_objet_sautee_sans_casser() {

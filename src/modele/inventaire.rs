@@ -191,6 +191,8 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     // Les programmes suspendus (rappelés au bilan, resuspendus si ce compte en a les droits) et ceux sous surveillance
     // rapprochée (lus par le veilleur) : forgées, elles faisaient rappeler un autre programme, ou taire celui qu'on surveille.
     scelle(sceau::SUSPENDUS, "protection::blocage::suspension"),
+    // Les programmes coupés du réseau (rappelés au bilan) : forgée, elle taisait un programme coupé.
+    scelle(sceau::COUPURES, "protection::blocage::coupure"),
     scelle(sceau::SURVEILLES, "protection::blocage::surveiller"),
     local("quarantaine", "protection::quarantaine"),
     // Vidée ou effacée, les fichiers-pièges n'étaient plus vérifiés.
