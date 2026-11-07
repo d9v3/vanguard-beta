@@ -25,7 +25,7 @@ regle!(
     Os::Linux,
     381,
     ("garde des lancements", "launch guard"),
-    &["CIS Controls v8 10.1"],
+    &["CIS Controls v8 10.1", "MITRE ATT&CK M1038"],
     || vec![constat()]
 );
 

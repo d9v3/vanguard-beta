@@ -590,7 +590,7 @@ Les mesures d'ATT&CK que les règles de durcissement appliquent ou vérifient.
 | M1035 | Limit Access to Resource Over Network | `COM-AGT-001`, `COM-APP-001`, `COM-APP-002`, `COM-EXP-001`, `COM-EXP-004`, `COM-PAR-001`, `COM-PST-001`, `COM-PST-002`, `LNX-CTN-001`, `LNX-RES-001`, `LNX-SES-003`, `WIN-DIS-001`, `WIN-RES-001`, `WIN-RES-002` |
 | M1036 | Account Use Policies | `LNX-CPT-002` |
 | M1037 | Filter Network Traffic | `COM-EXP-003`, `LNX-PFE-001`, `WIN-PFE-001` |
-| M1038 | Execution Prevention | `WIN-DUR-005` |
+| M1038 | Execution Prevention | `LNX-SUR-002`, `WIN-DUR-005` |
 | M1039 | Environment Variable Permissions | — |
 | M1040 | Behavior Prevention on Endpoint | `WIN-ANV-003` |
 | M1041 | Encrypt Sensitive Information | `COM-CLE-002`, `LNX-CHF-001`, `WIN-CHF-001` |
@@ -614,7 +614,7 @@ Les mesures d'ATT&CK que les règles de durcissement appliquent ou vérifient.
 
 ## Règles sans identifiant ATT&CK
 
-40 règles sur 173 ne citent encore ni technique ni mesure (ce n'est pas une obligation : une vérification de l'état de l'ordinateur n'a pas toujours sa technique). Les règles par famille :
+40 règles sur 174 ne citent encore ni technique ni mesure (ce n'est pas une obligation : une vérification de l'état de l'ordinateur n'a pas toujours sa technique). Les règles par famille :
 
 - **communes et audit du réseau** (30) : COM-APP-003, COM-APP-005, COM-ARP-003, COM-CLE-001, COM-CLE-003, COM-DNS-001, COM-DNS-002, COM-DNS-003, COM-DNS-005, COM-ESP-001, COM-ETA-001, COM-EXP-002, COM-HEU-001, COM-HIS-001, COM-LOG-001, COM-MAT-001, COM-NAV-003, COM-NAV-004, COM-PQC-001, COM-PQC-002, COM-PQC-003, COM-PUB-001, COM-SUR-001, COM-SUR-002, COM-SUR-003, COM-TLS-002, COM-TLS-004, COM-TLS-005, COM-WIF-001, COM-WIF-005
 - **Linux** (7) : LNX-MAJ-006, LNX-MAT-001, LNX-SES-001, LNX-SES-002, LNX-SRV-001, LNX-SUR-001, LNX-WIF-001

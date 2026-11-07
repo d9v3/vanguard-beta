@@ -258,7 +258,7 @@ enum Commande {
     /// Garde des lancements (Linux) : un service système qui voit chaque programme lancé et compare son empreinte aux
     /// listes de programmes certainement malveillants ; posé en observation (rien n'est refusé, tout est noté), il ne
     /// refuse qu'après « refus », avec le mot de passe. Sans argument : son état et ses derniers événements. « on »
-    /// le pose, « off » le retire, « maj » refait ses listes, « pause <minutes> », « permettre <SHA-256> ».
+    /// le pose, « off » le retire, « maj » refait ses listes, « pause `<minutes>` », « permettre `<SHA-256>` ».
     /// Caché jusqu'au menu, au bilan et aux documents de L5.
     #[command(alias = "guard", hide = true)]
     Garde {

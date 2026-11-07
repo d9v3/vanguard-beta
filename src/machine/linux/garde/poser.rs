@@ -91,7 +91,7 @@ fn juger_pose_avec(
     None
 }
 
-/// L'uid réel d'un /proc/<pid>/status.
+/// L'uid réel d'un `/proc/<pid>/status`.
 fn uid_reel(status: &str) -> Option<u32> {
     status
         .lines()
@@ -403,6 +403,9 @@ mod tests {
         use std::os::unix::fs::MetadataExt;
         let d = crate::essais::Jetable::nouveau("garde-pose");
         let moi = std::fs::metadata(&*d).unwrap().uid();
+        if moi == 0 {
+            return crate::essais::saute("lancé en root : un dossier à soi est à root");
+        }
         let maison = d.to_path_buf();
         let listes = d.join("listes");
         std::fs::create_dir(&listes).unwrap();

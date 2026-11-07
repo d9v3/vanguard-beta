@@ -246,7 +246,7 @@ pub(super) fn raison_lancement_refuse() -> &'static str {
 const REFUS_LUS: usize = 256;
 
 /// Un lancement refusé par le garde, tel que son journal (à root) le dit.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 struct RefusDuGarde {
     /// Secondes depuis 1970.
     t: u64,
@@ -259,7 +259,7 @@ struct RefusDuGarde {
 /// par chemin, toujours là, ordinaire, dont l'empreinte relue maintenant (`empreinte`) est celle que le garde a
 /// refusée. Un fichier remplacé depuis n'est pas désigné : le garde a refusé l'autre. `deja` : les fichiers déjà
 /// désignés par une autre voie.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn refus_du_garde(
     evenements: &[RefusDuGarde],
     maintenant: u64,
@@ -821,7 +821,9 @@ mod tests {
     }
 
     /// Un refus du garde désigne le fichier refusé, une fois, s'il est toujours là avec la même empreinte, et depuis
-    /// une semaine au plus ; un fichier déjà désigné par une autre voie ne l'est pas deux fois.
+    /// une semaine au plus ; un fichier déjà désigné par une autre voie ne l'est pas deux fois. Linux seulement : le
+    /// garde n'existe que là, et ses chemins n'y sont absolus que là.
+    #[cfg(target_os = "linux")]
     #[test]
     fn refus_du_garde_designe_le_fichier_refuse() {
         let h = |c: char| c.to_string().repeat(64);
