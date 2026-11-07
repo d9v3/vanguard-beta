@@ -190,17 +190,6 @@ pub(crate) fn lire_sous(
     Ok((signature, Some(l)))
 }
 
-/// Relit une liste par son chemin complet (`depart` puis `lire_sous`).
-#[cfg(test)]
-pub(crate) fn lire(chemin: &Path, compte: u32) -> Result<ListeSha256, String> {
-    let dossier = chemin.parent().ok_or("sans dossier")?;
-    let nom = chemin.file_name().ok_or("sans nom")?;
-    let (d, relatif) = depart(dossier, compte)?;
-    lire_sous(&d, &relatif.join(nom), compte, None)?
-        .1
-        .ok_or_else(|| "pas relue".to_string())
-}
-
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::as_conversions,
@@ -209,6 +198,16 @@ pub(crate) fn lire(chemin: &Path, compte: u32) -> Result<ListeSha256, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Relit une liste par son chemin complet (`depart` puis `lire_sous`).
+    fn lire(chemin: &Path, compte: u32) -> Result<ListeSha256, String> {
+        let dossier = chemin.parent().ok_or("sans dossier")?;
+        let nom = chemin.file_name().ok_or("sans nom")?;
+        let (d, relatif) = depart(dossier, compte)?;
+        lire_sous(&d, &relatif.join(nom), compte, None)?
+            .1
+            .ok_or_else(|| "pas relue".to_string())
+    }
 
     fn hache_de(octets: &[u8]) -> Hache {
         hacher(octets).unwrap()

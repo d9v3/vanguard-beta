@@ -64,9 +64,7 @@ pub(crate) fn retirer() -> bool {
         return true;
     }
     let _ = utilisateur(Geste::Desactiver { maintenant: true }, &format!("{NOM}.timer"));
-    for f in fichiers() {
-        let _ = std::fs::remove_file(f);
-    }
+    let _ = crate::reseau::surveillance::retirer_fichiers(&fichiers());
     let _ = utilisateur(Geste::Recharger, "");
     !posee()
 }

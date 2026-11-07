@@ -582,9 +582,8 @@ fn nettoyer_le_compte() {
         );
     }
     let dossier = dossier_listes();
-    match effacer_listes(&dossier) {
-        Ok(()) => {}
-        Err(e) => afficher_aligne(
+    if let Err(e) = effacer_listes(&dossier) {
+        afficher_aligne(
             "  ⚠ ",
             &trf!(
                 "Listes du garde non effacées ({}) : {e}",
@@ -593,23 +592,23 @@ fn nettoyer_le_compte() {
             ),
             4,
             "",
-        ),
+        );
     }
 }
 
 /// Efface les deux listes, puis leur dossier s'il est vide : rien d'autre (un fichier que la personne y aurait mis
 /// reste, avec le dossier).
-fn effacer_listes(dossier: &Path) -> std::io::Result<()> {
-    for nom in [LISTE_SHA256, LISTE_MD5] {
-        match std::fs::remove_file(dossier.join(nom)) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
-            _ => {}
-        }
+fn effacer_listes(dossier: &Path) -> Result<(), crate::modele::raison::Echec> {
+    use crate::modele::raison::Echec;
+    let restes = crate::reseau::surveillance::retirer_fichiers(&[dossier.join(LISTE_SHA256), dossier.join(LISTE_MD5)]);
+    if !restes.is_empty() {
+        return Err(Echec::refuse("garde/listes", &restes.join(", ")));
     }
     match std::fs::remove_dir(dossier) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()),
-        r => r,
+        Err(e) => Err(Echec::io("garde/listes", &e)),
+        Ok(()) => Ok(()),
     }
 }
 
@@ -746,9 +745,10 @@ mod tests {
         let p = ecrire_dans(&dossier, &[[2u8; 32]], &[1u8; 32], &md5, Vec::new()).unwrap();
         assert_eq!((p.sha256, p.md5), (2, 1));
         let moi = crate::socle::uid();
-        let sha = super::super::listes::lire(&dossier.join(LISTE_SHA256), moi).unwrap();
-        assert_eq!(sha.nombre(), 2);
-        assert!(super::super::listes::lire(&dossier.join(LISTE_MD5), moi).is_ok());
+        let (depart, relatif) = super::super::listes::depart(&dossier, moi).unwrap();
+        let relue = |nom: &str| super::super::listes::lire_sous(&depart, &relatif.join(nom), moi, None);
+        assert_eq!(relue(LISTE_SHA256).unwrap().1.unwrap().nombre(), 2);
+        assert!(relue(LISTE_MD5).unwrap().1.is_some());
         assert_eq!(std::fs::metadata(&dossier).unwrap().mode() & 0o777, 0o700);
     }
 
