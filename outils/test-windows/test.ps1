@@ -2069,6 +2069,105 @@ $contenu = if (Test-Path $blocageJson) { Get-Content -LiteralPath $blocageJson -
 if ($contenu -notmatch '"outil-d-attaque"') { Ok 'Suite par défaut remise : plus rien d''écrit pour ce type' }
 else { Bug 'La suite par défaut remise laisse la suite choisie dans blocage.json' }
 
+Etape 'Couper et rendre le réseau d''un programme (blocage, défense R3) : deux règles sur son fichier, son voisin intact, refusé à un programme de Microsoft'
+# Un programme jetable, compilé ici (non signé), copié une fois sous un autre nom (son voisin) : avec « essai », il
+# tente une connexion TCP vers 1.1.1.1:443 (code 0 : connecté) ; sans, il attend. Coupé, son fichier a deux règles
+# de Vanguard (sortante et entrante, Block) et il ne se connecte plus ; son voisin, oui. Rendu, plus aucune règle, il
+# se reconnecte. Seul ce programme jetable est coupé : jamais le réseau de la VM, ni ce qui porte le Bureau à
+# distance. Sans Internet dans la VM, l'effet mesuré est dit sauté (les règles se vérifient quand même).
+$dossierR3 = Join-Path $env:TEMP 'vanguard-essai-r3'
+New-Item -ItemType Directory -Force $dossierR3 | Out-Null
+$reseauR3 = Join-Path $dossierR3 'reseau-r3.exe'
+$voisinR3 = Join-Path $dossierR3 'voisin-r3.exe'
+$jetableR3 = $null
+try {
+    if (-not (Test-Path $reseauR3)) {
+        Add-Type -OutputType ConsoleApplication -OutputAssembly $reseauR3 -TypeDefinition @'
+public static class Reseau {
+    public static int Main(string[] a) {
+        if (a.Length > 0 && a[0] == "essai") {
+            try {
+                var c = new System.Net.Sockets.TcpClient();
+                var r = c.BeginConnect("1.1.1.1", 443, null, null);
+                bool ok = r.AsyncWaitHandle.WaitOne(4000) && c.Connected;
+                c.Close();
+                return ok ? 0 : 1;
+            } catch { return 1; }
+        }
+        System.Threading.Thread.Sleep(600000);
+        return 0;
+    }
+}
+'@
+    }
+    Copy-Item $reseauR3 $voisinR3 -Force
+    $jetableR3 = Start-Process -FilePath $reseauR3 -PassThru -WindowStyle Hidden
+    Start-Sleep -Seconds 1
+} catch { Sautee "Programme jetable non compilé (Add-Type) : $($_.Exception.Message)" }
+function Connecte($programme) {
+    $p = Start-Process -FilePath $programme -ArgumentList 'essai' -PassThru -WindowStyle Hidden -Wait
+    $p.ExitCode -eq 0
+}
+function Regles-R3 {
+    @(Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'Vanguard : couper *reseau-r3.exe (*)' })
+}
+$internetR3 = $false
+if ($jetableR3) { $internetR3 = Connecte $voisinR3 }
+if (-not $internetR3) { Info 'Pas de connexion vers 1.1.1.1:443 depuis la VM : l''effet de la coupure ne se mesure pas, seules les règles se vérifient' }
+if ($jetableR3 -and -not $jetableR3.HasExited) {
+    $id = $jetableR3.Id
+    LancerAvec 'blocage-couper-reseau' @('blocage', 'couper-reseau', "$id") "o`n"
+    $t = "$(Sortie 'blocage-couper-reseau')"
+    if ($t -match 'Réseau coupé|Network cut') { Ok "vanguard blocage couper-reseau $id : dit coupé" }
+    elseif ($t -match 'session à distance|remote session|connexion à distance|remote connection') { Sautee "vanguard blocage couper-reseau $id : refusé, le programme descend d'une session à distance (la passe tourne par SSH)" }
+    else { Bug "vanguard blocage couper-reseau $id : pas « Réseau coupé » ($((Lignes $t | Where-Object { $_ -match '✖' }) -join ' / '))" }
+    if ($t -match 'TOUS les processus de ce fichier|ALL processes of that file') { Ok 'La question dit que tous les processus du fichier sont coupés' }
+    elseif ($t -match 'Réseau coupé|Network cut') { Bug 'La question ne dit pas que TOUS les processus du fichier sont coupés' }
+    $regles = Regles-R3
+    $sens = @($regles | ForEach-Object { "$($_.Direction)" } | Sort-Object)
+    $bloquent = @($regles | Where-Object { "$($_.Action)" -eq 'Block' -and "$($_.Enabled)" -eq 'True' }).Count -eq 2
+    $programmes = @($regles | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue | Where-Object { $_.Program -eq $reseauR3 }).Count
+    if ($regles.Count -eq 2 -and ($sens -join ',') -eq 'Inbound,Outbound' -and $bloquent -and $programmes -eq 2) { Ok 'Deux règles de Vanguard (sortante, entrante), Block, sur le fichier du programme' }
+    elseif ($t -match 'Réseau coupé|Network cut') { Bug "Règles de coupure inattendues : $($regles.Count) règle(s), sens $($sens -join ','), Block : $bloquent, programme : $programmes" }
+    if ($internetR3 -and $regles.Count -eq 2) {
+        if (-not (Connecte $reseauR3)) { Ok 'Le programme coupé ne se connecte plus (effet mesuré, même fichier lancé de nouveau)' }
+        else { Bug 'Le programme coupé se connecte encore à 1.1.1.1:443' }
+        if (Connecte $voisinR3) { Ok 'Son voisin (une copie sous un autre nom) se connecte toujours' }
+        else { Bug 'Le voisin du programme coupé ne se connecte plus' }
+    }
+    Lancer 'blocage-rendre-reseau' @('blocage', 'rendre-reseau', "$id")
+    $t = "$(Sortie 'blocage-rendre-reseau')"
+    if ($t -match 'Rendu|Given back') { Ok "vanguard blocage rendre-reseau $id : dit rendu" }
+    else { Bug "vanguard blocage rendre-reseau $id : pas « Rendu » ($((Lignes $t | Where-Object { $_ -match '✖' }) -join ' / '))" }
+    $regles = Regles-R3
+    if ($regles.Count -eq 0) { Ok 'Plus aucune règle de coupure après le retour' }
+    else { Bug "$($regles.Count) règle(s) de coupure restent après le retour" }
+    if ($internetR3) {
+        if (Connecte $reseauR3) { Ok 'Le programme rendu se connecte de nouveau (effet mesuré)' }
+        else { Bug 'Le programme rendu ne se connecte toujours pas' }
+    }
+    Lancer 'blocage-rendre-reseau-vide' @('blocage', 'rendre-reseau')
+    if ("$(Sortie 'blocage-rendre-reseau-vide')" -match 'Aucun programme coupé du réseau|No program cut from the network') { Ok 'Un second retour ne touche à rien : la liste est vide' }
+    else { Bug 'Un second retour ne dit pas « Aucun programme coupé du réseau »' }
+    Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+}
+$blocR3 = Join-Path $dossierR3 'bloc-r3.exe'
+try {
+    Copy-Item (Join-Path $env:SystemRoot 'System32\notepad.exe') $blocR3 -Force
+    $signe = Start-Process -FilePath $blocR3 -PassThru -WindowStyle Minimized
+    Start-Sleep -Seconds 1
+    LancerAvec 'blocage-couper-reseau-microsoft' @('blocage', 'couper-reseau', "$($signe.Id)") "o`n"
+    $t = "$(Sortie 'blocage-couper-reseau-microsoft')"
+    $poses = @(Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'Vanguard : couper *bloc-r3.exe (*)' })
+    if ($t -match "Rien n'est coupé|Nothing is cut" -and $poses.Count -eq 0) { Ok 'Copie de notepad.exe (signée Microsoft) : coupure refusée, avec sa raison' }
+    else { Bug "Copie de notepad.exe : coupure non refusée ($($poses.Count) règle(s))" }
+    if ($poses.Count) { Start-Process -FilePath $exe -ArgumentList @('blocage', 'rendre-reseau', "$($signe.Id)") -NoNewWindow -Wait | Out-Null }
+    Stop-Process -Id $signe.Id -Force -ErrorAction SilentlyContinue
+} catch { Sautee "Copie de notepad.exe non lancée : $($_.Exception.Message)" }
+# Filet : une règle de cet essai restée (un retour raté) est retirée ici, par son nom, pour ne rien laisser.
+Regles-R3 | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $dossierR3 -Recurse -Force -ErrorAction SilentlyContinue
+
 Journal "FIN $(Get-Date -Format 'HH:mm:ss')"
 $rapport = Rapport
 $toutes = @($script:etapes | ForEach-Object { $_.Verifs })
