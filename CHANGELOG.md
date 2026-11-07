@@ -17,11 +17,13 @@ recompilée au besoin.
   Mac déjà installé ne trouve plus de mise à jour, sans erreur ; il ne recevra pas non plus de changement de clé : le
   désinstaller. Les nomenclatures (SBOM) sont produites et attestées par le travail « nomenclatures » de `ci.yml`, et
   `outils/publier-version.sh` vérifie toujours cette attestation avant de publier.
-- **Le cadre de tête prend toute la largeur de la fenêtre.** Dans les menus, il suit la fenêtre quand on la
-  redimensionne, panneau d'aperçu compris (la dernière colonne reste libre, pour l'ancienne console de Windows) ; sur
-  les autres écrans, il prend la largeur au moment de l'affichage. Dans une fenêtre étroite, il rétrécit au lieu de
-  déborder : la précision de droite est coupée (« … ») ou retirée avant le titre. Sans terminal (tube, rapport), il
-  garde ses 76 colonnes.
+- **Le cadre de tête prend toute la largeur de la fenêtre, les titres aussi.** Dans les menus, il suit la fenêtre
+  quand on la redimensionne, panneau d'aperçu compris (la dernière colonne reste libre, pour l'ancienne console de
+  Windows) ; sur les autres écrans, il prend la largeur au moment de l'affichage. Dans une fenêtre étroite, il
+  rétrécit au lieu de déborder : la précision de droite est coupée (« … ») ou retirée avant le titre. Les titres
+  « ━━ » et sous-titres « ── » font de même, dans les menus, les listes à cocher et la recherche ; à côté du panneau
+  d'aperçu, ils s'arrêtent une colonne avant lui. Le texte des listes garde sa largeur. Sans terminal (tube, rapport),
+  cadre et titres gardent leurs 76 colonnes.
 
 ## 6 novembre 2026 : version 0.90.0
 

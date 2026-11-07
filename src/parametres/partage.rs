@@ -381,8 +381,7 @@ fn en_retrait(octets: &[u8]) -> Vec<String> {
 
 /// « Voir ce qui serait envoyé » : le prochain lot, la file, le dernier envoi ; rien n'est écrit.
 pub(crate) fn voir() {
-    println!();
-    println!("{}", ligne_titre(tr!("Ce qui serait envoyé", "What would be sent")));
+    crate::ui::titre(tr!("Ce qui serait envoyé", "What would be sent"));
     dire_relais_absent();
     if refuse_dans(&crate::socle::dossier_local()) {
         afficher_aligne(
@@ -721,11 +720,7 @@ pub(crate) fn au_menu() {
     match au_lancement(lu.as_ref(), PHASE, en_service, terminal, parti) {
         AuLancement::Rien => {}
         AuLancement::Avis => {
-            println!();
-            println!(
-                "{}",
-                ligne_titre(tr!("Partage avec l'auteur", "Sharing with the author"))
-            );
+            crate::ui::titre(tr!("Partage avec l'auteur", "Sharing with the author"));
             afficher_aligne(
                 "  ",
                 tr!(

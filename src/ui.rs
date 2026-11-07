@@ -392,26 +392,62 @@ pub fn afficher_aligne(debut: &str, texte: &str, retrait: usize, style: &str) {
     }
 }
 
-/// Titre de section : « ━━ Titre ━━━━━━━━… » sur toute la largeur.
+/// Titre de section : « ━━ Titre ━━━━━━━━… » sur la largeur de la fenêtre au moment de l'impression, comme `cadre`.
 pub fn titre(t: &str) {
-    println!("\n{}", ligne_titre(t));
+    println!("\n{}", ligne_titre_sur(t, largeur_du_cadre(colonnes_du_terminal())));
 }
 
-/// La ligne d'un titre de section, pour un menu qui se redessine.
+/// La ligne d'un titre de section, pour un menu qui se redessine : faite sur `LARGEUR`, étirée au dessin à la
+/// largeur de la fenêtre (`etirer_filets`).
 pub fn ligne_titre(t: &str) -> String {
-    let reste = LARGEUR.saturating_sub(largeur_affichee(t).saturating_add(4));
+    ligne_titre_sur(t, LARGEUR)
+}
+
+/// La ligne d'un titre de section sur `largeur` colonnes ; un titre plus long garde son texte entier, sans filet.
+pub fn ligne_titre_sur(t: &str, largeur: usize) -> String {
+    let reste = largeur.saturating_sub(largeur_affichee(t).saturating_add(4));
     format!("{ACCENT}━━ {t} {}{RESET}", "━".repeat(reste))
 }
 
-/// Sous-titre discret à l'intérieur d'un écran : « ── NOM ──────… ».
+/// Sous-titre discret à l'intérieur d'un écran : « ── NOM ──────… », sur la largeur de la fenêtre comme `titre`.
 pub fn section(t: &str) {
-    println!("\n{}", ligne_section(t));
+    println!("\n{}", ligne_section_sur(t, largeur_du_cadre(colonnes_du_terminal())));
 }
 
-/// La ligne d'un sous-titre, pour un menu qui se redessine.
+/// La ligne d'un sous-titre, pour un menu qui se redessine : faite sur `LARGEUR`, étirée au dessin comme
+/// `ligne_titre`.
 pub fn ligne_section(t: &str) -> String {
-    let reste = LARGEUR.saturating_sub(largeur_affichee(t).saturating_add(6));
+    ligne_section_sur(t, LARGEUR)
+}
+
+/// La ligne d'un sous-titre sur `largeur` colonnes.
+pub fn ligne_section_sur(t: &str, largeur: usize) -> String {
+    let reste = largeur.saturating_sub(largeur_affichee(t).saturating_add(6));
     format!("  {ACCENT}── {t}{RESET} {GRIS}{}{RESET}", "─".repeat(reste))
+}
+
+/// Étire (ou raccourcit) à `largeur` colonnes le filet des titres et sous-titres parmi `rangees`, au moment du
+/// dessin : les menus les reçoivent tout faits (`ligne_titre`, `ligne_section`, dans des `Ligne::Texte` ou les titres
+/// d'une liste à cocher), et seul l'écran sait la largeur de la fenêtre. Les autres rangées ne changent pas.
+pub fn etirer_filets(rangees: &mut [String], largeur: usize) {
+    for r in rangees {
+        if let Some(etiree) = filet_sur(r, largeur) {
+            *r = etiree;
+        }
+    }
+}
+
+/// `rangee` refaite sur `largeur` colonnes si c'est un titre ou un sous-titre ; son texte est retrouvé entre le
+/// début et le filet de la ligne, telle que `ligne_titre_sur` ou `ligne_section_sur` l'a faite.
+fn filet_sur(rangee: &str, largeur: usize) -> Option<String> {
+    let corps = rangee.strip_suffix(RESET)?;
+    if let Some(t) = corps.strip_prefix(&format!("{ACCENT}━━ ")) {
+        let t = t.trim_end_matches('━').strip_suffix(' ')?;
+        return Some(ligne_titre_sur(t, largeur));
+    }
+    let t = corps.strip_prefix(&format!("  {ACCENT}── "))?;
+    let t = t.trim_end_matches('─').strip_suffix(&format!("{RESET} {GRIS}"))?;
+    Some(ligne_section_sur(t, largeur))
 }
 
 /// Cadre de tête d'écran : un titre à gauche, une précision à droite, sur la largeur de la fenêtre au moment de
@@ -791,6 +827,37 @@ mod tests {
         // Un titre seul, trop long, est coupé lui aussi au lieu de déborder.
         let [_, milieu, _] = lignes_cadre_sur(&"x".repeat(80), "", LARGEUR);
         assert_eq!(largeur_affichee(&milieu), LARGEUR);
+    }
+
+    /// Les titres et sous-titres d'un menu, faits sur 76 colonnes, étirés au dessin à 40, 76, 120 et 200 colonnes :
+    /// la largeur exacte, le texte gardé, et les autres rangées intactes.
+    #[test]
+    fn les_titres_s_etirent_a_la_largeur_voulue() {
+        let titre = ligne_titre("Réglages du poste");
+        let section = ligne_section("RÉSEAU ET INTERNET");
+        let autre = format!("  {GRIS}── pas un sous-titre{RESET}");
+        assert_eq!(largeur_affichee(&titre), LARGEUR);
+        assert_eq!(largeur_affichee(&section), LARGEUR);
+        for colonnes in [40, 76, 120, 200] {
+            let largeur = largeur_du_cadre(Some(colonnes));
+            let mut rangees = vec![titre.clone(), section.clone(), autre.clone(), String::new()];
+            etirer_filets(&mut rangees, largeur);
+            assert_eq!(rangees[0], ligne_titre_sur("Réglages du poste", largeur));
+            assert_eq!(rangees[1], ligne_section_sur("RÉSEAU ET INTERNET", largeur));
+            assert_eq!(largeur_affichee(&rangees[0]), largeur, "{colonnes} colonnes");
+            assert_eq!(largeur_affichee(&rangees[1]), largeur, "{colonnes} colonnes");
+            assert!(sans_codes(&rangees[0]).starts_with("━━ Réglages du poste ━"));
+            assert!(sans_codes(&rangees[1]).starts_with("  ── RÉSEAU ET INTERNET ─"));
+            assert_eq!(rangees[2..], [autre.clone(), String::new()]);
+            // Étirer de nouveau, à une autre largeur (la fenêtre redimensionnée), part du texte et non du filet.
+            etirer_filets(&mut rangees, LARGEUR);
+            assert_eq!(rangees[..2], [titre.clone(), section.clone()]);
+        }
+        // Un titre plus long que la fenêtre garde son texte : seul le filet disparaît.
+        let long = "x".repeat(50);
+        let mut rangees = vec![ligne_titre(&long)];
+        etirer_filets(&mut rangees, 40);
+        assert_eq!(sans_codes(&rangees[0]), format!("━━ {long} "));
     }
 
     /// Une question trop longue est coupée aux espaces : la réponse tapée tombe dans 76 colonnes. Une question qui

@@ -494,6 +494,18 @@ fn texte(l: &Ligne, colonne: usize, en_cours: bool, cadre: usize) -> Option<Stri
     }
 }
 
+/// Le menu imprimé une fois, sans mode clavier : cadre, titres et sous-titres sur la largeur de la fenêtre du moment.
+fn imprimer_lignes(lignes: &[Ligne], colonne: usize) {
+    let largeur = largeur_du_cadre(colonnes_du_terminal());
+    for t in lignes.iter().filter_map(|l| texte(l, colonne, false, largeur)) {
+        let mut rangees: Vec<String> = t.split('\n').map(String::from).collect();
+        etirer_filets(&mut rangees, largeur);
+        for r in rangees {
+            println!("{r}");
+        }
+    }
+}
+
 /// Hauteur de fenêtre en dessous de laquelle un menu se lit ligne par ligne : trop peu de place pour défiler.
 const RANGEES_MINIMUM: usize = 10;
 
@@ -763,10 +775,7 @@ pub fn choisir_sans_defaut(lignes: &[Ligne], invite: &str, depart: &str, echap: 
         return choisir(lignes, invite, depart, echap);
     }
     let colonne = colonne(lignes);
-    let cadre = largeur_du_cadre(colonnes_du_terminal());
-    for t in lignes.iter().filter_map(|l| texte(l, colonne, false, cadre)) {
-        println!("{t}");
-    }
+    imprimer_lignes(lignes, colonne);
     let r = demander_ou_defaut(invite);
     noter_retour(r.is_empty());
     (!r.is_empty()).then_some(r)
@@ -873,10 +882,7 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
     let colonne = colonne(lignes);
     let clavier = au_clavier(!visibles.is_empty());
     let Some(_mode) = clavier.then(ModeClavier::activer_sans_curseur).flatten() else {
-        let cadre = largeur_du_cadre(colonnes_du_terminal());
-        for t in lignes.iter().filter_map(|l| texte(l, colonne, false, cadre)) {
-            println!("{t}");
-        }
+        imprimer_lignes(lignes, colonne);
         return Some(par_ligne(&choix, &touches, invite));
     };
 
@@ -930,8 +936,9 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
         // En mode clavier, le terminal ne revient plus seul au début de la ligne : d'où les « \r\n ».
         let mut ecran = String::from("\x1b[H");
         if recherche {
-            let (entete, hauteur_entete) = entete_de_recherche(lignes, colonne, largeur_de_cadre(colonnes));
-            let entete = (&entete[..], hauteur_entete);
+            let cadre = largeur_de_cadre(colonnes);
+            let (entete, hauteur_entete) = entete_de_recherche(lignes, colonne, cadre);
+            let entete = (&entete[..], hauteur_entete, cadre);
             ecran += &ecran_de_recherche(lignes, &etat, entete, &trouvailles, &aides, panneau);
         } else {
             ecran += &ecran_du_menu(
@@ -962,13 +969,13 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
     }
 }
 
-/// L'écran d'une recherche : l'en-tête (ses lignes et sa hauteur) s'il laisse au moins trois lignes trouvées, le
-/// titre de la recherche, les lignes trouvées et l'aperçu de celle en surbrillance (`panneau` : la largeur de son
-/// texte), puis l'aide et la saisie.
+/// L'écran d'une recherche : l'en-tête (ses lignes, sa hauteur, la largeur de son cadre) s'il laisse au moins trois
+/// lignes trouvées, le titre de la recherche, les lignes trouvées et l'aperçu de celle en surbrillance (`panneau` : la
+/// largeur de son texte), puis l'aide et la saisie.
 fn ecran_de_recherche(
     lignes: &[Ligne],
     etat: &EtatMenu,
-    (entete, hauteur_entete): (&[String], usize),
+    (entete, hauteur_entete, cadre): (&[String], usize, usize),
     t: &Trouvailles<'_, '_>,
     aides: &Aides,
     panneau: Option<usize>,
@@ -1033,6 +1040,7 @@ fn ecran_de_recherche(
         }
         Some((apercu(lignes, c.ligne, largeur, hauteur), debut))
     });
+    etirer_filets(&mut ecran, largeur_des_filets(cadre, panneau.is_some()));
     let mut ecran = avec_panneau(&ecran, panneau.as_ref().map(|(p, d)| (p.as_slice(), *d)));
     let aide = if t.suite.is_some() {
         &aides.prediction
@@ -1119,6 +1127,7 @@ fn ecran_du_menu(
     {
         trois.clone_from_slice(&lignes_cadre_sur(gauche, droite, borne));
     }
+    etirer_filets(&mut rangees, largeur_des_filets(borne, panneau.is_some()));
     let place = terminal::size().map_or(24, |(_, r)| usize::from(r)).saturating_sub(2);
     // Des rangées vides pour l'aperçu, jamais au point de faire défiler le menu.
     if voulues > rangees.len() {
@@ -1233,6 +1242,13 @@ fn touche_du_menu(
         }
     }
     ControlFlow::Continue(())
+}
+
+/// La largeur des titres et sous-titres d'un menu : celle du cadre, ou `LARGEUR` à côté du panneau d'aperçu. Ils
+/// pourraient aller jusqu'à la colonne qui précède son filet, mais une colonne vide entre les deux sépare mieux le menu
+/// de l'aperçu (comme les lignes de choix, qui s'arrêtent à `LARGEUR`).
+fn largeur_des_filets(cadre: usize, panneau: bool) -> usize {
+    if panneau { LARGEUR } else { cadre }
 }
 
 /// La largeur du cadre de tête dans une fenêtre de `colonnes` colonnes, bornée à celle que Vanguard vient de demander
@@ -1601,7 +1617,13 @@ fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
 /// une ligne, et un mot cherche.
 fn cocher_par_ligne(liste: &Liste<'_>, mut etats: Vec<bool>) -> Option<Vec<bool>> {
     let (cases, colonne) = (liste.cases, liste.colonne);
-    for l in liste.titre {
+    let mut titre: Vec<String> = liste
+        .titre
+        .iter()
+        .flat_map(|l| l.split('\n').map(String::from))
+        .collect();
+    etirer_filets(&mut titre, largeur_du_cadre(colonnes_du_terminal()));
+    for l in titre {
         println!("{l}");
     }
     for (i, c) in cases.iter().enumerate() {
@@ -1698,6 +1720,11 @@ fn ecran_de_la_liste(
     // La fenêtre se fait à la hauteur de la liste entière ; une recherche, qui la raccourcit, n'y change rien.
     if etat.recherche.is_none() {
         crate::fenetre::epouser(rangees.len().saturating_add(DESSOUS_LISTE));
+    }
+    // Après `epouser` : une taille que Vanguard vient de demander borne déjà les titres.
+    let colonnes = terminal::size().ok().map(|(c, _)| usize::from(c));
+    if let Some(titre) = rangees.get_mut(..entete) {
+        etirer_filets(titre, largeur_de_cadre(colonnes));
     }
     // Pendant une recherche, la saisie prend une ligne de plus sous l'aide.
     let place = terminal::size()
@@ -2146,11 +2173,12 @@ mod tests {
             Ligne::Texte(ligne_section("BILAN")),
         ];
         lignes.extend((1..=30).map(|i| Ligne::choix(&i.to_string(), &format!("Outil {i}"), "précision")));
+        lignes.push(Ligne::Texte(ligne_titre("Fin")));
         let colonne_panneau = format!("\x1b[{}G", LARGEUR + 2);
         for colonnes in [40, 76, 120, 200] {
             let cadre = largeur_du_cadre(Some(colonnes));
             assert_eq!(cadre, colonnes - 1);
-            let rangees: Vec<String> = lignes
+            let mut rangees: Vec<String> = lignes
                 .iter()
                 .filter_map(|l| texte(l, 36, false, cadre))
                 .flat_map(|t| t.split('\n').map(String::from).collect::<Vec<_>>())
@@ -2158,21 +2186,42 @@ mod tests {
             for r in &rangees[..3] {
                 assert_eq!(largeur_affichee(r), cadre, "{colonnes} colonnes : {r}");
             }
-            // Le reste garde sa largeur d'avant.
-            assert_eq!(rangees[4], ligne_section("BILAN"));
+            // Les titres prennent la largeur du cadre, ou s'arrêtent avant le filet du panneau quand il est là.
+            let avec_apercu = largeur_apercu(colonnes).is_some();
+            assert_eq!(avec_apercu, colonnes >= COLONNES_AVEC_APERCU);
+            let filets = if avec_apercu { LARGEUR } else { cadre };
+            etirer_filets(&mut rangees, largeur_des_filets(cadre, avec_apercu));
+            assert_eq!(rangees[4], ligne_section_sur("BILAN", filets));
+            assert_eq!(rangees.last(), Some(&ligne_titre_sur("Fin", filets)));
             for (montrees, haut) in [(rangees.clone(), 0), {
                 // Plus haut que la fenêtre : l'en-tête reste en place, la liste défile jusqu'en bas.
                 let mut haut = usize::MAX;
                 (fenetre(&rangees, 4, rangees.len() - 1, 12, &mut haut), haut)
             }] {
+                assert_eq!(montrees.len(), if haut == 0 { rangees.len() } else { 12 });
                 assert_eq!(debut_apercu(&montrees), 3, "{colonnes} colonnes, haut {haut}");
-                let panneau = vec!["Outil".to_string()];
-                let ecran = avec_panneau(&montrees, Some((&panneau, 3)));
+                let panneau = ["Outil".to_string()];
+                let ecran = avec_panneau(&montrees, avec_apercu.then_some((&panneau[..], 3)));
                 let ecran: Vec<&str> = ecran.split("\r\n").collect();
                 assert!(ecran[..3].iter().all(|l| !l.contains(&colonne_panneau)));
                 assert!(simplement_affiche(ecran[0]).starts_with('╭'));
                 assert!(simplement_affiche(ecran[2]).starts_with('╰'));
-                assert!(ecran[3].contains(&colonne_panneau));
+                assert_eq!(ecran[3].contains(&colonne_panneau), avec_apercu);
+                // Chaque titre montré, défilé ou non, a sa largeur exacte et laisse une colonne vide avant le panneau.
+                let titres: Vec<&str> = ecran[3..]
+                    .iter()
+                    .copied()
+                    .filter(|l| l.contains("──") || l.contains("━━"))
+                    .collect();
+                assert_eq!(
+                    titres.len(),
+                    if haut == 0 { 2 } else { 1 },
+                    "{colonnes} colonnes, haut {haut}"
+                );
+                for t in titres {
+                    let avant = t.split(&colonne_panneau).next().unwrap_or(t);
+                    assert_eq!(largeur_affichee(avant), filets, "{colonnes} colonnes : {t:?}");
+                }
             }
         }
         // Sans terminal, la ligne par ligne garde les 76 colonnes d'avant.

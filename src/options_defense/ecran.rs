@@ -1659,7 +1659,10 @@ mod boucle {
 
     fn voir(e: &Etat) {
         crate::ui::titre(titre());
-        for l in lignes(e) {
+        // Les sous-titres sur la largeur du titre au-dessus, celle de la fenêtre.
+        let mut l = lignes(e);
+        crate::ui::etirer_filets(&mut l, crate::ui::largeur_du_cadre(crate::ui::colonnes_du_terminal()));
+        for l in l {
             println!("{l}");
         }
         println!();
