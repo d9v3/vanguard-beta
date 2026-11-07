@@ -446,6 +446,32 @@ mod tests {
         assert!(!md5.contient(&enregistrement(Empreintes::de(b"contenu pua").md5, 9)));
     }
 
+    /// Les signatures que la base ignore (.ign2, par le nom seul ou par le nom et le MD5 de leur ligne) ne vont pas
+    /// dans les listes du garde : elles sont écartées dès le chargement, avant que les listes ne soient tirées.
+    #[test]
+    fn ignorees_absentes_des_listes_du_garde() {
+        let a = Empreintes::de(b"contenu a");
+        let b = Empreintes::de(b"contenu b");
+        let ligne_b = format!("{}:9:Essai.Sha-1:73", hex(&b.sha256));
+        let md5_ligne_b = hex(&<md5::Md5 as md5::Digest>::digest(ligne_b.as_bytes()));
+        let mut fichiers = base_essai();
+        fichiers.push(("local.ign2", format!("Essai.Fichier-1\nEssai.Sha-1:{md5_ligne_b}\n")));
+        let s = charger(
+            Options {
+                mode: Mode::Empreintes,
+                pua: false,
+            },
+            &fichiers,
+        );
+        assert_eq!(s.liste_sha256(), [] as [u8; 0]);
+        let md5 = hashes::ListeSha256::lire(s.liste_md5_taille()).unwrap();
+        let mut e = [0u8; 32];
+        e[..8].copy_from_slice(&9u64.to_be_bytes());
+        e[8..24].copy_from_slice(&a.md5);
+        assert!(!md5.contient(&e));
+        assert_eq!(s.par_sha256(&b.sha256), None);
+    }
+
     #[test]
     fn liste_blanche() {
         let a = Empreintes::de(b"contenu a");
