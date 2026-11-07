@@ -1,7 +1,10 @@
 //! L'ensemble CERTAIN du garde, relu en root sans aucun lecteur de format (P22) : deux fichiers d'enregistrements de
 //! 32 octets triés, sans en-tête, préparés par le Vanguard du compte (`compte::preparer_listes`) depuis MalwareBazaar et
-//! la base ClamAV. Le garde ne vérifie que « multiple de 32, trié, sans doublon » ; une liste forgée ne peut que
-//! rendre plus strict (les exceptions P11 gardent le système), une liste illisible laisse l'ancienne en place.
+//! la base ClamAV. Le garde ne vérifie que « multiple de 32, trié, sans doublon » ; une liste illisible laisse
+//! l'ancienne en place. Le compte contrôle ces fichiers : il pourrait les vider. Le garde garde donc l'UNION de ce qu'il
+//! a reçu (`unir`), en root dans son dossier d'état (`charger_union`, `ecrire_union`) : une liste du compte ne peut que
+//! rendre plus strict (les exceptions P11 gardent le système) ; ce qu'elle n'a plus est compté, rien n'en est retiré.
+//! Seul un ordre root (poser, mettre à jour) efface l'union et repart des listes du compte.
 //!
 //! - `certain-sha256.bin` : des SHA-256 de fichiers entiers ;
 //! - `certain-md5.bin` : la taille (u64 gros-boutiste), le MD5, huit zéros (`Signatures::liste_md5_taille`).
@@ -104,9 +107,152 @@ pub(crate) fn hacher(lu: impl Read) -> Option<Hache> {
     })
 }
 
-/// L'identité d'une liste sur le disque (fstat de son descripteur) : mtime (s, ns), inode, taille. La même : pas
-/// relue.
+/// L'identité d'une liste sur le disque (fstat de son descripteur) : ctime (s, ns), inode, taille. La même : pas
+/// relue. Le ctime, pas le mtime : le compte remet un mtime ancien à volonté (utimensat), pas le ctime, que le noyau
+/// avance à chaque écriture et à chaque utimensat.
 pub(crate) type Signature = (i64, i64, u64, u64);
+
+/// Ce qu'une liste reçue du compte change à l'union en vigueur.
+#[derive(Debug)]
+pub(crate) struct Union {
+    /// La nouvelle union, si la liste reçue y ajoute quelque chose ; `None` : l'union reste telle quelle.
+    pub liste: Option<ListeSha256>,
+    /// Les empreintes de l'union que la liste reçue n'a plus : gardées, et dites (alerte haute).
+    pub retirees: u64,
+    /// Les empreintes reçues non ajoutées : l'union serait passée au-delà de `max` (gardée telle quelle, et dite).
+    pub bloquees: u64,
+}
+
+/// D'où vient une empreinte, dans la fusion de deux listes triées.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Cote {
+    Deux,
+    Union,
+    Recue,
+}
+
+/// Parcourt deux listes triées sans doublon dans l'ordre, chaque empreinte une fois.
+fn fusion(union: &[[u8; 32]], recue: &[[u8; 32]], mut rendre: impl FnMut(&[u8; 32], Cote)) {
+    let (mut gardees, mut recues) = (union.iter().peekable(), recue.iter().peekable());
+    loop {
+        match (gardees.peek().copied(), recues.peek().copied()) {
+            (Some(g), Some(r)) => match g.cmp(r) {
+                std::cmp::Ordering::Less => {
+                    rendre(g, Cote::Union);
+                    gardees.next();
+                }
+                std::cmp::Ordering::Greater => {
+                    rendre(r, Cote::Recue);
+                    recues.next();
+                }
+                std::cmp::Ordering::Equal => {
+                    rendre(g, Cote::Deux);
+                    gardees.next();
+                    recues.next();
+                }
+            },
+            (Some(g), None) => {
+                rendre(g, Cote::Union);
+                gardees.next();
+            }
+            (None, Some(r)) => {
+                rendre(r, Cote::Recue);
+                recues.next();
+            }
+            (None, None) => return,
+        }
+    }
+}
+
+/// L'union de `union` (en vigueur, `None` : aucune encore) et de `recue` (la liste du compte), au plus `max`
+/// empreintes. Rien n'est jamais retiré : une liste reçue plus courte, ou vide, ne fait que compter ce qu'elle n'a plus.
+pub(crate) fn unir(union: Option<&ListeSha256>, recue: ListeSha256, max: usize) -> Union {
+    let Some(union) = union else {
+        if recue.nombre() <= max {
+            return Union {
+                liste: Some(recue),
+                retirees: 0,
+                bloquees: 0,
+            };
+        }
+        let bloquees = u64::try_from(recue.nombre()).unwrap_or(u64::MAX);
+        return Union {
+            liste: None,
+            retirees: 0,
+            bloquees,
+        };
+    };
+    let (mut retirees, mut ajoutees) = (0u64, 0usize);
+    fusion(union.empreintes(), recue.empreintes(), |_, cote| match cote {
+        Cote::Union => retirees = retirees.saturating_add(1),
+        Cote::Recue => ajoutees = ajoutees.saturating_add(1),
+        Cote::Deux => {}
+    });
+    if ajoutees == 0 {
+        return Union {
+            liste: None,
+            retirees,
+            bloquees: 0,
+        };
+    }
+    if union.nombre().saturating_add(ajoutees) > max {
+        return Union {
+            liste: None,
+            retirees,
+            bloquees: u64::try_from(ajoutees).unwrap_or(u64::MAX),
+        };
+    }
+    let mut octets = Vec::with_capacity(union.nombre().saturating_add(ajoutees).saturating_mul(32));
+    fusion(union.empreintes(), recue.empreintes(), |e, _| {
+        octets.extend_from_slice(e);
+    });
+    drop(recue);
+    Union {
+        // Triée et sans doublon par construction ; relue quand même par `lire`, qui en est le seul juge.
+        liste: ListeSha256::lire(octets),
+        retirees,
+        bloquees: 0,
+    }
+}
+
+/// Les empreintes au plus dans une union : la taille d'une liste du compte.
+pub(crate) fn union_max() -> usize {
+    usize::try_from(TAILLE_MAX / 32).unwrap_or(usize::MAX)
+}
+
+/// Relit l'union gardée en root dans `dossier` (le dossier d'état du garde, à root, 0700, sur un disque local : jamais
+/// celui du compte), pour chacun des `noms`. Absente : `None`, sans rien dire (premier démarrage, ou effacée par un
+/// ordre root). Illisible ou mal formée : `None`, et la raison.
+pub(crate) fn charger_union(dossier: &Path, noms: [&str; 2]) -> ([Option<ListeSha256>; 2], Vec<String>) {
+    let mut alertes = Vec::new();
+    let lues = noms.map(|nom| {
+        let chemin = dossier.join(nom);
+        match crate::socle::lire_ordinaire(&chemin, TAILLE_MAX) {
+            Ok(octets) => {
+                let l = ListeSha256::lire(octets);
+                if l.is_none() {
+                    alertes.push(format!("liste: {}: union mal formée", chemin.display()));
+                }
+                l
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                alertes.push(format!("liste: {}: {e}", chemin.display()));
+                None
+            }
+        }
+    });
+    (lues, alertes)
+}
+
+/// Écrit l'union de `nom` dans `dossier`, d'un coup (un temporaire renommé, sans suivre de lien), lisible par root
+/// seulement.
+pub(crate) fn ecrire_union(dossier: &Path, nom: &str, union: &ListeSha256) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let chemin = dossier.join(nom);
+    crate::socle::ecrire_atomique(&chemin, union.empreintes().as_flattened())?;
+    std::fs::set_permissions(&chemin, std::fs::Permissions::from_mode(0o600))
+}
 
 /// Le dossier de départ des ouvertures dans le dossier des listes : son premier dossier parent qui est au compte (son
 /// dossier personnel ; ceux du dessus sont à root, le compte ne peut pas les remplacer), ouvert sans le suivre s'il
@@ -163,6 +309,22 @@ pub(crate) fn lire_sous(
     use std::os::fd::AsFd;
     use std::os::unix::fs::MetadataExt;
     let montre = relatif.display();
+    // Chaque dossier entre le départ et la liste est au compte, comme elle : un maillon d'un autre compte (un dossier
+    // ouvert à tous, par exemple) lui permettrait d'y mettre une autre liste.
+    let mut dessus: Vec<&Path> = relatif
+        .ancestors()
+        .skip(1)
+        .filter(|a| !a.as_os_str().is_empty())
+        .collect();
+    dessus.reverse();
+    for d in dessus {
+        let m = super::ouvrir::sous(depart.as_fd(), d, true)
+            .and_then(|f| f.metadata())
+            .map_err(|e| format!("{}: {e}", d.display()))?;
+        if m.uid() != compte {
+            return Err(format!("{}: n'est pas au compte {compte}", d.display()));
+        }
+    }
     let f = super::ouvrir::sous(depart.as_fd(), relatif, false).map_err(|e| format!("{montre}: {e}"))?;
     let m = f.metadata().map_err(|e| e.to_string())?;
     if !m.is_file() {
@@ -175,7 +337,7 @@ pub(crate) fn lire_sous(
         return Err(format!("{montre}: plus de {TAILLE_MAX} octets"));
     }
     verifier_local(&f, relatif)?;
-    let signature = (m.mtime(), m.mtime_nsec(), m.ino(), m.len());
+    let signature = (m.ctime(), m.ctime_nsec(), m.ino(), m.len());
     if avant == Some(signature) {
         return Ok((signature, None));
     }
@@ -310,5 +472,113 @@ mod tests {
         let vide = d.join("vide.bin");
         std::fs::write(&vide, []).unwrap();
         assert_eq!(lire(&vide, moi).unwrap().nombre(), 0);
+        // f5 : chaque dossier du milieu est jugé avant la liste (ici, au nom d'un autre compte : c'est un dossier qui
+        // est dit, pas la liste).
+        let e = lire_sous(&depart_, &relatif.join("vraies/l.bin"), moi.wrapping_add(1), None).unwrap_err();
+        assert!(e.contains("n'est pas au compte") && !e.contains("l.bin"), "{e}");
+        assert!(lire_sous(&depart_, &relatif.join("vraies/l.bin"), moi, None).is_ok());
+    }
+
+    /// f3 : une liste réécrite puis remise à sa date d'avant (utimensat) est relue quand même.
+    #[test]
+    fn une_date_remise_ne_cache_pas_une_liste_changee() {
+        use std::os::unix::fs::MetadataExt;
+        let jetable = crate::essais::Jetable::nouveau("garde-listes-date");
+        let d = jetable.canonicalize().unwrap();
+        let moi = std::fs::metadata(&d).unwrap().uid();
+        let chemin = d.join("l.bin");
+        std::fs::write(&chemin, [[1u8; 32], [2u8; 32]].concat()).unwrap();
+        let date = std::fs::metadata(&chemin).unwrap().modified().unwrap();
+        let Ok((depart_, relatif)) = depart(&d, moi) else {
+            return crate::essais::saute("dossier des essais sur un système de fichiers non local");
+        };
+        let sig = match lire_sous(&depart_, &relatif.join("l.bin"), moi, None) {
+            Ok((sig, _)) => sig,
+            Err(e) if e.contains("os error 38") || e.contains("non local") => {
+                return crate::essais::saute("openat2 absent, ou système de fichiers non local");
+            }
+            Err(e) => panic!("{e}"),
+        };
+        // Le ctime du noyau avance par pas d'horloge grossière : un pas d'écart.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let f = std::fs::OpenOptions::new().write(true).open(&chemin).unwrap();
+        std::io::Write::write_all(&mut &f, &[[1u8; 32], [3u8; 32]].concat()).unwrap();
+        f.set_modified(date).unwrap();
+        drop(f);
+        assert_eq!(std::fs::metadata(&chemin).unwrap().modified().unwrap(), date);
+        let (_, relue) = lire_sous(&depart_, &relatif.join("l.bin"), moi, Some(sig)).unwrap();
+        let relue = relue.expect("relue malgré la date remise");
+        assert!(relue.contient(&[3u8; 32]));
+        assert_eq!(std::fs::metadata(&chemin).unwrap().ino(), sig.2);
+    }
+
+    fn liste(octets: &[u8]) -> ListeSha256 {
+        ListeSha256::lire(octets.iter().flat_map(|o| [*o; 32]).collect()).unwrap()
+    }
+
+    fn octets(l: &ListeSha256) -> Vec<u8> {
+        l.empreintes().iter().map(|e| e[0]).collect()
+    }
+
+    /// M-N1 : une liste du compte ne retire rien de l'union ; ce qu'elle n'a plus est compté.
+    #[test]
+    fn l_union_ne_retrecit_jamais() {
+        // Aucune union encore : la liste reçue la devient.
+        let u = unir(None, liste(&[1, 3]), 10);
+        assert_eq!(octets(u.liste.as_ref().unwrap()), [1, 3]);
+        assert_eq!((u.retirees, u.bloquees), (0, 0));
+        let union = u.liste.unwrap();
+        // Vide : rien ne change, deux retirées dites.
+        let u = unir(Some(&union), liste(&[]), 10);
+        assert!(u.liste.is_none());
+        assert_eq!((u.retirees, u.bloquees), (2, 0));
+        // Amputée d'une seule : rien ne change, une retirée.
+        let u = unir(Some(&union), liste(&[3]), 10);
+        assert!(u.liste.is_none());
+        assert_eq!(u.retirees, 1);
+        // La même : rien.
+        let u = unir(Some(&union), liste(&[1, 3]), 10);
+        assert!(u.liste.is_none());
+        assert_eq!((u.retirees, u.bloquees), (0, 0));
+        // Une autre, qui ajoute et retire : l'union grandit, rien n'en sort, la retirée est dite.
+        let u = unir(Some(&union), liste(&[0, 2, 3, 9]), 10);
+        assert_eq!(octets(u.liste.as_ref().unwrap()), [0, 1, 2, 3, 9]);
+        assert_eq!((u.retirees, u.bloquees), (1, 0));
+        // Au-delà du plafond : l'union reste, ce qui n'y entre pas est dit.
+        let u = unir(Some(&union), liste(&[0, 2, 4]), 4);
+        assert!(u.liste.is_none());
+        assert_eq!((u.retirees, u.bloquees), (2, 3));
+        let u = unir(None, liste(&[0, 2, 4]), 2);
+        assert!(u.liste.is_none());
+        assert_eq!(u.bloquees, 3);
+        assert_eq!(union_max(), 2 << 20);
+    }
+
+    /// M-N1 et f1 : l'union s'écrit en root (0600) et se relit telle quelle ; absente, elle ne dit rien ; mal formée,
+    /// elle est refusée et dite.
+    #[test]
+    fn l_union_s_ecrit_et_se_relit() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = crate::essais::Jetable::nouveau("garde-union");
+        let (lues, alertes) = charger_union(&d, ["a.bin", "b.bin"]);
+        assert!(lues.iter().all(Option::is_none) && alertes.is_empty(), "{alertes:?}");
+        ecrire_union(&d, "a.bin", &liste(&[4, 7])).unwrap();
+        assert_eq!(
+            std::fs::metadata(d.join("a.bin")).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::write(d.join("b.bin"), [9u8; 31]).unwrap();
+        let (lues, alertes) = charger_union(&d, ["a.bin", "b.bin"]);
+        assert_eq!(octets(lues[0].as_ref().unwrap()), [4, 7]);
+        assert!(lues[1].is_none());
+        assert!(
+            alertes.len() == 1 && alertes[0].starts_with("liste: ") && alertes[0].contains("b.bin"),
+            "{alertes:?}"
+        );
+        // Un lien à la place : pas suivi.
+        std::fs::remove_file(d.join("b.bin")).unwrap();
+        std::os::unix::fs::symlink(d.join("a.bin"), d.join("b.bin")).unwrap();
+        let (lues, alertes) = charger_union(&d, ["a.bin", "b.bin"]);
+        assert!(lues[1].is_none() && alertes.len() == 1, "{alertes:?}");
     }
 }

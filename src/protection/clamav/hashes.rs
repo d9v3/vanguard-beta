@@ -236,6 +236,11 @@ impl ListeSha256 {
     pub(crate) fn contient(&self, e: &[u8; 32]) -> bool {
         self.0.as_chunks::<32>().0.binary_search(e).is_ok()
     }
+
+    /// Les empreintes, triées : le garde en garde l'union (une liste du compte ne retire rien) et l'écrit telle quelle.
+    pub(crate) fn empreintes(&self) -> &[[u8; 32]] {
+        self.0.as_chunks::<32>().0
+    }
 }
 
 #[allow(
@@ -325,6 +330,7 @@ mod tests {
         let l = ListeSha256::lire([a, b].concat()).unwrap();
         assert_eq!(l.nombre(), 2);
         assert!(l.contient(&a) && l.contient(&b) && !l.contient(&[3; 32]));
+        assert_eq!(l.empreintes(), [a, b]);
         assert!(ListeSha256::lire([b, a].concat()).is_none());
         assert!(ListeSha256::lire([a, a].concat()).is_none());
         assert!(ListeSha256::lire(vec![0; 33]).is_none());

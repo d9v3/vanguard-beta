@@ -19,8 +19,8 @@ use crate::protection::blocage::ordres::Resultat;
 use crate::{tr, trf};
 
 use super::{
-    DOSSIER_ETAT, DOSSIER_PROGRAMME, DOSSIER_REGLAGES, FICHIER_UNITE, PERMISES_MAX, PROGRAMME, REGLAGES,
-    REGLAGES_TAILLE_MAX, Reglages, UNITE, VANGUARD_MAX, VERSION_REGLAGES,
+    DOSSIER_ETAT, DOSSIER_PROGRAMME, DOSSIER_REGLAGES, FICHIER_UNITE, LISTE_MD5, LISTE_SHA256, PERMISES_MAX, PROGRAMME,
+    REGLAGES, REGLAGES_TAILLE_MAX, Reglages, UNITE, VANGUARD_MAX, VERSION_REGLAGES,
 };
 
 /// Le programme copié, au plus (Vanguard fait ~30 Mo).
@@ -263,6 +263,7 @@ fn poser(compte: u32, dossier: &str) -> Result<Option<String>, Echec> {
     garder_empreinte(&mut r, empreinte);
     ecrire_reglages(&r)?;
     ecrire_root(Path::new(FICHIER_UNITE), super::unite::texte().as_bytes(), 0o644)?;
+    effacer_union()?;
     agir(ActionUnite::Activer, &["enable", "--now"])?;
     if deja {
         agir(ActionUnite::Redemarrer, &["try-restart"])?;
@@ -282,8 +283,22 @@ fn mettre_a_jour() -> Result<Option<String>, Echec> {
     ecrire_reglages(&r)?;
     ecrire_root(Path::new(FICHIER_UNITE), super::unite::texte().as_bytes(), 0o644)?;
     agir(ActionUnite::ActiverSansDemarrer, &["enable"])?;
+    effacer_union()?;
     agir(ActionUnite::Redemarrer, &["try-restart"])?;
     Ok(None)
+}
+
+/// Efface l'union des listes que le garde garde en root (M-N1) : il repart, à son redémarrage, des listes du compte.
+/// Seuls ces ordres root le font. Le garde encore en marche peut la réécrire avant d'être redémarré (une liste du
+/// compte changée à cet instant) : elle est alors plus large, jamais plus courte.
+fn effacer_union() -> Result<(), Echec> {
+    let fichiers = [LISTE_SHA256, LISTE_MD5].map(|n| Path::new(DOSSIER_ETAT).join(n));
+    let echecs = crate::reseau::surveillance::retirer_fichiers(&fichiers);
+    if echecs.is_empty() {
+        Ok(())
+    } else {
+        Err(Echec::echoue("garde/poser", echecs.join(" ; ")))
+    }
 }
 
 /// Change les réglages ; le garde les relit de lui-même (leur date change).
