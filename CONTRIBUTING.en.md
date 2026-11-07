@@ -298,7 +298,10 @@ of this computer gives two identical programs, Linux and Windows alike; before, 
 (`~/Projects/vanguard/target/…`), and two folders gave two programs. What can still differ from one computer to
 another: the versions of musl-gcc and MinGW (gcc, binutils, startup libraries), which compile the C of ring and
 link the programs. CI writes the fingerprint of its builds in its log (`EMPREINTE-VANGUARD-LINUX`,
-`-WINDOWS`), to compare with `SHA256SUMS.txt`; they are not yet the same as the author's computer's while these tools
+`-WINDOWS`), to compare with `SHA256SUMS.txt`; `outils/publier-version.sh` takes those of a master run on the built commit, or on
+a later commit that only changes files that are never compiled (screenshots, social preview, features page: the
+closed list `HORS_COMPILATION`), in a straight line and without a merge, and then says so in the notes. They are not
+yet the same as the author's computer's while these tools
 differ (Arch versus Ubuntu). Until then, `outils/publier-version.sh` refuses to publish: it needs the override
 `VANGUARD_PUBLIER_SANS_EMPREINTES_CI=1`, which is stated on the release page (notes, in French and English) and in the
 signed version history (`historique.txt`, line `passe-droit-sans-empreintes-ci`, likewise `passe-droit-sans-vm` for

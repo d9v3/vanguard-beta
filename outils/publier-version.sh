@@ -54,12 +54,25 @@ without being matched against the CI's reproducible build (VANGUARD_PUBLIER_SANS
   done
 }
 
+# La compilation reproductible de la CI retenue, quand elle a tourné sur un commit d'après celui de la version
+# (CI_APRES, descendant_hors_compilation) : dit en tête des notes, avec ce commit, pour qui veut la retrouver.
+CI_APRES=
+ci_apres_notes() {
+  [[ -n $CI_APRES ]] || return 0
+  printf '%s\n' "ℹ Programmes Linux et Windows identiques à ceux de la compilation reproductible de la CI, faite sur \
+le commit $CI_APRES : il suit celui de la version et ne change que des captures d'écran ou la page des fonctions, rien \
+de ce qui est compilé." "ℹ Linux and Windows programs identical to those of the CI's reproducible build, run on commit \
+$CI_APRES: it follows the version's commit and only changes screenshots or the features page, nothing that is \
+compiled." ""
+}
+
 # Ce qui change, version par version : le titre de son commit, ses puces dessous (sans les lignes de co-auteur). Une
 # seule version : son titre en gras, comme avant ; plusieurs : un titre « X.Y.Z : … » chacune. Puis comment
-# télécharger. Les passe-droits pris d'abord.
+# télécharger. Les passe-droits pris d'abord, puis la provenance de la CI quand elle est dite.
 notes() {
   local lignes nombre sha sujet puces
   passe_droits_notes
+  ci_apres_notes
   lignes=$(versions)
   nombre=$(grep -c . <<<"$lignes" || true)
   [[ $nombre -gt 0 ]] || printf '**%s %s**\n\n' "$NOM" "$VERSION"
@@ -215,23 +228,66 @@ attendre_execution() { # exécution, secondes au plus
   return "$code"
 }
 
+# Ce qui n'entre pas dans les programmes compilés, une liste fermée, plus étroite que .github/hors-code.txt (qui
+# compte aussi outils/, donc la recette de compilation) : les captures d'écran et l'image de partage du README, que
+# deployer.sh committe après la version (« Captures d'écran : vX.Y.Z »), et la page des fonctions (« Page des
+# fonctions : vX.Y.Z »). Ni src/, ni build.rs, ni Cargo.toml ne citent ces chemins (relu par
+# outils/essais-signature.sh) ; build.rs ne lit que des fichiers nommés (assets/oui.tsv, assets/yara/…,
+# assets/vanguard.ico…), pas des dossiers ; et outils/date-du-code.sh les saute (hors-code.txt les contient) : la
+# date gravée reste celle du code. Tout autre fichier, même hors du programme (.md, outils/, ci.yml), n'y est pas.
+HORS_COMPILATION='^(assets/captures/[A-Za-z0-9][A-Za-z0-9._-]*\.png|assets/captures/VERSION|assets/partage\.png|docs/index\.html)$'
+# Le commit de la CI (2e argument) vient après le commit compilé (1er), en ligne droite jusqu'à la tête de master
+# (COMMIT), et chaque commit entre les deux ne touche que HORS_COMPILATION : la CI a compilé le même code. Code 0
+# seulement alors ; une fusion, un commit hors de la ligne, un fichier hors de la liste (un renommage compte pour ses
+# deux chemins), une réponse de git illisible : 1. Lue telle quelle par outils/essais-signature.sh.
+descendant_hors_compilation() { # commit compilé, commit de la CI
+  local de=$1 vers=$2 fusions premiers tous c chemins p
+  [[ $de =~ ^[0-9a-f]{40}$ && $vers =~ ^[0-9a-f]{40}$ && $de != "$vers" ]] || return 1
+  git merge-base --is-ancestor "$de" "$vers" 2>/dev/null || return 1
+  git merge-base --is-ancestor "$vers" "$COMMIT" 2>/dev/null || return 1
+  fusions=$(git rev-list --merges "$de..$vers" 2>/dev/null) || return 1
+  [[ -z $fusions ]] || return 1
+  premiers=$(git rev-list --first-parent "$de..$vers" 2>/dev/null) || return 1
+  tous=$(git rev-list "$de..$vers" 2>/dev/null) || return 1
+  [[ -n $tous && $premiers == "$tous" ]] || return 1
+  for c in $tous; do
+    [[ $c =~ ^[0-9a-f]{40}$ ]] || return 1
+    # Un élément vide en dernier : git a fini sans erreur (un chemin n'est jamais vide).
+    mapfile -d '' chemins < <(git diff-tree --no-commit-id --name-only -r --no-renames -z "$c" 2>/dev/null &&
+      printf '\0')
+    [[ ${#chemins[@]} -gt 0 && -z ${chemins[-1]} ]] || return 1
+    unset 'chemins[-1]'
+    for p in "${chemins[@]+"${chemins[@]}"}"; do
+      [[ $p =~ $HORS_COMPILATION ]] || return 1
+    done
+  done
+}
+
 # Les programmes Linux et Windows qui partent doivent être ceux que la CI a compilés du même code : son travail
 # « reproductible » (.github/workflows/ci.yml) les compile deux fois par la même recette et écrit leurs empreintes
 # dans son journal (EMPREINTE-VANGUARD-LINUX, -WINDOWS). Sans cette comparaison, un programme altéré sur cet ordinateur
 # (chaîne Rust, éditeur de liens, fichier de config de cargo) serait signé et publié avec une CI verte à côté
-# (campagne d'attaque n° 6, F1). Seulement une exécution de master (push, nuit ou à la main), du commit compilé ou
-# d'un commit d'avant au même code (.github/hors-code.txt), comme les nomenclatures. Code 0 : mêmes empreintes ; 1 : différentes
-# (la raison) ; 2 : aucune exécution de la CI n'en a pour ce code. Lue telle quelle par outils/essais-signature.sh.
+# (campagne d'attaque n° 6, F1). Seulement une exécution de master (push, nuit ou à la main), du commit compilé, d'un
+# commit d'avant au même code (.github/hors-code.txt), comme les nomenclatures, ou d'un commit d'après dont rien de
+# ce qui est compilé n'a changé (descendant_hors_compilation : les captures et la page des fonctions que deployer.sh
+# committe après la version, et sur lesquels la CI tourne). Code 0 : mêmes empreintes ; 1 : différentes (la raison) ;
+# 2 : aucune exécution de la CI n'en a pour ce code. Lue telle quelle par outils/essais-signature.sh.
 empreintes_de_la_ci() {
-  local id sha travail journal linux windows ici_linux ici_windows
+  local id sha apres travail journal linux windows ici_linux ici_windows
   ici_linux=$(sha256sum "$DOSSIER/vanguard-linux-x86_64" | cut -d' ' -f1)
   ici_windows=$(sha256sum "$DOSSIER/vanguard-windows-x86_64.exe" | cut -d' ' -f1)
   while read -r id sha; do
     [[ $id =~ ^[0-9]+$ ]] || continue
+    apres=
     if [[ $sha != "$COMPILE" ]]; then
-      git merge-base --is-ancestor "$sha" "$COMPILE" 2>/dev/null || continue
-      [[ -n $HORS_CODE ]] || continue
-      git diff --name-only "$sha" "$COMPILE" | grep -vqE "$HORS_CODE" && continue
+      if git merge-base --is-ancestor "$sha" "$COMPILE" 2>/dev/null; then
+        [[ -n $HORS_CODE ]] || continue
+        git diff --name-only "$sha" "$COMPILE" | grep -vqE "$HORS_CODE" && continue
+      elif descendant_hors_compilation "$COMPILE" "$sha"; then
+        apres=", après ${COMPILE:0:12} sans rien de compilé changé"
+      else
+        continue
+      fi
     fi
     travail=$(gh run view "$id" --json jobs \
       -q '.jobs[] | select(.name == "reproductible" and .conclusion == "success") | .databaseId' | head -n 1)
@@ -247,7 +303,7 @@ empreintes_de_la_ci() {
         echo "Windows : ${ici_windows:0:16}… ici, ${windows:0:16}… dans la CI (exécution $id, ${sha:0:12})."
       return 1
     fi
-    echo "exécution $id, ${sha:0:12}"
+    echo "exécution $id, ${sha:0:12}$apres"
     return 0
   done < <(gh run list --workflow ci.yml --branch master --limit 30 --json databaseId,headSha,headBranch,event \
     -q '.[] | select(.headBranch == "master" and (.event == "push" or .event == "schedule"
@@ -273,6 +329,10 @@ if ((CODE_CI == 2)); then
 fi
 if ((CODE_CI == 0)); then
   echo "✔ Programmes Linux et Windows identiques à ceux de la compilation reproductible de la CI ($EMPREINTES_CI)."
+  if [[ $EMPREINTES_CI == *", après "* ]]; then
+    CI_APRES=$(sed -nE 's/^exécution [0-9]+, ([0-9a-f]{12}), après .*/\1/p' <<<"$EMPREINTES_CI")
+    [[ -n $CI_APRES ]] || { echo "Provenance de la CI illisible ($EMPREINTES_CI) : rien de publié."; exit 1; }
+  fi
 elif [[ -n ${VANGUARD_PUBLIER_SANS_EMPREINTES_CI:-} ]]; then
   [[ -z $EMPREINTES_CI ]] || echo "$EMPREINTES_CI"
   echo "⚠ Programmes Linux et Windows publiés sans être ceux de la CI (VANGUARD_PUBLIER_SANS_EMPREINTES_CI) : dit dans les notes et l'historique signé."

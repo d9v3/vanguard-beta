@@ -39,6 +39,11 @@
 #      face à un faux gh), elle seule et notée, une fois la nouvelle page en ligne et ses fichiers relus ; jamais
 #      avec-macos, une plus vieille, une plus récente, une annotée, une hors de la ligne de la version, celle d'une
 #      page encore en ligne, ni sans pouvoir lire les étiquettes ou noter le retrait.
+#   6h. Une compilation reproductible de la CI faite sur un commit d'après celui de la version compte seulement en
+#      ligne droite jusqu'à la tête de master, sans fusion, chaque commit entre les deux ne touchant que la liste
+#      fermée HORS_COMPILATION (captures, image de partage, page des fonctions : descendant_hors_compilation, dans un
+#      dépôt git jetable ; empreintes_de_la_ci, face à un faux gh) ; rien du programme ne lit ces fichiers, et les
+#      notes le disent.
 #   6c. Au branchement de la clé, deployer.sh (ci_verte, face à un faux gh) ne récupère ni ne compile un commit de
 #      GitHub sans CI verte sur ce commit exact (ci.yml, master ; campagne d'attaque n° 6, F4), et dit à part gh sans
 #      compte connecté ou introuvable (sinon, sous le service de la clé, « réessayé » pour toujours sans alerte).
@@ -716,6 +721,134 @@ GH
 else
   echo "  (sauté : jq absent, pas de faux gh pour l'étiquette d'avant)"
 fi
+
+# 6h. La compilation reproductible de la CI faite sur un commit d'après celui de la version (les captures et la page
+# des fonctions que deployer.sh committe ensuite, et sur lesquels la CI tourne) : acceptée seulement en ligne droite
+# jusqu'à la tête de master, sans fusion, chaque commit entre les deux ne touchant que la liste fermée
+# HORS_COMPILATION (descendant_hors_compilation, dans un dépôt git jetable) ; puis empreintes_de_la_ci face à un faux
+# gh, et ce qu'en disent les notes. Sans jq, la partie au faux gh est sautée et dite.
+H=$T/depot-apres
+mkdir -p "$H/src" "$H/docs" "$H/assets/captures" "$H/outils"
+commit_h() { git -C "$H" add -A && git -C "$H" -c user.name=essai -c user.email=essai@exemple.invalid commit -qm "$1" &&
+  git -C "$H" rev-parse HEAD; }
+echo 'fn main() {}' >"$H/src/main.rs"
+echo 'pub fn f() {}' >"$H/src/lib.rs"
+echo 0.92.0 >"$H/assets/captures/VERSION"
+echo page >"$H/docs/index.html"
+echo recette >"$H/outils/compiler-version.sh"
+git -C "$H" init -q
+H_COMPILE=$(commit_h "Vanguard 0.92.0 (v0.92.0)")
+printf 'png' >"$H/assets/captures/accueil.png"
+printf 'png' >"$H/assets/partage.png"
+echo 0.92.0+1 >"$H/assets/captures/VERSION"
+H_CAPTURES=$(commit_h "Captures d'écran : v0.92.0")
+echo page2 >"$H/docs/index.html"
+H_PAGE=$(commit_h "Page des fonctions : v0.92.0")
+{ grep '^HORS_COMPILATION=' "$DEPOT/outils/publier-version.sh"
+  awk '/^descendant_hors_compilation\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"; } >"$T/descendant.sh"
+apres() { # commit compilé, commit de la CI, tête de master (le dernier commit par défaut) : le code
+  (cd "$H" && COMMIT=${3:-$(git rev-parse HEAD)} \
+    bash -c "source '$T/descendant.sh'; descendant_hors_compilation '$1' '$2'")
+}
+# Un commit de plus sur une branche à part, depuis la page des fonctions : le chemin donné, ou une commande qui
+# prépare l'arbre (renommage, fusion…). Rend son commit ; la branche principale reste où elle était.
+a_part() { # nom de la branche, chemin à changer
+  git -C "$H" checkout -q -b "$1" "$H_PAGE"
+  mkdir -p "$H/$(dirname "$2")" && printf '%s' "$1" >>"$H/$2"
+  commit_h "$1"
+  git -C "$H" checkout -q "$H_PAGE" 2>/dev/null
+}
+apres "$H_COMPILE" "$H_PAGE" && apres "$H_COMPILE" "$H_CAPTURES" &&
+  ok "publier : une CI faite après la version, sur les captures puis la page des fonctions, compte" ||
+  ko "publier : CI faite sur les captures ou la page des fonctions refusée"
+for cas in "md|docs/autre.md" "outils|outils/compiler-version.sh" "ci|.github/workflows/ci.yml" "src|src/main.rs" \
+  "sous-dossier|assets/captures/sous/a.png" "autre-extension|assets/captures/a.png.sh" "cargo|Cargo.toml" \
+  "assets|assets/oui.tsv" "cachee|assets/captures/.a.png" "attributs|.gitattributes" "ligne|assets/captures/a
+b.png"; do
+  c=$(a_part "${cas%%|*}" "${cas#*|}")
+  [[ $c =~ ^[0-9a-f]{40}$ ]] || { ko "publier : commit d'essai pas fait (${cas#*|})"; continue; }
+  apres "$H_COMPILE" "$c" "$c" && ko "publier : CI acceptée après un commit qui touche ${cas#*|}" ||
+    ok "publier : CI refusée après un commit qui touche $(head -n 1 <<<"${cas#*|}")…"
+done
+git -C "$H" checkout -q -b renomme "$H_PAGE"
+git -C "$H" mv src/lib.rs assets/captures/lib.png
+R=$(commit_h renommage)
+git -C "$H" checkout -q "$H_PAGE"
+apres "$H_COMPILE" "$R" "$R" && ko "publier : CI acceptée après un renommage depuis src/" ||
+  ok "publier : CI refusée après un renommage depuis src/ vers les captures (ses deux chemins comptent)"
+git -C "$H" checkout -q -b cote "$H_COMPILE"
+printf 'png' >"$H/assets/captures/cote.png"
+COTE=$(commit_h "à côté")
+git -C "$H" checkout -q -b fusion "$H_PAGE"
+git -C "$H" -c user.name=essai -c user.email=essai@exemple.invalid merge -q --no-edit "$COTE"
+FUSION=$(git -C "$H" rev-parse HEAD)
+git -C "$H" checkout -q "$H_PAGE"
+[[ $(git -C "$H" rev-list --merges -n 1 "$FUSION") == "$FUSION" ]] &&
+  ! apres "$H_COMPILE" "$FUSION" "$FUSION" && ok "publier : CI refusée sur une fusion, même de captures seulement" ||
+  ko "publier : CI acceptée sur une fusion (ou fusion pas faite)"
+apres "$H_COMPILE" "$COTE" "$H_PAGE" && ko "publier : CI acceptée sur un commit hors de la ligne de master" ||
+  ok "publier : CI refusée sur un commit qui n'est pas dans la ligne de la tête de master"
+apres "$H_COMPILE" "$H_PAGE" "$H_CAPTURES" && ko "publier : CI acceptée sur un commit d'après la tête de master" ||
+  ok "publier : CI refusée sur un commit d'après la tête de master"
+! apres "$H_PAGE" "$H_COMPILE" && ! apres "$H_COMPILE" "$H_COMPILE" && ! apres "$H_COMPILE" "${H_PAGE:0:12}" &&
+  ! apres "$H_COMPILE" HEAD && ! apres "$H_COMPILE" "$(printf 'f%.0s' {1..40})" &&
+  ok "publier : CI refusée sur un commit d'avant, le même, un nom abrégé ou symbolique, un commit inconnu" ||
+  ko "publier : CI d'un commit d'avant, abrégé, symbolique ou inconnu acceptée comme descendant"
+# Ce que la liste dit hors de la compilation ne l'est pas : rien de src/, build.rs ni Cargo.toml ne cite ces
+# chemins, et build.rs ne parcourt aucun dossier (il ne lit que des fichiers nommés).
+cites=$(grep -rnE 'assets/captures|captures/|partage\.png|index\.html|\.\./docs|"/?docs/|/docs"' \
+  "$DEPOT/src" "$DEPOT/build.rs" "$DEPOT/Cargo.toml" || true)
+parcours=$(grep -nE 'read_dir|glob(::|\()|WalkDir|walkdir' "$DEPOT/build.rs" || true)
+[[ -z $cites && -z $parcours ]] &&
+  ok "liste hors compilation : ni src/, ni build.rs, ni Cargo.toml ne lisent les captures ou la page des fonctions" ||
+  ko "liste hors compilation : un fichier de la liste est lu par la compilation : ${cites#"$DEPOT"/}${parcours}"
+# La liste est aussi « hors code » pour outils/date-du-code.sh : la date gravée par la CI sur ce commit d'après est
+# celle du commit compilé.
+while read -r p; do
+  [[ $p =~ $(grep -v '^#' "$DEPOT/.github/hors-code.txt" | head -n 1) ]] || { ko "liste hors compilation : $p pas dans hors-code.txt"; break; }
+done <<<$'assets/captures/a.png\nassets/captures/VERSION\nassets/partage.png\ndocs/index.html' &&
+  ok "liste hors compilation : comprise dans .github/hors-code.txt (même date gravée)"
+if command -v jq >/dev/null; then
+  F=$T/faux-gh-apres
+  mkdir -p "$F" "$T/dossier-apres"
+  cp "$T/faux-gh-ci/gh" "$F/gh"
+  printf 'ELF linux' >"$T/dossier-apres/vanguard-linux-x86_64"
+  printf 'MZ windows' >"$T/dossier-apres/vanguard-windows-x86_64.exe"
+  A_LINUX=$(sha256sum "$T/dossier-apres/vanguard-linux-x86_64" | cut -d' ' -f1)
+  A_WINDOWS=$(sha256sum "$T/dossier-apres/vanguard-windows-x86_64.exe" | cut -d' ' -f1)
+  printf '%s\n' "reproductible	Deux compilations	2026-11-07T08:00:00Z EMPREINTE-VANGUARD-LINUX $A_LINUX" \
+    "reproductible	Deux compilations	2026-11-07T08:00:00Z EMPREINTE-VANGUARD-WINDOWS $A_WINDOWS" >"$F/journal-7.txt"
+  echo '{"jobs": [{"databaseId": 70, "name": "reproductible", "conclusion": "success"}]}' >"$F/travaux-7.json"
+  { cat "$T/descendant.sh"; awk '/^empreintes_de_la_ci\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"; } >"$T/empreintes-apres.sh"
+  empreintes_apres() { # commit de la CI, tête de master : la sortie de empreintes_de_la_ci, puis « code N »
+    local code=0 sortie
+    echo "[{\"databaseId\": 7, \"headSha\": \"$1\", \"headBranch\": \"master\", \"event\": \"push\"}]" >"$F/runs.json"
+    sortie=$(cd "$H" && PATH="$F:$PATH" COMPILE=$H_COMPILE COMMIT=$2 HORS_CODE=$(grep -v '^#' "$DEPOT/.github/hors-code.txt" | head -n 1) \
+      DOSSIER=$T/dossier-apres bash -c "source '$T/empreintes-apres.sh'; empreintes_de_la_ci" 2>&1) || code=$?
+    printf '%s\ncode %s\n' "$sortie" "$code"
+  }
+  r=$(empreintes_apres "$H_PAGE" "$H_PAGE")
+  [[ $r == "exécution 7, ${H_PAGE:0:12}, après ${H_COMPILE:0:12} sans rien de compilé changé"$'\n'"code 0" ]] &&
+    ok "publier : empreintes de la CI faite sur la page des fonctions acceptées, et dites « après » la version" ||
+    ko "publier : CI faite sur la page des fonctions ($r)"
+  c=$(git -C "$H" rev-parse md)
+  r=$(empreintes_apres "$c" "$c")
+  [[ $r == *"code 2" ]] && ok "publier : CI faite après un commit hors de la liste : aucune ne compte (refus comme avant)" ||
+    ko "publier : CI faite après un commit hors de la liste acceptée ($r)"
+  r=$(empreintes_apres "$FUSION" "$FUSION")
+  [[ $r == *"code 2" ]] && ok "publier : CI faite sur une fusion : aucune ne compte" ||
+    ko "publier : CI faite sur une fusion acceptée ($r)"
+else
+  echo "  (sauté : jq absent, pas de faux gh pour la CI faite après la version)"
+fi
+# Ce que les notes en disent, et d'où elles le prennent.
+r=$(CI_APRES=0123456789ab bash -c "$(awk '/^ci_apres_notes\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"); ci_apres_notes")
+[[ $(grep -c 'commit 0123456789ab' <<<"$r") == 2 && $r == *"captures d'écran"* && $r == *"screenshots"* &&
+  -z $(CI_APRES= bash -c "$(awk '/^ci_apres_notes\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"); ci_apres_notes") ]] &&
+  awk '/^notes\(\) \{/ { n = 1 } n && /^  ci_apres_notes$/ { c = 1 } n && /^\}/ { n = 0 }
+    /CI_APRES=\$\(sed -nE .*<<<"\$EMPREINTES_CI"\)$/ { e = 1 } END { exit !(c && e) }' "$DEPOT/outils/publier-version.sh" &&
+  ok "notes : une CI faite après la version est dite, avec son commit, en français et en anglais" ||
+  ko "notes : la CI faite après la version n'est pas dite ($r)"
 
 # 6d. Les passe-droits de publier-version.sh : dans les notes de la page et dans l'historique signé (relecture du lot
 # correctifs-c6), pas seulement au terminal.
