@@ -236,8 +236,8 @@ pub(super) fn raison_rancongiciel() -> &'static str {
 /// revient (`suites::Type::LancementRefuse`).
 pub(super) fn raison_lancement_refuse() -> &'static str {
     tr!(
-        "lancement refusé par le garde (empreinte certaine)",
-        "launch refused by the guard (certain fingerprint)"
+        "lancement refusé par le garde (empreinte de ses listes, à confirmer)",
+        "launch refused by the guard (fingerprint from its lists, to be confirmed)"
     )
 }
 
@@ -259,6 +259,11 @@ struct RefusDuGarde {
 /// par chemin, toujours là, ordinaire, dont l'empreinte relue maintenant (`empreinte`) est celle que le garde a
 /// refusée. Un fichier remplacé depuis n'est pas désigné : le garde a refusé l'autre. `deja` : les fichiers déjà
 /// désignés par une autre voie.
+///
+/// Jamais certaine : l'empreinte refusée vient des listes que le compte prépare (le garde n'en lit aucun format,
+/// P22), et ce journal ne prouve rien de plus. Un compte pris pourrait y mettre l'empreinte d'un fichier sain pour
+/// le faire arrêter et isoler tout seul ; la menace est donc proposée, et l'arrêt ou la quarantaine attendent un
+/// accord. Aucune preuve indépendante du compte n'existe ici : la recherche tourne elle aussi au compte.
 #[cfg(target_os = "linux")]
 fn refus_du_garde(
     evenements: &[RefusDuGarde],
@@ -286,7 +291,7 @@ fn refus_du_garde(
         let raison = raison_lancement_refuse();
         menaces.push(Menace {
             categorie: Categorie::Programmes,
-            certaine: true,
+            certaine: false,
             quoi: trf!("« {nom} » ({montre}) : {raison}", "“{nom}” ({montre}): {raison}"),
             cle: format!("fichier:{}", chemin.display()),
             geste: Geste::Programme {
@@ -862,7 +867,17 @@ mod tests {
         let deja = HashSet::from([PathBuf::from("/home/alice/deja")]);
         let m = refus_du_garde(&evenements, maintenant, &deja, sur_le_disque);
         assert_eq!(m.len(), 1, "{:?}", m.iter().map(|m| &m.cle).collect::<Vec<_>>());
-        assert!(m[0].certaine);
+        // Jamais certaine : les listes viennent du compte ; bloquer attend un accord, même en automatique.
+        assert!(!m[0].certaine);
+        let reglages = super::super::parametres::Parametres {
+            accord: Some("2026-01-01 00:00".into()),
+            programmes: super::super::parametres::Mode::Automatique,
+            ..Default::default()
+        };
+        assert_eq!(
+            super::super::parametres::decider(&reglages, m[0].categorie, m[0].certaine),
+            super::super::parametres::Decision::UnClic
+        );
         assert_eq!(m[0].cle, "fichier:/home/alice/Téléchargements/outil");
         assert!(matches!(
             &m[0].geste,
