@@ -789,16 +789,10 @@ mod tests {
     use crate::protection::clamav::hashes::Empreintes;
     use crate::protection::clamav::signatures::Mode;
 
-    /// La chaîne d'essai EICAR, assemblée à l'exécution : ni le source ni un programme compilé ne la contiennent d'un
-    /// bloc (P23).
+    /// La chaîne d'essai EICAR, démasquée à l'exécution (`sources::marque_d_essai`, P23). Pas en morceaux littéraux :
+    /// l'éditeur de liens les rangeait bout à bout, et le programme d'essai la contenait entière.
     fn eicar() -> Vec<u8> {
-        [
-            r"X5O!P%@AP[4\PZX54(P^)7CC)7}$",
-            "EICAR-STANDARD-",
-            "ANTIVIRUS-TEST-FILE!$H+H*",
-        ]
-        .concat()
-        .into_bytes()
+        crate::protection::sources::marque_d_essai()
     }
 
     const COMPLETE: Options = Options {

@@ -502,6 +502,37 @@ pub(crate) mod tests {
         );
     }
 
+    /// Aucun source ne garde un morceau de la chaîne d'essai (12 octets ou plus) : des morceaux littéraux finissent bout
+    /// à bout dans le programme compilé, qu'un antivirus met alors en quarantaine (P23).
+    #[test]
+    fn aucun_source_n_a_de_morceau_de_la_marque() {
+        let m = marque_d_essai();
+        let mut a_lire = vec![
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src"),
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests"),
+        ];
+        let mut lus = 0;
+        while let Some(d) = a_lire.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    a_lire.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    let contenu = std::fs::read(&p).unwrap();
+                    lus += 1;
+                    for morceau in m.windows(12) {
+                        assert!(
+                            !contenu.windows(12).any(|w| w == morceau),
+                            "{} garde un morceau de la marque d'essai",
+                            p.display()
+                        );
+                    }
+                }
+            }
+        }
+        assert!(lus > 100, "{lus} sources lus");
+    }
+
     /// Un lecteur qui rend peu à la fois : la marque, coupée entre deux lectures, est trouvée quand même.
     struct Goutte<'a>(&'a [u8], usize);
 
