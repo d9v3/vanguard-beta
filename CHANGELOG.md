@@ -7,6 +7,15 @@ une seule publication par jour, qui regroupe le travail de la journée ; le 21 o
 la 0.84 au soir, qui reprend la 0.83 livrée juste avant elle. Seule la dernière version a sa page de téléchargement ;
 chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par exemple), pour être recompilée au besoin.
 
+## Non publiée
+
+- **Vanguard ne vise plus macOS.** Plus de programme pour le Mac, plus de compilation ni d'essais sur le Mac de GitHub,
+  plus de partition MACOS sur les nouvelles clés de secours (une clé déjà écrite garde la sienne jusqu'à sa prochaine
+  réécriture). Le déploiement retire de la clé le programme macOS, son mode d'emploi et son lanceur. Un Vanguard pour
+  Mac déjà installé ne trouve plus de mise à jour, sans erreur. Les nomenclatures (SBOM) sont produites et attestées
+  par le travail « nomenclatures » de `ci.yml`, et `outils/publier-version.sh` vérifie toujours cette attestation avant
+  de publier.
+
 ## 6 novembre 2026 : version 0.90.0
 
 - **Options de défense, en un écran** (`vanguard options-defense`, outil 4.10 sous Windows, 4.9 sous Linux). Ce qui

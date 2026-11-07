@@ -6,7 +6,7 @@ titre_en = "Rust example"
 description_fr = "Deux constats inventés et la version du système, écrits avec la bibliothèque vanguard-extension."
 description_en = "Two made-up findings and the system version, written with the vanguard-extension library."
 auteur = "Vanguard (exemple)"
-systemes = ["linux", "macos", "windows"]
+systemes = ["linux", "windows"]
 delai = 20
 commande = "bin/rust-exemple"
 

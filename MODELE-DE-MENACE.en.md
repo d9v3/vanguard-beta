@@ -8,8 +8,8 @@ program, the USB key or the update) belong on another page: [SECURITY.md](SECURI
 
 ## What Vanguard protects
 
-- **The computer it runs on**: its security settings, its updates, what starts with it, what runs on it and what
-  talks to the Internet. Linux, Windows and macOS.
+- **The computer it runs on**: its security settings, its updates, what starts with it, what runs on it and what talks
+  to the Internet. Linux, then Windows.
 - **The local network as seen from that computer**: the router, the connected devices, what is open to the
   Internet, the Wi-Fi.
 - **The person's data**: their files (ransomware traps, backup check), their secrets (leaked passwords and email
@@ -23,7 +23,7 @@ program, the USB key or the update) belong on another page: [SECURITY.md](SECURI
 |---|---|
 | Known malware on the computer | The system antivirus as a second opinion, YARA rules, MalwareBazaar hashes, program memory, startup entries, signs of a rootkit; blocking after consent, or on its own for what leaves no doubt (active protection). |
 | Ransomware | Trap files checked every hour; on Linux, once turned on, a live watcher that stops a near-certain case when active protection is on. |
-| A weak setting or an unpatched vulnerability | A security check graded A to F, missing updates, actively exploited vulnerabilities from the CISA catalog, end of support; every fix after consent, undoable except one that turns a protection back on (firewall, antivirus, encryption, UAC, SELinux, Gatekeeper, kernel hardening on Linux, Windows hardening and Defender protections). Lowering a protection remains the person's choice, never Vanguard's (see [Lowered by choice](#lowered-by-choice)). |
+| A weak setting or an unpatched vulnerability | A security check graded A to F, missing updates, actively exploited vulnerabilities from the CISA catalog, end of support; every fix after consent, undoable except one that turns a protection back on (firewall, antivirus, encryption, UAC, SELinux, kernel hardening on Linux, Windows hardening and Defender protections). Lowering a protection remains the person's choice, never Vanguard's (see [Lowered by choice](#lowered-by-choice)). |
 | Exposure to the Internet | Ports the router opens (asked of the router itself, UPnP openings included), public IPv6 without a firewall; in the logs, guessed passwords and Remote Desktop connections from outside. |
 | An intruder on the local network or the Wi-Fi | Inventory of the devices and of newcomers, fake access point, hijacked DNS and certificates; public Wi-Fi mode when traveling. |
 | Someone close who spies on the person | Spyware, remote control (fake technician). |
@@ -41,9 +41,8 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
 - **The kernel and the firmware.** Vanguard loads nothing into the kernel. It reports the signs of a rootkit (hidden
   processes, kernel modules that hide or are unsigned), but a well-made rootkit can lie to the system that asks it.
   Secure Boot is checked and the firmware (BIOS, UEFI) updated after consent, but nothing watches it live.
-- **A new threat, still without a signature.** Detection relies mostly on known lists; what is not on them yet can
-  get through. Vanguard complements the system antivirus (Microsoft Defender, XProtect, ClamAV): it does not replace
-  it.
+- **A new threat, still without a signature.** Detection relies mostly on known lists; what is not on them yet can get
+  through. Vanguard complements the system antivirus (Microsoft Defender, ClamAV): it does not replace it.
 - **Everything, in real time.** Apart from the two Linux watchers (programs and connections, anti-ransomware; both off
   by default), the live integrity monitoring of critical files and Defender's blocking, monitoring runs every hour,
   between two checks.
@@ -106,8 +105,8 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   protections are no longer reversed at all by undoing. The person can still lower them themselves, in Windows or in
   the Defense options, by the path described below.
 - **Testing has its limits.** Vanguard is tested on the author's computer, a Windows VM, a second Windows PC and
-  GitHub's machines (Windows, Mac, real Linux distributions). It has never run on a real Mac; other cases are still to
-  be tried on real hardware (other distributions, a real UPnP router, booting the key).
+  GitHub's machines (Windows, real Linux distributions); other cases are still to be tried on real hardware (other
+  distributions, a real UPnP router, booting the key).
 
 ## Lowered by choice
 
@@ -203,8 +202,7 @@ it has already won (see above). The same goes, on Linux, for a program already r
 The threat, version and vulnerability lists are downloaded in full, the same for everyone. What Vanguard sends
 itself:
 
-- **On Windows and macOS**, the list of installed software does not leave: their versions are judged against these
-  lists.
+- **On Windows**, the list of installed software does not leave: their versions are judged against these lists.
 - **On Arch Linux, after consent** (Settings › AUR packages, off by default): the names of the packages installed
   outside the official repositories, to aur.archlinux.org, to learn their latest version (rule LNX-MAJ-006 and AUR
   updates); without this consent, these packages are not checked, which is said.
@@ -263,16 +261,14 @@ the device scan, LLMNR and mDNS.
 
 ### Programs run by Vanguard
 
-During the check, without separate consent, Vanguard asks the system's tools for pending updates, and they query
-their repositories: checkupdates, dnf, apt, zypper, flatpak, snap, fwupdmgr (firmware, LVFS), softwareupdate and mas
-(Apple); yay or paru only with the AUR consent. On request or after consent, it runs programs that reach their own
-servers: the package manager (pacman, apt, dnf, winget), flatpak (`dl.flathub.org`), Homebrew and its installer
-(`brew.sh`, script fetched from raw.githubusercontent.com), freshclam for ClamAV, the Defender signature update, trivy
-for containers (its vulnerability database), the Rosetta installation; nmap only queries devices on the local
-network. A page opened in the browser after consent (“Report” pages, public Wi-Fi portal: the system probe's address,
-NetworkManager's on Linux, shown first) is reached by the browser. An extension added by the person has the
-computer's network, unless run isolated (Linux, macOS). These destinations depend on those programs, not on
-Vanguard.
+During the check, without separate consent, Vanguard asks the system's tools for pending updates, and they query their
+repositories: checkupdates, dnf, apt, zypper, flatpak, snap, fwupdmgr (firmware, LVFS); yay or paru only with the AUR
+consent. On request or after consent, it runs programs that reach their own servers: the package manager (pacman, apt,
+dnf, winget), flatpak (`dl.flathub.org`), freshclam for ClamAV, the Defender signature update, trivy for containers
+(its vulnerability database); nmap only queries devices on the local network. A page opened in the browser after
+consent (“Report” pages, public Wi-Fi portal: the system probe's address, NetworkManager's on Linux, shown first) is
+reached by the browser. An extension added by the person has the computer's network, unless run isolated (Linux).
+These destinations depend on those programs, not on Vanguard.
 
 ### The improvement record and its relay
 
@@ -293,8 +289,8 @@ other computers. Four stages; the last two do not happen while the relay is not 
 - **The sending queue, with no host.** `RELAIS` is empty in the code and the closed list of HTTPS sites (`HOTES`, the
   first table above) holds no relay: no batch is prepared, no sending file is written, no thread or connection is
   started. Even with a relay, nothing would leave under the tests, under Wine, in CI, with `VANGUARD_ENVOI=0`, from a
-  key, as root (Linux, macOS), in a development build, offline, before the notice shown at launch or your "yes"
-  (before 1.0, a "yes" will be required), after "No" to sharing, or for what was recorded before the day of consent.
+  key, as root (Linux), in a development build, offline, before the notice shown at launch or your "yes" (before 1.0,
+  a "yes" will be required), after "No" to sharing, or for what was recorded before the day of consent.
 - **The relay, once deployed.** Its address will then enter `HOTES` and the first table, like the other sites.
   Vanguard will reach it over HTTPS only, without following a redirect; it will send at most one batch a day (96 KiB,
   strictly re-read before leaving), with an installation identifier drawn at random and renewed every 90 days; at most

@@ -21,11 +21,10 @@ Dans le dossier local de Vanguard, jamais sur la clé USB ni à côté du progra
 | Système | Dossier |
 |---|---|
 | Linux | `~/.local/share/vanguard/plugins/` (ou `$XDG_DATA_HOME/vanguard/plugins/`) |
-| macOS | `~/Library/Application Support/vanguard/plugins/` |
 | Windows | `%LOCALAPPDATA%\vanguard\plugins\` |
 
-Le labo est le sous-dossier `labo/`. Vanguard refuse le dossier s'il n'est pas à toi ou si d'autres comptes peuvent
-y écrire (Unix : `chmod go-w`), et sous Windows s'il est hors de ton profil.
+Le labo est le sous-dossier `labo/`. Vanguard refuse le dossier s'il n'est pas à toi ou si d'autres comptes peuvent y
+écrire (Linux : `chmod go-w`), et sous Windows s'il est hors de ton profil.
 
 ## Un plugin
 
@@ -46,7 +45,7 @@ description_en = "What it checks, in one sentence."
 auteur = "alice"                   # facultatif, montré tel quel (non vérifié, sauf signé : voir plus bas)
 cle_auteur = "1f0c…"               # facultatif : clé publique Ed25519 de l'auteur, 64 chiffres hexadécimaux
 source = "https://exemple.org/x"   # facultatif, montré tel quel (non vérifié)
-systemes = ["linux", "macos", "windows"]
+systemes = ["linux", "windows"]
 delai = 30                         # secondes, de 1 à 600 (60 par défaut)
 commande = "mon-script.sh"         # chemin relatif au dossier, jamais « .. » ni absolu
 arguments = ["--court"]            # arguments fixes, avant ceux tapés à la ligne de commande
@@ -71,7 +70,7 @@ vanguard plugins ajouter extensions/exemples/exemple   copie, analyse, montre, d
 vanguard plugins exemple                                le lance
 vanguard plugins exemple --rapport                      ses constats dans le rapport HTML (section Plugins)
 vanguard plugins exemple --isole                        sans réseau, dossier personnel masqué (Linux :
-                                                       bubblewrap ; macOS : sandbox-exec ; pas sous Windows)
+                                                       bubblewrap ; pas sous Windows)
 vanguard plugins liste                                  chaque plugin et son état
 vanguard plugins approuver exemple                      après un changement, le remontre et le réapprouve
 vanguard plugins retirer exemple
@@ -92,8 +91,7 @@ La signature : Ed25519, sur « vanguard-plugin 1 », un saut de ligne, l'emprein
 SHA-256 des lignes « empreinte  chemin » de `sha256sum`, triées par chemin, sans `target/` ni `.git/` à la racine)
 et un saut de ligne ; en hexadécimal dans `plugin.sig`. Une clé : `openssl genpkey -algorithm ed25519 -out
 auteur.pem` (à garder pour soi) ; la clé publique pour `cle_auteur` : `openssl pkey -in auteur.pem -pubout -outform
-DER | tail -c 32 | od -An -tx1 | tr -d ' \n'`. Puis, dans le dossier du plugin, après le dernier changement (Linux ;
-sous macOS, `shasum -a 256` à la place de `sha256sum`) :
+DER | tail -c 32 | od -An -tx1 | tr -d ' \n'`. Puis, dans le dossier du plugin, après le dernier changement (Linux) :
 
 ```sh
 # signer-plugin

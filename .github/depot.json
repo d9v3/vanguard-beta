@@ -1,6 +1,6 @@
 {
   "_lisez-moi": "Page du dépôt sur GitHub, appliquée par outils/github.py après chaque envoi. La version (Cargo.toml) s'ajoute seule au bout de la description ; le nom du dépôt suit celui du programme.",
-  "description": "Portable cyber defense for endpoints and networks, from a USB key, written in Rust: a security check graded A to F (rules citing CIS, Microsoft, ANSSI and MITRE ATT&CK), network audit, threat hunting, YARA scan, threat blocking and defense actions after consent. Signed updates, a closed list of HTTPS hosts. Linux · Windows · macOS · EN/FR",
+  "description": "Portable cyber defense for endpoints and networks, from a USB key, written in Rust: a security check graded A to F (rules citing CIS, Microsoft, ANSSI and MITRE ATT&CK), network audit, threat hunting, YARA scan, threat blocking and defense actions after consent. Signed updates, a closed list of HTTPS hosts. Linux · Windows · EN/FR",
   "accueil": "https://claude.ai/code/artifact/d0b6d00e-38d4-4d9d-ad29-75dbdbecf37f",
   "sujets": [
     "endpoint-security",
@@ -21,7 +21,6 @@
     "rust",
     "linux",
     "windows",
-    "macos",
     "french"
   ],
   "options": {

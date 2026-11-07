@@ -15,7 +15,7 @@ aucune personne à joindre ailleurs.
 ## Ce qu'il faut joindre
 
 - la version de Vanguard : `vanguard --version` ;
-- le système : Linux et sa distribution, Windows (10 ou 11, et sa version), macOS (version, Intel ou Apple) ;
+- le système : Linux et sa distribution, Windows (10 ou 11, et sa version) ;
 - les étapes pour reproduire : commandes lancées, choix dans les menus, fichiers utilisés ;
 - une preuve minimale : le plus petit fichier, la plus courte commande qui montre la faille, et ce qu'un attaquant
   pourrait en faire ;
@@ -47,10 +47,10 @@ Merci de garder le secret jusqu'à la publication de l'avis.
 
 ## Dans le champ
 
-- le programme `vanguard` pour Linux, Windows et macOS, tel que publié (page Releases et dépôt
+- le programme `vanguard` pour Linux et Windows, tel que publié (page Releases et dépôt
   [vanguard-update](https://github.com/d9v3/vanguard-update)), et les scripts qu'il écrit puis lance (PowerShell,
   shell) ;
-- les scripts de la clé USB : `Lancer Vanguard.bat`, `Lancer Vanguard.command`, `autorun.sh` et ce qu'ils exécutent ;
+- les scripts de la clé USB : `Lancer Vanguard.bat`, `autorun.sh` et ce qu'ils exécutent ;
 - l'installation : la copie sur l'ordinateur depuis la clé, le raccourci, la mise à jour depuis la clé ou depuis
   GitHub.
 
@@ -66,11 +66,11 @@ Par exemple :
 
 ## Hors du champ
 
-- Les failles de Windows, de macOS ou d'une distribution Linux, même trouvées avec Vanguard : à signaler à leur
-  éditeur. Windows : [Microsoft Security Response Center](https://msrc.microsoft.com/report/vulnerability). macOS :
-  [Apple Security Research](https://security.apple.com/submit). Linux : l'équipe de sécurité de ta distribution, par
-  exemple [Debian](https://www.debian.org/security/), [Ubuntu](https://ubuntu.com/security/disclosure-policy),
-  [Fedora](https://fedoraproject.org/wiki/Security_Bugs) ou [Arch Linux](https://security.archlinux.org/).
+- Les failles de Windows ou d'une distribution Linux, même trouvées avec Vanguard : à signaler à leur éditeur.
+  Windows : [Microsoft Security Response Center](https://msrc.microsoft.com/report/vulnerability). Linux : l'équipe de
+  sécurité de ta distribution, par exemple [Debian](https://www.debian.org/security/),
+  [Ubuntu](https://ubuntu.com/security/disclosure-policy), [Fedora](https://fedoraproject.org/wiki/Security_Bugs) ou
+  [Arch Linux](https://security.archlinux.org/).
 - Les failles d'un outil que Vanguard lance sans l'avoir écrit (trivy, ClamAV…) : à signaler à son projet.
 - Les problèmes que Vanguard trouve sur ton ordinateur : c'est son travail, le bilan les explique.
 - Ce que le [modèle de menace](MODELE-DE-MENACE.md) dit hors de portée de Vanguard (par exemple un attaquant déjà
@@ -99,12 +99,13 @@ Par exemple :
   plus ancienne, ou dont la taille ou l'empreinte diffère.
 - **Compilation reproductible** des programmes Linux et Windows, vérifiée la nuit sur GitHub quand le code a changé :
   le même code, compilé deux fois, donne exactement le même programme.
-- **Nomenclatures (SBOM) et attestation** : chaque page de version joint la nomenclature CycloneDX de chaque
-  programme (toutes les dépendances compilées, versions et licences). Le programme macOS, compilé par GitHub, et ces
-  nomenclatures y sont attestés (Sigstore), à vérifier avec la GitHub CLI connectée :
-  `gh attestation verify vanguard-macos -R d9v3/vanguard-beta --signer-workflow d9v3/vanguard-beta/.github/workflows/macos.yml --source-ref refs/heads/master`.
-  Les nomenclatures Linux et Windows décrivent leur code, pas le fichier publié ; ces deux programmes, compilés par
-  l'auteur, ne sont pas attestés : la mise à jour intégrée les vérifie par la signature Ed25519 ci-dessus.
+- **Nomenclatures (SBOM) et attestation** : chaque page de version joint la nomenclature CycloneDX de chaque programme
+  (toutes les dépendances compilées, versions et licences) ; elles décrivent leur code, pas le fichier publié. GitHub,
+  qui les produit, les atteste (Sigstore), à vérifier avec la GitHub CLI connectée, le nom du fichier changé pour
+  l'autre système :
+  `gh attestation verify vanguard-linux-x86_64.cdx.json -R d9v3/vanguard-beta --signer-workflow d9v3/vanguard-beta/.github/workflows/ci.yml --source-ref refs/heads/master`.
+  Les programmes Linux et Windows, compilés par l'auteur, ne sont pas attestés : la mise à jour intégrée les vérifie
+  par la signature Ed25519 ci-dessus.
 - **Workflows de GitHub** relus par [zizmor](https://github.com/zizmorcore/zizmor) à chaque vérification (injections
   de gabarit, déclencheurs dangereux, jetons laissés dans les extractions), et leurs actions épinglées par commit.
 
@@ -127,7 +128,7 @@ reach elsewhere.
 ## What to include
 
 - Vanguard's version: `vanguard --version`;
-- the system: Linux and its distribution, Windows (10 or 11, and its version), macOS (version, Intel or Apple);
+- the system: Linux and its distribution, Windows (10 or 11, and its version);
 - the steps to reproduce: commands run, menu choices, files used;
 - a minimal proof: the smallest file, the shortest command that shows the flaw, and what an attacker could do with it;
 - **nothing personal**: no computer name, account, IP or MAC address, Wi-Fi network, or full report or journal as is.
@@ -157,10 +158,10 @@ Please keep the flaw secret until the advisory is published.
 
 ## In scope
 
-- the `vanguard` program for Linux, Windows and macOS, as published (Releases page and the
+- the `vanguard` program for Linux and Windows, as published (Releases page and the
   [vanguard-update](https://github.com/d9v3/vanguard-update) repository), and the scripts it writes then runs
   (PowerShell, shell);
-- the USB key's scripts: `Lancer Vanguard.bat`, `Lancer Vanguard.command`, `autorun.sh` and what they run;
+- the USB key's scripts: `Lancer Vanguard.bat`, `autorun.sh` and what they run;
 - the installation: the copy onto the computer from the key, the shortcut, the update from the key or from GitHub.
 
 For example:
@@ -175,11 +176,11 @@ For example:
 
 ## Out of scope
 
-- Flaws in Windows, macOS or a Linux distribution, even found with Vanguard: report them to their vendor. Windows:
-  [Microsoft Security Response Center](https://msrc.microsoft.com/report/vulnerability). macOS:
-  [Apple Security Research](https://security.apple.com/submit). Linux: your distribution's security team, for example
-  [Debian](https://www.debian.org/security/), [Ubuntu](https://ubuntu.com/security/disclosure-policy),
-  [Fedora](https://fedoraproject.org/wiki/Security_Bugs) or [Arch Linux](https://security.archlinux.org/).
+- Flaws in Windows or a Linux distribution, even found with Vanguard: report them to their vendor. Windows: [Microsoft
+  Security Response Center](https://msrc.microsoft.com/report/vulnerability). Linux: your distribution's security
+  team, for example [Debian](https://www.debian.org/security/),
+  [Ubuntu](https://ubuntu.com/security/disclosure-policy), [Fedora](https://fedoraproject.org/wiki/Security_Bugs) or
+  [Arch Linux](https://security.archlinux.org/).
 - Flaws in a tool Vanguard runs without having written it (trivy, ClamAV…): report them to its project.
 - The problems Vanguard finds on your computer: that is its job, the check explains them.
 - What the [threat model](MODELE-DE-MENACE.en.md) puts out of Vanguard's reach (for example an attacker who is already
@@ -209,10 +210,10 @@ For example:
 - **Reproducible build** of the Linux and Windows programs, checked nightly on GitHub when the code changed: the same
   code, built twice, gives exactly the same program.
 - **SBOMs and attestation**: each release page includes the CycloneDX bill of materials of each program (every
-  compiled dependency, versions and licenses). The macOS program, built by GitHub, and these SBOMs are attested there
-  (Sigstore); check with the GitHub CLI logged in:
-  `gh attestation verify vanguard-macos -R d9v3/vanguard-beta --signer-workflow d9v3/vanguard-beta/.github/workflows/macos.yml --source-ref refs/heads/master`.
-  The Linux and Windows SBOMs describe their code, not the published file; these two programs, built by the author,
-  are not attested: the built-in update checks them with the Ed25519 signature above.
+  compiled dependency, versions and licenses); they describe its code, not the published file. GitHub, which builds
+  them, attests them (Sigstore); check with the GitHub CLI logged in, changing the file name for the other system:
+  `gh attestation verify vanguard-linux-x86_64.cdx.json -R d9v3/vanguard-beta --signer-workflow d9v3/vanguard-beta/.github/workflows/ci.yml --source-ref refs/heads/master`.
+  The Linux and Windows programs, built by the author, are not attested: the built-in update checks them with the
+  Ed25519 signature above.
 - **GitHub workflows** checked by [zizmor](https://github.com/zizmorcore/zizmor) at every verification (template
   injections, dangerous triggers, tokens left in checkouts), and their actions pinned by commit.

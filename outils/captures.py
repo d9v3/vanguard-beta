@@ -411,7 +411,7 @@ p.en{{margin-top:10px;font-size:26px;color:#8a8a8a}}
 </style><img src="{logo}" alt=""><div><h1>Vanguard</h1>
 <p>Cyberdéfense portable des postes et des réseaux, depuis une clé USB.</p>
 <p class="en">Portable cyber defense for endpoints and networks, from a USB key.</p>
-<div class="os">Linux · Windows · macOS</div></div>"""
+<div class="os">Linux · Windows</div></div>"""
     photographier(page, PARTAGE, 1280, 640, bac)
 
 

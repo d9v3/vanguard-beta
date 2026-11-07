@@ -8,7 +8,7 @@ post-quantique), bloque les menaces trouvées, collecte les traces d'un incident
 le signalement d'une faille à son éditeur. Chaque constat est expliqué ; chaque correction et chaque blocage
 passent par un accord. En plus : le dépannage, l'optimisation, les données et la sauvegarde ; en développement,
 des images qui démarrent un ordinateur en panne (dossier ISO). Vanguard complète l'antivirus du système (Microsoft
-Defender, XProtect, ClamAV) : il ne le remplace pas.
+Defender, ClamAV) : il ne le remplace pas.
 
 Sécurité de Vanguard et de la clé
   - Protection de la clé : elle a deux parties. VANGUARD (tout ce que décrit « Contenu de la clé ») est en lecture

@@ -4,11 +4,11 @@
 
 <p align="center">
   <b>Portable cyber defense for endpoints and networks, from a USB key.</b><br>
-  Written in Rust · one executable per system (static Linux x86_64, Windows x86_64, universal macOS), nothing to install<br>
+  Written in Rust · one executable per system (static Linux x86_64, Windows x86_64), nothing to install<br>
   Runs with the account's rights: administrator rights are only asked for an accepted action (pkexec, run0 or sudo; UAC)<br>
   Reads and judges on the computer itself; over HTTPS, only reaches a closed list of 28 hosts<br>
-  Linux, Windows and macOS · English and French<br>
-  It complements the system's antivirus (Microsoft Defender, XProtect, ClamAV): it does not replace it.
+  Linux, then Windows · English and French<br>
+  It complements the system's antivirus (Microsoft Defender, ClamAV): it does not replace it.
 </p>
 
 <p align="center"><b>In active development · defensive only</b></p>
@@ -21,10 +21,10 @@ and how to check it:
 | Area | What is done | How to check |
 |---|---|---|
 | **Signed versions** | The latest version is described by a manifest (version, size and SHA-256 of each system's program) signed with Ed25519 outside GitHub. Two public keys are built into the program: the main one, and a backup key kept offline that can revoke the main one (the revocation is kept in the sealed state, and the main key is never accepted again). Strict verification (`verify_strict`) under a signature domain (`vanguard-versions 1`, and `vanguard-historique 1` for the version history: a signature never counts for the other file). Refused: a badly signed manifest, a version no newer than the highest already seen (kept, sealed), a program whose size, fingerprint or built-in version is not the signed one. A manifest older than 45 days gives “not verified”, never “up to date”. Nothing is installed without consent. | `vanguard verifier-moi`: version, date of the last commit, SHA-256 fingerprint, compared with the signed version history; published programs kept apart, in [vanguard-update](https://github.com/d9v3/vanguard-update) |
-| **The published program** | Its protections are read back from its headers before each release (`vanguard deploiement verifier-binaire`), and a program missing one is not released. Linux: static-pie ELF, full RELRO marking (BIND_NOW, applied by Vanguard itself at startup, since musl's startup does not do it), non-executable stack, no segment both writable and executable. Windows: ASLR (DYNAMIC_BASE, HIGH_ENTROPY_VA), DEP (NX_COMPAT), relocations present, DLLs imported from System32 only, `asInvoker` manifest. macOS: each slice (arm64, x86_64) MH_PIE, no executable stack, `__PAGEZERO` without rights, no writable and executable segment, signature present. CFG and CET are shown, not required. Built with LTO and `overflow-checks = true`: a calculation that overflows on hostile data stops instead of wrapping around to zero. | `vanguard deploiement verifier-binaire <program>` |
+| **The published program** | Its protections are read back from its headers before each release (`vanguard deploiement verifier-binaire`), and a program missing one is not released. Linux: static-pie ELF, full RELRO marking (BIND_NOW, applied by Vanguard itself at startup, since musl's startup does not do it), non-executable stack, no segment both writable and executable. Windows: ASLR (DYNAMIC_BASE, HIGH_ENTROPY_VA), DEP (NX_COMPAT), relocations present, DLLs imported from System32 only, `asInvoker` manifest. CFG and CET are shown, not required. Built with LTO and `overflow-checks = true`: a calculation that overflows on hostile data stops instead of wrapping around to zero. | `vanguard deploiement verifier-binaire <program>` |
 | **The code** | `#![deny(unsafe_code)]` at the root; unsafe is only allowed module by module, each block with the `// SAFETY:` comment clippy requires, and it is refused with no way back (`forbid`) in 62 modules. Counted on each pass of `outils/verifier.sh` (in this version: 357 `unsafe` blocks, 57 `unsafe extern` blocks, 18 functions and 3 `impl`). Clippy in pedantic mode, warnings treated as errors; `unwrap`, `expect`, `panic!` and direct indexing refused outside tests. The code is reviewed against [ANSSI's Secure Rust Guidelines](CONFORMITE-ANSSI.en.md). | `outils/verifier.sh` (unsafe summary at the end of the pass) |
-| **Readers of hostile data** | 35 fuzzing targets (.evtx logs and BinXML, PE headers, plist, SQLite, zip, tar, zstd, gzip, DNS client, TLS reply, D-Bus, systemd journal, YARA rules, MIME email…): a few seconds per target on each `verifier.sh` pass, five minutes per target every night in CI. 6 Kani proofs on bounded readers (DNS, SQLite, zstd), compiled on each pass. | `fuzz/`, `outils/fuzz.sh`, `outils/preuves.sh` |
-| **Detection regression** | 77 made-up, harmless cases (`tests/corpus-detection`): each case gives its rule's judgment made-up data and requires a finding of at least the expected severity; the same clean case requires it to stay silent. Each rule that cites an ATT&CK technique, and each tool that detects, has its case or a written reason for exemption. | `cargo test` (`src/modele/corpus.rs`) |
+| **Readers of hostile data** | 35 fuzzing targets (.evtx logs and BinXML, PE headers, SQLite, zip, tar, zstd, gzip, DNS client, TLS reply, D-Bus, systemd journal, YARA rules, MIME email…): a few seconds per target on each `verifier.sh` pass, five minutes per target every night in CI. 6 Kani proofs on bounded readers (DNS, SQLite, zstd), compiled on each pass. | `fuzz/`, `outils/fuzz.sh`, `outils/preuves.sh` |
+| **Detection regression** | 71 made-up, harmless cases (`tests/corpus-detection`): each case gives its rule's judgment made-up data and requires a finding of at least the expected severity; the same clean case requires it to stay silent. Each rule that cites an ATT&CK technique, and each tool that detects, has its case or a written reason for exemption. | `cargo test` (`src/modele/corpus.rs`) |
 | **Dependencies** | cargo deny (known vulnerabilities, licenses, origin), cargo audit, cargo vet (each library reviewed by a third party, or exempted). Each program carries the list of its dependencies (cargo auditable). CycloneDX 1.5 software bill of materials (SBOM) with each version. GitHub workflows analyzed by zizmor, actions pinned by commit. | `cargo audit bin <program>`, [SECURITY.md](SECURITY.md) |
 | **Reproducible build** | A single recipe (`outils/compiler-version.sh`): the toolchain of `rust-toolchain.toml`, Cargo.lock as is, the commit date, paths removed. CI rebuilds the same code and writes its fingerprints in its log. They are not yet the same as those of the release computer (musl-gcc and MinGW differ between Arch and Ubuntu): until then, a release goes through the `VANGUARD_PUBLIER_SANS_EMPREINTES_CI=1` override, stated in the release notes and in the signed history. | [CONTRIBUTING.md](CONTRIBUTING.md) (“Reproducible build”) |
 | **Secrets** | No private key and no API key in the program: the only keys built in are the two public signing keys, and the private key never leaves the release computer. API keys are the person's own: abuse.ch, kept in the account's Vanguard folder, readable by that account only, never on the USB key, and the address that carries it appears in no message, log, report or JSON; Have I Been Pwned through `VANGUARD_HIBP_CLE`, sent in a header, never on another program's command line. | `src/mise_a_jour/github.rs`, `src/protection/abuse_ch.rs` |
@@ -32,8 +32,8 @@ and how to check it:
 | **Sealed state** | Vanguard's state (extension settings, downloaded lists, defenses turned on, tasks, changes made) is sealed: changed outside Vanguard, it grants nothing and turns nothing off, and says so. The event log is chained and sealed. | `vanguard evenements` |
 | **Reporting a vulnerability** | Privately, through the repository's Security tab (GitHub security advisories). | [SECURITY.md](SECURITY.md) |
 
-The programs carry no publisher code signature (Authenticode, Apple): their SHA-256 fingerprint, on each release page
-and in the signed history, is the proof that they are genuine.
+The programs carry no publisher code signature (Authenticode): their SHA-256 fingerprint, on each release page and in
+the signed history, is the proof that they are genuine.
 
 ## Security functions, threat by threat
 
@@ -46,11 +46,11 @@ on” restores it ([Lowered by choice](MODELE-DE-MENACE.en.md#lowered-by-choice)
 
 | Threat | What it reads | What it judges | What it can do |
 |---|---|---|---|
-| **The check, graded from A to F** | Linux: sysctl, `sshd_config` in the order of its `Include`s, the OpenSSH version read without running it, the clock through `adjtimex`. Windows: registry, WMI and COM (Defender, BitLocker, Windows Update, disk), `NetUserEnum`, `NetShareEnum`; PowerShell as a fallback only. macOS: plist (in-house reader), TCC permissions (in-house SQLite reader) | 171 rules with a stable identifier (`LNX-SSH-006`): 94 on Linux, 82 on Windows, 71 on macOS, shared ones included. Each cites its reference (CIS, Microsoft or ANSSI; ATT&CK, T… for what it detects, M… for what it hardens) and has its time limit. What could not be checked is said, never counted as healthy | Fix after consent, preceded by a restore point when the system has one (snapper or timeshift, Windows, Time Machine). On Windows, fourteen settings from a fixed allowlist applied by Vanguard itself, relaunched as administrator (one UAC prompt, a named pipe checked on both sides); the rest through a readable script. sshd fixes validated by `sshd -t` |
+| **The check, graded from A to F** | Linux: sysctl, `sshd_config` in the order of its `Include`s, the OpenSSH version read without running it, the clock through `adjtimex`. Windows: registry, WMI and COM (Defender, BitLocker, Windows Update, disk), `NetUserEnum`, `NetShareEnum`; PowerShell as a fallback only | 138 rules with a stable identifier (`LNX-SSH-006`): 94 on Linux, 82 on Windows, shared ones included. Each cites its reference (CIS, Microsoft or ANSSI; ATT&CK, T… for what it detects, M… for what it hardens) and has its time limit. What could not be checked is said, never counted as healthy | Fix after consent, preceded by a restore point when the system has one (snapper or timeshift, Windows). On Windows, fourteen settings from a fixed allowlist applied by Vanguard itself, relaunched as administrator (one UAC prompt, a named pipe checked on both sides); the rest through a readable script. sshd fixes validated by `sshd -t` |
 | **Exposure to the Internet** | The router through UPnP IGD (Rust client: SSDP, read-only SOAP), listening ports (netlink on Linux, `GetExtendedTcpTable` on Windows), public IPv6, the router's admin page | The network audit: 34 checks in six grades (exposure, Wi-Fi, device separation, DNS and certificates, connected devices, computers); after consent, the public address in four blocklists | Flags; nothing is attacked, no password is tried (one announced exception: an SNMP read request with the factory password “public”) |
 | **Intruders on the Wi-Fi and the local network** | Wi-Fi through nl80211 (Linux) or the WLAN API (Windows), neighbors through netlink; TCP “connect” scan without root, mDNS, SSDP; random names asked over LLMNR, NBT-NS and mDNS | Encryption (WEP, WPA2, WPA3), WPS, fake access point copying the name, DHCP server that is not the router, ARP, a poisoner like Responder (which answers a name that does not exist), newcomers | Flags, and every hour with monitoring; public Wi-Fi mode closes the computer to the network and puts it back as it was |
 | **Connected devices** | Manufacturer, open ports (TCP and UDP), mDNS and SSDP announcements | Router, cameras, printers, NAS, TVs, smart home; default password to change, hidden cameras | Flags, with what to change |
-| **Infected computer** | Files (YARA engine written for Vanguard, 4 threads, 308 ReversingLabs rules, MalwareBazaar fingerprints); memory of programs on demand (`/proc/<pid>/mem`, `ReadProcessMemory`: never LSASS nor a protected process); each program's connections; startup, services, drivers; `/proc` (hidden PIDs, fileless programs, modules); Windows logs (in-house .evtx reader, EvtQuery) and systemd's | Log rules (`EVT-…`), botnet command servers (ThreatFox, Feodo Tracker), vulnerable drivers (LOLDrivers), encryption burst (ransomware watcher, Linux), decoy files; the certain kept apart from the doubtful | **Block**, with one click: program stopped and quarantined (reversible), connection closed at the firewall (ufw, or an nftables table `inet vanguard` written through netlink; Windows Firewall through INetFwPolicy2; a pf anchor on macOS), startup entry removed. Before each action, the evidence is recorded (program, command line, fingerprint, connections) and linked to the action in the sealed event log. Active protection, turned on once, blocks the certain on its own. Evidence collected before any cleanup, with the timeline. On Windows and Linux, the most serious checkup findings (hidden account, service or startup entry added in secret, suspicious setuid program, WMI subscription, added root certificate…) are undone by a defense action, shown then confirmed; the Defense options set Defender, the ASR rules and the firewall (ufw, firewalld or nftables on Linux). **Refused on purpose**: Vanguard and what runs it, PIDs 0, 1 and 4 and critical processes (lsass, csrss, winlogon, svchost, MsMpEng, systemd, launchd…), a system program, a remote connection in use |
+| **Infected computer** | Files (YARA engine written for Vanguard, 4 threads, 308 ReversingLabs rules, MalwareBazaar fingerprints); memory of programs on demand (`/proc/<pid>/mem`, `ReadProcessMemory`: never LSASS nor a protected process); each program's connections; startup, services, drivers; `/proc` (hidden PIDs, fileless programs, modules); Windows logs (in-house .evtx reader, EvtQuery) and systemd's | Log rules (`EVT-…`), botnet command servers (ThreatFox, Feodo Tracker), vulnerable drivers (LOLDrivers), encryption burst (ransomware watcher, Linux), decoy files; the certain kept apart from the doubtful | **Block**, with one click: program stopped and quarantined (reversible), connection closed at the firewall (ufw, or an nftables table `inet vanguard` written through netlink; Windows Firewall through INetFwPolicy2), startup entry removed. Before each action, the evidence is recorded (program, command line, fingerprint, connections) and linked to the action in the sealed event log. Active protection, turned on once, blocks the certain on its own. Evidence collected before any cleanup, with the timeline. On Windows and Linux, the most serious checkup findings (hidden account, service or startup entry added in secret, suspicious setuid program, WMI subscription, added root certificate…) are undone by a defense action, shown then confirmed; the Defense options set Defender, the ASR rules and the firewall (ufw, firewalld or nftables on Linux). **Refused on purpose**: Vanguard and what runs it, PIDs 0, 1 and 4 and critical processes (lsass, csrss, winlogon, svchost, MsMpEng, systemd…), a system program, a remote connection in use |
 | **Hijacked DNS and certificates** | The DNS really in use (DNS cache through varlink on Linux), compared with two public resolvers on stable names; root certificates; proxy, hosts file, WPAD; browser extensions | Made-up answers, added root (HTTPS interception), forced proxy, extensions that read every site | Flags; WPAD is among the settings fixed on Windows |
 | **Scams and remote control** | Remote control software installed or running; a link, without opening it; a downloaded file | Link: domain compared with URLhaus, Spamhaus DBL and SURBL, domain age through RDAP (only the domain leaves); password: Have I Been Pwned with k-anonymity; file: YARA and fingerprints | Flags; a sandbox for an unknown program |
 | **Privacy and spyware** | Échap's public indicators compared with connections and the DNS cache; camera and microphone (Linux: `/dev/video*` and PipeWire or PulseAudio streams; Windows: the system's history); monitoring permissions; browser passwords; git history | Spyware planted by someone close, program reading the keyboard, program started from a temporary folder using the camera, secrets left in clear text | Flags; block like a threat |
@@ -68,15 +68,14 @@ drafts, stripped of anything personal; the person reviews and sends them persona
 
 - Firewall, open ports (TCP and UDP), updates and known vulnerabilities, disk encryption, Secure Boot, screen lock,
   accounts (and their lockout after wrong passwords, minimum length: Linux, Windows), automatic proxy discovery
-  (WPAD: Windows, macOS), SSH (and its failed login attempts, from the Internet or from the local network, and a
+  (WPAD: Windows), SSH (and its failed login attempts, from the Internet or from the local network, and a
   client that does not check servers; forwarded ports open to the network, forwarded X11 display, too many password
   attempts; broken algorithms, SHA-1, CBC, 3DES, MD5 or DSA, reopened in sshd, removed after `sshd -t` without
   cutting any connection), sudo, groups worth root (docker, lxd, libvirt, disk), command folders other accounts can
   change, kernel hardening (on Linux: ICMP redirects in IPv4 and IPv6, impossible source addresses, user namespaces
-  open to all; on macOS: sealed system volume, enforced code signing, library validation, added extensions), badly
-  protected secret files, backups, file shares open to everyone (Samba, NFS, Windows shares, macOS File Sharing: the
+  open to all), badly protected secret files, backups, file shares open to everyone (Samba, NFS, Windows shares: the
   password-less access is closed after your consent, named accounts keep theirs).
-- Clock set automatically; end of support: Windows 10 and the Windows 11 or macOS versions that no longer get fixes,
+- Clock set automatically; end of support: Windows 10 and the Windows 11 versions that no longer get fixes,
   programs abandoned by their publisher (Flash, Java 7, Office 2016…), browsers that no longer update; forgotten
   accounts (active but unused for six months); new administrators.
 - Windows: WDigest (passwords in clear text in memory), Local Security Authority protection, PowerShell 2.0, Remote
@@ -88,32 +87,30 @@ drafts, stripped of anything personal; the person reviews and sends them persona
   with unquoted paths, exploit protection off, Windows Update turned off or paused, OpenSSH server (password sign-in,
   administrators_authorized_keys rights) and SSH keys without a passphrase or readable by others, Defender protections
   turned on by Vanguard and later turned off; Linux: automatic security updates, session that opens by itself without
-  an encrypted disk; macOS: password policy and account lockout, startup security, login and background items, login
-  hooks and authorization plugins, unencrypted Time Machine backup.
+  an encrypted disk.
 - Software installed since the last check, reported for a week (an inventory kept sealed on the computer, never sent);
-  outdated software on Windows and macOS (see below).
+  outdated software on Windows (see below).
 - Each rule cites at least one CIS, Microsoft or ANSSI reference (`vanguard rules`), and has its time limit: one that
   exceeds it is reported as not checked, the others go on.
 - Health: disk space, SMART status of the disks (without root), battery, temperatures.
 - What could not be checked is said, never counted as healthy.
-- The check reads what it checks by itself, without starting a program for each reading: on Windows, the accounts,
-  the Run keys and the Startup folder (Windows functions and the registry, PowerShell as a fallback); on macOS, the settings,
-  launchd agents, the version, the Mac's name, free space and administrators (plists read directly, instead of
-  defaults, plutil, sw_vers, sysctl, scutil or df). Faster, and fewer ways to fail.
+- The check reads what it checks by itself, without starting a program for each reading: on Windows, the accounts, the
+  Run keys and the Startup folder (Windows functions and the registry, PowerShell as a fallback). Faster, and fewer
+  ways to fail.
 - Fixes applied only after confirmation, with a restore point created automatically beforehand when the system
-  allows one (snapper or timeshift configured on Linux, Windows restore point, Time Machine snapshot on macOS). On
+  allows one (snapper or timeshift configured on Linux, Windows restore point). On
   Windows, fourteen hardening settings from a fixed allowlist (WDigest, Remote Desktop NLA, NTLMv2 only, LLMNR, WPAD,
   UAC…) are applied by Vanguard itself, relaunched as administrator: Windows' prompt names it; only Enter or yes
   applies them. They are protections: Vanguard does not undo them, the person can change them in Windows. Threat blocking adds, the same way, Microsoft's
   vulnerable driver blocklist. The other fixes, or those chosen along with them, go through a readable script.
 - Each fix first records the previous state of what it changes, noted and sealed: “What Vanguard changed” undoes it,
   then reads the state back. A fix whose previous state cannot be read is called “not undoable” before it is applied,
-  and one that turns a protection back on (firewall, antivirus, BitLocker, UAC, SELinux, Gatekeeper, kernel hardening
+  and one that turns a protection back on (firewall, antivirus, BitLocker, UAC, SELinux, kernel hardening
   on Linux, Windows hardening and Defender protections) is never undone; undoing only puts back a noted value of the
   expected form, never a kernel key below its safe value nor a weakened sshd directive in its file (a forged note can
   still have that file, set by Vanguard, removed: sshd then goes back to its earlier settings).
 
-**Outdated software** (`vanguard outdated-software`, Windows and macOS, and in the check) — the installed version of
+**Outdated software** (`vanguard outdated-software`, Windows, and in the check) — the installed version of
 browsers (Chrome, Edge, Firefox, Brave), Office, Acrobat and Reader, Java, 7-Zip, PuTTY and Slack, read in the file
 itself, compared with the latest published. The lists from the publishers, endoflife.date and Homebrew are downloaded
 in full, the same for everyone: the list of your software never leaves the computer (Settings › Software versions to
@@ -150,7 +147,7 @@ without enough checks, no grade.
 **Local network** — every device, its manufacturer, its open ports (TCP, and UDP: SNMP, NetBIOS, UPnP, DNS, mDNS) and
 its risks; newcomers flagged, one notebook per network (the owner's, each friend's), nicknames ("HP printer"); the
 ports that devices opened to the Internet on the router through UPnP (read-only, by a UPnP client written in Rust; as
-a fallback, miniupnpc on Linux and macOS, the Windows UPnP interface on Windows).
+a fallback, miniupnpc on Linux, the Windows UPnP interface on Windows).
 After your consent, the public Internet address is looked up in four blocklists (Spamhaus, SpamCop, DroneBL, PSBL):
 listed for spam or attacks, a device is probably infected. During the scan, Vanguard also asks for a name that does
 not exist (LLMNR, NetBIOS, mDNS): nobody legitimate answers, and the device that does is a poisoner like Responder,
@@ -174,10 +171,10 @@ hotel or an airport, and off when leaving. The computer no longer accepts any co
 session already open stays), file sharing and the announcement of its name are off, and the DNS switches to the
 Canadian Shield “Protected”, encrypted on Linux (a DNS that already protects you is kept). On Linux, a separate
 nftables table, which also closes container ports; on Windows, the Public category, the firewall's Public profile
-closed to incoming connections and NetBIOS off, in a single administrator prompt; on macOS, the firewall set to “block
-all” and stealth mode. Each change is shown with its previous value, noted and sealed; turning off puts everything
-back in reverse order, even after a restart, and what could not be closed is stated in the menu and the check.
-`vanguard public-wifi portal` reopens the network's sign-in page. Nothing is sent to recognize a public network.
+closed to incoming connections and NetBIOS off, in a single administrator prompt. Each change is shown with its
+previous value, noted and sealed; turning off puts everything back in reverse order, even after a restart, and what
+could not be closed is stated in the menu and the check. `vanguard public-wifi portal` reopens the network's sign-in
+page. Nothing is sent to recognize a public network.
 
 #### Connected devices
 
@@ -211,7 +208,7 @@ positive.
 **Threat blocking** (Block and respond › Threat blocking menu, `vanguard blocking`) — each threat found offers
 "Block": the action is shown, carried out after your consent, written down in "What Vanguard changed" and undone
 exactly by `vanguard blocking undo`; only stopping a program cannot be undone. Depending on the threat: the program
-stopped then quarantined, the connection closed at the firewall (ufw, nftables, Windows Firewall, pf), a launch
+stopped then quarantined, the connection closed at the firewall (ufw, nftables, Windows Firewall), a launch
 removed from startup, Windows' vulnerable driver blocklist turned on, an AI server's port closed to the network, an
 AI agent set back to asking before it acts. **Active protection**, once enabled, blocks clear-cut threats on its
 own (a file whose fingerprint is in MalwareBazaar, a known attack tool running, a connection to a known command
@@ -277,7 +274,7 @@ called “not undoable” before the question.
 What stays manual, and why: Defender's tamper protection (Vanguard does not get around it); a policy enforced on a
 work or school PC (shown, to be set by whoever manages the computer); a Microsoft account's password (Windows
 manages it online); Firefox's protection against fraudulent sites turned off by a policy; a kernel rootkit (back up
-and reinstall: nothing removes it safely). On macOS, the Defense options and these actions are not offered.
+and reinstall: nothing removes it safely).
 
 **Collect the traces** — after an infection, before cleaning up or reinstalling: what a specialist will want to
 see, kept in a dated folder on the VANGUARD key (or in this computer's Vanguard folder), in the order it vanishes.
@@ -357,9 +354,9 @@ sshguard or CrowdSec already blocks the addresses that keep trying.
   certutil, bitsadmin, mshta…), malicious PowerShell, Defender disarmed, BITS, WMI, audit policy. What Windows does
   not log by default (tasks, command lines) is said “not verified”, with the setting to turn on; the security log
   can only be read as administrator: without that right, it is said. On this Windows, or on a folder of .evtx from
-  Linux or macOS (disk mounted from the rescue drive), then the alerts in time order, with the period really read per
+  Linux (disk mounted from the rescue drive), then the alerts in time order, with the period really read per
   log; included in the report and in the evidence's CHRONOLOGIE.txt.
-- Antivirus: ClamAV (Linux, macOS) or Microsoft Defender (Windows), on the computer or on a chosen USB key / folder,
+- Antivirus: ClamAV (Linux) or Microsoft Defender (Windows), on the computer or on a chosen USB key / folder,
   with the tricks of USB worms (shortcut posing as a folder, autorun.inf, scripts).
 - Integrity of critical files (accounts, sudo, SSH, PAM, cron, services, autostart): BLAKE3 fingerprints, what changed
   since the reference, and live monitoring.
@@ -397,19 +394,18 @@ sshguard or CrowdSec already blocks the addresses that keep trying.
 - Check a downloaded file: its checksum compared with the one the site publishes (pasted, or a SHA256SUMS next to
   it), its name and content (double extension, program disguised as a document), then YARA and the antivirus.
 - Sandbox: run an unknown program without network, with a read-only system and an invisible home folder (bubblewrap
-  or firejail on Linux, Windows Sandbox on Windows, sandbox-exec on macOS).
+  or firejail on Linux, Windows Sandbox on Windows).
 - Leaked passwords: checked with Have I Been Pwned without ever sending the password (only 5 characters of its hash);
   email address leaks, after your consent (the address is sent to the service).
 
 #### Privacy and secrets
 
-**Spyware** (`vanguard spyware`, Viruses and spyware menu, and in the check) — signs of spyware planted by
-someone close: connections and names asked towards known spyware servers and sites (list from the Échap association,
-CC-BY 4.0, downloaded when used), known monitoring software installed or running (parental control and employee
-monitoring are called normal if installed on purpose), programs reading the keyboard (Linux), Input Monitoring,
-Accessibility and Screen Recording permissions (macOS). Read-only: nothing is removed, since whoever planted it could
-notice; the screen says to keep screenshots and ask for help first. What could not be checked is counted, and the
-verdict is never “no spyware”.
+**Spyware** (`vanguard spyware`, Viruses and spyware menu, and in the check) — signs of spyware planted by someone
+close: connections and names asked towards known spyware servers and sites (list from the Échap association, CC-BY
+4.0, downloaded when used), known monitoring software installed or running (parental control and employee monitoring
+are called normal if installed on purpose), programs reading the keyboard (Linux). Read-only: nothing is removed,
+since whoever planted it could notice; the screen says to keep screenshots and ask for help first. What could not be
+checked is counted, and the verdict is never “no spyware”.
 
 **Protect the key's data** — the key's device record (names, MAC addresses, nicknames) encrypted by a passphrase
 (XChaCha20-Poly1305, passphrase derived by Argon2id), against a lost or lent key. On the owner's computer, nothing
@@ -425,9 +421,8 @@ installed, adds its own. No secret is shown or kept.
 **Camera and microphone: who uses them?** — on Windows, each program that used the camera or the microphone, and the
 last time (a program started from a temporary folder or Downloads is flagged); on Linux, what holds them right now.
 Read-only. **Privacy check**: the apps that can access location, contacts, camera and microphone, and their last use
-when the system records it (the permission store on Windows, Flatpak and Snap on Linux, the macOS permission
-database, readable with Full Disk Access). Nothing is removed: what to do is given, and what could not be read is
-said to be unchecked.
+when the system records it (the permission store on Windows, Flatpak and Snap on Linux). Nothing is removed: what to
+do is given, and what could not be read is said to be unchecked.
 
 **Browser passwords** (`vanguard browser-passwords`) — how many each browser keeps and how they are protected:
 counted, never read or sent. The browser's built-in check (weak, reused, compromised passwords) is pointed to, and a
@@ -465,9 +460,9 @@ Beyond defense: troubleshooting, optimization, data, then follow-up, tools and t
 
 #### Troubleshooting
 
-**Computer diagnostic** — the first step of any troubleshooting: hardware, system, and recent problems (journal
-errors and crashed programs on Linux; blue screens, sudden shutdowns and crashes on Windows; kernel panics and crash
-reports on macOS), with a text copy saved on the key.
+**Computer diagnostic** — the first step of any troubleshooting: hardware, system, and recent problems (journal errors
+and crashed programs on Linux; blue screens, sudden shutdowns and crashes on Windows), with a text copy saved on the
+key.
 
 **Troubleshoot step by step** — everyday problems, handled the way someone who knows would: no Internet, Wi-Fi
 dropping, slow computer, no sound, printer not working, disk full. Two or three questions, then Vanguard checks by
@@ -503,17 +498,16 @@ disks: what you are asked on the phone or to buy a part. Serial numbers are show
 
 **Optimize** — privacy, performance and comfort settings written for Vanguard. On Windows: telemetry kept to a
 minimum, ads and tracking off, Recall without screen snapshots, file extensions shown, no autorun from USB drives,
-fast startup, full right-click menu. On Linux: SSD maintenance, journal size, reports sent by GNOME or Ubuntu. On
-macOS: ads, analytics, no .DS_Store on drives. Each setting shows its state and can be reverted exactly: the previous
-value is recorded, sealed, then put back. None of them weakens security. “Put everything back”
-(`vanguard optimize undo`) undoes, from the most recent to the oldest and in one administrator request, check-up
-fixes, Optimize, Gaming, blocks and public Wi-Fi mode.
+fast startup, full right-click menu. On Linux: SSD maintenance, journal size, reports sent by GNOME or Ubuntu. Each
+setting shows its state and can be reverted exactly: the previous value is recorded, sealed, then put back. None of
+them weakens security. “Put everything back” (`vanguard optimize undo`) undoes, from the most recent to the oldest and
+in one administrator request, check-up fixes, Optimize, Gaming, blocks and public Wi-Fi mode.
 
 **Clean up the system** — a checklist of what takes space for nothing: downloaded and unneeded packages, old Snap
 versions, unused Flatpak runtimes, AUR builds, old caches, thumbnails, old logs, crash reports (Linux); temporary
-files, Windows Update and Delivery Optimization caches, old components (Windows); old caches, Homebrew, Xcode, local
-snapshots (macOS). The space each item frees is measured first, what rebuilds itself is checked by default, the trash
-never; the free space read again afterwards tells what was really gained.
+files, Windows Update and Delivery Optimization caches, old components (Windows). The space each item frees is
+measured first, what rebuilds itself is checked by default, the trash never; the free space read again afterwards
+tells what was really gained.
 
 **Connection for gaming** — ping, jitter, loss, speed and bufferbloat (the lag when someone downloads), with a
 verdict criterion by criterion and advice.
@@ -528,19 +522,18 @@ address included; the fastest DNS, measured here, offered only if it does not re
   sharing, accounts and encryption, office, video and music, images and design, system tools, programming, privacy
   and network, backup) plus a starter pack (Firefox, Bitwarden, VLC, LibreOffice, 7-Zip): checklist, installed
   ones recognized, installation from the official source that checks each download (winget, distribution packages
-  or Flathub, Homebrew).
+  or Flathub).
 - Gaming: on Windows, game components and Windows settings; on Linux, Steam, 32- and 64-bit Vulkan drivers for your
-  graphics card, GameMode, MangoHud, Gamescope, Wine, Lutris, Heroic, ProtonUp-Qt, vm.max_map_count, ntsync; on
-  macOS, Rosetta 2, Steam, Heroic, Epic Games, GOG Galaxy, Prism Launcher and the Metal frame counter.
+  graphics card, GameMode, MangoHud, Gamescope, Wine, Lutris, Heroic, ProtonUp-Qt, vm.max_map_count, ntsync.
 
 #### Data and backup
 
-**Automatic backup** — set up with the system's tool (Déjà Dup or a daily rsync copy on Linux, Time Machine, File
+**Automatic backup** — set up with the system's tool (Déjà Dup or a daily rsync copy on Linux, File
 History on Windows), to an external disk, after your consent and undoable. **Check my backup**: the rsync copy
 actually read back from the disk, random files compared with their original; an original changed since, newer than
 its copy, is not counted as an error, a copy that differs from an unchanged original means a disk losing data, and a
 copy rewritten after the backup, newer than its original, is reported as damaged: that is how ransomware encrypting
-the backup disk shows up. For Time Machine, Déjà Dup and File History, which keep their backups in their own format,
+the backup disk shows up. For Déjà Dup and File History, which keep their backups in their own format,
 how to restore one file. Nothing is written or deleted.
 
 **Copy my files** — Documents, Pictures, Desktop, Videos and Music to an external disk, before a risky repair or a
@@ -599,7 +592,7 @@ slowdowns, the result of fixes, the choices made in Vanguard, the hardware (no s
 of the software, services and drivers involved. Never a password, file contents, a visited site, typed text, a command
 argument or a software inventory; an error text is cleaned (paths, addresses and tokens removed) or dropped entirely.
 The record lives in the `amelioration/` folder (sealed, 96 KiB per day, 90 days and 10 MB at most); it is never made
-from the key, as root (Linux, macOS), under Wine or in a CI. **In this version, nothing is sent**: the author's relay
+from the key, as root (Linux), under Wine or in a CI. **In this version, nothing is sent**: the author's relay
 is not in service yet, Vanguard has no address to send to and opens no connection for it, and the sharing screen says
 so. Once it is, the code provides for a notice at launch before anything is sent, one batch per day at most, over
 HTTPS, no sending of anything recorded before the day of consent, and an installation identifier drawn at random,
@@ -641,20 +634,20 @@ watcher, decoy files, shortcut and icon, program copy, leftovers of an earlier v
 be done, then checked. The data folder is erased only after a second consent; changes made to the system are first undone by
 their own tools, or said with their command; the key is never touched.
 
-**Command guide** — the useful commands of Omarchy, Arch, Fedora, Debian and Ubuntu (and other Linux), Windows 11,
-macOS, and the ones typed the same way everywhere (Vanguard, ping, nslookup, ssh, curl, git…), each one explained; ⚠
-marks the ones that change something. Each distribution has its introduction, its “Step by step” guides (update,
-install, free up space, repair, firewall, NVIDIA drivers, new release…), its programs (pacman, dnf, apt, SELinux,
-AppArmor…), then those common to Linux; Windows 11 and macOS have their step-by-step guides too (repair Windows,
-network, security, slowness, Time Machine…). You type what you are looking for: commands show up as you type, and Tab completes the word. Each command
-has its page: copy it, to type it here or on the computer of the person you help, or run it here when it only reads;
-its output scrolls in Vanguard, and Esc stops it. Every system can be read everywhere (Windows commands from Linux,
-for example), and the guide tells when a program is missing on this computer. On top of that, the examples of
-[tldr-pages](https://tldr.sh) (CC BY 4.0 license): over 30,000 community commands for Linux, Windows, macOS and
-others. The guide downloads them by itself, at most once a week, so do the monitoring and the monthly check-up (without
-opening the guide, once it has used them), and the key brings them along: run from the key, it
-has them from the first launch, even without Internet. They can be searched and copied, but never run from here,
-since Vanguard has not checked them.
+**Command guide** — the useful commands of Omarchy, Arch, Fedora, Debian and Ubuntu (and other Linux), Windows 11, and
+the ones typed the same way everywhere (Vanguard, ping, nslookup, ssh, curl, git…), each one explained; ⚠ marks the
+ones that change something. Each distribution has its introduction, its “Step by step” guides (update, install, free
+up space, repair, firewall, NVIDIA drivers, new release…), its programs (pacman, dnf, apt, SELinux, AppArmor…), then
+those common to Linux; Windows 11 has its step-by-step guides too (repair Windows, network, security, slowness…). You
+type what you are looking for: commands show up as you type, and Tab completes the word. Each command has its page:
+copy it, to type it here or on the computer of the person you help, or run it here when it only reads; its output
+scrolls in Vanguard, and Esc stops it. Every system can be read everywhere (Windows commands from Linux, for example),
+and the guide tells when a program is missing on this computer. On top of that, the examples of
+[tldr-pages](https://tldr.sh) (CC BY 4.0 license): over 30,000 community commands for Linux, Windows and other
+systems. The guide downloads them by itself, at most once a week, so do the monitoring and the monthly check-up
+(without opening the guide, once it has used them), and the key brings them along: run from the key, it has them from
+the first launch, even without Internet. They can be searched and copied, but never run from here, since Vanguard has
+not checked them.
 
 - Monthly check-up: one notification a month with the machine's grade, waiting updates, the space a cleanup would
   free and new problems; nothing is changed.
@@ -711,7 +704,7 @@ masked.</sub>
 | Linux | Arch and derivatives (Omarchy, Manjaro, EndeavourOS, CachyOS), Debian, Ubuntu, Mint, Pop!_OS, Fedora (and RHEL, Rocky, Nobara), openSUSE |
 | Atomic Linux | Bazzite, Silverblue, Kinoite, Bluefin, Aeon |
 | Windows | 10 and 11 |
-| macOS | 12 and later, Apple Silicon and Intel: published and maintained as is, without new Mac-specific features; tested automatically on GitHub's Macs, never on a real Mac |
+| macOS | No longer supported: no more Mac version. A Vanguard for Mac already installed no longer finds updates, without errors |
 
 Vanguard recognizes the distribution and offers its own commands: `omarchy update` / `omarchy pkg add` on Omarchy,
 `ujust update` on Bazzite, `rpm-ostree` or `transactional-update` on an atomic system, otherwise pacman, apt, dnf or
@@ -720,20 +713,15 @@ zypper.
 ## Installation and first launch
 
 **Download** (latest version): [Windows](../../releases/latest/download/vanguard-windows-x86_64.exe) ·
-[Linux](../../releases/latest/download/vanguard-linux-x86_64) · [macOS](../../releases/latest/download/vanguard-macos)
-— or the whole [releases page](../../releases/latest), with the SHA-256 checksums. What each version brought:
-[history](CHANGELOG.en.md).
+[Linux](../../releases/latest/download/vanguard-linux-x86_64) — or the whole [releases page](../../releases/latest),
+with the SHA-256 checksums. What each version brought: [history](CHANGELOG.en.md).
 
 - **Windows**: double-click the program. It is not signed: SmartScreen may warn (“More info”, then “Run anyway”).
   Microsoft Defender sometimes mistakes it for a virus (“Trojan:Win32/Bearfoos.A!ml”, an automatic detection of
   a new program): it is a false positive; check the SHA-256 checksum on the release page.
 - **Linux**: `chmod +x vanguard-linux-x86_64`, then `./vanguard-linux-x86_64` in a terminal (any distribution, nothing
   to install).
-- **macOS**: copied from the Internet, the program is blocked the first time: `xattr -d com.apple.quarantine
-  vanguard-macos`, then `./vanguard-macos` in Terminal. Tested automatically on a GitHub Mac, never tried on a real
-  Mac; maintained, without Mac-specific new features.
-- **From the USB key**: `Windows/vanguard.exe`, `Linux/vanguard`, or `Lancer Vanguard.command` on macOS; the key's guide
-  is in `README.txt`.
+- **From the USB key**: `Windows/vanguard.exe` or `Linux/vanguard`; the key's guide is in `README.txt`.
 
 In the menu, choose **1** (full security check), then **2** (fix). ↑ ↓ to move, Enter or → to select; Esc, ← or
 Backspace to go back. The window fits the menu when it was opened for Vanguard.
@@ -767,7 +755,7 @@ Each menu entry is also a command.
 | `vanguard handout` | report to leave behind: a simple page for the person you helped |
 | `vanguard secrets` | secrets forgotten in the history of git projects (and gitleaks, if installed; read-only) |
 | `vanguard containers` | known flaws in Docker or Podman images (trivy, if installed; read-only) |
-| `vanguard outdated-software` | outdated software (Windows, macOS): browsers, Office, Acrobat, Java, 7-Zip, PuTTY, Slack compared with their latest version; exploited flaws (read-only) |
+| `vanguard outdated-software` | outdated software (Windows): browsers, Office, Acrobat, Java, 7-Zip, PuTTY, Slack compared with their latest version; exploited flaws (read-only) |
 | `vanguard defense-options [--json] [--choose ID VALUE] [--turn-back-on ID]` | defense options. Windows: each Defender option (real-time, cloud, PUA, controlled folder access…), exclusions, ASR rules, firewall per profile and its rules, policies (GPO, Intune) that enforce a value, third-party antivirus, managed PC. Linux: the firewall (`--choose pare-feu-ufw coupe`, or firewalld, nftables; `allume`). Lowering shown, then confirmed by a typed yes, its previous value noted; `--turn-back-on` restores it; Windows only: `--exclude KIND TEXT`, `--allow PROGRAM`, `--note ID` (“It was me”), `--put-back WORD`; `--json` without paths or names |
 | **5 Network and Internet** | |
 | `vanguard devices [target] [-p common\|all\|22,80,8000-8100] [--json]` | scan the network or one device |
@@ -815,7 +803,7 @@ Each menu entry is also a command.
 | `vanguard check-copy [folder]` | check a copy: read back from the disk and compared with the originals (restore test) |
 | `vanguard check-drive [folder]` | check my drive: real capacity, speeds, bad blocks (writes into the free space after your consent, then erases) |
 | **10 Command guide** | |
-| `vanguard guide [system\|program\|words]` | command guide: a system (`omarchy`, `arch`, `fedora`, `debian`, `windows`, `macos`, `all`, or `linux` for the common programs, or `tldr`), a program (`winget`, `systemctl`…) or words to look for (`dns cache`) |
+| `vanguard guide [system\|program\|words]` | command guide: a system (`omarchy`, `arch`, `fedora`, `debian`, `windows`, `all`, or `linux` for the common programs, or `tldr`), a program (`winget`, `systemctl`…) or words to look for (`dns cache`) |
 | **11 Step-by-step troubleshooting** | |
 | `vanguard troubleshoot [subject]` | troubleshoot step by step: `internet`, `wifi`, `slow`, `sound`, `printer`, `disk`, `infection`, `new`, `leaving`, `account`, `evidence`, `relative`; `evidence [folder]` collects an incident's evidence into that folder, `relative` opens the relative's-computer guide |
 | `vanguard repair` | repairs and cleaning |
@@ -859,15 +847,13 @@ which draws them badly and shifts the menus, 💡 and 🔧 become → and +. `VA
 
 ## Development
 
-Building, testing, deploying, the USB key, the error journal: see [CONTRIBUTING.en.md](CONTRIBUTING.en.md).
-A security flaw in Vanguard? Report it privately: see [SECURITY.md](SECURITY.md#security).
-Every published program carries the list of its dependencies, versions included (cargo auditable), which cargo audit
-checks against the known vulnerabilities of the RustSec database:
-`cargo audit bin <program>`. Up to 0.86, the program carried YARA-X, and with it rsa (no fixed version) and bincode
-(unmaintained), two advisories accepted with their proof in [deny.toml](deny.toml): for those versions, add
-`--ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0141`. On macOS, on one half of the universal
-program, which it cannot read as is: `lipo vanguard-macos -thin arm64 -output vanguard-arm64`. The check run before
-each release, advisories handled as cargo deny does: `outils/failles-programmes.sh <program>`, from the source.
+Building, testing, deploying, the USB key, the error journal: see [CONTRIBUTING.en.md](CONTRIBUTING.en.md). A security
+flaw in Vanguard? Report it privately: see [SECURITY.md](SECURITY.md#security). Every published program carries the
+list of its dependencies, versions included (cargo auditable), which cargo audit checks against the known
+vulnerabilities of the RustSec database: `cargo audit bin <program>`. Up to 0.86, the program carried YARA-X, and with
+it rsa (no fixed version) and bincode (unmaintained), two advisories accepted with their proof in
+[deny.toml](deny.toml): for those versions, add `--ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0141`. The check run
+before each release, advisories handled as cargo deny does: `outils/failles-programmes.sh <program>`, from the source.
 
 ## License
 

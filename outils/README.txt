@@ -7,7 +7,7 @@ threat hunting, YARA scan, logs, spyware, outdated software, post-quantum key ex
 finds, collects the evidence of an incident and prepares, without ever sending it, the report of a flaw to its
 vendor. Every finding is explained; every fix and every block goes through consent. Also included:
 troubleshooting, optimization, data and backup; in development, images that start a computer that no longer boots
-(ISO folder). Vanguard complements the system's antivirus (Microsoft Defender, XProtect, ClamAV): it does not
+(ISO folder). Vanguard complements the system's antivirus (Microsoft Defender, ClamAV): it does not
 replace it.
 
 Security of Vanguard and of the key

@@ -5,9 +5,8 @@
 #   protege <lien>          site qui refuse les programmes (403) : seul un « page introuvable » y compte
 #   essai <lien> <autre>    ouvrir <autre> à la place : une petite demande, que le service sait traiter
 
-# Identifiants écrits dans des fichiers (manifeste du .exe, plist de launchd), jamais ouverts.
+# Identifiants écrits dans des fichiers (manifeste du .exe), jamais ouverts.
 ignorer http://schemas.microsoft.com/
-ignorer http://www.apple.com/DTDs/
 
 # Test de connexion : le téléchargement ferait 25 Mo, l'envoi n'accepte que POST.
 essai https://speed.cloudflare.com/__down https://speed.cloudflare.com/__down?bytes=1
@@ -49,8 +48,6 @@ serveur https://threatfox-api.abuse.ch/v2/files/exports/
 # Dépôt des versions signées (src/mise_a_jour/github.rs, outils/depot-versions.sh) : privé jusqu’à la première version, publiée par outils/publier-version.sh juste après l'envoi du code ;
 # avant la première, l'adresse ne répond pas. L'essai de « se-mettre-a-jour » après chaque publication la vérifie.
 ignorer https://github.com/d9v3/vanguard-update
-# Faux lien d'hameçonnage de l'essai sur le Mac (outils/test-macos/essai.sh) : inventé, jamais ouvert.
-ignorer https://paypal.com.compte-securite.xyz/
 # Préconnexion des polices de la page des fonctions (outils/page-fonctions.html) : des serveurs, pas des pages.
 essai https://fonts.googleapis.com https://fonts.googleapis.com/css2?family=IBM+Plex+Mono
 ignorer https://fonts.gstatic.com

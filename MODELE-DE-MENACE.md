@@ -9,7 +9,7 @@ clé USB ou de la mise à jour) relèvent d'une autre page : [SECURITY.md](SECUR
 ## Ce que Vanguard protège
 
 - **L'ordinateur sur lequel il tourne** : ses réglages de sécurité, ses mises à jour, ce qui s'y lance au démarrage,
-  ce qui y tourne et ce qui parle à Internet. Linux, Windows et macOS.
+  ce qui y tourne et ce qui parle à Internet. Linux, puis Windows.
 - **Le réseau local vu depuis cet ordinateur** : le routeur, les appareils connectés, ce qui est ouvert vers
   Internet, le Wi-Fi.
 - **Les données de la personne** : ses fichiers (pièges contre les rançongiciels, vérification de la sauvegarde), ses
@@ -24,7 +24,7 @@ clé USB ou de la mise à jour) relèvent d'une autre page : [SECURITY.md](SECUR
 |---|---|
 | Un logiciel malveillant connu sur l'ordinateur | Antivirus du système en second avis, règles YARA, empreintes de MalwareBazaar, mémoire des programmes, lancements au démarrage, signes d'un rootkit ; blocage après accord, ou de lui-même pour ce qui ne fait aucun doute (protection active). |
 | Un rançongiciel | Fichiers-pièges vérifiés chaque heure ; sous Linux, une fois allumé, un veilleur en direct qui arrête un cas quasi certain avec la protection active. |
-| Une faiblesse de réglage ou une faille non corrigée | Bilan noté de A à F, mises à jour manquantes, failles activement exploitées du catalogue de la CISA, fin de support ; chaque correction après accord, annulable sauf celle qui rallume une protection (pare-feu, antivirus, chiffrement, UAC, SELinux, Gatekeeper, durcissement du noyau sous Linux, durcissement de Windows et protections de Defender). Baisser une protection reste le choix de la personne, jamais celui de Vanguard (voir [Baisses par choix](#baisses-par-choix)). |
+| Une faiblesse de réglage ou une faille non corrigée | Bilan noté de A à F, mises à jour manquantes, failles activement exploitées du catalogue de la CISA, fin de support ; chaque correction après accord, annulable sauf celle qui rallume une protection (pare-feu, antivirus, chiffrement, UAC, SELinux, durcissement du noyau sous Linux, durcissement de Windows et protections de Defender). Baisser une protection reste le choix de la personne, jamais celui de Vanguard (voir [Baisses par choix](#baisses-par-choix)). |
 | Une exposition vers Internet | Ports que le routeur ouvre (demandés au routeur lui-même, ouvertures UPnP comprises), IPv6 publique sans pare-feu ; dans les journaux, les mots de passe devinés et les connexions au Bureau à distance depuis l'extérieur. |
 | Un intrus sur le réseau local ou le Wi-Fi | Inventaire des appareils et des nouveaux venus, faux point d'accès, DNS et certificats détournés ; mode Wi-Fi public en déplacement. |
 | Un proche qui surveille la personne | Logiciels espions, prise de contrôle à distance (faux technicien). |
@@ -44,8 +44,8 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   système qui l'interroge. Secure Boot est vérifié et le micrologiciel (BIOS, UEFI) mis à jour après accord, mais rien
   ne le surveille en direct.
 - **Une menace nouvelle, encore sans signature.** Les détections reposent surtout sur des listes connues ; ce qui n'y
-  est pas encore peut passer. Vanguard complète l'antivirus du système (Microsoft Defender, XProtect, ClamAV) : il ne
-  le remplace pas.
+  est pas encore peut passer. Vanguard complète l'antivirus du système (Microsoft Defender, ClamAV) : il ne le
+  remplace pas.
 - **Tout, en temps réel.** Hors des deux veilleurs de Linux (programmes et connexions, anti-rançongiciel ; coupés par
   défaut), de la surveillance en direct de l'intégrité des fichiers critiques et du blocage de Defender, la
   surveillance passe chaque heure, entre deux bilans.
@@ -109,8 +109,8 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   l'annulation. La personne peut toujours les baisser elle-même, dans Windows ou dans les Options de défense, par le
   chemin décrit plus bas.
 - **Les essais ont leurs limites.** Vanguard est essayé sur l'ordinateur de l'auteur, une VM Windows, un second PC
-  Windows et les machines de GitHub (Windows, Mac, vraies distributions Linux). Il n'a jamais tourné sur un vrai Mac ;
-  d'autres cas restent à essayer sur du vrai matériel (autres distributions, vrai routeur UPnP, démarrage de la clé).
+  Windows et les machines de GitHub (Windows, vraies distributions Linux) ; d'autres cas restent à essayer sur du vrai
+  matériel (autres distributions, vrai routeur UPnP, démarrage de la clé).
 
 ## Baisses par choix
 
@@ -211,7 +211,7 @@ qui tourne déjà en root.
 Les listes de menaces, de versions et de failles sont téléchargées en entier, les mêmes pour tous. Ce que Vanguard
 envoie lui-même :
 
-- **Sous Windows et macOS**, la liste des logiciels installés ne sort pas : leurs versions sont jugées sur ces listes.
+- **Sous Windows**, la liste des logiciels installés ne sort pas : leurs versions sont jugées sur ces listes.
 - **Sous Arch Linux, après accord** (Paramètres › Paquets de l'AUR, coupé par défaut) : le nom des paquets
   installés hors des dépôts officiels, à aur.archlinux.org, pour connaître leur dernière version (règle LNX-MAJ-006
   et mises à jour de l'AUR) ; sans cet accord, ces paquets ne sont pas vérifiés, ce qui est dit.
@@ -272,15 +272,14 @@ les caméras, le balayage des appareils, LLMNR et mDNS.
 ### Programmes lancés par Vanguard
 
 Pendant le bilan, sans accord à part, Vanguard demande les mises à jour en attente aux outils du système, qui
-interrogent leurs dépôts : checkupdates, dnf, apt, zypper, flatpak, snap, fwupdmgr (micrologiciels, LVFS),
-softwareupdate et mas (Apple) ; yay ou paru seulement avec l'accord pour l'AUR. Sur demande ou après accord, il lance
-des programmes qui joignent leurs propres serveurs : le gestionnaire de paquets (pacman, apt, dnf, winget), flatpak
-(`dl.flathub.org`), Homebrew et son installation (`brew.sh`, script tiré de raw.githubusercontent.com), freshclam
-pour ClamAV, la mise à jour des signatures de Defender, trivy pour les conteneurs (sa base de failles), l'installation
-de Rosetta ; nmap, lui, n'interroge que les appareils du réseau local. Une page ouverte dans le navigateur après
-accord (pages de « Signaler », portail du Wi-Fi public : l'adresse de la sonde du système, celle de NetworkManager
-sous Linux, montrée avant) est jointe par le navigateur. Une extension ajoutée par la personne a le réseau de
-l'ordinateur, sauf lancée isolée (Linux, macOS). Ces destinations dépendent de ces programmes, pas de Vanguard.
+interrogent leurs dépôts : checkupdates, dnf, apt, zypper, flatpak, snap, fwupdmgr (micrologiciels, LVFS) ; yay ou
+paru seulement avec l'accord pour l'AUR. Sur demande ou après accord, il lance des programmes qui joignent leurs
+propres serveurs : le gestionnaire de paquets (pacman, apt, dnf, winget), flatpak (`dl.flathub.org`), freshclam pour
+ClamAV, la mise à jour des signatures de Defender, trivy pour les conteneurs (sa base de failles) ; nmap, lui,
+n'interroge que les appareils du réseau local. Une page ouverte dans le navigateur après accord (pages de
+« Signaler », portail du Wi-Fi public : l'adresse de la sonde du système, celle de NetworkManager sous Linux, montrée
+avant) est jointe par le navigateur. Une extension ajoutée par la personne a le réseau de l'ordinateur, sauf lancée
+isolée (Linux). Ces destinations dépendent de ces programmes, pas de Vanguard.
 
 ### Le relevé d'amélioration et son relais
 
@@ -303,9 +302,9 @@ ce qui est le cas aujourd'hui :
 - **La file d'envoi, sans hôte.** `RELAIS` est vide dans le code et la liste fermée des sites HTTPS (`HOTES`, le
   premier tableau ci-dessus) ne contient aucun relais : aucun lot n'est préparé, aucun fichier d'envoi n'est écrit,
   aucun fil ni aucune connexion n'est lancé. Même avec un relais, rien ne partirait sous les essais, sous Wine, dans
-  la CI, avec `VANGUARD_ENVOI=0`, depuis une clé, en root (Linux, macOS), dans une compilation de développement, hors
-  ligne, ni avant l'avis montré au lancement ou votre « oui » (avant la 1.0, il faudra répondre « oui »), ni après
-  « Non » au partage, ni pour ce qui a été relevé avant le jour de l'accord.
+  la CI, avec `VANGUARD_ENVOI=0`, depuis une clé, en root (Linux), dans une compilation de développement, hors ligne,
+  ni avant l'avis montré au lancement ou votre « oui » (avant la 1.0, il faudra répondre « oui »), ni après « Non » au
+  partage, ni pour ce qui a été relevé avant le jour de l'accord.
 - **Le relais, une fois déployé.** Son adresse entrera alors dans `HOTES` et dans le premier tableau, au même titre
   que les autres sites. Vanguard ne le joindra qu'en HTTPS, sans suivre de redirection ; il n'enverra qu'un lot par
   jour au plus (96 Kio, relu strictement avant de partir), avec un identifiant d'installation tiré au hasard et

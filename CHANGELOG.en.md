@@ -7,6 +7,14 @@ a day, gathering the day's work; October 21 had two, 0.82 in the morning and 0.8
 delivered just before it. Only the latest version has its download page; every version keeps its tag in the repository
 (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 
+## Unreleased
+
+- **Vanguard no longer targets macOS.** No more Mac program, no more builds or tests on GitHub's Mac, no more MACOS
+  partition on new rescue keys (a key already written keeps its own until it is next rewritten). Deployment removes
+  the macOS program, its guide and its launcher from the key. A Vanguard for Mac already installed no longer finds
+  updates, without errors. The SBOMs are produced and attested by the "nomenclatures" job of `ci.yml`, and
+  `outils/publier-version.sh` still checks that attestation before publishing.
+
 ## November 6, 2026: version 0.90.0
 
 - **Defense options, on one screen** (`vanguard defense-options`, tool 4.10 on Windows, 4.9 on Linux). What defends the

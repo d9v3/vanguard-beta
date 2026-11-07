@@ -1,13 +1,13 @@
 # Vanguard — consignes pour Claude
 
 Outil en Rust (édition 2024) qui sécurise et optimise une machine et son réseau : bilan, corrections, réglages,
-antivirus, scan du réseau, clé USB portable. Linux, Windows, macOS ; français et anglais. Un seul auteur (licence
+antivirus, scan du réseau, clé USB portable. Linux, puis Windows ; français et anglais. Un seul auteur (licence
 GPL-3.0-or-later, double licence possible).
 Réponses à l'utilisateur en français, claires, avec le pourquoi.
 
 ## Commandes
 
-- Tout vérifier en une commande : `outils/verifier.sh` (mise en forme, clippy ×4, tests Linux et Wine, la suite Linux
+- Tout vérifier en une commande : `outils/verifier.sh` (mise en forme, clippy ×2, tests Linux et Wine, la suite Linux
   refaite sans Internet, scripts PowerShell, shell et Python, extensions, essais de la clé et de la signature des
   versions, liens internes, textes FR/EN (`outils/textes.py`), protections des programmes (`verifier-binaire`), dépendances par cargo deny et cargo vet, workflows
   par zizmor, nomenclatures (SBOM, `outils/sbom.sh`, cargo-cyclonedx 0.5.9), banc de fuzzing, preuves de Kani compilées
@@ -24,11 +24,8 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   dépend d'Internet doit s'y arrêter de lui-même, en moins d'une minute, et dire pourquoi il ne conclut pas.
 - Tests : `cargo test` (cible par défaut x86_64-unknown-linux-musl, voir `.cargo/config.toml`). Unitaires dans chaque
   module ; `tests/programme.rs` lance le vrai programme (dossier personnel jetable, rien ne change le système).
-- Lint, zéro remarque (clippy pedantic, voir Cargo.toml) sur les quatre cibles : les étapes clippy de
-  `outils/verifier.sh`. À la main, Linux et Windows : `cargo clippy -q --all-targets --target <cible>` ; les cibles
-  Mac (ring compile du C, et YARA-X aussi, oracle des tests seulement depuis le lot AV2 ; sans les outils d'Apple)
-  demandent en plus `CC_<cible>=clang` et
-  `CFLAGS_<cible>=-ffreestanding -nostdlibinc -DRING_CORE_NOSTDLIBINC -I$PWD/outils/mac-entetes` (`<cible>` avec des `_`, voir verifier.sh).
+- Lint, zéro remarque (clippy pedantic, voir Cargo.toml) sur les deux cibles (Linux et Windows) : les étapes clippy de
+  `outils/verifier.sh`. À la main : `cargo clippy -q --all-targets --target <cible>`.
 - Mise en forme : `cargo fmt`, toujours avant un commit.
 - Dépendances : `cargo deny check` (`deny.toml` : failles RustSec, licences permises, crates.io seulement, doublons dits
   sans échouer ; une faille admise l'est avec sa preuve ; `extensions/deny.toml` pour la bibliothèque des extensions
@@ -52,18 +49,17 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
 - Tests Windows sous Wine (pas de PowerShell sous Wine ; le registre, lui, marche ; sans le bus système, les disques
   montés, dont la vraie clé, ne deviennent pas des lecteurs du préfixe) :
   `DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent WINEPREFIX=<dossier jetable> WINEDEBUG=-all CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=~/.local/share/Steam/compatibilitytools.d/GE-Proton11-9-x86_64/files/bin/wine cargo test --target x86_64-pc-windows-gnu`
-- macOS : compilé et testé sur un Mac de GitHub (`.github/workflows/macos.yml`), à chaque publication et la nuit si
-  le code a changé ; ici, clippy seulement. Sur master, le travail « attester » atteste le programme et les
-  nomenclatures (actions/attest) ; `publier-version.sh` refait les nomenclatures ici, les compare et vérifie
-  l'attestation avant de publier.
+- Vanguard ne vise plus macOS (ni code, ni compilation, ni binaire publié). Nomenclatures : sur master, le travail
+  « nomenclatures » de ci.yml les produit et les atteste (actions/attest) ; `publier-version.sh` les refait ici, les
+  compare et vérifie l'attestation avant de publier.
 - CI (`.github/workflows/ci.yml`) : à chaque envoi sur master, `outils/verifier.sh --ci` (tout sauf Wine), vraies
   distributions, vrai Windows, compilation reproductible et le .exe livré essayé sur Windows ; la nuit, les mêmes si
   le code a changé (`.github/hors-code.txt`), et toujours cargo audit, cargo deny et 5 min de fuzzing par cible. GitHub
   lance la nuit avec souvent des heures de retard : `gh run list --workflow ci.yml --event schedule` avant de la croire
   absente. À la demande (des minutes facturées) : `gh workflow run ci.yml --ref master`.
-- Publication du jour : `outils/livrer-branche.sh <branche> <worktree>` (commit de version en tête : garde-fou, Mac
-  de GitHub, vérification complète pendant qu'il compile, fusion rapide, puis `outils/deployer.sh`). Entre deux
-  publications, sans rien envoyer : `outils/deployer.sh --local` (binaire local, clé USB ; avec
+- Publication du jour : `outils/livrer-branche.sh <branche> <worktree>` (commit de version en tête : garde-fou,
+  vérification complète, fusion rapide, puis `outils/deployer.sh`). Entre deux publications, sans rien
+  envoyer : `outils/deployer.sh --local` (binaire local, clé USB ; avec
   `VANGUARD_INTERMEDIAIRE=1`, rien dans la VM). `deployer.sh` publie la page de chaque publication (Releases), 0.x.0
   comme 0.x.y, seulement quand une passe réussie de la VM a fait tourner ce .exe-là (verdict signé par le surveillant de la file
   d'essais, HMAC du secret tiré à son installation : `outils/vm-tester.sh --verdict <sha256>` ;
@@ -134,7 +130,7 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   le fichier à jour.
 - Une seule publication par jour sur GitHub, qui regroupe le travail de la journée en une version (Cargo.toml :
   fonction 0.x+1.0, correctif seul 0.x.y+1). Entre deux publications, le travail s'accumule sur une branche, sans
-  numéro de version ni envoi ; le Mac de GitHub et la VM ne voient que la version publiée (leurs minutes coûtent).
+  numéro de version ni envoi ; la VM ne voit que la version publiée (ses minutes coûtent).
   CHANGELOG.md et CHANGELOG.en.md gagnent un paragraphe par jour publié ; seule la dernière version garde sa page.
   Relire `grep ^version Cargo.toml` après le changement : une autre session a pu avancer la version.
 - Veille continue (`outils/veille/LISEZMOI.md`) : chaque nuit, sans IA, verifier.sh, fuzz, proptest à graine du
