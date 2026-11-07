@@ -14,6 +14,8 @@
 //!
 //! Comme tout sceau : barrière, pas coffre. Un programme qui connaît ce mécanisme peut refaire le sceau.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -31,9 +33,18 @@ pub(crate) enum Defense {
     Surveillance,
     Veilleur,
     Rancongiciel,
+    /// L'accord pour que le veilleur arrête tout seul un programme certain du compte au lancement : à part de celui
+    /// du veilleur, donné avant quand il ne faisait qu'observer (une promesse qui change se redemande). Douteux : pas
+    /// d'accord, rien n'est arrêté.
+    ArretVeilleur,
 }
 
-const TOUTES: [Defense; 3] = [Defense::Surveillance, Defense::Veilleur, Defense::Rancongiciel];
+const TOUTES: [Defense; 4] = [
+    Defense::Surveillance,
+    Defense::Veilleur,
+    Defense::Rancongiciel,
+    Defense::ArretVeilleur,
+];
 
 impl Defense {
     /// Son nom dans l'état et au journal : stable, jamais traduit.
@@ -42,6 +53,7 @@ impl Defense {
             Defense::Surveillance => "surveillance",
             Defense::Veilleur => "veilleur",
             Defense::Rancongiciel => "rancongiciel",
+            Defense::ArretVeilleur => "veilleur-arret",
         }
     }
 
@@ -50,6 +62,7 @@ impl Defense {
             Defense::Surveillance => tr!("Surveillance horaire", "Hourly monitoring"),
             Defense::Veilleur => tr!("Veilleur", "Watcher"),
             Defense::Rancongiciel => tr!("Veille anti-rançongiciel", "Ransomware watch"),
+            Defense::ArretVeilleur => tr!("Arrêt du malware connu (veilleur)", "Known malware stop (watcher)"),
         }
     }
 }
@@ -266,6 +279,11 @@ pub(crate) fn adopter_d_avant_dans(dossier: &Path, d: Defense) {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,6 +396,40 @@ mod tests {
         assert_eq!(
             souvenir_dans(&d, Defense::Surveillance),
             Souvenir::Douteux(Doute::Adopte)
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// L'accord d'arrêt du veilleur est à part : le veilleur voulu (l'accord d'avant, pour observer) ne le donne pas, et
+    /// un état réécrit par Vanguard après un doute le garde douteux, donc refusé : jamais un arrêt sur un accord
+    /// incertain. Couper l'accord le note arrêté, le veilleur restant voulu.
+    #[test]
+    fn l_accord_d_arret_du_veilleur_est_a_part() {
+        let d = jetable("arret");
+        noter_dans(&d, Defense::Veilleur, true, false).unwrap();
+        assert_eq!(souvenir_dans(&d, Defense::ArretVeilleur), Souvenir::Jamais);
+        noter_dans(&d, Defense::ArretVeilleur, true, false).unwrap();
+        assert!(matches!(souvenir_dans(&d, Defense::ArretVeilleur), Souvenir::Voulue(_)));
+        noter_dans(&d, Defense::ArretVeilleur, false, false).unwrap();
+        assert!(matches!(
+            souvenir_dans(&d, Defense::ArretVeilleur),
+            Souvenir::Arretee(_)
+        ));
+        assert!(matches!(souvenir_dans(&d, Defense::Veilleur), Souvenir::Voulue(_)));
+        // Forgé « voulu » hors de Vanguard : douteux ; puis Vanguard note le veilleur : l'accord reste douteux.
+        std::fs::write(
+            d.join(FICHIER),
+            br#"{"defenses":{"veilleur-arret":{"voulue":true,"quand":"2026-01-01"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            souvenir_dans(&d, Defense::ArretVeilleur),
+            Souvenir::Douteux(Doute::HorsVanguard)
+        );
+        noter_dans(&d, Defense::Veilleur, true, false).unwrap();
+        assert_eq!(
+            souvenir_dans(&d, Defense::ArretVeilleur),
+            Souvenir::Douteux(Doute::Herite)
         );
         let _ = std::fs::remove_dir_all(&d);
     }

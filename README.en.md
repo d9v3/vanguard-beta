@@ -308,9 +308,15 @@ certutil, curl piped to a shell), a program started from Downloads, a temporary 
 **The watcher** (Linux 6.6 and later, off by default, `vanguard watcher on`) — between two monitoring runs, each program
 started, even one of a few milliseconds, and each TCP or UDP connection as it closes. Programs are judged as in the
 check, connections against the botnet command servers already downloaded; what is serious goes to the dashboard
-and as a notification. Without root or code loaded into the kernel, this part stops nothing. A program gone before
-it could be read is counted as such, never judged safe, and the program of a closed connection is not known (the
-kernel does not give it).
+and as a notification. With active protection and a separate consent (offered when it is turned on, or
+`vanguard watcher known on`), it also stops by itself, as it starts, a certain program of the account: its fingerprint
+is that of known malware (MalwareBazaar), or it carries the EICAR test mark inside an executable. The judgment is on
+the file the kernel started, never on what is later at its path; the program and what it started are frozen, the
+evidence is recorded, then it is stopped and quarantined, with the blocking safeguards. Never a system program, a
+critical process, Vanguard or remote access during a session, nor a program of another account (an alert, and
+“Block” with administrator rights). A malicious program in the account can switch the watcher off. A program gone
+before it could be read is counted as such, never judged safe, and the program of a closed connection is not known
+(the kernel does not give it).
 
 **Ransomware watcher** (Linux, offered when the watcher is turned on, or `vanguard watcher ransomware on`, off by
 default) — personal folders (Documents, Pictures, Desktop, Music, Videos, Downloads) watched live, without

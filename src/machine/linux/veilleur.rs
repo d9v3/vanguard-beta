@@ -12,9 +12,14 @@
 //! sain) ; le programme d'une connexion fermée n'est jamais connu (le noyau ne donne ni le compte ni la prise à ce
 //! moment-là).
 //!
-//! Il observe seulement : rien n'est arrêté ni envoyé. Les programmes sont jugés par la voie des sources de menaces
-//! (`protection::sources` : les empreintes récentes de MalwareBazaar, puis les fonctions de COM-PRG-001), les connexions par les serveurs de commande des listes déjà téléchargées ; ce qui
-//! est grave va au journal du tableau de bord et en notification, à débit borné. Il ne lit, de chaque processus, que
+//! Il n'envoie rien. Les programmes sont jugés par la voie des sources de menaces (`protection::sources` : les
+//! empreintes récentes de MalwareBazaar, haché depuis l'inode que le noyau a lancé, puis les fonctions de COM-PRG-001),
+//! les connexions par les serveurs de commande des listes déjà téléchargées ; ce qui est grave va au journal du
+//! tableau de bord et en notification, à débit borné. Il n'arrête que le CERTAIN (empreinte connue, ou marque d'essai
+//! EICAR dans un exécutable) d'un programme du compte, et seulement avec l'accord de la personne et la protection
+//! active : par le même chemin que le rançongiciel (gel de la lignée, preuve, arrêt et quarantaine par le blocage, sous
+//! ses garde-fous) ; jamais un programme du système, un processus critique, Vanguard ni un accès à distance pendant une
+//! session (une alerte seulement). Il ne lit, de chaque processus, que
 //! `/proc/<pid>/exe`, cmdline et status : jamais les fichiers des agents d'IA (conversations, history.jsonl,
 //! shell-snapshots), ni rien d'autre de leur dossier.
 //!
@@ -921,6 +926,9 @@ pub(crate) struct Lance {
     pub lignee: Vec<String>,
     /// Vanguard ou lancé par lui : jamais jugé.
     pub de_vanguard: bool,
+    /// Le programme lancé, tenu par son inode avec le départ du processus (`processus::tenir`) : ce qui est haché et,
+    /// s'il est certain, ce qui est gelé. `None` : parti, d'un autre compte que /proc ne nous ouvre pas, ou non lu.
+    pub tenu: Option<crate::socle::processus::Tenu>,
 }
 
 pub(crate) struct Veilleur {
@@ -1114,10 +1122,12 @@ impl Veilleur {
             self.rafale = (maintenant, 0);
         }
         self.rafale.1 = self.rafale.1.saturating_add(1);
-        let lecture = if self.rafale.1 > LECTURES_PAR_SECONDE {
-            Lecture::NonLu
+        // Le programme tenu d'abord (il part vite), puis ce qui se lit de lui.
+        let (lecture, tenu) = if self.rafale.1 > LECTURES_PAR_SECONDE {
+            (Lecture::NonLu, None)
         } else {
-            lire_proc(pid)
+            let tenu = crate::socle::processus::tenir(pid);
+            (lire_proc(pid), tenu)
         };
         let lu = match &lecture {
             Lecture::Complet(p) | Lecture::NomSeul(p) => Some(p),
@@ -1133,6 +1143,7 @@ impl Veilleur {
             lignee: self.table.lignee(pid),
             de_vanguard: self.table.de_vanguard(pid),
             lecture,
+            tenu,
         })
     }
 }
@@ -1194,34 +1205,294 @@ fn juger_lance(l: &Lance) -> Option<Alerte> {
     })
 }
 
-/// Un programme lancé, jugé par la voie unique des sources de menaces (`protection::sources`) : d'abord son empreinte
-/// (MalwareBazaar, les dernières 48 heures : la liste complète ne tient pas dans la mémoire du service), comme le
-/// blocage et le bilan, puis les signes de COM-PRG-001.
-fn juger_lance_avec(l: &Lance, fichiers: &mut crate::protection::sources::Fichiers) -> Option<Alerte> {
+/// Ce que donne le jugement d'un programme lancé.
+#[derive(Debug, PartialEq, Eq)]
+enum Juge {
+    /// Une alerte, rien d'arrêté (COM-PRG-001, outil offensif connu).
+    Alerte(Alerte),
+    /// Certain par l'inode qu'il a lancé (P10, P23) : arrêté si tout le permet (`decider`), sinon une alerte.
+    Certain(crate::protection::sources::Certitude),
+}
+
+/// Un programme lancé, jugé par la voie unique des sources de menaces (`protection::sources`) : d'abord ce qu'il a
+/// VRAIMENT lancé (l'inode tenu, jamais le chemin relu : un fichier remis à sa place ne fait juger ni arrêter un autre
+/// programme), certain par son empreinte (MalwareBazaar, les dernières 48 heures : la liste complète ne tient pas
+/// dans la mémoire du service) ou par la marque d'essai ; puis les signes de COM-PRG-001.
+fn juger_lance_avec(l: &Lance, fichiers: &mut crate::protection::sources::Fichiers) -> Option<Juge> {
     if !l.de_vanguard
-        && let Lecture::Complet(p) = &l.lecture
-        && let Some(chemin) = p.chemin.as_deref()
-        && fichiers.connu(chemin)
+        && let Lecture::Complet(_) = &l.lecture
+        && let Some(tenu) = &l.tenu
+        && let Some(c) = fichiers.juger_tenu(tenu)
     {
-        let raison = crate::protection::sources::raison_empreinte();
-        return Some(Alerte {
-            cle: format!("{raison}|{chemin}"),
-            grave: true,
-            genre: Genre::Veilleur,
-            titre: tr!(
-                "Vanguard : logiciel malveillant connu lancé",
-                "Vanguard: known malware started"
+        return Some(Juge::Certain(c));
+    }
+    juger_lance(l).map(Juge::Alerte)
+}
+
+// ───────────────────────────── Arrêt du certain au lancement ─────────────────────────────
+
+/// Pourquoi un programme certain n'est pas arrêté par le veilleur : une alerte à la place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Exception {
+    /// Un programme du système (P11) : une liste d'empreintes forgée ne doit jamais pouvoir casser l'ordinateur.
+    Systeme,
+    /// Un processus critique (noyau, init, session, terminal, compositeur) ou Vanguard.
+    Critique,
+    /// Un outil d'accès à distance pendant une session, ou ce qui descend d'une session à distance : on ne coupe
+    /// jamais quelqu'un qui aide (ou la personne elle-même, à distance).
+    Session,
+    /// D'un autre compte, ou setuid : le veilleur, sans droits, ne l'arrête pas ; « Bloquer » le fait, avec les droits.
+    AutreCompte,
+    /// La personne n'a pas accepté que le veilleur arrête (ou son accord ne peut pas être cru).
+    PasDAccord,
+    /// La protection active n'arrête rien toute seule (coupée, en pause, Vanguard en administrateur, ou Programmes
+    /// pas en automatique).
+    PasPermis,
+    /// Le chemin du programme ne se lit pas : rien ne s'arrête à l'aveugle.
+    SansChemin,
+}
+
+/// Ce que la décision regarde, lu au moment du jugement (`faits_de`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // des faits lus, chacun pour lui-même ; `decider` les ordonne
+struct Faits {
+    du_compte: bool,
+    systeme: bool,
+    critique: bool,
+    session: bool,
+    accord: bool,
+    permis: bool,
+}
+
+/// Arrêter (`Ok`), ou pourquoi pas. Les garde-fous d'abord : jamais arrêté, quels que soient l'accord et les réglages ;
+/// puis le compte ; puis l'accord et la protection active, qui ne font que permettre.
+fn decider(f: Faits) -> Result<(), Exception> {
+    if f.systeme {
+        Err(Exception::Systeme)
+    } else if f.critique {
+        Err(Exception::Critique)
+    } else if f.session {
+        Err(Exception::Session)
+    } else if !f.du_compte {
+        Err(Exception::AutreCompte)
+    } else if !f.accord {
+        Err(Exception::PasDAccord)
+    } else if !f.permis {
+        Err(Exception::PasPermis)
+    } else {
+        Ok(())
+    }
+}
+
+/// Les faits du programme lancé `pid` (`nom`, `chemin`), lus maintenant : ses comptes (tenus au lancement), les
+/// garde-fous du blocage, l'accord noté et la protection active.
+fn faits_de(pid: u32, nom: &str, chemin: &str, tenu: &crate::socle::processus::Tenu) -> Faits {
+    use crate::protection::blocage::{self, gardes};
+    let sessions = gardes::sessions_a_distance();
+    let acces_a_distance = gardes::programme_de_session(nom) || gardes::programme_de_session(chemin);
+    Faits {
+        du_compte: tenu.du_compte,
+        systeme: gardes::dossier_systeme(chemin, Os::Linux),
+        critique: blocage::processus_gelable(pid, nom, Some(chemin), &HashSet::new()).is_some(),
+        session: (acces_a_distance && !gardes::aucune_session(sessions.as_ref()))
+            || gardes::lignee_de_session(pid, sessions.as_ref()).is_some(),
+        accord: arret_voulu(),
+        permis: blocage::arret_automatique_programmes_permis(),
+    }
+}
+
+/// Le chemin désigne-t-il encore l'inode lancé ? Sinon (effacé, ou un autre fichier mis à sa place), le fichier qui
+/// est là n'est pas celui qui a été jugé : il n'est jamais mis en quarantaine.
+fn meme_inode(chemin: &str, tenu: &crate::socle::processus::Tenu) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::symlink_metadata(chemin), tenu.exe().metadata()) {
+        (Ok(a), Ok(b)) => a.is_file() && (a.dev(), a.ino()) == (b.dev(), b.ino()),
+        _ => false,
+    }
+}
+
+/// Le processus tourne-t-il encore le programme tenu ? Même départ (pas un numéro repris) et même inode lancé (pas
+/// un autre `exec` depuis le jugement).
+fn toujours_le_meme(tenu: &crate::socle::processus::Tenu) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Some(maintenant) = crate::socle::processus::tenir(tenu.pid) else {
+        return false;
+    };
+    match (maintenant.exe().metadata(), tenu.exe().metadata()) {
+        (Ok(a), Ok(b)) => maintenant.debut == tenu.debut && (a.dev(), a.ino()) == (b.dev(), b.ino()),
+        _ => false,
+    }
+}
+
+/// Sous les essais, seul un programme du dossier des essais peut être gelé ou arrêté : un essai ne doit jamais
+/// toucher un autre programme de l'ordinateur, même par une erreur du jugement. Le dossier tel que le noyau le
+/// nomme (/proc/<pid>/exe : sans lien symbolique), le dossier de compilation pouvant en être un.
+#[cfg(test)]
+fn arret_permis_en_essai(chemin: &str) -> bool {
+    let Ok(dossier) = std::fs::canonicalize(crate::essais::temporaire()) else {
+        return false;
+    };
+    let c = std::path::Path::new(chemin);
+    !chemin.contains("/../") && c.is_absolute() && c.starts_with(dossier)
+}
+
+/// La lignée à geler du programme `racine` : lui et ce qu'il a lancé (`veille::lignee_de`).
+fn lignee_a_geler(racine: u32) -> Vec<reponse::Membre> {
+    let lignee = veille::lignee_de(racine);
+    #[cfg(test)]
+    let lignee: Vec<reponse::Membre> = lignee
+        .into_iter()
+        .filter(|(_, _, c)| {
+            c.as_deref()
+                .is_some_and(|c| arret_permis_en_essai(&c.to_string_lossy()))
+        })
+        .collect();
+    lignee
+}
+
+/// Gèle la lignée du programme certain puis l'arrête et le met en quarantaine : le chemin du rançongiciel
+/// (`reponse::geler_et_arreter`, sous les garde-fous du blocage, preuve relevée avant). Ce qui est gelé est ce qui a
+/// été haché : le même inode lancé, relu juste avant, et le même départ (gel par pidfd, départ relu avant l'arrêt).
+/// Le fichier ne va en quarantaine que si son chemin désigne encore l'inode lancé.
+fn arreter_certain(
+    tenu: &crate::socle::processus::Tenu,
+    nom: &str,
+    chemin: &str,
+    c: crate::protection::sources::Certitude,
+) -> reponse::Issue {
+    #[cfg(test)]
+    if !arret_permis_en_essai(chemin) {
+        return reponse::Issue::Refuse("essai : hors du dossier des essais, rien n'est gelé".to_string());
+    }
+    if !toujours_le_meme(tenu) {
+        return reponse::Issue::Refuse(
+            tr!(
+                "le processus ne tourne plus le programme jugé (parti, relancé ou numéro repris) : rien n'est gelé",
+                "the process no longer runs the judged program (exited, re-executed or number reused): nothing is frozen"
             )
             .to_string(),
-            texte: trf!(
-                "« {} » (PID {}) : {raison}. Ne rien arrêter à la hâte : vanguard depanner traces garde ses traces, puis Dépanner › Après une infection.",
-                "“{}” (PID {}): {raison}. Do not stop anything in a hurry: vanguard depanner traces keeps its traces, then Troubleshoot › After an infection.",
-                crate::ui::affichable(chemin),
-                l.pid
-            ),
-        });
+        );
     }
-    juger_lance(l)
+    let cible = reponse::Cible {
+        racine: tenu.pid,
+        nom: nom.to_string(),
+        chemin: Some(PathBuf::from(chemin)),
+        fichier: meme_inode(chemin, tenu).then(|| PathBuf::from(chemin)),
+        detection: c.raison().to_string(),
+        cle: format!("programme:{}:{chemin}", tenu.pid),
+        debut: Some(tenu.debut),
+    };
+    reponse::geler_et_arreter(&cible, || lignee_a_geler(tenu.pid))
+}
+
+/// Ce que dit l'alerte d'un programme certain qui n'est pas arrêté, selon pourquoi.
+fn pourquoi_pas_arrete(e: Exception) -> &'static str {
+    match e {
+        Exception::Systeme => tr!(
+            "C'est un programme du système : le veilleur n'en arrête jamais (une alerte seulement). Ouvrez Vanguard pour vérifier ; vanguard depanner traces garde ses traces.",
+            "It is a system program: the watcher never stops one (an alert only). Open Vanguard to check; vanguard depanner traces keeps its traces."
+        ),
+        Exception::Critique => tr!(
+            "C'est un processus critique (ou Vanguard) : jamais arrêté tout seul. Ouvrez Vanguard pour vérifier ; vanguard depanner traces garde ses traces.",
+            "It is a critical process (or Vanguard): never stopped automatically. Open Vanguard to check; vanguard depanner traces keeps its traces."
+        ),
+        Exception::Session => tr!(
+            "C'est un accès à distance pendant une session, ou il en descend : jamais arrêté tout seul, pour ne couper personne. Si vous ne l'avez pas voulu, coupez Internet et ouvrez Vanguard.",
+            "It is remote access during a session, or comes from one: never stopped automatically, so as to cut no one off. If you did not want it, cut the Internet and open Vanguard."
+        ),
+        Exception::AutreCompte => tr!(
+            "Il tourne sous un autre compte : le veilleur, sans droits, ne l'arrête pas. Ouvrez Vanguard pour le bloquer (droits d'administrateur).",
+            "It runs under another account: the watcher, without rights, does not stop it. Open Vanguard to block it (administrator rights)."
+        ),
+        Exception::PasDAccord => tr!(
+            "Vous n'avez pas accepté que le veilleur arrête le malware connu : rien n'est arrêté. Ouvrez Vanguard pour le bloquer ; « vanguard veilleur » propose l'arrêt automatique.",
+            "You have not accepted that the watcher stops known malware: nothing is stopped. Open Vanguard to block it; “vanguard watcher” offers the automatic stop."
+        ),
+        Exception::PasPermis => tr!(
+            "La protection active n'arrête rien toute seule ici (coupée, en pause, ou Vanguard en administrateur) : ouvrez Vanguard pour le bloquer.",
+            "Active protection stops nothing by itself here (off, paused, or Vanguard running as administrator): open Vanguard to block it."
+        ),
+        Exception::SansChemin => tr!(
+            "Son chemin ne se lit pas : rien n'est arrêté à l'aveugle. Ouvrez Vanguard pour le bloquer.",
+            "Its path cannot be read: nothing is stopped blindly. Open Vanguard to block it."
+        ),
+    }
+}
+
+/// Un programme lancé certain : arrêté si tout le permet (`decider`), sinon une alerte qui dit pourquoi pas. Un arrêt
+/// est toujours notifié ; le reste passe par le débit et « Ce que Vanguard a appris » comme les autres alertes.
+fn repondre_certain(l: &Lance, c: crate::protection::sources::Certitude, etat: &mut Etat, debit: &mut Debit) {
+    let Lecture::Complet(p) = &l.lecture else { return };
+    let Some(tenu) = &l.tenu else { return };
+    let raison = c.raison();
+    let objet = p.chemin.as_deref().unwrap_or(&p.nom);
+    let cle_brute = format!("{raison}|{objet}");
+    let cle = crate::protection::normales::cle_veilleur(&cle_brute);
+    // Déclaré normal par la personne : ni arrêté ni dit.
+    if crate::protection::normales::est_normale(&cle) {
+        return;
+    }
+    let nom_aff = crate::ui::affichable(objet);
+    let decision = match p.chemin.as_deref() {
+        Some(chemin) => decider(faits_de(l.pid, &p.nom, chemin, tenu)),
+        None => Err(Exception::SansChemin),
+    };
+    let titre_connu = tr!(
+        "Vanguard : logiciel malveillant connu lancé",
+        "Vanguard: known malware started"
+    );
+    let texte = match decision.and_then(|()| p.chemin.as_deref().ok_or(Exception::SansChemin)) {
+        Ok(chemin) => match arreter_certain(tenu, &p.nom, chemin, c) {
+            reponse::Issue::Arrete(quoi) => {
+                etat.connus_arretes = etat.connus_arretes.saturating_add(1);
+                let titre = tr!(
+                    "Vanguard : logiciel malveillant connu arrêté",
+                    "Vanguard: known malware stopped"
+                );
+                let texte = trf!(
+                    "« {nom_aff} » (PID {}) : {raison}. Le veilleur l'a gelé avec ce qu'il avait lancé, a relevé la preuve, puis l'a arrêté ({}). La quarantaine s'annule dans « Ce que Vanguard a changé ».",
+                    "“{nom_aff}” (PID {}): {raison}. The watcher froze it with what it had started, recorded the evidence, then stopped it ({}). The quarantine can be undone in “What Vanguard changed”.",
+                    l.pid,
+                    crate::ui::affichable(&quoi)
+                );
+                crate::reseau::surveillance::alerter_cle(Genre::Veilleur, &cle, titre, &texte);
+                return;
+            }
+            reponse::Issue::Gele { raison: refus, geles } => {
+                // Un garde-fou du blocage a refusé l'arrêt : il dit aussi que ce programme ne se touche pas, il est
+                // repris tout de suite plutôt que laissé gelé.
+                reponse::reprendre(&geles);
+                trf!(
+                    "« {nom_aff} » (PID {}) : {raison}. Gelé puis repris, pas arrêté : {}. Ouvrez Vanguard pour le bloquer.",
+                    "“{nom_aff}” (PID {}): {raison}. Frozen then resumed, not stopped: {}. Open Vanguard to block it.",
+                    l.pid,
+                    crate::ui::affichable(&refus)
+                )
+            }
+            reponse::Issue::Refuse(refus) => trf!(
+                "« {nom_aff} » (PID {}) : {raison}. Rien n'est arrêté : {}. Ouvrez Vanguard pour le bloquer.",
+                "“{nom_aff}” (PID {}): {raison}. Nothing is stopped: {}. Open Vanguard to block it.",
+                l.pid,
+                crate::ui::affichable(&refus)
+            ),
+        },
+        Err(e) => trf!(
+            "« {nom_aff} » (PID {}) : {raison}. {}",
+            "“{nom_aff}” (PID {}): {raison}. {}",
+            l.pid,
+            pourquoi_pas_arrete(e)
+        ),
+    };
+    match debit.decider(&cle_brute, true, maintenant()) {
+        Decision::Noter { notifier: true } => {
+            crate::reseau::surveillance::alerter_cle(Genre::Veilleur, &cle, titre_connu, &texte);
+        }
+        Decision::Noter { notifier: false } => {
+            tableau::noter_alerte_cle(Genre::Veilleur, Some(&cle), titre_connu, &texte);
+        }
+        Decision::Repete => {}
+        Decision::Taire => etat.tus = etat.tus.saturating_add(1),
+    }
 }
 
 /// Une connexion fermée, jugée par les serveurs de commande connus : seulement vers Internet.
@@ -1377,6 +1648,8 @@ pub(crate) struct Etat {
     pub rancon_rafales: u64,
     /// Rançongiciels gelés (quasi certains).
     pub rancon_gels: u64,
+    /// Programmes certains (malware connu, marque d'essai) arrêtés au lancement, avec l'accord de la personne.
+    pub connus_arretes: u64,
     /// Débordements de la file de surveillance des fichiers.
     pub rancon_perdus: u64,
     /// Les PID restés gelés par le veilleur (un tiers peut les reprendre : la surveillance horaire le dit).
@@ -1396,6 +1669,12 @@ fn fichier_voulu() -> PathBuf {
 /// ne le fait pas oublier.
 pub(crate) fn voulu() -> bool {
     fichier_voulu().is_file() || matches!(voulues::souvenir(Defense::Veilleur), voulues::Souvenir::Voulue(_))
+}
+
+/// L'arrêt du malware connu au lancement est-il voulu ? L'état scellé seul (`voulues`), comme la veille des fichiers :
+/// un accord à part de celui du veilleur (qui observait seulement quand il a été donné), demandé par le geste.
+pub(crate) fn arret_voulu() -> bool {
+    matches!(voulues::souvenir(Defense::ArretVeilleur), voulues::Souvenir::Voulue(_))
 }
 
 fn marquer(fichier: &std::path::Path) {
@@ -1583,6 +1862,14 @@ fn en_marche(etat: &Etat) -> bool {
 /// demandé, 1 sur une erreur inattendue ou passagère (systemd le relance), 77 sur un refus que relancer ne changerait
 /// pas (`Refus::sortie`).
 fn servir() -> i32 {
+    // Chaque programme lu est tenu ouvert (`processus::tenir`) jusqu'à son jugement, à la fin du tour : jusqu'à deux
+    // secondes de lectures (`LECTURES_PAR_SECONDE`) dans un tour à cheval sur deux, plus le reste. La limite douce
+    // de systemd (1024 descripteurs) serait trop juste ; la dure le permet.
+    let _ = crate::reseau::scan::limite_connexions(
+        usize::try_from(LECTURES_PAR_SECONDE)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(4),
+    );
     let mut etat = Etat {
         pid: std::process::id(),
         depuis: maintenant(),
@@ -1846,6 +2133,7 @@ fn repondre_quasi_certain(groupe: u32, s: &score::Signaux, etat: &mut Etat, debi
         fichier: chemin,
         detection: detection.clone(),
         cle: cle.clone(),
+        debut: None,
     };
     match reponse::geler_et_arreter(&cible, || veille::lignee_de(groupe)) {
         reponse::Issue::Arrete(_) => {
@@ -1970,7 +2258,14 @@ fn traiter(
                     etat.derniers_partis.push((l.pid, l.parent));
                 }
             }
-            juger_lance_avec(&l, fichiers)
+            match juger_lance_avec(&l, fichiers) {
+                Some(Juge::Certain(c)) => {
+                    repondre_certain(&l, c, etat, debit);
+                    return;
+                }
+                Some(Juge::Alerte(a)) => Some(a),
+                None => None,
+            }
         }
     };
     let Some(a) = alerte else { return };
@@ -2020,11 +2315,11 @@ fn unite_dans(exe: &str, anglais: bool) -> String {
                    SystemCallFilter=@system-service\nRestrictAddressFamilies=AF_UNIX AF_NETLINK\n";
     if anglais {
         format!(
-            "{MARQUE_EN};\n# “vanguard watcher off” removes it.\n[Unit]\nDescription=Vanguard: watcher\nStartLimitIntervalSec=1h\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart={exe} veilleur --servir\n# One tokio worker: one per core would exceed TasksMax.\nEnvironment=TOKIO_WORKER_THREADS=1\n{durcissement}# 77: kernel too old or kernel refusal; a restart changes nothing.\n{limites}# No ProtectSystem, ProtectHome, PrivateTmp, ReadOnlyPaths,\n# ReadWritePaths, ProtectKernel*, ProtectControlGroups, PrivateDevices\n# or PrivateUsers: in a user unit, they create a user namespace where\n# the kernel ignores the connector subscription (measured: no ack).\n# No Nice: the later the watcher runs, the more a brief program is gone\n# before it is read.\n\n[Install]\nWantedBy=default.target\n"
+            "{MARQUE_EN};\n# “vanguard watcher off” removes it.\n[Unit]\nDescription=Vanguard: watcher (stops known malware, with consent)\nStartLimitIntervalSec=1h\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart={exe} veilleur --servir\n# One tokio worker: one per core would exceed TasksMax.\nEnvironment=TOKIO_WORKER_THREADS=1\n{durcissement}# 77: kernel too old or kernel refusal; a restart changes nothing.\n{limites}# No ProtectSystem, ProtectHome, PrivateTmp, ReadOnlyPaths,\n# ReadWritePaths, ProtectKernel*, ProtectControlGroups, PrivateDevices\n# or PrivateUsers: in a user unit, they create a user namespace where\n# the kernel ignores the connector subscription (measured: no ack).\n# No Nice: the later the watcher runs, the more a brief program is gone\n# before it is read.\n\n[Install]\nWantedBy=default.target\n"
         )
     } else {
         format!(
-            "{MARQUE_FR} ;\n# « vanguard veilleur off » le retire.\n[Unit]\nDescription=Vanguard : veilleur\nStartLimitIntervalSec=1h\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart={exe} veilleur --servir\n# Un seul fil de travail pour tokio : un par cœur dépasserait TasksMax.\nEnvironment=TOKIO_WORKER_THREADS=1\n{durcissement}# 77 : noyau trop ancien ou refus du noyau ; relancer n'y change rien.\n{limites}# Ni ProtectSystem, ProtectHome, PrivateTmp, ReadOnlyPaths,\n# ReadWritePaths, ProtectKernel*, ProtectControlGroups, PrivateDevices\n# ni PrivateUsers : dans une unité de l'utilisateur, ils créent un\n# espace de noms d'utilisateur où le noyau ignore l'abonnement au\n# connecteur (mesuré : plus d'accusé).\n# Pas de Nice : plus le veilleur est servi tard, plus un programme bref\n# part avant d'être lu.\n\n[Install]\nWantedBy=default.target\n"
+            "{MARQUE_FR} ;\n# « vanguard veilleur off » le retire.\n[Unit]\nDescription=Vanguard : veilleur (arrête le malware connu, sur accord)\nStartLimitIntervalSec=1h\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart={exe} veilleur --servir\n# Un seul fil de travail pour tokio : un par cœur dépasserait TasksMax.\nEnvironment=TOKIO_WORKER_THREADS=1\n{durcissement}# 77 : noyau trop ancien ou refus du noyau ; relancer n'y change rien.\n{limites}# Ni ProtectSystem, ProtectHome, PrivateTmp, ReadOnlyPaths,\n# ReadWritePaths, ProtectKernel*, ProtectControlGroups, PrivateDevices\n# ni PrivateUsers : dans une unité de l'utilisateur, ils créent un\n# espace de noms d'utilisateur où le noyau ignore l'abonnement au\n# connecteur (mesuré : plus d'accusé).\n# Pas de Nice : plus le veilleur est servi tard, plus un programme bref\n# part avant d'être lu.\n\n[Install]\nWantedBy=default.target\n"
         )
     }
 }
@@ -2060,8 +2355,8 @@ fn exe_prevu() -> Option<String> {
 
 fn explication() -> &'static str {
     tr!(
-        "Le veilleur voit chaque programme lancé sur cet ordinateur, de tous les comptes, même s'il ne vit que quelques millisecondes, et chaque connexion TCP ou UDP au moment où elle se ferme. Il les juge comme le bilan (outil offensif connu, commande qui télécharge ou cache ce qu'elle lance) et contre les serveurs de commande de botnets déjà téléchargés par la surveillance ou le bilan. Il n'envoie rien, et garde les alertes au tableau de bord (vanguard tableau-de-bord). Après l'allumage, il vous propose aussi de surveiller vos dossiers personnels contre les rançongiciels : avec la protection active, il peut alors geler puis arrêter un rançongiciel quasi certain. Un programme parti avant d'être lu est compté tel quel, jamais jugé sain ; le programme d'une connexion fermée n'est pas connu (le noyau ne le donne pas). Il tourne pendant votre session ouverte, sans droits d'administrateur ni code chargé dans le noyau.",
-        "The watcher sees each program started on this computer, from every account, even one that lives only a few milliseconds, and each TCP or UDP connection as it closes. It judges them as the check does (known offensive tool, command that downloads or hides what it runs) and against the botnet command servers already downloaded by the monitoring or the check. It sends nothing, and keeps the alerts on the dashboard (vanguard dashboard). After it is turned on, it also offers to watch your personal folders against ransomware: with active protection, it can then freeze and stop an almost certain ransomware. A program gone before it could be read is counted as such, never judged safe; the program of a closed connection is not known (the kernel does not give it). It runs while your session is open, without administrator rights or code loaded into the kernel."
+        "Le veilleur voit chaque programme lancé sur cet ordinateur, de tous les comptes, même s'il ne vit que quelques millisecondes, et chaque connexion TCP ou UDP au moment où elle se ferme. Il les juge comme le bilan (outil offensif connu, commande qui télécharge ou cache ce qu'elle lance) et contre les serveurs de commande de botnets déjà téléchargés par la surveillance ou le bilan. Il n'envoie rien, et garde les alertes au tableau de bord (vanguard tableau-de-bord). Après l'allumage, il vous propose d'arrêter tout seul un malware connu de votre compte à son lancement, puis de surveiller vos dossiers personnels contre les rançongiciels : deux accords à part, qui n'arrêtent rien sans la protection active. Un programme malveillant de votre compte peut l'éteindre : il ne remplace pas vos mises à jour ni votre sauvegarde. Un programme parti avant d'être lu est compté tel quel, jamais jugé sain ; le programme d'une connexion fermée n'est pas connu (le noyau ne le donne pas). Il tourne pendant votre session ouverte, sans droits d'administrateur ni code chargé dans le noyau.",
+        "The watcher sees each program started on this computer, from every account, even one that lives only a few milliseconds, and each TCP or UDP connection as it closes. It judges them as the check does (known offensive tool, command that downloads or hides what it runs) and against the botnet command servers already downloaded by the monitoring or the check. It sends nothing, and keeps the alerts on the dashboard (vanguard dashboard). After it is turned on, it offers to stop known malware of your account by itself as it starts, then to watch your personal folders against ransomware: two separate consents, which stop nothing without active protection. A malicious program in your account can switch it off: it does not replace your updates or your backup. A program gone before it could be read is counted as such, never judged safe; the program of a closed connection is not known (the kernel does not give it). It runs while your session is open, without administrator rights or code loaded into the kernel."
     )
 }
 
@@ -2193,7 +2488,9 @@ fn allumer() {
             "  ⚠ Watcher set up, not seen running yet: “vanguard watcher” tells again in a moment; journalctl --user -u {UNITE} tells why."
         );
     }
-    // Dans le même accord : proposer la surveillance des dossiers personnels contre les rançongiciels (point ouvert 6).
+    // Après l'allumage, deux accords à part : l'arrêt du malware connu, puis la surveillance des dossiers personnels
+    // contre les rançongiciels (point ouvert 6).
+    proposer_arret();
     proposer_rancon();
 }
 
@@ -2363,7 +2660,7 @@ fn oublier_le_choix(issue: &Retire, dossier: &std::path::Path) {
         // L'arrêt d'abord, puis les marques : interrompu entre les deux, il reste une marque de trop (le veilleur se
         // dit voulu et absent), jamais des marques effacées sans arrêt noté. Une défense jamais notée n'a pas d'arrêt
         // à noter (la veille anti-rançongiciel jamais voulue).
-        for d in [Defense::Veilleur, Defense::Rancongiciel]
+        for d in [Defense::Veilleur, Defense::ArretVeilleur, Defense::Rancongiciel]
             .into_iter()
             .filter(|d| voulues::souvenir_dans(dossier, *d) != voulues::Souvenir::Jamais)
         {
@@ -2388,6 +2685,9 @@ pub(crate) fn commande(etat: Option<&str>, sous_etat: Option<&str>, servir: bool
     if matches!(etat, Some("rancongiciel" | "ransomware")) {
         return commande_rancon(sous_etat);
     }
+    if etat == Some("connus") {
+        return commande_arret(sous_etat);
+    }
     titre(tr!(
         "Veilleur : lancements et connexions",
         "Watcher: launches and connections"
@@ -2406,11 +2706,132 @@ pub(crate) fn commande(etat: Option<&str>, sous_etat: Option<&str>, servir: bool
             if std::io::stdin().is_terminal() {
                 println!();
                 if crate::machine::linux::natif::unite_activee(UNITE, true) == Some(true) {
-                    couper();
+                    // Allumé avant que le veilleur n'arrête quoi que ce soit : son accord ne vaut pas pour l'arrêt,
+                    // qui se demande à part, sans rien couper.
+                    if arret_voulu() || !proposer_arret() {
+                        couper();
+                    }
                 } else {
                     allumer();
                 }
             }
+        }
+    }
+}
+
+// ───────────────────────────── Accord de l'arrêt du malware connu ─────────────────────────────
+
+/// Le texte d'accord de l'arrêt du malware connu au lancement : lu avant la question, dans la langue du bureau. Un
+/// accord à part de celui du veilleur, donné quand le veilleur n'arrêtait rien (critique C11 de la conception).
+fn texte_accord_arret() -> &'static str {
+    tr!(
+        "Le veilleur peut arrêter tout seul un programme de votre compte au moment où il se lance, s'il est certain : son empreinte est celle d'un logiciel malveillant connu (MalwareBazaar, les 48 dernières heures), ou il porte la marque d'essai EICAR (pour vérifier que l'arrêt marche). Il le gèle avec ce qu'il a lancé, relève la preuve, puis l'arrête et met son fichier en quarantaine (« Ce que Vanguard a changé » l'annule). Seulement avec la protection active (Programmes en automatique). Jamais un programme du système, un processus critique, Vanguard, ni un accès à distance pendant une session : une alerte seulement, comme pour un programme d'un autre compte (« Bloquer », avec les droits d'administrateur). Un programme malveillant de votre compte peut éteindre le veilleur : ce n'est pas un rempart, vos mises à jour et votre sauvegarde restent la vraie protection.",
+        "The watcher can stop a program of your account by itself as it starts, if it is certain: its fingerprint is that of known malware (MalwareBazaar, the last 48 hours), or it carries the EICAR test mark (to check that stopping works). It freezes it with what it started, records the evidence, then stops it and quarantines its file (“What Vanguard changed” undoes it). Only with active protection (Programs on automatic). Never a system program, a critical process, Vanguard, or remote access during a session: an alert only, as for a program of another account (“Block”, with administrator rights). A malicious program in your account can switch the watcher off: it is not a wall, your updates and your backup remain the real protection."
+    )
+}
+
+/// Propose l'arrêt du malware connu, à quelqu'un qui peut répondre seulement. Un non garde le veilleur tel quel (il
+/// observe). `true` : la question a été posée.
+fn proposer_arret() -> bool {
+    if arret_voulu() || !std::io::stdin().is_terminal() {
+        return false;
+    }
+    println!();
+    afficher_aligne("  ", texte_accord_arret(), 2, "");
+    if demander(tr!(
+        "\n  Arrêter tout seul le malware connu de votre compte à son lancement ? [o/N] : ",
+        "\n  Stop known malware of your account by itself as it starts? [y/N]: "
+    ))
+    .oui()
+    {
+        activer_arret();
+    } else {
+        trp!(
+            "  Le veilleur observe et alerte, sans rien arrêter ; « vanguard veilleur connus on » le permettra.",
+            "  The watcher watches and alerts, stopping nothing; “vanguard watcher known on” will allow it."
+        );
+    }
+    true
+}
+
+/// Note l'accord, et dit si la protection active le laisse agir dès maintenant. Le service relit l'accord à chaque
+/// programme certain : rien à relancer.
+fn activer_arret() {
+    voulues::noter(Defense::ArretVeilleur, true);
+    trp!(
+        "  {VERT}✔{RESET} Arrêt du malware connu accepté : un programme certain de votre compte sera gelé, arrêté et mis en quarantaine à son lancement.",
+        "  {VERT}✔{RESET} Known malware stop accepted: a certain program of your account will be frozen, stopped and quarantined as it starts."
+    );
+    if !crate::protection::blocage::arret_automatique_programmes_permis() {
+        trp!(
+            "  ⚠ La protection active n'arrête rien toute seule pour l'instant (Programmes pas en automatique, en pause, ou Vanguard en administrateur) : « vanguard blocage auto » la règle ; d'ici là, une alerte seulement.",
+            "  ⚠ Active protection stops nothing by itself for now (Programs not on automatic, paused, or Vanguard as administrator): “vanguard blocking auto” sets it; until then, an alert only."
+        );
+    }
+}
+
+/// `vanguard veilleur connus [on|off]`.
+fn commande_arret(sous_etat: Option<&str>) {
+    titre(tr!(
+        "Veilleur : malware connu au lancement",
+        "Watcher: known malware at launch"
+    ));
+    match sous_etat {
+        Some("on") => {
+            if !voulu() && crate::machine::linux::natif::unite_activee(UNITE, true) != Some(true) {
+                trp!(
+                    "  Allumez d'abord le veilleur : « vanguard veilleur on » (il propose l'arrêt du malware connu).",
+                    "  Turn the watcher on first: “vanguard watcher on” (it offers the known malware stop)."
+                );
+                return;
+            }
+            if arret_voulu() {
+                trp!(
+                    "  {VERT}✔{RESET} L'arrêt du malware connu est déjà accepté.",
+                    "  {VERT}✔{RESET} The known malware stop is already accepted."
+                );
+                return;
+            }
+            afficher_aligne("  ", texte_accord_arret(), 2, "");
+            if demander(tr!("\n  Accepter ? [o/N] : ", "\n  Accept? [y/N]: ")).oui() {
+                activer_arret();
+            } else {
+                trp!("  Rien n'est changé.", "  Nothing is changed.");
+            }
+        }
+        Some("off") => {
+            // Jamais accepté : rien à noter (un état douteux, lui, se note coupé).
+            if voulues::souvenir(Defense::ArretVeilleur) != voulues::Souvenir::Jamais {
+                voulues::noter(Defense::ArretVeilleur, false);
+            }
+            trp!(
+                "  {VERT}✔{RESET} Le veilleur n'arrête plus rien tout seul : il observe et alerte.",
+                "  {VERT}✔{RESET} The watcher no longer stops anything by itself: it watches and alerts."
+            );
+        }
+        _ => {
+            let arretes = lire_etat().map_or(0, |e| e.connus_arretes);
+            let message = if arret_voulu() {
+                trf!(
+                    "Arrêt du malware connu : accepté ({}). {arretes} programme(s) arrêté(s) depuis le démarrage du veilleur. « vanguard veilleur connus off » le retire.",
+                    "Known malware stop: accepted ({}). {arretes} program(s) stopped since the watcher started. “vanguard watcher known off” withdraws it.",
+                    if crate::protection::blocage::arret_automatique_programmes_permis() {
+                        tr!("la protection active le permet", "active protection allows it")
+                    } else {
+                        tr!(
+                            "mais la protection active n'arrête rien toute seule pour l'instant",
+                            "but active protection stops nothing by itself for now"
+                        )
+                    }
+                )
+            } else {
+                tr!(
+                    "Arrêt du malware connu : pas accepté ; le veilleur observe et alerte. « vanguard veilleur connus on » le propose.",
+                    "Known malware stop: not accepted; the watcher watches and alerts. “vanguard watcher known on” offers it."
+                )
+                .to_string()
+            };
+            afficher_aligne("  ", &message, 4, "");
         }
     }
 }
@@ -2420,8 +2841,8 @@ pub(crate) fn commande(etat: Option<&str>, sous_etat: Option<&str>, servir: bool
 /// Le texte d'accord de la surveillance des fichiers (plan §5) : lu avant la question, dans la langue du bureau.
 fn texte_accord_rancon() -> &'static str {
     tr!(
-        "Le veilleur surveillera aussi vos dossiers personnels en direct. Il lit au plus 12 Kio des fichiers qui viennent d'être réécrits, en mémoire, pour voir s'ils sont chiffrés ; rien ne quitte cet ordinateur. Avec la protection active, il peut geler puis arrêter tout seul un rançongiciel quasi certain (jusqu'ici le veilleur n'arrêtait rien). Un programme malveillant de votre compte peut l'éteindre : ce n'est pas un rempart, votre sauvegarde reste la vraie protection.",
-        "The watcher will also watch your personal folders live. It reads at most 12 KiB of files that were just rewritten, in memory, to see whether they are encrypted; nothing leaves this computer. With active protection, it can freeze then stop an almost certain ransomware by itself (until now the watcher stopped nothing). A malicious program in your account can switch it off: it is not a wall, your backup remains the real protection."
+        "Le veilleur surveillera aussi vos dossiers personnels en direct. Il lit au plus 12 Kio des fichiers qui viennent d'être réécrits, en mémoire, pour voir s'ils sont chiffrés ; rien ne quitte cet ordinateur. Avec la protection active, il peut geler puis arrêter tout seul un rançongiciel quasi certain. Un programme malveillant de votre compte peut l'éteindre : ce n'est pas un rempart, votre sauvegarde reste la vraie protection.",
+        "The watcher will also watch your personal folders live. It reads at most 12 KiB of files that were just rewritten, in memory, to see whether they are encrypted; nothing leaves this computer. With active protection, it can freeze then stop an almost certain ransomware by itself. A malicious program in your account can switch it off: it is not a wall, your backup remains the real protection."
     )
 }
 
@@ -2851,6 +3272,13 @@ fn juger_etat(
                     .to_string(),
                 );
             }
+            if e.connus_arretes > 0 {
+                ajouter(trf!(
+                    "{} malware connu(s) arrêté(s) à son lancement (vanguard veilleur connus).",
+                    "{} known malware stopped as it started (vanguard watcher known).",
+                    e.connus_arretes
+                ));
+            }
             // La veille anti-rançongiciel : son état, ses rafales, les rançongiciels arrêtés.
             if e.rancon_actif {
                 ajouter(trf!(
@@ -3223,43 +3651,281 @@ mod tests {
         }
     }
 
-    /// Un programme dont l'empreinte est connue (MalwareBazaar) ressort au veilleur comme au blocage, par la même
-    /// voie ; un programme de Vanguard, jamais ; sans liste, le jugement de COM-PRG-001 seul.
+    /// Un programme lancé dont l'empreinte est connue (MalwareBazaar) est certain, jugé sur l'inode qu'il tourne ; un
+    /// programme de Vanguard, jamais ; sans l'inode tenu (parti, non lu), le jugement de COM-PRG-001 seul.
     #[test]
     fn empreinte_connue_vue_au_lancement() {
+        use crate::protection::sources::{Certitude, tests as s};
         let dossier = crate::essais::temporaire().join(format!("vanguard-veilleur-empreinte-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dossier);
         std::fs::create_dir_all(&dossier).unwrap();
-        let fichier = dossier.join("facture");
-        std::fs::write(&fichier, b"charge inventee").unwrap();
+        let Some(fichier) = s::programme_jetable(&dossier, "facture", b"charge inventee") else {
+            let _ = std::fs::remove_dir_all(&dossier);
+            return crate::essais::saute("sleep absent");
+        };
         let empreinte = crate::protection::empreintes::sha256(&fichier).unwrap();
         let mut fichiers = crate::protection::sources::Fichiers::pour_essai(vec![empreinte]);
+        let mut enfant = s::lancer_jetable(&fichier);
+        let tenu = s::tenir_quand_lance(enfant.id(), &fichier);
         let programme = EnMarche {
             chemin: Some(fichier.to_string_lossy().into_owned()),
-            ..en_marche(300, "facture", Some("facture"))
+            ..en_marche(enfant.id(), "facture", Some("facture"))
         };
-        let alerte = juger_lance_avec(
-            &lance(Lecture::Complet(programme.clone()), &["bash"], false),
-            &mut fichiers,
-        )
-        .unwrap();
-        assert!(
-            alerte.grave && alerte.cle.ends_with(&*fichier.to_string_lossy()),
-            "{alerte:?}"
+        let avec = |tenu, de_vanguard| Lance {
+            tenu,
+            ..lance(Lecture::Complet(programme.clone()), &["bash"], de_vanguard)
+        };
+        let verdicts = (
+            juger_lance_avec(&avec(tenu, false), &mut fichiers),
+            juger_lance_avec(&avec(s::tenir_quand_lance(enfant.id(), &fichier), true), &mut fichiers),
+            juger_lance_avec(&avec(None, false), &mut fichiers),
         );
-        assert_eq!(
-            juger_lance_avec(
-                &lance(Lecture::Complet(programme.clone()), &["vanguard"], true),
-                &mut fichiers
-            ),
-            None
-        );
-        let mut vide = crate::protection::sources::Fichiers::pour_essai(Vec::new());
-        assert_eq!(
-            juger_lance_avec(&lance(Lecture::Complet(programme), &["bash"], false), &mut vide),
-            None
-        );
+        let _ = enfant.kill();
+        let _ = enfant.wait();
         let _ = std::fs::remove_dir_all(&dossier);
+        assert_eq!(verdicts, (Some(Juge::Certain(Certitude::Empreinte)), None, None));
+    }
+
+    /// La décision d'arrêter : les garde-fous (système, critique, session) passent avant tout, puis le compte, puis
+    /// l'accord et la protection active ; tout réuni, arrêter.
+    #[test]
+    fn decision_d_arret() {
+        let tout = Faits {
+            du_compte: true,
+            accord: true,
+            permis: true,
+            ..Faits::default()
+        };
+        assert_eq!(decider(tout), Ok(()));
+        assert_eq!(decider(Faits { systeme: true, ..tout }), Err(Exception::Systeme));
+        assert_eq!(decider(Faits { critique: true, ..tout }), Err(Exception::Critique));
+        assert_eq!(decider(Faits { session: true, ..tout }), Err(Exception::Session));
+        assert_eq!(
+            decider(Faits {
+                du_compte: false,
+                ..tout
+            }),
+            Err(Exception::AutreCompte)
+        );
+        assert_eq!(decider(Faits { accord: false, ..tout }), Err(Exception::PasDAccord));
+        assert_eq!(decider(Faits { permis: false, ..tout }), Err(Exception::PasPermis));
+        // Un garde-fou l'emporte sur tout le reste, et l'autre compte sur l'accord.
+        assert_eq!(
+            decider(Faits {
+                systeme: true,
+                session: true,
+                du_compte: false,
+                ..tout
+            }),
+            Err(Exception::Systeme)
+        );
+        assert_eq!(
+            decider(Faits {
+                du_compte: false,
+                accord: false,
+                permis: false,
+                ..tout
+            }),
+            Err(Exception::AutreCompte)
+        );
+        assert_eq!(decider(Faits::default()), Err(Exception::AutreCompte));
+        // Chaque exception se dit, dans les deux langues.
+        for e in [
+            Exception::Systeme,
+            Exception::Critique,
+            Exception::Session,
+            Exception::AutreCompte,
+            Exception::PasDAccord,
+            Exception::PasPermis,
+            Exception::SansChemin,
+        ] {
+            assert_ne!(pourquoi_pas_arrete(e), "");
+        }
+    }
+
+    /// Sous les essais, seul un programme du dossier des essais peut être gelé : jamais un autre de l'ordinateur.
+    #[test]
+    fn un_essai_n_arrete_que_dans_son_dossier() {
+        let dossier = std::fs::canonicalize(crate::essais::temporaire()).unwrap();
+        let dedans = dossier.join("x").join("prog");
+        assert!(arret_permis_en_essai(&dedans.to_string_lossy()));
+        assert!(!arret_permis_en_essai(
+            &dossier.join("x/../../../prog").to_string_lossy()
+        ));
+        assert!(!arret_permis_en_essai("/usr/bin/sleep"));
+        assert!(!arret_permis_en_essai("prog"));
+        let moi = std::env::current_exe().unwrap();
+        assert!(!arret_permis_en_essai(&moi.to_string_lossy()));
+    }
+
+    /// Le processus jugé n'est arrêté que s'il est encore lui (même départ : pas un numéro repris ; même inode lancé :
+    /// pas un autre exec), et son fichier ne va en quarantaine que si le chemin désigne encore l'inode lancé (un
+    /// fichier mis à sa place n'est jamais touché).
+    #[test]
+    fn course_de_pid_et_fichier_remplace() {
+        use crate::protection::sources::{Certitude, tests as s};
+        let d = crate::essais::temporaire().join(format!("vanguard-veilleur-course-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let Some(f) = s::programme_jetable(&d, "course", b"course") else {
+            let _ = std::fs::remove_dir_all(&d);
+            return crate::essais::saute("sleep absent");
+        };
+        let mut enfant = s::lancer_jetable(&f);
+        let tenu = s::tenir_quand_lance(enfant.id(), &f);
+        let chemin = std::fs::canonicalize(&f).unwrap().to_string_lossy().into_owned();
+        let vu = tenu.as_ref().map(|t| {
+            let mut repris = crate::socle::processus::tenir(t.pid).unwrap();
+            repris.debut = repris.debut.wrapping_add(1);
+            let meme_avant = meme_inode(&chemin, t);
+            // Le fichier effacé puis un autre mis à sa place : le processus tourne toujours l'inode lancé.
+            let _ = std::fs::remove_file(&f);
+            std::fs::write(&f, b"autre fichier").unwrap();
+            (
+                toujours_le_meme(t),
+                toujours_le_meme(&repris),
+                meme_avant,
+                meme_inode(&chemin, t),
+                arreter_certain(&repris, "course", &chemin, Certitude::Essai),
+                crate::socle::processus::est_gele(t.pid),
+            )
+        });
+        let _ = enfant.kill();
+        let _ = enfant.wait();
+        let _ = std::fs::remove_dir_all(&d);
+        let (meme, repris, meme_avant, meme_apres, issue, gele) = vu.expect("le programme lancé ne se tient pas");
+        assert!(meme && !repris, "un départ différent est un autre processus");
+        assert!(
+            meme_avant && !meme_apres,
+            "le fichier remis à sa place n'est pas celui lancé"
+        );
+        assert!(matches!(issue, reponse::Issue::Refuse(_)), "{issue:?}");
+        assert_eq!(gele, Some(false), "rien n'est gelé pour un numéro repris");
+    }
+
+    /// Les processus qui tournent l'inode `inode` (appareil, numéro), quel que soit leur parent.
+    fn qui_tourne(inode: (u64, u64)) -> Vec<u32> {
+        use std::os::unix::fs::MetadataExt;
+        crate::socle::processus::pids()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| std::fs::metadata(format!("/proc/{p}/exe")).is_ok_and(|e| (e.dev(), e.ino()) == inode))
+            .collect()
+    }
+
+    /// L'essai réel, sans VM ni root : une copie jetable d'un programme du système, avec la marque d'essai construite
+    /// à l'exécution, lancée HORS de la lignée de l'essai (`setsid -f` : ce qui descend de Vanguard est intouchable),
+    /// est jugée certaine, gelée, puis arrêtée et mise en quarantaine par le même chemin que le rançongiciel. Rien
+    /// d'autre ne peut l'être : sous les essais, le gel et l'arrêt refusent tout chemin hors du dossier des essais.
+    #[test]
+    fn le_veilleur_gele_et_arrete_l_enfant_marque() {
+        use crate::protection::sources::{Certitude, marque_d_essai, tests as s};
+        let d = crate::essais::temporaire().join(format!("vanguard-veilleur-arret-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let Some(f) = s::programme_jetable(&d, "essai-marque", &marque_d_essai()) else {
+            let _ = std::fs::remove_dir_all(&d);
+            return crate::essais::saute("sleep absent");
+        };
+        let f = std::fs::canonicalize(&f).unwrap();
+        let inode = {
+            use std::os::unix::fs::MetadataExt;
+            let m = std::fs::metadata(&f).unwrap();
+            (m.dev(), m.ino())
+        };
+        let mut pid = None;
+        for _ in 0..50 {
+            // ETXTBSY (un autre essai lance un programme au même moment) : setsid échoue, on relance.
+            let lance = std::process::Command::new("setsid")
+                .arg("-f")
+                .arg(&f)
+                .arg("30")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            if lance.is_err() {
+                break;
+            }
+            for _ in 0..20 {
+                pid = qui_tourne(inode).first().copied();
+                if pid.is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if pid.is_some() {
+                break;
+            }
+        }
+        // Tout ce qui tourne ce fichier, et lui seul, est tué à la fin, quoi qu'il arrive (même mis en quarantaine).
+        let nettoyer = || {
+            for p in qui_tourne(inode) {
+                let _ = std::process::Command::new("kill")
+                    .arg("-KILL")
+                    .arg(p.to_string())
+                    .status();
+            }
+        };
+        let Some(pid) = pid else {
+            let _ = std::fs::remove_dir_all(&d);
+            return crate::essais::saute("setsid absent ou l'enfant ne se lance pas");
+        };
+        let Some(tenu) = s::tenir_quand_lance(pid, &f) else {
+            nettoyer();
+            let _ = std::fs::remove_dir_all(&d);
+            panic!("l'enfant lancé ne se tient pas");
+        };
+        let chemin = f.to_string_lossy().into_owned();
+        let nom = crate::socle::processus::nom_court(pid).unwrap_or_default();
+        let l = Lance {
+            tenu: Some(tenu),
+            ..lance(
+                Lecture::Complet(EnMarche {
+                    chemin: Some(chemin.clone()),
+                    ..en_marche(pid, &nom, Some(&chemin))
+                }),
+                &[],
+                false,
+            )
+        };
+        let tenu = l.tenu.as_ref().unwrap();
+        let mut sans_liste = crate::protection::sources::Fichiers::de(None);
+        let juge = juger_lance_avec(&l, &mut sans_liste);
+        let faits = faits_de(pid, &nom, &chemin, tenu);
+        if faits.session {
+            nettoyer();
+            let _ = std::fs::remove_dir_all(&d);
+            return crate::essais::saute("session à distance ouverte : rien n'est arrêté sous elle");
+        }
+        let decision = decider(Faits {
+            accord: true,
+            permis: true,
+            ..faits
+        });
+        let issue = arreter_certain(tenu, &nom, &chemin, Certitude::Essai);
+        // Arrêté : le processus n'est plus là (ou n'est plus qu'un zombie que son nouveau parent va relever).
+        let mut parti = false;
+        for _ in 0..300 {
+            parti = crate::socle::processus::debut(pid) != Some(tenu.debut)
+                || std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                    .ok()
+                    .and_then(|s| crate::socle::processus::etat_du_stat(&s))
+                    == Some('Z');
+            if parti {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let encore_la = f.exists();
+        nettoyer();
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(juge, Some(Juge::Certain(Certitude::Essai)));
+        assert!(faits.du_compte && !faits.systeme && !faits.critique, "{faits:?}");
+        assert_eq!(decision, Ok(()));
+        assert!(matches!(issue, reponse::Issue::Arrete(_)), "{issue:?}");
+        assert!(parti, "l'enfant tourne encore");
+        assert!(!encore_la, "le fichier n'est pas en quarantaine");
     }
 
     fn lance(lecture: Lecture, lignee: &[&str], de_vanguard: bool) -> Lance {
@@ -3269,6 +3935,7 @@ mod tests {
             lecture,
             lignee: lignee.iter().map(|n| (*n).to_string()).collect(),
             de_vanguard,
+            tenu: None,
         }
     }
 

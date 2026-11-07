@@ -121,6 +121,113 @@ pub(crate) fn etat_du_stat(stat: &str) -> Option<char> {
     apres.split_whitespace().next()?.chars().next()
 }
 
+/// Le départ d'un processus, 22e champ de `/proc/<pid>/stat` (en tops d'horloge depuis le démarrage), lu après la
+/// DERNIÈRE « ) » comme l'état. Avec le PID, il désigne un processus sans ambiguïté : un numéro repris par un autre
+/// processus a un autre départ, alors qu'un `exec` garde le sien.
+#[cfg(target_os = "linux")]
+pub(crate) fn debut_du_stat(stat: &str) -> Option<u64> {
+    let (_, apres) = stat.rsplit_once(')')?;
+    apres.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// Le départ du processus `pid` ; `None` : parti ou illisible.
+#[cfg(target_os = "linux")]
+pub(crate) fn debut(pid: u32) -> Option<u64> {
+    debut_du_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// Les quatre comptes de la ligne « Uid: » de `/proc/<pid>/status` (réel, effectif, sauvé, système de fichiers) sont-ils
+/// tous `uid` ? Un programme setuid lancé depuis ce compte a un autre compte effectif : il n'est pas « du compte », et
+/// ce n'est pas au veilleur, sans droits, de l'arrêter.
+#[cfg(target_os = "linux")]
+pub(crate) fn tout_au_compte(status: &str, uid: u32) -> bool {
+    let Some(ligne) = status.lines().find_map(|l| l.strip_prefix("Uid:")) else {
+        return false;
+    };
+    let comptes: Vec<&str> = ligne.split_whitespace().collect();
+    comptes.len() == 4 && comptes.iter().all(|c| c.parse::<u32>().ok() == Some(uid))
+}
+
+/// Un programme lancé, tenu par son inode : le lien `/proc/<pid>/exe` ouvert en O_PATH désigne le fichier que le noyau
+/// a lancé, même effacé ou remplacé depuis sur le disque, sans rien y lire (O_PATH n'appelle pas l'ouverture du système
+/// de fichiers : un montage FUSE qui ne répond pas ne fige pas le veilleur). Le haché, c'est lui, jamais le chemin relu.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub(crate) struct Tenu {
+    pub(crate) pid: u32,
+    /// Le départ du processus (`debut`) : ce qui sera gelé doit être ce processus-là.
+    pub(crate) debut: u64,
+    /// Tous ses comptes sont celui de ce processus-ci (`tout_au_compte`).
+    pub(crate) du_compte: bool,
+    exe: std::fs::File,
+}
+
+#[cfg(target_os = "linux")]
+impl Tenu {
+    /// Le lien ouvert en O_PATH : il se lit en le rouvrant par `/proc/self/fd/<n>` (voir `protection::sources`), et
+    /// `metadata()` donne l'inode lancé.
+    pub(crate) fn exe(&self) -> &std::fs::File {
+        &self.exe
+    }
+}
+
+/// Tient le programme du processus `pid` : son départ, puis son programme ouvert, puis ses comptes, puis son départ
+/// relu. Le même départ avant et après : le programme ouvert est bien celui de ce processus (un numéro repris entre
+/// les deux aurait un autre départ). `None` : parti, d'un autre compte que /proc ne nous ouvre pas, ou repris.
+#[cfg(target_os = "linux")]
+pub(crate) fn tenir(pid: u32) -> Option<Tenu> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let avant = debut(pid)?;
+    let exe = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH)
+        .open(format!("/proc/{pid}/exe"))
+        .ok()?;
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    if debut(pid)? != avant {
+        return None;
+    }
+    Some(Tenu {
+        pid,
+        debut: avant,
+        du_compte: tout_au_compte(&status, crate::socle::uid()),
+        exe,
+    })
+}
+
+/// Gèle le processus `pid` seulement s'il est encore celui qui a démarré à `debut` : le signal part par un pidfd
+/// (pidfd_send_signal), qui ne peut pas atteindre un autre processus, ouvert AVANT de relire le départ. Si le départ
+/// lu après l'ouverture est le bon, le pidfd désigne ce processus (né avant l'ouverture, il portait déjà ce numéro).
+/// Sans pidfd (noyau d'avant 5.3, filtre d'appels), rien n'est gelé : jamais de signal envoyé au numéro seul ici.
+#[cfg(target_os = "linux")]
+pub(crate) fn geler_si(pid: u32, debut_attendu: u64) -> bool {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let Ok(p) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: pidfd_open ne lit aucune mémoire ; un descripteur rendu (≥ 0) est à nous seuls, confié à OwnedFd.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, p, 0u32) };
+    let Some(fd) = i32::try_from(fd).ok().filter(|&f| f >= 0) else {
+        return false;
+    };
+    // SAFETY: voir ci-dessus : ce descripteur vient d'être rendu par le noyau et n'appartient à rien d'autre.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    if debut(pid) != Some(debut_attendu) {
+        return false;
+    }
+    // SAFETY: un descripteur à nous, vivant ; aucune information de signal (pointeur nul permis), drapeaux nuls.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            fd.as_raw_fd(),
+            libc::SIGSTOP,
+            std::ptr::null::<libc::siginfo_t>(),
+            0u32,
+        )
+    };
+    r == 0
+}
+
 #[cfg(target_os = "linux")]
 fn envoyer_signal(pid: u32, signal: libc::c_int) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
@@ -131,8 +238,86 @@ fn envoyer_signal(pid: u32, signal: libc::c_int) -> bool {
 }
 
 #[cfg(all(test, target_os = "linux"))]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 mod tests {
     use super::*;
+
+    /// Le départ se lit après la DERNIÈRE « ) » : un nom de programme qui en contient une (choisi par lui) ne décale
+    /// pas les champs.
+    #[test]
+    fn debut_dans_stat() {
+        let champs = |debut: &str| format!("S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 {debut} 19 20");
+        assert_eq!(debut_du_stat(&format!("42 (bash) {}", champs("8812"))), Some(8812));
+        assert_eq!(debut_du_stat(&format!("42 (a) 1 2) {}", champs("77"))), Some(77));
+        assert_eq!(debut_du_stat("42 (court) S 1 2"), None);
+        assert_eq!(debut_du_stat(&format!("42 (x) {}", champs("-3"))), None);
+    }
+
+    /// Un programme setuid lancé depuis le compte (compte effectif autre) n'est pas « du compte ».
+    #[test]
+    fn comptes_du_status() {
+        assert!(tout_au_compte(
+            "Name:\tx\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\n",
+            1000
+        ));
+        assert!(!tout_au_compte("Uid:\t1000\t0\t0\t0\n", 1000));
+        assert!(!tout_au_compte("Uid:\t0\t0\t0\t0\n", 1000));
+        assert!(!tout_au_compte("Uid:\t1000\t1000\n", 1000));
+        assert!(!tout_au_compte("Gid:\t1000\t1000\t1000\t1000\n", 1000));
+    }
+
+    /// Ce processus se tient lui-même (son programme, son départ, son compte) ; un départ faux ne gèle rien : le
+    /// numéro seul ne suffit jamais à envoyer le signal.
+    #[test]
+    fn tenir_soi_et_ne_geler_que_le_bon_depart() {
+        use std::os::unix::fs::MetadataExt;
+        let moi = std::process::id();
+        let t = tenir(moi).expect("ce processus se tient");
+        assert_eq!(t.pid, moi);
+        assert!(t.du_compte);
+        assert_eq!(Some(t.debut), debut(moi));
+        let lance = std::fs::metadata(std::env::current_exe().unwrap()).unwrap();
+        let tenu = t.exe().metadata().unwrap();
+        assert_eq!((tenu.dev(), tenu.ino()), (lance.dev(), lance.ino()));
+        assert!(tenir(u32::MAX).is_none());
+        assert!(!geler_si(u32::MAX, 0));
+
+        // Un enfant qui dort : un départ faux (celui d'un numéro repris) ne lui envoie rien ; le bon le gèle.
+        let Ok(mut enfant) = std::process::Command::new("sleep").arg("30").spawn() else {
+            return crate::essais::saute("sleep ne se lance pas");
+        };
+        let pid = enfant.id();
+        let mut depart = None;
+        for _ in 0..200 {
+            if est_gele(pid) == Some(false) && nom_court(pid).as_deref() == Some("sleep") {
+                depart = debut(pid);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let faux = depart.map(|d| geler_si(pid, d.wrapping_add(1)));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let gele_par_le_faux = est_gele(pid);
+        let bon = depart.map(|d| geler_si(pid, d));
+        // Le gel se fait quand le noyau sert l'enfant : un instant après le signal.
+        let mut gele_par_le_bon = est_gele(pid);
+        for _ in 0..200 {
+            if gele_par_le_bon != Some(false) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            gele_par_le_bon = est_gele(pid);
+        }
+        let _ = enfant.kill();
+        let _ = enfant.wait();
+        assert!(depart.is_some(), "l'enfant ne se lit pas");
+        assert_eq!((faux, gele_par_le_faux), (Some(false), Some(false)));
+        assert_eq!((bon, gele_par_le_bon), (Some(true), Some(true)));
+    }
 
     #[test]
     fn etat_dans_stat() {

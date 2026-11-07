@@ -240,14 +240,15 @@ enum Commande {
         etat: Option<String>,
     },
     /// Veilleur (Linux 6.6 et plus) : chaque programme lancé et chaque connexion fermée, vus sur le moment et jugés
-    /// comme au bilan ; avec la protection active, il peut geler et arrêter un rançongiciel quasi certain. Coupé par
-    /// défaut. Sans argument : son état, puis l'allumer ou le couper, après accord. « rancongiciel on|off » règle la
-    /// veille anti-rançongiciel des dossiers personnels.
+    /// comme au bilan ; avec la protection active et votre accord, il peut arrêter un malware connu à son lancement,
+    /// et geler puis arrêter un rançongiciel quasi certain. Coupé par défaut. Sans argument : son état, puis l'allumer
+    /// ou le couper, après accord. « connus on|off » règle l'arrêt du malware connu ; « rancongiciel on|off » la veille
+    /// anti-rançongiciel des dossiers personnels.
     #[command(visible_alias = "watcher")]
     Veilleur {
-        #[arg(value_parser = interrupteur_veilleur, value_name = "on|off|rancongiciel")]
+        #[arg(value_parser = interrupteur_veilleur, value_name = "on|off|connus|rancongiciel")]
         etat: Option<String>,
-        /// Pour « rancongiciel » : on ou off.
+        /// Pour « connus » ou « rancongiciel » : on ou off.
         #[arg(value_parser = interrupteur, value_name = "on|off")]
         sous_etat: Option<String>,
         /// Le service lui-même, lancé par systemd.
@@ -2971,10 +2972,12 @@ fn sans_etat(valeur: Option<&str>) -> Option<&str> {
     valeur.filter(|v| *v != "etat")
 }
 
-/// Le veilleur prend aussi « rancongiciel » (ransomware), pour la surveillance en direct des dossiers.
+/// Le veilleur prend aussi « rancongiciel » (ransomware), pour la surveillance en direct des dossiers, et « connus »
+/// (known), pour l'arrêt du malware connu à son lancement.
 fn interrupteur_veilleur(mot: &str) -> Result<String, String> {
     match selection::simplifier(mot.trim()).as_str() {
         "rancongiciel" | "ransomware" => Ok("rancongiciel".into()),
+        "connus" | "connu" | "known" => Ok("connus".into()),
         _ => interrupteur(mot),
     }
 }
@@ -4538,6 +4541,8 @@ mod tests_menu {
         }
         assert!(interrupteur("peut-etre").is_err());
         assert_eq!(interrupteur_veilleur("ransomware").as_deref(), Ok("rancongiciel"));
+        assert_eq!(interrupteur_veilleur("known").as_deref(), Ok("connus"));
+        assert_eq!(interrupteur_veilleur("arrêt").as_deref(), Ok("off"));
         assert_eq!(interrupteur_wifi_public("portal").as_deref(), Ok("portail"));
         assert_eq!(sans_etat(Some("etat")), None);
         assert_eq!(sans_etat(Some("on")), Some("on"));

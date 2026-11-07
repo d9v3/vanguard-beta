@@ -26,6 +26,12 @@ pub(crate) struct Cible {
     pub detection: String,
     /// La clé stable « `rancongiciel:<chemin>` », qui relie l'alerte, la preuve et le geste.
     pub cle: String,
+    /// Le départ de la racine (`processus::debut`), quand celui qui l'a désignée l'a lu avec ce qu'il a jugé (le
+    /// veilleur, au lancement) : la racine n'est alors gelée que par un pidfd si elle est encore ce processus-là, et
+    /// n'est arrêtée que si son départ n'a pas changé. Un numéro repris entre le jugement et l'arrêt ne fait jamais
+    /// geler ni arrêter un autre programme. `None` : la racine se juge maintenant (le rançongiciel, attribué à
+    /// l'instant).
+    pub debut: Option<u64>,
 }
 
 /// Ce qu'a donné la réponse.
@@ -69,7 +75,33 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
     }
 
     let mut geles: HashSet<u32> = HashSet::new();
-    processus::geler(cible.racine);
+    match cible.debut {
+        #[cfg(target_os = "linux")]
+        Some(debut) => {
+            if !processus::geler_si(cible.racine, debut) {
+                return Issue::Refuse(
+                    tr!(
+                        "le processus jugé n'est plus là (parti, ou son numéro repris par un autre) : rien n'est gelé",
+                        "the judged process is gone (exited, or its number reused by another): nothing is frozen"
+                    )
+                    .to_string(),
+                );
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        Some(_) => {
+            return Issue::Refuse(
+                tr!(
+                    "le départ d'un processus ne se vérifie pas ici : rien n'est gelé",
+                    "a process start cannot be checked here: nothing is frozen"
+                )
+                .to_string(),
+            );
+        }
+        None => {
+            processus::geler(cible.racine);
+        }
+    }
     geles.insert(cible.racine);
 
     // Un membre pris dans la lignée (le même groupe de processus) sans descendre de la racine, sous un hôte de session
@@ -108,6 +140,24 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
         if processus::est_gele(pid) == Some(false) {
             processus::geler(pid);
         }
+    }
+
+    // Gelée, la racine ne peut plus finir d'elle-même ; son départ relu juste avant l'arrêt dit qu'elle est encore
+    // celle qui a été jugée (un tiers a pu la tuer pendant les passes, et son numéro être repris).
+    #[cfg(target_os = "linux")]
+    if let Some(debut) = cible.debut
+        && processus::debut(cible.racine) != Some(debut)
+    {
+        let mut v: Vec<u32> = geles.into_iter().filter(|&p| p != cible.racine).collect();
+        v.sort_unstable();
+        reprendre(&v);
+        return Issue::Refuse(
+            tr!(
+                "le processus jugé n'est plus là (son numéro repris par un autre) : rien n'est arrêté, sa lignée est reprise",
+                "the judged process is gone (its number reused by another): nothing is stopped, its lineage is resumed"
+            )
+            .to_string(),
+        );
     }
 
     // Arrêt + quarantaine de la racine, sous les garde-fous du blocage (preuve relevée avant).

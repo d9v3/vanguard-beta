@@ -324,9 +324,15 @@ Téléchargements, d'un dossier temporaire ou de la corbeille.
 **Le veilleur** (Linux 6.6 et plus, coupé par défaut, `vanguard veilleur on`) — entre deux passes de la surveillance,
 chaque programme lancé, même de quelques millisecondes, et chaque connexion TCP ou UDP au moment où elle se ferme.
 Les programmes sont jugés comme au bilan, les connexions contre les serveurs de commande de botnets déjà
-téléchargés ; le grave va au tableau de bord et en notification. Sans root ni code chargé dans le noyau, il
-n'arrête rien de ce côté. Un programme parti avant d'être lu est compté tel quel, jamais jugé sain, et le programme
-d'une connexion fermée n'est pas connu (le noyau ne le donne pas).
+téléchargés ; le grave va au tableau de bord et en notification. Avec la protection active et un accord à part
+(proposé à l'allumage, ou `vanguard veilleur connus on`), il arrête aussi tout seul, à son lancement, un programme
+certain du compte : son empreinte est celle d'un malware connu (MalwareBazaar), ou il porte la marque d'essai EICAR
+dans un exécutable. Le jugement porte sur le fichier que le noyau a lancé, jamais sur ce qui est ensuite à son chemin ;
+le programme et ce qu'il a lancé sont gelés, la preuve est relevée, puis il est arrêté et mis en quarantaine, sous les
+garde-fous du blocage. Jamais un programme du système, un processus critique, Vanguard ni un accès à distance pendant
+une session, ni un programme d'un autre compte (une alerte, et « Bloquer » avec les droits d'administrateur). Un
+programme malveillant du compte peut éteindre le veilleur. Un programme parti avant d'être lu est compté tel quel,
+jamais jugé sain, et le programme d'une connexion fermée n'est pas connu (le noyau ne le donne pas).
 
 **Veilleur anti-rançongiciel** (Linux, proposé à l'allumage du veilleur ou `vanguard veilleur rancongiciel on`, coupé
 par défaut) — les dossiers personnels (Documents, Images, Bureau, Musique, Vidéos, Téléchargements) surveillés en
