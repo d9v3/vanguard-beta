@@ -60,10 +60,10 @@ CI_APRES=
 ci_apres_notes() {
   [[ -n $CI_APRES ]] || return 0
   printf '%s\n' "ℹ Programmes Linux et Windows identiques à ceux de la compilation reproductible de la CI, faite sur \
-le commit $CI_APRES : il suit celui de la version et ne change que des captures d'écran ou la page des fonctions, rien \
-de ce qui est compilé." "ℹ Linux and Windows programs identical to those of the CI's reproducible build, run on commit \
-$CI_APRES: it follows the version's commit and only changes screenshots or the features page, nothing that is \
-compiled." ""
+le commit $CI_APRES : il suit celui de la version et ne change que des captures d'écran, l'image de partage ou la page \
+des fonctions, rien de ce qui est compilé." "ℹ Linux and Windows programs identical to those of the CI's reproducible \
+build, run on commit $CI_APRES: it follows the version's commit and only changes screenshots, the social preview image \
+or the features page, nothing that is compiled." ""
 }
 
 # Ce qui change, version par version : le titre de son commit, ses puces dessous (sans les lignes de co-auteur). Une

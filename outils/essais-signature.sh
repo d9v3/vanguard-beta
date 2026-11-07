@@ -892,7 +892,8 @@ else
 fi
 # Ce que les notes en disent, et d'où elles le prennent.
 r=$(CI_APRES=0123456789ab bash -c "$(awk '/^ci_apres_notes\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"); ci_apres_notes")
-[[ $(grep -c 'commit 0123456789ab' <<<"$r") == 2 && $r == *"captures d'écran"* && $r == *"screenshots"* &&
+[[ $(grep -c 'commit 0123456789ab' <<<"$r") == 2 && $r == *"captures d'écran, l'image de partage ou la page"* &&
+  $r == *"screenshots, the social preview image or the features page"* &&
   -z $(CI_APRES= bash -c "$(awk '/^ci_apres_notes\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"); ci_apres_notes") ]] &&
   awk '/^notes\(\) \{/ { n = 1 } n && /^  ci_apres_notes$/ { c = 1 } n && /^\}/ { n = 0 }
     /CI_APRES=\$\(sed -nE .*<<<"\$EMPREINTES_CI"\)$/ { e = 1 } END { exit !(c && e) }' "$DEPOT/outils/publier-version.sh" &&
