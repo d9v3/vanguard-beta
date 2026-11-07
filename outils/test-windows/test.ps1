@@ -2021,6 +2021,25 @@ if ("$(Sortie 'alerte-inconnue')" -match 'Aucune alerte de cet identifiant|No al
 else { Bug 'vanguard alerte : un identifiant absent du journal n''est pas dit absent' }
 Remove-Item -LiteralPath $dossierR1 -Recurse -Force -ErrorAction SilentlyContinue
 
+Etape 'Suites de gestes (blocage, défense R2) : un geste ajouté, scellé dans blocage.json, puis la suite par défaut remise'
+# L'éditeur du menu Blocage, par des réponses tapées d'avance : Suites de gestes (7), Outil d'attaque (3), Ajouter (a),
+# Suspendre (1). La suite s'écrit dans blocage.json, scellée ; « d » la retire, et le fichier redevient celui d'avant
+# (rien d'écrit pour une suite par défaut). Le fichier forgé et le plancher du certain sont vérifiés par les essais purs.
+$blocageJson = Join-Path $env:LOCALAPPDATA 'vanguard\blocage.json'
+LancerAvec 'blocage-suites' @('blocage') "7`n3`na`n1`n`n`n`n"
+$t = "$(Sortie 'blocage-suites')"
+$contenu = if (Test-Path $blocageJson) { Get-Content -LiteralPath $blocageJson -Raw -Encoding UTF8 } else { '' }
+if ($t -match 'suite enregistrée|suite saved' -and $contenu -match '"outil-d-attaque"' -and $contenu -match '"suspendre"') { Ok 'Suite d''un outil d''attaque : Suspendre ajouté, écrit dans blocage.json' }
+else { Bug "Suite d'un outil d'attaque non enregistrée ($((Lignes $t | Where-Object { $_ -match '✖|⚠' }) -join ' / '))" }
+LancerAvec 'blocage-suites-relue' @('blocage') "7`n`n`n"
+$t = (Lignes "$(Sortie 'blocage-suites-relue')") -join "`n"
+if ($t -match "Outil d'attaque \*|Attack tool \*" -and $t -notmatch 'changé hors de Vanguard|changed outside Vanguard') { Ok 'Suite relue au lancement suivant, scellée (marquée « * », aucun avertissement)' }
+else { Bug 'Suite écrite par l''éditeur non relue, ou dite changée hors de Vanguard' }
+LancerAvec 'blocage-suites-defaut' @('blocage') "7`n3`nd`n`n`n`n"
+$contenu = if (Test-Path $blocageJson) { Get-Content -LiteralPath $blocageJson -Raw -Encoding UTF8 } else { '' }
+if ($contenu -notmatch '"outil-d-attaque"') { Ok 'Suite par défaut remise : plus rien d''écrit pour ce type' }
+else { Bug 'La suite par défaut remise laisse la suite choisie dans blocage.json' }
+
 Journal "FIN $(Get-Date -Format 'HH:mm:ss')"
 $rapport = Rapport
 $toutes = @($script:etapes | ForEach-Object { $_.Verifs })
