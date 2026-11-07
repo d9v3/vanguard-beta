@@ -17,8 +17,8 @@
 // Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crossterm::terminal;
@@ -52,6 +52,41 @@ static DEMANDE: AtomicU64 = AtomicU64::new(0);
 
 /// La dernière hauteur demandée : redessiner le même menu (une flèche, un caractère tapé) ne redemande rien.
 static DERNIERE: Mutex<Option<u16>> = Mutex::new(None);
+
+/// La fenêtre est-elle à Vanguard (`systeme::Fenetre::trouver`) ? Lu une fois, à la première demande.
+static SIENNE: OnceLock<bool> = OnceLock::new();
+
+/// Une retouche de la taille est en cours : la fenêtre va prendre `COLONNES`.
+static EN_COURS: AtomicBool = AtomicBool::new(false);
+
+/// Une retouche vient de finir : le menu se redessine sur la grille obtenue (`a_fini`).
+static FINIE: AtomicBool = AtomicBool::new(false);
+
+/// Les colonnes que Vanguard vient de demander à sa propre fenêtre, tant que la retouche n'est pas finie ; `None`
+/// sinon. Un cadre dessiné plus large que la fenêtre qui arrive serait recoupé au rétrécissement (Terminal Windows,
+/// conhost) : l'écran sauterait et l'historique garderait les morceaux. Une fois la retouche finie, plus de borne :
+/// une fenêtre que la personne agrandit ensuite élargit le cadre.
+pub fn colonnes_demandees() -> Option<usize> {
+    EN_COURS.load(Ordering::SeqCst).then_some(usize::from(COLONNES))
+}
+
+/// Une retouche a-t-elle fini depuis la dernière question ? Le cadre, borné pendant qu'elle courait, reprend alors
+/// la largeur de la fenêtre, même si sa grille n'a pas changé.
+pub fn a_fini() -> bool {
+    FINIE.swap(false, Ordering::SeqCst)
+}
+
+/// La fin d'une retouche, quelle que soit la sortie de `ajuster` ; une plus récente qui l'a remplacée reste en cours.
+struct Fin(u64);
+
+impl Drop for Fin {
+    fn drop(&mut self) {
+        if DEMANDE.load(Ordering::SeqCst) == self.0 {
+            EN_COURS.store(false, Ordering::SeqCst);
+            FINIE.store(true, Ordering::SeqCst);
+        }
+    }
+}
 
 /// Une fenêtre et ce qu'elle montre : position et taille en pixels du bureau, grille du terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,12 +127,21 @@ pub fn epouser(rangees: usize) {
         *derniere = Some(rangees);
     }
     let demande = DEMANDE.fetch_add(1, Ordering::SeqCst).saturating_add(1);
-    let _ = std::thread::Builder::new()
+    // Avant le dessin qui suit : son cadre ne dépasse pas la largeur demandée. Seulement pour la fenêtre de
+    // Vanguard ; une autre ne bouge pas, son cadre garde toute sa largeur.
+    if *SIENNE.get_or_init(|| systeme::Fenetre::trouver().is_some()) {
+        EN_COURS.store(true, Ordering::SeqCst);
+    }
+    let lance = std::thread::Builder::new()
         .name("fenetre".into())
         .spawn(move || ajuster(demande, COLONNES, rangees));
+    if lance.is_err() {
+        drop(Fin(demande));
+    }
 }
 
 fn ajuster(demande: u64, colonnes: u16, rangees: u16) {
+    let _fin = Fin(demande);
     let Some(fenetre) = systeme::Fenetre::trouver() else {
         return;
     };
@@ -597,6 +641,22 @@ mod systeme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pendant une retouche demandée par Vanguard, le cadre ne dépasse pas la largeur qui arrive ; après, plus de
+    /// borne (une fenêtre agrandie ensuite élargit le cadre), et le menu se redessine une fois.
+    #[test]
+    fn la_largeur_demandee_ne_borne_que_pendant_la_retouche() {
+        let demande = DEMANDE.fetch_add(1, Ordering::SeqCst) + 1;
+        EN_COURS.store(true, Ordering::SeqCst);
+        assert_eq!(colonnes_demandees(), Some(usize::from(COLONNES)));
+        // Une retouche plus ancienne, remplacée, ne lève pas la borne.
+        drop(Fin(demande - 1));
+        assert_eq!(colonnes_demandees(), Some(usize::from(COLONNES)));
+        drop(Fin(demande));
+        assert_eq!(colonnes_demandees(), None);
+        assert!(a_fini());
+        assert!(!a_fini());
+    }
 
     const ZONE: Zone = Zone {
         x: 0,

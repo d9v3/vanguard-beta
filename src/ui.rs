@@ -499,12 +499,20 @@ fn couper_en_couleur(t: &str, n: usize) -> String {
         }
         court.push(c);
     }
-    let fin = court.trim_end_matches(' ').len();
-    court.truncate(fin);
-    court.push('…');
+    // Ni espace ni code de couleur juste avant « … » : « VANGUARD{RESET} {GRIS} » garderait son espace derrière
+    // le code qui le suit.
+    loop {
+        let sans_espace = court.trim_end_matches(' ').len();
+        court.truncate(sans_espace);
+        match court.rfind('\x1b') {
+            Some(i) if court.ends_with('m') && !court[i..].contains(' ') => court.truncate(i),
+            _ => break,
+        }
+    }
     if t.contains('\x1b') {
         court.push_str(RESET);
     }
+    court.push('…');
     court
 }
 
@@ -766,7 +774,15 @@ mod tests {
         );
         // Aucun code de couleur coupé en deux, et la couleur rendue avant le bord.
         assert!(!propre.contains("Cyber") && !propre.contains('['), "{milieu:?}");
-        assert!(milieu.contains(&format!("…{RESET}  ")), "{milieu:?}");
+        assert!(milieu.contains(&format!("{RESET}…  ")), "{milieu:?}");
+        // Coupé juste après un code et une espace : ni l'espace ni le code ne restent avant « … ».
+        let titre = format!("{ACCENT}VANGUARD{RESET} {GRIS}0.90.0{RESET}");
+        let coupe = couper_en_couleur(&titre, 10);
+        assert_eq!(coupe, format!("{ACCENT}VANGUARD{RESET}…"));
+        assert_eq!(largeur_affichee(&coupe), 9);
+        let [_, milieu, _] = lignes_cadre_sur(&titre, "", 16);
+        assert_eq!(largeur_affichee(&milieu), 16);
+        assert!(sans_codes(&milieu).starts_with("│  VANGUARD…"), "{milieu:?}");
         // Sous le minimum, ou sans terminal (essais, tube, rapport), les 76 colonnes d'avant.
         assert_eq!(largeur_du_cadre(Some(CADRE_MIN)), LARGEUR);
         assert_eq!(largeur_du_cadre(Some(CADRE_MIN + 1)), CADRE_MIN);

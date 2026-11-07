@@ -900,7 +900,7 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
         // La grille avant de dessiner : si elle change ensuite, sans que le terminal le dise, le menu se redessine.
         let grille = terminal::size().ok();
         // Le cadre de tête suit la largeur de la fenêtre, redessiné avec le reste.
-        let cadre = largeur_du_cadre(grille.map(|(colonnes, _)| usize::from(colonnes)));
+        let colonnes = grille.map(|(colonnes, _)| usize::from(colonnes));
         let recherche = est_une_recherche(&etat.tape, &touches);
         let (trouves, corrections, partiels): (Vec<&Choisissable>, Vec<(String, String)>, bool) = if recherche {
             let mots = mots_du_menu
@@ -930,13 +930,13 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
         // En mode clavier, le terminal ne revient plus seul au début de la ligne : d'où les « \r\n ».
         let mut ecran = String::from("\x1b[H");
         if recherche {
-            let (entete, hauteur_entete) = entete_de_recherche(lignes, colonne, cadre);
+            let (entete, hauteur_entete) = entete_de_recherche(lignes, colonne, largeur_de_cadre(colonnes));
             let entete = (&entete[..], hauteur_entete);
             ecran += &ecran_de_recherche(lignes, &etat, entete, &trouvailles, &aides, panneau);
         } else {
             ecran += &ecran_du_menu(
                 lignes,
-                (colonne, cadre),
+                (colonne, colonnes),
                 visibles.len(),
                 &mut etat,
                 &aides.menu,
@@ -1050,10 +1050,10 @@ fn ecran_de_recherche(
 
 /// L'écran du menu entier : ses rangées dans la fenêtre (l'en-tête fixe, la liste qui défile) et l'aperçu de la ligne
 /// en cours (`panneau` : la largeur de son texte), puis l'aide et la saisie. `colonne` : celle des précisions ;
-/// `cadre` : la largeur du cadre de tête. Garde `etat.haut` d'un affichage à l'autre.
+/// `colonnes` : celles de la fenêtre, pour le cadre de tête. Garde `etat.haut` d'un affichage à l'autre.
 fn ecran_du_menu(
     lignes: &[Ligne],
-    (colonne, cadre): (usize, usize),
+    (colonne, colonnes): (usize, Option<usize>),
     nombre_visibles: usize,
     etat: &mut EtatMenu,
     aide: &str,
@@ -1063,8 +1063,13 @@ fn ecran_du_menu(
     // Les rangées du menu ; l'en-tête est ce qui précède la première ligne de choix.
     let mut rangees: Vec<String> = Vec::new();
     let (mut n, mut rangee_en_cours, mut entete_menu) = (0, 0, None);
+    let cadre = largeur_de_cadre(colonnes);
+    let mut rangee_du_cadre = None;
     for l in lignes {
         let ligne_de_choix = matches!(l, Ligne::Choix { .. });
+        if let Ligne::Cadre { gauche, droite } = l {
+            rangee_du_cadre.get_or_insert((rangees.len(), gauche, droite));
+        }
         if ligne_de_choix {
             entete_menu.get_or_insert(rangees.len());
             if n == en_cours {
@@ -1106,6 +1111,14 @@ fn ecran_du_menu(
     });
     // L'aide et la saisie restent sous le menu ; la fenêtre se fait à sa hauteur.
     crate::fenetre::epouser(voulues.saturating_add(2));
+    // Une taille que Vanguard vient de demander borne le cadre dès ce dessin-ci, avant que la fenêtre ne rétrécisse.
+    let borne = largeur_de_cadre(colonnes);
+    if borne != cadre
+        && let Some((i, gauche, droite)) = rangee_du_cadre
+        && let Some(trois) = rangees.get_mut(i..i.saturating_add(3))
+    {
+        trois.clone_from_slice(&lignes_cadre_sur(gauche, droite, borne));
+    }
     let place = terminal::size().map_or(24, |(_, r)| usize::from(r)).saturating_sub(2);
     // Des rangées vides pour l'aperçu, jamais au point de faire défiler le menu.
     if voulues > rangees.len() {
@@ -1222,6 +1235,13 @@ fn touche_du_menu(
     ControlFlow::Continue(())
 }
 
+/// La largeur du cadre de tête dans une fenêtre de `colonnes` colonnes, bornée à celle que Vanguard vient de demander
+/// pour sa fenêtre (`fenetre::colonnes_demandees`) : le cadre n'est pas recoupé quand elle rétrécit.
+fn largeur_de_cadre(colonnes: Option<usize>) -> usize {
+    let demandees = crate::fenetre::colonnes_demandees();
+    largeur_du_cadre(colonnes.map(|c| demandees.map_or(c, |d| c.min(d))))
+}
+
 /// Le prochain événement du clavier ou du terminal, ou `None` quand la grille n'est plus `grille`, celle du dessin :
 /// le menu est à redessiner. La vieille console de Windows (conhost) n'annonce que les changements de son tampon
 /// (WINDOW_BUFFER_SIZE_EVENT), pas ceux de la fenêtre : son tampon a des milliers de lignes, et la fenêtre qui
@@ -1231,7 +1251,8 @@ fn evenement(grille: Option<(u16, u16)>) -> Option<Event> {
     loop {
         match event::poll(std::time::Duration::from_millis(150)) {
             Ok(true) => return event::read().ok(),
-            Ok(false) if terminal::size().ok() == grille => {}
+            // Une retouche de la fenêtre finie : le cadre, borné pendant qu'elle courait, reprend la largeur.
+            Ok(false) if terminal::size().ok() == grille && !crate::fenetre::a_fini() => {}
             Ok(false) => return None,
             // Un terminal qui ne répond plus : le menu se redessine, sans tourner à vide.
             Err(_) => {
