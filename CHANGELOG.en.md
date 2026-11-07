@@ -8,7 +8,7 @@ delivered just before it. Since November 7, 2026, more than one release on the s
 other in their day's paragraph. Only the latest version has its download page; every version keeps its tag in the
 repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 
-## Unreleased
+## November 7, 2026: version 0.91.0
 
 - **Vanguard no longer targets macOS.** No more Mac program, no more builds or tests on GitHub's Mac, no more MACOS
   partition on new rescue keys (a key already written keeps its own until it is next rewritten). Deployment removes the
@@ -21,6 +21,12 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   dropped before the title. "━━" titles and "──" subtitles do the same, in menus, checklists and search; next to the
   preview pane, they stop one column before it. List text keeps its width. Without a terminal (pipe, report), frame
   and titles keep their 76 columns.
+- **Checked arithmetic everywhere (ANSSI rules for Rust).** On Linux, the whole program refuses arithmetic overflows
+  and truncating number conversions: every computation is checked, and an out-of-range value gives a stated error
+  instead of a wrong number. Every program error has a readable message; the passphrase and the session key are wiped
+  from memory after use. The Windows parts remain to be reviewed (CONFORMITE-ANSSI.md).
+- **Menus remember the tool you ran.** Coming back to a group, the highlight returns to the tool last run, found by
+  itself rather than by its number.
 
 ## November 6, 2026: version 0.90.0
 

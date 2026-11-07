@@ -9,7 +9,7 @@ jour est permise ; elles se suivent dans le paragraphe de leur journée. Seule l
 téléchargement ; chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par exemple), pour être
 recompilée au besoin.
 
-## Non publiée
+## 7 novembre 2026 : version 0.91.0
 
 - **Vanguard ne vise plus macOS.** Plus de programme pour le Mac, plus de compilation ni d'essais sur le Mac de GitHub,
   plus de partition MACOS sur les nouvelles clés de secours (une clé déjà écrite garde la sienne jusqu'à sa prochaine
@@ -24,6 +24,13 @@ recompilée au besoin.
   « ━━ » et sous-titres « ── » font de même, dans les menus, les listes à cocher et la recherche ; à côté du panneau
   d'aperçu, ils s'arrêtent une colonne avant lui. Le texte des listes garde sa largeur. Sans terminal (tube, rapport),
   cadre et titres gardent leurs 76 colonnes.
+- **Calculs vérifiés partout (règles de l'ANSSI pour Rust).** Sous Linux, tout le programme refuse les débordements
+  de calcul et les conversions de nombres qui tronquent : chaque calcul est vérifié, et une valeur hors bornes donne
+  une erreur dite plutôt qu'un nombre faux. Chaque erreur du programme a son message lisible ; la phrase de passe et
+  la clé de session sont effacées de la mémoire après usage. Les parties Windows restent à relire
+  (CONFORMITE-ANSSI.md).
+- **Les menus se souviennent de l'outil lancé.** En revenant dans un groupe, la surbrillance revient sur l'outil lancé
+  la dernière fois, retrouvé par lui-même et non par son numéro.
 
 ## 6 novembre 2026 : version 0.90.0
 
