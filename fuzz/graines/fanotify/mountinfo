@@ -1,0 +1,9 @@
+22 1 259:2 / / rw,relatime shared:1 - btrfs /dev/nvme0n1p2 rw
+23 22 259:2 /@home /home rw shared:2 - btrfs /dev/nvme0n1p2 rw
+25 22 0:23 / /tmp rw,nosuid shared:6 - tmpfs tmpfs rw
+26 22 0:50 / /mnt/cle\040usb rw shared:7 master:3 - vfat /dev/sda1 rw
+27 22 0:51 / /mnt/reseau rw - nfs4 serveur:/ rw
+28 22 0:52 / /run/user/1000/doc rw - fuse.portal portal rw
+29 22 0:53 / /x rw - overlay overlay rw
+30 22 0:54 / /y\9zz rw - ext4 /dev/sdc1 rw
+31 22 1:2
