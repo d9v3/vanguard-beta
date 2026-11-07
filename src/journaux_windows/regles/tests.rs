@@ -3863,3 +3863,22 @@ fn manques_de_l_ordinateur_types_audit_coupe() {
     let (_, refuse) = resultat::manque(&Source::Vivant, &Manque::Refuse("Security".into()));
     assert_eq!(refuse, Raison::Droits);
 }
+
+/// Un journal désactivé et lu sans un événement : le désactivé l'explique seul, sans « vidé, remplacé » en plus.
+/// Actif et vide, le manque « vide » reste : rien n'est rendu plus facile.
+#[test]
+fn journal_desactive_et_vide_dit_desactive_seul() {
+    let sans_taches: Vec<EvenementWindows> = ordinaire().into_iter().filter(|e| e.journal != TACHES).collect();
+    let manques_taches = |active: bool| {
+        let mut etats = tout_lu();
+        etats.iter_mut().find(|e| e.nom == TACHES).unwrap().active = Some(active);
+        let j = regle(&juger_nu(&sans_taches, &etats, options()), "EVT-TAC-001").clone();
+        assert!(!j.verifie(), "{:?}", j.manques);
+        j.manques
+            .into_iter()
+            .filter(|m| matches!(m, Manque::Desactive(n) | Manque::Vide(n) | Manque::VideCalme(n) if n == TACHES))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(manques_taches(false), vec![Manque::Desactive(TACHES.into())]);
+    assert_eq!(manques_taches(true), vec![Manque::Vide(TACHES.into())]);
+}

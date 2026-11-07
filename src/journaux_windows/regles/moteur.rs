@@ -1157,7 +1157,10 @@ fn lecture(
     let actif = journal.eq_ignore_ascii_case("Security")
         || journal.eq_ignore_ascii_case("System")
         || journal.eq_ignore_ascii_case("Microsoft-Windows-TaskScheduler/Operational");
-    if lu && stat.evenements == 0 {
+    // Un journal désactivé n'écrit rien : vide, il s'explique déjà ainsi, sans « vidé ou remplacé » qui ferait peur pour
+    // rien. Toujours non vérifié (`Desactive`).
+    let desactive = m.iter().any(|x| matches!(x, Manque::Desactive(_)));
+    if lu && stat.evenements == 0 && !desactive {
         m.push(if actif {
             Manque::Vide(journal.to_string())
         } else {
