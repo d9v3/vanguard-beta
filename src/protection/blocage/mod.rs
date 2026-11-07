@@ -10,6 +10,11 @@
 //! malveillants, connexions dangereuses, démarrage et pilotes, agents et serveurs d'IA (`parametres`). Les
 //! garde-fous (`gardes`) passent avant tout : jamais Vanguard ni ce qui le fait tourner, jamais un processus critique
 //! ou un programme du système, jamais une connexion à distance en cours ; sans les droits, rien n'est fait à moitié.
+//!
+//! Chaque type d'alerte a sa suite de gestes (`suites`, enchaînée par `enchainer`) : suspendre, couper les
+//! connexions, relever la preuve, bloquer, surveiller, prévenir, dans l'ordre choisi (menu Blocage). Le certain la
+//! fait tout seul, le douteux la propose d'une touche ; chaque geste repasse ses garde-fous, est noté et s'annule à
+//! part.
 
 // Le programme sous Linux : ses parties Windows ne sont pas encore relues, et les essais en sont exemptés
 // (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
@@ -31,6 +36,9 @@ pub(crate) mod parametres;
 pub(crate) mod pare_feu;
 pub(crate) mod surveiller;
 pub(crate) mod suspension;
+// Les suites préréglées : du code pur.
+mod enchainer;
+pub(crate) mod suites;
 
 use std::collections::{BTreeSet, HashSet};
 use std::io::IsTerminal;
@@ -58,8 +66,8 @@ fn parametres() -> Parametres {
         afficher_aligne(
             &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
             &trf!(
-                "blocage.json {raison} : les catégories qu'il désactivait restent sur « un clic », et son accord à la protection active ne fait rien bloquer sans clic. Réglez-les de nouveau ici si c'est bien votre choix.",
-                "blocage.json {raison}: the categories it turned off stay on “one click”, and its consent to active protection blocks nothing without a click. Set them again here if that really is your choice."
+                "blocage.json {raison} : les catégories qu'il désactivait restent sur « un clic », son accord à la protection active ne fait rien bloquer sans clic, et ses suites de gestes ne comptent pas (celles par défaut s'appliquent). Réglez-les de nouveau ici si c'est bien votre choix.",
+                "blocage.json {raison}: the categories it turned off stay on “one click”, its consent to active protection blocks nothing without a click, and its action suites do not count (the default ones apply). Set them again here if that really is your choice."
             ),
             4,
             "",
@@ -588,6 +596,11 @@ pub fn menu() {
             tr!("Annuler un blocage", "Undo a block"),
             &trf!("{en_place} en place", "{en_place} in place"),
         ));
+        lignes.push(Ligne::choix(
+            "7",
+            tr!("Suites de gestes", "Action suites"),
+            tr!("par type d'alerte", "by alert type"),
+        ));
         lignes.push(Ligne::Texte(String::new()));
         lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
         let Some(choix) = choisir(
@@ -602,6 +615,7 @@ pub fn menu() {
         match choix.as_str() {
             "5" => chercher_et_proposer(),
             "6" => annuler(),
+            "7" => editer_suites(),
             n => match n
                 .parse::<usize>()
                 .ok()
@@ -667,6 +681,264 @@ fn regler_categorie(c: Categorie) {
     }
 }
 
+/// L'éditeur des suites : un type d'alerte, puis ses gestes (choisir, ordonner, retirer). Pas de langage de règles :
+/// seulement les gestes de la liste fermée, dans l'ordre choisi.
+fn editer_suites() {
+    let mut dernier = String::from("1");
+    loop {
+        let p = parametres();
+        let mut lignes = vec![
+            Ligne::Texte(String::new()),
+            Ligne::Texte(ligne_titre(tr!("Suites de gestes", "Action suites"))),
+        ];
+        for l in envelopper(
+            tr!(
+                "Ce que Vanguard enchaîne pour chaque type d'alerte : tout seul pour le certain, proposé d'une touche pour le douteux. Chaque geste est noté et s'annule à part.",
+                "What Vanguard chains for each alert type: by itself for what is certain, offered with one key for what is doubtful. Each action is logged and undone on its own."
+            ),
+            LARGEUR.saturating_sub(4),
+        ) {
+            lignes.push(Ligne::Texte(format!("  {GRIS}{l}{RESET}")));
+        }
+        lignes.push(Ligne::Texte(String::new()));
+        for (i, t) in suites::Type::TOUS.iter().enumerate() {
+            let marque = if suites::lire(&p.suites, *t).is_ok_and(|s| s.is_some()) {
+                " *"
+            } else {
+                ""
+            };
+            lignes.push(Ligne::choix(
+                &i.saturating_add(1).to_string(),
+                &format!("{}{marque}", t.titre()),
+                t.origine(),
+            ));
+        }
+        lignes.push(Ligne::Texte(format!(
+            "  {GRIS}{}{RESET}",
+            tr!("* : suite choisie ici", "* : suite chosen here")
+        )));
+        lignes.push(Ligne::Texte(String::new()));
+        lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
+        let Some(choix) = choisir(
+            &lignes,
+            tr!("\n  Choix (Entrée pour revenir) : ", "\n  Choice (Enter to go back): "),
+            &dernier,
+            tr!("revenir", "back"),
+        ) else {
+            return;
+        };
+        let choix = choix.trim().to_string();
+        let Some(&t) = choix
+            .parse::<usize>()
+            .ok()
+            .and_then(|i| suites::Type::TOUS.get(i.checked_sub(1)?))
+        else {
+            return;
+        };
+        editer_suite(t);
+        dernier = choix;
+    }
+}
+
+/// La suite d'un type : ses gestes dans l'ordre ; un geste choisi se monte ou se retire, un autre s'ajoute à la fin,
+/// et celle par défaut se remet. Chaque changement est enregistré (scellé) tout de suite.
+fn editer_suite(t: suites::Type) {
+    let mut dernier = String::from("1");
+    loop {
+        let p = parametres();
+        let (etapes, choisie, abimee) = match suites::lire(&p.suites, t) {
+            Ok(Some(s)) => (s, true, None),
+            Ok(None) => (suites::defaut(t), false, None),
+            Err(e) => (suites::defaut(t), false, Some(e)),
+        };
+        let mut lignes = vec![
+            Ligne::Texte(String::new()),
+            Ligne::Texte(ligne_titre(t.titre())),
+            Ligne::Texte(format!(
+                "  {GRIS}{}{RESET}",
+                if choisie {
+                    tr!("Suite choisie ici.", "Suite chosen here.")
+                } else {
+                    tr!("Suite par défaut.", "Default suite.")
+                }
+            )),
+        ];
+        let mut avertir = |texte: &str| {
+            for l in envelopper(texte, LARGEUR.saturating_sub(4)) {
+                lignes.push(Ligne::Texte(format!(
+                    "  {}{l}{RESET}",
+                    couleur(crate::risk::Niveau::Moyen)
+                )));
+            }
+        };
+        if let Some(e) = &abimee {
+            avertir(&trf!(
+                "⚠ La suite écrite ne se lit pas ({e}) : celle par défaut s'applique.",
+                "⚠ The written suite cannot be read ({e}): the default one applies."
+            ));
+        }
+        if !suites::plancher_tenu(t, &etapes) {
+            avertir(&format!("⚠ {}", suites::plancher_dit(t)));
+        }
+        if t == suites::Type::Rancongiciel {
+            avertir(tr!(
+                "Le veilleur, tout seul, fait toujours la suite par défaut ; celle-ci sert quand vous répondez à son alerte.",
+                "The watcher, by itself, always runs the default suite; this one is used when you answer its alert."
+            ));
+        }
+        lignes.push(Ligne::Texte(String::new()));
+        for (i, e) in etapes.iter().enumerate() {
+            lignes.push(Ligne::choix(
+                &i.saturating_add(1).to_string(),
+                e.texte(),
+                e.annulation(),
+            ));
+        }
+        lignes.push(Ligne::Texte(String::new()));
+        let manquants = suites::a_ajouter(&etapes);
+        if !manquants.is_empty() {
+            lignes.push(Ligne::choix("a", tr!("Ajouter un geste", "Add an action"), ""));
+        }
+        if choisie || abimee.is_some() {
+            lignes.push(Ligne::choix(
+                "d",
+                tr!("Remettre la suite par défaut", "Restore the default suite"),
+                "",
+            ));
+        }
+        lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
+        let Some(choix) = choisir(
+            &lignes,
+            tr!("\n  Choix (Entrée pour revenir) : ", "\n  Choice (Enter to go back): "),
+            &dernier,
+            tr!("revenir", "back"),
+        ) else {
+            return;
+        };
+        let choix = choix.trim().to_string();
+        let nouvelle = match choix.as_str() {
+            "a" if !manquants.is_empty() => {
+                let Some(e) = choisir_geste_a_ajouter(&manquants) else {
+                    continue;
+                };
+                let mut s = etapes.clone();
+                s.push(e);
+                Some(s)
+            }
+            "d" if choisie || abimee.is_some() => None,
+            autre => {
+                let Some(rang) = autre
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|n| n.checked_sub(1))
+                    .filter(|n| *n < etapes.len())
+                else {
+                    return;
+                };
+                let mut suite = etapes.clone();
+                if !changer_geste(&mut suite, rang) {
+                    dernier = choix;
+                    continue;
+                }
+                Some(suite)
+            }
+        };
+        let mut p = p;
+        // Une suite redevenue celle par défaut ne s'écrit pas : le défaut d'une version suivante s'appliquera.
+        let nouvelle = nouvelle.filter(|s| *s != suites::defaut(t));
+        p.regler_suite(t, nouvelle.as_deref());
+        if enregistrer(&p) {
+            trp!(
+                "  {VERT}✔{RESET} {} : suite enregistrée.",
+                "  {VERT}✔{RESET} {}: suite saved.",
+                t.titre()
+            );
+        }
+        dernier = choix;
+    }
+}
+
+/// Le geste à ajouter à la fin de la suite (`None` : rien).
+fn choisir_geste_a_ajouter(manquants: &[suites::Etape]) -> Option<suites::Etape> {
+    let mut lignes = vec![
+        Ligne::Texte(String::new()),
+        Ligne::Texte(ligne_titre(tr!("Ajouter un geste", "Add an action"))),
+        Ligne::Texte(String::new()),
+    ];
+    for (i, e) in manquants.iter().enumerate() {
+        lignes.push(Ligne::choix(
+            &i.saturating_add(1).to_string(),
+            e.texte(),
+            e.annulation(),
+        ));
+    }
+    lignes.push(Ligne::Texte(String::new()));
+    lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
+    let choix = choisir(
+        &lignes,
+        tr!("\n  Choix (Entrée pour revenir) : ", "\n  Choice (Enter to go back): "),
+        "1",
+        tr!("revenir", "back"),
+    )?;
+    let e = *choix
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .and_then(|i| manquants.get(i.checked_sub(1)?))?;
+    if !e.disponible() {
+        afficher_aligne(
+            "  ",
+            tr!(
+                "Ce geste n'existe pas encore : la suite le nomme, il sera dit et sauté sans casser la suite.",
+                "This action does not exist yet: the suite names it, it will be said and skipped without breaking the suite."
+            ),
+            2,
+            GRIS,
+        );
+    }
+    Some(e)
+}
+
+/// Monter ou retirer le geste `i` (`false` : rien changé).
+fn changer_geste(s: &mut Vec<suites::Etape>, i: usize) -> bool {
+    let Some(e) = s.get(i).copied() else {
+        return false;
+    };
+    let mut lignes = vec![
+        Ligne::Texte(String::new()),
+        Ligne::Texte(ligne_titre(e.texte())),
+        Ligne::Texte(String::new()),
+    ];
+    if i > 0 {
+        lignes.push(Ligne::choix("1", tr!("Monter d'un cran", "Move up one step"), ""));
+    }
+    if s.len() > 1 {
+        lignes.push(Ligne::choix(
+            "2",
+            tr!("Retirer de la suite", "Remove from the suite"),
+            "",
+        ));
+    }
+    lignes.push(Ligne::Texte(String::new()));
+    lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
+    let Some(choix) = choisir(
+        &lignes,
+        tr!("\n  Choix (Entrée pour revenir) : ", "\n  Choice (Enter to go back): "),
+        if i > 0 { "1" } else { "2" },
+        tr!("revenir", "back"),
+    ) else {
+        return false;
+    };
+    match choix.trim() {
+        "1" if i > 0 => {
+            suites::monter(s, i);
+            true
+        }
+        "2" => suites::retirer(s, i),
+        _ => false,
+    }
+}
+
 /// Les catégories où quelque chose se cherche (pas désactivées).
 fn categories_actives(p: &Parametres) -> Vec<Categorie> {
     Categorie::TOUTES
@@ -725,7 +997,7 @@ fn chercher_et_proposer() {
     let t = menaces::chercher(&categories, false);
     let interactif = std::io::stdin().is_terminal();
     let ctx = Contexte::lire(t.intouchables.clone(), interactif);
-    proposer(t.menaces, &ctx);
+    proposer(t.menaces, &ctx, &p);
     dire_normales(t.normales);
     dire_non_verifie(&t.non_verifie);
 }
@@ -762,10 +1034,10 @@ pub fn au_bilan() {
         .filter(|m| decider(&p, m.categorie, m.certaine) != Decision::Rien)
         .partition(|m| decider(&p, m.categorie, m.certaine) == Decision::Auto);
     for m in &auto {
-        bloquer_tout_seul(m, &ctx, None);
+        bloquer_tout_seul(m, &ctx, &p, None);
     }
     if interactif {
-        proposer(un_clic, &ctx);
+        proposer(un_clic, &ctx, &p);
     } else if !un_clic.is_empty() {
         for m in &un_clic {
             afficher_aligne(
@@ -794,20 +1066,52 @@ pub fn au_bilan() {
     dire_non_verifie(&t.non_verifie);
 }
 
-/// Bloque une menace certaine sans rien demander, puis prévient (notification et tableau de bord). `signalees` : en
+/// Bloque une menace certaine sans rien demander, par la suite de son type (`suites`, celle par défaut si la sienne
+/// ne tient pas le plancher du certain), puis prévient (notification et tableau de bord). `signalees` : en
 /// surveillance, les menaces déjà dites non bloquées au passage d'avant, pour ne pas le répéter chaque heure ; elle
 /// y ajoute celle-ci si elle reste non bloquée.
-fn bloquer_tout_seul(m: &Menace, ctx: &Contexte, signalees: Option<(&BTreeSet<String>, &mut BTreeSet<String>)>) {
-    let resultat = gestes::preparer(m, ctx, true).and_then(|pret| {
-        if ctx.interactif {
-            montrer(m, &pret);
-        }
-        gestes::faire(m, pret, true)
+fn bloquer_tout_seul(
+    m: &Menace,
+    ctx: &Contexte,
+    p: &Parametres,
+    mut signalees: Option<(&BTreeSet<String>, &mut BTreeSet<String>)>,
+) {
+    let retenue = enchainer::type_de(m).map(|t| p.suite(t, true));
+    let dit = retenue.as_ref().and_then(|r| r.dit.clone());
+    if ctx.interactif
+        && let Some(d) = &dit
+    {
+        afficher_aligne(
+            &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Moyen)),
+            &capitaliser(d),
+            4,
+            "",
+        );
+    }
+    let etapes = retenue.map_or_else(|| suites::defaut(suites::Type::MalwareConnu), |r| r.etapes);
+    let pret = gestes::preparer(m, ctx, true);
+    let d = enchainer::derouler(m, &etapes, ctx, true, pret, &mut |d| {
+        prevenir_tout_seul(m, ctx, d, dit.as_deref(), &mut signalees)
     });
-    match resultat {
-        Ok(fait) => {
-            let quoi = &fait.quoi;
+    if ctx.interactif {
+        dire_les_autres_gestes(&d);
+    }
+}
+
+/// Le geste Prévenir d'une suite faite toute seule : le blocage (ou son échec, dit une fois) à l'écran et au tableau
+/// de bord, avec ce que la suite a fait d'autre.
+fn prevenir_tout_seul(
+    m: &Menace,
+    ctx: &Contexte,
+    d: &enchainer::Deroule,
+    dit: Option<&str>,
+    signalees: &mut Option<(&BTreeSet<String>, &mut BTreeSet<String>)>,
+) -> enchainer::Issue {
+    let (titre, texte) = alerte_de_la_suite(m, d, dit);
+    match &d.bloque {
+        Some(Ok(fait)) => {
             if ctx.interactif {
+                let quoi = &fait.quoi;
                 if fait.verifie {
                     trp!(
                         "  {VERT}✔{RESET} Bloqué tout seul (protection active).",
@@ -825,24 +1129,8 @@ fn bloquer_tout_seul(m: &Menace, ctx: &Contexte, signalees: Option<(&BTreeSet<St
                     );
                 }
             }
-            let titre = if fait.verifie {
-                tr!("Vanguard a bloqué une menace", "Vanguard blocked a threat")
-            } else {
-                tr!(
-                    "Vanguard a posé une règle sans pouvoir la vérifier",
-                    "Vanguard added a rule without being able to verify it"
-                )
-            };
-            alerter_blocage(
-                m,
-                titre,
-                &trf!(
-                    "{quoi}. Pour annuler : vanguard blocage annuler.",
-                    "{quoi}. To undo: vanguard blocking undo."
-                ),
-            );
         }
-        Err(raison) => {
+        Some(Err(raison)) => {
             if ctx.interactif {
                 afficher_aligne(
                     &format!("  {}✖{RESET} ", couleur(crate::risk::Niveau::Eleve)),
@@ -858,15 +1146,82 @@ fn bloquer_tout_seul(m: &Menace, ctx: &Contexte, signalees: Option<(&BTreeSet<St
                 }
                 None => true,
             };
-            if nouvelle {
-                alerter_blocage(
-                    m,
-                    tr!("Vanguard n'a pas pu bloquer", "Vanguard could not block"),
-                    &trf!("{} : {raison}", "{}: {raison}", m.quoi),
+            if !nouvelle {
+                return enchainer::Issue::Saute(
+                    tr!("déjà dit au passage d'avant", "already said on the previous pass").to_string(),
                 );
             }
         }
+        None => {}
     }
+    alerter_blocage(m, titre, &texte);
+    enchainer::Issue::Fait(tr!("notification et tableau de bord", "notification and dashboard").to_string())
+}
+
+/// Le titre et le texte de l'alerte d'une suite : ce que Bloquer a fait (ou pourquoi pas), ce que la suite a fait
+/// d'autre jusque-là, ce qui l'a remplacée par celle par défaut, et comment défaire chaque geste.
+fn alerte_de_la_suite(m: &Menace, d: &enchainer::Deroule, dit: Option<&str>) -> (&'static str, String) {
+    let titre = match &d.bloque {
+        Some(Ok(f)) if f.verifie => tr!("Vanguard a bloqué une menace", "Vanguard blocked a threat"),
+        Some(Ok(_)) => tr!(
+            "Vanguard a posé une règle sans pouvoir la vérifier",
+            "Vanguard added a rule without being able to verify it"
+        ),
+        Some(Err(_)) => tr!("Vanguard n'a pas pu bloquer", "Vanguard could not block"),
+        None => tr!("Vanguard a fait une suite de gestes", "Vanguard ran a suite of actions"),
+    };
+    let mut texte = match &d.bloque {
+        Some(Ok(f)) => f.quoi.clone(),
+        Some(Err(raison)) => trf!("{} : {raison}", "{}: {raison}", m.quoi),
+        None => m.quoi.clone(),
+    };
+    let autres: Vec<String> = d
+        .issues
+        .iter()
+        .filter(|(e, i)| *e != suites::Etape::Bloquer && !matches!(i, enchainer::Issue::AvecBloquer(_)))
+        .map(|(e, i)| i.ligne(*e))
+        .collect();
+    let suspendu = d
+        .issues
+        .iter()
+        .any(|(e, i)| *e == suites::Etape::Suspendre && matches!(i, enchainer::Issue::Fait(_)));
+    if !autres.is_empty() {
+        texte += &trf!(". Suite : {}", ". Suite: {}", autres.join(" ; "));
+    }
+    if let Some(d) = dit {
+        texte += &trf!(" ({d})", " ({d})");
+    }
+    // Chaque geste se défait à part : le blocage par « annuler », la suspension par « reprendre ».
+    if suspendu {
+        texte += tr!(
+            ". Pour annuler, chaque geste à part : vanguard blocage annuler, vanguard blocage reprendre.",
+            ". To undo, each action on its own: vanguard blocking undo, vanguard blocking resume."
+        );
+    } else if matches!(d.bloque, Some(Ok(_))) {
+        texte += tr!(
+            ". Pour annuler : vanguard blocage annuler.",
+            ". To undo: vanguard blocking undo."
+        );
+    }
+    (titre, texte)
+}
+
+/// Les gestes de la suite autres que Bloquer et Prévenir (déjà dits), une ligne chacun.
+fn dire_les_autres_gestes(d: &enchainer::Deroule) {
+    for (e, i) in &d.issues {
+        if matches!(e, suites::Etape::Bloquer | suites::Etape::Prevenir) {
+            continue;
+        }
+        afficher_aligne("    ", &affichable(&i.ligne(*e)), 4, GRIS);
+    }
+}
+
+/// La première lettre en capitale (une raison écrite pour suivre « : »).
+fn capitaliser(t: &str) -> String {
+    let mut c = t.chars();
+    c.next()
+        .map(|p| p.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
 }
 
 /// L'alerte d'un blocage fait tout seul, ou manqué. Une menace certaine n'est jamais tue (`menaces::chercher`) :
@@ -931,7 +1286,7 @@ pub(crate) fn en_surveillance() {
         .iter()
         .filter(|m| decider(&p, m.categorie, m.certaine) == Decision::Auto)
     {
-        bloquer_tout_seul(m, &ctx, Some((&avant, &mut maintenant)));
+        bloquer_tout_seul(m, &ctx, &p, Some((&avant, &mut maintenant)));
     }
     let _ = crate::sceau::ecrire(
         crate::sceau::BLOCAGE_SIGNALEES,
@@ -995,7 +1350,7 @@ fn montrer(m: &Menace, pret: &gestes::Pret) {
 
 /// Chaque menace ouvre son menu des gestes (`choix`) : Bloquer en tête, puis Suspendre, Surveiller de plus près, Faire
 /// confiance (ou « c'est normal ici ») et Ignorer. Ce que les garde-fous refusent reste visible, grisé, avec sa raison.
-fn proposer(menaces: Vec<Menace>, ctx: &Contexte) {
+fn proposer(menaces: Vec<Menace>, ctx: &Contexte, p: &Parametres) {
     if menaces.is_empty() {
         trp!(
             "  {VERT}✔{RESET} Aucune menace à bloquer.",
@@ -1048,7 +1403,7 @@ fn proposer(menaces: Vec<Menace>, ctx: &Contexte) {
             return;
         };
         let m = restantes.remove(i);
-        if !agir(&m, ctx) {
+        if !agir(&m, ctx, p) {
             restantes.insert(i, m);
         }
     }
@@ -1122,6 +1477,24 @@ pub fn alerte(id: &str) {
         "  {GRIS}Recherche de la menace, rejugée maintenant…{RESET}",
         "  {GRIS}Looking for the threat, judged again now…{RESET}"
     );
+    // Une alerte du veilleur anti-rançongiciel : le programme en marche à ce chemin, s'il y est encore, avec la suite
+    // « rançongiciel » (douteux : proposée, jamais faite sans la question).
+    if let Some((m, intouchables)) = cle
+        .strip_prefix("veilleur|rancongiciel|")
+        .filter(|c| std::path::Path::new(c).is_absolute())
+        .and_then(menaces::rancongiciel)
+    {
+        if !std::io::stdin().is_terminal() {
+            trp!(
+                "  Ses gestes se choisissent dans un terminal : vanguard alerte {id}.",
+                "  Its actions are chosen in a terminal: vanguard alert {id}."
+            );
+            return;
+        }
+        let ctx = Contexte::lire(intouchables, true);
+        agir(&m, &ctx, &parametres());
+        return;
+    }
     let t = menaces::chercher(&Categorie::TOUTES, false);
     let Some(m) = t.menaces.iter().find(|m| alerte_designe(m, cle)) else {
         afficher_aligne(
@@ -1144,7 +1517,7 @@ pub fn alerte(id: &str) {
         return;
     }
     let ctx = Contexte::lire(t.intouchables.clone(), true);
-    agir(m, &ctx);
+    agir(m, &ctx, &parametres());
 }
 
 /// Ce que le menu des gestes doit savoir de la menace, lu maintenant.
@@ -1179,13 +1552,37 @@ fn faits_de(m: &Menace, ctx: &Contexte, pret: &Result<gestes::Pret, crate::model
 /// Le menu des gestes d'une menace, puis le geste choisi. `true` : la menace est traitée (bloquée, surveillée, tenue
 /// pour normale ou ignorée) et quitte la liste ; `false` : elle y reste (rien fait, refusé, ou suspendue : Bloquer
 /// reste à faire).
-fn agir(m: &Menace, ctx: &Contexte) -> bool {
+fn agir(m: &Menace, ctx: &Contexte, p: &Parametres) -> bool {
     let pret = gestes::preparer(m, ctx, false);
     let gestes_menu = choix::gestes(&faits_de(m, ctx, &pret));
     let mut lignes = vec![
         Ligne::Texte(String::new()),
         Ligne::Texte(format!("  {}", couper(&affichable(&m.quoi), 74))),
     ];
+    // La suite de son type, proposée en tête : une touche (Entrée) pour toute la suite. Un Bloquer refusé par ses
+    // garde-fous la grise aussi, avec la même raison.
+    let suite = enchainer::type_de(m).map(|t| (t, p.suite(t, false)));
+    let mut decalage = 0usize;
+    if let Some((t, r)) = &suite {
+        let precision = t.titre();
+        let texte = trf!(
+            "Toute la suite ({} gestes)",
+            "The whole suite ({} actions)",
+            r.etapes.len()
+        );
+        match &pret {
+            Err(e) if r.etapes.contains(&suites::Etape::Bloquer) => {
+                lignes.push(Ligne::Texte(format!("  {GRIS}✖  {texte}{RESET}")));
+                for l in envelopper(&affichable(&e.to_string()), 68) {
+                    lignes.push(Ligne::Texte(format!("      {GRIS}{l}{RESET}")));
+                }
+            }
+            _ => {
+                lignes.push(Ligne::choix("1", &texte, precision));
+                decalage = 1;
+            }
+        }
+    }
     let mut permis: Vec<(String, choix::Choix, choix::Etat)> = Vec::new();
     for (c, e) in &gestes_menu {
         if let choix::Etat::Grise(raison) = e {
@@ -1198,7 +1595,7 @@ fn agir(m: &Menace, ctx: &Contexte) -> bool {
             }
             continue;
         }
-        let touche = permis.len().saturating_add(1).to_string();
+        let touche = permis.len().saturating_add(1).saturating_add(decalage).to_string();
         lignes.push(Ligne::choix(
             &touche,
             choix::texte(*c, m.certaine),
@@ -1219,6 +1616,12 @@ fn agir(m: &Menace, ctx: &Contexte) -> bool {
     };
     let reponse = reponse.trim();
     let reponse = if reponse.is_empty() { "1" } else { reponse };
+    if decalage == 1
+        && reponse == "1"
+        && let Some((t, r)) = suite
+    {
+        return toute_la_suite(m, ctx, t, &r, pret);
+    }
     let Some((_, c, etat)) = permis.into_iter().find(|(t, _, _)| t == reponse) else {
         return false;
     };
@@ -1245,6 +1648,114 @@ fn agir(m: &Menace, ctx: &Contexte) -> bool {
             true
         }
     }
+}
+
+/// Toute la suite d'un type, proposée : chaque geste montré, fait ou sauté (avec pourquoi), le détail du blocage,
+/// puis une seule question pour toute la suite. `true` : la menace est traitée (bloquée, ou mise sous surveillance
+/// sans blocage dans la suite) ; une suspension seule la laisse dans la liste, Bloquer reste à faire.
+fn toute_la_suite(
+    m: &Menace,
+    ctx: &Contexte,
+    t: suites::Type,
+    retenue: &suites::Retenue,
+    pret: Result<gestes::Pret, crate::modele::Echec>,
+) -> bool {
+    println!();
+    afficher_aligne("  ", &trf!("Suite « {} »", "“{}” suite", t.titre()), 2, GRAS);
+    if let Some(d) = &retenue.dit {
+        afficher_aligne(
+            &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Moyen)),
+            &capitaliser(d),
+            4,
+            "",
+        );
+    }
+    let releve = enchainer::avant(m);
+    for (i, (e, plan)) in enchainer::plan(&retenue.etapes, &releve, pret.is_ok())
+        .iter()
+        .enumerate()
+    {
+        let n = i.saturating_add(1);
+        let (texte, gris) = match plan {
+            suites::Plan::Faire => (e.texte().to_string(), false),
+            suites::Plan::AvecBloquer(pourquoi) => (format!("{} : {pourquoi}", e.texte()), false),
+            suites::Plan::SansObjet(pourquoi) => (
+                trf!("{} : sauté, {pourquoi}", "{}: skipped, {pourquoi}", e.texte()),
+                true,
+            ),
+            suites::Plan::PasDisponible => (
+                trf!(
+                    "{} : pas encore disponible, sauté",
+                    "{}: not available yet, skipped",
+                    e.texte()
+                ),
+                true,
+            ),
+        };
+        afficher_aligne(&format!("    {n}. "), &texte, 7, if gris { GRIS } else { "" });
+        if *e == suites::Etape::Suspendre
+            && *plan == suites::Plan::Faire
+            && let menaces::Geste::Programme {
+                pid: Some(pid),
+                chemin: Some(c),
+                ..
+            } = &m.geste
+            && let Some(role) = suspension::role(*pid, &c.to_string_lossy())
+        {
+            afficher_aligne(
+                "       ",
+                &trf!(
+                    "C'est {role} : il ne sera pas suspendu dans la suite (Suspendre, à part, le montre et le confirme).",
+                    "This is {role}: it will not be suspended in the suite (Suspend, on its own, shows and confirms it)."
+                ),
+                7,
+                GRIS,
+            );
+        }
+    }
+    match &pret {
+        Ok(p) if retenue.etapes.contains(&suites::Etape::Bloquer) => montrer(m, p),
+        Err(e) if retenue.etapes.contains(&suites::Etape::Bloquer) => {
+            afficher_aligne("  ✖ ", &trf!("Bloquer : {e}", "Block: {e}"), 4, "");
+        }
+        _ => {}
+    }
+    afficher_aligne(
+        "  ",
+        tr!(
+            "Chaque geste est noté et s'annule à part (vanguard blocage annuler ; reprendre pour une suspension).",
+            "Each action is noted and undone on its own (vanguard blocking undo; resume for a suspension)."
+        ),
+        2,
+        GRIS,
+    );
+    if !demander(tr!(
+        "\n  Faire toute la suite ? [o/N] : ",
+        "\n  Run the whole suite? [y/N]: "
+    ))
+    .oui()
+    {
+        trp!("  Rien n'a été fait.", "  Nothing was done.");
+        return false;
+    }
+    let d = enchainer::derouler(m, &retenue.etapes, ctx, false, pret, &mut |d| {
+        let (titre, texte) = alerte_de_la_suite(m, d, retenue.dit.as_deref());
+        alerter_blocage(m, titre, &texte);
+        enchainer::Issue::Fait(tr!("notification et tableau de bord", "notification and dashboard").to_string())
+    });
+    for (e, i) in &d.issues {
+        let marque = match i {
+            enchainer::Issue::Fait(_) | enchainer::Issue::AvecBloquer(_) => format!("  {VERT}✔{RESET} "),
+            enchainer::Issue::Saute(_) => format!("  {GRIS}–{RESET} "),
+            enchainer::Issue::Echoue(_) => format!("  {}✖{RESET} ", couleur(crate::risk::Niveau::Eleve)),
+        };
+        afficher_aligne(&marque, &affichable(&i.phrase(*e)), 4, "");
+    }
+    matches!(d.bloque, Some(Ok(_)))
+        || (d.bloque.is_none()
+            && d.issues
+                .iter()
+                .any(|(e, i)| *e == suites::Etape::Surveiller && matches!(i, enchainer::Issue::Fait(_))))
 }
 
 /// Bloquer : le geste montré, puis fait après accord.

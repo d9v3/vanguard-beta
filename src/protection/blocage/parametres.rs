@@ -1,5 +1,8 @@
 //! Les réglages du blocage, gardés sur cet ordinateur seulement (blocage.json, comme appris.json) : un mode par
-//! catégorie de menaces, et l'accord donné une fois pour la protection active.
+//! catégorie de menaces, l'accord donné une fois pour la protection active, et les suites de gestes choisies par type
+//! d'alerte (`suites`).
+
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 
 use std::path::{Path, PathBuf};
 
@@ -144,6 +147,11 @@ pub(crate) struct Parametres {
     pub demarrage: Mode,
     #[serde(default)]
     pub agents_ia: Mode,
+    /// Les suites de gestes choisies, par type d'alerte (`suites::lire`) ; rien : celles par défaut. Gardé tel que lu
+    /// (un `Value`) : une suite abîmée ne rend pas illisible tout le fichier, elle laisse la place à celle par défaut,
+    /// et c'est dit.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub suites: serde_json::Value,
 }
 
 impl Parametres {
@@ -190,6 +198,17 @@ impl Parametres {
     /// La protection active tourne-t-elle (au moins une catégorie réellement automatique) ?
     pub(crate) fn actif(&self) -> bool {
         Categorie::TOUTES.iter().any(|&c| self.effectif(c) == Mode::Automatique)
+    }
+
+    /// La suite qui s'applique à ce type d'alerte, en automatique ou proposée (un clic), avec pourquoi ce n'est pas
+    /// celle écrite quand elle ne sert pas.
+    pub(crate) fn suite(&self, t: super::suites::Type, automatique: bool) -> super::suites::Retenue {
+        super::suites::retenir(t, super::suites::lire(&self.suites, t), automatique)
+    }
+
+    /// Règle la suite d'un type (`None` : celle par défaut).
+    pub(crate) fn regler_suite(&mut self, t: super::suites::Type, etapes: Option<&[super::suites::Etape]>) {
+        super::suites::ecrire(&mut self.suites, t, etapes);
     }
 
     /// Tout est-il désactivé ? Alors le bilan ne cherche même pas.
@@ -278,6 +297,9 @@ fn charger_de(chemin: &Path) -> Result<(Parametres, Option<&'static str>), Echec
     // L'accord de la protection active est le seul témoin du consentement à bloquer sans clic : venu d'un fichier
     // non cru, il ne vaut rien (l'automatique redevient un clic).
     coupait |= p.accord.take().is_some();
+    // Les suites aussi : venues d'un fichier non cru, elles ne valent rien (celles par défaut, plus strictes,
+    // s'appliquent). Une suite forgée qui retirerait l'arrêt d'un geste proposé passerait sinon pour un choix.
+    coupait |= !std::mem::take(&mut p.suites).is_null();
     Ok((p, coupait.then_some(raison)))
 }
 
@@ -297,6 +319,11 @@ fn enregistrer_dans(p: &Parametres, chemin: &Path) -> std::io::Result<()> {
     crate::sceau::ecrire_dans(dossier, nom, texte.as_bytes())
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,6 +421,7 @@ mod tests {
             connexions: Mode::Automatique,
             demarrage: Mode::UnClic,
             agents_ia: Mode::Desactive,
+            suites: serde_json::Value::Null,
         };
         enregistrer_dans(&p, &f).unwrap();
         let texte = std::fs::read_to_string(&f).unwrap();
@@ -405,6 +433,53 @@ mod tests {
         // Abîmé : refusé, jamais lu comme des défauts qu'on réécrirait par-dessus.
         enregistrer_brut(&f, "{pas du json");
         assert!(charger_de(&f).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Les suites : choisies dans Vanguard, scellées et relues ; abîmées, celle par défaut (dit) sans rendre le
+    /// fichier illisible ; écrites hors de Vanguard (fichier forgé), ignorées : celles par défaut s'appliquent, et
+    /// c'est dit, même pour une suite qui retire l'arrêt d'une menace proposée.
+    #[test]
+    fn suites_scellees_ou_ignorees() {
+        use super::super::suites::{Etape, Type, defaut};
+        let d = crate::socle::dossier_local().join("essai-blocage-suites");
+        let _ = std::fs::remove_dir_all(&d);
+        let f = d.join(BLOCAGE);
+        let mut p = Parametres::default();
+        p.regler_suite(
+            Type::OutilDAttaque,
+            Some(&[Etape::Preuve, Etape::Bloquer, Etape::Surveiller, Etape::Prevenir]),
+        );
+        enregistrer_dans(&p, &f).unwrap();
+        let (lu, raison) = charger_de(&f).unwrap();
+        assert_eq!((&lu, raison), (&p, None));
+        assert_eq!(
+            lu.suite(Type::OutilDAttaque, true).etapes,
+            [Etape::Preuve, Etape::Bloquer, Etape::Surveiller, Etape::Prevenir]
+        );
+        assert_eq!(lu.suite(Type::Rancongiciel, true).etapes, defaut(Type::Rancongiciel));
+        // Abîmée par Vanguard lui-même (scellée) : le reste se lit, la suite par défaut sert, et c'est dit.
+        enregistrer_brut(
+            &f,
+            r#"{"programmes":"automatique","suites":{"outil-d-attaque":["oublier"]}}"#,
+        );
+        let lu = charger_de(&f).unwrap().0;
+        assert_eq!(lu.programmes, Mode::Automatique);
+        let r = lu.suite(Type::OutilDAttaque, false);
+        assert_eq!(r.etapes, defaut(Type::OutilDAttaque));
+        assert!(r.dit.is_some());
+        // Forgée hors de Vanguard : une suite qui ne bloque plus rien, même proposée, est ignorée.
+        std::fs::write(
+            &f,
+            r#"{"suites":{"outil-d-attaque":["prevenir"],"malware-connu":["preuve"]}}"#,
+        )
+        .unwrap();
+        let (lu, raison) = charger_de(&f).unwrap();
+        assert!(raison.is_some());
+        assert_eq!(lu.suites, serde_json::Value::Null);
+        for t in Type::TOUS {
+            assert_eq!(lu.suite(t, false).etapes, defaut(t), "{t:?}");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

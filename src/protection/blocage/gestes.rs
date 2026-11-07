@@ -105,7 +105,7 @@ struct Arret {
     demandee: Option<(HashSet<u32>, Os)>,
 }
 
-fn droits_manquants() -> String {
+pub(super) fn droits_manquants() -> String {
     tr!(
         "droits d'administrateur manquants : rien n'a été fait (ouvrez Vanguard, Bloquer et réagir › Blocage des menaces)",
         "administrator rights missing: nothing was done (open Vanguard, Block and respond › Threat blocking)"
@@ -799,6 +799,44 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<Fait, E
                 .map_err(|e| Echec::ecriture(OU, &e))
         }
     }
+}
+
+/// La preuve seule, relevée par une suite sans le geste Bloquer (`enchainer`) : ce qu'il suit encore (le processus,
+/// relu sur son programme comme avant l'arrêt, son fichier ; les connexions vers une adresse ; le fichier réglé). Elle
+/// va au journal comme celle d'un geste, sous la clé de la menace. `false` : rien à relever pour ce geste.
+pub(super) fn relever_seule(m: &Menace) -> bool {
+    use preuve::Releve;
+    let quoi = match &m.geste {
+        Geste::Programme {
+            pid: Some(pid),
+            chemin: Some(chemin),
+            fichier,
+            ..
+        } if chemin_du_processus(*pid).is_some_and(|c| meme_chemin(&c, &chemin.to_string_lossy())) => {
+            Releve::Programme {
+                pid: Some(*pid),
+                fichier: fichier.as_deref(),
+            }
+        }
+        Geste::Programme {
+            pid: Some(_), fichier, ..
+        } => Releve::ProgrammeParti {
+            fichier: fichier.as_deref(),
+        },
+        Geste::Programme { pid: None, fichier, .. } => Releve::Programme {
+            pid: None,
+            fichier: fichier.as_deref(),
+        },
+        Geste::Adresse { ip } => Releve::Adresse(*ip),
+        Geste::Permissions { fichier, .. } => Releve::Fichier(fichier),
+        _ => Releve::Rien,
+    };
+    if matches!(quoi, Releve::Rien) {
+        return false;
+    }
+    preuve::relever(quoi, &m.cle, crate::modele::evenement::Source::Blocage)
+        .preuve()
+        .is_some()
 }
 
 /// Le relevé d'avant le geste : le processus et le fichier d'un programme, les connexions vers une adresse, le

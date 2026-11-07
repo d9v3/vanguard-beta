@@ -385,7 +385,7 @@ pub(crate) fn role(pid: u32, chemin: &str) -> Option<String> {
 
 /// Ce compte peut-il suspendre ce processus lui-même ? Sinon l'ordre passe par l'assistant élevé (Linux) ou le
 /// processus élevé (Windows), qui le rejuge.
-fn sans_droits_de_plus(pid: u32) -> bool {
+pub(super) fn sans_droits_de_plus(pid: u32) -> bool {
     #[cfg(windows)]
     {
         crate::machine::windows::processus::peut_suspendre(pid)

@@ -2,6 +2,11 @@
 //! en quelques millisecondes et figer les traces (P3), puis laisser le blocage relever la preuve, arrêter et mettre en
 //! quarantaine, sous ses garde-fous. Rien n'est effacé par le gel ; « Reprendre » l'annule. Si un garde-fou refuse
 //! l'arrêt, le programme RESTE gelé et on le dit : jamais laissé gelé en silence.
+//!
+//! Dite comme une suite de gestes (`blocage::suites`), c'est la suite par défaut du rançongiciel : suspendre la
+//! lignée (ses envois s'arrêtent avec elle), couper ses connexions (l'arrêt les ferme), relever la preuve (le blocage
+//! la relève avant l'arrêt), arrêter et mettre en quarantaine, puis prévenir (l'alerte du veilleur). Le veilleur la
+//! fait toujours ainsi, tout seul : une suite réglée dans blocage.json ne sert que lorsqu'on répond à son alerte.
 
 // Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
@@ -315,5 +320,25 @@ pub(crate) fn reprendre(pids: &[u32]) {
         if processus::est_gele(pid) == Some(true) {
             processus::reprendre(pid);
         }
+    }
+}
+
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
+#[cfg(test)]
+mod tests {
+    use crate::protection::blocage::suites::{Etape, Type, defaut, plancher_tenu};
+
+    /// La réponse, dans l'ordre où elle agit, est la suite par défaut du rançongiciel, et celle-ci tient le plancher
+    /// du certain : changer l'une sans l'autre fait échouer l'essai.
+    #[test]
+    fn la_reponse_est_la_suite_par_defaut() {
+        use Etape::*;
+        let reponse = [Suspendre, CouperConnexions, Preuve, Bloquer, Prevenir];
+        assert_eq!(defaut(Type::Rancongiciel), reponse);
+        assert!(plancher_tenu(Type::Rancongiciel, &reponse));
     }
 }

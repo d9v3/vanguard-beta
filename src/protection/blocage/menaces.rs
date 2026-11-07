@@ -223,6 +223,36 @@ fn menace_programme(p: &EnMarche, j: Jugement) -> Menace {
     }
 }
 
+/// Ce qui désigne un programme par l'alerte du veilleur anti-rançongiciel (`veilleur|rancongiciel|<chemin>`) : la
+/// suite « rançongiciel » lui revient (`suites::Type::Rancongiciel`).
+pub(super) fn raison_rancongiciel() -> &'static str {
+    tr!(
+        "rançongiciel possible, d'après le veilleur (fichiers chiffrés en rafale)",
+        "possible ransomware, according to the watcher (files encrypted in a burst)"
+    )
+}
+
+/// La menace d'un programme désigné par une alerte du veilleur anti-rançongiciel : le processus en marche à ce chemin
+/// exact (le premier trouvé), lu maintenant, jamais un de ceux que Vanguard protège. Douteuse : seule une alerte de
+/// la personne l'ouvre, et chaque geste est rejugé par ses garde-fous. `None` : plus aucun programme à ce chemin.
+pub(super) fn rancongiciel(chemin: &str) -> Option<(Menace, HashSet<u32>)> {
+    let (liste, intouchables) = chasse::en_marche()?;
+    let p = liste.iter().filter(|p| !intouchables.contains(&p.pid)).find(|p| {
+        p.chemin
+            .as_deref()
+            .is_some_and(|c| super::gestes::meme_chemin(c, chemin))
+    })?;
+    let m = menace_programme(
+        p,
+        Jugement {
+            certaine: false,
+            raison: raison_rancongiciel().to_string(),
+            script: None,
+        },
+    );
+    Some((m, intouchables))
+}
+
 /// L'empreinte d'un fichier est-elle connue ? Par la voie unique des sources (`protection::sources`).
 fn connu_par(fichiers: &mut Fichiers, chemin: &str) -> bool {
     fichiers.connu(chemin)

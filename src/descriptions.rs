@@ -196,8 +196,8 @@ impl Action {
                 "Apps with permission and, when the system records it, their last use. Read-only: the steps to revoke are given."
             ),
             Action::Blocage => tr!(
-                "Règle, par catégorie, ce que Vanguard bloque : rien sans votre clic, ou le certain tout seul. Chaque blocage est noté et s'annule.",
-                "Sets, by category, what Vanguard blocks: nothing without your click, or what is certain on its own. Each block is logged and undoable."
+                "Règle, par catégorie, ce que Vanguard bloque : rien sans votre clic, ou le certain tout seul ; et, par type d'alerte, la suite de gestes enchaînés. Chaque geste est noté et s'annule.",
+                "Sets, by category, what Vanguard blocks: nothing without your click, or what is certain on its own; and, by alert type, the suite of chained actions. Each action is logged and undoable."
             ),
             Action::SitesDangereux => tr!(
                 "Ajoute au fichier hosts les sites malveillants d'URLhaus et de ThreatFox. Après accord, en administrateur ; se retire exactement.",
