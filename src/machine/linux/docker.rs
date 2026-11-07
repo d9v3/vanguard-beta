@@ -39,12 +39,14 @@ pub(super) fn docker() -> Vec<Constat> {
         match docker_api::conteneurs_sur(Path::new(docker_api::PRISE)) {
             Ok(liste) => return constats_docker(liste),
             // Hors du groupe docker (qui vaut root) : la CLI serait refusée de même.
-            Err(e) if e.raison == crate::modele::Raison::Droits => return vec![docker_sans_acces(&processus())],
+            Err(e) if e.raison == crate::modele::Raison::Droits => {
+                return vec![docker_sans_acces(&processus(), autres_visibles())];
+            }
             Err(_) => {}
         }
     }
     let Some(liste) = sortie_delai("docker", &["ps", "--format", "{{.Names}}\t{{.Ports}}"], 15, &[0]) else {
-        return vec![docker_sans_acces(&processus())];
+        return vec![docker_sans_acces(&processus(), autres_visibles())];
     };
     constats_docker(
         liste
@@ -120,17 +122,49 @@ pub(super) fn port_docker_proxy(args: &[String]) -> Option<(String, String)> {
     ))
 }
 
+/// Les processus des autres comptes sont-ils visibles ? Le PID 1 (à root) se lit : /proc n'est pas monté avec
+/// « hidepid » ; et Vanguard tourne dans l'espace de PID de l'ordinateur, pas dans un conteneur qui ne verrait pas
+/// ceux de l'hôte (4026531836 : l'inode fixe de l'espace initial dans le noyau, PROC_PID_INIT_INO).
+fn autres_visibles() -> bool {
+    let initial = std::fs::read_link("/proc/self/ns/pid").is_ok_and(|l| l.as_os_str() == "pid:[4026531836]");
+    initial && crate::socle::processus::nom_court(1).is_some()
+}
+
 /// Docker sans accès au démon (on n'est pas dans le groupe docker, et c'est mieux ainsi : ce groupe vaut root).
 /// Les processus restent visibles : un « containerd-shim » par conteneur actif, un « docker-proxy » par port publié,
-/// avec l'adresse et le port dans sa ligne de commande. De quoi conclure dans la plupart des cas.
-pub(super) fn docker_sans_acces(procs: &[(String, Vec<String>)]) -> Constat {
-    // /proc masqué (hidepid) : on ne verrait aucun processus d'un autre compte, donc on ne conclut rien.
+/// avec l'adresse et le port dans sa ligne de commande. De quoi conclure dans la plupart des cas. `autres_visibles` :
+/// les processus des autres comptes se voient (`autres_visibles()`) ; sans cela, l'absence de « dockerd » ne prouve
+/// rien.
+pub(super) fn docker_sans_acces(procs: &[(String, Vec<String>)], autres_visibles: bool) -> Constat {
+    let vu = |nom: &str| procs.iter().any(|(n, _)| n.starts_with(nom));
     if !procs.iter().any(|(n, _)| n == "dockerd") {
-        return impossible(
+        // /proc masqué (hidepid) ou conteneur : on ne verrait aucun processus d'un autre compte, donc on ne conclut
+        // rien.
+        if !autres_visibles {
+            return crate::machine::impossible_par(
+                "Docker",
+                crate::modele::Raison::Droits,
+                tr!(
+                    "Impossible de vérifier (processus des autres comptes masqués : hidepid ou conteneur).",
+                    "Could not check (processes of other accounts hidden: hidepid or container)."
+                ),
+            );
+        }
+        // Démon arrêté, mais des conteneurs gardés en marche (live-restore) : leurs ports ne se lisent pas sans lui.
+        if vu("containerd-shim") || vu("docker-proxy") {
+            return impossible(
+                "Docker",
+                tr!(
+                    "démon arrêté, conteneurs encore actifs (live-restore) : ports publiés non lus",
+                    "daemon stopped, containers still running (live-restore): published ports not read"
+                ),
+            );
+        }
+        return ok(
             "Docker",
             tr!(
-                "démon arrêté ou processus d'un autre compte masqués",
-                "daemon stopped or processes of another account hidden"
+                "Docker installé, démon arrêté : aucun conteneur actif.",
+                "Docker installed, daemon stopped: no running container."
             ),
         );
     }
@@ -237,16 +271,31 @@ mod tests {
             "/usr/bin/docker-proxy -proto udp -host-ip 0.0.0.0 -host-port 53 -container-ip 172.17.0.3 -container-port 53",
         );
         // Démon actif, aucun conteneur : vérifié, rien à signaler.
-        let c = docker_sans_acces(std::slice::from_ref(&dockerd));
+        let c = docker_sans_acces(std::slice::from_ref(&dockerd), true);
         assert!(c.verifie && c.probleme.is_none());
         // Conteneur publié seulement en local : rien à signaler.
-        let c = docker_sans_acces(&[dockerd.clone(), shim.clone(), local.clone()]);
+        let c = docker_sans_acces(&[dockerd.clone(), shim.clone(), local.clone()], true);
         assert!(c.verifie && c.probleme.is_none());
         // Port publié sur toutes les interfaces : alerte, avec le port.
-        let c = docker_sans_acces(&[dockerd.clone(), shim, local, ouvert]);
+        let c = docker_sans_acces(&[dockerd.clone(), shim.clone(), local, ouvert.clone()], true);
         assert_eq!(c.probleme, Some(Niveau::Eleve));
         assert!(c.message.contains("53/udp") && !c.message.contains("8006"));
-        // Processus des autres comptes invisibles (hidepid) : on ne conclut pas.
-        assert!(!docker_sans_acces(&[]).verifie);
+        // Démon arrêté, autres comptes visibles, aucun conteneur : vérifié, sain.
+        let c = docker_sans_acces(&[], true);
+        assert!(c.verifie && c.probleme.is_none(), "{}", c.message);
+        // Démon arrêté mais un conteneur gardé en marche (live-restore) : on ne conclut pas, et ce n'est pas tu.
+        for reste in [shim.clone(), ouvert] {
+            let c = docker_sans_acces(&[reste], true);
+            assert!(!c.verifie && c.message.contains("live-restore"), "{}", c.message);
+            assert!(matches!(c.etat(), crate::modele::Etat::NonVerifie(r) if !r.attendue(false)));
+        }
+        // Processus des autres comptes invisibles (hidepid) : on ne conclut pas, faute de droits.
+        for procs in [vec![], vec![shim]] {
+            let c = docker_sans_acces(&procs, false);
+            assert!(!c.verifie);
+            assert_eq!(c.etat(), crate::modele::Etat::NonVerifie(crate::modele::Raison::Droits));
+        }
+        // Le dockerd vu suffit, même si le PID 1 ne se lit pas.
+        assert!(docker_sans_acces(std::slice::from_ref(&dockerd), false).verifie);
     }
 }
