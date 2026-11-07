@@ -296,9 +296,17 @@ tel quel, cargo-auditable de la version de la CI, la date du commit (jamais l'he
 de la compilation retirés (le dépôt devient `/vanguard`, le dossier de cargo `/cargo`). Mesuré le 23 octobre 2026 :
 le même commit compilé dans deux dossiers différents de cet ordinateur donne deux programmes identiques, Linux comme
 Windows ; avant, les chemins du dossier personnel restaient dans le .exe (`~/Projects/vanguard/target/…`), et deux
-dossiers donnaient deux programmes. Ce qui peut encore différer d'un ordinateur à l'autre : les versions de musl-gcc
-et de MinGW (gcc, binutils, bibliothèques de démarrage), qui compilent le C de ring et lient les
-programmes. La CI écrit l'empreinte de ses compilations dans son journal (`EMPREINTE-VANGUARD-LINUX`, `-WINDOWS`), à
+dossiers donnaient deux programmes. Ce qui diffère encore d'un ordinateur à l'autre, mesuré à la 0.91.0 (même commit,
+même rustc 1.99.1, Arch ici contre Ubuntu 26.04 dans la CI) : la chaîne C de la distribution, qui compile le C de ring
+et de blake3 et lie les programmes. Pour Windows, comparé octet par octet au .exe de la CI : même taille, mais
+l'éditeur de liens de MinGW (binutils 2.47 contre 2.45.90) grave sa version dans l'en-tête PE et range autrement les
+sections, et la bibliothèque mingw-w64 (14.0.0 contre 13.0.0) fait importer au .exe un autre runtime C pour le même
+`-lmsvcrt` de rustc : les DLL UCRT (`api-ms-win-crt-*`) ici, `msvcrt.dll` dans la CI ; le gcc de MinGW diffère aussi
+(16.2.0 contre 13.2.0). Pour Linux (la CI n'en garde pas le programme) : gcc, par musl-gcc, laisse son nom et sa
+version dans la section `.comment` (16.2.1 ici, 15.2.0 d'Ubuntu), ld et musl diffèrent aussi (2.47 contre 2.46,
+1.2.6 contre 1.2.5). Ces outils sont relevés des deux côtés par `outils/chaine-c.sh` (repère de la compilation,
+lignes `OUTILS-VANGUARD` du journal de la CI), et `outils/publier-version.sh` montre ceux qui diffèrent. Seule la même
+chaîne C, épinglée des deux côtés, donnera les mêmes octets ; ce n'est pas encore fait. La CI écrit l'empreinte de ses compilations dans son journal (`EMPREINTE-VANGUARD-LINUX`, `-WINDOWS`), à
 comparer à `SHA256SUMS.txt` ; `outils/publier-version.sh` prend celles d'une exécution de master sur le commit
 compilé, ou sur un commit d'après qui ne change que des fichiers jamais compilés (captures d'écran, image de partage,
 page des fonctions : la liste fermée `HORS_COMPILATION`), en ligne droite et sans fusion, et le dit alors dans les

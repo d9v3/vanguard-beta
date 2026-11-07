@@ -295,9 +295,17 @@ who wants to rebuild a program from its tag: the toolchain of `rust-toolchain.to
 cargo-auditable version, the commit date (never the build time), and the build paths removed (the repository becomes
 `/vanguard`, cargo's folder `/cargo`). Measured on October 23, 2026: the same commit built in two different folders
 of this computer gives two identical programs, Linux and Windows alike; before, home folder paths stayed in the .exe
-(`~/Projects/vanguard/target/…`), and two folders gave two programs. What can still differ from one computer to
-another: the versions of musl-gcc and MinGW (gcc, binutils, startup libraries), which compile the C of ring and
-link the programs. CI writes the fingerprint of its builds in its log (`EMPREINTE-VANGUARD-LINUX`,
+(`~/Projects/vanguard/target/…`), and two folders gave two programs. What still differs from one computer to
+another, measured at 0.91.0 (same commit, same rustc 1.99.1, Arch here versus Ubuntu 26.04 in CI): the
+distribution's C toolchain, which compiles the C of ring and blake3 and links the programs. For Windows, compared byte
+by byte with the CI's .exe: same size, but the MinGW linker (binutils 2.47 versus 2.45.90) writes its version in the
+PE header and lays out sections differently, and the mingw-w64 library (14.0.0 versus 13.0.0) makes the .exe import
+another C runtime for the same `-lmsvcrt` from rustc: the UCRT DLLs (`api-ms-win-crt-*`) here, `msvcrt.dll` in CI;
+the MinGW gcc differs too (16.2.0 versus 13.2.0). For Linux (CI does not keep its program): gcc, through musl-gcc,
+leaves its name and version in the `.comment` section (16.2.1 here, Ubuntu's 15.2.0), and ld and musl differ too
+(2.47 versus 2.46, 1.2.6 versus 1.2.5). These tools are recorded on both sides by `outils/chaine-c.sh` (build marker,
+`OUTILS-VANGUARD` lines of the CI log), and `outils/publier-version.sh` shows those that differ. Only the same C
+toolchain, pinned on both sides, will give the same bytes; this is not done yet. CI writes the fingerprint of its builds in its log (`EMPREINTE-VANGUARD-LINUX`,
 `-WINDOWS`), to compare with `SHA256SUMS.txt`; `outils/publier-version.sh` takes those of a master run on the built commit, or on
 a later commit that only changes files that are never compiled (screenshots, social preview, features page: the
 closed list `HORS_COMPILATION`), in a straight line and without a merge, and then says so in the notes. They are not

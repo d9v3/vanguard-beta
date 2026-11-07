@@ -263,6 +263,24 @@ descendant_hors_compilation() { # commit compilé, commit de la CI
   done
 }
 
+# Les outils de la chaîne C (outils/chaine-c.sh) qui diffèrent entre le repère d'ici (lignes « outil ») et le journal
+# de la CI (OUTILS-VANGUARD) : montrés quand les empreintes diffèrent, pour dire d'où vient l'écart ; rien n'en
+# dépend. Seuls les noms et valeurs de la forme qu'écrit chaine-c.sh sont repris du journal. Lue telle quelle par
+# outils/essais-signature.sh.
+outils_differents() { # journal de la CI
+  local nom valeur ici ecarts=()
+  while IFS='=' read -r nom valeur; do
+    ici=$(sed -n "s/^outil $nom=//p" "${REPERE:-}" 2>/dev/null | head -n 1)
+    [[ $ici == "$valeur" ]] || ecarts+=("  $nom : « ${ici:-pas relevé ici} » ici, « $valeur » dans la CI")
+  done < <(tr -d '\r' <<<"$1" | grep -oE 'OUTILS-VANGUARD [a-z0-9-]{1,30}=[A-Za-z0-9 ._:+()/,~-]{1,120}$' |
+    cut -d' ' -f2- | awk -F= '!vu[$1]++')
+  if ((${#ecarts[@]})); then
+    echo "Outils de compilation qui diffèrent (outils/chaine-c.sh ; CONTRIBUTING.md, « Compilation reproductible ») :"
+    printf '%s\n' "${ecarts[@]}"
+  fi
+  return 0
+}
+
 # Les programmes Linux et Windows qui partent doivent être ceux que la CI a compilés du même code : son travail
 # « reproductible » (.github/workflows/ci.yml) les compile deux fois par la même recette et écrit leurs empreintes
 # dans son journal (EMPREINTE-VANGUARD-LINUX, -WINDOWS). Sans cette comparaison, un programme altéré sur cet ordinateur
@@ -301,6 +319,7 @@ empreintes_de_la_ci() {
         echo "Linux : ${ici_linux:0:16}… ici, ${linux:0:16}… dans la CI (exécution $id, ${sha:0:12})."
       [[ $windows == "$ici_windows" ]] ||
         echo "Windows : ${ici_windows:0:16}… ici, ${windows:0:16}… dans la CI (exécution $id, ${sha:0:12})."
+      outils_differents "$journal"
       return 1
     fi
     echo "exécution $id, ${sha:0:12}$apres"

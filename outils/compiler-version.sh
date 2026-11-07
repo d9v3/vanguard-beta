@@ -12,12 +12,17 @@
 #   - la date gravée est celle du code (outils/date-du-code.sh, par SOURCE_DATE_EPOCH que lit build.rs), jamais
 #     l'heure de la compilation ; l'éditeur de liens de MinGW
 #     n'écrit pas l'heure dans l'en-tête PE (--no-insert-timestamp, build.rs).
-# Ce qui peut encore différer d'un ordinateur à l'autre, et que cette recette ne fixe pas : les versions de musl-gcc
-# et de MinGW (gcc, binutils, ses bibliothèques de démarrage), qui compilent le C de ring et lient les programmes
-# (YARA-X n'y entre plus : c'est l'oracle des tests). Le résumé de la mesure est dans CONTRIBUTING.md, section « Compilation reproductible ».
+# Ce qui diffère encore d'un ordinateur à l'autre, et que cette recette ne fixe pas (mesuré à la 0.91.0, Arch ici
+# contre Ubuntu 26.04 dans la CI : même rustc, empreintes différentes) : la chaîne C de la distribution. gcc (par
+# musl-gcc) et ld, qui compilent le C de ring et de blake3 et lient le programme Linux ; gcc, ld et la bibliothèque
+# mingw-w64 de MinGW, qui font de même pour le .exe et choisissent son runtime C (msvcrt.dll sous Ubuntu, UCRT sous
+# Arch). YARA-X n'y entre plus : c'est l'oracle des tests. Ces outils sont relevés dans le repère (outils/chaine-c.sh,
+# lignes « outil … »), comme la CI les écrit dans son journal. Le détail de la mesure : CONTRIBUTING.md, section
+# « Compilation reproductible ».
 # Le repère de la compilation, target/.compilation : le commit compilé, si l'arbre du programme était propre (aucun
-# changement non commité ni fichier non suivi dans ce que le programme intègre), et l'empreinte SHA-256 des deux
-# programmes, relevée à la sortie de cargo. outils/publier-version.sh et outils/deployer.sh n'envoient que ces
+# changement non commité ni fichier non suivi dans ce que le programme intègre), l'empreinte SHA-256 des deux
+# programmes, relevée à la sortie de cargo, puis les outils de la chaîne C (pour dire, à la publication, lesquels
+# diffèrent de ceux de la CI ; ils ne décident rien). outils/publier-version.sh et outils/deployer.sh n'envoient que ces
 # octets-là : un target/ partagé avec les worktrees, une compilation ordinaire ou un fichier modifié le temps d'une
 # compilation ne partent plus signés (campagne d'attaque n° 3).
 #   outils/compiler-version.sh [options de cargo build en plus]
@@ -75,5 +80,6 @@ cargo auditable build --release --locked --target x86_64-unknown-linux-musl --ta
   echo "propre $PROPRE"
   echo "linux-x86_64 $(sha256sum "$CIBLES/x86_64-unknown-linux-musl/release/vanguard" | cut -d' ' -f1)"
   echo "windows-x86_64 $(sha256sum "$CIBLES/x86_64-pc-windows-gnu/release/vanguard.exe" | cut -d' ' -f1)"
+  bash outils/chaine-c.sh | sed 's/^/outil /'
 } >"$REPERE.nouveau"
 mv -f "$REPERE.nouveau" "$REPERE"

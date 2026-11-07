@@ -34,7 +34,9 @@
 #      un autre a commenté ou relu (et un fil illisible est refusé).
 #   6b. Linux et Windows publiés portent les empreintes de la compilation reproductible de la CI (ci.yml, master) :
 #      publier-version.sh (empreintes_de_la_ci, face à un faux gh) refuse un octet changé, un travail en échec ou
-#      un journal sans empreintes, et ignore une autre branche (campagne d'attaque n° 6, F1).
+#      un journal sans empreintes, et ignore une autre branche (campagne d'attaque n° 6, F1). Avec le refus, les
+#      outils de compilation qui diffèrent (outils/chaine-c.sh : repère d'ici, journal de la CI) sont montrés, sous
+#      une forme sûre ; ils ne décident rien.
 #   6g. À la publication, l'étiquette de la version d'avant est retirée du dépôt du code (retirer_etiquette_precedente,
 #      face à un faux gh), elle seule et notée, une fois la nouvelle page en ligne et ses fichiers relus ; jamais
 #      avec-macos, une plus vieille, une plus récente, une annotée, une hors de la ligne de la version, celle d'une
@@ -513,7 +515,8 @@ JSON
   echo '{"jobs": [{"databaseId": 30, "name": "reproductible", "conclusion": "success"}]}' >"$F/travaux-3.json"
   echo '{"jobs": [{"databaseId": 10, "name": "reproductible", "conclusion": "success"}]}' >"$F/travaux-1.json"
   journal_ci 3 "$E_LINUX" "$E_WINDOWS"
-  awk '/^empreintes_de_la_ci\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" >"$T/empreintes_de_la_ci.sh"
+  awk '/^outils_differents\(\) \{/,/^\}/; /^empreintes_de_la_ci\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" \
+    >"$T/empreintes_de_la_ci.sh"
   empreintes_ci() { # la sortie de empreintes_de_la_ci, puis « code N »
     local code=0 sortie
     sortie=$(cd "$T" && PATH="$F:$PATH" COMPILE=c0ffee HORS_CODE= DOSSIER=$T/dossier-ci \
@@ -534,6 +537,30 @@ JSON
   r=$(empreintes_ci)
   [[ $r == *"Windows :"*"code 1" ]] && ok "publier : un programme Windows qui n'est pas celui de la CI est refusé" ||
     ko "publier : Windows différent de la CI accepté ($r)"
+  # Les outils de compilation qui diffèrent, montrés à côté du refus (repère d'ici contre journal de la CI) : ni un
+  # outil égal, ni une ligne d'une autre forme (la commande recopiée par GitHub, des caractères de terminal).
+  printf 'outil cc=cc (GCC) 16.2.1\noutil mingw-runtime=ucrt\n' >"$T/repere-outils"
+  printf '%s\n' "reproductible	Deux compilations	bash outils/chaine-c.sh | sed 's/^/OUTILS-VANGUARD /'" \
+    "reproductible	Deux compilations	2026-10-31T08:00:00Z OUTILS-VANGUARD cc=cc (GCC) 16.2.1" \
+    "reproductible	Deux compilations	2026-10-31T08:00:00Z OUTILS-VANGUARD mingw-runtime=msvcrt" \
+    "reproductible	Deux compilations	2026-10-31T08:00:00Z OUTILS-VANGUARD ld=$(printf '\033]0;titre\007')GNU ld" \
+    >>"$F/journal-1.txt"
+  r=$(REPERE=$T/repere-outils empreintes_ci)
+  [[ $r == *"mingw-runtime : « ucrt » ici, « msvcrt » dans la CI"*"code 1" && $r != *" cc : "* && $r != *"ld :"* ]] &&
+    ok "publier : les outils de compilation qui diffèrent de ceux de la CI sont montrés avec le refus" ||
+    ko "publier : outils de compilation différents pas montrés, ou mal ($r)"
+  # Ce que chaine-c.sh écrit (repère d'ici, journal de la CI) : les mêmes noms dans le même ordre, des valeurs aux
+  # seuls caractères sûrs, même d'un outil qui écrit des caractères de terminal ; et compiler-version.sh les garde.
+  mkdir -p "$T/faux-cc"
+  printf '#!/bin/sh\nprintf "\\033]0;titre\\007cc (essai) 1.0\\n"\n' >"$T/faux-cc/cc"
+  chmod +x "$T/faux-cc/cc"
+  r=$(PATH="$T/faux-cc:$PATH" bash "$DEPOT/outils/chaine-c.sh")
+  [[ $(cut -d= -f1 <<<"$r" | tr '\n' ' ') == "rustc cc ld musl-gcc musl mingw-gcc mingw-fils mingw-ld mingw-w64 mingw-runtime " &&
+    -z $(grep -vE '^[a-z0-9-]+=[A-Za-z0-9 ._:+()/,~-]{1,120}$' <<<"$r") && $r == *$'\n'"cc=0titrecc (essai) 1.0"$'\n'* ]] &&
+    grep -qF "bash outils/chaine-c.sh | sed 's/^/outil /'" "$DEPOT/outils/compiler-version.sh" &&
+    grep -qF "bash outils/chaine-c.sh | sed 's/^/OUTILS-VANGUARD /'" "$DEPOT/.github/workflows/ci.yml" &&
+    ok "chaine-c.sh : outils de compilation relevés sous une forme sûre, dans le repère et dans le journal de la CI" ||
+    ko "chaine-c.sh : sortie inattendue ($r)"
   journal_ci 1 "$E_LINUX" "$E_WINDOWS"
   echo '{"jobs": [{"databaseId": 10, "name": "reproductible", "conclusion": "failure"}]}' >"$F/travaux-1.json"
   r=$(empreintes_ci)
@@ -819,7 +846,7 @@ if command -v jq >/dev/null; then
   printf '%s\n' "reproductible	Deux compilations	2026-11-07T08:00:00Z EMPREINTE-VANGUARD-LINUX $A_LINUX" \
     "reproductible	Deux compilations	2026-11-07T08:00:00Z EMPREINTE-VANGUARD-WINDOWS $A_WINDOWS" >"$F/journal-7.txt"
   echo '{"jobs": [{"databaseId": 70, "name": "reproductible", "conclusion": "success"}]}' >"$F/travaux-7.json"
-  { cat "$T/descendant.sh"; awk '/^empreintes_de_la_ci\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"; } >"$T/empreintes-apres.sh"
+  { cat "$T/descendant.sh"; cat "$T/empreintes_de_la_ci.sh"; } >"$T/empreintes-apres.sh"
   empreintes_apres() { # commit de la CI, tête de master : la sortie de empreintes_de_la_ci, puis « code N »
     local code=0 sortie
     echo "[{\"databaseId\": 7, \"headSha\": \"$1\", \"headBranch\": \"master\", \"event\": \"push\"}]" >"$F/runs.json"
