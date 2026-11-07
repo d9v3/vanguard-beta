@@ -89,9 +89,56 @@ pub(crate) struct Evenement {
     pub chemin: String,
     #[serde(default)]
     pub sha256: String,
-    /// Une précision (le nombre de demandes d'un débordement, l'alerte…).
+    /// Le nom (comm) du processus qui lance, pour l'affichage seulement : il le choisit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lanceur: Option<String>,
+    /// Le verdict venu après le délai (`delai`), par son nom interne.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trop_tard: Option<String>,
+    /// La taille du fichier (`non-verifie`), en octets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taille: Option<u64>,
+    /// Le type du système de fichiers (`montage`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub systeme: Option<String>,
+    /// Au démarrage : les systèmes de fichiers marqués et refusés, et les options du groupe fanotify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub demarrage: Option<Demarrage>,
+    /// Une alerte, telle quelle (les lignes d'avant ces champs l'y mettaient aussi).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub detail: String,
+}
+
+/// Ce que note le démarrage du garde : des nombres et des oui/non, traduits par le compte.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Demarrage {
+    pub marques: u64,
+    pub refuses: u64,
+    pub pidfd: bool,
+    pub audit: bool,
+}
+
+/// Sans le `delai` du fil du délai quand le fil de décision a noté le même lancement (son `delai` avec `trop_tard`)
+/// juste après : un seul événement par lancement en retard.
+pub(crate) fn sans_delai_double(evenements: Vec<Evenement>) -> Vec<Evenement> {
+    /// L'écart, au plus, entre les deux notes d'un même lancement.
+    const ECART: u64 = 5;
+    let tard: Vec<(u64, String)> = evenements
+        .iter()
+        .filter(|e| e.genre == "delai" && e.trop_tard.is_some())
+        .map(|e| (e.t, e.chemin.clone()))
+        .collect();
+    evenements
+        .into_iter()
+        .filter(|e| {
+            !(e.genre == "delai"
+                && e.trop_tard.is_none()
+                && !e.chemin.is_empty()
+                && tard
+                    .iter()
+                    .any(|(t, c)| *c == e.chemin && *t >= e.t && t.saturating_sub(e.t) <= ECART))
+        })
+        .collect()
 }
 
 /// Un chemin borné à `CHEMIN_MAX` octets, coupé sur un caractère.
@@ -167,6 +214,55 @@ mod tests {
         );
         let texte = format!("{l}pas du json\n{l}");
         assert_eq!(evenements(&texte), vec![ev.clone(), ev]);
+    }
+
+    /// m5 : un lancement en retard est noté par le fil du délai, puis par le fil de décision ; il ne se montre
+    /// qu'une fois. Deux lancements différents, ou éloignés, restent deux.
+    #[test]
+    fn un_delai_ne_se_montre_qu_une_fois() {
+        let delai = |t, chemin: &str, tard: Option<&str>| Evenement {
+            t,
+            genre: "delai".into(),
+            chemin: chemin.into(),
+            trop_tard: tard.map(Into::into),
+            ..Evenement::default()
+        };
+        let vus = sans_delai_double(vec![
+            delai(10, "/home/alice/a", None),
+            delai(11, "/home/alice/a", Some("refuse")),
+            delai(12, "/home/alice/b", None),
+            delai(30, "/home/alice/c", None),
+            delai(40, "/home/alice/c", Some("observe")),
+        ]);
+        let reste: Vec<(&str, bool)> = vus.iter().map(|e| (e.chemin.as_str(), e.trop_tard.is_some())).collect();
+        assert_eq!(
+            reste,
+            [
+                ("/home/alice/a", true),
+                ("/home/alice/b", false),
+                ("/home/alice/c", false),
+                ("/home/alice/c", true)
+            ]
+        );
+    }
+
+    #[test]
+    fn champs_structures_relus() {
+        let ev = Evenement {
+            t: 2,
+            genre: "demarrage".into(),
+            demarrage: Some(Demarrage {
+                marques: 3,
+                refuses: 1,
+                pidfd: true,
+                audit: false,
+            }),
+            ..Evenement::default()
+        };
+        assert_eq!(evenements(&ligne(&ev)), vec![ev]);
+        // Une ligne d'avant ces champs se relit encore.
+        let vieille = r#"{"t":1,"genre":"montage","pid":0,"chemin":"/mnt","sha256":"","detail":"ext4"}"#;
+        assert_eq!(evenements(vieille).len(), 1);
     }
 
     #[test]

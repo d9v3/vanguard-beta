@@ -236,7 +236,7 @@ fn decider(p: &Partage, d: &Demande) {
                 let mut e = evenement("non-verifie");
                 e.pid = d.pid;
                 e.chemin = sortie::borner(&chemin_de(d.fd));
-                e.detail = format!("{} octets", d.cle.taille);
+                e.taille = Some(d.cle.taille);
                 p.noter(e);
             }
             return;
@@ -306,9 +306,10 @@ fn decider(p: &Partage, d: &Demande) {
     e.chemin = sortie::borner(&chemin);
     e.sha256 = crate::protection::empreintes::hex(&connu.sha256);
     if !a_temps {
-        e.detail = format!("verdict trop tard : {}", verdict.nom());
-    } else if !nom.is_empty() {
-        e.detail = format!("lancé par {}", sortie::borner(&nom));
+        e.trop_tard = Some(verdict.nom().into());
+    }
+    if !nom.is_empty() {
+        e.lanceur = Some(sortie::borner(&nom));
     }
     p.noter(e);
 }
@@ -614,7 +615,7 @@ fn entretien(
             for nouveau in marques.completer(&p.groupe, &info) {
                 let mut e = evenement("montage");
                 e.chemin = sortie::borner(&nouveau.point);
-                e.detail = nouveau.genre;
+                e.systeme = Some(nouveau.genre);
                 p.noter(e);
             }
         }
@@ -720,13 +721,12 @@ pub(crate) fn servir() -> i32 {
         return SORTIE_GROUPE;
     }
     let mut e = evenement("demarrage");
-    e.detail = format!(
-        "{} systèmes de fichiers marqués, {} refusés ; pidfd {}, audit {}",
-        marques.marques.len(),
-        marques.echecs.len(),
-        p.groupe.options.pidfd,
-        p.groupe.options.audit
-    );
+    e.demarrage = Some(sortie::Demarrage {
+        marques: u64::try_from(marques.marques.len()).unwrap_or(u64::MAX),
+        refuses: u64::try_from(marques.echecs.len()).unwrap_or(u64::MAX),
+        pidfd: p.groupe.options.pidfd,
+        audit: p.groupe.options.audit,
+    });
     p.noter(e);
 
     let (vers_decideurs, file) = std::sync::mpsc::sync_channel::<Demande>(FILE);

@@ -211,7 +211,7 @@ pub(crate) fn derniers_evenements(n: usize) -> Vec<sortie::Evenement> {
     )
     .and_then(|o| String::from_utf8(o).ok())
     .unwrap_or_default();
-    let tous = sortie::evenements(&texte);
+    let tous = sortie::sans_delai_double(sortie::evenements(&texte));
     let debut = tous.len().saturating_sub(n);
     tous.into_iter().skip(debut).collect()
 }
@@ -377,13 +377,14 @@ fn afficher_etat() {
         println!();
         trp!("  Derniers événements :", "  Latest events:");
         for ev in derniers {
-            let quoi = if ev.chemin.is_empty() { &ev.detail } else { &ev.chemin };
-            afficher_aligne(
-                &format!("    {GRIS}{}{RESET} ", heure(ev.t)),
-                &format!("{} {}", genre_affiche(&ev.genre), affichable(quoi)),
-                6,
-                "",
-            );
+            let mut ligne = genre_affiche(&ev.genre);
+            for morceau in [affichable(&ev.chemin), precision(&ev)] {
+                if !morceau.is_empty() {
+                    ligne.push(' ');
+                    ligne.push_str(&morceau);
+                }
+            }
+            afficher_aligne(&format!("    {GRIS}{}{RESET} ", heure(ev.t)), &ligne, 6, "");
         }
     }
 }
@@ -404,6 +405,43 @@ fn genre_affiche(genre: &str) -> String {
         "alerte" => tr!("alerte du garde", "guard alert").into(),
         autre => affichable(autre),
     }
+}
+
+/// Les champs d'un événement, dans la langue de l'affichage ; ce qui vient d'ailleurs que du garde (le nom du lanceur,
+/// une alerte) passe par `affichable`.
+fn precision(ev: &sortie::Evenement) -> String {
+    let mut morceaux: Vec<String> = Vec::new();
+    if let Some(v) = &ev.trop_tard {
+        let v = genre_affiche(v);
+        morceaux.push(trf!("verdict trop tard : {v}", "verdict too late: {v}"));
+    }
+    if let Some(n) = &ev.lanceur {
+        let n = affichable(n);
+        morceaux.push(trf!("lancé par {n}", "launched by {n}"));
+    }
+    if let Some(t) = ev.taille {
+        morceaux.push(trf!("{t} octets", "{t} bytes"));
+    }
+    if let Some(g) = &ev.systeme {
+        morceaux.push(affichable(g));
+    }
+    if let Some(d) = ev.demarrage {
+        let oui_non = |b: bool| if b { tr!("oui", "yes") } else { tr!("non", "no") };
+        let (pidfd, audit) = (oui_non(d.pidfd), oui_non(d.audit));
+        morceaux.push(trf!(
+            "{} systèmes de fichiers marqués, {} refusés ; pidfd {pidfd}, audit {audit}",
+            "{} file systems marked, {} refused; pidfd {pidfd}, audit {audit}",
+            d.marques,
+            d.refuses
+        ));
+    }
+    if !ev.detail.is_empty() {
+        morceaux.push(affichable(&ev.detail));
+    }
+    if morceaux.is_empty() {
+        return String::new();
+    }
+    format!("({})", morceaux.join(" ; "))
 }
 
 /// Montre l'ordre, le fait confirmer, puis le fait faire par l'assistant root (le mot de passe), et le note.
@@ -707,6 +745,31 @@ mod tests {
             assert_ne!(genre_affiche(g), g, "{g}");
         }
         assert_eq!(genre_affiche("inconnu"), "inconnu");
+    }
+
+    /// Recommandation 2 : le garde n'écrit que des champs ; leur texte vient d'ici, dans la langue de l'affichage.
+    #[test]
+    fn precision_des_champs_structures() {
+        let ev = sortie::Evenement {
+            genre: "delai".into(),
+            trop_tard: Some("refuse".into()),
+            lanceur: Some("outil\u{1b}[2J".into()),
+            ..sortie::Evenement::default()
+        };
+        let p = precision(&ev);
+        assert!(p.contains(&genre_affiche("refuse")), "{p}");
+        assert!(!p.contains('\u{1b}'), "{p}");
+        let demarrage = sortie::Evenement {
+            demarrage: Some(sortie::Demarrage {
+                marques: 4,
+                refuses: 1,
+                pidfd: true,
+                audit: true,
+            }),
+            ..sortie::Evenement::default()
+        };
+        assert!(precision(&demarrage).contains('4'));
+        assert_eq!(precision(&sortie::Evenement::default()), "");
     }
 
     #[test]
