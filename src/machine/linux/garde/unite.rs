@@ -13,7 +13,8 @@ pub(crate) fn texte() -> String {
 Description=Vanguard : garde des lancements (fanotify)
 DefaultDependencies=no
 After=local-fs.target
-Before=multi-user.target
+Before=multi-user.target shutdown.target
+Conflicts=shutdown.target
 
 [Service]
 Type=notify
@@ -36,7 +37,7 @@ RuntimeDirectoryPreserve=restart
 StateDirectory=vanguard/garde
 StateDirectoryMode=0700
 PrivateNetwork=yes
-RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictAddressFamilies=AF_UNIX
 MemoryDenyWriteExecute=yes
 SystemCallFilter=@system-service fanotify_init fanotify_mark
 SystemCallErrorNumber=EPERM
@@ -87,6 +88,10 @@ mod tests {
             v.first().copied()
         };
         for (cle, attendu) in [
+            // Sans les dépendances par défaut, l'arrêt de la machine doit être demandé exprès.
+            ("DefaultDependencies", "no"),
+            ("Before", "multi-user.target shutdown.target"),
+            ("Conflicts", "shutdown.target"),
             ("Type", "notify"),
             ("NotifyAccess", "main"),
             ("ExecStart", "/opt/vanguard/garde/vanguard garde-servir"),
@@ -104,7 +109,7 @@ mod tests {
             ("RuntimeDirectory", "vanguard/garde"),
             ("StateDirectory", "vanguard/garde"),
             ("PrivateNetwork", "yes"),
-            ("RestrictAddressFamilies", "AF_UNIX AF_NETLINK"),
+            ("RestrictAddressFamilies", "AF_UNIX"),
             ("MemoryDenyWriteExecute", "yes"),
             ("SystemCallFilter", "@system-service fanotify_init fanotify_mark"),
             ("SystemCallArchitectures", "native"),
