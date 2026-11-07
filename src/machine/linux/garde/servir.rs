@@ -837,6 +837,8 @@ fn recevoir(p: &Partage, vers_decideurs: &SyncSender<Demande>, ev: &lecture::Eve
         ctime: m.ctime(),
         ctime_ns: m.ctime_nsec(),
         taille: m.size(),
+        // Un appel de plus par lancement, sans attente : le type du système de fichiers du fichier lui-même.
+        fiable: super::cache::ctime_fiable(super::ouvrir::type_fs(fichier.as_fd()).ok()),
     };
     let connu = verrou(&p.cache).lire(&cle);
     if connu.is_some_and(|c| c.certain.is_none()) {
