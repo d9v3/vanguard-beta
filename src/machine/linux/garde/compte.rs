@@ -147,21 +147,55 @@ pub(crate) fn preparer_listes() -> Result<Preparees, String> {
 
 // ───────────────────────────── Ce que le garde écrit ─────────────────────────────
 
-/// Un fichier écrit par root (le garde), lu sans suivre de lien et borné : un fichier qu'un autre aurait mis là
-/// n'est pas cru.
-fn lire_de_root(chemin: &Path, max: u64) -> Option<Vec<u8>> {
+/// Un fichier écrit par root (le garde), ouvert sans suivre de lien : un fichier qu'un autre aurait mis là n'est pas
+/// cru.
+fn ouvrir_de_root(chemin: &Path) -> Option<(std::fs::File, u64)> {
     let f = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
         .open(chemin)
         .ok()?;
     let m = f.metadata().ok()?;
-    if !m.is_file() || m.uid() != 0 || m.mode() & 0o022 != 0 || m.len() > max {
+    if !m.is_file() || m.uid() != 0 || m.mode() & 0o022 != 0 {
+        return None;
+    }
+    Some((f, m.len()))
+}
+
+/// Un fichier écrit par root, en entier, s'il ne dépasse pas `max`.
+fn lire_de_root(chemin: &Path, max: u64) -> Option<Vec<u8>> {
+    let (f, taille) = ouvrir_de_root(chemin)?;
+    if taille > max {
         return None;
     }
     let mut octets = Vec::new();
     f.take(max).read_to_end(&mut octets).ok()?;
     Some(octets)
+}
+
+/// Les `garde` derniers octets d'un fichier de lignes écrit par root, à partir d'une ligne entière. Le garde ne passe
+/// à un nouveau fichier qu'une fois `EVENEMENTS_TAILLE_MAX` atteint : le fichier le dépasse d'un lot, et refuser de le
+/// lire tairait tous ses événements.
+fn lire_fin_de_root(chemin: &Path, garde: u64) -> Option<Vec<u8>> {
+    use std::io::{Seek as _, SeekFrom};
+    let (mut f, taille) = ouvrir_de_root(chemin)?;
+    let debut = taille.saturating_sub(garde);
+    f.seek(SeekFrom::Start(debut)).ok()?;
+    let mut octets = Vec::new();
+    f.take(garde).read_to_end(&mut octets).ok()?;
+    Some(depuis_une_ligne(octets, debut > 0))
+}
+
+/// Sans la première ligne quand la lecture a commencé au milieu du fichier (elle est coupée).
+fn depuis_une_ligne(mut octets: Vec<u8>, coupee: bool) -> Vec<u8> {
+    if coupee {
+        let fin = octets
+            .iter()
+            .position(|&o| o == b'\n')
+            .map_or(octets.len(), |i| i.saturating_add(1));
+        octets.drain(..fin);
+    }
+    octets
 }
 
 /// L'état écrit par le garde, s'il se lit.
@@ -171,9 +205,12 @@ pub(crate) fn etat() -> Option<Etat> {
 
 /// Les derniers événements notés par le garde.
 pub(crate) fn derniers_evenements(n: usize) -> Vec<sortie::Evenement> {
-    let texte = lire_de_root(Path::new(super::EVENEMENTS), sortie::EVENEMENTS_TAILLE_MAX)
-        .and_then(|o| String::from_utf8(o).ok())
-        .unwrap_or_default();
+    let texte = lire_fin_de_root(
+        Path::new(super::EVENEMENTS),
+        sortie::EVENEMENTS_TAILLE_MAX.saturating_mul(2),
+    )
+    .and_then(|o| String::from_utf8(o).ok())
+    .unwrap_or_default();
     let tous = sortie::evenements(&texte);
     let debut = tous.len().saturating_sub(n);
     tous.into_iter().skip(debut).collect()
@@ -691,5 +728,15 @@ mod tests {
             return crate::essais::saute("le fichier serait à root");
         }
         assert_eq!(lire_de_root(&f, 1024), None);
+        assert_eq!(lire_fin_de_root(&f, 1024), None);
+    }
+
+    /// m2 : un evenements.jsonl plus gros que la borne se lit par sa fin, à partir d'une ligne entière.
+    #[test]
+    fn fin_d_un_fichier_de_lignes() {
+        assert_eq!(depuis_une_ligne(b"a\nb\n".to_vec(), false), b"a\nb\n");
+        assert_eq!(depuis_une_ligne(b"e\"}\n{\"b\"}\n".to_vec(), true), b"{\"b\"}\n");
+        assert_eq!(depuis_une_ligne(b"sans fin".to_vec(), true), b"");
+        assert_eq!(depuis_une_ligne(Vec::new(), true), b"");
     }
 }
