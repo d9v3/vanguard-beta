@@ -384,10 +384,6 @@ criteria = "safe-to-run"
 version = "0.1.15"
 criteria = "safe-to-deploy"
 
-[[exemptions.fsevent-sys]]
-version = "4.1.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.funty]]
 version = "2.0.0"
 criteria = "safe-to-run"

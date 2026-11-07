@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Avis de licence des bibliothèques compilées dans Vanguard (Linux, Windows et macOS).
+"""Avis de licence des bibliothèques compilées dans Vanguard (Linux et Windows).
 
 Les licences MIT, Apache-2.0, BSD et ISC des dépendances demandent de joindre leur texte à l'exécutable distribué :
 ce script rassemble ces textes dans LICENCES-TIERCES.txt, copié sur la clé par deployer.sh.
@@ -14,7 +14,7 @@ import re
 import subprocess
 from pathlib import Path
 
-CIBLES = ["x86_64-unknown-linux-musl", "x86_64-pc-windows-gnu", "aarch64-apple-darwin", "x86_64-apple-darwin"]
+CIBLES = ["x86_64-unknown-linux-musl", "x86_64-pc-windows-gnu"]
 SORTIE = Path("LICENCES-TIERCES.txt")
 FICHIERS_LICENCE = re.compile(r"^(LICEN[CS]E|COPYING|NOTICE|UNLICENSE)", re.IGNORECASE)
 # Textes types : ceux du dépôt d'abord (le paquet licenses d'Arch n'a ni MIT, ni BSD-3-Clause, ni LLVM-exception,

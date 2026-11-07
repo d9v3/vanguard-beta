@@ -5,7 +5,7 @@ target = "x86_64-unknown-linux-musl"
 
 # Les tests proptest de src/ tirent sinon leur graine au hasard à chaque lancement : la CI essaierait d'autres entrées à
 # chaque passe, et un défaut rare rendrait master rouge un jour, vert le lendemain, sans changement, la graine perdue
-# (failure_persistence: None). Fixée ici, elle vaut pour tous les cargo test : CI Linux, Windows et macOS,
+# (failure_persistence: None). Fixée ici, elle vaut pour tous les cargo test : CI Linux et Windows,
 # outils/verifier.sh, Wine compris (cargo la passe au programme de test). Une variable déjà posée l'emporte : pour
 # explorer d'autres entrées, `PROPTEST_RNG_SEED=$RANDOM cargo test`, et un échec se rejoue avec la même valeur.
 [env]

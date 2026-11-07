@@ -21,8 +21,8 @@ inventory = "0.3.25"
 miniz_oxide = "0.9.1"
 quick-xml = { version = "0.42.0", features = ["serialize"] }
 # HTTPS en Rust : HTTP/2 et le proxy du système avec rustls, mais ring pour le chiffrement au lieu d'aws-lc, qui
-# compile du C impossible à construire ici pour macOS et pèse le double. Ni « json » ni « charset » : le corps est lu
-# en octets (http.rs) puis décodé par Vanguard.
+# compile du C et pèse le double. Ni « json » ni « charset » : le corps est lu en octets (http.rs) puis décodé par
+# Vanguard.
 reqwest = { version = "0.13.5", default-features = false, features = ["http2", "system-proxy", "rustls-no-provider"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 notify = { version = "8.2.0", default-features = false }
@@ -69,15 +69,6 @@ windows = { version = "0.62.2", default-features = false, features = [
 [target."cfg(unix)".dependencies]
 libc = "0.2.191"
 
-# Surveillance des fichiers en direct (intégrité) : FSEvents sous macOS.
-[target."cfg(target_os = \"macos\")".dependencies]
-notify = { version = "8.2.0", default-features = false, features = ["macos_fsevent"] }
-# DNS, proxy et services réseau en vigueur (SCDynamicStore, SCPreferences), au lieu de scutil et networksetup. Déjà
-# dans l'arbre par hyper-util (le proxy système de reqwest), même version : aucun code nouveau compilé. Ses fonctions
-# sûres ne sont pas toutes prises : `SCNetworkService::enabled` rend l'inverse de SCNetworkServiceGetEnabled (0.7.0),
-# et plusieurs constructeurs paniquent sur un pointeur nul ; machine/macos/config_reseau.rs passe par -sys.
-system-configuration = "0.7.0"
-
 [profile.release]
 strip = true
 lto = true
@@ -92,7 +83,7 @@ codegen-units = 1
 # sa valeur par défaut, « unwind », jamais « abort ». Hors de ces gardes, sur le fil principal, elle arrête la
 # commande. Dans un autre fil, elle n'arrête que lui, s'affiche et se note comme un plantage, et l'appelant qui le
 # joint en fait ce qu'il a prévu : souvent « non vérifié », parfois un résultat vide qui ne se dit pas (Flatpak, Snap,
-# AUR, micrologiciels et DKMS de machine/linux/maj.rs, Windows Update, Homebrew, constats réseau et carnet relus par
+# AUR, micrologiciels et DKMS de machine/linux/maj.rs, Windows Update, constats réseau et carnet relus par
 # audit::auditer). Ce filet ne dispense donc jamais d'une opération explicite : une somme de données que n'importe
 # quel programme peut poser (tailles de fichiers creux à nettoyer ou à copier) sature, au lieu de compter sur lui.
 overflow-checks = true
@@ -155,7 +146,7 @@ unnecessary_safety_comment = "warn"
 mem_forget = "warn"
 
 # `fuzzing` : posé par cargo-fuzz pour le banc de fuzz/, qui inclut des modules de src/ par leur chemin (sqlite.rs
-# y ouvre sa lecture des colonnes, réservée à macOS ailleurs). Déclaré pour que la compilation de Vanguard ne le
+# y ouvre sa lecture des colonnes, réservée à Linux ailleurs). Déclaré pour que la compilation de Vanguard ne le
 # prenne pas pour une faute de frappe. `kani` : posé par le vérificateur Kani pour les preuves bornées de
 # outils/preuves/ (outils/preuves.sh), qui inclut de même sqlite.rs, zstd.rs et dns_client.rs.
 [lints.rust]

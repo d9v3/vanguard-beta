@@ -1,14 +1,12 @@
 # Ce que les dépendances de Vanguard ont le droit d'être, vérifié par cargo deny (outils/verifier.sh, et chaque nuit
 # dans la CI) : failles connues (base RustSec), licences, provenance, doublons.
 
-# Les quatre cibles livrées, comme outils/licences-tierces.py : une dépendance propre à un autre système (Android,
+# Les deux cibles livrées, comme outils/licences-tierces.py : une dépendance propre à un autre système (Android,
 # WebAssembly…) n'est jamais compilée dans Vanguard.
 [graph]
 targets = [
     "x86_64-unknown-linux-musl",
     "x86_64-pc-windows-gnu",
-    "aarch64-apple-darwin",
-    "x86_64-apple-darwin",
 ]
 
 # Failles connues, bibliothèques abandonnées ou au code défaillant (unsound) : refusées, dans tout l'arbre (sans

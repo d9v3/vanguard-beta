@@ -1,6 +1,6 @@
-# La chaîne Rust de Vanguard, la même partout : l'ordinateur de l'auteur, la CI (Linux, Windows), le Mac de GitHub, et
-# quiconque refait un programme publié (outils/compiler-version.sh). Avec « stable », chaque runner prenait la
-# version du jour : deux compilations du même commit pouvaient différer, et un nouvel avertissement de clippy rendre
+# La chaîne Rust de Vanguard, la même partout : l'ordinateur de l'auteur, la CI (Linux, Windows), et quiconque
+# refait un programme publié (outils/compiler-version.sh). Avec « stable », chaque runner prenait la version du
+# jour : deux compilations du même commit pouvaient différer, et un nouvel avertissement de clippy rendre
 # la CI rouge sans changement de code. rustup pose cette version d'elle-même, avec ses composants et ses cibles.
 # À monter à la main, dans un commit à part, après une vérification complète (outils/verifier.sh) : la nouvelle
 # version de Rust y est essayée sur tout le code avant d'en compiler un programme publié. Le banc de fuzzing garde
@@ -9,4 +9,4 @@
 channel = "1.99.1"
 profile = "minimal"
 components = ["rustfmt", "clippy"]
-targets = ["x86_64-unknown-linux-musl", "x86_64-pc-windows-gnu", "aarch64-apple-darwin", "x86_64-apple-darwin"]
+targets = ["x86_64-unknown-linux-musl", "x86_64-pc-windows-gnu"]
