@@ -1,11 +1,11 @@
 ---
 name: livrer
-description: Livrer la publication du jour de Vanguard — numéro de version, commit de version, livraison de la branche (vérification, fusion dans master, déploiement : binaire, clé USB, GitHub) puis les mises à jour qui suivent. Une fois par jour, quand le travail de la journée est fini et que /verifier passe.
+description: Livrer une publication de Vanguard — numéro de version, commit de version, livraison de la branche (vérification, fusion dans master, déploiement : binaire, clé USB, GitHub) puis les mises à jour qui suivent. Quand l'auteur dit « publie » et que /verifier passe ; plus d'une par jour est permis.
 ---
 
-Une seule publication par jour sur GitHub (CLAUDE.md, « Façon de travailler ») : le travail de la journée
-s'accumule sur une branche (worktree), en commits ordinaires sans numéro de version ni envoi. Pour la clé entre-temps,
-sans rien envoyer : `VANGUARD_INTERMEDIAIRE=1 outils/deployer.sh --local`.
+Une publication sur GitHub regroupe le travail accumulé (CLAUDE.md, « Façon de travailler ») ; plus d'une le même jour
+est permis. Entre deux, le travail s'accumule sur une branche (worktree), en commits ordinaires sans numéro de version
+ni envoi. Pour la clé entre-temps, sans rien envoyer : `VANGUARD_INTERMEDIAIRE=1 outils/deployer.sh --local`.
 
 1. Version dans Cargo.toml : correctif seul 0.x.y+1, fonction 0.x+1.0. Regarde d'abord celle de master
    (`git show master:Cargo.toml`) : une autre session a pu l'avancer. Puis `cargo build` (Cargo.lock suit).

@@ -4,8 +4,9 @@
 
 What each day brought to Vanguard, most recent first. Since October 19, 2026, Vanguard has, as a rule, a single release
 a day, gathering the day's work; October 21 had two, 0.82 in the morning and 0.84 in the evening, which takes over 0.83,
-delivered just before it. Only the latest version has its download page; every version keeps its tag in the repository
-(`git checkout v0.62.0`, for example), to be rebuilt if needed.
+delivered just before it. Since November 7, 2026, more than one release on the same day is allowed; they follow each
+other in their day's paragraph. Only the latest version has its download page; every version keeps its tag in the
+repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 
 ## Unreleased
 

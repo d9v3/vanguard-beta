@@ -128,11 +128,13 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   lieu de relire les transcripts des autres, qui coûtent cher. Un message seulement pour prendre un lot, le dire
   vert (branche, preuves en une ligne) ou poser une question qui bloque ; pas de point d'étape. Le coordinateur tient
   le fichier à jour.
-- Une seule publication par jour sur GitHub, qui regroupe le travail de la journée en une version (Cargo.toml :
-  fonction 0.x+1.0, correctif seul 0.x.y+1). Entre deux publications, le travail s'accumule sur une branche, sans
-  numéro de version ni envoi ; la VM ne voit que la version publiée (ses minutes coûtent).
-  CHANGELOG.md et CHANGELOG.en.md gagnent un paragraphe par jour publié ; seule la dernière version garde sa page.
-  Relire `grep ^version Cargo.toml` après le changement : une autre session a pu avancer la version.
+- Une publication sur GitHub regroupe le travail accumulé en une version (Cargo.toml : fonction 0.x+1.0, correctif seul
+  0.x.y+1). Entre deux publications, le travail s'accumule sur une branche, sans numéro de version ni envoi. Plus d'une
+  le même jour est permis depuis le 7 nov. 2026, chacune avec son « publie » ; chaque programme Windows non signé repart
+  à zéro auprès de SmartScreen : le dire. La VM ne voit que la version publiée (ses minutes coûtent). CHANGELOG.md et
+  CHANGELOG.en.md gagnent un paragraphe par jour publié (deux versions du même jour s'y suivent) ; seule la dernière
+  version garde sa page. Relire `grep ^version Cargo.toml` après le changement : une autre session a pu avancer la
+  version.
 - Veille continue (`outils/veille/LISEZMOI.md`) : chaque nuit, sans IA, verifier.sh, fuzz, proptest à graine du
   jour, canaris des vraies sources et signaux KEV/RUSTSEC/Échap (rapport dans `~/.cache/vanguard-dev/veille/`) ;
   sur alerte, une correction proposée par claude -p dans une branche `veille/AAAA-MM-JJ-<sujet>`, jamais fusionnée
