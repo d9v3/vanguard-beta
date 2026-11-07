@@ -1,6 +1,8 @@
 //! Les alertes des règles `EVT-` (`journaux_windows`) pour la chronologie de l'incident : à part de `chronologie`,
 //! que le banc de fuzzing inclut seul, sans le moteur des règles.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::fmt::Write as _;
 
 use super::chronologie::{Apport, Evenement, Genre, Source};
@@ -20,7 +22,7 @@ pub(crate) fn alertes_des_journaux(
     let mut sans_date = 0usize;
     for x in &c.alertes {
         let Some(quand) = x.date.map(|d| d.timestamp()) else {
-            sans_date += 1;
+            sans_date = sans_date.saturating_add(1);
             continue;
         };
         let mut detail = format!("{} [{}] {}", x.regle, jc::gravite(x.gravite), x.texte);
@@ -65,6 +67,11 @@ pub(crate) fn alertes_des_journaux(
     apport
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

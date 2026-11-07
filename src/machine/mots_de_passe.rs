@@ -6,6 +6,8 @@
 //! compte les entrées sans en lire une seule : logins.json est compté dans sa structure, la base SQLite est parcourue
 //! page par page pour compter les lignes de la table « logins », sans décoder leur contenu ni dépendre de SQLite.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::path::Path;
 
 use super::{Constat, alerte, impossible, ok};
@@ -58,8 +60,8 @@ fn profils() -> Vec<Result<Profil, (String, String)>> {
                     None => liste.push(Err((navigateur.to_string(), format!("{nom}/logins.json")))),
                 }
             } else {
-                let mut total = 0;
-                let mut lus = 0;
+                let mut total = 0usize;
+                let mut lus = 0usize;
                 for base in ["Login Data", "Login Data For Account"] {
                     let f = chemin.join(base);
                     if !f.is_file() {
@@ -67,8 +69,8 @@ fn profils() -> Vec<Result<Profil, (String, String)>> {
                     }
                     match compter_base(&f) {
                         Some(n) => {
-                            total += n;
-                            lus += 1;
+                            total = total.saturating_add(n);
+                            lus = lus.saturating_add(1);
                         }
                         None => liste.push(Err((navigateur.to_string(), format!("{nom}/{base}")))),
                     }
@@ -315,6 +317,11 @@ pub(crate) fn navigateurs() {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

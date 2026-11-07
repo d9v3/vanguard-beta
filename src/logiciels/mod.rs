@@ -3,6 +3,9 @@
 //! depuis la source officielle du système, qui vérifie chaque téléchargement (empreinte ou signature) : paquets de
 //! la distribution ou Flathub sous Linux, winget sous Windows, Homebrew sous macOS. Rien n'est désinstallé ici.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 mod catalogue;
 
 use catalogue::{CATALOGUE, Categorie, FLATHUB_PAS_LIBRE, Logiciel};
@@ -357,7 +360,7 @@ fn installer(etat: &Etat, choisis: &[&Offre]) -> Suite {
         let present = apres
             .as_ref()
             .is_some_and(|e| e.offres.iter().any(|a| a.logiciel.nom == o.logiciel.nom && a.installe));
-        let reussi = resultats.get(i + decalage).copied().unwrap_or(false);
+        let reussi = resultats.get(i.saturating_add(decalage)).copied().unwrap_or(false);
         if present {
             println!("  {VERT}✔{RESET} {}", o.logiciel.nom);
         } else if reussi {
@@ -441,7 +444,9 @@ fn categorie(etat: &Etat, c: Categorie) -> Suite {
 
 /// « installés / total » d'une liste, pour la précision du menu.
 fn compte<'a>(offres: impl Iterator<Item = &'a Offre>) -> String {
-    let (faits, total) = offres.fold((0, 0), |(f, t), o| (f + usize::from(o.installe), t + 1));
+    let (faits, total) = offres.fold((0usize, 0usize), |(f, t), o| {
+        (f.saturating_add(usize::from(o.installe)), t.saturating_add(1))
+    });
     if faits == total {
         tr!("✔ tout est installé", "✔ all installed").into()
     } else {
@@ -465,7 +470,7 @@ pub fn lignes_de_recherche(cle: &str) -> Vec<crate::selection::Ligne> {
         .filter_map(|l| {
             let place = categories.iter().position(|c| *c == l.categorie)?;
             Some(
-                crate::selection::Ligne::cachee(&format!("{cle}.{}", place + 2), &chemin, l.nom, role(l))
+                crate::selection::Ligne::cachee(&format!("{cle}.{}", place.saturating_add(2)), &chemin, l.nom, role(l))
                     .avec_mots(l.categorie.titre()),
             )
         })
@@ -553,13 +558,13 @@ pub fn menu() {
         ];
         for (i, c) in categories.iter().enumerate() {
             lignes.push(Ligne::choix(
-                &(i + 2).to_string(),
+                &i.saturating_add(2).to_string(),
                 c.titre(),
                 &compte(etat.offres.iter().filter(|o| o.logiciel.categorie == *c)),
             ));
         }
         // L'autre sens de « mettre à jour les programmes » : ceux déjà installés, par 4.2 (Mises à jour du système).
-        let maj = (categories.len() + 2).to_string();
+        let maj = categories.len().saturating_add(2).to_string();
         let place_maj = crate::touche_de(crate::Action::Maj).unwrap_or_default();
         lignes.push(Ligne::choix(
             &maj,
@@ -651,7 +656,7 @@ pub fn liste() {
         "\n  {} logiciels proposés ici : {installes} installés, {} à installer.",
         "\n  {} programs offered here: {installes} installed, {} to install.",
         etat.offres.len(),
-        etat.offres.len() - installes
+        etat.offres.len().saturating_sub(installes)
     );
 }
 
@@ -662,6 +667,11 @@ pub fn recommandes() {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,6 +1,8 @@
 //! Les traces sous Linux : /proc pour les processus (sans rien lancer), ss et ip pour le réseau, systemd, cron et
 //! les fichiers de démarrage, les comptes et leurs connexions, le journal de systemd.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -45,7 +47,7 @@ pub(crate) fn debut_du_processus(stat: &str, btime: u64, tops: u64) -> Option<u6
     let (_, apres) = stat.rsplit_once(')')?;
     // Après le nom : l'état est le 3e champ, le démarrage le 22e.
     let depart: u64 = apres.split_whitespace().nth(19)?.parse().ok()?;
-    Some(btime + depart / tops.max(1))
+    Some(btime.saturating_add(depart.checked_div(tops.max(1))?))
 }
 
 /// Le démarrage de l'ordinateur, d'après /proc/stat.
@@ -103,8 +105,9 @@ pub(super) fn processus(dossier: &Path) -> Partie {
     let tops = tops_par_seconde();
     let montages = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
     let mut empreintes: HashMap<(u64, u64), Empreinte> = HashMap::new();
-    let mut illisibles = 0;
-    let fin = std::time::Instant::now() + super::DELAI_EMPREINTES;
+    let mut illisibles = 0usize;
+    let maintenant = std::time::Instant::now();
+    let fin = maintenant.checked_add(super::DELAI_EMPREINTES).unwrap_or(maintenant);
     let mut liste = Vec::new();
     for pid in pids {
         let racine = PathBuf::from(format!("/proc/{pid}"));
@@ -154,7 +157,7 @@ pub(super) fn processus(dossier: &Path) -> Partie {
                 (lien, etat, empreinte)
             }
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                illisibles += 1;
+                illisibles = illisibles.saturating_add(1);
                 (String::new(), "", Empreinte::Droits)
             }
             // Fil du noyau : pas de programme.
@@ -200,7 +203,7 @@ fn releve(f: &mut Feuille, titre: &str, lignes: Option<Vec<String>>) -> bool {
     f.section(&format!("{titre} (lu par Vanguard / read by Vanguard)"));
     if let Some(l) = lignes {
         f.ajouter(&l.join("\n"));
-        f.lues += 1;
+        f.lues = f.lues.saturating_add(1);
         true
     } else {
         f.ajouter(&Raison::Erreur("pas de réponse / no answer".into()).note());
@@ -429,7 +432,7 @@ fn releve_systemd(f: &mut Feuille, utilisateur: bool) -> Option<Vec<String>> {
         let _ = writeln!(texte, "{}\t{}\t{}\t{}", us(m.prochain), us(m.dernier), m.nom, m.service);
     }
     f.ajouter(&texte);
-    f.lues += 1;
+    f.lues = f.lues.saturating_add(1);
     Some(fichiers.iter().map(|(c, _)| unites::nom_de(c).to_string()).collect())
 }
 
@@ -494,7 +497,7 @@ fn dates_de_last(sortie: &str) -> Vec<Vec<i64>> {
                 return None;
             }
             let i = mots.iter().position(|m| JOURS.contains(m))?;
-            let texte = mots.get(i..i + 5)?.join(" ");
+            let texte = mots.get(i..i.saturating_add(5))?.join(" ");
             let d = chrono::NaiveDateTime::parse_from_str(&texte, "%a %b %e %H:%M:%S %Y").ok()?;
             let r = chrono::TimeZone::from_local_datetime(&chrono::Local, &d);
             let mut v: Vec<i64> = [r.earliest(), r.latest()]
@@ -535,14 +538,15 @@ fn absentes_de_last(
     };
     let mut vus: HashMap<i64, usize> = HashMap::new();
     for t in last.iter().flatten() {
-        *vus.entry(*t).or_default() += 1;
+        let fois = vus.entry(*t).or_default();
+        *fois = fois.saturating_add(1);
     }
-    let mut absentes = 0;
+    let mut absentes = 0usize;
     // Les `n` plus récents (n <= montres.len() par construction) : on saute les autres.
     for t in montres.iter().skip(montres.len().saturating_sub(n)) {
         match vus.get_mut(t) {
-            Some(k) if *k > 0 => *k -= 1,
-            _ => absentes += 1,
+            Some(k) if *k > 0 => *k = (*k).saturating_sub(1),
+            _ => absentes = absentes.saturating_add(1),
         }
     }
     absentes
@@ -623,7 +627,7 @@ fn releve_utmp(
                 texte.push('\n');
             }
             if natifs.len() > LIGNES_CONNEXIONS {
-                texte.push_str(&Raison::Lignes(natifs.len() - LIGNES_CONNEXIONS).note());
+                texte.push_str(&Raison::Lignes(natifs.len().saturating_sub(LIGNES_CONNEXIONS)).note());
                 texte.push('\n');
             }
             if coupe {
@@ -631,7 +635,7 @@ fn releve_utmp(
                 texte.push('\n');
             }
             f.ajouter(&texte);
-            f.lues += 1;
+            f.lues = f.lues.saturating_add(1);
             Some(natifs)
         }
         Err(e) => {
@@ -716,7 +720,7 @@ fn sessions_logind(f: &mut Feuille) -> Option<Vec<String>> {
     match r {
         Ok((lignes, ids)) => {
             f.ajouter(&lignes.join("\n"));
-            f.lues += 1;
+            f.lues = f.lues.saturating_add(1);
             // Plus de sessions que la borne : la liste est coupée, et c'est dit (une session qui manque ici n'est pas
             // une session absente).
             if coupees > 0 {
@@ -813,7 +817,7 @@ fn sessions_ouvertes(f: &mut Feuille) {
                 .filter(|e| e.genre == cx::USER_PROCESS)
                 .collect();
             f.ajouter(&v.iter().map(cx::ligne).collect::<Vec<_>>().join("\n"));
-            f.lues += 1;
+            f.lues = f.lues.saturating_add(1);
             // who ne montre que les sessions d'un compte dont le processus vit encore : une entrée périmée (terminal
             // tué) n'est pas un écart.
             Some(
@@ -930,7 +934,7 @@ fn connexions_wtmpdb(f: &mut Feuille) -> (Option<Vec<crate::machine::linux::conn
                         })
                         .collect();
                     f.ajouter(&lignes.join("\n"));
-                    f.lues += 1;
+                    f.lues = f.lues.saturating_add(1);
                 }
                 None => f.ajouter(&Raison::Erreur(pourquoi.clone()).note()),
             }
@@ -968,7 +972,7 @@ fn derniers_passages(f: &mut Feuille, passwd: &str) {
                         })
                         .collect();
                     f.ajouter(&lignes.join("\n"));
-                    f.lues += 1;
+                    f.lues = f.lues.saturating_add(1);
                 }
                 None => f.ajouter(&Raison::Erreur(pourquoi.clone()).note()),
             }
@@ -994,7 +998,7 @@ fn derniers_passages(f: &mut Feuille, passwd: &str) {
         }
         lignes.sort();
         f.ajouter(&lignes.join("\n"));
-        f.lues += 1;
+        f.lues = f.lues.saturating_add(1);
     }
     f.commande(&mut Command::new("lastlog2"), 20, false);
     f.commande(&mut Command::new("lastlog"), 20, false);
@@ -1183,7 +1187,7 @@ struct JournalNatif {
 fn prefixe(ligne: &str) -> Option<(i64, String)> {
     let date = ligne.get(..25)?;
     let quand = chrono::DateTime::parse_from_rfc3339(date).ok()?.timestamp();
-    let fin = ligne.get(26..)?.find(": ")? + 26;
+    let fin = (ligne.get(26..)?.find(": ")?).saturating_add(26);
     Some((quand, ligne[..fin].to_string()))
 }
 
@@ -1191,9 +1195,11 @@ fn prefixe(ligne: &str) -> Option<(i64, String)> {
 /// 05-journal.txt. `None` : il ne se lit pas ici, journalctl le fera ; `Some(Err)` : le fichier ne s'écrit pas.
 fn journal_natif(dossier: &Path, titre: &Bi) -> Option<std::io::Result<JournalNatif>> {
     use std::io::Write as _;
-    let depuis = u64::try_from(chronologie::secondes(std::time::SystemTime::now())? - chronologie::JOURS * 86_400)
-        .ok()?
-        .saturating_mul(1_000_000);
+    let depuis = u64::try_from(
+        chronologie::secondes(std::time::SystemTime::now())?.saturating_sub(chronologie::JOURS.saturating_mul(86_400)),
+    )
+    .ok()?
+    .saturating_mul(1_000_000);
     let debut = chronologie::secondes(std::time::SystemTime::now())?;
     let chemin = dossier.join(JOURNAL_ECRIT);
     let mut f = match super::creer_fichier(&chemin) {
@@ -1211,7 +1217,7 @@ fn journal_natif(dossier: &Path, titre: &Bi) -> Option<std::io::Result<JournalNa
     let parcours = crate::machine::linux::journal_systemd::tout_le_journal(depuis, |l| {
         let mut ligne = super::texte_sur(l);
         ligne.push('\n');
-        if octets + ligne.len() as u64 > super::BORNE_JOURNAL {
+        if octets.saturating_add(u64::try_from(ligne.len()).unwrap_or(u64::MAX)) > super::BORNE_JOURNAL {
             return false;
         }
         if prefixes.len() < PREFIXES_GARDES
@@ -1219,7 +1225,7 @@ fn journal_natif(dossier: &Path, titre: &Bi) -> Option<std::io::Result<JournalNa
         {
             prefixes.push(p);
         }
-        octets += ligne.len() as u64;
+        octets = octets.saturating_add(u64::try_from(ligne.len()).unwrap_or(u64::MAX));
         match f.write_all(ligne.as_bytes()) {
             Ok(()) => true,
             Err(e) => {
@@ -1263,7 +1269,8 @@ fn ecarts_du_journal(
         let mut m: HashMap<&str, isize> = HashMap::new();
         for (q, p) in v {
             if periode.contains(q) {
-                *m.entry(p.as_str()).or_default() += 1;
+                let fois = m.entry(p.as_str()).or_default();
+                *fois = fois.saturating_add(1);
             }
         }
         m
@@ -1272,15 +1279,15 @@ fn ecarts_du_journal(
         return (0, 0);
     };
     // La plus ancienne seconde peut être coupée : elle ne compte pas.
-    let mut debut = debut_n + 1;
+    let mut debut = debut_n.saturating_add(1);
     if temoin_coupe && let Some(debut_t) = temoin.iter().map(|p| p.0).min() {
-        debut = debut.max(debut_t + 1);
+        debut = debut.max(debut_t.saturating_add(1));
     }
-    let fin = fin - 10;
+    let fin = fin.saturating_sub(10);
     let (n, t) = (compter(natifs, debut..fin), compter(temoin, debut..fin));
     let manque = |a: &HashMap<&str, isize>, b: &HashMap<&str, isize>| {
         a.iter()
-            .map(|(k, v)| (v - b.get(k).copied().unwrap_or(0)).max(0))
+            .map(|(k, v)| v.saturating_sub(b.get(k).copied().unwrap_or(0)).max(0))
             .sum::<isize>()
             .unsigned_abs()
     };
@@ -1426,7 +1433,9 @@ fn journal_reserve(erreurs: &str) -> bool {
 /// semaine. Sans journalctl, la chronologie reprend les journaux écrits, et dit leur limite.
 pub(super) fn evenements_des_journaux(dossier: &Path) -> Apport {
     let maintenant = chrono::Local::now().naive_local();
-    let debut = chronologie::secondes(std::time::SystemTime::now()).unwrap_or(0) - chronologie::JOURS * 86_400;
+    let debut = chronologie::secondes(std::time::SystemTime::now())
+        .unwrap_or(0)
+        .saturating_sub(chronologie::JOURS.saturating_mul(86_400));
     let mut apport = Apport::default();
     let mut lu = false;
     let mut reserve = false;
@@ -1502,7 +1511,7 @@ pub(super) fn evenements_des_journaux(dossier: &Path) -> Apport {
                             .find_map(|l| chronologie::quand_de_ligne(l, maintenant, &chrono::Local))
                     })
             });
-        if let Some(q) = plus_ancienne.filter(|q| *q > debut + 3600) {
+        if let Some(q) = plus_ancienne.filter(|q| *q > debut.saturating_add(3600)) {
             let depuis = chronologie::date_locale(q, &chrono::Local);
             apport.manques.push(if reserve {
                 // Sans droits, la plus ancienne entrée lisible est celle du compte : le système en garde peut-être
@@ -1559,6 +1568,11 @@ pub(super) fn place_des_journaux() -> u64 {
     super::BORNE_JOURNAL + TEMOIN_JOURNAL
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

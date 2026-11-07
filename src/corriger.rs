@@ -110,7 +110,7 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Bilan {
             } else {
                 crate::amelioration::noter_correction(c.regle, Issue::Refusee);
                 crate::amelioration::noter_choix(c.regle, Choisi::Refus);
-                bilan.refusees += 1;
+                bilan.refusees = bilan.refusees.saturating_add(1);
                 trp!("    {GRIS}ignoré{RESET}", "    {GRIS}skipped{RESET}");
                 continue;
             };
@@ -165,7 +165,7 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Bilan {
                             // Pas de correction sans point de restauration : on le retentera avant la prochaine
                             // correction acceptée, au lieu de l'appliquer sans rien dire.
                             point_cree = false;
-                            bilan.non_faites += lot.len();
+                            bilan.non_faites = bilan.non_faites.saturating_add(lot.len());
                             trp!("    {GRIS}ignoré{RESET}", "    {GRIS}skipped{RESET}");
                             continue;
                         }
@@ -186,7 +186,7 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Bilan {
                     "    ✖ Valeurs d'avant non enregistrées : rien n'a été appliqué.",
                     "    ✖ Previous values not saved: nothing was applied."
                 );
-                bilan.non_faites += lot.len();
+                bilan.non_faites = bilan.non_faites.saturating_add(lot.len());
                 continue;
             }
             let mut ids = ids_lot;
@@ -235,7 +235,7 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Bilan {
                     }
                     bilan.appliquees.push(c.categorie);
                 } else {
-                    bilan.non_faites += 1;
+                    bilan.non_faites = bilan.non_faites.saturating_add(1);
                 }
                 let cat = crate::langue::categorie(c.categorie);
                 // Sans ces lignes, un échec (UAC refusée, commande en erreur) passait sans un mot de Vanguard.

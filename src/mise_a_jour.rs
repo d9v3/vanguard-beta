@@ -9,6 +9,13 @@
 //! l'auteur et vérifiée (`github`) ; elle remplace la copie de cet ordinateur et le programme lancé, s'il n'est pas
 //! sur la clé (la clé, elle, se met à jour chez son propriétaire).
 
+// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
+#![cfg_attr(
+    all(target_os = "linux", not(test)),
+    warn(clippy::arithmetic_side_effects, clippy::as_conversions)
+)]
+
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -36,7 +43,7 @@ const ENTETE_DECALE: [u8; 17] = *b"WBOHVBSE.WFSTJPO;";
 /// L'en-tête en clair, refait au lancement (`black_box` : le compilateur ne le calcule pas d'avance, ce qui l'écrirait
 /// en clair dans le programme).
 fn entete() -> [u8; 17] {
-    std::hint::black_box(ENTETE_DECALE).map(|o| o - 1)
+    std::hint::black_box(ENTETE_DECALE).map(|o| o.saturating_sub(1))
 }
 
 /// Au-delà, un fichier n'est pas un programme de Vanguard (en 0.85, un release fait 31 Mo sous Windows et 33 sous
@@ -108,7 +115,7 @@ fn version_gravee(octets: &[u8]) -> Option<Version> {
     let mut reste = octets;
     while let Some(i) = reste.windows(entete.len()).position(|f| f == entete) {
         // Ce qui suit l'occurrence ; les 32 premiers octets suffisent à une version et son « ; ».
-        let Some(apres) = reste.get(i + entete.len()..) else {
+        let Some(apres) = reste.get(i.saturating_add(entete.len())..) else {
             break;
         };
         let suite = apres.get(..32).unwrap_or(apres);
@@ -152,7 +159,9 @@ fn lire_octets(chemin: &Path, max: u64) -> Result<Vec<u8>, String> {
         return Err(tr!("pas un fichier ordinaire", "not a regular file").into());
     }
     let mut octets = Vec::new();
-    f.take(max + 1).read_to_end(&mut octets).map_err(|e| e.to_string())?;
+    f.take(max.saturating_add(1))
+        .read_to_end(&mut octets)
+        .map_err(|e| e.to_string())?;
     if u64::try_from(octets.len()).unwrap_or(u64::MAX) > max {
         return Err(tr!("fichier démesuré", "oversized file").into());
     }

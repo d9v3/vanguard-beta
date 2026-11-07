@@ -4,6 +4,8 @@
 //! gravité ; ce qu'il marque « ? » (chemin ou programme invisible sans droits, liste ou mémoire DNS manquante) est dit
 //! non vérifié.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 
@@ -24,7 +26,7 @@ type Debut = (chrono::DateTime<chrono::Utc>, std::time::Instant);
 /// mémoire DNS. Points vérifiés : les connexions, la mémoire DNS contre les serveurs de commande, contre URLhaus.
 pub(super) fn resultat(r: &Releve, a: &Analyse, debut: Debut) -> Resultat {
     let mut constats: Vec<Constat> = Vec::new();
-    let mut verifies = 0;
+    let mut verifies = 0u32;
     let mut non_verifies: Vec<String> = r.listes_absentes.clone();
     match &r.connexions {
         None => constats.push(impossible(
@@ -35,7 +37,7 @@ pub(super) fn resultat(r: &Releve, a: &Analyse, debut: Debut) -> Resultat {
             ),
         )),
         Some(connexions) if connexions.is_empty() => {
-            verifies += 1;
+            verifies = verifies.saturating_add(1);
             constats.push(ok(
                 CAT,
                 crate::tr!(
@@ -45,7 +47,7 @@ pub(super) fn resultat(r: &Releve, a: &Analyse, debut: Debut) -> Resultat {
             ));
         }
         Some(_) => {
-            verifies += 1;
+            verifies = verifies.saturating_add(1);
             constats.extend(programmes(a, &mut non_verifies));
             constats.extend(cachees(r, a, &mut non_verifies));
         }
@@ -64,12 +66,12 @@ pub(super) fn resultat(r: &Releve, a: &Analyse, debut: Debut) -> Resultat {
         Ok(noms) => {
             // Liste des domaines absente : déjà dite dans `listes_absentes`, rien n'est déclaré sain.
             if r.botnets.domaines.is_some() {
-                verifies += 1;
+                verifies = verifies.saturating_add(1);
                 constats.extend(domaines_de_commande(r, noms));
             }
             match &r.urlhaus {
                 Some(Ok((hotes, _))) => {
-                    verifies += 1;
+                    verifies = verifies.saturating_add(1);
                     constats.extend(sites(noms, hotes));
                 }
                 Some(Err(raison)) => non_verifies.push(raison.clone()),
@@ -84,7 +86,7 @@ pub(super) fn resultat(r: &Releve, a: &Analyse, debut: Debut) -> Resultat {
 /// un « rien de suspect » ; sans son chemin, il n'est pas jugé et compte parmi les non vérifiés.
 fn programmes(a: &Analyse, non_verifies: &mut Vec<String>) -> Vec<Constat> {
     let mut constats = Vec::new();
-    let mut sans_chemin = 0;
+    let mut sans_chemin = 0usize;
     for p in &a.programmes {
         let nom = &p.nom;
         let serveurs = &p.serveurs;
@@ -106,7 +108,7 @@ fn programmes(a: &Analyse, non_verifies: &mut Vec<String>) -> Vec<Constat> {
                 .avec_objet(objet),
             );
         } else if p.chemin.is_none() {
-            sans_chemin += 1;
+            sans_chemin = sans_chemin.saturating_add(1);
         } else {
             let n = p.connexions;
             constats.push(
@@ -225,6 +227,11 @@ fn sites(noms: &[String], hotes: &std::collections::HashSet<String>) -> Vec<Cons
         .collect()
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::super::{Botnets, Connexion, analyser};

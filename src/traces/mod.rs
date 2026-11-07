@@ -11,6 +11,9 @@
 //! Rien ne part sur Internet : le bilan joint est fait sans ses règles de mises à jour, les seules qui interrogent des
 //! serveurs.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 mod chronologie;
 // Lu par la chronologie sous Windows ; ses essais tournent partout.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -133,7 +136,7 @@ impl Raison {
     fn texte(&self) -> Bi {
         let taille = |o: u64| {
             #[allow(clippy::cast_precision_loss)]
-            let mo = o as f64 / f64::from(1u32 << 20);
+            let mo = crate::socle::nombres::flottant(o) / f64::from(1u32 << 20);
             (format!("{mo:.0} Mo"), format!("{mo:.0} MB"))
         };
         match self {
@@ -340,7 +343,7 @@ impl Feuille {
         };
         self.ajouter(&r.sortie);
         if r.code == Some(0) {
-            self.lues += 1;
+            self.lues = self.lues.saturating_add(1);
         } else {
             let erreurs = r.erreurs.trim();
             let _ = writeln!(
@@ -387,7 +390,7 @@ impl Feuille {
         self.section(&chemin.to_string_lossy());
         match lire_debut(chemin, BORNE_FICHIER, !est_lien) {
             Ok(texte) => {
-                self.lues += 1;
+                self.lues = self.lues.saturating_add(1);
                 self.ajouter(&if masquer { masquer_secrets(&texte) } else { texte });
                 if meta.len() > BORNE_FICHIER {
                     let _ = writeln!(self.texte, "{}", Raison::Borne(BORNE_FICHIER).note());
@@ -546,14 +549,14 @@ fn masquer_secrets(texte: &str) -> String {
 
 /// « [export|declare -x|typeset -x|local|readonly] NOM=valeur » ou, en fish, « set [-gx…] NOM valeur ».
 fn masquer_affectation(ligne: &str) -> String {
-    let debut = ligne.len() - ligne.trim_start().len();
+    let debut = ligne.len().saturating_sub(ligne.trim_start().len());
     let mots: Vec<&str> = ligne[debut..].split_whitespace().collect();
     if mots.first() == Some(&"set") {
         if let Some(nom) = mots.iter().skip(1).find(|m| !m.starts_with('-'))
             && nom_de_secret(nom)
             && let Some(i) = ligne.find(&format!(" {nom} "))
         {
-            return format!("{}(masqué)", &ligne[..i + nom.len() + 2]);
+            return format!("{}(masqué)", &ligne[..i.saturating_add(nom.len()).saturating_add(2)]);
         }
         return ligne.to_string();
     }
@@ -562,7 +565,9 @@ fn masquer_affectation(ligne: &str) -> String {
     };
     let avant = ligne[..egal].trim();
     let nom = avant.rsplit(char::is_whitespace).next().unwrap_or(avant);
-    let prefixe = avant[..avant.len() - nom.len()].split_whitespace().collect::<Vec<_>>();
+    let prefixe = avant[..avant.len().saturating_sub(nom.len())]
+        .split_whitespace()
+        .collect::<Vec<_>>();
     let mots_permis = ["export", "declare", "typeset", "local", "readonly", "-x", "-gx", "-r"];
     if !nom.is_empty()
         && nom.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
@@ -606,7 +611,7 @@ fn masquer_adresse(ligne: &str) -> String {
     let mut sortie = String::new();
     let mut reste = ligne;
     while let Some(i) = reste.find("://") {
-        let (avant, apres) = reste.split_at(i + 3);
+        let (avant, apres) = reste.split_at(i.saturating_add(3));
         sortie.push_str(avant);
         let fin = apres
             .find(|c: char| c == '/' || c.is_whitespace() || c == '"' || c == '\'')
@@ -682,7 +687,9 @@ fn lien_sur(m: &std::fs::Metadata) -> bool {
 pub(crate) fn date_iso(t: SystemTime) -> String {
     let secondes = match t.duration_since(SystemTime::UNIX_EPOCH) {
         Ok(d) => i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
-        Err(e) => -i64::try_from(e.duration().as_secs()).unwrap_or(i64::MAX),
+        Err(e) => i64::try_from(e.duration().as_secs())
+            .unwrap_or(i64::MAX)
+            .saturating_neg(),
     };
     date_iso_secondes(secondes)
 }
@@ -965,7 +972,9 @@ struct Parcours {
 /// lecture bloquée figeait la collecte au-delà de toute limite (vu le 20 octobre, la VM Windows ouverte). Les points
 /// de `montages` sont écartés sans être interrogés ; ailleurs (macOS), un dossier d'un autre appareil que sa racine.
 fn parcourir(racines: &[PathBuf], exclu: &Path, depuis: SystemTime, montages: &[PathBuf]) -> Parcours {
-    let fin = Instant::now() + Duration::from_secs(20);
+    let fin = Instant::now()
+        .checked_add(Duration::from_secs(20))
+        .unwrap_or_else(Instant::now);
     let mut p = Parcours {
         entrees: Vec::new(),
         vus: 0,
@@ -991,7 +1000,7 @@ fn parcourir(racines: &[PathBuf], exclu: &Path, depuis: SystemTime, montages: &[
             }
         };
         for e in entrees.flatten() {
-            p.vus += 1;
+            p.vus = p.vus.saturating_add(1);
             let chemin = e.path();
             if chemin.starts_with(exclu) || montages.contains(&chemin) {
                 continue;
@@ -1001,7 +1010,7 @@ fn parcourir(racines: &[PathBuf], exclu: &Path, depuis: SystemTime, montages: &[
             };
             if m.is_dir() {
                 if profondeur < 8 && racine.is_none_or(|r| r == appareil(&m)) {
-                    a_voir.push((chemin, profondeur + 1, racine));
+                    a_voir.push((chemin, profondeur.saturating_add(1), racine));
                 }
                 continue;
             }
@@ -1034,7 +1043,7 @@ fn decrire(chemin: &Path, m: &std::fs::Metadata) -> Entree {
         use std::os::unix::fs::MetadataExt;
         let change = u64::try_from(m.ctime())
             .ok()
-            .map(|s| SystemTime::UNIX_EPOCH + Duration::from_secs(s));
+            .and_then(|s| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(s)));
         let mode = if m.file_type().is_symlink() {
             "l".to_string()
         } else {
@@ -1089,11 +1098,16 @@ fn endroits() -> Vec<PathBuf> {
 fn fichiers_recents(dossier: &Path) -> Partie {
     let mut p = Partie::new(Bi::new("Fichiers récents", "Recent files"));
     let racines = endroits();
-    let depuis = SystemTime::now() - Duration::from_secs(JOURS_RECENTS * 86_400);
+    // Une date qui déborderait : la limite tombe en 1970, tout passe pour récent.
+    let depuis = SystemTime::now()
+        .checked_sub(Duration::from_secs(JOURS_RECENTS.saturating_mul(86_400)))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
     let mut parcours = parcourir(&racines, dossier, depuis, &os::points_de_montage());
-    let mut empreintes = 0;
-    let fin = Instant::now() + DELAI_EMPREINTES;
-    let mut en_retard = 0;
+    let mut empreintes = 0usize;
+    let fin = Instant::now()
+        .checked_add(DELAI_EMPREINTES)
+        .unwrap_or_else(Instant::now);
+    let mut en_retard = 0usize;
     for e in &mut parcours.entrees {
         if e.mode == "l" {
             continue;
@@ -1106,13 +1120,13 @@ fn fichiers_recents(dossier: &Path) -> Partie {
         let executable = u32::from_str_radix(&e.mode, 8).is_ok_and(|m| m & 0o111 != 0);
         if a_empreinter(&nom, &premiers_octets(chemin), executable) {
             if Instant::now() > fin {
-                en_retard += 1;
+                en_retard = en_retard.saturating_add(1);
                 e.empreinte = Some(Empreinte::Delai);
                 continue;
             }
             let x = empreinte(chemin, TAILLE_EMPREINTE);
             if matches!(x, Empreinte::Sha256(_)) {
-                empreintes += 1;
+                empreintes = empreintes.saturating_add(1);
             }
             e.empreinte = Some(x);
         }
@@ -1626,7 +1640,7 @@ pub fn collecter(argument: Option<&Path>) -> Option<PathBuf> {
         );
     }
     let besoin_journaux = os::place_des_journaux();
-    let besoin = besoin_journaux + PLACE_HORS_JOURNAUX;
+    let besoin = besoin_journaux.saturating_add(PLACE_HORS_JOURNAUX);
     let libre = place_libre(&dossier);
     let place = |o: u64| crate::socle::taille_lisible(o);
     match libre {
@@ -1752,6 +1766,11 @@ pub fn commande(dossier: Option<&Path>) -> bool {
     collecter(dossier).is_some()
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

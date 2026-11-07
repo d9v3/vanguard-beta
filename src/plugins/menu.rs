@@ -2,6 +2,8 @@
 //! (`vanguard plugins` sans argument) et les scripts du laboratoire (`vanguard labo` sans argument). Choisir un numéro
 //! lance l'élément ; les lettres du bas ajoutent, approuvent ou retirent. Rien ne s'y lance en administrateur.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::path::Path;
 
 use crate::langue::Reponse;
@@ -148,7 +150,7 @@ pub(super) fn lignes_plugins(plugins: &[Plugin], reglages: &super::reglages::Reg
         } else {
             etat_court(&p.etat)
         };
-        lignes_choix(&mut l, &(i + 1).to_string(), &texte, &etat);
+        lignes_choix(&mut l, &i.saturating_add(1).to_string(), &texte, &etat);
     }
     l.push(Ligne::Texte(String::new()));
     l.push(Ligne::choix("a", tr!("Ajouter un plugin", "Add a plugin"), ""));
@@ -212,7 +214,7 @@ pub(super) fn lignes_labo(
         } else {
             labo::libelle(&s.etat)
         };
-        lignes_choix(&mut l, &(i + 1).to_string(), &affichable(&s.fichier), &etat);
+        lignes_choix(&mut l, &i.saturating_add(1).to_string(), &affichable(&s.fichier), &etat);
     }
     l.push(Ligne::Texte(String::new()));
     l.push(Ligne::choix(
@@ -530,6 +532,11 @@ pub fn labo(racine: &Path) {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

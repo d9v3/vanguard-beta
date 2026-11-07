@@ -3,6 +3,8 @@
 //! du produit ; une détection ratée relève de l'envoi d'un échantillon. Seul un comportement anormal d'un produit
 //! mène à un rapport. Pur et sans entrée-sortie : testé seul.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::fmt::Write as _;
 
 use crate::modele::evenement::{Evenement, Genre};
@@ -48,7 +50,7 @@ pub(crate) fn cves(texte: &str) -> Vec<String> {
     let haut = texte.to_ascii_uppercase();
     let mut vues: Vec<String> = Vec::new();
     for (i, _) in haut.match_indices("CVE-") {
-        let reste = &haut[i + 4..];
+        let reste = &haut[i.saturating_add("CVE-".len())..];
         let annee: String = reste.chars().take_while(char::is_ascii_digit).collect();
         if annee.len() != 4 || !reste[4..].starts_with('-') {
             continue;
@@ -149,6 +151,11 @@ pub(crate) fn trier(sujet: &Sujet) -> Tri {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

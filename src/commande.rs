@@ -1,6 +1,8 @@
 //! Lancement des commandes système avec un délai maximal : un outil qui ne répond plus (systemctl, gsettings,
 //! PowerShell, gestionnaire de paquets hors ligne…) ne doit jamais figer Vanguard.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc (setsid, getpgid, kill, waitid : groupe de processus et attente) et de kernel32 (GetSystemDirectoryW ;
 // GetModuleHandleW et GetProcAddress, pour reconnaître Wine).
 #![allow(unsafe_code)]
@@ -65,7 +67,9 @@ fn lancer_entree(commande: &mut Command, entree: Option<Vec<u8>>, secondes: u64)
     }
     let sortie = lire_en_fond(enfant.stdout.take()?);
     let erreurs = lire_en_fond(enfant.stderr.take()?);
-    let limite = Instant::now() + Duration::from_secs(secondes);
+    let limite = Instant::now()
+        .checked_add(Duration::from_secs(secondes))
+        .unwrap_or_else(Instant::now);
     // Attente qui double de 1 à 50 ms : la plupart des commandes finissent en quelques millisecondes, et une pause
     // fixe de 50 ms coûtait 50 ms à chacune (5 s pour la centaine de petites commandes des fichiers suspects).
     let mut pause = Duration::from_millis(1);
@@ -74,7 +78,7 @@ fn lancer_entree(commande: &mut Command, entree: Option<Vec<u8>>, secondes: u64)
             Ok(Some(statut)) => break statut,
             Ok(None) if Instant::now() < limite => {
                 std::thread::sleep(pause);
-                pause = (pause * 2).min(Duration::from_millis(50));
+                pause = pause.saturating_mul(2).min(Duration::from_millis(50));
             }
             _ => {
                 arreter(&mut enfant);
@@ -208,7 +212,7 @@ fn lire_borne(
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
             };
-            let reste = borne - lu.len();
+            let reste = borne.saturating_sub(lu.len());
             lu.extend(tampon.iter().take(n.min(reste)));
             if n > reste {
                 plein.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -247,7 +251,7 @@ fn tuer_le_groupe(pid: u32) {
         // le chef, celui que setsid a créé pour lui : aucun autre processus que les siens.
         unsafe {
             if libc::getpgid(p) == p {
-                libc::kill(-p, libc::SIGKILL);
+                libc::kill(p.saturating_neg(), libc::SIGKILL);
             }
         }
     }
@@ -266,11 +270,11 @@ pub fn lancer_borne(commande: &mut Command, secondes: u64, borne: usize) -> Opti
         .stderr(Stdio::piped());
     // Un programme copié à l'instant (la copie vérifiée d'un plugin) peut être refusé « Text file busy » : un autre fil
     // qui lance un processus au même moment a hérité, le temps de son exec, du fichier encore ouvert en écriture.
-    let mut essais = 0;
+    let mut essais = 0usize;
     let mut enfant = loop {
         match commande.spawn() {
             Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && essais < 20 => {
-                essais += 1;
+                essais = essais.saturating_add(1);
                 std::thread::sleep(Duration::from_millis(50));
             }
             r => break r.ok()?,
@@ -279,7 +283,9 @@ pub fn lancer_borne(commande: &mut Command, secondes: u64, borne: usize) -> Opti
     let plein = Arc::new(AtomicBool::new(false));
     let sortie = lire_borne(enfant.stdout.take()?, borne, plein.clone());
     let erreurs = lire_borne(enfant.stderr.take()?, borne, plein.clone());
-    let limite = Instant::now() + Duration::from_secs(secondes);
+    let limite = Instant::now()
+        .checked_add(Duration::from_secs(secondes))
+        .unwrap_or_else(Instant::now);
     let mut pause = Duration::from_millis(1);
     let (mut tronque, mut delai) = (false, false);
     let pid = enfant.id();
@@ -302,7 +308,7 @@ pub fn lancer_borne(commande: &mut Command, secondes: u64, borne: usize) -> Opti
             }
             Ok(None) if Instant::now() < limite => {
                 std::thread::sleep(pause);
-                pause = (pause * 2).min(Duration::from_millis(50));
+                pause = pause.saturating_mul(2).min(Duration::from_millis(50));
             }
             _ => {
                 delai = true;
@@ -517,12 +523,12 @@ pub fn garder_la_fin(morceaux: std::collections::VecDeque<Vec<u8>>, borne: u64) 
     if total <= borne {
         return (tout, false);
     }
-    let mut debut = total - borne;
-    if debut > 0 && tout.get(debut - 1).is_some_and(|&o| o != b'\n') {
+    let mut debut = total.saturating_sub(borne);
+    if debut > 0 && tout.get(debut.saturating_sub(1)).is_some_and(|&o| o != b'\n') {
         debut = tout
             .get(debut..)
             .and_then(|reste| reste.iter().position(|&o| o == b'\n'))
-            .map_or(total, |p| debut + p + 1);
+            .map_or(total, |p| debut.saturating_add(p).saturating_add(1));
     }
     tout.drain(..debut);
     (tout, true)
@@ -571,7 +577,7 @@ pub fn lancer_vers(
                     #[expect(clippy::indexing_slicing, reason = "Read::read rend au plus tampon.len() octets")]
                     let morceau = &tampon[..n_gardes];
                     ok &= vers.write_all(morceau).is_ok();
-                    ecrits += n_gardes as u64;
+                    ecrits = ecrits.saturating_add(u64::try_from(n_gardes).unwrap_or(u64::MAX));
                     if n_gardes < n || !ok {
                         tronque = n_gardes < n;
                         plein_lu.store(true, Ordering::Relaxed);
@@ -580,13 +586,15 @@ pub fn lancer_vers(
                 }
                 Garder::Fin => {
                     fin.push_back(tampon.iter().take(n).copied().collect());
-                    en_memoire += n as u64;
+                    en_memoire = en_memoire.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
                     // Les morceaux entièrement hors de la borne tombent tout de suite : la mémoire reste bornée.
-                    while fin
-                        .front()
-                        .is_some_and(|m: &Vec<u8>| en_memoire - m.len() as u64 >= borne)
-                    {
-                        en_memoire -= fin.pop_front().map_or(0, |m| m.len() as u64);
+                    while fin.front().is_some_and(|m: &Vec<u8>| {
+                        en_memoire.saturating_sub(u64::try_from(m.len()).unwrap_or(u64::MAX)) >= borne
+                    }) {
+                        en_memoire = en_memoire.saturating_sub(
+                            fin.pop_front()
+                                .map_or(0, |m| u64::try_from(m.len()).unwrap_or(u64::MAX)),
+                        );
                         tronque = true;
                     }
                 }
@@ -596,11 +604,13 @@ pub fn lancer_vers(
             let (derniers, coupe) = garder_la_fin(fin, borne);
             tronque |= coupe;
             ok &= vers.write_all(&derniers).is_ok();
-            ecrits = derniers.len() as u64;
+            ecrits = u64::try_from(derniers.len()).unwrap_or(u64::MAX);
         }
         let _ = envoi.send((ecrits, tronque, ok));
     });
-    let limite = Instant::now() + Duration::from_secs(secondes);
+    let limite = Instant::now()
+        .checked_add(Duration::from_secs(secondes))
+        .unwrap_or_else(Instant::now);
     let mut pause = Duration::from_millis(1);
     let mut delai = false;
     let code = loop {
@@ -612,7 +622,7 @@ pub fn lancer_vers(
             }
             Ok(None) if Instant::now() < limite => {
                 std::thread::sleep(pause);
-                pause = (pause * 2).min(Duration::from_millis(50));
+                pause = pause.saturating_mul(2).min(Duration::from_millis(50));
             }
             _ => {
                 delai = true;
@@ -622,7 +632,9 @@ pub fn lancer_vers(
         }
     };
     // Après la fin, la lecture finit vite ; `Garder::Fin` écrit encore ce qu'il a gardé (la borne au plus).
-    let (octets, tronque, ok) = fini.recv_timeout(DELAI_LECTURE + Duration::from_secs(30)).ok()?;
+    let (octets, tronque, ok) = fini
+        .recv_timeout(DELAI_LECTURE.saturating_add(Duration::from_secs(30)))
+        .ok()?;
     if !ok {
         return None;
     }
@@ -644,7 +656,7 @@ pub(crate) fn descendants(liste: &[(u32, u32)], racine: u32) -> Vec<u32> {
     while let Some(&pid) = vus.get(i)
         && vus.len() < 1000
     {
-        i += 1;
+        i = i.saturating_add(1);
         for &(enfant, parent) in liste {
             if parent == pid && !vus.contains(&enfant) {
                 vus.push(enfant);
@@ -748,7 +760,7 @@ const APOSTROPHES_PS: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201a}', '\u
 /// doublée. Ne doubler que « ' » laissait « ’ » fermer la chaîne : la suite d'un nom de fichier téléchargé ou d'un
 /// appareil du réseau s'exécutait comme une commande.
 pub fn ps_texte(t: &str) -> String {
-    let mut s = String::with_capacity(t.len() + 2);
+    let mut s = String::with_capacity(t.len().saturating_add(2));
     for c in t.chars() {
         s.push(c);
         if APOSTROPHES_PS.contains(&c) {
@@ -800,7 +812,7 @@ pub fn decouper_commande(ligne: &str) -> (String, String) {
     let bas = ligne.to_ascii_lowercase();
     let fin = bas
         .match_indices(".exe")
-        .map(|(i, _)| i + 4)
+        .map(|(i, _)| i.saturating_add(4))
         .find(|&f| bas[f..].chars().next().is_none_or(|c| c.is_whitespace() || c == '"'));
     if let Some(f) = fin {
         let (exe, args) = ligne.split_at(f);
@@ -812,6 +824,11 @@ pub fn decouper_commande(ligne: &str) -> (String, String) {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests_powershell {
     use super::*;
@@ -992,6 +1009,11 @@ mod tests {
 /// `sh_chaine`, ou une exception relue (`RELUES`). Lu dans les fichiers du code, comme un relecteur le ferait.
 // `cfg(test)` seul sur sa ligne : clippy n'y reconnaît un module de tests (exempté des règles anti-panique,
 // clippy.toml) que sous cette forme, pas dans `all(test, …)`.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 #[cfg(unix)]
 mod tests_sh_chaine {
@@ -1562,6 +1584,11 @@ mod tests_sh_chaine {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests_lancer_vers {
     use super::*;
@@ -1692,6 +1719,11 @@ mod tests_lancer_borne {
 /// Sous Windows, aucun programme lancé par son seul nom : la liste de ceux qui restent, lue dans les sources
 /// compilées pour Windows (les `cfg` des modules et des blocs sont suivis, les tests mis à part).
 // `cfg(test)` seul sur sa ligne, comme tests_sh_chaine : clippy y reconnaît un module de tests.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 #[cfg(unix)]
 mod tests_noms_nus {

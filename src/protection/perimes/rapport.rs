@@ -9,6 +9,9 @@
 //! ferait chuter), un constat critique à part pour Firefox ou Edge antérieur au correctif d'une faille exploitée, et un
 //! seul « impossible » qui donne tout ce qui n'a pas pu être vérifié, jamais compté comme sain.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::time::Duration;
 
 use super::inventaire::{Installe, NonLu};
@@ -110,7 +113,7 @@ fn failles_firefox(
         match mozilla_avis::juger(index, &e.cve, v, branche) {
             Jugement::Anterieure(z) => failles.push((e.cve.clone(), z)),
             Jugement::Corrigee => {}
-            Jugement::Inconnu => inconnues += 1,
+            Jugement::Inconnu => inconnues = inconnues.saturating_add(1),
         }
     }
     let non_jugees = (inconnues > 0).then(|| {
@@ -706,6 +709,11 @@ pub(crate) fn constats() -> Vec<Constat> {
     constats_de(&relever())
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use std::path::Path;

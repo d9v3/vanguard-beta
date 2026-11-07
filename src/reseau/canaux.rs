@@ -4,6 +4,9 @@
 //! 80 MHz en occupe quatre d'un coup : ils se comptent par blocs. Lecture seule : le canal se règle dans
 //! l'administration de la box.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 #[cfg(target_os = "macos")]
 use std::process::Command;
 
@@ -71,7 +74,7 @@ fn gene_24(voisines: &[&Borne], c: u16) -> f64 {
         .iter()
         .filter(|b| b.bande == Bande::G24)
         .map(|b| match b.canal.abs_diff(c) {
-            ecart @ 0..5 => poids(b) * f64::from(5 - ecart) / 5.0,
+            ecart @ 0..5 => poids(b) * f64::from(5u16.saturating_sub(ecart)) / 5.0,
             _ => 0.0,
         })
         .sum()
@@ -124,7 +127,10 @@ fn barre_gene(gene: f64, maximum: f64) -> String {
         4..=6 => "\x1b[1;93m",
         _ => "\x1b[1;91m",
     };
-    let (pleines, vides) = ("▰".repeat(usize::from(n)), "▱".repeat(usize::from(10 - n)));
+    let (pleines, vides) = (
+        "▰".repeat(usize::from(n)),
+        "▱".repeat(usize::from(10u8.saturating_sub(n))),
+    );
     format!("{teinte}{pleines}{GRIS}{vides}{RESET}")
 }
 
@@ -360,6 +366,11 @@ fn afficher(lecture: &Lecture) {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -6,6 +6,8 @@
 //! reprend là où elle s'est arrêtée : ce qui est déjà copié, à l'identique, n'est pas recopié. Jamais vers la clé
 //! VANGUARD ni vers le disque du système.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc : statfs, fcntl et posix_fadvise (copie sans cache, système de fichiers de la cible).
 #![allow(unsafe_code)]
 
@@ -226,16 +228,16 @@ pub(crate) fn sans_echappements(t: &str) -> String {
     let mut i = 0;
     while let Some(&octet) = octets.get(i) {
         let code = octets
-            .get(i + 1..i + 4)
+            .get(i.saturating_add(1)..i.saturating_add(4))
             .and_then(|o| u8::from_str_radix(std::str::from_utf8(o).ok()?, 8).ok());
         match (octet, code) {
             (b'\\', Some(c)) => {
                 sortie.push(c);
-                i += 4;
+                i = i.saturating_add(4);
             }
             (o, _) => {
                 sortie.push(o);
-                i += 1;
+                i = i.saturating_add(1);
             }
         }
     }
@@ -360,7 +362,13 @@ fn disques_de_mount(sortie: &str) -> Vec<(PathBuf, String)> {
 fn disque_de(source: &str) -> Option<String> {
     let nom = source.strip_prefix("/dev/")?;
     let disque = match nom.rfind('s') {
-        Some(i) if i > 4 && nom[i + 1..].chars().all(|c| c.is_ascii_digit()) && i + 1 < nom.len() => &nom[..i],
+        Some(i)
+            if i > 4
+                && nom[i.saturating_add(1)..].chars().all(|c| c.is_ascii_digit())
+                && i.saturating_add(1) < nom.len() =>
+        {
+            &nom[..i]
+        }
         _ => nom,
     };
     Some(disque.to_string())
@@ -498,7 +506,7 @@ fn lire_lecteurs(texte: &str, systeme: &str) -> Vec<Disque> {
 /// à `u64::MAX` : quelques fichiers creux, qui annoncent des exaoctets sans rien occuper, feraient paniquer la somme
 /// dans la version publiée (`nettoyer::somme`).
 fn mesurer(dossier: &Path) -> (u64, u64) {
-    let (mut fichiers, mut octets) = (0, 0_u64);
+    let (mut fichiers, mut octets) = (0u64, 0_u64);
     let mut a_voir = vec![dossier.to_path_buf()];
     while let Some(d) = a_voir.pop() {
         for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
@@ -506,7 +514,7 @@ fn mesurer(dossier: &Path) -> (u64, u64) {
             if m.is_dir() {
                 a_voir.push(e.path());
             } else if m.is_file() {
-                fichiers += 1;
+                fichiers = fichiers.saturating_add(1);
                 octets = octets.saturating_add(m.len());
             }
         }
@@ -549,7 +557,9 @@ impl Avancement {
         self.dernier = Instant::now();
         #[allow(clippy::cast_precision_loss)]
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let debit = taille_lisible((self.octets as f64 / self.debut.elapsed().as_secs_f64().max(0.1)) as u64);
+        let debit = taille_lisible(crate::socle::nombres::entier(
+            crate::socle::nombres::flottant(self.octets) / self.debut.elapsed().as_secs_f64().max(0.1),
+        ));
         let texte = trf!(
             "{} / {} fichiers · {} / {} · {debit}/s",
             "{} / {} files · {} / {} · {debit}/s",
@@ -631,7 +641,7 @@ pub(crate) fn empreinte_relue(chemin: &Path) -> std::io::Result<blake3::Hash> {
             // Plus court que sa taille annoncée : l'empreinte diffère, la copie est vue abîmée.
             break;
         }
-        lu += n as u64;
+        lu += u64::try_from(n).unwrap_or(u64::MAX);
         // Une lecture courte avant la fin laisserait la suivante à une position que Windows refuse sans cache :
         // mieux vaut le dire que de relire ce morceau par le cache et le croire vérifié.
         if n % ALIGNEMENT_RELU != 0 && lu < taille {
@@ -748,7 +758,7 @@ fn copier_fichier(source: &Path, dossier: &Path, bilan: &mut Bilan) {
             .take_while(|p| std::fs::symlink_metadata(p).is_ok())
             .any(|p| identiques(&p, source));
         if deja_copie {
-            bilan.deja += 1;
+            bilan.deja = bilan.deja.saturating_add(1);
             bilan.octets = bilan
                 .octets
                 .saturating_add(std::fs::metadata(source).map_or(0, |m| m.len()));
@@ -771,7 +781,7 @@ fn copier_fichier(source: &Path, dossier: &Path, bilan: &mut Bilan) {
     }
     match essai {
         Ok(()) => {
-            bilan.copies += 1;
+            bilan.copies = bilan.copies.saturating_add(1);
             bilan.octets = bilan
                 .octets
                 .saturating_add(std::fs::metadata(&cible).map_or(0, |m| m.len()));
@@ -794,12 +804,12 @@ fn copier_arbre(source: &Path, cible: &Path, bilan: &mut Bilan, avancement: &mut
             let chemin = e.path();
             let Ok(m) = chemin.symlink_metadata() else { continue };
             if m.is_symlink() {
-                bilan.liens += 1;
+                bilan.liens = bilan.liens.saturating_add(1);
             } else if m.is_dir() {
                 a_voir.push((chemin, vers.join(nom_permis(&e.file_name().to_string_lossy()))));
             } else if m.is_file() {
                 copier_fichier(&chemin, &vers, bilan);
-                avancement.fichiers += 1;
+                avancement.fichiers = avancement.fichiers.saturating_add(1);
                 avancement.octets = avancement.octets.saturating_add(m.len());
                 avancement.montrer(false);
             }
@@ -961,7 +971,7 @@ fn choisir_disque() -> Option<PathBuf> {
     for (i, d) in liste.iter().enumerate() {
         let (libre, total) = (taille_lisible(d.libre), taille_lisible(d.total));
         let place = trf!("{} libres sur {}", "{} free out of {}", libre, total);
-        lignes.push(Ligne::choix(&(i + 1).to_string(), &d.nom, &place));
+        lignes.push(Ligne::choix(&i.saturating_add(1).to_string(), &d.nom, &place));
     }
     lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
     lignes.push(Ligne::Texte(String::new()));
@@ -1194,7 +1204,7 @@ const TAILLE_RELUE_MAX: u64 = 1 << 30;
 /// combien de gros fichiers (plus de `TAILLE_RELUE_MAX`) ont été laissés de côté.
 fn fichiers_de_la_copie(dossier: &Path) -> (Vec<PathBuf>, usize) {
     let mut trouves = Vec::new();
-    let mut gros = 0;
+    let mut gros = 0usize;
     let mut a_voir = vec![PathBuf::new()];
     while let Some(relatif) = a_voir.pop() {
         for e in std::fs::read_dir(dossier.join(&relatif))
@@ -1219,7 +1229,7 @@ fn fichiers_de_la_copie(dossier: &Path) -> (Vec<PathBuf>, usize) {
                     .any(|p| nom.ends_with(p.as_str()))
             {
                 if meta.len() > TAILLE_RELUE_MAX {
-                    gros += 1;
+                    gros = gros.saturating_add(1);
                 } else {
                     trouves.push(chemin);
                 }
@@ -1241,7 +1251,12 @@ pub(crate) fn echantillon(fichiers: &[PathBuf], n: usize) -> Vec<&PathBuf> {
     // i * (len - 1) / (n - 1) <= len - 1 : chaque `get` trouve son fichier. n = 1 : le premier seul (la division
     // par n - 1 = 0 plantait).
     (0..n)
-        .filter_map(|i| fichiers.get(i * (fichiers.len() - 1) / (n - 1).max(1)))
+        .filter_map(|i| {
+            let rang = i
+                .saturating_mul(fichiers.len().saturating_sub(1))
+                .checked_div(n.saturating_sub(1).max(1));
+            fichiers.get(rang.unwrap_or(0))
+        })
         .collect()
 }
 
@@ -1268,17 +1283,17 @@ fn relire(
             .and_then(|p| sources.iter().find(|(nom, _)| *nom == p))
             .map(|(_, source)| source.join(morceaux.as_path()));
         let Some(original) = original.filter(|o| o.is_file()) else {
-            r.sans_original += 1;
+            r.sans_original = r.sans_original.saturating_add(1);
             continue;
         };
         match empreinte(&original) {
-            Ok(h) if h == relue => r.identiques += 1,
+            Ok(h) if h == relue => r.identiques = r.identiques.saturating_add(1),
             Ok(_)
                 if std::fs::metadata(&original)
                     .and_then(|m| m.modified())
                     .is_ok_and(|m| m > copie_le) =>
             {
-                r.modifies_depuis += 1;
+                r.modifies_depuis = r.modifies_depuis.saturating_add(1);
             }
             Ok(_) => r.abimes.push((
                 (*relatif).clone(),
@@ -1288,7 +1303,7 @@ fn relire(
                 )
                 .to_string(),
             )),
-            Err(_) => r.sans_original += 1,
+            Err(_) => r.sans_original = r.sans_original.saturating_add(1),
         }
     }
     r
@@ -1417,6 +1432,11 @@ pub fn verifier_copie(destination: Option<&Path>) {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,6 +4,8 @@
 //! (paccache.sh.in : le nom est tout sauf les trois derniers morceaux séparés par « - »), et une signature `.sig`
 //! compte avec son paquet.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -76,16 +78,24 @@ fn calculer(
     let poids = |chemin: &Path| {
         let mut sig = chemin.as_os_str().to_owned();
         sig.push(".sig");
-        taille(chemin).unwrap_or(0) + taille(Path::new(&sig)).unwrap_or(0)
+        taille(chemin)
+            .unwrap_or(0)
+            .saturating_add(taille(Path::new(&sig)).unwrap_or(0))
     };
     let (mut anciennes, mut desinstalles) = (0u64, 0u64);
     for ((paquet, _), mut versions) in groupes {
         versions.sort_by(|a, b| super::maj::vercmp(&a.0, &b.0));
         let garder = versions.len().min(2);
-        let (vieilles, recentes) = versions.split_at(versions.len() - garder);
-        anciennes += vieilles.iter().map(|(_, c)| poids(c)).sum::<u64>();
+        let (vieilles, recentes) = versions.split_at(versions.len().saturating_sub(garder));
+        anciennes = vieilles
+            .iter()
+            .map(|(_, c)| poids(c))
+            .fold(anciennes, u64::saturating_add);
         if !installes.contains(&paquet) {
-            desinstalles += recentes.iter().map(|(_, c)| poids(c)).sum::<u64>();
+            desinstalles = recentes
+                .iter()
+                .map(|(_, c)| poids(c))
+                .fold(desinstalles, u64::saturating_add);
         }
     }
     (anciennes, desinstalles)
@@ -115,6 +125,11 @@ pub(crate) fn recuperable() -> Option<(u64, u64)> {
     }))
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

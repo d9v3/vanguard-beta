@@ -1,6 +1,8 @@
 //! Ce qui se cache : persistance (préchargement, services, démarrage de session, cron), programmes
 //! privilégiés hors paquet ou modifiés, PATH piégeable.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::*;
 
 /// /usr/bin/x → /bin/x (idem sbin, lib) : chemin d'avant la fusion de /usr.
@@ -178,7 +180,8 @@ pub(super) fn commande_lancee(ligne: &str) -> Option<String> {
     {
         let debut = l.find(['"', '\''])?;
         let fin = l.rfind(['"', '\''])?;
-        return (fin > debut).then(|| l[debut + 1..fin].to_string());
+        // `get` rend `None` quand la fin précède le début : le même cas que `fin > debut` refusait.
+        return l.get(debut.checked_add(1)?..fin).map(str::to_string);
     }
     None
 }
@@ -419,7 +422,7 @@ fn juger_configuration(
                     "{}:{} précharge une bibliothèque (LD_PRELOAD)",
                     "{}:{} preloads a library (LD_PRELOAD)",
                     court(f, h),
-                    n + 1
+                    n.saturating_add(1)
                 ));
             } else if !commentaire(l)
                 && !demarrage.contains(f)
@@ -428,8 +431,12 @@ fn juger_configuration(
                 t.sources
                     .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), l));
                 t.retraits.push(retrait(f, &texte, l));
-                t.suspects
-                    .push(trf!("{}:{} : {raison}", "{}:{}: {raison}", court(f, h), n + 1));
+                t.suspects.push(trf!(
+                    "{}:{} : {raison}",
+                    "{}:{}: {raison}",
+                    court(f, h),
+                    n.saturating_add(1)
+                ));
             }
         }
     }
@@ -446,8 +453,12 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
                 t.sources
                     .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), l));
                 t.retraits.push(retrait(f, &texte, l));
-                t.suspects
-                    .push(trf!("{}:{} : {raison}", "{}:{}: {raison}", court(f, h), n + 1));
+                t.suspects.push(trf!(
+                    "{}:{} : {raison}",
+                    "{}:{}: {raison}",
+                    court(f, h),
+                    n.saturating_add(1)
+                ));
             }
         }
     }
@@ -642,7 +653,7 @@ fn parcourir(d: &Path, profondeur: u32, trouve: &mut Vec<std::path::PathBuf>, te
         let p = e.path();
         if e.file_type().is_ok_and(|t| t.is_dir()) {
             if profondeur > 0 {
-                parcourir(&p, profondeur - 1, trouve, test);
+                parcourir(&p, profondeur.saturating_sub(1), trouve, test);
             }
         } else if test(&p) {
             trouve.push(p);
@@ -776,7 +787,7 @@ fn programmes_privilegies() -> (
         .map(|s| fichiers_capacites(&s))
     });
     let mut anormaux = Vec::new();
-    for (d, prof) in [("/tmp", 3), ("/var/tmp", 3), ("/dev/shm", 3), (&home() as &str, 2)] {
+    for (d, prof) in [("/tmp", 3), ("/var/tmp", 3), ("/dev/shm", 3), (home().as_str(), 2)] {
         parcourir(Path::new(d), prof, &mut anormaux, &dangereux_hors_systeme);
     }
     // Dans les dossiers système : chaque setuid ou setgid doit venir d'un paquet, et être intact.
@@ -829,7 +840,7 @@ fn comparer_aux_paquets(
             None => anormaux.push(p.clone()),
         }
     }
-    let (mut modifies, mut non_verifies) = (Vec::new(), 0);
+    let (mut modifies, mut non_verifies) = (Vec::new(), 0usize);
     // Chaque paquet se vérifie à part (pacman, zcat et sha256sum, ou dpkg --verify, en lecture seule) : 16 à la
     // fois plutôt qu'un par un, une vingtaine de paquets attendaient l'un après l'autre.
     let paquets: Vec<(&String, &Vec<std::path::PathBuf>)> = par_paquet.iter().collect();
@@ -850,7 +861,7 @@ fn comparer_aux_paquets(
             match etat {
                 Some(true) => modifies.push((f.clone(), paquet.clone())),
                 Some(false) => {}
-                None => non_verifies += 1,
+                None => non_verifies = non_verifies.saturating_add(1),
             }
         }
     }
@@ -1014,6 +1025,11 @@ pub(super) fn juger_fichiers_suspects(r: &Releve) -> Vec<Constat> {
     constats
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

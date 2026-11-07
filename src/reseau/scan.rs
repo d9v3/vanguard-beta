@@ -1,5 +1,8 @@
 //! Découverte des machines et scan TCP « connect » (aucun privilège root requis).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::{BTreeMap, HashMap};
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -45,7 +48,10 @@ pub fn limite_connexions(demande: usize) -> usize {
             rlim_max: 0,
         };
         if libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim) == 0 {
-            let voulu = (demande as libc::rlim_t + 128).min(lim.rlim_max);
+            let voulu = libc::rlim_t::try_from(demande)
+                .unwrap_or(libc::rlim_t::MAX)
+                .saturating_add(128)
+                .min(lim.rlim_max);
             if lim.rlim_cur < voulu {
                 lim.rlim_cur = voulu;
                 libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lim);
@@ -76,7 +82,7 @@ pub fn parse_cible(cible: &str) -> Result<Vec<Ipv4Addr>, String> {
         if pref >= 31 {
             return Ok((reseau..=diffusion).map(Ipv4Addr::from).collect());
         }
-        return Ok((reseau + 1..diffusion).map(Ipv4Addr::from).collect());
+        return Ok((reseau.saturating_add(1)..diffusion).map(Ipv4Addr::from).collect());
     }
     if let Some((debut, fin)) = cible.split_once('-') {
         let debut: Ipv4Addr = debut
@@ -336,13 +342,14 @@ pub(crate) fn demander_voisins(famille: libc::c_int) -> Option<Vec<u8>> {
     let mut demande = [0u8; 28];
     demande[0..4].copy_from_slice(&28u32.to_ne_bytes());
     demande[4..6].copy_from_slice(&RTM_GETNEIGH.to_ne_bytes());
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    demande[6..8].copy_from_slice(&((libc::NLM_F_REQUEST | libc::NLM_F_DUMP) as u16).to_ne_bytes());
+    demande[6..8].copy_from_slice(
+        &u16::try_from(libc::NLM_F_REQUEST | libc::NLM_F_DUMP)
+            .unwrap_or(0)
+            .to_ne_bytes(),
+    );
     demande[8..12].copy_from_slice(&1u32.to_ne_bytes());
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    {
-        demande[16] = famille as u8;
-    }
+    // AF_INET (2) ou AF_INET6 (10) : un octet ; sinon 0 (AF_UNSPEC), que le noyau prend pour toutes.
+    demande[16] = u8::try_from(famille).unwrap_or(0);
     // SAFETY: une socket netlink ouverte ici et refermée une seule fois à la sortie ; chaque appel reçoit un pointeur
     // et la taille exacte d'un objet à nous, vivant pendant l'appel (demande, adresse, délai, tampon) ; recv écrit au
     // plus `tampon.len()` octets dans le tampon, et seuls les `n` reçus sont lus. Le délai de réception (2 s) empêche
@@ -366,10 +373,8 @@ pub(crate) fn demander_voisins(famille: libc::c_int) -> Option<Vec<u8>> {
             taille(std::mem::size_of::<libc::timeval>()),
         );
         let mut adresse: libc::sockaddr_nl = std::mem::zeroed();
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        {
-            adresse.nl_family = libc::AF_NETLINK as u16;
-        }
+        // AF_NETLINK (16) tient dans sa_family_t ; sinon la famille inconnue fait refuser l'envoi par le noyau.
+        adresse.nl_family = libc::sa_family_t::try_from(libc::AF_NETLINK).unwrap_or_default();
         let envoye = libc::sendto(
             s,
             demande.as_ptr().cast(),
@@ -417,11 +422,11 @@ pub(crate) fn messages_netlink(octets: &[u8]) -> impl Iterator<Item = (u16, &[u8
         let &[l0, l1, l2, l3, g0, g1, ..] = octets.get(pos..pos.checked_add(16)?)?.first_chunk::<16>()?;
         let longueur = usize::try_from(u32::from_ne_bytes([l0, l1, l2, l3])).ok()?;
         let genre = u16::from_ne_bytes([g0, g1]);
-        let corps = octets.get(pos + 16..pos.checked_add(longueur)?)?;
+        let corps = octets.get(pos.saturating_add(16)..pos.checked_add(longueur)?)?;
         if longueur < 16 {
             return None;
         }
-        pos += longueur.next_multiple_of(4);
+        pos = pos.saturating_add(longueur.next_multiple_of(4));
         Some((genre, corps))
     })
 }
@@ -456,8 +461,8 @@ fn lire_voisins_netlink(octets: &[u8]) -> HashMap<Ipv4Addr, String> {
         if etat == 0 || etat & 0x40 != 0 {
             continue;
         }
-        let mut pos = 12;
-        while let Some(&[l0, l1, g0, g1]) = corps.get(pos..pos + 4) {
+        let mut pos = 12usize;
+        while let Some(&[l0, l1, g0, g1]) = corps.get(pos..pos.saturating_add(4)) {
             let longueur = usize::from(u16::from_ne_bytes([l0, l1]));
             let genre_attribut = u16::from_ne_bytes([g0, g1]);
             if longueur < 4 {
@@ -465,12 +470,12 @@ fn lire_voisins_netlink(octets: &[u8]) -> HashMap<Ipv4Addr, String> {
             }
             if genre_attribut == 1
                 && let Some(ip) = corps
-                    .get(pos + 4..pos + longueur)
+                    .get(pos.saturating_add(4)..pos.saturating_add(longueur))
                     .and_then(|a| <[u8; 4]>::try_from(a).ok())
             {
                 voisins.insert(Ipv4Addr::from(ip), nom_d_etat(etat).to_string());
             }
-            pos += longueur.next_multiple_of(4);
+            pos = pos.saturating_add(longueur.next_multiple_of(4));
         }
     }
     voisins
@@ -531,7 +536,9 @@ async fn confirmer_voisins(
     deja: &std::collections::HashSet<Ipv4Addr>,
     repli: Vec<Ipv4Addr>,
 ) -> Vec<Ipv4Addr> {
-    let fin = std::time::Instant::now() + Duration::from_secs(10);
+    let fin = std::time::Instant::now()
+        .checked_add(Duration::from_secs(10))
+        .unwrap_or_else(std::time::Instant::now);
     let mut candidats: Option<Vec<Ipv4Addr>> = None;
     loop {
         let Some(etats) = tokio::task::spawn_blocking(etats_voisins).await.ok().flatten() else {
@@ -690,7 +697,7 @@ fn resume_udp(port: u16, reponse: &[u8]) -> Option<String> {
         // La valeur suit l'OID de sysDescr.0 : 0x04 (texte), longueur, texte.
         161 => {
             let oid = [0x2b, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00];
-            let debut = reponse.windows(oid.len()).position(|w| w == oid)? + oid.len();
+            let debut = (reponse.windows(oid.len()).position(|w| w == oid)?).saturating_add(oid.len());
             let (&type_, reste) = reponse.get(debut..)?.split_first()?;
             if type_ != 0x04 {
                 return None;
@@ -864,6 +871,11 @@ fn commande_sortie(cmd: &str, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1143,6 +1155,11 @@ mod tests {
 
 /// Propriétés des réponses UDP (NetBIOS, SNMP, SSDP) : chaque appareil du réseau choisit ce qu'il y écrit. Quels que
 /// soient les octets reçus, la lecture ne plante pas, et ce qu'elle rend ne pilote pas le terminal.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod proprietes {
     use super::*;

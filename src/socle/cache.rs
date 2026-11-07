@@ -10,6 +10,8 @@
 //! est périmée : redemandée, et si elle ne peut pas l'être, la liste n'est pas vérifiée (et c'est dit), jamais
 //! comptée comme saine. Comme le sceau : barrière, pas coffre (qui refait les sceaux n'est pas vu).
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
@@ -36,6 +38,15 @@ pub(crate) enum Echec {
     /// La copie gardée ne peut pas être crue (`Refus`), et la redemande n'a rien donné (`Redemande`).
     CopieRefusee(Refus, Redemande),
 }
+
+// Le texte déjà montré par l'interface (`raison`), pour qu'une erreur standard dise la même chose.
+impl std::fmt::Display for Echec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.raison())
+    }
+}
+
+impl std::error::Error for Echec {}
 
 /// Ce qu'a donné la redemande d'une copie refusée.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +76,15 @@ pub(crate) enum Refus {
     /// Datée dans le futur : elle ne vieillirait jamais.
     DateFuture,
 }
+
+// Le texte déjà montré par l'interface (`texte`), pour qu'une erreur standard dise la même chose.
+impl std::fmt::Display for Refus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.texte())
+    }
+}
+
+impl std::error::Error for Refus {}
 
 impl Refus {
     /// La raison, prête à suivre « copie gardée refusée, ».
@@ -270,7 +290,7 @@ pub(crate) fn gardee(lieu: (&str, &str), max: u64) -> Result<Option<(Vec<u8>, Du
     let Ok(octets) = super::lire_ordinaire(&fichier, max) else {
         return Err(Refus::Effacee);
     };
-    if octets.len() as u64 != sceau.taille || empreinte(&octets) != sceau.empreinte {
+    if u64::try_from(octets.len()).ok() != Some(sceau.taille) || empreinte(&octets) != sceau.empreinte {
         return Err(Refus::HorsVanguard);
     }
     Ok(Some((octets, age_de(&sceau))))
@@ -334,7 +354,7 @@ pub(crate) fn garder(lieu: (&str, &str), octets: &[u8]) -> std::io::Result<()> {
     super::ecrire_atomique(&dossier.join(lieu.0).join(lieu.1), octets)?;
     let sceau = Sceau {
         telecharge: maintenant(),
-        taille: octets.len() as u64,
+        taille: u64::try_from(octets.len()).unwrap_or(u64::MAX),
         empreinte: empreinte(octets),
     };
     crate::sceau::ecrire_dans(
@@ -387,8 +407,8 @@ pub(crate) fn vieillir_pour_essai(lieu: (&str, &str), age: Duration) {
     let dossier = super::dossier_local();
     let octets = std::fs::read(dossier.join(lieu.0).join(lieu.1)).unwrap();
     let sceau = Sceau {
-        telecharge: maintenant() - age.as_secs(),
-        taille: octets.len() as u64,
+        telecharge: maintenant().saturating_sub(age.as_secs()),
+        taille: u64::try_from(octets.len()).unwrap_or(u64::MAX),
         empreinte: empreinte(&octets),
     };
     crate::sceau::ecrire_dans(&dossier, &nom_du_sceau(lieu), &serde_json::to_vec(&sceau).unwrap()).unwrap();
@@ -502,6 +522,11 @@ fn gardee_sans_lire(sceau: &Result<Option<Sceau>, Refus>, lieu: (&str, &str)) ->
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

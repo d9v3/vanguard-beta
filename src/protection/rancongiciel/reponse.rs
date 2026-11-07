@@ -3,6 +3,9 @@
 //! quarantaine, sous ses garde-fous. Rien n'est effacé par le gel ; « Reprendre » l'annule. Si un garde-fou refuse
 //! l'arrêt, le programme RESTE gelé et on le dit : jamais laissé gelé en silence.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -78,7 +81,7 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
     };
 
     // Passes : liste + gel, jusqu'à deux passes de suite sans nouveau membre (au plus cinq).
-    let mut sans_nouveau = 0;
+    let mut sans_nouveau = 0usize;
     for _ in 0..PASSES_MAX {
         let mut nouveau = false;
         for (pid, nom, chemin) in lignee() {
@@ -94,7 +97,7 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
                 nouveau = true;
             }
         }
-        sans_nouveau = if nouveau { 0 } else { sans_nouveau + 1 };
+        sans_nouveau = if nouveau { 0 } else { sans_nouveau.saturating_add(1) };
         if sans_nouveau >= 2 {
             break;
         }

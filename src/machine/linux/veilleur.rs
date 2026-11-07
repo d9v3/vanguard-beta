@@ -21,6 +21,7 @@
 //! Le service est une unité systemd de l'utilisateur, Type=simple, coupée par défaut et posée seulement après accord
 //! (`vanguard veilleur on`) ; `vanguard veilleur off` la retire exactement.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 // FFI de libc : prises netlink et poll du veilleur, signaux (sigaction).
 #![allow(unsafe_code)]
 
@@ -124,7 +125,9 @@ enum EvenementProc {
 }
 
 fn u32_a(octets: &[u8], pos: usize) -> Option<u32> {
-    Some(u32::from_ne_bytes(octets.get(pos..pos + 4)?.try_into().ok()?))
+    Some(u32::from_ne_bytes(
+        octets.get(pos..pos.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 
 /// Les événements d'un morceau reçu du connecteur. Chaque message : nlmsghdr de type NLMSG_DONE, cn_msg (idx et val à
@@ -155,7 +158,7 @@ fn lire_evenements_proc(octets: &[u8]) -> Vec<EvenementProc> {
         let Some(what) = u32_a(donnees, 0) else {
             continue;
         };
-        let champ = |pos: usize| u32_a(donnees, 16 + pos);
+        let champ = |pos: usize| u32_a(donnees, pos.checked_add(16)?);
         let evenement = match what {
             PROC_EVENT_NONE => champ(0).map(|err| EvenementProc::Accuse { seq, ack, err }),
             PROC_EVENT_FORK => match (champ(4), champ(8), champ(12)) {
@@ -225,9 +228,13 @@ fn lire_fins_de_prises(octets: &[u8]) -> Vec<FinPrise> {
                 break;
             }
             if u16::from_ne_bytes([g0, g1]) == INET_DIAG_PROTOCOL && longueur >= 5 {
-                protocole = corps.get(pos + 4).copied();
+                protocole = pos.checked_add(4).and_then(|i| corps.get(i)).copied();
             }
-            pos += longueur.next_multiple_of(4);
+            // Un attribut dont l'alignement déborderait : la suite ne se lit plus.
+            let Some(suite) = longueur.checked_next_multiple_of(4).and_then(|l| pos.checked_add(l)) else {
+                break;
+            };
+            pos = suite;
         }
         fins.push(FinPrise {
             protocole,
@@ -360,8 +367,9 @@ struct Table {
 
 fn nom_borne(nom: &str) -> String {
     let mut fin = nom.len().min(NOM_MAX);
+    // 0 est toujours une frontière : la boucle s'arrête avant.
     while !nom.is_char_boundary(fin) {
-        fin -= 1;
+        fin = fin.saturating_sub(1);
     }
     nom[..fin].to_string()
 }
@@ -371,7 +379,7 @@ impl Table {
         if !self.fiches.contains_key(&pid) && self.fiches.len() >= TABLE_MAX {
             self.faire_de_la_place(vivant);
         }
-        self.entrees += 1;
+        self.entrees = self.entrees.saturating_add(1);
         self.fiches.insert(
             pid,
             Fiche {
@@ -397,7 +405,7 @@ impl Table {
         self.fiches.retain(|&p, _| vivant(p));
         let mut a_voir = self.ordre.len();
         while self.fiches.len() > TABLE_APRES_BALAYAGE && a_voir > 0 {
-            a_voir -= 1;
+            a_voir = a_voir.saturating_sub(1);
             let Some((p, entree)) = self.ordre.pop_front() else {
                 break;
             };
@@ -514,6 +522,15 @@ pub(crate) enum Refus {
     Erreur(i32),
 }
 
+// Le texte déjà montré par l'interface (`raison`), pour qu'une erreur standard dise la même chose.
+impl std::fmt::Display for Refus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.raison())
+    }
+}
+
+impl std::error::Error for Refus {}
+
 impl Refus {
     pub(crate) fn raison(&self) -> String {
         match self {
@@ -621,7 +638,8 @@ fn adresse_netlink(groupes: u32) -> libc::sockaddr_nl {
     let mut adresse: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     {
-        adresse.nl_family = libc::AF_NETLINK as u16;
+        // AF_NETLINK (16) tient dans sa_family_t ; sinon la famille inconnue fait refuser l'envoi par le noyau.
+        adresse.nl_family = libc::sa_family_t::try_from(libc::AF_NETLINK).unwrap_or_default();
     }
     adresse.nl_groups = groupes;
     adresse
@@ -756,7 +774,14 @@ fn ecouter_les_signaux() -> [libc::sigaction; 2] {
     // gestionnaire ne fait qu'écrire un booléen atomique, ce qui est sûr dans un signal.
     unsafe {
         let mut action: libc::sigaction = std::mem::zeroed();
-        action.sa_sigaction = sur_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        // sigaction prend le gestionnaire comme un entier (sighandler_t) : seul `as` convertit un pointeur de fonction.
+        #[expect(
+            clippy::as_conversions,
+            reason = "pointeur de fonction vers sighandler_t, la forme de l'ABI de sigaction"
+        )]
+        {
+            action.sa_sigaction = sur_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        }
         libc::sigemptyset(&raw mut action.sa_mask);
         let mut avant: [libc::sigaction; 2] = std::mem::zeroed();
         libc::sigaction(libc::SIGTERM, &raw const action, &raw mut avant[0]);
@@ -822,7 +847,8 @@ fn ouvrir_connecteur() -> Result<Abonnement, Refus> {
     }
     // La demande est partie : le désabonnement est dû, quoi qu'il arrive ensuite.
     let abonnement = Abonnement(prise);
-    let limite = Instant::now() + Duration::from_secs(2);
+    let maintenant = Instant::now();
+    let limite = maintenant.checked_add(Duration::from_secs(2)).unwrap_or(maintenant);
     let mut tampon = vec![0u8; 16 << 10];
     let mut perte = false;
     while let Some(reste) = limite.checked_duration_since(Instant::now())
@@ -963,7 +989,7 @@ fn a_tour_de_role(
     while restants.iter().any(|&r| r > 0) {
         for (i, reste) in restants.iter_mut().enumerate() {
             if *reste > 0 {
-                *reste = if lire(i)? { *reste - 1 } else { 0 };
+                *reste = if lire(i)? { reste.saturating_sub(1) } else { 0 };
             }
         }
         if arret() || debut.elapsed() >= duree {
@@ -1087,7 +1113,7 @@ impl Veilleur {
         if maintenant.duration_since(self.rafale.0) >= Duration::from_secs(1) {
             self.rafale = (maintenant, 0);
         }
-        self.rafale.1 += 1;
+        self.rafale.1 = self.rafale.1.saturating_add(1);
         let lecture = if self.rafale.1 > LECTURES_PAR_SECONDE {
             Lecture::NonLu
         } else {
@@ -1285,7 +1311,7 @@ impl Debit {
             .filter(|&&q| maintenant.saturating_sub(q) < 3600)
             .count();
         if derniere_heure >= JOURNAL_PAR_HEURE || self.journal.len() >= JOURNAL_PAR_JOUR {
-            self.tues += 1;
+            self.tues = self.tues.saturating_add(1);
             return Decision::Taire;
         }
         self.journal.push_back(maintenant);
@@ -1673,7 +1699,9 @@ fn servir() -> i32 {
             etat.en_pause = crate::protection::temps_reel::coupure().is_some();
             v.lire = !etat.en_pause;
             etat.battement = maintenant();
-            etat.non_haches += fichiers.prendre_non_haches() as u64;
+            etat.non_haches = etat
+                .non_haches
+                .saturating_add(u64::try_from(fichiers.prendre_non_haches()).unwrap_or(u64::MAX));
             ecrire_etat(&etat);
         }
         if quart.elapsed() >= Duration::from_mins(15) {
@@ -1685,14 +1713,18 @@ fn servir() -> i32 {
         // Les empreintes récentes, rafraîchies chaque jour par la surveillance : relues toutes les 6 heures.
         if empreintes_relues.elapsed() >= Duration::from_hours(6) {
             empreintes_relues = Instant::now();
-            etat.non_haches += fichiers.prendre_non_haches() as u64;
+            etat.non_haches = etat
+                .non_haches
+                .saturating_add(u64::try_from(fichiers.prendre_non_haches()).unwrap_or(u64::MAX));
             fichiers = crate::protection::sources::Fichiers::recentes();
         }
     };
     // Le désabonnement part ici, avant l'état final.
     drop(v);
     etat.battement = maintenant();
-    etat.non_haches += fichiers.prendre_non_haches() as u64;
+    etat.non_haches = etat
+        .non_haches
+        .saturating_add(u64::try_from(fichiers.prendre_non_haches()).unwrap_or(u64::MAX));
     ecrire_etat(&etat);
     sortie
 }
@@ -1737,7 +1769,7 @@ fn construire_veille(etat: &mut Etat) -> Option<veille::Veille> {
 fn tour_rancon(v: &mut veille::Veille, etat: &mut Etat, debit: &mut Debit) {
     v.absorber();
     etat.rancon_changements = v.changements_vus;
-    etat.rancon_perdus += v.prendre_perdus();
+    etat.rancon_perdus = etat.rancon_perdus.saturating_add(v.prendre_perdus());
     let maintenant_i = Instant::now();
     let (s, reecrits) = v.signaux(maintenant_i);
     // L'attribution (deux relevés à ~1 s) n'a lieu que si tout le reste atteint déjà le quasi-certain : rare, et elle
@@ -1817,8 +1849,8 @@ fn repondre_quasi_certain(groupe: u32, s: &score::Signaux, etat: &mut Etat, debi
     };
     match reponse::geler_et_arreter(&cible, || veille::lignee_de(groupe)) {
         reponse::Issue::Arrete(_) => {
-            etat.rancon_gels += 1;
-            etat.rancon_rafales += 1;
+            etat.rancon_gels = etat.rancon_gels.saturating_add(1);
+            etat.rancon_rafales = etat.rancon_rafales.saturating_add(1);
             let titre = tr!("Vanguard : rançongiciel arrêté", "Vanguard: ransomware stopped");
             let texte = trf!(
                 "{nom_aff} chiffrait vos fichiers et a touché un fichier-piège. Vanguard l'a gelé, a relevé la preuve, puis l'a arrêté et mis en quarantaine. {} fichiers ont été touchés avant l'arrêt : la liste est dans « Ce que Vanguard a changé ».",
@@ -1912,26 +1944,26 @@ fn traiter(
 ) {
     let alerte = match vu {
         Vu::Perdus(n) => {
-            etat.perdus += u64::from(n);
+            etat.perdus = etat.perdus.saturating_add(u64::from(n));
             None
         }
         Vu::Prise(f) => {
-            etat.prises += 1;
+            etat.prises = etat.prises.saturating_add(1);
             juger_prise(&f, serveurs)
         }
         Vu::Lance(l) => {
-            etat.lancements += 1;
+            etat.lancements = etat.lancements.saturating_add(1);
             match &l.lecture {
                 Lecture::Complet(p) => {
-                    etat.lus += 1;
+                    etat.lus = etat.lus.saturating_add(1);
                     if p.chemin.is_none() {
-                        etat.sans_programme += 1;
+                        etat.sans_programme = etat.sans_programme.saturating_add(1);
                     }
                 }
-                Lecture::NomSeul(_) => etat.noms_seuls += 1,
-                Lecture::NonLu => etat.non_lus += 1,
+                Lecture::NomSeul(_) => etat.noms_seuls = etat.noms_seuls.saturating_add(1),
+                Lecture::NonLu => etat.non_lus = etat.non_lus.saturating_add(1),
                 Lecture::Parti => {
-                    etat.partis += 1;
+                    etat.partis = etat.partis.saturating_add(1);
                     if etat.derniers_partis.len() >= DERNIERS_PARTIS {
                         etat.derniers_partis.remove(0);
                     }
@@ -1953,7 +1985,7 @@ fn traiter(
         }
         Decision::Noter { notifier: false } => tableau::noter_alerte_cle(a.genre, Some(&cle), &a.titre, &a.texte),
         Decision::Repete => {}
-        Decision::Taire => etat.tus += 1,
+        Decision::Taire => etat.tus = etat.tus.saturating_add(1),
     }
 }
 
@@ -2901,6 +2933,11 @@ fn juger_etat(
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

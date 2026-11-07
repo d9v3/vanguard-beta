@@ -41,6 +41,19 @@ pub(crate) enum ErreurXml {
     MalForme,
 }
 
+// Les deux langues dans une seule chaîne : le lecteur ne dépend pas de l'interface (compilé seul par le banc de
+// fuzzing).
+impl std::fmt::Display for ErreurXml {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Demesure => "XML au-delà des bornes / XML beyond the limits",
+            Self::MalForme => "XML mal formé ou coupé / malformed or truncated XML",
+        })
+    }
+}
+
+impl std::error::Error for ErreurXml {}
+
 /// Un élément en cours de lecture : le nœud, le nombre de caractères de son texte, et s'il a déjà été coupé.
 struct Ouvert {
     noeud: Noeud,

@@ -6,6 +6,8 @@
 //! Les fichiers sont lus une fois (`Faits::de`) ; les règles ne font ensuite aucune lecture, ce qui les rend
 //! testables sur des faits inventés.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -423,7 +425,9 @@ fn edge(i: &Installe, v: Version, f: &Faits) -> Verdict {
         return a_jour(derniere, "Microsoft", lu.age);
     }
     let ecart = derniere.majeur().saturating_sub(v.majeur());
-    let recente = stable.publiee.is_none_or(|p| f.maintenant - p < EDGE_DEPLOIEMENT);
+    let recente = stable
+        .publiee
+        .is_none_or(|p| f.maintenant.signed_duration_since(p) < EDGE_DEPLOIEMENT);
     if recente && ecart <= 1 {
         return Verdict::NonVerifie(trf!(
             "déploiement de la {derniere} en cours",
@@ -610,7 +614,7 @@ fn office(i: &Installe, v: Version, f: &Faits) -> Verdict {
         .max();
     let en_cours = derniere
         .and_then(|d| d.disponible)
-        .is_some_and(|d| aujourd_hui - d < OFFICE_DEPLOIEMENT);
+        .is_some_and(|d| aujourd_hui.signed_duration_since(d) < OFFICE_DEPLOIEMENT);
     if en_cours && precedente.is_some_and(|p| v >= p) {
         return Verdict::NonVerifie(trf!(
             "déploiement de la {} en cours",
@@ -689,6 +693,11 @@ fn java(d: Distribution, v: Version, f: &Faits) -> Verdict {
     )
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 pub(crate) mod tests {
     use std::path::Path;

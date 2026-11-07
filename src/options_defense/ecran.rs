@@ -217,9 +217,9 @@ pub(super) fn resume_exclusions(listes: Option<&[Vec<String>; 3]>, permis: Optio
     let (mut choix, mut inconnues) = (0usize, 0usize);
     for id in exclusions.chain(permis_lus) {
         if par_choix_element(id, notes).is_some() {
-            choix += 1;
+            choix = choix.saturating_add(1);
         } else {
-            inconnues += 1;
+            inconnues = inconnues.saturating_add(1);
         }
     }
     let inconnue = |i: usize| {
@@ -236,7 +236,7 @@ pub(super) fn resume_exclusions(listes: Option<&[Vec<String>; 3]>, permis: Optio
         (c, i) => trf!(
             "{} ({c} votre choix, {i} {} ⚠)",
             "{} ({c} your choice, {i} {} ⚠)",
-            c + i,
+            c.saturating_add(i),
             inconnue(i)
         ),
     }
@@ -254,7 +254,7 @@ pub(super) fn resume_asr(e: &Etat) -> String {
         compte(ActionAsr::Avertit),
     );
     // « coupées » (désactivées ou absentes) : le mot court qui tient dans les 33 caractères d'une précision.
-    let coupees = ASR_TOUTES.len().saturating_sub(b + au + av);
+    let coupees = ASR_TOUTES.len().saturating_sub(b.saturating_add(au).saturating_add(av));
     if av > 0 {
         trf!(
             "{b} bloquent · {au} audit · {av} avertissent · {coupees} coupées",
@@ -336,12 +336,12 @@ pub(super) fn borner(lignes: &mut [Ligne]) {
             ..
         } = l
         {
-            let debut = 5 + largeur_affichee(touche).max(2);
+            let debut = largeur_affichee(touche).max(2).saturating_add(5);
             if precision.is_empty() {
                 *texte = couper(texte, LARGEUR.saturating_sub(debut));
             } else {
                 *texte = couper(texte, colonne.saturating_sub(1));
-                *precision = couper(precision, LARGEUR.saturating_sub(debut + colonne));
+                *precision = couper(precision, LARGEUR.saturating_sub(debut.saturating_add(colonne)));
             }
         }
     }
@@ -383,7 +383,7 @@ pub(super) fn menu(
             Some(c) => format!("→ {}", texte_cible(c)),
             None => e.etat_opt(o).texte(o.masculin()),
         };
-        l.push(Ligne::choix(&(i + 1).to_string(), &texte, &precision));
+        l.push(Ligne::choix(&i.saturating_add(1).to_string(), &texte, &precision));
     }
     let en_liste = changes.iter().filter(|c| c.id.element()).count();
     let exclusions = if en_liste > 0 {
@@ -580,7 +580,7 @@ pub(super) fn lignes_option(e: &Etat, o: Opt, notes: &Notes, changes: &[Change])
             ""
         };
         l.push(Ligne::choix(
-            &(k + 1).to_string(),
+            &k.saturating_add(1).to_string(),
             &majuscule(&o.etat(cv).texte(masc)),
             precision,
         ));
@@ -815,7 +815,7 @@ pub(super) fn lignes_asr(e: &Etat, notes: &Notes, changes: &[Change]) -> Vec<Lig
         l.push(Ligne::Texte(String::new()));
         l.push(Ligne::Texte(format!("  {GRIS}{titre_groupe}{RESET}")));
         for id in groupe {
-            k += 1;
+            k = k.saturating_add(1);
             let mut texte = String::new();
             if avertissement_asr(id).is_some() {
                 texte.push_str("⚠ ");
@@ -1029,7 +1029,11 @@ pub(super) fn lignes_regle(e: &Etat, id: &'static str, notes: &Notes, changes: &
         } else {
             ""
         };
-        l.push(Ligne::choix(&(k + 1).to_string(), nom_choix_asr(*c), precision));
+        l.push(Ligne::choix(
+            &k.saturating_add(1).to_string(),
+            nom_choix_asr(*c),
+            precision,
+        ));
     }
     if let Some(cible) = rallumable_asr(e, id, notes) {
         l.push(Ligne::choix(
@@ -1161,7 +1165,7 @@ pub(super) fn lignes_exclusions(
     let mut actions = Vec::new();
     let n = std::cell::Cell::new(0usize);
     let touche = |prefixe: &str| {
-        n.set(n.get() + 1);
+        n.set(n.get().saturating_add(1));
         format!("{prefixe}{}", n.get())
     };
     let lisibles = listes.filter(|x| !masquee(x));

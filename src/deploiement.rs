@@ -2,6 +2,8 @@
 //! étaient en bash et en Python, à côté d'un code Rust qui faisait la même chose et pouvait en diverger. Le programme
 //! n'écrit rien de lui-même : chaque étape n'est lancée que par le déploiement, sur l'ordinateur de l'auteur.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -281,7 +283,7 @@ fn lire_manifeste(octets: &[u8]) -> Option<(Vec<String>, Vec<String>)> {
     for _ in 0..100_000 {
         let evenement = lecteur.read_event().ok()?;
         match &evenement {
-            Event::Start(_) => ouverts += 1,
+            Event::Start(_) => ouverts = ouverts.saturating_add(1),
             Event::End(_) => ouverts = ouverts.checked_sub(1)?,
             _ => {}
         }
@@ -395,6 +397,13 @@ impl std::fmt::Display for PasEcrit {
     }
 }
 
+impl std::error::Error for PasEcrit {}
+
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,6 +7,9 @@
 //! famille entière, variantes comprises. Lecture seule : rien n'est déplacé ni supprimé. Chaque fichier lu est aussi comparé aux empreintes de MalwareBazaar (`empreintes`) : là, c'est
 //! un logiciel malveillant précis, reconnu sans doute possible.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -176,7 +179,15 @@ fn analyser_fichier(regles: &Regles, chemin: &Path) -> Result<Vec<usize>, ()> {
         return Err(());
     }
     regles
-        .analyser_flux(&mut fichier, meta.len(), Some(Instant::now() + DELAI_PAR_FICHIER))
+        .analyser_flux(
+            &mut fichier,
+            meta.len(),
+            Some(
+                Instant::now()
+                    .checked_add(DELAI_PAR_FICHIER)
+                    .unwrap_or_else(Instant::now),
+            ),
+        )
         .map_err(|_| ())
 }
 
@@ -326,7 +337,7 @@ fn appliquer(cibles: &[PathBuf]) -> Option<(Vec<Trouve>, Vec<String>, empreintes
         trp!("  Analyse de {}…", "  Scanning {}…", chemin_affichable(cible));
         let mut echecs = Vec::new();
         let liste = fichiers(cible, &mut echecs);
-        listes += liste.len();
+        listes = listes.saturating_add(liste.len());
         let (t, e) = analyser_fichiers(regles, empreintes.ok(), &liste);
         trouves.extend(t);
         echecs.extend(e);
@@ -471,6 +482,11 @@ pub fn menu() {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

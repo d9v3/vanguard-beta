@@ -108,7 +108,7 @@ fn etat(r: &Reglage) -> Etat {
 /// L'état d'un réglage de `total` changements : `bons` en place, `choisis` baissés par la personne (comptés seulement
 /// si un autre est en place).
 fn etat_de(bons: usize, choisis: usize, total: usize) -> Etat {
-    match (bons, bons + choisis) {
+    match (bons, bons.saturating_add(choisis)) {
         (0, _) => Etat::AFaire,
         (_, n) if n == total => Etat::Fait,
         _ => Etat::EnPartie,

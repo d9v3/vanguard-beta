@@ -11,6 +11,9 @@
 //! Jamais relevé : sous les essais (`cfg(test)`), sous Wine, dans la CI, avec `VANGUARD_ENVOI=0` (qui l'emporte
 //! toujours), ni depuis une clé VANGUARD (son programme sert sur des ordinateurs qui ne sont pas les siens).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 pub(crate) mod materiel;
 pub(crate) mod releve;
 pub(crate) mod texte;
@@ -763,9 +766,11 @@ pub(crate) fn relever_dans(
 
 /// Les jours de plus de 90 jours, puis les plus anciens tant que `amelioration/` dépasse 10 Mo.
 pub(crate) fn purger_dans(dossier: &Path, jour: chrono::NaiveDate) -> std::io::Result<()> {
-    let limite = (jour - chrono::Duration::days(releve::JOURS_GARDES))
-        .format("%Y-%m-%d")
-        .to_string();
+    // Une date hors de chrono : limite vide, rien n'est purgé par l'âge.
+    let limite = jour
+        .checked_sub_signed(chrono::Duration::days(releve::JOURS_GARDES))
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_default();
     let garde = jour.format("%Y-%m-%d").to_string();
     let autres = taille(dossier, SUIVI).saturating_add(taille(dossier, MATERIEL));
     for j in releve::a_purger(&jours_dans(dossier), &limite, &garde, autres) {
@@ -992,5 +997,10 @@ pub(crate) fn version(brut: &str) -> Result<VersionTierce, Rejet> {
     VersionTierce::nettoyer(brut)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests;

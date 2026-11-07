@@ -33,6 +33,8 @@
 //! avant d'écrire et n'écrit pas s'il a changé depuis sa lecture, donc un changement voulu n'est pas écrasé. Reste
 //! l'instant entre cette relecture et l'écriture (une passe par heure) ; au pire une montée se perd et revient.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
@@ -558,8 +560,9 @@ fn regler_cache(
     mesures: &BTreeMap<String, super::mesures::Cache>,
 ) -> PourLaCache {
     let mut pour = PourLaCache::default();
-    let debut_coupe = (aujourd_hui - chrono::Duration::days(COUPE_JOURS - 1))
-        .and_hms_opt(0, 0, 0)
+    let debut_coupe = aujourd_hui
+        .checked_sub_signed(chrono::Duration::days(COUPE_JOURS.saturating_sub(1)))
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
         .map_or(i64::MIN, |d| d.and_utc().timestamp());
     for t in super::cache::TABLE {
         if e.gardees.contains(t.regle) || e.coupures.iter().any(|c| c.regle == t.regle) {
@@ -938,7 +941,9 @@ pub(crate) fn etat_court() -> String {
 }
 
 fn nombre_de_changements(e: &Etat) -> usize {
-    e.montees.len() + e.raccourcies.len() + e.coupures.len() + e.relances.len()
+    [e.montees.len(), e.raccourcies.len(), e.coupures.len(), e.relances.len()]
+        .into_iter()
+        .fold(0, usize::saturating_add)
 }
 
 /// Une montée, telle qu'elle se montre : « LNX-NOY-001 : délai 10 → 30 min, le 2026-11-02 (mesure 6 min 12 s) ».
@@ -1199,7 +1204,7 @@ fn afficher() -> Vec<Changement> {
             Changement::Coupure(c) => coupure_montree(c),
             Changement::Relance(r) => relance_montree(r),
         };
-        afficher_aligne(&format!("  {TOUCHE}{:>2}{RESET} ", i + 1), &texte, 5, "");
+        afficher_aligne(&format!("  {TOUCHE}{:>2}{RESET} ", i.saturating_add(1)), &texte, 5, "");
     }
     let vue = crate::agent::sortie::vue_dans(&crate::socle::dossier_local());
     let en_marche = vue
@@ -1296,6 +1301,11 @@ pub(crate) fn menu() {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

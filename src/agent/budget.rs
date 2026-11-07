@@ -1,6 +1,8 @@
 //! Le budget d'un tour de mission : ce qu'elle peut lire, combien de décisions elle peut rendre, et en combien de
 //! temps. Un budget épuisé arrête la mission (`Arret`) : rien n'est décidé sur une observation à moitié faite.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::time::{Duration, Instant};
 
 /// Pourquoi une mission s'arrête avant de juger. Fermé : rien qu'un fichier lu ne puisse ajouter.
@@ -26,7 +28,8 @@ impl Budget {
         Budget {
             lectures,
             decisions,
-            fin: Instant::now() + duree,
+            // Une durée qui déborderait l'horloge : budget épuisé d'emblée, la mission ne juge rien (jamais un budget sans fin).
+            fin: Instant::now().checked_add(duree).unwrap_or_else(Instant::now),
         }
     }
 
@@ -51,6 +54,11 @@ impl Budget {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

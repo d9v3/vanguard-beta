@@ -9,6 +9,8 @@
 //! attrape un défaut du code, pas un nom que Vanguard ignore (nom complet, nom d'un proche, ville) : la vraie dernière
 //! couche est la relecture par la personne, et les textes ne promettent pas plus.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::BTreeMap;
 
 /// Ce qui a été masqué, par sorte : montré à la personne avant d'écrire.
@@ -67,7 +69,8 @@ pub(crate) struct Decompte(pub BTreeMap<Sorte, u32>);
 impl Decompte {
     pub(crate) fn ajouter(&mut self, sorte: Sorte, n: u32) {
         if n > 0 {
-            *self.0.entry(sorte).or_default() += n;
+            let fois = self.0.entry(sorte).or_default();
+            *fois = fois.saturating_add(n);
         }
     }
 
@@ -145,7 +148,7 @@ fn compter(avant: &str, apres: &str, d: &mut Decompte) {
     let tildes = |t: &str| {
         u32::try_from(
             t.char_indices()
-                .filter(|(i, c)| *c == '~' && t[i + 1..].starts_with(['/', '\\']))
+                .filter(|(i, c)| *c == '~' && t[i.saturating_add(1)..].starts_with(['/', '\\']))
                 .count(),
         )
         .unwrap_or(u32::MAX)
@@ -224,7 +227,7 @@ fn dossier_personnel(chemin: &str, maisons: &[String]) -> Option<usize> {
             && chemin[..m.len()].eq_ignore_ascii_case(m)
             && chemin[m.len()..].starts_with(['/', '\\'])
         {
-            return Some(m.len() + 1);
+            return Some(m.len().saturating_add(1));
         }
     }
     if chemin.starts_with("~/") || chemin.starts_with("~\\") {
@@ -234,8 +237,12 @@ fn dossier_personnel(chemin: &str, maisons: &[String]) -> Option<usize> {
     for debut in ["/var/home/", "/home/", "/users/", "/run/media/", "/media/", "/root/"] {
         if let Some(reste) = bas.strip_prefix(debut) {
             // Le compte après le préfixe (« /home/alice/ »), sauf /root/, qui est déjà le dossier.
-            let compte = if debut == "/root/" { 0 } else { reste.find('/')? + 1 };
-            return Some(debut.len() + compte);
+            let compte = if debut == "/root/" {
+                0
+            } else {
+                reste.find('/')?.checked_add(1)?
+            };
+            return Some(debut.len().saturating_add(compte));
         }
     }
     let b = chemin.as_bytes();
@@ -244,7 +251,11 @@ fn dossier_personnel(chemin: &str, maisons: &[String]) -> Option<usize> {
     {
         let reste = &bas[3..];
         if let Some(r) = reste.strip_prefix("users\\").or_else(|| reste.strip_prefix("users/")) {
-            return Some(3 + "users\\".len() + r.find(['\\', '/'])? + 1);
+            return "users\\"
+                .len()
+                .checked_add(3)?
+                .checked_add(r.find(['\\', '/'])?)?
+                .checked_add(1);
         }
     }
     None
@@ -299,7 +310,9 @@ impl Coupe {
         let barre = morceau.find(['/', '\\']).unwrap_or(morceau.len());
         let k = morceau[..barre].rfind('…')?;
         let corps = morceau.trim_end_matches(FIN_DE_CHEMIN);
-        let apres = corps.get(k + '…'.len_utf8()..).filter(|a| !a.is_empty())?;
+        let apres = corps
+            .get(k.saturating_add('…'.len_utf8())..)
+            .filter(|a| !a.is_empty())?;
         Some(Coupe {
             prefixe: morceau[..k].to_string(),
             chemin: apres.to_string(),
@@ -375,13 +388,13 @@ fn reduire_morceau(morceau: &str, maisons: &[String]) -> String {
     // (« fichier:~/… », « file:///… ») : sinon le chemin lu commence à « r:~/ » et n'est plus reconnu.
     let lecteur = debut >= 2
         && morceau[..debut].ends_with(':')
-        && morceau[..debut - 1].ends_with(|c: char| c.is_ascii_alphabetic())
-        && !morceau[..debut - 2].ends_with(|c: char| c.is_alphanumeric());
+        && morceau[..debut.saturating_sub(1)].ends_with(|c: char| c.is_ascii_alphabetic())
+        && !morceau[..debut.saturating_sub(2)].ends_with(|c: char| c.is_alphanumeric());
     // « file:///home/… » : les barres en trop du schéma ne font pas partie du chemin.
     let debut = if lecteur {
-        debut - 2
+        debut.saturating_sub(2)
     } else if morceau[..debut].ends_with(':') && morceau[debut..].starts_with("///") {
-        debut + 2
+        debut.saturating_add(2)
     } else {
         debut
     };
@@ -480,7 +493,7 @@ fn trouve_en_mot(texte: &str, nom: &str) -> bool {
     }
     bas.match_indices(&nom).any(|(i, _)| {
         let avant = bas[..i].chars().next_back();
-        let apres = bas[i + nom.len()..].chars().next();
+        let apres = bas[i.saturating_add(nom.len())..].chars().next();
         avant.is_none_or(|c| !c.is_alphanumeric()) && apres.is_none_or(|c| !c.is_alphanumeric())
     })
 }
@@ -510,6 +523,11 @@ pub(crate) fn controle_final(texte: &str, connues: &[(String, Sorte)]) -> Result
     if trouvees.is_empty() { Ok(()) } else { Err(trouvees) }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

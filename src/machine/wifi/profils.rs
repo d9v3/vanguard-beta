@@ -5,6 +5,9 @@
 //! c'est « non vérifié », et le bilan de la machine garde sa lecture par nmcli. Windows lit les siens par l'API WLAN
 //! (wlanapi.rs). Les lecteurs sont purs ; seuls `lire_linux` et `lire_macos` touchent le disque.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use crate::ui::affichable;
 
 /// Un réseau enregistré.
@@ -93,7 +96,9 @@ fn nom_iwd(base: &str) -> Option<String> {
     let nom = match base.strip_prefix('=') {
         Some(hex) => {
             let octets: Option<Vec<u8>> = (0..hex.len() / 2)
-                .map(|i| u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok())
+                .map(|i| {
+                    u8::from_str_radix(hex.get(i.saturating_mul(2)..i.saturating_mul(2).saturating_add(2))?, 16).ok()
+                })
                 .collect();
             String::from_utf8_lossy(&octets?).into_owned()
         }
@@ -291,6 +296,11 @@ pub(crate) fn lire_macos() -> Result<Vec<ProfilEnregistre>, &'static str> {
     Ok(profils)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     /// Plus de profils dans un dossier que la borne : pas une liste partielle prise pour complète.

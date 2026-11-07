@@ -3,6 +3,9 @@
 //! liste des logiciels de l'ordinateur ne sort jamais), gardé un jour ; hors ligne, la copie d'avant sert jusqu'à un
 //! mois. Le catalogue suit les faits : une faille exploitée d'hier peut ne pas y être encore (PHP2Shell, 21 oct. 2026).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::time::Duration;
 
 use chrono::NaiveDate;
@@ -142,7 +145,10 @@ pub fn ecran(jours: u32) {
             return;
         }
     };
-    let depuis = chrono::Local::now().date_naive() - chrono::Duration::days(i64::from(jours));
+    let depuis = chrono::Local::now()
+        .date_naive()
+        .checked_sub_signed(chrono::Duration::days(i64::from(jours)))
+        .unwrap_or(chrono::NaiveDate::MIN);
     // Les CVE des paquets de cet ordinateur : sous Arch, le suivi de sécurité les donne.
     #[cfg(target_os = "linux")]
     let ici = crate::machine::linux::cves_installees();
@@ -194,6 +200,11 @@ pub fn ecran(jours: u32) {
     afficher_aligne("  ", fin, 2, GRIS);
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

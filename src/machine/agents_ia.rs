@@ -11,6 +11,9 @@
 //! mais illisible rend l'outil « non vérifié », jamais « aucun agent ». Aucune valeur secrète n'est affichée ni
 //! gardée : seulement le nom du serveur et celui de la clé. Rien ne se corrige tout seul.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 #[cfg(test)]
 use crate::socle::jsonc::json_sans_jsonc;
 use crate::socle::jsonc::lire_json;
@@ -300,14 +303,18 @@ fn paquet_non_epingle(commande: &str, args: &[&str]) -> Option<String> {
         // fois (un fichier de réglages piégé, 350 Ko) faisait déborder la pile, ce qui arrête tout le programme.
         let barre = |a: &&str| a.eq_ignore_ascii_case("/c") || a.eq_ignore_ascii_case("/k");
         let i = args.iter().position(barre)?;
-        let mots: Vec<&str> = args.get(i + 1..)?.iter().flat_map(|a| a.split_whitespace()).collect();
+        let mots: Vec<&str> = args
+            .get(i.saturating_add(1)..)?
+            .iter()
+            .flat_map(|a| a.split_whitespace())
+            .collect();
         let mut reste = &mots[..];
         loop {
             let (commande, suite) = reste.split_first()?;
             if nom_du_lanceur(commande) != "cmd" {
                 return paquet_non_epingle(commande, suite);
             }
-            reste = suite.get(suite.iter().position(barre)? + 1..)?;
+            reste = suite.get(suite.iter().position(barre)?.saturating_add(1)..)?;
         }
     }
     let mut reste = args.iter().copied();
@@ -447,7 +454,7 @@ fn en_clair(valeur: &Value) -> bool {
 
 fn lire_serveurs(outil: &str, serveurs: &serde_json::Map<String, Value>, t: &mut Trouvailles) {
     for (nom, s) in serveurs {
-        t.serveurs += 1;
+        t.serveurs = t.serveurs.saturating_add(1);
         let qui = format!("{outil} › {nom}");
         if let Some(commande) = s.get("command").and_then(Value::as_str) {
             let args: Vec<&str> = s
@@ -684,13 +691,13 @@ fn lire_fichier(chemin: &Path) -> Result<Option<Value>, String> {
 
 pub(crate) fn reglages() -> Vec<Constat> {
     let mut t = Trouvailles::default();
-    let mut lus = 0;
+    let mut lus = 0usize;
     let mut illisibles = Vec::new();
     for (outil, chemin) in fichiers_de_reglages() {
         match lire_fichier(&chemin) {
             Ok(None) => {}
             Ok(Some(json)) => {
-                lus += 1;
+                lus = lus.saturating_add(1);
                 lire_reglages(outil, &json, &mut t);
             }
             Err(raison) => illisibles.push(format!("{outil} ({raison})")),
@@ -699,6 +706,11 @@ pub(crate) fn reglages() -> Vec<Constat> {
     juger_reglages(&t, lus, &illisibles)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1165,6 +1177,11 @@ mod tests {
 
 /// Les fichiers de réglages des outils d'IA s'écrivent à la main ou par n'importe quel programme (une extension, un
 /// installeur de serveur MCP) : jamais de panique, et le JSONC ramené au JSON garde exactement la valeur.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod entrees_hostiles {
     use super::*;

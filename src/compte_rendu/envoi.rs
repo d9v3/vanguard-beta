@@ -1128,6 +1128,8 @@ impl fmt::Display for Refus {
     }
 }
 
+impl std::error::Error for Refus {}
+
 /// Relit un lot : tout ou rien.
 pub(crate) fn lire(octets: &[u8]) -> Result<Lot, Refus> {
     if octets.len() > LOT_MAX {

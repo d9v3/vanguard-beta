@@ -49,6 +49,22 @@ pub(crate) enum Defaut {
     Repertoire,
 }
 
+// Les deux langues dans une seule chaîne : ce socle n'importe pas l'interface (`tests::sans_interface`), et une
+// erreur de lecteur se journalise plus qu'elle ne s'affiche.
+impl std::fmt::Display for Defaut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::EnTete => "en-tête OLE illisible / unreadable OLE header",
+            Self::Chaine => "chaîne de secteurs incohérente / inconsistent sector chain",
+            Self::Tronque => "flux plus court qu'annoncé / stream shorter than announced",
+            Self::Limite => "au-delà de la borne de lecture / beyond the read limit",
+            Self::Repertoire => "répertoire illisible / unreadable directory",
+        })
+    }
+}
+
+impl std::error::Error for Defaut {}
+
 /// Une entrée du répertoire.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Entree {
@@ -466,6 +482,23 @@ pub(crate) mod essais {
 
     /// Un flux ou un stockage à écrire : chemin (« VBA/dir ») et contenu (`None` : un stockage).
     pub(crate) type Element<'a> = (&'a str, Option<&'a [u8]>);
+
+    /// Chaque défaut se dit dans les deux langues, sans dépendre de l'interface, et vaut une erreur standard.
+    #[test]
+    fn defaut_se_dit() {
+        for d in [
+            super::Defaut::EnTete,
+            super::Defaut::Chaine,
+            super::Defaut::Tronque,
+            super::Defaut::Limite,
+            super::Defaut::Repertoire,
+        ] {
+            let texte = d.to_string();
+            assert!(texte.contains(" / "), "{texte}");
+            let e: &dyn std::error::Error = &d;
+            assert!(e.source().is_none());
+        }
+    }
 
     /// Un fichier composé : chaque stockage et flux, les flux de moins de 4 096 octets dans le mini-flux. Les
     /// entrées d'un même stockage sont chaînées par leur frère droit (un arbre dégénéré, permis : la couleur n'est

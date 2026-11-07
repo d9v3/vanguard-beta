@@ -6,6 +6,8 @@
 //! ou la mémoire ne jugent rien et restent à l'écran. Une vérification qui n'a pas pu se faire est non vérifiée,
 //! jamais « aucun ».
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::Section;
 use crate::machine::{Constat, alerte, impossible_par, ok};
 use crate::modele::resultat::{Couverture, Resultat};
@@ -49,7 +51,7 @@ pub(super) fn resultat(sections: &[Section], debut: Debut) -> Resultat {
         };
         let cat = categorie(point);
         let c = if l.verifie {
-            verifies += 1;
+            verifies = verifies.saturating_add(1);
             match grave(l) {
                 Some(n) => alerte(cat, n, message),
                 None => ok(cat, message),
@@ -63,6 +65,11 @@ pub(super) fn resultat(sections: &[Section], debut: Debut) -> Resultat {
     Resultat::nouveau(ID, debut, &constats, Couverture { verifies, non_verifies })
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::super::{alerte, ligne, non_verifie, programmes_plantes};

@@ -285,7 +285,7 @@ fn remettre(elements: &[Element]) {
                         "",
                     );
                 }
-                rang_choix += 1;
+                rang_choix = rang_choix.saturating_add(1);
             }
             Element::Note(n) => {
                 let issue = issues

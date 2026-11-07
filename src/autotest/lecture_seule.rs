@@ -11,6 +11,9 @@
 //! écrirait son « déjà vu » après coup. Les fichiers de l'autotest lui-même s'écrivent par un chemin exempté nommé
 //! (`ecrire_resultat`), dans le seul fil qui l'ouvre, et pour une liste fermée de fichiers.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -213,7 +216,7 @@ pub(crate) fn empreinte_dossier(dossier: &Path) -> Empreinte {
                         .unwrap_or_default()
                 )
             } else if m.is_file() {
-                octets += m.len().min(OCTETS_PAR_FICHIER);
+                octets = octets.saturating_add(m.len().min(OCTETS_PAR_FICHIER));
                 hacher(&chemin, m.len())
             } else {
                 "special".to_string()
@@ -282,6 +285,11 @@ pub(crate) fn ecarts(avant: &Empreinte, apres: &Empreinte) -> Vec<(String, Chang
     tous
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

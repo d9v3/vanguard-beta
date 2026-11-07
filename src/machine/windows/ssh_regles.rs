@@ -48,10 +48,12 @@ pub(crate) fn nom_note_sshd(r: ReglageSshd) -> String {
 }
 
 fn hex(octets: &[u8]) -> String {
-    octets.iter().fold(String::with_capacity(octets.len() * 2), |mut s, o| {
-        let _ = std::fmt::Write::write_fmt(&mut s, format_args!("{o:02x}"));
-        s
-    })
+    octets
+        .iter()
+        .fold(String::with_capacity(octets.len().saturating_mul(2)), |mut s, o| {
+            let _ = std::fmt::Write::write_fmt(&mut s, format_args!("{o:02x}"));
+            s
+        })
 }
 
 /// L'empreinte SHA-256 en hexadécimal minuscule.
@@ -117,7 +119,7 @@ pub(crate) fn explicites(sddl: &str) -> Option<Explicites> {
         let mut fin = None;
         for (i, c) in regles_texte.char_indices() {
             match c {
-                '(' => profondeur += 1,
+                '(' => profondeur = profondeur.checked_add(1)?,
                 ')' => {
                     profondeur = profondeur.checked_sub(1)?;
                     if profondeur == 0 {
@@ -130,7 +132,7 @@ pub(crate) fn explicites(sddl: &str) -> Option<Explicites> {
         }
         let fin = fin?;
         let regle = regles_texte.get(..=fin)?;
-        regles_texte = regles_texte.get(fin + 1..)?;
+        regles_texte = regles_texte.get(fin.checked_add(1)?..)?;
         // Le deuxième champ : les drapeaux d'héritage, par paires de lettres (« OICIID »).
         let heritee = regle
             .trim_start_matches('(')
@@ -442,7 +444,7 @@ pub(crate) fn avec_reglage(octets: &[u8], r: ReglageSshd) -> Vec<u8> {
     } else {
         b"\n"
     };
-    let mut n = Vec::with_capacity(octets.len() + 160);
+    let mut n = Vec::with_capacity(octets.len().saturating_add(160));
     n.extend_from_slice(bom);
     n.extend_from_slice(
         format!(

@@ -35,6 +35,9 @@
 //! nommé posé à sa place figeait la surveillance pour toujours. En root, les sceaux ne s'écrivent que dans un dossier
 //! à root (`socle::ecriture_sure`).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -647,7 +650,10 @@ fn verrou_d_avant_le_temoin(chemin: &Path) -> bool {
     };
     #[cfg(not(unix))]
     let ne = m.created().ok();
-    ne_avant(ne, std::time::UNIX_EPOCH + std::time::Duration::from_secs(depuis))
+    // Une date qui déborderait vaut « après tout » : le verrou passe pour d'avant le témoin, comme avant.
+    std::time::UNIX_EPOCH
+        .checked_add(std::time::Duration::from_secs(depuis))
+        .is_none_or(|d| ne_avant(ne, d))
 }
 
 /// Le jugement de `verrou_d_avant_le_temoin` : d'après le témoin seulement sur une naissance lue, et pas avant `depuis`.
@@ -1459,6 +1465,15 @@ pub(crate) enum Doute {
     Inconnu,
 }
 
+// Le texte déjà montré par l'interface (`texte`), pour qu'une erreur standard dise la même chose.
+impl std::fmt::Display for Doute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.texte())
+    }
+}
+
+impl std::error::Error for Doute {}
+
 impl Doute {
     /// La raison, au masculin (« le fichier … »), pour quelqu'un qui ne connaît pas les sceaux.
     pub(crate) fn texte(self) -> &'static str {
@@ -1560,6 +1575,11 @@ pub(crate) fn connus_sous(dossier: &Path, sous: &str) -> bool {
     registre(dossier).is_ok_and(|r| r.is_some_and(|r| r.fichiers.keys().any(|n| n.starts_with(&prefixe))))
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

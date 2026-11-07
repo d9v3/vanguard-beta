@@ -3,6 +3,9 @@
 //! programme déguisé en document) ; puis l'analyse YARA et l'antivirus. Un moteur absent ou en échec est dit, jamais
 //! compté comme sain. Vanguard ne déplace ni ne supprime rien (Defender, lui, met en quarantaine ce qu'il reconnaît).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::path::{Path, PathBuf};
 
 use crate::protection::antivirus::Examen;
@@ -335,7 +338,7 @@ fn sans_prefixe_etendu(chemin: &str) -> String {
 /// « 3,4 Mo », « 812 o ».
 pub(crate) fn taille(octets: u64) -> String {
     #[allow(clippy::cast_precision_loss)] // un ordre de grandeur, pour l'œil
-    let o = octets as f64;
+    let o = crate::socle::nombres::flottant(octets);
     match octets {
         0..1_000 => trf!("{octets} o", "{octets} B"),
         1_000..1_000_000 => trf!("{:.0} Ko", "{:.0} KB", o / 1e3),
@@ -810,7 +813,7 @@ fn a_signaler(fichiers: &[(String, u64, Vec<u8>)], depuis: u64) -> Vec<(String, 
             trf!(
                 "{} autre(s) programme(s) arrivé(s) dans Téléchargements : vérifiez-les avant de les ouvrir.",
                 "{} other program(s) arrived in Downloads: check them before opening them.",
-                trouves.len() - 3
+                trouves.len().saturating_sub(3)
             ),
         ));
     }
@@ -962,6 +965,11 @@ pub(crate) fn corpus_signalements(e: &crate::modele::corpus::Entree) -> Vec<crat
     constats
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

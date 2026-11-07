@@ -4,6 +4,9 @@
 //! chaque appareil pour la première fois (bluetooth.json, jamais sur la clé) et signale ceux de la dernière semaine ;
 //! ceux qui étaient là au premier passage sont connus d'avant. Sans adaptateur Bluetooth, rien n'est dit.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
@@ -58,7 +61,10 @@ const VUS: &str = crate::sceau::BLUETOOTH;
 fn adresse(texte: &str) -> Option<String> {
     let hex: String = texte.chars().filter(char::is_ascii_hexdigit).collect();
     let separateurs = texte.chars().filter(|c| matches!(c, ':' | '-')).count();
-    if hex.len() != 12 || !(separateurs == 0 || separateurs == 5) || texte.trim().len() != 12 + separateurs {
+    if hex.len() != 12
+        || !(separateurs == 0 || separateurs == 5)
+        || texte.trim().len() != (separateurs).saturating_add(12)
+    {
         return None;
     }
     let octets: Vec<String> = hex
@@ -118,7 +124,7 @@ fn juger(etat: &Etat, avant: Option<&Vus>, aujourd_hui: NaiveDate) -> (Vec<Const
         .filter(|a| {
             vus.get(&a.adresse)
                 .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
-                .is_some_and(|d| (aujourd_hui - d).num_days() < RECENT_JOURS)
+                .is_some_and(|d| aujourd_hui.signed_duration_since(d).num_days() < RECENT_JOURS)
         })
         .collect();
     let mut constats = Vec::new();
@@ -296,7 +302,7 @@ fn lire_objets(objets: &[(String, crate::machine::linux::dbus::Valeur)]) -> Opti
     let mut etat = Etat::default();
     for (chemin, interfaces) in objets {
         if let Some(a) = interfaces.champ("org.bluez.Adapter1") {
-            etat.adaptateurs += 1;
+            etat.adaptateurs = etat.adaptateurs.saturating_add(1);
             let oui = |cle: &str| a.champ(cle).and_then(super::linux::dbus::Valeur::booleen) == Some(true);
             let allume = oui("Powered");
             etat.allume |= allume;
@@ -468,6 +474,11 @@ fn lire_profil(json: &str) -> Option<Etat> {
     })
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

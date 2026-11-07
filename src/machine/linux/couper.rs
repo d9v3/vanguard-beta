@@ -4,6 +4,8 @@
 //! et son accusé lu. Il faut CAP_NET_ADMIN et un noyau avec CONFIG_INET_DIAG_DESTROY : sinon, c'est dit (la
 //! connexion déjà ouverte continue), jamais avalé.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::net::IpAddr;
 
 use super::netlink::{self, NLM_F_ACK, NLM_F_DUMP, NLM_F_REQUEST, Prise, recus};
@@ -77,7 +79,8 @@ pub(crate) fn couper_vers(ip: IpAddr) -> Result<Coupure, Echec> {
     let mut sequence = 1u32;
     for &(protocole, etats) in &[(IPPROTO_TCP, ETATS_TCP), (IPPROTO_UDP, ETATS_UDP)] {
         for &famille in familles {
-            sequence += 1;
+            // Un numéro de séquence netlink : il fait le tour, c'est son sens.
+            sequence = sequence.wrapping_add(1);
             let liste = netlink::message(
                 SOCK_DIAG_BY_FAMILY,
                 NLM_F_REQUEST | NLM_F_DUMP,
@@ -100,7 +103,7 @@ pub(crate) fn couper_vers(ip: IpAddr) -> Result<Coupure, Echec> {
                 }
             };
             for (f, id) in prises_vers(&reponse, ip) {
-                sequence += 1;
+                sequence = sequence.wrapping_add(1);
                 let m = netlink::message(
                     SOCK_DESTROY,
                     NLM_F_REQUEST | NLM_F_ACK,
@@ -108,8 +111,10 @@ pub(crate) fn couper_vers(ip: IpAddr) -> Result<Coupure, Echec> {
                     &demande(f, protocole, u32::MAX, &id),
                 );
                 match prise.envoyer_et_attendre(&m, &[sequence]) {
-                    Ok(()) => resultat.coupees += 1,
-                    Err((c, _)) if c == -libc::ENOENT => resultat.deja_fermees += 1,
+                    Ok(()) => resultat.coupees = resultat.coupees.saturating_add(1),
+                    Err((c, _)) if c == -libc::ENOENT => {
+                        resultat.deja_fermees = resultat.deja_fermees.saturating_add(1);
+                    }
                     Err((c, _)) => return Err(raison(c)),
                 }
             }
@@ -142,6 +147,11 @@ fn raison_texte(code: i32) -> String {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

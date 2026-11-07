@@ -2174,7 +2174,7 @@ fn uid_de_connexion(pid: &str) -> Option<u32> {
 /// en contenir) : son numéro de périphérique et le chemin où il se trouve, pour un pseudo-terminal (majeur 136) ou
 /// une console (majeur 4, mineur 1 à 63). `tty_nr` s'écrit comme un `st_rdev` : les deux se comparent tels quels.
 fn terminal_de_controle(stat: &str) -> Option<(u64, PathBuf)> {
-    let apres = &stat[stat.rfind(')')? + 1..];
+    let apres = &stat[stat.rfind(')')?.checked_add(1)?..];
     let tty: u64 = apres.split_whitespace().nth(4)?.parse().ok()?;
     let majeur = ((tty >> 8) & 0xfff) | ((tty >> 32) & !0xfff);
     let mineur = (tty & 0xff) | ((tty >> 12) & !0xff);

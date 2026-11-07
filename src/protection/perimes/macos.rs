@@ -7,6 +7,9 @@
 //!
 //! Compilé aussi pour les tests sous Linux (arbre jetable).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -87,7 +90,7 @@ fn applications(racine: &Path, apps: &mut usize, inv: &mut Inventaire) -> Vec<Pa
         if *apps >= APPS_MAX {
             inv.trop(1);
         } else {
-            *apps += 1;
+            *apps = (*apps).saturating_add(1);
             trouvees.push(chemin);
         }
     };
@@ -114,7 +117,7 @@ pub(crate) fn plateforme_macho(octets: &[u8]) -> Plateforme {
     const X86_64: u32 = 0x0100_0007;
     const ARM64: u32 = 0x0100_000C;
     let mot = |a: usize, gros: bool| {
-        let o: [u8; 4] = octets.get(a..a + 4)?.try_into().ok()?;
+        let o: [u8; 4] = octets.get(a..a.saturating_add(4))?.try_into().ok()?;
         Some(if gros {
             u32::from_be_bytes(o)
         } else {
@@ -130,7 +133,10 @@ pub(crate) fn plateforme_macho(octets: &[u8]) -> Plateforme {
         // Fin : magique en gros-boutiste, puis le nombre d'architectures et leurs entrées de 20 octets.
         Some(0xCAFE_BABE) => {
             let n = usize::try_from(mot(4, true).unwrap_or(0).min(8)).unwrap_or(0);
-            let cpus: Vec<Plateforme> = (0..n).filter_map(|i| mot(8 + 20 * i, true)).map(une).collect();
+            let cpus: Vec<Plateforme> = (0..n)
+                .filter_map(|i| mot(i.saturating_mul(20).saturating_add(8), true))
+                .map(une)
+                .collect();
             match (cpus.contains(&Plateforme::X64), cpus.contains(&Plateforme::Arm64)) {
                 (true, true) => Plateforme::Universel,
                 (true, false) => Plateforme::X64,
@@ -341,6 +347,11 @@ pub(crate) fn inventaire() -> Inventaire {
     inv
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -54,7 +54,11 @@ fn texte_pf(id: IdChoix, v: Option<i64>) -> String {
 /// La touche d'un réglage dans l'écran du pare-feu : « 1 » à « 4 » pour Domaine, « 5 » à « 8 » pour Privé, « 9 » à
 /// « 12 » pour Public.
 pub(in crate::options_defense) fn touche_pf(p: ProfilPareFeu, r: ReglagePareFeu) -> String {
-    (indice(p) * 4 + position(r) + 1).to_string()
+    indice(p)
+        .saturating_mul(4)
+        .saturating_add(position(r))
+        .saturating_add(1)
+        .to_string()
 }
 
 /// Le réglage désigné par une touche de l'écran du pare-feu.
@@ -396,7 +400,7 @@ pub(in crate::options_defense) fn lignes_reglage_pf(
             ""
         };
         l.push(Ligne::choix(
-            &(k + 1).to_string(),
+            &k.saturating_add(1).to_string(),
             &majuscule(mot_valeur_pare_feu(r, fermee)),
             precision,
         ));
@@ -607,7 +611,7 @@ pub(in crate::options_defense) fn lignes_regles(
             Some(c) => format!("→ {}", texte_cible(c)),
             None => resume_regle(x),
         };
-        l.push(Ligne::choix(&(k + 1).to_string(), &texte, &precision));
+        l.push(Ligne::choix(&k.saturating_add(1).to_string(), &texte, &precision));
     }
     l.push(Ligne::Texte(String::new()));
     l.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));

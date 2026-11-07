@@ -3,6 +3,13 @@
 //! qu'il a trouvé, et propose la bonne réparation (celles de Réparer) ou le bon outil (Nettoyer, Copier mes
 //! fichiers…). Rien n'est changé sans être montré et accepté.
 
+// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
+#![cfg_attr(
+    all(target_os = "linux", not(test)),
+    warn(clippy::arithmetic_side_effects, clippy::as_conversions)
+)]
+
 mod compte;
 mod depart;
 mod depuis_maj;
@@ -151,7 +158,7 @@ fn question(texte: &str, reponses: &[&str]) -> Option<usize> {
     );
     lignes.push(Ligne::Texte(String::new()));
     for (i, r) in reponses.iter().enumerate() {
-        lignes.push(Ligne::choix(&(i + 1).to_string(), r, ""));
+        lignes.push(Ligne::choix(&i.saturating_add(1).to_string(), r, ""));
     }
     lignes.push(Ligne::Texte(String::new()));
     let choix = choisir(&lignes, tr!("  Réponse : ", "  Answer: "), "1", tr!("arrêter", "stop"))?;
@@ -257,7 +264,7 @@ fn a_savoir(conseils: &[&str]) {
 fn taille(octets: u64) -> String {
     if octets >= 1 << 40 {
         #[allow(clippy::cast_precision_loss)]
-        let to = octets as f64 / f64::from(1u32 << 20) / f64::from(1u32 << 20);
+        let to = crate::socle::nombres::flottant(octets) / f64::from(1u32 << 20) / f64::from(1u32 << 20);
         trf!("{} To", "{} TB", crate::langue::decimal(to, 1))
     } else {
         crate::socle::taille_lisible(octets)
@@ -402,7 +409,7 @@ fn disque_plein() {
         let pct = if *total == 0 {
             100.0
         } else {
-            *libre as f64 * 100.0 / *total as f64
+            crate::socle::nombres::flottant(*libre) * 100.0 / crate::socle::nombres::flottant(*total)
         };
         let texte = trf!(
             "{point} : {} libres sur {} ({pct:.0} %)",
@@ -557,7 +564,9 @@ fn plus_gros_dossiers() -> Vec<(String, u64)> {
     if maison.as_os_str().is_empty() {
         return Vec::new();
     }
-    let fin = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let fin = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(10))
+        .unwrap_or_else(std::time::Instant::now);
     let mut tailles: Vec<(String, u64)> = std::fs::read_dir(&maison)
         .into_iter()
         .flatten()
@@ -583,7 +592,7 @@ pub fn lignes_de_recherche(cle: &str) -> Vec<Ligne> {
         .enumerate()
         .map(|(i, p)| {
             Ligne::cachee(
-                &format!("{cle}.{}", i + 1),
+                &format!("{cle}.{}", i.saturating_add(1)),
                 &chemin,
                 dans_la_langue(p.titre),
                 dans_la_langue(p.apercu),
@@ -641,11 +650,23 @@ fn lignes_du_menu(autres: &[(&str, &str, &str)]) -> Vec<Ligne> {
     lignes.push(Ligne::Texte(String::new()));
     for (i, p) in PARCOURS.iter().enumerate() {
         lignes.push(
-            Ligne::choix(&(i + 1).to_string(), dans_la_langue(p.titre), dans_la_langue(p.apercu)).avec_mots(p.mots),
+            Ligne::choix(
+                &i.saturating_add(1).to_string(),
+                dans_la_langue(p.titre),
+                dans_la_langue(p.apercu),
+            )
+            .avec_mots(p.mots),
         );
     }
     for (i, (titre, precision, mots)) in autres.iter().enumerate() {
-        lignes.push(Ligne::choix(&(PARCOURS.len() + i + 1).to_string(), titre, precision).avec_mots(mots));
+        lignes.push(
+            Ligne::choix(
+                &PARCOURS.len().saturating_add(i).saturating_add(1).to_string(),
+                titre,
+                precision,
+            )
+            .avec_mots(mots),
+        );
     }
     lignes.push(Ligne::Texte(String::new()));
     lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
@@ -671,7 +692,7 @@ pub fn menu(autres: &[(&str, &str, &str)], lancer: &mut dyn FnMut(usize)) {
         let autre = choix
             .parse::<usize>()
             .ok()
-            .and_then(|n| n.checked_sub(PARCOURS.len() + 1))
+            .and_then(|n| n.checked_sub(PARCOURS.len().saturating_add(1)))
             .filter(|i| *i < autres.len());
         match (chemin(&choix), autre) {
             (Some(n), _) => {

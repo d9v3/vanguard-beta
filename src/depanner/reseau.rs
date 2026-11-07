@@ -2,6 +2,8 @@
 //! les noms de sites), lu par des essais qui ne changent rien : une adresse sur le réseau, la box qui répond, trois
 //! serveurs d'Internet joignables (Cloudflare, Quad9, Google), deux noms de sites traduits en adresses.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc : socket et ioctl (état des cartes réseau).
 #![allow(unsafe_code)]
 
@@ -106,7 +108,9 @@ fn noms_resolus() -> bool {
         });
     }
     drop(envoi);
-    let fin = Instant::now() + Duration::from_secs(6);
+    let fin = Instant::now()
+        .checked_add(Duration::from_secs(6))
+        .unwrap_or_else(Instant::now);
     while let Ok(ok) = reception.recv_timeout(fin.saturating_duration_since(Instant::now())) {
         if ok {
             return true;
@@ -480,7 +484,7 @@ fn signal_airport(texte: &str) -> Option<Signal> {
         .next()?
         .parse()
         .ok()?;
-    let qualite = u8::try_from((2 * (dbm + 100)).clamp(0, 100)).ok()?;
+    let qualite = u8::try_from(dbm.saturating_add(100).saturating_mul(2).clamp(0, 100)).ok()?;
     // « Channel: 37 (6GHz, 160MHz) » : le numéro, puis la bande entre parenthèses.
     let canal = en_cours.lines().find_map(|l| l.trim().strip_prefix("Channel:"));
     Some(Signal {
@@ -528,8 +532,8 @@ fn niveau_wifi(texte: &str, cartes: &[String]) -> Option<(String, i32)> {
 /// −100 dBm → 0 %, en ligne droite entre les deux. La garder laisse les seuils (40 %, 60 %) où ils étaient.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn qualite_de_dbm(dbm: i32) -> u8 {
-    let ecart = -(dbm.clamp(-100, -40) + 40);
-    u8::try_from((100 - ecart * 100 / 60).clamp(0, 100)).unwrap_or(0)
+    let ecart = dbm.clamp(-100, -40).saturating_add(40).saturating_neg();
+    u8::try_from(100i32.saturating_sub(ecart.saturating_mul(100) / 60).clamp(0, 100)).unwrap_or(0)
 }
 
 /// La fréquence d'une réponse SIOCGIWFREQ, en MHz : m × 10^e hertz. Un petit nombre avec e = 0 est un numéro
@@ -814,6 +818,11 @@ pub(super) fn wifi() {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1034,6 +1043,11 @@ mod tests {
 
 /// Propriétés des lectures du dépannage, sur des sorties tirées au hasard : rien ne plante ; seule une entrée
 /// REACHABLE confirme la box ; un signal lu reste entre 0 et 100.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod proprietes {
     use super::*;

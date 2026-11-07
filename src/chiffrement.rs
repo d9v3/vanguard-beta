@@ -13,6 +13,9 @@
 //! Ordinateur et phrase perdus : le carnet de la clé est perdu, c'est voulu ; une sauvegarde est proposée avant
 //! d'activer la protection.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::path::{Path, PathBuf};
 
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -34,12 +37,64 @@ pub(crate) const PARAMETRES: (u32, u32, u32) = (64 * 1024, 3, 1);
 pub(crate) struct Cle([u8; 32]);
 
 // La clé effacée dès qu'elle ne sert plus : une mémoire relue plus tard (fichier d'échange, vidage après un
-// plantage) ne la rend pas. Les copies faites en route (tableaux sur la pile, état du chiffreur) ne le sont pas, ni
-// l'exemplaire de la session (`cle_pour`) : gardé jusqu'à la fin du programme pour ne demander la phrase qu'une fois,
-// il n'est jamais détruit.
+// plantage) ne la rend pas. Elle est écrite en place (`Cle::vide` puis remplie), jamais composée depuis un tableau de
+// la pile qui en garderait une copie. Reste l'état du chiffreur. L'exemplaire de la session (`cle_pour`), gardé pour
+// ne demander la phrase qu'une fois, est détruit à la sortie (`oublier_session`).
 impl Drop for Cle {
     fn drop(&mut self) {
         crate::socle::effacer(&mut self.0);
+    }
+}
+
+/// La phrase de passe, tapée par la personne : effacée dès qu'elle ne sert plus, comme la clé. Elle reprend le
+/// tampon que rpassword a rempli (`String::into_bytes`, sans copie) ; ce que rpassword a pu allouer avant est hors
+/// de portée. Jamais affichée (`Debug` la masque), jamais clonée.
+pub(crate) struct Phrase(Vec<u8>);
+
+impl Phrase {
+    /// Les octets de la phrase, pour la dérivation.
+    fn octets(&self) -> &[u8] {
+        &self.0
+    }
+
+    fn est_vide(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Le nombre de caractères, pour la longueur minimale.
+    fn caracteres(&self) -> usize {
+        std::str::from_utf8(&self.0).map_or(0, |s| s.chars().count())
+    }
+}
+
+impl From<String> for Phrase {
+    fn from(s: String) -> Self {
+        Phrase(s.into_bytes())
+    }
+}
+
+#[cfg(test)]
+impl From<&str> for Phrase {
+    fn from(s: &str) -> Self {
+        Phrase(s.as_bytes().to_vec())
+    }
+}
+
+impl PartialEq for Phrase {
+    fn eq(&self, autre: &Self) -> bool {
+        self.0 == autre.0
+    }
+}
+
+impl Drop for Phrase {
+    fn drop(&mut self) {
+        crate::socle::effacer(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for Phrase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Phrase(…)")
     }
 }
 
@@ -58,11 +113,33 @@ pub(crate) enum Refus {
     Authentification,
 }
 
+impl std::fmt::Display for Refus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Refus::Format => crate::tr!(
+                "pas un fichier chiffré de Vanguard, ou tronqué",
+                "not a Vanguard encrypted file, or truncated"
+            ),
+            Refus::Authentification => crate::tr!(
+                "phrase incorrecte, ou fichier modifié",
+                "wrong passphrase, or file changed"
+            ),
+        })
+    }
+}
+
+impl std::error::Error for Refus {}
+
 impl Cle {
     pub(crate) fn nouvelle() -> std::io::Result<Cle> {
-        let mut octets = [0u8; 32];
-        getrandom::fill(&mut octets).map_err(|e| std::io::Error::other(e.to_string()))?;
-        Ok(Cle(octets))
+        let mut cle = Cle::vide();
+        getrandom::fill(&mut cle.0).map_err(|e| std::io::Error::other(e.to_string()))?;
+        Ok(cle)
+    }
+
+    /// Une clé à remplir en place : son `Drop` efface ce qui y aura été écrit, même si le remplissage échoue.
+    fn vide() -> Cle {
+        Cle([0u8; 32])
     }
 
     /// Identifiant de la clé (BLAKE3, 16 octets en hexadécimal), écrit en clair dans l'enveloppe : il dit si la clé
@@ -118,22 +195,24 @@ pub(crate) fn dechiffrer(cle: &Cle, nom: &str, donnees: &[u8]) -> Result<Vec<u8>
 }
 
 /// La clé de la phrase, par Argon2id.
-fn deriver(phrase: &str, sel: &[u8], (memoire, passes, fils): (u32, u32, u32)) -> Result<Cle, Refus> {
+fn deriver(phrase: &Phrase, sel: &[u8], (memoire, passes, fils): (u32, u32, u32)) -> Result<Cle, Refus> {
     let parametres = Params::new(memoire, passes, fils, Some(32)).map_err(|_| Refus::Format)?;
-    let mut octets = [0u8; 32];
+    let mut cle = Cle::vide();
     Argon2::new(Algorithm::Argon2id, Version::V0x13, parametres)
-        .hash_password_into(phrase.as_bytes(), sel, &mut octets)
+        .hash_password_into(phrase.octets(), sel, &mut cle.0)
         .map_err(|_| Refus::Format)?;
-    Ok(Cle(octets))
+    Ok(cle)
 }
 
 /// L'enveloppe de la clé de données par une phrase : en-tête, paramètres d'Argon2id (pour pouvoir les durcir plus
 /// tard sans perdre les anciennes), sel, identifiant de la clé, puis la clé chiffrée.
-pub(crate) fn envelopper(cle: &Cle, phrase: &str, parametres: (u32, u32, u32)) -> std::io::Result<Vec<u8>> {
+pub(crate) fn envelopper(cle: &Cle, phrase: &Phrase, parametres: (u32, u32, u32)) -> std::io::Result<Vec<u8>> {
     let sel: [u8; TAILLE_SEL] = hasard()?;
     let enveloppante = deriver(phrase, &sel, parametres).map_err(|_| std::io::Error::other("paramètres refusés"))?;
     let identifiant = cle.identifiant();
     let chiffre = chiffrer(&enveloppante, &identifiant, &cle.0)?;
+    // Effacée ici, dès la clé chiffrée, plutôt qu'à la fin de la fonction ; le `Drop` reste le filet.
+    drop(enveloppante);
     let (m, t, p) = parametres;
     Ok([
         &MAGIQUE_ENVELOPPE[..],
@@ -149,19 +228,19 @@ pub(crate) fn envelopper(cle: &Cle, phrase: &str, parametres: (u32, u32, u32)) -
 
 /// L'identifiant de la clé écrit dans une enveloppe, sans phrase.
 pub(crate) fn identifiant_de(enveloppe: &[u8]) -> Option<String> {
-    let debut = MAGIQUE_ENVELOPPE.len() + 12 + TAILLE_SEL;
+    let debut = MAGIQUE_ENVELOPPE.len().saturating_add(TAILLE_SEL).saturating_add(12);
     enveloppe
         .strip_prefix(&MAGIQUE_ENVELOPPE[..])
-        .and_then(|_| enveloppe.get(debut..debut + 32))
+        .and_then(|_| enveloppe.get(debut..debut.saturating_add(32)))
         .and_then(|i| std::str::from_utf8(i).ok())
         .map(str::to_string)
 }
 
-pub(crate) fn ouvrir(enveloppe: &[u8], phrase: &str) -> Result<Cle, Refus> {
+pub(crate) fn ouvrir(enveloppe: &[u8], phrase: &Phrase) -> Result<Cle, Refus> {
     let reste = enveloppe.strip_prefix(&MAGIQUE_ENVELOPPE[..]).ok_or(Refus::Format)?;
     let nombre = |i: usize| -> Result<u32, Refus> {
         let o: [u8; 4] = reste
-            .get(i..i + 4)
+            .get(i..i.saturating_add(4))
             .and_then(|o| o.try_into().ok())
             .ok_or(Refus::Format)?;
         Ok(u32::from_le_bytes(o))
@@ -178,11 +257,19 @@ pub(crate) fn ouvrir(enveloppe: &[u8], phrase: &str) -> Result<Cle, Refus> {
         .ok_or(Refus::Format)?;
     let chiffre = reste.get(12 + TAILLE_SEL + 32..).ok_or(Refus::Format)?;
     let enveloppante = deriver(phrase, sel, parametres)?;
-    // La clé en clair passe par un tampon du tas : effacé avant d'être rendu.
+    // La clé en clair passe par un tampon du tas, copié en place dans la clé puis effacé : aucun tableau de la pile
+    // n'en garde une copie. L'enveloppante est effacée dès le déchiffrement fait.
     let mut clair = dechiffrer(&enveloppante, identifiant, chiffre)?;
-    let octets: Option<[u8; 32]> = clair.as_slice().try_into().ok();
+    drop(enveloppante);
+    let mut cle = Cle::vide();
+    let bonne_taille = clair.len() == cle.0.len();
+    if bonne_taille {
+        cle.0.copy_from_slice(&clair);
+    }
     crate::socle::effacer(&mut clair);
-    let cle = Cle(octets.ok_or(Refus::Format)?);
+    if !bonne_taille {
+        return Err(Refus::Format);
+    }
     if cle.identifiant() == identifiant {
         Ok(cle)
     } else {
@@ -234,8 +321,64 @@ pub(crate) fn protegee(donnees: &Path) -> bool {
 /// l'enveloppe, sinon par la phrase (dans un terminal seulement : la surveillance, sans personne devant l'écran,
 /// continue sans le carnet). Ouverte chez le propriétaire, elle y est gardée de nouveau (ordinateur réinstallé).
 fn cle_pour(donnees: &Path) -> Option<Cle> {
-    static SESSION: std::sync::OnceLock<Option<Cle>> = std::sync::OnceLock::new();
-    SESSION.get_or_init(|| obtenir(donnees)).clone()
+    cle_dans(&SESSION, || obtenir(donnees))
+}
+
+/// `cle_pour` sur une session donnée (les essais en ont une à eux : `SESSION` est partagée par tout le programme).
+/// Le verrou tenu pendant la demande de la phrase : un second fil attend la réponse au lieu de la redemander, comme
+/// avec le `OnceLock` d'avant. Un fil qui a paniqué en le tenant ne laisse qu'un état cohérent (rien n'est écrit
+/// avant la fin d'`obtenir`) : le verrou empoisonné est repris tel quel.
+fn cle_dans(session: &std::sync::Mutex<Session>, obtenir: impl FnOnce() -> Option<Cle>) -> Option<Cle> {
+    let mut session = session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    match &*session {
+        Session::Connue(cle) => cle.clone(),
+        Session::Oubliee => None,
+        Session::PasDemandee => {
+            let cle = obtenir();
+            let rendue = cle.clone();
+            *session = Session::Connue(cle);
+            rendue
+        }
+    }
+}
+
+/// L'exemplaire de la clé gardé pour la session, pour ne demander la phrase qu'une fois par lancement.
+enum Session {
+    PasDemandee,
+    /// Cherchée : la clé, ou `None` (pas de phrase, pas de terminal, enveloppe illisible) sans la redemander.
+    Connue(Option<Cle>),
+    /// Effacée à la sortie : plus rien n'est redemandé ni gardé.
+    Oubliee,
+}
+
+static SESSION: std::sync::Mutex<Session> = std::sync::Mutex::new(Session::PasDemandee);
+
+/// À la sortie du programme : l'exemplaire de la session détruit, donc effacé (`Drop` de `Cle`). Une `static` ne
+/// l'est jamais d'elle-même, et un vidage de la mémoire après coup (fichier d'échange, hibernation) la rendrait.
+/// `try_lock` : une sortie (Ctrl+C, tube fermé) pendant qu'un autre fil attend la phrase ne doit pas rester bloquée
+/// derrière lui ; la clé n'est alors pas encore gardée, rien à effacer.
+pub(crate) fn oublier_session() {
+    oublier_dans(&SESSION);
+}
+
+fn oublier_dans(session: &std::sync::Mutex<Session>) {
+    let mut session = match session.try_lock() {
+        Ok(s) => s,
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return,
+    };
+    // L'ancien état détruit ici, verrou tenu : sa clé est effacée avant qu'un autre fil puisse relire `SESSION`.
+    drop(std::mem::replace(&mut *session, Session::Oubliee));
+}
+
+/// Garde posée en tête de `main` : `oublier_session` au retour normal et pendant le déroulement d'une panique.
+/// `std::process::exit` ne détruit rien : chaque sortie de ce genre l'appelle elle-même (`machine::quitter`).
+pub(crate) struct OublierALaSortie;
+
+impl Drop for OublierALaSortie {
+    fn drop(&mut self) {
+        oublier_session();
+    }
 }
 
 fn obtenir(donnees: &Path) -> Option<Cle> {
@@ -249,12 +392,14 @@ fn obtenir(donnees: &Path) -> Option<Cle> {
         return None;
     }
     for _ in 0..3 {
-        let phrase = rpassword::prompt_password(crate::tr!(
-            "  Phrase des données de la clé VANGUARD (Entrée : continuer sans le carnet) : ",
-            "  VANGUARD key data passphrase (Enter: go on without the record): "
-        ))
-        .ok()?;
-        if phrase.is_empty() {
+        let phrase = Phrase::from(
+            rpassword::prompt_password(crate::tr!(
+                "  Phrase des données de la clé VANGUARD (Entrée : continuer sans le carnet) : ",
+                "  VANGUARD key data passphrase (Enter: go on without the record): "
+            ))
+            .ok()?,
+        );
+        if phrase.est_vide() {
             crate::trp!(
                 "  {}Carnet de la clé non lu : rien n'y sera écrit.{}",
                 "  {}Key record not read: nothing will be written to it.{}",
@@ -263,7 +408,10 @@ fn obtenir(donnees: &Path) -> Option<Cle> {
             );
             return None;
         }
-        match ouvrir(&enveloppe, &phrase) {
+        let ouverte = ouvrir(&enveloppe, &phrase);
+        // Effacée dès l'essai fait, bonne ou mauvaise : la boucle n'en garde pas trois en mémoire.
+        drop(phrase);
+        match ouverte {
             Ok(cle) => {
                 if donnees.parent().is_some_and(est_au_proprietaire) {
                     let _ = ecrire_cle_locale(&cle, &chemin_local());
@@ -357,7 +505,7 @@ pub(crate) fn proteger_dans(
     donnees: &Path,
     cle_locale: &Path,
     local: &Path,
-    phrase: &str,
+    phrase: &Phrase,
     parametres: (u32, u32, u32),
 ) -> std::io::Result<()> {
     let cle = Cle::nouvelle()?;
@@ -423,22 +571,30 @@ fn retirer_dans(donnees: &Path, cle: &Cle, cle_locale: &Path) -> std::io::Result
 }
 
 /// Une nouvelle phrase : la même clé de données, dans une nouvelle enveloppe.
-fn nouvelle_phrase_dans(donnees: &Path, cle: &Cle, phrase: &str, parametres: (u32, u32, u32)) -> std::io::Result<()> {
+fn nouvelle_phrase_dans(
+    donnees: &Path,
+    cle: &Cle,
+    phrase: &Phrase,
+    parametres: (u32, u32, u32),
+) -> std::io::Result<()> {
     crate::socle::ecrire_atomique(&donnees.join(ENVELOPPE), envelopper(cle, phrase, parametres)?)
 }
 
 /// Demande une phrase deux fois. 10 caractères au moins : c'est la seule défense d'une clé perdue.
-fn demander_phrase() -> Option<String> {
-    let phrase = rpassword::prompt_password(crate::tr!(
-        "  Phrase (10 caractères au moins, plusieurs mots c'est mieux) : ",
-        "  Passphrase (at least 10 characters; several words are better): "
-    ))
-    .ok()?;
-    if phrase.chars().count() < 10 {
+fn demander_phrase() -> Option<Phrase> {
+    let phrase = Phrase::from(
+        rpassword::prompt_password(crate::tr!(
+            "  Phrase (10 caractères au moins, plusieurs mots c'est mieux) : ",
+            "  Passphrase (at least 10 characters; several words are better): "
+        ))
+        .ok()?,
+    );
+    if phrase.caracteres() < 10 {
         crate::trp!("  ✖ Trop courte : rien n'a changé.", "  ✖ Too short: nothing changed.");
         return None;
     }
-    let encore = rpassword::prompt_password(crate::tr!("  La même, encore : ", "  The same, again: ")).ok()?;
+    let encore =
+        Phrase::from(rpassword::prompt_password(crate::tr!("  La même, encore : ", "  The same, again: ")).ok()?);
     if encore != phrase {
         crate::trp!(
             "  ✖ Les deux phrases diffèrent : rien n'a changé.",
@@ -636,9 +792,59 @@ fn constat_de(donnees: &Path) -> Option<crate::machine::Constat> {
     })
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La clé de la session : cherchée une fois, rendue ensuite sans redemander ; oubliée, plus rien n'est rendu ni
+    /// redemandé. Une session tenue par un autre fil (phrase en cours de saisie) n'arrête pas la sortie.
+    #[test]
+    fn session_cherchee_une_fois_puis_oubliee() {
+        let session = std::sync::Mutex::new(Session::PasDemandee);
+        let cle = Cle::nouvelle().unwrap();
+        let mut demandes = 0;
+        assert_eq!(
+            cle_dans(&session, || {
+                demandes += 1;
+                Some(cle.clone())
+            }),
+            Some(cle.clone())
+        );
+        assert_eq!(cle_dans(&session, || unreachable!("redemandée")), Some(cle.clone()));
+        assert_eq!(demandes, 1);
+        oublier_dans(&session);
+        assert!(matches!(*session.lock().unwrap(), Session::Oubliee));
+        assert_eq!(cle_dans(&session, || unreachable!("redemandée après l'oubli")), None);
+
+        // Sans clé trouvée : `None` gardé, pas redemandé.
+        let vide = std::sync::Mutex::new(Session::PasDemandee);
+        assert_eq!(cle_dans(&vide, || None), None);
+        assert_eq!(cle_dans(&vide, || unreachable!("redemandée")), None);
+
+        // Verrou tenu ailleurs : l'oubli rend la main sans attendre, l'état intact.
+        let tenue = std::sync::Mutex::new(Session::Connue(Some(cle.clone())));
+        std::thread::scope(|fils| {
+            let garde = tenue.lock().unwrap();
+            fils.spawn(|| oublier_dans(&tenue)).join().unwrap();
+            assert!(matches!(&*garde, Session::Connue(Some(_))));
+        });
+    }
+
+    /// La phrase ne se montre pas (`Debug`), se compare, se compte en caractères (pas en octets) ; la clé non plus.
+    #[test]
+    fn phrase_et_cle_masquees() {
+        let phrase = Phrase::from(String::from("été chaud"));
+        assert_eq!(format!("{phrase:?}"), "Phrase(…)");
+        assert_eq!(phrase.caracteres(), 9);
+        assert!(!phrase.est_vide() && Phrase::from("").est_vide());
+        assert!(phrase == Phrase::from("été chaud") && phrase != Phrase::from("ete chaud"));
+        assert_eq!(format!("{:?}", Cle::vide()), "Cle(…)");
+    }
 
     /// Argon2id réduit pour les tests : la même logique, en quelques millisecondes.
     const RAPIDE: (u32, u32, u32) = (64, 1, 1);
@@ -674,23 +880,26 @@ mod tests {
     #[test]
     fn enveloppe_et_mauvaise_phrase() {
         let cle = Cle::nouvelle().unwrap();
-        let enveloppe = envelopper(&cle, "cheval agrafe pile 42", RAPIDE).unwrap();
-        assert_eq!(ouvrir(&enveloppe, "cheval agrafe pile 42").unwrap(), cle);
+        let enveloppe = envelopper(&cle, &Phrase::from("cheval agrafe pile 42"), RAPIDE).unwrap();
+        assert_eq!(ouvrir(&enveloppe, &Phrase::from("cheval agrafe pile 42")).unwrap(), cle);
         assert_eq!(
-            ouvrir(&enveloppe, "cheval agrafe pile 43"),
+            ouvrir(&enveloppe, &Phrase::from("cheval agrafe pile 43")),
             Err(Refus::Authentification)
         );
-        assert_eq!(ouvrir(&enveloppe, ""), Err(Refus::Authentification));
+        assert_eq!(ouvrir(&enveloppe, &Phrase::from("")), Err(Refus::Authentification));
         assert_eq!(identifiant_de(&enveloppe), Some(cle.identifiant()));
         // L'identifiant changé dans l'enveloppe ne fait pas passer une autre clé.
         let mut falsifiee = enveloppe.clone();
         falsifiee[MAGIQUE_ENVELOPPE.len() + 12 + TAILLE_SEL] ^= 1;
-        assert!(ouvrir(&falsifiee, "cheval agrafe pile 42").is_err());
+        assert!(ouvrir(&falsifiee, &Phrase::from("cheval agrafe pile 42")).is_err());
         // Des paramètres démesurés sont refusés avant de dériver.
         let mut enorme = enveloppe.clone();
         enorme[MAGIQUE_ENVELOPPE.len()..MAGIQUE_ENVELOPPE.len() + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert_eq!(ouvrir(&enorme, "cheval agrafe pile 42"), Err(Refus::Format));
-        assert_eq!(ouvrir(b"pas une enveloppe", "x"), Err(Refus::Format));
+        assert_eq!(
+            ouvrir(&enorme, &Phrase::from("cheval agrafe pile 42")),
+            Err(Refus::Format)
+        );
+        assert_eq!(ouvrir(b"pas une enveloppe", &Phrase::from("x")), Err(Refus::Format));
     }
 
     #[test]
@@ -728,7 +937,14 @@ mod tests {
         std::fs::write(donnees.join("rapport.html"), "<p>Salon</p>").unwrap();
         std::fs::write(donnees.join("diagnostic-2026-10-18-1200.txt"), "x").unwrap();
         assert!(constat_de(&donnees).is_some());
-        proteger_dans(&donnees, &cle_locale, &local, "phrase de test assez longue", RAPIDE).unwrap();
+        proteger_dans(
+            &donnees,
+            &cle_locale,
+            &local,
+            &Phrase::from("phrase de test assez longue"),
+            RAPIDE,
+        )
+        .unwrap();
         assert!(protegee(&donnees) && constat_de(&donnees).is_none());
         assert!(!donnees.join("appareils.json").exists() && !donnees.join("rapport.html").exists());
         assert!(local.join("rapport.html").exists() && local.join("diagnostic-2026-10-18-1200.txt").exists());
@@ -740,16 +956,22 @@ mod tests {
         let cle = lire_cle_locale(&cle_locale).unwrap();
         assert_eq!(lire_carnet_avec(&donnees, &cle).as_deref(), Some(carnet));
         let enveloppe = std::fs::read(donnees.join(ENVELOPPE)).unwrap();
-        assert_eq!(ouvrir(&enveloppe, "phrase de test assez longue").unwrap(), cle);
+        assert_eq!(
+            ouvrir(&enveloppe, &Phrase::from("phrase de test assez longue")).unwrap(),
+            cle
+        );
         // Un enregistrement réécrit le carnet chiffré, jamais en clair.
         ecrire_carnet_avec(&donnees, &cle, r#"{"reseaux":{}}"#).unwrap();
         assert_eq!(lire_carnet_avec(&donnees, &cle).as_deref(), Some(r#"{"reseaux":{}}"#));
         ecrire_carnet_avec(&donnees, &cle, carnet).unwrap();
         // Nouvelle phrase : l'ancienne n'ouvre plus, la nouvelle oui, le carnet ne change pas.
-        nouvelle_phrase_dans(&donnees, &cle, "une toute nouvelle phrase", RAPIDE).unwrap();
+        nouvelle_phrase_dans(&donnees, &cle, &Phrase::from("une toute nouvelle phrase"), RAPIDE).unwrap();
         let enveloppe = std::fs::read(donnees.join(ENVELOPPE)).unwrap();
-        assert!(ouvrir(&enveloppe, "phrase de test assez longue").is_err());
-        assert_eq!(ouvrir(&enveloppe, "une toute nouvelle phrase").unwrap(), cle);
+        assert!(ouvrir(&enveloppe, &Phrase::from("phrase de test assez longue")).is_err());
+        assert_eq!(
+            ouvrir(&enveloppe, &Phrase::from("une toute nouvelle phrase")).unwrap(),
+            cle
+        );
         // Retour : en clair, comme avant ; enveloppe et clé gardée retirées.
         retirer_dans(&donnees, &cle, &cle_locale).unwrap();
         assert_eq!(std::fs::read_to_string(donnees.join("appareils.json")).unwrap(), carnet);
@@ -767,7 +989,7 @@ mod tests {
             &donnees,
             &cle_locale,
             &d.join("local"),
-            "phrase de test assez longue",
+            &Phrase::from("phrase de test assez longue"),
             RAPIDE,
         )
         .unwrap();

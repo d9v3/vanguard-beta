@@ -3,6 +3,8 @@
 //! sur le réseau local. nmap -sV interroge chaque service pour reconnaître le logiciel et sa version : un service
 //! ancien se repère ainsi. Ce que les appareils répondent est neutralisé avant d'être montré (`ui::affichable`).
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
 use std::process::Command;
@@ -126,7 +128,11 @@ pub fn versions(ip: Ipv4Addr, ports: &[u16]) -> BTreeMap<u16, String> {
     };
     let liste = ports.iter().map(u16::to_string).collect::<Vec<_>>().join(",");
     // Une minute, plus cinq secondes par port : -sV attend la réponse de chaque service.
-    let delai = 60 + 5 * u64::try_from(ports.len()).unwrap_or(u64::MAX).min(48);
+    let delai = u64::try_from(ports.len())
+        .unwrap_or(u64::MAX)
+        .min(48)
+        .saturating_mul(5)
+        .saturating_add(60);
     crate::commande::lancer(
         Command::new(nmap).args([
             "-sV",
@@ -148,6 +154,11 @@ pub fn versions(ip: Ipv4Addr, ports: &[u16]) -> BTreeMap<u16, String> {
     .unwrap_or_default()
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,6 +7,8 @@
 //! répond pas, ou qui refuse le DNS utilisé, est dite : jamais « pas listé ». Le verdict reste prudent : aucun outil
 //! ne peut dire qu'un lien est sûr.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
@@ -309,9 +311,9 @@ fn punycode(entree: &str) -> Option<String> {
         loop {
             let octet = octets.next()?;
             let chiffre = u32::from(match octet {
-                b'a'..=b'z' => octet - b'a',
-                b'A'..=b'Z' => octet - b'A',
-                b'0'..=b'9' => octet - b'0' + 26,
+                b'a'..=b'z' => octet.saturating_sub(b'a'),
+                b'A'..=b'Z' => octet.saturating_sub(b'A'),
+                b'0'..=b'9' => octet.saturating_sub(b'0').saturating_add(26),
                 _ => return None,
             });
             rang = rang.checked_add(chiffre.checked_mul(poids)?)?;
@@ -319,28 +321,35 @@ fn punycode(entree: &str) -> Option<String> {
             if chiffre < seuil {
                 break;
             }
-            poids = poids.checked_mul(BASE - seuil)?;
-            palier += BASE;
+            poids = poids.checked_mul(BASE.saturating_sub(seuil))?;
+            palier = palier.saturating_add(BASE);
         }
-        let nombre = u32::try_from(sortie.len()).ok()? + 1;
-        biais = adapter(rang - ancien, nombre, ancien == 0);
-        caractere = caractere.checked_add(rang / nombre)?;
-        rang %= nombre;
+        let nombre = u32::try_from(sortie.len()).ok()?.saturating_add(1);
+        biais = adapter(rang.saturating_sub(ancien), nombre, ancien == 0);
+        // `nombre` vaut au moins 1 (une longueur plus un).
+        caractere = caractere.checked_add(rang.checked_div(nombre)?)?;
+        rang = rang.checked_rem(nombre)?;
         sortie.insert(usize::try_from(rang).ok()?, char::from_u32(caractere)?);
-        rang += 1;
+        rang = rang.saturating_add(1);
     }
     Some(sortie.into_iter().collect())
 }
 
 fn adapter(delta: u32, nombre: u32, premier: bool) -> u32 {
     let mut delta = if premier { delta / 700 } else { delta / 2 };
-    delta += delta / nombre;
-    let mut k = 0;
+    delta = delta.saturating_add(delta.checked_div(nombre).unwrap_or(0));
+    let mut k = 0u32;
     while delta > ((36 - 1) * 26) / 2 {
         delta /= 36 - 1;
-        k += 36;
+        k = k.saturating_add(36);
     }
-    k + (36 * delta) / (delta + 38)
+    // delta + 38 vaut au moins 38 : la division ne se fait jamais par zéro.
+    k.saturating_add(
+        delta
+            .saturating_mul(36)
+            .checked_div(delta.saturating_add(38))
+            .unwrap_or(0),
+    )
 }
 
 /// L'hôte tel qu'un navigateur peut l'afficher : étiquettes punycode décodées. Le punycode code n'importe quel
@@ -365,11 +374,16 @@ pub(crate) fn domaine_enregistrable(hote: &str) -> String {
         .copied()
         .chain(HEBERGEURS.split_whitespace())
         .filter(|s| hote.ends_with(&format!(".{s}")))
-        .map(|s| s.matches('.').count() + 1)
+        .map(|s| s.matches('.').count().saturating_add(1))
         .max()
         .unwrap_or(1);
     // Les `suffixe + 1` dernières étiquettes, ou toutes s'il y en a moins.
-    let mut garde: Vec<&str> = etiquettes.iter().rev().take(suffixe + 1).copied().collect();
+    let mut garde: Vec<&str> = etiquettes
+        .iter()
+        .rev()
+        .take(suffixe.saturating_add(1))
+        .copied()
+        .collect();
     garde.reverse();
     garde.join(".")
 }
@@ -382,7 +396,7 @@ fn latine(c: char) -> Option<char> {
     }
     // Pleine chasse : « ａ » à « ｚ ».
     if ('\u{ff41}'..='\u{ff5a}').contains(&c) {
-        return char::from_u32(u32::from(c) - 0xff41 + u32::from(b'a'));
+        return char::from_u32(u32::from(c).saturating_sub(0xff41).saturating_add(u32::from(b'a')));
     }
     Some(match c {
         'а' | 'α' | 'ɑ' | 'à' | 'á' | 'â' | 'ä' | 'ã' | 'å' => 'a',
@@ -464,7 +478,7 @@ fn une_retouche(a: &[char], b: &[char], long: bool) -> bool {
             .collect();
         return match ecarts[..] {
             [(_, x, y)] => confondues(x, y),
-            [(i, ai, bi), (j, aj, bj)] => j == i + 1 && ai == bj && aj == bi,
+            [(i, ai, bi), (j, aj, bj)] => j == i.saturating_add(1) && ai == bj && aj == bi,
             _ => false,
         };
     }
@@ -478,12 +492,12 @@ fn une_retouche(a: &[char], b: &[char], long: bool) -> bool {
         .position(|(x, y)| x != y)
         .unwrap_or(court.len());
     // `longue` a une lettre de plus que `court` : les deux restes existent toujours.
-    if court.get(i..) != longue.get(i + 1..) {
+    if court.get(i..) != longue.get(i.saturating_add(1)..) {
         return false;
     }
     // La lettre en trop est-elle celle de la place `k` (une lettre doublée) ?
     let doublee = |k: usize| longue.get(i).is_some_and(|l| longue.get(k) == Some(l));
-    long || (i > 0 && doublee(i - 1)) || doublee(i + 1)
+    long || (i > 0 && doublee(i.saturating_sub(1))) || doublee(i.saturating_add(1))
 }
 
 /// `mot` imite-t-il la marque `cle` sans l'être ? (« paypa1 », « arnazon », « micros0ft », « gooogle »). Les clés
@@ -1125,7 +1139,7 @@ fn age(domaine: &str) -> Result<(chrono::DateTime<chrono::Utc>, i64), String> {
         )
         .to_string()
     })?;
-    Ok((date, (chrono::Utc::now() - date).num_days()))
+    Ok((date, chrono::Utc::now().signed_duration_since(date).num_days()))
 }
 
 /// Ce que dit l'âge d'un domaine : un site piège a souvent quelques jours.
@@ -1681,6 +1695,11 @@ pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<crate::machine::C
     constats
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

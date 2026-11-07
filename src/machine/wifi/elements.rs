@@ -4,6 +4,8 @@
 //! nmcli ni netsh ne le disent. Lecture seule, sur des octets choisis par la borne d'en face : chaque longueur est
 //! vérifiée, un élément tronqué arrête la lecture sans rien casser.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use crate::tr;
 use crate::ui::affichable;
 
@@ -128,9 +130,11 @@ fn elements(ies: &[u8]) -> impl Iterator<Item = (u8, &[u8])> {
     let mut pos = 0usize;
     std::iter::from_fn(move || {
         let id = *ies.get(pos)?;
-        let longueur = usize::from(*ies.get(pos + 1)?);
-        let corps = ies.get(pos + 2..pos + 2 + longueur)?;
-        pos += 2 + longueur;
+        let longueur = usize::from(*ies.get(pos.checked_add(1)?)?);
+        let debut = pos.checked_add(2)?;
+        let fin = debut.checked_add(longueur)?;
+        let corps = ies.get(debut..fin)?;
+        pos = fin;
         Some((id, corps))
     })
 }
@@ -142,28 +146,29 @@ struct Curseur<'a> {
 }
 
 impl Curseur<'_> {
+    /// Les `N` octets suivants ; le curseur n'avance que s'ils sont tous là.
+    fn prendre<const N: usize>(&mut self) -> Option<[u8; N]> {
+        let fin = self.pos.checked_add(N)?;
+        let o = *self.octets.get(self.pos..fin)?.first_chunk::<N>()?;
+        self.pos = fin;
+        Some(o)
+    }
+
     fn u8(&mut self) -> Option<u8> {
-        let v = *self.octets.get(self.pos)?;
-        self.pos += 1;
-        Some(v)
+        self.prendre::<1>().map(|[v]| v)
     }
 
     fn u16_le(&mut self) -> Option<u16> {
-        let o = self.octets.get(self.pos..self.pos + 2)?.first_chunk::<2>()?;
-        self.pos += 2;
-        Some(u16::from_le_bytes(*o))
+        self.prendre().map(u16::from_le_bytes)
     }
 
     fn u16_be(&mut self) -> Option<u16> {
-        let o = self.octets.get(self.pos..self.pos + 2)?.first_chunk::<2>()?;
-        self.pos += 2;
-        Some(u16::from_be_bytes(*o))
+        self.prendre().map(u16::from_be_bytes)
     }
 
     /// Une suite de chiffrement ou d'authentification : son OUI (3 octets) et son type.
     fn suite(&mut self) -> Option<([u8; 3], u8)> {
-        let &[a, b, c, genre] = self.octets.get(self.pos..self.pos + 4)?.first_chunk::<4>()?;
-        self.pos += 4;
+        let [a, b, c, genre] = self.prendre()?;
         Some(([a, b, c], genre))
     }
 
@@ -312,6 +317,11 @@ pub(crate) fn mac_normalisee(texte: &str) -> Option<String> {
 }
 
 /// Fabrique des éléments d'information pour les tests des lecteurs (ici, nl80211, wlanapi, audit).
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 pub(crate) mod fabrique {
     use super::{ELEMENT_FABRICANT, ELEMENT_RSN, ELEMENT_SSID, OUI_80211, OUI_MICROSOFT};
@@ -382,6 +392,11 @@ pub(crate) mod fabrique {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::fabrique::*;
@@ -526,6 +541,11 @@ mod tests {
 }
 
 /// Quoi qu'annonce la borne d'en face, le lecteur ne plante pas, et un nom lu ne pilote jamais le terminal.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod proprietes {
     use super::*;

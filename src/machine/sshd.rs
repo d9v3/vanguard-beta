@@ -4,6 +4,8 @@
 //! retiennent vraiment (valeurs par défaut de la version, puis « + », « - », « ^ » ou liste écrite), pour dire si
 //! l'échange post-quantique y est (`post_quantique`).
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 /// La partie d'un fichier de configuration de sshd qui vaut pour toutes les connexions : un bloc « Match » ne
 /// s'applique qu'à certaines (un utilisateur, une adresse) et va jusqu'à la fin du fichier.
 pub(crate) fn partie_globale_sshd(texte: &str) -> String {
@@ -80,7 +82,7 @@ pub(crate) fn premiere_valeur<'a>(
 
 /// La version d'OpenSSH dans « OpenSSH_9.6p1 Ubuntu-3ubuntu13, OpenSSL 3.0.13 ».
 pub(crate) fn version_openssh(texte: &str) -> Option<(u32, u32)> {
-    let reste = &texte[texte.find("OpenSSH_")? + "OpenSSH_".len()..];
+    let (_, reste) = texte.split_once("OpenSSH_")?;
     let (majeure, reste) = reste.split_once('.')?;
     let mineure: String = reste.chars().take_while(char::is_ascii_digit).collect();
     Some((majeure.parse().ok()?, mineure.parse().ok()?))
@@ -97,7 +99,7 @@ pub(crate) fn version_dans_le_programme(octets: &[u8]) -> Option<(u32, u32)> {
         .filter(|(_, f)| *f == MOTIF)
         .filter_map(|(i, _)| {
             // OpenSSH de Microsoft : « OpenSSH_for_Windows_9.5p1 » dans sshd.exe et ssh.exe.
-            let reste = octets.get(i + MOTIF.len()..)?;
+            let reste = octets.get(i.checked_add(MOTIF.len())?..)?;
             let reste = reste.strip_prefix(b"for_Windows_").unwrap_or(reste);
             let longueur = reste
                 .iter()
@@ -249,6 +251,11 @@ pub(crate) fn noms_a_ajouter(version: Option<(u32, u32)>) -> Option<String> {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

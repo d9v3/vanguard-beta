@@ -10,6 +10,13 @@
 //! « Ne pas partager » dans ce processus. Le lot posté est celui que la lecture stricte du schéma 2 vient de relire ;
 //! de la réponse, seul le code est lu (`http::poster_sans_lire`).
 
+// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
+#![cfg_attr(
+    all(target_os = "linux", not(test)),
+    warn(clippy::arithmetic_side_effects, clippy::as_conversions)
+)]
+
 mod file;
 mod plateforme;
 #[cfg(test)]
@@ -177,7 +184,12 @@ where
     let mut etat = file::lire_etat(c.dossier);
     tenir(&mut etat, c);
     bilan.mis = remplir(&mut etat, c, s.plateforme, &s.du_jour);
-    let debut = c.aujourd_hui - chrono::Duration::days(JOURS_GARDES);
+    // Le prédicat dit ce qui est gardé : hors des dates de chrono, la fenêtre part du premier jour, rien n'est jeté
+    // pour son âge.
+    let debut = c
+        .aujourd_hui
+        .checked_sub_signed(chrono::Duration::days(JOURS_GARDES))
+        .unwrap_or(chrono::NaiveDate::MIN);
     // Un lot d'un jour d'avant l'accord (mis en file avant un « non » puis un nouveau « oui », ou posé par un autre)
     // ne part pas : il est jeté.
     file::purger(c.dossier, |d| {
@@ -199,7 +211,8 @@ fn tenir(etat: &mut Etat, c: &Cadre) {
         etat.premier_jour = Some(aujourd_hui.clone());
     }
     let id_vieux = etat.installation.as_ref().is_none_or(|i| {
-        futur(&i.depuis) || file::date(&i.depuis).is_none_or(|d| (c.aujourd_hui - d).num_days() >= ID_JOURS)
+        futur(&i.depuis)
+            || file::date(&i.depuis).is_none_or(|d| c.aujourd_hui.signed_duration_since(d).num_days() >= ID_JOURS)
     });
     if id_vieux {
         let mut octets = [0u8; 8];
@@ -228,7 +241,7 @@ fn tenir(etat: &mut Etat, c: &Cadre) {
     if etat.dernier_mis.as_ref().is_some_and(futur) {
         // Un jour « déjà mis » du futur arrêterait la file jusqu'à lui : il revient à hier, sans refaire un jour
         // envoyé (au pire, ceux de la fenêtre qui ont encore leur relevé).
-        etat.dernier_mis = Some(file::jour(c.aujourd_hui - chrono::Duration::days(1)));
+        etat.dernier_mis = Some(file::jour(c.aujourd_hui.pred_opt().unwrap_or(c.aujourd_hui)));
     }
     if etat.essais.as_ref().is_some_and(|e| futur(&e.jour)) {
         etat.essais = None;
@@ -251,10 +264,15 @@ where
     P: FnOnce() -> Option<(Plateforme, Activite)>,
     J: Fn(NaiveDate, Lot) -> Option<Lot>,
 {
-    let hier = c.aujourd_hui - chrono::Duration::days(1);
-    let mut d = c.aujourd_hui - chrono::Duration::days(JOURS_GARDES);
+    let hier = c.aujourd_hui.pred_opt().unwrap_or(c.aujourd_hui);
+    // Hors des dates de chrono : la fenêtre commence aujourd'hui, et rien n'est mis en file (jamais une boucle
+    // depuis le premier jour que chrono connaît).
+    let mut d = c
+        .aujourd_hui
+        .checked_sub_signed(chrono::Duration::days(JOURS_GARDES))
+        .unwrap_or(c.aujourd_hui);
     if let Some(apres) = etat.dernier_mis.as_ref().and_then(file::date) {
-        d = d.max(apres + chrono::Duration::days(1));
+        d = d.max(apres.succ_opt().unwrap_or(apres));
     }
     if d > hier {
         return 0;
@@ -276,7 +294,7 @@ where
                     if file::mettre(c.dossier, d, lot).is_err() {
                         return mis;
                     }
-                    mis += 1;
+                    mis = mis.saturating_add(1);
                 }
                 // Le relevé d'hier est là mais ne se croit pas (un autre Vanguard le réécrit, ou finit sa
                 // journée après minuit) : réessayé à la passe suivante, jusqu'à ce qu'il ne soit plus d'hier.
@@ -285,7 +303,9 @@ where
             }
         }
         etat.dernier_mis = Some(file::jour(d));
-        d += chrono::Duration::days(1);
+        // Le dernier jour que chrono connaît : la boucle s'arrête là.
+        let Some(suivant) = d.succ_opt() else { break };
+        d = suivant;
     }
     mis
 }
@@ -293,7 +313,7 @@ where
 /// La base du lot du jour `d` : version, ancienneté depuis `premier`, plateforme, activité, identifiant
 /// d'installation et version d'avant tels que l'état les tient.
 fn base(etat: &Etat, version: &Version, d: NaiveDate, premier: NaiveDate, (p, a): (&Plateforme, &Activite)) -> Lot {
-    let jours = u64::try_from((d - premier).num_days()).unwrap_or(0);
+    let jours = u64::try_from(d.signed_duration_since(premier).num_days()).unwrap_or(0);
     let mut base = Lot::new(
         version.clone(),
         file::jour(d),
@@ -304,7 +324,7 @@ fn base(etat: &Etat, version: &Version, d: NaiveDate, premier: NaiveDate, (p, a)
     base.installation = etat.installation.as_ref().map(|i| i.id.clone());
     base.version_avant = etat.version.as_ref().and_then(|v| {
         let depuis = file::date(&v.depuis)?;
-        let ecart = (d - depuis).num_days();
+        let ecart = d.signed_duration_since(depuis).num_days();
         (0..VERSION_AVANT_JOURS)
             .contains(&ecart)
             .then(|| v.avant.clone())
@@ -329,7 +349,7 @@ where
             Ok(None) => continue,
             Err(()) => {
                 file::retirer(c.dossier, d);
-                bilan.jetes += 1;
+                bilan.jetes = bilan.jetes.saturating_add(1);
                 noter(etat, &aujourd_hui, Raison::Illisible, None);
                 continue;
             }
@@ -344,19 +364,19 @@ where
         }
         etat.essais = Some(Essais {
             jour: aujourd_hui.clone(),
-            n: essais + 1,
+            n: essais.saturating_add(1),
         });
         // Sans l'essai noté sur le disque, rien ne part : le plafond du jour ne tiendrait plus d'un processus à
         // l'autre.
         if file::ecrire_etat(c.dossier, etat).is_err() {
             return;
         }
-        bilan.postes += 1;
+        bilan.postes = bilan.postes.saturating_add(1);
         let code = poster(adresse, lot.ecrire());
         match code {
             Some(200..=299) => {
                 file::retirer(c.dossier, d);
-                bilan.recus += 1;
+                bilan.recus = bilan.recus.saturating_add(1);
                 etat.dernier_succes = Some(aujourd_hui.clone());
             }
             Some(429 | 503) => {
@@ -373,7 +393,7 @@ where
             // déployé) ne dit rien du lot, qui attend comme pour une panne.
             Some(400 | 413 | 415 | 422) => {
                 file::retirer(c.dossier, d);
-                bilan.jetes += 1;
+                bilan.jetes = bilan.jetes.saturating_add(1);
                 noter(etat, &aujourd_hui, Raison::Refuse, code);
             }
             Some(_) => {
@@ -561,7 +581,7 @@ where
         return a;
     };
     let premier = etat.premier_jour.as_ref().and_then(file::date).unwrap_or(aujourd_hui);
-    let hier = aujourd_hui - chrono::Duration::days(1);
+    let hier = aujourd_hui.pred_opt().unwrap_or(aujourd_hui);
     a.lot = [hier, aujourd_hui].into_iter().find_map(|d| {
         let mut lot = du_jour(d, base(&etat, version, d, premier, (&p, &act)))?;
         lot.tronquer();

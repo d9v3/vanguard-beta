@@ -4,6 +4,9 @@
 //! « --temps-reel » surveille ces fichiers en direct ; « --accepter » prend l'état actuel comme référence
 //! (après une mise à jour du système, qui modifie légitimement certains d'entre eux).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -237,7 +240,10 @@ impl Ecarts {
     }
 
     fn total(&self) -> usize {
-        self.modifies.len() + self.ajoutes.len() + self.supprimes.len()
+        self.modifies
+            .len()
+            .saturating_add(self.ajoutes.len())
+            .saturating_add(self.supprimes.len())
     }
 }
 
@@ -607,6 +613,11 @@ pub(crate) fn corpus_signaler(e: &crate::modele::corpus::Entree) -> Vec<Constat>
     )]
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

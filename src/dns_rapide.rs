@@ -5,6 +5,8 @@
 //! affaiblirait la protection. Sinon, le plus rapide est proposé ; appliqué après accord, il s'annule exactement
 //! (Optimiser › Tout remettre comme avant).
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
@@ -88,7 +90,7 @@ fn mesurer(serveur: IpAddr) -> Option<Duration> {
 /// les DNS publics : c'est ce temps-là qui se compare.
 fn noms_nouveaux() -> Vec<String> {
     let graine = hasard();
-    (0..NOMS.len() * TOURS)
+    (0..NOMS.len().saturating_mul(TOURS))
         .map(|i| format!("vanguard-{graine:x}-{i}.example"))
         .collect()
 }
@@ -98,19 +100,19 @@ fn mesurer_noms(serveur: IpAddr, noms: &[String]) -> Option<Duration> {
     let socket = UdpSocket::bind(if serveur.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" }).ok()?;
     socket.connect(SocketAddr::new(serveur, 53)).ok()?;
     let graine = u16::try_from(hasard() & 0xffff).unwrap_or(0);
-    let (mut temps, mut perdues) = (Vec::new(), 0);
+    let (mut temps, mut perdues) = (Vec::new(), 0u32);
     let mut tampon = [0u8; 1500];
-    for (i, nom) in noms.iter().cycle().take(NOMS.len() * TOURS).enumerate() {
+    for (i, nom) in noms.iter().cycle().take(NOMS.len().saturating_mul(TOURS)).enumerate() {
         let id = graine.wrapping_add(u16::try_from(i).unwrap_or(0));
         let debut = Instant::now();
         // Une réponse tardive à une question d'avant ne compte pas : on attend la nôtre.
         let lire = |r: &[u8], _: SocketAddr| repond(r, id).then_some(());
-        let repondu =
-            socket.send(&question(id, nom)).is_ok() && recevoir(&socket, debut + DELAI, &mut tampon, lire).is_some();
+        let repondu = socket.send(&question(id, nom)).is_ok()
+            && recevoir(&socket, debut.checked_add(DELAI).unwrap_or(debut), &mut tampon, lire).is_some();
         if repondu {
             temps.push(debut.elapsed());
         } else {
-            perdues += 1;
+            perdues = perdues.saturating_add(1);
         }
         // Muet trois fois de suite d'entrée : inutile d'attendre davantage.
         if temps.is_empty() && perdues >= 3 {
@@ -249,7 +251,11 @@ fn vaut_la_peine(actuel: Option<Duration>, meilleur: Option<Duration>) -> bool {
     match (actuel, meilleur) {
         (_, None) => false,
         (None, Some(_)) => true,
-        (Some(a), Some(m)) => m * 5 <= a * 4 && a.saturating_sub(m) >= Duration::from_millis(5),
+        // Un temps qui déborderait en multipliant (des siècles) ne prouve rien : pas plus rapide.
+        (Some(a), Some(m)) => {
+            matches!((m.checked_mul(5), a.checked_mul(4)), (Some(m5), Some(a4)) if m5 <= a4)
+                && a.saturating_sub(m) >= Duration::from_millis(5)
+        }
     }
 }
 
@@ -372,7 +378,7 @@ pub fn mesurer_et_proposer() {
         let texte = format!("{} ({})", p.nom, p.v4[0]);
         let precision = precision(p, *t, meilleur.is_some_and(|(m, _)| m == i));
         lignes.push(if garde.is_none() && t.is_some() {
-            Ligne::choix(&(i + 1).to_string(), &texte, &precision)
+            Ligne::choix(&i.saturating_add(1).to_string(), &texte, &precision)
         } else {
             Ligne::Texte(format!("     {}  {GRIS}{precision}{RESET}", ajuster(&texte, 34)))
         });
@@ -423,7 +429,7 @@ pub fn mesurer_et_proposer() {
     lignes.push(Ligne::choix("↵", garder, ""));
     lignes.push(Ligne::Texte(String::new()));
     let depart = match meilleur {
-        Some((i, _)) if proposer => (i + 1).to_string(),
+        Some((i, _)) if proposer => i.saturating_add(1).to_string(),
         _ => "↵".to_string(),
     };
     let invite = tr!("Choix (Entrée pour garder) : ", "Choice (Enter to keep): ");
@@ -462,6 +468,11 @@ pub fn mesurer_et_proposer() {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

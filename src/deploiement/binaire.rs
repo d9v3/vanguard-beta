@@ -167,6 +167,8 @@ impl std::fmt::Display for Illisible {
     }
 }
 
+impl std::error::Error for Illisible {}
+
 /// Le nom d'un système et de son format, dans la langue de l'interface.
 fn nom_systeme(s: Systeme) -> &'static str {
     match s {
@@ -753,6 +755,21 @@ fn juger_tranche(a: &str, m: &macho::MachO, j: &mut Jugement) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LANG-ERRWRAP : une erreur standard, avec un texte pour chaque variante.
+    #[test]
+    fn illisible_est_une_erreur_standard() {
+        for e in [
+            Illisible::PasUnFichier,
+            Illisible::TropGrand,
+            Illisible::Elf,
+            Illisible::Pe,
+            Illisible::Inconnu,
+        ] {
+            let e: &dyn std::error::Error = &e;
+            assert_ne!(e.to_string(), "");
+        }
+    }
     use crate::analyse::elf::essais::{Durci, elf64, elf64_durci, entete};
     use crate::analyse::macho::essais::{MacDurci, macho64, macho64_durci, universel_de};
     use crate::pe::essais::{Retrait, gardes_d_essai, sans_protection};

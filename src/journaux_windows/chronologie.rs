@@ -8,6 +8,8 @@
 //! `nom_sans_piege` : une séquence de terminal, un saut de ligne ou un caractère bidi devient « � », et la longueur est
 //! bornée.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use chrono::{DateTime, Utc};
 
 use super::regles::jeu::JOURNAUX;
@@ -154,7 +156,7 @@ pub(crate) fn chronologie(a: &Analyse, est_normale: &dyn Fn(&str) -> bool) -> Ch
         let r = j.regle;
         for t in &j.trouvailles {
             if resultat::taisable(r.id, t) && est_normale(&resultat::cle_normale(r.id, &t.objet)) {
-                c.tues += 1;
+                c.tues = c.tues.saturating_add(1);
                 continue;
             }
             c.alertes.push(AlerteDatee {
@@ -255,6 +257,11 @@ pub(crate) fn gravite(g: Gravite) -> &'static str {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

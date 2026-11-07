@@ -15,6 +15,9 @@
 //! jamais recoupé ; une session SSH ou Bureau à distance en cours n'est jamais coupée. L'écriture élevée est celle du
 //! projet (`machine::appliquer_chacune` : sudo, ou une seule fenêtre PowerShell administrateur sous Windows).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 mod etat;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -1628,13 +1631,18 @@ fn portail_revenu() {
             trp!("  Annulé : rien n'a changé.", "  Cancelled: nothing changed.");
             return;
         }
-        let e = relache(&e, Some(chrono::Local::now().timestamp() + PORTAIL_SECONDES));
+        let e = relache(
+            &e,
+            Some(chrono::Local::now().timestamp().saturating_add(PORTAIL_SECONDES)),
+        );
         if !ecrire_etat(&e) {
             return;
         }
         let commande = linux::nm_modifier(&uuid, &[("connection.dns-over-tls", "opportunistic")]);
         let _ = appliquer(&[commande.into_iter().collect()]);
-        let fin = std::time::Instant::now() + std::time::Duration::from_secs(PORTAIL_SECONDES.unsigned_abs());
+        let fin = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(PORTAIL_SECONDES.unsigned_abs()))
+            .unwrap_or_else(std::time::Instant::now);
         if !portail::ouvrir_et_attendre(Some(fin)) {
             trp!(
                 "  Échéance de 10 minutes atteinte : retour au DNS chiffré strict.",
@@ -2098,6 +2106,11 @@ pub(crate) fn constat() -> Vec<Constat> {
     )]
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

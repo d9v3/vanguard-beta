@@ -2,6 +2,8 @@
 //! relevé, sans l'écran. Versé au rapport (`examens/PRO-LNO-001.json`), au journal des événements, et rendu par
 //! `--json`. Sans accord, rien n'a été demandé : non vérifié, jamais « pas listée ».
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::{LISTES, Releve, Verdict, sens};
 use crate::machine::{Constat, alerte, impossible_par, ok};
 use crate::modele::Objet;
@@ -56,7 +58,7 @@ pub(super) fn resultat(r: &Releve, debut: Debut) -> Resultat {
             .to_string(),
         ),
         Releve::Repondu(_, reponses) => {
-            let mut verifies = 0;
+            let mut verifies = 0u32;
             let constats: Vec<Constat> = LISTES
                 .iter()
                 .zip(reponses)
@@ -64,11 +66,11 @@ pub(super) fn resultat(r: &Releve, debut: Debut) -> Resultat {
                     let nom = liste.nom;
                     let constat = match reponse {
                         Verdict::Absente => {
-                            verifies += 1;
+                            verifies = verifies.saturating_add(1);
                             ok(CAT, crate::trf!("{nom} : pas listée.", "{nom}: not listed."))
                         }
                         Verdict::Listee(codes) => {
-                            verifies += 1;
+                            verifies = verifies.saturating_add(1);
                             let (texte, niveau) = sens(liste.zone, codes);
                             let message = crate::trf!("{nom} : {texte}.", "{nom}: {texte}.");
                             match niveau {
@@ -102,6 +104,11 @@ pub(super) fn resultat(r: &Releve, debut: Debut) -> Resultat {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

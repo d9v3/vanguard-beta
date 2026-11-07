@@ -2,6 +2,8 @@
 //! place dans `nettoyer`, mais demandés partout (bilan, traces d'incident, protection, Gaming). Le dossier
 //! personnel était relu dans une quarantaine d'endroits, chacun avec sa règle quand HOME manque.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc : getpwuid_r et statvfs.
 #![allow(unsafe_code)]
 
@@ -72,7 +74,7 @@ pub(crate) fn compte_de(uid: libc::uid_t) -> Option<(std::ffi::OsString, PathBuf
 /// « 1.2 Go », « 340 Mo ».
 pub fn taille_lisible(octets: u64) -> String {
     #[allow(clippy::cast_precision_loss)] // une taille affichée à un chiffre après la virgule
-    let f = octets as f64;
+    let f = crate::socle::nombres::flottant(octets);
     if octets >= 1 << 30 {
         trf!("{} Go", "{} GB", crate::langue::decimal(f / f64::from(1u32 << 30), 1))
     } else if octets >= MEGA {
@@ -112,6 +114,11 @@ pub fn volume(chemin: &Path) -> Option<(u64, u64)> {
     ))
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

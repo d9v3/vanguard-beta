@@ -14,6 +14,13 @@
 //! journal des mesures (`mesures`). Hors ligne par défaut ; `--internet` le permet à la main. Ce qui ne va pas va au
 //! journal des erreurs, sans aucune valeur lue sur la machine : identifiants, nombres, genres d'écart.
 
+// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
+#![cfg_attr(
+    all(target_os = "linux", not(test)),
+    warn(clippy::arithmetic_side_effects, clippy::as_conversions)
+)]
+
 pub(crate) mod cache;
 pub(crate) mod croisees;
 pub(crate) mod lecture_seule;
@@ -205,7 +212,7 @@ fn juger_regles(constats: &[Constat], durees: &[(&'static str, Duration)], saute
         } else if raison(&Raison::Muette) {
             r.muettes.push(regle.id);
         } else {
-            r.ont_repondu += 1;
+            r.ont_repondu = r.ont_repondu.saturating_add(1);
         }
     }
     for c in constats {
@@ -228,7 +235,7 @@ fn juger_regles(constats: &[Constat], durees: &[(&'static str, Duration)], saute
             }
         }
         if matches!(c.etat(), Etat::NonVerifie(Raison::NonPrecisee)) {
-            r.sans_raison_typee += 1;
+            r.sans_raison_typee = r.sans_raison_typee.saturating_add(1);
         }
     }
     r
@@ -765,7 +772,7 @@ fn annoter_selon(constats: &mut [Constat], d: &Dernier, maintenant: chrono::Date
         .iter()
         .filter_map(|x| {
             let q = date(if x.quand.is_empty() { &d.quand } else { &x.quand })?;
-            (maintenant - q <= chrono::Duration::days(CONTREDITE_JOURS))
+            (maintenant.signed_duration_since(q) <= chrono::Duration::days(CONTREDITE_JOURS))
                 .then(|| (x, q.with_timezone(&chrono::Local).format("%d/%m").to_string()))
         })
         .collect();
@@ -788,7 +795,7 @@ pub(crate) fn ligne_diagnostic() -> (String, Option<Niveau>) {
             None,
         );
     };
-    let jours = date(&d.quand).map_or(0, |q| (chrono::Utc::now() - q).num_days().max(0));
+    let jours = date(&d.quand).map_or(0, |q| chrono::Utc::now().signed_duration_since(q).num_days().max(0));
     match d.verdict.as_str() {
         "sain" => (trf!("il y a {jours} j, sans écart", "{jours} d ago, no gap"), None),
         "ecart" => (
@@ -1214,7 +1221,7 @@ fn reporter(d: Option<&Dernier>, maintenant: chrono::DateTime<chrono::Utc>, jeu:
     // n'avait plus de fin.
     jeu == Some(true)
         && d.and_then(|d| date(&d.quand)).is_some_and(|q| {
-            let ecart = maintenant - q;
+            let ecart = maintenant.signed_duration_since(q);
             ecart >= chrono::Duration::zero() && ecart < chrono::Duration::days(2 * SEMAINE)
         })
 }
@@ -1223,7 +1230,7 @@ fn reporter(d: Option<&Dernier>, maintenant: chrono::DateTime<chrono::Utc>, jeu:
 /// le repousse pas), ou après 7 jours ; une date dans le futur ne le repousse pas non plus.
 fn du(d: Option<&Dernier>, maintenant: chrono::DateTime<chrono::Utc>) -> bool {
     d.and_then(|d| date(&d.quand)).is_none_or(|q| {
-        let ecart = maintenant - q;
+        let ecart = maintenant.signed_duration_since(q);
         ecart >= chrono::Duration::days(SEMAINE) || ecart < chrono::Duration::zero()
     })
 }

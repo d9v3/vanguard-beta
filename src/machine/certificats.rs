@@ -2,6 +2,9 @@
 //! site et lire tout le trafic HTTPS (banque, courriel), sans le moindre avertissement du navigateur.
 //! Les certificats livrés par le système ne sont pas examinés : seulement ceux ajoutés à côté.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use super::{Constat, alerte, ok};
 use crate::risk::Niveau;
 use crate::{tr, trf};
@@ -364,7 +367,7 @@ fn fichiers(
         };
         let chemin = e.path();
         if chemin.is_dir() && profondeur > 0 {
-            fichiers(&chemin, profondeur - 1, sortie, illisibles);
+            fichiers(&chemin, profondeur.saturating_sub(1), sortie, illisibles);
         } else if chemin.is_file() {
             sortie.push(chemin);
         }
@@ -615,6 +618,11 @@ pub(super) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
         .collect()
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

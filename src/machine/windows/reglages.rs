@@ -237,7 +237,7 @@ pub(crate) fn texte(b: &Brute) -> Option<String> {
         .iter()
         .map(|p| u16::from_le_bytes(*p))
         .collect();
-    let fin = unites.iter().rposition(|&u| u != 0).map_or(0, |i| i + 1);
+    let fin = unites.iter().rposition(|&u| u != 0).map_or(0, |i| i.saturating_add(1));
     String::from_utf16(unites.get(..fin)?).ok()
 }
 

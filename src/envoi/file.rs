@@ -3,6 +3,8 @@
 //! ce qu'un programme du compte pourrait envoyer lui-même), et l'état ne fait que borner les essais (une valeur
 //! forgée est ramenée dans ses bornes, au pire un jour d'attente de plus ou de moins).
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
@@ -131,7 +133,7 @@ pub(crate) fn ecrire_etat(dossier: &Path, etat: &Etat) -> std::io::Result<()> {
         return Err(std::io::Error::other("envoi/ n'est pas un dossier"));
     }
     let octets = serde_json::to_vec(etat).map_err(std::io::Error::other)?;
-    if octets.len() as u64 > ETAT_MAX {
+    if u64::try_from(octets.len()).unwrap_or(u64::MAX) > ETAT_MAX {
         return Err(std::io::Error::other("état de plus de 2 Kio"));
     }
     crate::socle::ecrire_atomique(&dossier.join(ETAT), octets)
@@ -205,7 +207,7 @@ pub(crate) fn purger(dossier: &Path, garde: impl Fn(NaiveDate) -> bool) {
 /// Le lot en file du jour `d`, relu strictement. `Err(())` : il est là mais ne vaut rien (trop gros, pas un simple
 /// fichier, hors du schéma, d'un autre jour) et doit être jeté ; `Ok(None)` : il n'est pas là.
 pub(crate) fn relire(dossier: &Path, d: NaiveDate) -> Result<Option<Lot>, ()> {
-    let octets = match crate::socle::lire_ordinaire(&chemin(dossier, d), LOT_MAX as u64) {
+    let octets = match crate::socle::lire_ordinaire(&chemin(dossier, d), u64::try_from(LOT_MAX).unwrap_or(u64::MAX)) {
         Ok(o) => o,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(()),

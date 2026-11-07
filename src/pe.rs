@@ -118,6 +118,20 @@ pub(crate) enum Echec {
     Format,
 }
 
+// Les deux langues dans une seule chaîne : le lecteur ne dépend pas de l'interface (compilé seul par le banc de
+// fuzzing). `ErrorKind` plutôt que l'erreur : `Copy`, et rien du chemin ni du système dedans.
+impl std::fmt::Display for Echec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ouverture(k) => write!(f, "ouverture impossible / cannot open: {k}"),
+            Self::PasUnFichier => f.write_str("pas un fichier ordinaire / not a regular file"),
+            Self::Format => f.write_str("pas un PE avec une version lisible / not a PE with a readable version"),
+        }
+    }
+}
+
+impl std::error::Error for Echec {}
+
 /// La version de l'exécutable `chemin`. Un fichier ordinaire seulement (un tube nommé bloquerait la lecture).
 #[cfg_attr(not(any(windows, test)), allow(dead_code))] // logiciels pas à jour, sous Windows
 pub(crate) fn version(chemin: &Path) -> Result<InfoPe, Echec> {
@@ -1256,6 +1270,22 @@ fn imports(
 #[cfg(test)]
 pub(crate) mod essais {
     //! Un PE minimal fabriqué en Rust, pour les tests d'ici et de l'inventaire : aucun .exe tiers dans le dépôt.
+
+    /// Chaque échec se dit dans les deux langues ; l'ouverture dit la sorte d'erreur, jamais le chemin.
+    #[test]
+    fn echec_se_dit() {
+        for e in [
+            super::Echec::Ouverture(std::io::ErrorKind::NotFound),
+            super::Echec::PasUnFichier,
+            super::Echec::Format,
+        ] {
+            let texte = e.to_string();
+            assert!(texte.contains(" / "), "{texte}");
+            let _: &dyn std::error::Error = &e;
+        }
+        let texte = super::Echec::Ouverture(std::io::ErrorKind::PermissionDenied).to_string();
+        assert!(texte.contains("permission denied"), "{texte}");
+    }
 
     /// Les réglages d'un PE fabriqué : de quoi le rendre valide, ou abîmé d'une façon précise.
     #[derive(Clone)]

@@ -35,6 +35,9 @@
 //! coffre : qui remplace le programme peut mentir sur tout cela ; c'est pourquoi la référence reste chez le
 //! propriétaire et l'empreinte est publiée ailleurs.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
@@ -592,6 +595,8 @@ impl std::fmt::Display for PasEcrit {
     }
 }
 
+impl std::error::Error for PasEcrit {}
+
 /// La référence `reference` peut-elle être réécrite d'après la clé `racine` sans accord ? Oui quand elle n'a changé
 /// que dans ce que le déploiement y pose ; une référence absente ne l'est que là où aucune clé n'a encore la sienne
 /// (premier déploiement sur cet ordinateur).
@@ -704,7 +709,7 @@ fn rafraichir_images_dans(
             affichable(c)
         )));
     }
-    let mut images = 0;
+    let mut images = 0usize;
     for (chemin, taille) in releve.fichiers.into_iter().filter(|(c, _)| d_images(c)) {
         let nom = chemin.rsplit('/').next().unwrap_or_default();
         let posee = nouvelles
@@ -734,7 +739,7 @@ fn rafraichir_images_dans(
         } else {
             continue;
         };
-        images += usize::from(e.chemin.starts_with("ISO/"));
+        images = images.saturating_add(usize::from(e.chemin.starts_with("ISO/")));
         m.fichiers.push(e);
     }
     m.fichiers.sort_by(|a, b| a.chemin.cmp(&b.chemin));
@@ -820,7 +825,7 @@ fn comparer_avec(racine: &Path, manifeste: &Manifeste, gros: u64) -> Ecart {
                         _ => true,
                     };
                 if pareil {
-                    ecart.verifies += 1;
+                    ecart.verifies = ecart.verifies.saturating_add(1);
                 } else {
                     ecart.modifies.push(chemin.clone());
                 }
@@ -1184,7 +1189,7 @@ pub fn date_compilation() -> Option<NaiveDate> {
 }
 
 fn age_jours(aujourd_hui: NaiveDate) -> Option<i64> {
-    date_compilation().map(|d| (aujourd_hui - d).num_days())
+    date_compilation().map(|d| aujourd_hui.signed_duration_since(d).num_days())
 }
 
 /// La ligne d'avertissement du menu quand cette copie a plus de six mois, sinon rien.
@@ -1356,7 +1361,8 @@ fn comparer_a_l_historique(hex: &str) {
         .then(|| {
             let mut o = [0u8; 32];
             for (i, c) in o.iter_mut().enumerate() {
-                *c = u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()?;
+                *c = u8::from_str_radix(hex.get(i.saturating_mul(2)..i.saturating_mul(2).saturating_add(2))?, 16)
+                    .ok()?;
             }
             Some(o)
         })
@@ -1487,6 +1493,11 @@ pub fn commande(ecrire_dossier: Option<&Path>, forcer: bool, accepter: bool, ima
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

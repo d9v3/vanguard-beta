@@ -5,6 +5,8 @@
 //! une connexion graphique n'est pas toujours notée). Rien depuis six mois : une information, avec la façon de le
 //! désactiver. Le compte qui lance Vanguard n'est jamais compté.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc : getpwent et getutxent (comptes et dernières connexions), wtmp de macOS.
 #![allow(unsafe_code)]
 
@@ -34,7 +36,7 @@ fn juger(comptes: &[Compte], aujourd_hui: chrono::NaiveDate) -> Vec<Constat> {
                     "Le compte « {nom} » est actif mais n'a jamais servi : un compte oublié est une porte de plus, souvent avec un mot de passe faible.",
                     "The “{nom}” account is active but has never been used: a forgotten account is one more door, often with a weak password."
                 ),
-                Some(d) if (aujourd_hui - d).num_days() > OUBLIE_JOURS => trf!(
+                Some(d) if aujourd_hui.signed_duration_since(d).num_days() > OUBLIE_JOURS => trf!(
                     "Le compte « {nom} » est actif mais n'a pas servi depuis le {d} : un compte oublié est une porte de plus, souvent avec un vieux mot de passe.",
                     "The “{nom}” account is active but has not been used since {d}: a forgotten account is one more door, often with an old password."
                 ),
@@ -102,7 +104,7 @@ fn lire_lastlog(ligne: &str) -> Option<chrono::NaiveDate> {
     let i = mots
         .iter()
         .position(|m| m.len() == 3 && ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].contains(m))?;
-    let texte = mots.get(i..i + 6)?.join(" ");
+    let texte = mots.get(i..i.saturating_add(6))?.join(" ");
     chrono::DateTime::parse_from_str(&texte, "%a %b %e %H:%M:%S %z %Y")
         .ok()
         .map(|d| d.date_naive())
@@ -366,6 +368,11 @@ pub fn constats() -> Vec<Constat> {
     juger(&comptes, chrono::Local::now().date_naive())
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

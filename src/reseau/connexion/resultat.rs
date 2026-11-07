@@ -3,6 +3,8 @@
 //! Versé au rapport (`examens/PRO-CNX-001.json`), au journal des événements, et rendu par `--json`. Ce qui n'a pas pu
 //! se mesurer (pas d'Internet, mode hors ligne, aucun transfert abouti) est dit non vérifié, jamais compté bon.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::{Releve, liaison_instable, moins_bonne_que_d_habitude, note_bufferbloat};
 use crate::machine::{Constat, alerte, impossible_par, ok};
 use crate::modele::resultat::{Couverture, Resultat};
@@ -83,7 +85,7 @@ pub(super) fn resultat(r: Option<&Releve>, debut: Debut) -> Resultat {
                 "pertes",
                 crate::trf!("Pertes : {pertes:.0} %.", "Loss: {pertes:.0}%."),
             ));
-            verifies += 3;
+            verifies = verifies.saturating_add(3);
             match charge.hausse(repos) {
                 Some(h) => {
                     constats.push(critere(
@@ -95,7 +97,7 @@ pub(super) fn resultat(r: Option<&Releve>, debut: Debut) -> Resultat {
                             note_bufferbloat(h).0
                         ),
                     ));
-                    verifies += 1;
+                    verifies = verifies.saturating_add(1);
                 }
                 None => non_verifies.push(
                     crate::tr!(
@@ -116,7 +118,7 @@ pub(super) fn resultat(r: Option<&Releve>, debut: Debut) -> Resultat {
                             mesure,
                             crate::trf!("{nom} : {d:.0} Mbit/s.", "{nom}: {d:.0} Mbit/s."),
                         ));
-                        verifies += 1;
+                        verifies = verifies.saturating_add(1);
                     }
                     None => non_verifies.push(crate::trf!(
                         "{nom} : aucun transfert n'a abouti",
@@ -138,7 +140,7 @@ pub(super) fn resultat(r: Option<&Releve>, debut: Debut) -> Resultat {
                         )
                     };
                     constats.push(critere(!instable, "routeur", message.to_string()));
-                    verifies += 1;
+                    verifies = verifies.saturating_add(1);
                 }
                 None => non_verifies.push(
                     crate::tr!(
@@ -163,13 +165,18 @@ pub(super) fn resultat(r: Option<&Releve>, debut: Debut) -> Resultat {
                     )
                 };
                 constats.push(critere(!moins_bonne, "habitudes", message.to_string()));
-                verifies += 1;
+                verifies = verifies.saturating_add(1);
             }
         }
     }
     Resultat::nouveau(ID, debut, &constats, Couverture { verifies, non_verifies })
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::super::{Charge, Repos, Serie};

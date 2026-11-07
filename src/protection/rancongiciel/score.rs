@@ -7,6 +7,8 @@
 //! programme honnête : chaque seuil est donc prudent, et le quasi-certain (seul à permettre un arrêt automatique)
 //! exige l'ensemble des indices les plus durs à provoquer par accident.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 /// Fichiers existants réécrits à partir desquels on parle de rafale (Suspect).
 pub(crate) const R1_SUSPECT: u32 = 10;
 /// Fichiers existants réécrits à partir desquels c'est Grave (avec le format perdu sur la moitié).
@@ -22,7 +24,8 @@ pub(crate) const L1_FICHIERS_MIN: u32 = 100;
 
 /// Ce que l'effacement des copies de secours vaut, selon le contexte (Critique C4 : le ménage planifié du système ne
 /// doit pas crier chaque jour).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+// L'ordre des variantes est celui de la gravité : `Ord` les compare ainsi.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub(crate) enum Copies {
     #[default]
     Aucune,
@@ -70,7 +73,7 @@ pub(crate) enum Verdict {
 
 /// La moitié au moins des réécrits ont perdu leur format (et il y a eu au moins un réécrit).
 fn format_perdu_majoritaire(s: &Signaux) -> bool {
-    s.reecrits > 0 && s.format_perdu * 2 >= s.reecrits
+    s.reecrits > 0 && s.format_perdu.saturating_mul(2) >= s.reecrits
 }
 
 /// Une rafale chiffrée au sens du quasi-certain : ≥ 20 réécrits, dans ≥ 3 dossiers, format perdu sur ≥ 50 %.
@@ -108,6 +111,11 @@ pub(crate) fn juger(s: &Signaux, attribution_sure: bool) -> Verdict {
     Verdict::Calme
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

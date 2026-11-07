@@ -8,6 +8,9 @@
 //! par le bilan, et le parcours redemande un accord exprès, en rappelant que la personne qui aide peut être connectée
 //! par ce programme même. Un programme que la personne utilise elle-même se déclare normal (« i » à la correction).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 #[cfg(unix)]
 use std::path::PathBuf;
 
@@ -138,11 +141,11 @@ pub(crate) fn meme_logiciel(a: &str, b: &str) -> bool {
 pub(crate) fn contient_mot(texte: &str, motif: &str) -> bool {
     let mut debut = 0;
     while let Some(pos) = texte[debut..].find(motif) {
-        let i = debut + pos;
+        let i = debut.saturating_add(pos);
         if !texte[..i].chars().next_back().is_some_and(char::is_alphanumeric) {
             return true;
         }
-        debut = i + motif.len();
+        debut = i.saturating_add(motif.len());
     }
     false
 }
@@ -471,7 +474,7 @@ fn juger(trouvailles: &[Trouvaille], aujourd_hui: NaiveDate) -> Vec<Constat> {
         let recent = siens.iter().any(|t| {
             matches!(t.trace, Trace::Installe | Trace::Fichier)
                 && t.depuis
-                    .is_some_and(|d| (0..RECENT_JOURS).contains(&(aujourd_hui - d).num_days()))
+                    .is_some_and(|d| (0..RECENT_JOURS).contains(&aujourd_hui.signed_duration_since(d).num_days()))
         });
         let fichier = siens.iter().any(|t| t.trace == Trace::Fichier);
         let installe = siens.iter().any(|t| t.trace == Trace::Installe);
@@ -1701,7 +1704,7 @@ fn guid_msi(chaine: &str) -> Option<&str> {
         return None;
     }
     let debut = chaine.find('{')?;
-    let fin = chaine[debut..].find('}')? + debut;
+    let fin = chaine[debut..].find('}')?.checked_add(debut)?;
     let guid = &chaine[debut..=fin];
     (guid.len() == 38 && guid[1..37].chars().all(|c| c.is_ascii_hexdigit() || c == '-')).then_some(guid)
 }
@@ -1986,7 +1989,7 @@ fn dire(texte: &str) {
 
 /// « le 2026-10-03 (il y a 15 jours) ».
 fn quand(d: NaiveDate, aujourd_hui: NaiveDate) -> String {
-    match (aujourd_hui - d).num_days() {
+    match aujourd_hui.signed_duration_since(d).num_days() {
         0 => tr!("aujourd'hui", "today").to_string(),
         1 => tr!("hier", "yesterday").to_string(),
         n if n > 1 => trf!("le {d} (il y a {n} jours)", "on {d} ({n} days ago)"),
@@ -2247,6 +2250,11 @@ pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
     juger(&trouvailles, aujourd_hui())
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,6 +4,8 @@
 //! ces périphériques sont des claviers. Le compositeur, systemd-logind et les outils de remappage des touches en
 //! tiennent aussi : reconnus et montrés, jamais cachés. Tout est lu dans /proc et /sys, sans lancer de commande.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use crate::risk::Niveau;
 
 /// Les programmes qui lisent le clavier par nature : compositeurs Wayland et serveur X, gestion des sessions et des
@@ -245,7 +247,7 @@ pub(super) fn lecteurs() -> (Vec<Lecteur>, usize) {
             })
             .clone()
     };
-    let (mut lecteurs, mut illisibles) = (Vec::new(), 0);
+    let (mut lecteurs, mut illisibles) = (Vec::new(), 0usize);
     // /proc illisible : aucun processus n'a pu être regardé, ce qui se dit (un illisible), au lieu d'une liste vide
     // qui passait pour « aucun lecteur du clavier ».
     let Some(pids) = crate::socle::processus::pids() else {
@@ -256,7 +258,7 @@ pub(super) fn lecteurs() -> (Vec<Lecteur>, usize) {
             continue;
         }
         if i >= PROCESSUS_MAX {
-            illisibles += 1;
+            illisibles = illisibles.saturating_add(1);
             continue;
         }
         let fd = match std::fs::read_dir(format!("/proc/{pid}/fd")) {
@@ -264,7 +266,7 @@ pub(super) fn lecteurs() -> (Vec<Lecteur>, usize) {
             // Le processus a fini entre-temps : rien à dire.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(_) => {
-                illisibles += 1;
+                illisibles = illisibles.saturating_add(1);
                 continue;
             }
         };
@@ -291,6 +293,11 @@ pub(super) fn lecteurs() -> (Vec<Lecteur>, usize) {
     (lecteurs, illisibles)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

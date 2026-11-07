@@ -4,6 +4,8 @@
 //! bénéficiaires, messages aux contacts). Vanguard vérifie ensuite que cet ordinateur n'est pas la cause (voleur de mots
 //! de passe, extension, prise de contrôle) et propose les recherches de fuites. Rien n'est changé sans accord.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::{a_savoir, bilan, conseil, ecran, proposer_outil, question};
 use crate::ui::*;
 
@@ -131,7 +133,7 @@ pub(super) fn compte() {
         GRIS,
     );
     for (i, etape) in etapes(sorte, acces == 0).iter().enumerate() {
-        afficher_aligne(&format!("  {TOUCHE}{}{RESET} ", i + 1), etape, 4, "");
+        afficher_aligne(&format!("  {TOUCHE}{}{RESET} ", i.saturating_add(1)), etape, 4, "");
     }
     section(tr!(
         "CET ORDINATEUR A-T-IL LIVRÉ LE MOT DE PASSE ?",
@@ -162,6 +164,11 @@ pub(super) fn compte() {
     )]);
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

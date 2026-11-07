@@ -4,6 +4,8 @@
 //! jetable, sous un nom choisi par Vanguard (jamais celui de l'expéditeur, qui pourrait sortir du dossier), lisible
 //! par l'utilisateur seul, jamais exécutable, et le dossier est effacé à la fin, même sur erreur.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::path::{Path, PathBuf};
 
 use super::Signe;
@@ -121,21 +123,21 @@ fn trouve(meule: &[u8], aiguille: &[u8]) -> bool {
     // l'octet `i`, `repli` a `i` cases et `k` < `i`.
     let mut repli = Vec::with_capacity(aiguille.len());
     repli.push(0_usize);
-    let mut k = 0;
+    let mut k = 0usize;
     for &c in aiguille.iter().skip(1) {
         #[expect(
             clippy::indexing_slicing,
             reason = "k < i = repli.len() < aiguille.len() : voir plus haut"
         )]
         while k > 0 && c != aiguille[k] {
-            k = repli[k - 1];
+            k = repli[k.saturating_sub(1)];
         }
         if aiguille.get(k) == Some(&c) {
-            k += 1;
+            k = k.saturating_add(1);
         }
         repli.push(k);
     }
-    let mut k = 0;
+    let mut k = 0usize;
     for &o in meule {
         // `k` < `aiguille.len()` = `repli.len()` : il revient avant d'atteindre la longueur (return plus bas).
         #[expect(
@@ -143,10 +145,10 @@ fn trouve(meule: &[u8], aiguille: &[u8]) -> bool {
             reason = "0 < k < aiguille.len() = repli.len() : voir plus haut"
         )]
         while k > 0 && o != aiguille[k] {
-            k = repli[k - 1];
+            k = repli[k.saturating_sub(1)];
         }
         if aiguille.get(k) == Some(&o) {
-            k += 1;
+            k = k.saturating_add(1);
             if k == aiguille.len() {
                 return true;
             }
@@ -466,13 +468,14 @@ fn fin_montree(nom: &str) -> String {
         return nom;
     }
     let mut fin: Vec<char> = Vec::new();
-    let mut l = 0;
+    let mut l = 0usize;
     for c in nom.chars().rev() {
         // Une colonne gardée pour « … ».
-        if l + crate::ui::largeur_car(c) >= LARGEUR {
+        let suite = l.saturating_add(crate::ui::largeur_car(c));
+        if suite >= LARGEUR {
             break;
         }
-        l += crate::ui::largeur_car(c);
+        l = suite;
         fin.push(c);
     }
     std::iter::once('…').chain(fin.into_iter().rev()).collect()
@@ -649,7 +652,7 @@ fn nom_disque(rang: usize, nom: &str) -> String {
     } else {
         "bin".into()
     };
-    format!("piece-{:02}.{ext}", rang + 1)
+    format!("piece-{:02}.{ext}", rang.saturating_add(1))
 }
 
 fn ecrire(chemin: &Path, contenu: &[u8]) -> std::io::Result<()> {
@@ -723,6 +726,11 @@ pub(crate) fn moteurs(
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

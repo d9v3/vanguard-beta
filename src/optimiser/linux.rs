@@ -2,6 +2,8 @@
 //! distributions (Ubuntu, Debian). Chacun n'est proposé que si cette machine en a l'usage : un SSD pour l'entretien
 //! des SSD, GNOME pour ses préférences, le paquet concerné pour les options des distributions.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -203,7 +205,7 @@ fn ligne_sysctl_posee(cle: &str, v: &str) -> bool {
         // Un plancher : la valeur par défaut du noyau (65 530). Plus bas, plus aucun programme ne démarre.
         "vm/max_map_count" => v
             .parse::<u64>()
-            .is_ok_and(|n| (MAX_MAP_COUNT_MIN..=i32::MAX as u64).contains(&n)),
+            .is_ok_and(|n| (MAX_MAP_COUNT_MIN..=u64::from(i32::MAX.unsigned_abs())).contains(&n)),
         _ => v
             .parse::<i64>()
             .is_ok_and(|n| crate::machine::linux::valeur_durcie(cle, n)),
@@ -299,7 +301,7 @@ fn champ<'a>(texte: &'a str, cle: &str) -> Option<&'a str> {
 /// Le fichier d'autostart masqué : « Hidden=true » juste sous [Desktop Entry], à la place de toute autre valeur
 /// « Hidden » de ce groupe ; le reste est gardé à l'octet près. Masquer deux fois ne change plus rien.
 fn masquer(texte: &str) -> String {
-    let mut sortie = String::with_capacity(texte.len() + 16);
+    let mut sortie = String::with_capacity(texte.len().saturating_add(16));
     let mut dans_entree = false;
     let mut pose = false;
     for l in texte.split_inclusive('\n') {
@@ -1531,6 +1533,11 @@ pub fn catalogue() -> Vec<Reglage> {
     l
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

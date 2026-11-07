@@ -11,6 +11,9 @@
 //! C'est le changement assumé de la règle « un identifiant sans paramètre » des corrections natives de Windows
 //! (`corrections.rs`) : les paramètres sont permis, parce qu'ils sont typés et rejugés.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::HashSet;
 
 use super::gardes;
@@ -751,6 +754,11 @@ pub(crate) fn powershell(o: &Ordre) -> Option<String> {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

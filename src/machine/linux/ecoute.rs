@@ -5,6 +5,8 @@
 //! cups-browsed) quand le programme reste invisible sans droits admin, et la règle des ports en dépend (la faille
 //! de cups-browsed). /proc/net ne le donne pas : il ne sert que si netlink ne répond pas, et ss en dernier recours.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
 use std::path::{Path, PathBuf};
@@ -155,13 +157,19 @@ fn lire_sock_diag(octets: &[u8], udp: bool) -> Vec<(Ecoute, Option<u64>)> {
                 break;
             }
             if u16::from_ne_bytes([g0, g1]) == INET_DIAG_CGROUP_ID
-                && let Some(n) = corps
-                    .get(pos + 4..pos + longueur)
+                && let Some(n) = pos
+                    .checked_add(4)
+                    .zip(pos.checked_add(longueur))
+                    .and_then(|(debut, fin)| corps.get(debut..fin))
                     .and_then(|v| <[u8; 8]>::try_from(v).ok())
             {
                 numero = Some(u64::from_ne_bytes(n));
             }
-            pos += longueur.next_multiple_of(4);
+            // Un attribut dont la fin déborderait : la suite du message ne se lit plus.
+            let Some(suite) = longueur.checked_next_multiple_of(4).and_then(|l| pos.checked_add(l)) else {
+                break;
+            };
+            pos = suite;
         }
         prises.push((
             Ecoute {
@@ -201,10 +209,8 @@ pub(crate) fn demander_netlink(protocole: i32, demande: &[u8]) -> Option<Vec<u8>
             taille(std::mem::size_of::<libc::timeval>()),
         );
         let mut adresse: libc::sockaddr_nl = std::mem::zeroed();
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        {
-            adresse.nl_family = libc::AF_NETLINK as u16;
-        }
+        // AF_NETLINK (16) tient dans sa_family_t ; sinon la famille inconnue fait refuser l'envoi par le noyau.
+        adresse.nl_family = libc::sa_family_t::try_from(libc::AF_NETLINK).unwrap_or_default();
         let envoye = libc::sendto(
             s,
             demande.as_ptr().cast(),
@@ -280,7 +286,7 @@ fn groupes_par_numero(racine: &Path) -> HashMap<u64, String> {
         }
         for e in std::fs::read_dir(&dossier).into_iter().flatten().flatten() {
             if e.file_type().is_ok_and(|t| t.is_dir()) {
-                a_voir.push((e.path(), profondeur + 1));
+                a_voir.push((e.path(), profondeur.saturating_add(1)));
             }
         }
     }
@@ -362,6 +368,11 @@ pub(super) fn lire_ss(sortie: &str, udp: bool) -> Vec<Ecoute> {
         .collect()
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

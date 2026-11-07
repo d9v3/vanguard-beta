@@ -5,6 +5,8 @@
 //! Reconnu : commentaires `#`, clés nues, chaînes "…" (échappements \" \\ \n \t \r \uXXXX \UXXXXXXXX) et '…', entiers,
 //! tableaux de chaînes (sur plusieurs lignes, virgule finale permise), sections `[linux]`, `[windows]`, `[macos]`.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use crate::modele::Echec;
 use crate::{tr, trf};
 
@@ -204,13 +206,13 @@ fn analyser(texte: &str) -> Result<Vec<Paire>, String> {
         l.blancs(true);
         let Some(c) = l.voir() else { break };
         if c == '[' {
-            l.i += 1;
+            l.i = l.i.saturating_add(1);
             let nom = l.mot();
             l.blancs(false);
             if l.voir() != Some(']') || nom.is_empty() {
                 return Err(l.erreur(tr!("section mal fermée", "badly closed section")));
             }
-            l.i += 1;
+            l.i = l.i.saturating_add(1);
             section = Some(nom);
         } else {
             let ligne = l.ligne;
@@ -222,7 +224,7 @@ fn analyser(texte: &str) -> Result<Vec<Paire>, String> {
             if l.voir() != Some('=') {
                 return Err(l.erreur(tr!("« = » attendu", "“=” expected")));
             }
-            l.i += 1;
+            l.i = l.i.saturating_add(1);
             l.blancs(false);
             let valeur = l.valeur()?;
             paires.push((section.clone(), cle, valeur, ligne));
@@ -251,14 +253,14 @@ impl Lecteur {
     fn blancs(&mut self, lignes: bool) {
         while let Some(c) = self.voir() {
             match c {
-                ' ' | '\t' | '\r' => self.i += 1,
+                ' ' | '\t' | '\r' => self.i = self.i.saturating_add(1),
                 '\n' if lignes => {
-                    self.ligne += 1;
-                    self.i += 1;
+                    self.ligne = self.ligne.saturating_add(1);
+                    self.i = self.i.saturating_add(1);
                 }
                 '#' => {
                     while self.voir().is_some_and(|c| c != '\n') {
-                        self.i += 1;
+                        self.i = self.i.saturating_add(1);
                     }
                 }
                 _ => break,
@@ -272,8 +274,8 @@ impl Lecteur {
         match self.voir() {
             None => Ok(()),
             Some('\n') => {
-                self.i += 1;
-                self.ligne += 1;
+                self.i = self.i.saturating_add(1);
+                self.ligne = self.ligne.saturating_add(1);
                 Ok(())
             }
             Some(_) => Err(self.erreur(tr!("texte en trop", "unexpected text"))),
@@ -286,7 +288,7 @@ impl Lecteur {
             .voir()
             .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         {
-            self.i += 1;
+            self.i = self.i.saturating_add(1);
         }
         self.c.iter().take(self.i).skip(debut).collect()
     }
@@ -295,13 +297,13 @@ impl Lecteur {
         match self.voir() {
             Some('"' | '\'') => self.chaine().map(Valeur::Chaine),
             Some('[') => {
-                self.i += 1;
+                self.i = self.i.saturating_add(1);
                 let mut liste = Vec::new();
                 loop {
                     self.blancs(true);
                     match self.voir() {
                         Some(']') => {
-                            self.i += 1;
+                            self.i = self.i.saturating_add(1);
                             break;
                         }
                         Some('"' | '\'') => {
@@ -314,7 +316,7 @@ impl Lecteur {
                             liste.push(self.chaine()?);
                             self.blancs(true);
                             match self.voir() {
-                                Some(',') => self.i += 1,
+                                Some(',') => self.i = self.i.saturating_add(1),
                                 Some(']') => {}
                                 _ => return Err(self.erreur(tr!("« , » ou « ] » attendu", "“,” or “]” expected"))),
                             }
@@ -336,9 +338,9 @@ impl Lecteur {
             },
             Some(c) if c.is_ascii_digit() || c == '-' || c == '+' => {
                 let debut = self.i;
-                self.i += 1;
+                self.i = self.i.saturating_add(1);
                 while self.voir().is_some_and(|c| c.is_ascii_digit() || c == '_') {
-                    self.i += 1;
+                    self.i = self.i.saturating_add(1);
                 }
                 let texte: String = self.c.iter().take(self.i).skip(debut).filter(|c| **c != '_').collect();
                 texte
@@ -355,19 +357,19 @@ impl Lecteur {
 
     fn chaine(&mut self) -> Result<String, String> {
         let guillemet = self.voir().unwrap_or('"');
-        self.i += 1;
+        self.i = self.i.saturating_add(1);
         let mut lu = String::new();
         loop {
             let Some(c) = self.voir() else {
                 return Err(self.erreur(tr!("chaîne non fermée", "unclosed string")));
             };
-            self.i += 1;
+            self.i = self.i.saturating_add(1);
             match c {
                 '\n' => return Err(self.erreur(tr!("chaîne non fermée", "unclosed string"))),
                 _ if c == guillemet => break,
                 '\\' if guillemet == '"' => {
                     let echappe = self.voir();
-                    self.i += 1;
+                    self.i = self.i.saturating_add(1);
                     match echappe {
                         Some('"') => lu.push('"'),
                         Some('\\') => lu.push('\\'),
@@ -377,7 +379,7 @@ impl Lecteur {
                         Some(u @ ('u' | 'U')) => {
                             let n = if u == 'u' { 4 } else { 8 };
                             let hex: String = self.c.iter().skip(self.i).take(n).collect();
-                            self.i += n;
+                            self.i = self.i.saturating_add(n);
                             let car = (hex.len() == n)
                                 .then(|| u32::from_str_radix(&hex, 16).ok())
                                 .flatten()
@@ -495,7 +497,7 @@ fn lire_paires(paires: Vec<Paire>) -> Result<Lus, Echec> {
             i
         } else {
             lus.commandes.push((systeme, None, None));
-            lus.commandes.len() - 1
+            lus.commandes.len().saturating_sub(1)
         };
         ranger(&mut lus, systeme.is_some(), &cle, valeur, place)
             .map_err(|quoi| Echec::refuse(CONTEXTE, erreur(&String::from(quoi))))?;
@@ -605,7 +607,8 @@ fn cle_publique(hex: &str) -> Result<[u8; 32], Echec> {
     let mut cle = [0u8; 32];
     let lue = hex.len() == 64
         && cle.iter_mut().enumerate().all(|(i, o)| {
-            hex.get(2 * i..2 * i + 2)
+            i.checked_mul(2)
+                .and_then(|d| hex.get(d..d.checked_add(2)?))
                 .and_then(|h| u8::from_str_radix(h, 16).ok())
                 .map(|v| *o = v)
                 .is_some()
@@ -761,6 +764,11 @@ fn commandes_lues(commandes: Vec<CommandeLue>) -> Result<Commandes, Echec> {
     Ok((commune, par_systeme))
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

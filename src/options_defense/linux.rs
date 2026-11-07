@@ -331,7 +331,10 @@ pub(crate) fn gestes_possibles(x: &Lu) -> (bool, bool) {
 /// Les touches du menu : « 1 » couper ufw, « 2 » rallumer ufw, « 3 » couper firewalld…
 fn touche(p: PareFeu, rallumer: bool) -> String {
     let i = PareFeu::TOUS.iter().position(|x| *x == p).unwrap_or(0);
-    (i * 2 + usize::from(rallumer) + 1).to_string()
+    i.saturating_mul(2)
+        .saturating_add(usize::from(rallumer))
+        .saturating_add(1)
+        .to_string()
 }
 
 pub(crate) fn geste_de_touche(t: &str) -> Option<(PareFeu, bool)> {

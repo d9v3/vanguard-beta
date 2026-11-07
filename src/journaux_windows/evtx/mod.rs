@@ -336,6 +336,26 @@ impl From<std::io::Error> for Erreur {
     }
 }
 
+// Les deux langues dans une seule chaîne : le lecteur ne dépend pas de l'interface (compilé seul par le banc de
+// fuzzing). L'erreur d'entrée-sortie reste la cause (`source`), sans être redite dans le texte.
+impl std::fmt::Display for Erreur {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Lecture(e) => write!(f, "lecture du fichier / file read: {e}"),
+            Self::PasUnEvtx => f.write_str("pas un journal .evtx / not an .evtx log"),
+        }
+    }
+}
+
+impl std::error::Error for Erreur {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Lecture(e) => Some(e),
+            Self::PasUnEvtx => None,
+        }
+    }
+}
+
 /// Lit un fichier .evtx.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn lire_fichier(chemin: &Path, bornes: &Bornes) -> Result<Lecture, Erreur> {

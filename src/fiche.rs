@@ -3,6 +3,9 @@
 //! Les numéros de série s'affichent à l'écran seulement : ni dans le JSON (`vanguard fiche-ordinateur --json`), ni dans un
 //! fichier, ni dans le journal des erreurs. Ils identifient un appareil, et une fiche se partage facilement.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use serde::Serialize;
 
 use crate::ui::*;
@@ -489,7 +492,7 @@ fn lire() -> Fiche {
         .collect();
     f.coeurs = valeur("cpu cores")
         .and_then(|c| c.parse::<u32>().ok())
-        .map(|c| c * u32::try_from(processeurs.len().max(1)).unwrap_or(1));
+        .map(|c| c.saturating_mul(u32::try_from(processeurs.len().max(1)).unwrap_or(1)));
     f.fils = u32::try_from(cpuinfo.lines().filter(|l| l.starts_with("processor")).count())
         .ok()
         .filter(|&n| n > 0);
@@ -498,7 +501,7 @@ fn lire() -> Fiche {
         .lines()
         .find_map(|l| l.strip_prefix("MemTotal:"))
         .and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok())
-        .map(|ko| ko * 1024);
+        .map(|ko| ko.saturating_mul(1024));
     let (barrettes, series) = barrettes_udev(&proprietes_udev(&fichier("/run/udev/data/+dmi:id")));
     f.barrettes_illisibles = barrettes.is_empty();
     f.barrettes = barrettes;
@@ -887,7 +890,9 @@ fn taille_lue(texte: &str) -> Option<u64> {
     };
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     #[allow(clippy::cast_precision_loss)]
-    Some((nombre * facteur as f64) as u64)
+    Some(crate::socle::nombres::entier(
+        nombre * crate::socle::nombres::flottant(facteur),
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -929,7 +934,7 @@ fn lire() -> Fiche {
 
 fn taille(octets: u64) -> String {
     #[allow(clippy::cast_precision_loss)]
-    let g = octets as f64 / f64::from(1u32 << 30);
+    let g = crate::socle::nombres::flottant(octets) / f64::from(1u32 << 30);
     if g >= 1000.0 {
         trf!("{} To", "{} TB", crate::langue::decimal(g / 1024.0, 1))
     } else if g >= 10.0 {
@@ -1047,6 +1052,11 @@ pub fn fiche(json: bool) {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

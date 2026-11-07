@@ -4,6 +4,8 @@
 //! a reçus. Le résultat du fournisseur est donc le plus haut ; un faux résultat « tout réussi » glissé par l'expéditeur
 //! est forcément plus bas, sous les « Received » des serveurs qui l'ont transporté.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::Signe;
 use super::mime::{self, Entete};
 use crate::protection::lien;
@@ -26,11 +28,11 @@ pub(crate) struct Adresse {
 pub(crate) fn adresses(brut: &[u8], max: usize) -> (Vec<Adresse>, usize) {
     let valeur = String::from_utf8_lossy(brut);
     let mut liste = Vec::new();
-    let mut laissees = 0;
+    let mut laissees = 0usize;
     for morceau in decouper_hors_guillemets(&valeur, ',') {
         // Un groupe : « Nom du groupe: » avant les adresses, « ; » après.
         let morceau = match position_hors_guillemets(&morceau, ':') {
-            Some(i) if !morceau[..i].contains('<') => morceau[i + 1..].to_string(),
+            Some(i) if !morceau[..i].contains('<') => morceau[i.saturating_add(1)..].to_string(),
             _ => morceau,
         };
         let morceau = morceau.trim().trim_end_matches(';').trim();
@@ -41,7 +43,7 @@ pub(crate) fn adresses(brut: &[u8], max: usize) -> (Vec<Adresse>, usize) {
             continue;
         };
         if liste.len() >= max {
-            laissees += 1;
+            laissees = laissees.saturating_add(1);
         } else {
             liste.push(a);
         }
@@ -55,10 +57,10 @@ fn une_adresse(morceau: &str) -> Option<Adresse> {
         Some(i) => {
             let fin = sans_commentaires[i..]
                 .find('>')
-                .map_or(sans_commentaires.len(), |f| i + f);
+                .map_or(sans_commentaires.len(), |f| i.saturating_add(f));
             (
                 sans_commentaires[..i].trim().to_string(),
-                sans_commentaires[i + 1..fin].trim().to_string(),
+                sans_commentaires[i.saturating_add(1)..fin].trim().to_string(),
             )
         }
         None => (commentaires.trim().to_string(), sans_commentaires.trim().to_string()),
@@ -131,10 +133,10 @@ fn retirer_commentaires(t: &str) -> (String, String) {
                 if profondeur > 0 {
                     commentaires.push(c);
                 }
-                profondeur += 1;
+                profondeur = profondeur.saturating_add(1);
             }
             ')' if !guillemets && profondeur > 0 => {
-                profondeur -= 1;
+                profondeur = profondeur.saturating_sub(1);
                 if profondeur > 0 {
                     commentaires.push(c);
                 } else {
@@ -171,7 +173,7 @@ fn decouper_hors_guillemets(t: &str, sep: char) -> Vec<String> {
     let mut reste = t;
     while let Some(i) = position_hors_guillemets(reste, sep) {
         morceaux.push(reste[..i].to_string());
-        reste = &reste[i + sep.len_utf8()..];
+        reste = &reste[i.saturating_add(sep.len_utf8())..];
     }
     morceaux.push(reste.to_string());
     morceaux
@@ -703,7 +705,7 @@ pub(crate) fn examiner_expediteur(entetes: &[Entete]) -> Vec<Signe> {
         return signes;
     };
     let (liste, laissees) = adresses(&premier.brut, 20);
-    if froms.len() > 1 || liste.len() + laissees > 1 {
+    if froms.len() > 1 || liste.len().saturating_add(laissees) > 1 {
         signes.push((
             Niveau::Eleve,
             tr!(
@@ -886,6 +888,11 @@ pub(crate) fn expediteur(entetes: &[Entete]) -> Option<Adresse> {
     mime::valeur(entetes, "from").and_then(|e| adresses(&e.brut, 1).0.into_iter().next())
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

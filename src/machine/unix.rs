@@ -2,6 +2,8 @@
 //! passe, dossiers de commandes modifiables par d'autres comptes. Chaque système garde ses mots à lui (« la machine », « le Mac ») et ce qu'il vérifie en plus
 //! (machine/linux/privileges.rs, machine/macos/privileges.rs).
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::ffi::OsStr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -130,7 +132,7 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
 pub(crate) fn regles_nopasswd(liste: &str) -> (Vec<String>, usize) {
     let lignes: Vec<&str> = liste.lines().map(str::trim).collect();
     let mut totales = Vec::new();
-    let mut limitees = 0;
+    let mut limitees = 0usize;
     for (i, l) in lignes.iter().enumerate().filter(|(_, l)| l.contains("NOPASSWD:")) {
         let commandes = l.split_once("NOPASSWD:").map_or("", |(_, c)| c).trim();
         if commandes == "ALL" || commandes.starts_with("ALL,") {
@@ -139,13 +141,16 @@ pub(crate) fn regles_nopasswd(liste: &str) -> (Vec<String>, usize) {
                 .flatten()
                 .is_some_and(|(cible, _)| {
                     let (tout, passwd) = (format!("({cible}) ALL"), format!("({cible}) PASSWD: ALL"));
-                    lignes.iter().skip(i + 1).any(|m| *m == tout || *m == passwd)
+                    lignes
+                        .iter()
+                        .skip(i.saturating_add(1))
+                        .any(|m| *m == tout || *m == passwd)
                 });
             if !reprise {
                 totales.push((*l).to_string());
             }
         } else {
-            limitees += 1;
+            limitees = limitees.saturating_add(1);
         }
     }
     (totales, limitees)
@@ -538,6 +543,11 @@ pub(super) fn rendre_a_root(constat: Constat, dossiers: &[DossierDeCommandes]) -
     )
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests_sshd {
     use super::*;
@@ -561,6 +571,11 @@ mod tests_sshd {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests_dossiers_de_commandes {
     use super::*;
@@ -644,6 +659,11 @@ mod tests_dossiers_de_commandes {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests_netstat {
     use super::*;

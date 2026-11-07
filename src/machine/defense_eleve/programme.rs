@@ -19,7 +19,7 @@ const FD_MAX: usize = 1024;
 /// De `/proc/<pid>/stat` : l'état (3e champ), les drapeaux (9e) et la naissance en tops d'horloge depuis le démarrage
 /// (22e), lus après la dernière parenthèse : le nom, entre parenthèses, peut en contenir.
 pub(crate) fn naissance_du_stat(stat: &str) -> Option<(char, u64, u64)> {
-    let apres = stat.get(stat.rfind(')')? + 1..)?;
+    let apres = stat.get(stat.rfind(')')?.checked_add(1)?..)?;
     let champs: Vec<&str> = apres.split_whitespace().collect();
     let etat = champs.first()?.chars().next()?;
     let drapeaux = champs.get(6)?.parse().ok()?;

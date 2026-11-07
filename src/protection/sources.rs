@@ -7,6 +7,8 @@
 //! MalwareBazaar (plus d'un million d'empreintes) ne tient pas. Il juge avec les empreintes des dernières 48 heures,
 //! relues toutes les 6 heures ; la surveillance horaire et le bilan gardent la liste complète.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -137,7 +139,7 @@ impl Fichiers {
             return connu;
         }
         let Ok(h) = self.hacher(chemin) else {
-            self.non_haches += 1;
+            self.non_haches = self.non_haches.saturating_add(1);
             return false;
         };
         let connu = match (&self.liste, h) {
@@ -215,6 +217,11 @@ pub(crate) fn juger_programme(p: &EnMarche, os: Os, connu: &mut impl FnMut(&str)
     })
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

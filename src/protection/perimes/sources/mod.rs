@@ -9,6 +9,9 @@
 //! copie (`crate::socle::cache::liste_validee`). Un fichier gzip est gardé tel que reçu, et relu par `degzip_controle` (CRC et
 //! taille vérifiés) : un téléchargement coupé ne passe pas pour un fichier entier.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 pub(crate) mod editeurs;
 pub(crate) mod eol;
 pub(crate) mod homebrew;
@@ -432,7 +435,7 @@ impl<E: Forme> Forme for Vec<E> {
         let mut garde = Some(Vec::new());
         let mut n = 0usize;
         while let Some(e) = suite.next_element::<Souple<E>>()? {
-            n += 1;
+            n = n.saturating_add(1);
             match (e.bon(), garde.as_mut()) {
                 (Some(e), Some(v)) if n <= SOUS_ENTREES_MAX => v.push(e),
                 _ => garde = None,
@@ -466,7 +469,7 @@ impl<'de, T: Deserialize<'de> + Choix> Deserialize<'de> for Choisis<T> {
                 let mut gardes = Vec::new();
                 let mut n = 0usize;
                 while let Some(e) = suite.next_element::<T>()? {
-                    n += 1;
+                    n = n.saturating_add(1);
                     if n > ENTREES_MAX {
                         return Err(de::Error::custom("trop d'entrées"));
                     }
@@ -691,6 +694,11 @@ fn raison(echec: crate::protection::abuse_ch::Echec) -> String {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

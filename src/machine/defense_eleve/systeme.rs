@@ -726,7 +726,7 @@ pub(crate) fn ligne_de_proxy(l: &[u8]) -> bool {
 pub(super) fn juger_proxy(e: Empreinte, c: &CheminDesigne, a: &mut dyn Acces) -> Jugement {
     let (p, f, contenu) = fichier_de_ligne(c, a)?;
     let vu = lisible(&p);
-    let mut nouveau = Vec::with_capacity(contenu.len() + MARQUE_PROXY.len());
+    let mut nouveau = Vec::with_capacity(contenu.len().saturating_add(MARQUE_PROXY.len()));
     let mut trouvee: Option<&[u8]> = None;
     for morceau in contenu.split_inclusive(|o| *o == b'\n') {
         let ligne = morceau.strip_suffix(b"\n").unwrap_or(morceau);

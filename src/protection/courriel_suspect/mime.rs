@@ -105,6 +105,33 @@ pub(crate) enum Anomalie {
     SansCorps,
 }
 
+// Les deux langues dans une seule chaîne : le lecteur ne dépend pas de l'interface (compilé seul par le banc de
+// fuzzing). Le nom d'un encodage ou d'un en-tête vient du courriel lu : court (borné à la lecture), jamais un
+// contenu.
+impl std::fmt::Display for Anomalie {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TropGros => f.write_str("courriel trop gros / message too large"),
+            Self::TropProfond => f.write_str("parties imbriquées trop profond / parts nested too deep"),
+            Self::TropDeParties => f.write_str("trop de parties / too many parts"),
+            Self::TropDEntetes => f.write_str("trop d'en-têtes / too many headers"),
+            Self::EnteteTropLong => f.write_str("en-tête trop long / header too long"),
+            Self::FrontiereAbsente => f.write_str("frontière MIME absente / missing MIME boundary"),
+            Self::FrontiereTropLongue => f.write_str("frontière MIME trop longue / MIME boundary too long"),
+            Self::FrontiereNonFermee => f.write_str("frontière MIME non fermée / unterminated MIME boundary"),
+            Self::FrontiereRepetee => {
+                f.write_str("frontière MIME reprise d'une partie parente / MIME boundary reused from a parent part")
+            }
+            Self::EncodageInconnu(e) => write!(f, "encodage inconnu / unknown encoding: {e}"),
+            Self::Base64Abime => f.write_str("base64 abîmé / damaged base64"),
+            Self::EnteteEnDouble(n) => write!(f, "en-tête en double / duplicate header: {n}"),
+            Self::SansCorps => f.write_str("sans corps / no body"),
+        }
+    }
+}
+
+impl std::error::Error for Anomalie {}
+
 /// Le courriel lu.
 #[derive(Debug, Default)]
 pub(crate) struct Message {
@@ -980,6 +1007,35 @@ pub(crate) fn parametres(brut: &str, b: &Bornes) -> (String, Vec<(String, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Chaque anomalie se dit dans les deux langues, le nom porté dedans, sans dépendre de l'interface.
+    #[test]
+    fn anomalie_se_dit() {
+        for a in [
+            Anomalie::TropGros,
+            Anomalie::TropProfond,
+            Anomalie::TropDeParties,
+            Anomalie::TropDEntetes,
+            Anomalie::EnteteTropLong,
+            Anomalie::FrontiereAbsente,
+            Anomalie::FrontiereTropLongue,
+            Anomalie::FrontiereNonFermee,
+            Anomalie::FrontiereRepetee,
+            Anomalie::EncodageInconnu("x-uuencode".into()),
+            Anomalie::Base64Abime,
+            Anomalie::EnteteEnDouble("content-type".into()),
+            Anomalie::SansCorps,
+        ] {
+            let texte = a.to_string();
+            assert!(texte.contains(" / "), "{texte}");
+            let _: &dyn std::error::Error = &a;
+        }
+        assert!(
+            Anomalie::EncodageInconnu("x-uuencode".into())
+                .to_string()
+                .ends_with("x-uuencode")
+        );
+    }
 
     fn petit() -> Bornes {
         Bornes {

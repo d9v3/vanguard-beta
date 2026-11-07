@@ -4,6 +4,8 @@
 //! La place à gagner est mesurée avant (simulations de paccache, tailles des dossiers) quand on peut le faire sans
 //! droits d'administrateur.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::HashSet;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
@@ -34,7 +36,12 @@ fn octets(nombre: &str, unite: &str) -> Option<u64> {
         "TiB" | "T" => 1024.0_f64.powi(4),
         _ => return None,
     };
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // une taille positive, arrondie à l'octet
+    // Une taille positive, arrondie à l'octet. De f64 vers un entier, Rust n'a que `as`, qui sature (NaN : 0).
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::as_conversions,
+        reason = "f64 vers u64 : seul `as` existe, et il sature au lieu de déborder"
+    )]
     Some((n * facteur) as u64)
 }
 
@@ -510,6 +517,11 @@ pub fn executer(choisis: &[&Element]) -> Vec<bool> {
     crate::machine::appliquer_chacune(&groupes)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

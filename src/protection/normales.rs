@@ -7,6 +7,8 @@
 //! l'adresse et le port, l'appareil), si bien qu'accepter un programme ne fait pas taire son voisin. Le fichier est
 //! scellé (`sceau::NORMALES`) : changé hors de Vanguard, accepté sans sceau ou illisible, il ne fait rien taire.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
@@ -75,7 +77,7 @@ fn date(texte: &str) -> Option<NaiveDate> {
 
 /// Le choix vaut-il encore, ce jour-là ?
 fn en_vigueur(n: &Normale, jour: NaiveDate) -> bool {
-    date(&n.le).is_some_and(|le| (jour - le).num_days() < DUREE_JOURS && le <= jour)
+    date(&n.le).is_some_and(|le| jour.signed_duration_since(le).num_days() < DUREE_JOURS && le <= jour)
 }
 
 fn est_normale_dans(n: &Normales, cle: &str, jour: NaiveDate) -> bool {
@@ -183,9 +185,11 @@ fn recentes(
     n: &Normales,
     jour: NaiveDate,
 ) -> Vec<crate::reseau::tableau::Alerte> {
-    let limite = (jour - chrono::Duration::days(JOURS_RECENTS))
-        .format("%Y-%m-%d")
-        .to_string();
+    // Une date hors de chrono (impossible depuis l'horloge) : toutes les alertes passent pour récentes.
+    let limite = jour
+        .checked_sub_signed(chrono::Duration::days(JOURS_RECENTS))
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_default();
     let mut vues = std::collections::HashSet::new();
     alertes
         .iter()
@@ -249,12 +253,12 @@ pub(crate) fn section() {
         );
         return;
     }
-    let mut i = 0;
+    let mut i = 0usize;
     if !declarees.is_empty() {
         trp!("  Déclarées normales :\n", "  Declared normal:\n");
         for (_, a) in &declarees {
-            i += 1;
-            let etat = match date(&a.le).map(|le| le + chrono::Duration::days(DUREE_JOURS)) {
+            i = i.saturating_add(1);
+            let etat = match date(&a.le).and_then(|le| le.checked_add_signed(chrono::Duration::days(DUREE_JOURS))) {
                 Some(f) if f > jour => trf!("jusqu'au {}", "until {}", f.format(tr!("%d/%m/%Y", "%Y-%m-%d"))),
                 _ => tr!("expiré : elle revient", "expired: it comes back").to_string(),
             };
@@ -275,7 +279,7 @@ pub(crate) fn section() {
     if !recentes.is_empty() {
         trp!("\n  Alertes récentes :\n", "\n  Recent alerts:\n");
         for a in &recentes {
-            i += 1;
+            i = i.saturating_add(1);
             afficher_aligne(
                 &format!("  {TOUCHE}{i:>2}{RESET} "),
                 &format!(
@@ -309,10 +313,14 @@ pub(crate) fn section() {
     }
     let mut faits = Vec::new();
     for c in &choix {
-        if let Some((cle, _)) = declarees.get(c - 1) {
+        // Un numéro 0 ne désigne rien (la liste commence à 1).
+        let rang = c.checked_sub(1);
+        if let Some((cle, _)) = rang.and_then(|r| declarees.get(r)) {
             n.alertes.remove(cle);
             faits.push((cle.clone(), None));
-        } else if let Some(a) = recentes.get(c - 1 - declarees.len())
+        } else if let Some(a) = rang
+            .and_then(|r| r.checked_sub(declarees.len()))
+            .and_then(|r| recentes.get(r))
             && let Some(cle) = &a.cle
         {
             faits.push((cle.clone(), Some(a.titre.clone())));
@@ -357,6 +365,11 @@ fn noter_au_journal(cle: &str, titre: Option<&str>) {
     crate::modele::journal::noter(Evenement::nouveau(Source::Utilisateur, quoi).cle(Some(cle)));
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

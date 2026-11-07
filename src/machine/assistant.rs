@@ -45,6 +45,8 @@
 //! oui (use_pty). Une liste qui contient un tel geste ne passe donc que par sudo, lancé depuis un terminal
 //! (`methodes`).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // FFI de libc : prctl (PR_SET_DUMPABLE, le secret de l'assistant élevé hors des vidages).
 #![allow(unsafe_code)]
 
@@ -318,14 +320,14 @@ fn lire_lignes(source: impl Read) -> Option<Vec<String>> {
 /// qu'une ligne n'en est pas un, qu'un groupe est vide, ou qu'il y en a trop.
 fn analyser_liste(lignes: &[String]) -> Option<Vec<Vec<Demande>>> {
     let mut groupes = vec![Vec::new()];
-    let mut total = 0;
+    let mut total = 0usize;
     for l in lignes {
         if l == SUITE {
             groupes.push(Vec::new());
             continue;
         }
         let o = Demande::analyser(l).filter(Demande::permis_ici)?;
-        total += 1;
+        total = total.saturating_add(1);
         groupes.last_mut()?.push(o);
     }
     // Lot D7c : une baisse (un pare-feu coupé) n'arrive que seule, du choix fait dans les Options de défense. Mêlée à
@@ -359,10 +361,10 @@ const JOURNAL: &str = "journal ";
 /// dans `LIGNE_MAX` (le parent refuserait toute la réponse pour une ligne trop longue).
 fn ligne_journal(erreur: &str) -> String {
     let texte = crate::ui::affichable(&erreur.replace("\r\n", "\n").replace(['\r', '\n'], " | "));
-    let place = LIGNE_MAX - JOURNAL.len();
+    let place = LIGNE_MAX.saturating_sub(JOURNAL.len());
     let mut fin = texte.len().min(place);
     while !texte.is_char_boundary(fin) {
-        fin -= 1;
+        fin = fin.saturating_sub(1);
     }
     format!("{JOURNAL}{}", &texte[..fin])
 }
@@ -2100,6 +2102,11 @@ fn accord_au_terminal(g: GesteUnix) -> Result<(), Refus> {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,6 +5,9 @@
 //! s'installe. Chaque signe se juge par une fonction pure, testée sous Linux et sous Wine ; la lecture (journaux,
 //! processus) est propre à chaque système. Lecture seule : rien n'est arrêté, rien n'est envoyé.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 
@@ -79,7 +82,7 @@ pub(crate) fn intrusions(tentatives: &[Tentative]) -> Vec<Intrusion> {
     {
         let n = echecs.entry(t.adresse).or_default();
         if !t.reussie {
-            *n += 1;
+            *n = (*n).saturating_add(1);
         } else if *n >= SEUIL_ECHECS && !trouvees.iter().any(|i| i.adresse == t.adresse && i.compte == t.compte) {
             trouvees.push(Intrusion {
                 adresse: t.adresse,
@@ -99,7 +102,7 @@ pub(crate) fn origine_ssh(ligne: &str) -> Option<(IpAddr, u16)> {
     let mots: Vec<&str> = ligne.split_whitespace().collect();
     let i = mots.iter().rposition(|m| *m == "port")?;
     let ip = mots.get(i.checked_sub(1)?)?.parse::<IpAddr>().ok()?.to_canonical();
-    let port = mots.get(i + 1)?.trim_end_matches(':').parse().ok()?;
+    let port = mots.get(i.saturating_add(1))?.trim_end_matches(':').parse().ok()?;
     Some((ip, port))
 }
 
@@ -143,7 +146,7 @@ pub(crate) fn tentatives_ssh_datees<D: Copy>(lignes: &[(D, &str)]) -> Vec<(D, Te
             Some((
                 quand,
                 Tentative {
-                    compte: mots.get(pour + 1..depuis)?.join(" "),
+                    compte: mots.get(pour.saturating_add(1)..depuis)?.join(" "),
                     reussie: true,
                     ..echec
                 },
@@ -422,7 +425,7 @@ pub(crate) fn mots(texte: &str) -> Vec<(&str, usize)> {
 fn fin_du_mot(bas: &str, mot: &str) -> Option<usize> {
     let lettre = |c: char| c.is_alphanumeric() || c == '_';
     bas.match_indices(mot)
-        .map(|(i, _)| (i, i + mot.len()))
+        .map(|(i, _)| (i, i.saturating_add(mot.len())))
         .find(|&(debut, fin)| {
             !bas[..debut].chars().next_back().is_some_and(lettre) && !bas[fin..].chars().next().is_some_and(lettre)
         })
@@ -448,15 +451,15 @@ pub(crate) fn detournement(programme: &str, args: &str) -> Option<Motif> {
                     None => test(m),
                 }
             })
-            .map(|&(m, fin)| (fin - m.len(), fin))
+            .map(|&(m, fin)| (fin.saturating_sub(m.len()), fin))
     };
     let premier = |motifs: &[&str]| {
         motifs
             .iter()
-            .filter_map(|m| bas.find(m).map(|i| (i, i + m.len())))
+            .filter_map(|m| bas.find(m).map(|i| (i, i.saturating_add(m.len()))))
             .min_by_key(|&(_, fin)| fin)
     };
-    let mot_entier = |m: &str| fin_du_mot(&bas, m).map(|fin| (fin - m.len(), fin));
+    let mot_entier = |m: &str| fin_du_mot(&bas, m).map(|fin| (fin.saturating_sub(m.len()), fin));
     // Le motif à sa place, tel qu'il est écrit dans `args`, sans guillemets autour.
     let motif = |raison: &'static str| {
         move |(debut, fin): (usize, usize)| Motif {
@@ -537,10 +540,10 @@ fn morceaux_du_tube(ligne: &str) -> Vec<(usize, &str)> {
     for (i, &o) in octets.iter().enumerate() {
         let seul = o == b'|'
             && i.checked_sub(1).and_then(|p| octets.get(p)) != Some(&b'|')
-            && octets.get(i + 1) != Some(&b'|');
+            && octets.get(i.saturating_add(1)) != Some(&b'|');
         if seul {
             morceaux.push((debut, &ligne[debut..i]));
-            debut = i + 1;
+            debut = i.saturating_add(1);
         }
     }
     morceaux.push((debut, &ligne[debut..]));
@@ -665,17 +668,22 @@ pub(crate) fn passe_a_un_shell(ligne: &str) -> Option<Motif> {
     let morceaux = morceaux_du_tube(&bas);
     // Le morceau lu tel qu'il est écrit (les minuscules gardent la place de chaque octet) : la casse d'une option compte.
     let interprete = |&(debut, morceau): &(usize, &str)| {
-        programme_du_morceau(&ligne[debut..debut + morceau.len()])
+        programme_du_morceau(&ligne[debut..debut.saturating_add(morceau.len())])
             .is_some_and(|p| INTERPRETES.contains(&nom_de_fichier(&p.to_ascii_lowercase())))
     };
     for (k, (debut, morceau)) in morceaux.iter().enumerate() {
-        if !morceaux.iter().skip(k + 1).any(interprete) {
+        if !morceaux.iter().skip(k.saturating_add(1)).any(interprete) {
             continue;
         }
         // Chaque mot du morceau, à sa place dans la ligne : lu en minuscules, montré tel qu'il est écrit.
         let places: Vec<(usize, usize)> = mots(morceau)
             .into_iter()
-            .map(|(m, fin)| (debut + fin - m.len(), debut + fin))
+            .map(|(m, fin)| {
+                (
+                    debut.saturating_add(fin).saturating_sub(m.len()),
+                    debut.saturating_add(fin),
+                )
+            })
             .collect();
         let nom = |&(a, b): &(usize, usize)| nom_de_fichier(&bas[a..b]);
         let ecrit = |(a, b): (usize, usize)| nom_de_fichier(&ligne[a..b]).to_string();
@@ -691,7 +699,10 @@ pub(crate) fn passe_a_un_shell(ligne: &str) -> Option<Motif> {
             });
         }
         if let Some((i, &base)) = places.iter().enumerate().find(|(_, p)| nom(p) == "base64")
-            && let Some(&option) = places.iter().skip(i + 1).find(|p| matches!(nom(p), "-d" | "--decode"))
+            && let Some(&option) = places
+                .iter()
+                .skip(i.saturating_add(1))
+                .find(|p| matches!(nom(p), "-d" | "--decode"))
         {
             return Some(Motif {
                 raison: tr!(
@@ -716,7 +727,7 @@ fn extrait(texte: &str, suite: bool) -> String {
     let mut montre = if caracteres.len() > LONGUEUR_EXTRAIT {
         let garde: String = caracteres
             .iter()
-            .skip(caracteres.len() - (LONGUEUR_EXTRAIT - 1))
+            .skip(caracteres.len().saturating_sub(LONGUEUR_EXTRAIT - 1))
             .collect();
         format!("…{garde}")
     } else {
@@ -1432,9 +1443,14 @@ fn programmes_ps() -> Option<(Vec<EnMarche>, Option<&'static str>)> {
 fn date_cim(texte: &str) -> Option<NaiveDateTime> {
     let locale = NaiveDateTime::parse_from_str(texte.get(..21)?, "%Y%m%d%H%M%S%.f").ok()?;
     let decalage: i64 = texte.get(21..)?.parse().ok()?;
-    Some(locale - chrono::TimeDelta::minutes(decalage))
+    locale.checked_sub_signed(chrono::TimeDelta::minutes(decalage))
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2304,6 +2320,11 @@ mod tests {
 
 /// Une ligne de commande, un chemin ou un nom tenté sur SSH sont choisis par celui qu'on cherche : jamais de panique,
 /// un motif toujours à sa place dans la ligne, et ce qui est montré reste court et inoffensif.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod entrees_hostiles {
     use super::*;

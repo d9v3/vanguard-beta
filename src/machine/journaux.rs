@@ -3,6 +3,9 @@
 //! d'événements a-t-il été effacé récemment (Windows note lui-même chaque effacement, événement 104).
 //! Aucun programme local ne peut empêcher l'administrateur d'agir : seule une copie hors de la machine le peut.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use super::{Constat, alerte, ok};
 use chrono::{DateTime, Utc};
 
@@ -114,7 +117,7 @@ fn juger_effacements(effacements: &[Effacement], aujourdhui: chrono::NaiveDate) 
         .map(|e| {
             let (date, detail) = (&e.jour, &e.detail);
             let recent = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
-                .is_ok_and(|d| (aujourdhui - d).num_days() <= 30);
+                .is_ok_and(|d| aujourdhui.signed_duration_since(d).num_days() <= 30);
             let instant = e
                 .instant
                 .map_or_else(|| date.clone(), |i| i.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
@@ -167,7 +170,12 @@ pub(super) fn ceder_au_bilan_des_journaux(constats: &mut Vec<Constat>, lu: Optio
     let vu = |c: &Constat| {
         c.regle == REGLE
             && c.probleme.is_some()
-            && instant_de(c).is_some_and(|t| t > lu.depuis + chrono::Duration::seconds(1) && t < lu.debut)
+            && instant_de(c).is_some_and(|t| {
+                lu.depuis
+                    .checked_add_signed(chrono::Duration::seconds(1))
+                    .is_some_and(|d| t > d)
+                    && t < lu.debut
+            })
     };
     let Some(premier) = constats.iter_mut().find(|c| vu(c)) else {
         return;
@@ -274,6 +282,11 @@ pub(super) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
     juger_effacements(&effacements, chrono::NaiveDate::from_ymd_opt(2026, 10, 20).unwrap())
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

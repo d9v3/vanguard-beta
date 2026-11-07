@@ -6,6 +6,9 @@
 //! journal des événements, d'où une alerte non critique peut être déclarée normale (« Ce que Vanguard a appris ») ;
 //! rien n'est demandé.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -43,7 +46,12 @@ enum Refus {
 
 fn options(jours: u32) -> Options {
     Options {
-        depuis: Some(Utc::now() - chrono::Duration::days(i64::from(jours))),
+        depuis: Some(
+            Utc::now()
+                .checked_sub_signed(chrono::Duration::days(i64::from(jours)))
+                // Plus de jours que chrono n'en compte : depuis le début, tout est lu.
+                .unwrap_or(chrono::DateTime::<Utc>::MIN_UTC),
+        ),
         defender_antivirus: None,
         installation: None,
     }
@@ -226,7 +234,7 @@ fn ecran(t: &str) -> String {
                 .iter()
                 .rposition(|c| matches!(c, '/' | '\\' | '-' | '_' | '%' | '.' | ','))
                 .filter(|i| *i >= MOT_MAX / 2)
-                .map_or(MOT_MAX, |i| i + 1);
+                .map_or(MOT_MAX, |i| i.saturating_add(1));
             let Some((morceau, suite)) = reste.split_at_checked(coupe) else {
                 break;
             };
@@ -259,7 +267,10 @@ fn entete(dossier: Option<&Path>, jours: u32) {
         None => tr!("Les journaux de cet ordinateur", "This computer's logs").to_string(),
     };
     afficher_aligne("  ", &source, 2, GRIS);
-    let depuis = chrono::Local::now() - chrono::Duration::days(i64::from(jours));
+    let depuis = chrono::Local::now()
+        .checked_sub_signed(chrono::Duration::days(i64::from(jours)))
+        // Plus de jours que chrono n'en compte : depuis le début.
+        .unwrap_or_else(|| chrono::DateTime::<Utc>::MIN_UTC.with_timezone(&chrono::Local));
     afficher_aligne(
         "  ",
         &trf!(
@@ -582,6 +593,11 @@ fn periodes_ecran(a: &Analyse) {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

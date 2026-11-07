@@ -8,6 +8,9 @@
 //! « aucun signe parmi ce qui a été vérifié ». Un logiciel de prise de contrôle à distance est renvoyé à « Mon
 //! ordinateur est-il contrôlé ? ».
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 #[cfg(any(target_os = "linux", test))]
 mod clavier;
 mod connus;
@@ -167,7 +170,7 @@ impl Releve {
     /// Un nom de programme (installé, processus, service, démarrage) comparé aux logiciels de surveillance connus,
     /// puis aux noms de la liste d'Échap. `actif` : en marche ou lancé au démarrage, plus grave que seulement installé.
     pub(super) fn programme(&mut self, nom: &str, ou: String, actif: bool, ind: Option<&Indicateurs>) {
-        self.programmes_vus += 1;
+        self.programmes_vus = self.programmes_vus.saturating_add(1);
         if crate::protection::distance::controle_a_distance(nom) {
             self.renvoyer(nom);
             return;
@@ -326,7 +329,7 @@ fn relever_linux(r: &mut Releve, ind: Option<&Indicateurs>) {
                 r.programme(&nom, ou, true, ind);
             }
         }
-        r.verifies += 1;
+        r.verifies = r.verifies.saturating_add(1);
         if processus::autres_comptes_caches() {
             r.non_verifie(tr!(
                 "processus des autres comptes cachés (/proc monté avec hidepid)",
@@ -338,7 +341,7 @@ fn relever_linux(r: &mut Releve, ind: Option<&Indicateurs>) {
     }
     let montages = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
     let (lecteurs, illisibles) = clavier::lecteurs();
-    r.verifies += 1;
+    r.verifies = r.verifies.saturating_add(1);
     r.clavier_illisibles = illisibles;
     for l in &lecteurs {
         let claviers = l.claviers.join(", ");
@@ -443,7 +446,7 @@ fn relever_ecran() -> (Releve, Option<Duration>) {
     if let Some(ind) = &ind {
         match crate::protection::sortantes::connexions_vues() {
             Some(c) => {
-                r.verifies += 1;
+                r.verifies = r.verifies.saturating_add(1);
                 r.connexions_lues = true;
                 connexions_espions(&mut r, ind, &c);
             }
@@ -451,7 +454,7 @@ fn relever_ecran() -> (Releve, Option<Duration>) {
         }
         match crate::protection::memoire_dns::noms() {
             Ok(noms) => {
-                r.verifies += 1;
+                r.verifies = r.verifies.saturating_add(1);
                 r.dns_lu = true;
                 memoire_espions(&mut r, ind, &noms);
             }
@@ -553,7 +556,7 @@ fn afficher_section(r: &Releve, section: Section, titre: &str, rien: Option<(&st
         if t.ou.len() > 5 {
             afficher_aligne(
                 "      ",
-                &trf!("… et {} autre(s)", "… and {} more", t.ou.len() - 5),
+                &trf!("… et {} autre(s)", "… and {} more", t.ou.len().saturating_sub(5)),
                 6,
                 GRIS,
             );
@@ -782,6 +785,11 @@ pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
     constats_de(&r)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

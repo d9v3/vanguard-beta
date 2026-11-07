@@ -125,6 +125,19 @@ pub(crate) enum Ecart {
     SansDate,
 }
 
+// Les deux langues dans une seule chaîne : ce module ne dépend pas de l'interface (compilé seul par le banc de
+// fuzzing).
+impl std::fmt::Display for Ecart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Filtre => "écarté par le filtre / excluded by the filter",
+            Self::SansDate => "sans date lisible / no readable date",
+        })
+    }
+}
+
+impl std::error::Error for Ecart {}
+
 impl Filtre {
     /// Le journal est-il voulu ?
     pub(crate) fn veut_journal(&self, journal: &str) -> bool {

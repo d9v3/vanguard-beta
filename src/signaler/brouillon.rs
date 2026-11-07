@@ -7,6 +7,8 @@
 //! observations « non vérifiées », un journal adopté ou incomplet « non prouvé », jamais « intact »), aucun score
 //! CVSS ni CWE n'est inventé, et le brouillon dit qu'il a été préparé par un outil automatique.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::fmt::Write as _;
 
 use super::garde::{self, Decompte};
@@ -409,7 +411,7 @@ pub(crate) fn assembler(
                 }
             }
             let mut gardes: Vec<&Evenement> = fil.iter().filter(|e| !e.essai).collect();
-            omis = *o + gardes.len().saturating_sub(FIL_MAX);
+            omis = o.saturating_add(gardes.len().saturating_sub(FIL_MAX));
             // Le choix de la personne reste dans le fil gardé : couper avant lui ôterait le sujet même du rapport.
             if let Some(i) = gardes.iter().position(|e| e.id == choisi.id).filter(|&i| i >= FIL_MAX) {
                 let c = gardes.remove(i);

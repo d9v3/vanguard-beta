@@ -22,6 +22,7 @@
 //!
 //! Les signaux (lot A9) sont tirés de ces comptes par `signaux` : en Rust, sans IA, sur les états de la nuit.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 #![forbid(unsafe_code)]
 
 pub(crate) mod signaux;
@@ -1156,7 +1157,7 @@ impl Ouvertes {
             let Some(k) = self.a_retirer() else { break };
             let Some(entrees) = self.0.get_mut(&k) else { break };
             if entrees.pop_last().is_some() {
-                self.1 -= 1;
+                self.1 = self.1.saturating_sub(1);
             }
             if entrees.is_empty() {
                 self.0.remove(&k);

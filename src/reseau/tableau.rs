@@ -7,6 +7,8 @@
 //! des alertes (surveillance-alertes.jsonl) n'est plus écrit, mais il est encore lu : une version d'avant, lancée
 //! depuis la clé, peut y écrire.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
@@ -251,11 +253,17 @@ fn ajouter(fichier: &Path, alerte: Alerte, maintenant: NaiveDateTime) -> std::io
     crate::socle::ecrire_atomique(fichier, texte)
 }
 
+/// `t` moins `jours` jours, écrit dans `format`. Vide hors des dates de chrono, que l'horloge n'atteint pas : une
+/// limite vide laisse tout passer, rien n'est retiré.
+fn jours_avant(t: NaiveDateTime, jours: i64, format: &str) -> String {
+    t.checked_sub_signed(chrono::Duration::days(jours))
+        .map(|d| d.format(format).to_string())
+        .unwrap_or_default()
+}
+
 /// Les alertes de moins de 90 jours, les 500 plus récentes au plus.
 fn borner(mut alertes: Vec<Alerte>, maintenant: NaiveDateTime) -> Vec<Alerte> {
-    let limite = (maintenant - chrono::Duration::days(JOURS_GARDES))
-        .format(FORMAT_DATE)
-        .to_string();
+    let limite = jours_avant(maintenant, JOURS_GARDES, FORMAT_DATE);
     alertes.retain(|a| a.date >= limite);
     let trop = alertes.len().saturating_sub(ALERTES_GARDEES);
     alertes.drain(..trop);
@@ -473,9 +481,7 @@ fn jour(date: &str) -> &str {
 /// Les appareils apparus depuis 30 jours, les plus récents en tête. Ceux du premier scan d'un réseau n'en sont pas :
 /// ils étaient déjà là quand Vanguard l'a découvert.
 fn nouveaux(appareils: &[FicheAppareil], maintenant: NaiveDateTime) -> Vec<&FicheAppareil> {
-    let limite = (maintenant - chrono::Duration::days(JOURS_NOUVEAUX))
-        .format("%Y-%m-%d")
-        .to_string();
+    let limite = jours_avant(maintenant, JOURS_NOUVEAUX, "%Y-%m-%d");
     let mut debut: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
     for a in appareils {
         if let Some(p) = a.premier_vu.as_deref() {
@@ -620,9 +626,7 @@ fn page_vide(d: &Donnees) -> bool {
 
 fn tuiles(d: &Donnees, nouveaux: usize, suspectes: usize) -> String {
     let depuis = |jours: i64| {
-        let limite = (d.maintenant - chrono::Duration::days(jours))
-            .format(FORMAT_DATE)
-            .to_string();
+        let limite = jours_avant(d.maintenant, jours, FORMAT_DATE);
         d.alertes.iter().filter(|a| a.date >= limite).count()
     };
     let tuile = |n: usize, etiquette: &str| {
@@ -662,11 +666,13 @@ fn alertes_par_jour(d: &Donnees) -> String {
     let plus = par_jour.values().map(Vec::len).max().unwrap_or(1).max(1);
     h += "<div class=carte>";
     for i in (0..JOURS_RESUMES).rev() {
-        let j = (d.maintenant - chrono::Duration::days(i))
-            .format("%Y-%m-%d")
-            .to_string();
+        let j = jours_avant(d.maintenant, i, "%Y-%m-%d");
         let n = par_jour.get(j.as_str()).map_or(0, Vec::len);
-        let largeur = if n == 0 { 0 } else { (n * 100).div_ceil(plus) };
+        let largeur = if n == 0 {
+            0
+        } else {
+            n.saturating_mul(100).div_ceil(plus)
+        };
         let _ = write!(
             h,
             "<div class=barre><span class=j>{}</span><span class=\"b{}\" style=\"width:{largeur}%\"></span><span>{n}</span></div>",
@@ -756,7 +762,7 @@ fn connexions_suspectes(d: &Donnees, vues: &[&Alerte]) -> String {
         // connexions illisibles depuis) : la date, sans « encore ».
         let recentes = d
             .botnets_vus
-            .is_some_and(|v| (d.maintenant - v) <= chrono::Duration::hours(BOTNETS_RECENTS_HEURES));
+            .is_some_and(|v| d.maintenant.signed_duration_since(v) <= chrono::Duration::hours(BOTNETS_RECENTS_HEURES));
         let vues = d
             .botnets_vus
             .map(|v| quand(&v.format(FORMAT_DATE).to_string()))
@@ -874,6 +880,11 @@ pub fn ouvrir(sans_ouvrir: bool) {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

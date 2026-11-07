@@ -10,6 +10,8 @@
 //! de l'auto-réglage (`super::reglage` : ordre de départ des règles, délai monté d'une règle qui frôle le sien) ; un
 //! fichier douteux vaut un fichier vide, et sa lecture est bornée.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -21,6 +23,13 @@ pub(crate) const MESURES: &str = "autotest/mesures.json";
 const TAILLE_MAX: u64 = 4 << 20;
 /// Jours gardés : 8 semaines.
 const JOURS_GARDES: i64 = 56;
+/// Le jour `ecart` jours avant `jour`, tel que les mesures le nomment (« 2026-11-04 ») ; `None` hors des dates de
+/// chrono, que l'horloge n'atteint pas.
+fn jour_avant(jour: chrono::NaiveDate, ecart: i64) -> Option<String> {
+    jour.checked_sub_signed(chrono::Duration::days(ecart))
+        .map(|j| j.format("%Y-%m-%d").to_string())
+}
+
 /// Durées gardées par règle pour le jour en cours (la médiane du jour se calcule sur elles).
 const PAR_JOUR_MAX: usize = 48;
 /// Une règle régresse quand sa médiane de la semaine dépasse ce multiple de celle des 4 semaines d'avant…
@@ -161,9 +170,8 @@ impl Mesures {
                 v.push(u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
             }
         }
-        let limite = (jour - chrono::Duration::days(JOURS_GARDES))
-            .format("%Y-%m-%d")
-            .to_string();
+        // Une date hors de chrono (impossible depuis l'horloge) : rien n'est retiré.
+        let limite = jour_avant(jour, JOURS_GARDES).unwrap_or_default();
         self.jours.retain(|j, _| *j > limite);
         self.v = 1;
     }
@@ -172,9 +180,9 @@ impl Mesures {
     fn medianes(&self, regle: &str, aujourd_hui: chrono::NaiveDate, de: i64, a: i64) -> Vec<u64> {
         let mut v = Vec::new();
         for ecart in de..=a {
-            let jour = (aujourd_hui - chrono::Duration::days(ecart))
-                .format("%Y-%m-%d")
-                .to_string();
+            let Some(jour) = jour_avant(aujourd_hui, ecart) else {
+                continue;
+            };
             if jour == self.jour {
                 if let Some(d) = self.en_cours.get(regle) {
                     v.push(resumer(d).med);
@@ -189,9 +197,7 @@ impl Mesures {
     fn max_semaine(&self, regle: &str, aujourd_hui: chrono::NaiveDate) -> u64 {
         (0..7)
             .filter_map(|ecart| {
-                let jour = (aujourd_hui - chrono::Duration::days(ecart))
-                    .format("%Y-%m-%d")
-                    .to_string();
+                let jour = jour_avant(aujourd_hui, ecart)?;
                 if jour == self.jour {
                     self.en_cours.get(regle).and_then(|d| d.iter().copied().max())
                 } else {
@@ -235,7 +241,7 @@ impl Mesures {
 
     /// Les jours où quelque chose a été mesuré.
     fn jours_mesures(&self) -> usize {
-        self.jours.len() + usize::from(!self.en_cours.is_empty())
+        self.jours.len().saturating_add(usize::from(!self.en_cours.is_empty()))
     }
 }
 
@@ -375,9 +381,9 @@ pub(crate) fn hors_delai(
         let delai_ms = u64::try_from(delai(r).as_millis()).unwrap_or(u64::MAX);
         let mut fois = 0usize;
         for ecart in 0..7 {
-            let jour = (aujourd_hui - chrono::Duration::days(ecart))
-                .format("%Y-%m-%d")
-                .to_string();
+            let Some(jour) = jour_avant(aujourd_hui, ecart) else {
+                continue;
+            };
             fois = fois.saturating_add(if jour == m.jour {
                 m.en_cours
                     .get(r)
@@ -436,6 +442,11 @@ pub(crate) fn verdict() -> Verdict {
     })
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

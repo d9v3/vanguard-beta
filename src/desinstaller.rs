@@ -10,6 +10,9 @@
 //! changements faits sur le système, que la désinstallation propose de défaire d'abord par leurs propres outils.
 //! Sans droits d'administrateur.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
@@ -233,7 +236,7 @@ fn taille(d: &Path) -> u64 {
         entrees
             .flatten()
             .map(|e| match std::fs::symlink_metadata(e.path()) {
-                Ok(m) if m.is_dir() => dans(&e.path(), profondeur + 1),
+                Ok(m) if m.is_dir() => dans(&e.path(), profondeur.saturating_add(1)),
                 Ok(m) if m.is_file() => m.len(),
                 _ => 0,
             })
@@ -993,7 +996,7 @@ fn effacer(
         match std::fs::read_dir(p) {
             Ok(entrees) => {
                 for e in entrees.flatten() {
-                    vide &= effacer(&e.path(), garder, aussi, restes, profondeur + 1);
+                    vide &= effacer(&e.path(), garder, aussi, restes, profondeur.saturating_add(1));
                 }
             }
             Err(e) => {
@@ -1055,7 +1058,12 @@ struct Annulables {
 
 impl Annulables {
     fn menu_vide(&self) -> bool {
-        self.optimiser + self.bilan + self.blocages + self.jeux + self.quarantaine == 0
+        self.optimiser
+            .saturating_add(self.bilan)
+            .saturating_add(self.blocages)
+            .saturating_add(self.jeux)
+            .saturating_add(self.quarantaine)
+            == 0
     }
 
     fn vide(&self) -> bool {
@@ -1064,7 +1072,10 @@ impl Annulables {
 
     /// Ce qui se défait exactement grâce au dossier de données.
     fn a_defaire(&self) -> usize {
-        self.optimiser + self.bilan + self.blocages + self.jeux
+        self.optimiser
+            .saturating_add(self.bilan)
+            .saturating_add(self.blocages)
+            .saturating_add(self.jeux)
     }
 }
 
@@ -1108,7 +1119,7 @@ fn defaire_d_abord(liste: bool) {
             }
             let mut lignes = vec![Ligne::Texte(String::new())];
             for (i, (texte, precision)) in entrees_annulables(&a).into_iter().enumerate() {
-                lignes.push(Ligne::choix(&(i + 1).to_string(), &texte, &precision));
+                lignes.push(Ligne::choix(&i.saturating_add(1).to_string(), &texte, &precision));
             }
             lignes.push(Ligne::Texte(String::new()));
             lignes.push(Ligne::choix("↵", tr!("Continuer", "Continue"), ""));
@@ -1606,7 +1617,7 @@ fn accord_donnees(e: &Element, a: &Annulables, gardes: &[(PathBuf, String)]) -> 
     };
     let extensions = compter(&|x| x.path().is_dir(), &d.join("plugins"));
     let traces = compter(&|x| x.file_name().to_string_lossy().starts_with("traces-"), d);
-    if extensions + traces > 0 {
+    if extensions.saturating_add(traces) > 0 {
         dire(&trf!(
             "Vos extensions ({extensions}) et les traces collectées ({traces}) y sont aussi.",
             "Your extensions ({extensions}) and the collected traces ({traces}) are there too."
@@ -1922,7 +1933,7 @@ fn montrer_la_liste(rec: &Recensement) {
             tr!(" (pas coché d'office)", " (not checked by default)")
         };
         afficher_aligne(
-            &format!("  {TOUCHE}{:>2}{RESET} ", i + 1),
+            &format!("  {TOUCHE}{:>2}{RESET} ", i.saturating_add(1)),
             &format!("{}{coche}", e.texte),
             5,
             "",
@@ -2082,6 +2093,11 @@ fn retirer_et_conclure(
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

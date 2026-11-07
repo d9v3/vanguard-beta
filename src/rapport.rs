@@ -1,5 +1,7 @@
 //! Rapport HTML autonome (un seul fichier, aucun accès réseau) ouvert dans le navigateur.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::fmt::Write;
 use std::path::PathBuf;
 
@@ -906,9 +908,13 @@ fn journaux_windows_html(
                 "<div class=meta>{coupees} older alert(s) not shown: vanguard windows-logs --json gives them all.</div>"
             );
         }
-        let sans_date = alertes.len() - datees;
+        let sans_date = alertes.len().saturating_sub(datees);
         let montrees_sans_date = sans_date.min(10);
-        for c in alertes.iter().skip(coupees).take(ALERTES_JOURNAUX + montrees_sans_date) {
+        for c in alertes
+            .iter()
+            .skip(coupees)
+            .take(ALERTES_JOURNAUX.saturating_add(montrees_sans_date))
+        {
             let quand = c
                 .date
                 .as_deref()
@@ -927,7 +933,7 @@ fn journaux_windows_html(
                 h,
                 "<div class=meta>{} alerte(s) sans date de plus : vanguard journaux-windows --json les donne toutes.</div>",
                 "<div class=meta>{} more alert(s) without a date: vanguard windows-logs --json gives them all.</div>",
-                sans_date - montrees_sans_date
+                sans_date.saturating_sub(montrees_sans_date)
             );
         }
     }
@@ -937,17 +943,19 @@ fn journaux_windows_html(
 /// Encodage base64, pour mettre une image dans la page elle-même (le rapport reste un seul fichier).
 pub(crate) fn base64(octets: &[u8]) -> String {
     const LETTRES: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut s = String::with_capacity(octets.len().div_ceil(3) * 4);
+    let mut s = String::with_capacity(octets.len().div_ceil(3).saturating_mul(4));
     for bloc in octets.chunks(3) {
         // 3 octets = 24 bits = 4 lettres de 6 bits ; « = » complète le dernier bloc.
-        let n = bloc.iter().fold(0u32, |acc, &o| acc << 8 | u32::from(o)) << (8 * (3 - bloc.len()));
+        // Un bloc fait 1 à 3 octets : le décalage vaut 0, 8 ou 16, jamais saturé.
+        let n = bloc.iter().fold(0u32, |acc, &o| acc << 8 | u32::from(o))
+            << 3usize.saturating_sub(bloc.len()).saturating_mul(8);
         for i in 0..4 {
             s.push(if i <= bloc.len() {
                 #[expect(
                     clippy::indexing_slicing,
                     reason = "« & 63 » borne l'indice sous 64, la taille de LETTRES"
                 )]
-                char::from(LETTRES[(n >> (18 - 6 * i) & 63) as usize])
+                char::from(LETTRES[usize::try_from(n >> 18usize.saturating_sub(i.saturating_mul(6)) & 63).unwrap_or(0)])
             } else {
                 '='
             });
@@ -1184,6 +1192,11 @@ pub fn ouvrir(audit: Option<&Audit>, reseau: Option<&Rapport>, audit_reseau: Opt
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

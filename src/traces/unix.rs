@@ -2,6 +2,8 @@
 //! d'un fichier journal, un journal écrit par sa commande dans une borne, les événements de la chronologie repris
 //! dans les journaux écrits.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -205,7 +207,7 @@ pub(super) fn copier_avec_le_tourne(
     if let Some(etendue) = &lu_sur {
         sortie.write_all(ligne_lu_sur(etendue).as_bytes())?;
     }
-    let mut ecrit = 0;
+    let mut ecrit = 0u64;
     if let Some((tourne, (octets, _))) = &ancien {
         writeln!(
             sortie,
@@ -217,10 +219,13 @@ pub(super) fn copier_avec_le_tourne(
             texte.push('\n');
         }
         sortie.write_all(texte.as_bytes())?;
-        ecrit += octets.len() as u64;
+        ecrit = ecrit.saturating_add(u64::try_from(octets.len()).unwrap_or(u64::MAX));
     }
     sortie.write_all(super::texte_sur(&String::from_utf8_lossy(&actuel)).as_bytes())?;
-    Ok((ecrit + actuel.len() as u64, erreur))
+    Ok((
+        ecrit.saturating_add(u64::try_from(actuel.len()).unwrap_or(u64::MAX)),
+        erreur,
+    ))
 }
 
 /// Lance une commande qui écrit un journal dans `nom` (après l'en-tête), `borne` octets au plus ; `etendue` : celle à
@@ -272,6 +277,10 @@ pub(super) fn journal_vers_borne(
 /// La taille lisible d'un journal écrit.
 pub(super) fn mo(octets: u64) -> Bi {
     #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::as_conversions,
+        reason = "u64 vers f64 : seul `as` existe ; une taille à montrer, arrondie"
+    )]
     let mo = octets as f64 / f64::from(1u32 << 20);
     if mo < 1.0 {
         Bi::new("moins de 1 Mo", "less than 1 MB")
@@ -293,7 +302,7 @@ fn raison_de(e: &std::io::Error) -> Raison {
 /// fin de chacun, précédée de celle de son fichier tourné le plus récent (« auth.log.1 ») : tourné la nuit, le
 /// fichier lui-même ne couvre que la journée.
 pub(super) fn journaux_classiques(p: &mut Partie, dossier: &Path, fichiers: &[&str]) -> u64 {
-    let mut total = 0;
+    let mut total = 0u64;
     for source in fichiers {
         let source = Path::new(source);
         if !source.is_file() {
@@ -306,7 +315,7 @@ pub(super) fn journaux_classiques(p: &mut Partie, dossier: &Path, fichiers: &[&s
         let tournes = tournes(source);
         match copier_avec_le_tourne(source, &tournes, dossier, &nom, FIN_JOURNAL) {
             Ok((n, erreur_du_tourne)) => {
-                total += n;
+                total = total.saturating_add(n);
                 let contenu = match tournes.lisible.as_deref().filter(|_| erreur_du_tourne.is_none()) {
                     Some(tourne) => bi!(
                         "la fin de {} et de {}, le fichier tourné le plus récent (10 Mo chacun au plus)",
@@ -371,7 +380,9 @@ pub(super) fn journaux_ecrits(
         });
     }
     let maintenant = chrono::Local::now().naive_local();
-    let debut = chronologie::secondes(std::time::SystemTime::now()).unwrap_or(0) - chronologie::JOURS * 86_400;
+    let debut = chronologie::secondes(std::time::SystemTime::now())
+        .unwrap_or(0)
+        .saturating_sub(chronologie::JOURS.saturating_mul(86_400));
     for chemin in journaux {
         let nom = chemin.file_name().unwrap_or_default().to_string_lossy().into_owned();
         match lire_fichier(&chemin, maintenant) {
@@ -380,7 +391,7 @@ pub(super) fn journaux_ecrits(
                 // Un journal qui ne couvre pas la semaine : ce qui précède manque à la chronologie, et c'est dit avec
                 // sa vraie raison. Seul un journal lu en entier, avec les droits, dit ce que le système a gardé ; les
                 // bornes de Vanguard (50 Mo, la fin d'un fichier, le dernier jour de macOS) ne l'accusent pas.
-                if let Some(q) = lecture.plus_ancienne.filter(|q| *q > debut + 3600) {
+                if let Some(q) = lecture.plus_ancienne.filter(|q| *q > debut.saturating_add(3600)) {
                     let depuis = chronologie::date_locale(q, &chrono::Local);
                     let borne = std::fs::metadata(&chemin).is_ok_and(|m| m.len() >= super::BORNE_JOURNAL);
                     apport.manques.push(Manque {
@@ -431,7 +442,7 @@ impl Lecture {
             return;
         }
         if let Some(q) = chronologie::quand_de_ligne(ligne, maintenant, &chrono::Local) {
-            self.entrees += 1;
+            self.entrees = self.entrees.saturating_add(1);
             self.plus_ancienne = Some(self.plus_ancienne.map_or(q, |p| p.min(q)));
         }
         if let Some(e) = lire_ligne_journal(ligne, maintenant, &chrono::Local) {
@@ -465,6 +476,11 @@ fn lire_fichier(chemin: &Path, maintenant: chrono::NaiveDateTime) -> std::io::Re
     Ok(lecture)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

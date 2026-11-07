@@ -6,6 +6,8 @@
 //! Rien d'Internet : tout se passe sur le réseau local (multicast LLMNR/mDNS, diffusion NetBIOS). Sans réseau local,
 //! la sonde s'arrête aussitôt. Lecture seule : rien n'est coupé ni bloqué.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -101,7 +103,7 @@ fn requete_mdns(id: u16, nom: &str) -> Vec<u8> {
 fn nom_netbios(nom: &str) -> [u8; 16] {
     let mut brut = [b' '; 16];
     for (case, c) in brut.iter_mut().zip(nom.chars().take(15)) {
-        *case = u8::try_from(c.to_ascii_uppercase() as u32).unwrap_or(b' ');
+        *case = u8::try_from(u32::from(c.to_ascii_uppercase())).unwrap_or(b' ');
     }
     brut[15] = 0x00;
     brut
@@ -111,8 +113,8 @@ fn nom_netbios(nom: &str) -> [u8; 16] {
 fn encoder_netbios(brut: &[u8; 16]) -> Vec<u8> {
     let mut p = Vec::with_capacity(32);
     for &o in brut {
-        p.push(b'A' + (o >> 4));
-        p.push(b'A' + (o & 0x0f));
+        p.push(b'A'.saturating_add(o >> 4));
+        p.push(b'A'.saturating_add(o & 0x0f));
     }
     p
 }
@@ -154,7 +156,7 @@ fn requete_netbios(id: u16, nom: &str) -> Vec<u8> {
 
 /// Lit un u16 en gros-boutien à `offset`.
 fn u16_be(p: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_be_bytes([*p.get(offset)?, *p.get(offset + 1)?]))
+    Some(u16::from_be_bytes([*p.get(offset)?, *p.get(offset.saturating_add(1))?]))
 }
 
 /// Saute un nom DNS à partir de `debut` et rend l'offset qui le suit. Gère les pointeurs de compression (0xC0…), avec
@@ -165,9 +167,9 @@ fn sauter_nom(p: &[u8], debut: usize) -> Option<usize> {
         let octet = *p.get(i)?;
         match octet & 0xc0 {
             // Pointeur de compression : deux octets, le nom se poursuit ailleurs mais la position d'origine s'arrête là.
-            0xc0 => return Some(i + 2),
-            0x00 if octet == 0 => return Some(i + 1),
-            0x00 => i += 1 + octet as usize,
+            0xc0 => return Some(i.saturating_add(2)),
+            0x00 if octet == 0 => return Some(i.saturating_add(1)),
+            0x00 => i = i.saturating_add(usize::from(octet).saturating_add(1)),
             _ => return None, // étiquette réservée (0x40, 0x80) : paquet mal formé.
         }
     }
@@ -183,7 +185,7 @@ fn lire_nom(p: &[u8], debut: usize) -> Option<String> {
         let octet = *p.get(i)?;
         match octet & 0xc0 {
             0xc0 => {
-                let cible = (usize::from(octet & 0x3f) << 8) | usize::from(*p.get(i + 1)?);
+                let cible = (usize::from(octet & 0x3f) << 8) | usize::from(*p.get(i.saturating_add(1))?);
                 // Un pointeur doit renvoyer en arrière : sinon il pourrait boucler.
                 if cible >= i {
                     return None;
@@ -192,8 +194,8 @@ fn lire_nom(p: &[u8], debut: usize) -> Option<String> {
             }
             0x00 if octet == 0 => return Some(nom),
             0x00 => {
-                let fin = i + 1 + octet as usize;
-                let etiquette = p.get(i + 1..fin)?;
+                let fin = i.checked_add(1)?.checked_add(usize::from(octet))?;
+                let etiquette = p.get(i.saturating_add(1)..fin)?;
                 if !nom.is_empty() {
                     nom.push('.');
                 }
@@ -223,13 +225,13 @@ fn adresse_dns(p: &[u8], id_attendu: u16, nom_attendu: &str) -> Option<Ipv4Addr>
         let nom = lire_nom(p, i)?;
         let apres = sauter_nom(p, i)?;
         let type_ = u16_be(p, apres)?;
-        let longueur = usize::from(u16_be(p, apres + 8)?);
-        let rdata = apres + 10;
+        let longueur = usize::from(u16_be(p, apres.saturating_add(8))?);
+        let rdata = apres.saturating_add(10);
         if type_ == 0x0001 && longueur == 4 && nom.eq_ignore_ascii_case(nom_attendu) {
-            let a: [u8; 4] = p.get(rdata..rdata + 4)?.try_into().ok()?;
+            let a: [u8; 4] = p.get(rdata..rdata.saturating_add(4))?.try_into().ok()?;
             return Some(Ipv4Addr::from(a));
         }
-        i = rdata + longueur;
+        i = rdata.saturating_add(longueur);
     }
     None
 }
@@ -269,7 +271,10 @@ fn adresse_netbios(p: &[u8], id: u16, nom: &str) -> Option<Ipv4Addr> {
         return None;
     }
     // type (2) + classe (2) + TTL (4) + longueur (2) = 10 ; chaque adresse : drapeaux (2) + IP (4).
-    let a: [u8; 4] = p.get(apres + 12..apres + 16)?.try_into().ok()?;
+    let a: [u8; 4] = p
+        .get(apres.saturating_add(12)..apres.saturating_add(16))?
+        .try_into()
+        .ok()?;
     Some(Ipv4Addr::from(a))
 }
 
@@ -299,7 +304,8 @@ async fn interroger(
     if socket.send_to(&requete, cible).await.is_err() {
         return trouves;
     }
-    let fin = Instant::now() + DELAI;
+    let maintenant = Instant::now();
+    let fin = maintenant.checked_add(DELAI).unwrap_or(maintenant);
     let mut tampon = [0u8; 1500];
     while let Some(reste) = fin.checked_duration_since(Instant::now()) {
         match timeout(reste, socket.recv_from(&mut tampon)).await {
@@ -359,7 +365,12 @@ fn diffusion_de(cidr: &str) -> Option<Ipv4Addr> {
     if pref > 32 {
         return None;
     }
-    let masque = if pref == 0 { 0 } else { u32::MAX << (32 - pref) };
+    // 1 ≤ pref ≤ 32 ici : le décalage vaut de 0 à 31.
+    let masque = if pref == 0 {
+        0
+    } else {
+        u32::MAX << 32u32.saturating_sub(pref)
+    };
     Some(Ipv4Addr::from((u32::from(ip) & masque) | !masque))
 }
 
@@ -445,6 +456,11 @@ pub fn afficher(rapport: &Rapport, hotes: &[super::Hote]) {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

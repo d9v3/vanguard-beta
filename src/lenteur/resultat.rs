@@ -5,6 +5,8 @@
 //! information. Une mesure qui manque (processeur, mémoire, disque, place, démarrage, durée allumée) est dite non
 //! vérifiée : « rien ne force » ne vaut que pour ce qui a été mesuré.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::{Instantane, conseils, mesure_complete};
 use crate::machine::{Constat, alerte, impossible_par, ok, sans_objet};
 use crate::modele::resultat::{Couverture, Resultat};
@@ -28,7 +30,7 @@ pub(super) fn resultat(i: &Instantane, debut: Debut) -> Resultat {
     let mut constats: Vec<Constat> = Vec::new();
     let mut point = |mesure: bool, manque: &str| {
         if mesure {
-            verifies += 1;
+            verifies = verifies.saturating_add(1);
         } else {
             non_verifies.push(manque.to_string());
         }
@@ -57,7 +59,7 @@ pub(super) fn resultat(i: &Instantane, debut: Debut) -> Resultat {
         tr!("durée depuis le démarrage non lue", "time since startup not read"),
     );
     match &i.demarrage {
-        Ok(_) => verifies += 1,
+        Ok(_) => verifies = verifies.saturating_add(1),
         // macOS ne note pas la durée de son démarrage : rien à juger, ce n'est pas une lecture qui a échoué.
         Err(raison) if cfg!(target_os = "macos") => {
             constats.push(sans_objet(CAT, Absence::Plateforme, raison.clone()));
@@ -94,6 +96,11 @@ pub(super) fn resultat(i: &Instantane, debut: Debut) -> Resultat {
     Resultat::nouveau(ID, debut, &constats, Couverture { verifies, non_verifies })
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::super::Demarrage;

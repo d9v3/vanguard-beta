@@ -6,6 +6,9 @@
 //! Planificateur natif de chaque système : timer systemd (Linux), Planificateur de tâches (Windows), agent launchd
 //! (macOS).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::Command;
@@ -360,12 +363,12 @@ fn nouveautes_machine(avant: &EtatMachine, apres: &EtatMachine) -> Vec<(String, 
             trf!(
                 "{} autre(s) problème(s) nouveau(x) : lancez « vanguard audit ».",
                 "{} other new problem(s): run “vanguard audit”.",
-                nouvelles.len() - 3
+                nouvelles.len().saturating_sub(3)
             ),
         ));
     }
     if let (Some(a), Some(b)) = (avant.score, apres.score)
-        && b + 10 <= a
+        && b.saturating_add(10) <= a
     {
         notes.push((
             tr!("Vanguard : note en baisse", "Vanguard: grade dropping").to_string(),
@@ -383,7 +386,7 @@ fn nouveautes_machine(avant: &EtatMachine, apres: &EtatMachine) -> Vec<(String, 
 /// reste la référence, et deux moitiés de baisse se comparent à la même note.
 fn score_retenu(avant: Option<u32>, apres: Option<u32>, repris: bool) -> Option<u32> {
     match (avant, apres) {
-        (Some(a), Some(b)) if repris && b < a && b + 10 > a => Some(a),
+        (Some(a), Some(b)) if repris && b < a && b.saturating_add(10) > a => Some(a),
         _ => apres,
     }
 }
@@ -702,7 +705,9 @@ async fn attendre_reseau(
     pas: std::time::Duration,
     max: std::time::Duration,
 ) -> bool {
-    let fin = tokio::time::Instant::now() + max;
+    let fin = tokio::time::Instant::now()
+        .checked_add(max)
+        .unwrap_or_else(tokio::time::Instant::now);
     loop {
         if reseau_la() {
             return true;
@@ -2188,6 +2193,11 @@ pub(crate) fn corpus_audit(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
     alertes
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

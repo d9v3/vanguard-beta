@@ -6,6 +6,9 @@
 //! configuration, rien ne se fait à sa place). Ce que Vanguard a posé est noté (sauvegarde.json) pour ne retirer que ça.
 //! Jamais vers la clé VANGUARD ni le disque du système : la liste des disques de Copier mes fichiers les exclut.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -199,6 +202,17 @@ pub(crate) enum Refus {
     /// L'identité du disque (UUID de son système de fichiers, findmnt pour la vérifier) ne se lit pas.
     Identite,
 }
+
+impl std::fmt::Display for Refus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Refus::Controle => crate::tr!("caractère de contrôle dans un chemin", "control character in a path"),
+            Refus::Identite => crate::tr!("identité du disque (UUID) illisible", "disk identity (UUID) unreadable"),
+        })
+    }
+}
+
+impl std::error::Error for Refus {}
 
 /// L'UUID tel qu'il peut entrer dans une ligne d'unité : lettres, chiffres et tirets seulement.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -468,9 +482,9 @@ pub(crate) fn nouvel_identifiant(avant: &[String], apres: &[String]) -> Option<S
 /// Le nom du lecteur cible dans Config1.xml de l'Historique des fichiers (« `<TargetName>…` »).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn cible_historique(xml: &str) -> Option<String> {
-    let debut = xml.find("<TargetName>")? + "<TargetName>".len();
+    let debut = xml.find("<TargetName>")?.saturating_add("<TargetName>".len());
     let fin = xml[debut..].find("</TargetName>")?;
-    let nom = xml[debut..debut + fin].trim();
+    let nom = xml[debut..debut.saturating_add(fin)].trim();
     (!nom.is_empty()).then(|| affichable(nom))
 }
 
@@ -744,7 +758,7 @@ fn choisir_disque() -> Option<crate::copier::Disque> {
             taille_lisible(d.libre),
             taille_lisible(d.total)
         );
-        lignes.push(Ligne::choix(&(i + 1).to_string(), &d.nom, &place));
+        lignes.push(Ligne::choix(&i.saturating_add(1).to_string(), &d.nom, &place));
     }
     lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
     lignes.push(Ligne::Texte(String::new()));
@@ -1410,7 +1424,7 @@ fn comparer(copie: &Path, original: &Path) -> Comparaison {
     // depuis une archive donne le même signe : une vérification de trop coûte moins qu'une sauvegarde chiffrée
     // passée pour saine.
     match (heure(copie), heure(original)) {
-        (Some(c), Some(o)) if o > c + marge => Comparaison::ModifieDepuis,
+        (Some(c), Some(o)) if c.checked_add(marge).is_some_and(|l| o > l) => Comparaison::ModifieDepuis,
         _ => Comparaison::Different,
     }
 }
@@ -1448,7 +1462,7 @@ fn fichiers_de(dossier: &Path) -> Liste {
             let chemin = relatif.join(e.file_name());
             match std::fs::symlink_metadata(e.path()) {
                 Ok(m) if m.is_dir() => a_voir.push(chemin),
-                Ok(m) if m.is_file() && m.len() > TAILLE_RELUE_MAX => liste.gros += 1,
+                Ok(m) if m.is_file() && m.len() > TAILLE_RELUE_MAX => liste.gros = liste.gros.saturating_add(1),
                 Ok(m) if m.is_file() => liste.fichiers.push(chemin),
                 _ => {}
             }
@@ -1604,7 +1618,7 @@ pub fn verifier_sauvegarde() {
         mauvais(&format!("{} : {pourquoi}", chemin_affichable(relatif)));
     }
     println!();
-    if differents + illisibles > 0 {
+    if differents.saturating_add(illisibles) > 0 {
         mauvais(tr!(
             "La sauvegarde est abîmée : le disque perd peut-être des données. Vérifiez-le (Données et sauvegardes › Vérifier une clé USB ou un disque) et refaites une sauvegarde complète sur un autre disque.",
             "The backup is damaged: the disk may be losing data. Check it (Data and backups › Check a USB drive or a disk) and make a full backup to another disk."
@@ -1622,6 +1636,11 @@ pub fn verifier_sauvegarde() {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

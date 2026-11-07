@@ -57,6 +57,15 @@ pub(crate) enum Refus {
     CarnetModifie,
 }
 
+// Le texte déjà montré par l'interface (`texte`), pour qu'une erreur standard dise la même chose.
+impl std::fmt::Display for Refus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.texte())
+    }
+}
+
+impl std::error::Error for Refus {}
+
 impl Refus {
     pub(crate) fn texte(self) -> String {
         match self {
@@ -636,7 +645,7 @@ mod tests {
             &donnees,
             &base.join("cle-donnees"),
             &base.join("local"),
-            "phrase",
+            &crate::chiffrement::Phrase::from("phrase"),
             (64, 1, 1),
         )
         .unwrap();
@@ -654,7 +663,7 @@ mod tests {
             &donnees,
             &base.join("cle-donnees"),
             &base.join("local"),
-            "phrase",
+            &crate::chiffrement::Phrase::from("phrase"),
             (64, 1, 1),
         )
         .unwrap();

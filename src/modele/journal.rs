@@ -15,6 +15,9 @@
 //! Comme les sceaux : barrière, pas coffre. BLAKE3 sans clé secrète, quelqu'un qui a les droits du compte peut tout
 //! recalculer ; ce qu'on gagne, c'est qu'un programme qui retire sa ligne sans connaître ce mécanisme se voit.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -51,6 +54,13 @@ struct Bornes {
 
 const BORNES: Bornes = Bornes {
     // Le mois en cours en plus : une horloge sautée en avant peut en laisser un de plus.
+    #[cfg_attr(
+        target_os = "linux",
+        expect(
+            clippy::as_conversions,
+            reason = "constante : From n'est pas utilisable ici ; quelques mois"
+        )
+    )]
     mois: MOIS_GARDES as usize + 1,
     octets: SEGMENT_MAX,
     evenements: 200_000,
@@ -116,7 +126,9 @@ enum Fin {
 /// exacte, nombre de lignes compris : une ligne de plus que la tête, même chaînée sur sa dernière, est une autre fin.
 fn fin_trouvee(t: &Tete, dernier: Option<&str>, lignes: usize, derniere: Option<&str>) -> Fin {
     let pareil = |segment: &str, n: u64, fin: &str| {
-        dernier.unwrap_or_default() == segment && lignes as u64 == n && derniere.unwrap_or_default() == fin
+        dernier.unwrap_or_default() == segment
+            && u64::try_from(lignes).unwrap_or(u64::MAX) == n
+            && derniere.unwrap_or_default() == fin
     };
     if pareil(&t.segment, t.lignes, &t.derniere) {
         Fin::DeLaTete
@@ -339,7 +351,7 @@ fn garder_recent(
 ) {
     if evenements.len() >= max {
         evenements.pop_front();
-        *laisses += 1;
+        *laisses = (*laisses).saturating_add(1);
     }
     evenements.push_back(e);
 }
@@ -348,16 +360,27 @@ fn garder_recent(
 fn plus_ancien_garde(mois: &str) -> String {
     let annee: i32 = mois.get(..4).and_then(|a| a.parse().ok()).unwrap_or(0);
     let m: i32 = mois.get(5..).and_then(|a| a.parse().ok()).unwrap_or(1);
-    let total = annee * 12 + (m - 1) - (MOIS_GARDES - 1);
-    format!("{:04}-{:02}", total.div_euclid(12), total.rem_euclid(12) + 1)
+    let total = annee
+        .saturating_mul(12)
+        .saturating_add(m.saturating_sub(1))
+        .saturating_sub(MOIS_GARDES.saturating_sub(1));
+    format!(
+        "{:04}-{:02}",
+        total.div_euclid(12),
+        total.rem_euclid(12).saturating_add(1)
+    )
 }
 
 /// Le mois d'après (« 2026-12 » → « 2027-01 »).
 fn mois_suivant(mois: &str) -> String {
     let annee: i32 = mois.get(..4).and_then(|a| a.parse().ok()).unwrap_or(0);
     let m: i32 = mois.get(5..).and_then(|a| a.parse().ok()).unwrap_or(1);
-    let total = annee * 12 + m;
-    format!("{:04}-{:02}", total.div_euclid(12), total.rem_euclid(12) + 1)
+    let total = annee.saturating_mul(12).saturating_add(m);
+    format!(
+        "{:04}-{:02}",
+        total.div_euclid(12),
+        total.rem_euclid(12).saturating_add(1)
+    )
 }
 
 /// La tête telle que les sceaux la rendent.
@@ -516,10 +539,10 @@ fn ecrire_dans(
     // La tête telle que le disque est avant l'ajout (après une rupture, celle refaite du disque) : c'est elle qui
     // porte l'annonce.
     tete.segment = dernier.clone().unwrap_or_default();
-    tete.lignes = reelles.len() as u64;
+    tete.lignes = u64::try_from(reelles.len()).unwrap_or(u64::MAX);
     tete.derniere = fin_reelle.clone().unwrap_or_default();
     // Rotation : le mois d'avant est clos, et sa dernière empreinte devient l'ancre du nouveau.
-    let mut n_courant = reelles.len() as u64;
+    let mut n_courant = u64::try_from(reelles.len()).unwrap_or(u64::MAX);
     let mut prefixe_retour = !octets.is_empty() && !octets.ends_with(b"\n");
     let mut clos_ici = None;
     if let Some(d) = &dernier
@@ -528,7 +551,7 @@ fn ecrire_dans(
         clos_ici = Some((
             d.clone(),
             Clos {
-                lignes: reelles.len() as u64,
+                lignes: u64::try_from(reelles.len()).unwrap_or(u64::MAX),
                 empreinte: empreinte_segment(&octets),
             },
         ));
@@ -546,13 +569,17 @@ fn ecrire_dans(
         precedent = empreinte_ligne(&ligne);
         a_ajouter.extend_from_slice(&ligne);
         a_ajouter.push(b'\n');
-        n_courant += 1;
+        n_courant = n_courant.saturating_add(1);
     }
     // Le mois en cours n'est jamais élagué : sans cette borne, un segment au-delà de ce que la lecture accepte ne
     // se relirait plus, et tout le mois (ses alertes comprises) disparaîtrait des lectures. Le refus, lui, va au
     // journal des erreurs par `noter`.
-    let deja = if n_courant == 0 { 0 } else { octets.len() as u64 };
-    if deja + a_ajouter.len() as u64 > SEGMENT_MAX {
+    let deja = if n_courant == 0 {
+        0
+    } else {
+        u64::try_from(octets.len()).unwrap_or(u64::MAX)
+    };
+    if deja.saturating_add(u64::try_from(a_ajouter.len()).unwrap_or(u64::MAX)) > SEGMENT_MAX {
         return Err(std::io::Error::new(
             std::io::ErrorKind::StorageFull,
             "journal du mois plein / month's log full",
@@ -584,7 +611,7 @@ fn ecrire_dans(
             let _ = std::fs::remove_file(f);
         }
         if apres > n {
-            noter_perdus(dossier, usize::try_from(apres - n).unwrap_or(usize::MAX));
+            noter_perdus(dossier, usize::try_from(apres.saturating_sub(n)).unwrap_or(usize::MAX));
         }
     }
     #[cfg(test)]
@@ -644,7 +671,8 @@ fn juger_la_tete(
                     if let Some((m, c)) = a.clos {
                         let pareil = presents.iter().find(|(p, _)| *p == m).is_some_and(|(_, chemin)| {
                             crate::socle::lire_ordinaire(chemin, SEGMENT_MAX).is_ok_and(|o| {
-                                empreinte_segment(&o) == c.empreinte && lignes(&o).len() as u64 == c.lignes
+                                empreinte_segment(&o) == c.empreinte
+                                    && u64::try_from(lignes(&o).len()).ok() == Some(c.lignes)
                             })
                         });
                         if pareil {
@@ -707,7 +735,7 @@ fn refaire_du_disque(tete: &mut Tete, presents: &[(String, PathBuf)]) {
             tete.clos.insert(
                 m.clone(),
                 Clos {
-                    lignes: lignes(&o).len() as u64,
+                    lignes: u64::try_from(lignes(&o).len()).unwrap_or(u64::MAX),
                     empreinte: empreinte_segment(&o),
                 },
             );
@@ -1039,7 +1067,7 @@ fn lire_borne(dossier: &Path, bornes: Bornes) -> Lu {
         lecture = lecture.pire(Lecture::Incomplet(texte_perdus(n)));
     }
     let verifies_des = if tete_crue && !matches!(lecture, Lecture::Falsifie(_)) {
-        derniere_rupture.map_or(0, |i| i + 1)
+        derniere_rupture.map_or(0, |i| i.saturating_add(1))
     } else {
         evenements.len()
     };
@@ -1063,7 +1091,7 @@ fn relire(
     let mut lecture = Lecture::Intact;
     let mut evenements = std::collections::VecDeque::new();
     let mut laisses = 0;
-    let mut illisibles = 0;
+    let mut illisibles = 0usize;
     let mut precedente: Option<String> = tete.filter(|_| ecartes.is_empty()).map(|t| t.ancre.clone());
     let dernier = presents.len().saturating_sub(1);
     if let Some(t) = tete {
@@ -1093,14 +1121,14 @@ fn relire(
                 (Some(p), Some(attendu)) if p != *attendu => {
                     lecture = lecture.pire(Lecture::Falsifie(format!(
                         "{mois} ligne/line {} : chaîne rompue / chain broken",
-                        j + 1
+                        j.saturating_add(1)
                     )));
                 }
                 _ => {}
             }
             match serde_json::from_slice::<Evenement>(l) {
                 Ok(e) => garder_recent(&mut evenements, e, max, &mut laisses),
-                Err(_) => illisibles += 1,
+                Err(_) => illisibles = illisibles.saturating_add(1),
             }
             precedente = Some(empreinte_ligne(l));
         }
@@ -1114,7 +1142,9 @@ fn relire(
             .map(|(_, c)| c);
         if i < dernier {
             match t.clos.get(mois).or(clos_annonce) {
-                Some(c) if c.empreinte == empreinte_segment(&octets) && c.lignes == ls.len() as u64 => {}
+                Some(c)
+                    if c.empreinte == empreinte_segment(&octets)
+                        && c.lignes == u64::try_from(ls.len()).unwrap_or(u64::MAX) => {}
                 Some(_) => {
                     lecture = lecture.pire(Lecture::Falsifie(format!(
                         "{mois} : mois clos changé / closed month changed"
@@ -1277,7 +1307,7 @@ pub(crate) fn noter(ev: Evenement) -> Option<String> {
         Err(e) => {
             evs.truncate(avant);
             let perdus = differer(&dossier, evs);
-            noter_perdus(&dossier, perdus + 1);
+            noter_perdus(&dossier, perdus.saturating_add(1));
             let mut echec = super::Echec::io("evenements/noter", &e);
             if perdus > 0 {
                 echec = echec.detail(trf!(
@@ -1415,9 +1445,11 @@ fn constat_de_rupture(
     evenements: &[Evenement],
     maintenant: chrono::DateTime<chrono::Utc>,
 ) -> Option<crate::machine::Constat> {
-    let limite = (maintenant - chrono::Duration::days(RUPTURE_DITE_JOURS))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
+    // Une date hors de chrono : limite vide, toute rupture compte (l'alerte dure plus, jamais moins).
+    let limite = maintenant
+        .checked_sub_signed(chrono::Duration::days(RUPTURE_DITE_JOURS))
+        .map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_default();
     // Jamais après maintenant : une rupture datée de l'avenir (horloge avancée) ne tiendrait l'alerte que plus longtemps.
     let apres = maintenant.format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let dans_le_mois =
@@ -1535,7 +1567,10 @@ fn dernier_dans(
     fenetre: chrono::Duration,
     maintenant: chrono::DateTime<chrono::Utc>,
 ) -> Option<String> {
-    let limite = (maintenant - fenetre).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let limite = maintenant
+        .checked_sub_signed(fenetre)
+        .map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_default();
     let apres = maintenant.format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let plafond = mois_de(maintenant);
     let presents = segments(&dossier.join(DOSSIER));
@@ -1602,6 +1637,11 @@ pub(crate) fn en_place(evenements: &[Evenement]) -> Vec<&Evenement> {
         .collect()
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,6 +5,8 @@
 //!
 //! Lecteurs purs, sans `crate::`.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::io::Read;
 use std::path::Path;
 
@@ -26,7 +28,10 @@ pub(crate) fn texte_borne(chemin: &Path) -> Option<String> {
         return None;
     }
     let mut octets = Vec::new();
-    fichier.take(TAILLE_MAX as u64 + 1).read_to_end(&mut octets).ok()?;
+    fichier
+        .take(u64::try_from(TAILLE_MAX).unwrap_or(u64::MAX).saturating_add(1))
+        .read_to_end(&mut octets)
+        .ok()?;
     texte(&octets).map(str::to_string)
 }
 
@@ -106,7 +111,7 @@ fn chaine(texte: &str) -> Option<(&str, &str)> {
     let reste = &texte[1..];
     let fin = reste.find(guillemet)?;
     let contenu = &reste[..fin];
-    (!contenu.contains('\\')).then_some((contenu, &reste[fin + 1..]))
+    (!contenu.contains('\\')).then_some((contenu, &reste[fin.saturating_add(guillemet.len_utf8())..]))
 }
 
 /// Le canal de mise à jour de Firefox écrit dans `defaults/pref/channel-prefs.js` :
@@ -135,6 +140,11 @@ pub(crate) fn canal_prefs(texte: &str) -> Option<String> {
     None
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

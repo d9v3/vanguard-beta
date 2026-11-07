@@ -8,6 +8,9 @@
 //! la lecture dépend du système. Aucun programme n'est lancé : ni « sshd -T », ni « wg show » (il afficherait les
 //! clés en clair, et c'est un programme tiers lancé en administrateur).
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use super::{Constat, alerte, impossible_par, ok, sans_objet};
 use crate::machine::regles::{Os, regle};
 use crate::machine::sshd::{kex_post_quantique, liste_qui_retire, noms_a_ajouter, premiere_valeur};
@@ -484,9 +487,9 @@ pub(crate) fn pairs_wg_quick(texte: &str) -> Pairs {
     let mut p = Pairs::default();
     for (nom, lignes) in sections(texte) {
         if nom == "peer" {
-            p.total += 1;
+            p.total = p.total.saturating_add(1);
             if !a_valeur(&lignes, "presharedkey") {
-                p.sans += 1;
+                p.sans = p.sans.saturating_add(1);
             }
         }
     }
@@ -509,13 +512,13 @@ pub(crate) fn pairs_networkmanager(texte: &str) -> Option<(String, Pairs)> {
     let mut p = Pairs::default();
     for (nom, lignes) in &s {
         if nom.starts_with("wireguard-peer.") {
-            p.total += 1;
+            p.total = p.total.saturating_add(1);
             if a_valeur(lignes, "preshared-key") {
                 continue;
             }
             match valeur(lignes, "preshared-key-flags").map(str::trim) {
-                None | Some("0" | "4") => p.sans += 1,
-                Some(_) => p.inconnus += 1,
+                None | Some("0" | "4") => p.sans = p.sans.saturating_add(1),
+                Some(_) => p.inconnus = p.inconnus.saturating_add(1),
             }
         }
     }
@@ -535,9 +538,9 @@ pub(crate) fn pairs_netdev(texte: &str) -> Option<(String, Pairs)> {
     let mut p = Pairs::default();
     for (nom, lignes) in &s {
         if nom == "wireguardpeer" {
-            p.total += 1;
+            p.total = p.total.saturating_add(1);
             if !a_valeur(lignes, "presharedkey") && !a_valeur(lignes, "presharedkeyfile") {
-                p.sans += 1;
+                p.sans = p.sans.saturating_add(1);
             }
         }
     }
@@ -659,7 +662,9 @@ fn lire_efface(chemin: &std::path::Path) -> std::io::Result<Efface> {
     use std::io::Read;
     let f = std::fs::File::open(chemin)?;
     let taille = f.metadata()?.len().min(1 << 20);
-    let mut tampon = Efface(Vec::with_capacity(usize::try_from(taille).unwrap_or(0) + 1));
+    let mut tampon = Efface(Vec::with_capacity(
+        usize::try_from(taille).unwrap_or(0).saturating_add(1),
+    ));
     f.take(1 << 20).read_to_end(&mut tampon.0)?;
     Ok(tampon)
 }
@@ -869,13 +874,11 @@ fn lire_client() -> Lecture<Client> {
         return Lecture::Absent(Absence::Logiciel);
     }
     let dossier = crate::socle::maison().join(".ssh");
+    // Le premier lecteur porte le type de tous : sans lui, chaque fermeture a le sien.
+    let inclus_ssh: &dyn Fn(&str) -> Vec<(String, String)> = &|m: &str| super::fichiers_inclus_ssh(&dossier, m);
     let mut fichiers = Vec::new();
     for (nom, chemin, inclus) in [
-        (
-            "~/.ssh/config".to_string(),
-            dossier.join("config"),
-            &(|m: &str| super::fichiers_inclus_ssh(&dossier, m)) as &dyn Fn(&str) -> Vec<(String, String)>,
-        ),
+        ("~/.ssh/config".to_string(), dossier.join("config"), inclus_ssh),
         (
             "/etc/ssh/ssh_config".to_string(),
             std::path::PathBuf::from("/etc/ssh/ssh_config"),
@@ -1023,6 +1026,11 @@ fn lire_wireguard() -> Wireguard {
     )
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

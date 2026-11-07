@@ -1,6 +1,13 @@
 //! Audit de sécurité de cette machine : types communs, affichage et exécution des correctifs.
 //! Les vérifications elles-mêmes dépendent du système (linux/, windows/, macos/).
 
+// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
+#![cfg_attr(
+    all(target_os = "linux", not(test)),
+    warn(clippy::arithmetic_side_effects, clippy::as_conversions)
+)]
+
 #[cfg(unix)]
 use std::process::Command;
 
@@ -244,7 +251,7 @@ impl Audit {
             .iter()
             .filter(|c| !matches!(c.etat(), Etat::SansObjet(_)))
             .count();
-        pare_feu_verifie && self.impossibles() * 3 < juges
+        pare_feu_verifie && self.impossibles().saturating_mul(3) < juges
     }
 }
 
@@ -530,7 +537,10 @@ pub(crate) fn regles_lancees(
         .map(|r| {
             reprise(r.id).map_or_else(
                 || (regles::verification_avec(r, longs), Some(r)),
-                |repris| (Box::new(move || repris) as Verification<'_>, None),
+                |repris| {
+                    let verification: Verification<'_> = Box::new(move || repris);
+                    (verification, None)
+                },
             )
         })
         .unzip();
@@ -978,11 +988,11 @@ fn deplier_config_ssh(
                 .split_whitespace()
             {
                 for (inclus, contenu) in lire(motif.trim_matches('"')) {
-                    deplier_config_ssh(&inclus, &contenu, lire, profondeur - 1, sortie);
+                    deplier_config_ssh(&inclus, &contenu, lire, profondeur.saturating_sub(1), sortie);
                 }
             }
         } else {
-            sortie.push((nom.to_string(), i + 1, ligne.to_string()));
+            sortie.push((nom.to_string(), i.saturating_add(1), ligne.to_string()));
         }
     }
 }
@@ -1073,9 +1083,9 @@ fn reglages_ssh_risques(config: &str) -> Vec<(usize, &'static str)> {
             "host" => global = valeur.split_whitespace().all(|motif| motif == "*"),
             "match" => global = valeur == "all",
             "stricthostkeychecking" if global && matches!(valeur.as_str(), "no" | "off") => {
-                trouves.push((i + 1, "stricthostkeychecking"));
+                trouves.push((i.saturating_add(1), "stricthostkeychecking"));
             }
-            "forwardagent" if global && valeur == "yes" => trouves.push((i + 1, "forwardagent")),
+            "forwardagent" if global && valeur == "yes" => trouves.push((i.saturating_add(1), "forwardagent")),
             _ => {}
         }
     }
@@ -1088,7 +1098,8 @@ fn constats_config_ssh(lignes: &[(String, usize, String)]) -> Vec<Constat> {
     reglages_ssh_risques(&texte)
         .into_iter()
         .filter_map(|(n, reglage)| {
-            let (fichier, ligne, _) = lignes.get(n - 1)?;
+            // Les lignes se comptent à partir de 1 : 0 n'en désigne aucune.
+            let (fichier, ligne, _) = lignes.get(n.checked_sub(1)?)?;
             let fichier = affichable(fichier);
             Some((fichier, *ligne, reglage))
         })
@@ -1135,8 +1146,8 @@ pub(crate) fn cle_protegee(texte: &str) -> Option<bool> {
             let corps: String = texte.lines().filter(|l| !l.starts_with("-----")).collect();
             let octets = base64_decoder(&corps)?;
             let reste = octets.strip_prefix(b"openssh-key-v1\0")?;
-            let longueur = u32::from_be_bytes(reste.get(..4)?.try_into().ok()?) as usize;
-            Some(reste.get(4..4 + longueur)? != b"none")
+            let longueur = usize::try_from(u32::from_be_bytes(reste.get(..4)?.try_into().ok()?)).ok()?;
+            Some(reste.get(4..longueur.checked_add(4)?)? != b"none")
         }
         // Ancien format PEM (RSA, EC, DSA) : un en-tête Proc-Type signale le chiffrement.
         _ => Some(texte.contains("Proc-Type: 4,ENCRYPTED")),
@@ -1148,9 +1159,9 @@ pub(crate) fn cle_protegee(texte: &str) -> Option<bool> {
 fn base64_decoder(texte: &str) -> Option<Vec<u8>> {
     let valeur = |c: u8| -> Option<u32> {
         Some(u32::from(match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
+            b'A'..=b'Z' => c.saturating_sub(b'A'),
+            b'a'..=b'z' => c.saturating_sub(b'a').saturating_add(26),
+            b'0'..=b'9' => c.saturating_sub(b'0').saturating_add(52),
             b'+' => 62,
             b'/' => 63,
             _ => return None,
@@ -1160,9 +1171,10 @@ fn base64_decoder(texte: &str) -> Option<Vec<u8>> {
         .bytes()
         .filter(|c| !c.is_ascii_whitespace() && *c != b'=')
         .collect();
-    let mut sortie = Vec::with_capacity(propre.len() * 3 / 4);
+    let mut sortie = Vec::with_capacity(propre.len().saturating_mul(3) / 4);
     for bloc in propre.chunks(4) {
-        let n = bloc.iter().try_fold(0u32, |acc, &c| Some(acc << 6 | valeur(c)?))? << (6 * (4 - bloc.len()));
+        let n = bloc.iter().try_fold(0u32, |acc, &c| Some(acc << 6 | valeur(c)?))?
+            << 4usize.saturating_sub(bloc.len()).saturating_mul(6);
         // Un bloc de k caractères (1 à 4) donne k - 1 octets, pris après l'octet de poids fort, toujours nul.
         sortie.extend(n.to_be_bytes().iter().skip(1).take(bloc.len().saturating_sub(1)));
     }
@@ -1934,6 +1946,7 @@ pub fn quitter(code: i32) -> ! {
     crate::amelioration::ligne_finie();
     crate::agent::tic(crate::agent::Moment::Sortie);
     crate::modele::journal::ecrire_differes();
+    crate::chiffrement::oublier_session();
     std::process::exit(code)
 }
 

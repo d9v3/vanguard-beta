@@ -6,6 +6,13 @@
 //! fait que lire (`lancement`). Tous les systèmes se lisent partout : sous Linux, on peut lire les commandes de
 //! Windows.
 
+// Le programme sous Linux : ses parties Windows et macOS ne sont pas encore relues, et les essais en sont exemptés
+// (y déborder fait échouer l'essai). L'en-tête vaut aussi pour les sous-modules.
+#![cfg_attr(
+    all(target_os = "linux", not(test)),
+    warn(clippy::arithmetic_side_effects, clippy::as_conversions)
+)]
+
 mod arch;
 mod debian;
 mod fedora;
@@ -698,7 +705,7 @@ fn ligne_de_menu(c: &Commande) -> String {
 
 /// Un texte en gris sur des lignes de menu, décalé de `retrait` espaces.
 fn lignes_grises(texte: &str, retrait: usize) -> Vec<Ligne> {
-    envelopper(texte, LARGEUR - retrait)
+    envelopper(texte, LARGEUR.saturating_sub(retrait))
         .into_iter()
         .map(|l| Ligne::Texte(format!("{}{GRIS}{l}{RESET}", " ".repeat(retrait))))
         .collect()
@@ -712,11 +719,13 @@ fn lignes_des_commandes(avant: &str, chemin: &str, p: &Programme) -> Vec<Ligne> 
         .enumerate()
         .map(|(k, c)| {
             let texte = format!("{}{}", if c.modifie { "⚠ " } else { "" }, ligne(c));
-            Ligne::cachee(&format!("{avant}{}", k + 1), chemin, &texte, dans_la_langue(c.texte)).avec_mots(&format!(
-                "{} {}",
-                mots_de_la_commande(c),
-                noms_du_programme(p)
-            ))
+            Ligne::cachee(
+                &format!("{avant}{}", k.saturating_add(1)),
+                chemin,
+                &texte,
+                dans_la_langue(c.texte),
+            )
+            .avec_mots(&format!("{} {}", mots_de_la_commande(c), noms_du_programme(p)))
         })
         .collect()
 }
@@ -791,14 +800,23 @@ pub fn lignes_de_recherche(cle: &str) -> Vec<Ligne> {
     if !cle.is_empty() {
         for (i, s) in SYSTEMES.iter().enumerate() {
             lignes.push(
-                Ligne::cachee(&format!("{avant}{}", i + 1), &format!("{guide} ›"), s.nom(), s.apercu())
-                    .avec_mots(&s.mots().join(" ")),
+                Ligne::cachee(
+                    &format!("{avant}{}", i.saturating_add(1)),
+                    &format!("{guide} ›"),
+                    s.nom(),
+                    s.apercu(),
+                )
+                .avec_mots(&s.mots().join(" ")),
             );
         }
     }
     for page in pages() {
         let p = page.programme;
-        let cle_programme = format!("{avant}{}.{}", page.rang_systeme + 1, page.rang_programme + 1);
+        let cle_programme = format!(
+            "{avant}{}.{}",
+            page.rang_systeme.saturating_add(1),
+            page.rang_programme.saturating_add(1)
+        );
         let chemin = format!("{racine}{} ›", page.systeme.nom());
         lignes.push(
             Ligne::cachee(&cle_programme, &chemin, nom(p), dans_la_langue(p.role)).avec_mots(&noms_du_programme(p)),
@@ -858,8 +876,8 @@ fn place(s: Systeme, p: &Programme, commande: Option<usize>) -> Option<String> {
         .and_then(|(rang, x)| rang_de(*x).map(|r| (*rang, r)))
         .or_else(|| candidats.iter().find_map(|(rang, x)| rang_de(*x).map(|r| (*rang, r))))?;
     Some(match commande {
-        Some(numero) => format!("{}.{}.{numero}", systeme + 1, programme + 1),
-        None => format!("{}.{}", systeme + 1, programme + 1),
+        Some(numero) => format!("{}.{}.{numero}", systeme.saturating_add(1), programme.saturating_add(1)),
+        None => format!("{}.{}", systeme.saturating_add(1), programme.saturating_add(1)),
     })
 }
 
@@ -906,7 +924,7 @@ fn lignes_de_commande(commande: &str, largeur: usize) -> Vec<String> {
         while largeur_affichee(&reste.iter().collect::<String>()) > largeur {
             let mut morceau = String::new();
             while let Some(&c) = reste.first() {
-                if largeur_affichee(&morceau) + largeur_car(c) > largeur {
+                if largeur_affichee(&morceau).saturating_add(largeur_car(c)) > largeur {
                     break;
                 }
                 morceau.push(c);
@@ -927,7 +945,11 @@ fn revenir(choix: &str) -> bool {
 /// Une commande seule : ce qu'elle fait, puis la copier, ou la lancer ici quand elle ne fait que lire.
 fn montrer_commande(s: Systeme, p: &Programme, c: &Commande) {
     let raison = lancement::pourquoi_pas(s, p, c);
-    let rang = p.commandes.iter().position(|x| std::ptr::eq(x, c)).map_or(0, |i| i + 1);
+    let rang = p
+        .commandes
+        .iter()
+        .position(|x| std::ptr::eq(x, c))
+        .map_or(0, |i| i.saturating_add(1));
     let chemin = chemin_affiche(s, p);
     let droite = trf!("{rang} sur {}", "{rang} of {}", p.commandes.len());
     let commande = ligne(c);
@@ -1087,7 +1109,10 @@ fn montrer_programme(s: Systeme, p: &Programme) {
         lignes.extend(legende(s).into_iter().map(Ligne::Texte));
         lignes.push(Ligne::Texte(String::new()));
         for (i, c) in p.commandes.iter().enumerate() {
-            lignes.push(Ligne::choix(&(i + 1).to_string(), &ligne_de_menu(c), "").avec_mots(&mots_de_la_commande(c)));
+            lignes.push(
+                Ligne::choix(&i.saturating_add(1).to_string(), &ligne_de_menu(c), "")
+                    .avec_mots(&mots_de_la_commande(c)),
+            );
             lignes.extend(lignes_grises(dans_la_langue(c.texte), 9));
         }
         if let Some(pied) = pied_de_page(s, p, None) {
@@ -1168,12 +1193,14 @@ fn menu_systeme(s: Systeme) {
             .iter()
             .map(|&(proprietaire, p)| {
                 let absent = s != Systeme::Tldr && absent(proprietaire, p);
-                largeur_affichee(nom(p)) + if absent { marque_absent } else { 0 }
+                largeur_affichee(nom(p)).saturating_add(if absent { marque_absent } else { 0 })
             })
             .max()
             .unwrap_or(0);
-        let colonne = (plus_long + 2).clamp(36, 48);
-        let place = LARGEUR.saturating_sub(5 + largeur_touche + colonne).max(10);
+        let colonne = plus_long.saturating_add(2).clamp(36, 48);
+        let place = LARGEUR
+            .saturating_sub(largeur_touche.saturating_add(colonne).saturating_add(5))
+            .max(10);
         let tldr = s == Systeme::Tldr;
         let pages_tldr = if tldr { tldr::pages() } else { &[] };
         let mut section = None;
@@ -1210,7 +1237,12 @@ fn menu_systeme(s: Systeme) {
                 noms_du_programme(p)
             };
             lignes.push(
-                Ligne::choix(&(j + 1).to_string(), &nom, &couper(dans_la_langue(p.role), place)).avec_mots(&mots),
+                Ligne::choix(
+                    &j.saturating_add(1).to_string(),
+                    &nom,
+                    &couper(dans_la_langue(p.role), place),
+                )
+                .avec_mots(&mots),
             );
         }
         lignes.push(Ligne::Texte(String::new()));
@@ -1219,7 +1251,7 @@ fn menu_systeme(s: Systeme) {
         // Taper un mot trouve aussi chaque commande de ce système.
         if !tldr {
             for (j, (_, p)) in programmes.iter().enumerate() {
-                lignes.extend(lignes_des_commandes(&format!("{}.", j + 1), "", p));
+                lignes.extend(lignes_des_commandes(&format!("{}.", j.saturating_add(1)), "", p));
             }
         }
         let Some(choix) = choisir(
@@ -1323,7 +1355,7 @@ pub fn menu() {
     let mut dernier = SYSTEMES
         .iter()
         .position(|s| *s == Systeme::actuel())
-        .map_or_else(|| "1".to_string(), |i| (i + 1).to_string());
+        .map_or_else(|| "1".to_string(), |i| i.saturating_add(1).to_string());
     loop {
         print!("\x1b[2J\x1b[H");
         let mut lignes = entete(
@@ -1349,7 +1381,7 @@ pub fn menu() {
             } else {
                 s.apercu().to_string()
             };
-            lignes.push(Ligne::choix(&(i + 1).to_string(), &nom, &apercu).avec_mots(&s.mots().join(" ")));
+            lignes.push(Ligne::choix(&i.saturating_add(1).to_string(), &nom, &apercu).avec_mots(&s.mots().join(" ")));
         }
         lignes.push(Ligne::Texte(String::new()));
         lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
@@ -1408,7 +1440,7 @@ fn lignes_de_tldr() -> Vec<Ligne> {
             let p = &page.programme;
             let explications: Vec<&str> = p.commandes.iter().map(|c| c.texte.0).collect();
             Ligne::cachee(
-                &format!("{}.{}", rang + 1, j + 1),
+                &format!("{}.{}", rang.saturating_add(1), j.saturating_add(1)),
                 &format!("tldr › {} ›", page.plateforme),
                 p.nom,
                 p.role.0,

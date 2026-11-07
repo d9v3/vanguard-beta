@@ -14,6 +14,9 @@
 //! dit, jamais compté comme sain. Sur macOS, la mémoire d'autrui demande des droits spéciaux (task_for_pid) : non
 //! vérifié, dit tel quel.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::time::{Duration, Instant};
 
 use crate::protection::moteur_yara::Regles;
@@ -111,7 +114,10 @@ pub(crate) fn regrouper(mut morceaux: Vec<(Region, u64)>, chargee: bool) -> Vec<
         .max()
         .unwrap_or(0);
     let somme: u64 = morceaux.iter().map(|(r, _)| r.taille).sum();
-    if morceaux.len() > 1 && fin <= TAILLE_REGION_MAX as u64 && fin <= somme.saturating_mul(4) + (1 << 20) {
+    if morceaux.len() > 1
+        && fin <= u64::try_from(TAILLE_REGION_MAX).unwrap_or(u64::MAX)
+        && fin <= somme.saturating_mul(4).saturating_add(1 << 20)
+    {
         return vec![Bloc {
             morceaux,
             taille: fin,
@@ -133,7 +139,7 @@ pub(crate) fn recoller_image(morceaux: Vec<(Region, u64)>, chargee: bool) -> (Ve
         return (blocs, false);
     }
     let somme: u64 = blocs.iter().map(Bloc::a_lire).sum();
-    if somme > TAILLE_REGION_MAX as u64 {
+    if somme > u64::try_from(TAILLE_REGION_MAX).unwrap_or(u64::MAX) {
         return (blocs, true);
     }
     // `regrouper` rend les morceaux seuls par position croissante : l'en-tête, à la position 0, reste en tête.
@@ -143,7 +149,7 @@ pub(crate) fn recoller_image(morceaux: Vec<(Region, u64)>, chargee: bool) -> (Ve
         .flat_map(|b| b.morceaux)
         .map(|(r, _)| {
             let p = position;
-            position += r.taille;
+            position = position.saturating_add(r.taille);
             (r, p)
         })
         .collect();
@@ -216,7 +222,7 @@ impl Releve {
                 continue;
             }
             self.blocs.extend(image.blocs);
-            self.images_morcelees += usize::from(image.morcelee);
+            self.images_morcelees = self.images_morcelees.saturating_add(usize::from(image.morcelee));
             prises.extend(image.cle);
         }
         prises
@@ -386,15 +392,19 @@ pub(crate) fn entetes_pe_concordent(memoire: &[u8], fichier: &[u8]) -> Option<bo
         if o.get(pe..pe.checked_add(4)?)? != b"PE\0\0" {
             return None;
         }
-        let sections = usize::from(u16::from_le_bytes(o.get(pe + 6..pe + 8)?.try_into().ok()?));
-        let facultatif = usize::from(u16::from_le_bytes(o.get(pe + 20..pe + 22)?.try_into().ok()?));
-        let opt = pe + 24;
+        let sections = usize::from(u16::from_le_bytes(
+            o.get(pe.saturating_add(6)..pe.saturating_add(8))?.try_into().ok()?,
+        ));
+        let facultatif = usize::from(u16::from_le_bytes(
+            o.get(pe.saturating_add(20)..pe.saturating_add(22))?.try_into().ok()?,
+        ));
+        let opt = pe.saturating_add(24);
         let table = opt.checked_add(facultatif)?;
         Some(vec![
-            o.get(pe + 6..pe + 12)?,
-            o.get(opt + 16..opt + 20)?,
-            o.get(opt + 56..opt + 60)?,
-            o.get(opt + 64..opt + 68)?,
+            o.get(pe.saturating_add(6)..pe.saturating_add(12))?,
+            o.get(opt.saturating_add(16)..opt.saturating_add(20))?,
+            o.get(opt.saturating_add(56)..opt.saturating_add(60))?,
+            o.get(opt.saturating_add(64)..opt.saturating_add(68))?,
             o.get(table..table.checked_add(sections.checked_mul(40)?)?)?,
         ])
     }
@@ -441,7 +451,7 @@ fn entete_linux(ligne: &str) -> Option<Mappage> {
     Some(Mappage {
         region: Region {
             debut,
-            taille: fin - debut,
+            taille: fin.saturating_sub(debut),
         },
         lisible: lis == b'r',
         executable: exec == b'x',
@@ -529,7 +539,7 @@ pub(crate) fn releve_linux(
         let cle = (m.peripherique, m.inode, m.chemin.clone());
         let k = *rang.entry(cle).or_insert_with(|| {
             images.push(Vec::new());
-            images.len() - 1
+            images.len().saturating_sub(1)
         });
         #[expect(
             clippy::indexing_slicing,
@@ -549,7 +559,7 @@ pub(crate) fn releve_linux(
         if efface || reecrit || hors_disque == Some(true) {
             let (blocs, morcelee) = recoller_image(morceaux(), false);
             releve.blocs.extend(blocs);
-            releve.images_morcelees += usize::from(morcelee);
+            releve.images_morcelees = releve.images_morcelees.saturating_add(usize::from(morcelee));
             continue;
         }
         releve.blocs.extend(
@@ -559,12 +569,12 @@ pub(crate) fn releve_linux(
                 .map(|m| Bloc::seule(m.region, false)),
         );
         if hors_disque.is_none() {
-            releve.images_non_verifiees += 1;
+            releve.images_non_verifiees = releve.images_non_verifiees.saturating_add(1);
             continue;
         }
         let fichier = disque(&premier.chemin, premier.inode);
         if fichier.du_systeme {
-            releve.images_laissees += 1;
+            releve.images_laissees = releve.images_laissees.saturating_add(1);
             continue;
         }
         // Sans région exécutable : une donnée mappée, sauf si le début du fichier (mappé) est un en-tête ELF ou PE ;
@@ -640,7 +650,12 @@ fn fichier_linux(chemin: &str, inode: u64) -> SurLeDisque {
                 .ok()
                 .filter(|m| m.is_file() && m.ino() == inode)
                 .map(|m| {
-                    let ns = |s: i64, n: i64| i128::from(s) * 1_000_000_000 + i128::from(n);
+                    // Deux i64 en i128 : le produit et la somme tiennent toujours.
+                    let ns = |s: i64, n: i64| {
+                        i128::from(s)
+                            .saturating_mul(1_000_000_000)
+                            .saturating_add(i128::from(n))
+                    };
                     (ns(m.mtime(), m.mtime_nsec()), ns(m.ctime(), m.ctime_nsec()))
                 })
         };
@@ -679,9 +694,9 @@ enum Decision {
 fn decider(taille: u64, a_lire: u64, lu_processus: u64, lu_total: u64, ecoule: Duration) -> Decision {
     if ecoule >= DUREE_MAX || lu_total >= TOTAL_MAX {
         Decision::Arret
-    } else if taille > TAILLE_REGION_MAX as u64 {
+    } else if taille > u64::try_from(TAILLE_REGION_MAX).unwrap_or(u64::MAX) {
         Decision::Sauter
-    } else if lu_processus + a_lire > PAR_PROCESSUS_MAX {
+    } else if lu_processus.saturating_add(a_lire) > PAR_PROCESSUS_MAX {
         Decision::ProcessusPlein
     } else {
         Decision::Lire
@@ -745,25 +760,25 @@ fn analyser_regions(
             bloc.taille,
             bloc.a_lire(),
             lecture.octets,
-            lu_total + lecture.octets,
+            lu_total.saturating_add(lecture.octets),
             debut.elapsed(),
         ) {
             Decision::Arret => {
                 lecture.arret = true;
-                lecture.sautees += blocs.len() - i;
+                lecture.sautees = lecture.sautees.saturating_add(blocs.len().saturating_sub(i));
                 break;
             }
             Decision::ProcessusPlein => {
-                lecture.sautees += blocs.len() - i;
+                lecture.sautees = lecture.sautees.saturating_add(blocs.len().saturating_sub(i));
                 break;
             }
             Decision::Sauter => {
-                lecture.sautees += 1;
-                lecture.trop_grosses += 1;
+                lecture.sautees = lecture.sautees.saturating_add(1);
+                lecture.trop_grosses = lecture.trop_grosses.saturating_add(1);
             }
             Decision::Lire => {
                 let Some(zone) = usize::try_from(bloc.taille).ok().and_then(|t| tampon.get_mut(..t)) else {
-                    lecture.sautees += 1;
+                    lecture.sautees = lecture.sautees.saturating_add(1);
                     continue;
                 };
                 let recolle = bloc.morceaux.len() > 1;
@@ -788,21 +803,23 @@ fn analyser_regions(
                             dest.iter_mut().skip(n).for_each(|o| *o = 0);
                         }
                     }
-                    lus += n;
-                    fin = fin.max(place.map_or(0, |p| p.start + n));
+                    lus = lus.saturating_add(n);
+                    fin = fin.max(place.map_or(0, |p| p.start.saturating_add(n)));
                 }
                 if lus == 0 {
-                    lecture.sautees += 1;
+                    lecture.sautees = lecture.sautees.saturating_add(1);
                     continue;
                 }
                 if !entier {
-                    lecture.partielles += 1;
+                    lecture.partielles = lecture.partielles.saturating_add(1);
                 }
-                lecture.octets += lus as u64;
-                let echeance = Instant::now() + DELAI_PAR_REGION;
+                lecture.octets = lecture.octets.saturating_add(u64::try_from(lus).unwrap_or(u64::MAX));
+                let maintenant = Instant::now();
+                // Une horloge qui déborderait : l'échéance est déjà passée, la région est dite sautée.
+                let echeance = maintenant.checked_add(DELAI_PAR_REGION).unwrap_or(maintenant);
                 // `fin` ne dépasse pas la fin d'une place prise dans `zone` ; sinon le bloc serait compté sauté.
                 let Some(zone) = (if recolle { Some(&*zone) } else { zone.get(..fin) }) else {
-                    lecture.sautees += 1;
+                    lecture.sautees = lecture.sautees.saturating_add(1);
                     continue;
                 };
                 match crate::journal::rattraper(std::panic::AssertUnwindSafe(|| {
@@ -820,7 +837,7 @@ fn analyser_regions(
                     Ok(Ok(trouvees)) => lecture
                         .trouves
                         .extend(trouvees.into_iter().map(|k| (regles.nom(k).to_string(), bloc.region()))),
-                    _ => lecture.sautees += 1,
+                    _ => lecture.sautees = lecture.sautees.saturating_add(1),
                 }
             }
         }
@@ -897,7 +914,7 @@ mod plateforme {
             .take(PROC_MAX + 1)
             .read_to_string(&mut texte)
             .ok()?;
-        (texte.len() as u64 <= PROC_MAX).then_some(texte)
+        (u64::try_from(texte.len()).unwrap_or(u64::MAX) <= PROC_MAX).then_some(texte)
     }
 
     /// `/proc/<pid>/smaps` pour les régions (et leurs pages privées), mountinfo pour les systèmes de fichiers en
@@ -938,9 +955,12 @@ mod plateforme {
         pub(super) fn lire(&self, region: &Region, zone: &mut [u8]) -> usize {
             let mut fait = 0usize;
             while let Some(reste) = zone.get_mut(fait..).filter(|r| !r.is_empty()) {
-                match self.fichier.read_at(reste, region.debut + fait as u64) {
+                match self.fichier.read_at(
+                    reste,
+                    region.debut.saturating_add(u64::try_from(fait).unwrap_or(u64::MAX)),
+                ) {
                     Ok(0) | Err(_) => break,
-                    Ok(n) => fait += n,
+                    Ok(n) => fait = fait.saturating_add(n),
                 }
             }
             fait
@@ -1146,14 +1166,14 @@ fn parcourir(regles: &Regles) -> Bilan {
         let lieux: Option<Lieux> = None;
         match trier(p.pid, &p.nom, moi, lieux.as_ref()) {
             Tri::Exclu => {
-                bilan.exclus += 1;
+                bilan.exclus = bilan.exclus.saturating_add(1);
                 continue;
             }
             Tri::Incertain => {
                 if plateforme::protege(p.pid) {
-                    bilan.exclus += 1;
+                    bilan.exclus = bilan.exclus.saturating_add(1);
                 } else {
-                    bilan.non_lus += 1;
+                    bilan.non_lus = bilan.non_lus.saturating_add(1);
                 }
                 continue;
             }
@@ -1165,8 +1185,8 @@ fn parcourir(regles: &Regles) -> Bilan {
             Tri::Lire => {}
         }
         match plateforme::ouvrir(p.pid) {
-            Acces::Protege => bilan.exclus += 1,
-            Acces::Refuse => bilan.non_lus += 1,
+            Acces::Protege => bilan.exclus = bilan.exclus.saturating_add(1),
+            Acces::Refuse => bilan.non_lus = bilan.non_lus.saturating_add(1),
             Acces::Ouvert(lecteur) => {
                 let mut releve = lecteur.regions();
                 let lecture = lire_processus(
@@ -1177,14 +1197,14 @@ fn parcourir(regles: &Regles) -> Bilan {
                     |r, z| lecteur.lire(r, z),
                     (lu_total, debut),
                 );
-                lu_total += lecture.octets;
-                bilan.lus += 1;
-                bilan.trop_grosses += lecture.trop_grosses;
-                bilan.images_non_verifiees += releve.images_non_verifiees;
-                bilan.images_laissees += releve.images_laissees;
-                bilan.images_morcelees += releve.images_morcelees;
+                lu_total = lu_total.saturating_add(lecture.octets);
+                bilan.lus = bilan.lus.saturating_add(1);
+                bilan.trop_grosses = bilan.trop_grosses.saturating_add(lecture.trop_grosses);
+                bilan.images_non_verifiees = bilan.images_non_verifiees.saturating_add(releve.images_non_verifiees);
+                bilan.images_laissees = bilan.images_laissees.saturating_add(releve.images_laissees);
+                bilan.images_morcelees = bilan.images_morcelees.saturating_add(releve.images_morcelees);
                 if lecture.incomplete() {
-                    bilan.incomplets += 1;
+                    bilan.incomplets = bilan.incomplets.saturating_add(1);
                 }
                 if (lecture.incomplete() || releve.images_non_verifiees > 0 || releve.images_morcelees > 0)
                     && bilan.noms_incomplets.len() < NOMS_MAX
@@ -1206,7 +1226,7 @@ fn parcourir(regles: &Regles) -> Bilan {
             }
         }
     }
-    bilan.non_lus += restants.count();
+    bilan.non_lus = bilan.non_lus.saturating_add(restants.count());
     bilan
 }
 
@@ -1404,6 +1424,11 @@ pub fn analyser() {
     afficher(&parcourir(regles), regles);
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 // FFI de libc : mmap et munmap, pour les images de fichier que lisent les essais.
 #[allow(unsafe_code)]

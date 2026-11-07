@@ -4,6 +4,9 @@
 //! signale ceux de la dernière semaine ; ceux du premier passage sont connus d'avant. La surveillance horaire suit la
 //! catégorie « Comptes » : un nouvel administrateur y fait une notification.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
@@ -142,7 +145,7 @@ fn juger(admins: &[String], avant: Option<&Vus>, aujourd_hui: NaiveDate) -> (Con
         .filter(|(_, cle)| {
             vus.get(*cle)
                 .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
-                .is_some_and(|d| (aujourd_hui - d).num_days() < RECENT_JOURS)
+                .is_some_and(|d| aujourd_hui.signed_duration_since(d).num_days() < RECENT_JOURS)
         })
         .map(|(a, _)| a.as_str())
         .collect();
@@ -263,6 +266,11 @@ pub(super) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
     vec![juger(&admins, Some(&Vus { vus }), jour).0]
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

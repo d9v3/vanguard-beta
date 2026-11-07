@@ -11,6 +11,9 @@
 //! authentification). Rien vers les autres appareils du réseau.
 //! Ce qui ne se lit pas, ou pas hors ligne, est dit « non vérifié », jamais compté sain.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -66,7 +69,7 @@ fn etiquette_au_hasard() -> String {
             *o = h.rotate_left(u32::try_from(i).unwrap_or(0));
         }
     }
-    octets.iter().map(|o| char::from(b'a' + o % 26)).collect()
+    octets.iter().map(|o| char::from(b'a'.saturating_add(o % 26))).collect()
 }
 /// La question de DDR (RFC 9462) : le résolveur annonce-t-il du DNS chiffré ?
 const NOM_DDR: &str = "_dns.resolver.arpa";
@@ -458,7 +461,7 @@ struct Navigateurs {
 }
 
 fn navigateurs() -> Navigateurs {
-    let (mut exceptions, mut doh, mut nombre) = (Vec::new(), Vec::new(), 0);
+    let (mut exceptions, mut doh, mut nombre) = (Vec::new(), Vec::new(), 0usize);
     let mut vus: Vec<PathBuf> = Vec::new();
     for (nom, racine) in racines_firefox() {
         for profil in profils(&racine) {
@@ -467,7 +470,7 @@ fn navigateurs() -> Navigateurs {
                 continue;
             }
             vus.push(reel);
-            nombre += 1;
+            nombre = nombre.saturating_add(1);
             let lire = |f: &str| std::fs::read_to_string(profil.join(f)).unwrap_or_default();
             doh.push((nom.to_string(), doh_firefox(&(lire("prefs.js") + &lire("user.js")))));
             for (hote, port, drapeaux) in lire_exceptions(&lire("cert_override.txt")) {
@@ -1046,9 +1049,9 @@ fn bilan(m: &Mesure, e: &Entree) -> Bilan {
             .flat_map(Reponse::adresses_v4)
             .collect();
         match verdict(reponse.as_ref(), &attendues, &publiques) {
-            Verdict::Muet => b.muets += 1,
+            Verdict::Muet => b.muets = b.muets.saturating_add(1),
             Verdict::Filtre => b.filtres.push(nom),
-            Verdict::Conforme => b.conformes += 1,
+            Verdict::Conforme => b.conformes = b.conformes.saturating_add(1),
             Verdict::Divergent(vue) => {
                 let attendue = attendues.first().copied().unwrap_or(Ipv4Addr::UNSPECIFIED);
                 b.divergents.push((nom, vue, attendue));
@@ -1666,7 +1669,7 @@ fn constat_exceptions(e: &Entree) -> Constat {
         }
     }
     let plus = if hotes.len() > 5 {
-        trf!(" et {} autres", " and {} more", hotes.len() - 5)
+        trf!(" et {} autres", " and {} more", hotes.len().saturating_sub(5))
     } else {
         String::new()
     };
@@ -2016,6 +2019,11 @@ pub(crate) fn corpus_racines(e: &crate::modele::corpus::Entree) -> Vec<Constat> 
     constats_du_corpus(e, &entree)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

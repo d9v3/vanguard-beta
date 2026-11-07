@@ -12,6 +12,9 @@
 //! rien d'autre ne change ; dans le bloc, que des « 0.0.0.0 nom » et « :: nom », jamais un nom protégé), la montre
 //! avant l'accord, puis remplace le hosts d'un coup (ReplaceFileW) en gardant une copie d'avant.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -126,7 +129,11 @@ fn bloc_pose(hosts: &str) -> Option<(Option<NaiveDate>, usize)> {
         .split_once(" le ")
         .and_then(|(_, r)| NaiveDate::parse_from_str(r.get(..10)?, "%Y-%m-%d").ok());
     let sans = sans_bloc(hosts).unwrap_or_default();
-    let noms = hosts.lines().count().saturating_sub(sans.lines().count() + 2) / 2;
+    let noms = hosts
+        .lines()
+        .count()
+        .saturating_sub(sans.lines().count().saturating_add(2))
+        / 2;
     Some((date, noms))
 }
 
@@ -227,7 +234,7 @@ pub(crate) fn lignes_du_diff(d: &gestes::DiffHosts) -> Vec<String> {
         lignes.push(format!("{titre} ({})", liste.len()));
         let mut ligne = String::new();
         for n in liste {
-            if !ligne.is_empty() && ligne.len() + 2 + n.len() > crate::ui::LARGEUR - 4 {
+            if !ligne.is_empty() && ligne.len().saturating_add(2).saturating_add(n.len()) > crate::ui::LARGEUR - 4 {
                 lignes.push(std::mem::take(&mut ligne));
             }
             if ligne.is_empty() {
@@ -545,7 +552,7 @@ pub(crate) fn constat(categorie: &'static str) -> Option<Constat> {
 /// L'âge du bloc s'il dépasse `VIEILLE_JOURS` ; une date illisible compte comme vieille (`i64::MAX`).
 fn vieux_de(hosts: &str, aujourd_hui: NaiveDate) -> Option<i64> {
     let (date, _) = bloc_pose(hosts)?;
-    let jours = date.map_or(i64::MAX, |d| (aujourd_hui - d).num_days());
+    let jours = date.map_or(i64::MAX, |d| aujourd_hui.signed_duration_since(d).num_days());
     (jours > VIEILLE_JOURS).then_some(jours)
 }
 
@@ -572,6 +579,11 @@ pub(crate) fn noms_bloques_ici() -> std::collections::HashSet<String> {
         .unwrap_or_default()
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -6,6 +6,8 @@
 //! La réponse vient d'un démon local, mais elle peut être fausse (un programme qui a pris la place de la prise) :
 //! tout est borné et vérifié, une forme inattendue rend une erreur.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -49,7 +51,8 @@ pub(crate) fn get(prise: &Path, chemin: &str) -> Result<(u16, Vec<u8>), Echec> {
     s.write_all(demande.as_bytes()).map_err(|e| echec(e.to_string()))?;
     // Une échéance pour toute la réponse, pas seulement pour chaque lecture : un démon qui envoie un octet toutes les
     // neuf secondes ne retient pas Vanguard.
-    let echeance = std::time::Instant::now() + DELAI;
+    let maintenant = std::time::Instant::now();
+    let echeance = maintenant.checked_add(DELAI).unwrap_or(maintenant);
     let mut octets = Vec::new();
     let mut tampon = vec![0u8; 64 << 10];
     loop {
@@ -138,7 +141,7 @@ fn sans_morceaux(mut o: &[u8]) -> Result<Vec<u8>, Echec> {
             return Ok(corps);
         }
         let donnees = o.get(..n).ok_or_else(|| echec("morceau coupé"))?;
-        if corps.len() + n > REPONSE_MAX {
+        if corps.len().checked_add(n).is_none_or(|t| t > REPONSE_MAX) {
             return Err(echec("réponse trop grosse"));
         }
         corps.extend_from_slice(donnees);
@@ -204,6 +207,11 @@ pub(crate) fn connexions_snap(prise: &Path) -> Result<Vec<(String, String)>, Ech
         .collect())
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 pub(super) mod essais {
     use std::io::{Read, Write};
@@ -241,6 +249,11 @@ pub(super) mod essais {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

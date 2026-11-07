@@ -6,6 +6,8 @@
 //! personne (`abuse_ch`). Sans Internet ou sans clé, la copie d'avant sert (une empreinte connue le reste), et le
 //! rafraîchissement manqué est dit ; sans copie du tout, c'est dit, jamais sain.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -122,7 +124,10 @@ fn mot32(o: &[u8], i: usize) -> Option<usize> {
 /// vraies tailles même quand l'en-tête local les laisse à zéro. Compression « deflate » (8) ou aucune (0) ; au-delà de
 /// `max` octets décompressés, rien. `None` : ce n'est pas une archive lisible.
 pub(crate) fn premier_fichier_zip(archive: &[u8], max: usize) -> Option<Vec<u8>> {
-    premier_fichier_zip_avant(archive, max, std::time::Instant::now() + DELAI_ZIP)
+    premier_fichier_zip_avant(archive, max, {
+        let maintenant = std::time::Instant::now();
+        maintenant.checked_add(DELAI_ZIP).unwrap_or(maintenant)
+    })
 }
 
 /// Le temps de décompresser la liste complète : une vraie (≈ 100 Mio de texte) se lit en moins d'une seconde ; des
@@ -135,19 +140,22 @@ fn premier_fichier_zip_avant(archive: &[u8], max: usize, echeance: std::time::In
     let debut = archive.len().saturating_sub(22 + 0xffff);
     let fin = (debut..archive.len().saturating_sub(21))
         .rev()
-        .find(|&i| archive.get(i..i + 4) == Some(b"PK\x05\x06"))?;
-    let central = mot32(archive, fin + 16)?;
-    if archive.get(central..central + 4)? != b"PK\x01\x02" {
+        .find(|&i| archive.get(i..i.saturating_add(4)) == Some(b"PK\x05\x06"))?;
+    let central = mot32(archive, fin.saturating_add(16))?;
+    if archive.get(central..central.saturating_add(4))? != b"PK\x01\x02" {
         return None;
     }
-    let methode = mot16(archive, central + 10)?;
-    let compresse = mot32(archive, central + 20)?;
-    let decompresse = mot32(archive, central + 24)?;
-    let local = mot32(archive, central + 42)?;
-    if archive.get(local..local + 4)? != b"PK\x03\x04" || decompresse > max {
+    let methode = mot16(archive, central.saturating_add(10))?;
+    let compresse = mot32(archive, central.saturating_add(20))?;
+    let decompresse = mot32(archive, central.saturating_add(24))?;
+    let local = mot32(archive, central.saturating_add(42))?;
+    if archive.get(local..local.saturating_add(4))? != b"PK\x03\x04" || decompresse > max {
         return None;
     }
-    let donnees = local + 30 + mot16(archive, local + 26)? + mot16(archive, local + 28)?;
+    let donnees = local
+        .checked_add(30)?
+        .checked_add(mot16(archive, local.checked_add(26)?)?)?
+        .checked_add(mot16(archive, local.checked_add(28)?)?)?;
     let brut = archive.get(donnees..donnees.checked_add(compresse)?)?;
     // Décompressé jusqu'à la taille annoncée, pas jusqu'à `max` : une archive qui annonce 1 octet et en contient
     // un milliard s'arrête au premier ; le résultat doit faire exactement la taille annoncée, d'octets compressés
@@ -198,7 +206,11 @@ pub(crate) fn gardees() -> Chargees {
 pub(crate) fn recentes_gardees() -> Option<Empreintes> {
     // Borné comme une liste : le veilleur tient en 128 Mo, un fichier creux de plusieurs Gio ne s'y charge pas.
     // La copie scellée seule (`socle::cache::gardee`) : changée hors de Vanguard, aucune liste, jamais une liste vide.
-    let (octets, _) = crate::socle::cache::gardee(("malwarebazaar", "recentes.txt"), TEXTE_MAX as u64).ok()??;
+    let (octets, _) = crate::socle::cache::gardee(
+        ("malwarebazaar", "recentes.txt"),
+        u64::try_from(TEXTE_MAX).unwrap_or(u64::MAX),
+    )
+    .ok()??;
     let mut triees = lire_texte(&String::from_utf8_lossy(&octets));
     triees.sort_unstable();
     triees.dedup();
@@ -265,7 +277,7 @@ fn charger(telecharger: bool) -> Result<Empreintes, String> {
         None => Vec::new(),
     };
     triees.extend(lire_octets(
-        &gardee("recentes.txt", TEXTE_MAX as u64).unwrap_or_default(),
+        &gardee("recentes.txt", u64::try_from(TEXTE_MAX).unwrap_or(u64::MAX)).unwrap_or_default(),
     ));
     triees.sort_unstable();
     triees.dedup();
@@ -367,6 +379,11 @@ pub(crate) fn connus(empreintes: &Empreintes, fichiers: &[PathBuf]) -> Vec<(Path
         .collect()
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,6 +5,8 @@
 //! une à une ; un blocage (protection/blocage) garde de quoi se défaire exactement, et `vanguard blocage annuler` le
 //! défait. « Tout remettre comme avant » (`annulation`) défait le tout.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use serde::{Deserialize, Serialize};
 
 use crate::ui::*;
@@ -227,7 +229,7 @@ fn ecrire(chemin: &std::path::Path, tous: &[Changement]) {
     let mut en_trop = gardes.len().saturating_sub(GARDES);
     gardes.retain(|c| {
         if en_trop > 0 && !en_place(c) {
-            en_trop -= 1;
+            en_trop = en_trop.saturating_sub(1);
             return false;
         }
         true
@@ -235,8 +237,8 @@ fn ecrire(chemin: &std::path::Path, tous: &[Changement]) {
     let taille = |g: &[Changement]| -> usize {
         g.iter()
             .filter_map(|c| serde_json::to_string(c).ok())
-            .map(|l| l.len() + 1)
-            .sum()
+            .map(|l| l.len().saturating_add(1))
+            .fold(0, usize::saturating_add)
     };
     while taille(&gardes) > OCTETS_GARDES {
         if let Some(i) = gardes.iter().position(|c| !en_place(c)) {
@@ -724,7 +726,11 @@ pub fn afficher() {
         }
         let premiere = c.commandes.first().map(String::as_str).unwrap_or_default();
         let suite = if c.commandes.len() > 1 {
-            trf!(" (+{} commande(s))", " (+{} command(s))", c.commandes.len() - 1)
+            trf!(
+                " (+{} commande(s))",
+                " (+{} command(s))",
+                c.commandes.len().saturating_sub(1)
+            )
         } else {
             String::new()
         };
@@ -745,7 +751,7 @@ pub fn afficher() {
         trp!(
             "  {GRIS}… et {} plus ancien(s), dans {}{RESET}",
             "  {GRIS}… and {} older, in {}{RESET}",
-            tous.len() - 30,
+            tous.len().saturating_sub(30),
             chemin_affichable(&fichier())
         );
     }
@@ -778,7 +784,7 @@ fn annuler_des_corrections() {
         ];
         for (i, n) in notes.iter().enumerate() {
             lignes.push(Ligne::choix(
-                &(i + 1).to_string(),
+                &i.saturating_add(1).to_string(),
                 &couper(&affichable(&n.titre), 44),
                 &n.date,
             ));
@@ -818,6 +824,11 @@ fn annuler_des_corrections() {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     /// Un choix des Options de défense dit dans l'historique comment il se remet, même avec la valeur d'avant en

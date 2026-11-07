@@ -5,6 +5,9 @@
 //! invisibles sans droits d'administrateur : comptées à part, jamais comme saines. Lecture seule : rien n'est coupé
 //! ni bloqué.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::{BTreeSet, HashMap};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -82,7 +85,7 @@ pub(crate) fn adresse_proc(hex: &str) -> Option<IpAddr> {
     }
     let octets: Vec<u8> = (0..hex.len())
         .step_by(8)
-        .map(|i| u32::from_str_radix(&hex[i..i + 8], 16).map(u32::to_ne_bytes))
+        .map(|i| u32::from_str_radix(&hex[i..i.saturating_add(8)], 16).map(u32::to_ne_bytes))
         .collect::<Result<Vec<_>, _>>()
         .ok()?
         .concat();
@@ -655,7 +658,7 @@ fn figee_depuis(texte: &str, aujourd_hui: chrono::NaiveDate) -> Option<chrono::N
         let apres = l.split_once("Last updated:")?.1.trim();
         chrono::NaiveDate::parse_from_str(apres.get(..10)?, "%Y-%m-%d").ok()
     })?;
-    ((aujourd_hui - date).num_days() > FEODO_FIGEE_JOURS).then_some(date)
+    (aujourd_hui.signed_duration_since(date).num_days() > FEODO_FIGEE_JOURS).then_some(date)
 }
 
 /// Sans ThreatFox (`domaines` à `None`), Feodo Tracker est la seule liste lue : figée, elle ne dédouane rien, et c'est
@@ -690,7 +693,7 @@ fn champs_csv(ligne: &str) -> Option<Vec<String>> {
                 } else if caracteres.next_if(|&(_, c)| c == '"').is_some() {
                     valeur.push('"');
                 } else {
-                    break i + 1;
+                    break i.saturating_add(1);
                 }
             };
             champs.push(valeur);
@@ -753,9 +756,9 @@ fn lignes_threatfox<T>(texte: &str, genre: &str, lire: impl Fn(&str) -> Option<T
         if Some(i) == entete || ligne.starts_with('#') {
             continue;
         }
-        vues += 1;
+        vues = vues.saturating_add(1);
         let Some(champs) = champs_csv(ligne) else {
-            illisibles += 1;
+            illisibles = illisibles.saturating_add(1);
             continue;
         };
         let lu = |place: usize| champs.get(place).map(String::as_str);
@@ -763,7 +766,7 @@ fn lignes_threatfox<T>(texte: &str, genre: &str, lire: impl Fn(&str) -> Option<T
         let (Some(valeur), Some(genre_lu), Some(menace), Some(famille), Some(confiance)) =
             (lu(p0), lu(p1), lu(p2), lu(p3), lu(p4))
         else {
-            illisibles += 1;
+            illisibles = illisibles.saturating_add(1);
             continue;
         };
         if genre_lu != genre || menace != "botnet_cc" {
@@ -772,10 +775,10 @@ fn lignes_threatfox<T>(texte: &str, genre: &str, lire: impl Fn(&str) -> Option<T
         match (lire(valeur), confiance.parse::<u8>()) {
             (Some(lue), Ok(c)) if c >= THREATFOX_CONFIANCE => gardees.push((lue, famille_montree(famille))),
             (Some(_), Ok(_)) => {}
-            _ => illisibles += 1,
+            _ => illisibles = illisibles.saturating_add(1),
         }
     }
-    (illisibles * 2 <= vues).then_some(gardees)
+    (illisibles.saturating_mul(2) <= vues).then_some(gardees)
 }
 
 /// N'importe qui signale à ThreatFox : le nom est montré tel quel seulement s'il est inoffensif, et court.
@@ -1020,7 +1023,7 @@ pub(crate) fn serveurs_gardes() -> (ServeursDeCommande, Vec<String>) {
     let (serveurs, mut absentes) = serveurs_gardes_dans("feodo", "threatfox");
     if let Err(refus) = crate::socle::cache::gardee(
         ("malwarebazaar", "recentes.txt"),
-        crate::protection::empreintes::TEXTE_MAX as u64,
+        u64::try_from(crate::protection::empreintes::TEXTE_MAX).unwrap_or(u64::MAX),
     ) {
         absentes.push(trf!(
             "empreintes récentes de MalwareBazaar non vérifiées : {}",
@@ -1457,7 +1460,9 @@ fn noms(adresses: &BTreeSet<IpAddr>) -> HashMap<IpAddr, String> {
         });
     }
     drop(envoi);
-    let limite = Instant::now() + Duration::from_secs(4);
+    let limite = Instant::now()
+        .checked_add(Duration::from_secs(4))
+        .unwrap_or_else(Instant::now);
     let mut noms = HashMap::new();
     while let Some(reste) = limite.checked_duration_since(Instant::now()) {
         match reception.recv_timeout(reste) {
@@ -1811,7 +1816,7 @@ fn afficher_connexions(r: &Releve, a: &Analyse) -> BTreeSet<String> {
     let (affiches, cachees) = (&a.programmes, &a.cachees);
     println!();
     let mut a_regarder = Vec::new();
-    let mut chemins_invisibles = 0;
+    let mut chemins_invisibles = 0usize;
     for p in affiches {
         let n = p.connexions;
         println!(
@@ -1823,7 +1828,7 @@ fn afficher_connexions(r: &Releve, a: &Analyse) -> BTreeSet<String> {
         if let Some(c) = &p.chemin {
             afficher_aligne("      ", c, 6, GRIS);
         } else {
-            chemins_invisibles += 1;
+            chemins_invisibles = chemins_invisibles.saturating_add(1);
             afficher_aligne(
                 "      ",
                 tr!(
@@ -1951,6 +1956,11 @@ pub(crate) fn corpus_botnets(e: &crate::modele::corpus::Entree) -> Vec<crate::ma
     constats
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2642,6 +2652,11 @@ mod tests {
 
 /// Propriétés des lectures des connexions, sur des sorties tirées au hasard : rien ne plante ; une connexion bien
 /// écrite redonne son adresse, son port, son programme ; netstat ne compte jamais deux fois ce que lsof a vu.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod proprietes {
     use super::*;

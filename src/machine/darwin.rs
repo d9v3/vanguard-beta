@@ -9,6 +9,7 @@
 //! autre taille que celle de la structure est refusée (`None`), jamais lue à moitié : une version de macOS qui
 //! changerait la disposition se verrait refusée, pas mal lue.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 // Les noms des champs sont ceux des en-têtes de XNU, préfixes compris : on les retrouve en les cherchant.
 #![allow(clippy::struct_field_names)]
 
@@ -331,32 +332,32 @@ pub(crate) fn lire_socket_fdinfo(o: &[u8]) -> Option<PriseNoyau> {
         return None;
     }
     let psi = offset_of!(SocketFdinfo, psi);
-    let famille = i32_ne(o, psi + offset_of!(SocketInfo, soi_family))?;
+    let famille = i32_ne(o, psi.saturating_add(offset_of!(SocketInfo, soi_family)))?;
     if famille != AF_INET && famille != AF_INET6 {
         return None;
     }
-    let protocole = i32_ne(o, psi + offset_of!(SocketInfo, soi_protocol))?;
-    let sorte = i32_ne(o, psi + offset_of!(SocketInfo, soi_kind))?;
+    let protocole = i32_ne(o, psi.saturating_add(offset_of!(SocketInfo, soi_protocol)))?;
+    let sorte = i32_ne(o, psi.saturating_add(offset_of!(SocketInfo, soi_kind)))?;
     let tcp = match (sorte, protocole) {
         (SOCKINFO_TCP, IPPROTO_TCP) => true,
         (SOCKINFO_IN, IPPROTO_UDP) => false,
         _ => return None,
     };
     // in_sockinfo est en tête de l'union, et aussi en tête de tcp_sockinfo.
-    let ini = psi + offset_of!(SocketInfo, soi_proto);
-    let vflag = *o.get(ini + offset_of!(InSockinfo, insi_vflag))?;
+    let ini = psi.saturating_add(offset_of!(SocketInfo, soi_proto));
+    let vflag = *o.get(ini.saturating_add(offset_of!(InSockinfo, insi_vflag)))?;
     let etat = if tcp {
-        i32_ne(o, ini + offset_of!(TcpSockinfo, tcpsi_state))?
+        i32_ne(o, ini.saturating_add(offset_of!(TcpSockinfo, tcpsi_state)))?
     } else {
         -1
     };
     Some(PriseNoyau {
         tcp,
         etat,
-        locale: adresse_insi(o, ini + offset_of!(InSockinfo, insi_laddr), vflag)?,
-        port_local: port_insi(o, ini + offset_of!(InSockinfo, insi_lport))?,
-        distante: adresse_insi(o, ini + offset_of!(InSockinfo, insi_faddr), vflag)?,
-        port_distant: port_insi(o, ini + offset_of!(InSockinfo, insi_fport))?,
+        locale: adresse_insi(o, ini.saturating_add(offset_of!(InSockinfo, insi_laddr)), vflag)?,
+        port_local: port_insi(o, ini.saturating_add(offset_of!(InSockinfo, insi_lport)))?,
+        distante: adresse_insi(o, ini.saturating_add(offset_of!(InSockinfo, insi_faddr)), vflag)?,
+        port_distant: port_insi(o, ini.saturating_add(offset_of!(InSockinfo, insi_fport)))?,
     })
 }
 
@@ -396,7 +397,7 @@ pub(crate) fn lire_shortbsdinfo(o: &[u8], pid: u32) -> Option<Court> {
         ppid: u32_ne(o, offset_of!(ProcBsdShortinfo, pbsi_ppid))?,
         uid: u32_ne(o, offset_of!(ProcBsdShortinfo, pbsi_uid))?,
         ruid: u32_ne(o, offset_of!(ProcBsdShortinfo, pbsi_ruid))?,
-        comm: texte_c(o.get(comm..comm + 16)?),
+        comm: texte_c(o.get(comm..comm.saturating_add(16))?),
     })
 }
 
@@ -432,14 +433,14 @@ pub(crate) fn lire_procargs2(o: &[u8]) -> Option<(String, Vec<String>)> {
     let chemin = String::from_utf8_lossy(reste.get(..fin_chemin)?).into_owned();
     let mut i = fin_chemin;
     while reste.get(i) == Some(&0) {
-        i += 1;
+        i = i.saturating_add(1);
     }
     let mut args = Vec::with_capacity(nombre.min(256));
     for _ in 0..nombre {
         let morceau = reste.get(i..)?;
         let longueur = morceau.iter().position(|&c| c == 0)?;
         args.push(String::from_utf8_lossy(morceau.get(..longueur)?).into_owned());
-        i += longueur + 1;
+        i = i.saturating_add(longueur.saturating_add(1));
     }
     Some((chemin, args))
 }
@@ -533,7 +534,10 @@ fn adresse_route(sa: &[u8], famille_dst: Option<u8>) -> AdresseRoute {
                 .get(..nlen)
                 .map(|n| String::from_utf8_lossy(n).into_owned())
                 .unwrap_or_default();
-            let mac = donnees.get(nlen..nlen + alen).map(<[u8]>::to_vec).unwrap_or_default();
+            let mac = donnees
+                .get(nlen..nlen.saturating_add(alen))
+                .map(<[u8]>::to_vec)
+                .unwrap_or_default();
             AdresseRoute::Lien { index, nom, mac }
         }
         _ => AdresseRoute::Autre,
@@ -543,7 +547,11 @@ fn adresse_route(sa: &[u8], famille_dst: Option<u8>) -> AdresseRoute {
 /// La taille occupée par une `sockaddr` dans un message de routage : sa longueur arrondie à 4 octets, 4 pour une
 /// longueur nulle (ROUNDUP32 de bsd/net/rtsock.c, sur Intel comme sur Apple Silicon).
 fn place_sockaddr(longueur: usize) -> usize {
-    if longueur == 0 { 4 } else { (longueur + 3) & !3 }
+    if longueur == 0 {
+        4
+    } else {
+        longueur.saturating_add(3) & !3
+    }
 }
 
 /// Les routes d'une réponse de sysctl {CTL_NET, PF_ROUTE, 0, famille, NET_RT_DUMP ou NET_RT_FLAGS, …} : une suite de
@@ -564,7 +572,7 @@ pub(crate) fn lire_routes(o: &[u8]) -> Vec<Route> {
         if longueur < entete {
             break;
         }
-        debut += longueur;
+        debut = debut.saturating_add(longueur);
         if message.get(offset_of!(RtMsghdr, rtm_version)) != Some(&RTM_VERSION) {
             continue;
         }
@@ -581,8 +589,12 @@ pub(crate) fn lire_routes(o: &[u8]) -> Vec<Route> {
                 break;
             };
             let sa_len = usize::from(sa_len);
-            *place = Some(message.get(i..(i + sa_len).min(message.len())).unwrap_or_default());
-            i += place_sockaddr(sa_len);
+            *place = Some(
+                message
+                    .get(i..i.saturating_add(sa_len).min(message.len()))
+                    .unwrap_or_default(),
+            );
+            i = i.saturating_add(place_sockaddr(sa_len));
         }
         let famille_dst = adresses[RTAX_DST].and_then(|d| d.get(1).copied());
         routes.push(Route {
@@ -761,7 +773,8 @@ pub(crate) fn sante_batterie(v: &crate::plist::Valeur) -> Option<u64> {
     let origine = entier(batterie.cle("DesignCapacity")).filter(|c| *c > 0)?;
     let actuelle = entier(batterie.cle("AppleRawMaxCapacity"))
         .or_else(|| entier(batterie.cle("MaxCapacity")).filter(|c| *c > 100))?;
-    Some((actuelle.saturating_mul(100) / origine).min(100))
+    // Une capacité d'origine à 0 ne donne pas d'usure mesurable.
+    Some(actuelle.saturating_mul(100).checked_div(origine)?.min(100))
 }
 
 /// L'identifiant de l'ordinateur (gethostuuid, 16 octets) écrit comme ioreg écrit IOPlatformUUID : en majuscules,
@@ -776,6 +789,11 @@ pub(crate) fn uuid_comme_ioreg(o: &[u8; 16]) -> String {
     format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,6 +7,8 @@
 //! tldr`, `cle`) : lancé depuis la clé, Vanguard les a dès le premier lancement, même sur un ordinateur sans Internet.
 //! Des deux copies, la plus récente sert.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -292,7 +294,7 @@ fn remplacer_les_espaces_reserves(commande: &str) -> String {
             sortie.push_str(&reste[debut..]);
             return sortie;
         };
-        let dedans = &reste[debut + 2..debut + fin];
+        let dedans = &reste[debut.saturating_add(2)..debut.saturating_add(fin)];
         match dedans.strip_prefix('[').and_then(|d| d.strip_suffix(']')) {
             Some(choix) if choix.contains('|') => sortie.push_str(choix.rsplit('|').next().unwrap_or(choix)),
             _ => {
@@ -301,7 +303,7 @@ fn remplacer_les_espaces_reserves(commande: &str) -> String {
                 sortie.push('>');
             }
         }
-        reste = &reste[debut + fin + 2..];
+        reste = &reste[debut.saturating_add(fin).saturating_add(2)..];
     }
     sortie.push_str(reste);
     sortie
@@ -485,6 +487,11 @@ pub(super) fn date_en_clair() -> Option<String> {
     Some(date.format(crate::tr!("%d/%m/%Y", "%Y-%m-%d")).to_string())
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -716,6 +723,11 @@ mod tests {
 }
 
 /// Archives au hasard : jamais de plantage, jamais plus que les limites.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests_au_hasard {
     use super::*;

@@ -5,6 +5,8 @@
 //! PulseAudio) en ce moment, pour les programmes de ce compte. Sous macOS, la liste est protégée par le système :
 //! Vanguard dit où la voir.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 // macOS n'a ni historique ni liste lisible : seule l'explication sert.
 #![cfg_attr(target_os = "macos", allow(dead_code))]
 
@@ -64,7 +66,7 @@ fn afficher(titre_appareil: &str, usages: &[Usage]) {
         trp!(
             "  {GRIS}… et {} autre(s), plus anciens.{RESET}",
             "  {GRIS}… and {} more, older.{RESET}",
-            usages.len() - 15
+            usages.len().saturating_sub(15)
         );
     }
 }
@@ -178,7 +180,7 @@ pub(crate) fn date_filetime(ft: u64) -> Option<String> {
     if ft == 0 {
         return None;
     }
-    let secondes = i64::try_from(ft / 10_000_000).ok()? - 11_644_473_600;
+    let secondes = (i64::try_from(ft / 10_000_000).ok()?).saturating_sub(11_644_473_600);
     let utc = chrono::DateTime::from_timestamp(secondes, 0)?;
     Some(utc.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
 }
@@ -366,6 +368,11 @@ fn lire_pactl(texte: &str) -> Vec<Usage> {
     usages
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,6 +4,8 @@
 //! elle devient plus grave qu'au moment de ton choix. « Ce que Vanguard a appris » (menu Cette machine) montre tout et
 //! permet d'oublier.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
@@ -89,21 +91,26 @@ fn signature(categorie: &str, message: &str) -> String {
     while let Some(&lettre) = lettres.get(i) {
         if !lettre.is_ascii_digit() {
             sortie.push(lettre);
-            i += 1;
+            i = i.saturating_add(1);
             continue;
         }
         // Un bloc de chiffres, avec ce qui les lie (« 10.0.0.5 », « 12:30 », « 4.5.4 »).
         let debut = i;
         while let Some(&c) = lettres.get(i)
-            && (c.is_ascii_digit() || (matches!(c, '.' | ':') && lettres.get(i + 1).is_some_and(char::is_ascii_digit)))
+            && (c.is_ascii_digit()
+                || (matches!(c, '.' | ':')
+                    && i.checked_add(1)
+                        .and_then(|j| lettres.get(j))
+                        .is_some_and(char::is_ascii_digit)))
         {
-            i += 1;
+            i = i.saturating_add(1);
         }
         let bloc: String = lettres.iter().take(i).skip(debut).collect();
         let lie = |c: Option<&char>| c.is_some_and(|c| c.is_alphanumeric() || *c == '_');
         // Avant : une lettre, « _ », ou un « - » qui suit lui-même une lettre ou un chiffre (« S-1-5 », pas « -60 »).
         let avant = lie(debut.checked_sub(1).and_then(|j| lettres.get(j)))
-            || (debut >= 2 && lettres.get(debut - 1) == Some(&'-') && lie(lettres.get(debut - 2)));
+            || (debut.checked_sub(1).and_then(|j| lettres.get(j)) == Some(&'-')
+                && lie(debut.checked_sub(2).and_then(|j| lettres.get(j))));
         let apres = lettres.get(i).is_some_and(|c| c.is_alphabetic() || *c == '_');
         if bloc.contains(['.', ':']) || avant || apres {
             sortie.push_str(&bloc);
@@ -128,7 +135,7 @@ fn affichee(d: NaiveDate) -> String {
 
 /// Le choix vaut-il encore pour cette alerte, ce jour-là ?
 fn en_vigueur(choix: &Acceptee, niveau: Niveau, jour: NaiveDate) -> bool {
-    niveau <= choix.niveau && date(&choix.le).is_some_and(|le| (jour - le).num_days() < DUREE_JOURS)
+    niveau <= choix.niveau && date(&choix.le).is_some_and(|le| jour.signed_duration_since(le).num_days() < DUREE_JOURS)
 }
 
 /// Retient qu'une alerte est normale ici.
@@ -254,7 +261,7 @@ fn choix_du_noyau_groupe<'a>(appris: &'a Appris, c: &Constat) -> Option<&'a Acce
     // celle de l'ancien message.
     let elements: Vec<String> = reste
         .split(", ")
-        .map(|e| signature(CAT, e)[CAT.len() + 3..].to_string())
+        .map(|e| signature(CAT, e)[CAT.len().saturating_add(3)..].to_string())
         .collect();
     appris.acceptees.iter().find_map(|(sig, a)| {
         (a.cle.is_none() && sig.starts_with(&debut) && elements.iter().all(|e| sig.contains(e.as_str()))).then_some(a)
@@ -281,7 +288,7 @@ fn appliquer_avec(
     jour: NaiveDate,
     a_completer: &mut Vec<(String, String)>,
 ) -> usize {
-    let mut n = 0;
+    let mut n = 0usize;
     for c in constats.iter_mut() {
         let Some(niveau) = c.probleme else {
             continue;
@@ -300,7 +307,7 @@ fn appliquer_avec(
             " (normal chez vous, selon votre choix du {le})",
             " (normal for you, as you chose on {le})"
         );
-        n += 1;
+        n = n.saturating_add(1);
     }
     n
 }
@@ -379,13 +386,13 @@ pub fn menu() {
     );
     let liste: Vec<(String, Acceptee)> = appris.acceptees.clone().into_iter().collect();
     for (i, (_, a)) in liste.iter().enumerate() {
-        let fin = date(&a.le).map(|le| le + chrono::Duration::days(DUREE_JOURS));
+        let fin = date(&a.le).and_then(|le| le.checked_add_signed(chrono::Duration::days(DUREE_JOURS)));
         let etat = match fin {
             Some(f) if f > jour => trf!("jusqu'au {}", "until {}", affichee(f)),
             _ => tr!("expiré : la question reviendra", "expired: the question will come back").to_string(),
         };
         afficher_aligne(
-            &format!("  {TOUCHE}{:>2}{RESET} ", i + 1),
+            &format!("  {TOUCHE}{:>2}{RESET} ", i.saturating_add(1)),
             &format!("{} : {}", crate::langue::categorie(&a.categorie), a.message),
             5,
             "",
@@ -403,7 +410,7 @@ pub fn menu() {
             .split([' ', ','])
             .filter_map(|n| n.trim().parse::<usize>().ok())
             .filter(|n| (1..=liste.len()).contains(n))
-            .map(|n| n - 1)
+            .filter_map(|n| n.checked_sub(1))
             .collect()
     };
     // « 1 1 » ou « 1,1 » : un seul choix.
@@ -498,6 +505,11 @@ fn reprendre(contenu: Option<Appris>) {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

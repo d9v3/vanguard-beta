@@ -5,6 +5,8 @@
 //! sont montrés. gitleaks (libre, licence MIT), s'il est installé, ajoute ses propres règles : ce qu'il trouve en plus
 //! s'ajoute, sans doublon ; son rapport, qui nomme aussi les auteurs des commits, est lu puis effacé.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -57,7 +59,7 @@ pub(crate) fn depots(racine: &Path) -> Vec<PathBuf> {
                 continue;
             }
             if e.file_type().is_ok_and(|t| t.is_dir()) {
-                a_voir.push((e.path(), profondeur + 1));
+                a_voir.push((e.path(), profondeur.saturating_add(1)));
             }
         }
     }
@@ -242,7 +244,7 @@ fn forme(ligne: &str) -> Option<&'static Regle> {
                     .chars()
                     .next_back()
                     .is_none_or(|c| !c.is_ascii_alphanumeric());
-                let suite = &ligne[position + p.len()..];
+                let suite = &ligne[position.saturating_add(p.len())..];
                 // Les caractères permis sont tous ASCII : leur nombre est aussi leur longueur en octets.
                 let n = suite.chars().take_while(|c| (r.caractere)(*c)).count();
                 en_debut && (r.longueur.0..=r.longueur.1).contains(&n) && !exemple(&suite[..n])
@@ -261,7 +263,7 @@ fn cle_privee(ligne: &str) -> bool {
     };
     let Some(fin) = l[position..]
         .find("PRIVATE KEY-----")
-        .map(|f| position + f + "PRIVATE KEY-----".len())
+        .map(|f| position.saturating_add(f).saturating_add("PRIVATE KEY-----".len()))
     else {
         return false;
     };
@@ -278,7 +280,7 @@ fn cle_privee(ligne: &str) -> bool {
 /// Un mot de passe dans une adresse : « https://alice:motdepasse@serveur ».
 fn mot_de_passe_dans_une_adresse(ligne: &str) -> bool {
     ligne.match_indices("://").any(|(i, _)| {
-        let reste = &ligne[i + 3..];
+        let reste = &ligne[i.saturating_add("://".len())..];
         let fin = reste
             .find(|c: char| c == '/' || c.is_whitespace() || c == '"' || c == '\'')
             .unwrap_or(reste.len());
@@ -308,7 +310,7 @@ fn affectation(ligne: &str) -> bool {
     let bas = ligne.to_ascii_lowercase();
     NOMS_DE_SECRETS.iter().any(|nom| {
         bas.match_indices(nom).any(|(i, _)| {
-            let reste = ligne[i + nom.len()..].trim_start_matches(['"', '\'', ' ', '\t']);
+            let reste = ligne[i.saturating_add(nom.len())..].trim_start_matches(['"', '\'', ' ', '\t']);
             let Some(reste) = reste.strip_prefix(['=', ':']) else {
                 return false;
             };
@@ -379,7 +381,7 @@ pub(crate) fn lire_historique(sortie: &str) -> Vec<Fuite> {
                     commit: commit.clone(),
                 });
             }
-            ligne += 1;
+            ligne = ligne.saturating_add(1);
         }
     }
     fuites
@@ -542,21 +544,21 @@ pub fn analyser() {
             "  gitleaks is installed: its rules add to Vanguard's."
         );
     }
-    let mut sains = 0;
+    let mut sains = 0usize;
     let mut illisibles = Vec::new();
     let mut avec = Vec::new();
     // Le compteur seulement dans un terminal : lu par un script (test de la VM), il ne ferait que du bruit.
     let terminal = std::io::IsTerminal::is_terminal(&std::io::stdout());
     for (i, depot) in depots.iter().enumerate() {
         if terminal {
-            print!("\r  {}/{}", i + 1, depots.len());
+            print!("\r  {}/{}", i.saturating_add(1), depots.len());
             let _ = std::io::stdout().flush();
         }
         let rapport = complement
             .as_ref()
             .map_or_else(PathBuf::new, |c| c.rapports.join(format!("{i}.json")));
         match examiner(&git, complement.as_ref(), depot, &rapport) {
-            Issue::Sain => sains += 1,
+            Issue::Sain => sains = sains.saturating_add(1),
             Issue::Fuites(f) => avec.push((depot, f)),
             Issue::Illisible => illisibles.push(depot),
         }
@@ -609,7 +611,7 @@ pub fn analyser() {
         if fuites.len() > 10 {
             println!(
                 "      {GRIS}{}{RESET}",
-                trf!("… et {} autre(s)", "… and {} more", fuites.len() - 10)
+                trf!("… et {} autre(s)", "… and {} more", fuites.len().saturating_sub(10))
             );
         }
     }
@@ -640,6 +642,11 @@ pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<crate::machine::C
     constats
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

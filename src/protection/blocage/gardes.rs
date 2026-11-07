@@ -2,6 +2,9 @@
 //! en quarantaine ni ne se bloque jamais, même quand une liste ou une règle le désigne. Ce qu'ils refusent reste une
 //! alerte, avec sa raison.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::collections::HashSet;
 use std::net::IpAddr;
 
@@ -164,7 +167,7 @@ fn chemin_long(chemin: &str) -> Option<String> {
 fn a_un_nom_court(chemin: &str) -> bool {
     chemin.split(['\\', '/']).any(|nom| {
         nom.char_indices()
-            .any(|(i, c)| c == '~' && nom[i + 1..].starts_with(|d: char| d.is_ascii_digit()))
+            .any(|(i, c)| c == '~' && nom[i.saturating_add(1)..].starts_with(|d: char| d.is_ascii_digit()))
     })
 }
 
@@ -642,7 +645,7 @@ pub(crate) fn etablies_table(octets: &[u8], ipv6: bool) -> Vec<(u16, IpAddr, u16
     let mot = |o: &[u8], i: usize| o.get(i..)?.first_chunk::<4>().map(|m| u32::from_ne_bytes(*m));
     let port = |o: &[u8], i: usize| o.get(i..)?.first_chunk::<2>().map(|m| u16::from_be_bytes(*m));
     let (taille, port_local, adresse, port_distant, etat, processus) = if ipv6 {
-        (56, 20, 24, 44, 48, 52)
+        (56usize, 20usize, 24usize, 44usize, 48usize, 52usize)
     } else {
         (24, 8, 12, 16, 0, 20)
     };
@@ -657,9 +660,9 @@ pub(crate) fn etablies_table(octets: &[u8], ipv6: bool) -> Vec<(u16, IpAddr, u16
         .filter(|l| mot(l, etat) == Some(5))
         .filter_map(|l| {
             let distante = if ipv6 {
-                IpAddr::from(<[u8; 16]>::try_from(l.get(adresse..adresse + 16)?).ok()?)
+                IpAddr::from(<[u8; 16]>::try_from(l.get(adresse..adresse.saturating_add(16))?).ok()?)
             } else {
-                IpAddr::from(<[u8; 4]>::try_from(l.get(adresse..adresse + 4)?).ok()?)
+                IpAddr::from(<[u8; 4]>::try_from(l.get(adresse..adresse.saturating_add(4))?).ok()?)
             };
             Some((
                 port(l, port_local)?,
@@ -1780,7 +1783,10 @@ pub(crate) fn destination_de_quarantaine(
             "the quarantine is not inside the profile of the account that opened Vanguard as administrator: nothing is moved"
         ));
     }
-    for a in dossier.ancestors().take(d.len() - p.len() + 1) {
+    for a in dossier
+        .ancestors()
+        .take(d.len().saturating_sub(p.len()).saturating_add(1))
+    {
         match lien(a) {
             Ok(false) => {}
             Ok(true) => {

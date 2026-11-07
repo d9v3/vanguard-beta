@@ -8,6 +8,8 @@
 //! Données hostiles : un fichier se lit borné (la fin de wtmp, une taille au plus pour les bases), un enregistrement
 //! coupé est laissé, les textes passent par `from_utf8_lossy` et restent à neutraliser avant d'être montrés.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::io::{Read, Seek, SeekFrom};
 use std::net::IpAddr;
 use std::path::Path;
@@ -92,9 +94,10 @@ pub(crate) fn lire_utmp(octets: &[u8]) -> Vec<Enregistrement> {
 pub(crate) fn lire_fin(chemin: &Path, max: u64) -> std::io::Result<(Vec<u8>, bool)> {
     let mut f = std::fs::File::open(chemin)?;
     let taille = f.metadata()?.len();
-    let n = TAILLE_UTMP as u64;
+    let n = u64::try_from(TAILLE_UTMP).map_err(std::io::Error::other)?;
+    // Saturé, le début tombe après la fin : rien n'est lu, plutôt qu'une frontière fausse.
     let debut = if taille > max {
-        (taille - max).div_ceil(n) * n
+        taille.saturating_sub(max).div_ceil(n).saturating_mul(n)
     } else {
         0
     };
@@ -151,8 +154,9 @@ pub(crate) fn ligne(e: &Enregistrement) -> String {
 /// creux).
 pub(crate) fn lastlog_de(chemin: &Path, uid: u32) -> std::io::Result<Option<(u32, String, String)>> {
     let mut f = std::fs::File::open(chemin)?;
-    let position = u64::from(uid) * TAILLE_LASTLOG;
-    if position + TAILLE_LASTLOG > f.metadata()?.len() {
+    let position = u64::from(uid).saturating_mul(TAILLE_LASTLOG);
+    let longueur = f.metadata()?.len();
+    if position.checked_add(TAILLE_LASTLOG).is_none_or(|fin| fin > longueur) {
         return Ok(None);
     }
     f.seek(SeekFrom::Start(position))?;
@@ -179,6 +183,25 @@ pub(crate) enum PasLue {
     /// Illisible (droits, erreur du système) ou pas une base que le lecteur comprend.
     Illisible(String),
 }
+
+impl std::fmt::Display for PasLue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PasLue::Absente => f.write_str(crate::tr!("absente", "missing")),
+            PasLue::Journal => f.write_str(crate::tr!(
+                "écriture en attente dans son journal",
+                "write pending in its journal"
+            )),
+            PasLue::TropGrosse => f.write_str(crate::tr!(
+                "base trop grosse pour Vanguard",
+                "database too big for Vanguard"
+            )),
+            PasLue::Illisible(x) => write!(f, "{} : {x}", crate::tr!("illisible", "unreadable")),
+        }
+    }
+}
+
+impl std::error::Error for PasLue {}
 
 /// Les octets d'une base SQLite, seulement si elle se lit seule : pas de journal WAL ni de journal de retour en
 /// arrière non vide à côté (le mode WAL se lit aux octets 18 et 19 de l'en-tête, à 2).
@@ -281,6 +304,11 @@ pub(crate) fn wtmpdb(octets: &[u8]) -> Option<Vec<Session>> {
     )
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,6 +3,8 @@
 //! "categorie":"…","message":"…"}` devient un constat, affiché comme ceux du bilan et marqué « plugin `<nom>` ». Un
 //! constat de plugin ne compte jamais dans la note : il n'entre ni dans l'audit ni dans l'historique.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -91,12 +93,12 @@ pub fn analyser(sortie: &str) -> Lu {
             if lu.constats.len() < CONSTATS_MAX {
                 lu.constats.push(c);
             } else {
-                lu.constats_en_trop += 1;
+                lu.constats_en_trop = lu.constats_en_trop.saturating_add(1);
             }
         } else if lu.lignes.len() < LIGNES_MAX {
             lu.lignes.push(propre(ligne, LIGNE_MAX));
         } else {
-            lu.lignes_en_trop += 1;
+            lu.lignes_en_trop = lu.lignes_en_trop.saturating_add(1);
         }
     }
     lu

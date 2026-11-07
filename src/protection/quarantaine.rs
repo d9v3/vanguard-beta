@@ -5,6 +5,9 @@
 //! le replace exactement où il était, avec ses permissions d'avant, sans jamais écraser un fichier qui aurait pris sa
 //! place. Les fichiers isolés avant la 0.61 (journal.txt seulement) se remettent aussi.
 
+// Sous Linux seulement : les parties Windows et macOS ne sont pas encore relues ; le lint y viendra avec elles.
+#![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
+
 use std::path::{Path, PathBuf};
 
 use crate::modele::{Echec, Raison};
@@ -616,7 +619,11 @@ pub fn menu() {
             return;
         }
         for (i, e) in fichiers.iter().enumerate() {
-            println!("  {TOUCHE}{:>2}{RESET}  {}", i + 1, affichable(&e.origine));
+            println!(
+                "  {TOUCHE}{:>2}{RESET}  {}",
+                i.saturating_add(1),
+                affichable(&e.origine)
+            );
             println!(
                 "      {GRIS}{} · {}{RESET}",
                 affichable(&e.detection),
@@ -677,6 +684,11 @@ pub fn menu() {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

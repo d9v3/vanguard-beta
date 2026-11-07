@@ -15,6 +15,8 @@
 //!
 //! Tout passe par des ensembles ordonnés et des comparaisons entières : le résultat ne dépend pas de l'ordre des lots.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Component, Path};
@@ -179,12 +181,17 @@ fn assez(num: [u64; 3]) -> bool {
 
 /// `num / den > p / q`, en entiers (« au-delà de » : strictement).
 fn au_dela(num: u64, den: u64, p: u64, q: u64) -> bool {
-    den > 0 && u128::from(num) * u128::from(q) > u128::from(p) * u128::from(den)
+    // Deux u64 multipliés tiennent dans un u128 : `saturating_mul` ne sature jamais ici.
+    den > 0 && u128::from(num).saturating_mul(u128::from(q)) > u128::from(p).saturating_mul(u128::from(den))
 }
 
 /// `n / d >= 2 × np / dp` (« au moins deux fois celui d'avant »), en entiers.
 fn double(n: u64, d: u64, np: u64, dp: u64) -> bool {
-    d > 0 && dp > 0 && u128::from(n) * u128::from(dp) >= 2 * u128::from(np) * u128::from(d)
+    // Le double d'un produit de deux u64 peut dépasser u128 : saturé, il ne peut plus être atteint (faux).
+    d > 0
+        && dp > 0
+        && u128::from(n).saturating_mul(u128::from(dp))
+            >= u128::from(np).saturating_mul(u128::from(d)).saturating_mul(2)
 }
 
 /// Les règles vues dans un agrégat (`regle|ID|vue`).
@@ -1249,7 +1256,7 @@ fn resume(an: &Analyse, comptes: &Comptes) -> Resume {
             sources: n,
             installations: jf.tous.installations,
             lots: jf.tous.lots,
-            arrivee_soudaine: u128::from(n) * 7 > 2 * u128::from(avant) + 35,
+            arrivee_soudaine: u128::from(n).saturating_mul(7) > u128::from(avant).saturating_mul(2).saturating_add(35),
         });
     }
     Resume {

@@ -2,6 +2,8 @@
 //! (attributs HSI : TPM, protection en écriture du BIOS, IOMMU…), le verrouillage du noyau et la signature de ses
 //! modules, BPF réservé à root, les espaces de noms ouverts à tous, et le journal d'audit quand auditd est installé.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::*;
 use crate::machine::regles::{Os, Regle};
 
@@ -536,13 +538,18 @@ fn service_tourne_dans(racines: &[&Path], unite: &str) -> Option<bool> {
             }
             // Seules les tranches contiennent d'autres services ; quatre étages suffisent à toutes.
             if profondeur < 4 && nom.to_string_lossy().ends_with(".slice") {
-                a_voir.push((e.path(), profondeur + 1));
+                a_voir.push((e.path(), profondeur.saturating_add(1)));
             }
         }
     }
     Some(false)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

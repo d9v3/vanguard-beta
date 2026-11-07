@@ -9,6 +9,7 @@ pub(crate) mod hachage;
 #[cfg(unix)]
 mod identite;
 pub(crate) mod jsonc;
+pub(crate) mod nombres;
 pub(crate) mod personnel;
 #[cfg(unix)]
 pub(crate) mod processus;

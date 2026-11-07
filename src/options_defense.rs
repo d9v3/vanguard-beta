@@ -389,7 +389,7 @@ impl Asr {
         let mut asr = Asr::default();
         for (i, id) in ids.iter().enumerate() {
             let Some(connu) = asr_connue(id) else {
-                asr.inconnues += 1;
+                asr.inconnues = asr.inconnues.saturating_add(1);
                 continue;
             };
             let action = ActionAsr::depuis(actions.get(i).copied().flatten());
@@ -904,7 +904,9 @@ fn nom_du_tiers(e: &Etat) -> String {
 /// Une ligne « libellé ···· valeur », la valeur à la colonne 42.
 fn pointilles(libelle: &str, valeur: &str, style: &str) -> String {
     const COLONNE: usize = 40;
-    let points = COLONNE.saturating_sub(largeur_affichee(libelle) + 3).max(2);
+    let points = COLONNE
+        .saturating_sub(largeur_affichee(libelle).saturating_add(3))
+        .max(2);
     format!(
         "  {style}{libelle} {DISCRET}{}{RESET} {style}{valeur}{RESET}",
         "·".repeat(points)
@@ -1072,7 +1074,7 @@ fn section_defender(l: &mut Vec<String>, e: &Etat) {
     ));
     // Le détail tient sur sa propre ligne : des nombres seulement, jamais les chemins exclus.
     if let Some([Compte::Nombre(d), Compte::Nombre(p), Compte::Nombre(t)]) = exclusions
-        && d + p + t > 0
+        && d.saturating_add(p).saturating_add(t) > 0
     {
         note(
             l,
@@ -1131,7 +1133,11 @@ fn section_asr(l: &mut Vec<String>, e: &Etat) {
             compte(ActionAsr::Bloque),
             compte(ActionAsr::Audit),
             compte(ActionAsr::Avertit),
-            ASR_TOUTES.len() - reglees + compte(ActionAsr::Coupee) + compte(ActionAsr::NonReglee)
+            ASR_TOUTES
+                .len()
+                .saturating_sub(reglees)
+                .saturating_add(compte(ActionAsr::Coupee))
+                .saturating_add(compte(ActionAsr::NonReglee))
         )
     ));
     let mut une_imposee = false;
@@ -1425,7 +1431,11 @@ fn section_centre(l: &mut Vec<String>, e: &Etat) {
         };
         // « Antivirus : <nom> (état) », le nom coupé pour que l'état reste sur la ligne.
         let debut = tr!("Antivirus :", "Antivirus:");
-        let place = crate::ui::LARGEUR.saturating_sub(largeur_affichee(debut) + largeur_affichee(etat) + 6);
+        let place = crate::ui::LARGEUR.saturating_sub(
+            largeur_affichee(debut)
+                .saturating_add(largeur_affichee(etat))
+                .saturating_add(6),
+        );
         let nom = crate::ui::couper(&p.nom, place);
         l.push(format!("  {GRIS}{debut}{RESET} {nom} {GRIS}({etat}){RESET}"));
     }

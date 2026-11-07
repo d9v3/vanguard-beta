@@ -54,6 +54,41 @@ pub(crate) struct Refus {
     pub raison: Raison,
 }
 
+// Les deux langues dans une seule chaîne : le lecteur de règles ne dépend pas de l'interface (compilé seul par le
+// banc de fuzzing). Ce qu'une variante porte vient du texte des règles, pas du fichier analysé.
+impl std::fmt::Display for Raison {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Inconnue(c) => write!(
+                f,
+                "construction inconnue du moteur / construct unknown to the engine: {c}"
+            ),
+            Self::Syntaxe(attendu) => write!(f, "syntaxe, attendu / syntax, expected: {attendu}"),
+            Self::Nom(n) => write!(f, "nom déjà pris ou inconnu / name already taken or unknown: {n}"),
+            Self::Import(m) => write!(f, "module sans import / module without import: {m}"),
+            Self::Borne(b) => write!(f, "borne dépassée / limit exceeded: {b}"),
+            Self::Motif(m) => write!(f, "chaîne refusée / string refused: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for Raison {}
+
+impl std::fmt::Display for Refus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.regle {
+            Some(r) => write!(f, "règle / rule {r}, ligne / line {}: {}", self.ligne, self.raison),
+            None => write!(f, "ligne / line {}: {}", self.ligne, self.raison),
+        }
+    }
+}
+
+impl std::error::Error for Refus {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.raison)
+    }
+}
+
 /// Les métadonnées utiles au constat.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Meta {
@@ -1328,6 +1363,40 @@ pub(crate) fn lire(source: &str) -> Fichier {
 #[allow(clippy::cast_possible_truncation)] // des tirages au hasard, réduits exprès
 mod tests {
     use super::*;
+
+    /// Un refus se dit avec sa règle, sa ligne et sa raison ; la raison en est la cause (`source`).
+    #[test]
+    fn refus_se_dit() {
+        use std::error::Error as _;
+        for r in [
+            Raison::Inconnue("xor".into()),
+            Raison::Syntaxe("condition"),
+            Raison::Nom("$a".into()),
+            Raison::Import("pe".into()),
+            Raison::Borne("chaînes"),
+            Raison::Motif("vide".into()),
+        ] {
+            assert!(r.to_string().contains(" / "), "{r}");
+            assert!(r.source().is_none());
+        }
+        let refus = Refus {
+            regle: Some("essai".into()),
+            ligne: 3,
+            raison: Raison::Import("pe".into()),
+        };
+        let texte = refus.to_string();
+        assert!(
+            texte.contains("essai") && texte.contains("line 3") && texte.ends_with("pe"),
+            "{texte}"
+        );
+        assert!(refus.source().is_some_and(|c| c.to_string().ends_with("pe")));
+        let sans = Refus {
+            regle: None,
+            ligne: 1,
+            raison: Raison::Syntaxe("rule"),
+        };
+        assert!(!sans.to_string().contains("rule "), "{sans}");
+    }
 
     fn raison_seule(source: &str) -> Raison {
         let f = lire(source);

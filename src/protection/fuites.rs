@@ -2,6 +2,8 @@
 //! Le mot de passe ne quitte jamais l'ordinateur : seuls les 5 premiers caractères de son empreinte SHA-1 partent,
 //! le service renvoie toutes les empreintes qui commencent pareil (des centaines), et la comparaison se fait ici.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use crate::ui::*;
 
 const SERVICE: &str = "https://api.pwnedpasswords.com/range/";
@@ -41,7 +43,7 @@ fn milliers(n: u64) -> String {
     let chiffres = n.to_string();
     let mut sortie = String::new();
     for (i, c) in chiffres.chars().enumerate() {
-        if i > 0 && (chiffres.len() - i).is_multiple_of(3) {
+        if i > 0 && chiffres.len().saturating_sub(i).is_multiple_of(3) {
             sortie.push(separateur);
         }
         sortie.push(c);
@@ -103,7 +105,7 @@ fn encoder(adresse: &str) -> String {
     adresse
         .bytes()
         .map(|o| match o {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'@' | b'.' | b'-' | b'_' => (o as char).to_string(),
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'@' | b'.' | b'-' | b'_' => char::from(o).to_string(),
             _ => format!("%{o:02X}"),
         })
         .collect()
@@ -235,6 +237,11 @@ pub fn verifier_courriel() {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

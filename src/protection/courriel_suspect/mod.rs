@@ -9,6 +9,8 @@
 //!
 //! Différent de « Mon courriel a-t-il fuité ? » (`fuites`), qui cherche une adresse dans les fuites de données.
 
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 pub(crate) mod corps;
 pub(crate) mod entetes;
 pub(crate) mod mime;
@@ -188,9 +190,9 @@ fn examiner(m: &Message) -> (Constats, Vec<&[u8]>) {
     c.manques.extend(manques);
 
     let mut liens: Vec<LienTrouve> = Vec::new();
-    let mut images_distantes = 0;
-    let mut images = 0;
-    let mut texte_visible = 0;
+    let mut images_distantes = 0usize;
+    let mut images = 0usize;
+    let mut texte_visible = 0usize;
     let mut contenus = Vec::new();
     for p in &m.parties {
         let reste = LIENS_MAX.saturating_sub(liens.len());
@@ -241,7 +243,7 @@ fn examiner(m: &Message) -> (Constats, Vec<&[u8]>) {
             continue;
         }
         if p.type_mime.starts_with("image/") {
-            images += 1;
+            images = images.saturating_add(1);
             continue;
         }
         let (texte, jeu_connu) = mime::texte(&p.contenu, p.jeu.as_deref());
@@ -278,12 +280,12 @@ fn examiner(m: &Message) -> (Constats, Vec<&[u8]>) {
                 affiche: None,
                 source: source.clone(),
             }));
-            images += h.images;
-            texte_visible += h.texte_visible;
-            images_distantes += h.images_distantes;
+            images = images.saturating_add(h.images);
+            texte_visible = texte_visible.saturating_add(h.texte_visible);
+            images_distantes = images_distantes.saturating_add(h.images_distantes);
             liens.extend(h.liens);
         } else {
-            texte_visible += texte.chars().filter(|c| !c.is_whitespace()).count();
+            texte_visible = texte_visible.saturating_add(texte.chars().filter(|c| !c.is_whitespace()).count());
             liens.extend(corps::liens_texte(&texte, reste, &source));
         }
     }
@@ -329,7 +331,7 @@ fn examiner(m: &Message) -> (Constats, Vec<&[u8]>) {
         c.manques.push(trf!(
             "{} pièces jointes au-delà des {} premières (pas passées à l'antivirus)",
             "{} attachments beyond the first {} (not scanned by the antivirus)",
-            c.pieces.len() - pieces::MOTEURS_MAX,
+            c.pieces.len().saturating_sub(pieces::MOTEURS_MAX),
             pieces::MOTEURS_MAX
         ));
     }
@@ -366,7 +368,7 @@ fn lire_fichier(chemin: &Path) -> Result<Vec<u8>, Refus> {
     }
     let mut octets = Vec::new();
     std::fs::File::open(chemin)
-        .and_then(|f| f.take(max + 1).read_to_end(&mut octets))
+        .and_then(|f| f.take(max.saturating_add(1)).read_to_end(&mut octets))
         .map_err(|_| Refus::Illisible)?;
     if octets.len() > mime::BORNES.octets {
         return Err(Refus::TropGros);
@@ -594,7 +596,7 @@ fn afficher_liens(c: &Constats) {
                 "{} lien(s) vers {} site(s), examinés sans être ouverts.",
                 "{} link(s) to {} site(s), checked without being opened.",
                 e.examines,
-                e.par_site.len() + e.non_examines
+                e.par_site.len().saturating_add(e.non_examines)
             )
         );
     }
@@ -651,7 +653,14 @@ fn afficher_pieces(c: &Constats) {
         let taille = crate::protection::telechargement::taille(u64::try_from(p.taille).unwrap_or(u64::MAX));
         // Le type prend ce qui reste de la ligne : « application/vnd.openxmlformats-… » d'un simple .docx est long.
         // Deux espaces, le nom, « (», la taille, « , » et « ) ».
-        let place = LARGEUR.saturating_sub(2 + largeur_affichee(&nom) + 2 + largeur_affichee(&taille) + 2 + 1);
+        let place = LARGEUR.saturating_sub(
+            largeur_affichee(&nom)
+                .saturating_add(largeur_affichee(&taille))
+                .saturating_add(2)
+                .saturating_add(2)
+                .saturating_add(2)
+                .saturating_add(1),
+        );
         let precision = format!("{taille}, {}", couper(&affichable(&p.type_declare), place.clamp(8, 24)));
         println!("  {ACCENT}{nom}{RESET} {GRIS}({precision}){RESET}");
         lignes(&p.signes);
@@ -744,13 +753,15 @@ fn pourcents(v: &str) -> Vec<u8> {
     let mut i = 0;
     while let Some(&c) = o.get(i) {
         if c == b'%'
-            && let Some(h) = v.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
+            && let Some(h) = v
+                .get(i.saturating_add(1)..i.saturating_add(3))
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
         {
             s.push(h);
-            i += 3;
+            i = i.saturating_add(3);
         } else {
             s.push(c);
-            i += 1;
+            i = i.saturating_add(1);
         }
     }
     s
@@ -974,6 +985,11 @@ pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<crate::machine::C
     }]
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
