@@ -414,21 +414,60 @@ pub fn ligne_section(t: &str) -> String {
     format!("  {ACCENT}── {t}{RESET} {GRIS}{}{RESET}", "─".repeat(reste))
 }
 
-/// Cadre de tête d'écran : un titre à gauche, une précision à droite.
+/// Cadre de tête d'écran : un titre à gauche, une précision à droite, sur la largeur de la fenêtre au moment de
+/// l'impression (`largeur_du_cadre`).
 pub fn cadre(gauche: &str, droite: &str) {
-    for l in lignes_cadre(gauche, droite) {
+    for l in lignes_cadre_sur(gauche, droite, largeur_du_cadre(colonnes_du_terminal())) {
         println!("{l}");
     }
 }
 
-/// Les trois lignes du cadre de tête, pour un menu qui se redessine.
-pub fn lignes_cadre(gauche: &str, droite: &str) -> [String; 3] {
-    let interieur = LARGEUR - 2;
-    let espace = interieur.saturating_sub(
-        largeur_affichee(gauche)
-            .saturating_add(largeur_affichee(droite))
-            .saturating_add(4),
-    );
+/// En dessous de cette largeur, le cadre ne suit plus la fenêtre et garde `LARGEUR`, comme avant : quelques colonnes
+/// ne laisseraient plus lire le titre.
+pub const CADRE_MIN: usize = 30;
+
+/// Une précision de droite coupée garde au moins ces colonnes (« … » compris) ; sinon elle est retirée.
+const DROITE_MIN: usize = 8;
+
+/// La largeur du cadre dans une fenêtre de `colonnes` colonnes : toute la fenêtre sauf sa dernière colonne, où écrire
+/// fait passer l'ancienne console de Windows à la ligne. `LARGEUR` sans terminal (tube, essais, rapport : des sorties
+/// stables) ou sous `CADRE_MIN`.
+pub fn largeur_du_cadre(colonnes: Option<usize>) -> usize {
+    match colonnes.map(|c| c.saturating_sub(1)) {
+        Some(l) if l >= CADRE_MIN => l,
+        _ => LARGEUR,
+    }
+}
+
+/// Les colonnes de la fenêtre où écrit Vanguard, ou `None` sans vrai terminal (et toujours dans les essais, dont la
+/// sortie ne doit pas dépendre de la fenêtre qui les lance).
+pub fn colonnes_du_terminal() -> Option<usize> {
+    use std::io::IsTerminal as _;
+    if cfg!(test) || !std::io::stdout().is_terminal() {
+        return None;
+    }
+    crossterm::terminal::size().ok().map(|(c, _)| usize::from(c))
+}
+
+/// Les trois lignes du cadre de tête, chacune de `largeur` colonnes exactement. Trop étroit pour les deux textes, la
+/// précision de droite cède d'abord (coupée par « … », puis retirée), le titre de gauche ensuite.
+pub fn lignes_cadre_sur(gauche: &str, droite: &str, largeur: usize) -> [String; 3] {
+    let interieur = largeur.saturating_sub(2);
+    // Deux espaces de chaque côté des textes.
+    let place = interieur.saturating_sub(4);
+    let (g, d) = (largeur_affichee(gauche), largeur_affichee(droite));
+    let (gauche, droite) = if g.saturating_add(d) <= place {
+        (gauche.to_string(), droite.to_string())
+    } else {
+        // Une espace au moins entre les deux textes.
+        let pour_droite = place.saturating_sub(g.saturating_add(1));
+        if d > 0 && pour_droite >= DROITE_MIN {
+            (gauche.to_string(), couper_en_couleur(droite, pour_droite))
+        } else {
+            (couper_en_couleur(gauche, place), String::new())
+        }
+    };
+    let espace = place.saturating_sub(largeur_affichee(&gauche).saturating_add(largeur_affichee(&droite)));
     [
         format!("{ACCENT}╭{}╮{RESET}", "─".repeat(interieur)),
         format!(
@@ -437,6 +476,36 @@ pub fn lignes_cadre(gauche: &str, droite: &str) -> [String; 3] {
         ),
         format!("{ACCENT}╰{}╯{RESET}", "─".repeat(interieur)),
     ]
+}
+
+/// Le début de `t` qui tient dans `n` colonnes, « … » compris s'il a fallu couper, ses codes de couleur gardés
+/// (`couper` les compterait comme du texte et pourrait en couper un).
+fn couper_en_couleur(t: &str, n: usize) -> String {
+    if largeur_affichee(t) <= n {
+        return t.to_string();
+    }
+    if n == 0 {
+        return String::new();
+    }
+    let mut court = String::new();
+    let (mut l, mut code) = (0usize, false);
+    for c in t.chars() {
+        match (code, c) {
+            (false, '\x1b') => code = true,
+            (true, c) => code = c != 'm',
+            // Une colonne gardée pour « … ».
+            (false, c) if l.saturating_add(largeur_car(c)) >= n => break,
+            (false, c) => l = l.saturating_add(largeur_car(c)),
+        }
+        court.push(c);
+    }
+    let fin = court.trim_end_matches(' ').len();
+    court.truncate(fin);
+    court.push('…');
+    if t.contains('\x1b') {
+        court.push_str(RESET);
+    }
+    court
 }
 
 /// Barre de score sur 10 cases, de la couleur de sa lettre : « ▰▰▰▰▰▰▰▰▱▱ ».
@@ -656,6 +725,57 @@ pub(crate) fn textes_trop_larges(source: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Le cadre de tête à 40, 76, 120 et 200 colonnes : chaque ligne de la largeur voulue, les coins au bord, la
+    /// précision de droite coupée proprement quand la place manque, puis retirée avant le titre.
+    #[test]
+    fn le_cadre_prend_la_largeur_de_la_fenetre() {
+        let gauche = format!("{ACCENT}VANGUARD{RESET} {GRIS}0.90.0{RESET}");
+        let droite = "Cyberdéfense portable des postes et des réseaux";
+        for colonnes in [40, 76, 120, 200] {
+            let largeur = largeur_du_cadre(Some(colonnes));
+            // La dernière colonne reste libre : y écrire fait passer l'ancienne console de Windows à la ligne.
+            assert_eq!(largeur, colonnes - 1);
+            let [haut, milieu, bas] = lignes_cadre_sur(&gauche, droite, largeur);
+            for l in [&haut, &milieu, &bas] {
+                assert_eq!(largeur_affichee(l), largeur, "{colonnes} colonnes : {l}");
+            }
+            let (haut, milieu, bas) = (sans_codes(&haut), sans_codes(&milieu), sans_codes(&bas));
+            assert!(haut.starts_with('╭') && haut.ends_with('╮'), "{haut}");
+            assert!(bas.starts_with('╰') && bas.ends_with('╯'), "{bas}");
+            assert!(
+                milieu.starts_with("│  VANGUARD 0.90.0 ") && milieu.ends_with("  │"),
+                "{milieu}"
+            );
+            if colonnes < 76 {
+                // « Cyberdéfense portable… » : coupée à une fin de mot ou dedans, jamais sur une espace avant « … ».
+                assert!(milieu.ends_with("…  │") && !milieu.contains(" …"), "{milieu}");
+                assert!(milieu.contains("Cyber"), "{milieu}");
+            } else {
+                assert!(milieu.ends_with(&format!("{droite}  │")), "{milieu}");
+            }
+        }
+        // Trop étroit pour la précision : elle est retirée, et le titre coupé ensuite, ses couleurs gardées.
+        let long = format!("{ACCENT}VANGUARD{RESET} {GRIS}›{RESET} Réseau et Internet {GRIS}›{RESET} Wi-Fi public");
+        let [_, milieu, _] = lignes_cadre_sur(&long, droite, 30);
+        assert_eq!(largeur_affichee(&milieu), 30, "{milieu}");
+        let propre = sans_codes(&milieu);
+        assert!(
+            propre.starts_with("│  VANGUARD › Réseau") && propre.ends_with("…  │"),
+            "{propre}"
+        );
+        // Aucun code de couleur coupé en deux, et la couleur rendue avant le bord.
+        assert!(!propre.contains("Cyber") && !propre.contains('['), "{milieu:?}");
+        assert!(milieu.contains(&format!("…{RESET}  ")), "{milieu:?}");
+        // Sous le minimum, ou sans terminal (essais, tube, rapport), les 76 colonnes d'avant.
+        assert_eq!(largeur_du_cadre(Some(CADRE_MIN)), LARGEUR);
+        assert_eq!(largeur_du_cadre(Some(CADRE_MIN + 1)), CADRE_MIN);
+        assert_eq!(largeur_du_cadre(None), LARGEUR);
+        assert_eq!(colonnes_du_terminal(), None);
+        // Un titre seul, trop long, est coupé lui aussi au lieu de déborder.
+        let [_, milieu, _] = lignes_cadre_sur(&"x".repeat(80), "", LARGEUR);
+        assert_eq!(largeur_affichee(&milieu), LARGEUR);
+    }
 
     /// Une question trop longue est coupée aux espaces : la réponse tapée tombe dans 76 colonnes. Une question qui
     /// tient ne bouge pas, ses espaces de fin compris.

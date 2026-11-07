@@ -651,15 +651,18 @@ fn entete(chemin: &[&str], droite: &str) -> Vec<Ligne> {
             .iter()
             .fold(depart, |g, morceau| format!("{g} {GRIS}›{RESET} {morceau}"))
     };
-    let complet = lignes_cadre(&fil(format!("{ACCENT}VANGUARD{RESET}"), chemin), droite);
-    // Au plus long chemin, le nom du programme en tête cède sa place : le reste du fil se lit en entier.
-    let lignes = match chemin.split_first() {
-        Some((premier, reste)) if complet.iter().any(|l| largeur_affichee(l) > LARGEUR) => {
-            lignes_cadre(&fil((*premier).to_string(), reste), droite)
-        }
+    let complet = fil(format!("{ACCENT}VANGUARD{RESET}"), chemin);
+    // Au plus long chemin, le nom du programme en tête cède sa place : le reste du fil se lit en entier. Jugé sur
+    // `LARGEUR`, celle du cadre dans la plus étroite des fenêtres où le menu se dessine au clavier.
+    let deborde = largeur_affichee(&complet)
+        .saturating_add(largeur_affichee(droite))
+        .saturating_add(6)
+        > LARGEUR;
+    let gauche = match chemin.split_first() {
+        Some((premier, reste)) if deborde => fil((*premier).to_string(), reste),
         _ => complet,
     };
-    lignes.into_iter().map(Ligne::Texte).collect()
+    vec![Ligne::cadre(&gauche, droite)]
 }
 
 /// La commande sur une ligne de menu, ⚠ devant si elle change quelque chose (une espace sinon : les commandes d'un
@@ -1026,14 +1029,12 @@ fn montrer_commande(s: Systeme, p: &Programme, c: &Commande) {
                 dernier = "2".to_string();
                 message = None;
                 print!("\x1b[2J\x1b[H");
-                for l in lignes_cadre(
+                cadre(
                     &chemin.iter().fold(format!("{ACCENT}VANGUARD{RESET}"), |g, morceau| {
                         format!("{g} {GRIS}›{RESET} {morceau}")
                     }),
                     &droite,
-                ) {
-                    println!("{l}");
-                }
+                );
                 println!();
                 lancement::lancer_ici(c);
             }
@@ -1935,7 +1936,8 @@ mod tests {
         }
     }
 
-    /// Le cadre d'une page de programme ou de commande tient dans 76 colonnes, même au plus long chemin.
+    /// Le cadre d'une page de programme ou de commande tient dans 76 colonnes sans rien couper, même au plus long
+    /// chemin.
     #[test]
     fn chaque_en_tete_tient_dans_76_colonnes() {
         for page in pages() {
@@ -1945,12 +1947,16 @@ mod tests {
                 format!("{0} sur {0}", p.commandes.len()),
             ] {
                 for l in entete(&["Guide", page.systeme.nom(), nom(p)], &droite) {
-                    let Ligne::Texte(l) = l else { unreachable!() };
+                    let Ligne::Cadre { gauche, droite } = l else {
+                        unreachable!()
+                    };
+                    let rendu = lignes_cadre_sur(&gauche, &droite, LARGEUR);
                     assert!(
-                        largeur_affichee(&l) <= LARGEUR,
-                        "{} › {} : {l}",
+                        !rendu[1].contains('…') && rendu[1].contains(&droite),
+                        "{} › {} : {}",
                         page.systeme.nom(),
-                        p.nom
+                        p.nom,
+                        rendu[1]
                     );
                 }
             }

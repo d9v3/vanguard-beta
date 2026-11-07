@@ -24,8 +24,11 @@ use crate::ui::*;
 
 /// Une ligne d'un menu.
 pub enum Ligne {
-    /// Affichée telle quelle : cadre, titre, état, ligne vide.
+    /// Affichée telle quelle : titre, état, ligne vide.
     Texte(String),
+    /// Le cadre de tête (trois rangées), dessiné à chaque rendu sur la largeur de la fenêtre : il suit ses
+    /// changements de taille (`ui::lignes_cadre_sur`).
+    Cadre { gauche: String, droite: String },
     /// Ligne qu'on peut choisir : la touche qui la désigne, son texte, une précision en gris à droite, et des mots que
     /// la recherche trouve sans qu'ils s'affichent. `description` et `sous` (ce qu'elle ouvre, quand ce ne sont pas des
     /// lignes cachées de ce menu) ne se lisent que dans l'aperçu.
@@ -51,6 +54,13 @@ pub enum Ligne {
 }
 
 impl Ligne {
+    pub fn cadre(gauche: &str, droite: &str) -> Self {
+        Ligne::Cadre {
+            gauche: gauche.into(),
+            droite: droite.into(),
+        }
+    }
+
     pub fn choix(touche: &str, texte: &str, precision: &str) -> Self {
         Ligne::Choix {
             touche: touche.into(),
@@ -285,7 +295,7 @@ fn choisissables(lignes: &[Ligne]) -> Vec<Choisissable<'_>> {
     lignes
         .iter()
         .filter_map(|l| match l {
-            Ligne::Texte(_) => None,
+            Ligne::Texte(_) | Ligne::Cadre { .. } => None,
             Ligne::Choix {
                 touche,
                 texte,
@@ -349,12 +359,25 @@ fn fantome(suite: Option<&str>) -> (String, String) {
     }
 }
 
+/// Les rangées qu'un menu prend à l'écran, hors recherche : le cadre en fait trois, une ligne cachée aucune.
+#[cfg(test)]
+pub(crate) fn rangees_a_l_ecran(lignes: &[Ligne]) -> usize {
+    lignes
+        .iter()
+        .map(|l| match l {
+            Ligne::Cachee { .. } => 0,
+            Ligne::Cadre { .. } => 3,
+            Ligne::Texte(_) | Ligne::Choix { .. } => 1,
+        })
+        .sum()
+}
+
 /// Ce que la prédiction lit d'un menu : le texte, la précision et les mots cachés de chaque ligne, sans couleurs.
 fn textes_du_menu(lignes: &[Ligne]) -> Vec<String> {
     lignes
         .iter()
         .filter_map(|l| match l {
-            Ligne::Texte(_) => None,
+            Ligne::Texte(_) | Ligne::Cadre { .. } => None,
             Ligne::Choix {
                 texte, precision, mots, ..
             }
@@ -448,17 +471,19 @@ pub(crate) fn colonne(lignes: &[Ligne]) -> usize {
         .iter()
         .filter_map(|l| match l {
             Ligne::Choix { texte, precision, .. } if !precision.is_empty() => Some(largeur_affichee(texte)),
-            Ligne::Choix { .. } | Ligne::Texte(_) | Ligne::Cachee { .. } => None,
+            Ligne::Choix { .. } | Ligne::Texte(_) | Ligne::Cadre { .. } | Ligne::Cachee { .. } => None,
         })
         .max()
         .unwrap_or(0);
     plus_long.saturating_add(2).clamp(36, 48)
 }
 
-/// La ligne à l'écran, ou rien pour une ligne cachée (seule la recherche la montre).
-fn texte(l: &Ligne, colonne: usize, en_cours: bool) -> Option<String> {
+/// La ligne à l'écran, ou rien pour une ligne cachée (seule la recherche la montre). Le cadre prend `cadre`
+/// colonnes (`ui::largeur_du_cadre`), ses trois rangées séparées par « \n ».
+fn texte(l: &Ligne, colonne: usize, en_cours: bool, cadre: usize) -> Option<String> {
     match l {
         Ligne::Texte(t) => Some(t.clone()),
+        Ligne::Cadre { gauche, droite } => Some(lignes_cadre_sur(gauche, droite, cadre).join("\n")),
         Ligne::Choix {
             touche,
             texte,
@@ -546,7 +571,7 @@ fn a_des_apercus(lignes: &[Ligne]) -> bool {
     lignes.iter().any(|l| match l {
         Ligne::Choix { description, sous, .. } => !description.is_empty() || !sous.is_empty(),
         Ligne::Cachee { .. } => true,
-        Ligne::Texte(_) => false,
+        Ligne::Texte(_) | Ligne::Cadre { .. } => false,
     })
 }
 
@@ -571,7 +596,7 @@ fn ce_qu_elle_ouvre(lignes: &[Ligne], ligne: &Ligne) -> Vec<String> {
         }
         Ligne::Choix { touche, .. } => (touche.as_str(), 1),
         Ligne::Cachee { touche, chemin, .. } => (touche.as_str(), profondeur(chemin).saturating_add(1)),
-        Ligne::Texte(_) => return Vec::new(),
+        Ligne::Texte(_) | Ligne::Cadre { .. } => return Vec::new(),
     };
     let mut vues: Vec<&str> = Vec::new();
     let mut noms = Vec::new();
@@ -609,7 +634,7 @@ fn apercu(lignes: &[Ligne], ligne: &Ligne, largeur: usize, hauteur: usize) -> Ve
             description,
             ..
         } => (chemin.as_str(), texte, precision.as_str(), description),
-        Ligne::Texte(_) => return Vec::new(),
+        Ligne::Texte(_) | Ligne::Cadre { .. } => return Vec::new(),
     };
     // Chaque rangée coupée au besoin : `envelopper` laisse entier un mot plus long que la largeur.
     let rangees = |t: &str, style: &str| -> Vec<String> {
@@ -738,7 +763,8 @@ pub fn choisir_sans_defaut(lignes: &[Ligne], invite: &str, depart: &str, echap: 
         return choisir(lignes, invite, depart, echap);
     }
     let colonne = colonne(lignes);
-    for t in lignes.iter().filter_map(|l| texte(l, colonne, false)) {
+    let cadre = largeur_du_cadre(colonnes_du_terminal());
+    for t in lignes.iter().filter_map(|l| texte(l, colonne, false, cadre)) {
         println!("{t}");
     }
     let r = demander_ou_defaut(invite);
@@ -791,11 +817,11 @@ fn aides_du_menu(gauche_revient: bool, echap: &str) -> Aides {
 /// L'en-tête (cadre, titre, état) qui reste en place pendant la recherche, et sa hauteur en rangées. Sans le
 /// sous-titre ni la ligne vide qui annonçaient la première section (« BILAN DE SÉCURITÉ ») : les lignes trouvées
 /// viennent de partout.
-fn entete_de_recherche(lignes: &[Ligne], colonne: usize) -> (Vec<String>, usize) {
+fn entete_de_recherche(lignes: &[Ligne], colonne: usize, cadre: usize) -> (Vec<String>, usize) {
     let mut entete: Vec<String> = lignes
         .iter()
-        .take_while(|l| matches!(l, Ligne::Texte(_)))
-        .filter_map(|l| texte(l, colonne, false))
+        .take_while(|l| matches!(l, Ligne::Texte(_) | Ligne::Cadre { .. }))
+        .filter_map(|l| texte(l, colonne, false, cadre))
         .collect();
     while entete.last().is_some_and(|t| {
         let t = simplement_affiche(t);
@@ -847,7 +873,8 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
     let colonne = colonne(lignes);
     let clavier = au_clavier(!visibles.is_empty());
     let Some(_mode) = clavier.then(ModeClavier::activer_sans_curseur).flatten() else {
-        for t in lignes.iter().filter_map(|l| texte(l, colonne, false)) {
+        let cadre = largeur_du_cadre(colonnes_du_terminal());
+        for t in lignes.iter().filter_map(|l| texte(l, colonne, false, cadre)) {
             println!("{t}");
         }
         return Some(par_ligne(&choix, &touches, invite));
@@ -866,13 +893,14 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
     // Les mots du menu, lus à la première recherche seulement : pour la fin de mot proposée, et pour corriger une faute.
     let mut vocabulaire: Option<Vocabulaire> = None;
     let mut mots_du_menu: Option<Vec<String>> = None;
-    let (entete, hauteur_entete) = entete_de_recherche(lignes, colonne);
     let apercus = a_des_apercus(lignes);
     let mut sortie = std::io::stdout();
     let _ = sortie.write_all(b"\x1b[2J");
     loop {
         // La grille avant de dessiner : si elle change ensuite, sans que le terminal le dise, le menu se redessine.
         let grille = terminal::size().ok();
+        // Le cadre de tête suit la largeur de la fenêtre, redessiné avec le reste.
+        let cadre = largeur_du_cadre(grille.map(|(colonnes, _)| usize::from(colonnes)));
         let recherche = est_une_recherche(&etat.tape, &touches);
         let (trouves, corrections, partiels): (Vec<&Choisissable>, Vec<(String, String)>, bool) = if recherche {
             let mots = mots_du_menu
@@ -902,10 +930,18 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
         // En mode clavier, le terminal ne revient plus seul au début de la ligne : d'où les « \r\n ».
         let mut ecran = String::from("\x1b[H");
         if recherche {
+            let (entete, hauteur_entete) = entete_de_recherche(lignes, colonne, cadre);
             let entete = (&entete[..], hauteur_entete);
             ecran += &ecran_de_recherche(lignes, &etat, entete, &trouvailles, &aides, panneau);
         } else {
-            ecran += &ecran_du_menu(lignes, colonne, visibles.len(), &mut etat, &aides.menu, panneau);
+            ecran += &ecran_du_menu(
+                lignes,
+                (colonne, cadre),
+                visibles.len(),
+                &mut etat,
+                &aides.menu,
+                panneau,
+            );
         }
         let _ = sortie.write_all(ecran.as_bytes());
         let _ = sortie.flush();
@@ -1013,11 +1049,11 @@ fn ecran_de_recherche(
 }
 
 /// L'écran du menu entier : ses rangées dans la fenêtre (l'en-tête fixe, la liste qui défile) et l'aperçu de la ligne
-/// en cours (`panneau` : la largeur de son texte), puis l'aide et la saisie. Garde `etat.haut` d'un affichage à
-/// l'autre.
+/// en cours (`panneau` : la largeur de son texte), puis l'aide et la saisie. `colonne` : celle des précisions ;
+/// `cadre` : la largeur du cadre de tête. Garde `etat.haut` d'un affichage à l'autre.
 fn ecran_du_menu(
     lignes: &[Ligne],
-    colonne: usize,
+    (colonne, cadre): (usize, usize),
     nombre_visibles: usize,
     etat: &mut EtatMenu,
     aide: &str,
@@ -1035,7 +1071,7 @@ fn ecran_du_menu(
                 rangee_en_cours = rangees.len();
             }
         }
-        if let Some(t) = texte(l, colonne, ligne_de_choix && n == en_cours) {
+        if let Some(t) = texte(l, colonne, ligne_de_choix && n == en_cours, cadre) {
             rangees.extend(t.split('\n').map(String::from));
         }
         n = n.saturating_add(usize::from(ligne_de_choix));
@@ -1874,7 +1910,7 @@ mod tests {
         assert!(correspond("nmap", &choix[1].cherche));
         assert!(!choix[1].texte.contains("nmap"));
         // Hors recherche, une ligne cachée ne s'affiche pas.
-        assert!(texte(&lignes[2], 36, false).is_none());
+        assert!(texte(&lignes[2], 36, false, LARGEUR).is_none());
         // Un très long chemin est coupé : la ligne trouvée tient dans LARGEUR.
         let long = [Ligne::cachee(
             "10.1.12",
@@ -2058,7 +2094,7 @@ mod tests {
 
     #[test]
     fn le_panneau_se_place_par_colonne_sous_le_cadre() {
-        let rangees: Vec<String> = lignes_cadre("VANGUARD", "titre")
+        let rangees: Vec<String> = lignes_cadre_sur("VANGUARD", "titre", LARGEUR)
             .into_iter()
             .chain(["  1  Bilan".to_string(), String::new()])
             .collect();
@@ -2074,5 +2110,52 @@ mod tests {
         assert!(lignes[4].contains(&colonne) && lignes[4].ends_with(&format!("│{RESET} ")));
         // Sans panneau, l'écran est celui d'avant.
         assert!(!avec_panneau(&rangees, None).contains(&colonne));
+    }
+
+    /// Le cadre de tête d'un menu se dessine sur la fenêtre, sa dernière colonne laissée libre ; le panneau commence
+    /// sous lui, même quand le menu défile.
+    #[test]
+    fn le_cadre_suit_la_fenetre_et_le_panneau_reste_dessous() {
+        let mut lignes = vec![
+            Ligne::cadre(
+                &format!("{ACCENT}VANGUARD{RESET} {GRIS}0.90.0{RESET}"),
+                "Cyberdéfense portable",
+            ),
+            Ligne::Texte("  état".into()),
+            Ligne::Texte(ligne_section("BILAN")),
+        ];
+        lignes.extend((1..=30).map(|i| Ligne::choix(&i.to_string(), &format!("Outil {i}"), "précision")));
+        let colonne_panneau = format!("\x1b[{}G", LARGEUR + 2);
+        for colonnes in [40, 76, 120, 200] {
+            let cadre = largeur_du_cadre(Some(colonnes));
+            assert_eq!(cadre, colonnes - 1);
+            let rangees: Vec<String> = lignes
+                .iter()
+                .filter_map(|l| texte(l, 36, false, cadre))
+                .flat_map(|t| t.split('\n').map(String::from).collect::<Vec<_>>())
+                .collect();
+            for r in &rangees[..3] {
+                assert_eq!(largeur_affichee(r), cadre, "{colonnes} colonnes : {r}");
+            }
+            // Le reste garde sa largeur d'avant.
+            assert_eq!(rangees[4], ligne_section("BILAN"));
+            for (montrees, haut) in [(rangees.clone(), 0), {
+                // Plus haut que la fenêtre : l'en-tête reste en place, la liste défile jusqu'en bas.
+                let mut haut = usize::MAX;
+                (fenetre(&rangees, 4, rangees.len() - 1, 12, &mut haut), haut)
+            }] {
+                assert_eq!(debut_apercu(&montrees), 3, "{colonnes} colonnes, haut {haut}");
+                let panneau = vec!["Outil".to_string()];
+                let ecran = avec_panneau(&montrees, Some((&panneau, 3)));
+                let ecran: Vec<&str> = ecran.split("\r\n").collect();
+                assert!(ecran[..3].iter().all(|l| !l.contains(&colonne_panneau)));
+                assert!(simplement_affiche(ecran[0]).starts_with('╭'));
+                assert!(simplement_affiche(ecran[2]).starts_with('╰'));
+                assert!(ecran[3].contains(&colonne_panneau));
+            }
+        }
+        // Sans terminal, la ligne par ligne garde les 76 colonnes d'avant.
+        let rendu = texte(&lignes[0], 36, false, largeur_du_cadre(colonnes_du_terminal())).unwrap();
+        assert!(rendu.split('\n').all(|r| largeur_affichee(r) == LARGEUR));
     }
 }

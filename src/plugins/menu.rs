@@ -25,10 +25,10 @@ fn attendre() {
 }
 
 fn tete(chemin: &str, resume: &str) -> Vec<Ligne> {
-    let mut l: Vec<Ligne> = lignes_cadre(&format!("{ACCENT}VANGUARD{RESET} {GRIS}›{RESET} {chemin}"), resume)
-        .into_iter()
-        .map(Ligne::Texte)
-        .collect();
+    let mut l: Vec<Ligne> = vec![Ligne::cadre(
+        &format!("{ACCENT}VANGUARD{RESET} {GRIS}›{RESET} {chemin}"),
+        resume,
+    )];
     l.push(Ligne::Texte(String::new()));
     l
 }
@@ -545,6 +545,8 @@ mod tests {
     fn largeur(l: &Ligne) -> usize {
         match l {
             Ligne::Texte(t) => largeur_affichee(t),
+            // Le cadre, à sa largeur la plus étroite, sans rien couper.
+            Ligne::Cadre { gauche, droite } => 6 + largeur_affichee(gauche) + largeur_affichee(droite),
             Ligne::Choix { texte, precision, .. } => {
                 8 + largeur_affichee(texte).max(30) + 2 + largeur_affichee(precision)
             }
@@ -557,6 +559,7 @@ mod tests {
             .iter()
             .map(|l| match l {
                 Ligne::Texte(t) => t.clone(),
+                Ligne::Cadre { gauche, droite } => format!("{gauche} {droite}"),
                 Ligne::Choix {
                     touche,
                     texte,

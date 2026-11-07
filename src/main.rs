@@ -1313,16 +1313,13 @@ fn touche_de(action: Action) -> Option<String> {
 
 /// Les lignes du menu principal, sous l'état (dernier bilan, clé, surveillance).
 fn lignes_du_menu(etat: Vec<String>) -> Vec<Ligne> {
-    let mut lignes: Vec<Ligne> = lignes_cadre(
+    let mut lignes: Vec<Ligne> = vec![Ligne::cadre(
         &format!("{ACCENT}VANGUARD{RESET} {GRIS}{}{RESET}", env!("CARGO_PKG_VERSION")),
         tr!(
             "Cyberdéfense portable des postes et des réseaux",
             "Portable cyber defense for endpoints and networks"
         ),
-    )
-    .into_iter()
-    .map(Ligne::Texte)
-    .collect();
+    )];
     lignes.extend(etat.into_iter().map(Ligne::Texte));
 
     // Trois intertitres, sans ligne vide : cadre (3), état (3 au plus), intertitres (3) et 13 lignes font 22 rangées,
@@ -2686,10 +2683,10 @@ async fn liste_d_outils(s: &mut Session, chemin: &str, resume: &str, actions: &[
     let mut dernier = s.ligne_gardee(chemin, actions);
     loop {
         print!("\x1b[2J\x1b[H");
-        let mut lignes: Vec<Ligne> = lignes_cadre(&format!("{ACCENT}VANGUARD{RESET} {GRIS}›{RESET} {chemin}"), resume)
-            .into_iter()
-            .map(Ligne::Texte)
-            .collect();
+        let mut lignes: Vec<Ligne> = vec![Ligne::cadre(
+            &format!("{ACCENT}VANGUARD{RESET} {GRIS}›{RESET} {chemin}"),
+            resume,
+        )];
         lignes.push(Ligne::Texte(String::new()));
         for (i, a) in actions.iter().enumerate() {
             let (texte, precision) = a.libelle();
@@ -4394,7 +4391,7 @@ mod tests_menu {
             [s("b"), s("k"), s("a")]
         );
         let lignes = lignes_du_menu(vec![String::new(); 3]);
-        let affichees = lignes.iter().filter(|l| !matches!(l, Ligne::Cachee { .. })).count();
+        let affichees = selection::rangees_a_l_ecran(&lignes);
         assert!(affichees + 2 <= 24, "{affichees} lignes affichées");
         // La recherche voit plus que l'écran : outils des sous-menus et pages du guide.
         assert!(lignes.len() > affichees + 50);

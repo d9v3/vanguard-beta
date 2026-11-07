@@ -1849,6 +1849,11 @@ mod tests {
         l.iter()
             .filter_map(|x| match x {
                 Ligne::Texte(t) => Some((largeur_affichee(t), t.clone())),
+                // Le cadre, à sa largeur la plus étroite, sans rien couper.
+                Ligne::Cadre { gauche, droite } => Some((
+                    6 + largeur_affichee(gauche) + largeur_affichee(droite),
+                    format!("{gauche} {droite}"),
+                )),
                 Ligne::Choix {
                     touche,
                     texte,
@@ -1887,6 +1892,7 @@ mod tests {
         l.iter()
             .map(|x| match x {
                 Ligne::Texte(t) => t.clone(),
+                Ligne::Cadre { gauche, droite } => format!("{gauche} {droite}"),
                 Ligne::Choix { texte, precision, .. } | Ligne::Cachee { texte, precision, .. } => {
                     format!("{texte} {precision}")
                 }

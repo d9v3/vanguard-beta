@@ -17,6 +17,11 @@ recompilée au besoin.
   Mac déjà installé ne trouve plus de mise à jour, sans erreur ; il ne recevra pas non plus de changement de clé : le
   désinstaller. Les nomenclatures (SBOM) sont produites et attestées par le travail « nomenclatures » de `ci.yml`, et
   `outils/publier-version.sh` vérifie toujours cette attestation avant de publier.
+- **Le cadre de tête prend toute la largeur de la fenêtre.** Dans les menus, il suit la fenêtre quand on la
+  redimensionne, panneau d'aperçu compris (la dernière colonne reste libre, pour l'ancienne console de Windows) ; sur
+  les autres écrans, il prend la largeur au moment de l'affichage. Dans une fenêtre étroite, il rétrécit au lieu de
+  déborder : la précision de droite est coupée (« … ») ou retirée avant le titre. Sans terminal (tube, rapport), il
+  garde ses 76 colonnes.
 
 ## 6 novembre 2026 : version 0.90.0
 

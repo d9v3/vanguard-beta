@@ -15,6 +15,10 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   macOS program, its guide and its launcher from the key. A Vanguard for Mac already installed no longer finds updates,
   without errors; nor will it receive a key change: uninstall it. The SBOMs are produced and attested by the
   "nomenclatures" job of `ci.yml`, and `outils/publier-version.sh` still checks that attestation before publishing.
+- **The header frame spans the whole window.** In menus, it follows the window when resized, preview pane included
+  (the last column stays free, for the old Windows console); on other screens, it takes the width at display time. In
+  a narrow window, it shrinks instead of overflowing: the right-hand detail is cut ("…") or dropped before the title.
+  Without a terminal (pipe, report), it keeps its 76 columns.
 
 ## November 6, 2026: version 0.90.0
 

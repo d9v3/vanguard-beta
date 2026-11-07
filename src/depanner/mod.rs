@@ -133,23 +133,24 @@ fn dans_la_langue(t: (&'static str, &'static str)) -> &'static str {
 /// Le titre du parcours en cours, pour le cadre de chaque question.
 static EN_COURS: std::sync::Mutex<&str> = std::sync::Mutex::new("");
 
-fn entete() -> Vec<String> {
+/// Le cadre du parcours : son titre à gauche, sa précision à droite.
+fn entete() -> (String, &'static str) {
     let titre = *EN_COURS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    lignes_cadre(
-        &format!(
+    (
+        format!(
             "{ACCENT}VANGUARD{RESET} {GRIS}›{RESET} {} {GRIS}›{RESET} {titre}",
             tr!("Dépanner", "Troubleshoot")
         ),
         tr!("pas à pas", "step by step"),
     )
-    .to_vec()
 }
 
 /// Une question à choix, posée comme un petit menu sous le cadre du parcours : le numéro choisi (à partir de 0), ou
 /// `None` (Échap, ou réponse vide).
 fn question(texte: &str, reponses: &[&str]) -> Option<usize> {
     print!("\x1b[2J\x1b[H");
-    let mut lignes: Vec<Ligne> = entete().into_iter().map(Ligne::Texte).collect();
+    let (gauche, droite) = entete();
+    let mut lignes: Vec<Ligne> = vec![Ligne::cadre(&gauche, droite)];
     lignes.push(Ligne::Texte(String::new()));
     lignes.extend(
         envelopper(texte, LARGEUR - 4)
@@ -228,9 +229,8 @@ fn conseil(texte: &str) {
 /// Un écran neuf sous le cadre du parcours.
 fn ecran() {
     print!("\x1b[2J\x1b[H");
-    for l in entete() {
-        println!("{l}");
-    }
+    let (gauche, droite) = entete();
+    cadre(&gauche, droite);
 }
 
 /// Le début de l'écran des vérifications, après les questions.
@@ -602,16 +602,13 @@ pub fn ouvrir(n: usize) {
 /// L'écran des parcours, suivis des `autres` outils du groupe : 24 rangées au plus avec l'aide et la saisie (test),
 /// d'où une explication d'une ligne.
 fn lignes_du_menu(autres: &[(&str, &str, &str)]) -> Vec<Ligne> {
-    let mut lignes: Vec<Ligne> = lignes_cadre(
+    let mut lignes: Vec<Ligne> = vec![Ligne::cadre(
         &format!(
             "{ACCENT}VANGUARD{RESET} {GRIS}›{RESET} {}",
             tr!("Dépanner pas à pas", "Step-by-step troubleshooting")
         ),
         tr!("une panne, des questions", "a problem, a few questions"),
-    )
-    .into_iter()
-    .map(Ligne::Texte)
-    .collect();
+    )];
     lignes.push(Ligne::Texte(format!(
         "  {GRIS}{}{RESET}",
         tr!(
@@ -736,7 +733,7 @@ mod tests {
     fn l_ecran_tient_dans_24_lignes() {
         let autres = [("Réparer", "a", "m"), ("Diagnostic", "b", "m")];
         let lignes = lignes_du_menu(&autres);
-        let affichees = lignes.iter().filter(|l| !matches!(l, Ligne::Cachee { .. })).count();
+        let affichees = crate::selection::rangees_a_l_ecran(&lignes);
         assert!(affichees + 2 <= 24, "{affichees} lignes affichées");
     }
 
