@@ -2470,7 +2470,7 @@ fn precision_veilleur() -> &'static str {
     ""
 }
 
-/// Le veilleur : il lit deux flux du noyau Linux ; ailleurs, la commande le dit.
+/// Le garde des lancements : fanotify, du noyau Linux ; ailleurs, la commande le dit.
 fn garde(action: Option<&str>, argument: Option<&str>) {
     #[cfg(target_os = "linux")]
     machine::linux::garde::compte::commande(action, argument);
@@ -2484,6 +2484,7 @@ fn garde(action: Option<&str>, argument: Option<&str>) {
     }
 }
 
+/// Le veilleur : il lit deux flux du noyau Linux ; ailleurs, la commande le dit.
 fn veilleur(etat: Option<&str>, sous_etat: Option<&str>, servir: bool) {
     #[cfg(target_os = "linux")]
     machine::linux::veilleur::commande(etat, sous_etat, servir);

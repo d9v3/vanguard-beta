@@ -343,11 +343,29 @@ fn afficher_etat() {
             let quoi = if ev.chemin.is_empty() { &ev.detail } else { &ev.chemin };
             afficher_aligne(
                 &format!("    {GRIS}{}{RESET} ", heure(ev.t)),
-                &format!("{} {}", affichable(&ev.genre), affichable(quoi)),
+                &format!("{} {}", genre_affiche(&ev.genre), affichable(quoi)),
                 6,
                 "",
             );
         }
+    }
+}
+
+/// Le genre d'un événement, dans la langue de l'affichage (le nom interne reste français dans evenements.jsonl).
+fn genre_affiche(genre: &str) -> String {
+    match genre {
+        "refuse" => tr!("refusé", "refused").into(),
+        "observe" => tr!("noté (observation)", "noted (observing)").into(),
+        "epargne" => tr!("épargné (exception)", "spared (exception)").into(),
+        "permise" => tr!("permis par vous", "allowed by you").into(),
+        "delai" => tr!("permis faute de verdict", "allowed, no verdict in time").into(),
+        "non-verifie" => tr!("non vérifié", "not checked").into(),
+        "file-pleine" => tr!("file pleine", "queue full").into(),
+        "debordement" => tr!("débordement", "overflow").into(),
+        "demarrage" => tr!("démarrage", "start").into(),
+        "montage" => tr!("montage marqué", "mount marked").into(),
+        "alerte" => tr!("alerte du garde", "guard alert").into(),
+        autre => affichable(autre),
     }
 }
 
@@ -631,6 +649,26 @@ mod tests {
         let c = juger(true, Some(&alertes), maintenant);
         assert_eq!(c.probleme, Some(Niveau::Info));
         assert!(!c.message.contains('\u{1b}'), "{}", c.message);
+    }
+
+    #[test]
+    fn chaque_genre_est_traduit() {
+        for g in [
+            "refuse",
+            "observe",
+            "epargne",
+            "permise",
+            "delai",
+            "non-verifie",
+            "file-pleine",
+            "debordement",
+            "demarrage",
+            "montage",
+            "alerte",
+        ] {
+            assert_ne!(genre_affiche(g), g, "{g}");
+        }
+        assert_eq!(genre_affiche("inconnu"), "inconnu");
     }
 
     #[test]

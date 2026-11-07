@@ -3,7 +3,7 @@
 //! rejugé ici (`juger_pose`) par l'élevé.
 //!
 //! La pose copie `/proc/self/exe` de l'assistant (l'image qui tourne déjà en root, à l'abri d'un remplacement du
-//! fichier du compte) en root:root 0755 dans /usr/local/lib/vanguard/garde : le garde ne lance jamais une copie que le
+//! fichier du compte) en root:root 0755 dans /opt/vanguard/garde : le garde ne lance jamais une copie que le
 //! compte peut écrire. L'unité est activée par le bus système (le client maison), systemctl en secours.
 
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
@@ -322,7 +322,7 @@ fn retirer() -> Result<Option<String>, Echec> {
     // Les dossiers de Vanguard, s'ils sont vides (remove_dir refuse un dossier qui ne l'est pas).
     for d in [
         DOSSIER_PROGRAMME,
-        "/usr/local/lib/vanguard",
+        "/opt/vanguard",
         DOSSIER_REGLAGES,
         "/var/lib/vanguard",
         "/run/vanguard/garde",

@@ -1744,8 +1744,8 @@ fn changements_restants(a: &Annulables, donnees_effacees: bool) -> Vec<String> {
     if a.garde {
         l.push(
             tr!(
-                "Le garde des lancements reste posé : « vanguard garde off » le retire ; sans Vanguard, en administrateur : systemctl disable --now vanguard-garde, puis effacer /etc/systemd/system/vanguard-garde.service, /etc/vanguard/garde.json, /usr/local/lib/vanguard/garde et /var/lib/vanguard/garde.",
-                "The launch guard stays installed: “vanguard guard off” removes it; without Vanguard, as administrator: systemctl disable --now vanguard-garde, then delete /etc/systemd/system/vanguard-garde.service, /etc/vanguard/garde.json, /usr/local/lib/vanguard/garde and /var/lib/vanguard/garde."
+                "Le garde des lancements reste posé : « vanguard garde off » le retire ; sans Vanguard, en administrateur : systemctl disable --now vanguard-garde, puis effacer /etc/systemd/system/vanguard-garde.service, /etc/vanguard/garde.json, /opt/vanguard/garde et /var/lib/vanguard/garde.",
+                "The launch guard stays installed: “vanguard guard off” removes it; without Vanguard, as administrator: systemctl disable --now vanguard-garde, then delete /etc/systemd/system/vanguard-garde.service, /etc/vanguard/garde.json, /opt/vanguard/garde and /var/lib/vanguard/garde."
             )
             .to_string(),
         );

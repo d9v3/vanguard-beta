@@ -13,7 +13,7 @@
 //! - `compte` : ce que fait le Vanguard du compte (`vanguard garde on|off|etat|maj`, les listes, l'état lu).
 //!
 //! Le garde ne lance jamais une copie que le compte peut écrire : son programme est la copie, root:root 0755 dans
-//! /usr/local/lib/vanguard/garde, de l'assistant root qui l'a posé. Ses réglages (mode, pause, empreintes permises) ne
+//! /opt/vanguard/garde, de l'assistant root qui l'a posé. Ses réglages (mode, pause, empreintes permises) ne
 //! se lisent que dans /etc/vanguard, écrits par les ordres, avec le mot de passe.
 
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
@@ -37,10 +37,13 @@ pub(crate) use poser::{faire_ordre, juger_pose};
 pub(crate) const UNITE: &str = "vanguard-garde.service";
 /// Le fichier de l'unité, écrit par la pose.
 pub(crate) const FICHIER_UNITE: &str = "/etc/systemd/system/vanguard-garde.service";
-/// Le dossier du programme du garde (à root seul).
-pub(crate) const DOSSIER_PROGRAMME: &str = "/usr/local/lib/vanguard/garde";
+/// Le dossier du programme du garde (à root seul). Dans /opt, pas dans /usr/local/lib : sous SELinux (Fedora), un
+/// programme de /usr/local/lib porte lib_t, que systemd lance sans changer de domaine (init_t, qui ne peut pas marquer
+/// un système de fichiers : le garde ne démarrerait jamais) ; ce qui est créé dans /opt porte usr_t, comme le veut
+/// la politique pour ce chemin, et tourne en unconfined_service_t, même après un réétiquetage complet.
+pub(crate) const DOSSIER_PROGRAMME: &str = "/opt/vanguard/garde";
 /// Le programme du garde : la copie de l'assistant root qui l'a posé.
-pub(crate) const PROGRAMME: &str = "/usr/local/lib/vanguard/garde/vanguard";
+pub(crate) const PROGRAMME: &str = "/opt/vanguard/garde/vanguard";
 /// Le dossier des réglages root de Vanguard.
 pub(crate) const DOSSIER_REGLAGES: &str = "/etc/vanguard";
 /// Les réglages du garde (root:root 0644) : le compte les lit, seuls les ordres les écrivent.

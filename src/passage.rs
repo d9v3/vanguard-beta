@@ -3,7 +3,7 @@
 //! règles du pare-feu, dossiers sur les disques, fichiers posés par une correction). Ce module est le seul endroit du
 //! code qui le connaît : au premier lancement, il reprend ce qui peut l'être, et il aide les autres modules à
 //! reconnaître le reste, pour pouvoir encore l'annuler ou le retirer. Rien ne se perd, même sur un ordinateur oublié.
-//! Le garde des lancements (service vanguard-garde, /etc/vanguard, /usr/local/lib/vanguard, /var/lib/vanguard) est né
+//! Le garde des lancements (service vanguard-garde, /etc/vanguard, /opt/vanguard, /var/lib/vanguard) est né
 //! après le changement de nom : il n'a pas d'ancien nom, rien à reprendre ici ; « Retirer Vanguard » le propose.
 //! À retirer à la 1.0.
 

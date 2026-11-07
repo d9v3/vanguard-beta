@@ -89,7 +89,7 @@ mod tests {
         for (cle, attendu) in [
             ("Type", "notify"),
             ("NotifyAccess", "main"),
-            ("ExecStart", "/usr/local/lib/vanguard/garde/vanguard garde-servir"),
+            ("ExecStart", "/opt/vanguard/garde/vanguard garde-servir"),
             ("WatchdogSec", "5"),
             ("Restart", "always"),
             ("TimeoutStopSec", "3"),
