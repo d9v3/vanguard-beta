@@ -89,7 +89,7 @@ impl Type {
 /// Un geste d'une suite : la liste fermée. Rien d'autre ne s'écrit dans une suite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Etape {
-    /// Geler le programme (réversible : `vanguard blocage reprendre`).
+    /// Geler le processus désigné, lui seul : pas ce qu'il a déjà lancé (réversible : `vanguard blocage reprendre`).
     Suspendre,
     /// Couper ses connexions déjà ouvertes.
     CouperConnexions,
@@ -160,14 +160,29 @@ impl Etape {
         }
     }
 
+    /// La précision du geste dans l'éditeur d'une suite de ce type (au plus 33 colonnes) : son annulation, sauf
+    /// « couper ses connexions » d'un programme, qui n'a pas d'objet sans Bloquer tant que « couper le réseau d'un
+    /// programme » (R3) n'est pas là : c'est dit d'avance, plutôt que découvert à l'alerte.
+    pub(crate) fn precision(self, t: Type) -> &'static str {
+        match (self, t) {
+            (
+                Etape::CouperConnexions,
+                Type::Rancongiciel | Type::OutilDAttaque | Type::MalwareConnu | Type::Famille | Type::LancementRefuse,
+            ) => tr!("seul : pas encore disponible", "alone: not available yet"),
+            _ => self.annulation(),
+        }
+    }
+
     /// Le geste existe-t-il déjà ? « Couper le réseau d'un programme » attend R3.
     pub(crate) fn disponible(self) -> bool {
         self != Etape::CouperReseau
     }
 }
 
-/// La suite par défaut d'un type. Le rançongiciel : ce que fait déjà `rancongiciel::reponse` (geler la lignée, ce qui
-/// coupe ses envois ; la preuve ; l'arrêt et la quarantaine, qui ferment ses connexions ; prévenir). Les autres : ce
+/// La suite par défaut d'un type. Le rançongiciel : dans l'ordre de `rancongiciel::reponse` (geler d'abord, ce qui
+/// coupe ses envois ; la preuve ; l'arrêt et la quarantaine, qui ferment ses connexions ; prévenir). Le veilleur,
+/// tout seul, gèle toute la lignée ; le geste Suspendre d'une suite, lui, ne gèle que le processus désigné (la
+/// suspension du blocage est par numéro), pas ce qu'il a lancé. Les autres : ce
 /// que le blocage de R1 fait déjà (la preuve avant le geste, le geste, l'alerte), la coupure des connexions déjà
 /// ouvertes en plus pour un serveur de commande.
 pub(crate) fn defaut(t: Type) -> Vec<Etape> {
@@ -662,7 +677,20 @@ mod tests {
             // Le titre sert aussi de précision (« Toute la suite »), et l'éditeur y ajoute « * ».
             assert!(t.titre().chars().count() <= 31, "{t:?}");
             assert!(t.origine().chars().count() <= 33, "{t:?}");
+            for e in Etape::TOUTES {
+                assert!(e.precision(t).chars().count() <= 33, "{e:?} {t:?}");
+            }
         }
+        // « Couper ses connexions » d'un programme : dit d'avance pas encore disponible seul ; d'une adresse, son
+        // annulation.
+        assert_ne!(
+            Etape::CouperConnexions.precision(Type::OutilDAttaque),
+            Etape::CouperConnexions.annulation()
+        );
+        assert_eq!(
+            Etape::CouperConnexions.precision(Type::ServeurDeCommande),
+            Etape::CouperConnexions.annulation()
+        );
         let mut noms: Vec<&str> = Etape::TOUTES.iter().map(|e| e.nom()).collect();
         noms.extend(Type::TOUS.iter().map(|t| t.nom()));
         let n = noms.len();

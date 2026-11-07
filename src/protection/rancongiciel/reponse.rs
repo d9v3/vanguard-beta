@@ -3,10 +3,11 @@
 //! quarantaine, sous ses garde-fous. Rien n'est effacé par le gel ; « Reprendre » l'annule. Si un garde-fou refuse
 //! l'arrêt, le programme RESTE gelé et on le dit : jamais laissé gelé en silence.
 //!
-//! Dite comme une suite de gestes (`blocage::suites`), c'est la suite par défaut du rançongiciel : suspendre la
-//! lignée (ses envois s'arrêtent avec elle), couper ses connexions (l'arrêt les ferme), relever la preuve (le blocage
-//! la relève avant l'arrêt), arrêter et mettre en quarantaine, puis prévenir (l'alerte du veilleur). Le veilleur la
-//! fait toujours ainsi, tout seul : une suite réglée dans blocage.json ne sert que lorsqu'on répond à son alerte.
+//! Dite comme une suite de gestes (`blocage::suites`), c'est la suite par défaut du rançongiciel : suspendre (ici,
+//! toute la lignée ; ses envois s'arrêtent avec elle), couper ses connexions (l'arrêt les ferme), relever la preuve
+//! (le blocage la relève avant l'arrêt), arrêter et mettre en quarantaine, puis prévenir (l'alerte du veilleur). Le
+//! veilleur la fait toujours ainsi, tout seul : une suite réglée dans blocage.json ne sert que lorsqu'on répond à son
+//! alerte, et son geste Suspendre ne gèle alors que le processus désigné, pas sa lignée.
 
 // Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]

@@ -431,15 +431,17 @@ fn refus_de_l_assistant(notes: &[String]) -> Echec {
     )
 }
 
-/// Suspend le programme d'une menace, demandé par la personne : garde-fous rejugés (avec les processus que Vanguard
-/// protège, `intouchables`, comme au menu), geste sans course, puis noté (liste scellée et journal). `cle` : la clé de
-/// la menace, au journal.
+/// Suspend le programme d'une menace : garde-fous rejugés (avec les processus que Vanguard protège, `intouchables`,
+/// comme au menu), geste sans course, puis noté (liste scellée et journal). `cle` : la clé de la menace, au journal ;
+/// `source` : qui l'a voulu (la personne, ou la protection active quand une suite le fait toute seule), au journal
+/// aussi : une suspension faite sans personne n'y est jamais dite demandée par la personne.
 pub(crate) fn suspendre(
     pid: u32,
     chemin: &str,
     quoi: &str,
     cle: Option<&str>,
     intouchables: &HashSet<u32>,
+    source: crate::modele::evenement::Source,
 ) -> Result<(), Echec> {
     // Lu avant l'ordre, et porté par lui : le processus que l'ordre vise, et pas un autre venu après sur ce numéro
     // (l'assistant élevé n'agit que sur ce départ-là).
@@ -475,7 +477,7 @@ pub(crate) fn suspendre(
     } else {
         par_l_assistant(&o).and_then(|()| depart_apres_l_assistant(pid, chemin, avant))
     };
-    noter_au_journal(&o, resultat.is_ok(), cle);
+    crate::modele::journal::noter(evenement(source, &o, resultat.is_ok(), cle));
     let d = resultat?;
     retenir(Suspendu {
         pid,
@@ -524,8 +526,35 @@ fn depart_apres_l_assistant(pid: u32, chemin: &str, avant: Option<u64>) -> Resul
 
 /// Le geste au journal des événements, avec sa ligne d'ordre : ce qui a été suspendu ou repris, et quand.
 fn noter_au_journal(o: &Ordre, reussi: bool, cle: Option<&str>) {
-    use crate::modele::evenement::{Evenement, Source};
-    crate::modele::journal::noter(Evenement::action(Source::Utilisateur, &o.texte(), reussi, &[o.ligne()]).cle(cle));
+    crate::modele::journal::noter(evenement(crate::modele::evenement::Source::Utilisateur, o, reussi, cle));
+}
+
+/// L'action au journal d'un ordre de suspension ou de reprise, sous la source de qui l'a voulu.
+fn evenement(
+    source: crate::modele::evenement::Source,
+    o: &Ordre,
+    reussi: bool,
+    cle: Option<&str>,
+) -> crate::modele::evenement::Evenement {
+    crate::modele::evenement::Evenement::action(source, &o.texte(), reussi, &[o.ligne()]).cle(cle)
+}
+
+/// Après une suite : le processus qu'elle a suspendu, puis que Bloquer a arrêté, n'est plus là ; son entrée est
+/// oubliée tout de suite (le bilan le ferait en silence) pour que « reprendre » ne soit plus conseillé d'un processus
+/// mort. Une liste qui ne compte pas n'est pas touchée. Vrai si l'entrée est oubliée.
+pub(crate) fn oublier_s_il_est_fini(pid: u32) -> bool {
+    let Ok(mut l) = charger() else {
+        return false;
+    };
+    retirer_fini(&mut l, pid, |s| lire(s.pid, &s.chemin, s.depart)) && enregistrer(&l).is_ok()
+}
+
+/// Retire l'entrée de `pid` si elle se relit finie (`lu`) ; jamais une autre, ni un processus encore là (même un
+/// autre sur ce numéro, `Lu::Autre` : le bilan le dira). Vrai si retirée.
+fn retirer_fini(l: &mut Liste, pid: u32, lu: impl Fn(&Suspendu) -> Lu) -> bool {
+    let avant = l.suspendus.len();
+    l.suspendus.retain(|s| s.pid != pid || lu(s) != Lu::Fini);
+    l.suspendus.len() != avant
 }
 
 /// Ajoute un suspendu à la liste (le même numéro remplacé). Une liste changée hors de Vanguard ne compte pas : elle
@@ -1055,6 +1084,45 @@ mod tests {
         l.suspendus.push(s(64));
         assert!(pleine(&l, 1000));
         assert!(!pleine(&l, 64));
+    }
+
+    /// Après Suspendre puis Bloquer : seule l'entrée du processus arrêté (relu fini) est oubliée ; un processus
+    /// encore là, ou un autre sur ce numéro, reste, comme les autres entrées.
+    #[test]
+    fn oubli_du_processus_arrete() {
+        let s = |pid| Suspendu {
+            pid,
+            depart: Some(7),
+            chemin: "/home/alice/.local/bin/x".into(),
+            quoi: String::new(),
+            le: String::new(),
+        };
+        let mut l = Liste {
+            suspendus: vec![s(10), s(11)],
+        };
+        assert!(!retirer_fini(&mut l, 10, |_| Lu::Gele));
+        assert!(!retirer_fini(&mut l, 10, |_| Lu::Autre));
+        assert_eq!(l.suspendus.len(), 2);
+        assert!(retirer_fini(&mut l, 10, |_| Lu::Fini));
+        assert_eq!(l.suspendus, vec![s(11)]);
+        assert!(!retirer_fini(&mut l, 99, |_| Lu::Fini));
+        assert_eq!(l.suspendus, vec![s(11)]);
+    }
+
+    /// Une suspension faite par une suite toute seule est notée sous la protection active, jamais « demandée par la
+    /// personne » ; celle d'un menu, sous la personne.
+    #[test]
+    fn suspension_notee_avec_sa_source() {
+        use crate::modele::evenement::Source;
+        let o = Ordre::SuspendreProcessus {
+            pid: 4242,
+            chemin: "/home/alice/.local/bin/x".into(),
+            depart: None,
+        };
+        let e = evenement(Source::Blocage, &o, true, Some("fichier:/home/alice/.local/bin/x"));
+        assert!(matches!(e.source, Source::Blocage));
+        let e = evenement(Source::Utilisateur, &o, true, None);
+        assert!(matches!(e.source, Source::Utilisateur));
     }
 
     /// Windows, sans le droit de suspendre : un autre programme, une autre heure de création ou un autre nom dans la

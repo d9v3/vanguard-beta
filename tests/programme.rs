@@ -2291,6 +2291,15 @@ mod menus_dans_un_terminal {
     /// Vanguard lancé dans un pseudo-terminal de 80 × 40, avec `args` et le dossier personnel `maison` : le processus,
     /// le terminal, et le fil qui lit l'écran.
     fn lancer(maison: &std::path::Path, args: &[&str]) -> (std::process::Child, Terminal, std::thread::JoinHandle<()>) {
+        lancer_en(maison, args, "fr")
+    }
+
+    /// `lancer`, dans la langue donnée (« fr », « en »).
+    fn lancer_en(
+        maison: &std::path::Path,
+        args: &[&str],
+        langue: &str,
+    ) -> (std::process::Child, Terminal, std::thread::JoinHandle<()>) {
         let (maitre, esclave) = ouvrir(80, 40);
         let mut commande = Command::new(env!("CARGO_BIN_EXE_vanguard"));
         commande
@@ -2298,7 +2307,7 @@ mod menus_dans_un_terminal {
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("TERM", "xterm-256color")
-            .env("VANGUARD_LANG", "fr")
+            .env("VANGUARD_LANG", langue)
             .env("USER", "essai")
             .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
             .env("XDG_RUNTIME_DIR", maison.join("run"))
@@ -2423,6 +2432,88 @@ mod menus_dans_un_terminal {
         drop(t);
         let _ = lecteur.join();
         let _ = std::fs::remove_dir_all(&maison);
+    }
+
+    /// Blocage › Suites de gestes au clavier, en français puis en anglais : « Outil d'attaque », un geste ajouté
+    /// (Suspendre, le premier qui manque) et enregistré scellé dans blocage.json, puis la suite par défaut remise
+    /// (rien n'y reste écrit) ; Entrée revient de chaque écran, jusqu'à la sortie.
+    #[test]
+    fn suites_de_gestes_au_clavier() {
+        for (langue, entree, legende, defaut, ajout, enregistree, choisie) in [
+            (
+                "fr",
+                "Suites de gestes",
+                "* : suite choisie ici",
+                "Suite par défaut.",
+                "« reprendre » le lève",
+                "suite enregistrée",
+                "Remettre la suite par défaut",
+            ),
+            (
+                "en",
+                "Action suites",
+                "* : suite chosen here",
+                "Default suite.",
+                "“resume” lifts it",
+                "suite saved",
+                "Restore the default suite",
+            ),
+        ] {
+            let maison = maison_jetable();
+            let fichier = maison.join("donnees/vanguard/blocage.json");
+            let lu = || std::fs::read_to_string(&fichier).unwrap_or_default();
+            let (mut enfant, mut t, lecteur) = lancer_en(&maison, &["blocage"], langue);
+            t.attendre(entree, 60);
+            t.taper("7");
+            t.taper(ENTREE);
+            t.attendre(legende, 30);
+            t.taper("3");
+            t.taper(ENTREE);
+            t.attendre(defaut, 30);
+            t.taper("a");
+            t.taper(ENTREE);
+            t.attendre(ajout, 30);
+            t.taper("1");
+            t.taper(ENTREE);
+            let ecran = t.attendre(choisie, 30);
+            assert!(ecran.contains(enregistree), "{langue} : {ecran}");
+            let ecrit = lu();
+            assert!(
+                ecrit.contains("outil-d-attaque") && ecrit.contains("suspendre"),
+                "{langue} : {ecrit}"
+            );
+            // Scellé par Vanguard : relu sans l'avertissement d'un fichier changé hors de lui.
+            assert!(maison.join("donnees/vanguard/sceaux.json").exists(), "{langue}");
+            t.taper("d");
+            t.taper(ENTREE);
+            let ecran = t.attendre(defaut, 30);
+            assert!(ecran.contains(enregistree), "{langue} : {ecran}");
+            assert!(!lu().contains("outil-d-attaque"), "{langue} : {}", lu());
+            // « d » parti avec la suite choisie : Entrée revient (pas le premier geste rouvert).
+            t.taper(ENTREE);
+            t.attendre(legende, 30);
+            t.taper(ECHAP);
+            t.attendre(entree, 30);
+            t.taper(ECHAP);
+            let fin = Instant::now() + Duration::from_secs(30);
+            let statut = loop {
+                if let Some(s) = enfant.try_wait().unwrap() {
+                    break s;
+                }
+                if Instant::now() > fin {
+                    let _ = enfant.kill();
+                    panic!(
+                        "{langue} : Entrée n'a pas fermé le menu du blocage en 30 s :\n{}",
+                        t.attendre("", 0)
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            };
+            assert!(statut.success(), "{langue} : {statut:?}");
+            drop(t);
+            let _ = lecteur.join();
+            let _ = std::fs::remove_dir_all(&maison);
+        }
     }
 
     /// L'assistant de signalement au clavier : « Rien de ce que Vanguard a vu » choisi par Entrée, la question du tri

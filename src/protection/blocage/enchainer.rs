@@ -54,6 +54,8 @@ pub(super) struct Deroule {
     /// Le geste Bloquer : ce qui a été fait (vérifié ou non), ou pourquoi pas ; `None` : pas encore, ou pas dans la
     /// suite.
     pub(super) bloque: Option<Result<gestes::Fait, String>>,
+    /// Suspendu par la suite et toujours là (« reprendre » le relance) : faux si Bloquer l'a arrêté ensuite.
+    pub(super) a_reprendre: bool,
 }
 
 /// Le type d'alerte d'une menace, qui choisit sa suite ; `None` : pas de suite (un démarrage, la liste des pilotes,
@@ -124,7 +126,10 @@ pub(super) fn derouler(
     let mut d = Deroule {
         issues: Vec::with_capacity(plan.len()),
         bloque: None,
+        a_reprendre: false,
     };
+    // `gestes::faire` note son propre geste au journal : la suite ne le redit pas seule (`a_noter`).
+    let mut faire_appele = false;
     for (e, p) in plan {
         let issue = match p {
             Plan::PasDisponible => Issue::Saute(tr!("pas encore disponible", "not available yet").to_string()),
@@ -141,6 +146,7 @@ pub(super) fn derouler(
                             if automatique && ctx.interactif {
                                 super::montrer(m, &p);
                             }
+                            faire_appele = true;
                             gestes::faire(m, p, automatique).map_err(|e| e.to_string())
                         }
                         Some(Err(e)) => Err(e.to_string()),
@@ -151,6 +157,9 @@ pub(super) fn derouler(
                         Ok(f) => Issue::Fait(trf!("{} (non vérifié)", "{} (not verified)", f.quoi)),
                         Err(e) => Issue::Echoue(e.clone()),
                     };
+                    if fait.is_ok() {
+                        arrete_apres_suspension(m, &mut d);
+                    }
                     d.bloque = Some(fait);
                     issue
                 }
@@ -173,10 +182,44 @@ pub(super) fn derouler(
                 Etape::CouperReseau => Issue::Saute(tr!("pas encore disponible", "not available yet").to_string()),
             },
         };
+        if e == Etape::Suspendre && matches!(issue, Issue::Fait(_)) {
+            d.a_reprendre = true;
+        }
         d.issues.push((e, issue));
     }
-    noter(m, automatique, &d);
+    if a_noter(&d.issues, faire_appele) {
+        noter(m, automatique, &d);
+    }
     d
+}
+
+/// Bloquer a arrêté le processus que la suite venait de suspendre : son entrée de suspension est oubliée, et
+/// « reprendre » n'est plus conseillé (il n'y a plus rien à relancer). Encore là (l'arrêt pas encore constaté) :
+/// rien ne change, le bilan l'oubliera.
+fn arrete_apres_suspension(m: &Menace, d: &mut Deroule) {
+    let Geste::Programme { pid: Some(pid), .. } = &m.geste else {
+        return;
+    };
+    if !d.a_reprendre || !suspension::oublier_s_il_est_fini(*pid) {
+        return;
+    }
+    d.a_reprendre = false;
+    for (e, i) in &mut d.issues {
+        if *e == Etape::Suspendre && matches!(i, Issue::Fait(_)) {
+            *i = Issue::Fait(tr!("gelé, puis arrêté par Bloquer", "frozen, then stopped by Block").to_string());
+        }
+    }
+}
+
+/// La suite se note-t-elle au journal ? Pas quand elle ne dirait que le geste Bloquer, déjà noté par
+/// `gestes::faire` (`faire_appele`), avec Prévenir et ce qui s'est fait avec Bloquer : deux actions pour un seul
+/// geste, sinon, au tableau de bord. Dès qu'un autre geste est fait, sauté ou manqué, ou que Bloquer ne s'est pas
+/// fait (refusé d'avance : rien d'autre ne le note), elle se note.
+fn a_noter(issues: &[(Etape, Issue)], faire_appele: bool) -> bool {
+    !faire_appele
+        || issues
+            .iter()
+            .any(|(e, i)| !matches!(e, Etape::Bloquer | Etape::Prevenir) && !matches!(i, Issue::AvecBloquer(_)))
 }
 
 /// La suite entière au journal, une ligne par geste (ce qui a été sauté aussi, avec pourquoi), sous la clé de la
@@ -219,7 +262,20 @@ fn suspendre(m: &Menace, ctx: &Contexte, automatique: bool) -> Issue {
     if automatique && !ctx.admin && !ctx.interactif && !suspension::sans_droits_de_plus(*pid) {
         return Issue::Echoue(gestes::droits_manquants());
     }
-    match suspension::suspendre(*pid, &chemin, &m.quoi, Some(&m.cle_normale()), &ctx.intouchables) {
+    // Sans clic, la protection active l'a fait : le journal le dit (jamais « demandé par la personne »).
+    let source = if automatique {
+        crate::modele::evenement::Source::Blocage
+    } else {
+        crate::modele::evenement::Source::Utilisateur
+    };
+    match suspension::suspendre(
+        *pid,
+        &chemin,
+        &m.quoi,
+        Some(&m.cle_normale()),
+        &ctx.intouchables,
+        source,
+    ) {
         Ok(()) => Issue::Fait(trf!(
             "« vanguard blocage reprendre {pid} » le reprend",
             "“vanguard blocking resume {pid}” resumes it"
@@ -318,6 +374,36 @@ mod tests {
             d.issues
         );
         assert!(d.bloque.is_none());
+    }
+
+    /// Une seule action au journal pour un seul geste : la suite par défaut (preuve et coupure avec Bloquer,
+    /// Bloquer, Prévenir) ne redit pas ce que `gestes::faire` a noté ; un autre geste, ou Bloquer refusé d'avance
+    /// (personne d'autre ne le note), et elle se note.
+    #[test]
+    fn suite_notee_sans_doublon() {
+        let fait = || Issue::Fait("x".into());
+        let avec = || Issue::AvecBloquer("x".into());
+        let defaut = [
+            (Etape::Preuve, avec()),
+            (Etape::Bloquer, fait()),
+            (Etape::CouperConnexions, avec()),
+            (Etape::Prevenir, fait()),
+        ];
+        assert!(!a_noter(&defaut, true));
+        assert!(a_noter(&defaut, false));
+        let refuse = [
+            (Etape::Bloquer, Issue::Echoue("pas administrateur".into())),
+            (Etape::Prevenir, fait()),
+        ];
+        assert!(a_noter(&refuse, false));
+        let gele = [
+            (Etape::Suspendre, fait()),
+            (Etape::Bloquer, fait()),
+            (Etape::Prevenir, fait()),
+        ];
+        assert!(a_noter(&gele, true));
+        let saute = [(Etape::Bloquer, fait()), (Etape::Surveiller, Issue::Saute("x".into()))];
+        assert!(a_noter(&saute, true));
     }
 
     /// Le type d'alerte, d'après ce qui a désigné la menace.

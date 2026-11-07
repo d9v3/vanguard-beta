@@ -83,6 +83,12 @@ fn parametres() -> Parametres {
     })
 }
 
+/// Les réglages, sans redire ce que `parametres` a déjà dit (fichier non cru ou illisible) : pour les tours d'un
+/// même éditeur, entré par `parametres`.
+fn parametres_tus() -> Parametres {
+    parametres::charger().unwrap_or_default()
+}
+
 /// Enregistre les réglages. Un fichier illisible n'est pas écrasé en silence : il est d'abord mis de côté, intact.
 fn enregistrer(p: &Parametres) -> bool {
     if parametres::charger().is_err() {
@@ -326,7 +332,14 @@ fn suspendre_par_pid(mot: &str) {
     }
     let quoi = trf!("Suspendu à la main : {}", "Suspended by hand: {}", chemin);
     let intouchables = crate::machine::chasse::en_marche().map_or_else(HashSet::new, |(_, i)| i);
-    match suspension::suspendre(pid, &chemin, &quoi, None, &intouchables) {
+    match suspension::suspendre(
+        pid,
+        &chemin,
+        &quoi,
+        None,
+        &intouchables,
+        crate::modele::evenement::Source::Utilisateur,
+    ) {
         Ok(()) => trp!("  {VERT}✔{RESET} Suspendu.", "  {VERT}✔{RESET} Suspended."),
         Err(e) => trp!("  ✖ {e}", "  ✖ {e}"),
     }
@@ -685,8 +698,10 @@ fn regler_categorie(c: Categorie) {
 /// seulement les gestes de la liste fermée, dans l'ordre choisi.
 fn editer_suites() {
     let mut dernier = String::from("1");
+    // Un fichier non cru ou illisible est dit ici, une fois, pas à chaque tour de l'éditeur.
+    let _ = parametres();
     loop {
-        let p = parametres();
+        let p = parametres_tus();
         let mut lignes = vec![
             Ligne::Texte(String::new()),
             Ligne::Texte(ligne_titre(tr!("Suites de gestes", "Action suites"))),
@@ -745,7 +760,7 @@ fn editer_suites() {
 fn editer_suite(t: suites::Type) {
     let mut dernier = String::from("1");
     loop {
-        let p = parametres();
+        let p = parametres_tus();
         let (etapes, choisie, abimee) = match suites::lire(&p.suites, t) {
             Ok(Some(s)) => (s, true, None),
             Ok(None) => (suites::defaut(t), false, None),
@@ -782,16 +797,28 @@ fn editer_suite(t: suites::Type) {
         }
         if t == suites::Type::Rancongiciel {
             avertir(tr!(
-                "Le veilleur, tout seul, fait toujours la suite par défaut ; celle-ci sert quand vous répondez à son alerte.",
-                "The watcher, by itself, always runs the default suite; this one is used when you answer its alert."
+                "Le veilleur, tout seul, fait toujours la suite par défaut et gèle tout ce que le programme a lancé ; celle-ci sert quand vous répondez à son alerte, et son « suspendre » ne gèle que le processus désigné.",
+                "The watcher, by itself, always runs the default suite and freezes everything the program started; this one is used when you answer its alert, and its “suspend” freezes only the named process."
             ));
+        }
+        if etapes.contains(&suites::Etape::Bloquer) {
+            // Bloquer relève toujours la preuve juste avant son geste : l'étape ne se retire pas en vérité.
+            for l in envelopper(
+                tr!(
+                    "La preuve est toujours relevée juste avant Bloquer, même sans l'étape « Relever la preuve ».",
+                    "The evidence is always recorded just before Block, even without the “Record the evidence” step."
+                ),
+                LARGEUR.saturating_sub(4),
+            ) {
+                lignes.push(Ligne::Texte(format!("  {GRIS}{l}{RESET}")));
+            }
         }
         lignes.push(Ligne::Texte(String::new()));
         for (i, e) in etapes.iter().enumerate() {
             lignes.push(Ligne::choix(
                 &i.saturating_add(1).to_string(),
                 e.texte(),
-                e.annulation(),
+                e.precision(t),
             ));
         }
         lignes.push(Ligne::Texte(String::new()));
@@ -818,7 +845,7 @@ fn editer_suite(t: suites::Type) {
         let choix = choix.trim().to_string();
         let nouvelle = match choix.as_str() {
             "a" if !manquants.is_empty() => {
-                let Some(e) = choisir_geste_a_ajouter(&manquants) else {
+                let Some(e) = choisir_geste_a_ajouter(t, &manquants) else {
                     continue;
                 };
                 let mut s = etapes.clone();
@@ -854,12 +881,13 @@ fn editer_suite(t: suites::Type) {
                 t.titre()
             );
         }
-        dernier = choix;
+        // « d » disparaît avec la suite choisie : Entrée revient alors, au lieu de rouvrir le premier geste.
+        dernier = if choix == "d" { "↵".to_string() } else { choix };
     }
 }
 
 /// Le geste à ajouter à la fin de la suite (`None` : rien).
-fn choisir_geste_a_ajouter(manquants: &[suites::Etape]) -> Option<suites::Etape> {
+fn choisir_geste_a_ajouter(t: suites::Type, manquants: &[suites::Etape]) -> Option<suites::Etape> {
     let mut lignes = vec![
         Ligne::Texte(String::new()),
         Ligne::Texte(ligne_titre(tr!("Ajouter un geste", "Add an action"))),
@@ -869,7 +897,7 @@ fn choisir_geste_a_ajouter(manquants: &[suites::Etape]) -> Option<suites::Etape>
         lignes.push(Ligne::choix(
             &i.saturating_add(1).to_string(),
             e.texte(),
-            e.annulation(),
+            e.precision(t),
         ));
     }
     lignes.push(Ligne::Texte(String::new()));
@@ -1090,11 +1118,38 @@ fn bloquer_tout_seul(
     }
     let etapes = retenue.map_or_else(|| suites::defaut(suites::Type::MalwareConnu), |r| r.etapes);
     let pret = gestes::preparer(m, ctx, true);
+    if let Err(raison) = &pret
+        && deja_refusee(&m.cle, &mut signalees)
+    {
+        // Bloquer refusé d'avance (souvent : pas administrateur) et déjà dit au passage d'avant : rien à refaire,
+        // ni preuve ni action au journal, sinon la passe horaire les répéterait chaque heure.
+        if ctx.interactif {
+            afficher_aligne(
+                &format!("  {}✖{RESET} ", couleur(crate::risk::Niveau::Eleve)),
+                &trf!("{} : pas bloqué, {raison}", "{}: not blocked, {raison}", m.quoi),
+                4,
+                "",
+            );
+        }
+        return;
+    }
     let d = enchainer::derouler(m, &etapes, ctx, true, pret, &mut |d| {
         prevenir_tout_seul(m, ctx, d, dit.as_deref(), &mut signalees)
     });
     if ctx.interactif {
         dire_les_autres_gestes(&d);
+    }
+}
+
+/// Note la menace comme signalée (Bloquer refusé d'avance) et dit si elle l'était déjà au passage d'avant : la suite
+/// entière est alors tue. Sans liste (`None`, une passe hors surveillance), jamais déjà signalée.
+fn deja_refusee(cle: &str, signalees: &mut Option<(&BTreeSet<String>, &mut BTreeSet<String>)>) -> bool {
+    match signalees {
+        Some((avant, maintenant)) => {
+            maintenant.insert(cle.to_string());
+            avant.contains(cle)
+        }
+        None => false,
     }
 }
 
@@ -1181,10 +1236,7 @@ fn alerte_de_la_suite(m: &Menace, d: &enchainer::Deroule, dit: Option<&str>) -> 
         .filter(|(e, i)| *e != suites::Etape::Bloquer && !matches!(i, enchainer::Issue::AvecBloquer(_)))
         .map(|(e, i)| i.ligne(*e))
         .collect();
-    let suspendu = d
-        .issues
-        .iter()
-        .any(|(e, i)| *e == suites::Etape::Suspendre && matches!(i, enchainer::Issue::Fait(_)));
+    let suspendu = d.a_reprendre;
     if !autres.is_empty() {
         texte += &trf!(". Suite : {}", ". Suite: {}", autres.join(" ; "));
     }
@@ -1477,23 +1529,28 @@ pub fn alerte(id: &str) {
         "  {GRIS}Recherche de la menace, rejugée maintenant…{RESET}",
         "  {GRIS}Looking for the threat, judged again now…{RESET}"
     );
-    // Une alerte du veilleur anti-rançongiciel : le programme en marche à ce chemin, s'il y est encore, avec la suite
-    // « rançongiciel » (douteux : proposée, jamais faite sans la question).
-    if let Some((m, intouchables)) = cle
-        .strip_prefix("veilleur|rancongiciel|")
-        .filter(|c| std::path::Path::new(c).is_absolute())
-        .and_then(menaces::rancongiciel)
-    {
-        if !std::io::stdin().is_terminal() {
-            trp!(
-                "  Ses gestes se choisissent dans un terminal : vanguard alerte {id}.",
-                "  Its actions are chosen in a terminal: vanguard alert {id}."
-            );
-            return;
+    // Une alerte du veilleur anti-rançongiciel : le processus qu'elle nomme (son numéro, ou le seul à ce chemin),
+    // s'il y est encore, avec la suite « rançongiciel » (douteux : proposée, jamais faite sans la question).
+    if let Some(objet) = cle.strip_prefix("veilleur|rancongiciel|") {
+        match menaces::rancongiciel(objet, &ev.quand) {
+            menaces::Rancon::Menace(m, intouchables) => {
+                if !std::io::stdin().is_terminal() {
+                    trp!(
+                        "  Ses gestes se choisissent dans un terminal : vanguard alerte {id}.",
+                        "  Its actions are chosen in a terminal: vanguard alert {id}."
+                    );
+                    return;
+                }
+                let ctx = Contexte::lire(intouchables, true);
+                agir(&m, &ctx, &parametres());
+                return;
+            }
+            menaces::Rancon::Choisir { pids, interpreteur } => {
+                afficher_aligne("  ⚠ ", &a_choisir(&pids, interpreteur), 4, "");
+                return;
+            }
+            menaces::Rancon::Absent => {}
         }
-        let ctx = Contexte::lire(intouchables, true);
-        agir(&m, &ctx, &parametres());
-        return;
     }
     let t = menaces::chercher(&Categorie::TOUTES, false);
     let Some(m) = t.menaces.iter().find(|m| alerte_designe(m, cle)) else {
@@ -1518,6 +1575,31 @@ pub fn alerte(id: &str) {
     }
     let ctx = Contexte::lire(t.intouchables.clone(), true);
     agir(m, &ctx, &parametres());
+}
+
+/// Plusieurs processus à un chemin nommé par le veilleur (ou un interpréteur) : aucun n'est pris au hasard, la
+/// personne dit lequel (dix numéros au plus à l'écran).
+fn a_choisir(pids: &[u32], interpreteur: bool) -> String {
+    let mut liste = pids.iter().take(10).map(u32::to_string).collect::<Vec<_>>().join(", ");
+    if pids.len() > 10 {
+        liste.push_str(", …");
+    }
+    let n = pids.len();
+    let pourquoi = if interpreteur {
+        trf!(
+            "c'est un interpréteur ({n} en marche : {liste}) : son chemin ne dit pas quel script chiffrait",
+            "it is an interpreter ({n} running: {liste}): its path does not tell which script was encrypting"
+        )
+    } else {
+        trf!(
+            "{n} processus à ce chemin ({liste})",
+            "{n} processes at this path ({liste})"
+        )
+    };
+    trf!(
+        "{pourquoi}. Vanguard n'en prend aucun au hasard : vérifiez lequel, puis « vanguard blocage suspendre <PID> ».",
+        "{pourquoi}. Vanguard does not pick one at random: check which, then “vanguard blocking suspend <PID>”."
+    )
 }
 
 /// Ce que le menu des gestes doit savoir de la menace, lu maintenant.
@@ -1804,7 +1886,14 @@ fn suspendre_la_menace(m: &Menace) -> bool {
         return false;
     }
     let intouchables = crate::machine::chasse::en_marche().map_or_else(HashSet::new, |(_, i)| i);
-    match suspension::suspendre(*pid, &chemin, &m.quoi, Some(&m.cle_normale()), &intouchables) {
+    match suspension::suspendre(
+        *pid,
+        &chemin,
+        &m.quoi,
+        Some(&m.cle_normale()),
+        &intouchables,
+        crate::modele::evenement::Source::Utilisateur,
+    ) {
         Ok(()) => trp!(
             "  {VERT}✔{RESET} Suspendu. Pour le reprendre : vanguard blocage reprendre {pid} ; pour l'arrêter : Bloquer.",
             "  {VERT}✔{RESET} Suspended. To resume it: vanguard blocking resume {pid}; to stop it: Block."
@@ -2077,6 +2166,35 @@ pub fn annuler() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Plusieurs processus à choisir : leurs numéros (dix au plus) et la commande pour dire lequel, l'interpréteur
+    /// dit comme tel.
+    #[test]
+    fn a_choisir_dit_les_numeros() {
+        let t = a_choisir(&[14, 15], false);
+        assert!(t.contains("14, 15") && t.contains("suspend"), "{t}");
+        let beaucoup: Vec<u32> = (1..=12).collect();
+        let t = a_choisir(&beaucoup, true);
+        assert!(t.contains("10, …") && !t.contains("11"), "{t}");
+        assert!(t.contains("12"), "{t}");
+    }
+
+    /// Bloquer refusé d'avance (sans administrateur) : la première passe horaire fait la suite (preuve, action,
+    /// alerte), les suivantes la taisent toute, sinon preuve et action reviendraient au journal chaque heure.
+    #[test]
+    fn refus_redit_une_seule_fois() {
+        let cle = "adresse:203.0.113.9";
+        let avant = BTreeSet::new();
+        let mut premiere = BTreeSet::new();
+        assert!(!deja_refusee(cle, &mut Some((&avant, &mut premiere))));
+        assert!(premiere.contains(cle));
+        let mut seconde = BTreeSet::new();
+        assert!(deja_refusee(cle, &mut Some((&premiere, &mut seconde))));
+        // Toujours notée : à la troisième heure aussi, elle reste tue.
+        assert!(seconde.contains(cle));
+        // Hors surveillance (pas de liste), jamais tue.
+        assert!(!deja_refusee(cle, &mut None));
+    }
 
     /// Une clé de menace ajoutée hors de Vanguard aux menaces déjà signalées ne tait plus l'échec de son blocage :
     /// le fichier changé sans sceau se lit vide, et la menace est redite.

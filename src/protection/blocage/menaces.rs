@@ -232,25 +232,84 @@ pub(super) fn raison_rancongiciel() -> &'static str {
     )
 }
 
-/// La menace d'un programme désigné par une alerte du veilleur anti-rançongiciel : le processus en marche à ce chemin
-/// exact (le premier trouvé), lu maintenant, jamais un de ceux que Vanguard protège. Douteuse : seule une alerte de
-/// la personne l'ouvre, et chaque geste est rejugé par ses garde-fous. `None` : plus aucun programme à ce chemin.
-pub(super) fn rancongiciel(chemin: &str) -> Option<(Menace, HashSet<u32>)> {
-    let (liste, intouchables) = chasse::en_marche()?;
-    let p = liste.iter().filter(|p| !intouchables.contains(&p.pid)).find(|p| {
-        p.chemin
-            .as_deref()
-            .is_some_and(|c| super::gestes::meme_chemin(c, chemin))
-    })?;
-    let m = menace_programme(
-        p,
-        Jugement {
-            certaine: false,
-            raison: raison_rancongiciel().to_string(),
-            script: None,
-        },
-    );
-    Some((m, intouchables))
+/// Ce que désigne une alerte du veilleur anti-rançongiciel, relue maintenant.
+pub(super) enum Rancon {
+    /// Un seul processus, celui qu'elle nomme : la menace (douteuse) et les processus que Vanguard protège.
+    Menace(Menace, HashSet<u32>),
+    /// Plusieurs processus à ce chemin, ou un interpréteur : Vanguard n'en choisit aucun, la personne dit lequel.
+    Choisir { pids: Vec<u32>, interpreteur: bool },
+    /// Plus rien à ce chemin ou à ce numéro (ou la liste des processus illisible, ou une clé sans programme).
+    Absent,
+}
+
+/// Le processus désigné par l'objet d'une clé du veilleur (`veilleur|rancongiciel|<objet>`), parmi `liste` : ce
+/// numéro-là pour `pid:<n>` (le veilleur n'a pas pu lire son chemin), le seul processus à ce chemin exact sinon.
+/// Jamais un de ceux que Vanguard protège, ni un processus né après l'alerte (`alerte`, UTC) : un numéro repris ou
+/// une instance lancée depuis n'est pas le coupable. Plusieurs processus au chemin, ou un interpréteur (son chemin
+/// ne dit pas quel script chiffrait, même s'il n'en reste qu'un), et aucun n'est pris au hasard.
+fn designer<'a>(
+    objet: &str,
+    alerte: Option<chrono::NaiveDateTime>,
+    liste: &'a [EnMarche],
+    intouchables: &HashSet<u32>,
+) -> Result<Option<&'a EnMarche>, (Vec<u32>, bool)> {
+    let avant_l_alerte = |p: &&EnMarche| match (p.ne, alerte) {
+        (Some(ne), Some(a)) => ne <= a,
+        _ => true,
+    };
+    let candidats = liste
+        .iter()
+        .filter(|p| !intouchables.contains(&p.pid))
+        .filter(avant_l_alerte);
+    if let Some(n) = objet.strip_prefix("pid:") {
+        let Ok(n) = n.parse::<u32>() else {
+            return Ok(None);
+        };
+        return Ok(candidats.into_iter().find(|p| p.pid == n));
+    }
+    if !Path::new(objet).is_absolute() {
+        return Ok(None);
+    }
+    let au_chemin: Vec<&EnMarche> = candidats
+        .filter(|p| {
+            p.chemin
+                .as_deref()
+                .is_some_and(|c| super::gestes::meme_chemin(c, objet))
+        })
+        .collect();
+    let interpreteur = Path::new(objet)
+        .file_name()
+        .is_some_and(|f| chasse::interpreteur(&f.to_string_lossy()));
+    match au_chemin.as_slice() {
+        [] => Ok(None),
+        [p] if !interpreteur => Ok(Some(*p)),
+        plusieurs => Err((plusieurs.iter().map(|p| p.pid).collect(), interpreteur)),
+    }
+}
+
+/// La menace d'un programme désigné par une alerte du veilleur anti-rançongiciel (l'objet de sa clé, voir
+/// `designer`), lue maintenant ; `alerte` : l'heure de l'alerte (« AAAA-MM-JJTHH:MM:SSZ », UTC). Douteuse : seule
+/// une alerte de la personne l'ouvre, et chaque geste est rejugé par ses garde-fous.
+pub(super) fn rancongiciel(objet: &str, alerte: &str) -> Rancon {
+    let Some((liste, intouchables)) = chasse::en_marche() else {
+        return Rancon::Absent;
+    };
+    let alerte = chrono::NaiveDateTime::parse_from_str(alerte, "%Y-%m-%dT%H:%M:%SZ").ok();
+    match designer(objet, alerte, &liste, &intouchables) {
+        Ok(Some(p)) => {
+            let m = menace_programme(
+                p,
+                Jugement {
+                    certaine: false,
+                    raison: raison_rancongiciel().to_string(),
+                    script: None,
+                },
+            );
+            Rancon::Menace(m, intouchables)
+        }
+        Ok(None) => Rancon::Absent,
+        Err((pids, interpreteur)) => Rancon::Choisir { pids, interpreteur },
+    }
 }
 
 /// L'empreinte d'un fichier est-elle connue ? Par la voie unique des sources (`protection::sources`).
@@ -652,6 +711,76 @@ mod tests {
             ligne: Some(ligne.into()),
             ..EnMarche::default()
         }
+    }
+
+    /// L'alerte du veilleur désigne un processus précis : le numéro de sa clé (`pid:<n>`), ou le seul à ce chemin.
+    /// Plusieurs au chemin, ou un interpréteur même seul : aucun pris au hasard. Jamais un intouchable, ni un
+    /// processus né après l'alerte (numéro repris, instance lancée depuis).
+    #[test]
+    fn rancongiciel_designe_le_bon_processus() {
+        let heure = |h: u32| {
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 7)
+                .unwrap()
+                .and_hms_opt(h, 0, 0)
+                .unwrap()
+        };
+        let p = |pid: u32, chemin: &str, ne: Option<chrono::NaiveDateTime>| EnMarche {
+            pid,
+            nom: "x".into(),
+            chemin: (!chemin.is_empty()).then(|| chemin.into()),
+            ne,
+            ..EnMarche::default()
+        };
+        // Des chemins absolus du système où l'essai tourne (« /usr/bin » n'est pas absolu sous Windows).
+        let (outil, python, deux) = if cfg!(windows) {
+            (
+                r"C:\Users\alice\bin\chiffreur.exe",
+                r"C:\Python3\python.exe",
+                r"C:\Users\alice\bin\deux.exe",
+            )
+        } else {
+            (
+                "/home/alice/.local/bin/chiffreur",
+                "/usr/bin/python3",
+                "/home/alice/.local/bin/deux",
+            )
+        };
+        let liste = vec![
+            p(10, python, Some(heure(8))),
+            p(11, outil, Some(heure(9))),
+            p(12, "", Some(heure(9))),
+            p(13, python, Some(heure(9))),
+            p(14, deux, None),
+            p(15, deux, None),
+            p(16, "", Some(heure(11))),
+        ];
+        let rien = HashSet::new();
+        let alerte = Some(heure(10));
+        let pid = |r: Result<Option<&EnMarche>, (Vec<u32>, bool)>| r.map(|o| o.map(|p| p.pid));
+        // Le numéro de la clé, pas le premier au chemin.
+        assert_eq!(pid(designer("pid:12", alerte, &liste, &rien)), Ok(Some(12)));
+        // Né après l'alerte : un numéro repris, pas le coupable.
+        assert_eq!(pid(designer("pid:16", alerte, &liste, &rien)), Ok(None));
+        assert_eq!(pid(designer("pid:99", alerte, &liste, &rien)), Ok(None));
+        assert_eq!(pid(designer("pid:x", alerte, &liste, &rien)), Ok(None));
+        // Le seul à ce chemin.
+        assert_eq!(pid(designer(outil, alerte, &liste, &rien)), Ok(Some(11)));
+        // Deux au même chemin : à choisir.
+        assert_eq!(pid(designer(deux, alerte, &liste, &rien)), Err((vec![14, 15], false)));
+        // Un interpréteur : à choisir, même seul.
+        assert_eq!(pid(designer(python, alerte, &liste, &rien)), Err((vec![10, 13], true)));
+        let seul_python = HashSet::from([10]);
+        assert_eq!(
+            pid(designer(python, alerte, &liste, &seul_python)),
+            Err((vec![13], true))
+        );
+        // Intouchable : jamais pris.
+        assert_eq!(pid(designer(outil, alerte, &liste, &HashSet::from([11]))), Ok(None));
+        assert_eq!(pid(designer("pid:12", alerte, &liste, &HashSet::from([12]))), Ok(None));
+        // Une clé sans programme (« rafale ») ou un chemin relatif : rien.
+        assert_eq!(pid(designer("rafale", alerte, &liste, &rien)), Ok(None));
+        // Heure de l'alerte illisible : la naissance ne départage plus, le reste tient.
+        assert_eq!(pid(designer("pid:16", None, &liste, &rien)), Ok(Some(16)));
     }
 
     /// Certain : un outil d'attaque connu, une empreinte connue. Douteux : le reste de COM-PRG-001. Rien sinon.
