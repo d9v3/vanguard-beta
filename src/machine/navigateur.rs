@@ -705,7 +705,7 @@ fn dossier_plateforme(compatibilite: &str) -> Option<std::path::PathBuf> {
 }
 
 /// La version majeure de Gecko, le moteur de toute la famille Firefox (Zen, Floorp, Waterfox numérotent leur
-/// programme à leur façon, pas leur moteur), d'après le platform.ini de ce dossier : « [Build] Milestone=144.0.2 ».
+/// programme à leur façon, pas leur moteur), d'après le platform.ini de ce dossier : « `[Build] Milestone=144.0.2` ».
 fn version_gecko(platform: &str) -> Option<u32> {
     platform
         .lines()
