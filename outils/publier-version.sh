@@ -236,12 +236,17 @@ attendre_execution() { # exécution, secondes au plus
 # assets/vanguard.ico…), pas des dossiers ; et outils/date-du-code.sh les saute (hors-code.txt les contient) : la
 # date gravée reste celle du code. Tout autre fichier, même hors du programme (.md, outils/, ci.yml), n'y est pas.
 HORS_COMPILATION='^(assets/captures/[A-Za-z0-9][A-Za-z0-9._-]*\.png|assets/captures/VERSION|assets/partage\.png|docs/index\.html)$'
+# Une entrée de « git diff-tree --raw » permise dans la liste : un fichier ordinaire (100644, 100755) ajouté, changé
+# ou qui l'est devenu, ou un effacement (000000) ; un lien symbolique (120000) ou un sous-module (160000) nommé comme
+# une capture n'est pas ce que deployer.sh committe (relecture adverse du lot publier-version, T1).
+ENTREE_HORS_COMPILATION='^:[0-7]{6} ((100644|100755) [0-9a-f]{40} [0-9a-f]{40} [AMT]|000000 [0-9a-f]{40} 0{40} D)$'
 # Le commit de la CI (2e argument) vient après le commit compilé (1er), en ligne droite jusqu'à la tête de master
-# (COMMIT), et chaque commit entre les deux ne touche que HORS_COMPILATION : la CI a compilé le même code. Code 0
-# seulement alors ; une fusion, un commit hors de la ligne, un fichier hors de la liste (un renommage compte pour ses
-# deux chemins), une réponse de git illisible : 1. Lue telle quelle par outils/essais-signature.sh.
+# (COMMIT), et chaque commit entre les deux ne touche que HORS_COMPILATION, en fichiers ordinaires : la CI a compilé
+# le même code. Code 0 seulement alors ; une fusion, un commit hors de la ligne, un fichier hors de la liste (un
+# renommage compte pour ses deux chemins), un lien ou un sous-module, une réponse de git illisible : 1. Lue telle
+# quelle par outils/essais-signature.sh.
 descendant_hors_compilation() { # commit compilé, commit de la CI
-  local de=$1 vers=$2 fusions premiers tous c chemins p
+  local de=$1 vers=$2 fusions premiers tous c champs i
   [[ $de =~ ^[0-9a-f]{40}$ && $vers =~ ^[0-9a-f]{40}$ && $de != "$vers" ]] || return 1
   git merge-base --is-ancestor "$de" "$vers" 2>/dev/null || return 1
   git merge-base --is-ancestor "$vers" "$COMMIT" 2>/dev/null || return 1
@@ -252,13 +257,14 @@ descendant_hors_compilation() { # commit compilé, commit de la CI
   [[ -n $tous && $premiers == "$tous" ]] || return 1
   for c in $tous; do
     [[ $c =~ ^[0-9a-f]{40}$ ]] || return 1
-    # Un élément vide en dernier : git a fini sans erreur (un chemin n'est jamais vide).
-    mapfile -d '' chemins < <(git diff-tree --no-commit-id --name-only -r --no-renames -z "$c" 2>/dev/null &&
-      printf '\0')
-    [[ ${#chemins[@]} -gt 0 && -z ${chemins[-1]} ]] || return 1
-    unset 'chemins[-1]'
-    for p in "${chemins[@]+"${chemins[@]}"}"; do
-      [[ $p =~ $HORS_COMPILATION ]] || return 1
+    # Avec -z, chaque entrée fait deux éléments : « :modes shas état », puis le chemin. Un élément vide en dernier :
+    # git a fini sans erreur (un chemin n'est jamais vide).
+    mapfile -d '' champs < <(git diff-tree --no-commit-id --raw -r --no-renames -z "$c" 2>/dev/null && printf '\0')
+    [[ ${#champs[@]} -gt 0 && -z ${champs[-1]} ]] || return 1
+    unset 'champs[-1]'
+    (( ${#champs[@]} % 2 == 0 )) || return 1
+    for ((i = 0; i < ${#champs[@]}; i += 2)); do
+      [[ ${champs[i]} =~ $ENTREE_HORS_COMPILATION && ${champs[i + 1]} =~ $HORS_COMPILATION ]] || return 1
     done
   done
 }

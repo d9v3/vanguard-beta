@@ -44,8 +44,8 @@
 #   6h. Une compilation reproductible de la CI faite sur un commit d'après celui de la version compte seulement en
 #      ligne droite jusqu'à la tête de master, sans fusion, chaque commit entre les deux ne touchant que la liste
 #      fermée HORS_COMPILATION (captures, image de partage, page des fonctions : descendant_hors_compilation, dans un
-#      dépôt git jetable ; empreintes_de_la_ci, face à un faux gh) ; rien du programme ne lit ces fichiers, et les
-#      notes le disent.
+#      dépôt git jetable ; empreintes_de_la_ci, face à un faux gh), en fichiers ordinaires (ni lien symbolique ni
+#      sous-module) ; rien du programme ne lit ces fichiers, et les notes le disent.
 #   6c. Au branchement de la clé, deployer.sh (ci_verte, face à un faux gh) ne récupère ni ne compile un commit de
 #      GitHub sans CI verte sur ce commit exact (ci.yml, master ; campagne d'attaque n° 6, F4), et dit à part gh sans
 #      compte connecté ou introuvable (sinon, sous le service de la clé, « réessayé » pour toujours sans alerte).
@@ -771,7 +771,7 @@ echo 0.92.0+1 >"$H/assets/captures/VERSION"
 H_CAPTURES=$(commit_h "Captures d'écran : v0.92.0")
 echo page2 >"$H/docs/index.html"
 H_PAGE=$(commit_h "Page des fonctions : v0.92.0")
-{ grep '^HORS_COMPILATION=' "$DEPOT/outils/publier-version.sh"
+{ grep -E '^(HORS_COMPILATION|ENTREE_HORS_COMPILATION)=' "$DEPOT/outils/publier-version.sh"
   awk '/^descendant_hors_compilation\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"; } >"$T/descendant.sh"
 apres() { # commit compilé, commit de la CI, tête de master (le dernier commit par défaut) : le code
   (cd "$H" && COMMIT=${3:-$(git rev-parse HEAD)} \
@@ -803,6 +803,28 @@ R=$(commit_h renommage)
 git -C "$H" checkout -q "$H_PAGE"
 apres "$H_COMPILE" "$R" "$R" && ko "publier : CI acceptée après un renommage depuis src/" ||
   ok "publier : CI refusée après un renommage depuis src/ vers les captures (ses deux chemins comptent)"
+# Le nom ne suffit pas : un lien symbolique ou un sous-module nommé comme une capture est refusé ; un fichier
+# ordinaire rendu exécutable ou effacé reste accepté.
+git -C "$H" checkout -q -b lien "$H_PAGE"
+ln -s ../../src/main.rs "$H/assets/captures/lien.png"
+LIEN=$(commit_h "lien")
+git -C "$H" checkout -q -b sous-module "$H_PAGE"
+git -C "$H" update-index --add --cacheinfo "160000,$H_COMPILE,assets/captures/module.png"
+git -C "$H" -c user.name=essai -c user.email=essai@exemple.invalid commit -qm "sous-module"
+MODULE=$(git -C "$H" rev-parse HEAD)
+git -C "$H" checkout -q -b ordinaire "$H_PAGE"
+chmod +x "$H/assets/captures/accueil.png"
+git -C "$H" rm -q assets/partage.png
+ORDINAIRE=$(commit_h "exécutable et effacé")
+git -C "$H" checkout -q "$H_PAGE"
+[[ $(git -C "$H" ls-tree "$LIEN" assets/captures/lien.png) == 120000* &&
+  $(git -C "$H" ls-tree "$MODULE" assets/captures/module.png) == 160000* ]] &&
+  ! apres "$H_COMPILE" "$LIEN" "$LIEN" && ! apres "$H_COMPILE" "$MODULE" "$MODULE" &&
+  ok "publier : CI refusée après un lien symbolique ou un sous-module nommés comme une capture" ||
+  ko "publier : CI acceptée après un lien symbolique ou un sous-module dans les captures (ou essai pas préparé)"
+apres "$H_COMPILE" "$ORDINAIRE" "$ORDINAIRE" &&
+  ok "publier : CI acceptée après une capture rendue exécutable et l'image de partage effacée" ||
+  ko "publier : CI refusée après un changement de mode ou un effacement dans la liste"
 git -C "$H" checkout -q -b cote "$H_COMPILE"
 printf 'png' >"$H/assets/captures/cote.png"
 COTE=$(commit_h "à côté")
