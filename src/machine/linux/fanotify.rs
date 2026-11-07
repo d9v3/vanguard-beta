@@ -147,6 +147,32 @@ impl Groupe {
         }
     }
 
+    /// Attend des événements au plus `delai_ms` : vrai s'il y en a à lire. Le fil lecteur du garde bat ainsi même
+    /// quand rien ne se lance.
+    // FFI de libc : poll sur le descripteur du groupe, une seule structure.
+    #[allow(unsafe_code)]
+    pub(crate) fn attendre(&self, delai_ms: i32) -> io::Result<bool> {
+        let mut p = libc::pollfd {
+            fd: self.fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: une seule structure pollfd à nous, vivante pendant l'appel ; le descripteur vit autant que `self`.
+        let r = unsafe { libc::poll(&raw mut p, 1, delai_ms) };
+        if r < 0 {
+            let e = erreur();
+            return if e.kind() == io::ErrorKind::Interrupted {
+                Ok(false)
+            } else {
+                Err(e)
+            };
+        }
+        if r > 0 && (p.revents & (libc::POLLERR | libc::POLLNVAL)) != 0 {
+            return Err(io::Error::other("groupe fanotify en erreur"));
+        }
+        Ok(r > 0 && (p.revents & libc::POLLIN) != 0)
+    }
+
     /// Répond à la demande portée par `fd` : permise ou refusée, notée par l'audit du noyau si `noter` et que le
     /// groupe l'a. ENOENT : déjà répondue (ou le groupe ne la connaît pas).
     // FFI de libc : write d'une `struct fanotify_response` à nous sur le descripteur du groupe.

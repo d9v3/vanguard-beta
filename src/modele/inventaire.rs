@@ -182,6 +182,9 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     local("veilleur-voulu", "machine::linux::veilleur"),
     local("veilleur-oublier-le-choix", "machine::linux::veilleur"),
     local("rancongiciel-voulu", "machine::linux::veilleur"),
+    // Les listes du garde des lancements (l'ensemble CERTAIN) : forgées, elles ne peuvent que le rendre plus strict, et
+    // ses exceptions gardent le système ; effacées, il ne reconnaît plus que les fichiers d'essai, ce que dit le bilan.
+    local("garde", "machine::linux::garde"),
     // Réglages du veilleur anti-rançongiciel (dossiers en plus, exclusions), scellés ; écrit par le palier 1 Linux.
     scelle("rancongiciel-reglages.json", "protection::rancongiciel"),
     // Protection.
@@ -493,6 +496,11 @@ mod tests {
             "les sceaux eux-mêmes : effacés ou abîmés, ils se voient (refaits, COM-ETA-001)",
         ),
         ("sceaux.verrou", "verrou, sans contenu"),
+        (
+            "garde",
+            "les listes du garde des lancements, relues par le garde en root : forgées, elles ne font que refuser \
+             davantage (ses exceptions gardent le système) ; effacées, le bilan le dit (aucune empreinte chargée)",
+        ),
         (
             sceau::TEMOIN,
             "témoin des sceaux, posé après le premier registre écrit : seule sa présence compte, et l'effacer revient \

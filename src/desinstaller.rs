@@ -997,6 +997,7 @@ fn effacer(
 
 /// Les changements faits sur le système que des outils de Vanguard savent défaire, et les corrections qui se défont à
 /// la main.
+#[derive(Clone)]
 struct Annulables {
     optimiser: usize,
     /// Les corrections du bilan qui se défont (leur valeur d'avant notée).
@@ -1004,6 +1005,8 @@ struct Annulables {
     blocages: usize,
     jeux: usize,
     quarantaine: usize,
+    /// Le garde des lancements est posé (Linux) : un service système, qui resterait sans Vanguard.
+    garde: bool,
     a_la_main: Vec<(String, String)>,
 }
 
@@ -1015,6 +1018,7 @@ impl Annulables {
             .saturating_add(self.jeux)
             .saturating_add(self.quarantaine)
             == 0
+            && !self.garde
     }
 
     fn vide(&self) -> bool {
@@ -1037,8 +1041,27 @@ fn annulables() -> Annulables {
         blocages: crate::changements::blocages_en_place().len(),
         jeux: crate::gaming::reglages_notes(),
         quarantaine: crate::protection::quarantaine::nombre(),
+        garde: garde_pose(),
         a_la_main: crate::changements::a_defaire_a_la_main(),
     }
+}
+
+/// Le garde des lancements est-il posé ? Jamais lu sous les essais (le vrai /etc).
+fn garde_pose() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        !cfg!(test) && crate::machine::linux::garde::compte::pose()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+/// Retire le garde des lancements (mot de passe demandé).
+fn retirer_garde() {
+    #[cfg(target_os = "linux")]
+    crate::machine::linux::garde::compte::retirer();
 }
 
 /// Les changements faits sur le système : retirer Vanguard ne les défait pas. Leurs propres outils les défont d'abord,
@@ -1156,6 +1179,12 @@ fn entrees_annulables(a: &Annulables) -> Vec<(String, String)> {
             trf!("{} fichier(s) à remettre ?", "{} file(s) to put back?", a.quarantaine),
         ));
     }
+    if a.garde {
+        e.push((
+            tr!("Garde des lancements", "Launch guard").to_string(),
+            tr!("service système, à retirer", "system service, to remove").to_string(),
+        ));
+    }
     e
 }
 
@@ -1178,6 +1207,9 @@ fn outils_annulables(a: &Annulables) -> Vec<fn()> {
     }
     if a.quarantaine > 0 {
         o.push(crate::protection::quarantaine::menu);
+    }
+    if a.garde {
+        o.push(retirer_garde);
     }
     o
 }
@@ -1708,6 +1740,16 @@ fn copier_releve(releve: &Path, dossier: &Path) -> Result<PathBuf, String> {
 /// le dossier de données (qui savait les défaire) est effacé.
 fn changements_restants(a: &Annulables, donnees_effacees: bool) -> Vec<String> {
     let mut l = Vec::new();
+    // Le garde ne dépend pas du dossier de données : son retrait se dit toujours, et sans Vanguard aussi.
+    if a.garde {
+        l.push(
+            tr!(
+                "Le garde des lancements reste posé : « vanguard garde off » le retire ; sans Vanguard, en administrateur : systemctl disable --now vanguard-garde, puis effacer /etc/systemd/system/vanguard-garde.service, /etc/vanguard/garde.json, /usr/local/lib/vanguard/garde et /var/lib/vanguard/garde.",
+                "The launch guard stays installed: “vanguard guard off” removes it; without Vanguard, as administrator: systemctl disable --now vanguard-garde, then delete /etc/systemd/system/vanguard-garde.service, /etc/vanguard/garde.json, /usr/local/lib/vanguard/garde and /var/lib/vanguard/garde."
+            )
+            .to_string(),
+        );
+    }
     if donnees_effacees {
         if a.a_defaire() > 0 {
             l.push(trf!(
@@ -2565,6 +2607,7 @@ mod tests {
             blocages: 0,
             jeux: 0,
             quarantaine: 0,
+            garde: false,
             a_la_main: Vec::new(),
         };
         // Refusé avant toute question : ces fichiers ne se remettent pas d'ici.
@@ -2615,6 +2658,7 @@ mod tests {
             blocages: 0,
             jeux: 0,
             quarantaine: 0,
+            garde: false,
             a_la_main: vec![
                 ("2026-10-01 10:00".into(), "ufw enable".into()),
                 ("2026-10-02 11:00".into(), "systemctl disable --now cups".into()),
@@ -2622,6 +2666,19 @@ mod tests {
         };
         let restes = changements_restants(&a, true).join("\n");
         assert!(restes.contains("ufw enable") && restes.contains("cups"), "{restes}");
+        assert!(!restes.contains("vanguard-garde"), "{restes}");
+        // Le garde posé se dit, dossier de données effacé ou non, avec de quoi le retirer sans Vanguard.
+        for effacees in [false, true] {
+            let restes = changements_restants(
+                &Annulables {
+                    garde: true,
+                    ..a.clone()
+                },
+                effacees,
+            )
+            .join("\n");
+            assert!(restes.contains("systemctl disable --now vanguard-garde"), "{restes}");
+        }
         assert!(restes.contains("2026-10-02 11:00"), "{restes}");
         // Données gardées : le relevé est là, la commande qui le montre suffit.
         assert!(!changements_restants(&a, false).join("\n").contains("ufw enable"));
@@ -2705,6 +2762,7 @@ mod tests {
             blocages: 120,
             jeux: 120,
             quarantaine: 120,
+            garde: true,
             a_la_main: Vec::new(),
         }) {
             assert!(largeur_affichee(&precision) <= 33 && largeur_affichee(&texte) <= 44);

@@ -232,6 +232,111 @@ pub(super) fn raison_rancongiciel() -> &'static str {
     )
 }
 
+/// Ce qui désigne un fichier dont le garde des lancements a refusé le lancement : la suite « lancement refusé » lui
+/// revient (`suites::Type::LancementRefuse`).
+pub(super) fn raison_lancement_refuse() -> &'static str {
+    tr!(
+        "lancement refusé par le garde (empreinte certaine)",
+        "launch refused by the guard (certain fingerprint)"
+    )
+}
+
+/// Les derniers événements du garde des lancements relus pour la recherche, au plus.
+#[cfg(target_os = "linux")]
+const REFUS_LUS: usize = 256;
+
+/// Un lancement refusé par le garde, tel que son journal (à root) le dit.
+#[cfg(any(target_os = "linux", test))]
+struct RefusDuGarde {
+    /// Secondes depuis 1970.
+    t: u64,
+    chemin: String,
+    /// En hexadécimal.
+    sha256: String,
+}
+
+/// Les menaces des lancements refusés par le garde depuis une semaine (`maintenant`, secondes depuis 1970) : un fichier
+/// par chemin, toujours là, ordinaire, dont l'empreinte relue maintenant (`empreinte`) est celle que le garde a
+/// refusée. Un fichier remplacé depuis n'est pas désigné : le garde a refusé l'autre. `deja` : les fichiers déjà
+/// désignés par une autre voie.
+#[cfg(any(target_os = "linux", test))]
+fn refus_du_garde(
+    evenements: &[RefusDuGarde],
+    maintenant: u64,
+    deja: &HashSet<PathBuf>,
+    empreinte: impl Fn(&Path) -> Option<String>,
+) -> Vec<Menace> {
+    let mut vus: HashSet<PathBuf> = deja.clone();
+    let mut menaces = Vec::new();
+    for e in evenements.iter().rev() {
+        if maintenant.saturating_sub(e.t) > SEMAINE.as_secs() || e.sha256.len() != 64 {
+            continue;
+        }
+        let chemin = PathBuf::from(&e.chemin);
+        if !chemin.is_absolute() || !vus.insert(chemin.clone()) {
+            continue;
+        }
+        if empreinte(&chemin).is_none_or(|h| !h.eq_ignore_ascii_case(&e.sha256)) {
+            continue;
+        }
+        let montre = chemin_affichable(&chemin);
+        let nom = chemin
+            .file_name()
+            .map_or_else(|| montre.clone(), |n| affichable(&n.to_string_lossy()));
+        let raison = raison_lancement_refuse();
+        menaces.push(Menace {
+            categorie: Categorie::Programmes,
+            certaine: true,
+            quoi: trf!("« {nom} » ({montre}) : {raison}", "“{nom}” ({montre}): {raison}"),
+            cle: format!("fichier:{}", chemin.display()),
+            geste: Geste::Programme {
+                pid: None,
+                nom: montre,
+                chemin: Some(chemin.clone()),
+                fichier: Some(chemin),
+                detection: raison.to_string(),
+            },
+        });
+    }
+    menaces
+}
+
+/// Les lancements refusés par le garde, s'il est posé (Linux).
+#[cfg(target_os = "linux")]
+fn refus(t: &mut Trouvees) {
+    let refus: Vec<RefusDuGarde> = crate::machine::linux::garde::compte::derniers_evenements(REFUS_LUS)
+        .into_iter()
+        .filter(|e| e.genre == "refuse")
+        .map(|e| RefusDuGarde {
+            t: e.t,
+            chemin: e.chemin,
+            sha256: e.sha256,
+        })
+        .collect();
+    if refus.is_empty() {
+        return;
+    }
+    let deja: HashSet<PathBuf> = t
+        .menaces
+        .iter()
+        .filter_map(|m| match &m.geste {
+            Geste::Programme { fichier, .. } => fichier.clone(),
+            _ => None,
+        })
+        .collect();
+    let maintenant = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let ordinaire = |c: &Path| {
+        std::fs::symlink_metadata(c)
+            .ok()
+            .filter(std::fs::Metadata::is_file)
+            .and_then(|_| empreintes::sha256(c))
+            .map(|h| empreintes::hex(&h))
+    };
+    t.menaces.extend(refus_du_garde(&refus, maintenant, &deja, ordinaire));
+}
+
 /// Ce que désigne une alerte du veilleur anti-rançongiciel, relue maintenant.
 pub(super) enum Rancon {
     /// Un seul processus, celui qu'elle nomme : la menace (douteuse) et les processus que Vanguard protège.
@@ -638,6 +743,8 @@ pub(crate) fn chercher(categories: &[Categorie], telecharger: bool) -> Trouvees 
     };
     if veut(Categorie::Programmes) {
         programmes(empreintes, os, &mut t);
+        #[cfg(target_os = "linux")]
+        refus(&mut t);
     }
     if veut(Categorie::Connexions) {
         connexions(&mut t);
@@ -711,6 +818,57 @@ mod tests {
             ligne: Some(ligne.into()),
             ..EnMarche::default()
         }
+    }
+
+    /// Un refus du garde désigne le fichier refusé, une fois, s'il est toujours là avec la même empreinte, et depuis
+    /// une semaine au plus ; un fichier déjà désigné par une autre voie ne l'est pas deux fois.
+    #[test]
+    fn refus_du_garde_designe_le_fichier_refuse() {
+        let h = |c: char| c.to_string().repeat(64);
+        let refus = |t: u64, chemin: &str, sha: &str| RefusDuGarde {
+            t,
+            chemin: chemin.into(),
+            sha256: sha.into(),
+        };
+        let maintenant = 10_000_000;
+        let evenements = [
+            refus(maintenant - 60, "/home/alice/Téléchargements/outil", &h('a')),
+            // Le même, refusé deux fois : une menace.
+            refus(maintenant - 30, "/home/alice/Téléchargements/outil", &h('a')),
+            // Remplacé depuis : un autre fichier, pas désigné.
+            refus(maintenant - 30, "/home/alice/remplace", &h('b')),
+            // Disparu.
+            refus(maintenant - 30, "/home/alice/parti", &h('c')),
+            // Trop vieux.
+            refus(maintenant - 8 * 24 * 3600, "/home/alice/vieux", &h('d')),
+            // Relatif, ou une empreinte mal formée.
+            refus(maintenant, "relatif", &h('e')),
+            refus(maintenant, "/home/alice/court", "abc"),
+            // Déjà désigné par MalwareBazaar.
+            refus(maintenant, "/home/alice/deja", &h('f')),
+        ];
+        let sur_le_disque = |c: &Path| -> Option<String> {
+            match c.to_str()? {
+                "/home/alice/Téléchargements/outil" => Some(h('A')),
+                "/home/alice/remplace" => Some(h('0')),
+                "/home/alice/vieux" => Some(h('d')),
+                "/home/alice/court" => Some("abc".into()),
+                "/home/alice/deja" => Some(h('f')),
+                _ => None,
+            }
+        };
+        let deja = HashSet::from([PathBuf::from("/home/alice/deja")]);
+        let m = refus_du_garde(&evenements, maintenant, &deja, sur_le_disque);
+        assert_eq!(m.len(), 1, "{:?}", m.iter().map(|m| &m.cle).collect::<Vec<_>>());
+        assert!(m[0].certaine);
+        assert_eq!(m[0].cle, "fichier:/home/alice/Téléchargements/outil");
+        assert!(matches!(
+            &m[0].geste,
+            Geste::Programme { pid: None, fichier: Some(f), detection, .. }
+                if f == Path::new("/home/alice/Téléchargements/outil") && detection == raison_lancement_refuse()
+        ));
+        // Une horloge qui recule ne fait rien déborder (tout y paraît récent).
+        assert_eq!(refus_du_garde(&evenements, 0, &deja, sur_le_disque).len(), 2);
     }
 
     /// L'alerte du veilleur désigne un processus précis : le numéro de sa clé (`pid:<n>`), ou le seul à ce chemin.

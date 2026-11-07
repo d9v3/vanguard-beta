@@ -72,6 +72,10 @@ pub(super) fn type_de(m: &Menace) -> Option<Type> {
         {
             Some(Type::OutilDAttaque)
         }
+        // Un fichier dont le garde des lancements a refusé le lancement.
+        Geste::Programme { detection, .. } if detection == super::menaces::raison_lancement_refuse() => {
+            Some(Type::LancementRefuse)
+        }
         // Le reste du certain : une empreinte connue de MalwareBazaar.
         Geste::Programme { .. } if m.certaine => Some(Type::MalwareConnu),
         Geste::Adresse { .. } => Some(Type::ServeurDeCommande),
@@ -494,6 +498,10 @@ mod tests {
         assert_eq!(
             type_de(&programme(false, super::super::menaces::raison_rancongiciel())),
             Some(Type::Rancongiciel)
+        );
+        assert_eq!(
+            type_de(&programme(true, super::super::menaces::raison_lancement_refuse())),
+            Some(Type::LancementRefuse)
         );
         assert_eq!(type_de(&programme(false, "commande qui télécharge")), None);
         let mut adresse = programme(true, "x");

@@ -481,6 +481,16 @@ mod tests {
                 "enfant élevé de Défense (Linux) : fichier créé sans écraser ni suivre de lien (create_new, O_NOFOLLOW), avec son propriétaire et ses droits, écrit jusqu'au disque, dans un dossier de root fermé aux autres comptes ; remplacé par un voisin renommé seulement si le fichier n'a pas changé depuis la question ; un lien dur pour déplacer (rien n'est remplacé) ; la note d'avant retirée une fois le geste défait ; jamais sous les essais, hors bilan",
             ),
             (
+                "machine/linux/garde/poser.rs",
+                5,
+                "assistant root du garde (Linux) : son programme, son unité et ses réglages, chacun dans un temporaire créé sans écraser ni suivre de lien, ses droits posés, écrit jusqu'au disque puis renommé, dans un dossier de root fermé en écriture aux autres comptes ; le temporaire retiré si l'écriture échoue ; les fichiers du garde retirés à son retrait ; jamais sous les essais, hors bilan",
+            ),
+            (
+                "machine/linux/garde/sortie.rs",
+                2,
+                "garde des lancements (root) : son journal d'événements, ouvert en ajout sans suivre de lien dans /run/vanguard/garde, et sa rotation par renommage, hors bilan",
+            ),
+            (
                 "machine/linux/veilleur.rs",
                 10,
                 "veilleur : son état et le « chiffrement voulu » de l'anti-rançongiciel, hors bilan",

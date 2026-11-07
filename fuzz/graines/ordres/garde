@@ -1,0 +1,18 @@
+vanguard:garde-poser 1000 2f686f6d652f616c6963652f2e6c6f63616c2f73686172652f76616e67756172642f6761726465
+vanguard:garde-poser 0 2f686f6d652f616c6963652f2e6c6f63616c2f73686172652f76616e67756172642f6761726465
+vanguard:garde-poser 1000 72656c617469662f6761726465
+vanguard:garde-poser 01000 2f686f6d652f616c6963652f2e6c6f63616c2f73686172652f76616e67756172642f6761726465
+vanguard:garde-maj
+vanguard:garde-regler refus
+vanguard:garde-regler observation
+vanguard:garde-regler Refus
+vanguard:garde-pause 0
+vanguard:garde-pause 86400
+vanguard:garde-pause 86401
+vanguard:garde-pause -1
+vanguard:garde-pause 4294967296
+vanguard:garde-permettre abababababababababababababababababababababababababababababababab
+vanguard:garde-permettre ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB
+vanguard:garde-permettre ababababababababababababababababababababababababababababababab
+vanguard:garde-retirer
+vanguard:garde-retirer now

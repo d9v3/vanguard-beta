@@ -32,7 +32,8 @@ pub(crate) enum Type {
     Famille,
     /// Un agent d'IA hors de contrôle : serveur d'IA ouvert au réseau, agent réglé pour tout faire sans demander.
     AgentIa,
-    /// Un programme dont le lancement a été refusé par le garde (à venir) : le type et sa suite existent déjà.
+    /// Un fichier dont le lancement a été refusé par le garde des lancements (Linux) : il n'a pas tourné, il reste
+    /// sur le disque.
     LancementRefuse,
 }
 
@@ -81,7 +82,7 @@ impl Type {
             Type::OutilDAttaque | Type::MalwareConnu => tr!("programmes malveillants", "malicious programs"),
             Type::Famille => tr!("à venir (familles)", "coming (families)"),
             Type::AgentIa => tr!("agents et serveurs d'IA", "AI agents and servers"),
-            Type::LancementRefuse => tr!("à venir (garde des lancements)", "coming (launch guard)"),
+            Type::LancementRefuse => tr!("garde des lancements (Linux)", "launch guard (Linux)"),
         }
     }
 }

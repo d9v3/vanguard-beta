@@ -35,8 +35,8 @@ pub(crate) mod docker_api;
 mod dpkg_verifier;
 mod durcissement;
 pub(crate) mod ecoute;
-#[allow(dead_code, reason = "lu par le garde (Défense L3)")]
 pub(crate) mod fanotify;
+pub(crate) mod garde;
 pub(crate) mod gvdb;
 pub(crate) mod http_unix;
 pub(crate) mod journal_systemd;

@@ -23,6 +23,8 @@ use crate::{tr, trf};
 
 #[cfg(test)]
 use super::ordres_ligne::CHEMIN_MAX;
+#[cfg(target_os = "linux")]
+pub(crate) use super::ordres_ligne::PAUSE_MAX;
 pub(crate) use super::ordres_ligne::{LIGNE_MAX, LIGNES_MAX, Ordre, analyser};
 // Le préfixe ne sert qu'à l'assistant élevé de Linux (`machine::lancer_les_ordres`, `gestes_unix`).
 #[cfg(unix)]
@@ -116,6 +118,44 @@ impl Ordre {
                 "Put the vulnerable driver blocklist back as before (value absent)"
             )
             .to_string(),
+            Ordre::GardePoser { compte, dossier } => trf!(
+                "Poser le garde des lancements (service système vanguard-garde ; en observation s'il est neuf) pour le compte {compte}, avec les listes d'empreintes de {}",
+                "Install the launch guard (system service vanguard-garde; observing if new) for account {compte}, with the hash lists of {}",
+                crate::ui::affichable(dossier)
+            ),
+            Ordre::GardeMettreAJour => tr!(
+                "Mettre à jour le garde des lancements (vanguard-garde) avec ce Vanguard",
+                "Update the launch guard (vanguard-garde) with this Vanguard"
+            )
+            .to_string(),
+            Ordre::GardeRegler { refus: true } => tr!(
+                "Garde des lancements : refuser les programmes certainement malveillants",
+                "Launch guard: refuse programs that are certainly malicious"
+            )
+            .to_string(),
+            Ordre::GardeRegler { refus: false } => tr!(
+                "Garde des lancements : observer seulement (tout est permis, ce qui aurait été refusé est noté)",
+                "Launch guard: observe only (everything is allowed, what would have been refused is noted)"
+            )
+            .to_string(),
+            Ordre::GardePause { secondes: 0 } => {
+                tr!("Garde des lancements : lever la pause", "Launch guard: end the pause").to_string()
+            }
+            Ordre::GardePause { secondes } => trf!(
+                "Garde des lancements : pause de {} min (rien n'est refusé pendant ce temps)",
+                "Launch guard: pause for {} min (nothing is refused meanwhile)",
+                secondes.div_ceil(60)
+            ),
+            Ordre::GardePermettre { sha256 } => trf!(
+                "Garde des lancements : toujours permettre le fichier d'empreinte SHA-256 {}",
+                "Launch guard: always allow the file with SHA-256 {}",
+                crate::protection::empreintes::hex(sha256)
+            ),
+            Ordre::GardeRetirer => tr!(
+                "Retirer le garde des lancements (service vanguard-garde, son programme, ses réglages et son état)",
+                "Remove the launch guard (vanguard-garde service, its program, its settings and its state)"
+            )
+            .to_string(),
         }
     }
 
@@ -140,6 +180,12 @@ impl Ordre {
             | Ordre::CouperReseauProgramme { .. }
             | Ordre::RendreReseauProgramme { .. } => true,
             Ordre::RemettrePilotes { .. } | Ordre::RendreReseauFichier { .. } => os == Os::Windows,
+            Ordre::GardePoser { .. }
+            | Ordre::GardeMettreAJour
+            | Ordre::GardeRegler { .. }
+            | Ordre::GardePause { .. }
+            | Ordre::GardePermettre { .. }
+            | Ordre::GardeRetirer => os == Os::Linux,
         }
     }
 }
@@ -227,6 +273,12 @@ pub(crate) struct Juge {
     sessions: Option<gardes::Sessions>,
     intouchables: HashSet<u32>,
     os: Os,
+    /// Le Vanguard qui a demandé, s'il est connu : la pose du garde vérifie qu'il tourne sous le compte nommé.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(dead_code, reason = "le garde n'existe que sous Linux")
+    )]
+    demandeur: Option<u32>,
 }
 
 impl Juge {
@@ -242,6 +294,7 @@ impl Juge {
             sessions: gardes::sessions_a_distance(),
             intouchables,
             os: Os::actuel(),
+            demandeur,
         }
     }
 
@@ -273,6 +326,7 @@ impl Juge {
             sessions,
             intouchables,
             os: Os::actuel(),
+            demandeur: None,
         }
     }
 }
@@ -365,6 +419,20 @@ pub(crate) fn juger(o: &Ordre, j: &Juge) -> Option<String> {
         }
         #[cfg(not(windows))]
         Ordre::RemettrePilotes { .. } => None,
+        // Le compte et son dossier sont rejugés ici (`garde::juger_pose`) : un compte réel, pas root, le dossier à lui
+        // dans son dossier personnel, sans lien, et le Vanguard qui demande tourne sous ce compte.
+        #[cfg(target_os = "linux")]
+        Ordre::GardePoser { compte, dossier } => {
+            crate::machine::linux::garde::juger_pose(*compte, dossier, j.demandeur)
+        }
+        #[cfg(not(target_os = "linux"))]
+        Ordre::GardePoser { .. } => None,
+        // Le reste ne touche que le garde lui-même : le mot de passe (root) en est l'accord.
+        Ordre::GardeMettreAJour
+        | Ordre::GardeRegler { .. }
+        | Ordre::GardePause { .. }
+        | Ordre::GardePermettre { .. }
+        | Ordre::GardeRetirer => None,
     }
 }
 
@@ -750,6 +818,12 @@ mod linux {
             | Ordre::RemettrePilotes { .. } => {
                 Resultat::echec(tr!("ordre d'un autre système", "order from another system"))
             }
+            Ordre::GardePoser { .. }
+            | Ordre::GardeMettreAJour
+            | Ordre::GardeRegler { .. }
+            | Ordre::GardePause { .. }
+            | Ordre::GardePermettre { .. }
+            | Ordre::GardeRetirer => crate::machine::linux::garde::faire_ordre(o),
         }
     }
 
@@ -887,6 +961,19 @@ mod tests {
             },
             Ordre::RemettrePilotes { avant: None },
             Ordre::RemettrePilotes { avant: Some(0) },
+            Ordre::GardePoser {
+                compte: 1000,
+                dossier: "/home/alice/.local/share/vanguard/garde".into(),
+            },
+            Ordre::GardeMettreAJour,
+            Ordre::GardeRegler { refus: true },
+            Ordre::GardeRegler { refus: false },
+            Ordre::GardePause { secondes: 0 },
+            Ordre::GardePause {
+                secondes: super::super::ordres_ligne::PAUSE_MAX,
+            },
+            Ordre::GardePermettre { sha256: [0xab; 32] },
+            Ordre::GardeRetirer,
         ]
     }
 
@@ -1042,6 +1129,24 @@ mod tests {
             "vanguard:couper-reseau-programme-demande 42 2f78 7",
             "vanguard:remettre-pilotes 2",
             "vanguard:remettre-pilotes",
+            // Le garde des lancements (Défense L3) : jamais root, un dossier complet, un mode de la liste, une pause
+            // bornée, une empreinte entière en minuscules, aucun paramètre en trop.
+            "vanguard:garde-poser 0 2f686f6d65",
+            "vanguard:garde-poser 01000 2f686f6d65",
+            "vanguard:garde-poser +1000 2f686f6d65",
+            "vanguard:garde-poser 1000 686f6d65",
+            "vanguard:garde-poser 1000 2F686F6D65",
+            "vanguard:garde-poser 1000",
+            "vanguard:garde-maj 1",
+            "vanguard:garde-regler",
+            "vanguard:garde-regler Refus",
+            "vanguard:garde-regler arret",
+            "vanguard:garde-pause 86401",
+            "vanguard:garde-pause -1",
+            "vanguard:garde-pause 060",
+            "vanguard:garde-permettre abab",
+            "vanguard:garde-permettre ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+            "vanguard:garde-retirer tout",
             "vanguard:wdigest-coupe",
             "Vanguard:bloquer-sortie nftables 203.0.113.7",
         ] {

@@ -305,6 +305,29 @@ impl Signatures {
             .flatten()
             .collect()
     }
+
+    /// Les MD5 des fichiers entiers qui ont une taille (la base en est surtout faite), sans ceux des listes blanches,
+    /// en enregistrements de 32 octets triés : la taille en u64 gros-boutiste, le MD5, huit zéros. La même forme que
+    /// `liste_sha256` (`hashes::ListeSha256` la relit) : le garde des lancements (Défense L3) cherche
+    /// l'enregistrement exact d'un fichier, sans rien analyser. Un MD5 « toute taille » (`*`) n'y est pas.
+    pub(crate) fn liste_md5_taille(&self) -> Vec<u8> {
+        let blanches = self.blanches.md5_et_tailles();
+        let mut v: Vec<[u8; 32]> = self
+            .fichiers
+            .md5_et_tailles()
+            .into_iter()
+            .filter(|e| blanches.binary_search(e).is_err())
+            .filter_map(|(md5, taille)| {
+                let mut e = [0u8; 32];
+                e.get_mut(..8)?.copy_from_slice(&u64::from(taille?).to_be_bytes());
+                e.get_mut(8..24)?.copy_from_slice(&md5);
+                Some(e)
+            })
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v.into_iter().flatten().collect()
+    }
 }
 
 #[allow(
@@ -408,6 +431,19 @@ mod tests {
         assert_eq!(s.liste_sha256(), b.sha256.to_vec());
         let liste = hashes::ListeSha256::lire(s.liste_sha256()).unwrap();
         assert!(liste.contient(&b.sha256));
+        // Les MD5 avec leur taille, pour le garde des lancements : relus par le même lecteur, triés ; la PUA n'y est
+        // pas (non chargée), ni une taille inventée.
+        let md5 = hashes::ListeSha256::lire(s.liste_md5_taille()).unwrap();
+        let enregistrement = |md5: [u8; 16], taille: u64| {
+            let mut e = [0u8; 32];
+            e[..8].copy_from_slice(&taille.to_be_bytes());
+            e[8..24].copy_from_slice(&md5);
+            e
+        };
+        let a = Empreintes::de(b"contenu a");
+        assert!(md5.contient(&enregistrement(a.md5, 9)));
+        assert!(!md5.contient(&enregistrement(a.md5, 10)));
+        assert!(!md5.contient(&enregistrement(Empreintes::de(b"contenu pua").md5, 9)));
     }
 
     #[test]
@@ -423,6 +459,12 @@ mod tests {
         assert_eq!(trouvees(&s, b"contenu a", Cible::Tout), ["(blanche)"]);
         assert_eq!(s.liste_sha256(), [] as [u8; 0]);
         assert_eq!(s.par_sha256(&Empreintes::de(b"contenu b").sha256), None);
+        // Le MD5 blanchi (a, 9 octets) n'est pas dans la liste du garde.
+        let md5 = hashes::ListeSha256::lire(s.liste_md5_taille()).unwrap();
+        let mut e = [0u8; 32];
+        e[..8].copy_from_slice(&9u64.to_be_bytes());
+        e[8..24].copy_from_slice(&a.md5);
+        assert!(!md5.contient(&e));
     }
 
     #[test]

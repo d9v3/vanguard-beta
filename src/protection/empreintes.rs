@@ -62,6 +62,12 @@ impl Empreintes {
     pub(crate) fn nombre(&self) -> usize {
         self.triees.len()
     }
+
+    /// Les empreintes, triées : le garde des lancements (Défense L3) les reçoit telles quelles, bout à bout.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn triees(&self) -> &[[u8; 32]] {
+        &self.triees
+    }
 }
 
 /// Les empreintes d'un texte d'abuse.ch : une par ligne, lignes « # » de commentaire. Dans chaque ligne, le premier

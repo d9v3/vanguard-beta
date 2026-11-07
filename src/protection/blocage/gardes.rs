@@ -45,6 +45,12 @@ const NOMS_CRITIQUES: &[&str] = &[
     "xrdp-sesman",
 ];
 
+/// Un processus critique du système (ses premiers numéros, ou un nom de `NOMS_CRITIQUES`) : jamais arrêté ni gelé, et
+/// le garde des lancements (Défense L3, P11) ne refuse jamais ce qu'il lance.
+pub(crate) fn processus_critique(pid: u32, nom: &str) -> bool {
+    PID_CRITIQUES.contains(&pid) || NOMS_CRITIQUES.contains(&nom_simple(nom).as_str())
+}
+
 /// Le nom d'un processus comparé aux noms critiques : sans dossier, sans « .exe », en minuscules.
 fn nom_simple(nom: &str) -> String {
     let fichier = nom.rsplit(['/', '\\']).next().unwrap_or(nom).trim().to_lowercase();
@@ -118,7 +124,7 @@ fn processus_intouchable_selon(
     os: Os,
     long: &dyn Fn(&str) -> Option<String>,
 ) -> Option<&'static str> {
-    if PID_CRITIQUES.contains(&pid) || NOMS_CRITIQUES.contains(&nom_simple(nom).as_str()) {
+    if processus_critique(pid, nom) {
         return Some(tr!(
             "processus critique du système : une alerte seulement",
             "critical system process: an alert only"
@@ -250,7 +256,7 @@ pub(crate) fn processus_gelable(
     chemin: Option<&str>,
     intouchables: &HashSet<u32>,
 ) -> Option<&'static str> {
-    if PID_CRITIQUES.contains(&pid) || NOMS_CRITIQUES.contains(&nom_simple(nom).as_str()) {
+    if processus_critique(pid, nom) {
         return Some(tr!(
             "processus critique du système : jamais gelé",
             "critical system process: never frozen"

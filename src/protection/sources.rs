@@ -342,6 +342,16 @@ impl<R: std::io::Read> std::io::Read for Guetteur<R> {
     }
 }
 
+/// Le SHA-256 de ce qui est lu, et la marque d'essai EICAR dans un exécutable (ELF ou PE) : le point d'entrée du garde
+/// des lancements (Défense L3), qui « certain (essai) » comme `hacher_lance`. Une recherche d'octets, pas un lecteur de
+/// format (P22).
+#[cfg(target_os = "linux")]
+pub(crate) fn hacher_et_guetter(lu: impl std::io::Read) -> Option<([u8; 32], bool)> {
+    let mut g = Guetteur::new(lu);
+    let empreinte = empreintes::sha256_de(&mut g)?;
+    Some((empreinte, g.marque()))
+}
+
 /// Le hachage d'un programme lancé, depuis son lien `/proc/<pid>/exe` tenu en O_PATH : rouvert en lecture par
 /// `/proc/self/fd/<n>` (le même inode, même effacé), sans attendre (un tube ne bloque pas), revérifié (un fichier
 /// ordinaire, le même inode, pas trop gros), puis haché en y cherchant la marque d'essai.

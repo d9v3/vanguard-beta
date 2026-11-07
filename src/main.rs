@@ -255,6 +255,24 @@ enum Commande {
         #[arg(long, hide = true)]
         servir: bool,
     },
+    /// Garde des lancements (Linux) : un service système qui voit chaque programme lancé et compare son empreinte aux
+    /// listes de programmes certainement malveillants ; posé en observation (rien n'est refusé, tout est noté), il ne
+    /// refuse qu'après « refus », avec le mot de passe. Sans argument : son état et ses derniers événements. « on »
+    /// le pose, « off » le retire, « maj » refait ses listes, « pause <minutes> », « permettre <SHA-256> ».
+    /// Caché jusqu'au menu, au bilan et aux documents de L5.
+    #[command(alias = "guard", hide = true)]
+    Garde {
+        #[arg(
+            value_parser = ["etat", "on", "off", "maj", "update", "refus", "refuse", "observation", "observe", "pause", "permettre", "allow"],
+            value_name = "etat|on|off|maj|refus|observation|pause|permettre"
+        )]
+        action: Option<String>,
+        /// Pour « pause » : les minutes (0 la lève) ; pour « permettre » : l'empreinte SHA-256.
+        argument: Option<String>,
+    },
+    /// Le garde des lancements lui-même, lancé par systemd en root (voir machine/linux/garde/servir.rs).
+    #[command(name = "garde-servir", hide = true)]
+    GardeServir,
     /// Entretien du mois : une fois par mois, en silence, la note, les mises à jour en attente, la place à libérer et
     /// les problèmes nouveaux, en une notification ; rien n'est changé. Sans argument : ce qu'il dirait maintenant.
     #[command(visible_alias = "maintenance")]
@@ -2453,6 +2471,19 @@ fn precision_veilleur() -> &'static str {
 }
 
 /// Le veilleur : il lit deux flux du noyau Linux ; ailleurs, la commande le dit.
+fn garde(action: Option<&str>, argument: Option<&str>) {
+    #[cfg(target_os = "linux")]
+    machine::linux::garde::compte::commande(action, argument);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (action, argument);
+        trp!(
+            "Le garde des lancements n'existe que sous Linux : il s'appuie sur fanotify, du noyau Linux.",
+            "The launch guard exists only on Linux: it relies on fanotify, from the Linux kernel."
+        );
+    }
+}
+
 fn veilleur(etat: Option<&str>, sous_etat: Option<&str>, servir: bool) {
     #[cfg(target_os = "linux")]
     machine::linux::veilleur::commande(etat, sous_etat, servir);
@@ -3673,6 +3704,12 @@ async fn main() {
     {
         return println!("vanguard {}", env!("CARGO_PKG_VERSION"));
     }
+    // Le garde des lancements, root, lancé par systemd : rien d'autre ne tourne avant lui (ni journal, ni passage, ni
+    // réglages, qui liraient ou écriraient dans des dossiers que /root ou le compte contrôlent).
+    #[cfg(target_os = "linux")]
+    if std::env::args_os().skip(1).eq(["garde-servir"]) {
+        std::process::exit(machine::linux::garde::servir::servir());
+    }
     // Le processus élevé ne fait que sa liste : rien d'autre ne doit tourner avec le jeton administrateur (journal,
     // passage, reconnaissance de la clé écrivent dans des dossiers que le compte contrôle).
     if std::env::args_os().nth(1).is_some_and(|a| a == "appliquer-eleve") {
@@ -3819,6 +3856,7 @@ async fn main() {
             sous_etat,
             servir,
         }) => veilleur(sans_etat(etat.as_deref()), sans_etat(sous_etat.as_deref()), servir),
+        Some(Commande::Garde { action, argument }) => garde(action.as_deref(), argument.as_deref()),
         Some(Commande::SitesDangereux { etat }) => protection::sites_bloques::commande(sans_etat(etat.as_deref())),
         Some(Commande::DernieresFailles { jours }) => protection::kev::ecran(jours),
         Some(Commande::Surveiller) => reseau::surveillance::surveiller().await,
@@ -3828,7 +3866,7 @@ async fn main() {
         },
         Some(Commande::Entretenir) => entretien::entretenir(),
         // Traité au tout début de main, avant tout le reste : jamais ici.
-        Some(Commande::AppliquerEleve { .. }) => machine::quitter(2),
+        Some(Commande::AppliquerEleve { .. } | Commande::GardeServir) => machine::quitter(2),
         Some(Commande::Maj) => maj::executer(),
         Some(Commande::Reparer) => reparer::menu(),
         Some(Commande::Gaming) => gaming::menu(),

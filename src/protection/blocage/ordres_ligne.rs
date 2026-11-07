@@ -21,6 +21,8 @@ pub(crate) const LIGNE_MAX: usize = 8448;
 pub(crate) const LIGNES_MAX: usize = 512;
 /// Le plus long chemin de programme qu'un ordre d'arrêt porte.
 pub(crate) const CHEMIN_MAX: usize = 4096;
+/// La plus longue pause du garde des lancements (Défense L3) : un jour ; au-delà, le garde se repose ou se retire.
+pub(crate) const PAUSE_MAX: u32 = 86_400;
 
 /// Un geste de la liste fermée.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,6 +97,28 @@ pub(crate) enum Ordre {
     RemettrePilotes {
         avant: Option<u32>,
     },
+    /// Linux (Défense L3) : poser le garde des lancements, le service système `vanguard-garde`, pour ce compte (jamais
+    /// root), qui lui prépare ses listes d'empreintes dans ce dossier (le sien, rejugé par l'élevé).
+    GardePoser {
+        compte: u32,
+        dossier: String,
+    },
+    /// Le programme du garde remplacé par celui de l'assistant (une nouvelle version), son unité réécrite.
+    GardeMettreAJour,
+    /// Le mode du garde : `refus` refuse le certain ; sinon observation (tout passe, ce qu'il aurait refusé est noté).
+    GardeRegler {
+        refus: bool,
+    },
+    /// Le garde en pause pendant ces secondes (au plus `PAUSE_MAX`) ; zéro lève la pause.
+    GardePause {
+        secondes: u32,
+    },
+    /// Ce fichier (son SHA-256) n'est plus jamais refusé par le garde.
+    GardePermettre {
+        sha256: [u8; 32],
+    },
+    /// Le garde retiré exactement : service, programme, réglages et état.
+    GardeRetirer,
 }
 
 fn nom_pare_feu(p: PareFeu) -> &'static str {
@@ -200,6 +224,16 @@ impl Ordre {
             }
             Ordre::RemettrePilotes { avant: Some(v) } => format!("{PREFIXE}remettre-pilotes {v}"),
             Ordre::RemettrePilotes { avant: None } => format!("{PREFIXE}remettre-pilotes absent"),
+            Ordre::GardePoser { compte, dossier } => {
+                format!("{PREFIXE}garde-poser {compte} {}", hex(dossier.as_bytes()))
+            }
+            Ordre::GardeMettreAJour => format!("{PREFIXE}garde-maj"),
+            Ordre::GardeRegler { refus } => {
+                format!("{PREFIXE}garde-regler {}", if *refus { "refus" } else { "observation" })
+            }
+            Ordre::GardePause { secondes } => format!("{PREFIXE}garde-pause {secondes}"),
+            Ordre::GardePermettre { sha256 } => format!("{PREFIXE}garde-permettre {}", hex(sha256)),
+            Ordre::GardeRetirer => format!("{PREFIXE}garde-retirer"),
         }
     }
 }
@@ -262,6 +296,20 @@ pub(crate) fn analyser(ligne: &str) -> Option<Ordre> {
         ["remettre-pilotes", "absent"] => Ordre::RemettrePilotes { avant: None },
         // Les deux seules valeurs que cette clé a jamais eues avant un blocage de Vanguard.
         ["remettre-pilotes", v @ ("0" | "1")] => Ordre::RemettrePilotes { avant: v.parse().ok() },
+        // Le compte du garde n'est jamais root : ses listes viendraient d'un dossier que personne d'autre ne tient.
+        ["garde-poser", u, c] => Ordre::GardePoser {
+            compte: u.parse::<u32>().ok().filter(|u| *u != 0)?,
+            dossier: chemin_de(c).filter(|d| d.starts_with('/'))?,
+        },
+        ["garde-maj"] => Ordre::GardeMettreAJour,
+        ["garde-regler", m @ ("observation" | "refus")] => Ordre::GardeRegler { refus: *m == "refus" },
+        ["garde-pause", n] => Ordre::GardePause {
+            secondes: n.parse::<u32>().ok().filter(|s| *s <= PAUSE_MAX)?,
+        },
+        ["garde-permettre", e] => Ordre::GardePermettre {
+            sha256: de_hex(e)?.try_into().ok()?,
+        },
+        ["garde-retirer"] => Ordre::GardeRetirer,
         _ => return None,
     };
     (ordre.ligne() == ligne).then_some(ordre)

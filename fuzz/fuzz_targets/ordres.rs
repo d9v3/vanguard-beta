@@ -2,7 +2,7 @@
 //! Vanguard non élevé (src/protection/blocage/ordres_ligne.rs) : verbes hors de la liste, pare-feu inconnus,
 //! adresses écrites autrement (IPv4 en IPv6, zéros de tête), ports nuls ou démesurés, chemins en hexadécimal piégés
 //! (majuscules, longueur impaire, relatif, NUL, saut de ligne), départs absents ou nuls de la coupure du réseau d'un
-//! programme, lignes démesurées ; et le non-recouvrement avec les
+//! programme, comptes root ou pauses démesurées du garde, lignes démesurées ; et le non-recouvrement avec les
 //! gestes de Linux (src/machine/gestes_unix.rs), qui passent par le même canal.
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (src/) : refusé sans recours, un allow ne compile pas.
@@ -67,6 +67,13 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                 assert!(!chemin.is_empty() && chemin.len() <= ordres_ligne::CHEMIN_MAX);
                 assert!(!chemin.contains(['\0', '\n', '\r']));
             }
+            // Le garde : jamais posé pour root, ses listes sous un chemin absolu ; une pause bornée.
+            ordres_ligne::Ordre::GardePoser { compte, dossier } => {
+                assert_ne!(compte, 0);
+                assert!(dossier.starts_with('/') && dossier.len() <= ordres_ligne::CHEMIN_MAX);
+                assert!(!dossier.contains(['\0', '\n', '\r']));
+            }
+            ordres_ligne::Ordre::GardePause { secondes } => assert!(secondes <= ordres_ligne::PAUSE_MAX),
             _ => {}
         }
     }

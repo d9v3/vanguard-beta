@@ -380,6 +380,7 @@ pub(crate) const CONTEXTES_ECHEC: &[&str] = &[
     "evenements/perdus",
     "evenements/version",
     "examens/ecrire",
+    "garde/poser",
     "http_unix",
     "http_unix/connexion",
     "machine/ports-bloques",
