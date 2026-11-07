@@ -324,6 +324,16 @@ pub(crate) fn juger(posee: bool, etat: Option<&Etat>, maintenant: u64) -> Consta
             ),
         );
     }
+    if k.debordements > 0 {
+        let n = k.debordements;
+        hausser(
+            Niveau::Eleve,
+            trf!(
+                "La file des demandes du noyau a débordé {n} fois : des lancements ont pu passer sans être vus, ni jugés après coup. Elle reste bornée exprès (jamais illimitée, FAN_UNLIMITED_QUEUE) : sans borne, une rafale ferait grandir la mémoire sans fin ; le cache du garde a été vidé, tout est rehaché.",
+                "The kernel's request queue overflowed {n} times: launches may have passed unseen, and cannot be judged afterwards. It stays bounded on purpose (never unlimited, FAN_UNLIMITED_QUEUE): without a bound, a burst would grow memory endlessly; the guard's cache was emptied, everything is hashed again."
+            ),
+        );
+    }
     if k.rattrapages_perdus > 0 {
         let n = k.rattrapages_perdus;
         hausser(
@@ -893,6 +903,12 @@ mod tests {
         let mut perdus = etat(maintenant);
         perdus.compteurs.rattrapages_perdus = 9;
         assert_eq!(juger(true, Some(&perdus), maintenant).probleme, Some(Niveau::Moyen));
+        // C7-1 : un débordement de la file du noyau, haut, et la borne voulue dite.
+        let mut deborde = etat(maintenant);
+        deborde.compteurs.debordements = 2;
+        let c = juger(true, Some(&deborde), maintenant);
+        assert_eq!(c.probleme, Some(Niveau::Eleve));
+        assert!(c.message.contains("FAN_UNLIMITED_QUEUE"), "{}", c.message);
         // N-1 : un rafraîchissement normal ne dit rien ; une croissance anormale, au moins moyenne, et le nombre.
         let rafraichi = Etat {
             listes_ajoutees: 4_000,

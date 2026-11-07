@@ -146,6 +146,8 @@ struct Partage {
     debut: Instant,
     evenements: SyncSender<Evenement>,
     arret: AtomicBool,
+    /// Les débordements de la file du noyau déjà suivis d'un cache vidé (C7-1).
+    debordements_vus: AtomicU64,
 }
 
 /// Une demande confiée au tri, puis aux fils de décision.
@@ -261,6 +263,12 @@ fn cle_de(fichier: &File) -> Option<Cle> {
 /// Lit la clé de la demande (si ce n'est fait) et y cherche le verdict au cache. Faux : la demande est répondue
 /// (permise : propre en cache, ou illisible) ; vrai : elle reste à juger.
 fn preparer(p: &Partage, d: &mut Demande) -> bool {
+    // C7-1 : après un débordement, des lancements sont passés sans être vus ; rien de ce que le cache sait n'est plus
+    // repris sans être rehaché.
+    let debordements = p.compteurs.debordements.load(Ordering::Relaxed);
+    if p.debordements_vus.swap(debordements, Ordering::Relaxed) != debordements {
+        verrou(&p.cache).vider();
+    }
     let cle = if let Some(c) = d.cle {
         c
     } else {
@@ -946,6 +954,7 @@ pub(crate) fn servir() -> i32 {
         debut: Instant::now(),
         evenements: vers_sortie,
         arret: AtomicBool::new(false),
+        debordements_vus: AtomicU64::new(0),
     });
     // Les réglages et l'union des listes reçues (à root, sur un disque local) avant la première marque : le mode et
     // l'ensemble CERTAIN d'avant sont en vigueur dès la première demande (f1). Les listes du compte, dans son dossier,
@@ -1063,6 +1072,8 @@ fn recevoir(
 ) {
     // Le pidfd ne sert pas : le processus attend son exec, son numéro ne peut pas être repris.
     drop(ev.pidfd.and_then(fanotify::prendre));
+    // C7-1 : la file du noyau a débordé ; ce qu'elle n'a pas pris est passé sans descripteur, impossible à juger après
+    // coup. Compté (alerte haute) ; le tri vide le cache avant sa demande suivante.
     if ev.masque & fanotify::DEBORDEMENT != 0 {
         plus(&p.compteurs.debordements);
         p.noter(evenement("debordement"));
@@ -1267,6 +1278,7 @@ mod tests {
             debut: Instant::now(),
             evenements: vers,
             arret: AtomicBool::new(false),
+            debordements_vus: AtomicU64::new(0),
         };
         (p, evenements)
     }
@@ -1408,6 +1420,19 @@ mod tests {
         assert_eq!(revue.cle, Some(cle));
         assert_eq!(p.compteurs.lire().cache, 1);
         assert!(!verrou(&p.attentes).contient(revue.fd, &revue.fichier));
+        // C7-1 : après un débordement, le cache est vidé avant la demande suivante : rien n'est repris sans hachage.
+        plus(&p.compteurs.debordements);
+        let fichier = Arc::new(File::open(d.join("inconnue")).unwrap());
+        let mut apres = Demande {
+            fd: std::os::fd::AsRawFd::as_raw_fd(&*fichier),
+            fichier,
+            pid: i32::MAX,
+            cle: None,
+            connu: None,
+        };
+        assert!(preparer(&p, &mut apres));
+        assert!(verrou(&p.cache).lire(&cle).is_none());
+        assert_eq!(p.compteurs.lire().cache, 1);
         // Une file pleine : permise tout de suite, confiée au rattrapage ; pleine aussi, comptée.
         let (vers, _file) = std::sync::mpsc::sync_channel::<Demande>(0);
         let (vers_r, file_r) = std::sync::mpsc::sync_channel::<Demande>(1);

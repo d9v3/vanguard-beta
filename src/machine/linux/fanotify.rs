@@ -3,8 +3,10 @@
 //!
 //! Le groupe : FAN_CLOEXEC, FAN_CLASS_CONTENT (demandes de permission), FAN_REPORT_PIDFD (un PIDFD avec chaque
 //! événement, pour ne pas confondre un numéro de processus repris ; noyau 5.15) et FAN_ENABLE_AUDIT (les refus notés
-//! par l'audit du noyau ; exige CAP_AUDIT_WRITE), chacun retiré s'il est refusé. Jamais FAN_UNLIMITED_QUEUE : une file
-//! pleine laisse passer (le veilleur du compte est la deuxième ligne). Pas de mode FID : l'identité d'un fichier vient
+//! par l'audit du noyau ; exige CAP_AUDIT_WRITE), chacun retiré s'il est refusé. Jamais FAN_UNLIMITED_QUEUE : sans
+//! borne, une rafale de lancements ferait grandir la mémoire du noyau sans fin. Une file pleine (16 384 demandes)
+//! laisse donc passer ce qu'elle ne prend plus, sans descripteur à juger après coup : le garde le dit (alerte haute,
+//! cache vidé), et le veilleur du compte reste la deuxième ligne. Pas de mode FID : l'identité d'un fichier vient
 //! de `fstat` sur le descripteur rendu.
 //!
 //! Les marques : FAN_MARK_FILESYSTEM, sur les systèmes de fichiers locaux seulement (`lecture::local`), un par
