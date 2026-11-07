@@ -1933,7 +1933,28 @@ function Fils-Suspendus($id) {
     $fils = @($p.Threads)
     @($fils | Where-Object { $_.ThreadState -eq 'Wait' -and $_.WaitReason -eq 'Suspended' }).Count -eq $fils.Count -and $fils.Count -gt 0
 }
-if ($jetable -and -not $jetable.HasExited) {
+# Lancé depuis une session à distance (SSH, WinRM…), ce script fait naître ses programmes jetables sous l'hôte de
+# cette session : Vanguard refuse alors, comme voulu, de les suspendre (HOTES_DE_SESSION de blocage/gardes.rs). Ce
+# refus est vérifié à la place de la suspension.
+$hoteDistant = $null
+$ancetre = Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction SilentlyContinue
+for ($i = 0; $ancetre -and $i -lt 32; $i++) {
+    if (($ancetre.Name -replace '\.exe$', '') -in 'sshd', 'sshd-session', 'wsmprovhost', 'winrshost', 'rdpinit', 'rdpshell') { $hoteDistant = $ancetre.Name; break }
+    if (-not $ancetre.ParentProcessId) { break }
+    $ancetre = Get-CimInstance Win32_Process -Filter "ProcessId=$($ancetre.ParentProcessId)" -ErrorAction SilentlyContinue
+}
+if ($hoteDistant -and $jetable -and -not $jetable.HasExited) {
+    $id = $jetable.Id
+    LancerAvec 'blocage-suspendre' @('blocage', 'suspendre', "$id") "o`no`n"
+    $t = "$(Sortie 'blocage-suspendre')" -replace '\s+', ' '
+    $etat = Fils-Suspendus $id
+    if ($t -match 'session à distance|remote session' -and $etat -ne $true) { Ok "Session à distance ($hoteDistant) : la suspension d'un programme qui en descend est refusée, et dit" }
+    else { Bug "Session à distance ($hoteDistant) : suspension pas refusée (fils suspendus : $etat ; $((Lignes (Sortie 'blocage-suspendre') | Where-Object { $_ -match '✖|✔' }) -join ' / '))" }
+    Lancer 'blocage-reprendre' @('blocage', 'reprendre', "$id")
+    Sautee 'Suspension, seconde suspension et reprise : ce script tourne dans une session à distance, où Vanguard refuse'
+    Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+}
+elseif ($jetable -and -not $jetable.HasExited) {
     $id = $jetable.Id
     LancerAvec 'blocage-suspendre' @('blocage', 'suspendre', "$id") "o`no`n"
     $t = "$(Sortie 'blocage-suspendre')"
@@ -2013,7 +2034,9 @@ try {
         # Le texte est coupé à la largeur de la console : espaces et retours ramenés à un seul espace avant de lire.
         $t = "$(Sortie 'blocage-suspendre-microsoft')" -replace '\s+', ' '
         $etat = Fils-Suspendus $signe.Id
-        if ($t -match "Rien n'est suspendu|Nothing is suspended" -and $t -match 'signé par Microsoft|signed by Microsoft' -and $etat -ne $true) { Ok 'Copie de PING.EXE (signée Microsoft) : suspension refusée, avec sa raison' }
+        # En session à distance, la garde de la session refuse la première : sa raison vaut aussi.
+        $raison = $t -match 'signé par Microsoft|signed by Microsoft' -or ($hoteDistant -and $t -match 'session à distance|remote session')
+        if ($t -match "Rien n'est suspendu|Nothing is suspended" -and $raison -and $etat -ne $true) { Ok 'Copie de PING.EXE (signée Microsoft) : suspension refusée, avec sa raison' }
         else { Bug "Copie de PING.EXE : suspension non refusée ou sans sa raison (fils suspendus : $etat ; $((Lignes (Sortie 'blocage-suspendre-microsoft') | Where-Object { $_ -match '✖' }) -join ' / '))" }
     }
     Start-Process -FilePath $exe -ArgumentList @('blocage', 'reprendre') -NoNewWindow -Wait | Out-Null
