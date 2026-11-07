@@ -10,10 +10,10 @@ delivered just before it. Only the latest version has its download page; every v
 ## Unreleased
 
 - **Vanguard no longer targets macOS.** No more Mac program, no more builds or tests on GitHub's Mac, no more MACOS
-  partition on new rescue keys (a key already written keeps its own until it is next rewritten). Deployment removes
-  the macOS program, its guide and its launcher from the key. A Vanguard for Mac already installed no longer finds
-  updates, without errors. The SBOMs are produced and attested by the "nomenclatures" job of `ci.yml`, and
-  `outils/publier-version.sh` still checks that attestation before publishing.
+  partition on new rescue keys (a key already written keeps its own until it is next rewritten). Deployment removes the
+  macOS program, its guide and its launcher from the key. A Vanguard for Mac already installed no longer finds updates,
+  without errors; nor will it receive a key change: uninstall it. The SBOMs are produced and attested by the
+  "nomenclatures" job of `ci.yml`, and `outils/publier-version.sh` still checks that attestation before publishing.
 
 ## November 6, 2026: version 0.90.0
 

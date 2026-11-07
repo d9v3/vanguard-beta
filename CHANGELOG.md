@@ -12,9 +12,9 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 - **Vanguard ne vise plus macOS.** Plus de programme pour le Mac, plus de compilation ni d'essais sur le Mac de GitHub,
   plus de partition MACOS sur les nouvelles clés de secours (une clé déjà écrite garde la sienne jusqu'à sa prochaine
   réécriture). Le déploiement retire de la clé le programme macOS, son mode d'emploi et son lanceur. Un Vanguard pour
-  Mac déjà installé ne trouve plus de mise à jour, sans erreur. Les nomenclatures (SBOM) sont produites et attestées
-  par le travail « nomenclatures » de `ci.yml`, et `outils/publier-version.sh` vérifie toujours cette attestation avant
-  de publier.
+  Mac déjà installé ne trouve plus de mise à jour, sans erreur ; il ne recevra pas non plus de changement de clé : le
+  désinstaller. Les nomenclatures (SBOM) sont produites et attestées par le travail « nomenclatures » de `ci.yml`, et
+  `outils/publier-version.sh` vérifie toujours cette attestation avant de publier.
 
 ## 6 novembre 2026 : version 0.90.0
 
