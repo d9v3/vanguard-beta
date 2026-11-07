@@ -23,6 +23,7 @@ pub(crate) mod cache;
 pub(crate) mod compte;
 pub(crate) mod decision;
 pub(crate) mod listes;
+mod minuterie;
 mod notifier;
 mod ouvrir;
 mod poser;

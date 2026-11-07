@@ -532,22 +532,85 @@ fn poser() {
         );
         return;
     };
-    envoyer(
+    if !envoyer(
         &Ordre::GardePoser {
             compte: crate::socle::uid(),
             dossier,
         },
         le_faire(),
-    );
-}
-
-/// Retire le garde (aussi depuis « Retirer Vanguard »).
-pub(crate) fn retirer() {
-    if !pose() {
-        trp!("  Le garde n'est pas posé.", "  The guard is not installed.");
+    ) {
         return;
     }
-    envoyer(&Ordre::GardeRetirer, le_faire());
+    if super::minuterie::poser() {
+        trp!(
+            "  {GRIS}Les listes se rafraîchiront une fois par jour (« vanguard garde maj »).{RESET}",
+            "  {GRIS}The lists will refresh once a day (“vanguard guard update”).{RESET}"
+        );
+    } else {
+        trp!(
+            "  ⚠ Rafraîchissement quotidien des listes non posé : lancez « vanguard garde maj » de temps en temps.",
+            "  ⚠ Daily list refresh not set up: run “vanguard guard update” now and then."
+        );
+    }
+}
+
+/// Retire le garde (aussi depuis « Retirer Vanguard »), puis ce qui ne servait qu'à lui sous le compte : sa minuterie
+/// et ses listes. Un garde déjà retiré laisse quand même ces deux-là partir.
+pub(crate) fn retirer() {
+    if pose() {
+        if !envoyer(&Ordre::GardeRetirer, le_faire()) {
+            return;
+        }
+    } else {
+        trp!("  Le garde n'est pas posé.", "  The guard is not installed.");
+    }
+    nettoyer_le_compte();
+}
+
+/// Il reste quelque chose du garde sous le compte (sa minuterie, ses listes) ?
+pub(crate) fn restes() -> bool {
+    super::minuterie::posee() || std::fs::symlink_metadata(dossier_listes()).is_ok()
+}
+
+/// Efface la minuterie et les listes du compte ; dit ce qui n'a pas pu partir.
+fn nettoyer_le_compte() {
+    if !super::minuterie::retirer() {
+        trp!(
+            "  ⚠ La minuterie des listes ({}) n'a pas pu être retirée.",
+            "  ⚠ The lists timer ({}) could not be removed.",
+            super::minuterie::NOM
+        );
+    }
+    let dossier = dossier_listes();
+    match effacer_listes(&dossier) {
+        Ok(()) => {}
+        Err(e) => afficher_aligne(
+            "  ⚠ ",
+            &trf!(
+                "Listes du garde non effacées ({}) : {e}",
+                "Guard lists not erased ({}): {e}",
+                dossier.display()
+            ),
+            4,
+            "",
+        ),
+    }
+}
+
+/// Efface les deux listes, puis leur dossier s'il est vide : rien d'autre (un fichier que la personne y aurait mis
+/// reste, avec le dossier).
+fn effacer_listes(dossier: &Path) -> std::io::Result<()> {
+    for nom in [LISTE_SHA256, LISTE_MD5] {
+        match std::fs::remove_file(dossier.join(nom)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+    }
+    match std::fs::remove_dir(dossier) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()),
+        r => r,
+    }
 }
 
 /// L'empreinte d'un programme, s'il se lit.
@@ -570,6 +633,14 @@ fn mettre_a_jour() {
         trp!(
             "  Le programme du garde est déjà celui-ci.",
             "  The guard's program is already this one."
+        );
+        return;
+    }
+    // Lancé par la minuterie du jour : rien à demander à personne, seulement le dire.
+    if !crate::protection::blocage::gardes::console_reelle() {
+        trp!(
+            "  Le programme du garde n'est pas celui-ci : « vanguard garde maj » dans un terminal le met à jour.",
+            "  The guard's program is not this one: “vanguard guard update” in a terminal updates it."
         );
         return;
     }
@@ -792,6 +863,23 @@ mod tests {
         }
         assert_eq!(lire_de_root(&f, 1024), None);
         assert_eq!(lire_fin_de_root(&f, 1024), None);
+    }
+
+    /// Recommandation 3 : au retrait, les deux listes partent, et leur dossier s'il est vide ; rien d'autre.
+    #[test]
+    fn listes_effacees_au_retrait() {
+        let d = crate::essais::Jetable::nouveau("garde-effacer");
+        let dossier = d.join("garde");
+        ecrire_dans(&dossier, &[[2u8; 32]], &[], &[], Vec::new()).unwrap();
+        effacer_listes(&dossier).unwrap();
+        assert!(!dossier.exists());
+        // Déjà effacées : rien à redire.
+        effacer_listes(&dossier).unwrap();
+        ecrire_dans(&dossier, &[[2u8; 32]], &[], &[], Vec::new()).unwrap();
+        std::fs::write(dossier.join("a-moi.txt"), b"x").unwrap();
+        effacer_listes(&dossier).unwrap();
+        assert!(dossier.join("a-moi.txt").exists());
+        assert!(!dossier.join(LISTE_SHA256).exists() && !dossier.join(LISTE_MD5).exists());
     }
 
     /// m2 : un evenements.jsonl plus gros que la borne se lit par sa fin, à partir d'une ligne entière.

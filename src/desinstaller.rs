@@ -1046,11 +1046,12 @@ fn annulables() -> Annulables {
     }
 }
 
-/// Le garde des lancements est-il posé ? Jamais lu sous les essais (le vrai /etc).
+/// Le garde des lancements est-il posé, ou reste-t-il sa minuterie ou ses listes sous le compte ? Jamais lu sous les
+/// essais (le vrai /etc).
 fn garde_pose() -> bool {
     #[cfg(target_os = "linux")]
     {
-        !cfg!(test) && crate::machine::linux::garde::compte::pose()
+        !cfg!(test) && (crate::machine::linux::garde::compte::pose() || crate::machine::linux::garde::compte::restes())
     }
     #[cfg(not(target_os = "linux"))]
     {
