@@ -426,6 +426,31 @@ try {
             Where-Object { $_ -notmatch '^\S.* \((rollout of|déploiement de la) \S+ (in progress|en cours)\)$' }).Count -eq 0 })
     $enDeploiement | ForEach-Object { Info "Non vérifié, déploiement en cours (attendu) : $($_.categorie) — $($_.message)" }
     $impossibles = @($impossibles | Where-Object { $enDeploiement -notcontains $_ })
+    # Journaux d'événements : sur une machine où l'audit est éteint (journal de PowerShell 7 absent, création des
+    # processus ou tâches planifiées pas journalisées, historique court, politique d'audit réduite), Vanguard dit à
+    # juste titre « non vérifié » ; c'est l'état de cet ordinateur, pas un échec de Vanguard. Attendu seulement si
+    # TOUTES les raisons du constat sont de cette sorte : illisible, lu en partie, réservé à l'administrateur
+    # (essai lancé en administrateur), bornes, morceaux abîmés, journal muet… restent des défauts.
+    $etatDeLaMachine = @(
+        '^journal \S+ absent de cet ordinateur$', '^log \S+ missing on this computer$',
+        '^journal \S+ désactivé : il n''écrit plus rien, ce qui est lu est ancien$',
+        '^log \S+ disabled: it writes nothing anymore, what is read is old$',
+        '^journal \S+ lu mais vide sur la période : vidé, remplacé, ou son audit coupé$',
+        '^log \S+ read but empty over the period: cleared, replaced, or its auditing turned off$',
+        '^journal \S+ lu seulement depuis le .+? : plus ancien écrasé, effacé, ou rien écrit$',
+        '^log \S+ only read from .+?: older events overwritten, cleared, or never written$',
+        '^\S+ : la politique d''audit de ces événements a été réduite pendant la période \(4719\)$',
+        '^\S+: the audit policy of these events was reduced during the period \(4719\)$',
+        '^\S+ : rien ne prouve que Windows écrit ces événements \(.+\)$',
+        '^\S+: nothing proves Windows writes these events \(.+\)$',
+        '^\S+ : plus rien ne prouve ces événements depuis le [^(]+ \(.+\)$',
+        '^\S+: nothing proves these events since [^(]+ \(.+\)$')
+    $auditEteint = @($impossibles | Where-Object {
+        $_.regle -eq 'WIN-JRN-003' -and
+        $_.message -match '^(Non vérifié|Not verified) — (.+?) ?: EVT-[A-Z]+-\d+ \(.+\)\.$' -and
+        @($Matches[2] -split ' ; ' | Where-Object { $r = $_; -not ($etatDeLaMachine | Where-Object { $r -match $_ }) }).Count -eq 0 })
+    $auditEteint | ForEach-Object { Info "Non vérifié, audit de cette machine éteint (attendu) : $($_.categorie) — $($_.message)" }
+    $impossibles = @($impossibles | Where-Object { $auditEteint -notcontains $_ })
     if ($impossibles.Count) { $impossibles | ForEach-Object { Bug "Vérification impossible : $($_.categorie) — $($_.message)" } }
     else { Ok "Toutes les vérifications ont pu se faire ($(@($audit.constats).Count) constats, note $($audit.score)/100)" }
 } catch { Bug "machine --json illisible : $($_.Exception.Message)" }
