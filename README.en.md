@@ -217,7 +217,11 @@ button. Four categories (programs, connections, startup and drivers, AI agents),
 (programs and connections). Never Vanguard, a system program, a critical process, a remote session in progress, a
 local address or a public DNS; an interpreter (python3, PowerShell) is never quarantined, at most the script it
 runs. As administrator, nothing is blocked by itself: the blocking settings can be written by any program of the
-account, and clear-cut threats are offered with one click there.
+account, and clear-cut threats are offered with one click there. Each threat also offers **Suspend** (the program
+frozen, reversible with `vanguard blocking resume`, recalled at each check), **Watch more closely** (Linux: an alert
+at each start for 7 days), **Trust** (a certain file: a typed word, tied to its fingerprint, 90 days) and Ignore; an
+action refused by a safeguard stays visible, greyed, with its reason. A notified alert is taken up again with
+`vanguard alert <id>`: read again from the sealed log, the threat judged again.
 
 **Evidence before the action** — before stopping a program, quarantining a file or blocking an address, including on
 its own at night, Vanguard records what the action will erase: the program, its command line, its parent, its account,
@@ -795,7 +799,7 @@ Each menu entry is also a command.
 | `vanguard camera-mic` | camera and microphone: who uses them? (read-only) |
 | `vanguard privacy-review [--json]` | privacy check: who can access location, contacts, camera and microphone (read-only) |
 | **8 Block and respond** | |
-| `vanguard blocking [search\|undo\|auto\|click\|category mode]` | threat blocking: one-click “Block” for each threat (action shown, written down, undoable); active protection, after a consent, that blocks clear-cut threats by itself (MalwareBazaar fingerprint, known attack tool, command server) |
+| `vanguard blocking [search\|undo\|auto\|click\|category mode\|suspend PID\|resume [PID]]` | threat blocking: one-click “Block” for each threat (action shown, written down, undoable); active protection, after a consent, that blocks clear-cut threats by itself (MalwareBazaar fingerprint, known attack tool, command server) |
 | `vanguard dangerous-sites [on\|off]` | dangerous sites blocked by the hosts file (URLhaus, ThreatFox command servers), after your consent; `off` removes them exactly |
 | `vanguard events [--json] [--incident id]` | the event log: alerts, evidence recorded before an action, actions, undos, alerts declared normal and version changes, linked; the state of its sealed chain first |
 | `vanguard changes` | what Vanguard changed: each fix run here, its date and its result; a fix marked “undoable” is undone there, then the previous state is read back |
@@ -804,6 +808,7 @@ Each menu entry is also a command.
 | `vanguard windows-logs [--folder D] [--days N] [--json]` | what happened? The EVT- rules on the Windows logs, of this computer (Windows) or of a folder of .evtx (any system: `winevt\Logs` of a mounted disk, folder of `troubleshoot evidence`): each rule's verdict (“not verified” and why when a log is missing), the alerts in time order with account, program and address, the period really read per log; 7 days by default (read-only) |
 | `vanguard watcher [on\|off]` | watcher (Linux 6.6 and later): programs started and connections closed, seen as they happen; `ransomware on\|off`: personal folders watched live against ransomware; off by default |
 | `vanguard protection [on\|off] [--for 1h\|4h] [--json]` | the state of each protection switch on one screen (`--json`: without changing anything); `on` or `off` acts on real-time protection |
+| `vanguard alert <id>` | a notified alert, by the identifier its notification gives: read again from the sealed log, the threat looked for and judged again, then its actions offered (block, suspend, watch more closely, trust, ignore); nothing else is taken from the command line |
 | **9 Data and backups** | |
 | `vanguard copy-files [destination]` | copy my files to an external disk, checked copy |
 | `vanguard auto-backup [--undo]` | automatic backup to an external disk, with the system's tool |
@@ -847,7 +852,7 @@ Each menu entry is also a command.
 </details>
 
 **Language**: the system's (English or French). To force it: the Settings menu, or `VANGUARD_LANG=en` or
-`VANGUARD_LANG=fr` (the variable wins). The commands also keep their French names (`bilan`, `chercher`, `corriger`, `rapport`, `annuler`, `appareils`, `audit-reseau`, `surveillance`, `tableau-de-bord`, `dernieres-failles`, `sites-dangereux`, `veilleur`, `entretien`, `mises-a-jour`, `reparer`, `jeux`, `diagnostic`, `logiciels`, `nettoyer`, `optimiser`, `appris`, `test-connexion`, `listes-noires`, `canaux-wifi`, `cameras-cachees`, `objets-connectes`, `dns-rapide`, `wifi-public`, `integrite`, `pieges`, `memoire`, `isoler`, `fuite-courriel`, `fuite-mot-de-passe`, `mots-de-passe-navigateurs`, `connexions-sortantes`, `acces-a-distance`, `lien`, `verifier-fichier`, `courriel-suspect`, `logiciels-espions`, `logiciels-perimes`, `options-defense`, `signaler`, `camera-micro`, `bilan-confidentialite`, `quarantaine`, `conteneurs`, `parametres`, `blocage`, `exporter`, `importer`, `nommer`, `lenteur`, `demarrage`, `fiche-ordinateur`, `copier-fichiers`, `verifier-copie`, `verifier-sauvegarde`, `verifier-cle`, `rapport-a-laisser`, `changements`, `evenements`, `journaux-windows`, `sauvegarde-auto`, `raccourci`, `ordinateurs`, `se-mettre-a-jour`, `desinstaller`, `regles`, `autotest`, `depanner`, `verifier-moi`, `labo`).
+`VANGUARD_LANG=fr` (the variable wins). The commands also keep their French names (`bilan`, `chercher`, `corriger`, `rapport`, `annuler`, `appareils`, `audit-reseau`, `surveillance`, `tableau-de-bord`, `dernieres-failles`, `sites-dangereux`, `veilleur`, `entretien`, `mises-a-jour`, `reparer`, `jeux`, `diagnostic`, `logiciels`, `nettoyer`, `optimiser`, `appris`, `test-connexion`, `listes-noires`, `canaux-wifi`, `cameras-cachees`, `objets-connectes`, `dns-rapide`, `wifi-public`, `integrite`, `pieges`, `memoire`, `isoler`, `fuite-courriel`, `fuite-mot-de-passe`, `mots-de-passe-navigateurs`, `connexions-sortantes`, `acces-a-distance`, `lien`, `verifier-fichier`, `courriel-suspect`, `logiciels-espions`, `logiciels-perimes`, `options-defense`, `signaler`, `camera-micro`, `bilan-confidentialite`, `quarantaine`, `conteneurs`, `parametres`, `blocage`, `alerte`, `exporter`, `importer`, `nommer`, `lenteur`, `demarrage`, `fiche-ordinateur`, `copier-fichiers`, `verifier-copie`, `verifier-sauvegarde`, `verifier-cle`, `rapport-a-laisser`, `changements`, `evenements`, `journaux-windows`, `sauvegarde-auto`, `raccourci`, `ordinateurs`, `se-mettre-a-jour`, `desinstaller`, `regles`, `autotest`, `depanner`, `verifier-moi`, `labo`).
 
 **Emojis**: in the old Windows console (command prompt or PowerShell outside Windows Terminal, common on Windows 10),
 which draws them badly and shifts the menus, 💡 and 🔧 become → and +. `VANGUARD_EMOJI=0` removes them everywhere,

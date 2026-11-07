@@ -188,6 +188,10 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     // Une catégorie désactivée ne bloque plus rien.
     scelle(crate::protection::blocage::parametres::BLOCAGE, "protection::blocage"),
     local("blocage", "protection::blocage::gestes"),
+    // Les programmes suspendus (rappelés et resuspendus au bilan) et ceux sous surveillance rapprochée (lus par le
+    // veilleur) : forgées, elles faisaient rappeler un autre programme, ou taire celui qu'on surveille.
+    scelle(sceau::SUSPENDUS, "protection::blocage::suspension"),
+    scelle(sceau::SURVEILLES, "protection::blocage::surveiller"),
     local("quarantaine", "protection::quarantaine"),
     // Vidée ou effacée, les fichiers-pièges n'étaient plus vérifiés.
     scelle(sceau::PIEGES, "protection::pieges"),

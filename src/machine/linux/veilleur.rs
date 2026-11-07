@@ -1225,11 +1225,35 @@ fn juger_lance_avec(l: &Lance, fichiers: &mut crate::protection::sources::Fichie
     if !l.de_vanguard
         && let Lecture::Complet(_) = &l.lecture
         && let Some(tenu) = &l.tenu
-        && let Some(c) = fichiers.juger_tenu(tenu)
+        && let (Some(c), empreinte) = fichiers.juger_tenu_avec_empreinte(tenu)
+        // La personne a fait confiance à ce fichier précis (P5 : confirmation tapée, liée à son empreinte, 90 jours) :
+        // jugé comme un autre programme, jamais arrêté comme certain.
+        && !empreinte.is_some_and(|e| crate::protection::blocage::confiance_accordee(&e))
     {
         return Some(Juge::Certain(c));
     }
     juger_lance(l).map(Juge::Alerte)
+}
+
+/// Un programme que la personne a demandé de surveiller de plus près (`blocage::surveiller`, 7 jours) : une alerte à
+/// chaque lancement, notifiée, reconnue par son chemin ou par l'empreinte de l'inode lancé. Rien n'est arrêté.
+fn surveille_de_pres(l: &Lance, fichiers: &mut crate::protection::sources::Fichiers) -> Option<Alerte> {
+    if l.de_vanguard {
+        return None;
+    }
+    let Lecture::Complet(p) = &l.lecture else { return None };
+    // L'empreinte est déjà dans le cache de `juger_tenu_avec_empreinte` : rien n'est haché deux fois.
+    let empreinte = l.tenu.as_ref().and_then(|t| fichiers.juger_tenu_avec_empreinte(t).1);
+    let s = crate::protection::blocage::surveiller::designe_par(p.chemin.as_deref(), empreinte.as_ref())?;
+    let (cle, titre, texte) =
+        crate::protection::blocage::surveiller::alerte(&s, l.pid, p.chemin.as_deref().unwrap_or(&p.nom));
+    Some(Alerte {
+        cle,
+        grave: true,
+        genre: Genre::Veilleur,
+        titre: titre.to_string(),
+        texte,
+    })
 }
 
 // ───────────────────────────── Arrêt du certain au lancement ─────────────────────────────
@@ -1630,6 +1654,10 @@ fn repondre_certain(l: &Lance, c: crate::protection::sources::Certitude, etat: &
         cle
     };
     match debit.decider(&cle_debit, true, maintenant()) {
+        // Non arrêté : la notification dit comment choisir quoi faire (`vanguard alerte <id>`).
+        Decision::Noter { notifier: true } if !arrete => {
+            crate::reseau::surveillance::alerter_cle_a_choisir(Genre::Veilleur, &cle, titre, &texte);
+        }
         Decision::Noter { notifier: true } => {
             crate::reseau::surveillance::alerter_cle(Genre::Veilleur, &cle, titre, &texte);
         }
@@ -2424,8 +2452,9 @@ fn traiter(
                     repondre_certain(&l, c, etat, debit);
                     return;
                 }
-                Some(Juge::Alerte(a)) => Some(a),
-                None => None,
+                // Surveillé de près : son alerte passe avant celle des signes (elle dit pourquoi on la reçoit).
+                Some(Juge::Alerte(a)) => surveille_de_pres(&l, fichiers).or(Some(a)),
+                None => surveille_de_pres(&l, fichiers),
             }
         }
     };

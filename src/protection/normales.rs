@@ -149,6 +149,11 @@ fn raison(r: &Refus) -> &'static str {
 /// genre « veilleur ») avec la clé d'un blocage aurait fait taire le blocage de ce programme pendant 90 jours.
 fn genre_de_la_cle(cle: &str, genre: &str) -> bool {
     use crate::reseau::tableau::{Genre, nom_genre};
+    // La confiance accordée à un fichier certain se tape dans le menu des gestes (P5), jamais d'ici : une ligne du
+    // journal ne la propose pas.
+    if cle.starts_with(crate::protection::blocage::choix::PREFIXE_CONFIANCE) {
+        return false;
+    }
     let attendus: &[Genre] = match cle.split_once('|').map(|(p, _)| p) {
         // Le veilleur note aussi, avec sa clé, la connexion fermée avec un serveur de botnet et les rafales de
         // chiffrement (« veilleur|rancongiciel|… ») : sans ce genre, un outil de chiffrement voulu ne pouvait jamais
@@ -468,6 +473,8 @@ mod tests {
             ligne("autre", "veilleur|dossier temporaire|/tmp/y"),
             ligne("blocage", "blocage|connexion:203.0.113.7"),
             ligne("botnet", "veilleur|203.0.113.8:443"),
+            // La confiance à un fichier certain se tape au menu des gestes, jamais depuis le journal.
+            ligne("blocage", "blocage|confiance|abcdef"),
         ];
         let jour = NaiveDate::parse_from_str("2026-10-23", "%Y-%m-%d").unwrap();
         let r = recentes(&journal, &Normales::default(), jour);

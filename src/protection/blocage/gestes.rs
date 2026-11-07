@@ -62,6 +62,14 @@ pub(crate) struct Pret {
     faire: Faire,
 }
 
+impl Pret {
+    /// Une signature illisible attend la confirmation de la personne (choix 3.1) : le menu des gestes le dit.
+    pub(crate) fn confirmera(&self) -> bool {
+        let a = [gardes::etape_confirmera(false), gardes::etape_confirmera(true)];
+        self.etapes.iter().any(|e| a.contains(e))
+    }
+}
+
 enum Faire {
     /// Les commandes seules : leur inverse est connu d'avance.
     Commandes {
@@ -422,7 +430,7 @@ fn preparer_programme(
 
 /// Ce compte peut-il arrêter ce processus sans droits de plus ? Sous Linux : un processus de ce compte ;
 /// sous Windows : la poignée d'arrêt accordée.
-fn arret_sans_droits(pid: u32) -> bool {
+pub(super) fn arret_sans_droits(pid: u32) -> bool {
     #[cfg(windows)]
     {
         crate::machine::windows::processus::peut_terminer(pid)

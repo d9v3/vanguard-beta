@@ -578,8 +578,17 @@ enum Commande {
     Blocage {
         /// « chercher », « annuler », « etat », « auto » ou « clic » (la protection active), une catégorie
         /// (programmes, connexions, demarrage, agents) suivie d'un mode (off, clic, auto), ou « juger » un PID,
-        /// « parent » ou un fichier (ce que le blocage refuserait, et pourquoi, sans rien faire).
+        /// « parent » ou un fichier (ce que le blocage refuserait, et pourquoi, sans rien faire), « suspendre » un PID
+        /// (réversible) ou « reprendre » (un PID, ou tous ceux que Vanguard a suspendus).
         quoi: Vec<String>,
+    },
+    /// Une alerte notifiée, par l'identifiant que donne sa notification : l'alerte est relue dans le journal scellé,
+    /// la menace cherchée de nouveau et rejugée, puis ses gestes proposés (bloquer, suspendre, surveiller de plus
+    /// près, faire confiance, ignorer). Rien d'autre que l'identifiant n'est pris de la ligne de commande.
+    #[command(visible_alias = "alert")]
+    Alerte {
+        /// L'identifiant de l'alerte, tel que la notification le donne (vanguard evenements les montre aussi).
+        id: String,
     },
     /// Sauvegarde la base des appareils et l'état de la surveillance dans un fichier JSON.
     #[command(name = "exporter", visible_alias = "export")]
@@ -3129,6 +3138,9 @@ const AIDES_EN: &[(&str, &str)] = &[
     ("blocage", "Threat blocking: each threat found offers “Block” (the action shown, accepted, written down, \
                  undoable); active protection, after a consent given once, blocks what is certain by itself \
                  (MalwareBazaar fingerprint, known attack tool, command server), then warns you. No argument: the menu"),
+    ("alerte", "A notified alert, by the identifier its notification gives: the alert is read again from the sealed \
+                log, the threat looked for again and judged again, then its actions offered (block, suspend, watch \
+                more closely, trust, ignore). Nothing but the identifier is taken from the command line"),
     ("canaux-wifi", "Crowded Wi-Fi: nearby networks by channel, and the freest channel to set on the router. Read-only"),
     ("nat", "NAT type for gaming (open, moderate or strict), from two public servers (STUN). Read-only"),
     ("cameras-cachees", "Hidden cameras: on a rental's or someone's network, the devices that look like cameras. Read-only"),
@@ -3382,7 +3394,9 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
                               value; real-time no also takes --for 1h or 4h"),
     ("blocage", "quoi", "“search”, “undo”, “status”, “auto” or “click” (active protection), a category (programs, \
                            connections, startup, agents) followed by a mode (off, click, auto), or “judge” a PID, \
-                           “parent” or a file (what blocking would refuse, and why, without doing anything)"),
+                           “parent” or a file (what blocking would refuse, and why, without doing anything), \
+                           “suspend” a PID (reversible) or “resume” (one PID, or all those Vanguard suspended)"),
+    ("alerte", "id", "The alert's identifier, as the notification gives it (vanguard events shows them too)"),
     ("optimiser", "quoi", "recommended, privacy, performance, comfort or undo"),
     ("verifier-moi", "programme", "Another copy of Vanguard to check (from another key, an earlier version), by its \
                                      fingerprint and the signed version history"),
@@ -3412,6 +3426,7 @@ fn ligne_de_commande() -> clap::Command {
 /// elles vont.
 const RUBRIQUE_DES_AUTRES: &[(&str, Groupe)] = &[
     ("protection", Groupe::Reagir),
+    ("alerte", Groupe::Reagir),
     ("importer", Groupe::Vanguard),
     ("plugins", Groupe::Vanguard),
     ("labo", Groupe::Vanguard),
@@ -4038,6 +4053,7 @@ async fn main() {
         Some(Commande::VerifierCle { dossier }) => verifier_cle::commande(dossier.as_deref()),
         Some(Commande::Changements) => changements::afficher(),
         Some(Commande::Evenements { json, incident }) => evenements::afficher(json, incident.as_deref()),
+        Some(Commande::Alerte { id }) => protection::blocage::alerte(&id),
         Some(Commande::JournauxWindows { dossier, jours, json }) => {
             journaux_windows::commande::executer(dossier.as_deref(), jours, json);
         }
@@ -4678,6 +4694,10 @@ mod tests_menu {
         (
             "chercher",
             "la recherche de l'accueil (« Numéro, ou un mot à chercher »)",
+        ),
+        (
+            "alerte",
+            "l'identifiant d'une alerte notifiée ; Blocage des menaces propose les mêmes gestes",
         ),
     ];
 

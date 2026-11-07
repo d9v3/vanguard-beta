@@ -25,9 +25,12 @@ mod juger;
 mod menaces;
 pub(crate) mod ordres;
 // La forme des lignes des ordres : du code pur, lu aussi par le banc de fuzzing.
+pub(crate) mod choix;
 mod ordres_ligne;
 pub(crate) mod parametres;
 pub(crate) mod pare_feu;
+pub(crate) mod surveiller;
+pub(crate) mod suspension;
 
 use std::collections::BTreeSet;
 use std::io::IsTerminal;
@@ -138,6 +141,10 @@ pub(crate) fn protection_active() -> bool {
 #[cfg(target_os = "linux")]
 pub(crate) use gardes::processus_gelable;
 
+/// La confiance accordée à un fichier certain (P5), lue par le veilleur avant d'arrêter un certain.
+#[cfg(target_os = "linux")]
+pub(crate) use choix::confiance_accordee;
+
 /// Lot D7b : l'arrêt d'un programme que la personne a accepté, sur le terminal de l'assistant élevé. Les gardes des
 /// sessions à distance et de la signature passent encore juste avant le signal ; `attendu` : son programme, sans
 /// « (deleted) ».
@@ -242,6 +249,12 @@ pub fn commande(mots: &[String]) {
         // En lecture seulement : ce que chaque garde refuserait, et pourquoi (essais de la VM, défense D6a).
         [m, d, dossier] if est(m, &["juger", "judge"]) && est(d, &["destination"]) => juger::commande(dossier, true),
         [m, quoi] if est(m, &["juger", "judge"]) => juger::commande(quoi, false),
+        [m, pid] if est(m, &["suspendre", "suspend"]) => suspendre_par_pid(pid),
+        [m] if est(m, &["reprendre", "resume"]) => reprendre_les_suspendus(None),
+        [m, pid] if est(m, &["reprendre", "resume"]) => match pid.parse::<u32>() {
+            Ok(p) if p > 0 => reprendre_les_suspendus(Some(p)),
+            _ => usage(),
+        },
         [m] if est(m, &["auto", "actif", "active", "on"]) => {
             for c in Categorie::TOUTES.into_iter().filter(|c| c.a_du_certain()) {
                 if !changer_mode(c, Mode::Automatique) {
@@ -267,9 +280,94 @@ pub fn commande(mots: &[String]) {
 fn usage() {
     let categories = Categorie::TOUTES.map(Categorie::mot).join(", ");
     trp!(
-        "  Usage : vanguard blocage [chercher | annuler | etat | auto | clic | <catégorie> <mode> | juger <PID | parent | fichier> | juger destination <dossier>]\n  Catégories : {categories}. Modes : off, clic, auto (programmes et connexions seulement). « juger » montre ce que le blocage refuserait, et pourquoi, sans rien faire.",
-        "  Usage: vanguard blocking [search | undo | status | auto | click | <category> <mode> | judge <PID | parent | file> | judge destination <folder>]\n  Categories: {categories}. Modes: off, click, auto (programs and connections only). “judge” shows what blocking would refuse, and why, without doing anything."
+        "  Usage : vanguard blocage [chercher | annuler | etat | auto | clic | <catégorie> <mode> | juger <PID | parent | fichier> | juger destination <dossier> | suspendre <PID> | reprendre [<PID>]]\n  Catégories : {categories}. Modes : off, clic, auto (programmes et connexions seulement). « juger » montre ce que le blocage refuserait, et pourquoi, sans rien faire. « suspendre » gèle un processus (réversible) ; « reprendre » le relance (sans PID : tous ceux que Vanguard a suspendus).",
+        "  Usage: vanguard blocking [search | undo | status | auto | click | <category> <mode> | judge <PID | parent | file> | judge destination <folder> | suspend <PID> | resume [<PID>]]\n  Categories: {categories}. Modes: off, click, auto (programs and connections only). “judge” shows what blocking would refuse, and why, without doing anything. “suspend” freezes a process (reversible); “resume” starts it again (without a PID: all those Vanguard suspended)."
     );
+}
+
+/// `vanguard blocage suspendre <PID>` : le programme du processus lu, les gardes du gel rejugées, montré, confirmé.
+fn suspendre_par_pid(mot: &str) {
+    let Some(pid) = mot.parse::<u32>().ok().filter(|p| *p > 0) else {
+        usage();
+        return;
+    };
+    let Some(chemin) = chemin_du_processus(pid) else {
+        trp!(
+            "  ✖ Le processus {pid} est fini, ou son programme ne se lit pas : rien n'est suspendu.",
+            "  ✖ Process {pid} has ended, or its program cannot be read: nothing is suspended."
+        );
+        return;
+    };
+    let o = ordres::Ordre::SuspendreProcessus {
+        pid,
+        chemin: chemin.clone(),
+    };
+    if let Some(raison) = ordres::juger(&o, &ordres::Juge::lire(None)) {
+        afficher_aligne(
+            "  ✖ ",
+            &trf!("Rien n'est suspendu : {raison}.", "Nothing is suspended: {raison}."),
+            4,
+            "",
+        );
+        return;
+    }
+    afficher_aligne(
+        "  ",
+        &trf!(
+            "Suspendre « {} » (PID {pid}) : il ne fait plus rien mais reste là. « vanguard blocage reprendre {pid} » le relance.",
+            "Suspend “{}” (PID {pid}): it does nothing more but stays there. “vanguard blocking resume {pid}” starts it again.",
+            affichable(&chemin)
+        ),
+        2,
+        "",
+    );
+    if !demander(tr!("\n  Suspendre ? [o/N] : ", "\n  Suspend? [y/N]: ")).oui() {
+        trp!("  Rien n'a été fait.", "  Nothing was done.");
+        return;
+    }
+    let quoi = trf!("Suspendu à la main : {}", "Suspended by hand: {}", chemin);
+    match suspension::suspendre(pid, &chemin, &quoi, None) {
+        Ok(()) => trp!("  {VERT}✔{RESET} Suspendu.", "  {VERT}✔{RESET} Suspended."),
+        Err(e) => trp!("  ✖ {e}", "  ✖ {e}"),
+    }
+}
+
+/// `vanguard blocage reprendre [<PID>]` : seulement ce que Vanguard a suspendu (sa liste scellée), et toujours le
+/// même programme.
+fn reprendre_les_suspendus(pid: Option<u32>) {
+    if let Err(r) = suspension::lisible() {
+        trp!("  ✖ {r} : rien n'est repris.", "  ✖ {r}: nothing is resumed.");
+        return;
+    }
+    let faits = suspension::reprendre(pid);
+    if faits.is_empty() {
+        match pid {
+            Some(p) => trp!(
+                "  Le processus {p} n'a pas été suspendu par Vanguard : rien n'est repris.",
+                "  Process {p} was not suspended by Vanguard: nothing is resumed."
+            ),
+            None => trp!(
+                "  Aucun programme suspendu par Vanguard.",
+                "  No program suspended by Vanguard."
+            ),
+        }
+        return;
+    }
+    for (s, r) in faits {
+        // Une menace dit déjà son PID ; « Suspendu à la main » non.
+        let quoi = if s.quoi.contains(&format!("PID {}", s.pid)) {
+            affichable(&s.quoi)
+        } else {
+            format!("{} (PID {})", affichable(&s.quoi), s.pid)
+        };
+        match r {
+            Ok(()) => trp!(
+                "  {VERT}✔{RESET} Repris (ou déjà fini) : {quoi}.",
+                "  {VERT}✔{RESET} Resumed (or already ended): {quoi}."
+            ),
+            Err(e) => trp!("  ✖ {quoi} : {e}", "  ✖ {quoi}: {e}"),
+        }
+    }
 }
 
 /// L'état des quatre catégories, et de la protection active.
@@ -580,6 +678,10 @@ fn chercher_et_proposer() {
 /// en temps réel coupée, voir `pour_agir`), puis chaque autre menace propose « Bloquer » (dans un terminal ; sinon
 /// elle est seulement dite, sans question).
 pub fn au_bilan() {
+    // Ce que la personne a suspendu ou demandé de surveiller se rappelle à chaque bilan, même le blocage coupé : un
+    // programme gelé et oublié tient ses fichiers, et un tiers qui l'a repris est vu (et le programme resuspendu).
+    suspension::rappeler();
+    surveiller::rappeler();
     let p = parametres();
     if p.rien() {
         return;
@@ -727,8 +829,11 @@ fn alerter_blocage(m: &Menace, titre: &str, texte: &str) {
         },
         chrono::Duration::minutes(10),
     );
-    crate::reseau::tableau::noter_alerte_liee(Genre::Blocage, Some(&cle), geste.as_deref(), titre, texte);
-    crate::reseau::surveillance::notifier(titre, texte);
+    let id = crate::reseau::tableau::noter_alerte_liee(Genre::Blocage, Some(&cle), geste.as_deref(), titre, texte);
+    crate::reseau::surveillance::notifier(
+        titre,
+        &crate::reseau::surveillance::corps_a_choisir(texte, id.as_deref()),
+    );
 }
 
 /// Les menaces déjà signalées comme non bloquées, d'après les sceaux : intactes ou adoptées, leurs clés ; changées
@@ -831,38 +936,18 @@ fn montrer(m: &Menace, pret: &gestes::Pret) {
     }
 }
 
-/// Chaque menace propose « Bloquer » : choisie, son geste est montré, puis fait après accord. Ce que les garde-fous
-/// refusent d'avance reste une alerte, avec sa raison.
+/// Chaque menace ouvre son menu des gestes (`choix`) : Bloquer en tête, puis Suspendre, Surveiller de plus près, Faire
+/// confiance (ou « c'est normal ici ») et Ignorer. Ce que les garde-fous refusent reste visible, grisé, avec sa raison.
 fn proposer(menaces: Vec<Menace>, ctx: &Contexte) {
-    let mut restantes: Vec<Menace> = Vec::new();
-    let mut refusees = 0usize;
-    for m in menaces {
-        match gestes::preparer(&m, ctx, false) {
-            Ok(_) => restantes.push(m),
-            Err(r) => {
-                refusees = refusees.saturating_add(1);
-                afficher_aligne(
-                    &format!("  {}ℹ{RESET} ", couleur(crate::risk::Niveau::Info)),
-                    &m.quoi,
-                    4,
-                    "",
-                );
-                afficher_aligne("    ", &trf!("Alerte seulement : {r}", "Alert only: {r}"), 4, GRIS);
-            }
-        }
-    }
-    if !restantes.is_empty() {
-        dire_si_pare_feu_coupe();
-    }
-    if restantes.is_empty() {
-        if refusees == 0 {
-            trp!(
-                "  {VERT}✔{RESET} Aucune menace à bloquer.",
-                "  {VERT}✔{RESET} No threat to block."
-            );
-        }
+    if menaces.is_empty() {
+        trp!(
+            "  {VERT}✔{RESET} Aucune menace à bloquer.",
+            "  {VERT}✔{RESET} No threat to block."
+        );
         return;
     }
+    dire_si_pare_feu_coupe();
+    let mut restantes = menaces;
     loop {
         if restantes.is_empty() {
             return;
@@ -870,25 +955,24 @@ fn proposer(menaces: Vec<Menace>, ctx: &Contexte) {
         let mut lignes = vec![
             Ligne::Texte(String::new()),
             Ligne::Texte(trf!(
-                "  {GRIS}Choisissez une menace : son geste est montré avant d'être fait.{RESET}",
-                "  {GRIS}Pick a threat: its action is shown before it is done.{RESET}"
+                "  {GRIS}Choisissez une menace : ses gestes sont montrés, le prévu en tête.{RESET}",
+                "  {GRIS}Pick a threat: its actions are shown, the planned one first.{RESET}"
             )),
         ];
         for (i, m) in restantes.iter().enumerate() {
-            let texte = couper(&trf!("Bloquer : {}", "Block: {}", m.quoi), 52);
             let precision = if m.certaine {
                 tr!("certain", "certain")
             } else {
                 tr!("douteux", "doubtful")
             };
-            lignes.push(Ligne::choix(&i.saturating_add(1).to_string(), &texte, precision));
+            lignes.push(Ligne::choix(
+                &i.saturating_add(1).to_string(),
+                &couper(&m.quoi, 52),
+                precision,
+            ));
         }
         lignes.push(Ligne::Texte(String::new()));
-        lignes.push(Ligne::choix(
-            "↵",
-            tr!("Ne rien bloquer de plus", "Block nothing more"),
-            "",
-        ));
+        lignes.push(Ligne::choix("↵", tr!("Ne rien faire de plus", "Do nothing more"), ""));
         let Some(choix) = choisir(
             &lignes,
             tr!("\n  Choix (Entrée : rien) : ", "\n  Choice (Enter: nothing): "),
@@ -907,68 +991,388 @@ fn proposer(menaces: Vec<Menace>, ctx: &Contexte) {
             return;
         };
         let m = restantes.remove(i);
-        let pret = match gestes::preparer(&m, ctx, false) {
-            Ok(p) => p,
-            Err(raison) => {
-                trp!("  ✖ {raison}", "  ✖ {raison}");
-                continue;
-            }
-        };
-        montrer(&m, &pret);
-        // Une menace certaine ne se tait jamais (`menaces::chercher`) : « c'est normal » ne lui est pas proposé.
-        let reponse = demander(if m.certaine {
-            tr!("\n  Bloquer ? [o/N] : ", "\n  Block? [y/N]: ")
-        } else {
-            tr!(
-                "\n  Bloquer ? [o/N] ; « i » : c'est normal ici (90 jours) : ",
-                "\n  Block? [y/N]; “i”: this is normal here (90 days): "
-            )
-        });
-        if !m.certaine && reponse.trim().eq_ignore_ascii_case("i") {
-            match crate::protection::normales::declarer(
-                &m.cle_normale(),
-                crate::reseau::tableau::nom_genre(Genre::Blocage),
-                tr!("Menace déclarée normale", "Threat declared normal"),
-                &m.quoi,
-            ) {
-                Ok(()) => afficher_aligne(
-                    "  ",
-                    tr!(
-                        "Retenu pour 90 jours : ni proposée ni bloquée (Ce que Vanguard a appris l'oublie).",
-                        "Saved for 90 days: neither offered nor blocked (What Vanguard has learned forgets it)."
-                    ),
-                    2,
-                    GRIS,
-                ),
-                Err(e) => afficher_aligne(
-                    "  ✖ ",
-                    &trf!("Rien n'est retenu : {e}.", "Nothing is saved: {e}."),
-                    4,
-                    "",
-                ),
-            }
-            continue;
-        }
-        if !reponse.oui() {
-            trp!("  Rien n'a été fait.", "  Nothing was done.");
+        if !agir(&m, ctx) {
             restantes.insert(i, m);
+        }
+    }
+}
+
+/// Un identifiant d'événement tel que Vanguard les écrit (chiffres, lettres, tirets), borné : rien d'autre ne passe
+/// de la ligne de commande.
+fn id_d_alerte_valide(id: &str) -> bool {
+    (1..=64).contains(&id.len()) && id.bytes().all(|o| o.is_ascii_alphanumeric() || o == b'-')
+}
+
+/// La menace cherchée maintenant est-elle celle que désigne la clé d'une alerte du journal ? Celle du blocage (sa clé
+/// « normale »), ou celle du veilleur (« veilleur|raison|chemin ») pour un programme au même chemin.
+fn alerte_designe(m: &Menace, cle: &str) -> bool {
+    if m.cle_normale() == cle {
+        return true;
+    }
+    let menaces::Geste::Programme { chemin: Some(c), .. } = &m.geste else {
+        return false;
+    };
+    cle.starts_with("veilleur|") && cle.ends_with(&format!("|{}", c.to_string_lossy()))
+}
+
+/// `vanguard alerte <id>` (depuis la notification) : seul l'identifiant vient de la ligne de commande. L'alerte est
+/// relue dans la partie vérifiée du journal scellé, la menace cherchée de nouveau et rejugée (`menaces::chercher`,
+/// puis les garde-fous de chaque geste) : une ligne forgée, ou une menace partie, ne fait rien faire.
+pub fn alerte(id: &str) {
+    use crate::modele::evenement::{Genre as Quoi, Source};
+    titre(tr!("Alerte", "Alert"));
+    if !id_d_alerte_valide(id) {
+        trp!(
+            "  ✖ Identifiant d'alerte invalide : rien n'est fait.",
+            "  ✖ Invalid alert identifier: nothing is done."
+        );
+        return;
+    }
+    let lu = crate::modele::journal::lire();
+    let Some(ev) = lu.verifies().iter().find(|e| e.id == id) else {
+        afficher_aligne(
+            "  ✖ ",
+            tr!(
+                "Aucune alerte de cet identifiant dans la partie vérifiée du journal (vanguard evenements) : rien n'est fait.",
+                "No alert with this identifier in the verified part of the log (vanguard events): nothing is done."
+            ),
+            4,
+            "",
+        );
+        return;
+    };
+    let (Quoi::Alerte { titre: t, texte, .. }, Some(cle), Source::Blocage | Source::Veilleur) =
+        (&ev.quoi, ev.cle.as_deref(), &ev.source)
+    else {
+        afficher_aligne(
+            "  ✖ ",
+            tr!(
+                "Cet événement n'est pas l'alerte d'une menace du blocage ou du veilleur : rien à proposer.",
+                "This event is not the alert of a blocking or watcher threat: nothing to offer."
+            ),
+            4,
+            "",
+        );
+        return;
+    };
+    afficher_aligne("  ", &affichable(t), 2, GRAS);
+    afficher_aligne("  ", &affichable(texte), 2, GRIS);
+    trp!(
+        "  {GRIS}Recherche de la menace, rejugée maintenant…{RESET}",
+        "  {GRIS}Looking for the threat, judged again now…{RESET}"
+    );
+    let t = menaces::chercher(&Categorie::TOUTES, false);
+    let Some(m) = t.menaces.iter().find(|m| alerte_designe(m, cle)) else {
+        afficher_aligne(
+            "  ",
+            tr!(
+                "Cette menace n'est plus là (finie, déjà bloquée, ou tenue pour normale) : rien à faire.",
+                "This threat is no longer there (ended, already blocked, or held as normal): nothing to do."
+            ),
+            2,
+            "",
+        );
+        dire_non_verifie(&t.non_verifie);
+        return;
+    };
+    if !std::io::stdin().is_terminal() {
+        trp!(
+            "  Ses gestes se choisissent dans un terminal : vanguard alerte {id}.",
+            "  Its actions are chosen in a terminal: vanguard alert {id}."
+        );
+        return;
+    }
+    let ctx = Contexte::lire(t.intouchables.clone(), true);
+    agir(m, &ctx);
+}
+
+/// Ce que le menu des gestes doit savoir de la menace, lu maintenant.
+fn faits_de(m: &Menace, ctx: &Contexte, pret: &Result<gestes::Pret, crate::modele::Echec>) -> choix::Faits {
+    let suspendre = match &m.geste {
+        menaces::Geste::Programme {
+            pid: Some(pid),
+            chemin: Some(c),
+            ..
+        } => ordres::juger(
+            &ordres::Ordre::SuspendreProcessus {
+                pid: *pid,
+                chemin: c.to_string_lossy().into_owned(),
+            },
+            &ordres::Juge::lire(None).avec(&ctx.intouchables),
+        ),
+        _ => Some(tr!("aucun processus en marche à suspendre", "no running process to suspend").to_string()),
+    };
+    choix::Faits {
+        certaine: m.certaine,
+        bloquer: match pret {
+            Ok(p) => Ok(p.confirmera()),
+            Err(e) => Err(e.to_string()),
+        },
+        suspendre,
+        empreinte: m.empreinte().is_some(),
+        surveillance_ici: cfg!(target_os = "linux"),
+    }
+}
+
+/// Le menu des gestes d'une menace, puis le geste choisi. `true` : la menace est traitée (bloquée, surveillée, tenue
+/// pour normale ou ignorée) et quitte la liste ; `false` : elle y reste (rien fait, refusé, ou suspendue : Bloquer
+/// reste à faire).
+fn agir(m: &Menace, ctx: &Contexte) -> bool {
+    let pret = gestes::preparer(m, ctx, false);
+    let gestes_menu = choix::gestes(&faits_de(m, ctx, &pret));
+    let mut lignes = vec![
+        Ligne::Texte(String::new()),
+        Ligne::Texte(format!("  {}", couper(&affichable(&m.quoi), 74))),
+    ];
+    let mut permis: Vec<(String, choix::Choix, choix::Etat)> = Vec::new();
+    for (c, e) in &gestes_menu {
+        if let choix::Etat::Grise(raison) = e {
+            lignes.push(Ligne::Texte(format!(
+                "  {GRIS}✖  {}{RESET}",
+                choix::texte(*c, m.certaine)
+            )));
+            for l in envelopper(&affichable(raison), 68) {
+                lignes.push(Ligne::Texte(format!("      {GRIS}{l}{RESET}")));
+            }
             continue;
         }
-        match gestes::faire(&m, pret, false) {
-            Ok(f) if f.verifie => trp!(
-                "  {VERT}✔{RESET} Bloqué. Pour annuler : vanguard blocage annuler.",
-                "  {VERT}✔{RESET} Blocked. To undo: vanguard blocking undo."
+        let touche = permis.len().saturating_add(1).to_string();
+        lignes.push(Ligne::choix(
+            &touche,
+            choix::texte(*c, m.certaine),
+            choix::precision(*c, e),
+        ));
+        permis.push((touche, *c, e.clone()));
+    }
+    let Some(reponse) = choisir(
+        &lignes,
+        tr!(
+            "\n  Geste (Entrée : le premier) : ",
+            "\n  Action (Enter: the first one): "
+        ),
+        "1",
+        tr!("revenir", "back"),
+    ) else {
+        return false;
+    };
+    let reponse = reponse.trim();
+    let reponse = if reponse.is_empty() { "1" } else { reponse };
+    let Some((_, c, etat)) = permis.into_iter().find(|(t, _, _)| t == reponse) else {
+        return false;
+    };
+    if let choix::Etat::Confirmer(raison) = &etat {
+        afficher_aligne("  ", &affichable(raison), 2, GRIS);
+    }
+    match c {
+        choix::Choix::Bloquer => match pret {
+            Ok(p) => bloquer(m, p),
+            Err(e) => {
+                trp!("  ✖ {e}", "  ✖ {e}");
+                false
+            }
+        },
+        choix::Choix::Suspendre => suspendre_la_menace(m),
+        choix::Choix::Surveiller => surveiller_la_menace(m),
+        choix::Choix::Confiance if m.certaine => faire_confiance(m),
+        choix::Choix::Confiance => declarer_normale(m),
+        choix::Choix::Ignorer => {
+            trp!(
+                "  Ignorée pour cette fois : le prochain bilan la montrera de nouveau.",
+                "  Ignored this time: the next check will show it again."
+            );
+            true
+        }
+    }
+}
+
+/// Bloquer : le geste montré, puis fait après accord.
+fn bloquer(m: &Menace, pret: gestes::Pret) -> bool {
+    montrer(m, &pret);
+    if !demander(tr!("\n  Bloquer ? [o/N] : ", "\n  Block? [y/N]: ")).oui() {
+        trp!("  Rien n'a été fait.", "  Nothing was done.");
+        return false;
+    }
+    match gestes::faire(m, pret, false) {
+        Ok(f) if f.verifie => trp!(
+            "  {VERT}✔{RESET} Bloqué. Pour annuler : vanguard blocage annuler.",
+            "  {VERT}✔{RESET} Blocked. To undo: vanguard blocking undo."
+        ),
+        Ok(f) => afficher_aligne(
+            &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Moyen)),
+            &trf!(
+                "Non vérifié : {f}. Pour retirer la règle : vanguard blocage annuler.",
+                "Not verified: {f}. To remove the rule: vanguard blocking undo."
             ),
-            Ok(f) => afficher_aligne(
-                &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Moyen)),
+            4,
+            "",
+        ),
+        Err(e) => {
+            trp!("  ✖ {e}", "  ✖ {e}");
+            return false;
+        }
+    }
+    true
+}
+
+/// Suspendre : montré, confirmé, puis fait sous les gardes du gel (rejugées juste avant). La menace reste dans la
+/// liste : Bloquer peut suivre.
+fn suspendre_la_menace(m: &Menace) -> bool {
+    let menaces::Geste::Programme {
+        pid: Some(pid),
+        chemin: Some(chemin),
+        nom,
+        ..
+    } = &m.geste
+    else {
+        return false;
+    };
+    afficher_aligne(
+        "  ",
+        &trf!(
+            "Suspendre « {} » (PID {pid}) : il ne fait plus rien mais reste là (fichiers, mémoire), le temps de regarder. Rien n'est effacé ; « vanguard blocage reprendre {pid} » le relance. Un programme malveillant qui a les droits d'administrateur peut se reprendre lui-même : le bilan le revoit et le resuspend.",
+            "Suspend “{}” (PID {pid}): it does nothing more but stays there (files, memory), while you look. Nothing is deleted; “vanguard blocking resume {pid}” starts it again. A malicious program with administrator rights can resume itself: the check sees it and suspends it again.",
+            affichable(nom)
+        ),
+        2,
+        "",
+    );
+    if !demander(tr!("\n  Suspendre ? [o/N] : ", "\n  Suspend? [y/N]: ")).oui() {
+        trp!("  Rien n'a été fait.", "  Nothing was done.");
+        return false;
+    }
+    match suspension::suspendre(*pid, &chemin.to_string_lossy(), &m.quoi, Some(&m.cle_normale())) {
+        Ok(()) => trp!(
+            "  {VERT}✔{RESET} Suspendu. Pour le reprendre : vanguard blocage reprendre {pid} ; pour l'arrêter : Bloquer.",
+            "  {VERT}✔{RESET} Suspended. To resume it: vanguard blocking resume {pid}; to stop it: Block."
+        ),
+        Err(e) => trp!("  ✖ {e}", "  ✖ {e}"),
+    }
+    false
+}
+
+/// Surveiller de plus près : 7 jours, une alerte à chaque lancement (le veilleur Linux).
+fn surveiller_la_menace(m: &Menace) -> bool {
+    let (Some(fichier), Some(empreinte)) = (m.fichier_du_programme(), m.empreinte()) else {
+        return false;
+    };
+    match surveiller::ajouter(&fichier.to_string_lossy(), &empreinte, &m.quoi) {
+        Ok(fin) => {
+            afficher_aligne(
+                &format!("  {VERT}✔{RESET} "),
                 &trf!(
-                    "Non vérifié : {f}. Pour retirer la règle : vanguard blocage annuler.",
-                    "Not verified: {f}. To remove the rule: vanguard blocking undo."
+                    "Surveillé de près jusqu'au {fin} : le veilleur alerte à chaque lancement (s'il est en marche : vanguard veilleur). Rien n'est arrêté.",
+                    "Watched closely until {fin}: the watcher alerts at each start (if it is running: vanguard watcher). Nothing is stopped."
                 ),
                 4,
                 "",
-            ),
-            Err(e) => trp!("  ✖ {e}", "  ✖ {e}"),
+            );
+            true
+        }
+        Err(e) => {
+            trp!("  ✖ {e}", "  ✖ {e}");
+            false
+        }
+    }
+}
+
+/// Un douteux : c'est normal ici, 90 jours.
+fn declarer_normale(m: &Menace) -> bool {
+    match crate::protection::normales::declarer(
+        &m.cle_normale(),
+        crate::reseau::tableau::nom_genre(Genre::Blocage),
+        tr!("Menace déclarée normale", "Threat declared normal"),
+        &m.quoi,
+    ) {
+        Ok(()) => {
+            afficher_aligne(
+                "  ",
+                tr!(
+                    "Retenu pour 90 jours : ni proposée ni bloquée (Ce que Vanguard a appris l'oublie).",
+                    "Saved for 90 days: neither offered nor blocked (What Vanguard has learned forgets it)."
+                ),
+                2,
+                GRIS,
+            );
+            true
+        }
+        Err(e) => {
+            afficher_aligne(
+                "  ✖ ",
+                &trf!("Rien n'est retenu : {e}.", "Nothing is saved: {e}."),
+                4,
+                "",
+            );
+            false
+        }
+    }
+}
+
+/// Un certain (P5) : faire confiance à CE fichier, par son empreinte relue maintenant, 90 jours, sur un mot tapé. Le
+/// même chemin réécrit par un autre fichier n'en profite pas.
+fn faire_confiance(m: &Menace) -> bool {
+    let (Some(fichier), Some(empreinte)) = (m.fichier_du_programme(), m.empreinte()) else {
+        return false;
+    };
+    let hex = surveiller::hex(&empreinte);
+    afficher_aligne(
+        &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
+        &trf!(
+            "Ce fichier est un logiciel malveillant CONNU ({}). Déconseillé : lui faire confiance, c'est le laisser tourner, ni proposé, ni bloqué, ni arrêté par le veilleur pendant 90 jours. Seulement ce fichier-là : « {} », empreinte {}…{}.",
+            "This file is KNOWN malware ({}). Not recommended: trusting it lets it run, neither offered, nor blocked, nor stopped by the watcher for 90 days. Only this exact file: “{}”, fingerprint {}…{}.",
+            affichable(&m.quoi),
+            chemin_affichable(fichier),
+            hex.get(..12).unwrap_or(&hex),
+            hex.get(hex.len().saturating_sub(4)..).unwrap_or_default()
+        ),
+        4,
+        "",
+    );
+    let mot = choix::mot_de_confiance();
+    let reponse = demander(&trf!(
+        "\n  Pour lui faire confiance, tapez {mot} (Entrée : non) : ",
+        "\n  To trust it, type {mot} (Enter: no): "
+    ));
+    if !choix::confiance_tapee(&reponse) {
+        trp!("  Rien n'a été fait.", "  Nothing was done.");
+        return false;
+    }
+    // Relue après la réponse : un fichier changé pendant la question n'hérite pas de la confiance.
+    if m.empreinte() != Some(empreinte) {
+        trp!(
+            "  ✖ Le fichier a changé pendant la question : rien n'est retenu.",
+            "  ✖ The file changed during the question: nothing is saved."
+        );
+        return false;
+    }
+    match crate::protection::normales::declarer(
+        &choix::cle_confiance(&empreinte),
+        crate::reseau::tableau::nom_genre(Genre::Blocage),
+        tr!(
+            "Confiance accordée à un fichier certain",
+            "Trust given to a certain file"
+        ),
+        &m.quoi,
+    ) {
+        Ok(()) => {
+            afficher_aligne(
+                "  ",
+                tr!(
+                    "Retenu pour 90 jours, pour ce fichier précis (Ce que Vanguard a appris l'oublie).",
+                    "Saved for 90 days, for this exact file (What Vanguard has learned forgets it)."
+                ),
+                2,
+                GRIS,
+            );
+            true
+        }
+        Err(e) => {
+            afficher_aligne(
+                "  ✖ ",
+                &trf!("Rien n'est retenu : {e}.", "Nothing is saved: {e}."),
+                4,
+                "",
+            );
+            false
         }
     }
 }

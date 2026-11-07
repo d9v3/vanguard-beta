@@ -42,6 +42,10 @@ enum Liste {
     Propre(Empreintes),
 }
 
+/// Le verdict d'un programme lancé, et son empreinte (`None` : illisible).
+#[cfg(target_os = "linux")]
+type JugeLance = (Option<Certitude>, Option<[u8; 32]>);
+
 /// Les empreintes connues, et ce qui a déjà été haché : un même programme, lancé mille fois, ne l'est qu'une fois
 /// tant qu'il ne change pas (taille et date gardées avec).
 pub(crate) struct Fichiers {
@@ -53,11 +57,13 @@ pub(crate) struct Fichiers {
     /// Le hachage parti dans son fil et resté sans réponse : tant qu'il n'a pas fini, rien d'autre n'est haché (au
     /// plus un fil pris, jamais une file qui s'allonge).
     en_cours: Option<mpsc::Receiver<Option<Hache>>>,
-    /// Les programmes lancés déjà jugés, par leur inode (`juger_tenu`) : appareil, inode, taille, date de
+    /// Les programmes lancés déjà jugés, par leur inode (`juger_tenu_avec_empreinte`) : appareil, inode, taille, date de
     /// modification et de changement (en secondes et nanosecondes). Un fichier réécrit change de date de changement,
     /// même remise à l'ancienne date de modification : il est rehaché.
+    /// Avec le verdict, l'empreinte (`None` : illisible) : la surveillance rapprochée et la confiance accordée à un
+    /// certain s'y reconnaissent (`juger_tenu_avec_empreinte`).
     #[cfg(target_os = "linux")]
-    lances: HashMap<[i64; 7], Option<Certitude>>,
+    lances: HashMap<[i64; 7], JugeLance>,
     /// Les fichiers qu'on n'a pas pu hacher à temps : non vérifiés, jamais comptés sains.
     non_haches: usize,
 }
@@ -174,13 +180,19 @@ impl Fichiers {
     /// depuis le chemin relu : un programme qui s'efface ou se réécrit après son lancement est jugé sur ce qui tourne,
     /// et un fichier remis à sa place ne fait jamais juger (ni arrêter) un autre programme. Certain : son empreinte
     /// est connue de MalwareBazaar, ou c'est un exécutable (ELF ou PE) qui porte la marque d'essai EICAR. Jugé sans
-    /// liste aussi (la marque d'essai n'en dépend pas) ; un fichier pas haché à temps est compté non haché.
+    /// liste aussi (la marque d'essai n'en dépend pas) ; un fichier pas haché à temps est compté non haché. Rend
+    /// aussi l'empreinte SHA-256 de l'inode lancé (`None` : pas hachée, trop grosse ou illisible).
     #[cfg(target_os = "linux")]
-    pub(crate) fn juger_tenu(&mut self, tenu: &crate::socle::processus::Tenu) -> Option<Certitude> {
+    pub(crate) fn juger_tenu_avec_empreinte(
+        &mut self,
+        tenu: &crate::socle::processus::Tenu,
+    ) -> (Option<Certitude>, Option<[u8; 32]>) {
         use std::os::unix::fs::MetadataExt;
-        let m = tenu.exe().metadata().ok()?;
+        let Ok(m) = tenu.exe().metadata() else {
+            return (None, None);
+        };
         if !m.is_file() || m.len() > self.taille_max {
-            return None;
+            return (None, None);
         }
         let cle = [
             i64::try_from(m.dev()).unwrap_or(-1),
@@ -196,24 +208,33 @@ impl Fichiers {
         }
         // Un double du descripteur, à lui seul : le fil peut survivre au délai et au `Tenu`, et ne doit jamais lire
         // un numéro de descripteur fermé puis repris par autre chose.
-        let exe = tenu.exe().try_clone().ok()?;
+        let Ok(exe) = tenu.exe().try_clone() else {
+            return (None, None);
+        };
         let taille_max = self.taille_max;
         let Ok(h) = self.hacher(move || hacher_lance(&exe, taille_max)) else {
             self.non_haches = self.non_haches.saturating_add(1);
-            return None;
+            return (None, None);
         };
-        let certitude = h.and_then(|h| {
+        let certitude = h.as_ref().and_then(|h| {
             if self.contient(&h.empreinte) {
                 Some(Certitude::Empreinte)
             } else {
                 h.essai.then_some(Certitude::Essai)
             }
         });
+        let verdict = (certitude, h.map(|h| h.empreinte));
         if self.lances.len() >= RETENUS_MAX {
             self.lances.clear();
         }
-        self.lances.insert(cle, certitude);
-        certitude
+        self.lances.insert(cle, verdict);
+        verdict
+    }
+
+    /// Le verdict seul (essais).
+    #[cfg(all(target_os = "linux", test))]
+    pub(crate) fn juger_tenu(&mut self, tenu: &crate::socle::processus::Tenu) -> Option<Certitude> {
+        self.juger_tenu_avec_empreinte(tenu).0
     }
 }
 

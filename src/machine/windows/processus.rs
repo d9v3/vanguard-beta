@@ -23,8 +23,22 @@ unsafe extern "system" {
     ) -> i32;
     fn GetCurrentProcess() -> *mut c_void;
     fn CloseHandle(objet: *mut c_void) -> i32;
+    fn Thread32First(instantane: *mut c_void, entree: *mut EntreeFil) -> i32;
+    fn Thread32Next(instantane: *mut c_void, entree: *mut EntreeFil) -> i32;
+    fn OpenThread(acces: u32, heriter: i32, fil: u32) -> *mut c_void;
+    fn SuspendThread(fil: *mut c_void) -> u32;
+    fn ResumeThread(fil: *mut c_void) -> u32;
+    fn GetProcessIdOfThread(fil: *mut c_void) -> u32;
     /// Partagé avec `comptes` : une seule déclaration de chaque import.
     pub(super) fn LocalFree(memoire: *mut c_void) -> *mut c_void;
+}
+
+// Suspendre et reprendre tous les fils d'un processus d'un seul appel : non documentées, mais stables depuis Windows XP
+// et utilisées par le Gestionnaire des tâches (« Suspendre ») comme par Process Explorer.
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    fn NtSuspendProcess(processus: *mut c_void) -> i32;
+    fn NtResumeProcess(processus: *mut c_void) -> i32;
 }
 
 #[link(name = "advapi32")]
@@ -53,6 +67,18 @@ struct Entree {
     priorite: i32,
     drapeaux: u32,
     fichier: [u16; 260],
+}
+
+/// THREADENTRY32 (tlhelp32.h).
+#[repr(C)]
+struct EntreeFil {
+    taille: u32,
+    utilisations: u32,
+    fil: u32,
+    processus: u32,
+    priorite: i32,
+    delta: i32,
+    drapeaux: u32,
 }
 
 /// Un processus : son numéro, celui de son parent, et son nom tel que tasklist et Get-Process le montraient.
@@ -124,13 +150,19 @@ pub(crate) struct Tenu(*mut c_void);
 
 impl Tenu {
     /// Ouvre le processus `pid` ; l'erreur de Windows s'il refuse (processus fini, protégé).
-    // FFI : OpenProcess, la poignée gardée par la valeur rendue.
-    #[allow(unsafe_code)]
     pub(crate) fn ouvrir(pid: u32) -> std::io::Result<Tenu> {
         const INFORMATION_LIMITEE: u32 = 0x1000;
+        Tenu::ouvrir_avec(pid, INFORMATION_LIMITEE)
+    }
+
+    /// Ouvre le processus `pid` avec les droits `acces` (qui doivent comprendre la lecture limitée, 0x1000, pour lire
+    /// son chemin et son heure de création).
+    // FFI : OpenProcess, la poignée gardée par la valeur rendue.
+    #[allow(unsafe_code)]
+    fn ouvrir_avec(pid: u32, acces: u32) -> std::io::Result<Tenu> {
         // SAFETY: OpenProcess ne lit rien de notre mémoire ; une poignée nulle (refus) n'est jamais gardée, une autre
         // l'est par `Tenu`, qui la referme une seule fois (Drop).
-        let poignee = unsafe { OpenProcess(INFORMATION_LIMITEE, 0, pid) };
+        let poignee = unsafe { OpenProcess(acces, 0, pid) };
         if poignee.is_null() {
             Err(std::io::Error::last_os_error())
         } else {
@@ -237,6 +269,155 @@ pub(crate) fn terminer_si(processus: u32, attendu: &str) -> bool {
         let arrete = lu && chemin.eq_ignore_ascii_case(attendu) && TerminateProcess(poignee, 1) != 0;
         CloseHandle(poignee);
         arrete
+    }
+}
+
+/// Les droits d'une poignée de suspension : suspendre et reprendre (PROCESS_SUSPEND_RESUME), lire le chemin et
+/// l'heure de création (PROCESS_QUERY_LIMITED_INFORMATION).
+const SUSPENSION_ET_LECTURE: u32 = 0x0800 | 0x1000;
+/// Un fil se suspend et se reprend (THREAD_SUSPEND_RESUME) ; on vérifie aussi à qui il est (THREAD_QUERY_LIMITED…).
+const FIL_SUSPENSION: u32 = 0x0002 | 0x0800;
+/// Ce que SuspendThread et ResumeThread rendent en cas d'échec ((DWORD) -1).
+const ECHEC_FIL: u32 = u32::MAX;
+/// Au plus tant de passes pour rattraper les fils nés pendant la suspension (un tiers peut en créer un dans le
+/// processus suspendu, CreateRemoteThread) ; au-delà, la suspension est dite instable.
+const PASSES_MAX: usize = 8;
+
+/// Une poignée de suspension (`SUSPENSION_ET_LECTURE`) ouverte sur `processus`, gardée seulement s'il fait encore
+/// tourner `attendu` (casse ignorée) et, si elle est connue, depuis la même heure de création : c'est elle qui lit,
+/// suspend et reprend, le numéro ne peut pas passer à un autre processus entre la lecture et le geste.
+fn suspensible(processus: u32, attendu: &str, creation: Option<u64>) -> Option<Tenu> {
+    let tenu = Tenu::ouvrir_avec(processus, SUSPENSION_ET_LECTURE).ok()?;
+    let meme = tenu.chemin().is_some_and(|c| c.eq_ignore_ascii_case(attendu))
+        && creation.is_none_or(|c| tenu.creation() == Some(c));
+    meme.then_some(tenu)
+}
+
+/// Les fils du processus `processus`, d'un instantané Toolhelp32. Vide si Windows refuse.
+// FFI : CreateToolhelp32Snapshot, Thread32First et Thread32Next.
+#[allow(unsafe_code)]
+fn fils(processus: u32) -> Vec<u32> {
+    const INSTANTANE_FILS: u32 = 4;
+    let mut liste = Vec::new();
+    // SAFETY: CreateToolhelp32Snapshot rend un instantané (ou INVALID_HANDLE_VALUE, -1, vérifié), refermé une seule
+    // fois plus bas. `entree` est une THREADENTRY32 dont le champ de taille est rempli, comme Windows l'exige.
+    unsafe {
+        let instantane = CreateToolhelp32Snapshot(INSTANTANE_FILS, 0);
+        if instantane as isize == -1 {
+            return liste;
+        }
+        let mut entree: EntreeFil = std::mem::zeroed();
+        entree.taille = u32::try_from(std::mem::size_of::<EntreeFil>()).unwrap_or(0);
+        let mut suivant = Thread32First(instantane, &raw mut entree) != 0;
+        while suivant {
+            if entree.processus == processus {
+                liste.push(entree.fil);
+            }
+            suivant = Thread32Next(instantane, &raw mut entree) != 0;
+        }
+        CloseHandle(instantane);
+    }
+    liste
+}
+
+/// Le compte de suspension du fil `fil` du processus `processus` (0 : il tourne), lu en le suspendant puis en le
+/// reprenant aussitôt (Windows ne le donne pas autrement) ; s'il tournait et que `suspendre` est vrai, il reste
+/// suspendu. `None` : fil fini, d'un autre processus (numéro repris), ou refusé.
+// FFI : OpenThread, GetProcessIdOfThread, SuspendThread, ResumeThread et CloseHandle.
+#[allow(unsafe_code)]
+fn compte_du_fil(processus: u32, fil: u32, suspendre: bool) -> Option<u32> {
+    // SAFETY: OpenThread ne lit rien de notre mémoire ; une poignée nulle (refus) n'est pas utilisée, une autre est
+    // refermée une seule fois avant de rendre. Les appels sur la poignée n'écrivent rien chez nous.
+    unsafe {
+        let poignee = OpenThread(FIL_SUSPENSION, 0, fil);
+        if poignee.is_null() {
+            return None;
+        }
+        let compte = if GetProcessIdOfThread(poignee) == processus {
+            let avant = SuspendThread(poignee);
+            if avant != ECHEC_FIL && !(suspendre && avant == 0) {
+                ResumeThread(poignee);
+            }
+            (avant != ECHEC_FIL).then_some(avant)
+        } else {
+            None
+        };
+        CloseHandle(poignee);
+        compte
+    }
+}
+
+/// Une passe sur les fils : suspend chacun de ceux qui tournent encore (`suspendre`) ou les compte seulement. Rend le
+/// nombre de fils trouvés tournants et le nombre lus.
+fn passe(processus: u32, suspendre: bool) -> (usize, usize) {
+    let mut tournants = 0usize;
+    let mut lus = 0usize;
+    for fil in fils(processus) {
+        if let Some(compte) = compte_du_fil(processus, fil, suspendre) {
+            lus = lus.saturating_add(1);
+            if compte == 0 {
+                tournants = tournants.saturating_add(1);
+            }
+        }
+    }
+    (tournants, lus)
+}
+
+/// Suspend le processus `processus` seulement s'il fait encore tourner `attendu` (et, si donnée, depuis `creation`) :
+/// la poignée qui lit le chemin est celle qui suspend (NtSuspendProcess, tous les fils d'un coup), puis des passes
+/// fil par fil rattrapent ceux nés pendant (au plus `PASSES_MAX`), jusqu'à une passe qui n'en trouve aucun qui
+/// tourne. `false` : refusé, fini, un autre programme, ou instable (des fils naissent sans cesse).
+// FFI : NtSuspendProcess sur la poignée vérifiée.
+#[allow(unsafe_code)]
+pub(crate) fn suspendre_si(processus: u32, attendu: &str, creation: Option<u64>) -> bool {
+    let Some(tenu) = suspensible(processus, attendu, creation) else {
+        return false;
+    };
+    // SAFETY: la poignée est ouverte, avec le droit de suspendre, tant que `tenu` vit ; l'appel ne lit rien chez nous.
+    if unsafe { NtSuspendProcess(tenu.0) } < 0 {
+        return false;
+    }
+    for _ in 0..PASSES_MAX {
+        if passe(processus, true).0 == 0 {
+            return true;
+        }
+    }
+    passe(processus, false).0 == 0
+}
+
+/// Reprend le processus `processus` suspendu par `suspendre_si`, seulement s'il fait encore tourner `attendu` (et, si
+/// donnée, depuis `creation`) : NtResumeProcess retire une suspension à chaque fil, celle que Vanguard a mise (les
+/// fils rattrapés un par un n'en ont qu'une aussi). `false` : refusé, fini ou un autre programme.
+// FFI : NtResumeProcess sur la poignée vérifiée.
+#[allow(unsafe_code)]
+pub(crate) fn reprendre_si(processus: u32, attendu: &str, creation: Option<u64>) -> bool {
+    let Some(tenu) = suspensible(processus, attendu, creation) else {
+        return false;
+    };
+    // SAFETY: la poignée est ouverte, avec le droit de reprendre, tant que `tenu` vit ; l'appel ne lit rien chez nous.
+    unsafe { NtResumeProcess(tenu.0) >= 0 }
+}
+
+/// Le processus `processus`, s'il fait encore tourner `attendu` (et depuis `creation`), est-il suspendu (aucun de ses
+/// fils ne tourne) ? Sert à resuspendre ce qu'un tiers aurait repris. `None` : fini, autre programme, ou illisible.
+pub(crate) fn est_suspendu_si(processus: u32, attendu: &str, creation: Option<u64>) -> Option<bool> {
+    // La poignée tenue pendant la lecture : le numéro ne peut pas être repris, ses fils sont bien les siens.
+    let _tenu = suspensible(processus, attendu, creation)?;
+    let (tournants, lus) = passe(processus, false);
+    (lus > 0).then_some(tournants == 0)
+}
+
+/// Ce compte a-t-il le droit de suspendre ce processus ? La poignée de suspension est demandée puis refermée aussitôt.
+pub(crate) fn peut_suspendre(processus: u32) -> bool {
+    const SUSPENSION: u32 = 0x0800;
+    // SAFETY: la poignée vient d'OpenProcess (nulle : refus, vérifié) et n'est refermée qu'une fois.
+    unsafe {
+        let poignee = OpenProcess(SUSPENSION, 0, processus);
+        if poignee.is_null() {
+            return false;
+        }
+        CloseHandle(poignee);
+        true
     }
 }
 
@@ -491,5 +672,69 @@ mod tests {
         assert_eq!(tenu.sid().ok(), sid());
         assert!(tenu.chemin().is_some_and(|c| c.to_lowercase().ends_with(".exe")));
         assert!(Tenu::ouvrir(u32::MAX - 3).is_err());
+    }
+
+    /// THREADENTRY32 de tlhelp32.h : 28 octets.
+    #[test]
+    fn entree_de_fil() {
+        assert_eq!(std::mem::size_of::<EntreeFil>(), 28);
+    }
+
+    /// Un enfant jetable pour l'essai de suspension : ce binaire d'essais, qui ne fait que dormir.
+    #[test]
+    #[ignore = "lancé seulement comme enfant par suspension_d_un_enfant"]
+    fn enfant_qui_dort() {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
+
+    /// Suspendu seulement s'il fait tourner le programme attendu et depuis la bonne heure de création ; repris de
+    /// même ; un programme ou une heure faux ne touche à rien. Ce binaire d'essais, relancé, sert d'enfant jetable.
+    #[test]
+    fn suspension_d_un_enfant() {
+        let Ok(moi) = std::env::current_exe() else {
+            return crate::essais::saute("binaire d'essais introuvable");
+        };
+        let Ok(mut enfant) = std::process::Command::new(moi)
+            .args([
+                "--ignored",
+                "--exact",
+                "machine::windows::processus::tests::enfant_qui_dort",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        else {
+            return crate::essais::saute("l'enfant ne se lance pas");
+        };
+        let pid = enfant.id();
+        let mut lu = None;
+        for _ in 0..200 {
+            lu = chemin(pid).zip(creation(pid));
+            if lu.is_some() && est_suspendu_si(pid, &lu.as_ref().unwrap().0, None).is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let Some((programme, nee)) = lu else {
+            let _ = enfant.kill();
+            return crate::essais::saute("l'enfant ne se lit pas");
+        };
+        let autre = suspendre_si(pid, r"C:\autre\programme.exe", None);
+        let mauvaise_heure = suspendre_si(pid, &programme, Some(nee.wrapping_add(1)));
+        let libre = est_suspendu_si(pid, &programme, Some(nee));
+        let suspendu = suspendre_si(pid, &programme, Some(nee));
+        let fige = est_suspendu_si(pid, &programme, Some(nee));
+        let repris_faux = reprendre_si(pid, r"C:\autre\programme.exe", None);
+        let toujours = est_suspendu_si(pid, &programme, Some(nee));
+        let repris = reprendre_si(pid, &programme, Some(nee));
+        let apres = est_suspendu_si(pid, &programme, Some(nee));
+        let _ = enfant.kill();
+        let _ = enfant.wait();
+        assert_eq!((autre, mauvaise_heure, libre), (false, false, Some(false)));
+        assert_eq!((suspendu, fige), (true, Some(true)));
+        assert_eq!((repris_faux, toujours), (false, Some(true)));
+        assert_eq!((repris, apres), (true, Some(false)));
+        assert!(!suspendre_si(u32::MAX - 3, &programme, None));
+        assert!(!peut_suspendre(u32::MAX - 3));
     }
 }

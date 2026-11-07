@@ -138,6 +138,28 @@ pub(crate) fn alerter(genre: Genre, titre: &str, texte: &str) {
 
 /// Une alerte qui se reconnaît à sa clé (`protection::normales`) : déclarée normale ici, elle n'est ni notée ni
 /// notifiée ; sinon, notée avec sa clé (les traces d'incident la relient au blocage), puis notifiée.
+/// Comme `alerter_cle`, et la notification dit la commande qui ouvre les gestes de la menace : seul l'identifiant de
+/// l'alerte y passe (`vanguard alerte <id>` relit l'alerte au journal et rejuge la menace).
+#[cfg(target_os = "linux")]
+pub(crate) fn alerter_cle_a_choisir(genre: Genre, cle: &str, titre: &str, texte: &str) {
+    if crate::protection::normales::est_normale(cle) {
+        return;
+    }
+    let id = tableau::noter_alerte_liee(genre, Some(cle), None, titre, texte);
+    notifier(titre, &corps_a_choisir(texte, id.as_deref()));
+}
+
+/// Le corps d'une notification, suivi de la commande qui ouvre les gestes de son alerte.
+pub(crate) fn corps_a_choisir(texte: &str, id: Option<&str>) -> String {
+    match id {
+        Some(id) => trf!(
+            "{texte}\nPour choisir quoi faire : vanguard alerte {id}",
+            "{texte}\nTo choose what to do: vanguard alert {id}"
+        ),
+        None => texte.to_string(),
+    }
+}
+
 pub(crate) fn alerter_cle(genre: Genre, cle: &str, titre: &str, texte: &str) {
     if crate::protection::normales::est_normale(cle) {
         return;

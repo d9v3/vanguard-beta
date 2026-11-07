@@ -97,6 +97,20 @@ impl Menace {
         };
         crate::protection::normales::cle_blocage(&cle)
     }
+
+    /// Le fichier du programme, celui qui irait en quarantaine (jamais un interpréteur : au plus son script) ; la
+    /// surveillance rapprochée et la confiance s'attachent à lui. `None` hors d'un programme.
+    pub(crate) fn fichier_du_programme(&self) -> Option<&std::path::Path> {
+        match &self.geste {
+            Geste::Programme { fichier, .. } => fichier.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// L'empreinte SHA-256 du fichier du programme, lue maintenant (`None` : pas de fichier, ou illisible).
+    pub(crate) fn empreinte(&self) -> Option<[u8; 32]> {
+        self.fichier_du_programme().and_then(empreintes::sha256)
+    }
 }
 
 /// Les fichiers des Téléchargements arrivés depuis une semaine, jusqu'à 64 Mio et 300 fichiers.
@@ -529,7 +543,11 @@ pub(crate) fn chercher(categories: &[Categorie], telecharger: bool) -> Trouvees 
     retirer_bloquees(&mut t.menaces, &crate::changements::blocages_en_place());
     // Déclarée normale ici : ni proposée ni bloquée tant que le choix vaut (90 jours) ; une menace certaine ne se
     // tait jamais (le fichier connu de MalwareBazaar qui a pris la place du douteux déclaré normal).
-    t.normales = retirer_normales(&mut t.menaces, crate::protection::normales::est_normale);
+    // Un certain à qui la personne a fait confiance (confirmation tapée, P5) se tait, lui : par l'empreinte de son
+    // fichier relue maintenant, jamais par son chemin.
+    t.normales = retirer_normales(&mut t.menaces, crate::protection::normales::est_normale, |m| {
+        m.empreinte().is_some_and(|e| super::choix::confiance_accordee(&e))
+    });
     t
 }
 
@@ -547,10 +565,21 @@ fn retirer_bloquees(menaces: &mut Vec<Menace>, en_place: &[(String, crate::chang
     menaces.retain(|m| !bloquees.contains(m.cle.as_str()));
 }
 
-/// Retire les menaces douteuses déclarées normales ; rend combien.
-fn retirer_normales(menaces: &mut Vec<Menace>, normale: impl Fn(&str) -> bool) -> usize {
+/// Retire les menaces douteuses déclarées normales, et les certaines dont le fichier a reçu la confiance de la
+/// personne (`confiance`) ; rend combien.
+fn retirer_normales(
+    menaces: &mut Vec<Menace>,
+    normale: impl Fn(&str) -> bool,
+    confiance: impl Fn(&Menace) -> bool,
+) -> usize {
     let avant = menaces.len();
-    menaces.retain(|m| m.certaine || !normale(&m.cle_normale()));
+    menaces.retain(|m| {
+        if m.certaine {
+            !confiance(m)
+        } else {
+            !normale(&m.cle_normale())
+        }
+    });
     avant.saturating_sub(menaces.len())
 }
 
@@ -831,10 +860,13 @@ mod tests {
             menace_de(true, Some("/home/alice/.cache/x/outil"), None, "r"),
             menace_de(false, Some("/home/alice/.cache/x/outil"), None, "r"),
         ];
-        let tues = retirer_normales(&mut menaces, |_| true);
+        let tues = retirer_normales(&mut menaces, |_| true, |_| false);
         assert_eq!(tues, 1);
         assert_eq!(menaces.len(), 1);
         assert!(menaces[0].certaine);
+        // Seule la confiance accordée à son fichier (P5) tait un certain.
+        assert_eq!(retirer_normales(&mut menaces, |_| true, |_| true), 1);
+        assert!(menaces.is_empty());
     }
 
     /// Un fichier mis en quarantaine a quitté son chemin : le même, téléchargé de nouveau, est reproposé ; une règle

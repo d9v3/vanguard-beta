@@ -212,6 +212,13 @@ pub(crate) fn tuer_si(pid: u32, debut_attendu: u64) -> bool {
     signaler_si(pid, debut_attendu, libc::SIGKILL)
 }
 
+/// Reprend (SIGCONT) le processus `pid` seulement s'il est encore celui qui a démarré à `debut`, par un pidfd comme
+/// `geler_si` : la suspension d'un programme menaçant se lève sur ce processus-là, jamais sur un numéro repris.
+#[cfg(target_os = "linux")]
+pub(crate) fn reprendre_si(pid: u32, debut_attendu: u64) -> bool {
+    signaler_si(pid, debut_attendu, libc::SIGCONT)
+}
+
 /// `signal` au processus `pid` par un pidfd, seulement s'il a démarré à `debut_attendu` (voir `geler_si`).
 #[cfg(target_os = "linux")]
 fn signaler_si(pid: u32, debut_attendu: u64, signal: libc::c_int) -> bool {
@@ -327,6 +334,26 @@ mod tests {
             gele_par_le_bon = est_gele(pid);
         }
         // L'arrêt de même : un départ faux ne tue rien (l'enfant reste là, gelé), le bon le tue.
+        // La reprise de même : un départ faux ne reprend rien, le bon reprend ; puis regelé pour la suite.
+        let repris_par_le_faux = depart.map(|d| reprendre_si(pid, d.wrapping_add(1)));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let gele_apres_le_faux = est_gele(pid);
+        let repris_par_le_bon = depart.map(|d| reprendre_si(pid, d));
+        let mut repris = est_gele(pid);
+        for _ in 0..200 {
+            if repris != Some(true) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            repris = est_gele(pid);
+        }
+        let regele = depart.map(|d| geler_si(pid, d));
+        for _ in 0..200 {
+            if est_gele(pid) != Some(false) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let tue_par_le_faux = depart.map(|d| tuer_si(pid, d.wrapping_add(1)));
         let encore_la = est_gele(pid);
         let tue_par_le_bon = depart.map(|d| tuer_si(pid, d));
@@ -335,6 +362,11 @@ mod tests {
         assert!(depart.is_some(), "l'enfant ne se lit pas");
         assert_eq!((faux, gele_par_le_faux), (Some(false), Some(false)));
         assert_eq!((bon, gele_par_le_bon), (Some(true), Some(true)));
+        assert_eq!((repris_par_le_faux, gele_apres_le_faux), (Some(false), Some(true)));
+        assert_eq!(
+            (repris_par_le_bon, repris, regele),
+            (Some(true), Some(false), Some(true))
+        );
         assert_eq!((tue_par_le_faux, encore_la), (Some(false), Some(true)));
         assert_eq!(tue_par_le_bon, Some(true));
         assert_eq!(
@@ -342,6 +374,7 @@ mod tests {
             Some(libc::SIGKILL)
         );
         assert!(!tuer_si(u32::MAX, 0));
+        assert!(!reprendre_si(u32::MAX, 0));
     }
 
     #[test]

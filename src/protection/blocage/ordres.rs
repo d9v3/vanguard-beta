@@ -72,6 +72,16 @@ impl Ordre {
                 "Stop process {pid} ({}), only if it still runs this program; if its signature cannot be read, you will see why and confirm first",
                 crate::ui::affichable(chemin)
             ),
+            Ordre::SuspendreProcessus { pid, chemin } => trf!(
+                "Suspendre le processus {pid} ({}) sans l'arrêter, seulement s'il fait toujours tourner ce programme",
+                "Suspend process {pid} ({}) without stopping it, only if it still runs this program",
+                crate::ui::affichable(chemin)
+            ),
+            Ordre::ReprendreProcessus { pid, chemin } => trf!(
+                "Reprendre le processus {pid} ({}) suspendu, seulement s'il fait toujours tourner ce programme",
+                "Resume the suspended process {pid} ({}), only if it still runs this program",
+                crate::ui::affichable(chemin)
+            ),
             Ordre::RemettrePilotes { avant: Some(v) } => trf!(
                 "Remettre la liste de blocage des pilotes vulnérables comme avant (VulnerableDriverBlocklistEnable = {v})",
                 "Put the vulnerable driver blocklist back as before (VulnerableDriverBlocklistEnable = {v})"
@@ -99,7 +109,9 @@ impl Ordre {
                 Os::Tous => false,
             },
             Ordre::CouperConnexions { .. } => os != Os::Windows,
-            Ordre::ArreterProcessus { .. } => true,
+            Ordre::ArreterProcessus { .. } | Ordre::SuspendreProcessus { .. } | Ordre::ReprendreProcessus { .. } => {
+                true
+            }
             Ordre::RemettrePilotes { .. } => os == Os::Windows,
         }
     }
@@ -207,6 +219,13 @@ impl Juge {
         }
     }
 
+    /// Avec, en plus, les processus que celui qui demande protège déjà (ce qu'il a lancé) : le menu des gestes juge
+    /// une suspension comme elle sera jugée, sans rien oublier de ce que Vanguard ne touche jamais.
+    pub(crate) fn avec(mut self, autres: &HashSet<u32>) -> Juge {
+        self.intouchables.extend(autres.iter().copied());
+        self
+    }
+
     /// Les sessions à distance relues au moment d'agir : le processus élevé de Windows lit le reste du juge dès le
     /// canal vérifié, le Vanguard qui demande tenu par une poignée, puis attend l'accord de la personne.
     #[cfg(windows)]
@@ -284,36 +303,13 @@ pub(crate) fn juger(o: &Ordre, j: &Juge) -> Option<String> {
         // Une règle entrante Block coupe aussi ce qui est établi : le port d'une session en cours (prise en main sur
         // 5900, RustDesk…) n'est pas fermé, et rien ne l'est sans connexions lisibles.
         Ordre::FermerPort { port, .. } => gardes::port_a_garder(*port, j.sessions.as_ref()).map(str::to_string),
-        Ordre::ArreterProcessus { pid, chemin, demande } => {
-            let Some(actuel) = super::gestes::chemin_du_processus(*pid) else {
-                return Some(trf!(
-                    "le processus {pid} est fini ou son programme ne se lit pas : rien n'est arrêté",
-                    "process {pid} has ended or its program cannot be read: nothing is stopped"
-                ));
-            };
-            if !super::gestes::meme_chemin(&actuel, chemin) {
-                return Some(trf!(
-                    "le PID {pid} désigne maintenant un autre programme : rien n'est arrêté",
-                    "PID {pid} now points to another program: nothing is stopped"
-                ));
-            }
-            // Le nom du fichier, et sous Linux celui que le processus s'est donné : un nom critique, l'un ou l'autre,
-            // et rien n'est arrêté.
-            let fichier = std::path::Path::new(&actuel)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            #[cfg(target_os = "linux")]
-            let noms = [Some(fichier), crate::socle::processus::nom_court(*pid)];
-            #[cfg(not(target_os = "linux"))]
-            let noms = [Some(fichier), None];
-            noms.iter()
-                .flatten()
-                .find_map(|nom| gardes::processus_intouchable(*pid, nom, Some(&actuel), &j.intouchables, j.os))
-                .or_else(|| gardes::lignee_de_session(*pid, j.sessions.as_ref()))
-                .map(str::to_string)
-                .or_else(|| signature_avant_arret(&actuel, *demande))
-        }
+        Ordre::ArreterProcessus { pid, chemin, demande } => juger_processus(*pid, chemin, *demande, j, false),
+        // Suspendre passe les mêmes gardes qu'un arrêt demandé : jamais un processus vital, ni ce qui descend d'une
+        // session à distance, ni un programme signé Microsoft ; une signature illisible ne refuse pas (le geste se
+        // défait, la personne l'a choisi dans le menu).
+        Ordre::SuspendreProcessus { pid, chemin } => juger_processus(*pid, chemin, true, j, true),
+        // Reprendre ne fait que lever un gel : seulement s'il fait toujours tourner ce programme, et s'il est gelé.
+        Ordre::ReprendreProcessus { pid, chemin } => juger_reprise(*pid, chemin),
         // Défaire n'est permis que pour ce que Vanguard a pu poser : il ne bloque jamais une adresse locale ou un DNS
         // public, ne ferme jamais SSH ni le Bureau à distance. Une note forgée qui viserait la règle d'un autre (ufw ne
         // distingue pas les siennes) pour rouvrir ces portes-là est refusée.
@@ -336,6 +332,79 @@ pub(crate) fn juger(o: &Ordre, j: &Juge) -> Option<String> {
         #[cfg(not(windows))]
         Ordre::RemettrePilotes { .. } => None,
     }
+}
+
+/// Les gardes d'un geste sur un processus (arrêt, suspension) : le même programme, aucun nom critique, rien qui
+/// descend d'une session à distance, la signature. `suspendre` : seulement les mots du refus changent.
+fn juger_processus(pid: u32, chemin: &str, demande: bool, j: &Juge, suspendre: bool) -> Option<String> {
+    let rien = if suspendre {
+        tr!("rien n'est suspendu", "nothing is suspended")
+    } else {
+        tr!("rien n'est arrêté", "nothing is stopped")
+    };
+    let Some(actuel) = super::gestes::chemin_du_processus(pid) else {
+        return Some(trf!(
+            "le processus {pid} est fini ou son programme ne se lit pas : {}",
+            "process {pid} has ended or its program cannot be read: {}",
+            rien
+        ));
+    };
+    if !super::gestes::meme_chemin(&actuel, chemin) {
+        return Some(trf!(
+            "le PID {pid} désigne maintenant un autre programme : {}",
+            "PID {pid} now points to another program: {}",
+            rien
+        ));
+    }
+    // Le nom du fichier, et sous Linux celui que le processus s'est donné : un nom critique, l'un ou l'autre, et rien
+    // n'est fait.
+    let fichier = std::path::Path::new(&actuel)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    #[cfg(target_os = "linux")]
+    let noms = [Some(fichier), crate::socle::processus::nom_court(pid)];
+    #[cfg(not(target_os = "linux"))]
+    let noms = [Some(fichier), None];
+    // Suspendre (Linux) : les gardes du gel, qui permettent un outil du système (c'est réversible) ; ailleurs, et pour
+    // un arrêt, celles de l'arrêt.
+    #[cfg(target_os = "linux")]
+    let garde = |nom: &str| {
+        if suspendre {
+            gardes::processus_gelable(pid, nom, Some(&actuel), &j.intouchables)
+        } else {
+            gardes::processus_intouchable(pid, nom, Some(&actuel), &j.intouchables, j.os)
+        }
+    };
+    #[cfg(not(target_os = "linux"))]
+    let garde = |nom: &str| gardes::processus_intouchable(pid, nom, Some(&actuel), &j.intouchables, j.os);
+    let refus = noms
+        .iter()
+        .flatten()
+        .find_map(|nom| garde(nom))
+        .or_else(|| gardes::lignee_de_session(pid, j.sessions.as_ref()))
+        .map(str::to_string);
+    // Un gel Linux se lève : la signature (Microsoft) ne le concerne pas.
+    if suspendre && cfg!(target_os = "linux") {
+        return refus;
+    }
+    refus.or_else(|| signature_avant_arret(&actuel, demande))
+}
+
+/// La garde d'une reprise : le même programme, et gelé (Linux) ; une note forgée ne fait rien d'autre que lever un
+/// gel que ce programme-là porte déjà.
+fn juger_reprise(pid: u32, chemin: &str) -> Option<String> {
+    let meme = super::gestes::chemin_du_processus(pid).is_some_and(|a| super::gestes::meme_chemin(&a, chemin));
+    #[cfg(target_os = "linux")]
+    let gele = crate::socle::processus::est_gele(pid) == Some(true);
+    #[cfg(not(target_os = "linux"))]
+    let gele = true;
+    (!meme || !gele).then(|| {
+        trf!(
+            "le processus {pid} n'est plus ce programme, est fini ou n'est pas suspendu : rien n'est repris",
+            "process {pid} no longer runs this program, has ended or is not suspended: nothing is resumed"
+        )
+    })
 }
 
 /// La garde de signature du rejugement : Microsoft lisible refuse toujours ; illisible refuse un ordre automatique,
@@ -394,8 +463,8 @@ pub(crate) fn executer_groupes(
     executer_en_groupes(groupes, Ordre::texte, |o| juger_et_faire(o, juge), annoncer)
 }
 
-/// Un ordre rejugé, puis fait s'il passe.
-#[cfg(any(unix, test))]
+/// Un ordre rejugé, puis fait s'il passe (l'assistant élevé de Linux ; la suspension, partout, quand ce compte en a
+/// les droits).
 pub(crate) fn juger_et_faire(o: &Ordre, juge: &Juge) -> Resultat {
     juger(o, juge).map_or_else(|| faire(o, juge), Resultat::echec)
 }
@@ -459,6 +528,17 @@ pub(crate) fn faire(o: &Ordre, j: &Juge) -> Resultat {
             Ok(None) => Resultat::ok(),
             Err(e) => Resultat::echec(e.to_string()),
         };
+    }
+    match o {
+        Ordre::SuspendreProcessus { pid, chemin } => {
+            return super::suspension::suspendre_ici(*pid, chemin)
+                .map_or_else(|e| Resultat::echec(e.to_string()), |_| Resultat::ok());
+        }
+        Ordre::ReprendreProcessus { pid, chemin } => {
+            return super::suspension::reprendre_ici(*pid, chemin, None)
+                .map_or_else(|e| Resultat::echec(e.to_string()), |()| Resultat::ok());
+        }
+        _ => {}
     }
     #[cfg(target_os = "linux")]
     {
@@ -564,7 +644,10 @@ mod linux {
                 Ok(_) => Resultat::ok(),
                 Err(e) => Resultat::ok_note(format!("{} : {e}", super::note_non_coupee())),
             },
-            Ordre::ArreterProcessus { .. } | Ordre::RemettrePilotes { .. } => {
+            Ordre::ArreterProcessus { .. }
+            | Ordre::SuspendreProcessus { .. }
+            | Ordre::ReprendreProcessus { .. }
+            | Ordre::RemettrePilotes { .. } => {
                 Resultat::echec(tr!("ordre d'un autre système", "order from another system"))
             }
         }
@@ -669,6 +752,14 @@ mod tests {
                 chemin: r"C:\Users\alice\AppData\Local\Temp\l'outil.exe".into(),
                 demande: true,
             },
+            Ordre::SuspendreProcessus {
+                pid: 4242,
+                chemin: "/home/alice/.cache/x m'rig".into(),
+            },
+            Ordre::ReprendreProcessus {
+                pid: 7,
+                chemin: r"C:\Users\alice\AppData\Local\Temp\l'outil.exe".into(),
+            },
             Ordre::RemettrePilotes { avant: None },
             Ordre::RemettrePilotes { avant: Some(0) },
         ]
@@ -699,6 +790,22 @@ mod tests {
             }
             .ligne(),
             "vanguard:arreter-processus-demande 1 2f612062"
+        );
+        assert_eq!(
+            Ordre::SuspendreProcessus {
+                pid: 1,
+                chemin: "/a b".into(),
+            }
+            .ligne(),
+            "vanguard:suspendre-processus 1 2f612062"
+        );
+        assert_eq!(
+            Ordre::ReprendreProcessus {
+                pid: 1,
+                chemin: "/a b".into(),
+            }
+            .ligne(),
+            "vanguard:reprendre-processus 1 2f612062"
         );
     }
 
@@ -733,6 +840,15 @@ mod tests {
             "vanguard:arreter-processus 42 2f7",
             "vanguard:arreter-processus +42 2f78",
             "vanguard:arreter-processus 42",
+            "vanguard:suspendre-processus 0 2f78",
+            "vanguard:suspendre-processus 42 7878",
+            "vanguard:suspendre-processus 42 2f780d",
+            "vanguard:suspendre-processus 42 2f7800",
+            "vanguard:suspendre-processus 42 2f78 1",
+            "vanguard:suspendre-processus-demande 42 2f78",
+            "vanguard:reprendre-processus 42",
+            "vanguard:reprendre-processus 042 2f78",
+            "vanguard:reprendre-processus 4294967296 2f78",
             "vanguard:remettre-pilotes 2",
             "vanguard:remettre-pilotes",
             "vanguard:wdigest-coupe",
@@ -836,6 +952,22 @@ mod tests {
                 demande: true,
             };
             assert!(juger(&autre, &juge).is_some());
+            // Suspendre passe les mêmes gardes : jamais soi-même, ni un autre programme sous ce numéro ; reprendre
+            // ne vise qu'un processus gelé de ce programme.
+            let suspendre_moi = Ordre::SuspendreProcessus {
+                pid: moi,
+                chemin: chemin.clone(),
+            };
+            assert!(juger(&suspendre_moi, &Juge::lire(None)).is_some());
+            let suspendre_autre = Ordre::SuspendreProcessus {
+                pid: moi,
+                chemin: "/autre/programme".into(),
+            };
+            assert!(juger(&suspendre_autre, &juge).is_some());
+            let reprendre_moi = Ordre::ReprendreProcessus { pid: moi, chemin };
+            if cfg!(target_os = "linux") {
+                assert!(juger(&reprendre_moi, &juge).is_some(), "pas gelé");
+            }
         }
     }
 
@@ -917,6 +1049,14 @@ mod tests {
                 pid: 4242,
                 chemin: r"C:\Users\alice\l'outil.exe".into(),
                 demande: false,
+            })
+            .is_none()
+        );
+        // La suspension non plus : elle passe par la poignée vérifiée (`suspension::suspendre_ici`).
+        assert!(
+            powershell(&Ordre::SuspendreProcessus {
+                pid: 4242,
+                chemin: r"C:\Users\alice\l'outil.exe".into(),
             })
             .is_none()
         );

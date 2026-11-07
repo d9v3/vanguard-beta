@@ -228,7 +228,11 @@ pilotes, agents d'IA), chacune désactivée, en un clic ou automatique (programm
 programme du système, un processus critique, une session à distance en cours, une adresse locale ni un DNS public ; un
 interpréteur (python3, PowerShell) n'est jamais mis en quarantaine, au plus le script qu'il lance. En administrateur,
 rien n'est bloqué tout seul : les réglages du blocage peuvent être écrits par n'importe quel programme du compte, et
-ce qui ne fait aucun doute s'y propose d'un clic.
+ce qui ne fait aucun doute s'y propose d'un clic. Chaque menace propose aussi **Suspendre** (le programme gelé,
+réversible par `vanguard blocage reprendre`, rappelé à chaque bilan), **Surveiller de plus près** (Linux : une alerte
+à chaque lancement pendant 7 jours), **Faire confiance** (un fichier certain : mot tapé, lié à son empreinte, 90
+jours) et Ignorer ; un geste refusé par un garde-fou reste visible, grisé, avec sa raison. Une alerte notifiée se
+reprend par `vanguard alerte <id>` : relue dans le journal scellé, la menace rejugée.
 
 **La preuve avant le geste** — avant d'arrêter un programme, de mettre un fichier en quarantaine ou de bloquer une
 adresse, y compris tout seul la nuit, Vanguard relève ce que le geste va effacer : le programme, sa ligne de commande,
@@ -840,7 +844,7 @@ Chaque entrée du menu existe aussi en commande.
 | `vanguard camera-micro` | caméra et micro : qui s'en sert ? (lecture seule) |
 | `vanguard bilan-confidentialite [--json]` | bilan de confidentialité : qui a accès à la position, aux contacts, à la caméra et au micro (lecture seule) |
 | **8 Bloquer et réagir** | |
-| `vanguard blocage [chercher\|annuler\|auto\|clic\|catégorie mode]` | blocage des menaces : « Bloquer » d'un clic pour chaque menace (geste montré, noté, annulable) ; protection active, après un accord, qui bloque toute seule ce qui ne fait aucun doute (empreinte de MalwareBazaar, outil d'attaque connu, serveur de commande) |
+| `vanguard blocage [chercher\|annuler\|auto\|clic\|catégorie mode\|suspendre PID\|reprendre [PID]]` | blocage des menaces : « Bloquer » d'un clic pour chaque menace (geste montré, noté, annulable) ; protection active, après un accord, qui bloque toute seule ce qui ne fait aucun doute (empreinte de MalwareBazaar, outil d'attaque connu, serveur de commande) |
 | `vanguard sites-dangereux [on\|off]` | sites dangereux bloqués par le fichier hosts (URLhaus, serveurs de commande de ThreatFox), après accord ; `off` les retire exactement |
 | `vanguard evenements [--json] [--incident id]` | le journal des événements : alertes, preuves relevées avant un geste, gestes, annulations, alertes déclarées normales et passages de version, reliés ; l'état de sa chaîne scellée d'abord |
 | `vanguard changements` | ce que Vanguard a changé : chaque correction lancée ici, sa date et son résultat ; une correction marquée « annulable » s'y annule, puis l'état d'avant est relu |
@@ -849,6 +853,7 @@ Chaque entrée du menu existe aussi en commande.
 | `vanguard journaux-windows [--dossier D] [--jours N] [--json]` | que s'est-il passé ? Les règles EVT- sur les journaux de Windows, de cet ordinateur (Windows) ou d'un dossier de .evtx (tout système : `winevt\Logs` d'un disque monté, dossier de `depanner traces`) : le verdict de chaque règle (« non vérifié » et pourquoi quand un journal manque), les alertes dans l'ordre du temps avec compte, programme et adresse, la période vraiment lue par journal ; 7 jours par défaut (lecture seule) |
 | `vanguard veilleur [on\|off]` | veilleur (Linux 6.6 et plus) : programmes lancés et connexions fermées, vus sur le moment ; `rancongiciel on\|off` : les dossiers personnels surveillés en direct contre les rançongiciels ; coupé par défaut |
 | `vanguard protection [oui\|non] [--pendant 1h\|4h] [--json]` | l'état de chaque interrupteur de protection en un écran (`--json` : sans rien changer) ; `oui` ou `non` agit sur la protection en temps réel |
+| `vanguard alerte <id>` | une alerte notifiée, par l'identifiant que donne sa notification : relue dans le journal scellé, la menace recherchée et rejugée, puis ses gestes proposés (bloquer, suspendre, surveiller de plus près, faire confiance, ignorer) ; rien d'autre n'est pris de la ligne de commande |
 | **9 Données et sauvegardes** | |
 | `vanguard copier-fichiers [destination]` | copier mes fichiers vers un disque externe, copie vérifiée |
 | `vanguard sauvegarde-auto [--annuler]` | sauvegarde automatique vers un disque externe, avec l'outil du système |
@@ -892,7 +897,7 @@ Chaque entrée du menu existe aussi en commande.
 </details>
 
 **Langue** : celle du système (français ou anglais). Pour forcer : menu Paramètres, ou `VANGUARD_LANG=fr` ou
-`VANGUARD_LANG=en` (la variable l'emporte). Les commandes ont aussi un nom anglais (`check`, `search`, `fix`, `report`, `undo`, `devices`, `network-audit`, `monitor`, `dashboard`, `latest-flaws`, `dangerous-sites`, `watcher`, `maintenance`, `updates`, `repair`, `gaming`, `diagnostics`, `software`, `clean`, `optimize`, `learned`, `connection-test`, `blocklists`, `wifi-channels`, `hidden-cameras`, `smart-devices`, `fast-dns`, `public-wifi`, `integrity`, `decoys`, `memory`, `sandbox`, `email-leak`, `password-leak`, `browser-passwords`, `outbound-connections`, `remote-access`, `link`, `check-file`, `suspicious-email`, `spyware`, `outdated-software`, `defense-options`, `defender`, `disclose`, `camera-mic`, `privacy-review`, `quarantine`, `containers`, `settings`, `blocking`, `export`, `import`, `name`, `slow`, `startup`, `specs`, `copy-files`, `check-copy`, `check-backup`, `check-drive`, `handout`, `changes`, `events`, `windows-logs`, `auto-backup`, `shortcut`, `computers`, `self-update`, `uninstall`, `rules`, `self-test`, `troubleshoot`, `self-check`, `lab`).
+`VANGUARD_LANG=en` (la variable l'emporte). Les commandes ont aussi un nom anglais (`check`, `search`, `fix`, `report`, `undo`, `devices`, `network-audit`, `monitor`, `dashboard`, `latest-flaws`, `dangerous-sites`, `watcher`, `maintenance`, `updates`, `repair`, `gaming`, `diagnostics`, `software`, `clean`, `optimize`, `learned`, `connection-test`, `blocklists`, `wifi-channels`, `hidden-cameras`, `smart-devices`, `fast-dns`, `public-wifi`, `integrity`, `decoys`, `memory`, `sandbox`, `email-leak`, `password-leak`, `browser-passwords`, `outbound-connections`, `remote-access`, `link`, `check-file`, `suspicious-email`, `spyware`, `outdated-software`, `defense-options`, `defender`, `disclose`, `camera-mic`, `privacy-review`, `quarantine`, `containers`, `settings`, `blocking`, `alert`, `export`, `import`, `name`, `slow`, `startup`, `specs`, `copy-files`, `check-copy`, `check-backup`, `check-drive`, `handout`, `changes`, `events`, `windows-logs`, `auto-backup`, `shortcut`, `computers`, `self-update`, `uninstall`, `rules`, `self-test`, `troubleshoot`, `self-check`, `lab`).
 
 **Emojis** : dans l'ancienne console de Windows (invite de commandes ou PowerShell hors du Terminal Windows, courant
 sous Windows 10), qui les dessine mal et décale les menus, 💡 et 🔧 deviennent → et +. `VANGUARD_EMOJI=0` les retire

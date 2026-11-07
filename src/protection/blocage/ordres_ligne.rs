@@ -55,6 +55,17 @@ pub(crate) enum Ordre {
         chemin: String,
         demande: bool,
     },
+    /// Suspendre ce processus (le geler sans l'arrêter), seulement s'il fait toujours tourner ce programme : toujours
+    /// demandé par la personne (menu des gestes, `vanguard blocage suspendre`), jamais automatique.
+    SuspendreProcessus {
+        pid: u32,
+        chemin: String,
+    },
+    /// Lever la suspension de ce processus, seulement s'il fait toujours tourner ce programme.
+    ReprendreProcessus {
+        pid: u32,
+        chemin: String,
+    },
     /// Windows : la liste de blocage des pilotes vulnérables remise à sa valeur d'avant (`None` : valeur absente).
     RemettrePilotes {
         avant: Option<u32>,
@@ -133,6 +144,12 @@ impl Ordre {
                 };
                 format!("{PREFIXE}{verbe} {pid} {}", hex(chemin.as_bytes()))
             }
+            Ordre::SuspendreProcessus { pid, chemin } => {
+                format!("{PREFIXE}suspendre-processus {pid} {}", hex(chemin.as_bytes()))
+            }
+            Ordre::ReprendreProcessus { pid, chemin } => {
+                format!("{PREFIXE}reprendre-processus {pid} {}", hex(chemin.as_bytes()))
+            }
             Ordre::RemettrePilotes { avant: Some(v) } => format!("{PREFIXE}remettre-pilotes {v}"),
             Ordre::RemettrePilotes { avant: None } => format!("{PREFIXE}remettre-pilotes absent"),
         }
@@ -168,24 +185,41 @@ pub(crate) fn analyser(ligne: &str) -> Option<Ordre> {
             port: port(n)?,
         },
         ["couper-connexions", a] => Ordre::CouperConnexions { ip: ip(a)? },
-        [verbe @ ("arreter-processus" | "arreter-processus-demande"), n, c] => {
-            let chemin = String::from_utf8(de_hex(c)?).ok()?;
-            let absolu = chemin_absolu(&chemin);
-            if chemin.is_empty() || chemin.len() > CHEMIN_MAX || !absolu || chemin.contains(['\0', '\n', '\r']) {
-                return None;
-            }
-            Ordre::ArreterProcessus {
-                pid: n.parse::<u32>().ok().filter(|p| *p != 0)?,
-                chemin,
-                demande: *verbe == "arreter-processus-demande",
-            }
-        }
+        [verbe @ ("arreter-processus" | "arreter-processus-demande"), n, c] => Ordre::ArreterProcessus {
+            pid: pid_de(n)?,
+            chemin: chemin_de(c)?,
+            demande: *verbe == "arreter-processus-demande",
+        },
+        ["suspendre-processus", n, c] => Ordre::SuspendreProcessus {
+            pid: pid_de(n)?,
+            chemin: chemin_de(c)?,
+        },
+        ["reprendre-processus", n, c] => Ordre::ReprendreProcessus {
+            pid: pid_de(n)?,
+            chemin: chemin_de(c)?,
+        },
         ["remettre-pilotes", "absent"] => Ordre::RemettrePilotes { avant: None },
         // Les deux seules valeurs que cette clé a jamais eues avant un blocage de Vanguard.
         ["remettre-pilotes", v @ ("0" | "1")] => Ordre::RemettrePilotes { avant: v.parse().ok() },
         _ => return None,
     };
     (ordre.ligne() == ligne).then_some(ordre)
+}
+
+/// Un numéro de processus : ni zéro (« tout le groupe » pour kill), ni autre chose qu'un entier.
+fn pid_de(t: &str) -> Option<u32> {
+    t.parse::<u32>().ok().filter(|p| *p != 0)
+}
+
+/// Le chemin d'un programme, en hexadécimal : de l'UTF-8, complet, non vide, d'au plus `CHEMIN_MAX` octets, sans
+/// caractère nul ni fin de ligne.
+fn chemin_de(t: &str) -> Option<String> {
+    let chemin = String::from_utf8(de_hex(t)?).ok()?;
+    let valide = !chemin.is_empty()
+        && chemin.len() <= CHEMIN_MAX
+        && chemin_absolu(&chemin)
+        && !chemin.contains(['\0', '\n', '\r']);
+    valide.then_some(chemin)
 }
 
 /// Un chemin complet, d'Unix (« / ») ou de Windows (« C:\ », « \\?\ ») : écrit à part de `Path`, pour que la

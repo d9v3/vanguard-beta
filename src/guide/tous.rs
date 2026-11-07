@@ -304,6 +304,13 @@ pub const PROGRAMMES: &[Programme] = &[
                 true,
             ),
             traduite(
+                "vanguard alerte",
+                "vanguard alert",
+                "Une alerte notifiée, par l'identifiant de sa notification : la menace rejugée, puis ses gestes proposés.",
+                "A notified alert, by its notification's identifier: the threat judged again, then its actions offered.",
+                true,
+            ),
+            traduite(
                 "vanguard blocage annuler",
                 "vanguard blocking undo",
                 "Défaire un blocage, exactement : règle de pare-feu retirée, fichier remis à sa place.",
