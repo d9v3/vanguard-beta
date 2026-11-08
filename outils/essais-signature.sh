@@ -1285,6 +1285,59 @@ grep -qxE 'ZIG_SHA256=[0-9a-f]{64}' "$DEPOT/outils/chaine-zig.sh" &&
   [[ $(sed -n 2p "$DEPOT/outils/zig-minisign.pub" | base64 -d | wc -c) -eq 42 ]] &&
   ok "chaine-zig.sh : empreintes de zig et cargo-zigbuild épinglées, clé de zig dans le dépôt" ||
   ko "chaine-zig.sh : empreinte non épinglée ou clé de zig illisible"
+# Le script entier, sur une fausse chaîne : une archive de zig d'essai (son empreinte mise à la place de la vraie
+# dans une copie du script) et un cargo-zigbuild d'essai déjà posé, avec son empreinte notée. Rien n'est téléchargé
+# ni compilé.
+#   - sous un umask de 077 ou de 002, l'arbre extrait garde les modes de l'archive : accepté, deux fois de suite ;
+#   - un cargo-zigbuild remplacé par un autre qui dit la bonne version : refusé ;
+#   - un dossier inscriptible par le groupe ou par les autres : refusé.
+C=$T/chaine-zig
+mkdir -p "$C/depot/outils" "$C/arbre/zig-x86_64-linux-9.9.9/lib/std"
+printf '#!/bin/sh\necho 9.9.9\n' >"$C/arbre/zig-x86_64-linux-9.9.9/zig"
+echo 'const std = @import("std");' >"$C/arbre/zig-x86_64-linux-9.9.9/lib/std/std.zig"
+chmod 755 "$C/arbre/zig-x86_64-linux-9.9.9" "$C/arbre/zig-x86_64-linux-9.9.9/lib" "$C/arbre/zig-x86_64-linux-9.9.9/lib/std" \
+  "$C/arbre/zig-x86_64-linux-9.9.9/zig"
+chmod 644 "$C/arbre/zig-x86_64-linux-9.9.9/lib/std/std.zig"
+tar -cJf "$C/zig-x86_64-linux-9.9.9.tar.xz" -C "$C/arbre" --owner=0 --group=0 zig-x86_64-linux-9.9.9
+sed -e 's/^ZIG_VERSION=.*/ZIG_VERSION=9.9.9/' \
+  -e "s/^ZIG_SHA256=.*/ZIG_SHA256=$(sha256sum "$C/zig-x86_64-linux-9.9.9.tar.xz" | cut -d' ' -f1)/" \
+  "$DEPOT/outils/chaine-zig.sh" >"$C/depot/outils/chaine-zig.sh"
+cp "$DEPOT/outils/zig-minisign.pub" "$C/depot/outils/"
+fausse_chaine() { # dossier : l'archive d'essai et un cargo-zigbuild posé, son empreinte notée
+  mkdir -p -m 700 "$1/cargo-zigbuild-0.24.0/bin"
+  cp "$C/zig-x86_64-linux-9.9.9.tar.xz" "$1/"
+  printf '#!/bin/sh\necho "cargo-zigbuild 0.24.0"\n' >"$1/cargo-zigbuild-0.24.0/bin/cargo-zigbuild"
+  chmod 755 "$1/cargo-zigbuild-0.24.0/bin/cargo-zigbuild"
+  sha256sum "$1/cargo-zigbuild-0.24.0/bin/cargo-zigbuild" | cut -d' ' -f1 >"$1/cargo-zigbuild-0.24.0/empreinte"
+}
+chaine_essai() { VANGUARD_CHAINE_ZIG=$1 bash "$C/depot/outils/chaine-zig.sh" 2>"$C/raison"; }
+for masque in 077 002; do
+  mkdir -m 700 "$C/umask-$masque" && fausse_chaine "$C/umask-$masque"
+  if (umask "$masque" && chaine_essai "$C/umask-$masque" >/dev/null && chaine_essai "$C/umask-$masque" >/dev/null) &&
+    [[ $(stat -c %a "$C/umask-$masque/zig-x86_64-linux-9.9.9/lib/std/std.zig") == 644 ]]; then
+    ok "chaine-zig.sh : sous umask $masque, l'arbre de zig a les modes de l'archive et passe, deux fois"
+  else
+    ko "chaine-zig.sh : refusé à tort sous umask $masque ($(head -n 1 "$C/raison"))"
+  fi
+done
+mkdir -m 700 "$C/remplace" && fausse_chaine "$C/remplace"
+chaine_essai "$C/remplace" >/dev/null || ko "chaine-zig.sh : la fausse chaîne d'essai est refusée ($(head -n 1 "$C/raison"))"
+printf '#!/bin/sh\n# remplaçant\necho "cargo-zigbuild 0.24.0"\n' >"$C/remplace/cargo-zigbuild-0.24.0/bin/cargo-zigbuild"
+chaine_essai "$C/remplace" >/dev/null && ko "chaine-zig.sh : un cargo-zigbuild remplacé (même version dite) passe" ||
+  { grep -qF 'cargo-zigbuild changé depuis son installation' "$C/raison" &&
+    ok "chaine-zig.sh : un cargo-zigbuild remplacé (même version dite) est refusé par son empreinte" ||
+    ko "chaine-zig.sh : un cargo-zigbuild remplacé est refusé pour une autre raison ($(head -n 1 "$C/raison"))"; }
+for mode in 777 770; do
+  mkdir -m 700 "$C/ouvert-$mode" && fausse_chaine "$C/ouvert-$mode" && chmod "$mode" "$C/ouvert-$mode"
+  chaine_essai "$C/ouvert-$mode" >/dev/null && ko "chaine-zig.sh : un dossier en mode $mode passe" ||
+    { grep -qF 'inscriptible par son groupe ou par les autres' "$C/raison" &&
+      ok "chaine-zig.sh : un dossier en mode $mode (inscriptible par d'autres) est refusé" ||
+      ko "chaine-zig.sh : un dossier en mode $mode est refusé pour une autre raison ($(head -n 1 "$C/raison"))"; }
+done
+# Les téléchargements bornés en taille (un miroir qui enverrait sans fin) : chaque appel de curl du script.
+[[ $(grep -c 'curl -fsS' "$DEPOT/outils/chaine-zig.sh") -eq $(grep -c 'curl -fsS.*--max-filesize' "$DEPOT/outils/chaine-zig.sh") ]] &&
+  ok "chaine-zig.sh : chaque téléchargement a sa taille maximale (--max-filesize)" ||
+  ko "chaine-zig.sh : un téléchargement sans --max-filesize"
 
 # 8. Les octets publiés, ceux de la compilation de leur commit.
 G=$T/depot-compilation

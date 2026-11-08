@@ -13,10 +13,18 @@
 #   - l'arbre de zig, à chaque usage : le même que l'archive gardée, fichier par fichier (tar --compare), sans fichier en
 #     plus, l'archive elle-même revérifiée (SHA-256) ;
 #   - cargo-zigbuild : posé par cargo install --locked --version =X (source de crates.io, dépendances de son Cargo.lock,
-#     sommes vérifiées par cargo), puis l'archive .crate que cargo a téléchargée comparée à ZIGBUILD_SHA256 ; sa
-#     version relue à chaque usage.
+#     sommes vérifiées par cargo), puis l'archive .crate que cargo a téléchargée comparée à ZIGBUILD_SHA256 ; le
+#     SHA-256 du programme compilé noté à côté de lui (fichier « empreinte ») et recomparé à chaque usage, avec sa
+#     version : un programme changé depuis est refusé.
 # Rien ne demande root : tout va dans un dossier de l'utilisateur, ~/.cache/vanguard-dev/chaine-zig ici, celui que
 # donne VANGUARD_CHAINE_ZIG ailleurs (la CI : un dossier du runner, neuf à chaque passage, jamais un cache restauré).
+# Ce dossier est au compte qui compile et n'est inscriptible ni par son groupe ni par les autres, sinon refusé ;
+# absent, il est créé en 0700.
+# Les modes des fichiers posés sont ceux de l'archive (umask 022 ici, quel que soit celui de la session) : l'arbre se
+# compare à l'archive, mode compris.
+# Hors du verrou (outils/compiler-version.sh, après ce script), rien n'empêche un autre programme du même compte de
+# changer zig avant qu'il serve : ce script protège contre l'archive fausse et l'arbre abîmé, pas contre le compte
+# lui-même, qui pourrait aussi bien changer rustc ou le dépôt.
 # Téléchargement : ziglang.org. Avec VANGUARD_ZIG_MIROIRS=1 (la CI), d'abord les miroirs de la communauté, dans un
 # ordre tiré au hasard, puis ziglang.org en dernier : le projet zig demande que les CI ne chargent pas son site, qui
 # tient sur un seul serveur (https://ziglang.org/download/community-mirrors/). Un miroir ne peut rien glisser : la
@@ -102,10 +110,15 @@ if [[ ${1:-} == --versions ]]; then
 fi
 [[ $# -eq 0 ]] || refus "option inconnue : $1"
 command -v openssl >/dev/null || refus "openssl absent : la signature de zig ne peut pas être vérifiée."
+umask 022
 
 DOSSIER=${VANGUARD_CHAINE_ZIG:-$HOME/.cache/vanguard-dev/chaine-zig}
-mkdir -p "$DOSSIER"
+[[ -e $DOSSIER ]] || mkdir -p -m 700 "$DOSSIER"
 DOSSIER=$(cd "$DOSSIER" && pwd -P)
+# Un dossier qu'un autre compte peut écrire (le sien, ou /tmp partagé) : un cargo-zigbuild ou un verrou d'un autre.
+read -r PROPRIETAIRE DROITS < <(stat -c '%u %a' "$DOSSIER")
+[[ $PROPRIETAIRE == "$(id -u)" ]] || refus "$DOSSIER n'appartient pas à ce compte (uid $PROPRIETAIRE) : refusé."
+((!(8#$DROITS & 8#022))) || refus "$DOSSIER est inscriptible par son groupe ou par les autres (mode $DROITS) : refusé."
 ZIG_DOSSIER=$DOSSIER/zig-x86_64-linux-$ZIG_VERSION
 ZIG_GARDEE=$DOSSIER/$ZIG_ARCHIVE
 ZIGBUILD_DOSSIER=$DOSSIER/cargo-zigbuild-$ZIGBUILD_VERSION
@@ -128,18 +141,21 @@ telecharger_zig() {
   if [[ -n ${VANGUARD_ZIG_MIROIRS:-} ]]; then
     # La liste des miroirs : seulement des adresses https:// aux caractères sûrs ; une liste illisible n'empêche pas
     # le repli sur ziglang.org.
-    miroirs=$(curl -fsS --proto '=https' --tlsv1.2 --max-time 30 https://ziglang.org/download/community-mirrors.txt \
+    miroirs=$(curl -fsS --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 1M https://ziglang.org/download/community-mirrors.txt \
       2>/dev/null | grep -xE 'https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?' | shuf || true)
     while read -r source; do
       [[ -n $source ]] && sources+=("${source%/}/$ZIG_ARCHIVE")
     done <<<"$miroirs"
   fi
   sources+=("https://ziglang.org/download/$ZIG_VERSION/$ZIG_ARCHIVE")
+  # Des tailles bornées (l'archive fait 57 Mo, sa signature moins de 400 octets) : un miroir qui enverrait sans fin
+  # remplirait le disque avant que l'empreinte le refuse.
   for source in "${sources[@]}"; do
     rm -f "$t/archive" "$t/archive.minisig"
-    curl -fsS --proto '=https' --tlsv1.2 --max-time 600 -o "$t/archive" "$source?source=vanguard" 2>/dev/null &&
-      curl -fsS --proto '=https' --tlsv1.2 --max-time 60 -o "$t/archive.minisig" "$source.minisig?source=vanguard" \
-        2>/dev/null || { dire "pas de réponse de ${source%/*}"; continue; }
+    curl -fsS --proto '=https' --tlsv1.2 --max-time 600 --max-filesize 100M -o "$t/archive" "$source?source=vanguard" \
+      2>/dev/null &&
+      curl -fsS --proto '=https' --tlsv1.2 --max-time 60 --max-filesize 4K -o "$t/archive.minisig" \
+        "$source.minisig?source=vanguard" 2>/dev/null || { dire "pas de réponse de ${source%/*}"; continue; }
     if ! empreinte_juste "$t/archive"; then
       dire "archive de ${source%/*} refusée : SHA-256 $(sha256sum "$t/archive" | cut -c1-16)… ≠ ${ZIG_SHA256:0:16}…"
       continue
@@ -202,9 +218,14 @@ fi
 
 # cargo-zigbuild : compilé par la chaîne Rust du dépôt (rust-toolchain.toml), hors du dépôt (sa configuration de cargo
 # viserait musl), dans un dossier à part puis mis en place seulement une fois la source vérifiée.
+# Posé : le programme, son empreinte notée à l'installation (absente : posé par une version d'avant de ce script,
+# reposé), la même, et sa version. Une empreinte différente n'est pas réparée en silence : refusée, dite.
 zigbuild_pose() {
-  [[ -x $ZIGBUILD_DOSSIER/bin/cargo-zigbuild &&
-    $("$ZIGBUILD_DOSSIER/bin/cargo-zigbuild" --version 2>/dev/null) == "cargo-zigbuild $ZIGBUILD_VERSION" ]]
+  local programme=$ZIGBUILD_DOSSIER/bin/cargo-zigbuild notee=$ZIGBUILD_DOSSIER/empreinte
+  [[ -x $programme && -f $notee ]] || return 1
+  [[ $(sha256sum "$programme" | cut -d' ' -f1) == "$(cat "$notee")" ]] ||
+    refus "cargo-zigbuild changé depuis son installation (SHA-256 différent de celui noté dans $notee) ; pour le reposer depuis sa source vérifiée : rm -rf $ZIGBUILD_DOSSIER"
+  [[ $("$programme" --version 2>/dev/null) == "cargo-zigbuild $ZIGBUILD_VERSION" ]]
 }
 if ! zigbuild_pose; then
   CHAINE=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
@@ -218,12 +239,15 @@ if ! zigbuild_pose; then
     rm -rf "$t"
     refus "source de cargo-zigbuild $ZIGBUILD_VERSION introuvable ou à une autre empreinte que $ZIGBUILD_SHA256."
   fi
+  sha256sum "$t/bin/cargo-zigbuild" | cut -d' ' -f1 >"$t/empreinte"
   rm -rf "$ZIGBUILD_DOSSIER"
   mv "$t" "$ZIGBUILD_DOSSIER"
   zigbuild_pose || refus "cargo-zigbuild ne dit pas sa version $ZIGBUILD_VERSION."
   dire "cargo-zigbuild $ZIGBUILD_VERSION posé, source vérifiée."
 fi
 
+# Les enveloppes de cargo-zigbuild n'y sont plus gardées (outils/compiler-version.sh les veut neuves à chaque fois).
+rm -rf "$DOSSIER/enveloppes"
 # Le dossier à mettre en tête du PATH : zig et cargo-zigbuild, et rien d'autre.
 mkdir -p "$DOSSIER/bin"
 ln -sfn "$ZIG_DOSSIER/zig" "$DOSSIER/bin/zig"
