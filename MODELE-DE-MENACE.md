@@ -218,6 +218,28 @@ Options de défense.
   élévation montrée : un programme du compte ne peut ni isoler ni lever sans elle ; le service durci du veilleur ne
   peut pas l'obtenir seul, et l'alerte le dit.
 
+  Ce qui passe encore pendant l'isolement, et ses limites :
+  - La session gardée l'est par sa connexion exacte (adresse et port distants, port local 22 ou 3389), dans son seul
+    sens : rien d'autre vers cette adresse, et une connexion que ce PC ouvre vers l'extérieur (client SSH) n'est pas
+    une session à garder. Une fois coupée, elle ne revient pas, même depuis la même adresse.
+  - Les serveurs de Vanguard ne sont joignables qu'en HTTPS (TCP 443). Leurs adresses sont souvent celles d'un
+    hébergeur (CDN) partagées avec d'autres sites : tout site HTTPS servi par ces mêmes adresses reste joignable, et un
+    programme hostile peut s'en servir pour sortir des données.
+  - Le DNS en place reste joignable sur le port 53 : un programme hostile peut faire sortir des données par des noms
+    demandés à ce résolveur (tunnel DNS).
+  - Sous Linux, une copie de Vanguard tourne en root à chaque démarrage tant que dure l'isolement (bornée par le
+    durcissement de son unité) ; elle est copiée du Vanguard qui a demandé l'isolement : s'il vit dans un dossier du
+    compte, un programme du compte qui l'a remplacé avant le mot de passe devient root, comme pour toute élévation
+    (vérifier le programme avant de le copier est un lot à part).
+  - Les sessions que Vanguard ne reconnaît pas sont coupées : mosh (qui continue en UDP), et une session qui passe par
+    IPsec sans interface (ESP et IKE ne sont pas gardés).
+  - Sous Windows, le pare-feu ne bloque, vers une adresse gardée, que TCP, UDP et ICMP (les autres protocoles vers elle
+    passent) ; une connexion entrante depuis le port 443 d'un serveur de Vanguard n'est pas refusée (Windows ne
+    distingue pas une connexion établie) ; le canal UDP de RDP n'est pas gardé (RDP retombe sur TCP) ; les messages
+    ICMPv4 d'erreur d'une session gardée (taille de paquet) ne sont pas permis par une règle, et il n'a pas été vérifié
+    que le pare-feu les laisse passer ; et le trafic des machines virtuelles (Hyper-V, WSL2) peut ne pas passer par le
+    pare-feu de l'ordinateur.
+
 **Les gardes contre le verrouillage (Linux).** Un geste de défense qui peut couper la personne de son ordinateur
 (verrouiller root ou son propre compte, retirer le dernier administrateur, rendre sudo, su et pkexec inutilisables)
 n'est pas refusé : c'est peut-être ce qu'il faut faire. Il est précédé d'un AVERTISSEMENT, et la question `[o/N]` dit

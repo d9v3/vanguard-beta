@@ -208,6 +208,27 @@ Defense options.
   through the same shown elevation: a program of the account can neither isolate nor lift without it; the watcher's
   hardened service cannot obtain it by itself, and the alert says so.
 
+  What still gets through during the isolation, and its limits:
+  - The kept session is kept by its exact connection (remote address and port, local port 22 or 3389), in its own
+    direction only: nothing else to that address, and a connection this PC opens outward (SSH client) is not a session
+    to keep. Once dropped, it does not come back, even from the same address.
+  - Vanguard's servers are reachable over HTTPS only (TCP 443). Their addresses often belong to a host (CDN) shared
+    with other sites: any HTTPS site served from those same addresses stays reachable, and a hostile program can use
+    it to send data out.
+  - The current DNS stays reachable on port 53: a hostile program can send data out through names asked of that
+    resolver (DNS tunnel).
+  - On Linux, a copy of Vanguard runs as root at each boot while the isolation lasts (bounded by its unit's
+    hardening); it is copied from the Vanguard that asked for the isolation: if that one lives in a folder of the
+    account, a program of the account that replaced it before the password becomes root, as with any elevation
+    (checking the program before copying it is a separate batch).
+  - Sessions Vanguard does not recognize are cut: mosh (which goes on over UDP), and a session that goes through IPsec
+    without an interface (ESP and IKE are not kept).
+  - On Windows, the firewall blocks, to a kept address, only TCP, UDP and ICMP (other protocols to it get through); an
+    inbound connection from port 443 of a Vanguard server is not refused (Windows does not tell an established
+    connection apart); RDP's UDP channel is not kept (RDP falls back to TCP); a kept session's ICMPv4 error messages
+    (packet size) are not allowed by a rule, and whether the firewall lets them through was not checked; and the traffic
+    of virtual machines (Hyper-V, WSL2) may not go through the computer's firewall.
+
 **Guards against lockout (Linux).** A defense action that could cut the person off from their computer (locking
 root or their own account, removing the last administrator, making sudo, su and pkexec unusable) is not refused: it
 may be what needs doing. It is preceded by a WARNING, and the `[y/N]` question defaults to no; if it cannot be
