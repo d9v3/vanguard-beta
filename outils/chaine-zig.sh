@@ -19,7 +19,7 @@
 # Rien ne demande root : tout va dans un dossier de l'utilisateur, ~/.cache/vanguard-dev/chaine-zig ici, celui que
 # donne VANGUARD_CHAINE_ZIG ailleurs (la CI : un dossier du runner, neuf à chaque passage, jamais un cache restauré).
 # Ce dossier est au compte qui compile et n'est inscriptible ni par son groupe ni par les autres, sinon refusé ;
-# absent, il est créé en 0700.
+# absent, il est créé en 0700. Son parent de même (ce compte ou root, inscriptible par eux seuls).
 # Les modes des fichiers posés sont ceux de l'archive (umask 022 ici, quel que soit celui de la session) : l'arbre se
 # compare à l'archive, mode compris.
 # Hors du verrou (outils/compiler-version.sh, après ce script), rien n'empêche un autre programme du même compte de
@@ -119,6 +119,14 @@ DOSSIER=$(cd "$DOSSIER" && pwd -P)
 read -r PROPRIETAIRE DROITS < <(stat -c '%u %a' "$DOSSIER")
 [[ $PROPRIETAIRE == "$(id -u)" ]] || refus "$DOSSIER n'appartient pas à ce compte (uid $PROPRIETAIRE) : refusé."
 ((!(8#$DROITS & 8#022))) || refus "$DOSSIER est inscriptible par son groupe ou par les autres (mode $DROITS) : refusé."
+# Son parent aussi : un autre compte qui peut y écrire peut renommer le dossier et poser le sien à sa place, entre ce
+# contrôle et l'usage. Ce compte ou root, et inscriptible par eux seuls (/tmp, même avec son bit collant, est refusé).
+PARENT=$(dirname "$DOSSIER")
+read -r PROPRIETAIRE DROITS < <(stat -c '%u %a' "$PARENT")
+[[ $PROPRIETAIRE == "$(id -u)" || $PROPRIETAIRE == 0 ]] ||
+  refus "$PARENT, qui contient $DOSSIER, appartient à un autre compte (uid $PROPRIETAIRE) : refusé."
+((!(8#$DROITS & 8#022))) ||
+  refus "$PARENT, qui contient $DOSSIER, est inscriptible par son groupe ou par les autres (mode $DROITS) : refusé."
 ZIG_DOSSIER=$DOSSIER/zig-x86_64-linux-$ZIG_VERSION
 ZIG_GARDEE=$DOSSIER/$ZIG_ARCHIVE
 ZIGBUILD_DOSSIER=$DOSSIER/cargo-zigbuild-$ZIGBUILD_VERSION

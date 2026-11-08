@@ -274,9 +274,11 @@ jobs:
     # zig et cargo-zigbuild posés à chaque exécution dans le dossier temporaire du runner (jamais de cache entre deux
     # exécutions : l'archive de zig et le paquet de cargo-zigbuild sont revérifiés à chaque fois), d'abord depuis les
     # miroirs de la communauté de zig, comme ziglang.org le demande aux CI ; un miroir ne peut rien glisser (empreinte
-    # SHA-256 et signature minisign de outils/zig-minisign.pub). outils/chaine-c.sh relit le même dossier.
+    # SHA-256 et signature minisign de outils/zig-minisign.pub). outils/chaine-c.sh relit le même dossier. Un niveau
+    # de plus, créé par le script (0755, au runner) : son parent est contrôlé aussi, quels que soient les droits du
+    # dossier temporaire.
     env:
-      VANGUARD_CHAINE_ZIG: ${{ runner.temp }}/chaine-zig
+      VANGUARD_CHAINE_ZIG: ${{ runner.temp }}/vanguard/chaine-zig
       VANGUARD_ZIG_MIROIRS: 1
     steps:
       # Tout l'historique : outils/compiler-version.sh grave la date du code (outils/date-du-code.sh), comme

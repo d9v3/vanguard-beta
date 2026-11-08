@@ -1315,7 +1315,7 @@ grep -qxE 'ZIG_SHA256=[0-9a-f]{64}' "$DEPOT/outils/chaine-zig.sh" &&
 # ni compilé.
 #   - sous un umask de 077 ou de 002, l'arbre extrait garde les modes de l'archive : accepté, deux fois de suite ;
 #   - un cargo-zigbuild remplacé par un autre qui dit la bonne version : refusé ;
-#   - un dossier inscriptible par le groupe ou par les autres : refusé.
+#   - un dossier, ou son parent, inscriptible par le groupe ou par les autres : refusé.
 C=$T/chaine-zig
 mkdir -p "$C/depot/outils" "$C/arbre/zig-x86_64-linux-9.9.9/lib/std"
 printf '#!/bin/sh\necho 9.9.9\n' >"$C/arbre/zig-x86_64-linux-9.9.9/zig"
@@ -1359,6 +1359,19 @@ for mode in 777 770; do
       ok "chaine-zig.sh : un dossier en mode $mode (inscriptible par d'autres) est refusé" ||
       ko "chaine-zig.sh : un dossier en mode $mode est refusé pour une autre raison ($(head -n 1 "$C/raison"))"; }
 done
+# Son parent de même : un autre compte qui pourrait y écrire échangerait le dossier entre le contrôle et l'usage.
+for mode in 777 775; do
+  mkdir -m 700 "$C/parent-$mode" "$C/parent-$mode/chaine" && fausse_chaine "$C/parent-$mode/chaine" &&
+    chmod "$mode" "$C/parent-$mode"
+  chaine_essai "$C/parent-$mode/chaine" >/dev/null && ko "chaine-zig.sh : un dossier dans un parent en mode $mode passe" ||
+    { grep -qF 'qui contient' "$C/raison" && grep -qF 'inscriptible par son groupe ou par les autres' "$C/raison" &&
+      ok "chaine-zig.sh : un dossier dans un parent en mode $mode (inscriptible par d'autres) est refusé" ||
+      ko "chaine-zig.sh : parent en mode $mode refusé pour une autre raison ($(head -n 1 "$C/raison"))"; }
+done
+grep -qF 'appartient à un autre compte (uid $PROPRIETAIRE)' "$DEPOT/outils/chaine-zig.sh" &&
+  [[ $(grep -c 'stat -c .%u %a.' "$DEPOT/outils/chaine-zig.sh") -eq 2 ]] &&
+  ok "chaine-zig.sh : le propriétaire du dossier et celui de son parent sont contrôlés (ce compte, ou root pour le parent)" ||
+  ko "chaine-zig.sh : propriétaire du dossier ou de son parent non contrôlé"
 # Les téléchargements bornés en taille (un miroir qui enverrait sans fin) : chaque appel de curl du script.
 [[ $(grep -c 'curl -fsS' "$DEPOT/outils/chaine-zig.sh") -eq $(grep -c 'curl -fsS.*--max-filesize' "$DEPOT/outils/chaine-zig.sh") ]] &&
   ok "chaine-zig.sh : chaque téléchargement a sa taille maximale (--max-filesize)" ||
