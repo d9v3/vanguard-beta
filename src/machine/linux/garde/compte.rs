@@ -33,6 +33,8 @@ const CAT: &str = "Surveillance";
 /// Au-delà, un battement est trop vieux : le garde est figé ou arrêté (il bat chaque seconde ; systemd le tue après
 /// 5 s sans nouvelles et le relance).
 pub(crate) const BATTEMENT_VIEUX: u64 = 30;
+/// Au-delà (en secondes), aucun fil du tri du garde ne répond : les lancements ne sont plus jugés à temps (alerte haute).
+const TRI_MUET_MAX: u64 = 10;
 /// Les derniers événements montrés par `vanguard garde etat`.
 const DERNIERS: usize = 8;
 
@@ -375,6 +377,35 @@ pub(crate) fn juger(posee: bool, etat: Option<&Etat>, maintenant: u64) -> Consta
             ),
         );
     }
+    if k.file_pleine > 0 {
+        let n = k.file_pleine;
+        hausser(
+            Niveau::Info,
+            trf!(
+                "{n} lancements ont été permis tout de suite, la file du garde étant pleine (une rafale de lancements) : ils sont jugés après coup, et un programme certainement malveillant passé ainsi est dit.",
+                "{n} launches were allowed at once, the guard's queue being full (a burst of launches): they are judged afterwards, and a certainly malicious program that passed this way is reported."
+            ),
+        );
+    }
+    if e.tri_muet > TRI_MUET_MAX {
+        let secondes = e.tri_muet;
+        hausser(
+            Niveau::Eleve,
+            trf!(
+                "Le garde ne juge plus les lancements à temps depuis {secondes} s : ses fils attendent un système de fichiers qui ne répond plus (disque en erreur, support débranché). Les lancements sont permis sans être jugés à temps ; redémarrer l'ordinateur remet le garde en état.",
+                "The guard has not judged launches in time for {secondes} s: its threads are waiting on a file system that no longer responds (failing disk, unplugged media). Launches are allowed without being judged in time; restarting the computer puts the guard back in order."
+            ),
+        );
+    } else if e.tris_pris > 0 {
+        let n = e.tris_pris;
+        hausser(
+            Niveau::Moyen,
+            trf!(
+                "{n} fils du garde attendent un système de fichiers qui ne répond plus (disque en erreur, support débranché) ; d'autres ont pris la relève, mais les lancements depuis ce système ne sont pas jugés à temps.",
+                "{n} guard threads are waiting on a file system that no longer responds (failing disk, unplugged media); others took over, but launches from that file system are not judged in time."
+            ),
+        );
+    }
     if e.listes_retirees > 0 {
         let n = e.listes_retirees;
         hausser(
@@ -499,6 +530,7 @@ fn genre_affiche(genre: &str) -> String {
         "change-avant-jugement" => tr!("changé avant d'être jugé", "changed before being judged").into(),
         "file-pleine" => tr!("file pleine", "queue full").into(),
         "debordement" => tr!("débordement", "overflow").into(),
+        "tri-relance" => tr!("tri du garde relancé", "guard sorting relaunched").into(),
         "demarrage" => tr!("démarrage", "start").into(),
         "montage" => tr!("montage marqué", "mount marked").into(),
         "alerte" => tr!("alerte du garde", "guard alert").into(),
@@ -951,6 +983,25 @@ mod tests {
         let c = juger(true, Some(&gros), maintenant);
         assert_eq!(c.probleme, Some(Niveau::Info));
         assert!(c.message.contains("512"), "{}", c.message);
+        // Trouvaille 3 : une file pleine, une information ; un fil du tri pris, moyen ; aucun libre depuis plus de 10 s,
+        // haut.
+        let mut pleine = etat(maintenant);
+        pleine.compteurs.file_pleine = 7;
+        assert_eq!(juger(true, Some(&pleine), maintenant).probleme, Some(Niveau::Info));
+        let pris = Etat {
+            tris_pris: 1,
+            tri_muet: 0,
+            ..etat(maintenant)
+        };
+        assert_eq!(juger(true, Some(&pris), maintenant).probleme, Some(Niveau::Moyen));
+        let gele = Etat {
+            tris_pris: 4,
+            tri_muet: 11,
+            ..etat(maintenant)
+        };
+        let c = juger(true, Some(&gele), maintenant);
+        assert_eq!(c.probleme, Some(Niveau::Eleve));
+        assert!(c.message.contains("11 s"), "{}", c.message);
         // C7-5 : un fichier changé avant d'être jugé, au moins moyen.
         let mut change = etat(maintenant);
         change.compteurs.changes_avant_jugement = 1;

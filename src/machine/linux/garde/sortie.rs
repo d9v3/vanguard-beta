@@ -89,6 +89,14 @@ pub(crate) struct Etat {
     /// ou mise à jour : gardé en root, l'alerte survit au redémarrage (au moins moyenne).
     #[serde(default)]
     pub listes_croissance: u64,
+    /// Les fils du tri pris sur une demande depuis plus de 5 s : un système de fichiers marqué qui ne répond plus (un
+    /// autre fil a pris la relève, s'il en restait).
+    #[serde(default)]
+    pub tris_pris: u64,
+    /// Depuis combien de secondes aucun fil du tri n'est libre (0 : un au moins répond) : les lancements sont permis
+    /// par file pleine sans être jugés à temps (alerte haute au-delà de 10 s).
+    #[serde(default)]
+    pub tri_muet: u64,
 }
 
 impl Etat {
@@ -103,8 +111,8 @@ impl Etat {
 pub(crate) struct Evenement {
     /// Secondes depuis 1970.
     pub t: u64,
-    /// `refuse`, `observe`, `epargne`, `permise` (un verdict), ou `delai`, `non-verifie`, `file-pleine`,
-    /// `debordement`, `demarrage`, `alerte`.
+    /// `refuse`, `observe`, `epargne`, `permise` (un verdict), ou `delai`, `non-verifie`, `trop-gros`,
+    /// `change-avant-jugement`, `file-pleine`, `debordement`, `tri-relance`, `demarrage`, `montage`, `alerte`.
     pub genre: String,
     /// `liste` ou `essai` pour un verdict.
     #[serde(default, skip_serializing_if = "Option::is_none")]

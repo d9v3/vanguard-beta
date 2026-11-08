@@ -74,6 +74,11 @@ const EVENEMENTS_EN_FILE: usize = 1024;
 const BATTEMENT_MS: i32 = 500;
 /// Un lecteur muet depuis plus longtemps n'envoie plus WATCHDOG=1 (WatchdogSec=5).
 const LECTEUR_MUET: Duration = Duration::from_secs(3);
+/// Un fil du tri pris plus longtemps sur une seule demande (un fstat ou un fstatfs ne prend que des microsecondes) :
+/// un système de fichiers qui ne répond plus ; un autre fil le remplace.
+const TRI_MUET_MS: u64 = 5_000;
+/// Les fils du tri lancés en tout, au plus (le premier et ses remplaçants).
+const TRIS_MAX: usize = 4;
 /// Les listes sont regardées à cette fréquence (leur date et leur taille), les réglages à chaque seconde.
 const LISTES_TOUTES_LES: Duration = Duration::from_secs(5);
 
@@ -166,6 +171,8 @@ struct Partage {
     arret: AtomicBool,
     /// Les débordements de la file du noyau déjà suivis d'un cache vidé (C7-1).
     debordements_vus: AtomicU64,
+    /// Par fil du tri : le début de la demande en cours, en millisecondes depuis `debut` plus un ; 0 : libre.
+    tris: [AtomicU64; TRIS_MAX],
 }
 
 /// Une demande confiée au tri, puis aux fils de décision.
@@ -223,8 +230,12 @@ impl Partage {
     }
 
     fn battre(&self) {
-        let ms = u64::try_from(self.debut.elapsed().as_millis()).unwrap_or(u64::MAX);
-        self.battement.store(ms, Ordering::Relaxed);
+        self.battement.store(self.ms(), Ordering::Relaxed);
+    }
+
+    /// Les millisecondes depuis `debut`.
+    fn ms(&self) -> u64 {
+        u64::try_from(self.debut.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
     fn lecteur_muet(&self) -> bool {
@@ -361,15 +372,76 @@ fn confier(p: &Partage, d: Demande, vers: &SyncSender<Demande>, vers_rattrapage:
 /// Le fil du tri.
 fn trier(
     p: &Partage,
-    file: &Receiver<Demande>,
+    rang: usize,
+    file: &Mutex<Receiver<Demande>>,
     vers_decideurs: &SyncSender<Demande>,
     vers_rattrapage: &SyncSender<Demande>,
 ) {
-    while let Ok(mut d) = file.recv() {
+    let Some(battement) = p.tris.get(rang) else {
+        return;
+    };
+    loop {
+        let d = verrou(file).recv();
+        let Ok(mut d) = d else { return };
+        // Le début de la demande, vu par l'entretien : un tri pris plus de `TRI_MUET_MS` est remplacé (trouvaille 3).
+        battement.store(p.ms().saturating_add(1), Ordering::Relaxed);
         if preparer(p, &mut d) {
             confier(p, d, vers_decideurs, vers_rattrapage);
         }
+        battement.store(0, Ordering::Relaxed);
     }
+}
+
+/// Les fils du tri (L-2) : un au départ ; quand tous ceux lancés sont pris sur une demande depuis plus de
+/// `TRI_MUET_MS` (fstat ou fstatfs sur un système de fichiers qui ne répond plus), l'entretien en lance un autre,
+/// `TRIS_MAX` en tout au plus, et le dit. Sans cela, le tri gelé laissait tout permettre par file pleine, en silence.
+///
+/// Le garde ne sort pas pour se faire relancer par systemd : un fil pris dans le noyau (état D) ne meurt pas, même
+/// tué ; le processus et son groupe fanotify resteraient alors sans lecteur, et chaque lancement des systèmes marqués
+/// attendrait sans fin (une demande de permission n'a pas de délai dans le noyau). Un garde qui permet et le dit
+/// (alerte haute) vaut mieux qu'un ordinateur où plus rien ne se lance.
+struct Tris {
+    file: Arc<Mutex<Receiver<Demande>>>,
+    vers_decideurs: SyncSender<Demande>,
+    vers_rattrapage: SyncSender<Demande>,
+    lances: usize,
+}
+
+impl Tris {
+    /// Lance un fil du tri de plus ; faux s'il y en a déjà `TRIS_MAX`.
+    fn lancer(&mut self, p: &Arc<Partage>) -> bool {
+        if self.lances >= TRIS_MAX {
+            return false;
+        }
+        let (p, rang, file) = (Arc::clone(p), self.lances, Arc::clone(&self.file));
+        let (vers_decideurs, vers_rattrapage) = (self.vers_decideurs.clone(), self.vers_rattrapage.clone());
+        std::thread::spawn(move || trier(&p, rang, &file, &vers_decideurs, &vers_rattrapage));
+        self.lances = self.lances.saturating_add(1);
+        true
+    }
+}
+
+/// Les fils du tri pris sur une demande depuis plus de `TRI_MUET_MS`, et depuis combien de millisecondes aucun n'est
+/// libre (0 : un au moins répond). `debuts` : ceux des fils lancés (`Partage::tris`), à l'instant `maintenant`.
+fn tris_pris(debuts: &[AtomicU64], maintenant: u64) -> (u64, u64) {
+    let mut pris = 0u64;
+    let mut muet = u64::MAX;
+    for debut in debuts {
+        let depuis = match debut.load(Ordering::Relaxed) {
+            0 => 0,
+            d => maintenant.saturating_sub(d.saturating_sub(1)),
+        };
+        if depuis > TRI_MUET_MS {
+            pris = pris.saturating_add(1);
+        }
+        muet = muet.min(depuis);
+    }
+    let muet = if debuts.is_empty() || muet <= TRI_MUET_MS {
+        0
+    } else {
+        muet
+    };
+    (pris, muet)
 }
 
 /// Juge une demande et y répond, si personne ne l'a fait. Déjà permise (le délai, la file pleine), elle est jugée
@@ -881,8 +953,8 @@ fn alerter_listes(p: &Partage, alertes: Vec<String>) {
     c.alertes.extend(alertes);
 }
 
-/// Écrit etat.json d'un coup.
-fn ecrire_etat(p: &Partage, demarre: u64, marques: &Marques) {
+/// Écrit etat.json d'un coup ; `tris` : les fils du tri lancés.
+fn ecrire_etat(p: &Partage, demarre: u64, marques: &Marques, tris: usize) {
     let (
         refus,
         pause_jusqu_a,
@@ -918,6 +990,7 @@ fn ecrire_etat(p: &Partage, demarre: u64, marques: &Marques) {
         alertes.push(format!("evenements: {perdus} non écrits (file pleine)"));
     }
     let debut_ms = p.battement.load(Ordering::Relaxed);
+    let (tris_pris, tri_muet) = tris_pris(p.tris.get(..tris).unwrap_or_default(), p.ms());
     let etat = Etat {
         version: env!("CARGO_PKG_VERSION").into(),
         pid: std::process::id(),
@@ -933,6 +1006,8 @@ fn ecrire_etat(p: &Partage, demarre: u64, marques: &Marques) {
         listes_bloquees,
         listes_ajoutees,
         listes_croissance,
+        tris_pris,
+        tri_muet: tri_muet / 1000,
     };
     let Ok(texte) = serde_json::to_vec(&etat) else {
         return;
@@ -943,11 +1018,12 @@ fn ecrire_etat(p: &Partage, demarre: u64, marques: &Marques) {
 
 /// Le fil d'entretien.
 fn entretien(
-    p: &Partage,
+    p: &Arc<Partage>,
     evenements: &Receiver<Evenement>,
     notifier: &Notifier,
     mut marques: Marques,
     mut relecture: Relecture,
+    mut tris: Tris,
 ) {
     let demarre = super::maintenant();
     let mut montages = Montages::ouvrir().ok();
@@ -971,6 +1047,12 @@ fn entretien(
             }
         }
         relecture.faire(p);
+        // Trouvaille 3 : tous les fils du tri pris sur un système de fichiers qui ne répond plus : un autre prend la
+        // relève, et c'est dit.
+        let (_, muet) = tris_pris(p.tris.get(..tris.lances).unwrap_or_default(), p.ms());
+        if muet > 0 && tris.lancer(p) {
+            p.noter(evenement("tri-relance"));
+        }
         let mut lignes = String::new();
         while let Ok(e) = evenements.try_recv() {
             lignes.push_str(&sortie::ligne(&e));
@@ -982,7 +1064,7 @@ fn entretien(
                 &lignes,
             );
         }
-        ecrire_etat(p, demarre, &marques);
+        ecrire_etat(p, demarre, &marques, tris.lances);
         if !p.lecteur_muet() {
             notifier.envoyer("WATCHDOG=1");
         }
@@ -1059,6 +1141,7 @@ pub(crate) fn servir() -> i32 {
         evenements: vers_sortie,
         arret: AtomicBool::new(false),
         debordements_vus: AtomicU64::new(0),
+        tris: Default::default(),
     });
     // Les réglages et l'union des listes reçues (à root, sur un disque local) avant la première marque : le mode et
     // l'ensemble CERTAIN d'avant sont en vigueur dès la première demande (f1). Les listes du compte, dans son dossier,
@@ -1099,10 +1182,13 @@ pub(crate) fn servir() -> i32 {
         std::thread::spawn(move || rattraper(&p, &rattrapage, &vers_gros));
     }
     let (vers_tri, tri) = std::sync::mpsc::sync_channel::<Demande>(FILE);
-    {
-        let (p, vers_rattrapage) = (Arc::clone(&p), vers_rattrapage.clone());
-        std::thread::spawn(move || trier(&p, &tri, &vers_decideurs, &vers_rattrapage));
-    }
+    let mut tris = Tris {
+        file: Arc::new(Mutex::new(tri)),
+        vers_decideurs,
+        vers_rattrapage: vers_rattrapage.clone(),
+        lances: 0,
+    };
+    tris.lancer(&p);
     {
         let p = Arc::clone(&p);
         std::thread::spawn(move || delai(&p));
@@ -1111,7 +1197,7 @@ pub(crate) fn servir() -> i32 {
         let p = Arc::clone(&p);
         std::thread::spawn(move || {
             let notifier = Notifier::depuis_environnement();
-            entretien(&p, &evenements, &notifier, marques, relecture);
+            entretien(&p, &evenements, &notifier, marques, relecture, tris);
         });
     }
     {
@@ -1400,6 +1486,7 @@ mod tests {
             evenements: vers,
             arret: AtomicBool::new(false),
             debordements_vus: AtomicU64::new(0),
+            tris: Default::default(),
         };
         (p, evenements)
     }
@@ -1716,6 +1803,52 @@ mod tests {
         let k = p.compteurs.lire();
         assert_eq!((k.file_pleine, k.rattrapages_perdus), (2, 1));
         assert!(file_r.try_recv().is_ok());
+    }
+
+    /// Trouvaille 3 : un fil du tri pris plus de `TRI_MUET_MS` est compté ; tant qu'un autre est libre, le tri n'est
+    /// pas muet ; tous pris, il l'est depuis le plus récent.
+    #[test]
+    fn un_tri_gele_est_vu() {
+        let debuts: [AtomicU64; 3] = Default::default();
+        assert_eq!(tris_pris(&debuts, 100_000), (0, 0));
+        assert_eq!(tris_pris(&[], 100_000), (0, 0));
+        debuts[0].store(1_000 + 1, Ordering::Relaxed);
+        assert_eq!(tris_pris(&debuts[..1], 1_000 + TRI_MUET_MS), (0, 0));
+        assert_eq!(tris_pris(&debuts[..1], 20_000), (1, 19_000));
+        // Un autre lancé, libre : le tri répond.
+        assert_eq!(tris_pris(&debuts[..2], 20_000), (1, 0));
+        // Lui aussi pris, depuis peu : pas encore muet ; puis muet depuis le plus récent.
+        debuts[1].store(18_000 + 1, Ordering::Relaxed);
+        assert_eq!(tris_pris(&debuts[..2], 20_000), (1, 0));
+        assert_eq!(tris_pris(&debuts[..2], 30_000), (2, 12_000));
+    }
+
+    /// Trouvaille 3 : le tri note le début de chaque demande et se dit libre après ; les remplaçants sont bornés.
+    #[test]
+    fn le_tri_bat_et_ses_remplacants_sont_bornes() {
+        let d = crate::essais::Jetable::nouveau("garde-servir-tri-bat");
+        let (p, _evenements) = partage(&[]);
+        let p = Arc::new(p);
+        let (vers_tri, tri) = std::sync::mpsc::sync_channel::<Demande>(1);
+        let (vers_decideurs, _decideurs) = std::sync::mpsc::sync_channel::<Demande>(1);
+        let (vers_rattrapage, _rattrapage) = std::sync::mpsc::sync_channel::<Demande>(1);
+        let file = Arc::new(Mutex::new(tri));
+        vers_tri.send(demande(&d, "a", b"a")).unwrap();
+        drop(vers_tri);
+        trier(&p, 0, &file, &vers_decideurs, &vers_rattrapage);
+        assert_eq!(p.tris[0].load(Ordering::Relaxed), 0);
+        assert_eq!(p.compteurs.lire().file_pleine, 0);
+        let mut tris = Tris {
+            file,
+            vers_decideurs,
+            vers_rattrapage,
+            lances: 0,
+        };
+        for _ in 0..TRIS_MAX {
+            assert!(tris.lancer(&p));
+        }
+        assert!(!tris.lancer(&p));
+        assert_eq!(tris.lances, TRIS_MAX);
     }
 
     #[test]
