@@ -35,10 +35,16 @@ pub(super) fn resultat(c: &Constats, pire_en_ligne: Option<Niveau>, debut: Debut
     let mut constats: Vec<Constat> = signes.map(|(n, t)| alerte(CAT, *n, t.clone())).collect();
     for p in &c.pieces {
         for (moteur, e) in &p.moteurs {
-            if let Examen::Trouve(detection) = e {
+            let (niveau, detection) = match e {
+                Examen::Trouve(d) => (Niveau::Critique, d),
+                // Une heuristique seule : une alerte moyenne, pas une détection.
+                Examen::Suspect(d) => (Niveau::Moyen, d),
+                _ => continue,
+            };
+            {
                 constats.push(alerte(
                     CAT,
-                    Niveau::Critique,
+                    niveau,
                     // Le nom vient de l'expéditeur : un caractère de direction (U+202E) retournerait la fin du nom
                     // (« facture », U+202E, « fdp.exe » se lit « facture.exe.pdf ») dans le résultat, le journal et le rapport ;
                     // filtré et coupé comme à l'écran. Le nom de la détection vient d'un moteur : filtré aussi.

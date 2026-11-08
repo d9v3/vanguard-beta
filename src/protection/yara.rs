@@ -5,7 +5,8 @@
 //! gardé en oracle de développement seulement. Une règle que le moteur ne comprend pas entière est refusée, comptée et
 //! nommée : tant qu'il en reste une, aucune analyse ne se dit saine. En complément de l'antivirus : une règle décrit une
 //! famille entière, variantes comprises. Lecture seule : rien n'est déplacé ni supprimé. Chaque fichier lu est aussi comparé aux empreintes de MalwareBazaar (`empreintes`) : là, c'est
-//! un logiciel malveillant précis, reconnu sans doute possible.
+//! un logiciel malveillant précis, reconnu sans doute possible. Depuis le verdict commun (`moteur`), chaque fichier passe
+//! par toutes les sources du moteur de Vanguard : empreintes, règles, base ClamAV installée et heuristiques.
 
 // Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
@@ -15,8 +16,8 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::protection::antivirus::{Examen, Portee};
-use crate::protection::empreintes::{self, Empreintes};
-use crate::protection::moteur;
+use crate::protection::empreintes;
+use crate::protection::moteur::{self, Source, Sources, Usage};
 use crate::protection::moteur_yara::Regles;
 use crate::protection::regles_yara::Raison;
 use crate::ui::*;
@@ -108,9 +109,11 @@ pub(crate) fn endroits_a_risque() -> Vec<PathBuf> {
     liste.into_iter().filter(|p| p.is_dir()).collect()
 }
 
-/// Une correspondance : la règle (« Win32_Ransomware_WannaCry ») et le fichier.
+/// Une correspondance : la source, la règle (« Win32_Ransomware_WannaCry », ou le texte de l'heuristique) et le
+/// fichier.
 #[derive(Debug, PartialEq)]
 struct Trouve {
+    source: Source,
     regle: String,
     /// Prêt à montrer.
     fichier: String,
@@ -119,9 +122,16 @@ struct Trouve {
 }
 
 impl Trouve {
-    /// Le chemin, seulement montré, est rendu inoffensif : son nom est celui qu'a choisi l'auteur du fichier.
+    /// Une correspondance d'une règle (essais).
+    #[cfg(test)]
     fn nouveau(regle: &str, chemin: &Path) -> Trouve {
+        Trouve::de(Source::Yara, regle, chemin)
+    }
+
+    /// Le chemin, seulement montré, est rendu inoffensif : son nom est celui qu'a choisi l'auteur du fichier.
+    fn de(source: Source, regle: &str, chemin: &Path) -> Trouve {
         Trouve {
+            source,
             regle: regle.to_string(),
             fichier: affichable(&chemin.display().to_string()),
             chemin: chemin.to_path_buf(),
@@ -173,41 +183,26 @@ enum Lu {
     Non,
 }
 
-/// Un fichier passé aux règles par le moteur d'analyse (`moteur::examiner`) : ouvert sans suivre de lien et sans
-/// attendre (un tube nommé glissé à sa place bloquerait la lecture), découpé en parties (entrées d'archive, flux
-/// OLE, source des macros, octets ajoutés…), chacune passée aux règles. `Err` : rien n'a pu être conclu.
-fn analyser_fichier(regles: &Regles, chemin: &Path) -> Result<moteur::Constat, ()> {
-    moteur::examiner(chemin, regles, DELAI_PAR_FICHIER)
+/// Un fichier passé au moteur d'analyse (`moteur::examiner`) : ouvert sans suivre de lien et sans attendre (un tube
+/// nommé glissé à sa place bloquerait la lecture), découpé en parties (entrées d'archive, flux OLE, source des macros,
+/// octets ajoutés…), chacune passée à toutes les sources. `Err` : rien n'a pu être conclu.
+fn analyser_fichier(sources: &Sources<'_>, chemin: &Path) -> Result<moteur::Resultat, ()> {
+    moteur::examiner(chemin, sources, DELAI_PAR_FICHIER)
 }
 
-/// Les règles appliquées à des fichiers, par `FILS` fils, et l'empreinte de chaque fichier (et de chaque partie qu'il
-/// contient) cherchée dans celles de MalwareBazaar : (correspondances, fichiers illisibles ou trop longs à lire,
-/// fichiers vérifiés en partie seulement avec la raison).
-fn analyser_fichiers(
-    regles: &Regles,
-    empreintes: Option<&Empreintes>,
-    liste: &[PathBuf],
-) -> (Vec<Trouve>, Vec<PathBuf>, Vec<(PathBuf, String)>) {
-    par_lots(
+/// Les sources du moteur appliquées à des fichiers, par `FILS` fils, et l'empreinte de chaque fichier cherchée à part
+/// dans celles de MalwareBazaar (sa propre garde, voir `par_lots`) : (correspondances, fichiers illisibles ou trop
+/// longs à lire, fichiers vérifiés en partie seulement avec la raison). Une partie connue cachée dans une archive :
+/// l'archive entière est désignée. Les heuristiques arrivent en correspondances de source `Heuristique`.
+fn analyser_fichiers(sources: &Sources<'_>, liste: &[PathBuf]) -> (Vec<Trouve>, Vec<PathBuf>, Vec<(PathBuf, String)>) {
+    let (mut trouves, echecs, partiels) = par_lots(
         liste,
         || (),
-        |(), f| match analyser_fichier(regles, f) {
-            Ok(constat) => {
-                let mut trouves: Vec<Trouve> = constat
-                    .regles
-                    .iter()
-                    .map(|k| Trouve::nouveau(regles.nom(*k), f))
-                    .collect();
-                // Un logiciel malveillant connu caché dans une archive : l'archive entière est désignée.
-                if let Some(e) = empreintes {
-                    for contenue in constat.contenues.iter().filter(|c| e.contient(c)) {
-                        let nom = format!("{MALWAREBAZAAR}{}", empreintes::hex(contenue));
-                        if !trouves.iter().any(|t| t.regle == nom) {
-                            trouves.push(Trouve::nouveau(&nom, f));
-                        }
-                    }
-                }
-                let lu = match constat.non_verifie.into_iter().next() {
+        |(), f| match analyser_fichier(sources, f) {
+            Ok(r) => {
+                let mut trouves: Vec<Trouve> = r.trouvailles.iter().map(|t| Trouve::de(t.source, &t.nom, f)).collect();
+                trouves.extend(r.indices.iter().map(|i| Trouve::de(Source::Heuristique, &i.texte(), f)));
+                let lu = match r.non_verifie.into_iter().next() {
                     None => Lu::Tout,
                     Some(raison) => Lu::EnPartie(raison),
                 };
@@ -217,14 +212,25 @@ fn analyser_fichiers(
         },
         // Le fichier vient d'être lu : il est encore en mémoire, l'empreinte coûte peu.
         |f| {
-            empreintes
+            sources
+                .malwarebazaar
                 .map(|e| empreintes::connus(e, std::slice::from_ref(f)))
                 .unwrap_or_default()
                 .into_iter()
-                .map(|(chemin, e)| Trouve::nouveau(&format!("{MALWAREBAZAAR}{e}"), &chemin))
+                .map(|(chemin, e)| {
+                    Trouve::de(
+                        Source::EmpreinteMalwareBazaar,
+                        &format!("{}{e}", moteur::MALWAREBAZAAR),
+                        &chemin,
+                    )
+                })
                 .collect()
         },
-    )
+    );
+    // Un fichier connu de MalwareBazaar l'est par le moteur et par la garde de l'empreinte : dit une fois.
+    let mut vus = std::collections::HashSet::new();
+    trouves.retain(|t| vus.insert((t.chemin.clone(), t.regle.clone())));
+    (trouves, echecs, partiels)
 }
 
 /// `liste` répartie en `FILS` lots, un fil par lot avec son propre analyseur (`nouveau`) ; `un` passe un fichier aux
@@ -311,9 +317,10 @@ fn en_partie(cible: &Path, partiels: &[(PathBuf, String)]) -> Option<String> {
 }
 
 /// Le début du nom d'une correspondance par empreinte : « MalwareBazaar `sha256:<empreinte>` ».
-const MALWAREBAZAAR: &str = "MalwareBazaar sha256:";
+const MALWAREBAZAAR: &str = moteur::MALWAREBAZAAR;
 
-/// La famille d'une règle de ReversingLabs, lue dans son nom (« ByteCode_MSIL_Ransomware_Apis »).
+/// La famille d'une règle de ReversingLabs ou d'une signature ClamAV, lue dans son nom
+/// (« ByteCode_MSIL_Ransomware_Apis », « Win.Trojan.Agent-1 »).
 pub(crate) fn famille(regle: &str) -> &'static str {
     if regle.starts_with(MALWAREBAZAAR) {
         return tr!(
@@ -321,7 +328,10 @@ pub(crate) fn famille(regle: &str) -> &'static str {
             "known malware, exact fingerprint"
         );
     }
-    for morceau in regle.split('_') {
+    if regle.to_ascii_lowercase().contains("eicar") {
+        return tr!("fichier d'essai EICAR, inoffensif", "EICAR test file, harmless");
+    }
+    for morceau in regle.split(['_', '.', '-']) {
         let nom = match morceau {
             "Ransomware" => tr!("rançongiciel", "ransomware"),
             "Infostealer" => tr!("voleur de mots de passe", "password stealer"),
@@ -338,40 +348,36 @@ pub(crate) fn famille(regle: &str) -> &'static str {
     tr!("logiciel malveillant", "malware")
 }
 
-/// Applique les 308 règles et les empreintes de MalwareBazaar aux cibles : (correspondances, ce qui n'a pas pu être
-/// lu, les empreintes s'il y en avait). `None` : règles qui ne se compilent pas, ce qui est dit. Tout ce qui n'a pas
-/// pu être lu est rendu : jamais compté comme sain.
-fn appliquer(cibles: &[PathBuf]) -> Option<(Vec<Trouve>, Vec<String>, empreintes::Chargees, usize)> {
-    let regles = match regles() {
-        Ok(r) => r,
-        Err(e) => {
-            println!(
-                "  ✖ {}",
-                trf!(
-                    "Règles YARA impossibles à compiler : {e}",
-                    "YARA rules could not be compiled: {e}"
-                )
-            );
-            return None;
-        }
-    };
-    let empreintes = empreintes::connues();
+/// Applique les sources du moteur aux cibles : (correspondances, ce qui n'a pas pu être lu, nombre de fichiers listés).
+/// Une source attendue qui manque (règles YARA refusées ou inutilisables) est rendue avec ce qui n'a pas été lu :
+/// jamais compté comme sain.
+fn appliquer(sources: &Sources<'_>, cibles: &[PathBuf], bavard: bool) -> (Vec<Trouve>, Vec<String>, usize) {
     let mut trouves = Vec::new();
-    // Une règle refusée n'a rien vérifié : l'analyse n'est pas complète, et rien n'est dit sain.
-    let mut erreurs: Vec<String> = non_verifiees(regles).into_iter().collect();
+    let mut erreurs: Vec<String> = sources.manquantes.clone();
     let mut listes = 0usize;
     for cible in cibles {
-        trp!("  Analyse de {}…", "  Scanning {}…", chemin_affichable(cible));
+        if bavard {
+            trp!("  Analyse de {}…", "  Scanning {}…", chemin_affichable(cible));
+        }
         let mut echecs = Vec::new();
         let liste = fichiers(cible, &mut echecs);
         listes = listes.saturating_add(liste.len());
-        let (t, e, p) = analyser_fichiers(regles, empreintes.ok(), &liste);
+        let (t, e, p) = analyser_fichiers(sources, &liste);
         trouves.extend(t);
         echecs.extend(e);
         erreurs.extend(illisible(cible, &echecs));
         erreurs.extend(en_partie(cible, &p));
     }
-    Some((trouves, erreurs, empreintes, listes))
+    (trouves, erreurs, listes)
+}
+
+/// Le niveau d'une correspondance : certaine (empreinte exacte, essai) critique, famille élevée, suspect moyen.
+fn niveau(t: &Trouve) -> crate::risk::Niveau {
+    match t.source {
+        Source::Heuristique => crate::risk::Niveau::Moyen,
+        s if s.certaine() => crate::risk::Niveau::Critique,
+        _ => crate::risk::Niveau::Eleve,
+    }
 }
 
 pub fn analyser(portee: &Portee) {
@@ -385,24 +391,12 @@ pub fn analyser(portee: &Portee) {
         trp!("  Rien à analyser ici.", "  Nothing to scan here.");
         return;
     }
-    let Some((trouves, erreurs, empreintes, _)) = appliquer(&cibles) else {
-        return;
-    };
+    let sources = moteur::sources(Usage::ALaDemande);
+    let (trouves, erreurs, _) = appliquer(&sources, &cibles, true);
     println!();
-    match empreintes {
-        Err(raison) => afficher_aligne(
-            "  ⚠ ",
-            &trf!(
-                "Empreintes de MalwareBazaar {raison} : seules les 308 règles ont servi.",
-                "MalwareBazaar fingerprints {raison}: only the 308 rules were used."
-            ),
-            4,
-            "",
-        ),
-        Ok(Empreintes {
-            avertissement: Some(a), ..
-        }) => afficher_aligne("  ⚠ ", a, 4, ""),
-        Ok(_) => {}
+    // Ce qui manquait sans empêcher de conclure (base ClamAV absente, empreintes non chargées) : dit d'abord.
+    for r in &sources.reserves {
+        afficher_aligne("  ⚠ ", r, 4, "");
     }
     // Les flux de données alternatifs de NTFS (« fichier.txt:cache ») ne sont pas listés par le système de fichiers
     // comme des fichiers : un contenu qui s'y cache n'est pas lu, et c'est dit.
@@ -432,67 +426,94 @@ pub fn analyser(portee: &Portee) {
         }
     }
     if trouves.is_empty() {
-        match (erreurs.is_empty(), empreintes.ok()) {
-            (true, Some(e)) => trp!(
-                "  {VERT}✔{RESET} Aucun fichier ne correspond aux 308 règles ni aux {} empreintes de MalwareBazaar.",
-                "  {VERT}✔{RESET} No file matches the 308 rules or the {} MalwareBazaar fingerprints.",
-                e.nombre()
-            ),
-            (true, None) => trp!(
-                "  {VERT}✔{RESET} Aucun fichier ne correspond aux 308 règles.",
-                "  {VERT}✔{RESET} No file matches the 308 rules."
-            ),
-            _ => {}
+        if erreurs.is_empty() {
+            match sources.malwarebazaar {
+                Some(e) => trp!(
+                    "  {VERT}✔{RESET} Rien de connu ni de suspect (308 règles, {} empreintes de MalwareBazaar, heuristiques).",
+                    "  {VERT}✔{RESET} Nothing known or suspicious (308 rules, {} MalwareBazaar fingerprints, heuristics).",
+                    e.nombre()
+                ),
+                None => trp!(
+                    "  {VERT}✔{RESET} Rien de connu ni de suspect (308 règles, heuristiques).",
+                    "  {VERT}✔{RESET} Nothing known or suspicious (308 rules, heuristics)."
+                ),
+            }
         }
         return;
     }
     for t in &trouves {
-        let niveau = if t.regle.starts_with(MALWAREBAZAAR) {
-            crate::risk::Niveau::Critique
+        println!("  {}✖{RESET} {}", couleur(niveau(t)), t.fichier);
+        if t.source == Source::Heuristique {
+            println!("      {GRIS}{}{RESET}", trf!("suspect : {}", "suspicious: {}", t.regle));
         } else {
-            crate::risk::Niveau::Eleve
-        };
-        println!("  {}✖{RESET} {}", couleur(niveau), t.fichier);
-        println!("      {GRIS}{} ({}){RESET}", famille(&t.regle), t.regle);
+            println!("      {GRIS}{} ({}){RESET}", famille(&t.regle), affichable(&t.regle));
+        }
     }
     println!();
-    for ligne in envelopper(
-        tr!(
-            "Ne les ouvrez pas. Faites-les aussi analyser par l'antivirus (même menu). Une règle peut se tromper sur un fichier légitime : la quarantaine se défait, et en cas de doute, envoyez-le à VirusTotal.",
-            "Do not open them. Have the antivirus scan them too (same menu). A rule can be wrong about a legitimate file: the quarantine can be undone, and when in doubt, upload it to VirusTotal."
-        ),
-        LARGEUR - 2,
-    ) {
-        println!("  {ligne}");
-    }
     let mut a_isoler: Vec<(PathBuf, String)> = Vec::new();
-    for t in &trouves {
+    // Une heuristique seule ne propose jamais la quarantaine : elle dit, la personne juge.
+    for t in trouves.iter().filter(|t| t.source != Source::Heuristique) {
         if t.chemin.is_file() && !a_isoler.iter().any(|(c, _)| *c == t.chemin) {
-            let raison = if t.regle.starts_with(MALWAREBAZAAR) {
-                t.regle.clone()
-            } else {
-                format!("YARA {}", t.regle)
+            let raison = match t.source {
+                Source::EmpreinteMalwareBazaar => t.regle.clone(),
+                Source::Yara => format!("YARA {}", t.regle),
+                s => format!("{} {}", s.nom(), t.regle),
             };
             a_isoler.push((t.chemin.clone(), raison));
         }
     }
-    crate::protection::quarantaine::proposer(&a_isoler);
+    let conseil = if a_isoler.is_empty() {
+        tr!(
+            "Seulement suspect : rien de connu n'y est reconnu, et rien n'est mis en quarantaine. Faites-les analyser par l'antivirus (même menu) ; en cas de doute, ne les ouvrez pas. Un faux positif connu se fait taire dans Alertes déclarées normales.",
+            "Suspicious only: nothing known is recognized, and nothing is quarantined. Have the antivirus scan them (same menu); when in doubt, do not open them. A known false positive can be silenced in Alerts marked as normal."
+        )
+    } else {
+        tr!(
+            "Ne les ouvrez pas. Faites-les aussi analyser par l'antivirus (même menu). Une règle peut se tromper sur un fichier légitime : la quarantaine se défait, et en cas de doute, envoyez-le à VirusTotal.",
+            "Do not open them. Have the antivirus scan them too (same menu). A rule can be wrong about a legitimate file: the quarantine can be undone, and when in doubt, upload it to VirusTotal."
+        )
+    };
+    for ligne in envelopper(conseil, LARGEUR - 2) {
+        println!("  {ligne}");
+    }
+    if !a_isoler.is_empty() {
+        crate::protection::quarantaine::proposer(&a_isoler);
+    }
 }
 
-/// Un seul fichier, pour « Vérifier un fichier téléchargé » : le résultat, que l'appelant affiche.
+/// Un seul fichier, pour « Vérifier un fichier téléchargé », le courriel suspect et les plugins : le résultat du
+/// moteur de Vanguard, que l'appelant affiche. Une reconnaissance par une source de signatures l'emporte, puis le
+/// suspect, puis l'impossible ; un « rien trouvé » auquel une source manquait le dit.
 pub(crate) fn examiner(fichier: &Path) -> Examen {
-    match appliquer(&[fichier.to_path_buf()]) {
-        None => Examen::Impossible(tr!("règles YARA inutilisables", "YARA rules unusable").into()),
-        Some((trouves, _, _, _)) if !trouves.is_empty() => Examen::Trouve(
-            trouves
+    let sources = moteur::sources(Usage::ALaDemande);
+    examiner_avec(&sources, fichier)
+}
+
+fn examiner_avec(sources: &Sources<'_>, fichier: &Path) -> Examen {
+    let (trouves, erreurs, listes) = appliquer(sources, &[fichier.to_path_buf()], false);
+    let (signes, connus): (Vec<&Trouve>, Vec<&Trouve>) = trouves.iter().partition(|t| t.source == Source::Heuristique);
+    if !connus.is_empty() {
+        return Examen::Trouve(
+            connus
                 .iter()
                 .map(|t| format!("{} ({})", famille(&t.regle), t.regle))
                 .collect(),
-        ),
-        Some((_, erreurs, _, _)) if !erreurs.is_empty() => Examen::Impossible(erreurs.join(" ; ")),
-        // Aucun fichier listé : rien n'a été lu, ce n'est pas « sain ».
-        Some((_, _, _, 0)) => Examen::Impossible(tr!("aucun fichier lu", "no file read").into()),
-        Some(_) => Examen::Sain,
+        );
+    }
+    if !signes.is_empty() {
+        return Examen::Suspect(signes.iter().map(|t| t.regle.clone()).collect());
+    }
+    if !erreurs.is_empty() {
+        return Examen::Impossible(erreurs.join(" ; "));
+    }
+    // Aucun fichier listé : rien n'a été lu, ce n'est pas « sain ».
+    if listes == 0 {
+        return Examen::Impossible(tr!("aucun fichier lu", "no file read").into());
+    }
+    if sources.reserves.is_empty() {
+        Examen::Sain
+    } else {
+        Examen::SainSousReserve(sources.reserves.clone())
     }
 }
 
@@ -518,6 +539,56 @@ pub fn menu() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protection::empreintes::Empreintes;
+
+    /// Les règles données et, s'il y en a, des empreintes : ni base ClamAV, ni heuristiques, rien qui manque.
+    fn yara_seul<'a>(regles: &'a Regles, malwarebazaar: Option<&'a Empreintes>) -> Sources<'a> {
+        Sources {
+            yara: Some(regles),
+            malwarebazaar,
+            clamav: None,
+            heuristiques: false,
+            lieu: Some(crate::protection::heuristiques::Lieu::Ordinaire),
+            normale: |_| false,
+            manquantes: Vec::new(),
+            reserves: Vec::new(),
+        }
+    }
+
+    /// Le résultat d'un fichier : une détection l'emporte sur un signe, un signe seul est suspect (jamais une
+    /// détection), et un « rien trouvé » sans une source attendue le dit.
+    #[test]
+    fn examen_d_un_fichier_par_le_moteur() {
+        let essai =
+            Regles::compiler(r#"rule Win32_Trojan_Essai { strings: $a = "vanguard-essai-yara" condition: $a }"#);
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let outil = d.join("outil");
+        std::fs::write(&outil, crate::protection::heuristiques::corpus::elf_wx()).unwrap();
+        let mut sources = yara_seul(&essai, None);
+        sources.heuristiques = true;
+        assert!(
+            matches!(examiner_avec(&sources, &outil), Examen::Suspect(s) if s.len() == 1),
+            "{:?}",
+            examiner_avec(&sources, &outil)
+        );
+        let mut piege = crate::protection::heuristiques::corpus::elf_wx();
+        piege.extend(b"vanguard-essai-yara");
+        std::fs::write(&outil, piege).unwrap();
+        assert_eq!(
+            examiner_avec(&sources, &outil),
+            Examen::Trouve(vec!["cheval de Troie (Win32_Trojan_Essai)".into()])
+        );
+        std::fs::write(&outil, b"rien").unwrap();
+        assert_eq!(examiner_avec(&sources, &outil), Examen::Sain);
+        sources.reserves.push("base ClamAV absente".into());
+        assert_eq!(
+            examiner_avec(&sources, &outil),
+            Examen::SainSousReserve(vec!["base ClamAV absente".into()])
+        );
+        sources.manquantes.push("règles refusées".into());
+        assert!(matches!(examiner_avec(&sources, &outil), Examen::Impossible(r) if r.contains("règles refusées")));
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn regles_integrees() {
@@ -615,6 +686,12 @@ mod tests {
         assert_eq!(famille("Win32_Ransomware_WannaCry"), "rançongiciel");
         assert_eq!(famille("ByteCode_MSIL_Infostealer_RedLine"), "voleur de mots de passe");
         assert_eq!(famille("Linux_Inconnu_X"), "logiciel malveillant");
+        assert_eq!(famille("Win.Trojan.Agent-1"), "cheval de Troie");
+        assert_eq!(
+            famille("Doc.Downloader.Emotet-2"),
+            "téléchargeur de logiciels malveillants"
+        );
+        assert_eq!(famille(moteur::NOM_EICAR), "fichier d'essai EICAR, inoffensif");
         // Le nom du fichier est celui que son auteur a choisi : piégé, il arrive inoffensif.
         let piege = Trouve::nouveau(
             "X",
@@ -700,7 +777,7 @@ mod tests {
         let mut illisibles = Vec::new();
         let liste = fichiers(&dossier, &mut illisibles);
         assert_eq!(liste.len(), 2, "{liste:?}");
-        let (trouves, echecs, partiels) = analyser_fichiers(&essai, None, &liste);
+        let (trouves, echecs, partiels) = analyser_fichiers(&yara_seul(&essai, None), &liste);
         // Le trop gros n'est pas lu, mais il est dit.
         assert!(
             illisibles.len() == 1 && illisibles[0].ends_with("image.iso"),
@@ -719,11 +796,11 @@ mod tests {
         assert!(trouves[0].chemin.ends_with("sous/facture.exe"));
         assert_eq!(famille(&trouves[0].regle), "cheval de Troie");
         // Les vraies règles, sur le même dossier : rien.
-        assert_eq!(analyser_fichiers(regles().unwrap(), None, &liste).0, []);
+        assert_eq!(analyser_fichiers(&yara_seul(regles().unwrap(), None), &liste).0, []);
         // Avec l'empreinte de note.txt parmi celles de MalwareBazaar : trouvé par elle, sans règle.
         let note = dossier.join("note.txt");
         let connues = Empreintes::depuis(vec![empreintes::sha256(&note).unwrap()]);
-        let par_empreinte = analyser_fichiers(regles().unwrap(), Some(&connues), &liste).0;
+        let par_empreinte = analyser_fichiers(&yara_seul(regles().unwrap(), Some(&connues)), &liste).0;
         assert_eq!(par_empreinte.len(), 1);
         assert_eq!(par_empreinte[0].chemin, note);
         assert!(
@@ -740,7 +817,7 @@ mod tests {
         assert!(illisible(&dossier, &absents).is_some());
         // Un fichier qui disparaît entre la liste et la lecture : illisible, pas sain.
         let parti = dossier.join("parti.exe");
-        let (trouves, echecs, partiels) = analyser_fichiers(&essai, None, std::slice::from_ref(&parti));
+        let (trouves, echecs, partiels) = analyser_fichiers(&yara_seul(&essai, None), std::slice::from_ref(&parti));
         assert!(trouves.is_empty() && echecs == [parti] && partiels.is_empty());
         let _ = std::fs::remove_dir_all(&dossier);
     }
@@ -760,7 +837,10 @@ mod tests {
             sha2::Sha256::digest(&cache).into()
         };
         let connues = Empreintes::depuis(vec![connue]);
-        let (trouves, echecs, _) = analyser_fichiers(regles().unwrap(), Some(&connues), std::slice::from_ref(&archive));
+        let (trouves, echecs, _) = analyser_fichiers(
+            &yara_seul(regles().unwrap(), Some(&connues)),
+            std::slice::from_ref(&archive),
+        );
         assert_eq!(echecs, Vec::<PathBuf>::new());
         assert_eq!(trouves.len(), 1, "{trouves:?}");
         assert_eq!(trouves[0].chemin, archive);
@@ -807,7 +887,7 @@ mod tests {
             .collect();
         liste.insert(4, piege.clone());
         let connues = Empreintes::depuis(vec![empreintes::sha256(&piege).unwrap()]);
-        let (trouves, echecs, _) = analyser_fichiers(&essai, Some(&connues), &liste);
+        let (trouves, echecs, _) = analyser_fichiers(&yara_seul(&essai, Some(&connues)), &liste);
         assert_eq!(echecs, Vec::<PathBuf>::new());
         for f in &liste {
             assert!(
@@ -886,7 +966,7 @@ mod tests {
         std::os::unix::fs::symlink(&vrai, &lien).unwrap();
         let tube = d.join("tube");
         crate::essais::tube_nomme(&tube).unwrap();
-        assert_eq!(examiner(&vrai), Examen::Sain);
+        assert!(matches!(examiner(&vrai), Examen::Sain | Examen::SainSousReserve(_)));
         for cible in [&lien, &tube] {
             assert!(matches!(examiner(cible), Examen::Impossible(_)), "{}", cible.display());
         }
@@ -895,8 +975,8 @@ mod tests {
         assert_eq!(illisibles, std::slice::from_ref(&lien));
         // Listé comme fichier, ouvert comme lien : illisible.
         let regles = regles().unwrap();
-        assert!(analyser_fichier(regles, &lien).is_err());
-        assert!(analyser_fichier(regles, &vrai).is_ok());
+        assert!(analyser_fichier(&yara_seul(regles, None), &lien).is_err());
+        assert!(analyser_fichier(&yara_seul(regles, None), &vrai).is_ok());
         let _ = std::fs::remove_dir_all(&d);
     }
 

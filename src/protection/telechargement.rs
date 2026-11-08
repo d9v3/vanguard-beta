@@ -592,35 +592,26 @@ fn verifier_le_nom(chemin: &Path, nom: &str, v: &mut Verification) {
     }
 }
 
-/// YARA, puis l'antivirus du système.
+/// Le moteur de Vanguard (empreintes, YARA, ClamAV, heuristiques), puis l'antivirus du système.
 fn analyser(chemin: &Path, v: &mut Verification) {
     section(tr!("Analyse", "Scan"));
     let antivirus = if cfg!(windows) { "Defender" } else { "ClamAV" };
     for (moteur, examen) in [
-        ("YARA", crate::protection::yara::examiner(chemin)),
+        ("Vanguard", crate::protection::yara::examiner(chemin)),
         (antivirus, crate::protection::antivirus::examiner(chemin)),
     ] {
+        let (niveau, texte) = examen.ligne(moteur);
         match examen {
-            Examen::Sain => ligne(None, &trf!("{moteur} : rien trouvé.", "{moteur}: nothing found.")),
-            Examen::Trouve(noms) => {
+            Examen::Sain | Examen::SainSousReserve(_) => {}
+            Examen::Trouve(_) => {
                 v.detecte = true;
                 v.pire = Some(Niveau::Critique);
-                ligne(
-                    Some(Niveau::Critique),
-                    &trf!("{moteur} : {}", "{moteur}: {}", resume(&noms, 3, ", ")),
-                );
             }
-            Examen::Impossible(raison) => {
-                v.incomplet.push(moteur);
-                ligne(
-                    Some(Niveau::Moyen),
-                    &trf!(
-                        "{moteur} : impossible à vérifier ({raison}).",
-                        "{moteur}: could not check ({raison})."
-                    ),
-                );
-            }
+            // Une heuristique seule : dite, au niveau moyen ; ni « logiciel malveillant », ni geste automatique.
+            Examen::Suspect(_) => v.pire = v.pire.max(Some(Niveau::Moyen)),
+            Examen::Impossible(_) => v.incomplet.push(moteur),
         }
+        ligne(niveau, &texte);
     }
 }
 

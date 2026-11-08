@@ -1,6 +1,6 @@
 //! Les pièces jointes, jugées sans jamais être ouvertes : leur nom (programme, double extension, caractère qui retourne
 //! l'écriture), ce que leur contenu montre de lui-même (archive à mot de passe, macros, PDF qui lance du code, objet
-//! intégré dans un RTF), puis YARA et l'antivirus. Pour ces deux moteurs, chaque pièce est écrite dans un dossier
+//! intégré dans un RTF), puis le moteur de Vanguard et l'antivirus. Pour ces deux moteurs, chaque pièce est écrite dans un dossier
 //! jetable, sous un nom choisi par Vanguard (jamais celui de l'expéditeur, qui pourrait sortir du dossier), lisible
 //! par l'utilisateur seul, jamais exécutable, et le dossier est effacé à la fin, même sur erreur.
 
@@ -698,7 +698,7 @@ pub(crate) fn passer_aux_moteurs(
     }
 }
 
-/// Les vrais moteurs : YARA, puis l'antivirus. Un antivirus absent n'est proposé qu'une fois (l'installer ? non) : sa
+/// Les vrais moteurs : celui de Vanguard (`yara::examiner` → `moteur::examiner`), puis l'antivirus. Un antivirus absent n'est proposé qu'une fois (l'installer ? non) : sa
 /// réponse vaut pour les pièces suivantes, au lieu de reposer la question à chacune. Seule une raison qui vaut pour
 /// tous les fichiers est reportée (`antivirus::vaut_pour_tous` : moteur absent, MpCmdRun qui ne se lance pas ou ne
 /// finit pas) ; une raison propre à une pièce (sautée ou exclue, illisible, verrouillée, trop grosse, compte rendu muet
@@ -722,7 +722,7 @@ pub(crate) fn moteurs(
             }
             e
         };
-        vec![("YARA".into(), yara(chemin)), (nom_antivirus.into(), av)]
+        vec![("Vanguard".into(), yara(chemin)), (nom_antivirus.into(), av)]
     }
 }
 

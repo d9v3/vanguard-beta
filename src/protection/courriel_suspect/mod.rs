@@ -4,7 +4,7 @@
 //! expéditeur (nom affiché qui imite une marque ou cache une autre adresse, réponses envoyées ailleurs, domaine qui
 //! imite), le résultat SPF, DKIM et DMARC écrit par le fournisseur de la personne (jamais celui qu'un expéditeur
 //! glisse plus bas), chaque lien (texte montré contre vraie adresse, avec les règles de « Ce lien est-il dangereux ? »)
-//! et les pièces jointes (nom, contenu, YARA, antivirus, dans un dossier jetable). Après accord seulement, les noms de
+//! et les pièces jointes (nom, contenu, moteur de Vanguard, antivirus, dans un dossier jetable). Après accord seulement, les noms de
 //! domaine sortent de l'ordinateur pour leur âge et les listes publiques. Le verdict n'est jamais « sûr ».
 //!
 //! Différent de « Mon courriel a-t-il fuité ? » (`fuites`), qui cherche une adresse dans les fuites de données.
@@ -66,7 +66,11 @@ impl Constats {
                 self.pieces
                     .iter()
                     .flat_map(|p| &p.moteurs)
-                    .filter_map(|(_, e)| matches!(e, Examen::Trouve(_)).then_some(Niveau::Critique)),
+                    .filter_map(|(_, e)| match e {
+                        Examen::Trouve(_) => Some(Niveau::Critique),
+                        Examen::Suspect(_) => Some(Niveau::Moyen),
+                        _ => None,
+                    }),
             )
             .filter(|n| *n > Niveau::Info)
             .max()
@@ -665,20 +669,8 @@ fn afficher_pieces(c: &Constats) {
         println!("  {ACCENT}{nom}{RESET} {GRIS}({precision}){RESET}");
         lignes(&p.signes);
         for (moteur, examen) in &p.moteurs {
-            match examen {
-                Examen::Sain => ligne(None, &trf!("{moteur} : rien trouvé.", "{moteur}: nothing found.")),
-                Examen::Trouve(noms) => ligne(
-                    Some(Niveau::Critique),
-                    &trf!("{moteur} : {}", "{moteur}: {}", resume(noms, 3, ", ")),
-                ),
-                Examen::Impossible(raison) => ligne(
-                    Some(Niveau::Moyen),
-                    &trf!(
-                        "{moteur} : impossible à vérifier ({raison}).",
-                        "{moteur}: could not check ({raison})."
-                    ),
-                ),
-            }
+            let (niveau, texte) = examen.ligne(moteur);
+            ligne(niveau, &texte);
         }
     }
 }

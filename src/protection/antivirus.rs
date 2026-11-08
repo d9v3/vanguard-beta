@@ -19,10 +19,52 @@ fn home() -> PathBuf {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Examen {
     Sain,
+    /// Rien trouvé, mais une source attendue manquait (base ClamAV absente ou écartée, empreintes de MalwareBazaar
+    /// non chargées) : le « rien trouvé » est dit avec ce qui manquait, jamais comme un sain sans réserve.
+    SainSousReserve(Vec<String>),
     /// Détections : nom de la menace ou de la famille.
     Trouve(Vec<String>),
+    /// Des heuristiques seulement (moteur de Vanguard) : à regarder, jamais mis en quarantaine de lui-même.
+    Suspect(Vec<String>),
     /// Pas pu analyser, avec la raison : jamais compté comme sain.
     Impossible(String),
+}
+
+impl Examen {
+    /// La ligne à montrer pour ce moteur : (niveau, texte). Une détection est critique, un suspect moyen, une analyse
+    /// impossible moyenne (rien n'est conclu).
+    pub(crate) fn ligne(&self, moteur: &str) -> (Option<Niveau>, String) {
+        match self {
+            Examen::Sain => (None, trf!("{moteur} : rien trouvé.", "{moteur}: nothing found.")),
+            Examen::SainSousReserve(reserves) => (
+                None,
+                trf!(
+                    "{moteur} : rien trouvé (⚠ {}).",
+                    "{moteur}: nothing found (⚠ {}).",
+                    affichable(&reserves.join(" ; "))
+                ),
+            ),
+            Examen::Trouve(noms) => (
+                Some(Niveau::Critique),
+                trf!("{moteur} : {}", "{moteur}: {}", resume(noms, 3, ", ")),
+            ),
+            Examen::Suspect(signes) => (
+                Some(Niveau::Moyen),
+                trf!(
+                    "{moteur} : suspect, rien de connu ({}).",
+                    "{moteur}: suspicious, nothing known ({}).",
+                    resume(signes, 2, " ; ")
+                ),
+            ),
+            Examen::Impossible(raison) => (
+                Some(Niveau::Moyen),
+                trf!(
+                    "{moteur} : impossible à vérifier ({raison}).",
+                    "{moteur}: could not check ({raison})."
+                ),
+            ),
+        }
+    }
 }
 
 /// Ce que couvre une analyse.

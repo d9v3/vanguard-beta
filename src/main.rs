@@ -5522,6 +5522,8 @@ mod tests_menu {
             ("src/protection/isoler.rs", 1),
             ("src/protection/antivirus.rs", 1),
             ("src/protection/cle.rs", 1),
+            // Le programme : le lieu d'un fichier pour les heuristiques (dossier temporaire).
+            ("src/protection/moteur.rs", 1),
             ("src/traces/windows.rs", 2),
             // Le programme (dossier risqué) et un essai qui juge le dossier temporaire du compte.
             ("src/protection/sortantes.rs", 2),

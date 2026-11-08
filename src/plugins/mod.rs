@@ -1043,40 +1043,38 @@ fn decrire(programme: &str, arguments: &[String]) -> String {
         .join(" ")
 }
 
-/// L'analyse d'un plugin ou d'un script avant l'accord : les règles YARA et les empreintes de MalwareBazaar de
-/// Vanguard, sur la copie qui sera approuvée. Une correspondance : `Err`, avec la règle (refusé). Une analyse
-/// impossible : dite, et l'accord reste à demander. Rend la ligne à montrer.
+/// L'analyse d'un plugin ou d'un script avant l'accord : le moteur de Vanguard (empreintes de MalwareBazaar, règles
+/// YARA, base ClamAV installée, heuristiques), sur la copie qui sera approuvée. Une détection : `Err`, avec son nom
+/// (refusé). Un suspect, une analyse impossible ou une source qui manquait : dits, et l'accord reste à demander. Rend
+/// la ligne à montrer.
 fn analyser_avant_accord(chemin: &Path) -> Result<String, String> {
     use crate::protection::antivirus::Examen;
-    let bazaar = crate::protection::empreintes::connues();
     match crate::protection::yara::examiner(chemin) {
-        Examen::Trouve(regles) => Err(trf!(
+        Examen::Trouve(noms) => Err(trf!(
             "Refusé : l'analyse de Vanguard reconnaît un logiciel malveillant ({}). Rien n'a été approuvé.",
             "Refused: Vanguard's scan recognizes malware ({}). Nothing was approved.",
-            regles.iter().map(|r| affichable(r)).collect::<Vec<_>>().join(", ")
+            noms.iter().map(|r| affichable(r)).collect::<Vec<_>>().join(", ")
+        )),
+        Examen::Suspect(signes) => Ok(trf!(
+            "⚠ suspect, rien de connu ({}) : à regarder avant d'accepter",
+            "⚠ suspicious, nothing known ({}): look before accepting",
+            affichable(&signes.join(" ; "))
         )),
         Examen::Impossible(pourquoi) => Ok(trf!(
             "⚠ analyse impossible ({}) : rien ne dit qu'il est sain",
             "⚠ scan not possible ({}): nothing says it is safe",
             affichable(&pourquoi)
         )),
-        Examen::Sain => Ok(match bazaar {
-            Ok(e) => match &e.avertissement {
-                None => tr!(
-                    "aucune règle YARA ni empreinte MalwareBazaar ne correspond",
-                    "no YARA rule nor MalwareBazaar fingerprint matches"
-                )
-                .to_string(),
-                Some(a) => trf!(
-                    "aucune règle YARA ni empreinte MalwareBazaar ne correspond (⚠ {a})",
-                    "no YARA rule nor MalwareBazaar fingerprint matches (⚠ {a})"
-                ),
-            },
-            Err(raison) => trf!(
-                "aucune règle YARA ne correspond (⚠ empreintes MalwareBazaar {raison} : non comparées)",
-                "no YARA rule matches (⚠ MalwareBazaar fingerprints {raison}: not compared)"
-            ),
-        }),
+        Examen::Sain => Ok(tr!(
+            "rien de connu ne correspond (empreintes, règles YARA, signatures ClamAV, heuristiques)",
+            "nothing known matches (fingerprints, YARA rules, ClamAV signatures, heuristics)"
+        )
+        .to_string()),
+        Examen::SainSousReserve(reserves) => Ok(trf!(
+            "rien de connu ne correspond (⚠ {})",
+            "nothing known matches (⚠ {})",
+            affichable(&reserves.join(" ; "))
+        )),
     }
 }
 

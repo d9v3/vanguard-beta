@@ -23,6 +23,7 @@ pub(crate) mod empreintes;
 pub mod environnement;
 pub mod espions;
 pub mod fuites;
+pub(crate) mod heuristiques;
 pub mod integrite;
 pub(crate) mod isolement;
 pub mod isoler;

@@ -273,7 +273,6 @@ impl Certitude {
 /// La marque d'essai EICAR, masquée octet par octet : ni le dépôt ni le binaire compilé ne la contiennent d'un bloc
 /// (un antivirus qui les lirait mettrait Vanguard en quarantaine). Démasquée à l'exécution par une clé que le
 /// compilateur ne peut pas suivre (`black_box`) : il ne peut pas la ranger en clair parmi les constantes.
-#[cfg(any(target_os = "linux", test))]
 const MARQUE_MASQUEE: [u8; 68] = [
     0x02, 0x6f, 0x15, 0x7b, 0x0a, 0x7f, 0x1a, 0x1b, 0x0a, 0x01, 0x6e, 0x06, 0x0a, 0x00, 0x02, 0x6f, 0x6e, 0x72, 0x0a,
     0x04, 0x73, 0x6d, 0x19, 0x19, 0x73, 0x6d, 0x27, 0x7e, 0x1f, 0x13, 0x19, 0x1b, 0x08, 0x77, 0x09, 0x0e, 0x1b, 0x14,
@@ -282,10 +281,26 @@ const MARQUE_MASQUEE: [u8; 68] = [
 ];
 
 /// La marque d'essai EICAR, démasquée.
-#[cfg(any(target_os = "linux", test))]
 pub(crate) fn marque_d_essai() -> Vec<u8> {
     let cle = std::hint::black_box(0x5Au8);
     MARQUE_MASQUEE.iter().map(|o| o ^ cle).collect()
+}
+
+/// Le début d'un exécutable ELF, ou PE (« MZ ») : la marque d'essai n'est certaine que là (P23), jamais dans un
+/// texte (un document qui cite la chaîne, une page qui l'explique).
+fn tete_executable(tete: &[u8]) -> bool {
+    tete.starts_with(b"\x7fELF") || tete.starts_with(b"MZ")
+}
+
+/// Un contenu déjà en mémoire (une partie lue par le moteur commun) : un exécutable ELF ou PE qui porte la marque
+/// d'essai, « certain (essai) » (P23). Le même jugement que le garde des lancements (`Guetteur`, qui le fait en
+/// hachant), une recherche d'octets sans lecteur de format.
+pub(crate) fn porte_la_marque_d_essai(octets: &[u8]) -> bool {
+    if !tete_executable(octets) {
+        return false;
+    }
+    let marque = marque_d_essai();
+    octets.windows(marque.len()).any(|f| f == marque.as_slice())
 }
 
 /// Lit ce qui est haché et y cherche la marque d'essai au passage, sans relire le fichier : une fenêtre glissante
@@ -315,7 +330,7 @@ impl<R: std::io::Read> Guetteur<R> {
 
     /// Un exécutable (ELF, ou PE qui commence par « MZ ») qui porte la marque.
     fn marque(&self) -> bool {
-        self.trouvee && (self.tete.starts_with(b"\x7fELF") || self.tete.starts_with(b"MZ"))
+        self.trouvee && tete_executable(&self.tete)
     }
 }
 

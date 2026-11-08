@@ -19,8 +19,8 @@
 //! Mémoire (P21) : la base complète (`Mode::Complete`) pour une analyse à la demande ; les empreintes seules
 //! (`Mode::Empreintes`) pour ce qui tourne en continu. Le garde (L3) et le veilleur prendront `charger` et
 //! `par_empreintes` (la base est surtout faite de MD5 : 542 000 empreintes en nov. 2026, dont 227 SHA-256 seulement),
-//! `par_sha256` et `liste_sha256` n'en couvrant qu'une part ; le moteur commun (AV4), `examiner`. Rien ne les appelle
-//! encore.
+//! `par_sha256` et `liste_sha256` n'en couvrant qu'une part. Le moteur commun (`moteur::examiner`) juge chaque partie
+//! d'un fichier par le `Juge`, pendant sa lecture avec les autres sources.
 
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 
@@ -610,13 +610,16 @@ pub(crate) struct Trouvaille {
     /// La partie, depuis le fichier (« archive.zip › programme.exe »).
     pub partie: String,
     pub nom: String,
+    /// Trouvée par l'empreinte de la partie entière (.hdb/.hsb : ce contenu exact), pas par un motif ni une section :
+    /// le moteur commun la dit certaine.
+    pub entiere: bool,
 }
 
 /// Ce que la base a vu dans un fichier lu.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Constat {
     pub trouvailles: Vec<Trouvaille>,
-    /// Ce qui n'a pas été lu, une phrase par manque, comme `moteur::Constat`. Vide : tout le fichier a été vérifié.
+    /// Ce qui n'a pas été lu, une phrase par manque, comme `moteur::Resultat`. Vide : tout le fichier a été vérifié.
     pub non_verifie: Vec<String>,
 }
 
@@ -687,83 +690,146 @@ fn point_entree_pe(s: &crate::pe::StructurePe) -> Option<u64> {
 /// rien n'est conclu. Une partie dans une liste blanche de la base retire ce qui est trouvé en elle et dans ce
 /// qu'elle contient.
 pub(crate) fn examiner(chemin: &Path, base: &Base, delai: Duration) -> Result<Constat, ()> {
-    if administrateur() {
-        return Err(());
-    }
-    examiner_sans_garde(chemin, base, delai)
+    examiner_avec(chemin, Juge::nouveau(base).ok_or(())?, delai)
 }
 
-/// Ce qui désigne une partie dans l'arbre de l'analyse : son parent, son chemin et son empreinte.
-type Designation = (Option<usize>, String, Option<[u8; 32]>);
+/// Ce qui désigne une partie dans l'arbre de l'analyse : son parent, son chemin et son empreinte (le visiteur ne
+/// reçoit pas son numéro, et voit les enfants avant leur parent).
+pub(crate) type Designation = (Option<usize>, String, Option<[u8; 32]>);
 
-fn examiner_sans_garde(chemin: &Path, base: &Base, delai: Duration) -> Result<Constat, ()> {
+/// Le numéro d'une partie désignée, dans l'analyse finie.
+pub(crate) fn numero(analyse: &analyse::Analyse, cle: &Designation) -> Option<usize> {
+    analyse
+        .parties
+        .iter()
+        .position(|p| p.parent == cle.0 && p.chemin == cle.1 && p.sha256 == cle.2)
+}
+
+/// Le jugement de la base partie par partie, pendant la lecture d'un fichier par le socle : le moteur commun
+/// (`moteur::examiner`) le mène avec ses autres sources, sans relire le fichier ; `conclure` applique ensuite les
+/// listes blanches de la base (à ses seules trouvailles).
+/// Une partie jugée : liste blanche (`None`), ou ses noms avec « par l'empreinte entière ».
+type Vue = (Designation, Option<Vec<(String, bool)>>);
+
+pub(crate) struct Juge<'a> {
+    base: &'a Base,
+    /// Chaque partie jugée qui a donné quelque chose : liste blanche, ou noms (avec « par l'empreinte entière »).
+    vues: Vec<Vue>,
+    echec: bool,
+}
+
+impl<'a> Juge<'a> {
+    /// `None` : Vanguard tourne en administrateur (P22), la base n'est pas appliquée.
+    pub(crate) fn nouveau(base: &'a Base) -> Option<Juge<'a>> {
+        (!administrateur()).then_some(Juge {
+            base,
+            vues: Vec::new(),
+            echec: false,
+        })
+    }
+
+    /// Sans la garde de l'administrateur : un essai lancé par root (espace de noms de verifier.sh) juge aussi.
+    #[cfg(test)]
+    pub(crate) fn sans_garde(base: &'a Base) -> Juge<'a> {
+        Juge {
+            base,
+            vues: Vec::new(),
+            echec: false,
+        }
+    }
+
+    /// Juge une partie lue (ses faits et détails déjà remplis).
+    pub(crate) fn partie(&mut self, p: &Partie, octets: &[u8], echeance: Option<Instant>) {
+        if self.echec {
+            return;
+        }
+        let designation = || (p.parent, p.chemin.clone(), p.sha256);
+        match self.base.signatures.juger(octets, &cadre(p), echeance) {
+            Ok(Verdict::Trouvees(n)) if n.is_empty() => {}
+            Ok(Verdict::Trouvees(noms)) => {
+                // Rare (une trouvaille) : l'empreinte entière se refait pour dire laquelle vient d'elle.
+                let entiere = u64::try_from(octets.len()).ok().and_then(|taille| {
+                    self.base
+                        .signatures
+                        .par_empreintes(&super::hashes::Empreintes::de(octets), taille)
+                        .map(str::to_string)
+                });
+                let noms = noms
+                    .into_iter()
+                    .map(|n| {
+                        let e = entiere.as_deref() == Some(n.as_str());
+                        (n, e)
+                    })
+                    .collect();
+                self.vues.push((designation(), Some(noms)));
+            }
+            Ok(Verdict::Blanche) => self.vues.push((designation(), None)),
+            Err(_) => self.echec = true,
+        }
+    }
+
+    /// Les trouvailles hors des parties en liste blanche (et de ce qu'elles contiennent), et le numéro de chaque
+    /// partie en liste blanche. `Err` : l'examen n'a pas fini à temps, rien n'est conclu.
+    pub(crate) fn conclure(self, analyse: &analyse::Analyse) -> Result<(Vec<Trouvaille>, Vec<usize>), ()> {
+        if self.echec {
+            return Err(());
+        }
+        let blanches: Vec<usize> = self
+            .vues
+            .iter()
+            .filter(|(_, v)| v.is_none())
+            .filter_map(|(c, _)| numero(analyse, c))
+            .collect();
+        let mut trouvailles: Vec<Trouvaille> = Vec::new();
+        for (cle, v) in &self.vues {
+            let (Some(noms), Some(i)) = (v, numero(analyse, cle)) else {
+                continue;
+            };
+            if sous_une_blanche(analyse, &blanches, i) {
+                continue;
+            }
+            let partie = analyse.chemin_complet(i);
+            for (nom, entiere) in noms {
+                let t = Trouvaille {
+                    partie: partie.clone(),
+                    nom: nom.clone(),
+                    entiere: *entiere,
+                };
+                if !trouvailles.contains(&t) {
+                    trouvailles.push(t);
+                }
+            }
+        }
+        Ok((trouvailles, blanches))
+    }
+}
+
+/// La partie `i` est-elle dans une partie en liste blanche (elle-même comprise) ?
+pub(crate) fn sous_une_blanche(analyse: &analyse::Analyse, blanches: &[usize], i: usize) -> bool {
+    let mut k = Some(i);
+    // Chaque parent précède son enfant : la remontée finit en autant de pas qu'il y a de parties.
+    for _ in 0..=analyse.parties.len() {
+        let Some(j) = k else { return false };
+        if blanches.contains(&j) {
+            return true;
+        }
+        k = analyse.parties.get(j).and_then(|p| p.parent);
+    }
+    false
+}
+
+fn examiner_avec(chemin: &Path, mut juge: Juge<'_>, delai: Duration) -> Result<Constat, ()> {
     let echeance = Instant::now().checked_add(delai);
     let bornes = Bornes {
         delai,
         ..Bornes::default()
     };
-    // Chaque partie jugée, par ce qui la désigne dans l'arbre (le visiteur ne reçoit pas son numéro).
-    let mut vues: Vec<(Designation, Verdict)> = Vec::new();
-    let mut echec = false;
-    let mut visiteur = |p: &Partie, octets: &[u8]| {
-        if echec {
-            return;
-        }
-        match base.signatures.juger(octets, &cadre(p), echeance) {
-            Ok(Verdict::Trouvees(n)) if n.is_empty() => {}
-            Ok(v) => vues.push(((p.parent, p.chemin.clone(), p.sha256), v)),
-            Err(_) => echec = true,
-        }
-    };
+    let mut visiteur = |p: &Partie, octets: &[u8]| juge.partie(p, octets, echeance);
     let analyse = analyse::analyser_fichier(chemin, &bornes, &mut visiteur).map_err(|_| ())?;
-    if echec {
-        return Err(());
-    }
-    let numero = |cle: &(Option<usize>, String, Option<[u8; 32]>)| {
-        analyse
-            .parties
-            .iter()
-            .position(|p| p.parent == cle.0 && p.chemin == cle.1 && p.sha256 == cle.2)
-    };
-    let blanches: Vec<usize> = vues
-        .iter()
-        .filter(|(_, v)| *v == Verdict::Blanche)
-        .filter_map(|(c, _)| numero(c))
-        .collect();
-    let sous_une_blanche = |i: usize| {
-        let mut k = Some(i);
-        // Chaque parent précède son enfant : la remontée finit en autant de pas qu'il y a de parties.
-        for _ in 0..=analyse.parties.len() {
-            let Some(j) = k else { return false };
-            if blanches.contains(&j) {
-                return true;
-            }
-            k = analyse.parties.get(j).and_then(|p| p.parent);
-        }
-        false
-    };
-    let mut trouvailles: Vec<Trouvaille> = Vec::new();
-    for (cle, v) in &vues {
-        let (Verdict::Trouvees(noms), Some(i)) = (v, numero(cle)) else {
-            continue;
-        };
-        if sous_une_blanche(i) {
-            continue;
-        }
-        let partie = analyse.chemin_complet(i);
-        for nom in noms {
-            let t = Trouvaille {
-                partie: partie.clone(),
-                nom: nom.clone(),
-            };
-            if !trouvailles.contains(&t) {
-                trouvailles.push(t);
-            }
-        }
-    }
+    let (trouvailles, blanches) = juge.conclure(&analyse)?;
     let mut non_verifie: Vec<String> = Vec::new();
     for (i, r) in analyse.manques() {
-        if moteur::laisse_non_verifie(r) && !sous_une_blanche(i) {
+        if moteur::laisse_non_verifie(r) && !sous_une_blanche(&analyse, &blanches, i) {
             let phrase = format!("{} : {}", analyse.chemin_complet(i), moteur::raison(r));
             if !non_verifie.contains(&phrase) {
                 non_verifie.push(phrase);
@@ -774,6 +840,66 @@ fn examiner_sans_garde(chemin: &Path, base: &Base, delai: Duration) -> Result<Co
         trouvailles,
         non_verifie,
     })
+}
+
+/// Une base fabriquée pour les essais d'autres modules (le moteur commun).
+#[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
+pub(crate) mod essais {
+    use super::*;
+    use crate::protection::clamav::commun::hex;
+    use crate::protection::clamav::hashes::Empreintes;
+
+    /// Une base dans `dossier` (créé) : une empreinte de fichier entier (.hdb) par `(contenu, nom)` de `entiers`, une
+    /// signature de corps (.ndb) par `(nom, motif)` de `corps`.
+    pub(crate) fn base(dossier: &Path, entiers: &[(&[u8], &str)], corps: &[(&str, &[u8])]) -> Base {
+        use std::fmt::Write as _;
+        std::fs::create_dir_all(dossier).unwrap();
+        let mut hdb = String::new();
+        for (c, nom) in entiers {
+            let _ = writeln!(hdb, "{}:{}:{nom}", hex(&Empreintes::de(c).md5), c.len());
+        }
+        let mut ndb = String::new();
+        for (nom, m) in corps {
+            let _ = writeln!(ndb, "{nom}:0:*:{}", hex(m));
+        }
+        let main = crate::protection::clamav::cvd::essais::base(
+            "main",
+            3,
+            &[("main.hdb", hdb.as_bytes()), ("main.ndb", ndb.as_bytes())],
+            true,
+        );
+        std::fs::write(dossier.join("main.cvd"), main).unwrap();
+        let options = Options {
+            mode: super::signatures::Mode::Complete,
+            pua: false,
+        };
+        charger_dans(dossier, options, &regles(dossier)).unwrap()
+    }
+
+    #[cfg(unix)]
+    fn regles(dossier: &Path) -> Regles {
+        use std::os::unix::fs::MetadataExt;
+        let mut proprietaires = vec![crate::socle::uid()];
+        for parent in std::fs::canonicalize(dossier).unwrap().ancestors() {
+            proprietaires.push(std::fs::symlink_metadata(parent).unwrap().uid());
+        }
+        Regles {
+            proprietaires,
+            comptes: vec![u32::MAX - 7],
+            groupes: Vec::new(),
+            ecrivable: |_| false,
+        }
+    }
+
+    #[cfg(windows)]
+    fn regles(_: &Path) -> Regles {
+        Regles { ecrivable: |_| false }
+    }
 }
 
 #[allow(
@@ -867,6 +993,11 @@ mod tests {
         c.trouvailles.iter().map(|t| t.nom.as_str()).collect()
     }
 
+    /// `examiner` sans la garde de l'administrateur : un essai lancé par root (espace de noms) juge aussi.
+    fn examiner_sans_garde(chemin: &Path, base: &Base, delai: Duration) -> Result<Constat, ()> {
+        examiner_avec(chemin, Juge::sans_garde(base), delai)
+    }
+
     fn examiner_octets(base: &Base, dossier: &Path, nom: &str, octets: &[u8]) -> Constat {
         let f = dossier.join(nom);
         std::fs::write(&f, octets).unwrap();
@@ -905,9 +1036,13 @@ mod tests {
             c.trouvailles,
             [Trouvaille {
                 partie: "a.zip › lisezmoi.txt".into(),
-                nom: "Essai.Eicar-1".into()
+                nom: "Essai.Eicar-1".into(),
+                entiere: true,
             }]
         );
+        // Un motif de corps n'est pas l'empreinte du contenu entier : le moteur commun en fait une famille.
+        let corps = examiner_octets(&base, &f, "corps", b"xx marque-corps xx");
+        assert!(!corps.trouvailles[0].entiere);
         assert_eq!(
             noms(&examiner_octets(&base, &f, "corps", b"xx marque-corps xx")),
             ["Essai.Corps-1"]
