@@ -657,7 +657,19 @@ fn reponse(ligne: &str, notes: &[String]) -> String {
     notes
         .iter()
         .find_map(|n| n.strip_prefix(ligne)?.trim().strip_prefix('(')?.strip_suffix(')'))
-        .map_or_else(|| notes.join(" ; "), crate::protection::blocage::ordres::note_lisible)
+        .map_or_else(
+            // Sans précision, la note n'est que la ligne de l'ordre : rien à dire de plus (essai QEMU de R4, qui
+            // montrait « Isolement levé (vanguard:lever-isolement) »).
+            || {
+                notes
+                    .iter()
+                    .filter(|n| n.trim() != ligne)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" ; ")
+            },
+            crate::protection::blocage::ordres::note_lisible,
+        )
 }
 
 /// Confie un ordre de l'isolement à l'élévation (toujours : il faut les droits d'administrateur), le note au journal,
@@ -811,6 +823,15 @@ mod tests {
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn reponse_sans_la_ligne_brute() {
+        let l = "vanguard:lever-isolement";
+        assert_eq!(reponse(l, &[l.to_string()]), "");
+        assert_eq!(reponse(l, &[format!("{l} (table absente)")]), "table absente");
+        assert_eq!(reponse(l, &[l.to_string(), "autre chose".to_string()]), "autre chose");
+        assert_eq!(reponse(l, &[]), "");
     }
 
     fn sessions(v: &[&str]) -> Sessions {
