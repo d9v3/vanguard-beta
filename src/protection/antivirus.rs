@@ -24,13 +24,30 @@ pub(crate) enum Examen {
     SainSousReserve(Vec<String>),
     /// Détections : nom de la menace ou de la famille.
     Trouve(Vec<String>),
-    /// Des heuristiques seulement (moteur de Vanguard) : à regarder, jamais mis en quarantaine de lui-même.
-    Suspect(Vec<String>),
+    /// Des heuristiques seulement (moteur de Vanguard) : à regarder, jamais mis en quarantaine de lui-même. Un signe
+    /// ne fait pas taire ce qui n'a pas pu être vérifié : `manques` (partie non lue, source attendue absente) et
+    /// `reserves` (source facultative absente) restent dits à côté du « suspect ».
+    Suspect {
+        signes: Vec<String>,
+        manques: Vec<String>,
+        reserves: Vec<String>,
+    },
     /// Pas pu analyser, avec la raison : jamais compté comme sain.
     Impossible(String),
 }
 
 impl Examen {
+    /// Ce qu'un suspect n'a pas pu vérifier (manques puis réserves), en une phrase ; `None` s'il n'y en a pas ou si
+    /// l'examen n'est pas un suspect. Partagé par l'écran, le courriel, les plugins et le résultat versé.
+    pub(crate) fn non_verifie_du_suspect(&self) -> Option<String> {
+        match self {
+            Examen::Suspect { manques, reserves, .. } if !(manques.is_empty() && reserves.is_empty()) => {
+                Some(manques.iter().chain(reserves).cloned().collect::<Vec<_>>().join(" ; "))
+            }
+            _ => None,
+        }
+    }
+
     /// La ligne à montrer pour ce moteur : (niveau, texte). Une détection est critique, un suspect moyen, une analyse
     /// impossible moyenne (rien n'est conclu).
     pub(crate) fn ligne(&self, moteur: &str) -> (Option<Niveau>, String) {
@@ -48,12 +65,15 @@ impl Examen {
                 Some(Niveau::Critique),
                 trf!("{moteur} : {}", "{moteur}: {}", resume(noms, 3, ", ")),
             ),
-            Examen::Suspect(signes) => (
+            Examen::Suspect { signes, .. } => (
                 Some(Niveau::Moyen),
                 trf!(
-                    "{moteur} : suspect, rien de connu ({}).",
-                    "{moteur}: suspicious, nothing known ({}).",
-                    resume(signes, 2, " ; ")
+                    "{moteur} : suspect, rien de connu ({}){}.",
+                    "{moteur}: suspicious, nothing known ({}){}.",
+                    resume(signes, 2, " ; "),
+                    self.non_verifie_du_suspect()
+                        .map(|n| trf!(" ; non vérifié : {}", "; not checked: {}", affichable(&n)))
+                        .unwrap_or_default()
                 ),
             ),
             Examen::Impossible(raison) => (

@@ -36,9 +36,15 @@ pub(super) fn resultat(c: &Constats, pire_en_ligne: Option<Niveau>, debut: Debut
     for p in &c.pieces {
         for (moteur, e) in &p.moteurs {
             let (niveau, detection) = match e {
-                Examen::Trouve(d) => (Niveau::Critique, d),
-                // Une heuristique seule : une alerte moyenne, pas une détection.
-                Examen::Suspect(d) => (Niveau::Moyen, d),
+                Examen::Trouve(d) => (Niveau::Critique, d.join(", ")),
+                // Une heuristique seule : une alerte moyenne, pas une détection ; ce qu'elle n'a pas pu vérifier suit.
+                Examen::Suspect { signes, .. } => (
+                    Niveau::Moyen,
+                    match e.non_verifie_du_suspect() {
+                        Some(n) => crate::trf!("{} (non vérifié : {n})", "{} (not checked: {n})", signes.join(", ")),
+                        None => signes.join(", "),
+                    },
+                ),
                 _ => continue,
             };
             {
@@ -51,7 +57,7 @@ pub(super) fn resultat(c: &Constats, pire_en_ligne: Option<Niveau>, debut: Debut
                     format!(
                         "{} : {moteur} {}",
                         crate::modele::resultat::nom_sans_piege(&p.nom, 44),
-                        crate::modele::resultat::sans_piege(&detection.join(", "), false)
+                        crate::modele::resultat::sans_piege(&detection, false)
                     ),
                 ));
             }
@@ -115,6 +121,40 @@ mod tests {
         assert_eq!(r.pire(), Some(Niveau::Eleve));
         assert_eq!(r.constats.len(), 2);
         assert_eq!(refuse("pas un courriel", debut).verdict(), "non-verifie");
+    }
+
+    /// Une pièce suspecte dont une partie n'a pas été lue : le moteur compte parmi les manques (non vérifié) et le
+    /// constat dit ce qui n'a pas pu être vérifié à côté du signe.
+    #[test]
+    fn suspect_garde_ses_manques() {
+        let debut = (chrono::Utc::now(), std::time::Instant::now());
+        let mut c = Constats::default();
+        c.pieces.push(super::super::pieces::Piece {
+            nom: "facture.zip".into(),
+            type_declare: "application/zip".into(),
+            taille: 10,
+            signes: Vec::new(),
+            manques: Vec::new(),
+            moteurs: vec![(
+                "YARA".into(),
+                Examen::Suspect {
+                    signes: vec!["script PowerShell encodé".into()],
+                    manques: vec!["facture.zip › secret.zip : archive chiffrée".into()],
+                    reserves: vec!["base ClamAV absente".into()],
+                },
+            )],
+        });
+        super::super::manques_des_moteurs(&mut c);
+        assert_eq!(c.manques, ["YARA"]);
+        super::super::manques_des_moteurs(&mut c);
+        assert_eq!(c.manques, ["YARA"], "nommé une fois");
+        let r = resultat(&c, None, debut);
+        assert_eq!(r.pire(), Some(Niveau::Moyen));
+        assert_eq!(r.couverture.non_verifies, ["YARA"]);
+        let message = &r.constats[0].message;
+        for attendu in ["script PowerShell encodé", "archive chiffrée", "base ClamAV absente"] {
+            assert!(message.contains(attendu), "{message:?}");
+        }
     }
 
     /// Un nom de pièce jointe piégé (U+202E retourne la fin, un saut de ligne ajoute une fausse ligne) n'arrive

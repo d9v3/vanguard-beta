@@ -68,7 +68,7 @@ impl Constats {
                     .flat_map(|p| &p.moteurs)
                     .filter_map(|(_, e)| match e {
                         Examen::Trouve(_) => Some(Niveau::Critique),
-                        Examen::Suspect(_) => Some(Niveau::Moyen),
+                        Examen::Suspect { .. } => Some(Niveau::Moyen),
                         _ => None,
                     }),
             )
@@ -399,6 +399,23 @@ fn est_un_courriel(m: &Message, octets: &[u8]) -> bool {
         "reply-to",
     ];
     !octets.get(..1024).unwrap_or(octets).contains(&0) && m.entetes.iter().any(|e| CONNUS.contains(&e.nom.as_str()))
+}
+
+/// Les moteurs qui n'ont pas pu tout vérifier d'une pièce, nommés une fois parmi les manques : une analyse impossible,
+/// ou un suspect auquel une partie ou une source attendue manquait (le signe ne fait pas taire le manque).
+fn manques_des_moteurs(c: &mut Constats) {
+    for p in &c.pieces {
+        for (moteur, e) in &p.moteurs {
+            let manque = match e {
+                Examen::Impossible(_) => true,
+                Examen::Suspect { manques, .. } => !manques.is_empty(),
+                _ => false,
+            };
+            if manque && !c.manques.contains(moteur) {
+                c.manques.push(moteur.clone());
+            }
+        }
+    }
 }
 
 /// Le verdict, prudent : jamais « sûr ». Ce qui n'a pas pu être vérifié est dit à la suite.
@@ -871,13 +888,7 @@ pub fn verifier(fichier: Option<&Path>) {
                 "the attachments scan (disposable folder impossible: {e})"
             )),
         }
-        for p in &c.pieces {
-            for (moteur, e) in &p.moteurs {
-                if matches!(e, Examen::Impossible(_)) && !c.manques.contains(moteur) {
-                    c.manques.push(moteur.clone());
-                }
-            }
-        }
+        manques_des_moteurs(&mut c);
     }
     afficher_pieces(&c);
 

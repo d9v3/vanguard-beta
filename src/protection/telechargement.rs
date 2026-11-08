@@ -759,7 +759,16 @@ fn juger(moteur: &'static str, examen: &Examen, v: &mut Verification) {
             v.signe(Niveau::Critique, texte);
         }
         // Une heuristique seule : dite, au niveau moyen ; ni « logiciel malveillant », ni geste automatique.
-        Examen::Suspect(_) => v.signe(Niveau::Moyen, texte),
+        // Ce qui n'a pas été lu reste un manque (écran et résultat versé) ; une réserve, comme pour un sain sous réserve.
+        Examen::Suspect { manques, reserves, .. } => {
+            v.signe(Niveau::Moyen, texte);
+            for m in manques {
+                v.manque(moteur, trf!("{moteur} : {m}", "{moteur}: {m}"));
+            }
+            v.releve
+                .manques
+                .extend(reserves.iter().map(|r| trf!("{moteur} : {r}", "{moteur}: {r}")));
+        }
         Examen::Impossible(raison) => {
             v.dire(niveau, &texte);
             v.manque(moteur, trf!("{moteur} : {raison}", "{moteur}: {raison}"));
@@ -1112,6 +1121,51 @@ pub(crate) fn corpus_signalements(e: &crate::modele::corpus::Entree) -> Vec<crat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un suspect garde ses manques : la partie non lue reste « incomplète » à l'écran et non vérifiée dans le résultat
+    /// versé (et donc le JSON), la réserve aussi dans le résultat ; le signe reste au niveau moyen.
+    #[test]
+    fn suspect_garde_ses_manques() {
+        let mut v = Verification {
+            muet: true,
+            ..Verification::default()
+        };
+        let examen = Examen::Suspect {
+            signes: vec!["script PowerShell encodé".into()],
+            manques: vec!["archive.zip › secret.zip : archive chiffrée".into()],
+            reserves: vec!["base ClamAV absente".into()],
+        };
+        juger("Vanguard", &examen, &mut v);
+        assert_eq!(v.pire, Some(Niveau::Moyen));
+        assert!(!v.detecte);
+        assert_eq!(v.incomplet, ["Vanguard"]);
+        let r = resultat::resultat(&v.releve, (chrono::Utc::now(), std::time::Instant::now()));
+        let non_verifies = &r.couverture.non_verifies;
+        assert!(
+            non_verifies.iter().any(|m| m.contains("archive chiffrée")),
+            "{non_verifies:?}"
+        );
+        assert!(
+            non_verifies.iter().any(|m| m.contains("base ClamAV absente")),
+            "{non_verifies:?}"
+        );
+        assert!(
+            r.constats.iter().any(|c| c.message.contains("non vérifié")),
+            "le constat le dit aussi"
+        );
+        // Sans manque, un suspect seul ne crée pas de manque.
+        let mut seul = Verification {
+            muet: true,
+            ..Verification::default()
+        };
+        let examen = Examen::Suspect {
+            signes: vec!["script PowerShell encodé".into()],
+            manques: Vec::new(),
+            reserves: Vec::new(),
+        };
+        juger("Vanguard", &examen, &mut seul);
+        assert!(seul.incomplet.is_empty() && seul.releve.manques.is_empty());
+    }
 
     /// Les vecteurs de la RFC 1321 (annexe A.5), lus dans un fichier comme une empreinte publiée.
     #[test]

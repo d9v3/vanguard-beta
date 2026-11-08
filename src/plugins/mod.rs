@@ -1046,24 +1046,29 @@ fn decrire(programme: &str, arguments: &[String]) -> String {
 /// L'analyse d'un plugin ou d'un script avant l'accord : le moteur de Vanguard (empreintes de MalwareBazaar, règles
 /// YARA, base ClamAV installée, heuristiques), sur la copie qui sera approuvée. Une détection : `Err`, avec son nom
 /// (refusé). Un suspect, une analyse impossible ou une source qui manquait : dits, et l'accord reste à demander. Rend
-/// la ligne à montrer.
-fn analyser_avant_accord(chemin: &Path) -> Result<String, String> {
+/// la ligne à montrer. L'examen est fait par l'appelant (`yara::examiner` sur la copie) ; un suspect dit aussi ce
+/// qu'il n'a pas pu vérifier.
+fn analyser_avant_accord(examen: &crate::protection::antivirus::Examen) -> Result<String, String> {
     use crate::protection::antivirus::Examen;
-    match crate::protection::yara::examiner(chemin) {
+    match examen {
         Examen::Trouve(noms) => Err(trf!(
             "Refusé : l'analyse de Vanguard reconnaît un logiciel malveillant ({}). Rien n'a été approuvé.",
             "Refused: Vanguard's scan recognizes malware ({}). Nothing was approved.",
             noms.iter().map(|r| affichable(r)).collect::<Vec<_>>().join(", ")
         )),
-        Examen::Suspect(signes) => Ok(trf!(
-            "⚠ suspect, rien de connu ({}) : à regarder avant d'accepter",
-            "⚠ suspicious, nothing known ({}): look before accepting",
-            affichable(&signes.join(" ; "))
+        Examen::Suspect { signes, .. } => Ok(trf!(
+            "⚠ suspect, rien de connu ({}){} : à regarder avant d'accepter",
+            "⚠ suspicious, nothing known ({}){}: look before accepting",
+            affichable(&signes.join(" ; ")),
+            examen
+                .non_verifie_du_suspect()
+                .map(|n| trf!(" ; non vérifié : {}", "; not checked: {}", affichable(&n)))
+                .unwrap_or_default()
         )),
         Examen::Impossible(pourquoi) => Ok(trf!(
             "⚠ analyse impossible ({}) : rien ne dit qu'il est sain",
             "⚠ scan not possible ({}): nothing says it is safe",
-            affichable(&pourquoi)
+            affichable(pourquoi)
         )),
         Examen::Sain => Ok(tr!(
             "rien de connu ne correspond (empreintes, règles YARA, signatures ClamAV, heuristiques)",
@@ -1345,7 +1350,7 @@ fn ajouter_dossier(racine: &Path, source: &Path, mut accord: impl FnMut(&str) ->
     let destination = racine.join(&m.nom);
     let cle =
         auteur_verifie(&m, &copie, &fichiers).map_err(|e| trf!("Plugin non ajouté : {e}", "Plugin not added: {e}"))?;
-    let analyse = analyser_avant_accord(&copie)?;
+    let analyse = analyser_avant_accord(&crate::protection::yara::examiner(&copie))?;
     presenter(&copie, &destination, &m, &fichiers, &analyse, cle.as_ref());
     if destination.exists() {
         comparer_auteur(approbations(racine).plugins.get(&m.nom), cle.as_ref());
@@ -1448,7 +1453,7 @@ fn approuver(racine: &Path, nom: &str, mut accord: impl FnMut(&str) -> bool) -> 
     }
     let avant = approbations(racine).plugins.get(nom).cloned();
     let cle = auteur_verifie(&m, &copie, &fichiers)?;
-    let analyse = analyser_avant_accord(&copie)?;
+    let analyse = analyser_avant_accord(&crate::protection::yara::examiner(&copie))?;
     presenter(&copie, &d, &m, &fichiers, &analyse, cle.as_ref());
     comparer_auteur(avant.as_ref(), cle.as_ref());
     if let Some(a) = &avant {

@@ -924,3 +924,26 @@ fn seul_un_interprete_du_systeme_est_pris() {
     std::fs::write(&faux, "#!/bin/sh\n").unwrap();
     assert!(!du_systeme(&faux));
 }
+
+/// Avant l'accord, un suspect dit aussi ce qu'il n'a pas pu vérifier (partie non lue, source absente) ; sans manque,
+/// la ligne reste celle d'avant.
+#[test]
+fn suspect_avant_accord_dit_ses_manques() {
+    use crate::protection::antivirus::Examen;
+    let ligne = analyser_avant_accord(&Examen::Suspect {
+        signes: vec!["script PowerShell encodé".into()],
+        manques: vec!["plugin.zip › secret.zip : archive chiffrée".into()],
+        reserves: vec!["base ClamAV absente".into()],
+    })
+    .unwrap();
+    for attendu in ["suspect", "archive chiffrée", "base ClamAV absente"] {
+        assert!(ligne.contains(attendu), "{ligne}");
+    }
+    let seul = analyser_avant_accord(&Examen::Suspect {
+        signes: vec!["script PowerShell encodé".into()],
+        manques: Vec::new(),
+        reserves: Vec::new(),
+    })
+    .unwrap();
+    assert!(!seul.contains("non vérifié"), "{seul}");
+}

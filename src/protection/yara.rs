@@ -535,7 +535,12 @@ fn examen_de(r: &moteur::Resultat) -> Examen {
         );
     }
     if !r.indices.is_empty() {
-        return Examen::Suspect(r.indices.iter().map(moteur::Indice::texte).collect());
+        // Un signe ne fait pas taire ce qui n'a pas été lu ni les sources qui manquaient : dits à côté.
+        return Examen::Suspect {
+            signes: r.indices.iter().map(moteur::Indice::texte).collect(),
+            manques: r.manquantes.iter().chain(&r.non_verifie).cloned().collect(),
+            reserves: r.reserves.clone(),
+        };
     }
     if !r.manquantes.is_empty() || !r.non_verifie.is_empty() {
         return Examen::Impossible(
@@ -566,7 +571,11 @@ fn examiner_avec(sources: &Sources<'_>, fichier: &Path) -> Examen {
         );
     }
     if !signes.is_empty() {
-        return Examen::Suspect(signes.iter().map(|t| t.regle.clone()).collect());
+        return Examen::Suspect {
+            signes: signes.iter().map(|t| t.regle.clone()).collect(),
+            manques: erreurs,
+            reserves: sources.reserves.clone(),
+        };
     }
     if !erreurs.is_empty() {
         return Examen::Impossible(erreurs.join(" ; "));
@@ -632,7 +641,7 @@ mod tests {
         let mut sources = yara_seul(&essai, None);
         sources.heuristiques = true;
         assert!(
-            matches!(examiner_avec(&sources, &outil), Examen::Suspect(s) if s.len() == 1),
+            matches!(examiner_avec(&sources, &outil), Examen::Suspect { signes, .. } if signes.len() == 1),
             "{:?}",
             examiner_avec(&sources, &outil)
         );
@@ -688,6 +697,30 @@ mod tests {
             ..moteur::Resultat::default()
         };
         assert!(matches!(examen_de(&vide), Examen::Impossible(r) if r.contains("PDF non ouvert")));
+        // Un signe ne fait pas taire la partie non lue, la source attendue absente ni la réserve.
+        let suspect = moteur::Resultat {
+            indices: vec![moteur::Indice {
+                heuristique: crate::protection::heuristiques::Heuristique::PeNonSigne,
+                detail: String::new(),
+                partie: "archive.zip › setup.exe".into(),
+                cle: None,
+            }],
+            non_verifie: vec!["archive.zip › secret.zip : archive chiffrée".into()],
+            manquantes: vec!["règles refusées".into()],
+            reserves: vec!["base ClamAV absente".into()],
+            ..moteur::Resultat::default()
+        };
+        let examen = examen_de(&suspect);
+        assert!(
+            matches!(&examen, Examen::Suspect { signes, manques, reserves }
+                if signes.len() == 1 && manques.len() == 2 && reserves == &["base ClamAV absente"]),
+            "{examen:?}"
+        );
+        let (niveau, ligne) = examen.ligne("Vanguard");
+        assert_eq!(niveau, Some(crate::risk::Niveau::Moyen));
+        for attendu in ["archive chiffrée", "règles refusées", "base ClamAV absente"] {
+            assert!(ligne.contains(attendu), "{ligne}");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -226,7 +226,7 @@ fn copie_approuvee(
     let mut a = approbations(racine);
     let avant = a.labo.get(fichier).cloned();
     if avant.as_ref().is_none_or(|x| x.empreinte != empreinte) {
-        let analyse = analyser_avant_accord(&copie)?;
+        let analyse = analyser_avant_accord(&crate::protection::yara::examiner(&copie))?;
         presenter(&chemin, &copie, &empreinte, avant.as_ref(), &analyse);
         let question = match (avant.is_some(), et_lancer) {
             (true, true) => tr!(
