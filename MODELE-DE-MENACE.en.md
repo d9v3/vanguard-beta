@@ -212,9 +212,11 @@ Defense options.
   - The kept session is kept by its exact connection (remote address and port, local port 22 or 3389), in its own
     direction only: nothing else to that address, and a connection this PC opens outward (SSH client) is not a session
     to keep. Once dropped, it does not come back, even from the same address.
-  - Vanguard's servers are reachable over HTTPS only (TCP 443). Their addresses often belong to a host (CDN) shared
-    with other sites: any HTTPS site served from those same addresses stays reachable, and a hostile program can use
-    it to send data out.
+  - During the isolation the person asks for, Vanguard's servers are reachable over HTTPS only (TCP 443). Their
+    addresses often belong to a host (CDN) shared with other sites: any HTTPS site served from those same addresses
+    stays reachable, and a hostile program can use it to send data out. The automatic isolation of a ransomware keeps
+    no Vanguard server (the elevated side decides it from the order, which cannot ask for any): this residue does not
+    apply to it, and Vanguard no longer updates itself until it is lifted.
   - The current DNS stays reachable on port 53: a hostile program can send data out through names asked of that
     resolver (DNS tunnel).
   - On Linux, a copy of Vanguard runs as root at each boot while the isolation lasts (bounded by its unit's
@@ -230,9 +232,9 @@ Defense options.
     filtered by the isolation: its frames are switched without going through the computer's IP hooks, unless
     `br_netfilter` is active, which is not the default. It keeps its whole network while the computer is isolated; a
     routed virtual machine or container (libvirt NAT, Docker) is cut.
-  - On Windows, the firewall blocks, to a kept address, only TCP, UDP and ICMP (other protocols to it get through); an
-    inbound connection from port 443 of a Vanguard server is not refused (Windows does not tell an established
-    connection apart); RDP's UDP channel is not kept (RDP falls back to TCP); a kept session's ICMPv4 error messages
+  - On Windows, the firewall blocks, to a kept address, only TCP, UDP and ICMP (other protocols to it get through); during
+    the isolation the person asks for, an inbound connection from port 443 of a Vanguard server is not refused
+    (Windows does not tell an established connection apart); RDP's UDP channel is not kept (RDP falls back to TCP); a kept session's ICMPv4 error messages
     (packet size) are not allowed by a rule, and whether the firewall lets them through was not checked; and the traffic
     of virtual machines (Hyper-V, WSL2) may not go through the computer's firewall.
 

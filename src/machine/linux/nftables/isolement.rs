@@ -591,6 +591,84 @@ mod tests {
         }
     }
 
+    /// R5 (choix de l'auteur) : l'isolement d'un rançongiciel ne garde aucun serveur de Vanguard, sans même les
+    /// résoudre ; l'isolement voulu (R4) garde les siens en 443 comme avant.
+    #[test]
+    fn r5_sans_https_r4_avec() {
+        use crate::protection::isolement::serveurs_gardes;
+        let serveur: IpAddr = "198.51.100.20".parse().unwrap();
+        let https = |permis: &Permis| {
+            accepte(
+                permis,
+                &Paquet {
+                    entree: false,
+                    boucle: false,
+                    distante: serveur,
+                    l4: TCP,
+                    source: 50000,
+                    destination: HTTPS,
+                    icmp: (0, 0),
+                    etablie: false,
+                },
+            )
+        };
+        let r5 = Permis {
+            serveurs: serveurs_gardes(false, || panic!("R5 ne résout aucun serveur")),
+            ..permis()
+        };
+        assert_eq!(r5.serveurs, Vec::<IpAddr>::new());
+        assert!(!https(&r5), "R5 : aucun serveur en 443");
+        let r4 = Permis {
+            serveurs: serveurs_gardes(true, || vec![serveur]),
+            ..permis()
+        };
+        assert!(https(&r4), "R4 : le serveur en 443, comme avant");
+    }
+
+    proptest! {
+        /// R5 : sans serveurs, aucun paquet TCP vers ou depuis le port 443 ne passe, quelle que soit l'adresse, sauf
+        /// la connexion exacte d'une session gardée (qui l'aurait sur ce port) ; et aucune règle ne nomme 443 hors
+        /// d'une session.
+        #[test]
+        fn r5_aucune_regle_443(
+            sessions in proptest::collection::vec((adresse_v(), port_v(), port_v()), 0..4),
+            dns in proptest::collection::vec(adresse_v(), 0..3),
+            x in adresse_v(),
+            entree in any::<bool>(),
+            autre in port_v().prop_filter("le DNS a son port 53", |p| *p != 53),
+            etablie in any::<bool>(),
+        ) {
+            let mut garder: Vec<SessionGardee> = sessions
+                .iter()
+                .map(|(ip, d, l)| SessionGardee { distante: *ip, port_distant: *d, port_local: *l })
+                .collect();
+            garder.sort_unstable();
+            garder.dedup();
+            let permis = Permis {
+                garder: garder.clone(),
+                serveurs: crate::protection::isolement::serveurs_gardes(false, Vec::new),
+                dns,
+            };
+            for (source, destination) in [(autre, HTTPS), (HTTPS, autre)] {
+                let p = Paquet { entree, boucle: false, distante: x, l4: TCP, source, destination, icmp: (0, 0), etablie };
+                let d_une_session = garder.iter().any(|g| {
+                    let s = de_la_session(g, entree);
+                    g.distante == x && (s.source, s.destination) == (source, destination)
+                });
+                prop_assert_eq!(accepte(&permis, &p), d_une_session, "{:?}", p);
+            }
+            let sans_session_443 = garder.iter().all(|g| g.port_distant != HTTPS && g.port_local != HTTPS);
+            if sans_session_443 {
+                for (_, conditions) in criteres(&permis) {
+                    prop_assert!(
+                        !conditions.iter().any(|c| matches!(c, Critere::PortSource(HTTPS) | Critere::PortDestination(HTTPS))),
+                        "{conditions:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn serveurs_en_https_seulement() {
         let p = permis();

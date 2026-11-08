@@ -161,9 +161,11 @@ pub(crate) enum Ordre {
     /// Isoler l'ordinateur du réseau (Défense R4) en gardant ces sessions : les sessions à distance entrantes en
     /// cours, chacune par sa connexion exacte, montrées avant l'accord (triées, sans double, au plus `GARDER_MAX`).
     /// L'élevé relit les sessions et refuse si l'une n'y est pas ; il ajoute lui-même ce qui reste permis (boucle
-    /// locale, DHCP, DNS en place, serveurs de Vanguard).
+    /// locale, DHCP, DNS en place, et les serveurs de Vanguard seulement si `serveurs`). L'isolement automatique d'un
+    /// rançongiciel (R5) n'en garde aucun : son verbe à part, `isoler-sans-serveurs`, ne peut pas en demander.
     Isoler {
         garder: Vec<SessionGardee>,
+        serveurs: bool,
     },
     /// Lever l'isolement : ce qui porte la marque de Vanguard seulement, l'état d'avant remis.
     LeverIsolement,
@@ -282,10 +284,14 @@ impl Ordre {
             Ordre::GardePause { secondes } => format!("{PREFIXE}garde-pause {secondes}"),
             Ordre::GardePermettre { sha256 } => format!("{PREFIXE}garde-permettre {}", hex(sha256)),
             Ordre::GardeRetirer => format!("{PREFIXE}garde-retirer"),
-            Ordre::Isoler { garder } if garder.is_empty() => format!("{PREFIXE}isoler"),
-            Ordre::Isoler { garder } => {
-                let liste: Vec<String> = garder.iter().map(SessionGardee::texte).collect();
-                format!("{PREFIXE}isoler {}", liste.join(","))
+            Ordre::Isoler { garder, serveurs } => {
+                let verbe = if *serveurs { "isoler" } else { "isoler-sans-serveurs" };
+                if garder.is_empty() {
+                    format!("{PREFIXE}{verbe}")
+                } else {
+                    let liste: Vec<String> = garder.iter().map(SessionGardee::texte).collect();
+                    format!("{PREFIXE}{verbe} {}", liste.join(","))
+                }
             }
             Ordre::LeverIsolement => format!("{PREFIXE}lever-isolement"),
         }
@@ -364,9 +370,21 @@ pub(crate) fn analyser(ligne: &str) -> Option<Ordre> {
             sha256: de_hex(e)?.try_into().ok()?,
         },
         ["garde-retirer"] => Ordre::GardeRetirer,
-        ["isoler"] => Ordre::Isoler { garder: Vec::new() },
+        ["isoler"] => Ordre::Isoler {
+            garder: Vec::new(),
+            serveurs: true,
+        },
         ["isoler", liste] => Ordre::Isoler {
             garder: garder_de(liste)?,
+            serveurs: true,
+        },
+        ["isoler-sans-serveurs"] => Ordre::Isoler {
+            garder: Vec::new(),
+            serveurs: false,
+        },
+        ["isoler-sans-serveurs", liste] => Ordre::Isoler {
+            garder: garder_de(liste)?,
+            serveurs: false,
         },
         ["lever-isolement"] => Ordre::LeverIsolement,
         _ => return None,

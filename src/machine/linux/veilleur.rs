@@ -3151,8 +3151,8 @@ pub(crate) fn isolement_voulu() -> bool {
 /// Le texte d'accord de l'isolement du réseau (défense R5) : lu avant la question.
 fn texte_accord_isolement() -> &'static str {
     tr!(
-        "Quand le veilleur gèle un rançongiciel quasi certain (des fichiers chiffrés en rafale, un fichier-piège touché), il peut aussi isoler l'ordinateur du réseau, entre le gel et l'arrêt : tout est coupé en entrée et en sortie, sauf la boucle locale, DHCP, le DNS en place, les serveurs de Vanguard et la session à distance en cours (jamais coupée ; si elle ne se reconnaît pas avec certitude, rien n'est isolé). Cela coupe l'envoi de vos fichiers et la propagation vers les autres ordinateurs pendant l'arrêt. Seulement avec la protection active (Programmes en automatique) et la veille anti-rançongiciel. Il faut les droits d'administrateur : la fenêtre de mot de passe du système les demande, et le service du veilleur, durci, ne peut pas encore les demander seul ; l'alerte dit alors que rien n'est isolé et « vanguard blocage isoler » le fait. L'isolement dure jusqu'à « vanguard blocage annuler », même après un redémarrage.",
-        "When the watcher freezes an almost certain ransomware (files encrypted in a burst, a decoy file touched), it can also isolate the computer from the network, between the freeze and the stop: everything is cut in and out, except loopback, DHCP, the current DNS, Vanguard's servers and the current remote session (never cut; if it cannot be recognized with certainty, nothing is isolated). This cuts the sending of your files and the spread to other computers during the stop. Only with active protection (Programs on automatic) and the ransomware watch. It needs administrator rights: the system's password window asks for them, and the watcher's hardened service cannot ask for them by itself yet; the alert then says that nothing is isolated and “vanguard blocking isolate” does it. The isolation lasts until “vanguard blocking undo”, even after a restart."
+        "Quand le veilleur gèle un rançongiciel quasi certain (des fichiers chiffrés en rafale, un fichier-piège touché), il peut aussi isoler l'ordinateur du réseau, entre le gel et l'arrêt : tout est coupé en entrée et en sortie, sauf la boucle locale, DHCP, le DNS en place et la session à distance en cours (jamais coupée ; si elle ne se reconnaît pas avec certitude, rien n'est isolé). Aucun serveur de Vanguard n'est gardé : Vanguard ne se met plus à jour (ni programme ni listes de menaces) pendant cet isolement, jusqu'à la levée. Cela coupe l'envoi de vos fichiers et la propagation vers les autres ordinateurs pendant l'arrêt. Seulement avec la protection active (Programmes en automatique) et la veille anti-rançongiciel. Il faut les droits d'administrateur : la fenêtre de mot de passe du système les demande, et le service du veilleur, durci, ne peut pas encore les demander seul ; l'alerte dit alors que rien n'est isolé et « vanguard blocage isoler » le fait. L'isolement dure jusqu'à « vanguard blocage annuler », même après un redémarrage.",
+        "When the watcher freezes an almost certain ransomware (files encrypted in a burst, a decoy file touched), it can also isolate the computer from the network, between the freeze and the stop: everything is cut in and out, except loopback, DHCP, the current DNS and the current remote session (never cut; if it cannot be recognized with certainty, nothing is isolated). No Vanguard server is kept: Vanguard no longer updates itself (neither the program nor the threat lists) during this isolation, until it is lifted. This cuts the sending of your files and the spread to other computers during the stop. Only with active protection (Programs on automatic) and the ransomware watch. It needs administrator rights: the system's password window asks for them, and the watcher's hardened service cannot ask for them by itself yet; the alert then says that nothing is isolated and “vanguard blocking isolate” does it. The isolation lasts until “vanguard blocking undo”, even after a restart."
     )
 }
 
@@ -3702,6 +3702,18 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    /// R5 (choix de l'auteur) : l'accord dit qu'aucun serveur n'est gardé et que Vanguard ne se met plus à jour.
+    #[test]
+    fn l_accord_r5_dit_sans_serveurs_ni_mise_a_jour() {
+        let t = texte_accord_isolement();
+        assert!(t.contains("Aucun serveur de Vanguard n'est gardé"), "{t}");
+        assert!(
+            t.contains("ne se met plus à jour") && t.contains("jusqu'à la levée"),
+            "{t}"
+        );
+        assert!(!t.contains("HTTPS"), "{t}");
+    }
 
     // Les octets du noyau, écrits à la main dans l'ordre de cette machine.
 

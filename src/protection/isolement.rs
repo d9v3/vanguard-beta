@@ -1,5 +1,5 @@
 //! Isoler l'ordinateur du réseau (Défense R4), et le lever. Deux ordres fermés de la liste du blocage
-//! (`Ordre::Isoler { garder }`, `Ordre::LeverIsolement`), validés avant l'élévation et rejugés par l'élevé :
+//! (`Ordre::Isoler { garder, serveurs }`, `Ordre::LeverIsolement`), validés avant l'élévation et rejugés par l'élevé :
 //!
 //! - **la session à distance en cours n'est jamais coupée** : ses connexions sont lues AVANT la moindre règle,
 //!   montrées, portées par l'ordre (`garder`), puis relues par l'élevé, qui refuse si une session en cours n'y est
@@ -9,7 +9,8 @@
 //!   adresse, ni une connexion que ce PC ouvrirait vers elle ;
 //! - restent permis : la boucle locale, DHCP, le DNS du résolveur en place (port 53), et les serveurs de Vanguard
 //!   (mises à jour, listes de menaces) en HTTPS (TCP 443) seulement, par les adresses qu'ils ont au moment d'isoler
-//!   (P2) ;
+//!   (P2) ; aucun serveur pendant l'isolement automatique d'un rançongiciel (R5, `isoler-sans-serveurs`), décidé par
+//!   l'élevé d'après le verbe de l'ordre ;
 //! - Linux : une table nf_tables à lui (`machine::linux::nftables::isolement`), remise au démarrage par sa propre
 //!   unité (`machine::linux::isolement`) ; sans systemd, « jusqu'au redémarrage » ;
 //! - Windows : des règles Block explicites, les exceptions écrites en plages et en ports complémentaires (une règle
@@ -226,6 +227,12 @@ pub(crate) fn tunnels() -> Option<Vec<String>> {
 #[cfg(not(any(target_os = "linux", windows)))]
 pub(crate) fn tunnels() -> Option<Vec<String>> {
     None
+}
+
+/// Les serveurs gardés : ceux que rend `resoudre` pour l'isolement voulu (R4) ; aucun, sans même les résoudre, pour
+/// celui d'un rançongiciel (R5) : rien ne sort vers un hébergeur partagé pendant qu'un programme chiffre les fichiers.
+pub(crate) fn serveurs_gardes(serveurs: bool, resoudre: impl FnOnce() -> Vec<IpAddr>) -> Vec<IpAddr> {
+    if serveurs { resoudre() } else { Vec::new() }
 }
 
 /// Les adresses des serveurs de Vanguard, résolues maintenant (`SERVEURS_MAX` au plus) : un nom qui ne se résout pas
@@ -858,8 +865,8 @@ impl Avant {
 }
 
 /// Ce que fait l'élevé pour isoler : il refuse hors de root (ou des essais), relit les sessions et rejuge, résout les
-/// serveurs, lit le DNS, puis pose.
-pub(crate) fn isoler_ici(garder: &[SessionGardee]) -> Resultat {
+/// serveurs (sauf `serveurs` faux : aucun), lit le DNS, puis pose.
+pub(crate) fn isoler_ici(garder: &[SessionGardee], serveurs: bool) -> Resultat {
     if cfg!(test) {
         return Resultat::echec("essais : jamais d'isolement réel");
     }
@@ -876,7 +883,7 @@ pub(crate) fn isoler_ici(garder: &[SessionGardee]) -> Resultat {
     }
     let permis = Permis {
         garder: trier_sessions(garder.iter().copied()),
-        serveurs: resoudre_serveurs(),
+        serveurs: serveurs_gardes(serveurs, resoudre_serveurs),
         dns: dns_en_place(),
     };
     #[cfg(target_os = "linux")]
@@ -945,8 +952,8 @@ pub(crate) fn banniere() -> Option<String> {
         })
         .unwrap_or_default();
     Some(trf!(
-        "Cet ordinateur est isolé du réseau par Vanguard{quand} : seuls la connexion gardée de la session à distance (aucune nouvelle), le DNS et les serveurs de Vanguard en HTTPS passent. Pour le lever : « vanguard blocage annuler ».",
-        "This computer is isolated from the network by Vanguard{quand}: only the kept connection of the remote session (no new one), DNS and Vanguard's servers over HTTPS get through. To lift it: “vanguard blocking undo”."
+        "Cet ordinateur est isolé du réseau par Vanguard{quand} : seuls la connexion gardée de la session à distance (aucune nouvelle), le DNS et, si vous l'avez isolé vous-même, les serveurs de Vanguard en HTTPS passent (aucun après un rançongiciel). Pour le lever : « vanguard blocage annuler ».",
+        "This computer is isolated from the network by Vanguard{quand}: only the kept connection of the remote session (no new one), DNS and, if you isolated it yourself, Vanguard's servers over HTTPS get through (none after a ransomware). To lift it: “vanguard blocking undo”."
     ))
 }
 
@@ -1022,13 +1029,13 @@ fn confier(
 
 /// L'ordre d'isoler pour les sessions en cours, jugé ici avant l'élévation (l'élevé le rejuge) ; `Err` dit pourquoi
 /// rien ne sera demandé.
-pub(crate) fn ordre_maintenant() -> Result<crate::protection::blocage::ordres::Ordre, Echec> {
+pub(crate) fn ordre_maintenant(serveurs: bool) -> Result<crate::protection::blocage::ordres::Ordre, Echec> {
     let sessions = crate::protection::blocage::gardes::sessions_a_distance();
     let garder = garder_pour(sessions.as_ref())?;
     if let Some(raison) = juger(&garder, sessions.as_ref(), tunnels().as_deref()) {
         return Err(Echec::refuse(OU, raison));
     }
-    Ok(crate::protection::blocage::ordres::Ordre::Isoler { garder })
+    Ok(crate::protection::blocage::ordres::Ordre::Isoler { garder, serveurs })
 }
 
 /// Pur : `NoNewPrivs` d'un `/proc/<pid>/status`. Posé (le service du veilleur : `NoNewPrivileges=yes`), aucun
@@ -1058,7 +1065,8 @@ pub(crate) fn isoler_sans_question(cle: Option<&str>) -> Result<String, Echec> {
             ),
         ));
     }
-    let o = ordre_maintenant()?;
+    // R5 : aucun serveur de Vanguard gardé (choix de l'auteur), l'élevé n'en résout même pas.
+    let o = ordre_maintenant(false)?;
     confier(&o, crate::modele::evenement::Source::Blocage, cle)
 }
 
@@ -1069,7 +1077,7 @@ pub fn isoler_avec_accord() {
         "Isoler l'ordinateur du réseau",
         "Isolate the computer from the network"
     ));
-    let o = match ordre_maintenant() {
+    let o = match ordre_maintenant(true) {
         Ok(o) => o,
         Err(raison) => {
             afficher_aligne("  ✖ ", &raison.to_string(), 4, "");
@@ -1189,6 +1197,7 @@ mod tests {
         // L'ordre construit se relit tel quel (validation de ordres_ligne).
         let o = crate::protection::blocage::ordres::Ordre::Isoler {
             garder: garder_pour(Some(&s)).unwrap(),
+            serveurs: true,
         };
         assert_eq!(crate::protection::blocage::ordres::analyser(&o.ligne()), Some(o));
     }
@@ -1596,6 +1605,45 @@ mod tests {
             });
             let x = Paquet { entree, protocole, distante, local, distant };
             prop_assert_eq!(bloque(&r, x), !attendu(&permis, &dhcp, x), "{:?}", x);
+        }
+
+        /// R5 (choix de l'auteur) : sous Windows, sans serveurs, aucune connexion TCP vers ou depuis le port 443 ne
+        /// passe, vers les adresses qu'auraient eues les serveurs comme vers toute autre, sauf la connexion exacte
+        /// d'une session gardée ; R4 garde ses serveurs en 443.
+        #[test]
+        fn windows_r5_sans_https(
+            garder in proptest::collection::vec(session_au_hasard(), 0..4),
+            serveurs in proptest::collection::vec(adresse(), 1..4),
+            dns in proptest::collection::vec(adresse(), 0..3),
+            dhcp in proptest::collection::vec(adresse(), 0..3),
+            vers in 0usize..4,
+            autre in adresse(),
+            entree in any::<bool>(),
+            port in (1u16..).prop_filter("le DNS a son port 53", |p| *p != 53),
+        ) {
+            let r5 = Permis {
+                garder: garder.clone(),
+                serveurs: serveurs_gardes(false, || serveurs.clone()),
+                dns: dns.clone(),
+            };
+            prop_assert!(r5.serveurs.is_empty());
+            let r = regles_windows(&r5, &dhcp, 'a').unwrap();
+            let distante = serveurs.get(vers).copied().unwrap_or(autre);
+            prop_assume!(!couverte(&boucle_locale(), distante.to_canonical()));
+            for (local, distant) in [(port, 443u16), (443, port)] {
+                let x = Paquet { entree, protocole: ProtocoleWindows::Tcp, distante, local, distant };
+                let d_une_session = garder
+                    .iter()
+                    .any(|g| g.distante == distante.to_canonical() && g.port_local == local && g.port_distant == distant);
+                prop_assert_eq!(bloque(&r, x), !d_une_session, "{:?}", x);
+            }
+            // R4 : le même serveur reste joignable en 443.
+            let r4 = Permis { garder, serveurs: serveurs_gardes(true, || serveurs.clone()), dns };
+            let r = regles_windows(&r4, &dhcp, 'a').unwrap();
+            let s = serveurs[0];
+            prop_assume!(!couverte(&boucle_locale(), s.to_canonical()));
+            let x = Paquet { entree: false, protocole: ProtocoleWindows::Tcp, distante: s, local: port, distant: 443 };
+            prop_assert!(!bloque(&r, x), "R4 : {:?}", x);
         }
     }
 }

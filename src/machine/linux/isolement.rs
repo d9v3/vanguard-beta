@@ -117,8 +117,8 @@ fn resume(permis: &Permis) -> String {
     );
     if permis.serveurs.is_empty() {
         t.push_str(tr!(
-            " ; aucun serveur de Vanguard ne s'est résolu : ni mises à jour ni listes pendant l'isolement",
-            "; no Vanguard server resolved: no updates or lists during the isolation"
+            " ; aucun serveur de Vanguard gardé : ni mise à jour ni liste de menaces jusqu'à la levée",
+            "; no Vanguard server kept: no update or threat list until it is lifted"
         ));
     }
     if permis.dns.is_empty() {

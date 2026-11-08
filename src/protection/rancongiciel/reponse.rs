@@ -95,14 +95,14 @@ impl Isolement {
             Isolement::NonDemande => None,
             Isolement::Fait(p) if p.is_empty() => Some(
                 tr!(
-                    "L'ordinateur est isolé du réseau ; « vanguard blocage annuler » le lève.",
-                    "The computer is isolated from the network; “vanguard blocking undo” lifts it."
+                    "L'ordinateur est isolé du réseau, sans les serveurs de Vanguard : Vanguard ne se met plus à jour jusqu'à la levée ; « vanguard blocage annuler » le lève.",
+                    "The computer is isolated from the network, without Vanguard's servers: Vanguard no longer updates itself until it is lifted; “vanguard blocking undo” lifts it."
                 )
                 .to_string(),
             ),
             Isolement::Fait(p) => Some(trf!(
-                "L'ordinateur est isolé du réseau ({p}) ; « vanguard blocage annuler » le lève.",
-                "The computer is isolated from the network ({p}); “vanguard blocking undo” lifts it."
+                "L'ordinateur est isolé du réseau ({p}), sans les serveurs de Vanguard : Vanguard ne se met plus à jour jusqu'à la levée ; « vanguard blocage annuler » le lève.",
+                "The computer is isolated from the network ({p}), without Vanguard's servers: Vanguard no longer updates itself until it is lifted; “vanguard blocking undo” lifts it."
             )),
             Isolement::PasFait(raison) => Some(trf!(
                 "L'ordinateur n'est pas isolé du réseau : {raison}.",
@@ -532,7 +532,13 @@ mod tests {
             fait.contains("192.0.2.7") && (fait.contains("annuler") || fait.contains("undo")),
             "{fait}"
         );
-        assert!(Isolement::Fait(String::new()).phrase().is_some());
+        // R5 (choix de l'auteur) : l'alerte dit que Vanguard ne se met plus à jour jusqu'à la levée.
+        for f in [fait.clone(), Isolement::Fait(String::new()).phrase().unwrap()] {
+            assert!(
+                f.contains("sans les serveurs de Vanguard") && f.contains("ne se met plus à jour"),
+                "{f}"
+            );
+        }
         let pas = Isolement::PasFait("droits refusés".into()).phrase().unwrap();
         assert!(pas.contains("droits refusés"), "{pas}");
         assert!(Isolement::EnAttente.phrase().is_some());

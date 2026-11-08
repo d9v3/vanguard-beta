@@ -32,3 +32,8 @@ vanguard:isoler 10.0.0.1:50000>22,10.0.0.2:50000>22,10.0.0.3:50000>22,10.0.0.4:5
 vanguard:lever-isolement
 vanguard:lever-isolement now
 vanguard:Isoler
+vanguard:isoler-sans-serveurs
+vanguard:isoler-sans-serveurs 192.0.2.7:51234>22
+vanguard:isoler-sans-serveurs 192.0.2.7:51234>22,[2001:db8::5]:40000>22
+vanguard:isoler-sans-serveurs 
+vanguard:isoler-sans-serveurs serveurs

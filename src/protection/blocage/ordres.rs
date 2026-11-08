@@ -158,32 +158,49 @@ impl Ordre {
                 "Remove the launch guard (vanguard-garde service, its program, its settings and its state)"
             )
             .to_string(),
-            Ordre::Isoler { garder } if garder.is_empty() => tr!(
-                "Isoler l'ordinateur du réseau (aucune session à distance en cours)",
-                "Isolate the computer from the network (no remote session in progress)"
-            )
-            .to_string(),
-            Ordre::Isoler { garder } => trf!(
-                "Isoler l'ordinateur du réseau, en gardant seulement la connexion exacte de chaque session à distance \
-                 en cours (adresse:port distant → port local) : {}",
-                "Isolate the computer from the network, keeping only the exact connection of each remote session in \
-                 progress (address:remote port → local port): {}",
-                garder
-                    .iter()
-                    .map(|s| format!(
-                        "{} → {}",
-                        std::net::SocketAddr::new(s.distante, s.port_distant),
-                        s.port_local
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            Ordre::Isoler { garder, serveurs } => {
+                let sessions = Ordre::sessions_texte(garder);
+                if *serveurs {
+                    sessions
+                } else {
+                    trf!(
+                        "{sessions} ; sans les serveurs de Vanguard : aucune mise à jour jusqu'à la levée",
+                        "{sessions}; without Vanguard's servers: no update until it is lifted"
+                    )
+                }
+            }
             Ordre::LeverIsolement => tr!(
                 "Lever l'isolement de l'ordinateur (règles de Vanguard retirées, réglages d'avant remis)",
                 "Lift the computer's isolation (Vanguard's rules removed, previous settings restored)"
             )
             .to_string(),
         }
+    }
+
+    /// Ce que dit l'ordre d'isoler de ses sessions gardées.
+    fn sessions_texte(garder: &[SessionGardee]) -> String {
+        if garder.is_empty() {
+            return tr!(
+                "Isoler l'ordinateur du réseau (aucune session à distance en cours)",
+                "Isolate the computer from the network (no remote session in progress)"
+            )
+            .to_string();
+        }
+        trf!(
+            "Isoler l'ordinateur du réseau, en gardant seulement la connexion exacte de chaque session à distance \
+                 en cours (adresse:port distant → port local) : {}",
+            "Isolate the computer from the network, keeping only the exact connection of each remote session in \
+                 progress (address:remote port → local port): {}",
+            garder
+                .iter()
+                .map(|s| format!(
+                    "{} → {}",
+                    std::net::SocketAddr::new(s.distante, s.port_distant),
+                    s.port_local
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 
     /// Cet ordre a-t-il un sens sur ce système ? Celui qui agit refuse tout autre (une note d'un autre système).
@@ -468,7 +485,7 @@ pub(crate) fn juger(o: &Ordre, j: &Juge) -> Option<String> {
         | Ordre::GardeRetirer => None,
         // L'isolement ne coupe jamais une session à distance en cours : chacune doit être dans `garder` (montrée avant
         // l'accord), les connexions doivent se lire, et aucun tunnel ne doit être monté pendant une session.
-        Ordre::Isoler { garder } => {
+        Ordre::Isoler { garder, .. } => {
             crate::protection::isolement::juger(garder, j.sessions.as_ref(), j.tunnels.as_deref())
         }
         // Lever ne retire que ce qui porte la marque de Vanguard et remet l'état d'avant : jamais plus ouvert.
@@ -743,7 +760,7 @@ pub(crate) fn faire(o: &Ordre, j: &Juge) -> Resultat {
             return super::coupure::rendre_ici(*pid, chemin, *depart);
         }
         Ordre::RendreReseauFichier { chemin } => return super::coupure::rendre_fichier_ici(chemin),
-        Ordre::Isoler { garder } => return crate::protection::isolement::isoler_ici(garder),
+        Ordre::Isoler { garder, serveurs } => return crate::protection::isolement::isoler_ici(garder, *serveurs),
         Ordre::LeverIsolement => return crate::protection::isolement::lever_ici(),
         _ => {}
     }
@@ -1016,7 +1033,14 @@ mod tests {
             },
             Ordre::GardePermettre { sha256: [0xab; 32] },
             Ordre::GardeRetirer,
-            Ordre::Isoler { garder: Vec::new() },
+            Ordre::Isoler {
+                garder: Vec::new(),
+                serveurs: true,
+            },
+            Ordre::Isoler {
+                garder: Vec::new(),
+                serveurs: false,
+            },
             Ordre::Isoler {
                 garder: vec![
                     SessionGardee {
@@ -1035,6 +1059,7 @@ mod tests {
                         port_local: 22,
                     },
                 ],
+                serveurs: true,
             },
             Ordre::Isoler {
                 garder: (1..=16u8)
@@ -1053,6 +1078,7 @@ mod tests {
                         port_local: 65535,
                     })
                     .collect(),
+                serveurs: false,
             },
             Ordre::LeverIsolement,
         ]

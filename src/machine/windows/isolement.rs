@@ -334,6 +334,12 @@ pub(crate) fn isoler(permis: &Permis, sessions: usize) -> Resultat {
             "{sessions} session(s) à distance, {n_serveurs} adresse(s) des serveurs de Vanguard, {n_dns} DNS, {n_dhcp} DHCP gardés",
             "{sessions} remote session(s), {n_serveurs} Vanguard server address(es), {n_dns} DNS, {n_dhcp} DHCP kept"
         );
+        if n_serveurs == 0 {
+            note.push_str(tr!(
+                " ; aucun serveur de Vanguard gardé : ni mise à jour ni liste de menaces jusqu'à la levée",
+                "; no Vanguard server kept: no update or threat list until it is lifted"
+            ));
+        }
         if sessions > 0 {
             note.push_str(tr!(
                 " ; « bloquer toutes les connexions entrantes » laissé tel quel (session à distance)",
