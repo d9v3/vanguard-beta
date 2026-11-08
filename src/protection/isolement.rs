@@ -1351,6 +1351,16 @@ mod tests {
         assert_eq!(lire_etat(&etat_texte(&sans)), Some(sans));
         assert_eq!(lire_etat(&t.replace("depuis 1700000000", "depuis x")), None);
         assert_eq!(lire_etat(""), None);
+        // R5 : une session gardée, aucun serveur ; l'état remis au démarrage n'en garde toujours aucun.
+        let r5 = Etat {
+            permis: Permis {
+                serveurs: serveurs_gardes(false, || unreachable!("R5 ne résout pas les serveurs")),
+                ..e.permis.clone()
+            },
+            ..e.clone()
+        };
+        assert!(etat_texte(&r5).contains("serveurs -\n"));
+        assert_eq!(lire_etat(&etat_texte(&r5)), Some(r5));
     }
 
     #[test]

@@ -76,8 +76,11 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             }
             ordres_ligne::Ordre::GardePause { secondes } => assert!(secondes <= ordres_ligne::PAUSE_MAX),
             // L'isolement : des sessions exactes (adresse d'hôte, deux ports non nuls), triées sans double, bornées ;
-            // jamais une forme IPv4 écrite en IPv6.
-            ordres_ligne::Ordre::Isoler { garder } => {
+            // jamais une forme IPv4 écrite en IPv6. R5 : le verbe sans serveurs est le seul qui n'en garde pas.
+            ordres_ligne::Ordre::Isoler { garder, serveurs } => {
+                let verbe = l.split(' ').next().unwrap_or_default();
+                assert_eq!(serveurs, verbe == "vanguard:isoler", "{l}");
+                assert!(serveurs || verbe == "vanguard:isoler-sans-serveurs", "{l}");
                 assert!(garder.len() <= ordres_ligne::GARDER_MAX);
                 assert!(garder.windows(2).all(|p| p[0] < p[1]));
                 for s in &garder {
