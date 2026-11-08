@@ -199,6 +199,12 @@ Defense options.
   checked by `nft -c`, each table that is not Vanguard's; never the whole ruleset at once. iptables-nft tables
   (Docker, libvirt, fail2ban…), recognized by their name or their shape, and tables marked `owner` or `persist` are
   never removed; Vanguard's own are not either.
+- **Network isolation.** Isolating the computer keeps the current remote session: it is found before any rule, and
+  if it cannot be identified with certainty (tunnel, VPN, unreadable connections), the isolation is refused. It
+  removes nothing from the existing firewall; lifting it removes only what carries Vanguard's name and restores the
+  settings noted before, even if the note is lost (without a note, the firewall stays closed to inbound traffic,
+  never more open). On Linux, the state lives in root's folders and a damaged state at boot keeps the computer
+  isolated.
 
 **Guards against lockout (Linux).** A defense action that could cut the person off from their computer (locking
 root or their own account, removing the last administrator, making sudo, su and pkexec unusable) is not refused: it

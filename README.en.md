@@ -805,7 +805,7 @@ Each menu entry is also a command.
 | `vanguard camera-mic` | camera and microphone: who uses them? (read-only) |
 | `vanguard privacy-review [--json]` | privacy check: who can access location, contacts, camera and microphone (read-only) |
 | **8 Block and respond** | |
-| `vanguard blocking [search\|undo\|auto\|click\|category mode\|suspend PID\|resume [PID]\|cut-network PID\|restore-network [PID]]` | threat blocking: one-click “Block” for each threat (action shown, written down, undoable); active protection, after a consent, that blocks clear-cut threats by itself (MalwareBazaar fingerprint, known attack tool, command server) |
+| `vanguard blocking [search\|undo\|auto\|click\|category mode\|suspend PID\|resume [PID]\|cut-network PID\|restore-network [PID]\|isolate\|lift-isolation]` | threat blocking: one-click “Block” for each threat (action shown, written down, undoable); “isolate” cuts the computer off the network except the remote session in progress, DNS and Vanguard's servers (lifted through “undo”); active protection, after a consent, that blocks clear-cut threats by itself (MalwareBazaar fingerprint, known attack tool, command server) |
 | `vanguard dangerous-sites [on\|off]` | dangerous sites blocked by the hosts file (URLhaus, ThreatFox command servers), after your consent; `off` removes them exactly |
 | `vanguard events [--json] [--incident id]` | the event log: alerts, evidence recorded before an action, actions, undos, alerts declared normal and version changes, linked; the state of its sealed chain first |
 | `vanguard changes` | what Vanguard changed: each fix run here, its date and its result; a fix marked “undoable” is undone there, then the previous state is read back |

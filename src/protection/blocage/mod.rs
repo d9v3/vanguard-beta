@@ -277,6 +277,10 @@ pub fn commande(mots: &[String]) {
             Ok(p) if p > 0 => rendre_le_reseau(Some(p)),
             _ => usage(),
         },
+        [m] if est(m, &["isoler", "isolate"]) => crate::protection::isolement::isoler_avec_accord(),
+        [m] if est(m, &["lever-isolement", "lift-isolation"]) => {
+            crate::protection::isolement::lever_avec_accord();
+        }
         [m] if est(m, &["auto", "actif", "active", "on"]) => {
             for c in Categorie::TOUTES.into_iter().filter(|c| c.a_du_certain()) {
                 if !changer_mode(c, Mode::Automatique) {
@@ -302,8 +306,8 @@ pub fn commande(mots: &[String]) {
 fn usage() {
     let categories = Categorie::TOUTES.map(Categorie::mot).join(", ");
     trp!(
-        "  Usage : vanguard blocage [chercher | annuler | etat | auto | clic | <catégorie> <mode> | juger <PID | parent | fichier> | juger destination <dossier> | suspendre <PID> | reprendre [<PID>] | couper-reseau <PID> | rendre-reseau [<PID>]]\n  Catégories : {categories}. Modes : off, clic, auto (programmes et connexions seulement). « juger » montre ce que le blocage refuserait, et pourquoi, sans rien faire. « suspendre » gèle un processus (réversible ; pas les programmes qu'il a déjà lancés) ; « reprendre » le relance (sans PID : tous ceux que Vanguard a suspendus). « couper-reseau » coupe le réseau d'un processus sans l'arrêter (réversible ; sous Windows, tous les processus de ce fichier) ; « rendre-reseau » le lui rend (sans PID : à tous ceux que Vanguard a coupés).",
-        "  Usage: vanguard blocking [search | undo | status | auto | click | <category> <mode> | judge <PID | parent | file> | judge destination <folder> | suspend <PID> | resume [<PID>] | cut-network <PID> | restore-network [<PID>]]\n  Categories: {categories}. Modes: off, click, auto (programs and connections only). “judge” shows what blocking would refuse, and why, without doing anything. “suspend” freezes a process (reversible; not the programs it already started); “resume” starts it again (without a PID: all those Vanguard suspended). “cut-network” cuts a process's network without stopping it (reversible; on Windows, all processes of that file); “restore-network” gives it back (without a PID: to all those Vanguard cut)."
+        "  Usage : vanguard blocage [chercher | annuler | etat | auto | clic | <catégorie> <mode> | juger <PID | parent | fichier> | juger destination <dossier> | suspendre <PID> | reprendre [<PID>] | couper-reseau <PID> | rendre-reseau [<PID>] | isoler | lever-isolement]\n  Catégories : {categories}. Modes : off, clic, auto (programmes et connexions seulement). « juger » montre ce que le blocage refuserait, et pourquoi, sans rien faire. « suspendre » gèle un processus (réversible ; pas les programmes qu'il a déjà lancés) ; « reprendre » le relance (sans PID : tous ceux que Vanguard a suspendus). « couper-reseau » coupe le réseau d'un processus sans l'arrêter (réversible ; sous Windows, tous les processus de ce fichier) ; « rendre-reseau » le lui rend (sans PID : à tous ceux que Vanguard a coupés). « isoler » coupe l'ordinateur du réseau, sauf la session à distance en cours, le DNS et les serveurs de Vanguard (mot de passe demandé) ; « lever-isolement » le lève (aussi par « annuler »).",
+        "  Usage: vanguard blocking [search | undo | status | auto | click | <category> <mode> | judge <PID | parent | file> | judge destination <folder> | suspend <PID> | resume [<PID>] | cut-network <PID> | restore-network [<PID>] | isolate | lift-isolation]\n  Categories: {categories}. Modes: off, click, auto (programs and connections only). “judge” shows what blocking would refuse, and why, without doing anything. “suspend” freezes a process (reversible; not the programs it already started); “resume” starts it again (without a PID: all those Vanguard suspended). “cut-network” cuts a process's network without stopping it (reversible; on Windows, all processes of that file); “restore-network” gives it back (without a PID: to all those Vanguard cut). “isolate” cuts the computer off the network, except the remote session in progress, DNS and Vanguard's servers (password asked); “lift-isolation” lifts it (also through “undo”)."
     );
 }
 
@@ -799,6 +803,20 @@ pub fn menu() {
             tr!("Suites de gestes", "Action suites"),
             tr!("par type d'alerte", "by alert type"),
         ));
+        let isole = crate::protection::isolement::en_place().is_some();
+        lignes.push(if isole {
+            Ligne::choix(
+                "8",
+                tr!("Lever l'isolement", "Lift the isolation"),
+                tr!("l'ordinateur est isolé", "the computer is isolated"),
+            )
+        } else {
+            Ligne::choix(
+                "8",
+                tr!("Isoler l'ordinateur du réseau", "Isolate the computer"),
+                tr!("sauf la session à distance", "except the remote session"),
+            )
+        });
         lignes.push(Ligne::Texte(String::new()));
         lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
         let Some(choix) = choisir(
@@ -814,6 +832,10 @@ pub fn menu() {
             "5" => chercher_et_proposer(),
             "6" => annuler(),
             "7" => editer_suites(),
+            "8" if isole => {
+                crate::protection::isolement::lever_avec_accord();
+            }
+            "8" => crate::protection::isolement::isoler_avec_accord(),
             n => match n
                 .parse::<usize>()
                 .ok()
@@ -2343,6 +2365,12 @@ fn decrire_annulation(a: &Annulation) -> String {
 /// exactement, après accord.
 pub fn annuler() {
     titre(tr!("Annuler un blocage", "Undo a block"));
+    // L'isolement d'abord (Défense R4) : c'est lui qui coupe le plus, et sa levée doit se trouver sans chercher.
+    if let Some(b) = crate::protection::isolement::banniere() {
+        afficher_aligne("  ⚠ ", &b, 4, "");
+        crate::protection::isolement::lever_avec_accord();
+        println!();
+    }
     loop {
         let mut liste = crate::changements::blocages_en_place();
         liste.reverse();

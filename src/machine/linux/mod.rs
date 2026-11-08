@@ -39,6 +39,7 @@ pub(crate) mod fanotify;
 pub(crate) mod garde;
 pub(crate) mod gvdb;
 pub(crate) mod http_unix;
+pub(crate) mod isolement;
 pub(crate) mod journal_systemd;
 mod maj;
 pub(crate) mod natif;

@@ -486,6 +486,11 @@ mod tests {
                 "assistant root du garde (Linux) : son programme, son unité et ses réglages, chacun dans un temporaire créé sans écraser ni suivre de lien, ses droits posés, écrit jusqu'au disque puis renommé, dans un dossier de root fermé en écriture aux autres comptes ; le temporaire retiré si l'écriture échoue ; les fichiers du garde retirés à son retrait ; jamais sous les essais, hors bilan",
             ),
             (
+                "machine/linux/isolement.rs",
+                4,
+                "isolement du réseau (root, Linux) : retrait de ses propres fichiers dans des dossiers de root (état durable d'une persistance à moitié faite, état de /run remplacé par l'état durable, lien d'activation laissé par systemctl, unité et programme à la levée) ; les écritures passent par l'assistant root du garde (garde/poser.rs), jamais sous les essais, hors bilan",
+            ),
+            (
                 "machine/linux/garde/sortie.rs",
                 2,
                 "garde des lancements (root) : son journal d'événements, ouvert en ajout sans suivre de lien dans /run/vanguard/garde, et sa rotation par renommage, hors bilan",

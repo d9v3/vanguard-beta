@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 /// Les seuls hôtes d'Internet que Vanguard joint en HTTPS : une adresse de départ ou une redirection vers un autre est
 /// refusée avant toute connexion, même construite par `format!`. La même liste est écrite dans MODELE-DE-MENACE.md
 /// (« Ce qui sort de l'ordinateur »), avec ce qui part vers chacun ; le test `envois` vérifie qu'elles ne divergent pas.
-const HOTES: &[&str] = &[
+pub(crate) const HOTES: &[&str] = &[
     // Fuites de mots de passe et d'adresses courriel.
     "api.pwnedpasswords.com",
     "api.xposedornot.com",

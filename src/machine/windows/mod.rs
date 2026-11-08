@@ -39,6 +39,8 @@ pub(crate) mod gestionnaire;
 pub(crate) mod hachage;
 pub(crate) mod impression;
 pub(crate) mod installes;
+/// L'isolement de l'ordinateur (Défense R4).
+pub(crate) mod isolement;
 mod journal_evenements;
 mod lancement_ecriture;
 pub(crate) mod lecteurs;

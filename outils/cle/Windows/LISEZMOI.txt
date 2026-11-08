@@ -65,4 +65,17 @@ Le programme : « vanguard.exe », dans ce dossier. Windows 10 et 11 (64 bits), 
      commande.
    - Quitter : q dans le menu, ou Ctrl+C.
 
+6. ORDINATEUR ISOLÉ DU RÉSEAU PAR VANGUARD
+
+   Lever l'isolement :  E:\Windows\vanguard.exe blocage annuler   (ou le menu Blocage) ; accord UAC.
+   Il retire les quatre règles « Vanguard : isolement… » et remet le pare-feu exactement comme avant.
+   Si Vanguard ne se lance plus : PowerShell en administrateur, puis
+
+     Get-NetFirewallRule -DisplayName "Vanguard : isolement*" | Remove-NetFirewallRule
+     Set-NetFirewallProfile -All -AllowInboundRules True
+
+   La deuxième ligne rouvre les règles d'entrée de Windows (l'isolement les avait fermées). Le pare-feu
+   reste allumé : c'est plus sûr. Les valeurs d'avant sont écrites dans la description des règles.
+
+
 Guide complet (menu, protection de la clé, langue) : LISEZMOI.txt à la racine de la clé.

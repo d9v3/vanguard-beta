@@ -25,7 +25,7 @@ use crate::{tr, trf};
 use super::ordres_ligne::CHEMIN_MAX;
 #[cfg(target_os = "linux")]
 pub(crate) use super::ordres_ligne::PAUSE_MAX;
-pub(crate) use super::ordres_ligne::{LIGNE_MAX, LIGNES_MAX, Ordre, analyser};
+pub(crate) use super::ordres_ligne::{GARDER_MAX, LIGNE_MAX, LIGNES_MAX, Ordre, analyser};
 // Le préfixe ne sert qu'à l'assistant élevé de Linux (`machine::lancer_les_ordres`, `gestes_unix`).
 #[cfg(unix)]
 pub(crate) use super::ordres_ligne::PREFIXE;
@@ -156,6 +156,21 @@ impl Ordre {
                 "Remove the launch guard (vanguard-garde service, its program, its settings and its state)"
             )
             .to_string(),
+            Ordre::Isoler { garder } if garder.is_empty() => tr!(
+                "Isoler l'ordinateur du réseau (aucune session à distance en cours)",
+                "Isolate the computer from the network (no remote session in progress)"
+            )
+            .to_string(),
+            Ordre::Isoler { garder } => trf!(
+                "Isoler l'ordinateur du réseau, en gardant la session à distance en cours depuis {}",
+                "Isolate the computer from the network, keeping the remote session in progress from {}",
+                garder.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+            ),
+            Ordre::LeverIsolement => tr!(
+                "Lever l'isolement de l'ordinateur (règles de Vanguard retirées, réglages d'avant remis)",
+                "Lift the computer's isolation (Vanguard's rules removed, previous settings restored)"
+            )
+            .to_string(),
         }
     }
 
@@ -186,6 +201,7 @@ impl Ordre {
             | Ordre::GardePause { .. }
             | Ordre::GardePermettre { .. }
             | Ordre::GardeRetirer => os == Os::Linux,
+            Ordre::Isoler { .. } | Ordre::LeverIsolement => os == Os::Linux || os == Os::Windows,
         }
     }
 }
@@ -271,6 +287,8 @@ pub(crate) fn lire_reponse(ligne: &str) -> Resultat {
 /// processus jamais arrêtés (lui-même, ce qui l'a lancé, le Vanguard qui demande et ce qui le fait tourner).
 pub(crate) struct Juge {
     sessions: Option<gardes::Sessions>,
+    /// Les tunnels montés (VPN) ; `None` s'ils ne se lisent pas : l'isolement les juge avec les sessions.
+    tunnels: Option<Vec<String>>,
     intouchables: HashSet<u32>,
     os: Os,
     /// Le Vanguard qui a demandé, s'il est connu : la pose du garde vérifie qu'il tourne sous le compte nommé.
@@ -292,6 +310,7 @@ impl Juge {
         }
         Juge {
             sessions: gardes::sessions_a_distance(),
+            tunnels: crate::protection::isolement::tunnels(),
             intouchables,
             os: Os::actuel(),
             demandeur,
@@ -310,6 +329,7 @@ impl Juge {
     #[cfg(windows)]
     pub(crate) fn relire_sessions(&mut self) {
         self.sessions = gardes::sessions_a_distance();
+        self.tunnels = crate::protection::isolement::tunnels();
     }
 
     /// Le nombre de sessions à distance en cours, relu à l'accord ; `None` si les connexions ne se lisent pas. Un geste
@@ -324,6 +344,7 @@ impl Juge {
     pub(crate) fn essai(sessions: Option<gardes::Sessions>, intouchables: HashSet<u32>) -> Juge {
         Juge {
             sessions,
+            tunnels: Some(Vec::new()),
             intouchables,
             os: Os::actuel(),
             demandeur: None,
@@ -433,6 +454,13 @@ pub(crate) fn juger(o: &Ordre, j: &Juge) -> Option<String> {
         | Ordre::GardePause { .. }
         | Ordre::GardePermettre { .. }
         | Ordre::GardeRetirer => None,
+        // L'isolement ne coupe jamais une session à distance en cours : chacune doit être dans `garder` (montrée avant
+        // l'accord), les connexions doivent se lire, et aucun tunnel ne doit être monté pendant une session.
+        Ordre::Isoler { garder } => {
+            crate::protection::isolement::juger(garder, j.sessions.as_ref(), j.tunnels.as_deref())
+        }
+        // Lever ne retire que ce qui porte la marque de Vanguard et remet l'état d'avant : jamais plus ouvert.
+        Ordre::LeverIsolement => None,
     }
 }
 
@@ -703,6 +731,8 @@ pub(crate) fn faire(o: &Ordre, j: &Juge) -> Resultat {
             return super::coupure::rendre_ici(*pid, chemin, *depart);
         }
         Ordre::RendreReseauFichier { chemin } => return super::coupure::rendre_fichier_ici(chemin),
+        Ordre::Isoler { garder } => return crate::protection::isolement::isoler_ici(garder),
+        Ordre::LeverIsolement => return crate::protection::isolement::lever_ici(),
         _ => {}
     }
     #[cfg(target_os = "linux")]
@@ -815,9 +845,9 @@ mod linux {
             | Ordre::CouperReseauProgramme { .. }
             | Ordre::RendreReseauProgramme { .. }
             | Ordre::RendreReseauFichier { .. }
-            | Ordre::RemettrePilotes { .. } => {
-                Resultat::echec(tr!("ordre d'un autre système", "order from another system"))
-            }
+            | Ordre::RemettrePilotes { .. }
+            | Ordre::Isoler { .. }
+            | Ordre::LeverIsolement => Resultat::echec(tr!("ordre d'un autre système", "order from another system")),
             Ordre::GardePoser { .. }
             | Ordre::GardeMettreAJour
             | Ordre::GardeRegler { .. }
@@ -974,6 +1004,27 @@ mod tests {
             },
             Ordre::GardePermettre { sha256: [0xab; 32] },
             Ordre::GardeRetirer,
+            Ordre::Isoler { garder: Vec::new() },
+            Ordre::Isoler {
+                garder: vec!["198.51.100.20".parse().unwrap(), "2001:db8::7".parse().unwrap()],
+            },
+            Ordre::Isoler {
+                garder: (1..=16u8)
+                    .map(|i| {
+                        std::net::IpAddr::V6(std::net::Ipv6Addr::new(
+                            0x2001,
+                            0xdb8,
+                            0xffff,
+                            0xffff,
+                            0xffff,
+                            0xffff,
+                            0xffff,
+                            u16::from(i),
+                        ))
+                    })
+                    .collect(),
+            },
+            Ordre::LeverIsolement,
         ]
     }
 

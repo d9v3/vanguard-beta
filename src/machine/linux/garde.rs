@@ -26,7 +26,7 @@ pub(crate) mod listes;
 mod minuterie;
 mod notifier;
 mod ouvrir;
-mod poser;
+pub(crate) mod poser;
 pub(crate) mod servir;
 pub(crate) mod sortie;
 pub(crate) mod unite;

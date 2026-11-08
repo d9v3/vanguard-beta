@@ -97,7 +97,7 @@ fn coupe_pour_le_reseau(p: &INetFwPolicy2) -> String {
 }
 
 /// La règle de ce nom, si elle existe.
-fn trouver(r: &INetFwRules, nom: &str) -> Option<INetFwRule> {
+pub(super) fn trouver(r: &INetFwRules, nom: &str) -> Option<INetFwRule> {
     // SAFETY: objet COM valide ; BSTR vivant pendant l'appel. Une erreur (règle absente) se défait dans ce fil.
     unsafe { r.Item(&BSTR::from(nom)) }.ok()
 }
@@ -218,7 +218,7 @@ fn creer(r: &INetFwRules, v: &Voulue) -> windows::core::Result<()> {
 
 /// Retire toutes les règles de ce nom (des doublons laissés par une version d'avant : Remove n'en retire qu'une par
 /// appel), 16 au plus ; `Ok(n)` : combien.
-fn retirer_toutes(r: &INetFwRules, nom: &str) -> windows::core::Result<usize> {
+pub(super) fn retirer_toutes(r: &INetFwRules, nom: &str) -> windows::core::Result<usize> {
     let mut n = 0;
     while trouver(r, nom).is_some() && n < 16 {
         // SAFETY: objet COM valide ; BSTR vivant pendant l'appel.
@@ -229,7 +229,7 @@ fn retirer_toutes(r: &INetFwRules, nom: &str) -> windows::core::Result<usize> {
 }
 
 /// Dans un fil COM à part, avec un délai : le Pare-feu Windows qui ne répond pas ne fige pas le processus élevé.
-fn dans_com(geste: impl FnOnce(&INetFwPolicy2, &INetFwRules) -> Resultat + Send + 'static) -> Resultat {
+pub(super) fn dans_com(geste: impl FnOnce(&INetFwPolicy2, &INetFwRules) -> Resultat + Send + 'static) -> Resultat {
     let r = super::wmi::com_delai(
         crate::compte_rendu::Contexte::PareFeuWindows,
         "INetFwPolicy2",
@@ -734,11 +734,11 @@ const CONTEXTE_CHOIX: &str = "pare-feu/choix";
 /// Au-delà, la liste des règles n'est pas crue lue en entier : un Windows en a quelques centaines.
 const REGLES_MAX: usize = 50_000;
 
-fn booleen(b: bool) -> VARIANT_BOOL {
+pub(super) fn booleen(b: bool) -> VARIANT_BOOL {
     if b { VARIANT_TRUE } else { VARIANT_FALSE }
 }
 
-fn vrai_faux(v: VARIANT_BOOL) -> Option<bool> {
+pub(super) fn vrai_faux(v: VARIANT_BOOL) -> Option<bool> {
     if v == VARIANT_TRUE {
         Some(true)
     } else if v == VARIANT_FALSE {
@@ -840,7 +840,7 @@ fn regles_com(r: &INetFwRules) -> windows::core::Result<(Vec<(RegleLue, INetFwRu
 }
 
 /// Une lecture du pare-feu dans un fil COM à part, avec un délai ; `None` : pas de réponse ou COM indisponible.
-fn lecture<T: Send + 'static>(
+pub(super) fn lecture<T: Send + 'static>(
     geste: impl FnOnce(&INetFwPolicy2, &INetFwRules) -> windows::core::Result<T> + Send + 'static,
 ) -> Option<T> {
     super::wmi::com_delai(

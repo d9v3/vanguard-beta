@@ -2200,6 +2200,108 @@ finally {
     Remove-Item -LiteralPath $dossierR3 -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+Etape 'Isoler l''ordinateur du réseau (défense R4) : session à distance gardée, Internet coupé, levée exacte'
+# Éteint par défaut : il coupe le réseau de la VM, pilotée par le Bureau à distance (xfreerdp). Un défaut couperait le
+# 3389 pendant que personne n'est là ; il ne tourne donc qu'allumé par ESSAI-ISOLEMENT.bat (VANGUARD_ESSAI_ISOLEMENT=1),
+# avec l'auteur devant la VM, jamais dans la file d'essais sans clic. Vérifié : la connexion du Bureau à distance en
+# cours toujours là pendant l'isolement, et son adresse dite gardée ; les quatre règles de Vanguard (Block, en marche) ;
+# Internet coupé (si la VM l'avait) ; le bandeau au lancement suivant ; puis la levée : plus aucune règle de
+# l'isolement, les profils (en marche, règles d'entrée permises) et toutes les autres règles exactement comme avant,
+# Internet revenu. Le filet du finally lève l'isolement s'il est resté.
+function Internet-R4 {
+    try {
+        $c = New-Object System.Net.Sockets.TcpClient
+        $r = $c.BeginConnect('1.1.1.1', 443, $null, $null)
+        $ok = $r.AsyncWaitHandle.WaitOne(4000) -and $c.Connected
+        $c.Close()
+        $ok
+    } catch { $false }
+}
+function Profils-R4 { (Get-NetFirewallProfile -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Enabled),$($_.AllowInboundRules)" }) -join ';' }
+# Les règles d'entrée de chaque profil (« True,False » : en marche, toutes les entrées bloquées), sans son nom.
+function Entrees-R4($profils) { @($profils -split ';' | ForEach-Object { ($_ -split ',')[1] }) -join ',' }
+function Autres-Regles-R4 {
+    $lignes = Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -notlike 'Vanguard : isolement*' } |
+        ForEach-Object { "$($_.Name)|$($_.Enabled)|$($_.Action)|$($_.Direction)|$($_.Profile)" } | Sort-Object
+    $octets = [Text.Encoding]::UTF8.GetBytes(($lignes -join "`n"))
+    -join ([Security.Cryptography.SHA256]::Create().ComputeHash($octets) | ForEach-Object { $_.ToString('x2') })
+}
+function Regles-R4 { @(Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'Vanguard : isolement*' }) }
+function Bureau-R4 { @(Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue) }
+$adminR4 = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$isoleR4 = $false
+if ($env:VANGUARD_ESSAI_ISOLEMENT -ne '1') { Sautee 'Sautée : essai éteint par défaut (ESSAI-ISOLEMENT.bat l''allume, avec l''auteur devant la VM)' }
+elseif ($SansOuvrir) { Sautee 'Sautée : test lancé en arrière-plan, personne devant la VM' }
+elseif ($Auto -and -not $adminR4) { Sautee 'Sautée : sans questions et sans droits, les fenêtres UAC ne peuvent pas être acceptées' }
+elseif ((Regles-R4).Count) { Bug "Des règles « Vanguard : isolement » sont déjà là avant l'essai : rien n'est fait" }
+elseif (-not $Auto -and -not (Question 'Isoler la VM du réseau puis lever l''isolement (une fenêtre UAC pour chaque) ?')) { Sautee 'Sautée (refusée).' }
+else {
+    try {
+        $profilsAvant = Profils-R4
+        $autresAvant = Autres-Regles-R4
+        $bureauAvant = Bureau-R4
+        $internetAvant = Internet-R4
+        if (-not $internetAvant) { Info 'Pas de connexion vers 1.1.1.1:443 depuis la VM avant l''isolement : la coupure ne se mesure pas' }
+        if (-not $Auto) { Write-Host '      Accepte la fenêtre UAC. Le Bureau à distance doit rester ouvert pendant tout l''essai.' -ForegroundColor Yellow }
+        LancerAvec 'blocage-isoler' @('blocage', 'isoler') "o`n"
+        $t = "$(Sortie 'blocage-isoler')" -replace '\s+', ' '
+        $regles = Regles-R4
+        $isoleR4 = $regles.Count -gt 0
+        if ($t -match 'Isolé|Isolated') { Ok 'vanguard blocage isoler : dit isolé' }
+        else { Bug "vanguard blocage isoler : pas « Isolé » ($((Lignes (Sortie 'blocage-isoler') | Where-Object { $_ -match '✖|✔' }) -join ' / '))" }
+        $bloquent = @($regles | Where-Object { "$($_.Action)" -eq 'Block' -and "$($_.Enabled)" -eq 'True' }).Count
+        if ($regles.Count -eq 4 -and $bloquent -eq 4) { Ok 'Quatre règles « Vanguard : isolement », Block, en marche' }
+        else { Bug "Règles de l'isolement : $($regles.Count) (dont $bloquent Block en marche), 4 attendues" }
+        Start-Sleep -Seconds 5
+        $bureauPendant = Bureau-R4
+        foreach ($c in $bureauAvant) {
+            if (@($bureauPendant | Where-Object { $_.RemoteAddress -eq $c.RemoteAddress -and $_.RemotePort -eq $c.RemotePort }).Count) { Ok "Bureau à distance depuis $($c.RemoteAddress) : connexion toujours établie" }
+            else { Bug "Bureau à distance depuis $($c.RemoteAddress) : connexion PERDUE pendant l'isolement" }
+            if ($t -match [regex]::Escape("$($c.RemoteAddress)")) { Ok "Son adresse ($($c.RemoteAddress)) est dite gardée" }
+            else { Bug "Son adresse ($($c.RemoteAddress)) n'est pas dans ce que l'isolement dit garder" }
+        }
+        if (-not $bureauAvant) { Info 'Aucune connexion du Bureau à distance au port 3389 avant l''essai : la garde de la session ne se vérifie pas ici' }
+        $profilsPendant = Profils-R4
+        if ($profilsPendant -match '=False') { Bug "Un profil du pare-feu est coupé pendant l'isolement : $profilsPendant" }
+        elseif ($bureauAvant -and (Entrees-R4 $profilsPendant) -ne (Entrees-R4 $profilsAvant)) { Bug "Pendant une session à distance, les règles d'entrée ont changé : avant $profilsAvant, pendant $profilsPendant" }
+        elseif (-not $bureauAvant -and (Entrees-R4 $profilsPendant) -match 'True') { Bug "Sans session à distance, un profil laisse encore les règles d'entrée : $profilsPendant" }
+        else { Ok "Profils pendant l'isolement (tous en marche) : $profilsPendant" }
+        if ($internetAvant) {
+            if (-not (Internet-R4)) { Ok 'Internet coupé : 1.1.1.1:443 ne répond plus' }
+            else { Bug 'Isolé, mais 1.1.1.1:443 répond encore' }
+        }
+        Lancer 'isolement-bandeau' @('blocage', 'etat')
+        $bandeau = "$(Get-Content (Join-Path $res 'isolement-bandeau.err.txt') -Raw -Encoding UTF8)" -replace '\s+', ' '
+        if ($bandeau -match 'isolé du réseau par Vanguard|isolated from the network by Vanguard') { Ok 'Le bandeau de l''isolement s''affiche au lancement suivant' }
+        else { Bug 'Pas de bandeau de l''isolement au lancement suivant' }
+        if (-not $Auto) { Write-Host '      Accepte la fenêtre UAC pour lever l''isolement.' -ForegroundColor Yellow }
+        LancerAvec 'blocage-lever-isolement' @('blocage', 'lever-isolement') "o`n"
+        $t = "$(Sortie 'blocage-lever-isolement')" -replace '\s+', ' '
+        if ($t -match 'Isolement levé|Isolation lifted') { Ok 'vanguard blocage lever-isolement : dit levé' }
+        else { Bug "vanguard blocage lever-isolement : pas « levé » ($((Lignes (Sortie 'blocage-lever-isolement') | Where-Object { $_ -match '✖|✔' }) -join ' / '))" }
+        if ((Regles-R4).Count -eq 0) { Ok 'Plus aucune règle de l''isolement'; $isoleR4 = $false }
+        else { Bug "$((Regles-R4).Count) règle(s) de l'isolement restent après la levée" }
+        $profilsApres = Profils-R4
+        if ($profilsApres -eq $profilsAvant) { Ok "Profils du pare-feu exactement comme avant ($profilsApres)" }
+        else { Bug "Profils changés par l'aller-retour : avant $profilsAvant, après $profilsApres" }
+        if ((Autres-Regles-R4) -eq $autresAvant) { Ok 'Toutes les autres règles du pare-feu exactement comme avant' }
+        else { Bug 'Les autres règles du pare-feu ont changé pendant l''aller-retour' }
+        if ($internetAvant) {
+            if (Internet-R4) { Ok 'Internet revenu après la levée' }
+            else { Bug 'Internet toujours coupé après la levée' }
+        }
+        if (-not $Auto) { Constat 'Le Bureau à distance est-il resté ouvert et réactif pendant tout l''essai ?' }
+    }
+    finally {
+        # Filet, même après une exception : un isolement resté est levé par Vanguard (les réglages d'avant remis),
+        # puis, s'il reste une règle, retirée par son nom.
+        if ($isoleR4 -or (Regles-R4).Count) {
+            Start-Process -FilePath $exe -ArgumentList @('blocage', 'lever-isolement') -NoNewWindow -Wait -RedirectStandardInput (New-Item -Force (Join-Path $res 'lever-filet.txt') -Value "o`r`n").FullName | Out-Null
+            Regles-R4 | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 Journal "FIN $(Get-Date -Format 'HH:mm:ss')"
 $rapport = Rapport
 $toutes = @($script:etapes | ForEach-Object { $_.Verifs })

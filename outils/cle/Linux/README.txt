@@ -64,4 +64,18 @@ The program: "vanguard", in this folder. Any 64-bit distribution (x86_64), nothi
    - The images update themselves (Ventoy too, once you agree) when the key is plugged into the computer
      that prepares it, and every day if it stays plugged in there.
 
+6. COMPUTER ISOLATED FROM THE NETWORK BY VANGUARD
+
+   Lift the isolation:  vanguard blocking undo   (or the Blocking menu); your password is asked.
+   If Vanguard no longer starts, as root, these commands remove only what Vanguard added:
+
+     systemctl disable --now vanguard-isolement.service
+     nft delete table inet vanguard_isolement
+     rm -f /etc/systemd/system/vanguard-isolement.service
+     rm -rf /opt/vanguard/isolement /var/lib/vanguard/isolement /run/vanguard/isolement
+     systemctl daemon-reload
+
+   The rest of the firewall was not changed: it comes back as it was.
+
+
 Full guide (menu, key protection, language): README.txt at the root of the key.

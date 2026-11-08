@@ -16,6 +16,22 @@ use std::path::Path;
 /// Une destination du réseau local, ou reçue de l'appelant, n'est pas écrite ici.
 const PRISES: &[(&str, &[&str], &str)] = &[
     (
+        "protection/isolement.rs",
+        &[
+            "github.com",
+            "objects.githubusercontent.com",
+            "release-assets.githubusercontent.com",
+            "raw.githubusercontent.com",
+            "feodotracker.abuse.ch",
+            "mb-api.abuse.ch",
+            "threatfox-api.abuse.ch",
+            "urlhaus-api.abuse.ch",
+            "www.cisa.gov",
+            "www.loldrivers.io",
+        ],
+        "isolement de l'ordinateur : les adresses des serveurs de Vanguard, résolues avant de poser les règles (P2), pour les garder joignables",
+    ),
+    (
         "dns_rapide.rs",
         &[
             "1.1.1.1",

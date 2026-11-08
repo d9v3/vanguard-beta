@@ -598,7 +598,8 @@ enum Commande {
         /// (programmes, connexions, demarrage, agents) suivie d'un mode (off, clic, auto), ou « juger » un PID,
         /// « parent » ou un fichier (ce que le blocage refuserait, et pourquoi, sans rien faire), « suspendre » un PID
         /// (réversible) ou « reprendre » (un PID, ou tous ceux que Vanguard a suspendus), « couper-reseau » un PID
-        /// (réversible) ou « rendre-reseau » (un PID, ou tous ceux que Vanguard a coupés).
+        /// (réversible) ou « rendre-reseau » (un PID, ou tous ceux que Vanguard a coupés), « isoler » (l'ordinateur
+        /// coupé du réseau, sauf la session à distance en cours) ou « lever-isolement ».
         quoi: Vec<String>,
     },
     /// Une alerte notifiée, par l'identifiant que donne sa notification : l'alerte est relue dans le journal scellé,
@@ -3711,6 +3712,11 @@ async fn main() {
     if std::env::args_os().skip(1).eq(["garde-servir"]) {
         std::process::exit(machine::linux::garde::servir::servir());
     }
+    // L'isolement remis au démarrage (Défense R4), root, lancé par son unité avant le réseau : rien d'autre non plus.
+    #[cfg(target_os = "linux")]
+    if std::env::args_os().skip(1).eq(["isolement-demarrage"]) {
+        std::process::exit(machine::linux::isolement::demarrage());
+    }
     // Le processus élevé ne fait que sa liste : rien d'autre ne doit tourner avec le jeton administrateur (journal,
     // passage, reconnaissance de la clé écrivent dans des dossiers que le compte contrôle).
     if std::env::args_os().nth(1).is_some_and(|a| a == "appliquer-eleve") {
@@ -3754,6 +3760,10 @@ async fn main() {
     protection::cle::proteger_cle();
     protection::environnement::afficher();
     avertir_si_eleve();
+    // Tant que dure l'isolement (Défense R4) : dit à chaque lancement, avec la commande qui le lève.
+    if let Some(b) = protection::isolement::banniere() {
+        avertir(&b);
+    }
     passage::au_lancement();
     // Après le passage, qui a pu déplacer l'ancien dossier avec ses droits d'avant.
     #[cfg(unix)]

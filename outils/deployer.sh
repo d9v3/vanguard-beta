@@ -442,7 +442,7 @@ elif [[ -d $HOME/Windows && -f $WINDOWS ]]; then
   cp -f "$WINDOWS" "$VM/programme/vanguard.exe"
   # Le lanceur de la clé aussi : test.ps1 l'essaie dans un dossier sans programme (Vanguard bloqué par Defender).
   cp -f outils/test-windows/test.ps1 outils/test-windows/menu.ps1 "outils/cle/Lancer Vanguard.bat" "$VM/programme/"
-  cp -f outils/test-windows/TESTER-VANGUARD.bat outils/test-windows/LISEZMOI.txt "$VM/"
+  cp -f outils/test-windows/TESTER-VANGUARD.bat outils/test-windows/ESSAI-ISOLEMENT.bat outils/test-windows/LISEZMOI.txt "$VM/"
   # La version déposée et l'empreinte du programme : le menu les montre, le test automatique part quand elles changent.
   printf '%s\r\n%s\r\n' "$(./"$LINUX" --version)" "$(sha256sum "$WINDOWS" | cut -c1-16)" >"$VM/programme/version.txt"
   if [[ -s $VM/resultats/historique.txt ]]; then

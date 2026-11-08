@@ -2,7 +2,8 @@
 //! Vanguard non élevé (src/protection/blocage/ordres_ligne.rs) : verbes hors de la liste, pare-feu inconnus,
 //! adresses écrites autrement (IPv4 en IPv6, zéros de tête), ports nuls ou démesurés, chemins en hexadécimal piégés
 //! (majuscules, longueur impaire, relatif, NUL, saut de ligne), départs absents ou nuls de la coupure du réseau d'un
-//! programme, comptes root ou pauses démesurées du garde, lignes démesurées ; et le non-recouvrement avec les
+//! programme, comptes root ou pauses démesurées du garde, adresses gardées par l'isolement en double, en désordre,
+//! IPv4 écrites en IPv6 ou trop nombreuses, lignes démesurées ; et le non-recouvrement avec les
 //! gestes de Linux (src/machine/gestes_unix.rs), qui passent par le même canal.
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (src/) : refusé sans recours, un allow ne compile pas.
@@ -74,6 +75,13 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                 assert!(!dossier.contains(['\0', '\n', '\r']));
             }
             ordres_ligne::Ordre::GardePause { secondes } => assert!(secondes <= ordres_ligne::PAUSE_MAX),
+            // L'isolement : des adresses d'hôtes, triées sans double, bornées ; jamais une forme IPv4 écrite en IPv6.
+            ordres_ligne::Ordre::Isoler { garder } => {
+                assert!(garder.len() <= ordres_ligne::GARDER_MAX);
+                assert!(garder.windows(2).all(|p| p[0] < p[1]));
+                assert!(garder.iter().all(|ip| !ip.is_unspecified() && !ip.is_multicast()));
+                assert!(garder.iter().all(|ip| ip.to_canonical() == *ip));
+            }
             _ => {}
         }
     }

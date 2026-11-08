@@ -65,4 +65,17 @@ The program: "vanguard.exe", in this folder. Windows 10 and 11 (64-bit), nothing
      command.
    - Quit: q in the menu, or Ctrl+C.
 
+6. COMPUTER ISOLATED FROM THE NETWORK BY VANGUARD
+
+   Lift the isolation:  E:\Windows\vanguard.exe blocking undo   (or the Blocking menu); UAC consent.
+   It removes the four "Vanguard : isolement…" rules and puts the firewall back exactly as it was.
+   If Vanguard no longer starts: PowerShell as administrator, then
+
+     Get-NetFirewallRule -DisplayName "Vanguard : isolement*" | Remove-NetFirewallRule
+     Set-NetFirewallProfile -All -AllowInboundRules True
+
+   The second line reopens Windows' inbound rules (the isolation had closed them). The firewall stays
+   on: that is safer. The previous values are written in the rules' description.
+
+
 Full guide (menu, key protection, language): README.txt at the root of the key.

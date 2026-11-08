@@ -24,6 +24,7 @@ pub mod environnement;
 pub mod espions;
 pub mod fuites;
 pub mod integrite;
+pub(crate) mod isolement;
 pub mod isoler;
 pub mod kev;
 pub mod lien;

@@ -209,6 +209,11 @@ Options de défense.
   vérifiée par `nft -c`, chaque table qui n'est pas à Vanguard ; jamais tout le jeu de règles d'un coup. Les tables
   d'iptables-nft (Docker, libvirt, fail2ban…), reconnues à leur nom ou à leur forme, et les tables marquées `owner`
   ou `persist` ne sont jamais retirées ; celles de Vanguard non plus.
+- **L'isolement du réseau.** Isoler l'ordinateur garde la session à distance en cours : elle est trouvée avant la
+  moindre règle, et si elle ne peut pas l'être avec certitude (tunnel, VPN, connexions illisibles), l'isolement est
+  refusé. Il ne retire rien du pare-feu existant ; sa levée ne retire que ce qui porte le nom de Vanguard et remet les
+  réglages notés avant, même si la note est perdue (sans note, le pare-feu reste fermé à l'entrée, jamais plus
+  ouvert). Sous Linux, l'état est dans des dossiers de root et un état abîmé au démarrage garde l'ordinateur isolé.
 
 **Les gardes contre le verrouillage (Linux).** Un geste de défense qui peut couper la personne de son ordinateur
 (verrouiller root ou son propre compte, retirer le dernier administrateur, rendre sudo, su et pkexec inutilisables)

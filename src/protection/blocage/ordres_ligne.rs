@@ -23,6 +23,8 @@ pub(crate) const LIGNES_MAX: usize = 512;
 pub(crate) const CHEMIN_MAX: usize = 4096;
 /// La plus longue pause du garde des lancements (Défense L3) : un jour ; au-delà, le garde se repose ou se retire.
 pub(crate) const PAUSE_MAX: u32 = 86_400;
+/// Au plus autant d'adresses gardées par l'isolement (Défense R4) : les sessions à distance en cours.
+pub(crate) const GARDER_MAX: usize = 16;
 
 /// Un geste de la liste fermée.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -119,6 +121,15 @@ pub(crate) enum Ordre {
     },
     /// Le garde retiré exactement : service, programme, réglages et état.
     GardeRetirer,
+    /// Isoler l'ordinateur du réseau (Défense R4) en gardant ces adresses : celles des sessions à distance en cours,
+    /// montrées avant l'accord (triées, sans double, au plus `GARDER_MAX`). L'élevé relit les sessions et refuse si
+    /// l'une n'y est pas ; il ajoute lui-même ce qui reste permis (boucle locale, DHCP, DNS en place, serveurs de
+    /// Vanguard).
+    Isoler {
+        garder: Vec<IpAddr>,
+    },
+    /// Lever l'isolement : ce qui porte la marque de Vanguard seulement, l'état d'avant remis.
+    LeverIsolement,
 }
 
 fn nom_pare_feu(p: PareFeu) -> &'static str {
@@ -234,6 +245,12 @@ impl Ordre {
             Ordre::GardePause { secondes } => format!("{PREFIXE}garde-pause {secondes}"),
             Ordre::GardePermettre { sha256 } => format!("{PREFIXE}garde-permettre {}", hex(sha256)),
             Ordre::GardeRetirer => format!("{PREFIXE}garde-retirer"),
+            Ordre::Isoler { garder } if garder.is_empty() => format!("{PREFIXE}isoler"),
+            Ordre::Isoler { garder } => {
+                let liste: Vec<String> = garder.iter().map(IpAddr::to_string).collect();
+                format!("{PREFIXE}isoler {}", liste.join(","))
+            }
+            Ordre::LeverIsolement => format!("{PREFIXE}lever-isolement"),
         }
     }
 }
@@ -310,9 +327,30 @@ pub(crate) fn analyser(ligne: &str) -> Option<Ordre> {
             sha256: de_hex(e)?.try_into().ok()?,
         },
         ["garde-retirer"] => Ordre::GardeRetirer,
+        ["isoler"] => Ordre::Isoler { garder: Vec::new() },
+        ["isoler", liste] => Ordre::Isoler {
+            garder: garder_de(liste)?,
+        },
+        ["lever-isolement"] => Ordre::LeverIsolement,
         _ => return None,
     };
     (ordre.ligne() == ligne).then_some(ordre)
+}
+
+/// Les adresses gardées par l'isolement : séparées par une virgule, de 1 à `GARDER_MAX`, strictement croissantes
+/// (ni double ni ordre au choix), chacune une adresse d'un hôte joignable : ni non spécifiée, ni multidiffusion, ni
+/// IPv4 écrite en IPv6 (la même adresse aurait deux formes).
+pub(crate) fn garder_de(liste: &str) -> Option<Vec<IpAddr>> {
+    let garder: Vec<IpAddr> = liste
+        .split(',')
+        .map(|t| t.parse::<IpAddr>().ok())
+        .collect::<Option<_>>()?;
+    let hote = |ip: &IpAddr| !ip.is_unspecified() && !ip.is_multicast() && ip.to_canonical() == *ip;
+    let valide = !garder.is_empty()
+        && garder.len() <= GARDER_MAX
+        && garder.iter().all(hote)
+        && garder.windows(2).all(|p| matches!(p, [a, b] if a < b));
+    valide.then_some(garder)
 }
 
 /// Le départ en fin de ligne d'une suspension ou d'une reprise : absent, ou un entier non nul.

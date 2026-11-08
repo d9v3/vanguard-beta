@@ -21,6 +21,14 @@ sans droits administrateur ; sa sortie va dans resultats\. Le dossier partagé
 s'écrit depuis Linux : à n'accepter que dans une machine virtuelle de test.
 L'accord est gardé dans ce Windows, pas dans le dossier partagé.
 
+ESSAI DE L'ISOLEMENT DU RÉSEAU (défense R4)
+-------------------------------------------
+Éteint dans les tests ordinaires : il coupe le réseau de la VM (sauf la session
+à distance). Seulement avec l'auteur devant la VM : double-clic sur
+ESSAI-ISOLEMENT.bat, puis le choix 2 ; deux fenêtres UAC (isoler, lever).
+Vérifie que le Bureau à distance reste ouvert et que la levée remet le
+pare-feu exactement comme avant. Jamais par la file d'essais sans clic.
+
 ESSAIS SANS CLIC (file d'essais)
 --------------------------------
 Une seule fois : sur Linux, outils/vm-tester.sh --installer ; ici, double-clic

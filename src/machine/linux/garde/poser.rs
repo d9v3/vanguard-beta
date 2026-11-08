@@ -156,7 +156,7 @@ fn reglages_en_place() -> Option<Reglages> {
 }
 
 /// Un dossier à root, créé au besoin en 0755 : jamais un lien, jamais écrit par un autre.
-fn dossier_root(chemin: &Path) -> Result<(), Echec> {
+pub(crate) fn dossier_root(chemin: &Path) -> Result<(), Echec> {
     if let Some(parent) = chemin.parent()
         && parent != Path::new("/")
         && std::fs::symlink_metadata(parent).is_err()
@@ -184,7 +184,7 @@ fn dossier_root(chemin: &Path) -> Result<(), Echec> {
 }
 
 /// Écrit `contenu` dans `chemin` d'un coup (fichier temporaire à côté, puis renommage), avec ces droits.
-fn ecrire_root(chemin: &Path, contenu: &[u8], mode: u32) -> Result<(), Echec> {
+pub(crate) fn ecrire_root(chemin: &Path, contenu: &[u8], mode: u32) -> Result<(), Echec> {
     let temporaire = chemin.with_extension(format!("tmp-{}", std::process::id()));
     let _ = std::fs::remove_file(&temporaire);
     let ecrit = (|| {
@@ -208,7 +208,13 @@ fn ecrire_root(chemin: &Path, contenu: &[u8], mode: u32) -> Result<(), Echec> {
 
 /// Copie l'image de ce processus (l'assistant root) en PROGRAMME, root:root 0755 ; rend son SHA-256.
 fn installer_programme() -> Result<String, Echec> {
-    dossier_root(Path::new(DOSSIER_PROGRAMME))?;
+    copier_soi(Path::new(DOSSIER_PROGRAMME), Path::new(PROGRAMME))
+}
+
+/// Copie l'image de ce processus (l'assistant root, à l'abri d'un remplacement du fichier du compte) dans ce dossier
+/// à root seul, en root:root 0755 ; rend son SHA-256. Le garde et l'isolement (Défense R4) ont chacun la leur.
+pub(crate) fn copier_soi(dossier: &Path, programme: &Path) -> Result<String, Echec> {
+    dossier_root(dossier)?;
     let mut source =
         std::fs::File::open("/proc/self/exe").map_err(|e| Echec::io("garde/poser", &e).detail("/proc/self/exe"))?;
     let mut octets = Vec::new();
@@ -218,7 +224,7 @@ fn installer_programme() -> Result<String, Echec> {
         .map_err(|e| Echec::io("garde/poser", &e).detail("/proc/self/exe"))?;
     let empreinte = crate::protection::empreintes::sha256_de(octets.as_slice())
         .ok_or_else(|| Echec::echoue("garde/poser", "/proc/self/exe illisible"))?;
-    ecrire_root(Path::new(PROGRAMME), &octets, 0o755)?;
+    ecrire_root(programme, &octets, 0o755)?;
     Ok(crate::protection::empreintes::hex(&empreinte))
 }
 
@@ -359,12 +365,12 @@ fn systemctl() -> Option<&'static str> {
         .find(|c| Path::new(c).exists())
 }
 
-fn lancer_systemctl(arguments: &[&str]) -> Result<(), Echec> {
+fn lancer_systemctl(unite: &str, arguments: &[&str]) -> Result<(), Echec> {
     let programme = systemctl().ok_or_else(|| Echec::echoue("garde/poser", "systemctl introuvable"))?;
     let mut c = std::process::Command::new(programme);
     c.args(arguments);
     if arguments.first().is_some_and(|a| *a != "daemon-reload") {
-        c.arg(UNITE);
+        c.arg(unite);
     }
     match crate::commande::lancer(&mut c, 60) {
         Some(r) if r.code == Some(0) => Ok(()),
@@ -379,19 +385,25 @@ fn lancer_systemctl(arguments: &[&str]) -> Result<(), Echec> {
     }
 }
 
-/// Une action sur l'unité : par le bus système, systemctl en secours.
+/// Une action sur l'unité du garde.
 fn agir(action: ActionUnite, secours: &[&str]) -> Result<(), Echec> {
+    agir_sur(UNITE, action, secours)
+}
+
+/// Une action sur une unité de Vanguard (le garde, l'isolement de Défense R4) : par le bus système, systemctl en
+/// secours.
+pub(crate) fn agir_sur(unite: &str, action: ActionUnite, secours: &[&str]) -> Result<(), Echec> {
     use crate::machine::linux::dbus::systeme;
-    let par_le_bus = systeme::bus_pour_agir().and_then(|mut bus| systeme::agir_sur_unite(&mut bus, action, UNITE));
+    let par_le_bus = systeme::bus_pour_agir().and_then(|mut bus| systeme::agir_sur_unite(&mut bus, action, unite));
     match par_le_bus {
         Ok(()) => Ok(()),
-        Err(e) => lancer_systemctl(secours).map_err(|s| Echec::echoue("garde/poser", format!("{e} ; {s}"))),
+        Err(e) => lancer_systemctl(unite, secours).map_err(|s| Echec::echoue("garde/poser", format!("{e} ; {s}"))),
     }
 }
 
-/// Fait oublier à systemd l'unité retirée.
-fn recharger() -> Result<(), Echec> {
-    lancer_systemctl(&["daemon-reload"])
+/// Fait relire ses unités à systemd (une unité retirée est oubliée).
+pub(crate) fn recharger() -> Result<(), Echec> {
+    lancer_systemctl("", &["daemon-reload"])
 }
 
 #[allow(

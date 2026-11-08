@@ -53,6 +53,9 @@ use super::netlink::{
 
 pub(crate) const TABLE: &str = "vanguard";
 
+/// L'isolement de l'ordinateur (Défense R4) : sa table à lui, posée avec les aides de ce module.
+pub(crate) mod isolement;
+
 const NETLINK_NETFILTER: i32 = 12;
 const NFNL_SUBSYS_NFTABLES: u16 = 10;
 const NFNL_MSG_BATCH_BEGIN: u16 = 16;

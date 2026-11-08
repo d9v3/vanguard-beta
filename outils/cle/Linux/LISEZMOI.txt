@@ -64,4 +64,18 @@ Le programme : « vanguard », dans ce dossier. Toutes les distributions 64 bits
    - Les images se mettent à jour toutes seules (Ventoy aussi, après accord) quand la clé est branchée sur
      l'ordinateur qui la prépare, et chaque jour si elle y reste branchée.
 
+6. ORDINATEUR ISOLÉ DU RÉSEAU PAR VANGUARD
+
+   Lever l'isolement :  vanguard blocage annuler   (ou le menu Blocage) ; le mot de passe est demandé.
+   Si Vanguard ne se lance plus, en root, ces commandes ne retirent que ce que Vanguard a posé :
+
+     systemctl disable --now vanguard-isolement.service
+     nft delete table inet vanguard_isolement
+     rm -f /etc/systemd/system/vanguard-isolement.service
+     rm -rf /opt/vanguard/isolement /var/lib/vanguard/isolement /run/vanguard/isolement
+     systemctl daemon-reload
+
+   Le reste du pare-feu n'a pas été changé : il revient tel qu'il était.
+
+
 Guide complet (menu, protection de la clé, langue) : LISEZMOI.txt à la racine de la clé.
