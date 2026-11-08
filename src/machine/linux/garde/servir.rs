@@ -316,13 +316,15 @@ fn preparer(p: &Partage, d: &mut Demande) -> bool {
     let cle = if let Some(c) = d.cle {
         c
     } else {
-        // Déjà répondue (le délai, la file pleine) : le lancement a pu finir, et le fichier changer depuis.
-        let tard = !verrou(&p.attentes).contient(d.fd, &d.fichier);
         let Some(c) = cle_de(&d.fichier) else {
             plus(&p.compteurs.non_verifiees);
             p.repondre(d.fd, &d.fichier, true);
             return false;
         };
+        // Déjà répondue (le délai, la file pleine) : le lancement a pu finir, et le fichier changer depuis. Regardé
+        // après la clé (C7-5) : répondue entre les deux, la clé lue l'a été pendant que le lancement attendait encore,
+        // et le test de la ctime s'applique quand même.
+        let tard = !verrou(&p.attentes).contient(d.fd, &d.fichier);
         d.cle = Some(c);
         // C7-5 : changé depuis la réception (une ctime ne se recule pas sans root) : ce qui serait haché n'est plus
         // ce qui a tourné ; le dire, plutôt que de juger propre un autre contenu.
@@ -485,28 +487,48 @@ fn decider(p: &Partage, d: &Demande, max: u64, vers_gros: Option<&SyncSender<Dem
             }
             return;
         }
-        let lecteur = ParPosition {
-            fichier: &d.fichier,
-            position: 0,
-            fin: cle.taille,
-        };
-        let Some(h) = listes::hacher(lecteur) else {
-            plus(&p.compteurs.non_verifiees);
-            p.repondre(d.fd, &d.fichier, true);
-            return;
-        };
-        plus(&p.compteurs.hachees);
-        let c = juger_hache(p, &h);
-        // C7-5 : relu après le hachage ; changé pendant (tronqué, réécrit), l'empreinte peut mêler deux contenus. Une
-        // empreinte certaine reste une preuve (elle ne s'obtient que du contenu certain) ; propre, elle ne prouve
-        // rien : le lancement est dit, et rien n'est gardé.
-        if cle_de(&d.fichier) == Some(cle) {
-            verrou(&p.cache).noter(cle, c);
-        } else if c.certain.is_none() {
-            change_avant_jugement(p, d);
-            return;
+        let mut cle = cle;
+        let mut essais = 0u8;
+        loop {
+            let lecteur = ParPosition {
+                fichier: &d.fichier,
+                position: 0,
+                fin: cle.taille,
+            };
+            let Some(h) = listes::hacher(lecteur) else {
+                plus(&p.compteurs.non_verifiees);
+                p.repondre(d.fd, &d.fichier, true);
+                return;
+            };
+            plus(&p.compteurs.hachees);
+            let c = juger_hache(p, &h);
+            // C7-5 : relu après le hachage ; changé pendant (tronqué, réécrit), l'empreinte peut mêler deux contenus.
+            // Une empreinte certaine reste une preuve (elle ne s'obtient que du contenu certain) ; propre, elle ne
+            // prouve rien. Rien ici ne compte sur l'interdiction d'écrire un programme lancé (ETXTBSY) : ce n'est pas
+            // une garantie (vers Linux 6.11, l'exec a cessé de la prendre ; selon le noyau, elle peut manquer).
+            let relue = cle_de(&d.fichier);
+            if relue == Some(cle) {
+                verrou(&p.cache).noter(cle, c);
+                break c;
+            }
+            if c.certain.is_some() {
+                break c;
+            }
+            // La demande attend encore : le contenu qui tournera est celui d'après ; il est rehaché (deux fois au
+            // plus), plutôt que permis. Sinon, ou s'il change encore : permis (rien de certain n'est prouvé), et dit.
+            match relue {
+                Some(nouvelle)
+                    if essais < 2 && nouvelle.taille <= max && verrou(&p.attentes).contient(d.fd, &d.fichier) =>
+                {
+                    cle = nouvelle;
+                    essais = essais.saturating_add(1);
+                }
+                _ => {
+                    change_avant_jugement(p, d);
+                    return;
+                }
+            }
         }
-        c
     };
     let Some(certitude) = connu.certain else {
         p.repondre(d.fd, &d.fichier, true);
@@ -1718,6 +1740,31 @@ mod tests {
         decider(&p, &intact, HACHAGE_MAX, None);
         let k = p.compteurs.lire();
         assert_eq!((k.changes_avant_jugement, k.certains_passes), (2, 1));
+    }
+
+    /// C7-5 : changé pendant son hachage alors que le lancement attend encore, le fichier est rehaché (le contenu qui
+    /// tournera) plutôt que permis : un contenu certain écrit à ce moment-là est refusé, pas « changé avant jugement ».
+    #[test]
+    fn un_fichier_change_pendant_le_hachage_est_rehache() {
+        let d = crate::essais::Jetable::nouveau("garde-servir-rehache");
+        let malveillant = b"un programme malveillant invente, ecrit pendant le hachage du propre";
+        let empreinte = listes::hacher(&malveillant[..]).unwrap().sha256;
+        let (p, evenements) = partage(&[empreinte]);
+        // La clé est celle du contenu propre ; le contenu certain arrive avant la fin du jugement.
+        let change = demande(&d, "change", b"un programme propre invente");
+        verrou(&p.attentes).ajouter(change.fd, Arc::clone(&change.fichier), Instant::now());
+        std::fs::write(d.join("change"), malveillant).unwrap();
+        decider(&p, &change, HACHAGE_MAX, None);
+        let k = p.compteurs.lire();
+        assert_eq!((k.hachees, k.refusees, k.changes_avant_jugement), (2, 1, 0));
+        assert!(!verrou(&p.attentes).contient(change.fd, &change.fichier));
+        assert!(evenements.try_iter().all(|e| e.genre != "change-avant-jugement"));
+        // Plus attendue (déjà permise par le délai) : rien à rehacher, le cas est dit comme avant.
+        let tard = demande(&d, "tard", b"un programme propre invente");
+        std::fs::write(d.join("tard"), b"un autre contenu, plus long que le premier").unwrap();
+        decider(&p, &tard, HACHAGE_MAX, None);
+        let k = p.compteurs.lire();
+        assert_eq!((k.hachees, k.changes_avant_jugement), (3, 1));
     }
 
     /// L-2 : le fil lecteur (celui qui bat le chien de garde) ne fait aucun appel qui puisse attendre un système de
