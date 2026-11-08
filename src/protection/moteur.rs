@@ -397,33 +397,17 @@ pub(crate) fn sources(usage: Usage) -> Sources<'static> {
         Usage::ALaDemande => Mode::Complete,
         Usage::EnContinu => Mode::Empreintes,
     };
-    let clamav = match base_clamav(mode) {
-        Ok(b) => {
-            reserves.extend(b.ecartes.iter().map(|(nom, raison)| {
-                trf!(
-                    "base ClamAV : {nom} écarté ({raison})",
-                    "ClamAV database: {nom} skipped ({raison})"
-                )
-            }));
-            if mode == Mode::Empreintes {
-                reserves.push(
-                    tr!(
-                        "base ClamAV : empreintes seules (analyse en continu)",
-                        "ClamAV database: fingerprints only (continuous scan)"
-                    )
-                    .into(),
-                );
-            }
-            Some(b)
-        }
-        Err(raison) => {
-            reserves.push(trf!(
-                "{raison} : empreintes, YARA et heuristiques seulement",
-                "{raison}: fingerprints, YARA and heuristics only"
-            ));
-            None
-        }
-    };
+    let (clamav, manques_clamav) = clamav_et_manques(mode);
+    reserves.extend(manques_clamav);
+    if clamav.is_some() && mode == Mode::Empreintes {
+        reserves.push(
+            tr!(
+                "base ClamAV : empreintes seules (analyse en continu)",
+                "ClamAV database: fingerprints only (continuous scan)"
+            )
+            .into(),
+        );
+    }
     Sources {
         yara,
         malwarebazaar,
@@ -433,6 +417,40 @@ pub(crate) fn sources(usage: Usage) -> Sources<'static> {
         normale: crate::protection::normales::est_normale,
         manquantes,
         reserves,
+    }
+}
+
+/// La base ClamAV d'un usage et ce qui lui manque (base absente, refusée ou fichiers écartés), sans la note
+/// « empreintes seules » du continu, qui est un choix (P21) et non un manque : le blocage le dit avec ses résultats.
+pub(crate) fn reserves_clamav(usage: Usage) -> Vec<String> {
+    let mode = match usage {
+        Usage::ALaDemande => Mode::Complete,
+        Usage::EnContinu => Mode::Empreintes,
+    };
+    clamav_et_manques(mode).1
+}
+
+fn clamav_et_manques(mode: Mode) -> (Option<&'static Base>, Vec<String>) {
+    match base_clamav(mode) {
+        Ok(b) => (
+            Some(b),
+            b.ecartes
+                .iter()
+                .map(|(nom, raison)| {
+                    trf!(
+                        "base ClamAV : {nom} écarté ({raison})",
+                        "ClamAV database: {nom} skipped ({raison})"
+                    )
+                })
+                .collect(),
+        ),
+        Err(raison) => (
+            None,
+            vec![trf!(
+                "{raison} : empreintes, YARA et heuristiques seulement",
+                "{raison}: fingerprints, YARA and heuristics only"
+            )],
+        ),
     }
 }
 

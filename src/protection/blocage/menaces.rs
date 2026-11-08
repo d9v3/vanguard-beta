@@ -462,6 +462,19 @@ fn programmes(empreintes: Option<&'static Empreintes>, os: Os, t: &mut Trouvees)
     telecharges(empreintes, t);
 }
 
+/// Ce que l'analyse des Téléchargements n'a pas eu : les sources attendues manquantes, puis les réserves (base
+/// ClamAV absente, refusée ou écartée), chacune une fois, pour le « non vérifié » du blocage.
+fn sources_non_verifiees(manquantes: &[String], reserves: &[String]) -> Vec<String> {
+    let mut dites: Vec<String> = Vec::new();
+    for m in manquantes.iter().chain(reserves) {
+        let phrase = trf!("Téléchargements : {m}", "Downloads: {m}");
+        if !dites.contains(&phrase) {
+            dites.push(phrase);
+        }
+    }
+    dites
+}
+
 /// Les fichiers arrivés dans Téléchargements cette semaine, examinés par le moteur maison (`moteur::examiner` :
 /// empreintes, YARA, base ClamAV en continu, heuristiques), en une minute au plus pour tous. Ce qui n'a pas été lu
 /// en entier est dit, jamais compté sain.
@@ -499,12 +512,11 @@ fn telecharges(empreintes: Option<&'static Empreintes>, t: &mut Trouvees) {
     if empreintes.is_some() {
         sources.malwarebazaar = empreintes;
     }
-    t.non_verifie.extend(
-        sources
-            .manquantes
-            .iter()
-            .map(|m| trf!("Téléchargements : {m}", "Downloads: {m}")),
-    );
+    // Les empreintes de MalwareBazaar sont dites par `chercher` ; la base ClamAV absente ou écartée l'est ici, une fois.
+    t.non_verifie.extend(sources_non_verifiees(
+        &sources.manquantes,
+        &moteur::reserves_clamav(moteur::Usage::EnContinu),
+    ));
     let debut = std::time::Instant::now();
     let mut partiels = 0usize;
     let mut non_lus = 0usize;
@@ -908,6 +920,35 @@ fn retirer_normales(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Le blocage dit aussi la base ClamAV absente (réserve du moteur), pas seulement les sources attendues, et
+    /// chaque phrase une fois.
+    #[test]
+    fn telecharges_dit_les_reserves() {
+        let dites = sources_non_verifiees(
+            &["règles YARA inutilisables".into()],
+            &[
+                "base ClamAV absente : empreintes, YARA et heuristiques seulement".into(),
+                "règles YARA inutilisables".into(),
+            ],
+        );
+        assert_eq!(dites.len(), 2, "{dites:?}");
+        assert!(dites[0].contains("règles YARA"), "{dites:?}");
+        assert!(dites[1].contains("base ClamAV absente"), "{dites:?}");
+        // Sous les essais, la base ClamAV n'est jamais chargée : la réserve du continu le dit, sans la note
+        // « empreintes seules », qui est un choix et non un manque.
+        let reserves = crate::protection::moteur::reserves_clamav(crate::protection::moteur::Usage::EnContinu);
+        assert_eq!(reserves.len(), 1, "{reserves:?}");
+        assert!(
+            reserves.iter().all(|r| !r.contains("empreintes seules")),
+            "{reserves:?}"
+        );
+        assert!(
+            sources_non_verifiees(&[], &reserves)
+                .iter()
+                .all(|r| r.starts_with("Téléchargements : "))
+        );
+    }
 
     fn programme(nom: &str, chemin: &str, ligne: &str) -> EnMarche {
         EnMarche {
