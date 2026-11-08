@@ -1053,7 +1053,9 @@ fn verifier_fichier_en_json() {
     let notes = maison.join("notes.txt");
     std::fs::write(&notes, "bonjour\n").unwrap();
     let lire = |args: &[&str]| -> serde_json::Value {
-        let s = vanguard_dans(programme, &maison, "fr", args, "", 240);
+        // Hors ligne : MalwareBazaar n'est pas demandé par Internet (lent, sensible au réseau) ; ses empreintes
+        // absentes deviennent la réserve que l'essai attend plus bas.
+        let s = vanguard_dans_env(programme, &maison, "fr", args, "", 60, &[("VANGUARD_HORS_LIGNE", "1")]);
         assert_eq!(s.code, Some(0), "{}", s.erreurs);
         serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("{args:?} : JSON illisible ({e}) : {}", s.texte))
     };
@@ -1076,13 +1078,16 @@ fn verifier_fichier_en_json() {
     assert!(moteur.is_object(), "{v}");
     let verdict = moteur["verdict"].as_str().expect("moteur sans verdict");
     assert!(["sain", "non-verifie"].contains(&verdict), "{verdict}");
-    // Une source facultative absente n'est pas tue : chaque réserve du moteur est un manque du résultat.
-    for r in moteur["reserves"]
+    // Une source facultative absente n'est pas tue : chaque réserve du moteur est un manque du résultat. Hors ligne,
+    // dans un dossier personnel neuf, les empreintes de MalwareBazaar manquent toujours : la boucle a de quoi juger.
+    let reserves: Vec<&str> = moteur["reserves"]
         .as_array()
         .expect("pas de réserves")
         .iter()
         .filter_map(serde_json::Value::as_str)
-    {
+        .collect();
+    assert!(reserves.iter().any(|r| r.contains("MalwareBazaar")), "{reserves:?}");
+    for r in reserves {
         assert!(
             manques.contains(&format!("Vanguard : {r}").as_str()),
             "{r} : {manques:?}"
