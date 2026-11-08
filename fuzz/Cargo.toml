@@ -184,6 +184,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "heuristiques"
+path = "fuzz_targets/heuristiques.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "analyse_lecteurs"
 path = "fuzz_targets/analyse_lecteurs.rs"
 test = false
