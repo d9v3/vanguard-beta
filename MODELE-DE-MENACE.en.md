@@ -204,7 +204,9 @@ Defense options.
   removes nothing from the existing firewall; lifting it removes only what carries Vanguard's name and restores the
   settings noted before, even if the note is lost (without a note, the firewall stays closed to inbound traffic,
   never more open). On Linux, the state lives in root's folders and a damaged state at boot keeps the computer
-  isolated.
+  isolated. The automatic isolation of an almost certain ransomware (separate consent, active protection) goes
+  through the same shown elevation: a program of the account can neither isolate nor lift without it; the watcher's
+  hardened service cannot obtain it by itself, and the alert says so.
 
 **Guards against lockout (Linux).** A defense action that could cut the person off from their computer (locking
 root or their own account, removing the last administrator, making sudo, su and pkexec unusable) is not refused: it

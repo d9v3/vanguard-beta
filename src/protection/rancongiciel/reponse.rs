@@ -15,9 +15,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use crate::modele::Echec;
 use crate::protection::blocage;
 use crate::socle::processus;
-use crate::tr;
+use crate::{tr, trf};
 
 /// Le programme à geler et arrêter.
 #[derive(Debug, Clone)]
@@ -71,22 +72,145 @@ const PASSES_MAX: usize = 5;
 /// passe : elle rattrape un `fork` arrivé entre-temps). La racine est gelée en premier pour couper le chiffrement tout
 /// de suite.
 pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) -> Issue {
+    repondre(cible, lignee, None).0
+}
+
+/// Ce qu'a donné l'isolement de l'ordinateur pendant la réponse à un rançongiciel (défense R5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Isolement {
+    /// Pas demandé : pas d'accord, ou la protection active n'agit pas seule (jamais sans elle), ou rien n'a été gelé.
+    NonDemande,
+    /// Isolé : la précision de l'élevé (les sessions et serveurs gardés).
+    Fait(String),
+    /// Demandé, pas fait : pourquoi (session à distance pas reconnue, droits refusés, service sans élévation).
+    PasFait(String),
+    /// Demandé, sans réponse au bout du délai : la fenêtre de mot de passe attend peut-être encore.
+    EnAttente,
+}
+
+impl Isolement {
+    /// La phrase à ajouter à l'alerte, s'il y a quelque chose à dire.
+    pub(crate) fn phrase(&self) -> Option<String> {
+        match self {
+            Isolement::NonDemande => None,
+            Isolement::Fait(p) if p.is_empty() => Some(
+                tr!(
+                    "L'ordinateur est isolé du réseau ; « vanguard blocage annuler » le lève.",
+                    "The computer is isolated from the network; “vanguard blocking undo” lifts it."
+                )
+                .to_string(),
+            ),
+            Isolement::Fait(p) => Some(trf!(
+                "L'ordinateur est isolé du réseau ({p}) ; « vanguard blocage annuler » le lève.",
+                "The computer is isolated from the network ({p}); “vanguard blocking undo” lifts it."
+            )),
+            Isolement::PasFait(raison) => Some(trf!(
+                "L'ordinateur n'est pas isolé du réseau : {raison}.",
+                "The computer is not isolated from the network: {raison}."
+            )),
+            Isolement::EnAttente => Some(
+                tr!(
+                    "L'isolement du réseau est demandé, sans réponse pour l'instant (la fenêtre de mot de passe attend peut-être).",
+                    "Network isolation was requested, with no answer yet (the password window may be waiting)."
+                )
+                .to_string(),
+            ),
+        }
+    }
+}
+
+/// Le temps laissé à l'élévation de l'isolement (la fenêtre de mot de passe) après l'arrêt : au-delà, l'alerte part
+/// sans attendre, et dit que l'isolement est demandé.
+const ATTENTE_ISOLEMENT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// Pur : l'isolement est-il demandé ? Seulement avec la protection active qui agit seule (`arret_automatique_
+/// programmes_permis`) ET l'accord noté, jamais douteux (P1). Jamais sans protection active.
+pub(crate) fn isolement_demande(protection_auto: bool, accord: &crate::voulues::Souvenir) -> bool {
+    protection_auto && matches!(accord, crate::voulues::Souvenir::Voulue(_))
+}
+
+/// Comme `geler_et_arreter`, pour un rançongiciel quasi certain : après le gel et avant l'arrêt, l'ordinateur est
+/// isolé du réseau si la protection active agit seule et que la personne l'a accepté (défense R5, P1). L'isolement
+/// court pendant l'arrêt (sa fenêtre de mot de passe ne le retarde pas) ; son issue est attendue au plus
+/// `ATTENTE_ISOLEMENT`.
+#[cfg(target_os = "linux")]
+pub(crate) fn geler_isoler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) -> (Issue, Isolement) {
+    let demande = isolement_demande(
+        blocage::arret_automatique_programmes_permis(),
+        &crate::voulues::souvenir(crate::voulues::Defense::IsolementRancon),
+    );
+    if !demande {
+        return (geler_et_arreter(cible, lignee), Isolement::NonDemande);
+    }
+    let cle = cible.cle.clone();
+    let isoler = move || crate::protection::isolement::isoler_sans_question(Some(&cle));
+    repondre(cible, lignee, Some(Box::new(isoler)))
+}
+
+/// L'isolement à lancer après le gel : `Ok` la précision, `Err` la raison.
+type Isoler = Box<dyn FnOnce() -> Result<String, Echec> + Send + 'static>;
+
+/// Lance `isoler` dans son propre fil : l'arrêt n'attend pas la fenêtre de mot de passe.
+fn lancer_isolement(isoler: Isoler) -> std::sync::mpsc::Receiver<Result<String, Echec>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let lance = std::thread::Builder::new().name("isolement".into()).spawn(move || {
+        let _ = tx.send(isoler());
+    });
+    if let Err(e) = lance {
+        // Le fil n'a pas pu naître : l'émetteur est parti avec la fermeture, la réception dit « pas fait ».
+        Echec::echoue("blocage/pare-feu", e.to_string()).journaliser();
+    }
+    rx
+}
+
+/// L'issue de l'isolement, attendue au plus `attente`.
+fn issue_isolement(rx: &std::sync::mpsc::Receiver<Result<String, Echec>>, attente: std::time::Duration) -> Isolement {
+    match rx.recv_timeout(attente) {
+        Ok(Ok(p)) => Isolement::Fait(p),
+        Ok(Err(raison)) => Isolement::PasFait(raison.to_string()),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Isolement::EnAttente,
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Isolement::PasFait(
+            tr!(
+                "l'isolement n'a pas pu être lancé",
+                "the isolation could not be started"
+            )
+            .to_string(),
+        ),
+    }
+}
+
+/// La réponse : gel, puis (si `isoler`) l'isolement lancé, puis l'arrêt. Rien n'est isolé si rien n'a été gelé.
+fn repondre(cible: &Cible, lignee: impl Fn() -> Vec<Membre>, isoler: Option<Isoler>) -> (Issue, Isolement) {
+    let (issue, rx) = geler_puis_arreter(cible, lignee, isoler);
+    let isolement = rx.map_or(Isolement::NonDemande, |rx| issue_isolement(&rx, ATTENTE_ISOLEMENT));
+    (issue, isolement)
+}
+
+/// Le gel, l'isolement lancé (si `isoler`), puis l'arrêt : l'issue, et de quoi attendre l'isolement s'il a été lancé.
+fn geler_puis_arreter(
+    cible: &Cible,
+    lignee: impl Fn() -> Vec<Membre>,
+    isoler: Option<Isoler>,
+) -> (Issue, Option<std::sync::mpsc::Receiver<Result<String, Echec>>>) {
     // Les mêmes intouchables que le blocage (Vanguard, ce qu'il a lancé, ce qui le fait tourner) : un ensemble vide
     // laissait geler puis tuer le terminal ou la session d'où Vanguard tourne, s'ils tombaient dans la lignée.
     let Some((_, intouchables)) = crate::machine::chasse::en_marche() else {
-        return Issue::Refuse(
-            tr!(
-                "la liste des programmes en marche ne se lit pas : rien n'est gelé à l'aveugle",
-                "the list of running programs cannot be read: nothing is frozen blindly"
-            )
-            .to_string(),
+        return (
+            Issue::Refuse(
+                tr!(
+                    "la liste des programmes en marche ne se lit pas : rien n'est gelé à l'aveugle",
+                    "the list of running programs cannot be read: nothing is frozen blindly"
+                )
+                .to_string(),
+            ),
+            None,
         );
     };
     let chemin_racine = cible.chemin.as_ref().map(|c| c.to_string_lossy().into_owned());
     // La racine doit pouvoir être gelée : sinon rien (alerte seulement).
     if let Some(raison) = blocage::processus_gelable(cible.racine, &cible.nom, chemin_racine.as_deref(), &intouchables)
     {
-        return Issue::Refuse(raison.to_string());
+        return (Issue::Refuse(raison.to_string()), None);
     }
 
     // Chaque membre gelé avec son départ, lu une fois gelé : regelé ou tué plus tard par un pidfd seulement s'il est
@@ -96,23 +220,26 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
         #[cfg(target_os = "linux")]
         Some(debut) => {
             if !processus::geler_si(cible.racine, debut) {
-                return Issue::Refuse(
+                return (Issue::Refuse(
                     tr!(
                         "le processus jugé n'est plus là (parti, ou son numéro repris par un autre) : rien n'est gelé",
                         "the judged process is gone (exited, or its number reused by another): nothing is frozen"
                     )
                     .to_string(),
-                );
+                ), None);
             }
         }
         #[cfg(not(target_os = "linux"))]
         Some(_) => {
-            return Issue::Refuse(
-                tr!(
-                    "le départ d'un processus ne se vérifie pas ici : rien n'est gelé",
-                    "a process start cannot be checked here: nothing is frozen"
-                )
-                .to_string(),
+            return (
+                Issue::Refuse(
+                    tr!(
+                        "le départ d'un processus ne se vérifie pas ici : rien n'est gelé",
+                        "a process start cannot be checked here: nothing is frozen"
+                    )
+                    .to_string(),
+                ),
+                None,
             );
         }
         None => {
@@ -170,14 +297,19 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
         let mut v: Vec<u32> = geles.into_keys().filter(|&p| p != cible.racine).collect();
         v.sort_unstable();
         reprendre(&v);
-        return Issue::Refuse(
+        return (Issue::Refuse(
             tr!(
                 "le processus jugé n'est plus là (son numéro repris par un autre) : rien n'est arrêté, sa lignée est reprise",
                 "the judged process is gone (its number reused by another): nothing is stopped, its lineage is resumed"
             )
             .to_string(),
-        );
+        ), None);
     }
+
+    // Défense R5 : la lignée gelée et encore celle qui a été jugée, l'ordinateur est isolé du réseau AVANT l'arrêt
+    // (il coupe l'exfiltration et la propagation pendant l'arrêt), dans son propre fil : sa fenêtre de mot de passe
+    // ne retarde pas l'arrêt. Seulement si l'appelant l'a demandé (protection active + accord, `isolement_demande`).
+    let isolement = isoler.map(lancer_isolement);
 
     // Arrêt + quarantaine de la racine, sous les garde-fous du blocage (preuve relevée avant).
     let fait = match (cible.debut, cible.inode) {
@@ -193,7 +325,7 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
         )
         .map_err(|e| Fin::Garde(String::from(e))),
     };
-    match fait {
+    let issue = match fait {
         Ok(quoi) => {
             // La racine arrêtée, tuer le reste de la lignée gelée (le chiffrement était déjà figé).
             // Seulement ce qui est encore gelé, et encore le processus gelé (son départ) : un numéro libéré
@@ -223,7 +355,8 @@ pub(crate) fn geler_et_arreter(cible: &Cible, lignee: impl Fn() -> Vec<Membre>) 
             reprendre(&v);
             Issue::Refuse(raison)
         }
-    }
+    };
+    (issue, isolement)
 }
 
 /// Pourquoi l'arrêt n'a pas eu lieu.
@@ -341,5 +474,67 @@ mod tests {
         let reponse = [Suspendre, CouperConnexions, Preuve, Bloquer, Prevenir];
         assert_eq!(defaut(Type::Rancongiciel), reponse);
         assert!(plancher_tenu(Type::Rancongiciel, &reponse));
+    }
+
+    /// P1 : l'isolement n'est demandé qu'avec la protection active qui agit seule ET l'accord noté, jamais douteux.
+    #[test]
+    fn isolement_seulement_protection_active_et_accord() {
+        use super::isolement_demande;
+        use crate::voulues::{Doute, Souvenir};
+        let voulue = Souvenir::Voulue("2026-11-07".into());
+        assert!(isolement_demande(true, &voulue));
+        assert!(!isolement_demande(false, &voulue), "jamais sans protection active");
+        for autre in [
+            Souvenir::Jamais,
+            Souvenir::Arretee("2026-11-07".into()),
+            Souvenir::Douteux(Doute::HorsVanguard),
+            Souvenir::Douteux(Doute::Illisible),
+        ] {
+            assert!(!isolement_demande(true, &autre), "{autre:?}");
+            assert!(!isolement_demande(false, &autre), "{autre:?}");
+        }
+    }
+
+    /// L'issue de l'isolement lancé dans son fil : faite, refusée, sans réponse au bout du délai, ou fil perdu.
+    #[test]
+    fn issue_de_l_isolement() {
+        use super::{Isolement, issue_isolement, lancer_isolement};
+        use std::time::Duration;
+        let rx = lancer_isolement(Box::new(|| Ok("2 adresses gardées".into())));
+        assert_eq!(
+            issue_isolement(&rx, Duration::from_secs(10)),
+            Isolement::Fait("2 adresses gardées".into())
+        );
+        let rx = lancer_isolement(Box::new(|| {
+            Err(crate::modele::Echec::refuse("blocage/pare-feu", "refusé"))
+        }));
+        assert!(matches!(
+            issue_isolement(&rx, Duration::from_secs(10)),
+            Isolement::PasFait(r) if r.contains("refusé")
+        ));
+        let (tx, rx) = std::sync::mpsc::channel::<Result<String, crate::modele::Echec>>();
+        assert_eq!(issue_isolement(&rx, Duration::from_millis(10)), Isolement::EnAttente);
+        drop(tx);
+        assert!(matches!(
+            issue_isolement(&rx, Duration::from_millis(10)),
+            Isolement::PasFait(_)
+        ));
+    }
+
+    /// Ce que l'alerte dit : rien sans demande ; sinon, isolé (avec la levée), pas isolé (avec la raison), ou en
+    /// attente.
+    #[test]
+    fn phrase_de_l_isolement() {
+        use super::Isolement;
+        assert_eq!(Isolement::NonDemande.phrase(), None);
+        let fait = Isolement::Fait("ssh 192.0.2.7".into()).phrase().unwrap();
+        assert!(
+            fait.contains("192.0.2.7") && (fait.contains("annuler") || fait.contains("undo")),
+            "{fait}"
+        );
+        assert!(Isolement::Fait(String::new()).phrase().is_some());
+        let pas = Isolement::PasFait("droits refusés".into()).phrase().unwrap();
+        assert!(pas.contains("droits refusés"), "{pas}");
+        assert!(Isolement::EnAttente.phrase().is_some());
     }
 }

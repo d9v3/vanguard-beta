@@ -37,13 +37,17 @@ pub(crate) enum Defense {
     /// du veilleur, donné avant quand il ne faisait qu'observer (une promesse qui change se redemande). Douteux : pas
     /// d'accord, rien n'est arrêté.
     ArretVeilleur,
+    /// L'accord pour isoler l'ordinateur du réseau quand le veilleur gèle un rançongiciel quasi certain (défense R5),
+    /// à part des autres : couper le réseau est une autre promesse que geler ou arrêter. Douteux : pas d'accord.
+    IsolementRancon,
 }
 
-const TOUTES: [Defense; 4] = [
+const TOUTES: [Defense; 5] = [
     Defense::Surveillance,
     Defense::Veilleur,
     Defense::Rancongiciel,
     Defense::ArretVeilleur,
+    Defense::IsolementRancon,
 ];
 
 impl Defense {
@@ -54,6 +58,7 @@ impl Defense {
             Defense::Veilleur => "veilleur",
             Defense::Rancongiciel => "rancongiciel",
             Defense::ArretVeilleur => "veilleur-arret",
+            Defense::IsolementRancon => "veilleur-isolement",
         }
     }
 
@@ -63,6 +68,7 @@ impl Defense {
             Defense::Veilleur => tr!("Veilleur", "Watcher"),
             Defense::Rancongiciel => tr!("Veille anti-rançongiciel", "Ransomware watch"),
             Defense::ArretVeilleur => tr!("Arrêt du malware connu (veilleur)", "Known malware stop (watcher)"),
+            Defense::IsolementRancon => tr!("Isolement du réseau (rançongiciel)", "Network isolation (ransomware)"),
         }
     }
 }

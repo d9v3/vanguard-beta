@@ -698,6 +698,37 @@ pub(crate) fn ordre_maintenant() -> Result<crate::protection::blocage::ordres::O
     Ok(crate::protection::blocage::ordres::Ordre::Isoler { garder })
 }
 
+/// Pur : `NoNewPrivs` d'un `/proc/<pid>/status`. Posé (le service du veilleur : `NoNewPrivileges=yes`), aucun
+/// programme setuid (pkexec, sudo) ne donne de droits à ce processus ni à ce qu'il lance. Illisible : supposé posé
+/// (rien n'est tenté à l'aveugle).
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn sans_nouveaux_droits(status: &str) -> bool {
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("NoNewPrivs:"))
+        .is_none_or(|v| v.trim() != "0")
+}
+
+/// Isole sans question (la réponse au rançongiciel, R5) : l'ordre est jugé ici (les sessions en cours gardées, refusé
+/// si l'une ne se reconnaît pas), puis demandé à l'élévation, montrée par le système (la fenêtre de mot de passe) ;
+/// l'élevé le rejuge. Un processus qui ne peut pas gagner de droits (le service durci du veilleur) ne demande rien :
+/// c'est dit, avec la commande qui le fait. `Ok` : la précision de l'élevé ; `Err` : pourquoi ce n'est pas fait.
+#[cfg(target_os = "linux")]
+pub(crate) fn isoler_sans_question(cle: Option<&str>) -> Result<String, Echec> {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    if sans_nouveaux_droits(&status) {
+        return Err(Echec::refuse(
+            OU,
+            tr!(
+                "le veilleur tourne sans pouvoir demander les droits d'administrateur (service durci) : « vanguard blocage isoler » le fait",
+                "the watcher runs without being able to ask for administrator rights (hardened service): “vanguard blocking isolate” does it"
+            ),
+        ));
+    }
+    let o = ordre_maintenant()?;
+    confier(&o, crate::modele::evenement::Source::Blocage, cle)
+}
+
 /// `vanguard blocage isoler` : ce qui sera fait (les sessions gardées), montré, confirmé, puis demandé à l'élévation.
 pub fn isoler_avec_accord() {
     use crate::ui::*;
@@ -840,6 +871,15 @@ mod tests {
         for h in HOTES_DE_VANGUARD {
             assert!(crate::http::HOTES.contains(h), "{h}");
         }
+    }
+
+    /// R5 : le service durci du veilleur (`NoNewPrivileges=yes`) ne demande pas d'élévation ; illisible : supposé.
+    #[test]
+    fn sans_nouveaux_droits_lu_du_status() {
+        assert!(sans_nouveaux_droits("Name:\tvanguard\nNoNewPrivs:\t1\nSeccomp:\t2\n"));
+        assert!(!sans_nouveaux_droits("Name:\tvanguard\nNoNewPrivs:\t0\nSeccomp:\t0\n"));
+        assert!(sans_nouveaux_droits(""));
+        assert!(sans_nouveaux_droits("NoNewPrivs:\tx\n"));
     }
 
     #[test]

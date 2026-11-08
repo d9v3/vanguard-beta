@@ -336,7 +336,10 @@ administrator rights. An encryption burst (dozens of files rewritten in seconds,
 format, a ransom note, a decoy file touched, backup copies erased) raises an alert within seconds, instead of
 waiting for the hourly decoy check, and “Block” is offered at the next check. With active protection and an almost-certain case (a decoy touched and
 a burst attributed without ambiguity to one program), the program and its descendants are frozen, the evidence is
-recorded, then they are stopped and quarantined, with the blocking safeguards; otherwise, Vanguard only alerts. A
+recorded, then they are stopped and quarantined, with the blocking safeguards; otherwise, Vanguard only alerts. With
+one more consent (`vanguard watcher isolation on`), the computer is also isolated from the network between the freeze
+and the stop, as by `vanguard blocking isolate` (the current remote session kept); it needs administrator rights, which
+the watcher's hardened service cannot ask for by itself yet: the alert then says nothing is isolated. A
 malicious program in the account can switch it off: a backup remains the real protection. Stated limit: a write
 through a hard link placed outside these folders escapes the live watch (decoys are still checked hourly).
 

@@ -2325,14 +2325,17 @@ fn repondre_quasi_certain(groupe: u32, s: &score::Signaux, etat: &mut Etat, debi
         debut: None,
         inode: None,
     };
-    match reponse::geler_et_arreter(&cible, || veille::lignee_de(groupe)) {
+    // Défense R5 : l'ordinateur isolé du réseau entre le gel et l'arrêt, avec la protection active et l'accord.
+    let (issue, isolement) = reponse::geler_isoler_et_arreter(&cible, || veille::lignee_de(groupe));
+    let isolement = isolement.phrase().map(|p| format!(" {p}")).unwrap_or_default();
+    match issue {
         reponse::Issue::Arrete(_) => {
             etat.rancon_gels = etat.rancon_gels.saturating_add(1);
             etat.rancon_rafales = etat.rancon_rafales.saturating_add(1);
             let titre = tr!("Vanguard : rançongiciel arrêté", "Vanguard: ransomware stopped");
             let texte = trf!(
-                "{nom_aff} chiffrait vos fichiers et a touché un fichier-piège. Vanguard l'a gelé, a relevé la preuve, puis l'a arrêté et mis en quarantaine. {} fichiers ont été touchés avant l'arrêt : la liste est dans « Ce que Vanguard a changé ».",
-                "{nom_aff} was encrypting your files and touched a decoy file. Vanguard froze it, recorded the evidence, then stopped and quarantined it. {} files were touched before the stop: the list is in “What Vanguard changed”.",
+                "{nom_aff} chiffrait vos fichiers et a touché un fichier-piège. Vanguard l'a gelé, a relevé la preuve, puis l'a arrêté et mis en quarantaine. {} fichiers ont été touchés avant l'arrêt : la liste est dans « Ce que Vanguard a changé ».{isolement}",
+                "{nom_aff} was encrypting your files and touched a decoy file. Vanguard froze it, recorded the evidence, then stopped and quarantined it. {} files were touched before the stop: the list is in “What Vanguard changed”.{isolement}",
                 s.reecrits
             );
             // Toujours notifier un arrêt automatique, même si la clé a été dite normale avant.
@@ -2346,8 +2349,8 @@ fn repondre_quasi_certain(groupe: u32, s: &score::Signaux, etat: &mut Etat, debi
             let titre = tr!("Vanguard : rançongiciel gelé", "Vanguard: ransomware frozen");
             // Seul ce qui existe est proposé : aucun écran n'offre encore « Reprendre » ni « Arrêter » à part.
             let texte = trf!(
-                "{nom_aff} est gelé, pas arrêté : {raison}. Si c'est vous : vanguard veilleur rancongiciel off le reprend (et coupe la surveillance des fichiers).",
-                "{nom_aff} is frozen, not stopped: {raison}. If it was you: vanguard watcher ransomware off resumes it (and turns file watching off)."
+                "{nom_aff} est gelé, pas arrêté : {raison}. Si c'est vous : vanguard veilleur rancongiciel off le reprend (et coupe la surveillance des fichiers).{isolement}",
+                "{nom_aff} is frozen, not stopped: {raison}. If it was you: vanguard watcher ransomware off resumes it (and turns file watching off).{isolement}"
             );
             crate::reseau::surveillance::alerter_cle(crate::reseau::tableau::Genre::Rancongiciel, &cle, titre, &texte);
         }
@@ -2871,9 +2874,14 @@ fn oublier_le_choix(issue: &Retire, dossier: &std::path::Path) {
         // L'arrêt d'abord, puis les marques : interrompu entre les deux, il reste une marque de trop (le veilleur se
         // dit voulu et absent), jamais des marques effacées sans arrêt noté. Une défense jamais notée n'a pas d'arrêt
         // à noter (la veille anti-rançongiciel jamais voulue).
-        for d in [Defense::Veilleur, Defense::ArretVeilleur, Defense::Rancongiciel]
-            .into_iter()
-            .filter(|d| voulues::souvenir_dans(dossier, *d) != voulues::Souvenir::Jamais)
+        for d in [
+            Defense::Veilleur,
+            Defense::ArretVeilleur,
+            Defense::Rancongiciel,
+            Defense::IsolementRancon,
+        ]
+        .into_iter()
+        .filter(|d| voulues::souvenir_dans(dossier, *d) != voulues::Souvenir::Jamais)
         {
             if let Err(e) = voulues::noter_dans(dossier, d, false, true) {
                 crate::modele::Echec::echoue("veilleur/oublier", e.to_string()).journaliser();
@@ -2898,6 +2906,9 @@ pub(crate) fn commande(etat: Option<&str>, sous_etat: Option<&str>, servir: bool
     }
     if etat == Some("connus") {
         return commande_arret(sous_etat);
+    }
+    if etat == Some("isolement") {
+        return commande_isolement(sous_etat);
     }
     titre(tr!(
         "Veilleur : lancements et connexions",
@@ -3124,6 +3135,89 @@ fn activer_rancon() {
             "  Aucun fichier-piège posé : « vanguard pieges » en pose (accord séparé) ; ils rendent l'arrêt automatique possible.",
             "  No decoy file placed: “vanguard decoys” places some (separate consent); they make the automatic stop possible."
         );
+    }
+}
+
+// ───────────────────────────── Accord de l'isolement du réseau (défense R5) ─────────────────────────────
+
+/// L'isolement du réseau pendant la réponse à un rançongiciel est-il accepté ? L'état scellé seul (`voulues`).
+pub(crate) fn isolement_voulu() -> bool {
+    matches!(
+        voulues::souvenir(Defense::IsolementRancon),
+        voulues::Souvenir::Voulue(_)
+    )
+}
+
+/// Le texte d'accord de l'isolement du réseau (défense R5) : lu avant la question.
+fn texte_accord_isolement() -> &'static str {
+    tr!(
+        "Quand le veilleur gèle un rançongiciel quasi certain (des fichiers chiffrés en rafale, un fichier-piège touché), il peut aussi isoler l'ordinateur du réseau, entre le gel et l'arrêt : tout est coupé en entrée et en sortie, sauf la boucle locale, DHCP, le DNS en place, les serveurs de Vanguard et la session à distance en cours (jamais coupée ; si elle ne se reconnaît pas avec certitude, rien n'est isolé). Cela coupe l'envoi de vos fichiers et la propagation vers les autres ordinateurs pendant l'arrêt. Seulement avec la protection active (Programmes en automatique) et la veille anti-rançongiciel. Il faut les droits d'administrateur : la fenêtre de mot de passe du système les demande, et le service du veilleur, durci, ne peut pas encore les demander seul ; l'alerte dit alors que rien n'est isolé et « vanguard blocage isoler » le fait. L'isolement dure jusqu'à « vanguard blocage annuler », même après un redémarrage.",
+        "When the watcher freezes an almost certain ransomware (files encrypted in a burst, a decoy file touched), it can also isolate the computer from the network, between the freeze and the stop: everything is cut in and out, except loopback, DHCP, the current DNS, Vanguard's servers and the current remote session (never cut; if it cannot be recognized with certainty, nothing is isolated). This cuts the sending of your files and the spread to other computers during the stop. Only with active protection (Programs on automatic) and the ransomware watch. It needs administrator rights: the system's password window asks for them, and the watcher's hardened service cannot ask for them by itself yet; the alert then says that nothing is isolated and “vanguard blocking isolate” does it. The isolation lasts until “vanguard blocking undo”, even after a restart."
+    )
+}
+
+/// `vanguard veilleur isolement [on|off]`.
+fn commande_isolement(sous_etat: Option<&str>) {
+    titre(tr!(
+        "Veilleur : isolement du réseau (rançongiciel)",
+        "Watcher: network isolation (ransomware)"
+    ));
+    match sous_etat {
+        Some("on") => {
+            if !rancon_voulu() {
+                trp!(
+                    "  Allumez d'abord la veille anti-rançongiciel : « vanguard veilleur rancongiciel on ».",
+                    "  Turn the ransomware watch on first: “vanguard watcher ransomware on”."
+                );
+                return;
+            }
+            if isolement_voulu() {
+                trp!(
+                    "  {VERT}✔{RESET} L'isolement du réseau est déjà accepté.",
+                    "  {VERT}✔{RESET} Network isolation is already accepted."
+                );
+                return;
+            }
+            afficher_aligne("  ", texte_accord_isolement(), 2, "");
+            if demander(tr!("\n  Accepter ? [o/N] : ", "\n  Accept? [y/N]: ")).oui() {
+                voulues::noter(Defense::IsolementRancon, true);
+                trp!(
+                    "  {VERT}✔{RESET} Isolement du réseau accepté pour un rançongiciel quasi certain.",
+                    "  {VERT}✔{RESET} Network isolation accepted for an almost certain ransomware."
+                );
+                if !crate::protection::blocage::arret_automatique_programmes_permis() {
+                    trp!(
+                        "  ⚠ La protection active n'agit pas seule pour l'instant (Programmes pas en automatique, en pause, ou Vanguard en administrateur) : rien ne sera isolé ; « vanguard blocage auto » la règle.",
+                        "  ⚠ Active protection does not act by itself for now (Programs not on automatic, paused, or Vanguard as administrator): nothing will be isolated; “vanguard blocking auto” sets it."
+                    );
+                }
+            } else {
+                trp!("  Rien n'est changé.", "  Nothing is changed.");
+            }
+        }
+        Some("off") => {
+            if voulues::souvenir(Defense::IsolementRancon) != voulues::Souvenir::Jamais {
+                voulues::noter(Defense::IsolementRancon, false);
+            }
+            trp!(
+                "  {VERT}✔{RESET} Le veilleur n'isole plus l'ordinateur tout seul (un isolement en place reste : « vanguard blocage annuler » le lève).",
+                "  {VERT}✔{RESET} The watcher no longer isolates the computer by itself (an isolation in place stays: “vanguard blocking undo” lifts it)."
+            );
+        }
+        _ => {
+            let message = if isolement_voulu() {
+                tr!(
+                    "Isolement du réseau pour un rançongiciel quasi certain : accepté. « vanguard veilleur isolement off » le retire.",
+                    "Network isolation for an almost certain ransomware: accepted. “vanguard watcher isolation off” withdraws it."
+                )
+            } else {
+                tr!(
+                    "Isolement du réseau pour un rançongiciel quasi certain : pas accepté. « vanguard veilleur isolement on » le propose.",
+                    "Network isolation for an almost certain ransomware: not accepted. “vanguard watcher isolation on” offers it."
+                )
+            };
+            afficher_aligne("  ", message, 2, "");
+        }
     }
 }
 

@@ -354,7 +354,10 @@ secondes, un contenu qui ne ressemble plus à son format, une note de rançon, u
 secours effacées) donne une alerte en quelques secondes, au lieu d'attendre la vérification horaire des pièges, et
 « Bloquer » est proposé au bilan suivant. Avec la protection active et un cas quasi certain (piège touché et rafale attribuée sans ambiguïté à un
 programme), le programme et sa descendance sont gelés, la preuve est relevée, puis ils sont arrêtés et mis en
-quarantaine, sous les garde-fous du blocage ; sinon, Vanguard alerte seulement. Un programme malveillant du compte
+quarantaine, sous les garde-fous du blocage ; sinon, Vanguard alerte seulement. Avec un accord de plus
+(`vanguard veilleur isolement on`), l'ordinateur est aussi isolé du réseau entre le gel et l'arrêt, comme par
+`vanguard blocage isoler` (session à distance en cours gardée) ; il faut les droits d'administrateur, que le service
+durci du veilleur ne peut pas encore demander seul : l'alerte dit alors que rien n'est isolé. Un programme malveillant du compte
 peut l'éteindre : la sauvegarde reste la vraie protection. Limite dite : une écriture par un lien physique placé hors
 de ces dossiers échappe à la veille en direct (les pièges restent vérifiés chaque heure).
 

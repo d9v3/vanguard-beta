@@ -214,6 +214,9 @@ Options de défense.
   refusé. Il ne retire rien du pare-feu existant ; sa levée ne retire que ce qui porte le nom de Vanguard et remet les
   réglages notés avant, même si la note est perdue (sans note, le pare-feu reste fermé à l'entrée, jamais plus
   ouvert). Sous Linux, l'état est dans des dossiers de root et un état abîmé au démarrage garde l'ordinateur isolé.
+  L'isolement automatique d'un rançongiciel quasi certain (accord à part, protection active) passe par la même
+  élévation montrée : un programme du compte ne peut ni isoler ni lever sans elle ; le service durci du veilleur ne
+  peut pas l'obtenir seul, et l'alerte le dit.
 
 **Les gardes contre le verrouillage (Linux).** Un geste de défense qui peut couper la personne de son ordinateur
 (verrouiller root ou son propre compte, retirer le dernier administrateur, rendre sudo, su et pkexec inutilisables)
