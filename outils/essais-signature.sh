@@ -41,11 +41,12 @@
 #      face à un faux gh), elle seule et notée, une fois la nouvelle page en ligne et ses fichiers relus ; jamais
 #      avec-macos, une plus vieille, une plus récente, une annotée, une hors de la ligne de la version, celle d'une
 #      page encore en ligne, ni sans pouvoir lire les étiquettes ou noter le retrait.
-#   6h. Une compilation reproductible de la CI faite sur un commit d'après celui de la version compte seulement en
-#      ligne droite jusqu'à la tête de master, sans fusion, chaque commit entre les deux ne touchant que la liste
-#      fermée HORS_COMPILATION (captures, image de partage, page des fonctions : descendant_hors_compilation, dans un
-#      dépôt git jetable ; empreintes_de_la_ci, face à un faux gh), en fichiers ordinaires (ni lien symbolique ni
-#      sous-module) ; rien du programme ne lit ces fichiers, et les notes le disent.
+#   6h. Une compilation reproductible de la CI faite sur un commit d'après celui de la version, ou d'avant, compte
+#      seulement en ligne droite jusqu'à la tête de master, sans fusion, chaque commit entre les deux ne touchant que
+#      la liste fermée HORS_COMPILATION (captures, image de partage, page des fonctions : descendant_hors_compilation,
+#      dans un dépôt git jetable ; empreintes_de_la_ci, face à un faux gh), en fichiers ordinaires (ni lien
+#      symbolique ni sous-module) ; avant : ni un .md, ni outils/, ni src/, ni une fusion, ni un commit à côté (la
+#      liste large .github/hors-code.txt n'y sert plus) ; rien du programme ne lit ces fichiers, et les notes le disent.
 #   6i. zig, la chaîne C des programmes publiés (outils/chaine-zig.sh), n'est pris que sous sa signature minisign,
 #      vérifiée par openssl : une signature d'essai juste passe ; un octet changé, un autre nom de fichier (retour en
 #      arrière), un commentaire de confiance réécrit ou à deux noms, une autre clé, l'ancienne forme « Ed », une
@@ -874,10 +875,11 @@ if command -v jq >/dev/null; then
     "reproductible	Deux compilations	2026-11-07T08:00:00Z EMPREINTE-VANGUARD-WINDOWS $A_WINDOWS" >"$F/journal-7.txt"
   echo '{"jobs": [{"databaseId": 70, "name": "reproductible", "conclusion": "success"}]}' >"$F/travaux-7.json"
   { cat "$T/descendant.sh"; cat "$T/empreintes_de_la_ci.sh"; } >"$T/empreintes-apres.sh"
-  empreintes_apres() { # commit de la CI, tête de master : la sortie de empreintes_de_la_ci, puis « code N »
+  empreintes_apres() { # commit de la CI, tête de master [, commit compilé] : la sortie de empreintes_de_la_ci, puis
+    # « code N »
     local code=0 sortie
     echo "[{\"databaseId\": 7, \"headSha\": \"$1\", \"headBranch\": \"master\", \"event\": \"push\"}]" >"$F/runs.json"
-    sortie=$(cd "$H" && PATH="$F:$PATH" COMPILE=$H_COMPILE COMMIT=$2 HORS_CODE=$(grep -v '^#' "$DEPOT/.github/hors-code.txt" | head -n 1) \
+    sortie=$(cd "$H" && PATH="$F:$PATH" COMPILE=${3:-$H_COMPILE} COMMIT=$2 HORS_CODE=$(grep -v '^#' "$DEPOT/.github/hors-code.txt" | head -n 1) \
       DOSSIER=$T/dossier-apres bash -c "source '$T/empreintes-apres.sh'; empreintes_de_la_ci" 2>&1) || code=$?
     printf '%s\ncode %s\n' "$sortie" "$code"
   }
@@ -892,6 +894,26 @@ if command -v jq >/dev/null; then
   r=$(empreintes_apres "$FUSION" "$FUSION")
   [[ $r == *"code 2" ]] && ok "publier : CI faite sur une fusion : aucune ne compte" ||
     ko "publier : CI faite sur une fusion acceptée ($r)"
+  # La CI faite AVANT le commit compilé (la règle « ancêtre ») : la même liste fermée, commit par commit, en ligne
+  # droite. Plus .github/hors-code.txt (que HORS_CODE porte encore ici, pour le prouver), qui laissait passer un .md,
+  # la recette de la compilation (outils/) et une fusion.
+  r=$(empreintes_apres "$H_COMPILE" "$H_PAGE" "$H_PAGE")
+  [[ $r == "exécution 7, ${H_COMPILE:0:12}, avant ${H_PAGE:0:12} sans rien de compilé changé"$'\n'"code 0" ]] &&
+    ok "publier : CI faite avant le commit compilé, captures et page des fonctions entre les deux : acceptée, dite « avant »" ||
+    ko "publier : CI faite avant, seulement des captures entre les deux ($r)"
+  for cas in md outils src; do
+    c=$(git -C "$H" rev-parse "$cas")
+    r=$(empreintes_apres "$H_COMPILE" "$c" "$c")
+    [[ $r == *"code 2" ]] &&
+      ok "publier : CI faite avant un commit qui touche $(git -C "$H" diff-tree --no-commit-id --name-only -r "$c") : aucune ne compte" ||
+      ko "publier : CI faite avant un commit hors de la liste fermée acceptée ($cas : $r)"
+  done
+  r=$(empreintes_apres "$H_COMPILE" "$FUSION" "$FUSION")
+  [[ $r == *"code 2" ]] && ok "publier : CI faite avant une fusion (de captures seulement) : aucune ne compte" ||
+    ko "publier : CI faite avant une fusion acceptée ($r)"
+  r=$(empreintes_apres "$COTE" "$H_PAGE" "$H_PAGE")
+  [[ $r == *"code 2" ]] && ok "publier : CI faite sur un commit à côté de la ligne de master : aucune ne compte" ||
+    ko "publier : CI faite à côté de la ligne de master acceptée ($r)"
 else
   echo "  (sauté : jq absent, pas de faux gh pour la CI faite après la version)"
 fi

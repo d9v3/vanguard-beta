@@ -242,12 +242,13 @@ HORS_COMPILATION='^(assets/captures/[A-Za-z0-9][A-Za-z0-9._-]*\.png|assets/captu
 # ou qui l'est devenu, ou un effacement (000000) ; un lien symbolique (120000) ou un sous-module (160000) nommé comme
 # une capture n'est pas ce que deployer.sh committe (relecture adverse du lot publier-version, T1).
 ENTREE_HORS_COMPILATION='^:[0-7]{6} ((100644|100755) [0-9a-f]{40} [0-9a-f]{40} [AMT]|000000 [0-9a-f]{40} 0{40} D)$'
-# Le commit de la CI (2e argument) vient après le commit compilé (1er), en ligne droite jusqu'à la tête de master
-# (COMMIT), et chaque commit entre les deux ne touche que HORS_COMPILATION, en fichiers ordinaires : la CI a compilé
-# le même code. Code 0 seulement alors ; une fusion, un commit hors de la ligne, un fichier hors de la liste (un
+# Le 2e commit vient après le 1er, en ligne droite jusqu'à la tête de master (COMMIT), et chaque commit entre les deux
+# ne touche que HORS_COMPILATION, en fichiers ordinaires : les deux compilent le même code. Appelée dans les deux sens :
+# (commit compilé, commit de la CI) quand la CI a tourné après, (commit de la CI, commit compilé) quand elle a tourné
+# avant. Code 0 seulement alors ; une fusion, un commit hors de la ligne, un fichier hors de la liste (un
 # renommage compte pour ses deux chemins), un lien ou un sous-module, une réponse de git illisible : 1. Lue telle
 # quelle par outils/essais-signature.sh.
-descendant_hors_compilation() { # commit compilé, commit de la CI
+descendant_hors_compilation() { # commit d'avant, commit d'après
   local de=$1 vers=$2 fusions premiers tous c champs i
   [[ $de =~ ^[0-9a-f]{40}$ && $vers =~ ^[0-9a-f]{40}$ && $de != "$vers" ]] || return 1
   git merge-base --is-ancestor "$de" "$vers" 2>/dev/null || return 1
@@ -293,11 +294,15 @@ outils_differents() { # journal de la CI
 # « reproductible » (.github/workflows/ci.yml) les compile deux fois par la même recette et écrit leurs empreintes
 # dans son journal (EMPREINTE-VANGUARD-LINUX, -WINDOWS). Sans cette comparaison, un programme altéré sur cet ordinateur
 # (chaîne Rust, éditeur de liens, fichier de config de cargo) serait signé et publié avec une CI verte à côté
-# (campagne d'attaque n° 6, F1). Seulement une exécution de master (push, nuit ou à la main), du commit compilé, d'un
-# commit d'avant au même code (.github/hors-code.txt), comme les nomenclatures, ou d'un commit d'après dont rien de
-# ce qui est compilé n'a changé (descendant_hors_compilation : les captures et la page des fonctions que deployer.sh
-# committe après la version, et sur lesquels la CI tourne). Code 0 : mêmes empreintes ; 1 : différentes (la raison) ;
-# 2 : aucune exécution de la CI n'en a pour ce code. Lue telle quelle par outils/essais-signature.sh.
+# (campagne d'attaque n° 6, F1). Seulement une exécution de master (push, nuit ou à la main), du commit compilé, ou
+# d'un commit d'avant ou d'après dont rien de ce qui est compilé n'a changé : en ligne droite, sans fusion, chaque
+# commit entre les deux ne touchant que la liste fermée HORS_COMPILATION (descendant_hors_compilation, dans un sens
+# ou dans l'autre ; après : les captures et la page des fonctions que deployer.sh committe après la version, et sur
+# lesquels la CI tourne). Pas .github/hors-code.txt, trop large ici : il laisse passer outils/ (dont la recette de la
+# compilation, outils/compiler-version.sh et outils/chaine-zig.sh), .cargo/audit.toml, tout .md, et un écart à
+# travers une fusion (relecture du lot publier-version, recommandation acceptée). Code 0 : mêmes empreintes ; 1 :
+# différentes (la raison) ; 2 : aucune exécution de la CI n'en a pour ce code. Lue telle quelle par
+# outils/essais-signature.sh.
 empreintes_de_la_ci() {
   local id sha apres travail journal linux windows ici_linux ici_windows
   ici_linux=$(sha256sum "$DOSSIER/vanguard-linux-x86_64" | cut -d' ' -f1)
@@ -306,9 +311,8 @@ empreintes_de_la_ci() {
     [[ $id =~ ^[0-9]+$ ]] || continue
     apres=
     if [[ $sha != "$COMPILE" ]]; then
-      if git merge-base --is-ancestor "$sha" "$COMPILE" 2>/dev/null; then
-        [[ -n $HORS_CODE ]] || continue
-        git diff --name-only "$sha" "$COMPILE" | grep -vqE "$HORS_CODE" && continue
+      if descendant_hors_compilation "$sha" "$COMPILE"; then
+        apres=", avant ${COMPILE:0:12} sans rien de compilé changé"
       elif descendant_hors_compilation "$COMPILE" "$sha"; then
         apres=", après ${COMPILE:0:12} sans rien de compilé changé"
       else
