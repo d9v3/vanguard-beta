@@ -60,15 +60,22 @@ CHAINE=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
   { echo "rustc n'est pas celui de rust-toolchain.toml ($CHAINE) : $(rustc --version)" >&2; exit 1; }
 # cargo-auditable : celui de la CI (.github/workflows/ci.yml), vérifié ici et non plus seulement par
 # outils/deployer.sh ; un autre écrirait une autre liste des dépendances, donc un autre programme. Celui que cargo
-# prendra (son dossier de programmes d'abord), sa version lue dans le programme même (outils/chaine-c.sh). Posé
-# autrement que par cargo install (la CI le prend déjà compilé, à la version de ci.yml), elle peut ne pas s'y lire :
-# c'est dit, sans refus ; une autre version est refusée.
+# prendra (son dossier de programmes d'abord), sa version lue dans le programme même (outils/chaine-c.sh). Une autre
+# version est refusée ; une version qui ne s'y lit pas aussi, sauf dans la CI (GITHUB_ACTIONS), qui le prend déjà
+# compilé, épinglé à la version de ci.yml, sans le chemin de sa source : ici, cargo install le pose avec.
 AUDITABLE_CI=$(sed -n 's/.*cargo-auditable@\([0-9][0-9.]*\).*/\1/p' .github/workflows/ci.yml | head -1)
 [[ -n $AUDITABLE_CI ]] || { echo "version de cargo-auditable introuvable dans .github/workflows/ci.yml" >&2; exit 1; }
 AUDITABLE=$(PATH="$CARGO_DOSSIER/bin:$PATH" bash outils/chaine-c.sh | sed -n 's/^cargo-auditable=//p')
 case $AUDITABLE in
   "$AUDITABLE_CI") ;;
-  inconnue) echo "cargo-auditable : version non lue dans le programme, non vérifiée ici (la CI : $AUDITABLE_CI)." >&2 ;;
+  inconnue)
+    [[ ${GITHUB_ACTIONS:-} == true ]] || {
+      echo "cargo-auditable : version non lue dans le programme (posé autrement que par cargo install ?), refusé" \
+        "hors de la CI. cargo install cargo-auditable --locked --version $AUDITABLE_CI" >&2
+      exit 1
+    }
+    echo "cargo-auditable : version non lue dans le programme ; dans la CI, celle qu'épingle ci.yml ($AUDITABLE_CI)." >&2
+    ;;
   *)
     echo "cargo-auditable ${AUDITABLE:-absent} ici, $AUDITABLE_CI dans la CI : une autre liste des dépendances, un autre" \
       "programme. cargo install cargo-auditable --locked --version $AUDITABLE_CI" >&2

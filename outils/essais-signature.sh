@@ -578,6 +578,21 @@ JSON
   ((code != 0)) && [[ $r == *"cargo-auditable 9.8.7 ici"* ]] &&
     ok "compiler-version.sh : un cargo-auditable d'une autre version que celle de la CI est refusé" ||
     ko "compiler-version.sh : cargo-auditable d'une autre version accepté, ou refus inattendu (code $code : ${r:0:200})"
+  # Un cargo-auditable dont la version ne se lit pas (sans le chemin de sa source) : refusé ici ; dans la CI
+  # (GITHUB_ACTIONS=true, binaire précompilé épinglé par ci.yml), dit seulement, et la suite tourne : elle s'arrête
+  # ici sur la chaîne zig, refusée exprès (un dossier en 777).
+  mkdir -p "$T/cargo-muet/bin" "$T/chaine-ouverte" && chmod 777 "$T/chaine-ouverte"
+  printf '#!/bin/sh\nexit 0\n' >"$T/cargo-muet/bin/cargo-auditable" && chmod +x "$T/cargo-muet/bin/cargo-auditable"
+  r=$(GITHUB_ACTIONS= CARGO_HOME=$T/cargo-muet VANGUARD_CHAINE_ZIG=$T/chaine-ouverte \
+    bash "$DEPOT/outils/compiler-version.sh" 2>&1 >/dev/null) && code=0 || code=$?
+  ((code != 0)) && [[ $r == *"version non lue dans le programme"*"refusé hors de la CI"* && $r != *inscriptible* ]] &&
+    ok "compiler-version.sh : un cargo-auditable de version illisible est refusé hors de la CI" ||
+    ko "compiler-version.sh : cargo-auditable de version illisible accepté hors de la CI (code $code : ${r:0:200})"
+  r=$(GITHUB_ACTIONS=true CARGO_HOME=$T/cargo-muet VANGUARD_CHAINE_ZIG=$T/chaine-ouverte \
+    bash "$DEPOT/outils/compiler-version.sh" 2>&1 >/dev/null) && code=0 || code=$?
+  ((code != 0)) && [[ $r == *"dans la CI, celle qu'épingle ci.yml"* && $r == *inscriptible* ]] &&
+    ok "compiler-version.sh : dans la CI, un cargo-auditable de version illisible est dit, sans refus" ||
+    ko "compiler-version.sh : dans la CI, cargo-auditable de version illisible mal traité (code $code : ${r:0:200})"
   journal_ci 1 "$E_LINUX" "$E_WINDOWS"
   echo '{"jobs": [{"databaseId": 10, "name": "reproductible", "conclusion": "failure"}]}' >"$F/travaux-1.json"
   r=$(empreintes_ci)
