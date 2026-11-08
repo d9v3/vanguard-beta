@@ -149,7 +149,10 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
        7.8 Privacy check: who can access location, contacts, camera and microphone (read-only)
   8  Block and respond ›
        8.1 Threat blocking: one-click "Block" for each threat found (action shown, written down, undoable);
-         active protection, once enabled, blocks clear-cut threats by itself (vanguard blocking)
+         active protection, once enabled, blocks clear-cut threats by itself; also Suspend, Cut its network,
+         Watch more closely, Trust (vanguard alert <id> reopens a notified alert); isolate the computer from
+         the network, remote session kept (vanguard blocking isolate, lifted by vanguard blocking
+         lift-isolation)
        8.2 Block dangerous sites: URLhaus ones and ThreatFox command servers, in the hosts file, after your
          consent; removed exactly (vanguard dangerous-sites)
        8.3 After an infection, step by step · 8.4 Hacked account, step by step: guides 11.7 and 11.10
@@ -168,7 +171,8 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
          Windows' logs; on Linux, on a folder of .evtx it asks for (winevt\Logs of a disk mounted
          from the drive). The alerts in time order (read-only; vanguard windows-logs)
        8.11 Watcher (Linux): programs started and connections closed seen as they happen, off by default
-         (vanguard watcher on); and, on request, personal folders watched live against ransomware: an alert
+         (vanguard watcher on); with active protection and your consent, known malware placed in your
+         folders is stopped when it starts (vanguard watcher known on); and, on request, personal folders watched live against ransomware: an alert
          within seconds, freeze then stop of an almost-certain case only with active protection
          (vanguard watcher ransomware on)
   ── ALSO INCLUDED ──

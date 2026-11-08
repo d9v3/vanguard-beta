@@ -9,6 +9,43 @@ jour est permise ; elles se suivent dans le paragraphe de leur journée. Seule l
 téléchargement ; chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par exemple), pour être
 recompilée au besoin.
 
+## 8 novembre 2026 : version 0.92.0
+
+- **De nouveaux gestes face à chaque menace.** En plus de Bloquer : **Suspendre** (le programme gelé, repris par
+  `vanguard blocage reprendre`, rappelé à chaque bilan), **Couper son réseau** (le programme tourne mais ne parle plus
+  à personne, rendu par `vanguard blocage rendre-reseau` ; sous Linux, ce processus seul ; sous Windows, deux règles du
+  pare-feu sur son fichier), **Surveiller de plus près** (Linux : une alerte à chacun de ses lancements, pendant 7
+  jours) et **Faire confiance** (un mot tapé, lié à l'empreinte du fichier, 90 jours). Un geste refusé par un
+  garde-fou reste visible, grisé, avec sa raison. Chaque type d'alerte (rançongiciel, serveur de commande, outil
+  d'attaque, malware connu…) a sa suite de gestes, prise dans une liste fermée. Une alerte notifiée se reprend par
+  `vanguard alerte <id>` : relue dans le journal scellé, la menace est rejugée avant tout geste.
+- **Isoler l'ordinateur du réseau** (`vanguard blocage isoler`, Linux et Windows). Tout est coupé, en entrée comme en
+  sortie, sauf la session à distance en cours, le DNS et les serveurs de Vanguard ; le coût est dit avant l'accord, et
+  `vanguard blocage lever-isolement` remet le réseau exactement comme avant. Avec un accord de plus (`vanguard veilleur
+  isolement on`), un rançongiciel quasi certain gelé par le veilleur fait aussi isoler l'ordinateur avant son arrêt.
+  Essayé sur un vrai Windows : session à distance gardée, Internet coupé puis rendu, pare-feu identique après la levée.
+- **Le veilleur arrête le malware connu à son lancement (Linux).** Avec la protection active et un accord à part
+  (`vanguard veilleur connus on`), un programme du compte dont l'empreinte est celle d'un malware connu est gelé avec
+  ce qu'il a lancé, sa preuve relevée, puis arrêté et mis en quarantaine. Seulement un fichier posé dans les dossiers
+  du compte : jamais un programme du système ou installé, un processus critique, Vanguard ni un accès à distance
+  pendant une session. Un garde des lancements en root (fanotify, du noyau Linux) est livré en préparation, caché :
+  il n'apparaîtra au menu et au bilan qu'une fois fini.
+- **Un moteur d'analyse commun, avec ses propres heuristiques.** Chaque fichier analysé reçoit un seul verdict :
+  certain (empreinte MalwareBazaar, signature sûre de ClamAV, fichier d'essai EICAR), famille (règle YARA, signature
+  ClamAV), suspect, sain ou non vérifié. « Sain » seulement si tout a été lu. Les bases de ClamAV déjà installées sont
+  lues par Vanguard lui-même, sans lancer clamscan, et seulement si aucun compte ordinaire ne peut les modifier. Des
+  heuristiques (programme sans signature dans les Téléchargements, contenu compressé comme par un paqueteur, double
+  extension, macro qui se lance à l'ouverture, PowerShell encodé, script qui télécharge puis lance…) donnent au plus
+  « suspect », jamais une quarantaine à elles seules. `vanguard verifier-fichier`, les téléchargements, le courriel
+  suspect et les extensions passent par ce moteur.
+- **Programmes publiés compilés par zig.** Linux et Windows sont compilés par zig et cargo-zigbuild, épinglés et
+  vérifiés par leur empreinte, ici comme dans la CI : deux compilations donnent le même programme, octet pour octet.
+  Le programme Windows importe l'UCRT, fournie par Windows 10 et 11 sans rien installer.
+- **Moins de faux constats.** La protection post-quantique de Zen, Floorp et Waterfox se lit maintenant (version de
+  leur moteur) ; sans le groupe docker, un démon Docker arrêté est reconnu sain ; un journal d'événements de Windows
+  désactivé et vide n'est plus dit « vidé ou remplacé » ; les « non vérifié » attendus (un choix de la personne,
+  l'état de l'ordinateur) ne vont plus au journal des erreurs ni en ticket, mais restent « non vérifié » au bilan.
+
 ## 7 novembre 2026 : version 0.91.0
 
 - **Vanguard ne vise plus macOS.** Plus de programme pour le Mac, plus de compilation ni d'essais sur le Mac de GitHub,

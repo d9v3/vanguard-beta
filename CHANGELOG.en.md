@@ -8,6 +8,43 @@ delivered just before it. Since November 7, 2026, more than one release on the s
 other in their day's paragraph. Only the latest version has its download page; every version keeps its tag in the
 repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 
+## November 8, 2026: version 0.92.0
+
+- **New actions for each threat.** Besides Block: **Suspend** (the program frozen, resumed with
+  `vanguard blocking resume`, recalled at each check), **Cut its network** (the program runs but talks to no one,
+  restored with `vanguard blocking restore-network`; on Linux, that process alone; on Windows, two firewall rules on its
+  file), **Watch more closely** (Linux: an alert each time it starts, for 7 days) and **Trust** (a typed word, tied
+  to the file's hash, 90 days). An action refused by a safeguard stays visible, greyed out, with its reason. Each
+  alert type (ransomware, command server, attack tool, known malware…) has its own sequence of actions, taken from a
+  closed list. A notified alert can be reopened with `vanguard alert <id>`: read back from the sealed log, the threat
+  is judged again before any action.
+- **Isolate the computer from the network** (`vanguard blocking isolate`, Linux and Windows). Everything is cut,
+  incoming and outgoing, except the remote session in progress, DNS and Vanguard's servers; the cost is stated before
+  consent, and `vanguard blocking lift-isolation` puts the network back exactly as it was. With one more consent
+  (`vanguard watcher isolation on`), a near-certain ransomware frozen by the watcher also gets the computer isolated
+  before it is stopped. Tried on a real Windows: remote session kept, Internet cut then restored, firewall identical
+  after lifting.
+- **The watcher stops known malware when it starts (Linux).** With active protection and a separate consent
+  (`vanguard watcher known on`), a program of the account whose hash is that of known malware is frozen along with
+  what it started, its evidence collected, then stopped and quarantined. Only a file placed in the account's folders:
+  never a system or installed program, a critical process, Vanguard or remote access during a session. A launch guard
+  running as root (fanotify, from the Linux kernel) ships in preparation, hidden: it will appear in the menu and the
+  check only once finished.
+- **A common analysis engine, with its own heuristics.** Each scanned file gets a single verdict: certain
+  (MalwareBazaar hash, reliable ClamAV signature, EICAR test file), family (YARA rule, ClamAV signature), suspicious,
+  clean or not checked. "Clean" only if everything was read. ClamAV databases already installed are read by Vanguard
+  itself, without running clamscan, and only if no ordinary account can modify them. Heuristics (unsigned program in
+  Downloads, content compressed as by a packer, double extension, macro that runs on opening, encoded PowerShell,
+  script that downloads then runs…) give "suspicious" at most, never a quarantine on their own. `vanguard
+  check-file`, downloads, suspicious email and extensions go through this engine.
+- **Published programs built with zig.** Linux and Windows are built with zig and cargo-zigbuild, pinned and checked
+  by their hash, here as in CI: two builds give the same program, byte for byte. The Windows program imports the
+  UCRT, provided by Windows 10 and 11 with nothing to install.
+- **Fewer false findings.** Post-quantum protection in Zen, Floorp and Waterfox is now read (their engine's version);
+  without the docker group, a stopped Docker daemon is recognised as clean; a disabled, empty Windows event log is no
+  longer called "cleared or replaced"; expected "not checked" results (a person's choice, the computer's state) no
+  longer go to the error log or into a ticket, but stay "not checked" in the check.
+
 ## November 7, 2026: version 0.91.0
 
 - **Vanguard no longer targets macOS.** No more Mac program, no more builds or tests on GitHub's Mac, no more MACOS

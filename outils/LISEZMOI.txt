@@ -156,8 +156,10 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
        7.8 Bilan de confidentialité : qui a accès à la position, aux contacts, à la caméra et au micro (lecture seule)
   8  Bloquer et réagir ›
        8.1 Blocage des menaces : « Bloquer » d'un clic pour chaque menace trouvée (geste montré, noté, annulable) ;
-         la protection active, une fois mise en marche, bloque toute seule ce qui ne fait aucun doute
-         (vanguard blocage)
+         la protection active, une fois mise en marche, bloque toute seule ce qui ne fait aucun doute ;
+         aussi Suspendre, Couper son réseau, Surveiller de plus près, Faire confiance (vanguard alerte <id>
+         reprend une alerte notifiée) ; isoler l'ordinateur du réseau, session à distance gardée
+         (vanguard blocage isoler, levée par vanguard blocage lever-isolement)
        8.2 Bloquer les sites dangereux : ceux d'URLhaus et les serveurs de commande de ThreatFox, dans le fichier
          hosts, après accord ; retirés exactement (vanguard sites-dangereux)
        8.3 Après une infection, pas à pas · 8.4 Compte piraté, pas à pas : les parcours 11.7 et 11.10
@@ -176,7 +178,8 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
          sur les journaux de ce Windows ; sous Linux, sur un dossier de .evtx demandé (winevt\Logs d'un
          disque monté depuis la clé). Les alertes dans l'ordre du temps (lecture seule ; vanguard journaux-windows)
        8.11 Veilleur (Linux) : programmes lancés et connexions fermées vus sur le moment, coupé par défaut
-         (vanguard veilleur on) ; et, sur demande, les dossiers personnels surveillés en direct contre les
+         (vanguard veilleur on) ; avec la protection active et votre accord, arrêt à son lancement d'un malware
+         connu posé dans vos dossiers (vanguard veilleur connus on) ; et, sur demande, les dossiers personnels surveillés en direct contre les
          rançongiciels : alerte en quelques secondes, gel puis arrêt d'un cas quasi certain seulement avec la
          protection active (vanguard veilleur rancongiciel on)
   ── EN PLUS ──
