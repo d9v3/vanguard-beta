@@ -50,12 +50,14 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   missing expected source or an unread part gives “not checked”; a missing optional source (ClamAV database,
   MalwareBazaar hashes) is stated with the verdict, and the result recorded for the report counts it as not checked.
   Heuristics can be evaded (a program signed with a stolen certificate, diluted entropy, an ordinary name) and can be
-  wrong. So they only give a “suspicious”, which triggers no action on its own: one click, and a `normales` key tied
-  to the exact content to silence a false positive. A family rule (YARA, ClamAV signature) also starts from a click.
-  Only a known hash (or the EICAR test) can lead to quarantine without a click, if active protection allows it, and
-  quarantine stays undoable. On Windows, with Defender on, the engine is only a second opinion. With Defender turned
-  off by the person (Defense options), it becomes the main one and the scan says what is missing. Defender off with
-  no recorded choice, or unreadable: nothing is concluded.
+  wrong. For them, “signed” means “an Authenticode signature is present”, never verified (neither the chain nor the
+  match with the file): a signature copied from another program, or self-signed, is enough to silence “program
+  without a signature”. So they only give a “suspicious”, which triggers no action on its own: one click, and a
+  `normales` key tied to the exact content to silence a false positive. A family rule (YARA, ClamAV signature) also
+  starts from a click. Only a known hash (or the EICAR test) can lead to quarantine without a click, if active
+  protection allows it, and quarantine stays undoable. On Windows, with Defender on, the engine is only a second
+  opinion. With Defender turned off by the person (Defense options), it becomes the main one and the scan says what
+  is missing. Defender off with no recorded choice, or unreadable: nothing is concluded.
 - **Everything, in real time.** Apart from the two Linux watchers (programs and connections, anti-ransomware; both off
   by default), the live integrity monitoring of critical files and Defender's blocking, monitoring runs every hour,
   between two checks.

@@ -56,6 +56,9 @@ pub(crate) enum Heuristique {
     /// Un programme Windows sans signature Authenticode (ou à la signature illisible), dans un dossier temporaire ou
     /// de téléchargement. ATT&CK T1204.002 (User Execution: Malicious File) et T1105 (Ingress Tool Transfer) ;
     /// Microsoft, « Authenticode Digital Signatures » et SmartScreen (réputation d'un programme non signé).
+    /// « Signé » veut dire ici « table de certificats Authenticode présente et lisible », jamais vérifiée : ni la chaîne
+    /// de confiance, ni la correspondance avec le contenu du fichier. Une table copiée d'un autre programme, ou
+    /// auto-signée, suffit à faire taire ce signe (contournement admis, voir MODELE-DE-MENACE.md).
     PeNonSigne,
     /// Une section d'un PE, ou un segment d'un ELF, à la fois écrivable et exécutable : du code qui se réécrit en
     /// mémoire (décompresseur, déchiffreur). ATT&CK T1027.002 (Software Packing) ; Microsoft, « PE Format »
@@ -192,6 +195,8 @@ pub(crate) fn juger(p: &Partie, octets: &[u8], lieu: Lieu) -> Vec<Signe> {
     signes
 }
 
+/// Sans table Authenticode, ou illisible : le signe. Une table présente fait taire le signe sans être vérifiée
+/// (chaîne, certificat, empreinte du fichier) : c'est une présence, pas une preuve.
 fn pe_non_signe(p: &Partie, lieu: Lieu) -> Option<String> {
     if lieu == Lieu::Ordinaire || p.type_ != Type::Pe {
         return None;

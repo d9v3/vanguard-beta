@@ -49,17 +49,19 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
 - **Ce que le moteur de Vanguard ne voit pas.** Son verdict (certain, famille, suspect, sain, non vérifié) vient des
   empreintes (MalwareBazaar, ClamAV), des règles YARA, des signatures de ClamAV et de huit heuristiques, sur ce qui est
   écrit sur le disque. Il n'a ni analyse dans le nuage, ni lecture de la mémoire, ni AMSI : un script ou une macro qui
-  ne se déchiffre qu'à l'exécution lui échappe. Sous Windows, il ne refuse aucun lancement : seul Defender le fait.
-  « Sain » veut dire « rien de connu dans ce qui a été lu ». Une source attendue absente ou une partie non lue donne
-  « non vérifié » ; une source facultative absente (base de ClamAV, empreintes de MalwareBazaar) est dite avec le
+  ne se déchiffre qu'à l'exécution lui échappe. Sous Windows, il ne refuse aucun lancement : seul Defender le fait. «
+  Sain » veut dire « rien de connu dans ce qui a été lu ». Une source attendue absente ou une partie non lue donne «
+  non vérifié » ; une source facultative absente (base de ClamAV, empreintes de MalwareBazaar) est dite avec le
   verdict, et le résultat versé au rapport la compte comme non vérifiée. Les heuristiques se contournent (programme
-  signé avec un certificat volé, entropie diluée, nom ordinaire) et peuvent se tromper. Elles ne rendent donc qu'un
-  « suspect », qui ne déclenche aucun geste tout seul : un clic, et une clé `normales` liée au contenu exact pour faire
-  taire un faux positif. Une règle de famille (YARA, signature de ClamAV) part aussi d'un clic. Seule une empreinte
-  connue (ou l'essai EICAR) peut mener à la quarantaine sans clic, si la protection active le permet, et la
-  quarantaine reste annulable. Sous Windows, Defender allumé, le moteur n'est qu'un second avis. Defender coupé par
-  la personne (Options de défense), il devient le principal et l'analyse dit ce qui manque. Defender coupé sans choix
-  noté, ou illisible : rien n'est conclu.
+  signé avec un certificat volé, entropie diluée, nom ordinaire) et peuvent se tromper. Pour elles, « signé » veut dire
+  « une signature Authenticode est présente », jamais vérifiée (ni chaîne, ni correspondance avec le fichier) : une
+  signature copiée d'un autre programme, ou auto-signée, suffit à faire taire « programme sans signature ». Elles ne
+  rendent donc qu'un « suspect », qui ne déclenche aucun geste tout seul : un clic, et une clé `normales` liée au
+  contenu exact pour faire taire un faux positif. Une règle de famille (YARA, signature de ClamAV) part aussi d'un
+  clic. Seule une empreinte connue (ou l'essai EICAR) peut mener à la quarantaine sans clic, si la protection active le
+  permet, et la quarantaine reste annulable. Sous Windows, Defender allumé, le moteur n'est qu'un second avis. Defender
+  coupé par la personne (Options de défense), il devient le principal et l'analyse dit ce qui manque. Defender coupé
+  sans choix noté, ou illisible : rien n'est conclu.
 - **Tout, en temps réel.** Hors des deux veilleurs de Linux (programmes et connexions, anti-rançongiciel ; coupés par
   défaut), de la surveillance en direct de l'intégrité des fichiers critiques et du blocage de Defender, la
   surveillance passe chaque heure, entre deux bilans.
