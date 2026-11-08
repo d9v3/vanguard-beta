@@ -571,6 +571,13 @@ JSON
     grep -qF "bash outils/chaine-c.sh | sed 's/^/OUTILS-VANGUARD /'" "$DEPOT/.github/workflows/ci.yml" &&
     ok "chaine-c.sh : outils de compilation relevés sous une forme sûre, dans le repère et dans le journal de la CI" ||
     ko "chaine-c.sh : sortie inattendue ($r)"
+  # compiler-version.sh refuse un cargo-auditable d'une autre version que celle de la CI, avant de rien compiler :
+  # celui de cargo (CARGO_HOME/bin), ici un faux à la version 9.8.7.
+  mkdir -p "$T/cargo-faux/bin" && cp "$T/faux-cc/cargo-auditable" "$T/cargo-faux/bin/"
+  r=$(CARGO_HOME=$T/cargo-faux bash "$DEPOT/outils/compiler-version.sh" 2>&1 >/dev/null) && code=0 || code=$?
+  ((code != 0)) && [[ $r == *"cargo-auditable 9.8.7 ici"* ]] &&
+    ok "compiler-version.sh : un cargo-auditable d'une autre version que celle de la CI est refusé" ||
+    ko "compiler-version.sh : cargo-auditable d'une autre version accepté, ou refus inattendu (code $code : ${r:0:200})"
   journal_ci 1 "$E_LINUX" "$E_WINDOWS"
   echo '{"jobs": [{"databaseId": 10, "name": "reproductible", "conclusion": "failure"}]}' >"$F/travaux-1.json"
   r=$(empreintes_ci)

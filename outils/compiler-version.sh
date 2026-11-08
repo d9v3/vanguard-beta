@@ -3,7 +3,8 @@
 # outils/deployer.sh avant chaque déploiement, la CI pour sa compilation reproductible (.github/workflows/ci.yml), et
 # quiconque veut refaire un programme publié à partir de son étiquette. Une seule recette, pour que deux compilations
 # du même code donnent les mêmes octets, ici (Arch) comme dans la CI (Ubuntu) :
-#   - la chaîne Rust de rust-toolchain.toml (rustup la pose d'elle-même), cargo-auditable dans la version de la CI ;
+#   - la chaîne Rust de rust-toolchain.toml (rustup la pose d'elle-même), cargo-auditable dans la version de la CI
+#     (vérifiée) ;
 #   - la chaîne C épinglée, la même sur tous les systèmes : zig (compilateur C, éditeur de liens, musl, mingw-w64 et
 #     leur runtime) et cargo-zigbuild, posés et vérifiés par outils/chaine-zig.sh (empreinte et signature) ; plus rien
 #     de gcc, ld, musl ni mingw-w64 de la distribution dans le programme. Mesuré à la 0.91.0 (CONTRIBUTING.md,
@@ -57,6 +58,23 @@ done < <(compgen -e | grep -E '^((TARGET_|HOST_)?(CC|CXX|AR|RANLIB|CFLAGS|CXXFLA
 CHAINE=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
 [[ $(rustc --version) == "rustc $CHAINE "* ]] ||
   { echo "rustc n'est pas celui de rust-toolchain.toml ($CHAINE) : $(rustc --version)" >&2; exit 1; }
+# cargo-auditable : celui de la CI (.github/workflows/ci.yml), vérifié ici et non plus seulement par
+# outils/deployer.sh ; un autre écrirait une autre liste des dépendances, donc un autre programme. Celui que cargo
+# prendra (son dossier de programmes d'abord), sa version lue dans le programme même (outils/chaine-c.sh). Posé
+# autrement que par cargo install (la CI le prend déjà compilé, à la version de ci.yml), elle peut ne pas s'y lire :
+# c'est dit, sans refus ; une autre version est refusée.
+AUDITABLE_CI=$(sed -n 's/.*cargo-auditable@\([0-9][0-9.]*\).*/\1/p' .github/workflows/ci.yml | head -1)
+[[ -n $AUDITABLE_CI ]] || { echo "version de cargo-auditable introuvable dans .github/workflows/ci.yml" >&2; exit 1; }
+AUDITABLE=$(PATH="$CARGO_DOSSIER/bin:$PATH" bash outils/chaine-c.sh | sed -n 's/^cargo-auditable=//p')
+case $AUDITABLE in
+  "$AUDITABLE_CI") ;;
+  inconnue) echo "cargo-auditable : version non lue dans le programme, non vérifiée ici (la CI : $AUDITABLE_CI)." >&2 ;;
+  *)
+    echo "cargo-auditable ${AUDITABLE:-absent} ici, $AUDITABLE_CI dans la CI : une autre liste des dépendances, un autre" \
+      "programme. cargo install cargo-auditable --locked --version $AUDITABLE_CI" >&2
+    exit 1
+    ;;
+esac
 # La chaîne C : zig et cargo-zigbuild épinglés, vérifiés à chaque compilation (outils/chaine-zig.sh), en tête du
 # PATH, devant le dossier des programmes de cargo (que cargo, sinon, regarde en premier pour ses sous-commandes).
 ZIG_BIN=$(bash outils/chaine-zig.sh)
