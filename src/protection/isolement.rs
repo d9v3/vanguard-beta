@@ -1245,6 +1245,34 @@ mod tests {
         }
     }
 
+    /// F1 : le modèle de menace dit, dans les deux langues, que le trafic des machines virtuelles peut échapper à
+    /// l'isolement : pontées en L2 sous Linux (sans `br_netfilter`), Hyper-V et WSL2 sous Windows.
+    #[test]
+    fn les_machines_virtuelles_hors_isolement_sont_dites() {
+        for (page, liste, mots) in [
+            (
+                "MODELE-DE-MENACE.md",
+                "Ce qui passe encore pendant l'isolement",
+                ["pontée au niveau 2", "macvtap", "`br_netfilter`", "Hyper-V, WSL2"],
+            ),
+            (
+                "MODELE-DE-MENACE.en.md",
+                "What still gets through during the isolation",
+                ["bridged at layer 2", "macvtap", "`br_netfilter`", "Hyper-V, WSL2"],
+            ),
+        ] {
+            let texte = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(page)).unwrap();
+            let debut = texte
+                .find(liste)
+                .unwrap_or_else(|| panic!("{page} : « {liste} » introuvable"));
+            let partie = &texte[debut..];
+            let partie = &partie[..partie.find("\n\n").unwrap_or(partie.len())];
+            for mot in mots {
+                assert!(partie.contains(mot), "{page} : {mot}");
+            }
+        }
+    }
+
     #[test]
     fn tunnels_de_linux() {
         assert!(tunnel_linux(65534, false));

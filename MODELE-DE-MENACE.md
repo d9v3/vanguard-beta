@@ -236,6 +236,10 @@ Options de défense.
   - Sous Linux, un `restart` ou un `reload` de nftables remet la table (son unité suit nftables) ; un `systemctl stop
     nftables` ou un `nft flush ruleset` d'un administrateur la retire jusqu'au prochain démarrage, et le bandeau dit
     encore « isolé ».
+  - Sous Linux, une machine virtuelle pontée au niveau 2 (réseau « bridged », macvtap, pont relié à la carte réseau)
+    n'est pas filtrée par l'isolement : ses trames sont commutées sans passer par les crochets IP de l'ordinateur, sauf
+    si `br_netfilter` est actif, ce qui n'est pas le réglage par défaut. Elle garde tout son réseau pendant que
+    l'ordinateur est isolé ; une machine virtuelle ou un conteneur routés (NAT de libvirt, Docker) sont coupés.
   - Sous Windows, le pare-feu ne bloque, vers une adresse gardée, que TCP, UDP et ICMP (les autres protocoles vers elle
     passent) ; une connexion entrante depuis le port 443 d'un serveur de Vanguard n'est pas refusée (Windows ne
     distingue pas une connexion établie) ; le canal UDP de RDP n'est pas gardé (RDP retombe sur TCP) ; les messages

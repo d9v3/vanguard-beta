@@ -226,6 +226,10 @@ Defense options.
   - On Linux, a `restart` or `reload` of nftables sets the table again (its unit follows nftables); an administrator's
     `systemctl stop nftables` or `nft flush ruleset` removes it until the next boot, and the banner still says
     “isolated”.
+  - On Linux, a virtual machine bridged at layer 2 (“bridged” network, macvtap, bridge tied to the network card) is not
+    filtered by the isolation: its frames are switched without going through the computer's IP hooks, unless
+    `br_netfilter` is active, which is not the default. It keeps its whole network while the computer is isolated; a
+    routed virtual machine or container (libvirt NAT, Docker) is cut.
   - On Windows, the firewall blocks, to a kept address, only TCP, UDP and ICMP (other protocols to it get through); an
     inbound connection from port 443 of a Vanguard server is not refused (Windows does not tell an established
     connection apart); RDP's UDP channel is not kept (RDP falls back to TCP); a kept session's ICMPv4 error messages
