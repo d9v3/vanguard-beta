@@ -404,9 +404,9 @@ nomenclatures() {
 }
 
 # Les protections des programmes, lues dans leurs en-têtes par vanguard deploiement verifier-binaire
-# (src/deploiement/binaire.rs), sans les lancer : toujours le programme Linux de ce code-ci (compilé en débogage, déjà
-# fait par les tests : mêmes réglages d'édition des liens que celui qu'on publie, static-pie de musl, voir
-# .cargo/config.toml), et les programmes de publication (Linux, Windows) quand ce sont ceux de ce commit (repère de
+# (src/deploiement/binaire.rs), sans les lancer : toujours le programme Linux de ce code-ci (compilé en débogage par
+# musl-gcc, déjà fait par les tests : static-pie de musl, comme celui qu'on publie, lié lui par zig, build.rs), et les
+# programmes de publication (Linux, Windows) quand ce sont ceux de ce commit (repère de
 # outils/compiler-version.sh : même commit, arbre propre, mêmes empreintes). Sinon c'est dit, sans se dire sautée :
 # une étape sautée à chaque passe sans compilation de version ferait échouer pour toujours le passage complet, et des
 # programmes d'un autre commit donneraient un vert ou un rouge qui n'est pas celui de ce code. deployer.sh,

@@ -212,7 +212,10 @@ The judgment is written separately (`juger_…`, reading nothing from the system
 ## Build, test, deploy
 
 Requirements: `rustup target add x86_64-unknown-linux-musl x86_64-pc-windows-gnu`, `musl` (musl-gcc), `mingw-w64-gcc`
-and `clang`: ring (TLS) compiles a little C for each target, and so does YARA-X, the tests' oracle. To deploy, also
+and `clang`: ring (TLS) compiles a little C for each target, and so does YARA-X, the tests' oracle. Published
+programs, however, are built by zig ("Reproducible build", below): `outils/compiler-version.sh` installs it itself,
+without root; from the distribution it only takes windres (`mingw-w64-binutils`, and the MinGW gcc for its
+preprocessor). To deploy, also
 `cargo install cargo-auditable --locked --version 0.7.7` and `cargo install cargo-audit --locked --version 0.22.2`,
 the versions of the CI (`.github/workflows/ci.yml`): `deployer.sh` embeds in each program the list of its
 dependencies, versions included (`cargo auditable build`), then looks for known vulnerabilities in it
@@ -306,15 +309,24 @@ PE header and lays out sections differently, and the mingw-w64 library (14.0.0 v
 another C runtime for the same `-lmsvcrt` from rustc: the UCRT DLLs (`api-ms-win-crt-*`) here, `msvcrt.dll` in CI;
 the MinGW gcc differs too (16.2.0 versus 13.2.0). For Linux (CI does not keep its program): gcc, through musl-gcc,
 leaves its name and version in the `.comment` section (16.2.1 here, Ubuntu's 15.2.0), and ld and musl differ too
-(2.47 versus 2.46, 1.2.6 versus 1.2.5). These tools are recorded on both sides by `outils/chaine-c.sh` (build marker,
-`OUTILS-VANGUARD` lines of the CI log), and `outils/publier-version.sh` shows those that differ. Only the same C
-toolchain, pinned on both sides, will give the same bytes; this is not done yet. CI writes the fingerprint of its builds in its log (`EMPREINTE-VANGUARD-LINUX`,
-`-WINDOWS`), to compare with `SHA256SUMS.txt`; `outils/publier-version.sh` takes those of a master run on the built commit, or on
-a later commit that only changes files that are never compiled (screenshots, social preview, features page: the
-closed list `HORS_COMPILATION`), in a straight line, without a merge and as plain files, and then says so in the notes and in the
-signed history. They are not
-yet the same as the author's computer's while these tools
-differ (Arch versus Ubuntu). Until then, `outils/publier-version.sh` refuses to publish: it needs the override
+(2.47 versus 2.46, 1.2.6 versus 1.2.5). Since then, the C toolchain is pinned, the same on both sides:
+`outils/chaine-zig.sh` installs zig 0.17.0, downloaded from ziglang.org and checked by its SHA-256 fingerprint and by
+its minisign signature (zig's public key in `outils/zig-minisign.pub`), and cargo-zigbuild 0.24.0
+(`cargo install --locked`, its package's fingerprint checked), without root, in `~/.cache/vanguard-dev/chaine-zig` or
+in CI's temporary folder; it refuses any file with another fingerprint. `outils/compiler-version.sh` then builds both
+targets with `cargo zigbuild`, which makes zig the C compiler (ring, blake3) and the linker, with its own musl for
+Linux and its own mingw-w64 for Windows. The .exe imports the UCRT C runtime (`api-ms-win-crt-*`), shipped with
+Windows 10 and 11 without a redistributable, rather than `msvcrt.dll`, the old runtime kept for compatibility.
+Measured on November 8, 2026: the same commit built this way in two different folders, with two zig installations,
+gives two identical programs, Linux and Windows alike. Only windres (the .exe's icon and manifest) still comes from
+the distribution. These tools (rustc, zig, cargo-zigbuild, windres and its preprocessor) are recorded on both sides by
+`outils/chaine-c.sh` (build marker, `OUTILS-VANGUARD` lines of the CI log), and `outils/publier-version.sh` shows
+those that differ. CI writes the fingerprint of its builds in its log (`EMPREINTE-VANGUARD-LINUX`, `-WINDOWS`), to
+compare with `SHA256SUMS.txt`; `outils/publier-version.sh` takes those of a master run on the built commit, or on an
+earlier or later commit that only changes files that are never compiled (screenshots, social preview, features page:
+the closed list `HORS_COMPILATION`), in a straight line, without a merge and as plain files, and then says so in the
+notes and in the signed history. If they differ from the author's computer's, `outils/publier-version.sh` refuses to
+publish: it needs the override
 `VANGUARD_PUBLIER_SANS_EMPREINTES_CI=1`, which is stated on the release page (notes, in French and English) and in the
 signed version history (`historique.txt`, line `passe-droit-sans-empreintes-ci`, likewise `passe-droit-sans-vm` for
 `VANGUARD_PUBLIER_SANS_VM=1`); a version published that way was not checked against CI.

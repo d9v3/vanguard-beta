@@ -45,7 +45,8 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   `unsafe` qui touchent la mémoire de Vanguard (liste dans le script), Kani sur trois lecteurs (`outils/preuves/`).
   À relancer après avoir touché à l'un d'eux.
 - Chaîne Rust épinglée (`rust-toolchain.toml`, à monter à la main après un verifier.sh vert) ; programmes publiés
-  compilés par `outils/compiler-version.sh` (chemins retirés : deux dossiers, même programme).
+  compilés par `outils/compiler-version.sh` (chemins retirés : deux dossiers, même programme), chaîne C épinglée :
+  zig et cargo-zigbuild posés et vérifiés par `outils/chaine-zig.sh` (sha256 + minisign).
 - Tests Windows sous Wine (pas de PowerShell sous Wine ; le registre, lui, marche ; sans le bus système, les disques
   montés, dont la vraie clé, ne deviennent pas des lecteurs du préfixe) :
   `DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent WINEPREFIX=<dossier jetable> WINEDEBUG=-all CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=~/.local/share/Steam/compatibilitytools.d/GE-Proton11-9-x86_64/files/bin/wine cargo test --target x86_64-pc-windows-gnu`

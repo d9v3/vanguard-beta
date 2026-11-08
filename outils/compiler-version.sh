@@ -2,26 +2,29 @@
 # Compile les deux programmes publiés d'ici (Linux statique musl, Windows MinGW), toujours de la même façon :
 # outils/deployer.sh avant chaque déploiement, la CI pour sa compilation reproductible (.github/workflows/ci.yml), et
 # quiconque veut refaire un programme publié à partir de son étiquette. Une seule recette, pour que deux compilations
-# du même code donnent les mêmes octets :
+# du même code donnent les mêmes octets, ici (Arch) comme dans la CI (Ubuntu) :
 #   - la chaîne Rust de rust-toolchain.toml (rustup la pose d'elle-même), cargo-auditable dans la version de la CI ;
+#   - la chaîne C épinglée, la même sur tous les systèmes : zig (compilateur C, éditeur de liens, musl, mingw-w64 et
+#     leur runtime) et cargo-zigbuild, posés et vérifiés par outils/chaine-zig.sh (empreinte et signature) ; plus rien
+#     de gcc, ld, musl ni mingw-w64 de la distribution dans le programme. Mesuré à la 0.91.0 (CONTRIBUTING.md,
+#     « Compilation reproductible ») : c'étaient eux qui faisaient différer les empreintes d'Arch et d'Ubuntu, jusqu'au
+#     runtime C du .exe (msvcrt.dll sous Ubuntu, UCRT sous Arch). Avec zig, le .exe importe l'UCRT (les DLL
+#     api-ms-win-crt-*, livrées avec Windows 10 et 11, sans redistribuable). Seul reste de la distribution
+#     x86_64-w64-mingw32-windres (et son préprocesseur), qui fait les ressources du .exe (icône, version, manifeste) ;
+#     relevé avec les autres outils (outils/chaine-c.sh) ;
 #   - Cargo.lock tel quel (--locked) ;
 #   - les chemins de la compilation retirés des programmes : le dossier du dépôt devient /vanguard et celui de cargo
 #     (CARGO_HOME, bibliothèques téléchargées) /cargo. Sans cela, ils gardent /home/<compte>/… ou /home/runner/…, et
 #     le même code compilé dans deux dossiers donne deux programmes (et un nom de compte publié avec chaque version).
 #     RUSTFLAGS remplace les rustflags d'un ~/.cargo/config.toml personnel : seuls ceux-ci comptent ;
 #   - la date gravée est celle du code (outils/date-du-code.sh, par SOURCE_DATE_EPOCH que lit build.rs), jamais
-#     l'heure de la compilation ; l'éditeur de liens de MinGW
-#     n'écrit pas l'heure dans l'en-tête PE (--no-insert-timestamp, build.rs).
-# Ce qui diffère encore d'un ordinateur à l'autre, et que cette recette ne fixe pas (mesuré à la 0.91.0, Arch ici
-# contre Ubuntu 26.04 dans la CI : même rustc, empreintes différentes) : la chaîne C de la distribution. gcc (par
-# musl-gcc) et ld, qui compilent le C de ring et de blake3 et lient le programme Linux ; gcc, ld et la bibliothèque
-# mingw-w64 de MinGW, qui font de même pour le .exe et choisissent son runtime C (msvcrt.dll sous Ubuntu, UCRT sous
-# Arch). YARA-X n'y entre plus : c'est l'oracle des tests. Ces outils sont relevés dans le repère (outils/chaine-c.sh,
-# lignes « outil … »), comme la CI les écrit dans son journal. Le détail de la mesure : CONTRIBUTING.md, section
-# « Compilation reproductible ».
+#     l'heure de la compilation ; l'éditeur de liens de zig n'écrit pas l'heure dans l'en-tête PE (-Brepro,
+#     build.rs) ;
+#   - le cache de zig (la bibliothèque C, compiler-rt, le C de ring et de blake3 compilés) est neuf à chaque
+#     compilation et retiré après : rien d'une compilation d'avant, ni d'un autre worktree, n'entre dans celle-ci.
 # Le repère de la compilation, target/.compilation : le commit compilé, si l'arbre du programme était propre (aucun
 # changement non commité ni fichier non suivi dans ce que le programme intègre), l'empreinte SHA-256 des deux
-# programmes, relevée à la sortie de cargo, puis les outils de la chaîne C (pour dire, à la publication, lesquels
+# programmes, relevée à la sortie de cargo, puis les outils de la chaîne (pour dire, à la publication, lesquels
 # diffèrent de ceux de la CI ; ils ne décident rien). outils/publier-version.sh et outils/deployer.sh n'envoient que ces
 # octets-là : un target/ partagé avec les worktrees, une compilation ordinaire ou un fichier modifié le temps d'une
 # compilation ne partent plus signés (campagne d'attaque n° 3).
@@ -35,8 +38,13 @@ CARGO_DOSSIER=$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd)
 # l'ANSSI) : un autre compilateur que celui de rust-toolchain.toml, un programme intercalé, des options qui passent
 # avant RUSTFLAGS, les mêmes réglages sous leur nom de configuration (CARGO_BUILD_…), un profil release changé
 # (CARGO_PROFILE_…), un autre éditeur de liens (CARGO_TARGET_…_LINKER). cargo auditable pose lui-même son
-# intercalaire, après ceci.
+# intercalaire, après ceci. De même pour cargo-zigbuild et zig : un autre zig (CARGO_ZIGBUILD_ZIG_…, ou le paquet
+# Python ziglang, que cargo-zigbuild essaie avant tout autre), une autre bibliothèque de zig (ZIG_LIB_DIR), un autre
+# cache ; tous reposés plus bas.
 unset RUSTUP_TOOLCHAIN RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER CARGO_ENCODED_RUSTFLAGS
+while read -r variable; do
+  unset "$variable"
+done < <(compgen -e | grep -E '^(CARGO_ZIGBUILD_|ZIG_)' || true)
 while read -r variable; do
   unset "$variable"
 done < <(compgen -e | grep -E '^CARGO_(BUILD_|PROFILE_|TARGET_[A-Z0-9_]+_(LINKER|RUSTFLAGS|RUNNER)$)' || true)
@@ -44,11 +52,26 @@ done < <(compgen -e | grep -E '^CARGO_(BUILD_|PROFILE_|TARGET_[A-Z0-9_]+_(LINKER
 # Les CFLAGS de chaque cible sont reposés plus bas.
 while read -r variable; do
   unset "$variable"
-done < <(compgen -e | grep -E '^((TARGET_|HOST_)?(CC|CXX|AR|CFLAGS|CXXFLAGS|CRATE_CC_NO_DEFAULTS))(_.+)?$' || true)
+done < <(compgen -e | grep -E '^((TARGET_|HOST_)?(CC|CXX|AR|RANLIB|CFLAGS|CXXFLAGS|CRATE_CC_NO_DEFAULTS))(_.+)?$' || true)
 # Une chaîne posée pour ce dossier (rustup override) passe aussi avant rust-toolchain.toml : refusée.
 CHAINE=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
 [[ $(rustc --version) == "rustc $CHAINE "* ]] ||
   { echo "rustc n'est pas celui de rust-toolchain.toml ($CHAINE) : $(rustc --version)" >&2; exit 1; }
+# La chaîne C : zig et cargo-zigbuild épinglés, vérifiés à chaque compilation (outils/chaine-zig.sh), en tête du
+# PATH, devant le dossier des programmes de cargo (que cargo, sinon, regarde en premier pour ses sous-commandes).
+ZIG_BIN=$(bash outils/chaine-zig.sh)
+export PATH="$ZIG_BIN:$CARGO_DOSSIER/bin:$PATH"
+[[ $(command -v cargo-zigbuild) == "$ZIG_BIN/cargo-zigbuild" && $(command -v zig) == "$ZIG_BIN/zig" ]] ||
+  { echo "zig ou cargo-zigbuild pris ailleurs que dans $ZIG_BIN" >&2; exit 1; }
+# Ce zig-là et aucun autre : la commande donnée tout de suite (cargo-zigbuild ne cherche alors ni Python ni le PATH).
+export CARGO_ZIGBUILD_ZIG_COMMAND=$ZIG_BIN/zig CARGO_ZIGBUILD_ZIG_PATH=$ZIG_BIN/zig
+export CARGO_ZIGBUILD_PYTHON_PATH=/nonexistent/python3
+mkdir -p "${CARGO_TARGET_DIR:-target}"
+ZIG_CACHE=$(mktemp -d "${CARGO_TARGET_DIR:-target}/cache-zig.XXXXXX")
+ZIG_CACHE=$(cd "$ZIG_CACHE" && pwd -P)
+trap 'rm -rf "$ZIG_CACHE"' EXIT
+export ZIG_GLOBAL_CACHE_DIR=$ZIG_CACHE/global ZIG_LOCAL_CACHE_DIR=$ZIG_CACHE/local
+export CARGO_ZIGBUILD_CACHE_DIR=${ZIG_BIN%/bin}/enveloppes
 export RUSTFLAGS="--remap-path-prefix=$RACINE=/vanguard --remap-path-prefix=$CARGO_DOSSIER=/cargo"
 # Le C (ring) : ses chemins aussi, pour les messages d'assertion qu'il garde même dans un programme allégé.
 for cible in x86_64_unknown_linux_musl x86_64_pc_windows_gnu; do
@@ -71,7 +94,7 @@ if [[ $COMMIT != inconnu && -z $(git status --porcelain -- src build.rs assets C
   rust-toolchain.toml 2>/dev/null) ]]; then
   PROPRE=oui
 fi
-cargo auditable build --release --locked --target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu "$@"
+cargo auditable zigbuild --release --locked --target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu "$@"
 # Relu après : un fichier changé pendant la compilation la rend douteuse.
 [[ $PROPRE == oui && $(git rev-parse HEAD) == "$COMMIT" && -z $(git status --porcelain -- src build.rs assets \
   Cargo.toml Cargo.lock .cargo rust-toolchain.toml 2>/dev/null) ]] || PROPRE=non

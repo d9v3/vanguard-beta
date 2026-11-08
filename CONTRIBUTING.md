@@ -212,7 +212,10 @@ Le jugement s'écrit à part (`juger_…`, sans rien lire du système), pour se 
 ## Compiler, tester, déployer
 
 Prérequis : `rustup target add x86_64-unknown-linux-musl x86_64-pc-windows-gnu`, `musl` (musl-gcc), `mingw-w64-gcc` et
-`clang` : ring (TLS) compile un peu de C pour chaque cible, et YARA-X aussi, l'oracle des tests. Pour déployer, aussi
+`clang` : ring (TLS) compile un peu de C pour chaque cible, et YARA-X aussi, l'oracle des tests. Les programmes
+publiés, eux, sont compilés par zig (« Compilation reproductible », plus bas) : `outils/compiler-version.sh` le pose
+lui-même, sans root ; de la distribution, il ne prend que windres (`mingw-w64-binutils`, et le gcc de MinGW pour son
+préprocesseur). Pour déployer, aussi
 `cargo install cargo-auditable --locked --version 0.7.7` et `cargo install cargo-audit --locked --version 0.22.2`, les
 versions de la CI (`.github/workflows/ci.yml`) : `deployer.sh` grave dans chaque programme la liste de ses
 dépendances, versions comprises (`cargo auditable build`), puis y cherche les failles connues
@@ -307,14 +310,24 @@ sections, et la bibliothèque mingw-w64 (14.0.0 contre 13.0.0) fait importer au 
 `-lmsvcrt` de rustc : les DLL UCRT (`api-ms-win-crt-*`) ici, `msvcrt.dll` dans la CI ; le gcc de MinGW diffère aussi
 (16.2.0 contre 13.2.0). Pour Linux (la CI n'en garde pas le programme) : gcc, par musl-gcc, laisse son nom et sa
 version dans la section `.comment` (16.2.1 ici, 15.2.0 d'Ubuntu), ld et musl diffèrent aussi (2.47 contre 2.46,
-1.2.6 contre 1.2.5). Ces outils sont relevés des deux côtés par `outils/chaine-c.sh` (repère de la compilation,
-lignes `OUTILS-VANGUARD` du journal de la CI), et `outils/publier-version.sh` montre ceux qui diffèrent. Seule la même
-chaîne C, épinglée des deux côtés, donnera les mêmes octets ; ce n'est pas encore fait. La CI écrit l'empreinte de ses compilations dans son journal (`EMPREINTE-VANGUARD-LINUX`, `-WINDOWS`), à
-comparer à `SHA256SUMS.txt` ; `outils/publier-version.sh` prend celles d'une exécution de master sur le commit
-compilé, ou sur un commit d'après qui ne change que des fichiers jamais compilés (captures d'écran, image de partage,
-page des fonctions : la liste fermée `HORS_COMPILATION`), en ligne droite, sans fusion et en fichiers ordinaires, et le dit alors
-dans les notes et dans l'historique signé. Elles ne sont pas encore les mêmes que celles de l'ordinateur de l'auteur tant que ces
-outils diffèrent (Arch contre Ubuntu). D'ici là, `outils/publier-version.sh` refuse de publier : il faut le passe-droit
+1.2.6 contre 1.2.5). Depuis, la chaîne C est épinglée, la même des deux côtés : `outils/chaine-zig.sh` pose zig
+0.17.0, téléchargé sur ziglang.org et vérifié par son empreinte SHA-256 et par sa signature minisign (clé publique de
+zig dans `outils/zig-minisign.pub`), et cargo-zigbuild 0.24.0 (`cargo install --locked`, empreinte de son paquet
+vérifiée), sans root, dans `~/.cache/vanguard-dev/chaine-zig` ou dans le dossier temporaire de la CI ; il refuse tout
+fichier d'une autre empreinte. `outils/compiler-version.sh` compile alors les deux cibles par `cargo zigbuild`, qui
+fait de zig le compilateur C (ring, blake3) et l'éditeur de liens, avec sa propre musl pour Linux et sa propre
+mingw-w64 pour Windows. Le .exe importe le runtime C UCRT (`api-ms-win-crt-*`), fourni par Windows 10 et 11 sans
+redistribuable, plutôt que `msvcrt.dll`, l'ancien runtime gardé pour la compatibilité. Mesuré le 8 novembre 2026 : le
+même commit compilé ainsi dans deux dossiers différents, avec deux installations de zig, donne deux programmes
+identiques, Linux comme Windows. Seul windres (icône et manifeste du .exe) vient encore de la distribution. Ces outils
+(rustc, zig, cargo-zigbuild, windres et son préprocesseur) sont relevés des deux côtés par `outils/chaine-c.sh`
+(repère de la compilation, lignes `OUTILS-VANGUARD` du journal de la CI), et `outils/publier-version.sh` montre ceux
+qui diffèrent. La CI écrit l'empreinte de ses compilations dans son journal (`EMPREINTE-VANGUARD-LINUX`, `-WINDOWS`),
+à comparer à `SHA256SUMS.txt` ; `outils/publier-version.sh` prend celles d'une exécution de master sur le commit
+compilé, ou sur un commit d'avant ou d'après qui ne change que des fichiers jamais compilés (captures d'écran, image
+de partage, page des fonctions : la liste fermée `HORS_COMPILATION`), en ligne droite, sans fusion et en fichiers
+ordinaires, et le dit alors dans les notes et dans l'historique signé. Si elles diffèrent de celles de l'ordinateur de
+l'auteur, `outils/publier-version.sh` refuse de publier : il faut le passe-droit
 `VANGUARD_PUBLIER_SANS_EMPREINTES_CI=1`, qui est dit sur la page de la version (notes, en français et en anglais) et
 dans l'historique signé des versions (`historique.txt`, ligne `passe-droit-sans-empreintes-ci`, de même
 `passe-droit-sans-vm` pour `VANGUARD_PUBLIER_SANS_VM=1`) ; une version publiée ainsi n'a pas été confrontée à la CI.

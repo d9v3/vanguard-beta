@@ -17,6 +17,23 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         ressources_windows();
     }
+    // Le programme Linux statique reste « static-pie » (adresses tirées au hasard, comme avec l'éditeur de liens de
+    // musl-gcc, que rustc demande par -static-pie) : zig cc ignore -static-pie (« argument unused ») et ferait un
+    // programme statique à adresses fixes, que `vanguard deploiement verifier-binaire` refuse (PIE absent). -pie le
+    // lui demande : vérifié avec zig 0.17.0 (ELF DYN, FLAGS_1 NOW PIE, sans interpréteur ni bibliothèque).
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("musl") && par_zig() {
+        println!("cargo:rustc-link-arg=-pie");
+    }
+}
+
+/// Vrai quand cargo-zigbuild compile cette cible (outils/compiler-version.sh, les programmes publiés) : l'éditeur de
+/// liens est alors celui de zig (lld), et non celui de la distribution. cargo-zigbuild se signale par
+/// CARGO_ZIGBUILD_TARGET_<cible>, qu'il pose pour chaque cible.
+fn par_zig() -> bool {
+    std::env::var("TARGET")
+        .map(|cible| format!("CARGO_ZIGBUILD_TARGET_{}", cible.replace('-', "_")))
+        .inspect(|nom| println!("cargo:rerun-if-env-changed={nom}"))
+        .is_ok_and(|nom| std::env::var_os(nom).is_some())
 }
 
 /// Date du dernier commit, pour « cette copie a N mois » (src/protection/manifeste.rs) : jamais l'horloge, pour qu'un
@@ -382,17 +399,38 @@ fn ressources_windows() {
         );
         println!("cargo:warning=ressources Windows non intégrées : {e}");
     }
-    // L'éditeur de liens de MinGW écrit l'heure de la compilation dans l'en-tête PE : sans elle, un même code donne le
-    // même .exe (travail « reproductible » de la CI). Ici et non dans les rustflags de la cible, qui remplaceraient
-    // ceux de [build] (--remap-path-prefix).
+    // L'éditeur de liens écrit l'heure de la compilation dans l'en-tête PE : sans elle, un même code donne le même .exe
+    // (travail « reproductible » de la CI). Ici et non dans les rustflags de la cible, qui remplaceraient ceux de
+    // [build] (--remap-path-prefix).
+    // Deux éditeurs de liens : celui de MinGW (ld de binutils : tests, clippy, outils/verifier.sh) et celui de zig
+    // (lld, par cargo-zigbuild : les programmes publiés, outils/compiler-version.sh), qui refuse les options de ld
+    // ci-dessous.
+    let zig = par_zig();
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {
-        println!("cargo:rustc-link-arg=-Wl,--no-insert-timestamp");
+        // lld : -Brepro met à la place de l'heure une empreinte du contenu (et rend déterministe l'identifiant de
+        // l'en-tête de débogage).
+        println!(
+            "cargo:rustc-link-arg={}",
+            if zig {
+                "-Wl,-Brepro"
+            } else {
+                "-Wl,--no-insert-timestamp"
+            }
+        );
         // La garde contre une DLL posée à côté du programme (src/machine/windows/chargement.rs) n'est référencée par
         // aucun code : `#[used]` ne suffit pas toujours, et l'éditeur de liens jetait sa section dans certains
         // découpages de la compilation (vu le 21 oct. : programme sans « Load Config »). Exigée ici, elle reste, et
         // son absence fait échouer la compilation au lieu de passer en silence. Le programme seulement : les tests
-        // d'intégration n'ont pas ce module.
-        println!("cargo:rustc-link-arg-bins=-Wl,--require-defined=_load_config_used");
+        // d'intégration n'ont pas ce module. lld n'a pas --require-defined, mais son -u (/INCLUDE) fait la même chose :
+        // un symbole absent arrête l'édition des liens (vérifié avec zig 0.17.0 : « undefined symbol »).
+        println!(
+            "cargo:rustc-link-arg-bins={}",
+            if zig {
+                "-Wl,-u,_load_config_used"
+            } else {
+                "-Wl,--require-defined=_load_config_used"
+            }
+        );
     }
     // La pile du fil principal : 1 Mio d'origine avec MSVC, 2 avec MinGW. Le programme de mise au point (sans
     // optimisation) dépassait 1 Mio dès la lecture des arguments (STATUS_STACK_OVERFLOW, tests d'intégration de la

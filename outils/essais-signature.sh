@@ -558,11 +558,12 @@ JSON
   # Ce que chaine-c.sh écrit (repère d'ici, journal de la CI) : les mêmes noms dans le même ordre, des valeurs aux
   # seuls caractères sûrs, même d'un outil qui écrit des caractères de terminal ; et compiler-version.sh les garde.
   mkdir -p "$T/faux-cc"
-  printf '#!/bin/sh\nprintf "\\033]0;titre\\007cc (essai) 1.0\\n"\n' >"$T/faux-cc/cc"
-  chmod +x "$T/faux-cc/cc"
+  printf '#!/bin/sh\nprintf "\\033]0;titre\\007windres (essai) 1.0\\n"\n' >"$T/faux-cc/x86_64-w64-mingw32-windres"
+  chmod +x "$T/faux-cc/x86_64-w64-mingw32-windres"
   r=$(PATH="$T/faux-cc:$PATH" bash "$DEPOT/outils/chaine-c.sh")
-  [[ $(cut -d= -f1 <<<"$r" | tr '\n' ' ') == "rustc cc ld musl-gcc musl mingw-gcc mingw-fils mingw-ld mingw-w64 mingw-runtime " &&
-    -z $(grep -vE '^[a-z0-9-]+=[A-Za-z0-9 ._:+()/,~-]{1,120}$' <<<"$r") && $r == *$'\n'"cc=0titrecc (essai) 1.0"$'\n'* ]] &&
+  [[ $(cut -d= -f1 <<<"$r" | tr '\n' ' ') == "rustc zig cargo-zigbuild windres windres-cpp " &&
+    -z $(grep -vE '^[a-z0-9-]+=[A-Za-z0-9 ._:+()/,~-]{1,120}$' <<<"$r") &&
+    $r == *$'\n'"windres=0titrewindres (essai) 1.0"$'\n'* ]] &&
     grep -qF "bash outils/chaine-c.sh | sed 's/^/outil /'" "$DEPOT/outils/compiler-version.sh" &&
     grep -qF "bash outils/chaine-c.sh | sed 's/^/OUTILS-VANGUARD /'" "$DEPOT/.github/workflows/ci.yml" &&
     ok "chaine-c.sh : outils de compilation relevés sous une forme sûre, dans le repère et dans le journal de la CI" ||
