@@ -223,6 +223,9 @@ Defense options.
     (checking the program before copying it is a separate batch).
   - Sessions Vanguard does not recognize are cut: mosh (which goes on over UDP), and a session that goes through IPsec
     without an interface (ESP and IKE are not kept).
+  - On Linux, a `restart` or `reload` of nftables sets the table again (its unit follows nftables); an administrator's
+    `systemctl stop nftables` or `nft flush ruleset` removes it until the next boot, and the banner still says
+    “isolated”.
   - On Windows, the firewall blocks, to a kept address, only TCP, UDP and ICMP (other protocols to it get through); an
     inbound connection from port 443 of a Vanguard server is not refused (Windows does not tell an established
     connection apart); RDP's UDP channel is not kept (RDP falls back to TCP); a kept session's ICMPv4 error messages

@@ -233,6 +233,9 @@ Options de défense.
     (vérifier le programme avant de le copier est un lot à part).
   - Les sessions que Vanguard ne reconnaît pas sont coupées : mosh (qui continue en UDP), et une session qui passe par
     IPsec sans interface (ESP et IKE ne sont pas gardés).
+  - Sous Linux, un `restart` ou un `reload` de nftables remet la table (son unité suit nftables) ; un `systemctl stop
+    nftables` ou un `nft flush ruleset` d'un administrateur la retire jusqu'au prochain démarrage, et le bandeau dit
+    encore « isolé ».
   - Sous Windows, le pare-feu ne bloque, vers une adresse gardée, que TCP, UDP et ICMP (les autres protocoles vers elle
     passent) ; une connexion entrante depuis le port 443 d'un serveur de Vanguard n'est pas refusée (Windows ne
     distingue pas une connexion établie) ; le canal UDP de RDP n'est pas gardé (RDP retombe sur TCP) ; les messages
