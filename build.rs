@@ -362,10 +362,56 @@ fn alleger_yara(texte: &str) -> String {
     sortie
 }
 
+/// Les ressources du programme publié (outils/compiler-version.sh, par cargo-zigbuild) compilées par zig rc, le
+/// compilateur de ressources fourni avec zig : plus rien de la distribution (windres de binutils et le préprocesseur
+/// du gcc de MinGW, d'une autre version sous Arch et sous Ubuntu) dans les octets du .exe. Le même fichier .rc que
+/// winresource donnerait à windres ; sans dossier d'inclusion du système (/x, /:auto-includes none), le dépôt seul
+/// (/i), en objet COFF lié comme celui de windres.
+fn compiler_ressources_zig(res: &winresource::WindowsResource) -> std::io::Result<()> {
+    println!("cargo:rerun-if-env-changed=CARGO_ZIGBUILD_ZIG_PATH");
+    let sortie = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
+    let depot = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
+    let rc = sortie.join("main_res.rc");
+    let objet = sortie.join("main_res.o");
+    res.write_resource_file(&rc)?;
+    // Le fichier commence par « #pragma code_page(65001) » (les accents de la fiche, en UTF-8), que zig rc ne prend
+    // sans avertissement qu'après une première ligne ; /c 65001 dit la même page de code dès le début.
+    let texte = std::fs::read_to_string(&rc)?;
+    std::fs::write(&rc, format!("// Ressources de vanguard.exe (build.rs)\n{texte}"))?;
+    let zig = std::env::var("CARGO_ZIGBUILD_ZIG_PATH").unwrap_or_else(|_| "zig".to_owned());
+    let etat = std::process::Command::new(zig)
+        .current_dir(&depot)
+        .args([
+            "rc",
+            "/x",
+            "/:auto-includes",
+            "none",
+            "/:target",
+            "x64",
+            "/:output-format",
+            "coff",
+            "/c",
+            "65001",
+        ])
+        .arg("/i")
+        .arg(&depot)
+        .arg("/fo")
+        .arg(&objet)
+        .arg("--")
+        .arg(&rc)
+        .status()?;
+    if !etat.success() {
+        return Err(std::io::Error::other(format!("zig rc a échoué ({etat})")));
+    }
+    println!("cargo:rustc-link-arg={}", objet.display());
+    Ok(())
+}
+
 fn ressources_windows() {
     println!("cargo:rerun-if-changed=assets/vanguard.ico");
     let mut res = winresource::WindowsResource::new();
-    // Compilation croisée depuis Linux : outils de MinGW.
+    // Compilation croisée depuis Linux : outils de MinGW (tests, clippy, outils/verifier.sh). Les programmes publiés,
+    // eux, passent par zig rc (compiler_ressources_zig).
     if !cfg!(windows) {
         res.set_windres_path("x86_64-w64-mingw32-windres");
         res.set_ar_path("x86_64-w64-mingw32-ar");
@@ -388,7 +434,12 @@ fn ressources_windows() {
   </application>
 </assembly>"#,
         );
-    if let Err(e) = res.compile() {
+    let compilees = if par_zig() {
+        compiler_ressources_zig(&res)
+    } else {
+        res.compile()
+    };
+    if let Err(e) = compilees {
         // Le programme livré doit porter son manifeste (page de code UTF-8, accents et chemins justes ; asInvoker) :
         // en version publiée, son absence arrête la compilation au lieu d'un avertissement que personne ne lit
         // (`vanguard deploiement verifier-binaire` le revérifie sur le .exe, avant qu'il parte). Les tests, eux, s'en

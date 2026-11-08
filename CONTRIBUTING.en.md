@@ -214,8 +214,7 @@ The judgment is written separately (`juger_…`, reading nothing from the system
 Requirements: `rustup target add x86_64-unknown-linux-musl x86_64-pc-windows-gnu`, `musl` (musl-gcc), `mingw-w64-gcc`
 and `clang`: ring (TLS) compiles a little C for each target, and so does YARA-X, the tests' oracle. Published
 programs, however, are built by zig ("Reproducible build", below): `outils/compiler-version.sh` installs it itself,
-without root; from the distribution it only takes windres (`mingw-w64-binutils`, and the MinGW gcc for its
-preprocessor). To deploy, also
+without root, and takes nothing from the distribution. To deploy, also
 `cargo install cargo-auditable --locked --version 0.7.7` and `cargo install cargo-audit --locked --version 0.22.2`,
 the versions of the CI (`.github/workflows/ci.yml`): `deployer.sh` embeds in each program the list of its
 dependencies, versions included (`cargo auditable build`), then looks for known vulnerabilities in it
@@ -318,8 +317,10 @@ targets with `cargo zigbuild`, which makes zig the C compiler (ring, blake3) and
 Linux and its own mingw-w64 for Windows. The .exe imports the UCRT C runtime (`api-ms-win-crt-*`), shipped with
 Windows 10 and 11 without a redistributable, rather than `msvcrt.dll`, the old runtime kept for compatibility.
 Measured on November 8, 2026: the same commit built this way in two different folders, with two zig installations,
-gives two identical programs, Linux and Windows alike. Only windres (the .exe's icon and manifest) still comes from
-the distribution. These tools (rustc, zig, cargo-zigbuild, windres and its preprocessor) are recorded on both sides by
+gives two identical programs, Linux and Windows alike. The .exe's resources (icon, version information, manifest) go
+through `zig rc` (`build.rs`) and its import libraries through `zig dlltool`: nothing from the distribution any more,
+neither windres, nor its preprocessor, nor dlltool. These tools (rustc, zig, cargo-zigbuild, cargo-auditable) are
+recorded on both sides by
 `outils/chaine-c.sh` (build marker, `OUTILS-VANGUARD` lines of the CI log), and `outils/publier-version.sh` shows
 those that differ. CI writes the fingerprint of its builds in its log (`EMPREINTE-VANGUARD-LINUX`, `-WINDOWS`), to
 compare with `SHA256SUMS.txt`; `outils/publier-version.sh` takes those of a master run on the built commit, or on an

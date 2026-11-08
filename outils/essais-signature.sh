@@ -557,13 +557,16 @@ JSON
     ko "publier : outils de compilation différents pas montrés, ou mal ($r)"
   # Ce que chaine-c.sh écrit (repère d'ici, journal de la CI) : les mêmes noms dans le même ordre, des valeurs aux
   # seuls caractères sûrs, même d'un outil qui écrit des caractères de terminal ; et compiler-version.sh les garde.
-  mkdir -p "$T/faux-cc"
-  printf '#!/bin/sh\nprintf "\\033]0;titre\\007windres (essai) 1.0\\n"\n' >"$T/faux-cc/x86_64-w64-mingw32-windres"
-  chmod +x "$T/faux-cc/x86_64-w64-mingw32-windres"
-  r=$(PATH="$T/faux-cc:$PATH" bash "$DEPOT/outils/chaine-c.sh")
-  [[ $(cut -d= -f1 <<<"$r" | tr '\n' ' ') == "rustc zig cargo-zigbuild windres windres-cpp " &&
+  # Un faux zig (le dossier de la chaîne vide : celui du PATH) et un faux cargo-auditable, qui garde le chemin de
+  # sa source comme le vrai.
+  mkdir -p "$T/faux-cc" "$T/chaine-vide"
+  printf '#!/bin/sh\nprintf "\\033]0;titre\\0070.17.0\\n"\n' >"$T/faux-cc/zig"
+  printf '#!/bin/sh\n# /cargo/registry/src/index/cargo-auditable-9.8.7/src/main.rs\n' >"$T/faux-cc/cargo-auditable"
+  chmod +x "$T/faux-cc/zig" "$T/faux-cc/cargo-auditable"
+  r=$(PATH="$T/faux-cc:$PATH" VANGUARD_CHAINE_ZIG=$T/chaine-vide bash "$DEPOT/outils/chaine-c.sh")
+  [[ $(cut -d= -f1 <<<"$r" | tr '\n' ' ') == "rustc zig cargo-zigbuild cargo-auditable " &&
     -z $(grep -vE '^[a-z0-9-]+=[A-Za-z0-9 ._:+()/,~-]{1,120}$' <<<"$r") &&
-    $r == *$'\n'"windres=0titrewindres (essai) 1.0"$'\n'* ]] &&
+    $r == *$'\n'"zig=0titre0.17.0"$'\n'* && $r == *$'\n'"cargo-auditable=9.8.7" ]] &&
     grep -qF "bash outils/chaine-c.sh | sed 's/^/outil /'" "$DEPOT/outils/compiler-version.sh" &&
     grep -qF "bash outils/chaine-c.sh | sed 's/^/OUTILS-VANGUARD /'" "$DEPOT/.github/workflows/ci.yml" &&
     ok "chaine-c.sh : outils de compilation relevés sous une forme sûre, dans le repère et dans le journal de la CI" ||

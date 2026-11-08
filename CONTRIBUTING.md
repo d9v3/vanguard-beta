@@ -214,8 +214,7 @@ Le jugement s'écrit à part (`juger_…`, sans rien lire du système), pour se 
 Prérequis : `rustup target add x86_64-unknown-linux-musl x86_64-pc-windows-gnu`, `musl` (musl-gcc), `mingw-w64-gcc` et
 `clang` : ring (TLS) compile un peu de C pour chaque cible, et YARA-X aussi, l'oracle des tests. Les programmes
 publiés, eux, sont compilés par zig (« Compilation reproductible », plus bas) : `outils/compiler-version.sh` le pose
-lui-même, sans root ; de la distribution, il ne prend que windres (`mingw-w64-binutils`, et le gcc de MinGW pour son
-préprocesseur). Pour déployer, aussi
+lui-même, sans root, et ne prend rien de la distribution. Pour déployer, aussi
 `cargo install cargo-auditable --locked --version 0.7.7` et `cargo install cargo-audit --locked --version 0.22.2`, les
 versions de la CI (`.github/workflows/ci.yml`) : `deployer.sh` grave dans chaque programme la liste de ses
 dépendances, versions comprises (`cargo auditable build`), puis y cherche les failles connues
@@ -319,8 +318,10 @@ fait de zig le compilateur C (ring, blake3) et l'éditeur de liens, avec sa prop
 mingw-w64 pour Windows. Le .exe importe le runtime C UCRT (`api-ms-win-crt-*`), fourni par Windows 10 et 11 sans
 redistribuable, plutôt que `msvcrt.dll`, l'ancien runtime gardé pour la compatibilité. Mesuré le 8 novembre 2026 : le
 même commit compilé ainsi dans deux dossiers différents, avec deux installations de zig, donne deux programmes
-identiques, Linux comme Windows. Seul windres (icône et manifeste du .exe) vient encore de la distribution. Ces outils
-(rustc, zig, cargo-zigbuild, windres et son préprocesseur) sont relevés des deux côtés par `outils/chaine-c.sh`
+identiques, Linux comme Windows. Les ressources du .exe (icône, fiche de version, manifeste) passent par `zig rc`
+(`build.rs`) et ses bibliothèques d'import par `zig dlltool` : plus rien de la distribution, ni windres, ni son
+préprocesseur, ni dlltool. Ces outils (rustc, zig, cargo-zigbuild, cargo-auditable) sont relevés des deux côtés par
+`outils/chaine-c.sh`
 (repère de la compilation, lignes `OUTILS-VANGUARD` du journal de la CI), et `outils/publier-version.sh` montre ceux
 qui diffèrent. La CI écrit l'empreinte de ses compilations dans son journal (`EMPREINTE-VANGUARD-LINUX`, `-WINDOWS`),
 à comparer à `SHA256SUMS.txt` ; `outils/publier-version.sh` prend celles d'une exécution de master sur le commit

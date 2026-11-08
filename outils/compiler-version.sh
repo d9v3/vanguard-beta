@@ -9,9 +9,9 @@
 #     de gcc, ld, musl ni mingw-w64 de la distribution dans le programme. Mesuré à la 0.91.0 (CONTRIBUTING.md,
 #     « Compilation reproductible ») : c'étaient eux qui faisaient différer les empreintes d'Arch et d'Ubuntu, jusqu'au
 #     runtime C du .exe (msvcrt.dll sous Ubuntu, UCRT sous Arch). Avec zig, le .exe importe l'UCRT (les DLL
-#     api-ms-win-crt-*, livrées avec Windows 10 et 11, sans redistribuable). Seul reste de la distribution
-#     x86_64-w64-mingw32-windres (et son préprocesseur), qui fait les ressources du .exe (icône, version, manifeste) ;
-#     relevé avec les autres outils (outils/chaine-c.sh) ;
+#     api-ms-win-crt-*, livrées avec Windows 10 et 11, sans redistribuable). Les ressources du .exe (icône, version,
+#     manifeste) passent par zig rc (build.rs) et ses bibliothèques d'import (raw-dylib) par zig dlltool : plus rien
+#     de MinGW ni de binutils de la distribution ;
 #   - Cargo.lock tel quel (--locked) ;
 #   - les chemins de la compilation retirés des programmes : le dossier du dépôt devient /vanguard et celui de cargo
 #     (CARGO_HOME, bibliothèques téléchargées) /cargo. Sans cela, ils gardent /home/<compte>/… ou /home/runner/…, et
@@ -71,7 +71,17 @@ ZIG_CACHE=$(mktemp -d "${CARGO_TARGET_DIR:-target}/cache-zig.XXXXXX")
 ZIG_CACHE=$(cd "$ZIG_CACHE" && pwd -P)
 trap 'rm -rf "$ZIG_CACHE"' EXIT
 export ZIG_GLOBAL_CACHE_DIR=$ZIG_CACHE/global ZIG_LOCAL_CACHE_DIR=$ZIG_CACHE/local
-export CARGO_ZIGBUILD_CACHE_DIR=${ZIG_BIN%/bin}/enveloppes
+# Les enveloppes de cargo-zigbuild (zig cc, ar, … par cible) : neuves elles aussi, jamais celles d'avant.
+export CARGO_ZIGBUILD_CACHE_DIR=$ZIG_CACHE/enveloppes
+# dlltool : rustc le cherche dans le PATH sous ce nom pour les bibliothèques d'import du .exe (raw-dylib de
+# windows-link), et cargo-zigbuild préfère celui de MinGW s'il en trouve un. Ici, ce nom mène à cargo-zigbuild, qui,
+# appelé ainsi, passe la main à zig dlltool (le zig ci-dessus) : celui de la distribution, s'il y en a un, n'est
+# jamais pris.
+mkdir "$ZIG_CACHE/outils"
+ln -s "$ZIG_BIN/cargo-zigbuild" "$ZIG_CACHE/outils/x86_64-w64-mingw32-dlltool"
+export PATH="$ZIG_CACHE/outils:$PATH"
+[[ $(command -v x86_64-w64-mingw32-dlltool) == "$ZIG_CACHE/outils/x86_64-w64-mingw32-dlltool" ]] ||
+  { echo "dlltool pris ailleurs que dans $ZIG_CACHE/outils" >&2; exit 1; }
 export RUSTFLAGS="--remap-path-prefix=$RACINE=/vanguard --remap-path-prefix=$CARGO_DOSSIER=/cargo"
 # Le C (ring) : ses chemins aussi, pour les messages d'assertion qu'il garde même dans un programme allégé.
 for cible in x86_64_unknown_linux_musl x86_64_pc_windows_gnu; do
