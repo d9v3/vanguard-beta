@@ -652,7 +652,7 @@ pub(crate) fn banniere() -> Option<String> {
     ))
 }
 
-/// Ce que l'élevé a répondu : la précision notée (« <ligne> (<précision>) »), ou la raison d'un échec.
+/// Ce que l'élevé a répondu : la précision notée (« `<ligne> (<précision>)` »), ou la raison d'un échec.
 fn reponse(ligne: &str, notes: &[String]) -> String {
     notes
         .iter()

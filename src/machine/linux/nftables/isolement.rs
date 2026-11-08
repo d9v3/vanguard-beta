@@ -72,7 +72,7 @@ fn nom_d_interface(nom: &[u8]) -> [u8; 16] {
     n
 }
 
-/// « ip saddr|daddr <adresse> » (ou ip6) : la famille, puis l'adresse à sa place dans l'en-tête.
+/// « `ip saddr|daddr <adresse>` » (ou ip6) : la famille, puis l'adresse à sa place dans l'en-tête.
 fn adresse(a: &mut Attributs, ip: IpAddr, source: bool) {
     meta(a, NFT_META_NFPROTO);
     match ip {
