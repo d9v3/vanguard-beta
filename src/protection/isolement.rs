@@ -970,6 +970,25 @@ fn reponse(ligne: &str, notes: &[String]) -> String {
         )
 }
 
+/// Ce qui est dit avant de demander l'accord d'isoler : ce qui passe, et ce que coûte l'isolement (il tient après un
+/// redémarrage, la connexion gardée est figée, un état perdu ne garde plus rien), puis la sortie de secours.
+pub(crate) fn avant_l_accord() -> [&'static str; 3] {
+    [
+        tr!(
+            "Tout le reste est coupé, en entrée et en sortie : navigateur, partages, autres ordinateurs du réseau. Restent la boucle locale, DHCP, le DNS en place (port 53) et les serveurs de Vanguard en HTTPS (mises à jour, listes de menaces ; ces adresses sont souvent partagées avec d'autres sites par leur hébergeur).",
+            "Everything else is cut, in and out: browser, shares, other computers on the network. What remains: loopback, DHCP, the current DNS (port 53) and Vanguard's servers over HTTPS (updates, threat lists; their host often shares these addresses with other sites)."
+        ),
+        tr!(
+            "L'isolement tient après un redémarrage. Chaque session gardée l'est par sa connexion exacte d'aujourd'hui, figée : si elle se coupe, ou après un redémarrage, elle ne peut pas revenir (une nouvelle connexion, même depuis la même adresse, est refusée) ; une session dont l'adresse change (adresse dynamique) est refusée elle aussi. Sous Linux, si l'état noté de l'isolement est perdu ou abîmé, le redémarrage isole sans plus aucune exception, session comprise.",
+            "The isolation holds after a restart. Each kept session is kept by its exact connection of today, frozen: if it drops, or after a restart, it cannot come back (a new connection, even from the same address, is refused); a session whose address changes (dynamic address) is refused as well. On Linux, if the recorded isolation state is lost or damaged, the restart isolates with no exception at all, session included."
+        ),
+        tr!(
+            "Pour le lever : « vanguard blocage annuler ». Sortie de secours, depuis la console de l'ordinateur (écran et clavier) ou la clé de secours : « vanguard blocage lever-isolement » ; sous Linux, en dernier recours, en root : « nft delete table inet vanguard_isolement » puis « systemctl disable vanguard-isolement.service » ; sous Windows : les règles « Vanguard : isolement » du Pare-feu Windows (wf.msc).",
+            "To lift it: “vanguard blocking undo”. Emergency exit, from the computer's console (screen and keyboard) or the rescue key: “vanguard blocking lift-isolation”; on Linux, as a last resort, as root: “nft delete table inet vanguard_isolement” then “systemctl disable vanguard-isolement.service”; on Windows: the “Vanguard : isolement” rules of the Windows Firewall (wf.msc)."
+        ),
+    ]
+}
+
 /// Confie un ordre de l'isolement à l'élévation (toujours : il faut les droits d'administrateur), le note au journal,
 /// et rend la précision de l'élevé, ou pourquoi rien n'a été fait.
 fn confier(
@@ -1055,15 +1074,9 @@ pub fn isoler_avec_accord() {
     };
     println!();
     afficher_aligne("  ", &o.texte(), 2, GRAS);
-    afficher_aligne(
-        "    ",
-        tr!(
-            "Tout le reste est coupé, en entrée et en sortie : navigateur, partages, autres ordinateurs du réseau. Restent la boucle locale, DHCP, le DNS en place et les serveurs de Vanguard en HTTPS (mises à jour, listes de menaces). Se lève par « vanguard blocage annuler ».",
-            "Everything else is cut, in and out: browser, shares, other computers on the network. What remains: loopback, DHCP, the current DNS and Vanguard's servers over HTTPS (updates, threat lists). Lifted with “vanguard blocking undo”."
-        ),
-        4,
-        GRIS,
-    );
+    for t in avant_l_accord() {
+        afficher_aligne("    ", t, 4, GRIS);
+    }
     if !demander(tr!("\n  Isoler maintenant ? [o/N] : ", "\n  Isolate now? [y/N]: ")).oui() {
         trp!("  Rien n'a été fait.", "  Nothing was done.");
         return;
@@ -1197,6 +1210,24 @@ mod tests {
             juger(&[sg("192.0.2.9", 50000, 22)], Some(&Sessions::default()), Some(&[])),
             None
         );
+    }
+
+    /// M4 : avant l'accord, la personne apprend que l'isolement tient après un redémarrage, que la connexion gardée
+    /// est figée, qu'un état abîmé ne garde plus rien, et la sortie de secours.
+    #[test]
+    fn le_cout_est_dit_avant_l_accord() {
+        let fr = avant_l_accord().join(" ");
+        for mot in [
+            "redémarrage",
+            "figée",
+            "abîmé",
+            "secours",
+            "vanguard blocage lever-isolement",
+            "nft delete table inet vanguard_isolement",
+            "HTTPS",
+        ] {
+            assert!(fr.contains(mot), "{mot}");
+        }
     }
 
     #[test]
