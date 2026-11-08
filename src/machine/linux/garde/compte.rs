@@ -336,11 +336,22 @@ pub(crate) fn juger(posee: bool, etat: Option<&Etat>, maintenant: u64) -> Consta
     }
     if k.rattrapages_perdus > 0 {
         let n = k.rattrapages_perdus;
+        // En refus, un lancement permis sans jamais être jugé a pu être celui d'un programme certain : haute (C7-2).
+        hausser(
+            if e.refus { Niveau::Eleve } else { Niveau::Moyen },
+            trf!(
+                "{n} lancements ont été permis sans jamais être jugés : le garde était saturé (une rafale de lancements) ; un programme certainement malveillant a pu passer ainsi.",
+                "{n} launches were allowed without ever being judged: the guard was saturated (a burst of launches); a certainly malicious program may have passed that way."
+            ),
+        );
+    }
+    if k.gros_perdus > 0 {
+        let n = k.gros_perdus;
         hausser(
             Niveau::Moyen,
             trf!(
-                "{n} lancements ont été permis sans jamais être jugés (garde saturé, ou fichier de plus de 512 Mio).",
-                "{n} launches were allowed without ever being judged (guard saturated, or file over 512 MiB)."
+                "{n} lancements de fichiers de plus de 64 Mio ont été permis sans jamais être jugés (trop nombreux à la fois, ou plus de 512 Mio).",
+                "{n} launches of files over 64 MiB were allowed without ever being judged (too many at once, or over 512 MiB)."
             ),
         );
     }
@@ -925,6 +936,15 @@ mod tests {
         let mut perdus = etat(maintenant);
         perdus.compteurs.rattrapages_perdus = 9;
         assert_eq!(juger(true, Some(&perdus), maintenant).probleme, Some(Niveau::Moyen));
+        // C7-2 : en refus, un lancement permis par file pleine et jamais jugé, haut ; un gros jamais jugé, moyen.
+        perdus.refus = true;
+        assert_eq!(juger(true, Some(&perdus), maintenant).probleme, Some(Niveau::Eleve));
+        let mut gros_perdus = etat(maintenant);
+        gros_perdus.refus = true;
+        gros_perdus.compteurs.gros_perdus = 3;
+        let c = juger(true, Some(&gros_perdus), maintenant);
+        assert_eq!(c.probleme, Some(Niveau::Moyen));
+        assert!(c.message.contains("512"), "{}", c.message);
         // C7-2 : des lancements permis sans vérification à temps sont dits (au moins une information).
         let mut gros = etat(maintenant);
         gros.compteurs.non_verifiees = 4;

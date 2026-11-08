@@ -9,12 +9,13 @@
 //!   premier), et confie le reste à la file des fils de décision ; s'il reste pris, le délai permet ce qui attend, et
 //!   sa file pleine, le lecteur permet et confie au rattrapage ;
 //! - deux fils de DÉCISION hachent le descripteur rendu par le noyau (borné à 64 Mio, au-delà : permis, noté et
-//!   confié au rattrapage) et jugent (`decision`) ; leur nombre borne les hachages concurrents ;
+//!   confié au fil des gros) et jugent (`decision`) ; leur nombre borne les hachages concurrents ;
 //! - le fil du DÉLAI permet toute demande sans verdict après 250 ms (P9), et la note ; elle reste dans la file et
 //!   est jugée quand même : son verdict va au cache, et un fichier certain passé ainsi est dit (alerte haute) ;
-//! - le fil de RATTRAPAGE juge de même, après coup, les demandes permises parce que la file était pleine, et hache
-//!   les fichiers trop gros pour l'être à temps (jusqu'à 512 Mio) ; sa file à lui est courte, et pleine, la demande
-//!   n'est que comptée (le travail d'après coup reste borné) ;
+//! - le fil de RATTRAPAGE juge de même, après coup, les demandes permises parce que la file était pleine ; sa file à
+//!   lui est courte, et pleine, la demande n'est que comptée (le travail d'après coup reste borné) ;
+//! - le fil des GROS hache après coup les fichiers trop gros pour l'être à temps (jusqu'à 512 Mio), à débit borné,
+//!   depuis sa propre file : des gros lancés en rafale ne prennent jamais la place du rattrapage ;
 //! - le fil d'ENTRETIEN marque les montages faits plus tard, relit les réglages, écrit etat.json et evenements.jsonl,
 //!   et envoie WATCHDOG=1 tant que le lecteur bat (un lecteur figé : systemd tue le garde, et la fermeture du groupe
 //!   laisse passer tout ce qui attend) ; il n'attend jamais rien du dossier du compte ;
@@ -47,16 +48,25 @@ use super::sortie::{self, Compteurs, Etat, Evenement};
 use super::{LISTE_MD5, LISTE_SHA256, Reglages};
 use crate::tr;
 
-/// Un fichier plus gros n'est pas haché à temps : permis, noté « non vérifié », et confié au rattrapage (C7-2).
+/// Un fichier plus gros n'est pas haché à temps : permis, noté « non vérifié », et confié au fil des gros (C7-2).
 pub(crate) const HACHAGE_MAX: u64 = 64 << 20;
-/// Le rattrapage hache après coup jusqu'à cette taille (un seul fil, quelques secondes par fichier au plus) ; au-delà,
-/// la demande permise n'est que comptée, comme une file de rattrapage pleine : le travail d'après coup reste borné.
-const RATTRAPAGE_HACHAGE_MAX: u64 = 512 << 20;
+/// Le fil des gros hache après coup jusqu'à cette taille (quelques secondes par fichier au plus) ; au-delà, la demande
+/// permise n'est que comptée, comme une file des gros pleine : le travail d'après coup reste borné.
+const GROS_HACHAGE_MAX: u64 = 512 << 20;
+/// La file du fil des gros ; pleine, la demande permise n'est que comptée (`gros_perdus`). À part de celle du
+/// rattrapage : des gros fichiers lancés en rafale ne prennent jamais la place d'une demande permise par file pleine.
+const GROS: usize = 8;
+/// Le fil des gros ne lit pas plus que ces octets par seconde (C7-2). Une borne par débit plutôt que par inode : un
+/// même gros fichier rejugé à chaque ctime nouvelle (un `touch` suffit), ou mille fichiers creux de 500 Mio (qui ne
+/// coûtent rien sur le disque), ne tiennent pas plus d'une fraction de cœur ; une borne par inode laisserait passer
+/// les seconds, et ne plus hacher un inode laisserait un contenu certain y être mis ensuite sans jamais être jugé.
+const GROS_DEBIT: u64 = 64 << 20;
 /// Les fils de décision.
 const DECIDEURS: usize = 2;
 /// La file vers les fils de décision ; pleine, la demande est permise, notée, et confiée au rattrapage.
 const FILE: usize = 256;
-/// La file du rattrapage (un seul fil) ; pleine, la demande permise n'est que comptée.
+/// La file du rattrapage (un seul fil) : les demandes permises par file pleine (M-N2) ; pleine, la demande permise
+/// n'est que comptée (`rattrapages_perdus`, alerte haute en mode refus).
 const RATTRAPAGE: usize = 32;
 /// Les événements gardés en mémoire avant d'être écrits ; au-delà, ils sont comptés sans être écrits.
 const EVENEMENTS_EN_FILE: usize = 1024;
@@ -113,6 +123,7 @@ struct Compteurs2 {
     evenements_perdus: AtomicU64,
     certains_passes: AtomicU64,
     rattrapages_perdus: AtomicU64,
+    gros_perdus: AtomicU64,
     changes_avant_jugement: AtomicU64,
 }
 
@@ -135,6 +146,7 @@ impl Compteurs2 {
             debordements: l(&self.debordements),
             certains_passes: l(&self.certains_passes),
             rattrapages_perdus: l(&self.rattrapages_perdus),
+            gros_perdus: l(&self.gros_perdus),
             changes_avant_jugement: l(&self.changes_avant_jugement),
         }
     }
@@ -364,9 +376,10 @@ fn trier(
 /// quand même : le verdict va au cache (le lancement suivant est jugé tout de suite), et un fichier certain qui aurait
 /// été refusé est compté (`certains_passes`, alerte haute) et noté.
 ///
-/// `max` : la taille hachée au plus ; au-delà, permise, et confiée à `vers_rattrapage` s'il y en a un (les fils de
-/// décision : il la hache après coup, jusqu'à `RATTRAPAGE_HACHAGE_MAX`), sinon seulement comptée (le rattrapage).
-fn decider(p: &Partage, d: &Demande, max: u64, vers_rattrapage: Option<&SyncSender<Demande>>) {
+/// `max` : la taille hachée au plus ; au-delà, permise, et confiée à `vers_gros` s'il y en a un (les fils de décision
+/// et le rattrapage : le fil des gros la hache après coup, jusqu'à `GROS_HACHAGE_MAX`), sinon seulement comptée (le
+/// fil des gros lui-même).
+fn decider(p: &Partage, d: &Demande, max: u64, vers_gros: Option<&SyncSender<Demande>>) {
     let Some(cle) = d.cle else {
         // Jamais : `preparer` la lit avant.
         p.repondre(d.fd, &d.fichier, true);
@@ -377,8 +390,8 @@ fn decider(p: &Partage, d: &Demande, max: u64, vers_rattrapage: Option<&SyncSend
     } else {
         if cle.taille > max {
             let a_temps = p.repondre(d.fd, &d.fichier, true);
-            let Some(vers) = vers_rattrapage else {
-                plus(&p.compteurs.rattrapages_perdus);
+            let Some(vers) = vers_gros else {
+                plus(&p.compteurs.gros_perdus);
                 let mut e = evenement("trop-gros");
                 e.pid = d.pid;
                 e.chemin = sortie::borner(&chemin_de(d.fd));
@@ -396,7 +409,7 @@ fn decider(p: &Partage, d: &Demande, max: u64, vers_rattrapage: Option<&SyncSend
             }
             // C7-2 : haché après coup ; son verdict va au cache, et un fichier certain passé ainsi est dit.
             if vers.try_send(d.clone()).is_err() {
-                plus(&p.compteurs.rattrapages_perdus);
+                plus(&p.compteurs.gros_perdus);
             }
             return;
         }
@@ -508,24 +521,50 @@ fn nom_exception(e: Exception) -> &'static str {
 }
 
 /// Un fil de décision.
-fn decideur(p: &Partage, file: &Mutex<Receiver<Demande>>, vers_rattrapage: &SyncSender<Demande>) {
+fn decideur(p: &Partage, file: &Mutex<Receiver<Demande>>, vers_gros: &SyncSender<Demande>) {
     loop {
         let d = verrou(file).recv();
         match d {
-            Ok(d) => decider(p, &d, HACHAGE_MAX, Some(vers_rattrapage)),
+            Ok(d) => decider(p, &d, HACHAGE_MAX, Some(vers_gros)),
             Err(_) => return,
         }
     }
 }
 
-/// Le fil du rattrapage : les demandes permises par la file pleine, ou trop grosses pour être hachées à temps,
-/// jugées après coup, une à la fois.
-fn rattraper(p: &Partage, file: &Receiver<Demande>) {
+/// Le fil du rattrapage : les demandes permises par la file pleine, jugées après coup, une à la fois (M-N2) ; les
+/// trop grosses pour être hachées à temps vont au fil des gros, sans le retenir.
+fn rattraper(p: &Partage, file: &Receiver<Demande>, vers_gros: &SyncSender<Demande>) {
     while let Ok(mut d) = file.recv() {
         if preparer(p, &mut d) {
-            decider(p, &d, RATTRAPAGE_HACHAGE_MAX, None);
+            decider(p, &d, HACHAGE_MAX, Some(vers_gros));
         }
     }
+}
+
+/// Le fil des gros : les demandes trop grosses pour être hachées à temps, jugées après coup, une à la fois, à
+/// `GROS_DEBIT` au plus (C7-2).
+fn hacher_gros(p: &Partage, file: &Receiver<Demande>) {
+    while let Ok(mut d) = file.recv() {
+        let debut = Instant::now();
+        if preparer(p, &mut d) {
+            decider(p, &d, GROS_HACHAGE_MAX, None);
+            let lu = d.cle.map_or(0, |c| c.taille).min(GROS_HACHAGE_MAX.saturating_add(1));
+            std::thread::sleep(pause_gros(lu, debut.elapsed()));
+        }
+    }
+}
+
+/// La pause du fil des gros après avoir jugé un fichier de `taille` octets en `duree` : de quoi ne pas lire plus de
+/// `GROS_DEBIT` octets par seconde. Un fichier au-delà de `GROS_HACHAGE_MAX` n'est pas lu : aucune pause.
+fn pause_gros(taille: u64, duree: Duration) -> Duration {
+    if taille > GROS_HACHAGE_MAX {
+        return Duration::ZERO;
+    }
+    let voulue = taille
+        .saturating_mul(1_000)
+        .checked_div(GROS_DEBIT)
+        .map_or(Duration::ZERO, Duration::from_millis);
+    voulue.saturating_sub(duree)
 }
 
 /// Le fil du délai.
@@ -1043,16 +1082,21 @@ pub(crate) fn servir() -> i32 {
     });
     p.noter(e);
 
+    let (vers_gros, gros) = std::sync::mpsc::sync_channel::<Demande>(GROS);
+    {
+        let p = Arc::clone(&p);
+        std::thread::spawn(move || hacher_gros(&p, &gros));
+    }
     let (vers_rattrapage, rattrapage) = std::sync::mpsc::sync_channel::<Demande>(RATTRAPAGE);
     let (vers_decideurs, file) = std::sync::mpsc::sync_channel::<Demande>(FILE);
     let file = Arc::new(Mutex::new(file));
     for _ in 0..DECIDEURS {
-        let (p, file, vers_rattrapage) = (Arc::clone(&p), Arc::clone(&file), vers_rattrapage.clone());
-        std::thread::spawn(move || decideur(&p, &file, &vers_rattrapage));
+        let (p, file, vers_gros) = (Arc::clone(&p), Arc::clone(&file), vers_gros.clone());
+        std::thread::spawn(move || decideur(&p, &file, &vers_gros));
     }
     {
         let p = Arc::clone(&p);
-        std::thread::spawn(move || rattraper(&p, &rattrapage));
+        std::thread::spawn(move || rattraper(&p, &rattrapage, &vers_gros));
     }
     let (vers_tri, tri) = std::sync::mpsc::sync_channel::<Demande>(FILE);
     {
@@ -1436,13 +1480,65 @@ mod tests {
         }
         assert_eq!(pleine, 1);
         drop(vers);
-        rattraper(&p, &file);
+        let (vers_gros, _gros) = std::sync::mpsc::sync_channel::<Demande>(GROS);
+        rattraper(&p, &file, &vers_gros);
         assert_eq!(p.compteurs.lire().certains_passes, RATTRAPAGE as u64);
     }
 
-    /// C7-2 : un fichier trop gros pour être haché à temps est permis, compté « non vérifié », et confié au
-    /// rattrapage, qui le hache après coup : certain, il est compté comme passé (alerte haute), et son verdict va au
-    /// cache ; trop gros pour le rattrapage aussi, il n'est que compté. La taille au plus est passée en paramètre :
+    /// C7-2 : les gros fichiers ont leur file : 32 demandes trop grosses pour être hachées à temps en remplissent la
+    /// file et sont comptées à part, sans toucher au rattrapage ; une demande certaine permise par file pleine juste
+    /// après y est jugée.
+    #[test]
+    fn les_gros_ne_prennent_pas_la_place_du_rattrapage() {
+        let d = crate::essais::Jetable::nouveau("garde-servir-gros-file");
+        let certain = b"un programme malveillant invente, permis par file pleine";
+        let (p, _evenements) = partage(&[listes::hacher(&certain[..]).unwrap().sha256]);
+        let (vers_gros, gros) = std::sync::mpsc::sync_channel::<Demande>(GROS);
+        for i in 0..32 {
+            decider(
+                &p,
+                &demande(&d, &format!("gros{i}"), b"un gros programme sain"),
+                16,
+                Some(&vers_gros),
+            );
+        }
+        let k = p.compteurs.lire();
+        assert_eq!(
+            (k.non_verifiees, k.gros_perdus, k.rattrapages_perdus),
+            (32, 32 - GROS as u64, 0)
+        );
+        let (vers, _file) = std::sync::mpsc::sync_channel::<Demande>(0);
+        let (vers_r, file_r) = std::sync::mpsc::sync_channel::<Demande>(RATTRAPAGE);
+        let mut pleine = demande(&d, "pleine", certain);
+        pleine.cle = None;
+        verrou(&p.attentes).ajouter(pleine.fd, Arc::clone(&pleine.fichier), Instant::now());
+        confier(&p, pleine, &vers, &vers_r);
+        drop(vers_r);
+        rattraper(&p, &file_r, &vers_gros);
+        let k = p.compteurs.lire();
+        assert_eq!((k.file_pleine, k.certains_passes, k.rattrapages_perdus), (1, 1, 0));
+        // Le fil des gros les juge ensuite, chacun à son tour.
+        drop(vers_gros);
+        hacher_gros(&p, &gros);
+        assert_eq!(p.compteurs.lire().hachees, 1 + GROS as u64);
+    }
+
+    /// C7-2 : le fil des gros ne lit pas plus de `GROS_DEBIT` par seconde ; ce qu'il ne lit pas ne le retient pas.
+    #[test]
+    fn le_fil_des_gros_est_borne_en_debit() {
+        assert_eq!(pause_gros(GROS_DEBIT, Duration::ZERO), Duration::from_secs(1));
+        assert_eq!(
+            pause_gros(GROS_DEBIT * 8, Duration::from_secs(3)),
+            Duration::from_secs(5)
+        );
+        assert_eq!(pause_gros(GROS_DEBIT, Duration::from_secs(2)), Duration::ZERO);
+        assert_eq!(pause_gros(GROS_HACHAGE_MAX + 1, Duration::ZERO), Duration::ZERO);
+        assert_eq!(pause_gros(0, Duration::ZERO), Duration::ZERO);
+    }
+
+    /// C7-2 : un fichier trop gros pour être haché à temps est permis, compté « non vérifié », et confié au fil des
+    /// gros, qui le hache après coup : certain, il est compté comme passé (alerte haute), et son verdict va au cache ;
+    /// trop gros pour ce fil aussi, ou sa file pleine, il n'est que compté. La taille au plus est passée en paramètre :
     /// l'essai n'écrit pas 64 Mio.
     #[test]
     fn un_gros_fichier_est_hache_apres_coup() {
@@ -1450,7 +1546,7 @@ mod tests {
         let contenu = b"un gros programme malveillant invente pour l'essai";
         let empreinte = listes::hacher(&contenu[..]).unwrap().sha256;
         let (p, evenements) = partage(&[empreinte]);
-        let (vers, file) = std::sync::mpsc::sync_channel::<Demande>(RATTRAPAGE);
+        let (vers, file) = std::sync::mpsc::sync_channel::<Demande>(GROS);
         let gros = demande(&d, "gros", contenu);
         verrou(&p.attentes).ajouter(gros.fd, Arc::clone(&gros.fichier), Instant::now());
         decider(&p, &gros, 16, Some(&vers));
@@ -1459,25 +1555,25 @@ mod tests {
         assert_eq!((k.non_verifiees, k.hachees, k.certains_passes), (1, 0, 0));
         assert_eq!(evenements.try_recv().unwrap().genre, "non-verifie");
         drop(vers);
-        rattraper(&p, &file);
+        hacher_gros(&p, &file);
         let k = p.compteurs.lire();
         assert_eq!(
-            (k.non_verifiees, k.hachees, k.certains_passes, k.rattrapages_perdus),
+            (k.non_verifiees, k.hachees, k.certains_passes, k.gros_perdus),
             (1, 1, 1, 0)
         );
         assert!(verrou(&p.cache).lire(&gros.cle.unwrap()).unwrap().certain.is_some());
         let e = evenements.try_recv().unwrap();
         assert_eq!((e.genre.as_str(), e.trop_tard.as_deref()), ("delai", Some("refuse")));
-        // Trop gros pour le rattrapage : compté comme jamais jugé, et dit.
+        // Trop gros pour le fil des gros : compté comme jamais jugé, et dit.
         let enorme = demande(&d, "enorme", contenu);
         decider(&p, &enorme, 16, None);
         let k = p.compteurs.lire();
-        assert_eq!((k.hachees, k.rattrapages_perdus), (1, 1));
+        assert_eq!((k.hachees, k.gros_perdus, k.rattrapages_perdus), (1, 1, 0));
         assert_eq!(evenements.try_recv().unwrap().genre, "trop-gros");
-        // La file du rattrapage pleine : compté aussi.
+        // La file des gros pleine : compté aussi.
         let (plein, _file) = std::sync::mpsc::sync_channel::<Demande>(0);
         decider(&p, &demande(&d, "encore", contenu), 16, Some(&plein));
-        assert_eq!(p.compteurs.lire().rattrapages_perdus, 2);
+        assert_eq!(p.compteurs.lire().gros_perdus, 2);
     }
 
     /// C7-5 : un fichier tronqué (ou réécrit) entre le lancement et son jugement après coup n'est pas jugé propre :
