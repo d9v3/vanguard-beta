@@ -2204,7 +2204,8 @@ finally {
     # Filet, même après une exception : les programmes de l'essai arrêtés (le jetable attend 600 s), les règles de
     # cet essai restées (un retour raté) retirées par leur nom, son dossier effacé.
     foreach ($p in @($jetableR3, $signeR3)) { if ($p) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
-    @(Regles-R3) + @(Regles-R3 'bloc-r3.exe') | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+    $restesR3 = @(Regles-R3) + @(Regles-R3 'bloc-r3.exe')
+    if ($restesR3.Count) { $restesR3 | Remove-NetFirewallRule -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $dossierR3 -Recurse -Force -ErrorAction SilentlyContinue
 }
 
@@ -2264,8 +2265,14 @@ else {
         if ($t -match 'Isolé|Isolated') { Ok 'vanguard blocage isoler : dit isolé' }
         else { Bug "vanguard blocage isoler : pas « Isolé » ($((Lignes (Sortie 'blocage-isoler') | Where-Object { $_ -match '✖|✔' }) -join ' / '))" }
         $bloquent = @($regles | Where-Object { "$($_.Action)" -eq 'Block' -and "$($_.Enabled)" -eq 'True' }).Count
-        if ($regles.Count -eq 4 -and $bloquent -eq 4) { Ok 'Quatre règles « Vanguard : isolement », Block, en marche' }
-        else { Bug "Règles de l'isolement : $($regles.Count) (dont $bloquent Block en marche), 4 attendues" }
+        # Leur nombre suit le découpage des adresses permises (protection/isolement.rs, regles_windows) : 28 le 8 nov.
+        # Vérifié : toutes Block en marche, une seule génération (« a000 » …), les deux sens présents.
+        $generations = @($regles | ForEach-Object { if ($_.DisplayName -match '^Vanguard : isolement ([a-z])\d{3} \((sortie|entrée), ') { $Matches[1] } else { '?' } } | Sort-Object -Unique)
+        $sens = @($regles | ForEach-Object { "$($_.Direction)" } | Sort-Object -Unique) -join ','
+        if ($regles.Count -ge 2 -and $bloquent -eq $regles.Count -and $generations.Count -eq 1 -and $generations[0] -ne '?' -and $sens -eq 'Inbound,Outbound') {
+            Ok "$($regles.Count) règles « Vanguard : isolement », Block, en marche, génération $($generations[0]), entrée et sortie"
+        }
+        else { Bug "Règles de l'isolement : $($regles.Count) (dont $bloquent Block en marche), générations $($generations -join ','), sens $sens" }
         Start-Sleep -Seconds 5
         $bureauPendant = Bureau-R4
         foreach ($c in $bureauAvant) {
@@ -2310,8 +2317,13 @@ else {
         # Filet, même après une exception : un isolement resté est levé par Vanguard (les réglages d'avant remis),
         # puis, s'il reste une règle, retirée par son nom.
         if ($isoleR4 -or (Regles-R4).Count) {
+            # Sans cette consigne, la fenêtre Vanguard administrateur de la levée attendait Entrée sans que personne
+            # le sache (8 nov. : le filet est resté bloqué, l'isolement en place).
+            if (-not $Auto) { Write-Host '      Filet : l''isolement est encore là. Entrée dans la fenêtre Vanguard administrateur pour le lever (UAC, si elle demande).' -ForegroundColor Yellow }
             Start-Process -FilePath $exe -ArgumentList @('blocage', 'lever-isolement') -NoNewWindow -Wait -RedirectStandardInput (New-Item -Force (Join-Path $res 'lever-filet.txt') -Value "o`r`n").FullName | Out-Null
-            Regles-R4 | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+            # Jamais un tube vide vers Remove-NetFirewallRule : sans objet ni filtre, la commande retire TOUTES les règles.
+            $restesR4 = Regles-R4
+            if ($restesR4.Count) { $restesR4 | Remove-NetFirewallRule -ErrorAction SilentlyContinue }
         }
         # Les résultats de l'étape rendus à la passe (le journal mis à la suite du sien). Si le partage ne répond
         # pas encore, ils restent dans la VM, et l'écran dit où.
