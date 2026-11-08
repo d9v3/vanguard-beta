@@ -143,7 +143,7 @@ impl Source {
     }
 }
 
-/// Le début du nom d'une correspondance par empreinte de MalwareBazaar : « MalwareBazaar sha256:<empreinte> ».
+/// Le début du nom d'une correspondance par empreinte de MalwareBazaar : « `MalwareBazaar sha256:<empreinte>` ».
 pub(crate) const MALWAREBAZAAR: &str = "MalwareBazaar sha256:";
 
 /// Le nom donné à la marque d'essai trouvée.
