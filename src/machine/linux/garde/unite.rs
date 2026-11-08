@@ -5,6 +5,13 @@
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 
 /// Le texte de l'unité.
+///
+/// C7-1 : `Nice=-5` et `CPUWeight=200` donnent au garde la main plus tôt quand l'ordinateur est chargé, pour que le
+/// lecteur reçoive et le tri juge avant le délai de 250 ms ; ils ne le retardent jamais (une priorité plus haute, pas
+/// une limite). Modérés exprès : les fils qui hachent ont la même priorité, et un garde qui hacherait sans fin ne doit
+/// pas affamer la session (le fil des gros fichiers est en plus borné en débit). `Nice` joue entre les fils d'un même
+/// groupe, `CPUWeight` entre le service et ses voisins de system.slice ; aucun des deux n'est du temps réel
+/// (`RestrictRealtime=yes` reste), qui pourrait geler la machine.
 pub(crate) fn texte() -> String {
     format!(
         "\
@@ -26,6 +33,8 @@ Restart=always
 RestartSec=1
 TimeoutStopSec=3
 MemoryMax=256M
+Nice=-5
+CPUWeight=200
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_AUDIT_WRITE
 AmbientCapabilities=
 NoNewPrivileges=yes
@@ -99,6 +108,9 @@ mod tests {
             ("Restart", "always"),
             ("TimeoutStopSec", "3"),
             ("MemoryMax", "256M"),
+            // C7-1 : la main plus tôt sous charge, sans temps réel.
+            ("Nice", "-5"),
+            ("CPUWeight", "200"),
             (
                 "CapabilityBoundingSet",
                 "CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_AUDIT_WRITE",
