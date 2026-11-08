@@ -53,19 +53,24 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   par défaut) ne bloque jamais l'ordinateur : quand il ne peut pas répondre, il laisse passer. Deux fenêtres en
   découlent. Pendant une relance du garde (environ une seconde), les lancements sont permis sans être vus. Un garde
   figé fait attendre chaque lancement jusqu'à son chien de garde (environ cinq secondes), puis systemd le tue et tout
-  ce qui attendait passe. Un lancement sans verdict en 250 ms passe aussi, noté. Le veilleur des programmes reste la
-  deuxième ligne. Le garde ne refuse que le certain (une empreinte des listes, ou la marque d'essai), jamais un
-  programme du système, de Vanguard ou lancé par init.
-- **Ce que le garde des lancements ne voit pas (Linux).** Il juge le fichier qu'un `execve` ouvre (le programme, ou
-  le script lancé directement et son interprète), sur un système de fichiers local qu'il a marqué. Il ne juge pas un
+  ce qui attendait passe. Un lancement sans verdict en 250 ms passe aussi, noté. Un fil de tri figé (un disque qui ne
+  répond plus) est remplacé après environ cinq secondes (quatre fils au plus en tout) et dit au bilan ; d'ici là, les
+  lancements passent au bout de 250 ms. Le veilleur des programmes reste la deuxième ligne. Le garde ne refuse que le
+  certain (une empreinte des listes, ou la marque d'essai), jamais un programme du système, de Vanguard ou lancé par
+  init.
+- **Ce que le garde des lancements ne voit pas (Linux).** Il juge le fichier qu'un `execve` ouvre (le programme, ou le
+  script lancé directement et son interprète), sur un système de fichiers local qu'il a marqué. Il ne juge pas un
   script passé à son interprète (`bash script.sh`, `python3 script.py`), un programme passé à l'éditeur de liens
   (`ld.so ./programme`), ni une bibliothèque chargée par dlopen ou LD_PRELOAD : ce sont de simples ouvertures. Il ne
-  voit aucun lancement depuis FUSE (dont les AppImage), overlay, squashfs (les snaps), un partage réseau (NFS, SMB, 9p),
-  ni depuis un système de fichiers neuf monté dans un espace de noms privé (`unshare`, sans root sur la plupart des
-  distributions). Une marque vaut pour tout un système de fichiers (son superbloc) : un montage lié du même disque,
-  même dans un espace de noms privé, reste couvert. Un système de fichiers monté après le démarrage du garde (une clé
-  USB) est marqué en une seconde environ ; un lancement dans cette seconde n'est pas vu. L'antivirus et le veilleur
-  des programmes restent la ligne pour ces voies.
+  voit aucun lancement depuis FUSE (dont les AppImage), overlay, squashfs (les snaps), un partage réseau (NFS, SMB,
+  9p), ni depuis un système de fichiers neuf monté dans un espace de noms privé (`unshare`, sans root sur la plupart
+  des distributions). Il ne marque que ext2/3/4, btrfs, xfs, f2fs, tmpfs, vfat, exfat, msdos, ntfs3, bcachefs et jfs :
+  tout autre type n'est pas vu (ZFS compris, ainsi qu'erofs, udf et iso9660). Une marque vaut pour tout un système de
+  fichiers (son superbloc) : un montage lié du même disque, même dans un espace de noms privé, reste couvert. Un
+  système de fichiers monté après le démarrage du garde (une clé USB) est marqué en une seconde environ ; un lancement
+  dans cette seconde n'est pas vu. Un programme de plus de 64 Mio passe à son premier lancement et n'est jugé qu'après
+  coup ; sur FAT et exFAT (clés USB), où rien n'est gardé en cache faute d'horodatage fiable, il n'est jamais arrêté à
+  temps. L'antivirus et le veilleur des programmes restent la ligne pour ces voies.
 - **La page visitée.** Vanguard n'a pas d'extension de navigateur : la page ouverte n'est pas examinée. Il examine un
   lien qu'on lui donne, bloque après accord des sites dangereux connus par le fichier hosts
   (`vanguard sites-dangereux`), et le mode Wi-Fi public passe à un DNS qui filtre.

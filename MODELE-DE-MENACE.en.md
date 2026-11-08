@@ -50,18 +50,22 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   locks the computer up: when it cannot answer, it lets the launch through. Two windows follow from this. While the
   guard restarts (about one second), launches are allowed without being seen. A frozen guard makes each launch wait
   until its watchdog (about five seconds); systemd then kills it and everything that was waiting goes through. A
-  launch with no verdict within 250 ms also goes through, noted. The program watcher remains the second line. The
-  guard refuses only what is certain (a hash from the lists, or the test mark), never a system program, Vanguard or
-  what init launches.
+  launch with no verdict within 250 ms also goes through, noted. A frozen sorting thread (a disk that no longer
+  answers) is replaced after about five seconds (four threads at most in all) and reported in the check; until then,
+  launches go through after 250 ms. The program watcher remains the second line. The guard refuses only what is
+  certain (a hash from the lists, or the test mark), never a system program, Vanguard or what init launches.
 - **What the launch guard does not see (Linux).** It judges the file an `execve` opens (the program, or the script
   launched directly and its interpreter), on a local file system it has marked. It does not judge a script passed to
   its interpreter (`bash script.sh`, `python3 script.py`), a program passed to the dynamic linker (`ld.so ./program`),
-  or a library loaded by dlopen or LD_PRELOAD: these are plain opens. It sees no launch from FUSE (AppImages included),
-  overlay, squashfs (snaps), a network share (NFS, SMB, 9p), or from a new file system mounted in a private namespace
-  (`unshare`, without root on most distributions). A mark covers a whole file system (its superblock): a bind mount of
-  the same disk, even in a private namespace, stays covered. A file system mounted after the guard started (a USB
-  key) is marked within about a second; a launch in that second is not seen. The antivirus and the program watcher
-  remain the line for these paths.
+  or a library loaded by dlopen or LD_PRELOAD: these are plain opens. It sees no launch from FUSE (AppImages
+  included), overlay, squashfs (snaps), a network share (NFS, SMB, 9p), or from a new file system mounted in a private
+  namespace (`unshare`, without root on most distributions). It marks only ext2/3/4, btrfs, xfs, f2fs, tmpfs, vfat,
+  exfat, msdos, ntfs3, bcachefs and jfs: any other type is not seen (ZFS included, as well as erofs, udf and iso9660).
+  A mark covers a whole file system (its superblock): a bind mount of the same disk, even in a private namespace,
+  stays covered. A file system mounted after the guard started (a USB key) is marked within about a second; a launch
+  in that second is not seen. A program larger than 64 MiB goes through on its first launch and is judged only
+  afterwards; on FAT and exFAT (USB keys), where nothing is cached for lack of reliable timestamps, it is never
+  stopped in time. The antivirus and the program watcher remain the line for these paths.
 - **The page being visited.** Vanguard has no browser extension: the open page is not examined. It examines a link
   it is given, blocks known dangerous sites through the hosts file after consent (`vanguard sites-dangereux`), and
   public Wi-Fi mode switches to a filtering DNS.
