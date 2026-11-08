@@ -7,13 +7,16 @@
 //! table inet vanguard_isolement {
 //!     chain entree { type filter hook input priority 0; policy drop;
 //!         iifname "lo" accept
-//!         ip saddr <gardée> accept            ip6 saddr <gardée> accept     (sessions, serveurs de Vanguard)
-//!         ip saddr <dns> udp|tcp sport 53 accept                            (le résolveur en place)
+//!         ip saddr <session> tcp sport <son port> tcp dport <port local> accept       (chaque session gardée)
+//!         ip saddr <serveur> tcp sport 443 ct state established accept                (serveurs de Vanguard)
+//!         ip saddr <dns> udp|tcp sport 53 accept                                      (le résolveur en place)
 //!         udp sport 67 udp dport 68 accept    udp sport 547 udp dport 546 accept      (DHCP)
-//!         icmpv6 type 133-136 accept                                        (découverte des voisins)
-//!         icmp type 3 code 4 accept           icmpv6 type 2 accept           (taille des paquets) }
+//!         icmpv6 type 133-136 accept                                                  (découverte des voisins)
+//!         icmp type 3 code 4 accept           icmpv6 type 2 accept                     (taille des paquets) }
 //!     chain sortie { type filter hook output priority 0; policy drop;
-//!         oifname "lo" accept   ip daddr <gardée> accept   ip daddr <dns> udp|tcp dport 53 accept
+//!         oifname "lo" accept
+//!         ip daddr <session> tcp sport <port local> tcp dport <son port> accept
+//!         ip daddr <serveur> tcp dport 443 accept     ip daddr <dns> udp|tcp dport 53 accept
 //!         udp sport 68 udp dport 67 accept    udp sport 546 udp dport 547 accept   icmpv6 type 133-136 accept }
 //!     chain transit { type filter hook forward priority 0; policy drop; }
 //! }
@@ -29,7 +32,7 @@ use super::{
     Attributs, CROCHET_ENTREE, CROCHET_SORTIE, NETLINK_NETFILTER, NF_ACCEPT, NF_DROP, NFPROTO_IPV4, NFPROTO_IPV6,
     NFT_CMP_EQ, NFT_META_IIFNAME, NFT_META_L4PROTO, NFT_META_NFPROTO, NFT_MSG_GETRULE, NFT_MSG_GETTABLE,
     NFT_MSG_NEWCHAIN, NFT_MSG_NEWRULE, NFT_MSG_NEWTABLE, NFT_PAYLOAD_NETWORK_HEADER, NFT_PAYLOAD_TRANSPORT_HEADER,
-    NFT_REG_VERDICT, NFTA_CHAIN_HOOK, NFTA_CHAIN_NAME, NFTA_CHAIN_POLICY, NFTA_CHAIN_TABLE, NFTA_CHAIN_TYPE,
+    NFT_REG_1, NFT_REG_VERDICT, NFTA_CHAIN_HOOK, NFTA_CHAIN_NAME, NFTA_CHAIN_POLICY, NFTA_CHAIN_TABLE, NFTA_CHAIN_TYPE,
     NFTA_DATA_VERDICT, NFTA_HOOK_HOOKNUM, NFTA_HOOK_PRIORITY, NFTA_IMMEDIATE_DATA, NFTA_IMMEDIATE_DREG,
     NFTA_RULE_CHAIN, NFTA_RULE_EXPRESSIONS, NFTA_RULE_TABLE, NFTA_TABLE_FLAGS, NFTA_TABLE_NAME, NFTA_VERDICT_CODE, OU,
     Prise, attributs, cmp, expression, genre, lot, meta, netlink, nft, payload, premier_numero, recus, refus,
@@ -72,6 +75,82 @@ fn nom_d_interface(nom: &[u8]) -> [u8; 16] {
     n
 }
 
+/// Une condition d'une règle de l'isolement, lue du côté de la chaîne : en entrée, l'adresse distante est la source
+/// du paquet ; en sortie, sa destination. Les règles s'écrivent d'abord ainsi (ce que les essais jugent paquet par
+/// paquet), puis en expressions de nf_tables, une condition après l'autre.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Critere {
+    /// La boucle locale (`iifname "lo"` en entrée, `oifname "lo"` en sortie).
+    BoucleLocale,
+    /// L'adresse distante (`ip saddr` en entrée, `ip daddr` en sortie ; ou ip6).
+    Distante(IpAddr),
+    /// IPv4 seulement (`meta nfproto ipv4`).
+    Ipv4,
+    /// Le protocole de transport (`meta l4proto`).
+    Protocole(u8),
+    /// Le port source (`tcp|udp sport`).
+    PortSource(u16),
+    /// Le port de destination (`tcp|udp dport`).
+    PortDestination(u16),
+    /// Le genre d'un message ICMP (son premier octet).
+    GenreIcmp(u8),
+    /// Le genre et le code d'un message ICMP (ses deux premiers octets).
+    GenreCodeIcmp(u8, u8),
+    /// Un paquet d'une connexion déjà établie (`ct state established`) : jamais le début d'une connexion.
+    Etablie,
+}
+
+/// Le protocole TCP, UDP, ICMP et ICMPv6.
+const TCP: u8 = 6;
+const UDP: u8 = 17;
+const ICMP: u8 = 1;
+const ICMPV6: u8 = 58;
+/// Le seul port des serveurs de Vanguard gardé (HTTPS).
+const HTTPS: u16 = 443;
+
+/// L'expression ct (`ct state`), et l'état « établie » (IP_CT_ESTABLISHED, un seul bit posé à la fois).
+const NFTA_CT_DREG: u16 = 1;
+const NFTA_CT_KEY: u16 = 2;
+const NFT_CT_STATE: u32 = 0;
+const CT_ETABLIE: u32 = 2;
+
+/// Une condition écrite en expressions de nf_tables, dans cette chaîne (`entree` : la chaîne d'entrée).
+fn ecrire(a: &mut Attributs, c: Critere, entree: bool) {
+    match c {
+        Critere::BoucleLocale => {
+            meta(a, if entree { NFT_META_IIFNAME } else { NFT_META_OIFNAME });
+            cmp(a, NFT_CMP_EQ, &nom_d_interface(b"lo"));
+        }
+        Critere::Distante(ip) => adresse(a, ip, entree),
+        Critere::Ipv4 => {
+            meta(a, NFT_META_NFPROTO);
+            cmp(a, NFT_CMP_EQ, &[NFPROTO_IPV4]);
+        }
+        Critere::Protocole(l4) => {
+            meta(a, NFT_META_L4PROTO);
+            cmp(a, NFT_CMP_EQ, &[l4]);
+        }
+        Critere::PortSource(n) => port(a, n, true),
+        Critere::PortDestination(n) => port(a, n, false),
+        Critere::GenreIcmp(g) => {
+            payload(a, NFT_PAYLOAD_TRANSPORT_HEADER, 0, 1);
+            cmp(a, NFT_CMP_EQ, &[g]);
+        }
+        Critere::GenreCodeIcmp(g, c) => {
+            payload(a, NFT_PAYLOAD_TRANSPORT_HEADER, 0, 2);
+            cmp(a, NFT_CMP_EQ, &[g, c]);
+        }
+        Critere::Etablie => {
+            expression(a, "ct", |d| {
+                d.be32(NFTA_CT_DREG, NFT_REG_1);
+                d.be32(NFTA_CT_KEY, NFT_CT_STATE);
+            });
+            // L'état est un u32 dans l'ordre de la machine, un seul bit posé : l'égalité suffit.
+            cmp(a, NFT_CMP_EQ, &CT_ETABLIE.to_ne_bytes());
+        }
+    }
+}
+
 /// « `ip saddr|daddr <adresse>` » (ou ip6) : la famille, puis l'adresse à sa place dans l'en-tête.
 fn adresse(a: &mut Attributs, ip: IpAddr, source: bool) {
     meta(a, NFT_META_NFPROTO);
@@ -89,99 +168,98 @@ fn adresse(a: &mut Attributs, ip: IpAddr, source: bool) {
     }
 }
 
-fn protocole(a: &mut Attributs, l4: u8) {
-    meta(a, NFT_META_L4PROTO);
-    cmp(a, NFT_CMP_EQ, &[l4]);
-}
-
 /// « sport N » ou « dport N » de l'en-tête UDP ou TCP (les deux au même endroit).
 fn port(a: &mut Attributs, numero: u16, source: bool) {
     payload(a, NFT_PAYLOAD_TRANSPORT_HEADER, if source { 0 } else { 2 }, 2);
     cmp(a, NFT_CMP_EQ, &numero.to_be_bytes());
 }
 
-fn regle(f: impl FnOnce(&mut Attributs)) -> Attributs {
-    let mut r = Attributs::default();
-    f(&mut r);
-    accepter(&mut r);
-    r
-}
-
-/// Les règles de l'isolement, chaîne par chaîne, dans l'ordre où elles sont posées. Le transit n'en a aucune.
-pub(crate) fn regles(permis: &Permis) -> Vec<(&'static str, Attributs)> {
+/// Les règles de l'isolement en conditions, chaîne par chaîne, dans l'ordre où elles sont posées ; chacune accepte.
+/// Le transit n'en a aucune.
+pub(crate) fn criteres(permis: &Permis) -> Vec<(&'static str, Vec<Critere>)> {
+    use Critere::{
+        BoucleLocale, Distante, Etablie, GenreCodeIcmp, GenreIcmp, Ipv4, PortDestination, PortSource, Protocole,
+    };
     let mut v = Vec::new();
     for (chaine, entree) in [("entree", true), ("sortie", false)] {
-        let lo = nom_d_interface(b"lo");
-        v.push((
-            chaine,
-            regle(|r| {
-                meta(r, if entree { NFT_META_IIFNAME } else { NFT_META_OIFNAME });
-                cmp(r, NFT_CMP_EQ, &lo);
-            }),
-        ));
-        // Les sessions gardées et les serveurs de Vanguard : tout échange avec eux.
-        for ip in permis.garder.iter().chain(&permis.serveurs) {
-            v.push((chaine, regle(|r| adresse(r, *ip, entree))));
+        v.push((chaine, vec![BoucleLocale]));
+        // Chaque session gardée : sa connexion TCP exacte, dans son sens. En entrée, de son port vers le port local
+        // de la session ; en sortie, l'inverse. Rien d'autre vers cette adresse.
+        for g in &permis.garder {
+            let (source, destination) = if entree {
+                (g.port_distant, g.port_local)
+            } else {
+                (g.port_local, g.port_distant)
+            };
+            v.push((
+                chaine,
+                vec![
+                    Distante(g.distante),
+                    Protocole(TCP),
+                    PortSource(source),
+                    PortDestination(destination),
+                ],
+            ));
+        }
+        // Les serveurs de Vanguard : HTTPS seulement, ouvert par ce PC (en entrée, la réponse d'une connexion
+        // établie, jamais un début de connexion).
+        for ip in &permis.serveurs {
+            v.push((
+                chaine,
+                if entree {
+                    vec![Distante(*ip), Protocole(TCP), PortSource(HTTPS), Etablie]
+                } else {
+                    vec![Distante(*ip), Protocole(TCP), PortDestination(HTTPS)]
+                },
+            ));
         }
         // Le résolveur en place : le port 53 seulement, en UDP et en TCP.
         for ip in &permis.dns {
-            for l4 in [17, 6] {
+            for l4 in [UDP, TCP] {
                 v.push((
                     chaine,
-                    regle(|r| {
-                        adresse(r, *ip, entree);
-                        protocole(r, l4);
-                        port(r, 53, entree);
-                    }),
+                    vec![
+                        Distante(*ip),
+                        Protocole(l4),
+                        if entree { PortSource(53) } else { PortDestination(53) },
+                    ],
                 ));
             }
         }
         // DHCP (v4 : client 68, serveur 67 ; v6 : client 546, serveur 547).
         for (client, serveur) in [(68u16, 67u16), (546, 547)] {
+            let (source, destination) = if entree { (serveur, client) } else { (client, serveur) };
             v.push((
                 chaine,
-                regle(|r| {
-                    protocole(r, 17);
-                    let (source, destination) = if entree { (serveur, client) } else { (client, serveur) };
-                    port(r, source, true);
-                    port(r, destination, false);
-                }),
+                vec![Protocole(UDP), PortSource(source), PortDestination(destination)],
             ));
         }
         // La découverte des voisins d'IPv6 (sollicitation et annonce de routeur, de voisin) : sans elle, plus
         // d'adresse ni de passerelle IPv6, la session gardée comprise.
         for genre_icmp in 133u8..=136 {
-            v.push((
-                chaine,
-                regle(|r| {
-                    protocole(r, 58);
-                    payload(r, NFT_PAYLOAD_TRANSPORT_HEADER, 0, 1);
-                    cmp(r, NFT_CMP_EQ, &[genre_icmp]);
-                }),
-            ));
+            v.push((chaine, vec![Protocole(ICMPV6), GenreIcmp(genre_icmp)]));
         }
     }
     // La taille des paquets sur le chemin (« fragmentation nécessaire », « paquet trop grand ») : sans elle, une
     // session gardée peut se figer sur un lien à MTU réduite.
-    v.push((
-        "entree",
-        regle(|r| {
-            meta(r, NFT_META_NFPROTO);
-            cmp(r, NFT_CMP_EQ, &[NFPROTO_IPV4]);
-            protocole(r, 1);
-            payload(r, NFT_PAYLOAD_TRANSPORT_HEADER, 0, 2);
-            cmp(r, NFT_CMP_EQ, &[3, 4]);
-        }),
-    ));
-    v.push((
-        "entree",
-        regle(|r| {
-            protocole(r, 58);
-            payload(r, NFT_PAYLOAD_TRANSPORT_HEADER, 0, 1);
-            cmp(r, NFT_CMP_EQ, &[2]);
-        }),
-    ));
+    v.push(("entree", vec![Ipv4, Protocole(ICMP), GenreCodeIcmp(3, 4)]));
+    v.push(("entree", vec![Protocole(ICMPV6), GenreIcmp(2)]));
     v
+}
+
+/// Les règles de l'isolement en expressions de nf_tables, chaîne par chaîne, dans l'ordre où elles sont posées.
+pub(crate) fn regles(permis: &Permis) -> Vec<(&'static str, Attributs)> {
+    criteres(permis)
+        .into_iter()
+        .map(|(chaine, conditions)| {
+            let mut r = Attributs::default();
+            for c in conditions {
+                ecrire(&mut r, c, chaine == "entree");
+            }
+            accepter(&mut r);
+            (chaine, r)
+        })
+        .collect()
 }
 
 /// Le nombre de règles attendu dans chaque chaîne.
@@ -379,17 +457,188 @@ pub(crate) fn presente() -> Result<bool, Echec> {
 mod tests {
     use super::*;
 
+    use crate::protection::blocage::ordres::SessionGardee;
+    use proptest::prelude::*;
+
+    fn session(ip: &str, port_distant: u16, port_local: u16) -> SessionGardee {
+        SessionGardee {
+            distante: ip.parse().unwrap(),
+            port_distant,
+            port_local,
+        }
+    }
+
     fn permis() -> Permis {
         Permis {
-            garder: vec!["192.0.2.7".parse().unwrap(), "2001:db8::7".parse().unwrap()],
+            garder: vec![session("192.0.2.7", 51234, 22), session("2001:db8::7", 40000, 22)],
             serveurs: vec!["198.51.100.20".parse().unwrap()],
             dns: vec!["192.0.2.53".parse().unwrap()],
         }
     }
 
+    /// Un paquet tel que les règles le jugent.
+    #[derive(Clone, Copy, Debug)]
+    struct Paquet {
+        entree: bool,
+        boucle: bool,
+        distante: IpAddr,
+        l4: u8,
+        source: u16,
+        destination: u16,
+        /// Genre et code ICMP (les deux premiers octets de l'en-tête de transport).
+        icmp: (u8, u8),
+        etablie: bool,
+    }
+
+    fn remplit(c: Critere, p: &Paquet) -> bool {
+        match c {
+            Critere::BoucleLocale => p.boucle,
+            Critere::Distante(ip) => p.distante == ip,
+            Critere::Ipv4 => p.distante.is_ipv4(),
+            Critere::Protocole(l4) => p.l4 == l4,
+            Critere::PortSource(n) => matches!(p.l4, TCP | UDP) && p.source == n,
+            Critere::PortDestination(n) => matches!(p.l4, TCP | UDP) && p.destination == n,
+            Critere::GenreIcmp(g) => matches!(p.l4, ICMP | ICMPV6) && p.icmp.0 == g,
+            Critere::GenreCodeIcmp(g, c) => matches!(p.l4, ICMP | ICMPV6) && p.icmp == (g, c),
+            Critere::Etablie => p.etablie,
+        }
+    }
+
+    /// La table accepte-t-elle ce paquet ? Une règle dont toutes les conditions sont remplies ; sinon, jeté.
+    fn accepte(permis: &Permis, p: &Paquet) -> bool {
+        let chaine = if p.entree { "entree" } else { "sortie" };
+        criteres(permis)
+            .into_iter()
+            .any(|(c, conditions)| c == chaine && conditions.into_iter().all(|x| remplit(x, p)))
+    }
+
+    /// Le paquet d'une session, dans un sens : en entrée de son port vers le port local, en sortie l'inverse.
+    fn de_la_session(g: &SessionGardee, entree: bool) -> Paquet {
+        let (source, destination) = if entree {
+            (g.port_distant, g.port_local)
+        } else {
+            (g.port_local, g.port_distant)
+        };
+        Paquet {
+            entree,
+            boucle: false,
+            distante: g.distante,
+            l4: TCP,
+            source,
+            destination,
+            icmp: (0, 0),
+            etablie: true,
+        }
+    }
+
+    fn adresse_v() -> impl Strategy<Value = IpAddr> {
+        prop_oneof![
+            (1u8..4).prop_map(|n| IpAddr::from([192, 0, 2, n])),
+            (1u16..4).prop_map(|n| IpAddr::from([0x2001, 0xdb8, 0, 0, 0, 0, 0, n])),
+        ]
+    }
+
+    fn port_v() -> impl Strategy<Value = u16> {
+        prop_oneof![
+            Just(22u16),
+            Just(3389),
+            Just(53),
+            Just(67),
+            Just(68),
+            Just(443),
+            1u16..=65535
+        ]
+    }
+
+    proptest! {
+        /// La session en cours reste permise, dans son sens ; rien d'autre vers son adresse : ni un autre port, ni
+        /// l'autre sens, ni UDP (hors DHCP), ni ICMP (hors voisins et taille des paquets), ni un autre protocole.
+        #[test]
+        fn la_session_et_rien_d_autre(
+            sessions in proptest::collection::vec((adresse_v(), port_v(), port_v()), 1..5),
+            entree in any::<bool>(),
+            l4 in prop_oneof![Just(TCP), Just(UDP), Just(ICMP), Just(ICMPV6), Just(47u8)],
+            source in port_v(),
+            destination in port_v(),
+            icmp in (any::<u8>(), any::<u8>()),
+            etablie in any::<bool>(),
+            laquelle in any::<prop::sample::Index>(),
+        ) {
+            let mut garder: Vec<SessionGardee> = sessions
+                .iter()
+                .map(|(ip, d, l)| SessionGardee { distante: *ip, port_distant: *d, port_local: *l })
+                .collect();
+            garder.sort_unstable();
+            garder.dedup();
+            let permis = Permis { garder: garder.clone(), serveurs: Vec::new(), dns: Vec::new() };
+            for g in &garder {
+                for sens in [true, false] {
+                    prop_assert!(accepte(&permis, &de_la_session(g, sens)), "{g:?} coupée");
+                }
+            }
+            let x = laquelle.get(&garder).distante;
+            let p = Paquet { entree, boucle: false, distante: x, l4, source, destination, icmp, etablie };
+            let d_une_session = l4 == TCP && garder.iter().any(|g| {
+                let s = de_la_session(g, entree);
+                g.distante == x && (s.source, s.destination) == (source, destination)
+            });
+            let dhcp = l4 == UDP
+                && [(67u16, 68u16), (547, 546)].iter().any(|(serveur, client)| {
+                    if entree { (source, destination) == (*serveur, *client) } else { (source, destination) == (*client, *serveur) }
+                });
+            let voisins = l4 == ICMPV6 && (133..=136).contains(&icmp.0);
+            let taille = entree && ((l4 == ICMP && x.is_ipv4() && icmp == (3, 4)) || (l4 == ICMPV6 && icmp.0 == 2));
+            prop_assert_eq!(accepte(&permis, &p), d_une_session || dhcp || voisins || taille, "{:?}", p);
+        }
+    }
+
+    #[test]
+    fn serveurs_en_https_seulement() {
+        let p = permis();
+        let serveur: IpAddr = "198.51.100.20".parse().unwrap();
+        let paquet = |entree, source, destination, etablie| Paquet {
+            entree,
+            boucle: false,
+            distante: serveur,
+            l4: TCP,
+            source,
+            destination,
+            icmp: (0, 0),
+            etablie,
+        };
+        assert!(accepte(&p, &paquet(false, 50000, 443, false)), "ce PC ouvre HTTPS");
+        assert!(accepte(&p, &paquet(true, 443, 50000, true)), "la réponse revient");
+        assert!(
+            !accepte(&p, &paquet(true, 443, 50000, false)),
+            "jamais un début de connexion du serveur"
+        );
+        assert!(!accepte(&p, &paquet(false, 50000, 80, false)), "HTTP : coupé");
+        assert!(!accepte(&p, &paquet(false, 50000, 22, false)), "un autre port : coupé");
+        assert!(
+            !accepte(
+                &p,
+                &Paquet {
+                    l4: UDP,
+                    ..paquet(false, 50000, 443, false)
+                }
+            ),
+            "UDP 443 : coupé"
+        );
+        // La boucle locale : toujours.
+        assert!(accepte(
+            &p,
+            &Paquet {
+                boucle: true,
+                l4: UDP,
+                ..paquet(false, 1, 2, false)
+            }
+        ));
+    }
+
     #[test]
     fn chaque_chaine_a_ses_regles() {
-        // Entrée : lo, 3 adresses, 2 DNS, 2 DHCP, 4 voisins, 2 tailles ; sortie : de même sans les tailles.
+        // Entrée : lo, 2 sessions, 1 serveur, 2 DNS, 2 DHCP, 4 voisins, 2 tailles ; sortie : de même sans les
+        // tailles.
         assert_eq!(
             attendues(&permis()),
             vec![("entree", 14), ("sortie", 12), ("transit", 0)]
@@ -479,10 +728,12 @@ mod tests {
         assert!(envoyer("192.0.2.9"), "avant l'isolement, le paquet part");
         assert!(!presente().unwrap());
         let p = Permis {
-            garder: vec!["192.0.2.7".parse().unwrap()],
+            garder: vec![session("192.0.2.7", 51234, 22)],
             serveurs: Vec::new(),
             dns: vec!["192.0.2.53".parse().unwrap()],
         };
+        // TCP : une connexion jetée en sortie n'échoue pas ici (le noyau réessaie le SYN), comme une permise dans cet
+        // espace sans voisin : la connexion exacte et le refus du reste se vérifient en QEMU (essais-qemu-r4.md).
         isoler(&p).unwrap();
         // Deux fois : remplacée, jamais doublée.
         isoler(&p).unwrap();
@@ -491,7 +742,10 @@ mod tests {
             !envoyer("192.0.2.9"),
             "isolé : l'envoi vers une autre adresse est refusé"
         );
-        assert!(envoyer("192.0.2.7"), "isolé : la session gardée passe");
+        assert!(
+            !envoyer("192.0.2.7"),
+            "isolé : UDP vers l'adresse de la session gardée est refusé"
+        );
         assert!(envoyer("127.0.0.1"), "isolé : la boucle locale passe");
         if let Some(texte) = liste() {
             for attendu in [
@@ -500,8 +754,8 @@ mod tests {
                 "type filter hook input priority filter; policy drop;",
                 "type filter hook output priority filter; policy drop;",
                 "type filter hook forward priority filter; policy drop;",
-                "ip daddr 192.0.2.7 accept",
-                "ip saddr 192.0.2.7 accept",
+                "ip daddr 192.0.2.7 tcp sport 22 tcp dport 51234 accept",
+                "ip saddr 192.0.2.7 tcp sport 51234 tcp dport 22 accept",
                 "udp dport 53 accept",
             ] {
                 assert!(texte.contains(attendu), "« {attendu} » manque :\n{texte}");

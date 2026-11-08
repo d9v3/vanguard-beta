@@ -25,7 +25,9 @@ use crate::{tr, trf};
 use super::ordres_ligne::CHEMIN_MAX;
 #[cfg(target_os = "linux")]
 pub(crate) use super::ordres_ligne::PAUSE_MAX;
-pub(crate) use super::ordres_ligne::{GARDER_MAX, LIGNE_MAX, LIGNES_MAX, Ordre, analyser};
+#[cfg(any(target_os = "linux", test))]
+pub(crate) use super::ordres_ligne::garder_de;
+pub(crate) use super::ordres_ligne::{GARDER_MAX, LIGNE_MAX, LIGNES_MAX, Ordre, SessionGardee, analyser};
 // Le préfixe ne sert qu'à l'assistant élevé de Linux (`machine::lancer_les_ordres`, `gestes_unix`).
 #[cfg(unix)]
 pub(crate) use super::ordres_ligne::PREFIXE;
@@ -162,9 +164,19 @@ impl Ordre {
             )
             .to_string(),
             Ordre::Isoler { garder } => trf!(
-                "Isoler l'ordinateur du réseau, en gardant la session à distance en cours depuis {}",
-                "Isolate the computer from the network, keeping the remote session in progress from {}",
-                garder.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+                "Isoler l'ordinateur du réseau, en gardant seulement la connexion exacte de chaque session à distance \
+                 en cours (adresse:port distant → port local) : {}",
+                "Isolate the computer from the network, keeping only the exact connection of each remote session in \
+                 progress (address:remote port → local port): {}",
+                garder
+                    .iter()
+                    .map(|s| format!(
+                        "{} → {}",
+                        std::net::SocketAddr::new(s.distante, s.port_distant),
+                        s.port_local
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             Ordre::LeverIsolement => tr!(
                 "Lever l'isolement de l'ordinateur (règles de Vanguard retirées, réglages d'avant remis)",
@@ -1006,12 +1018,28 @@ mod tests {
             Ordre::GardeRetirer,
             Ordre::Isoler { garder: Vec::new() },
             Ordre::Isoler {
-                garder: vec!["198.51.100.20".parse().unwrap(), "2001:db8::7".parse().unwrap()],
+                garder: vec![
+                    SessionGardee {
+                        distante: "198.51.100.20".parse().unwrap(),
+                        port_distant: 51234,
+                        port_local: 22,
+                    },
+                    SessionGardee {
+                        distante: "198.51.100.20".parse().unwrap(),
+                        port_distant: 51235,
+                        port_local: 3389,
+                    },
+                    SessionGardee {
+                        distante: "2001:db8::7".parse().unwrap(),
+                        port_distant: 40000,
+                        port_local: 22,
+                    },
+                ],
             },
             Ordre::Isoler {
                 garder: (1..=16u8)
-                    .map(|i| {
-                        std::net::IpAddr::V6(std::net::Ipv6Addr::new(
+                    .map(|i| SessionGardee {
+                        distante: std::net::IpAddr::V6(std::net::Ipv6Addr::new(
                             0x2001,
                             0xdb8,
                             0xffff,
@@ -1020,7 +1048,9 @@ mod tests {
                             0xffff,
                             0xffff,
                             u16::from(i),
-                        ))
+                        )),
+                        port_distant: 65535,
+                        port_local: 65535,
                     })
                     .collect(),
             },
@@ -1236,6 +1266,7 @@ mod tests {
             sessions: vec!["198.51.100.20".parse().unwrap()],
             autres_comptes: Vec::new(),
             ports_locaux: Vec::new(),
+            isolables: Vec::new(),
         };
         let juge = Juge::essai(Some(sessions), HashSet::new());
         let pf = match Os::actuel() {

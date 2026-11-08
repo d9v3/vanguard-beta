@@ -9,7 +9,7 @@
 // Ni `unsafe` : refusé sans recours, aucun `allow` intérieur ne le lève (garde : chaque_module_fuzze_refuse_unsafe).
 #![forbid(unsafe_code)]
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use super::pare_feu::PareFeu;
 
@@ -23,8 +23,45 @@ pub(crate) const LIGNES_MAX: usize = 512;
 pub(crate) const CHEMIN_MAX: usize = 4096;
 /// La plus longue pause du garde des lancements (Défense L3) : un jour ; au-delà, le garde se repose ou se retire.
 pub(crate) const PAUSE_MAX: u32 = 86_400;
-/// Au plus autant d'adresses gardées par l'isolement (Défense R4) : les sessions à distance en cours.
+/// Au plus autant de sessions gardées par l'isolement (Défense R4) : les sessions à distance en cours.
 pub(crate) const GARDER_MAX: usize = 16;
+
+/// Une session à distance gardée par l'isolement (Défense R4) : la connexion TCP exacte, entrante, et elle seule.
+/// L'adresse distante, son port, et le port local de ce PC où la session est arrivée (22, 3389…). Rien d'autre vers
+/// cette adresse : ni un autre port, ni un autre protocole, ni une connexion que ce PC ouvrirait vers elle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct SessionGardee {
+    pub distante: IpAddr,
+    pub port_distant: u16,
+    pub port_local: u16,
+}
+
+impl SessionGardee {
+    /// La forme écrite, la seule admise : `<adresse>:<port distant>><port local>` (`192.0.2.7:51234>22`,
+    /// `[2001:db8::7]:51234>22`).
+    pub(crate) fn texte(&self) -> String {
+        format!(
+            "{}>{}",
+            SocketAddr::new(self.distante, self.port_distant),
+            self.port_local
+        )
+    }
+
+    /// Une session écrite par `texte`, et seulement sous cette forme : une adresse d'un hôte joignable (ni non
+    /// spécifiée, ni multidiffusion, ni IPv4 écrite en IPv6), deux ports non nuls, réécrite à l'identique.
+    pub(crate) fn lire(t: &str) -> Option<Self> {
+        let (distante, local) = t.split_once('>')?;
+        let d: SocketAddr = distante.parse().ok()?;
+        let s = Self {
+            distante: d.ip(),
+            port_distant: d.port(),
+            port_local: local.parse().ok()?,
+        };
+        let ip = s.distante;
+        let hote = !ip.is_unspecified() && !ip.is_multicast() && ip.to_canonical() == ip;
+        (hote && s.port_distant != 0 && s.port_local != 0 && s.texte() == t).then_some(s)
+    }
+}
 
 /// Un geste de la liste fermée.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,12 +158,12 @@ pub(crate) enum Ordre {
     },
     /// Le garde retiré exactement : service, programme, réglages et état.
     GardeRetirer,
-    /// Isoler l'ordinateur du réseau (Défense R4) en gardant ces adresses : celles des sessions à distance en cours,
-    /// montrées avant l'accord (triées, sans double, au plus `GARDER_MAX`). L'élevé relit les sessions et refuse si
-    /// l'une n'y est pas ; il ajoute lui-même ce qui reste permis (boucle locale, DHCP, DNS en place, serveurs de
-    /// Vanguard).
+    /// Isoler l'ordinateur du réseau (Défense R4) en gardant ces sessions : les sessions à distance entrantes en
+    /// cours, chacune par sa connexion exacte, montrées avant l'accord (triées, sans double, au plus `GARDER_MAX`).
+    /// L'élevé relit les sessions et refuse si l'une n'y est pas ; il ajoute lui-même ce qui reste permis (boucle
+    /// locale, DHCP, DNS en place, serveurs de Vanguard).
     Isoler {
-        garder: Vec<IpAddr>,
+        garder: Vec<SessionGardee>,
     },
     /// Lever l'isolement : ce qui porte la marque de Vanguard seulement, l'état d'avant remis.
     LeverIsolement,
@@ -247,7 +284,7 @@ impl Ordre {
             Ordre::GardeRetirer => format!("{PREFIXE}garde-retirer"),
             Ordre::Isoler { garder } if garder.is_empty() => format!("{PREFIXE}isoler"),
             Ordre::Isoler { garder } => {
-                let liste: Vec<String> = garder.iter().map(IpAddr::to_string).collect();
+                let liste: Vec<String> = garder.iter().map(SessionGardee::texte).collect();
                 format!("{PREFIXE}isoler {}", liste.join(","))
             }
             Ordre::LeverIsolement => format!("{PREFIXE}lever-isolement"),
@@ -337,19 +374,12 @@ pub(crate) fn analyser(ligne: &str) -> Option<Ordre> {
     (ordre.ligne() == ligne).then_some(ordre)
 }
 
-/// Les adresses gardées par l'isolement : séparées par une virgule, de 1 à `GARDER_MAX`, strictement croissantes
-/// (ni double ni ordre au choix), chacune une adresse d'un hôte joignable : ni non spécifiée, ni multidiffusion, ni
-/// IPv4 écrite en IPv6 (la même adresse aurait deux formes).
-pub(crate) fn garder_de(liste: &str) -> Option<Vec<IpAddr>> {
-    let garder: Vec<IpAddr> = liste
-        .split(',')
-        .map(|t| t.parse::<IpAddr>().ok())
-        .collect::<Option<_>>()?;
-    let hote = |ip: &IpAddr| !ip.is_unspecified() && !ip.is_multicast() && ip.to_canonical() == *ip;
-    let valide = !garder.is_empty()
-        && garder.len() <= GARDER_MAX
-        && garder.iter().all(hote)
-        && garder.windows(2).all(|p| matches!(p, [a, b] if a < b));
+/// Les sessions gardées par l'isolement : séparées par une virgule, de 1 à `GARDER_MAX`, strictement croissantes
+/// (ni double ni ordre au choix), chacune sous sa seule forme admise (`SessionGardee::lire`).
+pub(crate) fn garder_de(liste: &str) -> Option<Vec<SessionGardee>> {
+    let garder: Vec<SessionGardee> = liste.split(',').map(SessionGardee::lire).collect::<Option<_>>()?;
+    let valide =
+        !garder.is_empty() && garder.len() <= GARDER_MAX && garder.windows(2).all(|p| matches!(p, [a, b] if a < b));
     valide.then_some(garder)
 }
 

@@ -1,17 +1,20 @@
 //! Isoler l'ordinateur du réseau (Défense R4), et le lever. Deux ordres fermés de la liste du blocage
 //! (`Ordre::Isoler { garder }`, `Ordre::LeverIsolement`), validés avant l'élévation et rejugés par l'élevé :
 //!
-//! - **la session à distance en cours n'est jamais coupée** : ses adresses sont lues AVANT la moindre règle, montrées,
-//!   portées par l'ordre (`garder`), puis relues par l'élevé, qui refuse si une session en cours n'y est pas, si les
-//!   connexions ne se lisent pas, ou si un tunnel (VPN) est monté pendant une session (la session passerait par lui,
-//!   et ses paquets chiffrés partiraient vers une adresse que rien ne garde) ;
+//! - **la session à distance en cours n'est jamais coupée** : ses connexions sont lues AVANT la moindre règle,
+//!   montrées, portées par l'ordre (`garder`), puis relues par l'élevé, qui refuse si une session en cours n'y est
+//!   pas, si les connexions ne se lisent pas, ou si un tunnel (VPN) est monté pendant une session (la session
+//!   passerait par lui, et ses paquets chiffrés partiraient vers une adresse que rien ne garde). Chaque session est
+//!   gardée par sa connexion TCP exacte (adresse, port distant, port local), dans son sens : rien d'autre vers cette
+//!   adresse, ni une connexion que ce PC ouvrirait vers elle ;
 //! - restent permis : la boucle locale, DHCP, le DNS du résolveur en place (port 53), et les serveurs de Vanguard
-//!   (mises à jour, listes de menaces), par les adresses qu'ils ont au moment d'isoler (P2) ;
+//!   (mises à jour, listes de menaces) en HTTPS (TCP 443) seulement, par les adresses qu'ils ont au moment d'isoler
+//!   (P2) ;
 //! - Linux : une table nf_tables à lui (`machine::linux::nftables::isolement`), remise au démarrage par sa propre
 //!   unité (`machine::linux::isolement`) ; sans systemd, « jusqu'au redémarrage » ;
-//! - Windows : des règles Block explicites, les exceptions écrites en plages complémentaires (une règle Block n'a pas
-//!   d'exception), plus « bloquer toutes les connexions entrantes » quand aucune session n'est en cours ; les valeurs
-//!   d'avant notées dans la règle même, remises exactement à la levée ;
+//! - Windows : des règles Block explicites, les exceptions écrites en plages et en ports complémentaires (une règle
+//!   Block n'a pas d'exception), plus « bloquer toutes les connexions entrantes » quand aucune session n'est en
+//!   cours ; les valeurs d'avant notées dans les règles mêmes, remises exactement à la levée ;
 //! - la levée retire ce qui porte la marque de Vanguard (la table, les règles par leur nom), même sans l'état noté.
 
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
@@ -22,14 +25,15 @@ use crate::modele::Echec;
 use crate::protection::blocage::gardes::Sessions;
 use crate::protection::blocage::ordres::GARDER_MAX;
 use crate::protection::blocage::ordres::Resultat;
+pub(crate) use crate::protection::blocage::ordres::SessionGardee;
 use crate::{tr, trf};
 
 /// Ce que l'isolement laisse passer, en plus de la boucle locale et de DHCP.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Permis {
-    /// Les sessions à distance en cours : tout échange avec elles.
-    pub garder: Vec<IpAddr>,
-    /// Les serveurs de Vanguard, résolus au moment d'isoler : tout échange avec eux.
+    /// Les sessions à distance en cours : chacune par sa connexion TCP exacte, dans son sens, et rien d'autre.
+    pub garder: Vec<SessionGardee>,
+    /// Les serveurs de Vanguard, résolus au moment d'isoler : HTTPS (TCP 443) ouvert par ce PC, rien d'autre.
     pub serveurs: Vec<IpAddr>,
     /// Le résolveur en place : le port 53 seulement.
     pub dns: Vec<IpAddr>,
@@ -54,10 +58,9 @@ pub(crate) const HOTES_DE_VANGUARD: &[&str] = &[
 pub(crate) const SERVEURS_MAX: usize = 64;
 /// Au plus autant de serveurs DNS.
 pub(crate) const DNS_MAX: usize = 8;
-/// Le temps laissé aux noms des serveurs pour se résoudre, tous ensemble.
 /// Le contexte des échecs de l'isolement, celui du pare-feu du blocage (`compte_rendu::champs::CONTEXTES_ECHEC`).
 const OU: &str = "blocage/pare-feu";
-
+/// Le temps laissé aux noms des serveurs pour se résoudre, tous ensemble.
 const RESOLUTION: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Une adresse qu'un isolement peut garder : ni non spécifiée, ni multidiffusion, ni boucle locale (déjà permise),
@@ -75,9 +78,36 @@ fn trier(adresses: impl IntoIterator<Item = IpAddr>) -> Vec<IpAddr> {
     v
 }
 
-/// Les adresses à garder d'après les sessions à distance en cours : `Err` si elles ne se lisent pas (rien n'est
-/// isolé sans les connaître) ou s'il y en a trop.
-pub(crate) fn garder_pour(sessions: Option<&Sessions>) -> Result<Vec<IpAddr>, Echec> {
+/// Des sessions à garder, triées, sans doublon, l'adresse sous sa forme canonique ; sans celles de la boucle locale
+/// (déjà permise) ni une adresse qui n'est pas celle d'un hôte.
+fn trier_sessions(sessions: impl IntoIterator<Item = SessionGardee>) -> Vec<SessionGardee> {
+    let mut v: Vec<SessionGardee> = sessions
+        .into_iter()
+        .filter_map(|s| {
+            Some(SessionGardee {
+                distante: gardable(s.distante)?,
+                ..s
+            })
+        })
+        .filter(|s| s.port_distant != 0 && s.port_local != 0)
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// Une session écrite pour la personne : « 192.0.2.7:51234 → 22 ».
+pub(crate) fn session_texte(s: &SessionGardee) -> String {
+    format!(
+        "{} → {}",
+        std::net::SocketAddr::new(s.distante, s.port_distant),
+        s.port_local
+    )
+}
+
+/// Les sessions à garder d'après les sessions à distance en cours (`Sessions::isolables`) : `Err` si elles ne se
+/// lisent pas (rien n'est isolé sans les connaître) ou s'il y en a trop.
+pub(crate) fn garder_pour(sessions: Option<&Sessions>) -> Result<Vec<SessionGardee>, Echec> {
     let Some(s) = sessions else {
         return Err(Echec::refuse(
             OU,
@@ -87,7 +117,7 @@ pub(crate) fn garder_pour(sessions: Option<&Sessions>) -> Result<Vec<IpAddr>, Ec
             ),
         ));
     };
-    let garder = trier(s.sessions.iter().copied());
+    let garder = trier_sessions(s.isolables.iter().copied());
     if garder.len() > GARDER_MAX {
         return Err(Echec::refuse(
             OU,
@@ -103,7 +133,11 @@ pub(crate) fn garder_pour(sessions: Option<&Sessions>) -> Result<Vec<IpAddr>, Ec
 
 /// Le jugement de l'isolement, avant l'élévation puis par l'élevé, sur ce qu'il relit lui-même : `None` s'il peut
 /// se faire. `tunnels` : les tunnels montés (`None` : illisibles).
-pub(crate) fn juger(garder: &[IpAddr], sessions: Option<&Sessions>, tunnels: Option<&[String]>) -> Option<String> {
+pub(crate) fn juger(
+    garder: &[SessionGardee],
+    sessions: Option<&Sessions>,
+    tunnels: Option<&[String]>,
+) -> Option<String> {
     let Some(s) = sessions else {
         return Some(
             tr!(
@@ -113,11 +147,12 @@ pub(crate) fn juger(garder: &[IpAddr], sessions: Option<&Sessions>, tunnels: Opt
             .to_string(),
         );
     };
-    let en_cours = trier(s.sessions.iter().copied());
-    if let Some(ip) = en_cours.iter().find(|ip| !garder.contains(ip)) {
+    let en_cours = trier_sessions(s.isolables.iter().copied());
+    if let Some(manque) = en_cours.iter().find(|x| !garder.contains(x)) {
+        let manque = session_texte(manque);
         return Some(trf!(
-            "une session à distance depuis {ip} est en cours sans avoir été montrée : rien n'est isolé (relancez pour la voir)",
-            "a remote session from {ip} is in progress without having been shown: nothing is isolated (start again to see it)"
+            "une session à distance ({manque}) est en cours sans avoir été montrée : rien n'est isolé (relancez pour la voir)",
+            "a remote session ({manque}) is in progress without having been shown: nothing is isolated (start again to see it)"
         ));
     }
     if !en_cours.is_empty() {
@@ -245,6 +280,25 @@ pub(crate) fn liste_texte(adresses: &[IpAddr]) -> String {
     adresses.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
 }
 
+/// Les sessions gardées écrites comme dans l'ordre (`ordres_ligne::garder_de`), « - » sans session.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn sessions_texte(sessions: &[SessionGardee]) -> String {
+    if sessions.is_empty() {
+        return "-".into();
+    }
+    sessions.iter().map(SessionGardee::texte).collect::<Vec<_>>().join(",")
+}
+
+/// L'inverse de `sessions_texte` : `None` hors de la forme de l'ordre, ou pour une adresse non gardable.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn sessions_de(texte: &str) -> Option<Vec<SessionGardee>> {
+    if texte == "-" {
+        return Some(Vec::new());
+    }
+    let v = crate::protection::blocage::ordres::garder_de(texte)?;
+    v.iter().all(|s| gardable(s.distante) == Some(s.distante)).then_some(v)
+}
+
 /// L'inverse de `liste_texte`, borné : `None` si une adresse ne se lit pas ou s'il y en a plus que `max`.
 #[cfg(any(target_os = "linux", test))]
 pub(crate) fn liste_de(texte: &str, max: usize) -> Option<Vec<IpAddr>> {
@@ -267,7 +321,7 @@ pub(crate) struct Etat {
 
 /// La première ligne de l'état : sa forme.
 #[cfg(any(target_os = "linux", test))]
-const ENTETE_ETAT: &str = "vanguard-isolement 1";
+const ENTETE_ETAT: &str = "vanguard-isolement 2";
 
 /// L'état écrit, ligne à ligne.
 #[cfg(any(target_os = "linux", test))]
@@ -275,7 +329,7 @@ pub(crate) fn etat_texte(e: &Etat) -> String {
     format!(
         "{ENTETE_ETAT}\ndepuis {}\ngarder {}\nserveurs {}\ndns {}\n",
         e.depuis,
-        liste_texte(&e.permis.garder),
+        sessions_texte(&e.permis.garder),
         liste_texte(&e.permis.serveurs),
         liste_texte(&e.permis.dns)
     )
@@ -290,7 +344,7 @@ pub(crate) fn lire_etat(texte: &str) -> Option<Etat> {
     }
     let mut champ = |nom: &str| lignes.next()?.strip_prefix(nom)?.strip_prefix(' ').map(str::to_string);
     let depuis = champ("depuis")?.parse().ok()?;
-    let garder = liste_de(&champ("garder")?, GARDER_MAX)?;
+    let garder = sessions_de(&champ("garder")?)?;
     let serveurs = liste_de(&champ("serveurs")?, SERVEURS_MAX)?;
     let dns = liste_de(&champ("dns")?, DNS_MAX)?;
     if lignes.next().is_some() {
@@ -352,7 +406,7 @@ pub(crate) fn complement(gardees: &[(u128, u128)], max: u128) -> Vec<(u128, u128
 pub(crate) type Plage = (IpAddr, IpAddr);
 
 /// Les plages à bloquer : tout sauf `gardees`, IPv4 et IPv6 chacune de son côté.
-#[cfg(any(windows, test))]
+#[cfg(test)]
 pub(crate) fn plages_bloquees(gardees: &[Plage]) -> Vec<Plage> {
     let mut v = Vec::new();
     for (v6, max) in [(false, u128::from(u32::MAX)), (true, u128::MAX)] {
@@ -398,17 +452,23 @@ fn prefixe(reseau: &str, longueur: u32) -> Option<Plage> {
     Some((en_adresse(v6, n & !masque)?, en_adresse(v6, n | masque)?))
 }
 
-/// Ce qui n'est jamais bloqué par les règles de l'isolement de Windows, en plus de ce qu'il garde : l'adresse non
-/// spécifiée (DHCP), la boucle locale, la diffusion (DHCP), le lien local et la multidiffusion locale d'IPv6 (découverte
-/// des voisins, DHCPv6). Le lien local ne reste ouvert qu'hors TCP (`TCP_LOCAL`).
+/// La boucle locale : jamais bloquée par les règles de l'isolement de Windows.
 #[cfg(any(windows, test))]
-pub(crate) fn toujours_permises() -> Vec<Plage> {
+fn boucle_locale() -> Vec<Plage> {
+    [("127.0.0.0", 8), ("::1", 128)]
+        .into_iter()
+        .filter_map(|(r, l)| prefixe(r, l))
+        .collect()
+}
+
+/// Le lien local et ce qui sert à obtenir une adresse : l'adresse non spécifiée et la diffusion (DHCP), le lien local
+/// et la multidiffusion locale d'IPv6 (découverte des voisins, DHCPv6). Seuls DHCP (UDP) et ICMPv6 y passent.
+#[cfg(any(windows, test))]
+pub(crate) fn lien_local() -> Vec<Plage> {
     [
         ("0.0.0.0", 32),
-        ("127.0.0.0", 8),
         ("255.255.255.255", 32),
         ("::", 128),
-        ("::1", 128),
         ("fe80::", 10),
         ("ff02::", 16),
     ]
@@ -417,99 +477,335 @@ pub(crate) fn toujours_permises() -> Vec<Plage> {
     .collect()
 }
 
-/// Une règle de l'isolement de Windows : son nom, son sens, ses adresses distantes, et si elle ne vise que TCP (hors
-/// du port distant 53).
+/// Les ports distants de DHCP en UDP (v4 : 67-68 ; v6 : 546-547).
+#[cfg(any(windows, test))]
+pub(crate) const PORTS_DHCP: [u16; 4] = [67, 68, 546, 547];
+
+/// Le port du DNS, en UDP et en TCP.
+#[cfg(any(windows, test))]
+const PORT_DNS: u16 = 53;
+
+/// Le port des serveurs de Vanguard (HTTPS, TCP seulement).
+#[cfg(any(windows, test))]
+const PORT_HTTPS: u16 = 443;
+
+/// Ce qui est permis vers une adresse, sous Windows. Tout le reste vers elle est bloqué, sauf les protocoles autres
+/// que TCP, UDP et ICMP, qu'une règle Block ne sait pas viser un à un sans en écrire des centaines (limite dite).
+#[cfg(any(windows, test))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Permission {
+    /// La boucle locale : rien n'est bloqué.
+    tout: bool,
+    /// Les connexions TCP exactes des sessions gardées : (port local, port distant).
+    tcp_paires: Vec<(u16, u16)>,
+    /// Les ports distants TCP permis depuis tout port local (DNS, serveurs de Vanguard).
+    tcp_distants: Vec<u16>,
+    /// Les ports distants UDP permis (DNS, DHCP).
+    udp_distants: Vec<u16>,
+    /// ICMPv6 (découverte des voisins sur le lien local ; « paquet trop grand » et voisins d'une session gardée).
+    icmp6: bool,
+}
+
+#[cfg(any(windows, test))]
+impl Permission {
+    /// L'union de deux permissions, en listes triées sans doublon.
+    fn avec(&self, autre: &Permission) -> Permission {
+        let joindre = |a: &[u16], b: &[u16]| {
+            let mut v: Vec<u16> = a.iter().chain(b).copied().collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        };
+        let mut paires: Vec<(u16, u16)> = self.tcp_paires.iter().chain(&autre.tcp_paires).copied().collect();
+        paires.sort_unstable();
+        paires.dedup();
+        Permission {
+            tout: self.tout || autre.tout,
+            tcp_paires: paires,
+            tcp_distants: joindre(&self.tcp_distants, &autre.tcp_distants),
+            udp_distants: joindre(&self.udp_distants, &autre.udp_distants),
+            icmp6: self.icmp6 || autre.icmp6,
+        }
+    }
+}
+
+/// Le protocole d'une règle de l'isolement de Windows.
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProtocoleWindows {
+    Tout,
+    Tcp,
+    Udp,
+    Icmp4,
+    Icmp6,
+}
+
+#[cfg(any(windows, test))]
+impl ProtocoleWindows {
+    /// Le numéro du protocole pour INetFwRule (256 : tous).
+    pub(crate) fn numero(self) -> i32 {
+        match self {
+            ProtocoleWindows::Tout => 256,
+            ProtocoleWindows::Tcp => 6,
+            ProtocoleWindows::Udp => 17,
+            ProtocoleWindows::Icmp4 => 1,
+            ProtocoleWindows::Icmp6 => 58,
+        }
+    }
+
+    fn texte(self) -> &'static str {
+        match self {
+            ProtocoleWindows::Tout => "*",
+            ProtocoleWindows::Tcp => "TCP",
+            ProtocoleWindows::Udp => "UDP",
+            ProtocoleWindows::Icmp4 => "ICMPv4",
+            ProtocoleWindows::Icmp6 => "ICMPv6",
+        }
+    }
+}
+
+/// Une règle Block de l'isolement de Windows : son nom (marqué de `PREFIXE_WINDOWS` et de sa génération), son sens,
+/// son protocole, ses adresses distantes (jamais vides), et ses ports (`None` : tous).
 #[cfg(any(windows, test))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RegleWindows {
-    pub nom: &'static str,
+    pub nom: String,
     pub entree: bool,
+    pub protocole: ProtocoleWindows,
     pub distantes: String,
-    pub tcp: bool,
+    pub ports_locaux: Option<String>,
+    pub ports_distants: Option<String>,
 }
 
-/// Le nom de chaque règle de l'isolement de Windows : la marque que la levée retire.
+/// Le début du nom de chaque règle de l'isolement de Windows : la marque que la levée retire. Suivi d'une espace et
+/// de la lettre de la génération (« a » ou « b ») : refaire l'isolement pose la génération suivante avant de retirer
+/// l'autre, jamais un trou entre les deux.
 #[cfg(any(windows, test))]
-pub(crate) const NOMS_WINDOWS: [&str; 4] = [
-    "Vanguard : isolement (sortie)",
-    "Vanguard : isolement (entrée)",
-    "Vanguard : isolement, TCP local (sortie)",
-    "Vanguard : isolement, TCP local (entrée)",
-];
+pub(crate) const PREFIXE_WINDOWS: &str = "Vanguard : isolement";
 
-/// Les ports distants de TCP local bloqués : tous sauf 53 (DNS en TCP).
-#[cfg(windows)]
-pub(crate) const TCP_LOCAL_PORTS: &str = "1-52,54-65535";
-
-/// Les règles de l'isolement de Windows : tout bloquer sauf ce qui est gardé (sessions, serveurs), le DNS, les
-/// serveurs DHCP et `toujours_permises` ; puis TCP vers le lien local, le DNS et les serveurs DHCP (sauf le port 53),
-/// jamais vers une adresse gardée. `None` si une liste est vide (une règle sans adresse viserait tout).
+/// La génération d'une règle de l'isolement d'après son nom : `Some('a')`, `Some('b')`, ou `Some('?')` pour une
+/// règle marquée d'une autre forme (une version d'avant) ; `None` hors de la marque.
 #[cfg(any(windows, test))]
-pub(crate) fn regles_windows(permis: &Permis, dhcp: &[IpAddr]) -> Option<Vec<RegleWindows>> {
-    let seule = |ip: &IpAddr| (ip.to_canonical(), ip.to_canonical());
-    let gardees: Vec<IpAddr> = permis
-        .garder
-        .iter()
-        .chain(&permis.serveurs)
-        .map(IpAddr::to_canonical)
-        .collect();
-    let mut exceptions: Vec<Plage> = gardees.iter().map(seule).collect();
-    exceptions.extend(permis.dns.iter().chain(dhcp).map(seule));
-    exceptions.extend(toujours_permises());
-    let tout = adresses_distantes(&plages_bloquees(&exceptions));
-    // TCP local : le lien local d'IPv6, le DNS et les serveurs DHCP, moins ce qui est gardé.
-    let mut locales: Vec<Plage> = permis
-        .dns
-        .iter()
-        .chain(dhcp)
-        .filter(|ip| !gardees.contains(&ip.to_canonical()))
-        .map(seule)
-        .collect();
-    locales.extend(prefixe("fe80::", 10));
-    // Réunies (le complément du complément), sans double ni chevauchement.
-    let locales = plages_bloquees(&plages_bloquees(&locales));
-    let locales = adresses_distantes(&soustraire(&locales, &gardees));
-    if tout.is_empty() || locales.is_empty() {
-        return None;
+pub(crate) fn generation(nom: &str) -> Option<char> {
+    let reste = nom.strip_prefix(PREFIXE_WINDOWS)?;
+    match reste.strip_prefix(' ').and_then(|r| r.chars().next()) {
+        Some(g @ ('a' | 'b')) => Some(g),
+        _ => Some('?'),
     }
-    Some(
-        NOMS_WINDOWS
-            .iter()
-            .enumerate()
-            .map(|(i, nom)| RegleWindows {
-                nom,
-                entree: i % 2 == 1,
-                distantes: if i < 2 { tout.clone() } else { locales.clone() },
-                tcp: i >= 2,
-            })
-            .collect(),
-    )
 }
 
-/// Les plages moins ces adresses (une plage qui en contient une est coupée autour d'elle).
+/// La génération à poser après celles en place : « b » si une règle « a » est là, sinon « a ».
 #[cfg(any(windows, test))]
-fn soustraire(plages: &[Plage], adresses: &[IpAddr]) -> Vec<Plage> {
-    let mut v = Vec::new();
-    for (a, b) in plages {
-        let (v6, na) = en_nombre(*a);
-        let (_, nb) = en_nombre(*b);
-        let trous: Vec<(u128, u128)> = adresses
+pub(crate) fn generation_suivante<'a>(noms: impl IntoIterator<Item = &'a str>) -> char {
+    if noms.into_iter().any(|n| generation(n) == Some('a')) {
+        'b'
+    } else {
+        'a'
+    }
+}
+
+/// Les ports de 1 à 65535 hors de ceux-ci, écrits « a-b,c » ; `None` s'il n'en reste aucun.
+#[cfg(any(windows, test))]
+pub(crate) fn ports_hors(permis: &[u16]) -> Option<String> {
+    let trous: Vec<(u128, u128)> = permis.iter().map(|p| (u128::from(*p), u128::from(*p))).collect();
+    let v: Vec<String> = complement(&trous, u128::from(u16::MAX))
+        .into_iter()
+        .filter_map(|(a, b)| {
+            let (a, b) = (u16::try_from(a.max(1)).ok()?, u16::try_from(b).ok()?);
+            (a >= 1 && a <= b).then(|| if a == b { a.to_string() } else { format!("{a}-{b}") })
+        })
+        .collect();
+    (!v.is_empty()).then(|| v.join(","))
+}
+
+/// Les règles de l'isolement de Windows, génération `generation` : l'espace des adresses est coupé en morceaux d'une
+/// même permission (sessions gardées, serveurs, DNS, serveurs DHCP, lien local, boucle locale, rien), puis chaque
+/// groupe reçoit les règles Block de ce qui ne lui est pas permis, dans les deux sens :
+///
+/// - rien de permis : tout bloqué (une règle, tout protocole) ;
+/// - TCP : les ports hors de ceux permis (pour une session, hors de sa connexion exacte : port local, port distant) ;
+/// - UDP : les ports distants hors du DNS (53) et de DHCP (67-68, 546-547) quand ils sont permis ;
+/// - ICMPv4 toujours, ICMPv6 hors du lien local et des sessions gardées.
+///
+/// `None` si une règle n'aurait pas d'adresse (elle viserait tout).
+#[cfg(any(windows, test))]
+pub(crate) fn regles_windows(permis: &Permis, dhcp: &[IpAddr], generation: char) -> Option<Vec<RegleWindows>> {
+    let seule = |ip: &IpAddr| (ip.to_canonical(), ip.to_canonical());
+    let mut faits: Vec<(Plage, Permission)> = Vec::new();
+    for (de, a) in [
+        ("0.0.0.0", "255.255.255.255"),
+        ("::", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"),
+    ] {
+        faits.push(((de.parse().ok()?, a.parse().ok()?), Permission::default()));
+    }
+    for p in boucle_locale() {
+        faits.push((
+            p,
+            Permission {
+                tout: true,
+                ..Permission::default()
+            },
+        ));
+    }
+    let dhcp_permis = Permission {
+        udp_distants: PORTS_DHCP.to_vec(),
+        ..Permission::default()
+    };
+    for p in lien_local() {
+        faits.push((
+            p,
+            Permission {
+                icmp6: true,
+                ..dhcp_permis.clone()
+            },
+        ));
+    }
+    for ip in dhcp {
+        faits.push((seule(ip), dhcp_permis.clone()));
+    }
+    for g in &permis.garder {
+        faits.push((
+            seule(&g.distante),
+            Permission {
+                tcp_paires: vec![(g.port_local, g.port_distant)],
+                icmp6: true,
+                ..Permission::default()
+            },
+        ));
+    }
+    for ip in &permis.serveurs {
+        faits.push((
+            seule(ip),
+            Permission {
+                tcp_distants: vec![PORT_HTTPS],
+                ..Permission::default()
+            },
+        ));
+    }
+    for ip in &permis.dns {
+        faits.push((
+            seule(ip),
+            Permission {
+                tcp_distants: vec![PORT_DNS],
+                udp_distants: vec![PORT_DNS],
+                ..Permission::default()
+            },
+        ));
+    }
+    // Les morceaux d'une même permission, chaque famille de son côté, regroupés par permission.
+    let mut groupes: Vec<(Permission, Vec<Plage>)> = Vec::new();
+    for (v6, max) in [(false, u128::from(u32::MAX)), (true, u128::MAX)] {
+        let famille: Vec<((u128, u128), &Permission)> = faits
             .iter()
-            .map(|ip| en_nombre(*ip))
-            .filter(|(f, n)| *f == v6 && *n >= na && *n <= nb)
-            .map(|(_, n)| (n, n))
+            .filter_map(|((a, b), p)| {
+                let (fa, na) = en_nombre(*a);
+                let (fb, nb) = en_nombre(*b);
+                (fa == v6 && fb == v6 && na <= nb).then_some(((na, nb), p))
+            })
             .collect();
-        // Le complément des trous, ramené à la plage.
-        for (x, y) in complement(&trous, nb) {
-            let (x, y) = (x.max(na), y);
-            if x <= y
-                && let (Some(x), Some(y)) = (en_adresse(v6, x), en_adresse(v6, y))
-            {
-                v.push((x, y));
+        let mut bornes: Vec<u128> = vec![0];
+        for ((a, b), _) in &famille {
+            bornes.push(*a);
+            if let Some(n) = b.checked_add(1).filter(|n| *n <= max) {
+                bornes.push(n);
+            }
+        }
+        bornes.sort_unstable();
+        bornes.dedup();
+        for (i, debut) in bornes.iter().enumerate() {
+            let fin = match bornes.get(i.checked_add(1)?) {
+                Some(n) => n.checked_sub(1)?,
+                None => max,
+            };
+            let ici = famille
+                .iter()
+                .filter(|((a, b), _)| a <= debut && debut <= b)
+                .fold(Permission::default(), |acc, (_, p)| acc.avec(p));
+            let plage = (en_adresse(v6, *debut)?, en_adresse(v6, fin)?);
+            match groupes.iter_mut().find(|(p, _)| *p == ici) {
+                Some((_, plages)) => plages.push(plage),
+                None => groupes.push((ici, vec![plage])),
             }
         }
     }
-    v
+    let mut v = Vec::new();
+    for (p, plages) in &groupes {
+        if p.tout {
+            continue;
+        }
+        let toutes = adresses_distantes(plages);
+        let famille = |v6: bool| {
+            adresses_distantes(
+                &plages
+                    .iter()
+                    .copied()
+                    .filter(|(a, _)| a.is_ipv6() == v6)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        // (protocole, adresses, ports locaux, ports distants) ; `None` en ports : tous.
+        let mut bloquer: Vec<(ProtocoleWindows, String, Option<String>, Option<String>)> = Vec::new();
+        if *p == Permission::default() {
+            bloquer.push((ProtocoleWindows::Tout, toutes.clone(), None, None));
+        } else {
+            // TCP : hors des ports locaux des sessions, tout port distant hors de ceux permis à tous ; puis, pour
+            // chaque port local d'une session, les ports distants hors de ceux de ses sessions.
+            let mut locaux: Vec<u16> = p.tcp_paires.iter().map(|(l, _)| *l).collect();
+            locaux.dedup();
+            if let Some(distants) = ports_hors(&p.tcp_distants) {
+                if locaux.is_empty() {
+                    bloquer.push((ProtocoleWindows::Tcp, toutes.clone(), None, Some(distants)));
+                } else if let Some(hors) = ports_hors(&locaux) {
+                    bloquer.push((ProtocoleWindows::Tcp, toutes.clone(), Some(hors), Some(distants)));
+                }
+            }
+            for l in &locaux {
+                let mut ouverts: Vec<u16> = p.tcp_paires.iter().filter(|(x, _)| x == l).map(|(_, d)| *d).collect();
+                ouverts.extend(&p.tcp_distants);
+                if let Some(distants) = ports_hors(&ouverts) {
+                    bloquer.push((
+                        ProtocoleWindows::Tcp,
+                        toutes.clone(),
+                        Some(l.to_string()),
+                        Some(distants),
+                    ));
+                }
+            }
+            if let Some(distants) = ports_hors(&p.udp_distants) {
+                bloquer.push((ProtocoleWindows::Udp, toutes.clone(), None, Some(distants)));
+            }
+            bloquer.push((ProtocoleWindows::Icmp4, famille(false), None, None));
+            if !p.icmp6 {
+                bloquer.push((ProtocoleWindows::Icmp6, famille(true), None, None));
+            }
+        }
+        for (protocole, distantes, locaux, distants) in bloquer {
+            // Une famille absente de ce groupe : pas de règle (sans adresse, elle viserait tout).
+            if distantes.is_empty() && matches!(protocole, ProtocoleWindows::Icmp4 | ProtocoleWindows::Icmp6) {
+                continue;
+            }
+            for entree in [false, true] {
+                let n = v.len();
+                v.push(RegleWindows {
+                    nom: format!(
+                        "{PREFIXE_WINDOWS} {generation}{n:03} ({}, {})",
+                        if entree {
+                            tr!("entrée", "inbound")
+                        } else {
+                            tr!("sortie", "outbound")
+                        },
+                        protocole.texte()
+                    ),
+                    entree,
+                    protocole,
+                    distantes: distantes.clone(),
+                    ports_locaux: locaux.clone(),
+                    ports_distants: distants.clone(),
+                });
+            }
+        }
+    }
+    (!v.is_empty() && v.iter().all(|r| !r.distantes.is_empty())).then_some(v)
 }
 
 /// Les profils du Pare-feu Windows (domaine, privé, public), par leur bit, et leur lettre dans `Avant`.
@@ -563,7 +859,7 @@ impl Avant {
 
 /// Ce que fait l'élevé pour isoler : il refuse hors de root (ou des essais), relit les sessions et rejuge, résout les
 /// serveurs, lit le DNS, puis pose.
-pub(crate) fn isoler_ici(garder: &[IpAddr]) -> Resultat {
+pub(crate) fn isoler_ici(garder: &[SessionGardee]) -> Resultat {
     if cfg!(test) {
         return Resultat::echec("essais : jamais d'isolement réel");
     }
@@ -579,7 +875,7 @@ pub(crate) fn isoler_ici(garder: &[IpAddr]) -> Resultat {
         return Resultat::echec(raison);
     }
     let permis = Permis {
-        garder: trier(garder.iter().copied()),
+        garder: trier_sessions(garder.iter().copied()),
         serveurs: resoudre_serveurs(),
         dns: dns_en_place(),
     };
@@ -589,7 +885,9 @@ pub(crate) fn isoler_ici(garder: &[IpAddr]) -> Resultat {
     }
     #[cfg(windows)]
     {
-        let n = sessions.map_or(0, |s| s.sessions.len());
+        // Les sessions gardées (au moins celles en cours, relues et jugées) : « bloquer toutes les connexions
+        // entrantes » n'est posé que sans aucune.
+        let n = permis.garder.len();
         crate::machine::windows::isolement::isoler(&permis, n)
     }
     #[cfg(not(any(target_os = "linux", windows)))]
@@ -647,8 +945,8 @@ pub(crate) fn banniere() -> Option<String> {
         })
         .unwrap_or_default();
     Some(trf!(
-        "Cet ordinateur est isolé du réseau par Vanguard{quand} : seuls la session à distance gardée, le DNS et les serveurs de Vanguard passent. Pour le lever : « vanguard blocage annuler ».",
-        "This computer is isolated from the network by Vanguard{quand}: only the kept remote session, DNS and Vanguard's servers get through. To lift it: “vanguard blocking undo”."
+        "Cet ordinateur est isolé du réseau par Vanguard{quand} : seuls la connexion gardée de la session à distance (aucune nouvelle), le DNS et les serveurs de Vanguard en HTTPS passent. Pour le lever : « vanguard blocage annuler ».",
+        "This computer is isolated from the network by Vanguard{quand}: only the kept connection of the remote session (no new one), DNS and Vanguard's servers over HTTPS get through. To lift it: “vanguard blocking undo”."
     ))
 }
 
@@ -760,8 +1058,8 @@ pub fn isoler_avec_accord() {
     afficher_aligne(
         "    ",
         tr!(
-            "Tout le reste est coupé, en entrée et en sortie : navigateur, partages, autres ordinateurs du réseau. Restent la boucle locale, DHCP, le DNS en place et les serveurs de Vanguard (mises à jour, listes de menaces). Se lève par « vanguard blocage annuler ».",
-            "Everything else is cut, in and out: browser, shares, other computers on the network. What remains: loopback, DHCP, the current DNS and Vanguard's servers (updates, threat lists). Lifted with “vanguard blocking undo”."
+            "Tout le reste est coupé, en entrée et en sortie : navigateur, partages, autres ordinateurs du réseau. Restent la boucle locale, DHCP, le DNS en place et les serveurs de Vanguard en HTTPS (mises à jour, listes de menaces). Se lève par « vanguard blocage annuler ».",
+            "Everything else is cut, in and out: browser, shares, other computers on the network. What remains: loopback, DHCP, the current DNS and Vanguard's servers over HTTPS (updates, threat lists). Lifted with “vanguard blocking undo”."
         ),
         4,
         GRIS,
@@ -834,23 +1132,42 @@ mod tests {
         assert_eq!(reponse(l, &[]), "");
     }
 
-    fn sessions(v: &[&str]) -> Sessions {
+    /// Une session gardée : « adresse », port distant, port local.
+    fn sg(a: &str, distant: u16, local: u16) -> SessionGardee {
+        SessionGardee {
+            distante: ip(a),
+            port_distant: distant,
+            port_local: local,
+        }
+    }
+
+    fn sessions(v: &[SessionGardee]) -> Sessions {
         Sessions {
-            sessions: v.iter().map(|s| ip(s)).collect(),
+            sessions: v.iter().map(|s| s.distante).collect(),
+            isolables: v.to_vec(),
             ..Sessions::default()
         }
     }
 
     #[test]
     fn garder_trie_et_canonique() {
-        let s = sessions(&["198.51.100.20", "::ffff:192.0.2.7", "198.51.100.20", "127.0.0.1"]);
+        let s = sessions(&[
+            sg("198.51.100.20", 51234, 22),
+            sg("::ffff:192.0.2.7", 50000, 3389),
+            sg("198.51.100.20", 51234, 22),
+            sg("198.51.100.20", 51235, 22),
+            sg("127.0.0.1", 40000, 22),
+        ]);
         assert_eq!(
             garder_pour(Some(&s)).unwrap(),
-            vec![ip("192.0.2.7"), ip("198.51.100.20")]
+            vec![
+                sg("192.0.2.7", 50000, 3389),
+                sg("198.51.100.20", 51234, 22),
+                sg("198.51.100.20", 51235, 22)
+            ]
         );
         assert!(garder_pour(None).is_err());
-        let trop: Vec<String> = (1..=17).map(|i| format!("192.0.2.{i}")).collect();
-        let trop: Vec<&str> = trop.iter().map(String::as_str).collect();
+        let trop: Vec<SessionGardee> = (1..=17).map(|i| sg(&format!("192.0.2.{i}"), 50000, 22)).collect();
         assert!(garder_pour(Some(&sessions(&trop))).is_err());
         // L'ordre construit se relit tel quel (validation de ordres_ligne).
         let o = crate::protection::blocage::ordres::Ordre::Isoler {
@@ -861,13 +1178,14 @@ mod tests {
 
     #[test]
     fn jugement_de_l_isolement() {
-        let s = sessions(&["198.51.100.20"]);
-        let garder = [ip("198.51.100.20")];
+        let s = sessions(&[sg("198.51.100.20", 51234, 22)]);
+        let garder = [sg("198.51.100.20", 51234, 22)];
         assert_eq!(juger(&garder, Some(&s), Some(&[])), None);
         // Connexions illisibles : refusé.
         assert!(juger(&garder, None, Some(&[])).is_some());
-        // Une session non montrée : refusé.
+        // Une session non montrée : refusé, même depuis une adresse gardée par une autre connexion.
         assert!(juger(&[], Some(&s), Some(&[])).is_some());
+        assert!(juger(&[sg("198.51.100.20", 51235, 22)], Some(&s), Some(&[])).is_some());
         // Un tunnel pendant une session, ou des cartes illisibles : refusé.
         assert!(juger(&garder, Some(&s), Some(&["wg0".to_string()])).is_some());
         assert!(juger(&garder, Some(&s), None).is_some());
@@ -875,7 +1193,10 @@ mod tests {
         assert_eq!(juger(&[], Some(&Sessions::default()), Some(&["wg0".to_string()])), None);
         assert_eq!(juger(&[], Some(&Sessions::default()), None), None);
         // Garder plus que les sessions (une session finie entre-temps) : permis.
-        assert_eq!(juger(&[ip("192.0.2.9")], Some(&Sessions::default()), Some(&[])), None);
+        assert_eq!(
+            juger(&[sg("192.0.2.9", 50000, 22)], Some(&Sessions::default()), Some(&[])),
+            None
+        );
     }
 
     #[test]
@@ -908,7 +1229,7 @@ mod tests {
         let e = Etat {
             depuis: 1_700_000_000,
             permis: Permis {
-                garder: vec![ip("198.51.100.20")],
+                garder: vec![sg("198.51.100.20", 51234, 22), sg("2001:db8::7", 50000, 3389)],
                 serveurs: vec![ip("192.0.2.1"), ip("2001:db8::1")],
                 dns: Vec::new(),
             },
@@ -916,14 +1237,35 @@ mod tests {
         let t = etat_texte(&e);
         assert_eq!(lire_etat(&t), Some(e.clone()));
         assert!(t.contains("dns -\n"));
-        // Toute autre forme : refusée.
+        assert!(
+            t.contains("garder 198.51.100.20:51234>22,[2001:db8::7]:50000>3389\n"),
+            "{t}"
+        );
+        // Toute autre forme : refusée (dont l'état d'avant, qui gardait des adresses seules).
         assert_eq!(
-            lire_etat(&t.replace("vanguard-isolement 1", "vanguard-isolement 2")),
+            lire_etat(&t.replace("vanguard-isolement 2", "vanguard-isolement 1")),
             None
         );
         assert_eq!(lire_etat(&format!("{t}x\n")), None);
-        assert_eq!(lire_etat(&t.replace("198.51.100.20", "198.51.100.20,0.0.0.0")), None);
-        assert_eq!(lire_etat(&t.replace("198.51.100.20", "127.0.0.1")), None);
+        assert_eq!(lire_etat(&t.replace("198.51.100.20:51234>22", "198.51.100.20")), None);
+        assert_eq!(
+            lire_etat(&t.replace("198.51.100.20:51234>22", "198.51.100.20:0>22")),
+            None
+        );
+        assert_eq!(
+            lire_etat(&t.replace("198.51.100.20:51234>22", "127.0.0.1:51234>22")),
+            None
+        );
+        // Sans session : « - ».
+        let sans = Etat {
+            permis: Permis {
+                garder: Vec::new(),
+                ..e.permis.clone()
+            },
+            ..e.clone()
+        };
+        assert!(etat_texte(&sans).contains("garder -\n"));
+        assert_eq!(lire_etat(&etat_texte(&sans)), Some(sans));
         assert_eq!(lire_etat(&t.replace("depuis 1700000000", "depuis x")), None);
         assert_eq!(lire_etat(""), None);
     }
@@ -955,20 +1297,70 @@ mod tests {
     #[test]
     fn regles_de_windows() {
         let permis = Permis {
-            garder: vec![ip("198.51.100.20")],
+            garder: vec![sg("198.51.100.20", 51234, 22)],
             serveurs: vec![ip("192.0.2.1")],
             dns: vec![ip("192.168.1.1"), ip("198.51.100.20")],
         };
-        let r = regles_windows(&permis, &[ip("192.168.1.1")]).unwrap();
-        assert_eq!(r.len(), 4);
-        assert_eq!(r.iter().map(|x| x.nom).collect::<Vec<_>>(), NOMS_WINDOWS);
-        assert!(!r[0].entree && r[1].entree && !r[2].entree && r[3].entree);
-        assert!(!r[0].tcp && r[2].tcp);
-        // TCP local : le DNS non gardé et le lien local, jamais la session (aussi DNS ici).
-        assert_eq!(
-            r[2].distantes,
-            "192.168.1.1,fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+        let r = regles_windows(&permis, &[ip("192.168.1.1")], 'a').unwrap();
+        // Chaque règle : marquée, génération « a », dans les deux sens, jamais sans adresse.
+        assert!(
+            r.iter()
+                .all(|x| x.nom.starts_with("Vanguard : isolement a") && !x.distantes.is_empty())
         );
+        assert_eq!(r.iter().filter(|x| x.entree).count() * 2, r.len());
+        let noms: std::collections::BTreeSet<&str> = r.iter().map(|x| x.nom.as_str()).collect();
+        assert_eq!(noms.len(), r.len());
+        // La session (aussi DNS ici) : TCP hors du port local 22 sauf 53 ; sur 22, hors de 51234 et 53.
+        let tcp_session: Vec<(&Option<String>, &Option<String>)> = r
+            .iter()
+            .filter(|x| !x.entree && x.protocole == ProtocoleWindows::Tcp && x.distantes == "198.51.100.20")
+            .map(|x| (&x.ports_locaux, &x.ports_distants))
+            .collect();
+        assert_eq!(
+            tcp_session,
+            vec![
+                (&Some("1-21,23-65535".into()), &Some("1-52,54-65535".into())),
+                (&Some("22".into()), &Some("1-52,54-51233,51235-65535".into()))
+            ]
+        );
+        // Le serveur : TCP hors de 443, et UDP tout entier.
+        let serveur: Vec<(ProtocoleWindows, &Option<String>)> = r
+            .iter()
+            .filter(|x| !x.entree && x.distantes == "192.0.2.1")
+            .map(|x| (x.protocole, &x.ports_distants))
+            .collect();
+        assert_eq!(
+            serveur,
+            vec![
+                (ProtocoleWindows::Tcp, &Some("1-442,444-65535".into())),
+                (ProtocoleWindows::Udp, &Some("1-65535".into())),
+                (ProtocoleWindows::Icmp4, &None)
+            ]
+        );
+        // B1 : le DNS (aussi serveur DHCP) : UDP hors de 53 et de DHCP, pas tout UDP.
+        assert!(r.iter().any(|x| x.distantes == "192.168.1.1"
+            && x.protocole == ProtocoleWindows::Udp
+            && x.ports_distants.as_deref() == Some("1-52,54-66,69-545,548-65535")));
+        assert_eq!(generation("Vanguard : isolement a003 (sortie, TCP)"), Some('a'));
+        assert_eq!(generation("Vanguard : isolement (sortie)"), Some('?'));
+        assert_eq!(generation("Vanguard : blocage"), None);
+        assert_eq!(generation_suivante(["Vanguard : isolement a000 (sortie, *)"]), 'b');
+        assert_eq!(generation_suivante(["Vanguard : isolement b000 (sortie, *)"]), 'a');
+        assert_eq!(generation_suivante(["Vanguard : isolement (sortie)"]), 'a');
+        assert_eq!(
+            [
+                ProtocoleWindows::Tout,
+                ProtocoleWindows::Tcp,
+                ProtocoleWindows::Udp,
+                ProtocoleWindows::Icmp4,
+                ProtocoleWindows::Icmp6
+            ]
+            .map(ProtocoleWindows::numero),
+            [256, 6, 17, 1, 58]
+        );
+        assert_eq!(ports_hors(&[]), Some("1-65535".into()));
+        assert_eq!(ports_hors(&[1, 65535]), Some("2-65534".into()));
+        assert_eq!(ports_hors(&(1..=65535).collect::<Vec<u16>>()), None);
     }
 
     #[test]
@@ -993,6 +1385,74 @@ mod tests {
         })
     }
 
+    /// Un paquet vu par le simulateur : sens, protocole, adresse distante, port local, port distant.
+    #[derive(Clone, Copy, Debug)]
+    struct Paquet {
+        entree: bool,
+        protocole: ProtocoleWindows,
+        distante: IpAddr,
+        local: u16,
+        distant: u16,
+    }
+
+    /// Des ports écrits « a-b,c » contiennent-ils celui-ci ? (`None` : tous.)
+    fn dans_ports(ports: Option<&str>, p: u16) -> bool {
+        ports.is_none_or(|t| {
+            t.split(',').any(|x| match x.split_once('-') {
+                Some((a, b)) => a.parse::<u16>().unwrap() <= p && p <= b.parse::<u16>().unwrap(),
+                None => x.parse::<u16>().unwrap() == p,
+            })
+        })
+    }
+
+    /// Des adresses écrites « a-b,c » (la forme de RemoteAddresses), relues.
+    fn plages_lues(t: &str) -> Vec<Plage> {
+        t.split(',')
+            .map(|p| match p.split_once('-') {
+                Some((a, b)) if a.parse::<IpAddr>().is_ok() => (ip(a), ip(b)),
+                _ => (ip(p), ip(p)),
+            })
+            .collect()
+    }
+
+    /// Le Pare-feu Windows simulé : une règle Block qui vise le paquet le bloque (aucune règle Allow n'y peut rien).
+    fn bloque(r: &[RegleWindows], x: Paquet) -> bool {
+        r.iter().any(|g| {
+            g.entree == x.entree
+                && (g.protocole == ProtocoleWindows::Tout || g.protocole == x.protocole)
+                && couverte(&plages_lues(&g.distantes), x.distante.to_canonical())
+                && dans_ports(g.ports_locaux.as_deref(), x.local)
+                && dans_ports(g.ports_distants.as_deref(), x.distant)
+        })
+    }
+
+    /// Ce qui doit passer, écrit d'après la règle et non d'après le code : la boucle locale ; la connexion exacte de
+    /// chaque session ; les serveurs en TCP 443 ; le DNS en 53 ; DHCP vers les serveurs DHCP et le lien local ;
+    /// ICMPv6 sur le lien local et vers une session. Rien d'autre.
+    fn attendu(permis: &Permis, dhcp: &[IpAddr], x: Paquet) -> bool {
+        let a = x.distante.to_canonical();
+        let parmi = |v: &[IpAddr]| v.iter().any(|y| y.to_canonical() == a);
+        if couverte(&boucle_locale(), a) {
+            return true;
+        }
+        let lien = couverte(&lien_local(), a);
+        match x.protocole {
+            ProtocoleWindows::Tcp => {
+                permis
+                    .garder
+                    .iter()
+                    .any(|g| g.distante == a && g.port_local == x.local && g.port_distant == x.distant)
+                    || (parmi(&permis.serveurs) && x.distant == 443)
+                    || (parmi(&permis.dns) && x.distant == 53)
+            }
+            ProtocoleWindows::Udp => {
+                (parmi(&permis.dns) && x.distant == 53) || ((parmi(dhcp) || lien) && PORTS_DHCP.contains(&x.distant))
+            }
+            ProtocoleWindows::Icmp6 => lien || permis.garder.iter().any(|g| g.distante == a),
+            ProtocoleWindows::Icmp4 | ProtocoleWindows::Tout => false,
+        }
+    }
+
     fn adresse() -> impl Strategy<Value = IpAddr> {
         prop_oneof![
             any::<u32>().prop_map(|n| IpAddr::V4(n.into())),
@@ -1004,40 +1464,64 @@ mod tests {
         ]
     }
 
+    fn session_au_hasard() -> impl Strategy<Value = SessionGardee> {
+        (adresse(), prop_oneof![Just(22u16), Just(3389), 1u16..], 1u16..).prop_filter_map("gardable", |(a, l, d)| {
+            Some(SessionGardee {
+                distante: gardable(a)?,
+                port_distant: d,
+                port_local: l,
+            })
+        })
+    }
+
     proptest! {
-        /// Aucune adresse gardée (session, serveur) n'est couverte par une règle Block ; toute autre adresse publique
-        /// l'est par la règle de tout.
+        /// M1, M3, B1 : sous Windows, la connexion exacte de chaque session passe dans les deux sens ; tout le reste
+        /// est bloqué ou permis exactement comme le dit `attendu` (rien d'autre vers l'adresse d'une session, les
+        /// serveurs en TCP 443 seulement, le DNS et DHCP par leurs ports seulement).
         #[test]
-        fn rien_de_garde_n_est_bloque(
-            garder in proptest::collection::vec(adresse(), 0..6),
-            serveurs in proptest::collection::vec(adresse(), 0..6),
+        fn windows_exactement_ce_qui_est_permis(
+            garder in proptest::collection::vec(session_au_hasard(), 0..4),
+            serveurs in proptest::collection::vec(adresse(), 0..4),
             dns in proptest::collection::vec(adresse(), 0..3),
             dhcp in proptest::collection::vec(adresse(), 0..3),
+            vers in 0usize..6,
             autre in adresse(),
+            protocole in prop_oneof![
+                Just(ProtocoleWindows::Tcp),
+                Just(ProtocoleWindows::Udp),
+                Just(ProtocoleWindows::Icmp4),
+                Just(ProtocoleWindows::Icmp6),
+            ],
+            entree in any::<bool>(),
+            ports in prop_oneof![(1u16.., 1u16..), (Just(22u16), 1u16..), (1u16.., prop_oneof![Just(53u16), Just(443), Just(67), Just(547)])],
+            exact in any::<bool>(),
         ) {
             let permis = Permis { garder: garder.clone(), serveurs: serveurs.clone(), dns: dns.clone() };
-            let r = regles_windows(&permis, &dhcp).unwrap();
-            let lire = |t: &str| -> Vec<Plage> {
-                t.split(',').map(|p| match p.split_once('-') {
-                    Some((a, b)) if a.parse::<IpAddr>().is_ok() => (ip(a), ip(b)),
-                    _ => (ip(p), ip(p)),
-                }).collect()
-            };
-            for regle in &r {
-                let plages = lire(&regle.distantes);
-                for g in garder.iter().chain(&serveurs) {
-                    prop_assert!(!couverte(&plages, g.to_canonical()), "{} couvre {g}", regle.nom);
-                }
-                if !regle.tcp {
-                    for d in dns.iter().chain(&dhcp) {
-                        prop_assert!(!couverte(&plages, d.to_canonical()));
-                    }
+            let r = regles_windows(&permis, &dhcp, 'a').unwrap();
+            prop_assert!(r.iter().all(|g| !g.distantes.is_empty()));
+            // Chaque session : sa connexion exacte n'est jamais bloquée, ni en entrée ni en sortie.
+            for g in &garder {
+                for entree in [false, true] {
+                    let x = Paquet { entree, protocole: ProtocoleWindows::Tcp, distante: g.distante, local: g.port_local, distant: g.port_distant };
+                    prop_assert!(!bloque(&r, x), "session {g:?} bloquée");
                 }
             }
-            let autre = autre.to_canonical();
-            let gardee = garder.iter().chain(&serveurs).chain(&dns).chain(&dhcp).any(|g| g.to_canonical() == autre)
-                || couverte(&toujours_permises(), autre);
-            prop_assert_eq!(couverte(&lire(&r[0].distantes), autre), !gardee);
+            // Un paquet vers une adresse connue (session, serveur, DNS, DHCP) ou au hasard.
+            let connues: Vec<IpAddr> = garder.iter().map(|g| g.distante).chain(serveurs).chain(dns).chain(dhcp.clone()).collect();
+            let distante = connues.get(vers).copied().unwrap_or(autre);
+            let (mut local, mut distant) = ports;
+            if exact && let Some(g) = garder.iter().find(|g| g.distante == distante.to_canonical()) {
+                (local, distant) = (g.port_local, g.port_distant);
+            }
+            // ICMPv4 ne va qu'à une IPv4, ICMPv6 qu'à une IPv6.
+            let v6 = distante.to_canonical().is_ipv6();
+            prop_assume!(match protocole {
+                ProtocoleWindows::Icmp4 => !v6,
+                ProtocoleWindows::Icmp6 => v6,
+                _ => true,
+            });
+            let x = Paquet { entree, protocole, distante, local, distant };
+            prop_assert_eq!(bloque(&r, x), !attendu(&permis, &dhcp, x), "{:?}", x);
         }
     }
 }

@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 use crate::machine::regles::Os;
+use crate::protection::blocage::ordres::SessionGardee;
 use crate::{tr, trf};
 
 /// Le noyau ou Idle (0), init ou systemd (1), System de Windows (4).
@@ -583,6 +584,9 @@ pub(crate) struct Sessions {
     /// Les ports locaux des sessions en cours (VNC sur 5900, RustDesk…) : jamais fermés en entrée pendant qu'elles
     /// durent, une règle Block coupant aussi ce qui est établi.
     pub ports_locaux: Vec<u16>,
+    /// Les sessions à distance que l'isolement (Défense R4) garde, chacune par sa connexion exacte (`session_a_garder`,
+    /// et celle de SSH_CONNECTION) : triées, sans doublon.
+    pub isolables: Vec<SessionGardee>,
 }
 
 /// Pourquoi cette adresse ne doit pas être bloquée en sortie, ou `None`. `sessions` : ce que les connexions en cours
@@ -711,6 +715,38 @@ pub(crate) fn est_session(e: &Etablie, port_rdp: Option<u16>) -> bool {
         || PORTS_WINRM.contains(&e.port_local)
         || port_rdp.is_some_and(|p| p != 0 && e.port_local == p)
         || e.programme.as_deref().is_some_and(programme_de_session)
+}
+
+/// Les clients et les tunnels : leurs connexions partent de cet ordinateur. Aucune n'est une session que l'isolement
+/// garde (un client SSH ou du Bureau à distance qui part d'ici, un VPN).
+const CLIENTS_ET_TUNNELS: &[&str] = &[
+    "tailscaled",
+    "tailscale",
+    "wireguard",
+    "wg",
+    "wg-quick",
+    "openvpn",
+    "openvpn-gui",
+    "openvpnserv",
+    "zerotier-one",
+    "zerotier-one_x64",
+    "pangps",
+    "vpnagent",
+    "fortisslvpndaemon",
+    "mstsc",
+];
+
+/// Une connexion établie est-elle une session à distance que l'isolement garde (Défense R4) : arrivée sur un port
+/// local de SSH, du Bureau à distance (3389 ou son `port_rdp`) ou de WinRM, ou tenue par un programme de prise en
+/// main (sshd sur un autre port, VNC, RustDesk, AnyDesk, TeamViewer…). Ni un client qui part d'ici (port distant 22
+/// ou 3389 seulement, mstsc), ni un VPN : l'isolement ne garde pas ce que ce PC ouvre vers l'extérieur.
+pub(crate) fn session_a_garder(e: &Etablie, port_rdp: Option<u16>) -> bool {
+    PORTS_DE_SESSION.contains(&e.port_local)
+        || PORTS_WINRM.contains(&e.port_local)
+        || port_rdp.is_some_and(|p| p != 0 && e.port_local == p)
+        || e.programme
+            .as_deref()
+            .is_some_and(|p| programme_de_session(p) && !CLIENTS_ET_TUNNELS.contains(&nom_simple(p).as_str()))
 }
 
 /// Le port du Bureau à distance d'après la valeur PortNumber de RDP-Tcp : `None` si elle manque, vaut 0 ou dépasse
@@ -849,6 +885,13 @@ pub(crate) fn juger_etablies(etablies: &[Etablie], client: Option<IpAddr>, port_
             s.sessions.push(ip);
             s.ports_locaux.push(e.port_local);
         }
+        if session_a_garder(e, port_rdp) && e.port_local != 0 && e.port_distant != 0 {
+            s.isolables.push(SessionGardee {
+                distante: ip,
+                port_distant: e.port_distant,
+                port_local: e.port_local,
+            });
+        }
         if e.autre_compte {
             s.autres_comptes.push(ip);
         }
@@ -860,7 +903,24 @@ pub(crate) fn juger_etablies(etablies: &[Etablie], client: Option<IpAddr>, port_
     }
     s.ports_locaux.sort_unstable();
     s.ports_locaux.dedup();
+    s.isolables.sort_unstable();
+    s.isolables.dedup();
     s
+}
+
+/// La connexion exacte de la session SSH où tourne Vanguard (« SSH_CONNECTION=client port serveur port ») : l'adresse
+/// et le port du client, le port de sshd sur ce PC.
+pub(crate) fn session_ssh(valeur: &str) -> Option<SessionGardee> {
+    let mut champs = valeur.split_whitespace();
+    let distante = champs.next()?.parse::<IpAddr>().ok()?.to_canonical();
+    let port_distant = champs.next()?.parse::<u16>().ok().filter(|p| *p != 0)?;
+    let _serveur = champs.next()?;
+    let port_local = champs.next()?.parse::<u16>().ok().filter(|p| *p != 0)?;
+    champs.next().is_none().then_some(SessionGardee {
+        distante,
+        port_distant,
+        port_local,
+    })
 }
 
 /// L'adresse du client de la session SSH où tourne Vanguard (« SSH_CONNECTION=client port serveur port »), même sur
@@ -954,8 +1014,15 @@ pub(crate) fn sessions_a_distance() -> Option<Sessions> {
     #[cfg(not(windows))]
     let port = None;
     let etablies = lire_etablies()?;
-    let client = std::env::var("SSH_CONNECTION").ok().as_deref().and_then(client_ssh);
-    Some(juger_etablies(&etablies, client, port))
+    let ssh = std::env::var("SSH_CONNECTION").ok();
+    let client = ssh.as_deref().and_then(client_ssh);
+    let mut s = juger_etablies(&etablies, client, port);
+    if let Some(g) = ssh.as_deref().and_then(session_ssh) {
+        s.isolables.push(g);
+        s.isolables.sort_unstable();
+        s.isolables.dedup();
+    }
+    Some(s)
 }
 
 #[cfg(target_os = "linux")]
@@ -3099,6 +3166,7 @@ mod tests {
             sessions: vec![ip("198.51.100.20")],
             autres_comptes: vec![ip("203.0.113.9")],
             ports_locaux: Vec::new(),
+            isolables: Vec::new(),
         };
         let s = Some(&sessions);
         for auto in [false, true] {

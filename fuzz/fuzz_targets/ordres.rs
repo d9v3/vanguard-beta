@@ -75,12 +75,17 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                 assert!(!dossier.contains(['\0', '\n', '\r']));
             }
             ordres_ligne::Ordre::GardePause { secondes } => assert!(secondes <= ordres_ligne::PAUSE_MAX),
-            // L'isolement : des adresses d'hôtes, triées sans double, bornées ; jamais une forme IPv4 écrite en IPv6.
+            // L'isolement : des sessions exactes (adresse d'hôte, deux ports non nuls), triées sans double, bornées ;
+            // jamais une forme IPv4 écrite en IPv6.
             ordres_ligne::Ordre::Isoler { garder } => {
                 assert!(garder.len() <= ordres_ligne::GARDER_MAX);
                 assert!(garder.windows(2).all(|p| p[0] < p[1]));
-                assert!(garder.iter().all(|ip| !ip.is_unspecified() && !ip.is_multicast()));
-                assert!(garder.iter().all(|ip| ip.to_canonical() == *ip));
+                for s in &garder {
+                    let ip = s.distante;
+                    assert!(!ip.is_unspecified() && !ip.is_multicast() && ip.to_canonical() == ip);
+                    assert!(s.port_distant != 0 && s.port_local != 0);
+                    assert_eq!(ordres_ligne::SessionGardee::lire(&s.texte()), Some(*s));
+                }
             }
             _ => {}
         }

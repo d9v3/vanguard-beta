@@ -810,7 +810,7 @@ fn lire_regle(r: &INetFwRule) -> Option<RegleLue> {
 
 /// Chaque règle du pare-feu, relue, avec son objet COM (dans ce fil seulement), et le nombre de celles qui ne se
 /// lisent pas. Une liste qui ne se parcourt pas jusqu'au bout est une erreur, jamais une liste partielle.
-fn regles_com(r: &INetFwRules) -> windows::core::Result<(Vec<(RegleLue, INetFwRule)>, usize)> {
+pub(super) fn regles_com(r: &INetFwRules) -> windows::core::Result<(Vec<(RegleLue, INetFwRule)>, usize)> {
     // SAFETY: objet COM valide ; _NewEnum rend un énumérateur à nous ; chaque VARIANT rempli par Next est à nous et
     // libéré par son Drop (VariantClear) ; la règle tirée de son IDispatch est une référence comptée à part.
     unsafe {
