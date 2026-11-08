@@ -378,7 +378,18 @@ fn compiler_ressources_zig(res: &winresource::WindowsResource) -> std::io::Resul
     // sans avertissement qu'après une première ligne ; /c 65001 dit la même page de code dès le début.
     let texte = std::fs::read_to_string(&rc)?;
     std::fs::write(&rc, format!("// Ressources de vanguard.exe (build.rs)\n{texte}"))?;
-    let zig = std::env::var("CARGO_ZIGBUILD_ZIG_PATH").unwrap_or_else(|_| "zig".to_owned());
+    // Le zig posé et vérifié par outils/chaine-zig.sh, que compiler-version.sh donne par son chemin ; jamais un zig
+    // pris dans le PATH (un `cargo zigbuild` lancé à la main, hors de la recette, prendrait celui de la distribution).
+    let zig = std::env::var_os("CARGO_ZIGBUILD_ZIG_PATH")
+        .map(std::path::PathBuf::from)
+        .filter(|chemin| chemin.is_absolute() && chemin.is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "CARGO_ZIGBUILD_ZIG_PATH absente ou pas un chemin complet vers zig : les programmes compilés par zig \
+                 passent par outils/compiler-version.sh (zig posé et vérifié par outils/chaine-zig.sh), pas par \
+                 cargo zigbuild lancé à la main"
+            )
+        });
     let etat = std::process::Command::new(zig)
         .current_dir(&depot)
         .args([
