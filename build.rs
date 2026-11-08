@@ -383,13 +383,13 @@ fn compiler_ressources_zig(res: &winresource::WindowsResource) -> std::io::Resul
     let zig = std::env::var_os("CARGO_ZIGBUILD_ZIG_PATH")
         .map(std::path::PathBuf::from)
         .filter(|chemin| chemin.is_absolute() && chemin.is_file())
-        .unwrap_or_else(|| {
-            panic!(
+        .ok_or_else(|| {
+            std::io::Error::other(
                 "CARGO_ZIGBUILD_ZIG_PATH absente ou pas un chemin complet vers zig : les programmes compilés par zig \
                  passent par outils/compiler-version.sh (zig posé et vérifié par outils/chaine-zig.sh), pas par \
-                 cargo zigbuild lancé à la main"
+                 cargo zigbuild lancé à la main",
             )
-        });
+        })?;
     let etat = std::process::Command::new(zig)
         .current_dir(&depot)
         .args([
@@ -454,9 +454,9 @@ fn ressources_windows() {
         // Le programme livré doit porter son manifeste (page de code UTF-8, accents et chemins justes ; asInvoker) :
         // en version publiée, son absence arrête la compilation au lieu d'un avertissement que personne ne lit
         // (`vanguard deploiement verifier-binaire` le revérifie sur le .exe, avant qu'il parte). Les tests, eux, s'en
-        // passent.
+        // passent ; sous zig (cargo-zigbuild), jamais : rien ne compile un programme de zig sans ses ressources.
         assert!(
-            std::env::var("PROFILE").as_deref() != Ok("release"),
+            !par_zig() && std::env::var("PROFILE").as_deref() != Ok("release"),
             "ressources Windows non intégrées (manifeste UTF-8, asInvoker, icône) : {e}"
         );
         println!("cargo:warning=ressources Windows non intégrées : {e}");
