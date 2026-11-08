@@ -21,7 +21,7 @@ program, the USB key or the update) belong on another page: [SECURITY.md](SECURI
 
 | Threat | What Vanguard does |
 |---|---|
-| Known malware on the computer | The system antivirus as a second opinion, YARA rules, MalwareBazaar hashes, program memory, startup entries, signs of a rootkit; blocking after consent, or on its own for what leaves no doubt (active protection). |
+| Known malware on the computer | Vanguard's engine (MalwareBazaar and ClamAV hashes, YARA rules, ClamAV signatures, heuristics) with the system antivirus, program memory, startup entries, signs of a rootkit; blocking after consent, or on its own for what leaves no doubt (active protection). |
 | Ransomware | Trap files checked every hour; on Linux, once turned on, a live watcher that stops a near-certain case when active protection is on. |
 | A weak setting or an unpatched vulnerability | A security check graded A to F, missing updates, actively exploited vulnerabilities from the CISA catalog, end of support; every fix after consent, undoable except one that turns a protection back on (firewall, antivirus, encryption, UAC, SELinux, kernel hardening on Linux, Windows hardening and Defender protections). Lowering a protection remains the person's choice, never Vanguard's (see [Lowered by choice](#lowered-by-choice)). |
 | Exposure to the Internet | Ports the router opens (asked of the router itself, UPnP openings included), public IPv6 without a firewall; in the logs, guessed passwords and Remote Desktop connections from outside. |
@@ -43,6 +43,19 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   Secure Boot is checked and the firmware (BIOS, UEFI) updated after consent, but nothing watches it live.
 - **A new threat, still without a signature.** Detection relies mostly on known lists; what is not on them yet can get
   through. Vanguard complements the system antivirus (Microsoft Defender, ClamAV): it does not replace it.
+- **What Vanguard's engine does not see.** Its verdict (certain, family, suspicious, clean, not checked) comes from
+  hashes (MalwareBazaar, ClamAV), YARA rules, ClamAV signatures and eight heuristics, on what is written on disk. It
+  has no cloud analysis, no memory scanning and no AMSI: a script or a macro that only decrypts itself when it runs
+  escapes it. On Windows, it refuses no launch: only Defender does. “Clean” means “nothing known in what was read”. A
+  missing expected source or an unread part gives “not checked”; a missing optional source (ClamAV database,
+  MalwareBazaar hashes) is stated with the verdict, and the result recorded for the report counts it as not checked.
+  Heuristics can be evaded (a program signed with a stolen certificate, diluted entropy, an ordinary name) and can be
+  wrong. So they only give a “suspicious”, which triggers no action on its own: one click, and a `normales` key tied
+  to the exact content to silence a false positive. A family rule (YARA, ClamAV signature) also starts from a click.
+  Only a known hash (or the EICAR test) can lead to quarantine without a click, if active protection allows it, and
+  quarantine stays undoable. On Windows, with Defender on, the engine is only a second opinion. With Defender turned
+  off by the person (Defense options), it becomes the main one and the scan says what is missing. Defender off with
+  no recorded choice, or unreadable: nothing is concluded.
 - **Everything, in real time.** Apart from the two Linux watchers (programs and connections, anti-ransomware; both off
   by default), the live integrity monitoring of critical files and Defender's blocking, monitoring runs every hour,
   between two checks.
