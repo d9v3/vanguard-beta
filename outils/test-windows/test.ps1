@@ -2206,38 +2206,49 @@ public static class Reseau {
         $id = $jetableR3.Id
         LancerAvec 'blocage-couper-reseau' @('blocage', 'couper-reseau', "$id") "o`n"
         $t = "$(Sortie 'blocage-couper-reseau')" -replace '\s+', ' '
-        if ($t -match 'Réseau coupé|Network cut') { Ok "vanguard blocage couper-reseau $id : dit coupé" }
-        else { Bug "vanguard blocage couper-reseau $id : pas « Réseau coupé » ($((Lignes (Sortie 'blocage-couper-reseau') | Where-Object { $_ -match '✖' }) -join ' / '))" }
-        if ($t -match 'TOUS les processus de ce fichier|ALL processes of that file') { Ok 'La question dit que tous les processus du fichier sont coupés' }
-        elseif ($t -match 'Réseau coupé|Network cut') { Bug 'La question ne dit pas que TOUS les processus du fichier sont coupés' }
-        $regles = Regles-R3
-        $sens = @($regles | ForEach-Object { "$($_.Direction)" } | Sort-Object)
-        $bloquent = @($regles | Where-Object { "$($_.Action)" -eq 'Block' -and "$($_.Enabled)" -eq 'True' }).Count -eq 2
-        # Le chemin tel que le Pare-feu le rend, comparé sans la casse et sous sa forme complète.
-        $complet = [IO.Path]::GetFullPath($reseauR3)
-        $programmes = @($regles | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue | Where-Object { $_.Program -and [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($_.Program)) -ieq $complet }).Count
-        if ($regles.Count -eq 2 -and ($sens -join ',') -eq 'Inbound,Outbound' -and $bloquent -and $programmes -eq 2) { Ok 'Deux règles de Vanguard (sortante, entrante), Block, sur le fichier du programme' }
-        elseif ($t -match 'Réseau coupé|Network cut') { Bug "Règles de coupure inattendues : $($regles.Count) règle(s), sens $($sens -join ','), Block : $bloquent, programme : $programmes" }
-        if ($internetR3 -and $regles.Count -eq 2) {
-            if (-not (Connecte $reseauR3)) { Ok 'Le programme coupé ne se connecte plus (effet mesuré, même fichier lancé de nouveau)' }
-            else { Bug 'Le programme coupé se connecte encore à 1.1.1.1:443' }
-            if (Connecte $voisinR3) { Ok 'Son voisin (une copie sous un autre nom) se connecte toujours' }
-            else { Bug 'Le voisin du programme coupé ne se connecte plus' }
+        # Lancé dans la session du Bureau à distance sans droits d'administrateur (passe du menu), Vanguard ne lit pas
+        # l'heure de création de tous les ancêtres : la lignée est incertaine pendant une session à distance, et la
+        # coupure est refusée, comme voulu (gardes.rs). Rien n'est alors coupé : le retour n'est pas essayé, il
+        # ouvrirait une fenêtre administrateur que personne ne fermerait (8 nov. : passe du menu bloquée à 17:52).
+        $refusSession = $t -match "Rien n'est coupé|Nothing is cut" -and $t -match 'session à distance|remote session' -and (Regles-R3).Count -eq 0
+        if ($refusSession) {
+            Ok 'Session à distance (lignée incertaine sans droits d''administrateur) : la coupure est refusée, rien n''est posé'
+            Sautee 'Coupure mesurée, retour et second retour : refusés dans une session à distance sans droits d''administrateur'
         }
-        Lancer 'blocage-rendre-reseau' @('blocage', 'rendre-reseau', "$id")
-        $t = "$(Sortie 'blocage-rendre-reseau')" -replace '\s+', ' '
-        if ($t -match 'Rendu|Given back') { Ok "vanguard blocage rendre-reseau $id : dit rendu" }
-        else { Bug "vanguard blocage rendre-reseau $id : pas « Rendu » ($((Lignes (Sortie 'blocage-rendre-reseau') | Where-Object { $_ -match '✖' }) -join ' / '))" }
-        $regles = Regles-R3
-        if ($regles.Count -eq 0) { Ok 'Plus aucune règle de coupure après le retour' }
-        else { Bug "$($regles.Count) règle(s) de coupure restent après le retour" }
-        if ($internetR3) {
-            if (Connecte $reseauR3) { Ok 'Le programme rendu se connecte de nouveau (effet mesuré)' }
-            else { Bug 'Le programme rendu ne se connecte toujours pas' }
+        else {
+            if ($t -match 'Réseau coupé|Network cut') { Ok "vanguard blocage couper-reseau $id : dit coupé" }
+            else { Bug "vanguard blocage couper-reseau $id : pas « Réseau coupé » ($((Lignes (Sortie 'blocage-couper-reseau') | Where-Object { $_ -match '✖' }) -join ' / '))" }
+            if ($t -match 'TOUS les processus de ce fichier|ALL processes of that file') { Ok 'La question dit que tous les processus du fichier sont coupés' }
+            elseif ($t -match 'Réseau coupé|Network cut') { Bug 'La question ne dit pas que TOUS les processus du fichier sont coupés' }
+            $regles = Regles-R3
+            $sens = @($regles | ForEach-Object { "$($_.Direction)" } | Sort-Object)
+            $bloquent = @($regles | Where-Object { "$($_.Action)" -eq 'Block' -and "$($_.Enabled)" -eq 'True' }).Count -eq 2
+            # Le chemin tel que le Pare-feu le rend, comparé sans la casse et sous sa forme complète.
+            $complet = [IO.Path]::GetFullPath($reseauR3)
+            $programmes = @($regles | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue | Where-Object { $_.Program -and [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($_.Program)) -ieq $complet }).Count
+            if ($regles.Count -eq 2 -and ($sens -join ',') -eq 'Inbound,Outbound' -and $bloquent -and $programmes -eq 2) { Ok 'Deux règles de Vanguard (sortante, entrante), Block, sur le fichier du programme' }
+            elseif ($t -match 'Réseau coupé|Network cut') { Bug "Règles de coupure inattendues : $($regles.Count) règle(s), sens $($sens -join ','), Block : $bloquent, programme : $programmes" }
+            if ($internetR3 -and $regles.Count -eq 2) {
+                if (-not (Connecte $reseauR3)) { Ok 'Le programme coupé ne se connecte plus (effet mesuré, même fichier lancé de nouveau)' }
+                else { Bug 'Le programme coupé se connecte encore à 1.1.1.1:443' }
+                if (Connecte $voisinR3) { Ok 'Son voisin (une copie sous un autre nom) se connecte toujours' }
+                else { Bug 'Le voisin du programme coupé ne se connecte plus' }
+            }
+            Lancer 'blocage-rendre-reseau' @('blocage', 'rendre-reseau', "$id")
+            $t = "$(Sortie 'blocage-rendre-reseau')" -replace '\s+', ' '
+            if ($t -match 'Rendu|Given back') { Ok "vanguard blocage rendre-reseau $id : dit rendu" }
+            else { Bug "vanguard blocage rendre-reseau $id : pas « Rendu » ($((Lignes (Sortie 'blocage-rendre-reseau') | Where-Object { $_ -match '✖' }) -join ' / '))" }
+            $regles = Regles-R3
+            if ($regles.Count -eq 0) { Ok 'Plus aucune règle de coupure après le retour' }
+            else { Bug "$($regles.Count) règle(s) de coupure restent après le retour" }
+            if ($internetR3) {
+                if (Connecte $reseauR3) { Ok 'Le programme rendu se connecte de nouveau (effet mesuré)' }
+                else { Bug 'Le programme rendu ne se connecte toujours pas' }
+            }
+            Lancer 'blocage-rendre-reseau-vide' @('blocage', 'rendre-reseau')
+            if ("$(Sortie 'blocage-rendre-reseau-vide')" -match 'Aucun programme coupé du réseau|No program cut from the network') { Ok 'Un second retour ne touche à rien : la liste est vide' }
+            else { Bug 'Un second retour ne dit pas « Aucun programme coupé du réseau »' }
         }
-        Lancer 'blocage-rendre-reseau-vide' @('blocage', 'rendre-reseau')
-        if ("$(Sortie 'blocage-rendre-reseau-vide')" -match 'Aucun programme coupé du réseau|No program cut from the network') { Ok 'Un second retour ne touche à rien : la liste est vide' }
-        else { Bug 'Un second retour ne dit pas « Aucun programme coupé du réseau »' }
     }
     try {
         Copy-Item (Join-Path $env:SystemRoot 'System32\notepad.exe') $blocR3 -Force

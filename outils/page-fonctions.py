@@ -100,7 +100,7 @@ def securite() -> dict[str, int]:
     (outils/preuves/src), les modules qui portent `#![forbid(unsafe_code)]` en tête de ligne (comme le compte de
     outils/verifier.sh), les cas du corpus de détection et les règles YARA de ReversingLabs."""
     http = (RACINE / "src/http.rs").read_text(encoding="utf-8")
-    bloc = re.search(r"^const HOTES: &\[&str\] = &\[\n(.*?)^\];", http, re.S | re.M)
+    bloc = re.search(r"^(?:pub(?:\([a-z]+\))? )?const HOTES: &\[&str\] = &\[\n(.*?)^\];", http, re.S | re.M)
     hotes = len(re.findall(r'^\s*"[^"]+",', bloc.group(1), re.M)) if bloc else 0
     fuzz = len(re.findall(r"^\[\[bin\]\]", (RACINE / "fuzz/Cargo.toml").read_text(encoding="utf-8"), re.M))
     kani = sum(f.read_text(encoding="utf-8").count("#[kani::proof]")
