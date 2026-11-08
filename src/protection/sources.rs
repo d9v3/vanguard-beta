@@ -572,7 +572,8 @@ pub(crate) mod tests {
         assert!(!guetter(&[&b"#!/bin/sh\n"[..], &m].concat(), 3).0);
     }
 
-    /// Une copie jetable d'un vrai programme du système (`sleep`), suivie de `en_plus`, rendue exécutable.
+    /// Une copie jetable d'un vrai programme du système (`sleep`), suivie de `en_plus`, rendue exécutable :
+    /// `d/<nom>/sleep`.
     #[cfg(target_os = "linux")]
     pub(crate) fn programme_jetable(d: &Path, nom: &str, en_plus: &[u8]) -> Option<PathBuf> {
         use std::os::unix::fs::PermissionsExt;
@@ -580,7 +581,12 @@ pub(crate) mod tests {
             .into_iter()
             .map(Path::new)
             .find(|c| c.is_file())?;
-        let f = d.join(nom);
+        // Le fichier garde le nom « sleep », dans un dossier à son nom : un sleep à plusieurs usages (uutils, celui
+        // d'Ubuntu depuis 25.10) choisit quoi faire d'après le nom sous lequel il est lancé, et sortirait aussitôt
+        // sous un autre nom ; l'essai qui doit le garder en vie le verrait parti.
+        let dossier = d.join(nom);
+        std::fs::create_dir_all(&dossier).ok()?;
+        let f = dossier.join("sleep");
         let mut octets = std::fs::read(source).ok()?;
         octets.extend_from_slice(en_plus);
         std::fs::write(&f, octets).ok()?;
