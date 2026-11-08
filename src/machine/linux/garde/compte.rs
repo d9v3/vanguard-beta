@@ -379,8 +379,8 @@ pub(crate) fn juger(posee: bool, etat: Option<&Etat>, maintenant: u64) -> Consta
         hausser(
             Niveau::Moyen,
             trf!(
-                "{n} empreintes ont été ajoutées d'un coup aux listes du garde, bien au-delà de leur croissance normale (MalwareBazaar et ClamAV) : un programme sous votre compte a pu y mettre celles de programmes sains pour les faire refuser. Si vous venez d'installer ou de mettre à jour la base de ClamAV, c'est elle ; sinon, « vanguard garde maj » dans un terminal repart des listes refaites.",
-                "{n} hashes were added at once to the guard's lists, far beyond their normal growth (MalwareBazaar and ClamAV): a program under your account may have put in those of safe programs to have them refused. If you just installed or updated the ClamAV database, that is it; otherwise, “vanguard guard update” in a terminal starts over from freshly made lists."
+                "{n} empreintes ont été ajoutées aux listes du garde au-delà de leur croissance normale (MalwareBazaar et ClamAV, 20 000 par jour au plus, d'un coup ou en plusieurs fois) : un programme sous votre compte a pu y mettre celles de programmes sains pour les faire refuser. Si vous venez d'installer ou de mettre à jour la base de ClamAV, ou si l'ordinateur est resté éteint plus de deux semaines, c'est cela ; sinon, « vanguard garde maj » dans un terminal repart des listes refaites.",
+                "{n} hashes were added to the guard's lists beyond their normal growth (MalwareBazaar and ClamAV, at most 20,000 a day, at once or over several times): a program under your account may have put in those of safe programs to have them refused. If you just installed or updated the ClamAV database, or the computer stayed off for more than two weeks, that is it; otherwise, “vanguard guard update” in a terminal starts over from freshly made lists."
             ),
         );
     }

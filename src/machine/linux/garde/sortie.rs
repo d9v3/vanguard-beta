@@ -81,8 +81,8 @@ pub(crate) struct Etat {
     /// Les empreintes que la dernière lecture des listes a ajoutées à l'union.
     #[serde(default)]
     pub listes_ajoutees: u64,
-    /// Les empreintes ajoutées d'un coup bien au-delà de la croissance normale (N-1), depuis la dernière pose ou mise à
-    /// jour : gardé en root, l'alerte survit au redémarrage (au moins moyenne).
+    /// Les empreintes ajoutées au-delà de la croissance normale (N-1), d'un coup ou en tranches, depuis la dernière pose
+    /// ou mise à jour : gardé en root, l'alerte survit au redémarrage (au moins moyenne).
     #[serde(default)]
     pub listes_croissance: u64,
 }

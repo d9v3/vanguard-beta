@@ -86,8 +86,8 @@ struct Config {
     bloquees: [u64; 2],
     /// Par liste : ce que la dernière lecture a ajouté à l'union.
     ajoutees: [u64; 2],
-    /// La croissance anormale depuis la dernière pose ou mise à jour (N-1), gardée en root (`CROISSANCE`).
-    croissance: u64,
+    /// La croissance des listes depuis la dernière pose ou mise à jour (N-1), gardée en root (`CROISSANCE`).
+    croissance: listes::Croissance,
 }
 
 impl Config {
@@ -647,7 +647,7 @@ impl Relecture {
         alertes.extend(alerte);
         let mut c = p.config.write().unwrap_or_else(PoisonError::into_inner);
         c.certain = Certain { sha256, md5 };
-        c.croissance = croissance;
+        c.croissance = croissance.unwrap_or_default();
         // Préfixe « union » : ces alertes-là restent (celles des listes du compte sont remplacées à chaque lecture).
         c.alertes.extend(alertes.into_iter().map(|a| format!("union {a}")));
     }
@@ -790,20 +790,20 @@ impl Relecture {
                     };
                     if let Some(nouvelle) = u.liste {
                         if let Some(nom) = NOMS.get(i) {
-                            // N-1 : un ajout bien au-delà de la croissance normale depuis la dernière (la date de
-                            // l'union, à root) est compté et gardé ; il est dit jusqu'à la prochaine mise à jour.
-                            let depuis = std::fs::metadata(self.union.join(nom))
-                                .and_then(|m| m.modified())
-                                .ok()
-                                .and_then(|t| t.elapsed().ok());
-                            let anormale = listes::croissance_anormale(u.ajoutees, depuis);
-                            if anormale > 0 {
-                                let total = {
+                            // N-1 : les ajouts depuis la dernière pose ou mise à jour, cumulés en root avec leur
+                            // départ, ne passent pas le rythme normal (des tranches non plus) ; au-delà, l'ajout est
+                            // compté et gardé, dit jusqu'à la prochaine mise à jour.
+                            if u.ajoutees > 0 {
+                                let gardee = {
                                     let mut c = p.config.write().unwrap_or_else(PoisonError::into_inner);
-                                    c.croissance = c.croissance.saturating_add(anormale);
-                                    c.croissance
+                                    let c = &mut c.croissance;
+                                    if let Some(cumul) = c.cumuls.get_mut(i) {
+                                        let anormale = listes::juger_croissance(cumul, u.ajoutees, super::maintenant());
+                                        c.anormale = c.anormale.saturating_add(anormale);
+                                    }
+                                    *c
                                 };
-                                if let Err(e) = listes::ecrire_croissance(&self.union, super::CROISSANCE, total) {
+                                if let Err(e) = listes::ecrire_croissance(&self.union, super::CROISSANCE, &gardee) {
                                     alertes
                                         .push(format!("liste: {}: {e}", self.union.join(super::CROISSANCE).display()));
                                 }
@@ -864,7 +864,7 @@ fn ecrire_etat(p: &Partage, demarre: u64, marques: &Marques) {
             somme(c.retirees),
             somme(c.bloquees),
             somme(c.ajoutees),
-            c.croissance,
+            c.croissance.anormale,
         )
     };
     alertes.extend(
@@ -1262,7 +1262,8 @@ mod tests {
     }
 
     /// N-1 : une liste du compte qui ajoute d'un coup bien plus que la croissance normale est comptée, gardée en root
-    /// et relue au démarrage ; un rafraîchissement ordinaire est compté comme ajout, sans croissance anormale.
+    /// et relue au démarrage ; un rafraîchissement ordinaire est compté comme ajout, sans croissance anormale ; des
+    /// tranches qui passent ensemble le rythme normal sont dites, même d'un démarrage à l'autre.
     #[test]
     fn la_croissance_anormale_est_gardee() {
         let d = crate::essais::Jetable::nouveau("garde-servir-croissance");
@@ -1294,22 +1295,32 @@ mod tests {
         r.appliquer(&p, lues(liste(gonfle)));
         {
             let c = p.config.read().unwrap();
-            assert_eq!((c.ajoutees[0], c.croissance), (gonfle, gonfle));
+            assert_eq!((c.ajoutees[0], c.croissance.anormale), (gonfle, gonfle));
             assert_eq!(c.certain.nombre(), usize::try_from(gonfle + 1).unwrap());
         }
         // Le même jour, cinq de plus : un ajout ordinaire.
         r.appliquer(&p, lues(liste(gonfle + 5)));
         assert_eq!(p.config.read().unwrap().ajoutees[0], 5);
-        assert_eq!(p.config.read().unwrap().croissance, gonfle);
+        assert_eq!(p.config.read().unwrap().croissance.anormale, gonfle);
         // Au redémarrage, l'alerte est toujours là.
         let (p2, _e2) = partage(&[]);
         Relecture::nouvelle(d.to_path_buf()).charger_union(&p2);
         let c = p2.config.read().unwrap();
         assert_eq!(
-            (c.croissance, c.certain.nombre()),
+            (c.croissance.anormale, c.certain.nombre()),
             (gonfle, usize::try_from(gonfle + 6).unwrap())
         );
         assert!(c.alertes.is_empty(), "{:?}", c.alertes);
+        drop(c);
+        // Deux tranches, chacune sous le rythme d'un jour, le même jour et après le redémarrage : la seconde est dite.
+        let tranche = listes::CROISSANCE_PAR_JOUR - 10;
+        let mut r2 = Relecture::nouvelle(d.to_path_buf());
+        r2.appliquer(&p2, lues(liste(gonfle + 5 + tranche)));
+        assert_eq!(p2.config.read().unwrap().croissance.anormale, gonfle);
+        r2.appliquer(&p2, lues(liste(gonfle + 5 + 2 * tranche)));
+        assert_eq!(p2.config.read().unwrap().croissance.anormale, gonfle + tranche);
+        let (gardee, _) = listes::charger_croissance(&d, super::super::CROISSANCE);
+        assert_eq!(gardee.unwrap().anormale, gonfle + tranche);
     }
 
     /// Un partage d'essai : un groupe sur /dev/null, en refus, avec `certain` comme liste.

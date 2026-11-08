@@ -121,53 +121,122 @@ pub(crate) struct Union {
     pub retirees: u64,
     /// Les empreintes reçues non ajoutées : l'union serait passée au-delà de `max` (gardée telle quelle, et dite).
     pub bloquees: u64,
-    /// Les empreintes ajoutées à une union qui existait déjà (N-1) : la croissance, jugée par `croissance_anormale`. La
+    /// Les empreintes ajoutées à une union qui existait déjà (N-1) : la croissance, jugée par `juger_croissance`. La
     /// première union (après une pose ou une mise à jour) n'en compte aucune : elle n'a pas d'avant.
     pub ajoutees: u64,
 }
 
 /// La croissance normale d'une liste, par jour, au plus : MalwareBazaar publie de l'ordre de 1 000 à 3 000 nouvelles
 /// empreintes SHA-256 par jour, la base quotidienne de ClamAV (daily) quelques milliers de signatures d'empreintes ;
-/// moins de 10 000 par jour en tout. Le double laisse la marge des jours chargés. Au-delà, un ajout d'un coup n'est pas
-/// un rafraîchissement : le compte (qui prépare les listes, P22) a pu y mettre les empreintes de programmes sains pour
-/// les faire refuser (N-1). Ce n'est dit qu'au-delà : une poignée d'empreintes ajoutées ne se distingue pas ainsi.
+/// moins de 10 000 par jour en tout. Le double laisse la marge des jours chargés. Le compte (qui prépare les listes,
+/// P22) peut y mettre les empreintes de programmes sains pour les faire refuser (N-1) : ce qui est ajouté au-delà de ce
+/// rythme est dit. Une poignée d'empreintes ajoutées ne se distingue pas ainsi.
 pub(crate) const CROISSANCE_PAR_JOUR: u64 = 20_000;
 
-/// Les empreintes d'un ajout de `ajoutees` à une liste dont l'union a grandi pour la dernière fois il y a `depuis`
-/// (`None` : on ne sait pas, compté comme un jour) qui dépassent la croissance normale : toutes, si l'ajout passe
-/// `CROISSANCE_PAR_JOUR` par jour écoulé (un jour au moins : plusieurs relectures le même jour se partagent un jour) ;
-/// 0 sinon. Une horloge qui recule compte un jour.
-pub(crate) fn croissance_anormale(ajoutees: u64, depuis: Option<std::time::Duration>) -> u64 {
-    let jours = depuis.map_or(1, |d| d.as_secs().div_ceil(86_400)).max(1);
-    if ajoutees > CROISSANCE_PAR_JOUR.saturating_mul(jours) {
+/// Le crédit d'ajouts qu'une liste peut accumuler sans s'en servir, en jours de `CROISSANCE_PAR_JOUR` : un ordinateur
+/// éteint deux semaines rattrape ses ajouts sans alerte. Sans plafond, des mois de rafraîchissements ordinaires (bien
+/// sous le rythme permis) laisseraient un crédit de centaines de milliers d'empreintes à ajouter d'un coup.
+pub(crate) const CROISSANCE_CREDIT_JOURS: u64 = 14;
+
+const JOUR: u64 = 86_400;
+
+/// La croissance des deux listes (SHA-256, MD5) depuis la dernière pose ou mise à jour (N-1), gardée en root : ce qui a
+/// été dit anormal, et pour chaque liste son départ (secondes depuis 1970 ; 0 : pas encore, pris au premier ajout, un
+/// jour avant lui : il couvre les ajouts de la veille) et les ajouts ordinaires depuis.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Croissance {
+    pub anormale: u64,
+    pub cumuls: [(u64, u64); 2],
+}
+
+/// Juge un ajout de `ajoutees` à la liste dont le départ et le cumul sont `cumul`, à l'instant `maintenant` (secondes
+/// depuis 1970) : les ajouts depuis le départ, celui-ci compris, ne doivent pas passer `CROISSANCE_PAR_JOUR` par jour
+/// écoulé depuis ce départ (un jour au moins). Ainsi un ajout coupé en tranches, chacune sous le rythme d'un jour, est
+/// dit dès que leur somme le passe. Rend l'ajout, compté en entier comme anormal s'il fait passer le rythme (alors il
+/// ne compte pas dans le cumul : les rafraîchissements ordinaires qui suivent ne sont pas dits), 0 sinon. Le crédit
+/// non servi est plafonné à `CROISSANCE_CREDIT_JOURS` jours : le départ avance alors. Une horloge qui recule compte un
+/// jour.
+pub(crate) fn juger_croissance(cumul: &mut (u64, u64), ajoutees: u64, maintenant: u64) -> u64 {
+    if ajoutees == 0 {
+        return 0;
+    }
+    let depart = if cumul.0 == 0 {
+        maintenant.saturating_sub(JOUR).max(1)
+    } else {
+        cumul.0
+    };
+    let ecoule = maintenant.saturating_sub(depart).max(JOUR);
+    let permis = CROISSANCE_PAR_JOUR
+        .saturating_mul(ecoule)
+        .checked_div(JOUR)
+        .unwrap_or(u64::MAX);
+    let total = cumul.1.saturating_add(ajoutees);
+    let anormale = if total > permis {
+        *cumul = (depart, cumul.1);
         ajoutees
     } else {
+        *cumul = (depart, total);
         0
+    };
+    // Le crédit non servi, au plus `CROISSANCE_CREDIT_JOURS` jours : au-delà, le départ avance d'autant.
+    let plafond = CROISSANCE_PAR_JOUR.saturating_mul(CROISSANCE_CREDIT_JOURS);
+    if permis.saturating_sub(cumul.1) > plafond {
+        *cumul = (
+            maintenant
+                .saturating_sub(CROISSANCE_CREDIT_JOURS.saturating_mul(JOUR))
+                .max(1),
+            0,
+        );
     }
+    anormale
 }
 
-/// Relit le compte de la croissance anormale gardé en root (`nom` dans `dossier`, le dossier d'état) : un nombre en
-/// décimal, écrit par le garde lui-même. Absent : 0. Illisible ou mal formé : 0, et la raison.
-pub(crate) fn charger_croissance(dossier: &Path, nom: &str) -> (u64, Option<String>) {
+/// Relit la croissance gardée en root (`nom` dans `dossier`, le dossier d'état), écrite par le garde lui-même :
+/// « anormale départ cumul départ cumul » en décimal ; l'ancienne forme (le seul nombre anormal) est relue sans départ.
+/// Absente : `None`. Illisible ou mal formée : `None`, et la raison.
+pub(crate) fn charger_croissance(dossier: &Path, nom: &str) -> (Option<Croissance>, Option<String>) {
     let chemin = dossier.join(nom);
-    match crate::socle::lire_ordinaire(&chemin, 32) {
-        Ok(octets) => match std::str::from_utf8(&octets)
-            .ok()
-            .and_then(|t| t.trim().parse::<u64>().ok())
-        {
-            Some(n) => (n, None),
-            None => (0, Some(format!("liste: {}: mal formé", chemin.display()))),
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (0, None),
-        Err(e) => (0, Some(format!("liste: {}: {e}", chemin.display()))),
+    match crate::socle::lire_ordinaire(&chemin, 128) {
+        Ok(octets) => {
+            let nombres: Option<Vec<u64>> = std::str::from_utf8(&octets)
+                .ok()
+                .map(|t| {
+                    t.split_ascii_whitespace()
+                        .map(str::parse)
+                        .collect::<Result<_, _>>()
+                        .ok()
+                })
+                .unwrap_or_default();
+            match nombres.as_deref() {
+                Some(&[anormale]) => (
+                    Some(Croissance {
+                        anormale,
+                        cumuls: [(0, 0); 2],
+                    }),
+                    None,
+                ),
+                Some(&[anormale, d0, c0, d1, c1]) => (
+                    Some(Croissance {
+                        anormale,
+                        cumuls: [(d0, c0), (d1, c1)],
+                    }),
+                    None,
+                ),
+                _ => (None, Some(format!("liste: {}: mal formé", chemin.display()))),
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (None, None),
+        Err(e) => (None, Some(format!("liste: {}: {e}", chemin.display()))),
     }
 }
 
-/// Écrit le compte de la croissance anormale, d'un coup, lisible par root seulement.
-pub(crate) fn ecrire_croissance(dossier: &Path, nom: &str, n: u64) -> std::io::Result<()> {
+/// Écrit la croissance, d'un coup, lisible par root seulement.
+pub(crate) fn ecrire_croissance(dossier: &Path, nom: &str, c: &Croissance) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let chemin = dossier.join(nom);
-    crate::socle::ecrire_atomique(&chemin, n.to_string().as_bytes())?;
+    let [(d0, c0), (d1, c1)] = c.cumuls;
+    let texte = format!("{} {d0} {c0} {d1} {c1}", c.anormale);
+    crate::socle::ecrire_atomique(&chemin, texte.as_bytes())?;
     std::fs::set_permissions(&chemin, std::fs::Permissions::from_mode(0o600))
 }
 
@@ -608,33 +677,81 @@ mod tests {
     }
 
     /// N-1 : le rafraîchissement normal (MalwareBazaar et ClamAV, quelques milliers par jour) ne dit rien, même après
-    /// des jours sans relecture ; un ajout d'un coup bien au-delà est compté en entier. Le compte gardé en root se relit.
+    /// des jours sans relecture ; un ajout d'un coup bien au-delà est compté en entier, comme des tranches sous le
+    /// rythme d'un jour qui le passent ensemble ; le crédit accumulé est plafonné. Le compte gardé en root se relit.
     #[test]
     fn la_croissance_anormale_est_comptee() {
-        use std::time::Duration;
-        let jour = Duration::from_hours(24);
-        // Un rafraîchissement quotidien, ou trois relectures dans la même heure.
-        assert_eq!(croissance_anormale(8_000, Some(jour)), 0);
-        assert_eq!(croissance_anormale(8_000, Some(Duration::from_secs(60))), 0);
-        assert_eq!(croissance_anormale(CROISSANCE_PAR_JOUR, None), 0);
+        let t0 = 1_800_000_000;
+        // Deux relectures de 4 000 à un jour d'écart, puis 60 jours de 8 000 par jour : rien.
+        let mut c = (0, 0);
+        assert_eq!(juger_croissance(&mut c, 4_000, t0), 0);
+        assert_eq!(c, (t0 - JOUR, 4_000));
+        assert_eq!(juger_croissance(&mut c, 4_000, t0 + JOUR), 0);
+        for j in 2..62 {
+            assert_eq!(juger_croissance(&mut c, 8_000, t0 + j * JOUR), 0, "jour {j}");
+        }
+        // Trois relectures dans la même heure, ensemble sous le rythme d'un jour : rien.
+        let mut c = (0, 0);
+        for m in 0..3 {
+            assert_eq!(juger_croissance(&mut c, 6_000, t0 + m * 60), 0);
+        }
+        // Deux tranches, chacune sous le rythme d'un jour, le même jour : la seconde est dite.
+        let mut c = (0, 0);
+        let tranche = CROISSANCE_PAR_JOUR - 1;
+        assert_eq!(juger_croissance(&mut c, tranche, t0), 0);
+        assert_eq!(juger_croissance(&mut c, tranche, t0 + 3_600), tranche);
+        // Elle ne compte pas dans le cumul : un rafraîchissement ordinaire le lendemain ne dit rien.
+        assert_eq!(juger_croissance(&mut c, 5_000, t0 + JOUR + 3_600), 0);
+        // Des tranches de 10 000 toutes les deux heures : la troisième passe le rythme, elle est dite.
+        let mut c = (0, 0);
+        assert_eq!(juger_croissance(&mut c, 10_000, t0), 0);
+        assert_eq!(juger_croissance(&mut c, 10_000, t0 + 7_200), 0);
+        assert_eq!(juger_croissance(&mut c, 10_000, t0 + 14_400), 10_000);
         // Une semaine éteint : sept jours d'ajouts normaux passent.
-        assert_eq!(croissance_anormale(60_000, Some(jour * 7)), 0);
+        let mut c = (t0, 0);
+        assert_eq!(juger_croissance(&mut c, 60_000, t0 + 7 * JOUR), 0);
         // D'un coup, bien au-delà : tout est compté.
-        assert_eq!(croissance_anormale(300_000, Some(jour)), 300_000);
+        let mut c = (0, 0);
+        assert_eq!(juger_croissance(&mut c, 300_000, t0), 300_000);
+        assert_eq!(c, (t0 - JOUR, 0));
+        // Cent jours de rafraîchissements ordinaires ne laissent que quatorze jours de crédit : 400 000 d'un coup, dits.
+        let mut c = (0, 0);
+        for j in 0..100 {
+            assert_eq!(juger_croissance(&mut c, 2_000, t0 + j * JOUR), 0);
+        }
+        assert_eq!(juger_croissance(&mut c, 400_000, t0 + 100 * JOUR), 400_000);
+        assert_eq!(juger_croissance(&mut c, 250_000, t0 + 100 * JOUR), 0);
+        // Une horloge qui recule : un jour.
+        let mut c = (t0, 0);
         assert_eq!(
-            croissance_anormale(CROISSANCE_PAR_JOUR + 1, Some(Duration::ZERO)),
+            juger_croissance(&mut c, CROISSANCE_PAR_JOUR + 1, t0 - 1_000),
             CROISSANCE_PAR_JOUR + 1
         );
-        assert_eq!(croissance_anormale(1_000_000, Some(Duration::MAX)), 0);
+        assert_eq!(juger_croissance(&mut c, CROISSANCE_PAR_JOUR, t0 - 1_000), 0);
+        assert_eq!(juger_croissance(&mut c, 0, u64::MAX), 0);
+        assert_eq!(juger_croissance(&mut c, 1, u64::MAX), 0);
 
         let d = crate::essais::Jetable::nouveau("croissance");
-        assert_eq!(charger_croissance(&d, "croissance"), (0, None));
-        ecrire_croissance(&d, "croissance", 300_000).unwrap();
-        assert_eq!(charger_croissance(&d, "croissance"), (300_000, None));
-        std::fs::write(d.join("croissance"), b"abc").unwrap();
-        let (n, alerte) = charger_croissance(&d, "croissance");
-        assert_eq!(n, 0);
-        assert!(alerte.unwrap().contains("mal formé"));
+        assert_eq!(charger_croissance(&d, "croissance"), (None, None));
+        let gardee = Croissance {
+            anormale: 300_000,
+            cumuls: [(t0, 4_000), (0, 0)],
+        };
+        ecrire_croissance(&d, "croissance", &gardee).unwrap();
+        assert_eq!(charger_croissance(&d, "croissance"), (Some(gardee), None));
+        // L'ancienne forme : le seul nombre, sans départ.
+        std::fs::write(d.join("croissance"), b"300000").unwrap();
+        let (c, alerte) = charger_croissance(&d, "croissance");
+        assert_eq!(
+            (c.unwrap().anormale, c.unwrap().cumuls, alerte),
+            (300_000, [(0, 0); 2], None)
+        );
+        for mauvais in [&b"abc"[..], b"1 2 3", b"1 2 3 4 5 6", b"-1"] {
+            std::fs::write(d.join("croissance"), mauvais).unwrap();
+            let (c, alerte) = charger_croissance(&d, "croissance");
+            assert!(c.is_none());
+            assert!(alerte.unwrap().contains("mal formé"));
+        }
     }
 
     /// M-N1 et f1 : l'union s'écrit en root (0600) et se relit telle quelle ; absente, elle ne dit rien ; mal formée,
