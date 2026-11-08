@@ -974,8 +974,14 @@ Lancer 'yara' @('yara', $dossierYara)
 $y = (Sortie 'yara') -replace '\x1b\[[0-9;]*m', '' -replace '\s+', ' '
 if ($y -match 'Analyse de|Scanning') { Ok 'Analyse lancée' } else { Bug 'Analyse PAS lancée' }
 if ($y -match "installer|install it|winget") { Bug 'Vanguard parle encore d''installer un moteur YARA' }
+# Depuis la défense AV4, une heuristique dit « suspect » (jamais plus) un programme sans signature intégrée dans un
+# dossier temporaire : c'est le cas de la copie de HOSTNAME.EXE, signé par catalogue et non dans le fichier. Seule
+# elle peut ressortir ; la note, elle, n'est jamais citée.
+$seulOutilSuspect = ($y -match 'outil\.exe [^:]*: (programme Windows sans signature|unsigned Windows program)') -and
+    ($y -match 'Seulement suspect|Suspicious only') -and ($y -notmatch 'note\.txt')
 if ($y -match 'Aucun fichier ne correspond|No file matches') { Ok 'Dossier sans danger : rien trouvé, tout lu' }
 elseif ($y -match 'illisible|unreadable') { Bug 'Des fichiers du dossier d''essai n''ont pas pu être lus' }
+elseif ($seulOutilSuspect) { Ok 'Programme sans signature intégrée dans un dossier temporaire : suspect seulement, le reste sans rien' }
 else { Bug 'Résultat de l''analyse YARA inattendu' }
 # « MZ » sans en-tête PE (programme DOS ou 16 bits, ou PE abîmé) : non ouvert, donc l'analyse se dit incomplète en le
 # nommant, et ne conclut jamais « rien trouvé » (src/analyse/mod.rs, ExecutableDos).
@@ -1043,7 +1049,9 @@ try {
 $ye = (Sortie 'yara-empreinte') -replace '\x1b\[[0-9;]*m', '' -replace '\s+', ' '
 if ($ye -match 'copie gardée refusée|kept copy refused') { Ok 'Copie gardée refusée : l''empreinte plantée hors de Vanguard ne compte pas, et c''est dit' } else { Bug 'Copie des empreintes changée hors de Vanguard PAS dite refusée' }
 if ($ye -match 'empreinte exacte|exact fingerprint') { Bug 'Fichier d''essai reconnu par une empreinte plantée hors de Vanguard' } else { Ok 'Aucune empreinte de la copie refusée n''a servi' }
-if ($ye -match 'quarantaine|quarantine') { Bug 'Quarantaine proposée ou faite sur une copie refusée' } else { Ok 'Aucune quarantaine' }
+# La phrase qui rassure (« rien n'est mis en quarantaine ») est retirée avant de chercher une quarantaine proposée ou faite.
+$yeSansRassurance = $ye -replace "rien n'est mis en quarantaine|nothing is quarantined", ''
+if ($yeSansRassurance -match 'quarantaine|quarantine') { Bug 'Quarantaine proposée ou faite sur une copie refusée' } else { Ok 'Aucune quarantaine' }
 if (Test-Path -LiteralPath $essaiEmpreinte) { Ok 'Fichier d''essai laissé en place' } else { Bug 'Fichier d''essai déplacé alors que rien ne l''a reconnu' }
 if ($avaitRecentes) {
     $memeContenu = (Get-FileHash -LiteralPath $recentes).Hash -eq (Get-FileHash -InputStream ([IO.MemoryStream]::new($copieRecentes))).Hash
