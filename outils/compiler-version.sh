@@ -129,7 +129,21 @@ if [[ $COMMIT != inconnu && -z $(git status --porcelain -- src build.rs assets C
   rust-toolchain.toml 2>/dev/null) ]]; then
   PROPRE=oui
 fi
-cargo auditable zigbuild --release --locked --target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu "$@"
+# cargo-auditable posé à la main par son seul nom, comme le ferait « cargo auditable » : celui-ci s'y met par son
+# chemin complet, que cargo mêle au -C metadata de Vanguard (~/.cargo/bin ici, /home/runner/.cargo/bin dans la CI :
+# deux programmes différents). Trouvé par le PATH, le nom est le même partout. Le JSON reprend ce que
+# « cargo auditable » transmettrait pour « --locked » (CargoArgs de cargo-auditable 0.7).
+CARGO_AUDITABLE_ORIG_ARGS='{"offline":false,"locked":true,"frozen":false,"config":[]}' \
+  RUSTC_WORKSPACE_WRAPPER=cargo-auditable \
+  cargo zigbuild --release --locked --target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu "$@"
+# Jamais de programme sans la liste de ses dépendances (section .dep-v0, relue par cargo audit bin) : si
+# cargo-auditable venait à ne plus être appelé, cargo compilerait quand même, sans rien dire.
+for p in "$CIBLES/x86_64-unknown-linux-musl/release/vanguard" "$CIBLES/x86_64-pc-windows-gnu/release/vanguard.exe"; do
+  if ! LC_ALL=C grep -qaF .dep-v0 "$p"; then
+    echo "✖ $p : sans la liste de ses dépendances (section .dep-v0 de cargo-auditable)" >&2
+    exit 1
+  fi
+done
 # Relu après : un fichier changé pendant la compilation la rend douteuse.
 [[ $PROPRE == oui && $(git rev-parse HEAD) == "$COMMIT" && -z $(git status --porcelain -- src build.rs assets \
   Cargo.toml Cargo.lock .cargo rust-toolchain.toml 2>/dev/null) ]] || PROPRE=non
