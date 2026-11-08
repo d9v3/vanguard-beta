@@ -2,7 +2,7 @@
 //! débrancher le réseau ou mettre en quarantaine ne les efface — sauf devant un rançongiciel ou une prise de contrôle
 //! encore reliés à Internet, où couper passe avant tout ; ce qui presse (couper Internet, ne pas payer, ne pas
 //! rappeler le numéro affiché), puis ce que Vanguard vérifie lui-même (persistance, accès à distance, comptes,
-//! intégrité, fichiers suspects, navigation détournée), les analyses qu'il propose (YARA, antivirus et démarrage,
+//! intégrité, fichiers suspects, navigation détournée), les analyses qu'il propose (antivirus et démarrage,
 //! intégrité en détail, connexions sortantes, prise de contrôle à distance), et enfin la liste des mots de passe à
 //! changer, dans l'ordre, depuis un autre appareil. Rien n'est changé sans accord : chaque outil redemande le sien.
 
@@ -319,10 +319,6 @@ struct Analyse {
     lancer: fn(),
 }
 
-fn yara() {
-    crate::protection::yara::analyser(&crate::protection::antivirus::Portee::Rapide);
-}
-
 fn antivirus() {
     crate::protection::antivirus::analyser(crate::protection::antivirus::Portee::Rapide);
 }
@@ -336,21 +332,11 @@ fn integrite() {
 fn liste_des_analyses(signe: Signe, internet: bool) -> Vec<Analyse> {
     let mut a = vec![
         Analyse {
-            texte: tr!("Analyse YARA", "YARA scan"),
-            precision: tr!("familles connues", "known families"),
-            detail: tr!(
-                "308 règles qui reconnaissent des familles entières (rançongiciels, voleurs de mots de passe, portes dérobées) dans Téléchargements, sur le Bureau et au démarrage. Lecture seule, rien à installer.",
-                "308 rules that recognize whole families (ransomware, password stealers, backdoors) in Downloads, on the Desktop and at startup. Read-only, nothing to install."
-            ),
-            cochee: true,
-            lancer: yara,
-        },
-        Analyse {
             texte: tr!("Antivirus rapide et démarrage", "Quick antivirus and startup"),
-            precision: tr!("moteur du système", "system engine"),
+            precision: tr!("Vanguard et système", "Vanguard and system"),
             detail: tr!(
-                "Le moteur reconnu du système (Defender, ClamAV) sur les dossiers où arrivent les menaces, puis la revue de ce qui se lance au démarrage, là où une infection cherche à se maintenir.",
-                "The system's recognized engine (Defender, ClamAV) on the folders where threats arrive, then the review of what starts at boot, where an infection tries to stay."
+                "Le moteur de Vanguard (308 règles YARA, empreintes, heuristiques) et le moteur reconnu du système (Defender, ClamAV) sur les dossiers où arrivent les menaces, puis la revue de ce qui se lance au démarrage, là où une infection cherche à se maintenir.",
+                "The Vanguard engine (308 YARA rules, fingerprints, heuristics) and the system's recognized engine (Defender, ClamAV) on the folders where threats arrive, then the review of what starts at boot, where an infection tries to stay."
             ),
             cochee: true,
             lancer: antivirus,
@@ -459,14 +445,14 @@ mod tests {
     #[test]
     fn les_analyses_suivent_la_situation() {
         // Sans Internet, pas de connexions sortantes à regarder.
-        assert_eq!(liste_des_analyses(Signe::Doute, true).len(), 5);
-        assert_eq!(liste_des_analyses(Signe::Doute, false).len(), 4);
+        assert_eq!(liste_des_analyses(Signe::Doute, true).len(), 4);
+        assert_eq!(liste_des_analyses(Signe::Doute, false).len(), 3);
         // Les lectures seules d'abord, le retrait en dernier.
         let a = liste_des_analyses(Signe::PriseDeControle, true);
         assert!(a.last().is_some_and(|x| x.cochee && x.precision.contains("retire")));
         assert!(!liste_des_analyses(Signe::FichierOuvert, true).last().unwrap().cochee);
         // Un rançongiciel : les connexions sortantes ne sont pas cochées (le mal est fait, le réseau doit être coupé).
-        assert!(!liste_des_analyses(Signe::Rancon, true)[3].cochee);
+        assert!(!liste_des_analyses(Signe::Rancon, true)[2].cochee);
         for x in &a {
             assert!(largeur_affichee(x.texte) <= 42, "{}", x.texte);
             assert!(largeur_affichee(x.precision) <= 22, "{}", x.precision);

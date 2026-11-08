@@ -382,6 +382,13 @@ fn niveau(t: &Trouve) -> crate::risk::Niveau {
 
 pub fn analyser(portee: &Portee) {
     titre(tr!("Analyse YARA", "YARA scan"));
+    analyser_sans_titre(portee, true);
+}
+
+/// Le moteur de Vanguard sur les endroits de la portée, sous le titre de l'appelant. `seule` : l'analyse est lancée
+/// pour elle-même (menu Analyse YARA), et le conseil renvoie à l'antivirus ; dans l'analyse antivirus, qui la suit
+/// d'un second avis, il ne le fait pas.
+pub(crate) fn analyser_sans_titre(portee: &Portee, seule: bool) {
     let cibles = match portee {
         Portee::Dossier(d) => vec![d.clone()],
         Portee::Complete => vec![crate::socle::maison()],
@@ -462,7 +469,19 @@ pub fn analyser(portee: &Portee) {
             a_isoler.push((t.chemin.clone(), raison));
         }
     }
-    let conseil = if a_isoler.is_empty() {
+    let conseil = if !seule {
+        if a_isoler.is_empty() {
+            tr!(
+                "Seulement suspect : rien de connu n'y est reconnu, et rien n'est mis en quarantaine ; en cas de doute, ne les ouvrez pas. Un faux positif connu se fait taire dans Alertes déclarées normales.",
+                "Suspicious only: nothing known is recognized, and nothing is quarantined; when in doubt, do not open them. A known false positive can be silenced in Alerts marked as normal."
+            )
+        } else {
+            tr!(
+                "Ne les ouvrez pas. Une règle peut se tromper sur un fichier légitime : la quarantaine se défait, et en cas de doute, envoyez-le à VirusTotal.",
+                "Do not open them. A rule can be wrong about a legitimate file: the quarantine can be undone, and when in doubt, upload it to VirusTotal."
+            )
+        }
+    } else if a_isoler.is_empty() {
         tr!(
             "Seulement suspect : rien de connu n'y est reconnu, et rien n'est mis en quarantaine. Faites-les analyser par l'antivirus (même menu) ; en cas de doute, ne les ouvrez pas. Un faux positif connu se fait taire dans Alertes déclarées normales.",
             "Suspicious only: nothing known is recognized, and nothing is quarantined. Have the antivirus scan them (same menu); when in doubt, do not open them. A known false positive can be silenced in Alerts marked as normal."
@@ -487,6 +506,52 @@ pub fn analyser(portee: &Portee) {
 pub(crate) fn examiner(fichier: &Path) -> Examen {
     let sources = moteur::sources(Usage::ALaDemande);
     examiner_avec(&sources, fichier)
+}
+
+/// Comme `examiner`, avec le résultat du moteur quand le fichier a pu lui être passé en entier (fichier ordinaire, pas
+/// trop gros, sans panique) : « Vérifier un fichier téléchargé » le verse au journal et le rend en `--json`. Sinon
+/// (`None`), l'examen ordinaire, qui dit ce qui n'a pas pu être lu ; le fichier n'est lu qu'une fois dans les deux cas.
+pub(crate) fn examiner_en_detail(fichier: &Path) -> (Examen, Option<moteur::Resultat>) {
+    let sources = moteur::sources(Usage::ALaDemande);
+    let ordinaire = std::fs::symlink_metadata(fichier).is_ok_and(|m| m.is_file() && m.len() <= TAILLE_MAX);
+    if ordinaire
+        && let Ok(Ok(r)) =
+            crate::journal::rattraper(std::panic::AssertUnwindSafe(|| analyser_fichier(&sources, fichier)))
+    {
+        return (examen_de(&r), Some(r));
+    }
+    (examiner_avec(&sources, fichier), None)
+}
+
+/// L'examen tiré d'un résultat du moteur, dans l'ordre de `examiner_avec` : reconnu, suspect, impossible (source
+/// attendue absente ou partie non lue), puis sain, sous réserve si une source facultative manquait.
+fn examen_de(r: &moteur::Resultat) -> Examen {
+    if !r.trouvailles.is_empty() {
+        return Examen::Trouve(
+            r.trouvailles
+                .iter()
+                .map(|t| format!("{} ({})", famille(&t.nom), t.nom))
+                .collect(),
+        );
+    }
+    if !r.indices.is_empty() {
+        return Examen::Suspect(r.indices.iter().map(moteur::Indice::texte).collect());
+    }
+    if !r.manquantes.is_empty() || !r.non_verifie.is_empty() {
+        return Examen::Impossible(
+            r.manquantes
+                .iter()
+                .chain(&r.non_verifie)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ; "),
+        );
+    }
+    if r.reserves.is_empty() {
+        Examen::Sain
+    } else {
+        Examen::SainSousReserve(r.reserves.clone())
+    }
 }
 
 fn examiner_avec(sources: &Sources<'_>, fichier: &Path) -> Examen {
@@ -587,6 +652,42 @@ mod tests {
         );
         sources.manquantes.push("règles refusées".into());
         assert!(matches!(examiner_avec(&sources, &outil), Examen::Impossible(r) if r.contains("règles refusées")));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Le résultat du moteur gardé pour `--json` (`examiner_en_detail`) donne le même examen que le chemin ordinaire,
+    /// cas par cas : détection, suspect, sain, sain sous réserve, source attendue absente, partie non lue.
+    #[test]
+    fn examen_du_resultat_comme_l_ordinaire() {
+        let essai =
+            Regles::compiler(r#"rule Win32_Trojan_Essai { strings: $a = "vanguard-essai-yara" condition: $a }"#);
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let outil = d.join("outil");
+        let mut sources = yara_seul(&essai, None);
+        sources.heuristiques = true;
+        let mut piege = crate::protection::heuristiques::corpus::elf_wx();
+        piege.extend(b"vanguard-essai-yara");
+        let pareil = |sources: &Sources<'_>| {
+            let r = analyser_fichier(sources, &outil).expect("fichier lu");
+            assert_eq!(examen_de(&r), examiner_avec(sources, &outil), "{r:?}");
+        };
+        for contenu in [
+            piege,
+            crate::protection::heuristiques::corpus::elf_wx(),
+            b"rien".to_vec(),
+        ] {
+            std::fs::write(&outil, contenu).unwrap();
+            pareil(&sources);
+        }
+        sources.reserves.push("base ClamAV absente".into());
+        pareil(&sources);
+        sources.manquantes.push("règles refusées".into());
+        pareil(&sources);
+        let vide = moteur::Resultat {
+            non_verifie: vec!["archive.zip › doc.pdf : contenu PDF non ouvert".into()],
+            ..moteur::Resultat::default()
+        };
+        assert!(matches!(examen_de(&vide), Examen::Impossible(r) if r.contains("PDF non ouvert")));
         let _ = std::fs::remove_dir_all(&d);
     }
 

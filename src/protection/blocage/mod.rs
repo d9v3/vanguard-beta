@@ -209,6 +209,7 @@ pub(crate) fn arreter_programme_automatique(
             fichier,
             detection: detection.to_string(),
         },
+        type_alerte: Some(suites::Type::Rancongiciel),
     };
     let ctx = Contexte::lire(intouchables.clone(), false);
     let pret = gestes::preparer(&menace, &ctx, true)?;

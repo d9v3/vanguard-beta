@@ -96,14 +96,102 @@ pub fn analyser(portee: Portee) {
         }
         autre => autre,
     };
-    #[cfg(windows)]
-    defender(&portee);
+    // Linux : le moteur de Vanguard d'abord, ClamAV en second avis (ses signatures complètes, s'il est installé).
     #[cfg(unix)]
-    clamav(&portee);
+    {
+        section(tr!("Moteur de Vanguard", "Vanguard engine"));
+        crate::protection::yara::analyser_sans_titre(&portee, false);
+        section(tr!("Second avis : ClamAV", "Second opinion: ClamAV"));
+        clamav(&portee);
+    }
+    #[cfg(windows)]
+    {
+        let (mode, temps_reel) = crate::machine::windows::defense_etat::defender_en_marche();
+        let par_choix = crate::machine::choix_avant::note_de(
+            &crate::machine::choix_avant::notes(),
+            crate::machine::gestes::IdChoix::Defender(crate::machine::gestes::ReglageDefender::TempsReel),
+        )
+        .is_some();
+        let place = place_du_moteur(mode, temps_reel, par_choix);
+        if place == PlaceDuMoteur::SecondAvis {
+            section(tr!("Microsoft Defender", "Microsoft Defender"));
+            defender(&portee);
+            section(tr!(
+                "Second avis : moteur de Vanguard",
+                "Second opinion: Vanguard engine"
+            ));
+            crate::protection::yara::analyser_sans_titre(&portee, false);
+        } else {
+            section(tr!("Moteur de Vanguard", "Vanguard engine"));
+            for ligne in envelopper(place.ce_qui_manque(), LARGEUR - 4) {
+                println!("  {GRIS}{ligne}{RESET}");
+            }
+            crate::protection::yara::analyser_sans_titre(&portee, false);
+            section(tr!(
+                "Second avis : Defender, à la demande",
+                "Second opinion: Defender, on demand"
+            ));
+            defender(&portee);
+        }
+    }
     match &portee {
         // Une clé n'a pas de programmes de démarrage : on regarde plutôt les pièges des vers de clé USB.
         Portee::Dossier(d) => revue_cle(d),
         _ => demarrage(),
+    }
+}
+
+/// La place du moteur de Vanguard face à Defender (P19), dans l'analyse antivirus de Windows.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlaceDuMoteur {
+    /// Defender protège (ou un autre antivirus reconnu, Defender passif) : il analyse d'abord, Vanguard donne un
+    /// second avis.
+    SecondAvis,
+    /// La protection en temps réel de Defender est coupée par le choix de la personne (Options de défense, noté) :
+    /// Vanguard est le moteur principal, et ce qui manque est dit.
+    Principal,
+    /// Defender coupé sans choix noté, ou son état illisible : Vanguard analyse d'abord, sans rien conclure de
+    /// Defender ; le bilan dit ce qui l'a coupé.
+    NonVerifie,
+}
+
+impl PlaceDuMoteur {
+    /// Ce qui ne protège plus quand le moteur de Vanguard est en premier : il analyse à la demande et à l'heure,
+    /// il ne refuse rien avant le lancement, ne voit pas les scripts en mémoire (AMSI) et ne demande l'avis d'aucun
+    /// nuage.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn ce_qui_manque(self) -> &'static str {
+        match self {
+            PlaceDuMoteur::SecondAvis => "",
+            PlaceDuMoteur::Principal => tr!(
+                "Defender est coupé par votre choix (Options de défense) : le moteur de Vanguard est le principal. Il ne remplace pas tout : rien n'est refusé avant le lancement, les scripts en mémoire (AMSI) ne sont pas vus, et aucun nuage n'est consulté. « Rallumer » remet Defender.",
+                "Defender is turned off by your choice (Defense options): the Vanguard engine is the main one. It does not replace everything: nothing is refused before launch, in-memory scripts (AMSI) are not seen, and no cloud is consulted. “Turn back on” restores Defender."
+            ),
+            PlaceDuMoteur::NonVerifie => tr!(
+                "La protection en temps réel de Defender est coupée sans choix noté, ou son état ne se lit pas : non vérifié, voir le bilan. Le moteur de Vanguard analyse d'abord ; il ne refuse rien avant le lancement, ne voit pas AMSI ni le nuage.",
+                "Defender's real-time protection is off with no noted choice, or its state cannot be read: not verified, see the checkup. The Vanguard engine scans first; it refuses nothing before launch, sees neither AMSI nor the cloud."
+            ),
+        }
+    }
+}
+
+/// P19 : Defender allumé (ou passif derrière un autre antivirus) → second avis ; temps réel coupé par le choix noté
+/// de la personne → principal ; tout le reste (coupé sans choix, illisible) → non vérifié, jamais compté comme une
+/// protection en place.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn place_du_moteur(
+    mode: crate::options_defense::ModeDefender,
+    temps_reel: Option<bool>,
+    par_choix: bool,
+) -> PlaceDuMoteur {
+    use crate::options_defense::ModeDefender;
+    match (mode, temps_reel) {
+        (ModeDefender::Actif, Some(true)) | (ModeDefender::Passif | ModeDefender::BlocageEdr, _) => {
+            PlaceDuMoteur::SecondAvis
+        }
+        (_, Some(false)) | (ModeDefender::Coupe, _) if par_choix => PlaceDuMoteur::Principal,
+        _ => PlaceDuMoteur::NonVerifie,
     }
 }
 
@@ -2509,6 +2597,36 @@ fn demarrage_windows() -> (Vec<String>, Vec<String>) {
 mod tests_cle {
     use super::*;
     use std::path::Path;
+
+    /// P19 : le moteur de Vanguard n'est principal que si la personne a coupé Defender par son choix noté ; Defender
+    /// allumé, ou passif derrière un autre antivirus, garde la première place ; un Defender coupé sans choix ou
+    /// illisible n'est jamais compté comme une protection, et ce qui manque est dit (refus avant lancement, AMSI,
+    /// nuage).
+    #[test]
+    fn place_du_moteur_selon_defender() {
+        use crate::options_defense::ModeDefender as M;
+        assert_eq!(place_du_moteur(M::Actif, Some(true), false), PlaceDuMoteur::SecondAvis);
+        // Une note restée alors que Defender a été rallumé depuis : il protège, il reste premier.
+        assert_eq!(place_du_moteur(M::Actif, Some(true), true), PlaceDuMoteur::SecondAvis);
+        assert_eq!(
+            place_du_moteur(M::Passif, Some(false), false),
+            PlaceDuMoteur::SecondAvis
+        );
+        assert_eq!(place_du_moteur(M::BlocageEdr, None, false), PlaceDuMoteur::SecondAvis);
+        assert_eq!(place_du_moteur(M::Actif, Some(false), true), PlaceDuMoteur::Principal);
+        assert_eq!(place_du_moteur(M::Coupe, None, true), PlaceDuMoteur::Principal);
+        // Coupé sans choix (un programme, un réglage d'ailleurs) ou illisible : non vérifié.
+        assert_eq!(place_du_moteur(M::Actif, Some(false), false), PlaceDuMoteur::NonVerifie);
+        assert_eq!(place_du_moteur(M::Coupe, Some(false), false), PlaceDuMoteur::NonVerifie);
+        assert_eq!(place_du_moteur(M::Illisible, None, false), PlaceDuMoteur::NonVerifie);
+        assert_eq!(place_du_moteur(M::Actif, None, false), PlaceDuMoteur::NonVerifie);
+        assert_eq!(place_du_moteur(M::Illisible, None, true), PlaceDuMoteur::NonVerifie);
+        for p in [PlaceDuMoteur::Principal, PlaceDuMoteur::NonVerifie] {
+            let manque = p.ce_qui_manque();
+            assert!(manque.contains("AMSI") && manque.contains("lancement"), "{manque}");
+        }
+        assert_eq!(PlaceDuMoteur::SecondAvis.ce_qui_manque(), "");
+    }
 
     #[test]
     fn volumes_de_lsblk() {

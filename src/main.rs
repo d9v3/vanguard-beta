@@ -23,7 +23,7 @@ mod agent;
 #[cfg_attr(not(test), allow(dead_code))]
 mod amelioration;
 // Le socle d'analyse des fichiers (lot AV1 de l'antivirus maison) : ses lecteurs servent aux motifs, aux signatures
-// et aux heuristiques des lots suivants (AV2 à AV4), qui ne sont pas encore branchés.
+// et aux heuristiques du moteur commun (AV2 à AV4) ; quelques-uns attendent encore les lots suivants.
 #[cfg_attr(not(test), allow(dead_code))]
 mod analyse;
 mod annulation;
@@ -458,13 +458,18 @@ enum Commande {
         #[arg(long)]
         internet: bool,
     },
-    /// Vérifier un fichier téléchargé : empreinte comparée à celle du site, nom et contenu, YARA et antivirus.
+    /// Vérifier un fichier téléchargé : empreinte comparée à celle du site, nom et contenu, moteur de Vanguard et
+    /// antivirus du système.
     #[command(name = "verifier-fichier", visible_alias = "check-file")]
     VerifierFichier {
         /// Le fichier téléchargé.
         fichier: std::path::PathBuf,
         /// L'empreinte publiée par le site (SHA-256 de préférence). Sinon : un SHA256SUMS ou .sha256 à côté.
         empreinte: Option<String>,
+        /// Le résultat en JSON, pour un script : rien n'est demandé ; l'antivirus du système n'est pas lancé (dit non
+        /// vérifié), le moteur de Vanguard l'est, son verdict à part.
+        #[arg(long)]
+        json: bool,
     },
     /// Ce courriel est-il une arnaque ? Un courriel enregistré (.eml) examiné sans rien ouvrir : l'expéditeur et son
     /// authentification écrite par votre fournisseur, les liens, les pièces jointes ; après accord, l'âge des domaines
@@ -3202,8 +3207,8 @@ const AIDES_EN: &[(&str, &str)] = &[
     ("verifier-moi", "Check Vanguard itself: version, build date, SHA-256 fingerprint of the program (to compare with the release page), on the owner's key the key manifest, and after your consent the signed history of published versions; or another copy of Vanguard, by its fingerprint and that history"),
     ("acces-a-distance", "Is my computer being controlled? Remote control software (AnyDesk, TeamViewer, RustDesk…) installed, started at boot, running or downloaded: the fake technicians' tool. Removed after your consent; a running program asks for a second consent"),
     ("lien", "Is this link dangerous? Checked without ever opening it; after your consent, its age and public lists"),
-    ("verifier-fichier", "Check a downloaded file: checksum compared with the site's, name and content, YARA and \
-                          antivirus"),
+    ("verifier-fichier", "Check a downloaded file: checksum compared with the site's, name and content, Vanguard's \
+                          engine and the system's antivirus"),
     ("courriel-suspect", "Is this email a scam? A saved email (.eml) examined without opening anything: the sender \
                           and its authentication (SPF, DKIM, DMARC) as written by your provider, the links (shown \
                           text against real address) and the attachments (name, content, YARA, antivirus); after \
@@ -3381,6 +3386,8 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("signaler", "langue", "The draft's language (fr or en); by default, the one the program reads"),
     ("signaler", "json", "The sorting and the draft as JSON, for a script: nothing written or recorded, no question"),
     ("signaler", "effacer", "List the kept drafts and erase them after your consent"),
+    ("verifier-fichier", "json", "The result as JSON, for a script: nothing is asked; the system's antivirus is not \
+                                  run (said not checked), Vanguard's engine is, its verdict apart"),
     ("courriel-suspect", "json", "The result as JSON, for a script: the examination on the computer only (neither \
                                   the online check nor the attachments scan, said not checked)"),
     ("evenements", "incident", "One incident's thread: this event, what caused it and what it caused"),
@@ -3950,9 +3957,18 @@ async fn main() {
             json: true,
             internet,
         }) => protection::lien::json(&adresse, internet),
-        Some(Commande::VerifierFichier { fichier, empreinte }) => {
+        Some(Commande::VerifierFichier {
+            fichier,
+            empreinte,
+            json: false,
+        }) => {
             protection::telechargement::verifier(Some(&fichier), empreinte.as_deref());
         }
+        Some(Commande::VerifierFichier {
+            fichier,
+            empreinte,
+            json: true,
+        }) => protection::telechargement::json(&fichier, empreinte.as_deref()),
         Some(Commande::CourrielSuspect { fichier, json: false }) => {
             protection::courriel_suspect::verifier(Some(&fichier));
         }

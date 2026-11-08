@@ -59,29 +59,12 @@ pub(super) struct Deroule {
     pub(super) a_reprendre: bool,
 }
 
-/// Le type d'alerte d'une menace, qui choisit sa suite ; `None` : pas de suite (un démarrage, la liste des pilotes,
-/// le reste des programmes douteux de COM-PRG-001), le menu des gestes de R1 seul.
+/// Le type d'alerte d'une menace, qui choisit sa suite : celui que lui a donné ce qui l'a désignée (`Menace::type_alerte`,
+/// jamais déduit du texte de sa détection, qui change avec la langue) ; `None` : pas de suite (un démarrage, la liste
+/// des pilotes, le reste des programmes douteux de COM-PRG-001, un fichier seulement suspect), le menu des gestes de
+/// R1 seul.
 pub(super) fn type_de(m: &Menace) -> Option<Type> {
-    match &m.geste {
-        Geste::Programme { detection, .. } if detection == super::menaces::raison_rancongiciel() => {
-            Some(Type::Rancongiciel)
-        }
-        // La raison écrite par `sources::juger_programme`, dans la langue de ce passage.
-        Geste::Programme { detection, .. }
-            if detection.starts_with("outil offensif : ") || detection.starts_with("offensive tool: ") =>
-        {
-            Some(Type::OutilDAttaque)
-        }
-        // Un fichier dont le garde des lancements a refusé le lancement.
-        Geste::Programme { detection, .. } if detection == super::menaces::raison_lancement_refuse() => {
-            Some(Type::LancementRefuse)
-        }
-        // Le reste du certain : une empreinte connue de MalwareBazaar.
-        Geste::Programme { .. } if m.certaine => Some(Type::MalwareConnu),
-        Geste::Adresse { .. } => Some(Type::ServeurDeCommande),
-        Geste::ServeurIa { .. } | Geste::Permissions { .. } => Some(Type::AgentIa),
-        _ => None,
-    }
+    m.type_alerte
 }
 
 /// Ce que la suite sait de sa cible, lu une fois avant le premier geste : l'empreinte du fichier, avant que la
@@ -395,6 +378,7 @@ mod tests {
         let m = Menace {
             categorie: Categorie::Programmes,
             certaine: false,
+            type_alerte: None,
             quoi: "« essai » : x".into(),
             cle: "programme:essai-suite".into(),
             geste: Geste::Programme {
@@ -467,12 +451,13 @@ mod tests {
         assert!(a_noter(&saute, true));
     }
 
-    /// Le type d'alerte, d'après ce qui a désigné la menace.
+    /// Le type d'alerte vient de ce qui a désigné la menace, jamais du texte de sa détection : « outil offensif : »
+    /// écrit dans un nom de fichier ne choisit pas la suite des outils d'attaque.
     #[test]
     fn type_d_alerte() {
-        let programme = |certaine: bool, detection: &str| Menace {
+        let programme = |type_alerte: Option<Type>, detection: &str| Menace {
             categorie: Categorie::Programmes,
-            certaine,
+            certaine: false,
             quoi: "q".into(),
             cle: "programme:1:/x".into(),
             geste: Geste::Programme {
@@ -482,45 +467,16 @@ mod tests {
                 fichier: None,
                 detection: detection.into(),
             },
+            type_alerte,
         };
+        assert_eq!(type_de(&programme(None, "outil offensif : mimikatz")), None);
         assert_eq!(
-            type_de(&programme(true, "outil offensif : mimikatz")),
-            Some(Type::OutilDAttaque)
+            type_de(&programme(None, super::super::menaces::raison_rancongiciel())),
+            None
         );
-        assert_eq!(
-            type_de(&programme(false, "offensive tool: laZagne")),
-            Some(Type::OutilDAttaque)
-        );
-        assert_eq!(
-            type_de(&programme(true, crate::protection::sources::raison_empreinte())),
-            Some(Type::MalwareConnu)
-        );
-        assert_eq!(
-            type_de(&programme(false, super::super::menaces::raison_rancongiciel())),
-            Some(Type::Rancongiciel)
-        );
-        assert_eq!(
-            type_de(&programme(true, super::super::menaces::raison_lancement_refuse())),
-            Some(Type::LancementRefuse)
-        );
-        assert_eq!(type_de(&programme(false, "commande qui télécharge")), None);
-        let mut adresse = programme(true, "x");
-        adresse.geste = Geste::Adresse {
-            ip: "203.0.113.7".parse().unwrap(),
-        };
-        assert_eq!(type_de(&adresse), Some(Type::ServeurDeCommande));
-        let mut ia = programme(false, "x");
-        ia.geste = Geste::ServeurIa {
-            port: 11434,
-            nom: "ollama".into(),
-        };
-        assert_eq!(type_de(&ia), Some(Type::AgentIa));
-        ia.geste = Geste::Demarrage {
-            id: "x".into(),
-            nom: "x".into(),
-            machine: false,
-        };
-        assert_eq!(type_de(&ia), None);
+        for t in Type::TOUS {
+            assert_eq!(type_de(&programme(Some(t), "x")), Some(t));
+        }
     }
 
     /// Bloquer refusé par ses garde-fous reste refusé dans la suite : dit, et la suite continue.
@@ -529,6 +485,7 @@ mod tests {
         let m = Menace {
             categorie: Categorie::Programmes,
             certaine: true,
+            type_alerte: None,
             quoi: "« essai » : x".into(),
             cle: "programme:essai-refus".into(),
             geste: Geste::Programme {

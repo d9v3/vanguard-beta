@@ -22,6 +22,14 @@ use crate::options_defense::{
 const DEFENDER: &str = r"root\Microsoft\Windows\Defender";
 const CENTRE: &str = r"root\SecurityCenter2";
 
+/// Le mode de Defender et sa protection en temps réel, seuls : une requête WMI, pour l'analyse antivirus (place du
+/// moteur de Vanguard, P19), sans lire tout l'écran. Illisible : `(Illisible, None)`, jamais « allumé ».
+pub(crate) fn defender_en_marche() -> (ModeDefender, Option<bool>) {
+    wmi::requete(DEFENDER, "MSFT_MpComputerStatus", "", &CHAMPS_STATUT)
+        .and_then(|l| l.first().map(statut))
+        .map_or((ModeDefender::Illisible, None), |s| (s.mode, s.temps_reel))
+}
+
 /// Tout lire, dans cet ordre ; chaque partie à part, une panne n'emporte pas les autres.
 pub(crate) fn lire() -> Etat {
     Etat {

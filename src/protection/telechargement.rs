@@ -1,7 +1,8 @@
 //! Vérifier un fichier téléchargé : son empreinte, calculée par l'outil du système, comparée à celle que publie le
 //! site (collée, ou lue dans un fichier SHA256SUMS ou .sha256 posé à côté) ; son nom et sa nature (double extension,
-//! programme déguisé en document) ; puis l'analyse YARA et l'antivirus. Un moteur absent ou en échec est dit, jamais
-//! compté comme sain. Vanguard ne déplace ni ne supprime rien (Defender, lui, met en quarantaine ce qu'il reconnaît).
+//! programme déguisé en document) ; puis le moteur de Vanguard et l'antivirus du système. Un moteur absent ou en échec
+//! est dit, jamais compté comme sain. Vanguard ne déplace ni ne supprime rien (Defender, lui, met en quarantaine ce
+//! qu'il reconnaît). Le résultat est versé au rapport et au journal (`resultat.rs`), et rendu par `--json`.
 
 // Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
@@ -9,8 +10,11 @@
 use std::path::{Path, PathBuf};
 
 use crate::protection::antivirus::Examen;
+use crate::protection::moteur;
 use crate::risk::Niveau;
 use crate::ui::*;
+
+mod resultat;
 
 /// Sorte d'empreinte, reconnue à sa longueur en chiffres hexadécimaux.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -361,26 +365,77 @@ fn ligne(niveau: Option<Niveau>, texte: &str) {
 /// `vanguard verifier-fichier <fichier> [empreinte]`.
 pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
     titre(tr!("Vérifier un fichier téléchargé", "Check a downloaded file"));
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
     let interactif = fichier.is_none();
     let Some((chemin, meta)) = fichier_a_verifier(fichier) else {
         return;
     };
-    // Le nom tel quel sert à juger (un caractère qui retourne la fin du nom est justement le piège à trouver) ; montré,
-    // il est rendu inoffensif, comme le dossier.
-    let nom = chemin
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
+    let nom = nom_du_fichier(&chemin);
     montrer_le_fichier(&chemin, &nom, &meta);
     let mut v = Verification::default();
     // 1. L'empreinte : celle collée, sinon celle posée à côté, sinon on la demande (menu).
-    let attendue = empreinte_attendue(&chemin, empreinte, interactif);
+    let attendue = empreinte_attendue(&chemin, empreinte, interactif, &mut v);
     verifier_l_empreinte(&chemin, attendue.as_ref(), &mut v);
     // 2. Le nom et les premiers octets.
     verifier_le_nom(&chemin, &nom, &mut v);
-    // 3. Les moteurs : YARA, puis l'antivirus du système.
-    analyser(&chemin, &mut v);
+    // 3. Les moteurs : celui de Vanguard, puis l'antivirus du système.
+    section(tr!("Analyse", "Scan"));
+    analyser_vanguard(&chemin, &mut v);
+    analyser_systeme(&chemin, &mut v);
     montrer_le_verdict(&v);
+    crate::modele::resultat::verser(&resultat::resultat(&v.releve, debut));
+}
+
+/// `vanguard verifier-fichier <fichier> [empreinte] --json` : sans rien demander ni afficher, l'empreinte, le nom et
+/// le moteur de Vanguard ; l'antivirus du système (qui peut demander une installation) n'y est pas lancé, et c'est
+/// dit comme non vérifié, jamais compté sain. Le résultat du moteur suit sous « moteur » (nul s'il n'a pas pu lire
+/// tout le fichier, la raison étant dans les manques).
+pub fn json(fichier: &Path, empreinte: Option<&str>) {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let mut v = Verification {
+        muet: true,
+        ..Verification::default()
+    };
+    let r = match ouvrir(fichier) {
+        Err(refus) => resultat::refuse(&refus.raison(), debut),
+        Ok((chemin, _)) => {
+            let nom = nom_du_fichier(&chemin);
+            let attendue = empreinte_attendue(&chemin, empreinte, false, &mut v);
+            verifier_l_empreinte(&chemin, attendue.as_ref(), &mut v);
+            verifier_le_nom(&chemin, &nom, &mut v);
+            analyser_vanguard(&chemin, &mut v);
+            v.releve.manques.push(trf!(
+                "{} : pas lancé avec --json",
+                "{}: not run with --json",
+                antivirus_du_systeme()
+            ));
+            resultat::resultat(&v.releve, debut)
+        }
+    };
+    crate::modele::resultat::verser(&r);
+    let mut valeur = serde_json::to_value(&r).unwrap_or_default();
+    if let Some(objet) = valeur.as_object_mut() {
+        objet.insert(
+            "moteur".into(),
+            v.moteur
+                .as_ref()
+                .map_or(serde_json::Value::Null, moteur::Resultat::json),
+        );
+    }
+    println!("{}", serde_json::to_string_pretty(&valeur).unwrap_or_default());
+}
+
+/// Le nom tel quel sert à juger (un caractère qui retourne la fin du nom est justement le piège à trouver) ; montré,
+/// il est rendu inoffensif, comme le dossier.
+fn nom_du_fichier(chemin: &Path) -> String {
+    chemin
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+fn antivirus_du_systeme() -> &'static str {
+    if cfg!(windows) { "Defender" } else { "ClamAV" }
 }
 
 /// Ce que la vérification d'un fichier a trouvé, d'une étape à l'autre.
@@ -388,12 +443,75 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
 struct Verification {
     /// Le pire signe trouvé.
     pire: Option<Niveau>,
-    /// Ce qui n'a pas pu être vérifié.
+    /// Ce qui n'a pas pu être vérifié, en un mot pour l'écran.
     incomplet: Vec<&'static str>,
-    /// L'empreinte publiée (d'un algorithme solide) correspond.
-    conforme: bool,
     /// Un moteur a reconnu un logiciel malveillant.
     detecte: bool,
+    /// Sans écran (`--json`) : rien n'est affiché, tout est relevé.
+    muet: bool,
+    /// Les signes, les manques et l'empreinte conforme, pour le résultat versé (`resultat.rs`).
+    releve: resultat::Releve,
+    /// Le résultat du moteur de Vanguard, quand il a lu tout le fichier (`--json`).
+    moteur: Option<moteur::Resultat>,
+}
+
+impl Verification {
+    /// Une ligne à l'écran, sauf sans écran.
+    fn dire(&self, niveau: Option<Niveau>, texte: &str) {
+        if !self.muet {
+            ligne(niveau, texte);
+        }
+    }
+
+    /// Un signe : dit, relevé pour le résultat, et compté dans le pire s'il dépasse l'information.
+    fn signe(&mut self, niveau: Niveau, texte: String) {
+        self.dire(Some(niveau), &texte);
+        if niveau > Niveau::Info {
+            self.pire = self.pire.max(Some(niveau));
+            self.releve.signes.push((niveau, texte));
+        }
+    }
+
+    /// Ce qui n'a pas pu être vérifié : `quoi` pour l'écran, la phrase entière pour le résultat.
+    fn manque(&mut self, quoi: &'static str, phrase: String) {
+        if !self.incomplet.contains(&quoi) {
+            self.incomplet.push(quoi);
+        }
+        self.releve.manques.push(phrase);
+    }
+}
+
+/// Pourquoi un fichier donné ne se vérifie pas.
+enum Refus {
+    Introuvable(PathBuf),
+    Illisible(PathBuf),
+    PasUnFichier,
+}
+
+impl Refus {
+    /// En une phrase, pour le résultat et `--json`.
+    fn raison(&self) -> String {
+        match self {
+            Refus::Introuvable(_) => tr!("fichier introuvable", "file not found"),
+            Refus::Illisible(_) => tr!("fichier illisible", "file unreadable"),
+            Refus::PasUnFichier => tr!("pas un fichier", "not a file"),
+        }
+        .to_string()
+    }
+}
+
+/// Le chemin réel d'un fichier et ses métadonnées. Le chemin réel, « \\?\ » compris sous Windows : c'est lui qui
+/// désigne ce fichier-là (« facture.exe. » et « facture.exe » sont deux fichiers). Il n'est raccourci qu'à l'écran
+/// (`affiche`).
+fn ouvrir(chemin: &Path) -> Result<(PathBuf, std::fs::Metadata), Refus> {
+    let reel = chemin
+        .canonicalize()
+        .map_err(|_| Refus::Introuvable(chemin.to_path_buf()))?;
+    let meta = std::fs::metadata(&reel).map_err(|_| Refus::Illisible(reel.clone()))?;
+    if !meta.is_file() {
+        return Err(Refus::PasUnFichier);
+    }
+    Ok((reel, meta))
 }
 
 /// Le fichier à vérifier, donné ou demandé, son chemin réel et ses métadonnées ; `None` (et c'est dit) s'il est
@@ -412,24 +530,24 @@ fn fichier_a_verifier(fichier: Option<&Path>) -> Option<(PathBuf, std::fs::Metad
         }
         PathBuf::from(reponse)
     };
-    // Le chemin réel, « \\?\ » compris sous Windows : c'est lui qui désigne ce fichier-là (« facture.exe. » et
-    // « facture.exe » sont deux fichiers). Il n'est raccourci qu'à l'écran (`affiche`).
-    let Ok(chemin) = chemin.canonicalize() else {
-        trp!("  ✖ Introuvable : {}", "  ✖ Not found: {}", chemin_affichable(&chemin));
-        return None;
-    };
-    let Ok(meta) = std::fs::metadata(&chemin) else {
-        trp!("  ✖ Illisible : {}", "  ✖ Unreadable: {}", affiche(&chemin));
-        return None;
-    };
-    if !meta.is_file() {
-        trp!(
-            "  ✖ Ce n'est pas un fichier (un dossier s'analyse avec l'antivirus ou YARA).",
-            "  ✖ This is not a file (a folder is scanned with the antivirus or YARA)."
-        );
-        return None;
+    match ouvrir(&chemin) {
+        Ok(ouvert) => Some(ouvert),
+        Err(Refus::Introuvable(chemin)) => {
+            trp!("  ✖ Introuvable : {}", "  ✖ Not found: {}", chemin_affichable(&chemin));
+            None
+        }
+        Err(Refus::Illisible(chemin)) => {
+            trp!("  ✖ Illisible : {}", "  ✖ Unreadable: {}", affiche(&chemin));
+            None
+        }
+        Err(Refus::PasUnFichier) => {
+            trp!(
+                "  ✖ Ce n'est pas un fichier (un dossier s'analyse avec l'antivirus).",
+                "  ✖ This is not a file (a folder is scanned with the antivirus)."
+            );
+            None
+        }
     }
-    Some((chemin, meta))
 }
 
 /// Le nom, la taille et le dossier du fichier, rendus inoffensifs.
@@ -451,7 +569,12 @@ fn montrer_le_fichier(chemin: &Path, nom: &str, meta: &std::fs::Metadata) {
 
 /// L'empreinte publiée : (algorithme, valeur, d'où elle vient). Celle donnée, sinon celle d'un fichier posé à côté,
 /// sinon demandée (menu) ; un texte qui n'en est pas une est dit.
-fn empreinte_attendue(chemin: &Path, empreinte: Option<&str>, interactif: bool) -> Option<(Algo, String, String)> {
+fn empreinte_attendue(
+    chemin: &Path,
+    empreinte: Option<&str>,
+    interactif: bool,
+    v: &mut Verification,
+) -> Option<(Algo, String, String)> {
     let saisie = match empreinte {
         Some(e) => Some(e.to_string()),
         None if interactif && empreinte_a_cote(chemin).is_none() => Some(demander(tr!(
@@ -466,10 +589,21 @@ fn empreinte_attendue(chemin: &Path, empreinte: Option<&str>, interactif: bool) 
             let lue = lire_empreinte(s).map(|(a, e)| (a, e, tr!("collée", "pasted").to_string()));
             if lue.is_none() {
                 // Le texte collé vient souvent d'une page web.
-                trp!(
-                    "  ⚠ « {} » n'est pas une empreinte reconnue (32, 40, 64 ou 128 chiffres hexadécimaux).",
-                    "  ⚠ “{}” is not a recognized checksum (32, 40, 64 or 128 hexadecimal digits).",
-                    affichable(s.trim())
+                if !v.muet {
+                    trp!(
+                        "  ⚠ « {} » n'est pas une empreinte reconnue (32, 40, 64 ou 128 chiffres hexadécimaux).",
+                        "  ⚠ “{}” is not a recognized checksum (32, 40, 64 or 128 hexadecimal digits).",
+                        affichable(s.trim())
+                    );
+                }
+                // Rien n'a été comparé : ce n'est pas « pas d'empreinte publiée ».
+                v.manque(
+                    tr!("l'empreinte", "the checksum"),
+                    tr!(
+                        "l'empreinte donnée n'en est pas une (rien de comparé)",
+                        "the given checksum is not one (nothing compared)"
+                    )
+                    .to_string(),
                 );
             }
             lue
@@ -486,27 +620,31 @@ fn empreinte_attendue(chemin: &Path, empreinte: Option<&str>, interactif: bool) 
 
 /// L'empreinte calculée, comparée à celle publiée.
 fn verifier_l_empreinte(chemin: &Path, attendue: Option<&(Algo, String, String)>, v: &mut Verification) {
-    section(tr!("Empreinte", "Checksum"));
-    trp!(
-        "  {GRIS}Calcul de l'empreinte…{RESET}",
-        "  {GRIS}Computing the checksum…{RESET}"
-    );
+    if !v.muet {
+        section(tr!("Empreinte", "Checksum"));
+        trp!(
+            "  {GRIS}Calcul de l'empreinte…{RESET}",
+            "  {GRIS}Computing the checksum…{RESET}"
+        );
+    }
     let sha256 = calculer(chemin, Algo::Sha256);
     match &sha256 {
-        Ok(sha256) => println!("  {GRIS}SHA-256{RESET}  {sha256}"),
+        Ok(sha256) => {
+            if !v.muet {
+                println!("  {GRIS}SHA-256{RESET}  {sha256}");
+            }
+        }
         Err(e) => {
-            ligne(
-                Some(Niveau::Moyen),
-                &trf!(
-                    "SHA-256 impossible à calculer : {e}",
-                    "SHA-256 could not be computed: {e}"
-                ),
+            let texte = trf!(
+                "SHA-256 impossible à calculer : {e}",
+                "SHA-256 could not be computed: {e}"
             );
-            v.incomplet.push(tr!("l'empreinte", "the checksum"));
+            v.dire(Some(Niveau::Moyen), &texte);
+            v.manque(tr!("l'empreinte", "the checksum"), texte);
         }
     }
     match attendue {
-        None => ligne(
+        None => v.dire(
             Some(Niveau::Info),
             tr!(
                 "Pas d'empreinte à comparer : cherchez « SHA-256 » sur la page de téléchargement officielle, puis refaites la vérification avec elle.",
@@ -520,8 +658,8 @@ fn verifier_l_empreinte(chemin: &Path, attendue: Option<&(Algo, String, String)>
             calculer(chemin, *algo)
         } {
             Ok(calculee) if calculee == *valeur => {
-                v.conforme = !algo.faible();
-                ligne(
+                v.releve.conforme = !algo.faible();
+                v.dire(
                     if algo.faible() { Some(Niveau::Info) } else { None },
                     &if algo.faible() {
                         trf!(
@@ -540,10 +678,9 @@ fn verifier_l_empreinte(chemin: &Path, attendue: Option<&(Algo, String, String)>
                 );
             }
             Ok(calculee) => {
-                v.pire = Some(Niveau::Critique);
-                ligne(
-                    Some(Niveau::Critique),
-                    &trf!(
+                v.signe(
+                    Niveau::Critique,
+                    trf!(
                         "L'empreinte {} ({source}) ne correspond pas : le fichier a été abîmé ou remplacé. Attendue {valeur}, obtenue {calculee}.",
                         "The {} checksum ({source}) does not match: the file was damaged or replaced. Expected {valeur}, got {calculee}.",
                         algo.nom()
@@ -551,15 +688,13 @@ fn verifier_l_empreinte(chemin: &Path, attendue: Option<&(Algo, String, String)>
                 );
             }
             Err(e) => {
-                ligne(
-                    Some(Niveau::Moyen),
-                    &trf!(
-                        "{} impossible à calculer : {e}",
-                        "{} could not be computed: {e}",
-                        algo.nom()
-                    ),
+                let texte = trf!(
+                    "{} impossible à calculer : {e}",
+                    "{} could not be computed: {e}",
+                    algo.nom()
                 );
-                v.incomplet.push(tr!("l'empreinte", "the checksum"));
+                v.dire(Some(Niveau::Moyen), &texte);
+                v.manque(tr!("l'empreinte", "the checksum"), texte);
             }
         },
     }
@@ -567,7 +702,9 @@ fn verifier_l_empreinte(chemin: &Path, attendue: Option<&(Algo, String, String)>
 
 /// Le nom et les premiers octets : un nom ou un contenu qui trompe sur ce qu'est le fichier.
 fn verifier_le_nom(chemin: &Path, nom: &str, v: &mut Verification) {
-    section(tr!("Nom et contenu", "Name and content"));
+    if !v.muet {
+        section(tr!("Nom et contenu", "Name and content"));
+    }
     let mut debut = [0_u8; 4];
     let lus = std::fs::File::open(chemin)
         .and_then(|mut f| std::io::Read::read(&mut f, &mut debut))
@@ -576,7 +713,7 @@ fn verifier_le_nom(chemin: &Path, nom: &str, v: &mut Verification) {
     let lu: Vec<u8> = debut.iter().take(lus).copied().collect();
     let signes = nature(nom, &lu);
     if signes.is_empty() {
-        ligne(
+        v.dire(
             None,
             tr!(
                 "Rien de trompeur dans le nom ni dans le contenu.",
@@ -584,34 +721,49 @@ fn verifier_le_nom(chemin: &Path, nom: &str, v: &mut Verification) {
             ),
         );
     }
-    for (niveau, texte) in &signes {
-        ligne(Some(*niveau), texte);
-        if *niveau > Niveau::Info {
-            v.pire = v.pire.max(Some(*niveau));
-        }
+    for (niveau, texte) in signes {
+        v.signe(niveau, texte);
     }
 }
 
-/// Le moteur de Vanguard (empreintes, YARA, ClamAV, heuristiques), puis l'antivirus du système.
-fn analyser(chemin: &Path, v: &mut Verification) {
-    section(tr!("Analyse", "Scan"));
-    let antivirus = if cfg!(windows) { "Defender" } else { "ClamAV" };
-    for (moteur, examen) in [
-        ("Vanguard", crate::protection::yara::examiner(chemin)),
-        (antivirus, crate::protection::antivirus::examiner(chemin)),
-    ] {
-        let (niveau, texte) = examen.ligne(moteur);
-        match examen {
-            Examen::Sain | Examen::SainSousReserve(_) => {}
-            Examen::Trouve(_) => {
-                v.detecte = true;
-                v.pire = Some(Niveau::Critique);
-            }
-            // Une heuristique seule : dite, au niveau moyen ; ni « logiciel malveillant », ni geste automatique.
-            Examen::Suspect(_) => v.pire = v.pire.max(Some(Niveau::Moyen)),
-            Examen::Impossible(_) => v.incomplet.push(moteur),
+/// Le moteur de Vanguard (empreintes, YARA, ClamAV, heuristiques), qui garde son résultat pour `--json`.
+fn analyser_vanguard(chemin: &Path, v: &mut Verification) {
+    let (examen, detail) = crate::protection::yara::examiner_en_detail(chemin);
+    v.moteur = detail;
+    juger("Vanguard", &examen, v);
+}
+
+/// L'antivirus du système (Defender, ClamAV), qui peut demander une installation : jamais avec `--json`.
+fn analyser_systeme(chemin: &Path, v: &mut Verification) {
+    juger(
+        antivirus_du_systeme(),
+        &crate::protection::antivirus::examiner(chemin),
+        v,
+    );
+}
+
+/// L'examen d'un moteur : dit, et relevé. Une source facultative absente (`SainSousReserve`) est un manque du
+/// résultat versé, sans changer l'écran, qui la dit déjà.
+fn juger(moteur: &'static str, examen: &Examen, v: &mut Verification) {
+    let (niveau, texte) = examen.ligne(moteur);
+    match examen {
+        Examen::Sain => v.dire(niveau, &texte),
+        Examen::SainSousReserve(reserves) => {
+            v.dire(niveau, &texte);
+            v.releve
+                .manques
+                .extend(reserves.iter().map(|r| trf!("{moteur} : {r}", "{moteur}: {r}")));
         }
-        ligne(niveau, &texte);
+        Examen::Trouve(_) => {
+            v.detecte = true;
+            v.signe(Niveau::Critique, texte);
+        }
+        // Une heuristique seule : dite, au niveau moyen ; ni « logiciel malveillant », ni geste automatique.
+        Examen::Suspect(_) => v.signe(Niveau::Moyen, texte),
+        Examen::Impossible(raison) => {
+            v.dire(niveau, &texte);
+            v.manque(moteur, trf!("{moteur} : {raison}", "{moteur}: {raison}"));
+        }
     }
 }
 
@@ -620,10 +772,11 @@ fn montrer_le_verdict(v: &Verification) {
     let Verification {
         pire,
         incomplet,
-        conforme,
         detecte,
+        releve,
+        ..
     } = v;
-    let (pire, conforme, detecte) = (*pire, *conforme, *detecte);
+    let (pire, conforme, detecte) = (*pire, releve.conforme, *detecte);
     println!();
     let verdict = if detecte {
         tr!(

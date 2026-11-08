@@ -1546,6 +1546,7 @@ mod tests {
         Menace {
             categorie: super::super::parametres::Categorie::Connexions,
             certaine: true,
+            type_alerte: None,
             quoi: "x".into(),
             cle: "x".into(),
             geste,

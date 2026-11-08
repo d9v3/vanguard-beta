@@ -422,6 +422,8 @@ pub(crate) struct Jugement {
     pub raison: String,
     /// Le mot de la ligne de commande qui désigne le script, quand l'outil a été reconnu par un argument.
     pub script: Option<String>,
+    /// Le type d'alerte, qui choisit la suite du blocage ; `None` : douteux sans suite propre (COM-PRG-001).
+    pub type_alerte: Option<crate::protection::blocage::suites::Type>,
 }
 
 /// Le jugement d'un programme en marche, ou `None`. Certain : un outil d'attaque connu reconnu au programme lui-même
@@ -438,6 +440,7 @@ pub(crate) fn juger_programme(p: &EnMarche, os: Os, connu: &mut impl FnMut(&str)
             certaine,
             raison: trf!("outil offensif : {raison}", "offensive tool: {raison}"),
             script,
+            type_alerte: Some(crate::protection::blocage::suites::Type::OutilDAttaque),
         });
     }
     if p.chemin.as_deref().is_some_and(&mut *connu) {
@@ -445,12 +448,14 @@ pub(crate) fn juger_programme(p: &EnMarche, os: Os, connu: &mut impl FnMut(&str)
             certaine: true,
             raison: raison_empreinte().to_string(),
             script: None,
+            type_alerte: Some(crate::protection::blocage::suites::Type::MalwareConnu),
         });
     }
     chasse::juger_programme(p, os).map(|s| Jugement {
         certaine: false,
         raison: s.raison.to_string(),
         script: None,
+        type_alerte: None,
     })
 }
 

@@ -196,6 +196,7 @@ fn juger_processus(pid: u32, ctx: &Contexte) {
             fichier: None,
             detection: tr!("essai : juger", "test: judge").to_string(),
         },
+        type_alerte: None,
     };
     verdict(&menace, ctx);
 }
@@ -233,6 +234,7 @@ fn juger_fichier(chemin: &Path, ctx: &Contexte) {
             fichier: Some(chemin.to_path_buf()),
             detection: tr!("essai : juger", "test: judge").to_string(),
         },
+        type_alerte: None,
     };
     verdict(&menace, ctx);
 }

@@ -27,8 +27,8 @@ pub(crate) enum Type {
     OutilDAttaque,
     /// Un fichier dont l'empreinte est connue de MalwareBazaar.
     MalwareConnu,
-    /// Une famille de logiciels malveillants reconnue par ses règles (AV4, à venir) : le type et sa suite existent
-    /// déjà, rien ne le produit encore.
+    /// Un fichier téléchargé reconnu par une règle de famille (YARA, signature ClamAV) du moteur commun : une règle
+    /// peut se tromper, la suite part d'un clic, jamais toute seule.
     Famille,
     /// Un agent d'IA hors de contrôle : serveur d'IA ouvert au réseau, agent réglé pour tout faire sans demander.
     AgentIa,
@@ -80,7 +80,7 @@ impl Type {
             Type::Rancongiciel => tr!("veilleur anti-rançongiciel", "ransomware watcher"),
             Type::ServeurDeCommande => tr!("connexions dangereuses", "dangerous connections"),
             Type::OutilDAttaque | Type::MalwareConnu => tr!("programmes malveillants", "malicious programs"),
-            Type::Famille => tr!("à venir (familles)", "coming (families)"),
+            Type::Famille => tr!("téléchargements (règles)", "downloads (rules)"),
             Type::AgentIa => tr!("agents et serveurs d'IA", "AI agents and servers"),
             Type::LancementRefuse => tr!("garde des lancements (Linux)", "launch guard (Linux)"),
         }

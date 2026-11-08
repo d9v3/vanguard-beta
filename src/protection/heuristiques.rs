@@ -86,7 +86,8 @@ pub(crate) enum Heuristique {
 }
 
 impl Heuristique {
-    /// Toutes, dans l'ordre du rapport.
+    /// Toutes, dans l'ordre du rapport. Lues par les essais et le banc de fuzzing (chacune a son code, sa clé).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const TOUTES: [Heuristique; 8] = [
         Heuristique::PeNonSigne,
         Heuristique::EcrivableExecutable,

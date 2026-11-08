@@ -120,8 +120,8 @@ impl Action {
                 "Looks for malware with ClamAV (Linux) or Microsoft Defender (Windows), or with the built-in YARA rules."
             ),
             Action::AntivirusRapide => tr!(
-                "Analyse les endroits où arrivent les menaces, puis montre ce qui se lance au démarrage. Un fichier détecté : quarantaine ou suppression, au choix.",
-                "Scans where threats arrive, then shows what runs at startup. A detected file: quarantine or delete, your choice."
+                "Le moteur de Vanguard et celui du système (Defender, ClamAV) là où arrivent les menaces, puis ce qui se lance au démarrage. Un fichier détecté : quarantaine ou suppression, au choix.",
+                "The Vanguard engine and the system's (Defender, ClamAV) where threats arrive, then what runs at startup. A detected file: quarantine or delete, your choice."
             ),
             Action::AntivirusComplet => tr!(
                 "Plus long que l'analyse rapide. Si un fichier est détecté, vous choisissez : quarantaine réversible, suppression ou rien.",

@@ -1042,6 +1042,77 @@ fn verifier_fichier_verdicts() {
     let _ = std::fs::remove_dir_all(&dossier);
 }
 
+/// `verifier-fichier --json` : rien n'est demandé ni affiché hors du JSON ; l'antivirus du système, pas lancé, est dit
+/// non vérifié, donc le verdict n'est jamais « sain » ; le moteur de Vanguard rend le sien à part, et une source qui
+/// lui manquait (empreintes de MalwareBazaar dans un dossier personnel neuf) figure dans ce qui n'a pas été vérifié.
+/// Le résultat est versé (`examens/PRO-TEL-001.json`) ; un fichier introuvable rend un résultat non vérifié.
+#[test]
+fn verifier_fichier_en_json() {
+    let maison = maison_jetable();
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let notes = maison.join("notes.txt");
+    std::fs::write(&notes, "bonjour\n").unwrap();
+    let lire = |args: &[&str]| -> serde_json::Value {
+        let s = vanguard_dans(programme, &maison, "fr", args, "", 240);
+        assert_eq!(s.code, Some(0), "{}", s.erreurs);
+        serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("{args:?} : JSON illisible ({e}) : {}", s.texte))
+    };
+    let v = lire(&["verifier-fichier", notes.to_str().unwrap(), "--json"]);
+    assert_eq!(v["outil"], "PRO-TEL-001", "{v}");
+    let constats = v["constats"].as_array().expect("pas de constats");
+    assert!(constats.iter().all(|c| c["etat"] != "probleme"), "{v}");
+    let manques: Vec<&str> = v["couverture"]["non_verifies"]
+        .as_array()
+        .expect("pas de non_verifies")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    let antivirus = if cfg!(windows) { "Defender" } else { "ClamAV" };
+    assert!(
+        manques.contains(&format!("{antivirus} : pas lancé avec --json").as_str()),
+        "{manques:?}"
+    );
+    let moteur = &v["moteur"];
+    assert!(moteur.is_object(), "{v}");
+    let verdict = moteur["verdict"].as_str().expect("moteur sans verdict");
+    assert!(["sain", "non-verifie"].contains(&verdict), "{verdict}");
+    // Une source facultative absente n'est pas tue : chaque réserve du moteur est un manque du résultat.
+    for r in moteur["reserves"]
+        .as_array()
+        .expect("pas de réserves")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+    {
+        assert!(
+            manques.contains(&format!("Vanguard : {r}").as_str()),
+            "{r} : {manques:?}"
+        );
+    }
+    assert!(
+        dossier_vanguard(&maison)
+            .join("examens")
+            .join("PRO-TEL-001.json")
+            .is_file(),
+        "résultat pas versé"
+    );
+    // Un programme Windows déguisé en document : un problème, que l'antivirus manque ou non.
+    let piege = maison.join("facture.pdf.exe");
+    std::fs::write(&piege, b"MZ\x90\x00").unwrap();
+    let v = lire(&["verifier-fichier", piege.to_str().unwrap(), "--json"]);
+    let constats = v["constats"].as_array().expect("pas de constats");
+    assert!(constats.iter().any(|c| c["etat"] == "probleme"), "{v}");
+    // Introuvable : rien de vérifié, et le moteur n'a rien rendu.
+    let v = lire(&["verifier-fichier", "/nexiste/pas/outil.zip", "--json"]);
+    assert_eq!(v["couverture"]["verifies"], 0, "{v}");
+    assert!(
+        v["constats"]
+            .as_array()
+            .is_some_and(|c| c.iter().all(|c| c["etat"] == "non-verifie")),
+        "{v}"
+    );
+    assert!(v["moteur"].is_null(), "{v}");
+}
+
 /// ClamAV absent (un PATH vide) et aucune réponse : la question « L'installer maintenant ? » trouve la fin de l'entrée,
 /// qui vaut « non ». Le verdict suit, incomplet ; le programme ne quitte pas à la question, comme jusqu'à la 0.88.
 #[cfg(unix)]
