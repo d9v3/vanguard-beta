@@ -63,24 +63,27 @@ impl Examen {
             ),
             Examen::Trouve(noms) => (
                 Some(Niveau::Critique),
-                trf!("{moteur} : {}", "{moteur}: {}", resume(noms, 3, ", ")),
+                trf!("{moteur} : {}", "{moteur}: {}", affichable(&resume(noms, 3, ", "))),
             ),
             Examen::Suspect { signes, .. } => (
                 Some(Niveau::Moyen),
                 trf!(
                     "{moteur} : suspect, rien de connu ({}){}.",
                     "{moteur}: suspicious, nothing known ({}){}.",
-                    resume(signes, 2, " ; "),
+                    affichable(&resume(signes, 2, " ; ")),
                     self.non_verifie_du_suspect()
                         .map(|n| trf!(" ; non vérifié : {}", "; not checked: {}", affichable(&n)))
                         .unwrap_or_default()
                 ),
             ),
+            // La raison peut porter un nom d'entrée d'archive, choisi par qui a fait le fichier : sans `affichable`,
+            // ses séquences d'échappement effaceraient ou forgeraient les lignes de verdict à l'écran.
             Examen::Impossible(raison) => (
                 Some(Niveau::Moyen),
                 trf!(
-                    "{moteur} : impossible à vérifier ({raison}).",
-                    "{moteur}: could not check ({raison})."
+                    "{moteur} : impossible à vérifier ({}).",
+                    "{moteur}: could not check ({}).",
+                    affichable(raison)
                 ),
             ),
         }
@@ -2617,6 +2620,30 @@ fn demarrage_windows() -> (Vec<String>, Vec<String>) {
 mod tests_cle {
     use super::*;
     use std::path::Path;
+
+    /// Un nom d'entrée d'archive piégé (effacement de ligne, couleur, cloche) ne passe jamais tel quel à l'écran,
+    /// quelle que soit la branche du verdict qui le porte.
+    #[test]
+    fn ligne_du_verdict_sans_sequence_d_echappement() {
+        let piege = "a.zip/\u{1b}[2K\r\u{1b}[32mrien\u{7}.7z".to_string();
+        let examens = [
+            Examen::Impossible(piege.clone()),
+            Examen::Trouve(vec![piege.clone()]),
+            Examen::SainSousReserve(vec![piege.clone()]),
+            Examen::Suspect {
+                signes: vec![piege.clone()],
+                manques: vec![piege.clone()],
+                reserves: vec![piege.clone()],
+            },
+        ];
+        for examen in &examens {
+            let (_, texte) = examen.ligne("Vanguard");
+            assert!(
+                !texte.chars().any(char::is_control),
+                "séquence de contrôle à l'écran : {texte:?}"
+            );
+        }
+    }
 
     /// P19 : le moteur de Vanguard n'est principal que si la personne a coupé Defender par son choix noté ; Defender
     /// allumé, ou passif derrière un autre antivirus, garde la première place ; un Defender coupé sans choix ou
