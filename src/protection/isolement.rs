@@ -972,11 +972,15 @@ fn reponse(ligne: &str, notes: &[String]) -> String {
 
 /// Ce qui est dit avant de demander l'accord d'isoler : ce qui passe, et ce que coûte l'isolement (il tient après un
 /// redémarrage, la connexion gardée est figée, un état perdu ne garde plus rien), puis la sortie de secours.
-pub(crate) fn avant_l_accord() -> [&'static str; 3] {
+pub(crate) fn avant_l_accord() -> [&'static str; 4] {
     [
         tr!(
             "Tout le reste est coupé, en entrée et en sortie : navigateur, partages, autres ordinateurs du réseau. Restent la boucle locale, DHCP, le DNS en place (port 53) et les serveurs de Vanguard en HTTPS (mises à jour, listes de menaces ; ces adresses sont souvent partagées avec d'autres sites par leur hébergeur).",
             "Everything else is cut, in and out: browser, shares, other computers on the network. What remains: loopback, DHCP, the current DNS (port 53) and Vanguard's servers over HTTPS (updates, threat lists; their host often shares these addresses with other sites)."
+        ),
+        tr!(
+            "Seules les sessions à distance entrantes reconnues sont gardées (SSH, Bureau à distance, RustDesk, AnyDesk, TeamViewer et d'autres outils connus) : une prise en main hors de cette liste (mosh, outils tiers) sera coupée. Les connexions sortantes de cet ordinateur vers d'autres machines (SSH, Bureau à distance, VPN) seront coupées elles aussi.",
+            "Only recognized incoming remote sessions are kept (SSH, Remote Desktop, RustDesk, AnyDesk, TeamViewer and other known tools): remote control outside this list (mosh, third-party tools) will be cut. Outgoing connections from this computer to other machines (SSH, Remote Desktop, VPN) will be cut as well."
         ),
         tr!(
             "L'isolement tient après un redémarrage. Chaque session gardée l'est par sa connexion exacte d'aujourd'hui, figée : si elle se coupe, ou après un redémarrage, elle ne peut pas revenir (une nouvelle connexion, même depuis la même adresse, est refusée) ; une session dont l'adresse change (adresse dynamique) est refusée elle aussi. Sous Linux, si l'état noté de l'isolement est perdu ou abîmé, le redémarrage isole sans plus aucune exception, session comprise.",
@@ -1225,8 +1229,19 @@ mod tests {
             "vanguard blocage lever-isolement",
             "nft delete table inet vanguard_isolement",
             "HTTPS",
+            // C1 : le sortant coupé ; C2 : la prise en main hors liste coupée.
+            "connexions sortantes",
+            "VPN",
+            "hors de cette liste",
+            "mosh",
         ] {
             assert!(fr.contains(mot), "{mot}");
+        }
+        // Chaque phrase tient en lignes d'au plus 76 colonnes une fois mise en retrait comme à l'écran.
+        for t in avant_l_accord() {
+            for l in crate::ui::envelopper_decale(t, crate::ui::LARGEUR - 4, crate::ui::LARGEUR - 4) {
+                assert!(crate::ui::largeur_affichee(&l) + 4 <= crate::ui::LARGEUR, "{l}");
+            }
         }
     }
 
