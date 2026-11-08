@@ -964,7 +964,10 @@ Etape 'YARA : analyse d''un dossier par le moteur de Vanguard (rien à installer
 $dossierYara = Join-Path $env:TEMP 'vanguard-dossier-yara'
 New-Item -ItemType Directory -Force $dossierYara | Out-Null
 Set-Content -Path (Join-Path $dossierYara 'note.txt') -Value 'fichier sans danger' -Encoding UTF8
-[IO.File]::WriteAllBytes((Join-Path $dossierYara 'outil.exe'), [byte[]](0x4D, 0x5A, 0x90, 0x00) + [Text.Encoding]::ASCII.GetBytes('programme sans danger'))
+# Un vrai programme Windows (PE) sans danger : depuis la défense AV1b, YARA passe par le socle d'analyse, qui ouvre le
+# PE partie par partie ; un faux « MZ » sans en-tête PE n'y est jamais lu ni compté sain (essai DOS plus bas).
+Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\HOSTNAME.EXE') (Join-Path $dossierYara 'outil.exe') -Force
+Remove-Item -LiteralPath (Join-Path $dossierYara 'vieux-dos.exe') -Force -ErrorAction SilentlyContinue
 Lancer 'yara' @('yara', $dossierYara)
 # Le texte est replié à 76 colonnes, chaque ligne finie par un code de couleur : les mots se cherchent sans couleurs,
 # remis bout à bout.
@@ -974,6 +977,17 @@ if ($y -match "installer|install it|winget") { Bug 'Vanguard parle encore d''ins
 if ($y -match 'Aucun fichier ne correspond|No file matches') { Ok 'Dossier sans danger : rien trouvé, tout lu' }
 elseif ($y -match 'illisible|unreadable') { Bug 'Des fichiers du dossier d''essai n''ont pas pu être lus' }
 else { Bug 'Résultat de l''analyse YARA inattendu' }
+# « MZ » sans en-tête PE (programme DOS ou 16 bits, ou PE abîmé) : non ouvert, donc l'analyse se dit incomplète en le
+# nommant, et ne conclut jamais « rien trouvé » (src/analyse/mod.rs, ExecutableDos).
+$dossierDos = Join-Path $env:TEMP 'vanguard-dossier-yara-dos'
+New-Item -ItemType Directory -Force $dossierDos | Out-Null
+[IO.File]::WriteAllBytes((Join-Path $dossierDos 'vieux-dos.exe'), [byte[]](0x4D, 0x5A, 0x90, 0x00) + [Text.Encoding]::ASCII.GetBytes('programme sans danger'))
+Lancer 'yara-dos' @('yara', $dossierDos)
+$yd = (Sortie 'yara-dos') -replace '\x1b\[[0-9;]*m', '' -replace '\s+', ' '
+if ($yd -match '(?:Analyse incomplète|Incomplete scan).*vieux-dos\.exe.*(?:programme DOS ou 16 bits|DOS or 16-bit program)') { Ok 'Programme DOS (MZ sans PE) dit non ouvert, analyse incomplète' }
+else { Bug 'Programme DOS (MZ sans PE) PAS dit non ouvert' }
+if ($yd -match 'Aucun fichier ne correspond|No file matches') { Bug 'Programme DOS non ouvert compté comme lu (« rien trouvé »)' }
+Remove-Item -LiteralPath $dossierDos -Recurse -Force -ErrorAction SilentlyContinue
 # 0.84 : les empreintes de MalwareBazaar ne se téléchargent qu'avec la clé abuse.ch de la personne (Paramètres). Avec
 # elle, l'analyse les compte ; sans elle, elle doit dire qu'elles n'ont pas été vérifiées faute de clé, jamais se taire.
 # Une copie gardée d'avant sert encore sans clé : comptée, avec son rafraîchissement manqué dit.
