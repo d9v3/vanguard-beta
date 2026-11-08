@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 use super::sortie::{self, Etat};
 use super::{FICHIER_UNITE, LISTE_MD5, LISTE_SHA256, PROGRAMME};
 use crate::machine::regles::{Os, regle};
-use crate::machine::{Constat, alerte, impossible, ok, sans_objet};
+use crate::machine::{Constat, alerte, impossible_par, ok, sans_objet};
+use crate::modele::Raison;
 use crate::modele::etat::Absence;
 use crate::protection::blocage::ordres::{self, Ordre};
 use crate::protection::clamav::signatures::{Mode, Options};
@@ -450,9 +451,22 @@ pub(crate) fn juger(posee: bool, etat: Option<&Etat>, maintenant: u64) -> Consta
 /// Le constat de cet ordinateur.
 pub(crate) fn constat() -> Constat {
     if !crate::machine::linux::dbus::systeme::systemd_present() && !pose() {
-        return impossible(CAT, tr!("systemd absent", "systemd not present"));
+        return sans_systemd();
     }
     juger(pose(), etat().as_ref(), super::maintenant())
+}
+
+/// Sans systemd, le garde ne peut pas être posé ni lu : « non vérifié », avec sa raison typée (l'outil absent), qui
+/// n'est jamais attendue : le journal des erreurs la note, et le bilan ne la compte jamais saine.
+fn sans_systemd() -> Constat {
+    impossible_par(
+        CAT,
+        Raison::Absente("systemd".into()),
+        tr!(
+            "Impossible de vérifier (systemd absent).",
+            "Could not check (systemd not present)."
+        ),
+    )
 }
 
 // ───────────────────────────── Les commandes ─────────────────────────────
@@ -866,6 +880,20 @@ mod tests {
             certain: 12,
             ..Etat::default()
         }
+    }
+
+    #[test]
+    fn sans_systemd_non_verifie_par_l_outil_absent_jamais_attendu() {
+        let c = sans_systemd();
+        assert!(!c.verifie);
+        let crate::modele::Etat::NonVerifie(r) = c.etat() else {
+            panic!("{:?}", c.etat());
+        };
+        assert_eq!(r, Raison::Absente("systemd".into()));
+        assert!(
+            !r.attendue(false) && !r.attendue(true),
+            "le journal des erreurs doit le noter"
+        );
     }
 
     #[test]
