@@ -8,8 +8,10 @@
 //!   redémarrage ».
 //! - Au démarrage (`vanguard isolement-demarrage`, sous-commande cachée lancée par l'unité avant le réseau) : l'état
 //!   relu, la même table remise ; un état absent ou abîmé isole sans rien garder (jamais ouvrir faute de note).
-//! - Lever : l'unité désactivée, ses fichiers et l'état retirés, puis la table supprimée par son nom ; rien ne dépend
-//!   de l'état noté.
+//! - Lever : la table supprimée par son nom d'abord ; seulement si c'est fait, l'unité désactivée, ses fichiers et
+//!   l'état retirés (un échec laisse tout, et le bandeau qui le dit), puis la table supprimée encore une fois (un
+//!   `systemctl restart nftables` pendant la levée a pu la remettre par l'unité). Rien ne dépend de l'état noté.
+//! - En place : l'état lu, sinon une trace (état illisible, unité, copie), sinon, en root, la table elle-même.
 
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 
@@ -168,9 +170,14 @@ fn persister(texte: &str) -> Result<(), crate::modele::Echec> {
 
 /// L'isolement sans persistance : l'état dans /run (effacé au redémarrage), et la note qui le dit.
 fn jusqu_au_redemarrage(texte: &str, gardes: &str, pourquoi: Option<&str>) -> Resultat {
-    // Un état durable d'une persistance à moitié faite est retiré : l'unité ne doit pas remettre un isolement que la
-    // note dit fini au redémarrage.
-    let _ = std::fs::remove_file(ETAT);
+    // Une persistance à moitié faite est défaite (unité désactivée, son fichier, la copie et l'état durable retirés) :
+    // l'unité ne doit pas remettre au redémarrage un isolement que la note dit fini au redémarrage.
+    let restes = if pourquoi.is_some() {
+        retirer_persistance()
+    } else {
+        let _ = std::fs::remove_file(ETAT);
+        Vec::new()
+    };
     let ecrit = dossier_root(Path::new(DOSSIER_ETAT_RUN))
         .and_then(|()| ecrire_root(Path::new(ETAT_RUN), texte.as_bytes(), 0o644));
     let mut note = trf!(
@@ -179,6 +186,13 @@ fn jusqu_au_redemarrage(texte: &str, gardes: &str, pourquoi: Option<&str>) -> Re
     );
     if let Some(p) = pourquoi {
         note.push_str(&trf!(" (unité non posée : {p})", " (unit not set up: {p})"));
+    }
+    if !restes.is_empty() {
+        let r = restes.join(" ; ");
+        note.push_str(&trf!(
+            " ; persistance à moitié faite non défaite ({r}) : l'isolement peut revenir au redémarrage, « vanguard blocage annuler » le lève",
+            "; half-done persistence not undone ({r}): the isolation may come back at restart, “vanguard blocking undo” lifts it"
+        ));
     }
     if let Err(e) = ecrit {
         note.push_str(&trf!(
@@ -189,32 +203,72 @@ fn jusqu_au_redemarrage(texte: &str, gardes: &str, pourquoi: Option<&str>) -> Re
     Resultat::ok_note(note)
 }
 
-/// Lève (root) : l'unité et ses fichiers, l'état, puis la table, par leurs noms.
-pub(crate) fn lever() -> Resultat {
-    let mut notes: Vec<String> = Vec::new();
+/// Les fichiers de la persistance : l'état durable, l'unité et la copie du programme (le lien d'activation à part).
+const PERSISTANCE: [&str; 3] = [ETAT, FICHIER_UNITE, PROGRAMME];
+
+/// Retire des fichiers par leur chemin absolu, pris sous `racine` (« / », ou un dossier jetable dans les essais) : un
+/// fichier absent n'est pas une erreur ; rend ceux qui n'ont pas pu l'être, avec la raison.
+fn retirer_fichiers(racine: &Path, chemins: &[&str]) -> Vec<String> {
+    let mut restes = Vec::new();
+    for f in chemins {
+        let chemin = racine.join(f.trim_start_matches('/'));
+        match std::fs::remove_file(&chemin) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => restes.push(format!("{f}: {e}")),
+        }
+    }
+    restes
+}
+
+/// Défait la persistance (root) : l'unité désactivée (au mieux), son lien s'il reste, ses fichiers et l'état durable
+/// retirés, systemd rechargé. Rend ce qui n'a pas pu l'être. Ne touche jamais à la table.
+fn retirer_persistance() -> Vec<String> {
+    let mut restes: Vec<String> = Vec::new();
     if Path::new(FICHIER_UNITE).exists()
         && let Err(e) = agir_sur(UNITE, ActionUnite::Desactiver, &["disable", "--now"])
     {
-        notes.push(e.to_string());
+        restes.push(e.to_string());
     }
     // Le lien d'activation, s'il reste (systemd n'a pas répondu) : un lien seulement, jamais un fichier.
     if std::fs::symlink_metadata(LIEN_UNITE).is_ok_and(|m| m.file_type().is_symlink())
         && let Err(e) = std::fs::remove_file(LIEN_UNITE)
     {
-        notes.push(format!("{LIEN_UNITE}: {e}"));
+        restes.push(format!("{LIEN_UNITE}: {e}"));
     }
-    for f in [FICHIER_UNITE, PROGRAMME, ETAT, ETAT_RUN] {
-        match std::fs::remove_file(f) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => notes.push(format!("{f}: {e}")),
-        }
-    }
+    restes.extend(retirer_fichiers(Path::new("/"), &PERSISTANCE));
     if systemd()
         && let Err(e) = recharger()
     {
-        notes.push(e.to_string());
+        restes.push(e.to_string());
     }
+    restes
+}
+
+/// Lève (root) : la table d'abord, par son nom ; seulement si c'est fait, la persistance et l'état, puis la table
+/// encore une fois (un rechargement de nftables pendant la levée a pu la remettre par l'unité, `PartOf`).
+pub(crate) fn lever() -> Resultat {
+    let retiree = match table::lever() {
+        Ok(r) => r,
+        Err(e) => {
+            return Resultat::echec(trf!(
+                "{e} ; rien d'autre n'est retiré : l'isolement, son état et son unité restent en place",
+                "{e}; nothing else is removed: the isolation, its state and its unit stay in place"
+            ));
+        }
+    };
+    let mut notes: Vec<String> = Vec::new();
+    if !retiree {
+        notes.push(
+            tr!(
+                "la table de l'isolement n'était pas là",
+                "the isolation table was not there"
+            )
+            .to_string(),
+        );
+    }
+    notes.extend(retirer_persistance());
+    notes.extend(retirer_fichiers(Path::new("/"), &[ETAT_RUN]));
     for d in [
         DOSSIER_PROGRAMME,
         "/opt/vanguard",
@@ -226,32 +280,39 @@ pub(crate) fn lever() -> Resultat {
         let _ = std::fs::remove_dir(d);
     }
     match table::lever() {
+        Ok(false) => {}
+        Ok(true) => notes.push(
+            tr!(
+                "la table était revenue pendant la levée (nftables rechargé) : retirée de nouveau",
+                "the table came back during the lift (nftables reloaded): removed again"
+            )
+            .to_string(),
+        ),
         Err(e) => {
-            notes.insert(0, e.to_string());
-            Resultat::echec(notes.join(" ; "))
+            notes.insert(
+                0,
+                trf!(
+                    "la table est revenue pendant la levée et n'a pas pu être retirée de nouveau ({e}) : relancez « vanguard blocage annuler »",
+                    "the table came back during the lift and could not be removed again ({e}): run “vanguard blocking undo” again"
+                ),
+            );
+            return Resultat::echec(notes.join(" ; "));
         }
-        Ok(retiree) => {
-            if !retiree {
-                notes.insert(
-                    0,
-                    tr!(
-                        "la table de l'isolement n'était pas là",
-                        "the isolation table was not there"
-                    )
-                    .to_string(),
-                );
-            }
-            if notes.is_empty() {
-                Resultat::ok()
-            } else {
-                Resultat::ok_note(notes.join(" ; "))
-            }
-        }
+    }
+    if notes.is_empty() {
+        Resultat::ok()
+    } else {
+        Resultat::ok_note(notes.join(" ; "))
     }
 }
 
 /// L'état noté, lu sans suivre de lien, seulement s'il est à root et que personne d'autre ne peut l'écrire.
 fn lire_note(chemin: &str) -> Option<Etat> {
+    lire_etat(&texte_note(chemin)?)
+}
+
+/// Le texte de l'état noté, aux mêmes conditions que `lire_note`.
+fn texte_note(chemin: &str) -> Option<String> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     let f = std::fs::OpenOptions::new()
@@ -269,12 +330,41 @@ fn lire_note(chemin: &str) -> Option<Etat> {
     }
     let mut texte = String::new();
     f.take(ETAT_TAILLE_MAX).read_to_string(&mut texte).ok()?;
-    lire_etat(&texte)
+    Some(texte)
 }
 
 /// L'isolement noté (durable, sinon jusqu'au redémarrage) : ce que lit le bandeau.
-pub(crate) fn notee() -> Option<Etat> {
+fn notee() -> Option<Etat> {
     lire_note(ETAT).or_else(|| lire_note(ETAT_RUN))
+}
+
+/// Une trace de l'isolement sous `racine` (« / » hors essais) : un état (même illisible ou abîmé), l'unité ou la copie
+/// du programme. Un lien compte aussi (`symlink_metadata`) : la trace est montrée, jamais suivie.
+fn trace_sous(racine: &Path) -> bool {
+    [ETAT, ETAT_RUN, FICHIER_UNITE, PROGRAMME]
+        .iter()
+        .any(|f| std::fs::symlink_metadata(racine.join(f.trim_start_matches('/'))).is_ok())
+}
+
+/// L'isolement est-il en place ? L'état lu donne sa date ; sinon une trace, ou (en root, qui seul peut lire nftables)
+/// la table elle-même, donnent `Some(0)` (date inconnue) : un isolement présent sans état garde son bandeau et sa
+/// levée. Sans root, une table seule (sans aucune trace) n'est pas vue.
+pub(crate) fn en_place() -> Option<i64> {
+    if let Some(e) = notee() {
+        return Some(e.depuis);
+    }
+    if trace_sous(Path::new("/")) {
+        return Some(0);
+    }
+    (crate::socle::euid() == 0 && table::presente().unwrap_or(false)).then_some(0)
+}
+
+/// Ce que remet le démarrage d'après le texte de l'état durable (`None` : absent ou illisible), et s'il a été lu. Un
+/// état absent ou abîmé ne garde rien : jamais ouvrir faute de note.
+fn permis_au_demarrage(texte: Option<&str>) -> (Permis, bool) {
+    texte
+        .and_then(lire_etat)
+        .map_or_else(|| (Permis::default(), false), |e| (e.permis, true))
 }
 
 /// `vanguard isolement-demarrage`, lancé par l'unité : la table remise d'après l'état durable. Un état absent ou
@@ -285,12 +375,10 @@ pub(crate) fn demarrage() -> i32 {
         eprintln!("vanguard isolement-demarrage : root seulement");
         return 1;
     }
-    let permis = if let Some(e) = lire_note(ETAT) {
-        e.permis
-    } else {
+    let (permis, lu) = permis_au_demarrage(texte_note(ETAT).as_deref());
+    if !lu {
         eprintln!("vanguard isolement-demarrage : état absent ou abîmé ({ETAT}), isolement sans exception");
-        Permis::default()
-    };
+    }
     match table::isoler(&permis) {
         Ok(()) => {
             eprintln!(
@@ -371,6 +459,91 @@ mod tests {
         std::fs::write(&f, etat_texte(&e)).unwrap();
         if crate::socle::euid() != 0 {
             assert_eq!(lire_note(f.to_str().unwrap()), None);
+        }
+    }
+
+    /// M2/B4 : les fichiers de la persistance sont retirés par leur chemin (pris sous un dossier jetable ici) ; un
+    /// absent n'est pas une erreur, un qui ne peut pas l'être est rendu.
+    #[test]
+    fn retirer_fichiers_rend_ce_qui_reste() {
+        let d = crate::essais::Jetable::nouveau("isolement-retirer");
+        assert_eq!(PERSISTANCE, [ETAT, FICHIER_UNITE, PROGRAMME]);
+        for f in [ETAT, FICHIER_UNITE] {
+            let c = d.join(f.trim_start_matches('/'));
+            std::fs::create_dir_all(c.parent().unwrap()).unwrap();
+            std::fs::write(&c, "x").unwrap();
+        }
+        // La copie du programme absente : rien à redire.
+        assert_eq!(retirer_fichiers(&d, &PERSISTANCE), Vec::<String>::new());
+        for f in PERSISTANCE {
+            assert!(!d.join(f.trim_start_matches('/')).exists(), "{f}");
+        }
+        // Un dossier à la place d'un fichier n'est pas retiré (jamais un dossier) : il est rendu.
+        std::fs::create_dir_all(d.join(ETAT_RUN.trim_start_matches('/'))).unwrap();
+        let restes = retirer_fichiers(&d, &[ETAT_RUN]);
+        assert_eq!(restes.len(), 1, "{restes:?}");
+        assert!(restes[0].starts_with(ETAT_RUN), "{restes:?}");
+    }
+
+    /// M2 : une trace de l'isolement (état, même abîmé ; unité ; copie ; même un lien) suffit à le dire en place.
+    #[test]
+    fn une_trace_suffit() {
+        for f in [ETAT, ETAT_RUN, FICHIER_UNITE, PROGRAMME] {
+            let d = crate::essais::Jetable::nouveau("isolement-trace");
+            assert!(!trace_sous(&d));
+            let c = d.join(f.trim_start_matches('/'));
+            std::fs::create_dir_all(c.parent().unwrap()).unwrap();
+            std::fs::write(&c, "abîmé").unwrap();
+            assert!(trace_sous(&d), "{f}");
+            std::fs::remove_file(&c).unwrap();
+            std::os::unix::fs::symlink("/nulle-part", &c).unwrap();
+            assert!(trace_sous(&d), "lien {f}");
+        }
+    }
+
+    /// Démarrage avec un état abîmé : rien n'est gardé (aucune adresse, aucun port hors DHCP), jamais ouvert.
+    #[test]
+    fn demarrage_avec_etat_abime() {
+        use crate::machine::linux::nftables::isolement::{Critere, criteres};
+        use crate::protection::blocage::ordres::SessionGardee;
+        let bon = Etat {
+            depuis: 1_700_000_000,
+            permis: Permis {
+                garder: vec![SessionGardee {
+                    distante: "192.0.2.7".parse().unwrap(),
+                    port_distant: 51234,
+                    port_local: 22,
+                }],
+                serveurs: vec!["198.51.100.20".parse().unwrap()],
+                dns: vec!["192.0.2.53".parse().unwrap()],
+            },
+        };
+        let texte = etat_texte(&bon);
+        assert_eq!(permis_au_demarrage(Some(&texte)), (bon.permis.clone(), true));
+        let ancien = texte.replacen("vanguard-isolement 2", "vanguard-isolement 1", 1);
+        let coupe = &texte[..texte.len() / 2];
+        let ligne_en_trop = format!("{texte}ouvrir tout\n");
+        let session_mal_ecrite = texte.replace("192.0.2.7:51234>22", "192.0.2.7");
+        for abime in [
+            None,
+            Some(""),
+            Some("n'importe quoi"),
+            Some(ancien.as_str()),
+            Some(coupe),
+            Some(ligne_en_trop.as_str()),
+            Some(session_mal_ecrite.as_str()),
+        ] {
+            let (permis, lu) = permis_au_demarrage(abime);
+            assert!(!lu, "{abime:?}");
+            assert_eq!(permis, Permis::default(), "{abime:?}");
+            for (_, c) in criteres(&permis) {
+                for x in &c {
+                    assert!(!matches!(x, Critere::Distante(_)), "{abime:?} : {c:?}");
+                    if let Critere::PortSource(p) | Critere::PortDestination(p) = x {
+                        assert!([67, 68, 546, 547].contains(p), "{abime:?} : {c:?}");
+                    }
+                }
+            }
         }
     }
 

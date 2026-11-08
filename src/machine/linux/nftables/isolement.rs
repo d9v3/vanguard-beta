@@ -443,7 +443,6 @@ fn presente_par(prise: &Prise) -> Result<bool, Echec> {
 }
 
 /// La table de l'isolement est-elle en place ? Il faut CAP_NET_ADMIN pour la lire : `Err` sans lui (essais).
-#[cfg(test)]
 pub(crate) fn presente() -> Result<bool, Echec> {
     presente_par(&ouvrir()?)
 }

@@ -921,7 +921,7 @@ pub(crate) fn lever_ici() -> Resultat {
 pub(crate) fn en_place() -> Option<i64> {
     #[cfg(target_os = "linux")]
     {
-        crate::machine::linux::isolement::notee().map(|e| e.depuis)
+        crate::machine::linux::isolement::en_place()
     }
     #[cfg(windows)]
     {
