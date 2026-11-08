@@ -567,7 +567,28 @@ Etape 'Audit du réseau (0.82) : six domaines, rien de sain sans lecture, en 76 
 function Regles-Pare-Feu {
     try { @(Get-NetFirewallApplicationFilter -ErrorAction Stop | Where-Object { $_.Program -like '*vanguard*' }).Count } catch { -1 }
 }
+# L'invite naît quand Windows refuse à un programme sans règle d'écouter (TCP) ou de recevoir (UDP). L'audit
+# « Filtering Platform Connection » le note : 5031 (écoute refusée, programme et profils), 5157 (connexion refusée,
+# sens, protocole, adresses et ports). Allumé en échec le temps de l'étape, puis remis exactement à sa valeur d'avant
+# (« Setting Value » : 1 succès, 2 échec, 3 les deux) ; GUID plutôt que nom, la VM est en anglais.
+$guidWfp = '{0CCE9226-69AE-11D9-BED3-505054503030}'
+function Audit-Wfp {
+    try {
+        $l = @(auditpol /get /subcategory:$guidWfp /r 2>$null | Where-Object { $_ } | ConvertFrom-Csv)
+        if ($LASTEXITCODE -eq 0 -and $l.Count -eq 1 -and "$($l[0].'Setting Value')" -match '^[0-3]$') { [int]$l[0].'Setting Value' } else { -1 }
+    } catch { -1 }
+}
+function Regler-Audit-Wfp([int]$valeur) {
+    $s = if ($valeur -band 1) { 'enable' } else { 'disable' }
+    $f = if ($valeur -band 2) { 'enable' } else { 'disable' }
+    auditpol /set /subcategory:$guidWfp /success:$s /failure:$f 2>&1 | Out-Null
+}
+$auditWfpAvant = Audit-Wfp
+$debutAuditReseau = Get-Date
+if ($auditWfpAvant -ge 0 -and -not ($auditWfpAvant -band 2)) { Regler-Audit-Wfp ($auditWfpAvant -bor 2) }
+$auditWfpPendant = Audit-Wfp
 $reglesAvant = Regles-Pare-Feu
+try {
 Lancer 'audit-reseau' @('audit-reseau')
 Lancer 'audit-reseau-json' @('audit-reseau', '--json')
 $codesAudit = @($script:etape.Commandes | ForEach-Object Code)
@@ -630,6 +651,27 @@ if (((Sortie 'audit-reseau-invite') -replace '\s+', ' ') -match 'From the guest 
 # Menu Réseau et Internet (5), outil 2 : l'audit, Entrée pour revenir, Entrée pour le menu principal, q.
 LancerAvec 'menu-audit-reseau' @() "5`n2`n`n`nq`n"
 if ((Sortie 'menu-audit-reseau') -match "Audit grade|Note de l.audit") { Ok 'Menu Réseau › 2 : audit du réseau lancé' } else { Bug 'Menu Réseau › 2 : audit du réseau PAS lancé' }
+}
+finally {
+    if ($auditWfpAvant -ge 0 -and $auditWfpPendant -ne $auditWfpAvant) { Regler-Audit-Wfp $auditWfpAvant }
+}
+$auditWfpApres = Audit-Wfp
+if ($auditWfpAvant -lt 0) { Info 'Audit « Filtering Platform Connection » illisible (auditpol) : refus du pare-feu non relevés' }
+elseif ($auditWfpApres -ne $auditWfpAvant) { Bug "Audit « Filtering Platform Connection » PAS remis : $auditWfpAvant avant, $auditWfpApres après" }
+elseif (-not ($auditWfpPendant -band 2)) { Info "Audit « Filtering Platform Connection » pas allumé ($auditWfpPendant) : refus du pare-feu non relevés" }
+else {
+    function Champs($evt) { $h = @{}; foreach ($d in ([xml]$evt.ToXml()).Event.EventData.Data) { $h[$d.Name] = "$($d.'#text')" }; $h }
+    $refus = @(Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 5031, 5157; StartTime = $debutAuditReseau } -ErrorAction SilentlyContinue |
+        ForEach-Object { $c = Champs $_; $c['Id'] = $_.Id; [pscustomobject]$c } | Where-Object { $_.Application -match 'vanguard' })
+    $ecoutes = @($refus | Where-Object Id -eq 5031)
+    # 5157 : %%14592 = entrée ; protocole 6 = TCP, 17 = UDP. Seules les entrées refusées peuvent mener à l'invite.
+    $entrees = @($refus | Where-Object { $_.Id -eq 5157 -and $_.Direction -eq '%%14592' } |
+        ForEach-Object { "$(switch ($_.Protocol) { '6' { 'TCP' } '17' { 'UDP' } default { "proto $($_.Protocol)" } }) $($_.SourceAddress):$($_.SourcePort) <- $($_.DestAddress):$($_.DestPort)" } |
+        Sort-Object -Unique)
+    if ($entrees.Count) { Info "Entrées refusées à Vanguard pendant l'audit (local <- distant) : $(($entrees | Select-Object -First 8) -join ' ; ')" }
+    if ($ecoutes.Count) { Bug "Windows a refusé à Vanguard d'écouter pendant l'audit (événement 5031, celui de l'invite) : $($ecoutes[0].Application), profils $($ecoutes[0].Profiles)" }
+    else { Ok "Aucun refus d'écoute pour Vanguard noté par Windows pendant l'audit (5031), $($entrees.Count) entrée(s) refusée(s) (5157)" }
+}
 $reglesApres = Regles-Pare-Feu
 if ($reglesAvant -lt 0 -or $reglesApres -lt 0) { Info 'Règles du pare-feu illisibles ici : invite non vérifiée par les règles' }
 elseif ($reglesApres -eq $reglesAvant) { Ok "Aucune règle du pare-feu ajoutée pour Vanguard ($reglesApres) : pas d'invite répondue" }
@@ -1758,11 +1800,22 @@ try {
     $vu = @($audit.constats | Where-Object { $_.message -match 'sans guillemets|unquoted path' })
     Info "Services au chemin sans guillemets avec espace : $($sansGuillemets.Count) ; Vanguard : $(if ($vu.Count) { $vu[0].message } else { 'rien (aucun dossier modifiable par tous)' })"
     # Ports en écoute lus par netstat (adresse distante 0.0.0.0:0 ou [::]:0, quelle que soit la langue) : les mêmes que
-    # Get-NetTCPConnection, et le bilan ne les dit jamais « impossibles ».
-    $parNetstat = @(netstat -ano | ForEach-Object { $c = -split $_; if ($c.Count -eq 5 -and $c[0] -eq 'TCP' -and $c[2] -in '0.0.0.0:0', '[::]:0') { [int]($c[1] -replace '.*:', '') } }) | Sort-Object -Unique
-    $parCmdlet = @(Get-NetTCPConnection -State Listen | ForEach-Object { [int]$_.LocalPort }) | Sort-Object -Unique
-    if (-not (Compare-Object $parNetstat $parCmdlet)) { Ok "Ports en écoute : netstat et Get-NetTCPConnection d'accord ($($parNetstat.Count) ports)" }
-    else { Bug "Ports en écoute : netstat ($($parNetstat -join ',')) et Get-NetTCPConnection ($($parCmdlet -join ',')) diffèrent" }
+    # Get-NetTCPConnection, et le bilan ne les dit jamais « impossibles ». Deux lectures faites l'une après l'autre :
+    # pendant qu'un service démarre ou s'arrête (11:42 le 8 nov. : 6 ports d'un côté, 3 de l'autre, au lieu de 12),
+    # elles diffèrent sans que l'une soit fausse. Trois essais à 3 s d'écart ; un écart qui dure est un vrai défaut.
+    $essaisPorts = @()
+    foreach ($essai in 1..3) {
+        $parNetstat = @(netstat -ano | ForEach-Object { $c = -split $_; if ($c.Count -eq 5 -and $c[0] -eq 'TCP' -and $c[2] -in '0.0.0.0:0', '[::]:0') { [int]($c[1] -replace '.*:', '') } }) | Sort-Object -Unique
+        $parCmdlet = @(Get-NetTCPConnection -State Listen | ForEach-Object { [int]$_.LocalPort }) | Sort-Object -Unique
+        if (-not (Compare-Object @($parNetstat) @($parCmdlet))) { break }
+        $essaisPorts += "netstat ($($parNetstat -join ',')) / Get-NetTCPConnection ($($parCmdlet -join ','))"
+        if ($essai -lt 3) { Start-Sleep -Seconds 3 }
+    }
+    if ($essaisPorts.Count -lt 3) {
+        if ($essaisPorts.Count) { Info "Ports en écoute en mouvement, relus : $($essaisPorts -join ' ; ')" }
+        Ok "Ports en écoute : netstat et Get-NetTCPConnection d'accord ($(@($parNetstat).Count) ports)"
+    }
+    else { Bug "Ports en écoute : netstat et Get-NetTCPConnection diffèrent trois fois de suite : $($essaisPorts -join ' ; ')" }
     if (@($audit.constats | Where-Object { $_.categorie -eq 'Ports en écoute' -and -not $_.verifie }).Count) { Bug 'Ports en écoute : impossibles à vérifier au bilan' }
     else { Ok 'Ports en écoute vérifiés au bilan' }
     # Exclusions de Defender : lisibles seulement en administrateur ; sinon Vanguard ne conclut rien.
