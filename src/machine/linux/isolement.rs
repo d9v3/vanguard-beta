@@ -206,6 +206,9 @@ fn jusqu_au_redemarrage(texte: &str, gardes: &str, pourquoi: Option<&str>) -> Re
 /// Les fichiers de la persistance : l'état durable, l'unité et la copie du programme (le lien d'activation à part).
 const PERSISTANCE: [&str; 3] = [ETAT, FICHIER_UNITE, PROGRAMME];
 
+/// Toutes les traces de l'isolement sur le disque : ce que lit le bandeau quand l'état ne l'est pas.
+const TRACES: [&str; 4] = [ETAT, ETAT_RUN, FICHIER_UNITE, PROGRAMME];
+
 /// Retire des fichiers par leur chemin absolu, pris sous `racine` (« / », ou un dossier jetable dans les essais) : un
 /// fichier absent n'est pas une erreur ; rend ceux qui n'ont pas pu l'être, avec la raison.
 fn retirer_fichiers(racine: &Path, chemins: &[&str]) -> Vec<String> {
@@ -221,9 +224,10 @@ fn retirer_fichiers(racine: &Path, chemins: &[&str]) -> Vec<String> {
     restes
 }
 
-/// Défait la persistance (root) : l'unité désactivée (au mieux), son lien s'il reste, ses fichiers et l'état durable
-/// retirés, systemd rechargé. Rend ce qui n'a pas pu l'être. Ne touche jamais à la table.
-fn retirer_persistance() -> Vec<String> {
+/// Désactive l'unité (root, au mieux) et retire son lien d'activation s'il reste : l'isolement ne revient plus au
+/// démarrage ni par un rechargement de nftables, mais ses fichiers (état, unité, copie) restent, et le bandeau avec.
+/// Rend ce qui n'a pas pu l'être. Ne touche jamais à la table.
+fn desactiver_unite() -> Vec<String> {
     let mut restes: Vec<String> = Vec::new();
     if Path::new(FICHIER_UNITE).exists()
         && let Err(e) = agir_sur(UNITE, ActionUnite::Desactiver, &["disable", "--now"])
@@ -236,19 +240,62 @@ fn retirer_persistance() -> Vec<String> {
     {
         restes.push(format!("{LIEN_UNITE}: {e}"));
     }
-    restes.extend(retirer_fichiers(Path::new("/"), &PERSISTANCE));
-    if systemd()
-        && let Err(e) = recharger()
-    {
-        restes.push(e.to_string());
-    }
     restes
 }
 
-/// Lève (root) : la table d'abord, par son nom ; seulement si c'est fait, la persistance et l'état, puis la table
-/// encore une fois (un rechargement de nftables pendant la levée a pu la remettre par l'unité, `PartOf`).
+/// Recharge systemd après le retrait du fichier de l'unité (sans systemd, rien à faire).
+fn recharger_systemd() -> Vec<String> {
+    if systemd()
+        && let Err(e) = recharger()
+    {
+        return vec![e.to_string()];
+    }
+    Vec::new()
+}
+
+/// Défait la persistance (root) : l'unité désactivée (au mieux), son lien s'il reste, ses fichiers et l'état durable
+/// retirés, systemd rechargé. Rend ce qui n'a pas pu l'être. Ne touche jamais à la table.
+fn retirer_persistance() -> Vec<String> {
+    let mut restes = desactiver_unite();
+    restes.extend(retirer_fichiers(Path::new("/"), &PERSISTANCE));
+    restes.extend(recharger_systemd());
+    restes
+}
+
+/// Efface les traces de l'isolement (root), une fois la table partie pour de bon : état durable et de session, unité,
+/// copie du programme, leurs dossiers vides ; systemd rechargé. Rend ce qui n'a pas pu l'être.
+fn effacer_traces() -> Vec<String> {
+    let mut restes = retirer_fichiers(Path::new("/"), &TRACES);
+    for d in [
+        DOSSIER_PROGRAMME,
+        "/opt/vanguard",
+        DOSSIER_ETAT,
+        "/var/lib/vanguard",
+        DOSSIER_ETAT_RUN,
+        "/run/vanguard",
+    ] {
+        let _ = std::fs::remove_dir(d);
+    }
+    restes.extend(recharger_systemd());
+    restes
+}
+
+/// Lève (root) : la table d'abord, par son nom ; seulement si c'est fait, l'unité désactivée, puis la table encore une
+/// fois (un rechargement de nftables pendant la levée a pu la remettre par l'unité, `PartOf`) ; et seulement si ce
+/// 2e retrait est fait aussi, l'état et l'unité effacés.
 pub(crate) fn lever() -> Resultat {
-    let retiree = match table::lever() {
+    lever_par(table::lever, desactiver_unite, effacer_traces)
+}
+
+/// La levée, ses gestes passés en paramètres (les essais les remplacent). Tant qu'une table peut rester, les traces
+/// (état, unité, copie) restent elles aussi : le bandeau ne disparaît jamais d'un ordinateur encore isolé, même pour un
+/// compte qui ne peut pas lire nftables.
+fn lever_par(
+    mut retirer_table: impl FnMut() -> Result<bool, crate::modele::Echec>,
+    desactiver: impl FnOnce() -> Vec<String>,
+    effacer: impl FnOnce() -> Vec<String>,
+) -> Resultat {
+    let retiree = match retirer_table() {
         Ok(r) => r,
         Err(e) => {
             return Resultat::echec(trf!(
@@ -267,19 +314,8 @@ pub(crate) fn lever() -> Resultat {
             .to_string(),
         );
     }
-    notes.extend(retirer_persistance());
-    notes.extend(retirer_fichiers(Path::new("/"), &[ETAT_RUN]));
-    for d in [
-        DOSSIER_PROGRAMME,
-        "/opt/vanguard",
-        DOSSIER_ETAT,
-        "/var/lib/vanguard",
-        DOSSIER_ETAT_RUN,
-        "/run/vanguard",
-    ] {
-        let _ = std::fs::remove_dir(d);
-    }
-    match table::lever() {
+    notes.extend(desactiver());
+    match retirer_table() {
         Ok(false) => {}
         Ok(true) => notes.push(
             tr!(
@@ -292,13 +328,14 @@ pub(crate) fn lever() -> Resultat {
             notes.insert(
                 0,
                 trf!(
-                    "la table est revenue pendant la levée et n'a pas pu être retirée de nouveau ({e}) : relancez « vanguard blocage annuler »",
-                    "the table came back during the lift and could not be removed again ({e}): run “vanguard blocking undo” again"
+                    "la table est revenue pendant la levée et n'a pas pu être retirée de nouveau ({e}) : l'état et l'unité restent en place ; relancez « vanguard blocage annuler »",
+                    "the table came back during the lift and could not be removed again ({e}): the state and the unit stay in place; run “vanguard blocking undo” again"
                 ),
             );
             return Resultat::echec(notes.join(" ; "));
         }
     }
+    notes.extend(effacer());
     if notes.is_empty() {
         Resultat::ok()
     } else {
@@ -341,7 +378,7 @@ fn notee() -> Option<Etat> {
 /// Une trace de l'isolement sous `racine` (« / » hors essais) : un état (même illisible ou abîmé), l'unité ou la copie
 /// du programme. Un lien compte aussi (`symlink_metadata`) : la trace est montrée, jamais suivie.
 fn trace_sous(racine: &Path) -> bool {
-    [ETAT, ETAT_RUN, FICHIER_UNITE, PROGRAMME]
+    TRACES
         .iter()
         .any(|f| std::fs::symlink_metadata(racine.join(f.trim_start_matches('/'))).is_ok())
 }
@@ -499,6 +536,79 @@ mod tests {
             std::os::unix::fs::symlink("/nulle-part", &c).unwrap();
             assert!(trace_sous(&d), "lien {f}");
         }
+    }
+
+    /// C3 : la levée n'efface l'état et l'unité qu'après le retrait réussi des deux tables ; un 2e retrait qui échoue
+    /// (la table revenue par un rechargement de nftables) laisse toutes les traces, donc le bandeau, en place.
+    #[test]
+    fn deuxieme_retrait_qui_echoue_garde_les_traces() {
+        use crate::modele::Echec;
+        let d = crate::essais::Jetable::nouveau("isolement-levee");
+        let poser = || {
+            for f in TRACES {
+                let c = d.join(f.trim_start_matches('/'));
+                std::fs::create_dir_all(c.parent().unwrap()).unwrap();
+                std::fs::write(&c, "x").unwrap();
+            }
+        };
+        poser();
+        let (mut retraits, mut desactivee) = (0, false);
+        let r = lever_par(
+            || {
+                retraits += 1;
+                if retraits == 1 {
+                    Ok(true)
+                } else {
+                    Err(Echec::echoue("essai", "netlink indisponible"))
+                }
+            },
+            || {
+                desactivee = true;
+                Vec::new()
+            },
+            || retirer_fichiers(&d, &TRACES),
+        );
+        assert!(!r.reussi, "{r:?}");
+        assert!(
+            r.raison.contains("netlink indisponible") && r.raison.contains("relancez"),
+            "{r:?}"
+        );
+        assert_eq!(retraits, 2);
+        assert!(desactivee);
+        for f in TRACES {
+            assert!(d.join(f.trim_start_matches('/')).exists(), "{f}");
+        }
+        assert!(trace_sous(&d));
+
+        // Le 1er retrait échoue : rien n'est désactivé ni effacé.
+        let mut touche = false;
+        let r = lever_par(
+            || Err(Echec::echoue("essai", "netlink indisponible")),
+            || {
+                touche = true;
+                Vec::new()
+            },
+            || retirer_fichiers(&d, &TRACES),
+        );
+        assert!(!r.reussi && !touche, "{r:?}");
+        assert!(trace_sous(&d));
+
+        // Les deux retraits faits (la table revenue, retirée de nouveau) : les traces partent, et le bandeau avec.
+        let mut retraits = 0;
+        let r = lever_par(
+            || {
+                retraits += 1;
+                Ok(true)
+            },
+            Vec::new,
+            || retirer_fichiers(&d, &TRACES),
+        );
+        assert!(r.reussi, "{r:?}");
+        assert!(
+            r.note.as_deref().is_some_and(|n| n.contains("retirée de nouveau")),
+            "{r:?}"
+        );
+        assert!(!trace_sous(&d));
     }
 
     /// Démarrage avec un état abîmé : rien n'est gardé (aucune adresse, aucun port hors DHCP), jamais ouvert.
