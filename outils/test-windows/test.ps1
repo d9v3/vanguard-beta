@@ -2364,6 +2364,11 @@ else {
         }
         if (-not $Auto) { Constat 'Le Bureau à distance est-il resté ouvert et réactif pendant tout l''essai ?' }
     }
+    catch {
+        # Sans ce relevé, une erreur pendant l'isolement passait droit au filet sans laisser son message (8 nov. :
+        # saut au filet après « blocage etat », cause inconnue). Le Bug va au journal local, rendu à la passe.
+        Bug "Essai interrompu par une erreur, ligne $($_.InvocationInfo.ScriptLineNumber) : $($_.Exception.Message)"
+    }
     finally {
         # Filet, même après une exception : un isolement resté est levé par Vanguard (les réglages d'avant remis),
         # puis, s'il reste une règle, retirée par son nom.
