@@ -46,6 +46,10 @@
 #      fermée HORS_COMPILATION (captures, image de partage, page des fonctions : descendant_hors_compilation, dans un
 #      dépôt git jetable ; empreintes_de_la_ci, face à un faux gh), en fichiers ordinaires (ni lien symbolique ni
 #      sous-module) ; rien du programme ne lit ces fichiers, et les notes le disent.
+#   6i. zig, la chaîne C des programmes publiés (outils/chaine-zig.sh), n'est pris que sous sa signature minisign,
+#      vérifiée par openssl : une signature d'essai juste passe ; un octet changé, un autre nom de fichier (retour en
+#      arrière), un commentaire de confiance réécrit ou à deux noms, une autre clé, l'ancienne forme « Ed », une
+#      signature abîmée ou incomplète sont refusés ; l'empreinte de zig et de cargo-zigbuild est épinglée.
 #   6c. Au branchement de la clé, deployer.sh (ci_verte, face à un faux gh) ne récupère ni ne compile un commit de
 #      GitHub sans CI verte sur ce commit exact (ci.yml, master ; campagne d'attaque n° 6, F4), et dit à part gh sans
 #      compte connecté ou introuvable (sinon, sous le service de la clé, « réessayé » pour toujours sans alerte).
@@ -1190,6 +1194,74 @@ if fichiers=$(find "$DEPOT/.github" \( -path "$DEPOT/.github/workflows/*" -o -pa
 else
   ko "workflows : aucun fichier de .github/workflows lu, les épingles ne sont pas vérifiées"
 fi
+
+# 6i. La signature minisign de zig (outils/chaine-zig.sh --verifier-signature), vérifiée par openssl : une clé d'essai
+# Ed25519, des signatures écrites ici à la forme de minisign (« ED » : BLAKE2b-512 du fichier, puis la signature du
+# commentaire de confiance). Juste, elle passe ; tout le reste est refusé.
+Z=$T/minisign
+mkdir -p "$Z"
+openssl genpkey -algorithm ed25519 -out "$Z/cle" 2>/dev/null
+openssl genpkey -algorithm ed25519 -out "$Z/autre" 2>/dev/null
+printf '\x11\x22\x33\x44\x55\x66\x77\x88' >"$Z/numero"
+cle_publique() { # clé privée, numéro de clé, fichier .pub écrit
+  { echo "untrusted comment: clé d'essai"
+    { printf 'Ed'; cat "$2"; openssl pkey -in "$1" -pubout -outform DER | tail -c 32; } | base64 -w0; echo; } >"$3"
+}
+signer_minisign() { # fichier, clé privée, numéro de clé, commentaire de confiance, signature écrite [, forme]
+  local f=$1 k=$2 n=$3 c=$4 s=$5 forme=${6:-ED}
+  if [[ $forme == ED ]]; then openssl dgst -blake2b512 -binary "$f" >"$Z/a-signer"; else cp "$f" "$Z/a-signer"; fi
+  openssl pkeyutl -sign -inkey "$k" -rawin -in "$Z/a-signer" -out "$Z/sig64"
+  { printf '%s' "$forme"; cat "$n" "$Z/sig64"; } >"$Z/sig"
+  { cat "$Z/sig64"; printf '%s' "$c"; } >"$Z/message"
+  openssl pkeyutl -sign -inkey "$k" -rawin -in "$Z/message" -out "$Z/globale"
+  { echo "untrusted comment: signature d'essai"; base64 -w0 "$Z/sig"; echo
+    echo "trusted comment: $c"; base64 -w0 "$Z/globale"; echo; } >"$s"
+}
+verifier_zig() { bash "$DEPOT/outils/chaine-zig.sh" --verifier-signature "$1" "$2" "$3" "$4" 2>/dev/null; }
+cle_publique "$Z/cle" "$Z/numero" "$Z/cle.pub"
+head -c 4096 /dev/urandom >"$Z/zig-x86_64-linux-9.9.9.tar.xz"
+F=$Z/zig-x86_64-linux-9.9.9.tar.xz
+BON=$(printf 'timestamp:1790965431\tfile:zig-x86_64-linux-9.9.9.tar.xz\thashed')
+signer_minisign "$F" "$Z/cle" "$Z/numero" "$BON" "$Z/bonne.minisig"
+verifier_zig "$F" "$Z/bonne.minisig" zig-x86_64-linux-9.9.9.tar.xz "$Z/cle.pub" &&
+  ok "zig : une signature minisign juste passe" || ko "zig : une signature minisign juste est refusée"
+cp "$F" "$Z/change.tar.xz" && printf 'x' | dd of="$Z/change.tar.xz" bs=1 seek=100 conv=notrunc 2>/dev/null
+verifier_zig "$Z/change.tar.xz" "$Z/bonne.minisig" zig-x86_64-linux-9.9.9.tar.xz "$Z/cle.pub" &&
+  ko "zig : un octet changé dans l'archive passe" || ok "zig : un octet changé dans l'archive est refusé"
+verifier_zig "$F" "$Z/bonne.minisig" zig-x86_64-linux-9.9.8.tar.xz "$Z/cle.pub" &&
+  ko "zig : une archive signée sous un autre nom passe (retour en arrière)" ||
+  ok "zig : une archive signée sous un autre nom est refusée (retour en arrière)"
+sed '3s/9\.9\.9/9.9.8/' "$Z/bonne.minisig" >"$Z/commentaire.minisig"
+verifier_zig "$F" "$Z/commentaire.minisig" zig-x86_64-linux-9.9.8.tar.xz "$Z/cle.pub" &&
+  ko "zig : un commentaire de confiance réécrit passe" || ok "zig : un commentaire de confiance réécrit est refusé"
+DEUX=$(printf 'file:zig-x86_64-linux-9.9.8.tar.xz\tfile:zig-x86_64-linux-9.9.9.tar.xz')
+signer_minisign "$F" "$Z/cle" "$Z/numero" "$DEUX" "$Z/deux.minisig"
+verifier_zig "$F" "$Z/deux.minisig" zig-x86_64-linux-9.9.9.tar.xz "$Z/cle.pub" &&
+  ko "zig : un commentaire à deux noms de fichier passe" || ok "zig : un commentaire à deux noms de fichier est refusé"
+signer_minisign "$F" "$Z/autre" "$Z/numero" "$BON" "$Z/autre.minisig"
+verifier_zig "$F" "$Z/autre.minisig" zig-x86_64-linux-9.9.9.tar.xz "$Z/cle.pub" &&
+  ko "zig : une signature d'une autre clé (même numéro) passe" || ok "zig : une signature d'une autre clé est refusée"
+verifier_zig "$F" "$Z/bonne.minisig" zig-x86_64-linux-9.9.9.tar.xz "$DEPOT/outils/zig-minisign.pub" &&
+  ko "zig : une signature d'essai passe sous la vraie clé de zig" ||
+  ok "zig : la vraie clé de zig refuse une signature d'une autre clé (numéro de clé)"
+signer_minisign "$F" "$Z/cle" "$Z/numero" "$BON" "$Z/ancienne.minisig" Ed
+verifier_zig "$F" "$Z/ancienne.minisig" zig-x86_64-linux-9.9.9.tar.xz "$Z/cle.pub" &&
+  ko "zig : une signature de l'ancienne forme (« Ed », sans BLAKE2b) passe" ||
+  ok "zig : une signature de l'ancienne forme (« Ed ») est refusée"
+awk 'NR == 2 { c = substr($0, 50, 1); $0 = substr($0, 1, 49) (c == "A" ? "B" : "A") substr($0, 51) } 1' \
+  "$Z/bonne.minisig" >"$Z/abimee.minisig"
+verifier_zig "$F" "$Z/abimee.minisig" zig-x86_64-linux-9.9.9.tar.xz "$Z/cle.pub" &&
+  ko "zig : une signature abîmée passe" || ok "zig : une signature abîmée est refusée"
+head -n 3 "$Z/bonne.minisig" >"$Z/courte.minisig"
+verifier_zig "$F" "$Z/courte.minisig" zig-x86_64-linux-9.9.9.tar.xz "$Z/cle.pub" &&
+  ko "zig : une signature sans sa signature globale passe" || ok "zig : une signature sans sa signature globale est refusée"
+# Le script garde l'empreinte, la version et la clé ensemble : SHA-256 de 64 chiffres, clé de zig de 42 octets, et
+# l'empreinte vérifiée avant la signature, à chaque téléchargement.
+grep -qxE 'ZIG_SHA256=[0-9a-f]{64}' "$DEPOT/outils/chaine-zig.sh" &&
+  grep -qxE 'ZIGBUILD_SHA256=[0-9a-f]{64}' "$DEPOT/outils/chaine-zig.sh" &&
+  [[ $(sed -n 2p "$DEPOT/outils/zig-minisign.pub" | base64 -d | wc -c) -eq 42 ]] &&
+  ok "chaine-zig.sh : empreintes de zig et cargo-zigbuild épinglées, clé de zig dans le dépôt" ||
+  ko "chaine-zig.sh : empreinte non épinglée ou clé de zig illisible"
 
 # 8. Les octets publiés, ceux de la compilation de leur commit.
 G=$T/depot-compilation
