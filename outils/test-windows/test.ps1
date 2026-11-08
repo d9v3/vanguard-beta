@@ -2287,7 +2287,14 @@ function Autres-Regles-R4 {
     -join ([Security.Cryptography.SHA256]::Create().ComputeHash($octets) | ForEach-Object { $_.ToString('x2') })
 }
 function Regles-R4 { @(Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'Vanguard : isolement*' }) }
-function Bureau-R4 { @(Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue) }
+# Les connexions du Bureau à distance lues dans les tables TCP de Windows (.NET, état indépendant de la langue) :
+# Get-NetTCPConnection (fournisseur CIM) n'en a vu aucune le 8 nov. à 15:44, l'auteur connecté (même oubli de 3389
+# qu'à l'étape des ports), et l'essai a conclu à tort « sans session à distance ».
+function Bureau-R4 {
+    @([Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpConnections() |
+        Where-Object { $_.LocalEndPoint.Port -eq 3389 -and $_.State -eq 'Established' } |
+        ForEach-Object { [pscustomobject]@{ RemoteAddress = "$($_.RemoteEndPoint.Address)"; RemotePort = $_.RemoteEndPoint.Port } })
+}
 $adminR4 = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $isoleR4 = $false
 if ($env:VANGUARD_ESSAI_ISOLEMENT -ne '1') { Sautee 'Sautée : essai éteint par défaut (ESSAI-ISOLEMENT.bat l''allume, avec l''auteur devant la VM)' }
@@ -2302,6 +2309,10 @@ else {
     $resPartageR4 = $res
     $res = Join-Path $env:TEMP ('vanguard-isolement-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
     New-Item -ItemType Directory -Force $res | Out-Null
+    # Le dossier courant aussi : Start-Process le donne au programme lancé, et le dossier du test est sur le partage.
+    # Isolé, Windows refuse de lancer quoi que ce soit dans un dossier injoignable (« The directory name is
+    # invalid », 8 nov. à 15:44 : le bandeau, puis la levée du filet ; l'isolement est resté, 28 règles).
+    Push-Location -LiteralPath $env:TEMP
     try {
         $profilsAvant = Profils-R4
         $autresAvant = Autres-Regles-R4
@@ -2376,7 +2387,9 @@ else {
             # Sans cette consigne, la fenêtre Vanguard administrateur de la levée attendait Entrée sans que personne
             # le sache (8 nov. : le filet est resté bloqué, l'isolement en place).
             if (-not $Auto) { Write-Host '      Filet : l''isolement est encore là. Entrée dans la fenêtre Vanguard administrateur pour le lever (UAC, si elle demande).' -ForegroundColor Yellow }
-            Start-Process -FilePath $exe -ArgumentList @('blocage', 'lever-isolement') -NoNewWindow -Wait -RedirectStandardInput (New-Item -Force (Join-Path $res 'lever-filet.txt') -Value "o`r`n").FullName | Out-Null
+            # Une erreur de la levée n'arrête pas le filet : le retrait par le nom doit suivre.
+            try { Start-Process -FilePath $exe -ArgumentList @('blocage', 'lever-isolement') -NoNewWindow -Wait -RedirectStandardInput (New-Item -Force (Join-Path $res 'lever-filet.txt') -Value "o`r`n").FullName | Out-Null }
+            catch { Bug "Filet : vanguard blocage lever-isolement n'a pas pu être lancé : $($_.Exception.Message)" }
             # Jamais un tube vide vers Remove-NetFirewallRule : sans objet ni filtre, la commande retire TOUTES les règles.
             $restesR4 = Regles-R4
             if ($restesR4.Count) { $restesR4 | Remove-NetFirewallRule -ErrorAction SilentlyContinue }
@@ -2395,6 +2408,7 @@ else {
             Remove-Item -LiteralPath $resLocalR4 -Recurse -Force -ErrorAction SilentlyContinue
         }
         catch { Write-Host "      Résultats de l'isolement gardés dans $resLocalR4 : le dossier partagé ne répond pas ($($_.Exception.Message))" -ForegroundColor Yellow }
+        try { Pop-Location } catch { Write-Host "      Dossier du test injoignable : la suite continue depuis $env:TEMP" -ForegroundColor Yellow }
     }
 }
 
