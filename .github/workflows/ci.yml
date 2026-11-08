@@ -277,10 +277,13 @@ jobs:
     # SHA-256 et signature minisign de outils/zig-minisign.pub). outils/chaine-c.sh relit le même dossier. Un niveau
     # de plus, créé par le script (0755, au runner) : son parent est contrôlé aussi, quels que soient les droits du
     # dossier temporaire.
+    # Le contexte « runner » n'existe pas encore au niveau du travail (GitHub refuse alors tout le fichier) : le
+    # chemin est posé par la première étape, depuis RUNNER_TEMP, pour toutes les suivantes.
     env:
-      VANGUARD_CHAINE_ZIG: ${{ runner.temp }}/vanguard/chaine-zig
       VANGUARD_ZIG_MIROIRS: 1
     steps:
+      - name: Dossier de la chaîne de zig
+        run: echo "VANGUARD_CHAINE_ZIG=$RUNNER_TEMP/vanguard/chaine-zig" >> "$GITHUB_ENV"
       # Tout l'historique : outils/compiler-version.sh grave la date du code (outils/date-du-code.sh), comme
       # l'ordinateur de l'auteur.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
