@@ -2244,13 +2244,19 @@ elseif ($Auto -and -not $adminR4) { Sautee 'Sautée : sans questions et sans dro
 elseif ((Regles-R4).Count) { Bug "Des règles « Vanguard : isolement » sont déjà là avant l'essai : rien n'est fait" }
 elseif (-not $Auto -and -not (Question 'Isoler la VM du réseau puis lever l''isolement (une fenêtre UAC pour chaque) ?')) { Sautee 'Sautée (refusée).' }
 else {
+    # Les résultats de cette étape s'écrivent dans la VM : le dossier partagé (\\host.lan) est une connexion réseau
+    # que l'isolement coupe (8 nov. : la passe s'est figée en écrivant son journal sur le partage pendant
+    # l'isolement). Ils sont recopiés dans la passe après la levée.
+    $resPartageR4 = $res
+    $res = Join-Path $env:TEMP ('vanguard-isolement-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    New-Item -ItemType Directory -Force $res | Out-Null
     try {
         $profilsAvant = Profils-R4
         $autresAvant = Autres-Regles-R4
         $bureauAvant = Bureau-R4
         $internetAvant = Internet-R4
         if (-not $internetAvant) { Info 'Pas de connexion vers 1.1.1.1:443 depuis la VM avant l''isolement : la coupure ne se mesure pas' }
-        if (-not $Auto) { Write-Host '      Accepte la fenêtre UAC. Le Bureau à distance doit rester ouvert pendant tout l''essai.' -ForegroundColor Yellow }
+        if (-not $Auto) { Write-Host '      Une fenêtre Vanguard administrateur s''ouvre (UAC, si elle demande) : Entrée dedans. Le Bureau à distance doit rester ouvert pendant tout l''essai.' -ForegroundColor Yellow }
         LancerAvec 'blocage-isoler' @('blocage', 'isoler') "o`n"
         $t = "$(Sortie 'blocage-isoler')" -replace '\s+', ' '
         $regles = Regles-R4
@@ -2282,7 +2288,7 @@ else {
         $bandeau = "$(Get-Content (Join-Path $res 'isolement-bandeau.err.txt') -Raw -Encoding UTF8)" -replace '\s+', ' '
         if ($bandeau -match 'isolé du réseau par Vanguard|isolated from the network by Vanguard') { Ok 'Le bandeau de l''isolement s''affiche au lancement suivant' }
         else { Bug 'Pas de bandeau de l''isolement au lancement suivant' }
-        if (-not $Auto) { Write-Host '      Accepte la fenêtre UAC pour lever l''isolement.' -ForegroundColor Yellow }
+        if (-not $Auto) { Write-Host '      Pour lever l''isolement : Entrée dans la fenêtre Vanguard administrateur (UAC, si elle demande).' -ForegroundColor Yellow }
         LancerAvec 'blocage-lever-isolement' @('blocage', 'lever-isolement') "o`n"
         $t = "$(Sortie 'blocage-lever-isolement')" -replace '\s+', ' '
         if ($t -match 'Isolement levé|Isolation lifted') { Ok 'vanguard blocage lever-isolement : dit levé' }
@@ -2307,6 +2313,20 @@ else {
             Start-Process -FilePath $exe -ArgumentList @('blocage', 'lever-isolement') -NoNewWindow -Wait -RedirectStandardInput (New-Item -Force (Join-Path $res 'lever-filet.txt') -Value "o`r`n").FullName | Out-Null
             Regles-R4 | Remove-NetFirewallRule -ErrorAction SilentlyContinue
         }
+        # Les résultats de l'étape rendus à la passe (le journal mis à la suite du sien). Si le partage ne répond
+        # pas encore, ils restent dans la VM, et l'écran dit où.
+        $resLocalR4 = $res
+        $res = $resPartageR4
+        try {
+            $journalR4 = Join-Path $resLocalR4 'journal.txt'
+            if (Test-Path -LiteralPath $journalR4) {
+                Add-Content -Path (Join-Path $res 'journal.txt') -Value (Get-Content -LiteralPath $journalR4 -Encoding UTF8) -Encoding UTF8 -ErrorAction Stop
+                Remove-Item -LiteralPath $journalR4 -Force
+            }
+            Copy-Item -Path (Join-Path $resLocalR4 '*') -Destination $res -Recurse -Force -ErrorAction Stop
+            Remove-Item -LiteralPath $resLocalR4 -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        catch { Write-Host "      Résultats de l'isolement gardés dans $resLocalR4 : le dossier partagé ne répond pas ($($_.Exception.Message))" -ForegroundColor Yellow }
     }
 }
 
