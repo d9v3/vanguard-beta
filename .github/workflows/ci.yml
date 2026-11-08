@@ -317,7 +317,10 @@ jobs:
           # Seul le programme est recompilé (les dépendances restent) : c'est lui que l'on compare.
           cargo clean -p vanguard --release --target x86_64-unknown-linux-musl
           cargo clean -p vanguard --release --target x86_64-pc-windows-gnu
-          outils/compiler-version.sh
+          # En détail (-v) : la commande de rustc pour le programme, son -C metadata et son intercalaire, à comparer à
+          # celle de l'ordinateur de l'auteur si les empreintes diffèrent ; les dépendances déjà compilées tues.
+          set -o pipefail
+          outils/compiler-version.sh -v 2>&1 | { grep -v '^ *Fresh ' || true; }
           cmp premiere/vanguard target/x86_64-unknown-linux-musl/release/vanguard
           cmp premiere/vanguard.exe target/x86_64-pc-windows-gnu/release/vanguard.exe
           echo "EMPREINTE-VANGUARD-LINUX $(sha256sum premiere/vanguard | cut -d' ' -f1)"
