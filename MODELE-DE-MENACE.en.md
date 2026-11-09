@@ -86,7 +86,9 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   It sees a file closed after writing or arriving by rename, a DIRECT child of one of them. It does not see: a
   subfolder (an archive extracted into `Downloads/folder/`), another folder (Documents, /tmp, a USB drive), a file
   written before the watcher started or while it is off or paused, nor a program started without being written to
-  these folders (the program watcher and the guard judge it at launch). A file over 64 MiB, unreadable, gone before
+  these folders (the program watcher and the guard judge it at launch). Real-time scanning fits in 128 MiB of
+  memory: it uses the YARA rules, the heuristics and the MalwareBazaar fingerprints of the last 48 hours; the ClamAV
+  database and the full fingerprint list serve on-demand scans and the hourly pass. A file over 32 MiB, unreadable, gone before
   being read, or arriving when the queue is full (256 waiting) is not scanned: it is counted as not verified, never
   as clean. An overflow of the kernel queue loses an unknown number of events: it is counted and reported. A file
   being downloaded (".part", ".crdownload") is only scanned at its final rename. A link is never followed. The

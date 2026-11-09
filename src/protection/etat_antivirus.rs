@@ -133,8 +133,8 @@ fn relever() -> Releve {
 #[cfg(unix)]
 fn moteur() -> String {
     tr!(
-        "Le moteur de Vanguard fait les analyses à la demande et le temps réel des fichiers : empreintes de MalwareBazaar, règles YARA, base ClamAV installée (lue par Vanguard, sans clamscan) et heuristiques.",
-        "The Vanguard engine runs on-demand scans and real-time file scanning: MalwareBazaar fingerprints, YARA rules, the installed ClamAV database (read by Vanguard, without clamscan) and heuristics."
+        "Le moteur de Vanguard fait les analyses à la demande : empreintes de MalwareBazaar, règles YARA, base ClamAV installée (lue par Vanguard, sans clamscan) et heuristiques. Le temps réel des fichiers tient en 128 Mio : règles YARA, heuristiques et empreintes récentes (48 heures) ; la base ClamAV sert aux analyses à la demande et à la passe horaire.",
+        "The Vanguard engine runs on-demand scans: MalwareBazaar fingerprints, YARA rules, the installed ClamAV database (read by Vanguard, without clamscan) and heuristics. Real-time file scanning fits in 128 MiB: YARA rules, heuristics and recent fingerprints (48 hours); the ClamAV database serves on-demand scans and the hourly pass."
     )
     .to_string()
 }

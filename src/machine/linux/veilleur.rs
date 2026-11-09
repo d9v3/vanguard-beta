@@ -2236,11 +2236,13 @@ fn servir() -> i32 {
 // ───────────────────────────── Temps réel des fichiers ─────────────────────────────
 
 /// Marque les dossiers où arrivent les menaces et démarre leur examen ; met à jour l'état (en marche, ou pourquoi
-/// pas). Les sources du moteur sont celles de l'usage en continu (P21 : base ClamAV aux empreintes seules), chargées
-/// une fois dans le fil de l'examinateur.
+/// pas). Les sources du moteur sont celles du temps réel (`moteur::sources_du_temps_reel` : le veilleur tient en
+/// 128 Mo, sans la base ClamAV ni la liste complète de MalwareBazaar), chargées dans le fil de l'examinateur.
 fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
-    use crate::protection::moteur::{Usage, sources};
-    match fichiers::Surveillance::demarrer(fichiers::a_surveiller(), Box::new(|| sources(Usage::EnContinu))) {
+    match fichiers::Surveillance::demarrer(
+        fichiers::a_surveiller(),
+        Box::new(crate::protection::moteur::sources_du_temps_reel),
+    ) {
         Ok(s) => {
             s.mettre_en_pause(etat.en_pause);
             etat.fichiers = s.releve();

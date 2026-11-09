@@ -378,16 +378,7 @@ pub(crate) fn base_a_la_demande() -> Result<&'static Base, &'static str> {
 pub(crate) fn sources(usage: Usage) -> Sources<'static> {
     let mut manquantes = Vec::new();
     let mut reserves = Vec::new();
-    let yara = match crate::protection::yara::regles() {
-        Ok(r) => {
-            manquantes.extend(crate::protection::yara::non_verifiees(r));
-            Some(r)
-        }
-        Err(e) => {
-            manquantes.push(trf!("règles YARA inutilisables : {e}", "YARA rules unusable: {e}"));
-            None
-        }
-    };
+    let yara = regles_yara(&mut manquantes);
     let chargees = match usage {
         Usage::ALaDemande => empreintes::connues(),
         Usage::EnContinu => empreintes::gardees(),
@@ -430,6 +421,65 @@ pub(crate) fn sources(usage: Usage) -> Sources<'static> {
         manquantes,
         reserves,
     }
+}
+
+/// Les règles YARA, et ce qu'elles ne vérifient pas (règles refusées) ou pourquoi aucune ne s'applique, ajouté à
+/// `manquantes` : une source attendue qui manque, jamais comptée saine.
+fn regles_yara(manquantes: &mut Vec<String>) -> Option<&'static Regles> {
+    match crate::protection::yara::regles() {
+        Ok(r) => {
+            manquantes.extend(crate::protection::yara::non_verifiees(r));
+            Some(r)
+        }
+        Err(e) => {
+            manquantes.push(trf!("règles YARA inutilisables : {e}", "YARA rules unusable: {e}"));
+            None
+        }
+    }
+}
+
+/// Les sources du temps réel des fichiers (le veilleur, Linux) et ses empreintes. Le veilleur est un service borné à
+/// 128 Mo de mémoire (MemoryMax) : la base ClamAV, même aux empreintes seules (≈ 450 Mio en pointe, mesuré), et la
+/// liste complète de MalwareBazaar (plus d'un million d'empreintes) n'y tiennent pas, et le noyau le tuerait. Il prend
+/// donc les empreintes des dernières 48 heures (`empreintes::recentes_gardees`, relues par l'appelant), les règles
+/// YARA et les heuristiques ; la base ClamAV et la liste complète servent aux analyses à la demande et à la passe
+/// horaire. C'est dit en réserve avec chaque résultat : un choix de mesure, pas une source attendue qui manque.
+#[cfg(target_os = "linux")]
+pub(crate) fn sources_du_temps_reel() -> (Sources<'static>, Option<Empreintes>) {
+    let mut manquantes = Vec::new();
+    let yara = regles_yara(&mut manquantes);
+    let recentes = empreintes::recentes_gardees();
+    let mut reserves = vec![
+        tr!(
+            "base ClamAV : analyses à la demande et passe horaire seulement (le temps réel tient en 128 Mo de mémoire)",
+            "ClamAV database: on-demand scans and hourly pass only (real time fits in 128 MB of memory)"
+        )
+        .to_string(),
+    ];
+    reserves.push(if recentes.is_some() {
+        tr!(
+            "empreintes de MalwareBazaar : celles des dernières 48 heures seulement (temps réel)",
+            "MalwareBazaar fingerprints: those of the last 48 hours only (real time)"
+        )
+        .to_string()
+    } else {
+        tr!(
+            "empreintes récentes de MalwareBazaar : aucune copie gardée",
+            "recent MalwareBazaar fingerprints: no copy kept"
+        )
+        .to_string()
+    });
+    let sources = Sources {
+        yara,
+        malwarebazaar: None,
+        clamav: None,
+        heuristiques: true,
+        lieu: None,
+        normale: crate::protection::normales::est_normale,
+        manquantes,
+        reserves,
+    };
+    (sources, recentes)
 }
 
 /// La base ClamAV d'un usage et ce qui lui manque (base absente, refusée ou fichiers écartés), sans la note
@@ -505,26 +555,31 @@ enum Releve {
 /// moins de `delai`. `Err` : le fichier n'a pas pu être lu (absent, illisible, lien, tube, pas un fichier ordinaire),
 /// ou une source n'a pas fini à temps : rien n'est conclu. Une partie qui manque est dite dans `non_verifie`.
 pub(crate) fn examiner(chemin: &Path, sources: &Sources<'_>, delai: Duration) -> Result<Resultat, ()> {
-    examiner_par(chemin, sources, delai, &mut |bornes, visiteur| {
+    let bornes = Bornes {
+        delai,
+        ..Bornes::default()
+    };
+    examiner_par(chemin, sources, bornes, &mut |bornes, visiteur| {
         analyse::analyser_fichier(chemin, bornes, visiteur)
     })
 }
 
 /// Comme [`examiner`], pour un fichier déjà ouvert par l'appelant (le veilleur l'ouvre sous le dossier qu'il
 /// surveille, sans suivre de lien) ; `chemin` ne sert qu'à nommer et situer ce qui est trouvé, jamais à rouvrir.
+/// `bornes` : celles de l'appelant (le veilleur tient en 128 Mo de mémoire), délai compris.
 #[cfg(target_os = "linux")]
 pub(crate) fn examiner_ouvert(
     fichier: std::fs::File,
     chemin: &Path,
     sources: &Sources<'_>,
-    delai: Duration,
+    bornes: Bornes,
 ) -> Result<Resultat, ()> {
     let nom = chemin
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let mut fichier = Some(fichier);
-    examiner_par(chemin, sources, delai, &mut |bornes, visiteur| {
+    examiner_par(chemin, sources, bornes, &mut |bornes, visiteur| {
         let f = fichier.take().ok_or_else(|| std::io::Error::other("fichier déjà lu"))?;
         analyse::analyser_ouvert(f, nom.clone(), bornes, visiteur)
     })
@@ -533,12 +588,8 @@ pub(crate) fn examiner_ouvert(
 /// La lecture d'un fichier par le socle d'analyse, chaque partie passée au visiteur.
 type Lire<'a> = dyn FnMut(&Bornes, &mut dyn FnMut(&Partie, &[u8])) -> std::io::Result<analyse::Analyse> + 'a;
 
-fn examiner_par(chemin: &Path, sources: &Sources<'_>, delai: Duration, lire: &mut Lire<'_>) -> Result<Resultat, ()> {
-    let echeance = Instant::now().checked_add(delai);
-    let bornes = Bornes {
-        delai,
-        ..Bornes::default()
-    };
+fn examiner_par(chemin: &Path, sources: &Sources<'_>, bornes: Bornes, lire: &mut Lire<'_>) -> Result<Resultat, ()> {
+    let echeance = Instant::now().checked_add(bornes.delai);
     let lieu = sources.lieu.unwrap_or_else(|| lieu_de(chemin));
     let mut reserves = sources.reserves.clone();
     let mut juge = sources.clamav.and_then(juge);

@@ -92,8 +92,10 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   Il voit un fichier fermé après écriture ou arrivé par renommage, enfant DIRECT de l'un d'eux. Il ne voit pas : un
   sous-dossier (une archive décompressée dans `Téléchargements/dossier/`), un autre dossier (Documents, /tmp, une clé
   USB), un fichier écrit avant le démarrage du veilleur ou pendant qu'il est coupé ou en pause, ni un programme lancé
-  sans être écrit dans ces dossiers (le veilleur des programmes et le garde le jugent à son lancement). Un fichier de
-  plus de 64 Mio, illisible, parti avant d'être lu, ou arrivé quand la file est pleine (256 en attente) n'est pas
+  sans être écrit dans ces dossiers (le veilleur des programmes et le garde le jugent à son lancement). Le temps réel
+  tient en 128 Mio de mémoire : il prend les règles YARA, les heuristiques et les empreintes de MalwareBazaar des
+  dernières 48 heures ; la base ClamAV et la liste complète des empreintes servent aux analyses à la demande et à la
+  passe horaire. Un fichier de plus de 32 Mio, illisible, parti avant d'être lu, ou arrivé quand la file est pleine (256 en attente) n'est pas
   examiné : il est compté non vérifié, jamais sain. Un débordement de la file du noyau perd un nombre inconnu
   d'événements : il est compté et dit. Un fichier en cours de téléchargement (« .part », « .crdownload ») n'est
   examiné qu'à son renommage final. Un lien n'est jamais suivi. La passe horaire et l'analyse « Rapide » reprennent

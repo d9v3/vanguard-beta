@@ -47,11 +47,30 @@ pub(crate) const FILE_MAX: usize = 256;
 pub(crate) const CALME: Duration = Duration::from_secs(1);
 /// Un fichier réécrit sans cesse est examiné quand même au bout de ce temps.
 pub(crate) const ATTENTE_MAX: Duration = Duration::from_secs(30);
-/// La taille au-delà de laquelle un fichier n'est pas lu (compté « trop gros », non vérifié) : celle de l'empreinte
-/// relue avant la quarantaine.
-pub(crate) const TAILLE_MAX: u64 = crate::protection::blocage::en_direct::TAILLE_MAX;
+/// La taille au-delà de laquelle un fichier n'est pas lu (compté « trop gros », non vérifié ; la passe horaire reprend
+/// ceux de Téléchargements jusqu'à 64 Mio). Le fichier est lu en mémoire, et le veilleur tient en 128 Mo
+/// (MemoryMax) avec tout le reste : 32 Mio, plus 32 Mio au plus de parties extraites (`bornes`). Jamais plus que
+/// l'empreinte relue avant la quarantaine.
+pub(crate) const TAILLE_MAX: u64 = 32 << 20;
+const _: () = assert!(TAILLE_MAX <= crate::protection::blocage::en_direct::TAILLE_MAX);
 /// Le temps du moteur pour un fichier.
 const DELAI_EXAMEN: Duration = Duration::from_secs(15);
+/// Les empreintes récentes de MalwareBazaar sont relues sur le disque à ce rythme (la surveillance les rafraîchit).
+const RELIRE_SOURCES: Duration = Duration::from_hours(6);
+
+/// Les bornes du moteur dans le veilleur : celles des analyses à la demande, resserrées pour tenir en 128 Mo. Une
+/// archive ou un document qui les dépasse est dit lu en partie (non vérifié), jamais sain.
+fn bornes() -> crate::analyse::Bornes {
+    crate::analyse::Bornes {
+        taille_fichier: TAILLE_MAX,
+        taille_partie: 16 << 20,
+        produits: 32 << 20,
+        seuil_taux: 8 << 20,
+        texte: 4 << 20,
+        delai: DELAI_EXAMEN,
+        ..crate::analyse::Bornes::default()
+    }
+}
 /// Les menaces examinées en attente de leur suite dans le veilleur, au plus.
 const CANAL: usize = 64;
 /// L'attente du lecteur entre deux regards sur l'arrêt et la pause.
@@ -436,8 +455,10 @@ impl std::fmt::Display for Refus {
     }
 }
 
-/// Les sources du moteur pour un usage en continu (P21 : empreintes ClamAV seules, rien téléchargé).
-pub(crate) type Charger = Box<dyn FnOnce() -> Sources<'static> + Send>;
+/// Les sources du moteur du temps réel et ses empreintes récentes (`moteur::sources_du_temps_reel`), rechargées toutes
+/// les `RELIRE_SOURCES`.
+pub(crate) type Charger =
+    Box<dyn FnMut() -> (Sources<'static>, Option<crate::protection::empreintes::Empreintes>) + Send>;
 
 impl Surveillance {
     /// Marque `dossiers` (chemin réel, nom à montrer, est Téléchargements) et démarre les deux fils. `charger` rend
@@ -515,10 +536,26 @@ impl Surveillance {
                 .spawn(move || lire(&groupes, &marques, &arret, &pause, &attente, &compteurs, &erreur))
         };
         let examinateur = {
-            let (arret, pause, attente, compteurs) = (arret.clone(), pause.clone(), attente.clone(), compteurs.clone());
+            let (arret, pause, attente, compteurs, erreur_examen) = (
+                arret.clone(),
+                pause.clone(),
+                attente.clone(),
+                compteurs.clone(),
+                erreur.clone(),
+            );
             std::thread::Builder::new()
                 .name("vanguard-fichiers-examen".into())
-                .spawn(move || examiner(charger, &marques, &arret, &pause, &attente, &compteurs, &envoi))
+                .spawn(move || {
+                    let partage = Partage {
+                        marques: &marques,
+                        arret: &arret,
+                        pause: &pause,
+                        attente: &attente,
+                        compteurs: &compteurs,
+                        erreur: &erreur_examen,
+                    };
+                    examiner(charger, &partage, &envoi);
+                })
         };
         let mut fils = Vec::new();
         for f in [lecteur, examinateur] {
@@ -760,30 +797,61 @@ fn ranger(ev: &lecture::Nomme, m: &Marque, en_pause: bool) -> Rangement {
 
 // ───────────────────────────── L'examinateur ─────────────────────────────
 
-fn examiner(
-    charger: Charger,
-    marques: &[Marque],
-    arret: &AtomicBool,
-    pause: &AtomicBool,
-    attente: &(Mutex<Attente>, Condvar),
-    compteurs: &Compteurs,
-    envoi: &SyncSender<Examine>,
-) {
+/// Ce que l'examinateur partage avec le lecteur et le veilleur.
+struct Partage<'a> {
+    marques: &'a [Marque],
+    arret: &'a AtomicBool,
+    pause: &'a AtomicBool,
+    attente: &'a (Mutex<Attente>, Condvar),
+    compteurs: &'a Compteurs,
+    erreur: &'a Mutex<Option<String>>,
+}
+
+/// Les sources chargées, ou `None` si leur chargement a paniqué : jamais la mort du veilleur.
+type Chargees = Option<(Sources<'static>, Option<crate::protection::empreintes::Empreintes>)>;
+
+fn charger_sans_paniquer(charger: &mut Charger) -> Chargees {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(charger)).ok()
+}
+
+fn examiner(mut charger: Charger, p: &Partage<'_>, envoi: &SyncSender<Examine>) {
+    let compteurs = p.compteurs;
     let avant = rss_kio();
-    let mut sources = charger();
+    let Some((mut base, mut recentes)) = charger_sans_paniquer(&mut charger) else {
+        // Rien ne s'examine sans sources : dit « arrêté », jamais sain ; le reste du veilleur continue.
+        if let Ok(mut x) = p.erreur.lock() {
+            *x = Some(tr!("sources non chargées", "sources not loaded").to_string());
+        }
+        return;
+    };
     if let (Some(a), Some(b)) = (avant, rss_kio()) {
         compteurs.sources_kio.store(b.saturating_sub(a), Ordering::Relaxed);
         compteurs.sources_chargees.store(true, Ordering::Relaxed);
     }
-    while let Some((i, nom, dernier)) = prochain(arret, attente) {
-        let Some(marque) = marques.get(i) else {
+    let mut chargees_a = Instant::now();
+    while let Some((i, nom, dernier)) = prochain(p.arret, p.attente) {
+        let Some(marque) = p.marques.get(i) else {
             continue;
         };
-        if pause.load(Ordering::SeqCst) {
+        if p.pause.load(Ordering::SeqCst) {
             plus(&compteurs.en_pause);
             continue;
         }
-        sources.lieu = marque.telechargements.then_some(Lieu::Telechargements);
+        // Les empreintes récentes changent chaque jour : relues de temps en temps ; un rechargement qui échoue garde
+        // les sources d'avant.
+        if chargees_a.elapsed() >= RELIRE_SOURCES {
+            if let Some((b, r)) = charger_sans_paniquer(&mut charger) {
+                (base, recentes) = (b, r);
+            }
+            chargees_a = Instant::now();
+        }
+        let sources = Sources {
+            malwarebazaar: recentes.as_ref(),
+            lieu: marque.telechargements.then_some(Lieu::Telechargements),
+            manquantes: base.manquantes.clone(),
+            reserves: base.reserves.clone(),
+            ..base
+        };
         let Some(r) = examiner_un(marque, &nom, &sources, compteurs) else {
             continue;
         };
@@ -804,7 +872,7 @@ fn examiner(
                 loop {
                     match envoi.try_send(x) {
                         Ok(()) => break,
-                        Err(TrySendError::Full(y)) if !arret.load(Ordering::SeqCst) => {
+                        Err(TrySendError::Full(y)) if !p.arret.load(Ordering::SeqCst) => {
                             x = y;
                             std::thread::sleep(Duration::from_millis(100));
                         }
@@ -864,7 +932,7 @@ fn examiner_un(m: &Marque, nom: &[u8], sources: &Sources<'_>, c: &Compteurs) -> 
     }
     let chemin = m.chemin.join(OsStr::from_bytes(nom));
     plus(&c.examines);
-    let r = moteur::examiner_ouvert(f, &chemin, sources, DELAI_EXAMEN).ok();
+    let r = moteur::examiner_ouvert(f, &chemin, sources, bornes()).ok();
     if r.is_none() {
         plus(&c.illisibles);
     }
@@ -1126,7 +1194,10 @@ mod tests {
         let d = crate::protection::isoler::dossier_jetable().unwrap();
         let ailleurs = crate::protection::isoler::dossier_jetable().unwrap();
         let reel = std::fs::canonicalize(&d).unwrap();
-        let s = match Surveillance::demarrer(vec![(reel.clone(), "Salon".into(), false)], Box::new(sources_essai)) {
+        let s = match Surveillance::demarrer(
+            vec![(reel.clone(), "Salon".into(), false)],
+            Box::new(|| (sources_essai(), None)),
+        ) {
             Ok(s) => s,
             Err(e) => return crate::essais::saute(&format!("marque refusée : {e}")),
         };
@@ -1187,5 +1258,37 @@ mod tests {
         drop(s);
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&ailleurs);
+    }
+
+    /// Un chargement des sources qui panique (mémoire, base illisible) : « sources non chargées », dit à l'état ;
+    /// le fil meurt seul, la surveillance et le veilleur restent, et l'arrêt se fait sans attendre.
+    #[test]
+    fn sources_non_chargees_sans_mourir() {
+        if let Err(e) = Groupe::ouvrir_notification() {
+            return crate::essais::saute(&format!("fanotify sans droits refusé par ce noyau : {e}"));
+        }
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let reel = std::fs::canonicalize(&d).unwrap();
+        let s = match Surveillance::demarrer(
+            vec![(reel, "Salon".into(), false)],
+            Box::new(|| panic!("essai : chargement des sources en échec")),
+        ) {
+            Ok(s) => s,
+            Err(e) => return crate::essais::saute(&format!("marque refusée : {e}")),
+        };
+        let fin = Instant::now() + Duration::from_secs(10);
+        while s.releve().sans.is_none() && Instant::now() < fin {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let r = s.releve();
+        assert_eq!(
+            r.sans.as_deref(),
+            Some(tr!("sources non chargées", "sources not loaded")),
+            "{r:?}"
+        );
+        assert!(!r.actif);
+        assert!(r.phrase().contains(tr!("sources non chargées", "sources not loaded")));
+        drop(s);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
