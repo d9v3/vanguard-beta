@@ -453,6 +453,9 @@ pub(crate) struct Releve {
     /// Les dossiers trop grands dont une perte n'a pas pu être reprise (relecture abandonnée après quelques essais) :
     /// ce qui y est arrivé sans être vu n'est pas examiné, jusqu'à une relecture complète réussie.
     pub abandons: Vec<String>,
+    /// Les chemins de ces dossiers, dans le même ordre : ce qui est gardé au redémarrage (le nom montré change avec
+    /// la langue, et un dossier refusé au démarrage n'a pas de marque).
+    pub abandons_chemins: Vec<PathBuf>,
     /// Les pertes (fichier sans place dans la file, débordement du noyau, tampon perdu) que les relectures en cours
     /// n'ont pas encore reprises : ce qui y est arrivé n'est pas encore relu.
     pub a_reprendre: u64,
@@ -826,17 +829,35 @@ impl Marque {
         r.curseur.is_some() || !r.noms.is_empty()
     }
 
-    /// Note un fichier examiné, avec son état d'alors.
+    /// Note un fichier examiné au verdict définitif (sain, trop gros), avec son état d'alors.
     fn noter_examine(&self, nom: &[u8], meta: &std::fs::Metadata) {
-        self.noter_examine_a(nom, meta, Instant::now());
+        self.noter_examine_a(nom, meta, Instant::now(), true);
     }
 
-    fn noter_examine_a(&self, nom: &[u8], meta: &std::fs::Metadata, quand: Instant) {
+    /// Note un fichier non vérifié ou illisible : sauté par les relectures un temps seulement, sinon un attaquant qui
+    /// provoque des pertes à volonté ferait réexaminer sans fin des fichiers lents (délai dépassé), et le temps réel
+    /// attendrait derrière eux ; mais réexaminé plus tard, car la cause peut passer.
+    fn noter_passager(&self, nom: &[u8], meta: &std::fs::Metadata) {
+        self.noter_examine_a(nom, meta, Instant::now(), false);
+    }
+
+    fn noter_examine_a(&self, nom: &[u8], meta: &std::fs::Metadata, quand: Instant, definitif: bool) {
         let mut x = self.examines.lock().unwrap_or_else(PoisonError::into_inner);
         if x.len() >= MEMOIRE_MAX && !x.contains_key(nom) {
             x.clear();
         }
-        x.insert(nom.to_vec(), ((meta.ino(), meta.ctime(), meta.ctime_nsec()), quand));
+        x.insert(
+            nom.to_vec(),
+            ((meta.ino(), meta.ctime(), meta.ctime_nsec()), quand, definitif),
+        );
+    }
+
+    /// Les sources du moteur sont rechargées : ce qui n'a pas pu être vérifié mérite un nouvel examen.
+    fn oublier_passagers(&self) {
+        self.examines
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|_, (_, _, definitif)| *definitif);
     }
 
     /// Ce fichier a-t-il été examiné tel qu'il est (même inode, même ctime) ? Une écriture, un renommage ou un
@@ -847,8 +868,10 @@ impl Marque {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(nom)
-            .is_some_and(|(x, quand)| {
-                *x == (meta.ino(), meta.ctime(), meta.ctime_nsec()) && quand.elapsed() >= FENETRE_MMAP
+            .is_some_and(|(x, quand, definitif)| {
+                *x == (meta.ino(), meta.ctime(), meta.ctime_nsec())
+                    && quand.elapsed() >= FENETRE_MMAP
+                    && (*definitif || quand.elapsed() < RELIRE_SOURCES)
             })
     }
 }
@@ -881,6 +904,8 @@ pub(crate) struct Surveillance {
     suites_non_verifiees: u64,
     /// Le début de la pause en cours (secondes depuis 1970) : à sa fin, chaque dossier est relu depuis lui.
     pause_debut: AtomicI64,
+    /// Les pertes abandonnées d'avant le redémarrage dont le dossier n'est pas marqué cette fois : toujours dites.
+    abandons_anciens: Vec<(String, PathBuf)>,
 }
 
 /// La raison d'un refus de fanotify, prête à montrer.
@@ -1058,15 +1083,21 @@ impl Surveillance {
             isoles: 0,
             suites_non_verifiees: 0,
             pause_debut: AtomicI64::new(0),
+            abandons_anciens: Vec::new(),
         })
     }
 
     /// Les pertes abandonnées d'avant un redémarrage (dossiers trop grands, gardés dans l'état) : toujours dites,
     /// et retentées dès que le dossier n'est plus en relecture ; sinon l'alerte s'oublierait à chaque redémarrage.
-    pub(crate) fn reprendre_abandons(&self, noms: &[String]) {
-        for m in self.marques.iter().filter(|m| noms.contains(&m.nom)) {
-            m.perte_abandonnee.store(true, Ordering::Relaxed);
-            *m.abandon_a.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    /// Un dossier qui n'est pas marqué cette fois garde son alerte telle quelle.
+    pub(crate) fn reprendre_abandons(&mut self, noms: &[String], chemins: &[PathBuf]) {
+        for (nom, chemin) in noms.iter().zip(chemins) {
+            if let Some(m) = self.marques.iter().find(|m| m.chemin == *chemin) {
+                m.perte_abandonnee.store(true, Ordering::Relaxed);
+                *m.abandon_a.lock().unwrap_or_else(PoisonError::into_inner) = None;
+            } else if !self.abandons_anciens.iter().any(|(_, c)| c == chemin) {
+                self.abandons_anciens.push((nom.clone(), chemin.clone()));
+            }
         }
     }
 
@@ -1142,6 +1173,13 @@ impl Surveillance {
     /// Le relevé pour l'état du veilleur.
     pub(crate) fn releve(&self) -> Releve {
         let c = &self.compteurs;
+        let abandons: Vec<(String, PathBuf)> = self
+            .marques
+            .iter()
+            .filter(|m| m.perte_abandonnee.load(Ordering::Relaxed))
+            .map(|m| (m.nom.clone(), m.chemin.clone()))
+            .chain(self.abandons_anciens.iter().cloned())
+            .collect();
         let examines = lu(&c.examines);
         let erreur = self
             .erreur
@@ -1190,12 +1228,8 @@ impl Surveillance {
                 .filter(|m| m.trop_grand.load(Ordering::Relaxed))
                 .map(|m| m.nom.clone())
                 .collect(),
-            abandons: self
-                .marques
-                .iter()
-                .filter(|m| m.perte_abandonnee.load(Ordering::Relaxed))
-                .map(|m| m.nom.clone())
-                .collect(),
+            abandons: abandons.iter().map(|(n, _)| n.clone()).collect(),
+            abandons_chemins: abandons.into_iter().map(|(_, c)| c).collect(),
             a_reprendre: self
                 .marques
                 .iter()
@@ -1463,7 +1497,9 @@ fn en_famine(depuis: Instant, maintenant: Instant) -> bool {
 }
 
 /// Un fichier examiné : son état d'alors (inode, ctime en secondes et nanosecondes) et le moment de l'examen.
-type Note = ((u64, i64, i64), Instant);
+/// L'état d'un fichier examiné (inode, ctime), le moment de l'examen, et si son verdict est définitif (sain, trop
+/// gros) ou passager (non vérifié, illisible : périmé après `RELIRE_SOURCES` ou au rechargement des sources).
+type Note = ((u64, i64, i64), Instant, bool);
 
 /// Ce qu'a fait une relecture.
 #[derive(Debug, PartialEq, Eq)]
@@ -1526,7 +1562,15 @@ fn relire(i: usize, m: &Marque, attente: &(Mutex<Attente>, Condvar), compteurs: 
     for nom in &mis {
         etat.noms.remove(nom);
     }
-    if etat.finir(apres, du_debut && fait != Relu::TropGrand) {
+    let avait_perte = etat.perte_sans_nom;
+    let fini = etat.finir(apres, du_debut);
+    if !fini && avait_perte && !etat.perte_sans_nom {
+        // La perte sans nom (comptée une fois) n'attend plus ; restent les noms ou une demande ordinaire.
+        let _ = m
+            .a_reprendre
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| Some(n.saturating_sub(1)));
+    }
+    if fini {
         m.a_reprendre.store(0, Ordering::Relaxed);
         // Un dossier trop grand abandonné n'est pas « fini » : il n'a pas été lu, et ne se relit qu'à son rythme.
         return if fait == Relu::TropGrand {
@@ -1603,8 +1647,9 @@ impl Relecture {
     /// arrivée pendant elle (une fin de pause, une perte) garde son point. Vrai : le dossier est à jour (plus de
     /// curseur ni de nom perdu).
     ///
-    /// `depuis_min` : la lecture partait du début (`i64::MIN`) et a tout mis en file ; elle a donc repris la perte
-    /// sans nom, même si une demande ordinaire est arrivée pendant elle (une nouvelle perte garde le drapeau).
+    /// `depuis_min` : la lecture partait du début (`i64::MIN`) et n'a rien laissé : tout est en file, ou elle est
+    /// abandonnée (dossier trop grand, `perte_abandonnee` prend le relais) ; la perte sans nom n'attend donc plus,
+    /// même si une demande ordinaire est arrivée pendant elle (une nouvelle perte garde le drapeau).
     fn finir(&mut self, apres: Option<Curseur>, depuis_min: bool) -> bool {
         self.en_lecture = false;
         let pendant = self.pendant.take();
@@ -1849,6 +1894,9 @@ fn examiner(mut charger: Charger, p: &Partage<'_>, envoi: &SyncSender<Examine>) 
         if chargees_a.elapsed() >= RELIRE_SOURCES {
             if let Some((b, r)) = charger_sans_paniquer(&mut charger) {
                 (base, recentes) = (b, r);
+                for m in p.marques {
+                    m.oublier_passagers();
+                }
             }
             chargees_a = Instant::now();
         }
@@ -1974,13 +2022,19 @@ fn examiner_un(
     if let Some(f) = pour_le_cache {
         fanotify::oublier_du_cache(&f);
     }
-    // Seul un fichier sain est retenu : une relecture saute ce qui est encore tel quel. Une menace est réexaminée,
-    // donc redite ; un non-vérifié ou un illisible aussi, car la cause peut passer (délai dépassé sous charge,
-    // sources manquantes rechargées) : recompté à chaque relecture, mais une chance de plus d'être vérifié.
+    // Un fichier sain est retenu : une relecture saute ce qui est encore tel quel. Une menace ne l'est jamais : elle
+    // est réexaminée, donc redite. Un non-vérifié ou un illisible l'est un temps (`noter_passager`) : la cause peut
+    // passer (délai dépassé sous charge, sources manquantes rechargées).
     match &r {
-        None => plus(&c.illisibles),
-        Some(fait) if matches!(fait.verdict(), Verdict::Sain) => m.noter_examine(nom, &lu_avant),
-        Some(_) => {}
+        None => {
+            plus(&c.illisibles);
+            m.noter_passager(nom, &lu_avant);
+        }
+        Some(fait) => match fait.verdict() {
+            Verdict::Sain => m.noter_examine(nom, &lu_avant),
+            Verdict::NonVerifie(_) => m.noter_passager(nom, &lu_avant),
+            _ => {}
+        },
     }
     r.map(|r| (r, identite))
 }
@@ -2801,7 +2855,22 @@ mod tests {
         m.noter_examine(b"vu", &meta);
         assert!(!m.deja_examine(b"vu", &meta));
         let il_y_a = Instant::now().checked_sub(FENETRE_MMAP).unwrap();
-        m.noter_examine_a(b"vu", &meta, il_y_a);
+        m.noter_examine_a(b"vu", &meta, il_y_a, true);
+        assert!(m.deja_examine(b"vu", &meta));
+        // N1 : un non-vérifié est sauté un temps, puis réexaminé ; un rechargement des sources l'oublie.
+        let meta_neuf = std::fs::symlink_metadata(d.join("neuf")).unwrap();
+        m.noter_examine_a(b"neuf", &meta_neuf, il_y_a, false);
+        assert!(m.deja_examine(b"neuf", &meta_neuf));
+        if let Some(vieux) = Instant::now().checked_sub(RELIRE_SOURCES) {
+            m.noter_examine_a(b"neuf", &meta_neuf, vieux, false);
+            assert!(!m.deja_examine(b"neuf", &meta_neuf), "périmé");
+            m.noter_examine_a(b"vu", &meta, vieux, true);
+            assert!(m.deja_examine(b"vu", &meta), "un sain ne se périme pas");
+            m.noter_examine_a(b"vu", &meta, il_y_a, true);
+        }
+        m.noter_examine_a(b"neuf", &meta_neuf, il_y_a, false);
+        m.oublier_passagers();
+        assert!(!m.deja_examine(b"neuf", &meta_neuf));
         assert!(m.deja_examine(b"vu", &meta));
         let attente = (Mutex::new(Attente::new(RESERVE_DIRECT + 10)), Condvar::new());
         let c = Compteurs::default();
@@ -3009,6 +3078,35 @@ mod tests {
         drop(s);
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&ailleurs);
+    }
+
+    /// N3 : une perte abandonnée d'avant le redémarrage est reprise par le chemin de son dossier (pas par son nom
+    /// montré, qui change avec la langue) ; celle d'un dossier pas marqué cette fois reste dite.
+    #[test]
+    fn abandons_repris_par_le_chemin() {
+        if let Err(e) = Groupe::ouvrir_notification() {
+            return crate::essais::saute(&format!("fanotify sans droits refusé par ce noyau : {e}"));
+        }
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let reel = std::fs::canonicalize(&d).unwrap();
+        let mut s = match Surveillance::demarrer(
+            vec![(reel.clone(), "Salon".into(), false)],
+            Box::new(|| (sources_essai(), None)),
+            None,
+        ) {
+            Ok(s) => s,
+            Err(e) => return crate::essais::saute(&format!("marque refusée : {e}")),
+        };
+        let ailleurs = PathBuf::from("/nulle-part/alice");
+        s.reprendre_abandons(
+            &["Living room".into(), "Alice".into()],
+            &[reel.clone(), ailleurs.clone()],
+        );
+        let r = s.releve();
+        assert_eq!(r.abandons, vec!["Salon".to_string(), "Alice".to_string()]);
+        assert_eq!(r.abandons_chemins, vec![reel, ailleurs]);
+        drop(s);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Le vrai fanotify, sans droits, sur un dossier jetable seulement : un fichier copié par un autre processus est

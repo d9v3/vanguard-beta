@@ -2135,6 +2135,10 @@ fn servir() -> i32 {
         // Une perte abandonnée (dossier trop grand) reste dite après un redémarrage, et y est retentée.
         fichiers: fichiers::Releve {
             abandons: avant.as_ref().map(|e| e.fichiers.abandons.clone()).unwrap_or_default(),
+            abandons_chemins: avant
+                .as_ref()
+                .map(|e| e.fichiers.abandons_chemins.clone())
+                .unwrap_or_default(),
             ..fichiers::Releve::default()
         },
         ..Etat::default()
@@ -2319,6 +2323,7 @@ fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
     // Les pertes abandonnées d'avant (dossiers trop grands) : retentées si le temps réel démarre, gardées sinon,
     // pour le démarrage suivant.
     let abandons = std::mem::take(&mut etat.fichiers.abandons);
+    let abandons_chemins = std::mem::take(&mut etat.fichiers.abandons_chemins);
     // Coupé par le filtre ou sans sonde : la personne avait dit oui au temps réel, le bilan le redit.
     if let Err(coupure) = fanotify_permis(&sonde, unite.as_deref()) {
         let cause = coupure.cause();
@@ -2327,6 +2332,7 @@ fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
             sans: Some(cause),
             coupure: Some(coupure),
             abandons,
+            abandons_chemins,
             ..fichiers::Releve::default()
         };
         return None;
@@ -2337,8 +2343,8 @@ fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
         Some(relire_depuis(etat.fichiers_a_jour, maintenant())),
     );
     match demarre {
-        Ok(s) => {
-            s.reprendre_abandons(&abandons);
+        Ok(mut s) => {
+            s.reprendre_abandons(&abandons, &abandons_chemins);
             s.mettre_en_pause(etat.en_pause);
             etat.fichiers = s.releve();
             Some(s)
@@ -2348,6 +2354,7 @@ fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
             etat.fichiers = fichiers::Releve {
                 sans: Some(raison.0),
                 abandons,
+                abandons_chemins,
                 ..fichiers::Releve::default()
             };
             None
