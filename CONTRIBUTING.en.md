@@ -21,7 +21,7 @@ A security flaw? No public issue or pull request: report it privately, see [SECU
 | `src/menu/` | the interactive menu: the tool list, its groups and switches (`outils.rs`), the status at the top (`etat.rs`), search and command names (`recherche.rs`), display and launching (`lancer.rs`), its tests (`tests.rs`) |
 | `src/deploiement.rs`, `src/deploiement/binaire.rs` | steps of `outils/deployer.sh` handed to the program (`vanguard deploiement …`, hidden command): key markers, the key's tldr archives; protections of the shipped programs read from their headers, without running them (`binaire.rs`, `verifier-binaire`): ELF (PIE, static, RELRO marking, non-executable stack, nothing writable and executable), PE (guards of vanguard.exe, ASLR, DEP, relocations); any other format is refused |
 | `src/ui.rs` | colors, titles, frames, bars, lines wrapped and aligned within 76 columns |
-| `src/selection.rs` | keyboard menus and checklists (arrows, Enter, Esc or Backspace), word search in menus, preview of the highlighted line on the right (wide enough window) |
+| `src/selection.rs` | keyboard menus and checklists (arrows, Enter, Esc or Backspace), word search in menus, preview of the highlighted line on the right (wide enough window); the mouse (`selection/souris.rs`: click, hover, wheel, right click, help-line buttons) |
 | `src/descriptions.rs` | what the menu preview says about each tool and each group |
 | `src/recherche.rs` | search: per-word score, synonyms ("box" → router), typos corrected; for the menu and `vanguard search` |
 | `src/prediction.rs` | prediction of the word being typed, the same in every menu: its end in grey, Tab completes it |

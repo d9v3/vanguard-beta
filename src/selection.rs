@@ -22,6 +22,9 @@ use crossterm::terminal;
 use crate::prediction::Vocabulaire;
 use crate::ui::*;
 
+mod souris;
+use souris::{Action, Zone};
+
 /// Une ligne d'un menu.
 pub enum Ligne {
     /// Affichée telle quelle : titre, état, ligne vide.
@@ -514,10 +517,23 @@ const RANGEES_MINIMUM: usize = 10;
 /// `en_cours`, entre deux annonces de ce qui est caché au-dessus et au-dessous. `haut`, la première rangée montrée de
 /// la liste, est gardé d'un affichage à l'autre : la liste ne bouge que si la ligne en cours allait en sortir, et
 /// garde alors une rangée de contexte (le titre d'une section). Rend au plus `place` rangées.
+#[cfg(test)]
 fn fenetre(rangees: &[String], entete: usize, en_cours: usize, place: usize, haut: &mut usize) -> Vec<String> {
+    fenetre_indexee(rangees, entete, en_cours, place, haut).0
+}
+
+/// `fenetre`, et pour chaque rangée montrée celle d'où elle vient (`None` : une annonce de ce qui est caché) : la
+/// souris sait ainsi quelle ligne est sous elle.
+fn fenetre_indexee(
+    rangees: &[String],
+    entete: usize,
+    en_cours: usize,
+    place: usize,
+    haut: &mut usize,
+) -> (Vec<String>, Vec<Option<usize>>) {
     if rangees.len() <= place {
         *haut = 0;
-        return rangees.to_vec();
+        return (rangees.to_vec(), (0..rangees.len()).map(Some).collect());
     }
     // Au moins trois rangées de liste sous l'en-tête et les deux annonces ; sinon l'en-tête défile aussi.
     let entete = if entete.saturating_add(5) <= place { entete } else { 0 };
@@ -544,18 +560,23 @@ fn fenetre(rangees: &[String], entete: usize, en_cours: usize, place: usize, hau
         }
     };
     let mut ecran: Vec<String> = tete.to_vec();
+    let mut sources: Vec<Option<usize>> = (0..tete.len()).map(Some).collect();
     ecran.push(annonce(
         '↑',
         *haut,
         trf!("{} ligne(s) plus haut", "{} more line(s) above", *haut),
     ));
-    ecran.extend(liste.iter().skip(*haut).take(hauteur).cloned());
+    sources.push(None);
+    let montrees = liste.iter().skip(*haut).take(hauteur);
+    sources.extend((0..montrees.len()).map(|i| Some(tete.len().saturating_add(*haut).saturating_add(i))));
+    ecran.extend(montrees.cloned());
     ecran.push(annonce(
         '↓',
         reste,
         trf!("{reste} ligne(s) plus bas", "{reste} more line(s) below"),
     ));
-    ecran
+    sources.push(None);
+    (ecran, sources)
 }
 
 /// Le panneau d'aperçu prend ce qui reste à droite du menu, entre ces deux largeurs de texte : plus étroit, ses lignes
@@ -740,6 +761,13 @@ impl ModeClavier {
         let _ = sortie.flush();
         Some(mode)
     }
+
+    /// Pour un menu ou une liste : sans curseur, et la souris en plus (`souris`), prise après le mode clavier.
+    pub(crate) fn activer_avec_souris() -> Option<Self> {
+        let mode = Self::activer_sans_curseur()?;
+        souris::capturer();
+        Some(mode)
+    }
 }
 
 impl Drop for ModeClavier {
@@ -751,6 +779,8 @@ impl Drop for ModeClavier {
 /// Le terminal comme avant le mode clavier : touches lues ligne par ligne, curseur visible. Aussi avant chaque
 /// `quitter` sur une touche lue en mode clavier : `std::process::exit` ne passe pas par `drop`.
 pub(crate) fn rendre_le_terminal() {
+    // La souris d'abord : sous Windows, elle remet le mode de console du mode clavier, que la ligne suivante rend.
+    souris::rendre();
     let _ = terminal::disable_raw_mode();
     let mut sortie = std::io::stdout();
     let _ = sortie.write_all(b"\x1b[?25h");
@@ -881,7 +911,7 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
     let visibles: Vec<&str> = choix.iter().filter(|c| c.visible).map(|c| c.touche).collect();
     let colonne = colonne(lignes);
     let clavier = au_clavier(!visibles.is_empty());
-    let Some(_mode) = clavier.then(ModeClavier::activer_sans_curseur).flatten() else {
+    let Some(_mode) = clavier.then(ModeClavier::activer_avec_souris).flatten() else {
         imprimer_lignes(lignes, colonne);
         return Some(par_ligne(&choix, &touches, invite));
     };
@@ -900,6 +930,8 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
     let mut vocabulaire: Option<Vocabulaire> = None;
     let mut mots_du_menu: Option<Vec<String>> = None;
     let apercus = a_des_apercus(lignes);
+    // Ce que la souris peut viser sur l'écran dessiné.
+    let mut zones: Vec<Zone> = Vec::new();
     let mut sortie = std::io::stdout();
     let _ = sortie.write_all(b"\x1b[2J");
     loop {
@@ -939,7 +971,7 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
             let cadre = largeur_de_cadre(colonnes);
             let (entete, hauteur_entete) = entete_de_recherche(lignes, colonne, cadre);
             let entete = (&entete[..], hauteur_entete, cadre);
-            ecran += &ecran_de_recherche(lignes, &etat, entete, &trouvailles, &aides, panneau);
+            ecran += &ecran_de_recherche(lignes, &etat, entete, &trouvailles, &aides, panneau, &mut zones);
         } else {
             ecran += &ecran_du_menu(
                 lignes,
@@ -948,23 +980,69 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
                 &mut etat,
                 &aides.menu,
                 panneau,
+                &mut zones,
             );
         }
         let _ = sortie.write_all(ecran.as_bytes());
         let _ = sortie.flush();
 
-        let Some(Event::Key(k)) = evenement(grille) else {
+        let Some(k) = geste_du_menu(grille, &zones, &mut etat, recherche) else {
             continue;
         };
-        // Windows signale aussi le relâchement de la touche : un seul événement par appui.
-        if k.kind == KeyEventKind::Release {
-            continue;
-        }
         if let ControlFlow::Break(choisi) =
             touche_du_menu(k, &mut etat, &trouvailles, recherche, &visibles, gauche_revient)
         {
             let _ = sortie.write_all(b"\r\n");
             return choisi;
+        }
+    }
+}
+
+/// Le prochain appui à traiter dans un menu, ou `None` : le menu est à redessiner. Un geste de la souris devient une
+/// touche : un clic sur une ligne la met en cours puis l'ouvre (Entrée), une lettre de l'aide (« q quitter ») se tape
+/// puis s'ouvre. La souris qui passe sur une ligne la met en surbrillance ; ailleurs, elle ne redessine rien.
+fn geste_du_menu(
+    grille: Option<(u16, u16)>,
+    zones: &[Zone],
+    etat: &mut EtatMenu,
+    recherche: bool,
+) -> Option<event::KeyEvent> {
+    // La ligne visée devient celle en cours : `true` si elle a changé (à redessiner).
+    let viser = |etat: &mut EtatMenu, n: usize| {
+        let en_cours = if recherche {
+            &mut etat.en_cours_trouve
+        } else {
+            &mut etat.en_cours
+        };
+        std::mem::replace(en_cours, n) != n
+    };
+    loop {
+        match evenement(grille)? {
+            // Windows signale aussi le relâchement de la touche : un seul événement par appui.
+            Event::Key(k) if k.kind == KeyEventKind::Release => {}
+            Event::Key(k) => return Some(k),
+            Event::Mouse(m) => match souris::action(m, zones) {
+                Some(Action::Touche(k)) => return Some(k),
+                Some(Action::Viser(n)) => {
+                    if viser(etat, n) {
+                        return None;
+                    }
+                }
+                Some(Action::Ouvrir(n)) => {
+                    viser(etat, n);
+                    if !recherche {
+                        etat.tape.clear();
+                    }
+                    return Some(souris::touche(KeyCode::Enter));
+                }
+                Some(Action::Lettre(c)) if !recherche => {
+                    etat.tape = c.to_string();
+                    return Some(souris::touche(KeyCode::Enter));
+                }
+                // Rien sous la souris, ou une lettre pendant une recherche (son aide n'en montre pas).
+                None | Some(Action::Lettre(_)) => {}
+            },
+            _ => return None,
         }
     }
 }
@@ -979,7 +1057,9 @@ fn ecran_de_recherche(
     t: &Trouvailles<'_, '_>,
     aides: &Aides,
     panneau: Option<usize>,
+    zones: &mut Vec<Zone>,
 ) -> String {
+    zones.clear();
     let mut ecran: Vec<String> = Vec::new();
     let rangees = terminal::size().map_or(24, |(_, r)| usize::from(r));
     let montre_entete = hauteur_entete.saturating_add(7) <= rangees;
@@ -1002,6 +1082,7 @@ fn ecran_de_recherche(
     let debut = etat.en_cours_trouve.saturating_add(1).saturating_sub(place);
     let largeur = largeur_des_touches(t.trouves.iter().copied());
     for (i, c) in t.trouves.iter().enumerate().skip(debut).take(place) {
+        zones.push(Zone::ligne(ecran.len(), i));
         ecran.push(rendu_trouve(c, largeur, i == etat.en_cours_trouve));
     }
     if t.trouves.is_empty() {
@@ -1041,12 +1122,14 @@ fn ecran_de_recherche(
         Some((apercu(lignes, c.ligne, largeur, hauteur), debut))
     });
     etirer_filets(&mut ecran, largeur_des_filets(cadre, panneau.is_some()));
+    let rangee_de_l_aide = ecran.len();
     let mut ecran = avec_panneau(&ecran, panneau.as_ref().map(|(p, d)| (p.as_slice(), *d)));
     let aide = if t.suite.is_some() {
         &aides.prediction
     } else {
         &aides.recherche
     };
+    zones.extend(souris::zones_de_l_aide(aide, rangee_de_l_aide));
     let (gris, recul) = fantome(t.suite.as_deref());
     let tape = &etat.tape;
     let _ = write!(
@@ -1066,10 +1149,13 @@ fn ecran_du_menu(
     etat: &mut EtatMenu,
     aide: &str,
     panneau: Option<usize>,
+    zones: &mut Vec<Zone>,
 ) -> String {
     let en_cours = etat.en_cours;
-    // Les rangées du menu ; l'en-tête est ce qui précède la première ligne de choix.
+    // Les rangées du menu ; l'en-tête est ce qui précède la première ligne de choix. Pour chaque rangée, la ligne de
+    // choix qu'elle montre, que la souris peut viser.
     let mut rangees: Vec<String> = Vec::new();
+    let mut choix_des_rangees: Vec<Option<usize>> = Vec::new();
     let (mut n, mut rangee_en_cours, mut entete_menu) = (0, 0, None);
     let cadre = largeur_de_cadre(colonnes);
     let mut rangee_du_cadre = None;
@@ -1086,6 +1172,7 @@ fn ecran_du_menu(
         }
         if let Some(t) = texte(l, colonne, ligne_de_choix && n == en_cours, cadre) {
             rangees.extend(t.split('\n').map(String::from));
+            choix_des_rangees.resize(rangees.len(), ligne_de_choix.then_some(n));
         }
         n = n.saturating_add(usize::from(ligne_de_choix));
     }
@@ -1133,7 +1220,14 @@ fn ecran_du_menu(
     if voulues > rangees.len() {
         rangees.resize(voulues.min(place.max(rangees.len())), String::new());
     }
-    let montrees = fenetre(&rangees, entete_menu, rangee_en_cours, place, &mut etat.haut);
+    let (montrees, sources) = fenetre_indexee(&rangees, entete_menu, rangee_en_cours, place, &mut etat.haut);
+    zones.clear();
+    for (rangee, source) in sources.into_iter().enumerate() {
+        if let Some(n) = source.and_then(|s| choix_des_rangees.get(s).copied().flatten()) {
+            zones.push(Zone::ligne(rangee, n));
+        }
+    }
+    zones.extend(souris::zones_de_l_aide(aide, montrees.len()));
     let panneau = panneau.map(|largeur| {
         let debut = debut_apercu(&montrees);
         let courante = lignes.iter().filter(|l| matches!(l, Ligne::Choix { .. })).nth(en_cours);
@@ -1338,7 +1432,7 @@ pub fn attendre_retour_avant(question: &str, fin: Option<std::time::Instant>) ->
 pub fn choisir_en_ligne(options: &[(&str, &str)], invite: &str) -> Option<String> {
     let clavier = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let mut sortie = std::io::stdout();
-    let Some(_mode) = clavier.then(ModeClavier::activer_sans_curseur).flatten() else {
+    let Some(_mode) = clavier.then(ModeClavier::activer_avec_souris).flatten() else {
         let r = demander(invite).trim().to_lowercase();
         return options.iter().any(|(t, _)| *t == r).then_some(r);
     };
@@ -1357,13 +1451,35 @@ pub fn choisir_en_ligne(options: &[(&str, &str)], invite: &str) -> Option<String
     };
     let _ = sortie.write_all(b"\r\n");
     dessiner(&mut sortie, en_cours, false);
+    // Les options sont juste au-dessus du curseur : leurs rangées, pour la souris (aucune si le terminal ne dit pas où
+    // est son curseur ; le clavier reste).
+    let zones: Vec<Zone> = crossterm::cursor::position()
+        .ok()
+        .and_then(|(_, rangee)| usize::from(rangee).checked_sub(toutes.len()))
+        .map(|premiere| {
+            (0..toutes.len())
+                .map(|i| Zone::ligne(premiere.saturating_add(i), i))
+                .collect()
+        })
+        .unwrap_or_default();
     loop {
-        let Ok(Event::Key(k)) = event::read() else {
-            continue;
+        let k = match event::read() {
+            Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => k,
+            Ok(Event::Mouse(m)) => match souris::action(m, &zones) {
+                Some(Action::Touche(k)) => k,
+                Some(Action::Viser(i)) if i != en_cours => {
+                    en_cours = i;
+                    dessiner(&mut sortie, en_cours, true);
+                    continue;
+                }
+                Some(Action::Ouvrir(i)) => {
+                    en_cours = i;
+                    souris::touche(KeyCode::Enter)
+                }
+                _ => continue,
+            },
+            _ => continue,
         };
-        if k.kind == KeyEventKind::Release {
-            continue;
-        }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
             rendre_le_terminal();
@@ -1544,7 +1660,7 @@ fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
         usize::from(largeur) > LARGEUR && usize::from(rangees) >= RANGEES_MINIMUM + DESSOUS_LISTE - 2
     });
     let clavier = std::io::stdin().is_terminal() && std::io::stdout().is_terminal() && tient;
-    let Some(_mode) = clavier.then(ModeClavier::activer_sans_curseur).flatten() else {
+    let Some(_mode) = clavier.then(ModeClavier::activer_avec_souris).flatten() else {
         return cocher_par_ligne(&liste, etats);
     };
 
@@ -1570,6 +1686,7 @@ fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
         haut: 0,
         recherche: None,
     };
+    let mut zones: Vec<Zone> = Vec::new();
     let mut sortie = std::io::stdout();
     let _ = sortie.write_all(b"\x1b[2J");
     loop {
@@ -1596,19 +1713,44 @@ fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
                 })
                 .suite(t, |q| liste.cherche.iter().any(|c| correspond(q, c)))
         });
-        let ecran = ecran_de_la_liste(&liste, &mut etat, &montrees, rang, suite.as_deref(), &aides);
+        let vue = (rang, suite.as_deref(), &aides);
+        let ecran = ecran_de_la_liste(&liste, &mut etat, &montrees, vue, &mut zones);
         let _ = sortie.write_all(ecran.as_bytes());
         let _ = sortie.flush();
 
-        let Some(Event::Key(k)) = evenement(grille) else {
+        let Some(k) = geste_de_la_liste(grille, &zones, &mut etat) else {
             continue;
         };
-        if k.kind == KeyEventKind::Release {
-            continue;
-        }
         if let ControlFlow::Break(fin) = touche_de_la_liste(k, &mut etat, cases, &montrees, rang, suite.as_deref()) {
             let _ = sortie.write_all(b"\r\n");
             return fin;
+        }
+    }
+}
+
+/// Le prochain appui à traiter dans une liste à cocher, ou `None` : la liste est à redessiner. Un clic sur une ligne
+/// la met en cours et la coche ou la décoche (Espace) ; la souris qui passe dessus la met en surbrillance et montre
+/// son explication.
+fn geste_de_la_liste(grille: Option<(u16, u16)>, zones: &[Zone], etat: &mut EtatListe) -> Option<event::KeyEvent> {
+    loop {
+        match evenement(grille)? {
+            Event::Key(k) if k.kind == KeyEventKind::Release => {}
+            Event::Key(k) => return Some(k),
+            Event::Mouse(m) => match souris::action(m, zones) {
+                None => {}
+                Some(Action::Touche(k)) => return Some(k),
+                Some(Action::Viser(i)) => {
+                    if std::mem::replace(&mut etat.en_cours, i) != i {
+                        return None;
+                    }
+                }
+                Some(Action::Ouvrir(i)) => {
+                    etat.en_cours = i;
+                    return Some(souris::touche(KeyCode::Char(' ')));
+                }
+                Some(Action::Lettre(c)) => return Some(souris::touche(KeyCode::Char(c))),
+            },
+            _ => return None,
         }
     }
 }
@@ -1686,9 +1828,8 @@ fn ecran_de_la_liste(
     liste: &Liste<'_>,
     etat: &mut EtatListe,
     montrees: &[usize],
-    rang: Option<usize>,
-    suite: Option<&str>,
-    aides: &Aides,
+    (rang, suite, aides): (Option<usize>, Option<&str>, &Aides),
+    zones: &mut Vec<Zone>,
 ) -> String {
     let cases = liste.cases;
     let mut ecran = String::from("\x1b[H");
@@ -1730,13 +1871,22 @@ fn ecran_de_la_liste(
     let place = terminal::size()
         .map_or(24, |(_, r)| usize::from(r))
         .saturating_sub(DESSOUS_LISTE.saturating_add(usize::from(etat.recherche.is_some())));
-    for t in fenetre(
+    let (vues, sources) = fenetre_indexee(
         &rangees,
         entete,
         entete.saturating_add(rang_ecran),
         place,
         &mut etat.haut,
-    ) {
+    );
+    zones.clear();
+    for (rangee, source) in sources.into_iter().enumerate() {
+        if let Some(&i) = source.and_then(|s| s.checked_sub(entete)).and_then(|r| montrees.get(r)) {
+            zones.push(Zone::ligne(rangee, i));
+        }
+    }
+    // L'aide vient sous la liste, une ligne vide et l'explication.
+    let rangee_de_l_aide = vues.len().saturating_add(1).saturating_add(LIGNES_DETAIL);
+    for t in vues {
         ecran += &t;
         ecran += "\x1b[K\r\n";
     }
@@ -1757,12 +1907,14 @@ fn ecran_de_la_liste(
             &aides.recherche
         };
         let (gris, recul) = fantome(suite);
+        zones.extend(souris::zones_de_l_aide(aide, rangee_de_l_aide));
         let _ = write!(
             ecran,
             "{aide}\x1b[K\r\n  {ACCENT}›{RESET} /{t}{gris}\x1b[K\x1b[J{recul}"
         );
     } else {
         let aide = &aides.menu;
+        zones.extend(souris::zones_de_l_aide(aide, rangee_de_l_aide));
         let _ = write!(ecran, "{aide}\x1b[K\x1b[J");
     }
     ecran
@@ -1968,6 +2120,24 @@ mod tests {
         )];
         let c = choisissables(&long);
         assert!(largeur_affichee(&rendu_trouve(&c[0], 7, true)) <= LARGEUR);
+    }
+
+    /// La souris vise la bonne ligne : chaque rangée montrée dit d'où elle vient, les annonces de rien.
+    #[test]
+    fn la_fenetre_dit_d_ou_vient_chaque_rangee() {
+        let rangees: Vec<String> = (0..40).map(|i| format!("r{i}")).collect();
+        for (en_cours, place) in [(0, 20), (17, 20), (39, 20), (25, 12), (3, 50)] {
+            let mut haut = 0;
+            let (vues, sources) = fenetre_indexee(&rangees, 3, en_cours, place, &mut haut);
+            assert_eq!(vues.len(), sources.len());
+            for (vue, source) in vues.iter().zip(&sources) {
+                match source {
+                    Some(s) => assert_eq!(vue, &rangees[*s]),
+                    None => assert!(!vue.starts_with('r'), "une annonce : {vue}"),
+                }
+            }
+            assert!(sources.contains(&Some(en_cours)), "la ligne en cours est montrée");
+        }
     }
 
     #[test]

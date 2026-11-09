@@ -753,6 +753,10 @@ vérifiées.
 - Menus au clavier : ↑ ↓ pour se déplacer, Entrée ou → pour choisir, Échap, ← ou Retour arrière pour revenir (au menu
   principal, ← ne fait rien, pour ne pas quitter par erreur ; dans une liste à cocher, seule Entrée confirme). La
   fenêtre ouverte pour Vanguard prend la taille du menu et se centre (Hyprland, console de Windows).
+- Menus à la souris aussi : un clic ouvre une ligne (la coche, dans une liste), la souris qui passe dessus la met en
+  surbrillance avec son aperçu, la roulette défile, le clic droit revient, et les touches de la ligne d'aide (« Entrée
+  ouvrir », « s réglages », « q quitter »…) se cliquent comme des boutons. Linux, Windows et SSH. Pendant qu'un menu
+  attend, Maj et glisser sélectionne le texte ; ailleurs, la souris reste au terminal.
 - Recherche dans tous les menus et les listes à cocher : un mot tapé (wifi, disque, dns, mise à jour…) ne laisse que
   les lignes qui le contiennent, sans souci d'accents ni de majuscules ; la fin du mot le plus probable s'affiche en
   gris, et Tab la complète. Au menu principal, elle trouve aussi chaque outil des sous-menus, et chaque page et chaque

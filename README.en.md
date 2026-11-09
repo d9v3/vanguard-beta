@@ -711,6 +711,10 @@ not checked them.
 - Keyboard menus: ↑ ↓ to move, Enter or → to select, Esc, ← or Backspace to go back (on the main menu, ← does nothing,
   so as not to quit by mistake; in a checklist, only Enter confirms). The window opened for Vanguard takes the menu's
   size and centers itself (Hyprland, Windows console).
+- Menus work with the mouse too: a click opens a line (checks it, in a checklist), hovering highlights it with its
+  preview, the wheel scrolls, a right click goes back, and the keys on the help line (“Enter open”, “s settings”,
+  “q quit”…) are clickable buttons. Linux, Windows and SSH. While a menu waits, Shift and drag selects text;
+  elsewhere, the mouse stays with the terminal.
 - Search in every menu and checklist: type a word (wifi, disk, dns, update…), only the lines containing it stay,
   whatever the accents or capitals; the end of the most likely word shows in grey, and Tab completes it. In the main
   menu, it also finds each tool of the submenus, and each page and each command of the guide.
