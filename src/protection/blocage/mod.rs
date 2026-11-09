@@ -1780,7 +1780,8 @@ pub fn alerte(id: &str) {
         }
     }
     let t = menaces::chercher(&Categorie::TOUTES, false);
-    // Un fichier du temps réel hors de Téléchargements : la recherche ne le rejuge pas, il l'est ici, par sa clé.
+    // Un fichier du temps réel que la recherche n'a pas repris (plus d'une semaine, plus de 64 Mio, au-delà de ses
+    // 300 fichiers ou de sa minute) : il est rejugé ici, par sa clé.
     #[cfg(target_os = "linux")]
     let en_direct = if t.menaces.iter().any(|m| alerte_designe(m, cle)) {
         None

@@ -462,12 +462,12 @@ fn programmes(empreintes: Option<&'static Empreintes>, os: Os, t: &mut Trouvees)
     telecharges(empreintes, t);
 }
 
-/// Ce que l'analyse des Téléchargements n'a pas eu : les sources attendues manquantes, puis les réserves (base
+/// Ce que l'analyse des dossiers à risque n'a pas eu : les sources attendues manquantes, puis les réserves (base
 /// ClamAV absente, refusée ou écartée), chacune une fois, pour le « non vérifié » du blocage.
 fn sources_non_verifiees(manquantes: &[String], reserves: &[String]) -> Vec<String> {
     let mut dites: Vec<String> = Vec::new();
     for m in manquantes.iter().chain(reserves) {
-        let phrase = trf!("Téléchargements : {m}", "Downloads: {m}");
+        let phrase = trf!("Dossiers à risque : {m}", "Risky folders: {m}");
         if !dites.contains(&phrase) {
             dites.push(phrase);
         }
@@ -475,14 +475,32 @@ fn sources_non_verifiees(manquantes: &[String], reserves: &[String]) -> Vec<Stri
     dites
 }
 
-/// Les fichiers arrivés dans Téléchargements cette semaine, examinés par le moteur maison (`moteur::examiner` :
-/// empreintes, YARA, base ClamAV en continu, heuristiques), en une minute au plus pour tous. Ce qui n'a pas été lu
-/// en entier est dit, jamais compté sain.
+/// Les dossiers que reprend la passe horaire : ceux du temps réel des fichiers sous Linux (Téléchargements, Bureau,
+/// ~/.local/bin, ~/.config/autostart), dont elle rattrape les trous (trop gros pour le temps réel, débordement,
+/// veilleur coupé) ; Téléchargements seul ailleurs. Chacun avec son nom à montrer.
+fn dossiers_a_reprendre() -> Vec<(PathBuf, String)> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::machine::linux::veilleur_fichiers::a_surveiller()
+            .into_iter()
+            .map(|(chemin, nom, _)| (chemin, nom))
+            .collect()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        crate::protection::telechargement::dossier_telechargements()
+            .map(|d| (d, tr!("Téléchargements", "Downloads").to_string()))
+            .into_iter()
+            .collect()
+    }
+}
+
+/// Les fichiers arrivés cette semaine dans les dossiers à risque (`dossiers_a_reprendre`), examinés par le moteur
+/// maison (`moteur::examiner` : empreintes, YARA, base ClamAV en continu, heuristiques), en une minute au plus pour
+/// tous, 300 fichiers au plus en tout. Ce qui n'a pas été lu en entier est dit, jamais compté sain.
 fn telecharges(empreintes: Option<&'static Empreintes>, t: &mut Trouvees) {
     use crate::protection::moteur;
-    let Some(dossier) = crate::protection::telechargement::dossier_telechargements() else {
-        return;
-    };
+    let dossiers = dossiers_a_reprendre();
     let deja: HashSet<PathBuf> = t
         .menaces
         .iter()
@@ -491,18 +509,7 @@ fn telecharges(empreintes: Option<&'static Empreintes>, t: &mut Trouvees) {
             _ => None,
         })
         .collect();
-    let recents: Vec<PathBuf> = std::fs::read_dir(&dossier)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|f| {
-            let m = std::fs::symlink_metadata(f.path()).ok()?;
-            let recent = m.modified().ok()?.elapsed().is_ok_and(|a| a < SEMAINE);
-            (m.is_file() && recent && m.len() <= TELECHARGES_MAX).then(|| f.path())
-        })
-        .filter(|c| !deja.contains(c))
-        .take(TELECHARGES_NOMBRE)
-        .collect();
+    let recents = recents_de(&dossiers, &deja);
     if recents.is_empty() {
         return;
     }
@@ -517,17 +524,54 @@ fn telecharges(empreintes: Option<&'static Empreintes>, t: &mut Trouvees) {
         &sources.manquantes,
         &moteur::reserves_clamav(moteur::Usage::EnContinu),
     ));
+    examiner_recents(recents, &sources, t);
+}
+
+/// Les fichiers ordinaires de la semaine (64 Mio au plus) posés directement dans `dossiers` (chemin, nom à montrer),
+/// hors ceux déjà trouvés, 300 au plus en tout ; un lien n'est jamais suivi.
+fn recents_de(dossiers: &[(PathBuf, String)], deja: &HashSet<PathBuf>) -> Vec<(PathBuf, String)> {
+    dossiers
+        .iter()
+        .flat_map(|(dossier, nom)| {
+            std::fs::read_dir(dossier)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(move |f| (f.path(), nom.clone()))
+        })
+        .filter(|(c, _)| {
+            std::fs::symlink_metadata(c).is_ok_and(|m| {
+                let recent = m
+                    .modified()
+                    .ok()
+                    .and_then(|d| d.elapsed().ok())
+                    .is_some_and(|a| a < SEMAINE);
+                m.is_file() && recent && m.len() <= TELECHARGES_MAX
+            })
+        })
+        .filter(|(c, _)| !deja.contains(c))
+        .take(TELECHARGES_NOMBRE)
+        .collect()
+}
+
+/// Examine `recents` (chemin, nom du dossier) en une minute au plus pour tous, 15 s chacun.
+fn examiner_recents(
+    recents: Vec<(PathBuf, String)>,
+    sources: &crate::protection::moteur::Sources<'_>,
+    t: &mut Trouvees,
+) {
+    use crate::protection::moteur;
     let debut = std::time::Instant::now();
     let mut partiels = 0usize;
     let mut non_lus = 0usize;
-    for chemin in recents {
+    for (chemin, ou) in recents {
         let reste = TELECHARGES_DELAI.saturating_sub(debut.elapsed());
         if reste.is_zero() {
             non_lus = non_lus.saturating_add(1);
             continue;
         }
-        match moteur::examiner(&chemin, &sources, reste.min(TELECHARGE_DELAI)) {
-            Ok(r) => match menace_du_fichier(chemin, &r, tr!("Téléchargements", "Downloads")) {
+        match moteur::examiner(&chemin, sources, reste.min(TELECHARGE_DELAI)) {
+            Ok(r) => match menace_du_fichier(chemin, &r, &ou) {
                 Some(m) => t.menaces.push(m),
                 None if !r.non_verifie.is_empty() => partiels = partiels.saturating_add(1),
                 None => {}
@@ -537,14 +581,14 @@ fn telecharges(empreintes: Option<&'static Empreintes>, t: &mut Trouvees) {
     }
     if partiels > 0 {
         t.non_verifie.push(trf!(
-            "Téléchargements : {partiels} fichier(s) lu(s) en partie (contenu non ouvert)",
-            "Downloads: {partiels} file(s) read in part (content not opened)"
+            "Dossiers à risque : {partiels} fichier(s) lu(s) en partie (contenu non ouvert)",
+            "Risky folders: {partiels} file(s) read in part (content not opened)"
         ));
     }
     if non_lus > 0 {
         t.non_verifie.push(trf!(
-            "Téléchargements : {non_lus} fichier(s) non examiné(s) (illisible ou délai dépassé)",
-            "Downloads: {non_lus} file(s) not examined (unreadable or time limit reached)"
+            "Dossiers à risque : {non_lus} fichier(s) non examiné(s) (illisible ou délai dépassé)",
+            "Risky folders: {non_lus} file(s) not examined (unreadable or time limit reached)"
         ));
     }
 }
@@ -943,8 +987,71 @@ mod tests {
         assert!(
             sources_non_verifiees(&[], &reserves)
                 .iter()
-                .all(|r| r.starts_with("Téléchargements : "))
+                .all(|r| r.starts_with(tr!("Dossiers à risque : ", "Risky folders: ")))
         );
+    }
+
+    /// La passe horaire reprend chaque dossier à risque, pas seulement Téléchargements : un fichier reconnu posé dans
+    /// le Bureau (dossier jetable) est trouvé, nommé avec son dossier ; un vieux fichier, un trop gros, un lien et un
+    /// sous-dossier ne sont pas repris ; un fichier déjà trouvé ne l'est pas deux fois.
+    #[test]
+    fn la_passe_horaire_reprend_les_dossiers_a_risque() {
+        let telech = crate::protection::isoler::dossier_jetable().unwrap();
+        let bureau = crate::protection::isoler::dossier_jetable().unwrap();
+        let mut elf = crate::protection::heuristiques::corpus::elf_sain();
+        elf.extend(crate::protection::sources::marque_d_essai());
+        std::fs::write(bureau.join("facture.bin"), &elf).unwrap();
+        std::fs::write(telech.join("sain.txt"), b"Salon").unwrap();
+        let vieux = telech.join("vieux.bin");
+        std::fs::write(&vieux, &elf).unwrap();
+        let il_y_a = std::time::SystemTime::now() - SEMAINE - std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&vieux)
+            .unwrap()
+            .set_modified(il_y_a)
+            .unwrap();
+        let gros = std::fs::File::create(telech.join("gros.bin")).unwrap();
+        gros.set_len(TELECHARGES_MAX + 1).unwrap();
+        std::fs::create_dir(bureau.join("sous-dossier")).unwrap();
+        std::fs::write(bureau.join("sous-dossier").join("cache.bin"), &elf).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(bureau.join("facture.bin"), telech.join("lien.bin")).unwrap();
+        let dossiers = vec![
+            (telech.clone(), "Salon".to_string()),
+            (bureau.clone(), "~/Bureau".to_string()),
+        ];
+        let mut recents = recents_de(&dossiers, &HashSet::new());
+        recents.sort();
+        let mut attendus = vec![
+            (telech.join("sain.txt"), "Salon".to_string()),
+            (bureau.join("facture.bin"), "~/Bureau".to_string()),
+        ];
+        attendus.sort();
+        assert_eq!(recents, attendus);
+        assert_eq!(
+            recents_de(&dossiers, &HashSet::from([bureau.join("facture.bin")])),
+            vec![(telech.join("sain.txt"), "Salon".to_string())]
+        );
+        let sources = crate::protection::moteur::Sources {
+            yara: None,
+            malwarebazaar: None,
+            clamav: None,
+            heuristiques: true,
+            lieu: None,
+            normale: |_| false,
+            manquantes: Vec::new(),
+            reserves: Vec::new(),
+        };
+        let mut t = Trouvees::default();
+        examiner_recents(recents, &sources, &mut t);
+        assert_eq!(t.menaces.len(), 1, "{:?}", t.non_verifie);
+        let m = &t.menaces[0];
+        assert!(m.certaine);
+        assert!(m.quoi.contains("~/Bureau"), "{}", m.quoi);
+        assert!(m.cle.contains("facture.bin"), "{}", m.cle);
+        let _ = std::fs::remove_dir_all(&telech);
+        let _ = std::fs::remove_dir_all(&bureau);
     }
 
     fn programme(nom: &str, chemin: &str, ligne: &str) -> EnMarche {

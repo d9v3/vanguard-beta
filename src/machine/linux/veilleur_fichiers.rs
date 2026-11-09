@@ -7,7 +7,8 @@
 //! l'identification par dossier et nom (FAN_REPORT_DFID_NAME), la seule permise, sans descripteur ouvert par le noyau ;
 //! des marques d'INODE seulement. Une marque d'inode ne voit que les enfants DIRECTS du dossier marqué : ni ses
 //! sous-dossiers, ni un autre dossier, ni un fichier lancé sans être écrit ici, ni ce qui était là avant le démarrage
-//! du veilleur (la passe horaire et l'analyse « Rapide » les voient). Un groupe par dossier : le dossier de chaque
+//! du veilleur (l'analyse « Rapide » les voit ; la passe horaire reprend les fichiers de la semaine posés dans ces
+//! dossiers, `menaces::telecharges`). Un groupe par dossier : le dossier de chaque
 //! événement est celui du groupe, sans `open_by_handle_at` (réservé à root) ; le chemin est refait comme dossier +
 //! nom, et le fichier est rouvert SOUS le descripteur du dossier, sans suivre aucun lien, fichier ordinaire seulement.
 //! Le verdict porte sur le contenu lu, jamais sur le nom.
@@ -48,7 +49,7 @@ pub(crate) const CALME: Duration = Duration::from_secs(1);
 /// Un fichier réécrit sans cesse est examiné quand même au bout de ce temps.
 pub(crate) const ATTENTE_MAX: Duration = Duration::from_secs(30);
 /// La taille au-delà de laquelle un fichier n'est pas lu (compté « trop gros », non vérifié ; la passe horaire reprend
-/// ceux de Téléchargements jusqu'à 64 Mio). Le fichier est lu en mémoire, et le veilleur tient en 128 Mo
+/// ceux de la semaine de ces dossiers jusqu'à 64 Mio). Le fichier est lu en mémoire, et le veilleur tient en 128 Mo
 /// (MemoryMax) avec tout le reste : 32 Mio, plus 32 Mio au plus de parties extraites (`bornes`). Jamais plus que
 /// l'empreinte relue avant la quarantaine.
 pub(crate) const TAILLE_MAX: u64 = 32 << 20;
@@ -362,8 +363,8 @@ impl Releve {
         if self.debordements > 0 || self.defauts > 0 {
             t.push(' ');
             t.push_str(&trf!(
-                "{} débordement(s) du noyau : des fichiers n'ont pas été vus, la passe horaire les reprend.",
-                "{} kernel overflow(s): some files were not seen, the hourly pass picks them up.",
+                "{} débordement(s) du noyau : des fichiers n'ont pas été vus, la passe horaire reprend ceux de la semaine.",
+                "{} kernel overflow(s): some files were not seen, the hourly pass picks up this week's.",
                 self.debordements.saturating_add(self.defauts)
             ));
         }

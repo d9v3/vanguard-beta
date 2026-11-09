@@ -94,8 +94,8 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   downloaded (".part", ".crdownload") is only scanned at its final rename. A link is never followed. A watched folder
   replaced under its name (moved then recreated) is noticed within half a second, counted, reported and marked again;
   what arrives there in between is not seen. Deleted, it is reported as "no longer watched" until it comes back. The
-  hourly pass and the "Quick" scan go over these folders again. Malware in the account can switch the watcher off,
-  like the others.
+  hourly pass goes over this week's files placed in these folders again (64 MiB at most, 300 files, one minute in
+  all); the "Quick" scan goes over all of them. Malware in the account can switch the watcher off, like the others.
 - **The page being visited.** Vanguard has no browser extension: the open page is not examined. It examines a link
   it is given, blocks known dangerous sites through the hosts file after consent (`vanguard sites-dangereux`), and
   public Wi-Fi mode switches to a filtering DNS.
