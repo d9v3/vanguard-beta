@@ -182,6 +182,7 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     local("loldrivers", "machine::windows::pilotes"),
     local("veilleur-voulu", "machine::linux::veilleur"),
     local("veilleur-oublier-le-choix", "machine::linux::veilleur"),
+    local("veilleur-dossier-unites-cree", "machine::linux::veilleur"),
     local("rancongiciel-voulu", "machine::linux::veilleur"),
     // Les listes du garde des lancements (l'ensemble CERTAIN) : forgées, elles ne peuvent que le rendre plus strict, et
     // ses exceptions gardent le système ; effacées, il ne reconnaît plus que les fichiers d'essai, ce que dit le bilan.
@@ -596,6 +597,11 @@ mod tests {
              posée, elle fait seulement croire le veilleur voulu (plus d'alertes)",
         ),
         ("veilleur-oublier-le-choix", "dossier jetable d'un essai seulement"),
+        (
+            "veilleur-dossier-unites-cree",
+            "indice seulement : posée, « off » retire ~/.config/systemd/user s'il est vide (remove_dir, jamais à \
+             travers un lien) ; effacée, ce dossier vide reste. Aucune défense n'en dépend",
+        ),
         (
             "rancongiciel-voulu",
             "indice pour le bilan : la veille ne s'allume que par defenses-voulues.json (scellé) ; celle d'une version \

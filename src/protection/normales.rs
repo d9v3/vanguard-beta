@@ -50,8 +50,13 @@ enum Refus {
 }
 
 fn charger() -> Result<Normales, Refus> {
+    charger_de(&crate::socle::dossier_local())
+}
+
+/// La liste du dossier `dossier` : les essais qui la falsifient en ont un à eux, sans toucher celle des autres.
+fn charger_de(dossier: &std::path::Path) -> Result<Normales, Refus> {
     use crate::sceau::Lecture;
-    match crate::sceau::lire(crate::sceau::NORMALES) {
+    match crate::sceau::lire_dans(dossier, crate::sceau::NORMALES) {
         Lecture::Absent | Lecture::Inconnu => Ok(Normales::default()),
         Lecture::Intact(o) => serde_json::from_slice(&o).map_err(|_| Refus::Illisible),
         // Ce fichier n'existe que depuis les sceaux : accepté sans sceau, c'est que les sceaux ont été effacés.
@@ -61,9 +66,16 @@ fn charger() -> Result<Normales, Refus> {
 }
 
 fn enregistrer(n: &Normales) -> std::io::Result<()> {
-    crate::sceau::ecrire(
+    enregistrer_vers(&crate::socle::dossier_local(), n)
+}
+
+fn enregistrer_vers(dossier: &std::path::Path, n: &Normales) -> std::io::Result<()> {
+    crate::sceau::ecrire_dans(
+        dossier,
         crate::sceau::NORMALES,
-        serde_json::to_string_pretty(n).map_err(std::io::Error::other)?,
+        serde_json::to_string_pretty(n)
+            .map_err(std::io::Error::other)?
+            .as_bytes(),
     )
 }
 
@@ -87,7 +99,11 @@ fn est_normale_dans(n: &Normales, cle: &str, jour: NaiveDate) -> bool {
 /// Cette alerte a-t-elle été déclarée normale ici, et le choix vaut-il encore ? Liste changée hors de Vanguard ou
 /// illisible : non, rien n'est tu.
 pub(crate) fn est_normale(cle: &str) -> bool {
-    charger().is_ok_and(|n| est_normale_dans(&n, cle, aujourd_hui()))
+    est_normale_de(&crate::socle::dossier_local(), cle)
+}
+
+fn est_normale_de(dossier: &std::path::Path, cle: &str) -> bool {
+    charger_de(dossier).is_ok_and(|n| est_normale_dans(&n, cle, aujourd_hui()))
 }
 
 /// Les alertes déclarées normales, pour les traces d'incident : (clé, jour du choix, titre), ou pourquoi la liste
@@ -121,9 +137,19 @@ pub(crate) fn cle_remise(empreinte: &[u8; 32], chemin: &std::path::Path) -> Stri
 
 /// Retient qu'une alerte est normale ici. `Err` : pourquoi rien n'a été retenu.
 pub(crate) fn declarer(cle: &str, genre: &str, titre: &str, texte: &str) -> Result<(), crate::modele::Echec> {
+    declarer_dans(&crate::socle::dossier_local(), cle, genre, titre, texte)
+}
+
+fn declarer_dans(
+    dossier: &std::path::Path,
+    cle: &str,
+    genre: &str,
+    titre: &str,
+    texte: &str,
+) -> Result<(), crate::modele::Echec> {
     use crate::modele::{Echec, Raison};
     const OU: &str = "normales/declarer";
-    let mut n = charger().map_err(|r| match r {
+    let mut n = charger_de(dossier).map_err(|r| match r {
         Refus::Falsifiee => Echec::new(OU, Raison::Falsifie).detail(raison(&r)),
         Refus::Illisible => Echec::new(OU, Raison::Illisible(raison(&r).to_string())),
     })?;
@@ -136,7 +162,7 @@ pub(crate) fn declarer(cle: &str, genre: &str, titre: &str, texte: &str) -> Resu
             le: aujourd_hui().format("%Y-%m-%d").to_string(),
         },
     );
-    enregistrer(&n).map_err(|e| Echec::ecriture(OU, &e))?;
+    enregistrer_vers(dossier, &n).map_err(|e| Echec::ecriture(OU, &e))?;
     noter_au_journal(cle, Some(titre));
     Ok(())
 }
@@ -424,20 +450,23 @@ mod tests {
     }
 
     /// Déclarée normale, puis la liste réécrite hors de Vanguard : plus rien n'est tu, et une nouvelle déclaration
-    /// n'écrase pas la liste en silence.
+    /// n'écrase pas la liste en silence. Dans un dossier à lui : falsifiée dans le dossier commun des essais, elle
+    /// faisait échouer au hasard ceux qui tournaient en même temps (la quarantaine, sous Wine).
     #[test]
     fn liste_falsifiee_ne_tait_rien() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
         let cle = cle_blocage("connexion:198.51.100.77");
-        declarer(&cle, "blocage", "Vanguard a bloqué une menace", "x").unwrap();
-        assert!(est_normale(&cle));
-        let chemin = crate::reseau::dossier_local().join(crate::sceau::NORMALES);
+        declarer_dans(&d, &cle, "blocage", "Vanguard a bloqué une menace", "x").unwrap();
+        assert!(est_normale_de(&d, &cle));
+        let chemin = d.join(crate::sceau::NORMALES);
         let mut texte = std::fs::read_to_string(&chemin).unwrap();
         texte.push(' ');
         std::fs::write(&chemin, texte).unwrap();
-        assert!(!est_normale(&cle));
-        assert!(declarer(&cle_blocage("autre"), "blocage", "t", "x").is_err());
-        enregistrer(&Normales::default()).unwrap();
-        assert!(!est_normale(&cle));
+        assert!(!est_normale_de(&d, &cle));
+        assert!(declarer_dans(&d, &cle_blocage("autre"), "blocage", "t", "x").is_err());
+        enregistrer_vers(&d, &Normales::default()).unwrap();
+        assert!(!est_normale_de(&d, &cle));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Les alertes récentes proposées : une par clé, sans celles qui n'en ont pas ni celles déjà normales.
