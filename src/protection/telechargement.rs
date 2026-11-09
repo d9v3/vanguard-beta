@@ -871,10 +871,11 @@ pub(crate) fn dossier_telechargements() -> Option<PathBuf> {
     }
 }
 
-/// Un fichier en cours de téléchargement : il sera renommé à la fin, et vu alors.
+/// Un fichier en cours de téléchargement : il sera renommé à la fin, et vu alors. Les suffixes des navigateurs
+/// seulement : « .tmp », que n'importe quel programme écrit, cacherait un fichier durable.
 pub(crate) fn en_cours(nom: &str) -> bool {
     let bas = nom.to_lowercase();
-    [".part", ".crdownload", ".download", ".partial", ".tmp", ".opdownload"]
+    [".part", ".crdownload", ".download", ".partial", ".opdownload"]
         .iter()
         .any(|e| bas.ends_with(e))
 }

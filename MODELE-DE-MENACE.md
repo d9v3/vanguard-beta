@@ -98,11 +98,12 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   passe horaire. Un fichier de plus de 32 Mio, illisible, parti avant d'être lu, ou arrivé quand la file est pleine
   (256 en attente) n'est pas examiné : il est compté non vérifié, jamais sain. Un débordement de la file du noyau perd
   un nombre inconnu d'événements : il est compté et dit. Un fichier en cours de téléchargement (« .part », «
-  .crdownload ») n'est examiné qu'à son renommage final. Un lien n'est jamais suivi. Un dossier surveillé remplacé
-  sous son nom (déplacé puis recréé) est vu en une demi-seconde, compté, dit et marqué de nouveau ; ce qui y arrive
-  entre-temps n'est pas vu. Supprimé, il est dit « plus surveillé » jusqu'à son retour. La passe horaire reprend les
-  fichiers de la semaine posés dans ces dossiers (64 Mio au plus, 300 fichiers, une minute en tout) ; l'analyse «
-  Rapide » les reprend tous. Un programme malveillant du compte peut éteindre le veilleur, comme les autres.
+  .crdownload ») n'est examiné qu'à son renommage final : il est compté non vérifié (la passe horaire, elle,
+  l'examine). Un lien n'est jamais suivi. Un dossier surveillé remplacé sous son nom (déplacé puis recréé) est vu en
+  une demi-seconde, compté, dit et marqué de nouveau ; ce qui y arrive entre-temps n'est pas vu. Supprimé, il est dit
+  « plus surveillé » jusqu'à son retour. La passe horaire reprend les fichiers de la semaine posés dans ces dossiers
+  (64 Mio au plus, 300 fichiers, une minute en tout) ; l'analyse « Rapide » les reprend tous. Un programme malveillant
+  du compte peut éteindre le veilleur, comme les autres.
 - **La page visitée.** Vanguard n'a pas d'extension de navigateur : la page ouverte n'est pas examinée. Il examine un
   lien qu'on lui donne, bloque après accord des sites dangereux connus par le fichier hosts
   (`vanguard sites-dangereux`), et le mode Wi-Fi public passe à un DNS qui filtre.

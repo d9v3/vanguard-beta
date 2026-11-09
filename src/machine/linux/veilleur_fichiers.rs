@@ -293,7 +293,8 @@ pub(crate) struct Releve {
     pub menaces: u64,
     /// Mis en quarantaine tout seuls.
     pub isoles: u64,
-    /// Tout ce qui n'a pas pu être vérifié : verdict non vérifié, trop gros, illisible, parti, file pleine, pause.
+    /// Tout ce qui n'a pas pu être vérifié : verdict non vérifié, trop gros, illisible, parti, file pleine, pause,
+    /// en cours de téléchargement.
     pub non_verifies: u64,
     pub trop_gros: u64,
     pub illisibles: u64,
@@ -314,7 +315,9 @@ pub(crate) struct Releve {
 }
 
 impl Releve {
-    /// Le nombre de fichiers non vérifiés, sans compter les débordements (de taille inconnue, dits à part).
+    /// Le nombre de fichiers non vérifiés, sans compter les débordements (de taille inconnue, dits à part). Un
+    /// fichier en cours de téléchargement (« .part ») en est : il n'est examiné qu'à son renommage final, qui peut
+    /// ne jamais venir (un « x.part » lancé tel quel).
     fn non_verifies_de(c: &Compteurs, suites: u64) -> u64 {
         [
             lu(&c.non_verifies),
@@ -323,6 +326,7 @@ impl Releve {
             lu(&c.partis),
             lu(&c.file_pleine),
             lu(&c.en_pause),
+            lu(&c.en_cours),
             suites,
         ]
         .iter()
@@ -355,8 +359,8 @@ impl Releve {
         if self.non_verifies > 0 {
             t.push(' ');
             t.push_str(&trf!(
-                "{} non vérifié(s) (trop gros, illisibles, partis, file pleine ou en pause) : jamais comptés sains.",
-                "{} not verified (too large, unreadable, gone, queue full or paused): never counted as clean.",
+                "{} non vérifié(s) (trop gros, illisibles, partis, file pleine, en pause, ou en cours de téléchargement et examinés seulement à leur renommage final) : jamais comptés sains.",
+                "{} not verified (too large, unreadable, gone, queue full, paused, or still downloading and scanned only at their final rename): never counted as clean.",
                 self.non_verifies
             ));
         }
@@ -1181,7 +1185,12 @@ mod tests {
             ranger(&ev(ecrit, 0, Some(b"x.exe.part")), &telech, false),
             Rangement::Compter(Compteur::EnCours)
         );
-        // Ailleurs que dans Téléchargements, « .tmp » ou « .part » ne protège rien : examiné.
+        // « .tmp » n'est pas un suffixe de navigateur : n'importe quel programme l'écrit, et il est examiné.
+        assert_eq!(
+            ranger(&ev(ecrit, 0, Some(b"x.exe.tmp")), &telech, false),
+            Rangement::Attendre(b"x.exe.tmp".to_vec())
+        );
+        // Ailleurs que dans Téléchargements, « .part » ne protège rien : examiné.
         assert_eq!(
             ranger(&ev(ecrit, 0, Some(b"x.exe.part")), &bureau, false),
             Rangement::Attendre(b"x.exe.part".to_vec())
@@ -1277,6 +1286,22 @@ mod tests {
         assert!(p.contains(tr!("débordement", "overflow")), "{p}");
         r.sans = Some("noyau".into());
         assert!(r.phrase().contains("noyau"));
+        // Un fichier en cours de téléchargement, examiné seulement à son renommage : compté non vérifié, et dit.
+        let c = Compteurs::default();
+        plus(&c.en_cours);
+        plus(&c.trop_gros);
+        assert_eq!(Releve::non_verifies_de(&c, 1), 3);
+        let r = Releve {
+            actif: true,
+            non_verifies: Releve::non_verifies_de(&c, 0),
+            ..Releve::default()
+        };
+        assert!(
+            r.phrase()
+                .contains(tr!("en cours de téléchargement", "still downloading")),
+            "{}",
+            r.phrase()
+        );
     }
 
     /// Le vrai fanotify, sans droits, sur un dossier jetable seulement : un fichier copié par un autre processus est

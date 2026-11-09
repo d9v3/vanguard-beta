@@ -91,11 +91,12 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   the full fingerprint list serve on-demand scans and the hourly pass. A file over 32 MiB, unreadable, gone before
   being read, or arriving when the queue is full (256 waiting) is not scanned: it is counted as not verified, never as
   clean. An overflow of the kernel queue loses an unknown number of events: it is counted and reported. A file being
-  downloaded (".part", ".crdownload") is only scanned at its final rename. A link is never followed. A watched folder
-  replaced under its name (moved then recreated) is noticed within half a second, counted, reported and marked again;
-  what arrives there in between is not seen. Deleted, it is reported as "no longer watched" until it comes back. The
-  hourly pass goes over this week's files placed in these folders again (64 MiB at most, 300 files, one minute in
-  all); the "Quick" scan goes over all of them. Malware in the account can switch the watcher off, like the others.
+  downloaded (".part", ".crdownload") is only scanned at its final rename: it is counted as not verified (the hourly
+  pass does scan it). A link is never followed. A watched folder replaced under its name (moved then recreated) is
+  noticed within half a second, counted, reported and marked again; what arrives there in between is not seen.
+  Deleted, it is reported as "no longer watched" until it comes back. The hourly pass goes over this week's files
+  placed in these folders again (64 MiB at most, 300 files, one minute in all); the "Quick" scan goes over all of
+  them. Malware in the account can switch the watcher off, like the others.
 - **The page being visited.** Vanguard has no browser extension: the open page is not examined. It examines a link
   it is given, blocks known dangerous sites through the hosts file after consent (`vanguard sites-dangereux`), and
   public Wi-Fi mode switches to a filtering DNS.
