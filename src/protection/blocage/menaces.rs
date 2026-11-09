@@ -516,7 +516,14 @@ fn telecharges(empreintes: Option<&'static Empreintes>, t: &mut Trouvees) {
             _ => None,
         })
         .collect();
-    let recents = recents_de(&dossiers, &deja);
+    let (recents, laisses) = recents_de(&dossiers, &deja);
+    if laisses > 0 {
+        // Au-delà du plafond, les plus anciens attendent la passe suivante : dit, jamais compté sain.
+        t.non_verifie.push(trf!(
+            "Dossiers à risque : {laisses} fichier(s) récent(s) non repris (plus de {TELECHARGES_NOMBRE} ; les plus récents d'abord)",
+            "Risky folders: {laisses} recent file(s) not rechecked (more than {TELECHARGES_NOMBRE}; newest first)"
+        ));
+    }
     if recents.is_empty() {
         return;
     }
@@ -535,9 +542,10 @@ fn telecharges(empreintes: Option<&'static Empreintes>, t: &mut Trouvees) {
 }
 
 /// Les fichiers ordinaires de la semaine (64 Mio au plus) posés directement dans `dossiers` (chemin, nom à montrer),
-/// hors ceux déjà trouvés, 300 au plus en tout ; un lien n'est jamais suivi.
-fn recents_de(dossiers: &[(PathBuf, String)], deja: &HashSet<PathBuf>) -> Vec<(PathBuf, String)> {
-    dossiers
+/// hors ceux déjà trouvés, 300 au plus en tout, les plus récents d'abord ; un lien n'est jamais suivi. Rend aussi le
+/// nombre de ceux laissés au-delà du plafond, pour qu'il soit dit.
+fn recents_de(dossiers: &[(PathBuf, String)], deja: &HashSet<PathBuf>) -> (Vec<(PathBuf, String)>, usize) {
+    let trouves = dossiers
         .iter()
         .flat_map(|(dossier, nom)| {
             std::fs::read_dir(dossier)
@@ -546,19 +554,27 @@ fn recents_de(dossiers: &[(PathBuf, String)], deja: &HashSet<PathBuf>) -> Vec<(P
                 .flatten()
                 .map(move |f| (f.path(), nom.clone()))
         })
-        .filter(|(c, _)| {
-            std::fs::symlink_metadata(c).is_ok_and(|m| {
-                let recent = m
-                    .modified()
-                    .ok()
-                    .and_then(|d| d.elapsed().ok())
-                    .is_some_and(|a| a < SEMAINE);
-                m.is_file() && recent && m.len() <= TELECHARGES_MAX
-            })
-        })
         .filter(|(c, _)| !deja.contains(c))
-        .take(TELECHARGES_NOMBRE)
-        .collect()
+        .filter_map(|(c, nom)| {
+            let m = std::fs::symlink_metadata(&c).ok()?;
+            let quand = m.modified().ok()?;
+            let recent = quand.elapsed().is_ok_and(|a| a < SEMAINE);
+            (m.is_file() && recent && m.len() <= TELECHARGES_MAX).then_some((c, nom, quand))
+        })
+        .collect();
+    plus_recents_d_abord(trouves, TELECHARGES_NOMBRE)
+}
+
+/// Les `plafond` fichiers les plus récents (date de modification, du plus récent au plus ancien) et le nombre de ceux
+/// laissés : l'ordre du système de fichiers n'est pas celui d'arrivée, et un plafond muet serait un trou.
+fn plus_recents_d_abord(
+    mut trouves: Vec<(PathBuf, String, std::time::SystemTime)>,
+    plafond: usize,
+) -> (Vec<(PathBuf, String)>, usize) {
+    trouves.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+    let laisses = trouves.len().saturating_sub(plafond);
+    trouves.truncate(plafond);
+    (trouves.into_iter().map(|(c, nom, _)| (c, nom)).collect(), laisses)
 }
 
 /// Examine `recents` (chemin, nom du dossier) en une minute au plus pour tous, 15 s chacun.
@@ -982,6 +998,38 @@ fn retirer_normales(
 mod tests {
     use super::*;
 
+    #[test]
+    fn plafond_garde_les_plus_recents_et_compte_le_reste() {
+        use std::time::{Duration, SystemTime};
+        let base = SystemTime::UNIX_EPOCH + Duration::from_hours(500_000);
+        // Dans le désordre, comme read_dir : « c » est le plus récent, « a » le plus ancien.
+        let trouves = vec![
+            (
+                PathBuf::from("/x/b"),
+                "Salon".to_string(),
+                base + Duration::from_secs(20),
+            ),
+            (PathBuf::from("/x/a"), "Salon".to_string(), base),
+            (
+                PathBuf::from("/x/c"),
+                "Salon".to_string(),
+                base + Duration::from_secs(30),
+            ),
+            (
+                PathBuf::from("/x/d"),
+                "Salon".to_string(),
+                base + Duration::from_secs(10),
+            ),
+        ];
+        let (gardes, laisses) = plus_recents_d_abord(trouves.clone(), 2);
+        let noms: Vec<_> = gardes.iter().map(|(c, _)| c.clone()).collect();
+        assert_eq!(noms, vec![PathBuf::from("/x/c"), PathBuf::from("/x/b")]);
+        assert_eq!(laisses, 2, "les deux plus anciens sont comptés, jamais tus");
+        assert_eq!(plus_recents_d_abord(trouves.clone(), 4).1, 0);
+        assert_eq!(plus_recents_d_abord(trouves, 10).0.len(), 4);
+        assert_eq!(plus_recents_d_abord(Vec::new(), 0), (Vec::new(), 0));
+    }
+
     /// Le blocage dit aussi la base ClamAV absente (réserve du moteur), pas seulement les sources attendues, et
     /// chaque phrase une fois.
     #[test]
@@ -1041,7 +1089,8 @@ mod tests {
             (telech.clone(), "Salon".to_string()),
             (bureau.clone(), "~/Bureau".to_string()),
         ];
-        let mut recents = recents_de(&dossiers, &HashSet::new());
+        let (mut recents, laisses) = recents_de(&dossiers, &HashSet::new());
+        assert_eq!(laisses, 0);
         recents.sort();
         let mut attendus = vec![
             (telech.join("sain.txt"), "Salon".to_string()),
@@ -1051,7 +1100,7 @@ mod tests {
         assert_eq!(recents, attendus);
         assert_eq!(
             recents_de(&dossiers, &HashSet::from([bureau.join("facture.bin")])),
-            vec![(telech.join("sain.txt"), "Salon".to_string())]
+            (vec![(telech.join("sain.txt"), "Salon".to_string())], 0)
         );
         let sources = crate::protection::moteur::Sources {
             yara: None,
