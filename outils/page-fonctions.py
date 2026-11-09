@@ -14,7 +14,7 @@ la page prête. Rien n'est envoyé d'ici.
   - commandes du guide : le programme les compte lui-même (« vanguard guide » sans terminal, hors ligne) ;
   - tests Linux et Wine : le résumé de la dernière vérification (outils/verifier.sh l'écrit dans
     ~/.cache/vanguard-dev/verifier-dernier.txt), ou --verifier SORTIE, ou les nombres donnés ;
-  - vérifications sur le vrai Windows : la dernière passe réussie de la VM (historique.txt) ;
+  - vérifications sur le vrai Windows : la dernière passe réussie de la VM (son menu ou la file d'essais) ;
   - captures : celles du README (assets/captures, déjà masquées par outils/captures.py), en WebP sans perte et
     intégrées à la page (data:) : une seule page, sans fichier à côté, pour GitHub Pages comme pour claude.ai. Il y
     faut Pillow (python-pillow).
@@ -180,12 +180,20 @@ def tests(args) -> tuple[str, str]:
 
 
 def verifications_vm() -> str:
-    historique = Path.home() / "Windows/VANGUARD-TEST/resultats/historique.txt"
-    nombres = re.findall(r"OK, tout est passé \((\d+) vérifications", historique.read_text(encoding="utf-8",
-                                                                                         errors="replace"))
-    if not nombres:
-        sys.exit("✖ aucune passe réussie de la VM dans historique.txt")
-    return nombres[-1]
+    # Deux historiques : les passes du menu de la VM, et celles de la file d'essais (vm-tester.sh), qui seule essaie
+    # le programme d'une version avant sa page ; la plus récente des passes réussies l'emporte, d'où qu'elle vienne.
+    racine = Path.home() / "Windows/VANGUARD-TEST"
+    passes: list[tuple[str, str]] = []
+    for fichier, motif in (
+        ("resultats/historique.txt", r"^(\d{4}-\d\d-\d\d \d\d:\d\d) .*OK, tout est passé \((\d+) vérifications"),
+        ("file-essais/historique.txt", r"^(\d{4}-\d\d-\d\d \d\d:\d\d) +\S+ +ok +test (\d+)/0/0/"),
+    ):
+        chemin = racine / fichier
+        if chemin.is_file():
+            passes += re.findall(motif, chemin.read_text(encoding="utf-8", errors="replace"), re.M)
+    if not passes:
+        sys.exit("✖ aucune passe réussie de la VM (resultats/ ni file-essais/historique.txt)")
+    return max(passes)[1]
 
 
 # Les captures de la page : nom dans assets/captures, et la partie gardée (gauche, haut, droite, bas), None pour toute.
