@@ -678,7 +678,12 @@ impl Surveillance {
     pub(crate) fn releve(&self) -> Releve {
         let c = &self.compteurs;
         let examines = lu(&c.examines);
-        let erreur = self.erreur.lock().ok().and_then(|e| e.clone());
+        let erreur = self
+            .erreur
+            .lock()
+            .ok()
+            .and_then(|e| e.clone())
+            .or_else(|| fil_arrete(&self.fils, &self.arret));
         Releve {
             actif: erreur.is_none(),
             dossiers: self.dossiers.clone(),
@@ -712,6 +717,20 @@ impl Surveillance {
             sources_kio: c.sources_chargees.load(Ordering::Relaxed).then(|| lu(&c.sources_kio)),
         }
     }
+}
+
+/// Un fil sorti sans que l'arrêt soit demandé (une panique, une erreur non prévue) : le temps réel ne tourne plus, et
+/// l'état le dit au lieu de compter des dossiers surveillés que plus rien ne lit.
+fn fil_arrete(fils: &[JoinHandle<()>], arret: &AtomicBool) -> Option<String> {
+    if arret.load(Ordering::SeqCst) {
+        return None;
+    }
+    let fini = fils.iter().find(|f| f.is_finished())?;
+    Some(match fini.thread().name() {
+        Some("vanguard-fichiers-lecteur") => tr!("lecteur des événements arrêté", "event reader stopped").to_string(),
+        Some("vanguard-fichiers-examen") => tr!("examinateur arrêté", "scanner stopped").to_string(),
+        _ => tr!("fil arrêté", "thread stopped").to_string(),
+    })
 }
 
 impl Drop for Surveillance {
@@ -1512,5 +1531,40 @@ mod tests {
         assert!(r.phrase().contains(tr!("sources non chargées", "sources not loaded")));
         drop(s);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Un fil mort sans arrêt demandé (ici, une panique) se voit dans l'état ; l'arrêt demandé, lui, n'est pas une
+    /// panne.
+    #[test]
+    fn fil_mort_dit_arrete() {
+        let mort = std::thread::Builder::new()
+            .name("vanguard-fichiers-examen".into())
+            .spawn(|| panic!("essai : l'examinateur meurt"))
+            .unwrap();
+        let (tenir, attendre) = mpsc::channel::<()>();
+        let vivant = std::thread::Builder::new()
+            .name("vanguard-fichiers-lecteur".into())
+            .spawn(move || {
+                let _ = attendre.recv();
+            })
+            .unwrap();
+        let fils = vec![vivant, mort];
+        let fin = Instant::now() + Duration::from_secs(10);
+        while !fils[1].is_finished() && Instant::now() < fin {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let arret = AtomicBool::new(false);
+        assert_eq!(
+            fil_arrete(&fils, &arret).as_deref(),
+            Some(tr!("examinateur arrêté", "scanner stopped"))
+        );
+        arret.store(true, Ordering::SeqCst);
+        assert_eq!(fil_arrete(&fils, &arret), None);
+        arret.store(false, Ordering::SeqCst);
+        assert_eq!(fil_arrete(&fils[..1], &arret), None);
+        drop(tenir);
+        for f in fils {
+            let _ = f.join();
+        }
     }
 }
