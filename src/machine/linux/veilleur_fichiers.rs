@@ -333,6 +333,17 @@ impl Releve {
         .fold(0u64, |a, b| a.saturating_add(*b))
     }
 
+    /// Ce que l'alerte horaire du veilleur compte : les fichiers non vérifiés, sauf ceux en cours de téléchargement
+    /// (examinés à leur renommage final, et un téléchargement long en ferait une alerte par heure) et ceux de la
+    /// pause (voulue, et déjà dite) ; plus les débordements du noyau, de taille inconnue.
+    pub(crate) fn a_signaler(&self) -> u64 {
+        self.non_verifies
+            .saturating_sub(self.en_cours)
+            .saturating_sub(self.en_pause)
+            .saturating_add(self.debordements)
+            .saturating_add(self.defauts)
+    }
+
     /// La phrase de l'état, pour le constat du veilleur et le menu.
     pub(crate) fn phrase(&self) -> String {
         if let Some(sans) = &self.sans {

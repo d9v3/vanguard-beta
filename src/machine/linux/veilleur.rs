@@ -1799,6 +1799,54 @@ impl Debit {
     }
 }
 
+/// Ce que le temps réel n'a pas pu vérifier, compté d'heure en heure : file pleine, débordement ou fichier trop gros
+/// ne laissent sinon qu'un compteur dans l'état, que personne ne lit. Une hausse au bout de l'heure devient une
+/// alerte du journal, au débit du veilleur.
+#[derive(Debug, Default)]
+struct NonVerifiesParHeure {
+    /// Le début de l'heure en cours et le compte d'alors ; `None` : pas encore de relevé.
+    depart: Option<(i64, u64)>,
+}
+
+impl NonVerifiesParHeure {
+    /// Le nombre de fichiers non vérifiés pendant l'heure qui vient de finir, s'il y en a. Un compte qui baisse
+    /// (temps réel redémarré, compteurs remis à zéro) repart de lui.
+    fn tour(&mut self, r: &fichiers::Releve, maintenant: i64) -> Option<u64> {
+        let n = r.a_signaler();
+        let Some((debut, base)) = self.depart else {
+            self.depart = Some((maintenant, n));
+            return None;
+        };
+        if n < base {
+            self.depart = Some((debut, n));
+            return None;
+        }
+        if maintenant.saturating_sub(debut) < 3600 {
+            return None;
+        }
+        self.depart = Some((maintenant, n));
+        Some(n.saturating_sub(base)).filter(|&d| d > 0)
+    }
+}
+
+/// Note l'alerte horaire des fichiers non vérifiés, au débit du veilleur (journal, sans notification).
+fn alerter_non_verifies(n: u64, debit: &mut Debit, etat: &mut Etat) {
+    let cle = format!("fichiers-non-verifies|{}", maintenant().div_euclid(3600));
+    let titre = tr!(
+        "Vanguard : temps réel, fichiers non vérifiés",
+        "Vanguard: real-time scanning, files not verified"
+    );
+    let texte = trf!(
+        "Temps réel : {n} fichier(s) non vérifié(s) depuis 1 h (file pleine, trop gros, illisibles ou débordement du noyau) : jamais comptés sains ; la passe horaire reprend ceux de la semaine, « vanguard audit » fait un bilan complet.",
+        "Real-time scanning: {n} file(s) not verified in the last hour (queue full, too large, unreadable or kernel overflow): never counted as clean; the hourly pass picks up this week's, “vanguard audit” runs a full check."
+    );
+    match debit.decider(&cle, false, maintenant()) {
+        Decision::Noter { .. } => tableau::noter_alerte(Genre::Veilleur, titre, &texte),
+        Decision::Repete => {}
+        Decision::Taire => etat.tus = etat.tus.saturating_add(1),
+    }
+}
+
 // ───────────────────────────── État, sur le disque ─────────────────────────────
 
 /// Ce que le service écrit toutes les minutes, et que le bilan et le menu relisent. Aucune ligne de commande n'y va.
@@ -2130,6 +2178,7 @@ fn servir() -> i32 {
     let mut surveillance = demarrer_fichiers(&mut etat);
     ecrire_etat(&etat);
     let (mut minute, mut quart) = (Instant::now(), Instant::now());
+    let mut par_heure = NonVerifiesParHeure::default();
     let sortie = loop {
         if ARRET.load(Ordering::SeqCst) {
             etat.raison_arret = Some(tr!("arrêt demandé", "stop requested").to_string());
@@ -2197,6 +2246,9 @@ fn servir() -> i32 {
             if let Some(s) = surveillance.as_ref() {
                 s.mettre_en_pause(etat.en_pause);
                 etat.fichiers = s.releve();
+                if let Some(n) = par_heure.tour(&etat.fichiers, maintenant()) {
+                    alerter_non_verifies(n, &mut debit, &mut etat);
+                }
             }
             etat.battement = maintenant();
             etat.non_haches = etat
@@ -4978,6 +5030,35 @@ mod tests {
             cle_du_debit("dossier temporaire|/tmp/x", t),
             "dossier temporaire|/tmp/x"
         );
+    }
+
+    #[test]
+    fn non_verifies_dits_chaque_heure() {
+        let releve = |non_verifies, en_cours, en_pause, debordements| fichiers::Releve {
+            non_verifies,
+            debordements,
+            en_pause,
+            en_cours,
+            ..fichiers::Releve::default()
+        };
+        // En cours de téléchargement et en pause : hors de l'alerte ; les débordements en sont.
+        assert_eq!(releve(10, 3, 2, 4).a_signaler(), 9);
+        let mut h = NonVerifiesParHeure::default();
+        let t0 = 1_800_000_000;
+        assert_eq!(h.tour(&releve(5, 0, 0, 0), t0), None, "premier relevé : la base");
+        assert_eq!(
+            h.tour(&releve(260, 0, 0, 0), t0 + 1800),
+            None,
+            "l'heure n'est pas finie"
+        );
+        assert_eq!(h.tour(&releve(300, 0, 0, 1), t0 + 3600), Some(296));
+        // Rien de nouveau dans l'heure : rien à dire.
+        assert_eq!(h.tour(&releve(300, 0, 0, 1), t0 + 7200), None);
+        // Seulement des fichiers en cours de téléchargement : pas d'alerte.
+        assert_eq!(h.tour(&releve(340, 40, 0, 1), t0 + 10_800), None);
+        // Compteurs remis à zéro (temps réel redémarré) : le compte repart de là, sans soustraction qui déborde.
+        assert_eq!(h.tour(&releve(2, 0, 0, 0), t0 + 11_000), None);
+        assert_eq!(h.tour(&releve(7, 0, 0, 0), t0 + 14_400), Some(5));
     }
 
     #[test]
