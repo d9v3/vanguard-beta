@@ -519,7 +519,7 @@ const RANGEES_MINIMUM: usize = 10;
 /// garde alors une rangée de contexte (le titre d'une section). Rend au plus `place` rangées.
 #[cfg(test)]
 fn fenetre(rangees: &[String], entete: usize, en_cours: usize, place: usize, haut: &mut usize) -> Vec<String> {
-    fenetre_indexee(rangees, entete, en_cours, place, haut).0
+    fenetre_indexee(rangees, entete, en_cours, place, haut, true).0
 }
 
 /// `fenetre`, et pour chaque rangée montrée celle d'où elle vient (`None` : une annonce de ce qui est caché) : la
@@ -530,6 +530,7 @@ fn fenetre_indexee(
     en_cours: usize,
     place: usize,
     haut: &mut usize,
+    marge: bool,
 ) -> (Vec<String>, Vec<Option<usize>>) {
     if rangees.len() <= place {
         *haut = 0;
@@ -541,7 +542,9 @@ fn fenetre_indexee(
     let (tete, liste) = rangees.split_at(entete.min(rangees.len()));
     let hauteur = place.saturating_sub(entete.saturating_add(2)).max(1);
     let ligne = en_cours.saturating_sub(entete).min(liste.len().saturating_sub(1));
-    let marge = usize::from(hauteur >= 5);
+    // Une rangée d'avance au clavier, pour voir venir la suite ; pas pour la souris (`marge` faux), dont la ligne visée
+    // est déjà à l'écran : la liste glisserait sous le pointeur, et le clic ouvrirait la voisine.
+    let marge = usize::from(marge && hauteur >= 5);
     // Borné d'abord : l'appelant demande la fin de la liste avec `usize::MAX`.
     let dernier_haut = liste.len().saturating_sub(hauteur);
     *haut = (*haut).min(dernier_haut);
@@ -885,6 +888,8 @@ struct EtatMenu {
     haut: usize,
     /// Ce qui est tapé au clavier : un raccourci validé par Entrée, comme avant, ou des mots à chercher.
     tape: String,
+    /// La ligne en cours vient de la souris : la liste ne défile pas pour elle (voir `fenetre_indexee`).
+    survol: bool,
 }
 
 /// Ce que la recherche en cours a trouvé (vide hors d'une recherche).
@@ -915,6 +920,7 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
         imprimer_lignes(lignes, colonne);
         return Some(par_ligne(&choix, &touches, invite));
     };
+    souris::nouvel_ecran();
 
     let mut etat = EtatMenu {
         en_cours: visibles
@@ -924,6 +930,7 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
         en_cours_trouve: 0,
         haut: 0,
         tape: String::new(),
+        survol: false,
     };
     let aides = aides_du_menu(gauche_revient, echap);
     // Les mots du menu, lus à la première recherche seulement : pour la fin de mot proposée, et pour corriger une faute.
@@ -1020,15 +1027,27 @@ fn geste_du_menu(
         match evenement(grille)? {
             // Windows signale aussi le relâchement de la touche : un seul événement par appui.
             Event::Key(k) if k.kind == KeyEventKind::Release => {}
-            Event::Key(k) => return Some(k),
+            Event::Key(k) => {
+                etat.survol = false;
+                return Some(k);
+            }
             Event::Mouse(m) => match souris::action(m, zones) {
-                Some(Action::Touche(k)) => return Some(k),
+                Some(Action::Touche(k)) => {
+                    etat.survol = false;
+                    return Some(k);
+                }
                 Some(Action::Viser(n)) => {
                     if viser(etat, n) {
+                        etat.survol = true;
+                        // Un raccourci tapé (« › 1 ») ne l'emporte plus sur la ligne visée : Entrée ouvre celle-ci.
+                        if !recherche {
+                            etat.tape.clear();
+                        }
                         return None;
                     }
                 }
                 Some(Action::Ouvrir(n)) => {
+                    etat.survol = true;
                     viser(etat, n);
                     if !recherche {
                         etat.tape.clear();
@@ -1187,8 +1206,10 @@ fn ecran_du_menu(
     {
         entete_menu = entete_menu.saturating_sub(1);
     }
-    // Première ou dernière ligne : la liste montre son début ou sa fin, titres compris.
-    if en_cours == 0 {
+    // Première ou dernière ligne : la liste montre son début ou sa fin, titres compris (au clavier : la souris ne fait
+    // pas défiler).
+    if etat.survol {
+    } else if en_cours == 0 {
         etat.haut = 0;
     } else if en_cours.saturating_add(1) == nombre_visibles {
         etat.haut = usize::MAX;
@@ -1220,7 +1241,14 @@ fn ecran_du_menu(
     if voulues > rangees.len() {
         rangees.resize(voulues.min(place.max(rangees.len())), String::new());
     }
-    let (montrees, sources) = fenetre_indexee(&rangees, entete_menu, rangee_en_cours, place, &mut etat.haut);
+    let (montrees, sources) = fenetre_indexee(
+        &rangees,
+        entete_menu,
+        rangee_en_cours,
+        place,
+        &mut etat.haut,
+        !etat.survol,
+    );
     zones.clear();
     for (rangee, source) in sources.into_iter().enumerate() {
         if let Some(n) = source.and_then(|s| choix_des_rangees.get(s).copied().flatten()) {
@@ -1436,6 +1464,7 @@ pub fn choisir_en_ligne(options: &[(&str, &str)], invite: &str) -> Option<String
         let r = demander(invite).trim().to_lowercase();
         return options.iter().any(|(t, _)| *t == r).then_some(r);
     };
+    souris::nouvel_ecran();
     let rien = tr!("Rien", "Nothing");
     let toutes: Vec<(&str, &str)> = options.iter().copied().chain(std::iter::once(("↵", rien))).collect();
     let colonne = (toutes.iter().map(|(t, _)| largeur_affichee(t)).max().unwrap_or(1)).saturating_add(4);
@@ -1634,6 +1663,8 @@ struct EtatListe {
     haut: usize,
     /// Pendant une recherche, ce qui est tapé : seules les lignes qui le contiennent restent à l'écran.
     recherche: Option<String>,
+    /// La ligne en cours vient de la souris : la liste ne défile pas pour elle (voir `fenetre_indexee`).
+    survol: bool,
 }
 
 fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
@@ -1663,6 +1694,7 @@ fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
     let Some(_mode) = clavier.then(ModeClavier::activer_avec_souris).flatten() else {
         return cocher_par_ligne(&liste, etats);
     };
+    souris::nouvel_ecran();
 
     let aides = Aides {
         menu: trf!(
@@ -1685,6 +1717,7 @@ fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
         en_cours: 0,
         haut: 0,
         recherche: None,
+        survol: false,
     };
     let mut zones: Vec<Zone> = Vec::new();
     let mut sortie = std::io::stdout();
@@ -1735,16 +1768,24 @@ fn geste_de_la_liste(grille: Option<(u16, u16)>, zones: &[Zone], etat: &mut Etat
     loop {
         match evenement(grille)? {
             Event::Key(k) if k.kind == KeyEventKind::Release => {}
-            Event::Key(k) => return Some(k),
+            Event::Key(k) => {
+                etat.survol = false;
+                return Some(k);
+            }
             Event::Mouse(m) => match souris::action(m, zones) {
                 None => {}
-                Some(Action::Touche(k)) => return Some(k),
+                Some(Action::Touche(k)) => {
+                    etat.survol = false;
+                    return Some(k);
+                }
                 Some(Action::Viser(i)) => {
                     if std::mem::replace(&mut etat.en_cours, i) != i {
+                        etat.survol = true;
                         return None;
                     }
                 }
                 Some(Action::Ouvrir(i)) => {
+                    etat.survol = true;
                     etat.en_cours = i;
                     return Some(souris::touche(KeyCode::Char(' ')));
                 }
@@ -1853,7 +1894,8 @@ fn ecran_de_la_liste(
         ));
     }
     let rang_ecran = rang.unwrap_or(0);
-    if rang_ecran == 0 {
+    if etat.survol {
+    } else if rang_ecran == 0 {
         etat.haut = 0;
     } else if rang_ecran.saturating_add(1) == montrees.len() {
         etat.haut = usize::MAX;
@@ -1877,6 +1919,7 @@ fn ecran_de_la_liste(
         entete.saturating_add(rang_ecran),
         place,
         &mut etat.haut,
+        !etat.survol,
     );
     zones.clear();
     for (rangee, source) in sources.into_iter().enumerate() {
@@ -2122,13 +2165,32 @@ mod tests {
         assert!(largeur_affichee(&rendu_trouve(&c[0], 7, true)) <= LARGEUR);
     }
 
+    /// La souris sur la dernière (ou la première) rangée montrée ne fait pas défiler : la ligne reste sous le pointeur.
+    /// Le clavier, lui, garde une rangée d'avance.
+    #[test]
+    fn la_souris_ne_fait_pas_defiler() {
+        let rangees: Vec<String> = (0..40).map(|i| format!("r{i}")).collect();
+        let mut haut = 10;
+        let (_, sources) = fenetre_indexee(&rangees, 3, 13, 20, &mut haut, true);
+        let derniere = sources.iter().rev().flatten().next().copied().unwrap_or_default();
+        let premiere = sources.iter().skip(4).flatten().next().copied().unwrap_or_default();
+        for visee in [derniere, premiere] {
+            let mut h = haut;
+            let (_, apres) = fenetre_indexee(&rangees, 3, visee, 20, &mut h, false);
+            assert_eq!((h, &apres), (haut, &sources), "souris sur r{visee}");
+        }
+        let mut h = haut;
+        fenetre_indexee(&rangees, 3, derniere, 20, &mut h, true);
+        assert_eq!(h, haut.saturating_add(1), "le clavier garde une rangée d'avance");
+    }
+
     /// La souris vise la bonne ligne : chaque rangée montrée dit d'où elle vient, les annonces de rien.
     #[test]
     fn la_fenetre_dit_d_ou_vient_chaque_rangee() {
         let rangees: Vec<String> = (0..40).map(|i| format!("r{i}")).collect();
         for (en_cours, place) in [(0, 20), (17, 20), (39, 20), (25, 12), (3, 50)] {
             let mut haut = 0;
-            let (vues, sources) = fenetre_indexee(&rangees, 3, en_cours, place, &mut haut);
+            let (vues, sources) = fenetre_indexee(&rangees, 3, en_cours, place, &mut haut, true);
             assert_eq!(vues.len(), sources.len());
             for (vue, source) in vues.iter().zip(&sources) {
                 match source {

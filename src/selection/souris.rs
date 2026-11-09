@@ -6,9 +6,11 @@
 //! montrer. Pendant qu'un menu attend, le terminal ne sélectionne plus le texte d'un simple glisser : Maj (Shift) et
 //! glisser le fait toujours. Hors des menus (la sortie d'une commande), la souris est rendue au terminal.
 
+use std::cell::Cell;
 use std::io::Write as _;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
@@ -38,6 +40,30 @@ pub(crate) fn rendre() {
         let mut sortie = std::io::stdout();
         let _ = crossterm::execute!(sortie, crossterm::event::DisableMouseCapture);
         let _ = sortie.flush();
+    }
+}
+
+/// Le second appui d'un double-clic, s'il tombe sur l'écran que le premier vient d'ouvrir, est ignoré : sans quoi il
+/// ouvrirait la ligne du sous-menu à la même place (« supprimer pour de bon », au pire), ou reviendrait deux fois en
+/// arrière. Un double-clic se fait en moins d'une demi-seconde, une lecture de l'écran prend plus.
+const DOUBLE_CLIC: Duration = Duration::from_millis(500);
+
+thread_local! {
+    /// Le dernier appui pris en compte, et l'ouverture de l'écran en cours.
+    static APPUIS: Cell<(Option<Instant>, Option<Instant>)> = const { Cell::new((None, None)) };
+}
+
+/// Un nouvel écran attend (menu, liste, question) : un appui qui suit de trop près celui d'avant sera ignoré.
+pub(crate) fn nouvel_ecran() {
+    APPUIS.with(|a| a.set((a.get().0, Some(Instant::now()))));
+}
+
+/// Un appui `maintenant` vient-il trop tôt : l'écran s'est ouvert après le dernier appui, et il y a moins de
+/// `DOUBLE_CLIC` ? Dans le même écran, des clics rapprochés comptent tous (cocher vite plusieurs cases).
+fn trop_tot(maintenant: Instant, (dernier, ouverture): (Option<Instant>, Option<Instant>)) -> bool {
+    match (dernier, ouverture) {
+        (Some(dernier), Some(ouverture)) => ouverture >= dernier && maintenant.duration_since(dernier) < DOUBLE_CLIC,
+        _ => false,
     }
 }
 
@@ -95,10 +121,26 @@ fn sous(m: MouseEvent, zones: &[Zone]) -> Option<Cible> {
         .map(|z| z.cible)
 }
 
-/// L'action d'un geste sur un écran fait de `zones`, ou `None` : rien à faire, ni à redessiner. Le clic agit à
-/// l'appui ; le glisser, bouton tenu, vise comme le survol. La roulette est ↑ ou ↓, le clic droit ← (revenir : au
-/// menu principal, ← ne quitte pas Vanguard).
+/// L'action d'un geste sur un écran fait de `zones`, ou `None` : rien à faire, ni à redessiner. Un appui qui suit de
+/// trop près celui qui a ouvert l'écran (double-clic) est ignoré.
 pub(crate) fn action(m: MouseEvent, zones: &[Zone]) -> Option<Action> {
+    if !matches!(m.kind, MouseEventKind::Down(_)) {
+        return geste(m, zones);
+    }
+    let maintenant = Instant::now();
+    APPUIS.with(|a| {
+        let (dernier, ouverture) = a.get();
+        if trop_tot(maintenant, (dernier, ouverture)) {
+            return None;
+        }
+        a.set((Some(maintenant), ouverture));
+        geste(m, zones)
+    })
+}
+
+/// Ce que devient un geste, sans tenir compte du temps. Le clic agit à l'appui ; le glisser, bouton tenu, vise comme
+/// le survol. La roulette est ↑ ou ↓, le clic droit ← (revenir : au menu principal, ← ne quitte pas Vanguard).
+fn geste(m: MouseEvent, zones: &[Zone]) -> Option<Action> {
     match m.kind {
         MouseEventKind::ScrollUp => Some(Action::Touche(touche(KeyCode::Up))),
         MouseEventKind::ScrollDown => Some(Action::Touche(touche(KeyCode::Down))),
@@ -275,32 +317,51 @@ mod tests {
             },
         ];
         let gauche = MouseEventKind::Down(MouseButton::Left);
-        assert_eq!(action(souris(gauche, 5, 3), &zones), Some(Action::Ouvrir(0)));
+        assert_eq!(geste(souris(gauche, 5, 3), &zones), Some(Action::Ouvrir(0)));
         assert_eq!(
-            action(souris(MouseEventKind::Moved, 5, 3), &zones),
+            geste(souris(MouseEventKind::Moved, 5, 3), &zones),
             Some(Action::Viser(0))
         );
         assert_eq!(
-            action(souris(gauche, 12, 9), &zones),
+            geste(souris(gauche, 12, 9), &zones),
             Some(Action::Touche(touche(KeyCode::Enter)))
         );
         // Le survol d'un bouton ne fait rien ; un clic à côté de tout non plus.
-        assert_eq!(action(souris(MouseEventKind::Moved, 12, 9), &zones), None);
-        assert_eq!(action(souris(gauche, 5, 4), &zones), None);
+        assert_eq!(geste(souris(MouseEventKind::Moved, 12, 9), &zones), None);
+        assert_eq!(geste(souris(gauche, 5, 4), &zones), None);
         // Le panneau d'aperçu, à droite du menu, n'est pas la ligne.
         let loin = u16::try_from(crate::ui::LARGEUR + 3).unwrap();
-        assert_eq!(action(souris(gauche, loin, 3), &zones), None);
+        assert_eq!(geste(souris(gauche, loin, 3), &zones), None);
         assert_eq!(
-            action(souris(MouseEventKind::ScrollDown, 0, 0), &[]),
+            geste(souris(MouseEventKind::ScrollDown, 0, 0), &[]),
             Some(Action::Touche(touche(KeyCode::Down)))
         );
         assert_eq!(
-            action(souris(MouseEventKind::Down(MouseButton::Right), 0, 0), &[]),
+            geste(souris(MouseEventKind::Down(MouseButton::Right), 0, 0), &[]),
             Some(Action::Touche(touche(KeyCode::Left)))
         );
+        assert_eq!(geste(souris(MouseEventKind::Up(MouseButton::Left), 5, 3), &zones), None);
+    }
+
+    /// Le second appui d'un double-clic ne passe pas dans l'écran que le premier a ouvert ; il passe dans le même
+    /// écran, et une fois la demi-seconde écoulée.
+    #[test]
+    fn le_double_clic_ne_traverse_pas() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        assert!(!trop_tot(ms(100), (None, Some(t0))));
+        assert!(trop_tot(ms(200), (Some(ms(0)), Some(ms(50)))));
+        assert!(!trop_tot(ms(600), (Some(ms(0)), Some(ms(50)))));
+        assert!(!trop_tot(ms(200), (Some(ms(100)), Some(ms(50)))));
+        // Pour de vrai : le clic ouvre, un écran neuf s'ouvre, le second clic est ignoré.
+        let zones = [Zone::ligne(3, 0)];
+        let gauche = MouseEventKind::Down(MouseButton::Left);
+        assert_eq!(action(souris(gauche, 5, 3), &zones), Some(Action::Ouvrir(0)));
+        nouvel_ecran();
+        assert_eq!(action(souris(gauche, 5, 3), &zones), None);
         assert_eq!(
-            action(souris(MouseEventKind::Up(MouseButton::Left), 5, 3), &zones),
-            None
+            action(souris(MouseEventKind::Moved, 5, 3), &zones),
+            Some(Action::Viser(0))
         );
     }
 }
