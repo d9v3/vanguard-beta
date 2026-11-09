@@ -132,7 +132,7 @@ impl Menace {
     }
 
     /// La clé que pose la sortie de quarantaine de ce contenu (`normales::cle_remise`), seulement pour la menace d'un
-    /// fichier (clé « fichier:<chemin> ») : jamais pour un programme qui tourne ni pour un comportement.
+    /// fichier (clé « `fichier:<chemin>` ») : jamais pour un programme qui tourne ni pour un comportement.
     pub(crate) fn cle_remise_avec(&self, empreinte: &[u8; 32]) -> Option<String> {
         let f = self.fichier_du_programme()?;
         (self.cle == format!("fichier:{}", f.display())).then(|| crate::protection::normales::cle_remise(empreinte, f))
@@ -1624,16 +1624,26 @@ mod tests {
     /// un fichier connu de MalwareBazaar) ; le douteux déclaré normal est retiré et compté.
     #[test]
     fn une_menace_certaine_n_est_jamais_tue() {
+        let dossier = crate::essais::Jetable::nouveau("certaine-jamais-tue");
+        let outil = dossier.join("outil");
+        std::fs::write(&outil, "MZ essai").unwrap();
+        let e = empreintes::sha256(&outil).unwrap();
+        let chemin = outil.to_string_lossy();
         let mut menaces = vec![
-            menace_de(true, Some("/home/alice/.cache/x/outil"), None, "r"),
-            menace_de(false, Some("/home/alice/.cache/x/outil"), None, "r"),
+            menace_de(true, Some(&chemin), Some(&chemin), "r"),
+            menace_de(false, Some(&chemin), Some(&chemin), "r"),
         ];
         let tues = retirer_normales(&mut menaces, |_| true, |_| false);
         assert_eq!(tues, 1);
         assert_eq!(menaces.len(), 1);
         assert!(menaces[0].certaine);
-        // Seule la confiance accordée à son fichier (P5) tait un certain.
-        assert_eq!(retirer_normales(&mut menaces, |_| true, |_| true), 1);
+        // Seule la confiance accordée à son fichier (P5), par l'empreinte de son contenu relu, tait un certain : pas
+        // celle d'un autre contenu, ni celle d'un fichier qui ne se lit plus.
+        assert_eq!(retirer_normales(&mut menaces, |_| true, |x| *x != e), 0);
+        let absent = Some("/home/alice/.cache/x/absent");
+        let mut perdu = vec![menace_de(true, absent, absent, "r")];
+        assert_eq!(retirer_normales(&mut perdu, |_| true, |_| true), 0);
+        assert_eq!(retirer_normales(&mut menaces, |_| true, |x| *x == e), 1);
         assert!(menaces.is_empty());
     }
 
