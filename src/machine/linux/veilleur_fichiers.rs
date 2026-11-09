@@ -370,6 +370,23 @@ impl Releve {
             self.menaces,
             self.isoles
         );
+        if self.examines > 0 {
+            t.push(' ');
+            t.push_str(&trf!(
+                "De l'arrivée au verdict : {} ms en moyenne, {} ms au plus (dont l'attente qu'un fichier cesse de changer).",
+                "From arrival to verdict: {} ms on average, {} ms at most (including the wait for a file to stop changing).",
+                self.latence_moyenne_ms,
+                self.latence_max_ms
+            ));
+        }
+        if let Some(kio) = self.sources_kio {
+            t.push(' ');
+            t.push_str(&trf!(
+                "Signatures en mémoire : {} Mio.",
+                "Signatures in memory: {} MiB.",
+                kio.div_ceil(1024)
+            ));
+        }
         if self.non_verifies > 0 {
             t.push(' ');
             t.push_str(&trf!(
@@ -1323,6 +1340,16 @@ mod tests {
         };
         let p = r.phrase();
         assert!(p.contains("~/Salon"), "{p}");
+        // La latence et la taille des sources : montrées, pas seulement écrites dans l'état.
+        r.latence_moyenne_ms = 1001;
+        r.latence_max_ms = 1500;
+        r.sources_kio = Some(30_860);
+        let p = r.phrase();
+        assert!(p.contains("1001 ms") && p.contains("1500 ms"), "{p}");
+        assert!(
+            p.contains(tr!("Signatures en mémoire : 31 Mio", "Signatures in memory: 31 MiB")),
+            "{p}"
+        );
         assert!(!p.contains(tr!("non vérifié", "not verified")), "{p}");
         r.non_verifies = 2;
         r.debordements = 1;

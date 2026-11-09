@@ -76,6 +76,9 @@ pub(crate) const UNITE: &str = "vanguard-veilleur.service";
 /// les garde si le veilleur reste alors que le dossier part.
 pub(crate) const ETAT: &str = crate::sceau::VEILLEUR_ETAT;
 pub(crate) const VOULU: &str = "veilleur-voulu";
+/// La note que « on » a créé le dossier des unités de l'utilisateur (~/.config/systemd/user) : « off » ne retire que
+/// celui-là, et seulement vide. Un dossier qui existait avant reste, même vide : tout s'annule exactement.
+const DOSSIER_UNITES_CREE: &str = "veilleur-dossier-unites-cree";
 /// La note du choix de surveiller aussi les dossiers personnels contre les rançongiciels (accord séparé, dans le même
 /// « on » que le veilleur) : présent = la veille anti-rançongiciel est voulue.
 pub(crate) const RANCON_VOULU: &str = "rancongiciel-voulu";
@@ -2291,10 +2294,17 @@ fn servir() -> i32 {
 /// pas). Les sources du moteur sont celles du temps réel (`moteur::sources_du_temps_reel` : le veilleur tient en
 /// 128 Mo, sans la base ClamAV ni la liste complète de MalwareBazaar), chargées dans le fil de l'examinateur.
 fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
-    match fichiers::Surveillance::demarrer(
-        fichiers::a_surveiller(),
-        Box::new(crate::protection::moteur::sources_du_temps_reel),
-    ) {
+    let par_systemd = std::env::var_os("INVOCATION_ID").is_some();
+    let unite = par_systemd
+        .then(|| std::fs::read_to_string(fichier_unite()).ok())
+        .flatten();
+    let demarre = fanotify_permis(par_systemd, unite.as_deref()).and_then(|()| {
+        fichiers::Surveillance::demarrer(
+            fichiers::a_surveiller(),
+            Box::new(crate::protection::moteur::sources_du_temps_reel),
+        )
+    });
+    match demarre {
         Ok(s) => {
             s.mettre_en_pause(etat.en_pause);
             etat.fichiers = s.releve();
@@ -2309,6 +2319,26 @@ fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
             None
         }
     }
+}
+
+/// Le temps réel des fichiers peut-il ouvrir fanotify ? Lancé par systemd (`par_systemd`), le veilleur tourne sous
+/// le filtre d'appels système de son unité : seulement si l'unité posée est la nôtre et permet fanotify
+/// (`FILTRE_APPELS`). Une unité d'une version d'avant (@system-service seul) ferait tuer tout le veilleur au premier
+/// appel (SIGSYS), et le temps réel des fichiers n'a pas eu d'accord avec elle : il attend « on », le reste continue.
+/// Lancé autrement (à la main, essai d'allumage), aucun filtre de l'unité ne s'applique.
+fn fanotify_permis(par_systemd: bool, unite: Option<&str>) -> Result<(), fichiers::Refus> {
+    let ligne = format!("SystemCallFilter={}", super::fanotify::FILTRE_APPELS);
+    let permis = unite.is_some_and(|u| notre_unite(u) && u.lines().any(|l| l.trim() == ligne));
+    if !par_systemd || permis {
+        return Ok(());
+    }
+    Err(fichiers::Refus(
+        tr!(
+            "l'unité posée vient d'une version d'avant et ne permet pas fanotify ; « vanguard veilleur on » la remet à jour, un seul accord",
+            "the unit in place comes from an earlier version and does not allow fanotify; “vanguard watcher on” updates it, one consent"
+        )
+        .to_string(),
+    ))
 }
 
 /// La clé du débit d'une menace du temps réel : le même contenu au même endroit n'est dit qu'une fois en 6 heures.
@@ -2656,17 +2686,23 @@ fn unite_dans(exe: &str, anglais: bool) -> String {
     // fois puis toutes ensemble). Sans Nice : plus le veilleur est servi tard, plus un programme bref part avant
     // d'être lu.
     let durcissement = "Restart=on-failure\nRestartSec=30s\n";
-    let limites = "RestartPreventExitStatus=77\nCPUQuota=20%\nMemoryMax=128M\nTasksMax=16\nUMask=0077\n\
-                   NoNewPrivileges=yes\nLockPersonality=yes\nMemoryDenyWriteExecute=yes\nRestrictRealtime=yes\n\
-                   RestrictSUIDSGID=yes\nRestrictNamespaces=yes\nSystemCallArchitectures=native\n\
-                   SystemCallFilter=@system-service\nRestrictAddressFamilies=AF_UNIX AF_NETLINK\n";
+    // Le filtre d'appels système permet fanotify (le temps réel des fichiers) : sans lui, le noyau tue le veilleur
+    // entier au premier appel (SIGSYS). Pas de SystemCallErrorNumber : un appel oublié du filtre doit se voir (arrêt
+    // et journal), pas échouer en silence.
+    let limites = format!(
+        "RestartPreventExitStatus=77\nCPUQuota=20%\nMemoryMax=128M\nTasksMax=16\nUMask=0077\n\
+         NoNewPrivileges=yes\nLockPersonality=yes\nMemoryDenyWriteExecute=yes\nRestrictRealtime=yes\n\
+         RestrictSUIDSGID=yes\nRestrictNamespaces=yes\nSystemCallArchitectures=native\n\
+         SystemCallFilter={}\nRestrictAddressFamilies=AF_UNIX AF_NETLINK\n",
+        super::fanotify::FILTRE_APPELS
+    );
     if anglais {
         format!(
-            "{MARQUE_EN};\n# “vanguard watcher off” removes it.\n[Unit]\nDescription=Vanguard: watcher (stops known malware, with consent)\nStartLimitIntervalSec=1h\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart={exe} veilleur --servir\n# One tokio worker: one per core would exceed TasksMax.\nEnvironment=TOKIO_WORKER_THREADS=1\n{durcissement}# 77: kernel too old or kernel refusal; a restart changes nothing.\n{limites}# No ProtectSystem, ProtectHome, PrivateTmp, ReadOnlyPaths,\n# ReadWritePaths, ProtectKernel*, ProtectControlGroups, PrivateDevices\n# or PrivateUsers: in a user unit, they create a user namespace where\n# the kernel ignores the connector subscription (measured: no ack).\n# No Nice: the later the watcher runs, the more a brief program is gone\n# before it is read.\n\n[Install]\nWantedBy=default.target\n"
+            "{MARQUE_EN};\n# “vanguard watcher off” removes it.\n[Unit]\nDescription=Vanguard: watcher (stops known malware, with consent)\nStartLimitIntervalSec=1h\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart={exe} veilleur --servir\n# One tokio worker: one per core would exceed TasksMax.\nEnvironment=TOKIO_WORKER_THREADS=1\n# The language of this unit, for its state and notifications.\nEnvironment=VANGUARD_LANG=en\n{durcissement}# 77: kernel too old or kernel refusal; a restart changes nothing.\n{limites}# No ProtectSystem, ProtectHome, PrivateTmp, ReadOnlyPaths,\n# ReadWritePaths, ProtectKernel*, ProtectControlGroups, PrivateDevices\n# or PrivateUsers: in a user unit, they create a user namespace where\n# the kernel ignores the connector subscription (measured: no ack).\n# No Nice: the later the watcher runs, the more a brief program is gone\n# before it is read.\n\n[Install]\nWantedBy=default.target\n"
         )
     } else {
         format!(
-            "{MARQUE_FR} ;\n# « vanguard veilleur off » le retire.\n[Unit]\nDescription=Vanguard : veilleur (arrête le malware connu, sur accord)\nStartLimitIntervalSec=1h\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart={exe} veilleur --servir\n# Un seul fil de travail pour tokio : un par cœur dépasserait TasksMax.\nEnvironment=TOKIO_WORKER_THREADS=1\n{durcissement}# 77 : noyau trop ancien ou refus du noyau ; relancer n'y change rien.\n{limites}# Ni ProtectSystem, ProtectHome, PrivateTmp, ReadOnlyPaths,\n# ReadWritePaths, ProtectKernel*, ProtectControlGroups, PrivateDevices\n# ni PrivateUsers : dans une unité de l'utilisateur, ils créent un\n# espace de noms d'utilisateur où le noyau ignore l'abonnement au\n# connecteur (mesuré : plus d'accusé).\n# Pas de Nice : plus le veilleur est servi tard, plus un programme bref\n# part avant d'être lu.\n\n[Install]\nWantedBy=default.target\n"
+            "{MARQUE_FR} ;\n# « vanguard veilleur off » le retire.\n[Unit]\nDescription=Vanguard : veilleur (arrête le malware connu, sur accord)\nStartLimitIntervalSec=1h\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart={exe} veilleur --servir\n# Un seul fil de travail pour tokio : un par cœur dépasserait TasksMax.\nEnvironment=TOKIO_WORKER_THREADS=1\n# La langue de cette unité, pour son état et ses notifications.\nEnvironment=VANGUARD_LANG=fr\n{durcissement}# 77 : noyau trop ancien ou refus du noyau ; relancer n'y change rien.\n{limites}# Ni ProtectSystem, ProtectHome, PrivateTmp, ReadOnlyPaths,\n# ReadWritePaths, ProtectKernel*, ProtectControlGroups, PrivateDevices\n# ni PrivateUsers : dans une unité de l'utilisateur, ils créent un\n# espace de noms d'utilisateur où le noyau ignore l'abonnement au\n# connecteur (mesuré : plus d'accusé).\n# Pas de Nice : plus le veilleur est servi tard, plus un programme bref\n# part avant d'être lu.\n\n[Install]\nWantedBy=default.target\n"
         )
     }
 }
@@ -2806,8 +2842,12 @@ fn allumer() {
     // Déjà en marche (un veilleur d'avant une mise à jour) : « enable --now » ne le relance pas, et l'ancien
     // programme resterait en mémoire.
     let deja_active = crate::machine::linux::natif::unite_activee(UNITE, true) == Some(true);
+    let dossier_absent = chemin.parent().is_some_and(|d| std::fs::symlink_metadata(d).is_err());
     let ecrit =
         chemin.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(&chemin, &texte).is_ok();
+    if ecrit && dossier_absent {
+        marquer(&crate::socle::dossier_local().join(DOSSIER_UNITES_CREE));
+    }
     let reussi = ecrit
         && super::dbus::actions::utilisateur(super::dbus::actions::Geste::Recharger, "")
         && super::dbus::actions::utilisateur(super::dbus::actions::Geste::Activer { maintenant: true }, UNITE)
@@ -2965,6 +3005,11 @@ pub(crate) fn retirer_sans_question(chemin: &std::path::Path, arreter_l_etranger
     if a_nous {
         commandes.push(format!("{} {}", tr!("retirer", "remove"), chemin.display()));
         let _ = std::fs::remove_file(chemin);
+        if let Some(d) = chemin.parent()
+            && retirer_dossier_cree(d, &crate::socle::dossier_local().join(DOSSIER_UNITES_CREE))
+        {
+            commandes.push(format!("{} {}", tr!("retirer", "remove"), d.display()));
+        }
     }
     commandes.push("systemctl --user daemon-reload".to_string());
     let _ = super::dbus::actions::utilisateur(super::dbus::actions::Geste::Recharger, "");
@@ -3003,6 +3048,20 @@ pub(crate) fn retirer_sans_question(chemin: &std::path::Path, arreter_l_etranger
     oublier_le_choix(&issue, &crate::socle::dossier_local());
     crate::changements::noter(&[commandes], &[issue == Retire::Fait]);
     issue
+}
+
+/// Retire le dossier des unités `dossier` si « on » l'a créé (la note `note`) et qu'il est vide ; rend vrai s'il est
+/// retiré. `remove_dir` ne retire qu'un dossier vide et jamais à travers un lien : rien d'autre ne part. La note part
+/// avec lui, ou quand le dossier n'existe plus ; gardée tant qu'il reste quelque chose dedans (une autre unité).
+fn retirer_dossier_cree(dossier: &std::path::Path, note: &std::path::Path) -> bool {
+    if !note.is_file() {
+        return false;
+    }
+    let retire = std::fs::remove_dir(dossier).is_ok();
+    if retire || std::fs::symlink_metadata(dossier).is_err() {
+        let _ = std::fs::remove_file(note);
+    }
+    retire
 }
 
 /// Efface la note du choix et l'état du dossier `dossier`, seulement si rien ne reste. Un veilleur encore en marche
@@ -5558,6 +5617,78 @@ mod tests {
             }
         }
         assert_ne!(unite_dans("/x", false), unite_dans("/x", true));
+        // Le service parle la langue de l'unité montrée à « on » : son état et ses notifications ne mêlent pas l'autre.
+        assert!(
+            unite_dans("/x", false)
+                .lines()
+                .any(|l| l == "Environment=VANGUARD_LANG=fr")
+        );
+        assert!(
+            unite_dans("/x", true)
+                .lines()
+                .any(|l| l == "Environment=VANGUARD_LANG=en")
+        );
+    }
+
+    /// QEMU (AV5) : sous une unité d'une version d'avant (@system-service seul), fanotify tuerait tout le veilleur ;
+    /// le temps réel des fichiers attend donc l'unité qui le permet, et seulement quand systemd l'a lancé.
+    #[test]
+    fn fanotify_seulement_sous_une_unite_qui_le_permet() {
+        for anglais in [false, true] {
+            let neuve = unite_dans("/x", anglais);
+            assert_eq!(fanotify_permis(true, Some(&neuve)), Ok(()));
+            let ancienne = neuve.replace(
+                &format!("SystemCallFilter={}", super::super::fanotify::FILTRE_APPELS),
+                "SystemCallFilter=@system-service",
+            );
+            assert_ne!(ancienne, neuve);
+            let refus = fanotify_permis(true, Some(&ancienne)).unwrap_err();
+            assert!(
+                refus.0.contains(tr!("version d'avant", "earlier version")),
+                "{}",
+                refus.0
+            );
+            // Hors de systemd (à la main, essai d'allumage), aucun filtre de l'unité ne s'applique.
+            assert_eq!(fanotify_permis(false, Some(&ancienne)), Ok(()));
+        }
+        // Unité illisible, ou étrangère qui imite la ligne : refusé.
+        assert!(fanotify_permis(true, None).is_err());
+        let etrangere = format!(
+            "[Service]\nSystemCallFilter={}\n",
+            super::super::fanotify::FILTRE_APPELS
+        );
+        assert!(fanotify_permis(true, Some(&etrangere)).is_err());
+        assert_eq!(fanotify_permis(false, None), Ok(()));
+    }
+
+    /// QEMU (AV5) : « off » laissait vide le dossier des unités que « on » avait créé. Seul celui-là part, vide ; un
+    /// dossier d'avant, plein, ou un lien vers un dossier reste.
+    #[test]
+    fn off_retire_seulement_le_dossier_cree_et_vide() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let note = d.join("note");
+        let unites = d.join("user");
+        // Pas de note : un dossier qui existait avant reste, même vide.
+        std::fs::create_dir(&unites).unwrap();
+        assert!(!retirer_dossier_cree(&unites, &note));
+        assert!(unites.is_dir());
+        // Noté, mais une autre unité dedans : gardé avec sa note.
+        std::fs::write(&note, b"").unwrap();
+        std::fs::write(unites.join("autre.service"), b"").unwrap();
+        assert!(!retirer_dossier_cree(&unites, &note));
+        assert!(unites.join("autre.service").is_file() && note.is_file());
+        // Noté et vide : retiré, la note aussi.
+        std::fs::remove_file(unites.join("autre.service")).unwrap();
+        assert!(retirer_dossier_cree(&unites, &note));
+        assert!(!unites.exists() && !note.exists());
+        // Un lien vers un dossier vide : ni le lien ni le dossier ne partent.
+        let ailleurs = d.join("ailleurs");
+        std::fs::create_dir(&ailleurs).unwrap();
+        std::os::unix::fs::symlink(&ailleurs, &unites).unwrap();
+        std::fs::write(&note, b"").unwrap();
+        assert!(!retirer_dossier_cree(&unites, &note));
+        assert!(ailleurs.is_dir() && std::fs::symlink_metadata(&unites).is_ok());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

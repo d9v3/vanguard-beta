@@ -20,6 +20,12 @@
 
 pub(crate) mod lecture;
 
+/// Le filtre d'appels système (`SystemCallFilter=`) des unités qui ouvrent fanotify : la garde et le veilleur.
+/// `fanotify_init` et `fanotify_mark` sont dans le groupe @privileged de systemd, hors de @system-service : sans eux,
+/// le noyau tue le service à son premier appel (SIGSYS), avec tout ce qu'il protège d'autre. Un seul texte pour les
+/// deux unités, et un essai (`le_filtre_permet_ce_que_le_code_appelle`) qui le compare aux appels du code.
+pub(crate) const FILTRE_APPELS: &str = "@system-service fanotify_init fanotify_mark";
+
 use std::ffi::CString;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
@@ -443,5 +449,99 @@ mod tests {
     fn un_descripteur_negatif_n_est_pas_pris() {
         assert!(prendre(-1).is_none());
         assert!(prendre(-2).is_none());
+    }
+
+    /// Les appels faits par libc hors de @system-service, et pourquoi ils ne sont pas dans `FILTRE_APPELS` : faits
+    /// seulement par le programme lancé à la main, jamais par un service filtré (garde, veilleur).
+    const HORS_DES_SERVICES: &[(&str, &str)] = &[("adjtimex", "machine/heure.rs : le bilan, lancé à la main")];
+
+    /// Un groupe d'appels de systemd, déployé (les groupes qu'il nomme compris) ; `None` sans systemd-analyze.
+    fn groupe(nom: &str, vus: &mut std::collections::HashSet<String>) -> Option<std::collections::HashSet<String>> {
+        let r = crate::commande::lancer(
+            std::process::Command::new("systemd-analyze").args(["syscall-filter", nom]),
+            20,
+        )?;
+        if r.code != Some(0) {
+            return None;
+        }
+        let mut appels = std::collections::HashSet::new();
+        for mot in r.sortie.lines().skip(1).map(str::trim) {
+            if mot.is_empty() || mot.starts_with('#') {
+                continue;
+            }
+            if mot.starts_with('@') {
+                if vus.insert(mot.to_string()) {
+                    appels.extend(groupe(mot, vus)?);
+                }
+            } else {
+                appels.insert(mot.to_string());
+            }
+        }
+        Some(appels)
+    }
+
+    /// Les noms appelés par `libc::nom(` et `libc::SYS_nom` dans les sources de `dossier`.
+    fn appels_du_code(dossier: &Path, noms: &mut std::collections::BTreeSet<String>) {
+        for entree in std::fs::read_dir(dossier).unwrap().map(Result::unwrap) {
+            let chemin = entree.path();
+            if chemin.is_dir() {
+                appels_du_code(&chemin, noms);
+            } else if chemin.extension().is_some_and(|e| e == "rs") {
+                let texte = std::fs::read_to_string(&chemin).unwrap();
+                for (i, _) in texte.match_indices("libc::") {
+                    let reste = &texte[i..]["libc::".len()..];
+                    let fin = reste
+                        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                        .unwrap_or(reste.len());
+                    let (nom, suite) = reste.split_at(fin);
+                    if let Some(sys) = nom.strip_prefix("SYS_") {
+                        noms.insert(sys.to_string());
+                    } else if suite.starts_with('(') && nom != "syscall" {
+                        noms.insert(nom.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    /// QEMU (AV5) : l'unité du veilleur filtrait @system-service sans fanotify, et le noyau tuait tout le veilleur au
+    /// premier appel. Chaque appel du code hors de @system-service est donc soit permis par `FILTRE_APPELS`, soit
+    /// classé `HORS_DES_SERVICES` avec sa raison ; un appel nouveau fait échouer cet essai jusqu'à ce choix. Les deux
+    /// unités filtrées portent le même filtre.
+    #[test]
+    fn le_filtre_permet_ce_que_le_code_appelle() {
+        let ligne = format!("SystemCallFilter={FILTRE_APPELS}");
+        let garde = crate::machine::linux::garde::unite::texte();
+        assert!(garde.lines().any(|l| l == ligne), "{garde}");
+        for anglais in [false, true] {
+            let veilleur = crate::machine::linux::veilleur::unite_d_essai("/x", anglais);
+            assert!(veilleur.lines().any(|l| l == ligne), "{veilleur}");
+        }
+        let mut vus = std::collections::HashSet::new();
+        let (Some(permis), Some(connus)) = (groupe("@system-service", &mut vus), groupe("@known", &mut vus)) else {
+            return crate::essais::saute("systemd-analyze absent ou muet : le filtre n'est pas comparé au code");
+        };
+        let mut noms = std::collections::BTreeSet::new();
+        appels_du_code(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut noms);
+        assert!(noms.contains("fanotify_init") && noms.contains("openat2"), "{noms:?}");
+        let ajoutes: Vec<&str> = FILTRE_APPELS
+            .split_whitespace()
+            .filter(|a| !a.starts_with('@'))
+            .collect();
+        for a in &ajoutes {
+            assert!(
+                connus.contains(*a) && !permis.contains(*a),
+                "{a} : inconnu de systemd ou déjà dans le groupe"
+            );
+        }
+        let hors: Vec<&String> = noms
+            .iter()
+            .filter(|n| connus.contains(*n) && !permis.contains(*n))
+            .filter(|n| !ajoutes.contains(&n.as_str()) && !HORS_DES_SERVICES.iter().any(|(h, _)| h == n))
+            .collect();
+        assert!(
+            hors.is_empty(),
+            "appels hors de @system-service, ni permis ni classés : {hors:?}"
+        );
     }
 }

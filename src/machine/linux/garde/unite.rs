@@ -48,7 +48,7 @@ StateDirectoryMode=0700
 PrivateNetwork=yes
 RestrictAddressFamilies=AF_UNIX
 MemoryDenyWriteExecute=yes
-SystemCallFilter=@system-service fanotify_init fanotify_mark
+SystemCallFilter={filtre}
 SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native
 RestrictNamespaces=yes
@@ -66,7 +66,8 @@ UMask=0022
 [Install]
 WantedBy=multi-user.target
 ",
-        programme = super::PROGRAMME
+        programme = super::PROGRAMME,
+        filtre = crate::machine::linux::fanotify::FILTRE_APPELS
     )
 }
 
