@@ -204,6 +204,17 @@ impl Groupe {
         )
     }
 
+    /// Retire la marque du dossier ouvert `dossier` (remplacé sous son nom : ses événements ne doivent plus se lire
+    /// sous le nouveau). Un dossier supprimé a déjà perdu la sienne : l'erreur se jette.
+    pub(crate) fn retirer_dossier(&self, dossier: BorrowedFd<'_>) -> io::Result<()> {
+        marquer_brut(
+            self.fd.as_fd(),
+            libc::FAN_MARK_REMOVE | libc::FAN_MARK_INODE | libc::FAN_MARK_ONLYDIR,
+            NOTIFICATION_FICHIERS,
+            &Objet::Descripteur(dossier),
+        )
+    }
+
     /// Lit ce que le noyau a d'événements (bloque jusqu'à au moins un) : le nombre d'octets écrits dans `tampon`.
     // FFI de libc : read dans un tampon à nous, de sa taille exacte.
     #[allow(unsafe_code)]

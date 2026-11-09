@@ -95,11 +95,13 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   sans être écrit dans ces dossiers (le veilleur des programmes et le garde le jugent à son lancement). Le temps réel
   tient en 128 Mio de mémoire : il prend les règles YARA, les heuristiques et les empreintes de MalwareBazaar des
   dernières 48 heures ; la base ClamAV et la liste complète des empreintes servent aux analyses à la demande et à la
-  passe horaire. Un fichier de plus de 32 Mio, illisible, parti avant d'être lu, ou arrivé quand la file est pleine (256 en attente) n'est pas
-  examiné : il est compté non vérifié, jamais sain. Un débordement de la file du noyau perd un nombre inconnu
-  d'événements : il est compté et dit. Un fichier en cours de téléchargement (« .part », « .crdownload ») n'est
-  examiné qu'à son renommage final. Un lien n'est jamais suivi. La passe horaire et l'analyse « Rapide » reprennent
-  ces dossiers. Un programme malveillant du compte peut éteindre le veilleur, comme les autres.
+  passe horaire. Un fichier de plus de 32 Mio, illisible, parti avant d'être lu, ou arrivé quand la file est pleine
+  (256 en attente) n'est pas examiné : il est compté non vérifié, jamais sain. Un débordement de la file du noyau perd
+  un nombre inconnu d'événements : il est compté et dit. Un fichier en cours de téléchargement (« .part », «
+  .crdownload ») n'est examiné qu'à son renommage final. Un lien n'est jamais suivi. Un dossier surveillé remplacé
+  sous son nom (déplacé puis recréé) est vu en une demi-seconde, compté, dit et marqué de nouveau ; ce qui y arrive
+  entre-temps n'est pas vu. Supprimé, il est dit « plus surveillé » jusqu'à son retour. La passe horaire et l'analyse
+  « Rapide » reprennent ces dossiers. Un programme malveillant du compte peut éteindre le veilleur, comme les autres.
 - **La page visitée.** Vanguard n'a pas d'extension de navigateur : la page ouverte n'est pas examinée. Il examine un
   lien qu'on lui donne, bloque après accord des sites dangereux connus par le fichier hosts
   (`vanguard sites-dangereux`), et le mode Wi-Fi public passe à un DNS qui filtre.

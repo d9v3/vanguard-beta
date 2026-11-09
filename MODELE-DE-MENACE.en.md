@@ -82,16 +82,18 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   afterwards; on FAT and exFAT (USB keys), where nothing is cached for lack of reliable timestamps, it is never
   stopped in time. The antivirus and the program watcher remain the line for these paths.
 - **What real-time file scanning does not see (Linux).** The watcher marks, without privileges, Downloads, the
-  Desktop, ~/.local/bin and ~/.config/autostart (fanotify inode marks, the only ones an ordinary account may use).
-  It sees a file closed after writing or arriving by rename, a DIRECT child of one of them. It does not see: a
-  subfolder (an archive extracted into `Downloads/folder/`), another folder (Documents, /tmp, a USB drive), a file
-  written before the watcher started or while it is off or paused, nor a program started without being written to
-  these folders (the program watcher and the guard judge it at launch). Real-time scanning fits in 128 MiB of
-  memory: it uses the YARA rules, the heuristics and the MalwareBazaar fingerprints of the last 48 hours; the ClamAV
-  database and the full fingerprint list serve on-demand scans and the hourly pass. A file over 32 MiB, unreadable, gone before
-  being read, or arriving when the queue is full (256 waiting) is not scanned: it is counted as not verified, never
-  as clean. An overflow of the kernel queue loses an unknown number of events: it is counted and reported. A file
-  being downloaded (".part", ".crdownload") is only scanned at its final rename. A link is never followed. The
+  Desktop, ~/.local/bin and ~/.config/autostart (fanotify inode marks, the only ones an ordinary account may use). It
+  sees a file closed after writing or arriving by rename, a DIRECT child of one of them. It does not see: a subfolder
+  (an archive extracted into `Downloads/folder/`), another folder (Documents, /tmp, a USB drive), a file written
+  before the watcher started or while it is off or paused, nor a program started without being written to these
+  folders (the program watcher and the guard judge it at launch). Real-time scanning fits in 128 MiB of memory: it
+  uses the YARA rules, the heuristics and the MalwareBazaar fingerprints of the last 48 hours; the ClamAV database and
+  the full fingerprint list serve on-demand scans and the hourly pass. A file over 32 MiB, unreadable, gone before
+  being read, or arriving when the queue is full (256 waiting) is not scanned: it is counted as not verified, never as
+  clean. An overflow of the kernel queue loses an unknown number of events: it is counted and reported. A file being
+  downloaded (".part", ".crdownload") is only scanned at its final rename. A link is never followed. A watched folder
+  replaced under its name (moved then recreated) is noticed within half a second, counted, reported and marked again;
+  what arrives there in between is not seen. Deleted, it is reported as "no longer watched" until it comes back. The
   hourly pass and the "Quick" scan go over these folders again. Malware in the account can switch the watcher off,
   like the others.
 - **The page being visited.** Vanguard has no browser extension: the open page is not examined. It examines a link

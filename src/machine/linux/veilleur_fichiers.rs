@@ -30,7 +30,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -255,6 +255,9 @@ pub(crate) struct Compteurs {
     pub ecartes: AtomicU64,
     pub en_cours: AtomicU64,
     pub propres: AtomicU64,
+    /// Dossiers surveillés remplacés ou supprimés sous leur nom (un `mv` puis un `mkdir`) : ce qui y est arrivé
+    /// avant la nouvelle marque n'a pas été vu.
+    pub remplaces: AtomicU64,
     pub latence_max_ms: AtomicU64,
     pub latence_totale_ms: AtomicU64,
     /// La mémoire prise par le chargement des sources (Kio, différence de VmRSS), si elle a pu être lue.
@@ -301,6 +304,9 @@ pub(crate) struct Releve {
     pub ecartes: u64,
     pub en_cours: u64,
     pub propres: u64,
+    pub remplaces: u64,
+    /// Les dossiers remplacés ou supprimés qui n'ont pas pu être marqués de nouveau : plus surveillés.
+    pub perdus: Vec<String>,
     pub latence_max_ms: u64,
     pub latence_moyenne_ms: u64,
     pub sources_kio: Option<u64>,
@@ -369,6 +375,22 @@ impl Releve {
                 self.refuses.join(" ; ")
             ));
         }
+        if !self.perdus.is_empty() {
+            t.push(' ');
+            t.push_str(&trf!(
+                "Dossier remplacé ou supprimé, plus surveillé : {}.",
+                "Folder replaced or deleted, no longer watched: {}.",
+                self.perdus.join(", ")
+            ));
+        }
+        if self.remplaces > 0 {
+            t.push(' ');
+            t.push_str(&trf!(
+                "{} dossier(s) remplacé(s) sous leur nom : ce qui y est arrivé avant la nouvelle marque n'a pas été vu.",
+                "{} folder(s) replaced under their name: what arrived there before the new mark was not seen.",
+                self.remplaces
+            ));
+        }
         t
     }
 }
@@ -384,13 +406,27 @@ fn rss_kio() -> Option<u64> {
 // ───────────────────────────── Surveillance ─────────────────────────────
 
 /// Un dossier marqué : son descripteur (ouvert par Vanguard, sous lequel chaque nom est rouvert), son chemin réel et
-/// son nom à montrer.
+/// son nom à montrer. Le descripteur change quand le dossier est remplacé sous son nom (`suivre_le_dossier`).
 #[derive(Debug)]
 struct Marque {
-    fd: File,
+    fd: RwLock<File>,
     chemin: PathBuf,
     nom: String,
     telechargements: bool,
+    /// Le dossier a été remplacé ou supprimé et n'a pas pu être marqué de nouveau : rien n'y est vu.
+    perdu: AtomicBool,
+}
+
+impl Marque {
+    fn nouvelle(fd: File, chemin: PathBuf, nom: String, telechargements: bool) -> Marque {
+        Marque {
+            fd: RwLock::new(fd),
+            chemin,
+            nom,
+            telechargements,
+            perdu: AtomicBool::new(false),
+        }
+    }
 }
 
 /// Une menace examinée, rendue au veilleur pour sa suite.
@@ -409,6 +445,7 @@ pub(crate) struct Surveillance {
     pub(crate) compteurs: Arc<Compteurs>,
     recus: Receiver<Examine>,
     fils: Vec<JoinHandle<()>>,
+    marques: Arc<Vec<Marque>>,
     dossiers: Vec<String>,
     refuses: Vec<String>,
     /// Une erreur du lecteur (groupe en erreur) : il s'est arrêté.
@@ -500,12 +537,7 @@ impl Surveillance {
                 continue;
             }
             groupes.push(groupe);
-            marques.push(Marque {
-                fd,
-                chemin,
-                nom,
-                telechargements,
-            });
+            marques.push(Marque::nouvelle(fd, chemin, nom, telechargements));
         }
         if groupes.is_empty() {
             return Err(Refus(trf!(
@@ -536,12 +568,13 @@ impl Surveillance {
                 .spawn(move || lire(&groupes, &marques, &arret, &pause, &attente, &compteurs, &erreur))
         };
         let examinateur = {
-            let (arret, pause, attente, compteurs, erreur_examen) = (
+            let (arret, pause, attente, compteurs, erreur_examen, marques) = (
                 arret.clone(),
                 pause.clone(),
                 attente.clone(),
                 compteurs.clone(),
                 erreur.clone(),
+                marques.clone(),
             );
             std::thread::Builder::new()
                 .name("vanguard-fichiers-examen".into())
@@ -578,6 +611,7 @@ impl Surveillance {
             compteurs,
             recus,
             fils,
+            marques,
             dossiers: noms,
             refuses,
             erreur,
@@ -647,6 +681,13 @@ impl Surveillance {
             ecartes: lu(&c.ecartes),
             en_cours: lu(&c.en_cours),
             propres: lu(&c.propres),
+            remplaces: lu(&c.remplaces),
+            perdus: self
+                .marques
+                .iter()
+                .filter(|m| m.perdu.load(Ordering::Relaxed))
+                .map(|m| m.nom.clone())
+                .collect(),
             latence_max_ms: lu(&c.latence_max_ms),
             latence_moyenne_ms: lu(&c.latence_totale_ms).checked_div(examines).unwrap_or(0),
             sources_kio: c.sources_chargees.load(Ordering::Relaxed).then(|| lu(&c.sources_kio)),
@@ -682,7 +723,15 @@ fn lire(
 ) {
     let mut tampon = vec![0u8; fanotify::TAMPON];
     let refs: Vec<&Groupe> = groupes.iter().collect();
+    let battement = Duration::from_millis(BATTEMENT_MS.unsigned_abs().into());
+    let mut suivis_a = Instant::now();
     while !arret.load(Ordering::SeqCst) {
+        if suivis_a.elapsed() >= battement {
+            suivis_a = Instant::now();
+            for (groupe, marque) in groupes.iter().zip(marques) {
+                suivre_le_dossier(groupe, marque, compteurs);
+            }
+        }
         let prets = match fanotify::attendre_groupes(&refs, BATTEMENT_MS) {
             Ok(p) => p,
             Err(e) => {
@@ -736,6 +785,48 @@ fn lire(
             }
         }
     }
+}
+
+/// Le dossier marqué est-il encore celui qui porte son nom ? Un `mv Téléchargements x` puis un `mkdir
+/// Téléchargements` laisse la marque sur l'ancien : le nouveau serait muet. Comparé à chaque battement (dev, inode
+/// du descripteur contre ceux du chemin, sans suivre de lien) ; remplacé, il est compté, le nouveau est marqué et
+/// l'ancien démarqué ; impossible (supprimé, lien, refusé), le dossier est dit perdu jusqu'à ce qu'il revienne.
+fn suivre_le_dossier(groupe: &Groupe, marque: &Marque, compteurs: &Compteurs) {
+    let identite = |m: &std::fs::Metadata| (m.dev(), m.ino());
+    let actuel = marque
+        .fd
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .metadata()
+        .map(|m| identite(&m))
+        .ok();
+    let au_chemin = std::fs::symlink_metadata(&marque.chemin).ok();
+    if let (Some(a), Some(c)) = (actuel, au_chemin.as_ref())
+        && c.is_dir()
+        && identite(c) == a
+    {
+        return;
+    }
+    if !marque.perdu.swap(true, Ordering::Relaxed) {
+        plus(&compteurs.remplaces);
+    }
+    if !au_chemin.is_some_and(|c| c.is_dir()) {
+        return;
+    }
+    let Ok(nouveau) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(&marque.chemin)
+    else {
+        return;
+    };
+    if groupe.marquer_dossier(nouveau.as_fd()).is_err() {
+        return;
+    }
+    let ancien = std::mem::replace(&mut *marque.fd.write().unwrap_or_else(PoisonError::into_inner), nouveau);
+    // L'ancien, déplacé ailleurs, ne parle plus : ses noms se liraient sous le nouveau dossier.
+    let _ = groupe.retirer_dossier(ancien.as_fd());
+    marque.perdu.store(false, Ordering::Relaxed);
 }
 
 /// Le compteur d'un événement qui n'est pas examiné.
@@ -906,7 +997,11 @@ fn prochain(arret: &AtomicBool, attente: &(Mutex<Attente>, Condvar)) -> Option<(
 /// Rouvre `nom` sous le dossier marqué, sans suivre aucun lien, et l'examine s'il est un fichier ordinaire de taille
 /// bornée. `None` : sauté, et compté.
 fn examiner_un(m: &Marque, nom: &[u8], sources: &Sources<'_>, c: &Compteurs) -> Option<Resultat> {
-    let f = match ouvrir::sous(m.fd.as_fd(), Path::new(OsStr::from_bytes(nom)), false) {
+    let ouvert = {
+        let fd = m.fd.read().unwrap_or_else(PoisonError::into_inner);
+        ouvrir::sous(fd.as_fd(), Path::new(OsStr::from_bytes(nom)), false)
+    };
+    let f = match ouvert {
         Ok(f) => f,
         Err(e) => {
             match e.raw_os_error() {
@@ -968,16 +1063,16 @@ mod tests {
     }
 
     fn marque(d: &Path, telechargements: bool) -> Marque {
-        Marque {
-            fd: std::fs::OpenOptions::new()
+        Marque::nouvelle(
+            std::fs::OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_DIRECTORY)
                 .open(d)
                 .unwrap(),
-            chemin: d.to_path_buf(),
-            nom: "Salon".into(),
+            d.to_path_buf(),
+            "Salon".into(),
             telechargements,
-        }
+        )
     }
 
     /// Un nom venu du noyau : un seul élément, jamais « . », « .. », un « / » ou un NUL ; les octets non UTF-8
@@ -1257,6 +1352,86 @@ mod tests {
         assert!(r.non_verifies >= 1);
         drop(s);
         let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&ailleurs);
+    }
+
+    /// Un dossier marqué remplacé sous son nom (mv puis mkdir, dans un dossier jetable) : compté, dit, et le nouveau
+    /// dossier est marqué ; ce qui y arrive ensuite est examiné, ce qui arrive dans l'ancien ne l'est plus. Supprimé
+    /// sans retour : dit « plus surveillé », jusqu'à ce qu'il revienne.
+    #[test]
+    fn dossier_remplace_puis_supprime() {
+        if let Err(e) = Groupe::ouvrir_notification() {
+            return crate::essais::saute(&format!("fanotify sans droits refusé par ce noyau : {e}"));
+        }
+        let parent = crate::protection::isoler::dossier_jetable().unwrap();
+        let ailleurs = crate::protection::isoler::dossier_jetable().unwrap();
+        let reel = std::fs::canonicalize(&parent).unwrap().join("Salon");
+        std::fs::create_dir(&reel).unwrap();
+        let s = match Surveillance::demarrer(
+            vec![(reel.clone(), "Salon".into(), false)],
+            Box::new(|| (sources_essai(), None)),
+        ) {
+            Ok(s) => s,
+            Err(e) => return crate::essais::saute(&format!("marque refusée : {e}")),
+        };
+        let attendre = |fini: &dyn Fn(&Releve) -> bool| {
+            let fin = Instant::now() + Duration::from_secs(10);
+            while !fini(&s.releve()) && Instant::now() < fin {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            s.releve()
+        };
+        let ancien = parent.join("Salon.ancien");
+        std::fs::rename(&reel, &ancien).unwrap();
+        std::fs::create_dir(&reel).unwrap();
+        let r = attendre(&|r| r.remplaces >= 1 && r.perdus.is_empty());
+        assert_eq!(r.remplaces, 1, "{r:?}");
+        assert!(r.perdus.is_empty(), "{r:?}");
+        assert!(r.phrase().contains(tr!("remplacé", "replaced")), "{}", r.phrase());
+        // Le nouveau dossier parle ; l'ancien, démarqué, se tait.
+        std::fs::write(ailleurs.join("source"), elf_marque()).unwrap();
+        for cible in [ancien.join("vieux.bin"), reel.join("neuf.bin")] {
+            let cp = std::process::Command::new("cp")
+                .arg(ailleurs.join("source"))
+                .arg(&cible)
+                .status()
+                .unwrap();
+            assert!(cp.success());
+        }
+        let mut vus = Vec::new();
+        let fin = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < fin {
+            if let Some(x) = s.recevoir() {
+                vus.push(x.chemin);
+            } else if !vus.is_empty() {
+                // Laisse une chance à un second événement, qui ne doit pas venir.
+                std::thread::sleep(Duration::from_millis(2500));
+                while let Some(x) = s.recevoir() {
+                    vus.push(x.chemin);
+                }
+                break;
+            } else {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        assert_eq!(vus, vec![reel.join("neuf.bin")]);
+        // Supprimé sans retour : plus surveillé, et dit.
+        std::fs::remove_dir_all(&reel).unwrap();
+        let r = attendre(&|r| !r.perdus.is_empty());
+        assert_eq!(r.perdus, vec!["Salon".to_string()], "{r:?}");
+        assert_eq!(r.remplaces, 2, "{r:?}");
+        assert!(
+            r.phrase().contains(tr!("plus surveillé", "no longer watched")),
+            "{}",
+            r.phrase()
+        );
+        // Revenu : marqué de nouveau.
+        std::fs::create_dir(&reel).unwrap();
+        let r = attendre(&|r| r.perdus.is_empty());
+        assert!(r.perdus.is_empty(), "{r:?}");
+        assert_eq!(r.remplaces, 2, "{r:?}");
+        drop(s);
+        let _ = std::fs::remove_dir_all(&parent);
         let _ = std::fs::remove_dir_all(&ailleurs);
     }
 
