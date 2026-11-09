@@ -3715,11 +3715,18 @@ fn constat() -> Constat {
 /// ne les a pas encore tous repris : ils ne sont pas examinés, c'est un problème au bilan, plus une remarque. La
 /// phrase de l'état dit déjà lesquels et pourquoi ; le niveau seul monte.
 fn relecture_au_bilan(c: Constat, vivant: bool, etat: Option<&Etat>) -> Constat {
-    if !vivant || etat.is_none_or(|e| !e.fichiers.en_retard()) {
+    let Some(f) = etat.map(|e| &e.fichiers).filter(|f| vivant && f.incomplet()) else {
         return c;
-    }
+    };
+    // Une perte pas reprise est un problème ; un dossier trop grand pour être relu (sans perte) est seulement dit
+    // non vérifié, la passe horaire le couvre.
+    let probleme = if f.en_retard() {
+        c.probleme.max(Some(Niveau::Moyen))
+    } else {
+        c.probleme
+    };
     Constat {
-        probleme: c.probleme.max(Some(Niveau::Moyen)),
+        probleme,
         verifie: false,
         ..c
     }
@@ -5814,6 +5821,12 @@ mod tests {
         e.fichiers.relectures.clear();
         let base = juger_bool(true, Some(true), Some(&e), true, Some(true));
         assert_eq!(relecture_au_bilan(base.clone(), true, Some(&e)).probleme, base.probleme);
+        // Un dossier trop grand pour être relu, sans perte : pas un problème, mais pas vérifié.
+        e.fichiers.trop_grands = vec!["~/Salon".into()];
+        let base = juger_bool(true, Some(true), Some(&e), true, Some(true));
+        let c = relecture_au_bilan(base.clone(), true, Some(&e));
+        assert_eq!(c.probleme, base.probleme);
+        assert!(!c.verifie);
     }
 
     /// G (relecture AV5) : au démarrage, la relecture part un peu avant le dernier moment à jour, sept jours au plus ;

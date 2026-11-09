@@ -8,9 +8,12 @@
 //! des marques d'INODE seulement. Une marque d'inode ne voit que les enfants DIRECTS du dossier marqué : ni ses
 //! sous-dossiers, ni un autre dossier, ni un fichier lancé sans être écrit ici. Ce qui y est arrivé sans être vu
 //! (file pleine, débordement du noyau, arrêt du veilleur, pause) est repris par une RELECTURE du dossier (`relire`) :
-//! les fichiers changés (ctime, que personne ne règle à la main) depuis la perte sont mis en file, par ordre, dès
-//! qu'elle a de la place ; au démarrage, depuis le dernier moment où le temps réel était à jour (sept jours au plus ;
-//! la passe horaire reprend aussi ceux de la semaine, `menaces::telecharges`). Un groupe par dossier : le dossier de chaque
+//! un nom perdu par file pleine est repris tel quel ; un débordement ou un défaut fait relire tout le dossier, sauf
+//! ce qui a déjà été examiné sain tel quel (inode et ctime) ; au démarrage et après une pause, les fichiers changés
+//! depuis le dernier moment où le temps réel était à jour (sept jours au plus ; la passe horaire reprend aussi ceux de
+//! la semaine, `menaces::telecharges`). Le ctime (que personne ne règle à la main) date de la dernière ÉCRITURE, pas
+//! de la fermeture : un fichier écrit avant l'arrêt du veilleur et fermé pendant lui échappe à la relecture du
+//! démarrage ; la passe horaire reste le filet. Un groupe par dossier : le dossier de chaque
 //! événement est celui du groupe, sans `open_by_handle_at` (réservé à root) ; le chemin est refait comme dossier +
 //! nom, et le fichier est rouvert SOUS le descripteur du dossier, sans suivre aucun lien, fichier ordinaire seulement.
 //! Le verdict porte sur le contenu lu, jamais sur le nom.
@@ -25,7 +28,7 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::os::fd::{AsFd, AsRawFd};
@@ -65,6 +68,14 @@ const RYTHME_RELECTURE: Duration = Duration::from_secs(2);
 /// Un dossier de plus d'entrées n'est pas relu (chaque relecture les lirait toutes) : dit, et réessayé à ce rythme.
 const LISTE_MAX: usize = 50_000;
 const RYTHME_TROP_GRAND: Duration = Duration::from_mins(1);
+/// Une relecture qui n'a pas pu avancer depuis ce temps (la file tenue pleine par une rafale qui dure) prend aussi les
+/// places gardées au direct : une rafale sans fin ne retarde pas la reprise sans fin.
+const FAMINE: Duration = Duration::from_secs(30);
+/// Les noms perdus (file pleine) retenus par dossier ; au-delà, tout le dossier est relu.
+const NOMS_PERDUS_MAX: usize = 4096;
+/// Les fichiers examinés retenus par dossier (nom, inode, ctime) : une relecture ne réexamine pas un fichier qui n'a
+/// pas changé depuis. Au-delà, la mémoire repart à vide (des réexamens, jamais un oubli).
+const MEMOIRE_MAX: usize = 4096;
 /// La marge prise en arrière d'une perte, en secondes : un fichier écrit juste avant l'événement perdu, l'examen en
 /// cours au moment d'un arrêt, une horloge un peu décalée.
 pub(crate) const MARGE_RELECTURE: i64 = 120;
@@ -181,6 +192,9 @@ struct Entree {
     nom: Vec<u8>,
     premier: Instant,
     dernier: Instant,
+    /// Depuis quand (secondes depuis 1970) ce fichier attend d'être examiné : l'événement, ou le ctime d'un fichier
+    /// repris par une relecture. Tant qu'il est en file, le temps réel n'est pas à jour au-delà.
+    depuis: i64,
 }
 
 /// La file bornée des fichiers à examiner, un par (dossier, nom).
@@ -204,8 +218,14 @@ impl Attente {
     }
 
     pub(crate) fn ajouter(&mut self, dossier: usize, nom: &[u8], quand: Instant) -> Ajout {
+        self.ajouter_depuis(dossier, nom, quand, secondes())
+    }
+
+    /// `ajouter`, avec le moment d'où le fichier attend (`Entree::depuis`).
+    fn ajouter_depuis(&mut self, dossier: usize, nom: &[u8], quand: Instant, depuis: i64) -> Ajout {
         if let Some(e) = self.file.iter_mut().find(|e| e.dossier == dossier && e.nom == nom) {
             e.dernier = e.dernier.max(quand);
+            e.depuis = e.depuis.min(depuis);
             return Ajout::Regroupe;
         }
         if self.file.len() >= self.max {
@@ -216,15 +236,16 @@ impl Attente {
             nom: nom.to_vec(),
             premier: quand,
             dernier: quand,
+            depuis,
         });
         Ajout::Nouveau
     }
 
     /// Le premier fichier prêt (calme depuis `CALME`, ou en attente depuis `ATTENTE_MAX`) : (dossier, nom, dernière
     /// écriture).
-    pub(crate) fn prendre_pret(&mut self, maintenant: Instant) -> Option<(usize, Vec<u8>, Instant)> {
+    pub(crate) fn prendre_pret(&mut self, maintenant: Instant) -> Option<(usize, Vec<u8>, Instant, i64)> {
         let i = self.file.iter().position(|e| pret(e, maintenant))?;
-        self.file.remove(i).map(|e| (e.dossier, e.nom, e.dernier))
+        self.file.remove(i).map(|e| (e.dossier, e.nom, e.dernier, e.depuis))
     }
 
     /// Le temps avant que le prochain fichier soit prêt ; `None` : file vide.
@@ -239,12 +260,9 @@ impl Attente {
             .min()
     }
 
-    /// Depuis combien de temps le plus ancien fichier en file attend ; `None` : file vide.
-    fn plus_ancien(&self, maintenant: Instant) -> Option<Duration> {
-        self.file
-            .iter()
-            .map(|e| maintenant.saturating_duration_since(e.premier))
-            .max()
+    /// Le plus ancien moment d'où un fichier en file attend (`Entree::depuis`) ; `None` : file vide.
+    fn plus_ancien(&self) -> Option<i64> {
+        self.file.iter().map(|e| e.depuis).min()
     }
 
     fn vider(&mut self) -> usize {
@@ -287,6 +305,9 @@ pub(crate) struct Compteurs {
     pub remplaces: AtomicU64,
     /// Les fichiers mis en file par une relecture de dossier.
     pub repris: AtomicU64,
+    /// Le fichier en cours d'examen attend depuis ce moment (`Entree::depuis`) ; 0 : aucun. Changé sous le verrou de
+    /// la file : un fichier sorti de la file pour l'examen compte toujours quelque part.
+    pub en_examen_depuis: AtomicI64,
     pub latence_max_ms: AtomicU64,
     pub latence_totale_ms: AtomicU64,
     /// La mémoire prise par le chargement des sources (Kio, différence de VmRSS), si elle a pu être lue.
@@ -436,11 +457,17 @@ impl Releve {
     }
 
     /// Des fichiers arrivés sans être vus ne sont pas encore examinés (pertes à reprendre) : le bilan le compte comme
-    /// un problème, pas comme une remarque. Un dossier trop grand pour la relecture du démarrage, sans perte, reste
-    /// dit dans la phrase (un Téléchargements de 60 000 fichiers ne doit pas tenir le bilan en alerte à chaque
-    /// démarrage) ; avec une perte, il est compté ici.
+    /// un problème, pas comme une remarque. Un dossier trop grand pour la relecture du démarrage, sans perte, n'est
+    /// pas un problème (un Téléchargements de 60 000 fichiers ne doit pas tenir le bilan en alerte à chaque
+    /// démarrage), seulement non vérifié (`incomplet`) ; avec une perte, il est compté ici.
     pub(crate) fn en_retard(&self) -> bool {
         self.a_reprendre > 0
+    }
+
+    /// Une partie de ce qui est arrivé n'a pas été relue (une perte pas reprise, ou un dossier trop grand pour être
+    /// relu) : le bilan ne la dit pas vérifiée.
+    pub(crate) fn incomplet(&self) -> bool {
+        self.en_retard() || !self.trop_grands.is_empty()
     }
 
     /// La phrase de l'état, pour le constat du veilleur et le menu.
@@ -505,8 +532,8 @@ impl Releve {
         if pertes > 0 {
             t.push(' ');
             t.push_str(&trf!(
-                "{} perte(s) (file pleine ou débordement du noyau) : chaque fois, le dossier est relu et ce qui y est arrivé examiné.",
-                "{} loss(es) (queue full or kernel overflow): each time, the folder is read again and what arrived there scanned.",
+                "{} perte(s) (file pleine ou débordement du noyau) : chaque fois, le dossier est relu et ce qui y a changé remis en file ; ce qui n'est pas encore repris est dit ci-dessous.",
+                "{} loss(es) (queue full or kernel overflow): each time, the folder is read again and what changed there queued again; what is not picked up yet is stated below.",
                 pertes
             ));
         }
@@ -521,8 +548,8 @@ impl Releve {
                 ));
             } else {
                 t.push_str(&trf!(
-                    "Relecture en cours ({dossiers}) : les fichiers arrivés pendant l'arrêt ou la pause sont examinés.",
-                    "Reading again ({dossiers}): the files that arrived while stopped or paused are being scanned."
+                    "Relecture en cours ({dossiers}) : les fichiers arrivés pendant l'arrêt ou la pause (sept jours au plus) sont examinés.",
+                    "Reading again ({dossiers}): the files that arrived while stopped or paused (seven days at most) are being scanned."
                 ));
             }
         }
@@ -592,8 +619,11 @@ struct Marque {
     perdu: AtomicBool,
     /// La relecture à faire, et celles demandées pendant qu'une lecture du dossier tourne.
     relecture: Mutex<Relecture>,
-    /// Les pertes depuis le début de la relecture en cours, remises à zéro quand elle finit.
+    /// Les pertes depuis le début de la relecture en cours, remises à zéro quand elle finit (sous le verrou de
+    /// `relecture`).
     a_reprendre: AtomicU64,
+    /// Les fichiers examinés et leur état d'alors (inode, ctime) : une relecture saute ceux qui n'ont pas changé.
+    examines: Mutex<HashMap<Vec<u8>, (u64, i64, i64)>>,
     /// Plus de `LISTE_MAX` entrées à la dernière relecture : elle ne peut pas finir.
     trop_grand: AtomicBool,
 }
@@ -608,6 +638,9 @@ struct Relecture {
     en_lecture: bool,
     /// Le plus ancien point demandé pendant la lecture en cours.
     pendant: Option<Curseur>,
+    /// Les noms perdus (file pleine) : relus quel que soit leur ctime (un fichier écrit, gardé ouvert, fermé
+    /// pendant une rafale a un ctime plus ancien que la perte).
+    noms: BTreeSet<Vec<u8>>,
 }
 
 /// Le plus ancien des deux points (`None` : aucun).
@@ -652,6 +685,7 @@ impl Marque {
             perdu: AtomicBool::new(false),
             relecture: Mutex::new(Relecture::default()),
             a_reprendre: AtomicU64::new(0),
+            examines: Mutex::new(HashMap::new()),
             trop_grand: AtomicBool::new(false),
         }
     }
@@ -659,26 +693,56 @@ impl Marque {
     /// Le dossier est à relire à partir de la seconde `s` : le plus ancien des deux points l'emporte (une perte ne
     /// fait jamais avancer une relecture en cours).
     fn relire_depuis(&self, s: i64) {
-        let mut r = self.relecture.lock().unwrap_or_else(PoisonError::into_inner);
-        let c = Curseur::depuis(s);
-        r.curseur = Some(plus_ancien(r.curseur.take(), c.clone()));
-        if r.en_lecture {
-            r.pendant = Some(plus_ancien(r.pendant.take(), c));
-        }
+        self.relecture
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .demander(Curseur::depuis(s));
     }
 
-    /// Une perte : un fichier arrivé là n'a pas été mis en file (ou un nombre inconnu, pour un débordement).
-    fn perte(&self, depuis: i64) {
-        self.relire_depuis(depuis);
+    /// Une perte dont on ne connaît pas les noms (débordement du noyau, tampon illisible) : tout le dossier est relu,
+    /// quel que soit le ctime ; la mémoire des examens évite de tout réexaminer.
+    fn perte(&self) {
+        let mut r = self.relecture.lock().unwrap_or_else(PoisonError::into_inner);
+        r.demander(Curseur::depuis(i64::MIN));
+        plus(&self.a_reprendre);
+    }
+
+    /// Un fichier sans place dans la file : son nom est gardé et relu tel quel ; trop de noms, tout le dossier.
+    fn nom_perdu(&self, nom: &[u8]) {
+        let mut r = self.relecture.lock().unwrap_or_else(PoisonError::into_inner);
+        if r.noms.contains(nom) {
+            return;
+        }
+        if r.noms.len() >= NOMS_PERDUS_MAX {
+            r.demander(Curseur::depuis(i64::MIN));
+        } else {
+            r.noms.insert(nom.to_vec());
+        }
         plus(&self.a_reprendre);
     }
 
     fn en_relecture(&self) -> bool {
-        self.relecture
+        let r = self.relecture.lock().unwrap_or_else(PoisonError::into_inner);
+        r.curseur.is_some() || !r.noms.is_empty()
+    }
+
+    /// Note un fichier examiné, avec son état d'alors.
+    fn noter_examine(&self, nom: &[u8], meta: &std::fs::Metadata) {
+        let mut x = self.examines.lock().unwrap_or_else(PoisonError::into_inner);
+        if x.len() >= MEMOIRE_MAX && !x.contains_key(nom) {
+            x.clear();
+        }
+        x.insert(nom.to_vec(), (meta.ino(), meta.ctime(), meta.ctime_nsec()));
+    }
+
+    /// Ce fichier a-t-il été examiné tel qu'il est (même inode, même ctime) ? Une écriture, un renommage ou un
+    /// changement de droits changent le ctime, qu'un programme sans droits ne remet pas en arrière.
+    fn deja_examine(&self, nom: &[u8], meta: &std::fs::Metadata) -> bool {
+        self.examines
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .curseur
-            .is_some()
+            .get(nom)
+            .is_some_and(|x| *x == (meta.ino(), meta.ctime(), meta.ctime_nsec()))
     }
 }
 
@@ -898,7 +962,12 @@ impl Surveillance {
             self.pause_debut.store(secondes(), Ordering::SeqCst);
         }
         if !pause && avant {
-            let debut = self.pause_debut.load(Ordering::SeqCst).saturating_sub(MARGE_RELECTURE);
+            // Sept jours au plus, comme au démarrage : au-delà, la passe complète reste le filet.
+            let debut = self
+                .pause_debut
+                .load(Ordering::SeqCst)
+                .saturating_sub(MARGE_RELECTURE)
+                .max(secondes().saturating_sub(RELECTURE_MAX));
             for m in self.marques.iter() {
                 m.relire_depuis(debut);
             }
@@ -940,9 +1009,18 @@ impl Surveillance {
         if self.pause.load(Ordering::SeqCst) || self.marques.iter().any(Marque::en_relecture) {
             return None;
         }
-        let attend = self.attente.0.lock().ok()?.plus_ancien(Instant::now());
-        let attend = attend.map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-        Some(secondes().saturating_sub(attend))
+        // Sous le verrou de la file : un fichier passe de la file à l'examen sous lui, il est compté d'un côté ou
+        // de l'autre, jamais entre les deux.
+        let a = self.attente.0.lock().ok()?;
+        let examen = self.compteurs.en_examen_depuis.load(Ordering::SeqCst);
+        let mut point = secondes();
+        if let Some(d) = a.plus_ancien() {
+            point = point.min(d);
+        }
+        if examen != 0 {
+            point = point.min(examen);
+        }
+        Some(point)
     }
 
     /// Le relevé pour l'état du veilleur.
@@ -993,7 +1071,7 @@ impl Surveillance {
             trop_grands: self
                 .marques
                 .iter()
-                .filter(|m| m.en_relecture() && m.trop_grand.load(Ordering::Relaxed))
+                .filter(|m| m.trop_grand.load(Ordering::Relaxed))
                 .map(|m| m.nom.clone())
                 .collect(),
             a_reprendre: self
@@ -1052,11 +1130,11 @@ fn lire(
     let refs: Vec<&Groupe> = groupes.iter().collect();
     let battement = Duration::from_millis(BATTEMENT_MS.unsigned_abs().into());
     let mut suivis_a = Instant::now();
-    // La dernière lecture réussie de chaque groupe (secondes depuis 1970) : un débordement a perdu des événements
-    // arrivés après elle.
-    let mut lus_a = vec![secondes(); groupes.len()];
     // La prochaine relecture permise de chaque dossier.
     let mut relire_a = vec![Instant::now(); groupes.len()];
+    // Depuis quand chaque relecture attend une place dans la file : au-delà de FAMINE, elle prend aussi les places
+    // gardées au temps réel, sinon un flot tenu juste sous la réserve la repousserait sans fin.
+    let mut affame: Vec<Option<Instant>> = vec![None; groupes.len()];
     while !arret.load(Ordering::SeqCst) {
         if suivis_a.elapsed() >= battement {
             suivis_a = Instant::now();
@@ -1067,7 +1145,23 @@ fn lire(
                     && !en_pause
                     && Instant::now() >= *quand
                 {
-                    let rythme = if relire(i, marque, attente, compteurs) == Relu::TropGrand {
+                    let attend = affame.get_mut(i);
+                    let tour = Tour {
+                        sans_reserve: attend
+                            .as_ref()
+                            .and_then(|a| a.as_ref())
+                            .is_some_and(|a| a.elapsed() >= FAMINE),
+                        ..Tour::NORMAL
+                    };
+                    let fait = relire(i, marque, attente, compteurs, tour);
+                    if let Some(a) = attend {
+                        *a = if fait == Relu::Rien && marque.en_relecture() {
+                            a.or_else(|| Some(Instant::now()))
+                        } else {
+                            None
+                        };
+                    }
+                    let rythme = if fait == Relu::TropGrand {
                         RYTHME_TROP_GRAND
                     } else {
                         RYTHME_RELECTURE
@@ -1096,10 +1190,9 @@ fn lire(
             if !pret {
                 continue;
             }
-            let perdu_depuis = lus_a.get(i).copied().unwrap_or(0).saturating_sub(MARGE_RELECTURE);
             let Ok(n) = groupe.lire(&mut tampon) else {
                 plus(&compteurs.defauts);
-                marque.perte(perdu_depuis);
+                marque.perte();
                 // Une erreur qui dure (le groupe dit prêt, la lecture échoue chaque fois) ferait sinon tourner ce fil
                 // à vide, un cœur entier pris : un court repos, et le compte des défauts le dit.
                 std::thread::sleep(REPOS_APRES_ERREUR);
@@ -1108,10 +1201,9 @@ fn lire(
             let l = lecture::evenements_nommes(tampon.get(..n).unwrap_or_default());
             if l.defaut.is_some() {
                 plus(&compteurs.defauts);
-                marque.perte(perdu_depuis);
+                marque.perte();
             }
             let maintenant = Instant::now();
-            let depuis_maintenant = secondes().saturating_sub(MARGE_RELECTURE);
             let en_pause = pause.load(Ordering::SeqCst);
             let mut nouveau = false;
             for ev in l.evenements {
@@ -1119,10 +1211,11 @@ fn lire(
                 match ranger(&ev, marque, en_pause) {
                     Rangement::Compter(compteur) => {
                         plus(compteur.de(compteurs));
-                        // Un nombre inconnu d'événements perdus depuis la lecture d'avant, ou un événement sans
-                        // nom : le dossier est relu.
+                        // Un nombre inconnu d'événements perdus, ou un événement sans nom : tout le dossier est relu
+                        // (un fichier fermé maintenant a pu être écrit bien avant : son ctime ne borne rien) ; ce qui
+                        // a déjà été examiné tel quel est sauté.
                         if matches!(compteur, Compteur::Debordement | Compteur::Defaut) {
-                            marque.perte(perdu_depuis);
+                            marque.perte();
                         }
                     }
                     Rangement::Attendre(nom) => {
@@ -1135,14 +1228,12 @@ fn lire(
                             Ajout::Regroupe => {}
                             Ajout::Pleine => {
                                 plus(&compteurs.file_pleine);
-                                marque.perte(depuis_maintenant);
+                                // Le nom est connu : lui seul est repris, quel que soit son ctime.
+                                marque.nom_perdu(&nom);
                             }
                         }
                     }
                 }
-            }
-            if let Some(x) = lus_a.get_mut(i) {
-                *x = secondes();
             }
             if nouveau {
                 attente.1.notify_all();
@@ -1193,57 +1284,153 @@ fn suivre_le_dossier(groupe: &Groupe, marque: &Marque, compteurs: &Compteurs) {
     marque.perdu.store(false, Ordering::Relaxed);
     // Le nouveau dossier a pu être préparé ailleurs puis mis à sa place : ses fichiers gardent leur ctime d'avant.
     // Tout y est relu, sans limite de temps.
-    marque.perte(0);
+    marque.perte();
 }
 
 /// Ce qu'a fait une relecture.
 #[derive(Debug, PartialEq, Eq)]
 enum Relu {
-    /// Rien à relire, ou pas de place dans la file.
+    /// Rien à relire, ou pas de place dans la file, ou dossier illisible.
     Rien,
     /// Une partie mise en file : la suite au prochain tour.
     EnPartie,
     /// Tout ce qui restait est en file : le dossier est à jour.
     Fini,
-    /// Trop d'entrées : rien de fait.
+    /// Trop d'entrées : le dossier n'est pas listé.
     TropGrand,
 }
 
-/// Relit un dossier à reprendre : les fichiers ordinaires changés après son curseur sont mis en file, du plus ancien
-/// changement au plus récent, autant que la file en laisse (`RESERVE_DIRECT` places restent au direct). Le curseur
-/// avance jusqu'au dernier mis en file ; une perte arrivée pendant ce temps le ramène en arrière.
-fn relire(i: usize, m: &Marque, attente: &(Mutex<Attente>, Condvar), compteurs: &Compteurs) -> Relu {
-    let place = |a: &Attente| a.max.saturating_sub(RESERVE_DIRECT).saturating_sub(a.file.len());
-    if attente.0.lock().map_or(0, |a| place(&a)) == 0 {
+/// Comment relire : les places gardées au direct (sauf en famine), et le nombre d'entrées au-delà duquel le dossier
+/// n'est pas listé.
+#[derive(Clone, Copy, Debug)]
+struct Tour {
+    sans_reserve: bool,
+    liste_max: usize,
+}
+
+impl Tour {
+    const NORMAL: Tour = Tour {
+        sans_reserve: false,
+        liste_max: LISTE_MAX,
+    };
+
+    fn place(self, a: &Attente) -> usize {
+        let reserve = if self.sans_reserve { 0 } else { RESERVE_DIRECT };
+        a.max.saturating_sub(reserve).saturating_sub(a.file.len())
+    }
+}
+
+/// Relit un dossier à reprendre : d'abord les noms perdus, tels quels ; puis les fichiers ordinaires changés après
+/// son curseur, du plus ancien changement au plus récent, autant que la file en laisse. Le curseur avance jusqu'au
+/// dernier mis en file ; une demande arrivée pendant ce temps garde son point.
+fn relire(i: usize, m: &Marque, attente: &(Mutex<Attente>, Condvar), compteurs: &Compteurs, tour: Tour) -> Relu {
+    if attente.0.lock().map_or(0, |a| tour.place(&a)) == 0 {
         return Relu::Rien;
     }
-    let curseur = {
+    let (curseur, noms) = {
         let mut etat = m.relecture.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(c) = etat.curseur.clone() else {
+        if etat.curseur.is_none() && etat.noms.is_empty() {
             return Relu::Rien;
-        };
+        }
         etat.en_lecture = true;
         etat.pendant = None;
-        c
+        (etat.curseur.clone(), etat.noms.iter().cloned().collect::<Vec<_>>())
     };
-    let (fait, apres) = relire_a_partir(i, m, &curseur, attente, compteurs, place);
-    if m.relecture.lock().unwrap_or_else(PoisonError::into_inner).finir(apres) {
-        m.a_reprendre.store(0, Ordering::Relaxed);
-        return Relu::Fini;
+    let (mis, tous_les_noms) = remettre_les_noms(i, m, &noms, attente, compteurs, tour);
+    let (fait, apres) = match curseur {
+        None => (Relu::Fini, None),
+        // La file est déjà pleine : le dossier n'est pas listé pour rien.
+        Some(c) if !tous_les_noms => (Relu::Rien, Some(c)),
+        Some(c) => relire_a_partir(i, m, &c, attente, compteurs, tour),
+    };
+    let mut etat = m.relecture.lock().unwrap_or_else(PoisonError::into_inner);
+    for nom in &mis {
+        etat.noms.remove(nom);
     }
-    fait
+    if etat.finir(apres) {
+        m.a_reprendre.store(0, Ordering::Relaxed);
+        // Un dossier trop grand abandonné n'est pas « fini » : il n'a pas été lu, et ne se relit qu'à son rythme.
+        return if fait == Relu::TropGrand {
+            Relu::TropGrand
+        } else {
+            Relu::Fini
+        };
+    }
+    match fait {
+        Relu::TropGrand => Relu::TropGrand,
+        _ if !mis.is_empty() => Relu::EnPartie,
+        Relu::Fini => Relu::EnPartie,
+        autre => autre,
+    }
+}
+
+/// Met en file les noms perdus, tant qu'il y a de la place ; rend ceux qui y sont, et si tous y sont.
+fn remettre_les_noms(
+    i: usize,
+    m: &Marque,
+    noms: &[Vec<u8>],
+    attente: &(Mutex<Attente>, Condvar),
+    compteurs: &Compteurs,
+    tour: Tour,
+) -> (Vec<Vec<u8>>, bool) {
+    if noms.is_empty() {
+        return (Vec::new(), true);
+    }
+    // Le ctime de chacun (lu avant de prendre la file) : le temps réel n'est pas à jour au-delà tant qu'il attend.
+    let depuis: Vec<i64> = noms.iter().map(|n| ctime_de(m, n).unwrap_or_else(secondes)).collect();
+    let mut mis = Vec::new();
+    let Ok(mut a) = attente.0.lock() else {
+        return (mis, false);
+    };
+    let maintenant = Instant::now();
+    let mut complet = true;
+    for (nom, d) in noms.iter().zip(depuis) {
+        if tour.place(&a) == 0 {
+            complet = false;
+            break;
+        }
+        match a.ajouter_depuis(i, nom, maintenant, d) {
+            Ajout::Nouveau => plus(&compteurs.repris),
+            Ajout::Regroupe => {}
+            Ajout::Pleine => {
+                complet = false;
+                break;
+            }
+        }
+        mis.push(nom.clone());
+    }
+    drop(a);
+    attente.1.notify_all();
+    (mis, complet)
+}
+
+/// Le ctime d'un nom du dossier marqué, sans suivre de lien.
+fn ctime_de(m: &Marque, nom: &[u8]) -> Option<i64> {
+    let fd = m.fd.read().unwrap_or_else(PoisonError::into_inner);
+    let chemin = Path::new(&format!("/proc/self/fd/{}", fd.as_raw_fd())).join(OsStr::from_bytes(nom));
+    std::fs::symlink_metadata(chemin).ok().map(|x| x.ctime())
 }
 
 impl Relecture {
+    /// Le dossier est à relire à partir de `c` : le plus ancien point l'emporte ; pendant une lecture, la demande
+    /// est aussi gardée à part pour sa fin.
+    fn demander(&mut self, c: Curseur) {
+        self.curseur = Some(plus_ancien(self.curseur.take(), c.clone()));
+        if self.en_lecture {
+            self.pendant = Some(plus_ancien(self.pendant.take(), c));
+        }
+    }
+
     /// La fin d'une lecture du dossier : `apres` est ce qui lui reste (`None` : tout est en file). Une demande
-    /// arrivée pendant elle (une fin de pause, une perte) garde son point. Vrai : le dossier est à jour.
+    /// arrivée pendant elle (une fin de pause, une perte) garde son point. Vrai : le dossier est à jour (plus de
+    /// curseur ni de nom perdu).
     fn finir(&mut self, apres: Option<Curseur>) -> bool {
         self.en_lecture = false;
         self.curseur = match (apres, self.pendant.take()) {
             (Some(a), p) => Some(plus_ancien(p, a)),
             (None, p) => p,
         };
-        self.curseur.is_none()
+        self.curseur.is_none() && self.noms.is_empty()
     }
 }
 
@@ -1255,28 +1442,36 @@ fn relire_a_partir(
     curseur: &Curseur,
     attente: &(Mutex<Attente>, Condvar),
     compteurs: &Compteurs,
-    place: impl Fn(&Attente) -> usize,
+    tour: Tour,
 ) -> (Relu, Option<Curseur>) {
-    let Some(candidats) = lister(m, curseur) else {
-        m.trop_grand.store(true, Ordering::Relaxed);
-        return (Relu::TropGrand, Some(curseur.clone()));
+    let candidats = match lister(m, curseur, tour.liste_max) {
+        Ok(c) => c,
+        // Illisible (dossier supprimé, /proc absent) : rien n'est mis en file, le curseur reste et le bilan le dit.
+        Err(Liste::Illisible) => return (Relu::Rien, Some(curseur.clone())),
+        Err(Liste::TropGrand) => {
+            m.trop_grand.store(true, Ordering::Relaxed);
+            // Sans perte (relecture du démarrage ou de fin de pause) : abandonnée, dite dans la phrase et comptée non
+            // vérifiée au bilan ; le temps réel continue. Avec une perte : réessayée, et le bilan reste en alerte.
+            let abandon = m.a_reprendre.load(Ordering::Relaxed) == 0;
+            return (Relu::TropGrand, (!abandon).then(|| curseur.clone()));
+        }
     };
     m.trop_grand.store(false, Ordering::Relaxed);
-    let (mut dernier, mut tous) = (None, true);
+    let (mut dernier, mut complet) = (None, true);
     let Ok(mut a) = attente.0.lock() else {
         return (Relu::Rien, Some(curseur.clone()));
     };
     let maintenant = Instant::now();
     for x in candidats {
-        if place(&a) == 0 {
-            tous = false;
+        if tour.place(&a) == 0 {
+            complet = false;
             break;
         }
-        match a.ajouter(i, &x.nom, maintenant) {
+        match a.ajouter_depuis(i, &x.nom, maintenant, x.s) {
             Ajout::Nouveau => plus(&compteurs.repris),
             Ajout::Regroupe => {}
             Ajout::Pleine => {
-                tous = false;
+                complet = false;
                 break;
             }
         }
@@ -1284,29 +1479,32 @@ fn relire_a_partir(
     }
     drop(a);
     attente.1.notify_all();
-    match (tous, dernier) {
+    match (complet, dernier) {
         (true, _) => (Relu::Fini, None),
         (false, Some(d)) => (Relu::EnPartie, Some(d)),
         (false, None) => (Relu::Rien, Some(curseur.clone())),
     }
 }
 
-/// Les fichiers ordinaires du dossier marqué changés après `curseur`, triés ; lus par le descripteur de la marque
-/// (le dossier marqué lui-même, même si un autre a pris son nom), sans suivre aucun lien. `None` : plus de
-/// `LISTE_MAX` entrées.
-fn lister(m: &Marque, curseur: &Curseur) -> Option<Vec<Curseur>> {
+/// Pourquoi un dossier n'a pas été listé.
+#[derive(Debug, PartialEq, Eq)]
+enum Liste {
+    Illisible,
+    TropGrand,
+}
+
+/// Les fichiers ordinaires du dossier marqué changés après `curseur` et pas déjà examinés tels quels, triés ; lus par
+/// le descripteur de la marque (le dossier marqué lui-même, même si un autre a pris son nom), sans suivre aucun lien.
+fn lister(m: &Marque, curseur: &Curseur, max: usize) -> Result<Vec<Curseur>, Liste> {
     let lecture = {
         let fd = m.fd.read().unwrap_or_else(PoisonError::into_inner);
         std::fs::read_dir(format!("/proc/self/fd/{}", fd.as_raw_fd()))
     };
-    // Illisible (dossier supprimé, /proc absent) : rien à mettre en file ; le curseur reste, et le bilan le dit.
-    let Ok(lecture) = lecture else {
-        return Some(Vec::new());
-    };
+    let lecture = lecture.map_err(|_| Liste::Illisible)?;
     let mut candidats = Vec::new();
     for (n, entree) in lecture.enumerate() {
-        if n >= LISTE_MAX {
-            return None;
+        if n >= max {
+            return Err(Liste::TropGrand);
         }
         let Ok(entree) = entree else {
             continue;
@@ -1319,7 +1517,7 @@ fn lister(m: &Marque, curseur: &Curseur) -> Option<Vec<Curseur>> {
         let Ok(meta) = entree.metadata() else {
             continue;
         };
-        if !meta.is_file() {
+        if !meta.is_file() || m.deja_examine(&nom, &meta) {
             continue;
         }
         let x = Curseur {
@@ -1332,7 +1530,7 @@ fn lister(m: &Marque, curseur: &Curseur) -> Option<Vec<Curseur>> {
         }
     }
     candidats.sort();
-    Some(candidats)
+    Ok(candidats)
 }
 
 /// Le compteur d'un événement qui n'est pas examiné.
@@ -1426,7 +1624,7 @@ fn examiner(mut charger: Charger, p: &Partage<'_>, envoi: &SyncSender<Examine>) 
         compteurs.sources_chargees.store(true, Ordering::Relaxed);
     }
     let mut chargees_a = Instant::now();
-    while let Some((i, nom, dernier)) = prochain(p.arret, p.attente) {
+    while let Some((i, nom, dernier)) = prochain(p.arret, p.attente, &compteurs.en_examen_depuis) {
         let Some(marque) = p.marques.get(i) else {
             continue;
         };
@@ -1482,16 +1680,23 @@ fn examiner(mut charger: Charger, p: &Partage<'_>, envoi: &SyncSender<Examine>) 
     }
 }
 
-/// Le prochain fichier prêt, en attendant ; `None` : arrêt demandé.
-fn prochain(arret: &AtomicBool, attente: &(Mutex<Attente>, Condvar)) -> Option<(usize, Vec<u8>, Instant)> {
+/// Le prochain fichier prêt, en attendant ; `None` : arrêt demandé. `en_examen` porte, sous le verrou de la file,
+/// le moment d'origine du fichier rendu (0 : aucun), pour que `vu_jusqu_a` le compte encore pendant son examen.
+fn prochain(
+    arret: &AtomicBool,
+    attente: &(Mutex<Attente>, Condvar),
+    en_examen: &AtomicI64,
+) -> Option<(usize, Vec<u8>, Instant)> {
     let mut a = attente.0.lock().ok()?;
+    en_examen.store(0, Ordering::SeqCst);
     loop {
         if arret.load(Ordering::SeqCst) {
             return None;
         }
         let maintenant = Instant::now();
-        if let Some(x) = a.prendre_pret(maintenant) {
-            return Some(x);
+        if let Some((i, nom, dernier, depuis)) = a.prendre_pret(maintenant) {
+            en_examen.store(depuis, Ordering::SeqCst);
+            return Some((i, nom, dernier));
         }
         let attendre = a
             .prochain(maintenant)
@@ -1512,7 +1717,12 @@ fn examiner_un(m: &Marque, nom: &[u8], sources: &Sources<'_>, c: &Compteurs) -> 
         Ok(f) => f,
         Err(e) => {
             match e.raw_os_error() {
-                Some(libc::ENOENT) => plus(&c.partis),
+                Some(libc::ENOENT) => {
+                    plus(&c.partis);
+                    // Parti, ou jamais là sous ce nom (O_TMPFILE puis linkat donne un événement au nom anonyme) : le
+                    // dossier est relu depuis peu, ce qui y est arrivé sous un autre nom est repris.
+                    m.relire_depuis(secondes().saturating_sub(MARGE_RELECTURE));
+                }
                 // Un lien (RESOLVE_NO_SYMLINKS, O_NOFOLLOW) : rien à lire ici, jamais suivi.
                 Some(libc::ELOOP | libc::EXDEV) => plus(&c.ecartes),
                 _ => plus(&c.illisibles),
@@ -1534,14 +1744,20 @@ fn examiner_un(m: &Marque, nom: &[u8], sources: &Sources<'_>, c: &Compteurs) -> 
     }
     let identite = Identite::de(&meta);
     let chemin = m.chemin.join(OsStr::from_bytes(nom));
+    // Le ctime lu avant l'examen : changé pendant lui, le fichier ne sera pas pris pour déjà examiné.
+    let lu_avant = meta.clone();
     plus(&c.examines);
     let pour_le_cache = f.try_clone().ok();
     let r = moteur::examiner_ouvert(f, &chemin, sources, bornes()).ok();
     if let Some(f) = pour_le_cache {
         fanotify::oublier_du_cache(&f);
     }
-    if r.is_none() {
-        plus(&c.illisibles);
+    match &r {
+        None => plus(&c.illisibles),
+        // Seul un fichier sain est retenu : une relecture saute ce qu'il est encore tel quel ; une menace ou un
+        // non-vérifié serait réexaminé.
+        Some(fait) if matches!(fait.verdict(), Verdict::Sain) => m.noter_examine(nom, &lu_avant),
+        Some(_) => {}
     }
     r.map(|r| (r, identite))
 }
@@ -1554,6 +1770,7 @@ fn examiner_un(m: &Marque, nom: &[u8], sources: &Sources<'_>, c: &Compteurs) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     fn sources_essai() -> Sources<'static> {
         Sources {
@@ -1857,16 +2074,27 @@ mod tests {
         m.relire_depuis(100);
         m.relire_depuis(200);
         assert_eq!(m.relecture.lock().unwrap().curseur, Some(Curseur::depuis(100)));
-        m.perte(50);
-        assert_eq!(m.relecture.lock().unwrap().curseur, Some(Curseur::depuis(50)));
+        m.perte();
+        assert_eq!(m.relecture.lock().unwrap().curseur, Some(Curseur::depuis(i64::MIN)));
         assert_eq!(m.a_reprendre.load(Ordering::Relaxed), 1);
+        // Un nom perdu est gardé une fois, et compté une fois.
+        m.nom_perdu(b"x");
+        m.nom_perdu(b"x");
+        assert_eq!(m.a_reprendre.load(Ordering::Relaxed), 2);
+        assert_eq!(m.relecture.lock().unwrap().noms.len(), 1);
         // Une demande pendant une lecture : gardée à part, et la fin de la lecture ne l'efface pas.
         let mut r = Relecture {
             curseur: Some(c(10, 0, b"a")),
             en_lecture: true,
             pendant: None,
+            noms: BTreeSet::new(),
         };
         assert!(r.finir(None));
+        // Un nom perdu pas encore en file : le dossier n'est pas à jour.
+        r.noms.insert(b"x".to_vec());
+        r.en_lecture = true;
+        assert!(!r.finir(None));
+        r.noms.clear();
         r.en_lecture = true;
         r.pendant = Some(Curseur::depuis(5));
         assert!(!r.finir(None));
@@ -1893,23 +2121,23 @@ mod tests {
         let m = marque(&d, true);
         let attente = (Mutex::new(Attente::new(RESERVE_DIRECT + 10)), Condvar::new());
         let c = Compteurs::default();
-        assert_eq!(relire(0, &m, &attente, &c), Relu::Rien);
-        m.perte(0);
+        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::Rien);
+        m.perte();
         let mut pris: Vec<Vec<u8>> = Vec::new();
         let vider = |pris: &mut Vec<Vec<u8>>| {
             let mut a = attente.0.lock().unwrap();
             pris.extend(a.file.drain(..).map(|e| e.nom));
         };
-        assert_eq!(relire(0, &m, &attente, &c), Relu::EnPartie);
+        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::EnPartie);
         assert_eq!(attente.0.lock().unwrap().len(), 10);
         // Les places gardées au direct ne sont jamais prises.
-        assert_eq!(relire(0, &m, &attente, &c), Relu::Rien);
+        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::Rien);
         assert!(m.en_relecture());
         vider(&mut pris);
-        assert_eq!(relire(0, &m, &attente, &c), Relu::EnPartie);
+        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::EnPartie);
         assert_eq!(m.a_reprendre.load(Ordering::Relaxed), 1);
         vider(&mut pris);
-        assert_eq!(relire(0, &m, &attente, &c), Relu::Fini);
+        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::Fini);
         vider(&mut pris);
         assert!(!m.en_relecture());
         assert_eq!(m.a_reprendre.load(Ordering::Relaxed), 0);
@@ -1917,7 +2145,7 @@ mod tests {
         let attendus: Vec<Vec<u8>> = (0..25).map(|n| format!("f{n:02}").into_bytes()).collect();
         assert_eq!(pris, attendus);
         assert_eq!(c.repris.load(Ordering::Relaxed), 25);
-        assert_eq!(relire(0, &m, &attente, &c), Relu::Rien);
+        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::Rien);
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -1943,7 +2171,267 @@ mod tests {
         r.a_reprendre = 0;
         r.trop_grands = vec!["~/Salon".into()];
         assert!(!r.en_retard());
+        // … mais pas vérifié.
+        assert!(r.incomplet());
         assert!(r.phrase().contains("vanguard audit"), "{}", r.phrase());
+    }
+
+    /// Défaut 1 (relecture Fable) : un nom perdu par file pleine est repris même si son ctime est plus ancien que
+    /// tout point de relecture (écrit, gardé ouvert, fermé pendant une rafale) ; l'entrée porte ce ctime.
+    #[test]
+    fn nom_perdu_repris_quel_que_soit_le_ctime() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        std::fs::write(d.join("vieux"), b"Salon").unwrap();
+        std::fs::write(d.join("autre"), b"Salon").unwrap();
+        let ctime = std::fs::symlink_metadata(d.join("vieux")).unwrap().ctime();
+        let m = marque(&d, false);
+        let attente = (Mutex::new(Attente::new(RESERVE_DIRECT + 10)), Condvar::new());
+        let c = Compteurs::default();
+        m.relire_depuis(secondes() + 3600);
+        m.nom_perdu(b"vieux");
+        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::Fini);
+        let a = attente.0.lock().unwrap();
+        let noms: Vec<&[u8]> = a.file.iter().map(|e| e.nom.as_slice()).collect();
+        assert_eq!(noms, vec![b"vieux".as_slice()]);
+        assert_eq!(a.plus_ancien(), Some(ctime));
+        drop(a);
+        assert!(!m.en_relecture());
+        assert_eq!(m.a_reprendre.load(Ordering::Relaxed), 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Défaut 3 : un dossier illisible ne finit pas la relecture : le curseur et la perte restent, puis lisible, il
+    /// finit.
+    #[test]
+    fn dossier_illisible_garde_sa_relecture() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        std::fs::write(d.join("f"), b"Salon").unwrap();
+        let m = marque(&d, false);
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&d).is_ok() {
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let _ = std::fs::remove_dir_all(&d);
+            return crate::essais::saute("droits ignorés (root ?) : le dossier reste lisible");
+        }
+        let attente = (Mutex::new(Attente::new(RESERVE_DIRECT + 10)), Condvar::new());
+        let c = Compteurs::default();
+        m.perte();
+        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::Rien);
+        assert!(m.en_relecture());
+        assert_eq!(m.a_reprendre.load(Ordering::Relaxed), 1);
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::Fini);
+        assert_eq!(m.a_reprendre.load(Ordering::Relaxed), 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Défaut 5 : un dossier trop grand, sans perte, n'est pas relu sans fin (abandon, dit) ; avec une perte, la
+    /// relecture reste demandée ; une liste réussie efface « trop grand ».
+    #[test]
+    fn dossier_trop_grand() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        for n in 0..5 {
+            std::fs::write(d.join(format!("f{n}")), b"Salon").unwrap();
+        }
+        let m = marque(&d, false);
+        let attente = (Mutex::new(Attente::new(RESERVE_DIRECT + 10)), Condvar::new());
+        let c = Compteurs::default();
+        let petit = Tour {
+            sans_reserve: false,
+            liste_max: 3,
+        };
+        m.relire_depuis(0);
+        assert_eq!(relire(0, &m, &attente, &c, petit), Relu::TropGrand);
+        assert!(!m.en_relecture());
+        assert!(m.trop_grand.load(Ordering::Relaxed));
+        m.perte();
+        assert_eq!(relire(0, &m, &attente, &c, petit), Relu::TropGrand);
+        assert!(m.en_relecture());
+        assert_eq!(m.a_reprendre.load(Ordering::Relaxed), 1);
+        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::Fini);
+        assert!(!m.trop_grand.load(Ordering::Relaxed));
+        assert_eq!(m.a_reprendre.load(Ordering::Relaxed), 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Défaut 4 : une file tenue dans les places gardées au direct bloque la relecture ; en famine, elle les prend.
+    #[test]
+    fn famine_prend_les_places_gardees() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        std::fs::write(d.join("f"), b"Salon").unwrap();
+        let m = marque(&d, false);
+        let attente = (Mutex::new(Attente::new(RESERVE_DIRECT + 5)), Condvar::new());
+        {
+            let mut a = attente.0.lock().unwrap();
+            for n in 0..10 {
+                assert_eq!(
+                    a.ajouter(1, format!("direct{n}").as_bytes(), Instant::now()),
+                    Ajout::Nouveau
+                );
+            }
+        }
+        let c = Compteurs::default();
+        m.perte();
+        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::Rien);
+        let affame = Tour {
+            sans_reserve: true,
+            liste_max: LISTE_MAX,
+        };
+        assert_eq!(relire(0, &m, &attente, &c, affame), Relu::Fini);
+        assert_eq!(c.repris.load(Ordering::Relaxed), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Défaut 2 : la file garde le plus ancien moment d'origine (regroupement compris) ; le fichier rendu à
+    /// l'examen reste compté jusqu'au suivant.
+    #[test]
+    fn moment_d_origine_de_la_file_et_de_l_examen() {
+        let attente = (Mutex::new(Attente::new(RESERVE_DIRECT + 10)), Condvar::new());
+        let avant = Instant::now().checked_sub(Duration::from_secs(3600)).unwrap();
+        {
+            let mut a = attente.0.lock().unwrap();
+            assert_eq!(a.plus_ancien(), None);
+            a.ajouter_depuis(0, b"a", avant, 100);
+            a.ajouter_depuis(0, b"b", avant, 50);
+            a.ajouter_depuis(0, b"a", avant, 30);
+            assert_eq!(a.plus_ancien(), Some(30));
+        }
+        let arret = AtomicBool::new(false);
+        let en_examen = AtomicI64::new(0);
+        let (_, nom, _) = prochain(&arret, &attente, &en_examen).unwrap();
+        let attendu = if nom == b"a" { 30 } else { 50 };
+        assert_eq!(en_examen.load(Ordering::SeqCst), attendu);
+        arret.store(true, Ordering::SeqCst);
+        assert!(prochain(&arret, &attente, &en_examen).is_none());
+        assert_eq!(en_examen.load(Ordering::SeqCst), 0);
+    }
+
+    /// Défaut 6 : un fichier examiné sain tel quel est sauté par une relecture ; réécrit, il est repris.
+    #[test]
+    fn deja_examine_saute_a_la_relecture() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        std::fs::write(d.join("vu"), b"Salon").unwrap();
+        std::fs::write(d.join("neuf"), b"Salon").unwrap();
+        let m = marque(&d, false);
+        let meta = std::fs::symlink_metadata(d.join("vu")).unwrap();
+        m.noter_examine(b"vu", &meta);
+        assert!(m.deja_examine(b"vu", &meta));
+        let attente = (Mutex::new(Attente::new(RESERVE_DIRECT + 10)), Condvar::new());
+        let c = Compteurs::default();
+        m.perte();
+        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::Fini);
+        let noms: Vec<Vec<u8>> = attente.0.lock().unwrap().file.drain(..).map(|e| e.nom).collect();
+        assert_eq!(noms, vec![b"neuf".to_vec()]);
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(d.join("vu"), b"Salon2").unwrap();
+        let meta = std::fs::symlink_metadata(d.join("vu")).unwrap();
+        assert!(!m.deja_examine(b"vu", &meta));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Attend que le relevé remplisse `ok`, `fin` au plus ; rend le dernier relevé.
+    fn attendre_releve(s: &Surveillance, fin: Duration, ok: impl Fn(&Releve) -> bool) -> Releve {
+        let fin = Instant::now() + fin;
+        loop {
+            let r = s.releve();
+            if ok(&r) || Instant::now() >= fin {
+                return r;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// La prochaine menace rendue, `fin` au plus.
+    fn attendre_menace(s: &Surveillance, fin: Duration) -> Option<Examine> {
+        let fin = Instant::now() + fin;
+        while Instant::now() < fin {
+            if let Some(x) = s.recevoir() {
+                return Some(x);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        None
+    }
+
+    /// Défaut 7 (relecture Fable) : un fichier créé par O_TMPFILE puis lié (linkat) donne un événement au nom
+    /// anonyme, « parti » ; le dossier est alors relu et le vrai fichier examiné.
+    #[test]
+    fn vrai_fanotify_o_tmpfile_linkat() {
+        if let Err(e) = Groupe::ouvrir_notification() {
+            return crate::essais::saute(&format!("fanotify sans droits refusé par ce noyau : {e}"));
+        }
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let ailleurs = crate::protection::isoler::dossier_jetable().unwrap();
+        let reel = std::fs::canonicalize(&d).unwrap();
+        std::fs::write(ailleurs.join("source"), elf_marque()).unwrap();
+        let s = match Surveillance::demarrer(
+            vec![(reel.clone(), "Salon".into(), false)],
+            Box::new(|| (sources_essai(), None)),
+            None,
+        ) {
+            Ok(s) => s,
+            Err(e) => return crate::essais::saute(&format!("marque refusée : {e}")),
+        };
+        let st = std::process::Command::new("python3")
+            .arg("-I")
+            .arg("-c")
+            .arg("import os,sys\nd=sys.argv[1]\nfd=os.open(d, os.O_TMPFILE|os.O_WRONLY, 0o644)\nos.write(fd, open(sys.argv[2],'rb').read())\nos.link(f'/proc/self/fd/{fd}', d+'/tmpfile.bin')\nos.close(fd)\n")
+            .arg(&d)
+            .arg(ailleurs.join("source"))
+            .status();
+        if !st.is_ok_and(|x| x.success()) {
+            drop(s);
+            let _ = std::fs::remove_dir_all(&d);
+            let _ = std::fs::remove_dir_all(&ailleurs);
+            return crate::essais::saute("python3 ou O_TMPFILE indisponible ici");
+        }
+        let menace = attendre_menace(&s, Duration::from_secs(20));
+        let r = s.releve();
+        let menace = menace.unwrap_or_else(|| panic!("fichier lié jamais examiné : {r:?}"));
+        assert_eq!(menace.chemin, reel.join("tmpfile.bin"));
+        assert!(matches!(menace.resultat.verdict(), Verdict::Certain(..)));
+        drop(s);
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&ailleurs);
+    }
+
+    /// Fin de pause : ce qui est arrivé pendant la pause (compté non vérifié) est relu et examiné à la reprise.
+    #[test]
+    fn vrai_fanotify_fin_de_pause_relue() {
+        if let Err(e) = Groupe::ouvrir_notification() {
+            return crate::essais::saute(&format!("fanotify sans droits refusé par ce noyau : {e}"));
+        }
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let ailleurs = crate::protection::isoler::dossier_jetable().unwrap();
+        let reel = std::fs::canonicalize(&d).unwrap();
+        std::fs::write(ailleurs.join("source"), elf_marque()).unwrap();
+        let s = match Surveillance::demarrer(
+            vec![(reel.clone(), "Salon".into(), false)],
+            Box::new(|| (sources_essai(), None)),
+            None,
+        ) {
+            Ok(s) => s,
+            Err(e) => return crate::essais::saute(&format!("marque refusée : {e}")),
+        };
+        s.mettre_en_pause(true);
+        let cp = std::process::Command::new("cp")
+            .arg(ailleurs.join("source"))
+            .arg(d.join("en-pause.bin"))
+            .status()
+            .unwrap();
+        assert!(cp.success());
+        let r = attendre_releve(&s, Duration::from_secs(10), |r| r.en_pause > 0);
+        assert!(r.en_pause > 0, "{r:?}");
+        assert!(s.recevoir().is_none());
+        s.mettre_en_pause(false);
+        let menace = attendre_menace(&s, Duration::from_secs(20));
+        let r = s.releve();
+        let menace = menace.unwrap_or_else(|| panic!("fichier de la pause jamais examiné : {r:?}"));
+        assert_eq!(menace.chemin, reel.join("en-pause.bin"));
+        assert!(r.repris > 0, "{r:?}");
+        drop(s);
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&ailleurs);
     }
 
     /// G (relecture AV5) : un fichier arrivé pendant l'arrêt du veilleur (avant la marque) est examiné au démarrage ;
@@ -2030,6 +2518,7 @@ mod tests {
         let menace = menace.unwrap_or_else(|| panic!("menace jamais examinée : {r:?}"));
         assert_eq!(menace.chemin, reel.join("menace.bin"));
         assert!(r.file_pleine > 0, "l'inondation n'a pas rempli la file : {r:?}");
+        assert!(r.repris > 0, "rien n'a été repris par relecture : {r:?}");
         drop(s);
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&ailleurs);
