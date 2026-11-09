@@ -527,7 +527,7 @@ fn telecharges(empreintes: Option<&'static Empreintes>, t: &mut Trouvees) {
             continue;
         }
         match moteur::examiner(&chemin, &sources, reste.min(TELECHARGE_DELAI)) {
-            Ok(r) => match menace_du_telecharge(chemin, &r) {
+            Ok(r) => match menace_du_fichier(chemin, &r, tr!("Téléchargements", "Downloads")) {
                 Some(m) => t.menaces.push(m),
                 None if !r.non_verifie.is_empty() => partiels = partiels.saturating_add(1),
                 None => {}
@@ -549,11 +549,11 @@ fn telecharges(empreintes: Option<&'static Empreintes>, t: &mut Trouvees) {
     }
 }
 
-/// La menace d'un fichier des Téléchargements d'après le verdict du moteur. Certain (contenu exact reconnu) : bloqué
-/// tout seul si les réglages le permettent. Famille (règle YARA, signature ClamAV) : sa suite proposée, en un geste
-/// de la personne. Suspect (heuristiques seules) : une alerte avec les gestes de R1, sans suite ni geste automatique.
-/// Sain ou non vérifié : pas de menace.
-fn menace_du_telecharge(chemin: PathBuf, r: &crate::protection::moteur::Resultat) -> Option<Menace> {
+/// La menace d'un fichier arrivé dans `ou` (Téléchargements, ou un dossier du temps réel des fichiers) d'après le
+/// verdict du moteur. Certain (contenu exact reconnu) : bloqué tout seul si les réglages le permettent. Famille (règle
+/// YARA, signature ClamAV) : sa suite proposée, en un geste de la personne. Suspect (heuristiques seules) : une alerte
+/// avec les gestes de R1, sans suite ni geste automatique. Sain ou non vérifié : pas de menace.
+pub(super) fn menace_du_fichier(chemin: PathBuf, r: &crate::protection::moteur::Resultat, ou: &str) -> Option<Menace> {
     use crate::protection::moteur::{Source, Verdict};
     let (certaine, type_alerte, raison) = match r.verdict() {
         Verdict::Certain(Source::EmpreinteMalwareBazaar, _) => (
@@ -585,10 +585,7 @@ fn menace_du_telecharge(chemin: PathBuf, r: &crate::protection::moteur::Resultat
         categorie: Categorie::Programmes,
         certaine,
         type_alerte,
-        quoi: trf!(
-            "« {nom} », dans Téléchargements : {raison}",
-            "“{nom}”, in Downloads: {raison}"
-        ),
+        quoi: trf!("« {nom} », dans {ou} : {raison}", "“{nom}”, in {ou}: {raison}"),
         cle: format!("fichier:{}", chemin.display()),
         geste: Geste::Programme {
             pid: None,
@@ -1168,7 +1165,7 @@ mod tests {
             }],
             ..vide.clone()
         };
-        let certain = menace_du_telecharge(chemin.clone(), &trouve(Source::EmpreinteClamav)).unwrap();
+        let certain = menace_du_fichier(chemin.clone(), &trouve(Source::EmpreinteClamav), "Téléchargements").unwrap();
         assert!(certain.certaine);
         assert_eq!(certain.type_alerte, Some(Type::MalwareConnu));
         assert_eq!(certain.cle, "fichier:/home/alice/Downloads/facture.pdf.exe");
@@ -1177,9 +1174,14 @@ mod tests {
             Geste::Programme { pid: None, fichier: Some(f), detection, .. }
                 if f == &chemin && detection.contains("Win.Trojan.Essai")
         ));
-        let mb = menace_du_telecharge(chemin.clone(), &trouve(Source::EmpreinteMalwareBazaar)).unwrap();
+        let mb = menace_du_fichier(
+            chemin.clone(),
+            &trouve(Source::EmpreinteMalwareBazaar),
+            "Téléchargements",
+        )
+        .unwrap();
         assert!(mb.certaine && mb.type_alerte == Some(Type::MalwareConnu));
-        let famille = menace_du_telecharge(chemin.clone(), &trouve(Source::Yara)).unwrap();
+        let famille = menace_du_fichier(chemin.clone(), &trouve(Source::Yara), "Téléchargements").unwrap();
         assert!(!famille.certaine);
         assert_eq!(famille.type_alerte, Some(Type::Famille));
         let suspect = Resultat {
@@ -1191,7 +1193,7 @@ mod tests {
             }],
             ..vide.clone()
         };
-        let s = menace_du_telecharge(chemin.clone(), &suspect).unwrap();
+        let s = menace_du_fichier(chemin.clone(), &suspect, "Téléchargements").unwrap();
         assert!(!s.certaine);
         assert_eq!(s.type_alerte, None);
         // Même en automatique, accord donné, un suspect ou une famille ne vaut qu'un clic ; le certain part seul.
@@ -1204,12 +1206,12 @@ mod tests {
         assert_eq!(decision(&s), super::super::parametres::Decision::UnClic);
         assert_eq!(decision(&famille), super::super::parametres::Decision::UnClic);
         assert_eq!(decision(&certain), super::super::parametres::Decision::Auto);
-        assert!(menace_du_telecharge(chemin.clone(), &vide).is_none());
+        assert!(menace_du_fichier(chemin.clone(), &vide, "Téléchargements").is_none());
         let non_lu = Resultat {
             non_verifie: vec!["contenu PDF non ouvert".into()],
             ..vide.clone()
         };
-        assert!(menace_du_telecharge(chemin, &non_lu).is_none());
+        assert!(menace_du_fichier(chemin, &non_lu, "Téléchargements").is_none());
     }
 
     /// Défaut de la relecture : un argument qui ressemble au nom d'un outil ne rendait l'interpréteur « certain »,

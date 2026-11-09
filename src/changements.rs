@@ -412,6 +412,31 @@ pub(crate) fn blocages_du_texte(texte: &str) -> Vec<(String, bool, Blocage)> {
         .collect()
 }
 
+/// Une quarantaine de la menace `cle`, posée sur le contenu d'empreinte `sha256` (hexadécimal, relevée par sa preuve),
+/// a-t-elle été défaite par la personne (fichier remis, pas supprimé) ? Seules comptent les lignes que Vanguard a
+/// écrites lui-même : une ligne forgée par un programme du compte ne fait pas taire la quarantaine automatique. Le
+/// temps réel des fichiers ne remet pas en quarantaine, tout seul, un fichier que la personne vient de sortir.
+#[cfg(target_os = "linux")]
+pub(crate) fn quarantaine_remise(cle: &str, sha256: &str) -> bool {
+    quarantaine_remise_de(&fichier(), cle, sha256)
+}
+
+#[cfg(target_os = "linux")]
+fn quarantaine_remise_de(chemin: &std::path::Path, cle: &str, sha256: &str) -> bool {
+    lire_de(chemin).into_iter().filter_map(|c| c.blocage).any(|b| {
+        b.origine.is_none()
+            && b.cle == cle
+            && b.annule.is_some()
+            && !b.supprime
+            && matches!(b.annulation, Some(Annulation::Quarantaine { .. }))
+            && b.preuve
+                .as_ref()
+                .and_then(|p| p.fichier.as_ref())
+                .and_then(|f| f.sha256.as_deref())
+                .is_some_and(|h| h.eq_ignore_ascii_case(sha256))
+    })
+}
+
 /// Note que ce blocage est défait : il n'est plus proposé à l'annulation, et la menace peut revenir.
 pub(crate) fn marquer_annule(id: &str) {
     marquer_annule_dans(&fichier(), id, false);

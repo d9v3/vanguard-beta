@@ -56,6 +56,8 @@ mod regles;
 pub(crate) mod reseau_natif;
 pub(crate) mod unites;
 pub(crate) mod veilleur;
+// Le temps réel des fichiers du veilleur, hors de veilleur.rs : il refuse l'`unsafe`, que veilleur.rs lève.
+pub(crate) mod veilleur_fichiers;
 pub(crate) mod zstd;
 
 pub(crate) use algorithmes_ssh::{liste_sure, sshd_dans_l_ordre, sshd_en_marche, version_ssh, version_sshd};

@@ -1,9 +1,9 @@
-//! Le lecteur des événements de fanotify et de /proc/self/mountinfo que le garde (root) lit
-//! (src/machine/linux/fanotify/lecture.rs) : versions de métadonnées inconnues, longueurs nulles, coupées,
-//! démesurées ou qui sortent du tampon, enregistrements d'information mal formés (longueur nulle, PIDFD en double ou
-//! de mauvaise taille), tampons pleins d'événements ; lignes de mountinfo hostiles (échappements faux, champs
-//! manquants, types inconnus). La première moitié des octets va au lecteur d'événements, tout le texte au lecteur de
-//! montages.
+//! Le lecteur des événements de fanotify et de /proc/self/mountinfo que le garde (root) et le veilleur (temps réel
+//! des fichiers, sans droits) lisent (src/machine/linux/fanotify/lecture.rs) : versions de métadonnées inconnues,
+//! longueurs nulles, coupées, démesurées ou qui sortent du tampon, enregistrements d'information mal formés (longueur
+//! nulle, PIDFD en double ou de mauvaise taille, DFID_NAME en double, à la poignée démesurée ou au nom sans fin),
+//! tampons pleins d'événements ; lignes de mountinfo hostiles (échappements faux, champs manquants, types inconnus).
+//! Les octets vont aux deux lecteurs d'événements, tout le texte au lecteur de montages.
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (src/) : refusé sans recours, un allow ne compile pas.
 #![forbid(unsafe_code)]
@@ -22,6 +22,16 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
         // Réécrit comme le noyau l'écrit, il se relit tel quel.
         let t = lecture::ecrire(e, e.pidfd);
         assert_eq!(lecture::evenements(&t).evenements, vec![*e]);
+    }
+    // Le groupe de notification du veilleur : chaque nom rendu est borné, non vide, sans NUL, et se relit tel quel.
+    let n = lecture::evenements_nommes(octets);
+    assert!(n.evenements.len() <= lecture::EVENEMENTS_MAX);
+    for e in &n.evenements {
+        if let Some(nom) = &e.nom {
+            assert!(!nom.is_empty() && nom.len() <= lecture::NOM_MAX && !nom.contains(&0));
+        }
+        let t = lecture::ecrire_nomme(e);
+        assert_eq!(lecture::evenements_nommes(&t).evenements, vec![e.clone()]);
     }
     // Sans défaut, tout le tampon a été lu ; vide, rien.
     if octets.is_empty() {

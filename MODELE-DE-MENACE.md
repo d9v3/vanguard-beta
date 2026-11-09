@@ -62,9 +62,9 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   permet, et la quarantaine reste annulable. Sous Windows, Defender allumé, le moteur n'est qu'un second avis. Defender
   coupé par la personne (Options de défense), il devient le principal et l'analyse dit ce qui manque. Defender coupé
   sans choix noté, ou illisible : rien n'est conclu.
-- **Tout, en temps réel.** Hors des deux veilleurs de Linux (programmes et connexions, anti-rançongiciel ; coupés par
-  défaut), de la surveillance en direct de l'intégrité des fichiers critiques et du blocage de Defender, la
-  surveillance passe chaque heure, entre deux bilans.
+- **Tout, en temps réel.** Hors des deux veilleurs de Linux (programmes, connexions et fichiers arrivés ;
+  anti-rançongiciel ; coupés par défaut), de la surveillance en direct de l'intégrité des fichiers critiques et du
+  blocage de Defender, la surveillance passe chaque heure, entre deux bilans.
 - **Chaque lancement, sans exception de temps (garde des lancements, Linux).** Le garde (`vanguard garde on`, coupé
   par défaut) ne bloque jamais l'ordinateur : quand il ne peut pas répondre, il laisse passer. Deux fenêtres en
   découlent. Pendant une relance du garde (environ une seconde), les lancements sont permis sans être vus. Un garde
@@ -87,6 +87,17 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   dans cette seconde n'est pas vu. Un programme de plus de 64 Mio passe à son premier lancement et n'est jugé qu'après
   coup ; sur FAT et exFAT (clés USB), où rien n'est gardé en cache faute d'horodatage fiable, il n'est jamais arrêté à
   temps. L'antivirus et le veilleur des programmes restent la ligne pour ces voies.
+- **Ce que le temps réel des fichiers ne voit pas (Linux).** Le veilleur marque, sans droits, Téléchargements, le
+  Bureau, ~/.local/bin et ~/.config/autostart (marques fanotify d'inode, les seules permises à un compte ordinaire).
+  Il voit un fichier fermé après écriture ou arrivé par renommage, enfant DIRECT de l'un d'eux. Il ne voit pas : un
+  sous-dossier (une archive décompressée dans `Téléchargements/dossier/`), un autre dossier (Documents, /tmp, une clé
+  USB), un fichier écrit avant le démarrage du veilleur ou pendant qu'il est coupé ou en pause, ni un programme lancé
+  sans être écrit dans ces dossiers (le veilleur des programmes et le garde le jugent à son lancement). Un fichier de
+  plus de 64 Mio, illisible, parti avant d'être lu, ou arrivé quand la file est pleine (256 en attente) n'est pas
+  examiné : il est compté non vérifié, jamais sain. Un débordement de la file du noyau perd un nombre inconnu
+  d'événements : il est compté et dit. Un fichier en cours de téléchargement (« .part », « .crdownload ») n'est
+  examiné qu'à son renommage final. Un lien n'est jamais suivi. La passe horaire et l'analyse « Rapide » reprennent
+  ces dossiers. Un programme malveillant du compte peut éteindre le veilleur, comme les autres.
 - **La page visitée.** Vanguard n'a pas d'extension de navigateur : la page ouverte n'est pas examinée. Il examine un
   lien qu'on lui donne, bloque après accord des sites dangereux connus par le fichier hosts
   (`vanguard sites-dangereux`), et le mode Wi-Fi public passe à un DNS qui filtre.

@@ -25,7 +25,7 @@ pub(crate) mod decision;
 pub(crate) mod listes;
 mod minuterie;
 mod notifier;
-mod ouvrir;
+pub(crate) mod ouvrir;
 pub(crate) mod poser;
 pub(crate) mod servir;
 pub(crate) mod sortie;

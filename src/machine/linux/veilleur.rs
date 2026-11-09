@@ -1,11 +1,14 @@
 //! Le veilleur : ce qui se passe entre deux passes de la surveillance horaire. La surveillance prend une photo par
 //! heure ; un programme ou une connexion qui vit moins d'une heure entre deux photos n'y est jamais vu. Le veilleur
-//! écoute deux flux que le noyau Linux ouvre aux comptes ordinaires, sans root ni eBPF, et sans aucun code chargé dans
+//! écoute trois flux que le noyau Linux ouvre aux comptes ordinaires, sans root ni eBPF, et sans aucun code chargé dans
 //! le noyau :
 //! - le connecteur de processus (NETLINK_CONNECTOR, groupe CN_IDX_PROC ; Linux 6.6 et plus sans droits) : chaque
 //!   fork, exec et fin de processus, de tous les comptes, même de quelques millisecondes ;
 //! - les fins de prises de sock_diag (groupes « destroy ») : chaque connexion TCP ou UDP au moment où elle se ferme,
-//!   adresses et ports, même brève.
+//!   adresses et ports, même brève ;
+//! - fanotify en groupe de notification (Linux 5.13 et plus sans droits, `veilleur_fichiers`) : chaque fichier fermé
+//!   après écriture ou arrivé par renommage dans Téléchargements, le Bureau, ~/.local/bin ou ~/.config/autostart
+//!   (enfants directs seulement), examiné par le moteur de Vanguard et suivi par le blocage.
 //!
 //! Ce qu'il ne voit pas, et dit tel quel : l'événement de lancement ne porte que le numéro du processus, et un
 //! programme de quelques millisecondes peut être parti avant qu'on lise /proc (il est compté « parti », jamais jugé
@@ -52,6 +55,8 @@ use crate::risk::Niveau;
 use crate::ui::{GRIS, RESET, VERT, afficher_aligne, couleur, demander, titre};
 use crate::voulues::{self, Defense};
 use crate::{tr, trf, trp};
+
+use super::veilleur_fichiers as fichiers;
 
 regle!(
     "LNX-SUR-001",
@@ -1845,6 +1850,8 @@ pub(crate) struct Etat {
     pub pids_geles: Vec<u32>,
     /// Pourquoi la veille des fichiers ne tourne pas, alors qu'elle est voulue (notify indisponible, aucun dossier).
     pub rancon_sans: Option<String>,
+    // ── Temps réel des fichiers (fanotify, dossiers où arrivent les menaces) ──
+    pub fichiers: fichiers::Releve,
 }
 
 const DERNIERS_PARTIS: usize = 10;
@@ -2119,6 +2126,8 @@ fn servir() -> i32 {
     adopter_les_marques();
     // La veille des dossiers personnels, si elle est voulue (accord séparé, dans le même « on »).
     let mut rancon = construire_veille(&mut etat);
+    // Le temps réel des fichiers : refusé (noyau, fanotify, marques), il est dit, et le reste du veilleur continue.
+    let mut surveillance = demarrer_fichiers(&mut etat);
     ecrire_etat(&etat);
     let (mut minute, mut quart) = (Instant::now(), Instant::now());
     let sortie = loop {
@@ -2152,6 +2161,9 @@ fn servir() -> i32 {
             if let Some(r) = rancon.as_mut() {
                 tour_rancon(r, &mut etat, &mut debit);
             }
+            if let Some(s) = surveillance.as_mut() {
+                tour_fichiers(s, &mut debit);
+            }
             if let Some(n) = debit.resume(maintenant()) {
                 tableau::noter_alerte(
                     Genre::Veilleur,
@@ -2170,10 +2182,22 @@ fn servir() -> i32 {
             // ne se tasse dans une même fenêtre au retour.
             r.jeter();
         }
+        if etat.en_pause
+            && let Some(s) = surveillance.as_ref()
+        {
+            // Ce que l'examinateur rendait encore au moment de la coupure : compté non vérifié, sans suite.
+            while s.recevoir().is_some() {
+                s.noter_en_pause();
+            }
+        }
         if minute.elapsed() >= Duration::from_mins(1) {
             minute = Instant::now();
             etat.en_pause = crate::protection::temps_reel::coupure().is_some();
             v.lire = !etat.en_pause;
+            if let Some(s) = surveillance.as_ref() {
+                s.mettre_en_pause(etat.en_pause);
+                etat.fichiers = s.releve();
+            }
             etat.battement = maintenant();
             etat.non_haches = etat
                 .non_haches
@@ -2197,12 +2221,67 @@ fn servir() -> i32 {
     };
     // Le désabonnement part ici, avant l'état final.
     drop(v);
+    if let Some(s) = surveillance.take() {
+        etat.fichiers = s.releve();
+        drop(s);
+    }
     etat.battement = maintenant();
     etat.non_haches = etat
         .non_haches
         .saturating_add(u64::try_from(fichiers.prendre_non_haches()).unwrap_or(u64::MAX));
     ecrire_etat(&etat);
     sortie
+}
+
+// ───────────────────────────── Temps réel des fichiers ─────────────────────────────
+
+/// Marque les dossiers où arrivent les menaces et démarre leur examen ; met à jour l'état (en marche, ou pourquoi
+/// pas). Les sources du moteur sont celles de l'usage en continu (P21 : base ClamAV aux empreintes seules), chargées
+/// une fois dans le fil de l'examinateur.
+fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
+    use crate::protection::moteur::{Usage, sources};
+    match fichiers::Surveillance::demarrer(fichiers::a_surveiller(), Box::new(|| sources(Usage::EnContinu))) {
+        Ok(s) => {
+            s.mettre_en_pause(etat.en_pause);
+            etat.fichiers = s.releve();
+            Some(s)
+        }
+        Err(raison) => {
+            eprintln!("{raison}");
+            etat.fichiers = fichiers::Releve {
+                sans: Some(raison.0),
+                ..fichiers::Releve::default()
+            };
+            None
+        }
+    }
+}
+
+/// La clé du débit d'une menace du temps réel : le même contenu au même endroit n'est dit qu'une fois en 6 heures.
+fn cle_de_fichier(x: &fichiers::Examine) -> String {
+    let hex = x
+        .resultat
+        .sha256
+        .as_ref()
+        .map(crate::protection::empreintes::hex)
+        .unwrap_or_default();
+    format!("fichier-en-direct|{hex}|{}", x.chemin.display())
+}
+
+/// Un tour du temps réel des fichiers : la suite de chaque menace examinée, au débit du veilleur.
+fn tour_fichiers(s: &mut fichiers::Surveillance, debit: &mut Debit) {
+    use crate::protection::blocage::en_direct::{self, Annonce};
+    use crate::protection::moteur::Verdict as V;
+    while let Some(x) = s.recevoir() {
+        let grave = matches!(x.resultat.verdict(), V::Certain(..) | V::Famille(..));
+        let annonce = match debit.decider(&cle_de_fichier(&x), grave, maintenant()) {
+            Decision::Noter { notifier: true } => Annonce::Notifier,
+            Decision::Noter { notifier: false } => Annonce::Noter,
+            Decision::Repete | Decision::Taire => Annonce::Taire,
+        };
+        let fait = en_direct::fichier_en_direct(&x.chemin, &x.ou, &x.resultat, annonce);
+        s.noter_suite(fait);
+    }
 }
 
 // ───────────────────────────── Veille anti-rançongiciel ─────────────────────────────
@@ -2569,8 +2648,8 @@ fn exe_prevu() -> Option<String> {
 
 fn explication() -> &'static str {
     tr!(
-        "Le veilleur voit chaque programme lancé sur cet ordinateur, de tous les comptes, même s'il ne vit que quelques millisecondes, et chaque connexion TCP ou UDP au moment où elle se ferme. Il les juge comme le bilan (outil offensif connu, commande qui télécharge ou cache ce qu'elle lance) et contre les serveurs de commande de botnets déjà téléchargés par la surveillance ou le bilan. Il n'envoie rien, et garde les alertes au tableau de bord (vanguard tableau-de-bord). Après l'allumage, il vous propose d'arrêter tout seul un malware connu de votre compte à son lancement, puis de surveiller vos dossiers personnels contre les rançongiciels : deux accords à part, qui n'arrêtent rien sans la protection active. Un programme malveillant de votre compte peut l'éteindre : il ne remplace pas vos mises à jour ni votre sauvegarde. Un programme parti avant d'être lu est compté tel quel, jamais jugé sain ; le programme d'une connexion fermée n'est pas connu (le noyau ne le donne pas). Il tourne pendant votre session ouverte, sans droits d'administrateur ni code chargé dans le noyau.",
-        "The watcher sees each program started on this computer, from every account, even one that lives only a few milliseconds, and each TCP or UDP connection as it closes. It judges them as the check does (known offensive tool, command that downloads or hides what it runs) and against the botnet command servers already downloaded by the monitoring or the check. It sends nothing, and keeps the alerts on the dashboard (vanguard dashboard). After it is turned on, it offers to stop known malware of your account by itself as it starts, then to watch your personal folders against ransomware: two separate consents, which stop nothing without active protection. A malicious program in your account can switch it off: it does not replace your updates or your backup. A program gone before it could be read is counted as such, never judged safe; the program of a closed connection is not known (the kernel does not give it). It runs while your session is open, without administrator rights or code loaded into the kernel."
+        "Le veilleur voit chaque programme lancé sur cet ordinateur, de tous les comptes, même s'il ne vit que quelques millisecondes, et chaque connexion TCP ou UDP au moment où elle se ferme. Il les juge comme le bilan (outil offensif connu, commande qui télécharge ou cache ce qu'elle lance) et contre les serveurs de commande de botnets déjà téléchargés par la surveillance ou le bilan. Il n'envoie rien, et garde les alertes au tableau de bord (vanguard tableau-de-bord). Après l'allumage, il vous propose d'arrêter tout seul un malware connu de votre compte à son lancement, puis de surveiller vos dossiers personnels contre les rançongiciels : deux accords à part, qui n'arrêtent rien sans la protection active. Il examine aussi chaque fichier posé dans Téléchargements, le Bureau, ~/.local/bin ou ~/.config/autostart (pas leurs sous-dossiers) avec le moteur de Vanguard : un fichier reconnu à coup sûr va en quarantaine (annulable) seulement si la protection active le permet ; sinon une alerte. Un programme malveillant de votre compte peut l'éteindre : il ne remplace pas vos mises à jour ni votre sauvegarde. Un programme parti avant d'être lu est compté tel quel, jamais jugé sain ; le programme d'une connexion fermée n'est pas connu (le noyau ne le donne pas). Il tourne pendant votre session ouverte, sans droits d'administrateur ni code chargé dans le noyau.",
+        "The watcher sees each program started on this computer, from every account, even one that lives only a few milliseconds, and each TCP or UDP connection as it closes. It judges them as the check does (known offensive tool, command that downloads or hides what it runs) and against the botnet command servers already downloaded by the monitoring or the check. It sends nothing, and keeps the alerts on the dashboard (vanguard dashboard). After it is turned on, it offers to stop known malware of your account by itself as it starts, then to watch your personal folders against ransomware: two separate consents, which stop nothing without active protection. It also scans each file placed in Downloads, the Desktop, ~/.local/bin or ~/.config/autostart (not their subfolders) with Vanguard's engine: a file recognized for certain goes to quarantine (reversible) only if active protection allows it; otherwise an alert. A malicious program in your account can switch it off: it does not replace your updates or your backup. A program gone before it could be read is counted as such, never judged safe; the program of a closed connection is not known (the kernel does not give it). It runs while your session is open, without administrator rights or code loaded into the kernel."
     )
 }
 
@@ -2911,8 +2990,8 @@ pub(crate) fn commande(etat: Option<&str>, sous_etat: Option<&str>, servir: bool
         return commande_isolement(sous_etat);
     }
     titre(tr!(
-        "Veilleur : lancements et connexions",
-        "Watcher: launches and connections"
+        "Veilleur : lancements, connexions et fichiers",
+        "Watcher: launches, connections and files"
     ));
     match etat {
         Some("on") => allumer(),
@@ -3610,6 +3689,9 @@ fn juger_etat(
                     e.connus_arretes
                 ));
             }
+            // Le temps réel des fichiers : les dossiers surveillés, ce qui n'a pas pu être vérifié, ou pourquoi il
+            // ne tourne pas.
+            ajouter(e.fichiers.phrase());
             // La veille anti-rançongiciel : son état, ses rafales, les rançongiciels arrêtés.
             if e.rancon_actif {
                 ajouter(trf!(

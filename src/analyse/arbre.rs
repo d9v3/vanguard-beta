@@ -98,7 +98,6 @@ pub(crate) fn analyser_fichier(
     bornes: &Bornes,
     visiteur: &mut dyn FnMut(&Partie, &[u8]),
 ) -> std::io::Result<Analyse> {
-    use std::io::Read;
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     // Sans attendre (un tube nommé glissé à la place du fichier bloquerait la lecture) et sans suivre de lien : un
@@ -107,6 +106,23 @@ pub(crate) fn analyser_fichier(
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK | libc::O_NOFOLLOW);
     let fichier = options.open(chemin)?;
+    let nom = chemin
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    analyser_ouvert(fichier, nom, bornes, visiteur)
+}
+
+/// L'analyse d'un fichier déjà ouvert par l'appelant (sans suivre de lien, sans attendre), sous le nom `nom` : un
+/// fichier ordinaire seulement, lu en entier s'il tient dans la borne, sinon dit « trop gros » sans être lu. Le
+/// veilleur s'en sert : il ouvre lui-même, sous le dossier qu'il surveille, le nom que le noyau lui a donné.
+pub(crate) fn analyser_ouvert(
+    fichier: std::fs::File,
+    nom: String,
+    bornes: &Bornes,
+    visiteur: &mut dyn FnMut(&Partie, &[u8]),
+) -> std::io::Result<Analyse> {
+    use std::io::Read;
     let meta = fichier.metadata()?;
     if !meta.is_file() {
         return Err(std::io::Error::new(
@@ -114,10 +130,6 @@ pub(crate) fn analyser_fichier(
             "pas un fichier ordinaire",
         ));
     }
-    let nom = chemin
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
     if meta.len() > bornes.taille_fichier {
         let mut e = Etat {
             bornes: *bornes,

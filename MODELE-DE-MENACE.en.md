@@ -58,9 +58,9 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   protection allows it, and quarantine stays undoable. On Windows, with Defender on, the engine is only a second
   opinion. With Defender turned off by the person (Defense options), it becomes the main one and the scan says what
   is missing. Defender off with no recorded choice, or unreadable: nothing is concluded.
-- **Everything, in real time.** Apart from the two Linux watchers (programs and connections, anti-ransomware; both off
-  by default), the live integrity monitoring of critical files and Defender's blocking, monitoring runs every hour,
-  between two checks.
+- **Everything, in real time.** Apart from the two Linux watchers (programs, connections and arriving files;
+  anti-ransomware; both off by default), the live integrity monitoring of critical files and Defender's blocking,
+  monitoring runs every hour, between two checks.
 - **Every launch, with no time gap (launch guard, Linux).** The guard (`vanguard guard on`, off by default) never
   locks the computer up: when it cannot answer, it lets the launch through. Two windows follow from this. While the
   guard restarts (about one second), launches are allowed without being seen. A frozen guard makes each launch wait
@@ -81,6 +81,17 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   in that second is not seen. A program larger than 64 MiB goes through on its first launch and is judged only
   afterwards; on FAT and exFAT (USB keys), where nothing is cached for lack of reliable timestamps, it is never
   stopped in time. The antivirus and the program watcher remain the line for these paths.
+- **What real-time file scanning does not see (Linux).** The watcher marks, without privileges, Downloads, the
+  Desktop, ~/.local/bin and ~/.config/autostart (fanotify inode marks, the only ones an ordinary account may use).
+  It sees a file closed after writing or arriving by rename, a DIRECT child of one of them. It does not see: a
+  subfolder (an archive extracted into `Downloads/folder/`), another folder (Documents, /tmp, a USB drive), a file
+  written before the watcher started or while it is off or paused, nor a program started without being written to
+  these folders (the program watcher and the guard judge it at launch). A file over 64 MiB, unreadable, gone before
+  being read, or arriving when the queue is full (256 waiting) is not scanned: it is counted as not verified, never
+  as clean. An overflow of the kernel queue loses an unknown number of events: it is counted and reported. A file
+  being downloaded (".part", ".crdownload") is only scanned at its final rename. A link is never followed. The
+  hourly pass and the "Quick" scan go over these folders again. Malware in the account can switch the watcher off,
+  like the others.
 - **The page being visited.** Vanguard has no browser extension: the open page is not examined. It examines a link
   it is given, blocks known dangerous sites through the hosts file after consent (`vanguard sites-dangereux`), and
   public Wi-Fi mode switches to a filtering DNS.

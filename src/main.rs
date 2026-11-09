@@ -241,7 +241,8 @@ enum Commande {
         etat: Option<String>,
     },
     /// Veilleur (Linux 6.6 et plus) : chaque programme lancé et chaque connexion fermée, vus sur le moment et jugés
-    /// comme au bilan ; avec la protection active et votre accord, il peut arrêter un malware connu à son lancement,
+    /// comme au bilan, et chaque fichier posé dans Téléchargements, le Bureau, ~/.local/bin ou ~/.config/autostart,
+    /// examiné par le moteur de Vanguard ; avec la protection active et votre accord, il peut arrêter un malware connu à son lancement,
     /// et geler puis arrêter un rançongiciel quasi certain. Coupé par défaut. Sans argument : son état, puis l'allumer
     /// ou le couper, après accord. « connus on|off » règle l'arrêt du malware connu ; « rancongiciel on|off » la veille
     /// anti-rançongiciel des dossiers personnels ; « isolement on|off » l'isolement du réseau quand un rançongiciel
@@ -2295,9 +2296,9 @@ const OUTILS: &[Outil] = &[
         mots: "journaux logs windows événements events evtx observateur viewer que s'est-il passé what happened \
                chronologie timeline effacé cleared tâche task processus process attaque attack" },
     Outil { action: Action::Veilleur, commande: "veilleur", groupe: Some(Groupe::Reagir), lettre: "",
-        titre: ["Veilleur : lancements, connexions", "Watcher: launches, connections"], precision: ["", ""],
+        titre: ["Veilleur : lancements, connexions, fichiers", "Watcher: launches, connections, files"], precision: ["", ""],
         mots: "veilleur watcher lancements launches processus processes connexions connections brèves brief \
-               connecteur connector temps réel live" },
+               connecteur connector temps réel live fichiers files fanotify téléchargements downloads" },
     // 9 Données et sauvegardes : les fichiers de la personne.
     Outil { action: Action::CopierFichiers, commande: "copier-fichiers", groupe: Some(Groupe::Donnees), lettre: "",
         titre: ["Copier mes fichiers", "Copy my files"],
@@ -3159,7 +3160,8 @@ const AIDES_EN: &[(&str, &str)] = &[
                           (abuse.ch key), after your consent and with administrator rights; \"off\" removes them \
                           exactly. Without argument: their state"),
     ("veilleur", "Watcher (Linux 6.6 and later): each program started and each connection closed, seen as they \
-                   happen and judged as in the check; with active protection, it can freeze and stop an almost \
+                   happen and judged as in the check, and each file placed in Downloads, the Desktop, ~/.local/bin \
+                   or ~/.config/autostart, scanned by Vanguard's engine; with active protection, it can freeze and stop an almost \
                    certain ransomware. Off by default. Without argument: its state, then turning it on or off, after \
                    your consent. \"ransomware on|off\" sets the personal-folder ransomware watch"),
     ("entretien", "Monthly check-up: once a month, silently, the grade, waiting updates, space to free and new \

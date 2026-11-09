@@ -39,6 +39,8 @@ pub(crate) mod pare_feu;
 pub(crate) mod surveiller;
 pub(crate) mod suspension;
 // Les suites préréglées : du code pur.
+#[cfg(target_os = "linux")]
+pub(crate) mod en_direct;
 mod enchainer;
 pub(crate) mod suites;
 
@@ -1260,7 +1262,7 @@ pub fn au_bilan() {
         .filter(|m| decider(&p, m.categorie, m.certaine) != Decision::Rien)
         .partition(|m| decider(&p, m.categorie, m.certaine) == Decision::Auto);
     for m in &auto {
-        bloquer_tout_seul(m, &ctx, &p, None);
+        bloquer_tout_seul(m, &ctx, &p, None, true);
     }
     if interactif {
         proposer(un_clic, &ctx, &p);
@@ -1301,7 +1303,8 @@ fn bloquer_tout_seul(
     ctx: &Contexte,
     p: &Parametres,
     mut signalees: Option<(&BTreeSet<String>, &mut BTreeSet<String>)>,
-) {
+    notifier: bool,
+) -> bool {
     let retenue = enchainer::type_de(m).map(|t| p.suite(t, true));
     let dit = retenue.as_ref().and_then(|r| r.dit.clone());
     if ctx.interactif
@@ -1329,14 +1332,15 @@ fn bloquer_tout_seul(
                 "",
             );
         }
-        return;
+        return false;
     }
     let d = enchainer::derouler(m, &etapes, ctx, true, pret, &mut |d| {
-        prevenir_tout_seul(m, ctx, d, dit.as_deref(), &mut signalees)
+        prevenir_tout_seul(m, ctx, d, dit.as_deref(), &mut signalees, notifier)
     });
     if ctx.interactif {
         dire_les_autres_gestes(&d);
     }
+    matches!(d.bloque, Some(Ok(_)))
 }
 
 /// Note la menace comme signalée (Bloquer refusé d'avance) et dit si elle l'était déjà au passage d'avant : la suite
@@ -1359,6 +1363,7 @@ fn prevenir_tout_seul(
     d: &enchainer::Deroule,
     dit: Option<&str>,
     signalees: &mut Option<(&BTreeSet<String>, &mut BTreeSet<String>)>,
+    notifier: bool,
 ) -> enchainer::Issue {
     let (titre, texte) = alerte_de_la_suite(m, d, dit);
     match &d.bloque {
@@ -1407,7 +1412,7 @@ fn prevenir_tout_seul(
         }
         None => {}
     }
-    alerter_blocage(m, titre, &texte);
+    alerter_blocage_avec(m, titre, &texte, notifier);
     enchainer::Issue::Fait(tr!("notification et tableau de bord", "notification and dashboard").to_string())
 }
 
@@ -1497,6 +1502,12 @@ fn capitaliser(t: &str) -> String {
 /// L'alerte est reliée, dans le journal des événements, au geste qu'elle annonce (ou à son échec, noté aussi) : le
 /// fil va de l'alerte de détection à la preuve, au geste, puis à cette alerte, au lieu d'alertes sans lien.
 fn alerter_blocage(m: &Menace, titre: &str, texte: &str) {
+    alerter_blocage_avec(m, titre, texte, true);
+}
+
+/// `alerter_blocage` ; sans `notifier`, notée au journal et au tableau de bord seulement (le temps réel des fichiers,
+/// au-delà de son débit de notifications).
+fn alerter_blocage_avec(m: &Menace, titre: &str, texte: &str, notifier: bool) {
     let cle = m.cle_normale_ici();
     if !m.certaine && crate::protection::normales::est_normale(&cle) {
         return;
@@ -1508,10 +1519,12 @@ fn alerter_blocage(m: &Menace, titre: &str, texte: &str) {
         chrono::Duration::minutes(10),
     );
     let id = crate::reseau::tableau::noter_alerte_liee(Genre::Blocage, Some(&cle), geste.as_deref(), titre, texte);
-    crate::reseau::surveillance::notifier(
-        titre,
-        &crate::reseau::surveillance::corps_a_choisir(texte, id.as_deref()),
-    );
+    if notifier {
+        crate::reseau::surveillance::notifier(
+            titre,
+            &crate::reseau::surveillance::corps_a_choisir(texte, id.as_deref()),
+        );
+    }
 }
 
 /// Les menaces déjà signalées comme non bloquées, d'après les sceaux : intactes ou adoptées, leurs clés ; changées
@@ -1552,7 +1565,7 @@ pub(crate) fn en_surveillance() {
         .iter()
         .filter(|m| decider(&p, m.categorie, m.certaine) == Decision::Auto)
     {
-        bloquer_tout_seul(m, &ctx, &p, Some((&avant, &mut maintenant)));
+        bloquer_tout_seul(m, &ctx, &p, Some((&avant, &mut maintenant)), true);
     }
     let _ = crate::sceau::ecrire(
         crate::sceau::BLOCAGE_SIGNALEES,
@@ -1767,7 +1780,17 @@ pub fn alerte(id: &str) {
         }
     }
     let t = menaces::chercher(&Categorie::TOUTES, false);
-    let Some(m) = t.menaces.iter().find(|m| alerte_designe(m, cle)) else {
+    // Un fichier du temps réel hors de Téléchargements : la recherche ne le rejuge pas, il l'est ici, par sa clé.
+    #[cfg(target_os = "linux")]
+    let en_direct = if t.menaces.iter().any(|m| alerte_designe(m, cle)) {
+        None
+    } else {
+        en_direct::menace_d_alerte(cle, &crate::machine::linux::veilleur_fichiers::dossiers())
+            .filter(|m| alerte_designe(m, cle))
+    };
+    #[cfg(not(target_os = "linux"))]
+    let en_direct: Option<Menace> = None;
+    let Some(m) = t.menaces.iter().find(|m| alerte_designe(m, cle)).or(en_direct.as_ref()) else {
         afficher_aligne(
             "  ",
             tr!(

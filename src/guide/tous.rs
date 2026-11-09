@@ -166,8 +166,8 @@ pub const PROGRAMMES: &[Programme] = &[
             traduite(
                 "vanguard veilleur",
                 "vanguard watcher",
-                "Veilleur (Linux) : programmes lancés et connexions fermées, vus sur le moment.",
-                "Watcher (Linux): programs started and connections closed, seen as they happen.",
+                "Veilleur (Linux) : programmes lancés, connexions fermées et fichiers arrivés dans Téléchargements, vus sur le moment.",
+                "Watcher (Linux): programs started, connections closed and files arriving in Downloads, seen as they happen.",
                 true,
             ),
             traduite(

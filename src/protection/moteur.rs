@@ -493,6 +493,35 @@ enum Releve {
 /// moins de `delai`. `Err` : le fichier n'a pas pu être lu (absent, illisible, lien, tube, pas un fichier ordinaire),
 /// ou une source n'a pas fini à temps : rien n'est conclu. Une partie qui manque est dite dans `non_verifie`.
 pub(crate) fn examiner(chemin: &Path, sources: &Sources<'_>, delai: Duration) -> Result<Resultat, ()> {
+    examiner_par(chemin, sources, delai, &mut |bornes, visiteur| {
+        analyse::analyser_fichier(chemin, bornes, visiteur)
+    })
+}
+
+/// Comme [`examiner`], pour un fichier déjà ouvert par l'appelant (le veilleur l'ouvre sous le dossier qu'il
+/// surveille, sans suivre de lien) ; `chemin` ne sert qu'à nommer et situer ce qui est trouvé, jamais à rouvrir.
+#[cfg(target_os = "linux")]
+pub(crate) fn examiner_ouvert(
+    fichier: std::fs::File,
+    chemin: &Path,
+    sources: &Sources<'_>,
+    delai: Duration,
+) -> Result<Resultat, ()> {
+    let nom = chemin
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut fichier = Some(fichier);
+    examiner_par(chemin, sources, delai, &mut |bornes, visiteur| {
+        let f = fichier.take().ok_or_else(|| std::io::Error::other("fichier déjà lu"))?;
+        analyse::analyser_ouvert(f, nom.clone(), bornes, visiteur)
+    })
+}
+
+/// La lecture d'un fichier par le socle d'analyse, chaque partie passée au visiteur.
+type Lire<'a> = dyn FnMut(&Bornes, &mut dyn FnMut(&Partie, &[u8])) -> std::io::Result<analyse::Analyse> + 'a;
+
+fn examiner_par(chemin: &Path, sources: &Sources<'_>, delai: Duration, lire: &mut Lire<'_>) -> Result<Resultat, ()> {
     let echeance = Instant::now().checked_add(delai);
     let bornes = Bornes {
         delai,
@@ -543,7 +572,7 @@ pub(crate) fn examiner(chemin: &Path, sources: &Sources<'_>, delai: Duration) ->
             releves.push(((p.parent, p.chemin.clone(), p.sha256), vus));
         }
     };
-    let analyse = analyse::analyser_fichier(chemin, &bornes, &mut visiteur).map_err(|_| ())?;
+    let analyse = lire(&bornes, &mut visiteur).map_err(|_| ())?;
     if echec {
         return Err(());
     }

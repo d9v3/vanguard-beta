@@ -139,6 +139,14 @@ pub(crate) fn evenements(tampon: &[u8]) -> Lecture {
 
 /// L'événement qui commence à `i`, et où commence le suivant.
 fn un(t: &[u8], i: usize) -> Result<(Evenement, usize), Defaut> {
+    let (masque, fd, pid, infos, fin) = metadonnees(t, i)?;
+    let pidfd = pidfd_de(infos)?;
+    Ok((Evenement { masque, fd, pid, pidfd }, fin))
+}
+
+/// Les métadonnées de l'événement qui commence à `i` : masque, fd, pid, ses enregistrements d'information, et où
+/// commence le suivant.
+fn metadonnees(t: &[u8], i: usize) -> Result<(u64, i32, i32, &[u8], usize), Defaut> {
     let longueur = usize::try_from(u32_a(t, i).ok_or(Defaut::Longueur)?).map_err(|_| Defaut::Longueur)?;
     let version = *t
         .get(i.checked_add(4).ok_or(Defaut::Longueur)?)
@@ -156,8 +164,145 @@ fn un(t: &[u8], i: usize) -> Result<(Evenement, usize), Defaut> {
     let fd = i32_a(t, a(16)?).ok_or(Defaut::Longueur)?;
     let pid = i32_a(t, a(20)?).ok_or(Defaut::Longueur)?;
     let infos = t.get(a(meta)?..fin).ok_or(Defaut::Longueur)?;
-    let pidfd = pidfd_de(infos)?;
-    Ok((Evenement { masque, fd, pid, pidfd }, fin))
+    Ok((masque, fd, pid, infos, fin))
+}
+
+// ───────────────────────────── Le groupe de notification (FAN_REPORT_DFID_NAME) ─────────────────────────────
+//
+// Le temps réel des fichiers du veilleur (sans droits) : chaque événement porte un enregistrement DFID_NAME, le
+// dossier (fsid, puis une `struct file_handle`) et le nom de l'enfant, terminé par NUL. Le nom est une donnée hostile
+// (n'importe quel programme du compte le choisit) : il n'est que rendu, en octets, borné, jamais interprété ici.
+
+/// Le type de l'enregistrement DFID_NAME (FAN_EVENT_INFO_TYPE_DFID_NAME).
+const INFO_DFID_NAME: u8 = 2;
+/// L'en-tête, puis fsid (deux s32), puis handle_bytes (u32) et handle_type (s32) de `struct file_handle`.
+const DEBUT_HANDLE: usize = TAILLE_EN_TETE_INFO + 8;
+const DEBUT_OCTETS_HANDLE: usize = DEBUT_HANDLE + 8;
+/// MAX_HANDLE_SZ du noyau : une poignée plus longue n'est pas crue.
+pub(crate) const HANDLE_MAX: usize = 128;
+/// NAME_MAX : un nom plus long n'est pas cru.
+pub(crate) const NOM_MAX: usize = 255;
+
+/// Un événement du groupe de notification : son masque, le PID (non nul seulement quand l'événement vient du
+/// processus qui lit : un groupe sans droits ne voit pas celui des autres), et le nom de l'enfant dans le dossier
+/// marqué (`None` : pas d'enregistrement DFID_NAME, ce qu'a un débordement de la file).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Nomme {
+    pub masque: u64,
+    pub pid: i32,
+    pub nom: Option<Vec<u8>>,
+}
+
+/// Les événements nommés d'un tampon, et ce qui a arrêté la lecture avant la fin s'il y a lieu.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct LectureNommee {
+    pub evenements: Vec<Nomme>,
+    pub defaut: Option<Defaut>,
+}
+
+/// Découpe le tampon d'un `read` du groupe de notification en événements nommés.
+pub(crate) fn evenements_nommes(tampon: &[u8]) -> LectureNommee {
+    let mut l = LectureNommee::default();
+    let mut i = 0usize;
+    while i < tampon.len() {
+        if l.evenements.len() >= EVENEMENTS_MAX {
+            l.defaut = Some(Defaut::Trop);
+            break;
+        }
+        match metadonnees(tampon, i).and_then(|(masque, _, pid, infos, fin)| Ok((masque, pid, nom_de(infos)?, fin))) {
+            Ok((masque, pid, nom, fin)) => {
+                l.evenements.push(Nomme { masque, pid, nom });
+                i = fin;
+            }
+            Err(d) => {
+                l.defaut = Some(d);
+                break;
+            }
+        }
+    }
+    l
+}
+
+/// Le nom de l'enregistrement DFID_NAME d'un événement (`infos` : ce qui suit ses métadonnées). Un seul tel
+/// enregistrement, une poignée qui tient dans l'enregistrement et dans `HANDLE_MAX`, un nom non vide terminé par NUL
+/// dans l'enregistrement et d'au plus `NOM_MAX` octets ; sinon, le défaut.
+fn nom_de(infos: &[u8]) -> Result<Option<Vec<u8>>, Defaut> {
+    let mut nom = None;
+    let mut i = 0usize;
+    let mut n = 0usize;
+    while i < infos.len() {
+        n = n.checked_add(1).ok_or(Defaut::Enregistrement)?;
+        if n > INFOS_MAX {
+            return Err(Defaut::Enregistrement);
+        }
+        let genre = *infos.get(i).ok_or(Defaut::Enregistrement)?;
+        let longueur =
+            usize::from(u16_a(infos, i.checked_add(2).ok_or(Defaut::Enregistrement)?).ok_or(Defaut::Enregistrement)?);
+        let fin = i.checked_add(longueur).ok_or(Defaut::Enregistrement)?;
+        if longueur < TAILLE_EN_TETE_INFO || fin > infos.len() {
+            return Err(Defaut::Enregistrement);
+        }
+        if genre == INFO_DFID_NAME {
+            if nom.is_some() {
+                return Err(Defaut::Enregistrement);
+            }
+            let r = infos.get(i..fin).ok_or(Defaut::Enregistrement)?;
+            nom = Some(nom_d_un_enregistrement(r).ok_or(Defaut::Enregistrement)?);
+        }
+        i = fin;
+    }
+    Ok(nom)
+}
+
+/// Le nom d'un enregistrement DFID_NAME entier (en-tête compris).
+fn nom_d_un_enregistrement(r: &[u8]) -> Option<Vec<u8>> {
+    let octets_handle = usize::try_from(u32_a(r, DEBUT_HANDLE)?).ok()?;
+    if octets_handle > HANDLE_MAX {
+        return None;
+    }
+    let debut_nom = DEBUT_OCTETS_HANDLE.checked_add(octets_handle)?;
+    let reste = r.get(debut_nom..)?;
+    let fin = reste.iter().position(|&o| o == 0)?;
+    let nom = reste.get(..fin)?;
+    (!nom.is_empty() && nom.len() <= NOM_MAX).then(|| nom.to_vec())
+}
+
+/// Un événement nommé écrit comme le noyau l'écrit (essais et graines du fuzzing) : métadonnées (fd FAN_NOFD), puis
+/// un enregistrement DFID_NAME (fsid et poignée inventés) avec `nom`, aligné sur 4 octets, s'il y en a un.
+#[cfg(any(test, fuzzing))]
+pub(crate) fn ecrire_nomme(e: &Nomme) -> Vec<u8> {
+    let handle = [0x5Au8; 8];
+    let info = e.nom.as_ref().map(|nom| {
+        let mut r = vec![INFO_DFID_NAME, 0, 0, 0];
+        r.extend_from_slice(&7i32.to_ne_bytes());
+        r.extend_from_slice(&9i32.to_ne_bytes());
+        r.extend_from_slice(&u32::try_from(handle.len()).unwrap_or(0).to_ne_bytes());
+        r.extend_from_slice(&1i32.to_ne_bytes());
+        r.extend_from_slice(&handle);
+        r.extend_from_slice(nom);
+        r.push(0);
+        while r.len() % 4 != 0 {
+            r.push(0);
+        }
+        let l = u16::try_from(r.len()).unwrap_or(u16::MAX).to_ne_bytes();
+        if let Some(x) = r.get_mut(2..4) {
+            x.copy_from_slice(&l);
+        }
+        r
+    });
+    let longueur = TAILLE_METADONNEES.saturating_add(info.as_ref().map_or(0, Vec::len));
+    let mut v = Vec::with_capacity(longueur);
+    v.extend_from_slice(&u32::try_from(longueur).unwrap_or(u32::MAX).to_ne_bytes());
+    v.push(VERSION);
+    v.push(0);
+    v.extend_from_slice(&u16::try_from(TAILLE_METADONNEES).unwrap_or(u16::MAX).to_ne_bytes());
+    v.extend_from_slice(&e.masque.to_ne_bytes());
+    v.extend_from_slice(&(-1i32).to_ne_bytes());
+    v.extend_from_slice(&e.pid.to_ne_bytes());
+    if let Some(i) = info {
+        v.extend_from_slice(&i);
+    }
+    v
 }
 
 /// Un événement écrit comme le noyau l'écrit (essais et graines du fuzzing) : ses métadonnées, puis un
@@ -416,6 +561,81 @@ mod tests {
         assert_eq!(l.evenements.len(), EVENEMENTS_MAX);
         assert_eq!(l.defaut, Some(Defaut::Trop));
         assert_eq!(evenements(&[]), Lecture::default());
+    }
+
+    fn nomme(nom: &[u8]) -> Nomme {
+        Nomme {
+            masque: 0x08,
+            pid: 0,
+            nom: Some(nom.to_vec()),
+        }
+    }
+
+    /// Le nom de l'enfant se relit tel quel, octets non UTF-8 compris ; un débordement (sans enregistrement) n'a pas
+    /// de nom ; plusieurs événements se suivent.
+    #[test]
+    fn evenements_nommes_relus() {
+        let premier = nomme(b"facture.pdf");
+        let second = nomme(b"\xff\xfe nom \xc3(");
+        let debordement = Nomme {
+            masque: 0x4000,
+            pid: 0,
+            nom: None,
+        };
+        let mut t = ecrire_nomme(&premier);
+        t.extend(ecrire_nomme(&second));
+        t.extend(ecrire_nomme(&debordement));
+        let l = evenements_nommes(&t);
+        assert_eq!((l.evenements, l.defaut), (vec![premier, second, debordement], None));
+        // Un nom de 255 octets passe ; un enregistrement inconnu est sauté.
+        let long = nomme(&[b'x'; NOM_MAX]);
+        assert_eq!(evenements_nommes(&ecrire_nomme(&long)).evenements, vec![long]);
+    }
+
+    /// Poignée démesurée, nom sans NUL, nom vide, nom trop long, deux DFID_NAME, longueurs hostiles : défaut, jamais
+    /// de panique ni de lecture hors du tampon.
+    #[test]
+    fn enregistrements_nommes_hostiles() {
+        let bon = ecrire_nomme(&nomme(b"a.exe"));
+        // handle_bytes (octets 36..40 : 24 de métadonnées, 4 d'en-tête, 8 de fsid) démesuré ou au-delà du nom.
+        for h in [129u32, 64, u32::MAX] {
+            let mut t = bon.clone();
+            t[36..40].copy_from_slice(&h.to_ne_bytes());
+            assert_eq!(evenements_nommes(&t).defaut, Some(Defaut::Enregistrement), "{h}");
+        }
+        // Le NUL final écrasé (et le remplissage) : plus de fin de nom.
+        let mut t = bon.clone();
+        let n = t.len();
+        for o in &mut t[n - 4..] {
+            *o = b'z';
+        }
+        assert_eq!(evenements_nommes(&t).defaut, Some(Defaut::Enregistrement));
+        // Nom vide, nom de 256 octets.
+        assert_eq!(
+            evenements_nommes(&ecrire_nomme(&nomme(b""))).defaut,
+            Some(Defaut::Enregistrement)
+        );
+        assert_eq!(
+            evenements_nommes(&ecrire_nomme(&nomme(&[b'y'; NOM_MAX + 1]))).defaut,
+            Some(Defaut::Enregistrement)
+        );
+        // Deux DFID_NAME.
+        let mut t = bon.clone();
+        t.extend_from_within(24..);
+        let l = u32::try_from(t.len()).unwrap();
+        t[..4].copy_from_slice(&l.to_ne_bytes());
+        assert_eq!(evenements_nommes(&t).defaut, Some(Defaut::Enregistrement));
+        // Longueur d'enregistrement nulle, trop courte, qui sort de l'événement.
+        for longueur in [0u16, 3, u16::MAX] {
+            let mut t = bon.clone();
+            t[26..28].copy_from_slice(&longueur.to_ne_bytes());
+            assert_eq!(evenements_nommes(&t).defaut, Some(Defaut::Enregistrement), "{longueur}");
+        }
+        // Chaque troncature : défaut ou rien, jamais de panique.
+        for fin in 0..bon.len() {
+            let l = evenements_nommes(&bon[..fin]);
+            assert!(l.evenements.is_empty(), "{fin}");
+        }
     }
 
     const MOUNTINFO: &str = "\

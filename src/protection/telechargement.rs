@@ -871,7 +871,7 @@ pub(crate) fn dossier_telechargements() -> Option<PathBuf> {
 }
 
 /// Un fichier en cours de téléchargement : il sera renommé à la fin, et vu alors.
-fn en_cours(nom: &str) -> bool {
+pub(crate) fn en_cours(nom: &str) -> bool {
     let bas = nom.to_lowercase();
     [".part", ".crdownload", ".download", ".partial", ".tmp", ".opdownload"]
         .iter()

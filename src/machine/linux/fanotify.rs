@@ -56,8 +56,6 @@ fn erreur() -> io::Error {
 }
 
 /// `fanotify_init` avec ces options en plus des fixes.
-// FFI de libc : fanotify_init rend un descripteur neuf, pris en charge par OwnedFd ici même.
-#[allow(unsafe_code)]
 fn init(options: Options) -> io::Result<OwnedFd> {
     let mut drapeaux = libc::FAN_CLOEXEC | libc::FAN_CLASS_CONTENT;
     if options.pidfd {
@@ -66,6 +64,14 @@ fn init(options: Options) -> io::Result<OwnedFd> {
     if options.audit {
         drapeaux |= libc::FAN_ENABLE_AUDIT;
     }
+    init_brut(drapeaux)
+}
+
+/// `fanotify_init` avec ces drapeaux, le fichier des événements en lecture seule : le seul appel au noyau qui ouvre
+/// un groupe, pour le garde comme pour le veilleur.
+// FFI de libc : fanotify_init rend un descripteur neuf, pris en charge par OwnedFd ici même.
+#[allow(unsafe_code)]
+fn init_brut(drapeaux: libc::c_uint) -> io::Result<OwnedFd> {
     let ouverture = libc::O_RDONLY | libc::O_LARGEFILE | libc::O_CLOEXEC;
     let ouverture = libc::c_uint::try_from(ouverture).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     // SAFETY: fanotify_init ne lit que ses deux entiers ; le descripteur rendu (≥ 0) est neuf et n'appartient qu'à
@@ -78,6 +84,42 @@ fn init(options: Options) -> io::Result<OwnedFd> {
         Ok(OwnedFd::from_raw_fd(fd))
     }
 }
+
+/// Ce qu'une marque désigne : un chemin absolu (le garde : un point de montage), ou l'objet d'un descripteur ouvert
+/// (le veilleur : le dossier qu'il a ouvert lui-même, sans que le chemin puisse changer entre-temps).
+enum Objet<'a> {
+    Chemin(&'a Path),
+    Descripteur(BorrowedFd<'a>),
+}
+
+/// `fanotify_mark` sur le groupe `fd` : le seul appel au noyau qui pose une marque.
+// FFI de libc : fanotify_mark sur le descripteur d'un groupe, avec un chemin en C vivant pendant l'appel, ou un
+// descripteur emprunté et un chemin nul.
+#[allow(unsafe_code)]
+fn marquer_brut(fd: BorrowedFd<'_>, drapeaux: libc::c_uint, masque: u64, objet: &Objet<'_>) -> io::Result<()> {
+    let r = match objet {
+        Objet::Chemin(point) => {
+            let chemin =
+                CString::new(point.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+            // SAFETY: le descripteur du groupe est emprunté pendant l'appel ; le chemin est une chaîne C terminée par
+            // NUL, à nous, vivante pendant l'appel ; AT_FDCWD : le chemin est absolu (un point de montage de
+            // mountinfo).
+            unsafe { libc::fanotify_mark(fd.as_raw_fd(), drapeaux, masque, libc::AT_FDCWD, chemin.as_ptr()) }
+        }
+        // SAFETY: les deux descripteurs sont empruntés, ouverts pendant l'appel ; un chemin nul désigne l'objet du
+        // second (fanotify_mark(2)), que le noyau ne garde pas.
+        Objet::Descripteur(d) => unsafe {
+            libc::fanotify_mark(fd.as_raw_fd(), drapeaux, masque, d.as_raw_fd(), std::ptr::null())
+        },
+    };
+    if r < 0 { Err(erreur()) } else { Ok(()) }
+}
+
+/// Ce que le groupe de notification du veilleur demande pour chaque dossier marqué : un fichier fermé après écriture
+/// (FAN_CLOSE_WRITE, sur les enfants : FAN_EVENT_ON_CHILD), un nom arrivé par renommage (FAN_MOVED_TO).
+pub(crate) const NOTIFICATION_FICHIERS: u64 = libc::FAN_CLOSE_WRITE | libc::FAN_MOVED_TO | libc::FAN_EVENT_ON_CHILD;
+/// FAN_ONDIR : l'objet de l'événement est un dossier.
+pub(crate) const DOSSIER: u64 = libc::FAN_ONDIR;
 
 impl Groupe {
     /// Un groupe d'essai sur un descripteur quelconque (/dev/null) : ses réponses ne vont nulle part.
@@ -125,24 +167,41 @@ impl Groupe {
 
     /// Marque le système de fichiers qui porte `point` : chaque exécution d'un fichier qu'il contient passe par le
     /// groupe.
-    // FFI de libc : fanotify_mark sur le descripteur du groupe, avec un chemin en C vivant pendant l'appel.
-    #[allow(unsafe_code)]
     pub(crate) fn marquer(&self, point: &Path) -> io::Result<()> {
-        let chemin =
-            CString::new(point.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-        let drapeaux = libc::FAN_MARK_ADD | libc::FAN_MARK_FILESYSTEM;
-        // SAFETY: le descripteur du groupe vit autant que `self` ; le chemin est une chaîne C terminée par NUL, à nous,
-        // vivante pendant l'appel ; AT_FDCWD : le chemin est absolu (un point de montage de mountinfo).
-        let r = unsafe {
-            libc::fanotify_mark(
-                self.fd.as_raw_fd(),
-                drapeaux,
-                OUVERTURE_EXEC_PERM,
-                libc::AT_FDCWD,
-                chemin.as_ptr(),
-            )
-        };
-        if r < 0 { Err(erreur()) } else { Ok(()) }
+        marquer_brut(
+            self.fd.as_fd(),
+            libc::FAN_MARK_ADD | libc::FAN_MARK_FILESYSTEM,
+            OUVERTURE_EXEC_PERM,
+            &Objet::Chemin(point),
+        )
+    }
+
+    /// Un groupe de NOTIFICATION, sans droits (Linux 5.13 et plus) : FAN_CLASS_NOTIF (aucune permission demandée,
+    /// rien n'attend Vanguard), FAN_REPORT_DFID_NAME (le dossier et le nom de l'enfant, la seule forme qu'un compte
+    /// ordinaire peut lire : pas de descripteur ouvert par le noyau, FAN_NOFD), file bornée (jamais
+    /// FAN_UNLIMITED_QUEUE, refusé sans droits). Le PID de l'événement est 0 sauf quand il vient de ce processus.
+    /// Refusé : EPERM (noyau d'avant 5.13, ou sysctl qui le ferme), EINVAL (option inconnue), ENOSYS.
+    pub(crate) fn ouvrir_notification() -> io::Result<Groupe> {
+        let fd = init_brut(libc::FAN_CLOEXEC | libc::FAN_CLASS_NOTIF | libc::FAN_REPORT_DFID_NAME)?;
+        Ok(Groupe {
+            fd,
+            options: Options {
+                pidfd: false,
+                audit: false,
+            },
+        })
+    }
+
+    /// Marque le dossier ouvert `dossier` (marque d'inode, la seule permise sans droits) : ses enfants DIRECTS fermés
+    /// après écriture ou arrivés par renommage. Pas ses sous-dossiers : une marque d'inode ne descend pas.
+    /// FAN_MARK_ONLYDIR : refusé si ce n'est pas un dossier.
+    pub(crate) fn marquer_dossier(&self, dossier: BorrowedFd<'_>) -> io::Result<()> {
+        marquer_brut(
+            self.fd.as_fd(),
+            libc::FAN_MARK_ADD | libc::FAN_MARK_INODE | libc::FAN_MARK_ONLYDIR,
+            NOTIFICATION_FICHIERS,
+            &Objet::Descripteur(dossier),
+        )
     }
 
     /// Lit ce que le noyau a d'événements (bloque jusqu'à au moins un) : le nombre d'octets écrits dans `tampon`.
@@ -165,28 +224,8 @@ impl Groupe {
 
     /// Attend des événements au plus `delai_ms` : vrai s'il y en a à lire. Le fil lecteur du garde bat ainsi même
     /// quand rien ne se lance.
-    // FFI de libc : poll sur le descripteur du groupe, une seule structure.
-    #[allow(unsafe_code)]
     pub(crate) fn attendre(&self, delai_ms: i32) -> io::Result<bool> {
-        let mut p = libc::pollfd {
-            fd: self.fd.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: une seule structure pollfd à nous, vivante pendant l'appel ; le descripteur vit autant que `self`.
-        let r = unsafe { libc::poll(&raw mut p, 1, delai_ms) };
-        if r < 0 {
-            let e = erreur();
-            return if e.kind() == io::ErrorKind::Interrupted {
-                Ok(false)
-            } else {
-                Err(e)
-            };
-        }
-        if r > 0 && (p.revents & (libc::POLLERR | libc::POLLNVAL)) != 0 {
-            return Err(io::Error::other("groupe fanotify en erreur"));
-        }
-        Ok(r > 0 && (p.revents & libc::POLLIN) != 0)
+        Ok(attendre_groupes(&[self], delai_ms)?.first().copied().unwrap_or(false))
     }
 
     /// Répond à la demande portée par `fd` : permise ou refusée, notée par l'audit du noyau si `noter` et que le
@@ -212,6 +251,37 @@ impl Groupe {
             Err(_) => Err(erreur()),
         }
     }
+}
+
+/// Attend des événements sur l'un des `groupes` au plus `delai_ms` : pour chacun, vrai s'il y en a à lire. Un groupe
+/// en erreur (POLLERR, POLLNVAL) rend l'erreur.
+// FFI de libc : poll sur les descripteurs des groupes, un tableau de structures à nous.
+#[allow(unsafe_code)]
+pub(crate) fn attendre_groupes(groupes: &[&Groupe], delai_ms: i32) -> io::Result<Vec<bool>> {
+    let mut p: Vec<libc::pollfd> = groupes
+        .iter()
+        .map(|g| libc::pollfd {
+            fd: g.fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        })
+        .collect();
+    let n = libc::nfds_t::try_from(p.len()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    // SAFETY: `p` est un tableau à nous de `n` structures pollfd, vivant pendant l'appel ; chaque descripteur vit
+    // autant que le groupe emprunté.
+    let r = unsafe { libc::poll(p.as_mut_ptr(), n, delai_ms) };
+    if r < 0 {
+        let e = erreur();
+        return if e.kind() == io::ErrorKind::Interrupted {
+            Ok(vec![false; p.len()])
+        } else {
+            Err(e)
+        };
+    }
+    if r > 0 && p.iter().any(|x| (x.revents & (libc::POLLERR | libc::POLLNVAL)) != 0) {
+        return Err(io::Error::other("groupe fanotify en erreur"));
+    }
+    Ok(p.iter().map(|x| r > 0 && (x.revents & libc::POLLIN) != 0).collect())
 }
 
 impl AsFd for Groupe {
