@@ -3718,8 +3718,8 @@ fn relecture_au_bilan(c: Constat, vivant: bool, etat: Option<&Etat>) -> Constat 
     let Some(f) = etat.map(|e| &e.fichiers).filter(|f| vivant && f.incomplet()) else {
         return c;
     };
-    // Une perte pas reprise est un problème ; un dossier trop grand pour être relu (sans perte) est seulement dit
-    // non vérifié, la passe horaire le couvre.
+    // Une perte pas reprise (même abandonnée, dossier trop grand) est un problème ; un dossier trop grand pour être
+    // relu (sans perte) est seulement dit non vérifié, la passe horaire le couvre en partie.
     let probleme = if f.en_retard() {
         c.probleme.max(Some(Niveau::Moyen))
     } else {
@@ -5826,6 +5826,12 @@ mod tests {
         let base = juger_bool(true, Some(true), Some(&e), true, Some(true));
         let c = relecture_au_bilan(base.clone(), true, Some(&e));
         assert_eq!(c.probleme, base.probleme);
+        assert!(!c.verifie);
+        // Une perte abandonnée dans un dossier trop grand : un problème, même sans perte en cours.
+        e.fichiers.abandons = vec!["~/Salon".into()];
+        let base = juger_bool(true, Some(true), Some(&e), true, Some(true));
+        let c = relecture_au_bilan(base.clone(), true, Some(&e));
+        assert_eq!(c.probleme, base.probleme.max(Some(Niveau::Moyen)));
         assert!(!c.verifie);
     }
 
