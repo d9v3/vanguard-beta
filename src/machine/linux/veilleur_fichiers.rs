@@ -86,9 +86,14 @@ const REESSAI_ABANDON: Duration = Duration::from_mins(2);
 /// les relectures proches de l'examen ; au-delà, le filet est la fermeture de la dernière référence et la passe
 /// horaire.
 const FENETRE_MMAP: Duration = Duration::from_secs(60);
+/// Un fichier mis en file par une relecture n'y est pas remis, tel quel, pendant ce temps : son attente en file puis
+/// `FENETRE_MMAP` après son examen ; au-delà, la mémoire des examens décide.
+const MEMOIRE_MIS_EN_FILE: Duration = Duration::from_mins(2);
 /// Les noms perdus (file pleine) retenus par dossier, les plus anciens et les plus récents moitié-moitié ; au-delà,
-/// ceux du milieu sont oubliés et tout le dossier est relu. Une inondation avant ou après une charge ne pousse donc
-/// pas son nom hors de la liste : il est repris même dans un dossier trop grand pour être listé.
+/// ceux du milieu sont oubliés et tout le dossier est relu. Une seule inondation, avant ou après une charge, ne
+/// pousse donc pas son nom hors de la liste. Limite dite : une charge placée entre deux inondations de plus de
+/// `NOMS_PERDUS_MAX / 2` noms est au milieu, donc oubliée ; dans un dossier trop grand pour être listé, elle n'est
+/// pas reprise tant qu'il le reste (perte abandonnée, en alerte au bilan, jamais comptée saine).
 const NOMS_PERDUS_MAX: usize = 4096;
 /// Les fichiers examinés retenus par dossier (nom, inode, ctime) : une relecture ne réexamine pas un fichier qui n'a
 /// pas changé depuis. Au-delà, les notes passagères puis la plus ancienne moitié sont oubliées (des réexamens, jamais
@@ -678,6 +683,13 @@ struct Marque {
     /// Les fichiers examinés (sains, non vérifiés, trop gros : pas les menaces), leur état d'alors (inode, ctime) et
     /// le moment de l'examen : une relecture saute ceux qui n'ont pas changé.
     examines: Mutex<HashMap<Vec<u8>, Note>>,
+    /// Les fichiers déjà mis en file par une relecture, tels qu'ils étaient (inode, ctime) : une relecture redemandée
+    /// (un fichier parti, toutes les 2 s si un attaquant le veut) ne les remet pas en file, même examinés depuis
+    /// moins que `FENETRE_MMAP` ; sinon elle repasserait sans fin sur les plus récents, au détriment d'une charge qui
+    /// attend. Une note ne vaut que `MEMOIRE_MIS_EN_FILE` (ensuite `examines` décide, avec ses notes passagères), et
+    /// toutes sont vidées à chaque perte et au rechargement des sources : le filet de l'écriture par mmap reste
+    /// entier là où un événement a pu manquer.
+    mis_en_file: Mutex<HashMap<Vec<u8>, MisEnFile>>,
     /// Plus de `LISTE_MAX` entrées à la dernière relecture : elle ne peut pas finir.
     trop_grand: AtomicBool,
     /// Les essais de relecture d'un dossier trop grand avec une perte, depuis la dernière liste réussie.
@@ -828,6 +840,7 @@ impl Marque {
             relecture: Mutex::new(Relecture::default()),
             a_reprendre: AtomicU64::new(0),
             examines: Mutex::new(HashMap::new()),
+            mis_en_file: Mutex::new(HashMap::new()),
             trop_grand: AtomicBool::new(false),
             essais_trop_grand: AtomicU32::new(0),
             perte_abandonnee: AtomicBool::new(false),
@@ -847,6 +860,7 @@ impl Marque {
     /// Une perte dont on ne connaît pas les noms (débordement du noyau, tampon illisible) : tout le dossier est relu,
     /// quel que soit le ctime ; la mémoire des examens évite de tout réexaminer.
     fn perte(&self) {
+        self.oublier_mis_en_file();
         let mut r = self.relecture.lock().unwrap_or_else(PoisonError::into_inner);
         r.demander(Curseur::depuis(i64::MIN));
         // Comptée une fois tant qu'elle attend : une panne qui dure ne la gonfle pas.
@@ -900,6 +914,9 @@ impl Marque {
             return;
         }
         // Un nom pour un autre : le compte ne bouge pas, sauf la perte sans nom, comptée une fois.
+        // Sous le verrou de la relecture (toujours pris avant celui-ci) : sinon une relecture qui finit entre les deux
+        // effacerait le nom oublié sans que la perte soit notée.
+        self.oublier_mis_en_file();
         r.demander(Curseur::depuis(i64::MIN));
         if !r.perte_sans_nom {
             r.perte_sans_nom = true;
@@ -936,8 +953,39 @@ impl Marque {
         );
     }
 
+    /// Une perte : ce qu'une relecture a mis en file sera relisté (voir `mis_en_file`). Le verrou de `relecture`, s'il
+    /// est pris, l'est avant celui-ci.
+    fn oublier_mis_en_file(&self) {
+        self.mis_en_file.lock().unwrap_or_else(PoisonError::into_inner).clear();
+    }
+
+    /// Note des fichiers mis en file par une relecture, tels qu'ils étaient listés ; au-delà de `LISTE_MAX`, la
+    /// mémoire repart de zéro (un oubli ne coûte qu'un réexamen).
+    fn noter_mis_en_file(&self, mis: &[&Candidat]) {
+        let mut x = self.mis_en_file.lock().unwrap_or_else(PoisonError::into_inner);
+        if x.len().saturating_add(mis.len()) > LISTE_MAX {
+            x.clear();
+        }
+        let maintenant = Instant::now();
+        for c in mis {
+            x.insert(c.c.nom.clone(), ((c.ino, c.c.s, c.c.ns), maintenant));
+        }
+    }
+
+    /// Ce fichier est-il déjà en file (ou examiné) par une relecture, tel qu'il est ?
+    fn deja_mis_en_file(&self, nom: &[u8], meta: &std::fs::Metadata) -> bool {
+        self.mis_en_file
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(nom)
+            .is_some_and(|(x, quand)| {
+                *x == (meta.ino(), meta.ctime(), meta.ctime_nsec()) && quand.elapsed() < MEMOIRE_MIS_EN_FILE
+            })
+    }
+
     /// Les sources du moteur sont rechargées : ce qui n'a pas pu être vérifié mérite un nouvel examen.
     fn oublier_passagers(&self) {
+        self.oublier_mis_en_file();
         self.examines
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1585,6 +1633,9 @@ fn en_famine(depuis: Instant, maintenant: Instant) -> bool {
 /// gros) ou passager (non vérifié, illisible : périmé après `RELIRE_SOURCES` ou au rechargement des sources).
 type Note = ((u64, i64, i64), Instant, bool);
 
+/// Un fichier mis en file par une relecture : son état d'alors (inode, ctime) et le moment.
+type MisEnFile = ((u64, i64, i64), Instant);
+
 /// La mémoire des examens est pleine : les notes passagères partent d'abord, puis la plus ancienne moitié (un oubli
 /// ne coûte qu'un réexamen).
 fn oublier_la_moitie(x: &mut HashMap<Vec<u8>, Note>) {
@@ -1594,9 +1645,22 @@ fn oublier_la_moitie(x: &mut HashMap<Vec<u8>, Note>) {
     }
     let mut quand: Vec<Instant> = x.values().map(|(_, q, _)| *q).collect();
     let milieu = quand.len() / 2;
+    if quand.is_empty() {
+        return;
+    }
     let (_, m, _) = quand.select_nth_unstable(milieu);
     let m = *m;
-    x.retain(|_, (_, q, _)| *q > m);
+    // Ceux du moment médian lui-même sont gardés jusqu'à la moitié : des examens notés au même instant (horloge
+    // grossière) ne vident pas toute la mémoire d'un coup.
+    x.retain(|_, (_, q, _)| *q >= m);
+    let mut de_trop = x.len().saturating_sub(MEMOIRE_MAX / 2);
+    x.retain(|_, (_, q, _)| {
+        if de_trop > 0 && *q == m {
+            de_trop = de_trop.saturating_sub(1);
+            return false;
+        }
+        true
+    });
 }
 
 /// Ce qu'a fait une relecture.
@@ -1653,8 +1717,9 @@ fn relire(i: usize, m: &Marque, attente: &(Mutex<Attente>, Condvar), compteurs: 
     let du_debut = curseur.as_ref().is_some_and(|c| c.s == i64::MIN);
     let (fait, apres, haut) = match curseur {
         None => (Relu::Fini, None, None),
-        // La file est déjà pleine : le dossier n'est pas listé pour rien.
-        Some(c) if !tous_les_noms => (Relu::Rien, Some(c), haut),
+        // La file est déjà pleine (des noms attendent encore, ou ils ont pris les dernières places) : le dossier
+        // n'est pas listé pour rien.
+        Some(c) if !tous_les_noms || attente.0.lock().map_or(0, |a| tour.place(&a)) == 0 => (Relu::Rien, Some(c), haut),
         Some(c) => relire_a_partir(i, m, &c, haut.as_ref(), attente, compteurs, tour),
     };
     let mut etat = m.relecture.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1823,6 +1888,7 @@ fn relire_a_partir(
     // (une charge déposée avant), et ainsi de suite.
     let (mut bas, mut pris_en_haut, mut complet, mut par_le_haut) = (None, None, true, true);
     let mut reste = candidats.iter();
+    let mut mis = Vec::new();
     loop {
         if tour.place(&a) == 0 {
             complet = reste.len() == 0;
@@ -1832,7 +1898,7 @@ fn relire_a_partir(
         let Some(x) = suivant else {
             break;
         };
-        match a.ajouter_depuis(i, &x.nom, maintenant, x.s) {
+        match a.ajouter_depuis(i, &x.c.nom, maintenant, x.c.s) {
             Ajout::Nouveau => plus(&compteurs.repris),
             Ajout::Regroupe => {}
             Ajout::Pleine => {
@@ -1840,15 +1906,17 @@ fn relire_a_partir(
                 break;
             }
         }
+        mis.push(x);
         if par_le_haut {
-            pris_en_haut = Some(x);
+            pris_en_haut = Some(&x.c);
         } else {
-            bas = Some(x);
+            bas = Some(&x.c);
         }
         par_le_haut = !par_le_haut;
     }
     drop(a);
     attente.1.notify_all();
+    m.noter_mis_en_file(&mis);
     if complet {
         return (Relu::Fini, None, None);
     }
@@ -1867,10 +1935,17 @@ enum Liste {
     TropGrand,
 }
 
-/// Les fichiers ordinaires du dossier marqué changés après `curseur` (et avant `haut`) et pas déjà examinés tels
-/// quels, triés ; lus par le descripteur de la marque (le dossier marqué lui-même, même si un autre a pris son nom),
-/// sans suivre aucun lien.
-fn lister(m: &Marque, curseur: &Curseur, haut: Option<&Curseur>, max: usize) -> Result<Vec<Curseur>, Liste> {
+/// Un fichier à relire : sa place dans l'ordre des changements, et son inode (`Marque::mis_en_file`).
+#[derive(Debug)]
+struct Candidat {
+    c: Curseur,
+    ino: u64,
+}
+
+/// Les fichiers ordinaires du dossier marqué changés après `curseur` (et avant `haut`), ni déjà examinés ni déjà mis
+/// en file tels quels, triés ; lus par le descripteur de la marque (le dossier marqué lui-même, même si un autre a
+/// pris son nom), sans suivre aucun lien.
+fn lister(m: &Marque, curseur: &Curseur, haut: Option<&Curseur>, max: usize) -> Result<Vec<Candidat>, Liste> {
     let lecture = {
         let fd = m.fd.read().unwrap_or_else(PoisonError::into_inner);
         std::fs::read_dir(format!("/proc/self/fd/{}", fd.as_raw_fd()))
@@ -1892,7 +1967,7 @@ fn lister(m: &Marque, curseur: &Curseur, haut: Option<&Curseur>, max: usize) -> 
         let Ok(meta) = entree.metadata() else {
             continue;
         };
-        if !meta.is_file() || m.deja_examine(&nom, &meta) {
+        if !meta.is_file() || m.deja_examine(&nom, &meta) || m.deja_mis_en_file(&nom, &meta) {
             continue;
         }
         let x = Curseur {
@@ -1901,10 +1976,10 @@ fn lister(m: &Marque, curseur: &Curseur, haut: Option<&Curseur>, max: usize) -> 
             nom,
         };
         if x > *curseur && haut.is_none_or(|h| x < *h) {
-            candidats.push(x);
+            candidats.push(Candidat { c: x, ino: meta.ino() });
         }
     }
-    candidats.sort();
+    candidats.sort_unstable_by(|a, b| a.c.cmp(&b.c));
     Ok(candidats)
 }
 
@@ -2641,6 +2716,62 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// Relecture AV5 (f909a113), défaut 1 : une demande ordinaire (un fichier parti, toutes les 2 s si un attaquant
+    /// le veut) rouvre le haut, mais ce que la relecture a déjà mis en file, tel quel, n'y est pas remis ; une perte
+    /// oublie tout (le filet de l'écriture par mmap) ; un fichier changé depuis est repris.
+    #[test]
+    fn relecture_redemandee_ne_remet_pas_ce_qui_est_en_file() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        for n in 0..30 {
+            std::fs::write(d.join(format!("f{n:02}")), b"Salon").unwrap();
+        }
+        let m = marque(&d, false);
+        let attente = (Mutex::new(Attente::new(RESERVE_DIRECT + 10)), Condvar::new());
+        let c = Compteurs::default();
+        let vider = || -> Vec<Vec<u8>> {
+            let mut a = attente.0.lock().unwrap();
+            a.file.drain(..).map(|e| e.nom).collect()
+        };
+        m.perte();
+        let mut pris: Vec<Vec<u8>> = Vec::new();
+        loop {
+            // Un fichier parti avant chaque tour : le haut est rouvert, la relecture reprend du plus récent.
+            m.relire_depuis(0);
+            let fait = relire(0, &m, &attente, &c, Tour::NORMAL);
+            pris.extend(vider());
+            assert!(pris.len() <= 30, "remis en file : {pris:?}");
+            if fait == Relu::Fini {
+                break;
+            }
+        }
+        pris.sort();
+        let attendus: Vec<Vec<u8>> = (0..30).map(|n| format!("f{n:02}").into_bytes()).collect();
+        assert_eq!(pris, attendus);
+        assert_eq!(c.repris.load(Ordering::Relaxed), 30);
+        // Rien n'a changé : une nouvelle demande ne remet rien.
+        m.relire_depuis(0);
+        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::Fini);
+        assert_eq!(vider(), Vec::<Vec<u8>>::new());
+        // Un fichier remplacé (autre inode) est repris, seul.
+        std::fs::write(d.join("neuf"), b"Salon").unwrap();
+        std::fs::rename(d.join("neuf"), d.join("f05")).unwrap();
+        m.relire_depuis(0);
+        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::Fini);
+        assert_eq!(vider(), [b"f05".to_vec()]);
+        // Une perte : tout ce qui n'est pas examiné depuis `FENETRE_MMAP` est repris.
+        m.perte();
+        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::EnPartie);
+        assert_eq!(vider().len(), 10);
+        // Une note trop vieille ne vaut plus : la mémoire des examens décide.
+        let vieux = Instant::now().checked_sub(MEMOIRE_MIS_EN_FILE).unwrap();
+        for (_, quand) in m.mis_en_file.lock().unwrap().values_mut() {
+            *quand = vieux;
+        }
+        let meta = std::fs::symlink_metadata(d.join("f00")).unwrap();
+        assert!(!m.deja_mis_en_file(b"f00", &meta));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     fn c_(s: i64, nom: &[u8]) -> Curseur {
         Curseur {
             s,
@@ -2737,12 +2868,21 @@ mod tests {
             .map(|n| (format!("{n}").into_bytes(), note(n, true)))
             .collect();
         oublier_la_moitie(&mut x);
-        assert!(x.len() >= MEMOIRE_MAX / 2 - 1 && x.len() < MEMOIRE_MAX, "{}", x.len());
+        assert_eq!(x.len(), MEMOIRE_MAX / 2);
         assert!(
             x.contains_key(format!("{}", MEMOIRE_MAX - 1).as_bytes()),
             "la plus récente reste"
         );
         assert!(!x.contains_key(&b"0"[..]), "la plus ancienne part");
+        // Toutes notées au même instant (horloge grossière) : la moitié reste, pas rien.
+        let mut x: HashMap<Vec<u8>, Note> = (0..MEMOIRE_MAX)
+            .map(|n| (format!("{n}").into_bytes(), ((0, 0, 0), t, true)))
+            .collect();
+        oublier_la_moitie(&mut x);
+        assert_eq!(x.len(), MEMOIRE_MAX / 2);
+        let mut vide: HashMap<Vec<u8>, Note> = HashMap::new();
+        oublier_la_moitie(&mut vide);
+        assert!(vide.is_empty());
         // Assez de notes passagères : elles seules partent.
         let mut x: HashMap<Vec<u8>, Note> = (0..MEMOIRE_MAX)
             .map(|n| (format!("{n}").into_bytes(), note(n, n % 4 != 0 && n > MEMOIRE_MAX / 2)))
