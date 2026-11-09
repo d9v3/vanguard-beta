@@ -100,7 +100,18 @@ pub(crate) fn fichier_en_direct(
         .as_deref()
         .is_some_and(|h| crate::changements::quarantaine_remise(&m.cle, h));
     let confiance = r.sha256.as_ref().is_some_and(super::confiance_accordee);
-    let suite = suite_de(&verdict, auto, remise, confiance);
+    // La personne a sorti ce contenu exact de la quarantaine (clé posée à la remise) : rien n'est redit ni refait,
+    // comme à la passe horaire ; un autre contenu sous ce nom a une autre clé et se juge de nouveau.
+    let sorti = r
+        .sha256
+        .as_ref()
+        .and_then(|e| m.cle_remise_avec(e))
+        .is_some_and(|c| crate::protection::normales::est_normale(&c));
+    let suite = if sorti {
+        Suite::Rien
+    } else {
+        suite_de(&verdict, auto, remise, confiance)
+    };
     let mut isole = false;
     if annonce == Annonce::Taire && suite != Suite::Quarantaine {
         return Fait { suite, isole };
@@ -292,6 +303,42 @@ mod tests {
         crate::essais::tube_nomme(&f).unwrap();
         assert!(!meme_contenu(&f, Some(&h)));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Sorti de la quarantaine par la personne (décidé : clé liée au contenu exact) : le temps réel ne le remet pas
+    /// en quarantaine et ne le redit pas ; la clé d'un autre contenu au même nom est autre.
+    #[test]
+    fn contenu_sorti_laisse_en_place() {
+        use crate::protection::moteur::Trouvaille;
+        let dossier = crate::essais::Jetable::nouveau("sorti-en-direct");
+        let f = dossier.join("colis.exe");
+        std::fs::write(&f, b"MZ sorti").unwrap();
+        let e = crate::protection::empreintes::sha256(&f).unwrap();
+        let r = Resultat {
+            trouvailles: vec![Trouvaille {
+                source: Source::EmpreinteMalwareBazaar,
+                nom: "essai".into(),
+                partie: String::new(),
+            }],
+            sha256: Some(e),
+            ..Resultat::default()
+        };
+        let autre = crate::protection::empreintes::sha256_de(&b"MZ autre"[..]).unwrap();
+        assert_ne!(
+            crate::protection::normales::cle_remise(&e, &f),
+            crate::protection::normales::cle_remise(&autre, &f)
+        );
+        crate::protection::normales::declarer(&crate::protection::normales::cle_remise(&e, &f), "blocage", "t", "x")
+            .unwrap();
+        let fait = fichier_en_direct(&f, "Téléchargements", &r, Annonce::Taire, None);
+        assert_eq!(
+            fait,
+            Fait {
+                suite: Suite::Rien,
+                isole: false
+            }
+        );
+        assert_eq!(std::fs::read(&f).unwrap(), b"MZ sorti");
     }
 
     /// Le nom porte-t-il encore l'inode examiné ? Un lien dur glissé à sa place, même au même contenu, ne vaut pas.

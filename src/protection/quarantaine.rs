@@ -649,6 +649,8 @@ fn remettre_dans(e: &Entree, dossier: &Path) -> Result<(), Echec> {
         p.set_readonly(false);
         let _ = std::fs::set_permissions(&source, p);
     }
+    // L'empreinte de ce qui sort vraiment, lue avant : c'est ce contenu-là que la personne reprend.
+    let empreinte = crate::protection::empreintes::sha256(&source);
     std::fs::rename(&source, &origine)
         .or_else(|_| std::fs::copy(&source, &origine).and_then(|_| std::fs::remove_file(&source)))
         .map_err(|x| Echec::ecriture(OU, &x))?;
@@ -659,9 +661,33 @@ fn remettre_dans(e: &Entree, dossier: &Path) -> Result<(), Echec> {
         let _ = std::fs::set_permissions(&origine, std::os::unix::fs::PermissionsExt::from_mode(mode));
     }
     retirer_du_registre(dossier, &e.nom);
+    declarer_remise(empreinte.as_ref(), &origine);
     // Le fichier est revenu : un résultat gardé d'avant (la cache du passage horaire) ne doit pas le cacher.
     crate::autotest::cache::oublier();
     Ok(())
+}
+
+/// Retient que la personne a sorti ce contenu exact de la quarantaine (`normales::cle_remise`, 90 jours) : ni la
+/// passe horaire ni le temps réel ne l'y remettent tout seuls, sans quoi l'annulation serait défaite à leur passage ;
+/// un autre contenu au même nom est examiné de nouveau. Sans empreinte lue ou sans liste écrite, c'est dit.
+fn declarer_remise(empreinte: Option<&[u8; 32]>, origine: &Path) {
+    let retenu = empreinte
+        .ok_or_else(|| tr!("contenu illisible", "unreadable content").to_string())
+        .and_then(|e| {
+            crate::protection::normales::declarer(
+                &crate::protection::normales::cle_remise(e, origine),
+                crate::reseau::tableau::nom_genre(crate::reseau::tableau::Genre::Blocage),
+                tr!("Sorti de la quarantaine", "Taken out of quarantine"),
+                &affichable(&origine.to_string_lossy()),
+            )
+            .map_err(|x| x.to_string())
+        });
+    if let Err(x) = retenu {
+        trp!(
+            "  ⚠ Non retenu ({x}) : une prochaine analyse peut le remettre en quarantaine.",
+            "  ⚠ Not remembered ({x}): a later scan may put it back in quarantine."
+        );
+    }
 }
 
 /// Remet à sa place le fichier isolé sous ce nom (l'annulation d'un blocage) ; même garde que le menu : rien n'est
@@ -890,6 +916,14 @@ mod tests {
             0o751
         );
         assert_eq!(liste_dans(&q), Vec::<Entree>::new());
+        // Sorti par la personne : ce contenu exact à ce chemin est retenu (décidé : il n'y retourne pas tout seul) ;
+        // un autre contenu au même nom, non.
+        let normale = |contenu: &[u8]| {
+            let e = crate::protection::empreintes::sha256_de(contenu).unwrap();
+            crate::protection::normales::est_normale(&crate::protection::normales::cle_remise(&e, &fichier))
+        };
+        assert!(normale(b"MZ contenu"));
+        assert!(!normale(b"MZ autre contenu"));
         let _ = std::fs::remove_dir_all(&maison);
     }
 

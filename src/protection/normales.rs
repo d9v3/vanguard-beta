@@ -109,6 +109,16 @@ pub(crate) fn cle_blocage(cle: &str) -> String {
     format!("blocage|{cle}")
 }
 
+/// La clé que pose la sortie de quarantaine d'un fichier : son contenu exact (empreinte) à ce chemin. Un autre
+/// préfixe que `cle_blocage` : « c'est normal ici » (un douteux) ne la pose jamais, et elle seule tait un certain.
+pub(crate) fn cle_remise(empreinte: &[u8; 32], chemin: &std::path::Path) -> String {
+    format!(
+        "quarantaine-remise|sha256:{}|fichier:{}",
+        crate::protection::empreintes::hex(empreinte),
+        chemin.display()
+    )
+}
+
 /// Retient qu'une alerte est normale ici. `Err` : pourquoi rien n'a été retenu.
 pub(crate) fn declarer(cle: &str, genre: &str, titre: &str, texte: &str) -> Result<(), crate::modele::Echec> {
     use crate::modele::{Echec, Raison};

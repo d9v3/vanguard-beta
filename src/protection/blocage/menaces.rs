@@ -131,6 +131,13 @@ impl Menace {
         }
     }
 
+    /// La clé que pose la sortie de quarantaine de ce contenu (`normales::cle_remise`), seulement pour la menace d'un
+    /// fichier (clé « fichier:<chemin> ») : jamais pour un programme qui tourne ni pour un comportement.
+    pub(crate) fn cle_remise_avec(&self, empreinte: &[u8; 32]) -> Option<String> {
+        let f = self.fichier_du_programme()?;
+        (self.cle == format!("fichier:{}", f.display())).then(|| crate::protection::normales::cle_remise(empreinte, f))
+    }
+
     /// L'empreinte SHA-256 du fichier du programme, lue maintenant (`None` : pas de fichier, ou illisible).
     pub(crate) fn empreinte(&self) -> Option<[u8; 32]> {
         self.fichier_du_programme().and_then(empreintes::sha256)
@@ -911,11 +918,13 @@ pub(crate) fn chercher(categories: &[Categorie], telecharger: bool) -> Trouvees 
     retirer_bloquees(&mut t.menaces, &crate::changements::blocages_en_place());
     // Déclarée normale ici : ni proposée ni bloquée tant que le choix vaut (90 jours) ; une menace certaine ne se
     // tait jamais (le fichier connu de MalwareBazaar qui a pris la place du douteux déclaré normal).
-    // Un certain à qui la personne a fait confiance (confirmation tapée, P5) se tait, lui : par l'empreinte de son
-    // fichier relue maintenant, jamais par son chemin.
-    t.normales = retirer_normales(&mut t.menaces, crate::protection::normales::est_normale, |m| {
-        m.empreinte().is_some_and(|e| super::choix::confiance_accordee(&e))
-    });
+    // Un certain à qui la personne a fait confiance (confirmation tapée, P5), ou qu'elle a sorti de la quarantaine,
+    // se tait, lui : par l'empreinte de son fichier relue maintenant, jamais par son chemin.
+    t.normales = retirer_normales(
+        &mut t.menaces,
+        crate::protection::normales::est_normale,
+        super::choix::confiance_accordee,
+    );
     t
 }
 
@@ -933,21 +942,32 @@ fn retirer_bloquees(menaces: &mut Vec<Menace>, en_place: &[(String, crate::chang
     menaces.retain(|m| !bloquees.contains(m.cle.as_str()));
 }
 
-/// Retire les menaces douteuses déclarées normales, et les certaines dont le fichier a reçu la confiance de la
-/// personne (`confiance`) ; rend combien.
+/// Retire les menaces douteuses déclarées normales, les certaines dont le fichier a reçu la confiance de la
+/// personne (`confiance`, par son empreinte) et le fichier dont elle a sorti ce contenu exact de la quarantaine ;
+/// rend combien.
 fn retirer_normales(
     menaces: &mut Vec<Menace>,
     normale: impl Fn(&str) -> bool,
-    confiance: impl Fn(&Menace) -> bool,
+    confiance: impl Fn(&[u8; 32]) -> bool,
 ) -> usize {
     let avant = menaces.len();
     menaces.retain(|m| {
+        let empreinte = m.empreinte();
+        // Sorti de la quarantaine par la personne : ce contenu exact n'y retourne pas tout seul, certain compris
+        // (l'annulation serait défaite à la passe suivante) ; un autre contenu au même nom a une autre clé.
+        if empreinte
+            .as_ref()
+            .and_then(|e| m.cle_remise_avec(e))
+            .is_some_and(|c| normale(&c))
+        {
+            return false;
+        }
         if m.certaine {
-            !confiance(m)
+            !empreinte.as_ref().is_some_and(&confiance)
         } else {
             // Par l'empreinte quand elle se lit : une ancienne déclaration par le chemin seul ne tait plus un fichier
             // qui se lit (il revient une fois, puis se redéclare par son empreinte).
-            !normale(&m.cle_normale_ici())
+            !normale(&m.cle_normale_avec(empreinte.as_ref()))
         }
     });
     avant.saturating_sub(menaces.len())
@@ -1525,6 +1545,45 @@ mod tests {
             script.cle_normale(),
             "blocage|commande qui télécharge|/home/alice/outil.py|/usr/bin/python3"
         );
+    }
+
+    /// Sorti de la quarantaine (décidé : clé liée au contenu exact) : le certain de ce contenu-là se tait à la passe
+    /// horaire ; un autre contenu au même nom revient, certain ; la clé ne vaut que pour la menace d'un fichier, jamais
+    /// pour un programme qui tourne ; « c'est normal ici » (autre clé) ne tait toujours pas un certain.
+    #[test]
+    fn contenu_sorti_de_quarantaine_tu() {
+        use crate::protection::moteur::{Resultat, Source, Trouvaille};
+        let dossier = crate::essais::Jetable::nouveau("sorti-quarantaine");
+        let f = dossier.join("facture.pdf.exe");
+        std::fs::write(&f, "MZ essai").unwrap();
+        let e = crate::protection::empreintes::sha256(&f).unwrap();
+        let r = Resultat {
+            trouvailles: vec![Trouvaille {
+                source: Source::EmpreinteMalwareBazaar,
+                nom: "essai".into(),
+                partie: String::new(),
+            }],
+            sha256: Some(e),
+            ..Resultat::default()
+        };
+        let m = menace_du_fichier(f.clone(), &r, "Téléchargements").unwrap();
+        assert!(m.certaine);
+        let remise = crate::protection::normales::cle_remise(&e, &f);
+        assert_eq!(m.cle_remise_avec(&e).as_deref(), Some(remise.as_str()));
+        let mut menaces = vec![m.clone()];
+        assert_eq!(retirer_normales(&mut menaces, |c| c == remise, |_| false), 1);
+        // « C'est normal ici » sur ce contenu ne tait pas un certain.
+        let ici = m.cle_normale_ici();
+        assert_ne!(ici, remise);
+        let mut menaces = vec![m.clone()];
+        assert_eq!(retirer_normales(&mut menaces, |c| c == ici, |_| false), 0);
+        // Un autre contenu au même nom : jugé de nouveau.
+        std::fs::write(&f, "MZ autre").unwrap();
+        let mut menaces = vec![m];
+        assert_eq!(retirer_normales(&mut menaces, |c| c == remise, |_| false), 0);
+        // Un programme qui tourne, même fichier : pas de clé de remise.
+        let programme = menace_de(true, Some(&f.to_string_lossy()), Some(&f.to_string_lossy()), "r");
+        assert_eq!(programme.cle_remise_avec(&e), None);
     }
 
     /// « C'est normal ici » lié à l'empreinte : un autre fichier au même chemin a une autre clé, et la déclaration
