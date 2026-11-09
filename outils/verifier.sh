@@ -580,7 +580,7 @@ compte_unsafe() {
   printf '      unsafe dans src/ : %s blocs, %s blocs extern, %s fn, %s impl, %s attributs\n' \
     "$(forme 'unsafe \{')" "$(forme 'unsafe extern')" "$(forme 'unsafe fn')" "$(forme 'unsafe impl')" "$(forme '#\[unsafe\(')"
   # Où le refus de la racine (#![deny(unsafe_code)]) est levé : un module de plus se voit au résumé, comme un module
-  # de moins à refuser sans recours. La garde (chaque_module_fuzze_refuse_unsafe dans src/main.rs) veut chaque forme
+  # de moins à refuser sans recours. La garde (chaque_module_fuzze_refuse_unsafe dans src/menu/tests.rs) veut chaque forme
   # seule sur sa ligne, et celles de module en tête du fichier : ces comptes sont exacts. Modules : les fichiers qui
   # portent la forme en colonne zéro ; éléments : les lignes, indentées ou non.
   modules() { grep -rlx --include='*.rs' "$1" src | wc -l; }

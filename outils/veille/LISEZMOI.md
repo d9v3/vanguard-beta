@@ -86,7 +86,8 @@ puis lus par le programme ; ni l'IA ni le rapport n'ouvrent ce qui vient d'un lo
   grosse ou illisible : en échec. `--sans-reseau` saute la relève, pas la lecture.
 - **Références** (`references-flotte.sh`) tirées de l'arbre de la veille : `versions.tsv` (chaque étiquette `vX.Y.Z`
   et sa date, en UTC) et, pour les trois mineures les plus récentes, les règles (`tests/regles-connues.txt`, sans les
-  retirées), les outils (`commande: "…"` de `src/main.rs`) et les fichiers suivis sous `src/` à l'étiquette.
+  retirées), les outils (`commande: "…"` de `src/main.rs`, et
+  de `src/menu/outils.rs` après la 0.93.0) et les fichiers suivis sous `src/` à l'étiquette.
 - **Lecture** (`src/compte_rendu/flotte.rs`) : chaque lot passe par `envoi::lire`, la lecture stricte du relais. Ne
   sont pas comptés, mais comptés comme refusés : enveloppe hors motif (jour, source, réseau large), lot trop gros ou
   hors schéma (JSON cassé, clé en trop, séquence de terminal), version non publiée, plus ancienne que les trois

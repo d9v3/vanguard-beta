@@ -94,7 +94,7 @@ being required (see `MODELE-DE-MENACE.en.md`).
 | MEM-FORGET | met | No `mem::forget`. | — |
 | MEM-FORGET-LINT | met | Added in this batch: `mem_forget` in the lints of `Cargo.toml`. | — |
 | MEM-NO-LEAK | partial | The tldr-pages pages are kept for the session with `leak` (`src/guide/tldr.rs`) and reloaded after each download of the archives: the lost memory grows with the number of downloads in one session. | Make the guide programs own their texts: roadmap. |
-| MEM-LEAK | partial | The three other intended leaks are done once per process and justified (`src/main.rs`, `src/machine/windows/eleve.rs`); the tldr one is not (previous point). | Same next step. |
+| MEM-LEAK | partial | The three other intended leaks are done once per process and justified (`src/menu/recherche.rs`, `src/machine/windows/eleve.rs`); the tldr one is not (previous point). | Same next step. |
 | MEM-MANUALLYDROP | met | Fixed in this batch: the elevated process channel is no longer wrapped in a `File` that is never released, but in a copy of its handle that has its own owner (`src/machine/windows/eleve.rs`). The remaining `ManuallyDrop` targets a union with trivial content (`src/machine/windows/wmi.rs`). | — |
 | MEM-NORAWPOINTER | met | Fixed in this batch: the position of the data in a ZIP is computed without subtracting pointers (`src/archives/zip.rs`), and addresses turned into numbers go through `.addr()`, each one justified: bounding the links of a Windows answer (`src/machine/windows/cartes.rs`, `src/machine/windows/gestionnaire.rs`), aligning a buffer (`src/verifier_cle.rs`). The other raw pointers outside `unsafe` are used for identity (`ptr::eq`) or to prepare a system call. | — |
 | MEM-INTOFROMRAWALWAYS | not applicable | No `into_raw`. | — |

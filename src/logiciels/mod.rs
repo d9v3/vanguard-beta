@@ -524,7 +524,7 @@ pub fn menu() {
         }
         // L'autre sens de « mettre à jour les programmes » : ceux déjà installés, par 4.2 (Mises à jour du système).
         let maj = categories.len().saturating_add(2).to_string();
-        let place_maj = crate::touche_de(crate::Action::Maj).unwrap_or_default();
+        let place_maj = crate::menu::etat::touche_de(crate::menu::outils::Action::Maj).unwrap_or_default();
         lignes.push(Ligne::choix(
             &maj,
             tr!("Mettre tout l'ordinateur à jour", "Update the whole computer"),

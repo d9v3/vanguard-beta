@@ -1320,7 +1320,7 @@ mod tests_sh_chaine {
     /// Les textes affichés qui nomment l'outil comptent aussi : la garde exige le nombre exact, un faux compte stable
     /// ne gêne pas, un vrai appel ajouté ou déplacé se voit.
     fn compte_sudo(code: &str) -> usize {
-        let code = crate::tests_menu::blanchi(code, false);
+        let code = crate::menu::tests::blanchi(code, false);
         let o = code.as_bytes();
         ELEVATEURS
             .iter()

@@ -17,7 +17,9 @@ Une faille de sécurité ? Pas de ticket ni de demande de fusion publics : signa
 
 | Fichier | Rôle |
 |---|---|
-| `src/main.rs` | menu et sous-commandes |
+| `src/main.rs` | aiguillage : les modules, la session du menu, `main` qui mène chaque sous-commande à son module |
+| `src/demarrage/` | la ligne de commande (`arguments.rs`, clap), son aide (`aide.rs`) et les droits du processus au démarrage (`droits.rs` : élevé, venu d'un autre compte, refus d'optimiser) |
+| `src/menu/` | le menu interactif : la liste des outils, leurs groupes et interrupteurs (`outils.rs`), l'état en tête (`etat.rs`), la recherche et les noms de commandes (`recherche.rs`), l'affichage et le lancement (`lancer.rs`), ses essais (`tests.rs`) |
 | `src/deploiement.rs`, `src/deploiement/binaire.rs` | étapes de `outils/deployer.sh` confiées au programme (`vanguard deploiement …`, commande cachée) : témoins de la clé, archives tldr de la clé ; protections des programmes livrés lues dans leurs en-têtes, sans les lancer (`binaire.rs`, `verifier-binaire`) : ELF (PIE, statique, marque RELRO, pile non exécutable, rien d'écrivable et exécutable), PE (gardes du vanguard.exe, ASLR, DEP, relocalisations) ; un autre format est refusé |
 | `src/ui.rs` | couleurs, titres, cadres, barres, lignes coupées et alignées dans 76 colonnes |
 | `src/selection.rs` | menus et listes à cocher au clavier (flèches, Entrée, Échap ou Retour arrière), recherche par mot dans les menus, aperçu à droite de la ligne en surbrillance (fenêtre assez large) |

@@ -59,7 +59,7 @@ pub enum Systeme {
     /// Les pages de tldr-pages, téléchargées chaque semaine : à copier seulement.
     Tldr,
     /// Les commandes de Vanguard, un programme par groupe du menu : générées depuis le menu et la ligne de commande
-    /// (`crate::programmes_vanguard`), jamais écrites à la main.
+    /// (`crate::menu::recherche::programmes_vanguard`), jamais écrites à la main.
     Vanguard,
 }
 
@@ -160,7 +160,7 @@ impl Systeme {
             Systeme::Linux => linux::COMMUNS,
             // Ses pages se téléchargent : `programmes` les prend dans `tldr`.
             Systeme::Tldr => &[],
-            Systeme::Vanguard => crate::programmes_vanguard(),
+            Systeme::Vanguard => crate::menu::recherche::programmes_vanguard(),
         }
     }
 
@@ -867,7 +867,7 @@ fn page_existe(systeme: usize, programme: Option<usize>, commande: Option<usize>
 /// 6.7.2 »), pour apprendre le raccourci.
 fn pied_de_page(s: Systeme, p: &Programme, commande: Option<usize>) -> Option<String> {
     let ici = place(s, p, commande)?;
-    let cle = crate::cle_du_guide();
+    let cle = crate::menu::recherche::cle_du_guide();
     Some(trf!(
         "Chemin : {cle}.{ici} · vanguard guide {ici}",
         "Path: {cle}.{ici} · vanguard guide {ici}"
@@ -1450,7 +1450,7 @@ pub fn executer(quoi: &str, sommaire: bool) {
     // « vanguard guide 6.7.2 » : la page de ce chemin, comme au menu (10.6.7.2, que le pied de page cite aussi : un
     // chemin à quatre nombres commence par la touche du guide).
     let sans_cle = quoi
-        .strip_prefix(&format!("{}.", crate::cle_du_guide()))
+        .strip_prefix(&format!("{}.", crate::menu::recherche::cle_du_guide()))
         .filter(|reste| reste.split('.').count() == 3)
         .unwrap_or(quoi);
     if sans_cle.starts_with(|c: char| c.is_ascii_digit())
@@ -1560,7 +1560,7 @@ mod tests {
             .iter()
             .flat_map(|(_, p)| p.commandes.iter().map(|c| c.ligne))
             .collect();
-        for c in crate::Args::command()
+        for c in crate::demarrage::arguments::Args::command()
             .get_subcommands()
             .filter(|c| !c.is_hide_set() && c.get_name() != "help")
         {

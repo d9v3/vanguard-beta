@@ -8,7 +8,7 @@ Les deux ensembles sont pris sur tout src/, pas fichier par fichier : un module 
 tous ses textes « perdus » puis « nouveaux ». Sans la référence (clone partiel de la CI), rien n'est comparé : code 77,
 « sautée » pour verifier.sh. Toujours 0 sinon : les écarts sont à lire, pas une erreur.
 Une seule erreur (code 1) : un tutoiement dans un texte français affiché (premier argument de ces macros, première
-chaîne d'une paire ("fr", "en") ou [fr, en], aide `///` de la ligne de commande dans main.rs). Vanguard vouvoie
+chaîne d'une paire ("fr", "en") ou [fr, en], aide `///` de la ligne de commande dans main.rs, demarrage/ et menu/). Vanguard vouvoie
 depuis la 0.87 ; cette vérification tourne aussi sur master et sans la référence (--vouvoiement : elle seule)."""
 import re
 import subprocess
@@ -72,7 +72,7 @@ def tutoiements(fichier, texte):
             note(premiere.start(1), premiere.group(1))
     for m in PAIRE.finditer(texte):
         note(m.start(1), m.group(1))
-    if fichier == 'src/main.rs':
+    if fichier == 'src/main.rs' or fichier.startswith(('src/demarrage/', 'src/menu/')):
         for m in re.finditer(r'^\s*///(.*)$', texte, re.MULTILINE):
             note(m.start(1), m.group(1))
     return sorted(set(vus))

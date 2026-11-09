@@ -5,7 +5,7 @@
 # <sortie>/versions.tsv : « X.Y.Z<TAB>AAAA-MM-JJ » par étiquette vX.Y.Z (date de l'étiquette, en UTC) ;
 # <sortie>/<X.Y.Z>/{regles,outils,fichiers}.txt pour les versions des trois mineures les plus récentes :
 #   regles.txt    les identifiants de tests/regles-connues.txt à l'étiquette, sans ceux marqués « retire » ;
-#   outils.txt    les `commande: "…"` non vides de src/main.rs à l'étiquette ;
+#   outils.txt    les `commande: "…"` non vides de src/main.rs et src/menu/outils.rs (après la 0.93.0) à l'étiquette ;
 #   fichiers.txt  les fichiers suivis sous src/ à l'étiquette.
 # Une version dont une source manque n'a pas de dossier : ses lots sont refusés « sans référence », comptés.
 # Seules les étiquettes au motif exact sont lues ; chaque ligne écrite passe le motif que le programme revérifie.
@@ -31,7 +31,7 @@ while IFS=$'\t' read -r v _; do
   if git -C "$ARBRE" show "v$v:tests/regles-connues.txt" 2>/dev/null |
     awk '!/^#/ && NF && $0 !~ /(^|[ \t])retire([ \t]|$)/ { print $1 }' |
     grep -E '^[A-Z]{3}-[A-Z]{3}-[0-9]{3}$' | sort -u >"$d/regles.txt" &&
-    git -C "$ARBRE" show "v$v:src/main.rs" 2>/dev/null | grep -oE 'commande: "[a-z][a-z0-9-]{0,30}[a-z0-9]?"' |
+    { git -C "$ARBRE" show "v$v:src/main.rs" && { git -C "$ARBRE" show "v$v:src/menu/outils.rs" || true; }; } 2>/dev/null | grep -oE 'commande: "[a-z][a-z0-9-]{0,30}[a-z0-9]?"' |
     sed -E 's/^commande: "(.*)"$/\1/' | grep -E '^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$' | sort -u >"$d/outils.txt" &&
     git -C "$ARBRE" ls-tree -r --name-only "v$v" -- src 2>/dev/null | grep -E '^src/[[:graph:]]{1,296}$' | sort -u \
       >"$d/fichiers.txt" &&
