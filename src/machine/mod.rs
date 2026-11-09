@@ -1792,7 +1792,7 @@ fn lancer_par_bash(c: &str) -> bool {
         );
         return false;
     };
-    bash.status().is_ok_and(|s| s.success())
+    crate::coulisses::Suivie::status_suivi(&mut bash).is_ok_and(|s| s.success())
 }
 
 /// Programme qui écoute sur chaque port TCP de cette machine (port → nom du programme, que chaque programme choisit :
@@ -1835,7 +1835,7 @@ pub fn programmes_en_ecoute() -> std::collections::HashMap<u16, String> {
 /// Ouvre un fichier ou une URL avec l'application par défaut du système.
 pub fn ouvrir(cible: &str) {
     #[cfg(target_os = "linux")]
-    let _ = Command::new("xdg-open").arg(cible).spawn();
+    let _ = crate::coulisses::Suivie::spawn_suivi(Command::new("xdg-open").arg(cible));
     // ShellExecuteExW dans un fil à part, sans cmd : ni « & » ni « %VAR% » d'un lien ou d'un dossier n'y sont lus.
     #[cfg(windows)]
     windows::ouvrir::ouvrir(cible, None);

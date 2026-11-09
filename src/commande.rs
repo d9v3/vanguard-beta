@@ -42,6 +42,7 @@ pub fn lancer(commande: &mut Command, secondes: u64) -> Option<Resultat> {
 }
 
 fn lancer_entree(commande: &mut Command, entree: Option<Vec<u8>>, secondes: u64) -> Option<Resultat> {
+    let mut suivi = crate::coulisses::Suivi::de(commande);
     let mut enfant = commande
         .stdin(if entree.is_some() {
             Stdio::piped()
@@ -75,10 +76,12 @@ fn lancer_entree(commande: &mut Command, entree: Option<Vec<u8>>, secondes: u64)
             }
             _ => {
                 arreter(&mut enfant);
+                suivi.fin(crate::coulisses::Issue::Arretee);
                 return None;
             }
         }
     };
+    suivi.fin(crate::coulisses::Issue::Code(statut.code()));
     Some(Resultat {
         code: statut.code(),
         sortie: sortie.recv_timeout(DELAI_LECTURE).ok()?,
@@ -261,6 +264,7 @@ pub fn lancer_borne(commande: &mut Command, secondes: u64, borne: usize) -> Opti
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    let mut suivi = crate::coulisses::Suivi::de(commande);
     // Un programme copié à l'instant (la copie vérifiée d'un plugin) peut être refusé « Text file busy » : un autre fil
     // qui lance un processus au même moment a hérité, le temps de son exec, du fichier encore ouvert en écriture.
     let mut essais = 0usize;
@@ -314,6 +318,11 @@ pub fn lancer_borne(commande: &mut Command, secondes: u64, borne: usize) -> Opti
     };
     #[cfg(not(unix))]
     let _ = pid;
+    suivi.fin(if tronque || delai {
+        crate::coulisses::Issue::Arretee
+    } else {
+        crate::coulisses::Issue::Code(code)
+    });
     // Un petit-enfant resté hors de l'arbre peut garder un canal ouvert : on n'attend pas plus que DELAI_LECTURE.
     let texte = |r: mpsc::Receiver<Vec<u8>>| {
         r.recv_timeout(DELAI_LECTURE)
@@ -536,6 +545,7 @@ pub fn lancer_vers(
 ) -> Option<Ecrit> {
     use std::io::Write;
     use std::sync::atomic::{AtomicBool, Ordering};
+    let mut suivi = crate::coulisses::Suivi::de(commande);
     let mut enfant = commande
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -619,6 +629,12 @@ pub fn lancer_vers(
             }
         }
     };
+    let arretee = delai || (plein.load(Ordering::Relaxed) && code.is_none());
+    suivi.fin(if arretee {
+        crate::coulisses::Issue::Arretee
+    } else {
+        crate::coulisses::Issue::Code(code)
+    });
     // Après la fin, la lecture finit vite ; `Garder::Fin` écrit encore ce qu'il a gardé (la borne au plus).
     let (octets, tronque, ok) = fini
         .recv_timeout(DELAI_LECTURE.saturating_add(Duration::from_secs(30)))
@@ -1358,6 +1374,83 @@ mod tests_sh_chaine {
         assert_eq!(compte_sudo("\"sudo\\tufw\" \"pkexec\tx\" \"doas x\""), 3);
         assert_eq!(compte_sudo("outil_sudo  sudoers pkexec_x run0x ésudo x"), 0);
         assert_eq!(compte_sudo("« sudo x » “sudo y”"), 2);
+    }
+
+    /// Le code d'un fichier sans ses modules d'essai (`#[cfg(test)]`, `#[cfg(all(test, …))]`, commentaires entre
+    /// les deux permis), où qu'ils soient dans le fichier.
+    fn sans_les_essais(src: &str) -> String {
+        let lignes: Vec<&str> = src.lines().collect();
+        let mut garde = String::new();
+        // Un `#[cfg(…test…)]` vu : le `mod … {` qui suit (après d'autres attributs, sur une ou plusieurs lignes, et
+        // des commentaires) est un module d'essai.
+        let mut attendu = false;
+        let mut i = 0usize;
+        while let Some(l) = lignes.get(i) {
+            let t = l.trim_start();
+            let module = (t.starts_with("mod ") || t.starts_with("pub(crate) mod ") || t.starts_with("pub mod "))
+                && t.ends_with('{');
+            if attendu && module {
+                let fin = format!("{}}}", l.get(..l.len().saturating_sub(t.len())).unwrap_or_default());
+                i = lignes
+                    .iter()
+                    .skip(i)
+                    .position(|p| *p == fin)
+                    .map_or(lignes.len(), |n| i.saturating_add(n));
+                attendu = false;
+            } else {
+                if t.starts_with("#[cfg(") && t.contains("test") {
+                    attendu = true;
+                } else if !(t.starts_with("#[")
+                    || t.starts_with("//")
+                    || l.starts_with(char::is_whitespace)
+                    || t.starts_with(")]"))
+                {
+                    attendu = false;
+                }
+                garde.push_str(l);
+                garde.push('\n');
+            }
+            i = i.saturating_add(1);
+        }
+        garde
+    }
+
+    /// Garde des coulisses : hors d'ici et de coulisses.rs, le vrai programme ne lance rien par `output`, `status` ou
+    /// `spawn` directs, qui échapperaient à « voir » (Paramètres › Coulisses) : `crate::coulisses::Suivie` à la place.
+    #[test]
+    fn appels_directs_suivis() {
+        let base = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        let mut fichiers = Vec::new();
+        sources(base, base, &mut fichiers);
+        let mut directs = Vec::new();
+        for (nom, src) in &fichiers {
+            let nom = nom.replace('\\', "/");
+            if matches!(nom.as_str(), "commande.rs" | "coulisses.rs")
+                || nom.ends_with("tests.rs")
+                || nom.contains("/tests/")
+            {
+                continue;
+            }
+            for l in sans_les_essais(src).lines() {
+                let code = l.split("//").next().unwrap_or_default();
+                // reponse.status() : le code HTTP d'une réponse, pas un programme.
+                if [".output()", ".status()", ".spawn()"].iter().any(|m| code.contains(m))
+                    && !code.contains("reponse.status()")
+                {
+                    directs.push(format!("{nom} : {}", l.trim()));
+                }
+            }
+        }
+        assert!(
+            directs.is_empty(),
+            "lancés sans les coulisses :\n{}",
+            directs.join("\n")
+        );
+        let essai = "fn a() {}\n#[cfg(all(test, unix))]\n/// essais\nmod tests {\n    x.spawn()\n}\nfn b() {}\n";
+        assert_eq!(
+            sans_les_essais(essai),
+            "fn a() {}\n#[cfg(all(test, unix))]\n/// essais\nfn b() {}\n"
+        );
     }
 
     #[test]

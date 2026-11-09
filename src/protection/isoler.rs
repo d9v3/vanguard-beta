@@ -234,27 +234,26 @@ fn lancer(source: &Path) {
         let wayland = std::env::var("WAYLAND_DISPLAY").ok();
         // Un lien (le cas courant) n'est pas un dossier pour symlink_metadata : il suit /run, déjà masqué.
         let var_run = std::fs::symlink_metadata("/var/run").is_ok_and(|m| m.is_dir());
-        std::process::Command::new("bwrap")
-            .args(arguments_bwrap(
-                &jetable,
-                &copie,
-                session.as_deref(),
-                wayland.as_deref(),
-                var_run,
-            ))
-            .status()
+        crate::coulisses::Suivie::status_suivi(std::process::Command::new("bwrap").args(arguments_bwrap(
+            &jetable,
+            &copie,
+            session.as_deref(),
+            wayland.as_deref(),
+            var_run,
+        )))
     } else if present("firejail") {
-        std::process::Command::new("firejail")
-            .args([
-                "--noprofile",
-                "--net=none",
-                "--private-tmp",
-                "--caps.drop=all",
-                "--nonewprivs",
-            ])
-            .arg(format!("--private={}", jetable.display()))
-            .arg(&copie)
-            .status()
+        crate::coulisses::Suivie::status_suivi(
+            std::process::Command::new("firejail")
+                .args([
+                    "--noprofile",
+                    "--net=none",
+                    "--private-tmp",
+                    "--caps.drop=all",
+                    "--nonewprivs",
+                ])
+                .arg(format!("--private={}", jetable.display()))
+                .arg(&copie),
+        )
     } else {
         trp!(
             "  ✖ Ni bubblewrap ni firejail. Pour installer bubblewrap : {}",
@@ -302,7 +301,7 @@ fn lancer(source: &Path) {
         "  {GRIS}Windows Sandbox s'ouvre : machine jetable, réseau coupé, dossier du programme en lecture seule.\n  Tout est effacé à la fermeture de la fenêtre.{RESET}",
         "  {GRIS}Windows Sandbox opens: disposable machine, network off, program folder read-only.\n  Everything is erased when the window closes.{RESET}"
     );
-    if let Err(e) = std::process::Command::new(&sandbox).arg(&wsb).spawn() {
+    if let Err(e) = crate::coulisses::Suivie::spawn_suivi(std::process::Command::new(&sandbox).arg(&wsb)) {
         trp!("  ✖ Lancement impossible : {e}", "  ✖ Could not start: {e}");
     }
 }

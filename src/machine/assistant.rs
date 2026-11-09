@@ -416,12 +416,13 @@ fn essayer(m: Methode, groupes: &[Vec<Demande>]) -> Issue {
         "    {GRIS}Administrator rights asked through {}: Vanguard itself will do the steps shown, and nothing else.{RESET}",
         m.nom()
     );
-    let Ok(mut fils) = commande(m, &chemin, &programme, terminal)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-    else {
+    let (lance, mut suivi) = crate::coulisses::Suivie::spawn_et_suivre(
+        commande(m, &chemin, &programme, terminal)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit()),
+    );
+    let Ok(mut fils) = lance else {
         return Issue::Indisponible;
     };
     let (Some(mut entree), Some(sortie)) = (fils.stdin.take(), fils.stdout.take()) else {
@@ -437,6 +438,7 @@ fn essayer(m: Methode, groupes: &[Vec<Demande>]) -> Issue {
     if !pret {
         drop(entree);
         let code = fils.wait().ok().and_then(|s| s.code());
+        suivi.fin(crate::coulisses::Issue::Code(code));
         return match (m, code) {
             // pkexec : 126, la personne a fermé la fenêtre ; 127, pas d'agent, ou pas autorisé : on essaie la suite.
             (Methode::Pkexec, Some(127)) => Issue::Indisponible,
@@ -452,7 +454,7 @@ fn essayer(m: Methode, groupes: &[Vec<Demande>]) -> Issue {
     } else {
         None
     };
-    let _ = fils.wait();
+    suivi.fin(crate::coulisses::Issue::Code(fils.wait().ok().and_then(|s| s.code())));
     let reponses = reponses.map(|r| {
         let (erreurs, reponses) = separer_journal(r);
         // Écrites ici, dans le journal du compte, que « le détail est dans le journal des erreurs » désigne : celui

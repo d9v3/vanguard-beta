@@ -140,7 +140,8 @@ pub(super) fn apres_mise_a_jour() {
             "\n  Open Windows restore points? [y/N]: "
         ),
         || {
-            let _ = crate::commande::systeme("rstrui.exe").spawn();
+            use crate::coulisses::Suivie as _;
+            let _ = crate::commande::systeme("rstrui.exe").spawn_suivi();
         },
     );
 }

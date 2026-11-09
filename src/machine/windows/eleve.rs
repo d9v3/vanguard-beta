@@ -1333,7 +1333,7 @@ fn lancer_script(chemin: &str, empreinte: &str) -> Resultat {
         Some((_, w)) => commande.env(super::VARIABLE_RESULTATS, w.as_raw_handle().addr().to_string()),
         None => commande.env_remove(super::VARIABLE_RESULTATS),
     };
-    let fils = commande.spawn();
+    let fils = crate::coulisses::Suivie::spawn_suivi(&mut commande);
     // Le parent ferme sa copie de l'écrivain : la fin de lecture vient quand PowerShell (et ce qu'il a lancé) a fermé
     // la sienne.
     let lecteur = tube.map(|(r, w)| {
@@ -1398,7 +1398,7 @@ fn lancer_programme(a: &gestes::Appel) -> Resultat {
         return refus(tr!("lecteur système introuvable", "system drive not found").to_string());
     };
     let exe = std::path::PathBuf::from(commande.get_program());
-    match commande.status() {
+    match crate::coulisses::Suivie::status_suivi(&mut commande) {
         Ok(s) => match s.code() {
             Some(3010) if a.reussite(3010) => Resultat {
                 reussi: true,

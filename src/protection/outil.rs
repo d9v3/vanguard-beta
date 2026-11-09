@@ -101,9 +101,9 @@ pub(crate) fn proposer(e: &Externe) -> Option<PathBuf> {
         let ok = crate::machine::windows::winget()
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
             .and_then(|w| {
-                std::process::Command::new(w)
-                    .args(commande.split_whitespace().skip(1))
-                    .status()
+                crate::coulisses::Suivie::status_suivi(
+                    std::process::Command::new(w).args(commande.split_whitespace().skip(1)),
+                )
             })
             .is_ok_and(|s| s.success());
         crate::changements::noter(&[vec![commande.clone()]], &[ok]);

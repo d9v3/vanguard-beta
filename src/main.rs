@@ -39,6 +39,7 @@ mod commande;
 mod compte_rendu;
 mod copier;
 mod corriger;
+mod coulisses;
 mod depanner;
 mod deploiement;
 mod descriptions;
@@ -1477,7 +1478,8 @@ fn outil_au_chemin(chemin: &str) -> Option<Action> {
 /// sans Internet, et n'arrête une règle bloquée qu'en sortant. Lancé ici, la suite de la session n'écrirait plus rien
 /// (corrections non notées, donc impossibles à défaire) et se croirait hors ligne.
 fn autotest_a_part() {
-    let lance = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg("autotest").status());
+    let lance = std::env::current_exe()
+        .and_then(|exe| crate::coulisses::Suivie::status_suivi(std::process::Command::new(exe).arg("autotest")));
     if let Err(e) = lance {
         trp!(
             "  ✖ Autotest impossible à lancer : {e}. En ligne de commande : vanguard autotest.",

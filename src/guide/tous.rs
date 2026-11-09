@@ -283,6 +283,13 @@ pub const PROGRAMMES: &[Programme] = &[
                 true,
             ),
             traduite(
+                "vanguard parametres coulisses",
+                "vanguard settings backstage",
+                "Chaque commande lancée par Vanguard en une ligne grise ; voir : les 200 dernières, en mémoire seulement.",
+                "Each command Vanguard runs as a grey line; see: the last 200, in memory only.",
+                true,
+            ),
+            traduite(
                 "vanguard parametres partage",
                 "vanguard settings sharing",
                 "Partage avec l'auteur : oui, non (efface le relevé) ou voir ce qui serait envoyé.",

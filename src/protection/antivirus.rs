@@ -2257,7 +2257,7 @@ fn clamav(portee: &Portee) {
         "  {GRIS}This can take from a few seconds to several minutes…{RESET}"
     );
 
-    let sortie = cmd.output();
+    let sortie = crate::coulisses::Suivie::output_suivi(&mut cmd);
     if let Some((chemin, _)) = &liste_tmp {
         let _ = std::fs::remove_file(chemin);
     }

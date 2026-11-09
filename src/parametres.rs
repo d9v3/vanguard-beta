@@ -65,6 +65,9 @@ struct Fichier {
     /// Phase 1 : le jour où l'avis du partage a été montré.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     avis_partage: Option<String>,
+    /// Les coulisses (`coulisses`) : chaque commande lancée montrée en une ligne grise (non par défaut).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    coulisses: bool,
 }
 
 /// Au-delà, ce n'est pas le fichier de Vanguard : il n'est pas lu (le processus élevé de Windows le lit aussi).
@@ -239,7 +242,15 @@ pub(crate) fn raison_hors_ligne() -> &'static str {
 
 /// À appeler au début du programme, avant tout affichage : les réglages du lancement sont lus là.
 pub fn au_lancement() {
-    let _ = au_demarrage();
+    crate::coulisses::allumer(au_demarrage().coulisses);
+}
+
+/// « voir », « see » : la liste plutôt qu'un changement.
+fn est_voir(mot: &str) -> bool {
+    matches!(
+        mot.trim().to_lowercase().as_str(),
+        "voir" | "see" | "show" | "montrer" | "liste" | "list"
+    )
 }
 
 /// La langue voulue : VANGUARD_LANG, sinon le fichier ; `None` : celle du système.
@@ -326,10 +337,11 @@ enum Reglage {
     Vitesse,
     PaquetsAur,
     Partage,
+    Coulisses,
 }
 
 impl Reglage {
-    const TOUS: [Reglage; 15] = [
+    const TOUS: [Reglage; 16] = [
         Reglage::Langue,
         Reglage::Emojis,
         Reglage::HorsLigne,
@@ -345,6 +357,7 @@ impl Reglage {
         Reglage::Vitesse,
         Reglage::PaquetsAur,
         Reglage::Partage,
+        Reglage::Coulisses,
     ];
 
     /// Le mot de la ligne de commande.
@@ -365,6 +378,7 @@ impl Reglage {
             Reglage::Vitesse => tr!("auto-reglage", "auto-tuning"),
             Reglage::Partage => tr!("partage", "sharing"),
             Reglage::PaquetsAur => tr!("paquets-aur", "aur-packages"),
+            Reglage::Coulisses => tr!("coulisses", "backstage"),
         }
     }
 
@@ -398,6 +412,7 @@ impl Reglage {
             }
             "partage" | "sharing" | "share" | "envoi" | "envois" | "send" => Some(Reglage::Partage),
             "paquets-aur" | "aur-packages" | "aur" | "paquets_aur" => Some(Reglage::PaquetsAur),
+            "coulisses" | "backstage" | "behind-the-scenes" | "commandes" | "commands" => Some(Reglage::Coulisses),
             _ => None,
         }
     }
@@ -419,6 +434,7 @@ impl Reglage {
             Reglage::Vitesse => tr!("Agent Vanguard (sans IA)", "Vanguard Agent (no AI)"),
             Reglage::Partage => tr!("Partage avec l'auteur", "Sharing with the author"),
             Reglage::PaquetsAur => tr!("Paquets de l'AUR", "AUR packages"),
+            Reglage::Coulisses => tr!("Coulisses (commandes lancées)", "Backstage (commands run)"),
         }
     }
 
@@ -460,8 +476,8 @@ impl Reglage {
             | Reglage::VersionsLogiciels
             | Reglage::Autotest
             | Reglage::PaquetsAur => &["oui", "non"],
-            Reglage::Partage if anglais => &["yes", "no", "see"],
-            Reglage::Partage => &["oui", "non", "voir"],
+            Reglage::Partage | Reglage::Coulisses if anglais => &["yes", "no", "see"],
+            Reglage::Partage | Reglage::Coulisses => &["oui", "non", "voir"],
             Reglage::Appris | Reglage::Blocage | Reglage::CleAbuseCh | Reglage::Vitesse => &[],
         }
     }
@@ -543,6 +559,12 @@ fn changer_dans(f: &mut Fichier, r: Reglage, valeur: &str) -> Result<(String, St
             f.paquets_aur = nouveau;
             Ok((avant, mot_oui_non(f.paquets_aur).to_string()))
         }
+        Reglage::Coulisses => {
+            let nouveau = oui_non(valeur).ok_or(())?;
+            let avant = mot_oui_non(f.coulisses).to_string();
+            f.coulisses = nouveau;
+            Ok((avant, mot_oui_non(f.coulisses).to_string()))
+        }
         _ => Err(()),
     }
 }
@@ -566,6 +588,7 @@ fn valeur(r: Reglage) -> String {
         Reglage::VersionsLogiciels => mot_oui_non(!fichier.sans_versions).to_string(),
         Reglage::Autotest => mot_oui_non(!fichier.sans_autotest).to_string(),
         Reglage::PaquetsAur => mot_oui_non(fichier.paquets_aur).to_string(),
+        Reglage::Coulisses => mot_oui_non(fichier.coulisses).to_string(),
         Reglage::TempsReel => crate::protection::temps_reel::valeur(),
         Reglage::Surveillance => mot_oui_non(crate::reseau::surveillance::active()).to_string(),
         Reglage::Entretien => mot_oui_non(crate::entretien::active()).to_string(),
@@ -641,6 +664,7 @@ pub fn commande(mots: &[String]) {
         (Reglage::Blocage, _) => crate::protection::blocage::commande(reste),
         (Reglage::Vitesse, _) => crate::autotest::reglage::commande(reste),
         (Reglage::Partage, []) => partage::afficher(),
+        (Reglage::Coulisses, [mot]) if est_voir(mot) => crate::coulisses::afficher(),
         (Reglage::CleAbuseCh, []) => crate::protection::abuse_ch::menu(),
         (Reglage::CleAbuseCh, [mot]) if est_retirer(mot) => crate::protection::abuse_ch::retirer(),
         // L'historique du terminal et la liste des processus garderaient une clé donnée en argument.
@@ -828,12 +852,18 @@ fn changer(r: Reglage, saisie: &str) -> bool {
         false
     };
     let (avant, apres) = match r {
+        Reglage::Coulisses if est_voir(saisie) => {
+            titre(r.titre());
+            crate::coulisses::afficher();
+            return false;
+        }
         Reglage::Langue
         | Reglage::Emojis
         | Reglage::HorsLigne
         | Reglage::VersionsLogiciels
         | Reglage::Autotest
-        | Reglage::PaquetsAur => {
+        | Reglage::PaquetsAur
+        | Reglage::Coulisses => {
             let mut change = None;
             let fait = modifier_dans(&fichier(), |f| {
                 change = changer_dans(f, r, saisie).ok();
@@ -898,6 +928,10 @@ fn changer(r: Reglage, saisie: &str) -> bool {
         "  {VERT}✔{RESET} {}: {avant} → {apres}",
         r.titre()
     );
+    if r == Reglage::Coulisses {
+        // Tout de suite, pas au prochain lancement : c'est ce lancement-ci qu'on veut voir.
+        crate::coulisses::allumer(apres == mot_oui_non(true));
+    }
     if r == Reglage::Restrictions && apres == mot_oui_non(false) {
         // Le même avertissement qu'au menu Extensions, et ce qui reste même coupées.
         crate::plugins::dire_restrictions(true);
@@ -1006,6 +1040,10 @@ fn explication(r: Reglage) -> &'static str {
         ),
         Reglage::Vitesse => crate::autotest::reglage::explication(),
         Reglage::Partage => partage::explication(),
+        Reglage::Coulisses => tr!(
+            "Oui : chaque commande que Vanguard lance se montre en une ligne grise (programme, arguments abrégés, durée, réussite), sur la sortie d'erreur du terminal seulement. Voir : les 200 dernières de ce lancement, gardées en mémoire, jamais sur le disque ni dans le journal. Rien n'est envoyé.",
+            "Yes: each command Vanguard runs shows as a grey line (program, shortened arguments, duration, success), on the terminal's error output only. See: the last 200 of this run, kept in memory, never on disk or in the log. Nothing is sent."
+        ),
         Reglage::Appris | Reglage::Blocage | Reglage::CleAbuseCh => "",
     }
 }
@@ -1061,7 +1099,15 @@ pub fn menu() {
             Reglage::Vitesse => crate::autotest::reglage::menu(),
             Reglage::Partage => partage::menu(),
             Reglage::TempsReel => choisir_temps_reel(),
-            _ => choisir_valeur(r),
+            Reglage::Coulisses => {
+                // « voir » écrit sous le menu : une pause, sinon le menu redessiné l'effacerait aussitôt.
+                if choisir_valeur(r) {
+                    crate::selection::attendre_retour(tr!("\n  Entrée pour revenir… ", "\n  Enter to go back… "));
+                }
+            }
+            _ => {
+                choisir_valeur(r);
+            }
         }
     }
 }
@@ -1121,7 +1167,8 @@ fn choisir_temps_reel() {
 }
 
 /// Le choix d'une valeur, la valeur actuelle marquée.
-fn choisir_valeur(r: Reglage) {
+/// `true` : une valeur a été choisie (et appliquée, ou montrée pour « voir »).
+fn choisir_valeur(r: Reglage) -> bool {
     let actuelle = valeur(r);
     let mut lignes = vec![Ligne::Texte(String::new()), Ligne::Texte(ligne_titre(r.titre()))];
     lignes.extend(
@@ -1154,16 +1201,18 @@ fn choisir_valeur(r: Reglage) {
         "1",
         tr!("revenir", "back"),
     ) else {
-        return;
+        return false;
     };
-    if let Some(v) = choix
+    let Some(v) = choix
         .trim()
         .parse::<usize>()
         .ok()
         .and_then(|i| r.valeurs().get(i.checked_sub(1)?))
-    {
-        changer(r, v);
-    }
+    else {
+        return false;
+    };
+    changer(r, v);
+    true
 }
 
 #[allow(
@@ -1198,6 +1247,7 @@ mod tests {
             partage_le: Some("2026-11-02".into()),
             partage_phase: Some(1),
             avis_partage: Some("2026-11-01".into()),
+            coulisses: true,
         };
         enregistrer_dans(&voulu, &f).unwrap();
         assert_eq!(charger_de(&f).unwrap(), voulu);
@@ -1425,6 +1475,13 @@ mod tests {
                 assert!(fr.contains("auteur") && en.contains("author"), "{r:?} : {fr} / {en}");
                 continue;
             }
+            if r == Reglage::Coulisses {
+                // Sa propre ligne : ce qui se montre, et que rien n'est gardé sur le disque.
+                let (fr, en) =
+                    crate::guide::explication_vanguard("vanguard parametres coulisses").expect("coulisses au guide");
+                assert!(fr.contains("commande") && en.contains("command"), "{r:?} : {fr} / {en}");
+                continue;
+            }
             if r == Reglage::PaquetsAur {
                 // La ligne est pleine : celui-ci a sa propre ligne au guide, qui dit ce qu'il envoie et où.
                 let (fr, en) = crate::guide::explication_vanguard("vanguard parametres paquets-aur oui")
@@ -1446,7 +1503,9 @@ mod tests {
                 Reglage::CleAbuseCh => ("clé abuse.ch", "abuse.ch key"),
                 Reglage::VersionsLogiciels => ("versions", "software versions"),
                 Reglage::Autotest => ("autotest", "self-test"),
-                Reglage::PaquetsAur | Reglage::Vitesse | Reglage::Partage => unreachable!("vérifié plus haut"),
+                Reglage::PaquetsAur | Reglage::Vitesse | Reglage::Partage | Reglage::Coulisses => {
+                    unreachable!("vérifié plus haut")
+                }
             };
             // Sans tenir compte des majuscules : la phrase du guide commence par l'un d'eux.
             assert!(
@@ -1489,6 +1548,7 @@ mod tests {
                         oui_non(v).is_some()
                     }
                     Reglage::Partage => partage::reponse_de(v).is_some(),
+                    Reglage::Coulisses => est_voir(v) || changer_dans(&mut f, r, v).is_ok(),
                     _ => changer_dans(&mut f, r, v).is_ok(),
                 };
                 assert!(ok, "{r:?} {v}");

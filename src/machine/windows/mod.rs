@@ -561,7 +561,7 @@ pub fn powershell_admin_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
          $p.WaitForExit(); \
          if ($null -eq $p.ExitCode) {{ exit 4 }}; exit $p.ExitCode"
     );
-    let statut = powershell().args(["-NoProfile", "-Command", &lanceur]).status();
+    let statut = crate::coulisses::Suivie::status_suivi(powershell().args(["-NoProfile", "-Command", &lanceur]));
     let reussi = statut.as_ref().is_ok_and(std::process::ExitStatus::success);
     let code = statut.as_ref().ok().and_then(std::process::ExitStatus::code);
     // 3 : demande d'administrateur refusée ; SANS_POINT_ARRETE : point refusé, le script s'arrête avant tout le reste.

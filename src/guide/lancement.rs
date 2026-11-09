@@ -151,12 +151,13 @@ pub(super) enum Fin {
 /// la même milliseconde sur l'une et l'autre peuvent s'inverser) à `montrer`, au fil de l'eau ; `montrer(None)` revient entre deux, pour une attente qui avance. `clavier` : Échap ou Ctrl-C l'arrêtent
 /// (le terminal doit être en mode clavier). Rend ce qui y a mis fin.
 pub(super) fn derouler(ligne: &str, delai: Duration, clavier: bool, mut montrer: impl FnMut(Option<&str>)) -> Fin {
-    let mut enfant = match processus(ligne)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+    let (lance, mut suivi) = crate::coulisses::Suivie::spawn_et_suivre(
+        processus(ligne)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    );
+    let mut enfant = match lance {
         Ok(enfant) => enfant,
         Err(e) => return Fin::PasDemarree(e.to_string()),
     };
@@ -224,6 +225,11 @@ pub(super) fn derouler(ligne: &str, delai: Duration, clavier: bool, mut montrer:
             Err(_) => break,
         }
     }
+    suivi.fin(match &fin {
+        Fin::Code(c) => crate::coulisses::Issue::Code(*c),
+        Fin::PasDemarree(_) => crate::coulisses::Issue::PasDemarree,
+        _ => crate::coulisses::Issue::Arretee,
+    });
     fin
 }
 
