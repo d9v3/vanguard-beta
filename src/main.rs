@@ -1055,6 +1055,14 @@ impl Session {
     }
 }
 
+/// La cible tapée par la personne (menu « Analyser un appareil », `vanguard reseau <cible>`) : vide, elle renonce
+/// (`None`, rien à faire ni à noter) ; sinon la cible, ou l'erreur à lui montrer. Une faute de frappe n'est pas un
+/// défaut du programme : elle n'a rien à faire dans le journal des erreurs, qui en faisait un ticket (#19).
+fn cible_tapee(reponse: &str) -> Option<Result<String, String>> {
+    let cible = reponse.trim();
+    (!cible.is_empty()).then(|| reseau::scan::parse_cible(cible).map(|_| cible.to_string()))
+}
+
 fn nommer(appareil: &str, surnom: &str) {
     let surnom = Some(surnom.trim()).filter(|s| !s.is_empty());
     match reseau::nommer(appareil, surnom) {
@@ -2897,11 +2905,15 @@ async fn executer_outil(s: &mut Session, action: Action) {
         Action::Scanner => s.scanner_reseau(None, "courants").await,
         Action::AuditReseau => s.audit_reseau(false, false, false).await,
         Action::Appareil => {
-            let ip = demander(tr!(
+            let reponse = demander(tr!(
                 "Adresse IP de l'appareil (ex. 10.0.0.1) : ",
                 "IP address of the device (e.g. 10.0.0.1): "
             ));
-            s.scanner_reseau(Some(ip), "tous").await;
+            match cible_tapee(&reponse) {
+                None => {}
+                Some(Ok(ip)) => s.scanner_reseau(Some(ip), "tous").await,
+                Some(Err(e)) => println!("  ✖ {e}"),
+            }
         }
         Action::Nommer => {
             let qui = demander(tr!(
@@ -3842,6 +3854,11 @@ async fn main() {
             parallele,
             json,
         }) => {
+            // Une cible mal tapée est une erreur de la personne, dite ici, pas un défaut du programme pour le journal.
+            if let Some(Some(Err(e))) = cible.as_deref().map(cible_tapee) {
+                eprintln!("{}", trf!("Erreur : {e}", "Error: {e}"));
+                machine::quitter(2);
+            }
             let o = Options {
                 cible,
                 ports,
@@ -4232,6 +4249,18 @@ mod tests_menu {
         );
         assert_eq!(s.ligne_gardee("Réseau", &[Action::Scanner]), "1");
         assert_eq!(s.ligne_gardee("Virus", &ecran), "1");
+    }
+
+    /// Analyser un appareil : Entrée seule renonce sans rien noter ; une cible mal tapée est refusée avec son message,
+    /// avant le scan (donc hors du journal des erreurs) ; une bonne cible passe, sans les espaces autour.
+    #[test]
+    fn cible_tapee_vide_fausse_ou_bonne() {
+        assert_eq!(cible_tapee(""), None);
+        assert_eq!(cible_tapee("   "), None);
+        assert!(matches!(cible_tapee("imprimante"), Some(Err(e)) if e.contains("imprimante")));
+        assert!(matches!(cible_tapee("10.0.0.50-10"), Some(Err(_))));
+        assert_eq!(cible_tapee(" 10.0.0.1 "), Some(Ok("10.0.0.1".to_string())));
+        assert_eq!(cible_tapee("10.0.0.0/24"), Some(Ok("10.0.0.0/24".to_string())));
     }
 
     /// Les sous-commandes refusées en administrateur sont exactement celles des outils d'Optimiser de la table.
