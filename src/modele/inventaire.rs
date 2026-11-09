@@ -152,6 +152,7 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     scelle(sceau::VEILLEUR_ETAT, "machine::linux::veilleur"),
     local("passage-restes", "passage"),
     local("reprise-version-d-avant", "passage"),
+    local("menu-0.87", "menu::lancer"),
     local("bin", "mise_a_jour"),
     local("versions", "mise_a_jour::github, protection::perimes"),
     local("raccourci-retrait", "raccourci"),
@@ -551,6 +552,10 @@ mod tests {
         (
             "reprise-version-d-avant",
             "marque de la reprise des données d'une version d'avant, sans contenu qui juge",
+        ),
+        (
+            "menu-0.87",
+            "marque de l'avis du nouveau menu, vu une fois : vide, forgée elle ne tait que cet avis",
         ),
         (
             "bin",

@@ -1260,6 +1260,8 @@ mod tests_sh_chaine {
         // « relancez sans sudo » : un conseil affiché, sans appel.
         ("amelioration/mod.rs", 2),
         ("changements.rs", 2),
+        // « relancez sans sudo » : l'avertissement du démarrage en root, sans appel.
+        ("demarrage/droits.rs", 2),
         ("depanner/imprimante.rs", 1),
         ("gaming/linux.rs", 8),
         ("machine/administrateurs.rs", 3),

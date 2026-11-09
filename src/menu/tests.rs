@@ -137,7 +137,10 @@ fn root_d_un_espace_de_noms_ou_de_l_ordinateur() {
 #[test]
 fn l_accroche_est_celle_de_la_vitrine() {
     let lire = |f: &str| std::fs::read_to_string(format!("{}/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap();
-    let (menu, lanceur) = (lire("src/main.rs"), lire("src/raccourci.rs"));
+    // Le menu (menu/etat.rs) et `--help` (demarrage/arguments.rs, son anglais dans demarrage/aide.rs), sortis de
+    // main.rs avec Structure 1.
+    let menu = lire("src/menu/etat.rs") + &lire("src/demarrage/arguments.rs") + &lire("src/demarrage/aide.rs");
+    let lanceur = lire("src/raccourci.rs");
     for (readme, fin) in [
         ("README.md", ", depuis une clé USB."),
         ("README.en.md", ", from a USB key."),
@@ -148,10 +151,10 @@ fn l_accroche_est_celle_de_la_vitrine() {
             .find_map(|l| l.trim().strip_prefix("<b>")?.split("</b>").next()?.strip_suffix(fin))
             .unwrap_or_else(|| panic!("accroche introuvable dans {readme}"));
         let citee = format!("\"{accroche}");
-        // Dans main.rs : le menu et `--help`.
+        // Dans le menu et dans `--help`.
         assert!(
             menu.matches(&citee).count() >= 2,
-            "{readme} : « {accroche} » manque dans main.rs"
+            "{readme} : « {accroche} » manque dans le menu ou dans --help (menu/etat.rs, demarrage/)"
         );
         assert!(
             lanceur.contains(&citee),
