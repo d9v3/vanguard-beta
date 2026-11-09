@@ -1840,8 +1840,8 @@ fn alerter_non_verifies(n: u64, debit: &mut Debit, etat: &mut Etat) {
         "Vanguard: real-time scanning, files not verified"
     );
     let texte = trf!(
-        "Temps réel : {n} fichier(s) non vérifié(s) depuis 1 h (file pleine, trop gros, illisibles ou débordement du noyau) : jamais comptés sains ; la passe horaire reprend ceux de la semaine, « vanguard audit » fait un bilan complet.",
-        "Real-time scanning: {n} file(s) not verified in the last hour (queue full, too large, unreadable or kernel overflow): never counted as clean; the hourly pass picks up this week's, “vanguard audit” runs a full check."
+        "Temps réel : {n} fichier(s) non vérifié(s) depuis 1 h (file pleine, trop gros, illisibles ou débordement du noyau) : jamais comptés sains ; la passe horaire reprend ceux de la semaine, « vanguard antivirus » analyse les endroits à risque en entier.",
+        "Real-time scanning: {n} file(s) not verified in the last hour (queue full, too large, unreadable or kernel overflow): never counted as clean; the hourly pass picks up this week's, “vanguard antivirus” scans the risky places in full."
     );
     match debit.decider(&cle, false, maintenant()) {
         Decision::Noter { .. } => tableau::noter_alerte(Genre::Veilleur, titre, &texte),
