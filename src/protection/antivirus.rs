@@ -2004,6 +2004,8 @@ pub(crate) fn examiner(fichier: &std::path::Path) -> Examen {
             .args(["-i", "--max-filesize=200M", "--max-scansize=400M"])
             .args(option_base())
             .args(option_pua())
+            // Un nom qui commence par « - » reste un fichier, jamais une option.
+            .arg("--")
             .arg(fichier),
         900,
     ) else {
@@ -2256,10 +2258,12 @@ fn clamav(portee: &Portee) {
     for e in exclusions {
         cmd.arg(format!("--exclude-dir={}", regex_echappe(e)));
     }
-    cmd.args(&cibles);
     if let Some((chemin, _)) = &liste_tmp {
         cmd.arg(format!("--file-list={}", chemin.display()));
     }
+    // Un chemin qui commence par « - » reste un chemin, jamais une option.
+    cmd.arg("--");
+    cmd.args(&cibles);
     let mut decrites: Vec<String> = cibles.iter().map(|p| chemin_affichable(p)).collect();
     if let Some((_, n)) = &liste_tmp {
         decrites.push(trf!(
