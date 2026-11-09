@@ -1903,6 +1903,9 @@ pub(crate) struct Etat {
     pub rancon_sans: Option<String>,
     // ── Temps réel des fichiers (fanotify, dossiers où arrivent les menaces) ──
     pub fichiers: fichiers::Releve,
+    /// Jusqu'où le temps réel des fichiers était à jour (secondes depuis 1970) : au redémarrage, les dossiers sont
+    /// relus depuis ce moment, et ce qui y est arrivé pendant l'arrêt est examiné. 0 : jamais noté.
+    pub fichiers_a_jour: i64,
 }
 
 const DERNIERS_PARTIS: usize = 10;
@@ -2117,6 +2120,7 @@ fn servir() -> i32 {
             .unwrap_or(usize::MAX)
             .saturating_mul(4),
     );
+    let avant = lire_etat();
     let mut etat = Etat {
         pid: std::process::id(),
         depuis: maintenant(),
@@ -2124,7 +2128,10 @@ fn servir() -> i32 {
         // Un redémarrage (Restart=on-failure, mise à jour, « rancongiciel on ») ne doit pas oublier un programme resté
         // gelé : seul ce fichier permet à « off » ou au retrait de le reprendre. Un PID mort, ou repris par un
         // processus qui n'est pas gelé, est écarté.
-        pids_geles: encore_geles(lire_etat().map(|e| e.pids_geles).unwrap_or_default()),
+        pids_geles: encore_geles(avant.as_ref().map(|e| e.pids_geles.clone()).unwrap_or_default()),
+        // Gardé tel quel jusqu'à ce que la relecture du démarrage soit finie : un arrêt pendant elle repartira du
+        // même point.
+        fichiers_a_jour: avant.as_ref().map_or(0, |e| e.fichiers_a_jour),
         ..Etat::default()
     };
     let refuser = |etat: &mut Etat, raison: String| {
@@ -2249,6 +2256,9 @@ fn servir() -> i32 {
             if let Some(s) = surveillance.as_ref() {
                 s.mettre_en_pause(etat.en_pause);
                 etat.fichiers = s.releve();
+                if let Some(t) = s.vu_jusqu_a() {
+                    etat.fichiers_a_jour = t;
+                }
                 if let Some(n) = par_heure.tour(&etat.fichiers, maintenant()) {
                     alerter_non_verifies(n, &mut debit, &mut etat);
                 }
@@ -2278,6 +2288,9 @@ fn servir() -> i32 {
     drop(v);
     if let Some(s) = surveillance.take() {
         etat.fichiers = s.releve();
+        if let Some(t) = s.vu_jusqu_a() {
+            etat.fichiers_a_jour = t;
+        }
         drop(s);
     }
     etat.battement = maintenant();
@@ -2312,6 +2325,7 @@ fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
     let demarre = fichiers::Surveillance::demarrer(
         fichiers::a_surveiller(),
         Box::new(crate::protection::moteur::sources_du_temps_reel),
+        Some(relire_depuis(etat.fichiers_a_jour, maintenant())),
     );
     match demarre {
         Ok(s) => {
@@ -2328,6 +2342,21 @@ fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
             None
         }
     }
+}
+
+/// D'où relire les dossiers au démarrage : un peu avant le dernier moment où le temps réel était à jour (une horloge
+/// qui hésite, un fichier écrit juste avant l'arrêt), sept jours au plus ; jamais noté (première fois, état perdu ou
+/// illisible) : les sept derniers jours. Un moment dans le futur (horloge reculée depuis) ne cache rien : borné à
+/// maintenant moins la marge.
+fn relire_depuis(a_jour: i64, maintenant: i64) -> i64 {
+    let plus_tot = maintenant.saturating_sub(fichiers::RELECTURE_MAX);
+    if a_jour <= 0 {
+        return plus_tot;
+    }
+    a_jour
+        .min(maintenant)
+        .saturating_sub(fichiers::MARGE_RELECTURE)
+        .max(plus_tot)
 }
 
 /// Le temps réel des fichiers peut-il ouvrir fanotify ? La sonde (`fanotify::sonder`) a essayé dans un enfant, sous le
@@ -3679,7 +3708,21 @@ fn constat() -> Constat {
         c.verifie &= i.verifie;
         c.probleme = c.probleme.max(i.probleme);
     }
-    rallumer_si_coupe(c, vivant, etat.as_ref())
+    relecture_au_bilan(rallumer_si_coupe(c, vivant, etat.as_ref()), vivant, etat.as_ref())
+}
+
+/// A (relecture AV5) : des fichiers sont arrivés sans être vus (file pleine, débordement du noyau) et la relecture
+/// ne les a pas encore tous repris : ils ne sont pas examinés, c'est un problème au bilan, plus une remarque. La
+/// phrase de l'état dit déjà lesquels et pourquoi ; le niveau seul monte.
+fn relecture_au_bilan(c: Constat, vivant: bool, etat: Option<&Etat>) -> Constat {
+    if !vivant || etat.is_none_or(|e| !e.fichiers.en_retard()) {
+        return c;
+    }
+    Constat {
+        probleme: c.probleme.max(Some(Niveau::Moyen)),
+        verifie: false,
+        ..c
+    }
 }
 
 /// F3 (relecture AV5) : un veilleur vivant dont le temps réel des fichiers a été coupé par le filtre d'appels système
@@ -5185,15 +5228,24 @@ mod tests {
 
     #[test]
     fn non_verifies_dits_chaque_heure() {
-        let releve = |non_verifies, en_cours, en_pause, debordements| fichiers::Releve {
+        let releve = |non_verifies, en_cours, en_pause, a_reprendre| fichiers::Releve {
             non_verifies,
-            debordements,
             en_pause,
             en_cours,
+            a_reprendre,
             ..fichiers::Releve::default()
         };
-        // En cours de téléchargement et en pause : hors de l'alerte ; les débordements en sont.
+        // En cours de téléchargement et en pause : hors de l'alerte ; les pertes pas encore reprises en sont (une
+        // perte reprise a été examinée, et un débordement seul ne dit pas combien de fichiers).
         assert_eq!(releve(10, 3, 2, 4).a_signaler(), 9);
+        assert_eq!(
+            fichiers::Releve {
+                debordements: 4,
+                ..fichiers::Releve::default()
+            }
+            .a_signaler(),
+            0
+        );
         let mut h = NonVerifiesParHeure::default();
         let t0 = 1_800_000_000;
         assert_eq!(h.tour(&releve(5, 0, 0, 0), t0), None, "premier relevé : la base");
@@ -5736,6 +5788,47 @@ mod tests {
         let autre = juger_bool(true, Some(true), Some(&e), true, Some(true));
         let probleme = autre.probleme;
         assert_eq!(rallumer_si_coupe(autre, true, Some(&e)).probleme, probleme);
+    }
+
+    /// A (relecture AV5) : des fichiers arrivés sans être vus et pas encore repris : le bilan le compte comme un
+    /// problème, pas vérifié ; repris, ou un veilleur mort (déjà dit autrement), rien ne change.
+    #[test]
+    fn pertes_pas_reprises_au_bilan() {
+        let mut e = etat_vivant();
+        e.fichiers = fichiers::Releve {
+            actif: true,
+            a_reprendre: 3,
+            relectures: vec!["~/Salon".into()],
+            ..fichiers::Releve::default()
+        };
+        let base = juger_bool(true, Some(true), Some(&e), true, Some(true));
+        let c = relecture_au_bilan(base.clone(), true, Some(&e));
+        assert_eq!(c.probleme, base.probleme.max(Some(Niveau::Moyen)), "{}", c.message);
+        assert!(!c.verifie);
+        assert!(c.message.contains("~/Salon"), "{}", c.message);
+        assert_eq!(
+            relecture_au_bilan(base.clone(), false, Some(&e)).probleme,
+            base.probleme
+        );
+        e.fichiers.a_reprendre = 0;
+        e.fichiers.relectures.clear();
+        let base = juger_bool(true, Some(true), Some(&e), true, Some(true));
+        assert_eq!(relecture_au_bilan(base.clone(), true, Some(&e)).probleme, base.probleme);
+    }
+
+    /// G (relecture AV5) : au démarrage, la relecture part un peu avant le dernier moment à jour, sept jours au plus ;
+    /// jamais noté : sept jours ; un moment dans le futur (horloge reculée) ne cache rien.
+    #[test]
+    fn point_de_relecture_au_demarrage() {
+        let t = 1_800_000_000;
+        let max = fichiers::RELECTURE_MAX;
+        let marge = fichiers::MARGE_RELECTURE;
+        assert_eq!(relire_depuis(0, t), t - max);
+        assert_eq!(relire_depuis(-5, t), t - max);
+        assert_eq!(relire_depuis(t - 600, t), t - 600 - marge);
+        assert_eq!(relire_depuis(t - 30 * 86_400, t), t - max);
+        assert_eq!(relire_depuis(t + 86_400, t), t - marge);
+        assert_eq!(relire_depuis(i64::MAX, t), t - marge);
     }
 
     /// QEMU (AV5) : « off » laissait vide le dossier des unités que « on » avait créé. Seul celui-là part, vide ; un
