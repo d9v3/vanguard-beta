@@ -377,7 +377,8 @@ sshguard or CrowdSec already blocks the addresses that keep trying.
   can only be read as administrator: without that right, it is said. On this Windows, or on a folder of .evtx from
   Linux (disk mounted from the rescue drive), then the alerts in time order, with the period really read per
   log; included in the report and in the evidence's CHRONOLOGIE.txt.
-- Antivirus: ClamAV (Linux) or Microsoft Defender (Windows), on the computer or on a chosen USB key / folder,
+- Antivirus: the Vanguard engine (fingerprints, YARA, installed ClamAV database, heuristics), with clamscan as an
+  optional second opinion (Linux) or Microsoft Defender (Windows), on the computer or on a chosen USB key / folder,
   with the tricks of USB worms (shortcut posing as a folder, autorun.inf, scripts).
 - Integrity of critical files (accounts, sudo, SSH, PAM, cron, services, autostart): BLAKE3 fingerprints, what changed
   since the reference, and live monitoring.

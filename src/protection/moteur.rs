@@ -352,11 +352,17 @@ fn base_clamav(mode: Mode) -> Result<&'static Base, &'static str> {
     #[cfg(not(test))]
     {
         static COMPLETE: OnceLock<Result<Base, String>> = OnceLock::new();
+        static COMPLETE_PUA: OnceLock<Result<Base, String>> = OnceLock::new();
         static EMPREINTES: OnceLock<Result<Base, String>> = OnceLock::new();
-        let charger = || base::charger(Options { mode, pua: false }).map_err(|r| r.to_string());
-        match mode {
-            Mode::Complete => COMPLETE.get_or_init(charger).as_ref().map_err(String::as_str),
-            Mode::Empreintes => EMPREINTES.get_or_init(charger).as_ref().map_err(String::as_str),
+        // P20 : les PUA seulement à la demande, et si la personne l'a choisi ; jamais en continu (veilleur, garde),
+        // où une empreinte connue met en quarantaine toute seule. Relu à chaque chargement : un choix changé dans
+        // les Paramètres vaut à l'analyse suivante, même dans le même lancement.
+        let pua = mode == Mode::Complete && crate::parametres::pua();
+        let charger = || base::charger(Options { mode, pua }).map_err(|r| r.to_string());
+        match (mode, pua) {
+            (Mode::Complete, false) => COMPLETE.get_or_init(charger).as_ref().map_err(String::as_str),
+            (Mode::Complete, true) => COMPLETE_PUA.get_or_init(charger).as_ref().map_err(String::as_str),
+            (Mode::Empreintes, _) => EMPREINTES.get_or_init(charger).as_ref().map_err(String::as_str),
         }
     }
 }

@@ -436,12 +436,13 @@ fn gestes_proxy(fichiers: Vec<(String, Option<Vec<u8>>)>) -> Vec<crate::machine:
     crate::machine::defense::tous(vus, |(f, l)| crate::machine::defense::commenter_proxy(&f, &l))
 }
 
-/// ClamAV absent : où le menu propose de l'installer (Virus et logiciels espions › Analyse antivirus).
+/// ClamAV absent : rien à mettre à jour, et rien à proposer (AV5 : ClamAV est un second avis facultatif, le moteur de
+/// Vanguard analyse sans lui).
 #[cfg(target_os = "linux")]
 fn sans_clamav() -> &'static str {
     tr!(
-        "ClamAV n'est pas installé : l'analyse antivirus (menu 6.1, rapide ou complète) propose de l'installer",
-        "ClamAV is not installed: the antivirus scan (menu 6.1, quick or full) offers to install it"
+        "ClamAV n'est pas installé : facultatif, le moteur de Vanguard analyse sans lui (empreintes, YARA, heuristiques)",
+        "ClamAV is not installed: optional, the Vanguard engine scans without it (fingerprints, YARA, heuristics)"
     )
 }
 
@@ -1476,16 +1477,13 @@ mod tests {
         }
     }
 
-    /// Le renvoi suit la numérotation du menu principal : un groupe ajouté ou déplacé le rendrait faux.
+    /// AV5 : ClamAV absent, rien ne propose de l'installer ; le texte dit que le moteur de Vanguard analyse sans lui.
     #[cfg(target_os = "linux")]
     #[test]
-    fn renvoi_au_menu_de_l_antivirus() {
-        let renvoi = crate::touche_de(crate::Action::Antivirus).expect("analyse antivirus absente du menu");
-        assert!(
-            sans_clamav().contains(&format!("menu {renvoi},")),
-            "« {} » ne renvoie pas à {renvoi}",
-            sans_clamav()
-        );
+    fn clamav_absent_sans_proposition() {
+        let texte = sans_clamav();
+        assert!(!texte.contains("propose") && !texte.contains("l'installer"), "{texte}");
+        assert!(texte.contains("facultatif") && texte.contains("Vanguard"), "{texte}");
     }
 
     #[cfg(target_os = "linux")]

@@ -9,8 +9,10 @@
 //! accord, sans toucher aux réglages de chacun), l'auto-réglage de la vitesse du bilan (`autotest::reglage` : en marche
 //! ou coupé, chaque délai monté annulable un par un, ou tout remis comme à l'origine). Chaque changement est montré avec sa valeur d'avant, et s'annule en
 //! la remettant. Le téléchargement des versions des logiciels (`protection::perimes`) est gardé dans parametres.json
-//! aussi, mais lu à chaque usage : ce n'est pas un réglage du lancement. parametres.json est scellé (`sceau`) : changé
-//! hors de Vanguard, ce qu'il coupait (travail sans Internet, autodiagnostic, versions des logiciels) reste en marche,
+//! aussi, mais lu à chaque usage : ce n'est pas un réglage du lancement ; de même le second avis ClamAV (clamscan
+//! lancé ou non après le moteur de Vanguard) et les programmes potentiellement indésirables (P20). parametres.json est scellé (`sceau`) : changé
+//! hors de Vanguard, ce qu'il coupait (travail sans Internet, autodiagnostic, versions des logiciels, second avis
+//! ClamAV) reste en marche,
 //! et c'est dit. Le partage avec l'auteur (`partage`) y est gardé aussi, relu à chaque écriture du relevé et avant
 //! chaque envoi.
 
@@ -68,6 +70,14 @@ struct Fichier {
     /// Les coulisses (`coulisses`) : chaque commande lancée montrée en une ligne grise (non par défaut).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     coulisses: bool,
+    /// Ne plus lancer clamscan en second avis des analyses (lancé par défaut s'il est installé). La base de ClamAV
+    /// installée reste lue par le moteur de Vanguard.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    sans_second_avis: bool,
+    /// Détecter aussi les programmes potentiellement indésirables (PUA) aux analyses à la demande : non par défaut,
+    /// comme clamscan. Jamais en continu (veilleur, garde) : une PUA n'est pas mise en quarantaine toute seule.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pua: bool,
 }
 
 /// Au-delà, ce n'est pas le fichier de Vanguard : il n'est pas lu (le processus élevé de Windows le lit aussi).
@@ -123,8 +133,10 @@ fn charger_juge(chemin: &Path) -> Result<(Fichier, Option<Douteux>), crate::mode
         return Ok((f, None));
     };
     let oui_au_partage = f.partage == Some(partage::Choix::Oui) || f.avis_partage.is_some();
-    let coupait = f.hors_ligne || f.sans_autotest || f.sans_versions || f.paquets_aur || oui_au_partage;
+    let coupait =
+        f.hors_ligne || f.sans_autotest || f.sans_versions || f.sans_second_avis || f.paquets_aur || oui_au_partage;
     f.hors_ligne = false;
+    f.sans_second_avis = false;
     f.sans_autotest = false;
     f.sans_versions = false;
     // Un accord ne se donne pas à la place de la personne : écrit hors de Vanguard, il ne vaut pas.
@@ -291,6 +303,17 @@ pub(crate) fn paquets_aur() -> bool {
     charger_de(&fichier()).unwrap_or_default().paquets_aur
 }
 
+/// Lancer clamscan en second avis des analyses, s'il est installé ? Oui par défaut ; lu à chaque usage.
+#[cfg(unix)]
+pub(crate) fn second_avis_clamav() -> bool {
+    !charger_de(&fichier()).unwrap_or_default().sans_second_avis
+}
+
+/// Détecter aussi les programmes potentiellement indésirables aux analyses à la demande ? Non par défaut (P20).
+pub(crate) fn pua() -> bool {
+    charger_de(&fichier()).unwrap_or_default().pua
+}
+
 /// L'autodiagnostic de la semaine, avec la surveillance ? Oui par défaut ; lu à chaque usage, comme les versions.
 pub(crate) fn autotest_hebdomadaire() -> bool {
     !charger_de(&fichier()).unwrap_or_default().sans_autotest
@@ -338,10 +361,12 @@ enum Reglage {
     PaquetsAur,
     Partage,
     Coulisses,
+    SecondAvis,
+    Pua,
 }
 
 impl Reglage {
-    const TOUS: [Reglage; 16] = [
+    const TOUS: [Reglage; 18] = [
         Reglage::Langue,
         Reglage::Emojis,
         Reglage::HorsLigne,
@@ -358,6 +383,8 @@ impl Reglage {
         Reglage::PaquetsAur,
         Reglage::Partage,
         Reglage::Coulisses,
+        Reglage::SecondAvis,
+        Reglage::Pua,
     ];
 
     /// Le mot de la ligne de commande.
@@ -379,6 +406,8 @@ impl Reglage {
             Reglage::Partage => tr!("partage", "sharing"),
             Reglage::PaquetsAur => tr!("paquets-aur", "aur-packages"),
             Reglage::Coulisses => tr!("coulisses", "backstage"),
+            Reglage::SecondAvis => tr!("second-avis", "second-opinion"),
+            Reglage::Pua => "pua",
         }
     }
 
@@ -413,6 +442,8 @@ impl Reglage {
             "partage" | "sharing" | "share" | "envoi" | "envois" | "send" => Some(Reglage::Partage),
             "paquets-aur" | "aur-packages" | "aur" | "paquets_aur" => Some(Reglage::PaquetsAur),
             "coulisses" | "backstage" | "behind-the-scenes" | "commandes" | "commands" => Some(Reglage::Coulisses),
+            "second-avis" | "second-opinion" | "secondavis" | "clamav" | "clamscan" => Some(Reglage::SecondAvis),
+            "pua" | "indesirables" | "indésirables" | "unwanted" | "pup" => Some(Reglage::Pua),
             _ => None,
         }
     }
@@ -435,6 +466,8 @@ impl Reglage {
             Reglage::Partage => tr!("Partage avec l'auteur", "Sharing with the author"),
             Reglage::PaquetsAur => tr!("Paquets de l'AUR", "AUR packages"),
             Reglage::Coulisses => tr!("Coulisses (commandes lancées)", "Backstage (commands run)"),
+            Reglage::SecondAvis => tr!("Second avis ClamAV (clamscan)", "ClamAV second opinion (clamscan)"),
+            Reglage::Pua => tr!("Programmes indésirables (PUA)", "Unwanted programs (PUA)"),
         }
     }
 
@@ -464,6 +497,8 @@ impl Reglage {
             | Reglage::VersionsLogiciels
             | Reglage::Autotest
             | Reglage::PaquetsAur
+            | Reglage::SecondAvis
+            | Reglage::Pua
                 if anglais =>
             {
                 &["yes", "no"]
@@ -475,7 +510,9 @@ impl Reglage {
             | Reglage::Restrictions
             | Reglage::VersionsLogiciels
             | Reglage::Autotest
-            | Reglage::PaquetsAur => &["oui", "non"],
+            | Reglage::PaquetsAur
+            | Reglage::SecondAvis
+            | Reglage::Pua => &["oui", "non"],
             Reglage::Partage | Reglage::Coulisses if anglais => &["yes", "no", "see"],
             Reglage::Partage | Reglage::Coulisses => &["oui", "non", "voir"],
             Reglage::Appris | Reglage::Blocage | Reglage::CleAbuseCh | Reglage::Vitesse => &[],
@@ -565,6 +602,18 @@ fn changer_dans(f: &mut Fichier, r: Reglage, valeur: &str) -> Result<(String, St
             f.coulisses = nouveau;
             Ok((avant, mot_oui_non(f.coulisses).to_string()))
         }
+        Reglage::SecondAvis => {
+            let nouveau = oui_non(valeur).ok_or(())?;
+            let avant = mot_oui_non(!f.sans_second_avis).to_string();
+            f.sans_second_avis = !nouveau;
+            Ok((avant, mot_oui_non(!f.sans_second_avis).to_string()))
+        }
+        Reglage::Pua => {
+            let nouveau = oui_non(valeur).ok_or(())?;
+            let avant = mot_oui_non(f.pua).to_string();
+            f.pua = nouveau;
+            Ok((avant, mot_oui_non(f.pua).to_string()))
+        }
         _ => Err(()),
     }
 }
@@ -589,6 +638,8 @@ fn valeur(r: Reglage) -> String {
         Reglage::Autotest => mot_oui_non(!fichier.sans_autotest).to_string(),
         Reglage::PaquetsAur => mot_oui_non(fichier.paquets_aur).to_string(),
         Reglage::Coulisses => mot_oui_non(fichier.coulisses).to_string(),
+        Reglage::SecondAvis => mot_oui_non(!fichier.sans_second_avis).to_string(),
+        Reglage::Pua => mot_oui_non(fichier.pua).to_string(),
         Reglage::TempsReel => crate::protection::temps_reel::valeur(),
         Reglage::Surveillance => mot_oui_non(crate::reseau::surveillance::active()).to_string(),
         Reglage::Entretien => mot_oui_non(crate::entretien::active()).to_string(),
@@ -863,7 +914,9 @@ fn changer(r: Reglage, saisie: &str) -> bool {
         | Reglage::VersionsLogiciels
         | Reglage::Autotest
         | Reglage::PaquetsAur
-        | Reglage::Coulisses => {
+        | Reglage::Coulisses
+        | Reglage::SecondAvis
+        | Reglage::Pua => {
             let mut change = None;
             let fait = modifier_dans(&fichier(), |f| {
                 change = changer_dans(f, r, saisie).ok();
@@ -971,8 +1024,8 @@ fn afficher() {
         Ok((_, Some(douteux))) => afficher_aligne(
             &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
             &trf!(
-                "parametres.json {} : le travail sans Internet, l'autodiagnostic et les versions des logiciels qu'il coupait restent en marche, et un accord qu'il donnait (paquets de l'AUR, partage avec l'auteur) ne vaut pas. Réglez-les de nouveau ici s'ils sont bien de vous.",
-                "parametres.json {}: offline work, the self-test and software versions it turned off stay on, and a consent it gave (AUR packages, sharing with the author) does not count. Set them again here if they really are yours.",
+                "parametres.json {} : le travail sans Internet, l'autodiagnostic, les versions des logiciels et le second avis ClamAV qu'il coupait restent en marche, et un accord qu'il donnait (paquets de l'AUR, partage avec l'auteur) ne vaut pas. Réglez-les de nouveau ici s'ils sont bien de vous.",
+                "parametres.json {}: offline work, the self-test, software versions and the ClamAV second opinion it turned off stay on, and a consent it gave (AUR packages, sharing with the author) does not count. Set them again here if they really are yours.",
                 douteux.texte()
             ),
             4,
@@ -1043,6 +1096,14 @@ fn explication(r: Reglage) -> &'static str {
         Reglage::Coulisses => tr!(
             "Oui : chaque commande que Vanguard lance se montre en une ligne grise (programme, arguments abrégés, durée, réussite), sur la sortie d'erreur du terminal seulement. Voir : les 200 dernières de ce lancement, gardées en mémoire, jamais sur le disque ni dans le journal. Rien n'est envoyé.",
             "Yes: each command Vanguard runs shows as a grey line (program, shortened arguments, duration, success), on the terminal's error output only. See: the last 200 of this run, kept in memory, never on disk or in the log. Nothing is sent."
+        ),
+        Reglage::SecondAvis => tr!(
+            "Oui : les analyses lancent aussi clamscan, s'il est installé, après le moteur de Vanguard. Non : le moteur de Vanguard seul (empreintes, YARA, heuristiques, et la base de ClamAV installée, qu'il lit lui-même) ; ce que clamscan sait lire de plus (bytecode, archives 7z et rar) n'est plus vérifié, ce qui est dit. Vanguard ne propose pas d'installer ClamAV.",
+            "Yes: scans also run clamscan, if it is installed, after the Vanguard engine. No: the Vanguard engine alone (fingerprints, YARA, heuristics, and the installed ClamAV database, which it reads itself); what clamscan can read on top (bytecode, 7z and rar archives) is no longer checked, which is said. Vanguard does not offer to install ClamAV."
+        ),
+        Reglage::Pua => tr!(
+            "Oui : les analyses à la demande signalent aussi les programmes potentiellement indésirables (signatures PUA de ClamAV : outils d'administration à distance, publicitaires, générateurs de clés), qui visent beaucoup de logiciels légitimes. Jamais en continu : une PUA n'est jamais mise en quarantaine toute seule. Non (par défaut, comme clamscan) : elles sont sautées.",
+            "Yes: on-demand scans also report potentially unwanted programs (ClamAV PUA signatures: remote administration tools, adware, key generators), which target many legitimate programs. Never in continuous mode: a PUA is never quarantined by itself. No (the default, like clamscan): they are skipped."
         ),
         Reglage::Appris | Reglage::Blocage | Reglage::CleAbuseCh => "",
     }
@@ -1248,6 +1309,8 @@ mod tests {
             partage_phase: Some(1),
             avis_partage: Some("2026-11-01".into()),
             coulisses: true,
+            sans_second_avis: true,
+            pua: true,
         };
         enregistrer_dans(&voulu, &f).unwrap();
         assert_eq!(charger_de(&f).unwrap(), voulu);
@@ -1272,12 +1335,15 @@ mod tests {
         crate::sceau::ecrire_dans(f.parent().unwrap(), crate::sceau::APPRIS, b"{}").unwrap();
         std::fs::write(
             &f,
-            r#"{"langue":"en","hors_ligne":true,"sans_autotest":true,"sans_versions":true}"#,
+            r#"{"langue":"en","hors_ligne":true,"sans_autotest":true,"sans_versions":true,"sans_second_avis":true}"#,
         )
         .unwrap();
         let (lu, raison) = charger_juge(&f).unwrap();
         assert_eq!(raison, Some(Douteux::HorsVanguard));
-        assert!(!lu.hors_ligne && !lu.sans_autotest && !lu.sans_versions, "{lu:?}");
+        assert!(
+            !lu.hors_ligne && !lu.sans_autotest && !lu.sans_versions && !lu.sans_second_avis,
+            "{lu:?}"
+        );
         assert_eq!(lu.langue.as_deref(), Some("en"));
         // La personne le règle elle-même : écrit et scellé par Vanguard, il vaut.
         let voulu = Fichier { hors_ligne: true, ..lu };
@@ -1393,6 +1459,23 @@ mod tests {
         assert!(f.sans_versions);
         assert!(changer_dans(&mut f, Reglage::VersionsLogiciels, "yes").is_ok());
         assert!(!f.sans_versions);
+        // Le second avis ClamAV : oui par défaut ; les PUA : non par défaut (P20). Chacun se remet.
+        assert!(!f.sans_second_avis && !f.pua);
+        assert_eq!(
+            changer_dans(&mut f, Reglage::SecondAvis, "non"),
+            Ok((mot_oui_non(true).to_string(), mot_oui_non(false).to_string()))
+        );
+        assert!(f.sans_second_avis);
+        assert!(changer_dans(&mut f, Reglage::SecondAvis, "oui").is_ok());
+        assert!(!f.sans_second_avis);
+        assert_eq!(
+            changer_dans(&mut f, Reglage::Pua, "oui"),
+            Ok((mot_oui_non(false).to_string(), mot_oui_non(true).to_string()))
+        );
+        assert!(f.pua);
+        assert_eq!(changer_dans(&mut f, Reglage::Pua, "auto"), Err(()));
+        assert!(changer_dans(&mut f, Reglage::Pua, "non").is_ok());
+        assert!(!f.pua);
         // Les réglages qui ont leur propre place ne passent pas par le fichier.
         assert_eq!(changer_dans(&mut f, Reglage::Surveillance, "oui"), Err(()));
         assert_eq!(oui_non("Activée"), Some(true));
@@ -1482,6 +1565,17 @@ mod tests {
                 assert!(fr.contains("commande") && en.contains("command"), "{r:?} : {fr} / {en}");
                 continue;
             }
+            if matches!(r, Reglage::SecondAvis | Reglage::Pua) {
+                // Leur propre ligne au guide, qui dit ce qui reste vérifié.
+                let commande = if r == Reglage::Pua {
+                    "vanguard parametres pua oui"
+                } else {
+                    "vanguard parametres second-avis non"
+                };
+                let (fr, en) = crate::guide::explication_vanguard(commande).expect("second avis et PUA au guide");
+                assert!(fr.contains("clamscan") || fr.contains("PUA"), "{r:?} : {fr} / {en}");
+                continue;
+            }
             if r == Reglage::PaquetsAur {
                 // La ligne est pleine : celui-ci a sa propre ligne au guide, qui dit ce qu'il envoie et où.
                 let (fr, en) = crate::guide::explication_vanguard("vanguard parametres paquets-aur oui")
@@ -1503,7 +1597,12 @@ mod tests {
                 Reglage::CleAbuseCh => ("clé abuse.ch", "abuse.ch key"),
                 Reglage::VersionsLogiciels => ("versions", "software versions"),
                 Reglage::Autotest => ("autotest", "self-test"),
-                Reglage::PaquetsAur | Reglage::Vitesse | Reglage::Partage | Reglage::Coulisses => {
+                Reglage::PaquetsAur
+                | Reglage::Vitesse
+                | Reglage::Partage
+                | Reglage::Coulisses
+                | Reglage::SecondAvis
+                | Reglage::Pua => {
                     unreachable!("vérifié plus haut")
                 }
             };

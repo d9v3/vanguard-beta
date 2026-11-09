@@ -698,7 +698,7 @@ pub(crate) fn passer_aux_moteurs(
     }
 }
 
-/// Les vrais moteurs : celui de Vanguard (`yara::examiner` → `moteur::examiner`), puis l'antivirus. Un antivirus absent n'est proposé qu'une fois (l'installer ? non) : sa
+/// Les vrais moteurs : celui de Vanguard (`yara::examiner` → `moteur::examiner`), puis l'antivirus. Un antivirus absent ou coupé n'est demandé qu'une fois : sa
 /// réponse vaut pour les pièces suivantes, au lieu de reposer la question à chacune. Seule une raison qui vaut pour
 /// tous les fichiers est reportée (`antivirus::vaut_pour_tous` : moteur absent, MpCmdRun qui ne se lance pas ou ne
 /// finit pas) ; une raison propre à une pièce (sautée ou exclue, illisible, verrouillée, trop grosse, compte rendu muet

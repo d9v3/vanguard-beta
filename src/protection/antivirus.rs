@@ -1931,13 +1931,29 @@ pub(crate) fn raison_absent() -> &'static str {
     )
 }
 
-/// Le moteur manque.
+/// Le second avis manque : clamscan n'est pas installé. Vanguard ne propose plus de l'installer (AV5, §7.5 de la
+/// conception) : son moteur fait l'analyse, et lit lui-même la base de ClamAV si elle est là.
 #[cfg(unix)]
 pub(crate) fn raison_absent() -> &'static str {
     tr!(
-        "ClamAV absent (installation refusée ou impossible)",
-        "ClamAV missing (installation declined or failed)"
+        "clamscan non installé (second avis facultatif)",
+        "clamscan not installed (optional second opinion)"
     )
+}
+
+/// Le second avis coupé par la personne (Paramètres › second-avis).
+#[cfg(unix)]
+pub(crate) fn raison_coupe() -> &'static str {
+    tr!(
+        "second avis ClamAV coupé dans les Paramètres",
+        "ClamAV second opinion turned off in Settings"
+    )
+}
+
+/// clamscan installé sans signatures, et leur téléchargement refusé ou impossible.
+#[cfg(unix)]
+pub(crate) fn raison_sans_signatures() -> &'static str {
+    tr!("signatures de ClamAV absentes", "ClamAV signatures missing")
 }
 
 /// Une raison d'`Examen::Impossible` qui vaut pour tous les fichiers, que `pieces::moteurs` peut reporter sur les
@@ -1946,6 +1962,10 @@ pub(crate) fn raison_absent() -> &'static str {
 /// d'analyse (code 2 : ce fichier-là peut être verrouillé), ni une réponse muette ou invérifiable : la pièce
 /// suivante, elle, peut être lue ou détectée.
 pub(crate) fn vaut_pour_tous(raison: &str) -> bool {
+    #[cfg(unix)]
+    if raison == raison_coupe() || raison == raison_sans_signatures() {
+        return true;
+    }
     raison == raison_absent() || (cfg!(windows) && raison == raison_injoignable())
 }
 
@@ -1958,8 +1978,8 @@ pub(crate) fn examinateur() -> impl FnMut(&std::path::Path) -> Examen {
 
 #[cfg(unix)]
 pub(crate) fn examiner(fichier: &std::path::Path) -> Examen {
-    if !preparer() {
-        return Examen::Impossible(raison_absent().into());
+    if let Err(raison) = preparer() {
+        return Examen::Impossible(raison.into());
     }
     // Au-delà de 200 Mo, ClamAV saute le fichier sans le lire (--max-filesize) : rien ne serait conclu.
     if std::fs::metadata(fichier).is_ok_and(|m| m.len() > 200 * 1024 * 1024) {
@@ -1975,6 +1995,7 @@ pub(crate) fn examiner(fichier: &std::path::Path) -> Examen {
         Command::new("clamscan")
             .args(["-i", "--max-filesize=200M", "--max-scansize=400M"])
             .args(option_base())
+            .args(option_pua())
             .arg(fichier),
         900,
     ) else {
@@ -2010,6 +2031,13 @@ fn base_presente() -> bool {
 #[cfg(unix)]
 fn option_base() -> Option<String> {
     dossier_de_base().map(|d| format!("--database={}", d.display()))
+}
+
+/// `--detect-pua=yes` si la personne a choisi de détecter aussi les programmes potentiellement indésirables (P20) ;
+/// sinon rien : clamscan les saute par défaut.
+#[cfg(unix)]
+fn option_pua() -> Option<&'static str> {
+    crate::parametres::pua().then_some("--detect-pua=yes")
 }
 
 /// Le dossier qui contient les signatures de ClamAV.
@@ -2053,31 +2081,20 @@ fn base_dans(dossier: &std::path::Path) -> bool {
     })
 }
 
-/// Installe ClamAV et télécharge les signatures si besoin. Retourne `false` si l'utilisateur refuse. Chaque commande
-/// est montrée avant la question qui l'accepte (comme `outil::proposer`) : on dit oui à ce qu'on a vu.
+/// Le second avis peut-il tourner ? Coupé dans les Paramètres, ou clamscan absent : non, et pourquoi, sans rien
+/// proposer d'installer (AV5 : ClamAV est facultatif). Installé sans signatures : leur premier téléchargement par
+/// l'outil de ClamAV est proposé, la commande montrée avant la question qui l'accepte (la base sert aussi au moteur
+/// de Vanguard).
 #[cfg(unix)]
-fn preparer() -> bool {
+fn preparer() -> Result<(), &'static str> {
+    if !crate::parametres::second_avis_clamav() {
+        return Err(raison_coupe());
+    }
     // Linux : le PATH parcouru sur le disque, sans lancer de shell.
     #[cfg(target_os = "linux")]
     let present = crate::machine::linux::natif::present("clamscan");
     if !present {
-        trp!(
-            "  ClamAV (antivirus open source) n'est pas installé.",
-            "  ClamAV (open source antivirus) is not installed."
-        );
-        let Some(installation) = commande_d_installation() else {
-            return false;
-        };
-        println!("  {GRIS}{installation}{RESET}");
-        // Sans réponse (`vanguard verifier-fichier f < /dev/null`, un script) : « non », et le fichier a son verdict.
-        if !demander_ou_defaut(tr!("  L'installer maintenant ? [o/N] : ", "  Install it now? [y/N]: ")).oui() {
-            return false;
-        }
-        // Par le lanceur des corrections : l'installation est notée dans « Ce que Vanguard a changé ».
-        if !crate::machine::appliquer(&[installation]) {
-            trp!("  Installation impossible.", "  Installation failed.");
-            return false;
-        }
+        return Err(raison_absent());
     }
     if !base_presente() {
         trp!(
@@ -2095,7 +2112,7 @@ fn preparer() -> bool {
         ))
         .oui()
         {
-            return false;
+            return Err(raison_sans_signatures());
         }
         trp!(
             "  Téléchargement des signatures de virus…",
@@ -2110,27 +2127,10 @@ fn preparer() -> bool {
             crate::machine::appliquer_sans_noter(&[telechargement]).0
         } && service.is_none_or(|s| crate::machine::appliquer(&[s]));
         if !ok {
-            return false;
+            return Err(raison_sans_signatures());
         }
     }
-    true
-}
-
-/// La commande qui installe ClamAV, ou `None` (et pourquoi, à l'écran) faute d'outil pour l'installer.
-#[cfg(target_os = "linux")]
-fn commande_d_installation() -> Option<String> {
-    // Fedora sépare le moteur et l'outil de mise à jour des signatures.
-    match crate::machine::linux::Paquets::detecter() {
-        Some(g @ crate::machine::linux::Paquets::Dnf) => Some(g.installer("clamav clamav-update")),
-        Some(g) => Some(g.installer("clamav")),
-        None => {
-            trp!(
-                "  Gestionnaire de paquets non reconnu : installez ClamAV avec l'outil de votre distribution.",
-                "  Package manager not recognized: install ClamAV with your distribution's tool."
-            );
-            None
-        }
-    }
+    Ok(())
 }
 
 /// Le geste du premier téléchargement des signatures, fait par l'assistant élevé sans shell (lot U3) ; rien après :
@@ -2163,8 +2163,16 @@ pub(crate) const ENDROITS_A_RISQUE: [&str; 6] = [
 
 #[cfg(unix)]
 fn clamav(portee: &Portee) {
-    if !preparer() {
-        trp!("  Analyse annulée.", "  Scan cancelled.");
+    if let Err(raison) = preparer() {
+        afficher_aligne(
+            "  ",
+            &trf!(
+                "Second avis non lancé : {raison}. Le moteur de Vanguard a fait l'analyse ci-dessus ; « vanguard parametres second-avis » le règle.",
+                "Second opinion not run: {raison}. The Vanguard engine did the scan above; “vanguard settings second-opinion” sets it."
+            ),
+            2,
+            GRIS,
+        );
         return;
     }
     let h = home();
@@ -2233,6 +2241,7 @@ fn clamav(portee: &Portee) {
     // Le bilan final (fichiers analysés, infectés, erreurs) sert à juger si l'analyse a vraiment eu lieu.
     cmd.args(["-r", "-i", "--max-filesize=200M", "--max-scansize=400M"]);
     cmd.args(option_base());
+    cmd.args(option_pua());
     for e in exclusions {
         cmd.arg(format!("--exclude-dir={}", regex_echappe(e)));
     }
@@ -3237,6 +3246,13 @@ mod tests_cle {
         }
         // Seul ce qui vaut pour tous les fichiers est reporté sur les pièces suivantes d'un courriel.
         assert!(vaut_pour_tous(raison_absent()));
+        // AV5 : le second avis coupé ou sans signatures vaut aussi pour toutes les pièces, sans reposer de question.
+        #[cfg(unix)]
+        {
+            assert!(vaut_pour_tous(raison_coupe()));
+            assert!(vaut_pour_tous(raison_sans_signatures()));
+            assert!(!raison_absent().contains("refusée"), "{}", raison_absent());
+        }
         assert!(!vaut_pour_tous(raison_sautee()));
         let Examen::Impossible(muette) = lire_mpcmdrun(Some(0), "", true) else {
             panic!("muette")

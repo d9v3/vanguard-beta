@@ -290,6 +290,20 @@ pub const PROGRAMMES: &[Programme] = &[
                 true,
             ),
             traduite(
+                "vanguard parametres second-avis non",
+                "vanguard settings second-opinion no",
+                "Linux : ne plus lancer clamscan après le moteur de Vanguard ; sa base reste lue par le moteur.",
+                "Linux: no longer run clamscan after the Vanguard engine; its database is still read by the engine.",
+                true,
+            ),
+            traduite(
+                "vanguard parametres pua oui",
+                "vanguard settings pua yes",
+                "Analyses à la demande : signaler aussi les programmes potentiellement indésirables (PUA).",
+                "On-demand scans: also report potentially unwanted programs (PUA).",
+                true,
+            ),
+            traduite(
                 "vanguard parametres partage",
                 "vanguard settings sharing",
                 "Partage avec l'auteur : oui, non (efface le relevé) ou voir ce qui serait envoyé.",

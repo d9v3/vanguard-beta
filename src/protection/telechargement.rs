@@ -733,7 +733,8 @@ fn analyser_vanguard(chemin: &Path, v: &mut Verification) {
     juger("Vanguard", &examen, v);
 }
 
-/// L'antivirus du système (Defender, ClamAV), qui peut demander une installation : jamais avec `--json`.
+/// L'antivirus du système (Defender, ou clamscan en second avis facultatif), qui peut demander le téléchargement des
+/// signatures de ClamAV : jamais avec `--json`.
 fn analyser_systeme(chemin: &Path, v: &mut Verification) {
     juger(
         antivirus_du_systeme(),

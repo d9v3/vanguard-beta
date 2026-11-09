@@ -397,7 +397,8 @@ fail2ban, sshguard ou CrowdSec bloque déjà les adresses qui insistent.
   administrateur : sans ce droit, c'est dit. Sur ce Windows, ou sur un dossier de .evtx depuis Linux (disque
   monté depuis la clé de secours), puis les alertes dans l'ordre du temps, avec la période vraiment lue par journal ;
   reprises dans le rapport et dans CHRONOLOGIE.txt des traces.
-- Antivirus : ClamAV (Linux) ou Microsoft Defender (Windows), sur l'ordinateur ou sur une clé USB / un dossier
+- Antivirus : le moteur de Vanguard (empreintes, YARA, base de ClamAV installée, heuristiques), avec clamscan en
+  second avis facultatif (Linux) ou Microsoft Defender (Windows), sur l'ordinateur ou sur une clé USB / un dossier
   choisi, avec les pièges des vers de clé (raccourci qui imite un dossier, autorun.inf, scripts).
 - Intégrité des fichiers critiques (comptes, sudo, SSH, PAM, cron, services, démarrage automatique) : empreintes
   BLAKE3, ce qui a changé depuis la référence, et surveillance en direct.
