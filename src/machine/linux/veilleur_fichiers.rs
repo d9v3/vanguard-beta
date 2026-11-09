@@ -77,6 +77,8 @@ fn bornes() -> crate::analyse::Bornes {
 const CANAL: usize = 64;
 /// L'attente du lecteur entre deux regards sur l'arrêt et la pause.
 const BATTEMENT_MS: i32 = 500;
+/// Le repos du lecteur après une lecture du groupe en erreur.
+const REPOS_APRES_ERREUR: Duration = Duration::from_millis(100);
 
 // ───────────────────────────── Dossiers surveillés ─────────────────────────────
 
@@ -792,6 +794,9 @@ fn lire(
             }
             let Ok(n) = groupe.lire(&mut tampon) else {
                 plus(&compteurs.defauts);
+                // Une erreur qui dure (le groupe dit prêt, la lecture échoue chaque fois) ferait sinon tourner ce fil
+                // à vide, un cœur entier pris : un court repos, et le compte des défauts le dit.
+                std::thread::sleep(REPOS_APRES_ERREUR);
                 continue;
             };
             let l = lecture::evenements_nommes(tampon.get(..n).unwrap_or_default());
