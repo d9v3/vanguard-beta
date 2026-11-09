@@ -43,7 +43,10 @@ mod tests;
 
 use std::time::Duration;
 
-pub(crate) use arbre::{analyser_fichier, analyser_ouvert};
+pub(crate) use arbre::analyser_fichier;
+// Un fichier déjà ouvert par l'appelant : le temps réel des fichiers, sous Linux seulement pour l'instant.
+#[cfg(target_os = "linux")]
+pub(crate) use arbre::analyser_ouvert;
 // Les octets déjà en mémoire : pour le banc de fuzzing et les essais ; les analyses de Vanguard partent d'un fichier.
 #[cfg(any(test, fuzzing))]
 pub(crate) use arbre::analyser;
