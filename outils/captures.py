@@ -341,11 +341,11 @@ def haut_du_tableau(page):
     détail, les appareils et la liste des fonctions sont coupés."""
     # La colonne de gauche fait la hauteur de la fenêtre : ramenée à celle du contenu, le bas vide se rogne. Ajouté
     # avant de chercher la coupe, qui sinon tomberait trop tôt.
-    page = page.replace("</head>", "<style>.cadre{min-height:0}.cote{height:auto}</style></head>", 1)
+    page = page.replace("</head>", "<style>.rail{height:auto}.intro,.envol{display:none}*,::before,::after{animation:none!important}</style></head>", 1)
     coupe = page.find("<section id=alertes>")
     if coupe < 0:
         coupe = page.find("</main>")
-    return page[:coupe] + "</main></div></body></html>"
+    return page[:coupe] + "</main></div></div></body></html>"
 
 
 # --- Images ----------------------------------------------------------------------------------------------------------

@@ -29,6 +29,8 @@ const JOURS_GARDES: i64 = 90;
 const JOURS_NOUVEAUX: i64 = 30;
 /// Jours du graphique et de l'anneau des alertes : un mois se lit d'un coup d'œil.
 const JOURS_GRAPHIQUE: i64 = 30;
+/// Les alertes du tableau « Alertes récentes » ; toutes sont plus bas, jour par jour.
+const ALERTES_RECENTES: usize = 7;
 /// Longueurs gardées d'une alerte : un nom d'appareil choisi par n'importe qui ne doit pas gonfler le journal.
 const TITRE_MAX: usize = 200;
 const TEXTE_MAX: usize = 1000;
@@ -468,6 +470,8 @@ pub(crate) struct Fonction {
 /// Une rubrique du menu et ses fonctions, dans l'ordre de l'écran.
 pub(crate) struct Rubrique {
     pub titre: String,
+    /// Le nom de son icône (`icone`) : « ordinateur », « reseau »…
+    pub icone: &'static str,
     pub resume: String,
     pub fonctions: Vec<Fonction>,
 }
@@ -615,14 +619,16 @@ fn table_appareils(appareils: &[&FicheAppareil]) -> String {
     h
 }
 
-/// Les couleurs de la page : lime sur noir pur, ou sur un fond clair. Les mêmes noms dans les deux thèmes : le reste
-/// de la feuille ne connaît qu'eux.
-const SOMBRE: &str = "--fond:#000;--surface:#0d0d0d;--surface-2:#171717;--encre:#f4f4ef;--doux:#a8a8a0;--discret:#77776f;\
---trait:#1c1c1c;--accent:#d4f36b;--accent-doux:rgba(217,245,110,.10);--vif:#d9f56e;--sur-vif:#0c0e04;\
---sur-vif-doux:rgba(12,14,4,.66);--grave:#ff5c5c;--moyen:#f5b83d;--gris:#4a4a46;--ombre:none;color-scheme:dark";
-const CLAIR: &str = "--fond:#f2f3ec;--surface:#fff;--surface-2:#f1f2ea;--encre:#0f1108;--doux:#4a4d40;--discret:#63675a;\
---trait:#e2e4da;--accent:#4d6b00;--accent-doux:rgba(77,107,0,.10);--vif:#d9f56e;--sur-vif:#0c0e04;\
---sur-vif-doux:rgba(12,14,4,.66);--grave:#c62828;--moyen:#b45309;--gris:#b5b8ad;--ombre:0 1px 2px rgba(0,0,0,.06);\
+/// Les couleurs de la page, celles de l'image de référence : un seul accent cyan sur du noir, des gris neutres pour
+/// tout le reste ; le rouge, l'orange et le jaune ne disent que la gravité, le vert une jauge en ordre. Les mêmes noms
+/// dans les deux thèmes : le reste de la feuille ne connaît qu'eux.
+const SOMBRE: &str = "--fond:#000;--surface:#0a0c0f;--surface-2:#12161b;--surface-3:#1a2027;--encre:#e8eef4;\
+--doux:#93a1af;--discret:#5f6b77;--trait:rgba(220,235,255,.08);--accent:#38c6f4;--accent-doux:rgba(56,198,244,.12);\
+--vif:#38c6f4;--sur-vif:#021018;--grave:#f0555a;--moyen:#f08c2e;--jaune:#d9c94a;--bon:#3fb950;--gris:#5f6b77;\
+color-scheme:dark";
+const CLAIR: &str = "--fond:#f3f5f7;--surface:#fff;--surface-2:#eef1f4;--surface-3:#e3e8ed;--encre:#0b1520;\
+--doux:#4a5868;--discret:#6b7785;--trait:rgba(10,25,40,.10);--accent:#0a7fb6;--accent-doux:rgba(10,127,182,.10);\
+--vif:#0a7fb6;--sur-vif:#fff;--grave:#c62828;--moyen:#c2410c;--jaune:#a16207;--bon:#15803d;--gris:#94a3b8;\
 color-scheme:light";
 
 /// La feuille de style du tableau. Sans script (la CSP l'interdit, et c'est voulu) : le bouton clair/sombre est une
@@ -631,75 +637,155 @@ color-scheme:light";
 fn feuille() -> String {
     format!(
         ":root{{{SOMBRE}}}@media (prefers-color-scheme:light){{:root{{{CLAIR}}}:root:has(#bascule:checked){{{SOMBRE}}}}}\
-         @media (prefers-color-scheme:dark){{:root:has(#bascule:checked){{{CLAIR}}}}}{CSS_TABLEAU}"
+         @media (prefers-color-scheme:dark){{:root:has(#bascule:checked){{{CLAIR}}}}}{CSS_TABLEAU}{CSS_OUVERTURE}"
     )
 }
 
-/// La mise en page : menu à gauche, cartes arrondies, chiffres en grand, la carte « en ordre » en lime.
+/// La mise en page : une colonne d'icônes à gauche (les rubriques du menu), une barre d'onglets en haut (les sections
+/// de la page), puis la vue d'ensemble en rangées : la courbe et l'anneau, les alertes récentes et les chiffres, les
+/// trois cartes d'état. Tout tombe sur une grille de 4 px ; les surfaces restent neutres, la couleur va aux données.
 const CSS_TABLEAU: &str = "
-*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:16px}
-body{margin:0;background:var(--fond);color:var(--encre);font:15px/1.55 system-ui,'Segoe UI',sans-serif}
-a{color:var(--accent)}.bascule{position:absolute;opacity:0;width:1px;height:1px}
-.cadre{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:100vh}
-.cote{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:4px;padding:22px 14px;border-right:1px solid var(--trait);background:var(--fond)}
-.marque{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.12em;font-size:14px;margin:0 8px 22px}
-.logo{width:26px;height:26px;background-size:contain;flex:none}
-.cote a{display:block;padding:9px 12px;border-radius:10px;color:var(--doux);text-decoration:none;font-size:14px}
-.cote a:hover{background:var(--surface-2);color:var(--encre)}.cote a.actif{background:var(--vif);color:var(--sur-vif);font-weight:600}
-.theme{margin-top:auto;display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid var(--trait);border-radius:999px;cursor:pointer;color:var(--doux);font-size:13px;user-select:none}
-.theme:hover{color:var(--encre)}.lune{width:12px;height:12px;border-radius:50%;border:1.5px solid currentColor;background:linear-gradient(90deg,currentColor 50%,transparent 50%);flex:none}#bascule:focus-visible~.cadre .theme{outline:2px solid var(--accent);outline-offset:2px}
-main{padding:28px 36px 64px;max-width:1180px;width:100%}
-.haut{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:22px}
-h1{font-size:36px;line-height:1.1;margin:0 0 6px;font-weight:700;letter-spacing:-.02em}h1 em{font-style:normal;color:var(--accent)}
-h2{font-size:22px;margin:40px 0 14px;font-weight:650}.sous{color:var(--doux);margin:0}
-.bouton{display:inline-block;background:var(--vif);color:var(--sur-vif);text-decoration:none;font-weight:600;padding:11px 20px;border-radius:999px}
-.bouton:hover{filter:brightness(1.06)}
-.grille{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;align-items:stretch;margin-bottom:14px}
-.carte{background:var(--surface);border:1px solid var(--trait);border-radius:18px;padding:18px 20px;margin:0 0 14px;box-shadow:var(--ombre)}
-.grille .carte{margin:0}.carte h3{font-size:18px;font-weight:600;margin:0 0 12px;display:flex;align-items:center;gap:8px}
-.carte.vif{background:var(--vif);border-color:var(--vif);color:var(--sur-vif)}
-.carte.vif .meta,.carte.vif .fix,.carte.vif .etiq{color:var(--sur-vif-doux)}.carte.vif code{background:rgba(12,14,4,.10)}
-.point{width:9px;height:9px;border-radius:50%;flex:none;display:inline-block;background:var(--moyen)}
-.point.bon{background:var(--accent)}.carte.vif .point.bon{background:var(--sur-vif)}.point.grave{background:var(--grave)}.point.gris{background:var(--gris)}
-.tuiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin:0 0 14px}
-.tuile{background:var(--surface);border:1px solid var(--trait);border-radius:18px;padding:16px 18px;box-shadow:var(--ombre)}
-.tuile .n{font-size:40px;font-weight:700;line-height:1;letter-spacing:-.02em}.etiq{color:var(--doux);font-size:13px;margin-top:6px}
-.note{display:flex;align-items:center;gap:16px}.note .n{font-size:28px;font-weight:700;line-height:1}
-.lettre{flex:none;width:64px;height:64px;border-radius:16px;display:grid;place-items:center;font-size:34px;font-weight:800;background:var(--surface-2)}
-.carte.vif .lettre{background:var(--sur-vif);color:var(--vif)}
-.duo{display:flex;align-items:center;gap:20px;flex-wrap:wrap}
-.anneau{width:124px;height:124px;border-radius:50%;display:grid;place-items:center;flex:none}
-.anneau span{width:88px;height:88px;border-radius:50%;background:var(--surface);display:grid;place-content:center;text-align:center;font-size:26px;font-weight:700;line-height:1.1}
-.anneau small{display:block;font-size:11px;font-weight:400;color:var(--doux)}
-.legende{list-style:none;margin:0;padding:0;font-size:13px;color:var(--doux);flex:1;min-width:150px}
-.legende li{display:flex;align-items:center;gap:8px;padding:2px 0}.legende b{color:var(--encre);margin-left:auto;padding-left:12px}
-.graphe{display:flex;align-items:flex-end;gap:4px;height:150px;padding-top:6px}
-.col{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;gap:2px;min-width:0}
-.col i{display:block;border-radius:4px;min-height:3px}.col i.vide{background:var(--surface-2);height:3px}
-.axe{display:flex;justify-content:space-between;color:var(--discret);font-size:12px;margin-top:8px}
-.critique-c{background:var(--grave)}.eleve-c{background:var(--moyen)}.moyen-c{background:color-mix(in srgb,var(--moyen) 50%,transparent)}.info-c{background:var(--gris)}
-.badge{font-size:11px;font-weight:700;letter-spacing:.04em;padding:3px 9px;border-radius:999px;white-space:nowrap;background:var(--gris);color:var(--encre)}
-.badge.ok{background:var(--vif);color:var(--sur-vif)}.carte.vif .badge.ok{background:var(--sur-vif);color:var(--vif)}
-.badge.critique{background:var(--grave);color:#fff}.badge.eleve{background:var(--moyen);color:#1a1200}
-.badge.moyen{background:transparent;color:var(--moyen);box-shadow:inset 0 0 0 1px var(--moyen)}.badge.info{background:var(--surface-2);color:var(--doux)}
-.carte.vif .badge.moyen{color:var(--sur-vif);box-shadow:inset 0 0 0 1px var(--sur-vif)}
-.ligne{display:flex;gap:12px;align-items:baseline;padding:9px 0;border-top:1px solid var(--trait)}.jour+.ligne,.ligne:first-child{border-top:0}
-.etats .ligne{justify-content:space-between}.etats .ligne b{text-align:right}
-.cat{font-weight:600}.meta{color:var(--doux);font-size:13px}.fix{color:var(--doux);font-size:13px;margin-top:6px}.jour{font-weight:650;margin:0 0 6px}
-code{font:12.5px ui-monospace,monospace;background:var(--surface-2);padding:2px 6px;border-radius:6px;overflow-wrap:break-word;user-select:all}
-table{width:100%;border-collapse:separate;border-spacing:0 6px;font-size:14px}
-td{padding:9px 10px;background:var(--surface-2);vertical-align:top}td:first-child{border-radius:10px 0 0 10px}td:last-child{border-radius:0 10px 10px 0}
-.entete td{background:transparent;color:var(--discret);font-size:12px;padding:0 10px}
-details summary{cursor:pointer;font-weight:600}ul{margin:8px 0 0;padding-left:20px}
-.fonctions{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;align-items:start}
-.fonctions details{background:var(--surface);border:1px solid var(--trait);border-radius:18px;padding:16px 18px;box-shadow:var(--ombre)}
-.fonctions summary{font-size:17px}.fonctions summary small{color:var(--doux);font-weight:400;font-size:13px;margin-left:6px}
-.fonction{display:grid;grid-template-columns:52px 1fr;gap:2px 12px;padding:10px 0;border-top:1px solid var(--trait)}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:80px}
+body{margin:0;background:var(--fond);color:var(--encre);font:14px/1.5 system-ui,'Segoe UI',sans-serif;font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}a:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+.bascule{position:absolute;opacity:0;width:1px;height:1px}
+.mono,code,.place,.axe,.echelle,.recentes tr:not(.entete) td:first-child{font-family:ui-monospace,'JetBrains Mono','SF Mono',Consolas,monospace}
+svg.ic{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.cadre{display:grid;grid-template-columns:88px minmax(0,1fr);min-height:100vh}
+.rail{position:sticky;top:0;height:100vh;overflow-y:auto;scrollbar-width:none;display:flex;flex-direction:column;gap:4px;padding:16px 8px;border-right:1px solid var(--trait)}
+.rail .tete{display:grid;place-items:center;height:48px;margin-bottom:12px}
+.logo,.envol{background-size:contain;background-repeat:no-repeat}.logo{width:32px;height:32px;display:block}
+.rail a,.theme{display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;border-radius:10px;color:var(--doux);text-decoration:none;font-size:11px;line-height:1.3;text-align:center;transition:background-color .15s,color .15s}
+.rail svg.ic{width:20px;height:20px}.rail a:hover,.theme:hover{background:var(--surface-2);color:var(--encre)}.rail a:hover svg{color:var(--accent)}
+.theme{margin-top:auto;cursor:pointer;user-select:none}#bascule:focus-visible~.cadre .theme{outline:2px solid var(--accent);outline-offset:2px}
+.lune{width:18px;height:18px;border-radius:50%;border:1.5px solid currentColor;background:linear-gradient(90deg,currentColor 50%,transparent 50%);flex:none}
+.page{min-width:0}
+.barre{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:32px;height:64px;padding:0 32px;border-bottom:1px solid var(--trait);background:color-mix(in srgb,var(--fond) 88%,transparent);backdrop-filter:blur(12px)}
+.marque{font-weight:600;letter-spacing:.24em;font-size:14px;white-space:nowrap}
+.onglets{display:flex;align-self:stretch;overflow-x:auto;scrollbar-width:none}
+.onglets a{display:flex;align-items:center;padding:0 16px;color:var(--doux);text-decoration:none;white-space:nowrap;border-bottom:2px solid transparent;margin-bottom:-1px;transition:color .15s}
+.onglets a:hover{color:var(--encre)}.onglets a.actif{color:var(--encre);border-bottom-color:var(--accent)}
+.veille{margin-left:auto;display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--doux);white-space:nowrap}
+.veille i{position:relative;width:8px;height:8px;border-radius:50%;background:var(--gris)}
+.veille.vivante i{background:var(--accent)}.veille.pause i{background:var(--moyen)}
+.veille.vivante i::after{content:'';position:absolute;inset:0;border-radius:50%;border:1px solid var(--accent);animation:onde 2.4s cubic-bezier(.2,.8,.2,1) infinite}
+@keyframes onde{to{transform:scale(3.2);opacity:0}}
+main{padding:32px 32px 64px;max-width:1520px}
+.haut{margin-bottom:24px}
+h1{font-size:28px;line-height:1.15;margin:0 0 4px;font-weight:600;letter-spacing:-.015em}
+h2{font-size:18px;margin:48px 0 16px;font-weight:600}.sous{color:var(--doux);margin:0}
+.bouton{display:inline-flex;align-items:center;gap:8px;background:var(--vif);color:var(--sur-vif);text-decoration:none;font-weight:600;font-size:13px;height:36px;padding:0 16px;border-radius:10px;transition:filter .15s,transform .1s}
+.bouton:hover{filter:brightness(1.08)}.bouton:active{transform:scale(.98)}
+.rangee{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:16px;margin-bottom:16px;align-items:stretch}
+.rangee.deux{grid-template-columns:repeat(2,minmax(0,1fr))}.rangee>.carte,.pile>.carte{margin:0}
+.pile{display:flex;flex-direction:column;gap:16px;min-width:0}.pile>.carte{flex:1}
+.grille{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;align-items:stretch;margin-bottom:16px}.grille .carte{margin:0}
+.carte{background:var(--surface);border:1px solid var(--trait);border-radius:16px;padding:20px 24px;margin:0 0 16px;min-width:0}
+.carte h3{font-size:13px;font-weight:500;color:var(--doux);margin:0 0 16px;display:flex;align-items:center;gap:8px;min-height:20px}
+.carte h3 .lien{margin-left:auto;font-weight:500;font-size:13px;text-decoration:none;color:var(--accent)}.carte h3 .lien:hover{text-decoration:underline}
+.carte.vif{border-color:color-mix(in srgb,var(--accent) 35%,transparent);box-shadow:inset 0 1px 0 color-mix(in srgb,var(--accent) 70%,transparent)}
+.point{width:8px;height:8px;border-radius:50%;flex:none;display:inline-block;background:var(--moyen)}
+.point.bon{background:var(--bon)}.point.grave{background:var(--grave)}.point.gris{background:var(--gris)}
+.tuiles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.tuile{background:var(--surface);border:1px solid var(--trait);border-radius:16px;padding:20px;display:flex;flex-direction:column;justify-content:space-between;gap:12px;min-height:128px}
+.tuile .n{font-size:40px;font-weight:500;line-height:1;letter-spacing:-.02em}.tuile.alerte{border-color:color-mix(in srgb,var(--grave) 40%,transparent)}.tuile.alerte .n{color:var(--grave)}
+.etiq{color:var(--doux);font-size:13px}.compare{color:var(--discret);font-size:12px;margin-top:4px}
+.note{display:flex;align-items:center;gap:16px;margin-bottom:8px}.note .n{font-size:28px;font-weight:500;line-height:1}
+.lettre{flex:none;width:56px;height:56px;border-radius:12px;display:grid;place-items:center;font-size:30px;font-weight:600;background:var(--surface-2)}
+.carte.vif .lettre{background:var(--accent);color:var(--sur-vif)}
+.jauge{margin-top:12px}.jauge~.meta,.jauge~.fix{margin-top:16px}.jauge-t{display:flex;justify-content:space-between;gap:12px;font-size:13px;color:var(--doux)}.jauge-t b{color:var(--encre);font-weight:500}
+.piste{height:6px;border-radius:3px;background:var(--surface-3);margin-top:8px;overflow:hidden}
+.piste i{display:block;height:100%;border-radius:3px;background:var(--accent);transform-origin:left}.piste i.bon{background:var(--bon)}.piste i.moyen{background:var(--moyen)}.piste i.grave{background:var(--grave)}
+.duo{display:flex;align-items:center;gap:24px;flex-wrap:wrap;justify-content:center;min-height:212px}
+.anneau{position:relative;width:176px;height:176px;border-radius:50%;display:grid;place-items:center;flex:none}
+.anneau::before{content:'';position:absolute;inset:0;border-radius:50%;background:var(--anneau,var(--surface-2))}
+.anneau span{position:relative;width:144px;height:144px;border-radius:50%;background:var(--surface);display:grid;place-content:center;text-align:center;font-size:40px;font-weight:500;line-height:1.05;letter-spacing:-.02em}
+.anneau small{display:block;font-size:12px;font-weight:400;color:var(--doux);letter-spacing:0;margin-top:4px}
+.legende{list-style:none;margin:0;padding:0;font-size:13px;color:var(--doux);flex:1;min-width:160px}
+.legende li{display:flex;align-items:center;gap:8px;padding:4px 0}.legende b{color:var(--encre);font-weight:500;margin-left:auto;padding-left:12px}.legende em{font-style:normal;color:var(--discret)}
+.courbe{position:relative;display:grid;grid-template-columns:32px minmax(0,1fr);height:212px}
+.echelle{display:flex;flex-direction:column;justify-content:space-between;color:var(--discret);font-size:11px;text-align:right;padding:0 8px 0 0;margin:-8px 0}
+.courbe svg{width:100%;height:212px;display:block;overflow:visible}
+.ligne-g{stroke:var(--trait);stroke-width:1;vector-effect:non-scaling-stroke}
+.aire{fill:url(#degrade)}.trace{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round;vector-effect:non-scaling-stroke}
+.trace-grave{fill:none;stroke:var(--grave);stroke-width:1.5;stroke-dasharray:4 4;vector-effect:non-scaling-stroke}
+.col rect{fill:transparent;transition:fill .15s}.col:hover rect{fill:var(--accent-doux)}
+.calme{position:absolute;inset:0 0 0 32px;display:grid;place-content:center;justify-items:center;gap:4px;color:var(--doux);font-size:13px;pointer-events:none}
+.calme b{font-size:15px;font-weight:500;color:var(--encre)}.coche{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:var(--accent-doux);color:var(--accent);flex:none}
+.axe{display:flex;justify-content:space-between;color:var(--discret);font-size:11px;margin:8px 0 0 32px}
+.cles{display:flex;gap:20px;flex-wrap:wrap;margin:12px 0 0 32px;font-size:12px;color:var(--doux)}.cles span{display:inline-flex;align-items:center;gap:8px}
+.cles i{width:16px;height:0;border-top:2px solid var(--accent)}.cles i.g{border-top:2px dashed var(--grave)}
+.critique-c{background:var(--grave)}.eleve-c{background:var(--moyen)}.moyen-c{background:var(--jaune)}.info-c{background:var(--gris)}
+.badge{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;line-height:20px;padding:0 8px;border-radius:6px;white-space:nowrap;background:var(--surface-3);color:var(--doux)}
+.badge.ok{background:var(--accent-doux);color:var(--accent)}
+.badge.critique{background:color-mix(in srgb,var(--grave) 16%,transparent);color:var(--grave)}
+.badge.eleve{background:color-mix(in srgb,var(--moyen) 16%,transparent);color:var(--moyen)}
+.badge.moyen{background:color-mix(in srgb,var(--jaune) 16%,transparent);color:var(--jaune)}
+.ligne{display:flex;gap:12px;align-items:baseline;padding:8px 0;border-top:1px solid var(--trait)}.jour+.ligne,.ligne:first-child{border-top:0}
+.etats{margin-top:12px}.etats .ligne{justify-content:space-between}.etats .ligne span{color:var(--doux)}.etats .ligne b{text-align:right;font-weight:500}
+.cat{font-weight:500}.meta{color:var(--doux);font-size:13px}.fix{color:var(--doux);font-size:13px;margin-top:8px}.jour{font-weight:600;margin:0 0 8px}
+code{font-size:12px;background:var(--surface-2);border:1px solid var(--trait);padding:1px 6px;border-radius:6px;overflow-wrap:break-word;user-select:all}
+table{width:100%;border-collapse:collapse;font-size:14px}
+td{padding:10px 12px;border-top:1px solid var(--trait);vertical-align:top}
+tr:hover td{background:var(--surface-2)}.entete:hover td{background:transparent}
+.entete td{border-top:0;color:var(--discret);font-size:12px;padding-top:0}
+.recentes{table-layout:fixed}.recentes td{vertical-align:middle}.recentes td:nth-child(1){width:112px;color:var(--doux);font-size:12px;white-space:nowrap}
+.recentes td:nth-child(2){width:104px}.recentes td:nth-child(3){width:136px;color:var(--doux);font-size:13px;text-transform:lowercase}.recentes td:nth-child(3)::first-letter{text-transform:uppercase}
+.recentes .detail{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--doux);font-size:12px}
+.recentes .cat{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rien{display:flex;align-items:center;gap:12px;padding:24px 4px;color:var(--doux)}.rien b{display:block;color:var(--encre);font-weight:500}
+details summary{cursor:pointer;font-weight:500}ul{margin:8px 0 0;padding-left:20px}
+.fonctions{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;align-items:start}
+.fonctions details{background:var(--surface);border:1px solid var(--trait);border-radius:16px;padding:16px 20px}
+.fonctions summary{font-size:15px;display:flex;align-items:center;gap:12px}.fonctions summary svg{color:var(--accent)}
+.fonctions summary small{color:var(--discret);font-weight:400;font-size:13px}
+.fonction{display:grid;grid-template-columns:52px 1fr;gap:4px 12px;padding:12px 0;border-top:1px solid var(--trait)}
 .fonction>*{grid-column:2}.fonction>.place{grid-column:1;grid-row:1/span 3}summary+.fonction{border-top:0;margin-top:8px}
-.place{font:600 12px ui-monospace,monospace;background:var(--accent-doux);color:var(--accent);padding:3px 8px;border-radius:999px;height:fit-content;text-align:center}
-.pied{color:var(--discret);font-size:13px;margin-top:36px}
-@media (max-width:760px){.cadre{display:block}.cote{height:auto;flex-direction:row;align-items:center;overflow-x:auto;padding:10px 12px;border-right:0;border-bottom:1px solid var(--trait);z-index:1}
-.marque{margin:0 10px 0 0}.theme{margin:0 0 0 auto;white-space:nowrap}.cote a{white-space:nowrap}main{padding:20px 16px 48px}h1{font-size:28px}.ligne{flex-wrap:wrap}}
+.place{font-size:12px;font-weight:500;background:var(--accent-doux);color:var(--accent);padding:2px 8px;border-radius:6px;height:fit-content;text-align:center}
+.pied{color:var(--discret);font-size:13px;margin-top:40px}
+@media (max-width:1100px){.rangee,.rangee.deux{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:760px){.cadre{display:block}.rail{position:static;height:auto;flex-direction:row;overflow-x:auto;padding:8px;border-right:0;border-bottom:1px solid var(--trait)}
+.rail .tete{margin:0 8px 0 0;height:auto}.rail a,.theme{min-width:84px;margin:0}.barre{padding:0 16px;gap:16px}.barre .bouton,.veille{display:none}
+main{padding:24px 16px 48px}h1{font-size:24px}.ligne{flex-wrap:wrap}.recentes td:nth-child(3){display:none}}
+";
+
+/// L'ouverture : un panneau noir à gauche, le logo devant un radar qui balaie, le nom et l'accroche ; après 1,3 s le
+/// logo s'envole à sa place dans la colonne d'icônes, le panneau glisse hors de l'écran, puis la page monte en
+/// cascade, la courbe se dessine, l'anneau se referme et les jauges se remplissent. Du CSS seul (la CSP interdit les
+/// scripts) : rien que des `transform`, `opacity` et `clip-path`, une seule courbe d'accélération. Le panneau ne
+/// reçoit aucun clic, et qui demande moins de mouvement à son système n'a ni ouverture ni animation.
+const CSS_OUVERTURE: &str = "
+.intro{position:fixed;inset:0 auto 0 0;width:min(420px,100vw);z-index:20;background:var(--fond);border-right:1px solid var(--trait);pointer-events:none;animation:retrait .7s cubic-bezier(.65,0,.35,1) 1.3s forwards}
+.radar{position:absolute;left:calc(50% - 120px);top:calc(50% - 180px);width:240px;height:240px;border-radius:50%;background:repeating-radial-gradient(circle,transparent 0 39px,color-mix(in srgb,var(--accent) 22%,transparent) 39px 40px);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent)}
+.radar::before{content:'';position:absolute;inset:0;border-radius:50%;background:conic-gradient(from 0deg,color-mix(in srgb,var(--accent) 38%,transparent),transparent 25%);animation:balaye 1.6s linear infinite}
+.radar::after{content:'';position:absolute;left:50%;top:0;bottom:0;border-left:1px solid color-mix(in srgb,var(--accent) 16%,transparent)}
+.intro .texte{position:absolute;left:24px;right:24px;top:calc(50% + 88px);display:flex;flex-direction:column;align-items:center;gap:12px}
+.intro b{font-weight:600;font-size:20px;letter-spacing:.32em;margin-right:-.32em}
+.intro span{color:var(--doux);font-size:14px;text-align:center;max-width:300px}
+.intro .mono{color:var(--discret);font-size:11px}
+.charge{margin-top:8px;width:160px;height:2px;border-radius:1px;background:var(--surface-3);overflow:hidden}
+.charge::before{content:'';display:block;height:100%;background:var(--accent);transform-origin:left;animation:remplit 1.2s cubic-bezier(.2,.8,.2,1) both}
+.envol{position:fixed;z-index:21;left:calc(min(420px,100vw)/2 - 64px);top:calc(50vh - 124px);width:128px;height:128px;transform-origin:0 0;pointer-events:none;
+animation:envol .7s cubic-bezier(.65,0,.35,1) 1.3s forwards,fondu .2s 2s forwards}
+.rail .logo{animation:fondu .2s 1.95s reverse both}
+.barre{animation:fondu .5s cubic-bezier(.2,.8,.2,1) 1.4s reverse both}.haut{animation:monte .6s cubic-bezier(.2,.8,.2,1) 1.45s both}
+.rangee>*{animation:monte .6s cubic-bezier(.2,.8,.2,1) 1.55s both}.rangee>:nth-child(2){animation-delay:1.63s}
+.rangee+.rangee>*{animation-delay:1.7s}.rangee+.rangee>:nth-child(2){animation-delay:1.78s}
+.rangee.deux>*{animation-delay:1.85s}.rangee.deux>:nth-child(2){animation-delay:1.93s}
+.courbe svg{animation:devoile 1.4s cubic-bezier(.65,0,.35,1) 1.7s both}
+.piste i{animation:remplit 1s cubic-bezier(.2,.8,.2,1) 2.1s both}
+@property --tour{syntax:'<angle>';inherits:false;initial-value:360deg}
+.anneau::before{-webkit-mask:conic-gradient(#000 var(--tour),transparent 0);mask:conic-gradient(#000 var(--tour),transparent 0);animation:referme 1.2s cubic-bezier(.65,0,.35,1) 1.75s both}
+@keyframes retrait{to{transform:translateX(-100%);visibility:hidden}}
+@keyframes envol{to{transform:translate(calc(92px - min(420px,100vw)/2),calc(148px - 50vh)) scale(.25)}}
+@keyframes fondu{to{opacity:0;visibility:hidden}}
+@keyframes balaye{to{transform:rotate(1turn)}}
+@keyframes remplit{from{transform:scaleX(0)}}
+@keyframes monte{from{opacity:0;transform:translateY(12px)}}
+@keyframes devoile{from{clip-path:inset(-12px 100% -12px -12px)}to{clip-path:inset(-12px -12px -12px -12px)}}
+@keyframes referme{from{--tour:0deg}}
+@media (max-width:760px){.envol{animation:fondu .4s 1.3s forwards}}
+@media (prefers-reduced-motion:reduce){.intro,.envol{display:none}*,::before,::after{animation:none!important}}
 ";
 
 /// Le comment l'activer, dit partout où la surveillance manque.
@@ -710,8 +796,8 @@ fn comment_activer() -> &'static str {
     )
 }
 
-/// La carte de l'état de la surveillance, en tête de page.
-fn etat(d: &Donnees) -> String {
+/// La carte de la surveillance du réseau : son état, puis les appareils connus et les nouveaux.
+fn etat(d: &Donnees, nouveaux: usize) -> String {
     let passe = d
         .derniere_passe
         .as_deref()
@@ -767,6 +853,13 @@ fn etat(d: &Donnees) -> String {
             esc(raison)
         );
     }
+    let _ = trw!(
+        h,
+        "<div class=etats><div class=ligne><span>Appareils connus</span><b>{}</b></div><div class=ligne><span>Nouveaux en 30 jours</span><b>{}</b></div></div>",
+        "<div class=etats><div class=ligne><span>Known devices</span><b>{}</b></div><div class=ligne><span>New in 30 days</span><b>{}</b></div></div>",
+        d.appareils.len(),
+        nouveaux
+    );
     h += "</div>";
     h
 }
@@ -781,19 +874,53 @@ fn tuiles(d: &Donnees, nouveaux: usize, suspectes: usize) -> String {
         let limite = jours_avant(d.maintenant, jours, FORMAT_DATE);
         d.alertes.iter().filter(|a| a.date >= limite).count()
     };
-    let tuile = |n: usize, etiquette: &str| {
-        format!("<div class=tuile><div class=n>{n}</div><div class=etiq>{etiquette}</div></div>")
+    // Une connexion suspecte se voit en rouge : c'est la seule tuile qui demande d'agir.
+    let tuile = |n: usize, etiquette: &str, compare: String, grave: bool| {
+        format!(
+            "<div class=\"tuile{}\"><div class=n>{n}</div><div><div class=etiq>{etiquette}</div>{compare}</div></div>",
+            if grave && n > 0 { " alerte" } else { "" }
+        )
+    };
+    // La semaine dite par rapport à celle d'avant : un chiffre seul ne dit pas si c'est beaucoup.
+    let semaine = depuis(7);
+    let avant = depuis(14).saturating_sub(semaine);
+    let compare = match semaine.cmp(&avant) {
+        std::cmp::Ordering::Equal => tr!("autant que la semaine d'avant", "same as the week before").to_string(),
+        std::cmp::Ordering::Less => trf!(
+            "{} de moins que la semaine d'avant",
+            "{} fewer than the week before",
+            avant.saturating_sub(semaine)
+        ),
+        std::cmp::Ordering::Greater => trf!(
+            "{} de plus que la semaine d'avant",
+            "{} more than the week before",
+            semaine.saturating_sub(avant)
+        ),
     };
     [
-        tuile(depuis(1), tr!("alertes en 24 heures", "alerts in 24 hours")),
-        tuile(depuis(7), tr!("alertes en 7 jours", "alerts in 7 days")),
+        tuile(
+            depuis(1),
+            tr!("alertes en 24 heures", "alerts in 24 hours"),
+            String::new(),
+            false,
+        ),
+        tuile(
+            semaine,
+            tr!("alertes en 7 jours", "alerts in 7 days"),
+            format!("<div class=compare>{compare}</div>"),
+            false,
+        ),
         tuile(
             nouveaux,
             tr!("nouveaux appareils en 30 jours", "new devices in 30 days"),
+            String::new(),
+            false,
         ),
         tuile(
             suspectes,
             tr!("connexions suspectes en 90 jours", "suspicious connections in 90 days"),
+            String::new(),
+            true,
         ),
     ]
     .into_iter()
@@ -973,15 +1100,33 @@ fn pourcent(n: usize, total: usize) -> usize {
     n.saturating_mul(100).checked_div(total).unwrap_or(0)
 }
 
-/// La carte du dernier bilan : sa note en lettre, son score, ses problèmes ; en lime seulement si tout est en ordre.
+/// Une jauge : son nom, sa valeur dite, et sa barre (sur 100) ; verte en ordre, orange ou rouge sinon.
+fn jauge(nom: &str, valeur: &str, sur_100: u32) -> String {
+    let classe = match sur_100 {
+        75.. => "bon",
+        50.. => "moyen",
+        _ => "grave",
+    };
+    format!(
+        "<div class=jauge><div class=jauge-t><span>{}</span><b>{}</b></div><div class=piste><i class={classe} style=\"width:{}%\"></i></div></div>",
+        esc(nom),
+        esc(valeur),
+        sur_100.min(100)
+    )
+}
+
+/// La carte du dernier bilan : sa note en lettre, ses jauges (cet ordinateur, le réseau), ses problèmes ; mise en
+/// avant seulement si tout est en ordre.
 fn carte_bilan(d: &Donnees) -> String {
     let titre = tr!("Dernier bilan", "Last check");
     let Some(b) = &d.bilan else {
         return format!(
-            "<div class=carte><h3><span class=\"point gris\"></span>{titre}</h3><p class=meta>{}</p></div>",
+            "<div class=carte><h3><span class=\"point gris\"></span>{titre}</h3><div class=rien><span class=coche>{}</span><div><b>{}</b>{}</div></div></div>",
+            icone("bilan"),
+            tr!("Aucun bilan encore", "No check yet"),
             tr!(
-                "Aucun bilan encore. Lancez « Bilan de sécurité complet » (1 au menu) ou <code>vanguard bilan</code>.",
-                "No check yet. Run “Full security check” (1 in the menu) or <code>vanguard check</code>."
+                "Lancez « Bilan de sécurité complet » (1 au menu) ou <code>vanguard bilan</code>.",
+                "Run “Full security check” (1 in the menu) or <code>vanguard check</code>."
             )
         );
     };
@@ -1003,18 +1148,20 @@ fn carte_bilan(d: &Donnees) -> String {
         esc(&score),
         trf!("cet ordinateur, le {}", "this computer, on {}", esc(&quand))
     );
-    if b.machine.is_none() {
-        h += tr!(
-            "<div class=fix>L'audit n'a pas pu se faire en entier : aucune note n'est donnée plutôt qu'une note fausse.</div>",
-            "<div class=fix>The audit could not run in full: no grade is given rather than a wrong one.</div>"
-        );
+    match b.machine {
+        Some(m) => h += &jauge(tr!("Cet ordinateur", "This computer"), &format!("{m}/100"), m),
+        None => {
+            h += tr!(
+                "<div class=fix>L'audit n'a pas pu se faire en entier : aucune note n'est donnée plutôt qu'une note fausse.</div>",
+                "<div class=fix>The audit could not run in full: no grade is given rather than a wrong one.</div>"
+            );
+        }
     }
     if let Some(r) = b.reseau {
-        let _ = trw!(
-            h,
-            "<div class=fix>Réseau : {} ({r}/100)</div>",
-            "<div class=fix>Network: {} ({r}/100)</div>",
-            crate::risk::note(r)
+        h += &jauge(
+            &trf!("Réseau : {}", "Network: {}", crate::risk::note(r)),
+            &format!("{r}/100"),
+            r,
         );
     }
     if b.problemes > 0 {
@@ -1049,7 +1196,7 @@ fn carte_anneau(d: &Donnees) -> String {
             let couleur = match *classe {
                 "critique" => "var(--grave)",
                 "eleve" => "var(--moyen)",
-                "moyen" => "color-mix(in srgb,var(--moyen) 50%,transparent)",
+                "moyen" => "var(--jaune)",
                 _ => "var(--gris)",
             };
             arcs.push(format!("{couleur} {debut}% {fin}%"));
@@ -1057,7 +1204,7 @@ fn carte_anneau(d: &Donnees) -> String {
         format!("conic-gradient({})", arcs.join(","))
     };
     let mut h = format!(
-        "<div class=carte><h3><span class=\"point {}\"></span>{}</h3><div class=duo><div class=anneau style=\"background:{fond}\"><span>{total}<small>{}</small></span></div><ul class=legende>",
+        "<div class=carte><h3><span class=\"point {}\"></span>{}</h3><div class=duo><div class=anneau style=\"--anneau:{fond}\"><span>{total}<small>{}</small></span></div><ul class=legende>",
         if n.first().is_some_and(|c| *c > 0) {
             "grave"
         } else if total > 0 {
@@ -1069,9 +1216,14 @@ fn carte_anneau(d: &Donnees) -> String {
         tr!("alertes", "alerts")
     );
     for ((classe, nom), compte) in gravites().iter().zip(n) {
+        let part = if total == 0 {
+            String::new()
+        } else {
+            format!(" <em>({} %)</em>", pourcent(compte, total))
+        };
         let _ = write!(
             h,
-            "<li><span class=\"point {classe}-c\"></span>{nom}<b>{compte}</b></li>"
+            "<li><span class=\"point {classe}-c\"></span>{nom}{part}<b>{compte}</b></li>"
         );
     }
     h += "</ul></div></div>";
@@ -1111,7 +1263,8 @@ fn carte_protection(d: &Donnees) -> String {
     h
 }
 
-/// Les alertes des 30 derniers jours, une colonne par jour, empilées par gravité (la plus grave en bas).
+/// Les alertes des 30 derniers jours en courbe : toutes (l'aire cyan) et les graves ou élevées (le trait rouge). Une
+/// zone par jour porte sa date et son compte au survol ; sans alerte du tout, la courbe reste à plat et le dit.
 fn graphique(d: &Donnees) -> String {
     let jours: Vec<String> = (0..JOURS_GRAPHIQUE)
         .rev()
@@ -1121,49 +1274,142 @@ fn graphique(d: &Donnees) -> String {
         .iter()
         .map(|j| par_gravite(d.alertes.iter().filter(|a| jour(&a.date) == j.as_str())))
         .collect();
-    let plus = comptes
-        .iter()
-        .map(|c| c.iter().sum::<usize>())
-        .max()
-        .unwrap_or(0)
-        .max(1);
-    let mut h = format!(
-        "<div class=carte><h3>{}</h3><div class=graphe>",
-        tr!("Alertes des 30 derniers jours", "Alerts of the last 30 days")
-    );
-    for (j, c) in jours.iter().zip(&comptes) {
-        let total: usize = c.iter().sum();
-        let _ = write!(
-            h,
-            "<div class=col title=\"{}\">",
-            esc(&trf!("{} : {} alerte(s)", "{}: {} alert(s)", date_fr(j), total))
-        );
-        if total == 0 {
-            h += "<i class=vide></i>";
-        }
-        // De haut en bas : information, moyennes, élevées, graves (la plus grave posée en bas de la colonne).
-        for ((classe, _), compte) in gravites().iter().zip(c).rev() {
-            if *compte > 0 {
+    let totaux: Vec<usize> = comptes.iter().map(|c| c.iter().sum()).collect();
+    let graves: Vec<usize> = comptes.iter().map(|c| c.iter().take(2).sum()).collect();
+    let plus = totaux.iter().copied().max().unwrap_or(0).max(1);
+    // Le dessin en nombres entiers : 100 de large par jour, 1000 de haut, le plus haut jour à 920.
+    let y = |n: usize| 1000usize.saturating_sub(n.saturating_mul(920).checked_div(plus).unwrap_or(0));
+    let trace = |valeurs: &[usize]| {
+        let mut p = String::new();
+        for (i, v) in valeurs.iter().enumerate() {
+            let x = i.saturating_mul(100);
+            if i == 0 {
+                let _ = write!(p, "M{x} {}", y(*v));
+            } else {
+                // Une courbe douce sans dépasser : les points de contrôle à mi-chemin, à la hauteur de chaque bout.
+                let avant = valeurs.get(i.saturating_sub(1)).copied().unwrap_or(0);
                 let _ = write!(
-                    h,
-                    "<i class={classe}-c style=\"height:{}%\"></i>",
-                    compte.saturating_mul(100).div_ceil(plus)
+                    p,
+                    " C{} {} {} {} {x} {}",
+                    x.saturating_sub(50),
+                    y(avant),
+                    x.saturating_sub(50),
+                    y(*v),
+                    y(*v)
                 );
             }
         }
-        h += "</div>";
+        p
+    };
+    let largeur = JOURS_GRAPHIQUE.saturating_sub(1).unsigned_abs().saturating_mul(100);
+    let ligne = trace(&totaux);
+    let mut h = format!(
+        "<div class=carte><h3>{}</h3><div class=courbe><div class=echelle><span>{plus}</span><span>{}</span><span>0</span></div>\
+         <svg viewBox=\"0 0 {largeur} 1000\" preserveAspectRatio=none aria-hidden=true><defs><linearGradient id=degrade x1=0 y1=0 x2=0 y2=1>\
+         <stop offset=0 style=\"stop-color:var(--accent);stop-opacity:.45\"/><stop offset=1 style=\"stop-color:var(--accent);stop-opacity:0\"/></linearGradient></defs>",
+        tr!("Alertes des 30 derniers jours", "Alerts of the last 30 days"),
+        plus.div_ceil(2)
+    );
+    for niveau in [80usize, 540, 1000] {
+        let _ = write!(h, "<line class=ligne-g x1=0 x2={largeur} y1={niveau} y2={niveau} />");
     }
-    let premier = jours.first().map(|j| date_fr(j)).unwrap_or_default();
     let _ = write!(
         h,
-        "</div><div class=axe><span>{premier}</span><span>{}</span></div><ul class=legende style=\"display:flex;gap:16px;flex-wrap:wrap;margin-top:10px\">",
-        tr!("aujourd'hui", "today")
+        "<path class=aire d=\"{ligne} L{largeur} 1000 L0 1000 Z\"/><path class=trace d=\"{ligne}\"/>"
     );
-    for (classe, nom) in gravites() {
-        let _ = write!(h, "<li><span class=\"point {classe}-c\"></span>{nom}</li>");
+    if graves.iter().any(|g| *g > 0) {
+        let _ = write!(h, "<path class=trace-grave d=\"{}\"/>", trace(&graves));
     }
-    h += "</ul></div>";
+    for (i, (j, total)) in jours.iter().zip(&totaux).enumerate() {
+        let _ = write!(
+            h,
+            "<g class=col><title>{}</title><rect x={} y=0 width=100 height=1000 /></g>",
+            esc(&trf!("{} : {} alerte(s)", "{}: {} alert(s)", date_fr(j), total)),
+            i.saturating_mul(100).saturating_sub(50)
+        );
+    }
+    h += "</svg>";
+    if totaux.iter().all(|t| *t == 0) {
+        let _ = write!(
+            h,
+            "<div class=calme><span class=coche>{}</span><b>{}</b>{}</div>",
+            icone("coche"),
+            tr!("Aucune alerte en 30 jours", "No alert in 30 days"),
+            tr!(
+                "La courbe montera si la surveillance voit quelque chose.",
+                "The curve will rise if monitoring sees something."
+            )
+        );
+    }
+    let premier = jours.first().map(|j| date_fr(j)).unwrap_or_default();
+    let milieu = jours.get(15).map(|j| date_fr(j)).unwrap_or_default();
+    let _ = write!(
+        h,
+        "</div><div class=axe><span>{premier}</span><span>{milieu}</span><span>{}</span></div><div class=cles><span><i></i>{}</span><span><i class=g></i>{}</span></div></div>",
+        tr!("aujourd'hui", "today"),
+        tr!("toutes les alertes", "all alerts"),
+        tr!("graves ou élevées", "critical or high")
+    );
     h
+}
+
+/// Les dernières alertes, la plus récente en haut : quand, gravité, genre, et ce qu'elle dit (le détail au survol).
+fn alertes_recentes(d: &Donnees) -> String {
+    let mut h = format!(
+        "<div class=carte><h3>{}<a class=lien href=#alertes>{}</a></h3>",
+        tr!("Alertes récentes", "Recent alerts"),
+        tr!("Tout voir ›", "See all ›")
+    );
+    if d.alertes.is_empty() {
+        let _ = write!(
+            h,
+            "<div class=rien><span class=coche>{}</span><div><b>{}</b>{}</div></div></div>",
+            icone("coche"),
+            tr!("Aucune alerte en 90 jours", "No alert in 90 days"),
+            tr!(
+                "Chaque alerte de la surveillance et de la protection s'affichera ici.",
+                "Every alert from monitoring and protection will show here."
+            )
+        );
+        return h;
+    }
+    let _ = write!(
+        h,
+        "<table class=recentes><tr class=entete><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+        tr!("Quand", "When"),
+        tr!("Gravité", "Severity"),
+        tr!("Genre", "Kind"),
+        tr!("Alerte", "Alert")
+    );
+    for a in d.alertes.iter().rev().take(ALERTES_RECENTES) {
+        let classe = classe_alerte(a);
+        let gravite = match classe {
+            "critique" => tr!("GRAVE", "CRITICAL"),
+            "eleve" => tr!("ÉLEVÉE", "HIGH"),
+            "moyen" => tr!("MOYENNE", "MEDIUM"),
+            _ => tr!("INFO", "INFO"),
+        };
+        let _ = write!(
+            h,
+            "<tr title=\"{}\"><td>{}</td><td><span class=\"badge {classe}\">{gravite}</span></td><td>{}</td><td><span class=cat>{}</span><span class=detail>{}</span></td></tr>",
+            esc(&a.texte),
+            esc(&date_courte(&a.date)),
+            Genre::de(&a.genre).libelle(),
+            esc(&a.titre),
+            esc(&a.texte)
+        );
+    }
+    h += "</table></div>";
+    h
+}
+
+/// « AAAA-MM-JJ HH:MM:SS » en court, sur une ligne : « 20/10 14:37 » (« 10/20 14:37 » en anglais).
+fn date_courte(date: &str) -> String {
+    match (date.get(5..7), date.get(8..10), date.get(11..16)) {
+        (Some(m), Some(j), Some(h)) if crate::langue::anglais() => format!("{m}/{j} {h}"),
+        (Some(m), Some(j), Some(h)) => format!("{j}/{m} {h}"),
+        _ => date.to_string(),
+    }
 }
 
 /// Toutes les fonctions du menu, rubrique par rubrique : la place à taper dans le menu, et la commande, qu'un clic
@@ -1179,8 +1425,9 @@ fn toutes_les_fonctions(fonctions: &[Rubrique]) -> String {
     for (i, r) in fonctions.iter().enumerate() {
         let _ = write!(
             h,
-            "<details{}><summary>{} <small>{} · {}</small></summary>",
+            "<details id=rubrique-{i}{}><summary>{}{} <small>{} · {}</small></summary>",
             if i == 0 { " open" } else { "" },
+            icone(r.icone),
             esc(&r.titre),
             esc(&r.resume),
             r.fonctions.len()
@@ -1204,10 +1451,79 @@ fn toutes_les_fonctions(fonctions: &[Rubrique]) -> String {
     h
 }
 
-/// Le menu de gauche : des ancres vers les sections de la page, et le bouton clair/sombre (l'étiquette de la case).
-fn navigation(complete: bool, logo: &str) -> String {
+/// Une icône au trait, dessinée ici (aucune ressource externe) : celle d'une rubrique du menu (`Rubrique::icone`) ou
+/// d'un état. Un nom inconnu donne un carré arrondi, jamais rien.
+pub(crate) fn icone(nom: &str) -> String {
+    let dessin = match nom {
+        "principal" => {
+            "<rect x=3 y=3 width=7 height=7 rx=1.5 /><rect x=14 y=3 width=7 height=7 rx=1.5 /><rect x=3 y=14 width=7 height=7 rx=1.5 /><rect x=14 y=14 width=7 height=7 rx=1.5 />"
+        }
+        "ordinateur" => "<rect x=3 y=4 width=18 height=12 rx=2 /><path d=\"M8 20h8M12 16v4\"/>",
+        "reseau" => {
+            "<path d=\"M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0M8.8 16a5 5 0 0 1 6.4 0\"/><circle cx=12 cy=19.5 r=.8 />"
+        }
+        "virus" => {
+            "<rect x=8 y=7 width=8 height=13 rx=4 /><path d=\"M12 11v9M4 13h4M16 13h4M5 7.5l3 2M19 7.5l-3 2M5 19l3-2M19 19l-3-2M10 7a2 2 0 0 1 4 0\"/>"
+        }
+        "arnaques" => "<rect x=3 y=5 width=18 height=14 rx=2 /><path d=\"m3.5 7 8.5 6 8.5-6\"/>",
+        "reagir" => {
+            "<path d=\"M12 3 4.5 6v5.5c0 4.5 3.2 8.2 7.5 9.5 4.3-1.3 7.5-5 7.5-9.5V6z\"/><path d=\"m9.5 9.5 5 5m0-5-5 5\"/>"
+        }
+        "donnees" => {
+            "<ellipse cx=12 cy=5.5 rx=7.5 ry=2.5 /><path d=\"M4.5 5.5v13c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5v-13M4.5 12c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5\"/>"
+        }
+        "guide" => {
+            "<path d=\"M3.5 5h6a2.5 2.5 0 0 1 2.5 2.5V20a2 2 0 0 0-2-2H3.5zM20.5 5h-6A2.5 2.5 0 0 0 12 7.5V20a2 2 0 0 1 2-2h6.5z\"/>"
+        }
+        "depanner" => {
+            "<path d=\"M14.5 4.2a5 5 0 0 0-4.9 6.6L3.5 17a2 2 0 0 0 2.8 2.8l6.3-6.2a5 5 0 0 0 6.6-4.9l-2.9 2.9-2.6-.6-.6-2.6z\"/>"
+        }
+        "optimiser" => "<path d=\"M4 18a8 8 0 1 1 16 0\"/><path d=\"m12 18 4.5-5.5\"/><circle cx=12 cy=18 r=1 />",
+        "vanguard" => {
+            "<path d=\"M12 3 4.5 6v5.5c0 4.5 3.2 8.2 7.5 9.5 4.3-1.3 7.5-5 7.5-9.5V6z\"/><path d=\"m8.5 9 3.5 7 3.5-7\"/>"
+        }
+        "bilan" => "<path d=\"M9 4h6v3H9zM7 5.5H5.5v15h13v-15H17\"/><path d=\"m9 13.5 2 2 4-4\"/>",
+        "coche" => "<path d=\"m5 12.5 4.5 4.5L19 7.5\"/>",
+        _ => "<rect x=4 y=4 width=16 height=16 rx=4 />",
+    };
+    format!("<svg class=ic viewBox=\"0 0 24 24\" aria-hidden=true>{dessin}</svg>")
+}
+
+/// Le titre d'une rubrique sans sa place (« 4 · Cet ordinateur » → « Cet ordinateur ») : la colonne d'icônes est
+/// étroite.
+fn titre_court(titre: &str) -> &str {
+    titre.split_once(" · ").map_or(titre, |(_, t)| t)
+}
+
+/// La colonne de gauche : le logo, une icône par rubrique du menu (vers sa liste de fonctions, en bas de la page), et
+/// le bouton clair/sombre (l'étiquette de la case).
+fn rail(fonctions: &[Rubrique], logo: &str) -> String {
     let mut h = format!(
-        "<nav class=cote><div class=marque><span class=logo style=\"background-image:url(data:image/png;base64,{logo})\"></span>VANGUARD</div><a class=actif href=#apercu>{}</a>",
+        "<nav class=rail aria-label=\"{}\"><div class=tete><span class=logo role=img aria-label=Vanguard style=\"background-image:url(data:image/png;base64,{logo})\"></span></div>",
+        tr!("Rubriques du menu", "Menu sections")
+    );
+    for (i, r) in fonctions.iter().enumerate() {
+        let _ = write!(
+            h,
+            "<a href=#rubrique-{i} title=\"{}\">{}{}</a>",
+            esc(&r.titre),
+            icone(r.icone),
+            esc(titre_court(&r.titre))
+        );
+    }
+    let _ = write!(
+        h,
+        "<label class=theme for=bascule><span class=lune></span>{}</label></nav>",
+        tr!("Clair / sombre", "Light / dark")
+    );
+    h
+}
+
+/// La barre du haut : la marque, les onglets (des ancres vers les sections de la page), l'état de la veille et le
+/// bouton des alertes. Le point ne bat que si la surveillance tourne vraiment ; en pause ou coupée, il reste fixe.
+fn barre(d: &Donnees, complete: bool) -> String {
+    let mut h = format!(
+        "<header class=barre><span class=marque>VANGUARD</span><nav class=onglets><a class=actif href=#apercu>{}</a>",
         tr!("Vue d'ensemble", "Overview")
     );
     if complete {
@@ -1221,10 +1537,22 @@ fn navigation(complete: bool, logo: &str) -> String {
     }
     let _ = write!(
         h,
-        "<a href=#fonctions>{}</a><label class=theme for=bascule><span class=lune></span>{}</label></nav>",
-        tr!("Toutes les fonctions", "All features"),
-        tr!("Clair / sombre", "Light / dark")
+        "<a href=#fonctions>{}</a></nav>",
+        tr!("Toutes les fonctions", "All features")
     );
+    let (classe, veille) = match (d.active, d.temps_reel_coupe.is_some()) {
+        (true, false) => ("vivante", tr!("En veille", "Watching")),
+        (true, true) => ("pause", tr!("Veille en pause", "Watch paused")),
+        (false, _) => ("", tr!("Veille coupée", "Watch off")),
+    };
+    let _ = write!(h, "<span class=\"veille {classe}\"><i></i>{veille}</span>");
+    if complete {
+        h += tr!(
+            "<a class=bouton href=#alertes>Voir les alertes</a>",
+            "<a class=bouton href=#alertes>See the alerts</a>"
+        );
+    }
+    h += "</header>";
     h
 }
 
@@ -1238,6 +1566,7 @@ pub(crate) fn html(d: &Donnees) -> String {
     let mut h = String::new();
     let date = d.maintenant.format(tr!("%d/%m/%Y à %H:%M", "%Y-%m-%d %H:%M"));
     let logo = base64(include_bytes!("../../assets/icones/vanguard-32.png"));
+    let grand = base64(include_bytes!("../../assets/icones/vanguard-128.png"));
     let feuille = feuille();
     let vide = page_vide(d);
     let _ = trw!(
@@ -1245,22 +1574,19 @@ pub(crate) fn html(d: &Donnees) -> String {
         "<!doctype html><html lang=fr><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">\
          <meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">\
          <title>Tableau de bord Vanguard</title><link rel=icon href=\"data:image/png;base64,{logo}\"><style>{feuille}</style></head><body>\
-         <input type=checkbox id=bascule class=bascule aria-label=\"Thème clair ou sombre\"><div class=cadre>{}<main>\
-         <header class=haut id=apercu><div><h1>Tableau de bord <em>Vanguard</em></h1><p class=sous>Généré par Vanguard le {date}. Rien n'est envoyé : cette page est écrite sur cet ordinateur.</p></div>{}</header>",
+         <input type=checkbox id=bascule class=bascule aria-label=\"Thème clair ou sombre\">\
+         <div class=intro aria-hidden=true><div class=radar></div><div class=texte><b>VANGUARD</b><span>Cyberdéfense portable des postes et des réseaux</span><span class=mono>{date}</span><i class=charge></i></div></div>\
+         <span class=envol aria-hidden=true style=\"background-image:url(data:image/png;base64,{grand})\"></span><div class=cadre>{}<div class=page>{}<main>\
+         <div class=haut id=apercu><h1>Vue d'ensemble</h1><p class=sous>Cet ordinateur et son réseau, le {date}. Rien n'est envoyé : cette page est écrite sur cet ordinateur.</p></div>",
         "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">\
          <meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">\
          <title>Vanguard dashboard</title><link rel=icon href=\"data:image/png;base64,{logo}\"><style>{feuille}</style></head><body>\
-         <input type=checkbox id=bascule class=bascule aria-label=\"Light or dark theme\"><div class=cadre>{}<main>\
-         <header class=haut id=apercu><div><h1>Vanguard <em>dashboard</em></h1><p class=sous>Generated by Vanguard on {date}. Nothing is sent: this page is written on this computer.</p></div>{}</header>",
-        navigation(!vide, &logo),
-        if vide {
-            ""
-        } else {
-            tr!(
-                "<a class=bouton href=#alertes>Voir les alertes</a>",
-                "<a class=bouton href=#alertes>See the alerts</a>"
-            )
-        }
+         <input type=checkbox id=bascule class=bascule aria-label=\"Light or dark theme\">\
+         <div class=intro aria-hidden=true><div class=radar></div><div class=texte><b>VANGUARD</b><span>Portable cyber defense for endpoints and networks</span><span class=mono>{date}</span><i class=charge></i></div></div>\
+         <span class=envol aria-hidden=true style=\"background-image:url(data:image/png;base64,{grand})\"></span><div class=cadre>{}<div class=page>{}<main>\
+         <div class=haut id=apercu><h1>Overview</h1><p class=sous>This computer and its network, on {date}. Nothing is sent: this page is written on this computer.</p></div>",
+        rail(&d.fonctions, &logo),
+        barre(d, !vide)
     );
     if vide {
         let _ = trw!(
@@ -1271,25 +1597,28 @@ pub(crate) fn html(d: &Donnees) -> String {
         );
         let _ = write!(h, "<div class=grille>{}{}</div>", carte_bilan(d), carte_protection(d));
         h += &toutes_les_fonctions(&d.fonctions);
-        h += "</main></div></body></html>";
+        h += "</main></div></div></body></html>";
         return h;
     }
-    h += &etat(d);
     let nouveaux = nouveaux(&d.appareils, d.maintenant);
     let vues: Vec<&Alerte> = d
         .alertes
         .iter()
         .filter(|a| Genre::de(&a.genre) == Genre::Botnet)
         .collect();
+    // La vue d'ensemble en trois rangées, comme l'image de référence : la courbe et l'anneau ; les alertes récentes
+    // et, à côté, les chiffres et la protection ; le bilan et la surveillance.
     let _ = write!(
         h,
-        "<div class=grille>{}{}{}</div>",
-        carte_bilan(d),
+        "<div class=rangee>{}{}</div><div class=rangee>{}<div class=pile>{}{}</div></div><div class=\"rangee deux\">{}{}</div>",
+        graphique(d),
         carte_anneau(d),
-        carte_protection(d)
+        alertes_recentes(d),
+        tuiles(d, nouveaux.len(), vues.len()),
+        carte_protection(d),
+        carte_bilan(d),
+        etat(d, nouveaux.len())
     );
-    h += &tuiles(d, nouveaux.len(), vues.len());
-    h += &graphique(d);
     let _ = write!(
         h,
         "<section id=alertes>{}</section><section id=appareils>{}</section><section id=connexions>{}</section>",
@@ -1303,7 +1632,7 @@ pub(crate) fn html(d: &Donnees) -> String {
         "<p class=pied>Les alertes sont gardées {JOURS_GARDES} jours ({ALERTES_GARDEES} au plus) dans le dossier de Vanguard de cet ordinateur. Pour remettre la page à jour : <code>vanguard tableau-de-bord</code>.</p>",
         "<p class=pied>Alerts are kept {JOURS_GARDES} days ({ALERTES_GARDEES} at most) in this computer's Vanguard folder. To refresh the page: <code>vanguard dashboard</code>.</p>"
     );
-    h += "</main></div></body></html>";
+    h += "</main></div></div></body></html>";
     h
 }
 
@@ -1446,6 +1775,7 @@ mod tests {
             quarantaine: 1,
             fonctions: vec![Rubrique {
                 titre: "4 · Cet ordinateur".into(),
+                icone: "ordinateur",
                 resume: "failles, mises à jour".into(),
                 fonctions: vec![
                     Fonction {
@@ -1541,7 +1871,7 @@ mod tests {
         };
         let page = html(&vide);
         assert!(page.contains("Rien à montrer pour l'instant") && page.contains("vanguard surveillance on"));
-        assert!(page.contains("vanguard appareils") && page.ends_with("</main></div></body></html>"));
+        assert!(page.contains("vanguard appareils") && page.ends_with("</main></div></div></body></html>"));
         // Coupée mais avec un historique : l'historique reste, et la façon de la réactiver est dite.
         let coupee = Donnees {
             active: false,
@@ -1579,9 +1909,9 @@ mod tests {
     #[test]
     fn vue_d_ensemble_et_fonctions() {
         let page = html(&donnees());
-        // Le bilan : 82/100 donne B ; deux problèmes empêchent la carte d'être dite en ordre (pas de lime).
+        // Le bilan : 82/100 donne B ; deux problèmes empêchent la carte d'être dite en ordre (pas mise en avant).
         assert!(page.contains("<div class=lettre>B</div>") && page.contains("82/100"));
-        assert!(page.contains("2 problème(s) à corriger") && page.contains("Réseau : C (64/100)"));
+        assert!(page.contains("2 problème(s) à corriger") && page.contains("Réseau : C</span><b>64/100</b>"));
         let bilan = &page[page.find("Dernier bilan").unwrap() - 60..page.find("Dernier bilan").unwrap()];
         assert!(!bilan.contains("vif"), "{bilan}");
         // L'anneau compte les deux alertes du mois : une grave (botnet), une élevée (appareil).
@@ -1594,7 +1924,7 @@ mod tests {
         assert!(page.contains("<section id=fonctions>") && page.contains("<span class=place>4.1</span>"));
         assert!(page.contains("<code>vanguard failles</code>") && page.contains("&lt;u&gt;piège&lt;/u&gt;"));
         // Le graphique : 30 colonnes, une par jour.
-        assert_eq!(page.matches("<div class=col ").count(), 30);
+        assert_eq!(page.matches("<g class=col>").count(), 30);
         // Le menu de gauche mène aux sections qui existent, et le bouton des alertes aussi.
         for ancre in ["apercu", "alertes", "appareils", "connexions", "fonctions"] {
             assert!(page.contains(&format!("href=#{ancre}")), "{ancre}");
@@ -1603,7 +1933,7 @@ mod tests {
         // Clair/sombre : une case lue par la feuille, sans aucun script.
         assert!(page.contains("<input type=checkbox id=bascule") && page.contains(":root:has(#bascule:checked)"));
         assert!(page.contains("<label class=theme for=bascule>"));
-        // La surveillance active et passée, sans scan raté : sa carte est dite en ordre (lime).
+        // La surveillance active et passée, sans scan raté : sa carte est dite en ordre (mise en avant).
         assert!(page.contains("<div class=\"carte vif\"><h3><span class=\"point bon\"></span>Surveillance du réseau"));
         // Un historique retouché empêche le bilan de se dire en ordre, même parfait.
         let parfait = Donnees {
@@ -1722,5 +2052,78 @@ mod tests {
         }
         // Un genre inconnu (journal d'une version plus récente) reste montré.
         assert_eq!(Genre::de("nouveau-genre"), Genre::Autre);
+    }
+
+    /// L'aperçu : une page pleine, sur des données inventées (adresses de documentation, appareils fictifs) et le vrai
+    /// menu, écrite où dit `VANGUARD_APERCU_TABLEAU` pour en faire une capture. Ignoré par défaut : il écrit un fichier.
+    #[test]
+    #[ignore = "écrit l'aperçu du tableau de bord pour une capture"]
+    fn apercu_du_tableau() {
+        let Ok(chemin) = std::env::var("VANGUARD_APERCU_TABLEAU") else {
+            return;
+        };
+        let maintenant = date("2026-10-20 14:50:00");
+        let genres = [
+            (
+                Genre::Appareil,
+                "Nouvel appareil sur votre réseau",
+                "10.0.0.41 — téléphone inconnu, 3c:22:fb:00:00:41",
+            ),
+            (
+                Genre::Port,
+                "Port dangereux nouvellement ouvert",
+                "10.0.0.12 : Telnet (23) ouvert depuis la dernière passe",
+            ),
+            (
+                Genre::Veilleur,
+                "Programme vu par le veilleur",
+                "/tmp/.x/maj lancé puis effacé en 2 secondes",
+            ),
+            (
+                Genre::WiFi,
+                "Wi-Fi moins protégé",
+                "Le réseau « Maison » annonce maintenant WPS",
+            ),
+            (Genre::Blocage, "Menace bloquée", "facture.pdf.exe mis en quarantaine"),
+            (
+                Genre::Telechargement,
+                "Téléchargement suspect",
+                "installeur-gratuit.msi : signature absente",
+            ),
+            (
+                Genre::Passerelle,
+                "Routeur usurpé ?",
+                "La passerelle 10.0.0.1 a changé d'adresse matérielle",
+            ),
+        ];
+        let mut alertes = Vec::new();
+        for jour in 0..30i64 {
+            // Une suite fixe, sans hasard : la capture est la même à chaque fois.
+            let n = usize::try_from((jour * 7 + 3) % 5 + i64::from(jour % 9 == 4) * 4).unwrap_or(0);
+            for k in 0..n {
+                let (genre, titre, texte) = genres[(usize::try_from(jour).unwrap_or(0) + k) % genres.len()];
+                let quand = (maintenant
+                    - chrono::Duration::days(29 - jour)
+                    - chrono::Duration::hours(i64::try_from(k).unwrap_or(0) * 3))
+                .format(FORMAT_DATE)
+                .to_string();
+                alertes.push(une_alerte(&quand, genre, titre, texte));
+            }
+        }
+        alertes.sort_by(|a, b| a.date.cmp(&b.date));
+        let d = Donnees {
+            alertes,
+            botnets_en_cours: vec![],
+            fonctions: crate::menu::etat::fonctions_du_menu(),
+            bilan: Some(DernierBilan {
+                date: "2026-10-20 09:12".into(),
+                machine: Some(88),
+                reseau: Some(71),
+                problemes: 0,
+            }),
+            fichiers: "Temps réel des fichiers : 4 812 fichiers examinés, aucun danger.".into(),
+            ..donnees()
+        };
+        std::fs::write(&chemin, html(&d)).unwrap();
     }
 }

@@ -137,7 +137,7 @@ pub(crate) fn lignes_d_etat(
 pub(crate) fn fonctions_du_menu() -> Vec<reseau::tableau::Rubrique> {
     use reseau::tableau::{Fonction, Rubrique};
     let clap = Args::command();
-    let rubrique = |titre: String, resume: &str, outils: Vec<(String, Action)>| {
+    let rubrique = |titre: String, icone: &'static str, resume: &str, outils: Vec<(String, Action)>| {
         let mut derniere = None;
         let fonctions = outils
             .into_iter()
@@ -160,6 +160,7 @@ pub(crate) fn fonctions_du_menu() -> Vec<reseau::tableau::Rubrique> {
             .collect();
         Rubrique {
             titre,
+            icone,
             resume: resume.to_string(),
             fonctions,
         }
@@ -171,6 +172,7 @@ pub(crate) fn fonctions_du_menu() -> Vec<reseau::tableau::Rubrique> {
         .collect();
     let mut rubriques = vec![rubrique(
         tr!("1 à 3 · Menu principal", "1 to 3 · Main menu").to_string(),
+        "principal",
         tr!("le bilan et ses suites", "the check and what follows"),
         principal,
     )];
@@ -186,7 +188,12 @@ pub(crate) fn fonctions_du_menu() -> Vec<reseau::tableau::Rubrique> {
             .into_iter()
             .collect();
         outils.extend(places.iter().filter(|(p, _)| p.starts_with(&prefixe)).cloned());
-        rubriques.push(rubrique(format!("{cle} · {}", groupe.titre()), groupe.resume(), outils));
+        rubriques.push(rubrique(
+            format!("{cle} · {}", groupe.titre()),
+            groupe.icone(),
+            groupe.resume(),
+            outils,
+        ));
     }
     rubriques
 }

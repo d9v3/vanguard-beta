@@ -2003,7 +2003,7 @@ fn tableau_de_bord_sans_surveillance_explique() {
         assert_eq!(s.code, Some(0), "{}", s.erreurs);
         let page = std::fs::read_to_string(dossier_vanguard(&maison).join("tableau.html")).unwrap();
         assert!(page.contains(attendu), "{page}");
-        assert!(page.ends_with("</main></div></body></html>"));
+        assert!(page.ends_with("</main></div></div></body></html>"));
         // Le menu du terminal y est repris, même sur une page vide.
         assert!(page.contains("<section id=fonctions>"), "{page}");
     }

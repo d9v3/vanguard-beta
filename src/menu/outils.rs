@@ -746,6 +746,22 @@ pub(crate) const ECRANS: &[(Action, &[Action])] = &[
 ];
 
 impl Groupe {
+    /// Le nom de son icône au tableau de bord (`reseau::tableau::icone`).
+    pub(crate) fn icone(self) -> &'static str {
+        match self {
+            Groupe::Ordinateur => "ordinateur",
+            Groupe::Reseau => "reseau",
+            Groupe::Virus => "virus",
+            Groupe::Arnaques => "arnaques",
+            Groupe::Reagir => "reagir",
+            Groupe::Donnees => "donnees",
+            Groupe::Guide => "guide",
+            Groupe::Depanner => "depanner",
+            Groupe::Optimiser => "optimiser",
+            Groupe::Vanguard => "vanguard",
+        }
+    }
+
     pub(crate) fn titre(self) -> &'static str {
         texte(self.titres())
     }
