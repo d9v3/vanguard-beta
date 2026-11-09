@@ -31,7 +31,7 @@ pub(crate) const CONTENU_MAX: usize = 768 << 20;
 /// Les en-têtes tar parcourus, au plus : daily.cld en a une soixantaine (avec ses .cdiff).
 const MEMBRES_MAX: usize = 10_000;
 /// La taille de l'en-tête.
-const EN_TETE: usize = 512;
+pub(crate) const EN_TETE: usize = 512;
 /// Un en-tête tar : le contenu d'un membre le suit (`tar::Entree::position` est celle de son en-tête).
 const BLOC_TAR: usize = 512;
 

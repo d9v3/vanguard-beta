@@ -143,6 +143,13 @@ pub const PROGRAMMES: &[Programme] = &[
                 false,
             ),
             traduite(
+                "vanguard antivirus --etat",
+                "vanguard antivirus --status",
+                "Le moteur, les bases et leur date, ce qui n'est pas lu, le temps réel des fichiers.",
+                "The engine, the databases and their date, what is not read, real-time file scanning.",
+                false,
+            ),
+            traduite(
                 "vanguard depanner traces",
                 "vanguard troubleshoot evidence",
                 "Après une infection, avant de nettoyer : garder les traces (processus, connexions…).",

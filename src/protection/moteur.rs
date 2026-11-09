@@ -367,6 +367,12 @@ fn base_clamav(mode: Mode) -> Result<&'static Base, &'static str> {
     }
 }
 
+/// La base ClamAV des analyses à la demande, pour le détail de l'écran de l'antivirus : ce qu'elle ne lit pas,
+/// compté par raison. La même que celle d'une analyse (chargée une fois par lancement).
+pub(crate) fn base_a_la_demande() -> Result<&'static Base, &'static str> {
+    base_clamav(Mode::Complete)
+}
+
 /// Les sources de Vanguard pour un usage : ce qui manque est rangé, attendu (règles YARA) ou en réserve (base ClamAV,
 /// empreintes de MalwareBazaar, qui demandent une installation ou une clé).
 pub(crate) fn sources(usage: Usage) -> Sources<'static> {

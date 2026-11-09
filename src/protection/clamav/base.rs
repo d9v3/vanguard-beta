@@ -325,6 +325,92 @@ pub(crate) fn charger(options: Options) -> Result<Base, Refus> {
     charger_dans(&dossier, options, &regles)
 }
 
+/// Les bases de l'ordinateur vues par leurs en-têtes seuls (`en_tetes`).
+pub(crate) struct Apercu {
+    pub dossier: PathBuf,
+    /// Chaque .cvd et .cld, par nom, et son en-tête ; `None` : illisible, la base serait écartée au chargement.
+    pub bases: Vec<(String, Option<cvd::EnTete>)>,
+    /// Les fichiers de signatures à part (local.hdb, local.ign2…).
+    pub a_part: Vec<String>,
+}
+
+/// Les bases de l'ordinateur sans les charger : l'écran de l'antivirus dit leur version et leur date en un instant,
+/// là où le chargement prend des secondes et des centaines de Mo. Le dossier est jugé comme au chargement (`Err` :
+/// pas de base, ou une base que le moteur refuserait) ; de chaque .cvd et .cld, seuls les 512 octets de l'en-tête
+/// sont lus, sans suivre de lien.
+pub(crate) fn en_tetes() -> Result<Apercu, Refus> {
+    if administrateur() {
+        return Err(Refus::Administrateur);
+    }
+    let dossier = dossier().ok_or(Refus::Absente)?;
+    #[cfg(unix)]
+    let regles = Regles::de_la_machine()?;
+    #[cfg(windows)]
+    let regles = Regles::de_la_machine();
+    en_tetes_dans(&dossier, &regles)
+}
+
+fn en_tetes_dans(dossier: &Path, regles: &Regles) -> Result<Apercu, Refus> {
+    let dossier = verifier_dossier(dossier, regles)?;
+    let illisible = |e: std::io::Error| Refus::Illisible(dossier.clone(), e.to_string());
+    let mut bases = Vec::new();
+    let mut a_part = Vec::new();
+    for (k, entree) in std::fs::read_dir(&dossier).map_err(illisible)?.enumerate() {
+        if k >= ENTREES_MAX {
+            return Err(Refus::Illisible(
+                dossier.clone(),
+                tr!("trop d'entrées", "too many entries").into(),
+            ));
+        }
+        let Some(nom) = entree.map_err(illisible)?.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if conteneur(&nom) {
+            let en_tete = lire_debut(&dossier.join(&nom)).ok().and_then(|o| cvd::en_tete(&o));
+            bases.push((nom, en_tete));
+        } else if signatures::a_lire(&nom) {
+            a_part.push(nom);
+        }
+    }
+    if bases.len().saturating_add(a_part.len()) > FICHIERS_MAX {
+        return Err(Refus::TropGrosse);
+    }
+    bases.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    a_part.sort_unstable();
+    Ok(Apercu { dossier, bases, a_part })
+}
+
+/// Un .cvd ou un .cld ? Extension en minuscules, comme `signatures::sorte` : freshclam ne les écrit pas autrement.
+fn conteneur(nom: &str) -> bool {
+    nom.rsplit_once('.').is_some_and(|(_, e)| matches!(e, "cvd" | "cld"))
+}
+
+/// Les premiers octets d'un simple fichier (son en-tête), ouvert sans suivre de lien ni attendre.
+fn lire_debut(chemin: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(
+        &mut options,
+        libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+    );
+    // FILE_FLAG_OPEN_REPARSE_POINT : un lien ou une jonction s'ouvre lui-même, sans être suivi.
+    #[cfg(windows)]
+    std::os::windows::fs::OpenOptionsExt::custom_flags(&mut options, 0x0020_0000);
+    let f = options.open(chemin)?;
+    if !f.metadata()?.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            tr!("pas un simple fichier", "not a plain file"),
+        ));
+    }
+    let mut octets = Vec::new();
+    f.take(u64::try_from(cvd::EN_TETE).unwrap_or(u64::MAX))
+        .read_to_end(&mut octets)?;
+    Ok(octets)
+}
+
 /// Le dossier de la base, vérifié, en chemin canonique : lui et (sous Linux) chacun de ses parents.
 fn verifier_dossier(dossier: &Path, regles: &Regles) -> Result<PathBuf, Refus> {
     let illisible = |e: std::io::Error| Refus::Illisible(dossier.to_path_buf(), e.to_string());
@@ -503,8 +589,6 @@ pub(crate) fn charger_dans(dossier: &Path, options: Options, regles: &Regles) ->
         }
     }
     noms.sort_unstable();
-    // Extension en minuscules, comme `signatures::sorte` : freshclam ne les écrit pas autrement.
-    let conteneur = |n: &str| n.rsplit_once('.').is_some_and(|(_, e)| matches!(e, "cvd" | "cld"));
     let lus = noms.iter().filter(|n| conteneur(n) || signatures::a_lire(n)).count();
     if lus > FICHIERS_MAX {
         return Err(Refus::TropGrosse);
@@ -1002,6 +1086,41 @@ mod tests {
         let f = dossier.join(nom);
         std::fs::write(&f, octets).unwrap();
         examiner_sans_garde(&f, base, Duration::from_secs(60)).unwrap()
+    }
+
+    /// L'aperçu de l'écran de l'antivirus : les en-têtes seuls, un lien jamais suivi, un dossier douteux refusé
+    /// comme au chargement.
+    #[test]
+    fn en_tetes_sans_chargement() {
+        let jet = crate::essais::Jetable::nouveau("clamav-en-tetes");
+        let b = jet.join("base");
+        std::fs::create_dir(&b).unwrap();
+        poser_base(&b);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(b.join("main.cvd"), b.join("lien.cvd")).unwrap();
+        let a = en_tetes_dans(&b, &regles(&b)).unwrap();
+        let vues: Vec<(&str, Option<u32>)> = a
+            .bases
+            .iter()
+            .map(|(n, e)| (n.as_str(), e.as_ref().map(|e| e.version)))
+            .collect();
+        let mut attendues = vec![
+            ("abime.cvd", Some(1)),
+            ("daily.cld", Some(9)),
+            ("daily.cvd", Some(8)),
+            ("main.cvd", Some(3)),
+        ];
+        if cfg!(unix) {
+            attendues.insert(3, ("lien.cvd", None));
+        }
+        assert_eq!(vues, attendues);
+        assert_eq!(a.a_part, vec!["local.hsb".to_string()]);
+        #[cfg(unix)]
+        {
+            let mut r = regles(&b);
+            r.ecrivable = |_| true;
+            assert!(matches!(en_tetes_dans(&b, &r), Err(Refus::NonFiable(..))));
+        }
     }
 
     #[test]

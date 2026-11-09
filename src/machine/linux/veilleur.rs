@@ -3392,6 +3392,38 @@ fn precision_de(activee: Option<bool>, vivant: bool, pause: bool) -> &'static st
     }
 }
 
+/// Le temps réel des fichiers en une phrase, pour l'écran de l'antivirus : l'état écrit par le veilleur s'il tourne,
+/// sinon pourquoi rien n'est surveillé. Des fichiers lus, rien de lancé.
+pub(crate) fn phrase_des_fichiers() -> String {
+    let (etat, doute) = lire_etat_dans(&crate::socle::dossier_local());
+    let mut phrase = match (doute, etat.filter(|e| vivant_d_apres(e, maintenant()))) {
+        (Some(d), _) => trf!(
+            "Temps réel des fichiers : non vérifié, {d}.",
+            "Real-time file scanning: not verified, {d}."
+        ),
+        (None, Some(e)) => e.fichiers.phrase(),
+        (None, None) if voulu() => tr!(
+            "Temps réel des fichiers : arrêté, le veilleur est allumé mais ne tourne pas (voir le bilan).",
+            "Real-time file scanning: stopped, the watcher is on but not running (see the checkup)."
+        )
+        .to_string(),
+        (None, None) => tr!(
+            "Temps réel des fichiers : arrêté, il passe par le veilleur, coupé ; la commande vanguard veilleur on l'allume (Linux 5.13 et plus).",
+            "Real-time file scanning: stopped, it runs in the watcher, which is off; the command vanguard watcher on turns it on (Linux 5.13 and later)."
+        )
+        .to_string(),
+    };
+    if let Some(c) = crate::protection::temps_reel::coupure() {
+        phrase.push(' ');
+        phrase.push_str(&trf!(
+            "Temps réel en pause {} : rien n'est examiné.",
+            "Real-time paused {}: nothing is scanned.",
+            crate::protection::temps_reel::echeance(&c)
+        ));
+    }
+    phrase
+}
+
 /// La précision de la ligne du menu : des fichiers lus, rien de lancé.
 pub(crate) fn precision() -> &'static str {
     let activee = crate::machine::linux::natif::unite_activee(UNITE, true);

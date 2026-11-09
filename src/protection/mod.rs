@@ -22,6 +22,7 @@ pub mod distance;
 pub(crate) mod empreintes;
 pub mod environnement;
 pub mod espions;
+pub(crate) mod etat_antivirus;
 pub mod fuites;
 pub(crate) mod heuristiques;
 pub mod integrite;

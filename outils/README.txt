@@ -127,6 +127,8 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
        6.1 Antivirus scan › Quick scan · Full scan of the home folder · USB drive or folder, with USB worm traps
          (fake shortcuts, autorun) · YARA rules on a folder: 308 rules for malware families (ransomware, password
          stealers…) and the fingerprints of known malware from MalwareBazaar (free abuse.ch key)
+         · Antivirus status: the engine, the databases and their date, what is not read, second opinion, PUA
+         and real-time file scanning
        6.2 Spyware: is someone watching me? Known servers and sites, programs reading the keyboard, monitoring
          permissions (read-only; vanguard spyware)
        6.3 Who talks to the Internet? Each program's connections, with the server's name, and known botnet

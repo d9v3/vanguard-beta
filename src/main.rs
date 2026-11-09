@@ -202,11 +202,19 @@ enum Commande {
         #[arg(long, visible_alias = "guest")]
         invite: bool,
     },
-    /// Recherche de malwares : ClamAV (Linux) ou Microsoft Defender (Windows).
+    /// Recherche de malwares : le moteur de Vanguard (empreintes, YARA, base ClamAV installée, heuristiques), avec
+    /// clamscan en second avis sous Linux s'il est installé, ou Microsoft Defender d'abord sous Windows.
     Antivirus {
         /// Tout le dossier personnel au lieu des endroits à risque.
-        #[arg(long, visible_alias = "full")]
+        #[arg(long, visible_alias = "full", conflicts_with = "etat")]
         complet: bool,
+        /// L'état de l'antivirus, sans rien analyser : moteur, bases et leur date, ce qui n'est pas lu, choix du
+        /// second avis et des PUA, temps réel des fichiers.
+        #[arg(long, visible_alias = "status", conflicts_with = "dossier")]
+        etat: bool,
+        /// Avec --etat : lire toute la base ClamAV pour compter ce qu'elle a d'écarté (environ 10 secondes).
+        #[arg(long, requires = "etat")]
+        detail: bool,
         /// Une clé USB, un disque externe ou un dossier à analyser en entier.
         dossier: Option<std::path::PathBuf>,
     },
@@ -585,15 +593,15 @@ enum Commande {
     #[command(visible_alias = "containers")]
     Conteneurs,
     /// Paramètres : tous les réglages de Vanguard (langue, emojis, travail sans Internet, protection en temps réel,
-    /// surveillance, entretien, alertes apprises, blocage, restrictions des extensions, clé abuse.ch, versions des
-    /// logiciels, autodiagnostic de la semaine, paquets de l'AUR, Agent Vanguard, partage avec l'auteur). Sans
+    /// surveillance, entretien, alertes apprises, blocage, restrictions des extensions, clé abuse.ch, second avis de
+    /// ClamAV, programmes indésirables (PUA), versions des logiciels, autodiagnostic de la semaine, paquets de l'AUR, Agent Vanguard, partage avec l'auteur). Sans
     /// argument : leur état ; avec un réglage et une valeur : le change, la valeur d'avant montrée pour revenir.
     /// « temps-reel non --pendant 1h|4h » coupe la protection en temps réel de Vanguard pour ce temps (sans
     /// --pendant : jusqu'à reprise), après accord ; jamais Defender, le pare-feu ni l'UAC.
     #[command(visible_alias = "settings")]
     Parametres {
         /// Un réglage (langue, emojis, sans-internet, temps-reel, surveillance, entretien, appris, blocage,
-        /// restrictions, abuse.ch, versions-logiciels, autotest, paquets-aur, auto-reglage, partage) et sa valeur ; temps-reel non prend aussi --pendant 1h ou 4h.
+        /// restrictions, abuse.ch, second-avis, pua, versions-logiciels, autotest, paquets-aur, auto-reglage, partage) et sa valeur ; temps-reel non prend aussi --pendant 1h ou 4h.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         quoi: Vec<String>,
     },
@@ -1974,6 +1982,7 @@ enum Action {
     AntivirusComplet,
     AntivirusDossier,
     Yara,
+    AntivirusEtat,
     LogicielsEspions,
     QuiParle,
     Memoire,
@@ -2183,6 +2192,11 @@ const OUTILS: &[Outil] = &[
         titre: ["Règles YARA sur un dossier", "YARA rules on a folder"],
         precision: ["logiciels malveillants connus", "known malware"],
         mots: "yara règles rules malware" },
+    Outil { action: Action::AntivirusEtat, commande: "antivirus", groupe: None, lettre: "",
+        titre: ["État de l'antivirus", "Antivirus status"],
+        precision: ["moteur, bases, temps réel", "engine, databases, real time"],
+        mots: "état status moteur engine bases databases clamav malwarebazaar yara pua second avis opinion \
+               temps réel real time" },
     Outil { action: Action::LogicielsEspions, commande: "logiciels-espions", groupe: Some(Groupe::Virus), lettre: "",
         titre: ["Logiciels espions : en ai-je un ?", "Spyware: is someone watching me?"],
         precision: ["clavier épié, indicateurs Échap", "keyboard spying, Échap indicators"],
@@ -2649,6 +2663,7 @@ const ECRANS: &[(Action, &[Action])] = &[
             Action::AntivirusComplet,
             Action::AntivirusDossier,
             Action::Yara,
+            Action::AntivirusEtat,
         ],
     ),
     (
@@ -2942,6 +2957,7 @@ async fn executer_outil(s: &mut Session, action: Action) {
         Action::AntivirusRapide => protection::antivirus::analyser(protection::antivirus::Portee::Rapide),
         Action::AntivirusComplet => protection::antivirus::analyser(protection::antivirus::Portee::Complete),
         Action::AntivirusDossier => protection::antivirus::choisir(),
+        Action::AntivirusEtat => protection::etat_antivirus::montrer(protection::etat_antivirus::Detail::Demander),
         Action::Yara => protection::yara::menu(),
         Action::Memoire => protection::memoire::analyser(),
         Action::Pieges => protection::pieges::menu(),
@@ -3150,7 +3166,8 @@ const AIDES_EN: &[(&str, &str)] = &[
                       connected devices, computers) from the local network scan, this computer's network findings and \
                       a few more read-only checks, attacking nothing; what could not be checked is said, never counted \
                       as safe"),
-    ("antivirus", "Malware scan: ClamAV (Linux) or Microsoft Defender (Windows)"),
+    ("antivirus", "Malware scan: the Vanguard engine (fingerprints, YARA, installed ClamAV database, heuristics), \
+                   with clamscan as a second opinion on Linux if installed, or Microsoft Defender first on Windows"),
     ("surveillance", "Turn hourly network monitoring on or off (notification for unknown devices)"),
     ("tableau-de-bord", "Monitoring dashboard in the browser: its state, the alerts day by day, the new devices and the \
                  suspicious connections. Local page, nothing is sent"),
@@ -3187,7 +3204,7 @@ const AIDES_EN: &[(&str, &str)] = &[
     ("conteneurs", "Known flaws in this computer's Docker or Podman images, by trivy if installed. Read-only"),
     ("parametres", "Settings: all of Vanguard's settings (language, emojis, working without the Internet, real-time \
                     protection, monitoring, monthly check-up, learned alerts, blocking, extension restrictions, \
-                    abuse.ch key, software versions, weekly self-test, AUR packages, Vanguard Agent, sharing with \
+                    abuse.ch key, ClamAV second opinion, unwanted programs (PUA), software versions, weekly self-test, AUR packages, Vanguard Agent, sharing with \
                     the author). \
                     No argument: their state; with a setting and a value: changes it, showing the \
                     previous value to go back. “real-time no --for 1h|4h” turns Vanguard's real-time protection off \
@@ -3356,6 +3373,9 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
                                 one"),
     ("antivirus", "complet", "The whole home folder instead of the risky places"),
     ("antivirus", "dossier", "A USB drive, external disk or folder to scan entirely"),
+    ("antivirus", "etat", "The antivirus status, scanning nothing: engine, databases and their date, what is not read, \
+                           second opinion and PUA choices, real-time file scanning"),
+    ("antivirus", "detail", "With --status: read the whole ClamAV database to count what it skipped (about 10 seconds)"),
     ("isoler", "fichier", "Program or script to run"),
     ("pieges", "retirer", "Remove the decoy files placed"),
     ("veilleur", "sous_etat", "For “ransomware”: on or off"),
@@ -3449,7 +3469,7 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
                                          with all your rights); off: back on. The extensions folder must stay yours \
                                          alone"),
     ("parametres", "quoi", "A setting (language, emojis, offline, real-time, monitoring, maintenance, learned, \
-                              blocking, restrictions, abuse.ch, software-versions, autotest, aur-packages, auto-tuning, \
+                              blocking, restrictions, abuse.ch, second-opinion, pua, software-versions, autotest, aur-packages, auto-tuning, \
                               sharing) and its \
                               value; real-time no also takes --for 1h or 4h"),
     ("blocage", "quoi", "“search”, “undo”, “status”, “auto” or “click” (active protection), a category (programs, \
@@ -3880,7 +3900,14 @@ async fn main() {
         Some(Commande::AuditReseau { json, html, invite }) => {
             Session::default().audit_reseau(json, html, invite).await;
         }
-        Some(Commande::Antivirus { complet, dossier }) => protection::antivirus::analyser(portee(dossier, complet)),
+        Some(Commande::Antivirus { etat: true, detail, .. }) => {
+            protection::etat_antivirus::montrer(if detail {
+                protection::etat_antivirus::Detail::Oui
+            } else {
+                protection::etat_antivirus::Detail::Non
+            });
+        }
+        Some(Commande::Antivirus { complet, dossier, .. }) => protection::antivirus::analyser(portee(dossier, complet)),
         Some(Commande::Surveillance { etat }) => match etat.as_str() {
             "on" | "off" => reseau::surveillance::activer(etat == "on"),
             _ => println!(

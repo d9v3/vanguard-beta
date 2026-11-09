@@ -131,7 +131,8 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
        6.1 Analyse antivirus › Analyse rapide · Analyse complète du dossier personnel · Clé USB ou dossier, avec les
          pièges des vers de clé (faux raccourcis, autorun) · Règles YARA sur un dossier : 308 règles de familles de
          logiciels malveillants (rançongiciels, voleurs de mots de passe…) et les empreintes de logiciels
-         malveillants connus de MalwareBazaar (clé abuse.ch gratuite)
+         malveillants connus de MalwareBazaar (clé abuse.ch gratuite) · État de l'antivirus : le moteur, les bases
+         et leur date, ce qui n'est pas lu, le second avis, les PUA et le temps réel des fichiers
        6.2 Logiciels espions : en ai-je un ? Serveurs et sites connus, programmes qui lisent le clavier, autorisations
          de surveillance (lecture seule ; vanguard logiciels-espions)
        6.3 Qui parle à Internet ? Les connexions de chaque programme, avec le nom du serveur, et les serveurs de

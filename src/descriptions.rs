@@ -116,8 +116,8 @@ impl Action {
                 "Closes the computer's inbound access, turns off sharing and sets a protective DNS. Each change is shown; turning it off restores all."
             ),
             Action::Antivirus => tr!(
-                "Cherche les logiciels malveillants avec ClamAV (Linux) ou Microsoft Defender (Windows), ou avec les règles YARA intégrées.",
-                "Looks for malware with ClamAV (Linux) or Microsoft Defender (Windows), or with the built-in YARA rules."
+                "Cherche les logiciels malveillants avec le moteur de Vanguard (empreintes, YARA, base ClamAV installée), et Defender sous Windows.",
+                "Looks for malware with the Vanguard engine (fingerprints, YARA, installed ClamAV database), and Defender on Windows."
             ),
             Action::AntivirusRapide => tr!(
                 "Le moteur de Vanguard et celui du système (Defender, ClamAV) là où arrivent les menaces, puis ce qui se lance au démarrage. Un fichier détecté : quarantaine ou suppression, au choix.",
@@ -130,6 +130,10 @@ impl Action {
             Action::AntivirusDossier => tr!(
                 "Analyse la clé ou le dossier choisi, puis cherche à sa racine les pièges des vers de clé USB : autorun.inf, raccourcis, scripts.",
                 "Scans the chosen drive or folder, then checks its root for USB worm traps: autorun.inf, shortcuts, scripts."
+            ),
+            Action::AntivirusEtat => tr!(
+                "Montre le moteur, les bases et leur date, ce qu'il ne lit pas, le second avis, les PUA et le temps réel. Rien n'est changé.",
+                "Shows the engine, the databases and their date, what it does not read, second opinion, PUA and real time. Nothing is changed."
             ),
             Action::Yara => tr!(
                 "Applique les règles de ReversingLabs au dossier choisi et compare chaque fichier aux empreintes de MalwareBazaar. Rien n'est déplacé.",

@@ -43,6 +43,18 @@ pub(crate) fn regles() -> Result<&'static Regles, &'static str> {
     Ok(regles)
 }
 
+/// Le commit de ReversingLabs d'où viennent les règles, abrégé à 12 caractères : l'en-tête que build.rs garde.
+pub(crate) fn commit_des_regles() -> Option<&'static str> {
+    commit_dans(REGLES)
+}
+
+fn commit_dans(regles: &str) -> Option<&str> {
+    let ligne = regles.lines().next()?;
+    let (_, apres) = ligne.split_once(", commit ")?;
+    let commit = apres.get(..12)?;
+    commit.bytes().all(|o| o.is_ascii_hexdigit()).then_some(commit)
+}
+
 /// La raison d'un refus, prête à montrer.
 fn raison(r: &Raison) -> String {
     match r {
@@ -848,6 +860,16 @@ mod tests {
     /// compile aussi avec YARA-X, l'oracle du moteur, et donne autant de règles que la version allégée. Il remplace
     /// l'étape de la CI qui le passait à libyara (yara-python, installé par pip sans version épinglée) : un autre moteur
     /// pouvait accepter une règle que YARA-X refuse, ou l'inverse.
+    /// Le commit des règles se lit dans l'en-tête gardé par build.rs ; un en-tête qui n'en a pas n'en invente pas.
+    #[test]
+    fn commit_des_regles_lu_dans_l_en_tete() {
+        let c = commit_des_regles().expect("en-tête des règles sans commit");
+        assert!(ORIGINE.lines().next().unwrap().contains(c));
+        assert_eq!(commit_dans("// Règles, commit 0123456789abcdef."), Some("0123456789ab"));
+        assert_eq!(commit_dans("// Règles, commit 0123zz"), None);
+        assert_eq!(commit_dans("rule a { condition: true }"), None);
+    }
+
     #[test]
     #[cfg(not(miri))]
     fn les_regles_d_origine_se_compilent_avec_yara_x() {

@@ -1,5 +1,6 @@
-//! Recherche de malwares avec un moteur reconnu (ClamAV sous Linux, Microsoft Defender sous Windows)
-//! et revue des programmes lancés au démarrage, là où un malware cherche à se maintenir.
+//! Recherche de malwares avec le moteur de Vanguard (empreintes, YARA, base ClamAV installée, heuristiques), clamscan
+//! en second avis facultatif sous Linux, Microsoft Defender sous Windows, et revue des programmes lancés au
+//! démarrage, là où un malware cherche à se maintenir.
 
 // Sous Linux seulement : les parties Windows ne sont pas encore relues ; le lint y viendra avec elles.
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
@@ -129,13 +130,7 @@ pub fn analyser(portee: Portee) {
     }
     #[cfg(windows)]
     {
-        let (mode, temps_reel) = crate::machine::windows::defense_etat::defender_en_marche();
-        let par_choix = crate::machine::choix_avant::note_de(
-            &crate::machine::choix_avant::notes(),
-            crate::machine::gestes::IdChoix::Defender(crate::machine::gestes::ReglageDefender::TempsReel),
-        )
-        .is_some();
-        let place = place_du_moteur(mode, temps_reel, par_choix);
+        let place = place_actuelle();
         if place == PlaceDuMoteur::SecondAvis {
             section(tr!("Microsoft Defender", "Microsoft Defender"));
             defender(&portee);
@@ -197,6 +192,19 @@ impl PlaceDuMoteur {
             ),
         }
     }
+}
+
+/// La place du moteur de Vanguard face à Defender sur cet ordinateur, lue maintenant : l'analyse et l'écran de
+/// l'antivirus.
+#[cfg(windows)]
+pub(crate) fn place_actuelle() -> PlaceDuMoteur {
+    let (mode, temps_reel) = crate::machine::windows::defense_etat::defender_en_marche();
+    let par_choix = crate::machine::choix_avant::note_de(
+        &crate::machine::choix_avant::notes(),
+        crate::machine::gestes::IdChoix::Defender(crate::machine::gestes::ReglageDefender::TempsReel),
+    )
+    .is_some();
+    place_du_moteur(mode, temps_reel, par_choix)
 }
 
 /// P19 : Defender allumé (ou passif derrière un autre antivirus) → second avis ; temps réel coupé par le choix noté
@@ -2081,6 +2089,12 @@ fn base_dans(dossier: &std::path::Path) -> bool {
     })
 }
 
+/// clamscan est-il installé ? Le PATH parcouru sur le disque, sans lancer de shell.
+#[cfg(unix)]
+pub(crate) fn clamscan_present() -> bool {
+    crate::machine::linux::natif::present("clamscan")
+}
+
 /// Le second avis peut-il tourner ? Coupé dans les Paramètres, ou clamscan absent : non, et pourquoi, sans rien
 /// proposer d'installer (AV5 : ClamAV est facultatif). Installé sans signatures : leur premier téléchargement par
 /// l'outil de ClamAV est proposé, la commande montrée avant la question qui l'accepte (la base sert aussi au moteur
@@ -2090,10 +2104,7 @@ fn preparer() -> Result<(), &'static str> {
     if !crate::parametres::second_avis_clamav() {
         return Err(raison_coupe());
     }
-    // Linux : le PATH parcouru sur le disque, sans lancer de shell.
-    #[cfg(target_os = "linux")]
-    let present = crate::machine::linux::natif::present("clamscan");
-    if !present {
+    if !clamscan_present() {
         return Err(raison_absent());
     }
     if !base_presente() {
