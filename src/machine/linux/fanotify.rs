@@ -91,6 +91,95 @@ fn init_brut(drapeaux: libc::c_uint) -> io::Result<OwnedFd> {
     }
 }
 
+/// Ce que la sonde a vu de fanotify sous le filtre d'appels système de ce processus.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Sonde {
+    /// Aucun filtre, ou un filtre qui laisse passer `fanotify_init` et `fanotify_mark`.
+    Permis,
+    /// Le filtre tue qui les appelle (SIGSYS) : les appeler ici tuerait tout le processus.
+    Interdit,
+    /// La sonde n'a pas pu tourner (fork refusé, attente ratée) : la raison, prête à montrer.
+    NonVerifie(String),
+}
+
+/// fanotify est-il permis à ce processus ? Le filtre qui compte est celui que le noyau applique, pas le texte d'une
+/// unité sur le disque : un fichier réécrit mais pas rechargé, un ajout local (drop-in) ou une unité étrangère
+/// diraient faux. Sans filtre (`Seccomp: 0`), rien à essayer ; sinon un enfant, qui hérite du même filtre, appelle
+/// les deux fonctions et meurt à notre place s'il le faut.
+pub(crate) fn sonder() -> Sonde {
+    if sans_filtre(&std::fs::read_to_string("/proc/self/status").unwrap_or_default()) {
+        return Sonde::Permis;
+    }
+    sonder_dans_un_enfant()
+}
+
+/// `/proc/self/status` dit-il qu'aucun filtre seccomp ne s'applique ? Illisible ou sans la ligne : on ne sait pas, la
+/// sonde tranchera.
+fn sans_filtre(status: &str) -> bool {
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("Seccomp:"))
+        .is_some_and(|v| v.trim() == "0")
+}
+
+/// L'enfant de la sonde : il ne fait que des appels système (aucune allocation, aucun verrou, sûr après un fork
+/// d'un processus à plusieurs fils), se rend non « dumpable » pour que sa mort éventuelle ne laisse pas de vidage
+/// mémoire (ni d'alerte de plantage), puis sort. Le parent lit comment il est mort.
+// FFI de libc : fork, prctl, fanotify_init, fanotify_mark, _exit et waitpid, sans pointeur hors de ces appels.
+#[allow(unsafe_code)]
+fn sonder_dans_un_enfant() -> Sonde {
+    let Ok(ouverture) = libc::c_uint::try_from(libc::O_RDONLY | libc::O_CLOEXEC) else {
+        return Sonde::NonVerifie("O_RDONLY".to_string());
+    };
+    // SAFETY: fork ne lit rien ; l'enfant (0) ne fait ensuite que des appels système sur des entiers et un littéral
+    // C statique, puis `_exit`, qui ne rend jamais la main ni ne lance les destructeurs du parent.
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        // SAFETY: voir ci-dessus ; `fd` peut valoir -1 (fanotify refusé autrement) : fanotify_mark rend alors EBADF,
+        // mais passe par le filtre comme tout appel, ce que la sonde veut voir.
+        unsafe {
+            libc::prctl(libc::PR_SET_DUMPABLE, libc::c_ulong::from(0_u8));
+            let fd = libc::fanotify_init(libc::FAN_CLASS_NOTIF | libc::FAN_CLOEXEC, ouverture);
+            libc::fanotify_mark(
+                fd,
+                libc::FAN_MARK_ADD,
+                libc::FAN_CLOSE_WRITE,
+                libc::AT_FDCWD,
+                c"/".as_ptr(),
+            );
+            libc::_exit(0);
+        }
+    }
+    if pid < 0 {
+        return Sonde::NonVerifie(erreur().to_string());
+    }
+    let mut statut: libc::c_int = 0;
+    loop {
+        // SAFETY: attend son propre enfant ; `statut` est un entier à nous, valable pendant l'appel.
+        let r = unsafe { libc::waitpid(pid, &raw mut statut, 0) };
+        if r == pid {
+            break;
+        }
+        let e = erreur();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Sonde::NonVerifie(e.to_string());
+        }
+    }
+    issue_de_l_enfant(statut)
+}
+
+/// Comment l'enfant de la sonde est sorti : tué par SIGSYS, le filtre interdit fanotify ; sorti normalement, il le
+/// permet (l'appel a pu échouer pour une autre raison, que le vrai démarrage dira).
+fn issue_de_l_enfant(statut: libc::c_int) -> Sonde {
+    if libc::WIFSIGNALED(statut) && libc::WTERMSIG(statut) == libc::SIGSYS {
+        Sonde::Interdit
+    } else if libc::WIFEXITED(statut) && libc::WEXITSTATUS(statut) == 0 {
+        Sonde::Permis
+    } else {
+        Sonde::NonVerifie(format!("{statut:#x}"))
+    }
+}
+
 /// Ce qu'une marque désigne : un chemin absolu (le garde : un point de montage), ou l'objet d'un descripteur ouvert
 /// (le veilleur : le dossier qu'il a ouvert lui-même, sans que le chemin puisse changer entre-temps).
 enum Objet<'a> {
@@ -517,8 +606,12 @@ mod tests {
             let veilleur = crate::machine::linux::veilleur::unite_d_essai("/x", anglais);
             assert!(veilleur.lines().any(|l| l == ligne), "{veilleur}");
         }
-        let mut vus = std::collections::HashSet::new();
-        let (Some(permis), Some(connus)) = (groupe("@system-service", &mut vus), groupe("@known", &mut vus)) else {
+        // Une liste des groupes déjà vus pour chacun : partagée, un groupe nommé par les deux ne serait déployé que
+        // dans le premier, et des appels manqueraient à l'autre (faux vert).
+        let (Some(permis), Some(connus)) = (
+            groupe("@system-service", &mut std::collections::HashSet::new()),
+            groupe("@known", &mut std::collections::HashSet::new()),
+        ) else {
             return crate::essais::saute("systemd-analyze absent ou muet : le filtre n'est pas comparé au code");
         };
         let mut noms = std::collections::BTreeSet::new();
@@ -543,5 +636,73 @@ mod tests {
             hors.is_empty(),
             "appels hors de @system-service, ni permis ni classés : {hors:?}"
         );
+    }
+    /// La ligne `Seccomp:` de /proc/self/status : 0 seulement veut dire « aucun filtre » ; absente ou autre, la sonde
+    /// tranche.
+    #[test]
+    fn sans_filtre_se_lit_dans_status() {
+        assert!(sans_filtre("Name:\tvanguard\nSeccomp:\t0\nSeccomp_filters:\t0\n"));
+        assert!(!sans_filtre("Seccomp:\t2\nSeccomp_filters:\t1\n"));
+        assert!(!sans_filtre("Name:\tvanguard\n"));
+        assert!(!sans_filtre(""));
+    }
+
+    /// Le statut de waitpid : tué par SIGSYS, interdit ; sorti à 0, permis ; le reste n'est pas compté permis.
+    #[test]
+    fn issue_de_l_enfant_selon_son_statut() {
+        assert_eq!(issue_de_l_enfant(libc::SIGSYS), Sonde::Interdit);
+        assert_eq!(issue_de_l_enfant(0), Sonde::Permis);
+        assert!(matches!(issue_de_l_enfant(0x100), Sonde::NonVerifie(_)));
+        assert!(matches!(issue_de_l_enfant(libc::SIGKILL), Sonde::NonVerifie(_)));
+    }
+
+    /// Sans filtre, l'enfant de la sonde sort normalement : le fork, l'attente et la lecture du statut marchent.
+    #[test]
+    fn la_sonde_sans_filtre_permet() {
+        if !sans_filtre(&std::fs::read_to_string("/proc/self/status").unwrap_or_default()) {
+            return crate::essais::saute("cet essai tourne déjà sous un filtre seccomp");
+        }
+        assert_eq!(sonder_dans_un_enfant(), Sonde::Permis);
+        assert_eq!(sonder(), Sonde::Permis);
+    }
+
+    /// Appelé seulement par `la_sonde_voit_le_filtre_charge`, sous un filtre posé par systemd-run.
+    #[test]
+    #[ignore = "lancé sous un filtre par la_sonde_voit_le_filtre_charge"]
+    fn sonde_sous_filtre() {
+        println!("SONDE={:?}", sonder());
+    }
+
+    /// F2 (relecture AV5) : la sonde juge le filtre que le noyau applique. Ce binaire d'essai, relancé par
+    /// systemd-run sous le filtre d'une unité d'avant (@system-service seul), voit « interdit » sans mourir ; sous
+    /// `FILTRE_APPELS`, « permis ».
+    #[test]
+    fn la_sonde_voit_le_filtre_charge() {
+        let Ok(exe) = std::env::current_exe() else {
+            return crate::essais::saute("le binaire d'essai ne se retrouve pas");
+        };
+        let sous = |filtre: &str| {
+            crate::commande::lancer(
+                std::process::Command::new("systemd-run")
+                    .args(["--user", "--wait", "--pipe", "--quiet", "--collect", "-p"])
+                    .arg(format!("SystemCallFilter={filtre}"))
+                    .arg(&exe)
+                    .args(["--exact", "machine::linux::fanotify::tests::sonde_sous_filtre"])
+                    .args(["--ignored", "--nocapture", "--test-threads=1"]),
+                60,
+            )
+            .filter(|r| r.code == Some(0))
+            .map(|r| r.sortie)
+        };
+        let Some(avant) = sous("@system-service") else {
+            return crate::essais::saute(
+                "systemd-run --user indisponible (pas de session systemd) : sonde non relancée sous filtre",
+            );
+        };
+        assert!(avant.contains("SONDE=Interdit"), "{avant}");
+        let Some(apres) = sous(FILTRE_APPELS) else {
+            panic!("systemd-run a marché une fois, pas la seconde");
+        };
+        assert!(apres.contains("SONDE=Permis"), "{apres}");
     }
 }

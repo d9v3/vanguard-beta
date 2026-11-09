@@ -289,6 +289,9 @@ pub(crate) struct Releve {
     pub refuses: Vec<String>,
     /// Pourquoi rien n'est surveillé (noyau trop ancien, fanotify refusé, aucun dossier) ; `None` : il tourne.
     pub sans: Option<String>,
+    /// Arrêté par le filtre d'appels système (ou sans pouvoir le sonder) alors que la personne l'avait voulu : le bilan
+    /// le dit comme un problème, avec « vanguard veilleur on ».
+    pub a_rallumer: bool,
     pub evenements: u64,
     pub examines: u64,
     pub sains: u64,
@@ -708,6 +711,7 @@ impl Surveillance {
             dossiers: self.dossiers.clone(),
             refuses: self.refuses.clone(),
             sans: erreur,
+            a_rallumer: false,
             evenements: lu(&c.evenements),
             examines,
             sains: lu(&c.sains),

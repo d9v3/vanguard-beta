@@ -2294,11 +2294,11 @@ fn servir() -> i32 {
 /// pas). Les sources du moteur sont celles du temps réel (`moteur::sources_du_temps_reel` : le veilleur tient en
 /// 128 Mo, sans la base ClamAV ni la liste complète de MalwareBazaar), chargées dans le fil de l'examinateur.
 fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
-    let par_systemd = std::env::var_os("INVOCATION_ID").is_some();
-    let unite = par_systemd
+    let sonde = super::fanotify::sonder();
+    let unite = (sonde != super::fanotify::Sonde::Permis)
         .then(|| std::fs::read_to_string(fichier_unite()).ok())
         .flatten();
-    let demarre = fanotify_permis(par_systemd, unite.as_deref()).and_then(|()| {
+    let demarre = fanotify_permis(&sonde, unite.as_deref()).and_then(|()| {
         fichiers::Surveillance::demarrer(
             fichiers::a_surveiller(),
             Box::new(crate::protection::moteur::sources_du_temps_reel),
@@ -2314,6 +2314,8 @@ fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
             eprintln!("{raison}");
             etat.fichiers = fichiers::Releve {
                 sans: Some(raison.0),
+                // Coupé par le filtre ou sans sonde : la personne avait dit oui au temps réel, le bilan le redit.
+                a_rallumer: sonde != super::fanotify::Sonde::Permis,
                 ..fichiers::Releve::default()
             };
             None
@@ -2321,24 +2323,41 @@ fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
     }
 }
 
-/// Le temps réel des fichiers peut-il ouvrir fanotify ? Lancé par systemd (`par_systemd`), le veilleur tourne sous
-/// le filtre d'appels système de son unité : seulement si l'unité posée est la nôtre et permet fanotify
-/// (`FILTRE_APPELS`). Une unité d'une version d'avant (@system-service seul) ferait tuer tout le veilleur au premier
-/// appel (SIGSYS), et le temps réel des fichiers n'a pas eu d'accord avec elle : il attend « on », le reste continue.
-/// Lancé autrement (à la main, essai d'allumage), aucun filtre de l'unité ne s'applique.
-fn fanotify_permis(par_systemd: bool, unite: Option<&str>) -> Result<(), fichiers::Refus> {
+/// Le temps réel des fichiers peut-il ouvrir fanotify ? La sonde (`fanotify::sonder`) a essayé dans un enfant, sous le
+/// filtre que le noyau applique vraiment à ce processus : un appel interdit tuerait tout le veilleur (SIGSYS), avec
+/// les lancements, les connexions et la veille anti-rançongiciel. Refusé, le reste continue et le temps réel des
+/// fichiers dit pourquoi. L'unité posée (`unite`, lue seulement après un refus) ne sert qu'à nommer la cause.
+fn fanotify_permis(sonde: &super::fanotify::Sonde, unite: Option<&str>) -> Result<(), fichiers::Refus> {
+    use super::fanotify::Sonde;
     let ligne = format!("SystemCallFilter={}", super::fanotify::FILTRE_APPELS);
-    let permis = unite.is_some_and(|u| notre_unite(u) && u.lines().any(|l| l.trim() == ligne));
-    if !par_systemd || permis {
-        return Ok(());
-    }
-    Err(fichiers::Refus(
-        tr!(
+    let raison = match (sonde, unite) {
+        (Sonde::Permis, _) => return Ok(()),
+        (Sonde::NonVerifie(r), _) => trf!(
+            "fanotify non essayé : la sonde du filtre d'appels système n'a pas pu tourner ({r}) ; « vanguard veilleur on » le relance",
+            "fanotify not tried: the system call filter probe could not run ({r}); “vanguard watcher on” restarts it"
+        ),
+        (Sonde::Interdit, None) => tr!(
+            "un filtre d'appels système interdit fanotify à ce processus, et l'unité du veilleur est absente ou illisible ; « vanguard veilleur on » la pose",
+            "a system call filter forbids fanotify to this process, and the watcher unit is missing or unreadable; “vanguard watcher on” puts it in place"
+        )
+        .to_string(),
+        (Sonde::Interdit, Some(u)) if !notre_unite(u) => tr!(
+            "l'unité posée n'est pas celle de Vanguard et son filtre d'appels système interdit fanotify",
+            "the unit in place is not Vanguard's and its system call filter forbids fanotify"
+        )
+        .to_string(),
+        (Sonde::Interdit, Some(u)) if u.lines().any(|l| l.trim() == ligne) => tr!(
+            "l'unité posée permet fanotify, mais le filtre en vigueur l'interdit (unité pas rechargée, ou un ajout local) ; « vanguard veilleur on » la recharge",
+            "the unit in place allows fanotify, but the filter in force forbids it (unit not reloaded, or a local addition); “vanguard watcher on” reloads it"
+        )
+        .to_string(),
+        (Sonde::Interdit, Some(_)) => tr!(
             "l'unité posée vient d'une version d'avant et ne permet pas fanotify ; « vanguard veilleur on » la remet à jour, un seul accord",
             "the unit in place comes from an earlier version and does not allow fanotify; “vanguard watcher on” updates it, one consent"
         )
         .to_string(),
-    ))
+    };
+    Err(fichiers::Refus(raison))
 }
 
 /// La clé du débit d'une menace du temps réel : le même contenu au même endroit n'est dit qu'une fois en 6 heures.
@@ -2842,11 +2861,15 @@ fn allumer() {
     // Déjà en marche (un veilleur d'avant une mise à jour) : « enable --now » ne le relance pas, et l'ancien
     // programme resterait en mémoire.
     let deja_active = crate::machine::linux::natif::unite_activee(UNITE, true) == Some(true);
-    let dossier_absent = chemin.parent().is_some_and(|d| std::fs::symlink_metadata(d).is_err());
+    let crees = chemin
+        .parent()
+        .map_or(0, |d| niveaux_absents(d, &crate::socle::maison()));
     let ecrit =
         chemin.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(&chemin, &texte).is_ok();
-    if ecrit && dossier_absent {
-        marquer(&crate::socle::dossier_local().join(DOSSIER_UNITES_CREE));
+    if ecrit && crees > 0 {
+        let note = crate::socle::dossier_local().join(DOSSIER_UNITES_CREE);
+        marquer(&note);
+        let _ = std::fs::write(&note, crees.to_string());
     }
     let reussi = ecrit
         && super::dbus::actions::utilisateur(super::dbus::actions::Geste::Recharger, "")
@@ -3005,10 +3028,11 @@ pub(crate) fn retirer_sans_question(chemin: &std::path::Path, arreter_l_etranger
     if a_nous {
         commandes.push(format!("{} {}", tr!("retirer", "remove"), chemin.display()));
         let _ = std::fs::remove_file(chemin);
-        if let Some(d) = chemin.parent()
-            && retirer_dossier_cree(d, &crate::socle::dossier_local().join(DOSSIER_UNITES_CREE))
-        {
-            commandes.push(format!("{} {}", tr!("retirer", "remove"), d.display()));
+        if let Some(d) = chemin.parent() {
+            let note = crate::socle::dossier_local().join(DOSSIER_UNITES_CREE);
+            for retire in retirer_dossier_cree(d, &note, &crate::socle::maison()) {
+                commandes.push(format!("{} {}", tr!("retirer", "remove"), retire.display()));
+            }
         }
     }
     commandes.push("systemctl --user daemon-reload".to_string());
@@ -3050,18 +3074,40 @@ pub(crate) fn retirer_sans_question(chemin: &std::path::Path, arreter_l_etranger
     issue
 }
 
-/// Retire le dossier des unités `dossier` si « on » l'a créé (la note `note`) et qu'il est vide ; rend vrai s'il est
-/// retiré. `remove_dir` ne retire qu'un dossier vide et jamais à travers un lien : rien d'autre ne part. La note part
-/// avec lui, ou quand le dossier n'existe plus ; gardée tant qu'il reste quelque chose dedans (une autre unité).
-fn retirer_dossier_cree(dossier: &std::path::Path, note: &std::path::Path) -> bool {
-    if !note.is_file() {
-        return false;
+/// Au plus trois niveaux créés par « on » : ~/.config/systemd/user, ~/.config/systemd, ~/.config.
+const NIVEAUX_CREES_MAX: usize = 3;
+
+/// Combien de dossiers `create_dir_all(dossier)` va créer : `dossier` et ses parents absents, jamais `racine` (le
+/// dossier personnel) ni au-dessus, au plus `NIVEAUX_CREES_MAX`.
+fn niveaux_absents(dossier: &std::path::Path, racine: &std::path::Path) -> usize {
+    dossier
+        .ancestors()
+        .take_while(|d| *d != racine && d.starts_with(racine) && std::fs::symlink_metadata(d).is_err())
+        .take(NIVEAUX_CREES_MAX)
+        .count()
+}
+
+/// Retire le dossier des unités `dossier` et les parents que « on » a créés avec lui (le nombre noté dans `note`),
+/// chacun seulement s'il est vide ; rend ceux qui sont retirés. `remove_dir` ne retire qu'un dossier vide et jamais
+/// à travers un lien : rien d'autre ne part. On remonte au plus `NIVEAUX_CREES_MAX`, jamais jusqu'à `racine` (le
+/// dossier personnel), et on s'arrête au premier qui reste. La note part quand `dossier` n'existe plus ; gardée tant
+/// qu'il reste quelque chose dedans (une autre unité). Une note vide ou illisible vaut un niveau.
+fn retirer_dossier_cree(dossier: &std::path::Path, note: &std::path::Path, racine: &std::path::Path) -> Vec<PathBuf> {
+    let Ok(texte) = std::fs::read_to_string(note) else {
+        return Vec::new();
+    };
+    let niveaux = texte.trim().parse::<usize>().unwrap_or(1).clamp(1, NIVEAUX_CREES_MAX);
+    let mut retires = Vec::new();
+    for d in dossier.ancestors().take(niveaux) {
+        if d == racine || !d.starts_with(racine) || std::fs::remove_dir(d).is_err() {
+            break;
+        }
+        retires.push(d.to_path_buf());
     }
-    let retire = std::fs::remove_dir(dossier).is_ok();
-    if retire || std::fs::symlink_metadata(dossier).is_err() {
+    if std::fs::symlink_metadata(dossier).is_err() {
         let _ = std::fs::remove_file(note);
     }
-    retire
+    retires
 }
 
 /// Efface la note du choix et l'état du dossier `dossier`, seulement si rien ne reste. Un veilleur encore en marche
@@ -3638,7 +3684,24 @@ fn constat() -> Constat {
         c.verifie &= i.verifie;
         c.probleme = c.probleme.max(i.probleme);
     }
-    c
+    rallumer_si_coupe(c, vivant, etat.as_ref())
+}
+
+/// F3 (relecture AV5) : un veilleur vivant dont le temps réel des fichiers a été coupé par le filtre d'appels système
+/// (une unité d'avant une mise à jour) n'est pas « allumé ✔ » : la personne avait dit oui au temps réel, c'est un
+/// problème, avec son remède. Seulement si rien de plus grave n'a déjà sa correction.
+fn rallumer_si_coupe(c: Constat, vivant: bool, etat: Option<&Etat>) -> Constat {
+    if !vivant || !etat.is_some_and(|e| e.fichiers.a_rallumer) || c.correctif.is_some() {
+        return c;
+    }
+    let probleme = c.probleme.max(Some(Niveau::Moyen));
+    Constat { probleme, ..c }.manuel(
+        tr!(
+            "Rallumer le temps réel des fichiers (l'unité remise à jour, un accord)",
+            "Turn real-time file scanning back on (the unit updated, one consent)"
+        ),
+        &["vanguard veilleur on"],
+    )
 }
 
 /// Le veilleur d'avant une mise à jour tourne encore (processus `pid`) : il voit toujours, mais avec l'ancien
@@ -5630,35 +5693,54 @@ mod tests {
         );
     }
 
-    /// QEMU (AV5) : sous une unité d'une version d'avant (@system-service seul), fanotify tuerait tout le veilleur ;
-    /// le temps réel des fichiers attend donc l'unité qui le permet, et seulement quand systemd l'a lancé.
+    /// QEMU (AV5) et relecture (F2, F5) : fanotify seulement quand la sonde l'a vu permis sous le filtre en vigueur,
+    /// quoi que dise le texte de l'unité ; refusé, la cause nommée est la vraie.
     #[test]
-    fn fanotify_seulement_sous_une_unite_qui_le_permet() {
+    fn fanotify_seulement_quand_la_sonde_le_permet() {
+        use super::super::fanotify::Sonde;
+        let ligne = format!("SystemCallFilter={}", super::super::fanotify::FILTRE_APPELS);
         for anglais in [false, true] {
             let neuve = unite_dans("/x", anglais);
-            assert_eq!(fanotify_permis(true, Some(&neuve)), Ok(()));
-            let ancienne = neuve.replace(
-                &format!("SystemCallFilter={}", super::super::fanotify::FILTRE_APPELS),
-                "SystemCallFilter=@system-service",
-            );
+            let ancienne = neuve.replace(&ligne, "SystemCallFilter=@system-service");
             assert_ne!(ancienne, neuve);
-            let refus = fanotify_permis(true, Some(&ancienne)).unwrap_err();
-            assert!(
-                refus.0.contains(tr!("version d'avant", "earlier version")),
-                "{}",
-                refus.0
-            );
-            // Hors de systemd (à la main, essai d'allumage), aucun filtre de l'unité ne s'applique.
-            assert_eq!(fanotify_permis(false, Some(&ancienne)), Ok(()));
+            // Permis : le texte ne compte pas (lancé à la main, sous un drop-in qui ajoute, etc.).
+            for u in [Some(neuve.as_str()), Some(ancienne.as_str()), None] {
+                assert_eq!(fanotify_permis(&Sonde::Permis, u), Ok(()));
+            }
+            let cause = |u: Option<&str>| fanotify_permis(&Sonde::Interdit, u).unwrap_err().0;
+            assert!(cause(Some(&ancienne)).contains(tr!("version d'avant", "earlier version")));
+            // Le fichier neuf mais le filtre chargé ancien : jamais permis sur la foi du texte.
+            assert!(cause(Some(&neuve)).contains(tr!("pas rechargée", "not reloaded")));
         }
-        // Unité illisible, ou étrangère qui imite la ligne : refusé.
-        assert!(fanotify_permis(true, None).is_err());
-        let etrangere = format!(
-            "[Service]\nSystemCallFilter={}\n",
-            super::super::fanotify::FILTRE_APPELS
-        );
-        assert!(fanotify_permis(true, Some(&etrangere)).is_err());
-        assert_eq!(fanotify_permis(false, None), Ok(()));
+        let cause = |u: Option<&str>| fanotify_permis(&Sonde::Interdit, u).unwrap_err().0;
+        assert!(cause(None).contains(tr!("absente ou illisible", "missing or unreadable")));
+        let etrangere = format!("[Service]\n{ligne}\n");
+        assert!(cause(Some(&etrangere)).contains(tr!("pas celle de Vanguard", "not Vanguard's")));
+        let non = fanotify_permis(&Sonde::NonVerifie("EAGAIN".into()), None)
+            .unwrap_err()
+            .0;
+        assert!(non.contains("EAGAIN"), "{non}");
+    }
+
+    /// F3 (relecture AV5) : après une mise à jour sous l'unité d'avant, le veilleur vit mais le temps réel des fichiers
+    /// est coupé : le bilan ne dit pas « allumé » sans problème, il donne le remède. Un arrêt pour une autre raison
+    /// (noyau, aucun dossier) reste comme avant.
+    #[test]
+    fn fichiers_coupes_par_le_filtre_au_bilan() {
+        let mut e = etat_vivant();
+        e.fichiers = fichiers::Releve {
+            sans: Some("unité d'avant".into()),
+            a_rallumer: true,
+            ..fichiers::Releve::default()
+        };
+        let c = rallumer_si_coupe(juger_bool(true, Some(true), Some(&e), true, Some(true)), true, Some(&e));
+        assert_eq!(c.probleme, Some(Niveau::Moyen), "{}", c.message);
+        let k = c.correctif.expect("remède");
+        assert!(!k.automatique && k.commandes == ["vanguard veilleur on"]);
+        e.fichiers.a_rallumer = false;
+        let autre = juger_bool(true, Some(true), Some(&e), true, Some(true));
+        let probleme = autre.probleme;
+        assert_eq!(rallumer_si_coupe(autre, true, Some(&e)).probleme, probleme);
     }
 
     /// QEMU (AV5) : « off » laissait vide le dossier des unités que « on » avait créé. Seul celui-là part, vide ; un
@@ -5670,25 +5752,61 @@ mod tests {
         let unites = d.join("user");
         // Pas de note : un dossier qui existait avant reste, même vide.
         std::fs::create_dir(&unites).unwrap();
-        assert!(!retirer_dossier_cree(&unites, &note));
+        assert_eq!(retirer_dossier_cree(&unites, &note, &d), Vec::<PathBuf>::new());
         assert!(unites.is_dir());
         // Noté, mais une autre unité dedans : gardé avec sa note.
         std::fs::write(&note, b"").unwrap();
         std::fs::write(unites.join("autre.service"), b"").unwrap();
-        assert!(!retirer_dossier_cree(&unites, &note));
+        assert_eq!(retirer_dossier_cree(&unites, &note, &d), Vec::<PathBuf>::new());
         assert!(unites.join("autre.service").is_file() && note.is_file());
         // Noté et vide : retiré, la note aussi.
         std::fs::remove_file(unites.join("autre.service")).unwrap();
-        assert!(retirer_dossier_cree(&unites, &note));
+        assert_eq!(retirer_dossier_cree(&unites, &note, &d), std::slice::from_ref(&unites));
         assert!(!unites.exists() && !note.exists());
         // Un lien vers un dossier vide : ni le lien ni le dossier ne partent.
         let ailleurs = d.join("ailleurs");
         std::fs::create_dir(&ailleurs).unwrap();
         std::os::unix::fs::symlink(&ailleurs, &unites).unwrap();
         std::fs::write(&note, b"").unwrap();
-        assert!(!retirer_dossier_cree(&unites, &note));
+        assert_eq!(retirer_dossier_cree(&unites, &note, &d), Vec::<PathBuf>::new());
         assert!(ailleurs.is_dir() && std::fs::symlink_metadata(&unites).is_ok());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// F4 (relecture AV5) : sur un compte neuf, « on » crée ~/.config/systemd et ~/.config/systemd/user ; « off »
+    /// retire les deux, vides, et jamais le dossier personnel ni ce qui était là avant.
+    #[test]
+    fn off_retire_aussi_les_parents_crees() {
+        let maison = crate::protection::isoler::dossier_jetable().unwrap();
+        std::fs::create_dir(maison.join(".config")).unwrap();
+        let unites = maison.join(".config/systemd/user");
+        assert_eq!(niveaux_absents(&unites, &maison), 2);
+        // Même absents, la maison et au-dessus ne comptent jamais.
+        assert_eq!(niveaux_absents(&maison.join("a/b"), &maison.join("a")), 1);
+        assert_eq!(niveaux_absents(&maison.join("autre/x"), &maison.join("a")), 0);
+        assert_eq!(niveaux_absents(&maison.join("x/y/z/w"), &maison), NIVEAUX_CREES_MAX);
+        std::fs::create_dir_all(&unites).unwrap();
+        let note = maison.join("note");
+        std::fs::write(&note, "2").unwrap();
+        let retires = retirer_dossier_cree(&unites, &note, &maison);
+        assert_eq!(retires, [unites.clone(), maison.join(".config/systemd")]);
+        assert!(maison.join(".config").is_dir() && !note.exists());
+        // Une note qui ment (99) : au plus trois niveaux, jamais la maison, seulement des dossiers vides.
+        std::fs::create_dir_all(&unites).unwrap();
+        std::fs::write(&note, "99").unwrap();
+        let retires = retirer_dossier_cree(&unites, &note, &maison);
+        assert_eq!(retires.len(), NIVEAUX_CREES_MAX);
+        assert!(maison.is_dir());
+        // Un parent qui contient autre chose reste.
+        std::fs::create_dir_all(&unites).unwrap();
+        std::fs::write(maison.join(".config/systemd/system.conf"), b"").unwrap();
+        std::fs::write(&note, "2").unwrap();
+        assert_eq!(
+            retirer_dossier_cree(&unites, &note, &maison),
+            std::slice::from_ref(&unites)
+        );
+        assert!(maison.join(".config/systemd/system.conf").is_file());
+        let _ = std::fs::remove_dir_all(&maison);
     }
 
     #[test]

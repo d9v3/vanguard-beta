@@ -599,8 +599,9 @@ mod tests {
         ("veilleur-oublier-le-choix", "dossier jetable d'un essai seulement"),
         (
             "veilleur-dossier-unites-cree",
-            "indice seulement : posée, « off » retire ~/.config/systemd/user s'il est vide (remove_dir, jamais à \
-             travers un lien) ; effacée, ce dossier vide reste. Aucune défense n'en dépend",
+            "indice seulement : le nombre de dossiers que « on » a créés ; « off » les retire s'ils sont vides \
+             (remove_dir, jamais à travers un lien, trois au plus, jamais le dossier personnel) ; effacée, ces \
+             dossiers vides restent. Aucune défense n'en dépend",
         ),
         (
             "rancongiciel-voulu",
