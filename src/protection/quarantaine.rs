@@ -345,14 +345,18 @@ fn isoler_dans(
     }
     #[cfg(not(unix))]
     let _ = renomme;
+    // Décidé : le même contenu déjà en quarantaine n'y entre pas deux fois ; le fichier trouvé quitte quand même son
+    // dossier.
+    let lu = crate::protection::empreintes::sha256(&dest).map(|e| crate::protection::empreintes::hex(&e));
+    // Sous Windows, chaque fichier garde sa copie : remis depuis celle d'un autre, il perdrait sa marque du web
+    // (Zone.Identifier), qui fait avertir Windows à son ouverture.
     #[cfg(unix)]
-    std::fs::set_permissions(&dest, std::os::unix::fs::PermissionsExt::from_mode(0o000))?;
-    #[cfg(windows)]
-    {
-        let mut p = std::fs::metadata(&dest)?.permissions();
-        p.set_readonly(true);
-        std::fs::set_permissions(&dest, p)?;
-    }
+    let joint = lu.as_deref().is_some_and(|h| rejoindre_un_jumeau(dossier, &dest, h));
+    #[cfg(not(unix))]
+    let joint = false;
+    // Joint : l'empreinte relue des deux côtés, la même que celle du jumeau au registre ; sinon celle de la preuve.
+    let sha256 = if joint { lu } else { sha256.or(lu) };
+    fermer(&dest)?;
     let mut r = charger(dossier);
     let entree = Entree {
         nom,
@@ -366,6 +370,74 @@ fn isoler_dans(
     r.fichiers.push(entree);
     enregistrer(dossier, &r)?;
     Ok(dest)
+}
+
+/// Fermé : illisible pour tous (Unix), en lecture seule (Windows).
+fn fermer(chemin: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    std::fs::set_permissions(chemin, std::os::unix::fs::PermissionsExt::from_mode(0o000))?;
+    #[cfg(windows)]
+    {
+        let mut p = std::fs::metadata(chemin)?.permissions();
+        p.set_readonly(true);
+        std::fs::set_permissions(chemin, p)?;
+    }
+    Ok(())
+}
+
+/// Un contenu déjà isolé n'y entre pas deux fois : `dest` (le fichier trouvé, déjà déplacé et relu) devient un second
+/// nom du fichier isolé qui a la même empreinte, relue des deux côtés (jamais celle du seul registre). Pas de seconde
+/// copie ; chaque nom garde son origine et se remet ou se supprime à part. `lu` : l'empreinte de `dest`. `false` :
+/// pas de jumeau, ou le lien impossible (le fichier reste une quarantaine ordinaire).
+#[cfg(unix)]
+fn rejoindre_un_jumeau(dossier: &Path, dest: &Path, lu: &str) -> bool {
+    let Some(jumeau) = liste_dans(dossier)
+        .into_iter()
+        .filter(|x| x.sha256.as_deref().is_some_and(|h| h.eq_ignore_ascii_case(lu)))
+        .map(|x| dossier.join(&x.nom))
+        .find(|c| c != dest && contenu_isole(c).is_some_and(|h| h.eq_ignore_ascii_case(lu)))
+    else {
+        return false;
+    };
+    let Some(mut nom) = dest.file_name().map(std::ffi::OsStr::to_os_string) else {
+        return false;
+    };
+    nom.push(".lien");
+    let lien = dest.with_file_name(nom);
+    if std::fs::hard_link(&jumeau, &lien).is_err() {
+        return false;
+    }
+    // Remplacé d'un coup : le nom n'est jamais vide, et seul l'inode du fichier trouvé s'en va.
+    if std::fs::rename(&lien, dest).is_err() {
+        let _ = std::fs::remove_file(&lien);
+        return false;
+    }
+    true
+}
+
+/// L'empreinte d'un fichier isolé, ouvert le temps de la lire puis refermé (illisible sinon).
+#[cfg(unix)]
+fn contenu_isole(chemin: &Path) -> Option<String> {
+    if !std::fs::symlink_metadata(chemin).ok()?.is_file() {
+        return None;
+    }
+    std::fs::set_permissions(chemin, std::os::unix::fs::PermissionsExt::from_mode(0o400)).ok()?;
+    let lu = crate::protection::empreintes::sha256(chemin);
+    let _ = fermer(chemin);
+    lu.map(|e| crate::protection::empreintes::hex(&e))
+}
+
+/// Les autres noms en quarantaine du même contenu que `e` (`rejoindre_un_jumeau`).
+fn jumeaux(e: &Entree, dossier: &Path) -> Vec<PathBuf> {
+    let Some(h) = e.sha256.as_deref() else {
+        return Vec::new();
+    };
+    liste_dans(dossier)
+        .into_iter()
+        .filter(|x| x.nom != e.nom && x.sha256.as_deref().is_some_and(|y| y.eq_ignore_ascii_case(h)))
+        .map(|x| dossier.join(&x.nom))
+        .filter(|c| c.exists())
+        .collect()
 }
 
 /// Le fichier relu juste avant le déplacement est-il celui qui a été examiné, et seul à porter son contenu ? Un fichier
@@ -651,9 +723,28 @@ fn remettre_dans(e: &Entree, dossier: &Path) -> Result<(), Echec> {
     }
     // L'empreinte de ce qui sort vraiment, lue avant : c'est ce contenu-là que la personne reprend.
     let empreinte = crate::protection::empreintes::sha256(&source);
-    std::fs::rename(&source, &origine)
-        .or_else(|_| std::fs::copy(&source, &origine).and_then(|_| std::fs::remove_file(&source)))
-        .map_err(|x| Echec::ecriture(OU, &x))?;
+    // Un contenu isolé sous plusieurs noms (`rejoindre_un_jumeau`) : ce nom-ci sort en copie, les autres restent
+    // fermés en quarantaine.
+    let autres = jumeaux(e, dossier);
+    #[cfg(unix)]
+    let partage = !autres.is_empty()
+        || std::fs::symlink_metadata(&source).is_ok_and(|m| std::os::unix::fs::MetadataExt::nlink(&m) > 1);
+    #[cfg(not(unix))]
+    let partage = !autres.is_empty();
+    let sorti = if partage {
+        std::fs::copy(&source, &origine).and_then(|_| std::fs::remove_file(&source))
+    } else {
+        std::fs::rename(&source, &origine)
+            .or_else(|_| std::fs::copy(&source, &origine).and_then(|_| std::fs::remove_file(&source)))
+    };
+    for autre in &autres {
+        let _ = fermer(autre);
+    }
+    // Resté en quarantaine après un échec : fermé de nouveau, comme avant la tentative.
+    if sorti.is_err() && source.exists() {
+        let _ = fermer(&source);
+    }
+    sorti.map_err(|x| Echec::ecriture(OU, &x))?;
     #[cfg(unix)]
     {
         // Sans mode noté (isolé avant la 0.61) : lecture et écriture pour soi, rien d'exécutable.
@@ -721,7 +812,12 @@ fn supprimer_dans(e: &Entree, dossier: &Path) -> Result<(), Echec> {
         p.set_readonly(false);
         let _ = std::fs::set_permissions(&chemin, p);
     }
-    std::fs::remove_file(&chemin).map_err(|x| Echec::ecriture("quarantaine/supprimer", &x))?;
+    let r = std::fs::remove_file(&chemin);
+    // Le même contenu sous un autre nom (`rejoindre_un_jumeau`) reste fermé.
+    for autre in jumeaux(e, dossier) {
+        let _ = fermer(&autre);
+    }
+    r.map_err(|x| Echec::ecriture("quarantaine/supprimer", &x))?;
     retirer_du_registre(dossier, &e.nom);
     Ok(())
 }
@@ -924,6 +1020,78 @@ mod tests {
         };
         assert!(normale(b"MZ contenu"));
         assert!(!normale(b"MZ autre contenu"));
+        let _ = std::fs::remove_dir_all(&maison);
+    }
+
+    /// Décidé : un contenu déjà en quarantaine n'y entre pas deux fois (un second nom du même fichier isolé, pas de
+    /// seconde copie), mais le fichier trouvé quitte quand même son dossier ; chaque nom se remet à part, avec son
+    /// origine et son mode, et l'autre reste fermé ; un autre contenu reste une copie à part. Sous Windows, chaque
+    /// fichier garde sa copie (sa marque du web), et se remet de même.
+    #[test]
+    fn meme_contenu_isole_une_fois() {
+        let maison = jetable("jumeaux");
+        let q = maison.join("quarantaine");
+        let telecharges = maison.join("Téléchargements");
+        std::fs::create_dir_all(&telecharges).unwrap();
+        let (a, b, autre) = (
+            telecharges.join("a.exe"),
+            telecharges.join("b.exe"),
+            telecharges.join("c.exe"),
+        );
+        std::fs::write(&a, b"MZ jumeau").unwrap();
+        std::fs::write(&b, b"MZ jumeau").unwrap();
+        std::fs::write(&autre, b"MZ autre").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&b, std::os::unix::fs::PermissionsExt::from_mode(0o640)).unwrap();
+        // La preuve de « a » n'avait pas d'empreinte : celle relue est notée, et sert au suivant.
+        let da = isoler_dans(&a, "X", &q, None, None).unwrap();
+        let db = isoler_dans(&b, "X", &q, Some("cd".repeat(32)), None).unwrap();
+        let d_autre = isoler_dans(&autre, "X", &q, None, None).unwrap();
+        assert!(
+            !a.exists() && !b.exists() && !autre.exists(),
+            "chaque fichier trouvé quitte son dossier"
+        );
+        assert!(da != db && d_autre.exists());
+        let liste = liste_dans(&q);
+        assert_eq!(liste.len(), 3);
+        assert_ne!(liste[0].sha256, liste[2].sha256);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            assert_eq!(liste[0].sha256, liste[1].sha256, "l'empreinte relue des deux côtés");
+            let ma = std::fs::metadata(&da).unwrap();
+            assert_eq!(ma.ino(), std::fs::metadata(&db).unwrap().ino(), "pas de seconde copie");
+            assert_ne!(ma.ino(), std::fs::metadata(&d_autre).unwrap().ino());
+            assert_eq!(ma.nlink(), 2);
+            assert_eq!(ma.permissions().mode() & 0o777, 0);
+        }
+        // « b » sort : son origine, son contenu, son mode ; « a » reste en quarantaine, fermé et intact.
+        remettre_dans(&liste[1], &q).unwrap();
+        assert_eq!(std::fs::read(&b).unwrap(), b"MZ jumeau");
+        assert!(da.exists() && !db.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            assert_eq!(std::fs::metadata(&b).unwrap().permissions().mode() & 0o777, 0o640);
+            let ma = std::fs::metadata(&da).unwrap();
+            assert_eq!(ma.permissions().mode() & 0o777, 0, "l'autre nom reste fermé");
+            assert_eq!(ma.nlink(), 1);
+        }
+        #[cfg(unix)]
+        assert_eq!(contenu_isole(&da), liste[0].sha256);
+        // Isolé de nouveau, puis supprimé pour de bon sous ce nom : l'autre ne bouge pas.
+        let db = isoler_dans(&b, "X", &q, None, None).unwrap();
+        let liste = liste_dans(&q);
+        let eb = liste.iter().find(|x| q.join(&x.nom) == db).unwrap();
+        supprimer_dans(eb, &q).unwrap();
+        assert!(da.exists() && !db.exists());
+        #[cfg(unix)]
+        assert_eq!(
+            std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&da).unwrap().permissions()) & 0o777,
+            0
+        );
+        remettre_dans(&liste[0], &q).unwrap();
+        assert_eq!(std::fs::read(&a).unwrap(), b"MZ jumeau");
         let _ = std::fs::remove_dir_all(&maison);
     }
 
