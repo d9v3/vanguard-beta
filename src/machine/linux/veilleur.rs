@@ -2707,6 +2707,15 @@ fn explication() -> &'static str {
     )
 }
 
+/// Décidé : l'allumage dit en une ligne, juste avant la question, que cet accord couvre aussi les fichiers des
+/// dossiers à risque (le temps réel des fichiers), sans second accord.
+fn aussi_les_fichiers() -> &'static str {
+    tr!(
+        "  Il surveille aussi les fichiers des dossiers à risque : un seul accord.",
+        "  It also watches the files of risky folders: one consent for both."
+    )
+}
+
 fn allumer() {
     if root() {
         trp!(
@@ -2767,6 +2776,8 @@ fn allumer() {
         println!("    {GRIS}{}{RESET}", crate::ui::affichable(l));
     }
     crate::protection::temps_reel::dire_si_coupee(crate::protection::temps_reel::Ou::Surveillance);
+    println!();
+    println!("{}", aussi_les_fichiers());
     if !demander(tr!(
         "\n  Allumer le veilleur ? [o/N] : ",
         "\n  Turn the watcher on? [y/N]: "
@@ -3870,6 +3881,29 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    /// Décidé : l'allumage dit en une ligne, dans les deux langues, que le veilleur surveille aussi les fichiers des
+    /// dossiers à risque ; l'explication au-dessus les nomme.
+    #[test]
+    fn l_allumage_dit_les_fichiers() {
+        for (ligne, explique, mot) in [
+            (aussi_les_fichiers(), explication(), "fichiers"),
+            (
+                crate::langue::en_anglais(aussi_les_fichiers),
+                crate::langue::en_anglais(explication),
+                "files",
+            ),
+        ] {
+            assert!(ligne.contains(mot), "{ligne}");
+            assert!(ligne.chars().count() <= crate::ui::LARGEUR, "{ligne}");
+            assert!(!ligne.contains('\n'), "une seule ligne : {ligne}");
+            assert!(
+                explique.contains("~/.local/bin") && explique.contains("~/.config/autostart"),
+                "{explique}"
+            );
+        }
+        assert_ne!(aussi_les_fichiers(), crate::langue::en_anglais(aussi_les_fichiers));
+    }
 
     /// R5 (choix de l'auteur) : l'accord dit qu'aucun serveur n'est gardé et que Vanguard ne se met plus à jour.
     #[test]
