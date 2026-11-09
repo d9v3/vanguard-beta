@@ -162,9 +162,11 @@ which steals the network's Windows passwords; the hourly monitoring flags it too
 - Hourly monitoring: a notification if an unknown device shows up, if a port opens, if the machine's grade drops, if
   the router seems spoofed (shared or changed MAC address: ARP spoofing), or if a program or a disguised file lands
   in Downloads (to check before opening it; with active protection, one whose fingerprint is in MalwareBazaar is
-  quarantined by itself). Its dashboard, a local page opened in the browser:
-  its state, the alerts day by day (kept even when the night's notification is gone), the devices that showed up and
-  the connections to botnet servers. Nothing is sent.
+  quarantined by itself). The dashboard, a local page opened in the browser, light or dark: the monitoring state,
+  the last check and its grade, protection (real-time file scanning, watcher, blocking, quarantine), the alerts of
+  the last 30 days by severity then day by day (kept even when the night's notification is gone), the devices that
+  showed up, the connections to botnet servers, and every menu feature with its place and command. Nothing is sent,
+  and the page holds no script.
 
 **Public Wi-Fi mode** (`vanguard public-wifi`, Network and Internet menu) — to turn on when arriving at a café, a
 hotel or an airport, and off when leaving. The computer no longer accepts any connection from that network (an SSH
@@ -734,6 +736,8 @@ not checked them.
   </tr>
 </table>
 
+![Vanguard's dashboard: monitoring, last check, alerts by severity and protection](assets/captures/tableau-en.png)
+
 <sub>Screenshots retaken at each version, on a copy of the data; the local network's addresses and names are
 masked.</sub>
 
@@ -805,7 +809,7 @@ Each menu entry is also a command.
 | `vanguard hidden-cameras` | hidden cameras on the network (rental, someone else's place) |
 | `vanguard blocklists [--json] [--internet]` | the public Internet address on a blocklist? (after your consent; `--internet` gives it in advance) |
 | `vanguard monitor on\|off` | hourly monitoring |
-| `vanguard dashboard [--no-open]` | monitoring dashboard: a local page opened in the browser; `--no-open` only writes it |
+| `vanguard dashboard [--no-open]` | dashboard: a local page opened in the browser; `--no-open` only writes it |
 | `vanguard public-wifi [on\|off\|portal]` | public Wi-Fi mode (café, hotel, airport): incoming connections closed, sharing and name announcement off, protective DNS, after your consent; `off` puts everything back exactly, `portal` reopens the network's sign-in page |
 | **6 Viruses and spyware** | |
 | `vanguard antivirus [--full] [folder]` | antivirus scan (computer, or a key / a folder) |

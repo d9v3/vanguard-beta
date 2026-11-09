@@ -336,6 +336,18 @@ def haut_du_rapport(page):
     return page[:coupe].replace("<html", '<html data-theme="dark"', 1) + "</main></body></html>"
 
 
+def haut_du_tableau(page):
+    """Haut du tableau de bord : la vue d'ensemble (surveillance, bilan, alertes, protection, graphique). Les alertes en
+    détail, les appareils et la liste des fonctions sont coupés."""
+    # La colonne de gauche fait la hauteur de la fenêtre : ramenée à celle du contenu, le bas vide se rogne. Ajouté
+    # avant de chercher la coupe, qui sinon tomberait trop tôt.
+    page = page.replace("</head>", "<style>.cadre{min-height:0}.cote{height:auto}</style></head>", 1)
+    coupe = page.find("<section id=alertes>")
+    if coupe < 0:
+        coupe = page.find("</main>")
+    return page[:coupe] + "</main></div></body></html>"
+
+
 # --- Images ----------------------------------------------------------------------------------------------------------
 
 def chromium():
@@ -443,12 +455,16 @@ def main():
         preparer_bac(programme, bac)
         exe = bac / "cle/Linux/vanguard"
         # Tout est pris avant d'être masqué : un même réseau inventé pour toutes les images, dans les deux langues.
-        ecrans, rapports = {}, {}
+        ecrans, rapports, tableaux = {}, {}, {}
         for langue in ("fr", "en"):
             suffixe = "" if langue == "fr" else "-en"
             env = environnement(bac, langue)
             complet = lancer(exe, ["bilan", "--html"], env)
             rapports[f"rapport{suffixe}.png"] = (langue, haut_du_rapport((bac / "cle/donnees/rapport.html").read_text()))
+            # Le tableau de bord lit la surveillance de cet ordinateur : il s'écrit à côté d'elle, pas sur la clé.
+            lancer(exe, ["tableau-de-bord", "--sans-ouvrir"], env, delai=60)
+            page = (bac / "donnees/vanguard/tableau.html").read_text()
+            tableaux[f"tableau{suffixe}.png"] = (langue, haut_du_tableau(page))
             machine, reseau = decouper(complet)
             ecrans[f"bilan{suffixe}.png"] = (langue, extrait_machine(machine, langue))
             ecrans[f"reseau{suffixe}.png"] = (langue, reseau)
@@ -456,7 +472,7 @@ def main():
             if connexion:
                 ecrans[f"connexion{suffixe}.png"] = (langue, lancer(exe, ["test-connexion"], env, delai=180))
         masque = conf.Masque([texte(r) for _, rangees in ecrans.values() for r in rangees]
-                        + [page for _, page in rapports.values()])
+                        + [page for _, page in rapports.values()] + [page for _, page in tableaux.values()])
         moi = conf.compte()
         termes = conf.termes()
         noms_vus, _ = conf.appareils(bac / "cle/donnees/appareils.json")
@@ -467,18 +483,21 @@ def main():
             noms[langue] = dict(sorted(tous.items(), key=lambda kv: -len(kv[0])))
         images = {nom: anonymiser(rangees, noms[langue], masque) for nom, (langue, rangees) in ecrans.items()}
         pages = {nom: anonymiser_page(page, noms[langue], masque) for nom, (langue, page) in rapports.items()}
+        larges = {nom: anonymiser_page(page, noms[langue], masque) for nom, (langue, page) in tableaux.items()}
         compte = [conf.Terme(f"{moi}@", "compte", rf"(?<![\w.-]){re.escape(moi)}@")]
         if len(moi) >= 4:
             compte.append(conf.Terme(moi, "compte", conf.motif_texte(moi)))
         detecteur = conf.Detecteur(termes + compte + masque.termes())
         for nom, rangees in images.items():
             verifier([texte(r) for r in rangees], detecteur, nom)
-        for nom, page in pages.items():
+        for nom, page in (pages | larges).items():
             verifier([re.sub(r"<[^>]+>", " ", page)], detecteur, nom)
         for nom, rangees in images.items():
             capture_terminal(rangees, DOSSIER / nom, bac)
         for nom, page in pages.items():
             photographier(page, DOSSIER / nom, 900, 1400, bac, rogner=True)
+        for nom, page in larges.items():
+            photographier(page, DOSSIER / nom, 1280, 1300, bac, rogner=True)
         capture_partage(bac)
     (DOSSIER / "VERSION").write_text(version + "\n")
     print(f"Captures de la version {version} : {DOSSIER}/")

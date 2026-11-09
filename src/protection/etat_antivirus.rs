@@ -164,12 +164,12 @@ fn moteur() -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn temps_reel() -> String {
+pub(crate) fn temps_reel() -> String {
     crate::machine::linux::veilleur::phrase_des_fichiers()
 }
 
 #[cfg(windows)]
-fn temps_reel() -> String {
+pub(crate) fn temps_reel() -> String {
     tr!(
         "Temps réel des fichiers : celui de Microsoft Defender. Celui de Vanguard n'existe pas encore sous Windows.",
         "Real-time file scanning: Microsoft Defender's. Vanguard's does not exist on Windows yet."

@@ -124,7 +124,8 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
        5.6 Adresse publique sur liste noire ? (Spamhaus, SpamCop, DroneBL, PSBL, après accord ; vanguard listes-noires)
        5.7 Surveillance toutes les heures (appareil inconnu, problème sur cet ordinateur, usurpation du routeur,
          empoisonneur de noms, programme arrivé dans Téléchargements)
-       5.8 Tableau de bord de la surveillance : alertes jour par jour, nouveaux appareils (page locale)
+       5.8 Tableau de bord (page locale, clair ou sombre) : dernier bilan, protection, alertes jour par jour,
+         nouveaux appareils, toutes les fonctions du menu
        5.9 Mode Wi-Fi public (café, hôtel, aéroport) : entrées fermées, partage et annonce du nom coupés, DNS
          protecteur, après accord ; tout se remet exactement en partant (vanguard wifi-public)
   6  Virus et logiciels espions ›

@@ -169,9 +169,11 @@ la surveillance horaire le signale aussi.
   la machine baisse, si le routeur semble usurpé (adresse MAC partagée ou changée : usurpation ARP), ou si un
   programme ou un fichier déguisé arrive dans Téléchargements (à vérifier avant de l'ouvrir ; avec la protection
   active, celui dont l'empreinte est dans MalwareBazaar est mis en quarantaine tout seul).
-  Son tableau de bord, une page locale ouverte dans le navigateur : son état, les alertes jour par jour (gardées
-  même quand la notification de la nuit a disparu), les appareils apparus et les connexions vers des serveurs de
-  botnets. Rien n'est envoyé.
+  Le tableau de bord, une page locale ouverte dans le navigateur, claire ou sombre : l'état de la surveillance, le
+  dernier bilan et sa note, la protection (temps réel des fichiers, veilleur, blocage, quarantaine), les alertes des
+  30 derniers jours par gravité puis jour par jour (gardées même quand la notification de la nuit a disparu), les
+  appareils apparus, les connexions vers des serveurs de botnets, et toutes les fonctions du menu avec leur place et
+  leur commande. Rien n'est envoyé, et la page ne contient aucun script.
 
 **Mode Wi-Fi public** (`vanguard wifi-public`, menu Réseau et Internet) — à allumer en arrivant dans un café, un hôtel
 ou un aéroport, à éteindre en partant. L'ordinateur n'accepte plus aucune connexion venue de ce réseau (une session
@@ -777,6 +779,8 @@ vérifiées.
   </tr>
 </table>
 
+![Tableau de bord de Vanguard : surveillance, dernier bilan, alertes par gravité et protection](assets/captures/tableau.png)
+
 <sub>Captures refaites à chaque version, sur une copie des données ; les adresses et les noms du réseau local y sont
 masqués.</sub>
 
@@ -852,7 +856,7 @@ Chaque entrée du menu existe aussi en commande.
 | `vanguard cameras-cachees` | caméras cachées sur le réseau (location, chez quelqu'un) |
 | `vanguard listes-noires [--json] [--internet]` | l'adresse Internet publique sur liste noire ? (après accord ; `--internet` le donne d'avance) |
 | `vanguard surveillance on\|off` | surveillance horaire |
-| `vanguard tableau-de-bord [--sans-ouvrir]` | tableau de bord de la surveillance : page locale ouverte dans le navigateur ; `--sans-ouvrir` l'écrit seulement |
+| `vanguard tableau-de-bord [--sans-ouvrir]` | tableau de bord : page locale ouverte dans le navigateur ; `--sans-ouvrir` l'écrit seulement |
 | `vanguard wifi-public [on\|off\|portail]` | mode Wi-Fi public (café, hôtel, aéroport) : entrées fermées, partage et annonce du nom coupés, DNS protecteur, après accord ; `off` remet tout exactement, `portail` rouvre la page de connexion du réseau |
 | **6 Virus et logiciels espions** | |
 | `vanguard antivirus [--complet] [dossier]` | analyse antivirus (ordinateur, ou une clé / un dossier) |

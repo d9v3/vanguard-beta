@@ -120,7 +120,8 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
        5.6 Public address on a blocklist? (Spamhaus, SpamCop, DroneBL, PSBL, after your consent; vanguard blocklists)
        5.7 Hourly monitoring (unknown device, problem on this computer, router impersonation, name poisoner,
          program landing in Downloads)
-       5.8 Monitoring dashboard: alerts day by day, new devices (local page)
+       5.8 Dashboard (local page, light or dark): last check, protection, alerts day by day, new devices, every
+         menu feature
        5.9 Public Wi-Fi mode (café, hotel, airport): incoming connections closed, sharing and name announcement
          off, protective DNS, after your consent; everything put back exactly when you leave (vanguard public-wifi)
   6  Viruses and spyware ›

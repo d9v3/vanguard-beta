@@ -166,8 +166,8 @@ pub const PROGRAMMES: &[Programme] = &[
             traduite(
                 "vanguard tableau-de-bord",
                 "vanguard dashboard",
-                "Le tableau de bord de la surveillance, dans le navigateur (page locale).",
-                "The monitoring dashboard, in the browser (local page).",
+                "Le tableau de bord, dans le navigateur (page locale) : bilan, protection, alertes, fonctions.",
+                "The dashboard, in the browser (local page): check, protection, alerts, features.",
                 false,
             ),
             traduite(

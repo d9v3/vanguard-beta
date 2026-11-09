@@ -224,8 +224,8 @@ enum Commande {
         #[arg(value_parser = interrupteur, value_name = "on|off")]
         etat: String,
     },
-    /// Tableau de bord de la surveillance dans le navigateur : son état, les alertes jour par jour, les nouveaux
-    /// appareils et les connexions suspectes. Page locale, rien n'est envoyé.
+    /// Tableau de bord dans le navigateur : la surveillance, le dernier bilan, la protection, les alertes, les nouveaux
+    /// appareils, les connexions suspectes et toutes les fonctions du menu. Page locale, rien n'est envoyé.
     #[command(name = "tableau-de-bord", visible_alias = "dashboard")]
     Tableau {
         /// Écrire la page sans l'ouvrir (sans affichage graphique, par SSH).
@@ -1357,6 +1357,66 @@ fn lignes_d_etat(bilan: String, connexion: Option<String>, cle: String, avis: Op
     }
 }
 
+/// Les fonctions du menu, rangées comme lui, pour le tableau de bord : chaque outil proposé ici avec sa place, son
+/// titre, sa précision et la commande qui fait la même chose. Une commande déjà dite à la ligne d'avant (les variantes
+/// d'un écran à choix ouvrent le même écran) ne se répète pas.
+fn fonctions_du_menu() -> Vec<reseau::tableau::Rubrique> {
+    use reseau::tableau::{Fonction, Rubrique};
+    let clap = Args::command();
+    let rubrique = |titre: String, resume: &str, outils: Vec<(String, Action)>| {
+        let mut derniere = None;
+        let fonctions = outils
+            .into_iter()
+            .map(|(place, a)| {
+                let (titre, precision) = a.libelle();
+                let nom = a.outil().commande;
+                let commande = (!nom.is_empty())
+                    .then(|| clap.find_subcommand(nom))
+                    .flatten()
+                    .map(|c| format!("vanguard {}", nom_de_commande(c)));
+                let repetee = commande.is_some() && commande == derniere;
+                derniere.clone_from(&commande);
+                Fonction {
+                    place,
+                    titre: titre.to_string(),
+                    precision: precision.to_string(),
+                    commande: if repetee { None } else { commande },
+                }
+            })
+            .collect();
+        Rubrique {
+            titre,
+            resume: resume.to_string(),
+            fonctions,
+        }
+    };
+    let principal = [Action::Complet, Action::Corriger, Action::Rapport]
+        .into_iter()
+        .zip(1u32..)
+        .map(|(a, i)| (i.to_string(), a))
+        .collect();
+    let mut rubriques = vec![rubrique(
+        tr!("1 à 3 · Menu principal", "1 to 3 · Main menu").to_string(),
+        tr!("le bilan et ses suites", "the check and what follows"),
+        principal,
+    )];
+    let places = places();
+    for (i, groupe) in GROUPES.iter().enumerate() {
+        let cle = i.saturating_add(4).to_string();
+        let prefixe = format!("{cle}.");
+        // Le guide et le dépannage s'ouvrent directement, sur leur premier outil : sa place est celle du groupe.
+        let mut outils: Vec<(String, Action)> = groupe
+            .direct()
+            .then(|| groupe.actions().first().map(|a| (cle.clone(), *a)))
+            .flatten()
+            .into_iter()
+            .collect();
+        outils.extend(places.iter().filter(|(p, _)| p.starts_with(&prefixe)).cloned());
+        rubriques.push(rubrique(format!("{cle} · {}", groupe.titre()), groupe.resume(), outils));
+    }
+    rubriques
+}
+
 /// La place d'un outil au menu (« 13.3 » : groupe 13, 3e outil proposé ici), comme la recherche la tape.
 fn touche_de(action: Action) -> Option<String> {
     places()
@@ -2165,8 +2225,8 @@ const OUTILS: &[Outil] = &[
         titre: ["Surveillance toutes les heures", "Hourly monitoring"], precision: ["", ""],
         mots: "monitor surveiller notification" },
     Outil { action: Action::Tableau, commande: "tableau-de-bord", groupe: Some(Groupe::Reseau), lettre: "",
-        titre: ["Tableau de bord de la surveillance", "Monitoring dashboard"],
-        precision: ["alertes, nouveaux appareils", "alerts, new devices"],
+        titre: ["Tableau de bord", "Dashboard"],
+        precision: ["bilan, alertes, appareils, menu", "check, alerts, devices, menu"],
         mots: "tableau dashboard historique history alertes alerts nouveaux new appareils devices botnet \
                connexions suspectes suspicious connections" },
     Outil { action: Action::WifiPublic, commande: "wifi-public", groupe: Some(Groupe::Reseau), lettre: "",
@@ -2945,7 +3005,7 @@ async fn executer_outil(s: &mut Session, action: Action) {
             nommer(&qui, &surnom);
         }
         Action::Surveillance => reseau::surveillance::activer(!reseau::surveillance::active()),
-        Action::Tableau => reseau::tableau::ouvrir(false),
+        Action::Tableau => reseau::tableau::ouvrir(false, fonctions_du_menu()),
         Action::Veilleur => veilleur(None, None, false),
         Action::Connexion => reseau::connexion::tester().await,
         Action::ListesNoires => reseau::listes_noires::verifier(),
@@ -3169,8 +3229,8 @@ const AIDES_EN: &[(&str, &str)] = &[
     ("antivirus", "Malware scan: the Vanguard engine (fingerprints, YARA, installed ClamAV database, heuristics), \
                    with clamscan as a second opinion on Linux if installed, or Microsoft Defender first on Windows"),
     ("surveillance", "Turn hourly network monitoring on or off (notification for unknown devices)"),
-    ("tableau-de-bord", "Monitoring dashboard in the browser: its state, the alerts day by day, the new devices and the \
-                 suspicious connections. Local page, nothing is sent"),
+    ("tableau-de-bord", "Dashboard in the browser: monitoring, the last check, protection, the alerts, the new devices, \
+                 the suspicious connections and every menu feature. Local page, nothing is sent"),
     ("dernieres-failles", "Latest exploited flaws: those CISA added to its catalog (known real attacks) in the last \
                             days, newest first; on Arch, those affecting a package on this computer first"),
     ("sites-dangereux", "Dangerous sites blocked by the hosts file: URLhaus ones and ThreatFox command servers \
@@ -3919,7 +3979,7 @@ async fn main() {
                 )
             ),
         },
-        Some(Commande::Tableau { sans_ouvrir }) => reseau::tableau::ouvrir(sans_ouvrir),
+        Some(Commande::Tableau { sans_ouvrir }) => reseau::tableau::ouvrir(sans_ouvrir, fonctions_du_menu()),
         Some(Commande::Veilleur {
             etat,
             sous_etat,
@@ -4263,6 +4323,36 @@ async fn main() {
 #[cfg(test)]
 mod tests_menu {
     use super::*;
+
+    /// Le tableau de bord liste toutes les places du menu, chacune une fois, dans l'ordre de l'écran, et chaque
+    /// commande citée existe ; le guide et le dépannage, ouverts directement, y ont la place de leur groupe.
+    #[test]
+    fn le_tableau_liste_tout_le_menu() {
+        let rubriques = fonctions_du_menu();
+        assert_eq!(rubriques.len(), GROUPES.len() + 1);
+        let listees: Vec<&str> = rubriques
+            .iter()
+            .flat_map(|r| r.fonctions.iter().map(|f| f.place.as_str()))
+            .collect();
+        for (place, _) in places() {
+            assert_eq!(listees.iter().filter(|p| **p == place).count(), 1, "{place}");
+        }
+        for attendue in ["1", "2", "3", "10", "11"] {
+            assert!(listees.contains(&attendue), "{attendue}");
+        }
+        assert_eq!(listees.len(), places().len() + 5);
+        let clap = Args::command();
+        for f in rubriques.iter().flat_map(|r| &r.fonctions) {
+            if let Some(c) = &f.commande {
+                let nom = c.strip_prefix("vanguard ").unwrap();
+                assert!(
+                    clap.get_subcommands()
+                        .any(|s| s.get_name() == nom || s.get_all_aliases().any(|a| a == nom)),
+                    "{c}"
+                );
+            }
+        }
+    }
 
     /// Revenir dans un écran d'outils remet la surbrillance sur l'outil choisi la dernière fois, retrouvé par l'outil
     /// même si son numéro a changé ; un autre écran, ou un outil disparu, repart à la ligne 1.

@@ -108,8 +108,8 @@ impl Action {
                 "Scans the network every hour and alerts you if an unknown device appears or a program talks to a botnet. The line turns it on or off."
             ),
             Action::Tableau => tr!(
-                "Écrit une page sur cet ordinateur et l'ouvre dans le navigateur : l'historique de la surveillance horaire. Rien n'est envoyé.",
-                "Writes a page on this computer and opens it in the browser: the history of hourly monitoring. Nothing is sent."
+                "Écrit une page sur cet ordinateur et l'ouvre dans le navigateur : dernier bilan, protection, alertes de la surveillance, appareils et toutes les fonctions du menu. Rien n'est envoyé.",
+                "Writes a page on this computer and opens it in the browser: last check, protection, monitoring alerts, devices and every menu feature. Nothing is sent."
             ),
             Action::WifiPublic => tr!(
                 "Ferme les entrées de l'ordinateur, coupe le partage et pose un DNS protecteur. Chaque changement est montré ; l'extinction remet tout.",
