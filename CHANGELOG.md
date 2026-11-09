@@ -28,6 +28,11 @@ recompilée au besoin.
   lancé ni changé ; `--detail` compte ce que la base ClamAV écarte (environ 10 s).
 - **Quarantaine plus sûre.** Elle n'isole que le fichier examiné, jamais un lien dur vers un autre ; un contenu déjà
   en quarantaine n'y entre pas deux fois, et un contenu qu'on en a sorti n'y retourne pas tout seul.
+- **Tableau de bord refait** (5.8, `vanguard tableau-de-bord`). Une vue d'ensemble lime sur noir, ou claire d'un
+  clic, toujours sans script ni requête : la surveillance du réseau, le dernier bilan (note, réseau, problèmes,
+  historique chaîné), les alertes des 30 derniers jours par gravité (anneau et graphique), la protection (veilleur,
+  temps réel, quarantaine) et les nouveaux appareils. Toutes les fonctions du menu du terminal y sont reprises, avec
+  leur place et leur commande, qu'un clic sélectionne pour la copier.
 - **Coulisses** (Paramètres, éteintes par défaut, `vanguard parametres coulisses oui|non|voir`) : chaque commande
   lancée par Vanguard montrée en une ligne grise (programme, arguments abrégés, secrets cachés, durée, issue) ; les 200
   dernières restent en mémoire seulement, jamais sur le disque ni dans le journal.

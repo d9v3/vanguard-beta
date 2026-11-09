@@ -27,6 +27,11 @@ repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
   run or changed; `--detail` counts what the ClamAV database skips (about 10 s).
 - **Safer quarantine.** It isolates only the file scanned, never a hard link to another one; content already in
   quarantine does not go in twice, and content taken out of it does not go back by itself.
+- **Redesigned dashboard** (5.8, `vanguard dashboard`). An overview in lime on black, or light with one click, still
+  with no script and no request: network monitoring, the last check (grade, network, problems, chained history),
+  alerts of the last 30 days by severity (ring and chart), protection (watcher, real time, quarantine) and new
+  devices. Every feature of the terminal menu is listed, with its place and its command, which one click selects for
+  copying.
 - **Backstage** (Settings, off by default, `vanguard settings backstage yes|no|show`): each command run by Vanguard
   shown as one grey line (program, shortened arguments, secrets hidden, duration, outcome); the last 200 stay in memory
   only, never on disk or in the log.
