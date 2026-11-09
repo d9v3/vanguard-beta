@@ -87,7 +87,10 @@ const REESSAI_ABANDON: Duration = Duration::from_mins(2);
 /// horaire.
 const FENETRE_MMAP: Duration = Duration::from_secs(60);
 /// Un fichier mis en file par une relecture n'y est pas remis, tel quel, pendant ce temps : son attente en file puis
-/// `FENETRE_MMAP` après son examen ; au-delà, la mémoire des examens décide.
+/// `FENETRE_MMAP` après son examen ; au-delà, la mémoire des examens décide. Compromis dit : une écriture par mmap
+/// après l'examen n'est plus reprise par une demande ordinaire (un fichier parti, une fin de pause) ; restent une
+/// perte (qui vide cette mémoire), la fermeture de la dernière référence (événement direct, ou nom perdu relu sans
+/// la consulter) et la passe horaire.
 const MEMOIRE_MIS_EN_FILE: Duration = Duration::from_mins(2);
 /// Les noms perdus (file pleine) retenus par dossier, les plus anciens et les plus récents moitié-moitié ; au-delà,
 /// ceux du milieu sont oubliés et tout le dossier est relu. Une seule inondation, avant ou après une charge, ne
@@ -959,17 +962,27 @@ impl Marque {
         self.mis_en_file.lock().unwrap_or_else(PoisonError::into_inner).clear();
     }
 
-    /// Note des fichiers mis en file par une relecture, tels qu'ils étaient listés ; au-delà de `LISTE_MAX`, la
+    /// Note des fichiers mis en file par une relecture, tels qu'ils étaient listés ; au-delà de `MEMOIRE_MAX`, la
     /// mémoire repart de zéro (un oubli ne coûte qu'un réexamen).
     fn noter_mis_en_file(&self, mis: &[&Candidat]) {
         let mut x = self.mis_en_file.lock().unwrap_or_else(PoisonError::into_inner);
-        if x.len().saturating_add(mis.len()) > LISTE_MAX {
+        // Les notes périmées partent d'abord : sans cela, un dossier relu souvent en garderait jusqu'au plafond.
+        x.retain(|_, (_, quand)| quand.elapsed() < MEMOIRE_MIS_EN_FILE);
+        if x.len().saturating_add(mis.len()) > MEMOIRE_MAX {
             x.clear();
         }
         let maintenant = Instant::now();
         for c in mis {
             x.insert(c.c.nom.clone(), ((c.ino, c.c.s, c.c.ns), maintenant));
         }
+    }
+
+    /// Un fichier mis en file mais pas lu (ouverture refusée) : pas sauté par la prochaine relecture.
+    fn oublier_un_mis_en_file(&self, nom: &[u8]) {
+        self.mis_en_file
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(nom);
     }
 
     /// Ce fichier est-il déjà en file (ou examiné) par une relecture, tel qu'il est ?
@@ -1914,9 +1927,10 @@ fn relire_a_partir(
         }
         par_le_haut = !par_le_haut;
     }
+    // Noté avant de rendre la file : un fichier déjà prêt ne peut pas être examiné (et sa note oubliée) avant.
+    m.noter_mis_en_file(&mis);
     drop(a);
     attente.1.notify_all();
-    m.noter_mis_en_file(&mis);
     if complet {
         return (Relu::Fini, None, None);
     }
@@ -2187,13 +2201,18 @@ fn examiner_un(
                 }
                 // Un lien (RESOLVE_NO_SYMLINKS, O_NOFOLLOW) : rien à lire ici, jamais suivi.
                 Some(libc::ELOOP | libc::EXDEV) => plus(&c.ecartes),
-                _ => plus(&c.illisibles),
+                _ => {
+                    plus(&c.illisibles);
+                    // Un échec passager (trop de descripteurs, interruption) : la prochaine relecture le reprend.
+                    m.oublier_un_mis_en_file(nom);
+                }
             }
             return None;
         }
     };
     let Ok(meta) = f.metadata() else {
         plus(&c.illisibles);
+        m.oublier_un_mis_en_file(nom);
         return None;
     };
     if !meta.is_file() {
@@ -2768,6 +2787,22 @@ mod tests {
             *quand = vieux;
         }
         let meta = std::fs::symlink_metadata(d.join("f00")).unwrap();
+        assert!(!m.deja_mis_en_file(b"f00", &meta));
+        // Les notes périmées partent à la notation suivante : la mémoire ne grossit pas jusqu'au plafond.
+        m.noter_mis_en_file(&[]);
+        assert!(m.mis_en_file.lock().unwrap().is_empty());
+        // Une ouverture refusée : le fichier n'est pas sauté par la prochaine relecture.
+        let f00 = Candidat {
+            c: Curseur {
+                s: meta.ctime(),
+                ns: meta.ctime_nsec(),
+                nom: b"f00".to_vec(),
+            },
+            ino: meta.ino(),
+        };
+        m.noter_mis_en_file(&[&f00]);
+        assert!(m.deja_mis_en_file(b"f00", &meta));
+        m.oublier_un_mis_en_file(b"f00");
         assert!(!m.deja_mis_en_file(b"f00", &meta));
         let _ = std::fs::remove_dir_all(&d);
     }
