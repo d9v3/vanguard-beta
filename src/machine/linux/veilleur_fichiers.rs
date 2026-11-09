@@ -77,8 +77,12 @@ const PASSE_LENTE: u64 = 16;
 /// Un dossier trop grand pour être listé, avec une perte : réessayé ce nombre de fois (une par minute), puis
 /// abandonné et dit.
 const ESSAIS_TROP_GRAND: u32 = 3;
+/// Une perte abandonnée (dossier trop grand) est retentée à ce rythme : le dossier a pu redevenir listable.
+const REESSAI_ABANDON: Duration = Duration::from_hours(1);
 /// Un fichier examiné il y a moins que ça n'est pas sauté par une relecture : une écriture par projection partagée
-/// (mmap) peut changer le contenu sans changer le ctime jusqu'à la prochaine écriture sur disque (~30 s).
+/// (mmap) change le contenu sans changer le ctime ; seule l'écriture suivante le change. La fenêtre ne couvre que
+/// les relectures proches de l'examen ; au-delà, le filet est la fermeture de la dernière référence et la passe
+/// horaire.
 const FENETRE_MMAP: Duration = Duration::from_secs(60);
 /// Les noms perdus (file pleine) retenus par dossier ; au-delà, tout le dossier est relu.
 const NOMS_PERDUS_MAX: usize = 4096;
@@ -204,6 +208,8 @@ struct Entree {
     /// Depuis quand (secondes depuis 1970) ce fichier attend d'être examiné : l'événement, ou le ctime d'un fichier
     /// repris par une relecture. Tant qu'il est en file, le temps réel n'est pas à jour au-delà.
     depuis: i64,
+    /// Venu d'un événement direct (pas d'une relecture) : compte pour la famine (voir `suivre_famine`).
+    direct: bool,
 }
 
 /// La file bornée des fichiers à examiner, un par (dossier, nom).
@@ -234,9 +240,19 @@ impl Attente {
 
     /// `ajouter`, avec le moment d'où le fichier attend (`Entree::depuis`).
     fn ajouter_depuis(&mut self, dossier: usize, nom: &[u8], quand: Instant, depuis: i64) -> Ajout {
+        self.ajouter_entree(dossier, nom, quand, depuis, false)
+    }
+
+    /// Un ajout venu d'un événement direct.
+    fn ajouter_direct(&mut self, dossier: usize, nom: &[u8], quand: Instant, depuis: i64) -> Ajout {
+        self.ajouter_entree(dossier, nom, quand, depuis, true)
+    }
+
+    fn ajouter_entree(&mut self, dossier: usize, nom: &[u8], quand: Instant, depuis: i64, direct: bool) -> Ajout {
         if let Some(e) = self.file.iter_mut().find(|e| e.dossier == dossier && e.nom == nom) {
             e.dernier = e.dernier.max(quand);
             e.depuis = e.depuis.min(depuis);
+            e.direct |= direct;
             return Ajout::Regroupe;
         }
         if self.file.len() >= self.max {
@@ -248,6 +264,7 @@ impl Attente {
             premier: quand,
             dernier: quand,
             depuis,
+            direct,
         });
         Ajout::Nouveau
     }
@@ -276,9 +293,15 @@ impl Attente {
         self.file.iter().map(|e| e.depuis).min()
     }
 
-    /// Vide la file ; rend chaque dossier et le moment d'origine de ce qui y attendait.
-    fn vider(&mut self) -> Vec<(usize, i64)> {
-        self.file.drain(..).map(|e| (e.dossier, e.depuis)).collect()
+    /// Vide la file ; rend chaque dossier et nom qui y attendait.
+    fn vider(&mut self) -> Vec<(usize, Vec<u8>)> {
+        self.file.drain(..).map(|e| (e.dossier, e.nom)).collect()
+    }
+
+    /// Les événements directs en file tiennent-ils une bonne part de la réserve ? Sinon, une relecture lente ne
+    /// l'est pas à cause du temps réel, et n'a pas à lui prendre ses places.
+    fn direct_presse(&self) -> bool {
+        self.file.iter().filter(|e| e.direct).count() >= RESERVE_DIRECT / 2
     }
 }
 
@@ -570,8 +593,8 @@ impl Releve {
         if !self.trop_grands.is_empty() {
             t.push(' ');
             t.push_str(&trf!(
-                "Trop d'entrées pour être relu(s) : {} ; ce qui y est arrivé sans être vu ne l'est pas, « vanguard audit » fait un bilan complet.",
-                "Too many entries to be read again: {}; what arrived there unseen is not scanned, “vanguard audit” runs a full check.",
+                "Trop d'entrées pour être relu(s) : {} ; ce qui y est arrivé pendant un arrêt ou sans être vu n'est pas relu, « vanguard audit » fait un bilan complet.",
+                "Too many entries to be read again: {}; what arrived there while stopped or unseen is not read again, “vanguard audit” runs a full check.",
                 self.trop_grands.join(", ")
             ));
         }
@@ -654,6 +677,8 @@ struct Marque {
     /// Une perte abandonnée parce que le dossier est trop grand : ce qui y est arrivé n'est pas repris. Effacé par
     /// une relecture complète réussie.
     perte_abandonnee: AtomicBool,
+    /// Le moment du dernier abandon d'une perte : retentée après `REESSAI_ABANDON` (`None` : tout de suite).
+    abandon_a: Mutex<Option<Instant>>,
 }
 
 /// L'état de la relecture d'un dossier.
@@ -720,6 +745,7 @@ impl Marque {
             trop_grand: AtomicBool::new(false),
             essais_trop_grand: AtomicU32::new(0),
             perte_abandonnee: AtomicBool::new(false),
+            abandon_a: Mutex::new(None),
         }
     }
 
@@ -740,8 +766,40 @@ impl Marque {
         // Comptée une fois tant qu'elle attend : une panne qui dure ne la gonfle pas.
         if !r.perte_sans_nom {
             r.perte_sans_nom = true;
+            self.essais_trop_grand.store(0, Ordering::Relaxed);
             plus(&self.a_reprendre);
         }
+    }
+
+    /// Un nom retiré de la file sans examen (pause) : repris tel quel, sans lister le dossier ; pas une perte, tant
+    /// que la liste des noms a de la place.
+    fn reprendre_nom(&self, nom: &[u8]) {
+        let mut r = self.relecture.lock().unwrap_or_else(PoisonError::into_inner);
+        if r.noms.contains(nom) {
+            return;
+        }
+        if r.noms.len() < NOMS_PERDUS_MAX {
+            r.noms.insert(nom.to_vec());
+            return;
+        }
+        drop(r);
+        self.nom_perdu(nom);
+    }
+
+    /// Une perte abandonnée depuis `REESSAI_ABANDON` : redemandée (le dossier a pu redevenir listable). Vrai : elle
+    /// l'a été.
+    fn relancer_abandon(&self, maintenant: Instant) -> bool {
+        if !self.perte_abandonnee.load(Ordering::Relaxed) || self.en_relecture() {
+            return false;
+        }
+        let mut quand = self.abandon_a.lock().unwrap_or_else(PoisonError::into_inner);
+        if quand.is_some_and(|a| maintenant.saturating_duration_since(a) < REESSAI_ABANDON) {
+            return false;
+        }
+        *quand = None;
+        drop(quand);
+        self.perte();
+        true
     }
 
     /// Un fichier sans place dans la file : son nom est gardé et relu tel quel ; trop de noms, tout le dossier.
@@ -756,6 +814,7 @@ impl Marque {
                 return;
             }
             r.perte_sans_nom = true;
+            self.essais_trop_grand.store(0, Ordering::Relaxed);
         } else {
             r.noms.insert(nom.to_vec());
         }
@@ -1002,8 +1061,18 @@ impl Surveillance {
         })
     }
 
+    /// Les pertes abandonnées d'avant un redémarrage (dossiers trop grands, gardés dans l'état) : toujours dites,
+    /// et retentées dès que le dossier n'est plus en relecture ; sinon l'alerte s'oublierait à chaque redémarrage.
+    pub(crate) fn reprendre_abandons(&self, noms: &[String]) {
+        for m in self.marques.iter().filter(|m| noms.contains(&m.nom)) {
+            m.perte_abandonnee.store(true, Ordering::Relaxed);
+            *m.abandon_a.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        }
+    }
+
     /// Met en pause (coupure du temps réel) ou reprend : en pause, ce qui arrive est compté non vérifié, jamais
-    /// examiné, et la file est vidée ; à la reprise, chaque dossier est relu depuis le début de la pause.
+    /// examiné ; ce qui attendait dans la file est gardé par son nom ; à la reprise, ces noms sont repris et chaque
+    /// dossier est relu depuis le début de la pause.
     pub(crate) fn mettre_en_pause(&self, pause: bool) {
         let avant = self.pause.swap(pause, Ordering::SeqCst);
         if pause && !avant {
@@ -1022,7 +1091,7 @@ impl Surveillance {
         }
         if pause && let Ok(mut a) = self.attente.0.lock() {
             // Ce qui attendait (venu d'une relecture, son ctime peut être bien plus ancien que la pause) n'est pas
-            // jeté : son dossier sera relu depuis son moment d'origine, à la reprise.
+            // jeté : repris par son nom à la reprise, même dans un dossier trop grand pour être listé.
             rendre_a_la_relecture(&self.marques, a.vider());
         }
     }
@@ -1194,6 +1263,13 @@ fn lire(
             let en_pause = pause.load(Ordering::SeqCst);
             for (i, (groupe, marque)) in groupes.iter().zip(marques).enumerate() {
                 suivre_le_dossier(groupe, marque, compteurs);
+                if !en_pause
+                    && marque.relancer_abandon(Instant::now())
+                    && let Some(quand) = relire_a.get_mut(i)
+                {
+                    // Une perte abandonnée est retentée : sa relecture part tout de suite.
+                    *quand = Instant::now();
+                }
                 if let Some(quand) = relire_a.get_mut(i)
                     && !en_pause
                     && Instant::now() >= *quand
@@ -1207,10 +1283,11 @@ fn lire(
                         ..Tour::NORMAL
                     };
                     let repris_avant = lu(&compteurs.repris);
+                    let presse = attente.0.lock().is_ok_and(|a| a.direct_presse());
                     let fait = relire(i, marque, attente, compteurs, tour);
                     let mis = lu(&compteurs.repris).saturating_sub(repris_avant);
                     if let Some(a) = affame.get_mut(i) {
-                        *a = suivre_famine(*a, marque.en_relecture(), mis, Instant::now());
+                        *a = suivre_famine(*a, marque.en_relecture(), presse, mis, Instant::now());
                     }
                     let rythme = if fait == Relu::TropGrand {
                         RYTHME_TROP_GRAND
@@ -1273,11 +1350,11 @@ fn lire(
                         // Le moment d'origine est le ctime, s'il est plus ancien : un fichier écrit longtemps avant
                         // sa fermeture, perdu dans la file par un arrêt, doit encore tomber dans la relecture du
                         // démarrage (lu avant de prendre la file, comme pour les noms perdus).
-                        let depuis = ctime_de(marque, &nom).map_or_else(secondes, |c| c.min(secondes()));
+                        let depuis = origine(ctime_de(marque, &nom));
                         let ajout = attente
                             .0
                             .lock()
-                            .map_or(Ajout::Pleine, |mut a| a.ajouter_depuis(i, &nom, maintenant, depuis));
+                            .map_or(Ajout::Pleine, |mut a| a.ajouter_direct(i, &nom, maintenant, depuis));
                         match ajout {
                             Ajout::Nouveau => nouveau = true,
                             Ajout::Regroupe => {}
@@ -1342,27 +1419,38 @@ fn suivre_le_dossier(groupe: &Groupe, marque: &Marque, compteurs: &Compteurs) {
     marque.perte();
 }
 
-/// Les fichiers retirés de la file sans examen (pause) : chaque dossier est relu depuis le plus ancien moment
-/// d'origine des siens.
-fn rendre_a_la_relecture(marques: &[Marque], retires: Vec<(usize, i64)>) {
-    let mut points: HashMap<usize, i64> = HashMap::new();
-    for (i, depuis) in retires {
-        let p = points.entry(i).or_insert(depuis);
-        *p = (*p).min(depuis);
-    }
-    for (i, depuis) in points {
+/// Les fichiers retirés de la file sans examen (pause) : repris par leur nom.
+fn rendre_a_la_relecture(marques: &[Marque], retires: Vec<(usize, Vec<u8>)>) {
+    for (i, nom) in retires {
         if let Some(m) = marques.get(i) {
-            m.relire_depuis(depuis.min(secondes()).saturating_sub(MARGE_RELECTURE));
+            m.reprendre_nom(&nom);
         }
     }
 }
 
-/// Depuis quand la relecture d'un dossier avance au compte-gouttes (moins de `PASSE_LENTE` fichiers par passe) :
-/// une place de temps en temps ne remet pas l'attente à zéro. Une fois en famine, elle le reste jusqu'à la fin de la
-/// relecture : en sortir à la première passe rapide la ferait retomber aussitôt sous le flot.
-fn suivre_famine(depuis: Option<Instant>, en_relecture: bool, mis: u64, maintenant: Instant) -> Option<Instant> {
+/// Le moment d'origine d'un fichier d'après son ctime : jamais dans le futur, ni avant la fenêtre de relecture
+/// (un vieux fichier rouvert en écriture ne doit pas faire relire des années).
+fn origine(ctime: Option<i64>) -> i64 {
+    let maintenant = secondes();
+    ctime.map_or(maintenant, |c| {
+        c.clamp(maintenant.saturating_sub(RELECTURE_MAX), maintenant)
+    })
+}
+
+/// Depuis quand la relecture d'un dossier avance au compte-gouttes (moins de `PASSE_LENTE` fichiers par passe)
+/// parce que le temps réel tient la file (`direct_presse`) : une place de temps en temps ne remet pas l'attente à
+/// zéro. Une fois en famine, elle le reste tant que le flot direct dure : en sortir à la première passe rapide la
+/// ferait retomber aussitôt sous lui. Un examen simplement lent (grosses photos, processeur bridé) n'est pas une
+/// famine : la relecture n'a pas à prendre les places du temps réel, qui tomberait alors en « file pleine ».
+fn suivre_famine(
+    depuis: Option<Instant>,
+    en_relecture: bool,
+    direct_presse: bool,
+    mis: u64,
+    maintenant: Instant,
+) -> Option<Instant> {
     match depuis {
-        _ if !en_relecture => None,
+        _ if !en_relecture || !direct_presse => None,
         Some(a) if en_famine(a, maintenant) => Some(a),
         _ if mis >= PASSE_LENTE => None,
         Some(a) => Some(a),
@@ -1427,6 +1515,7 @@ fn relire(i: usize, m: &Marque, attente: &(Mutex<Attente>, Condvar), compteurs: 
         (etat.curseur.clone(), etat.noms.iter().cloned().collect::<Vec<_>>())
     };
     let (mis, tous_les_noms) = remettre_les_noms(i, m, &noms, attente, compteurs, tour);
+    let du_debut = curseur.as_ref().is_some_and(|c| c.s == i64::MIN);
     let (fait, apres) = match curseur {
         None => (Relu::Fini, None),
         // La file est déjà pleine : le dossier n'est pas listé pour rien.
@@ -1437,7 +1526,7 @@ fn relire(i: usize, m: &Marque, attente: &(Mutex<Attente>, Condvar), compteurs: 
     for nom in &mis {
         etat.noms.remove(nom);
     }
-    if etat.finir(apres) {
+    if etat.finir(apres, du_debut && fait != Relu::TropGrand) {
         m.a_reprendre.store(0, Ordering::Relaxed);
         // Un dossier trop grand abandonné n'est pas « fini » : il n'a pas été lu, et ne se relit qu'à son rythme.
         return if fait == Relu::TropGrand {
@@ -1469,32 +1558,25 @@ fn remettre_les_noms(
     // Le ctime de chacun (lu avant de prendre la file) : le temps réel n'est pas à jour au-delà tant qu'il attend.
     // Seulement ce qui a une place : une file presque pleine ne fait pas lire des milliers de noms pour un seul.
     let place = attente.0.lock().map_or(0, |a| tour.place(&a));
-    let depuis: Vec<i64> = noms
-        .iter()
-        .take(place)
-        .map(|n| ctime_de(m, n).map_or_else(secondes, |c| c.min(secondes())))
-        .collect();
+    let depuis: Vec<i64> = noms.iter().take(place).map(|n| origine(ctime_de(m, n))).collect();
     let mut mis = Vec::new();
     let Ok(mut a) = attente.0.lock() else {
         return (mis, false);
     };
     let maintenant = Instant::now();
-    let mut complet = true;
     for (nom, d) in noms.iter().zip(depuis) {
         if tour.place(&a) == 0 {
-            complet = false;
             break;
         }
         match a.ajouter_depuis(i, nom, maintenant, d) {
             Ajout::Nouveau => plus(&compteurs.repris),
             Ajout::Regroupe => {}
-            Ajout::Pleine => {
-                complet = false;
-                break;
-            }
+            Ajout::Pleine => break,
         }
         mis.push(nom.clone());
     }
+    // Les noms au-delà des places (jamais lus) ne sont pas en file non plus.
+    let complet = mis.len() == noms.len();
     drop(a);
     attente.1.notify_all();
     (mis, complet)
@@ -1520,13 +1602,19 @@ impl Relecture {
     /// La fin d'une lecture du dossier : `apres` est ce qui lui reste (`None` : tout est en file). Une demande
     /// arrivée pendant elle (une fin de pause, une perte) garde son point. Vrai : le dossier est à jour (plus de
     /// curseur ni de nom perdu).
-    fn finir(&mut self, apres: Option<Curseur>) -> bool {
+    ///
+    /// `depuis_min` : la lecture partait du début (`i64::MIN`) et a tout mis en file ; elle a donc repris la perte
+    /// sans nom, même si une demande ordinaire est arrivée pendant elle (une nouvelle perte garde le drapeau).
+    fn finir(&mut self, apres: Option<Curseur>, depuis_min: bool) -> bool {
         self.en_lecture = false;
-        self.curseur = match (apres, self.pendant.take()) {
+        let pendant = self.pendant.take();
+        let perte_pendant = pendant.as_ref().is_some_and(|p| p.s == i64::MIN);
+        let tout_lu = apres.is_none();
+        self.curseur = match (apres, pendant) {
             (Some(a), p) => Some(plus_ancien(p, a)),
             (None, p) => p,
         };
-        if self.curseur.is_none() {
+        if self.curseur.is_none() || (depuis_min && tout_lu && !perte_pendant) {
             self.perte_sans_nom = false;
         }
         self.curseur.is_none() && self.noms.is_empty()
@@ -1553,15 +1641,21 @@ fn relire_a_partir(
             // repris sans lister) : abandonnée, dite et comptée non vérifiée au bilan. Avec une : réessayée quelques
             // fois, puis abandonnée aussi, et le bilan la garde en alerte (`perte_abandonnee`) : sinon un dossier
             // gonflé tiendrait tout le temps réel « pas à jour » pour toujours.
-            let essais = m.essais_trop_grand.fetch_add(1, Ordering::Relaxed).saturating_add(1);
             let avec_perte = m
                 .relecture
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .perte_sans_nom;
+            // Seuls les essais avec une perte comptent : un abandon sans perte ne rapproche pas le suivant.
+            let essais = if avec_perte {
+                m.essais_trop_grand.fetch_add(1, Ordering::Relaxed).saturating_add(1)
+            } else {
+                0
+            };
             let abandon = !avec_perte || essais >= ESSAIS_TROP_GRAND;
             if abandon && avec_perte {
                 m.perte_abandonnee.store(true, Ordering::Relaxed);
+                *m.abandon_a.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
             }
             return (Relu::TropGrand, (!abandon).then(|| curseur.clone()));
         }
@@ -1570,6 +1664,9 @@ fn relire_a_partir(
     m.essais_trop_grand.store(0, Ordering::Relaxed);
     if curseur.s == i64::MIN {
         m.perte_abandonnee.store(false, Ordering::Relaxed);
+    } else if m.perte_abandonnee.load(Ordering::Relaxed) {
+        // Le dossier se liste de nouveau : la perte abandonnée est reprise, depuis le début, à la passe suivante.
+        m.perte();
     }
     let (mut dernier, mut complet) = (None, true);
     let Ok(mut a) = attente.0.lock() else {
@@ -1744,7 +1841,7 @@ fn examiner(mut charger: Charger, p: &Partage<'_>, envoi: &SyncSender<Examine>) 
         };
         if p.pause.load(Ordering::SeqCst) {
             // Pris juste avant que la pause vide la file : rendu à la relecture, comme le reste de la file.
-            rendre_a_la_relecture(p.marques, vec![(i, depuis)]);
+            rendre_a_la_relecture(p.marques, vec![(i, nom)]);
             continue;
         }
         // Les empreintes récentes changent chaque jour : relues de temps en temps ; un rechargement qui échoue garde
@@ -1877,17 +1974,13 @@ fn examiner_un(
     if let Some(f) = pour_le_cache {
         fanotify::oublier_du_cache(&f);
     }
-    // Retenu, sauf une menace (réexaminée, donc redite, à chaque relecture) : une relecture saute ce qui est encore
-    // tel quel. Un non-vérifié ou un illisible a déjà été dit et compté ; le remettre en file à chaque perte le
-    // recompterait sans rien apprendre de plus.
-    let menace = r
-        .as_ref()
-        .is_some_and(|fait| !matches!(fait.verdict(), Verdict::Sain | Verdict::NonVerifie(_)));
-    if r.is_none() {
-        plus(&c.illisibles);
-    }
-    if !menace {
-        m.noter_examine(nom, &lu_avant);
+    // Seul un fichier sain est retenu : une relecture saute ce qui est encore tel quel. Une menace est réexaminée,
+    // donc redite ; un non-vérifié ou un illisible aussi, car la cause peut passer (délai dépassé sous charge,
+    // sources manquantes rechargées) : recompté à chaque relecture, mais une chance de plus d'être vérifié.
+    match &r {
+        None => plus(&c.illisibles),
+        Some(fait) if matches!(fait.verdict(), Verdict::Sain) => m.noter_examine(nom, &lu_avant),
+        Some(_) => {}
     }
     r.map(|r| (r, identite))
 }
@@ -1986,8 +2079,7 @@ mod tests {
         assert_eq!(a.len(), 0);
         assert_eq!(a.prochain(tard), None);
         assert_eq!(a.ajouter(0, b"c", tard), Ajout::Nouveau);
-        let origine = a.plus_ancien().unwrap();
-        assert_eq!(a.vider(), vec![(0, origine)]);
+        assert_eq!(a.vider(), vec![(0, b"c".to_vec())]);
         assert_eq!(a.len(), 0);
     }
 
@@ -2083,6 +2175,16 @@ mod tests {
         assert!(surveille.examines.lock().unwrap().contains_key(b"gros".as_slice()));
         assert!(examiner_un(&surveille, b"parti", &sources, &compteurs, secondes()).is_none());
         assert_eq!(lu(&compteurs.partis), 1);
+        // Parti avant son examen : le dossier est relu depuis le moment d'origine du fichier (un remplaçant écrit
+        // entre-temps est vu), pas depuis maintenant.
+        surveille.relecture.lock().unwrap().curseur = None;
+        let vieux = secondes() - 3_600;
+        assert!(examiner_un(&surveille, b"parti", &sources, &compteurs, vieux).is_none());
+        assert_eq!(
+            surveille.relecture.lock().unwrap().curseur,
+            Some(Curseur::depuis(vieux - MARGE_RELECTURE))
+        );
+        surveille.relecture.lock().unwrap().curseur = None;
         let nom = b"\xfe\xffalice";
         std::fs::write(dossier.join(OsStr::from_bytes(nom)), elf_marque()).unwrap();
         let (r, identite) = examiner_un(&surveille, nom, &sources, &compteurs, secondes()).unwrap();
@@ -2229,21 +2331,39 @@ mod tests {
             noms: BTreeSet::new(),
             perte_sans_nom: false,
         };
-        assert!(r.finir(None));
+        assert!(r.finir(None, false));
         // Un nom perdu pas encore en file : le dossier n'est pas à jour.
         r.noms.insert(b"x".to_vec());
         r.en_lecture = true;
-        assert!(!r.finir(None));
+        assert!(!r.finir(None, false));
         r.noms.clear();
         r.en_lecture = true;
         r.pendant = Some(Curseur::depuis(5));
-        assert!(!r.finir(None));
+        assert!(!r.finir(None, false));
         assert_eq!(r.curseur, Some(Curseur::depuis(5)));
         r.en_lecture = true;
         r.pendant = Some(Curseur::depuis(50));
-        assert!(!r.finir(Some(c(20, 0, b"x"))));
+        assert!(!r.finir(Some(c(20, 0, b"x")), false));
         assert_eq!(r.curseur, Some(c(20, 0, b"x")));
         assert!(!r.en_lecture && r.pendant.is_none());
+        // M7 : une lecture complète depuis le début reprend la perte sans nom, même si une demande ordinaire est
+        // arrivée pendant elle ; une nouvelle perte pendant elle garde le drapeau.
+        r.curseur = Some(Curseur::depuis(i64::MIN));
+        r.perte_sans_nom = true;
+        r.en_lecture = true;
+        r.pendant = Some(Curseur::depuis(50));
+        assert!(!r.finir(None, true));
+        assert!(!r.perte_sans_nom);
+        assert_eq!(r.curseur, Some(Curseur::depuis(50)));
+        r.perte_sans_nom = true;
+        r.en_lecture = true;
+        r.pendant = Some(Curseur::depuis(i64::MIN));
+        assert!(!r.finir(None, true));
+        assert!(r.perte_sans_nom);
+        // Pas finie (un reste) : le drapeau reste.
+        r.en_lecture = true;
+        assert!(!r.finir(Some(c(20, 0, b"x")), true));
+        assert!(r.perte_sans_nom);
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -2408,11 +2528,19 @@ mod tests {
         // Une relecture partielle ne l'efface pas ; une relecture complète réussie, si.
         attente.0.lock().unwrap().file.clear();
         m.relire_depuis(secondes());
-        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::Fini);
+        // M2 : le dossier se liste de nouveau : la perte abandonnée est redemandée depuis le début.
+        assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::EnPartie);
         assert!(m.perte_abandonnee.load(Ordering::Relaxed));
-        m.perte();
+        assert!(m.relecture.lock().unwrap().perte_sans_nom);
         assert_eq!(relire(0, &m, &attente, &c, Tour::NORMAL), Relu::Fini);
         assert!(!m.perte_abandonnee.load(Ordering::Relaxed));
+        // M9 : des abandons sans perte ne rapprochent pas l'abandon d'une perte.
+        attente.0.lock().unwrap().file.clear();
+        for _ in 0..ESSAIS_TROP_GRAND {
+            m.relire_depuis(0);
+            assert_eq!(relire(0, &m, &attente, &c, petit), Relu::TropGrand);
+        }
+        assert_eq!(m.essais_trop_grand.load(Ordering::Relaxed), 0);
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -2487,10 +2615,76 @@ mod tests {
         a.ajouter_depuis(1, b"c", Instant::now(), 2_000);
         rendre_a_la_relecture(&marques, a.vider());
         assert_eq!(a.len(), 0);
-        let point = |m: &Marque| m.relecture.lock().unwrap().curseur.clone();
-        assert_eq!(point(&marques[0]), Some(Curseur::depuis(500 - MARGE_RELECTURE)));
-        assert_eq!(point(&marques[1]), Some(Curseur::depuis(2_000 - MARGE_RELECTURE)));
+        // M3 : repris par leur nom, sans lister le dossier (qui peut être trop grand pour l'être).
+        let noms = |m: &Marque| m.relecture.lock().unwrap().noms.clone();
+        assert_eq!(noms(&marques[0]), BTreeSet::from([b"a".to_vec(), b"b".to_vec()]));
+        assert_eq!(noms(&marques[1]), BTreeSet::from([b"c".to_vec()]));
+        assert_eq!(marques[0].relecture.lock().unwrap().curseur, None);
         assert_eq!(marques[0].a_reprendre.load(Ordering::Relaxed), 0, "pas une perte");
+        // Un dossier trop grand : les noms rendus sont relus quand même.
+        let petit = Tour {
+            sans_reserve: false,
+            liste_max: 1,
+        };
+        std::fs::write(d.join("a"), b"Salon").unwrap();
+        std::fs::write(d.join("b"), b"Salon").unwrap();
+        let attente = (Mutex::new(Attente::new(RESERVE_DIRECT + 10)), Condvar::new());
+        let c = Compteurs::default();
+        assert_eq!(relire(0, &marques[0], &attente, &c, petit), Relu::Fini);
+        assert_eq!(attente.0.lock().unwrap().len(), 2);
+        // Plus de noms que la liste n'en garde : une perte, comptée une fois.
+        let m = &marques[1];
+        // Il y a déjà « c ».
+        for n in 1..NOMS_PERDUS_MAX {
+            m.reprendre_nom(format!("n{n}").as_bytes());
+        }
+        assert!(!m.relecture.lock().unwrap().perte_sans_nom);
+        m.reprendre_nom(b"de trop");
+        assert!(m.relecture.lock().unwrap().perte_sans_nom);
+        assert_eq!(m.a_reprendre.load(Ordering::Relaxed), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// M6 : des noms au-delà des places ne sont pas dits « tous en file ».
+    #[test]
+    fn noms_au_dela_des_places() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let m = marque(&d, false);
+        let attente = (Mutex::new(Attente::new(RESERVE_DIRECT + 2)), Condvar::new());
+        let c = Compteurs::default();
+        let noms: Vec<Vec<u8>> = (0..5).map(|n| format!("n{n}").into_bytes()).collect();
+        let (mis, complet) = remettre_les_noms(0, &m, &noms, &attente, &c, Tour::NORMAL);
+        assert_eq!(mis.len(), 2);
+        assert!(!complet);
+        let (mis, complet) = remettre_les_noms(0, &m, &noms[2..], &attente, &c, Tour::NORMAL);
+        assert!(mis.is_empty() && !complet, "file pleine : rien n'est dit en file");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// M8 : le moment d'origine tient dans la fenêtre de relecture.
+    #[test]
+    fn origine_bornee() {
+        let t = secondes();
+        assert!((t..=t + 1).contains(&origine(None)));
+        assert!((t - RELECTURE_MAX..=t - RELECTURE_MAX + 1).contains(&origine(Some(0))));
+        assert!((t..=t + 1).contains(&origine(Some(i64::MAX))));
+        assert_eq!(origine(Some(t - 60)), t - 60);
+    }
+
+    /// M2 : une perte abandonnée est retentée après `REESSAI_ABANDON` (tout de suite si son moment est inconnu,
+    /// comme après un redémarrage), jamais pendant une relecture.
+    #[test]
+    fn perte_abandonnee_retentee() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let m = marque(&d, false);
+        let t = Instant::now();
+        assert!(!m.relancer_abandon(t), "rien d'abandonné");
+        m.perte_abandonnee.store(true, Ordering::Relaxed);
+        *m.abandon_a.lock().unwrap() = Some(t);
+        assert!(!m.relancer_abandon(t + Duration::from_secs(60)));
+        assert!(m.relancer_abandon(t + REESSAI_ABANDON));
+        assert!(m.relecture.lock().unwrap().perte_sans_nom);
+        assert!(!m.relancer_abandon(t + REESSAI_ABANDON * 2), "déjà en relecture");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -2500,17 +2694,46 @@ mod tests {
     fn famine_des_passes_lentes() {
         let t = Instant::now();
         let plus_tard = t + FAMINE;
-        assert_eq!(suivre_famine(None, true, 1, t), Some(t), "une place par passe : lente");
-        assert_eq!(suivre_famine(Some(t), true, 1, t + Duration::from_secs(1)), Some(t));
         assert_eq!(
-            suivre_famine(Some(t), true, PASSE_LENTE, t + Duration::from_secs(1)),
+            suivre_famine(None, true, true, 1, t),
+            Some(t),
+            "une place par passe : lente"
+        );
+        assert_eq!(
+            suivre_famine(Some(t), true, true, 1, t + Duration::from_secs(1)),
+            Some(t)
+        );
+        assert_eq!(
+            suivre_famine(Some(t), true, true, PASSE_LENTE, t + Duration::from_secs(1)),
             None
         );
         assert!(!en_famine(t, t + Duration::from_secs(29)));
         assert!(en_famine(t, plus_tard));
-        assert_eq!(suivre_famine(Some(t), true, PASSE_LENTE, plus_tard), Some(t), "gardée");
-        assert_eq!(suivre_famine(Some(t), false, 0, plus_tard), None, "relecture finie");
-        assert_eq!(suivre_famine(None, false, 0, t), None);
+        assert_eq!(
+            suivre_famine(Some(t), true, true, PASSE_LENTE, plus_tard),
+            Some(t),
+            "gardée"
+        );
+        assert_eq!(
+            suivre_famine(Some(t), false, true, 0, plus_tard),
+            None,
+            "relecture finie"
+        );
+        assert_eq!(suivre_famine(None, false, true, 0, t), None);
+        // M1 : sans flot direct, un examen lent n'est pas une famine (la réserve reste au temps réel).
+        assert_eq!(suivre_famine(None, true, false, 1, t), None);
+        assert_eq!(suivre_famine(Some(t), true, false, 0, plus_tard), None);
+        let mut a = Attente::new(FILE_MAX);
+        for n in 0..RESERVE_DIRECT {
+            a.ajouter_depuis(0, format!("r{n}").as_bytes(), t, 0);
+        }
+        assert!(!a.direct_presse(), "des reprises, pas du direct");
+        for n in 0..RESERVE_DIRECT / 2 - 1 {
+            a.ajouter_direct(0, format!("d{n}").as_bytes(), t, 0);
+        }
+        assert!(!a.direct_presse());
+        a.ajouter_direct(0, b"r0", t, 0);
+        assert!(a.direct_presse(), "un regroupement direct compte");
     }
 
     /// Défaut 4 : une file tenue dans les places gardées au direct bloque la relecture ; en famine, elle les prend.

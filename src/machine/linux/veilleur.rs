@@ -2132,6 +2132,11 @@ fn servir() -> i32 {
         // Gardé tel quel jusqu'à ce que la relecture du démarrage soit finie : un arrêt pendant elle repartira du
         // même point.
         fichiers_a_jour: avant.as_ref().map_or(0, |e| e.fichiers_a_jour),
+        // Une perte abandonnée (dossier trop grand) reste dite après un redémarrage, et y est retentée.
+        fichiers: fichiers::Releve {
+            abandons: avant.as_ref().map(|e| e.fichiers.abandons.clone()).unwrap_or_default(),
+            ..fichiers::Releve::default()
+        },
         ..Etat::default()
     };
     let refuser = |etat: &mut Etat, raison: String| {
@@ -2311,6 +2316,9 @@ fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
     let unite = (sonde != super::fanotify::Sonde::Permis)
         .then(|| std::fs::read_to_string(fichier_unite()).ok())
         .flatten();
+    // Les pertes abandonnées d'avant (dossiers trop grands) : retentées si le temps réel démarre, gardées sinon,
+    // pour le démarrage suivant.
+    let abandons = std::mem::take(&mut etat.fichiers.abandons);
     // Coupé par le filtre ou sans sonde : la personne avait dit oui au temps réel, le bilan le redit.
     if let Err(coupure) = fanotify_permis(&sonde, unite.as_deref()) {
         let cause = coupure.cause();
@@ -2318,6 +2326,7 @@ fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
         etat.fichiers = fichiers::Releve {
             sans: Some(cause),
             coupure: Some(coupure),
+            abandons,
             ..fichiers::Releve::default()
         };
         return None;
@@ -2329,6 +2338,7 @@ fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
     );
     match demarre {
         Ok(s) => {
+            s.reprendre_abandons(&abandons);
             s.mettre_en_pause(etat.en_pause);
             etat.fichiers = s.releve();
             Some(s)
@@ -2337,6 +2347,7 @@ fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
             eprintln!("{raison}");
             etat.fichiers = fichiers::Releve {
                 sans: Some(raison.0),
+                abandons,
                 ..fichiers::Releve::default()
             };
             None
