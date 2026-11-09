@@ -1777,13 +1777,17 @@ fn remettre_les_noms(
     // Le ctime de chacun (lu avant de prendre la file) : le temps réel n'est pas à jour au-delà tant qu'il attend.
     // Seulement ce qui a une place : une file presque pleine ne fait pas lire des milliers de noms pour un seul.
     let place = attente.0.lock().map_or(0, |a| tour.place(&a));
-    let depuis: Vec<i64> = noms.iter().take(place).map(|n| origine(ctime_de(m, n))).collect();
+    let identites: Vec<Option<std::fs::Metadata>> = noms.iter().take(place).map(|n| meta_de(m, n)).collect();
     let mut mis = Vec::new();
+    // Ce qui est mis en file est noté comme par une liste : sinon la relecture du dossier qui suit souvent (perte
+    // sans nom, au-delà de NOMS_PERDUS_MAX) remettrait en file chacun de ces noms, et l'examinerait deux fois.
+    let mut notes = Vec::new();
     let Ok(mut a) = attente.0.lock() else {
         return (mis, false);
     };
     let maintenant = Instant::now();
-    for (nom, d) in noms.iter().zip(depuis) {
+    for (nom, meta) in noms.iter().zip(identites) {
+        let d = origine(meta.as_ref().map(MetadataExt::ctime));
         if tour.place(&a) == 0 {
             break;
         }
@@ -1792,8 +1796,20 @@ fn remettre_les_noms(
             Ajout::Regroupe => {}
             Ajout::Pleine => break,
         }
+        if let Some(x) = meta.filter(std::fs::Metadata::is_file) {
+            notes.push(Candidat {
+                c: Curseur {
+                    s: x.ctime(),
+                    ns: x.ctime_nsec(),
+                    nom: nom.clone(),
+                },
+                ino: x.ino(),
+            });
+        }
         mis.push(nom.clone());
     }
+    // Noté avant de rendre la file, comme dans `relire_a_partir`.
+    m.noter_mis_en_file(&notes.iter().collect::<Vec<_>>());
     // Les noms au-delà des places (jamais lus) ne sont pas en file non plus.
     let complet = mis.len() == noms.len();
     drop(a);
@@ -1803,9 +1819,14 @@ fn remettre_les_noms(
 
 /// Le ctime d'un nom du dossier marqué, sans suivre de lien.
 fn ctime_de(m: &Marque, nom: &[u8]) -> Option<i64> {
+    meta_de(m, nom).map(|x| x.ctime())
+}
+
+/// L'état d'un nom du dossier marqué, sans suivre de lien.
+fn meta_de(m: &Marque, nom: &[u8]) -> Option<std::fs::Metadata> {
     let fd = m.fd.read().unwrap_or_else(PoisonError::into_inner);
     let chemin = Path::new(&format!("/proc/self/fd/{}", fd.as_raw_fd())).join(OsStr::from_bytes(nom));
-    std::fs::symlink_metadata(chemin).ok().map(|x| x.ctime())
+    std::fs::symlink_metadata(chemin).ok()
 }
 
 impl Relecture {
@@ -3163,6 +3184,40 @@ mod tests {
         m.reprendre_nom(b"de trop");
         assert!(m.relecture.lock().unwrap().perte_sans_nom);
         assert_eq!(m.a_reprendre.load(Ordering::Relaxed), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Essai QEMU de 03789846 : les noms perdus remis en file ne le sont pas une seconde fois par la liste du dossier
+    /// qui suit (environ 9 300 examens pour 5 005 fichiers).
+    #[test]
+    fn noms_remis_pas_relistes() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        for n in 0..30 {
+            std::fs::write(d.join(format!("f{n:02}")), b"Salon").unwrap();
+        }
+        let m = marque(&d, false);
+        let attente = (Mutex::new(Attente::new(RESERVE_DIRECT + 10)), Condvar::new());
+        let c = Compteurs::default();
+        for n in 0..20 {
+            m.reprendre_nom(format!("f{n:02}").as_bytes());
+        }
+        // Un nom parti : remis en file (l'examen le dira parti), jamais noté.
+        m.reprendre_nom(b"absent");
+        m.relire_depuis(0);
+        let mut pris: Vec<Vec<u8>> = Vec::new();
+        loop {
+            let fait = relire(0, &m, &attente, &c, Tour::NORMAL);
+            pris.extend(attente.0.lock().unwrap().file.drain(..).map(|e| e.nom));
+            if fait == Relu::Fini {
+                break;
+            }
+            assert!(pris.len() <= 31, "remis en file : {pris:?}");
+        }
+        pris.sort();
+        let mut attendus: Vec<Vec<u8>> = (0..30).map(|n| format!("f{n:02}").into_bytes()).collect();
+        attendus.insert(0, b"absent".to_vec());
+        assert_eq!(pris, attendus);
+        assert!(m.mis_en_file.lock().unwrap().get(b"absent".as_slice()).is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
 
