@@ -330,6 +330,17 @@ another program and left its lineage escapes the freeze. A malicious program in 
 before it could be read is counted as such, never judged safe, and the program of a closed connection is not known
 (the kernel does not give it).
 
+**Real-time file scanning** (Linux, with the watcher: a single consent when it is turned on) — each file written to the
+risky folders (Downloads, Desktop, ~/.local/bin, ~/.config/autostart) is scanned as soon as it is closed after writing
+or arrives by rename, without administrator rights (fanotify, one group per folder, no link followed). A certain file
+goes to quarantine, undoable, according to the settings; a known family is handled in one click; a suspect file raises
+an alert. It fits in 128 MiB of memory: YARA rules, heuristics and MalwareBazaar fingerprints of the last 48 hours (the
+ClamAV database and the full list serve on-demand scans and the hourly pass). A file over 32 MiB, unreadable or gone
+before being read is counted as not verified, never clean; a lost file (full queue, kernel overflow) is counted then
+taken up again by a new reading of the folder, and the check says "at least N loss(es)" until it has finished. The
+hourly pass goes over the folders and says what it leaves; the Antivirus status screen (6.1.5) shows where it stands.
+Direct children of these folders only; what it does not see is written in the [threat model](MODELE-DE-MENACE.en.md).
+
 **Ransomware watcher** (Linux, offered when the watcher is turned on, or `vanguard watcher ransomware on`, off by
 default) — personal folders (Documents, Pictures, Desktop, Music, Videos, Downloads) watched live, without
 administrator rights. An encryption burst (dozens of files rewritten in seconds, content no longer matching its
@@ -577,23 +588,30 @@ lets you forget.
 
 **Settings** (Vanguard › Settings, "s" in the main menu, `vanguard settings`) — every setting in one place: language,
 emojis, working without the Internet, real-time protection, hourly monitoring, monthly check-up, learned alerts, threat
-blocking, extension restrictions, the abuse.ch key, software versions, the weekly self-test, AUR packages (Arch
-Linux: off by default, no package name is sent to the AUR without it), the Vanguard Agent and sharing with the author. Each change shows the previous value and the
-command to put it back; learned alerts and blocking open their own screen ("What Vanguard has learned", Threat
-blocking). Language, emojis and working without the Internet stay chosen from one launch to the next (VANGUARD_LANG,
-VANGUARD_EMOJI and VANGUARD_HORS_LIGNE always win).
+blocking, extension restrictions, the abuse.ch key, software versions, the weekly self-test, AUR packages (Arch Linux:
+off by default, no package name is sent to the AUR without it), the ClamAV second opinion (clamscan, Linux), unwanted
+programs (PUA, on-demand scans only), backstage, the Vanguard Agent and sharing with the author. Each change shows the
+previous value and the command to put it back; learned alerts and blocking open their own screen ("What Vanguard has
+learned", Threat blocking). Language, emojis and working without the Internet stay chosen from one launch to the next
+(VANGUARD_LANG, VANGUARD_EMOJI and VANGUARD_HORS_LIGNE always win).
 
-**Real-time protection** (Settings, `vanguard settings real-time no [--for 1h|4h]`) — turns off at once, after
-consent and the list of what stops, what Vanguard does by itself all the time: the hourly monitoring (and everything it
-watches and notifies) and the active protection of blocking, which no longer blocks anything by itself. For 1 hour, 4
-hours or until it is turned back on (`vanguard settings real-time yes`); it comes back by itself when the time is up, and
-the monitoring checks that itself. Each part's settings do not change: when it comes back, each one is as it was. While
-it is off, this is said again at the top of the main menu and on its Monitoring and Blocking lines, in each check-up (a
+**Backstage** (Settings, off by default, `vanguard settings backstage yes|no|show`) — to see what Vanguard really
+does: each command it runs is shown as one grey line (program, shortened arguments, an announced secret hidden,
+duration and outcome), on standard error and only in a terminal outside a menu, so that a `--json` stays clean. The
+last 200 stay in memory (`show`), never on disk or in the log.
+
+**Real-time protection** (Settings, `vanguard settings real-time no [--for 1h|4h]`) — turns off at once, after consent
+and the list of what stops, what Vanguard does by itself all the time: the hourly monitoring (and everything it watches
+and notifies) and the active protection of blocking, which no longer blocks anything by itself. For 1 hour, 4 hours or
+until it is turned back on (`vanguard settings real-time yes`); it comes back by itself when the time is up, and the
+monitoring checks that itself. Each part's settings do not change: when it comes back, each one is as it was. While it
+is off, this is said again at the top of the main menu and on its Monitoring and Blocking lines, in each check-up (a
 piece of information, with no effect on the grade), in "Who talks to the Internet?", in blocking and on the monitoring
 dashboard, by a notification at the first run then once a day, and in the monthly check-up: a program that turned it off
 quietly does not go unnoticed. It only concerns Vanguard: Defender, the firewall and UAC are never touched, and a block
-already made stays in place. As administrator, it is not set: its setting belongs to the user account (under sudo, the one
-of the account that started it is read).
+already made stays in place. The watcher keeps running without noting anything; files that arrive while it is off are
+counted as not verified, then read again when it comes back. As administrator, it is not set: its setting belongs to the
+user account (under sudo, the one of the account that started it is read).
 
 **Vanguard Agent (no AI)** (Settings › Vanguard Agent, `vanguard settings auto-tuning`, `vanguard agent [--json]`) — a
 small built-in agent, with no AI model, that tunes Vanguard itself on this computer, within bounds written in the

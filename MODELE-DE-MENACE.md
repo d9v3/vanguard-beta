@@ -95,9 +95,14 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   sans être écrit dans ces dossiers (le veilleur des programmes et le garde le jugent à son lancement). Le temps réel
   tient en 128 Mio de mémoire : il prend les règles YARA, les heuristiques et les empreintes de MalwareBazaar des
   dernières 48 heures ; la base ClamAV et la liste complète des empreintes servent aux analyses à la demande et à la
-  passe horaire. Un fichier de plus de 32 Mio, illisible, parti avant d'être lu, ou arrivé quand la file est pleine
-  (256 en attente) n'est pas examiné : il est compté non vérifié, jamais sain. Un débordement de la file du noyau perd
-  un nombre inconnu d'événements : il est compté et dit. Un fichier en cours de téléchargement (« .part »,
+  passe horaire. Un fichier de plus de 32 Mio, illisible ou parti avant d'être lu n'est pas examiné : il est compté
+  non vérifié, jamais sain. Un fichier arrivé quand la file est pleine (256 en attente), ou perdu par un débordement de
+  la file du noyau, est compté puis repris par une relecture du dossier (par son nom, ou par la liste des fichiers
+  changés depuis la perte, les plus récents et les plus anciens d'abord) ; tant qu'elle n'a pas fini, le bilan dit
+  « au moins N perte(s) » en alerte. Limites dites : au-delà de 4096 noms perdus, ceux du milieu sont oubliés et tout
+  le dossier est relu ; un dossier de plus de 50 000 entrées ne peut pas être relu : la perte y est abandonnée après
+  trois essais, gardée en alerte au bilan et retentée toutes les 2 minutes (l'analyse `vanguard antivirus` le reprend
+  en entier). Un fichier en cours de téléchargement (« .part »,
   « .crdownload ») n'est examiné qu'à son renommage final : il est compté non vérifié (la passe horaire, elle,
   l'examine). Un lien n'est jamais suivi. Il ne voit pas non plus un contenu qui change sans fermeture après écriture
   ni renommage : un lien dur créé dans ces dossiers (`link()`, événement que le veilleur ne demande pas au noyau), une

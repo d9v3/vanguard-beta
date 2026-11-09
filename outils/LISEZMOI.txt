@@ -182,7 +182,9 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
          (vanguard veilleur on) ; avec la protection active et votre accord, arrêt à son lancement d'un malware
          connu posé dans vos dossiers (vanguard veilleur connus on) ; et, sur demande, les dossiers personnels surveillés en direct contre les
          rançongiciels : alerte en quelques secondes, gel puis arrêt d'un cas quasi certain seulement avec la
-         protection active (vanguard veilleur rancongiciel on)
+                  protection active (vanguard veilleur rancongiciel on). Avec lui, le temps réel des fichiers : chaque
+         fichier écrit dans Téléchargements, le Bureau, ~/.local/bin ou ~/.config/autostart examiné dès son
+         écriture, sans droits (certain : quarantaine annulable ; famille connue : un clic ; suspect : alerte)
   ── EN PLUS ──
   9  Données et sauvegardes ›
        9.1 Copier mes fichiers vers un disque externe (copie vérifiée, rien d'effacé, reprise après interruption)
@@ -226,7 +228,8 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
  13  Vanguard ›
        13.1 Paramètres (aussi « s » au menu principal) : langue, emojis, travail sans Internet, protection en temps
          réel, surveillance, entretien, alertes apprises, blocage, restrictions des extensions, clé abuse.ch
-         (masquée) ; la valeur d'avant est montrée, sauf pour les alertes apprises et le blocage, qui ouvrent leur
+         (masquée), second avis ClamAV, programmes indésirables (PUA), coulisses (chaque commande lancée par
+         Vanguard en une ligne grise, éteintes par défaut) ; la valeur d'avant est montrée, sauf pour les alertes apprises et le blocage, qui ouvrent leur
          propre écran (vanguard parametres). Protection en temps réel : la surveillance horaire et la protection
          active du blocage coupées d'un coup, après accord, pendant 1 h, 4 h ou jusqu'à reprise ; jamais Defender,
          le pare-feu ni l'UAC, et un blocage déjà fait reste en place (vanguard parametres temps-reel non --pendant 1h).

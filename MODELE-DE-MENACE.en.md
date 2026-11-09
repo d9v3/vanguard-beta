@@ -88,9 +88,14 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   before the watcher started or while it is off or paused, nor a program started without being written to these
   folders (the program watcher and the guard judge it at launch). Real-time scanning fits in 128 MiB of memory: it
   uses the YARA rules, the heuristics and the MalwareBazaar fingerprints of the last 48 hours; the ClamAV database and
-  the full fingerprint list serve on-demand scans and the hourly pass. A file over 32 MiB, unreadable, gone before
-  being read, or arriving when the queue is full (256 waiting) is not scanned: it is counted as not verified, never as
-  clean. An overflow of the kernel queue loses an unknown number of events: it is counted and reported. A file being
+  the full fingerprint list serve on-demand scans and the hourly pass. A file over 32 MiB, unreadable or gone before
+  being read is not scanned: it is counted as not verified, never as clean. A file arriving when the queue is full (256
+  waiting), or lost by an overflow of the kernel queue, is counted then taken up again by a new reading of the folder
+  (by its name, or by the list of files changed since the loss, newest and oldest first); until it has finished, the
+  check says "at least N loss(es)" as an alert. Stated limits: beyond 4096 lost names, the middle ones are forgotten
+  and the whole folder is read again; a folder of more than 50,000 entries cannot be read again: the loss there is
+  given up after three tries, kept as an alert in the check and retried every 2 minutes (the `vanguard antivirus` scan
+  covers it in full). A file being
   downloaded (".part", ".crdownload") is only scanned at its final rename: it is counted as not verified (the hourly
   pass does scan it). A link is never followed. Nor does it see content that changes without a close after writing or
   a rename: a hard link created in these folders (`link()`, an event the watcher does not ask the kernel for), a write

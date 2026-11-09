@@ -9,6 +9,32 @@ jour est permise ; elles se suivent dans le paragraphe de leur journée. Seule l
 téléchargement ; chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par exemple), pour être
 recompilée au besoin.
 
+## 9 novembre 2026 : version 0.93.0
+
+- **Le temps réel des fichiers (Linux).** Le veilleur examine maintenant chaque fichier écrit dans les dossiers à
+  risque (Téléchargements, Bureau, ~/.local/bin, ~/.config/autostart), dès sa fermeture après écriture ou son arrivée
+  par renommage, sans droits d'administrateur (fanotify, un groupe par dossier, aucun lien suivi). Un fichier certain
+  va en quarantaine annulable selon les réglages, une famille connue se règle en un clic, un fichier suspect donne une
+  alerte. Le tout tient en 128 Mio de mémoire (règles YARA, heuristiques, empreintes des dernières 48 heures). Un
+  fichier perdu (file pleine, débordement du noyau) est compté puis repris par une relecture du dossier ; ce qui n'a
+  pas pu être vérifié est dit, jamais compté sain, et la passe horaire reprend les dossiers. Un seul accord à
+  l'allumage du veilleur. Essayé sous des inondations de milliers de fichiers dans de vraies VM Arch, Fedora et Debian.
+- **ClamAV devient facultatif.** Vanguard ne propose plus de l'installer : son moteur fait l'analyse et lit toujours
+  lui-même la base ClamAV installée. clamscan devient un second avis réglable (Paramètres › second-avis, lancé par
+  défaut s'il est là ; coupé, c'est dit à chaque analyse). L'option « pua » ajoute les programmes indésirables aux
+  analyses à la demande seulement, jamais au continu, où une empreinte met en quarantaine toute seule.
+- **État de l'antivirus** (6.1.5, `vanguard antivirus --etat`) : le moteur utilisé, les bases et leur date, ce que le
+  moteur ne lit pas (7z, RAR, bytecode de ClamAV…), le second avis, les PUA et le temps réel des fichiers. Rien n'est
+  lancé ni changé ; `--detail` compte ce que la base ClamAV écarte (environ 10 s).
+- **Quarantaine plus sûre.** Elle n'isole que le fichier examiné, jamais un lien dur vers un autre ; un contenu déjà
+  en quarantaine n'y entre pas deux fois, et un contenu qu'on en a sorti n'y retourne pas tout seul.
+- **Coulisses** (Paramètres, éteintes par défaut, `vanguard parametres coulisses oui|non|voir`) : chaque commande
+  lancée par Vanguard montrée en une ligne grise (programme, arguments abrégés, secrets cachés, durée, issue) ; les 200
+  dernières restent en mémoire seulement, jamais sur le disque ni dans le journal.
+- **Correctifs.** Analyser un appareil : Entrée seule revient, une cible mal tapée est dite sans aller au journal.
+  Post-quantique : le profil laissé par un navigateur désinstallé est sans objet, plus « version illisible ». Rendre
+  le réseau (Windows) : aucune fenêtre administrateur quand plus aucune règle ne coupe le programme.
+
 ## 8 novembre 2026 : version 0.92.0
 
 - **De nouveaux gestes face à chaque menace.** En plus de Bloquer : **Suspendre** (le programme gelé, repris par

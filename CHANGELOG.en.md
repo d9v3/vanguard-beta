@@ -8,6 +8,32 @@ delivered just before it. Since November 7, 2026, more than one release on the s
 other in their day's paragraph. Only the latest version has its download page; every version keeps its tag in the
 repository (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 
+## November 9, 2026: version 0.93.0
+
+- **Real-time file scanning (Linux).** The watcher now scans each file written to the risky folders (Downloads,
+  Desktop, ~/.local/bin, ~/.config/autostart) as soon as it is closed after writing or arrives by rename, without
+  administrator rights (fanotify, one group per folder, no link followed). A certain file goes to quarantine, undoable,
+  according to the settings; a known family is handled in one click; a suspect file raises an alert. It all fits in
+  128 MiB of memory (YARA rules, heuristics, fingerprints of the last 48 hours). A lost file (full queue, kernel
+  overflow) is counted then taken up again by a new reading of the folder; what could not be checked is reported,
+  never counted as clean, and the hourly pass goes over the folders again. A single consent when the watcher is turned
+  on. Tried under floods of thousands of files in real Arch, Fedora and Debian VMs.
+- **ClamAV becomes optional.** Vanguard no longer offers to install it: its own engine does the scan and still reads
+  the installed ClamAV database itself. clamscan becomes an adjustable second opinion (Settings › second-opinion, run
+  by default when present; when off, every scan says so). The "pua" option adds unwanted programs to on-demand scans
+  only, never to continuous protection, where a fingerprint quarantines by itself.
+- **Antivirus status** (6.1.5, `vanguard antivirus --status`): the engine used, the databases and their date, what the
+  engine does not read (7z, RAR, ClamAV bytecode…), the second opinion, PUA and real-time file scanning. Nothing is
+  run or changed; `--detail` counts what the ClamAV database skips (about 10 s).
+- **Safer quarantine.** It isolates only the file scanned, never a hard link to another one; content already in
+  quarantine does not go in twice, and content taken out of it does not go back by itself.
+- **Backstage** (Settings, off by default, `vanguard settings backstage yes|no|show`): each command run by Vanguard
+  shown as one grey line (program, shortened arguments, secrets hidden, duration, outcome); the last 200 stay in memory
+  only, never on disk or in the log.
+- **Fixes.** Scan a device: Enter alone goes back, a mistyped target is reported without going to the log.
+  Post-quantum: the profile left by an uninstalled browser is not applicable, no longer "unreadable version". Restore
+  network (Windows): no administrator window when no rule cuts the program any more.
+
 ## November 8, 2026: version 0.92.0
 
 - **New actions for each threat.** Besides Block: **Suspend** (the program frozen, resumed with

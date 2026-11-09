@@ -176,7 +176,9 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
          (vanguard watcher on); with active protection and your consent, known malware placed in your
          folders is stopped when it starts (vanguard watcher known on); and, on request, personal folders watched live against ransomware: an alert
          within seconds, freeze then stop of an almost-certain case only with active protection
-         (vanguard watcher ransomware on)
+                  (vanguard watcher ransomware on). With it, real-time file scanning: each file written to Downloads,
+         the Desktop, ~/.local/bin or ~/.config/autostart scanned as soon as it is written, without privileges
+         (certain: undoable quarantine; known family: one click; suspect: alert)
   ── ALSO INCLUDED ──
   9  Data and backups ›
        9.1 Copy my files to an external disk (checked copy, nothing deleted, resumes after an interruption)
@@ -219,7 +221,8 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
  13  Vanguard ›
        13.1 Settings (also "s" in the main menu): language, emojis, working without the Internet, real-time
          protection, monitoring, check-up, learned alerts, blocking, extension restrictions, abuse.ch key
-         (masked); the previous value is shown, except for learned alerts and blocking, which open their own
+         (masked), ClamAV second opinion, unwanted programs (PUA), backstage (each command run by Vanguard as
+         one grey line, off by default); the previous value is shown, except for learned alerts and blocking, which open their own
          screen (vanguard settings). Real-time protection: the hourly monitoring and the active protection of
          blocking turned off at once, after your consent, for 1 h, 4 h or until turned back on; never Defender,
          the firewall or UAC, and a block already made stays in place (vanguard settings real-time no --for 1h).

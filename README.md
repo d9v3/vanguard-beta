@@ -347,6 +347,18 @@ et « Bloquer » le voient ; un enfant qui a lancé un autre programme et quitt�
 programme malveillant du compte peut éteindre le veilleur. Un programme parti avant d'être lu est compté tel quel,
 jamais jugé sain, et le programme d'une connexion fermée n'est pas connu (le noyau ne le donne pas).
 
+**Le temps réel des fichiers** (Linux, avec le veilleur : un seul accord à son allumage) — chaque fichier écrit dans les
+dossiers à risque (Téléchargements, Bureau, ~/.local/bin, ~/.config/autostart) est examiné dès sa fermeture après
+écriture ou son arrivée par renommage, sans droits d'administrateur (fanotify, un groupe par dossier, aucun lien suivi).
+Un fichier certain va en quarantaine annulable selon les réglages, une famille connue se règle en un clic, un fichier
+suspect donne une alerte. Il tient en 128 Mio de mémoire : règles YARA, heuristiques et empreintes de MalwareBazaar des
+dernières 48 heures (la base ClamAV et la liste complète servent aux analyses à la demande et à la passe horaire). Un
+fichier de plus de 32 Mio, illisible ou parti avant d'être lu est compté non vérifié, jamais sain ; un fichier perdu
+(file pleine, débordement du noyau) est compté puis repris par une relecture du dossier, et le bilan dit « au moins N
+perte(s) » tant qu'elle n'a pas fini. La passe horaire reprend les dossiers et dit ce qu'elle laisse ; l'écran État de
+l'antivirus (6.1.5) montre où il en est. Seulement les enfants directs de ces dossiers ; ce qu'il ne voit pas est écrit
+dans le [modèle de menace](MODELE-DE-MENACE.md).
+
 **Veilleur anti-rançongiciel** (Linux, proposé à l'allumage du veilleur ou `vanguard veilleur rancongiciel on`, coupé
 par défaut) — les dossiers personnels (Documents, Images, Bureau, Musique, Vidéos, Téléchargements) surveillés en
 direct, sans droits d'administrateur. Une rafale de chiffrement (des dizaines de fichiers réécrits en quelques
@@ -613,10 +625,16 @@ a appris » montre tout et permet d'oublier.
 endroit : langue, emojis, travail sans Internet, protection en temps réel, surveillance horaire, entretien du mois,
 alertes apprises, blocage des menaces, restrictions des extensions, clé abuse.ch, versions des logiciels, autodiagnostic
 de la semaine, paquets de l'AUR (Arch Linux : coupé par défaut, aucun nom de paquet n'est envoyé à l'AUR sans lui),
-Agent Vanguard et partage avec l'auteur.
-Chaque changement montre la valeur d'avant et la commande pour la remettre ; les alertes apprises et le blocage ouvrent
-leur propre écran (« Ce que Vanguard a appris », Blocage des menaces). La langue, les emojis et le travail sans Internet
-restent choisis d'un lancement à l'autre (VANGUARD_LANG, VANGUARD_EMOJI et VANGUARD_HORS_LIGNE l'emportent toujours).
+second avis de ClamAV (clamscan, Linux), programmes indésirables (PUA, analyses à la demande seulement), coulisses,
+Agent Vanguard et partage avec l'auteur. Chaque changement montre la valeur d'avant et la commande pour la remettre ;
+les alertes apprises et le blocage ouvrent leur propre écran (« Ce que Vanguard a appris », Blocage des menaces). La
+langue, les emojis et le travail sans Internet restent choisis d'un lancement à l'autre (VANGUARD_LANG, VANGUARD_EMOJI
+et VANGUARD_HORS_LIGNE l'emportent toujours).
+
+**Coulisses** (Paramètres, éteintes par défaut, `vanguard parametres coulisses oui|non|voir`) — pour voir ce que
+Vanguard fait vraiment : chaque commande qu'il lance s'affiche en une ligne grise (programme, arguments abrégés, un
+secret annoncé caché, durée et issue), sur la sortie d'erreur et seulement dans un terminal hors d'un menu, pour qu'un
+`--json` reste propre. Les 200 dernières restent en mémoire (`voir`), jamais sur le disque ni dans le journal.
 
 **Protection en temps réel** (Paramètres, `vanguard parametres temps-reel non [--pendant 1h|4h]`) — coupe d'un coup,
 après accord et la liste de ce qui s'arrête, ce que Vanguard fait tout seul en continu : la surveillance horaire (et
@@ -627,8 +645,10 @@ retrouve son état d'avant. Tant qu'elle est coupée, c'est redit en tête du me
 et Blocage, dans chaque bilan (une information, sans effet sur la note), dans « Qui parle à Internet ? », dans le
 blocage et sur le tableau de la surveillance, par une notification à la première passe puis une fois par jour, et dans
 l'entretien du mois : un programme qui la couperait en douce ne passe pas inaperçu. Elle ne concerne que Vanguard :
-Defender, le pare-feu et l'UAC ne sont jamais touchés, et un blocage déjà fait reste en place. En administrateur, elle
-ne se règle pas : son réglage est celui du compte (sous sudo, celui du compte qui l'a lancé est lu).
+Defender, le pare-feu et l'UAC ne sont jamais touchés, et un blocage déjà fait reste en place. Le veilleur reste en
+marche sans rien noter ; les fichiers arrivés pendant la coupure sont comptés non vérifiés, puis relus à la reprise. En
+administrateur, elle ne se règle pas : son réglage est celui du compte (sous sudo, celui du compte qui l'a lancé est
+lu).
 
 **Agent Vanguard (sans IA)** (Paramètres › Agent Vanguard, `vanguard parametres auto-reglage`, `vanguard agent
 [--json]`) — un petit agent intégré, sans modèle d'IA, qui règle Vanguard lui-même sur cet ordinateur, entre des
