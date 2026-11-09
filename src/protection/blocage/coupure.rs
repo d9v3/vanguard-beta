@@ -628,12 +628,16 @@ pub(crate) fn rendre(pid: Option<u32>, source: crate::modele::evenement::Source)
             le: String::new(),
         });
     }
+    // Windows : les règles du Pare-feu se lisent sans droits. Un programme qu'aucune règle de Vanguard ne coupe plus
+    // n'a rien à rendre : aucune fenêtre administrateur pour rien. Des règles illisibles : la demande part comme avant.
+    let noms = noms_des_regles();
     let orphelines = if pid.is_none() {
-        regles_sans_liste(&visees)
+        regles_sans_liste(noms.as_deref(), &visees)
     } else {
         Vec::new()
     };
-    if visees.is_empty() && orphelines.is_empty() {
+    let (visees, libres) = encore_coupees(visees, noms.as_deref());
+    if visees.is_empty() && orphelines.is_empty() && libres.is_empty() {
         return (Vec::new(), refus);
     }
     let ordres: Vec<(Option<u32>, String, Ordre)> = visees
@@ -652,8 +656,25 @@ pub(crate) fn rendre(pid: Option<u32>, source: crate::modele::evenement::Source)
         }))
         .collect();
     let groupes: Vec<Vec<String>> = ordres.iter().map(|(_, _, o)| vec![o.ligne()]).collect();
-    let (faits, notes) = crate::machine::appliquer_chacune_sans_noter(&groupes);
-    let mut rendus = Vec::new();
+    let (faits, notes) = if groupes.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        crate::machine::appliquer_chacune_sans_noter(&groupes)
+    };
+    let mut rendus: Vec<Rendu> = libres
+        .into_iter()
+        .map(|c| Rendu {
+            pid: Some(c.pid),
+            chemin: c.chemin,
+            issue: Ok(Some(
+                tr!(
+                    "il n'était plus coupé : aucune règle de Vanguard ne le vise dans le Pare-feu, rien n'est demandé",
+                    "it was no longer cut: no Vanguard rule targets it in the Firewall, nothing is asked"
+                )
+                .to_string(),
+            )),
+        })
+        .collect();
     for (i, (p, chemin, o)) in ordres.iter().enumerate() {
         let fait = faits.get(i).copied().unwrap_or(false);
         let n = notes.get(i).map_or(&[][..], Vec::as_slice);
@@ -684,30 +705,55 @@ pub(crate) fn rendre(pid: Option<u32>, source: crate::modele::evenement::Source)
     (rendus, refus)
 }
 
+/// Windows : les noms des règles du Pare-feu, lus sans droits ; `None` : illisibles. Ailleurs : `None` (la coupure
+/// de Linux n'est pas une règle du pare-feu).
+fn noms_des_regles() -> Option<Vec<String>> {
+    #[cfg(windows)]
+    {
+        crate::machine::windows::pare_feu::regles_lues().map(|r| r.into_iter().map(|x| x.nom).collect())
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// Windows : les programmes que des règles « Vanguard : couper … » coupent encore sans être parmi `visees` (la liste
 /// perdue, changée hors de Vanguard, ou pas écrite après la coupure). Des règles qui ne se lisent pas : dit, rien
 /// n'est cherché. Ailleurs : aucune (la coupure de Linux part avec le processus et au redémarrage).
-fn regles_sans_liste(visees: &[Coupe]) -> Vec<String> {
+fn regles_sans_liste(noms: Option<&[String]>, visees: &[Coupe]) -> Vec<String> {
     #[cfg(windows)]
     {
-        let Some(regles) = crate::machine::windows::pare_feu::regles_lues() else {
+        let Some(noms) = noms else {
             trp!(
                 "  ⚠ Les règles du Pare-feu Windows ne se lisent pas : une coupure que la liste de Vanguard ne connaît plus n'est pas cherchée.",
                 "  ⚠ The Windows Firewall rules cannot be read: a cut that Vanguard's list no longer knows is not looked for."
             );
             return Vec::new();
         };
-        orphelines(regles.iter().map(|r| r.nom.as_str()), visees)
+        orphelines(noms.iter().map(String::as_str), visees)
     }
     #[cfg(not(windows))]
     {
-        let _ = visees;
+        let _ = (noms, visees);
         Vec::new()
     }
 }
 
+/// Partage `visees` d'après les noms des règles lues : celles qu'une règle de coupure de Vanguard vise encore (même
+/// chemin, sans tenir compte de la casse, comme Windows), puis celles qu'aucune ne vise plus, rien à rendre. Sans
+/// règles lues (illisibles, ou Linux) : toutes gardées, rien n'est conclu. Pur.
+fn encore_coupees(visees: Vec<Coupe>, noms: Option<&[String]>) -> (Vec<Coupe>, Vec<Coupe>) {
+    let Some(noms) = noms else {
+        return (visees, Vec::new());
+    };
+    let chemins: Vec<&str> = noms.iter().filter_map(|n| chemin_de_regle(n)).map(|(c, _)| c).collect();
+    visees
+        .into_iter()
+        .partition(|c| chemins.iter().any(|x| x.eq_ignore_ascii_case(&c.chemin)))
+}
+
 /// Le chemin et le sens d'une règle nommée par `nom_de_regle` ; `None` : une autre règle. Pur.
-#[cfg(any(windows, test))]
 fn chemin_de_regle(nom: &str) -> Option<(&str, bool)> {
     let reste = nom.strip_prefix("Vanguard : couper ")?;
     if let Some(c) = reste.strip_suffix(" (sortie)") {
@@ -954,7 +1000,19 @@ mod tests {
             partielle: false,
             le: String::new(),
         };
-        assert_eq!(orphelines(iter(), &[deja]), vec![autre.to_string()]);
+        assert_eq!(orphelines(iter(), std::slice::from_ref(&deja)), vec![autre.to_string()]);
+        // Avant de demander les droits : un programme qu'aucune règle ne coupe plus n'a rien à rendre ; des règles
+        // illisibles (ou Linux) ne concluent rien, tout reste à rendre.
+        let libre = Coupe {
+            pid: 7,
+            chemin: r"C:\Users\alice\Downloads\libre.exe".to_string(),
+            ..deja.clone()
+        };
+        let (coupees, libres) = encore_coupees(vec![deja.clone(), libre.clone()], Some(&noms));
+        assert_eq!(coupees.iter().map(|c| c.pid).collect::<Vec<_>>(), [4242]);
+        assert_eq!(libres.iter().map(|c| c.pid).collect::<Vec<_>>(), [7]);
+        let (coupees, libres) = encore_coupees(vec![deja, libre], None);
+        assert_eq!((coupees.len(), libres.len()), (2, 0));
         // L'ordre de retour se relit tel quel : rien n'est jugé, l'élevé ne retire que ces deux noms.
         let o = Ordre::RendreReseauFichier { chemin: autre.into() };
         assert_eq!(ordres::analyser(&o.ligne()), Some(o));
