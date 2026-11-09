@@ -2298,12 +2298,21 @@ fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
     let unite = (sonde != super::fanotify::Sonde::Permis)
         .then(|| std::fs::read_to_string(fichier_unite()).ok())
         .flatten();
-    let demarre = fanotify_permis(&sonde, unite.as_deref()).and_then(|()| {
-        fichiers::Surveillance::demarrer(
-            fichiers::a_surveiller(),
-            Box::new(crate::protection::moteur::sources_du_temps_reel),
-        )
-    });
+    // Coupé par le filtre ou sans sonde : la personne avait dit oui au temps réel, le bilan le redit.
+    if let Err(coupure) = fanotify_permis(&sonde, unite.as_deref()) {
+        let cause = coupure.cause();
+        eprintln!("{cause}");
+        etat.fichiers = fichiers::Releve {
+            sans: Some(cause),
+            coupure: Some(coupure),
+            ..fichiers::Releve::default()
+        };
+        return None;
+    }
+    let demarre = fichiers::Surveillance::demarrer(
+        fichiers::a_surveiller(),
+        Box::new(crate::protection::moteur::sources_du_temps_reel),
+    );
     match demarre {
         Ok(s) => {
             s.mettre_en_pause(etat.en_pause);
@@ -2314,8 +2323,6 @@ fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
             eprintln!("{raison}");
             etat.fichiers = fichiers::Releve {
                 sans: Some(raison.0),
-                // Coupé par le filtre ou sans sonde : la personne avait dit oui au temps réel, le bilan le redit.
-                a_rallumer: sonde != super::fanotify::Sonde::Permis,
                 ..fichiers::Releve::default()
             };
             None
@@ -2327,37 +2334,18 @@ fn demarrer_fichiers(etat: &mut Etat) -> Option<fichiers::Surveillance> {
 /// filtre que le noyau applique vraiment à ce processus : un appel interdit tuerait tout le veilleur (SIGSYS), avec
 /// les lancements, les connexions et la veille anti-rançongiciel. Refusé, le reste continue et le temps réel des
 /// fichiers dit pourquoi. L'unité posée (`unite`, lue seulement après un refus) ne sert qu'à nommer la cause.
-fn fanotify_permis(sonde: &super::fanotify::Sonde, unite: Option<&str>) -> Result<(), fichiers::Refus> {
+fn fanotify_permis(sonde: &super::fanotify::Sonde, unite: Option<&str>) -> Result<(), fichiers::Coupure> {
     use super::fanotify::Sonde;
+    use fichiers::Coupure as C;
     let ligne = format!("SystemCallFilter={}", super::fanotify::FILTRE_APPELS);
-    let raison = match (sonde, unite) {
+    Err(match (sonde, unite) {
         (Sonde::Permis, _) => return Ok(()),
-        (Sonde::NonVerifie(r), _) => trf!(
-            "fanotify non essayé : la sonde du filtre d'appels système n'a pas pu tourner ({r}) ; « vanguard veilleur on » le relance",
-            "fanotify not tried: the system call filter probe could not run ({r}); “vanguard watcher on” restarts it"
-        ),
-        (Sonde::Interdit, None) => tr!(
-            "un filtre d'appels système interdit fanotify à ce processus, et l'unité du veilleur est absente ou illisible ; « vanguard veilleur on » la pose",
-            "a system call filter forbids fanotify to this process, and the watcher unit is missing or unreadable; “vanguard watcher on” puts it in place"
-        )
-        .to_string(),
-        (Sonde::Interdit, Some(u)) if !notre_unite(u) => tr!(
-            "l'unité posée n'est pas celle de Vanguard et son filtre d'appels système interdit fanotify",
-            "the unit in place is not Vanguard's and its system call filter forbids fanotify"
-        )
-        .to_string(),
-        (Sonde::Interdit, Some(u)) if u.lines().any(|l| l.trim() == ligne) => tr!(
-            "l'unité posée permet fanotify, mais le filtre en vigueur l'interdit (unité pas rechargée, ou un ajout local) ; « vanguard veilleur on » la recharge",
-            "the unit in place allows fanotify, but the filter in force forbids it (unit not reloaded, or a local addition); “vanguard watcher on” reloads it"
-        )
-        .to_string(),
-        (Sonde::Interdit, Some(_)) => tr!(
-            "l'unité posée vient d'une version d'avant et ne permet pas fanotify ; « vanguard veilleur on » la remet à jour, un seul accord",
-            "the unit in place comes from an earlier version and does not allow fanotify; “vanguard watcher on” updates it, one consent"
-        )
-        .to_string(),
-    };
-    Err(fichiers::Refus(raison))
+        (Sonde::NonVerifie(r), _) => C::NonVerifie(r.clone()),
+        (Sonde::Interdit, None) => C::UniteAbsente,
+        (Sonde::Interdit, Some(u)) if !notre_unite(u) => C::UniteEtrangere,
+        (Sonde::Interdit, Some(u)) if u.lines().any(|l| l.trim() == ligne) => C::PasRechargee,
+        (Sonde::Interdit, Some(_)) => C::VersionAvant,
+    })
 }
 
 /// La clé du débit d'une menace du temps réel : le même contenu au même endroit n'est dit qu'une fois en 6 heures.
@@ -2873,12 +2861,19 @@ fn allumer() {
     }
     let reussi = ecrit
         && super::dbus::actions::utilisateur(super::dbus::actions::Geste::Recharger, "")
+        // Un veilleur arrêté par StartLimitBurst (cinq échecs dans l'heure) ne repartirait pas : la personne vient de
+        // le demander, l'échec d'avant est oublié. Sans effet sur une unité saine ; son refus n'arrête pas le reste.
+        && {
+            let _ = super::dbus::actions::utilisateur(super::dbus::actions::Geste::RemettreEchecs, UNITE);
+            true
+        }
         && super::dbus::actions::utilisateur(super::dbus::actions::Geste::Activer { maintenant: true }, UNITE)
         && (!deja_active || super::dbus::actions::utilisateur(super::dbus::actions::Geste::RedemarrerSiActive, UNITE));
     crate::changements::noter(
         &[vec![
             format!("{} → {}", tr!("écrire", "write"), chemin.display()),
             "systemctl --user daemon-reload".to_string(),
+            format!("systemctl --user reset-failed {UNITE}"),
             format!("systemctl --user enable --now {UNITE}"),
         ]],
         &[reussi],
@@ -3691,7 +3686,7 @@ fn constat() -> Constat {
 /// (une unité d'avant une mise à jour) n'est pas « allumé ✔ » : la personne avait dit oui au temps réel, c'est un
 /// problème, avec son remède. Seulement si rien de plus grave n'a déjà sa correction.
 fn rallumer_si_coupe(c: Constat, vivant: bool, etat: Option<&Etat>) -> Constat {
-    if !vivant || !etat.is_some_and(|e| e.fichiers.a_rallumer) || c.correctif.is_some() {
+    if !vivant || etat.is_none_or(|e| e.fichiers.coupure.is_none()) || c.correctif.is_some() {
         return c;
     }
     let probleme = c.probleme.max(Some(Niveau::Moyen));
@@ -5707,18 +5702,18 @@ mod tests {
             for u in [Some(neuve.as_str()), Some(ancienne.as_str()), None] {
                 assert_eq!(fanotify_permis(&Sonde::Permis, u), Ok(()));
             }
-            let cause = |u: Option<&str>| fanotify_permis(&Sonde::Interdit, u).unwrap_err().0;
+            let cause = |u: Option<&str>| fanotify_permis(&Sonde::Interdit, u).unwrap_err().cause();
             assert!(cause(Some(&ancienne)).contains(tr!("version d'avant", "earlier version")));
             // Le fichier neuf mais le filtre chargé ancien : jamais permis sur la foi du texte.
             assert!(cause(Some(&neuve)).contains(tr!("pas rechargée", "not reloaded")));
         }
-        let cause = |u: Option<&str>| fanotify_permis(&Sonde::Interdit, u).unwrap_err().0;
+        let cause = |u: Option<&str>| fanotify_permis(&Sonde::Interdit, u).unwrap_err().cause();
         assert!(cause(None).contains(tr!("absente ou illisible", "missing or unreadable")));
         let etrangere = format!("[Service]\n{ligne}\n");
         assert!(cause(Some(&etrangere)).contains(tr!("pas celle de Vanguard", "not Vanguard's")));
         let non = fanotify_permis(&Sonde::NonVerifie("EAGAIN".into()), None)
             .unwrap_err()
-            .0;
+            .cause();
         assert!(non.contains("EAGAIN"), "{non}");
     }
 
@@ -5730,14 +5725,14 @@ mod tests {
         let mut e = etat_vivant();
         e.fichiers = fichiers::Releve {
             sans: Some("unité d'avant".into()),
-            a_rallumer: true,
+            coupure: Some(fichiers::Coupure::VersionAvant),
             ..fichiers::Releve::default()
         };
         let c = rallumer_si_coupe(juger_bool(true, Some(true), Some(&e), true, Some(true)), true, Some(&e));
         assert_eq!(c.probleme, Some(Niveau::Moyen), "{}", c.message);
         let k = c.correctif.expect("remède");
         assert!(!k.automatique && k.commandes == ["vanguard veilleur on"]);
-        e.fichiers.a_rallumer = false;
+        e.fichiers.coupure = None;
         let autre = juger_bool(true, Some(true), Some(&e), true, Some(true));
         let probleme = autre.probleme;
         assert_eq!(rallumer_si_coupe(autre, true, Some(&e)).probleme, probleme);

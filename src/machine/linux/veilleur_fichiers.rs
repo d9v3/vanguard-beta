@@ -277,6 +277,56 @@ fn lu(c: &AtomicU64) -> u64 {
     c.load(Ordering::Relaxed)
 }
 
+/// Pourquoi le filtre d'appels système a coupé le temps réel des fichiers (`veilleur::fanotify_permis`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum Coupure {
+    /// La sonde n'a pas pu tourner (la raison du système, telle quelle).
+    NonVerifie(String),
+    /// Interdit, et l'unité du veilleur absente ou illisible.
+    UniteAbsente,
+    /// Interdit par une unité qui n'est pas celle de Vanguard.
+    UniteEtrangere,
+    /// L'unité posée permet fanotify, mais le filtre en vigueur non.
+    PasRechargee,
+    /// L'unité posée vient d'une version d'avant.
+    VersionAvant,
+}
+
+impl Coupure {
+    /// La cause, dans la langue de qui la lit.
+    pub(crate) fn cause(&self) -> String {
+        match self {
+            Coupure::NonVerifie(r) => {
+                let r = crate::ui::affichable(r);
+                trf!(
+                    "fanotify non essayé : la sonde du filtre d'appels système n'a pas pu tourner ({r}) ; « vanguard veilleur on » le relance",
+                    "fanotify not tried: the system call filter probe could not run ({r}); “vanguard watcher on” restarts it"
+                )
+            }
+            Coupure::UniteAbsente => tr!(
+                "un filtre d'appels système interdit fanotify à ce processus, et l'unité du veilleur est absente ou illisible ; « vanguard veilleur on » la pose",
+                "a system call filter forbids fanotify to this process, and the watcher unit is missing or unreadable; “vanguard watcher on” puts it in place"
+            )
+            .to_string(),
+            Coupure::UniteEtrangere => tr!(
+                "l'unité posée n'est pas celle de Vanguard et son filtre d'appels système interdit fanotify",
+                "the unit in place is not Vanguard's and its system call filter forbids fanotify"
+            )
+            .to_string(),
+            Coupure::PasRechargee => tr!(
+                "l'unité posée permet fanotify, mais le filtre en vigueur l'interdit (unité pas rechargée, ou un ajout local) ; « vanguard veilleur on » la recharge",
+                "the unit in place allows fanotify, but the filter in force forbids it (unit not reloaded, or a local addition); “vanguard watcher on” reloads it"
+            )
+            .to_string(),
+            Coupure::VersionAvant => tr!(
+                "l'unité posée vient d'une version d'avant et ne permet pas fanotify ; « vanguard veilleur on » la remet à jour, un seul accord",
+                "the unit in place comes from an earlier version and does not allow fanotify; “vanguard watcher on” updates it, one consent"
+            )
+            .to_string(),
+        }
+    }
+}
+
 /// Ce que le veilleur écrit dans son état : ce qui est surveillé, ce qui a été vu, ce qui n'a pas pu être vérifié.
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -290,8 +340,9 @@ pub(crate) struct Releve {
     /// Pourquoi rien n'est surveillé (noyau trop ancien, fanotify refusé, aucun dossier) ; `None` : il tourne.
     pub sans: Option<String>,
     /// Arrêté par le filtre d'appels système (ou sans pouvoir le sonder) alors que la personne l'avait voulu : le bilan
-    /// le dit comme un problème, avec « vanguard veilleur on ».
-    pub a_rallumer: bool,
+    /// le dit comme un problème, avec « vanguard veilleur on ». Gardée en code, pas en texte : l'écran la dit dans SA
+    /// langue, même quand le service tourne dans une autre (une unité d'avant, sans VANGUARD_LANG).
+    pub coupure: Option<Coupure>,
     pub evenements: u64,
     pub examines: u64,
     pub sains: u64,
@@ -352,6 +403,13 @@ impl Releve {
 
     /// La phrase de l'état, pour le constat du veilleur et le menu.
     pub(crate) fn phrase(&self) -> String {
+        if let Some(c) = &self.coupure {
+            let sans = c.cause();
+            return trf!(
+                "Temps réel des fichiers : arrêté ({sans}).",
+                "Real-time file scanning: stopped ({sans})."
+            );
+        }
         if let Some(sans) = &self.sans {
             return trf!(
                 "Temps réel des fichiers : arrêté ({sans}).",
@@ -711,7 +769,7 @@ impl Surveillance {
             dossiers: self.dossiers.clone(),
             refuses: self.refuses.clone(),
             sans: erreur,
-            a_rallumer: false,
+            coupure: None,
             evenements: lu(&c.evenements),
             examines,
             sains: lu(&c.sains),
@@ -1093,7 +1151,11 @@ fn examiner_un(m: &Marque, nom: &[u8], sources: &Sources<'_>, c: &Compteurs) -> 
     let identite = Identite::de(&meta);
     let chemin = m.chemin.join(OsStr::from_bytes(nom));
     plus(&c.examines);
+    let pour_le_cache = f.try_clone().ok();
     let r = moteur::examiner_ouvert(f, &chemin, sources, bornes()).ok();
+    if let Some(f) = pour_le_cache {
+        fanotify::oublier_du_cache(&f);
+    }
     if r.is_none() {
         plus(&c.illisibles);
     }
@@ -1362,6 +1424,17 @@ mod tests {
         assert!(p.contains(tr!("débordement", "overflow")), "{p}");
         r.sans = Some("noyau".into());
         assert!(r.phrase().contains("noyau"));
+        // QEMU (AV5, C) : la cause d'une coupure par le filtre est dite dans la langue de l'écran, pas dans celle du
+        // service qui l'a écrite (une unité d'avant, sans VANGUARD_LANG).
+        r.sans = Some("TEXTE-DU-SERVICE".into());
+        r.coupure = Some(Coupure::VersionAvant);
+        let p = r.phrase();
+        assert!(!p.contains("TEXTE-DU-SERVICE"), "{p}");
+        assert!(p.contains(tr!("version d'avant", "earlier version")), "{p}");
+        // Relu de l'état écrit : la coupure y reste un code.
+        let relu: Releve = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(relu.coupure, Some(Coupure::VersionAvant));
+        r.coupure = None;
         // Un fichier en cours de téléchargement, examiné seulement à son renommage : compté non vérifié, et dit.
         let c = Compteurs::default();
         plus(&c.en_cours);

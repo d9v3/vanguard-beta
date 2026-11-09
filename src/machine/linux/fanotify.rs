@@ -102,6 +102,16 @@ pub(crate) enum Sonde {
     NonVerifie(String),
 }
 
+/// Les pages d'un fichier examiné quittent le cache : le veilleur lit chaque fichier une fois, et ce cache compterait
+/// dans sa limite de mémoire (MemoryMax), qui monterait jusqu'au plafond sans rien y gagner (QEMU AV5, F). Seules les
+/// pages propres partent ; un échec ne change rien à l'examen. fadvise64 est dans @system-service.
+// FFI : posix_fadvise de la libc.
+#[allow(unsafe_code)]
+pub(crate) fn oublier_du_cache(f: &std::fs::File) {
+    // SAFETY: posix_fadvise ne lit que le descripteur, ouvert tant que `f` vit ; aucune mémoire n'est passée.
+    let _ = unsafe { libc::posix_fadvise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+}
+
 /// fanotify est-il permis à ce processus ? Le filtre qui compte est celui que le noyau applique, pas le texte d'une
 /// unité sur le disque : un fichier réécrit mais pas rechargé, un ajout local (drop-in) ou une unité étrangère
 /// diraient faux. Sans filtre (`Seccomp: 0`), rien à essayer ; sinon un enfant, qui hérite du même filtre, appelle

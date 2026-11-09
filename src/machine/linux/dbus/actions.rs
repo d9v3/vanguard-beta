@@ -1,7 +1,7 @@
 //! Les ACTIONS que Vanguard fait par D-Bus, à part des LECTURES de `dbus.rs` : une seconde liste fermée, par service,
 //! chemin, interface, méthode et signature, toutes sur le bus de la SESSION du compte (jamais le bus système) :
 //! - le gestionnaire systemd de l'utilisateur, pour les unités de Vanguard seulement (« vanguard-… ») : Reload,
-//!   EnableUnitFiles, DisableUnitFiles, StartUnit, StopUnit, RestartUnit, TryRestartUnit, et Subscribe avec AddMatch
+//!   EnableUnitFiles, DisableUnitFiles, StartUnit, StopUnit, RestartUnit, TryRestartUnit, ResetFailedUnit, et Subscribe avec AddMatch
 //!   pour attendre la fin du job (JobRemoved), comme `systemctl --user` sans `--no-block` ;
 //! - une notification (org.freedesktop.Notifications.Notify), à la place de notify-send ;
 //! - une écriture dans dconf (ca.desrt.dconf.Writer.Change), à la place de `gsettings set`.
@@ -47,6 +47,7 @@ pub(super) const ACTIONS: &[Action] = &[
     (SYSTEMD, CHEMIN_SYSTEMD, GESTIONNAIRE, "StopUnit", "ss"),
     (SYSTEMD, CHEMIN_SYSTEMD, GESTIONNAIRE, "RestartUnit", "ss"),
     (SYSTEMD, CHEMIN_SYSTEMD, GESTIONNAIRE, "TryRestartUnit", "ss"),
+    (SYSTEMD, CHEMIN_SYSTEMD, GESTIONNAIRE, "ResetFailedUnit", "s"),
     (
         NOTIFICATIONS,
         CHEMIN_NOTIFICATIONS,
@@ -390,6 +391,9 @@ pub(crate) enum Geste {
     Redemarrer,
     /// try-restart : seulement si elle tourne.
     RedemarrerSiActive,
+    /// reset-failed : oublie l'échec et le compte des démarrages (StartLimitBurst), sans quoi systemd refuse de la
+    /// relancer pendant l'intervalle, même à la demande de la personne.
+    RemettreEchecs,
 }
 
 /// Le résultat d'un job qui vaut réussite pour systemctl (« done » ; « skipped » pour une condition non remplie).
@@ -434,6 +438,7 @@ pub(crate) fn utilisateur(geste: Geste, unite: &str) -> bool {
             Geste::Arreter => &["stop"],
             Geste::Redemarrer => &["restart"],
             Geste::RedemarrerSiActive => &["try-restart"],
+            Geste::RemettreEchecs => &["reset-failed"],
         });
         if geste != Geste::Recharger {
             args.push(unite);
@@ -534,6 +539,16 @@ fn systemd_sur(bus: &mut Bus, geste: Geste, unite: &str) -> Result<(), Echec> {
         Geste::Arreter => job(bus, &mut fins, "StopUnit"),
         Geste::Redemarrer => job(bus, &mut fins, "RestartUnit"),
         Geste::RedemarrerSiActive => job(bus, &mut fins, "TryRestartUnit"),
+        // Pas de job : systemd remet l'état tout de suite.
+        Geste::RemettreEchecs => bus
+            .agir(
+                GESTIONNAIRE,
+                "ResetFailedUnit",
+                vec![Valeur::texte_de(unite)],
+                None,
+                &mut fins,
+            )
+            .map(|_| ()),
     }
 }
 
@@ -971,6 +986,23 @@ pub(crate) mod tests {
         let r = systemd_sur(&mut bus, Geste::Demarrer { attendre: false }, "vanguard-x.service");
         assert!(r.unwrap_err().to_string().contains("NoSuchUnit"));
         assert_eq!(fil.join().unwrap(), ["StartUnit"]);
+    }
+
+    /// reset-failed : ResetFailedUnit seul, avec le nom de l'unité, sans job à attendre.
+    #[test]
+    fn remettre_les_echecs() {
+        let (mut bus, fil) = faux_bus(|s, appels| {
+            let a = lire(s);
+            assert_eq!(a.signature, "s");
+            assert_eq!(a.corps, vec![Valeur::texte_de("vanguard-x.service")]);
+            assert_eq!(a.drapeaux & 0x4, 0, "jamais d'autorisation interactive");
+            appels.push(a.membre.clone().unwrap());
+            s.write_all(&retour(&a, "", Vec::new(), ":1.2")).unwrap();
+        });
+        assert!(systemd_sur(&mut bus, Geste::RemettreEchecs, "vanguard-x.service").is_ok());
+        assert_eq!(fil.join().unwrap(), ["ResetFailedUnit"]);
+        // Jamais sur une unité qui n'est pas de Vanguard.
+        assert!(!utilisateur(Geste::RemettreEchecs, "sshd.service"));
     }
 
     /// Notify : la signature, l'urgence critique en octet, un texte trop long coupé sans casser un caractère.

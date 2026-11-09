@@ -377,6 +377,13 @@ fn signee(programme: &Path) -> Signee {
 fn constat_de(t: Tache, programme: &Path, j: &Jugement, signee: Option<&Signee>) -> Option<Constat> {
     const CAT: &str = "Surveillance";
     let tache = t.dans_une_phrase();
+    // En tête de phrase : « Le veilleur lance… », pas « le veilleur lance… ».
+    let tache_debut: String = tache
+        .chars()
+        .take(1)
+        .flat_map(char::to_uppercase)
+        .chain(tache.chars().skip(1))
+        .collect();
     let chemin = crate::ui::chemin_affichable(programme);
     let remettre = || {
         trf!(
@@ -393,8 +400,8 @@ fn constat_de(t: Tache, programme: &Path, j: &Jugement, signee: Option<&Signee>)
     match j {
         Jugement::Sain | Jugement::Soi | Jugement::Premier => None,
         Jugement::AutreChemin(pose) => eleve(trf!(
-            "{tache} lance un autre programme que celui que Vanguard a posé : {chemin}, au lieu de {}. Un logiciel malveillant peut s'y faire passer pour Vanguard.",
-            "{tache} starts a different program from the one Vanguard placed: {chemin}, instead of {}. Malware can pass itself off as Vanguard there.",
+            "{tache_debut} lance un autre programme que celui que Vanguard a posé : {chemin}, au lieu de {}. Un logiciel malveillant peut s'y faire passer pour Vanguard.",
+            "{tache_debut} starts a different program from the one Vanguard placed: {chemin}, instead of {}. Malware can pass itself off as Vanguard there.",
             crate::ui::chemin_affichable(Path::new(pose))
         )),
         Jugement::Remplace => match signee {
@@ -426,7 +433,7 @@ fn constat_de(t: Tache, programme: &Path, j: &Jugement, signee: Option<&Signee>)
             ))),
         },
         Jugement::TexteChange => eleve(trf!(
-            "La tâche de {tache} a été changée hors de Vanguard : ce n'est plus celle que Vanguard a posée (un programme lancé en plus, une heure changée, une condition qui la fait sauter…). Un logiciel malveillant peut s'en servir pour la couper ou lancer autre chose sous son nom.",
+            "La tâche posée pour {tache} a été changée hors de Vanguard : ce n'est plus celle que Vanguard a posée (un programme lancé en plus, une heure changée, une condition qui la fait sauter…). Un logiciel malveillant peut s'en servir pour la couper ou lancer autre chose sous son nom.",
             "The task of {tache} was changed outside Vanguard: it is no longer the one Vanguard set up (an extra program started, a changed schedule, a condition that skips it…). Malware can use this to switch it off or run something else under its name."
         )),
         Jugement::ListeForgee => refaire(eleve(trf!(
