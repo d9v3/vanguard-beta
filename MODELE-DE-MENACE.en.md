@@ -92,11 +92,16 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   being read, or arriving when the queue is full (256 waiting) is not scanned: it is counted as not verified, never as
   clean. An overflow of the kernel queue loses an unknown number of events: it is counted and reported. A file being
   downloaded (".part", ".crdownload") is only scanned at its final rename: it is counted as not verified (the hourly
-  pass does scan it). A link is never followed. A watched folder replaced under its name (moved then recreated) is
-  noticed within half a second, counted, reported and marked again; what arrives there in between is not seen.
-  Deleted, it is reported as "no longer watched" until it comes back. The hourly pass goes over this week's files
-  placed in these folders again (64 MiB at most, 300 files, one minute in all); the "Quick" scan goes over all of
-  them. Malware in the account can switch the watcher off, like the others.
+  pass does scan it). A link is never followed. Nor does it see content that changes without a close after writing or
+  a rename: a hard link created in these folders (`link()`, an event the watcher does not ask the kernel for), a write
+  through `mmap(MAP_SHARED)` after the close, a `truncate()` by path; the hourly pass goes over the last two (modified
+  within the week), a hard link to an older file is only picked up by the "Quick" scan. A file with several names
+  (hard links) is never quarantined: zeroing its permissions would also affect the other names; and quarantine only
+  isolates the scanned inode. What could not be verified is reported in the log every hour. A watched folder replaced
+  under its name (moved then recreated) is noticed within half a second, counted, reported and marked again; what
+  arrives there in between is not seen. Deleted, it is reported as "no longer watched" until it comes back. The hourly
+  pass goes over this week's files placed in these folders again (64 MiB at most, 300 files, one minute in all); the
+  "Quick" scan goes over all of them. Malware in the account can switch the watcher off, like the others.
 - **The page being visited.** Vanguard has no browser extension: the open page is not examined. It examines a link
   it is given, blocks known dangerous sites through the hosts file after consent (`vanguard sites-dangereux`), and
   public Wi-Fi mode switches to a filtering DNS.

@@ -97,10 +97,16 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   dernières 48 heures ; la base ClamAV et la liste complète des empreintes servent aux analyses à la demande et à la
   passe horaire. Un fichier de plus de 32 Mio, illisible, parti avant d'être lu, ou arrivé quand la file est pleine
   (256 en attente) n'est pas examiné : il est compté non vérifié, jamais sain. Un débordement de la file du noyau perd
-  un nombre inconnu d'événements : il est compté et dit. Un fichier en cours de téléchargement (« .part », «
-  .crdownload ») n'est examiné qu'à son renommage final : il est compté non vérifié (la passe horaire, elle,
-  l'examine). Un lien n'est jamais suivi. Un dossier surveillé remplacé sous son nom (déplacé puis recréé) est vu en
-  une demi-seconde, compté, dit et marqué de nouveau ; ce qui y arrive entre-temps n'est pas vu. Supprimé, il est dit
+  un nombre inconnu d'événements : il est compté et dit. Un fichier en cours de téléchargement (« .part »,
+  « .crdownload ») n'est examiné qu'à son renommage final : il est compté non vérifié (la passe horaire, elle,
+  l'examine). Un lien n'est jamais suivi. Il ne voit pas non plus un contenu qui change sans fermeture après écriture
+  ni renommage : un lien dur créé dans ces dossiers (`link()`, événement que le veilleur ne demande pas au noyau), une
+  écriture par `mmap(MAP_SHARED)` après la fermeture, un `truncate()` par chemin ; la passe horaire reprend les deux
+  derniers (modifiés dans la semaine), un lien dur vers un fichier plus ancien n'est repris que par l'analyse
+  « Rapide ». Un fichier à plusieurs noms (liens durs) n'est jamais mis en quarantaine : ses permissions à zéro
+  toucheraient aussi les autres noms ; et la quarantaine n'isole que l'inode examiné. Ce qui n'a pas pu être vérifié
+  est dit au journal chaque heure. Un dossier surveillé remplacé sous son nom (déplacé puis recréé) est vu en une
+  demi-seconde, compté, dit et marqué de nouveau ; ce qui y arrive entre-temps n'est pas vu. Supprimé, il est dit
   « plus surveillé » jusqu'à son retour. La passe horaire reprend les fichiers de la semaine posés dans ces dossiers
   (64 Mio au plus, 300 fichiers, une minute en tout) ; l'analyse « Rapide » les reprend tous. Un programme malveillant
   du compte peut éteindre le veilleur, comme les autres.
