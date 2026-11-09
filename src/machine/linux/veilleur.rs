@@ -3473,8 +3473,8 @@ pub(crate) fn phrase_des_fichiers() -> String {
         )
         .to_string(),
         (None, None) => tr!(
-            "Temps réel des fichiers : arrêté, il passe par le veilleur, coupé ; la commande vanguard veilleur on l'allume (Linux 5.13 et plus).",
-            "Real-time file scanning: stopped, it runs in the watcher, which is off; the command vanguard watcher on turns it on (Linux 5.13 and later)."
+            "Temps réel des fichiers : arrêté, il passe par le veilleur, coupé ; « vanguard veilleur on » l'allume (Linux 5.13 et plus).",
+            "Real-time file scanning: stopped, it runs in the watcher, which is off; “vanguard watcher on” turns it on (Linux 5.13 and later)."
         )
         .to_string(),
     };

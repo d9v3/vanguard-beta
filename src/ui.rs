@@ -277,11 +277,31 @@ pub fn envelopper(t: &str, largeur: usize) -> Vec<String> {
     envelopper_decale(t, largeur, largeur)
 }
 
+/// Les mots d'un texte, groupés pour la coupe : en français, « et » sont séparés de leur contenu par une espace, et
+/// une coupe à cette espace laisserait un « seul en fin de ligne ou un » seul en tête de la suivante. Décidé : un mot
+/// qui finit par « reste collé au suivant, un mot qui commence par » au précédent.
+fn mots_insecables(t: &str) -> Vec<String> {
+    let mut mots: Vec<String> = Vec::new();
+    let mut coller = false;
+    for mot in t.split_whitespace() {
+        match mots.last_mut() {
+            Some(dernier) if coller || mot.starts_with('»') => {
+                dernier.push(' ');
+                dernier.push_str(mot);
+            }
+            _ => mots.push(mot.to_string()),
+        }
+        coller = mot.ends_with('«');
+    }
+    mots
+}
+
 /// Comme `envelopper`, la première ligne d'au plus `premiere` caractères (elle suit un début déjà affiché).
 pub fn envelopper_decale(t: &str, premiere: usize, suivantes: usize) -> Vec<String> {
     let mut lignes = Vec::new();
     let mut ligne = String::new();
-    for mot in t.split_whitespace() {
+    for mot in mots_insecables(t) {
+        let mot = mot.as_str();
         let largeur = if lignes.is_empty() { premiere } else { suivantes };
         if !ligne.is_empty()
             && largeur_affichee(&ligne)
@@ -1067,5 +1087,36 @@ mod tests {
         let lignes = envelopper("💡 💡 💡 💡 💡", 8);
         assert_eq!(lignes, ["💡 💡 💡", "💡 💡"]);
         assert!(lignes.iter().all(|l| largeur_affichee(l) <= 8));
+    }
+
+    /// Décidé : jamais une ligne qui finit par « ni une qui commence par », à toutes les largeurs ; rien de perdu ni
+    /// de déplacé, et la largeur tenue, sauf pour un groupe insécable plus large qu'elle, seul sur sa ligne.
+    #[test]
+    fn envelopper_ne_separe_pas_les_guillemets() {
+        let texte = "Temps réel des fichiers : arrêté, il passe par le veilleur, coupé ; « vanguard veilleur on » \
+                     l'allume. « Sain » veut dire « rien de connu dans ce qui a été lu », et « » reste entier.";
+        let mots: Vec<&str> = texte.split_whitespace().collect();
+        for largeur in 8_usize..=90 {
+            for premiere in [largeur, largeur.saturating_sub(5).max(4)] {
+                let lignes = envelopper_decale(texte, premiere, largeur);
+                assert_eq!(
+                    lignes.join(" ").split_whitespace().collect::<Vec<_>>(),
+                    mots,
+                    "{largeur}"
+                );
+                for (n, l) in lignes.iter().enumerate() {
+                    assert!(!l.ends_with('«') && !l.starts_with('»'), "{largeur} : {l:?}");
+                    let place = if n == 0 { premiere } else { largeur };
+                    assert!(
+                        largeur_affichee(l) <= place || mots_insecables(l).len() == 1,
+                        "{largeur} : {l:?}"
+                    );
+                }
+            }
+        }
+        // La coupe garde sa place à l'intérieur des guillemets : le groupe ne prend que le mot voisin.
+        assert_eq!(envelopper("a « b c d » e", 3), ["a", "« b", "c", "d »", "e"]);
+        assert_eq!(mots_insecables("« »"), ["« »"]);
+        assert_eq!(envelopper("💡 💡 💡 💡 💡", 8), ["💡 💡 💡", "💡 💡"]);
     }
 }
