@@ -167,7 +167,7 @@ fn alerter_suspect(m: &Menace, notifier: bool) {
     }
 }
 
-/// Pur : le chemin que nomme la clé « normale ici » d'un fichier (« blocage|sha256:<hex>|fichier:<chemin> »), s'il
+/// Pur : le chemin que nomme la clé « normale ici » d'un fichier (« `blocage|sha256:<hex>|fichier:<chemin>` »), s'il
 /// est absolu.
 pub(crate) fn chemin_de_cle(cle: &str) -> Option<PathBuf> {
     let (hex, reste) = cle.strip_prefix("blocage|sha256:")?.split_once('|')?;

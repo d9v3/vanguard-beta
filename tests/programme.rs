@@ -1118,8 +1118,9 @@ fn verifier_fichier_en_json() {
     assert!(v["moteur"].is_null(), "{v}");
 }
 
-/// ClamAV absent (un PATH vide) et aucune réponse : la question « L'installer maintenant ? » trouve la fin de l'entrée,
-/// qui vaut « non ». Le verdict suit, incomplet ; le programme ne quitte pas à la question, comme jusqu'à la 0.88.
+/// ClamAV absent (un PATH vide) et aucune réponse : depuis AV5 (P16), Vanguard ne propose plus de l'installer, ni
+/// commande ni question ; clamscan n'est qu'un second avis facultatif. Son absence reste dite, et la vérification
+/// incomplète : ce qui n'a pas pu être vérifié n'est jamais compté sain.
 #[cfg(unix)]
 #[test]
 fn verifier_fichier_sans_clamav_ni_reponse() {
@@ -1139,31 +1140,18 @@ fn verifier_fichier_sans_clamav_ni_reponse() {
     );
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     let t = sans_couleurs(&s.texte).split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(t.contains("L'installer maintenant ?"), "{t}");
-    // B1 (campagne 5) : la commande d'installation est montrée avant la question qui l'accepte, seule entre l'annonce
-    // et la question, entière (un « clamav » n'importe où avant la question ne prouvait rien).
-    #[cfg(target_os = "linux")]
-    {
-        let avant = t.split("L'installer maintenant ?").next().unwrap_or_default();
-        let commande = avant.rsplit("n'est pas installé.").next().unwrap_or_default().trim();
-        let paquets = commande.split(" && echo").next().unwrap_or_default();
-        assert!(
-            paquets.ends_with(" clamav") || paquets.ends_with(" clamav clamav-update"),
-            "{t}"
-        );
-        // Une seule commande, de son début (« x ; sudo pacman -S clamav » finissait bien par « clamav »).
-        assert!(
-            (paquets.starts_with("sudo ") || paquets.starts_with("omarchy pkg add "))
-                && !paquets.contains([';', '&', '|', '`', '$', '\n']),
-            "{t}"
-        );
-        assert!(
-            ["install ", "pkg add ", "pacman -S "]
-                .iter()
-                .any(|m| paquets.contains(m)),
-            "{t}"
-        );
+    assert!(!t.contains("L'installer maintenant ?"), "{t}");
+    for proposition in [
+        "sudo ",
+        "pacman -S",
+        "pkg add",
+        "apt install",
+        "dnf install",
+        " install clamav",
+    ] {
+        assert!(!t.contains(proposition), "installation proposée ({proposition}) : {t}");
     }
+    assert!(t.contains("second avis facultatif"), "{t}");
     assert!(t.contains("ClamAV : impossible à vérifier"), "{t}");
     assert!(t.contains("Vérification incomplète (ClamAV)"), "{t}");
     let _ = std::fs::remove_dir_all(&maison);
