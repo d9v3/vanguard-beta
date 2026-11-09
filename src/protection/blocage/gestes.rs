@@ -32,6 +32,8 @@ pub(crate) struct Contexte {
     pub interactif: bool,
     /// Le programme de Vanguard, jamais mis en quarantaine.
     pub mon_programme: Option<String>,
+    /// Le fichier examiné par le temps réel et son identité à l'examen : sa quarantaine n'isole que cet inode.
+    pub examine: Option<(PathBuf, crate::protection::quarantaine::Identite)>,
 }
 
 impl Contexte {
@@ -47,6 +49,7 @@ impl Contexte {
                 let c = c.to_string_lossy();
                 c.strip_suffix(" (deleted)").unwrap_or(&c).to_string()
             }),
+            examine: None,
         }
     }
 }
@@ -82,6 +85,8 @@ enum Faire {
     Programme {
         arret: Option<Arret>,
         quarantaine: Option<(PathBuf, String)>,
+        /// L'identité du fichier à son examen, quand le temps réel l'a lue.
+        identite: Option<crate::protection::quarantaine::Identite>,
     },
     Demarrage {
         id: String,
@@ -422,7 +427,16 @@ fn preparer_programme(
             etapes,
             commandes,
             apres: Vec::new(),
-            faire: Faire::Programme { arret, quarantaine },
+            faire: Faire::Programme {
+                identite: quarantaine.as_ref().and_then(|(c, _)| {
+                    ctx.examine
+                        .as_ref()
+                        .filter(|(examine, _)| examine == c)
+                        .map(|(_, i)| *i)
+                }),
+                arret,
+                quarantaine,
+            },
         },
         droits,
     ))
@@ -648,7 +662,11 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<Fait, E
                 ))
             }
         }
-        Faire::Programme { arret, quarantaine } => {
+        Faire::Programme {
+            arret,
+            quarantaine,
+            identite,
+        } => {
             let mut lancees = Vec::new();
             let mut fait = m.quoi.clone();
             if let Some(a) = &arret {
@@ -724,6 +742,7 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<Fait, E
                 automatique,
                 lancees,
                 preuve,
+                identite,
             };
             match crate::protection::quarantaine::isoler(chemin, detection, demande) {
                 Ok(_) => Ok(Fait {
@@ -1511,6 +1530,7 @@ mod tests {
                     demandee: None,
                 }),
                 quarantaine: None,
+                identite: None,
             },
         };
         let e = faire(&m, pret(pid), false).unwrap_err().to_string();
@@ -1539,6 +1559,7 @@ mod tests {
             admin,
             interactif,
             mon_programme: Some("/home/alice/vanguard".into()),
+            examine: None,
         }
     }
 
@@ -1860,6 +1881,7 @@ mod tests {
                 demandee: None,
             }),
             quarantaine: None,
+            identite: None,
         };
         let repris = relever(releve(&geste, &faire("/tmp/.x/outil".into())));
         assert!(repris.processus.is_none());

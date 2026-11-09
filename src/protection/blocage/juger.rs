@@ -60,6 +60,7 @@ fn contexte() -> Contexte {
         admin: gestes::administrateur_ou_inconnu(),
         interactif: false,
         mon_programme: std::env::current_exe().ok().map(|c| c.to_string_lossy().into_owned()),
+        examine: None,
     }
 }
 

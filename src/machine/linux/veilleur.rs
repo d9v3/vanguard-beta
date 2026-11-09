@@ -2333,7 +2333,7 @@ fn tour_fichiers(s: &mut fichiers::Surveillance, debit: &mut Debit) {
             Decision::Noter { notifier: false } => Annonce::Noter,
             Decision::Repete | Decision::Taire => Annonce::Taire,
         };
-        let fait = en_direct::fichier_en_direct(&x.chemin, &x.ou, &x.resultat, annonce);
+        let fait = en_direct::fichier_en_direct(&x.chemin, &x.ou, &x.resultat, annonce, Some(x.identite));
         s.noter_suite(fait);
     }
 }

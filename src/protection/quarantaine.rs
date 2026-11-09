@@ -62,6 +62,34 @@ fn enregistrer(dossier: &Path, r: &Registre) -> std::io::Result<()> {
     crate::socle::ecrire_atomique(&registre_dans(dossier), texte)
 }
 
+/// L'identité d'un fichier (périphérique, inode, nombre de noms) prise à son examen, sur le descripteur même qui a été
+/// lu. La quarantaine déplace ensuite un nom : sans cette identité, un programme du compte qui glisse sous ce nom un
+/// lien dur vers ~/.bashrc entre l'examen et le déplacement ferait rendre ~/.bashrc illisible (permissions à zéro sur
+/// l'inode partagé), au nom de la quarantaine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Identite {
+    pub dev: u64,
+    pub ino: u64,
+    pub liens: u64,
+}
+
+#[cfg(unix)]
+impl Identite {
+    pub(crate) fn de(m: &std::fs::Metadata) -> Identite {
+        use std::os::unix::fs::MetadataExt;
+        Identite {
+            dev: m.dev(),
+            ino: m.ino(),
+            liens: m.nlink(),
+        }
+    }
+
+    /// Le même inode (le nombre de noms à part).
+    pub(crate) fn meme_fichier(&self, autre: &Identite) -> bool {
+        (self.dev, self.ino) == (autre.dev, autre.ino)
+    }
+}
+
 /// Qui demande la quarantaine, pour la noter dans « Ce que Vanguard a changé » (`changements`), avec de quoi
 /// l'annuler (`vanguard blocage annuler`) : le blocage d'une menace, ou une analyse (antivirus, YARA) après accord.
 pub(crate) struct Demande {
@@ -74,6 +102,8 @@ pub(crate) struct Demande {
     pub lancees: Vec<String>,
     /// Le relevé d'avant le geste (`preuve::relever`) : sans lui, pas de quarantaine.
     pub preuve: crate::protection::preuve::PreuveFaite,
+    /// L'identité du fichier à son examen (temps réel) : un autre fichier sous ce nom n'est pas isolé.
+    pub identite: Option<Identite>,
 }
 
 /// La demande d'une analyse (antivirus, YARA) qui a trouvé `chemin` : son relevé est fait maintenant, avant
@@ -94,6 +124,7 @@ pub(crate) fn demande_d_analyse(chemin: &Path, detection: &str) -> Demande {
             &format!("fichier:{}", chemin.display()),
             crate::modele::evenement::Source::Analyse,
         ),
+        identite: None,
     }
 }
 
@@ -112,7 +143,7 @@ pub(crate) fn isoler(chemin: &Path, detection: &str, d: Demande) -> std::io::Res
     // Le seul chemin vers la quarantaine : un fichier signé par Microsoft n'y va jamais, d'où que vienne la demande
     // (défense D6a) ; une signature illisible s'y montre puis se confirme, seulement à la demande de la personne.
     let r = garde_de_signature(chemin, d.automatique, &mut lancees)
-        .and_then(|()| isoler_dans(chemin, detection, &dossier(), sha256));
+        .and_then(|()| isoler_dans(chemin, detection, &dossier(), sha256, d.identite));
     let annulation =
         r.as_ref()
             .ok()
@@ -239,7 +270,13 @@ fn essai_de_deplacement(_chemin: &Path) -> Option<u32> {
     None
 }
 
-fn isoler_dans(chemin: &Path, detection: &str, dossier: &Path, sha256: Option<String>) -> std::io::Result<PathBuf> {
+fn isoler_dans(
+    chemin: &Path,
+    detection: &str,
+    dossier: &Path,
+    sha256: Option<String>,
+    attendue: Option<Identite>,
+) -> std::io::Result<PathBuf> {
     // Lancé par sudo -E, root écrirait dans le dossier d'un compte, où un programme de ce compte a pu changer
     // journal.txt en lien vers /etc/ld.so.preload : la ligne ajoutée (une origine choisie par lui) y serait lue. Le
     // fichier reste en place, et `isoler` note l'échec.
@@ -263,6 +300,14 @@ fn isoler_dans(chemin: &Path, detection: &str, dossier: &Path, sha256: Option<St
         )));
     }
     #[cfg(unix)]
+    let avant = {
+        let avant = Identite::de(&meta);
+        identite_permise(&avant, attendue.as_ref())?;
+        avant
+    };
+    #[cfg(not(unix))]
+    let _ = attendue;
+    #[cfg(unix)]
     let mode = Some(std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o7777);
     #[cfg(windows)]
     let mode = None;
@@ -277,13 +322,29 @@ fn isoler_dans(chemin: &Path, detection: &str, dossier: &Path, sha256: Option<St
     let nom = format!("{horodatage}.{nom_origine}{suffixe}");
     let dest = dossier.join(&nom);
     // rename échoue d'un disque à l'autre (clé USB → disque) : copie, puis suppression de l'original.
-    std::fs::rename(chemin, &dest).or_else(|_| {
+    let renomme = std::fs::rename(chemin, &dest).map(|()| true).or_else(|_| {
+        #[cfg(unix)]
+        copier_le_meme(chemin, &dest, &avant)?;
+        #[cfg(not(unix))]
         std::fs::copy(chemin, &dest)?;
         // Original impossible à supprimer : pas de seconde copie, encore utilisable, en quarantaine.
-        std::fs::remove_file(chemin).inspect_err(|_| {
-            let _ = std::fs::remove_file(&dest);
-        })
+        std::fs::remove_file(chemin)
+            .inspect_err(|_| {
+                let _ = std::fs::remove_file(&dest);
+            })
+            .map(|()| false)
     })?;
+    // Le nom déplacé est relu avant de toucher aux permissions : un autre inode glissé sous ce nom entre la relecture
+    // et le déplacement retourne à sa place, intact.
+    #[cfg(unix)]
+    if renomme {
+        let apres = std::fs::symlink_metadata(&dest).map(|m| Identite::de(&m));
+        if !apres.as_ref().is_ok_and(|a| a.meme_fichier(&avant) && a.liens == 1) {
+            return Err(remettre_le_nom(&dest, chemin));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = renomme;
     #[cfg(unix)]
     std::fs::set_permissions(&dest, std::os::unix::fs::PermissionsExt::from_mode(0o000))?;
     #[cfg(windows)]
@@ -305,6 +366,74 @@ fn isoler_dans(chemin: &Path, detection: &str, dossier: &Path, sha256: Option<St
     r.fichiers.push(entree);
     enregistrer(dossier, &r)?;
     Ok(dest)
+}
+
+/// Le fichier relu juste avant le déplacement est-il celui qui a été examiné, et seul à porter son contenu ? Un fichier
+/// à plusieurs noms (liens durs) n'est jamais isolé : ses permissions à zéro toucheraient aussi les autres noms, que
+/// la personne n'a pas vus (un ~/.bashrc, une sauvegarde par liens durs).
+#[cfg(unix)]
+fn identite_permise(avant: &Identite, attendue: Option<&Identite>) -> std::io::Result<()> {
+    if attendue.is_some_and(|a| !a.meme_fichier(avant)) {
+        return Err(std::io::Error::other(tr!(
+            "le fichier a changé depuis son examen : rien n'est isolé, il sera examiné de nouveau",
+            "the file changed since it was scanned: nothing is isolated, it will be scanned again"
+        )));
+    }
+    if avant.liens > 1 {
+        return Err(std::io::Error::other(trf!(
+            "ce fichier a {} noms (liens durs) : le rendre inutilisable toucherait aussi les autres ; rien n'est fait",
+            "this file has {} names (hard links): making it unusable would also affect the others; nothing is done",
+            avant.liens
+        )));
+    }
+    Ok(())
+}
+
+/// D'un disque à l'autre : la copie part du descripteur ouvert sans suivre de lien, dont l'identité est relue, puis
+/// l'original n'est supprimé que s'il porte encore cette identité.
+#[cfg(unix)]
+fn copier_le_meme(chemin: &Path, dest: &Path, avant: &Identite) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let change = || {
+        std::io::Error::other(tr!(
+            "le fichier a changé pendant la quarantaine : rien n'est isolé",
+            "the file changed during quarantine: nothing is isolated"
+        ))
+    };
+    let mut source = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(chemin)?;
+    if !Identite::de(&source.metadata()?).meme_fichier(avant) {
+        return Err(change());
+    }
+    let mut copie = std::fs::OpenOptions::new().write(true).create_new(true).open(dest)?;
+    let copiee = std::io::copy(&mut source, &mut copie).and_then(|_| copie.sync_all());
+    let toujours = std::fs::symlink_metadata(chemin).is_ok_and(|m| Identite::de(&m).meme_fichier(avant));
+    if copiee.is_err() || !toujours {
+        let _ = std::fs::remove_file(dest);
+        return Err(copiee.err().unwrap_or_else(change));
+    }
+    Ok(())
+}
+
+/// Un autre inode est arrivé dans la quarantaine sous le nom examiné : il retourne à son nom, sans rien écraser
+/// (un lien vers le nom d'origine, puis le retrait de la quarantaine). Un nom repris entre-temps le laisse où il est,
+/// et l'erreur le dit.
+#[cfg(unix)]
+fn remettre_le_nom(dest: &Path, chemin: &Path) -> std::io::Error {
+    let remis = std::fs::hard_link(dest, chemin).and_then(|()| std::fs::remove_file(dest));
+    match remis {
+        Ok(()) => std::io::Error::other(tr!(
+            "un autre fichier a pris ce nom pendant la quarantaine : remis à sa place, rien n'est isolé",
+            "another file took this name during quarantine: put back in place, nothing is isolated"
+        )),
+        Err(e) => std::io::Error::other(trf!(
+            "un autre fichier a pris ce nom pendant la quarantaine, et ne se remet pas ({e}) : il est intact dans {}",
+            "another file took this name during quarantine and cannot be put back ({e}): it is intact in {}",
+            chemin_affichable(dest)
+        )),
+    }
 }
 
 /// Vanguard administrateur (Windows) écrit la quarantaine dans le profil du compte qui l'a ouvert ainsi, où un
@@ -733,7 +862,7 @@ mod tests {
         std::fs::write(&fichier, b"MZ contenu").unwrap();
         #[cfg(unix)]
         std::fs::set_permissions(&fichier, std::os::unix::fs::PermissionsExt::from_mode(0o751)).unwrap();
-        let dest = isoler_dans(&fichier, "Win32.Trojan.Exemple", &q, Some("ab".repeat(32))).unwrap();
+        let dest = isoler_dans(&fichier, "Win32.Trojan.Exemple", &q, Some("ab".repeat(32)), None).unwrap();
         assert!(!fichier.exists() && dest.exists());
         #[cfg(unix)]
         assert_eq!(
@@ -764,6 +893,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(&maison);
     }
 
+    /// Un lien dur glissé sous le nom examiné (vers un fichier de la personne) n'est jamais isolé ni rendu illisible ;
+    /// un fichier à plusieurs noms non plus ; le fichier examiné, lui, l'est.
+    #[cfg(unix)]
+    #[test]
+    fn lien_dur_jamais_isole() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = jetable("lien-dur");
+        let q = d.join("quarantaine");
+        let colis = d.join("colis.exe");
+        let precieux = d.join("bashrc");
+        std::fs::write(&colis, b"MZ examine").unwrap();
+        std::fs::write(&precieux, b"export PS1=alice").unwrap();
+        std::fs::set_permissions(&precieux, PermissionsExt::from_mode(0o644)).unwrap();
+        let examine = Identite::de(&std::fs::symlink_metadata(&colis).unwrap());
+        assert_eq!(examine.liens, 1);
+        // Après l'examen, le nom devient un lien dur vers le fichier de la personne.
+        std::fs::remove_file(&colis).unwrap();
+        std::fs::hard_link(&precieux, &colis).unwrap();
+        assert!(isoler_dans(&colis, "Test.Fichier", &q, None, Some(examine)).is_err());
+        // Même sans identité attendue : deux noms, rien n'est fait.
+        assert!(isoler_dans(&colis, "Test.Fichier", &q, None, None).is_err());
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&precieux), 0o644);
+        assert_eq!(mode(&colis), 0o644);
+        assert_eq!(std::fs::read(&precieux).unwrap(), b"export PS1=alice");
+        assert_eq!(liste_dans(&q), Vec::<Entree>::new());
+        // La copie d'un disque à l'autre relit aussi l'identité : rien n'est copié.
+        let ailleurs = d.join("copie");
+        assert!(copier_le_meme(&colis, &ailleurs, &examine).is_err());
+        assert!(!ailleurs.exists());
+        // Le fichier examiné, à son nom, part en quarantaine.
+        std::fs::remove_file(&colis).unwrap();
+        std::fs::write(&colis, b"MZ examine").unwrap();
+        let examine = Identite::de(&std::fs::symlink_metadata(&colis).unwrap());
+        let dest = isoler_dans(&colis, "Test.Fichier", &q, None, Some(examine)).unwrap();
+        assert!(!colis.exists());
+        assert_eq!(mode(&dest), 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Un autre inode arrivé dans la quarantaine retourne à son nom sans rien écraser ; un nom repris le laisse où il
+    /// est, intact.
+    #[cfg(unix)]
+    #[test]
+    fn autre_inode_remis_a_son_nom() {
+        let d = jetable("remis");
+        let dest = d.join("123.colis.exe");
+        let chemin = d.join("colis.exe");
+        std::fs::write(&dest, b"fichier de la personne").unwrap();
+        let _ = remettre_le_nom(&dest, &chemin);
+        assert!(!dest.exists());
+        assert_eq!(std::fs::read(&chemin).unwrap(), b"fichier de la personne");
+        std::fs::write(&dest, b"second").unwrap();
+        let e = remettre_le_nom(&dest, &chemin);
+        assert!(e.to_string().contains("123.colis.exe"), "{e}");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"second");
+        assert_eq!(std::fs::read(&chemin).unwrap(), b"fichier de la personne");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// Le journal de la quarantaine se lit avec cat : un nom piégé n'y pilote pas le terminal, et ses tabulations ou
     /// sauts de ligne ne cassent pas les quatre colonnes.
     /// journal.txt changé en lien par un autre programme : la ligne n'est pas ajoutée au fichier visé. Et en root, le
@@ -779,7 +968,7 @@ mod tests {
         std::os::unix::fs::symlink(&cible, q.join("journal.txt")).unwrap();
         let f = d.join("x.so");
         std::fs::write(&f, b"x").unwrap();
-        isoler_dans(&f, "Test.Fichier", &q, None).unwrap();
+        isoler_dans(&f, "Test.Fichier", &q, None, None).unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), b"");
         if crate::socle::uid() == 0 {
             return crate::essais::saute("lancé en root : un dossier à soi est à root");

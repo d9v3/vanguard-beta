@@ -397,6 +397,7 @@ mod tests {
             admin: false,
             interactif: false,
             mon_programme: None,
+            examine: None,
         };
         let s = [
             Etape::Suspendre,
@@ -504,6 +505,7 @@ mod tests {
             admin: false,
             interactif: false,
             mon_programme: None,
+            examine: None,
         };
         let mut apres = false;
         let d = derouler(

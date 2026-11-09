@@ -13,6 +13,7 @@ use super::gestes::{self, Contexte};
 use super::menaces::{self, Menace};
 use super::parametres::{Categorie, Decision, decider};
 use crate::protection::moteur::{self, Resultat, Verdict};
+use crate::protection::quarantaine::Identite;
 use crate::reseau::tableau::Genre;
 use crate::{tr, trf};
 
@@ -73,7 +74,14 @@ pub(crate) enum Annonce {
 }
 
 /// La suite du fichier `chemin`, arrivé dans `ou` (le dossier, prêt à montrer), d'après `r`, selon `annonce`.
-pub(crate) fn fichier_en_direct(chemin: &Path, ou: &str, r: &Resultat, annonce: Annonce) -> Fait {
+/// `identite` : celle du fichier lu à l'examen ; sa quarantaine n'isole que lui.
+pub(crate) fn fichier_en_direct(
+    chemin: &Path,
+    ou: &str,
+    r: &Resultat,
+    annonce: Annonce,
+    identite: Option<Identite>,
+) -> Fait {
     let notifier = annonce == Annonce::Notifier;
     let verdict = r.verdict();
     let Some(m) = menaces::menace_du_fichier(chemin.to_path_buf(), r, ou) else {
@@ -101,14 +109,23 @@ pub(crate) fn fichier_en_direct(chemin: &Path, ou: &str, r: &Resultat, annonce: 
         Suite::Quarantaine => {
             // Le contenu a changé depuis l'examen, ou ne se relit plus : rien n'est isolé sur la foi d'un autre
             // contenu (un fichier de la personne glissé au même nom) ; sa nouvelle écriture le ramène dans la file.
-            if !meme_contenu(chemin, hex.as_deref()) {
+            // Un autre inode sous ce nom (un lien dur vers un fichier de la personne) : pareil.
+            if !meme_contenu(chemin, hex.as_deref()) || !toujours_le_meme(chemin, identite.as_ref()) {
                 return Fait {
                     suite: Suite::NonVerifie,
                     isole: false,
                 };
             }
-            let ctx = Contexte::lire(HashSet::new(), false);
+            let mut ctx = Contexte::lire(HashSet::new(), false);
+            ctx.examine = identite.map(|i| (chemin.to_path_buf(), i));
             isole = super::bloquer_tout_seul(&m, &ctx, &p, None, notifier);
+            // La quarantaine a refusé un autre fichier glissé sous ce nom : ce qui est là n'a pas été examiné.
+            if !isole && !toujours_le_meme(chemin, identite.as_ref()) {
+                return Fait {
+                    suite: Suite::NonVerifie,
+                    isole: false,
+                };
+            }
         }
         Suite::UnClic => {
             let texte = if remise {
@@ -146,6 +163,19 @@ fn meme_contenu(chemin: &Path, attendu: Option<&str>) -> bool {
         crate::traces::empreinte(chemin, TAILLE_MAX),
         crate::traces::Empreinte::Sha256(h) if h.eq_ignore_ascii_case(attendu)
     )
+}
+
+/// Le nom porte-t-il encore le fichier examiné (même inode) ? Sans identité (hors du temps réel), rien à comparer.
+fn toujours_le_meme(chemin: &Path, identite: Option<&Identite>) -> bool {
+    #[cfg(unix)]
+    {
+        identite.is_none_or(|i| std::fs::symlink_metadata(chemin).is_ok_and(|m| Identite::de(&m).meme_fichier(i)))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (chemin, identite);
+        true
+    }
 }
 
 /// Un suspect : noté au journal (relié à sa clé, pour « c'est normal ici ») et notifié, sans geste ni lien vers un
@@ -261,6 +291,26 @@ mod tests {
         // Un tube nommé : relu sans attendre, ce n'est pas un fichier ordinaire.
         crate::essais::tube_nomme(&f).unwrap();
         assert!(!meme_contenu(&f, Some(&h)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Le nom porte-t-il encore l'inode examiné ? Un lien dur glissé à sa place, même au même contenu, ne vaut pas.
+    #[cfg(unix)]
+    #[test]
+    fn inode_examine_relu() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let f = d.join("colis.exe");
+        let autre = d.join("copie.exe");
+        std::fs::write(&f, b"contenu d'essai").unwrap();
+        std::fs::write(&autre, b"contenu d'essai").unwrap();
+        let examine = Identite::de(&std::fs::symlink_metadata(&f).unwrap());
+        assert!(toujours_le_meme(&f, Some(&examine)));
+        assert!(toujours_le_meme(&f, None));
+        std::fs::remove_file(&f).unwrap();
+        std::fs::hard_link(&autre, &f).unwrap();
+        assert!(!toujours_le_meme(&f, Some(&examine)));
+        std::fs::remove_file(&f).unwrap();
+        assert!(!toujours_le_meme(&f, Some(&examine)));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

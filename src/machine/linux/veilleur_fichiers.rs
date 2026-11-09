@@ -39,6 +39,7 @@ use crate::machine::linux::fanotify::{self, Groupe, lecture};
 use crate::machine::linux::garde::ouvrir;
 use crate::protection::heuristiques::Lieu;
 use crate::protection::moteur::{self, Resultat, Sources, Verdict};
+use crate::protection::quarantaine::Identite;
 use crate::{tr, trf};
 
 /// Les fichiers en attente d'examen, au plus : au-delà, un fichier de plus est compté non vérifié.
@@ -451,6 +452,8 @@ pub(crate) struct Examine {
     pub chemin: PathBuf,
     pub ou: String,
     pub resultat: Resultat,
+    /// L'identité du fichier lu (fstat du descripteur examiné) : la quarantaine n'isole que lui.
+    pub identite: Identite,
 }
 
 /// La surveillance en marche : ses deux fils, la file et les compteurs.
@@ -959,7 +962,7 @@ fn examiner(mut charger: Charger, p: &Partage<'_>, envoi: &SyncSender<Examine>) 
             reserves: base.reserves.clone(),
             ..base
         };
-        let Some(r) = examiner_un(marque, &nom, &sources, compteurs) else {
+        let Some((r, identite)) = examiner_un(marque, &nom, &sources, compteurs) else {
             continue;
         };
         let ms = u64::try_from(Instant::now().saturating_duration_since(dernier).as_millis()).unwrap_or(u64::MAX);
@@ -974,6 +977,7 @@ fn examiner(mut charger: Charger, p: &Partage<'_>, envoi: &SyncSender<Examine>) 
                     chemin: marque.chemin.join(OsStr::from_bytes(&nom)),
                     ou: marque.nom.clone(),
                     resultat: r,
+                    identite,
                 };
                 // Le veilleur prend la suite à son rythme : file pleine, on attend, sans jamais bloquer l'arrêt.
                 loop {
@@ -1011,8 +1015,8 @@ fn prochain(arret: &AtomicBool, attente: &(Mutex<Attente>, Condvar)) -> Option<(
 }
 
 /// Rouvre `nom` sous le dossier marqué, sans suivre aucun lien, et l'examine s'il est un fichier ordinaire de taille
-/// bornée. `None` : sauté, et compté.
-fn examiner_un(m: &Marque, nom: &[u8], sources: &Sources<'_>, c: &Compteurs) -> Option<Resultat> {
+/// bornée ; rend aussi l'identité du fichier lu. `None` : sauté, et compté.
+fn examiner_un(m: &Marque, nom: &[u8], sources: &Sources<'_>, c: &Compteurs) -> Option<(Resultat, Identite)> {
     let ouvert = {
         let fd = m.fd.read().unwrap_or_else(PoisonError::into_inner);
         ouvrir::sous(fd.as_fd(), Path::new(OsStr::from_bytes(nom)), false)
@@ -1041,13 +1045,14 @@ fn examiner_un(m: &Marque, nom: &[u8], sources: &Sources<'_>, c: &Compteurs) -> 
         plus(&c.trop_gros);
         return None;
     }
+    let identite = Identite::de(&meta);
     let chemin = m.chemin.join(OsStr::from_bytes(nom));
     plus(&c.examines);
     let r = moteur::examiner_ouvert(f, &chemin, sources, bornes()).ok();
     if r.is_none() {
         plus(&c.illisibles);
     }
-    r
+    r.map(|r| (r, identite))
 }
 
 #[allow(
@@ -1238,12 +1243,17 @@ mod tests {
         assert_eq!(lu(&compteurs.partis), 1);
         let nom = b"\xfe\xffalice";
         std::fs::write(dossier.join(OsStr::from_bytes(nom)), elf_marque()).unwrap();
-        let r = examiner_un(&surveille, nom, &sources, &compteurs).unwrap();
+        let (r, identite) = examiner_un(&surveille, nom, &sources, &compteurs).unwrap();
         assert!(matches!(r.verdict(), Verdict::Certain(..)), "{:?}", r.verdict());
+        // L'identité rendue est celle du fichier lu, sous son nom.
+        let lue = std::fs::symlink_metadata(dossier.join(OsStr::from_bytes(nom))).unwrap();
+        assert_eq!(identite, Identite::de(&lue));
+        assert_eq!(identite.liens, 1);
         std::fs::write(dossier.join("note.txt"), b"Liste du Salon").unwrap();
         assert_eq!(
             examiner_un(&surveille, b"note.txt", &sources, &compteurs)
                 .unwrap()
+                .0
                 .verdict(),
             Verdict::Sain
         );
