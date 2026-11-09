@@ -704,6 +704,17 @@ fn dossier_plateforme(compatibilite: &str) -> Option<std::path::PathBuf> {
     d.is_absolute().then_some(d)
 }
 
+/// Le dossier du programme qui a ouvert ce profil en dernier, s'il n'existe plus : le navigateur a été désinstallé
+/// (ou déplacé, et le profil n'a pas été rouvert depuis). Seule une absence prouvée compte, jamais un refus de lecture.
+/// Flatpak écrit un chemin du bac à sable (/app/…), invisible d'ici : jamais pris pour une absence.
+fn programme_disparu(compatibilite: &str) -> Option<std::path::PathBuf> {
+    let d = dossier_plateforme(compatibilite).filter(|d| !d.starts_with("/app"))?;
+    match std::fs::symlink_metadata(&d) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(d),
+        _ => None,
+    }
+}
+
 /// La version majeure de Gecko, le moteur de toute la famille Firefox (Zen, Floorp, Waterfox numérotent leur
 /// programme à leur façon, pas leur moteur), d'après le platform.ini de ce dossier : « `[Build] Milestone=144.0.2` ».
 fn version_gecko(platform: &str) -> Option<u32> {
@@ -975,7 +986,22 @@ pub fn post_quantique() -> Vec<Constat> {
                                 .map_or(Version::Illisible, Version::Lue),
                             allume: pq_allume_firefox(&prefs),
                         };
-                        juger_pq(&navigateur, coupure.as_ref(), &sans)
+                        // Un profil laissé par un navigateur désinstallé : aucune version à lire, et rien n'y passe
+                        // tant qu'il n'est pas rouvert. Une préférence qui coupe l'échange, elle, reste dite.
+                        match programme_disparu(&compatibilite) {
+                            Some(d) if coupure.is_none() && !sans.allume && sans.version == Version::Illisible => {
+                                let d = d.display();
+                                sans_objet(
+                                    CAT_PQ,
+                                    Absence::Logiciel,
+                                    trf!(
+                                        "{navigateur} : profil laissé par un navigateur qui n'est plus installé ({d} absent) ; vérifié à sa prochaine ouverture.",
+                                        "{navigateur}: profile left by a browser no longer installed ({d} missing); checked when it is next opened."
+                                    ),
+                                )
+                            }
+                            _ => juger_pq(&navigateur, coupure.as_ref(), &sans),
+                        }
                     }
                     Err(raison) => impossible(
                         CAT_PQ,
@@ -1345,6 +1371,14 @@ mod tests {
         assert_eq!(version_famille_firefox("Firefox", ini), Some(128));
         std::fs::remove_file(d.join("platform.ini")).unwrap();
         assert_eq!(version_famille_firefox("Zen", &compat), None);
+        // Le dossier est là sans platform.ini : illisible, pas disparu. Le dossier retiré : disparu (désinstallé).
+        assert_eq!(programme_disparu(&compat), None);
+        let chemin = d.to_path_buf();
+        drop(d);
+        assert_eq!(programme_disparu(&compat), Some(chemin));
+        assert_eq!(programme_disparu(ini), None);
+        #[cfg(unix)]
+        assert_eq!(programme_disparu("LastPlatformDir=/app/lib/zen\n"), None);
         assert!(pq_allume_firefox("user_pref(\"security.tls.enable_kyber\", true);\n"));
         assert!(!pq_allume_firefox(""));
     }
