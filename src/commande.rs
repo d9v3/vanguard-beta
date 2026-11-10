@@ -1281,6 +1281,8 @@ mod tests_sh_chaine {
         ("machine/journaux.rs", 4),
         ("machine/linux/algorithmes_ssh.rs", 9),
         ("machine/linux/corpus.rs", 1),
+        // Ce qu'une ligne lance : les lanceurs jamais suivis (sudo, doas, pkexec), une liste de refus, aucun appel.
+        ("machine/linux/designes.rs", 3),
         ("machine/linux/dissimulation.rs", 3),
         ("machine/linux/durcissement.rs", 4),
         ("machine/linux/maj.rs", 5),
