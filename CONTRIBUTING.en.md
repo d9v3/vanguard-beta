@@ -160,6 +160,7 @@ A security flaw? No public issue or pull request: report it privately, see [SECU
 | `fenetre/` | the Vanguard window (`vanguard-fenetre`, egui), a separate crate with its own Cargo.lock and `fenetre/deny.toml`; Linux with glibc, Windows; embedded fonts (`fenetre/polices/`, OFL) |
 | `fenetre/src/commandes.rs`, `fenetre/src/lanceur.rs`, `fenetre/src/nettoyage.rs` | the closed list of commands run (fixed arguments, time limits); running the `vanguard` placed next to it (input closed, group killed on stop, bounded outputs); text cleaned before display |
 | `fenetre/src/relais.rs`, `fenetre/src/bac_a_sable.rs` | Linux: the relay, split off at startup with the account's rights, the only one to start `vanguard` (numbered protocol, a request outside it = stop); the window's sandbox (Landlock according to the kernel version, no_new_privs; reading, display and graphics card only) |
+| `fenetre/src/travail.rs` | Windows: each `vanguard` run in its own job object: Stop and the end of the command also kill what it started, and so does closing the window |
 | `fenetre/src/appli.rs`, `fenetre/src/donnees/`, `fenetre/src/dessin/` | the window's state (screen, running command, console); JSON answers read without ever crashing (check, protection, journal, common result); drawing, the only part that talks to egui (frame, screens, check, drawn icons) |
 
 ### Extensions (plugins and lab)

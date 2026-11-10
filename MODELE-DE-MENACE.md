@@ -234,7 +234,7 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   `vanguard-fenetre` peut aussi remplacer `vanguard`. Sous Windows, la fenêtre et `vanguard` ne vérifient que le fait
   que l'autre soit un fichier ordinaire : ni son propriétaire, ni les droits (ACL) du fichier et de ses dossiers, que
   Windows ne laisse pas lire aussi simplement ; un dossier où d'autres comptes peuvent écrire n'est donc pas refusé
-  sous Windows. Sous Windows, Arrêter arrête la commande lancée, pas encore ce qu'elle aurait lancé elle-même. Sous
+  sous Windows. Sous Windows, chaque commande lancée est mise dans son propre objet de travail (job object) : Arrêter, le délai et la fin de la commande arrêtent aussi ce qu'elle a lancé, et tout s'arrête si la fenêtre s'arrête ; un processus lancé dans le court instant d'avant son entrée dans l'objet y échapperait. Sous
   Linux, pas encore de lecteur d'écran ni de copier-coller. Le bac à sable de la fenêtre protège moins avant Landlock 9
   (elle peut encore joindre les sockets Unix du compte, dont le bus de session, d'où `systemd-run` lancerait un
   programme) et sous X11, où tout programme de l'écran peut taper dans les autres fenêtres et où les sockets

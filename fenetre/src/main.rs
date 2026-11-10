@@ -23,6 +23,8 @@ mod nettoyage;
 mod relais;
 mod sortie;
 mod temps;
+#[cfg(windows)]
+mod travail;
 
 use std::process::ExitCode;
 

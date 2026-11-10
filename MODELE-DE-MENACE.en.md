@@ -222,8 +222,10 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
 - **Limits.** Like the program, it assumes only you can modify its folder: whoever can replace `vanguard-fenetre` can
   also replace `vanguard`. On Windows, the window and `vanguard` only check that the other one is a regular file:
   neither its owner nor the permissions (ACLs) of the file and its folders, which Windows does not let you read as
-  simply; a folder where other accounts can write is therefore not refused on Windows. On Windows, Stop stops the
-  command it ran, not yet what that command started itself. On Linux, no screen reader nor copy and paste yet. The
+  simply; a folder where other accounts can write is therefore not refused on Windows. On Windows, each command it
+  runs is put in its own job object: Stop, the time limit and the end of the command also stop what it started, and
+  everything stops if the window stops; a process started in the short moment before it enters the object would
+  escape it. On Linux, no screen reader nor copy and paste yet. The
   window's sandbox protects less before Landlock 9 (it can still reach the account's Unix sockets, including the
   session bus, from which `systemd-run` would start a program) and under X11, where any program on the screen can type
   into other windows and abstract sockets stay reachable (X11 needs them).

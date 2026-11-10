@@ -363,6 +363,7 @@ pub fn surveiller(
             );
         }
     };
+    let groupe = Groupe::de(&enfant);
     let trop = Arc::new(AtomicBool::new(false));
     let abandon = Arc::new(AtomicBool::new(false));
     let (sortie_envoi, sortie_recu) = mpsc::channel();
@@ -405,7 +406,7 @@ pub fn surveiller(
             Ok(true) => break Issue::Terminee,
             Ok(false) => {}
             Err(e) => {
-                arreter(&mut enfant);
+                arreter(&mut enfant, &groupe);
                 break Issue::Impossible(crate::nettoyage::nom(&e.to_string(), 200));
             }
         }
@@ -419,7 +420,7 @@ pub fn surveiller(
             None
         };
         if let Some(i) = issue {
-            arreter(&mut enfant);
+            arreter(&mut enfant, &groupe);
             break i;
         }
         std::thread::sleep(PAS);
@@ -435,11 +436,11 @@ pub fn surveiller(
     let sortie = if let Ok(s) = sortie_recu.recv_timeout(FIN_LECTURE) {
         Some(s)
     } else {
-        tuer_groupe(&enfant, true);
+        groupe.tuer(true);
         sortie_recu.recv_timeout(FIN_LECTURE).ok()
     };
     // Rien du groupe ne survit à la commande, même un petit-enfant qui a fermé ses sorties ; puis la récolte.
-    tuer_groupe(&enfant, true);
+    groupe.tuer(true);
     let code = enfant.wait().ok().and_then(|s| s.code());
     // Les dernières lignes d'erreur déjà écrites sont lues ; passé FIN_LECTURE, les lecteurs abandonnent (Linux) :
     // un processus qui garderait une sortie ouverte n'y retient ni un fil ni un tuyau de la fenêtre.
@@ -466,8 +467,8 @@ pub fn surveiller(
 
 /// Une sortie de l'enfant, lue jusqu'à sa fin ou jusqu'à `abandon` (Linux : l'attente se fait par poll, par pas
 /// de 100 ms, pour voir l'abandon ; le lecteur rend alors une fin, et le tuyau se ferme avec lui). Sous Windows, une
-/// lecture ordinaire : un lecteur reste en attente tant qu'un enfant de `vanguard` garde la sortie ouverte (limite
-/// connue, comme pour l'arrêt).
+/// lecture ordinaire : un enfant de `vanguard` qui garderait la sortie ouverte est tué avec son objet de travail à la
+/// fin de la commande, et la lecture finit avec lui (s'il a pu y être mis, voir `travail`).
 struct Lecteur<R> {
     source: R,
     abandon: Arc<AtomicBool>,
@@ -495,11 +496,11 @@ impl<R: Read> Read for Lecteur<R> {
     }
 }
 
-/// Arrête l'enfant : SIGTERM au groupe, puis SIGKILL après `GRACE` (Linux) ; sous Windows, `TerminateProcess` sur
-/// `vanguard` seul (ses enfants éventuels ne sont pas tués : limite connue). Ne le récolte pas : `surveiller` tue
-/// encore ce qui reste du groupe, puis le récolte.
-fn arreter(enfant: &mut Child) {
-    tuer_groupe(enfant, false);
+/// Arrête l'enfant : SIGTERM au groupe, puis SIGKILL après `GRACE` (Linux) ; sous Windows, tout son objet de
+/// travail (`travail`), ou `vanguard` seul si Windows l'a refusé. Ne le récolte pas : `surveiller` tue encore ce qui
+/// reste du groupe, puis le récolte.
+fn arreter(enfant: &mut Child, groupe: &Groupe) {
+    groupe.tuer(false);
     let debut = Instant::now();
     while debut.elapsed() < GRACE {
         if matches!(fini(enfant), Ok(true)) {
@@ -507,7 +508,7 @@ fn arreter(enfant: &mut Child) {
         }
         std::thread::sleep(PAS);
     }
-    tuer_groupe(enfant, true);
+    groupe.tuer(true);
     let _ = enfant.kill();
 }
 
@@ -524,19 +525,39 @@ fn fini(enfant: &mut Child) -> std::io::Result<bool> {
     enfant.try_wait().map(|s| s.is_some())
 }
 
+/// Ce que `vanguard` a lancé avec lui : son groupe de processus (Linux, le numéro de `vanguard`) ou son objet de
+/// travail (Windows).
 #[cfg(unix)]
-fn tuer_groupe(enfant: &Child, force: bool) {
-    let Ok(groupe) = i32::try_from(enfant.id()) else {
-        return;
-    };
-    if groupe > 1 {
-        signal::groupe(groupe, if force { libc::SIGKILL } else { libc::SIGTERM });
+struct Groupe(Option<i32>);
+
+#[cfg(unix)]
+impl Groupe {
+    fn de(enfant: &Child) -> Groupe {
+        Groupe(i32::try_from(enfant.id()).ok().filter(|g| *g > 1))
+    }
+
+    fn tuer(&self, force: bool) {
+        if let Some(g) = self.0 {
+            signal::groupe(g, if force { libc::SIGKILL } else { libc::SIGTERM });
+        }
     }
 }
 
-#[cfg(not(unix))]
-fn tuer_groupe(enfant: &Child, force: bool) {
-    let _ = (enfant, force);
+#[cfg(windows)]
+struct Groupe(Option<crate::travail::Travail>);
+
+#[cfg(windows)]
+impl Groupe {
+    fn de(enfant: &Child) -> Groupe {
+        Groupe(crate::travail::Travail::pour(enfant))
+    }
+
+    /// Windows n'a pas de demande polie à envoyer à un programme sans fenêtre : arrêter, c'est tuer.
+    fn tuer(&self, _force: bool) {
+        if let Some(t) = &self.0 {
+            t.tuer();
+        }
+    }
 }
 
 #[cfg(unix)]
