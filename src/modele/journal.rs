@@ -1561,12 +1561,26 @@ pub(crate) fn dernier(filtre: impl Fn(&Evenement) -> bool, fenetre: chrono::Dura
     dernier_dans(&dossier_du_journal(), filtre, fenetre, chrono::Utc::now())
 }
 
+/// `dernier`, l'événement entier : ce qu'il disait, pour ne pas réécrire la même chose (un refus répété).
+pub(crate) fn dernier_evenement(filtre: impl Fn(&Evenement) -> bool, fenetre: chrono::Duration) -> Option<Evenement> {
+    dernier_evenement_dans(&dossier_du_journal(), filtre, fenetre, chrono::Utc::now())
+}
+
 fn dernier_dans(
     dossier: &Path,
     filtre: impl Fn(&Evenement) -> bool,
     fenetre: chrono::Duration,
     maintenant: chrono::DateTime<chrono::Utc>,
 ) -> Option<String> {
+    dernier_evenement_dans(dossier, filtre, fenetre, maintenant).map(|e| e.id)
+}
+
+fn dernier_evenement_dans(
+    dossier: &Path,
+    filtre: impl Fn(&Evenement) -> bool,
+    fenetre: chrono::Duration,
+    maintenant: chrono::DateTime<chrono::Utc>,
+) -> Option<Evenement> {
     let limite = maintenant
         .checked_sub_signed(fenetre)
         .map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
@@ -1588,7 +1602,6 @@ fn dernier_dans(
                 .filter(|e| e.quand <= apres)
                 .take_while(|e| e.quand >= limite)
                 .find(|e| !e.essai && filtre(e))
-                .map(|e| e.id)
         })
 }
 

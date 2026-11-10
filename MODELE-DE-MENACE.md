@@ -202,8 +202,10 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   vient d'écrire, et n'envoie que la sorte (retirer ou remettre) et l'empreinte du programme (32 chiffres
   hexadécimaux, calculée par `vanguard`) : jamais un nom, une commande ou un chemin. La forme lancée est fermée,
   `vanguard demarrage --retirer|--remettre <empreinte> --json`, et `vanguard` rejuge tout : empreinte mal formée,
-  inconnue, ambiguë, programme à garder, pare-feu, notes de Vanguard illisibles ou changées hors de Vanguard, tout est
-  refusé sans rien changer ; ce qui change passe par la même correction que le terminal (point de restauration,
+  inconnue, ambiguë, programme à garder, pare-feu, notes de Vanguard illisibles ou changées hors de Vanguard (ni
+  retrait ni remise tant qu'elles le sont), « remettre » un programme qui se lance déjà (remis ou réécrit hors de
+  Vanguard, peut-être devenu un programme à garder : la vieille note ne l'écrase pas, ni par l'annulation d'un blocage
+  ni par « Tout remettre comme avant »), tout est refusé sans rien changer ; ce qui change passe par la même correction que le terminal (point de restauration,
   valeur d'avant notée, une seule fenêtre administrateur, jamais sudo). La console ne lance aucun changement, sous
   aucune forme tapée. « Accepter » revérifie que le geste est encore dans la dernière liste lue : une liste relue qui
   ne le contient plus ferme la confirmation (« La liste a changé : rien n'a changé. »), comme changer d'écran ; la
@@ -215,14 +217,22 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   remettre comme avant » : deux Vanguard ne changent pas les notes en même temps, le second refuse sans rien changer.
   « Remettre » relit les notes sous ce verrou et exige le même réglage noté qu'à la première lecture (sinon refusé,
   rien écrit) ; « Retirer » un programme qui se lance remplace une vieille note restée d'avant par la valeur lue
-  maintenant, pour que « Remettre » ramène l'état d'avant ce retrait-là. Chaque changement fait ou refusé est écrit au
-  journal des événements (sorte, nom nettoyé, issue, empreinte). Sa fin est dite (fait, refusé, échec, avec la
+  maintenant, pour que « Remettre » ramène l'état d'avant ce retrait-là. Sous Linux, cette valeur d'avant (l'entrée
+  d'autostart) est lue en une seule ouverture qui ne suit pas un lien, n'attend pas un tube et s'arrête à 64 Kio :
+  sinon refusé, rien changé (une entrée qui est un lien ne se retire donc pas d'ici). Chaque changement fait ou refusé
+  est écrit au journal des événements (sorte, nom nettoyé, issue, empreinte) ; un refus identique au précédent (même
+  empreinte, même sorte, même raison) ne s'y réécrit pas pendant 10 minutes, pour qu'une rafale de demandes ne noie pas
+  les alertes ; un changement fait s'y écrit toujours. Sa fin est dite (fait, refusé, échec, avec la
   raison), puis la liste est relue ; seule la dernière ligne de la sortie, un JSON du même geste, avec le code 0, dit
   « fait » : tout le reste est un échec, jamais un succès (`fenetre/src/attaques.rs`, essais B1 à B3). Essais :
   `une_confirmation_ne_bloque_rien_et_suit_la_liste` (`fenetre/src/appli.rs`), les essais du relais
   (`fenetre/src/relais.rs`), `verrou_des_notes_tenu_puis_rendu` et ceux de `src/optimiser/demarrage.rs`
-  (`seul_un_programme_note_se_remet`, `pare_feu_reconnu_par_son_paquet`), et de bout en bout, avec un dossier
-  personnel jetable, `demarrage_retire_puis_remet_a_l_octet_pres` (`tests/programme.rs`).
+  (`seul_un_programme_note_se_remet`, `pare_feu_reconnu_par_son_paquet`),
+  `valeur_d_avant_d_autostart_ni_lien_ni_tube_ni_trop_gros` (`src/optimiser/linux.rs`), et de bout en bout, avec un
+  dossier personnel jetable, `demarrage_retire_puis_remet_a_l_octet_pres` et le module `demarrage_sous_attaque`
+  (`tests/programme.rs` : remise par-dessus un programme qui se lance, par la fenêtre et par « Tout remettre comme
+  avant », retrait sur des notes douteuses, changements simultanés, lien, verrou tenu, notes forgées ou rejouées,
+  refus répétés).
 - **Ses réponses sont lues avec méfiance.** Taille bornée, lignes coupées, séquences de terminal et caractères de
   contrôle retirés, JSON lu sans jamais planter (lecteurs et console fuzzés : `fenetre_donnees`, `fenetre_saisie`) ; une
   réponse illisible est dite telle, jamais comptée saine. Comme dans le terminal (`ui::affichable`), un caractère qui
@@ -258,11 +268,13 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   liste, en telle langue », « retirer ou remettre le programme de telle empreinte, en telle langue » et
   « arrêter » ; une demande hors de ce protocole (longueur, sorte ou langue inconnue) l'arrête (protocole fuzzé,
   `fenetre_relais`) ; il retrouve lui-même le `vanguard` voisin et rejoue sa garde ; il ne se laisse pas observer
-  (PR_SET_DUMPABLE à 0). Un changement, il le borne lui-même, sans croire la fenêtre : seulement pour une empreinte
-  qu'il a vue passer dans la dernière sortie de `demarrage --json` qu'il a lui-même relayée ; seulement quand rien
+  (PR_SET_DUMPABLE à 0). Un changement, il le borne lui-même, sans croire la fenêtre : seulement pour une empreinte et
+  une sorte qu'il a vues ensemble, dans le même geste, dans la dernière sortie de `demarrage --json` qu'il a lui-même
+  relayée (« remettre » n'y passe pas pour un programme que la liste offrait de retirer) ; seulement quand rien
   d'autre ne tourne, et rien d'autre ne se lance tant qu'il tourne ; « arrêter » ne le coupe pas (essais
-  `le_relais_ne_comprend_que_le_changement_de_forme_fermee`, `seules_les_empreintes_de_la_liste_sont_vues`,
-  `un_changement_vu_passe_seul_et_ne_se_coupe_pas`). Quand la fenêtre se ferme, il arrête les lectures en cours,
+  `le_relais_ne_comprend_que_le_changement_de_forme_fermee`, `seuls_les_gestes_de_la_liste_sont_vus`,
+  `aucun_nom_ne_fabrique_un_geste_vu`, `une_sorte_que_la_liste_n_offrait_pas_est_refusee`,
+  `le_relais_refuse_la_sorte_que_la_liste_n_offrait_pas`, `un_changement_vu_passe_seul_et_ne_se_coupe_pas`). Quand la fenêtre se ferme, il arrête les lectures en cours,
   laisse finir un changement lancé, puis s'en va. Pourquoi pas `vanguard` aussi :
   enfermé, il verrait moins (no_new_privs seul fait disparaître la vérification de sudo du bilan ; Landlock lui cache
   les autres processus et le bus système), et un bilan qui voit moins sans le dire serait pire. À l'ouverture, la
@@ -301,9 +313,19 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   (~/.drirc, ~/.nv) ne sont pas lus : la carte garde ses valeurs par défaut.
   La confirmation d'un changement du démarrage protège d'un clic de trop, pas d'une fenêtre prise en main : celle-ci
   pourrait « accepter » à votre place. Ce qu'elle obtient alors reste borné par ce qui ne dépend pas d'elle : sous
-  Linux, le relais n'accepte que la forme fermée, une empreinte qu'il a vue dans la dernière liste, un changement à la
-  fois ; `vanguard` rejuge tout et ne retire jamais un programme à garder ni un pare-feu ; ce qui est retiré se remet
-  exactement (valeur d'avant notée) ; chaque geste est au journal des événements, où il se voit. Sous Windows, il n'y
+  Linux, le relais n'accepte que la forme fermée, un geste (empreinte et sorte) qu'il a vu dans la dernière liste, un
+  changement à la fois ; `vanguard` rejuge tout et ne retire jamais un programme à garder ni un pare-feu ; ce qui est
+  retiré se remet exactement (valeur d'avant notée) ; chaque geste est au journal des événements, où il se voit. Le
+  relais ne met aucune pause entre deux changements : une fenêtre prise en main peut enchaîner liste et changement et
+  retirer, l'un après l'autre, tous les programmes ordinaires (`le_relais_n_impose_aucun_intervalle_entre_deux_changements`),
+  chacun au journal et chacun se remet. Les notes de Vanguard et leurs sceaux (`src/sceau.rs`) sont une barrière
+  contre un fichier posé par un autre programme, pas un coffre : un programme de votre compte qui garde une copie des
+  notes avec leurs sceaux peut la reposer plus tard ; « Remettre » ramènerait alors une ancienne valeur notée d'un
+  programme qui ne se lance plus (par-dessus un programme qui se lance, c'est refusé : `notes_forgees_ou_rejouees`).
+  Le journal des événements est borné (13 mois, 20 Mio en tout, les plus vieux mois partent d'abord) : des refus
+  identiques ne s'y écrivent qu'une fois par 10 minutes (`des_refus_repetes_ne_noient_pas_le_journal`), mais des
+  demandes pour des empreintes toutes différentes s'écrivent chacune, et assez d'entre elles pousseraient de vieilles
+  alertes hors du journal. Sous Windows, il n'y
   a pas de relais : ces bornes-là sont celles de `vanguard` seul, et fermer la fenêtre arrête aussi un changement en
   cours (objet de travail) ; la valeur d'avant étant notée avant tout changement, il se remet quand même.
 

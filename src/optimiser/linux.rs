@@ -18,6 +18,9 @@ use crate::ui::*;
 /// La présence de la note d'un geste de défense (`Changement::Defense`), seule valeur relevée : son contenu n'est lu
 /// que par root.
 const NOTE_PRESENTE: &str = "note";
+/// La plus longue note admise d'un fichier d'autostart (« + » et contenu) : ce qu'en lit `lire` et ce qu'en admet la
+/// relecture des notes, une seule borne.
+const AUTOSTART_MAX: usize = 64 << 10;
 
 /// Ce que retire un réglage de démarrage.
 pub enum Entree {
@@ -527,12 +530,17 @@ impl Changement {
                 ))
             }
             Changement::Demarrage { entree, .. } => match entree {
-                Entree::Autostart(p) => match std::fs::read_to_string(p) {
-                    Ok(t) => Some(format!("+{t}")),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some("-".to_string()),
-                    // Illisible : ni présent ni absent, rien ne doit s'écrire d'après cette lecture.
-                    Err(_) => None,
-                },
+                // Une seule ouverture, sans suivre de lien ni attendre, jugée sur ce qui a été ouvert et bornée : un
+                // tube nommé, /dev/zero ou un lien échangé entre le regard et la lecture ne figent ni ne gonflent la
+                // note. Le « + » de la note compte dans la borne de son admission (`valeur_admise`).
+                Entree::Autostart(p) => {
+                    match crate::socle::lire_texte_ordinaire(p, u64::try_from(AUTOSTART_MAX - 1).unwrap_or(0)) {
+                        Ok(t) => Some(format!("+{t}")),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some("-".to_string()),
+                        // Illisible, pas un simple fichier, trop gros : ni présent ni absent, rien ne s'écrit d'après ça.
+                        Err(_) => None,
+                    }
+                }
                 Entree::Service(u) => etat_unite_lu(u, true),
             },
             Changement::Sysctl { .. }
@@ -752,7 +760,10 @@ impl Changement {
             Changement::Dns { connexion, .. } => dns_admis(connexion, v),
             Changement::Demarrage { entree, .. } => match entree {
                 // Le fichier d'autostart du compte, remis à l'octet près : il s'écrit sans droits, dans le compte.
-                Entree::Autostart(_) => v == "-" || (v.starts_with('+') && v.len() <= 64 << 10 && !v.contains('\0')),
+                Entree::Autostart(_) => {
+                    v == "-" || (v.starts_with('+') && v.len() <= AUTOSTART_MAX && !v.contains('\0'))
+                }
+
                 Entree::Service(_) => ETATS_UNITE.contains(&v),
             },
             // Remise en root par `sysctl -w` : le même plancher que dans les fichiers posés (`contenu_admis`). Une
@@ -2171,6 +2182,37 @@ mod tests {
         // Une valeur qu'on n'a pas su lire ne s'écrit jamais.
         assert_eq!(s.ecrire_ici(Some("?")), Some(false));
         assert!(s.decrire(Some("-")).contains("syncthing.desktop"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// La valeur d'avant d'une entrée d'autostart se lit en une ouverture, sans suivre de lien ni attendre un tube,
+    /// bornée : un lien, un tube nommé ou un fichier trop gros ne se lisent pas (`None` : rien ne s'écrit d'après
+    /// eux) ; la plus longue note lue est encore admise à la relecture.
+    #[test]
+    fn valeur_d_avant_d_autostart_ni_lien_ni_tube_ni_trop_gros() {
+        let base = dossier_jetable("lecture-bornee");
+        std::fs::create_dir_all(&base).unwrap();
+        let entree = |nom: &str| Changement::Demarrage {
+            entree: Entree::Autostart(base.join(nom)),
+            cible: None,
+        };
+        std::fs::write(base.join("vrai.desktop"), "[Desktop Entry]\nName=Lecteur\n").unwrap();
+        assert_eq!(
+            entree("vrai.desktop").lire().as_deref(),
+            Some("+[Desktop Entry]\nName=Lecteur\n")
+        );
+        assert_eq!(entree("absent.desktop").lire().as_deref(), Some("-"));
+        std::os::unix::fs::symlink(base.join("vrai.desktop"), base.join("lien.desktop")).unwrap();
+        assert_eq!(entree("lien.desktop").lire(), None);
+        crate::essais::tube_nomme(&base.join("tube.desktop")).unwrap();
+        assert_eq!(entree("tube.desktop").lire(), None);
+        std::fs::write(base.join("gros.desktop"), "x".repeat(AUTOSTART_MAX)).unwrap();
+        assert_eq!(entree("gros.desktop").lire(), None);
+        std::fs::write(base.join("juste.desktop"), "x".repeat(AUTOSTART_MAX - 1)).unwrap();
+        let juste = entree("juste.desktop");
+        let v = juste.lire().unwrap();
+        assert_eq!(v.len(), AUTOSTART_MAX);
+        assert!(juste.valeur_admise(Some(&v)));
         let _ = std::fs::remove_dir_all(&base);
     }
 

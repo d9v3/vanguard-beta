@@ -575,11 +575,14 @@ enum Refus {
     Ambigue,
     /// Il ne se lance plus : rien à retirer.
     NeSeLancePas,
+    /// Il se lance déjà (remis ou réécrit hors de Vanguard) : la vieille note n'écrase pas l'entrée d'aujourd'hui.
+    SeLanceDeja,
     /// Il protège ou fait marcher l'ordinateur.
     AGarder(&'static str),
     /// Un pare-feu : le retirer serait une baisse, qui ne se choisit que dans la liste à cocher, avec sa question.
     PareFeu,
-    /// Les notes de Vanguard sont illisibles ou changées hors de lui : rien ne s'en remet.
+    /// Les notes de Vanguard sont illisibles ou changées hors de lui : rien ne s'en remet, et rien n'est retiré (la
+    /// première écriture les remplacerait par des neuves, et ce qu'elles gardaient ne se remettrait plus).
     NotesDouteuses,
     /// Un autre Vanguard tient les notes (il change des réglages) : rien n'est changé, à refaire à sa fin.
     NotesOccupees,
@@ -608,6 +611,11 @@ impl Refus {
                 "this program no longer starts at login"
             )
             .to_string(),
+            Refus::SeLanceDeja => tr!(
+                "ce programme se lance déjà à l'ouverture de session : rien n'est remis par-dessus",
+                "this program already starts at login: nothing is put back over it"
+            )
+            .to_string(),
             Refus::AGarder(raison) => trf!("à garder ({})", "to keep ({})", raison),
             Refus::PareFeu => tr!(
                 "pare-feu : le retirer baisserait la protection (seulement par la liste « vanguard demarrage », avec sa question)",
@@ -615,8 +623,8 @@ impl Refus {
             )
             .to_string(),
             Refus::NotesDouteuses => tr!(
-                "notes de Vanguard illisibles ou changées hors de Vanguard : rien n'en est remis",
-                "Vanguard's notes unreadable or changed outside Vanguard: nothing is put back from them"
+                "notes de Vanguard illisibles ou changées hors de Vanguard : rien n'est retiré ni remis tant qu'elles le sont",
+                "Vanguard's notes unreadable or changed outside Vanguard: nothing is removed or put back while they are"
             )
             .to_string(),
             Refus::NotesOccupees => tr!(
@@ -771,6 +779,11 @@ pub fn changer(sorte: SorteDeChangement, empreinte: &str, json: bool) -> i32 {
 /// `changer`, le verrou des notes tenu : le nom du programme visé (s'il est connu) et l'issue.
 fn changer_tenu(sorte: SorteDeChangement, empreinte: &str) -> (Option<String>, Issue) {
     match sorte {
+        // Des notes douteuses seraient remplacées par des neuves à la première écriture : ce que Vanguard avait
+        // retiré ne se remettrait plus, et l'avertissement de la liste disparaîtrait. Rien n'est donc retiré.
+        SorteDeChangement::Retirer if super::historique_sans_ecrire(&crate::reseau::dossier_local()).is_none() => {
+            (None, Issue::Refuse(Refus::NotesDouteuses))
+        }
         SorteDeChangement::Retirer => match a_retirer_nomme(systeme::au_demarrage(), empreinte, classer) {
             (nom, Ok(r)) if retirer_le(&r) => (nom, Issue::Fait),
             (nom, Ok(_)) => (nom, Issue::Echec),
@@ -789,6 +802,11 @@ fn changer_tenu(sorte: SorteDeChangement, empreinte: &str) -> (Option<String>, I
             let nom =
                 r.id.strip_prefix(PREFIXE)
                     .map(|i| affichable(&systeme::Changement::nom_demarrage(i)));
+            // La liste n'offre « remettre » que pour un programme qui ne se lance plus : une entrée qui se lance
+            // (remise ou réécrite hors de Vanguard, peut-être devenue un programme à garder) n'est jamais écrasée.
+            if se_lance_deja(&r) {
+                return (nom, Issue::Refuse(Refus::SeLanceDeja));
+            }
             // Les notes relues pour de bon (`charger`) doivent dire la même chose que celles qui ont choisi : sinon,
             // rien n'est remis (ni écrit) d'après des notes qui ont changé entre les deux lectures.
             let mut h = charger();
@@ -800,6 +818,21 @@ fn changer_tenu(sorte: SorteDeChangement, empreinte: &str) -> (Option<String>, I
             (nom, if remis == [true] { Issue::Fait } else { Issue::Echec })
         }
     }
+}
+
+/// Un programme qui se lance aujourd'hui a l'identité de ce réglage (lu sur le système).
+pub(super) fn se_lance_deja(r: &Reglage) -> bool {
+    se_lance(&systeme::au_demarrage(), r)
+}
+
+/// Parmi `programmes`, un qui se lance a l'identité de ce réglage.
+fn se_lance(programmes: &[Programme], r: &Reglage) -> bool {
+    let Some(identite) = r.id.strip_prefix(PREFIXE) else {
+        return false;
+    };
+    programmes
+        .iter()
+        .any(|p| p.actif && p.changement.identite_demarrage().as_deref() == Some(identite))
 }
 
 /// Le réglage à remettre d'après les notes relues pour de bon (`h`), seulement s'il est celui choisi d'après la
@@ -837,10 +870,24 @@ fn noter_au_journal(sorte: SorteDeChangement, empreinte: &str, nom: Option<&str>
         Issue::Echec => trf!("Démarrage : {} « {} » : {}", "Startup: {} “{}”: {}", geste, qui, raison),
     };
     let cle = format!("demarrage|{}", if bien_formee { empreinte } else { "mal-formee" });
-    crate::modele::journal::noter(
-        Evenement::action(Source::Correction, &texte, matches!(issue, Issue::Fait), &[]).cle(Some(&cle)),
-    );
+    let ev = Evenement::action(Source::Correction, &texte, matches!(issue, Issue::Fait), &[]).cle(Some(&cle));
+    // Un refus identique au dernier mot noté pour cette empreinte, il y a moins de 10 minutes, ne se réécrit pas : une
+    // fenêtre détournée qui redemande sans fin ne noie pas les alertes sous le même refus. Un changement fait, un
+    // échec ou un refus qui dit autre chose s'écrivent toujours.
+    if matches!(issue, Issue::Refuse(_))
+        && crate::modele::journal::dernier_evenement(
+            |e| e.cle.as_deref() == Some(cle.as_str()),
+            chrono::Duration::minutes(REFUS_REPETE_MINUTES),
+        )
+        .is_some_and(|d| d.source == ev.source && d.quoi == ev.quoi)
+    {
+        return;
+    }
+    crate::modele::journal::noter(ev);
 }
+
+/// Pendant combien de minutes un refus identique pour la même empreinte ne se réécrit pas au journal.
+const REFUS_REPETE_MINUTES: i64 = 10;
 
 /// Remet au démarrage ce que Vanguard en a retiré, d'après sa note (l'annulation d'un blocage). `None` : aucune note
 /// pour ce réglage.
@@ -850,6 +897,14 @@ pub fn remettre(id: &str) -> Option<bool> {
     };
     let mut h = charger();
     let r = notes(&h).into_iter().find(|r| r.id == id)?;
+    // Comme la fenêtre : une entrée qui se lance déjà n'est pas réécrite d'après une vieille note (dit ici, puisque
+    // l'appelant renvoie au message ci-dessus).
+    if se_lance_deja(&r) {
+        let raison = Refus::SeLanceDeja.raison();
+        trp!("  ✖ Rien n'a changé : {raison}", "  ✖ Nothing changed: {raison}");
+        return Some(false);
+    }
+
     let (_, remis) = executer(&[], &[&r], &mut h);
     Some(remis == [true])
 }
@@ -1465,6 +1520,7 @@ mod essais_changer {
             Refus::Inconnue,
             Refus::Ambigue,
             Refus::NeSeLancePas,
+            Refus::SeLanceDeja,
             Refus::AGarder("pilote"),
             Refus::PareFeu,
             Refus::NotesDouteuses,

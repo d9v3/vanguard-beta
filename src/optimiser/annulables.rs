@@ -575,6 +575,12 @@ pub(super) fn defaire_dans(
                 "une valeur d'avant n'a pas la forme attendue : rien n'est remis",
                 "a previous value does not have the expected form: nothing is put back",
             ),
+            // Remis ou réécrit hors de Vanguard depuis (peut-être devenu un programme à garder) : la vieille note
+            // n'écrase pas l'entrée qui se lance aujourd'hui, comme pour la fenêtre.
+            Some(r) if id.starts_with(super::demarrage::PREFIXE) && super::demarrage::se_lance_deja(r) => refus(
+                "ce programme se lance déjà à l'ouverture de session : rien n'est remis par-dessus",
+                "this program already starts at login: nothing is put back over it",
+            ),
             Some(_) => None,
         };
         if issue.is_none()

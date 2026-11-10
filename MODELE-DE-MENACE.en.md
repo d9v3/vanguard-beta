@@ -193,7 +193,10 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   back) and the program's fingerprint (32 hexadecimal digits, computed by `vanguard`): never a name, a command or a
   path. The form started is closed, `vanguard demarrage --retirer|--remettre <fingerprint> --json`, and `vanguard`
   judges everything again: malformed, unknown or ambiguous fingerprint, program to keep, firewall, Vanguard's notes
-  unreadable or changed outside Vanguard, all are refused without changing anything; what changes goes through the
+  unreadable or changed outside Vanguard (neither removal nor putting back while they are), “put back” for a program
+  that already starts (put back or rewritten outside Vanguard, perhaps now a program to keep: the old note does not
+  overwrite it, neither through undoing a block nor through “Put everything back”), all are refused without changing
+  anything; what changes goes through the
   same correction as in the terminal (restore point, previous value noted, a single administrator window, never sudo).
   The console starts no change, in any typed form. “Accept” checks again that the action is still in the last list
   read: a list read again that no longer contains it closes the confirmation (“The list changed: nothing changed.”),
@@ -205,14 +208,21 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   optimiser and “Put everything back” do: two Vanguards never change the notes at the same time, the second refuses
   without changing anything. “Put back” reads the notes again under this lock and requires the same noted setting as
   on the first reading (otherwise refused, nothing written); “Remove” on a program that starts replaces an old note
-  left from before with the value read now, so that “Put back” brings back the state from before this removal. Each
-  change done or refused is written to the event log (kind, cleaned name, outcome, fingerprint). Its end is told
+  left from before with the value read now, so that “Put back” brings back the state from before this removal. Under
+  Linux, this previous value (the autostart entry) is read in a single opening that does not follow a link, does not
+  wait on a pipe and stops at 64 KiB: otherwise refused, nothing changed (an entry that is a link therefore cannot be
+  removed from here). Each change done or refused is written to the event log (kind, cleaned name, outcome,
+  fingerprint); a refusal identical to the previous one (same fingerprint, same kind, same reason) is not written
+  again for 10 minutes, so that a burst of requests does not drown the alerts; a change done is always written. Its end is told
   (done, refused, failure, with the reason), then the list is read again; only the last line of the output, a JSON of
   the same action, with exit code 0, means “done”: anything else is a failure, never a success
   (`fenetre/src/attaques.rs`, tests B1 to B3). Tests: `une_confirmation_ne_bloque_rien_et_suit_la_liste`
   (`fenetre/src/appli.rs`), the relay tests (`fenetre/src/relais.rs`), `verrou_des_notes_tenu_puis_rendu` and those
-  of `src/optimiser/demarrage.rs` (`seul_un_programme_note_se_remet`, `pare_feu_reconnu_par_son_paquet`), and end to
-  end, with a throwaway home folder, `demarrage_retire_puis_remet_a_l_octet_pres` (`tests/programme.rs`).
+  of `src/optimiser/demarrage.rs` (`seul_un_programme_note_se_remet`, `pare_feu_reconnu_par_son_paquet`),
+  `valeur_d_avant_d_autostart_ni_lien_ni_tube_ni_trop_gros` (`src/optimiser/linux.rs`), and end to end, with a
+  throwaway home folder, `demarrage_retire_puis_remet_a_l_octet_pres` and the `demarrage_sous_attaque` module
+  (`tests/programme.rs`: putting back over a program that starts, from the window and through “Put everything back”,
+  removal on doubtful notes, simultaneous changes, link, lock held, forged or replayed notes, repeated refusals).
 - **Its answers are read with suspicion.** Bounded size, long lines cut, terminal sequences and control characters
   removed, JSON read without ever crashing (readers and console fuzzed: `fenetre_donnees`, `fenetre_saisie`); an
   unreadable answer is said to be so, never counted as healthy. As in the terminal (`ui::affichable`), a character that
@@ -246,9 +256,12 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   fingerprint, in this language” and “stop”; a request outside this protocol (length, unknown kind or language) stops it
   (protocol fuzzed, `fenetre_relais`); it finds the neighbouring `vanguard` itself and replays its guard; it cannot be
   observed (PR_SET_DUMPABLE set to 0). A change, it bounds itself, without trusting the window: only for a fingerprint
-  it saw in the last output of `demarrage --json` it relayed itself; only when nothing else runs, and nothing else
-  starts while it runs; “stop” does not cut it (tests `le_relais_ne_comprend_que_le_changement_de_forme_fermee`,
-  `seules_les_empreintes_de_la_liste_sont_vues`, `un_changement_vu_passe_seul_et_ne_se_coupe_pas`). When the window
+  and a kind it saw together, in the same action, in the last output of `demarrage --json` it relayed itself (“put
+  back” does not pass for a program the list offered to remove); only when nothing else runs, and nothing else starts
+  while it runs; “stop” does not cut it (tests `le_relais_ne_comprend_que_le_changement_de_forme_fermee`,
+  `seuls_les_gestes_de_la_liste_sont_vus`, `aucun_nom_ne_fabrique_un_geste_vu`,
+  `une_sorte_que_la_liste_n_offrait_pas_est_refusee`, `le_relais_refuse_la_sorte_que_la_liste_n_offrait_pas`,
+  `un_changement_vu_passe_seul_et_ne_se_coupe_pas`). When the window
   closes, it stops the readings in progress, lets a started change finish, then leaves. Why not `vanguard`
   too: locked in, it would see less (no_new_privs alone makes the sudo check of the report disappear; Landlock hides
   other processes and the system bus from it), and a report that sees less without saying so would be worse. On opening,
@@ -286,9 +299,17 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   Xwayland's). Your account's driver settings (~/.drirc, ~/.nv) are not read: the card keeps its defaults.
   The confirmation of a startup change protects against one click too many, not against a hijacked window: that one
   could “accept” in your place. What it gets then stays bounded by what does not depend on it: under Linux, the relay
-  only accepts the closed form, a fingerprint it saw in the last list, one change at a time; `vanguard` judges
-  everything again and never removes a program to keep or a firewall; what is removed is put back exactly (previous
-  value noted); each action is in the event log, where it shows. Under Windows there is no relay: these bounds are
+  only accepts the closed form, an action (fingerprint and kind) it saw in the last list, one change at a time;
+  `vanguard` judges everything again and never removes a program to keep or a firewall; what is removed is put back
+  exactly (previous value noted); each action is in the event log, where it shows. The relay puts no pause between two
+  changes: a hijacked window can chain list and change and remove, one after the other, every ordinary program
+  (`le_relais_n_impose_aucun_intervalle_entre_deux_changements`), each in the log and each can be put back. Vanguard's
+  notes and their seals (`src/sceau.rs`) are a barrier against a file placed by another program, not a safe: a program
+  of your account that keeps a copy of the notes with their seals can put it back later; “Put back” would then bring
+  back an old noted value of a program that no longer starts (over a program that starts, it is refused:
+  `notes_forgees_ou_rejouees`). The event log is bounded (13 months, 20 MiB in all, the oldest months go first):
+  identical refusals are written only once per 10 minutes (`des_refus_repetes_ne_noient_pas_le_journal`), but requests
+  for fingerprints that all differ are each written, and enough of them would push old alerts out of the log. Under Windows there is no relay: these bounds are
   those of `vanguard` alone, and closing the window also stops a change in progress (job object); since the previous
   value is noted before any change, it can still be put back.
 

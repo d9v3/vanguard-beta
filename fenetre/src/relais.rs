@@ -15,8 +15,9 @@
 //! sans rien d'autre, est dans `protocole`.
 //!
 //! Un changement, côté relais (ce qui tient même si la fenêtre est prise) : il passe seul (refusé tant qu'une
-//! commande tourne ; rien d'autre ne se lance pendant lui) ; seulement pour une empreinte vue dans la dernière liste
-//! du démarrage que le relais a lui-même relayée (`demarrage --json`), et cette liste ne sert qu'une fois ; « Arrêter »
+//! commande tourne ; rien d'autre ne se lance pendant lui) ; seulement pour un geste vu dans la dernière liste du
+//! démarrage que le relais a lui-même relayée (`demarrage --json`), la même empreinte avec la même sorte (« retirer »
+//! un programme que la liste offrait de remettre est refusé), et cette liste ne sert qu'une fois ; « Arrêter »
 //! ne le coupe pas, la fermeture de la fenêtre non plus : coupé au milieu, il pourrait laisser un programme retiré sans
 //! la note qui le remet. Seul son délai (`Lancement::delai`) l'arrête.
 
@@ -26,7 +27,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::time::Duration;
 
-use crate::commandes::{Commande, Empreinte, Lancement};
+use crate::commandes::{Commande, Empreinte, Lancement, Sorte};
 use crate::lanceur::{Fin, Issue, Message, Programme, Rendre, Reveil, SORTIE_MAX, Tache};
 use crate::protocole::{DEMANDE_MAX, Demande, Reponse, coder_fin, coder_ligne, ecrire_trame, lire_reponse, lire_trame};
 
@@ -50,9 +51,9 @@ struct EnCours {
 #[derive(Default)]
 struct Etat {
     taches: HashMap<u32, EnCours>,
-    /// Les empreintes de la dernière liste du démarrage relayée, vidées quand un changement part : un changement
-    /// demande une liste relue après lui.
-    vues: HashSet<Empreinte>,
+    /// Les gestes de la dernière liste du démarrage relayée (l'empreinte et la sorte offerte pour elle), vidés quand
+    /// un changement part : un changement demande une liste relue après lui.
+    vues: HashMap<Empreinte, Sorte>,
 }
 
 impl Etat {
@@ -78,13 +79,21 @@ impl Etat {
             ));
         }
         if let Lancement::Changement(ch) = lancement {
-            if !self.vues.contains(&ch.empreinte) {
-                return Some(crate::tr!(
-                    "programme absent de la dernière liste du démarrage lue : relisez-la",
-                    "program not in the last startup list read: read it again"
-                ));
+            match self.vues.get(&ch.empreinte) {
+                None => {
+                    return Some(crate::tr!(
+                        "programme absent de la dernière liste du démarrage lue : relisez-la",
+                        "program not in the last startup list read: read it again"
+                    ));
+                }
+                Some(&offerte) if offerte != ch.sorte => {
+                    return Some(crate::tr!(
+                        "la dernière liste du démarrage lue n'offrait pas ce geste pour ce programme : relisez-la",
+                        "the last startup list read did not offer this action for this program: read it again"
+                    ));
+                }
+                Some(_) => self.vues.clear(),
             }
-            self.vues.clear();
         }
         self.taches.insert(
             id,
@@ -97,32 +106,53 @@ impl Etat {
     }
 }
 
-/// Les empreintes d'une sortie de `demarrage --json` : chaque clé `"empreinte"` suivie d'une chaîne de 32 chiffres
-/// hexadécimaux minuscules. Un balayage, sans lire le JSON : dans une chaîne JSON, un guillemet est toujours échappé,
-/// et un nom de programme ne peut donc pas fabriquer la clé. Borné à `EMPREINTES_MAX`.
-fn empreintes_vues(sortie: &[u8]) -> HashSet<Empreinte> {
-    const CLE: &[u8] = b"\"empreinte\"";
-    let blanc = |o: &[u8]| -> usize { o.iter().take_while(|c| c.is_ascii_whitespace()).count() };
-    let mut vues = HashSet::new();
-    let mut reste = sortie;
-    while vues.len() < EMPREINTES_MAX {
-        let Some(i) = reste.windows(CLE.len()).position(|w| w == CLE) else {
+/// Ce que le relais lit d'une liste du démarrage : les gestes de ses constats, rien d'autre (le reste est sauté sans
+/// être gardé, et un constat d'une forme inattendue est compté à part par `Liste`, sans faire tomber les autres).
+#[derive(serde::Deserialize)]
+struct ListeVue {
+    #[serde(default)]
+    constats: crate::donnees::Liste<ConstatVu>,
+}
+
+#[derive(serde::Deserialize)]
+struct ConstatVu {
+    #[serde(default)]
+    geste: Option<GesteVu>,
+}
+
+#[derive(serde::Deserialize)]
+struct GesteVu {
+    sorte: String,
+    empreinte: String,
+}
+
+/// Les gestes d'une sortie de `demarrage --json` : pour chaque constat, l'empreinte et la sorte lues dans le même
+/// objet `geste` (le JSON lu pour de bon, au fil de l'eau comme dans `donnees` : l'ordre des clés n'y fait rien, et
+/// un nom de programme, une chaîne, ne fabrique ni clé ni geste). Une empreinte offerte avec deux sortes n'est pas
+/// retenue (aucune n'est choisie) ; un geste incomplet non plus ; une sortie qui n'est pas du JSON : rien. Borné à
+/// `EMPREINTES_MAX`.
+fn gestes_vus(texte: &[u8]) -> HashMap<Empreinte, Sorte> {
+    let mut vus = HashMap::new();
+    let Ok(liste) = serde_json::from_slice::<ListeVue>(texte) else {
+        return vus;
+    };
+    let mut doubles = HashSet::new();
+    for g in liste.constats.elements.into_iter().filter_map(|c| c.geste) {
+        if vus.len() >= EMPREINTES_MAX {
             break;
-        };
-        reste = reste.get(i.saturating_add(CLE.len())..).unwrap_or_default();
-        let apres = reste.get(blanc(reste)..).unwrap_or_default();
-        let Some(valeur) = apres.strip_prefix(b":") else {
+        }
+        let (Some(sorte), Some(empreinte)) = (Sorte::lire(&g.sorte), Empreinte::lire(&g.empreinte)) else {
             continue;
         };
-        let valeur = valeur.get(blanc(valeur)..).unwrap_or_default();
-        let Some((hex, [b'"', ..])) = valeur.strip_prefix(b"\"").and_then(|v| v.split_at_checked(32)) else {
+        if doubles.contains(&empreinte) {
             continue;
-        };
-        if let Some(e) = std::str::from_utf8(hex).ok().and_then(Empreinte::lire) {
-            vues.insert(e);
+        }
+        if vus.insert(empreinte, sorte).is_some_and(|avant| avant != sorte) {
+            vus.remove(&empreinte);
+            doubles.insert(empreinte);
         }
     }
-    vues
+    vus
 }
 
 static CLIENT: OnceLock<Client> = OnceLock::new();
@@ -266,7 +296,7 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
                             let mut e = verrou(&etat2);
                             if fin.lancement == Lancement::Commande(Commande::Demarrage) && fin.issue == Issue::Terminee
                             {
-                                e.vues = empreintes_vues(&fin.sortie);
+                                e.vues = gestes_vus(&fin.sortie);
                             }
                             e.taches.remove(&id);
                         }
@@ -563,30 +593,75 @@ mod tests {
         }
     }
 
-    /// Les empreintes d'une liste : la clé `"empreinte"` suivie de 32 chiffres hexadécimaux minuscules, espaces
-    /// permises ; ni majuscule, ni longueur voisine, ni une clé fabriquée dans une chaîne (guillemets échappés).
+    /// Les gestes d'une liste : l'empreinte (32 chiffres hexadécimaux minuscules) avec sa sorte, lues dans le même
+    /// objet `geste`, dans n'importe quel ordre ; ni geste sans sorte, ni sorte inconnue, ni majuscule, ni longueur
+    /// voisine, ni empreinte hors d'un geste, ni geste fabriqué dans une chaîne (un nom de programme) ; une empreinte
+    /// offerte avec deux sortes n'est pas retenue.
     #[test]
-    fn seules_les_empreintes_de_la_liste_sont_vues() {
+    fn seuls_les_gestes_de_la_liste_sont_vus() {
         use std::fmt::Write as _;
-        let (e1, e2, e3) = ("0123456789abcdef0123456789abcdef", "a".repeat(32), "b".repeat(32));
+        let (e1, e2, e3, e4, e5) = (
+            "0123456789abcdef0123456789abcdef",
+            "a".repeat(32),
+            "b".repeat(32),
+            "d".repeat(32),
+            "e".repeat(32),
+        );
         let liste = format!(
             r#"{{"constats": [{{"geste": {{"sorte": "retirer", "empreinte": "{e1}", "nom": "Lecteur"}}}},
-            {{"geste": {{"empreinte":"{e2}"}}}}, {{"message": "\"empreinte\": \"{e3}\""}},
-            {{"empreinte": "{}"}}, {{"empreinte": "{}"}}, {{"empreinte": "{e1}0"}}, {{"empreinte": 7}}, "empreinte"]}}"#,
+            {{"geste": {{"nom": "Agenda", "empreinte":"{e2}", "sorte": "remettre"}}}},
+            {{"geste": {{"empreinte": "{e3}"}}}}, {{"geste": {{"sorte": "effacer", "empreinte": "{e3}"}}}},
+            {{"nom": "x\", \"geste\": {{\"sorte\": \"retirer\", \"empreinte\": \"{e4}\"}}"}},
+            {{"geste": {{"sorte": "retirer", "empreinte": "{e5}"}}}}, {{"geste": {{"sorte": "remettre", "empreinte": "{e5}"}}}},
+            {{"geste": {{"sorte": "retirer", "empreinte": "{}"}}}}, {{"geste": {{"sorte": "retirer", "empreinte": "{}"}}}},
+            {{"geste": {{"sorte": "retirer", "empreinte": "{e1}0"}}}}, {{"geste": {{"sorte": "retirer", "empreinte": 7}}}},
+            {{"empreinte": "{e4}", "sorte": "retirer"}}, "geste"]}}"#,
             "C".repeat(32),
             "c".repeat(31)
         );
-        let vues = empreintes_vues(liste.as_bytes());
-        let attendues: HashSet<Empreinte> = [e1, e2.as_str()].into_iter().filter_map(Empreinte::lire).collect();
-        assert_eq!(vues, attendues);
-        assert!(empreintes_vues(b"").is_empty());
-        assert!(empreintes_vues(b"\"empreinte\"").is_empty());
-        // Bornées.
-        let mut beaucoup = String::new();
-        for i in 0..EMPREINTES_MAX + 10 {
-            let _ = write!(beaucoup, r#"{{"empreinte": "{i:032x}"}}"#);
+        let vus = gestes_vus(liste.as_bytes());
+        let attendus: HashMap<Empreinte, Sorte> = [(e1, Sorte::Retirer), (e2.as_str(), Sorte::Remettre)]
+            .into_iter()
+            .filter_map(|(e, s)| Some((Empreinte::lire(e)?, s)))
+            .collect();
+        assert_eq!(vus, attendus);
+        for rien in [
+            &b""[..],
+            b"\"empreinte\"",
+            b"{\"constats\": 7}",
+            b"[1, 2]",
+            b"une ligne\n{\"constats\": []}",
+        ] {
+            assert!(gestes_vus(rien).is_empty());
         }
-        assert_eq!(empreintes_vues(beaucoup.as_bytes()).len(), EMPREINTES_MAX);
+        // Bornés.
+        let mut beaucoup = String::from(r#"{"constats": ["#);
+        for i in 0..EMPREINTES_MAX + 10 {
+            let _ = write!(
+                beaucoup,
+                r#"{{"geste": {{"sorte": "retirer", "empreinte": "{i:032x}"}}}},"#
+            );
+        }
+        beaucoup.push_str("{}]}");
+        assert_eq!(gestes_vus(beaucoup.as_bytes()).len(), EMPREINTES_MAX);
+    }
+
+    /// Le relais refuse un changement dont la sorte n'est pas celle que la liste offrait pour cette empreinte (une
+    /// fenêtre prise qui retire un programme que la liste offrait de remettre), sans consommer la liste.
+    #[test]
+    fn une_sorte_que_la_liste_n_offrait_pas_est_refusee() {
+        let e = Empreinte::lire("0123456789abcdef0123456789abcdef").unwrap();
+        let mut etat = Etat {
+            vues: [(e, Sorte::Remettre)].into(),
+            ..Etat::default()
+        };
+        let arret = Arc::new(AtomicBool::new(false));
+        let demande = |sorte| Lancement::Changement(Changement { sorte, empreinte: e });
+        assert!(etat.admettre(1, demande(Sorte::Retirer), &arret).is_some());
+        assert!(etat.taches.is_empty());
+        assert_eq!(etat.vues.get(&e), Some(&Sorte::Remettre));
+        assert_eq!(etat.admettre(2, demande(Sorte::Remettre), &arret), None);
+        assert!(etat.vues.is_empty());
     }
 
     /// Un faux `vanguard` : la liste lue dans liste.json ; un changement noté dans « changements », qui attend le
@@ -711,6 +786,150 @@ esac
             changements()
         );
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Un relais d'essai avec le faux `vanguard` et cette liste, dans un dossier jetable des essais : le dossier,
+    /// la fenêtre et le fil du relais.
+    fn banc_du_relais(nom: &str, liste: &str) -> (std::path::PathBuf, Client, std::thread::JoinHandle<()>) {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let d = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("target")
+            .join("essais-fenetre")
+            .join(format!("{nom}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(d.join("liste.json"), liste).unwrap();
+        std::fs::write(d.join("va"), b"").unwrap();
+        let script = d.join("vanguard");
+        std::fs::write(&script, FAUX_VANGUARD).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let moi = std::fs::metadata(&d).unwrap().uid();
+        let (fenetre, relais) = UnixStream::pair().unwrap();
+        let dossier = d.clone();
+        let serveur = std::thread::spawn(move || servir(relais, move || Programme::dans(&dossier, moi)));
+        (d, Client::demarrer(fenetre, None), serveur)
+    }
+
+    /// Pour de vrai : la liste n'offre que « retirer » pour le Lecteur ; une fenêtre prise en main demande
+    /// « remettre » avec la même empreinte. Le relais, qui a vu la liste, refuse cette sorte et ne lance rien.
+    #[test]
+    fn le_relais_refuse_la_sorte_que_la_liste_n_offrait_pas() {
+        let e1 = "0123456789abcdef0123456789abcdef";
+        let (d, c, serveur) = banc_du_relais(
+            "relais-sorte",
+            &format!(
+                r#"{{"outil": "PRO-DEM-001", "constats": [{{"objet": "demarrage:Lecteur",
+                "geste": {{"sorte": "retirer", "empreinte": "{e1}", "nom": "Lecteur", "commande": "/usr/bin/lecteur"}}}}]}}"#
+            ),
+        );
+        let rien: Reveil = Arc::new(|| {});
+        let f = attendre_fin(&c.lancer(Commande::Demarrage.into(), false, &rien));
+        assert_eq!((&f.issue, f.code), (&Issue::Terminee, Some(0)));
+        let f = attendre_fin(&c.lancer(
+            Lancement::Changement(Changement {
+                sorte: Sorte::Remettre,
+                empreinte: Empreinte::lire(e1).unwrap(),
+            }),
+            false,
+            &rien,
+        ));
+        let lances = std::fs::read_to_string(d.join("changements")).unwrap_or_default();
+        c.fermer();
+        serveur.join().unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(
+            matches!(&f.issue, Issue::Impossible(r) if r.contains("n'offrait pas")) && lances.is_empty(),
+            "{:?} ; lancé : {lances}",
+            f.issue
+        );
+    }
+
+    /// Une limite dite par le modèle de menace, gardée telle quelle : le relais ne met aucune pause entre deux
+    /// changements (une fenêtre prise en main peut enchaîner liste et changement). Douze programmes ordinaires
+    /// retirés à la suite passent tous ; si un jour une cadence est imposée, cet essai et le texte changent ensemble.
+    #[test]
+    fn le_relais_n_impose_aucun_intervalle_entre_deux_changements() {
+        use std::fmt::Write as _;
+        let mut constats = String::new();
+        for i in 0..12 {
+            let _ = write!(
+                constats,
+                r#"{}{{"objet": "demarrage:P{i}", "geste": {{"sorte": "retirer", "empreinte": "{i:032x}", "nom": "P{i}", "commande": "/usr/bin/p{i}"}}}}"#,
+                if i == 0 { "" } else { "," }
+            );
+        }
+        let (d, c, serveur) = banc_du_relais(
+            "relais-rafale",
+            &format!(r#"{{"outil": "PRO-DEM-001", "constats": [{constats}]}}"#),
+        );
+        let rien: Reveil = Arc::new(|| {});
+        let mut faits = 0;
+        for i in 0..12 {
+            let f = attendre_fin(&c.lancer(Commande::Demarrage.into(), false, &rien));
+            assert_eq!(f.issue, Issue::Terminee);
+            let f = attendre_fin(&c.lancer(
+                Lancement::Changement(Changement {
+                    sorte: Sorte::Retirer,
+                    empreinte: Empreinte::lire(&format!("{i:032x}")).unwrap(),
+                }),
+                false,
+                &rien,
+            ));
+            if f.issue == Issue::Terminee {
+                faits += 1;
+            }
+        }
+        let lances = std::fs::read_to_string(d.join("changements")).unwrap_or_default();
+        c.fermer();
+        serveur.join().unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(
+            lances.lines().filter(|l| l.starts_with("demarrage --retirer")).count(),
+            faits
+        );
+        assert_eq!(faits, 12);
+    }
+
+    /// Des noms et des commandes hostiles, écrits par un vrai sérialiseur JSON (comme `vanguard` le fait), essaient
+    /// de fabriquer un geste : seul celui de la liste est vu, avec sa sorte.
+    #[test]
+    fn aucun_nom_ne_fabrique_un_geste_vu() {
+        let (vraie, glissee) = ("0123456789abcdef0123456789abcdef", "f".repeat(32));
+        let hostiles = [
+            format!("\"empreinte\": \"{glissee}\""),
+            format!("\\\"empreinte\\\": \\\"{glissee}\\\""),
+            format!("\\\\\"empreinte\": \"{glissee}\""),
+            format!("x\"}}, {{\"empreinte\":\"{glissee}\""),
+            format!("\"empreinte\"\n:\n\"{glissee}\""),
+            format!("\u{0}\"empreinte\":\"{glissee}\""),
+            format!("\"geste\": {{\"sorte\": \"remettre\", \"empreinte\": \"{glissee}\"}}"),
+            "empreinte".to_string(),
+            glissee.clone(),
+        ];
+        let attendus: HashMap<Empreinte, Sorte> = Empreinte::lire(vraie)
+            .into_iter()
+            .map(|e| (e, Sorte::Retirer))
+            .collect();
+        for h in &hostiles {
+            for joli in [false, true] {
+                let v = serde_json::json!({
+                    "outil": "PRO-DEM-001",
+                    "constats": [
+                        {"objet": format!("demarrage:{h}"), "message": h, "categorie": h,
+                         "geste": {"sorte": "retirer", "empreinte": vraie, "nom": h, "commande": h}},
+                        {"objet": h, "message": [h, "empreinte", glissee]},
+                    ],
+                });
+                let texte = if joli {
+                    serde_json::to_string_pretty(&v).unwrap()
+                } else {
+                    serde_json::to_string(&v).unwrap()
+                };
+                assert_eq!(gestes_vus(texte.as_bytes()), attendus, "{h:?} : {texte}");
+            }
+        }
     }
 
     fn attendre_fin(t: &Tache) -> Fin {

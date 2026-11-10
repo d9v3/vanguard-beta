@@ -1481,6 +1481,508 @@ fn demarrage_retire_puis_remet_a_l_octet_pres() {
     assert!(notes.iter().all(|l| l.contains("Lecteur")), "{journal}");
 }
 
+/// Le démarrage changé comme une fenêtre prise en main (ou un autre programme du compte) le demanderait, après la
+/// campagne d'attaque du lot 2a : chaque essai dit le comportement sûr attendu. Tout se passe dans un dossier
+/// personnel jetable, sans bus de session, avec des programmes inventés ; seules des entrées d'autostart du dossier
+/// jetable sont visées (jamais un service, jamais un réglage du système).
+#[cfg(target_os = "linux")]
+mod demarrage_sous_attaque {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    struct Banc {
+        maison: essais::Jetable,
+        systeme: String,
+        autostart: PathBuf,
+    }
+
+    impl Banc {
+        fn nouveau(nom: &str) -> Banc {
+            let maison = essais::Jetable::nouveau(nom);
+            let systeme = maison.join("xdg");
+            let autostart = maison.join("config/autostart");
+            std::fs::create_dir_all(&systeme).unwrap();
+            std::fs::create_dir_all(&autostart).unwrap();
+            Banc {
+                systeme: systeme.to_string_lossy().into_owned(),
+                autostart,
+                maison,
+            }
+        }
+
+        fn lancer(&self, args: &[&str]) -> Sortie {
+            vanguard_dans_env(
+                Path::new(env!("CARGO_BIN_EXE_vanguard")),
+                &self.maison,
+                "fr",
+                args,
+                "",
+                180,
+                &[("XDG_CONFIG_DIRS", self.systeme.as_str())],
+            )
+        }
+
+        /// Pose une entrée d'autostart inventée ; rend son chemin et son contenu.
+        fn poser(&self, fichier: &str, nom: &str, exec: &str) -> (PathBuf, String) {
+            let texte = format!("[Desktop Entry]\nType=Application\nName={nom}\nExec={exec}\n");
+            let chemin = self.autostart.join(fichier);
+            std::fs::write(&chemin, &texte).unwrap();
+            (chemin, texte)
+        }
+
+        /// `demarrage --json` : le résultat lu, et sa sortie brute (ce que le relais lit).
+        fn liste(&self) -> (serde_json::Value, String) {
+            let s = self.lancer(&["demarrage", "--json"]);
+            assert_eq!(s.code, Some(0), "{} {}", s.texte, s.erreurs);
+            let v = serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("{e} : {}", s.texte));
+            (v, s.texte)
+        }
+
+        /// Le bouton que l'écran donne au programme `nom` : (sorte, empreinte) ; `None` : aucun bouton.
+        fn geste(&self, nom: &str) -> Option<(String, String)> {
+            gestes(&self.liste().0)
+                .into_iter()
+                .find(|g| g.0 == nom)
+                .map(|(_, sorte, e)| (sorte, e))
+        }
+
+        /// Ce qui n'a pas pu être lu, d'après la liste.
+        fn manques(&self) -> String {
+            self.liste().0["couverture"].to_string()
+        }
+
+        /// `demarrage <option> <empreinte> --json` : (code, issue, raison).
+        fn changer(&self, option: &str, e: &str) -> (Option<i32>, String, String) {
+            let s = self.lancer(&["demarrage", option, e, "--json"]);
+            let derniere = s.texte.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default();
+            let v: serde_json::Value =
+                serde_json::from_str(derniere).unwrap_or_else(|e| panic!("{e} : {} {}", s.texte, s.erreurs));
+            (
+                s.code,
+                v["issue"].as_str().unwrap_or_default().to_string(),
+                v["raison"].as_str().unwrap_or_default().to_string(),
+            )
+        }
+
+        /// Le dossier des notes de Vanguard, celui de `reglages.json`.
+        fn donnees(&self) -> PathBuf {
+            let d = self.maison.join("donnees/vanguard");
+            assert!(
+                d.join("reglages.json").is_file(),
+                "reglages.json absent de {}",
+                d.display()
+            );
+            d
+        }
+
+        /// Les lignes du journal des événements qui parlent de cette empreinte.
+        fn au_journal(&self, e: &str) -> Vec<String> {
+            let cle = format!("demarrage|{e}");
+            let mut lignes = Vec::new();
+            for f in std::fs::read_dir(self.maison.join("donnees/vanguard/evenements"))
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                let t = std::fs::read_to_string(f.path()).unwrap_or_default();
+                lignes.extend(t.lines().filter(|l| l.contains(&cle)).map(str::to_string));
+            }
+            lignes
+        }
+    }
+
+    /// Les gestes de la liste : (nom, sorte, empreinte).
+    fn gestes(v: &serde_json::Value) -> Vec<(String, String, String)> {
+        let mot = |g: &serde_json::Value, cle: &str| g[cle].as_str().unwrap_or_default().to_string();
+        v["constats"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| c.get("geste"))
+            .map(|g| (mot(g, "nom"), mot(g, "sorte"), mot(g, "empreinte")))
+            .collect()
+    }
+
+    fn lu(f: &Path) -> String {
+        std::fs::read_to_string(f).unwrap_or_else(|e| format!("<illisible : {e}>"))
+    }
+
+    fn copier(de: &Path, vers: &Path) {
+        std::fs::create_dir_all(vers).unwrap();
+        for f in std::fs::read_dir(de).unwrap().flatten() {
+            let (a, b) = (f.path(), vers.join(f.file_name()));
+            if f.file_type().unwrap().is_dir() {
+                copier(&a, &b);
+            } else if f.file_type().unwrap().is_file() {
+                std::fs::copy(&a, &b).unwrap();
+            }
+        }
+    }
+
+    /// L'empreinte d'une entrée d'autostart, comme `vanguard` la calcule (BLAKE3 de « demarrage:autostart|chemin »,
+    /// 16 octets) : pour viser une entrée que la liste ne montre pas, comme un programme du compte le pourrait.
+    fn empreinte_de(chemin: &Path) -> String {
+        let h = blake3::hash(format!("demarrage:autostart|{}", chemin.display()).as_bytes());
+        h.to_hex()[..32].to_string()
+    }
+
+    /// A1. Vanguard a retiré le Lecteur (note gardée), puis le Lecteur a été réécrit hors de Vanguard et se lance de
+    /// nouveau : l'écran n'offre que « Retirer ». « Remettre » avec la même empreinte est refusé, le fichier de
+    /// maintenant reste.
+    #[test]
+    fn remettre_refuse_quand_le_programme_se_lance() {
+        let b = Banc::nouveau("remettre-actif");
+        let (f, _) = b.poser("lecteur.desktop", "Lecteur", "/home/alice/bin/lecteur --ancien");
+        let (sorte, e) = b.geste("Lecteur").unwrap();
+        assert_eq!(sorte, "retirer");
+        assert_eq!(e, empreinte_de(&f), "l'empreinte se calcule hors de Vanguard");
+        assert_eq!(b.changer("--retirer", &e).1, "fait");
+        let (_, v2) = b.poser("lecteur.desktop", "Lecteur", "/home/alice/bin/lecteur --nouveau");
+        assert_eq!(b.geste("Lecteur").map(|g| g.0).as_deref(), Some("retirer"));
+        let (code, issue, raison) = b.changer("--remettre", &e);
+        assert_eq!((code, issue.as_str()), (Some(1), "refuse"), "{raison}");
+        assert!(raison.contains("se lance déjà"), "{raison}");
+        assert_eq!(lu(&f), v2);
+        // La note reste : retiré de nouveau, il se remet comme il était juste avant (v2).
+        assert_eq!(b.changer("--retirer", &e).1, "fait");
+        assert_eq!(b.changer("--remettre", &e).1, "fait");
+        assert_eq!(lu(&f), v2);
+    }
+
+    /// A2. La note d'un vieux retrait vise un fichier où se trouve maintenant un programme à garder (aucun bouton à
+    /// l'écran) : « Remettre » est refusé, rien n'est réécrit.
+    #[test]
+    fn remettre_n_ecrase_pas_un_programme_a_garder() {
+        let b = Banc::nouveau("remettre-garder");
+        let (f, _) = b.poser("agent.desktop", "Lecteur", "/home/alice/bin/lecteur");
+        let (_, e) = b.geste("Lecteur").unwrap();
+        assert_eq!(b.changer("--retirer", &e).1, "fait");
+        let (_, v2) = b.poser("agent.desktop", "ClamTk", "/opt/clamtk/clamtk --veille");
+        let (v, _) = b.liste();
+        assert!(v.to_string().contains("à garder"), "{v}");
+        assert_eq!(b.geste("ClamTk"), None, "un programme à garder n'a aucun bouton");
+        let (code, issue, raison) = b.changer("--remettre", &e);
+        assert_eq!((code, issue.as_str()), (Some(1), "refuse"), "{raison}");
+        assert_eq!(lu(&f), v2);
+    }
+
+    /// « Tout remettre comme avant » (`optimiser annuler`) ne réécrit pas non plus, d'après une vieille note, une
+    /// entrée qui se lance de nouveau : la note est refusée, dite, et gardée.
+    #[test]
+    fn tout_remettre_n_ecrase_pas_une_entree_qui_se_lance() {
+        let b = Banc::nouveau("tout-remettre-actif");
+        let (f, _) = b.poser("lecteur.desktop", "Lecteur", "/home/alice/bin/lecteur --ancien");
+        let e = empreinte_de(&f);
+        assert_eq!(b.changer("--retirer", &e).1, "fait");
+        let (_, v2) = b.poser("lecteur.desktop", "Lecteur", "/home/alice/bin/lecteur --nouveau");
+        let s = vanguard_dans_env(
+            Path::new(env!("CARGO_BIN_EXE_vanguard")),
+            &b.maison,
+            "fr",
+            &["optimiser", "annuler"],
+            "o\n",
+            180,
+            &[("XDG_CONFIG_DIRS", b.systeme.as_str())],
+        );
+        let tout = espaces_unis(&format!("{}{}", s.texte, s.erreurs));
+        assert_eq!(lu(&f), v2, "{tout}");
+        assert!(tout.contains("se lance déjà"), "{tout}");
+        // La note est gardée : la liste n'offre pas « Remettre » (il se lance), mais un nouveau retrait se remet.
+        assert_eq!(b.geste("Lecteur").map(|g| g.0).as_deref(), Some("retirer"));
+        assert_eq!(b.changer("--retirer", &e).1, "fait");
+        assert_eq!(b.changer("--remettre", &e).1, "fait");
+        assert_eq!(lu(&f), v2);
+    }
+
+    /// A3. Le Lecteur est retiré (note), puis les notes sont changées hors de Vanguard (douteuses : l'écran le dit).
+    /// Retirer la Musique est alors refusé comme « Remettre » : une première écriture remplacerait les notes par des
+    /// neuves, et le Lecteur ne se remettrait plus. Les notes remises comme elles étaient, il se remet.
+    #[test]
+    fn retirer_refuse_sur_des_notes_douteuses() {
+        let b = Banc::nouveau("notes-douteuses");
+        let (fa, va) = b.poser("lecteur.desktop", "Lecteur", "/home/alice/bin/lecteur");
+        let (fb, vb) = b.poser("musique.desktop", "Musique", "/home/alice/bin/musique");
+        let (_, ea) = b.geste("Lecteur").unwrap();
+        let (_, eb) = b.geste("Musique").unwrap();
+        assert_eq!(b.changer("--retirer", &ea).1, "fait");
+        let notes = b.donnees().join("reglages.json");
+        let original = lu(&notes);
+        std::fs::write(&notes, format!("{original} ")).unwrap();
+        assert!(b.manques().contains("notes de Vanguard"), "le doute est dit");
+        assert_eq!(b.changer("--remettre", &ea).1, "refuse");
+        let (code, issue, raison) = b.changer("--retirer", &eb);
+        assert_eq!((code, issue.as_str()), (Some(1), "refuse"), "{raison}");
+        assert!(raison.contains("notes de Vanguard"), "{raison}");
+        assert_eq!(lu(&fb), vb, "rien n'est retiré");
+        assert_eq!(lu(&notes), format!("{original} "), "les notes ne sont pas réécrites");
+        assert!(b.manques().contains("notes de Vanguard"), "l'avertissement reste");
+        std::fs::write(&notes, &original).unwrap();
+        assert_eq!(b.changer("--remettre", &ea).1, "fait");
+        assert_eq!(lu(&fa), va);
+    }
+
+    /// A4. Deux changements à la fois, hors du relais (un autre programme du compte lance `vanguard` en même temps) :
+    /// six retraits ensemble, puis six remises ensemble, trois tours. Chaque « fait » a sa note (il se remet à l'octet
+    /// près), chaque refus n'a rien changé, aucun fichier temporaire ne traîne.
+    #[test]
+    fn changements_simultanes_sans_note_perdue() {
+        let b = Banc::nouveau("simultanes");
+        let programmes: Vec<(PathBuf, String, String)> = (0..6)
+            .map(|i| {
+                let nom = format!("Programme{i}");
+                let (f, v) = b.poser(&format!("p{i}.desktop"), &nom, &format!("/home/alice/bin/p{i}"));
+                (f, v, nom)
+            })
+            .collect();
+        let empreintes: Vec<String> = programmes.iter().map(|(f, _, _)| empreinte_de(f)).collect();
+        let ensemble = |option: &'static str| -> Vec<(Option<i32>, String, String)> {
+            std::thread::scope(|s| {
+                let fils: Vec<_> = empreintes.iter().map(|e| s.spawn(|| b.changer(option, e))).collect();
+                fils.into_iter().map(|f| f.join().unwrap()).collect()
+            })
+        };
+        for tour in 0..3 {
+            let retraits = ensemble("--retirer");
+            for ((f, v, nom), r) in programmes.iter().zip(&retraits) {
+                let cache = lu(f).lines().any(|l| l == "Hidden=true");
+                if r.1 == "fait" {
+                    assert!(cache, "tour {tour} {nom} : dit fait, pas retiré");
+                } else {
+                    assert_eq!(&lu(f), v, "tour {tour} {nom} : refusé ({r:?}) mais changé");
+                }
+            }
+            // Chaque retrait fait a sa note : l'écran offre « Remettre ».
+            let l = gestes(&b.liste().0);
+            for ((_, _, nom), r) in programmes.iter().zip(&retraits) {
+                if r.1 == "fait" {
+                    let sorte = l.iter().find(|g| g.0 == *nom).map(|g| g.1.as_str());
+                    assert_eq!(
+                        sorte,
+                        Some("remettre"),
+                        "tour {tour} {nom} retiré sans note ({retraits:?})"
+                    );
+                }
+            }
+            let remises = ensemble("--remettre");
+            for (((f, v, nom), e), r) in programmes.iter().zip(&empreintes).zip(&remises) {
+                if r.1 != "fait" && lu(f) != *v {
+                    // Refusé (verrou occupé) : refait seul.
+                    assert_eq!(b.changer("--remettre", e).1, "fait", "tour {tour} {nom}");
+                }
+                assert_eq!(&lu(f), v, "tour {tour} {nom} pas remis à l'octet près ({r:?})");
+            }
+        }
+        let restes: Vec<String> = std::fs::read_dir(b.donnees())
+            .unwrap()
+            .flatten()
+            .map(|f| f.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("tmp-"))
+            .collect();
+        assert!(restes.is_empty(), "{restes:?}");
+    }
+
+    /// A5. La liste empoisonnée : un programme du compte pose des entrées dont le nom, la commande et le nom de
+    /// fichier contiennent `"empreinte": "<32 hex>"`. La liste n'a que les gestes des vrais programmes, du JSON seul
+    /// (ce que le relais lit) ; un programme à garder n'a pas de geste ; l'empreinte glissée est refusée, et le
+    /// programme à garder visé par son empreinte calculée hors de Vanguard reste.
+    #[test]
+    fn la_liste_ne_se_laisse_pas_glisser_d_empreinte() {
+        let b = Banc::nouveau("liste-empoisonnee");
+        let (glissee, autre) = ("f".repeat(32), "e".repeat(32));
+        let (f1, _) = b.poser(
+            "piege.desktop",
+            &format!("Lecteur\"empreinte\": \"{glissee}\""),
+            &format!("/home/alice/bin/x \"empreinte\":\"{glissee}\" \\\"empreinte\\\": \\\"{glissee}\\\""),
+        );
+        let (f2, _) = b.poser(&format!("a\"empreinte\": \"{autre}\".desktop"), "empreinte", &autre);
+        let (garde, _) = b.poser("antivirus.desktop", "ClamTk", "/opt/clamtk/clamtk --veille");
+        let (v, brut) = b.liste();
+        let vues: BTreeSet<String> = gestes(&v).into_iter().map(|g| g.2).collect();
+        let attendues: BTreeSet<String> = [empreinte_de(&f1), empreinte_de(&f2)].into();
+        assert_eq!(vues, attendues, "{brut}");
+        assert!(
+            brut.trim_start().starts_with('{') && brut.trim_end().ends_with('}'),
+            "{brut}"
+        );
+        for e in [&glissee, &autre] {
+            assert_eq!(b.changer("--retirer", e).1, "refuse");
+            assert_eq!(b.changer("--remettre", e).1, "refuse");
+        }
+        let (code, issue, raison) = b.changer("--retirer", &empreinte_de(&garde));
+        assert!(
+            issue == "refuse" && raison.contains("à garder") && !lu(&garde).contains("Hidden"),
+            "{code:?} {issue} {raison}"
+        );
+    }
+
+    /// A6. Les liens : l'entrée visée devient un lien vers un autre fichier (posé par un programme du compte entre la
+    /// liste et le clic), puis clignote entre fichier et lien pendant les retraits ; puis les notes elles-mêmes
+    /// deviennent un lien. La cible n'est jamais écrite, un lien n'est jamais retiré, et ce qu'il montrait ne se
+    /// retrouve pas dans les notes (la valeur d'avant se lit sans suivre de lien). Le clignotement est une course :
+    /// l'essai la tente douze fois, sans garantie de la gagner à chaque passage.
+    #[test]
+    fn un_lien_ne_fait_ecrire_nulle_part_ailleurs() {
+        let b = Banc::nouveau("liens");
+        let (f, v1) = b.poser("lecteur.desktop", "Lecteur", "/home/alice/bin/lecteur");
+        let (fm, _) = b.poser("musique.desktop", "Musique", "/home/alice/bin/musique");
+        let e = empreinte_de(&f);
+        let ailleurs = b.maison.join("ailleurs");
+        std::fs::create_dir_all(&ailleurs).unwrap();
+        let cible = ailleurs.join("cible.desktop");
+        let secret = "[Desktop Entry]\nType=Application\nName=Cible\nExec=/home/alice/bin/cible --cle-inventee\n";
+        std::fs::write(&cible, secret).unwrap();
+        std::fs::remove_file(&f).unwrap();
+        std::os::unix::fs::symlink(&cible, &f).unwrap();
+        let (code, issue, raison) = b.changer("--retirer", &e);
+        assert!(
+            issue == "refuse" && lu(&cible) == secret && f.symlink_metadata().unwrap().file_type().is_symlink(),
+            "un lien a été retiré ({code:?} {issue} {raison}) : {}",
+            lu(&cible)
+        );
+        let fin = std::sync::atomic::AtomicBool::new(false);
+        let issues = std::thread::scope(|s| {
+            s.spawn(|| {
+                let mut lien = false;
+                while !fin.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = std::fs::remove_file(&f);
+                    if lien {
+                        let _ = std::os::unix::fs::symlink(&cible, &f);
+                    } else {
+                        let _ = std::fs::write(&f, &v1);
+                    }
+                    lien = !lien;
+                    std::thread::sleep(Duration::from_micros(300));
+                }
+            });
+            let issues: Vec<String> = (0..12).map(|_| b.changer("--retirer", &e).1).collect();
+            fin.store(true, std::sync::atomic::Ordering::Relaxed);
+            issues
+        });
+        assert_eq!(lu(&cible), secret, "la cible du lien a été écrite ({issues:?})");
+        let notes = b.maison.join("donnees/vanguard/reglages.json");
+        assert!(
+            !lu(&notes).contains("--cle-inventee"),
+            "ce que montrait le lien est dans les notes ({issues:?})"
+        );
+        // Les notes deviennent un lien vers la cible : un retrait n'écrit pas à travers.
+        let _ = std::fs::remove_file(&notes);
+        std::os::unix::fs::symlink(&cible, &notes).unwrap();
+        let r = b.changer("--retirer", &empreinte_de(&fm));
+        assert_eq!(lu(&cible), secret, "écrit à travers le lien des notes ({r:?})");
+    }
+
+    /// A7. Le verrou des notes tenu par un autre programme du compte (`flock`) : tout changement est refusé sans rien
+    /// changer, en un temps borné.
+    #[test]
+    fn verrou_tenu_par_un_autre_rien_ne_change() {
+        if Command::new("flock").arg("--version").output().is_err() {
+            return essais::saute("flock (util-linux) absent");
+        }
+        let b = Banc::nouveau("verrou-tenu");
+        let (f, v1) = b.poser("lecteur.desktop", "Lecteur", "/home/alice/bin/lecteur");
+        let (fm, _) = b.poser("musique.desktop", "Musique", "/home/alice/bin/musique");
+        // Un premier changement crée le dossier et le fichier du verrou.
+        assert_eq!(b.changer("--retirer", &empreinte_de(&fm)).1, "fait");
+        let verrou = b.donnees().join("reglages.lock");
+        assert!(
+            verrou.is_file(),
+            "aucun fichier de verrou dans {}",
+            b.donnees().display()
+        );
+        // « -o » : seul flock tient le verrou ; il le rend quand `cat` finit (son entrée fermée plus bas).
+        let mut tenu = Command::new("flock")
+            .args(["-x", "-o"])
+            .arg(&verrou)
+            .arg("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let debut = Instant::now();
+        let (code, issue, raison) = b.changer("--retirer", &empreinte_de(&f));
+        let duree = debut.elapsed();
+        drop(tenu.stdin.take());
+        let _ = tenu.wait();
+        assert!(
+            issue == "refuse" && code == Some(1) && lu(&f) == v1 && duree < Duration::from_secs(90),
+            "{code:?} {issue} {raison} en {duree:?}"
+        );
+    }
+
+    /// A8. Des notes forgées, puis rejouées. (a) Une note réécrite sans son sceau ne fait rien remettre. (b) Les notes
+    /// et les sceaux d'avant, recopiés par un programme du compte après une remise, ne font pas remettre un vieux
+    /// contenu par-dessus une entrée qui se lance (refus « se lance déjà »). Le rejeu sur une entrée qui ne se lance
+    /// plus reste une limite dite (MODELE-DE-MENACE.md, « barrière, pas coffre ») : il n'est pas essayé ici.
+    #[test]
+    fn notes_forgees_ou_rejouees() {
+        let b = Banc::nouveau("notes-forgees");
+        let (f, v1) = b.poser("lecteur.desktop", "Lecteur", "/home/alice/bin/lecteur --ancien");
+        let e = empreinte_de(&f);
+        assert_eq!(b.changer("--retirer", &e).1, "fait");
+        let donnees = b.donnees();
+        let copie = b.maison.join("copie-des-notes");
+        copier(&donnees, &copie);
+        assert_eq!(b.changer("--remettre", &e).1, "fait");
+        assert_eq!(lu(&f), v1);
+        // (a) La note d'avant, réécrite vers un autre programme, sans toucher aux sceaux.
+        let forgee = lu(&copie.join("reglages.json")).replace("lecteur --ancien", "pirate --forge");
+        assert!(forgee.contains("pirate --forge"), "{forgee}");
+        std::fs::write(donnees.join("reglages.json"), &forgee).unwrap();
+        let (code, issue, raison) = b.changer("--remettre", &e);
+        assert!(
+            issue == "refuse" && lu(&f) == v1,
+            "{code:?} {issue} {raison} : {}",
+            lu(&f)
+        );
+        // (b) Le fichier a changé depuis (v2) ; notes et sceaux d'avant sont recopiés tels quels.
+        let (_, v2) = b.poser("lecteur.desktop", "Lecteur", "/home/alice/bin/lecteur --nouveau");
+        copier(&copie, &donnees);
+        let (code, issue, raison) = b.changer("--remettre", &e);
+        assert!(
+            issue == "refuse" && lu(&f) == v2,
+            "{code:?} {issue} {raison} : {}",
+            lu(&f)
+        );
+        assert!(raison.contains("se lance déjà"), "{raison}");
+    }
+
+    /// A9. Une fenêtre prise en main (ou un autre programme du compte) répète une demande refusée : le même refus
+    /// pour la même empreinte ne s'écrit qu'une fois au journal des événements en 10 minutes, et ne noie pas les
+    /// alertes. Un changement fait s'écrit toujours, un refus qui dit autre chose aussi.
+    #[test]
+    fn des_refus_repetes_ne_noient_pas_le_journal() {
+        let b = Banc::nouveau("refus-repetes");
+        let (f, _) = b.poser("lecteur.desktop", "Lecteur", "/home/alice/bin/lecteur");
+        let e = empreinte_de(&f);
+        assert_eq!(b.changer("--retirer", &e).1, "fait");
+        assert_eq!(b.au_journal(&e).len(), 1);
+        // Le Lecteur ne se lance plus : « retirer » est refusé à chaque fois.
+        for _ in 0..40 {
+            assert_eq!(b.changer("--retirer", &e).1, "refuse");
+        }
+        let lignes = b.au_journal(&e);
+        assert_eq!(lignes.len(), 2, "{lignes:#?}");
+        assert!(lignes[1].contains("refusé"), "{lignes:#?}");
+        // Un changement fait s'écrit, puis un refus d'une autre raison aussi (une fois).
+        assert_eq!(b.changer("--remettre", &e).1, "fait");
+        for _ in 0..3 {
+            assert_eq!(b.changer("--remettre", &e).1, "refuse");
+        }
+        let lignes = b.au_journal(&e);
+        assert_eq!(lignes.len(), 4, "{lignes:#?}");
+        assert!(
+            lignes[2].contains(": fait") && lignes[3].contains("refusé"),
+            "{lignes:#?}"
+        );
+
+        // Après un fait, le même refus qu'avant s'écrit de nouveau : seul le dernier mot noté compte.
+        assert_eq!(b.changer("--retirer", &e).1, "fait");
+        assert_eq!(b.changer("--retirer", &e).1, "refuse");
+        assert_eq!(b.au_journal(&e).len(), 6);
+    }
+}
+
 /// Lancés sans Internet : outils/verifier.sh refait toute la suite dans un espace réseau vide (unshare -rn, la boucle
 /// locale seule) et pose VANGUARD_HORS_LIGNE. Ailleurs, ce test ne fait rien : Internet y répondrait.
 fn hors_ligne() -> bool {
