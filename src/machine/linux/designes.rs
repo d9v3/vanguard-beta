@@ -504,7 +504,8 @@ fn bibliotheques_ou_flou(valeur: &str, liste: Liste) -> Result<Vec<String>, Flou
         if !mot.starts_with('/') {
             return Err(Flou::NomNu);
         }
-        if mot.contains(INTERDITS) || mot.contains(['%', '\'', '"']) {
+        // « //usr/lib/a.so » : une deuxième écriture du même fichier, qui passerait à côté du refus des doubles.
+        if mot.contains(INTERDITS) || mot.contains(['%', '\'', '"']) || mot.contains("//") {
             return Err(Flou::Syntaxe);
         }
         if mot.len() > CHEMIN_MAX {
@@ -788,6 +789,15 @@ mod tests {
         );
         assert_eq!(
             bibliotheques("/lib/$PLATFORM/a.so", Liste::Variable),
+            Designe::Indefini(Flou::Syntaxe)
+        );
+        // Trouvé par le fuzzing : « :// / » donnait le chemin « // ».
+        assert_eq!(
+            bibliotheques(":// /", Liste::Variable),
+            Designe::Indefini(Flou::Syntaxe)
+        );
+        assert_eq!(
+            bibliotheques("/a.so //a.so", Liste::Fichier),
             Designe::Indefini(Flou::Syntaxe)
         );
     }
