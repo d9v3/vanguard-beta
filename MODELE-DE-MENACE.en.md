@@ -185,28 +185,29 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   neither the group nor others can modify either (except a folder with the sticky bit, like `/tmp`), or it is not
   started: the same rule as for the window, below, checked again before each command, not only at opening.
 - **Its answers are read with suspicion.** Bounded size, long lines cut, terminal sequences and control characters
-  removed, JSON read without ever crashing; an unreadable answer is said to be so, never counted as healthy. The
-  check's grade is shown only when Vanguard says it is reliable (`fiable` in `audit --json`); when some points could
-  not be checked, the grade is said to be incomplete, next to the number, with how many.
+  removed, JSON read without ever crashing (readers and console fuzzed: `fenetre_donnees`, `fenetre_saisie`); an
+  unreadable answer is said to be so, never counted as healthy. The check's grade is shown only when Vanguard says it is
+  reliable (`fiable` in `audit --json`); when some points could not be checked, the grade is said to be incomplete, next
+  to the number, with how many.
 - **No connection, no file.** The window opens no network port, no server, no web page, and runs no JavaScript (no
   HTTP library among its dependencies); it writes no file (theme and language are not kept). The commands it runs
   reach the Internet as they do in the terminal (for example `test-connexion`, `logiciels-perimes`).
-- **A sandbox (Linux).** At startup, before anything else, the window splits in two: a relay (`vanguard-relais`)
-  keeps your account's rights and alone starts `vanguard`; the window locks itself in (Landlock and no_new_privs,
+- **A sandbox (Linux).** At startup, before anything else, the window splits in two: a relay (`vanguard-relais`) keeps
+  your account's rights and alone starts `vanguard`; the window locks itself in (Landlock and no_new_privs,
   `fenetre/src/bac_a_sable.rs`) and from then on only asks the relay for a command of the closed list, by its number
   (`fenetre/src/relais.rs`). Locked in, it can read files and talk to the display (Wayland or X11) and to the graphics
-  card, nothing else: it can neither write a file (not even the shader cache, which a trapped program could poison),
-  nor start a program, nor (Landlock 4, Linux 6.7) open a connection, nor (Landlock 6, Linux 6.12) send a signal
-  outside itself or, under Wayland, reach an abstract socket, nor (Landlock 9) reach a Unix socket other than the
-  display's (the D-Bus bus, for example). The relay only understands “run command n of the list, in this language”
-  and “stop”; a request outside this protocol stops it; it finds the neighbouring `vanguard` itself and replays its
-  guard; it cannot be observed (PR_SET_DUMPABLE set to 0); when the window closes, it stops what is running and
-  leaves. Why not `vanguard` too: locked in, it would see less (no_new_privs alone makes the sudo check of the
-  report disappear; Landlock hides other processes and the system bus from it), and a report that sees less without
-  saying so would be worse. On opening, the window's console says whether the sandbox is active, with which Landlock
-  version and what this kernel cannot take away; without Landlock (kernel before 5.13, or Landlock turned off), or if
-  the relay does not start, it says so in orange and keeps the account's rights: never a `vanguard` started from the
-  sandbox.
+  card, nothing else: it can neither write a file (not even the shader cache, which a trapped program could poison), nor
+  start a program, nor (Landlock 4, Linux 6.7) open a connection, nor (Landlock 6, Linux 6.12) send a signal outside
+  itself or, under Wayland, reach an abstract socket, nor (Landlock 9) reach a Unix socket other than the display's (the
+  D-Bus bus, for example). The relay only understands “run command n of the list, in this language” and “stop”; a
+  request outside this protocol stops it (protocol fuzzed, `fenetre_relais`); it finds the neighbouring `vanguard`
+  itself and replays its guard; it cannot be observed (PR_SET_DUMPABLE set to 0); when the window closes, it stops what
+  is running and leaves. Why not `vanguard` too: locked in, it would see less (no_new_privs alone makes the sudo check
+  of the report disappear; Landlock hides other processes and the system bus from it), and a report that sees less
+  without saying so would be worse. On opening, the window's console says whether the sandbox is active, with which
+  Landlock version and what this kernel cannot take away; without Landlock (kernel before 5.13, or Landlock turned off),
+  or if the relay does not start, it says so in orange and keeps the account's rights: never a `vanguard` started from
+  the sandbox.
 - **The menu stays the safe choice.** The window does not open without a terminal (a script writing the choices),
   over SSH or Remote Desktop, as administrator (root, sudo, administrator console), without a graphical screen, when
   it is not placed next to `vanguard`, when (on Linux) it is not a regular file owned by this account or root that

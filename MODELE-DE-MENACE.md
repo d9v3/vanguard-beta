@@ -194,29 +194,30 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   dossier à « sticky bit », comme `/tmp`), sinon il n'est pas lancé : la même règle que pour la fenêtre, plus bas,
   revérifiée avant chaque commande, et pas seulement à l'ouverture.
 - **Ses réponses sont lues avec méfiance.** Taille bornée, lignes coupées, séquences de terminal et caractères de
-  contrôle retirés, JSON lu sans jamais planter ; une réponse illisible est dite telle, jamais comptée saine. La note
-  du bilan n'est montrée que si Vanguard la dit fiable (`fiable` dans `audit --json`) ; quand des points n'ont pas pu
-  être vérifiés, la note est dite incomplète, à côté du chiffre, avec leur nombre.
+  contrôle retirés, JSON lu sans jamais planter (lecteurs et console fuzzés : `fenetre_donnees`, `fenetre_saisie`) ; une
+  réponse illisible est dite telle, jamais comptée saine. La note du bilan n'est montrée que si Vanguard la dit fiable
+  (`fiable` dans `audit --json`) ; quand des points n'ont pas pu être vérifiés, la note est dite incomplète, à côté du
+  chiffre, avec leur nombre.
 - **Aucune connexion, aucun fichier.** La fenêtre n'ouvre aucune porte réseau, aucun serveur, aucune page web, et
   n'exécute aucun JavaScript (aucune bibliothèque HTTP parmi ses dépendances) ; elle n'écrit aucun fichier (thème et
   langue ne sont pas gardés). Les commandes qu'elle lance joignent Internet comme dans le terminal (par exemple
   `test-connexion`, `logiciels-perimes`).
-- **Un bac à sable (Linux).** Au démarrage, avant tout le reste, la fenêtre se dédouble : un relais
-  (`vanguard-relais`) garde les droits de votre compte et lance seul `vanguard` ; la fenêtre s'enferme (Landlock et
-  no_new_privs, `fenetre/src/bac_a_sable.rs`) et ne fait plus que lui demander une commande de la liste fermée, par
-  son numéro (`fenetre/src/relais.rs`). Enfermée, elle peut lire des fichiers et parler à l'affichage (Wayland ou
-  X11) et à la carte graphique, rien d'autre : ni écrire un fichier (pas même le cache des shaders, qu'un programme
-  piégé pourrait empoisonner), ni lancer un programme, ni (Landlock 4, Linux 6.7) ouvrir une connexion, ni (Landlock 6,
-  Linux 6.12) envoyer un signal hors d'elle ou, sous Wayland, joindre une socket abstraite, ni (Landlock 9) joindre
-  une autre socket Unix que celle de l'affichage (le bus D-Bus, par exemple). Le relais ne comprend que « lancer la
-  commande n de la liste, en telle langue » et « arrêter » ; une demande hors de ce protocole l'arrête ; il retrouve
-  lui-même le `vanguard` voisin et rejoue sa garde ; il ne se laisse pas observer (PR_SET_DUMPABLE à 0) ; quand la
-  fenêtre se ferme, il arrête ce qui tourne et s'en va. Pourquoi pas `vanguard` aussi : enfermé, il verrait moins
-  (no_new_privs seul fait disparaître la vérification de sudo du bilan ; Landlock lui cache les autres processus et le
-  bus système), et un bilan qui voit moins sans le dire serait pire. À l'ouverture, la console de la fenêtre dit si
-  le bac est actif, avec quelle version de Landlock et ce que ce noyau ne sait pas retirer ; sans Landlock (noyau
-  d'avant 5.13, ou Landlock coupé), ou si le relais ne démarre pas, elle le dit en orange et garde les droits du
-  compte : jamais un `vanguard` lancé depuis le bac.
+- **Un bac à sable (Linux).** Au démarrage, avant tout le reste, la fenêtre se dédouble : un relais (`vanguard-relais`)
+  garde les droits de votre compte et lance seul `vanguard` ; la fenêtre s'enferme (Landlock et no_new_privs,
+  `fenetre/src/bac_a_sable.rs`) et ne fait plus que lui demander une commande de la liste fermée, par son numéro
+  (`fenetre/src/relais.rs`). Enfermée, elle peut lire des fichiers et parler à l'affichage (Wayland ou X11) et à la
+  carte graphique, rien d'autre : ni écrire un fichier (pas même le cache des shaders, qu'un programme piégé pourrait
+  empoisonner), ni lancer un programme, ni (Landlock 4, Linux 6.7) ouvrir une connexion, ni (Landlock 6, Linux 6.12)
+  envoyer un signal hors d'elle ou, sous Wayland, joindre une socket abstraite, ni (Landlock 9) joindre une autre socket
+  Unix que celle de l'affichage (le bus D-Bus, par exemple). Le relais ne comprend que « lancer la commande n de la
+  liste, en telle langue » et « arrêter » ; une demande hors de ce protocole l'arrête (protocole fuzzé,
+  `fenetre_relais`) ; il retrouve lui-même le `vanguard` voisin et rejoue sa garde ; il ne se laisse pas observer
+  (PR_SET_DUMPABLE à 0) ; quand la fenêtre se ferme, il arrête ce qui tourne et s'en va. Pourquoi pas `vanguard` aussi :
+  enfermé, il verrait moins (no_new_privs seul fait disparaître la vérification de sudo du bilan ; Landlock lui cache
+  les autres processus et le bus système), et un bilan qui voit moins sans le dire serait pire. À l'ouverture, la
+  console de la fenêtre dit si le bac est actif, avec quelle version de Landlock et ce que ce noyau ne sait pas
+  retirer ; sans Landlock (noyau d'avant 5.13, ou Landlock coupé), ou si le relais ne démarre pas, elle le dit en orange
+  et garde les droits du compte : jamais un `vanguard` lancé depuis le bac.
 - **Le menu reste le choix sûr.** La fenêtre ne s'ouvre pas sans terminal (un script qui écrit les choix), en SSH ou
   au Bureau à distance, en administrateur (root, sudo, console administrateur), sans écran graphique, quand elle n'est
   pas posée à côté, quand (sous Linux) elle n'est pas un fichier ordinaire à ce compte ou à root que ni le groupe ni
