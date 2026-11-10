@@ -108,8 +108,13 @@ fn rail(appli: &mut Appli, ui: &mut Ui) {
     let p = pal();
     ui.add_space(16.0);
     let (r, _) = ui.allocate_exact_size(vec2(72.0, 40.0), Sense::hover());
-    ui.painter()
-        .text(r.center(), Align2::CENTER_CENTER, "V", moyenne(26.0), p.encre);
+    ui.painter().text(
+        r.center(),
+        Align2::CENTER_CENTER,
+        "V",
+        moyenne(26.0),
+        p.encre.gamma_multiply(super::ouverture::v_du_rail(ui.ctx())),
+    );
     ui.add_space(12.0);
     let allumee = rubrique_de(appli.ecran);
     for rub in Rubrique::TOUTES {

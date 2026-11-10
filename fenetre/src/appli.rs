@@ -184,6 +184,42 @@ impl Appli {
         a
     }
 
+    /// Pour les captures (`dessin::captures`) : une fenêtre qui a trouvé `vanguard` mais ne lance rien (son chemin
+    /// n'existe pas : la garde d'avant chaque lancement le refuserait), la console vide.
+    #[cfg(test)]
+    pub fn pour_captures() -> Appli {
+        let mut a = Appli::nouvelle(Err(String::new()), std::sync::Arc::new(|| {}));
+        a.programme = Ok(Programme::factice());
+        a.console.clear();
+        // L'état du bac de cette machine-ci n'a rien à faire dans une capture : une phrase inventée, fixe.
+        a.coulisses = Coulisses::nouvelles((
+            crate::tr!(
+                "Bac à sable actif (Landlock 6) : la fenêtre ne peut ni lire vos fichiers, ni en écrire, ni lancer de programme, ni ouvrir de connexion ; `vanguard` est lancé à côté d'elle, avec tous ses droits de lecture.",
+                "Sandbox active (Landlock 6): the window can neither read your files, nor write any, nor start a program, nor open a connection; `vanguard` is started beside it, with all its read rights."
+            )
+            .into(),
+            false,
+        ));
+        a
+    }
+
+    /// Pour les captures : un résultat posé comme si `vanguard` l'avait rendu (données inventées).
+    #[cfg(test)]
+    pub fn poser(&mut self, c: Commande, sortie: &[u8]) {
+        let fin = Fin {
+            lancement: c.into(),
+            code: Some(0),
+            sortie: sortie.to_vec(),
+            issue: Issue::Terminee,
+            duree: Duration::from_millis(2143),
+        };
+        // Les coulisses le notent comme un vrai passage par le relais (numéro de processus inventé).
+        self.coulisses.lancee(fin.lancement, Chemin::Relais);
+        self.coulisses.processus(4242);
+        self.coulisses.finie(&fin);
+        self.finir(&fin);
+    }
+
     /// Ajoute une ligne à la console (nettoyée).
     pub fn dire(&mut self, source: &str, texte: &str, ton: Ton) {
         if self.console.len() >= CONSOLE_MAX {

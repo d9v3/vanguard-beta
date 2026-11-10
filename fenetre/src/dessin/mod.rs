@@ -5,11 +5,14 @@
 
 mod bilan;
 mod cadre;
+#[cfg(test)]
+mod captures;
 mod coulisses;
 mod defile;
 mod demarrage;
 mod ecrans;
 mod icones;
+mod ouverture;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -328,10 +331,13 @@ struct Fenetre {
     /// La poignée de main avec `vanguard` : dite une fois, à la première image.
     annoncer: bool,
     sombre_applique: bool,
+    ouverture: ouverture::Ouverture,
 }
 
 impl eframe::App for Fenetre {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        // Avant tout : une touche qui saute l'ouverture ne va pas aux écrans.
+        let ouverture = self.ouverture.avancer(ui.ctx());
         self.appli.avancer();
         if veut_revenir(ui.ctx()) {
             self.appli.revenir();
@@ -341,6 +347,10 @@ impl eframe::App for Fenetre {
             self.sombre_applique = self.appli.sombre;
         }
         cadre::tout(&mut self.appli, ui);
+        if let Some(t) = ouverture {
+            ouverture::dessiner(ui.ctx(), t);
+            ui.ctx().request_repaint();
+        }
         if self.annoncer {
             self.annoncer = false;
             annoncer_ouverte();
@@ -396,6 +406,7 @@ pub fn ouvrir(programme: Result<Programme, String>, depuis_vanguard: bool) -> Re
                 appli,
                 annoncer: depuis_vanguard,
                 sombre_applique: sombre,
+                ouverture: ouverture::Ouverture::nouvelle(),
             }))
         }),
     )

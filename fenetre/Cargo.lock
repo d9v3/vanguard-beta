@@ -2849,6 +2849,7 @@ dependencies = [
  "eframe",
  "glutin",
  "libc",
+ "png",
  "serde",
  "serde_json",
  "winit",

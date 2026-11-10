@@ -67,6 +67,15 @@ impl Programme {
         Ok(p)
     }
 
+    /// Pour les captures de la fenêtre : un `vanguard` qui n'existe pas, que `verifier` refuse avant tout lancement.
+    #[cfg(test)]
+    pub fn factice() -> Programme {
+        Programme {
+            chemin: PathBuf::from("/nonexistent/vanguard-des-captures/vanguard"),
+            proprietaire: u32::MAX,
+        }
+    }
+
     /// La garde (`refus_chemin`), rejouée juste avant chaque lancement : la fenêtre reste ouverte des heures et relit
     /// les événements toutes les minutes, le fichier vérifié à l'ouverture a pu changer depuis.
     pub fn verifier(&self) -> Result<(), String> {

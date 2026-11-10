@@ -35,6 +35,11 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 # licence hors de deny.toml.
 winit = { version = "0.30.13", default-features = false, features = ["wayland-dlopen"] }
 
+[dev-dependencies]
+# Les captures de la fenêtre en PNG (dessin/captures.rs, outils/captures-fenetre.sh), seulement dans les essais. La
+# version qu'eframe tire déjà (par image) : rien de nouveau dans Cargo.lock, rien dans le programme livré.
+png = { version = "0.18.1", default-features = false }
+
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # L'essai du bac à sable sur le vrai bureau (dessin/mod.rs) : OpenGL ouvert comme eframe l'ouvre, sans fenêtre. La
 # version et les options qu'eframe tire déjà : rien de nouveau dans Cargo.lock.

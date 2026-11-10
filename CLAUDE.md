@@ -68,6 +68,9 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   reproductible de la CI (`VANGUARD_PUBLIER_SANS_EMPREINTES_CI=1` pour s'en passer, dit) ; avec elle, l'historique signé des versions ; elle reprend les versions intermédiaires d'avant, qui n'ont pas la leur. Pour chaque page, il refait
   aussi les captures du README (`outils/captures.py`, sur une copie des données, ce qui identifierait la maison
   masqué) et les commite à part.
+- Captures de la fenêtre (fenetre/, chaque écran FR/EN, sombre/clair, 1280×800 et 1920×1080, et les images clés de
+  l'ouverture) : `outils/captures-fenetre.sh`, rendu logiciel des essais, sans fenêtre ni écran (jamais grim) ;
+  PNG dans ~/.cache/vanguard-dev/captures-fenetre/, jamais dans le dépôt.
 - master est protégé sur GitHub (Settings › Rules) : jamais réécrit ni supprimé, même par le propriétaire (une
   réécriture d'historique demande de couper d'abord la règle « master : jamais réécrite ni supprimée », avec son
   accord) ; seul son compte y envoie directement (`deployer.sh`), le reste passe par une demande de fusion approuvée.
