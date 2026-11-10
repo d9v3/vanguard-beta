@@ -4,7 +4,9 @@
 //!   (un seul PT_GNU_RELRO, dans un PT_LOAD écrivable et sur toute la section dynamique, et BIND_NOW, sous l'une de
 //!   ses trois formes : le démarrage de musl ne l'applique pas, Vanguard le fait lui-même au lancement,
 //!   `socle::relro`), pile non exécutable (PT_GNU_STACK sans PF_X), aucun PT_LOAD à la
-//!   fois écrivable et exécutable ; CET (IBT, SHSTK) affiché seulement ;
+//!   fois écrivable et exécutable ; CET (IBT, SHSTK) affiché seulement. Avec `--glibc` (la fenêtre de Vanguard,
+//!   liée à la libc du système) : au lieu de « statique », un seul PT_INTERP, celui de la glibc x86-64, et ni
+//!   DT_RPATH ni DT_RUNPATH ; le reste de même ;
 //! - Windows (PE, `crate::pe`) : ce que vérifiait `verifier-pe` (DLL importées depuis System32 seulement, manifeste
 //!   UTF-8 et asInvoker), plus ASLR (DYNAMIC_BASE, et en 64 bits HIGH_ENTROPY_VA avec LARGE_ADDRESS_AWARE, qu'il
 //!   exige), DEP (NX_COMPAT) et des
@@ -76,18 +78,18 @@ impl Jugement {
 }
 
 /// Vérifie chaque fichier et le dit, une ligne par fichier. `true` si tous portent leurs protections, et, avec
-/// `attendu`, sont tous des programmes de ce système.
-pub(super) fn verifier(fichiers: &[std::path::PathBuf], attendu: Option<Systeme>) -> bool {
+/// `attendu`, sont tous des programmes de ce système. `glibc` : voir `juger`.
+pub(super) fn verifier(fichiers: &[std::path::PathBuf], attendu: Option<Systeme>, glibc: bool) -> bool {
     let mut tous = true;
     for fichier in fichiers {
-        tous &= verifier_un(fichier, attendu);
+        tous &= verifier_un(fichier, attendu, glibc);
     }
     tous
 }
 
-fn verifier_un(fichier: &Path, attendu: Option<Systeme>) -> bool {
+fn verifier_un(fichier: &Path, attendu: Option<Systeme>, glibc: bool) -> bool {
     let f = fichier.display();
-    match juger(fichier, attendu) {
+    match juger(fichier, attendu, glibc) {
         Err(pourquoi) => {
             eprintln!(
                 "{}",
@@ -165,12 +167,15 @@ fn nom_systeme(s: Systeme) -> &'static str {
 }
 
 /// Le jugement du fichier `fichier`, lu une seule fois (le format et les protections viennent des mêmes octets).
-/// Avec `attendu`, un autre format est un manque, nommé en premier ; ses protections sont jugées quand même.
-pub(super) fn juger(fichier: &Path, attendu: Option<Systeme>) -> Result<Jugement, Illisible> {
+/// Avec `attendu`, un autre format est un manque, nommé en premier ; ses protections sont jugées quand même. Avec
+/// `glibc` (la fenêtre de Vanguard, qui demande la libc du système pour ses bibliothèques d'affichage), un programme
+/// Linux peut demander un interpréteur, mais seulement celui de la glibc x86-64 (`INTERPRETEUR_GLIBC`), et sans
+/// dossier de bibliothèques écrit dans le programme (DT_RPATH, DT_RUNPATH) ; le reste est exigé de même.
+pub(super) fn juger(fichier: &Path, attendu: Option<Systeme>, glibc: bool) -> Result<Jugement, Illisible> {
     let octets = lire(fichier)?;
     let (systeme, mut j) = if octets.starts_with(b"\x7fELF") {
         let e = elf::lire(&octets).ok_or(Illisible::Elf)?;
-        (Systeme::Linux, juger_elf(&e))
+        (Systeme::Linux, juger_elf(&e, glibc))
     } else if octets.starts_with(b"MZ") {
         let g = pe::lire_gardes(
             &mut std::io::Cursor::new(&octets),
@@ -225,16 +230,28 @@ fn oui_non(b: bool) -> &'static str {
     if b { tr!("oui", "yes") } else { tr!("non", "no") }
 }
 
-/// Un programme Linux : celui de Vanguard est un static-pie de musl.
-fn juger_elf(e: &elf::Elf) -> Jugement {
+/// L'interpréteur de la glibc x86-64, le seul permis avec `glibc` : un chemin fixe de l'ABI, posé par le système.
+const INTERPRETEUR_GLIBC: &str = "/lib64/ld-linux-x86-64.so.2";
+
+/// Un programme Linux : celui de Vanguard est un static-pie de musl ; avec `glibc`, la fenêtre (voir `juger`).
+fn juger_elf(e: &elf::Elf, glibc: bool) -> Jugement {
     let mut j = Jugement {
-        resume: tr!(
-            "ELF static-pie, marque RELRO (BIND_NOW, appliqué par Vanguard au démarrage), pile non exécutable, aucun segment \
-             écrivable et exécutable",
-            "ELF static-pie, RELRO marking (BIND_NOW, applied by Vanguard at startup), non-executable stack, no writable \
-             and executable segment"
-        )
-        .to_string(),
+        resume: if glibc {
+            trf!(
+                "ELF PIE lié à la glibc (interpréteur {INTERPRETEUR_GLIBC}, sans RPATH ni RUNPATH), RELRO complet \
+                 (BIND_NOW), pile non exécutable, aucun segment écrivable et exécutable",
+                "ELF PIE linked to glibc (interpreter {INTERPRETEUR_GLIBC}, no RPATH or RUNPATH), full RELRO \
+                 (BIND_NOW), non-executable stack, no writable and executable segment"
+            )
+        } else {
+            tr!(
+                "ELF static-pie, marque RELRO (BIND_NOW, appliqué par Vanguard au démarrage), pile non exécutable, aucun segment \
+                 écrivable et exécutable",
+                "ELF static-pie, RELRO marking (BIND_NOW, applied by Vanguard at startup), non-executable stack, no writable \
+                 and executable segment"
+            )
+            .to_string()
+        },
         ..Jugement::default()
     };
     if !e.bits64 || e.gros_boutiste || e.machine != elf::EM_X86_64 {
@@ -280,8 +297,36 @@ fn juger_elf(e: &elf::Elf) -> Jugement {
         );
     }
     // Statique : sans segment PT_INTERP. La chaîne ne sert qu'au message : un PT_INTERP dont elle ne se lit pas
-    // (hors du fichier) n'en demande pas moins un interpréteur au noyau.
-    if e.segments.iter().any(|s| s.type_ == elf::PT_INTERP) {
+    // (hors du fichier) n'en demande pas moins un interpréteur au noyau. Avec `glibc` : un seul PT_INTERP, celui de
+    // la glibc, lu tel quel (le noyau prend le premier ; un second, ou une chaîne illisible, est refusé).
+    let interpretes = e.segments.iter().filter(|s| s.type_ == elf::PT_INTERP).count();
+    if glibc {
+        if interpretes != 1 || e.interpreteur.as_deref() != Some(INTERPRETEUR_GLIBC) {
+            let i = e
+                .interpreteur
+                .clone()
+                .unwrap_or_else(|| tr!("absent ou illisible", "missing or unreadable").to_string());
+            j.manque(
+                Protection::Statique,
+                trf!(
+                    "interpréteur autre que celui de la glibc ({interpretes} PT_INTERP, {i} ; {INTERPRETEUR_GLIBC} attendu)",
+                    "interpreter other than glibc's ({interpretes} PT_INTERP, {i}; {INTERPRETEUR_GLIBC} expected)"
+                ),
+            );
+        }
+        if e.dynamique.is_some_and(|d| d.chemin_de_recherche) {
+            j.manque(
+                Protection::Statique,
+                tr!(
+                    "dossiers de bibliothèques écrits dans le programme (DT_RPATH ou DT_RUNPATH) : une bibliothèque posée là \
+                     serait chargée avant celles du système",
+                    "library folders written into the program (DT_RPATH or DT_RUNPATH): a library placed there would be \
+                     loaded before the system's"
+                )
+                .to_string(),
+            );
+        }
+    } else if interpretes > 0 {
         let i = e
             .interpreteur
             .clone()
@@ -584,7 +629,7 @@ mod tests {
     fn jugement(d: &Path, octets: &[u8]) -> Jugement {
         let f = d.join("programme");
         std::fs::write(&f, octets).unwrap();
-        juger(&f, None).unwrap()
+        juger(&f, None, false).unwrap()
     }
 
     /// Les protections manquantes des `octets`.
@@ -594,6 +639,63 @@ mod tests {
 
     fn pe_durci() -> Vec<u8> {
         gardes_d_essai(Some((148, 148, 0x800)), Some(MANIFESTE), 1)
+    }
+
+    /// Un ELF durci qui demande l'interpréteur de la glibc, comme la fenêtre de Vanguard.
+    fn elf_glibc() -> Vec<u8> {
+        let mut durci = Durci::COMPLET;
+        durci.statique = false;
+        let mut v = elf64_durci(durci);
+        let i = b"/lib64/ld-linux-x86-64.so.2\0";
+        v[0x160..0x160 + i.len()].copy_from_slice(i);
+        let longueur = (i.len() as u64).to_le_bytes();
+        let n = usize::from(u16::from_le_bytes([v[56], v[57]]));
+        for k in 0..n {
+            let p = crate::analyse::elf::essais::ENTETES + 56 * k;
+            if v[p..p + 4] == elf::PT_INTERP.to_le_bytes() {
+                v[p + 32..p + 40].copy_from_slice(&longueur);
+                v[p + 40..p + 48].copy_from_slice(&longueur);
+            }
+        }
+        v
+    }
+
+    /// `--glibc` (la fenêtre) : l'interpréteur de la glibc exigé, lui seul, sans RPATH ni RUNPATH ; un static-pie
+    /// n'est pas la fenêtre et se voit refusé ; sans l'option, le programme de la glibc reste refusé.
+    #[test]
+    fn glibc_seulement_avec_l_option_et_son_seul_interpreteur() {
+        let d = dossier();
+        let juge = |octets: &[u8], glibc| {
+            let f = d.join("fenetre");
+            std::fs::write(&f, octets).unwrap();
+            juger(&f, Some(Systeme::Linux), glibc)
+                .unwrap()
+                .manques
+                .iter()
+                .map(|m| m.protection)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(juge(&elf_glibc(), true), []);
+        assert_eq!(juge(&elf_glibc(), false), [Protection::Statique]);
+        // Un autre interpréteur (celui de musl), ou aucun : refusés avec --glibc.
+        let mut musl = Durci::COMPLET;
+        musl.statique = false;
+        assert_eq!(juge(&elf64_durci(musl), true), [Protection::Statique]);
+        assert_eq!(juge(&elf64_durci(Durci::COMPLET), true), [Protection::Statique]);
+        // Un DT_RUNPATH (à la place de DT_FLAGS) : refusé avec --glibc, et BIND_NOW tient par DF_1_NOW.
+        let mut v = elf_glibc();
+        v[0x180..0x188].copy_from_slice(&29u64.to_le_bytes());
+        assert_eq!(juge(&v, true), [Protection::Statique]);
+        let f = d.join("fenetre");
+        std::fs::write(&f, elf_glibc()).unwrap();
+        assert!(verifier(std::slice::from_ref(&f), Some(Systeme::Linux), true));
+        assert!(!verifier(std::slice::from_ref(&f), Some(Systeme::Linux), false));
+        // Chaque autre protection retirée reste refusée avec --glibc.
+        let mut sans_pie = Durci::COMPLET;
+        sans_pie.statique = false;
+        sans_pie.pie = false;
+        assert!(juge(&elf64_durci(sans_pie), true).contains(&Protection::Pie));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -796,7 +898,7 @@ mod tests {
         v[0x54..0x56].copy_from_slice(&60u16.to_le_bytes());
         let court = d.join("court.exe");
         std::fs::write(&court, &v).unwrap();
-        assert!(juger(&court, None).is_err() && !verifier(&[court], None));
+        assert!(juger(&court, None, false).is_err() && !verifier(&[court], None, false));
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -812,7 +914,7 @@ mod tests {
             f
         };
         let protections = |f: &Path, attendu| -> Vec<Protection> {
-            juger(f, attendu)
+            juger(f, attendu, false)
                 .unwrap()
                 .manques
                 .iter()
@@ -825,7 +927,7 @@ mod tests {
         for (f, s) in [(&linux, Systeme::Linux), (&windows, Systeme::Windows)] {
             assert_eq!(protections(f, None), [], "{s:?}");
             assert_eq!(protections(f, Some(s)), [], "{s:?}");
-            assert!(verifier(std::slice::from_ref(f), Some(s)));
+            assert!(verifier(std::slice::from_ref(f), Some(s), false));
             // Tout autre système attendu : refusé, et seulement pour cela.
             for autre in systemes.into_iter().filter(|a| *a != s) {
                 assert_eq!(
@@ -833,16 +935,16 @@ mod tests {
                     [Protection::Architecture],
                     "{s:?} au lieu de {autre:?}"
                 );
-                assert!(!verifier(std::slice::from_ref(f), Some(autre)));
+                assert!(!verifier(std::slice::from_ref(f), Some(autre), false));
             }
         }
         // Un ELF à la place du .exe, dit dans les deux langues.
         assert_eq!(
-            juger(&linux, Some(Systeme::Windows)).unwrap().manques[0].texte,
+            juger(&linux, Some(Systeme::Windows), false).unwrap().manques[0].texte,
             "programme Linux (ELF) au lieu d'un programme Windows (PE)"
         );
         assert_eq!(
-            crate::langue::en_anglais(|| juger(&linux, Some(Systeme::Windows)))
+            crate::langue::en_anglais(|| juger(&linux, Some(Systeme::Windows), false))
                 .unwrap()
                 .manques[0]
                 .texte,
@@ -883,11 +985,11 @@ mod tests {
             ),
         );
         assert_eq!(
-            juger(&f, None).unwrap().manques[0].texte,
+            juger(&f, None, false).unwrap().manques[0].texte,
             "architecture non livrée : ELF 32 bits petit-boutiste, e_machine 3 ; x86-64 attendu (64 bits, petit-boutiste, e_machine 62)"
         );
         assert_eq!(
-            crate::langue::en_anglais(|| juger(&f, None)).unwrap().manques[0].texte,
+            crate::langue::en_anglais(|| juger(&f, None, false)).unwrap().manques[0].texte,
             "architecture not shipped: ELF 32-bit little-endian, e_machine 3; x86-64 expected (64-bit, little-endian, e_machine 62)"
         );
         // Un PE32+ d'une autre machine (x86, ARM64) : refusé.
@@ -939,7 +1041,7 @@ mod tests {
     #[test]
     fn le_programme_des_essais_est_durci() {
         let exe = std::env::current_exe().unwrap();
-        let j = juger(&exe, None).unwrap();
+        let j = juger(&exe, None, false).unwrap();
         assert!(j.manques.is_empty(), "{}: {:?}", exe.display(), j.manques);
     }
 
@@ -948,17 +1050,17 @@ mod tests {
         let d = dossier();
         let f = d.join("texte");
         std::fs::write(&f, b"#!/bin/sh\necho bonjour\n").unwrap();
-        assert_eq!(juger(&f, None).unwrap_err(), Illisible::Inconnu);
+        assert_eq!(juger(&f, None, false).unwrap_err(), Illisible::Inconnu);
         assert_eq!(Illisible::Inconnu.to_string(), "format inconnu : ni ELF, ni PE");
         // Un programme Mac (Mach-O universel) : Vanguard n'en livre plus, refusé comme inconnu.
         std::fs::write(&f, [0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 2]).unwrap();
-        assert_eq!(juger(&f, None).unwrap_err(), Illisible::Inconnu);
+        assert_eq!(juger(&f, None, false).unwrap_err(), Illisible::Inconnu);
         std::fs::write(&f, b"MZ pas un programme").unwrap();
-        assert_eq!(juger(&f, None).unwrap_err(), Illisible::Pe);
+        assert_eq!(juger(&f, None, false).unwrap_err(), Illisible::Pe);
         std::fs::write(&f, b"\x7fELF").unwrap();
-        assert_eq!(juger(&f, None).unwrap_err(), Illisible::Elf);
+        assert_eq!(juger(&f, None, false).unwrap_err(), Illisible::Elf);
         assert_eq!(
-            juger(&d.join("absent"), None).unwrap_err(),
+            juger(&d.join("absent"), None, false).unwrap_err(),
             Illisible::Ouverture(std::io::ErrorKind::NotFound)
         );
         // Un dossier : refusé partout. Windows refuse déjà de l'ouvrir comme un fichier (accès refusé, sans
@@ -968,13 +1070,13 @@ mod tests {
         } else {
             Illisible::PasUnFichier
         };
-        assert_eq!(juger(&d, None).unwrap_err(), attendu);
+        assert_eq!(juger(&d, None, false).unwrap_err(), attendu);
         // Plusieurs fichiers : un seul refusé suffit à refuser le tout, et chacun est jugé.
         let bon = d.join("vanguard.exe");
         std::fs::write(&bon, pe_durci()).unwrap();
-        assert!(verifier(std::slice::from_ref(&bon), None));
-        assert!(!verifier(&[bon.clone(), d.join("absent")], None));
-        assert!(!verifier(&[d.join("absent"), bon], None));
+        assert!(verifier(std::slice::from_ref(&bon), None, false));
+        assert!(!verifier(&[bon.clone(), d.join("absent")], None, false));
+        assert!(!verifier(&[d.join("absent"), bon], None, false));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

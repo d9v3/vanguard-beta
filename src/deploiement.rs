@@ -29,6 +29,10 @@ pub(crate) enum Etape {
         /// porterait toutes ses protections, et ne démarrerait pas sous Windows).
         #[arg(long, value_enum)]
         attendu: Option<Systeme>,
+        /// Programme Linux lié à la glibc (la fenêtre de Vanguard) : l'interpréteur /lib64/ld-linux-x86-64.so.2 est
+        /// permis, lui seul, sans RPATH ni RUNPATH ; tout le reste est exigé de même. Sans l'option : static-pie.
+        #[arg(long)]
+        glibc: bool,
         /// Les programmes compilés.
         #[arg(required = true)]
         fichiers: Vec<PathBuf>,
@@ -85,8 +89,12 @@ pub(crate) enum Systeme {
 pub(crate) fn executer(etape: Etape) -> i32 {
     let reussi = match etape {
         Etape::Tldr { dossier } => crate::guide::tldr_sur_la_cle(&dossier),
-        Etape::VerifierBinaire { attendu, fichiers } => binaire::verifier(&fichiers, attendu),
-        Etape::VerifierPe { fichiers } => binaire::verifier(&fichiers, Some(Systeme::Windows)),
+        Etape::VerifierBinaire {
+            attendu,
+            glibc,
+            fichiers,
+        } => binaire::verifier(&fichiers, attendu, glibc),
+        Etape::VerifierPe { fichiers } => binaire::verifier(&fichiers, Some(Systeme::Windows), false),
         Etape::Temoins { racine } => match temoins(&racine, crate::machine::empreinte_machine()) {
             Ok(_) => true,
             Err(e) => {
@@ -427,11 +435,22 @@ mod tests {
         use clap::Parser as _;
         let deux = [PathBuf::from("a"), PathBuf::from("b.exe")];
         let e = Essai::try_parse_from(["vanguard", "verifier-binaire", "a", "b.exe"]).unwrap();
-        assert!(matches!(&e.etape, Etape::VerifierBinaire { attendu: None, fichiers } if fichiers == &deux));
+        assert!(
+            matches!(&e.etape, Etape::VerifierBinaire { attendu: None, glibc: false, fichiers } if fichiers == &deux)
+        );
+        let e = Essai::try_parse_from(["vanguard", "verifier-binaire", "--glibc", "--attendu", "linux", "a"]).unwrap();
+        assert!(matches!(
+            &e.etape,
+            Etape::VerifierBinaire {
+                attendu: Some(Systeme::Linux),
+                glibc: true,
+                ..
+            }
+        ));
         for (valeur, systeme) in [("linux", Systeme::Linux), ("windows", Systeme::Windows)] {
             let e = Essai::try_parse_from(["vanguard", "verifier-binaire", "--attendu", valeur, "a", "b.exe"]).unwrap();
             assert!(
-                matches!(&e.etape, Etape::VerifierBinaire { attendu: Some(s), fichiers } if *s == systeme && fichiers == &deux),
+                matches!(&e.etape, Etape::VerifierBinaire { attendu: Some(s), glibc: false, fichiers } if *s == systeme && fichiers == &deux),
                 "{valeur}"
             );
         }
@@ -464,6 +483,7 @@ mod tests {
         assert_eq!(
             executer(Etape::VerifierBinaire {
                 attendu: None,
+                glibc: false,
                 fichiers: vec![linux.clone(), exe.clone()]
             }),
             0
@@ -483,6 +503,7 @@ mod tests {
         assert_eq!(
             executer(Etape::VerifierBinaire {
                 attendu: Some(Systeme::Windows),
+                glibc: false,
                 fichiers: vec![exe, linux]
             }),
             1
@@ -496,7 +517,7 @@ mod tests {
         let essai = |nom: &str, octets: Vec<u8>| {
             let chemin = d.join(nom);
             std::fs::write(&chemin, octets).unwrap();
-            binaire::verifier(&[chemin], None)
+            binaire::verifier(&[chemin], None, false)
         };
         let bon = d.join("bon.exe");
         std::fs::write(
@@ -504,10 +525,11 @@ mod tests {
             gardes_d_essai(Some((148, 148, 0x800)), Some(MANIFESTE_D_ESSAI), 1),
         )
         .unwrap();
-        assert!(binaire::verifier(std::slice::from_ref(&bon), None));
+        assert!(binaire::verifier(std::slice::from_ref(&bon), None, false));
         assert_eq!(
             executer(Etape::VerifierBinaire {
                 attendu: None,
+                glibc: false,
                 fichiers: vec![bon]
             }),
             0
@@ -588,11 +610,12 @@ mod tests {
         assert!(!essai("ailleurs.exe", ailleurs));
         // Pas un PE, absent, ou un dossier : refusé, jamais compté comme vérifié.
         assert!(!essai("texte.exe", b"MZ pas un programme".to_vec()));
-        assert!(!binaire::verifier(&[d.join("absent.exe")], None));
-        assert!(!binaire::verifier(std::slice::from_ref(&d), None));
+        assert!(!binaire::verifier(&[d.join("absent.exe")], None, false));
+        assert!(!binaire::verifier(std::slice::from_ref(&d), None, false));
         assert_eq!(
             executer(Etape::VerifierBinaire {
                 attendu: None,
+                glibc: false,
                 fichiers: vec![d.join("absent.exe")]
             }),
             1

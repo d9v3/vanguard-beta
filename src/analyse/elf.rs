@@ -29,6 +29,8 @@ pub(crate) const EM_X86_64: u16 = 62;
 /// Les entrées de la section dynamique lues ici (elf(5)).
 const DT_NULL: u64 = 0;
 const DT_BIND_NOW: u64 = 24;
+const DT_RPATH: u64 = 15;
+const DT_RUNPATH: u64 = 29;
 const DT_FLAGS: u64 = 30;
 const DT_FLAGS_1: u64 = 0x6fff_fffb;
 /// DT_FLAGS : DF_BIND_NOW ; DT_FLAGS_1 : DF_1_NOW et DF_1_PIE (ce que l'éditeur de liens écrit pour `-pie`).
@@ -130,6 +132,9 @@ pub(crate) struct Dynamique {
     pub drapeaux_1: Option<u64>,
     /// DT_BIND_NOW, l'ancienne forme de DF_BIND_NOW.
     pub bind_now: bool,
+    /// DT_RPATH ou DT_RUNPATH : des dossiers de bibliothèques écrits dans le programme, cherchés avant ceux du
+    /// système (`$ORIGIN`, un chemin relatif : une bibliothèque posée à côté du programme y serait chargée).
+    pub chemin_de_recherche: bool,
 }
 
 impl Dynamique {
@@ -457,6 +462,7 @@ fn lire_dynamique(octets: &[u8], o: Ordre, bits64: bool, segments: &[Segment]) -
             match etiquette {
                 DT_NULL => return Some(dynamique),
                 DT_BIND_NOW => dynamique.bind_now = true,
+                DT_RPATH | DT_RUNPATH => dynamique.chemin_de_recherche = true,
                 DT_FLAGS => dynamique.drapeaux = Some(valeur),
                 DT_FLAGS_1 => dynamique.drapeaux_1 = Some(valeur),
                 _ => {}
@@ -925,6 +931,19 @@ mod tests {
         v[0x188..0x190].copy_from_slice(&(DF_1_NOW | DF_1_PIE).to_le_bytes());
         v[0x198..0x1A0].copy_from_slice(&DF_1_PIE.to_le_bytes());
         assert!(!lire(&v).unwrap().dynamique.unwrap().liaison_immediate());
+        // DT_RUNPATH, puis DT_RPATH, à la place de DT_FLAGS : des dossiers de bibliothèques écrits dans le programme.
+        assert!(
+            !lire(&elf64_durci(Durci::COMPLET))
+                .unwrap()
+                .dynamique
+                .unwrap()
+                .chemin_de_recherche
+        );
+        for etiquette in [DT_RUNPATH, DT_RPATH] {
+            let mut v = elf64_durci(Durci::COMPLET);
+            v[0x180..0x188].copy_from_slice(&etiquette.to_le_bytes());
+            assert!(lire(&v).unwrap().dynamique.unwrap().chemin_de_recherche, "{etiquette}");
+        }
     }
 
     #[test]
