@@ -149,8 +149,10 @@ pub fn largeur_car(c: char) -> usize {
 /// U+2029), trait d'union conditionnel (U+00AD), séparateur mongol (U+180E), étiquettes invisibles (U+E0000 à
 /// U+E007F), et les blancs qui ne sont pas des espaces mais en ont l'air ou ne se voient pas : remplissages coréens
 /// (U+115F, U+1160, U+3164, U+FFA0), Braille vide (U+2800), joint de graphèmes (U+034F). Le sélecteur de variante des
-/// émojis (U+FE0F) reste. Et les espaces trompeuses (`espace_trompeur`), montrées comme une espace ordinaire et non
-/// comme « � ». La fenêtre (fenetre/src/nettoyage.rs) garde la même liste.
+/// émojis (U+FE0F) reste. Les espaces trompeuses n'en sont pas (`espace_trompeur`) : `piege` sert aussi à juger (nom de
+/// fichier ou d'expéditeur piégé, `protection::telechargement`, `courriel_suspect`), et une insécable dans un nom
+/// normal n'est pas une ruse ; seul l'affichage les change (`rendu`). La fenêtre (fenetre/src/nettoyage.rs) garde la
+/// même liste.
 pub(crate) fn piege(c: char) -> bool {
     matches!(
         u32::from(c),
@@ -171,7 +173,7 @@ pub(crate) fn piege(c: char) -> bool {
             | 0xFEFF
             | 0xFFA0
             | 0xE0000..=0xE007F
-    ) || espace_trompeur(c)
+    )
 }
 
 /// Les espaces d'une autre largeur que l'espace ordinaire : insécable (U+00A0), ogham (U+1680), de U+2000 à U+200A
@@ -1082,7 +1084,7 @@ mod tests {
     fn espaces_trompeuses_rendues_ordinaires() {
         let espaces = "\u{a0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200a}\u{202f}\u{205f}\u{3000}";
         for c in espaces.chars() {
-            assert!(piege(c) && espace_trompeur(c), "U+{:04X}", u32::from(c));
+            assert!(espace_trompeur(c) && !piege(c), "U+{:04X}", u32::from(c));
             assert_eq!(affichable(&format!("Sa{c}lon")), "Sa lon", "U+{:04X}", u32::from(c));
             assert_eq!(
                 commande_affichable(&format!("rm Sa{c}lon")),

@@ -1360,6 +1360,22 @@ mod tests {
         assert_eq!(niveaux("script", b"#!/b"), [Niveau::Info]);
     }
 
+    /// Une insécable ou une fine insécable dans un nom normal n'est pas une ruse : ni signe, ni nom piégé (une
+    /// facture écrite à la française, une capture d'écran de macOS, « 10.00.00[U+202F]AM »). `ui::piege` ne les
+    /// compte pas ; seul l'affichage les rend en espace ordinaire.
+    #[test]
+    fn une_espace_insecable_n_est_pas_un_piege() {
+        for (nom, debut) in [
+            ("facture\u{a0}2026.pdf", &b"%PDF-1.7\n"[..]),
+            (
+                "Capture d'écran 2026-01-01 à 10.00.00\u{202f}AM.png",
+                &b"\x89PNG\r\n\x1a\n"[..],
+            ),
+        ] {
+            assert_eq!(nature(nom, debut), [], "{nom:?}");
+        }
+    }
+
     /// Campagne d'attaque n° 6, M2 : un caractère invisible collé à l'extension ne désamorce plus la double extension
     /// ni le programme déguisé, et le nom piégé est dit ; la surveillance annonce un fichier déguisé.
     #[test]

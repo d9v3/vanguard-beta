@@ -94,16 +94,21 @@ pub(crate) struct ConstatEcrit {
 }
 
 /// Un texte venu de l'extérieur (nom de pièce jointe, de réseau, de programme), prêt à écrire dans un résultat :
-/// chaque caractère piégé (`ui::piege` : contrôles, sens d'écriture, invisibles) devient « � », comme à l'écran.
-/// `lignes` : le saut de ligne et la tabulation restent (mise en forme d'un message de Vanguard).
+/// chaque caractère piégé (`ui::piege` : contrôles, sens d'écriture, invisibles) devient « � », et une espace d'une
+/// autre largeur (`ui::espace_trompeur`) une espace ordinaire, comme à l'écran. `lignes` : le saut de ligne et la
+/// tabulation restent (mise en forme d'un message de Vanguard).
 pub(crate) fn sans_piege(texte: &str, lignes: bool) -> String {
     texte
         .chars()
         .map(|x| {
-            if (lignes && (x == '\n' || x == '\t')) || !crate::ui::piege(x) {
+            if lignes && (x == '\n' || x == '\t') {
                 x
-            } else {
+            } else if crate::ui::espace_trompeur(x) {
+                ' '
+            } else if crate::ui::piege(x) {
                 '\u{fffd}'
+            } else {
+                x
             }
         })
         .collect()
@@ -342,6 +347,19 @@ mod tests {
                 .with_timezone(&chrono::Utc),
             std::time::Instant::now(),
         )
+    }
+
+    /// Une espace d'une autre largeur devient une espace ordinaire dans ce qui est écrit, pas « � » : un nom de pièce
+    /// jointe ou un nombre écrit à la française restent lisibles ; un vrai piège, lui, devient toujours « � ».
+    #[test]
+    fn une_espace_trompeuse_devient_ordinaire() {
+        assert_eq!(sans_piege("facture\u{a0}2026.pdf", false), "facture 2026.pdf");
+        assert_eq!(
+            sans_piege("10.00.00\u{202f}AM\u{3000}x\u{200a}y", false),
+            "10.00.00 AM x y"
+        );
+        assert_eq!(sans_piege("a\u{a0}b\u{200b}c\nd", true), "a b\u{fffd}c\nd");
+        assert_eq!(nom_sans_piege("Sa\u{2009}lon", 40), "Sa lon");
     }
 
     /// Un message qui reprend un nom piégé ne passe jamais tel quel dans ce qui est écrit (rapport, `--json`).

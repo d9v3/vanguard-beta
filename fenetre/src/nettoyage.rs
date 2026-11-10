@@ -13,8 +13,8 @@ pub const LIGNE_MAX: usize = 400;
 
 /// Les caractères qui pilotent un affichage ou trompent la lecture : contrôles C0 et C1, trait d'union conditionnel,
 /// marques et forçages du sens d'écriture, séparateurs de ligne Unicode, invisibles, étiquettes, et les blancs qui
-/// n'en sont pas (remplissages coréens, Braille vide, joint de graphèmes), et les espaces trompeuses
-/// (`espace_trompeur`), montrées comme une espace ordinaire. La liste de `ui::piege` de Vanguard.
+/// n'en sont pas (remplissages coréens, Braille vide, joint de graphèmes). La liste de `ui::piege` de Vanguard ; les
+/// espaces trompeuses (`espace_trompeur`) n'y sont pas et deviennent une espace ordinaire à l'affichage (`rendu`).
 pub fn piege(c: char) -> bool {
     matches!(
         u32::from(c),
@@ -35,7 +35,7 @@ pub fn piege(c: char) -> bool {
             | 0xFEFF
             | 0xFFA0
             | 0xE0000..=0xE007F
-    ) || espace_trompeur(c)
+    )
 }
 
 /// Les espaces d'une autre largeur que l'espace ordinaire : insécable (U+00A0), ogham (U+1680), de U+2000 à U+200A
@@ -202,7 +202,7 @@ mod tests {
     fn les_espaces_trompeuses_deviennent_ordinaires() {
         let espaces = "\u{a0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200a}\u{202f}\u{205f}\u{3000}";
         for c in espaces.chars() {
-            assert!(piege(c) && espace_trompeur(c), "U+{:04X}", u32::from(c));
+            assert!(espace_trompeur(c) && !piege(c), "U+{:04X}", u32::from(c));
             assert_eq!(ligne(&format!("Sa{c}lon")), "Sa lon", "U+{:04X}", u32::from(c));
             assert_eq!(texte(&format!("Sa{c}lon")), "Sa lon", "U+{:04X}", u32::from(c));
         }
