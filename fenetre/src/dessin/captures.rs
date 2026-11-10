@@ -321,7 +321,7 @@ fn image(appli: &mut Appli, ouverture: Option<&mut super::ouverture::Ouverture>,
 }
 
 /// Une fenêtre aux résultats inventés (réseau « Salon », compte « alice », adresses de documentation).
-fn appli_remplie(anglais: bool, sombre: bool) -> Appli {
+pub(super) fn appli_remplie(anglais: bool, sombre: bool) -> Appli {
     let mut a = Appli::pour_captures();
     a.sombre = sombre;
     let t = |fr: &'static str, en: &'static str| if anglais { en } else { fr };

@@ -18,7 +18,7 @@ const CORRIGER_MAX: usize = 60;
 /// Lignes d'un inventaire sain montrées d'emblée ; le reste se déplie.
 const LISTE_MAX: usize = 40;
 
-fn couleur_rang(r: Rang) -> Color32 {
+pub(super) fn couleur_rang(r: Rang) -> Color32 {
     let p = pal();
     match r {
         Rang::Corriger => p.accent,

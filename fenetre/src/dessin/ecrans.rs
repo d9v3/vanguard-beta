@@ -67,7 +67,11 @@ fn tuile(appli: &mut Appli, ui: &mut Ui, titre: &str, valeur: &str, phrase: &str
             // La valeur s'écrit à l'encre ; un état à signaler (couleur vive) met un point devant.
             let valeur = RichText::new(valeur).font(moyenne(24.0)).color(p.encre);
             if couleur == p.encre {
-                ui.label(valeur);
+                // La hauteur de la ligne signalée (`signale_avec`) : avec ou sans point, les tuiles ont la même.
+                ui.horizontal_top(|ui| {
+                    ui.set_min_height(24.0 * 1.3);
+                    ui.label(valeur);
+                });
             } else {
                 signale_avec(ui, couleur, 24.0, |ui| {
                     ui.label(valeur);
@@ -198,6 +202,11 @@ fn accueil(appli: &mut Appli, ui: &mut Ui) {
             tuile(appli, ui, t, &v, &ph, c, e);
             ui.add_space(16.0);
         }
+    }
+    // Dans une grande fenêtre, une deuxième rangée : le dernier bilan par sujet et les dernières alertes.
+    if large && super::ensemble::a_sa_place(appli, ui.ctx().content_rect()) {
+        ui.add_space(8.0);
+        super::ensemble::rangee(appli, ui);
     }
     ui.add_space(32.0);
     titre_section(ui, crate::tr!("Relire", "Read again"), None);

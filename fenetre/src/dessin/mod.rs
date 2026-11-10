@@ -14,6 +14,7 @@ mod coulisses;
 mod defile;
 mod demarrage;
 mod ecrans;
+mod ensemble;
 mod icones;
 mod mouvement;
 mod ouverture;
