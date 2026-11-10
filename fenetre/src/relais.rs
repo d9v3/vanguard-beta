@@ -408,6 +408,12 @@ mod tests {
         serveur.join().unwrap();
         let f = attendre(&c.lancer(Commande::Bilan, false, &rien));
         assert!(matches!(f.issue, Issue::Impossible(_)), "{:?}", f.issue);
+        // L'envoi peut échouer (socket fermée) avant que le lecteur, en fond, ait vu la fin et posé `mort` : on
+        // l'attend, borné.
+        let debut = Instant::now();
+        while !c.mort.load(Ordering::Relaxed) && debut.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(c.mort.load(Ordering::Relaxed));
     }
 
