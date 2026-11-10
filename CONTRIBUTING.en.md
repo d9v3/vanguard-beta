@@ -17,7 +17,7 @@ A security flaw? No public issue or pull request: report it privately, see [SECU
 | File | Purpose |
 |---|---|
 | `src/main.rs` | dispatch: the modules, the menu session, `main` sending each subcommand to its module |
-| `src/demarrage/` | the command line (`arguments.rs`, clap), its help (`aide.rs`) and the process rights at startup (`droits.rs`: elevated, coming from another account, refusing to optimize) |
+| `src/demarrage/` | the command line (`arguments.rs`, clap), its help (`aide.rs`), the process rights at startup (`droits.rs`: elevated, coming from another account, refusing to optimize) and the window opened instead of the menu (`lancer_fenetre.rs`: when, checked, "open" awaited, otherwise the menu) |
 | `src/menu/` | the interactive menu: the tool list, its groups and switches (`outils.rs`), the status at the top (`etat.rs`), search and command names (`recherche.rs`), display and launching (`lancer.rs`), its tests (`tests.rs`) |
 | `src/deploiement.rs`, `src/deploiement/binaire.rs` | steps of `outils/deployer.sh` handed to the program (`vanguard deploiement …`, hidden command): key markers, the key's tldr archives; protections of the shipped programs read from their headers, without running them (`binaire.rs`, `verifier-binaire`): ELF (PIE, static, RELRO marking, non-executable stack, nothing writable and executable), PE (guards of vanguard.exe, ASLR, DEP, relocations); any other format is refused |
 | `src/ui.rs` | colors, titles, frames, bars, lines wrapped and aligned within 76 columns |
@@ -157,6 +157,9 @@ A security flaw? No public issue or pull request: report it privately, see [SECU
 | `src/protection/integrite.rs`, `isoler.rs`, `memoire_dns.rs` | critical file integrity (BLAKE3 fingerprints); sandbox for an unknown program (bubblewrap or firejail, Windows Sandbox, sandbox-exec), also used for extensions; the computer's DNS cache, read without flushing it |
 | `src/protection/kev.rs`, `sites_bloques.rs`, `src/reseau/upnp.rs` | CISA catalog of exploited flaws; dangerous sites blocked by the hosts file (URLhaus, ThreatFox); ports opened to the Internet through UPnP |
 | `fuzz/` | fuzzing bench, outside the program's build: one target per reader, which includes its `src/` module by path (`fuzz/cale/` for the rest), seeds with made-up values (`outils/fuzz.sh`) |
+| `fenetre/` | the Vanguard window (`vanguard-fenetre`, egui), a separate crate with its own Cargo.lock and `fenetre/deny.toml`; Linux with glibc, Windows; embedded fonts (`fenetre/polices/`, OFL) |
+| `fenetre/src/commandes.rs`, `fenetre/src/lanceur.rs`, `fenetre/src/nettoyage.rs` | the closed list of commands run (fixed arguments, time limits); running the `vanguard` placed next to it (input closed, group killed on stop, bounded outputs); text cleaned before display |
+| `fenetre/src/appli.rs`, `fenetre/src/donnees/`, `fenetre/src/dessin/` | the window's state (screen, running command, console); JSON answers read without ever crashing (check, protection, journal, common result); drawing, the only part that talks to egui (frame, screens, check, drawn icons) |
 
 ### Extensions (plugins and lab)
 

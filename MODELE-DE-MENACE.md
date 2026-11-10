@@ -178,6 +178,32 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   Windows et les machines de GitHub (Windows, vraies distributions Linux) ; d'autres cas restent à essayer sur du vrai
   matériel (autres distributions, vrai routeur UPnP, démarrage de la clé).
 
+## La fenêtre
+
+`vanguard` sans argument ouvre la fenêtre de Vanguard (`vanguard-fenetre`, un programme à part posé à côté de
+`vanguard`) quand la personne est devant un écran graphique ; sinon, le menu du terminal, comme avant. Ses gardes :
+
+- **Elle ne fait rien d'elle-même.** Elle relance le programme `vanguard` posé à côté d'elle (chemin absolu, jamais
+  cherché dans le PATH) avec une commande d'une liste fermée, qui ne change rien à l'ordinateur dans cette version
+  (`audit`, `protection`, `evenements`, `diagnostic`, `test-connexion`…), toujours en `--json`, sans argument libre,
+  sans shell, entrée fermée, une à la fois, avec un délai et un bouton Arrêter (sous Linux, tout le groupe de
+  processus est arrêté). La console de la fenêtre n'accepte que les noms de cette liste.
+- **Ses réponses sont lues avec méfiance.** Taille bornée, lignes coupées, séquences de terminal et caractères de
+  contrôle retirés, JSON lu sans jamais planter ; une réponse illisible est dite telle, jamais comptée saine. La note
+  du bilan n'est montrée que si Vanguard la dit fiable (`fiable` dans `audit --json`).
+- **Aucune connexion, aucun fichier.** La fenêtre n'ouvre aucune porte réseau, aucun serveur, aucune page web, et
+  n'exécute aucun JavaScript (aucune bibliothèque HTTP parmi ses dépendances) ; elle n'écrit aucun fichier (thème et
+  langue ne sont pas gardés). Les commandes qu'elle lance joignent Internet comme dans le terminal (par exemple
+  `test-connexion`, `logiciels-perimes`).
+- **Le menu reste le choix sûr.** La fenêtre ne s'ouvre pas sans terminal (un script qui écrit les choix), en SSH ou
+  au Bureau à distance, en administrateur (root, sudo, console administrateur), sans écran graphique, quand elle n'est
+  pas posée à côté, quand (sous Linux) elle n'est pas un fichier ordinaire à ce compte ou à root que ni le groupe ni
+  les autres ne peuvent modifier, ou quand elle ne dit pas « ouverte » dans les 20 secondes. `vanguard --menu` force
+  le menu.
+- **Limites.** Comme le programme, elle suppose que son dossier n'est modifiable que par vous : qui peut remplacer
+  `vanguard-fenetre` peut aussi remplacer `vanguard`. Sous Windows, Arrêter arrête la commande lancée, pas encore ce
+  qu'elle aurait lancé elle-même. Sous Linux, pas encore de lecteur d'écran ni de copier-coller.
+
 ## Baisses par choix
 
 Vanguard ne baisse jamais une protection de lui-même. La personne, elle, peut en baisser une : c'est son ordinateur,

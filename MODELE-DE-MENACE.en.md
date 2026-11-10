@@ -169,6 +169,31 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   GitHub's machines (Windows, real Linux distributions); other cases are still to be tried on real hardware (other
   distributions, a real UPnP router, booting the key).
 
+## The window
+
+`vanguard` with no argument opens the Vanguard window (`vanguard-fenetre`, a separate program placed next to
+`vanguard`) when someone is in front of a graphical screen; otherwise, the terminal menu, as before. Its safeguards:
+
+- **It does nothing by itself.** It runs the `vanguard` program placed next to it (absolute path, never looked up in
+  the PATH) with a command from a closed list, which changes nothing on the computer in this version (`audit`,
+  `protection`, `evenements`, `diagnostic`, `test-connexion`…), always with `--json`, no free argument, no shell,
+  input closed, one at a time, with a time limit and a Stop button (on Linux, the whole process group is stopped).
+  The window's console only accepts the names on that list.
+- **Its answers are read with suspicion.** Bounded size, long lines cut, terminal sequences and control characters
+  removed, JSON read without ever crashing; an unreadable answer is said to be so, never counted as healthy. The
+  check's grade is shown only when Vanguard says it is reliable (`fiable` in `audit --json`).
+- **No connection, no file.** The window opens no network port, no server, no web page, and runs no JavaScript (no
+  HTTP library among its dependencies); it writes no file (theme and language are not kept). The commands it runs
+  reach the Internet as they do in the terminal (for example `test-connexion`, `logiciels-perimes`).
+- **The menu stays the safe choice.** The window does not open without a terminal (a script writing the choices),
+  over SSH or Remote Desktop, as administrator (root, sudo, administrator console), without a graphical screen, when
+  it is not placed next to `vanguard`, when (on Linux) it is not a regular file owned by this account or root that
+  neither the group nor others can modify, or when it does not say "open" within 20 seconds. `vanguard --menu` forces
+  the menu.
+- **Limits.** Like the program, it assumes only you can modify its folder: whoever can replace `vanguard-fenetre` can
+  also replace `vanguard`. On Windows, Stop stops the command it ran, not yet what that command started itself. On
+  Linux, no screen reader nor copy and paste yet.
+
 ## Lowered by choice
 
 Vanguard never lowers a protection on its own. The person can lower one: it is their computer, and a setting that is

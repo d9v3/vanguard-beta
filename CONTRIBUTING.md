@@ -18,7 +18,7 @@ Une faille de sécurité ? Pas de ticket ni de demande de fusion publics : signa
 | Fichier | Rôle |
 |---|---|
 | `src/main.rs` | aiguillage : les modules, la session du menu, `main` qui mène chaque sous-commande à son module |
-| `src/demarrage/` | la ligne de commande (`arguments.rs`, clap), son aide (`aide.rs`) et les droits du processus au démarrage (`droits.rs` : élevé, venu d'un autre compte, refus d'optimiser) |
+| `src/demarrage/` | la ligne de commande (`arguments.rs`, clap), son aide (`aide.rs`), les droits du processus au démarrage (`droits.rs` : élevé, venu d'un autre compte, refus d'optimiser) et la fenêtre ouverte à la place du menu (`lancer_fenetre.rs` : quand, vérifiée, « ouverte » attendu, sinon le menu) |
 | `src/menu/` | le menu interactif : la liste des outils, leurs groupes et interrupteurs (`outils.rs`), l'état en tête (`etat.rs`), la recherche et les noms de commandes (`recherche.rs`), l'affichage et le lancement (`lancer.rs`), ses essais (`tests.rs`) |
 | `src/deploiement.rs`, `src/deploiement/binaire.rs` | étapes de `outils/deployer.sh` confiées au programme (`vanguard deploiement …`, commande cachée) : témoins de la clé, archives tldr de la clé ; protections des programmes livrés lues dans leurs en-têtes, sans les lancer (`binaire.rs`, `verifier-binaire`) : ELF (PIE, statique, marque RELRO, pile non exécutable, rien d'écrivable et exécutable), PE (gardes du vanguard.exe, ASLR, DEP, relocalisations) ; un autre format est refusé |
 | `src/ui.rs` | couleurs, titres, cadres, barres, lignes coupées et alignées dans 76 colonnes |
@@ -158,6 +158,9 @@ Une faille de sécurité ? Pas de ticket ni de demande de fusion publics : signa
 | `src/protection/integrite.rs`, `isoler.rs`, `memoire_dns.rs` | intégrité des fichiers critiques (empreintes BLAKE3) ; bac à sable d'un programme inconnu (bubblewrap ou firejail, Windows Sandbox, sandbox-exec), aussi pour les extensions ; la mémoire DNS de l'ordinateur, lue sans la vider |
 | `src/protection/kev.rs`, `sites_bloques.rs`, `src/reseau/upnp.rs` | catalogue des failles exploitées de la CISA ; sites dangereux bloqués par le fichier hosts (URLhaus, ThreatFox) ; ports ouverts vers Internet par UPnP |
 | `fuzz/` | banc de fuzzing, hors de la compilation du programme : une cible par lecteur, qui inclut son module de `src/` par son chemin (`fuzz/cale/` pour le reste), graines aux valeurs inventées (`outils/fuzz.sh`) |
+| `fenetre/` | la fenêtre de Vanguard (`vanguard-fenetre`, egui), crate à part avec son Cargo.lock et `fenetre/deny.toml` ; Linux en glibc, Windows ; polices embarquées (`fenetre/polices/`, OFL) |
+| `fenetre/src/commandes.rs`, `fenetre/src/lanceur.rs`, `fenetre/src/nettoyage.rs` | la liste fermée des commandes lancées (arguments fixés, délais) ; le lancement de `vanguard` posé à côté (entrée fermée, groupe tué à l'arrêt, sorties bornées) ; le texte nettoyé avant l'affichage |
+| `fenetre/src/appli.rs`, `fenetre/src/donnees/`, `fenetre/src/dessin/` | l'état de la fenêtre (écran, commande en cours, console) ; les réponses JSON relues sans jamais planter (bilan, protection, journal, résultat commun) ; le dessin, seul à parler à egui (cadre, écrans, bilan, icônes tracées) |
 
 ### Extensions (plugins et laboratoire)
 
