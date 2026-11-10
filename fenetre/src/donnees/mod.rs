@@ -10,6 +10,7 @@
 
 pub mod appareils;
 pub mod bilan;
+pub mod couleurs;
 pub mod evenements;
 pub mod libre;
 pub mod protection;

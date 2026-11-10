@@ -914,7 +914,7 @@ esac
         assert_eq!(f.code, None);
 
         // Les coulisses de la fenêtre, par le même chemin que l'écran : la commande exacte, le chemin, le pid, la fin,
-        // la ligne d'erreur et la sortie. Les commandes du lancement sont arrêtées d'abord (le faux protection dort).
+        // la ligne d'erreur et la sortie. Les commandes du lancement sont arrêtées d'abord (la file vidée).
         let mut a = crate::appli::Appli::nouvelle(Ok(p.clone()), Arc::clone(&rien));
         a.arreter();
         let debut = Instant::now();
@@ -939,9 +939,9 @@ esac
         let textes: Vec<&str> = c.notes().iter().map(|n| n.texte.as_str()).collect();
         assert!(textes.contains(&"une ligne d'erreur"), "{textes:?}");
         assert!(textes.iter().any(|t| t.contains(r#""score": 90"#)), "{textes:?}");
-        // La première, arrêtée, a aussi son pid et sa fin.
+        // La première du lancement (les couleurs), arrêtée, a aussi son pid et sa fin.
         let premiere = c.passages().front().unwrap();
-        assert_eq!(premiere.ligne, "vanguard protection --json");
+        assert_eq!(premiere.ligne, "vanguard couleurs --json");
         assert!(premiere.pid.is_some() && premiere.fin.is_some(), "{premiere:?}");
         let _ = std::fs::remove_dir_all(&d);
     }

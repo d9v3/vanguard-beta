@@ -308,6 +308,7 @@ fn rangee(n: &Note) -> Rangee<'_> {
         Sorte::Sortie => ("stdout", p.doux, p.encre),
         Sorte::Fin => (crate::tr!("fin", "end"), p.doux, p.encre),
         Sorte::Refus => (crate::tr!("refus", "refused"), p.moyen, p.moyen),
+        Sorte::Avis => (crate::tr!("avis", "notice"), p.moyen, p.encre),
     };
     Rangee {
         numero: n.numero,

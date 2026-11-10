@@ -17,6 +17,7 @@ mod bac_a_sable;
 #[cfg(windows)]
 mod chargement;
 mod commandes;
+mod couleurs;
 mod coulisses;
 mod dessin;
 mod donnees;

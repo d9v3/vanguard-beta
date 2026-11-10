@@ -20,6 +20,11 @@
 //! un programme que la liste offrait de remettre est refusé), et cette liste ne sert qu'une fois ; « Arrêter »
 //! ne le coupe pas, la fermeture de la fenêtre non plus : coupé au milieu, il pourrait laisser un programme retiré sans
 //! la note qui le remet. Seul son délai (`Lancement::delai`) l'arrête.
+//!
+//! Un changement des couleurs de la fenêtre passe de même seul et sans interruption (`vanguard` écrit le fichier puis
+//! son sceau) ; sa forme est fermée (un thème, une base connue, quinze octets de couleur), et une couleur presque
+//! invisible sur le fond est refusée ici avant de l'être par `vanguard`. Une fenêtre prise peut au pire régler des
+//! couleurs laides, jamais cacher une alerte : la gravité est toujours dite aussi en mots.
 
 use std::collections::{HashMap, HashSet};
 use std::os::unix::net::UnixStream;
@@ -61,7 +66,7 @@ struct Etat {
 impl Etat {
     /// Pourquoi ce lancement est refusé, s'il l'est ; sinon il est retenu (et un changement consomme la liste vue).
     fn admettre(&mut self, id: u32, lancement: Lancement, arret: &Arc<AtomicBool>) -> Option<&'static str> {
-        let changement = matches!(lancement, Lancement::Changement(_));
+        let changement = lancement.change();
         if self.taches.len() >= TACHES_MAX || self.taches.contains_key(&id) {
             return Some(crate::tr!(
                 "trop de commandes en même temps",
@@ -96,6 +101,16 @@ impl Etat {
                 }
                 Some(_) => self.vues.clear(),
             }
+        }
+        // Des couleurs : revérifiées ici aussi (`vanguard` le refait), une presque invisible sur le fond refusée.
+        if let Lancement::Couleurs(cc) = lancement
+            && let Some(c) = cc.choix
+            && crate::couleurs::verifier(cc.theme, &c).is_err()
+        {
+            return Some(crate::tr!(
+                "une couleur se verrait à peine sur le fond du thème",
+                "a color would barely show on the theme's background"
+            ));
         }
         self.taches.insert(
             id,
@@ -671,6 +686,40 @@ mod tests {
         assert_eq!(etat.vues.get(&e), Some(&Sorte::Remettre));
         assert_eq!(etat.admettre(2, demande(Sorte::Remettre), &arret), None);
         assert!(etat.vues.is_empty());
+    }
+
+    /// Des couleurs : admises sans liste à lire, mais seules (jamais pendant une autre commande) et seulement
+    /// lisibles ; une fenêtre prise ne fait pas enregistrer des alertes noires sur du noir.
+    #[test]
+    fn des_couleurs_passent_seules_et_lisibles() {
+        use crate::commandes::ChangementCouleurs;
+        use crate::couleurs::{Base, Choix, Theme, Vif};
+        let arret = Arc::new(AtomicBool::new(false));
+        let braise = Choix::du_prereglage(Base::Braise, Theme::Sombre);
+        let mut noir = braise;
+        noir.poser(Vif::Grave, [0, 0, 0]);
+        let demande = |choix| {
+            Lancement::Couleurs(ChangementCouleurs {
+                theme: Theme::Sombre,
+                choix,
+            })
+        };
+        let mut etat = Etat::default();
+        assert!(etat.admettre(1, demande(Some(noir)), &arret).is_some());
+        assert!(etat.taches.is_empty());
+        assert_eq!(etat.admettre(2, Commande::Protection.into(), &arret), None);
+        assert!(
+            etat.admettre(3, demande(Some(braise)), &arret).is_some(),
+            "pendant une lecture"
+        );
+        etat.taches.clear();
+        assert_eq!(etat.admettre(4, demande(Some(braise)), &arret), None);
+        assert!(
+            etat.admettre(5, Commande::Protection.into(), &arret).is_some(),
+            "pendant le changement"
+        );
+        etat.taches.clear();
+        assert_eq!(etat.admettre(6, demande(None), &arret), None);
     }
 
     /// Un faux `vanguard` : la liste lue dans liste.json ; un changement noté dans « changements », qui attend le

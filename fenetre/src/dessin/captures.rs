@@ -313,7 +313,7 @@ fn echantillon(t: &Texture, uv: Pos2) -> [f32; 4] {
 /// Une image de la fenêtre, comme `Fenetre::ui` la fait, sans `Appli::avancer` (rien ne se lance).
 fn image(appli: &mut Appli, ouverture: Option<&mut super::ouverture::Ouverture>, ui: &mut Ui) {
     let t = ouverture.and_then(|o| o.avancer(ui.ctx()));
-    super::appliquer_theme(ui.ctx(), appli.sombre);
+    super::appliquer_palette(ui.ctx(), super::palette_de(&appli.jeu(), appli.sombre), appli.sombre);
     super::cadre::tout(appli, ui);
     if let Some(t) = t {
         super::ouverture::dessiner(ui.ctx(), t);
@@ -586,7 +586,79 @@ fn captures() {
         }
     }
     faites += mouvement(&dossier);
+    faites += couleurs(&dossier);
     println!("CAPTURES {faites} dans {}", dossier.display());
+}
+
+/// Les couleurs (couleurs/), en français : chaque préréglage et les couleurs du système (inventées), sombre et clair,
+/// sur l'accueil (1280×800) et sur l'écran Vanguard (1920×1080) ; puis la confirmation et un brouillon peu lisible.
+fn couleurs(dossier: &Path) -> usize {
+    use crate::commandes::ChangementCouleurs;
+    use crate::couleurs::{Base, Choix, Theme, Vif, depuis_le_systeme, vifs_hex};
+    let dossier = dossier.join("couleurs");
+    std::fs::create_dir_all(&dossier).unwrap();
+    crate::langue::choisir(Some(false));
+    // Des couleurs du système inventées, comme `vanguard couleurs --json` les dirait d'un thème d'Omarchy.
+    let systeme = serde_json::json!({
+        "source": "omarchy",
+        "vifs": ["e0567a", "ff5370", "f78c6c", "ffcb6b", "c3e88d"],
+    });
+    let poser = |a: &mut Appli, theme: Theme, choix: &Choix| {
+        let garde = serde_json::json!({ "base": choix.base.mot(), "vifs": vifs_hex(&choix.vifs) });
+        let mut lu = serde_json::json!({ "systeme": systeme });
+        lu[theme.mot()] = garde;
+        a.poser(Commande::Couleurs, lu.to_string().as_bytes());
+    };
+    let mut faites = 0;
+    for sombre in [true, false] {
+        let theme = Theme::depuis_sombre(sombre);
+        let lues: [Option<crate::couleurs::Rgb>; 5] =
+            ["e0567a", "ff5370", "f78c6c", "ffcb6b", "c3e88d"].map(crate::couleurs::lire_hex);
+        for base in Base::TOUTES {
+            let choix = match base {
+                Base::Systeme => depuis_le_systeme(theme, &lues).0,
+                b => Choix::du_prereglage(b, theme),
+            };
+            for (ecran, taille, nom) in [
+                (Ecran::Accueil, TAILLES[0], "accueil"),
+                (Ecran::Rubrique(Rubrique::Vanguard), TAILLES[1], "reglages"),
+            ] {
+                let mut rendu = Rendu::nouveau();
+                let mut appli = appli_remplie(false, sombre);
+                poser(&mut appli, theme, &choix);
+                appli.aller(ecran);
+                let toile = rendu.rendre(taille, &[0.0, 0.5, 2.0], |ui| image(&mut appli, None, ui));
+                let fichier = format!("{}-{nom}-{}.png", base.mot(), if sombre { "sombre" } else { "clair" });
+                toile.ecrire_png(&dossier.join(fichier)).unwrap();
+                faites += 1;
+            }
+        }
+        // La confirmation (Vanguard → Braise), puis un brouillon peu lisible (remarques, et un refus).
+        let braise = Choix::du_prereglage(Base::Braise, theme);
+        let mut peu_lisible = braise;
+        peu_lisible.poser(Vif::Moyen, peu_lisible.vif(Vif::Grave));
+        peu_lisible.poser(Vif::Bon, if sombre { [0x30, 0x30, 0x30] } else { [0xe8, 0xe8, 0xe8] });
+        for (nom, confirmer, brouillon) in [("confirmation", true, braise), ("remarques", false, peu_lisible)] {
+            let mut rendu = Rendu::nouveau();
+            let mut appli = appli_remplie(false, sombre);
+            poser(&mut appli, theme, &Choix::du_prereglage(Base::Vanguard, theme));
+            appli.aller(Ecran::Rubrique(Rubrique::Vanguard));
+            appli.brouillon = Some((theme, brouillon));
+            if confirmer {
+                appli.proposer_couleurs(ChangementCouleurs {
+                    theme,
+                    choix: Some(brouillon),
+                });
+            }
+            // Plus haute que l'écran : la section des couleurs entière, sans défiler.
+            let toile = rendu.rendre([1920, 1700], &[0.0, 0.5, 2.0], |ui| image(&mut appli, None, ui));
+            toile
+                .ecrire_png(&dossier.join(format!("{nom}-{}.png", if sombre { "sombre" } else { "clair" })))
+                .unwrap();
+            faites += 1;
+        }
+    }
+    faites
 }
 
 /// Les images clés du mouvement (mouvement/), en français, sombre, en 1280×800 : l'arrivée d'un écran.

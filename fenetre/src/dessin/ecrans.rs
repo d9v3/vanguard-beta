@@ -54,7 +54,7 @@ fn tuile(appli: &mut Appli, ui: &mut Ui, titre: &str, valeur: &str, phrase: &str
     let s = super::survol(ui, id, ui.ctx().read_response(id).is_some_and(|r| r.hovered()));
     let cadre = Frame::new()
         .fill(p.surface)
-        .stroke(Stroke::new(1.0, super::bord_survole(p, s)))
+        .stroke(Stroke::new(1.0, super::bord_survole(&p, s)))
         .shadow(super::ombre())
         .corner_radius(super::RAYON_CARTE)
         .inner_margin(Margin::same(20))
@@ -922,8 +922,8 @@ fn reglages(appli: &mut Appli, ui: &mut Ui) {
         ui,
         "Vanguard",
         crate::tr!(
-            "Les réglages de cette fenêtre, pour cette fois.",
-            "This window's settings, for this time."
+            "Les réglages de cette fenêtre : le thème et la langue pour cette fois, les couleurs gardées par Vanguard.",
+            "This window's settings: theme and language for this time, colors kept by Vanguard."
         ),
     );
     ui.add_space(24.0);
@@ -964,12 +964,15 @@ fn reglages(appli: &mut Appli, ui: &mut Ui) {
     ui.add_space(12.0);
     ui.label(texte(
         crate::tr!(
-            "Rien n'est enregistré : à la prochaine ouverture, la fenêtre reprend le thème du système et la langue de Vanguard. Les résultats déjà lus gardent leur langue jusqu'à la prochaine lecture.",
-            "Nothing is saved: next time, the window takes the system theme and Vanguard's language again. Results already read keep their language until read again."
+            "Le thème et la langue valent pour cette fois : à la prochaine ouverture, la fenêtre reprend le thème du système et la langue de Vanguard. Les résultats déjà lus gardent leur langue jusqu'à la prochaine lecture.",
+            "Theme and language are for this time: next time, the window takes the system theme and Vanguard's language again. Results already read keep their language until read again."
         ),
         13.0,
         p.discret,
     ));
+    ui.add_space(24.0);
+    titre_section(ui, crate::tr!("Couleurs", "Colors"), None);
+    super::couleurs::section(appli, ui);
     ui.add_space(24.0);
     titre_section(ui, crate::tr!("Vérifier Vanguard", "Check Vanguard"), None);
     cartes_commandes(appli, ui, Rubrique::Vanguard.commandes().collect());

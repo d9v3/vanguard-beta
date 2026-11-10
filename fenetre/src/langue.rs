@@ -36,6 +36,12 @@ pub fn secondes(s: f32) -> String {
     if anglais() { t } else { t.replace('.', ",") }
 }
 
+/// Un nombre à `decimales` chiffres après la virgule, avec la virgule en français : « 2,35 », « 2.35 ».
+pub fn nombre(x: f64, decimales: usize) -> String {
+    let t = format!("{x:.decimales$}");
+    if anglais() { t } else { t.replace('.', ",") }
+}
+
 /// « en », « en_CA.UTF-8 », « english » : de l'anglais ; le reste, du français.
 pub fn est_anglais(valeur: &str) -> bool {
     valeur.get(..2).is_some_and(|d| d.eq_ignore_ascii_case("en"))

@@ -8,6 +8,7 @@ mod cadre;
 #[cfg(test)]
 mod captures;
 mod clavier;
+mod couleurs;
 mod coulisses;
 mod defile;
 mod demarrage;
@@ -18,7 +19,6 @@ mod ouverture;
 mod vide;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use eframe::egui::{
@@ -28,7 +28,9 @@ use eframe::egui::{
 use crate::appli::Appli;
 use crate::lanceur::Programme;
 
-/// Les couleurs d'un thème (les mêmes que la maquette acceptée).
+/// Les couleurs d'un thème : les neutres et les couleurs vives du jeu réglé (`couleurs::Jeu`), plus le liseré,
+/// le gris et l'ombre, propres au thème.
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Palette {
     pub fond: Color32,
     pub surface: Color32,
@@ -53,56 +55,63 @@ const fn c(r: u8, g: u8, b: u8) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
-const SOMBRE: Palette = Palette {
-    fond: c(0, 0, 0),
-    surface: c(0x0a, 0x0c, 0x0f),
-    s2: c(0x12, 0x16, 0x1b),
-    s3: c(0x1a, 0x20, 0x27),
-    encre: c(0xe8, 0xee, 0xf4),
-    doux: c(0x93, 0xa1, 0xaf),
-    discret: c(0x5f, 0x6b, 0x77),
-    // rgba(220, 235, 255, 0.08), prémultiplié.
-    trait_: Color32::from_rgba_premultiplied(17, 18, 20, 20),
-    accent: c(0x38, 0xc6, 0xf4),
-    sur_vif: c(0x02, 0x10, 0x18),
-    grave: c(0xf0, 0x55, 0x5a),
-    moyen: c(0xf0, 0x8c, 0x2e),
-    jaune: c(0xd9, 0xc9, 0x4a),
-    bon: c(0x3f, 0xb9, 0x50),
-    gris: c(0x5f, 0x6b, 0x77),
-    ombre: Color32::from_rgba_premultiplied(0, 0, 0, 140),
-};
+fn rgb(x: crate::couleurs::Rgb) -> Color32 {
+    c(x[0], x[1], x[2])
+}
 
-const CLAIR: Palette = Palette {
-    fond: c(0xf3, 0xf5, 0xf7),
-    surface: c(0xff, 0xff, 0xff),
-    s2: c(0xee, 0xf1, 0xf4),
-    s3: c(0xe3, 0xe8, 0xed),
-    encre: c(0x0b, 0x15, 0x20),
-    doux: c(0x4a, 0x58, 0x68),
-    discret: c(0x6b, 0x77, 0x85),
-    // rgba(10, 25, 40, 0.10), prémultiplié.
-    trait_: Color32::from_rgba_premultiplied(1, 3, 4, 26),
-    accent: c(0x0a, 0x7f, 0xb6),
-    sur_vif: c(0xff, 0xff, 0xff),
-    grave: c(0xc6, 0x28, 0x28),
-    moyen: c(0xc2, 0x41, 0x0c),
-    jaune: c(0xa1, 0x62, 0x07),
-    bon: c(0x15, 0x80, 0x3d),
-    gris: c(0x94, 0xa3, 0xb8),
-    // rgba(10, 25, 40, 0.08), prémultiplié.
-    ombre: Color32::from_rgba_premultiplied(1, 2, 3, 20),
-};
+/// La palette d'un jeu de couleurs, pour le thème sombre ou clair.
+pub fn palette_de(jeu: &crate::couleurs::Jeu, sombre: bool) -> Palette {
+    use crate::couleurs::Vif;
+    let n = &jeu.neutres;
+    let (trait_, gris, ombre) = if sombre {
+        // rgba(220, 235, 255, 0.08), prémultiplié ; une ombre noire sur du noir.
+        (
+            Color32::from_rgba_premultiplied(17, 18, 20, 20),
+            c(0x5f, 0x6b, 0x77),
+            Color32::from_rgba_premultiplied(0, 0, 0, 140),
+        )
+    } else {
+        // rgba(10, 25, 40, 0.10) et rgba(10, 25, 40, 0.08), prémultipliés.
+        (
+            Color32::from_rgba_premultiplied(1, 3, 4, 26),
+            c(0x94, 0xa3, 0xb8),
+            Color32::from_rgba_premultiplied(1, 2, 3, 20),
+        )
+    };
+    Palette {
+        fond: rgb(n.fond),
+        surface: rgb(n.surface),
+        s2: rgb(n.s2),
+        s3: rgb(n.s3),
+        encre: rgb(n.encre),
+        doux: rgb(n.doux),
+        discret: rgb(n.discret),
+        trait_,
+        accent: rgb(jeu.vif(Vif::Accent)),
+        sur_vif: rgb(jeu.sur_vif),
+        grave: rgb(jeu.vif(Vif::Grave)),
+        moyen: rgb(jeu.vif(Vif::Moyen)),
+        jaune: rgb(jeu.vif(Vif::Jaune)),
+        bon: rgb(jeu.vif(Vif::Bon)),
+        gris,
+        ombre,
+    }
+}
 
-static THEME_CLAIR: AtomicBool = AtomicBool::new(false);
+/// La palette de Vanguard, rien de réglé.
+fn par_defaut(sombre: bool) -> Palette {
+    let t = crate::couleurs::Theme::depuis_sombre(sombre);
+    palette_de(&crate::couleurs::Jeu::de(t, None), sombre)
+}
+
+thread_local! {
+    /// La palette montrée. Une par fil : la fenêtre dessine dans un seul, chaque essai dans le sien.
+    static PALETTE: std::cell::Cell<Option<Palette>> = const { std::cell::Cell::new(None) };
+}
 
 /// La palette du thème montré.
-pub fn pal() -> &'static Palette {
-    if THEME_CLAIR.load(Ordering::Relaxed) {
-        &CLAIR
-    } else {
-        &SOMBRE
-    }
+pub fn pal() -> Palette {
+    PALETTE.with(std::cell::Cell::get).unwrap_or_else(|| par_defaut(true))
 }
 
 /// Mélange deux couleurs (`t` : la part de `a`).
@@ -206,7 +215,7 @@ pub fn bouton(ui: &mut Ui, t: &str, plein: bool, actif: bool) -> egui::Response 
         (fond, p.sur_vif, fond)
     } else {
         let fond = if presse { p.s3 } else { p.s2.gamma_multiply(s) };
-        (fond, p.encre, bord_survole(p, s))
+        (fond, p.encre, bord_survole(&p, s))
     };
     let r = ui.add_enabled(
         actif,
@@ -239,7 +248,7 @@ pub fn petit(ui: &mut Ui, t: &str, actif: bool) -> egui::Response {
         actif,
         egui::Button::new(texte(t, 13.0, if actif { p.encre } else { p.doux }))
             .fill(fond)
-            .stroke(Stroke::new(1.0, if actif { bord_survole(p, s) } else { p.trait_ }))
+            .stroke(Stroke::new(1.0, if actif { bord_survole(&p, s) } else { p.trait_ }))
             .corner_radius(8)
             .min_size(vec2(0.0, 32.0)),
     );
@@ -315,10 +324,14 @@ fn polices(ctx: &egui::Context) {
     ctx.set_fonts(f);
 }
 
-/// Applique le thème montré.
+/// Applique le thème montré, aux couleurs de Vanguard.
 pub fn appliquer_theme(ctx: &egui::Context, sombre: bool) {
-    THEME_CLAIR.store(!sombre, Ordering::Relaxed);
-    let p = pal();
+    appliquer_palette(ctx, par_defaut(sombre), sombre);
+}
+
+/// Applique le thème montré, avec ces couleurs.
+pub fn appliquer_palette(ctx: &egui::Context, p: Palette, sombre: bool) {
+    PALETTE.with(|c| c.set(Some(p)));
     ctx.set_visuals(if sombre {
         egui::Visuals::dark()
     } else {
@@ -332,7 +345,7 @@ pub fn appliquer_theme(ctx: &egui::Context, sombre: bool) {
         s.visuals.text_cursor.stroke = Stroke::new(2.0, p.accent);
         s.spacing.item_spacing = vec2(8.0, 8.0);
         meme_contour_au_survol(&mut s.visuals);
-        bulles(s, p);
+        bulles(s, &p);
     });
 }
 
@@ -363,7 +376,8 @@ struct Fenetre {
     appli: Appli,
     /// La poignée de main avec `vanguard` : dite une fois, à la première image.
     annoncer: bool,
-    sombre_applique: bool,
+    /// La palette posée sur egui : refaite quand le thème ou les couleurs réglées changent.
+    appliquee: Palette,
     ouverture: ouverture::Ouverture,
 }
 
@@ -375,9 +389,10 @@ impl eframe::App for Fenetre {
         if veut_revenir(ui.ctx()) {
             self.appli.revenir();
         }
-        if self.sombre_applique != self.appli.sombre {
-            appliquer_theme(ui.ctx(), self.appli.sombre);
-            self.sombre_applique = self.appli.sombre;
+        let voulue = palette_de(&self.appli.jeu(), self.appli.sombre);
+        if voulue != self.appliquee {
+            appliquer_palette(ui.ctx(), voulue, self.appli.sombre);
+            self.appliquee = voulue;
         }
         cadre::tout(&mut self.appli, ui);
         if let Some(t) = ouverture {
@@ -438,7 +453,7 @@ pub fn ouvrir(programme: Result<Programme, String>, depuis_vanguard: bool) -> Re
             Ok(Box::new(Fenetre {
                 appli,
                 annoncer: depuis_vanguard,
-                sombre_applique: sombre,
+                appliquee: pal(),
                 ouverture: ouverture::Ouverture::nouvelle(),
             }))
         }),
