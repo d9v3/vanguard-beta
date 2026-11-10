@@ -29,6 +29,7 @@ pub(crate) mod couper;
 mod croisees;
 pub(crate) mod dbus;
 pub(crate) mod dconf;
+pub(crate) mod designes;
 pub(crate) mod dissimulation;
 mod docker;
 pub(crate) mod docker_api;

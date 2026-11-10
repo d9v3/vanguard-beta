@@ -38,6 +38,14 @@ struct Acceptee {
     /// le choix est alors retrouvé par son texte, comme avant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cle: Option<String>,
+    /// L'empreinte des témoins de l'alerte au moment du choix (`machine::temoins`) : pour une alerte qui en relève,
+    /// le choix ne vaut que pour cet état exact (un fichier changé, une ligne ajoutée, et elle revient). Un choix
+    /// sans elle ne tait jamais une alerte à témoins, même à la même clé.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    etat: Option<String>,
+    /// Les lignes déclarées normales, telles que montrées avant le choix (« fichier:ligne : ligne »), pour le menu.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    lignes: Vec<String>,
 }
 
 fn fichier() -> std::path::PathBuf {
@@ -138,11 +146,136 @@ fn en_vigueur(choix: &Acceptee, niveau: Niveau, jour: NaiveDate) -> bool {
     niveau <= choix.niveau && date(&choix.le).is_some_and(|le| jour.signed_duration_since(le).num_days() < DUREE_JOURS)
 }
 
-/// Retient qu'une alerte est normale ici.
-pub fn accepter(c: &Constat) {
-    let Some(niveau) = c.probleme else {
-        return;
+/// Une alerte peut-elle être déclarée normale ? `Err` : pourquoi pas, prêt à montrer. Une correction automatique
+/// sans témoins se déclare comme avant (par sa clé ou son texte) ; une alerte à corriger soi-même, seulement si sa
+/// règle relève ce que le choix lierait (`machine::temoins`) ; un relevé refusé (illisible, ambigu, trop de lignes),
+/// jamais.
+pub fn declarable(c: &Constat) -> Result<(), crate::machine::temoins::Refus> {
+    use crate::machine::temoins::{Refus, Temoins};
+    let refus = |phrase: &str| Err(Refus(phrase.to_string()));
+    let (Some(_), Some(k)) = (c.probleme, &c.correctif) else {
+        return refus(tr!("pas une alerte à corriger", "not an alert to fix"));
     };
+    match &k.temoins {
+        Temoins::Refuse(raison) => refus(raison),
+        Temoins::Releves(_) => Ok(()),
+        Temoins::Aucun if k.automatique => Ok(()),
+        Temoins::Aucun => refus(tr!(
+            "Vanguard ne relève pas encore ce qu'un tel choix lierait pour cette alerte",
+            "Vanguard does not yet record what such a choice would be bound to for this alert"
+        )),
+    }
+}
+
+/// Montre exactement ce qui serait déclaré normal, demande de le confirmer, et le retient ; `true` si c'est retenu.
+/// Une alerte élevée ou critique demande de taper « normal » : jamais une seule touche par mégarde.
+pub fn declarer_normale(c: &Constat) -> bool {
+    use crate::machine::temoins::Temoins;
+    if let Err(raison) = declarable(c) {
+        afficher_aligne(
+            "    ✖ ",
+            &trf!(
+                "Ne peut pas être déclarée normale : {raison}.",
+                "Cannot be declared normal: {raison}."
+            ),
+            6,
+            "",
+        );
+        return false;
+    }
+    let niveau = c.probleme.unwrap_or(Niveau::Info);
+    trp!(
+        "
+  {GRAS}Ce qui sera déclaré normal chez vous :{RESET}",
+        "
+  {GRAS}What will be declared normal for you:{RESET}"
+    );
+    afficher_aligne(
+        &format!("  {}[{}]{RESET} ", couleur(niveau), niveau.libelle()),
+        &format!("{} — {}", crate::langue::categorie(c.categorie), c.message),
+        4,
+        "",
+    );
+    let temoins = c.temoins();
+    let lignes = temoins.lignes();
+    if lignes.is_empty() {
+        match c.cle() {
+            Some(cle) => afficher_aligne(
+                "  ",
+                &trf!(
+                    "Reconnue par sa clé : {}",
+                    "Recognized by its key: {}",
+                    crate::ui::affichable(&cle.to_string())
+                ),
+                4,
+                GRIS,
+            ),
+            None => afficher_aligne("  ", tr!("Reconnue par son texte.", "Recognized by its text."), 4, GRIS),
+        }
+    } else {
+        trp!(
+            "  Chaque ligne signalée ({}), sans exception :",
+            "  Every reported line ({}), without exception:",
+            lignes.len()
+        );
+        for t in &lignes {
+            afficher_aligne("   • ", &t.ou, 5, GRAS);
+            afficher_aligne("       ", &t.ligne, 7, "");
+            if let Some(e) = &t.contenant {
+                afficher_aligne("       ", &trf!("fichier : {e}", "file: {e}"), 7, GRIS);
+            }
+            for (chemin, etat) in &t.cibles {
+                afficher_aligne("       → ", &format!("{chemin} : {etat}"), 9, GRIS);
+            }
+        }
+        afficher_aligne(
+            "  ",
+            tr!(
+                "Si l'un de ces fichiers ou ce qu'une ligne lance change, s'il devient un lien, ou si une ligne s'ajoute, l'alerte revient.",
+                "If one of these files or what a line starts changes, if it becomes a link, or if a line is added, the alert comes back."
+            ),
+            2,
+            "",
+        );
+    }
+    afficher_aligne(
+        "  ",
+        &trf!(
+            "Le choix vaut {DUREE_JOURS} jours, et cesse si l'alerte devient plus grave.",
+            "The choice lasts {DUREE_JOURS} days, and ends if the alert gets worse."
+        ),
+        2,
+        GRIS,
+    );
+    if niveau >= Niveau::Eleve {
+        let r = demander_ou_defaut(tr!(
+            "  Tapez « normal » puis Entrée pour confirmer (autre chose annule) : ",
+            "  Type “normal” then Enter to confirm (anything else cancels): "
+        ));
+        if !r.trim().eq_ignore_ascii_case("normal") {
+            trp!(
+                "    {GRIS}rien n'est retenu{RESET}",
+                "    {GRIS}nothing is saved{RESET}"
+            );
+            return false;
+        }
+    }
+    // Relu au moment d'écrire : un relevé refusé entre-temps ne se retient pas.
+    if matches!(temoins, Temoins::Refuse(_)) {
+        return false;
+    }
+    accepter(c)
+}
+
+/// Retient qu'une alerte est normale ici ; `true` si c'est retenu. Jamais une alerte qui ne se déclare pas
+/// (`declarable`).
+fn accepter(c: &Constat) -> bool {
+    let Some(niveau) = c.probleme else {
+        return false;
+    };
+    if declarable(c).is_err() {
+        return false;
+    }
     let mut appris = match charger() {
         Ok(a) => a,
         Err(Refus::Illisible) => {
@@ -151,14 +284,14 @@ pub fn accepter(c: &Constat) {
                 "    ✖ Your choice list can no longer be read ({}): nothing is saved, so as not to overwrite it.",
                 fichier().display()
             );
-            return;
+            return false;
         }
         Err(Refus::Falsifiee(_)) => {
             trp!(
                 "    ✖ La liste de vos choix a été changée hors de Vanguard : rien\n      n'est retenu. « Ce que Vanguard a appris » la montre, pour la\n      reprendre ou l'oublier.",
                 "    ✖ Your choice list was changed outside Vanguard: nothing is\n      saved. “What Vanguard has learned” shows it, to take it back or\n      forget it."
             );
-            return;
+            return false;
         }
     };
     retenir(&mut appris, c, niveau, aujourd_hui());
@@ -169,8 +302,12 @@ pub fn accepter(c: &Constat) {
                 "    {GRIS}retenu pour {DUREE_JOURS} jours, sauf si elle s'aggrave{RESET}",
                 "    {GRIS}noted for {DUREE_JOURS} days, unless it gets worse{RESET}"
             );
+            true
         }
-        Err(e) => trp!("    ✖ Choix non retenu ({e}).", "    ✖ Choice not saved ({e})."),
+        Err(e) => {
+            trp!("    ✖ Choix non retenu ({e}).", "    ✖ Choice not saved ({e}).");
+            false
+        }
     }
 }
 
@@ -189,6 +326,13 @@ fn retenir(appris: &mut Appris, c: &Constat, niveau: Niveau, jour: NaiveDate) {
             niveau,
             le: jour.format("%Y-%m-%d").to_string(),
             cle,
+            etat: c.temoins().empreinte(),
+            lignes: c
+                .temoins()
+                .lignes()
+                .iter()
+                .map(|t| format!("{} : {}", t.ou, t.ligne))
+                .collect(),
         },
     );
 }
@@ -213,6 +357,21 @@ pub fn appliquer(constats: &mut [Constat]) -> usize {
         let _ = enregistrer(&appris);
     }
     n
+}
+
+/// Pour les essais d'autres modules : un choix « normal » fait sur `declare` (s'il se déclare) tait-il `plus_tard` ?
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn essai_tait(declare: &Constat, plus_tard: &Constat) -> bool {
+    let Some(niveau) = declare.probleme else {
+        return false;
+    };
+    if declarable(declare).is_err() {
+        return false;
+    }
+    let mut a = Appris::default();
+    retenir(&mut a, declare, niveau, aujourd_hui());
+    let mut c = [plus_tard.clone()];
+    appliquer_le(&a, &mut c, aujourd_hui()) == 1
 }
 
 #[cfg(test)]
@@ -299,6 +458,17 @@ fn appliquer_avec(
         if !en_vigueur(choix, niveau, jour) {
             continue;
         }
+        // Une alerte à témoins ne se tait que pour l'état exact déclaré normal ; un relevé refusé aujourd'hui (un
+        // fichier devenu illisible, une ligne devenue ambiguë), jamais.
+        match c.temoins() {
+            crate::machine::temoins::Temoins::Aucun => {}
+            crate::machine::temoins::Temoins::Releves(_) => {
+                if choix.etat.is_none() || choix.etat != c.temoins().empreinte() {
+                    continue;
+                }
+            }
+            crate::machine::temoins::Temoins::Refuse(_) => continue,
+        }
         a_completer.extend(completer);
         let le = date(&choix.le).map(affichee).unwrap_or_default();
         c.probleme = Some(Niveau::Info);
@@ -371,8 +541,8 @@ pub fn menu() {
         }
         for ligne in envelopper(
             tr!(
-                "Rien pour l'instant. Quand une alerte est normale chez vous, répondez « i » au moment de la corriger : Vanguard s'en souviendra pendant 90 jours, et vous la montrera seulement pour info.",
-                "Nothing yet. When an alert is normal for you, answer “i” when it is offered as a fix: Vanguard will remember it for 90 days, and only show it for information."
+                "Rien pour l'instant. Quand une alerte est normale chez vous, répondez « i » quand Vanguard propose de la corriger, ou dans la liste « À faire vous-même » : Vanguard s'en souviendra pendant 90 jours, et vous la montrera seulement pour info.",
+                "Nothing yet. When an alert is normal for you, answer “i” when Vanguard offers to fix it, or in the “To do yourself” list: Vanguard will remember it for 90 days, and only show it for information."
             ),
             LARGEUR - 2,
         ) {
@@ -397,6 +567,9 @@ pub fn menu() {
             5,
             "",
         );
+        for l in &a.lignes {
+            afficher_aligne("     • ", l, 7, GRIS);
+        }
         println!("     {GRIS}{etat}{RESET}");
     }
     let reponse = demander(tr!(
@@ -525,6 +698,7 @@ mod tests {
                 automatique: true,
                 bloque: None,
                 defaire: crate::machine::Defaire::Inconnu,
+                temoins: crate::machine::temoins::Temoins::Aucun,
             }),
             verifie: true,
             regle: "",
@@ -543,6 +717,8 @@ mod tests {
                 niveau,
                 le: le.into(),
                 cle: None,
+                etat: None,
+                lignes: Vec::new(),
             },
         );
         a
@@ -774,6 +950,59 @@ mod tests {
         }
     }
 
+    /// Une alerte à corriger soi-même : déclarable seulement si sa règle relève ce que le choix lierait ; tue pour
+    /// cet état exact ; jamais par un ancien choix sans état (même clé, même texte), ni quand le relevé est refusé.
+    #[test]
+    fn alerte_manuelle_liee_a_son_etat() {
+        use crate::machine::temoins::{Temoins, temoin};
+        let manuelle = |t: Temoins| {
+            let mut c = constat("Programmes au démarrage", Niveau::Eleve, "Lancé au démarrage : rappel.");
+            let k = c.correctif.as_mut().unwrap();
+            k.automatique = false;
+            k.temoins = t;
+            c
+        };
+        let releves = |ligne: &str| {
+            Temoins::de(vec![Ok(temoin(
+                "~/.config/systemd/user/rappel.service:6",
+                "~/.config/systemd/user/rappel.service:6".into(),
+                ligne,
+                None,
+                &[],
+            ))])
+        };
+        assert!(
+            declarable(&manuelle(Temoins::Aucun)).is_err(),
+            "règle sans relevé : à la main seulement"
+        );
+        assert!(declarable(&manuelle(Temoins::Refuse("ambiguë".into()))).is_err());
+        let vue = manuelle(releves("ExecStart=%h/.cache-x/rappel.sh"));
+        assert!(declarable(&vue).is_ok());
+        let j = jour("2026-11-10");
+        let mut a = Appris::default();
+        retenir(&mut a, &vue, Niveau::Eleve, j);
+        assert_eq!(appliquer_le(&a, &mut [vue.clone()], j), 1);
+        let mut autre = [manuelle(releves("ExecStart=%h/.cache-x/autre.sh"))];
+        assert_eq!(appliquer_le(&a, &mut autre, j), 0);
+        assert_eq!(autre[0].probleme, Some(Niveau::Eleve));
+        assert_eq!(
+            appliquer_le(&a, &mut [manuelle(Temoins::Refuse("illisible".into()))], j),
+            0
+        );
+        // Un choix sans état (écrit avant ce lot, ou à la main) ne tait pas une alerte à témoins.
+        let mut ancien = appris(
+            "Programmes au démarrage",
+            "Lancé au démarrage : rappel.",
+            Niveau::Eleve,
+            "2026-11-10",
+        );
+        assert_eq!(appliquer_le(&ancien, &mut [vue.clone()], j), 0);
+        for c in ancien.acceptees.values_mut() {
+            c.etat = Some("0".repeat(64));
+        }
+        assert_eq!(appliquer_le(&ancien, &mut [vue], j), 0);
+    }
+
     use proptest::prelude::*;
 
     proptest! {
@@ -798,6 +1027,8 @@ mod tests {
                         niveau: Niveau::Eleve,
                         le: "2026-10-22".into(),
                         cle: Some(format!("{}|port:{p}/tcp", regles[usize::from(*r)])),
+                        etat: None,
+                        lignes: Vec::new(),
                     },
                 );
             }

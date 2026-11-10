@@ -444,6 +444,18 @@ it: Windows prevents a non-elevated program from sending keys to the administrat
 as administrator, or if User Account Control (UAC) is off, a hostile program driving it is itself an administrator:
 it has already won (see above). The same goes, on Linux, for a program already running as root.
 
+**Alerts declared normal.** "This is normal for me" silences an alert for 90 days (it comes back sooner if it gets
+more serious), in a list sealed like the rest of Vanguard's state. An alert to fix yourself can only be declared
+normal if its rule records what the choice would be bound to: today, programs started at boot and preloads on Linux.
+Before the choice, Vanguard then shows every reported line without exception (file:line, the file's fingerprint, the
+program or library it names and their fingerprints), and a high or critical alert asks you to type "normal". The
+choice is bound to that exact state: a line added or changed, another source in the same alert, the file or the
+launched program changed, replaced by a link or deleted bring the alert back. What cannot be recorded without
+ambiguity (a variable, a pipe, a script passed as an argument, an unreadable file, more than 12 lines) cannot be
+declared normal. Limits: a program looked up in PATH, a file read by the launched program (EnvironmentFile, a sourced
+script) and the program of an added service are not bound; on Windows, Run keys and tasks are still declared by their
+command line alone.
+
 ## What leaves the computer
 
 The threat, version and vulnerability lists are downloaded in full, the same for everyone. What Vanguard sends

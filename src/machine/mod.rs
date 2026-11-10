@@ -44,6 +44,7 @@ mod sante;
 mod sensibles;
 mod sshd;
 pub(crate) use sshd::nom_pq;
+pub(crate) mod temoins;
 pub(crate) mod wifi;
 #[cfg(target_os = "linux")]
 use linux as os;
@@ -115,6 +116,10 @@ pub struct Correctif {
     /// Ce qui permet de l'annuler (`optimiser::annulables`) : dit avant de l'appliquer.
     #[serde(skip)]
     pub defaire: Defaire,
+    /// Ce qu'un choix « c'est normal chez moi » déclarerait normal, relevé au bilan (`temoins`) : le choix ne vaut
+    /// que tant que tout est pareil. Porté ici plutôt que par le constat : seule une alerte à corriger se déclare.
+    #[serde(skip)]
+    pub temoins: temoins::Temoins,
 }
 
 /// Comment une correction se défait.
@@ -328,14 +333,32 @@ impl Constat {
     }
 
     pub(crate) fn corriger(mut self, action: impl Into<String>, commandes: &[impl ToString]) -> Self {
+        // Une correction posée par-dessus une autre (`defense::corriger` après `manuel`) garde les témoins relevés.
+        let temoins = self.correctif.take().map(|k| k.temoins).unwrap_or_default();
         self.correctif = Some(Correctif {
             action: action.into(),
             commandes: commandes.iter().map(ToString::to_string).collect(),
             automatique: true,
             bloque: None,
             defaire: Defaire::Inconnu,
+            temoins,
         });
         self
+    }
+
+    /// Pose ce qu'un choix « normal » déclarerait normal (sans correction, rien à poser : rien ne se déclare).
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn avec_temoins(mut self, t: temoins::Temoins) -> Self {
+        if let Some(k) = &mut self.correctif {
+            k.temoins = t;
+        }
+        self
+    }
+
+    /// Les témoins relevés pour un choix « normal » (`Aucun` sans correction).
+    pub(crate) fn temoins(&self) -> &temoins::Temoins {
+        static AUCUN: temoins::Temoins = temoins::Temoins::Aucun;
+        self.correctif.as_ref().map_or(&AUCUN, |k| &k.temoins)
     }
 
     /// La correction se défait : la valeur d'avant de chacun de ces gestes est relevée juste avant de l'appliquer.

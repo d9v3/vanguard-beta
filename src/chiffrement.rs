@@ -784,6 +784,7 @@ fn constat_de(donnees: &Path) -> Option<crate::machine::Constat> {
             automatique: false,
             bloque: None,
             defaire: crate::machine::Defaire::Inconnu,
+            temoins: crate::machine::temoins::Temoins::Aucun,
         }),
         verifie: true,
         regle: "",

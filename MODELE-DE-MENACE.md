@@ -502,6 +502,18 @@ Vanguard tourne déjà en administrateur, ou si le contrôle de compte (UAC) est
 pilote est lui-même administrateur : il a déjà gagné (voir plus haut). Il en va de même, sous Linux, d'un programme
 qui tourne déjà en root.
 
+**Les alertes déclarées normales.** « C'est normal chez moi » tait une alerte 90 jours (elle revient plus tôt si
+elle devient plus grave), dans une liste scellée comme le reste de l'état de Vanguard. Une alerte à corriger soi-même
+ne se déclare normale que si sa règle relève ce que le choix lierait : aujourd'hui, les programmes lancés au démarrage
+et les préchargements sous Linux. Vanguard montre alors, avant le choix, chaque ligne signalée sans exception
+(fichier:ligne, empreinte du fichier, programme ou bibliothèque désignés et leur empreinte), et une alerte élevée ou
+critique demande de taper « normal ». Le choix est lié à cet état exact : une ligne ajoutée ou changée, une autre
+source dans la même alerte, le fichier ou le programme lancé changé, remplacé par un lien ou effacé font revenir
+l'alerte. Ce qui ne se relève pas sans ambiguïté (une variable, un tube, un script passé en argument, un fichier
+illisible, plus de 12 lignes) ne peut pas être déclaré normal. Limites : un programme cherché dans le PATH, un fichier
+lu par le programme lancé (EnvironmentFile, script sourcé) et le programme d'un service ajouté ne sont pas liés ; sous
+Windows, les clés Run et les tâches se déclarent encore par leur seule ligne de commande.
+
 ## Ce qui sort de l'ordinateur
 
 Les listes de menaces, de versions et de failles sont téléchargées en entier, les mêmes pour tous. Ce que Vanguard

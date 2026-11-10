@@ -81,15 +81,43 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Bilan {
             dire_si_annulable(k);
             dire_l_avis(avis.de(c.regle));
             crate::amelioration::noter_correction(c.regle, Issue::Proposee);
-            let rep = demander(tr!(
-                "  Appliquer ? [o]ui / [n]on / [t]out appliquer / [i]gnorer, c'est normal chez moi : ",
-                "  Apply? [y]es / [n]o / [a]ll / [i]gnore, this is normal for me: "
-            ))
-            .to_lowercase();
-            if rep.trim() == "i" {
-                crate::apprentissage::accepter(c);
-                continue;
+            // « [i]gnorer » seulement pour une alerte qui peut se déclarer normale ; refusé ou annulé à la
+            // confirmation, la question revient.
+            let declarable = crate::apprentissage::declarable(c);
+            if let Err(raison) = &declarable {
+                afficher_aligne(
+                    "    ",
+                    &trf!(
+                        "Ne peut pas être déclarée normale : {raison}.",
+                        "Cannot be declared normal: {raison}."
+                    ),
+                    4,
+                    GRIS,
+                );
             }
+            let rep = loop {
+                let rep = demander(if declarable.is_ok() {
+                    tr!(
+                        "  Appliquer ? [o]ui / [n]on / [t]out appliquer / [i]gnorer, c'est normal chez moi : ",
+                        "  Apply? [y]es / [n]o / [a]ll / [i]gnore, this is normal for me: "
+                    )
+                } else {
+                    tr!(
+                        "  Appliquer ? [o]ui / [n]on / [t]out appliquer : ",
+                        "  Apply? [y]es / [n]o / [a]ll: "
+                    )
+                })
+                .to_lowercase();
+                if rep.trim() != "i" || declarable.is_err() {
+                    break Some(rep);
+                }
+                if crate::apprentissage::declarer_normale(c) {
+                    break None;
+                }
+            };
+            let Some(rep) = rep else {
+                continue;
+            };
             let tout = crate::langue::tout(&rep);
             // « Tout » ne prend pas d'avance une correction fragile (échouée deux fois ici) : elle reste proposée, une
             // à une, après le lot. Celle qui vient d'être montrée, si : la personne l'a vue.
@@ -287,9 +315,37 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Bilan {
             for cmd in &k.commandes {
                 println!("     {GRIS}{cmd}{RESET}");
             }
+            proposer_normale(c);
         }
     }
     bilan
+}
+
+/// Dans la liste « À faire vous-même » : « c'est normal chez moi » pour une alerte dont la règle relève ce que le
+/// choix lierait (`machine::temoins`), ou pourquoi elle ne peut pas l'être. Entrée (ou la fin de l'entrée) passe.
+fn proposer_normale(c: &Constat) {
+    use crate::machine::temoins::Temoins;
+    match (crate::apprentissage::declarable(c), c.temoins()) {
+        (Ok(()), _) => {
+            let rep = demander_ou_defaut(tr!(
+                "     [i]gnorer, c'est normal chez moi ; Entrée pour passer : ",
+                "     [i]gnore, this is normal for me; Enter to skip: "
+            ));
+            if rep.trim().eq_ignore_ascii_case("i") {
+                crate::apprentissage::declarer_normale(c);
+            }
+        }
+        (Err(raison), Temoins::Refuse(_)) => afficher_aligne(
+            "     ",
+            &trf!(
+                "Ne peut pas être déclarée normale : {raison}.",
+                "Cannot be declared normal: {raison}."
+            ),
+            5,
+            GRIS,
+        ),
+        (Err(_), _) => {}
+    }
 }
 
 /// Relève l'état d'avant d'une correction : erreur, pourquoi elle ne s'annulera pas.

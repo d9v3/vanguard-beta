@@ -107,6 +107,7 @@ mod tests {
                 automatique: true,
                 bloque: None,
                 defaire: crate::machine::Defaire::Inconnu,
+                temoins: crate::machine::temoins::Temoins::Aucun,
             }),
             verifie,
             regle: "",

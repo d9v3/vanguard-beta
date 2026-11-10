@@ -554,6 +554,7 @@ fn constat_de(probleme: Option<Niveau>, message: String, conseil: Option<&str>) 
             automatique: false,
             bloque: None,
             defaire: crate::machine::Defaire::Inconnu,
+            temoins: crate::machine::temoins::Temoins::Aucun,
         }),
         verifie: true,
         regle: "",
