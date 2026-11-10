@@ -147,21 +147,28 @@ pub fn largeur_car(c: char) -> usize {
 /// U+061C), espace, liaisons et marques de largeur nulle (U+200B à U+200F, U+2060 à U+2064), marque d'ordre des
 /// octets (U+FEFF). Et ce qui rend un nom trompeur sans rien piloter : séparateurs de ligne et de paragraphe (U+2028,
 /// U+2029), trait d'union conditionnel (U+00AD), séparateur mongol (U+180E), étiquettes invisibles (U+E0000 à
-/// U+E007F). Le sélecteur de variante des émojis (U+FE0F) reste.
+/// U+E007F), et les blancs qui ne sont pas des espaces mais en ont l'air ou ne se voient pas : remplissages coréens
+/// (U+115F, U+1160, U+3164, U+FFA0), Braille vide (U+2800), joint de graphèmes (U+034F). Le sélecteur de variante des
+/// émojis (U+FE0F) reste. La fenêtre (fenetre/src/nettoyage.rs) garde la même liste.
 pub(crate) fn piege(c: char) -> bool {
     matches!(
         u32::from(c),
         0x00..=0x1F
             | 0x7F..=0x9F
             | 0xAD
+            | 0x034F
             | 0x061C
+            | 0x115F..=0x1160
             | 0x180E
             | 0x200B..=0x200F
             | 0x2028..=0x2029
             | 0x202A..=0x202E
             | 0x2060..=0x2064
             | 0x2066..=0x2069
+            | 0x2800
+            | 0x3164
             | 0xFEFF
+            | 0xFFA0
             | 0xE0000..=0xE007F
     )
 }
@@ -995,6 +1002,12 @@ mod tests {
         );
         // Invisibles : « Sa[U+200B]lon » ressemble à « Salon ».
         assert_eq!(affichable("Sa\u{200b}lon"), "Sa�lon");
+        // Des blancs qui n'en sont pas : un nom « vide » ou « Sa lon » fait de remplissages, de Braille vide ou d'un
+        // joint de graphèmes.
+        assert_eq!(
+            affichable("a\u{3164}b\u{ffa0}c\u{115f}d\u{1160}e\u{2800}f\u{34f}g"),
+            "a�b�c�d�e�f�g"
+        );
         // Trompeurs sans rien piloter : séparateurs de ligne, trait d'union conditionnel, séparateur mongol, étiquettes.
         assert_eq!(
             affichable("a\u{2028}b\u{2029}c\u{ad}d\u{180e}e\u{e0041}\u{e007f}"),

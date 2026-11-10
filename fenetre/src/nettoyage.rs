@@ -11,21 +11,27 @@ pub const TEXTE_MAX: usize = 4000;
 pub const LIGNE_MAX: usize = 400;
 
 /// Les caractères qui pilotent un affichage ou trompent la lecture : contrôles C0 et C1, trait d'union conditionnel,
-/// marques et forçages du sens d'écriture, séparateurs de ligne Unicode, invisibles, étiquettes.
+/// marques et forçages du sens d'écriture, séparateurs de ligne Unicode, invisibles, étiquettes, et les blancs qui
+/// n'en sont pas (remplissages coréens, Braille vide, joint de graphèmes). La liste de `ui::piege` de Vanguard.
 pub fn piege(c: char) -> bool {
     matches!(
         u32::from(c),
         0x00..=0x1F
             | 0x7F..=0x9F
             | 0xAD
+            | 0x034F
             | 0x061C
+            | 0x115F..=0x1160
             | 0x180E
             | 0x200B..=0x200F
             | 0x2028..=0x2029
             | 0x202A..=0x202E
             | 0x2060..=0x2064
             | 0x2066..=0x2069
+            | 0x2800
+            | 0x3164
             | 0xFEFF
+            | 0xFFA0
             | 0xE0000..=0xE007F
     )
 }
@@ -157,6 +163,14 @@ mod tests {
         assert_eq!(ligne("a\u{200b}b\u{2066}c\u{feff}d"), "a\u{fffd}b\u{fffd}c\u{fffd}d");
         assert_eq!(ligne("tab\tici"), "tab ici");
         assert_eq!(ligne("ligne\u{2028}deux"), "ligne\u{fffd}deux");
+        // Tous les sens d'écriture, les largeurs nulles et la marque d'ordre des octets.
+        for c in "\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}\u{200b}\u{200c}\u{200d}\u{200e}\u{200f}\u{feff}\u{61c}".chars() {
+            assert_eq!(ligne(&format!("a{c}b")), "a\u{fffd}b", "U+{:04X}", u32::from(c));
+        }
+        // Des blancs qui n'en sont pas : remplissages coréens, Braille vide, joint de graphèmes.
+        for c in "\u{3164}\u{ffa0}\u{115f}\u{1160}\u{2800}\u{34f}".chars() {
+            assert_eq!(ligne(&format!("Sa{c}lon")), "Sa\u{fffd}lon", "U+{:04X}", u32::from(c));
+        }
         assert_eq!(ligne("é ü 漢字 🙂"), "é ü 漢字 🙂");
     }
 
