@@ -12,6 +12,7 @@ mod defile;
 mod demarrage;
 mod ecrans;
 mod icones;
+mod mouvement;
 mod ouverture;
 
 use std::sync::Arc;
@@ -148,14 +149,11 @@ pub fn carte<R>(ui: &mut Ui, marge: i8, rayon: u8, f: impl FnOnce(&mut Ui) -> R)
         .inner
 }
 
-/// La durée du survol : assez courte pour suivre la souris, assez longue pour que l'œil voie un fondu.
-const DUREE_SURVOL: f32 = 0.12;
-
-/// La part de survol d'un élément, de 0 à 1, qui glisse en `DUREE_SURVOL` : la couleur change en douceur, la taille
+/// La part de survol d'un élément, de 0 à 1, qui glisse en `mouvement::SURVOL` : la couleur change en douceur, la taille
 /// jamais (un bouton qui bouge sous la souris fait brouillon).
 pub fn survol(ui: &Ui, id: egui::Id, survole: bool) -> f32 {
     ui.ctx()
-        .animate_bool_with_time(id.with("survol"), survole, DUREE_SURVOL)
+        .animate_bool_with_time(id.with("survol"), survole, mouvement::SURVOL)
 }
 
 /// La part de survol d'un bouton d'egui, dessiné avant qu'on sache s'il est survolé : son état à l'image d'avant

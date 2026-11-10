@@ -55,23 +55,31 @@ pub fn tout(appli: &mut Appli, ui: &mut Ui) {
         .show(ui, |ui| console(appli, ui, lignes));
     // Les coulisses : une fenêtre à part, ou un panneau à droite (avant le panneau central, qui prend le reste).
     super::coulisses::montrer(appli, ui);
+    // L'écran arrive en fondu ; un écran nouveau part du haut (sinon il s'ouvrait à la hauteur où était l'autre).
+    let arrivee = super::mouvement::arrivee(ui.ctx(), appli.ecran);
     egui::CentralPanel::default()
         .frame(Frame::new().fill(p.fond))
         .show(ui, |ui| {
-            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                Frame::new()
-                    .inner_margin(Margin {
-                        left: 32,
-                        right: 32,
-                        top: 32,
-                        bottom: 64,
-                    })
-                    .show(ui, |ui| {
-                        // Une borne, jamais un élargissement : `set_max_width` pose la largeur telle quelle, et 1 520
-                        // dans une fenêtre plus étroite poussait les cartes et leurs boutons hors de l'écran.
-                        ui.set_max_width(ui.available_width().min(1520.0));
-                        super::ecrans::montrer(appli, ui);
-                    });
+            super::mouvement::montrer_en_arrivant(ui, arrivee, |ui| {
+                let mut defile = egui::ScrollArea::vertical().auto_shrink(false);
+                if arrivee.nouvel_ecran {
+                    defile = defile.vertical_scroll_offset(0.0);
+                }
+                defile.show(ui, |ui| {
+                    Frame::new()
+                        .inner_margin(Margin {
+                            left: 32,
+                            right: 32,
+                            top: 32,
+                            bottom: 64,
+                        })
+                        .show(ui, |ui| {
+                            // Une borne, jamais un élargissement : `set_max_width` pose la largeur telle quelle, et 1 520
+                            // dans une fenêtre plus étroite poussait les cartes et leurs boutons hors de l'écran.
+                            ui.set_max_width(ui.available_width().min(1520.0));
+                            super::ecrans::montrer(appli, ui);
+                        });
+                });
             });
         });
     // Le trait du bord droit du rail, après les autres panneaux (leur fond ne le recouvre pas) : un pixel de l'écran,

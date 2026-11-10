@@ -198,7 +198,7 @@ fn pastille(ui: &mut Ui, id: Id, zone: Rect, col: Colonnes, nouvelles: usize, su
     }
     let t = ui
         .ctx()
-        .animate_bool_with_time(id.with("pastille-fondu"), nouvelles > 0, 0.12);
+        .animate_bool_with_time(id.with("pastille-fondu"), nouvelles > 0, super::mouvement::SURVOL);
     if t <= 0.0 || suivi.montre == 0 {
         return;
     }

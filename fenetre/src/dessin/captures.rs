@@ -526,7 +526,30 @@ fn captures() {
             }
         }
     }
+    faites += mouvement(&dossier);
     println!("CAPTURES {faites} dans {}", dossier.display());
+}
+
+/// Les images clés du mouvement (mouvement/), en français, sombre, en 1280×800 : l'arrivée d'un écran.
+fn mouvement(dossier: &Path) -> usize {
+    let dossier = dossier.join("mouvement");
+    std::fs::create_dir_all(&dossier).unwrap();
+    crate::langue::choisir(Some(false));
+    let taille = TAILLES[0];
+    let mut faites = 0;
+    for t in [0.0, 0.05, 0.1, 0.15] {
+        let mut rendu = Rendu::nouveau();
+        super::appliquer_theme(&rendu.ctx, true);
+        let mut appli = appli_remplie(false, true);
+        rendu.rendre(taille, &[0.0, 0.5, 2.0], |ui| image(&mut appli, None, ui));
+        appli.aller(Ecran::Bilan);
+        let instants: &[f64] = if t > 0.0 { &[0.0, t] } else { &[0.0] };
+        let toile = rendu.rendre(taille, instants, |ui| image(&mut appli, None, ui));
+        let fichier = format!("arrivee-{:03}ms.png", (t * 1000.0).round() as u32);
+        toile.ecrire_png(&dossier.join(fichier)).unwrap();
+        faites += 1;
+    }
+    faites
 }
 
 /// Le rendu logiciel peint pour de vrai : un fond, un rectangle plein, un texte (la texture des polices), une forme
