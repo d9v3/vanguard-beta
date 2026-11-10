@@ -205,8 +205,12 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
 - **Un bac à sable (Linux).** Au démarrage, avant tout le reste, la fenêtre se dédouble : un relais (`vanguard-relais`)
   garde les droits de votre compte et lance seul `vanguard` ; la fenêtre s'enferme (Landlock et no_new_privs,
   `fenetre/src/bac_a_sable.rs`) et ne fait plus que lui demander une commande de la liste fermée, par son numéro
-  (`fenetre/src/relais.rs`). Enfermée, elle peut lire des fichiers et parler à l'affichage (Wayland ou X11) et à la
-  carte graphique, rien d'autre : ni écrire un fichier (pas même le cache des shaders, qu'un programme piégé pourrait
+  (`fenetre/src/relais.rs`). Enfermée, elle peut lire les fichiers du système (bibliothèques, pilotes et réglages :
+  /usr, /etc, /lib*, /opt, /proc, /sys, /run sauf /run/user et /run/media) et, de votre compte, ses seuls thèmes de
+  curseurs (~/.icons, ~/.local/share/icons, ~/.cursors) et son fichier de touches mortes (~/.XCompose) ; parler à son
+  affichage (la socket de Wayland, ou celles d'X11 et le fichier ~/.Xauthority, jamais les deux) et à la carte graphique
+  (/dev/dri, /dev/nvidia*) ; rien d'autre : ni lire votre dossier personnel (clés SSH, navigateurs, jetons), /tmp, /var
+  ou les disques branchés, ni écrire un fichier (pas même le cache des shaders, qu'un programme piégé pourrait
   empoisonner), ni lancer un programme, ni (Landlock 4, Linux 6.7) ouvrir une connexion, ni (Landlock 6, Linux 6.12)
   envoyer un signal hors d'elle ou, sous Wayland, joindre une socket abstraite, ni (Landlock 9) joindre une autre socket
   Unix que celle de l'affichage (le bus D-Bus, par exemple). Le relais ne comprend que « lancer la commande n de la
@@ -236,10 +240,18 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   que l'autre soit un fichier ordinaire : ni son propriétaire, ni les droits (ACL) du fichier et de ses dossiers, que
   Windows ne laisse pas lire aussi simplement ; un dossier où d'autres comptes peuvent écrire n'est donc pas refusé
   sous Windows. Sous Windows, chaque commande lancée est mise dans son propre objet de travail (job object) : Arrêter, le délai et la fin de la commande arrêtent aussi ce qu'elle a lancé, et tout s'arrête si la fenêtre s'arrête ; un processus lancé dans le court instant d'avant son entrée dans l'objet y échapperait. Sous
-  Linux, pas encore de lecteur d'écran ni de copier-coller. Le bac à sable de la fenêtre protège moins avant Landlock 9
-  (elle peut encore joindre les sockets Unix du compte, dont le bus de session, d'où `systemd-run` lancerait un
-  programme) et sous X11, où tout programme de l'écran peut taper dans les autres fenêtres et où les sockets
-  abstraites restent joignables (X11 en a besoin).
+  Linux, pas encore de lecteur d'écran ni de copier-coller. Le bac à sable de la fenêtre ne retient pas ce que
+  l'affichage permet à toute fenêtre, et Wayland n'y est jamais compté comme sûr d'office. Sous X11, tout programme de
+  l'écran peut taper dans les autres fenêtres et lire leur presse-papiers, et les sockets abstraites restent
+  joignables (X11 en a besoin). Sous Wayland, cela dépend du compositeur : Hyprland (sans enforce_permissions) et ceux
+  de wlroots offrent à toute fenêtre, par la socket même où elle dessine, un clavier et un pointeur virtuels
+  (zwp_virtual_keyboard, zwlr_virtual_pointer), le presse-papiers des autres (data-control, wlr et ext), la capture de
+  l'écran (screencopy, image-copy-capture) et celle des fenêtres (hyprland_toplevel_export) ; Landlock n'y peut rien.
+  Une fenêtre prise en main pourrait donc taper dans un terminal ouvert, voir l'écran ou lire le presse-papiers ; vos
+  fichiers, eux, lui restent fermés. Le bac protège aussi moins avant Landlock 9 (elle peut encore joindre les sockets
+  Unix du compte, dont le bus de session, d'où `systemd-run` lancerait un programme, et celles d'X11 même sous
+  Wayland) et avant Landlock 6 (les sockets abstraites, dont celle de Xwayland). Les réglages de pilote de votre compte
+  (~/.drirc, ~/.nv) ne sont pas lus : la carte garde ses valeurs par défaut.
 
 ## Baisses par choix
 
