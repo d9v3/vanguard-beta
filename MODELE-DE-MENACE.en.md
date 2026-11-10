@@ -178,7 +178,9 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   the PATH) with a command from a closed list, which changes nothing on the computer in this version (`audit`,
   `protection`, `evenements`, `diagnostic`, `test-connexion`…), always with `--json`, no free argument, no shell,
   input closed, one at a time, with a time limit and a Stop button (on Linux, the whole process group is stopped).
-  The window's console only accepts the names on that list.
+  The window's console only accepts the names on that list. On Linux, that `vanguard` must be a regular file owned
+  by the window's account or by root, that neither the group nor others can modify, or it is not started (the same
+  rule as for the window, below).
 - **Its answers are read with suspicion.** Bounded size, long lines cut, terminal sequences and control characters
   removed, JSON read without ever crashing; an unreadable answer is said to be so, never counted as healthy. The
   check's grade is shown only when Vanguard says it is reliable (`fiable` in `audit --json`).

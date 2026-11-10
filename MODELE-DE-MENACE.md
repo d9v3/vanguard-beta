@@ -187,7 +187,9 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   cherché dans le PATH) avec une commande d'une liste fermée, qui ne change rien à l'ordinateur dans cette version
   (`audit`, `protection`, `evenements`, `diagnostic`, `test-connexion`…), toujours en `--json`, sans argument libre,
   sans shell, entrée fermée, une à la fois, avec un délai et un bouton Arrêter (sous Linux, tout le groupe de
-  processus est arrêté). La console de la fenêtre n'accepte que les noms de cette liste.
+  processus est arrêté). La console de la fenêtre n'accepte que les noms de cette liste. Sous Linux, ce `vanguard`
+  doit être un fichier ordinaire au compte de la fenêtre ou à root, que ni le groupe ni les autres ne peuvent
+  modifier, sinon il n'est pas lancé (la même règle que pour la fenêtre, plus bas).
 - **Ses réponses sont lues avec méfiance.** Taille bornée, lignes coupées, séquences de terminal et caractères de
   contrôle retirés, JSON lu sans jamais planter ; une réponse illisible est dite telle, jamais comptée saine. La note
   du bilan n'est montrée que si Vanguard la dit fiable (`fiable` dans `audit --json`).
