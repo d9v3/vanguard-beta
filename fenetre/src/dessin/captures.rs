@@ -601,6 +601,23 @@ fn mouvement(dossier: &Path) -> usize {
         toile.ecrire_png(&dossier.join(nom)).unwrap();
         faites += 1;
     }
+    // Des infobulles : la souris posée une fois, puis immobile au-delà du délai (egui le compte depuis le dernier
+    // mouvement). Une rubrique du rail en sombre, le point de veille en clair, la touche Tab en sombre.
+    for (nom, sombre, ici) in [
+        ("bulle-rail", true, egui::pos2(44.0, 255.0)),
+        ("bulle-veille", false, egui::pos2(990.0, 32.0)),
+        ("bulle-tab", true, egui::pos2(1150.0, 254.0)),
+    ] {
+        let mut rendu = Rendu::nouveau();
+        super::appliquer_theme(&rendu.ctx, sombre);
+        let mut appli = appli_remplie(false, sombre);
+        appli.aller(Ecran::Rubrique(Rubrique::Ordinateur));
+        rendu.rendre(taille, &[0.0, 0.5], |ui| image(&mut appli, None, ui));
+        rendu.touches.push(egui::Event::PointerMoved(ici));
+        let toile = rendu.rendre(taille, &[0.0, 0.2, 0.4, 0.6], |ui| image(&mut appli, None, ui));
+        toile.ecrire_png(&dossier.join(format!("{nom}.png"))).unwrap();
+        faites += 1;
+    }
     // L'en-tête de la console pendant qu'une commande tourne (aucune vraie commande ne tourne dans une capture :
     // l'en-tête seul, à mi-pouls).
     let mut rendu = Rendu::nouveau();

@@ -158,8 +158,56 @@ fn rail(appli: &mut Appli, ui: &mut Ui) {
                 r => Ecran::Rubrique(r),
             });
         }
-        rep.on_hover_cursor(egui::CursorIcon::PointingHand);
+        rep.on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_ui(|ui| bulle_rubrique(ui, rub));
         ui.add_space(4.0);
+    }
+}
+
+/// L'infobulle d'une rubrique du rail : son nom sur une ligne, puis ce qu'on y trouve.
+fn bulle_rubrique(ui: &mut Ui, rub: Rubrique) {
+    let p = pal();
+    let quoi = match rub {
+        Rubrique::Accueil => crate::tr!(
+            "Le bilan, la protection et le journal, d'un coup d'œil.",
+            "The check, protection and journal at a glance."
+        )
+        .to_owned(),
+        Rubrique::Guide => crate::tr!(
+            "Toutes les commandes que la fenêtre sait lancer, et ce que chacune fait.",
+            "Every command this window can run, and what each one does."
+        )
+        .to_owned(),
+        _ => rub.commandes().map(Commande::titre).collect::<Vec<_>>().join(" · "),
+    };
+    ui.label(RichText::new(rub.nom()).font(moyenne(13.0)).color(p.encre));
+    if !quoi.is_empty() {
+        ui.label(RichText::new(quoi).font(police(12.0)).color(p.doux));
+    }
+}
+
+/// Ce que dit l'infobulle du point de veille, pour chacun de ses trois états.
+fn bulle_veille(appli: &Appli) -> String {
+    if appli.protection().is_none() {
+        return crate::tr!(
+            "La protection n'a pas encore été lue : rien n'est supposé tant qu'elle ne l'est pas.",
+            "Protection has not been read yet: nothing is assumed until it is."
+        )
+        .to_owned();
+    }
+    let ou = Commande::Protection.rubrique().nom();
+    if veille(appli).1 {
+        crate::trf!(
+            "La veille en temps réel est allumée sur cet ordinateur (détail : {}).",
+            "Real-time watch is on for this computer (details: {}).",
+            ou
+        )
+    } else {
+        crate::trf!(
+            "Aucune veille en temps réel n'est allumée sur cet ordinateur (détail : {}).",
+            "No real-time watch is on for this computer (details: {}).",
+            ou
+        )
     }
 }
 
@@ -273,8 +321,12 @@ fn barre(appli: &mut Appli, ui: &mut Ui) {
     let temps = ui.ctx().input(|i| i.time);
     let periode = if respire { super::mouvement::POULS_VEILLE } else { 0.0 };
     super::mouvement::pouls(ui.painter(), temps, point, 4.0, couleur, periode);
-    ui.painter()
+    let ecrit = ui
+        .painter()
         .text(point + vec2(12.0, 0.0), Align2::LEFT_CENTER, mot, police(13.0), p.doux);
+    let zone = ecrit.union(Rect::from_center_size(point, vec2(12.0, 12.0)));
+    ui.interact(zone, ui.scope_id().with("veille"), Sense::hover())
+        .on_hover_text(bulle_veille(appli));
 }
 
 /// Une phase entre 0 et 1, de f64 en f32.
@@ -363,7 +415,20 @@ fn console(appli: &mut Appli, ui: &mut Ui, montrees: usize) {
     if rep.clicked() {
         ui.ctx().data_mut(|d| d.insert_temp(id_depliee(), !depliee));
     }
-    rep.on_hover_cursor(egui::CursorIcon::PointingHand);
+    rep.on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(if depliee {
+            crate::trf!(
+                "Montrer {} lignes de la console",
+                "Show {} console lines",
+                LIGNES_REPLIEE
+            )
+        } else {
+            crate::trf!(
+                "Montrer {} lignes de la console",
+                "Show {} console lines",
+                LIGNES_DEPLIEE
+            )
+        });
     // Les coulisses, à gauche : allumées tant qu'elles sont ouvertes.
     let ouvertes = super::coulisses::ouvertes(ui.ctx());
     let mot = crate::tr!("Coulisses", "Behind the scenes");
@@ -389,7 +454,11 @@ fn console(appli: &mut Appli, ui: &mut Ui, montrees: usize) {
     if rep.clicked() {
         super::coulisses::basculer(ui.ctx());
     }
-    rep.on_hover_cursor(egui::CursorIcon::PointingHand);
+    rep.on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(crate::tr!(
+            "Ce que fait la fenêtre, en direct et en lecture seule : chaque commande lancée, ses arguments exacts, son bac à sable, sa durée.",
+            "What the window does, live and read-only: each command run, its exact arguments, its sandbox, its duration."
+        ));
     let flux = Rect::from_min_max(
         pos2(r.left(), tete.bottom()),
         pos2(r.right(), tete.bottom() + 12.0 + HAUTEUR_LIGNE * n_f32(montrees)),
@@ -421,12 +490,37 @@ fn console(appli: &mut Appli, ui: &mut Ui, montrees: usize) {
         p.accent,
     );
     let mut x = saisie.right() - 32.0;
-    for k in [crate::tr!("Entrée", "Enter"), "↑", "Tab"] {
+    let touches = [
+        (
+            crate::tr!("Entrée", "Enter"),
+            crate::tr!(
+                "Lance la commande tapée, si elle est dans la liste fermée",
+                "Runs the typed command, if it is on the closed list"
+            ),
+        ),
+        (
+            "↑",
+            crate::tr!(
+                "Rappelle la saisie d'avant (↓ revient)",
+                "Recalls the previous entry (↓ goes back)"
+            ),
+        ),
+        (
+            "Tab",
+            crate::tr!(
+                "Complète le nom quand une seule commande convient",
+                "Completes the name when only one command fits"
+            ),
+        ),
+    ];
+    for (i, (k, aide)) in touches.into_iter().enumerate() {
         let g = peintre.layout_no_wrap(k.into(), police(11.0), p.doux);
         let w = g.size().x + 12.0;
         let cap = Rect::from_min_size(pos2(x - w, saisie.center().y - 10.0), vec2(w, 20.0));
         peintre.rect_stroke(cap, 4, Stroke::new(1.0, p.trait_), StrokeKind::Inside);
         peintre.galley(cap.center() - g.size() / 2.0, g, p.doux);
+        ui.interact(cap, ui.scope_id().with(("touche", i)), Sense::hover())
+            .on_hover_text(aide);
         x -= w + 8.0;
     }
     let champ = Rect::from_min_max(
@@ -498,5 +592,82 @@ fn rangee(l: &LigneConsole) -> Rangee<'_> {
             Ton::Grave => p.grave,
             Ton::Discret => p.doux,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui;
+
+    use crate::appli::Appli;
+    use crate::commandes::Rubrique;
+
+    /// Une image de la fenêtre entière, la souris posée en `souris` (un mouvement à la première image seulement : egui
+    /// compte le délai d'une bulle depuis le dernier) ; rend le cadre de l'infobulle qui dit `texte`, s'il y en a une.
+    fn image(
+        ctx: &egui::Context,
+        appli: &mut Appli,
+        temps: f64,
+        souris: egui::Pos2,
+        texte: &str,
+    ) -> Option<egui::Rect> {
+        let entree = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
+            time: Some(temps),
+            events: if temps <= 1.0 {
+                vec![egui::Event::PointerMoved(souris)]
+            } else {
+                vec![]
+            },
+            ..Default::default()
+        };
+        let mut sortie = ctx.run_ui(entree, |ui| super::tout(appli, ui));
+        sortie.textures_delta.clear();
+        let p = super::pal();
+        let ecrit = sortie.shapes.iter().find_map(|c| match &c.shape {
+            egui::Shape::Text(t) if t.galley.text() == texte => Some(t.pos),
+            _ => None,
+        })?;
+        // Le cadre d'une bulle vient avec son ombre : un `Shape::Vec`.
+        let feuilles = sortie.shapes.iter().flat_map(|c| match &c.shape {
+            egui::Shape::Vec(v) => v.iter().collect::<Vec<_>>(),
+            s => vec![s],
+        });
+        feuilles
+            .filter_map(|s| match s {
+                egui::Shape::Rect(r) => Some(r),
+                _ => None,
+            })
+            .find(|r| {
+                r.rect.contains(ecrit)
+                    && r.fill == p.surface
+                    && r.stroke.color == p.trait_
+                    && r.corner_radius == egui::CornerRadius::same(16)
+                    && r.rect.width() < 420.0
+            })
+            .map(|r| r.rect)
+    }
+
+    /// Une rubrique du rail dit son nom en entier dans une infobulle, au fond, au contour et au rayon des cartes ; pas
+    /// tout de suite (la souris qui passe ne fait rien surgir), mais en moins d'une demi-seconde.
+    #[test]
+    fn le_rail_dit_sa_rubrique_dans_une_bulle() {
+        let ctx = egui::Context::default();
+        super::super::polices(&ctx);
+        super::super::appliquer_theme(&ctx, true);
+        let mut appli = Appli::pour_captures();
+        // « Réseau et Internet », troisième du rail (sur deux lignes dans le rail, sur une dans la bulle).
+        let souris = egui::pos2(44.0, 255.0);
+        let nom = Rubrique::Reseau.nom();
+        assert!(
+            image(&ctx, &mut appli, 1.0, souris, nom).is_none(),
+            "une bulle sans attendre"
+        );
+        assert!(image(&ctx, &mut appli, 1.1, souris, nom).is_none(), "une bulle à 0,1 s");
+        let mut bulle = None;
+        for k in 0..6 {
+            bulle = bulle.or(image(&ctx, &mut appli, 1.2 + 0.05 * f64::from(k), souris, nom));
+        }
+        assert!(bulle.is_some(), "pas de bulle en une demi-seconde");
     }
 }

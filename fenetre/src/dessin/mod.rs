@@ -5,9 +5,9 @@
 
 mod bilan;
 mod cadre;
-mod clavier;
 #[cfg(test)]
 mod captures;
+mod clavier;
 mod coulisses;
 mod defile;
 mod demarrage;
@@ -312,7 +312,18 @@ pub fn appliquer_theme(ctx: &egui::Context, sombre: bool) {
         s.visuals.text_cursor.stroke = Stroke::new(2.0, p.accent);
         s.spacing.item_spacing = vec2(8.0, 8.0);
         meme_contour_au_survol(&mut s.visuals);
+        bulles(s, p);
     });
+}
+
+/// Les infobulles (le cadre « popup » d'egui, que rien d'autre n'utilise ici) : vite là, au fond, au contour et au
+/// rayon des cartes, une ligne de lecture courte.
+fn bulles(s: &mut egui::Style, p: &Palette) {
+    s.interaction.tooltip_delay = 0.25;
+    s.visuals.window_stroke = Stroke::new(1.0, p.trait_);
+    s.visuals.menu_corner_radius = egui::CornerRadius::same(16);
+    s.spacing.menu_margin = Margin::symmetric(14, 10);
+    s.spacing.tooltip_width = 360.0;
 }
 
 /// Un bouton garde sa taille sous la souris. egui retire de la marge intérieure l'épaisseur du contour de l'état
