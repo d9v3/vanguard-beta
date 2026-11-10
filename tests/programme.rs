@@ -1056,8 +1056,10 @@ fn verifier_fichier_en_json() {
     std::fs::write(&notes, "bonjour\n").unwrap();
     let lire = |args: &[&str]| -> serde_json::Value {
         // Hors ligne : MalwareBazaar n'est pas demandé par Internet (lent, sensible au réseau) ; ses empreintes
-        // absentes deviennent la réserve que l'essai attend plus bas.
-        let s = vanguard_dans_env(programme, &maison, "fr", args, "", 60, &[("VANGUARD_HORS_LIGNE", "1")]);
+        // absentes deviennent la réserve que l'essai attend plus bas. 120 s : le moteur lit les vraies bases de
+        // ClamAV de l'ordinateur (pas de dossier de bases au choix, exprès), ce qui dépasse 60 s en debug quand les
+        // autres essais tournent en même temps.
+        let s = vanguard_dans_env(programme, &maison, "fr", args, "", 120, &[("VANGUARD_HORS_LIGNE", "1")]);
         assert_eq!(s.code, Some(0), "{}", s.erreurs);
         serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("{args:?} : JSON illisible ({e}) : {}", s.texte))
     };
