@@ -3,7 +3,7 @@
 //! en bas d'un clic. Chaque ligne est complète, repliée à la largeur, et son texte se sélectionne. Seules les lignes
 //! visibles sont mises en page et dessinées : la hauteur de chacune est mesurée une fois, à son arrivée, et gardée.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use eframe::egui::text::{LayoutJob, TextFormat};
@@ -35,6 +35,9 @@ pub struct Colonnes {
     pub texte: f32,
     pub droite: f32,
     pub dessous: f32,
+    /// Chaque ligne sur une seule ligne, coupée d'un « … » si elle est trop longue ; un clic la déplie en entier, un
+    /// autre la replie. Sinon, chaque ligne est repliée à la largeur.
+    pub tronquer: bool,
 }
 
 /// Ce que le journal a vu à cette image.
@@ -61,6 +64,8 @@ struct Suivi {
     montre: usize,
     /// Un clic sur la pastille : redescendre à l'image suivante.
     descendre: bool,
+    /// Une ligne qu'un clic vient de déplier : la montrer depuis son début à l'image suivante.
+    montrer: Option<u64>,
 }
 
 /// Le journal de `n` lignes dans `ui.max_rect()`. `curseur` : le curseur clignotant après la dernière ligne, allumé à
@@ -78,10 +83,18 @@ pub fn journal<'a>(
     let largeur = (zone.width() - col.texte - col.droite).max(80.0);
     let cle_mesures = id.with("mesures");
     let cle_suivi = id.with("suivi");
+    let cle_depliees = id.with("depliees");
     let mut m: Mesures = ui
         .ctx()
         .data_mut(|d| std::mem::take(d.get_temp_mut_or_default::<Mesures>(cle_mesures)));
     let mut suivi: Suivi = ui.ctx().data(|d| d.get_temp(cle_suivi)).unwrap_or_default();
+    let mut depliees: BTreeSet<u64> = ui
+        .ctx()
+        .data_mut(|d| std::mem::take(d.get_temp_mut_or_default::<BTreeSet<u64>>(cle_depliees)));
+    if let Some(r) = rangee(0) {
+        depliees.retain(|k| *k >= r.numero);
+    }
+    let pliee = |numero: u64| col.tronquer && !depliees.contains(&numero);
     if (m.largeur - largeur).abs() > 0.5 {
         m.hauteurs.clear();
         m.largeur = largeur;
@@ -91,8 +104,8 @@ pub fn journal<'a>(
         let Some(r) = rangee(i) else {
             break;
         };
-        let g = mise_en_page(ui, r.texte, r.couleur, largeur);
-        m.hauteurs.push_back((r.numero, g.size().y.max(HAUTEUR_LIGNE)));
+        m.hauteurs
+            .push_back((r.numero, hauteur(ui, &r, largeur, pliee(r.numero))));
     }
     // Ce qui est mesuré est ce qui se montre (toujours toutes, sauf un appelant qui mentirait sur `n`).
     let n = m.hauteurs.len();
@@ -106,6 +119,8 @@ pub fn journal<'a>(
     }
     let total = y + col.dessous;
     let descendre = std::mem::take(&mut suivi.descendre);
+    let montrer = suivi.montrer.take();
+    let mut basculee = None;
     let sortie = ScrollArea::vertical()
         .id_salt(id)
         .stick_to_bottom(true)
@@ -123,6 +138,12 @@ pub fn journal<'a>(
             // Les plus anciennes s'effacent vers le haut quand d'autres sont cachées au-dessus.
             let estompe = vue.min.y > 0.5;
             let peintre = ui.painter().clone();
+            if let Some(k) = montrer
+                && let Some(h) = haut.get(m.hauteurs.partition_point(|(j, _)| *j < k))
+            {
+                let debut = Rect::from_min_size(pos2(x0, origine + h), vec2(1.0, HAUTEUR_LIGNE));
+                ui.scroll_to_rect(debut, Some(Align::TOP));
+            }
             for i in premiere..derniere {
                 let (Some(r), Some(h)) = (rangee(i), haut.get(i)) else {
                     continue;
@@ -151,14 +172,29 @@ pub fn journal<'a>(
                     mono(13.0),
                     r.couleur_source.gamma_multiply(a),
                 );
-                let g = mise_en_page(ui, r.texte, r.couleur.gamma_multiply(a), largeur);
+                let pliee = pliee(r.numero);
+                let g = mise_en_page(ui, r.texte, r.couleur.gamma_multiply(a), largeur, pliee);
                 let place = Rect::from_min_size(pos2(x0 + col.texte, y), g.size());
                 let fin = g.rows.last().map(|l| l.rect().translate(place.min.to_vec2()));
+                let coupee = g.elided;
                 // Un identifiant par ligne, pas par place : une sélection en cours tient pendant le défilement.
-                ui.scope_builder(
-                    UiBuilder::new().scope_id(id.with(("ligne", r.numero))).max_rect(place),
-                    |ui| ui.add(Label::new(g).selectable(true)),
-                );
+                let rep = ui
+                    .scope_builder(
+                        UiBuilder::new().scope_id(id.with(("ligne", r.numero))).max_rect(place),
+                        |ui| ui.add(Label::new(g).selectable(true).show_tooltip_when_elided(false)),
+                    )
+                    .inner;
+                if coupee || (col.tronquer && !pliee) {
+                    if rep.clicked() {
+                        basculee = Some(r.numero);
+                    }
+                    rep.on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(if pliee {
+                            crate::tr!("Cliquer pour voir la ligne entière", "Click to see the whole line")
+                        } else {
+                            crate::tr!("Cliquer pour la replier", "Click to fold it")
+                        });
+                }
                 if i + 1 == n
                     && curseur
                     && let Some(f) = fin
@@ -175,6 +211,21 @@ pub fn journal<'a>(
                 ui.scroll_to_rect(bas, Some(Align::BOTTOM));
             }
         });
+    // Une ligne dépliée ou repliée : sa hauteur est remesurée, et une ligne dépliée se montre depuis son début.
+    if let Some(k) = basculee {
+        let deplier = depliees.insert(k);
+        if !deplier {
+            depliees.remove(&k);
+        }
+        let i = m.hauteurs.partition_point(|(j, _)| *j < k);
+        if let (Some(r), Some(h)) = (rangee(i), m.hauteurs.get_mut(i))
+            && h.0 == k
+        {
+            h.1 = hauteur(ui, &r, largeur, !deplier);
+        }
+        suivi.montrer = deplier.then_some(k);
+        ui.ctx().request_repaint();
+    }
     let max = (sortie.content_size.y - sortie.inner_rect.height()).max(0.0);
     let en_bas = !descendre && sortie.state.clamped_offset().y >= max - 0.5;
     let derniere = m.hauteurs.back().map_or(0, |(k, _)| *k);
@@ -186,6 +237,7 @@ pub fn journal<'a>(
     ui.ctx().data_mut(|d| {
         d.insert_temp(cle_mesures, m);
         d.insert_temp(cle_suivi, suivi);
+        d.insert_temp(cle_depliees, depliees);
     });
     Vu { en_bas, nouvelles }
 }
@@ -238,8 +290,21 @@ fn pastille(ui: &mut Ui, id: Id, zone: Rect, col: Colonnes, nouvelles: usize, su
     }
 }
 
-/// Le texte d'une ligne, replié à `largeur`, une ligne de texte tous les `HAUTEUR_LIGNE` points.
-fn mise_en_page(ui: &Ui, texte: &str, couleur: Color32, largeur: f32) -> Arc<Galley> {
+/// La hauteur d'une ligne : une seule ligne de texte si elle est pliée, sinon tout son texte replié à `largeur`.
+fn hauteur(ui: &Ui, r: &Rangee<'_>, largeur: f32, pliee: bool) -> f32 {
+    if pliee {
+        HAUTEUR_LIGNE
+    } else {
+        mise_en_page(ui, r.texte, r.couleur, largeur, false)
+            .size()
+            .y
+            .max(HAUTEUR_LIGNE)
+    }
+}
+
+/// Le texte d'une ligne, replié à `largeur`, une ligne de texte tous les `HAUTEUR_LIGNE` points. `pliee` : sur une
+/// seule ligne, coupée d'un « … » si elle déborde.
+fn mise_en_page(ui: &Ui, texte: &str, couleur: Color32, largeur: f32, pliee: bool) -> Arc<Galley> {
     let mut job = LayoutJob::single_section(
         texte.to_owned(),
         TextFormat {
@@ -250,6 +315,10 @@ fn mise_en_page(ui: &Ui, texte: &str, couleur: Color32, largeur: f32) -> Arc<Gal
         },
     );
     job.wrap.max_width = largeur;
+    if pliee {
+        job.wrap.max_rows = 1;
+        job.wrap.overflow_character = Some('…');
+    }
     ui.fonts_mut(|f| f.layout_job(job))
 }
 
@@ -283,6 +352,7 @@ mod tests {
         texte: 220.0,
         droite: 32.0,
         dessous: 12.0,
+        tronquer: false,
     };
 
     /// Un journal de six lignes de haut, image par image, sans fenêtre.
@@ -290,6 +360,7 @@ mod tests {
         ctx: egui::Context,
         temps: f64,
         lignes: Vec<(u64, String)>,
+        col: Colonnes,
     }
 
     impl Banc {
@@ -300,6 +371,7 @@ mod tests {
                 ctx,
                 temps: 0.0,
                 lignes: Vec::new(),
+                col: COL,
             };
             b.ajouter(n);
             b
@@ -325,6 +397,7 @@ mod tests {
                 ..Default::default()
             };
             let lignes = &self.lignes;
+            let col = self.col;
             let mut vu = None;
             self.ctx
                 .run_ui(entree, |ui| {
@@ -343,7 +416,7 @@ mod tests {
                                     couleur: Color32::WHITE,
                                 })
                             },
-                            COL,
+                            col,
                             false,
                         )
                     });
@@ -466,6 +539,35 @@ mod tests {
                 en_bas: true,
                 nouvelles: 0
             }
+        );
+    }
+
+    /// Tronquées : une longue ligne tient sur une ligne coupée d'un « … » ; un clic la déplie en entier (et la montre
+    /// depuis son début), un autre la replie.
+    #[test]
+    fn une_ligne_tronquee_se_deplie_et_se_replie() {
+        let mut b = Banc::nouveau(2);
+        b.col.tronquer = true;
+        b.lignes.insert(0, (0, "mot ".repeat(80)));
+        let hauteur = |b: &Banc| {
+            b.ctx
+                .data(|d| d.get_temp::<Mesures>(Id::unique("essai").with("mesures")))
+                .and_then(|m| m.hauteurs.front().map(|h| h.1))
+                .unwrap()
+        };
+        b.souris();
+        assert!((hauteur(&b) - HAUTEUR_LIGNE).abs() < 0.5);
+        // Trois lignes posées en bas : la première commence 60 points sous le haut du journal.
+        let z = Banc::zone();
+        b.clic(pos2(z.left() + COL.texte + 10.0, z.top() + 60.0 + 10.0));
+        b.souris();
+        assert!(hauteur(&b) > 3.0 * HAUTEUR_LIGNE, "la ligne ne s'est pas dépliée");
+        // Dépliée, elle se montre depuis son début : en haut du journal.
+        b.clic(pos2(z.left() + COL.texte + 10.0, z.top() + 10.0));
+        b.souris();
+        assert!(
+            (hauteur(&b) - HAUTEUR_LIGNE).abs() < 0.5,
+            "la ligne ne s'est pas repliée"
         );
     }
 

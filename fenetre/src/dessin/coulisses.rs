@@ -16,9 +16,10 @@ use crate::coulisses::{Chemin, Coulisses, Note, Passage, Sorte};
 const COLONNES: Colonnes = Colonnes {
     heure: 20.0,
     source: 92.0,
-    texte: 184.0,
+    texte: 178.0,
     droite: 20.0,
     dessous: 8.0,
+    tronquer: true,
 };
 
 fn id_ouvertes() -> Id {
@@ -119,13 +120,21 @@ fn contenu(c: &Coulisses, ui: &mut Ui, panneau: bool) {
         rep.on_hover_cursor(egui::CursorIcon::PointingHand);
     }
     peintre.line_segment([tete.left_bottom(), tete.right_bottom()], Stroke::new(1.0, p.trait_));
-    // Le bac à sable, les commandes, puis le journal dans le reste.
-    let haut = Rect::from_min_max(pos2(r.left(), tete.bottom()), pos2(r.right(), tete.bottom() + 252.0));
-    ui.scope_builder(egui::UiBuilder::new().max_rect(haut), |ui| {
-        Frame::new()
-            .inner_margin(Margin::symmetric(20, 12))
-            .show(ui, |ui| resume(c, ui));
-    });
+    // Le bac à sable et les commandes à leur hauteur (des commandes entières, jamais une coupée au milieu), puis le
+    // journal dans le reste.
+    let visibles = if r.height() > 640.0 { 3 } else { 2 };
+    let place = Rect::from_min_max(pos2(r.left(), tete.bottom()), r.max);
+    let bas = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(place), |ui| {
+            Frame::new()
+                .inner_margin(Margin::symmetric(20, 12))
+                .show(ui, |ui| resume(c, ui, visibles))
+                .response
+                .rect
+                .bottom()
+        })
+        .inner;
+    let haut = Rect::from_min_max(place.min, pos2(r.right(), bas));
     peintre.line_segment([haut.left_bottom(), haut.right_bottom()], Stroke::new(1.0, p.trait_));
     let titre = Rect::from_min_max(pos2(r.left(), haut.bottom()), pos2(r.right(), haut.bottom() + 36.0));
     peintre.text(
@@ -166,8 +175,12 @@ fn contenu(c: &Coulisses, ui: &mut Ui, panneau: bool) {
     });
 }
 
-/// L'état du bac à sable et les commandes lancées, la plus récente en haut.
-fn resume(c: &Coulisses, ui: &mut Ui) {
+/// La hauteur d'une commande dans la liste : sa ligne, ses détails, l'air d'après.
+const PAS_COMMANDE: f32 = 42.0;
+
+/// L'état du bac à sable et les commandes lancées, la plus récente en haut ; `visibles` commandes entières se
+/// voient, les autres en défilant.
+fn resume(c: &Coulisses, ui: &mut Ui, visibles: usize) {
     let p = pal();
     let (bac, souligner) = &c.bac;
     ui.label(
@@ -194,36 +207,57 @@ fn resume(c: &Coulisses, ui: &mut Ui) {
         .font(moyenne(12.0))
         .color(p.encre),
     );
+    let passages = c.passages();
+    if passages.is_empty() {
+        ui.label(
+            RichText::new(crate::tr!(
+                "Aucune commande lancée pour l'instant.",
+                "No command started yet."
+            ))
+            .font(police(12.0))
+            .color(p.discret),
+        );
+        return;
+    }
+    ui.add_space(4.0);
+    ui.spacing_mut().item_spacing.y = 0.0;
     egui::ScrollArea::vertical()
         .id_salt("coulisses-commandes")
-        .auto_shrink(false)
-        .show(ui, |ui| {
-            if c.passages().is_empty() {
-                ui.label(
-                    RichText::new(crate::tr!(
-                        "Aucune commande lancée pour l'instant.",
-                        "No command started yet."
-                    ))
-                    .font(police(12.0))
-                    .color(p.discret),
-                );
-            }
-            for passage in c.passages().iter().rev() {
-                ui.add(
-                    Label::new(
-                        RichText::new(format!("{}  {}", passage.heure, passage.ligne))
-                            .font(mono(12.0))
-                            .color(p.accent),
-                    )
-                    .wrap(),
-                );
-                ui.add(Label::new(RichText::new(details(passage)).font(mono(12.0)).color(p.doux)).wrap());
-                ui.add_space(6.0);
+        .max_height(PAS_COMMANDE * super::n_f32(visibles))
+        .auto_shrink([false, true])
+        .show_rows(ui, PAS_COMMANDE, passages.len(), |ui, lignes| {
+            for i in lignes {
+                let Some(passage) = passages.len().checked_sub(i + 1).and_then(|j| passages.get(j)) else {
+                    continue;
+                };
+                let (zone, _) = ui.allocate_exact_size(vec2(ui.available_width(), PAS_COMMANDE), Sense::hover());
+                let peintre = ui.painter();
+                let heure = peintre.layout_no_wrap(passage.heure.clone(), mono(12.0), p.discret);
+                let decale = heure.size().x + 10.0;
+                peintre.galley(zone.min, heure, p.discret);
+                let ligne = une_ligne(ui, passage.ligne.clone(), mono(12.0), p.accent, zone.width() - decale);
+                peintre.galley(zone.min + vec2(decale, 0.0), ligne, p.accent);
+                let details = une_ligne(ui, details(passage), police(12.0), p.doux, zone.width() - decale);
+                peintre.galley(zone.min + vec2(decale, 18.0), details, p.doux);
             }
         });
 }
 
-/// Le chemin, le processus et la fin d'une commande, en une ligne.
+/// Un texte sur une seule ligne, coupé d'un « … » s'il dépasse `largeur`.
+fn une_ligne(
+    ui: &Ui,
+    texte: String,
+    police: egui::FontId,
+    couleur: egui::Color32,
+    largeur: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple(texte, police, couleur, largeur);
+    job.wrap.max_rows = 1;
+    job.wrap.overflow_character = Some('…');
+    ui.fonts_mut(|f| f.layout_job(job))
+}
+
+/// La fin, le chemin et le processus d'une commande, en une ligne.
 fn details(passage: &Passage) -> String {
     let chemin = match passage.chemin {
         Chemin::Relais => crate::tr!("par le relais", "through the relay"),
@@ -241,15 +275,16 @@ fn details(passage: &Passage) -> String {
                 |c| format!("code {c}"),
             );
             format!(
-                "{:.1} s · {} · {} · {}",
+                "{} · {:.1} s · {} · {}",
+                f.issue,
                 f.duree.as_secs_f32(),
                 code,
-                crate::trn!(f.taille, "octet", "octets", "byte", "bytes"),
-                f.issue
+                crate::trn!(f.taille, "octet", "octets", "byte", "bytes")
             )
         },
     );
-    format!("    {chemin} · {pid} · {fin}")
+    // L'issue d'abord : si la ligne est coupée, c'est le chemin qui se perd.
+    format!("{fin} · {chemin} · {pid}")
 }
 
 /// Une note pour le journal.

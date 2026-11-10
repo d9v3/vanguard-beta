@@ -22,6 +22,7 @@ const COLONNES: Colonnes = Colonnes {
     texte: 220.0,
     droite: 32.0,
     dessous: 12.0,
+    tronquer: false,
 };
 
 pub fn tout(appli: &mut Appli, ui: &mut Ui) {
@@ -129,7 +130,11 @@ fn hauteur_du_rail(aise: f32) -> f32 {
 }
 
 fn pas_du_rail(aise: f32) -> [f32; 4] {
-    std::array::from_fn(|i| RAIL_SERRE[i] + (RAIL_AISE[i] - RAIL_SERRE[i]) * aise)
+    let mut pas = RAIL_SERRE;
+    for (s, a) in pas.iter_mut().zip(RAIL_AISE) {
+        *s += (a - *s) * aise;
+    }
+    pas
 }
 
 /// L'aisance qui fait tenir le rail dans `haut` (8 pt gardés en bas), entre serré et à l'aise.
