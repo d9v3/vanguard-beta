@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Rien de personnel dans un commit de fusion : git merge ne lance pas pre-commit (outils/confidentialite.py).
+# Actif avec : git config core.hooksPath outils/hooks
+exec python3 "$(git rev-parse --show-toplevel)/outils/confidentialite.py" --commit

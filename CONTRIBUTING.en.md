@@ -290,7 +290,7 @@ running them).
 
 Dead links: `outils/liens.py` opens every link of the repository (documentation, the program's code except tests,
 scripts, licenses) and checks the internal links of the Markdown pages: target file, heading of an anchor, downloads
-of the latest release. It runs by itself before each push by `deployer.sh` and before each release page; CI checks
+of the latest release. It runs by itself before each push (`git push`, `deployer.sh`) and before each release page; CI checks
 the internal links (`--hors-ligne`). A dead link stops the push, a doubtful one (a site refusing programs, a server
 down) is only shown. Links that cannot be opened as they are (an API endpoint, a namespace) are described in
 `outils/liens.txt`.
@@ -354,11 +354,11 @@ uv run --no-project --with pyte python outils/captures.py [program] [--connexion
 ## Privacy
 
 `outils/confidentialite.py` keeps personal details from reaching GitHub. It runs by itself: on each commit (added
-lines, file names, author, message), before each push by `deployer.sh`, before each release page (notes and compiled
+lines, file names, author, message), before each push (`git push`, `deployer.sh`), before each release page (notes and compiled
 programs), before each journal issue and before writing the screenshots. Once per copy of the repository:
 
 ```sh
-git config core.hooksPath outils/hooks                                     # pre-commit and commit-msg hooks
+git config core.hooksPath outils/hooks                                     # commit and push hooks
 git config user.email "<id>+<account>@users.noreply.github.com"           # commits without your email
 ```
 

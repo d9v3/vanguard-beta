@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Rien de personnel dans ce qui part : chaque commit envoyé (auteur, message, lignes ajoutées, noms de fichiers), le
+# nom de la branche ou de l'étiquette, l'étiquette elle-même (outils/confidentialite.py). Le filet de ce que les
+# crochets de commit ne voient pas : git cherry-pick, rebase, am et revert n'en lancent aucun.
+# Actif avec : git config core.hooksPath outils/hooks
+outil="$(git rev-parse --show-toplevel)/outils/confidentialite.py"
+code=0
+# Une ligne par référence envoyée : <source d'ici> <commit d'ici> <ref de là-bas> <commit de là-bas>. Lue par la
+# fin : la source peut contenir des espaces (« master@{1 day ago} »), les trois autres champs jamais.
+while read -r ligne; do
+  avant=${ligne##* } && ligne=${ligne% *}
+  la_bas=${ligne##* } && ligne=${ligne% *}
+  ici=${ligne##* }
+  # Que des zéros : la référence est supprimée là-bas, rien n'est envoyé.
+  [[ $ici =~ ^0+$ ]] && continue
+  python3 "$outil" --plage "$avant" "$ici" "$la_bas" </dev/null || code=1
+done
+exit "$code"

@@ -114,9 +114,10 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
 - Aucun secret dans le code ni sur la clé ; le journal des erreurs est anonymisé (`journal.rs`).
 - Rien de personnel sur GitHub (dépôt, historique, commits, captures, pages de version, programmes, tickets) :
   `outils/confidentialite.py` le vérifie tout seul (crochets `outils/hooks/`, `deployer.sh`, `publier-version.sh`,
-  `journal-vers-github.py`, `captures.py`). Tests : valeurs inventées (adresses MAC au préfixe du fabricant gardé,
-  réseau « Salon », compte « alice »), jamais celles de la maison. Commits signés `d9v3` avec l'adresse noreply de
-  GitHub (`git config user.email`, déjà réglé dans ce dépôt).
+  `journal-vers-github.py`, `captures.py`) ; ses essais (noms piégés, binaires, renommages, historique) :
+  `outils/essais-confidentialite.sh`, dans `verifier.sh`. Tests : valeurs inventées (adresses MAC au préfixe du
+  fabricant gardé, réseau « Salon », compte « alice »), jamais celles de la maison. Commits signés `d9v3` avec l'adresse
+  noreply de GitHub (`git config user.email`, déjà réglé dans ce dépôt).
 - Jamais de commentaire ni de remarque de l'utilisateur dans les journaux, rapports, commits ou GitHub.
 
 ## Façon de travailler

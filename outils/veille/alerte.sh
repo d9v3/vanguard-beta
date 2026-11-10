@@ -62,7 +62,7 @@ CLE=${SIGNATURE#*:}
 # brûlerait un lancement pour un refus certain. Dite à l'auteur, sans IA.
 if [[ $GENRE == verifier ]]; then
   case ${CLE%%:*} in
-    essais-cle | signature | essais-verifier | masque)
+    essais-cle | signature | essais-confidentialite | essais-verifier | masque)
       conclure "étape ${CLE%%:*} de verifier.sh : un essai de outils/ (protégé), à corriger par l'auteur, sans IA"
       exit 0 ;;
   esac

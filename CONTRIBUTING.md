@@ -290,7 +290,7 @@ vérification (quelques secondes, sans les lancer).
 
 Liens morts : `outils/liens.py` ouvre tous les liens du dépôt (documentation, code du programme hors tests, scripts,
 licences) et vérifie les liens internes des pages Markdown : fichier visé, titre d'une ancre, téléchargements de la
-dernière version. Il est lancé tout seul avant chaque envoi par `deployer.sh` et avant chaque page de version ; la CI
+dernière version. Il est lancé tout seul avant chaque envoi (`git push`, `deployer.sh`) et avant chaque page de version ; la CI
 vérifie les liens internes (`--hors-ligne`). Un lien mort arrête l'envoi, un lien douteux (site qui refuse les
 programmes, serveur en panne) est seulement montré. Les liens qu'on ne peut pas ouvrir tels quels (point d'accès
 d'une API, espace de noms) se décrivent dans `outils/liens.txt`.
@@ -355,12 +355,12 @@ uv run --no-project --with pyte python outils/captures.py [programme] [--connexi
 ## Confidentialité
 
 `outils/confidentialite.py` empêche qu'un détail personnel parte sur GitHub. Il est lancé tout seul : à chaque commit
-(lignes ajoutées, noms de fichiers, auteur, message), avant chaque envoi par `deployer.sh`, avant chaque page de
+(lignes ajoutées, noms de fichiers, auteur, message), avant chaque envoi (`git push`, `deployer.sh`), avant chaque page de
 version (notes et programmes compilés), avant chaque ticket du journal et avant d'écrire les captures. Une fois par
 copie du dépôt :
 
 ```sh
-git config core.hooksPath outils/hooks                                     # crochets pre-commit et commit-msg
+git config core.hooksPath outils/hooks                                     # crochets de commit et d'envoi
 git config user.email "<id>+<compte>@users.noreply.github.com"            # commits sans ton courriel
 ```
 

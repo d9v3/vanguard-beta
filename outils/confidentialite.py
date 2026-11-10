@@ -2,8 +2,9 @@
 """Garde-fou : rien de personnel ne part sur GitHub. Ni dans le code, ni dans un message de commit, ni dans le nom de
 l'auteur, ni dans une page de version, un ticket ou une capture d'écran.
 
-Lancé tout seul : à chaque commit (crochets outils/hooks/pre-commit et commit-msg, actifs avec
-`git config core.hooksPath outils/hooks`), avant chaque envoi (outils/deployer.sh), avant chaque page de version
+Lancé tout seul : à chaque commit et à chaque envoi (crochets outils/hooks/pre-commit, commit-msg, pre-merge-commit
+et pre-push, actifs avec `git config core.hooksPath outils/hooks`), au déploiement (outils/deployer.sh), dans la CI
+(--plage, sur ce que GitHub a reçu), avant chaque page de version
 (outils/publier-version.sh), avant chaque ticket du journal (outils/journal-vers-github.py) et avant d'écrire les
 captures du README (outils/captures.py).
 
@@ -25,8 +26,12 @@ Depuis la racine du dépôt :
     python3 outils/confidentialite.py --binaire FICHIER… des programmes compilés (textes lisibles, métadonnées)
     python3 outils/confidentialite.py --depot            les fichiers et tout l'historique (avant de rendre le dépôt
                                                          public)
-    python3 outils/confidentialite.py --plage AVANT APRÈS
-                                                         les commits de AVANT (exclu) à APRÈS : ceux d'un envoi
+    python3 outils/confidentialite.py --plage AVANT APRÈS [REF]
+                                                         les commits de AVANT (exclu) à APRÈS : ceux d'un envoi, et
+                                                         le nom REF de la branche ou de l'étiquette envoyée
+Git est lu tel que git push l'envoie, jamais tel que les réglages de l'ordinateur le montrent : objets bruts (en-têtes
+et message d'un commit ou d'une étiquette), noms séparés par NUL, sans remplacement (git replace), sans filtre
+(textconv), un fichier que git dit binaire relu comme texte s'il en est un (UTF-16 compris).
 Avec --generique (la CI de GitHub) : seulement ce qui se reconnaît à sa forme (dossier personnel d'un compte,
 courriel, SID de Windows), sans rien lire de la machine qui le lance : sur GitHub, son compte « runner » et
 /home/runner ne sont à personne.
@@ -201,13 +206,14 @@ class Detecteur:
             if liste else None
         self.autrui = autrui
 
-    def trouver(self, texte: str, autrui=None):
+    def trouver(self, texte: str, autrui=None, courriels=True):
         """(terme, numéro de ligne) de chaque détail personnel du texte ; avec `autrui`, aussi ce qui pourrait être
-        la donnée de quelqu'un d'autre (donnees_d_autrui)."""
+        la donnée de quelqu'un d'autre (donnees_d_autrui), sans les courriels si `courriels` est faux (fichier tiers :
+        les courriels publics des auteurs des bibliothèques ; leurs comptes et SID restent cherchés)."""
         trouves = [(self.termes[int(m.lastgroup[1:])], texte.count("\n", 0, m.start()) + 1)
                    for m in self.motif.finditer(texte)] if self.motif else []
         if self.autrui if autrui is None else autrui:
-            trouves += [(t, texte.count("\n", 0, p) + 1) for t, p in donnees_d_autrui(texte)]
+            trouves += [(t, texte.count("\n", 0, p) + 1) for t, p in donnees_d_autrui(texte, courriels)]
         return trouves
 
 
@@ -393,21 +399,33 @@ COMPTES_INVENTES = {"alice", "bob", "zoé", "jean dupont", "moi", "x", "a", "a&b
                     # Et sa forme dans une chaîne PowerShell, l'apostrophe doublée.
                     "zoé o'brien", "zoé o''brien"}
 DEBUT_COMPTE_UNIX = re.compile(r"(?:/var/home|/run/media|/home|/Users|/media)/", re.IGNORECASE)
-DEBUT_COMPTE_WINDOWS = re.compile(r"(?<![A-Za-z])[A-Za-z]:(\\\\|\\|/)Users\1", re.IGNORECASE)
+# Avec ou sans lecteur (« \\Device\\HarddiskVolume3\\Users\\… », « %SystemDrive%\\Users\\… », partage réseau), une à
+# quatre barres inverses (un chemin échappé, puis échappé encore dans du JSON), barres mêlées.
+DEBUT_COMPTE_WINDOWS = re.compile(r"(?:(?<![A-Za-z])[A-Za-z]:(?:\\{1,4}|/)|\\{1,4})Users(?:\\{1,4}|/)", re.IGNORECASE)
 FIN_COMPTE_WINDOWS = set("\\/\"\n\r\t:;,|<>*?)]")
-COURRIEL = re.compile(r"(?<![\w.%+-])[\w.%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?![\w-])")
+# Nom court d'un dossier (8.3) : six caractères au plus, « ~ », un numéro.
+NOM_COURT = re.compile(r"([\w]{1,6})~\d{1,5}")
+# Le domaine peut porter des accents ; ce qui suit l'extension ne compte pas (« …@domaine.ca2 », « …@domaine.ca_x »
+# restent un courriel).
+COURRIEL = re.compile(r"(?<![\w.%+-])[\w.%+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}")
+# Le « @ » écrit autrement : dans une adresse web, dans une page HTML.
+AROBASES = re.compile(r"%40|&#0*64;|&#x0*40;|&commat;", re.IGNORECASE)
 # Adresses qui ne sont celles de personne : exemples, rôles (noreply…), identifiants publics (extension uBlock Origin).
 DOMAINES_EXEMPLES = re.compile(r"(?:^|\.)(?:example\.(?:com|net|org)|exemple\.[a-z]+)$|\.(?:example|invalid|test|"
-                               r"localhost|local)$|^users\.noreply\.github\.com$", re.IGNORECASE)
+                               r"localhost)$|^users\.noreply\.github\.com$", re.IGNORECASE)
 ROLES = {"noreply", "no-reply", "security", "support", "contact", "info", "admin", "abuse", "postmaster",
          "webmaster", "git"}
 # kexguess2@matt.ucc.asn.au : extension de l'échange de clés de Dropbear (serveur SSH), un nom de protocole public.
+# « wg-quick@wg0.service » : une unité systemd modèle et son instance ; aucun domaine d'Internet ne finit ainsi.
+UNITE_SYSTEMD = re.compile(r"\.(?:service|socket|timer|target|mount|automount|path|slice|scope|swap)$",
+                           re.IGNORECASE)
 COURRIELS_PUBLICS = {"ublock0@raymondhill.net", "kexguess2@matt.ucc.asn.au"}
 # Noms d'algorithmes du protocole SSH (« hmac-md5-etm@openssh.com ») : la forme d'un courriel, pas une personne.
 # Toujours des mots reliés par des tirets, ce que les comptes de ces domaines n'ont pas. Aussi tels qu'écrits dans
 # sshd_config (« KexAlgorithms +nom », « -nom », « ^nom ») et sans égard à la casse (OpenSSH les compare ainsi).
 ALGORITHME_SSH = re.compile(r"[a-z0-9]+(?:-[a-z0-9.]+)+@(?:openssh\.com|libssh\.org|lysator\.liu\.se)")
-SID = re.compile(r"S-1-5-21-(\d+)-(\d+)-(\d+)")
+# Compte local ou de domaine (S-1-5-21), compte Entra (S-1-12-1).
+SID = re.compile(r"S-1-(?:5-21|12-1)-(\d+)-(\d+)-(\d+)", re.IGNORECASE)
 # SID d'exemple de la documentation de Microsoft.
 SID_EXEMPLE = ("1004336348", "1177238915", "682003330")
 SERIE = re.compile(r"(?<!\w)(serial[ _]?number|serial no|serial|numéro de série|ioplatformuuid|ioplatformserialnumber|"
@@ -419,13 +437,17 @@ NOM_LOCAL = re.compile(r"(?<![\w.-])[\w-][\w.-]*?(?=\.(?:home\.arpa|internal|loc
                        re.IGNORECASE)
 # Les licences des bibliothèques nomment leurs auteurs avec leur courriel : publics, voulus. Les relectures importées
 # par cargo vet aussi, celui de chaque relecteur, recopiées telles quelles des registres publics de Google, Mozilla…
-TIERS = {"LICENCES-TIERCES.txt", "Cargo.lock", "supply-chain/imports.lock"}
+# Reconnus par le nom du fichier, dans n'importe quel dossier (fenetre/, fuzz/… ont les leurs) : voir tiers(). Pas
+# Cargo.lock : il ne porte aucun courriel.
+LICENCES = "LICENCES-TIERCES.txt"
+RELECTURES = "supply-chain/imports.lock"
 
 
 def comptes(texte):
     """(début, fin, nom) de chaque compte nommé par un dossier personnel : « /home/<nom> », « C:\\Users\\<nom> »."""
     for m in DEBUT_COMPTE_UNIX.finditer(texte):
-        if re.search(r"[A-Za-z]:$", texte[max(0, m.start() - 2):m.start()]):
+        # Une lettre seule devant « : » est un lecteur de Windows ; « PATH=/usr/bin:/home/… » n'en est pas un.
+        if re.search(r"(?<![A-Za-z])[A-Za-z]:$", texte[max(0, m.start() - 3):m.start()]):
             continue  # « C:/Users/… » : un chemin de Windows, vu plus bas
         nom = re.match(r"[\w.-]*", texte[m.end():]).group()
         yield m.end(), m.end() + len(nom), nom
@@ -443,13 +465,17 @@ def compte_de_personne(nom, inventes=True):
     """Un compte qui nomme peut-être quelqu'un : ni dossier commun, ni variable (« %USERNAME% »), ni, avec `inventes`,
     compte inventé des tests."""
     bas = nom.lower()
-    return (any(c.isalnum() for c in nom) and not any(c in nom for c in "%${<~") and bas not in COMPTES_COMMUNS
-            and not (inventes and bas in COMPTES_INVENTES))
+    connus = COMPTES_COMMUNS | (COMPTES_INVENTES if inventes else set())
+    court = NOM_COURT.fullmatch(bas)
+    if court:  # « RUNNER~1 » : le nom court (8.3) d'un compte connu ; « ZACHAR~1 » reste le début d’un nom
+        return not any(re.sub(r"[^\w]", "", c).startswith(court.group(1)) for c in connus)
+    return (any(c.isalnum() for c in nom) and not any(c in nom for c in "%${<") and not nom.startswith("~")
+            and bas not in connus)
 
 
 def courriel_de_personne(adresse):
     locale, _, domaine = adresse.rpartition("@")
-    return not (DOMAINES_EXEMPLES.search(domaine) or locale.lower() in ROLES or adresse.lower() in COURRIELS_PUBLICS
+    return not (DOMAINES_EXEMPLES.search(domaine) or UNITE_SYSTEMD.search(domaine) or locale.lower() in ROLES or adresse.lower() in COURRIELS_PUBLICS
                 or ALGORITHME_SSH.fullmatch(adresse.lower().lstrip("+-^")))
 
 
@@ -460,9 +486,10 @@ def donnees_d_autrui(texte, courriels=True):
     for debut, _, nom in comptes(texte):
         if compte_de_personne(nom):
             yield Terme(nom, "compte d'un dossier personnel (de quelqu'un ?)", ""), debut
-    for m in COURRIEL.finditer(texte) if courriels else ():
+    # Les « @ » écrits autrement, remis en clair : la position ne sert qu'à dire la ligne, qui ne change pas.
+    for m in COURRIEL.finditer(AROBASES.sub("@", texte)) if courriels else ():
         if courriel_de_personne(m.group()):
-            yield Terme(m.group(), "courriel (de quelqu'un ?)", ""), m.start()
+            yield Terme(m.group(), "courriel (de quelqu'un ?)", ""), min(m.start(), len(texte))
     for m in SID.finditer(texte):
         if m.groups() != SID_EXEMPLE and any(len(g) >= 5 for g in m.groups()):
             yield Terme(m.group(), "SID d'un compte Windows", ""), m.start()
@@ -493,29 +520,138 @@ def masquer_autrui(texte, masque):
 
 # --- Où chercher -----------------------------------------------------------------------------------------------------
 
-# Diff lu ligne à ligne : préfixes « a/ » et « b/ » imposés (diff.mnemonicPrefix ou diff.noPrefix les changent).
-DIFF = ("-U0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/")
+# Ce que git montre ne dépend jamais des réglages de l'ordinateur ni du dépôt : objets de remplacement (git replace,
+# l'outil lirait le remplaçant, git push enverrait le vrai), signatures collées dans la sortie de git log, encodage de
+# sortie, sous-modules cachés, gros fichiers dits binaires.
+GIT_FIXE = ("--no-replace-objects", "-c", "core.quotePath=false", "-c", "log.showSignature=false",
+            "-c", "i18n.logOutputEncoding=UTF-8", "-c", "diff.ignoreSubmodules=none",
+            "-c", "core.bigFileThreshold=2g")
+# Diff lu ligne à ligne : préfixes « a/ » et « b/ » imposés (diff.mnemonicPrefix ou diff.noPrefix les changent), sans
+# textconv (un filtre qui réécrirait le texte lu), sans détection des renommages (un renommage avec changement se lit
+# en entier sous son nouveau nom).
+DIFF = ("-U0", "--no-color", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--no-renames",
+        "--src-prefix=a/", "--dst-prefix=b/")
+# Chaque fichier changé, son nouveau contenu et son nom, séparés par NUL (jamais entre guillemets ni coupés).
+BRUT = ("--raw", "-z", "--no-abbrev", "--ignore-submodules=none", "--no-renames", "--diff-filter=d")
 
 
 def git(*args):
-    r = subprocess.run(["git", "-c", "core.quotePath=false", *args], capture_output=True, text=True, errors="replace")
+    # Octets décodés ici, pas par subprocess (text=True) : il changerait chaque retour chariot en fin de ligne, et la
+    # suite d'une ligne ajoutée ne commencerait plus par « + ».
+    r = subprocess.run(["git", *GIT_FIXE, *args], capture_output=True)
     if r.returncode:
-        raise SystemExit(f"confidentialité : git {' '.join(args)} a échoué : {r.stderr.strip()}")
-    return r.stdout
+        raise SystemExit(f"confidentialité : git {' '.join(args)} a échoué : "
+                         f"{r.stderr.decode('utf-8', 'replace').strip()}")
+    return r.stdout.decode("utf-8", "replace")
 
 
-def lignes_ajoutees(diff: str):
-    """(fichier, numéro de ligne, texte) de chaque ligne ajoutée d'un diff -U0, et une entrée par fichier pour son nom."""
+def objets(shas):
+    """(sha, genre, contenu en octets) de chaque objet, lus d'un coup par git cat-file --batch, tels que git push les
+    enverrait (sans remplacement). Un objet absent est sauté."""
+    shas = list(shas)
+    if not shas:
+        return
+    lot = subprocess.run(["git", "--no-replace-objects", "cat-file", "--batch"],
+                         input="".join(f"{s}\n" for s in shas).encode(), capture_output=True, check=True).stdout
+    position = 0
+    while position < len(lot):
+        fin = lot.index(b"\n", position)
+        entete = lot[position:fin].decode().split()
+        if len(entete) != 3:  # « <sha> missing »
+            position = fin + 1
+            continue
+        sha, genre, taille = entete
+        yield sha, genre, lot[fin + 1 : fin + 1 + int(taille)]
+        position = fin + 2 + int(taille)
+
+
+def chaines_d_octets(brut: bytes, mini=12) -> str:
+    """Les textes lisibles d'un contenu binaire, un par ligne : ASCII et UTF-8 (`mini` caractères de suite au moins),
+    puis UTF-16 et UTF-32. Douze par défaut : dans les octets au hasard d'une image compressée, une suite plus
+    courte finit par dessiner un faux courriel (une lettre, « @ », une lettre, un point, deux lettres) ; un vrai tient dans un texte plus long."""
+    textes = [s.decode(errors="replace") for s in re.findall(rb"[\t\x20-\x7e\x80-\xff]{%d,}" % mini, brut)]
+    for motif, sens in ((rb"(?:[\x20-\x7e]\x00){4,}", "utf-16-le"), (rb"(?:\x00[\x20-\x7e]){4,}", "utf-16-be"),
+                        (rb"(?:[\x20-\x7e]\x00\x00\x00){4,}", "utf-32-le"),
+                        (rb"(?:\x00\x00\x00[\x20-\x7e]){4,}", "utf-32-be")):
+        textes += [s.decode(sens) for s in re.findall(motif, brut)]
+    return "\n".join(textes)
+
+
+def texte_lisible(brut: bytes) -> str:
+    """Le texte d'un contenu. UTF-16 aussi (marque d'ordre des octets, ou un NUL un octet sur deux) : Windows en écrit
+    (export .reg, redirection de PowerShell 5.1). Tout autre contenu à octets NUL (base SQLite, PDF, journal ASCII
+    continué en UTF-16 par « >> ») n'est jamais dit sain sans être lu : ses textes lisibles sont fouillés, comme
+    ceux d'un programme."""
+    debut = brut[:8000]
+    if debut.startswith((b"\xff\xfe", b"\xfe\xff")) and not debut.startswith((b"\xff\xfe\0\0",)):
+        return brut.decode("utf-16", "replace")
+    if b"\0" not in brut:
+        return brut.decode("utf-8", "replace")
+    for nuls, sens in ((debut[1::2], "utf-16-le"), (debut[0::2], "utf-16-be")):
+        if len(nuls) >= 2 and nuls.count(0) >= 0.9 * len(nuls):
+            texte = brut[: len(brut) // 2 * 2].decode(sens, "replace")
+            lisibles = sum(c.isprintable() or c in "\t\r\n" for c in texte[:4000])
+            if lisibles >= 0.9 * min(len(texte), 4000):
+                return texte
+    return chaines_d_octets(brut)
+
+
+def dans_un_nom(detecteur, nom):
+    """Les détails personnels d'un nom de fichier, de dossier ou de référence. Lu depuis la racine (« /nom ») : un
+    dossier « home/<compte>/ » posé à la racine du dépôt est un dossier personnel comme un autre."""
+    return [terme for terme, _ in detecteur.trouver(f"/{nom}")]
+
+
+def tiers(chemin: str) -> bool:
+    """Un fichier recopié des bibliothèques : les courriels de leurs auteurs y sont permis, rien d'autre (un compte
+    d'un dossier personnel, un SID y sont cherchés comme partout)."""
+    return chemin.rsplit("/", 1)[-1] == LICENCES or f"/{chemin}".endswith(f"/{RELECTURES}")
+
+
+# Les échappements de git dans un chemin entre guillemets (quote.c, quote_c_style), en plus de l'octal.
+ECHAPPEMENTS = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
+
+
+def chemin_git(texte: str) -> str:
+    """Un chemin d'en-tête de diff comme git l'écrit. Un nom qui contient « " », « \\ », une tabulation ou un retour à
+    la ligne y est entre guillemets, échappé, même avec core.quotePath=false : décodé. Toute autre forme reste telle
+    quelle : jamais un fichier passé sans être lu parce que son en-tête surprend."""
+    if len(texte) < 2 or texte[0] != '"' or texte[-1] != '"':
+        return texte
+    octets, i, fin = bytearray(), 1, len(texte) - 1
+    while i < fin:
+        c = texte[i]
+        if c == "\\" and i + 1 < fin:
+            suite = texte[i + 1]
+            chiffres = re.match(r"[0-7]{1,3}", texte[i + 1 : min(i + 4, fin)])
+            if chiffres:
+                octets.append(int(chiffres.group(), 8) & 0xFF)
+                i += 1 + len(chiffres.group())
+                continue
+            if suite in ECHAPPEMENTS:
+                octets.append(ECHAPPEMENTS[suite])
+                i += 2
+                continue
+        octets += c.encode("utf-8", "surrogateescape")
+        i += 1
+    return octets.decode("utf-8", "replace")
+
+
+def lignes_ajoutees(diff: str, lus: set):
+    """(fichier, numéro de ligne, texte) de chaque ligne ajoutée d'un diff -U0 ; chaque fichier dont git a montré les
+    lignes (« +++ ») entre dans `lus`. Coupé sur « \\n » seulement : un retour chariot, un saut de page ou U+2028 dans
+    une ligne ne la coupe pas en morceaux qui ne commenceraient plus par « + »."""
     fichier, numero, entete = None, 0, False
-    for ligne in diff.splitlines():
+    for ligne in diff.split("\n"):
         # « +++ » n'est un en-tête qu'avant le premier « @@ » du fichier : plus loin, c'est une ligne ajoutée qui
         # commence par « ++ ».
         if ligne.startswith("diff "):
             entete = True
         elif entete and ligne.startswith("+++ "):
-            fichier = ligne[6:].rstrip("\t") if ligne.startswith("+++ b/") else None
+            nom = chemin_git(ligne[4:].rstrip("\t"))
+            fichier = None if nom == "/dev/null" else nom[2:] if nom.startswith("b/") else nom
             if fichier:
-                yield fichier, 0, fichier
+                lus.add(fichier)
         elif ligne.startswith("@@"):
             entete = False
             m = re.search(r"\+(\d+)", ligne)
@@ -525,10 +661,76 @@ def lignes_ajoutees(diff: str):
             numero += 1
 
 
-def chercher_diff(detecteur, diff, prefixe=""):
-    return [(f"{prefixe}{fichier}" + (f":{numero}" if numero else " (nom du fichier)"), terme)
-            for fichier, numero, texte in lignes_ajoutees(diff)
-            for terme, _ in detecteur.trouver(texte, False if fichier in TIERS else None)]
+def changes(brut: str):
+    """(mode, sha du nouveau contenu, nom) de chaque fichier d'une sortie --raw -z."""
+    morceaux = iter(brut.split("\0"))
+    for meta in morceaux:
+        if meta.startswith(":"):
+            champs = meta.split()
+            yield champs[1], champs[3], next(morceaux, "")
+
+
+def chercher_diff(detecteur, diff, brut, prefixe=""):
+    """Les lignes ajoutées du diff, le nom de chaque fichier changé, puis le contenu entier de chaque fichier que git
+    n'a pas montré ligne à ligne (binaire selon lui : « -diff » dans .gitattributes, ancienne version binaire, gros
+    fichier ; changement de mode) ou qu'il a montré sans pouvoir le lire (octets NUL, UTF-16 forcé en texte par
+    l'attribut « diff »). git et l'outil ne décident pas pareil de ce qui est du texte : rien ne tombe entre les deux."""
+    lus = set()
+    trouves = [(f"{prefixe}{fichier}:{numero}", terme)
+               for fichier, numero, texte in lignes_ajoutees(diff, lus)
+               for terme, _ in detecteur.trouver(texte, courriels=not tiers(fichier))]
+    a_lire = {}
+    for mode, sha, nom in changes(brut):
+        trouves += [(f"{prefixe}{nom} (nom du fichier)", terme) for terme in dans_un_nom(detecteur, nom)]
+        # Fichier ordinaire ou lien symbolique (sa cible) ; pas un sous-module (160000), qui n'a pas de contenu ici.
+        if mode[:2] in ("10", "12"):
+            a_lire.setdefault(sha, []).append(nom)
+    for sha, _, contenu in objets(a_lire):
+        etrange = b"\0" in contenu or contenu.startswith((b"\xff\xfe", b"\xfe\xff"))
+        texte = texte_lisible(contenu)
+        for nom in a_lire[sha]:
+            if etrange or nom not in lus:
+                trouves += [(f"{prefixe}{nom}:{n}", terme)
+                            for terme, n in detecteur.trouver(texte, courriels=not tiers(nom))]
+    return trouves
+
+
+# Les en-têtes d'un commit ou d'une étiquette, dits en clair ; les autres sont lus aussi, sous leur nom.
+EN_TETES = {"author": "auteur", "committer": "committeur", "tagger": "étiqueteur", "tag": "nom de l'étiquette",
+            "mergetag": "étiquette fusionnée", "encoding": "encodage"}
+
+
+def lectures(contenu: bytes):
+    """Les façons de lire un objet de git : UTF-8 ; si ses octets n'en sont pas, Latin-1 aussi (un en-tête
+    « encoding » dit à GitHub de le lire autrement : un nom accentué y redevient lisible) ; avec des octets NUL, ses
+    textes lisibles (un message en UTF-16)."""
+    try:
+        textes = [contenu.decode("utf-8")]
+    except UnicodeDecodeError:
+        textes = [contenu.decode("utf-8", "replace"), contenu.decode("latin-1")]
+    return textes + ([chaines_d_octets(contenu)] if b"\0" in contenu else [])
+
+
+def objet_lisible(detecteur, contenu: bytes, ou):
+    """Un commit ou une étiquette, lu dans l'objet brut, tel que git push l'envoie : chaque en-tête (même inconnu de
+    git log), puis le message, même après un NUL. Jamais par git show ou git log : un en-tête « encoding » menteur
+    les rendrait vides. Une signature (gpgsig) est lue aussi : en base64, elle ne ressemble à rien de personnel, et
+    ce qu'on y glisserait d'autre se voit."""
+    trouves = []
+    for texte in lectures(contenu):
+        entete, _, corps = texte.partition("\n\n")
+        cle = ""
+        for ligne in entete.split("\n"):
+            if ligne.startswith(" "):
+                valeur = ligne[1:]
+            else:
+                cle, _, valeur = ligne.partition(" ")
+            # Seules les empreintes ne sont pas lues.
+            if cle in ("tree", "parent", "object") and re.fullmatch(r"[0-9a-f]+", valeur):
+                continue
+            trouves += [(f"{ou} {EN_TETES.get(cle, f'en-tête « {cle} »')}", t) for t, _ in detecteur.trouver(valeur)]
+        trouves += [(f"{ou} message, ligne {n}", t) for t, n in detecteur.trouver(corps)]
+    return list(dict.fromkeys(trouves))
 
 
 def identite(detecteur, texte, ou):
@@ -540,99 +742,167 @@ def commit_en_cours(detecteur):
     for variable, role in (("GIT_AUTHOR_IDENT", "auteur"), ("GIT_COMMITTER_IDENT", "committeur")):
         # « Nom <courriel> horodatage fuseau »
         trouves += identite(detecteur, git("var", variable).rsplit(" ", 2)[0], f"{role} du commit")
-    diff = git("diff", "--cached", *DIFF, "--diff-filter=ACMR")
-    return trouves + chercher_diff(detecteur, diff)
+    # Tout sauf les fichiers retirés (« d ») : un type nouveau de git, ou un changement de type (T, un lien devenu
+    # fichier), n'échappe pas à la lecture.
+    diff = git("diff", "--cached", *DIFF, "--diff-filter=d")
+    return trouves + chercher_diff(detecteur, diff, git("diff", "--cached", *BRUT))
+
+
+CISEAUX = "# ------------------------ >8 ------------------------"
 
 
 def message(detecteur, chemin):
-    texte = Path(chemin).read_text(errors="replace").split("# ------------------------ >8 ------------------------")[0]
-    texte = "\n".join(l for l in texte.splitlines() if not l.startswith("#"))
+    """Le message, lu en entier : avec -m ou -F, git garde les lignes « # » et ce qui suit une ligne de ciseaux. Seul
+    le diff de git commit -v (les ciseaux, des lignes « # », puis « diff --git ») est laissé, lui que git retire
+    toujours : ses lignes sont lues par le crochet pre-commit, avec les permissions des fichiers tiers."""
+    avant, ciseaux, apres = Path(chemin).read_text(errors="replace").partition(CISEAUX)
+    texte = avant if re.match(r"\n(?:#[^\n]*\n)*diff --git ", apres) else avant + ciseaux + apres
     return [(f"message du commit, ligne {n}", terme) for terme, n in detecteur.trouver(texte)]
 
 
+def nom_de_ref(detecteur, ref):
+    return [(f"nom de la branche ou de l'étiquette « {ref} »", t) for t in dans_un_nom(detecteur, ref)]
+
+
+def git_si(*args) -> str:
+    """Ce que répond git, ou rien s'il refuse (une référence absente, un objet d'un autre genre)."""
+    r = subprocess.run(["git", *GIT_FIXE, *args], capture_output=True)
+    return "" if r.returncode else r.stdout.decode("utf-8", "replace").strip()
+
+
 def commits_a_envoyer(detecteur):
-    return verifier_commits(detecteur, git("rev-list", "--reverse", "HEAD", "--not", "--remotes=origin").split())
+    branche = git_si("symbolic-ref", "-q", "HEAD")
+    trouves = nom_de_ref(detecteur, branche) if branche else []
+    return trouves + verifier_commits(detecteur,
+                                      git("rev-list", "--reverse", "HEAD", "--not", "--remotes=origin").split())
+
+
+PRINCIPALES = ("refs/remotes/origin/master", "refs/remotes/origin/main")
 
 
 def commits_de_la_plage(avant, apres):
     """Les commits d'un envoi : de `avant` (exclu, le commit d'avant sur GitHub) à `apres`. Branche neuve (`avant` vide
-    ou fait de zéros) ou historique réécrit (`avant` disparu) : ceux qu'aucune autre branche de GitHub n'a déjà."""
-    connu = avant.strip("0") and subprocess.run(["git", "cat-file", "-e", f"{avant}^{{commit}}"],
-                                                capture_output=True).returncode == 0
-    if connu:
+    ou fait de zéros) ou historique réécrit (`avant` disparu) : ceux que la branche principale de GitHub n'a pas déjà.
+    Jamais en retirant les autres branches : rien ne dit qu'elles ont été relues. Sans branche principale à part :
+    tous les commits de `apres`."""
+    if avant.strip("0") and git_si("rev-parse", "-q", "--verify", f"{avant}^{{commit}}"):
         return git("rev-list", "--reverse", f"{avant}..{apres}").split()
-    autres = [r for r in git("for-each-ref", "--format=%(refname)", "refs/remotes/origin").split()
-              if r != "refs/remotes/origin/HEAD" and git("rev-parse", r).strip() != git("rev-parse", apres).strip()]
-    return git("rev-list", "--reverse", apres, "--not", *autres).split()
+    cible = git_si("rev-parse", "-q", "--verify", f"{apres}^{{commit}}")
+    if not cible:
+        return []  # une étiquette posée sur un arbre ou un fichier : lue par objets_envoyes
+    # Le nom exact : « refs/remotes/origin/main/essai » est une branche comme une autre, jamais relue.
+    refs = [ligne.split() for ligne in git("for-each-ref", "--format=%(refname) %(objectname)", *PRINCIPALES).split("\n")
+            if ligne]
+    return git("rev-list", "--reverse", apres, "--not",
+               *(ref for ref, sha in refs if ref in PRINCIPALES and sha != cible)).split()
 
 
 def verifier_commits(detecteur, shas):
     trouves = []
-    for sha in shas:
+    for sha, _, contenu in objets(shas):
         court = sha[:9]
-        entete = git("show", "-s", "--format=%an <%ae>%n%cn <%ce>%n%B", sha)
-        auteurs, _, corps = entete.partition("\n")
-        committeur, _, corps = corps.partition("\n")
-        trouves += identite(detecteur, auteurs, f"{court} auteur")
-        trouves += identite(detecteur, committeur, f"{court} committeur")
-        trouves += [(f"{court} message, ligne {n}", t) for t, n in detecteur.trouver(corps)]
+        trouves += objet_lisible(detecteur, contenu, court)
         diff = git("diff-tree", "-p", *DIFF, "--no-commit-id", "--root", "-r", "-m", "--first-parent", sha)
-        trouves += chercher_diff(detecteur, diff, f"{court} ")
+        brut = git("diff-tree", *BRUT, "--no-commit-id", "--root", "-r", "-m", "--first-parent", sha)
+        trouves += chercher_diff(detecteur, diff, brut, f"{court} ")
     return trouves
 
 
+def etiquette_envoyee(detecteur, apres):
+    """Une étiquette annotée envoyée : son objet (étiqueteur, nom, message), et chaque étiquette qu'elle étiquette à
+    son tour, jusqu'au commit."""
+    trouves, sha = [], git_si("rev-parse", "-q", "--verify", apres)
+    while sha and git_si("cat-file", "-t", sha) == "tag":
+        suivant = ""
+        for _, _, contenu in objets([sha]):
+            trouves += objet_lisible(detecteur, contenu, "étiquette")
+            vise = re.match(rb"object ([0-9a-f]+)\n", contenu)
+            suivant = vise.group(1).decode() if vise else ""
+        sha = suivant
+    return trouves
+
+
+def objets_envoyes(detecteur, apres):
+    """Une étiquette posée sur un arbre ou un fichier (sans commit) : tout ce qu'elle emporte est lu."""
+    if git_si("cat-file", "-t", f"{apres}^{{}}") not in ("tree", "blob"):
+        return []
+    return sorted(lire_objets(detecteur, git("rev-list", "--objects", "--no-object-names", f"{apres}^{{}}").split(),
+                              {}, "étiquette : "), key=lambda v: (v[0], v[1].texte))
+
+
+def noms_d_arbre(contenu: bytes, octets: int):
+    """Le nom de chaque entrée d'un arbre git (« <mode> <nom>\\0<empreinte> », bout à bout)."""
+    i = 0
+    while i < len(contenu):
+        espace = contenu.index(b" ", i)
+        nul = contenu.index(b"\0", espace)
+        yield contenu[espace + 1 : nul].decode("utf-8", "replace")
+        i = nul + 1 + octets
+
+
+def lire_objets(detecteur, shas, noms, prefixe):
+    """Ce que contient chaque objet : commit et étiquette (en-têtes, message), arbre (le nom de chaque entrée),
+    contenu de fichier (lu comme texte s'il en est un). `noms` : les noms connus de chaque contenu."""
+    vus = set()
+    for sha, genre, contenu in objets(shas):
+        if genre in ("commit", "tag"):
+            quoi = "commit" if genre == "commit" else "étiquette"
+            vus.update(objet_lisible(detecteur, contenu, f"{prefixe}{quoi},"))
+        elif genre == "tree":
+            for nom in noms_d_arbre(contenu, len(sha) // 2):
+                vus.update((f"{prefixe}{nom} (nom dans un arbre)", t) for t in dans_un_nom(detecteur, nom))
+        elif genre == "blob":
+            texte = texte_lisible(contenu)
+            # Permis comme tiers seulement si TOUS ses noms le sont : un nom ordinaire garde la lecture stricte.
+            tous = noms.get(sha, set())
+            permis = bool(tous) and all(tiers(n) for n in tous)
+            for terme, _ in detecteur.trouver(texte, courriels=not permis):
+                vus.add((f"{prefixe}{min(tous) if tous else sha[:9]}", terme))
+    return vus
+
+
 def depot_entier(detecteur):
-    """Fichiers suivis, puis tout l'historique : contenus de toutes les versions de chaque fichier, messages, auteurs."""
+    """Fichiers suivis, puis tout l'historique : chaque objet de chaque ref (commits, étiquettes, arbres, contenus),
+    chaque nom porté par un fichier, et le nom de chaque branche et étiquette."""
     trouves = []
     for chemin in git("ls-files", "-z").split("\0"):
-        if not chemin or not Path(chemin).is_file():
+        if not chemin:
             continue
-        brut = Path(chemin).read_bytes()
-        if b"\0" in brut[:8000]:
-            continue
-        tiers = False if chemin in TIERS else None
-        trouves += [(f"{chemin}:{n}", t) for t, n in detecteur.trouver(brut.decode(errors="replace"), tiers)]
-        trouves += [(f"{chemin} (nom du fichier)", t) for t, _ in detecteur.trouver(chemin)]
+        trouves += [(f"{chemin} (nom du fichier)", t) for t in dans_un_nom(detecteur, chemin)]
+        fichier = Path(chemin)
+        # Un lien symbolique : sa cible, comme git la garde (jamais le fichier visé, hors du dépôt peut-être).
+        if fichier.is_symlink():
+            brut = os.readlink(fichier).encode("utf-8", "surrogateescape")
+        elif fichier.is_file():
+            try:
+                brut = fichier.read_bytes()
+            except OSError as erreur:
+                # Pas lu, donc pas dit sain.
+                raise SystemExit(f"confidentialité : {chemin} est illisible ({erreur.strerror}) : rien n'est conclu.")
+        else:
+            continue  # retiré du dossier de travail, ou sous-module : l'historique le lit
+        trouves += [(f"{chemin}:{n}", t)
+                    for t, n in detecteur.trouver(texte_lisible(brut), courriels=not tiers(chemin))]
     vus = set()
-    for ligne in git("log", "--all", "--format=%h%x1f%an <%ae>%x1f%cn <%ce>%x1f%B%x1e").split("\x1e"):
-        if not ligne.strip():
-            continue
-        court, auteur, committeur, corps = ligne.strip("\n").split("\x1f", 3)
-        for texte, quoi in ((auteur, "auteur"), (committeur, "committeur"), (corps, "message")):
-            for terme, _ in detecteur.trouver(texte):
-                vus.add((f"historique : {quoi} de commit", terme))
-    objets = {}
-    for ligne in git("rev-list", "--objects", "--all").splitlines():
-        sha, _, chemin = ligne.partition(" ")
-        if chemin:
-            objets.setdefault(sha, chemin)
-    lot = subprocess.run(["git", "cat-file", "--batch"], input="".join(f"{s}\n" for s in objets).encode(),
-                         capture_output=True, check=True).stdout
-    position = 0
-    while position < len(lot):
-        fin = lot.index(b"\n", position)
-        entete = lot[position:fin].decode().split()
-        if len(entete) != 3:  # « <sha> missing »
-            position = fin + 1
-            continue
-        sha, genre, taille = entete
-        contenu = lot[fin + 1 : fin + 1 + int(taille)]
-        position = fin + 2 + int(taille)
-        if genre == "blob" and b"\0" not in contenu[:8000]:
-            tiers = False if objets[sha] in TIERS or objets[sha].rsplit("/", 1)[-1] in TIERS else None
-            for terme, _ in detecteur.trouver(contenu.decode(errors="replace"), tiers):
-                vus.add((f"historique : {objets[sha]}", terme))
-        for terme, _ in detecteur.trouver(objets.get(sha, "")):
-            vus.add((f"historique : {objets[sha]} (nom du fichier)", terme))
+    for ref in git("for-each-ref", "--format=%(refname)").split("\n"):
+        vus.update(nom_de_ref(detecteur, ref) if ref else ())
+    # Chaque nom qu'a porté chaque version de chaque fichier, dans tous les commits (fusions comprises). Pas
+    # « rev-list --objects » : il ne donne chaque contenu qu'une fois, sous un seul nom (l'ancien nom d'un renommage
+    # n'y est jamais), et coupe un nom au premier retour à la ligne. Ici, séparés par NUL : jamais coupés ni échappés.
+    noms = {}
+    for _, sha, nom in changes(git("log", "--all", *BRUT, "-m", "--root", "--format=")):
+        noms.setdefault(sha, set()).add(nom)
+    for nom in set().union(*noms.values()):
+        vus.update((f"historique : {nom} (nom du fichier)", t) for t in dans_un_nom(detecteur, nom))
+    # Tous les objets de l'historique, même sans commit (une étiquette posée sur un arbre ou un fichier).
+    vus.update(lire_objets(detecteur, git("rev-list", "--objects", "--no-object-names", "--all").split(), noms,
+                           "historique : "))
     return trouves + sorted(vus, key=lambda v: (v[0], v[1].texte))
 
 
 def chaines(chemin):
-    """Textes lisibles d'un programme compilé : ASCII et UTF-8, puis UTF-16 (métadonnées d'un .exe)."""
-    brut = Path(chemin).read_bytes()
-    textes = [s.decode(errors="replace") for s in re.findall(rb"[\t\x20-\x7e\x80-\xff]{4,}", brut)]
-    textes += [s.decode("utf-16-le") for s in re.findall(rb"(?:[\x20-\x7e]\x00){4,}", brut)]
-    return "\n".join(textes)
+    """Textes lisibles d'un programme compilé (métadonnées d'un .exe comprises)."""
+    return chaines_d_octets(Path(chemin).read_bytes(), mini=4)
 
 
 def rapport(trouves, quoi, en_clair=True) -> int:
@@ -677,10 +947,15 @@ def main():
         sys.exit(rapport(message(detecteur, args[1]), "le message du commit (rien n'est commité)"))
     if args[:1] == ["--envoi"]:
         sys.exit(rapport(commits_a_envoyer(detecteur), "les commits à envoyer"))
-    if args[:1] == ["--plage"] and len(args) == 3:
-        shas = commits_de_la_plage(args[1], args[2])
+    if args[:1] == ["--plage"] and len(args) in (3, 4):
+        # --plage AVANT APRÈS [REF] : REF, le nom envoyé (crochet pre-push), est lu lui aussi.
+        avant, apres = args[1:3]
+        shas = commits_de_la_plage(avant, apres)
         print(f"Confidentialité : {len(shas)} commit(s) relu(s).", file=sys.stderr)
-        sys.exit(rapport(verifier_commits(detecteur, shas), "les commits envoyés", en_clair=not os.environ.get("CI")))
+        trouves = nom_de_ref(detecteur, args[3]) if len(args) == 4 else []
+        trouves += etiquette_envoyee(detecteur, apres) + objets_envoyes(detecteur, apres)
+        trouves += verifier_commits(detecteur, shas)
+        sys.exit(rapport(trouves, "les commits envoyés", en_clair=not os.environ.get("CI")))
     if args[:1] == ["--texte"]:
         texte = sys.stdin.read()
         sys.exit(rapport([(f"ligne {n}", t) for t, n in detecteur.trouver(texte)], "le texte"))

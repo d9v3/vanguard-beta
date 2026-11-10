@@ -2,7 +2,8 @@
 # Tout vérifier en une commande, avant un commit ou une livraison : mise en forme, clippy sur les deux cibles, tests
 # Linux et Windows (sous Wine, avec le lanceur de la clé : outils/essais-lanceur.sh), les tests Linux refaits sans
 # Internet, scripts PowerShell, shell et Python, essais des outils de la clé (outils/essais-cle.sh), de la signature
-# des versions (outils/essais-signature.sh) et de ce script même sous --seulement (outils/essais-verifier.sh), liens
+# des versions (outils/essais-signature.sh), de la garde de confidentialité (outils/essais-confidentialite.sh)
+# et de ce script même sous --seulement (outils/essais-verifier.sh), liens
 # internes, carte de couverture ATT&CK à jour (outils/couverture-attack.py), documentation du code sans avertissement
 # (cargo doc), textes français et anglais (outils/textes.py), relais des lots (relais/, outils/relais-schema.py),
 # protections des programmes lues dans leurs en-têtes (vanguard deploiement verifier-binaire : PIE, marque RELRO, pile
@@ -477,6 +478,7 @@ if [[ $MODE != --rapide ]]; then
   etape shell scripts_shell &
   etape essais-cle bash outils/essais-cle.sh &
   etape signature bash outils/essais-signature.sh &
+  etape essais-confidentialite bash outils/essais-confidentialite.sh &
   etape essais-verifier bash outils/essais-verifier.sh &
   etape masque bash outils/verifier-masque.sh &
   etape extensions extensions &
@@ -633,6 +635,7 @@ if [[ $MODE != --rapide ]]; then
   ligne shell "scripts shell"
   ligne essais-cle "essais des outils de la clé"
   ligne signature "signature des versions"
+  ligne essais-confidentialite "garde de confidentialité (noms, types)"
   ligne essais-verifier "essais de verifier.sh (--seulement)"
   ligne masque "mots d'attaque masqués"
   ligne extensions "extensions (sdk, exemple Rust)"
