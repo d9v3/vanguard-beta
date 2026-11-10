@@ -327,9 +327,14 @@ fn surveiller(
         }
     };
     let trop = Arc::new(AtomicBool::new(false));
+    let abandon = Arc::new(AtomicBool::new(false));
     let (sortie_envoi, sortie_recu) = mpsc::channel();
     if let Some(s) = enfant.stdout.take() {
         let trop = Arc::clone(&trop);
+        let s = Lecteur {
+            source: s,
+            abandon: Arc::clone(&abandon),
+        };
         let _ = std::thread::Builder::new()
             .name("vanguard-sortie".into())
             .spawn(move || {
@@ -340,10 +345,14 @@ fn surveiller(
                 let _ = sortie_envoi.send(octets);
             });
     }
-    if let Some(e) = enfant.stderr.take() {
+    let erreurs = enfant.stderr.take().and_then(|e| {
+        let e = Lecteur {
+            source: e,
+            abandon: Arc::clone(&abandon),
+        };
         let envoi = envoi.clone();
         let reveil = Arc::clone(reveil);
-        let _ = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("vanguard-erreurs".into())
             .spawn(move || {
                 lire_lignes(e, LIGNE_ERREUR_MAX, LIGNES_ERREUR_MAX, |l| {
@@ -352,8 +361,9 @@ fn surveiller(
                         reveil();
                     }
                 });
-            });
-    }
+            })
+            .ok()
+    });
     let delai = commande.delai();
     let issue = loop {
         match fini(&mut enfant) {
@@ -383,10 +393,10 @@ fn surveiller(
     // son groupe, reste pris, et chaque killpg ci-dessous ne peut viser que ce groupe-là, jamais un autre processus
     // qui aurait reçu ce numéro après lui. Seul le `wait` de la fin le récolte, après le dernier killpg.
     // La sortie : ce que le lecteur a lu. Un petit-enfant qui la garderait ouverte est tué avec le groupe. Un
-    // processus sorti du groupe de lui-même (setsid) échapperait à killpg : le lecteur resterait alors en attente
-    // jusqu'à ce qu'il ferme la sortie, sans rien retenir de plus que SORTIE_MAX, et la tâche finit quand même
-    // (« sortie jamais fermée »). Aucune commande de la liste ne lance un tel processus (seuls le bilan complet,
-    // `vanguard plugins` et la surveillance lancent des plugins par setsid).
+    // processus sorti du groupe de lui-même (setsid) échapperait à killpg : la tâche finit quand même (« sortie
+    // jamais fermée ») et les lecteurs lâchent leur bout du tuyau (`abandon`, plus bas). Aucune commande de la liste
+    // ne lance un tel processus (seuls le bilan complet, `vanguard plugins` et la surveillance lancent des plugins
+    // par setsid).
     let sortie = if let Ok(s) = sortie_recu.recv_timeout(FIN_LECTURE) {
         Some(s)
     } else {
@@ -396,6 +406,13 @@ fn surveiller(
     // Rien du groupe ne survit à la commande, même un petit-enfant qui a fermé ses sorties ; puis la récolte.
     tuer_groupe(&enfant, true);
     let code = enfant.wait().ok().and_then(|s| s.code());
+    // Les dernières lignes d'erreur déjà écrites sont lues ; passé FIN_LECTURE, les lecteurs abandonnent (Linux) :
+    // un processus qui garderait une sortie ouverte n'y retient ni un fil ni un tuyau de la fenêtre.
+    let attente = Instant::now();
+    while erreurs.as_ref().is_some_and(|f| !f.is_finished()) && attente.elapsed() < FIN_LECTURE {
+        std::thread::sleep(PAS);
+    }
+    abandon.store(true, Ordering::Relaxed);
     let issue = if issue == Issue::Terminee && trop.load(Ordering::Relaxed) {
         Issue::TropLongue
     } else {
@@ -409,6 +426,37 @@ fn surveiller(
             Issue::Impossible(crate::tr!("sortie jamais fermée", "output never closed").into()),
         ),
         (i, _) => fin(None, Vec::new(), i),
+    }
+}
+
+/// Une sortie de l'enfant, lue jusqu'à sa fin ou jusqu'à `abandon` (Linux : l'attente se fait par poll, par pas
+/// de 100 ms, pour voir l'abandon ; le lecteur rend alors une fin, et le tuyau se ferme avec lui). Sous Windows, une
+/// lecture ordinaire : un lecteur reste en attente tant qu'un enfant de `vanguard` garde la sortie ouverte (limite
+/// connue, comme pour l'arrêt).
+struct Lecteur<R> {
+    source: R,
+    abandon: Arc<AtomicBool>,
+}
+
+#[cfg(unix)]
+impl<R: Read + std::os::fd::AsRawFd> Read for Lecteur<R> {
+    fn read(&mut self, tampon: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            if self.abandon.load(Ordering::Relaxed) {
+                return Ok(0);
+            }
+            if signal::lisible(self.source.as_raw_fd(), 100)? {
+                return self.source.read(tampon);
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+impl<R: Read> Read for Lecteur<R> {
+    fn read(&mut self, tampon: &mut [u8]) -> std::io::Result<usize> {
+        let _ = &self.abandon;
+        self.source.read(tampon)
     }
 }
 
@@ -464,6 +512,29 @@ mod signal {
         // SAFETY: killpg ne reçoit que deux entiers et ne touche aucune mémoire de ce programme ; le groupe est celui
         // de l'enfant (process_group(0) le crée avec son numéro), toujours > 1 (vérifié par l'appelant).
         let _ = unsafe { libc::killpg(groupe, sig) };
+    }
+
+    // raison : FFI de poll (libc), pour attendre une sortie avec un délai, ce que std ne sait pas faire sur un tuyau.
+    #[allow(unsafe_code)]
+    pub fn lisible(fd: i32, ms: i32) -> std::io::Result<bool> {
+        let mut attente = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: poll lit et écrit cette seule structure, à nous, vivante pendant l'appel (nombre : 1) ; le
+        // descripteur est celui du tuyau, gardé ouvert par l'appelant.
+        let r = unsafe { libc::poll(&raw mut attente, 1, ms) };
+        if r < 0 {
+            let e = std::io::Error::last_os_error();
+            return if e.kind() == std::io::ErrorKind::Interrupted {
+                Ok(false)
+            } else {
+                Err(e)
+            };
+        }
+        // Données, fin (POLLHUP) ou erreur : la lecture qui suit ne bloque pas et le dira.
+        Ok(r > 0 && attente.revents != 0)
     }
 
     // raison : FFI de waitid (libc), pour savoir l'enfant fini sans le récolter, ce que std ne sait pas faire.
@@ -626,6 +697,7 @@ case "$1 $2" in
 "evenements --json") yes ;;
 "diagnostic --json") sleep 30 & printf '{}' ;;
 "test-connexion --json") sleep 30 >/dev/null 2>&1 & echo $! > reste; printf '{}' ;;
+"acces-a-distance --json") setsid sleep 30 & echo $! > evade; printf '{}' ;;
 *) exit 7 ;;
 esac
 "#;
@@ -651,6 +723,19 @@ esac
     fn vivant(pid: &str) -> bool {
         std::fs::read_to_string(format!("/proc/{pid}/stat"))
             .is_ok_and(|s| s.rsplit_once(") ").is_some_and(|(_, r)| !r.starts_with('Z')))
+    }
+
+    /// Les fils lecteurs encore là (leur nom, coupé à 15 octets par Linux).
+    #[cfg(unix)]
+    fn lecteurs() -> usize {
+        std::fs::read_dir("/proc/self/task").map_or(0, |d| {
+            d.flatten()
+                .filter(|t| {
+                    std::fs::read_to_string(t.path().join("comm"))
+                        .is_ok_and(|n| n.starts_with("vanguard-sortie") || n.starts_with("vanguard-erreur"))
+                })
+                .count()
+        })
     }
 
     /// Un seul essai pour les quatre cas : le script est écrit une fois avant tout lancement (sinon un autre essai
@@ -720,6 +805,18 @@ esac
             std::thread::sleep(PAS);
         }
         assert!(!vivant(pid), "le petit-enfant {pid} vit encore");
+
+        // Un processus sorti du groupe (setsid) garde les sorties ouvertes : la tâche finit, et les lecteurs lâchent
+        // le tuyau au lieu de rester bloqués.
+        let (_, f) = attendre(&Tache::lancer(&p, Commande::AccesADistance, false, &rien));
+        assert!(matches!(f.issue, Issue::Impossible(_)), "{:?}", f.issue);
+        let debut = Instant::now();
+        while lecteurs() > 0 && debut.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(PAS);
+        }
+        assert_eq!(lecteurs(), 0, "un lecteur attend encore");
+        let evade = std::fs::read_to_string(d.join("evade")).unwrap();
+        let _ = std::process::Command::new("kill").arg(evade.trim()).status();
 
         // Une commande que le script ne connaît pas : son code de sortie est rendu tel quel.
         let (_, f) = attendre(&Tache::lancer(&p, Commande::Lenteur, false, &rien));

@@ -179,7 +179,7 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   `protection`, `evenements`, `diagnostic`, `test-connexion`…), always with `--json`, no free argument, no shell,
   input closed, one at a time, with a time limit and a Stop button (on Linux, the whole process group is stopped,
   and whatever is left of it when the command ends too; `vanguard` is only reaped afterwards, so that group number
-  cannot belong to anyone else).
+  cannot belong to anyone else; a process that left the group and keeps the outputs open does not hold the window, which lets go of the pipes).
   The window's console only accepts the names on that list. On Linux, that `vanguard` must be a regular file owned
   by the window's account or by root, that neither the group nor others can modify, in folders (up to `/`) that
   neither the group nor others can modify either (except a folder with the sticky bit, like `/tmp`), or it is not
