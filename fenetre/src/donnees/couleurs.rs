@@ -21,6 +21,8 @@ pub enum Doute {
     Efface,
     /// parametres.json illisible.
     Illisible,
+    /// parametres.json absent alors que les sceaux ont été refaits : peut-être effacé.
+    Inconnu,
     /// Des couleurs gardées qui ne se lisent pas, ou qui se verraient à peine (dit par `vanguard` ou vu ici).
     Invalides,
 }
@@ -32,6 +34,7 @@ impl Doute {
             "adopte" => Doute::Adopte,
             "efface" => Doute::Efface,
             "illisible" => Doute::Illisible,
+            "inconnu" => Doute::Inconnu,
             // Un mot inconnu (un `vanguard` plus récent) : un doute quand même, jamais rien.
             _ => Doute::Invalides,
         }
@@ -56,11 +59,33 @@ impl Doute {
                 "parametres.json est illisible : les couleurs de Vanguard servent.",
                 "parametres.json is unreadable: Vanguard's colors are used."
             ),
+            Doute::Inconnu => crate::tr!(
+                "parametres.json est absent alors que les sceaux ont été refaits (peut-être effacé) : les couleurs de Vanguard servent.",
+                "parametres.json is missing while the seals were remade (maybe deleted): Vanguard's colors are used."
+            ),
             Doute::Invalides => crate::tr!(
                 "Des couleurs gardées sont invalides : celles de Vanguard servent.",
                 "Some saved colors are invalid: Vanguard's are used."
             ),
         }
+    }
+
+    /// `vanguard couleurs` refuse d'écrire par-dessus ce fichier-là : illisible, ses autres réglages seraient perdus ;
+    /// effacé ou changé hors de Vanguard, le rescellement effacerait la trace. La fenêtre ne propose donc rien
+    /// d'enregistrer, et dit pourquoi (`refus`).
+    pub fn bloque(self) -> bool {
+        matches!(
+            self,
+            Doute::HorsVanguard | Doute::Adopte | Doute::Efface | Doute::Illisible
+        )
+    }
+
+    /// Ce qu'on fait d'un fichier qui bloque l'enregistrement.
+    pub fn refus() -> &'static str {
+        crate::tr!(
+            "Aucune couleur ne s'enregistre par-dessus : « vanguard parametres » dit ce qu'il a ignoré, et un réglage changé là le réécrit.",
+            "No color is saved over it: “vanguard settings” says what it ignored, and a setting changed there rewrites it."
+        )
     }
 }
 
@@ -286,6 +311,23 @@ mod tests {
         let l = lire(br#"{"douteux":"hors_vanguard"}"#).unwrap();
         assert_eq!((l.choix, l.doute), ([None, None], Some(Doute::HorsVanguard)));
         assert_eq!(lire(br#"{"douteux":"autre"}"#).unwrap().doute, Some(Doute::Invalides));
+        // Ce que `vanguard couleurs` refuse d'écraser bloque l'enregistrement ; des couleurs invalides ou un fichier
+        // peut-être effacé, non (rien d'autre à perdre, rien à resceller).
+        for (mot, bloque) in [
+            ("hors_vanguard", true),
+            ("adopte", true),
+            ("efface", true),
+            ("illisible", true),
+            ("inconnu", false),
+            ("invalides", false),
+        ] {
+            let d = lire(format!(r#"{{"douteux":"{mot}"}}"#).as_bytes())
+                .unwrap()
+                .doute
+                .unwrap();
+            assert_eq!(d.bloque(), bloque, "{mot}");
+        }
+        assert_eq!(lire(br#"{"douteux":"inconnu"}"#).unwrap().doute, Some(Doute::Inconnu));
         // Une source inconnue, ou pas exactement cinq cases : pas de couleurs du système.
         for s in [
             r#"{"systeme":{"source":"autre","vifs":["ff0000",null,null,null,null]}}"#,

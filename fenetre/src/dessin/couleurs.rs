@@ -13,7 +13,7 @@ use crate::couleurs::{
     Base, CONTRASTE_CONSEILLE, CONTRASTE_MIN, Choix, Jeu, Remarque, Rgb, Theme, Vif, contraste_sur_fonds,
     depuis_le_systeme, hex, remarques, verifier,
 };
-use crate::donnees::couleurs::Source;
+use crate::donnees::couleurs::{Doute, Source};
 
 fn c32(x: Rgb) -> Color32 {
     Color32::from_rgb(x[0], x[1], x[2])
@@ -81,6 +81,9 @@ fn rangee(ui: &mut Ui, etiquette: &str, theme: Theme, choix: Option<&Choix>) {
 pub fn section(appli: &mut Appli, ui: &mut Ui) {
     let p = pal();
     let theme = Theme::depuis_sombre(appli.sombre);
+    // Le brouillon est figé tant qu'une confirmation est ouverte : elle montre ce qui sera enregistré, et la carte
+    // ne doit pas montrer autre chose (un changement fait après « Enregistrer… » serait perdu à l'acceptation).
+    let fige = appli.confirmation_couleurs().is_some();
     if let Some((cc, avant)) = appli.confirmation_couleurs() {
         confirmation(appli, ui, cc, avant);
         ui.add_space(16.0);
@@ -109,20 +112,25 @@ pub fn section(appli: &mut Appli, ui: &mut Ui) {
         if let Some(d) = appli.couleurs().doute {
             ui.add_space(4.0);
             super::signale(ui, p.encre, d.texte(), 13.0);
+            if d.bloque() {
+                ui.label(texte(Doute::refus(), 13.0, p.encre));
+            }
         }
         ui.add_space(12.0);
-        prereglages(appli, ui, theme, &mut nouveau);
-        ui.add_space(12.0);
-        ui.separator();
-        for v in Vif::TOUS {
-            ligne_vif(ui, theme, &mut nouveau, v);
-        }
+        ui.add_enabled_ui(!fige, |ui| {
+            prereglages(appli, ui, theme, &mut nouveau);
+            ui.add_space(12.0);
+            ui.separator();
+            for v in Vif::TOUS {
+                ligne_vif(ui, theme, &mut nouveau, v);
+            }
+        });
         ui.separator();
         lisibilite(ui, theme, &nouveau, true);
         ui.add_space(12.0);
         gestes(appli, ui, theme, reglee, &nouveau);
     });
-    if nouveau != choix {
+    if nouveau != choix && !fige {
         appli.brouillon = Some((theme, nouveau));
     }
 }
@@ -338,7 +346,17 @@ fn lisibilite(ui: &mut Ui, theme: Theme, choix: &Choix, lisible_dit: bool) {
 
 /// Enregistrer, tout remettre, abandonner, revenir à celles d'avant.
 fn gestes(appli: &mut Appli, ui: &mut Ui, theme: Theme, reglee: Option<Choix>, choix: &Choix) {
-    let possible = appli.changement_possible();
+    // `vanguard couleurs` refuserait d'écrire par-dessus ce parametres.json : rien n'est proposé, la raison est dite.
+    let bloque = appli.couleurs().doute.is_some_and(Doute::bloque);
+    let possible = appli.changement_possible() && !bloque;
+    let pourquoi_pas = if bloque {
+        Doute::refus()
+    } else {
+        crate::tr!(
+            "Une commande tourne ou une confirmation est ouverte : un changement à la fois.",
+            "A command is running or a confirmation is open: one change at a time."
+        )
+    };
     let lisible = verifier(theme, choix).is_ok();
     let change = reglee != Some(*choix) && !(reglee.is_none() && *choix == Choix::du_prereglage(Base::Vanguard, theme));
     ui.horizontal_wrapped(|ui| {
@@ -349,10 +367,7 @@ fn gestes(appli: &mut Appli, ui: &mut Ui, theme: Theme, reglee: Option<Choix>, c
             possible && lisible && change,
         )
         .on_disabled_hover_text(if !possible {
-            crate::tr!(
-                "Une commande tourne ou une confirmation est ouverte : un changement à la fois.",
-                "A command is running or a confirmation is open: one change at a time."
-            )
+            pourquoi_pas
         } else if !lisible {
             crate::tr!("Une couleur se verrait à peine.", "A color would barely show.")
         } else {
@@ -374,6 +389,11 @@ fn gestes(appli: &mut Appli, ui: &mut Ui, theme: Theme, reglee: Option<Choix>, c
             "Propose de remettre les couleurs de Vanguard pour ce thème.",
             "Offers to put back Vanguard's colors for this theme."
         ))
+        .on_disabled_hover_text(if possible {
+            crate::tr!("Ce sont déjà celles de Vanguard.", "These are already Vanguard's.")
+        } else {
+            pourquoi_pas
+        })
         .clicked()
         {
             appli.proposer_couleurs(ChangementCouleurs { theme, choix: None });
@@ -399,6 +419,7 @@ fn gestes(appli: &mut Appli, ui: &mut Ui, theme: Theme, reglee: Option<Choix>, c
                 "Propose de remettre exactement les couleurs d'avant le dernier changement.",
                 "Offers to put back exactly the colors from before the last change."
             ))
+            .on_disabled_hover_text(pourquoi_pas)
             .clicked()
         {
             appli.proposer_couleurs(cc);

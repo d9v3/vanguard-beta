@@ -591,7 +591,8 @@ fn captures() {
 }
 
 /// Les couleurs (couleurs/), en français : chaque préréglage et les couleurs du système (inventées), sombre et clair,
-/// sur l'accueil (1280×800) et sur l'écran Vanguard (1920×1080) ; puis la confirmation et un brouillon peu lisible.
+/// sur l'accueil (1280×800) et sur l'écran Vanguard (1920×1080) ; puis la confirmation, un brouillon peu lisible et
+/// un parametres.json douteux.
 fn couleurs(dossier: &Path) -> usize {
     use crate::commandes::ChangementCouleurs;
     use crate::couleurs::{Base, Choix, Theme, Vif, depuis_le_systeme, vifs_hex};
@@ -657,6 +658,17 @@ fn couleurs(dossier: &Path) -> usize {
                 .unwrap();
             faites += 1;
         }
+        // Un parametres.json changé hors de Vanguard : la raison, et rien à enregistrer par-dessus.
+        let mut rendu = Rendu::nouveau();
+        let mut appli = appli_remplie(false, sombre);
+        appli.poser(Commande::Couleurs, br#"{"douteux":"hors_vanguard"}"#);
+        appli.aller(Ecran::Rubrique(Rubrique::Vanguard));
+        appli.brouillon = Some((theme, braise));
+        let toile = rendu.rendre([1920, 1700], &[0.0, 0.5, 2.0], |ui| image(&mut appli, None, ui));
+        toile
+            .ecrire_png(&dossier.join(format!("douteux-{}.png", if sombre { "sombre" } else { "clair" })))
+            .unwrap();
+        faites += 1;
     }
     faites
 }
@@ -967,4 +979,114 @@ fn aucun_mot_n_est_ecrit_dans_une_couleur_de_gravite() {
         }
     }
     assert!(vus > 1000, "{vus} morceaux de texte vus");
+}
+
+/// Un tour de la fenêtre entière (1920×1700 : la section des couleurs sans défiler), avec ces événements ; ses formes.
+fn tour(ctx: &Context, appli: &mut Appli, temps: &mut f64, events: Vec<egui::Event>) -> Vec<epaint::ClippedShape> {
+    *temps += 0.05;
+    let entree = egui::RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1920.0, 1700.0))),
+        time: Some(*temps),
+        events,
+        ..Default::default()
+    };
+    let mut sortie = ctx.run_ui(entree, |ui| image(appli, None, ui));
+    sortie.textures_delta.clear();
+    sortie.shapes
+}
+
+/// Les mots écrits, et le centre de chacun.
+fn mots(formes: Vec<epaint::ClippedShape>) -> Vec<(String, Pos2)> {
+    let mut pile: Vec<epaint::Shape> = formes.into_iter().map(|c| c.shape).collect();
+    let mut vus = Vec::new();
+    while let Some(f) = pile.pop() {
+        match f {
+            epaint::Shape::Vec(v) => pile.extend(v),
+            epaint::Shape::Text(t) => {
+                let centre = Rect::from_min_size(t.pos, t.galley.size()).center();
+                vus.push((t.galley.job.text.clone(), centre));
+            }
+            _ => {}
+        }
+    }
+    vus
+}
+
+/// Clique sur le mot `quoi` (il doit être écrit) ; les mots écrits après le clic.
+fn cliquer(ctx: &Context, appli: &mut Appli, temps: &mut f64, quoi: &str) -> Vec<(String, Pos2)> {
+    use egui::{Event, Modifiers, PointerButton};
+    let vus = mots(tour(ctx, appli, temps, Vec::new()));
+    let ou = vus
+        .iter()
+        .find(|(m, _)| m == quoi)
+        .unwrap_or_else(|| panic!("« {quoi} » n'est pas écrit"))
+        .1;
+    let bouton = |pressed| Event::PointerButton {
+        pos: ou,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    for e in [vec![Event::PointerMoved(ou)], vec![bouton(true)], vec![bouton(false)]] {
+        tour(ctx, appli, temps, e);
+    }
+    mots(tour(ctx, appli, temps, Vec::new()))
+}
+
+/// Un parametres.json que `vanguard couleurs` refuserait d'écraser : « Enregistrer… » ne propose rien, et la raison
+/// est écrite. Une confirmation ouverte fige le brouillon : un préréglage cliqué n'y change rien. Chaque fois, le
+/// même clic sans la cause fait bien son effet (le clic arrive).
+#[test]
+fn un_fichier_douteux_ne_propose_rien_et_la_confirmation_fige_le_brouillon() {
+    use crate::commandes::ChangementCouleurs;
+    use crate::couleurs::{Base, Choix, Theme};
+    use crate::donnees::couleurs::Doute;
+    crate::langue::choisir(Some(false));
+    let theme = Theme::Sombre;
+    let braise = Choix::du_prereglage(Base::Braise, theme);
+    for douteux in [None, Some("hors_vanguard"), Some("illisible"), Some("inconnu")] {
+        let ctx = Context::default();
+        super::polices(&ctx);
+        super::appliquer_theme(&ctx, true);
+        let mut temps = 1.0;
+        let mut a = appli_remplie(false, true);
+        let lu = douteux.map_or_else(|| serde_json::json!({}), |d| serde_json::json!({ "douteux": d }));
+        a.poser(Commande::Couleurs, lu.to_string().as_bytes());
+        a.aller(Ecran::Rubrique(Rubrique::Vanguard));
+        a.brouillon = Some((theme, braise));
+        let bloque = a.couleurs().doute.is_some_and(Doute::bloque);
+        assert_eq!(
+            bloque,
+            matches!(douteux, Some("hors_vanguard" | "illisible")),
+            "{douteux:?}"
+        );
+        let vus = cliquer(&ctx, &mut a, &mut temps, "Enregistrer…");
+        assert_eq!(a.confirmation_couleurs().is_some(), !bloque, "{douteux:?}");
+        assert_eq!(vus.iter().any(|(m, _)| m == Doute::refus()), bloque, "{douteux:?}");
+    }
+    // La confirmation ouverte : « Glacier » ne touche plus au brouillon ; fermée, il le change.
+    for confirmer in [true, false] {
+        let ctx = Context::default();
+        super::polices(&ctx);
+        super::appliquer_theme(&ctx, true);
+        let mut temps = 1.0;
+        let mut a = appli_remplie(false, true);
+        a.poser(Commande::Couleurs, b"{}");
+        a.aller(Ecran::Rubrique(Rubrique::Vanguard));
+        a.brouillon = Some((theme, braise));
+        if confirmer {
+            a.proposer_couleurs(ChangementCouleurs {
+                theme,
+                choix: Some(braise),
+            });
+        }
+        cliquer(&ctx, &mut a, &mut temps, "Glacier");
+        let apres = a.brouillon_de(theme).map(|c| c.base);
+        assert_eq!(
+            apres,
+            Some(if confirmer { Base::Braise } else { Base::Glacier }),
+            "{confirmer}"
+        );
+        assert_eq!(a.confirmation_couleurs().is_some(), confirmer);
+    }
 }
