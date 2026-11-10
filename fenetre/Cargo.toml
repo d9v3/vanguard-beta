@@ -23,7 +23,7 @@ path = "src/main.rs"
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "wayland", "x11"] }
 serde = { version = "1.0.229", features = ["derive"] }
 # preserve_order : les valeurs d'un JSON montré tel quel gardent l'ordre de Vanguard (indexmap, déjà là pour egui).
-serde_json = { version = "1.0.154", features = ["preserve_order"] }
+serde_json = { version = "1.0.154", features = ["preserve_order", "raw_value"] }
 # L'heure locale des lignes de la console et l'âge des événements (écrits en temps universel), comme Vanguard.
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 

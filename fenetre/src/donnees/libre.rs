@@ -1,6 +1,11 @@
 //! Un JSON sans lecteur à lui (`fiche-ordinateur`, `options-defense`), montré tel quel : une ligne par valeur, son
 //! chemin de clés en retrait. Borné en profondeur et en lignes : au-delà, une ligne le dit.
 
+use std::fmt;
+
+use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
+
 /// Profondeur montrée au plus.
 const PROFONDEUR_MAX: usize = 6;
 /// Lignes montrées au plus.
@@ -22,29 +27,156 @@ pub struct Vue {
 }
 
 pub fn lire(sortie: &[u8]) -> Result<Vue, String> {
-    let v: serde_json::Value = super::lire(sortie)?;
-    let mut vue = Vue::default();
-    parcourir(&v, 0, &mut vue);
+    let Racine(vue) = super::lire(sortie)?;
     Ok(vue)
 }
 
-fn valeur(v: &serde_json::Value) -> Option<String> {
-    match v {
-        serde_json::Value::Null => Some("—".into()),
-        serde_json::Value::Bool(b) => Some(
-            if *b {
+/// Le document lu au fil de l'eau, sans arbre en mémoire (voir `donnees`) : chaque valeur devient sa ligne dès qu'elle
+/// est lue ; au-delà des bornes, le reste est sauté sans être gardé.
+struct Racine(Vue);
+
+impl<'de> Deserialize<'de> for Racine {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Racine, D::Error> {
+        let mut vue = Vue::default();
+        Noeud {
+            vue: &mut vue,
+            profondeur: 0,
+            cle: None,
+        }
+        .deserialize(d)?;
+        Ok(Racine(vue))
+    }
+}
+
+/// Une valeur et sa place : sa clé (`None` pour la racine, dont les enfants sont au retrait 0 sans ligne de titre),
+/// son retrait.
+struct Noeud<'a> {
+    vue: &'a mut Vue,
+    profondeur: usize,
+    cle: Option<String>,
+}
+
+impl Noeud<'_> {
+    fn feuille(self, valeur: String) {
+        pousser(self.vue, self.profondeur, self.cle.unwrap_or_default(), valeur);
+    }
+
+    /// La ligne de titre d'un groupe ; le retrait de ses enfants, ou `None` s'ils ne seront pas montrés.
+    fn groupe(&mut self) -> Option<usize> {
+        let Some(cle) = self.cle.take() else {
+            return (self.vue.lignes.len() < LIGNES_MAX).then_some(0);
+        };
+        if self.profondeur + 1 >= PROFONDEUR_MAX {
+            self.vue.coupe = true;
+            pousser(self.vue, self.profondeur, cle, "…".into());
+            return None;
+        }
+        pousser(self.vue, self.profondeur, cle, String::new()).then_some(self.profondeur + 1)
+    }
+}
+
+impl<'de> DeserializeSeed<'de> for Noeud<'_> {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+        d.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for Noeud<'_> {
+    type Value = ();
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("une valeur JSON")
+    }
+
+    fn visit_unit<E>(self) -> Result<(), E> {
+        self.feuille("—".into());
+        Ok(())
+    }
+
+    fn visit_bool<E>(self, b: bool) -> Result<(), E> {
+        self.feuille(
+            if b {
                 crate::tr!("oui", "yes")
             } else {
                 crate::tr!("non", "no")
             }
             .into(),
-        ),
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        serde_json::Value::String(s) => Some(crate::nettoyage::nom(s, 200)),
-        _ => None,
+        );
+        Ok(())
+    }
+
+    fn visit_i64<E>(self, n: i64) -> Result<(), E> {
+        self.feuille(n.to_string());
+        Ok(())
+    }
+
+    fn visit_u64<E>(self, n: u64) -> Result<(), E> {
+        self.feuille(n.to_string());
+        Ok(())
+    }
+
+    fn visit_f64<E>(self, n: f64) -> Result<(), E> {
+        self.feuille(super::nombre(n));
+        Ok(())
+    }
+
+    fn visit_str<E>(self, s: &str) -> Result<(), E> {
+        self.feuille(crate::nettoyage::nom(s, 200));
+        Ok(())
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(mut self, mut s: A) -> Result<(), A::Error> {
+        let Some(retrait) = self.groupe() else {
+            while s.next_element::<IgnoredAny>()?.is_some() {}
+            return Ok(());
+        };
+        loop {
+            if self.vue.lignes.len() >= LIGNES_MAX {
+                if s.next_element::<IgnoredAny>()?.is_none() {
+                    return Ok(());
+                }
+                self.vue.coupe = true;
+                continue;
+            }
+            let enfant = Noeud {
+                vue: &mut *self.vue,
+                profondeur: retrait,
+                cle: Some(String::new()),
+            };
+            if s.next_element_seed(enfant)?.is_none() {
+                return Ok(());
+            }
+        }
+    }
+
+    fn visit_map<A: MapAccess<'de>>(mut self, mut m: A) -> Result<(), A::Error> {
+        let Some(retrait) = self.groupe() else {
+            while m.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+            return Ok(());
+        };
+        loop {
+            if self.vue.lignes.len() >= LIGNES_MAX {
+                if m.next_entry::<IgnoredAny, IgnoredAny>()?.is_none() {
+                    return Ok(());
+                }
+                self.vue.coupe = true;
+                continue;
+            }
+            let Some(cle) = m.next_key::<Cle>()? else {
+                return Ok(());
+            };
+            m.next_value_seed(Noeud {
+                vue: &mut *self.vue,
+                profondeur: retrait,
+                cle: Some(cle.0),
+            })?;
+        }
     }
 }
 
+/// Une ligne de plus, ou rien (et `coupe`) quand il y en a déjà `LIGNES_MAX`.
 fn pousser(vue: &mut Vue, retrait: usize, cle: String, valeur: String) -> bool {
     if vue.lignes.len() >= LIGNES_MAX {
         vue.coupe = true;
@@ -54,36 +186,13 @@ fn pousser(vue: &mut Vue, retrait: usize, cle: String, valeur: String) -> bool {
     true
 }
 
-fn parcourir(v: &serde_json::Value, profondeur: usize, vue: &mut Vue) {
-    let enfants: Vec<(String, &serde_json::Value)> = match v {
-        serde_json::Value::Object(o) => o.iter().map(|(k, x)| (crate::nettoyage::nom(k, 60), x)).collect(),
-        serde_json::Value::Array(a) => a.iter().map(|x| (String::new(), x)).collect(),
-        _ => {
-            if let Some(t) = valeur(v) {
-                pousser(vue, profondeur, String::new(), t);
-            }
-            return;
-        }
-    };
-    for (cle, x) in enfants {
-        if let Some(t) = valeur(x) {
-            if !pousser(vue, profondeur, cle, t) {
-                return;
-            }
-        } else if profondeur + 1 >= PROFONDEUR_MAX {
-            vue.coupe = true;
-            if !pousser(vue, profondeur, cle, "…".into()) {
-                return;
-            }
-        } else {
-            if !pousser(vue, profondeur, cle, String::new()) {
-                return;
-            }
-            parcourir(x, profondeur + 1, vue);
-            if vue.coupe && vue.lignes.len() >= LIGNES_MAX {
-                return;
-            }
-        }
+/// Une clé, nettoyée et bornée dès la lecture.
+struct Cle(String);
+
+impl<'de> Deserialize<'de> for Cle {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Cle, D::Error> {
+        let t = String::deserialize(d)?;
+        Ok(Cle(crate::nettoyage::nom(&t, 60)))
     }
 }
 
