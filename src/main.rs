@@ -785,8 +785,23 @@ async fn main() {
         Some(Commande::Guide { quoi, sommaire }) => guide::executer(&quoi.join(" "), sommaire),
         Some(Commande::Lenteur { json: false }) => lenteur::commande(),
         Some(Commande::Lenteur { json: true }) => lenteur::json(),
-        Some(Commande::Demarrage { json }) => {
-            if json {
+        Some(Commande::Demarrage {
+            json,
+            retirer,
+            remettre,
+        }) => {
+            let geste = match (retirer, remettre) {
+                (Some(e), _) => Some((optimiser::SorteDeChangement::Retirer, e)),
+                (None, Some(e)) => Some((optimiser::SorteDeChangement::Remettre, e)),
+                (None, None) => None,
+            };
+            if let Some((sorte, empreinte)) = geste {
+                let code = optimiser::changer_au_demarrage(sorte, &empreinte, json);
+                if code != 0 {
+                    chiffrement::oublier_session();
+                    std::process::exit(code);
+                }
+            } else if json {
                 optimiser::demarrage_json();
             } else {
                 optimiser::programmes_au_demarrage();

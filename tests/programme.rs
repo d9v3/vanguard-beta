@@ -1335,6 +1335,55 @@ fn demarrage_sans_rien_changer() {
     );
 }
 
+/// Retirer ou remettre au démarrage d'après une empreinte inventée ou mal formée : refusé, dit en une ligne JSON (la
+/// dernière), code non nul, rien de changé. Une empreinte inventée ne répond à aucun programme réel.
+#[test]
+fn demarrage_refuse_une_empreinte_inconnue_ou_mal_formee() {
+    if optimiser_refuse_ici() {
+        return essais::saute(REFUS_OPTIMISER);
+    }
+    let inventee = "0123456789abcdef0123456789abcdef";
+    let cas: [(&[&str], &str, i32); 5] = [
+        (&["demarrage", "--retirer", inventee, "--json"], "retirer", 1),
+        (&["demarrage", "--remettre", inventee, "--json"], "remettre", 1),
+        (
+            &["demarrage", "--retirer", "0123456789ABCDEF0123456789ABCDEF", "--json"],
+            "retirer",
+            2,
+        ),
+        (
+            &["demarrage", "--remettre", "../../etc/passwd", "--json"],
+            "remettre",
+            2,
+        ),
+        (&["startup", "--remove", "Lecteur", "--json"], "retirer", 2),
+    ];
+    for (args, geste, code) in cas {
+        let s = vanguard("fr", args, "", 60);
+        assert_eq!(s.code, Some(code), "{args:?} : {} {}", s.texte, s.erreurs);
+        let derniere = s.texte.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default();
+        let v: serde_json::Value = serde_json::from_str(derniere).unwrap_or_else(|e| panic!("{e} : {derniere}"));
+        assert_eq!(
+            (v["geste"].as_str(), v["issue"].as_str()),
+            (Some(geste), Some("refuse")),
+            "{v}"
+        );
+        assert!(v["raison"].as_str().is_some_and(|r| !r.is_empty()), "{v}");
+    }
+    // Sans --json : le refus se dit en clair, en anglais aussi.
+    let s = vanguard("en", &["startup", "--put-back", inventee], "", 60);
+    assert_eq!(s.code, Some(1), "{}", s.erreurs);
+    assert!(sans_couleurs(&s.texte).contains("Nothing changed"), "{}", s.texte);
+    // Les deux à la fois : refusé par les arguments.
+    let s = vanguard(
+        "fr",
+        &["demarrage", "--retirer", inventee, "--remettre", inventee],
+        "",
+        30,
+    );
+    assert_eq!(s.code, Some(2), "{}", s.erreurs);
+}
+
 /// Lancés sans Internet : outils/verifier.sh refait toute la suite dans un espace réseau vide (unshare -rn, la boucle
 /// locale seule) et pose VANGUARD_HORS_LIGNE. Ailleurs, ce test ne fait rien : Internet y répondrait.
 fn hors_ligne() -> bool {

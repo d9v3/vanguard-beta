@@ -188,6 +188,7 @@ mod tests {
                 message: message.into(),
                 corrigeable: false,
                 date: None,
+                geste: None,
             }],
         }))
     }

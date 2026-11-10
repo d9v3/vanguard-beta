@@ -309,6 +309,7 @@ proptest! {
                 message: champs[4].clone(),
                 corrigeable: false,
                 date: None,
+                geste: None,
             }],
         }));
         for sujet in [incident(fil), examen] {
@@ -712,6 +713,7 @@ fn constat(etat: &str, niveau: Option<crate::risk::Niveau>, message: &str) -> Co
         message: message.into(),
         corrigeable: false,
         date: None,
+        geste: None,
     }
 }
 

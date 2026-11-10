@@ -302,7 +302,13 @@ pub(crate) const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("diagnostic", "json", "The result as JSON, for a script: nothing changes"),
     ("lenteur", "json", "The result as JSON, for a script: nothing changes"),
     ("mises-a-jour", "json", "The result as JSON, for a script: nothing is installed, no question"),
-    ("demarrage", "json", "The result as JSON, for a script: nothing is removed, no question"),
+    ("demarrage", "json", "The result as JSON, for a script: nothing is removed, no question. With --retirer or \
+                           --remettre: the outcome on one JSON line, the last one"),
+    ("demarrage", "retirer", "Remove from startup the only program with this fingerprint (32 hexadecimal digits, given \
+                              by --json): an ordinary program that starts, never one to keep nor a firewall. It stays \
+                              installed"),
+    ("demarrage", "remettre", "Put back exactly as before the program with this fingerprint that Vanguard removed \
+                               (from its note)"),
     ("connexions-sortantes", "json", "The result as JSON, for a script"),
     ("acces-a-distance", "json", "The result as JSON, for a script: nothing is removed, no question"),
     ("bilan-confidentialite", "json", "The result as JSON, for a script"),

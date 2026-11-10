@@ -615,9 +615,22 @@ pub(crate) enum Commande {
     /// Chaque retrait s'annule exactement (Optimiser › Tout remettre comme avant).
     #[command(visible_alias = "startup")]
     Demarrage {
-        /// La liste jugée en JSON, pour un script : rien n'est retiré ni demandé.
+        /// La liste jugée en JSON, pour un script : rien n'est retiré ni demandé. Avec --retirer ou --remettre :
+        /// l'issue en une ligne JSON, la dernière.
         #[arg(long)]
         json: bool,
+        /// Retirer du démarrage le seul programme de cette empreinte (32 chiffres hexadécimaux, donnée par --json) :
+        /// un programme ordinaire qui se lance, jamais un programme à garder ni un pare-feu. Il reste installé.
+        #[arg(
+            long,
+            visible_alias = "remove",
+            value_name = "EMPREINTE",
+            conflicts_with = "remettre"
+        )]
+        retirer: Option<String>,
+        /// Remettre exactement comme avant le programme de cette empreinte que Vanguard a retiré (d'après sa note).
+        #[arg(long, visible_alias = "put-back", value_name = "EMPREINTE")]
+        remettre: Option<String>,
     },
     /// Fiche de l'ordinateur : modèle, carte mère, processeur, mémoire, carte graphique, disques, système. Les numéros
     /// de série s'affichent à l'écran seulement.

@@ -117,6 +117,26 @@ pub(crate) struct ConstatEcrit {
     /// alerte des journaux de Windows), pour remettre les alertes dans l'ordre du temps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date: Option<String>,
+    /// Ce qu'un clic de la fenêtre peut demander pour cet objet, après sa confirmation (un programme au démarrage à
+    /// retirer ou à remettre) ; absent : rien.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geste: Option<GesteEcrit>,
+}
+
+/// Un changement qu'un constat propose à la fenêtre. Elle ne le désigne que par `empreinte`, jamais par un nom ni un
+/// chemin : Vanguard retrouve lui-même ce qui y répond, et refuse tout le reste.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GesteEcrit {
+    /// « retirer » ou « remettre ».
+    pub sorte: String,
+    /// 32 chiffres hexadécimaux minuscules : les 16 premiers octets du BLAKE3 de l'objet (« demarrage:… »).
+    pub empreinte: String,
+    /// Le nom et la commande, sans piège et coupés, pour la confirmation.
+    pub nom: String,
+    pub commande: String,
+    /// De tout l'ordinateur : la fenêtre administrateur s'ouvrira.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub machine: bool,
 }
 
 /// Un texte venu de l'extérieur (nom de pièce jointe, de réseau, de programme), prêt à écrire dans un résultat :
@@ -195,6 +215,7 @@ impl From<&Constat> for ConstatEcrit {
             message: sans_piege(&c.message, true),
             corrigeable: c.correctif.is_some(),
             date: None,
+            geste: None,
         }
     }
 }
@@ -709,6 +730,7 @@ mod tests {
                     message,
                     corrigeable,
                     date: None,
+                    geste: None,
                 },
             )
     }

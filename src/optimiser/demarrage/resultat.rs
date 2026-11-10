@@ -12,7 +12,7 @@
 
 use crate::machine::{Constat, alerte, ok};
 use crate::modele::Objet;
-use crate::modele::resultat::{Couverture, Resultat, nom_pour_cle, nom_sans_piege};
+use crate::modele::resultat::{Couverture, GesteEcrit, Resultat, nom_pour_cle, nom_sans_piege};
 use crate::risk::Niveau;
 use crate::{tr, trf};
 
@@ -88,7 +88,7 @@ pub(super) fn resultat(entrees: &[Entree], manques: Vec<String>, debut: Debut) -
         ));
     }
     // La liste a été lue (même en partie) : une vérification ; chaque manque la rend partielle.
-    Resultat::nouveau(
+    let mut r = Resultat::nouveau(
         ID,
         debut,
         &constats,
@@ -96,7 +96,40 @@ pub(super) fn resultat(entrees: &[Entree], manques: Vec<String>, debut: Debut) -
             verifies: 1,
             non_verifies: manques,
         },
-    )
+    );
+    // Les premiers constats sont ceux des programmes montrés, dans le même ordre : chacun reçoit son geste.
+    for (c, e) in r.constats.iter_mut().zip(entrees.iter().take(PROGRAMMES_MONTRES)) {
+        c.geste = geste(e);
+    }
+    r
+}
+
+/// L'empreinte d'un programme : les 16 premiers octets du BLAKE3 de son objet tel que le constat l'écrit
+/// (« demarrage:<identité échappée> »), en 32 chiffres hexadécimaux minuscules. C'est tout ce que la fenêtre renvoie
+/// pour le désigner : ni nom ni chemin, qu'elle aurait pu se faire glisser. `None` : une identité vide, sans objet.
+pub(super) fn empreinte(identite: &str) -> Option<String> {
+    let objet = Objet::de("demarrage", &nom_pour_cle(identite));
+    let texte = objet.texte().filter(|t| !t.is_empty())?;
+    let h = blake3::hash(texte.as_bytes());
+    Some(super::hex(h.as_bytes().get(..16)?))
+}
+
+/// Ce qu'un clic peut demander pour ce programme : le retirer s'il est ordinaire et se lance, le remettre si Vanguard
+/// l'a retiré ; rien pour un programme à garder ni pour un pare-feu (le retirer serait une baisse, qui ne se choisit
+/// pas d'un clic).
+fn geste(e: &Entree) -> Option<GesteEcrit> {
+    let sorte = match e.statut {
+        Statut::SeLance => "retirer",
+        Statut::Retire => "remettre",
+        Statut::Garder(_) | Statut::PareFeu => return None,
+    };
+    Some(GesteEcrit {
+        sorte: sorte.to_string(),
+        empreinte: empreinte(e.identite)?,
+        nom: nom_sans_piege(e.nom, 80),
+        commande: nom_sans_piege(e.commande, 160),
+        machine: e.machine,
+    })
 }
 
 /// Le constat d'un programme : sain, avec ce que l'écran en dit. Le nom et la commande viennent de qui a posé
@@ -161,6 +194,60 @@ mod tests {
         assert_eq!(r.constats.len(), 3);
         assert_eq!(r.constats[0].objet.as_deref(), Some("demarrage:Lecteur"));
         assert!(r.constats[1].message.contains("pilote"));
+    }
+
+    /// Le geste de chaque programme : retirer un programme ordinaire qui se lance, remettre ce que Vanguard a
+    /// retiré, rien pour un programme à garder ni pour un pare-feu. L'empreinte est celle de l'objet écrit, en 32
+    /// chiffres hexadécimaux minuscules ; le nom et la commande sortent sans piège.
+    #[test]
+    fn gestes_et_empreintes() {
+        let mut piege = entree("Lecteur\u{202e}", Statut::SeLance);
+        piege.commande = "x\u{1b}[2Ky";
+        piege.machine = true;
+        let l = [
+            piege,
+            entree("Pilote", Statut::Garder("pilote")),
+            entree("Messagerie", Statut::Retire),
+            entree("Murdefeu", Statut::PareFeu),
+        ];
+        let r = resultat(&l, vec![], debut());
+        let gestes: Vec<Option<&str>> = r
+            .constats
+            .iter()
+            .map(|c| c.geste.as_ref().map(|g| g.sorte.as_str()))
+            .collect();
+        assert_eq!(gestes, [Some("retirer"), None, Some("remettre"), None]);
+        let g = r.constats[0].geste.as_ref().unwrap();
+        assert!(g.machine);
+        assert!(!g.nom.contains('\u{202e}') && !g.commande.contains('\u{1b}'));
+        for c in &r.constats {
+            if let (Some(g), Some(objet)) = (&c.geste, &c.objet) {
+                assert_eq!(g.empreinte.len(), 32);
+                assert!(g.empreinte.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+                let h = blake3::hash(objet.as_bytes());
+                assert_eq!(g.empreinte, super::super::hex(&h.as_bytes()[..16]), "{objet}");
+            }
+        }
+        // Deux programmes, deux empreintes.
+        assert_ne!(empreinte("Lecteur"), empreinte("Lecteur "));
+        assert_eq!(empreinte(""), None);
+        // Au-delà des programmes montrés, la ligne qui résume n'a pas de geste.
+        let noms: Vec<String> = (0..45).map(|i| format!("Programme{i}")).collect();
+        let l: Vec<Entree> = noms
+            .iter()
+            .map(|n| Entree {
+                nom: n,
+                commande: "lecteur",
+                identite: n,
+                machine: false,
+                statut: Statut::SeLance,
+            })
+            .collect();
+        let r = resultat(&l, vec![], debut());
+        assert_eq!(
+            r.constats.iter().filter(|c| c.geste.is_some()).count(),
+            PROGRAMMES_MONTRES
+        );
     }
 
     /// Aucun programme : une ligne saine qui le dit.

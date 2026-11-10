@@ -517,9 +517,225 @@ pub fn retirer(id: &str) -> Option<bool> {
         .filter(|p| p.actif && classer(p) == Garde::Ordinaire)
         .filter_map(|p| reglage(&p.nom, p.changement))
         .find(|r| r.id == id)?;
+    Some(retirer_le(&r))
+}
+
+/// Retire ce programme, valeur d'avant notée d'abord (`executer`) ; vrai s'il ne se lance plus.
+fn retirer_le(r: &Reglage) -> bool {
     let mut h = charger();
-    let (faits, _) = executer(&[&r], &[], &mut h);
-    Some(faits == [true] && etat(&r) == Etat::Fait)
+    let (faits, _) = executer(&[r], &[], &mut h);
+    faits == [true] && etat(r) == Etat::Fait
+}
+
+/// Ce que la fenêtre demande pour un seul programme, désigné par son empreinte (`vanguard demarrage --retirer` ou
+/// `--remettre`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SorteDeChangement {
+    /// Le retirer du démarrage : seulement un programme ordinaire qui se lance.
+    Retirer,
+    /// Remettre exactement comme avant ce que Vanguard en a retiré, d'après sa note.
+    Remettre,
+}
+
+impl SorteDeChangement {
+    fn code(self) -> &'static str {
+        match self {
+            SorteDeChangement::Retirer => "retirer",
+            SorteDeChangement::Remettre => "remettre",
+        }
+    }
+}
+
+/// Pourquoi rien n'est changé.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Refus {
+    /// Pas 32 chiffres hexadécimaux minuscules.
+    MalFormee,
+    /// Aucun programme (ou aucune note de Vanguard) n'a cette empreinte.
+    Inconnue,
+    /// Plusieurs y répondent : aucun n'est choisi au hasard.
+    Ambigue,
+    /// Il ne se lance plus : rien à retirer.
+    NeSeLancePas,
+    /// Il protège ou fait marcher l'ordinateur.
+    AGarder(&'static str),
+    /// Un pare-feu : le retirer serait une baisse, qui ne se choisit que dans la liste à cocher, avec sa question.
+    PareFeu,
+    /// Les notes de Vanguard sont illisibles ou changées hors de lui : rien ne s'en remet.
+    NotesDouteuses,
+}
+
+impl Refus {
+    fn raison(self) -> String {
+        match self {
+            Refus::MalFormee => tr!(
+                "empreinte mal formée (32 chiffres hexadécimaux minuscules attendus)",
+                "malformed fingerprint (32 lowercase hexadecimal digits expected)"
+            )
+            .to_string(),
+            Refus::Inconnue => tr!(
+                "aucun programme au démarrage n'a cette empreinte (la liste a peut-être changé)",
+                "no startup program has this fingerprint (the list may have changed)"
+            )
+            .to_string(),
+            Refus::Ambigue => tr!(
+                "plusieurs programmes répondent à cette empreinte : aucun n'est choisi",
+                "several programs match this fingerprint: none is chosen"
+            )
+            .to_string(),
+            Refus::NeSeLancePas => tr!(
+                "ce programme ne se lance plus à l'ouverture de session",
+                "this program no longer starts at login"
+            )
+            .to_string(),
+            Refus::AGarder(raison) => trf!("à garder ({})", "to keep ({})", raison),
+            Refus::PareFeu => tr!(
+                "pare-feu : le retirer baisserait la protection (seulement par la liste « vanguard demarrage », avec sa question)",
+                "firewall: removing it would lower protection (only through the “vanguard startup” list, with its question)"
+            )
+            .to_string(),
+            Refus::NotesDouteuses => tr!(
+                "notes de Vanguard illisibles ou changées hors de Vanguard : rien n'en est remis",
+                "Vanguard's notes unreadable or changed outside Vanguard: nothing is put back from them"
+            )
+            .to_string(),
+        }
+    }
+}
+
+/// 32 chiffres hexadécimaux minuscules, rien d'autre (ni espace, ni majuscule, ni préfixe).
+fn empreinte_bien_formee(e: &str) -> bool {
+    e.len() == 32 && e.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Le seul réglage dont l'identité a cette empreinte, parmi `reglages` ; refusé s'il n'y en a aucun ou plusieurs.
+fn le_seul<T>(trouves: Vec<T>) -> Result<T, Refus> {
+    let mut i = trouves.into_iter();
+    match (i.next(), i.next()) {
+        (Some(t), None) => Ok(t),
+        (None, _) => Err(Refus::Inconnue),
+        (Some(_), Some(_)) => Err(Refus::Ambigue),
+    }
+}
+
+/// L'empreinte de l'identité de ce réglage (« demarrage:… » sans le préfixe), comme la liste l'écrit.
+fn empreinte_du(r: &Reglage) -> Option<String> {
+    resultat::empreinte(r.id.strip_prefix(PREFIXE)?)
+}
+
+/// Le programme à retirer qui a cette empreinte, parmi ceux du système : il doit se lancer et être ordinaire. Tous
+/// les programmes comptent pour reconnaître une empreinte en double ; `classer` est passé pour les essais.
+fn a_retirer(
+    programmes: Vec<Programme>,
+    empreinte: &str,
+    classer: impl Fn(&Programme) -> Garde,
+) -> Result<Reglage, Refus> {
+    if !empreinte_bien_formee(empreinte) {
+        return Err(Refus::MalFormee);
+    }
+    let trouves: Vec<(Garde, bool, Reglage)> = programmes
+        .into_iter()
+        .filter_map(|p| {
+            let (actif, garde) = (p.actif, if p.actif { classer(&p) } else { Garde::Ordinaire });
+            let r = reglage(&p.nom, p.changement)?;
+            (empreinte_du(&r).as_deref() == Some(empreinte)).then_some((garde, actif, r))
+        })
+        .collect();
+    match le_seul(trouves)? {
+        (_, false, _) => Err(Refus::NeSeLancePas),
+        (Garde::Garder(raison), true, _) => Err(Refus::AGarder(raison)),
+        (Garde::PareFeu, true, _) => Err(Refus::PareFeu),
+        (Garde::Ordinaire, true, r) => Ok(r),
+    }
+}
+
+/// Le programme retiré par Vanguard qui a cette empreinte, d'après ses notes.
+fn a_remettre(h: &Historique, empreinte: &str) -> Result<Reglage, Refus> {
+    if !empreinte_bien_formee(empreinte) {
+        return Err(Refus::MalFormee);
+    }
+    le_seul(
+        notes(h)
+            .into_iter()
+            .filter(|r| empreinte_du(r).as_deref() == Some(empreinte))
+            .collect(),
+    )
+}
+
+/// Ce qu'est devenue la demande.
+enum Issue {
+    Fait,
+    Refuse(Refus),
+    /// Tenté sans succès : fenêtre administrateur refusée, système qui refuse, note impossible à écrire.
+    Echec,
+}
+
+/// `vanguard demarrage --retirer|--remettre <empreinte>` : un seul programme, sans question (l'accord a été donné
+/// dans la fenêtre, après la confirmation qui montre le nom et la commande). L'empreinte est vérifiée avant toute
+/// lecture du système ; rien n'est changé pour une empreinte inconnue, en double, d'un programme à garder ou d'un
+/// pare-feu. Avec `json`, l'issue est la dernière ligne. Rend le code de sortie : 0 fait, 1 refusé ou non fait, 2
+/// empreinte mal formée.
+pub fn changer(sorte: SorteDeChangement, empreinte: &str, json: bool) -> i32 {
+    // Vérifiée avant toute lecture du système.
+    let issue = if empreinte_bien_formee(empreinte) {
+        match sorte {
+            SorteDeChangement::Retirer => match a_retirer(systeme::au_demarrage(), empreinte, classer) {
+                Ok(r) if retirer_le(&r) => Issue::Fait,
+                Ok(_) => Issue::Echec,
+                Err(refus) => Issue::Refuse(refus),
+            },
+            SorteDeChangement::Remettre => {
+                // Choisi d'après les notes lues sans rien écrire : un refus ne laisse aucune trace.
+                match super::historique_sans_ecrire(&crate::reseau::dossier_local())
+                    .ok_or(Refus::NotesDouteuses)
+                    .and_then(|h| a_remettre(&h, empreinte))
+                {
+                    Ok(r) => {
+                        let mut h = charger();
+                        let (_, remis) = executer(&[], &[&r], &mut h);
+                        if remis == [true] { Issue::Fait } else { Issue::Echec }
+                    }
+                    Err(refus) => Issue::Refuse(refus),
+                }
+            }
+        }
+    } else {
+        Issue::Refuse(Refus::MalFormee)
+    };
+    let (code, nom, raison) = match &issue {
+        Issue::Fait => (0, "fait", String::new()),
+        Issue::Refuse(Refus::MalFormee) => (2, "refuse", Refus::MalFormee.raison()),
+        Issue::Refuse(r) => (1, "refuse", r.raison()),
+        Issue::Echec => (
+            1,
+            "echec",
+            tr!(
+                "non fait : fenêtre administrateur refusée, ou le système l'a refusé (détail plus haut)",
+                "not done: administrator window declined, or the system refused it (details above)"
+            )
+            .to_string(),
+        ),
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "geste": sorte.code(), "issue": nom, "raison": raison })
+        );
+    } else {
+        match (&issue, sorte) {
+            (Issue::Fait, SorteDeChangement::Retirer) => trp!(
+                "  {VERT}✔{RESET} Retiré du démarrage ; il reste installé.",
+                "  {VERT}✔{RESET} Removed from startup; it stays installed."
+            ),
+            (Issue::Fait, SorteDeChangement::Remettre) => trp!(
+                "  {VERT}✔{RESET} Remis au démarrage, exactement comme avant.",
+                "  {VERT}✔{RESET} Put back at startup, exactly as before."
+            ),
+            (Issue::Refuse(_), _) => trp!("  ✖ Rien n'a changé : {raison}", "  ✖ Nothing changed: {raison}"),
+            (Issue::Echec, _) => trp!("  ✖ {raison}", "  ✖ {raison}"),
+        }
+    }
+    code
 }
 
 /// Remet au démarrage ce que Vanguard en a retiré, d'après sa note (l'annulation d'un blocage). `None` : aucune note
@@ -923,5 +1139,157 @@ mod tests {
             "{}",
             l[0].reglage.titre
         );
+    }
+}
+
+#[cfg(test)]
+mod essais_changer {
+    use super::*;
+
+    /// Seuls 32 chiffres hexadécimaux minuscules passent : ni majuscule, ni espace, ni longueur voisine, ni chemin.
+    #[test]
+    fn empreinte_mal_formee_refusee() {
+        assert!(empreinte_bien_formee(&"0a".repeat(16)));
+        for e in [
+            String::new(),
+            "0".repeat(31),
+            "0".repeat(33),
+            "0A".repeat(16),
+            format!(" {}", "0".repeat(31)),
+            format!("{}\n", "0".repeat(31)),
+            "../../../../../../etc/passwd.....".to_string(),
+            "g".repeat(32),
+            "\u{ff10}".repeat(32),
+        ] {
+            assert!(!empreinte_bien_formee(&e), "{e:?}");
+            assert_eq!(
+                a_retirer(Vec::new(), &e, |_| Garde::Ordinaire).err(),
+                Some(Refus::MalFormee)
+            );
+            assert_eq!(a_remettre(&Historique::default(), &e).err(), Some(Refus::MalFormee));
+        }
+        // Mal formée : refusée avant toute lecture du système, code 2.
+        assert_eq!(changer(SorteDeChangement::Retirer, "NOPE", true), 2);
+        assert_eq!(changer(SorteDeChangement::Remettre, &"0".repeat(31), false), 2);
+    }
+
+    /// Remettre une empreinte sans note (le dossier de Vanguard des essais est jetable et vide) : refusé, code 1,
+    /// rien de lu sur le système.
+    #[test]
+    fn remettre_sans_note_refuse() {
+        assert_eq!(changer(SorteDeChangement::Remettre, &"0".repeat(32), true), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn service(nom: &str, actif: bool) -> Programme {
+        use super::systeme::{Changement, Entree};
+        Programme {
+            nom: nom.to_string(),
+            commande: format!("/usr/bin/{}", nom.to_lowercase()),
+            actif,
+            machine: false,
+            bureau: false,
+            changement: Changement::Demarrage {
+                entree: Entree::Service(format!("{nom}.service")),
+                cible: Some("disabled".to_string()),
+            },
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn empreinte_de(nom: &str) -> String {
+        resultat::empreinte(&format!("systemd|{nom}.service")).unwrap_or_default()
+    }
+
+    /// Une liste inventée, classée sans lire le système : seul le programme ordinaire qui se lance est retiré ; un
+    /// programme à garder ou un pare-feu ne l'est jamais, même désigné par sa vraie empreinte.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn seul_un_programme_ordinaire_se_retire() {
+        let liste = || {
+            vec![
+                service("Lecteur", true),
+                service("Pilote", true),
+                service("Murdefeu", true),
+                service("Ancien", false),
+            ]
+        };
+        let classe = |p: &Programme| match p.nom.as_str() {
+            "Pilote" => Garde::Garder("pilote"),
+            "Murdefeu" => Garde::PareFeu,
+            _ => Garde::Ordinaire,
+        };
+        let r = a_retirer(liste(), &empreinte_de("Lecteur"), classe);
+        assert_eq!(
+            r.map(|r| r.id.into_owned()),
+            Ok("demarrage:systemd|Lecteur.service".to_string())
+        );
+        for (nom, refus) in [
+            ("Pilote", Refus::AGarder("pilote")),
+            ("Murdefeu", Refus::PareFeu),
+            ("Ancien", Refus::NeSeLancePas),
+        ] {
+            assert_eq!(
+                a_retirer(liste(), &empreinte_de(nom), classe).err(),
+                Some(refus),
+                "{nom}"
+            );
+        }
+        assert_eq!(a_retirer(liste(), &"0".repeat(32), classe).err(), Some(Refus::Inconnue));
+        // Une empreinte en double : aucun des deux n'est choisi.
+        let double = vec![service("Lecteur", true), service("Lecteur", true)];
+        assert_eq!(
+            a_retirer(double, &empreinte_de("Lecteur"), classe).err(),
+            Some(Refus::Ambigue)
+        );
+        // L'empreinte d'un programme ne désigne pas un autre.
+        assert_eq!(
+            a_retirer(vec![service("Pilote", true)], &empreinte_de("Lecteur"), |_| {
+                Garde::Ordinaire
+            })
+            .err(),
+            Some(Refus::Inconnue)
+        );
+    }
+
+    /// Remettre ne vise que ce que Vanguard a noté.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn seul_un_programme_note_se_remet() {
+        use super::super::Avant;
+        let mut h = Historique::default();
+        h.reglages.insert(
+            format!("{PREFIXE}systemd|Lecteur.service"),
+            Avant {
+                date: String::new(),
+                valeurs: vec![Some("enabled".to_string())],
+                ..Avant::default()
+            },
+        );
+        assert_eq!(
+            a_remettre(&h, &empreinte_de("Lecteur")).map(|r| r.id.into_owned()),
+            Ok("demarrage:systemd|Lecteur.service".to_string())
+        );
+        assert_eq!(a_remettre(&h, &empreinte_de("Autre")).err(), Some(Refus::Inconnue));
+        assert_eq!(
+            a_remettre(&Historique::default(), &empreinte_de("Lecteur")).err(),
+            Some(Refus::Inconnue)
+        );
+    }
+
+    /// Chaque refus se dit.
+    #[test]
+    fn chaque_refus_a_sa_raison() {
+        for r in [
+            Refus::MalFormee,
+            Refus::Inconnue,
+            Refus::Ambigue,
+            Refus::NeSeLancePas,
+            Refus::AGarder("pilote"),
+            Refus::PareFeu,
+            Refus::NotesDouteuses,
+        ] {
+            assert_ne!(r.raison(), "");
+        }
     }
 }

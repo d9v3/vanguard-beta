@@ -18,6 +18,7 @@ pub(crate) use annulables::Geste;
 pub(crate) use demarrage::a_garder;
 pub use demarrage::json as demarrage_json;
 pub use demarrage::menu as programmes_au_demarrage;
+pub use demarrage::{SorteDeChangement, changer as changer_au_demarrage};
 pub use demarrage::{
     remettre as remettre_au_demarrage, retirables as demarrage_retirables, retirer as retirer_du_demarrage,
 };
