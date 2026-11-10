@@ -2024,6 +2024,26 @@ pub fn auditer_seulement(garder: impl Fn(&str) -> bool) -> Audit {
     }
 }
 
+/// Les témoins d'une alerte relevés à nouveau, maintenant : sa règle refaite, et son constat de même clé. Pour qu'un
+/// choix « normal » lie ce qui est là au moment de le confirmer, pas ce que le bilan a lu avant que la personne
+/// lise : un fichier remis au propre entre-temps se voit. `None` : la règle ne se refait pas ici, elle panique, ou
+/// elle ne rend plus cette alerte.
+pub(crate) fn temoins_maintenant(c: &Constat) -> Option<temoins::Temoins> {
+    let cle = c.cle()?;
+    let r = regles::regles(regles::Os::actuel())
+        .into_iter()
+        .find(|r| r.id == c.regle)?;
+    crate::journal::rattraper(r.verifier)
+        .ok()?
+        .into_iter()
+        .map(|mut n| {
+            n.regle = r.id;
+            n
+        })
+        .find(|n| n.cle().as_ref() == Some(&cle))
+        .map(|n| n.temoins().clone())
+}
+
 /// Système, programmes, pilotes et firmware : tout ce qui doit être à jour (`vanguard mises-a-jour`). `seulement` limite
 /// les longues recherches à ces catégories, pour revérifier ce qui vient d'être installé.
 pub fn mises_a_jour_completes(seulement: Option<&[&str]>) -> Vec<Constat> {

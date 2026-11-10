@@ -335,7 +335,9 @@ fn proposer_normale(c: &Constat) {
                 crate::apprentissage::declarer_normale(c);
             }
         }
-        (Err(raison), Temoins::Refuse(_)) => afficher_aligne(
+        // Dit pour un relevé refusé, et pour une alerte relevée mais trop grave (critique) ; pas pour chaque alerte dont
+        // la règle ne relève encore rien.
+        (Err(raison), Temoins::Refuse(_) | Temoins::Releves(_)) => afficher_aligne(
             "     ",
             &trf!(
                 "Ne peut pas être déclarée normale : {raison}.",

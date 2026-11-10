@@ -46,6 +46,10 @@ struct Acceptee {
     /// Les lignes déclarées normales, telles que montrées avant le choix (« fichier:ligne : ligne »), pour le menu.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     lignes: Vec<String>,
+    /// La trace de chaque ligne au moment du choix (`temoins::Trace`) : quand l'alerte revient, chaque ligne se dit
+    /// déjà acceptée, nouvelle ou changée. Pour le dire seulement : le choix tient à `etat`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    traces: Vec<crate::machine::temoins::Trace>,
 }
 
 fn fichier() -> std::path::PathBuf {
@@ -142,20 +146,31 @@ fn affichee(d: NaiveDate) -> String {
 }
 
 /// Le choix vaut-il encore pour cette alerte, ce jour-là ?
+/// Une date de choix dans le futur (horloge fausse ce jour-là) ne vaut pas : elle durerait plus de 90 jours.
 fn en_vigueur(choix: &Acceptee, niveau: Niveau, jour: NaiveDate) -> bool {
-    niveau <= choix.niveau && date(&choix.le).is_some_and(|le| jour.signed_duration_since(le).num_days() < DUREE_JOURS)
+    niveau <= choix.niveau
+        && date(&choix.le).is_some_and(|le| (0..DUREE_JOURS).contains(&jour.signed_duration_since(le).num_days()))
 }
 
 /// Une alerte peut-elle être déclarée normale ? `Err` : pourquoi pas, prêt à montrer. Une correction automatique
 /// sans témoins se déclare comme avant (par sa clé ou son texte) ; une alerte à corriger soi-même, seulement si sa
 /// règle relève ce que le choix lierait (`machine::temoins`) ; un relevé refusé (illisible, ambigu, trop de lignes),
-/// jamais.
+/// jamais. Une alerte critique à corriger soi-même non plus : elle reste montrée jusqu'à être corrigée.
 pub fn declarable(c: &Constat) -> Result<(), crate::machine::temoins::Refus> {
     use crate::machine::temoins::{Refus, Temoins};
     let refus = |phrase: &str| Err(Refus(phrase.to_string()));
-    let (Some(_), Some(k)) = (c.probleme, &c.correctif) else {
+    let (Some(niveau), Some(k)) = (c.probleme, &c.correctif) else {
         return refus(tr!("pas une alerte à corriger", "not an alert to fix"));
     };
+    // Une bibliothèque hors paquet préchargée dans tous les programmes, c'est la marque d'un rootkit : la taire par
+    // un choix ferait le travail de celui qui l'a posée. Une correction automatique critique reste déclarable comme
+    // avant (son état est celui d'un réglage, pas d'un fichier posé).
+    if niveau >= Niveau::Critique && !matches!(k.temoins, Temoins::Aucun) {
+        return refus(tr!(
+            "une alerte critique à corriger soi-même ne se tait pas par un choix ; elle reste montrée jusqu'à être corrigée",
+            "a critical alert to fix yourself cannot be silenced by a choice; it stays shown until it is fixed"
+        ));
+    }
     match &k.temoins {
         Temoins::Refuse(raison) => refus(raison),
         Temoins::Releves(_) => Ok(()),
@@ -168,9 +183,24 @@ pub fn declarable(c: &Constat) -> Result<(), crate::machine::temoins::Refus> {
 }
 
 /// Montre exactement ce qui serait déclaré normal, demande de le confirmer, et le retient ; `true` si c'est retenu.
-/// Une alerte élevée ou critique demande de taper « normal » : jamais une seule touche par mégarde.
+/// Toujours confirmé après le détail : « o » sous le niveau élevé, « normal » tapé à partir de lui (jamais une seule
+/// touche par mégarde). Seulement au clavier d'un terminal : une réponse venue d'un tube ou d'un fichier n'est pas
+/// celle d'une personne qui a lu.
 pub fn declarer_normale(c: &Constat) -> bool {
     use crate::machine::temoins::Temoins;
+    use std::io::IsTerminal as _;
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        afficher_aligne(
+            "    ✖ ",
+            tr!(
+                "Un choix « normal » ne se fait qu'au clavier, dans un terminal : rien n'est retenu.",
+                "A “normal” choice is only made at the keyboard, in a terminal: nothing is saved."
+            ),
+            6,
+            "",
+        );
+        return false;
+    }
     if let Err(raison) = declarable(c) {
         afficher_aligne(
             "    ✖ ",
@@ -198,6 +228,11 @@ pub fn declarer_normale(c: &Constat) -> bool {
     );
     let temoins = c.temoins();
     let lignes = temoins.lignes();
+    // Revenue après un choix : chaque ligne dit si elle était déjà acceptée, ou ce qui a changé depuis.
+    let traces: Vec<crate::machine::temoins::Trace> = charger()
+        .ok()
+        .and_then(|a| choix_pour(&a, c).map(|(choix, _)| choix.traces.clone()))
+        .unwrap_or_default();
     if lignes.is_empty() {
         match c.cle() {
             Some(cle) => afficher_aligne(
@@ -219,7 +254,11 @@ pub fn declarer_normale(c: &Constat) -> bool {
             lignes.len()
         );
         for t in &lignes {
-            afficher_aligne("   • ", &t.ou, 5, GRAS);
+            if traces.is_empty() {
+                afficher_aligne("   • ", &t.ou, 5, GRAS);
+            } else {
+                afficher_aligne("   • ", &format!("{} ({})", t.ou, t.marque(&traces).libelle()), 5, GRAS);
+            }
             afficher_aligne("       ", &t.ligne, 7, "");
             if let Some(e) = &t.contenant {
                 afficher_aligne("       ", &trf!("fichier : {e}", "file: {e}"), 7, GRIS);
@@ -251,22 +290,43 @@ pub fn declarer_normale(c: &Constat) -> bool {
         2,
         GRIS,
     );
-    if niveau >= Niveau::Eleve {
-        let r = demander_ou_defaut(tr!(
+    let confirme = if niveau >= Niveau::Eleve {
+        demander_ou_defaut(tr!(
             "  Tapez « normal » puis Entrée pour confirmer (autre chose annule) : ",
             "  Type “normal” then Enter to confirm (anything else cancels): "
-        ));
-        if !r.trim().eq_ignore_ascii_case("normal") {
-            trp!(
-                "    {GRIS}rien n'est retenu{RESET}",
-                "    {GRIS}nothing is saved{RESET}"
+        ))
+        .trim()
+        .eq_ignore_ascii_case("normal")
+    } else {
+        crate::langue::oui(&demander_ou_defaut(tr!(
+            "  La déclarer normale ? [o/N] : ",
+            "  Declare it normal? [y/N]: "
+        )))
+    };
+    if !confirme {
+        trp!(
+            "    {GRIS}rien n'est retenu{RESET}",
+            "    {GRIS}nothing is saved{RESET}"
+        );
+        return false;
+    }
+    // Ce qui a été montré a été lu au bilan, peut-être avant que la personne regarde : le relevé est refait
+    // maintenant, et le choix ne lie que ce qui est encore exactement là (un script remis au propre le temps de la
+    // lecture, puis rendu, se voit ici).
+    if matches!(temoins, Temoins::Releves(_)) {
+        let maintenant = crate::machine::temoins_maintenant(c);
+        if maintenant.as_ref().and_then(Temoins::empreinte) != temoins.empreinte() {
+            afficher_aligne(
+                "    ✖ ",
+                tr!(
+                    "Un de ces fichiers a changé pendant que vous lisiez : rien n'est retenu. Relancez la vérification pour voir ce qu'il contient maintenant.",
+                    "One of these files changed while you were reading: nothing is saved. Run the check again to see what it contains now."
+                ),
+                6,
+                "",
             );
             return false;
         }
-    }
-    // Relu au moment d'écrire : un relevé refusé entre-temps ne se retient pas.
-    if matches!(temoins, Temoins::Refuse(_)) {
-        return false;
     }
     accepter(c)
 }
@@ -302,6 +362,7 @@ fn accepter(c: &Constat) -> bool {
     match enregistrer(&appris) {
         Ok(()) => {
             crate::amelioration::noter_choix(c.regle, crate::amelioration::Choisi::Normale);
+            noter_au_journal(c);
             trp!(
                 "    {GRIS}retenu pour {DUREE_JOURS} jours, sauf si elle s'aggrave{RESET}",
                 "    {GRIS}noted for {DUREE_JOURS} days, unless it gets worse{RESET}"
@@ -315,6 +376,23 @@ fn accepter(c: &Constat) -> bool {
     }
 }
 
+/// Le choix va au journal des événements, daté, avec la clé de l'alerte qu'il tait : un choix fait à l'insu de la
+/// personne (un programme du compte qui ouvre un terminal) y laisse sa trace. Sa règle et sa catégorie seulement,
+/// jamais le texte de l'alerte (des chemins du dossier personnel).
+fn noter_au_journal(c: &Constat) {
+    use crate::modele::evenement::{Evenement, Genre, Source};
+    let cle = c.cle().map(|k| k.to_string());
+    crate::modele::journal::noter(
+        Evenement::nouveau(
+            Source::Utilisateur,
+            Genre::Normale {
+                titre: format!("{} ({})", c.categorie, c.regle),
+            },
+        )
+        .cle(cle.as_deref()),
+    );
+}
+
 /// Ajoute le choix d'une alerte à la liste. Un seul choix par clé : l'ancien, écrit dans une autre langue ou une
 /// autre tournure (donc sous une autre signature), resterait à côté et pourrait masquer celui-ci dans `choix_pour`.
 fn retenir(appris: &mut Appris, c: &Constat, niveau: Niveau, jour: NaiveDate) {
@@ -322,11 +400,12 @@ fn retenir(appris: &mut Appris, c: &Constat, niveau: Niveau, jour: NaiveDate) {
     if let Some(k) = &cle {
         appris.acceptees.retain(|_, a| a.cle.as_ref() != Some(k));
     }
+    let message = sans_revenue(&c.message);
     appris.acceptees.insert(
-        signature(c.categorie, &c.message),
+        signature(c.categorie, message),
         Acceptee {
             categorie: c.categorie.to_string(),
-            message: c.message.clone(),
+            message: message.to_string(),
             niveau,
             le: jour.format("%Y-%m-%d").to_string(),
             cle,
@@ -337,6 +416,7 @@ fn retenir(appris: &mut Appris, c: &Constat, niveau: Niveau, jour: NaiveDate) {
                 .iter()
                 .map(|t| format!("{} : {}", t.ou, t.ligne))
                 .collect(),
+            traces: c.temoins().traces(),
         },
     );
 }
@@ -353,6 +433,10 @@ pub fn appliquer(constats: &mut [Constat]) -> usize {
     let Ok(mut appris) = charger() else {
         return 0;
     };
+    // Adoptée sans sceau d'avant : ses états exacts ne valent rien tant qu'elle n'est pas reprise (`sans_etats`).
+    if crate::sceau::adopte(crate::sceau::APPRIS) {
+        retirer_etats(&mut appris);
+    }
     let mut cles = Vec::new();
     let n = appliquer_avec(&appris, constats, aujourd_hui(), &mut cles);
     // Pas sur une liste adoptée au premier usage des sceaux : la réécrire la scellerait sans ton accord (le menu le
@@ -462,19 +546,18 @@ fn appliquer_avec(
         if !en_vigueur(choix, niveau, jour) {
             continue;
         }
+        let le = date(&choix.le).map(affichee).unwrap_or_default();
         // Une alerte à témoins ne se tait que pour l'état exact déclaré normal ; un relevé refusé aujourd'hui (un
-        // fichier devenu illisible, une ligne devenue ambiguë), jamais.
-        match c.temoins() {
-            crate::machine::temoins::Temoins::Aucun => {}
-            crate::machine::temoins::Temoins::Releves(_) => {
-                if choix.etat.is_none() || choix.etat != c.temoins().empreinte() {
-                    continue;
-                }
-            }
-            crate::machine::temoins::Temoins::Refuse(_) => continue,
+        // fichier devenu illisible, une ligne devenue ambiguë), jamais. Un choix qui lie un état ne tait pas non plus
+        // une alerte qui n'en relève plus. Revenue, elle dit pourquoi.
+        if let Some(pourquoi) = revenue(choix, c.temoins()) {
+            c.message += &trf!(
+                " (revenue : {pourquoi}, depuis votre choix du {le})",
+                " (back: {pourquoi}, since your choice on {le})"
+            );
+            continue;
         }
         a_completer.extend(completer);
-        let le = date(&choix.le).map(affichee).unwrap_or_default();
         c.probleme = Some(Niveau::Info);
         c.correctif = None;
         c.message += &trf!(
@@ -484,6 +567,56 @@ fn appliquer_avec(
         n = n.saturating_add(1);
     }
     n
+}
+
+/// Le message d'une alerte sans ce qu'`appliquer_avec` y ajoute quand elle revient : le choix retient l'alerte, pas
+/// l'histoire de son retour.
+fn sans_revenue(message: &str) -> &str {
+    [" (revenue : ", " (back: "]
+        .iter()
+        .filter_map(|m| message.rfind(m))
+        .max()
+        .and_then(|i| message.get(..i))
+        .unwrap_or(message)
+}
+
+/// Pourquoi un choix en vigueur ne tait pas l'alerte, telle qu'elle est relevée aujourd'hui ; `None` : il la tait.
+/// Chaque ligne changée ou nouvelle est nommée (trois au plus), pour qu'on ne redéclare pas en bloc ce qui a bougé.
+fn revenue(choix: &Acceptee, temoins: &crate::machine::temoins::Temoins) -> Option<String> {
+    use crate::machine::temoins::{Marque, Temoins};
+    match temoins {
+        Temoins::Aucun if choix.etat.is_none() => None,
+        Temoins::Aucun => Some(tr!("plus rien à vérifier", "nothing left to check").to_string()),
+        Temoins::Refuse(_) => Some(tr!("ne se vérifie plus", "can no longer be checked").to_string()),
+        Temoins::Releves(_) if choix.etat.is_some() && choix.etat == temoins.empreinte() => None,
+        Temoins::Releves(_) if choix.etat.is_none() => Some(
+            tr!(
+                "ce choix ne disait pas l'état exact de ses fichiers",
+                "this choice did not record the exact state of its files"
+            )
+            .to_string(),
+        ),
+        Temoins::Releves(_) => {
+            let changees: Vec<String> = temoins
+                .lignes()
+                .iter()
+                .filter_map(|t| {
+                    let m = t.marque(&choix.traces);
+                    (m != Marque::DejaAcceptee || choix.traces.is_empty()).then(|| format!("{} {}", t.ou, m.libelle()))
+                })
+                .collect();
+            let mut dit = tr!("changé", "changed").to_string();
+            if !choix.traces.is_empty() && !changees.is_empty() {
+                dit.push_str(" : ");
+                dit.push_str(&changees.iter().take(3).cloned().collect::<Vec<_>>().join(", "));
+                let reste = changees.len().saturating_sub(3);
+                if reste > 0 {
+                    dit.push_str(&trf!(" et {reste} autre(s)", " and {reste} more"));
+                }
+            }
+            Some(dit)
+        }
+    }
 }
 
 /// Ce qui est habituel ici, appris des mesures passées : la connexion (médiane des derniers tests).
@@ -623,6 +756,7 @@ pub fn menu() {
 /// La liste acceptée telle quelle au premier usage des sceaux (le jour où Vanguard est passé à une version qui
 /// scelle, ou `sceaux.json` effacé par un autre programme) : appliquée, mais seulement rescellée sur ton accord.
 fn garder_adoptee(appris: &Appris) {
+    let appris = &sans_etats(appris.clone());
     trp!(
         "\n  Cette liste a été acceptée telle quelle, sans sceau d'avant (mise à\n  jour de Vanguard, ou sceaux effacés par un autre programme).",
         "\n  This list was accepted as it was, without an earlier seal (Vanguard\n  update, or seals deleted by another program)."
@@ -641,6 +775,37 @@ fn garder_adoptee(appris: &Appris) {
     }
 }
 
+/// Une liste reprise sans son sceau (changée hors de Vanguard, ou adoptée) : chaque choix perd l'état exact qu'il
+/// liait, ses lignes et leurs traces, que l'écran ne montre pas et qu'un programme aurait pu forger pour coller à sa
+/// propre ligne. Une alerte à corriger soi-même revient alors une fois, et se redéclare depuis ce que Vanguard montre.
+/// `true` si un choix en liait un.
+fn retirer_etats(appris: &mut Appris) -> bool {
+    let mut retires = false;
+    for a in appris.acceptees.values_mut() {
+        retires |= a.etat.is_some();
+        a.etat = None;
+        a.lignes.clear();
+        a.traces.clear();
+    }
+    retires
+}
+
+/// `retirer_etats`, dit à l'écran.
+fn sans_etats(mut appris: Appris) -> Appris {
+    if retirer_etats(&mut appris) {
+        afficher_aligne(
+            "  ",
+            tr!(
+                "Les fichiers que liaient ces choix ne se vérifient pas sans sceau : gardés, ils ne valent plus que pour les corrections automatiques ; une alerte à corriger vous-même reviendra une fois, à redéclarer.",
+                "The files these choices were bound to cannot be checked without a seal: kept, they only apply to automatic fixes; an alert to fix yourself will come back once, to declare again."
+            ),
+            2,
+            GRIS,
+        );
+    }
+    appris
+}
+
 /// La liste changée hors de Vanguard : montrée telle qu'elle est maintenant, sans être appliquée. Toi seul sais si ces
 /// choix sont les tiens (une copie de Vanguard plus ancienne écrit aussi sans sceau) : les garder les rescelle, sinon
 /// ils sont oubliés, et leurs alertes reviennent.
@@ -649,11 +814,12 @@ fn reprendre(contenu: Option<Appris>) {
         "  ✖ La liste de vos choix a été changée hors de Vanguard :\n    aucun n'est appliqué.",
         "  ✖ Your choice list was changed outside Vanguard:\n    none is applied."
     );
-    let appris = contenu.unwrap_or_default();
+    let appris = sans_etats(contenu.unwrap_or_default());
+    // Écrite hors de Vanguard : chaque mot est montré rendu inoffensif.
     for a in appris.acceptees.values() {
         afficher_aligne(
             "    ",
-            &format!("{} : {}", crate::langue::categorie(&a.categorie), a.message),
+            &crate::ui::affichable(&format!("{} : {}", crate::langue::categorie(&a.categorie), a.message)),
             4,
             "",
         );
@@ -723,6 +889,7 @@ mod tests {
                 cle: None,
                 etat: None,
                 lignes: Vec::new(),
+                traces: Vec::new(),
             },
         );
         a
@@ -1004,7 +1171,44 @@ mod tests {
         for c in ancien.acceptees.values_mut() {
             c.etat = Some("0".repeat(64));
         }
-        assert_eq!(appliquer_le(&ancien, &mut [vue], j), 0);
+        assert_eq!(appliquer_le(&ancien, &mut [vue.clone()], j), 0);
+
+        // C8 : revenue, elle dit pourquoi, et quelle ligne a changé.
+        assert!(autre[0].message.contains("revenue"), "{}", autre[0].message);
+        assert!(
+            autre[0].message.contains("rappel.service:6 nouvelle"),
+            "{}",
+            autre[0].message
+        );
+        assert_eq!(sans_revenue(&autre[0].message), "Lancé au démarrage : rappel.");
+        let mut sans_etat = [vue.clone()];
+        let ancien = appris(
+            "Programmes au démarrage",
+            "Lancé au démarrage : rappel.",
+            Niveau::Eleve,
+            "2026-11-10",
+        );
+        appliquer_le(&ancien, &mut sans_etat, j);
+        assert!(sans_etat[0].message.contains("état exact"), "{}", sans_etat[0].message);
+
+        // M1 : un choix daté du futur (horloge fausse) ne vaut pas.
+        let mut futur = Appris::default();
+        retenir(&mut futur, &vue, Niveau::Eleve, jour("2026-12-01"));
+        assert_eq!(appliquer_le(&futur, &mut [vue.clone()], j), 0);
+
+        // M2 : un choix qui lie un état ne tait pas l'alerte qui n'en relève plus.
+        assert_eq!(appliquer_le(&a, &mut [manuelle(Temoins::Aucun)], j), 0);
+
+        // C3 : une liste reprise sans sceau perd ses états ; l'alerte à témoins revient une fois.
+        let mut reprise = a.clone();
+        assert!(retirer_etats(&mut reprise));
+        assert_eq!(appliquer_le(&reprise, &mut [vue.clone()], j), 0);
+
+        // Critique : relevée, elle ne se déclare pas ; une correction automatique critique, si.
+        let mut critique = vue;
+        critique.probleme = Some(Niveau::Critique);
+        assert!(declarable(&critique).is_err());
+        assert!(declarable(&constat("Pare-feu", Niveau::Critique, "Pare-feu coupé.")).is_ok());
     }
 
     use proptest::prelude::*;
@@ -1033,6 +1237,7 @@ mod tests {
                         cle: Some(format!("{}|port:{p}/tcp", regles[usize::from(*r)])),
                         etat: None,
                         lignes: Vec::new(),
+                        traces: Vec::new(),
                     },
                 );
             }
