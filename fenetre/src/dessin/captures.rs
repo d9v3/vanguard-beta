@@ -90,6 +90,10 @@ pub struct Rendu {
     textures: HashMap<TextureId, Texture>,
     /// L'heure d'egui de la dernière image : elle ne recule jamais (les fondus d'egui partiraient de travers).
     heure: f64,
+    /// La souris, posée là à chaque image (aucune par défaut).
+    pub souris: Option<Pos2>,
+    /// Des touches, envoyées à la première image du prochain rendu seulement.
+    pub touches: Vec<egui::Event>,
 }
 
 impl Rendu {
@@ -100,6 +104,8 @@ impl Rendu {
             ctx,
             textures: HashMap::new(),
             heure: 0.0,
+            souris: None,
+            touches: Vec::new(),
         }
     }
 
@@ -111,11 +117,13 @@ impl Rendu {
         let mut derniere = None;
         for &instant in instants {
             self.heure = base + instant;
-            let entree = egui::RawInput {
+            let mut entree = egui::RawInput {
                 screen_rect: Some(ecran),
                 time: Some(self.heure),
                 ..Default::default()
             };
+            entree.events.extend(self.souris.map(egui::Event::PointerMoved));
+            entree.events.append(&mut self.touches);
             let mut sortie = self.ctx.run_ui(entree, &mut f);
             let mut delta = std::mem::take(&mut sortie.textures_delta);
             self.appliquer(&delta);
@@ -549,7 +557,15 @@ fn mouvement(dossier: &Path) -> usize {
         toile.ecrire_png(&dossier.join(fichier)).unwrap();
         faites += 1;
     }
-    faites
+    // Une carte de commande sous la souris : son fond s'éclaire, rien ne bouge.
+    let mut rendu = Rendu::nouveau();
+    super::appliquer_theme(&rendu.ctx, true);
+    let mut appli = appli_remplie(false, true);
+    appli.aller(Ecran::Rubrique(Rubrique::Ordinateur));
+    rendu.souris = Some(egui::pos2(700.0, 480.0));
+    let toile = rendu.rendre(taille, &[0.0, 0.5, 2.0], |ui| image(&mut appli, None, ui));
+    toile.ecrire_png(&dossier.join("survol-ligne.png")).unwrap();
+    faites + 1
 }
 
 /// Le rendu logiciel peint pour de vrai : un fond, un rectangle plein, un texte (la texture des polices), une forme

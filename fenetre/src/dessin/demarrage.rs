@@ -31,7 +31,7 @@ pub fn liste(appli: &mut Appli, ui: &mut Ui, v: &Vue) {
             ));
         }
         for (i, c) in v.constats.iter().enumerate() {
-            texte_et_boutons(
+            super::mouvement::ligne(ui, vec2(8.0, 3.0), 6.0, |ui| texte_et_boutons(
                 ui,
                 &format!("demarrage-{i}"),
                 |ui| {
@@ -70,7 +70,7 @@ pub fn liste(appli: &mut Appli, ui: &mut Ui, v: &Vue) {
                         }
                     });
                 },
-            );
+            ));
             ui.add_space(6.0);
         }
     });

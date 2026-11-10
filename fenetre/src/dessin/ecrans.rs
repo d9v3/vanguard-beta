@@ -240,7 +240,7 @@ fn cartes_commandes(appli: &mut Appli, ui: &mut Ui, commandes: Vec<Commande>) {
         let etat = etat_commande(appli, c);
         carte(ui, 20, 16, |ui| {
             ui.set_width(ui.available_width());
-            texte_et_boutons(
+            super::mouvement::ligne(ui, vec2(19.0, 19.0), 15.0, |ui| texte_et_boutons(
                 ui,
                 c.nom(),
                 |ui| {
@@ -256,7 +256,7 @@ fn cartes_commandes(appli: &mut Appli, ui: &mut Ui, commandes: Vec<Commande>) {
                         lancer_arreter(appli, ui, c);
                     });
                 },
-            );
+            ));
         });
         ui.add_space(12.0);
     }
@@ -361,7 +361,7 @@ fn appareils_liste(ui: &mut Ui, v: &scan::Vue) {
                 if k > 0 {
                     ui.separator();
                 }
-                ui.push_id(k, |ui| appareil(ui, a));
+                ui.push_id(k, |ui| super::mouvement::ligne(ui, vec2(8.0, 2.0), 6.0, |ui| appareil(ui, a)));
             }
         });
     }
@@ -594,7 +594,7 @@ fn protection_liste(ui: &mut Ui, v: &protection::Vue) {
             if k > 0 {
                 ui.separator();
             }
-            ui.horizontal(|ui| {
+            super::mouvement::ligne(ui, vec2(8.0, 2.0), 6.0, |ui| ui.horizontal(|ui| {
                 let couleur = match i.allure {
                     Allure::Allume => p.bon,
                     Allure::Eteint => p.moyen,
@@ -607,7 +607,7 @@ fn protection_liste(ui: &mut Ui, v: &protection::Vue) {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(texte(&i.etat, 13.0, couleur));
                 });
-            });
+            }));
         }
         if v.interrupteurs.is_empty() {
             ui.label(texte(
@@ -764,7 +764,7 @@ fn journal(ui: &mut Ui, j: &evenements::Vue) {
 
 fn evenement(ui: &mut Ui, e: &evenements::Evenement, maintenant: chrono::DateTime<chrono::Utc>) {
     let p = pal();
-    ui.horizontal_top(|ui| {
+    super::mouvement::ligne(ui, vec2(8.0, 3.0), 6.0, |ui| ui.horizontal_top(|ui| {
         let (z, _) = ui.allocate_exact_size(vec2(12.0, 18.0), Sense::hover());
         let couleur = if e.alerte {
             couleur_gravite(e.gravite.or(Some(crate::donnees::bilan::Gravite::Moyenne)))
@@ -786,7 +786,7 @@ fn evenement(ui: &mut Ui, e: &evenements::Evenement, maintenant: chrono::DateTim
                 ui.label(texte(&e.detail, 13.0, p.doux));
             }
         });
-    });
+    }));
     ui.add_space(6.0);
 }
 
@@ -861,7 +861,7 @@ fn guide(appli: &mut Appli, ui: &mut Ui) {
     );
     ui.add_space(24.0);
     for c in Commande::ici() {
-        ui.horizontal(|ui| {
+        super::mouvement::ligne(ui, vec2(8.0, 2.0), 6.0, |ui| ui.horizontal(|ui| {
             ui.push_id(c.nom(), |ui| {
                 ui.set_width(ui.available_width());
                 let rep = ui.add(
@@ -878,7 +878,7 @@ fn guide(appli: &mut Appli, ui: &mut Ui) {
                 );
                 ui.label(texte(c.description(), 13.0, p.doux));
             });
-        });
+        }));
         ui.add_space(4.0);
     }
     ui.add_space(16.0);

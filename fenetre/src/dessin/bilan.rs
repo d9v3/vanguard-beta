@@ -448,7 +448,8 @@ fn carte_constat(ui: &mut Ui, c: &Constat, i: usize) {
     let p = pal();
     carte(ui, 22, 16, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal_top(|ui| {
+        // Toute la carte s'éclaire : jusqu'à son trait, sous un point de bord.
+        super::mouvement::ligne(ui, vec2(21.0, 21.0), 15.0, |ui| ui.horizontal_top(|ui| {
             let (r, _) = ui.allocate_exact_size(vec2(12.0, 16.0), Sense::hover());
             ui.painter()
                 .circle_filled(pos2(r.left() + 4.0, r.center().y), 4.0, couleur_gravite(c.gravite));
@@ -492,7 +493,7 @@ fn carte_constat(ui: &mut Ui, c: &Constat, i: usize) {
                     );
                 });
             });
-        });
+        }));
     });
 }
 
@@ -500,11 +501,13 @@ fn carte_constat(ui: &mut Ui, c: &Constat, i: usize) {
 fn liste_saine(ui: &mut Ui, liste: &[&Constat]) {
     let p = pal();
     let ligne = |ui: &mut Ui, c: &Constat| {
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            let (r, _) = ui.allocate_exact_size(vec2(14.0, 16.0), Sense::hover());
-            icones::coche(ui.painter(), r, p.bon);
-            ui.label(texte(&c.message, 13.0, p.doux));
+        super::mouvement::ligne(ui, vec2(8.0, 3.0), 6.0, |ui| {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let (r, _) = ui.allocate_exact_size(vec2(14.0, 16.0), Sense::hover());
+                icones::coche(ui.painter(), r, p.bon);
+                ui.label(texte(&c.message, 13.0, p.doux));
+            });
         });
     };
     carte(ui, 20, 16, |ui| {
@@ -553,14 +556,14 @@ fn liste_cote(ui: &mut Ui, titre: &str, lignes: &[(String, String)], col: Color3
                     .line_segment([pos2(r.left(), y), pos2(r.right(), y)], Stroke::new(1.0, p.trait_));
             }
             ui.add_space(8.0);
-            ui.horizontal_top(|ui| {
+            super::mouvement::ligne(ui, vec2(8.0, 4.0), 6.0, |ui| ui.horizontal_top(|ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(12.0, 16.0), Sense::hover());
                 ui.painter().circle_filled(pos2(r.left() + 3.0, r.center().y), 3.0, col);
                 ui.vertical(|ui| {
                     ui.label(RichText::new(cat).font(moyenne(13.0)).color(p.encre));
                     ui.label(texte(message, 13.0, p.doux));
                 });
-            });
+            }));
             ui.add_space(4.0);
         }
         if lignes.len() > COTE_MAX {

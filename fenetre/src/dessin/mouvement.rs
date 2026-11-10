@@ -1,11 +1,12 @@
-//! Le mouvement de la fenêtre, en un seul endroit : le fondu d'arrivée d'un écran. Toutes les durées viennent d'une
+//! Le mouvement de la fenêtre, en un seul endroit : le fondu d'arrivée d'un écran, les lignes de liste qui
+//! s'éclairent au survol. Toutes les durées viennent d'une
 //! seule réglette, `ALLURE` : à 0, plus rien ne bouge (chaque fondu saute à sa fin), le reste de la fenêtre ne change
 //! pas. Aucun réglage « réduire les animations » n'est lu du système pour l'instant : la fenêtre, dans son bac à
 //! sable, ne lit ni les réglages du bureau ni ceux de Windows ; le jour où elle le pourra, il se branchera ici.
 
 use std::time::Duration;
 
-use eframe::egui::{Context, Id, Sense, Ui, emath::TSTransform, vec2};
+use eframe::egui::{Context, Id, Rect, Sense, Shape, Ui, Vec2, emath::TSTransform, vec2};
 
 use crate::appli::Ecran;
 
@@ -94,6 +95,25 @@ pub fn montrer_en_arrivant<R>(ui: &mut Ui, a: Arrivee, contenu: impl FnOnce(&mut
     r
 }
 
+/// Une ligne de liste (un constat, un appareil, une alerte, une commande…) qui s'éclaire doucement sous la souris :
+/// le fond seulement, peint sous son contenu, sur toute la largeur de la liste et débordant de `marge` (pris dans les
+/// espaces entre les lignes ou la marge de la carte). Rien ne bouge, aucune taille ne change : la ligne prend la place
+/// de son contenu, survolée ou non. Les boutons de la ligne gardent leur propre survol par-dessus.
+pub fn ligne<R>(ui: &mut Ui, marge: Vec2, rayon: f32, contenu: impl FnOnce(&mut Ui) -> R) -> R {
+    let id = ui.next_auto_id().with("ligne");
+    // Une place réservée sous le contenu, remplie une fois sa hauteur connue.
+    let fond = ui.painter().add(Shape::Noop);
+    let r = ui.scope(contenu);
+    let large = ui.max_rect();
+    let zone = Rect::from_x_y_ranges(large.x_range(), r.response.rect.y_range()).expand2(marge);
+    let s = super::survol(ui, id, ui.rect_contains_pointer(zone));
+    if s > 0.0 {
+        ui.painter()
+            .set(fond, Shape::rect_filled(zone, rayon, super::pal().s2.gamma_multiply(s)));
+    }
+    r.inner
+}
+
 #[cfg(test)]
 mod tests {
     use eframe::egui;
@@ -156,6 +176,45 @@ mod tests {
         assert!(a.part > 0.3 && a.part < 0.7 && !a.nouvel_ecran, "{}", a.part);
         let a = voir(Ecran::Bilan, f64::from(ARRIVEE));
         assert!((a.part - 1.0).abs() < f32::EPSILON);
+    }
+
+    /// Une ligne survolée s'éclaire (son fond apparaît en fondu, à la couleur `s2` une fois fini) sans changer de
+    /// taille ni de place.
+    #[test]
+    fn une_ligne_survolee_s_eclaire_sans_bouger() {
+        let ctx = egui::Context::default();
+        super::super::polices(&ctx);
+        let fond = super::super::pal().s2;
+        let voir = |temps: f64, souris: egui::Pos2| {
+            let mut entree = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                time: Some(temps),
+                ..Default::default()
+            };
+            entree.events.push(egui::Event::PointerMoved(souris));
+            let mut place = egui::Rect::NOTHING;
+            let mut sortie = ctx.run_ui(entree, |ui| {
+                ui.add_space(40.0);
+                place = super::ligne(ui, egui::vec2(8.0, 3.0), 6.0, |ui| ui.label("Lecteur · alice")).rect;
+            });
+            sortie.textures_delta.clear();
+            let eclairee = sortie.shapes.iter().any(|c| {
+                matches!(&c.shape, egui::Shape::Rect(r) if r.fill == fond && r.rect.width() > 700.0)
+            });
+            (place, eclairee)
+        };
+        let (avant, eclairee) = voir(1.0, egui::pos2(400.0, 500.0));
+        assert!(!eclairee, "éclairée sans la souris");
+        // La souris arrive sur la ligne (bord gauche du texte : dans la ligne) ; le fondu fini, le fond est là.
+        let dessus = avant.left_center() + egui::vec2(2.0, 0.0);
+        let (pendant, _) = voir(1.01, dessus);
+        let (apres, eclairee) = voir(1.5, dessus);
+        assert!(eclairee, "la ligne survolée ne s'éclaire pas");
+        assert_eq!(avant, pendant, "la ligne a bougé au survol");
+        assert_eq!(avant, apres, "la ligne a bougé au survol");
+        // La souris dans la marge, entre deux lignes, éclaire encore : pas de trou qui clignote entre les lignes.
+        let (_, eclairee) = voir(2.0, egui::pos2(avant.left() + 2.0, avant.top() - 2.0));
+        assert!(eclairee, "la marge de la ligne ne compte pas comme survolée");
     }
 
     /// Pendant l'arrivée, un clic sur le centre ne touche pas l'écran qui arrive ; une fois arrivé, si.
