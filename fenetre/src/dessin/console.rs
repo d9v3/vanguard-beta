@@ -1129,6 +1129,16 @@ fn saisie(appli: &mut Appli, ui: &mut Ui, peintre: &egui::Painter, haut: f32, b:
     } else {
         b.sur_la_liste = false;
     }
+    // Dans la saisie, Tab complète au lieu de passer à l'élément suivant : le champ le dit, et dit comment en sortir.
+    // Pas pendant que la liste est ouverte : la bulle se poserait dessus.
+    let rep = if l.len() > 0 {
+        rep
+    } else {
+        rep.on_hover_text(crate::tr!(
+            "Tab complète, Échap sort de la saisie (après avoir fermé la liste ou arrêté la commande en cours).",
+            "Tab completes, Esc leaves the entry (after closing the list or stopping the running command)."
+        ))
+    };
     let entree = rep.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
     if entree && choisie.is_none() {
         choisie = b.choix;

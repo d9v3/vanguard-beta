@@ -98,8 +98,11 @@ pub fn rubrique(p: &Painter, centre: Pos2, r: Rubrique, couleur: Color32) {
             arc(15.5, 8.5, 4.5, -PI * 0.25, PI * 1.25);
         }
         Rubrique::Optimiser => {
-            arc(12., 18., 8., PI, 2. * PI);
-            ligne(&[(12., 18.), (16.5, 12.5)]);
+            // Un cadran ouvert en bas (240 degrés), son aiguille vers la droite (« ça va vite ») et son moyeu : le
+            // demi-cercle d'avant, à 18 points, se lisait comme un bol.
+            arc(12., 14., 9., PI * 5. / 6., PI * 13. / 6.);
+            ligne(&[(12., 14.), (16., 10.)]);
+            p.circle_filled(pt(12., 14.), 1.6 * s, couleur);
         }
         Rubrique::Vanguard => {
             bouclier();

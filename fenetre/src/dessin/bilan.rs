@@ -60,7 +60,7 @@ fn bande(ui: &mut Ui, vue: Option<&Vue>, en_cours: Option<f32>, hauteur: f32) {
     let barres = Rect::from_min_size(r.min, vec2(largeur, hauteur));
     let (w, pas, ecart) = if noms {
         let plus = groupes.iter().map(|g| g.1.len()).max().unwrap_or(1);
-        let w = ((fente - 16.0) / (n_f32(plus) * 1.5)).clamp(4.0, 10.0);
+        let w = ((fente - 16.0) / (n_f32(plus) * 1.5)).clamp(4.0, 12.0);
         (w, w * 0.5, 0.0)
     } else {
         let w = (largeur / (n_f32(n) * 1.5 + g * 2.0)).clamp(2.0, 6.0);
