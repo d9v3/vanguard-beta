@@ -149,7 +149,8 @@ pub fn largeur_car(c: char) -> usize {
 /// U+2029), trait d'union conditionnel (U+00AD), séparateur mongol (U+180E), étiquettes invisibles (U+E0000 à
 /// U+E007F), et les blancs qui ne sont pas des espaces mais en ont l'air ou ne se voient pas : remplissages coréens
 /// (U+115F, U+1160, U+3164, U+FFA0), Braille vide (U+2800), joint de graphèmes (U+034F). Le sélecteur de variante des
-/// émojis (U+FE0F) reste. La fenêtre (fenetre/src/nettoyage.rs) garde la même liste.
+/// émojis (U+FE0F) reste. Et les espaces trompeuses (`espace_trompeur`), montrées comme une espace ordinaire et non
+/// comme « � ». La fenêtre (fenetre/src/nettoyage.rs) garde la même liste.
 pub(crate) fn piege(c: char) -> bool {
     matches!(
         u32::from(c),
@@ -170,16 +171,26 @@ pub(crate) fn piege(c: char) -> bool {
             | 0xFEFF
             | 0xFFA0
             | 0xE0000..=0xE007F
-    )
+    ) || espace_trompeur(c)
+}
+
+/// Les espaces d'une autre largeur que l'espace ordinaire : insécable (U+00A0), ogham (U+1680), de U+2000 à U+200A
+/// (cadratin, fine, ultrafine…), fine insécable (U+202F), moyenne mathématique (U+205F), idéographique (U+3000).
+/// L'ultrafine ne se voit presque pas (« Sa[U+200A]lon » lu « Salon »), l'idéographique prend deux colonnes et décale un
+/// alignement, l'ogham se dessine parfois comme un trait. Ils viennent aussi de sorties normales (nombres écrits à la
+/// française, « 12 % ») : montrés comme une espace ordinaire, un par un, ils gardent le texte lisible et ne trompent
+/// plus que comme une espace ordinaire le ferait.
+pub(crate) fn espace_trompeur(c: char) -> bool {
+    matches!(u32::from(c), 0xA0 | 0x1680 | 0x2000..=0x200A | 0x202F | 0x205F | 0x3000)
 }
 
 /// Un texte venu de l'extérieur (nom d'un réseau ou d'un appareil, réponse du réseau, nom de fichier, sortie d'un
 /// autre programme), prêt à montrer. Sans cela, un nom piégé pilote le terminal : une séquence OSC 52 écrit dans le
 /// presse-papier, ESC [2K et un retour chariot effacent une alerte de Vanguard et la réécrivent, un caractère bidi
-/// retourne la fin d'un nom. Chacun de ces caractères devient « � », pour que la manipulation se voie ; le reste ne
-/// change pas (accents, emojis, autres écritures, espaces).
+/// retourne la fin d'un nom. Chacun de ces caractères devient « � », pour que la manipulation se voie, sauf les espaces
+/// trompeuses, qui deviennent une espace ordinaire ; le reste ne change pas (accents, emojis, autres écritures).
 pub fn affichable(texte: &str) -> String {
-    texte.chars().map(|c| if piege(c) { '\u{fffd}' } else { c }).collect()
+    texte.chars().map(rendu).collect()
 }
 
 /// Un chemin de fichier ou de dossier prêt à montrer : un nom de fichier vient de n'importe qui (téléchargement, clé
@@ -220,10 +231,21 @@ pub fn commande_affichable(commande: &str) -> String {
         .map(|c| match c {
             '\n' => " ⏎ ".to_string(),
             '\t' => c.to_string(),
-            _ if piege(c) => '\u{fffd}'.to_string(),
-            _ => c.to_string(),
+            _ => rendu(c).to_string(),
         })
         .collect()
+}
+
+/// Ce qui est montré à la place d'un caractère : une espace ordinaire pour une espace trompeuse, « � » pour un autre
+/// piège, le caractère lui-même sinon.
+fn rendu(c: char) -> char {
+    if espace_trompeur(c) {
+        ' '
+    } else if piege(c) {
+        '\u{fffd}'
+    } else {
+        c
+    }
 }
 
 /// Le texte contient-il encore un caractère piégé ? Pour les tests des lectures.
@@ -1032,8 +1054,8 @@ mod tests {
         );
     }
 
-    /// Un texte normal ne change pas, octet pour octet : accents, emojis, autres écritures, espaces (dont l'espace
-    /// insécable), ponctuation, « � » déjà là.
+    /// Un texte normal ne change pas, octet pour octet : accents, emojis, autres écritures, espaces ordinaires,
+    /// ponctuation, « � » déjà là.
     #[test]
     fn texte_normal_identique() {
         for t in [
@@ -1043,13 +1065,42 @@ mod tests {
             "Café d'été « Québec » — 5 GHz",
             "💡 📶 🔒 ✔ ⚠ ✖ ℹ → ▰▱",
             "Москва 東京 서울 مرحبا שלום Ελλάδα हिन्दी ไทย",
-            "a\u{a0}b c",
+            "a b c",
             "C:\\Users\\alice\\Téléchargements\\facture (2).pdf",
             "déjà � là",
         ] {
             assert_eq!(affichable(t), t);
             assert_eq!(affichable(t).as_bytes(), t.as_bytes());
             assert!(!contient_un_piege(t), "{t}");
+        }
+    }
+
+    /// A4 : une espace d'une autre largeur (insécable, fine, ultrafine, cadratin, idéographique…) devient une espace
+    /// ordinaire, une par une : l'ultrafine ne colle plus « Sa lon » en « Salon », l'idéographique ne décale plus un
+    /// alignement, et un nombre écrit à la française (« 12 345 octets », « 75 % ») reste lisible.
+    #[test]
+    fn espaces_trompeuses_rendues_ordinaires() {
+        let espaces = "\u{a0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200a}\u{202f}\u{205f}\u{3000}";
+        for c in espaces.chars() {
+            assert!(piege(c) && espace_trompeur(c), "U+{:04X}", u32::from(c));
+            assert_eq!(affichable(&format!("Sa{c}lon")), "Sa lon", "U+{:04X}", u32::from(c));
+            assert_eq!(
+                commande_affichable(&format!("rm Sa{c}lon")),
+                "rm Sa lon",
+                "U+{:04X}",
+                u32::from(c)
+            );
+        }
+        let a = affichable(&format!("a{espaces}b"));
+        assert_eq!(a, format!("a{}b", " ".repeat(16)));
+        assert_eq!(largeur_affichee(&a), 18);
+        assert!(!contient_un_piege(&a));
+        assert_eq!(
+            affichable("12\u{a0}345\u{202f}octets, 75\u{a0}%"),
+            "12 345 octets, 75 %"
+        );
+        for c in [' ', '\t', '\u{200b}', '\u{3164}'] {
+            assert!(!espace_trompeur(c), "U+{:04X}", u32::from(c));
         }
     }
 

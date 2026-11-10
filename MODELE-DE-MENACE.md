@@ -195,7 +195,13 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   revérifiée avant chaque commande, et pas seulement à l'ouverture.
 - **Ses réponses sont lues avec méfiance.** Taille bornée, lignes coupées, séquences de terminal et caractères de
   contrôle retirés, JSON lu sans jamais planter (lecteurs et console fuzzés : `fenetre_donnees`, `fenetre_saisie`) ; une
-  réponse illisible est dite telle, jamais comptée saine. La note du bilan n'est montrée que si Vanguard la dit fiable
+  réponse illisible est dite telle, jamais comptée saine. Comme dans le terminal (`ui::affichable`), un caractère qui
+  retourne ou cache un texte (sens d'écriture, invisibles, blancs qui n'en sont pas) y devient « � », et une espace
+  d'une autre largeur (insécable, fine, ultrafine, cadratin, idéographique) une espace ordinaire : elle ne colle plus
+  deux morceaux d'un nom, et un nombre écrit à la française reste lisible. Assumé : une lettre d'une autre écriture qui
+  ressemble à une latine (« а » cyrillique dans « Sаlon ») reste telle quelle, pour ne pas abîmer les noms écrits dans
+  ces langues ; et un état est jugé après le retrait de ses espaces de fin, ce qui ne change rien tant qu'il est un mot
+  fixe de `vanguard`, jamais un nom venu de l'extérieur. La note du bilan n'est montrée que si Vanguard la dit fiable
   (`fiable` dans `audit --json`) ; quand des points n'ont pas pu être vérifiés, la note est dite incomplète, à côté du
   chiffre, avec leur nombre.
 - **Aucune connexion, aucun fichier.** La fenêtre n'ouvre aucune porte réseau, aucun serveur, aucune page web, et

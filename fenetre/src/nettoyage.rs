@@ -1,7 +1,8 @@
 //! Ce que `vanguard` écrit, prêt à montrer. Ses sorties reprennent des noms venus de l'extérieur (réseau, programme,
 //! fichier, appareil) : un nom piégé ne doit ni cacher une alerte, ni retourner un texte (caractères de sens
 //! d'écriture), ni glisser une ligne de plus. Les séquences d'échappement (couleurs, déplacements, OSC) sont retirées ;
-//! chaque autre caractère piégé devient « � », pour que la manipulation se voie, comme dans le terminal
+//! chaque autre caractère piégé devient « � », pour que la manipulation se voie, et une espace d'une autre largeur
+//! devient une espace ordinaire, comme dans le terminal
 //! (`ui::piege` de Vanguard, même liste). Chaque texte est aussi borné : une ligne immense ne gèle pas la fenêtre.
 
 /// La longueur maximale d'un texte montré, en caractères (« … » compris).
@@ -12,7 +13,8 @@ pub const LIGNE_MAX: usize = 400;
 
 /// Les caractères qui pilotent un affichage ou trompent la lecture : contrôles C0 et C1, trait d'union conditionnel,
 /// marques et forçages du sens d'écriture, séparateurs de ligne Unicode, invisibles, étiquettes, et les blancs qui
-/// n'en sont pas (remplissages coréens, Braille vide, joint de graphèmes). La liste de `ui::piege` de Vanguard.
+/// n'en sont pas (remplissages coréens, Braille vide, joint de graphèmes), et les espaces trompeuses
+/// (`espace_trompeur`), montrées comme une espace ordinaire. La liste de `ui::piege` de Vanguard.
 pub fn piege(c: char) -> bool {
     matches!(
         u32::from(c),
@@ -33,7 +35,29 @@ pub fn piege(c: char) -> bool {
             | 0xFEFF
             | 0xFFA0
             | 0xE0000..=0xE007F
-    )
+    ) || espace_trompeur(c)
+}
+
+/// Les espaces d'une autre largeur que l'espace ordinaire : insécable (U+00A0), ogham (U+1680), de U+2000 à U+200A
+/// (cadratin, fine, ultrafine…), fine insécable (U+202F), moyenne mathématique (U+205F), idéographique (U+3000).
+/// L'ultrafine ne se voit presque pas (« Sa[U+200A]lon » lu « Salon »), l'idéographique prend deux colonnes et décale un
+/// alignement, l'ogham se dessine parfois comme un trait. Ils viennent aussi de sorties normales (nombres écrits à la
+/// française, « 12 % ») : montrés comme une espace ordinaire, un par un, ils gardent le texte lisible et ne trompent
+/// plus que comme une espace ordinaire le ferait.
+pub fn espace_trompeur(c: char) -> bool {
+    matches!(u32::from(c), 0xA0 | 0x1680 | 0x2000..=0x200A | 0x202F | 0x205F | 0x3000)
+}
+
+/// Ce qui est montré à la place d'un caractère : une espace ordinaire pour une espace trompeuse, « � » pour un autre
+/// piège, le caractère lui-même sinon (`ui::affichable` de Vanguard).
+fn rendu(c: char) -> char {
+    if espace_trompeur(c) {
+        ' '
+    } else if piege(c) {
+        '\u{fffd}'
+    } else {
+        c
+    }
 }
 
 /// Retire les séquences d'échappement (CSI `ESC [ … final`, OSC `ESC ] … BEL|ESC \`, DCS/APC/PM/SOS jusqu'à
@@ -101,8 +125,7 @@ pub fn ligne(texte: &str) -> String {
         .chars()
         .map(|c| match c {
             '\t' => ' ',
-            c if piege(c) => '\u{fffd}',
-            c => c,
+            c => rendu(c),
         })
         .collect();
     couper(propre.trim_end(), LIGNE_MAX)
@@ -116,8 +139,7 @@ pub fn texte(texte: &str) -> String {
         .map(|c| match c {
             '\n' => '\n',
             '\t' => ' ',
-            c if piege(c) => '\u{fffd}',
-            c => c,
+            c => rendu(c),
         })
         .collect();
     couper(&propre, TEXTE_MAX)
@@ -172,6 +194,41 @@ mod tests {
             assert_eq!(ligne(&format!("Sa{c}lon")), "Sa\u{fffd}lon", "U+{:04X}", u32::from(c));
         }
         assert_eq!(ligne("é ü 漢字 🙂"), "é ü 漢字 🙂");
+    }
+
+    /// A4 : une espace d'une autre largeur devient une espace ordinaire, une par une ; elle ne cache plus rien
+    /// (l'ultrafine collait « Sa lon » en « Salon ») et un nombre écrit à la française reste lisible.
+    #[test]
+    fn les_espaces_trompeuses_deviennent_ordinaires() {
+        let espaces = "\u{a0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200a}\u{202f}\u{205f}\u{3000}";
+        for c in espaces.chars() {
+            assert!(piege(c) && espace_trompeur(c), "U+{:04X}", u32::from(c));
+            assert_eq!(ligne(&format!("Sa{c}lon")), "Sa lon", "U+{:04X}", u32::from(c));
+            assert_eq!(texte(&format!("Sa{c}lon")), "Sa lon", "U+{:04X}", u32::from(c));
+        }
+        assert_eq!(ligne(&format!("a{espaces}b")), format!("a{}b", " ".repeat(16)));
+        assert_eq!(nom("12\u{a0}345\u{202f}octets, 75\u{a0}%", 80), "12 345 octets, 75 %");
+        // L'espace ordinaire, le saut de ligne et les blancs déjà traités ne changent pas de sort.
+        for c in [' ', '\n', '\u{200b}', '\u{3164}'] {
+            assert!(!espace_trompeur(c), "U+{:04X}", u32::from(c));
+        }
+    }
+
+    /// Le corps de `fn <nom>(c: char) -> bool`, de l'accolade à la première fermeture en début de ligne.
+    fn corps<'a>(source: &'a str, nom: &str) -> &'a str {
+        let debut = source.find(&format!("fn {nom}(c: char) -> bool {{")).unwrap();
+        let fin = source[debut..].find("\n}").unwrap();
+        &source[debut..debut + fin]
+    }
+
+    /// La liste reste celle du terminal (`ui::piege`, `ui::espace_trompeur` de Vanguard), caractère pour caractère.
+    #[test]
+    fn meme_liste_que_le_terminal() {
+        let ici = include_str!("nettoyage.rs");
+        let terminal = include_str!("../../src/ui.rs");
+        for nom in ["piege", "espace_trompeur"] {
+            assert_eq!(corps(ici, nom), corps(terminal, nom), "{nom}");
+        }
     }
 
     #[test]

@@ -1,7 +1,8 @@
 //! Les essais de la campagne d'attaque du lot 1, repris comme tests : les invariants qu'aucune saisie ni aucune
-//! sortie de `vanguard` ne doit pouvoir casser. Les écarts faibles qu'elle a constatés (espaces Unicode non marqués,
-//! homoglyphes gardés, espaces de queue retirés avant de juger un état), partagés avec le terminal, attendent la
-//! décision de l'auteur et ne sont pas figés ici.
+//! sortie de `vanguard` ne doit pouvoir casser. Des écarts faibles qu'elle a constatés, partagés avec le terminal, les
+//! espaces Unicode d'une autre largeur (A4) sont maintenant montrées comme une espace ordinaire (`nettoyage`) ; les
+//! homoglyphes gardés (A5) et les espaces de queue retirées avant de juger un état (A6b) sont assumés, dits dans
+//! MODELE-DE-MENACE.md, et ne sont pas figés ici.
 
 use crate::commandes::{self, Commande, Saisie};
 use crate::donnees::{bilan, evenements, libre, protection};

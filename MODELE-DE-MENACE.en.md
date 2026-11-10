@@ -186,9 +186,14 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   started: the same rule as for the window, below, checked again before each command, not only at opening.
 - **Its answers are read with suspicion.** Bounded size, long lines cut, terminal sequences and control characters
   removed, JSON read without ever crashing (readers and console fuzzed: `fenetre_donnees`, `fenetre_saisie`); an
-  unreadable answer is said to be so, never counted as healthy. The check's grade is shown only when Vanguard says it is
-  reliable (`fiable` in `audit --json`); when some points could not be checked, the grade is said to be incomplete, next
-  to the number, with how many.
+  unreadable answer is said to be so, never counted as healthy. As in the terminal (`ui::affichable`), a character that
+  reverses or hides text (writing direction, invisibles, blanks that are not spaces) becomes “�”, and a space of another
+  width (no-break, thin, hair, em, ideographic) an ordinary space: it no longer glues two parts of a name together, and
+  a number written the French way stays readable. Accepted: a letter from another script that looks like a Latin one
+  (Cyrillic “а” in “Sаlon”) stays as it is, so as not to damage names written in those languages; and a state is judged
+  after its trailing spaces are removed, which changes nothing as long as it is a fixed word of `vanguard`, never a name
+  from outside. The check's grade is shown only when Vanguard says it is reliable (`fiable` in `audit --json`); when
+  some points could not be checked, the grade is said to be incomplete, next to the number, with how many.
 - **No connection, no file.** The window opens no network port, no server, no web page, and runs no JavaScript (no
   HTTP library among its dependencies); it writes no file (theme and language are not kept). The commands it runs
   reach the Internet as they do in the terminal (for example `test-connexion`, `logiciels-perimes`).
