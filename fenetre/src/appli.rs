@@ -101,11 +101,13 @@ pub struct Appli {
 
 impl Appli {
     /// Va à un écran en retenant celui-ci pour « Retour ». Seul chemin pour changer d'écran (un essai le garde) :
-    /// une affectation directe ferait sauter un pas au retour.
+    /// une affectation directe ferait sauter un pas au retour. Une confirmation ouverte se ferme : elle ne reste pas
+    /// en attente hors de la vue de la personne.
     pub fn aller(&mut self, vers: Ecran) {
         if vers == self.ecran {
             return;
         }
+        self.annuler();
         if self.retours.len() >= RETOURS_MAX {
             self.retours.remove(0);
         }
@@ -118,9 +120,10 @@ impl Appli {
         self.retours.last().copied()
     }
 
-    /// Revient à l'écran d'avant ; sans écran d'avant, rien.
+    /// Revient à l'écran d'avant (une confirmation ouverte se ferme, comme avec `aller`) ; sans écran d'avant, rien.
     pub fn revenir(&mut self) {
         if let Some(e) = self.retours.pop() {
+            self.annuler();
             self.ecran = e;
         }
     }
@@ -280,22 +283,45 @@ impl Appli {
     /// même si l'écran le demandait) et quand un changement est possible ; rien n'est lancé ici.
     pub fn proposer(&mut self, geste: &bilan::Geste) {
         if !self.changement_possible() {
-            self.dire(
-                "fenêtre",
+            let raison = if self.confirmation.is_some() {
+                crate::tr!(
+                    "Une confirmation est déjà ouverte : acceptez-la ou annulez-la d'abord. Rien n'a changé.",
+                    "A confirmation is already open: accept or cancel it first. Nothing changed."
+                )
+            } else {
                 crate::tr!(
                     "Une commande tourne encore : rien n'a changé. Réessayez à sa fin.",
                     "A command is still running: nothing changed. Try again when it ends."
+                )
+            };
+            self.dire("fenêtre", raison, Ton::Attention);
+            return;
+        }
+        if self.dans_la_liste(geste) {
+            self.confirmation = Some(geste.clone());
+        }
+    }
+
+    /// Le geste est-il dans la dernière liste du démarrage lue ? Seul un geste de cette liste se propose et s'accepte.
+    fn dans_la_liste(&self, geste: &bilan::Geste) -> bool {
+        matches!(
+            self.resultats.get(&Commande::Demarrage).map(|r| &r.contenu),
+            Some(Contenu::Constats(v)) if v.constats.iter().any(|c| c.geste.as_ref() == Some(geste))
+        )
+    }
+
+    /// La liste a changé sous une confirmation ouverte : elle se ferme, rien n'est lancé.
+    fn fermer_si_disparu(&mut self) {
+        if self.confirmation.as_ref().is_some_and(|g| !self.dans_la_liste(g)) {
+            self.confirmation = None;
+            self.dire(
+                "fenêtre",
+                crate::tr!(
+                    "La liste a changé : rien n'a changé.",
+                    "The list changed: nothing changed."
                 ),
                 Ton::Attention,
             );
-            return;
-        }
-        let dans_la_liste = matches!(
-            self.resultats.get(&Commande::Demarrage).map(|r| &r.contenu),
-            Some(Contenu::Constats(v)) if v.constats.iter().any(|c| c.geste.as_ref() == Some(geste))
-        );
-        if dans_la_liste {
-            self.confirmation = Some(geste.clone());
         }
     }
 
@@ -313,6 +339,7 @@ impl Appli {
             );
             return;
         }
+        self.fermer_si_disparu();
         if let Some(g) = self.confirmation.take() {
             self.lancer(Lancement::Changement(g.changement));
         }
@@ -381,9 +408,9 @@ impl Appli {
         if self.tache.is_none() {
             if let Some(c) = self.file.pop_front() {
                 self.lancer(c.into());
-            } else if self.programme.is_ok() && self.confirmation.is_none() && self.dernier_sondage.elapsed() >= SONDAGE
-            {
-                // Pas pendant une confirmation ouverte : « Accepter » trouverait une lecture en cours.
+            } else if self.programme.is_ok() && self.dernier_sondage.elapsed() >= SONDAGE {
+                // Même pendant une confirmation ouverte : la veille des alertes ne s'arrête jamais pour elle
+                // (« Accepter » pendant la lecture dit d'attendre sa fin, la confirmation reste ouverte).
                 self.dernier_sondage = Instant::now();
                 self.lancer(Commande::Evenements.into());
             }
@@ -462,6 +489,9 @@ impl Appli {
                 duree: f.duree,
             },
         );
+        if c == Commande::Demarrage {
+            self.fermer_si_disparu();
+        }
     }
 
     /// La fin d'un changement : une ligne de la console (fait, refusé ou échec, avec la raison), puis la liste du
@@ -1120,6 +1150,94 @@ esac
                 &*format!("vanguard demarrage --retirer {e1} --json")
             ]
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Une confirmation ouverte n'arrête pas la veille des alertes ; changer d'écran la ferme ; une liste relue qui
+    /// n'a plus le geste la ferme ; « Accepter » revérifie le geste dans la dernière liste. Rien n'est lancé.
+    #[cfg(unix)]
+    #[test]
+    fn une_confirmation_ne_bloque_rien_et_suit_la_liste() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let d = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("target")
+            .join("essais-fenetre")
+            .join(format!("confirmation-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let e1 = "0123456789abcdef0123456789abcdef";
+        let avec = format!(
+            r#"{{"outil": "PRO-DEM-001", "constats": [
+            {{"categorie": "Démarrage", "etat": "sain", "message": "Lecteur — se lance · /usr/bin/lecteur",
+              "objet": "demarrage:Lecteur",
+              "geste": {{"sorte": "retirer", "empreinte": "{e1}", "nom": "Lecteur", "commande": "/usr/bin/lecteur"}}}}]}}"#
+        );
+        let sans = r#"{"outil": "PRO-DEM-001", "constats": []}"#;
+        std::fs::write(d.join("liste.json"), &avec).unwrap();
+        let script = d.join("vanguard");
+        std::fs::write(&script, FAUX_DEMARRAGE).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let moi = std::fs::metadata(&d).unwrap().uid();
+        let mut a = Appli::nouvelle(Ok(Programme::dans(&d, moi).unwrap()), std::sync::Arc::new(|| {}));
+        finir_tout(&mut a);
+        let changements = || std::fs::read_to_string(d.join("changements")).unwrap_or_default();
+        let g1 = bilan::Geste {
+            changement: Changement {
+                sorte: Sorte::Retirer,
+                empreinte: crate::commandes::Empreinte::lire(e1).unwrap(),
+            },
+            nom: "Lecteur".into(),
+            commande: "/usr/bin/lecteur".into(),
+            machine: false,
+        };
+        let lire_la_liste = |a: &mut Appli| {
+            a.demander(Commande::Demarrage);
+            finir_tout(a);
+        };
+        let dit = |a: &Appli, mot: &str| a.console.iter().any(|l| l.texte.contains(mot));
+        lire_la_liste(&mut a);
+
+        // Le sondage repart pendant une confirmation ouverte ; « Accepter » attend sa fin, la confirmation reste.
+        a.proposer(&g1);
+        assert_eq!(a.confirmation(), Some(&g1));
+        a.dernier_sondage = Instant::now().checked_sub(SONDAGE + Duration::from_secs(1)).unwrap();
+        a.avancer();
+        assert_eq!(a.en_cours().map(|(c, _)| c), Some(Commande::Evenements));
+        a.accepter();
+        assert_eq!(a.confirmation(), Some(&g1));
+        // Une autre proposition dit la vraie raison.
+        a.console.clear();
+        finir_tout(&mut a);
+        a.proposer(&g1);
+        assert!(dit(&a, "déjà ouverte") || dit(&a, "already open"));
+
+        // Changer d'écran ferme la confirmation, sans rien lancer.
+        a.aller(Ecran::Bilan);
+        assert!(a.confirmation().is_none());
+        assert!(dit(&a, "Annulé") || dit(&a, "Cancelled"));
+        a.revenir();
+
+        // La liste relue n'a plus le geste : la confirmation se ferme.
+        a.proposer(&g1);
+        assert_eq!(a.confirmation(), Some(&g1));
+        std::fs::write(d.join("liste.json"), sans).unwrap();
+        lire_la_liste(&mut a);
+        assert!(a.confirmation().is_none());
+        assert!(dit(&a, "La liste a changé") || dit(&a, "The list changed"));
+
+        // « Accepter » revérifie : le geste parti de la dernière liste, rien ne se lance.
+        std::fs::write(d.join("liste.json"), &avec).unwrap();
+        lire_la_liste(&mut a);
+        a.proposer(&g1);
+        assert_eq!(a.confirmation(), Some(&g1));
+        a.resultats.remove(&Commande::Demarrage);
+        a.console.clear();
+        a.accepter();
+        assert!(a.confirmation().is_none());
+        assert!(a.en_cours().is_none());
+        assert!(dit(&a, "La liste a changé") || dit(&a, "The list changed"));
+        assert_eq!(changements(), "");
         let _ = std::fs::remove_dir_all(&d);
     }
 

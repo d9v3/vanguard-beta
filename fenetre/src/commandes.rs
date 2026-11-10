@@ -724,11 +724,12 @@ impl Lancement {
         }
     }
 
-    /// Un changement attend peut-être le mot de passe dans la fenêtre administrateur : dix minutes.
+    /// Un changement attend peut-être le mot de passe dans la fenêtre administrateur (Windows) : quinze minutes. C'est
+    /// le seul cas où il est coupé : ni « Arrêter », ni la fermeture de la fenêtre ne l'interrompent (`relais`).
     pub fn delai(self) -> Duration {
         match self {
             Lancement::Commande(c) => c.delai(),
-            Lancement::Changement(_) => Duration::from_secs(600),
+            Lancement::Changement(_) => Duration::from_mins(15),
         }
     }
 

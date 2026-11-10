@@ -11,15 +11,22 @@
 //! hors de ce protocole l'arrête. Il retrouve lui-même le `vanguard` voisin et rejoue sa garde (`lanceur`). Il ne
 //! se laisse pas observer (PR_SET_DUMPABLE à 0 : ni ptrace ni /proc/<pid>/mem du même compte), et Landlock empêche
 //! de toute façon la fenêtre d'observer ce qui est hors de son bac. Quand la fenêtre se ferme ou meurt, la socket se
-//! ferme : le relais arrête ce qui tourne et s'en va. Le protocole, sans rien d'autre, est dans `protocole`.
+//! ferme : le relais arrête les lectures qui tournent, laisse finir un changement commencé, et s'en va. Le protocole,
+//! sans rien d'autre, est dans `protocole`.
+//!
+//! Un changement, côté relais (ce qui tient même si la fenêtre est prise) : il passe seul (refusé tant qu'une
+//! commande tourne ; rien d'autre ne se lance pendant lui) ; seulement pour une empreinte vue dans la dernière liste
+//! du démarrage que le relais a lui-même relayée (`demarrage --json`), et cette liste ne sert qu'une fois ; « Arrêter »
+//! ne le coupe pas, la fermeture de la fenêtre non plus : coupé au milieu, il pourrait laisser un programme retiré sans
+//! la note qui le remet. Seul son délai (`Lancement::delai`) l'arrête.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::time::Duration;
 
-use crate::commandes::Lancement;
+use crate::commandes::{Commande, Empreinte, Lancement};
 use crate::lanceur::{Fin, Issue, Message, Programme, Rendre, Reveil, SORTIE_MAX, Tache};
 use crate::protocole::{DEMANDE_MAX, Demande, Reponse, coder_fin, coder_ligne, ecrire_trame, lire_reponse, lire_trame};
 
@@ -29,6 +36,94 @@ const REPONSE_MAX: usize = SORTIE_MAX + 64 * 1024;
 const TACHES_MAX: usize = 2;
 /// Une fenêtre qui ne lit plus ne bloque pas le relais au-delà.
 const ECRITURE_DELAI: Duration = Duration::from_secs(10);
+/// Empreintes retenues au plus d'une liste du démarrage (une machine en a quelques dizaines).
+const EMPREINTES_MAX: usize = 4096;
+
+/// Une commande lancée par le relais.
+struct EnCours {
+    arret: Arc<AtomicBool>,
+    /// Un changement : ni « Arrêter » ni la fermeture de la fenêtre ne le coupent.
+    changement: bool,
+}
+
+/// Ce que le relais retient entre deux demandes.
+#[derive(Default)]
+struct Etat {
+    taches: HashMap<u32, EnCours>,
+    /// Les empreintes de la dernière liste du démarrage relayée, vidées quand un changement part : un changement
+    /// demande une liste relue après lui.
+    vues: HashSet<Empreinte>,
+}
+
+impl Etat {
+    /// Pourquoi ce lancement est refusé, s'il l'est ; sinon il est retenu (et un changement consomme la liste vue).
+    fn admettre(&mut self, id: u32, lancement: Lancement, arret: &Arc<AtomicBool>) -> Option<&'static str> {
+        let changement = matches!(lancement, Lancement::Changement(_));
+        if self.taches.len() >= TACHES_MAX || self.taches.contains_key(&id) {
+            return Some(crate::tr!(
+                "trop de commandes en même temps",
+                "too many commands at once"
+            ));
+        }
+        if self.taches.values().any(|t| t.changement) {
+            return Some(crate::tr!(
+                "un changement est en cours : rien d'autre ne se lance avant sa fin",
+                "a change is running: nothing else starts before it ends"
+            ));
+        }
+        if changement && !self.taches.is_empty() {
+            return Some(crate::tr!(
+                "un changement à la fois : une commande tourne encore",
+                "one change at a time: a command is still running"
+            ));
+        }
+        if let Lancement::Changement(ch) = lancement {
+            if !self.vues.contains(&ch.empreinte) {
+                return Some(crate::tr!(
+                    "programme absent de la dernière liste du démarrage lue : relisez-la",
+                    "program not in the last startup list read: read it again"
+                ));
+            }
+            self.vues.clear();
+        }
+        self.taches.insert(
+            id,
+            EnCours {
+                arret: Arc::clone(arret),
+                changement,
+            },
+        );
+        None
+    }
+}
+
+/// Les empreintes d'une sortie de `demarrage --json` : chaque clé `"empreinte"` suivie d'une chaîne de 32 chiffres
+/// hexadécimaux minuscules. Un balayage, sans lire le JSON : dans une chaîne JSON, un guillemet est toujours échappé,
+/// et un nom de programme ne peut donc pas fabriquer la clé. Borné à `EMPREINTES_MAX`.
+fn empreintes_vues(sortie: &[u8]) -> HashSet<Empreinte> {
+    const CLE: &[u8] = b"\"empreinte\"";
+    let blanc = |o: &[u8]| -> usize { o.iter().take_while(|c| c.is_ascii_whitespace()).count() };
+    let mut vues = HashSet::new();
+    let mut reste = sortie;
+    while vues.len() < EMPREINTES_MAX {
+        let Some(i) = reste.windows(CLE.len()).position(|w| w == CLE) else {
+            break;
+        };
+        reste = reste.get(i.saturating_add(CLE.len())..).unwrap_or_default();
+        let apres = reste.get(blanc(reste)..).unwrap_or_default();
+        let Some(valeur) = apres.strip_prefix(b":") else {
+            continue;
+        };
+        let valeur = valeur.get(blanc(valeur)..).unwrap_or_default();
+        let Some((hex, [b'"', ..])) = valeur.strip_prefix(b"\"").and_then(|v| v.split_at_checked(32)) else {
+            continue;
+        };
+        if let Some(e) = std::str::from_utf8(hex).ok().and_then(Empreinte::lire) {
+            vues.insert(e);
+        }
+    }
+    vues
+}
 
 static CLIENT: OnceLock<Client> = OnceLock::new();
 static ETAT: OnceLock<(String, bool)> = OnceLock::new();
@@ -98,7 +193,8 @@ fn verrou<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Le côté relais : lit les demandes jusqu'à la fermeture (ou une demande hors protocole), lance chaque commande
-/// avec la surveillance de `lanceur` et renvoie ses lignes puis sa fin. À la fin, arrête ce qui tourne et l'attend.
+/// avec la surveillance de `lanceur` et renvoie ses lignes puis sa fin. À la fin, arrête les lectures, laisse finir
+/// un changement, et attend tout.
 fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Send + Sync + 'static) {
     let Ok(sortie) = flux.try_clone() else {
         return;
@@ -112,7 +208,7 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
         })
     };
     let trouver = Arc::new(trouver);
-    let taches: Arc<Mutex<HashMap<u32, Arc<AtomicBool>>>> = Arc::default();
+    let etat: Arc<Mutex<Etat>> = Arc::default();
     let mut fils: Vec<std::thread::JoinHandle<()>> = Vec::new();
     let mut entree = flux;
     while let Ok(Some(t)) = lire_trame(&mut entree, DEMANDE_MAX) {
@@ -121,21 +217,16 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
         };
         match d {
             Demande::Arreter { id } => {
-                if let Some(a) = verrou(&taches).get(&id) {
-                    a.store(true, Ordering::Relaxed);
+                // Un changement ne se coupe pas, même demandé : seul son délai l'arrête.
+                if let Some(t) = verrou(&etat).taches.get(&id)
+                    && !t.changement
+                {
+                    t.arret.store(true, Ordering::Relaxed);
                 }
             }
             Demande::Lancer { id, lancement, anglais } => {
                 let arret = Arc::new(AtomicBool::new(false));
-                let refus = {
-                    let mut t = verrou(&taches);
-                    if t.len() >= TACHES_MAX || t.contains_key(&id) {
-                        true
-                    } else {
-                        t.insert(id, Arc::clone(&arret));
-                        false
-                    }
-                };
+                let refus = verrou(&etat).admettre(id, lancement, &arret);
                 let impossible = |texte: String| Fin {
                     lancement,
                     code: None,
@@ -143,11 +234,8 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
                     issue: Issue::Impossible(texte),
                     duree: Duration::ZERO,
                 };
-                if refus {
-                    envoyer(&coder_fin(
-                        id,
-                        &impossible(crate::tr!("trop de commandes en même temps", "too many commands at once").into()),
-                    ));
+                if let Some(r) = refus {
+                    envoyer(&coder_fin(id, &impossible(r.into())));
                     continue;
                 }
                 let rendre: Rendre = {
@@ -158,7 +246,7 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
                         }
                     })
                 };
-                let (envoyer2, taches2, trouver2) = (Arc::clone(&envoyer), Arc::clone(&taches), Arc::clone(&trouver));
+                let (envoyer2, etat2, trouver2) = (Arc::clone(&envoyer), Arc::clone(&etat), Arc::clone(&trouver));
                 let lance = std::thread::Builder::new()
                     .name("vanguard-relais".into())
                     .spawn(move || {
@@ -172,13 +260,22 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
                                 duree: Duration::ZERO,
                             },
                         };
+                        // Retenue et retirée avant que la fin parte : la fenêtre qui la reçoit peut aussitôt
+                        // demander un changement de cette liste.
+                        {
+                            let mut e = verrou(&etat2);
+                            if fin.lancement == Lancement::Commande(Commande::Demarrage) && fin.issue == Issue::Terminee
+                            {
+                                e.vues = empreintes_vues(&fin.sortie);
+                            }
+                            e.taches.remove(&id);
+                        }
                         envoyer2(&coder_fin(id, &fin));
-                        verrou(&taches2).remove(&id);
                     });
                 match lance {
                     Ok(f) => fils.push(f),
                     Err(e) => {
-                        verrou(&taches).remove(&id);
+                        verrou(&etat).taches.remove(&id);
                         envoyer(&coder_fin(id, &impossible(e.to_string())));
                     }
                 }
@@ -186,9 +283,10 @@ fn servir(flux: UnixStream, trouver: impl Fn() -> Result<Programme, String> + Se
             }
         }
     }
-    // La fenêtre est partie (ou parle hors protocole) : ce qui tourne est arrêté, puis attendu.
-    for a in verrou(&taches).values() {
-        a.store(true, Ordering::Relaxed);
+    // La fenêtre est partie (ou parle hors protocole) : les lectures sont arrêtées ; un changement commencé finit
+    // (borné par son délai). Tout est attendu.
+    for t in verrou(&etat).taches.values().filter(|t| !t.changement) {
+        t.arret.store(true, Ordering::Relaxed);
     }
     for f in fils {
         let _ = f.join();
@@ -420,8 +518,9 @@ mod tests {
         assert!(c.mort.load(Ordering::Relaxed));
     }
 
-    /// Un changement bien formé passe (ici, sans `vanguard` voisin, il finit « impossible ») ; un changement à la
-    /// mauvaise longueur, d'une sorte inconnue ou suivi d'un chemin ferme le relais, sans rien lancer.
+    /// Un changement bien formé passe le protocole (ici, sans liste du démarrage relayée avant, il est refusé sans
+    /// rien lancer) ; un changement à la mauvaise longueur, d'une sorte inconnue ou suivi d'un chemin ferme le relais,
+    /// sans rien lancer.
     #[test]
     fn le_relais_ne_comprend_que_le_changement_de_forme_fermee() {
         let ch = Lancement::Changement(Changement {
@@ -451,12 +550,167 @@ mod tests {
             let c = Client::demarrer(fenetre.try_clone().unwrap(), None);
             let rien: Reveil = Arc::new(|| {});
             let f = attendre_fin(&c.lancer(ch, false, &rien));
-            assert_eq!((f.lancement, f.issue), (ch, Issue::Impossible("introuvable".into())));
+            assert_eq!(f.lancement, ch);
+            assert!(
+                matches!(&f.issue, Issue::Impossible(r) if r.contains("dernière liste")),
+                "{:?}",
+                f.issue
+            );
             ecrire_trame(&mut &fenetre, &fausse).unwrap();
             serveur.join().unwrap();
-            assert_eq!(lances.load(Ordering::Relaxed), 1, "{fausse:?}");
+            assert_eq!(lances.load(Ordering::Relaxed), 0, "{fausse:?}");
             c.fermer();
         }
+    }
+
+    /// Les empreintes d'une liste : la clé `"empreinte"` suivie de 32 chiffres hexadécimaux minuscules, espaces
+    /// permises ; ni majuscule, ni longueur voisine, ni une clé fabriquée dans une chaîne (guillemets échappés).
+    #[test]
+    fn seules_les_empreintes_de_la_liste_sont_vues() {
+        use std::fmt::Write as _;
+        let (e1, e2, e3) = ("0123456789abcdef0123456789abcdef", "a".repeat(32), "b".repeat(32));
+        let liste = format!(
+            r#"{{"constats": [{{"geste": {{"sorte": "retirer", "empreinte": "{e1}", "nom": "Lecteur"}}}},
+            {{"geste": {{"empreinte":"{e2}"}}}}, {{"message": "\"empreinte\": \"{e3}\""}},
+            {{"empreinte": "{}"}}, {{"empreinte": "{}"}}, {{"empreinte": "{e1}0"}}, {{"empreinte": 7}}, "empreinte"]}}"#,
+            "C".repeat(32),
+            "c".repeat(31)
+        );
+        let vues = empreintes_vues(liste.as_bytes());
+        let attendues: HashSet<Empreinte> = [e1, e2.as_str()].into_iter().filter_map(Empreinte::lire).collect();
+        assert_eq!(vues, attendues);
+        assert!(empreintes_vues(b"").is_empty());
+        assert!(empreintes_vues(b"\"empreinte\"").is_empty());
+        // Bornées.
+        let mut beaucoup = String::new();
+        for i in 0..EMPREINTES_MAX + 10 {
+            let _ = write!(beaucoup, r#"{{"empreinte": "{i:032x}"}}"#);
+        }
+        assert_eq!(empreintes_vues(beaucoup.as_bytes()).len(), EMPREINTES_MAX);
+    }
+
+    /// Un faux `vanguard` : la liste lue dans liste.json ; un changement noté dans « changements », qui attend le
+    /// fichier « va » (20 s au plus) puis note « fini » ; toute autre commande attend « va-lecture ».
+    const FAUX_VANGUARD: &str = r#"#!/bin/sh
+d=$(dirname "$0")
+attendre() { i=0; while [ ! -e "$d/$1" ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done; }
+case "$1 $2" in
+"demarrage --json") cat "$d/liste.json" ;;
+"demarrage --retirer"|"demarrage --remettre") echo "$@" >> "$d/changements"; attendre va; echo fini >> "$d/changements"
+  echo "{\"geste\": \"${2#--}\", \"issue\": \"fait\", \"raison\": \"\"}" ;;
+*) attendre va-lecture; echo '{}' ;;
+esac
+"#;
+
+    /// Pour de vrai, avec un faux `vanguard` : un changement n'est accepté que pour une empreinte de la dernière
+    /// liste relayée, et cette liste ne sert qu'une fois ; il passe seul (refusé pendant une lecture, et rien ne se
+    /// lance pendant lui) ; « Arrêter » ne le coupe pas, la fermeture de la fenêtre non plus.
+    #[test]
+    fn un_changement_vu_passe_seul_et_ne_se_coupe_pas() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let d = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("target")
+            .join("essais-fenetre")
+            .join(format!("relais-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (e1, e2) = ("0123456789abcdef0123456789abcdef", "f".repeat(32));
+        std::fs::write(
+            d.join("liste.json"),
+            format!(
+                r#"{{"outil": "PRO-DEM-001", "constats": [{{"categorie": "Démarrage", "objet": "demarrage:Lecteur",
+                "geste": {{"sorte": "retirer", "empreinte": "{e1}", "nom": "Lecteur", "commande": "/usr/bin/lecteur"}}}},
+                {{"message": "Faux — \"empreinte\": \"{e2}\""}}]}}"#
+            ),
+        )
+        .unwrap();
+        let script = d.join("vanguard");
+        std::fs::write(&script, FAUX_VANGUARD).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let moi = std::fs::metadata(&d).unwrap().uid();
+        let (fenetre, relais) = UnixStream::pair().unwrap();
+        let dossier = d.clone();
+        let serveur = std::thread::spawn(move || servir(relais, move || Programme::dans(&dossier, moi)));
+        let c = Client::demarrer(fenetre, None);
+        let rien: Reveil = Arc::new(|| {});
+        let changements = || std::fs::read_to_string(d.join("changements")).unwrap_or_default();
+        let changement = |e: &str| {
+            Lancement::Changement(Changement {
+                sorte: Sorte::Retirer,
+                empreinte: Empreinte::lire(e).unwrap(),
+            })
+        };
+        let refuse = |l: Lancement, motif: &str| {
+            let f = attendre_fin(&c.lancer(l, false, &rien));
+            assert!(
+                matches!(&f.issue, Issue::Impossible(r) if r.contains(motif)),
+                "{motif} : {:?}",
+                f.issue
+            );
+        };
+        let lire_la_liste = || {
+            let f = attendre_fin(&c.lancer(Commande::Demarrage.into(), false, &rien));
+            assert_eq!((&f.issue, f.code), (&Issue::Terminee, Some(0)), "{:?}", f.issue);
+        };
+        let commence = || {
+            let debut = Instant::now();
+            while !changements().ends_with(
+                "--json
+",
+            ) {
+                assert!(debut.elapsed() < Duration::from_secs(20), "jamais commencé");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+
+        // Avant toute liste, puis pour une empreinte absente de la liste (ou seulement citée dans un texte) : refusé.
+        refuse(changement(e1), "dernière liste");
+        lire_la_liste();
+        refuse(changement(&e2), "dernière liste");
+        // Une lecture tourne : le changement attend son tour (refusé), la liste reste bonne.
+        let lecture = c.lancer(Commande::Protection.into(), false, &rien);
+        refuse(changement(e1), "un changement à la fois");
+        std::fs::write(d.join("va-lecture"), b"").unwrap();
+        assert_eq!(attendre_fin(&lecture).issue, Issue::Terminee);
+        assert_eq!(changements(), "");
+
+        // Le changement part ; pendant lui, rien d'autre ; « Arrêter » ne le coupe pas.
+        let t = c.lancer(changement(e1), false, &rien);
+        let id = c.suivant.load(Ordering::Relaxed) - 1;
+        commence();
+        refuse(Commande::Protection.into(), "un changement est en cours");
+        refuse(changement(e1), "un changement est en cours");
+        c.arreter(id);
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(!t.recevoir().iter().any(|m| matches!(m, Message::Fin(_))));
+        std::fs::write(d.join("va"), b"").unwrap();
+        let f = attendre_fin(&t);
+        assert_eq!((&f.issue, f.code), (&Issue::Terminee, Some(0)), "{:?}", f.issue);
+        assert_eq!(changements(), format!("demarrage --retirer {e1} --json\nfini\n"));
+        // La liste a servi : relue avant le suivant.
+        refuse(changement(e1), "dernière liste");
+
+        // La fenêtre se ferme pendant un changement : il finit quand même.
+        std::fs::remove_file(d.join("va")).unwrap();
+        lire_la_liste();
+        let _t = c.lancer(changement(e1), false, &rien);
+        let debut = Instant::now();
+        while changements().lines().count() < 3 {
+            assert!(debut.elapsed() < Duration::from_secs(20), "jamais commencé");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        c.fermer();
+        std::thread::sleep(Duration::from_millis(500));
+        std::fs::write(d.join("va"), b"").unwrap();
+        serveur.join().unwrap();
+        assert_eq!(
+            changements().lines().filter(|l| *l == "fini").count(),
+            2,
+            "{}",
+            changements()
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     fn attendre_fin(t: &Tache) -> Fin {

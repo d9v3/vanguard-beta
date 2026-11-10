@@ -1384,6 +1384,103 @@ fn demarrage_refuse_une_empreinte_inconnue_ou_mal_formee() {
     assert_eq!(s.code, Some(2), "{}", s.erreurs);
 }
 
+/// Retirer puis remettre de bout en bout, comme le fait la fenêtre (par le relais) : un programme inventé du dossier
+/// d'autostart jetable, son empreinte lue dans `demarrage --json`, retiré (« Hidden=true »), puis remis : le fichier
+/// revient à l'octet près, et chaque geste est au journal des événements. Puis la vieille note (F2) : le programme
+/// retiré est réactivé autrement à la main, retiré de nouveau, remis : c'est la valeur d'avant ce second retrait qui
+/// revient, pas celle du premier. Sans bus de session (systemctl --user ne répond pas) ; les dossiers du système
+/// (XDG_CONFIG_DIRS) sont un dossier jetable vide.
+#[test]
+fn demarrage_retire_puis_remet_a_l_octet_pres() {
+    if !cfg!(target_os = "linux") {
+        return essais::saute("Linux seulement");
+    }
+    if optimiser_refuse_ici() {
+        return essais::saute(REFUS_OPTIMISER);
+    }
+    let maison = maison_jetable();
+    let systeme = maison.join("xdg");
+    let autostart = maison.join("config/autostart");
+    std::fs::create_dir_all(&systeme).unwrap();
+    std::fs::create_dir_all(&autostart).unwrap();
+    let fichier = autostart.join("lecteur.desktop");
+    let v1 = "[Desktop Entry]\nType=Application\nName=Lecteur\nExec=/home/alice/bin/lecteur\n# garde ce commentaire\n";
+    std::fs::write(&fichier, v1).unwrap();
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let systeme_txt = systeme.to_string_lossy().into_owned();
+    let lancer = |args: &[&str]| {
+        vanguard_dans_env(
+            programme,
+            &maison,
+            "fr",
+            args,
+            "",
+            60,
+            &[("XDG_CONFIG_DIRS", systeme_txt.as_str())],
+        )
+    };
+    // L'empreinte que `demarrage --json` donne au geste attendu (« retirer » ou « remettre ») du Lecteur.
+    let empreinte = |sorte: &str| {
+        let s = lancer(&["demarrage", "--json"]);
+        assert_eq!(s.code, Some(0), "{} {}", s.texte, s.erreurs);
+        let v: serde_json::Value = serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("{e} : {}", s.texte));
+        let gestes: Vec<&serde_json::Value> = v["constats"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| c.get("geste"))
+            .filter(|g| g["nom"] == "Lecteur")
+            .collect();
+        assert_eq!(gestes.len(), 1, "{v}");
+        assert_eq!(gestes[0]["sorte"].as_str(), Some(sorte), "{v}");
+        gestes[0]["empreinte"].as_str().unwrap().to_string()
+    };
+    let changer = |option: &str, e: &str, geste: &str| {
+        let s = lancer(&["demarrage", option, e, "--json"]);
+        let derniere = s.texte.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default();
+        let v: serde_json::Value = serde_json::from_str(derniere).unwrap_or_else(|e| panic!("{e} : {}", s.texte));
+        assert_eq!(
+            (s.code, v["geste"].as_str(), v["issue"].as_str()),
+            (Some(0), Some(geste), Some("fait")),
+            "{option} : {} {}",
+            s.texte,
+            s.erreurs
+        );
+    };
+    let lu = || std::fs::read_to_string(&fichier).unwrap();
+
+    let e = empreinte("retirer");
+    changer("--retirer", &e, "retirer");
+    assert!(lu().lines().any(|l| l == "Hidden=true"), "{}", lu());
+    assert!(lu().contains("# garde ce commentaire"), "{}", lu());
+    assert_eq!(empreinte("remettre"), e, "même programme, même empreinte");
+    changer("--remettre", &e, "remettre");
+    assert_eq!(lu(), v1, "remis à l'octet près");
+    assert_eq!(empreinte("retirer"), e);
+
+    // F2 : une note restée d'un retrait d'avant ne prend pas la place de la valeur lue maintenant.
+    changer("--retirer", &e, "retirer");
+    let v2 = "[Desktop Entry]\nType=Application\nName=Lecteur\nExec=/home/alice/bin/lecteur --discret\n";
+    std::fs::write(&fichier, v2).unwrap();
+    changer("--retirer", &e, "retirer");
+    assert!(lu().lines().any(|l| l == "Hidden=true"), "{}", lu());
+    changer("--remettre", &e, "remettre");
+    assert_eq!(lu(), v2, "la valeur d'avant le dernier retrait");
+
+    // Chaque geste est au journal des événements, avec son empreinte et le nom du programme.
+    let mut journal = String::new();
+    for f in std::fs::read_dir(maison.join("donnees/vanguard/evenements"))
+        .unwrap()
+        .flatten()
+    {
+        journal.push_str(&std::fs::read_to_string(f.path()).unwrap_or_default());
+    }
+    let cle = format!("demarrage|{e}");
+    let notes: Vec<&str> = journal.lines().filter(|l| l.contains(&cle)).collect();
+    assert_eq!(notes.len(), 5, "{journal}");
+    assert!(notes.iter().all(|l| l.contains("Lecteur")), "{journal}");
+}
+
 /// Lancés sans Internet : outils/verifier.sh refait toute la suite dans un espace réseau vide (unshare -rn, la boucle
 /// locale seule) et pose VANGUARD_HORS_LIGNE. Ailleurs, ce test ne fait rien : Internet y répondrait.
 fn hors_ligne() -> bool {

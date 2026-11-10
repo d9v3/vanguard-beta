@@ -163,6 +163,46 @@ fn charger() -> Historique {
     charger_dans(&crate::reseau::dossier_local())
 }
 
+/// Le verrou des notes (reglages.json), pris par `socle::Verrou::prendre_nomme` comme les autres bases du dossier.
+pub(crate) const VERROU_NOTES: &str = "reglages.verrou";
+
+// Ce fil tient-il déjà le verrou des notes ? Un `flock` vaut pour une ouverture du fichier : le reprendre dans le même
+// fil (un changement qui note pendant qu'il le tient) attendrait sa propre fin.
+thread_local! {
+    static NOTES_TENUES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Le verrou des notes, tenu de la lecture des notes jusqu'à leur dernière écriture : deux Vanguard qui changent des
+/// réglages en même temps (la fenêtre et le terminal) ne se perdent plus une note l'un l'autre (chacun relisait,
+/// changeait puis réécrivait tout le fichier, et le dernier effaçait la note du premier). Rendu en fin de portée.
+pub(crate) struct NotesTenues(Option<crate::socle::Verrou>);
+
+impl Drop for NotesTenues {
+    fn drop(&mut self) {
+        if self.0.is_some() {
+            NOTES_TENUES.with(|t| t.set(false));
+        }
+    }
+}
+
+/// Prend le verrou des notes de `dossier` (déjà tenu par ce fil : rien de plus). `None` : un autre Vanguard le tient
+/// au-delà de l'attente, ou il ne se prend pas ; c'est dit, et l'appelant ne change rien.
+fn tenir_les_notes(dossier: &std::path::Path) -> Option<NotesTenues> {
+    if NOTES_TENUES.with(std::cell::Cell::get) {
+        return Some(NotesTenues(None));
+    }
+    let _ = std::fs::create_dir_all(dossier);
+    let Some(v) = crate::socle::Verrou::prendre_nomme(dossier, VERROU_NOTES) else {
+        tre!(
+            "Attention : un autre Vanguard change des réglages en ce moment : rien n'a changé ici. Réessayez à sa fin.",
+            "Warning: another Vanguard is changing settings right now: nothing changed here. Try again when it ends."
+        );
+        return None;
+    };
+    NOTES_TENUES.with(|t| t.set(true));
+    Some(NotesTenues(Some(v)))
+}
+
 /// Met de côté, intact, un fichier de valeurs d'avant qu'on ne relit pas : jamais écrasé en silence. Une copie par
 /// contenu (son nom vient de l'empreinte) : le fichier est relu à chaque menu, et une copie datée à chaque lecture
 /// remplissait le dossier. Rend la copie la première fois dans ce processus, pour ne la dire qu'une fois ; `None`
@@ -258,6 +298,9 @@ fn retenir_protection_dans(id: &str, dossier: &std::path::Path) {
     if !systeme::reglage_protege(id) {
         return;
     }
+    let Some(_notes) = tenir_les_notes(dossier) else {
+        return;
+    };
     let mut h = charger_dans(dossier);
     if h.protections.insert(id.to_string()) {
         sauver_dans(&h, dossier);
@@ -569,8 +612,7 @@ fn a_changer(a_faire: &[&Reglage], a_annuler: &[&Reglage], h: &Historique) -> Ve
 
 /// Montre ce qui va changer, demande l'accord, applique, puis relit l'état de chaque réglage.
 fn confirmer_et_executer(a_faire: &[&Reglage], a_annuler: &[&Reglage]) {
-    let mut h = charger();
-    for l in a_changer(a_faire, a_annuler, &h) {
+    for l in a_changer(a_faire, a_annuler, &charger()) {
         println!("{l}");
     }
     if !demander(tr!(
@@ -582,6 +624,11 @@ fn confirmer_et_executer(a_faire: &[&Reglage], a_annuler: &[&Reglage]) {
         trp!("  Annulé.", "  Cancelled.");
         return;
     }
+    // Tenu de la relecture des notes (après la question, qui peut attendre longtemps) jusqu'à leur dernière écriture.
+    let Some(_notes) = tenir_les_notes(&crate::reseau::dossier_local()) else {
+        return;
+    };
+    let mut h = charger();
     // Ce que chaque changement doit valoir une fois fait, lu avant : la note d'un réglage annulé disparaît avec lui.
     // Une protection ne se défait jamais (`executer_avec`) : rien à comparer, elle n'est jamais dite « en partie ».
     let voulues: Vec<Option<Vec<Valeur>>> = a_faire
@@ -1186,6 +1233,29 @@ mod tests {
     /// Au nom unique : `plugins::reglages` prenait le même, et les deux essais « illisible » se croisaient.
     fn dossier_jetable(nom: &str) -> crate::essais::Jetable {
         crate::essais::Jetable::nouveau(&format!("optimiser-{nom}"))
+    }
+
+    /// Le verrou des notes : repris sans attente dans le même fil (un changement qui note pendant qu'il le tient),
+    /// refusé à un autre tant qu'il est tenu, rendu à la fin.
+    #[test]
+    fn verrou_des_notes_tenu_puis_rendu() {
+        let dossier = dossier_jetable("verrou-notes");
+        let d: std::path::PathBuf = dossier.to_path_buf();
+        let essayer = |d: std::path::PathBuf| {
+            std::thread::spawn(move || {
+                crate::socle::Verrou::prendre_compatible(&d, VERROU_NOTES, false, std::time::Duration::ZERO).is_ok()
+            })
+            .join()
+            .unwrap()
+        };
+        {
+            let tenu = tenir_les_notes(&d).expect("le verrou des notes");
+            assert!(tenir_les_notes(&d).is_some(), "repris dans le même fil sans s'attendre");
+            assert!(!essayer(d.clone()), "un autre fil ne l'a pas tant qu'il est tenu");
+            drop(tenu);
+        }
+        assert!(essayer(d.clone()), "rendu à la fin");
+        assert!(tenir_les_notes(&d).is_some(), "repris après");
     }
 
     fn copies(dossier: &std::path::Path, debut: &str) -> usize {

@@ -205,10 +205,24 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   inconnue, ambiguë, programme à garder, pare-feu, notes de Vanguard illisibles ou changées hors de Vanguard, tout est
   refusé sans rien changer ; ce qui change passe par la même correction que le terminal (point de restauration,
   valeur d'avant notée, une seule fenêtre administrateur, jamais sudo). La console ne lance aucun changement, sous
-  aucune forme tapée. Un changement lancé ne s'interrompt pas d'un clic (le couper au milieu laisserait un état à
-  moitié fait) : on l'arrête en refusant la fenêtre administrateur. Sa fin est dite (fait, refusé, échec, avec la
+  aucune forme tapée. « Accepter » revérifie que le geste est encore dans la dernière liste lue : une liste relue qui
+  ne le contient plus ferme la confirmation (« La liste a changé : rien n'a changé. »), comme changer d'écran ; la
+  veille des alertes continue pendant qu'une confirmation est ouverte. Un changement lancé ne s'interrompt pas (le
+  couper au milieu laisserait un état à moitié fait) : Arrêter n'y fait rien, et sous Linux la fermeture de la fenêtre
+  non plus (le relais le laisse finir) ; on l'arrête en refusant la fenêtre administrateur. Seul son délai, 15 minutes
+  (la fenêtre administrateur de Windows peut attendre), le coupe. Côté `vanguard`, un changement tient le verrou des
+  notes (`reglages.verrou`) de leur lecture à leur dernière écriture, comme l'optimiseur du terminal et « Tout
+  remettre comme avant » : deux Vanguard ne changent pas les notes en même temps, le second refuse sans rien changer.
+  « Remettre » relit les notes sous ce verrou et exige le même réglage noté qu'à la première lecture (sinon refusé,
+  rien écrit) ; « Retirer » un programme qui se lance remplace une vieille note restée d'avant par la valeur lue
+  maintenant, pour que « Remettre » ramène l'état d'avant ce retrait-là. Chaque changement fait ou refusé est écrit au
+  journal des événements (sorte, nom nettoyé, issue, empreinte). Sa fin est dite (fait, refusé, échec, avec la
   raison), puis la liste est relue ; seule la dernière ligne de la sortie, un JSON du même geste, avec le code 0, dit
-  « fait » : tout le reste est un échec, jamais un succès (`fenetre/src/attaques.rs`, essais B1 à B3).
+  « fait » : tout le reste est un échec, jamais un succès (`fenetre/src/attaques.rs`, essais B1 à B3). Essais :
+  `une_confirmation_ne_bloque_rien_et_suit_la_liste` (`fenetre/src/appli.rs`), les essais du relais
+  (`fenetre/src/relais.rs`), `verrou_des_notes_tenu_puis_rendu` et ceux de `src/optimiser/demarrage.rs`
+  (`seul_un_programme_note_se_remet`, `pare_feu_reconnu_par_son_paquet`), et de bout en bout, avec un dossier
+  personnel jetable, `demarrage_retire_puis_remet_a_l_octet_pres` (`tests/programme.rs`).
 - **Ses réponses sont lues avec méfiance.** Taille bornée, lignes coupées, séquences de terminal et caractères de
   contrôle retirés, JSON lu sans jamais planter (lecteurs et console fuzzés : `fenetre_donnees`, `fenetre_saisie`) ; une
   réponse illisible est dite telle, jamais comptée saine. Comme dans le terminal (`ui::affichable`), un caractère qui
@@ -244,7 +258,12 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   liste, en telle langue », « retirer ou remettre le programme de telle empreinte, en telle langue » et
   « arrêter » ; une demande hors de ce protocole (longueur, sorte ou langue inconnue) l'arrête (protocole fuzzé,
   `fenetre_relais`) ; il retrouve lui-même le `vanguard` voisin et rejoue sa garde ; il ne se laisse pas observer
-  (PR_SET_DUMPABLE à 0) ; quand la fenêtre se ferme, il arrête ce qui tourne et s'en va. Pourquoi pas `vanguard` aussi :
+  (PR_SET_DUMPABLE à 0). Un changement, il le borne lui-même, sans croire la fenêtre : seulement pour une empreinte
+  qu'il a vue passer dans la dernière sortie de `demarrage --json` qu'il a lui-même relayée ; seulement quand rien
+  d'autre ne tourne, et rien d'autre ne se lance tant qu'il tourne ; « arrêter » ne le coupe pas (essais
+  `le_relais_ne_comprend_que_le_changement_de_forme_fermee`, `seules_les_empreintes_de_la_liste_sont_vues`,
+  `un_changement_vu_passe_seul_et_ne_se_coupe_pas`). Quand la fenêtre se ferme, il arrête les lectures en cours,
+  laisse finir un changement lancé, puis s'en va. Pourquoi pas `vanguard` aussi :
   enfermé, il verrait moins (no_new_privs seul fait disparaître la vérification de sudo du bilan ; Landlock lui cache
   les autres processus et le bus système), et un bilan qui voit moins sans le dire serait pire. À l'ouverture, la
   console de la fenêtre dit si le bac est actif, avec quelle version de Landlock et ce que ce noyau ne sait pas
@@ -280,6 +299,13 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   Unix du compte, dont le bus de session, d'où `systemd-run` lancerait un programme, et celles d'X11 même sous
   Wayland) et avant Landlock 6 (les sockets abstraites, dont celle de Xwayland). Les réglages de pilote de votre compte
   (~/.drirc, ~/.nv) ne sont pas lus : la carte garde ses valeurs par défaut.
+  La confirmation d'un changement du démarrage protège d'un clic de trop, pas d'une fenêtre prise en main : celle-ci
+  pourrait « accepter » à votre place. Ce qu'elle obtient alors reste borné par ce qui ne dépend pas d'elle : sous
+  Linux, le relais n'accepte que la forme fermée, une empreinte qu'il a vue dans la dernière liste, un changement à la
+  fois ; `vanguard` rejuge tout et ne retire jamais un programme à garder ni un pare-feu ; ce qui est retiré se remet
+  exactement (valeur d'avant notée) ; chaque geste est au journal des événements, où il se voit. Sous Windows, il n'y
+  a pas de relais : ces bornes-là sont celles de `vanguard` seul, et fermer la fenêtre arrête aussi un changement en
+  cours (objet de travail) ; la valeur d'avant étant notée avant tout changement, il se remet quand même.
 
 ## Baisses par choix
 

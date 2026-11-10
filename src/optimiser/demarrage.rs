@@ -79,7 +79,10 @@ pub(crate) fn a_garder(nom: &str, commande: &str, bureau: bool) -> Option<&'stat
 /// l'élément (« sécurité ») ; sous Linux, le nom seul ne prouve rien : seul le paquet qui fournit le programme le
 /// reconnaît (`classer`), et ces motifs ne servent qu'à refuser quand ce paquet ne se lit pas.
 #[rustfmt::skip]
-const PARE_FEU: &[&str] = &["firewall", "firewalld", "gufw", "ufw", "opensnitch", "little snitch", "lulu", "nftables"];
+const PARE_FEU: &[&str] = &[
+    "firewall", "firewalld", "gufw", "ufw", "opensnitch", "little snitch", "lulu", "nftables", "tinywall", "glasswire",
+    "simplewall", "portmaster",
+];
 
 /// Les paquets de pare-feu de Linux (Debian, Fedora, Arch, openSUSE) et de leurs interfaces.
 #[rustfmt::skip]
@@ -124,7 +127,8 @@ fn a_garder_hors_pare_feu(nom: &str, commande: &str, bureau: bool) -> Option<&'s
         "panda", "emsisoft", "antivirus", "gdata", "avktray", "hitmanpro", "zemana", "acronis", "forticlient",
         "globalprotect", "zscaler", "netskope",
         // Un VPN qui démarre avec la session protège la connexion (souvent avec un coupe-circuit).
-        "wireguard", "openvpn", "protonvpn", "mullvad", "nordvpn", "expressvpn", "surfshark",
+        "wireguard", "openvpn", "protonvpn", "mullvad", "nordvpn", "expressvpn", "surfshark", "tailscale",
+        "cloudflare warp", "warp-svc", "warp-taskbar", "zerotier",
     ];
     #[rustfmt::skip]
     const PILOTES: &[&str] = &[
@@ -245,10 +249,11 @@ fn chemin_reel(programme: &str) -> Option<std::path::PathBuf> {
     std::fs::canonicalize(trouve).ok().filter(|c| c.is_file())
 }
 
-/// Pure : `chemin` trouve le programme, `paquet` dit qui le fournit. Le nom seul ne fait jamais un pare-feu : un faux
-/// « ufw » posé dans le dossier du compte est un programme comme un autre. Paquet illisible, fichier du paquet
-/// modifié, ou programme qu'on ne peut pas suivre (enveloppe, introuvable), avec un nom de pare-feu : traité comme le
-/// vrai pare-feu par prudence (R15), donc gardé, et c'est dit.
+/// Pure : `chemin` trouve le programme, `paquet` dit qui le fournit. Le nom seul ne fait jamais un pare-feu qu'on
+/// retire avec la question de baisse : seul son paquet le prouve. Mais un nom de pare-feu sans paquet qui le prouve
+/// (paquet illisible, fichier du paquet modifié, hors de tout paquet, ou programme qu'on ne peut pas suivre :
+/// enveloppe, introuvable) est gardé par prudence (R15), et c'est dit : un pare-feu installé à la main (dans
+/// /opt, ou le dossier du compte) se retirait sinon d'un clic, comme un programme ordinaire.
 #[cfg(target_os = "linux")]
 fn classer_linux(
     nom: &str,
@@ -277,6 +282,9 @@ fn classer_linux(
             Garde::Garder(tr!("pare-feu : fichier modifié", "firewall: file modified"))
         }
         EtatPaquet::Illisible => illisible(),
+        EtatPaquet::Aucun if nom_de_pare_feu(nom, commande) => {
+            Garde::Garder(tr!("pare-feu ? hors paquet", "firewall? not from a package"))
+        }
         EtatPaquet::Aucun | EtatPaquet::Intact(_) | EtatPaquet::Modifie(_) => Garde::Ordinaire,
     }
 }
@@ -512,6 +520,9 @@ pub fn retirables() -> Vec<AuDemarrage> {
 /// Retire du démarrage le programme de ce réglage, l'accord ayant été donné avant (blocage) : la valeur d'avant est
 /// notée comme pour la liste à cocher. `None` : il ne se lance plus, ou n'est plus là.
 pub fn retirer(id: &str) -> Option<bool> {
+    let Some(_notes) = super::tenir_les_notes(&crate::reseau::dossier_local()) else {
+        return Some(false);
+    };
     let r = systeme::au_demarrage()
         .into_iter()
         .filter(|p| p.actif && classer(p) == Garde::Ordinaire)
@@ -520,9 +531,16 @@ pub fn retirer(id: &str) -> Option<bool> {
     Some(retirer_le(&r))
 }
 
-/// Retire ce programme, valeur d'avant notée d'abord (`executer`) ; vrai s'il ne se lance plus.
+/// Retire ce programme, qui se lance, valeur d'avant notée d'abord (`executer`) ; vrai s'il ne se lance plus. Une
+/// vieille note du même programme (retiré par Vanguard, puis remis ailleurs, ou réécrit par une mise à jour) ne vaut
+/// plus : elle ferait remettre un fichier d'avant ; c'est la valeur de maintenant qui est notée. Seulement ici :
+/// ailleurs, la plus ancienne note reste (`executer`). Le verrou des notes est tenu (déjà tenu : rien de plus).
 fn retirer_le(r: &Reglage) -> bool {
+    let Some(_notes) = super::tenir_les_notes(&crate::reseau::dossier_local()) else {
+        return false;
+    };
     let mut h = charger();
+    h.reglages.remove(r.id.as_ref());
     let (faits, _) = executer(&[r], &[], &mut h);
     faits == [true] && etat(r) == Etat::Fait
 }
@@ -563,6 +581,8 @@ enum Refus {
     PareFeu,
     /// Les notes de Vanguard sont illisibles ou changées hors de lui : rien ne s'en remet.
     NotesDouteuses,
+    /// Un autre Vanguard tient les notes (il change des réglages) : rien n'est changé, à refaire à sa fin.
+    NotesOccupees,
 }
 
 impl Refus {
@@ -599,6 +619,11 @@ impl Refus {
                 "Vanguard's notes unreadable or changed outside Vanguard: nothing is put back from them"
             )
             .to_string(),
+            Refus::NotesOccupees => tr!(
+                "un autre Vanguard change des réglages en ce moment : réessayez à sa fin",
+                "another Vanguard is changing settings right now: try again when it ends"
+            )
+            .to_string(),
         }
     }
 }
@@ -624,29 +649,49 @@ fn empreinte_du(r: &Reglage) -> Option<String> {
 }
 
 /// Le programme à retirer qui a cette empreinte, parmi ceux du système : il doit se lancer et être ordinaire. Tous
-/// les programmes comptent pour reconnaître une empreinte en double ; `classer` est passé pour les essais.
+/// les programmes comptent pour reconnaître une empreinte en double ; seul le programme trouvé est classé (son
+/// paquet lu), `classer` passé pour les essais. Rend aussi son nom, rendu inoffensif, s'il est seul à l'avoir.
+fn a_retirer_nomme(
+    programmes: Vec<Programme>,
+    empreinte: &str,
+    classer: impl Fn(&Programme) -> Garde,
+) -> (Option<String>, Result<Reglage, Refus>) {
+    if !empreinte_bien_formee(empreinte) {
+        return (None, Err(Refus::MalFormee));
+    }
+    // Comme `empreinte_du` sur son réglage, sans le bâtir.
+    let trouves: Vec<Programme> = programmes
+        .into_iter()
+        .filter(|p| {
+            p.changement
+                .identite_demarrage()
+                .and_then(|i| resultat::empreinte(&i))
+                .as_deref()
+                == Some(empreinte)
+        })
+        .collect();
+    let p = match le_seul(trouves) {
+        Ok(p) => p,
+        Err(refus) => return (None, Err(refus)),
+    };
+    let nom = Some(affichable(&p.nom));
+    let garde = if p.actif { classer(&p) } else { Garde::Ordinaire };
+    let issue = match (p.actif, garde) {
+        (false, _) => Err(Refus::NeSeLancePas),
+        (true, Garde::Garder(raison)) => Err(Refus::AGarder(raison)),
+        (true, Garde::PareFeu) => Err(Refus::PareFeu),
+        (true, Garde::Ordinaire) => reglage(&p.nom, p.changement).ok_or(Refus::Inconnue),
+    };
+    (nom, issue)
+}
+
+#[cfg(test)]
 fn a_retirer(
     programmes: Vec<Programme>,
     empreinte: &str,
     classer: impl Fn(&Programme) -> Garde,
 ) -> Result<Reglage, Refus> {
-    if !empreinte_bien_formee(empreinte) {
-        return Err(Refus::MalFormee);
-    }
-    let trouves: Vec<(Garde, bool, Reglage)> = programmes
-        .into_iter()
-        .filter_map(|p| {
-            let (actif, garde) = (p.actif, if p.actif { classer(&p) } else { Garde::Ordinaire });
-            let r = reglage(&p.nom, p.changement)?;
-            (empreinte_du(&r).as_deref() == Some(empreinte)).then_some((garde, actif, r))
-        })
-        .collect();
-    match le_seul(trouves)? {
-        (_, false, _) => Err(Refus::NeSeLancePas),
-        (Garde::Garder(raison), true, _) => Err(Refus::AGarder(raison)),
-        (Garde::PareFeu, true, _) => Err(Refus::PareFeu),
-        (Garde::Ordinaire, true, r) => Ok(r),
-    }
+    a_retirer_nomme(programmes, empreinte, classer).1
 }
 
 /// Le programme retiré par Vanguard qui a cette empreinte, d'après ses notes.
@@ -673,36 +718,20 @@ enum Issue {
 /// `vanguard demarrage --retirer|--remettre <empreinte>` : un seul programme, sans question (l'accord a été donné
 /// dans la fenêtre, après la confirmation qui montre le nom et la commande). L'empreinte est vérifiée avant toute
 /// lecture du système ; rien n'est changé pour une empreinte inconnue, en double, d'un programme à garder ou d'un
-/// pare-feu. Avec `json`, l'issue est la dernière ligne. Rend le code de sortie : 0 fait, 1 refusé ou non fait, 2
-/// empreinte mal formée.
+/// pare-feu. Le verrou des notes est tenu de leur lecture à leur dernière écriture (un autre Vanguard qui le tient :
+/// refusé). Chaque demande, faite, refusée ou en échec, va au journal des événements. Avec `json`, l'issue est la
+/// dernière ligne. Rend le code de sortie : 0 fait, 1 refusé ou non fait, 2 empreinte mal formée.
 pub fn changer(sorte: SorteDeChangement, empreinte: &str, json: bool) -> i32 {
     // Vérifiée avant toute lecture du système.
-    let issue = if empreinte_bien_formee(empreinte) {
-        match sorte {
-            SorteDeChangement::Retirer => match a_retirer(systeme::au_demarrage(), empreinte, classer) {
-                Ok(r) if retirer_le(&r) => Issue::Fait,
-                Ok(_) => Issue::Echec,
-                Err(refus) => Issue::Refuse(refus),
-            },
-            SorteDeChangement::Remettre => {
-                // Choisi d'après les notes lues sans rien écrire : un refus ne laisse aucune trace.
-                match super::historique_sans_ecrire(&crate::reseau::dossier_local())
-                    .ok_or(Refus::NotesDouteuses)
-                    .and_then(|h| a_remettre(&h, empreinte))
-                {
-                    Ok(r) => {
-                        let mut h = charger();
-                        let (_, remis) = executer(&[], &[&r], &mut h);
-                        if remis == [true] { Issue::Fait } else { Issue::Echec }
-                    }
-                    Err(refus) => Issue::Refuse(refus),
-                }
-            }
+    let (nom, issue) = if empreinte_bien_formee(empreinte) {
+        match super::tenir_les_notes(&crate::reseau::dossier_local()) {
+            Some(_notes) => changer_tenu(sorte, empreinte),
+            None => (None, Issue::Refuse(Refus::NotesOccupees)),
         }
     } else {
-        Issue::Refuse(Refus::MalFormee)
+        (None, Issue::Refuse(Refus::MalFormee))
     };
-    let (code, nom, raison) = match &issue {
+    let (code, mot, raison) = match &issue {
         Issue::Fait => (0, "fait", String::new()),
         Issue::Refuse(Refus::MalFormee) => (2, "refuse", Refus::MalFormee.raison()),
         Issue::Refuse(r) => (1, "refuse", r.raison()),
@@ -716,10 +745,11 @@ pub fn changer(sorte: SorteDeChangement, empreinte: &str, json: bool) -> i32 {
             .to_string(),
         ),
     };
+    noter_au_journal(sorte, empreinte, nom.as_deref(), &issue, &raison);
     if json {
         println!(
             "{}",
-            serde_json::json!({ "geste": sorte.code(), "issue": nom, "raison": raison })
+            serde_json::json!({ "geste": sorte.code(), "issue": mot, "raison": raison })
         );
     } else {
         match (&issue, sorte) {
@@ -738,9 +768,86 @@ pub fn changer(sorte: SorteDeChangement, empreinte: &str, json: bool) -> i32 {
     code
 }
 
+/// `changer`, le verrou des notes tenu : le nom du programme visé (s'il est connu) et l'issue.
+fn changer_tenu(sorte: SorteDeChangement, empreinte: &str) -> (Option<String>, Issue) {
+    match sorte {
+        SorteDeChangement::Retirer => match a_retirer_nomme(systeme::au_demarrage(), empreinte, classer) {
+            (nom, Ok(r)) if retirer_le(&r) => (nom, Issue::Fait),
+            (nom, Ok(_)) => (nom, Issue::Echec),
+            (nom, Err(refus)) => (nom, Issue::Refuse(refus)),
+        },
+        SorteDeChangement::Remettre => {
+            // Choisi d'après les notes lues sans rien écrire : un refus ne laisse aucune trace.
+            let dossier = crate::reseau::dossier_local();
+            let choisi = super::historique_sans_ecrire(&dossier)
+                .ok_or(Refus::NotesDouteuses)
+                .and_then(|h1| a_remettre(&h1, empreinte).map(|r| (h1, r)));
+            let (h1, r) = match choisi {
+                Ok(t) => t,
+                Err(refus) => return (None, Issue::Refuse(refus)),
+            };
+            let nom =
+                r.id.strip_prefix(PREFIXE)
+                    .map(|i| affichable(&systeme::Changement::nom_demarrage(i)));
+            // Les notes relues pour de bon (`charger`) doivent dire la même chose que celles qui ont choisi : sinon,
+            // rien n'est remis (ni écrit) d'après des notes qui ont changé entre les deux lectures.
+            let mut h = charger();
+            let r2 = match relu_pareil(&h1, &r, &h, empreinte) {
+                Ok(r2) => r2,
+                Err(refus) => return (nom, Issue::Refuse(refus)),
+            };
+            let (_, remis) = executer(&[], &[&r2], &mut h);
+            (nom, if remis == [true] { Issue::Fait } else { Issue::Echec })
+        }
+    }
+}
+
+/// Le réglage à remettre d'après les notes relues pour de bon (`h`), seulement s'il est celui choisi d'après la
+/// première lecture (`h1`, `r`) avec la même note : sinon `NotesDouteuses`, et rien n'est remis.
+fn relu_pareil(h1: &Historique, r: &Reglage, h: &Historique, empreinte: &str) -> Result<Reglage, Refus> {
+    a_remettre(h, empreinte)
+        .ok()
+        .filter(|r2| r2.id == r.id && h.reglages.get(r.id.as_ref()) == h1.reglages.get(r.id.as_ref()))
+        .ok_or(Refus::NotesDouteuses)
+}
+
+/// La demande au journal des événements, faite ou pas : un changement demandé par la fenêtre se voit ensuite à côté
+/// des alertes, même si personne ne regardait. Le nom est déjà rendu inoffensif ; l'empreinte seulement bien formée.
+fn noter_au_journal(sorte: SorteDeChangement, empreinte: &str, nom: Option<&str>, issue: &Issue, raison: &str) {
+    use crate::modele::evenement::{Evenement, Source};
+    let bien_formee = empreinte_bien_formee(empreinte);
+    let qui = match nom {
+        Some(n) => n.to_string(),
+        None if bien_formee => trf!("empreinte {}", "fingerprint {}", empreinte),
+        None => tr!("empreinte mal formée", "malformed fingerprint").to_string(),
+    };
+    let geste = match sorte {
+        SorteDeChangement::Retirer => tr!("retirer du démarrage", "remove from startup"),
+        SorteDeChangement::Remettre => tr!("remettre au démarrage", "put back at startup"),
+    };
+    let texte = match issue {
+        Issue::Fait => trf!("Démarrage : {} « {} » : fait", "Startup: {} “{}”: done", geste, qui),
+        Issue::Refuse(_) => trf!(
+            "Démarrage : {} « {} » : refusé ({})",
+            "Startup: {} “{}”: refused ({})",
+            geste,
+            qui,
+            raison
+        ),
+        Issue::Echec => trf!("Démarrage : {} « {} » : {}", "Startup: {} “{}”: {}", geste, qui, raison),
+    };
+    let cle = format!("demarrage|{}", if bien_formee { empreinte } else { "mal-formee" });
+    crate::modele::journal::noter(
+        Evenement::action(Source::Correction, &texte, matches!(issue, Issue::Fait), &[]).cle(Some(&cle)),
+    );
+}
+
 /// Remet au démarrage ce que Vanguard en a retiré, d'après sa note (l'annulation d'un blocage). `None` : aucune note
 /// pour ce réglage.
 pub fn remettre(id: &str) -> Option<bool> {
+    let Some(_notes) = super::tenir_les_notes(&crate::reseau::dossier_local()) else {
+        return Some(false);
+    };
     let mut h = charger();
     let r = notes(&h).into_iter().find(|r| r.id == id)?;
     let (_, remis) = executer(&[], &[&r], &mut h);
@@ -916,6 +1023,29 @@ mod tests {
         );
         assert!(a_garder("NordVPN", r"C:\Program Files\NordVPN\NordVPN.exe", false).is_some());
         assert!(a_garder("mullvad-vpn", "/opt/Mullvad VPN/mullvad-gui", false).is_some());
+        for (nom, commande) in [
+            ("Tailscale", r"C:\Program Files\Tailscale\tailscale-ipn.exe"),
+            (
+                "Cloudflare WARP",
+                r"C:\Program Files\Cloudflare\Cloudflare WARP\Cloudflare WARP.exe",
+            ),
+            (
+                "ZeroTier One",
+                r"C:\Program Files (x86)\ZeroTier\One\zerotier_desktop_ui.exe",
+            ),
+        ] {
+            assert!(a_garder(nom, commande, false).is_some(), "{nom}");
+        }
+        // Pare-feu tiers de Windows : à garder (sous Linux, `classer` lit d'abord le paquet).
+        #[cfg(not(target_os = "linux"))]
+        for (nom, commande) in [
+            ("TinyWall", r"C:\Program Files (x86)\TinyWall\TinyWall.exe"),
+            ("GlassWire", r"C:\Program Files (x86)\GlassWire\glasswire.exe"),
+            ("simplewall", r"C:\Program Files\simplewall\simplewall.exe"),
+            ("Portmaster", r"C:\Program Files\Safing\Portmaster\portmaster-start.exe"),
+        ] {
+            assert!(a_garder(nom, commande, false).is_some(), "{nom}");
+        }
         assert!(
             a_garder(
                 "AVKTray",
@@ -981,11 +1111,37 @@ mod tests {
             classe("Applet réseau", "/usr/bin/applet", intact("firewall-applet")),
             Garde::PareFeu
         );
-        // Un nom de pare-feu sur un faux programme : un programme comme un autre.
+        // Un nom de pare-feu hors de tout paquet (un faux, ou un pare-feu posé à la main) : jamais retiré d'un clic,
+        // ni proposé comme pare-feu ; gardé, et dit.
+        for (nom, commande) in [
+            ("ufw", "/home/alice/.local/bin/ufw"),
+            ("Portmaster", "/opt/safing/portmaster/portmaster-start"),
+            ("simplewall", "/home/alice/bin/simplewall"),
+        ] {
+            assert!(
+                matches!(
+                    classe(nom, commande, EtatPaquet::Aucun),
+                    Garde::Garder(r) if r.contains("hors paquet") || r.contains("not from a package")
+                ),
+                "{nom}"
+            );
+        }
+        // Hors paquet sans nom de pare-feu : un programme comme un autre.
         assert_eq!(
-            classe("ufw", "/home/alice/.local/bin/ufw", EtatPaquet::Aucun),
+            classe("Lecteur", "/home/alice/bin/lecteur", EtatPaquet::Aucun),
             Garde::Ordinaire
         );
+        // Les VPN connus restent gardés (sécurité), quel que soit le paquet.
+        for (nom, commande) in [
+            ("Tailscale", "/usr/bin/tailscale systray"),
+            ("Cloudflare WARP", "/usr/bin/warp-taskbar"),
+            ("ZeroTier", "/usr/sbin/zerotier-one"),
+        ] {
+            assert!(
+                matches!(classe(nom, commande, EtatPaquet::Aucun), Garde::Garder(_)),
+                "{nom}"
+            );
+        }
         assert_eq!(classe("Firewall", "/usr/bin/steam", intact("steam")), Garde::Ordinaire);
         // Paquet illisible : traité comme le vrai pare-feu (gardé), et dit ; sans nom de pare-feu, rien à protéger.
         assert!(matches!(
@@ -1275,6 +1431,30 @@ mod essais_changer {
             a_remettre(&Historique::default(), &empreinte_de("Lecteur")).err(),
             Some(Refus::Inconnue)
         );
+        // Relues pour de bon avant de remettre : la même note, ou rien.
+        let r = a_remettre(&h, &empreinte_de("Lecteur")).unwrap();
+        let note = |valeur: &str| {
+            let mut n = Historique::default();
+            n.reglages.insert(
+                format!("{PREFIXE}systemd|Lecteur.service"),
+                Avant {
+                    date: String::new(),
+                    valeurs: vec![Some(valeur.to_string())],
+                    ..Avant::default()
+                },
+            );
+            n
+        };
+        assert!(relu_pareil(&h, &r, &note("enabled"), &empreinte_de("Lecteur")).is_ok());
+        let autre = note("disabled");
+        assert_eq!(
+            relu_pareil(&h, &r, &autre, &empreinte_de("Lecteur")).err(),
+            Some(Refus::NotesDouteuses)
+        );
+        assert_eq!(
+            relu_pareil(&h, &r, &Historique::default(), &empreinte_de("Lecteur")).err(),
+            Some(Refus::NotesDouteuses)
+        );
     }
 
     /// Chaque refus se dit.
@@ -1288,6 +1468,7 @@ mod essais_changer {
             Refus::AGarder("pilote"),
             Refus::PareFeu,
             Refus::NotesDouteuses,
+            Refus::NotesOccupees,
         ] {
             assert_ne!(r.raison(), "");
         }

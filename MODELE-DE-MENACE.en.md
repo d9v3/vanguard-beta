@@ -195,11 +195,24 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   judges everything again: malformed, unknown or ambiguous fingerprint, program to keep, firewall, Vanguard's notes
   unreadable or changed outside Vanguard, all are refused without changing anything; what changes goes through the
   same correction as in the terminal (restore point, previous value noted, a single administrator window, never sudo).
-  The console starts no change, in any typed form. A change once started cannot be interrupted by a click (cutting it
-  in the middle would leave a half-done state): it is stopped by declining the administrator window. Its end is told
+  The console starts no change, in any typed form. “Accept” checks again that the action is still in the last list
+  read: a list read again that no longer contains it closes the confirmation (“The list changed: nothing changed.”),
+  as changing screens does; the alert watch goes on while a confirmation is open. A change once started is not
+  interrupted (cutting it in the middle would leave a half-done state): Stop does nothing to it, and under Linux
+  neither does closing the window (the relay lets it finish); it is stopped by declining the administrator window.
+  Only its time limit, 15 minutes (the Windows administrator window may wait), cuts it. On the `vanguard` side, a
+  change holds the notes lock (`reglages.verrou`) from reading the notes to their last write, as the terminal
+  optimiser and “Put everything back” do: two Vanguards never change the notes at the same time, the second refuses
+  without changing anything. “Put back” reads the notes again under this lock and requires the same noted setting as
+  on the first reading (otherwise refused, nothing written); “Remove” on a program that starts replaces an old note
+  left from before with the value read now, so that “Put back” brings back the state from before this removal. Each
+  change done or refused is written to the event log (kind, cleaned name, outcome, fingerprint). Its end is told
   (done, refused, failure, with the reason), then the list is read again; only the last line of the output, a JSON of
   the same action, with exit code 0, means “done”: anything else is a failure, never a success
-  (`fenetre/src/attaques.rs`, tests B1 to B3).
+  (`fenetre/src/attaques.rs`, tests B1 to B3). Tests: `une_confirmation_ne_bloque_rien_et_suit_la_liste`
+  (`fenetre/src/appli.rs`), the relay tests (`fenetre/src/relais.rs`), `verrou_des_notes_tenu_puis_rendu` and those
+  of `src/optimiser/demarrage.rs` (`seul_un_programme_note_se_remet`, `pare_feu_reconnu_par_son_paquet`), and end to
+  end, with a throwaway home folder, `demarrage_retire_puis_remet_a_l_octet_pres` (`tests/programme.rs`).
 - **Its answers are read with suspicion.** Bounded size, long lines cut, terminal sequences and control characters
   removed, JSON read without ever crashing (readers and console fuzzed: `fenetre_donnees`, `fenetre_saisie`); an
   unreadable answer is said to be so, never counted as healthy. As in the terminal (`ui::affichable`), a character that
@@ -232,7 +245,11 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   only understands “run command n of the list, in this language”, “remove or put back the program with this
   fingerprint, in this language” and “stop”; a request outside this protocol (length, unknown kind or language) stops it
   (protocol fuzzed, `fenetre_relais`); it finds the neighbouring `vanguard` itself and replays its guard; it cannot be
-  observed (PR_SET_DUMPABLE set to 0); when the window closes, it stops what is running and leaves. Why not `vanguard`
+  observed (PR_SET_DUMPABLE set to 0). A change, it bounds itself, without trusting the window: only for a fingerprint
+  it saw in the last output of `demarrage --json` it relayed itself; only when nothing else runs, and nothing else
+  starts while it runs; “stop” does not cut it (tests `le_relais_ne_comprend_que_le_changement_de_forme_fermee`,
+  `seules_les_empreintes_de_la_liste_sont_vues`, `un_changement_vu_passe_seul_et_ne_se_coupe_pas`). When the window
+  closes, it stops the readings in progress, lets a started change finish, then leaves. Why not `vanguard`
   too: locked in, it would see less (no_new_privs alone makes the sudo check of the report disappear; Landlock hides
   other processes and the system bus from it), and a report that sees less without saying so would be worse. On opening,
   the window's console says whether the sandbox is active, with which Landlock version and what this kernel cannot take
@@ -267,6 +284,13 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   before Landlock 9 (it can still reach the account's Unix sockets, including the session bus, from which `systemd-run`
   would start a program, and the X11 ones even under Wayland) and before Landlock 6 (abstract sockets, including
   Xwayland's). Your account's driver settings (~/.drirc, ~/.nv) are not read: the card keeps its defaults.
+  The confirmation of a startup change protects against one click too many, not against a hijacked window: that one
+  could “accept” in your place. What it gets then stays bounded by what does not depend on it: under Linux, the relay
+  only accepts the closed form, a fingerprint it saw in the last list, one change at a time; `vanguard` judges
+  everything again and never removes a program to keep or a firewall; what is removed is put back exactly (previous
+  value noted); each action is in the event log, where it shows. Under Windows there is no relay: these bounds are
+  those of `vanguard` alone, and closing the window also stops a change in progress (job object); since the previous
+  value is noted before any change, it can still be put back.
 
 ## Lowered by choice
 

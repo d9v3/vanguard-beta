@@ -12,7 +12,7 @@ use std::path::Path;
 
 use super::{
     Avant, Categorie, DNS, Historique, Reglage, Valeur, a_changer, catalogue_note, charger, charger_dans,
-    executer_avec, note_admise, sauver_dans, systeme, valeurs_d_avant,
+    executer_avec, note_admise, sauver_dans, systeme, tenir_les_notes, valeurs_d_avant,
 };
 use crate::selection::{Case, cocher};
 use crate::ui::*;
@@ -305,6 +305,9 @@ pub(crate) fn noter(releves: &[&Releve]) -> bool {
 }
 
 fn noter_dans(releves: &[&Releve], dossier: &Path) -> bool {
+    let Some(_notes) = tenir_les_notes(dossier) else {
+        return false;
+    };
     let mut h = charger_dans(dossier);
     for r in releves {
         h.reglages.entry(r.id.clone()).or_insert_with(|| r.avant.clone());
@@ -319,6 +322,9 @@ pub(crate) fn apres_application(issues: &[(String, bool)]) {
 }
 
 fn apres_application_dans(issues: &[(String, bool)], dossier: &Path) {
+    let Some(_notes) = tenir_les_notes(dossier) else {
+        return;
+    };
     let mut h = charger_dans(dossier);
     let mut change = false;
     // Une note partagée par plusieurs corrections d'un lot (`regrouper`) reste dès que l'une a réussi.
@@ -350,6 +356,9 @@ pub(crate) fn oublier(ids: &[String]) {
 
 #[cfg(any(not(windows), test))]
 fn oublier_dans(ids: &[String], dossier: &Path) {
+    let Some(_notes) = tenir_les_notes(dossier) else {
+        return;
+    };
     let mut h = charger_dans(dossier);
     let avant = h.reglages.len();
     h.reglages.retain(|id, _| !ids.contains(id));
@@ -532,6 +541,15 @@ pub(super) fn defaire_dans(
     tient_le_dns: bool,
     dossier: &Path,
 ) -> (Vec<(String, Issue)>, Vec<bool>) {
+    // Un autre Vanguard change des réglages : rien n'est défait (ni les notes, ni les blocages d'en plus).
+    let Some(_notes) = tenir_les_notes(dossier) else {
+        let refus = tr!(
+            "un autre Vanguard change des réglages en ce moment : réessayez à sa fin",
+            "another Vanguard is changing settings right now: try again when it ends"
+        );
+        let issues = ids.iter().map(|id| (id.clone(), Issue::Refuse(refus.into()))).collect();
+        return (issues, vec![false; en_plus.len()]);
+    };
     let mut h = charger_dans(dossier);
     let tous = notes_rebaties(&h);
     let mut issues: Vec<(String, Option<Issue>)> = Vec::with_capacity(ids.len());

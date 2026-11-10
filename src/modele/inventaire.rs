@@ -238,6 +238,9 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     local("appareils.verrou", "reseau"),
     local("appareils.lock", "reseau"),
     local("alertes.verrou", "reseau::tableau"),
+    // Le verrou des notes des réglages (reglages.json), tenu d'une lecture des notes à leur dernière écriture.
+    local("reglages.verrou", "optimiser"),
+    local("reglages.lock", "optimiser"),
     local("connexion.json", "reseau::connexion"),
     local("surveillance-voulue", "reseau::surveillance"),
     local("horodatage", "reseau::surveillance"),
@@ -681,6 +684,8 @@ mod tests {
         ("appareils.verrou", "verrou, sans contenu"),
         ("appareils.lock", "verrou, sans contenu"),
         ("alertes.verrou", "verrou, sans contenu"),
+        ("reglages.verrou", "verrou, sans contenu"),
+        ("reglages.lock", "verrou, sans contenu"),
         (
             "connexion.json",
             "habitudes du test de débit : un chiffre montré, aucune défense",

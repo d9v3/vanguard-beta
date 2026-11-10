@@ -400,11 +400,12 @@ pub(crate) fn verrous_remplaces(dossier: &Path) -> Vec<String> {
     .collect()
 }
 
-/// Les verrous des autres bases du dossier (appareils du réseau, alertes) : rien ne les dit sinon remplacés, et leur
-/// base ne s'écrit plus sans un mot à l'écran. Au bilan seulement : ils ne touchent pas au journal des événements.
-/// Chacun avec son verrou du système (`socle::nom_systeme`, `appareils.lock`), que `prendre_compatible` prend d'abord :
-/// remplacé, la base se lit sans verrou, sans rien dire (campagne 6, E6-B3).
-const AUTRES_VERROUS: [&str; 2] = ["appareils.verrou", "alertes.verrou"];
+/// Les verrous des autres bases du dossier (appareils du réseau, alertes, notes des réglages) : rien ne les dit sinon
+/// remplacés, et leur base ne s'écrit plus sans un mot à l'écran. Au bilan seulement : ils ne touchent pas au journal
+/// des événements. Chacun avec son verrou du système (`socle::nom_systeme`, `appareils.lock`), que
+/// `prendre_compatible` prend d'abord : remplacé, la base se lit sans verrou, sans rien dire (campagne 6, E6-B3) ;
+/// celui des notes remplacé, aucun réglage ne change plus (`optimiser::tenir_les_notes`).
+const AUTRES_VERROUS: [&str; 3] = ["appareils.verrou", "alertes.verrou", "reglages.verrou"];
 
 /// Au bilan : le verrou des sceaux tenu ailleurs, comme celui du journal (`modele::journal`). Avant cela, un verrou
 /// de l'état remplacé par un dossier, un lien ou un tube, ou aux droits retirés : ce verrou ne se prend plus, pour personne, et sans ce
@@ -439,6 +440,12 @@ fn constat_verrou(dossier: &Path) -> Option<Constat> {
             }
             if remplaces.iter().any(|n| n.starts_with("alertes.")) {
                 bases.push(tr!("les alertes du réseau", "the network alerts"));
+            }
+            if remplaces.iter().any(|n| n.starts_with("reglages.")) {
+                bases.push(tr!(
+                    "les changements de réglages (rien ne change sans ce verrou)",
+                    "setting changes (nothing changes without this lock)"
+                ));
             }
             if des_copies {
                 bases.push(tr!(
@@ -1640,6 +1647,8 @@ mod tests {
         for (verrou, base, en) in [
             ("appareils.lock", "appareils du réseau", "network device"),
             ("alertes.lock", "alertes du réseau", "network alerts"),
+            ("reglages.verrou", "changements de réglages", "setting changes"),
+            ("reglages.lock", "changements de réglages", "setting changes"),
         ] {
             std::fs::create_dir(d.join(verrou)).unwrap();
             let c = constat_verrou(&d).unwrap();
