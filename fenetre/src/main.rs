@@ -15,6 +15,7 @@ mod donnees;
 mod lanceur;
 mod langue;
 mod nettoyage;
+mod sortie;
 mod temps;
 
 use std::process::ExitCode;

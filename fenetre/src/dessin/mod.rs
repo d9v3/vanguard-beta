@@ -259,12 +259,14 @@ impl eframe::App for Fenetre {
 }
 
 /// Dit à `vanguard`, qui attend sur notre sortie, que la fenêtre s'est ouverte : il ne montre pas son menu. Rien
-/// d'autre n'est jamais écrit sur la sortie.
+/// d'autre n'est jamais écrit sur la sortie, qui devient aussitôt le néant (`sortie`) : `vanguard` va fermer le
+/// tuyau, et une écriture de plus ne doit pas faire tomber la fenêtre.
 fn annoncer_ouverte() {
     use std::io::Write;
     let mut s = std::io::stdout();
     let _ = s.write_all(b"vanguard-fenetre:ouverte\n");
     let _ = s.flush();
+    let _ = crate::sortie::vers_le_neant();
 }
 
 /// Ouvre la fenêtre et rend la main quand elle se ferme.
