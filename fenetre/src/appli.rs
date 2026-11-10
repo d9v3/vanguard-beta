@@ -281,35 +281,20 @@ impl Appli {
             }
             Issue::Impossible(e) => Contenu::Erreur(crate::trf!("pas pu lancer : {}", "could not start: {}", e)),
         };
-        let (texte, ton) = match &contenu {
-            Contenu::Erreur(e) => (e.clone(), Ton::Attention),
-            Contenu::Constats(v) => (
-                v.resume(),
-                if v.compte(bilan::Rang::Corriger) > 0 {
-                    Ton::Attention
-                } else {
-                    Ton::Bon
-                },
+        let texte = match &contenu {
+            Contenu::Erreur(e) => e.clone(),
+            Contenu::Constats(v) => v.resume(),
+            Contenu::Protection(v) => {
+                crate::trf!("{} interrupteur(s) lus", "{} switch(es) read", v.interrupteurs.len())
+            }
+            Contenu::Evenements(v) => format!(
+                "{} · {}",
+                v.etat.phrase(),
+                crate::trf!("{} alerte(s)", "{} alert(s)", v.alertes().count())
             ),
-            Contenu::Protection(v) => (
-                crate::trf!("{} interrupteur(s) lus", "{} switch(es) read", v.interrupteurs.len()),
-                Ton::Bon,
-            ),
-            Contenu::Evenements(v) => (
-                format!(
-                    "{} · {}",
-                    v.etat.phrase(),
-                    crate::trf!("{} alerte(s)", "{} alert(s)", v.alertes().count())
-                ),
-                if v.etat.gravite().is_some() {
-                    Ton::Attention
-                } else {
-                    Ton::Bon
-                },
-            ),
-            Contenu::Libre(v) => (crate::trf!("{} valeur(s)", "{} value(s)", v.lignes.len()), Ton::Bon),
+            Contenu::Libre(v) => crate::trf!("{} valeur(s)", "{} value(s)", v.lignes.len()),
         };
-        self.dire(c.nom_affiche(), &format!("{texte} ({secondes:.1} s)"), ton);
+        self.dire(c.nom_affiche(), &format!("{texte} ({secondes:.1} s)"), ton(&contenu));
         if let Contenu::Evenements(v) = &contenu {
             self.dernier_sondage = Instant::now();
             let nouvelles: Vec<String> = match &self.journal {
@@ -441,9 +426,97 @@ fn lire(c: Commande, sortie: &[u8]) -> Result<Contenu, String> {
     })
 }
 
+/// La couleur de la ligne de la console qui dit un résultat. Vert seulement pour ce qui a été vérifié et va bien :
+/// un interrupteur éteint, une alerte, un constat à corriger ou une vérification qui n'a pas pu se faire ne passe
+/// jamais pour sain ; ce que la fenêtre ne sait pas juger (un état en d'autres mots, des valeurs brutes) reste neutre.
+fn ton(contenu: &Contenu) -> Ton {
+    match contenu {
+        Contenu::Erreur(_) => Ton::Attention,
+        Contenu::Constats(v) => {
+            if v.compte(bilan::Rang::Corriger) > 0 || v.compte(bilan::Rang::NonVerifie) > 0 || v.note_retenue {
+                Ton::Attention
+            } else if v.constats.is_empty() {
+                Ton::Normal
+            } else {
+                Ton::Bon
+            }
+        }
+        Contenu::Protection(v) => {
+            if v.compte(protection::Allure::Eteint) > 0 || v.illisibles > 0 {
+                Ton::Attention
+            } else if v.interrupteurs.is_empty() || v.compte(protection::Allure::Nuance) > 0 {
+                Ton::Normal
+            } else {
+                Ton::Bon
+            }
+        }
+        Contenu::Evenements(v) => match v.etat.gravite() {
+            Some(bilan::Gravite::Elevee | bilan::Gravite::Critique) => Ton::Grave,
+            Some(_) => Ton::Attention,
+            None if v.alertes().next().is_some() || v.illisibles > 0 => Ton::Attention,
+            None => Ton::Bon,
+        },
+        Contenu::Libre(_) => Ton::Normal,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rien_d_eteint_d_alerte_ni_de_non_verifie_ne_passe_pour_sain() {
+        use protection::Allure::{Allume, Eteint, Nuance};
+        let p = |allures: &[protection::Allure], illisibles| {
+            ton(&Contenu::Protection(protection::Vue {
+                interrupteurs: allures
+                    .iter()
+                    .map(|a| protection::Interrupteur {
+                        id: "x".into(),
+                        nom: "x".into(),
+                        etat: "x".into(),
+                        allure: *a,
+                    })
+                    .collect(),
+                illisibles,
+            }))
+        };
+        assert_eq!(p(&[Allume, Allume], 0), Ton::Bon);
+        assert_eq!(p(&[Allume, Eteint], 0), Ton::Attention);
+        assert_eq!(p(&[Allume], 1), Ton::Attention);
+        assert_eq!(p(&[Allume, Nuance], 0), Ton::Normal);
+        assert_eq!(p(&[], 0), Ton::Normal);
+
+        let e = |json: &str| ton(&Contenu::Evenements(evenements::lire(json.as_bytes()).unwrap()));
+        assert_eq!(e(r#"{"etat": "intact", "evenements": []}"#), Ton::Bon);
+        assert_eq!(
+            e(r#"{"etat": "intact", "illisibles": 2, "evenements": []}"#),
+            Ton::Attention
+        );
+        assert_eq!(e(r#"{"etat": "incomplet", "evenements": []}"#), Ton::Attention);
+        assert_eq!(e(r#"{"etat": "falsifie", "evenements": []}"#), Ton::Grave);
+        assert_eq!(e(r#"{"etat": "inattendu", "evenements": []}"#), Ton::Attention);
+        let alerte = r#"{"etat": "intact", "evenements": [{"v": 1, "id": "a1", "quand": "2026-11-09T13:10:00Z",
+            "source": "surveillance", "quoi": {"sorte": "alerte", "famille": "botnet", "titre": "Connexion"}}]}"#;
+        assert_eq!(e(alerte), Ton::Attention);
+
+        let b = |json: &str| ton(&Contenu::Constats(bilan::lire(json.as_bytes()).unwrap()));
+        let sain = r#"{"regle": "R1", "categorie": "Pare-feu", "etat": "sain", "message": "Actif."}"#;
+        assert_eq!(
+            b(&format!(r#"{{"score": 100, "fiable": true, "constats": [{sain}]}}"#)),
+            Ton::Bon
+        );
+        let manque = r#""couverture": {"non_verifies": ["Les disques"]}"#;
+        assert_eq!(
+            b(&format!(
+                r#"{{"score": 100, "fiable": true, "constats": [{sain}], {manque}}}"#
+            )),
+            Ton::Attention
+        );
+        assert_eq!(b(r#"{"constats": []}"#), Ton::Normal);
+
+        assert_eq!(ton(&Contenu::Libre(libre::Vue::default())), Ton::Normal);
+    }
 
     fn appli() -> Appli {
         // Sans programme : rien ne peut se lancer, l'état seul est essayé.
