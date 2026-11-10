@@ -4,7 +4,9 @@ use eframe::egui::{
     self, Align, Color32, Frame, Layout, Margin, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2,
 };
 
-use super::{bouton, carte, entete, icones, melange, mono, moyenne, n_f32, pal, texte, titre_section};
+use super::{
+    bouton, carte, entete, icones, melange, mono, moyenne, n_f32, pal, signale, signale_avec, texte, titre_section,
+};
 use crate::appli::{Appli, Contenu};
 use crate::commandes::Commande;
 use crate::donnees::bilan::{Constat, Gravite, Rang, Vue};
@@ -220,11 +222,12 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
     if let Some(e) = &erreur {
         carte(ui, 20, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(texte(
+            signale(
+                ui,
+                p.moyen,
                 &crate::trf!("Le bilan n'a pas abouti : {}", "The check did not finish: {}", e),
                 14.0,
-                p.moyen,
-            ));
+            );
         });
         ui.add_space(16.0);
     }
@@ -261,9 +264,10 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
                     (Some(v), None) => {
                         let incomplete = v.note_incomplete();
                         ui.horizontal(|ui| {
-                            // Des points non vérifiés : la note en couleur d'alerte, et leur nombre à côté, aussi
-                            // visible qu'elle. Ils ne comptent pas comme sains.
-                            let couleur = if incomplete.is_some() { p.moyen } else { p.encre };
+                            // Des points non vérifiés : leur nombre sous la note, aussi visible qu'elle, avec un
+                            // point d'alerte. Ils ne comptent pas comme sains. À l'encre : les couleurs vives se
+                            // règlent et ne portent jamais seules un mot.
+                            let couleur = p.encre;
                             match v.note.and_then(|n| usize::try_from(n).ok()) {
                                 Some(n) => {
                                     super::mouvement::nombre(ui, part, n, |k| k.to_string(), &moyenne(72.0), couleur);
@@ -276,11 +280,15 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
                         });
                         if let Some(k) = incomplete {
                             let ecrire = |k| crate::trf!("{} pas pu vérifier", "{} could not check", k);
-                            super::mouvement::nombre(ui, part, k, ecrire, &moyenne(28.0), p.moyen);
+                            signale_avec(ui, p.moyen, 28.0, |ui| {
+                                super::mouvement::nombre(ui, part, k, ecrire, &moyenne(28.0), p.encre);
+                            });
                         }
                         ui.add_space(8.0);
                         if v.note.is_none() {
-                            ui.label(texte(
+                            signale(
+                                ui,
+                                p.moyen,
                                 if v.note_retenue {
                                     crate::tr!(
                                         "Pas de note : trop de points n'ont pas pu être vérifiés pour qu'elle veuille dire quelque chose.",
@@ -290,8 +298,7 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
                                     crate::tr!("Pas de note pour ce bilan.", "No score for this check.")
                                 },
                                 13.0,
-                                p.moyen,
-                            ));
+                            );
                         }
                         ui.label(texte(
                             &phrase_note(v.compte(Rang::Corriger), v.compte(Rang::NonVerifie)),
@@ -568,7 +575,7 @@ fn carte_constat(ui: &mut Ui, c: &Constat) {
                     ui.horizontal(|ui| {
                         ui.label(texte(&c.categorie, 12.0, p.discret));
                         if let Some(g) = c.gravite {
-                            ui.label(texte(g.nom(), 12.0, couleur_gravite(Some(g))));
+                            ui.label(texte(g.nom(), 12.0, p.encre));
                         }
                         ui.label(RichText::new(&c.regle).font(mono(12.0)).color(p.discret));
                     });

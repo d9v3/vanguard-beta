@@ -5,13 +5,19 @@
 //! Le seul geste qui change l'ordinateur (lot 2a : retirer un programme du démarrage, remettre ce que Vanguard en a
 //! retiré) passe par deux temps : `proposer` ouvre la confirmation (le nom, la commande, ce qui va se passer), et
 //! seul `accepter` le lance, un à la fois, quand rien d'autre ne tourne. La console n'en lance jamais.
+//!
+//! Les couleurs de la fenêtre suivent le même chemin (`proposer_couleurs`, puis `accepter`) : la fenêtre ne les écrit
+//! jamais, `vanguard couleurs` les revérifie et les enregistre ; elle les relit ensuite de sa réponse, comme au
+//! lancement. La valeur d'avant reste offerte pour revenir en arrière (`revenir_couleurs`).
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use crate::commandes::{self, Changement, Commande, Forme, Lancement, Rubrique, Saisie, Sorte};
+use crate::commandes::{self, Changement, ChangementCouleurs, Commande, Forme, Lancement, Rubrique, Saisie, Sorte};
 use crate::console::{self, Console};
+use crate::couleurs::{Choix, Jeu, Theme};
 use crate::coulisses::{Chemin, Coulisses};
+use crate::donnees::couleurs::{IssueCouleurs, Lues};
 use crate::donnees::{appareils, bilan, evenements, libre, protection};
 use crate::lanceur::{Fin, Issue, Message, Programme, Reveil, Tache};
 
@@ -82,6 +88,14 @@ pub struct Resultat {
     pub fin: Instant,
 }
 
+/// Un changement proposé, en attente d'« Accepter » ou d'« Annuler ».
+#[derive(Clone, Debug, PartialEq)]
+enum Proposition {
+    Demarrage(bilan::Geste),
+    /// Les couleurs d'un thème : le changement, et la valeur montrée comme « avant ».
+    Couleurs(ChangementCouleurs, Option<Choix>),
+}
+
 pub struct Appli {
     pub ecran: Ecran,
     /// Les écrans d'avant, le plus récent à la fin (« Retour », Alt+←, le bouton Précédent de la souris, Échap).
@@ -104,18 +118,25 @@ pub struct Appli {
     dernier_sondage: Instant,
     reveil: Reveil,
     /// Le changement proposé, en attente d'« Accepter » ou d'« Annuler ».
-    confirmation: Option<bilan::Geste>,
+    confirmation: Option<Proposition>,
+    /// Les couleurs réglées, relues de `vanguard couleurs --json` (rien lu encore : celles de Vanguard).
+    couleurs: Lues,
+    /// Les couleurs en cours de choix pour un thème, pas encore proposées (l'écran Vanguard les montre seul).
+    pub brouillon: Option<(Theme, Choix)>,
+    /// Le changement qui remet les couleurs d'avant le dernier changement fait.
+    revenir: Option<ChangementCouleurs>,
 }
 
 impl Appli {
     /// Va à un écran en retenant celui-ci pour « Retour ». Seul chemin pour changer d'écran (un essai le garde) :
-    /// une affectation directe ferait sauter un pas au retour. Une confirmation ouverte se ferme : elle ne reste pas
-    /// en attente hors de la vue de la personne.
+    /// une affectation directe ferait sauter un pas au retour. Une confirmation ouverte se ferme, et des couleurs en
+    /// cours de choix sont abandonnées : rien ne reste en attente hors de la vue de la personne.
     pub fn aller(&mut self, vers: Ecran) {
         if vers == self.ecran {
             return;
         }
         self.annuler();
+        self.abandonner_brouillon();
         if self.retours.len() >= RETOURS_MAX {
             self.retours.remove(0);
         }
@@ -132,6 +153,7 @@ impl Appli {
     pub fn revenir(&mut self) {
         if let Some(e) = self.retours.pop() {
             self.annuler();
+            self.abandonner_brouillon();
             self.ecran = e;
         }
     }
@@ -154,6 +176,9 @@ impl Appli {
             dernier_sondage: Instant::now(),
             reveil,
             confirmation: None,
+            couleurs: Lues::default(),
+            brouillon: None,
+            revenir: None,
         };
         #[cfg(target_os = "linux")]
         if let Some((phrase, souligner)) = crate::relais::etat() {
@@ -170,8 +195,14 @@ impl Appli {
                     ),
                     Ton::Discret,
                 );
-                // Au lancement : l'état de la protection, le journal, puis le bilan (quelques secondes).
-                for c in [Commande::Protection, Commande::Evenements, Commande::Bilan] {
+                // Au lancement : les couleurs réglées (un instant), l'état de la protection, le journal, puis le
+                // bilan (quelques secondes).
+                for c in [
+                    Commande::Couleurs,
+                    Commande::Protection,
+                    Commande::Evenements,
+                    Commande::Bilan,
+                ] {
                     a.demander(c);
                 }
             }
@@ -305,7 +336,7 @@ impl Appli {
         if let Some(t) = &self.tache
             && !t.arret_demande()
         {
-            if matches!(t.lancement, Lancement::Changement(_)) {
+            if t.lancement.change() {
                 self.dire(
                     "fenêtre",
                     crate::tr!(
@@ -332,31 +363,119 @@ impl Appli {
         self.programme.is_ok() && self.tache.is_none() && self.file.is_empty() && self.confirmation.is_none()
     }
 
-    /// Le changement proposé, en attente de la réponse de la personne.
+    /// Le changement au démarrage proposé, en attente de la réponse de la personne.
     pub fn confirmation(&self) -> Option<&bilan::Geste> {
-        self.confirmation.as_ref()
+        match &self.confirmation {
+            Some(Proposition::Demarrage(g)) => Some(g),
+            _ => None,
+        }
+    }
+
+    /// Le changement des couleurs proposé, et la valeur d'avant montrée.
+    pub fn confirmation_couleurs(&self) -> Option<(ChangementCouleurs, Option<Choix>)> {
+        match &self.confirmation {
+            Some(Proposition::Couleurs(cc, avant)) => Some((*cc, *avant)),
+            _ => None,
+        }
+    }
+
+    /// Les couleurs réglées et ce que `vanguard` en a dit.
+    pub fn couleurs(&self) -> &Lues {
+        &self.couleurs
+    }
+
+    /// Toutes les couleurs montrées pour le thème affiché : le brouillon en cours (l'aperçu en direct dans toute la
+    /// fenêtre), sinon celles réglées. Un brouillon qui se verrait à peine n'est jamais montré : la fenêtre reste
+    /// lisible pendant qu'on cherche.
+    pub fn jeu(&self) -> Jeu {
+        let t = Theme::depuis_sombre(self.sombre);
+        let brouillon = self.brouillon_de(t).filter(|c| crate::couleurs::verifier(t, c).is_ok());
+        Jeu::de(t, brouillon.or(self.couleurs.de(t)).as_ref())
+    }
+
+    /// Le brouillon de ce thème, s'il y en a un.
+    pub fn brouillon_de(&self, t: Theme) -> Option<Choix> {
+        self.brouillon.filter(|(b, _)| *b == t).map(|(_, c)| c)
+    }
+
+    /// Abandonne le brouillon des couleurs (l'aperçu revient à celles réglées), en le disant s'il changeait quelque
+    /// chose.
+    pub fn abandonner_brouillon(&mut self) {
+        if let Some((t, c)) = self.brouillon.take()
+            && self.couleurs.de(t) != Some(c)
+        {
+            self.dire(
+                "couleurs",
+                crate::tr!(
+                    "Couleurs non enregistrées : abandonnées, celles réglées reviennent.",
+                    "Unsaved colors: dropped, the saved ones come back."
+                ),
+                Ton::Discret,
+            );
+        }
+    }
+
+    /// Le changement qui remettrait les couleurs d'avant le dernier changement, s'il y en a un.
+    pub fn revenir_couleurs(&self) -> Option<ChangementCouleurs> {
+        self.revenir
+    }
+
+    /// La raison de ne pas proposer un changement maintenant, dite dans la console.
+    fn pas_maintenant(&mut self) {
+        let raison = if self.confirmation.is_some() {
+            crate::tr!(
+                "Une confirmation est déjà ouverte : acceptez-la ou annulez-la d'abord. Rien n'a changé.",
+                "A confirmation is already open: accept or cancel it first. Nothing changed."
+            )
+        } else {
+            crate::tr!(
+                "Une commande tourne encore : rien n'a changé. Réessayez à sa fin.",
+                "A command is still running: nothing changed. Try again when it ends."
+            )
+        };
+        self.dire("fenêtre", raison, Ton::Attention);
+    }
+
+    /// Ouvre la confirmation d'un changement des couleurs. Seulement un choix lisible (`couleurs::verifier`, que
+    /// `vanguard` refait), différent de celui réglé, et quand un changement est possible ; rien n'est lancé ici.
+    pub fn proposer_couleurs(&mut self, cc: ChangementCouleurs) {
+        if !self.changement_possible() {
+            self.pas_maintenant();
+            return;
+        }
+        if let Some(Err(r)) = cc.choix.map(|c| crate::couleurs::verifier(cc.theme, &c)) {
+            let texte = crate::trf!(
+                "Refusé, rien n'a changé : une couleur se verrait à peine sur le fond (contraste {}:1).",
+                "Refused, nothing changed: a color would barely show on the background (contrast {}:1).",
+                crate::langue::nombre(r.ratio, 2)
+            );
+            self.dire("couleurs", &texte, Ton::Attention);
+            return;
+        }
+        let avant = self.couleurs.de(cc.theme);
+        if avant == cc.choix {
+            self.dire(
+                "couleurs",
+                crate::tr!(
+                    "Ce sont déjà les couleurs réglées.",
+                    "These are already the saved colors."
+                ),
+                Ton::Discret,
+            );
+            return;
+        }
+        self.confirmation = Some(Proposition::Couleurs(cc, avant));
     }
 
     /// Ouvre la confirmation d'un changement. Seulement un geste de la dernière liste du démarrage (pas un autre,
     /// même si l'écran le demandait) et quand un changement est possible ; rien n'est lancé ici.
     pub fn proposer(&mut self, geste: &bilan::Geste) {
         if !self.changement_possible() {
-            let raison = if self.confirmation.is_some() {
-                crate::tr!(
-                    "Une confirmation est déjà ouverte : acceptez-la ou annulez-la d'abord. Rien n'a changé.",
-                    "A confirmation is already open: accept or cancel it first. Nothing changed."
-                )
-            } else {
-                crate::tr!(
-                    "Une commande tourne encore : rien n'a changé. Réessayez à sa fin.",
-                    "A command is still running: nothing changed. Try again when it ends."
-                )
-            };
-            self.dire("fenêtre", raison, Ton::Attention);
+            self.pas_maintenant();
             return;
         }
         if self.dans_la_liste(geste) {
-            self.confirmation = Some(geste.clone());
+            self.confirmation = Some(Proposition::Demarrage(geste.clone()));
         }
     }
 
@@ -370,13 +489,32 @@ impl Appli {
 
     /// La liste a changé sous une confirmation ouverte : elle se ferme, rien n'est lancé.
     fn fermer_si_disparu(&mut self) {
-        if self.confirmation.as_ref().is_some_and(|g| !self.dans_la_liste(g)) {
+        if self.confirmation().is_some_and(|g| !self.dans_la_liste(g)) {
             self.confirmation = None;
             self.dire(
                 "fenêtre",
                 crate::tr!(
                     "La liste a changé : rien n'a changé.",
                     "The list changed: nothing changed."
+                ),
+                Ton::Attention,
+            );
+        }
+    }
+
+    /// Les couleurs relues ont changé sous une confirmation ouverte (l'« avant » montré n'est plus vrai) : elle se
+    /// ferme, rien n'est lancé.
+    fn fermer_si_couleurs_changees(&mut self) {
+        if self
+            .confirmation_couleurs()
+            .is_some_and(|(cc, avant)| self.couleurs.de(cc.theme) != avant)
+        {
+            self.confirmation = None;
+            self.dire(
+                "couleurs",
+                crate::tr!(
+                    "Les couleurs réglées ont changé entre-temps : rien n'a changé.",
+                    "The saved colors changed in the meantime: nothing changed."
                 ),
                 Ton::Attention,
             );
@@ -398,8 +536,11 @@ impl Appli {
             return;
         }
         self.fermer_si_disparu();
-        if let Some(g) = self.confirmation.take() {
-            self.lancer(Lancement::Changement(g.changement));
+        self.fermer_si_couleurs_changees();
+        match self.confirmation.take() {
+            Some(Proposition::Demarrage(g)) => self.lancer(Lancement::Changement(g.changement)),
+            Some(Proposition::Couleurs(cc, _)) => self.lancer(Lancement::Couleurs(cc)),
+            None => {}
         }
     }
 
@@ -486,8 +627,10 @@ impl Appli {
     fn finir(&mut self, f: &Fin) {
         self.coulisses.finie(f);
         let c = match f.lancement {
+            Lancement::Commande(Commande::Couleurs) => return self.lire_couleurs(f),
             Lancement::Commande(c) => c,
             Lancement::Changement(ch) => return self.finir_changement(ch, f),
+            Lancement::Couleurs(cc) => return self.finir_couleurs(cc, f),
         };
         let contenu = match &f.issue {
             Issue::Terminee => match lire(c, &f.sortie) {
@@ -612,6 +755,65 @@ impl Appli {
             },
         );
         self.demander(Commande::Demarrage);
+    }
+
+    /// Les couleurs relues (`vanguard couleurs --json`) : elles valent pour la fenêtre dès l'image suivante. Une
+    /// réponse illisible laisse les couleurs d'avant ; un fichier douteux est dit, dans la console et les coulisses.
+    fn lire_couleurs(&mut self, f: &Fin) {
+        let lues = match (&f.issue, f.code) {
+            (Issue::Terminee, Some(0)) => crate::donnees::couleurs::lire(&f.sortie),
+            _ => Err(crate::tr!("pas lues", "not read").to_string()),
+        };
+        match lues {
+            Ok(l) => {
+                if let Some(d) = l.doute
+                    && self.couleurs.doute != Some(d)
+                {
+                    self.coulisses.avis(d.texte());
+                    self.dire("couleurs", d.texte(), Ton::Attention);
+                }
+                self.couleurs = l;
+                self.fermer_si_couleurs_changees();
+            }
+            Err(e) => {
+                let texte = crate::trf!(
+                    "Couleurs réglées illisibles ({}) : celles d'avant restent.",
+                    "Saved colors unreadable ({}): the previous ones stay.",
+                    e
+                );
+                self.coulisses.avis(&texte);
+                self.dire("couleurs", &texte, Ton::Attention);
+            }
+        }
+    }
+
+    /// Un changement des couleurs a fini : son issue dans la console, puis les couleurs relues (seule source de ce
+    /// qui est montré : jamais celles demandées, toujours celles que `vanguard` a gardées).
+    fn finir_couleurs(&mut self, cc: ChangementCouleurs, f: &Fin) {
+        let (texte, ton) = match crate::donnees::couleurs::lire_issue(cc, f) {
+            IssueCouleurs::Fait { avant, apres: _ } => {
+                self.revenir = Some(ChangementCouleurs {
+                    theme: cc.theme,
+                    choix: avant,
+                });
+                self.brouillon = None;
+                (
+                    crate::tr!(
+                        "Fait : couleurs enregistrées. « Revenir à celles d'avant » les remet exactement.",
+                        "Done: colors saved. “Back to the previous ones” puts them back exactly."
+                    )
+                    .to_string(),
+                    Ton::Bon,
+                )
+            }
+            IssueCouleurs::Refuse(r) => (
+                crate::trf!("Refusé, rien n'a changé : {}", "Refused, nothing changed: {}", r),
+                Ton::Attention,
+            ),
+            IssueCouleurs::Echec(r) => (crate::trf!("Échec : {}", "Failed: {}", r), Ton::Attention),
+        };
+        self.dire("couleurs", &texte, ton);
+        self.demander(Commande::Couleurs);
     }
 
     /// La saisie de la console validée par Entrée.
@@ -1425,6 +1627,106 @@ esac
             a.console
                 .lignes()
                 .any(|l| l.ton == Ton::Grave && l.texte.contains("Connexion suspecte"))
+        );
+    }
+
+    /// Laisse finir ce qui tourne (avec le programme des captures, chaque lancement échoue tout de suite).
+    fn vider(a: &mut Appli) {
+        let debut = Instant::now();
+        while a.taches() > 0 && debut.elapsed() < Duration::from_secs(5) {
+            a.avancer();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(a.taches(), 0);
+    }
+
+    /// Les couleurs : l'aperçu en direct sans rien écrire, jamais une couleur presque invisible, la confirmation
+    /// avant tout lancement, des arguments exacts, puis « revenir à celles d'avant » qui remet exactement l'ancien ;
+    /// un fichier douteux remet celles de Vanguard, dit dans la console et les coulisses.
+    #[test]
+    fn les_couleurs_se_proposent_s_enregistrent_par_vanguard_et_s_annulent() {
+        use crate::couleurs::{Base, Vif};
+        let cc = |choix| ChangementCouleurs {
+            theme: Theme::Sombre,
+            choix,
+        };
+        let mut a = Appli::pour_captures();
+        a.poser(
+            Commande::Couleurs,
+            br#"{"sombre":null,"clair":null,"douteux":null,"systeme":null}"#,
+        );
+        let vanguard = Jeu::de(Theme::Sombre, None);
+        assert_eq!(a.jeu(), vanguard);
+
+        // Le brouillon se montre dans toute la fenêtre, sans rien lancer ; presque invisible, il ne se montre pas et
+        // ne se propose pas.
+        let braise = Choix::du_prereglage(Base::Braise, Theme::Sombre);
+        a.brouillon = Some((Theme::Sombre, braise));
+        assert_eq!(a.jeu(), Jeu::de(Theme::Sombre, Some(&braise)));
+        let mut noir = braise;
+        noir.poser(Vif::Accent, [0, 0, 0]);
+        a.brouillon = Some((Theme::Sombre, noir));
+        assert_eq!(a.jeu(), vanguard);
+        a.proposer_couleurs(cc(Some(noir)));
+        assert_eq!(a.confirmation_couleurs(), None);
+        a.sombre = false;
+        assert_eq!(
+            a.jeu(),
+            Jeu::de(Theme::Clair, None),
+            "le brouillon d'un thème ne touche pas l'autre"
+        );
+        a.sombre = true;
+
+        // Proposer n'ouvre que la confirmation ; « Accepter » lance exactement ces arguments.
+        a.brouillon = Some((Theme::Sombre, braise));
+        a.proposer_couleurs(cc(Some(braise)));
+        assert_eq!(a.confirmation_couleurs(), Some((cc(Some(braise)), None)));
+        assert_eq!(a.taches(), 0);
+        a.accepter();
+        assert_eq!(
+            a.coulisses.passages().back().map(|p| p.ligne.as_str()),
+            Some("vanguard couleurs --theme sombre --base braise --vifs f85c30,e94f97,ea900f,ddc33c,45b45e --json")
+        );
+        vider(&mut a);
+
+        // Vanguard dit « fait » : la valeur d'avant devient le retour ; les couleurs montrées sont celles relues.
+        let fait = br#"{"geste":"couleurs","issue":"fait","raison":"","theme":"sombre","avant":null,"apres":{"base":"braise","vifs":"f85c30,e94f97,ea900f,ddc33c,45b45e"}}"#;
+        a.finir(&Fin {
+            lancement: Lancement::Couleurs(cc(Some(braise))),
+            code: Some(0),
+            sortie: fait.to_vec(),
+            issue: Issue::Terminee,
+            duree: Duration::from_millis(5),
+        });
+        assert_eq!(a.revenir_couleurs(), Some(cc(None)));
+        assert_eq!(a.brouillon, None);
+        vider(&mut a);
+        a.poser(
+            Commande::Couleurs,
+            br#"{"sombre":{"base":"braise","vifs":"f85c30,e94f97,ea900f,ddc33c,45b45e"}}"#,
+        );
+        assert_eq!(a.jeu(), Jeu::de(Theme::Sombre, Some(&braise)));
+        a.proposer_couleurs(cc(None));
+        assert_eq!(a.confirmation_couleurs(), Some((cc(None), Some(braise))));
+
+        // Le fichier changé hors de Vanguard pendant la confirmation : celles de Vanguard, la confirmation fermée
+        // (son « avant » n'est plus vrai), et la raison dite.
+        a.poser(
+            Commande::Couleurs,
+            br#"{"sombre":null,"clair":null,"douteux":"hors_vanguard"}"#,
+        );
+        assert_eq!(a.jeu(), vanguard);
+        assert_eq!(a.confirmation_couleurs(), None);
+        assert!(
+            a.coulisses
+                .notes()
+                .iter()
+                .any(|n| n.sorte == crate::coulisses::Sorte::Avis && n.texte.contains("hors de Vanguard"))
+        );
+        assert!(
+            a.console
+                .lignes()
+                .any(|l| l.ton == Ton::Attention && l.texte.contains("hors de Vanguard"))
         );
     }
 }

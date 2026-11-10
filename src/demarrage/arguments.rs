@@ -554,6 +554,28 @@ pub(crate) enum Commande {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         quoi: Vec<String>,
     },
+    /// Les couleurs de la fenêtre, par thème (un préréglage ou celles du système, et les cinq couleurs vives),
+    /// gardées dans parametres.json : sans option, celles réglées et celles du système ; « --theme sombre --base
+    /// braise [--vifs …] » les change, « --theme sombre --defaut » remet celles de Vanguard. Lancée par la fenêtre,
+    /// qui n'écrit jamais rien elle-même ; tout est revérifié ici.
+    #[command(alias = "colors", hide = true)]
+    Couleurs {
+        /// La réponse en JSON, sur sa dernière ligne (pour la fenêtre).
+        #[arg(long)]
+        json: bool,
+        /// Le thème changé : sombre ou clair.
+        #[arg(long)]
+        theme: Option<String>,
+        /// Le préréglage : vanguard, braise, emeraude, ambre, violet, glacier ou systeme.
+        #[arg(long)]
+        base: Option<String>,
+        /// Les cinq couleurs vives (accent, grave, moyen, faible, bon) : « 3fbef7,f24f4d,fb852f,e7c03a,45b45e ».
+        #[arg(long)]
+        vifs: Option<String>,
+        /// Remettre les couleurs de Vanguard pour ce thème.
+        #[arg(long)]
+        defaut: bool,
+    },
     /// Blocage des menaces : chaque menace trouvée propose « Bloquer » (le geste montré, accepté, noté, annulable) ;
     /// la protection active, après un accord donné une fois, bloque toute seule le certain (empreinte de
     /// MalwareBazaar, outil d'attaque connu, serveur de commande), puis prévient. Sans argument : le menu.

@@ -134,12 +134,15 @@ pub enum Commande {
     Changements,
     VerifierMoi,
     Regles,
+    /// Les couleurs de la fenêtre, lues par `vanguard` (`couleurs --json`) : jamais montrée ni tapée dans la console,
+    /// demandée par la fenêtre elle-même (au lancement, après un changement de couleurs).
+    Couleurs,
 }
 
 impl Commande {
     /// L'ordre compte : le relais reçoit le rang d'une commande dans cette liste (`protocole`). Une commande
     /// nouvelle s'ajoute à la fin.
-    pub const TOUTES: [Commande; 34] = [
+    pub const TOUTES: [Commande; 35] = [
         Commande::Bilan,
         Commande::Protection,
         Commande::Evenements,
@@ -174,12 +177,17 @@ impl Commande {
         Commande::Changements,
         Commande::VerifierMoi,
         Commande::Regles,
+        Commande::Couleurs,
     ];
 
-    /// Les commandes de la liste que ce système sait lancer, dans l'ordre de la liste. Une commande propre à un autre
-    /// système reste dans `TOUTES` (le rang du relais ne bouge pas), mais n'est ni montrée, ni comprise, ni lancée.
+    /// Les commandes de la liste que ce système sait lancer et que la personne choisit, dans l'ordre de la liste. Une
+    /// commande propre à un autre système reste dans `TOUTES` (le rang du relais ne bouge pas), mais n'est ni montrée,
+    /// ni comprise, ni lancée. La lecture des couleurs non plus n'est ni montrée ni comprise : la fenêtre la demande
+    /// elle-même.
     pub fn ici() -> impl Iterator<Item = Commande> {
-        Commande::TOUTES.into_iter().filter(|c| c.sur_ce_systeme())
+        Commande::TOUTES
+            .into_iter()
+            .filter(|c| c.sur_ce_systeme() && *c != Commande::Couleurs)
     }
 
     /// Faux pour une commande d'un autre système : les journaux de Windows ne se lisent que sous Windows (lire un
@@ -225,6 +233,7 @@ impl Commande {
             Commande::Changements => "changements",
             Commande::VerifierMoi => "verifier-moi",
             Commande::Regles => "regles",
+            Commande::Couleurs => "couleurs",
         }
     }
 
@@ -265,6 +274,7 @@ impl Commande {
             Commande::Changements => "changes",
             Commande::VerifierMoi => "self-check",
             Commande::Regles => "rules",
+            Commande::Couleurs => "colors",
         }
     }
 
@@ -324,6 +334,7 @@ impl Commande {
             // Cette copie seulement : jamais le chemin d'un autre programme.
             Commande::VerifierMoi => &["verifier-moi", "--json"],
             Commande::Regles => &["regles", "--json"],
+            Commande::Couleurs => &["couleurs", "--json"],
         }
     }
 
@@ -351,6 +362,8 @@ impl Commande {
             | Commande::AuditReseau
             | Commande::CamerasCachees
             | Commande::VerifierMoi => 180,
+            // Un petit fichier et le thème du système : quelques millisecondes ; le délai le plus court de la liste.
+            Commande::Couleurs => 60,
             _ => 120,
         })
     }
@@ -367,7 +380,8 @@ impl Commande {
             | Commande::OptionsDefense
             | Commande::Autotest
             | Commande::Changements
-            | Commande::Regles => Forme::Libre,
+            | Commande::Regles
+            | Commande::Couleurs => Forme::Libre,
             _ => Forme::Resultat,
         }
     }
@@ -409,6 +423,7 @@ impl Commande {
             Commande::Changements => crate::tr!("Ce que Vanguard a changé", "What Vanguard changed"),
             Commande::VerifierMoi => crate::tr!("Vérifier cette copie de Vanguard", "Verify this copy of Vanguard"),
             Commande::Regles => crate::tr!("Règles du bilan", "Check rules"),
+            Commande::Couleurs => crate::tr!("Couleurs de la fenêtre", "Window colors"),
         }
     }
 
@@ -551,6 +566,10 @@ impl Commande {
                 "Les règles du bilan pour ce système : identifiant, sujet, références.",
                 "The check rules for this system: identifier, subject, references."
             ),
+            Commande::Couleurs => crate::tr!(
+                "Les couleurs réglées pour chaque thème, et celles du système, lues par Vanguard.",
+                "The colors set for each theme, and the system's, read by Vanguard."
+            ),
         }
     }
 
@@ -586,7 +605,7 @@ impl Commande {
             Commande::LogicielsPerimes | Commande::Demarrage | Commande::Nat | Commande::CanauxWifi => {
                 Rubrique::Optimiser
             }
-            Commande::Autotest | Commande::VerifierMoi | Commande::Regles => Rubrique::Vanguard,
+            Commande::Autotest | Commande::VerifierMoi | Commande::Regles | Commande::Couleurs => Rubrique::Vanguard,
         }
     }
 }
@@ -688,12 +707,21 @@ pub struct Changement {
     pub empreinte: Empreinte,
 }
 
+/// Un changement des couleurs de la fenêtre, pour un thème : un choix (sa base et ses cinq couleurs), ou `None` pour
+/// remettre celles de Vanguard. `vanguard` le revérifie et l'écrit ; la fenêtre n'écrit jamais rien.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ChangementCouleurs {
+    pub theme: crate::couleurs::Theme,
+    pub choix: Option<crate::couleurs::Choix>,
+}
+
 /// Ce qu'une tâche lance : une commande de la liste (elle lit), ou un changement (seulement par un clic confirmé,
-/// jamais par la console).
+/// jamais par la console) : au démarrage, ou des couleurs de la fenêtre.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Lancement {
     Commande(Commande),
     Changement(Changement),
+    Couleurs(ChangementCouleurs),
 }
 
 impl From<Commande> for Lancement {
@@ -721,7 +749,31 @@ impl Lancement {
                     "--json".to_string(),
                 ]
             }
+            // Des mots fermés et des couleurs de six chiffres hexadécimaux, construits ici depuis des valeurs typées.
+            Lancement::Couleurs(cc) => {
+                let mut a = vec![
+                    "couleurs".to_string(),
+                    "--theme".to_string(),
+                    cc.theme.mot().to_string(),
+                ];
+                match cc.choix {
+                    Some(c) => a.extend([
+                        "--base".to_string(),
+                        c.base.mot().to_string(),
+                        "--vifs".to_string(),
+                        crate::couleurs::vifs_hex(&c.vifs),
+                    ]),
+                    None => a.push("--defaut".to_string()),
+                }
+                a.push("--json".to_string());
+                a
+            }
         }
+    }
+
+    /// Un changement (au démarrage ou des couleurs) : il passe seul, et ne s'interrompt pas.
+    pub fn change(self) -> bool {
+        !matches!(self, Lancement::Commande(_))
     }
 
     /// Un changement attend peut-être le mot de passe dans la fenêtre administrateur (Windows) : quinze minutes. C'est
@@ -730,6 +782,8 @@ impl Lancement {
         match self {
             Lancement::Commande(c) => c.delai(),
             Lancement::Changement(_) => Duration::from_mins(15),
+            // Écrire un petit fichier, scellé.
+            Lancement::Couleurs(_) => Duration::from_mins(1),
         }
     }
 
@@ -742,6 +796,7 @@ impl Lancement {
         match self {
             Lancement::Commande(c) => c,
             Lancement::Changement(_) => Commande::Demarrage,
+            Lancement::Couleurs(_) => Commande::Couleurs,
         }
     }
 }
@@ -1081,6 +1136,48 @@ mod tests {
         assert_eq!(Commande::TOUTES[21], Commande::ObjetsConnectes);
         assert_eq!(Commande::TOUTES[22], Commande::Appareils);
         assert_eq!(Commande::TOUTES[33], Commande::Regles);
+        assert_eq!(Commande::TOUTES[34], Commande::Couleurs);
+    }
+
+    /// Un changement de couleurs part en mots fermés et en couleurs construites ici ; la lecture des couleurs n'est
+    /// ni montrée, ni comprise par la console.
+    #[test]
+    fn les_couleurs_partent_en_valeurs_construites_et_restent_cachees() {
+        use crate::couleurs::{Base, Choix, Theme};
+        let c = Choix::du_prereglage(Base::Braise, Theme::Sombre);
+        let l = Lancement::Couleurs(ChangementCouleurs {
+            theme: Theme::Sombre,
+            choix: Some(c),
+        });
+        assert_eq!(
+            l.arguments(),
+            [
+                "couleurs",
+                "--theme",
+                "sombre",
+                "--base",
+                "braise",
+                "--vifs",
+                &crate::couleurs::vifs_hex(&c.vifs),
+                "--json"
+            ]
+        );
+        assert!(l.change());
+        assert_eq!(l.commande(), Commande::Couleurs);
+        let defaut = Lancement::Couleurs(ChangementCouleurs {
+            theme: Theme::Clair,
+            choix: None,
+        });
+        assert_eq!(
+            defaut.arguments(),
+            ["couleurs", "--theme", "clair", "--defaut", "--json"]
+        );
+        assert!(!Lancement::from(Commande::Couleurs).change());
+        assert!(Commande::ici().all(|c| c != Commande::Couleurs));
+        for saisie in ["couleurs", "colors", "vanguard couleurs"] {
+            assert!(matches!(comprendre(saisie), Saisie::Refusee(_)), "{saisie}");
+        }
+        assert_eq!(completer("coul"), None);
     }
 
     #[test]

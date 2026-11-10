@@ -4,15 +4,18 @@
 //!
 //! Des trames : la longueur sur 4 octets, petit-boutiste, puis le contenu. Fenêtre → relais : `1 id commande langue`
 //! (lancer une commande de la liste), `3 id sorte empreinte(16) langue` (un changement au démarrage : sorte 1
-//! retirer, 2 remettre) ou `2 id` (arrêter). Relais → fenêtre : `1 id texte` (une ligne d'erreur), `3 id pid`
+//! retirer, 2 remettre), `4 id theme action base rvb(15) langue` (un changement des couleurs de la fenêtre : thème 1
+//! sombre, 2 clair ; action 1 un choix, sa base et ses cinq couleurs, ou 0 celles de Vanguard, base et couleurs
+//! alors toutes à zéro) ou `2 id` (arrêter). Relais → fenêtre : `1 id texte` (une ligne d'erreur), `3 id pid`
 //! (`vanguard` est lancé, sous ce numéro : pour les coulisses) ou `2 id issue code durée texte sortie` (la fin).
 
 use std::io::{Read, Write};
 use std::time::Duration;
 
-use crate::commandes::{Changement, Commande, Empreinte, Fin, Issue, Lancement, Sorte};
+use crate::commandes::{Changement, ChangementCouleurs, Commande, Empreinte, Fin, Issue, Lancement, Sorte};
+use crate::couleurs::{Base, Choix, Rgb, Theme, VIFS};
 
-/// Une demande de la fenêtre fait au plus 23 octets (un changement) : plus long, c'est hors du protocole.
+/// Une demande de la fenêtre fait au plus 24 octets (des couleurs) : plus long, c'est hors du protocole.
 pub const DEMANDE_MAX: usize = 32;
 
 /// Une demande de la fenêtre.
@@ -54,6 +57,25 @@ impl Demande {
                 v.push(u8::from(anglais));
                 v
             }
+            Demande::Lancer {
+                id,
+                lancement: Lancement::Couleurs(cc),
+                anglais,
+            } => {
+                let mut v = vec![4];
+                v.extend(id.to_le_bytes());
+                v.push(cc.theme.octet());
+                match cc.choix {
+                    Some(c) => {
+                        v.push(1);
+                        v.push(c.base.octet());
+                        v.extend(c.vifs.as_flattened());
+                    }
+                    None => v.extend([0u8; 2 + 3 * VIFS]),
+                }
+                v.push(u8::from(anglais));
+                v
+            }
             Demande::Arreter { id } => {
                 let mut v = vec![2];
                 v.extend(id.to_le_bytes());
@@ -85,10 +107,38 @@ impl Demande {
                 }),
                 anglais: langue(22)?,
             }),
+            (4, 24) => Some(Demande::Lancer {
+                id,
+                lancement: Lancement::Couleurs(couleurs(o.get(5..23)?)?),
+                anglais: langue(23)?,
+            }),
             (2, 5) => Some(Demande::Arreter { id }),
             _ => None,
         }
     }
+}
+
+/// `theme action base rvb(15)`, strictement : un thème et une base connus ; pour « celles de Vanguard », tout le
+/// reste à zéro. Les couleurs, elles, sont 15 octets quelconques : leur lisibilité est jugée par le relais
+/// (`couleurs::verifier`) puis par `vanguard`.
+fn couleurs(o: &[u8]) -> Option<ChangementCouleurs> {
+    let (&[theme, action, base], rvb) = o.split_first_chunk::<3>()?;
+    let theme = Theme::depuis_octet(theme)?;
+    let choix = match action {
+        0 if base == 0 && rvb.iter().all(|x| *x == 0) => None,
+        1 => {
+            let (paquets, []) = rvb.as_chunks::<3>() else {
+                return None;
+            };
+            let vifs: [Rgb; VIFS] = paquets.try_into().ok()?;
+            Some(Choix {
+                base: Base::depuis_octet(base)?,
+                vifs,
+            })
+        }
+        _ => return None,
+    };
+    Some(ChangementCouleurs { theme, choix })
 }
 
 fn rang(c: Commande) -> u8 {
@@ -304,6 +354,75 @@ mod tests {
         v[0] = 1;
         assert_eq!(Demande::lire(&v), None);
         assert_eq!(Demande::lire(&[3, 0, 0, 0, 0, 1, 0]), None);
+    }
+
+    /// Des couleurs : aller-retour pour chaque thème, base, langue, et pour « celles de Vanguard » ; une autre
+    /// longueur, un thème, une action ou une base inconnus, ou des octets non nuls après « celles de Vanguard » : hors
+    /// du protocole.
+    #[test]
+    fn les_couleurs_aller_retour_et_le_reste_refuse() {
+        for theme in Theme::TOUS {
+            for anglais in [false, true] {
+                let mut choix: Vec<Option<Choix>> = Base::TOUTES
+                    .into_iter()
+                    .map(|b| Some(Choix::du_prereglage(b, theme)))
+                    .collect();
+                choix.push(Some(Choix {
+                    base: Base::Violet,
+                    vifs: [[0, 0x10, 0xff], [0xff; 3], [0; 3], [1, 2, 3], [0x7f, 0x80, 0x81]],
+                }));
+                choix.push(None);
+                for choix in choix {
+                    let d = Demande::Lancer {
+                        id: 77,
+                        lancement: Lancement::Couleurs(ChangementCouleurs { theme, choix }),
+                        anglais,
+                    };
+                    let v = d.coder();
+                    assert_eq!(v.len(), 24);
+                    assert!(v.len() <= DEMANDE_MAX);
+                    assert_eq!(Demande::lire(&v), Some(d));
+                }
+            }
+        }
+        let bonne = Demande::Lancer {
+            id: 1,
+            lancement: Lancement::Couleurs(ChangementCouleurs {
+                theme: Theme::Sombre,
+                choix: Some(Choix::du_prereglage(Base::Braise, Theme::Sombre)),
+            }),
+            anglais: false,
+        }
+        .coder();
+        for n in 0..bonne.len() {
+            assert_eq!(Demande::lire(&bonne[..n]), None, "{n}");
+        }
+        let mut longue = bonne.clone();
+        longue.extend(b",ffffff");
+        assert_eq!(Demande::lire(&longue), None);
+        for (i, faux) in [(5, 0u8), (5, 3), (6, 2), (6, 0xff), (7, 7), (7, 0xff), (23, 2)] {
+            let mut v = bonne.clone();
+            v[i] = faux;
+            assert_eq!(Demande::lire(&v), None, "{i} {faux}");
+        }
+        let defaut = Demande::Lancer {
+            id: 1,
+            lancement: Lancement::Couleurs(ChangementCouleurs {
+                theme: Theme::Clair,
+                choix: None,
+            }),
+            anglais: true,
+        }
+        .coder();
+        for i in 7..23 {
+            let mut v = defaut.clone();
+            v[i] = 1;
+            assert_eq!(Demande::lire(&v), None, "{i}");
+        }
+        // Le type 3 (le démarrage) à la longueur des couleurs : refusé.
+        let mut v = bonne.clone();
+        v[0] = 3;
+        assert_eq!(Demande::lire(&v), None);
     }
 
     #[test]

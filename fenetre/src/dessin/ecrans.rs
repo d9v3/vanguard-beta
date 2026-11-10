@@ -5,7 +5,9 @@ use eframe::egui::{Align, Color32, Frame, Layout, Margin, RichText, Sense, Strok
 
 use super::bilan::{self, couleur_gravite};
 use super::vide;
-use super::{bouton, carte, entete, mono, moyenne, pal, petit, texte, texte_et_boutons, titre_section};
+use super::{
+    bouton, carte, entete, mono, moyenne, pal, petit, signale, signale_avec, texte, texte_et_boutons, titre_section,
+};
 use crate::appli::{Appli, Contenu, Ecran, ecran_de};
 use crate::commandes::{Commande, Rubrique};
 use crate::donnees::appareils::{self as scan, Empoisonnement, Upnp};
@@ -54,7 +56,7 @@ fn tuile(appli: &mut Appli, ui: &mut Ui, titre: &str, valeur: &str, phrase: &str
     let s = super::survol(ui, id, ui.ctx().read_response(id).is_some_and(|r| r.hovered()));
     let cadre = Frame::new()
         .fill(p.surface)
-        .stroke(Stroke::new(1.0, super::bord_survole(p, s)))
+        .stroke(Stroke::new(1.0, super::bord_survole(&p, s)))
         .shadow(super::ombre())
         .corner_radius(super::RAYON_CARTE)
         .inner_margin(Margin::same(20))
@@ -62,14 +64,22 @@ fn tuile(appli: &mut Appli, ui: &mut Ui, titre: &str, valeur: &str, phrase: &str
             ui.set_width(ui.available_width());
             ui.label(texte(titre, 13.0, p.doux));
             ui.add_space(4.0);
-            ui.label(RichText::new(valeur).font(moyenne(24.0)).color(couleur));
+            // La valeur s'écrit à l'encre ; un état à signaler (couleur vive) met un point devant.
+            let valeur = RichText::new(valeur).font(moyenne(24.0)).color(p.encre);
+            if couleur == p.encre {
+                ui.label(valeur);
+            } else {
+                signale_avec(ui, couleur, 24.0, |ui| {
+                    ui.label(valeur);
+                });
+            }
             ui.add_space(4.0);
             ui.label(texte(phrase, 13.0, p.doux));
             ui.add_space(16.0);
             ui.label(texte(
                 &format!("{} →", crate::tr!("Ouvrir", "Open")),
                 12.0,
-                p.discret.lerp_to_gamma(p.accent, s),
+                p.discret.lerp_to_gamma(p.encre, s),
             ));
         })
         .response
@@ -263,7 +273,7 @@ fn ligne_etat(ui: &mut Ui, etat: String, tourne: bool) {
             super::mouvement::POULS_TACHE,
         );
         super::mouvement::tourne(ui.ctx());
-        ui.label(RichText::new(etat).font(mono(12.0)).color(p.accent));
+        ui.label(RichText::new(etat).font(mono(12.0)).color(p.encre));
     });
 }
 
@@ -424,11 +434,13 @@ fn appareils_liste(ui: &mut Ui, v: &scan::Vue) {
     if !manques.is_empty() {
         carte(ui, 20, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(
-                RichText::new(crate::tr!("Pas pu vérifier", "Could not check"))
-                    .font(moyenne(15.0))
-                    .color(p.moyen),
-            );
+            signale_avec(ui, p.moyen, 15.0, |ui| {
+                ui.label(
+                    RichText::new(crate::tr!("Pas pu vérifier", "Could not check"))
+                        .font(moyenne(15.0))
+                        .color(p.encre),
+                );
+            });
             for m in &manques {
                 ui.label(texte(m, 13.0, p.doux));
             }
@@ -603,16 +615,23 @@ fn reseau_entier(ui: &mut Ui, v: &scan::Vue) {
                 Some(reste) => {
                     ui.horizontal(|ui| {
                         ui.add_space(16.0 - ui.spacing().item_spacing.x);
-                        ui.label(texte(reste, 13.0, couleur));
+                        ligne_signalee(ui, couleur, reste);
                     });
                 }
-                None => {
-                    ui.label(texte(&l, 13.0, couleur));
-                }
+                None => ligne_signalee(ui, couleur, &l),
             }
         }
     });
     ui.add_space(16.0);
+}
+
+/// Une ligne du diagnostic du réseau : à l'encre ; un point de sa couleur devant si elle dit un état.
+fn ligne_signalee(ui: &mut Ui, couleur: Color32, l: &str) {
+    if couleur == pal().encre {
+        ui.label(texte(l, 13.0, couleur));
+    } else {
+        signale(ui, couleur, l, 13.0);
+    }
 }
 
 /// Une ligne par appareil : son nom, son adresse, ses ports ; ce qui est nouveau ou risqué en couleur.
@@ -631,7 +650,7 @@ fn appareil(ui: &mut Ui, a: &scan::Appareil) {
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(&a.titre).font(moyenne(14.0)).color(p.encre));
                 if a.nouveau {
-                    ui.label(texte(crate::tr!("nouveau", "new"), 12.0, p.accent));
+                    ui.label(texte(crate::tr!("nouveau", "new"), 12.0, p.encre));
                 }
                 if a.passerelle() {
                     ui.label(texte(crate::tr!("la box", "the router"), 12.0, p.doux));
@@ -668,10 +687,12 @@ fn appareil(ui: &mut Ui, a: &scan::Appareil) {
                 ));
             }
             for (g, t) in a.alertes.iter().take(APPAREILS_MAX) {
-                ui.label(texte(t, 13.0, couleur_gravite(*g)));
+                signale(ui, couleur_gravite(*g), t, 13.0);
             }
             if a.illisibles > 0 {
-                ui.label(texte(
+                signale(
+                    ui,
+                    p.moyen,
                     &crate::trn!(
                         a.illisibles,
                         "détail illisible : non vérifié.",
@@ -680,8 +701,7 @@ fn appareil(ui: &mut Ui, a: &scan::Appareil) {
                         "unreadable details: not verified."
                     ),
                     13.0,
-                    p.moyen,
-                ));
+                );
             }
         });
     });
@@ -690,11 +710,12 @@ fn appareil(ui: &mut Ui, a: &scan::Appareil) {
 fn erreur(ui: &mut Ui, e: &str) {
     carte(ui, 20, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(texte(
+        signale(
+            ui,
+            pal().moyen,
             &crate::trf!("Pas de résultat lisible : {}", "No readable result: {}", e),
             14.0,
-            pal().moyen,
-        ));
+        );
     });
 }
 
@@ -731,7 +752,9 @@ fn protection_liste(ui: &mut Ui, v: &protection::Vue) {
             ));
         }
         if v.illisibles > 0 {
-            ui.label(texte(
+            signale(
+                ui,
+                p.moyen,
                 &crate::trn!(
                     v.illisibles,
                     "interrupteur que cette fenêtre n'a pas su lire : non vérifié.",
@@ -740,8 +763,7 @@ fn protection_liste(ui: &mut Ui, v: &protection::Vue) {
                     "switches this window could not read: not verified."
                 ),
                 13.0,
-                p.moyen,
-            ));
+            );
         }
     });
     ui.add_space(12.0);
@@ -783,14 +805,15 @@ fn libre_liste(ui: &mut Ui, v: &libre::Vue) {
             ));
         }
         if v.coupe {
-            ui.label(texte(
+            signale(
+                ui,
+                p.moyen,
                 crate::tr!(
                     "Coupé : tout n'est pas montré ici (trop long ou trop imbriqué).",
                     "Cut: not everything is shown here (too long or too nested)."
                 ),
                 13.0,
-                p.moyen,
-            ));
+            );
         }
     });
 }
@@ -833,12 +856,16 @@ fn journal(ui: &mut Ui, j: &evenements::Vue) {
     carte(ui, 20, |ui| {
         ui.set_width(ui.available_width());
         let couleur = j.etat.gravite().map_or(p.bon, |g| couleur_gravite(Some(g)));
-        ui.label(RichText::new(j.etat.phrase()).font(moyenne(15.0)).color(couleur));
+        signale_avec(ui, couleur, 15.0, |ui| {
+            ui.label(RichText::new(j.etat.phrase()).font(moyenne(15.0)).color(p.encre));
+        });
         if !j.raison.is_empty() {
             ui.label(texte(&j.raison, 13.0, p.doux));
         }
         if j.illisibles > 0 {
-            ui.label(texte(
+            signale(
+                ui,
+                p.moyen,
                 &crate::trn!(
                     j.illisibles,
                     "ligne illisible : non vérifiée.",
@@ -847,8 +874,7 @@ fn journal(ui: &mut Ui, j: &evenements::Vue) {
                     "unreadable lines: not verified."
                 ),
                 13.0,
-                p.moyen,
-            ));
+            );
         }
     });
     ui.add_space(24.0);
@@ -922,8 +948,8 @@ fn reglages(appli: &mut Appli, ui: &mut Ui) {
         ui,
         "Vanguard",
         crate::tr!(
-            "Les réglages de cette fenêtre, pour cette fois.",
-            "This window's settings, for this time."
+            "Les réglages de cette fenêtre : le thème et la langue pour cette fois, les couleurs gardées par Vanguard.",
+            "This window's settings: theme and language for this time, colors kept by Vanguard."
         ),
     );
     ui.add_space(24.0);
@@ -964,12 +990,15 @@ fn reglages(appli: &mut Appli, ui: &mut Ui) {
     ui.add_space(12.0);
     ui.label(texte(
         crate::tr!(
-            "Rien n'est enregistré : à la prochaine ouverture, la fenêtre reprend le thème du système et la langue de Vanguard. Les résultats déjà lus gardent leur langue jusqu'à la prochaine lecture.",
-            "Nothing is saved: next time, the window takes the system theme and Vanguard's language again. Results already read keep their language until read again."
+            "Le thème et la langue valent pour cette fois : à la prochaine ouverture, la fenêtre reprend le thème du système et la langue de Vanguard. Les résultats déjà lus gardent leur langue jusqu'à la prochaine lecture.",
+            "Theme and language are for this time: next time, the window takes the system theme and Vanguard's language again. Results already read keep their language until read again."
         ),
         13.0,
         p.discret,
     ));
+    ui.add_space(24.0);
+    titre_section(ui, crate::tr!("Couleurs", "Colors"), None);
+    super::couleurs::section(appli, ui);
     ui.add_space(24.0);
     titre_section(ui, crate::tr!("Vérifier Vanguard", "Check Vanguard"), None);
     cartes_commandes(appli, ui, Rubrique::Vanguard.commandes().collect());

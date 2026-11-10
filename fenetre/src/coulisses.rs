@@ -62,6 +62,8 @@ pub enum Sorte {
     Fin,
     /// Une saisie de la console refusée.
     Refus,
+    /// Une remarque de la fenêtre elle-même (des couleurs réglées qui ne valent pas, et pourquoi).
+    Avis,
 }
 
 #[derive(Clone, Debug)]
@@ -225,6 +227,11 @@ impl Coulisses {
                 ),
             );
         }
+    }
+
+    /// Une remarque de la fenêtre (des couleurs réglées qui ne valent pas, et pourquoi).
+    pub fn avis(&mut self, texte: &str) {
+        self.noter(Sorte::Avis, texte);
     }
 
     /// Une saisie de la console refusée : ce qui a été tapé (nettoyé, coupé) et pourquoi.

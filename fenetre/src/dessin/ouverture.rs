@@ -111,7 +111,7 @@ pub fn dessiner(ctx: &Context, t: f32) {
         .show(ctx, |ui| {
             let (_, voile) = ui.allocate_exact_size(ecran.size(), Sense::click());
             voile.on_hover_cursor(egui::CursorIcon::Default);
-            peindre(&ui.painter().with_clip_rect(ecran), ecran, t, pal());
+            peindre(&ui.painter().with_clip_rect(ecran), ecran, t, &pal());
         });
 }
 

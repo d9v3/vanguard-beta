@@ -199,14 +199,20 @@ fn resume(c: &Coulisses, ui: &mut Ui, visibles: usize) {
             .font(moyenne(12.0))
             .color(p.encre),
     );
-    ui.add(
-        Label::new(
-            RichText::new(bac)
-                .font(police(12.0))
-                .color(if *souligner { p.moyen } else { p.doux }),
-        )
-        .wrap(),
-    );
+    // Un bac incomplet est signalé d'un point ; le texte reste à l'encre (les couleurs vives se règlent).
+    let bac = Label::new(
+        RichText::new(bac)
+            .font(police(12.0))
+            .color(if *souligner { p.encre } else { p.doux }),
+    )
+    .wrap();
+    if *souligner {
+        super::signale_avec(ui, p.moyen, 12.0, |ui| {
+            ui.add(bac);
+        });
+    } else {
+        ui.add(bac);
+    }
     ui.add_space(8.0);
     ui.label(
         RichText::new(crate::trf!(
@@ -307,8 +313,11 @@ fn rangee(n: &Note) -> Rangee<'_> {
         Sorte::Erreur => ("stderr", p.doux, p.doux),
         Sorte::Sortie => ("stdout", p.doux, p.encre),
         Sorte::Fin => (crate::tr!("fin", "end"), p.doux, p.encre),
-        Sorte::Refus => (crate::tr!("refus", "refused"), p.moyen, p.moyen),
+        Sorte::Refus => (crate::tr!("refus", "refused"), p.encre, p.encre),
+        Sorte::Avis => (crate::tr!("avis", "notice"), p.encre, p.encre),
     };
+    // Un refus ou un avis : un point dans la marge ; les mots à l'encre (les couleurs vives se règlent).
+    let marque = matches!(n.sorte, Sorte::Refus | Sorte::Avis).then_some(p.moyen);
     Rangee {
         numero: n.numero,
         heure: &n.heure,
@@ -316,6 +325,7 @@ fn rangee(n: &Note) -> Rangee<'_> {
         couleur_source,
         texte: &n.texte,
         couleur,
+        marque,
     }
 }
 

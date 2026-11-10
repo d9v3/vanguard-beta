@@ -20,6 +20,7 @@
 #![cfg_attr(target_os = "linux", warn(clippy::arithmetic_side_effects, clippy::as_conversions))]
 
 pub(crate) mod agent;
+pub(crate) mod couleurs;
 pub(crate) mod partage;
 
 use std::path::{Path, PathBuf};
@@ -78,6 +79,9 @@ struct Fichier {
     /// comme clamscan. Jamais en continu (veilleur, garde) : une PUA n'est pas mise en quarantaine toute seule.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pua: bool,
+    /// Les couleurs de la fenêtre (`couleurs`), par thème ; absentes : celles de Vanguard.
+    #[serde(default, skip_serializing_if = "couleurs::Reglees::est_vide")]
+    couleurs: couleurs::Reglees,
 }
 
 /// Au-delà, ce n'est pas le fichier de Vanguard : il n'est pas lu (le processus élevé de Windows le lit aussi).
@@ -107,6 +111,25 @@ fn charger_de(chemin: &Path) -> Result<Fichier, crate::modele::Echec> {
 /// La langue se lit dans ce fichier : pendant sa lecture au lancement, `tr!` répond en français sans la demander
 /// (`en_lecture`) ; les raisons gardées se traduisent à l'affichage (`Douteux::texte`).
 fn charger_juge(chemin: &Path) -> Result<(Fichier, Option<Douteux>), crate::modele::Echec> {
+    juger(chemin).map(|(f, j)| (f, j.douteux.filter(|_| j.coupait)))
+}
+
+/// Ce que la lecture du fichier a écarté, et pourquoi.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Juge {
+    /// Pas tel que Vanguard l'a écrit : pourquoi.
+    douteux: Option<Douteux>,
+    /// Des réglages qui coupaient une défense, ou un accord, y étaient : ignorés.
+    coupait: bool,
+    /// Effacé hors de Vanguard.
+    efface: bool,
+    /// Absent, les sceaux refaits : peut-être effacé (`sceau::Lecture::Inconnu`).
+    inconnu: bool,
+}
+
+/// `charger_juge`, avec tout ce qui a été écarté. Les couleurs de la fenêtre aussi, qui ne coupent rien mais ne se
+/// gardent pas plus d'un fichier que Vanguard n'a pas écrit : `couleurs` le dit dès qu'il est douteux.
+fn juger(chemin: &Path) -> Result<(Fichier, Juge), crate::modele::Echec> {
     use crate::modele::{Echec, Raison};
     use crate::sceau::Lecture;
     const OU: &str = "parametres/lire";
@@ -114,7 +137,22 @@ fn charger_juge(chemin: &Path) -> Result<(Fichier, Option<Douteux>), crate::mode
     let dossier = chemin.parent().unwrap_or_else(|| Path::new("."));
     let nom = chemin.file_name().and_then(|n| n.to_str()).unwrap_or(PARAMETRES);
     let (octets, douteux) = match crate::sceau::lire_sans_ecrire(dossier, nom) {
-        Lecture::Absent | Lecture::Inconnu | Lecture::Falsifie(None) => return Ok((Fichier::default(), None)),
+        Lecture::Absent => return Ok((Fichier::default(), Juge::default())),
+        // Les défauts aussi, mais dit là où un réglage en dépend (les couleurs) : peut-être effacé.
+        Lecture::Inconnu => {
+            let inconnu = Juge {
+                inconnu: true,
+                ..Juge::default()
+            };
+            return Ok((Fichier::default(), inconnu));
+        }
+        Lecture::Falsifie(None) => {
+            let efface = Juge {
+                efface: true,
+                ..Juge::default()
+            };
+            return Ok((Fichier::default(), efface));
+        }
         Lecture::Illisible(e) => return Err(illisible(e)),
         Lecture::Intact(o) => (o, None),
         // Accepté tel quel lors de la mise à jour d'une version d'avant le sceau : les réglages de la personne,
@@ -129,9 +167,9 @@ fn charger_juge(chemin: &Path) -> Result<(Fichier, Option<Douteux>), crate::mode
     let texte = String::from_utf8(octets).map_err(|e| illisible(e.to_string()))?;
     let mut f: Fichier =
         serde_json::from_str(texte.trim_start_matches('\u{feff}')).map_err(|e| illisible(e.to_string()))?;
-    let Some(raison) = douteux else {
-        return Ok((f, None));
-    };
+    if douteux.is_none() {
+        return Ok((f, Juge::default()));
+    }
     let oui_au_partage = f.partage == Some(partage::Choix::Oui) || f.avis_partage.is_some();
     let coupait =
         f.hors_ligne || f.sans_autotest || f.sans_versions || f.sans_second_avis || f.paquets_aur || oui_au_partage;
@@ -149,7 +187,17 @@ fn charger_juge(chemin: &Path) -> Result<(Fichier, Option<Douteux>), crate::mode
         f.partage_phase = None;
     }
     f.avis_partage = None;
-    Ok((f, coupait.then_some(raison)))
+    // Les couleurs de la fenêtre : celles de Vanguard, et la fenêtre le dit dans ses coulisses.
+    f.couleurs = couleurs::Reglees::default();
+    Ok((
+        f,
+        Juge {
+            douteux,
+            coupait,
+            efface: false,
+            inconnu: false,
+        },
+    ))
 }
 
 /// parametres.json d'une version d'avant, accepté tel quel à la mise à jour : rescellé (`sceau::resceller_si`).
@@ -178,9 +226,64 @@ impl Douteux {
     }
 }
 
-/// Relit le fichier, le change par `change` (`false` : rien à écrire) et l'enregistre, scellé. Un fichier qu'on ne sait
-/// plus lire n'est jamais écrasé en silence : il est gardé à côté, puis remplacé par les défauts changés.
+/// Le verrou des changements de parametres.json, à côté de lui : tenu de la relecture jusqu'à l'écriture, deux Vanguard
+/// qui le changent en même temps (la fenêtre qui enregistre des couleurs, le terminal qui remet une défense) ne
+/// s'effacent plus l'un l'autre. À part du verrou des sceaux, qu'`ecrire_dans` prend lui-même (un `flock` ne se
+/// reprend pas dans le même processus).
+pub(crate) const VERROU_PARAMETRES: &str = "parametres.lock";
+
+fn tenir(chemin: &Path) -> std::io::Result<crate::socle::Verrou> {
+    let dossier = chemin.parent().unwrap_or_else(|| Path::new("."));
+    // Comme les sceaux : en administrateur dans le dossier d'un compte, rien n'y est créé.
+    if !crate::socle::ecriture_sure(dossier) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            tr!(
+                "en administrateur, le dossier de données d'un autre compte n'est pas écrit",
+                "as administrator, another account's data folder is not written"
+            ),
+        ));
+    }
+    std::fs::create_dir_all(dossier)?;
+    crate::socle::Verrou::prendre(dossier, VERROU_PARAMETRES, false, crate::socle::ATTENTE_ECRITURE)
+        .map_err(|e| e.erreur(VERROU_PARAMETRES))
+}
+
+/// Pourquoi un geste qui ne doit pas resceller un fichier douteux (`modifier_si_sur`) n'a rien écrit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Bloque {
+    /// Là, mais il ne se lit pas : ses autres réglages seraient perdus.
+    Illisible,
+    /// Effacé hors de Vanguard.
+    Efface,
+    /// Changé hors de Vanguard, ou accepté tel quel après des sceaux refaits.
+    Douteux(Douteux),
+}
+
+/// `modifier_dans` pour un geste cosmétique (les couleurs) : il n'écrit que par-dessus un fichier tel que Vanguard
+/// l'a écrit (ou absent). Illisible, effacé ou changé hors de Vanguard : rien n'est écrit, et la raison est rendue.
+/// Un tel geste ne doit ni remettre en silence les autres réglages à leur défaut (un fichier illisible), ni effacer
+/// la trace d'un fichier falsifié en le rescellant : c'est aux Paramètres, qui le disent, de le faire. Lu une seule
+/// fois, sous le verrou : `change` voit le fichier même qui a été jugé.
+fn modifier_si_sur(chemin: &Path, change: impl FnOnce(&mut Fichier) -> bool) -> std::io::Result<Result<(), Bloque>> {
+    let _tenu = tenir(chemin)?;
+    let mut f = match juger(chemin) {
+        Err(_) => return Ok(Err(Bloque::Illisible)),
+        Ok((_, j)) if j.efface => return Ok(Err(Bloque::Efface)),
+        Ok((_, Juge { douteux: Some(d), .. })) => return Ok(Err(Bloque::Douteux(d))),
+        Ok((f, _)) => f,
+    };
+    if change(&mut f) {
+        enregistrer_dans(&f, chemin)?;
+    }
+    Ok(Ok(()))
+}
+
+/// Relit le fichier, le change par `change` (`false` : rien à écrire) et l'enregistre, scellé, sous son verrou
+/// (`tenir`). Un fichier qu'on ne sait plus lire n'est jamais écrasé en silence : il est gardé à côté, puis remplacé
+/// par les défauts changés.
 fn modifier_dans(chemin: &Path, change: impl FnOnce(&mut Fichier) -> bool) -> std::io::Result<()> {
+    let _tenu = tenir(chemin)?;
     let lu = charger_de(chemin);
     let mut f = lu.clone().unwrap_or_default();
     if !change(&mut f) {
@@ -1311,6 +1414,7 @@ mod tests {
             coulisses: true,
             sans_second_avis: true,
             pua: true,
+            couleurs: couleurs::Reglees::default(),
         };
         enregistrer_dans(&voulu, &f).unwrap();
         assert_eq!(charger_de(&f).unwrap(), voulu);

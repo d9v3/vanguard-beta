@@ -25,6 +25,8 @@ pub struct Rangee<'a> {
     pub couleur_source: Color32,
     pub texte: &'a str,
     pub couleur: Color32,
+    /// Un point dans la marge, avant l'heure : l'état de la ligne (bon, attention, grave), jamais sa seule lecture.
+    pub marque: Option<Color32>,
 }
 
 /// Où commencent les colonnes depuis le bord gauche, la marge à droite et le vide sous la dernière ligne.
@@ -158,6 +160,9 @@ pub fn journal<'a>(
                     1.0
                 };
                 let milieu = y + HAUTEUR_LIGNE / 2.0;
+                if let Some(m) = r.marque {
+                    peintre.circle_filled(pos2(x0 + col.heure - 11.0, milieu), 3.0, m.gamma_multiply(a));
+                }
                 peintre.text(
                     pos2(x0 + col.heure, milieu),
                     Align2::LEFT_CENTER,
@@ -418,6 +423,7 @@ mod tests {
                                     couleur_source: Color32::GRAY,
                                     texte: t,
                                     couleur: Color32::WHITE,
+                                    marque: None,
                                 })
                             },
                             col,

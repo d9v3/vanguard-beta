@@ -18,6 +18,7 @@ mod bac_a_sable;
 mod chargement;
 mod commandes;
 mod console;
+mod couleurs;
 mod coulisses;
 mod dessin;
 mod donnees;

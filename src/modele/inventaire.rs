@@ -156,6 +156,8 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     local(crate::modele::resultat::EXAMENS, "modele::resultat"),
     // Le travail sans Internet, l'autodiagnostic et les versions des logiciels s'y coupent.
     scelle(crate::parametres::PARAMETRES, "parametres"),
+    // Le verrou des changements de parametres.json : la fenêtre et le terminal ne s'effacent plus l'un l'autre.
+    local(crate::parametres::VERROU_PARAMETRES, "parametres"),
     // Les défenses voulues (surveillance, veilleur, anti-rançongiciel) : effacées avec leur tâche, une défense coupée
     // se disait « coupée, comme par défaut ».
     scelle(crate::voulues::FICHIER, "voulues"),
@@ -542,6 +544,7 @@ mod tests {
         ("evenements.lock", "verrou, sans contenu"),
         ("agent.lock", "verrou, sans contenu"),
         ("envoi.lock", "verrou, sans contenu"),
+        ("parametres.lock", "verrou, sans contenu"),
         (
             crate::parametres::partage::MARQUE_NON,
             "la marque d'un « non » au partage : seule sa présence compte, et elle ne dit jamais que « non » ; forgée, \

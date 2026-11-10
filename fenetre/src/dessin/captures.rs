@@ -313,7 +313,7 @@ fn echantillon(t: &Texture, uv: Pos2) -> [f32; 4] {
 /// Une image de la fenêtre, comme `Fenetre::ui` la fait, sans `Appli::avancer` (rien ne se lance).
 fn image(appli: &mut Appli, ouverture: Option<&mut super::ouverture::Ouverture>, ui: &mut Ui) {
     let t = ouverture.and_then(|o| o.avancer(ui.ctx()));
-    super::appliquer_theme(ui.ctx(), appli.sombre);
+    super::appliquer_palette(ui.ctx(), super::palette_de(&appli.jeu(), appli.sombre), appli.sombre);
     super::cadre::tout(appli, ui);
     if let Some(t) = t {
         super::ouverture::dessiner(ui.ctx(), t);
@@ -587,7 +587,91 @@ fn captures() {
     }
     faites += mouvement(&dossier);
     faites += console(&dossier);
+    faites += couleurs(&dossier);
     println!("CAPTURES {faites} dans {}", dossier.display());
+}
+
+/// Les couleurs (couleurs/), en français : chaque préréglage et les couleurs du système (inventées), sombre et clair,
+/// sur l'accueil (1280×800) et sur l'écran Vanguard (1920×1080) ; puis la confirmation, un brouillon peu lisible et
+/// un parametres.json douteux.
+fn couleurs(dossier: &Path) -> usize {
+    use crate::commandes::ChangementCouleurs;
+    use crate::couleurs::{Base, Choix, Theme, Vif, depuis_le_systeme, vifs_hex};
+    let dossier = dossier.join("couleurs");
+    std::fs::create_dir_all(&dossier).unwrap();
+    crate::langue::choisir(Some(false));
+    // Des couleurs du système inventées, comme `vanguard couleurs --json` les dirait d'un thème d'Omarchy.
+    let systeme = serde_json::json!({
+        "source": "omarchy",
+        "vifs": ["e0567a", "ff5370", "f78c6c", "ffcb6b", "c3e88d"],
+    });
+    let poser = |a: &mut Appli, theme: Theme, choix: &Choix| {
+        let garde = serde_json::json!({ "base": choix.base.mot(), "vifs": vifs_hex(&choix.vifs) });
+        let mut lu = serde_json::json!({ "systeme": systeme });
+        lu[theme.mot()] = garde;
+        a.poser(Commande::Couleurs, lu.to_string().as_bytes());
+    };
+    let mut faites = 0;
+    for sombre in [true, false] {
+        let theme = Theme::depuis_sombre(sombre);
+        let lues: [Option<crate::couleurs::Rgb>; 5] =
+            ["e0567a", "ff5370", "f78c6c", "ffcb6b", "c3e88d"].map(crate::couleurs::lire_hex);
+        for base in Base::TOUTES {
+            let choix = match base {
+                Base::Systeme => depuis_le_systeme(theme, &lues).0,
+                b => Choix::du_prereglage(b, theme),
+            };
+            for (ecran, taille, nom) in [
+                (Ecran::Accueil, TAILLES[0], "accueil"),
+                (Ecran::Rubrique(Rubrique::Vanguard), TAILLES[1], "reglages"),
+            ] {
+                let mut rendu = Rendu::nouveau();
+                let mut appli = appli_remplie(false, sombre);
+                poser(&mut appli, theme, &choix);
+                appli.aller(ecran);
+                let toile = rendu.rendre(taille, &[0.0, 0.5, 2.0], |ui| image(&mut appli, None, ui));
+                let fichier = format!("{}-{nom}-{}.png", base.mot(), if sombre { "sombre" } else { "clair" });
+                toile.ecrire_png(&dossier.join(fichier)).unwrap();
+                faites += 1;
+            }
+        }
+        // La confirmation (Vanguard → Braise), puis un brouillon peu lisible (remarques, et un refus).
+        let braise = Choix::du_prereglage(Base::Braise, theme);
+        let mut peu_lisible = braise;
+        peu_lisible.poser(Vif::Moyen, peu_lisible.vif(Vif::Grave));
+        peu_lisible.poser(Vif::Bon, if sombre { [0x30, 0x30, 0x30] } else { [0xe8, 0xe8, 0xe8] });
+        for (nom, confirmer, brouillon) in [("confirmation", true, braise), ("remarques", false, peu_lisible)] {
+            let mut rendu = Rendu::nouveau();
+            let mut appli = appli_remplie(false, sombre);
+            poser(&mut appli, theme, &Choix::du_prereglage(Base::Vanguard, theme));
+            appli.aller(Ecran::Rubrique(Rubrique::Vanguard));
+            appli.brouillon = Some((theme, brouillon));
+            if confirmer {
+                appli.proposer_couleurs(ChangementCouleurs {
+                    theme,
+                    choix: Some(brouillon),
+                });
+            }
+            // Plus haute que l'écran : la section des couleurs entière, sans défiler.
+            let toile = rendu.rendre([1920, 1700], &[0.0, 0.5, 2.0], |ui| image(&mut appli, None, ui));
+            toile
+                .ecrire_png(&dossier.join(format!("{nom}-{}.png", if sombre { "sombre" } else { "clair" })))
+                .unwrap();
+            faites += 1;
+        }
+        // Un parametres.json changé hors de Vanguard : la raison, et rien à enregistrer par-dessus.
+        let mut rendu = Rendu::nouveau();
+        let mut appli = appli_remplie(false, sombre);
+        appli.poser(Commande::Couleurs, br#"{"douteux":"hors_vanguard"}"#);
+        appli.aller(Ecran::Rubrique(Rubrique::Vanguard));
+        appli.brouillon = Some((theme, braise));
+        let toile = rendu.rendre([1920, 1700], &[0.0, 0.5, 2.0], |ui| image(&mut appli, None, ui));
+        toile
+            .ecrire_png(&dossier.join(format!("douteux-{}.png", if sombre { "sombre" } else { "clair" })))
+            .unwrap();
+        faites += 1;
+    }
+    faites
 }
 
 /// Les images clés du mouvement (mouvement/), en français, sombre, en 1280×800 : l'arrivée d'un écran.
@@ -837,4 +921,253 @@ fn noms_de_fichier() {
     uniques.sort();
     uniques.dedup();
     assert_eq!(noms.len(), uniques.len(), "{noms:?}");
+}
+
+/// Aucun mot n'est écrit dans une couleur de gravité : un mot d'état se lit à l'encre, la couleur réglable ne marque
+/// que son point, sa barre ou sa bande. Sans quoi une gravité choisie près du fond effacerait le mot qui la dit
+/// (MODELE-DE-MENACE.md, « Les couleurs »). Chaque écran, sombre et clair, données remplies et vides, la section des
+/// couleurs avec un brouillon peu lisible et sa confirmation, les coulisses ouvertes.
+#[test]
+fn aucun_mot_n_est_ecrit_dans_une_couleur_de_gravite() {
+    use crate::commandes::ChangementCouleurs;
+    use crate::couleurs::{Base, Choix, Theme, Vif, verifier, vifs_hex};
+    crate::langue::choisir(Some(false));
+    // Des couleurs distinctes de toutes les autres (neutres, accent) : un mot qui en porte une se reconnaît.
+    let vifs = |sombre: bool| -> [crate::couleurs::Rgb; 5] {
+        if sombre {
+            [
+                [0x4d, 0xa6, 0xff],
+                [0xff, 0x4f, 0x8b],
+                [0xff, 0x9a, 0x3c],
+                [0xe8, 0xd8, 0x4a],
+                [0x3c, 0xcf, 0x7e],
+            ]
+        } else {
+            [
+                [0x0b, 0x5c, 0xad],
+                [0xb0, 0x12, 0x4a],
+                [0xa8, 0x5a, 0x00],
+                [0x7a, 0x6a, 0x00],
+                [0x0f, 0x7a, 0x3e],
+            ]
+        }
+    };
+    let mut vus = 0usize;
+    for sombre in [true, false] {
+        let theme = Theme::depuis_sombre(sombre);
+        let mut choix = Choix::du_prereglage(Base::Vanguard, theme);
+        for (v, c) in Vif::TOUS.into_iter().zip(vifs(sombre)) {
+            choix.poser(v, c);
+        }
+        assert!(verifier(theme, &choix).is_ok(), "des couleurs d'essai lisibles");
+        let interdites: Vec<Color32> = [Vif::Grave, Vif::Moyen, Vif::Jaune, Vif::Bon]
+            .map(|v| {
+                let c = choix.vif(v);
+                Color32::from_rgb(c[0], c[1], c[2])
+            })
+            .to_vec();
+        let poser = |a: &mut Appli| {
+            let mut lu = serde_json::json!({});
+            lu[theme.mot()] = serde_json::json!({ "base": choix.base.mot(), "vifs": vifs_hex(&choix.vifs) });
+            a.poser(Commande::Couleurs, lu.to_string().as_bytes());
+        };
+        let mut cas: Vec<(String, Appli, bool)> = Vec::new();
+        for (nom, ecran, donnees) in ecrans() {
+            let mut a = match donnees {
+                Donnees::Remplies => appli_remplie(false, sombre),
+                Donnees::Aucune => appli_vide(false, sombre),
+                Donnees::Rien => appli_vide(true, sombre),
+            };
+            poser(&mut a);
+            a.aller(ecran);
+            let coulisses = nom.ends_with("coulisses");
+            cas.push((nom, a, coulisses));
+        }
+        // La section des couleurs : un brouillon qui appelle des remarques et un refus, puis sa confirmation.
+        let mut peu_lisible = choix;
+        peu_lisible.poser(Vif::Moyen, peu_lisible.vif(Vif::Grave));
+        peu_lisible.poser(Vif::Jaune, if sombre { [0x20, 0x20, 0x20] } else { [0xf0, 0xf0, 0xf0] });
+        for confirmer in [false, true] {
+            let mut a = appli_remplie(false, sombre);
+            poser(&mut a);
+            a.aller(Ecran::Rubrique(Rubrique::Vanguard));
+            a.brouillon = Some((theme, if confirmer { choix } else { peu_lisible }));
+            if confirmer {
+                a.proposer_couleurs(ChangementCouleurs {
+                    theme,
+                    choix: Some(peu_lisible),
+                });
+            }
+            cas.push((format!("couleurs-{confirmer}"), a, false));
+        }
+        for (nom, mut appli, coulisses) in cas {
+            let ctx = Context::default();
+            super::polices(&ctx);
+            super::appliquer_theme(&ctx, sombre);
+            ctx.set_embed_viewports(true);
+            if coulisses {
+                super::coulisses::basculer(&ctx);
+            }
+            let mut formes = Vec::new();
+            for t in [1.0, 1.5, 3.0] {
+                let entree = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1920.0, 1700.0))),
+                    time: Some(t),
+                    ..Default::default()
+                };
+                let mut sortie = ctx.run_ui(entree, |ui| image(&mut appli, None, ui));
+                // Rien n'est peint ici : les textures sont dites appliquées, comme epaint le veut.
+                sortie.textures_delta.clear();
+                formes = sortie.shapes;
+            }
+            let mut pile: Vec<epaint::Shape> = formes.into_iter().map(|c| c.shape).collect();
+            while let Some(f) = pile.pop() {
+                match f {
+                    epaint::Shape::Vec(v) => pile.extend(v),
+                    epaint::Shape::Text(t) => {
+                        for s in &t.galley.job.sections {
+                            let couleur = t
+                                .override_text_color
+                                .unwrap_or(if s.format.color == Color32::PLACEHOLDER {
+                                    t.fallback_color
+                                } else {
+                                    s.format.color
+                                });
+                            let [r, g, b, a] = couleur.to_srgba_unmultiplied();
+                            let mot = t
+                                .galley
+                                .job
+                                .text
+                                .get(s.byte_range.start.0..s.byte_range.end.0)
+                                .unwrap_or_default();
+                            vus += 1;
+                            if a < 40 || mot.trim().is_empty() {
+                                continue;
+                            }
+                            for i in &interdites {
+                                let proche = (i.r().abs_diff(r)).max(i.g().abs_diff(g)).max(i.b().abs_diff(b)) <= 2;
+                                assert!(
+                                    !proche,
+                                    "{nom} ({}) : « {mot} » écrit en #{r:02x}{g:02x}{b:02x}",
+                                    theme.mot()
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    assert!(vus > 1000, "{vus} morceaux de texte vus");
+}
+
+/// Un tour de la fenêtre entière (1920×1700 : la section des couleurs sans défiler), avec ces événements ; ses formes.
+fn tour(ctx: &Context, appli: &mut Appli, temps: &mut f64, events: Vec<egui::Event>) -> Vec<epaint::ClippedShape> {
+    *temps += 0.05;
+    let entree = egui::RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1920.0, 1700.0))),
+        time: Some(*temps),
+        events,
+        ..Default::default()
+    };
+    let mut sortie = ctx.run_ui(entree, |ui| image(appli, None, ui));
+    sortie.textures_delta.clear();
+    sortie.shapes
+}
+
+/// Les mots écrits, et le centre de chacun.
+fn mots(formes: Vec<epaint::ClippedShape>) -> Vec<(String, Pos2)> {
+    let mut pile: Vec<epaint::Shape> = formes.into_iter().map(|c| c.shape).collect();
+    let mut vus = Vec::new();
+    while let Some(f) = pile.pop() {
+        match f {
+            epaint::Shape::Vec(v) => pile.extend(v),
+            epaint::Shape::Text(t) => {
+                let centre = Rect::from_min_size(t.pos, t.galley.size()).center();
+                vus.push((t.galley.job.text.clone(), centre));
+            }
+            _ => {}
+        }
+    }
+    vus
+}
+
+/// Clique sur le mot `quoi` (il doit être écrit) ; les mots écrits après le clic.
+fn cliquer(ctx: &Context, appli: &mut Appli, temps: &mut f64, quoi: &str) -> Vec<(String, Pos2)> {
+    use egui::{Event, Modifiers, PointerButton};
+    let vus = mots(tour(ctx, appli, temps, Vec::new()));
+    let ou = vus
+        .iter()
+        .find(|(m, _)| m == quoi)
+        .unwrap_or_else(|| panic!("« {quoi} » n'est pas écrit"))
+        .1;
+    let bouton = |pressed| Event::PointerButton {
+        pos: ou,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    for e in [vec![Event::PointerMoved(ou)], vec![bouton(true)], vec![bouton(false)]] {
+        tour(ctx, appli, temps, e);
+    }
+    mots(tour(ctx, appli, temps, Vec::new()))
+}
+
+/// Un parametres.json que `vanguard couleurs` refuserait d'écraser : « Enregistrer… » ne propose rien, et la raison
+/// est écrite. Une confirmation ouverte fige le brouillon : un préréglage cliqué n'y change rien. Chaque fois, le
+/// même clic sans la cause fait bien son effet (le clic arrive).
+#[test]
+fn un_fichier_douteux_ne_propose_rien_et_la_confirmation_fige_le_brouillon() {
+    use crate::commandes::ChangementCouleurs;
+    use crate::couleurs::{Base, Choix, Theme};
+    use crate::donnees::couleurs::Doute;
+    crate::langue::choisir(Some(false));
+    let theme = Theme::Sombre;
+    let braise = Choix::du_prereglage(Base::Braise, theme);
+    for douteux in [None, Some("hors_vanguard"), Some("illisible"), Some("inconnu")] {
+        let ctx = Context::default();
+        super::polices(&ctx);
+        super::appliquer_theme(&ctx, true);
+        let mut temps = 1.0;
+        let mut a = appli_remplie(false, true);
+        let lu = douteux.map_or_else(|| serde_json::json!({}), |d| serde_json::json!({ "douteux": d }));
+        a.poser(Commande::Couleurs, lu.to_string().as_bytes());
+        a.aller(Ecran::Rubrique(Rubrique::Vanguard));
+        a.brouillon = Some((theme, braise));
+        let bloque = a.couleurs().doute.is_some_and(Doute::bloque);
+        assert_eq!(
+            bloque,
+            matches!(douteux, Some("hors_vanguard" | "illisible")),
+            "{douteux:?}"
+        );
+        let vus = cliquer(&ctx, &mut a, &mut temps, "Enregistrer…");
+        assert_eq!(a.confirmation_couleurs().is_some(), !bloque, "{douteux:?}");
+        assert_eq!(vus.iter().any(|(m, _)| m == Doute::refus()), bloque, "{douteux:?}");
+    }
+    // La confirmation ouverte : « Glacier » ne touche plus au brouillon ; fermée, il le change.
+    for confirmer in [true, false] {
+        let ctx = Context::default();
+        super::polices(&ctx);
+        super::appliquer_theme(&ctx, true);
+        let mut temps = 1.0;
+        let mut a = appli_remplie(false, true);
+        a.poser(Commande::Couleurs, b"{}");
+        a.aller(Ecran::Rubrique(Rubrique::Vanguard));
+        a.brouillon = Some((theme, braise));
+        if confirmer {
+            a.proposer_couleurs(ChangementCouleurs {
+                theme,
+                choix: Some(braise),
+            });
+        }
+        cliquer(&ctx, &mut a, &mut temps, "Glacier");
+        let apres = a.brouillon_de(theme).map(|c| c.base);
+        assert_eq!(
+            apres,
+            Some(if confirmer { Base::Braise } else { Base::Glacier }),
+            "{confirmer}"
+        );
+        assert_eq!(a.confirmation_couleurs().is_some(), confirmer);
+    }
 }

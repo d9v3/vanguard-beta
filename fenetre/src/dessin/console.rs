@@ -435,6 +435,17 @@ fn couleur_ton(t: Ton) -> Color32 {
     }
 }
 
+/// L'encre d'un texte selon son ton : jamais une couleur de gravité (réglable), seulement l'encre, l'accent d'une
+/// commande ou le doux.
+fn encre_ton(t: Ton) -> Color32 {
+    let p = pal();
+    match t {
+        Ton::Normal | Ton::Bon | Ton::Attention | Ton::Grave => p.encre,
+        Ton::Commande => p.accent,
+        Ton::Discret => p.doux,
+    }
+}
+
 /// La couleur d'un bloc (sa bande à gauche, son icône) : l'attente en gris, le travail en accent, la fin selon ce
 /// qu'elle a trouvé, l'échec en grave.
 fn couleur_bloc(b: &Bloc) -> Color32 {
@@ -605,7 +616,12 @@ fn dessiner_place(appli: &Appli, ui: &mut Ui, place: Place, rangee: Rect) -> Opt
                 X_TEXTE - X_SOURCE - 8.0,
             );
             peintre.galley(pos2(x0 + X_SOURCE, milieu - source.size().y / 2.0), source, p.doux);
-            let g = coupee(ui, &l.texte, mono(13.0), couleur_ton(l.ton), largeur_texte);
+            // Un ton d'état : un point de sa couleur dans la marge, le texte à l'encre. Les couleurs de gravité se
+            // règlent : elles repèrent, elles ne portent jamais seules un mot (lot couleurs, relecture C1).
+            if matches!(l.ton, Ton::Bon | Ton::Attention | Ton::Grave) {
+                peintre.circle_filled(pos2(x0 + X_HEURE - 11.0, milieu), 3.0, couleur_ton(l.ton));
+            }
+            let g = coupee(ui, &l.texte, mono(13.0), encre_ton(l.ton), largeur_texte);
             let place = Rect::from_min_size(pos2(x0 + X_TEXTE, milieu - g.size().y / 2.0), g.size());
             texte_selectionnable(ui, Id::unique(("console-ligne", l.numero)), place, g);
             None
@@ -689,7 +705,8 @@ fn dessiner_bloc(
                         .duree
                         .map(|d| crate::langue::secondes(d.as_secs_f32()))
                         .unwrap_or_default();
-                    (format!("{d} · {}", b.resume), couleur_ton(b.ton))
+                    // Le résumé à l'encre : la couleur du bloc est déjà dans sa bande et son icône.
+                    (format!("{d} · {}", b.resume), encre_ton(b.ton))
                 }
             };
             let x = cmd.right().max(x0 + X_TEXTE - 16.0) + 16.0;
@@ -754,8 +771,9 @@ fn dessiner_bloc(
             fond_survole(ui, &rep, rangee);
             let couleur = couleur_point(pt);
             peintre.circle_filled(pos2(x0 + X_SOURCE + 5.0, milieu), 3.0, couleur);
-            let mot = coupee(ui, pt.mot(), police(12.0), couleur, X_TEXTE - X_SOURCE - 26.0);
-            peintre.galley(pos2(x0 + X_SOURCE + 18.0, milieu - mot.size().y / 2.0), mot, couleur);
+            // Le mot de gravité à l'encre ; sa couleur réglable reste au point.
+            let mot = coupee(ui, pt.mot(), police(12.0), p.encre, X_TEXTE - X_SOURCE - 26.0);
+            peintre.galley(pos2(x0 + X_SOURCE + 18.0, milieu - mot.size().y / 2.0), mot, p.encre);
             let mut job = LayoutJob::default();
             job.append(&pt.sujet, 0.0, TextFormat::simple(moyenne(13.0), p.encre));
             job.append(" — ", 0.0, TextFormat::simple(police(13.0), p.discret));
