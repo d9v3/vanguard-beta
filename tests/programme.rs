@@ -628,6 +628,8 @@ fn audit_en_json() {
     let audit: serde_json::Value = serde_json::from_str(&s.texte).expect("machine --json : JSON illisible");
     let score = audit["score"].as_u64().expect("pas de note");
     assert!(score <= 100);
+    // La fenêtre de Vanguard ne montre la note que si elle est dite fiable.
+    assert!(audit["fiable"].is_boolean(), "fiable absent");
     let constats = audit["constats"].as_array().expect("pas de constats");
     assert!(constats.len() >= 5, "{} constats seulement", constats.len());
     for c in constats {

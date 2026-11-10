@@ -345,8 +345,14 @@ pub(crate) fn ligne_de_commande() -> clap::Command {
     if !langue::anglais() {
         return c;
     }
-    let mut c =
-        c.about("Portable cyber defense for endpoints and networks: check, fixes, settings. No argument: menu.");
+    let mut c = c
+        .about(
+            "Portable cyber defense for endpoints and networks: check, fixes, settings. No argument: the Vanguard \
+                 window, or the menu.",
+        )
+        .mut_arg("menu", |a| {
+            a.help("The terminal menu, even when the Vanguard window could open.")
+        });
     for &(nom, aide) in AIDES_EN {
         c = c.mut_subcommand(nom, |s| s.about(aide));
     }
@@ -464,8 +470,8 @@ pub(crate) fn rubriques_des_commandes() -> Vec<(Option<Groupe>, Vec<&'static str
 pub(crate) fn aide_longue() -> String {
     use std::fmt::Write;
     let mut t = trf!(
-        "Vanguard {} : cyberdéfense portable des postes et des réseaux.\nSans argument : le menu.\n\nUsage : vanguard [commande] [options]\n\n",
-        "Vanguard {}: portable cyber defense for endpoints and networks.\nNo argument: the menu.\n\nUsage: vanguard [command] [options]\n\n",
+        "Vanguard {} : cyberdéfense portable des postes et des réseaux.\nSans argument : la fenêtre de Vanguard, ou le menu (--menu : le menu).\n\nUsage : vanguard [commande] [options]\n\n",
+        "Vanguard {}: portable cyber defense for endpoints and networks.\nNo argument: the Vanguard window, or the menu (--menu: the menu).\n\nUsage: vanguard [command] [options]\n\n",
         env!("CARGO_PKG_VERSION")
     );
     let rubriques = rubriques_de_l_aide();
@@ -489,8 +495,8 @@ pub(crate) fn aide_longue() -> String {
 pub(crate) fn aide_courte() -> String {
     use std::fmt::Write;
     let mut t = trf!(
-        "Vanguard {} : cyberdéfense portable des postes et des réseaux.\nSans argument : le menu (↑ ↓, ou un mot pour chercher un outil).\n\n",
-        "Vanguard {}: portable cyber defense for endpoints and networks.\nNo argument: the menu (↑ ↓, or a word to find a tool).\n\n",
+        "Vanguard {} : cyberdéfense portable des postes et des réseaux.\nSans argument : la fenêtre de Vanguard ; --menu : le menu (↑ ↓, ou un mot).\n\n",
+        "Vanguard {}: portable cyber defense for endpoints and networks.\nNo argument: the Vanguard window; --menu: the menu (↑ ↓, or a word).\n\n",
         env!("CARGO_PKG_VERSION")
     );
     let clap = Args::command();

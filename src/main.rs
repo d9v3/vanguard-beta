@@ -368,10 +368,12 @@ async fn main() {
                         parent: Some(parent),
                         ..
                     }),
+                ..
             }) => machine::windows::eleve::executer(&canal, parent),
             #[cfg(unix)]
             Ok(Args {
                 commande: Some(Commande::AppliquerEleve { langue, parent, .. }),
+                ..
             }) => machine::assistant::executer(langue.as_deref(), parent),
             _ => 2,
         };
@@ -430,7 +432,12 @@ async fn main() {
         machine::quitter(2);
     }
     match args.commande {
-        None => menu().await,
+        // La fenêtre de Vanguard quand elle est là et que la personne est devant un écran ; sinon le menu.
+        None => {
+            if args.menu || !demarrage::lancer_fenetre::ouvrir() {
+                menu().await;
+            }
+        }
         Some(Commande::Complet { html, texte }) => {
             let mut s = Session::default();
             s.complet().await;

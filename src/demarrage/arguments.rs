@@ -7,9 +7,14 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     version,
-    about = "Cyberdéfense portable des postes et des réseaux : bilan, correctifs, réglages. Sans argument : menu."
+    about = "Cyberdéfense portable des postes et des réseaux : bilan, correctifs, réglages. Sans argument : la fenêtre \
+             de Vanguard, ou le menu.",
+    args_conflicts_with_subcommands = true
 )]
 pub(crate) struct Args {
+    /// Le menu du terminal, même quand la fenêtre de Vanguard pourrait s'ouvrir.
+    #[arg(long, visible_alias = "terminal")]
+    pub(crate) menu: bool,
     #[command(subcommand)]
     pub(crate) commande: Option<Commande>,
 }

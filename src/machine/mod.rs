@@ -2050,13 +2050,37 @@ pub fn afficher_constats(constats: &[Constat]) {
     }
 }
 
+/// `audit --json` : l'audit, et si sa note est fiable (`Audit::fiable`). La fenêtre de Vanguard ne montre la note
+/// que fiable : sinon une machine peu vérifiée aurait une note rassurante.
+#[derive(Serialize)]
+struct AuditJson<'a> {
+    systeme: &'static str,
+    score: u32,
+    fiable: bool,
+    constats: &'a [Constat],
+}
+
+impl<'a> AuditJson<'a> {
+    fn de(a: &'a Audit) -> Self {
+        Self {
+            systeme: a.systeme,
+            score: a.score,
+            fiable: a.fiable(),
+            constats: &a.constats,
+        }
+    }
+}
+
 pub fn executer(json: bool) -> Audit {
     // La tête du journal notée dès le bilan, même sans rien d'autre à noter : c'est la preuve qu'une prochaine mise à
     // jour lira (`sceau::forme_d_avant`) ; sans elle, ce qu'elle reprendrait ne serait pas cru.
     crate::modele::journal::noter_version();
     let a = auditer(!json);
     if json {
-        println!("{}", serde_json::to_string_pretty(&a).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&AuditJson::de(&a)).unwrap_or_default()
+        );
     } else {
         afficher(&a);
     }

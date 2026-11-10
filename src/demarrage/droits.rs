@@ -8,7 +8,7 @@ use crate::ui::*;
 
 /// Vanguard lui-même en administrateur : root ou setuid (compte effectif ≠ compte réel), console administrateur
 /// sous Windows. Un jeton illisible compte pour élevé : c'est un garde-fou, il échoue fermé.
-fn processus_eleve() -> bool {
+pub(crate) fn processus_eleve() -> bool {
     #[cfg(unix)]
     {
         let (effectif, reel) = (crate::socle::euid(), crate::socle::uid());
