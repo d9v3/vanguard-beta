@@ -179,22 +179,33 @@ Each threat in detail, menu by menu: [Security functions, threat by threat](READ
   `protection`, `evenements`, `diagnostic`, `test-connexion`…), always with `--json`, no free argument, no shell,
   input closed, one at a time, with a time limit and a Stop button (on Linux, the whole process group is stopped).
   The window's console only accepts the names on that list. On Linux, that `vanguard` must be a regular file owned
-  by the window's account or by root, that neither the group nor others can modify, or it is not started (the same
-  rule as for the window, below).
+  by the window's account or by root, that neither the group nor others can modify, in folders (up to `/`) that
+  neither the group nor others can modify either (except a folder with the sticky bit, like `/tmp`), or it is not
+  started: the same rule as for the window, below, checked again before each command, not only at opening.
 - **Its answers are read with suspicion.** Bounded size, long lines cut, terminal sequences and control characters
   removed, JSON read without ever crashing; an unreadable answer is said to be so, never counted as healthy. The
-  check's grade is shown only when Vanguard says it is reliable (`fiable` in `audit --json`).
+  check's grade is shown only when Vanguard says it is reliable (`fiable` in `audit --json`); when some points could
+  not be checked, the grade is said to be incomplete, next to the number, with how many.
 - **No connection, no file.** The window opens no network port, no server, no web page, and runs no JavaScript (no
   HTTP library among its dependencies); it writes no file (theme and language are not kept). The commands it runs
   reach the Internet as they do in the terminal (for example `test-connexion`, `logiciels-perimes`).
 - **The menu stays the safe choice.** The window does not open without a terminal (a script writing the choices),
   over SSH or Remote Desktop, as administrator (root, sudo, administrator console), without a graphical screen, when
   it is not placed next to `vanguard`, when (on Linux) it is not a regular file owned by this account or root that
-  neither the group nor others can modify, or when it does not say "open" within 20 seconds. `vanguard --menu` forces
+  neither the group nor others can modify, in folders that neither the group nor others can modify, or when it does
+  not say "open" within 20 seconds. `vanguard --menu` forces
   the menu.
+- **Its libraries.** On Windows, like `vanguard.exe`, it loads its DLLs from System32 only: those it imports
+  (DependentLoadFlags), and those a library opens by name after startup (SetDefaultDllDirectories, first line of the
+  program; opengl32.dll for example). A DLL placed next to it, on the key or in Downloads, is never loaded. On Linux,
+  it is linked to the system's glibc (its display libraries are loaded at run time): only the interpreter
+  `/lib64/ld-linux-x86-64.so.2` is allowed, with no library folder written into the program (neither RPATH nor
+  RUNPATH), checked by each run of `outils/verifier.sh` (`vanguard deploiement verifier-binaire --glibc`).
 - **Limits.** Like the program, it assumes only you can modify its folder: whoever can replace `vanguard-fenetre` can
-  also replace `vanguard`. On Windows, Stop stops the command it ran, not yet what that command started itself. On
-  Linux, no screen reader nor copy and paste yet.
+  also replace `vanguard`. On Windows, the window and `vanguard` only check that the other one is a regular file:
+  neither its owner nor the permissions (ACLs) of the file and its folders, which Windows does not let you read as
+  simply; a folder where other accounts can write is therefore not refused on Windows. On Windows, Stop stops the
+  command it ran, not yet what that command started itself. On Linux, no screen reader nor copy and paste yet.
 
 ## Lowered by choice
 

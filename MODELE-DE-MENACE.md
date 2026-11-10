@@ -189,10 +189,13 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
   sans shell, entrée fermée, une à la fois, avec un délai et un bouton Arrêter (sous Linux, tout le groupe de
   processus est arrêté). La console de la fenêtre n'accepte que les noms de cette liste. Sous Linux, ce `vanguard`
   doit être un fichier ordinaire au compte de la fenêtre ou à root, que ni le groupe ni les autres ne peuvent
-  modifier, sinon il n'est pas lancé (la même règle que pour la fenêtre, plus bas).
+  modifier, dans des dossiers (jusqu'à `/`) que ni le groupe ni les autres ne peuvent modifier non plus (sauf un
+  dossier à « sticky bit », comme `/tmp`), sinon il n'est pas lancé : la même règle que pour la fenêtre, plus bas,
+  revérifiée avant chaque commande, et pas seulement à l'ouverture.
 - **Ses réponses sont lues avec méfiance.** Taille bornée, lignes coupées, séquences de terminal et caractères de
   contrôle retirés, JSON lu sans jamais planter ; une réponse illisible est dite telle, jamais comptée saine. La note
-  du bilan n'est montrée que si Vanguard la dit fiable (`fiable` dans `audit --json`).
+  du bilan n'est montrée que si Vanguard la dit fiable (`fiable` dans `audit --json`) ; quand des points n'ont pas pu
+  être vérifiés, la note est dite incomplète, à côté du chiffre, avec leur nombre.
 - **Aucune connexion, aucun fichier.** La fenêtre n'ouvre aucune porte réseau, aucun serveur, aucune page web, et
   n'exécute aucun JavaScript (aucune bibliothèque HTTP parmi ses dépendances) ; elle n'écrit aucun fichier (thème et
   langue ne sont pas gardés). Les commandes qu'elle lance joignent Internet comme dans le terminal (par exemple
@@ -200,11 +203,22 @@ Le détail de chaque menace, menu par menu : [Fonctions de sécurité, menace pa
 - **Le menu reste le choix sûr.** La fenêtre ne s'ouvre pas sans terminal (un script qui écrit les choix), en SSH ou
   au Bureau à distance, en administrateur (root, sudo, console administrateur), sans écran graphique, quand elle n'est
   pas posée à côté, quand (sous Linux) elle n'est pas un fichier ordinaire à ce compte ou à root que ni le groupe ni
-  les autres ne peuvent modifier, ou quand elle ne dit pas « ouverte » dans les 20 secondes. `vanguard --menu` force
+  les autres ne peuvent modifier, dans des dossiers que ni le groupe ni les autres ne peuvent modifier, ou quand elle
+  ne dit pas « ouverte » dans les 20 secondes. `vanguard --menu` force
   le menu.
+- **Ses bibliothèques.** Sous Windows, comme `vanguard.exe`, elle ne charge ses DLL que de System32 : celles qu'elle
+  importe (DependentLoadFlags), et celles qu'une bibliothèque ouvre par leur nom après le démarrage
+  (SetDefaultDllDirectories, première ligne du programme ; opengl32.dll par exemple). Une DLL posée à côté d'elle,
+  sur la clé ou dans Téléchargements, n'est jamais chargée. Sous Linux, elle est liée à la glibc du système (ses
+  bibliothèques d'affichage se chargent à l'exécution) : seul l'interpréteur `/lib64/ld-linux-x86-64.so.2` est
+  permis, sans dossier de bibliothèques écrit dans le programme (ni RPATH ni RUNPATH), vérifié à chaque passe de
+  `outils/verifier.sh` (`vanguard deploiement verifier-binaire --glibc`).
 - **Limites.** Comme le programme, elle suppose que son dossier n'est modifiable que par vous : qui peut remplacer
-  `vanguard-fenetre` peut aussi remplacer `vanguard`. Sous Windows, Arrêter arrête la commande lancée, pas encore ce
-  qu'elle aurait lancé elle-même. Sous Linux, pas encore de lecteur d'écran ni de copier-coller.
+  `vanguard-fenetre` peut aussi remplacer `vanguard`. Sous Windows, la fenêtre et `vanguard` ne vérifient que le fait
+  que l'autre soit un fichier ordinaire : ni son propriétaire, ni les droits (ACL) du fichier et de ses dossiers, que
+  Windows ne laisse pas lire aussi simplement ; un dossier où d'autres comptes peuvent écrire n'est donc pas refusé
+  sous Windows. Sous Windows, Arrêter arrête la commande lancée, pas encore ce qu'elle aurait lancé elle-même. Sous
+  Linux, pas encore de lecteur d'écran ni de copier-coller.
 
 ## Baisses par choix
 
