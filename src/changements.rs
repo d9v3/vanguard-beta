@@ -506,15 +506,25 @@ fn lire() -> Vec<Changement> {
 /// d'avant) : chaque ligne marquée `Avant`. Changé hors de Vanguard : chaque ligne marquée `HorsVanguard`, qu'aucune
 /// annulation ne rejoue. Supprimé, illisible (un tube, un lien, trop gros) : rien.
 fn lire_de(chemin: &std::path::Path) -> Vec<Changement> {
+    lire_et_juger(chemin).0
+}
+
+/// `lire_de`, et comment le relevé s'est relu, en code stable : « intact », « repris » (d'une version d'avant le
+/// sceau), « change-hors-de-vanguard », « absent », « efface » (supprimé hors de Vanguard), « inconnu » (absent, sceaux
+/// refaits), « illisible ».
+fn lire_et_juger(chemin: &std::path::Path) -> (Vec<Changement>, &'static str) {
     use crate::sceau::Lecture;
     let (dossier, nom) = lieu(chemin);
-    let (octets, douteuse) = match crate::sceau::lire_dans(dossier, nom) {
-        Lecture::Intact(o) => (o, None),
+    let (octets, douteuse, releve) = match crate::sceau::lire_dans(dossier, nom) {
+        Lecture::Intact(o) => (o, None, "intact"),
         // Repris d'une version d'avant le sceau à la mise à jour ; accepté après des sceaux refaits, il vient peut-être
         // de qui les a effacés : comme changé hors de Vanguard.
-        Lecture::Adopte(o) if crate::sceau::repris_dans(dossier, nom) => (o, Some(Origine::Avant)),
-        Lecture::Adopte(o) | Lecture::Falsifie(Some(o)) => (o, Some(Origine::HorsVanguard)),
-        Lecture::Absent | Lecture::Inconnu | Lecture::Falsifie(None) | Lecture::Illisible(_) => return Vec::new(),
+        Lecture::Adopte(o) if crate::sceau::repris_dans(dossier, nom) => (o, Some(Origine::Avant), "repris"),
+        Lecture::Adopte(o) | Lecture::Falsifie(Some(o)) => (o, Some(Origine::HorsVanguard), "change-hors-de-vanguard"),
+        Lecture::Absent => return (Vec::new(), "absent"),
+        Lecture::Inconnu => return (Vec::new(), "inconnu"),
+        Lecture::Falsifie(None) => return (Vec::new(), "efface"),
+        Lecture::Illisible(_) => return (Vec::new(), "illisible"),
     };
     // Changé hors de Vanguard : les lignes que Vanguard a écrites telles quelles (leur empreinte scellée à côté)
     // gardent leur origine ; les autres sont hors de Vanguard.
@@ -541,7 +551,7 @@ fn lire_de(chemin: &std::path::Path) -> Vec<Changement> {
         }
         tous.push(c);
     }
-    tous
+    (tous, releve)
 }
 
 /// Le relevé d'une version d'avant, accepté tel quel : réécrit et scellé, chaque ligne gardant sa marque `Avant`
@@ -697,6 +707,121 @@ fn resume_de(chemin: &std::path::Path) -> Option<(usize, usize, String)> {
     Some((tous.len(), tous.iter().filter(|c| c.reussi).count(), derniere))
 }
 
+/// Les changements montrés au plus, les plus récents (à l'écran comme en JSON) ; les autres sont comptés.
+const MONTRES: usize = 30;
+
+/// Une ligne de l'historique telle qu'elle se montre, sans couleur : ce qui a été fait, son état (texte, et code
+/// stable pour `--json`), d'où vient la ligne, et la preuve relevée avant un blocage.
+struct Ligne {
+    quoi: String,
+    etat: String,
+    code: &'static str,
+    douteuse: &'static str,
+    preuve: Option<String>,
+}
+
+fn ligne(c: &Changement, a_sa_note: &dyn Fn(&String) -> bool) -> Ligne {
+    let douteuse = match c.origine {
+        Some(Origine::HorsVanguard) => tr!(" (changé hors de Vanguard)", " (changed outside Vanguard)"),
+        Some(Origine::Avant) => tr!(" (noté avant le sceau)", " (noted before the seal)"),
+        None => "",
+    };
+    if let Some(b) = &c.blocage {
+        let (etat, code) = match (&b.annule, &b.annulation, b.automatique) {
+            (Some(le), _, _) if b.supprime => (
+                trf!(" (fichier supprimé le {le})", " (file deleted on {le})"),
+                "supprime",
+            ),
+            (Some(le), _, _) => (trf!(" (annulé le {le})", " (undone on {le})"), "annule"),
+            (None, Some(_), true) => (
+                tr!(" (automatique, annulable)", " (automatic, undoable)").to_string(),
+                "annulable",
+            ),
+            (None, Some(_), false) => (tr!(" (annulable)", " (undoable)").to_string(), "annulable"),
+            (None, None, _) => (String::new(), "en-place"),
+        };
+        return Ligne {
+            quoi: affichable(&b.quoi),
+            etat,
+            code,
+            douteuse,
+            preuve: b
+                .preuve
+                .as_ref()
+                .map(crate::protection::preuve::Preuve::resume)
+                .filter(|p| !p.is_empty()),
+        };
+    }
+    let premiere = c.commandes.first().map(String::as_str).unwrap_or_default();
+    let suite = if c.commandes.len() > 1 {
+        trf!(
+            " (+{} commande(s))",
+            " (+{} command(s))",
+            c.commandes.len().saturating_sub(1)
+        )
+    } else {
+        String::new()
+    };
+    let (etat, code) = match (&c.defaite, &c.annulable) {
+        (Some(le), _) => (trf!(" (défaite le {le})", " (undone on {le})"), "defaite"),
+        (None, Some(id)) if a_sa_note(id) => (tr!(" (annulable)", " (undoable)").to_string(), "annulable"),
+        _ if c.reussi => (se_remet(premiere).unwrap_or_default().to_string(), "fait"),
+        _ => (String::new(), "echoue"),
+    };
+    Ligne {
+        quoi: format!("{}{suite}", commande_affichable(premiere)),
+        etat,
+        code,
+        douteuse,
+        preuve: None,
+    }
+}
+
+/// `vanguard changements --json` : les `MONTRES` changements les plus récents, en JSON simple et borné (un historique
+/// n'a pas de verdict : ce n'est pas un résultat d'examen, et rien n'est versé). Rien n'est proposé ni changé. Comment
+/// le relevé s'est relu est dit : un relevé effacé ou changé hors de Vanguard ne se lit pas « aucune correction ».
+pub(crate) fn json() {
+    let (tous, releve) = lire_et_juger(&fichier());
+    let notes = crate::optimiser::annulables::notes(None);
+    let a_sa_note = |id: &String| notes.iter().any(|n| &n.id == id);
+    println!("{}", en_json(&tous, releve, &a_sa_note));
+}
+
+fn en_json(tous: &[Changement], releve: &'static str, a_sa_note: &dyn Fn(&String) -> bool) -> String {
+    use crate::modele::resultat::sans_piege;
+    let changements: Vec<serde_json::Value> = tous
+        .iter()
+        .rev()
+        .take(MONTRES)
+        .map(|c| {
+            let l = ligne(c, a_sa_note);
+            serde_json::json!({
+                "date": sans_piege(&c.date, false),
+                "reussi": c.reussi,
+                "genre": if c.blocage.is_some() { "blocage" } else { "correction" },
+                "texte": sans_piege(&format!("{}{}{}", l.quoi, l.etat, l.douteuse), false),
+                "commandes": c.commandes.len(),
+                "etat": l.code,
+                "origine": match c.origine {
+                    Some(Origine::HorsVanguard) => Some("hors-vanguard"),
+                    Some(Origine::Avant) => Some("avant-le-sceau"),
+                    None => None,
+                },
+                "preuve": l.preuve.map(|p| sans_piege(&p, false)),
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({
+        "schema": 1,
+        "releve": releve,
+        "total": tous.len(),
+        "montres": changements.len(),
+        "plus_anciens": tous.len().saturating_sub(MONTRES),
+        "changements": changements,
+    }))
+    .unwrap_or_default()
+}
+
 /// `vanguard changements` et le menu Cette machine : les changements notés, puis, s'il y en a, les corrections qui se
 /// défont, à annuler une par une (ou tout remettre comme avant).
 pub fn afficher() {
@@ -711,72 +836,34 @@ pub fn afficher() {
     }
     let notes = crate::optimiser::annulables::notes(None);
     let a_sa_note = |id: &String| notes.iter().any(|n| &n.id == id);
-    for c in tous.iter().rev().take(30) {
+    for c in tous.iter().rev().take(MONTRES) {
         let marque = if c.reussi {
             format!("{VERT}✔{RESET}")
         } else {
             format!("{}✖{RESET}", couleur(crate::risk::Niveau::Eleve))
         };
-        let douteuse = match c.origine {
-            Some(Origine::HorsVanguard) => tr!(" (changé hors de Vanguard)", " (changed outside Vanguard)"),
-            Some(Origine::Avant) => tr!(" (noté avant le sceau)", " (noted before the seal)"),
-            None => "",
-        };
-        if let Some(b) = &c.blocage {
-            let etat = match (&b.annule, &b.annulation, b.automatique) {
-                (Some(le), _, _) if b.supprime => trf!(" (fichier supprimé le {le})", " (file deleted on {le})"),
-                (Some(le), _, _) => trf!(" (annulé le {le})", " (undone on {le})"),
-                (None, Some(_), true) => tr!(" (automatique, annulable)", " (automatic, undoable)").to_string(),
-                (None, Some(_), false) => tr!(" (annulable)", " (undoable)").to_string(),
-                (None, None, _) => String::new(),
-            };
-            afficher_aligne(
-                &format!("  {marque} {GRIS}{}{RESET}  ", c.date),
-                &format!("{}{etat}{douteuse}", affichable(&b.quoi)),
-                21,
-                "",
-            );
-            // La preuve relevée avant le geste, en une ligne ; le détail est dans les traces d'incident.
-            if let Some(p) = b.preuve.as_ref().map(crate::protection::preuve::Preuve::resume)
-                && !p.is_empty()
-            {
-                afficher_aligne(
-                    &" ".repeat(21),
-                    &trf!("preuve gardée : {p}", "evidence kept: {p}"),
-                    21,
-                    GRIS,
-                );
-            }
-            continue;
-        }
-        let premiere = c.commandes.first().map(String::as_str).unwrap_or_default();
-        let suite = if c.commandes.len() > 1 {
-            trf!(
-                " (+{} commande(s))",
-                " (+{} command(s))",
-                c.commandes.len().saturating_sub(1)
-            )
-        } else {
-            String::new()
-        };
-        let etat = match (&c.defaite, &c.annulable) {
-            (Some(le), _) => trf!(" (défaite le {le})", " (undone on {le})"),
-            (None, Some(id)) if a_sa_note(id) => tr!(" (annulable)", " (undoable)").to_string(),
-            _ if c.reussi => se_remet(premiere).unwrap_or_default().to_string(),
-            _ => String::new(),
-        };
+        let l = ligne(c, &a_sa_note);
         afficher_aligne(
             &format!("  {marque} {GRIS}{}{RESET}  ", c.date),
-            &format!("{}{suite}{etat}{douteuse}", commande_affichable(premiere)),
+            &format!("{}{}{}", l.quoi, l.etat, l.douteuse),
             21,
             "",
         );
+        // La preuve relevée avant le geste, en une ligne ; le détail est dans les traces d'incident.
+        if let Some(p) = l.preuve {
+            afficher_aligne(
+                &" ".repeat(21),
+                &trf!("preuve gardée : {p}", "evidence kept: {p}"),
+                21,
+                GRIS,
+            );
+        }
     }
-    if tous.len() > 30 {
+    if tous.len() > MONTRES {
         trp!(
             "  {GRIS}… et {} plus ancien(s), dans {}{RESET}",
             "  {GRIS}… and {} older, in {}{RESET}",
-            tous.len().saturating_sub(30),
+            tous.len().saturating_sub(MONTRES),
             chemin_affichable(&fichier())
         );
     }
@@ -964,6 +1051,37 @@ mod tests {
         assert_eq!(resume_de(&f).map(|(n, r, _)| (n, r)), Some((GARDES, GARDES)));
         let _ = std::fs::remove_file(&f);
         assert_eq!(resume_de(&f), None);
+    }
+
+    /// `--json` : borné aux `MONTRES` plus récents (les autres comptés), un code d'état stable par ligne, et l'état
+    /// du relevé dit : changé hors de Vanguard ou effacé, il ne se lit jamais « aucune correction ».
+    #[test]
+    fn json_borne_et_releve_juge() {
+        let f = releve("json");
+        let beaucoup: Vec<Vec<String>> = (0..MONTRES + 3).map(|i| vec![format!("echo {i}")]).collect();
+        noter_dans(&f, &beaucoup, &vec![true; beaucoup.len()], &[]);
+        noter_blocage_dans(&f, vec!["x".into()], true, blocage("b", Some(regle("203.0.113.7"))));
+        let jamais = |_: &String| false;
+        let (tous, releve) = lire_et_juger(&f);
+        assert_eq!(releve, "intact");
+        let v: serde_json::Value = serde_json::from_str(&en_json(&tous, releve, &jamais)).unwrap();
+        assert_eq!(
+            (v["total"].as_u64(), v["montres"].as_u64()),
+            (Some(34), Some(30)),
+            "{v}"
+        );
+        assert_eq!(v["plus_anciens"], 4, "{v}");
+        assert_eq!(
+            (&v["changements"][0]["genre"], &v["changements"][0]["etat"]),
+            (&"blocage".into(), &"annulable".into())
+        );
+        assert_eq!(v["changements"][1]["genre"], "correction", "{v}");
+        let texte = std::fs::read_to_string(&f).unwrap().replacen("echo 1\"", "echo 9\"", 1);
+        std::fs::write(&f, texte).unwrap();
+        assert_eq!(lire_et_juger(&f).1, "change-hors-de-vanguard");
+        std::fs::remove_file(&f).unwrap();
+        let (tous, releve) = lire_et_juger(&f);
+        assert_eq!((tous.len(), releve), (0, "efface"));
     }
 
     fn blocage(id: &str, annulation: Option<Annulation>) -> Blocage {

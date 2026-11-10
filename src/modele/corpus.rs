@@ -249,6 +249,10 @@ const EXEMPTEES: &[(&str, &str)] = &[
         "PRO-SOR-001",
         "ses jugements hors botnets (dossier à risque, port suspect) n'ont pas d'identifiant de règle à eux ; les serveurs de commande sont exercés par SUR-BOT-001",
     ),
+    (
+        "PRO-MOI-001",
+        "compare le programme qui tourne à son manifeste sur la clé : rien de fabriqué à juger hors d'une clé déployée ; ses propres tests le gardent",
+    ),
 ];
 
 /// Les cas dont le propre ne peut rendre aucun constat vérifié, avec leur raison : la règle dit toujours ce qu'elle ne

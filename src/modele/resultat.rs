@@ -43,12 +43,14 @@ pub(crate) const AVEC_RESULTAT: &[&str] = &[
     "PRO-ANV-001",
     "PRO-YAR-001",
     "PRO-MEM-001",
+    "PRO-GIT-001",
+    "PRO-MOI-001",
 ];
 
 /// Le fichier de chaque outil de `AVEC_RESULTAT`, scellé (`sceau`) : un « rien trouvé » réécrit par un programme du
 /// compte s'affichait en vert dans le rapport. Inventoriés (`modele::inventaire`) ; un outil qui s'ajoute à
 /// `AVEC_RESULTAT` s'ajoute ici aussi (`fichiers_scelles`).
-pub(crate) const FICHIERS: [&str; 22] = [
+pub(crate) const FICHIERS: [&str; 24] = [
     "examens/PRO-ESP-001.json",
     "examens/PRO-PER-001.json",
     "examens/PRO-COU-001.json",
@@ -71,6 +73,8 @@ pub(crate) const FICHIERS: [&str; 22] = [
     "examens/PRO-ANV-001.json",
     "examens/PRO-YAR-001.json",
     "examens/PRO-MEM-001.json",
+    "examens/PRO-GIT-001.json",
+    "examens/PRO-MOI-001.json",
 ];
 
 /// Le fichier scellé d'un outil, s'il en a un.
@@ -615,7 +619,7 @@ mod tests {
     /// chaque identifiant y est un outil connu.
     #[test]
     fn outils_sans_resultat() {
-        const OUTILS_SANS_RESULTAT: usize = 3;
+        const OUTILS_SANS_RESULTAT: usize = 2;
         let outils: Vec<&str> = super::super::registre::OUTILS
             .iter()
             .map(|o| o.id)
@@ -661,6 +665,8 @@ mod tests {
             "protection/kev/resultat.rs",
             "maj/resultat.rs",
             "optimiser/demarrage/resultat.rs",
+            "protection/secrets_git/resultat.rs",
+            "protection/manifeste/resultat.rs",
         ] {
             let texte = std::fs::read_to_string(racine.join(f)).unwrap();
             let code = texte.find("#[cfg(test)]\nmod ").map_or(texte.as_str(), |t| &texte[..t]);

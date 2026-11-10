@@ -348,6 +348,14 @@ pub(crate) const OPTIONS_EN: &[(&str, &str, &str)] = &[
                                      fingerprint and the signed version history"),
     ("depanner", "sujet", "The subject: internet, wifi, slow, sound, printer, disk, infection, new, leaving (or words \
                              describing it)"),
+    ("secrets", "json", "The result as JSON, for a script: each secret's kind, file, line and commit, never the secret \
+                         itself; nothing changes"),
+    ("changements", "json", "The history as JSON, for a script: the most recent ones, with no offer to undo; nothing \
+                             changes"),
+    ("regles", "json", "The list as JSON, for a script: nothing changes"),
+    ("verifier-moi", "json", "The result as JSON, for a script: with no question, so without the signed history (which \
+                              asks for consent), said not compared; what could not be checked is said, nothing \
+                              changes"),
 ];
 
 /// La ligne de commande, avec son aide en anglais si l'interface est en anglais (l'aide écrite plus haut, en

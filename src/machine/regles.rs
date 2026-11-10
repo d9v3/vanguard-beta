@@ -163,6 +163,45 @@ pub fn afficher() {
     }
 }
 
+/// `vanguard regles --json` : le même registre que `afficher`, en JSON simple (une liste d'identifiants n'a pas de
+/// verdict : ce n'est pas un résultat d'examen, et rien n'est versé). Borné par le code lui-même ; rien n'est lu de la
+/// machine. Le sujet est dans la langue de l'interface.
+pub(crate) fn json() {
+    println!("{}", en_json());
+}
+
+fn en_json() -> String {
+    use serde_json::{Value, json};
+    let entree = |id: &str, s: (&'static str, &'static str), references: &[&str]| -> Value {
+        json!({ "id": id, "sujet": sujet(s), "references": references })
+    };
+    let bilan: Vec<Value> = regles(Os::actuel())
+        .into_iter()
+        .map(|r| entree(r.id, r.sujet, r.references))
+        .collect();
+    let audit: Vec<Value> = crate::audit::fiches::FICHES
+        .iter()
+        .map(|f| entree(f.id, f.sujet, f.references))
+        .collect();
+    let outils: Vec<Value> = crate::modele::registre::OUTILS
+        .iter()
+        .map(|o| entree(o.id, o.sujet, &[]))
+        .collect();
+    let croisees: Vec<Value> = crate::autotest::croisees::croisees()
+        .into_iter()
+        .map(|c| json!({ "id": c.id, "sujet": sujet(c.sujet), "outil": c.outil }))
+        .collect();
+    serde_json::to_string_pretty(&json!({
+        "schema": 1,
+        "systeme": std::env::consts::OS,
+        "bilan": bilan,
+        "audit": audit,
+        "outils": outils,
+        "croisees": croisees,
+    }))
+    .unwrap_or_default()
+}
+
 /// Tous les identifiants de ce programme : règles du bilan de ce système, fiches de l'audit du réseau, outils et
 /// surveillances (identifiant, sujet).
 #[cfg(test)]

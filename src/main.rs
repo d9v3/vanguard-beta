@@ -573,7 +573,12 @@ async fn main() {
         Some(Commande::Sortantes { json: true }) => protection::sortantes::json(),
         Some(Commande::Distance { json: false }) => protection::distance::menu(),
         Some(Commande::Distance { json: true }) => protection::distance::json(),
-        Some(Commande::VerifierMoi { programme }) => protection::manifeste::verifier_moi(programme.as_deref()),
+        Some(Commande::VerifierMoi { programme, json: false }) => {
+            protection::manifeste::verifier_moi(programme.as_deref());
+        }
+        Some(Commande::VerifierMoi { programme, json: true }) => {
+            protection::manifeste::verifier_moi_json(programme.as_deref());
+        }
         Some(Commande::Manifeste {
             ecrire,
             forcer,
@@ -679,7 +684,8 @@ async fn main() {
         Some(Commande::Acces { json: false }) => protection::acces::afficher_tout(),
         Some(Commande::Acces { json: true }) => protection::acces::json(),
         Some(Commande::Quarantaine) => protection::quarantaine::menu(),
-        Some(Commande::Secrets) => protection::secrets_git::analyser(),
+        Some(Commande::Secrets { json: false }) => protection::secrets_git::analyser(),
+        Some(Commande::Secrets { json: true }) => protection::secrets_git::json(),
         Some(Commande::Conteneurs) => protection::conteneurs::analyser(),
         Some(Commande::Blocage { quoi }) => protection::blocage::commande(&quoi),
         Some(Commande::Parametres { quoi }) => parametres::commande(&quoi),
@@ -787,7 +793,8 @@ async fn main() {
         Some(Commande::VerifierCopie { dossier }) => copier::verifier_copie(dossier.as_deref()),
         Some(Commande::VerifierSauvegarde) => sauvegarde::verifier_sauvegarde(),
         Some(Commande::VerifierCle { dossier }) => verifier_cle::commande(dossier.as_deref()),
-        Some(Commande::Changements) => changements::afficher(),
+        Some(Commande::Changements { json: false }) => changements::afficher(),
+        Some(Commande::Changements { json: true }) => changements::json(),
         Some(Commande::Evenements { json, incident }) => evenements::afficher(json, incident.as_deref()),
         Some(Commande::Alerte { id }) => protection::blocage::alerte(&id),
         Some(Commande::JournauxWindows { dossier, jours, json }) => {
@@ -805,7 +812,8 @@ async fn main() {
         Some(Commande::Ordinateurs) => ordinateurs::menu(),
         Some(Commande::SeMettreAJour) => mise_a_jour::commande(),
         Some(Commande::Desinstaller { liste }) => desinstaller::commande(liste),
-        Some(Commande::Regles) => machine::regles::afficher(),
+        Some(Commande::Regles { json: false }) => machine::regles::afficher(),
+        Some(Commande::Regles { json: true }) => machine::regles::json(),
         // En lecture seule : ni envoi en fond (plus haut), ni tour de sortie de l'agent (plus bas), qui écriraient.
         Some(Commande::Agent { json }) => {
             if json {

@@ -14,6 +14,8 @@ use std::process::Command;
 use crate::protection::outil;
 use crate::ui::*;
 
+pub(crate) mod resultat;
+
 /// Dossiers où un dépôt n'est pas cherché : copies de dépendances, environnements et caches, souvent énormes.
 const SAUTES: &[&str] = &[
     "node_modules",
@@ -28,7 +30,11 @@ const SAUTES: &[&str] = &[
 /// Jusqu'où descendre sous le dossier personnel (~/a/b/c/d), et combien de dépôts au plus : de quoi trouver les
 /// projets sans parcourir tout le disque.
 const PROFONDEUR: usize = 4;
-const DEPOTS_MAX: usize = 200;
+pub(crate) const DEPOTS_MAX: usize = 200;
+
+/// Les commits relus au plus par dépôt (`historique`, « --max-count ») : au-delà, les plus anciens ne le sont pas,
+/// et c'est dit (jamais compté sain).
+pub(crate) const COMMITS_MAX: usize = 2000;
 
 /// Les dépôts git sous `racine`. Les dossiers cachés (réglages, caches) et les liens sont sautés ; un dépôt n'est pas
 /// fouillé plus loin, ses sous-modules étant d'autres dépôts. La racine elle-même peut être un dépôt (fichiers de
@@ -390,7 +396,8 @@ pub(crate) fn lire_historique(sortie: &str) -> Vec<Fuite> {
 /// L'historique d'un dépôt, relu par git sans rien qu'un dépôt piégé puisse faire exécuter : ni programme de
 /// différence externe, ni conversion de texte, ni surveillance de fichiers, ni pager. Les 2 000 derniers commits de
 /// toutes les branches. `None` si git ne l'a pas lu (dépôt d'un autre compte, abîmé) ; un dépôt sans commit est sain.
-fn historique(git: &Path, depot: &Path) -> Option<Vec<Fuite>> {
+/// Le booléen dit si la borne est atteinte : les commits plus anciens n'ont pas été relus.
+fn historique(git: &Path, depot: &Path) -> Option<(Vec<Fuite>, bool)> {
     // En anglais, sur les trois systèmes : le message d'un dépôt sans commit est lu tel quel.
     let r = crate::commande::lancer(
         Command::new(git)
@@ -414,14 +421,16 @@ fn historique(git: &Path, depot: &Path) -> Option<Vec<Fuite>> {
                 "--no-textconv",
                 "--unified=0",
                 "--format=%x1e%H",
-                "--max-count=2000",
-            ]),
+            ])
+            .arg(format!("--max-count={COMMITS_MAX}")),
         120,
     )?;
     if r.code == Some(0) {
-        Some(lire_historique(&r.sortie))
+        // Chaque commit commence par le séparateur \x1e (« --format=%x1e%H »).
+        let commits = r.sortie.lines().filter(|l| l.starts_with('\u{1e}')).count();
+        Some((lire_historique(&r.sortie), commits >= COMMITS_MAX))
     } else if r.erreurs.contains("does not have any commits") {
-        Some(Vec::new())
+        Some((Vec::new(), false))
     } else {
         None
     }
@@ -475,14 +484,16 @@ fn par_gitleaks(c: &Complement, depot: &Path, rapport: &Path) -> Option<Vec<Fuit
 }
 
 /// Les deux recherches réunies : ce que gitleaks trouve en plus s'ajoute (même commit, fichier et ligne : un seul).
-/// Illisible seulement si aucune des deux n'a pu lire le dépôt.
-fn examiner(git: &Path, complement: Option<&Complement>, depot: &Path, rapport: &Path) -> Issue {
+/// Illisible seulement si aucune des deux n'a pu lire le dépôt. Le booléen : les règles de Vanguard n'ont relu que
+/// les `COMMITS_MAX` derniers commits.
+fn examiner(git: &Path, complement: Option<&Complement>, depot: &Path, rapport: &Path) -> (Issue, bool) {
     let natif = historique(git, depot);
+    let tronque = natif.as_ref().is_some_and(|(_, t)| *t);
     let autre = complement.and_then(|c| par_gitleaks(c, depot, rapport));
     if natif.is_none() && autre.is_none() {
-        return Issue::Illisible;
+        return (Issue::Illisible, false);
     }
-    let mut fuites = natif.unwrap_or_default();
+    let mut fuites = natif.map(|(f, _)| f).unwrap_or_default();
     for f in autre.unwrap_or_default() {
         if !fuites
             .iter()
@@ -492,41 +503,50 @@ fn examiner(git: &Path, complement: Option<&Complement>, depot: &Path, rapport: 
         }
     }
     if fuites.is_empty() {
-        Issue::Sain
+        (Issue::Sain, tronque)
     } else {
-        Issue::Fuites(fuites)
+        (Issue::Fuites(fuites), tronque)
     }
 }
 
-/// Menu Antivirus et protection › Secrets dans les projets git, et « vanguard secrets ».
-pub fn analyser() {
-    use std::io::Write;
-    titre(tr!("Secrets dans les projets git", "Secrets in git projects"));
-    let Some(git) = outil::trouver("git") else {
-        trp!(
-            "  git n'est pas installé : il n'y a pas de projet git à relire ici.",
-            "  git is not installed: there is no git project to read here."
-        );
-        return;
-    };
-    let maison = crate::socle::maison();
-    let depots = depots(&maison);
-    if depots.is_empty() {
-        trp!(
-            "  Aucun projet git dans votre dossier personnel.",
-            "  No git project in your home folder."
-        );
-        return;
+/// Ce que la recherche a relevé, sans l'écran : `analyser` l'affiche, `json` en tire le résultat commun. Les dépôts
+/// sont nommés comme à l'écran (`outil::chemin_affiche`) ; aucun secret n'y est, seulement le genre, le fichier, la
+/// ligne et le commit de chacun (`Fuite`).
+#[derive(Default, Debug)]
+pub(crate) struct Recherche {
+    /// Les dépôts trouvés.
+    pub depots: usize,
+    /// La recherche s'est arrêtée à `DEPOTS_MAX` : d'autres dépôts peuvent rester non relus.
+    pub plafond: bool,
+    /// gitleaks a ajouté ses règles.
+    pub gitleaks: bool,
+    pub sains: usize,
+    pub illisibles: Vec<String>,
+    pub avec: Vec<(String, Vec<Fuite>)>,
+    /// Les dépôts dont seuls les `COMMITS_MAX` derniers commits ont été relus par les règles de Vanguard.
+    pub tronques: Vec<String>,
+}
+
+impl Recherche {
+    /// Ce qui n'a pas pu être relu : rien n'est alors conclu pour le reste.
+    fn incomplete(&self) -> bool {
+        self.plafond || !self.illisibles.is_empty() || !self.tronques.is_empty()
     }
-    println!(
-        "  {}",
-        trf!(
-            "{} projet(s) git : l'historique de chacun est relu, rien n'est modifié.",
-            "{} git project(s): each one's history is read, nothing is changed.",
-            depots.len()
-        )
-    );
-    // gitleaks, s'il est là ; ses rapports, dans un dossier réservé au compte : ils nomment les auteurs des commits.
+}
+
+/// La recherche dans les dépôts `trouves` (`depots`) de `maison`, sans rien afficher (sinon le compteur, si
+/// `compteur`) ni rien changer : les rapports de gitleaks, qui nomment les auteurs des commits, vont dans un dossier
+/// réservé au compte, effacé après.
+pub(crate) fn chercher(git: &Path, maison: &Path, trouves: &[PathBuf], compteur: bool) -> Recherche {
+    use std::io::Write;
+    let mut r = Recherche {
+        depots: trouves.len(),
+        plafond: trouves.len() >= DEPOTS_MAX,
+        ..Recherche::default()
+    };
+    if trouves.is_empty() {
+        return r;
+    }
     let complement = outil::trouver("gitleaks").and_then(|gitleaks| {
         let aide = crate::commande::lancer(Command::new(&gitleaks).arg("--help"), 10)
             .map(|r| r.sortie + &r.erreurs)
@@ -538,93 +558,172 @@ pub fn analyser() {
             rapports,
         })
     });
-    if complement.is_some() {
-        trp!(
-            "  gitleaks est installé : ses règles s'ajoutent à celles de Vanguard.",
-            "  gitleaks is installed: its rules add to Vanguard's."
-        );
-    }
-    let mut sains = 0usize;
-    let mut illisibles = Vec::new();
-    let mut avec = Vec::new();
-    // Le compteur seulement dans un terminal : lu par un script (test de la VM), il ne ferait que du bruit.
-    let terminal = std::io::IsTerminal::is_terminal(&std::io::stdout());
-    for (i, depot) in depots.iter().enumerate() {
-        if terminal {
-            print!("\r  {}/{}", i.saturating_add(1), depots.len());
+    r.gitleaks = complement.is_some();
+    for (i, depot) in trouves.iter().enumerate() {
+        if compteur {
+            print!("\r  {}/{}", i.saturating_add(1), trouves.len());
             let _ = std::io::stdout().flush();
         }
         let rapport = complement
             .as_ref()
             .map_or_else(PathBuf::new, |c| c.rapports.join(format!("{i}.json")));
-        match examiner(&git, complement.as_ref(), depot, &rapport) {
-            Issue::Sain => sains = sains.saturating_add(1),
-            Issue::Fuites(f) => avec.push((depot, f)),
-            Issue::Illisible => illisibles.push(depot),
+        let nom = outil::chemin_affiche(depot, maison);
+        let (issue, tronque) = examiner(git, complement.as_ref(), depot, &rapport);
+        if tronque {
+            r.tronques.push(nom.clone());
+        }
+        match issue {
+            Issue::Sain => r.sains = r.sains.saturating_add(1),
+            Issue::Fuites(f) => r.avec.push((nom, f)),
+            Issue::Illisible => r.illisibles.push(nom),
         }
     }
     if let Some(c) = &complement {
         let _ = std::fs::remove_dir_all(&c.rapports);
     }
-    if terminal {
+    if compteur {
         print!("\r{}\r", " ".repeat(20));
     }
-    for depot in &illisibles {
+    r
+}
+
+/// Menu Antivirus et protection › Secrets dans les projets git, et « vanguard secrets ».
+pub fn analyser() {
+    titre(tr!("Secrets dans les projets git", "Secrets in git projects"));
+    let Some(git) = outil::trouver("git") else {
+        trp!(
+            "  git n'est pas installé : il n'y a pas de projet git à relire ici.",
+            "  git is not installed: there is no git project to read here."
+        );
+        return;
+    };
+    let maison = crate::socle::maison();
+    // Le compteur seulement dans un terminal : lu par un script (test de la VM), il ne ferait que du bruit.
+    let terminal = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let trouves = depots(&maison);
+    if trouves.is_empty() {
+        trp!(
+            "  Aucun projet git dans votre dossier personnel.",
+            "  No git project in your home folder."
+        );
+        return;
+    }
+    println!(
+        "  {}",
+        trf!(
+            "{} projet(s) git : l'historique de chacun est relu, rien n'est modifié.",
+            "{} git project(s): each one's history is read, nothing is changed.",
+            trouves.len()
+        )
+    );
+    let r = chercher(&git, &maison, &trouves, terminal);
+    if r.gitleaks {
+        trp!(
+            "  gitleaks est installé : ses règles s'ajoutent à celles de Vanguard.",
+            "  gitleaks is installed: its rules add to Vanguard's."
+        );
+    }
+    for depot in &r.illisibles {
         println!(
             "  ⚠ {}",
             trf!(
-                "{} : pas pu être relu, rien n'est conclu pour lui.",
-                "{}: could not be read, nothing is concluded for it.",
-                outil::chemin_affiche(depot, &maison)
+                "{depot} : pas pu être relu, rien n'est conclu pour lui.",
+                "{depot}: could not be read, nothing is concluded for it."
             )
         );
     }
-    if avec.is_empty() {
-        if illisibles.is_empty() {
+    for ligne in bornes(&r) {
+        println!("  ⚠ {ligne}");
+    }
+    if r.avec.is_empty() {
+        if !r.incomplete() {
             println!(
                 "  {VERT}✔{RESET} {}",
                 trf!(
-                    "Aucun secret dans l'historique de vos {sains} projet(s).",
-                    "No secret in the history of your {sains} project(s)."
+                    "Aucun secret dans l'historique de vos {} projet(s).",
+                    "No secret in the history of your {} project(s).",
+                    r.sains
                 )
             );
         }
         return;
     }
     let rouge = couleur(crate::risk::Niveau::Eleve);
-    for (depot, fuites) in &avec {
+    for (depot, fuites) in &r.avec {
         println!(
             "  {rouge}✖{RESET} {}",
-            trf!(
-                "{} : {} secret(s)",
-                "{}: {} secret(s)",
-                outil::chemin_affiche(depot, &maison),
-                fuites.len()
-            )
+            trf!("{} : {} secret(s)", "{}: {} secret(s)", depot, fuites.len())
         );
-        for f in fuites.iter().take(10) {
-            println!(
-                "      {GRIS}{}:{} — {} ({}){RESET}",
-                f.fichier, f.ligne, f.regle, f.commit
-            );
+        for f in fuites.iter().take(PAR_DEPOT) {
+            println!("      {GRIS}{}{RESET}", f.resume());
         }
-        if fuites.len() > 10 {
+        if fuites.len() > PAR_DEPOT {
             println!(
                 "      {GRIS}{}{RESET}",
-                trf!("… et {} autre(s)", "… and {} more", fuites.len().saturating_sub(10))
+                trf!(
+                    "… et {} autre(s)",
+                    "… and {} more",
+                    fuites.len().saturating_sub(PAR_DEPOT)
+                )
             );
         }
     }
     println!();
-    for ligne in envelopper(
-        tr!(
-            "Un secret écrit un jour reste dans l'historique, même effacé ensuite, et quiconque a une copie du dépôt peut le lire. D'abord le changer là où il sert (révoquer la clé, changer le mot de passe) ; puis, avant de publier, le retirer de l'historique (git filter-repo). Une règle peut se tromper : un exemple de documentation n'est pas un vrai secret. Les secrets ne sont ni affichés ni gardés par Vanguard.",
-            "A secret written once stays in the history, even when deleted later, and anyone with a copy of the repository can read it. First change it where it is used (revoke the key, change the password); then, before publishing, remove it from the history (git filter-repo). A rule can be wrong: a documentation example is not a real secret. Secrets are neither shown nor kept by Vanguard."
-        ),
-        LARGEUR - 2,
-    ) {
+    for ligne in envelopper(conseil(), LARGEUR - 2) {
         println!("  {ligne}");
     }
+}
+
+/// Les secrets montrés au plus par dépôt, à l'écran comme en JSON.
+pub(crate) const PAR_DEPOT: usize = 10;
+
+impl Fuite {
+    /// La fuite telle qu'elle est montrée : « fichier:ligne — genre (commit) », sans rien du secret.
+    pub(crate) fn resume(&self) -> String {
+        format!("{}:{} — {} ({})", self.fichier, self.ligne, self.regle, self.commit)
+    }
+}
+
+/// Les bornes atteintes, une phrase chacune : ce qui n'a pas été relu (à l'écran et en JSON).
+pub(crate) fn bornes(r: &Recherche) -> Vec<String> {
+    let mut b: Vec<String> = r
+        .tronques
+        .iter()
+        .map(|d| {
+            trf!(
+                "{d} : seuls les {COMMITS_MAX} derniers commits ont été relus par les règles de Vanguard ; les plus anciens ne l'ont pas été.",
+                "{d}: only the last {COMMITS_MAX} commits were read by Vanguard's rules; older ones were not."
+            )
+        })
+        .collect();
+    if r.plafond {
+        b.push(trf!(
+            "La recherche s'arrête à {DEPOTS_MAX} projets : d'autres, dans le dossier personnel, peuvent ne pas avoir été relus.",
+            "The search stops at {DEPOTS_MAX} projects: others in the home folder may not have been read."
+        ));
+    }
+    b
+}
+
+/// Que faire d'un secret trouvé.
+pub(crate) fn conseil() -> &'static str {
+    tr!(
+        "Un secret écrit un jour reste dans l'historique, même effacé ensuite, et quiconque a une copie du dépôt peut le lire. D'abord le changer là où il sert (révoquer la clé, changer le mot de passe) ; puis, avant de publier, le retirer de l'historique (git filter-repo). Une règle peut se tromper : un exemple de documentation n'est pas un vrai secret. Les secrets ne sont ni affichés ni gardés par Vanguard.",
+        "A secret written once stays in the history, even when deleted later, and anyone with a copy of the repository can read it. First change it where it is used (revoke the key, change the password); then, before publishing, remove it from the history (git filter-repo). A rule can be wrong: a documentation example is not a real secret. Secrets are neither shown nor kept by Vanguard."
+    )
+}
+
+/// « vanguard secrets --json » : le résultat commun (PRO-GIT-001), versé au rapport. Aucune question, rien de changé ;
+/// aucun secret n'y est écrit, ni en entier ni en partie.
+pub(crate) fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let maison = crate::socle::maison();
+    let r = match outil::trouver("git") {
+        Some(git) => resultat::resultat(&chercher(&git, &maison, &depots(&maison), false), debut),
+        None => resultat::sans_git(depots(&maison).len(), debut),
+    };
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
 }
 
 /// PRO-GIT-001 au corpus de détection : des lignes ajoutées dans l'historique d'un dépôt. Une fuite n'a pas de niveau
@@ -851,7 +950,11 @@ mod tests {
                 .success()
         };
         assert!(git_ici(&["init", "-q"]));
-        assert_eq!(historique(&git, &depot), Some(Vec::new()), "dépôt sans commit : sain");
+        assert_eq!(
+            historique(&git, &depot),
+            Some((Vec::new(), false)),
+            "dépôt sans commit : sain"
+        );
         std::fs::write(
             depot.join("config.env"),
             concat!("TOKEN=ghp", "_q8Zr2LmN4vB7xC1dF5gH9jK3pQ6sT0wY2eR4\n"),
@@ -860,7 +963,8 @@ mod tests {
         assert!(git_ici(&["add", "."]) && git_ici(&["commit", "-qm", "ajout"]));
         std::fs::write(depot.join("config.env"), "TOKEN=\n").unwrap();
         assert!(git_ici(&["commit", "-qam", "effacé"]));
-        let fuites = historique(&git, &depot).unwrap();
+        let (fuites, tronque) = historique(&git, &depot).unwrap();
+        assert!(!tronque, "deux commits : loin de la borne");
         assert_eq!(fuites.len(), 1);
         assert!(fuites[0].fichier == "config.env" && fuites[0].ligne == 1 && fuites[0].commit.len() == 7);
         let _ = std::fs::remove_dir_all(&depot);

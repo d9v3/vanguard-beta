@@ -48,6 +48,8 @@ use crate::modele::Echec;
 use crate::risk::Niveau;
 use crate::ui::*;
 
+pub(crate) mod resultat;
+
 const CAT: &str = "Clé USB";
 const FORMAT: &str = "vanguard-manifeste";
 /// Dossiers de la clé qui changent sans que personne n'y touche, et ceux que les systèmes y posent eux-mêmes.
@@ -1221,6 +1223,51 @@ fn programme() -> Option<PathBuf> {
     }
 }
 
+/// Ce que dit le manifeste de la clé du programme qui tourne (`comparer_au_manifeste`) : l'écran et `--json` le
+/// montrent chacun à sa façon.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Comparaison {
+    /// La référence de cette clé ici ne peut pas être crue (changée, effacée, acceptée après des sceaux refaits).
+    Douteuse(String),
+    /// Le jeton d'une clé déployée ici, mais son identifiant de volume ne correspond plus : rien de comparé.
+    IdentifiantChange,
+    /// Pas de référence pour cette clé, alors que d'autres clés ont la leur (chez le propriétaire) : rien de comparé.
+    SansSaReference,
+    /// Lancé depuis la clé, hors de chez le propriétaire : pas de manifeste à comparer.
+    HorsDeChezLeProprietaire,
+    /// Le programme est celui du manifeste écrit à cette date.
+    Identique(String),
+    /// Il en diffère : ce n'est pas le programme posé sur la clé.
+    Differe(String),
+    /// Le manifeste ne le nomme pas.
+    Absent,
+}
+
+/// Le programme `exe` comparé au manifeste de la clé d'où il est lancé ; `None` s'il n'est pas lancé depuis la clé.
+/// Rien n'est écrit.
+pub(crate) fn comparer_au_manifeste(exe: &Path) -> Option<Comparaison> {
+    let cle = crate::reseau::cle_usb()?;
+    let relatif = exe.strip_prefix(&cle).ok()?.to_string_lossy().replace('\\', "/");
+    let base = crate::socle::dossier_local();
+    let identifiant_change = identifiant_change(&base, &cle);
+    let lue = reference(&cle).ok_or(()).and_then(|r| lire(&r).map_err(|_| ()));
+    let douteuse = reference(&cle).as_deref().and_then(douteuse);
+    Some(match lue {
+        Err(()) if let Some(d) = &douteuse => Comparaison::Douteuse(d.raison.clone()),
+        // Reconnue mais sans référence : la comparaison a sauté parce que l'identifiant du volume a changé.
+        Err(()) if identifiant_change => Comparaison::IdentifiantChange,
+        // Chez le propriétaire (d'autres clés ont leur référence) : une clé sans la sienne n'est pas « hors de
+        // chez lui », c'est une clé à redéployer avant de s'en servir.
+        Err(()) if a_des_references(&base) => Comparaison::SansSaReference,
+        Err(()) => Comparaison::HorsDeChezLeProprietaire,
+        Ok(m) => match m.fichiers.iter().find(|e| e.chemin == relatif) {
+            Some(e) if e.blake3.is_some() && e.blake3 == empreinte(exe) => Comparaison::Identique(m.date),
+            Some(_) => Comparaison::Differe(m.date),
+            None => Comparaison::Absent,
+        },
+    })
+}
+
 /// « vanguard verifier-moi » : version, date, empreinte SHA-256, et le manifeste sur la clé du propriétaire ; après
 /// accord, l'historique signé des versions publiées. « vanguard verifier-moi `<programme>` » : une autre copie de
 /// Vanguard (celle d'une autre clé, une version d'avant), par son empreinte et l'historique.
@@ -1276,52 +1323,39 @@ pub fn verifier_moi(autre: Option<&Path>) {
                 None
             }
         };
-    if let Some(cle) = crate::reseau::cle_usb()
-        && let Ok(relatif) = exe.strip_prefix(&cle)
-    {
-        let relatif = relatif.to_string_lossy().replace('\\', "/");
-        let base = crate::socle::dossier_local();
-        let identifiant_change = identifiant_change(&base, &cle);
-        let lue = reference(&cle).ok_or(()).and_then(|r| lire(&r).map_err(|_| ()));
-        let douteuse = reference(&cle).as_deref().and_then(douteuse);
-        match lue {
-            Err(()) if let Some(d) = &douteuse => trp!(
-                "  ✖ Le manifeste de cette clé sur cet ordinateur ne peut pas être cru ({}) : rien n'a pu être comparé. Ne lancez rien depuis elle.",
-                "  ✖ This key's manifest on this computer cannot be trusted ({}): nothing could be compared. Do not run anything from it.",
-                d.raison
-            ),
-            // Reconnue mais sans référence : la comparaison a sauté parce que l'identifiant du volume a changé.
-            Err(()) if identifiant_change => trp!(
-                "  ✖ Jeton d'une clé déployée ici, mais son identifiant de volume ne correspond plus à son manifeste : rien n'a pu être comparé. Possible piège : ne lancez rien depuis elle, réécrivez-la (outils/deployer.sh).",
-                "  ✖ Token of a key deployed here, but its volume identifier no longer matches its manifest: nothing could be compared. Possible trap: do not run anything from it, rewrite it (outils/deployer.sh)."
-            ),
-            // Chez le propriétaire (d'autres clés ont leur référence) : une clé sans la sienne n'est pas « hors de
-            // chez lui », c'est une clé à redéployer avant de s'en servir.
-            Err(()) if a_des_references(&base) => trp!(
-                "  ⚠ Pas de manifeste ici pour cette clé, alors que d'autres clés y ont le leur : autre clé, ou jeton et identifiant changés. Rien n'a été comparé : ne lancez rien depuis elle avant de l'avoir redéployée.",
-                "  ⚠ No manifest here for this key, while other keys have theirs: another key, or token and identifier changed. Nothing was compared: do not run anything from it before redeploying it."
-            ),
-            Err(()) => trp!(
-                "  {GRIS}Lancé depuis la clé, hors de l'ordinateur du propriétaire : pas de manifeste à comparer.{RESET}",
-                "  {GRIS}Started from the key, away from the owner's computer: no manifest to compare.{RESET}"
-            ),
-            Ok(m) => match m.fichiers.iter().find(|e| e.chemin == relatif) {
-                Some(e) if e.blake3.is_some() && e.blake3 == empreinte(&exe) => trp!(
-                    "  {VERT}✔{RESET} Identique au manifeste de la clé écrit le {}.",
-                    "  {VERT}✔{RESET} Identical to the key manifest written on {}.",
-                    m.date
-                ),
-                Some(_) => trp!(
-                    "  ✖ DIFFÈRE du manifeste écrit le {} : ce n'est pas le programme posé sur la clé. Réécrivez la clé (outils/deployer.sh) avant de vous en servir.",
-                    "  ✖ DIFFERS from the manifest written on {}: this is not the program put on the key. Rewrite the key (outils/deployer.sh) before using it.",
-                    m.date
-                ),
-                None => trp!(
-                    "  ⚠ Absent du manifeste de la clé : ce fichier n'y était pas quand elle a été écrite.",
-                    "  ⚠ Missing from the key manifest: this file was not there when it was written."
-                ),
-            },
-        }
+    match comparer_au_manifeste(&exe) {
+        None => {}
+        Some(Comparaison::Douteuse(raison)) => trp!(
+            "  ✖ Le manifeste de cette clé sur cet ordinateur ne peut pas être cru ({}) : rien n'a pu être comparé. Ne lancez rien depuis elle.",
+            "  ✖ This key's manifest on this computer cannot be trusted ({}): nothing could be compared. Do not run anything from it.",
+            raison
+        ),
+        Some(Comparaison::IdentifiantChange) => trp!(
+            "  ✖ Jeton d'une clé déployée ici, mais son identifiant de volume ne correspond plus à son manifeste : rien n'a pu être comparé. Possible piège : ne lancez rien depuis elle, réécrivez-la (outils/deployer.sh).",
+            "  ✖ Token of a key deployed here, but its volume identifier no longer matches its manifest: nothing could be compared. Possible trap: do not run anything from it, rewrite it (outils/deployer.sh)."
+        ),
+        Some(Comparaison::SansSaReference) => trp!(
+            "  ⚠ Pas de manifeste ici pour cette clé, alors que d'autres clés y ont le leur : autre clé, ou jeton et identifiant changés. Rien n'a été comparé : ne lancez rien depuis elle avant de l'avoir redéployée.",
+            "  ⚠ No manifest here for this key, while other keys have theirs: another key, or token and identifier changed. Nothing was compared: do not run anything from it before redeploying it."
+        ),
+        Some(Comparaison::HorsDeChezLeProprietaire) => trp!(
+            "  {GRIS}Lancé depuis la clé, hors de l'ordinateur du propriétaire : pas de manifeste à comparer.{RESET}",
+            "  {GRIS}Started from the key, away from the owner's computer: no manifest to compare.{RESET}"
+        ),
+        Some(Comparaison::Identique(date)) => trp!(
+            "  {VERT}✔{RESET} Identique au manifeste de la clé écrit le {}.",
+            "  {VERT}✔{RESET} Identical to the key manifest written on {}.",
+            date
+        ),
+        Some(Comparaison::Differe(date)) => trp!(
+            "  ✖ DIFFÈRE du manifeste écrit le {} : ce n'est pas le programme posé sur la clé. Réécrivez la clé (outils/deployer.sh) avant de vous en servir.",
+            "  ✖ DIFFERS from the manifest written on {}: this is not the program put on the key. Rewrite the key (outils/deployer.sh) before using it.",
+            date
+        ),
+        Some(Comparaison::Absent) => trp!(
+            "  ⚠ Absent du manifeste de la clé : ce fichier n'y était pas quand elle a été écrite.",
+            "  ⚠ Missing from the key manifest: this file was not there when it was written."
+        ),
     }
     if let Some(h) = sha256 {
         comparer_a_l_historique(&h);
@@ -1336,6 +1370,49 @@ pub fn verifier_moi(autre: Option<&Path>) {
     ) {
         println!("  {ligne}");
     }
+}
+
+/// « vanguard verifier-moi [programme] --json » : le résultat commun (PRO-MOI-001). Aucune question : l'historique
+/// signé, qui demande un accord, n'est pas comparé, et c'est dit. Versé au rapport pour ce programme-ci seulement : le
+/// résultat d'une autre copie écraserait, sous le même identifiant, celui de Vanguard lui-même.
+pub(crate) fn verifier_moi_json(autre: Option<&Path>) {
+    use resultat::{Historique, Moi};
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let historique = if crate::parametres::hors_ligne() {
+        Historique::HorsLigne
+    } else {
+        Historique::SansAccord
+    };
+    let sha256 =
+        |p: &Path| crate::protection::telechargement::calculer(p, crate::protection::telechargement::Algo::Sha256);
+    let moi = if let Some(copie) = autre {
+        Moi {
+            version: None,
+            compile: None,
+            perime: None,
+            programme: Some(chemin_affichable(copie)),
+            sha256: Some(sha256(copie)),
+            manifeste: None,
+            historique,
+        }
+    } else {
+        let exe = programme();
+        let jours = age_jours(chrono::Local::now().date_naive());
+        Moi {
+            version: Some(env!("CARGO_PKG_VERSION")),
+            compile: date_compilation().zip(jours),
+            perime: jours.and_then(avertissement),
+            programme: exe.as_deref().map(chemin_affichable),
+            sha256: exe.as_deref().map(sha256),
+            manifeste: exe.as_deref().and_then(comparer_au_manifeste),
+            historique,
+        }
+    };
+    let r = resultat::resultat(&moi, debut);
+    if autre.is_none() {
+        crate::modele::resultat::verser(&r);
+    }
+    println!("{}", crate::modele::resultat::json(&r));
 }
 
 /// Une autre copie de Vanguard, par son empreinte SHA-256 et l'historique signé des versions publiées.

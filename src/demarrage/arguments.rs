@@ -516,7 +516,12 @@ pub(crate) enum Commande {
     Quarantaine,
     /// Secrets dans l'historique des projets git du dossier personnel (mots de passe, clés d'API, jetons), cherchés par
     /// Vanguard, et aussi par gitleaks s'il est installé. Aucun secret n'est affiché. Lecture seule.
-    Secrets,
+    Secrets {
+        /// Le résultat en JSON, pour un script : le genre, le fichier, la ligne et le commit de chaque secret, jamais
+        /// le secret lui-même ; rien ne change.
+        #[arg(long)]
+        json: bool,
+    },
     /// Failles connues des images Docker ou Podman de cet ordinateur, par trivy s'il est installé. Lecture seule.
     #[command(visible_alias = "containers")]
     Conteneurs,
@@ -638,7 +643,11 @@ pub(crate) enum Commande {
     ALaisser,
     /// Ce que Vanguard a changé : chaque correction lancée sur cet ordinateur, sa date et son résultat.
     #[command(visible_alias = "changes")]
-    Changements,
+    Changements {
+        /// L'historique en JSON, pour un script : les plus récents, sans rien proposer d'annuler ; rien ne change.
+        #[arg(long)]
+        json: bool,
+    },
     /// Le journal des événements : alertes, preuves relevées avant un geste, gestes, annulations, alertes déclarées
     /// normales et passages de version, reliés entre eux, avec l'état de sa chaîne scellée. Lecture seule.
     #[command(visible_alias = "events")]
@@ -700,7 +709,11 @@ pub(crate) enum Commande {
     },
     /// Les règles du bilan déclarées pour ce système : identifiant stable, sujet, références de durcissement.
     #[command(visible_alias = "rules")]
-    Regles,
+    Regles {
+        /// La liste en JSON, pour un script : rien ne change.
+        #[arg(long)]
+        json: bool,
+    },
     /// Autodiagnostic : Vanguard vérifie ses propres lectures sur cet ordinateur. Chaque règle du bilan sous garde et
     /// délai, en lecture seule prouvée (empreintes avant et après), et ses lectures comparées à celles des outils du
     /// système (pacman, systemctl, ss, PowerShell…). Rien n'est changé ; hors ligne sauf --internet ; un écart va au
@@ -742,6 +755,10 @@ pub(crate) enum Commande {
         /// Une autre copie de Vanguard à vérifier (celle d'une autre clé, une version d'avant), par son empreinte et
         /// l'historique signé des versions.
         programme: Option<std::path::PathBuf>,
+        /// Le résultat en JSON, pour un script : sans question, donc sans l'historique signé (qui demande un accord),
+        /// dit non comparé ; ce qui n'a pas pu être vérifié est dit, rien ne change.
+        #[arg(long)]
+        json: bool,
     },
     /// Manifeste de la clé VANGUARD : écrit au déploiement (outils/deployer.sh), comparé à la clé branchée.
     #[command(hide = true)]

@@ -98,4 +98,5 @@ pub(crate) const OUTILS: &[Outil] = &[
     Outil { id: "PRO-KEV-001", module: "protection::kev", sujet: ("dernières failles exploitées (CISA)", "latest exploited flaws (CISA)") },
     Outil { id: "PRO-MAJ-001", module: "maj", sujet: ("mises à jour en attente", "pending updates") },
     Outil { id: "PRO-DEM-001", module: "optimiser::demarrage", sujet: ("programmes au démarrage", "startup programs") },
+    Outil { id: "PRO-MOI-001", module: "protection::manifeste", sujet: ("Vanguard vérifié lui-même : empreinte, manifeste de la clé", "Vanguard checking itself: checksum, key manifest") },
 ];

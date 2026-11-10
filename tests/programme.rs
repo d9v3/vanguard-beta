@@ -3136,6 +3136,116 @@ fn objets_connectes_en_json() {
     assert_eq!(v["constats"][0]["raison"], "introuvable", "{v}");
 }
 
+/// `secrets --json` sur un dépôt jetable dont l'historique garde un faux jeton (inventé, coupé en deux dans le
+/// source pour ne jamais ressembler à un vrai) : la fuite est dite (genre, fichier, ligne, commit), et aucun morceau
+/// utilisable du secret n'est dans la sortie, ni sur l'erreur standard.
+#[test]
+fn secrets_en_json_sans_le_secret() {
+    let maison = maison_jetable();
+    let depot = maison.join("projets").join("site");
+    std::fs::create_dir_all(&depot).unwrap();
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=alice",
+                "-c",
+                "user.email=alice@exemple.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-C",
+            ])
+            .arg(&depot)
+            .args(args)
+            .env("HOME", &*maison)
+            .output()
+            .is_ok_and(|s| s.status.success())
+    };
+    if !git(&["init", "-q"]) {
+        return essais::saute("git absent");
+    }
+    let alea = "q8Zr2LmN4vB7xC1dF5gH9jK3pQ6sT0wY2eR4";
+    std::fs::write(
+        depot.join("config.env"),
+        format!("TOKEN={}{alea}\n", concat!("ghp", "_")),
+    )
+    .unwrap();
+    assert!(git(&["add", "."]) && git(&["commit", "-qm", "ajout"]));
+    std::fs::write(depot.join("config.env"), "TOKEN=\n").unwrap();
+    assert!(git(&["commit", "-qam", "efface"]));
+    let s = vanguard_dans_env(
+        Path::new(env!("CARGO_BIN_EXE_vanguard")),
+        &maison,
+        "fr",
+        &["secrets", "--json"],
+        "",
+        180,
+        &[("VANGUARD_HORS_LIGNE", "1")],
+    );
+    let _ = std::fs::remove_dir_all(&maison);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let v: serde_json::Value = serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("JSON illisible ({e})"));
+    assert_eq!(v["outil"], "PRO-GIT-001", "{v}");
+    assert!(
+        v["constats"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["etat"] == "probleme" && c["message"].as_str().is_some_and(|m| m.contains("config.env:1"))),
+        "{v}"
+    );
+    // Aucune fenêtre de huit caractères du secret : ni entier, ni coupé, ni dans une erreur.
+    let tout = format!("{}{}", s.texte, s.erreurs);
+    let bouts: Vec<&str> = (0..=alea.len() - 8).map(|i| &alea[i..i + 8]).collect();
+    assert!(
+        bouts.iter().all(|b| !tout.contains(b)),
+        "un morceau du secret est sorti"
+    );
+}
+
+/// `secrets --json` dans une maison sans dépôt : sans objet (rien à relire), jamais compté sain.
+#[test]
+fn secrets_en_json_sans_depot() {
+    let v = examen_en_json("secrets", "PRO-GIT-001");
+    assert_eq!(v["couverture"]["verifies"], 0, "{v}");
+    assert_eq!(v["constats"][0]["etat"], "sans-objet", "{v}");
+}
+
+/// `verifier-moi --json` : l'historique signé (qui demande un accord) n'est pas comparé, et c'est dit ; le résultat
+/// n'est donc jamais sain, et rien ne se dit authentique.
+#[test]
+fn verifier_moi_en_json() {
+    let v = examen_en_json("verifier-moi", "PRO-MOI-001");
+    assert!(v["couverture"]["non_verifies"][0].is_string(), "{v}");
+    assert!(!v.to_string().to_lowercase().contains("authenti"), "{v}");
+}
+
+/// `changements --json` dans une maison neuve : un relevé absent, rien à montrer, et aucun menu d'annulation.
+#[test]
+fn changements_en_json() {
+    let s = vanguard("fr", &["changements", "--json"], "", 60);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let v: serde_json::Value =
+        serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("JSON illisible ({e}) : {}", s.texte));
+    assert_eq!(v["schema"], 1, "{v}");
+    assert_eq!(v["releve"], "absent", "{v}");
+    assert_eq!((v["total"].as_u64(), v["montres"].as_u64()), (Some(0), Some(0)), "{v}");
+    assert!(v["changements"].as_array().is_some_and(Vec::is_empty), "{v}");
+}
+
+/// `regles --json` : le registre entier, sans question, avec ce programme-ci parmi les outils.
+#[test]
+fn regles_en_json() {
+    let s = vanguard("fr", &["regles", "--json"], "", 60);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let v: serde_json::Value = serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("JSON illisible ({e})"));
+    assert_eq!(v["schema"], 1, "{v}");
+    assert!(v["bilan"].as_array().is_some_and(|b| !b.is_empty()), "{v}");
+    let outils = v["outils"].as_array().unwrap();
+    assert!(outils.iter().any(|o| o["id"] == "PRO-GIT-001"), "{v}");
+    assert!(outils.iter().any(|o| o["id"] == "PRO-MOI-001"), "{v}");
+}
+
 /// Le JSON d'un outil lancé avec `--json` (dossier personnel jetable, `env` en plus) : code 0, la sortie standard
 /// n'est que ce JSON (aucune question, aucun « Entrée pour continuer »), l'outil, le schéma et des constats.
 fn resultat_json(args: &[&str], env: &[(&str, &str)], outil: &str, code: i32) -> serde_json::Value {
