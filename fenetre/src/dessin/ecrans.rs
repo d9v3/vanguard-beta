@@ -45,26 +45,36 @@ pub fn montrer(appli: &mut Appli, ui: &mut Ui) {
     }
 }
 
-/// Une carte qu'on clique pour ouvrir un écran.
+/// Une carte qu'on clique pour ouvrir un écran : « Ouvrir → » en bas le dit ; au survol, le contour et ce mot
+/// prennent l'accent, en fondu.
 fn tuile(appli: &mut Appli, ui: &mut Ui, titre: &str, valeur: &str, phrase: &str, couleur: Color32, vers: Ecran) {
     let p = pal();
-    let rep = Frame::new()
+    let id = ui.make_persistent_id(("tuile", titre));
+    let s = super::survol(ui, id, ui.ctx().read_response(id).is_some_and(|r| r.hovered()));
+    let cadre = Frame::new()
         .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.trait_))
+        .stroke(Stroke::new(1.0, super::bord_survole(p, s)))
         .shadow(super::ombre())
         .corner_radius(super::RAYON_CARTE)
         .inner_margin(Margin::same(20))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.set_min_height(120.0);
             ui.label(texte(titre, 13.0, p.doux));
             ui.add_space(4.0);
             ui.label(RichText::new(valeur).font(moyenne(24.0)).color(couleur));
             ui.add_space(4.0);
             ui.label(texte(phrase, 13.0, p.doux));
+            ui.add_space(16.0);
+            ui.label(texte(
+                &format!("{} →", crate::tr!("Ouvrir", "Open")),
+                12.0,
+                p.discret.lerp_to_gamma(p.accent, s),
+            ));
         })
         .response
-        .interact(Sense::click())
+        .rect;
+    let rep = ui
+        .interact(cadre, id, Sense::click())
         .on_hover_cursor(eframe::egui::CursorIcon::PointingHand);
     super::clavier::anneau(ui, &rep, 16.0);
     if rep.clicked() {

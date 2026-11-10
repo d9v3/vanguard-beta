@@ -4,12 +4,15 @@
 //! fenêtre ; seul « Accepter » lance le changement (`Appli::accepter`). Les boutons restent grisés tant qu'une
 //! commande tourne : un changement à la fois.
 
-use eframe::egui::{Margin, RichText, Sense, Stroke, Ui, pos2, vec2};
+use eframe::egui::{Align, Layout, Margin, RichText, Sense, Stroke, Ui, pos2, vec2};
 
 use super::{bouton, carte, icones, mono, moyenne, pal, petit, texte, texte_et_boutons, titre_section};
 use crate::appli::Appli;
 use crate::commandes::Sorte;
 use crate::donnees::bilan::{Geste, Rang, Vue};
+
+/// La hauteur d'une ligne de la liste : celle d'un bouton.
+const HAUTEUR_LIGNE: f32 = 32.0;
 
 /// La liste du démarrage, la confirmation ouverte au-dessus.
 pub fn liste(appli: &mut Appli, ui: &mut Ui, v: &Vue) {
@@ -31,27 +34,43 @@ pub fn liste(appli: &mut Appli, ui: &mut Ui, v: &Vue) {
             ));
         }
         for (i, c) in v.constats.iter().enumerate() {
+            // Un trait fin entre deux programmes.
+            if i > 0 {
+                let y = ui.cursor().top();
+                let r = ui.max_rect();
+                ui.painter()
+                    .line_segment([pos2(r.left(), y), pos2(r.right(), y)], Stroke::new(1.0, p.trait_));
+                ui.add_space(8.0);
+            }
             super::mouvement::ligne(ui, vec2(8.0, 3.0), 6.0, |ui| {
                 texte_et_boutons(
                     ui,
                     &format!("demarrage-{i}"),
                     |ui| {
-                        ui.horizontal_top(|ui| {
-                            ui.spacing_mut().item_spacing.x = 8.0;
-                            let (r, _) = ui.allocate_exact_size(vec2(14.0, 16.0), Sense::hover());
-                            match c.rang {
-                                Rang::Sain => icones::coche(ui.painter(), r, p.bon),
-                                Rang::NonVerifie => {
-                                    ui.painter()
-                                        .circle_filled(pos2(r.left() + 5.0, r.center().y), 4.0, p.moyen);
+                        // Toutes les lignes à la hauteur d'un bouton, le texte au milieu : avec ou sans bouton, elles
+                        // s'alignent.
+                        let largeur = ui.available_width();
+                        ui.allocate_ui_with_layout(
+                            vec2(largeur, HAUTEUR_LIGNE),
+                            Layout::left_to_right(Align::Center),
+                            |ui| {
+                                ui.set_min_height(HAUTEUR_LIGNE);
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                let (r, _) = ui.allocate_exact_size(vec2(14.0, 16.0), Sense::hover());
+                                match c.rang {
+                                    Rang::Sain => icones::coche(ui.painter(), r, p.bon),
+                                    Rang::NonVerifie => {
+                                        ui.painter()
+                                            .circle_filled(pos2(r.left() + 5.0, r.center().y), 4.0, p.moyen);
+                                    }
+                                    _ => {
+                                        ui.painter()
+                                            .circle_filled(pos2(r.left() + 5.0, r.center().y), 4.0, p.jaune);
+                                    }
                                 }
-                                _ => {
-                                    ui.painter()
-                                        .circle_filled(pos2(r.left() + 5.0, r.center().y), 4.0, p.jaune);
-                                }
-                            }
-                            ui.label(texte(&c.message, 13.0, p.encre));
-                        });
+                                ui.label(texte(&c.message, 13.0, p.encre));
+                            },
+                        );
                     },
                     |ui| {
                         let Some(g) = &c.geste else {
@@ -73,7 +92,6 @@ pub fn liste(appli: &mut Appli, ui: &mut Ui, v: &Vue) {
                     },
                 );
             });
-            ui.add_space(6.0);
         }
     });
     let mut manques: Vec<String> = v.manques.clone();

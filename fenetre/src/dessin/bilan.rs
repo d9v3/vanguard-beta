@@ -4,7 +4,7 @@ use eframe::egui::{
     self, Align, Color32, Frame, Layout, Margin, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2,
 };
 
-use super::{bouton, carte, entete, icones, melange, mono, moyenne, n_f32, pal, petit, texte, titre_section};
+use super::{bouton, carte, entete, icones, melange, mono, moyenne, n_f32, pal, texte, titre_section};
 use crate::appli::{Appli, Contenu};
 use crate::commandes::Commande;
 use crate::donnees::bilan::{Constat, Gravite, Rang, Vue};
@@ -40,7 +40,6 @@ pub fn couleur_gravite(g: Option<Gravite>) -> Color32 {
 fn bande(ui: &mut Ui, vue: Option<&Vue>, en_cours: Option<f32>) {
     let p = pal();
     let largeur = ui.available_width();
-    let (r, _) = ui.allocate_exact_size(vec2(largeur, 60.0), Sense::hover());
     let groupes: Vec<(String, Vec<Rang>)> = match vue {
         Some(v) if !v.constats.is_empty() => v.groupes(),
         _ => (0..32usize)
@@ -49,15 +48,29 @@ fn bande(ui: &mut Ui, vue: Option<&Vue>, en_cours: Option<f32>) {
     };
     let reel = vue.is_some_and(|v| !v.constats.is_empty());
     let n: usize = groupes.iter().map(|g| g.1.len()).sum();
-    // Les traits s'amincissent pour que la bande tienne toujours dans sa largeur.
     let g = n_f32(groupes.len().max(2));
-    let w = (r.width() / (n_f32(n) * 1.5 + g * 2.0)).clamp(2.0, 6.0);
-    let pas = (w * 0.5).max(1.0);
-    let naturel = n_f32(n) * (w + pas) - pas * g;
-    let ecart = ((r.width() - naturel) / (g - 1.0)).clamp(w, 24.0);
+    // Un vrai bilan : chaque sujet a sa part égale de la largeur, son nom dessous quand il y tient. Sinon (l'attente,
+    // ou trop de sujets), les traits se serrent pour que la bande tienne toujours dans sa largeur.
+    let fente = largeur / g;
+    let noms = reel && fente >= 64.0;
+    let (r, _) = ui.allocate_exact_size(vec2(largeur, if noms { 82.0 } else { 60.0 }), Sense::hover());
+    let barres = Rect::from_min_size(r.min, vec2(largeur, 60.0));
+    let (w, pas, ecart) = if noms {
+        let plus = groupes.iter().map(|g| g.1.len()).max().unwrap_or(1);
+        let w = ((fente - 16.0) / (n_f32(plus) * 1.5)).clamp(4.0, 10.0);
+        (w, w * 0.5, 0.0)
+    } else {
+        let w = (largeur / (n_f32(n) * 1.5 + g * 2.0)).clamp(2.0, 6.0);
+        let pas = (w * 0.5).max(1.0);
+        let naturel = n_f32(n) * (w + pas) - pas * g;
+        (w, pas, ((largeur - naturel) / (g - 1.0)).clamp(w, 24.0))
+    };
     let mut x = r.left();
     let peintre = ui.painter().clone();
     for (gi, (cat, rangs)) in groupes.iter().enumerate() {
+        if noms {
+            x = r.left() + fente * n_f32(gi);
+        }
         let x0 = x;
         for &e in rangs {
             if x + w > r.right() {
@@ -65,7 +78,7 @@ fn bande(ui: &mut Ui, vue: Option<&Vue>, en_cours: Option<f32>) {
             }
             let fini = en_cours.is_none() && reel;
             let haut = if e == Rang::Corriger && fini { 56.0 } else { 44.0 };
-            let trait_ = Rect::from_min_max(pos2(x, r.bottom() - haut), pos2(x + w, r.bottom()));
+            let trait_ = Rect::from_min_max(pos2(x, barres.bottom() - haut), pos2(x + w, barres.bottom()));
             let mut col = if fini { couleur_rang(e) } else { p.s3 };
             if let Some(t) = en_cours {
                 let pos = (t * 0.45) % 1.3 - 0.15;
@@ -97,7 +110,15 @@ fn bande(ui: &mut Ui, vue: Option<&Vue>, en_cours: Option<f32>) {
         }
         x -= pas;
         if reel && !cat.is_empty() {
-            let zone = Rect::from_min_max(pos2(x0 - 2.0, r.top()), pos2(x + 2.0, r.bottom()));
+            if noms {
+                let mut job = egui::text::LayoutJob::simple(cat.clone(), super::police(11.0), p.discret, fente - 12.0);
+                job.wrap.max_rows = 1;
+                job.wrap.overflow_character = Some('…');
+                let nom = ui.fonts_mut(|f| f.layout_job(job));
+                peintre.galley(pos2(x0, barres.bottom() + 8.0), nom, p.discret);
+            }
+            let fin = if noms { x0 + fente - 8.0 } else { x + 2.0 };
+            let zone = Rect::from_min_max(pos2(x0 - 2.0, r.top()), pos2(fin, r.bottom()));
             let corriger = rangs.iter().filter(|&&e| e == Rang::Corriger).count();
             let detail = if corriger > 0 {
                 crate::trf!(
@@ -119,6 +140,11 @@ fn bande(ui: &mut Ui, vue: Option<&Vue>, en_cours: Option<f32>) {
         }
         x += ecart;
     }
+}
+
+/// Les noms des sujets tiennent-ils sous la bande ? (Sinon, chaque groupe dit le sien au survol.)
+fn noms_sous_la_bande(largeur: f32, v: &Vue) -> bool {
+    largeur / n_f32(v.groupes().len().max(2)) >= 64.0
 }
 
 pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
@@ -272,21 +298,26 @@ pub fn ecran(appli: &mut Appli, ui: &mut Ui) {
                 let n = finie.map_or(0, |v| v.constats.len());
                 ui.horizontal(|ui| {
                     let t = if n > 0 {
-                        crate::trf!("Les {} vérifications, par sujet", "The {} checks, by topic", n)
+                        crate::trf!(
+                            "{}, par sujet",
+                            "{}, by topic",
+                            crate::trn!(n, "vérification", "vérifications", "check", "checks")
+                        )
                     } else {
                         crate::tr!("Les vérifications, par sujet", "The checks, by topic").into()
                     };
                     ui.label(texte(&t, 13.0, p.doux));
-                    if !etroit && n > 0 {
+                    // Les noms sous la bande quand ils y tiennent ; sinon, le survol les dit.
+                    if let Some(v) = finie
+                        && n > 0
+                        && !noms_sous_la_bande(ui.available_width(), v)
+                    {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(crate::tr!(
-                                    "survolez un groupe pour son nom",
-                                    "hover a group for its name"
-                                ))
-                                .font(mono(12.0))
-                                .color(p.discret),
-                            );
+                            ui.label(texte(
+                                crate::tr!("Survolez un groupe pour son nom", "Hover a group for its name"),
+                                12.0,
+                                p.discret,
+                            ));
                         });
                     }
                 });
@@ -381,8 +412,8 @@ pub fn constats(ui: &mut Ui, v: &Vue) {
             ui.set_width(largeur);
             let a_corriger = v.de_rang(Rang::Corriger);
             titre_section(ui, crate::tr!("À corriger", "To fix"), Some(a_corriger.len()));
-            for (i, c) in a_corriger.iter().take(CORRIGER_MAX).enumerate() {
-                carte_constat(ui, c, i);
+            for c in a_corriger.iter().take(CORRIGER_MAX) {
+                carte_constat(ui, c);
                 ui.add_space(12.0);
             }
             if a_corriger.len() > CORRIGER_MAX {
@@ -473,7 +504,10 @@ pub fn constats(ui: &mut Ui, v: &Vue) {
     };
     if total >= 1000.0 {
         ui.horizontal_top(|ui| {
-            gauche(ui, total - droite - 24.0);
+            // L'écart entre les éléments s'ajoute aux 24 points : sans le compter, la colonne de droite dépassait la
+            // carte du dessus.
+            let ecart = ui.spacing().item_spacing.x;
+            gauche(ui, total - droite - 24.0 - ecart);
             ui.add_space(24.0);
             cote(ui, droite);
         });
@@ -484,7 +518,7 @@ pub fn constats(ui: &mut Ui, v: &Vue) {
     }
 }
 
-fn carte_constat(ui: &mut Ui, c: &Constat, i: usize) {
+fn carte_constat(ui: &mut Ui, c: &Constat) {
     let p = pal();
     carte(ui, 22, |ui| {
         ui.set_width(ui.available_width());
@@ -524,15 +558,16 @@ fn carte_constat(ui: &mut Ui, c: &Constat, i: usize) {
                         ui.painter()
                             .line_segment([r.left_top(), r.left_bottom()], Stroke::new(2.0, p.trait_));
                     }
-                    ui.add_space(14.0);
-                    ui.push_id(i, |ui| {
-                        petit(ui, crate::tr!("Voir la correction", "See the fix"), false).on_disabled_hover_text(
-                            crate::tr!(
-                                "Les corrections arrivent dans un prochain lot : montrées, puis acceptées.",
-                                "Fixes come in a later batch: shown, then accepted."
-                            ),
-                        );
-                    });
+                    // Pas de bouton mort : la correction se fera ici, plus tard, et la carte le dit.
+                    ui.add_space(10.0);
+                    ui.label(texte(
+                        crate::tr!(
+                            "La correction viendra ici dans un prochain lot : montrée, puis acceptée.",
+                            "The fix will come here in a later batch: shown, then accepted."
+                        ),
+                        12.0,
+                        p.discret,
+                    ));
                 });
             })
         });
