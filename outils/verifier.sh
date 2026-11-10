@@ -4,12 +4,13 @@
 # Internet, scripts PowerShell, shell et Python, essais des outils de la clé (outils/essais-cle.sh), de la signature
 # des versions (outils/essais-signature.sh), de la garde de confidentialité (outils/essais-confidentialite.sh)
 # et de ce script même sous --seulement (outils/essais-verifier.sh), liens
-# internes, carte de couverture ATT&CK à jour (outils/couverture-attack.py), documentation du code sans avertissement
-# (cargo doc), textes français et anglais (outils/textes.py), relais des lots (relais/, outils/relais-schema.py),
-# protections des programmes lues dans leurs en-têtes (vanguard deploiement verifier-binaire : PIE, marque RELRO, pile
-# non exécutable ; ASLR, DEP), régression de détection (le corpus de
-# src/modele/corpus.rs, Linux et Wine), dépendances (cargo deny) et leurs failles connues (cargo audit), banc de
-# fuzzing compilé et passé quelques secondes par cible, preuves de Kani compilées (lancées par outils/preuves.sh).
+# internes, la fenêtre de Vanguard (fenetre/ : clippy sur les deux cibles, tests Linux), carte de couverture ATT&CK à
+# jour (outils/couverture-attack.py), documentation du code sans avertissement (cargo doc), textes français et anglais
+# (outils/textes.py), relais des lots (relais/, outils/relais-schema.py), protections des programmes lues dans leurs
+# en-têtes (vanguard deploiement verifier-binaire : PIE, marque RELRO, pile non exécutable ; ASLR, DEP), régression de
+# détection (le corpus de src/modele/corpus.rs, Linux et Wine), dépendances (cargo deny) et leurs failles connues
+# (cargo audit), banc de fuzzing compilé et passé quelques secondes par cible, preuves de Kani compilées (lancées par
+# outils/preuves.sh).
 # La CI lance ce même script (.github/workflows/ci.yml) : une seule logique, ici.
 # Chaque cible de compilation a sa chaîne (clippy, puis ses tests) et les deux tournent en même temps : cargo garde
 # un dossier par cible, elles ne s'attendent presque pas. À la fin, une ligne par étape ; le code de sortie dit si tout
@@ -268,6 +269,20 @@ extensions() {
     CARGO_TARGET_DIR=$cible cargo build -q --locked --manifest-path extensions/exemples/rust-exemple/Cargo.toml
 }
 
+# La fenêtre de Vanguard (fenetre/, programme vanguard-fenetre) : crate à part, avec son Cargo.lock, hors du programme
+# vanguard. Linux en glibc (ses bibliothèques d'affichage se chargent à l'exécution, ce que musl ne sait pas faire) et
+# Windows. --target toujours dit : lancé d'ici, cargo lit le .cargo/config.toml de la racine (musl), pas celui de
+# fenetre/. Ses tests ne tournent que sous Linux : sous Wine, pas encore (dit au résumé).
+fenetre() {
+  local cible=${CARGO_TARGET_DIR:-$PWD/target}/fenetre m=fenetre/Cargo.toml t
+  cargo fmt --check --manifest-path "$m" || return 1
+  for t in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu; do
+    CARGO_TARGET_DIR=$cible cargo clippy -q --locked --all-targets --manifest-path "$m" --target "$t" -- -D warnings ||
+      return 1
+  done
+  CARGO_TARGET_DIR=$cible cargo test -q --locked --manifest-path "$m" --target x86_64-unknown-linux-gnu
+}
+
 scripts_shell() { find outils extensions -name '*.sh' -print0 | xargs -0 -n1 bash -n; }
 
 # Analysés sans être compilés sur disque : py_compile laisserait des __pycache__ dans outils/.
@@ -310,6 +325,13 @@ dependances() {
   for m in extensions/sdk/Cargo.toml extensions/exemples/rust-exemple/Cargo.toml; do
     sortie+=$'\n'"$m :"$'\n'$(cargo deny "${options[@]}" --manifest-path "$m" --config extensions/deny.toml check \
       --hide-inclusion-graph "${verifications[@]}" 2>&1) || code=1
+  done
+  # La fenêtre (fenetre/deny.toml), une cible à la fois : passées ensemble, cargo deny unifierait leurs fonctions
+  # (features) et jugerait des bibliothèques qu'aucune des deux ne compile.
+  local t
+  for t in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu; do
+    sortie+=$'\n'"fenetre/Cargo.toml ($t) :"$'\n'$(cargo deny "${options[@]}" --manifest-path fenetre/Cargo.toml \
+      --config fenetre/deny.toml --target "$t" check --hide-inclusion-graph "${verifications[@]}" 2>&1) || code=1
   done
   # Le banc de fuzzing, crate à part aussi (fuzz/deny.toml) : ses dépendances ne vont jamais dans Vanguard.
   sortie+=$'\n'"fuzz/Cargo.toml :"$'\n'$(cargo deny "${options[@]}" --manifest-path fuzz/Cargo.toml \
@@ -482,6 +504,7 @@ if [[ $MODE != --rapide ]]; then
   etape essais-verifier bash outils/essais-verifier.sh &
   etape masque bash outils/verifier-masque.sh &
   etape extensions extensions &
+  etape fenetre fenetre &
   etape python scripts_python &
   etape relais relais &
   etape relais-schema python3 outils/relais-schema.py &
@@ -639,6 +662,7 @@ if [[ $MODE != --rapide ]]; then
   ligne essais-verifier "essais de verifier.sh (--seulement)"
   ligne masque "mots d'attaque masqués"
   ligne extensions "extensions (sdk, exemple Rust)"
+  ligne fenetre "fenêtre (clippy ×2, tests Linux : $(passes fenetre))"
   ligne python "scripts Python"
   ligne relais "relais des lots ($(grep -m1 -oE '^ℹ pass [0-9]+' "$TRAVAIL/relais.log" 2>/dev/null | cut -d' ' -f3) essais)"
   ligne relais-schema "relais : schéma et détecteur"
